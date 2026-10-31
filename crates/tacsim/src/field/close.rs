@@ -44,9 +44,7 @@ pub(crate) fn snapshot_returns(
 
 /// The site's record as the family holds it.
 pub(crate) fn site_record(ctx: &Ctx<'_>, site: &CanonicalId) -> Option<SiteRecord> {
-    let handles = ctx
-        .w
-        .module_state::<crate::port::families::PortHandles>()?;
+    let handles = ctx.w.module_state::<crate::port::families::PortHandles>()?;
     let key = crate::surface::site_record::SiteKey(site.clone());
     ctx.action_state(&handles.families.sites, &key)
         .ok()

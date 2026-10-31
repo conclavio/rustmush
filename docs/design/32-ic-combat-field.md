@@ -235,6 +235,9 @@ row); Q-CF-19 was the one default marked expensive to reverse, and the owner rev
   per field from A–Z less the confusable I and O and the provisional X, and is stable for the
   field. The party letter comes from the same alphabet in admission order. A viewer learns
   nothing about slots from a designator.
+- **Overflow (owner ruling, 2026-10-31):** a party past 23 units keeps CF.0's three-letter
+  `Designator::Wide` (party letter and a drawn pair, e.g. `RKQ`), refused past 552 units. It
+  matters only for the scale harnesses.
 - **Proposed default (as written):** one letter per party from a fixed alphabet in admission
   order; the second letter as today; the Designator test extended to N letters.
 - **Alternative:** relation-relative designators (own units always `A…`, hostiles `H…`).
@@ -736,3 +739,49 @@ meets CF.7 at the 512 run.
 When CF.7 passes, doc 27b is revised to sit on the engine: its seven steps stand, its FC.1
 content work has already landed as CF.6's content, and its FC.2 through FC.5 become the field
 story's slices. Doc 27 §5 gains one row for the field engine and marks W-clock built.
+
+## 7. CF.2 as built (the field host)
+
+Built 2026-10-30 on `main` at `a22770e4`; the module is `crates/tacsim/src/field/`. What the cut
+had to decide where the rulings left it open, for the owner to object to:
+
+- **How a fire order or a mark names a presence row.** By what the viewer reads: an octant and,
+  when two flights share it, a band (`+field/fire NE`, `+field/mark E near=hostile`). The flight
+  meant is the nearest match, seen from the nearest of the viewer's own units. The picture hands
+  out no token; nothing about a row's identity is printed back.
+- **Party letters in admission order** are the parties' keys in order, never the promoter
+  first: an `A` for whoever marked would tell the ground who marked whom (Q-CF-7).
+- **The class rule is the simulator's.** "No arena fields a vehicle" (doc 18 D-18-29) is the
+  OOC roster rule; the IC host admits every unit on the ground whatever its class
+  (`FieldHost::every_class`), so a prospector or a hauler is in its field (Q-CF-16, Q-CF-49).
+- **A hull on IC ground is running.** The field opens every unit online; `STARTUP` and its
+  ten seconds are the simulator's cold start.
+- **An IC field closes no hull's epoch** (Q-H9): the kernel's `sortie_closed` lines (`match_end`,
+  and a wreck's `destroyed`) are the OOC host's only.
+- **The opening shot** waits up to ten arena seconds for the shooter's own sensors to hold a
+  contact on the target's cell, then locks it and fires the first loaded weapon through the
+  pilot's seat. No contact in the window, no shot.
+- **Demotion** uses the kernel's own `Engaged` triggers (a shot, an impact due, hostiles within
+  weapons range of each other) with no round in flight, for `disengage_s` of arena time. Two
+  hostile parties parked in each other's weapons range therefore stay a field; a restart restarts
+  the quiet interval. The kernel's duration bound stays as a four-hour backstop and demotes too.
+- **Ramp handoffs settle first** (Q-H4): a launch, a recover from beside the ramp, a drive or a
+  reading from the bay and an unload finish as they would, and admission waits for them. A
+  mining run stops after the cycle in flight, which keeps its ore.
+- **The field's task** is keyed in the shared arena registry by a RAM number taken from the top
+  of the key space down; it is never persisted and never shown. The custody mark carries the
+  field (`DeployedMark::field`) and match number `0`; the black box is its own log per segment
+  (`field.<site>.<ordinal>.<segment>`), so a resume needs no restored ledger tail.
+- **After a restart** each pilot takes the cockpit back with `+focus <unit>/<station>`, as the
+  resume line says: focus never survives a boot (mush-sim D-E7-34).
+- **The site cap** is `[tacsim.field].max_units` at the launch command; the start's prepare and
+  the fill plan keep the record's ceiling (24) as their backstop.
+
+Not built in CF.2, each for a reason stated in its PR: **recovery as exit** (Q-CF-18: the kernel
+has no way for a unit to leave a running arena, and the surface recover is itself refused while
+the site is promoted); the site record's **objects as sensor contacts** and cover beyond their
+cells (they are impassable cells, Q-CF-26); **remains and crates dropped at demotion** (an
+irrecoverable hull's remains wait for the epoch close-destroyed rule, 27a H3, and a hopper's
+crate for the inventory transfer that empties it); a hull under **dedicated IC custody** (a
+licensed mind's sortie) refuses its site's field until doc 23 S.4b; **organization**
+friendships (F-1).

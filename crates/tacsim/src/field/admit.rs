@@ -99,9 +99,7 @@ pub(crate) fn tick(ctx: &mut Ctx<'_>, _tag: &str, _scene: Option<mush_core::Scen
             continue;
         }
         let busy = ctx.w.module_state::<FieldBook>().is_none_or(|book| {
-            book.hosted(&site).is_some()
-                || book.pending(&site)
-                || book.closing.contains(&site)
+            book.hosted(&site).is_some() || book.pending(&site) || book.closing.contains(&site)
         });
         if busy {
             continue;
@@ -115,7 +113,10 @@ pub(crate) fn tick(ctx: &mut Ctx<'_>, _tag: &str, _scene: Option<mush_core::Scen
                 ctx.out.sys_to_actor(
                     actor,
                     "tacsim.field",
-                    format!("The field on {} could not open: {why}", site_name(ctx, &site)),
+                    format!(
+                        "The field on {} could not open: {why}",
+                        site_name(ctx, &site)
+                    ),
                 );
             }
             owe_close(ctx, &site, &record, None);
@@ -266,7 +267,9 @@ fn admit(ctx: &mut Ctx<'_>, site: &CanonicalId, record: &SiteRecord) -> Result<(
     let entrants = parties::entrants(ctx, site, &units);
     let (lettered, rows) = parties::letter(&entrants).map_err(str::to_owned)?;
     let definition = super::ground::definition(ctx.w, site, record)?;
-    let custody = custody(ctx, &field, &open.by, &entrants, &lettered, &rows, definition)?;
+    let custody = custody(
+        ctx, &field, &open.by, &entrants, &lettered, &rows, definition,
+    )?;
     // (4) The check-out, all or nothing.
     let mark = mush_sim::deployed::DeployedMark::field(site.as_str(), field.ordinal);
     let mut out: Vec<ObjId> = Vec::new();
@@ -275,7 +278,10 @@ fn admit(ctx: &mut Ctx<'_>, site: &CanonicalId, record: &SiteRecord) -> Result<(
             for back in out {
                 let _ = mush_tactics::custody::check_in(ctx, back, None);
             }
-            return Err(format!("#{} could not be taken into the field ({error})", unit.0));
+            return Err(format!(
+                "#{} could not be taken into the field ({error})",
+                unit.0
+            ));
         }
         out.push(*unit);
     }
@@ -322,7 +328,10 @@ fn admit(ctx: &mut Ctx<'_>, site: &CanonicalId, record: &SiteRecord) -> Result<(
         return Err(match error {
             crate::arena_bridge::OpenMatchError::Arena(
                 crate::arena::state::ArenaError::CellImpassable { unit, x, y },
-            ) => format!("#{} stands on ({x}, {y}), ground it could never move from", unit.0),
+            ) => format!(
+                "#{} stands on ({x}, {y}), ground it could never move from",
+                unit.0
+            ),
             other => format!("its task did not open ({other})"),
         });
     }
@@ -461,7 +470,11 @@ fn custody(
             });
         }
     }
-    let party_of = |unit: ObjId| rows.iter().find(|row| row.unit == unit).map(|row| row.party);
+    let party_of = |unit: ObjId| {
+        rows.iter()
+            .find(|row| row.unit == unit)
+            .map(|row| row.party)
+    };
     let mut marks = Vec::new();
     if let PromotedBy::Mark { by, of, .. } = by
         && let (Some(by), Some(of)) = (party_of(*by), party_of(*of))

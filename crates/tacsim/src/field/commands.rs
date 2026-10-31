@@ -178,7 +178,7 @@ fn status(ctx: &mut Ctx<'_>) -> Result<(), CmdError> {
                         "Field {} is open on {}. Your party is {}; {} parties are on the ground.",
                         hosted.live.field.ordinal,
                         crate::surface::act::site_name(ctx.w, site),
-                        char::from(party.letter()),
+                        party.letter(),
                         hosted.live.parties.len()
                     ))
                 })
@@ -268,8 +268,8 @@ fn mark_in_field(
     of: PartyId,
     mark: Option<Mark>,
 ) -> Result<(), CmdError> {
-    let (site, by) = in_field(ctx, actor)
-        .ok_or_else(|| CmdError::msg("You lead no party in a field."))?;
+    let (site, by) =
+        in_field(ctx, actor).ok_or_else(|| CmdError::msg("You lead no party in a field."))?;
     let task = ctx
         .w
         .module_state::<super::FieldBook>()
@@ -296,10 +296,7 @@ fn mark_in_field(
     ctx.out.sys_to_actor(
         actor,
         "tacsim.field",
-        format!(
-            "Your party now marks party {} {word}.",
-            char::from(of.letter())
-        ),
+        format!("Your party now marks party {} {word}.", of.letter()),
     );
     Ok(())
 }
@@ -347,7 +344,9 @@ fn open_by(
         own.clone()
     };
     if own_for_door.is_empty() {
-        return Err(CmdError::msg("You are not flying a unit on that site's ground."));
+        return Err(CmdError::msg(
+            "You are not flying a unit on that site's ground.",
+        ));
     }
     let others: Vec<ObjId> = units
         .iter()
@@ -382,10 +381,12 @@ fn open_site(
     .ok()
     .flatten()
     {
-        return Err(CmdError::msg(crate::surface::site_record::promoted_refusal(
-            &field,
-            &crate::surface::act::site_name(ctx.w, site),
-        )));
+        return Err(CmdError::msg(
+            crate::surface::site_record::promoted_refusal(
+                &field,
+                &crate::surface::act::site_name(ctx.w, site),
+            ),
+        ));
     }
     let action = handles
         .field
@@ -431,8 +432,7 @@ fn open_site(
     } else {
         "Marked Hostile. The ground goes tactical."
     };
-    ctx.out
-        .sys_to_actor(actor, "tacsim.field", said.to_owned());
+    ctx.out.sys_to_actor(actor, "tacsim.field", said.to_owned());
     Ok(())
 }
 

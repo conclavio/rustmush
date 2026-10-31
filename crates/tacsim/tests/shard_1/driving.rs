@@ -166,8 +166,9 @@ fn boot_over(
     cfg: &TacsimConfig,
 ) -> TestWorld {
     let (_, registry) = mush_testkit::boot_world();
-    let mut engine = mush_core::Engine::with_modules(world, registry, Roster(cfg.clone()).modules())
-        .expect("the roster composes");
+    let mut engine =
+        mush_core::Engine::with_modules(world, registry, Roster(cfg.clone()).modules())
+            .expect("the roster composes");
     if keyed {
         assert!(tacsim::surface::install_geology(
             &mut engine.world,

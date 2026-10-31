@@ -1373,7 +1373,12 @@ impl Arena {
         // not at the match's end. When this destruction ends the match in the
         // same substep, every other open sortie closes `match_end` before the
         // end's line (`Arena::close_open_sorties`).
-        if let Some(close) = self.close_sortie(target, t_ms, crate::arena::mind::SORTIE_DESTROYED) {
+        // Doc 32 cut CF.2 (Q-H9): not in an IC field, where a wreck keeps its epoch open and
+        // only the world's own host closes it.
+        if self.end != crate::arena::party::EndCondition::Host
+            && let Some(close) =
+                self.close_sortie(target, t_ms, crate::arena::mind::SORTIE_DESTROYED)
+        {
             journal.push(close);
         }
     }

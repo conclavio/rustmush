@@ -13,7 +13,7 @@
 //! # The lifecycle
 //!
 //! 1. **Promotion** (Q-CF-14) by either door: a detachment leader's Hostile mark on a party seen
-//!    on the presence picture (`+field/mark`, [`commands`]), or a fire order at a presence row
+//!    on the presence picture (`+field/mark`, `commands`), or a fire order at a presence row
 //!    (`+field/fire`). Either submits `tacsim_field open` ([`provider`]): the site record's flag,
 //!    the door that opened it, and every settleable surface act settled in the same bundle
 //!    (Q-CF-30, Q-CF-31). **CF.6's hook**: a delivered `ENGAGE` received on the surface is the
@@ -23,7 +23,7 @@
 //!    checked out under a field custody mark (`mush_sim::deployed::DeployedMark::field`) and
 //!    handed to a fresh task with an IC [`crate::arena::FieldHost`] — the opening mark, the
 //!    standing friendships, [`crate::arena::party::EndCondition::Host`] — at its surface pose.
-//!    Parties take their letters in admission order ([`parties`]); a bystander nobody marked
+//!    Parties take their letters in admission order (`parties`); a bystander nobody marked
 //!    reads Unknown and is shootable (Q-CF-9, Q-CF-10). No partial admission ever: a unit that
 //!    will not check out refuses the whole field, which demotes at once.
 //! 3. **The fight.** Pilots keep their seats; their cockpit verbs reach the task as in the
@@ -31,11 +31,13 @@
 //!    the kernel as `ArenaMsg::Mark`. A fire order's shot resolves in the field's first pulses
 //!    under the normal lock rules: the host locks the shooter's own contact on the target once its
 //!    sensors hold one, and fires its first weapon; no contact within the window, no shot.
-//!    Launches onto the site are refused with the reason (Q-CF-17); recovery at the own ramp is
-//!    the way out (Q-CF-18, [`commands`]).
+//!    Launches onto the site are refused with the reason (Q-CF-17). **Recovery as exit**
+//!    (Q-CF-18) is not built in this cut: the kernel has no way for a unit to leave a running
+//!    arena, and the surface recover stays refused while the site is promoted (CF.1), so a
+//!    unit leaves at demotion.
 //! 4. **Demotion** (Q-CF-20): the task stops itself with `Disengaged` once no hostile pair has
 //!    fired, held another in weapons range or had a round in flight for `[tacsim.field]
-//!    .disengage_s` ([`crate::arena_task::FieldTerms`]). [`close`] checks every unit in through
+//!    .disengage_s` ([`crate::arena_task::FieldTerms`]). `close` checks every unit in through
 //!    the IC condition plan (Q-CF-36: only the custody vocabulary, no blanket wreck stamp),
 //!    places it at its field pose (Q-CF-31), and submits `tacsim_field close` with every
 //!    casualty and wreck at the pose it fell (Q-CF-24).
@@ -43,7 +45,7 @@
 //!    from the last snapshot the world holds; with none, every unit checks in as it went out.
 //! 6. **Resume** (Q-CF-33, Q-CF-34): a restart finds the field's live record and snapshot; while
 //!    the W-clock is frozen the resume is held, and it runs when the world's clock resumes
-//!    ([`boot`], a `WorldClockResumed` observer) — never during the countdown.
+//!    (`boot`, a `WorldClockResumed` observer) — never during the countdown.
 //!
 //! **The clock handoff** (Q-CF-31, Q-CF-32): a drive in flight at promotion stops at the point
 //! its leg reached on the campaign clock and the field takes the rig from there on wall time; at
@@ -210,33 +212,27 @@ pub(crate) fn tell_site(ctx: &mut Ctx<'_>, site: &CanonicalId, text: &str) {
             }
         }
     }
-    let rigs: Vec<ObjId> = crate::surface::act::world_rigs(ctx.w);
-    for rig in rigs {
-        if let Some(record) = ctx
-            .w
-            .module_state::<crate::port::families::PortHandles>()
-            .cloned()
-            .and_then(|handles| {
-                ctx.action_state(
-                    &handles.families.excursions,
-                    &crate::surface::excursion::RigKey(rig),
-                )
+    // The operators of rigs out on the site, wherever they stand.
+    if let Some(handles) = ctx
+        .w
+        .module_state::<crate::port::families::PortHandles>()
+        .cloned()
+    {
+        for rig in crate::surface::act::world_rigs(ctx.w) {
+            let key = crate::surface::excursion::RigKey(rig);
+            if let Some(out) = ctx
+                .action_state(&handles.families.excursions, &key)
                 .ok()
                 .flatten()
-                .cloned()
-            })
-            && record
-                .excursion
-                .as_ref()
-                .is_some_and(|out| &out.site == site)
-        {
-            seen.insert(record.excursion.as_ref().map_or(ObjId(0), |out| out.operator));
+                .and_then(|record| record.excursion.as_ref())
+                .filter(|out| &out.site == site)
+            {
+                seen.insert(out.operator);
+            }
         }
     }
     for who in seen {
-        if who.0 != 0 {
-            ctx.out.sys_to_actor(who, "tacsim.field", text.to_owned());
-        }
+        ctx.out.sys_to_actor(who, "tacsim.field", text.to_owned());
     }
 }
 
@@ -248,6 +244,9 @@ pub(crate) fn tell_site(ctx: &mut Ctx<'_>, site: &CanonicalId, text: &str) {
 pub fn register(reg: &mut Registrar<'_>) -> Result<(), ModError> {
     reg.state(FieldBook::default());
     reg.state(admit::OwedCloses::default());
+    // `+field` submits the host's authoritative action: the cockpit's command lane, then the
+    // module's own default restored for whatever registers after.
+    reg.classify_commands(mush_core::CommandCompatibility::Authoritative);
     reg.command(
         CommandSpec {
             name: FIELD_VERB.into(),
@@ -258,6 +257,7 @@ pub fn register(reg: &mut Registrar<'_>) -> Result<(), ModError> {
         },
         Arc::new(commands::command),
     )?;
+    reg.classify_commands(mush_core::CommandCompatibility::LegacyPostImage);
     reg.tick(
         FIELD_TICK,
         TickCadence::Coarse(FIELD_TICK_PERIOD),
@@ -280,11 +280,7 @@ pub fn log_of_task(w: &World, task: MatchId) -> Option<String> {
 
 /// **A field's snapshot** (the bridge's branch; Q-CF-34): the document beside the live record,
 /// the live record's moment moved to it, and the RAM copy the void rule demotes from.
-pub(crate) fn on_snapshot(
-    ctx: &mut Ctx<'_>,
-    task: MatchId,
-    snapshot: Arc<crate::arena::Snapshot>,
-) {
+pub(crate) fn on_snapshot(ctx: &mut Ctx<'_>, task: MatchId, snapshot: Arc<crate::arena::Snapshot>) {
     let at_ms = snapshot.at_ms;
     let document = Arc::try_unwrap(snapshot).map_or_else(
         |shared| shared.document.clone(),

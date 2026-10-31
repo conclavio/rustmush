@@ -76,8 +76,8 @@ fn armed(rig: &mut Rig, name: &str, cell: (i64, i64), heading: u32) -> ObjId {
             .create(ObjKind::Thing, name, GOD, None)
             .expect("the hull's object");
         mush_tactics::module::create_unit(ctx, obj, &spec).expect("the hull's unit record");
-        let pose = tacsim::surface::excursion::cell_pose([cell.0, cell.1], heading)
-            .expect("a site pose");
+        let pose =
+            tacsim::surface::excursion::cell_pose([cell.0, cell.1], heading).expect("a site pose");
         mush_sim::place(ctx, obj, domain, pose).expect("placed on the ground");
         obj
     })
@@ -208,12 +208,7 @@ fn pump(rig: &mut Rig, rx: &mut Receiver<ArenaOut>, lines: &mut Vec<LedgerEvent>
 fn second(rig: &mut Rig) -> Vec<String> {
     let t = rig.tw.world().now().saturating_add(1);
     rig.tw.set_now(t);
-    let events = rig.tw.fire_due(t.saturating_mul(1_000));
-    for (audience, event) in &events {
-        if std::env::var("CF2_DEBUG").is_ok() {
-            eprintln!("tick {t}: {audience:?} {event:?}");
-        }
-    }
+    let _ = rig.tw.fire_due(t.saturating_mul(1_000));
     let queued = drain(&mut rig.tw);
     queued
         .iter()
@@ -235,7 +230,7 @@ async fn until(
         tokio::time::sleep(Duration::from_millis(25)).await;
         pump(rig, rx, lines);
         beat += 1;
-        if beat % 8 == 0 {
+        if beat.is_multiple_of(8) {
             let _ = second(rig);
         }
         if done(rig, lines) {
@@ -291,7 +286,7 @@ async fn cf2_two_armed_hulls_fight_the_loser_stays_and_a_restart_resumes_after_t
     to_cell(&mut rig, c_tvs[0], (116, 116));
     let bystander = c_tvs[0];
     let hull_a = armed(&mut rig, "Red Hound", (110, 124), 90_000);
-    let hull_b = armed(&mut rig, "Grey Hound", (122, 124), 270_000);
+    let hull_b = armed(&mut rig, "Grey Hound", (114, 124), 270_000);
     seat(&mut rig, hull_a, a);
     seat(&mut rig, hull_b, b);
     fragile(&mut rig, hull_b);
@@ -307,7 +302,10 @@ async fn cf2_two_armed_hulls_fight_the_loser_stays_and_a_restart_resumes_after_t
         let _ = second(&mut rig);
     }
     let map = run(&mut rig.tw, a, "+tv/map");
-    assert!(map.contains("Presence:"), "A sees flights on the ground: {map}");
+    assert!(
+        map.contains("Presence:"),
+        "A sees flights on the ground: {map}"
+    );
 
     // (1) A's fire order at the flight to the east (B's hull): the site promotes.
     let (out, queued) = command(&mut rig, a, "+field/fire E");
@@ -327,7 +325,9 @@ async fn cf2_two_armed_hulls_fight_the_loser_stays_and_a_restart_resumes_after_t
 
     // (2) Admission on the next tick: everyone on the ground under the field's mark.
     assert!(
-        until(&mut rig, &mut rx, &mut lines, 10, |rig, _| task(rig).is_some()).await,
+        until(&mut rig, &mut rx, &mut lines, 10, |rig, _| task(rig)
+            .is_some())
+        .await,
         "the field's task opens"
     );
     for unit in [hull_a, hull_b, bystander] {
@@ -367,19 +367,24 @@ async fn cf2_two_armed_hulls_fight_the_loser_stays_and_a_restart_resumes_after_t
         })
     };
     assert!(
-        until(&mut rig, &mut rx, &mut lines, 20, |rig, _| rounds(rig).is_some()).await,
+        until(&mut rig, &mut rx, &mut lines, 20, |rig, _| rounds(rig)
+            .is_some())
+        .await,
         "A's cockpit frame arrives"
     );
     let full = rounds(&rig).expect("A's gun");
     let opened = until(&mut rig, &mut rx, &mut lines, 20, |rig, _| {
         let locked_b = frame(rig, a).is_some_and(|frame| {
             frame.lock.is_some()
-                && frame.lock == contact_at(rig, (122, 124)).map(|contact| contact.id)
+                && frame.lock == contact_at(rig, (114, 124)).map(|contact| contact.id)
         });
         locked_b && rounds(rig).is_some_and(|left| left < full)
     })
     .await;
-    assert!(opened, "the fire order's shot leaves the barrel, locked on B's hull");
+    assert!(
+        opened,
+        "the fire order's shot leaves the barrel, locked on B's hull"
+    );
 
     // The bystander: a contact nobody marked, neither friend nor foe, and shootable — the
     // kernel never refuses a shot by relation.
@@ -396,7 +401,10 @@ async fn cf2_two_armed_hulls_fight_the_loser_stays_and_a_restart_resumes_after_t
         seen.expect("the bystander's contact")
     };
     assert!(
-        matches!(bystander_contact.relation, Relation::Unknown | Relation::Neutral),
+        matches!(
+            bystander_contact.relation,
+            Relation::Unknown | Relation::Neutral
+        ),
         "a bystander nobody marked: {:?}",
         bystander_contact.relation
     );
@@ -444,12 +452,17 @@ async fn cf2_two_armed_hulls_fight_the_loser_stays_and_a_restart_resumes_after_t
     for _ in 0..3 {
         let _ = second(&mut rig);
     }
-    assert!(task(&rig).is_none(), "still held: no tick runs a frozen world");
+    assert!(
+        task(&rig).is_none(),
+        "still held: no tick runs a frozen world"
+    );
     staff_hand(&mut rig, |ctx| {
         let _ = ctx.resume_world_time();
     });
     assert!(
-        until(&mut rig, &mut rx, &mut lines, 10, |rig, _| task(rig).is_some()).await,
+        until(&mut rig, &mut rx, &mut lines, 10, |rig, _| task(rig)
+            .is_some())
+        .await,
         "the field resumes from its snapshot when the clock resumes"
     );
     for unit in [hull_a, hull_b, bystander] {
@@ -467,22 +480,13 @@ async fn cf2_two_armed_hulls_fight_the_loser_stays_and_a_restart_resumes_after_t
         assert!(!said.contains("Usage"), "{said}");
     }
     // A goes back to B's hull and fires until it is a wreck.
-    let wrecked = until(&mut rig, &mut rx, &mut lines, 90, |rig, _| {
-        if let Some(contact) = contact_at(rig, (122, 124))
+    let wrecked = until(&mut rig, &mut rx, &mut lines, 150, |rig, _| {
+        if let Some(contact) = contact_at(rig, (114, 124))
             && frame(rig, a).is_some_and(|frame| frame.lock != Some(contact.id))
         {
             let _ = run(&mut rig.tw, a, &format!("LOCK {}", contact.designator));
         }
-        let said = run(&mut rig.tw, a, &format!("FIRE {gun}"));
-        if std::env::var("CF2_DEBUG").is_ok() {
-            eprintln!(
-                "FIRE -> {said:?} rounds {:?} lock {:?} b_frame {:?} task {:?}",
-                rounds(rig),
-                frame(rig, a).map(|frame| frame.lock),
-                frame(rig, b).map(|frame| (frame.wreck, frame.immobile, frame.t_ms)),
-                task(rig)
-            );
-        }
+        let _ = run(&mut rig.tw, a, &format!("FIRE {gun}"));
         frame(rig, b).is_some_and(|frame| frame.wreck)
     })
     .await;
@@ -496,6 +500,21 @@ async fn cf2_two_armed_hulls_fight_the_loser_stays_and_a_restart_resumes_after_t
         })
         .await,
         "the field demotes after its quiet interval"
+    );
+    assert!(
+        lines.iter().any(|line| matches!(
+            line.kind,
+            EventKind::MatchEnded {
+                reason: tacsim::arena::state::EndReason::Disengaged
+            }
+        )),
+        "the black box ends on the disengagement"
+    );
+    assert!(
+        !lines
+            .iter()
+            .any(|line| matches!(line.kind, EventKind::SortieClosed { .. })),
+        "an IC field closes no hull's epoch (Q-H9)"
     );
     let record = site_record(&mut rig).expect("the record");
     assert_eq!(record.ordinal, 1);

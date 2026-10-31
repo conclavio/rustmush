@@ -1366,10 +1366,8 @@ struct PrePulse {
     cards: BTreeMap<ObjId, Vec<CardChange>>,
     /// **Doc 32 cut CF.2**: the leaders' marks, latest-wins per `(by, of)`, so
     /// bounded by the parties' square.
-    marks: BTreeMap<
-        (crate::arena::PartyId, crate::arena::PartyId),
-        Option<crate::arena::party::Mark>,
-    >,
+    marks:
+        BTreeMap<(crate::arena::PartyId, crate::arena::PartyId), Option<crate::arena::party::Mark>>,
 }
 
 impl PrePulse {
@@ -1769,10 +1767,7 @@ impl Task {
         let Some(terms) = self.terms else {
             return false;
         };
-        if self.arena.ended.is_some()
-            || self.arena.stopping()
-            || self.arena.round_in_flight()
-        {
+        if self.arena.ended.is_some() || self.arena.stopping() || self.arena.round_in_flight() {
             return false;
         }
         let since = self
@@ -3431,6 +3426,8 @@ mod tests {
             pool_wait_us: 0,
             tape: None,
             tape_cards: Vec::new(),
+            quiet_from_ms: 0,
+            terms: None,
         };
         let picture = |now_ms: i64| {
             let mut observer = task_picture();
@@ -3593,6 +3590,8 @@ mod tests {
             pool_wait_us: 0,
             tape: None,
             tape_cards: Vec::new(),
+            quiet_from_ms: 0,
+            terms: None,
         };
         (task, world)
     }
@@ -3886,6 +3885,8 @@ mod tests {
             pool_wait_us: 0,
             tape: None,
             tape_cards: Vec::new(),
+            quiet_from_ms: 0,
+            terms: None,
         };
         // The senders ride along: `Task::end` reads the stop signal, and a
         // dropped sender reads as a stopped task.

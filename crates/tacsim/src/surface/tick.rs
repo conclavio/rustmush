@@ -3083,7 +3083,7 @@ fn completion_line(
                     tv::WHY_MARKERS_QUEUED.to_owned()
                 }
                 RefusedCode::MarkersFull => tv::WHY_MARKERS_FULL.to_owned(),
-            RefusedCode::FieldOpened => tv::WHY_FIELD_OPENED.to_owned(),
+                RefusedCode::FieldOpened => tv::WHY_FIELD_OPENED.to_owned(),
             };
             tv::ACT_FAILED
                 .replace("{n}", &n)

@@ -283,10 +283,9 @@ impl PromotedBy {
     pub fn words(&self) -> String {
         match self {
             PromotedBy::Staff { staff } => format!("staff #{} fixture", staff.0),
-            PromotedBy::Mark { leader, by, of } => format!(
-                "#{}'s mark from #{} on #{}'s party",
-                leader.0, by.0, of.0
-            ),
+            PromotedBy::Mark { leader, by, of } => {
+                format!("#{}'s mark from #{} on #{}'s party", leader.0, by.0, of.0)
+            }
             PromotedBy::Fire {
                 pilot,
                 shooter,
@@ -665,7 +664,10 @@ impl SiteRecord {
                 })
                 || open.settled.iter().any(|rig| !rig.pose.on_site()))
         {
-            return Err("a promotion settles at most the field cap of rigs, in order, on the site's ground".to_owned());
+            return Err(
+                "a promotion settles at most the field cap of rigs, in order, on the site's ground"
+                    .to_owned(),
+            );
         }
         if self.units.len() > MAX_LEFT_UNITS {
             return Err(format!(

@@ -128,7 +128,12 @@ pub struct UnitDeployed {
 }
 
 /// [`UnitDeployed`]'s sentence: the match's, or the field's (doc 32 cut CF.2).
-fn deployed_words(unit: ObjId, match_id: u64, arena: &str, field: Option<&DeployedField>) -> String {
+fn deployed_words(
+    unit: ObjId,
+    match_id: u64,
+    arena: &str,
+    field: Option<&DeployedField>,
+) -> String {
     match field {
         Some(field) => format!(
             "{unit} is in field {} on {}; the field holds it until it settles.",

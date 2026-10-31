@@ -432,3 +432,102 @@ impl ActionProvider for FieldProvider {
             .with_eligible_witnesses(vec![invocation.principal().clone()]))
     }
 }
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use crate::surface::excursion::{Act, ActParams, Charge, LegWaypoint};
+
+    fn cid(text: &str) -> CanonicalId {
+        CanonicalId::new(text).unwrap_or_else(|_| panic!("{text} is canonical"))
+    }
+
+    /// A rig out on the ground, 100 s into a 200 s drive east from (10, 10) to (30, 10) that
+    /// reserved 2,000 cu.
+    fn driving() -> RigRecord {
+        let mut record = RigRecord::fresh_unread(ObjId(7));
+        record.charge = Charge {
+            value_cu: 50_000,
+            at_ic: 900,
+            in_bay: false,
+        };
+        record.act = Some(Act {
+            ordinal: 3,
+            kind: ActKind::Drive,
+            operator: ObjId(42),
+            hull: ObjId(500),
+            slot: 1,
+            site: cid("ahuna_port"),
+            started_ic: 1_000,
+            due_ic: 1_200,
+            reserved_cu: 2_000,
+            params: ActParams::Drive {
+                from_bay: false,
+                target: "30,10".to_owned(),
+                to: [30, 10],
+                waypoints: vec![
+                    LegWaypoint {
+                        x_cm: 10_500,
+                        y_cm: 10_500,
+                        at_s: 0,
+                    },
+                    LegWaypoint {
+                        x_cm: 30_500,
+                        y_cm: 10_500,
+                        at_s: 200,
+                    },
+                ],
+                secs: 200,
+                cost: 2_000,
+                metres: 200,
+                heading_mdeg: 90_000,
+            },
+            by: None,
+            seal: None,
+        });
+        record
+    }
+
+    #[test]
+    fn a_drive_stops_where_its_leg_reached_and_pays_for_what_it_drove() {
+        let mut record = driving();
+        let pose = settle(&mut record, &cid("ahuna_port"), 1_100).expect("the drive stops");
+        assert_eq!((pose.x_cm, pose.y_cm), (20_500, 10_500), "half way");
+        assert_eq!(pose.heading_mdeg, 90_000);
+        assert!(record.act.is_none(), "the remainder is cancelled");
+        assert_eq!(
+            record.charge.value_cu, 49_000,
+            "half the reservation is spent"
+        );
+        assert!(matches!(
+            record.last.as_ref().map(|last| last.result),
+            Some(ActResult::Refused {
+                code: RefusedCode::FieldOpened
+            })
+        ));
+        assert!(!handoff_pending(&record, &cid("ahuna_port")));
+    }
+
+    #[test]
+    fn another_site_and_a_ramp_handoff_are_left_alone() {
+        let mut record = driving();
+        let before = record.clone();
+        assert_eq!(settle(&mut record, &cid("vesta_port"), 1_100), None);
+        assert_eq!(
+            record, before,
+            "a drive on another site is not this field's"
+        );
+        let mut launching = driving();
+        if let Some(act) = launching.act.as_mut() {
+            act.kind = ActKind::Launch;
+            act.params = ActParams::None {};
+        }
+        let kept = launching.clone();
+        assert_eq!(settle(&mut launching, &cid("ahuna_port"), 1_100), None);
+        assert_eq!(
+            launching, kept,
+            "a launch on the ramp finishes into the field"
+        );
+        assert!(handoff_pending(&launching, &cid("ahuna_port")));
+    }
+}

@@ -121,8 +121,8 @@ fn resume(ctx: &mut Ctx<'_>, site: &CanonicalId, held: &Held) -> Result<(), Stri
         .snapshot
         .clone()
         .ok_or_else(|| "it has no snapshot".to_owned())?;
-    let record = super::close::site_record(ctx, site)
-        .ok_or_else(|| "its site record is gone".to_owned())?;
+    let record =
+        super::close::site_record(ctx, site).ok_or_else(|| "its site record is gone".to_owned())?;
     if record.open_field() != Some(live.field.clone()) {
         return Err("its site record no longer holds it open".to_owned());
     }
@@ -204,7 +204,10 @@ fn void(ctx: &mut Ctx<'_>, site: &CanonicalId, held: &Held) {
     let left = super::close::demote_units(ctx, site, &units, &returns);
     super::record::delete(ctx, site);
     if let Some(record) = super::close::site_record(ctx, site)
-        && record.promoted.as_ref().is_some_and(|open| open.by.hosted())
+        && record
+            .promoted
+            .as_ref()
+            .is_some_and(|open| open.by.hosted())
     {
         super::admit::owe_close(ctx, site, &record, Some(left));
     }

@@ -88,17 +88,16 @@ pub(crate) fn seated(w: &World, unit: ObjId) -> Option<(ObjId, SmolStr)> {
         .map(|(station, seat)| (seat.actor, SmolStr::new(station.as_str())))
 }
 
-/// **The open DT flight `unit` flies on `entry`**, as its operation and the flight's epoch.
-fn flight_of(
-    ctx: &Ctx<'_>,
-    unit: ObjId,
-    entry: &CanonicalId,
-) -> Option<(
+/// An open flight's operation, its epoch, its roster's leader and its organizer.
+type FlightFacts = (
     crate::detachment::sortie::OperationId,
     Option<SortieId>,
     Option<ObjId>,
     Option<ObjId>,
-)> {
+);
+
+/// **The open DT flight `unit` flies on `entry`**, as its operation and the flight's epoch.
+fn flight_of(ctx: &Ctx<'_>, unit: ObjId, entry: &CanonicalId) -> Option<FlightFacts> {
     let handles = ctx
         .w
         .module_state::<crate::detachment::sortie::SortieHandles>()?;
@@ -138,16 +137,14 @@ fn flight_of(
 
 /// **The rig's own record on the excursion family**, when it has one.
 fn rig_record(ctx: &Ctx<'_>, unit: ObjId) -> Option<crate::surface::excursion::RigRecord> {
-    let handles = ctx
-        .w
-        .module_state::<crate::port::families::PortHandles>()?;
+    let handles = ctx.w.module_state::<crate::port::families::PortHandles>()?;
     ctx.action_state(
         &handles.families.excursions,
         &crate::surface::excursion::RigKey(unit),
     )
-        .ok()
-        .flatten()
-        .cloned()
+    .ok()
+    .flatten()
+    .cloned()
 }
 
 /// **Each unit on the ground as the field admits it** (this module's head), in unit order.
@@ -274,10 +271,7 @@ mod tests {
         // Whoever marked, the letters are the keys' order.
         let entrants = vec![one(30, Some(3)), one(10, Some(1)), one(20, None)];
         let (parties, units) = letter(&entrants).expect("three parties");
-        let letters: Vec<char> = parties
-            .iter()
-            .map(|party| char::from(party.party.letter()))
-            .collect();
+        let letters: Vec<char> = parties.iter().map(|party| party.party.letter()).collect();
         assert_eq!(letters, vec!['A', 'B', 'C']);
         assert_eq!(units[0].unit, ObjId(10));
         assert_eq!(units[0].party, PartyId::nth(0).expect("A"));
