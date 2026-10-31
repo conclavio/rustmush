@@ -105,7 +105,15 @@ pub(crate) fn command(ctx: &mut Ctx<'_>) -> Result<(), CmdError> {
                 );
             }
         }
-        if record.active() {
+        // DT-8a: the chat's members are the slot holders (doc 26a), so an organizer outside
+        // the slots is not offered it.
+        if record.active()
+            && record
+                .plan
+                .slots
+                .iter()
+                .any(|s| s.controller.character() == Some(ctx.actor))
+        {
             line(
                 ctx,
                 format!(

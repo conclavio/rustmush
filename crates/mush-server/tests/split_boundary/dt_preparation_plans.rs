@@ -3341,6 +3341,141 @@ async fn ic_field_npc_hold_replacement_stops_old_mining_without_completing_hold(
     );
     Ok(())
 }
+/// DT-2/DT-3: `+sortie/{verb}` with an NPC mining and the player operator on the surface. Both
+/// keep their way home: the NPC's safety stop and own recover, the player's recover, and the
+/// loaded hopper's queued unload; no new field work starts.
+async fn field_crews_come_home_after(verb: &str) -> TestResult<(Rig, InMemoryStore, ObjId)> {
+    use tacsim::detachment::sortie::Phase;
+    let store = InMemoryStore::new();
+    let (mut rig, _) = mining_field_fixture(&store, true).await?;
+    let (organizer, unit) = (rig.organizer, rig.unit);
+    let leader = rig
+        .world
+        .world()
+        .module_state::<tacsim::TacsimStore>()
+        .ok_or("rentals")?
+        .tv_leases_of(organizer)
+        .find(|r| r.live() && r.slot == 2)
+        .ok_or("leader rig")?
+        .tv;
+    issue_npc_task(&mut rig, &store, "MINE").await?;
+    let mut run = None;
+    for _ in 0..200 {
+        pulse(&mut rig.world, &store, 1).await?;
+        run = surface_record(&rig.world, unit)?.and_then(|r| r.run);
+        if run.is_some() {
+            break;
+        }
+    }
+    let run = run.ok_or("actual source run must start")?;
+    commit(
+        &mut rig.world,
+        &store,
+        organizer,
+        &format!("+sortie/{verb} 1:1"),
+    )
+    .await?;
+    assert_eq!(flight(&rig.world, unit, 1)?.phase, Phase::Field);
+    assert_eq!(flight(&rig.world, leader, 1)?.phase, Phase::Field);
+    // Only the recovery acts remain: a scan is refused at preparation.
+    let scan = match submit(&mut rig.world, organizer, "+tv/2 scan go") {
+        Err(_) => true,
+        Ok(request) => {
+            persist_legacy(&mut rig.world, &store).await?;
+            stage(&mut rig.world, &store, &request).await.is_err()
+        }
+    };
+    assert!(
+        scan,
+        "a field operation that no longer stands admits no new work"
+    );
+    commit(&mut rig.world, &store, organizer, "+tv/2 recover go").await?;
+    for _ in 0..400 {
+        let home = flight(&rig.world, unit, 1)?.phase == Phase::Returned
+            && flight(&rig.world, leader, 1)?.phase == Phase::Returned
+            && surface_record(&rig.world, unit)?
+                .is_some_and(|r| r.run.is_none() && r.act.is_none() && r.queued.is_none());
+        if home {
+            break;
+        }
+        pulse(&mut rig.world, &store, 1).await?;
+    }
+    let record = surface_record(&rig.world, unit)?.ok_or("surface record")?;
+    assert_eq!(
+        flight(&rig.world, unit, 1)?.phase,
+        Phase::Returned,
+        "the NPC must stop and bring its unit home: {record:?}"
+    );
+    assert_eq!(flight(&rig.world, leader, 1)?.phase, Phase::Returned);
+    assert!(
+        record.run.is_none()
+            && record.act.is_none()
+            && record.queued.is_none()
+            && record.excursion.is_none()
+            && record.charge.in_bay,
+        "{record:?}"
+    );
+    assert_eq!(
+        pool_amount(&rig.world, mush_economy::VaultId(run.hopper), &run.good)?,
+        0,
+        "a loaded hopper must finish its unload"
+    );
+    Ok((rig, store, leader))
+}
+#[tokio::test]
+async fn dt3_end_leaves_field_crews_their_way_home_and_holds_the_rigs_lease() -> TestResult {
+    let (mut rig, store, _) = field_crews_come_home_after("end").await?;
+    let organizer = rig.organizer;
+    exit_after_release(&mut rig.world, &store, organizer, "+tv/2 leave").await?;
+    exit_after_release(
+        &mut rig.world,
+        &store,
+        organizer,
+        &format!("+sortie/unseat #{}", rig.invitee.0),
+    )
+    .await?;
+    // DT-4: an ended operation keeps its reservations, and they hold the rigs.
+    let denied = text(&mut rig.world, organizer, "+tv/2 lease return go");
+    assert!(denied.contains("reserved for a detachment"), "{denied}");
+    let denied = text(
+        &mut rig.world,
+        GOD,
+        &format!("@coop/revoke #{}=detached rigs", organizer.0),
+    );
+    assert!(
+        denied.contains(tacsim::port::recall::NOT_REVOKED),
+        "{denied}"
+    );
+    assert_eq!(
+        rig.world
+            .world()
+            .module_state::<tacsim::TacsimStore>()
+            .ok_or("rentals")?
+            .tv_leases_of(organizer)
+            .filter(|r| r.live())
+            .count(),
+        2
+    );
+    commit(&mut rig.world, &store, organizer, "+sortie/deactivate 1:1").await?;
+    let after = text(&mut rig.world, organizer, "+tv/2 lease return go");
+    assert!(!after.contains("reserved for a detachment"), "{after}");
+    Ok(())
+}
+#[tokio::test]
+async fn dt2_deactivate_leaves_field_crews_their_way_home() -> TestResult {
+    let (mut rig, store, _) = field_crews_come_home_after("deactivate").await?;
+    // DT-4: the closed flights and released reservations no longer hold the rig. The
+    // organizer steps out (a plain leave when no helm release is pending).
+    if exit_after_release(&mut rig.world, &store, rig.organizer, "+tv/2 leave")
+        .await
+        .is_err()
+    {
+        ordinary(&mut rig.world, rig.organizer, "+tv/2 leave")?;
+    }
+    let after = text(&mut rig.world, rig.organizer, "+tv/2 lease return go");
+    assert!(!after.contains("reserved for a detachment"), "{after}");
+    Ok(())
+}
 #[tokio::test]
 async fn ic_field_npc_unsupported_and_expired_orders_cannot_start_work() -> TestResult {
     use mush_tactics::detachment::{OrderBook, Response, Slot};

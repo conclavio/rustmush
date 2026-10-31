@@ -237,6 +237,58 @@ acquisition; DT.3d–DT.3h add the IC command and physical mining execution path
 Admitted durations follow continuous world IC time across rate generations.
 An explicit world-time freeze suspends physical steps until time resumes.
 
+## As built: review fixes of 2026-10-31 (DT-2, DT-3, DT-4, DT-8a)
+
+An external review of main at 830f2265 found that the two ways an operation stops
+standing, `+sortie/end` and `+sortie/deactivate`, left field units unable to come home,
+although both deliberately leave field flights open. Neither verb changed: end still
+cancels only departures aboard, and deactivate still recalls, repairs and moves nothing.
+
+- **Field authority comes from the flight, not the reservation.** The surface host
+  (`detachment/sortie/surface.rs`, `selected`) resolves an operator's operation from
+  the unit's current flight and its `OperationRecord`. While the operation *stands*
+  (not ended, its activation record current), it still requires both reservations,
+  exactly as before. Once it stops standing, the same operator, flight, station,
+  lease, NPC contract and unit-condition checks admit only the **recovery acts**:
+  drive, recover, dump, unload, `mine stop` and the plan's clear/strike/end controls.
+  Launch, scan, sound and mine are refused. A queued unload after a recover passes
+  `unload_ready`, so the tick never holds it for good.
+  Without a reservation, the operator's unit is found through the stations they hold
+  (`mush_sim`'s per-actor billet index), then the outstanding-flight index. The first is
+  what finds a returned unit, whose flight has already left the index.
+  *Why the flight, not a flight-held reservation:* the flight is already the
+  authoritative record of who is out and on what. A second reservation would add a row
+  to keep in step with every flight close, and deactivate's "removes precisely its
+  original reservations" contract would stop being true.
+- **An NPC whose operation stops standing winds down** (`npc.rs`, `wind_down`). Off a
+  running field, it safety-stops a live run, then starts an untasked recover home. The
+  flight closes in the bay as usual, and a loaded hopper's queued unload follows. This
+  is the NPC's own act, not deactivate's: nobody can order it after deactivation, since
+  field orders need the reservation. Inside a running field, an ended operation still
+  leaves the unit to the field host (doc 32). A deactivated one keeps its delivered
+  orders there, as before.
+- **Residual edge: an unlaunched departure.** After deactivation, a `Departing` flight
+  still in the bay is no longer launched by the tick, just as after end. The organizer's
+  `+sortie/cancel` still closes it, because cancel needs only the operation record. A
+  later activation may reserve that unit, but `+sortie/launch` refuses it while the old
+  flight is open.
+- **The lease return and bay repossession respect detachments** (DT-4). `+tv/lease
+  return` and `repossess` refuse a rig that holds a detachment reservation or an open
+  detachment flight. This is the same `available` test the surface act's own start
+  uses. A written-off wreck is exempt, because it never comes back to be recovered.
+  The returned rig's open `Departing` flight therefore cannot outlive its lease.
+- **The organizer's chat hint** (DT-8a). Chat membership is the slot holders' alone
+  (doc 26a). `+sortie/active` now offers `+sortie/chat` only to a slot holder. An
+  organizer outside the slots who tries it is told why, and no channel setup is
+  requested on their behalf.
+
+Not changed, by design: closed channels keep no aliases (DT-5), and `crew_contracts`
+stays insert-only (DT-8b, release deferred above).
+Tests: `dt3_end_leaves_field_crews_their_way_home_and_holds_the_rigs_lease` and
+`dt2_deactivate_leaves_field_crews_their_way_home` in
+`mush-server/tests/split_boundary/dt_preparation_plans.rs`, plus `dt_chat.rs`'s
+membership story.
+
 ## DT.3c contracted NPC unit stations
 
 `+sortie/seat <draft>:<activation>=<slot>` arranges one accepted NPC assignment.

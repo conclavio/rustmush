@@ -27,7 +27,15 @@ pub(super) struct Selection {
     pub flight: Flight,
     pub lease: crate::port::tv::TvLease,
     pub observations: Value,
+    /// The operation still stands: not ended, its activation current and both
+    /// reservations held. Otherwise only the recovery acts are admitted.
+    pub standing: bool,
 }
+/// Field authority comes from the unit's own current flight and its operation
+/// record. `+sortie/end` and deactivation leave a flight open by design (doc 26c
+/// §5, doc 26d), so neither the reservation nor the active roster can be the
+/// only key home: once the operation stops standing, its operator keeps the
+/// recovery acts ([`recovery_act`]) until the flight closes.
 pub(super) fn selected(
     world: &World,
     read: &mut impl Read,
@@ -38,26 +46,26 @@ pub(super) fn selected(
     if !h.enabled {
         return Err("Physical surface crew unavailable.".into());
     }
-    let reservation = read
-        .get(&h.reservations, &actor)?
-        .ok_or("No physical field assignment.")?;
-    reservation.validate()?;
-    let id = OperationId {
-        organizer: reservation.organizer,
-        draft: reservation.draft,
-        activation: reservation.revision,
-    };
-    let op = prepare::operation(read, h, id)?;
-    if op.ended.is_some()
-        || !matches!(op.roster.duty, CrewDuty::Mining | CrewDuty::Combat)
-        || read.get(&h.active, &id.reference())?.as_ref() != Some(&op.roster)
-    {
+    let (_, flight) = prepare::current(read, h, unit)?;
+    if flight.operator != actor {
+        return Err("No physical field assignment.".into());
+    }
+    let op = prepare::operation(read, h, flight.operation)?;
+    let id = op.id;
+    if !matches!(op.roster.duty, CrewDuty::Mining | CrewDuty::Combat) {
         // Doc 32 cut CF.6: an escort's combat contract drives its unit over the open ground
         // like a mining crew's; recovery stays its own duty's.
         return Err("No active mining or combat assignment.".into());
     }
-    facts::reservation(&op.roster, actor, Some(reservation))?;
-    facts::reservation(&op.roster, unit, read.get(&h.reservations, &unit)?)?;
+    let standing = prepare::standing(read, h, &op)?;
+    if standing {
+        let reservation = read
+            .get(&h.reservations, &actor)?
+            .ok_or("No physical field assignment.")?;
+        reservation.validate()?;
+        facts::reservation(&op.roster, actor, Some(reservation))?;
+        facts::reservation(&op.roster, unit, read.get(&h.reservations, &unit)?)?;
+    }
     let member = op
         .roster
         .plan
@@ -65,12 +73,9 @@ pub(super) fn selected(
         .iter()
         .find(|s| s.unit == Some(unit) && s.controller.character() == Some(actor))
         .ok_or("Not this unit's accepted operator.")?;
-    let (_, flight) = prepare::current(read, h, unit)?;
     prepare::membership(&op, &flight)?;
-    if flight.operation != id
-        || flight.operator != actor
-        || !((flight.phase == Phase::Field && facts::on_site(world, &flight))
-            || (flight.phase == Phase::Returned && facts::in_bay(world, &flight)))
+    if !((flight.phase == Phase::Field && facts::on_site(world, &flight))
+        || (flight.phase == Phase::Returned && facts::in_bay(world, &flight)))
     {
         return Err("The assigned unit is not physically on its field site.".into());
     }
@@ -128,32 +133,65 @@ pub(super) fn selected(
             principal: lease.pilot,
         },
         observations: json!({"flight":flight,"station":station,"contract":contract,"lease":lease,"condition":condition,
-            "person":world.get(actor).map(|o|(o.kind,o.location))}),
+            "person":world.get(actor).map(|o|(o.kind,o.location)),"standing":standing}),
         flight,
         lease,
+        standing,
     })
 }
 
+/// The unit `actor` operates under a field flight: the standing reservation's
+/// slot first; else a unit they hold a station on (bounded by their own billets,
+/// and still found once a returned flight leaves the index), then the open
+/// flights of the bounded flight index.
+fn unit_of(world: &World, read: &mut impl Read, h: &SortieHandles, actor: ObjId) -> Option<ObjId> {
+    let flown = |read: &mut _, unit: ObjId| {
+        prepare::current(read, h, unit).is_ok_and(|(_, f)| f.operator == actor)
+    };
+    if let Some(reservation) = read.get(&h.reservations, &actor).ok().flatten() {
+        let id = OperationId {
+            organizer: reservation.organizer,
+            draft: reservation.draft,
+            activation: reservation.revision,
+        };
+        let unit = prepare::operation(read, h, id).ok().and_then(|op| {
+            op.roster
+                .plan
+                .slots
+                .iter()
+                .find(|s| s.controller.character() == Some(actor))
+                .and_then(|s| s.unit)
+        });
+        if let Some(unit) = unit
+            && flown(read, unit)
+        {
+            return Some(unit);
+        }
+    }
+    let seated = world
+        .module_state::<mush_sim::SpatialState>()
+        .and_then(|s| s.derived.assignments_by_actor.get(&actor))
+        .into_iter()
+        .flatten()
+        .copied()
+        .find(|unit| flown(read, *unit));
+    if seated.is_some() {
+        return seated;
+    }
+    let index = read.get(&h.index, &()).ok()??;
+    index.units.into_iter().find(|unit| flown(read, *unit))
+}
 fn own_rig(
     world: &World,
     read: &mut impl Read,
     actor: ObjId,
+    unit: Option<ObjId>,
 ) -> Option<crate::surface::act::RigAt> {
     let h = world.module_state::<SortieHandles>()?;
-    let reservation = read.get(&h.reservations, &actor).ok()??;
-    let id = OperationId {
-        organizer: reservation.organizer,
-        draft: reservation.draft,
-        activation: reservation.revision,
+    let unit = match unit {
+        Some(unit) => unit,
+        None => unit_of(world, read, h, actor)?,
     };
-    let op = prepare::operation(read, h, id).ok()?;
-    let unit = op
-        .roster
-        .plan
-        .slots
-        .iter()
-        .find(|s| s.controller.character() == Some(actor))?
-        .unit?;
     let selected = selected(world, read, h, actor, unit).ok()?;
     Some(crate::surface::act::RigAt {
         tv: unit,
@@ -169,17 +207,37 @@ pub(crate) fn rig_in(
     engine: &mush_core::Engine,
     actor: ObjId,
 ) -> Option<crate::surface::act::RigAt> {
-    own_rig(&engine.world, &mut &*engine, actor)
+    own_rig(&engine.world, &mut &*engine, actor, None)
 }
 pub(crate) fn rig(ctx: &mush_core::Ctx<'_>) -> Option<crate::surface::act::RigAt> {
-    own_rig(ctx.w, &mut &*ctx, ctx.actor)
+    own_rig(ctx.w, &mut &*ctx, ctx.actor, None)
+}
+/// [`rig`] for a unit the caller already knows (the NPC walk's flight).
+pub(super) fn rig_of(ctx: &mush_core::Ctx<'_>, unit: ObjId) -> Option<crate::surface::act::RigAt> {
+    own_rig(ctx.w, &mut &*ctx, ctx.actor, Some(unit))
+}
+/// What an operator may still start once their operation stops standing: the
+/// way home and the unload, and the stops (doc 26d as-built, DT-2/DT-3).
+pub(crate) fn recovery_act(word: crate::surface::act::StartWord) -> bool {
+    use crate::surface::act::StartWord;
+    use crate::surface::excursion::ActKind;
+    matches!(
+        word,
+        StartWord::Act {
+            kind: ActKind::Drive | ActKind::Recover | ActKind::Dump | ActKind::Unload,
+            ..
+        } | StartWord::MineStop
+            | StartWord::PlanClear
+            | StartWord::PlanStrike
+            | StartWord::PlanEnd
+    )
 }
 pub(crate) fn unload_ready(
     ctx: &mush_core::Ctx<'_>,
     record: &crate::surface::excursion::RigRecord,
 ) -> bool {
     record.field_crew.as_deref().is_none_or(|crew| {
-        own_rig(ctx.w, &mut &*ctx, crew.operator)
+        own_rig(ctx.w, &mut &*ctx, crew.operator, Some(record.tv))
             .is_some_and(|rig| rig.crew.as_deref() == Some(crew) && matches!(crate::surface::act::where_is(ctx.w,record.tv),crate::surface::act::Where::Bay{hull} if hull==rig.hull))
             && working(ctx, record, false)
     })
@@ -413,6 +471,7 @@ pub(crate) fn admit(
     unit: ObjId,
     expected: &SurfaceCrew,
     moving: bool,
+    recovery: bool,
 ) -> Result<Flight, mush_core::ActionError> {
     let h = world
         .module_state::<SortieHandles>()
@@ -420,6 +479,11 @@ pub(crate) fn admit(
     let selected = selected(world, &mut &mut *txn, h, actor, unit).map_err(bad)?;
     if selected.crew != *expected {
         return Err(bad("Physical crew or flight changed."));
+    }
+    if !selected.standing && !recovery {
+        return Err(bad(
+            "The field operation no longer stands: drive home, recover, stop or unload.",
+        ));
     }
     if moving
         && !mush_tactics::module::unit_of(world, unit)

@@ -16,6 +16,8 @@ fn unavailable() -> CmdError {
         "No available detachment chat. Use +sortie/chat [<organizer>:]<draft>:<activation>[=<message>].",
     )
 }
+/// DT-8a: the organizer of a roster they hold no slot in.
+pub(crate) const NOT_A_MEMBER: &str = "Detachment chat is for the roster's slot holders. You organized this detachment but hold no slot in it, so you are not a member; take a slot in a new revision to join its chat.";
 pub(crate) fn command(ctx: &mut Ctx<'_>) -> Result<(), CmdError> {
     if ctx.switches.iter().count() != 1
         || ctx.args.raw().len() > mush_comsys::transit::MAX_TEXT_BYTES + 96
@@ -62,6 +64,11 @@ pub(crate) fn command(ctx: &mut Ctx<'_>) -> Result<(), CmdError> {
     if !member && ctx.actor != roster.organizer {
         return Err(unavailable());
     }
+    // DT-8a: membership is the slot holders' alone (doc 26a); an organizer outside the
+    // slots is told so before any channel setup is requested on their behalf.
+    if !member {
+        return Err(CmdError::msg(NOT_A_MEMBER));
+    }
     let channel = mush_comsys::managed::channel(ctx.w, &key(&roster));
     let membership = channel.and_then(|c| {
         ctx.w
@@ -70,7 +77,7 @@ pub(crate) fn command(ctx: &mut Ctx<'_>) -> Result<(), CmdError> {
             .get(&(ctx.actor, c))
             .cloned()
     });
-    if channel.is_none() || member && membership.is_none() {
+    if channel.is_none() || membership.is_none() {
         if message.is_some() {
             return Err(CmdError::msg(
                 "Open this detachment chat first with +sortie/chat and its roster reference, then send your message.",
@@ -86,9 +93,6 @@ pub(crate) fn command(ctx: &mut Ctx<'_>) -> Result<(), CmdError> {
         .map_err(CmdError::msg)?;
         ctx.out.info(ctx.actor, "Detachment chat setup requested; after it commits, use +sortie/chat again for your alias.");
         return Ok(());
-    }
-    if !member {
-        return Err(unavailable());
     }
     let channel = channel.ok_or_else(unavailable)?;
     if let Some(message) = message {

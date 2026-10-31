@@ -57,16 +57,25 @@ async fn dt5_chat_membership_is_the_accepted_roster_and_chat_is_not_an_order() -
         shown.contains("IC transit") && shown.contains("dt <message>"),
         "{shown}"
     );
+    // DT-8a: the roster view offers the chat only to a slot holder.
+    let active = text(&mut rig.world, organizer, "+sortie/active 1");
+    assert!(
+        active.contains("Release: +sortie/deactivate") && !active.contains("+sortie/chat"),
+        "{active}"
+    );
     for actor in [organizer, stranger] {
         let refused = text(
             &mut rig.world,
             actor,
             &format!("+sortie/chat {}:1:1=outsider", organizer.0),
         );
-        assert!(
-            refused.contains("No available detachment chat"),
-            "{refused}"
-        );
+        // DT-8a: the organizer outside the slots is told why, the stranger learns nothing.
+        let why = if actor == organizer {
+            "hold no slot"
+        } else {
+            "No available detachment chat"
+        };
+        assert!(refused.contains(why), "{refused}");
         assert!(!text(&mut rig.world, actor, "clist").contains(&name));
         assert!(
             !text(&mut rig.world, actor, &format!("@channel/who {name}"))

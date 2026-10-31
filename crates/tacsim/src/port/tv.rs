@@ -297,6 +297,10 @@ pub const WHY_SPOIL_GONE: &str =
 /// the lease return of a rig working a plan (doc 20 cut SM.11) with `{doing}` [`PLAN_DOING`],
 /// no `done {when}` clause, and [`PLAN_REMEDY`] appended.
 pub const RIG_BUSY: &str = "Rig {n} is {doing}: done {when}.";
+/// **The lease return of a rig a detachment holds** (DT-4): `{n}`. A reservation ends with
+/// `+sortie/deactivate`; an open flight with `+sortie/cancel` (unlaunched) or its recovery.
+pub const RIG_DETACHED: &str = "Rig {n} is reserved for a detachment or has an open detachment \
+     flight: deactivate the detachment, cancel its unlaunched departure, or recover it first.";
 /// **The lease return with a rig still logged out** (the fixer round's item 1): its
 /// `tacsim.excursion` record holds an open excursion but no act. A rig can only be in
 /// Occator's reach that way after a staff move (every act needs a site's pad), so the remedy
@@ -4017,6 +4021,11 @@ fn plan_return(ctx: &Ctx<'_>, named: Option<u8>) -> Result<ReturnPlan, String> {
             "Crew are still inside this rig; have them step into the vehicle bay first.".into(),
         );
     }
+    // DT-4: a detachment reservation or open detachment flight holds the rig (a written-off
+    // wreck excepted: it never comes back to be recovered).
+    if !write_off && !crate::detachment::sortie::ctx_available(ctx, record.tv) {
+        return Err(RIG_DETACHED.replace("{n}", &slot));
+    }
     // 6. The hopper is empty (a wreck's hopper goes with it).
     match hopper_load(ctx, record.tv, Some(&lessor.pool.unit)) {
         _ if write_off => {}
@@ -4387,6 +4396,13 @@ pub(crate) fn repossess(ctx: &mut Ctx<'_>, hull: ObjId) -> Result<usize, String>
         let wreck = !in_bay_of(w, &view, record.tv) && wrecked(w, record.tv);
         if !wreck && rig_out_or_busy(ctx, record.tv) {
             return Err(format!("rig {} is out on a site or busy", record.mark));
+        }
+        // DT-4: the lease return's detachment gate, for the same reason.
+        if !wreck && !crate::detachment::sortie::ctx_available(ctx, record.tv) {
+            return Err(format!(
+                "rig {} is reserved for a detachment or has an open detachment flight",
+                record.mark
+            ));
         }
         match hopper_load(ctx, record.tv, Some(&lessor.pool.unit)) {
             _ if wreck => {}
