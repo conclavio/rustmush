@@ -18,7 +18,9 @@ use std::fmt::Write as _;
 
 use mush_atlas::TerrainClass;
 use mush_atlas::cells::{base64_decode, base64_encode};
-use mush_atlas::def::{HeightfieldDef, RegionDef};
+use mush_atlas::def::{
+    ExitDef, FeatureDef, HeightfieldDef, PORT_DOCK_MARKER, RegionDef, RoomDef, SiteDef,
+};
 use mush_atlas::physics::{LocomotionTable, StepKind};
 use mush_core::{CanonicalId, DefinitionDigest};
 use serde::{Deserialize, Serialize};
@@ -135,9 +137,124 @@ fn default_one() -> u32 {
     1
 }
 
+fn default_true() -> bool {
+    true
+}
+
 #[allow(clippy::trivially_copy_pass_by_ref)]
 fn is_one(v: &u32) -> bool {
     *v == 1
+}
+
+/// Maximum number of mapped MUSH rooms / hangars per [`GroundDraft`].
+pub const MAX_DRAFT_ROOMS: usize = 64;
+
+/// Functional role of a mapped MUSH room or hangar on an arena/terrain grid.
+#[derive(Clone, Copy, Debug, Default, Eq, PartialEq, Serialize, Deserialize)]
+#[serde(rename_all = "snake_case")]
+pub enum DraftRoomRole {
+    /// A vehicle hangar bay (`markers: ["port.dock"]`, `flags: ["sheltered"]`) that connects a map to a base.
+    #[default]
+    Hangar,
+    /// An open landing or docking pad (`markers: ["port.dock"]`, outdoor `Platform`/`Paved`).
+    Pad,
+    /// An indoor building room (`flags: ["sheltered"]`) with perimeter walls and a doorway.
+    Building,
+    /// A hardened tactical bunker or command post (`flags: ["sheltered"]`).
+    Bunker,
+}
+
+impl DraftRoomRole {
+    /// Wire and `SiteDef.site_kind` label for this role.
+    #[must_use]
+    pub const fn as_str(self) -> &'static str {
+        match self {
+            Self::Hangar => "hangar",
+            Self::Pad => "pad",
+            Self::Building => "building",
+            Self::Bunker => "bunker",
+        }
+    }
+
+    /// Parse a [`DraftRoomRole`] from its `SiteDef.site_kind` label.
+    #[must_use]
+    pub fn from_kind_str(kind: &str) -> Self {
+        match kind {
+            "hangar" => Self::Hangar,
+            "pad" => Self::Pad,
+            "bunker" => Self::Bunker,
+            _ => Self::Building,
+        }
+    }
+
+    /// Whether this role carries the `"port.dock"` room marker.
+    #[must_use]
+    pub const fn is_dock(self) -> bool {
+        matches!(self, Self::Hangar | Self::Pad)
+    }
+
+    /// Whether this role is an indoor sheltered room (`Flags::SHELTERED`).
+    #[must_use]
+    pub const fn is_sheltered(self) -> bool {
+        matches!(self, Self::Hangar | Self::Building | Self::Bunker)
+    }
+}
+
+/// Link from a mapped room or hangar on the terrain grid to a MUSH room in a base
+/// neighborhood pack (or another room on the same map).
+#[derive(Clone, Debug, Default, Eq, PartialEq, Serialize, Deserialize)]
+#[serde(deny_unknown_fields)]
+pub struct DraftRoomLink {
+    /// Optional external neighborhood pack ID (e.g. `"neighborhood.malapert_exchange"`).
+    /// When omitted or empty, `room` names another room entry in this draft (`room.<id>`).
+    #[serde(default, skip_serializing_if = "String::is_empty")]
+    pub pack: String,
+    /// Target room entry ID (e.g. `"room.counter"` or a local room slug `"hangar_red"`).
+    pub room: String,
+    /// Optional required version of `pack` (defaults to `1` when `pack` is set).
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub pack_version: Option<u32>,
+    /// Optional forward exit spec from the map room into the target room
+    /// (e.g. `"Malapert Counter;counter"`).
+    #[serde(default, skip_serializing_if = "String::is_empty")]
+    pub exit_name: String,
+    /// Optional return exit spec from the target room back into the map room
+    /// (e.g. `"Red Base Hangar Bay;hangar_red"`).
+    #[serde(default, skip_serializing_if = "String::is_empty")]
+    pub back_name: String,
+}
+
+/// A building, hangar bay, landing pad, or bunker on the terrain grid linked to a
+/// MUSH room and neighborhood in `mush-atlas`.
+#[derive(Clone, Debug, Eq, PartialEq, Serialize, Deserialize)]
+#[serde(deny_unknown_fields)]
+pub struct DraftRoomDef {
+    /// Short room slug (`"hangar_red"` -> `site.hangar_red`, `room.hangar_red`).
+    pub id: String,
+    /// Human-facing MUSH room name (e.g. `"Red Base Hangar Bay"`).
+    pub name: String,
+    /// Functional role (`hangar`, `pad`, `building`, `bunker`).
+    #[serde(default)]
+    pub role: DraftRoomRole,
+    /// Inclusive west column (`0..cols`).
+    pub x0: u16,
+    /// Inclusive south row (`0..rows`).
+    pub y0: u16,
+    /// Inclusive east column (`x0..cols`).
+    pub x1: u16,
+    /// Inclusive north row (`y0..rows`).
+    pub y1: u16,
+    /// Entrance doorway or bay ramp cell `[x, y]` inside `x0..=x1, y0..=y1`.
+    pub door: [u16; 2],
+    /// Optional one-line room description (`short_desc` attribute).
+    #[serde(default, skip_serializing_if = "String::is_empty")]
+    pub short_desc: String,
+    /// Optional full MUSH room description (`desc` attribute).
+    #[serde(default, skip_serializing_if = "String::is_empty")]
+    pub desc: String,
+    /// Optional connection to a base neighborhood room or another mapped room.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub connects_to: Option<DraftRoomLink>,
 }
 
 /// **`ground.draft.v1`** — the single intermediate document between every
@@ -182,6 +299,9 @@ pub struct GroundDraft {
     /// positioned inside `entry_zones` when omitted.
     #[serde(default, skip_serializing_if = "Vec::is_empty")]
     pub tanks: Vec<TankDef>,
+    /// Optional MUSH rooms, buildings, and base hangars anchored to cell rectangles on the grid.
+    #[serde(default, skip_serializing_if = "Vec::is_empty")]
+    pub rooms: Vec<DraftRoomDef>,
     /// Atlas pack manifest version (defaults to `1`; `3` for the shipped proving ground).
     #[serde(default = "default_one", skip_serializing_if = "is_one")]
     pub atlas_version: u32,
@@ -319,6 +439,12 @@ pub struct CheckReport {
     pub waypoints_reachable: bool,
     /// IDs of any waypoint nodes not reachable by `tracked`.
     pub unreachable_waypoints: Vec<String>,
+    /// Whether every mapped room / hangar entrance (`door`) is reachable by `wheeled` from the entry zones.
+    #[serde(default = "default_true")]
+    pub rooms_wheeled_reachable: bool,
+    /// IDs of any mapped rooms / hangars whose entrance (`door`) is not reachable by `wheeled`.
+    #[serde(default, skip_serializing_if = "Vec::is_empty")]
+    pub unreachable_rooms: Vec<String>,
     /// Steepest orthogonal passable grade across the grid, in per cent.
     pub max_grade_pct: u32,
     /// Steepest orthogonal grade between adjacent `road` or `paved` cells, in per cent.
@@ -597,6 +723,132 @@ impl GroundDraft {
                 "a pack-reconstructed draft must name its pack id(s) and digest(s) in provenance.inputs"
                     .to_owned(),
             ));
+        }
+
+        if self.rooms.len() > MAX_DRAFT_ROOMS {
+            return Err(err(format!(
+                "draft has {} rooms, max is {MAX_DRAFT_ROOMS}",
+                self.rooms.len()
+            )));
+        }
+        let mut seen_rooms = BTreeSet::new();
+        for (idx, room) in self.rooms.iter().enumerate() {
+            if room.id.trim().is_empty() {
+                return Err(err(format!("rooms[{idx}].id must not be empty")));
+            }
+            if !seen_rooms.insert(room.id.as_str()) {
+                return Err(err(format!("duplicate room id `{}`", room.id)));
+            }
+            for derived in [
+                format!("site.{}", room.id),
+                format!("room.{}", room.id),
+                format!("feature.{}_door", room.id),
+                format!("exit.{}_link", room.id),
+                format!("exit.{}_field", room.id),
+            ] {
+                CanonicalId::new(&derived).map_err(|e| {
+                    err(format!(
+                        "room `{}` derived id `{derived}` invalid: {e}",
+                        room.id
+                    ))
+                })?;
+            }
+            if room.name.trim().is_empty() || room.name.len() > mush_atlas::record::MAX_NAME_BYTES {
+                return Err(err(format!(
+                    "room `{}` name must be 1..={} bytes",
+                    room.id,
+                    mush_atlas::record::MAX_NAME_BYTES
+                )));
+            }
+            if room.short_desc.len() > mush_atlas::def::MAX_SHORT_DESC_BYTES {
+                return Err(err(format!(
+                    "room `{}` short_desc exceeds {} bytes",
+                    room.id,
+                    mush_atlas::def::MAX_SHORT_DESC_BYTES
+                )));
+            }
+            if room.desc.len() > mush_atlas::record::MAX_TEXT_BYTES {
+                return Err(err(format!(
+                    "room `{}` desc exceeds {} bytes",
+                    room.id,
+                    mush_atlas::record::MAX_TEXT_BYTES
+                )));
+            }
+            if room.x0 > room.x1
+                || room.y0 > room.y1
+                || room.x1 >= self.cols
+                || room.y1 >= self.rows
+            {
+                return Err(err(format!(
+                    "room `{}` rect [{}..={}, {}..={}] is invalid or out of {}×{} bounds",
+                    room.id, room.x0, room.x1, room.y0, room.y1, self.cols, self.rows
+                )));
+            }
+            let [dx, dy] = room.door;
+            if dx < room.x0 || dx > room.x1 || dy < room.y0 || dy > room.y1 {
+                return Err(err(format!(
+                    "room `{}` door ({dx}, {dy}) must lie inside its footprint [{}..={}, {}..={}]",
+                    room.id, room.x0, room.x1, room.y0, room.y1
+                )));
+            }
+            for other in self.rooms.iter().take(idx) {
+                let disjoint = room.x1 < other.x0
+                    || other.x1 < room.x0
+                    || room.y1 < other.y0
+                    || other.y1 < room.y0;
+                if !disjoint {
+                    return Err(err(format!(
+                        "room `{}` footprint overlaps room `{}`",
+                        room.id, other.id
+                    )));
+                }
+            }
+            if let Some(link) = &room.connects_to {
+                let target_room = link.room.trim();
+                if target_room.is_empty() {
+                    return Err(err(format!(
+                        "room `{}` connects_to.room must not be empty",
+                        room.id
+                    )));
+                }
+                let pack_trimmed = link.pack.trim();
+                if pack_trimmed.is_empty() {
+                    let slug = target_room.strip_prefix("room.").unwrap_or(target_room);
+                    if slug == room.id {
+                        return Err(err(format!("room `{}` cannot connect to itself", room.id)));
+                    }
+                    if slug != "limbo" && !self.rooms.iter().any(|r| r.id == slug) {
+                        return Err(err(format!(
+                            "room `{}` connects to unknown local room `{slug}`",
+                            room.id
+                        )));
+                    }
+                } else {
+                    CanonicalId::new(pack_trimmed).map_err(|e| {
+                        err(format!(
+                            "room `{}` connects_to.pack `{pack_trimmed}` invalid: {e}",
+                            room.id
+                        ))
+                    })?;
+                    let entry = if target_room.starts_with("room.") {
+                        target_room.to_owned()
+                    } else {
+                        format!("room.{target_room}")
+                    };
+                    CanonicalId::new(&entry).map_err(|e| {
+                        err(format!(
+                            "room `{}` connects_to.room `{target_room}` invalid: {e}",
+                            room.id
+                        ))
+                    })?;
+                    if link.pack_version == Some(0) {
+                        return Err(err(format!(
+                            "room `{}` connects_to.pack_version must be >= 1",
+                            room.id
+                        )));
+                    }
+                }
+            }
         }
 
         let classes = decode_classes(&self.id, self.cols, self.rows, &self.classes)?;
@@ -1027,11 +1279,16 @@ pub fn atlas_pack_with(relief: Relief) -> String {
         2350,
         &classes,
         &elev,
+        &[],
     )
     .map_or_else(|_| String::new(), |(signed, _)| signed)
 }
 
-#[allow(clippy::too_many_arguments)]
+#[allow(
+    clippy::too_many_arguments,
+    clippy::too_many_lines,
+    clippy::cast_precision_loss
+)]
 fn build_atlas_pack_json(
     id: &str,
     label: &str,
@@ -1045,6 +1302,7 @@ fn build_atlas_pack_json(
     bg_seed: u64,
     classes: &[TerrainClass],
     elev: &[i16],
+    rooms: &[DraftRoomDef],
 ) -> Result<(String, DefinitionDigest), GroundError> {
     let lo_x = origin_m[0];
     let lo_y = origin_m[1];
@@ -1092,7 +1350,7 @@ fn build_atlas_pack_json(
         }),
     );
     entries.insert(
-        locality_id,
+        locality_id.clone(),
         serde_json::json!({
             "kind": "locality",
             "def": {
@@ -1133,13 +1391,218 @@ fn build_atlas_pack_json(
         }
     }
 
+    let mut requires_map: BTreeMap<String, u32> = BTreeMap::new();
+    if !rooms.is_empty() {
+        let nb_id = format!("neighborhood.{id}");
+        let room_target = u32::try_from(rooms.len()).unwrap_or(1).max(1);
+        let room_max = u32::try_from(rooms.len().saturating_add(16))
+            .unwrap_or(32)
+            .max(32);
+        entries.insert(
+            nb_id,
+            serde_json::json!({
+                "kind": "neighborhood",
+                "def": {
+                    "region": region_id,
+                    "locality": locality_id,
+                    "name": label,
+                    "setting": "outpost",
+                    "footprint": [[lo_x, lo_y], [hi_x, lo_y], [hi_x, hi_y], [lo_x, hi_y]],
+                    "room_budget": {
+                        "target": room_target,
+                        "maximum": room_max
+                    },
+                    "resolution_cm": cell_cm
+                }
+            }),
+        );
+
+        let first_dock = rooms.iter().find(|r| r.role.is_dock());
+        let cell_m = (i64::from(cell_cm) / 100).max(1);
+        let half_cell_m = f64::from(cell_cm) / 200.0;
+
+        for room in rooms {
+            let rx0 = lo_x + i64::from(room.x0) * cell_m;
+            let ry0 = lo_y + i64::from(room.y0) * cell_m;
+            let rx1 = lo_x + (i64::from(room.x1) + 1) * cell_m;
+            let ry1 = lo_y + (i64::from(room.y1) + 1) * cell_m;
+            let [dx, dy] = room.door;
+            let door_x_m = (lo_x + i64::from(dx) * cell_m) as f64 + half_cell_m;
+            let door_y_m = (lo_y + i64::from(dy) * cell_m) as f64 + half_cell_m;
+            let door_idx = usize::from(dy) * usize::from(cols) + usize::from(dx);
+            let door_elev_m = f64::from(elev.get(door_idx).copied().unwrap_or(0)) / 100.0;
+
+            let mut entrances: Vec<String> = Vec::new();
+            if let Some(link) = &room.connects_to {
+                let exit_id = format!("exit.{}_link", room.id);
+                entrances.push(exit_id.clone());
+                let pack_trimmed = link.pack.trim();
+                let target_trimmed = link.room.trim();
+                let target_slug = target_trimmed
+                    .strip_prefix("room.")
+                    .unwrap_or(target_trimmed);
+                let (to_ref, default_target_name) = if pack_trimmed.is_empty() {
+                    let r_ref = if target_slug == "limbo" {
+                        "limbo".to_owned()
+                    } else {
+                        format!("room.{target_slug}")
+                    };
+                    let t_name = rooms
+                        .iter()
+                        .find(|r| r.id == target_slug)
+                        .map_or_else(|| target_slug.to_owned(), |r| r.name.clone());
+                    (r_ref, t_name)
+                } else {
+                    requires_map
+                        .entry(pack_trimmed.to_owned())
+                        .or_insert(link.pack_version.unwrap_or(1));
+                    (
+                        format!("{pack_trimmed}.room.{target_slug}"),
+                        format!("{pack_trimmed} ({target_slug})"),
+                    )
+                };
+                let fwd = if link.exit_name.trim().is_empty() {
+                    format!("{default_target_name};{target_slug}")
+                } else {
+                    link.exit_name.clone()
+                };
+                let back = if link.back_name.trim().is_empty() {
+                    format!("{};{}", room.name, room.id)
+                } else {
+                    link.back_name.clone()
+                };
+                let names = if to_ref == "limbo" {
+                    vec![fwd]
+                } else {
+                    vec![fwd, back]
+                };
+                entries.insert(
+                    exit_id,
+                    serde_json::json!({
+                        "kind": "exit",
+                        "def": {
+                            "from": format!("room.{}", room.id),
+                            "to": to_ref,
+                            "names": names,
+                            "portal": {
+                                "mode": "ramp",
+                                "at": [door_x_m, door_y_m, door_elev_m]
+                            }
+                        }
+                    }),
+                );
+            } else if !room.role.is_dock() {
+                let exit_id = format!("exit.{}_field", room.id);
+                entrances.push(exit_id.clone());
+                let (to_ref, names) = match first_dock.filter(|d| d.id != room.id) {
+                    Some(dock) => (
+                        format!("room.{}", dock.id),
+                        vec![
+                            format!("{};{}", dock.name, dock.id),
+                            format!("{};{}", room.name, room.id),
+                        ],
+                    ),
+                    None => (
+                        "limbo".to_owned(),
+                        vec![format!("Field Perimeter;perimeter_{}", room.id)],
+                    ),
+                };
+                entries.insert(
+                    exit_id,
+                    serde_json::json!({
+                        "kind": "exit",
+                        "def": {
+                            "from": format!("room.{}", room.id),
+                            "to": to_ref,
+                            "names": names,
+                            "portal": {
+                                "mode": "ramp",
+                                "at": [door_x_m, door_y_m, door_elev_m]
+                            }
+                        }
+                    }),
+                );
+            }
+
+            entries.insert(
+                format!("site.{}", room.id),
+                serde_json::json!({
+                    "kind": "site",
+                    "def": {
+                        "name": room.name,
+                        "site_kind": room.role.as_str(),
+                        "footprint": [[rx0, ry0], [rx1, ry0], [rx1, ry1], [rx0, ry1]],
+                        "entrances": entrances
+                    }
+                }),
+            );
+
+            let flags = if room.role.is_sheltered() {
+                vec!["sheltered"]
+            } else {
+                vec!["outdoors"]
+            };
+            let markers: Vec<&str> = if room.role.is_dock() {
+                vec![PORT_DOCK_MARKER]
+            } else {
+                Vec::new()
+            };
+            let mut room_def = serde_json::json!({
+                "name": room.name,
+                "site": format!("site.{}", room.id),
+                "surface": "ground",
+                "kind": if room.role.is_sheltered() { "indoor" } else { "outdoor" },
+                "footprint": {
+                    "polygon": [[rx0, ry0], [rx1, ry0], [rx1, ry1], [rx0, ry1]]
+                },
+                "flags": flags,
+                "markers": markers
+            });
+            if !room.short_desc.is_empty()
+                && let Some(obj) = room_def.as_object_mut()
+            {
+                obj.insert("short_desc".to_owned(), serde_json::json!(room.short_desc));
+            }
+            if !room.desc.is_empty()
+                && let Some(obj) = room_def.as_object_mut()
+            {
+                obj.insert("desc".to_owned(), serde_json::json!(room.desc));
+            }
+            entries.insert(
+                format!("room.{}", room.id),
+                serde_json::json!({
+                    "kind": "room",
+                    "def": room_def
+                }),
+            );
+
+            entries.insert(
+                format!("feature.{}_door", room.id),
+                serde_json::json!({
+                    "kind": "feature",
+                    "def": {
+                        "feature_kind": if room.role.is_dock() { "gate" } else { "door" },
+                        "surface": "ground",
+                        "point": [door_x_m, door_y_m],
+                        "room": format!("room.{}", room.id)
+                    }
+                }),
+            );
+        }
+    }
+
+    let requires_json: Vec<serde_json::Value> = requires_map
+        .into_iter()
+        .map(|(req_id, req_ver)| serde_json::json!({ "id": req_id, "version": req_ver }))
+        .collect();
+
     let doc = serde_json::json!({
         "manifest": {
             "id": pack_id,
             "version": version,
             "kind": "region",
             "digest": UNSIGNED,
-            "requires": []
+            "requires": requires_json
         },
         "entries": entries
     });
@@ -1379,6 +1842,7 @@ pub fn build_with_options(
         bg_seed,
         &classes,
         &elev,
+        &working.rooms,
     )?;
     let (arena_json, arena_digest) =
         format_arena_pack_json(&working.id, working.arena_version, &arena_def)?;
@@ -1624,6 +2088,14 @@ pub fn check(draft: &GroundDraft) -> Result<CheckReport, GroundError> {
     }
     let key_spots_wheeled_reachable = unreachable_key_spots.is_empty();
 
+    let mut unreachable_rooms = Vec::new();
+    for room in &draft.rooms {
+        if !wheeled_union.contains(&(room.door[0], room.door[1])) {
+            unreachable_rooms.push(room.id.clone());
+        }
+    }
+    let rooms_wheeled_reachable = unreachable_rooms.is_empty();
+
     let mut unreachable_waypoints = Vec::new();
     for node in &draft.waypoints.nodes {
         if !tracked_union.contains(&(node.x, node.y)) {
@@ -1710,6 +2182,12 @@ pub fn check(draft: &GroundDraft) -> Result<CheckReport, GroundError> {
             unreachable_key_spots.join(", ")
         ));
     }
+    if !rooms_wheeled_reachable {
+        failures.push(format!(
+            "room entrances not reachable by wheeled: {}",
+            unreachable_rooms.join(", ")
+        ));
+    }
     if !waypoints_reachable {
         failures.push(format!(
             "waypoints not reachable by tracked: {}",
@@ -1744,6 +2222,8 @@ pub fn check(draft: &GroundDraft) -> Result<CheckReport, GroundError> {
         zones_reachable_legged,
         key_spots_wheeled_reachable,
         unreachable_key_spots,
+        rooms_wheeled_reachable,
+        unreachable_rooms,
         waypoints_reachable,
         unreachable_waypoints,
         max_grade_pct,
@@ -1773,6 +2253,15 @@ pub fn relax_slopes(draft: &mut GroundDraft) -> Result<usize, GroundError> {
     for z in &draft.entry_zones {
         for y in z.y0..=z.y1.min(draft.rows.saturating_sub(1)) {
             for x in z.x0..=z.x1.min(draft.cols.saturating_sub(1)) {
+                if let Some(slot) = in_zone.get_mut(usize::from(y) * w + usize::from(x)) {
+                    *slot = true;
+                }
+            }
+        }
+    }
+    for r in &draft.rooms {
+        for y in r.y0..=r.y1.min(draft.rows.saturating_sub(1)) {
+            for x in r.x0..=r.x1.min(draft.cols.saturating_sub(1)) {
                 if let Some(slot) = in_zone.get_mut(usize::from(y) * w + usize::from(x)) {
                     *slot = true;
                 }
@@ -1979,11 +2468,18 @@ pub fn despeckle(draft: &mut GroundDraft, min_region: usize) -> Result<usize, Gr
     let mut classes = orig_classes.clone();
     let w = usize::from(draft.cols);
     let h = usize::from(draft.rows);
-    let spot_cells: BTreeSet<(usize, usize)> = draft
+    let mut spot_cells: BTreeSet<(usize, usize)> = draft
         .key_spots
         .iter()
         .map(|s| (usize::from(s.x), usize::from(s.y)))
         .collect();
+    for r in &draft.rooms {
+        for y in r.y0..=r.y1 {
+            for x in r.x0..=r.x1 {
+                spot_cells.insert((usize::from(x), usize::from(y)));
+            }
+        }
+    }
     let is_exempt_class = |c: TerrainClass| {
         matches!(
             c,
@@ -2184,6 +2680,14 @@ pub fn route(draft: &mut GroundDraft) -> Result<(), GroundError> {
         }
         spot_anchors.push((spot.x, spot.y));
     }
+    for room in &draft.rooms {
+        let [dx, dy] = room.door;
+        let id = cid(&format!("room_{}", room.id))?;
+        if !nodes.iter().any(|n| n.x == dx && n.y == dy) && nodes.len() < MAX_WAYPOINT_NODES {
+            nodes.push(WaypointNode { id, x: dx, y: dy });
+        }
+        spot_anchors.push((dx, dy));
+    }
 
     let mut pairs: Vec<((u16, u16), (u16, u16))> = Vec::new();
     if spot_anchors.is_empty() {
@@ -2354,6 +2858,144 @@ pub fn from_packs(atlas_json: &str, arena_json: &str) -> Result<GroundDraft, Gro
         }));
     }
 
+    let origin_cm = (
+        arena_def.origin_m[0].saturating_mul(100),
+        arena_def.origin_m[1].saturating_mul(100),
+    );
+    let cell_cm_i64 = i64::from(arena_def.cell_cm).max(1);
+    let mut rooms: Vec<DraftRoomDef> = Vec::new();
+    for (entry_id, raw) in atlas_pack.entries() {
+        if raw.kind().as_str() != "room" {
+            continue;
+        }
+        let room_short_id = entry_id
+            .as_str()
+            .strip_prefix("room.")
+            .unwrap_or_else(|| entry_id.as_str())
+            .to_owned();
+        let room_def: RoomDef =
+            serde_json::from_value(serde_json::Value::Object(raw.def().clone()))
+                .map_err(|e| GroundError::Json(format!("{entry_id}: {e}")))?;
+        let (min_x_m, min_y_m, max_x_m, max_y_m) = match room_def.footprint.to_footprint() {
+            mush_atlas::record::Footprint::Rect(r) => (r.0.0, r.0.1, r.1.0, r.1.1),
+            mush_atlas::record::Footprint::Polygon(p) => {
+                if p.0.is_empty() {
+                    continue;
+                }
+                let mut x_lo = f64::INFINITY;
+                let mut y_lo = f64::INFINITY;
+                let mut x_hi = f64::NEG_INFINITY;
+                let mut y_hi = f64::NEG_INFINITY;
+                for pt in &p.0 {
+                    x_lo = x_lo.min(pt.0);
+                    y_lo = y_lo.min(pt.1);
+                    x_hi = x_hi.max(pt.0);
+                    y_hi = y_hi.max(pt.1);
+                }
+                (x_lo, y_lo, x_hi, y_hi)
+            }
+            mush_atlas::record::Footprint::Anchor { .. } => continue,
+        };
+        let rx0_cm = mush_atlas::geom::cm(min_x_m).map_err(|e| GroundError::Pack(e.to_string()))?;
+        let ry0_cm = mush_atlas::geom::cm(min_y_m).map_err(|e| GroundError::Pack(e.to_string()))?;
+        let rx1_cm = mush_atlas::geom::cm(max_x_m).map_err(|e| GroundError::Pack(e.to_string()))?;
+        let ry1_cm = mush_atlas::geom::cm(max_y_m).map_err(|e| GroundError::Pack(e.to_string()))?;
+        let x0 = u16::try_from((rx0_cm - origin_cm.0) / cell_cm_i64)
+            .map_err(|_| GroundError::Pack(format!("{entry_id} x0 out of range")))?;
+        let y0 = u16::try_from((ry0_cm - origin_cm.1) / cell_cm_i64)
+            .map_err(|_| GroundError::Pack(format!("{entry_id} y0 out of range")))?;
+        let x1 = u16::try_from(((rx1_cm - origin_cm.0) / cell_cm_i64).saturating_sub(1))
+            .map_err(|_| GroundError::Pack(format!("{entry_id} x1 out of range")))?;
+        let y1 = u16::try_from(((ry1_cm - origin_cm.1) / cell_cm_i64).saturating_sub(1))
+            .map_err(|_| GroundError::Pack(format!("{entry_id} y1 out of range")))?;
+
+        let feat_def: Option<FeatureDef> =
+            CanonicalId::new(format!("feature.{room_short_id}_door"))
+                .ok()
+                .and_then(|fid| atlas_pack.entries().get(&fid))
+                .and_then(|fraw| {
+                    serde_json::from_value(serde_json::Value::Object(fraw.def().clone())).ok()
+                });
+        let door = if let Some(pt) = feat_def.as_ref().and_then(|f| f.point) {
+            let dx_cm = mush_atlas::geom::cm(pt.0).map_err(|e| GroundError::Pack(e.to_string()))?;
+            let dy_cm = mush_atlas::geom::cm(pt.1).map_err(|e| GroundError::Pack(e.to_string()))?;
+            let dx = u16::try_from((dx_cm - origin_cm.0) / cell_cm_i64).unwrap_or((x0 + x1) / 2);
+            let dy = u16::try_from((dy_cm - origin_cm.1) / cell_cm_i64).unwrap_or(y0);
+            [dx, dy]
+        } else {
+            [(x0 + x1) / 2, y0]
+        };
+        let site_def: Option<SiteDef> = CanonicalId::new(format!("site.{room_short_id}"))
+            .ok()
+            .and_then(|sid| atlas_pack.entries().get(&sid))
+            .and_then(|sraw| {
+                serde_json::from_value(serde_json::Value::Object(sraw.def().clone())).ok()
+            });
+        let role = site_def.map_or_else(
+            || {
+                let has_dock = room_def.markers.iter().any(|m| m == PORT_DOCK_MARKER);
+                let has_sheltered = room_def
+                    .flags
+                    .iter()
+                    .any(|f| f.eq_ignore_ascii_case("sheltered"));
+                match (has_dock, has_sheltered) {
+                    (true, true) => DraftRoomRole::Hangar,
+                    (true, false) => DraftRoomRole::Pad,
+                    (false, _) => DraftRoomRole::Building,
+                }
+            },
+            |s| DraftRoomRole::from_kind_str(&s.site_kind),
+        );
+        let connects_to = CanonicalId::new(format!("exit.{room_short_id}_link"))
+            .ok()
+            .and_then(|eid| atlas_pack.entries().get(&eid))
+            .and_then(|eraw| {
+                serde_json::from_value::<ExitDef>(serde_json::Value::Object(eraw.def().clone()))
+                    .ok()
+            })
+            .map(|edef| {
+                let (pack, room, pack_version) = if let Some((req, rest)) =
+                    atlas_pack.manifest().requires().iter().find_map(|req| {
+                        edef.to
+                            .strip_prefix(&format!("{}.", req.id))
+                            .map(|rest| (req, rest))
+                    }) {
+                    (req.id.to_string(), rest.to_owned(), Some(req.version))
+                } else if let Some((p, r)) = edef.to.split_once(".room.") {
+                    let ver = atlas_pack
+                        .manifest()
+                        .requires()
+                        .iter()
+                        .find(|req| req.id.as_str() == p)
+                        .map(|req| req.version);
+                    (p.to_owned(), format!("room.{r}"), ver)
+                } else {
+                    let r = edef.to.strip_prefix("room.").unwrap_or(&edef.to).to_owned();
+                    (String::new(), r, None)
+                };
+                DraftRoomLink {
+                    pack,
+                    room,
+                    pack_version,
+                    exit_name: edef.names.first().cloned().unwrap_or_default(),
+                    back_name: edef.names.get(1).cloned().unwrap_or_default(),
+                }
+            });
+        rooms.push(DraftRoomDef {
+            id: room_short_id,
+            name: room_def.name,
+            role,
+            x0,
+            y0,
+            x1,
+            y1,
+            door,
+            short_desc: room_def.short_desc,
+            desc: room_def.desc,
+            connects_to,
+        });
+    }
+
     let seed = Some(region_def.background.seed);
     let draft = GroundDraft {
         schema: DRAFT_SCHEMA.to_owned(),
@@ -2369,6 +3011,7 @@ pub fn from_packs(atlas_json: &str, arena_json: &str) -> Result<GroundDraft, Gro
         elev: encode_elev(&elev),
         entry_zones: arena_def.entry_zones,
         key_spots: arena_def.key_spots,
+        rooms,
         waypoints: arena_def.waypoints,
         modes: arena_def.modes,
         tanks: arena_def.tanks,
@@ -2525,8 +3168,55 @@ pub fn stage_in_world(
         ));
     }
 
+    let _ = draft.validate()?;
     let mut working = draft.clone();
-    let mut built = build(&working)?;
+    if let Some(content) = ctx.w.module_state::<mush_content::ContentState>() {
+        for room in &mut working.rooms {
+            if let Some(link) = &mut room.connects_to
+                && !link.pack.is_empty()
+                && let Ok(ext_id) = CanonicalId::new(&link.pack)
+                && let Some(applied) = content.latches.applied(&ext_id)
+            {
+                link.pack_version = Some(applied.version());
+            }
+        }
+    }
+    let build_for_world =
+        |w: &mush_core::World, d: &GroundDraft| -> Result<BuiltPacks, GroundError> {
+            let mut copy = d.clone();
+            let content = w.module_state::<mush_content::ContentState>();
+            let atlas = w.module_state::<mush_atlas::AtlasState>();
+            for room in &mut copy.rooms {
+                if let Some(link) = &room.connects_to
+                    && !link.pack.is_empty()
+                {
+                    let target_slug = link
+                        .room
+                        .trim()
+                        .strip_prefix("room.")
+                        .unwrap_or(link.room.trim());
+                    let applied_and_present = CanonicalId::new(link.pack.trim())
+                        .ok()
+                        .zip(CanonicalId::new(format!("room.{target_slug}")).ok())
+                        .is_some_and(|(ext_id, entry_id)| {
+                            let pack_latched =
+                                content.is_some_and(|c| c.latches.applied(&ext_id).is_some());
+                            let room_exists = atlas.is_some_and(|a| {
+                                a.records
+                                    .roomgeo
+                                    .values()
+                                    .any(|g| g.key.pack == ext_id && g.key.entry == entry_id)
+                            });
+                            pack_latched && room_exists
+                        });
+                    if !applied_and_present {
+                        room.connects_to = None;
+                    }
+                }
+            }
+            build(&copy)
+        };
+    let mut built = build_for_world(ctx.w, &working)?;
     let mut atlas_pack =
         mush_content::load_pack(&built.atlas_json).map_err(|e| GroundError::Pack(e.to_string()))?;
     let mut arena_rules_pack =
@@ -2601,7 +3291,7 @@ pub fn stage_in_world(
 
     if working.atlas_version != draft.atlas_version || working.arena_version != draft.arena_version
     {
-        built = build(&working)?;
+        built = build_for_world(ctx.w, &working)?;
         atlas_pack = mush_content::load_pack(&built.atlas_json)
             .map_err(|e| GroundError::Pack(e.to_string()))?;
         arena_rules_pack = crate::pack::load_pack(&built.arena_json)
@@ -2868,10 +3558,134 @@ pub fn draft_from_records(
     }
     let classes_b64 = encode_classes(arena_def.cols, arena_def.rows, &classes);
     let elev_b64 = encode_elev(&elev);
+    let mut rooms: Vec<DraftRoomDef> = Vec::new();
+    let neigh_entry_str = format!("neighborhood.{short_id}");
+    for geo in records.roomgeo.values() {
+        if geo.key.pack != region_key.pack || geo.neighborhood.entry.as_str() != neigh_entry_str {
+            continue;
+        }
+        let (min_x_m, min_y_m, max_x_m, max_y_m) = match &geo.footprint {
+            mush_atlas::record::Footprint::Rect(rect) => (rect.0.0, rect.0.1, rect.1.0, rect.1.1),
+            mush_atlas::record::Footprint::Polygon(poly) => {
+                if poly.0.is_empty() {
+                    continue;
+                }
+                let mut x_lo = f64::INFINITY;
+                let mut y_lo = f64::INFINITY;
+                let mut x_hi = f64::NEG_INFINITY;
+                let mut y_hi = f64::NEG_INFINITY;
+                for pt in &poly.0 {
+                    x_lo = x_lo.min(pt.0);
+                    y_lo = y_lo.min(pt.1);
+                    x_hi = x_hi.max(pt.0);
+                    y_hi = y_hi.max(pt.1);
+                }
+                (x_lo, y_lo, x_hi, y_hi)
+            }
+            mush_atlas::record::Footprint::Anchor { .. } => continue,
+        };
+        let room_short_id = geo
+            .key
+            .entry
+            .as_str()
+            .strip_prefix("room.")
+            .unwrap_or_else(|| geo.key.entry.as_str())
+            .to_owned();
+        let rx0_cm = mush_atlas::geom::cm(min_x_m)
+            .map_err(|e| GroundError::Pack(format!("{} x0: {e}", geo.key)))?;
+        let ry0_cm = mush_atlas::geom::cm(min_y_m)
+            .map_err(|e| GroundError::Pack(format!("{} y0: {e}", geo.key)))?;
+        let rx1_cm = mush_atlas::geom::cm(max_x_m)
+            .map_err(|e| GroundError::Pack(format!("{} x1: {e}", geo.key)))?;
+        let ry1_cm = mush_atlas::geom::cm(max_y_m)
+            .map_err(|e| GroundError::Pack(format!("{} y1: {e}", geo.key)))?;
+        let Ok(x0) = u16::try_from((rx0_cm - origin_cm.0) / cell_cm) else {
+            continue;
+        };
+        let Ok(y0) = u16::try_from((ry0_cm - origin_cm.1) / cell_cm) else {
+            continue;
+        };
+        let Ok(x1) = u16::try_from(((rx1_cm - origin_cm.0) / cell_cm).saturating_sub(1)) else {
+            continue;
+        };
+        let Ok(y1) = u16::try_from(((ry1_cm - origin_cm.1) / cell_cm).saturating_sub(1)) else {
+            continue;
+        };
+        let site_rec = geo.site.as_ref().and_then(|sk| records.sites.get(sk));
+        let name = site_rec.map_or_else(|| room_short_id.clone(), |s| s.name.clone());
+        let role = site_rec.map_or(DraftRoomRole::Building, |s| {
+            DraftRoomRole::from_kind_str(&s.kind)
+        });
+        let feat_rec = CanonicalId::new(format!("feature.{room_short_id}_door"))
+            .ok()
+            .map(|fid| mush_atlas::RecordKey::new(geo.key.pack.clone(), fid))
+            .and_then(|fkey| records.features.get(&fkey));
+        let door = if let Some(mush_atlas::record::Geometry::Point(pt)) =
+            feat_rec.map(|f| &f.geometry)
+            && let (Ok(dx_cm), Ok(dy_cm)) = (mush_atlas::geom::cm(pt.0), mush_atlas::geom::cm(pt.1))
+        {
+            let dx = u16::try_from((dx_cm - origin_cm.0) / cell_cm).unwrap_or((x0 + x1) / 2);
+            let dy = u16::try_from((dy_cm - origin_cm.1) / cell_cm).unwrap_or(y0);
+            [dx, dy]
+        } else {
+            [(x0 + x1) / 2, y0]
+        };
+        let connects_to = CanonicalId::new(format!("exit.{room_short_id}_link"))
+            .ok()
+            .map(|eid| mush_atlas::RecordKey::new(geo.key.pack.clone(), eid))
+            .and_then(|ekey| records.portals.get(&ekey))
+            .and_then(|portal| {
+                let mush_atlas::record::Endpoint::Room(target_obj) = portal.to else {
+                    return None;
+                };
+                let target_geo = records.roomgeo.get(&target_obj)?;
+                let (pack, room, pack_version) = if target_geo.key.pack == geo.key.pack {
+                    (
+                        String::new(),
+                        target_geo
+                            .key
+                            .entry
+                            .as_str()
+                            .strip_prefix("room.")
+                            .unwrap_or_else(|| target_geo.key.entry.as_str())
+                            .to_owned(),
+                        None,
+                    )
+                } else {
+                    (
+                        target_geo.key.pack.to_string(),
+                        target_geo.key.entry.to_string(),
+                        Some(1),
+                    )
+                };
+                Some(DraftRoomLink {
+                    pack,
+                    room,
+                    pack_version,
+                    exit_name: String::new(),
+                    back_name: String::new(),
+                })
+            });
+        rooms.push(DraftRoomDef {
+            id: room_short_id,
+            name,
+            role,
+            x0,
+            y0,
+            x1,
+            y1,
+            door,
+            short_desc: String::new(),
+            desc: String::new(),
+            connects_to,
+        });
+    }
+    rooms.sort_by(|a, b| a.id.cmp(&b.id));
     if let Some(Ok(shipped)) = shipped_draft(short_id)
         && shipped.classes == classes_b64
         && shipped.elev == elev_b64
         && shipped.key_spots == arena_def.key_spots
+        && shipped.rooms == rooms
         && shipped.waypoints == arena_def.waypoints
         && shipped.entry_zones == arena_def.entry_zones
         && shipped.biome == region_rec.biome_str()
@@ -2897,6 +3711,7 @@ pub fn draft_from_records(
         elev: elev_b64,
         entry_zones: arena_def.entry_zones.clone(),
         key_spots: arena_def.key_spots.clone(),
+        rooms,
         waypoints: arena_def.waypoints.clone(),
         modes: arena_def.modes.clone(),
         tanks: arena_def.tanks.clone(),
@@ -3015,6 +3830,7 @@ pub fn proving_ground_draft() -> Result<GroundDraft, GroundError> {
                 y: 111,
             },
         ],
+        rooms: Vec::new(),
         waypoints: WaypointGraph {
             nodes: vec![
                 node("ew_008", 8, 97)?,
@@ -3359,6 +4175,7 @@ fn generate_biome_preset(
         elev: encode_elev(&elev),
         entry_zones: base.entry_zones,
         key_spots: base.key_spots,
+        rooms: base.rooms,
         waypoints: base.waypoints,
         modes: base.modes,
         tanks: base.tanks,
@@ -3837,6 +4654,7 @@ mod tests {
                     },
                 ],
                 key_spots: Vec::new(),
+                rooms: Vec::new(),
                 waypoints: WaypointGraph {
                     nodes: Vec::new(),
                     edges: Vec::new(),
@@ -4736,6 +5554,236 @@ mod tests {
                 .iter()
                 .any(|s| s.name == "Studio Ridge")
         );
+        Ok(())
+    }
+
+    #[test]
+    fn wg_rooms_hangar_and_building_link_map_cells_to_mush_rooms_and_base()
+    -> Result<(), Box<dyn std::error::Error>> {
+        let mut draft = proving_ground_draft()?;
+        draft.id = "hangar_ground".to_owned();
+        draft.label = "Hangar Ground".to_owned();
+        draft.atlas_version = 1;
+        draft.arena_version = 1;
+        draft.rooms = vec![
+            DraftRoomDef {
+                id: "alpha_pad".to_owned(),
+                name: "Alpha Landing Pad".to_owned(),
+                role: DraftRoomRole::Pad,
+                x0: 200,
+                y0: 140,
+                x1: 216,
+                y1: 156,
+                door: [208, 140],
+                short_desc: "Reinforced concrete VTOL & heavy armor pad.".to_owned(),
+                desc: String::new(),
+                connects_to: Some(DraftRoomLink {
+                    pack: String::new(),
+                    room: "red_hangar".to_owned(),
+                    pack_version: None,
+                    exit_name: "Service Tunnel;tunnel;west".to_owned(),
+                    back_name: "Alpha Pad;pad;east".to_owned(),
+                }),
+            },
+            DraftRoomDef {
+                id: "north_barn".to_owned(),
+                name: "North Barn".to_owned(),
+                role: DraftRoomRole::Building,
+                x0: 96,
+                y0: 186,
+                x1: 116,
+                y1: 202,
+                door: [106, 186],
+                short_desc: "Weathered stone barn at the north spur.".to_owned(),
+                desc: String::new(),
+                connects_to: None,
+            },
+            DraftRoomDef {
+                id: "red_hangar".to_owned(),
+                name: "Red Base Hangar".to_owned(),
+                role: DraftRoomRole::Hangar,
+                x0: 120,
+                y0: 84,
+                x1: 136,
+                y1: 94,
+                door: [129, 94],
+                short_desc: "Armored vehicle hangar bay opening onto the crossroads road."
+                    .to_owned(),
+                desc: "Gantry cranes and blast doors open north onto the main east-west road."
+                    .to_owned(),
+                connects_to: Some(DraftRoomLink {
+                    pack: "neighborhood.malapert_exchange".to_owned(),
+                    room: "room.counter".to_owned(),
+                    pack_version: Some(1),
+                    exit_name: "Base Concourse;concourse;base".to_owned(),
+                    back_name: "Hangar Bay;hangar;arena".to_owned(),
+                }),
+            },
+        ];
+
+        // Stamp a doorway on (129, 94) and floor inside red_hangar so wheeled vehicles reach the door.
+        let mut classes = decode_classes(&draft.id, draft.cols, draft.rows, &draft.classes)?;
+        let w = usize::from(draft.cols);
+        for y in 84_usize..=94 {
+            for x in 120_usize..=136 {
+                let c = if x == 129 && y == 94 {
+                    TerrainClass::Door
+                } else if x == 120 || x == 136 || y == 84 || y == 94 {
+                    TerrainClass::Wall
+                } else {
+                    TerrainClass::Floor
+                };
+                classes[y * w + x] = c;
+            }
+        }
+        for y in 95_usize..=96 {
+            classes[y * w + 129] = TerrainClass::Paved;
+        }
+        draft.classes = encode_classes(draft.cols, draft.rows, &classes);
+
+        // 1. Validation & check report verify all 3 room entrances are wheeled-reachable.
+        let report = check(&draft)?;
+        check!(report.passed, "report failures: {:?}", report.failures);
+        check!(report.rooms_wheeled_reachable);
+        check!(report.unreachable_rooms.is_empty());
+
+        // Overlapping rooms are refused by validate().
+        let mut bad_overlap = draft.clone();
+        bad_overlap.rooms.push(DraftRoomDef {
+            id: "overlap_bunker".to_owned(),
+            name: "Overlap Bunker".to_owned(),
+            role: DraftRoomRole::Bunker,
+            x0: 100,
+            y0: 190,
+            x1: 110,
+            y1: 198,
+            door: [105, 190],
+            short_desc: String::new(),
+            desc: String::new(),
+            connects_to: None,
+        });
+        check!(bad_overlap.validate().is_err());
+
+        // 2. `route` includes room doors as waypoint anchors.
+        let mut routed = draft.clone();
+        routed.waypoints = WaypointGraph::default();
+        route(&mut routed)?;
+        for r in &routed.rooms {
+            check!(
+                routed
+                    .waypoints
+                    .nodes
+                    .iter()
+                    .any(|n| n.x.abs_diff(r.door[0]) <= 2 && n.y.abs_diff(r.door[1]) <= 2),
+                "expected waypoint near room {} door {:?}",
+                r.id,
+                r.door
+            );
+        }
+
+        // 3. `build` and `from_packs` round-trip all room definitions and links.
+        let built = build(&draft)?;
+        let rebuilt = from_packs(&built.atlas_json, &built.arena_json)?;
+        check_eq!(rebuilt.rooms, draft.rooms);
+
+        // 4. Live staging & apply on `booted_test_world()` materializes the MUSH rooms,
+        //    sets `Flags::SHELTERED` + `port.dock` markers, stamps `cell.room` on the
+        //    surface composite, and wires exits.
+        let mut tw = booted_test_world()?;
+        let god = mush_core::GOD;
+        let json = serde_json::to_string(&draft)?;
+        let _ = tw.run(god, "@ground/stage/begin");
+        for chunk in json.as_bytes().chunks(4000) {
+            let s = std::str::from_utf8(chunk)?;
+            let _ = tw.run(god, &format!("@ground/stage/chunk {s}"));
+        }
+        let ev = tw.run(god, "@ground/stage/end/apply");
+        let end_out = tw.seen_by(&ev, god).join("\n");
+        check!(
+            end_out.contains("Staged and applied ground `hangar_ground`"),
+            "unexpected stage output: {end_out}"
+        );
+
+        // Verify `draft_from_world` preserves the full rooms & links.
+        let world_draft = draft_from_world(tw.world(), "hangar_ground")?;
+        check_eq!(world_draft.rooms, draft.rooms);
+
+        // Verify the MUSH rooms exist in `AtlasState.records.roomgeo` and on the surface tiles.
+        let atlas = tw
+            .world()
+            .module_state::<mush_atlas::AtlasState>()
+            .ok_or("missing AtlasState")?;
+        let pack_cid = CanonicalId::new("tacsim.hangar_ground")?;
+        let hangar_key =
+            mush_atlas::RecordKey::new(pack_cid.clone(), CanonicalId::new("room.red_hangar")?);
+        let pad_key =
+            mush_atlas::RecordKey::new(pack_cid.clone(), CanonicalId::new("room.alpha_pad")?);
+        let barn_key =
+            mush_atlas::RecordKey::new(pack_cid.clone(), CanonicalId::new("room.north_barn")?);
+
+        let hangar_geo = atlas
+            .records
+            .roomgeo
+            .values()
+            .find(|g| g.key == hangar_key)
+            .ok_or("missing room.red_hangar in roomgeo")?;
+        let pad_geo = atlas
+            .records
+            .roomgeo
+            .values()
+            .find(|g| g.key == pad_key)
+            .ok_or("missing room.alpha_pad in roomgeo")?;
+        let barn_geo = atlas
+            .records
+            .roomgeo
+            .values()
+            .find(|g| g.key == barn_key)
+            .ok_or("missing room.north_barn in roomgeo")?;
+
+        check_eq!(hangar_geo.kind, mush_atlas::record::RoomKind::Indoor);
+        check_eq!(pad_geo.kind, mush_atlas::record::RoomKind::Outdoor);
+        check_eq!(barn_geo.kind, mush_atlas::record::RoomKind::Indoor);
+
+        let hangar_obj = tw
+            .world()
+            .get(hangar_geo.room)
+            .ok_or("missing hangar room obj")?;
+        check_eq!(hangar_obj.name.as_str(), "Red Base Hangar");
+        check!(hangar_obj.flags.contains(mush_core::Flags::SHELTERED));
+        check!(tw.world().has_marker(hangar_geo.room, PORT_DOCK_MARKER));
+
+        // Verify the tile cells inside `red_hangar` (125, 88) composite to `hangar_geo.room`!
+        let region_key =
+            mush_atlas::RecordKey::new(pack_cid, CanonicalId::new("region.hangar_ground")?);
+        let frame = mush_atlas::WindowFrame {
+            region: region_key,
+            surfaces: vec![mush_atlas::SurfaceRef::Ground],
+            bbox: mush_atlas::RectCm {
+                min: mush_atlas::PointCm {
+                    x: 2_100_000,
+                    y: 2_050_000,
+                },
+                max: mush_atlas::PointCm {
+                    x: 2_164_000,
+                    y: 2_114_000,
+                },
+            },
+            cell_cm: 1_000,
+        };
+        let input = mush_atlas::capture(&atlas.records, &frame)?;
+        let comp = mush_atlas::composite(&input)?;
+        let surf = comp
+            .surface(&mush_atlas::SurfaceRef::Ground)
+            .ok_or("missing ground surface")?;
+        // Cell (125, 88) in metres is (20_000 + 1255 m, 20_000 + 885 m) = (2125500 cm, 2088500 cm).
+        let (cx, cy) = surf
+            .cell_of(mush_atlas::PointCm {
+                x: 2_000_000 + 125 * 1_000 + 500,
+                y: 2_000_000 + 88 * 1_000 + 500,
+            })
+            .ok_or("cell not in composite window")?;
+        check_eq!(surf.room_at(cx, cy), Some(hangar_geo.room));
+
         Ok(())
     }
 }

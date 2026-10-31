@@ -5,6 +5,7 @@ import { FEED_COCKPIT, FEED_MAP, KIND_COCKPIT, PixelModule } from "./pixel/wasm"
 import {
   applySculptBrush,
   autoMusterTanks,
+  BASE_ROOM_PRESETS,
   checkEditorMap,
   computePassabilityOverlay,
   computeViewshed,
@@ -23,15 +24,19 @@ import {
   getHoldObjective,
   type GroundDraftJson,
   importGroundDraftJson,
+  inferEntranceSide,
   markStudioEdited,
   moveTankSlot,
   paintTerrainBrush,
   paintTerrainLine,
   relaxEditorSlopes,
+  removeEditorRoom,
   routeEditorMap,
   setHoldObjective,
   setTankHeadingDeg,
+  stampRoomOnGrid,
   TERRAIN_PALETTE,
+  updateEditorRoom,
 } from "./map-editor";
 import pgParityFixture from "./fixtures/proving_ground_wg4_parity.json";
 
@@ -387,5 +392,111 @@ describe("map-editor WG.4 (ground.draft.v1 & parity with tacsim::ground)", () =>
 
     setHoldObjective(state, { enabled: false });
     expect(getHoldObjective(state)).toBeNull();
+  });
+
+  it("stamps MUSH rooms and base hangars onto the grid, checks wheeled doorway reachability, routes room doors, and round-trips ground.draft.v1 JSON", () => {
+    const state = createEditorMap(128, 128, "lunar", 5);
+    const preset = BASE_ROOM_PRESETS[0]!;
+
+    // Stamp a base hangar with a north-facing vehicle bay linked to Malapert Exchange
+    const hangar = stampRoomOnGrid(state, {
+      x0: 54,
+      y0: 20,
+      x1: 68,
+      y1: 30,
+      role: "hangar",
+      side: "north",
+      id: "red_hangar",
+      name: "Red Base Hangar",
+      short_desc: "Armored vehicle bay.",
+      desc: "Blast doors open north toward the crossroads.",
+      connects_to: {
+        pack: preset.pack,
+        room: preset.room,
+        pack_version: preset.pack_version,
+        exit_name: preset.exit_name,
+        back_name: preset.back_name,
+      },
+    });
+    expect(hangar).not.toBeNull();
+    expect(hangar?.id).toBe("red_hangar");
+    expect(hangar?.door).toEqual([61, 30]);
+    expect(inferEntranceSide(hangar!)).toBe("north");
+
+    // Verify wall (10), interior floor (5), 3-cell wide hangar door (11), and outer paved apron (1)
+    expect(state.classes[20 * 128 + 54]).toBe(10); // Corner wall
+    expect(state.classes[25 * 128 + 61]).toBe(5); // Interior floor
+    expect(state.classes[30 * 128 + 60]).toBe(11); // Hangar bay door (left)
+    expect(state.classes[30 * 128 + 61]).toBe(11); // Hangar bay door (center)
+    expect(state.classes[30 * 128 + 62]).toBe(11); // Hangar bay door (right)
+    expect(state.classes[31 * 128 + 61]).toBe(1); // Outer paved apron
+
+    // Reject overlapping room footprints
+    const overlap = stampRoomOnGrid(state, {
+      x0: 60,
+      y0: 25,
+      x1: 72,
+      y1: 35,
+      role: "bunker",
+    });
+    expect(overlap).toBeNull();
+
+    // Stamp a non-overlapping building linked locally to red_hangar
+    const barn = stampRoomOnGrid(state, {
+      x0: 80,
+      y0: 58,
+      x1: 90,
+      y1: 66,
+      role: "building",
+      side: "west",
+      id: "dispatch_barn",
+      name: "Dispatch Barn",
+      connects_to: {
+        room: "room.red_hangar",
+        exit_name: "Red Base Hangar;hangar",
+        back_name: "Dispatch Barn;barn",
+      },
+    });
+    expect(barn).not.toBeNull();
+    expect(state.rooms).toHaveLength(2);
+
+    // Check report verifies both room doors are wheeled-reachable
+    const report = checkEditorMap(state);
+    expect(report.rooms_wheeled_reachable).toBe(true);
+    expect(report.unreachable_rooms).toEqual([]);
+
+    // Route includes waypoint anchors near both room doors
+    const routeRes = routeEditorMap(state);
+    expect(routeRes.nodes.length).toBeGreaterThanOrEqual(state.keySpots.length + 2);
+    for (const r of state.rooms) {
+      const hasDoorNode = state.waypoints.nodes.some(
+        (n) => Math.abs(n.x - r.door[0]) <= 2 && Math.abs(n.y - r.door[1]) <= 2,
+      );
+      expect(hasDoorNode).toBe(true);
+    }
+
+    // Update room role & entrance side
+    expect(
+      updateEditorRoom(state, 1, {
+        name: "Fortified Dispatch Bunker",
+        role: "bunker",
+        side: "south",
+      }),
+    ).not.toBeNull();
+    expect(state.rooms[1]?.role).toBe("bunker");
+    expect(state.rooms[1]?.door).toEqual([85, 58]);
+
+    // Round-trip via ground.draft.v1 JSON
+    const exported = exportGroundDraftJson(state);
+    expect(exported.rooms).toHaveLength(2);
+    expect(exported.rooms?.[0]?.connects_to?.pack).toBe("neighborhood.malapert_exchange");
+
+    const reimported = importGroundDraftJson(JSON.parse(JSON.stringify(exported)) as GroundDraftJson);
+    expect(reimported.rooms).toEqual(state.rooms);
+
+    // Remove room with clearTerrain=true restores natural terrain over footprint
+    expect(removeEditorRoom(state, 1, true)).toBe(true);
+    expect(state.rooms).toHaveLength(1);
+    expect(state.classes[58 * 128 + 85]).not.toBe(11);
   });
 });

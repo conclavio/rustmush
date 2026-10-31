@@ -157,5 +157,18 @@ describe("MapEditorStudio (WG.4 ground.draft.v1)", () => {
     await fireEvent.click(musterBtn);
     await tick();
     expect(screen.getByText(/Mustered 12 tanks/i)).toBeTruthy();
+
+    // 5. MUSH Rooms & Hangars panel stamps a Base Hangar and links it to a MUSH neighborhood room
+    expect(screen.getByTestId("mush-rooms-panel")).toBeTruthy();
+    const addHangarBtn = screen.getByRole("button", { name: /\+ Base Hangar/i });
+    await fireEvent.click(addHangarBtn);
+    await tick();
+    expect(screen.getByText(/Stamped "Red Base Hangar 1"/i)).toBeTruthy();
+
+    const presetRoomSelect = screen.getByLabelText("Quick-pick base room preset") as HTMLSelectElement;
+    await fireEvent.change(presetRoomSelect, { target: { value: "2" } });
+    await tick();
+    const targetPackInput = screen.getByLabelText("Linked pack ID") as HTMLInputElement;
+    expect(targetPackInput.value).toBe("neighborhood.ahuna_flank");
   });
 });
