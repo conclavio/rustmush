@@ -126,7 +126,7 @@ fn sigterm_with_a_gateway_attached_drains_the_world_and_exits_zero() {
         .spawn()
         .expect("spawn mush-server");
     child
-        .await_log("awaiting gateway", TIMEOUT)
+        .await_log("accepting gateways", TIMEOUT)
         .expect("the server bound its endpoint");
 
     // The gateway side lives on this runtime's workers for the rest of the
