@@ -71,7 +71,10 @@ else
     done
     if logrotate -f -s "$state" "$conf"; then ok "forced rotation ran"; else bad "forced rotation failed"; fi
     after=$(find "$logdir" -maxdepth 1 -name '*.zst' | wc -l)
-    fresh=$(find "$logdir" -maxdepth 1 -name '*.zst' -newer "$stamp" | head -n1)
+    # -cnewer, not -newer: zstd gives the archive the rotated log's mtime, which
+    # predates the stamp, so an mtime test never sees a fresh archive (found
+    # on conclav.io, DW.4, 2026-10-31); the inode change time is the creation.
+    fresh=$(find "$logdir" -maxdepth 1 -name '*.zst' -cnewer "$stamp" | head -n1)
     if (( after > before )) && [[ -n "$fresh" ]] && unzstd -t -q "$fresh"; then
         ok "rotation left a new, valid zstd archive ($(basename "$fresh"))"
     else

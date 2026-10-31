@@ -91,6 +91,11 @@ key_dir = "__DATA_DIR__/resolution-keys"
 
 [ssh]
 listen = "__EXTERNAL_IP__:__SSH_PORT__"
+# Doc 29: the trusted ingress socket sshdoorway dials; empty = no doorway on
+# this box. Under gateway generations (doc 33 §4.4) it is a symlink that only
+# gateway-swap.sh / deploy.sh re-point at the serving generation's own
+# <stem>.<gen>.sock beside it.
+trusted_socket = "__TRUSTED_SOCKET__"
 # Doc 29a §9: a connection must authenticate within this many seconds of
 # accept, and open a session channel within as many again, or it is
 # disconnected and cut. Never applied to a connection that is in the game.

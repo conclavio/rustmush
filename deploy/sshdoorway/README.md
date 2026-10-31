@@ -6,8 +6,15 @@ their real address and any key they proved they hold. Design:
 [doc 29](../../docs/design/29-sshdoorway.md). Build plan:
 [doc 29a](../../docs/design/29a-sshdoorway-implementation-plan.md).
 
-**Nothing here is installed on any box yet.** The rollout (cut DW.4) waits for two
-things from the owner: moving admin `sshd` off the player addresses, and a go-ahead.
+**Installed on conclav.io on 2026-10-31 (cut DW.4).** Admin `sshd` moved to port 2222
+first (the box's ssh.socket is socket-activated; `Port 2222` in
+`/etc/ssh/sshd_config.d/10-ports.conf`, honored through Ubuntu's
+`sshd-socket-generator`), which freed 22. The doorway listens on
+`31.220.52.183:22` and `[2a02:4780:10:ccaf::1]:22`; its host key is
+`SHA256:MWrhOxRvUJTnDrimeJJRT7kOhM27gX5TCqG8XS49Nng` (ed25519). A client that
+had admin sshd's key for `conclav.io` (port 22) in `known_hosts` sees "host
+identification changed" once: `ssh-keygen -R conclav.io`, then accept the
+fingerprint above. The instances' own keys on 6789/6792 are untouched.
 
 ## Files
 
@@ -32,8 +39,14 @@ things from the owner: moving admin `sshd` off the player addresses, and a go-ah
    - `apt-get install zstd`.
 2. **System files.** Install every file in the table above. Then run
    `sysctl --system`, `systemd-tmpfiles --create` and `systemctl daemon-reload`.
-3. **Each instance.** Add `trusted_socket = "/run/rustmush-ssh/<instance>.sock"` to its
-   `[ssh]` section, then restart its gateway. The gateway creates the socket with mode
+3. **Each instance.** Set `TRUSTED_SOCKET=/run/rustmush-ssh/<instance>.sock` in its
+   `instance.env` (the template renders it into `[ssh].trusted_socket`; empty means
+   no doorway on this box), then `GATEWAY_SWAP=1 bash .../dev<N>-split/deploy.sh`:
+   the render carries the key, and the swap starts the idle gateway generation,
+   which binds `<instance>.<gen>.sock` and makes the `<instance>.sock` symlink the
+   doorway dials (doc 33 §4.4). Never a plain `systemctl restart`, which drops
+   players. The tmpfiles directory and the `sshdoorway` group must exist first or
+   the new generation's trusted bind fails and the swap rolls back. The gateway creates the socket with mode
    0660. Because the directory is setgid, the socket's group is `sshdoorway`, and only
    the doorway can connect to it. The gateway also checks each connection's peer
    credentials: it serves only a peer whose primary group is the socket's group (the unit
@@ -47,7 +60,10 @@ things from the owner: moving admin `sshd` off the player addresses, and a go-ah
    `swap.sh` moves the enablement to the generation it starts, so a reboot brings back the
    serving one.
 6. **Gate.** `check-logging.sh` must pass. Do not tell players about port 22 until it
-   does.
+   does. Two of its checks need time or traffic, not fixing: the timer must have
+   fired once (it runs at :00/:15/:30/:45), and each running generation must have
+   logged at least one line since the last rotation (a connection will do), or the
+   `notifempty` rotation has nothing to archive and the run fails.
 7. **Publish the host key fingerprint.** It is logged at start as `fingerprint=` (Q-29-5).
 
 ## Restarting without dropping players
