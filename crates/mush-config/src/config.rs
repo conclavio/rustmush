@@ -2128,6 +2128,13 @@ impl LogCfg {
     }
 }
 
+/// Default `[game].world_clock_checkpoint_s`: an idle world's `W-clock`
+/// checkpoint cadence in real seconds (every batch the world commits carries a
+/// checkpoint of its own). A third of the default `outage_freeze_threshold_s`
+/// (30), so an idle world's restart measured from the last checkpoint over-reads
+/// by at most ten seconds.
+pub const DEFAULT_WORLD_CLOCK_CHECKPOINT_S: u64 = 10;
+
 /// `[game]` section.
 #[derive(Clone, Debug, Deserialize)]
 #[serde(default)]
@@ -2162,6 +2169,17 @@ pub struct GameCfg {
     /// seconds when an outage at or above `outage_freeze_threshold_s` is detected.
     /// Default `300` (5 minutes).
     pub outage_countdown_s: u64,
+    /// Doc 27 `W-clock` (`Q-R4`): how often, in real seconds, an idle world
+    /// durably checkpoints its IC clock; a world that is writing carries the
+    /// checkpoint of each second in the batch itself. The checkpoint is the
+    /// last second the world is known to have reached, which is what the next
+    /// boot measures its outage from and where it resumes the IC clock. An
+    /// idle world's measured downtime therefore over-reads by up to one
+    /// cadence: keep this well under `outage_freeze_threshold_s`, or a
+    /// seconds-long restart reads as an outage (the boot warns when it is
+    /// not). Never written while the clock is frozen. `0` is treated as `1`.
+    /// Default `10` ([`DEFAULT_WORLD_CLOCK_CHECKPOINT_S`]).
+    pub world_clock_checkpoint_s: u64,
 }
 
 impl Default for GameCfg {
@@ -2174,6 +2192,7 @@ impl Default for GameCfg {
             starter_area: true,
             outage_freeze_threshold_s: 30,
             outage_countdown_s: 300,
+            world_clock_checkpoint_s: DEFAULT_WORLD_CLOCK_CHECKPOINT_S,
         }
     }
 }
@@ -2774,6 +2793,11 @@ scene_turn_dedline_secs = 30
         assert_eq!(cfg.ssh.listen, "0.0.0.0:2222");
         assert_eq!(cfg.game.linkdead_grace_s, 300);
         assert_eq!(cfg.game.max_characters, 3);
+        // W-clock (doc 27): the checkpoint cadence stays under the freeze threshold.
+        assert_eq!(cfg.game.outage_freeze_threshold_s, 30);
+        assert_eq!(cfg.game.outage_countdown_s, 300);
+        assert_eq!(cfg.game.world_clock_checkpoint_s, 10);
+        assert!(cfg.game.world_clock_checkpoint_s < cfg.game.outage_freeze_threshold_s);
         assert_eq!(cfg.store.store, "redis");
         assert_eq!(cfg.store.redis_url, "redis://127.0.0.1:6379");
         assert_eq!(cfg.store.receipt_policy, "applied");

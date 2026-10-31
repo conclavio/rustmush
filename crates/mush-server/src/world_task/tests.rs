@@ -5208,6 +5208,7 @@ async fn assert_live_hard_mode_gate(mode: WorldMode) {
         Arc::new(DurableOutboxRegistry::new()),
         None,
         Some(mode),
+        DEFAULT_WORLD_CLOCK_CHECKPOINT_S,
         move |_| -> Gateway { sink },
     );
     let PersistHandles {
@@ -7169,6 +7170,7 @@ async fn held_receipt_rig() -> HeldReceiptRig {
         // 16b cut T.2: this rig composes no game layer, so there is no arena
         // table and the egress arm stays disarmed.
         None,
+        DEFAULT_WORLD_CLOCK_CHECKPOINT_S,
     ));
     let mut rig = HeldReceiptRig {
         handle,
@@ -10846,6 +10848,7 @@ async fn h2a_the_production_spawn_composes_the_npc_adapter() {
         ServerDeps::in_memory(),
         None,
         DEFAULT_DECISION_PROVIDER_WORKERS,
+        DEFAULT_WORLD_CLOCK_CHECKPOINT_S,
         |_| Arc::new(BlackholeGateway),
     )
     .expect("production spawn");
@@ -10857,6 +10860,7 @@ async fn h2a_the_production_spawn_composes_the_npc_adapter() {
         ServerDeps::in_memory(),
         None,
         DEFAULT_DECISION_PROVIDER_WORKERS,
+        DEFAULT_WORLD_CLOCK_CHECKPOINT_S,
         |_| Arc::new(BlackholeGateway),
     )
     .expect("an unkeyed composition still spawns");
@@ -10868,6 +10872,7 @@ async fn h2a_the_production_spawn_composes_the_npc_adapter() {
         ServerDeps::in_memory(),
         None,
         mush_core::MAX_DECISION_PROVIDER_WORKERS + 1,
+        DEFAULT_WORLD_CLOCK_CHECKPOINT_S,
         |_| Arc::new(BlackholeGateway),
     );
     assert!(refused.is_err(), "33 workers must refuse");
@@ -11708,6 +11713,379 @@ fn w_clock_outage_countdown_broadcasts_5_2_1_minutes_and_unfreezes_without_catch
     engine.set_now(510);
     assert_eq!(engine.world.world_ic_now().at, 1_440);
     assert_eq!(engine.world.game_now_unix(), 1_440);
+}
+
+/// `W-clock` / `Q-R4` (doc 33 GG.5): the running world moves its durable checkpoint
+/// forward on the cadence through the deferred-persist path, writes an overdue one
+/// at once, never advances it while the clock is frozen, and counts the cadence
+/// from the timeline's last checkpoint whoever wrote it.
+#[tokio::test]
+async fn w_clock_periodic_checkpoint_advances_the_persisted_real_unix_and_holds_while_frozen() {
+    use crate::timeline::{
+        OutagePolicy, apply_boot_outage_policy, hydrate_world_timeline, load_or_seed_world_timeline,
+    };
+    use mush_store::{InMemoryStore, WriteBatch};
+
+    /// Persist whatever the step deferred, exactly as the loop's foot does: drain
+    /// the outbox into the engine's module ops and hand them to the store.
+    async fn flush(
+        engine: &mut Engine,
+        out: &mut Outbox,
+        fx: &mut Effects,
+        store: &InMemoryStore,
+        serial: u64,
+    ) -> usize {
+        engine.finish_external_step(out, fx);
+        let module_ops = engine.take_module_ops();
+        let count = module_ops.len();
+        if count > 0 {
+            store
+                .write(WriteBatch {
+                    serial,
+                    module_ops,
+                    durable: true,
+                    ..WriteBatch::default()
+                })
+                .await
+                .unwrap();
+        }
+        count
+    }
+    async fn persisted_real_unix(
+        store: &InMemoryStore,
+        clock: mush_core::GameClock,
+    ) -> Option<i64> {
+        load_or_seed_world_timeline(store, clock)
+            .await
+            .unwrap()
+            .checkpoint()
+            .map(|cp| cp.real_unix)
+    }
+
+    let store = InMemoryStore::new();
+    let clock = mush_core::GameClock {
+        ic_ratio: 4,
+        epoch_offset: 1_000,
+    };
+    let mut world = World::new_minimal();
+    hydrate_world_timeline(&mut world, &store, clock)
+        .await
+        .unwrap();
+    apply_boot_outage_policy(&mut world, &store, 1_000, OutagePolicy::default())
+        .await
+        .unwrap();
+    assert_eq!(persisted_real_unix(&store, clock).await, Some(1_000));
+    let mut engine = Engine::new(world, base_registry());
+    let cadence = WorldClockCheckpointCadence::new(10);
+    let mut out = Outbox::new();
+    let mut fx = Effects::new();
+    assert_eq!(
+        cadence.next_due_unix_ms(engine.world.world_timeline()),
+        Some(1_010_000)
+    );
+
+    // Before the cadence: nothing recorded, nothing queued.
+    assert_eq!(
+        step_world_clock_checkpoint(&mut engine, cadence, 1_005, &mut out),
+        None
+    );
+    assert_eq!(flush(&mut engine, &mut out, &mut fx, &store, 1).await, 0);
+    assert_eq!(persisted_real_unix(&store, clock).await, Some(1_000));
+
+    // On the cadence: one checkpoint, one op, the persisted real_unix moved.
+    let cp = step_world_clock_checkpoint(&mut engine, cadence, 1_010, &mut out).expect("due");
+    assert_eq!((cp.real_unix, cp.ic_unix), (1_010, 5_040));
+    assert_eq!(flush(&mut engine, &mut out, &mut fx, &store, 2).await, 1);
+    assert_eq!(persisted_real_unix(&store, clock).await, Some(1_010));
+    assert_eq!(
+        cadence.next_due_unix_ms(engine.world.world_timeline()),
+        Some(1_020_000)
+    );
+
+    // A late wake writes at once, and the next is a full cadence after the write.
+    assert!(step_world_clock_checkpoint(&mut engine, cadence, 1_033, &mut out).is_some());
+    assert_eq!(flush(&mut engine, &mut out, &mut fx, &store, 3).await, 1);
+    assert_eq!(persisted_real_unix(&store, clock).await, Some(1_033));
+    assert_eq!(
+        cadence.next_due_unix_ms(engine.world.world_timeline()),
+        Some(1_043_000)
+    );
+
+    // Frozen: nothing is recorded or queued, however overdue.
+    let mut frozen = engine.world.world_timeline().clone();
+    let _ = frozen.freeze_for_outage(1_033, 5_132, 1_040, 1_340);
+    engine.world.set_world_timeline(frozen);
+    for now in [1_043, 1_100, 1_339] {
+        assert_eq!(
+            step_world_clock_checkpoint(&mut engine, cadence, now, &mut out),
+            None,
+            "frozen at {now}"
+        );
+        assert_eq!(flush(&mut engine, &mut out, &mut fx, &store, 4).await, 0);
+    }
+    assert_eq!(persisted_real_unix(&store, clock).await, Some(1_033));
+
+    // Unfrozen again: the resume is itself a checkpoint (the unfreeze persists
+    // it), so the step is due a full cadence after the resume, not at once.
+    let mut resumed = engine.world.world_timeline().clone();
+    resumed.resume_at(1_340).expect("resumes");
+    engine.world.set_world_timeline(resumed);
+    assert_eq!(
+        cadence.next_due_unix_ms(engine.world.world_timeline()),
+        Some(1_350_000)
+    );
+    assert_eq!(
+        step_world_clock_checkpoint(&mut engine, cadence, 1_349, &mut out),
+        None
+    );
+    let cp = step_world_clock_checkpoint(&mut engine, cadence, 1_350, &mut out).expect("due");
+    assert_eq!(cp.real_unix, 1_350);
+    assert_eq!(flush(&mut engine, &mut out, &mut fx, &store, 5).await, 1);
+    assert_eq!(persisted_real_unix(&store, clock).await, Some(1_350));
+}
+
+/// The batch rider (`W-clock` / `Q-R4`): an authoritative batch carries the
+/// checkpoint of its own second ahead of the writes it covers, so the persisted
+/// checkpoint is never earlier than an IC stamp the store holds, and a restart
+/// re-anchors the IC clock at the last write rather than before it. The first
+/// CI run of PR #245 showed the rewind: a relay receipt `queued` before a crash
+/// and `transmitted` after the re-anchored boot read `queued > transmitted`,
+/// and the next boot refused the relay service state.
+#[tokio::test]
+async fn w_clock_a_batch_carries_the_checkpoint_of_its_second_so_a_restart_never_rewinds_the_clock()
+{
+    use crate::timeline::{
+        OutageEvaluation, OutagePolicy, apply_boot_outage_policy, hydrate_world_timeline,
+        load_or_seed_world_timeline,
+    };
+    use mush_store::{InMemoryStore, WriteBatch};
+
+    /// The loop's foot-of-loop flush, with what it handed the writer applied
+    /// to the store; `None` when nothing was dirty.
+    async fn flush_to_store(
+        engine: &mut Engine,
+        store: &InMemoryStore,
+        serial: &mut u64,
+    ) -> Option<WriteBatch> {
+        let (writer, mut writer_rx) = persist::test_store_writer_channel(Arc::new(Metrics::new()));
+        let mut health = StoreHealth::new();
+        let metrics = Metrics::new();
+        let mut retained = RetainedSeals::new();
+        let high_water = AtomicU64::new(0);
+        let persistence_integrity = PersistenceIntegrityLatch::new();
+        let outcome = flush_dirty(
+            engine,
+            &writer,
+            serial,
+            true,
+            &mut health,
+            &metrics,
+            &mut retained,
+            &high_water,
+            &crate::quarantine::QuarantineSpool::in_memory(),
+            &persistence_integrity,
+        )
+        .await;
+        match outcome {
+            FlushOutcome::Clean => None,
+            FlushOutcome::Queued { .. } => {
+                let StoreJob::Write { batch, .. } = writer_rx.try_recv().unwrap() else {
+                    panic!("a queued flush hands the writer a write job");
+                };
+                store.write(batch.clone()).await.unwrap();
+                Some(batch)
+            }
+            FlushOutcome::Refused(detail) | FlushOutcome::Rejected(detail) => {
+                panic!("the flush must queue: {detail}")
+            }
+            FlushOutcome::WriterGone => panic!("the flush must queue: writer gone"),
+        }
+    }
+    /// Positions of the timeline state ops in a batch's module ops.
+    fn timeline_ops(batch: &WriteBatch) -> Vec<usize> {
+        batch
+            .module_ops
+            .iter()
+            .enumerate()
+            .filter(|(_, op)| op.ns == mush_core::WORLD_TIMELINE_NAMESPACE)
+            .map(|(i, _)| i)
+            .collect()
+    }
+    async fn persisted_checkpoint(
+        store: &InMemoryStore,
+        clock: mush_core::GameClock,
+    ) -> Option<(i64, i64)> {
+        load_or_seed_world_timeline(store, clock)
+            .await
+            .unwrap()
+            .checkpoint()
+            .map(|cp| (cp.real_unix, cp.ic_unix))
+    }
+
+    let store = InMemoryStore::new();
+    let clock = mush_core::GameClock {
+        ic_ratio: 4,
+        epoch_offset: 1_000,
+    };
+    let mut world = World::new_minimal();
+    hydrate_world_timeline(&mut world, &store, clock)
+        .await
+        .unwrap();
+    apply_boot_outage_policy(&mut world, &store, 1_000, OutagePolicy::default())
+        .await
+        .unwrap();
+    assert_eq!(
+        persisted_checkpoint(&store, clock).await,
+        Some((1_000, 5_000))
+    );
+    let mut engine = Engine::new(world, base_registry());
+    let mut serial = 0;
+
+    // The minimal world's seed objects are legacy dirtiness: the boot's own
+    // second flushes them, and that batch carries no checkpoint — the boot's
+    // is this second's.
+    engine.set_now(1_000);
+    let batch = flush_to_store(&mut engine, &store, &mut serial)
+        .await
+        .expect("the seed objects");
+    assert_eq!(timeline_ops(&batch), Vec::<usize>::new());
+    assert!(
+        flush_to_store(&mut engine, &store, &mut serial)
+            .await
+            .is_none(),
+        "nothing dirty, no batch"
+    );
+
+    // A write seven seconds on: the batch carries the checkpoint of its second,
+    // ahead of the write, and the store now holds it.
+    engine.set_now(1_007);
+    assert_eq!(engine.world.world_ic_now().at, 5_028);
+    engine
+        .world
+        .create(ObjKind::Thing, "a receipt", GOD, Some(LIMBO))
+        .expect("creates");
+    let batch = flush_to_store(&mut engine, &store, &mut serial)
+        .await
+        .expect("a batch");
+    assert_eq!(timeline_ops(&batch), vec![0]);
+    assert_eq!(
+        persisted_checkpoint(&store, clock).await,
+        Some((1_007, 5_028))
+    );
+
+    // A second batch in the same second carries none: one per second at most.
+    engine
+        .world
+        .create(ObjKind::Thing, "another", GOD, Some(LIMBO))
+        .expect("creates");
+    let batch = flush_to_store(&mut engine, &store, &mut serial)
+        .await
+        .expect("a batch");
+    assert_eq!(timeline_ops(&batch), Vec::<usize>::new());
+
+    // The crash, twelve seconds after that write: the boot measures the real
+    // downtime and re-anchors the IC clock AT the write's second — never
+    // before a stamp the store holds. Without the rider it read the boot's
+    // checkpoint (19 s lost) and resumed at 5_000, 28 IC seconds before the
+    // write it had persisted.
+    let mut rebooted = World::new_minimal();
+    hydrate_world_timeline(&mut rebooted, &store, clock)
+        .await
+        .unwrap();
+    let evaluation =
+        apply_boot_outage_policy(&mut rebooted, &store, 1_019, OutagePolicy::default())
+            .await
+            .unwrap();
+    assert_eq!(
+        evaluation,
+        OutageEvaluation::SilentReanchor { lost_secs: 12 }
+    );
+    assert_eq!(rebooted.world_ic_now().at, 5_028);
+    assert_eq!(
+        persisted_checkpoint(&store, clock).await,
+        Some((1_019, 5_028))
+    );
+
+    // Frozen: a batch carries none, however far the second has moved; the
+    // checkpoint is the pre-outage moment the countdown holds the world at.
+    let mut frozen = engine.world.world_timeline().clone();
+    let _ = frozen.freeze_for_outage(1_007, 5_028, 1_030, 1_330);
+    engine.world.set_world_timeline(frozen);
+    engine.set_now(1_030);
+    engine
+        .world
+        .create(ObjKind::Thing, "while frozen", GOD, Some(LIMBO))
+        .expect("creates");
+    let batch = flush_to_store(&mut engine, &store, &mut serial)
+        .await
+        .expect("a batch");
+    assert_eq!(timeline_ops(&batch), Vec::<usize>::new());
+    assert_eq!(
+        engine
+            .world
+            .world_timeline()
+            .checkpoint()
+            .map(|cp| cp.real_unix),
+        Some(1_007)
+    );
+}
+
+/// The live loop: an idle world task with a one-second cadence writes its
+/// checkpoint to the store with no other wake, so a restart measures its outage
+/// from the last second the world ran rather than from the previous boot.
+#[tokio::test]
+async fn w_clock_live_world_task_writes_its_checkpoint_on_the_cadence() {
+    use crate::timeline::{
+        OutagePolicy, apply_boot_outage_policy, hydrate_world_timeline, load_or_seed_world_timeline,
+    };
+
+    let deps = ServerDeps::in_memory();
+    let store = Arc::clone(&deps.store);
+    let clock = mush_core::GameClock::default();
+    let boot = unix_now_s();
+    let mut world = World::new_minimal();
+    hydrate_world_timeline(&mut world, &*store, clock)
+        .await
+        .unwrap();
+    apply_boot_outage_policy(&mut world, &*store, boot, OutagePolicy::default())
+        .await
+        .unwrap();
+    let handles = spawn_persist_with_gateway_production(
+        Engine::new(world, base_registry()),
+        deps,
+        None,
+        DEFAULT_DECISION_PROVIDER_WORKERS,
+        1,
+        |_| Arc::new(BlackholeGateway),
+    )
+    .expect("production spawn");
+
+    let mut advanced = None;
+    for _ in 0..80 {
+        tokio::time::sleep(Duration::from_millis(100)).await;
+        let real = load_or_seed_world_timeline(&*store, clock)
+            .await
+            .unwrap()
+            .checkpoint()
+            .map(|cp| cp.real_unix);
+        if real.is_some_and(|real| real > boot) {
+            advanced = real;
+            break;
+        }
+    }
+    assert!(
+        advanced.is_some(),
+        "the idle world task wrote no checkpoint past the boot's within eight seconds"
+    );
+    assert!(
+        handles
+            .handle
+            .inbound(Inbound::Control(ControlMsg::Shutdown))
+            .await
+    );
+    handles.world_join.await.unwrap();
+    handles.writer_join.await.unwrap();
+    handles.outbox_join.await.unwrap();
 }
 
 #[test]

@@ -112,6 +112,7 @@
 
   const PICTURE_WIDTH_KEY = "rustmush.pictureWidth";
   const PICTURE_HD_KEY = "rustmush.pictureHd";
+  const COCKPIT_GLASS_KEY = "rustmush.cockpit_glass";
   const DEFAULT_PICTURE_W = 780;
   const MIN_PICTURE_W = 280;
   const MAX_PICTURE_W = 1280;
@@ -123,6 +124,44 @@
     storageSet(PICTURE_HD_KEY, hdMode ? "on" : "off");
     local?.forget();
   }
+
+  let glassOn = $state(storageGet(COCKPIT_GLASS_KEY) !== "off");
+
+  function toggleGlass(): void {
+    glassOn = !glassOn;
+    storageSet(COCKPIT_GLASS_KEY, glassOn ? "on" : "off");
+  }
+
+  /** Canopy glass damage level (`0` intact, `1` starred, `2` spiderwebbed) derived from hull armour. */
+  const glassDamageLevel = $derived.by<0 | 1 | 2>(() => {
+    if (!frame || frame.sections.length === 0) return 0;
+    if (frame.wreck) return 2;
+    let minArmourRatio = 1;
+    let minCoreInternalsRatio = 1;
+    let hasDamaged = false;
+    let hasDestroyed = false;
+    for (const sec of frame.sections) {
+      if (sec.condition === "destroyed") hasDestroyed = true;
+      else if (sec.condition !== "intact") hasDamaged = true;
+      if (
+        sec.internals_max > 0 &&
+        (sec.id === "hull" || sec.id === "turret" || sec.id === "head" || sec.id === "torso")
+      ) {
+        minCoreInternalsRatio = Math.min(minCoreInternalsRatio, sec.internals / sec.internals_max);
+      }
+      for (const f of sec.facets) {
+        if (f.armor_max > 0) minArmourRatio = Math.min(minArmourRatio, f.armor / f.armor_max);
+      }
+    }
+    if (hasDestroyed || minCoreInternalsRatio < 0.6) return 2;
+    if (hasDamaged || minArmourRatio < 0.65) return 1;
+    return 0;
+  });
+
+  /** Subtle horizontal parallax (in SVG viewBox units) when the pilot swings their look left or right. */
+  const glassLookShift = $derived(
+    Math.max(-18, Math.min(18, Math.round((-app.picture.lookMdeg / 90_000) * 18))),
+  );
 
   function loadPictureWidth(): number {
     const raw = Number(storageGet(PICTURE_WIDTH_KEY));
@@ -801,9 +840,33 @@
   }
 
   function onCanvasClick(ev: MouseEvent): void {
-    if ((viewKind !== "iso25d" && viewKind !== "overhead") || !active || frame === null) return;
+    if (!active || frame === null) return;
     const coords = canvasNormCoords(ev);
     if (!coords) return;
+    if (viewKind === "cockpit") {
+      // HUD heading tape (`draw_tape` in `overlay.rs`): x = 0.20..0.80, y = 0.01..0.15, ±30° reach.
+      if (
+        coords.normX >= 0.2 &&
+        coords.normX <= 0.8 &&
+        coords.normY >= 0.01 &&
+        coords.normY <= 0.15
+      ) {
+        const now = Date.now();
+        const camMdeg = wrap360Mdeg(predictedHeadingMdeg(now) + app.picture.lookMdeg);
+        const rel = Math.max(-1, Math.min(1, (coords.normX - 0.5) / 0.3));
+        const targetMdeg = wrap360Mdeg(camMdeg + Math.round(rel * 30_000));
+        const deg = (((Math.round(targetMdeg / 1_000) % 360) + 360) % 360);
+        if (!hullStuck()) {
+          baseHeadingMdeg = predictedHeadingMdeg(now);
+          baseAtMs = now;
+          orderedHeadingMdeg = deg * 1_000;
+          orderedAtMs = now;
+        }
+        app.helm(helmLine(deg, 0));
+      }
+      return;
+    }
+    if (viewKind !== "iso25d" && viewKind !== "overhead") return;
     const rawCockpit = app.picture.cockpitData as { sight_m?: unknown } | null;
     const sightM = typeof rawCockpit?.sight_m === "number" ? rawCockpit.sight_m : 600;
     const desig = pickCanvasContact(
@@ -949,6 +1012,54 @@
         title={hdMode ? "Switch to 640×480 SD" : "Switch to 1280×720 HD"}
         onclick={toggleHd}>{hdMode ? "1280p" : "640p"}</button
       >
+      <span class="camera-pills" role="group" aria-label="camera view">
+        <button
+          type="button"
+          class="toggle cam-btn"
+          class:active={viewKind === "cockpit"}
+          aria-pressed={viewKind === "cockpit"}
+          title="First-person view (v)"
+          onclick={() => (app.picture.kind = "cockpit")}>1st</button
+        >
+        <button
+          type="button"
+          class="toggle cam-btn"
+          class:active={viewKind === "overhead"}
+          aria-pressed={viewKind === "overhead"}
+          title="Overhead view (v)"
+          onclick={() => (app.picture.kind = "overhead")}>Overhead</button
+        >
+        <button
+          type="button"
+          class="toggle cam-btn"
+          class:active={viewKind === "iso25d"}
+          aria-pressed={viewKind === "iso25d"}
+          title="2.5D tactical view (v)"
+          onclick={() => (app.picture.kind = "iso25d")}>2.5D</button
+        >
+        {#if viewKind === "cockpit"}
+          <button
+            type="button"
+            class="toggle cam-btn"
+            class:active={glassOn}
+            aria-label="cockpit glass"
+            aria-pressed={glassOn}
+            title={glassOn ? "Hide cockpit canopy glass" : "Show cockpit canopy glass"}
+            onclick={toggleGlass}>Glass</button
+          >
+        {/if}
+        {#if app.picture.lookMdeg !== 0}
+          <button
+            type="button"
+            class="toggle cam-btn"
+            title="Centre look (c)"
+            onclick={() => {
+              lookTurn = 0;
+              lookTo(0);
+            }}>Centre</button
+          >
+        {/if}
+      </span>
       <span class="dim legend"
         >a d turn · w s speed · q e look · c centre · x stop · v view · f free/hold · g volley · t lock ·
         F1–F6 order</span
@@ -985,6 +1096,267 @@
         onpointerup={onCanvasPointerUp}
         onpointercancel={onCanvasPointerUp}
       ></canvas>
+      {#if viewKind === "cockpit" && glassOn}
+        <div
+          class="cockpit-glass-overlay"
+          class:power-off={frame?.power === "off"}
+          data-damage={glassDamageLevel}
+          aria-label="cockpit glass overlay"
+          style="--look-shift: {glassLookShift}px"
+        >
+          <div class="glass-pane-optics"></div>
+          <svg
+            class="cockpit-glass-svg"
+            viewBox="0 0 640 480"
+            preserveAspectRatio="none"
+            aria-hidden="true"
+          >
+            <defs>
+              <linearGradient id="cg-strut-grad" x1="0" y1="0" x2="1" y2="1">
+                <stop offset="0%" stop-color="#1b222c" />
+                <stop offset="50%" stop-color="#11161d" />
+                <stop offset="100%" stop-color="#090c10" />
+              </linearGradient>
+              <linearGradient id="cg-sill-grad" x1="0" y1="0" x2="0" y2="1">
+                <stop offset="0%" stop-color="#1e2631" />
+                <stop offset="35%" stop-color="#12171f" />
+                <stop offset="100%" stop-color="#080b0f" />
+              </linearGradient>
+              <linearGradient id="cg-sheen-grad" x1="0" y1="0" x2="1" y2="1">
+                <stop offset="0%" stop-color="#b8e4ff" stop-opacity="0.07" />
+                <stop offset="35%" stop-color="#b8e4ff" stop-opacity="0.015" />
+                <stop offset="65%" stop-color="#90d0ff" stop-opacity="0" />
+                <stop offset="100%" stop-color="#b8e4ff" stop-opacity="0.045" />
+              </linearGradient>
+            </defs>
+
+            <!-- Specular glass pane reflections & wiper sweep boundary -->
+            <g transform="translate({glassLookShift * 0.4}, 0)">
+              <polygon
+                points="145,10 310,10 190,448 55,448"
+                fill="url(#cg-sheen-grad)"
+              />
+              <polygon
+                points="390,10 495,10 385,448 295,448"
+                fill="url(#cg-sheen-grad)"
+                opacity="0.65"
+              />
+              <!-- Subtle wiper arc & outer corner condensation/grime boundary -->
+              <path
+                d="M 128 450 A 340 340 0 0 1 512 450"
+                fill="none"
+                stroke="#9ad4ff"
+                stroke-opacity="0.07"
+                stroke-width="1"
+                stroke-dasharray="6 4"
+              />
+              <!-- Corner micro-scratches / dust stipple outside the main sightline -->
+              <g stroke="#c8e6ff" stroke-opacity="0.11" stroke-width="0.8">
+                <line x1="28" y1="220" x2="54" y2="232" />
+                <line x1="34" y1="228" x2="50" y2="235" />
+                <line x1="560" y1="78" x2="594" y2="96" />
+                <line x1="572" y1="88" x2="598" y2="102" />
+                <line x1="44" y1="392" x2="82" y2="404" />
+              </g>
+            </g>
+
+            <!-- Etched HUD collimator glass brackets & horizon ticks -->
+            <g
+              class="glass-collimator"
+              stroke={frame?.power === "off" ? "#d0843c" : "#6ee7ff"}
+              stroke-opacity={frame?.power === "off" ? "0.14" : "0.22"}
+              stroke-width="1"
+              fill="none"
+            >
+              <!-- Left and right collimator framing brackets -->
+              <path d="M 218 178 L 206 178 L 206 302 L 218 302" />
+              <path d="M 422 178 L 434 178 L 434 302 L 422 302" />
+              <!-- Subtle pitch ladder ticks -->
+              <line x1="210" y1="210" x2="218" y2="210" />
+              <line x1="210" y1="240" x2="222" y2="240" />
+              <line x1="210" y1="270" x2="218" y2="270" />
+              <line x1="430" y1="210" x2="422" y2="210" />
+              <line x1="430" y1="240" x2="418" y2="240" />
+              <line x1="430" y1="270" x2="422" y2="270" />
+            </g>
+
+            <!-- Ballistic glass cracks when hull/armour takes damage -->
+            {#if glassDamageLevel >= 1}
+              <g class="glass-cracks" stroke="#d8f0ff" fill="none" stroke-linecap="round">
+                <!-- Upper-right quarter-pane ballistic star fracture -->
+                <circle
+                  cx="562"
+                  cy="144"
+                  r="4"
+                  fill="#ffffff"
+                  fill-opacity="0.22"
+                  stroke-opacity="0.55"
+                  stroke-width="1.1"
+                />
+                <path
+                  d="M 562 144 L 528 118 M 562 144 L 598 122 M 562 144 L 610 158 M 562 144 L 574 196 M 562 144 L 532 174 M 544 130 L 535 148 M 580 133 L 586 151 M 547 160 L 568 171"
+                  stroke-opacity="0.48"
+                  stroke-width="1"
+                />
+                <path
+                  d="M 528 118 L 512 112 M 574 196 L 582 222 M 532 174 L 514 184"
+                  stroke-opacity="0.28"
+                  stroke-width="0.75"
+                />
+              </g>
+            {/if}
+            {#if glassDamageLevel >= 2}
+              <g class="glass-cracks-heavy" stroke="#e4f5ff" fill="none" stroke-linecap="round">
+                <!-- Lower-left quarter-pane spiderweb fracture -->
+                <circle
+                  cx="76"
+                  cy="354"
+                  r="5.5"
+                  fill="#ffffff"
+                  fill-opacity="0.28"
+                  stroke-opacity="0.65"
+                  stroke-width="1.2"
+                />
+                <path
+                  d="M 76 354 L 32 316 M 76 354 L 116 308 M 76 354 L 138 352 M 76 354 L 118 408 M 76 354 L 58 424 M 76 354 L 24 378"
+                  stroke-opacity="0.55"
+                  stroke-width="1.15"
+                />
+                <path
+                  d="M 54 335 L 96 331 L 107 353 L 97 381 L 67 389 L 50 366 Z M 39 322 L 108 317 L 126 352 L 110 396 L 61 410 L 32 374 Z"
+                  stroke-opacity="0.32"
+                  stroke-width="0.8"
+                />
+              </g>
+            {/if}
+
+            <!-- Armored Canopy Struts, Mullions & Lower Cowling -->
+            <g transform="translate({glassLookShift * 0.15}, 0)">
+              <!-- Angled left and right interior canopy mullions (clear of scope, tape, reticle, and KPH bar) -->
+              <path
+                d="M 14 176 L 23 176 L 136 452 L 124 452 Z"
+                fill="url(#cg-strut-grad)"
+                stroke="#2c3848"
+                stroke-width="1"
+              />
+              <path
+                d="M 626 102 L 617 102 L 504 452 L 516 452 Z"
+                fill="url(#cg-strut-grad)"
+                stroke="#2c3848"
+                stroke-width="1"
+              />
+              <!-- Inner rubber gasket highlight along the mullions -->
+              <line
+                x1="24"
+                y1="176"
+                x2="137"
+                y2="452"
+                stroke="#7ec8ff"
+                stroke-opacity="0.16"
+                stroke-width="1"
+              />
+              <line
+                x1="616"
+                y1="102"
+                x2="503"
+                y2="452"
+                stroke="#7ec8ff"
+                stroke-opacity="0.16"
+                stroke-width="1"
+              />
+
+              <!-- Outer perimeter armored frame & upper-right structural gusset -->
+              <path
+                d="M 0 0 L 640 0 L 640 480 L 0 480 Z
+                   M 6 6 L 6 164 L 18 176 L 18 430 L 130 452 L 510 452 L 622 430 L 622 102 L 524 6 Z"
+                fill="url(#cg-strut-grad)"
+                fill-rule="evenodd"
+                stroke="#2a3544"
+                stroke-width="1.2"
+              />
+
+              <!-- Lower dashboard glacis / cowling details -->
+              <path
+                d="M 0 432 L 128 454 L 512 454 L 640 432 L 640 480 L 0 480 Z"
+                fill="url(#cg-sill-grad)"
+                stroke="#313f52"
+                stroke-width="1"
+              />
+              <!-- Defroster vent louvers on the lower cowling flanks -->
+              <g stroke="#253040" stroke-width="1.5">
+                <line x1="36" y1="456" x2="72" y2="462" />
+                <line x1="32" y1="462" x2="68" y2="468" />
+                <line x1="28" y1="468" x2="64" y2="474" />
+                <line x1="604" y1="456" x2="568" y2="462" />
+                <line x1="608" y1="462" x2="572" y2="468" />
+                <line x1="612" y1="468" x2="576" y2="474" />
+              </g>
+
+              <!-- Structural rivets along the canopy struts -->
+              <g fill="#38475a" stroke="#0b0e13" stroke-width="0.6">
+                <circle cx="542" cy="14" r="2.2" />
+                <circle cx="566" cy="32" r="2.2" />
+                <circle cx="590" cy="52" r="2.2" />
+                <circle cx="612" cy="72" r="2.2" />
+                <circle cx="130" cy="462" r="2.2" />
+                <circle cx="210" cy="464" r="2" />
+                <circle cx="430" cy="464" r="2" />
+                <circle cx="510" cy="462" r="2.2" />
+              </g>
+
+              <!-- Upper-right canopy strut status LEDs (PWR / WPN / LOCK) -->
+              <g font-family="monospace" font-size="7.5" font-weight="bold">
+                <circle
+                  cx="572"
+                  cy="16"
+                  r="2.8"
+                  fill={frame?.power === "off" ? "#d97724" : "#38d976"}
+                />
+                <text x="579" y="19" fill="#9fb0c6">PWR</text>
+
+                <circle
+                  cx="604"
+                  cy="16"
+                  r="2.8"
+                  fill={frame?.weapons_free === false ? "#d99b26" : "#49b6ff"}
+                />
+                <text x="611" y="19" fill="#9fb0c6">WPN</text>
+
+                <circle
+                  cx="592"
+                  cy="32"
+                  r="2.8"
+                  fill={frame?.lock_designator ? "#f05252" : "#2b3544"}
+                />
+                <text
+                  x="599"
+                  y="35"
+                  fill={frame?.lock_designator ? "#ffb4b4" : "#68778c"}
+                >{frame?.lock_designator ? `LCK:${frame.lock_designator}` : "NO LCK"}</text>
+              </g>
+
+              <!-- Center lower cowling look-angle indicator bar -->
+              <g>
+                <rect
+                  x="276"
+                  y="461"
+                  width="88"
+                  height="8"
+                  rx="2"
+                  fill="#0b0f14"
+                  stroke="#273242"
+                  stroke-width="0.9"
+                />
+                <line x1="320" y1="461" x2="320" y2="469" stroke="#4c607a" stroke-width="1" />
+                <polygon
+                  points="{320 - glassLookShift * 1.8},461 {316 - glassLookShift * 1.8},468 {324 - glassLookShift * 1.8},468"
+                  fill={app.picture.lookMdeg === 0 ? "#5ec2ff" : "#f0b44c"}
+                />
+              </g>
+            </g>
+          </svg>
+        </div>
+      {/if}
       {#if !drawnHere}
         <p class="muted waiting">
           {localFailed !== null ? "Could not draw the picture." : "Waiting for the first picture…"}
@@ -1107,6 +1479,23 @@
     font-size: 0.75rem;
   }
 
+  .camera-pills {
+    display: inline-flex;
+    align-items: center;
+    gap: 0.15rem;
+  }
+
+  .cam-btn {
+    padding: 0.05rem 0.4rem;
+    font-size: 0.74rem;
+  }
+
+  .cam-btn.active {
+    border-color: var(--accent, #6aa0ff);
+    color: var(--fg);
+    background: var(--bg-input);
+  }
+
   .frame {
     position: relative;
     margin-top: 0.35rem;
@@ -1125,6 +1514,62 @@
     aspect-ratio: 4 / 3;
     image-rendering: pixelated;
     background: var(--bg);
+  }
+
+  .cockpit-glass-overlay {
+    position: absolute;
+    inset: 0;
+    pointer-events: none;
+    overflow: hidden;
+    user-select: none;
+  }
+
+  .glass-pane-optics {
+    position: absolute;
+    inset: 0;
+    background:
+      radial-gradient(
+        ellipse 82% 76% at 50% 48%,
+        transparent 58%,
+        rgba(88, 175, 235, 0.045) 84%,
+        rgba(6, 12, 20, 0.42) 100%
+      ),
+      linear-gradient(
+        126deg,
+        rgba(185, 230, 255, 0.055) 0%,
+        transparent 24%,
+        rgba(160, 220, 255, 0.025) 48%,
+        transparent 68%,
+        rgba(140, 210, 255, 0.04) 100%
+      ),
+      repeating-linear-gradient(
+        0deg,
+        transparent 0px,
+        transparent 3px,
+        rgba(120, 200, 255, 0.012) 3px,
+        rgba(120, 200, 255, 0.012) 4px
+      );
+    box-shadow:
+      inset 0 0 28px rgba(0, 0, 0, 0.55),
+      inset 0 0 2px rgba(125, 205, 255, 0.22);
+  }
+
+  .cockpit-glass-overlay.power-off .glass-pane-optics {
+    background:
+      radial-gradient(
+        ellipse 80% 74% at 50% 48%,
+        rgba(18, 12, 8, 0.14) 50%,
+        rgba(180, 95, 35, 0.05) 82%,
+        rgba(5, 6, 10, 0.62) 100%
+      );
+  }
+
+  .cockpit-glass-svg {
+    position: absolute;
+    inset: 0;
+    width: 100%;
+    height: 100%;
+    display: block;
   }
 
   .resizer {

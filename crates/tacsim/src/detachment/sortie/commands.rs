@@ -224,7 +224,7 @@ pub(crate) fn command(ctx: &mut Ctx<'_>) -> Result<(), CmdError> {
                 return crate::field::exit::request(
                     ctx,
                     unit,
-                    ramp,
+                    Some(ramp),
                     crate::field::exit::Then::Sortie {
                         operation: id,
                         slot,
