@@ -147,7 +147,7 @@ pub(crate) fn on_withdrawn(
     ctx: &mut Ctx<'_>,
     task: MatchId,
     unit: ObjId,
-    outcome: Result<UnitReturn, WithdrawRefusal>,
+    outcome: Result<Box<UnitReturn>, WithdrawRefusal>,
 ) {
     let site = ctx
         .w
@@ -158,7 +158,7 @@ pub(crate) fn on_withdrawn(
         .module_state::<ExitBook>()
         .and_then(|book| book.0.get(&unit).cloned());
     let back = match outcome {
-        Ok(back) => back,
+        Ok(back) => *back,
         Err(refusal) => {
             if let Some(book) = ctx.w.module_state_mut::<ExitBook>() {
                 book.0.remove(&unit);
@@ -247,14 +247,16 @@ pub(crate) fn on_withdrawn(
     tracing::info!(site = %site, unit = unit.0, ordinal, "tacsim: a unit left an IC field at its carrier's ramp");
 }
 
-/// **Submit every owed `exit`** whose actor has nothing in flight.
-fn submit_owed(ctx: &mut Ctx<'_>) {
+/// **Submit every owed `exit`** whose actor has nothing in flight, at most one an actor (the
+/// engine stages one authoritative action per actor at a time); answers who submitted.
+fn submit_owed(ctx: &mut Ctx<'_>) -> BTreeSet<ObjId> {
+    let mut busy = BTreeSet::new();
     let Some(action) = ctx
         .w
         .module_state::<crate::port::families::PortHandles>()
         .and_then(|handles| handles.field.clone())
     else {
-        return;
+        return busy;
     };
     let owed: Vec<(CanonicalId, ObjId, ObjId)> = ctx
         .w
@@ -272,7 +274,7 @@ fn submit_owed(ctx: &mut Ctx<'_>) {
         .unwrap_or_default();
     let now = ctx.w.world_ic_now().at;
     for (site, unit, actor) in owed {
-        if ctx.authoritative_pending(actor) {
+        if busy.contains(&actor) || ctx.authoritative_pending(actor) {
             continue;
         }
         let Some(key) = super::provider::field_key(actor, &site, "exit", unit.0, now) else {
@@ -289,12 +291,12 @@ fn submit_owed(ctx: &mut Ctx<'_>) {
         );
         ctx.actor = saved;
     }
+    busy
 }
 
 /// **The host's tick, for exits** (this module's head, step 3): the owed writes, then each exit
 /// the record now names runs its recover as its player.
 pub(crate) fn tick(ctx: &mut Ctx<'_>) {
-    submit_owed(ctx);
     let sites: BTreeSet<CanonicalId> = ctx
         .w
         .module_state::<OwedExits>()
@@ -313,6 +315,7 @@ pub(crate) fn tick(ctx: &mut Ctx<'_>) {
                 .unwrap_or_default(),
         )
         .collect();
+    let mut ready: Vec<(ObjId, Exiting)> = Vec::new();
     for site in sites {
         let record = super::close::site_record(ctx, &site);
         let landed = |unit: ObjId| {
@@ -328,35 +331,39 @@ pub(crate) fn tick(ctx: &mut Ctx<'_>) {
                 owed.0.remove(&site);
             }
         }
-        let ready: Vec<(ObjId, Exiting)> = ctx
-            .w
-            .module_state::<ExitBook>()
-            .map(|book| {
+        if let Some(book) = ctx.w.module_state::<ExitBook>() {
+            ready.extend(
                 book.0
                     .iter()
                     .filter(|(unit, asked)| asked.site == site && asked.out && landed(**unit))
-                    .map(|(unit, asked)| (*unit, asked.clone()))
-                    .collect()
-            })
-            .unwrap_or_default();
-        for (unit, asked) in ready {
-            if let Some(book) = ctx.w.module_state_mut::<ExitBook>() {
-                book.0.remove(&unit);
-            }
-            let saved = ctx.actor;
-            ctx.actor = asked.requester;
-            let ran = continue_recover(ctx, unit, &asked.then);
-            ctx.actor = saved;
-            if let Err(error) = ran {
-                ctx.out.sys_to_actor(
-                    asked.requester,
-                    "tacsim.field",
-                    format!(
-                        "#{} is out of the field, but its recover did not start: {error}",
-                        unit.0
-                    ),
-                );
-            }
+                    .map(|(unit, asked)| (*unit, asked.clone())),
+            );
+        }
+    }
+    // The owed writes after the prune, so a landed exit is never written twice; then each
+    // recover, one an actor a pass, behind whatever that actor still has in flight.
+    let mut busy = submit_owed(ctx);
+    for (unit, asked) in ready {
+        if busy.contains(&asked.requester) || ctx.authoritative_pending(asked.requester) {
+            continue;
+        }
+        busy.insert(asked.requester);
+        if let Some(book) = ctx.w.module_state_mut::<ExitBook>() {
+            book.0.remove(&unit);
+        }
+        let saved = ctx.actor;
+        ctx.actor = asked.requester;
+        let ran = continue_recover(ctx, unit, &asked.then);
+        ctx.actor = saved;
+        if let Err(error) = ran {
+            ctx.out.sys_to_actor(
+                asked.requester,
+                "tacsim.field",
+                format!(
+                    "#{} is out of the field, but its recover did not start: {error}",
+                    unit.0
+                ),
+            );
         }
     }
 }

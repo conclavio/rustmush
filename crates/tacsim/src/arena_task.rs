@@ -475,7 +475,7 @@ pub enum ArenaOut {
         /// The unit.
         unit: ObjId,
         /// Its check-in row, or the refusal.
-        outcome: Result<UnitReturn, crate::arena::withdraw::WithdrawRefusal>,
+        outcome: Result<Box<UnitReturn>, crate::arena::withdraw::WithdrawRefusal>,
     },
 }
 
@@ -1066,7 +1066,7 @@ enum Outbound {
     /// Sent as [`ArenaOut::Withdrawn`] (doc 32 cut CF.5).
     Withdrawn {
         unit: ObjId,
-        outcome: Result<UnitReturn, crate::arena::withdraw::WithdrawRefusal>,
+        outcome: Result<Box<UnitReturn>, crate::arena::withdraw::WithdrawRefusal>,
     },
 }
 
@@ -1787,7 +1787,7 @@ async fn arena_loop(mut task: Task) {
                 // Doc 32 cut CF.5: the units leaving at the ramp, before the
                 // step, each answered behind the ledger.
                 for (unit, ramp) in std::mem::take(&mut waiting.withdrawals) {
-                    let outcome = task.arena.withdraw(unit, ramp);
+                    let outcome = task.arena.withdraw(unit, ramp).map(Box::new);
                     task.queue_withdrawn(unit, outcome);
                 }
                 match task.pulse(wall, &controls, &intents).await {
@@ -2378,7 +2378,7 @@ impl Task {
     fn queue_withdrawn(
         &mut self,
         unit: ObjId,
-        outcome: Result<UnitReturn, crate::arena::withdraw::WithdrawRefusal>,
+        outcome: Result<Box<UnitReturn>, crate::arena::withdraw::WithdrawRefusal>,
     ) {
         self.backlog
             .push_back(Outbound::Withdrawn { unit, outcome });

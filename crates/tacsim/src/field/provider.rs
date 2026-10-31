@@ -320,7 +320,10 @@ impl ActionProvider for FieldProvider {
             .map(|owed| {
                 owed.0
                     .iter()
-                    .map(|(site, units)| (site.to_string(), json!(units)))
+                    .map(|(site, units)| {
+                        let units: Vec<u32> = units.keys().map(|unit| unit.0).collect();
+                        (site.to_string(), json!(units))
+                    })
                     .collect()
             })
             .unwrap_or_default();

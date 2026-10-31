@@ -179,13 +179,42 @@ fn pump(rig: &mut Rig, rx: &mut Receiver<ArenaOut>) {
     }
 }
 
+/// What the watched player heard from the ticks, and every refused landing (the gate's diagnostics).
+static HEARD: std::sync::Mutex<(Option<ObjId>, String)> =
+    std::sync::Mutex::new((None, String::new()));
+
+fn watch(who: ObjId) {
+    if let Ok(mut heard) = HEARD.lock() {
+        heard.0 = Some(who);
+    }
+}
+
+fn heard() -> String {
+    HEARD
+        .lock()
+        .map(|heard| heard.1.clone())
+        .unwrap_or_default()
+}
+
 /// One world second: the ticks due, and every tacsim submission they queued, landed.
 fn second(rig: &mut Rig) {
     let t = rig.tw.world().now().saturating_add(1);
     rig.tw.set_now(t);
-    let _ = rig.tw.fire_due(t.saturating_mul(1_000));
+    let events = rig.tw.fire_due(t.saturating_mul(1_000));
+    let mut log = String::new();
+    if let Some(who) = HEARD.lock().ok().and_then(|heard| heard.0) {
+        for line in rig.tw.seen_by(&events, who) {
+            log.push_str(&line);
+            log.push('\n');
+        }
+    }
     for submit in drain(&mut rig.tw) {
-        let _ = land(rig, &submit);
+        if let Err(why) = land(rig, &submit) {
+            log.push_str(&format!("refused {}: {why}\n", submit.action.key().id));
+        }
+    }
+    if let Ok(mut heard) = HEARD.lock() {
+        heard.1.push_str(&log);
     }
 }
 
@@ -210,6 +239,28 @@ async fn until(
         }
     }
     false
+}
+
+/// `tv`'s act in flight, as its due instant.
+fn act_due(rig: &mut Rig, tv: ObjId) -> Option<i64> {
+    let h = handles(&rig.tw);
+    typed(&mut rig.tw, &h.families.excursions, &RigKey(tv))
+        .and_then(|record| record.act)
+        .map(|act| act.due_ic)
+}
+
+/// **On to IC instant `target`** in half-minute steps of world time, every tick due fired and every
+/// submission landed on the way.
+fn to_ic(rig: &mut Rig, target: i64) {
+    for _ in 0..2_000 {
+        if rig.tw.world().world_ic_now().at >= target {
+            break;
+        }
+        for _ in 0..30 {
+            second(rig);
+        }
+    }
+    second(rig);
 }
 
 fn task(rig: &Rig) -> Option<tacsim::arena_task::MatchId> {
@@ -289,6 +340,7 @@ async fn cf5_a_rig_recovers_out_of_a_running_field_and_a_stranded_pilot_is_extra
     // (1) Recovery as exit: the prospector on the ramp leaves the running field.
     let preview = run(&mut rig.tw, c, "+tv/1 recover");
     assert!(preview.contains("is in a field"), "{preview}");
+    watch(c);
     let asked = run(&mut rig.tw, c, "+tv/1 recover go");
     assert!(asked.contains("makes for the ramp"), "{asked}");
     let exited = until(&mut rig, &mut rx, 20, |rig| {
@@ -296,10 +348,30 @@ async fn cf5_a_rig_recovers_out_of_a_running_field_and_a_stranded_pilot_is_extra
             && site_record(rig).is_some_and(|record| record.exited(prospector))
     })
     .await;
+    let state = if exited {
+        String::new()
+    } else {
+        format!(
+            "in field: {}; exits: {:?}; C hears: {}",
+            in_field(&rig, prospector),
+            site_record(&mut rig).and_then(|record| record.promoted.map(|open| open.exits)),
+            run(&mut rig.tw, c, "+tv/1")
+        )
+    };
     assert!(
         exited,
-        "the prospector leaves the field and the record names its exit"
+        "the prospector leaves the field and the record names its exit: {state}"
     );
+    // The recover the host submitted as C is in flight: on to its due instant.
+    assert!(
+        until(&mut rig, &mut rx, 10, |rig| act_due(rig, prospector)
+            .is_some())
+        .await,
+        "the recover starts once the record names the exit: {}",
+        heard()
+    );
+    let due = act_due(&mut rig, prospector).expect("the recover's due instant");
+    to_ic(&mut rig, due);
     let home = until(&mut rig, &mut rx, 30, |rig| {
         let h = handles(&rig.tw);
         typed(&mut rig.tw, &h.families.excursions, &RigKey(prospector)).is_some_and(|record| {
@@ -310,7 +382,15 @@ async fn cf5_a_rig_recovers_out_of_a_running_field_and_a_stranded_pilot_is_extra
         })
     })
     .await;
-    assert!(home, "the recover into the bay runs once the rig is out");
+    let record = {
+        let h = handles(&rig.tw);
+        typed(&mut rig.tw, &h.families.excursions, &RigKey(prospector))
+    };
+    assert!(
+        home,
+        "the recover into the bay runs once the rig is out: {record:?}\nheard: {}",
+        heard()
+    );
     assert!(task(&rig).is_some(), "the field carries on without it");
     for unit in [hull_a, hull_b] {
         assert!(in_field(&rig, unit), "#{} is still in the field", unit.0);
@@ -371,6 +451,10 @@ async fn cf5_a_rig_recovers_out_of_a_running_field_and_a_stranded_pilot_is_extra
     let again = run(&mut rig.tw, b, "+sortie/extract");
     assert!(again.contains("already on its way"), "{again}");
     let fell = mush_sim::pose_of(rig.tw.world(), hull_b).map(|(_, pose)| (pose.x_cm, pose.y_cm));
+    let due = crew_of(rig.tw.world(), b)
+        .and_then(|crew| crew.extraction.as_ref().map(|coming| coming.due_ic))
+        .expect("the extraction's due instant");
+    to_ic(&mut rig, due);
     let extracted = until(&mut rig, &mut rx, 30, |rig| {
         crew_of(rig.tw.world(), b)
             .is_some_and(|crew| matches!(crew.location, CrewLocation::Port { .. }))
