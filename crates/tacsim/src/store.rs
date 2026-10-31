@@ -314,6 +314,10 @@ pub struct TacsimStore {
     /// at `on_world_loaded`. RAM only, never persisted; `None` only on a build
     /// fault, and every gauge then reads dark.
     pub(crate) goods: Option<std::sync::Arc<crate::definitions::GoodsTable>>,
+    /// **Doc 34 cut CS.5e** — standalone tables (`market/goods.json`,
+    /// `resources.json`, `tools/*.json`) hot-reloaded in Content Studio during
+    /// a running session. RAM only, keyed by `repo_path`.
+    pub(crate) studio_tables: BTreeMap<String, serde_json::Value>,
     /// **Doc 18 cut IC9** (§4.4's lifecycle "departing", lead ruling L4) —
     /// `tacsim:voyage:{hull}`: each programme hull's filed sailing plan
     /// ([`crate::port::voyage::Voyage`]): the pending passage `+ship/undock`

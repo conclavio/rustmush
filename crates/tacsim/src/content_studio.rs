@@ -475,10 +475,20 @@ fn build_catalog(ctx: &Ctx<'_>) -> InvokeResult {
 pub fn build_catalog_from_world(w: &mush_core::World) -> Value {
     let content_state = w.module_state::<mush_content::ContentState>();
     let atlas_state = w.module_state::<mush_atlas::AtlasState>();
+    let tacsim_store = w.module_state::<TacsimStore>();
 
-    // 1. Ports from lane pack
+    // 1. Ports from lane pack (check live shelf first)
     let mut ports = Vec::new();
-    if let Ok(lane_val) = serde_json::from_str::<Value>(LANE_JSON)
+    let lane_doc = if let Some(atlas) = atlas_state
+        && let Ok(cid) = CanonicalId::new(LANE_PACK)
+        && let Some(pack) = atlas.shelf.get(&cid)
+        && let Ok(val) = serde_json::to_value(pack)
+    {
+        Some(val)
+    } else {
+        serde_json::from_str::<Value>(LANE_JSON).ok()
+    };
+    if let Some(lane_val) = lane_doc
         && let Some(entries) = lane_val.get("entries").and_then(Value::as_object)
     {
         for (id, entry) in entries {
@@ -606,7 +616,7 @@ pub fn build_catalog_from_world(w: &mush_core::World) -> Value {
     // First pass over all documents to count quests per NPC
     let docs = shipped_docs();
     for spec in &docs {
-        let doc_val = shelf_or_shipped_value(atlas_state, spec);
+        let doc_val = shelf_or_shipped_value(atlas_state, tacsim_store, spec);
         if let Some(entries) = doc_val.get("entries").and_then(Value::as_object) {
             for entry in entries.values() {
                 if entry.get("kind").and_then(Value::as_str) == Some("quest")
@@ -625,7 +635,7 @@ pub fn build_catalog_from_world(w: &mush_core::World) -> Value {
     }
 
     for spec in &docs {
-        let doc_val = shelf_or_shipped_value(atlas_state, spec);
+        let doc_val = shelf_or_shipped_value(atlas_state, tacsim_store, spec);
         let version = doc_val
             .get("manifest")
             .and_then(|m| m.get("version"))
@@ -761,8 +771,11 @@ pub fn build_catalog_from_world(w: &mush_core::World) -> Value {
         }
     }
 
-    // 4. Goods summary
-    let goods: Vec<Value> = goods_table()
+    // 4. Goods summary (prefer live hot-reloaded `TacsimStore::goods` over compiled-in default)
+    let live_goods = tacsim_store
+        .and_then(|s| s.goods.as_deref().cloned())
+        .or_else(|| goods_table().ok());
+    let goods: Vec<Value> = live_goods
         .map(|t| {
             t.goods
                 .into_iter()
@@ -801,7 +814,11 @@ pub fn build_catalog_from_world(w: &mush_core::World) -> Value {
     })
 }
 
-fn shelf_or_shipped_value(atlas_state: Option<&mush_atlas::AtlasState>, spec: &DocSpec) -> Value {
+fn shelf_or_shipped_value(
+    atlas_state: Option<&mush_atlas::AtlasState>,
+    tacsim_store: Option<&TacsimStore>,
+    spec: &DocSpec,
+) -> Value {
     if let Some(atlas) = atlas_state
         && let Ok(cid) = CanonicalId::new(spec.id)
         && let Some(pack) = atlas.shelf.get(&cid)
@@ -809,12 +826,21 @@ fn shelf_or_shipped_value(atlas_state: Option<&mush_atlas::AtlasState>, spec: &D
     {
         return val;
     }
+    if let Some(store) = tacsim_store
+        && let Some(val) = store
+            .studio_tables
+            .get(spec.repo_path)
+            .or_else(|| store.studio_tables.get(spec.id))
+    {
+        return val.clone();
+    }
     serde_json::from_str(spec.bytes).unwrap_or_else(|_| json!({}))
 }
 
 fn read_document(ctx: &Ctx<'_>, id: &str) -> InvokeResult {
     let content_state = ctx.w.module_state::<mush_content::ContentState>();
     let atlas_state = ctx.w.module_state::<mush_atlas::AtlasState>();
+    let tacsim_store = ctx.w.module_state::<TacsimStore>();
 
     // Check shelf first for live-published packs
     if let Some(atlas) = atlas_state
@@ -828,6 +854,24 @@ fn read_document(ctx: &Ctx<'_>, id: &str) -> InvokeResult {
             repo_path: infer_repo_path(id),
             latched_version: latch.map(mush_content::Applied::version),
             retired: latch.is_some_and(mush_content::Applied::is_retired),
+            content,
+        });
+    }
+
+    // Check live hot-reloaded standalone tables on `TacsimStore`
+    let repo_path = infer_repo_path(id);
+    if let Some(store) = tacsim_store
+        && let Some(content) = store
+            .studio_tables
+            .get(&repo_path)
+            .or_else(|| store.studio_tables.get(id))
+            .cloned()
+    {
+        return InvokeResult::ContentStudio(ContentStudioResponse::Document {
+            id: id.to_string(),
+            repo_path,
+            latched_version: None,
+            retired: false,
             content,
         });
     }
@@ -1256,14 +1300,34 @@ fn publish_document(
             .and_then(Value::as_u64)
             .and_then(|v| u32::try_from(v).ok())
             .unwrap_or(1);
+        let repo_path = infer_repo_path(id);
+        let encoded = serde_json::to_string_pretty(&signed_doc).unwrap_or_default();
+        let mut hot_reloaded_goods = false;
+        if let Some(store) = ctx.state_mut::<TacsimStore>() {
+            store
+                .studio_tables
+                .insert(repo_path.clone(), signed_doc.clone());
+            if repo_path == "market/goods.json"
+                && let Ok(table) = GoodsTable::load("goods.json", &encoded)
+            {
+                store.goods = Some(std::sync::Arc::new(table));
+                hot_reloaded_goods = true;
+            }
+        }
+        let summary = if hot_reloaded_goods {
+            format!(
+                "Hot-reloaded GoodsTable on running world and staged `{repo_path}`; download and commit to persist across restarts."
+            )
+        } else {
+            format!(
+                "Hot-reloaded standalone table `{repo_path}` in Content Studio; download and commit to persist across restarts."
+            )
+        };
         return InvokeResult::ContentStudio(ContentStudioResponse::Published {
             id: id.to_string(),
             version: ver,
             refusals: Vec::new(),
-            summary: format!(
-                "Validated standalone table `{}`; download and commit to take effect at next boot.",
-                infer_repo_path(id)
-            ),
+            summary,
             pack: Some(signed_doc),
         });
     };
@@ -1332,27 +1396,56 @@ fn publish_document(
             }
         }
         PackKind::RulesDefinition => {
+            let _ = mush_atlas::stage_pack(ctx, pack.clone());
             if let Ok(rules_pack) =
                 crate::pack::load_pack(&serde_json::to_string(&signed_doc).unwrap_or_default())
                 && let Some(store) = ctx.state_mut::<TacsimStore>()
             {
+                let repo_path = infer_repo_path(id);
+                let target_id = rules_pack.manifest().id().clone();
                 store.loaded.insert(
-                    (
-                        rules_pack.manifest().id().clone(),
-                        rules_pack.manifest().version(),
-                    ),
+                    (target_id.clone(), rules_pack.manifest().version()),
                     LoadedPack {
-                        source: format!("<studio {}>", infer_repo_path(id)),
-                        pack: rules_pack,
+                        source: format!("<studio {repo_path}>"),
+                        pack: rules_pack.clone(),
                     },
                 );
+                if target_id.as_str() != crate::hardware::PACK {
+                    let mut loaded = Vec::new();
+                    let mut replaced = false;
+                    for src in fielded_sources() {
+                        if let Ok(p) = crate::pack::load_pack(&src.bytes) {
+                            if p.manifest().id() == &target_id {
+                                loaded.push(LoadedPack {
+                                    source: repo_path.clone(),
+                                    pack: rules_pack.clone(),
+                                });
+                                replaced = true;
+                            } else {
+                                loaded.push(LoadedPack {
+                                    source: src.name,
+                                    pack: p,
+                                });
+                            }
+                        }
+                    }
+                    if !replaced {
+                        loaded.push(LoadedPack {
+                            source: repo_path,
+                            pack: rules_pack,
+                        });
+                    }
+                    if let Ok(cat) = Catalog::build(&loaded, crate::NS) {
+                        store.definitions = std::sync::Arc::new(cat);
+                    }
+                }
             }
             InvokeResult::ContentStudio(ContentStudioResponse::Published {
                 id: pack.manifest().id().to_string(),
                 version,
                 refusals: Vec::new(),
                 summary: format!(
-                    "Registered {}@{}; rules definitions are fieldable after restart.",
+                    "Registered and hot-reloaded {}@{}; persisted unit schemas bind after restart.",
                     pack.manifest().id(),
                     version
                 ),
@@ -2423,6 +2516,125 @@ mod tests {
                 .and_then(Value::as_array),
             Some(&vec![json!("recovery")])
         );
+        Ok(())
+    }
+
+    #[test]
+    fn publish_hot_reloads_standalone_tables_and_rules_definitions_cs5e()
+    -> Result<(), Box<dyn std::error::Error>> {
+        let engine = mush_core::Engine::with_modules(
+            mush_core::World::new_minimal(),
+            mush_core::Registry::new(),
+            vec![crate::composition::tacsim_module_with(
+                crate::TacsimConfig::default(),
+                false,
+            )],
+        )?;
+        let mut w = engine.world;
+        let reg = engine.registry;
+        let staff = w.create(ObjKind::Player, "Staff", GOD, None)?;
+        if let Some(obj) = w.get_mut(staff) {
+            obj.flags.insert(Flags::WIZARD);
+        }
+        let mut out = mush_core::Outbox::new();
+        let mut ctx = Ctx {
+            w: &mut w,
+            actor: staff,
+            switches: Default::default(),
+            args: Default::default(),
+            out: &mut out,
+            reg: &reg,
+            module: Some(crate::NS.into()),
+            typed_state: mush_core::ModuleActionState::unavailable(),
+        };
+
+        // 1. Read `market/goods.json`, update `metals` reference_major to 1950, and Publish
+        let InvokeResult::ContentStudio(ContentStudioResponse::Document {
+            content: mut goods_doc,
+            ..
+        }) = read_document(&ctx, "market/goods.json")
+        else {
+            return Err("expected goods Document".into());
+        };
+        if let Some(arr) = goods_doc.get_mut("goods").and_then(Value::as_array_mut) {
+            for item in arr {
+                if item.get("id").and_then(Value::as_str) == Some("metals")
+                    && let Some(obj) = item.as_object_mut()
+                {
+                    obj.insert("reference_major".to_string(), json!(1950));
+                }
+            }
+        }
+        let pub_res = publish_document(&mut ctx, "market/goods.json", goods_doc, &[]);
+        let InvokeResult::ContentStudio(ContentStudioResponse::Published {
+            refusals, summary, ..
+        }) = pub_res
+        else {
+            return Err("expected Published for market/goods.json".into());
+        };
+        check!(refusals.is_empty(), "goods publish refusals: {refusals:?}");
+        check!(summary.contains("Hot-reloaded GoodsTable"));
+
+        // Verify live `TacsimStore::goods` and `build_catalog_from_world` immediately reflect 1950
+        let metals_ref = ctx
+            .w
+            .module_state::<TacsimStore>()
+            .and_then(|s| s.goods.as_ref())
+            .and_then(|g| g.goods.iter().find(|d| d.id.as_str() == "metals"))
+            .map(|d| d.reference_major);
+        check_eq!(metals_ref, Some(1950));
+
+        let cat = build_catalog_from_world(ctx.w);
+        let cat_metals_ref = cat
+            .get("goods")
+            .and_then(Value::as_array)
+            .and_then(|arr| {
+                arr.iter()
+                    .find(|g| g.get("id").and_then(Value::as_str) == Some("metals"))
+            })
+            .and_then(|g| g.get("reference_major"))
+            .and_then(Value::as_u64);
+        check_eq!(cat_metals_ref, Some(1950));
+
+        // 2. Read `tacsim.pack.he_105`, update `count_per_load` to 24, and Publish
+        let InvokeResult::ContentStudio(ContentStudioResponse::Document {
+            content: mut ammo_doc,
+            ..
+        }) = read_document(&ctx, "tacsim.pack.he_105")
+        else {
+            return Err("expected he_105 Document".into());
+        };
+        if let Some(def) = ammo_doc
+            .get_mut("entries")
+            .and_then(|e| e.get_mut("tacsim.ammunition.he_105"))
+            .and_then(|e| e.get_mut("def"))
+            .and_then(Value::as_object_mut)
+        {
+            def.insert("count_per_load".to_string(), json!(24));
+        }
+        let pub_ammo = publish_document(&mut ctx, "tacsim.pack.he_105", ammo_doc, &[]);
+        let InvokeResult::ContentStudio(ContentStudioResponse::Published {
+            refusals: ammo_refusals,
+            ..
+        }) = pub_ammo
+        else {
+            return Err("expected Published for he_105".into());
+        };
+        check!(
+            ammo_refusals.is_empty(),
+            "ammo publish refusals: {ammo_refusals:?}"
+        );
+        let count_per_load = ctx
+            .w
+            .module_state::<TacsimStore>()
+            .and_then(|s| {
+                CanonicalId::new("tacsim.ammunition.he_105")
+                    .ok()
+                    .and_then(|cid| s.definitions.ammunition.get(&cid))
+            })
+            .map(|a| a.count_per_load);
+        check_eq!(count_per_load, Some(24));
+
         Ok(())
     }
 }
