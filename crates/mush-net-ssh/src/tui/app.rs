@@ -1509,7 +1509,7 @@ impl TuiApp {
             self.cockpit_switched = Some(match_id);
             queries.extend(self.open_the_cockpit_screen());
         }
-        if !holds_the_ground {
+        if !holds_the_ground || self.window_shift_needed(frame) {
             let due = self.map_ask_due(match_id, now);
             // The screen that just opened asks for the terrain itself. That
             // ask IS this one: arm the latch on it rather than sending a second.
@@ -1526,6 +1526,56 @@ impl TuiApp {
             }
         }
         queries
+    }
+
+    /// Whether the held `arena.map` is a sub-window of a larger arena (`"extent"`)
+    /// and the pilot's cell in `frame` has moved within 32 cells of an unpinned
+    /// window edge, so a fresh `arena.map` query is owed (doc 30 §7, §11 WG.6;
+    /// `D-30-7`).
+    fn window_shift_needed(&self, frame: &Value) -> bool {
+        let Some(map) = self.panels.get(ARENA_MAP_FEED) else {
+            return false;
+        };
+        let Some(ext) = map.get("extent").and_then(Value::as_array) else {
+            return false;
+        };
+        let (Some(ext_w), Some(ext_h)) = (
+            ext.first().and_then(Value::as_u64),
+            ext.get(1).and_then(Value::as_u64),
+        ) else {
+            return false;
+        };
+        let w = map.get("width").and_then(Value::as_u64).unwrap_or(ext_w);
+        let h = map.get("height").and_then(Value::as_u64).unwrap_or(ext_h);
+        if w >= ext_w && h >= ext_h {
+            return false;
+        }
+        let origin = map.get("origin_cell").and_then(Value::as_array);
+        let ox = origin
+            .and_then(|a| a.first())
+            .and_then(Value::as_u64)
+            .unwrap_or(0);
+        let oy = origin
+            .and_then(|a| a.get(1))
+            .and_then(Value::as_u64)
+            .unwrap_or(0);
+        let Some(cell) = frame.get("cell").and_then(Value::as_array) else {
+            return false;
+        };
+        let (Some(cx), Some(cy)) = (
+            cell.first().and_then(Value::as_u64),
+            cell.get(1).and_then(Value::as_u64),
+        ) else {
+            return false;
+        };
+        let margin = 32_u64;
+        let near_west = ox > 0 && cx < ox.saturating_add(margin);
+        let near_east =
+            ox.saturating_add(w) < ext_w && cx.saturating_add(margin) > ox.saturating_add(w);
+        let near_south = oy > 0 && cy < oy.saturating_add(margin);
+        let near_north =
+            oy.saturating_add(h) < ext_h && cy.saturating_add(margin) > oy.saturating_add(h);
+        near_west || near_east || near_south || near_north
     }
 
     /// **Whether an `arena.map` ask for `match_id` is due at `now`** (16b cut

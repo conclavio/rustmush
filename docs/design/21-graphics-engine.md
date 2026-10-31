@@ -455,8 +455,10 @@ turn is a **helm order** through the control channel (F3's `helm` channel, the s
 between pulses while showing the local camera offset as what it is — a look, not a turn — until the
 pulse lands and the two reconcile. The camera never claims state the sim has not granted; the
 contacts a frame lists are the contacts the sim detected; a wreck is drawn when the frame says
-`reads_dead`. This is the epistemic rule of doc 02 applied to pixels, and it is why the renderer
-lives on the feeds.
+`reads_dead`. Likewise, the terrain renderer never invents relief (`D-30-6`, WG.2): when `arena.map`
+omits `"elev"` or carries an all-zero heightfield, every view draws flat ground at `0 cm` and `rock`
+is a surface class with no synthetic height of its own (`D-30-10`). This is the epistemic rule of
+doc 02 applied to pixels, and it is why the renderer lives on the feeds.
 
 ### 7.3 The cockpit's keys — G.12 (2026-10-27)
 
@@ -596,6 +598,12 @@ and the first map to carry it is the one the owner picks (Q-21-5): the proving g
 region with authored contours, or a Ceres site from doc 20 with the geology key seeding a height
 field the same way it seeds pockets (cheap, deterministic, and a crater looks like a crater).
 
+**Amended in WG.1–WG.6 (doc 30):**
+- **One elevation encoding (`D-30-6`).** `arena.map` carries a single elevation encoding (`"encoding": "zigzag-leb128-delta"`, row-major delta-coded signed `i16` centimetres), and `mush-pixel::cockpit::decode_elev` is the single decoder. Legacy raw-`le16` and synthesized-relief paths are removed.
+- **Flat-field rule (`D-30-6`, `D-30-10`).** When `arena.map` carries no `"elev"` field or an all-zero heightfield, `terrain_from_feed` produces a flat heightfield at `0 cm` and `rock` adds `0` height.
+- **Per-biome palette tables (`D-30-5`).** `arena.map` carries `"biome"` (`temperate | mars | lunar | ice`) from `RegionRec.biome`, selecting one of the four fixed per-biome surface ramp tables in `mush-pixel::heightfield::BiomePalette`.
+- **`arena.map` windowing and 2.5D terrain tiles (`D-30-7`, `Q-30-6`, WG.6).** Arenas up to 512×512 cells (`MAX_ARENA_SIDE = 512`, sixteen 128-cell heightfield quadrants) or steep 256×256 grounds window `arena.map` via `"window": [x0, y0, w, h]`, emitting `"origin_cell": [x0, y0]` and `"extent": [full_cols, full_rows]` so every frame stays within `MAP_MAX_BYTES = 262_144`. `Terrain::bake_window` bakes only the `[x0..x0+w, y0..y0+h]` slice while preserving world-cell coordinates across the first-person heightfield (`CockpitPicture`), overhead (`OverheadPicture`), and 2.5D tactical (`Iso25DPicture`) views. In `Iso25DPicture`, terrain tiles composite onto a retained `2.5×` canvas (`i=100/101, p=1, z=-100`) and rebake when `MapStamp` (`match_id`, `arena`, `origin_cell`, `width`, `height`, `extent`) or camera quadrant shifts.
+
 ## 9. What the spike leaves to the engine
 
 - The `u` uncapped switch stays as a staff diagnostic behind a privilege, never a player key.
@@ -654,7 +662,13 @@ No deploy without the owner; dev2 is the box these cuts smoke on.
   the step-down to 320x220 and 10 Hz on back-pressure.
 - **D-21-10** One image a frame, placed into the cell box by aspect. *Revised 2026-10-22:* the
   picture is the top two-thirds, drawn at that box's shape, with the flight HUD alone in its pixels;
-  the doll, weapons and heat, contacts, notices and comms are terminal text under it.
+  the doll, weapons and heat, contacts, notices and comms are terminal text under it. *Amended in WG.6
+  (doc 30 §7, §10, D-30-7):* in the 2.5D Kitty compositor (`Iso25DPicture`, `v` view cycle in `@tui`),
+  the view places a retained `2.5×` terrain canvas (`i=100/101, p=1, z=-100`), one unit sprite sheet
+  per `(model, paint, size)` (`SheetKey`, `i>=200`) with concurrent per-unit placements (`p=100` for
+  self, `p=101..` for contacts, cropping `x,y,w,h` per pose) on `w11term` (`074a20c1`), and vector HUD,
+  lock-box, and FX overlays (`z=-1`), falling back to single-PNG software composition on sixel and
+  WASM/web.
 - **D-21-11** 640x480 at 20 Hz is the target and the budget is a quarter of a vCPU and 110 KB/s a
   viewer; twenty bucket-A viewers a vCPU after G.1.
 - **D-21-12** Both terminal encoders ship early because Windows needs sixel and WezTerm needs kitty.

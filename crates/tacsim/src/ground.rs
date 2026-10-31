@@ -4068,4 +4068,241 @@ mod tests {
         check_ne!(png_plain, png_vs);
         Ok(())
     }
+
+    #[test]
+    fn wg6_512_quadrant_draft_and_steep_256_draft_fit_within_map_max_bytes()
+    -> Result<(), Box<dyn std::error::Error>> {
+        use crate::arena_task::MatchId;
+        use crate::definitions::arena::{ArenaDef, arena_map_within_bound};
+        use crate::match_::cockpit::{
+            MAP_MAX_BYTES, map_frame, map_frame_for_focus, map_frame_window_bounded,
+        };
+        use mush_core::CanonicalId;
+
+        // 1. Build a 512×512 draft (sixteen 128×128 quadrants) by tiling four 256×256
+        //    proving_ground quadrants and scaling coordinates 2×.
+        let base = proving_ground_draft()?;
+        let base_elev = decode_elev(&base.id, base.cols, base.rows, &base.elev)?;
+        let base_cls = decode_classes(&base.id, base.cols, base.rows, &base.classes)?;
+        let (cols, rows) = (512_u16, 512_u16);
+        let n = usize::from(cols) * usize::from(rows);
+        let mut elev_512 = vec![0_i16; n];
+        let mut cls_512 = vec![TerrainClass::Ground; n];
+        for y in 0..usize::from(rows) {
+            let sy = y / 2;
+            for x in 0..usize::from(cols) {
+                let sx = x / 2;
+                let si = sy * 256 + sx;
+                elev_512[y * 512 + x] = base_elev.get(si).copied().unwrap_or(0);
+                cls_512[y * 512 + x] = base_cls.get(si).copied().unwrap_or(TerrainClass::Ground);
+            }
+        }
+        let mut draft_512 = base.clone();
+        draft_512.id = "mega_valley".to_owned();
+        draft_512.label = "Mega Valley".to_owned();
+        draft_512.cols = cols;
+        draft_512.rows = rows;
+        draft_512.elev = encode_elev(&elev_512);
+        draft_512.classes = encode_classes(cols, rows, &cls_512);
+        for z in &mut draft_512.entry_zones {
+            z.x0 *= 2;
+            z.y0 *= 2;
+            z.x1 = z.x1.saturating_mul(2).min(511);
+            z.y1 = z.y1.saturating_mul(2).min(511);
+        }
+        for s in &mut draft_512.key_spots {
+            s.x *= 2;
+            s.y *= 2;
+        }
+        for w in &mut draft_512.waypoints.nodes {
+            w.x *= 2;
+            w.y *= 2;
+        }
+        for t in &mut draft_512.tanks {
+            t.x *= 2;
+            t.y *= 2;
+        }
+
+        let built_512 = build(&draft_512)?;
+        let atlas_512 = mush_content::parse_pack(&built_512.atlas_json)?;
+        let arena_512 = mush_content::parse_pack(&built_512.arena_json)?;
+        // 1 geographic_frame + 1 region + 16 heightfield quadrants = 18 entries, each < 64 KiB.
+        check_eq!(atlas_512.entries().len(), 18);
+        for (id, entry) in atlas_512.entries() {
+            let entry_bytes = serde_json::to_vec(entry)?;
+            check!(
+                entry_bytes.len() <= mush_content::MAX_ENTRY_BYTES,
+                "{id} fits in 64 KiB: {} B",
+                entry_bytes.len()
+            );
+        }
+
+        let mut records = mush_atlas::record::Records::default();
+        let pack_id = atlas_512.manifest().id().clone();
+        let region_id = CanonicalId::new("region.mega_valley")?;
+        let region_raw = atlas_512
+            .entries()
+            .get(&region_id)
+            .ok_or("missing region.mega_valley")?;
+        let region_def: RegionDef =
+            serde_json::from_value(serde_json::Value::Object(region_raw.def().clone()))?;
+        let region_key = mush_atlas::RecordKey::new(pack_id.clone(), region_id);
+        records.regions.insert(
+            region_key.clone(),
+            mush_atlas::RegionRec {
+                key: region_key.clone(),
+                name: region_def.name.clone(),
+                kind: region_def.region_kind()?,
+                frame: None,
+                parent: None,
+                extent: region_def.extent,
+                datum_cm: 0,
+                background: region_def.background,
+                ground: Vec::new(),
+                ground_resolution_cm: region_def.ground_resolution_cm,
+                theme: None,
+                biome: region_def.biome,
+                revision: 1,
+            },
+        );
+        for (entry_id, raw) in atlas_512.entries() {
+            if raw.kind().as_str() == "heightfield" {
+                let hf: HeightfieldDef =
+                    serde_json::from_value(serde_json::Value::Object(raw.def().clone()))?;
+                let samples = hf.samples()?;
+                let authored = hf.class_grid()?;
+                let mut cells = mush_atlas::Cells::filled(
+                    hf.cols,
+                    hf.rows,
+                    mush_atlas::Cell::default(),
+                    mush_atlas::MAX_TILE_CELLS,
+                )?;
+                for y in 0..hf.rows {
+                    for x in 0..hf.cols {
+                        let at = usize::from(y) * usize::from(hf.cols) + usize::from(x);
+                        let elev_cm = samples.get(at).copied().unwrap_or(0);
+                        let class = authored
+                            .as_ref()
+                            .and_then(|g| g.get(at).copied().flatten())
+                            .unwrap_or(TerrainClass::Ground);
+                        cells.set(
+                            x,
+                            y,
+                            mush_atlas::Cell {
+                                class,
+                                elev_cm,
+                                cover: 0,
+                                room: 0,
+                            },
+                        );
+                    }
+                }
+                let tile_id = CanonicalId::new(format!("{entry_id}.tile.0"))?;
+                let tile_key = mush_atlas::RecordKey::new(pack_id.clone(), tile_id);
+                let step_m = f64::from(hf.resolution_cm) / 100.0;
+                let bbox = mush_atlas::Rect2(
+                    mush_atlas::Point2(hf.origin.0, hf.origin.1),
+                    mush_atlas::Point2(
+                        hf.origin.0 + f64::from(hf.cols) * step_m,
+                        hf.origin.1 + f64::from(hf.rows) * step_m,
+                    ),
+                );
+                records.tiles.insert(
+                    tile_key.clone(),
+                    mush_atlas::TileRec {
+                        key: tile_key,
+                        region: region_key.clone(),
+                        surface: mush_atlas::SurfaceRef::Ground,
+                        owner: mush_atlas::record::TileOwner::Heightfield,
+                        bbox,
+                        resolution_cm: hf.resolution_cm,
+                        cells,
+                        rooms: Vec::new(),
+                        revision: 1,
+                    },
+                );
+            }
+        }
+        let arena_id = CanonicalId::new("tacsim.arena.mega_valley")?;
+        let arena_raw = arena_512
+            .entries()
+            .get(&arena_id)
+            .ok_or("missing tacsim.arena.mega_valley")?;
+        let arena_def: ArenaDef =
+            serde_json::from_value(serde_json::Value::Object(arena_raw.def().clone()))?;
+        check_eq!(arena_def.tiles.len(), 16);
+        let loaded_512 =
+            crate::definitions::arena::from_pack("tacsim.arena.mega_valley", &arena_def, &records)?;
+        check_eq!(loaded_512.terrain.width(), 512);
+        check_eq!(loaded_512.terrain.height(), 512);
+
+        // `arena_map_within_bound` succeeds and stays <= MAP_MAX_BYTES (256 KiB).
+        let bound_bytes = arena_map_within_bound(
+            "tacsim.arena.mega_valley",
+            &loaded_512.terrain,
+            &loaded_512.key_spots,
+        )?;
+        check!(bound_bytes <= MAP_MAX_BYTES);
+
+        // Explicit `window` slice `[128, 128, 256, 256]` carries `origin_cell: [128, 128]`
+        // and `extent: [512, 512]` and stays <= MAP_MAX_BYTES.
+        let win_frame = map_frame_window_bounded(
+            MatchId(1),
+            "tacsim.arena.mega_valley",
+            &loaded_512.terrain,
+            &loaded_512.key_spots,
+            (128, 128, 256, 256),
+        );
+        check_eq!(win_frame["origin_cell"], serde_json::json!([128, 128]));
+        check_eq!(win_frame["width"], serde_json::json!(256));
+        check_eq!(win_frame["height"], serde_json::json!(256));
+        check_eq!(win_frame["extent"], serde_json::json!([512, 512]));
+        check!(serde_json::to_vec(&win_frame)?.len() <= MAP_MAX_BYTES);
+
+        // And `draft_from_records` round-trips all 16 quadrants' cells, elev, and furniture.
+        let round_trip_512 = draft_from_records("mega_valley", &arena_def, &records)?;
+        check_eq!(round_trip_512.cols, 512);
+        check_eq!(round_trip_512.rows, 512);
+        check_eq!(round_trip_512.classes, built_512.draft.classes);
+        check_eq!(round_trip_512.elev, built_512.draft.elev);
+        check_eq!(round_trip_512.entry_zones, built_512.draft.entry_zones);
+        check_eq!(round_trip_512.key_spots, built_512.draft.key_spots);
+        check_eq!(round_trip_512.waypoints, built_512.draft.waypoints);
+        check_eq!(round_trip_512.tanks, built_512.draft.tanks);
+
+        // 2. A steep 256×256 ground whose unwindowed `map_frame` exceeds `MAP_MAX_BYTES`
+        //    automatically windows via `map_frame_for_focus` to fit within `MAP_MAX_BYTES`.
+        let mut steep_cells = loaded_512.terrain.cells()[0..(256 * 256)].to_vec();
+        for (i, c) in steep_cells.iter_mut().enumerate() {
+            let x = (i % 256) as i16;
+            let y = (i / 256) as i16;
+            // Steep oscillating relief so every delta takes 3 LEB128 bytes (> 256 KiB unwindowed).
+            c.elev_cm = if (x + y) % 2 == 0 { 14_000 } else { -14_000 };
+        }
+        let steep_terrain = crate::arena::state::ArenaTerrain::priced(
+            256,
+            256,
+            1_000,
+            steep_cells,
+            mush_atlas::physics::LocomotionTable::shipped(),
+        )?;
+        let unwindowed = map_frame(MatchId(1), "tacsim.arena.steep", &steep_terrain, &[]);
+        check!(
+            serde_json::to_vec(&unwindowed)?.len() > MAP_MAX_BYTES,
+            "unwindowed steep 256x256 exceeds 256 KiB"
+        );
+        let windowed_steep =
+            map_frame_for_focus(MatchId(1), "tacsim.arena.steep", &steep_terrain, &[], None);
+        let steep_bytes = serde_json::to_vec(&windowed_steep)?.len();
+        check!(
+            steep_bytes <= MAP_MAX_BYTES,
+            "windowed steep 256x256 fits in 256 KiB: {steep_bytes} B"
+        );
+        check_eq!(windowed_steep["extent"], serde_json::json!([256, 256]));
+        check!(
+            arena_map_within_bound("tacsim.arena.steep", &steep_terrain, &[]).is_ok(),
+            "arena_map_within_bound accepts the windowed steep 256x256 ground"
+        );
+        Ok(())
+    }
 }

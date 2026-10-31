@@ -671,6 +671,9 @@ Counts: 137 items verified (124 open, 10 partly or disputed, 3 closed) plus the 
   - verifier's note: Sharpen: no Panel item can carry an image, and the only picture on the wire is the cockpit frame (TUI graphics or the web's binary PNG), so the bucket-C embedding mechanism itself is unbuilt — a listing's hull thumbnail needs that mechanism plus a hull scene …
   - waits on: a Panel image item in mush-proto (the embedding mechanism); a listing/fitting feature to embed in (G.6's fitting half)
   - source: docs/design/21-graphics-engine.md:232 "Where a form wants a picture (the fitting screen's doll, a listing's thumbnail of a hull) it embeds a bucket-B scene as one image"
+- **W-138** [closed, M, unbuilt-cut, cut WG.6] 2.5D tactical view (`Iso25DPicture`), Kitty `p=` per-unit placements, 2.5D terrain tiles, and `arena.map` windowing (doc 30 §7, §10, §11 WG.6, D-30-7, Q-30-6)
+  - **CLOSED 2026-10-30 (WG.6)**: `Iso25DPicture` joins the `v` view cycle in `@tui` and the web cockpit alongside `CockpitPicture` and `OverheadPicture`, placing a retained `2.5×` terrain canvas (`i=100/101, p=1, z=-100`), one unit sprite sheet per `(model, paint, size)` (`SheetKey`, `i>=200`) with concurrent per-unit Kitty `p=` placements (`p=100` for self, `p=101..` for contacts) on `w11term` (`074a20c1`), and vector HUD/lock/FX overlays (`z=-1`), with single-PNG software composition on sixel and WASM/web. `arena.map` supports `window: [x0, y0, w, h]`, `"origin_cell"`, `"extent"`, and `Terrain::bake_window` for 512×512 sixteen-quadrant arenas (`MAX_ARENA_SIDE = 512`, `MAX_ARENA_TILES = 16`) and steep 256×256 grounds within `MAP_MAX_BYTES = 262_144`.
+  - source: docs/design/30-world-generator-v2.md:444 "docs/design/21a-graphics-engine-work-left-2026-10-23.md — the inventory row for the 2.5D view."
 
 ## Appendix: the train's timeline and the dev2 smoke records (context, not work)
 

@@ -460,7 +460,11 @@ player can write.
 - **D-22-6** A look is checked on its own and against its unit by a contract test; a unit with no
   look draws `unknown`.
 - **D-22-7** Sprites are pixel art written as text; a palette names materials from a closed set
-  of six (as built in U.3: Draft 0.1 had free colours, at most 16).
+  of six (as built in U.3: Draft 0.1 had free colours, at most 16). Ground biome surface palettes
+  (`temperate`, `mars`, `lunar`, `ice`) are fixed per-biome ramp tables in `mush-pixel::heightfield`
+  (doc 30 D-30-5) alongside the unit sheets, and in the 2.5D Kitty compositor (`Iso25DPicture`,
+  doc 30 §7 / WG.6) one retained sprite sheet per `(model, paint, size)` (`SheetKey`, `i>=200`)
+  serves all concurrent per-unit `p=` placements (`p=100`, `p=101..`) on `w11term` (`074a20c1`).
 - **D-22-8** The cuts U.0–U.5 above.
 - **D-22-9** (the owner, 2026-10-28, after the sprite-vs-voxel PoC) Units are drawn as sprite
   sheets, not 3D or voxel models. A sheet has **eight facings, each its own art (no mirrored

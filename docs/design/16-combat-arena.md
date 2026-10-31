@@ -303,10 +303,14 @@ angular size, flight time and the tempo trigger use it; the atlas `Trace` suppli
 only, never distance (its `range_cells` is Chebyshev).
 
 **The arena window** is one `mush-sim` domain over one region surface at `cell_cm = 1000`, 256 by 256
-cells (D-16-5): 2.56 km square, the current `MAX_TILE_SIDE`. The path to 10 km is a per-driver tile side
-and a tiled composite, specified in §11 as an addition and re-run through the harness first.
+cells (D-16-5): 2.56 km square, the current `MAX_TILE_SIDE` (extended up to 512 by 512 cells across up to
+sixteen 128-cell heightfield quadrants in WG.6, §11; doc 30 D-30-7). The path to 10 km is a per-driver tile
+side and a tiled composite, specified in §11 as an addition and re-run through the harness first.
 
-**Terrain** is the existing 18-class cell grid with the engine's cover and opacity per class. The first
+**Terrain** is the existing 18-class cell grid with the engine's cover and opacity per class. The ground is
+content, not code (`tacsim::ground`, `ground.draft.v1`, doc 30 D-30-1): biome (`temperate`, `mars`,
+`lunar`, `ice`) is a region property (`RegionDef.biome`, doc 30 D-30-5), and `rock` is a surface class
+with no synthetic height of its own (doc 30 D-30-10). The first
 arena is authored with roads, open ground, light and heavy woods, shallow water, a few buildings, two
 team entry zones, five named key spots (four until 16b cut AE.1 added The Bluff, §11; drawn, named and answered to on every surface a pilot
 reads the ground on since 16b cut V.1, §11), and a waypoint graph for the reflex controller (§6; *the stock mind's and the motor's since 17b cut M4.3, the reflex deleted in M4.6c, §11*).
@@ -720,6 +724,13 @@ crates/tacsim/content/
                                   the stock tanks' initial placements (eight; twelve since version 3, 16b cut Z.3),
                                   the modes the ground supports (`modes`, version 4, 16b cut O.1: hold at
                                   The Crossroads, six cells, 120 s; outside the definition digest)
+  arenas/winter_valley.json       the second shipped 2.56 km arena (`tacsim.arena.winter_valley`, WG.5, §11),
+                                  extracted from Unity terrain/splatmap (`scripts/ground-extract/`) via
+                                  `content/drafts/winter_valley.draft.json` (`ground.draft.v1`) and built by
+                                  `ground-pack` into `tacsim.winter_valley` + `tacsim.pack.winter_valley`
+  drafts/*.draft.json             `ground.draft.v1` authoring drafts (`proving_ground`, `winter_valley`),
+                                  round-tripped through `tacsim::ground` (`generate`, `route`, `check`,
+                                  `build`, `from_packs`, `render_png`; doc 30 §4–§8)
   resources.json                  the ten commodity families as InstrumentDef rows (Commodity),
                                   shipped unconsumed by the story
 ```
@@ -1222,6 +1233,17 @@ Historical landed amendments follow unchanged.
   drawn. Its own turn keys move a look, not the tank, and the line over the picture prints the look
   against the sim's heading until doc 21 G.4 makes a turn a helm order. No feed, frame or version moved;
   `help cockpit` gains "The picture".
+- **World Generator v2 (WG.1–WG.6, doc 30).** The ground becomes content (`D-30-1`) authored through
+  `ground.draft.v1` (`tacsim::ground`, `ground-pack`, Web Terrain & Arena Studio, and
+  `scripts/ground-extract/`). `RegionDef` and `RegionRec` gain `biome` (`temperate | mars | lunar | ice`,
+  `D-30-5`); `HeightfieldDef` carries optional RLE `classes` (`D-30-2`) so quadrant heightfield entries stay
+  under `MAX_ENTRY_BYTES` without sparse `tile_patch` pairs (`proving_ground` bumps to atlas v3 / arena v5,
+  Byte-exact round-tripped through `proving_ground.draft.json`, `D-30-4`); and the second shipped arena
+  `tacsim.arena.winter_valley` (`winter_valley.json`) ships beside the two-half pin (WG.5). In WG.6
+  (`D-30-7`, `Q-30-6`), `ArenaDef` accepts up to `MAX_ARENA_SIDE = 512` (sixteen 128-cell quadrants,
+  `MAX_ARENA_TILES = 16`), and `arena.map` gains an optional `window: [x0, y0, w, h]` request parameter and
+  carries `"origin_cell": [x0, y0]` and `"extent": [full_cols, full_rows]` on the wire so any 512×512 or
+  steep 256×256 ground stays within `MAP_MAX_BYTES = 262_144`.
 
 ---
 
