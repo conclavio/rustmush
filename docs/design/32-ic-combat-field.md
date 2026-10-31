@@ -43,7 +43,7 @@ Q-CF-1 asks the owner to confirm that reading, because every later answer depend
 | A disabled unit can be attacked again; recoverable states keep the hull epoch open; only irrecoverable closes it destroyed | doc 27 Q-H8, Q-H9; 27a H1-A | Casualties are live targets; epochs are the unit's, not the field's |
 | The carrier may leave units behind after an explicit confirmation that recalls nothing and closes nothing | doc 27 Q-H10 | Not re-asked |
 | No player permadeath; crew status modelled separately; bounded NPC extraction to a known safe port | doc 27 Q-H12, FO-12, Q-F4, P-5 | Q-CF-38/39 ask only the minimal model |
-| Outage: silent re-anchor under the threshold, else a five-minute frozen countdown; no catch-up | doc 27 FO-11, Q-H11, Q-R4; built as PR #137 | The field resumes after unfreeze (Q-CF-33) |
+| Outage: silent re-anchor under the threshold, else a five-minute frozen countdown; no catch-up | doc 27 FO-11, Q-H11, Q-R4; built as PR #90 (the kernel: `mush-core` `WorldTimeline`, the `mush-server` boot policy and world task) | The field resumes after unfreeze (Q-CF-33) |
 | The arena is an authority that shares no state and no lock with the world; four messages each way | doc 16 D-16-1 | The field keeps the seam; one task per site |
 | The arena window and the site are one grid of 10 m cells, 256 a side **today** (`ARENA_CELLS`, `SITE_CELLS`, `MAX_TILE_SIDE`, unchanged since 16b T.3 and SM.1); doc 30 Q-30-6 ruled the biggest authored map 512 a side with WG.6 (the frame window, unbuilt) to play it; the 10 km path is doc 16 D-16-5's recorded addition, not yet scheduled. Docs 16 and 20 do not yet carry the doc 30 amendment | doc 16 D-16-5, §11; doc 20 §3.1; doc 30 D-30-7, Q-30-6, WG.6 | One field per site (Q-CF-13); the field never names a side (Q-CF-51) |
 | A match is a simulator concept, not an IC one; an IC epoch never shares the match id packing | doc 23 D-23-10 | The field is not a match and must not borrow its identifiers |
@@ -80,7 +80,12 @@ Q-CF-1 asks the owner to confirm that reading, because every later answer depend
   Mine), the NPC mining executor on the surface tick, IC detachment chat. The field-ops helper
   library (`tacsim/src/field_ops.rs`, `mush_tactics::field_ops::*`) has one live caller,
   `assess_tacsim_unit`; everything else in it is uncalled.
-- **W-clock** is built (PR #137). The arena task and the match resume do not consult it.
+- **W-clock** is built once, in the kernel (PR #90: `mush_core::clock::WorldTimeline`, the
+  `mush-server` boot policy in `timeline.rs` and the world task's countdown step, with the
+  `[game]` knobs `outage_freeze_threshold_s` 30 / `outage_countdown_s` 300). The field-ops
+  twin PR #137 carried (`mush_tactics::field_ops::clock`, test-only) was retired on
+  2026-10-31 (doc 27a cut notes). The arena task and the match resume do not consult it;
+  the field module's boot and tick do (CF.2).
 - **No armed IC hull, no combat contract**: the only leasable rig is the unarmed prospector;
   the armed designs are arena stock; both shipped crew offers carry mining and recovery duties.
 - **Doc 22's looks** carry three team palette slots and the unit type; doc 31's model

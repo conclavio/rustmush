@@ -6,11 +6,10 @@
 use std::collections::{BTreeMap, BTreeSet};
 use std::fmt;
 
-use mush_core::ObjId;
+use mush_core::{ObjId, WorldEvent};
 use serde::{Deserialize, Serialize};
 use smol_str::SmolStr;
 
-use crate::field_ops::clock::AdjustedSalvageClaimDeadline;
 use crate::field_ops::condition::OperationalState;
 use crate::field_ops::recovery::RecoveryOpId;
 use crate::unit::{ComponentId, SectionId};
@@ -261,6 +260,29 @@ pub struct AuthoritativeRecoveryRecord {
     pub loaded_into_base: Option<ObjId>,
     /// IC timestamp when bay load completed and the hull epoch closed as `RecoveredToBase`.
     pub loaded_at_ic: Option<i64>,
+}
+
+/// Published deadline adjustment for a pending [`SalvageClaim`] when the world clock
+/// resumes after a freeze (`Q-F3`, `P-4`).
+#[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(deny_unknown_fields)]
+pub struct AdjustedSalvageClaimDeadline {
+    /// Adjusted salvage claim id.
+    pub claim_id: SalvageClaimId,
+    /// Claimed hull or field-stripped component.
+    pub subject: SalvageSubject,
+    /// Recoverer / claimant object id.
+    pub claimant: ObjId,
+    /// Prior title holder object id.
+    pub prior_owner: ObjId,
+    /// Deadline in real-time UTC seconds before this outage adjustment.
+    pub previous_deadline_real_s: i64,
+    /// Adjusted deadline in real-time UTC seconds after adding the unavailable duration (`Q-F3`).
+    pub adjusted_deadline_real_s: i64,
+    /// Remaining available real seconds in the 48-hour contest window at unfreeze (`Q-F3`).
+    pub remaining_available_real_s: i64,
+    /// Cumulative real seconds paused across all outages for this claim (`Q-F3`).
+    pub total_paused_real_s: i64,
 }
 
 /// Strongly typed identifier for a [`SalvageClaim`].
@@ -1223,6 +1245,42 @@ impl SalvageClaimBook {
             }
         }
         adjusted
+    }
+
+    /// Apply one kernel `W-clock` event to the pending contest windows (`Q-F3`, `P-4`): the
+    /// consumer a module holding this book subscribes to `WorldClockFrozen` and
+    /// `WorldClockResumed`, the way the economy extends its real-time contract deadlines.
+    ///
+    /// - [`WorldEvent::WorldClockFrozen`] pauses every pending claim at the event's
+    ///   `real_unix` (the pre-outage checkpoint for an outage freeze, the command's second for
+    ///   a deliberate one) via [`Self::pause_claims_for_outage`].
+    /// - [`WorldEvent::WorldClockResumed`] resumes them at `resumed_real_unix` via
+    ///   [`Self::resume_claims_after_outage`], extending each deadline by the time paused. A
+    ///   pending claim the freeze event never reached is paused at the event's
+    ///   `frozen_real_unix` first, so it is extended by the same unavailable time the economy
+    ///   applies to a window it finds open at the freeze.
+    /// - Any other event changes nothing.
+    ///
+    /// Returns the published adjustments (empty for a freeze).
+    pub fn apply_world_clock_event(
+        &mut self,
+        event: &WorldEvent,
+    ) -> Vec<AdjustedSalvageClaimDeadline> {
+        match event {
+            WorldEvent::WorldClockFrozen { real_unix, .. } => {
+                self.pause_claims_for_outage(*real_unix);
+                Vec::new()
+            }
+            WorldEvent::WorldClockResumed {
+                frozen_real_unix,
+                resumed_real_unix,
+                ..
+            } => {
+                self.pause_claims_for_outage(*frozen_real_unix);
+                self.resume_claims_after_outage(*resumed_real_unix)
+            }
+            _ => Vec::new(),
+        }
     }
 
     /// Submit a contest against a pending [`SalvageClaim`] within its 48-available-real-hour

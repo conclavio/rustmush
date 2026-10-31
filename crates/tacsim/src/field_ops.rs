@@ -4,56 +4,54 @@
 //! sortie roster/manifest/crew-pool/expense orchestration, universal & live coupled towing,
 //! surface block-tenure & mining-pause bridges, recovery entitlement & 48-hour salvage
 //! claims, black-box forensics & contraband component provenance, field engineering &
-//! resupply tenders, `W-clock` outage freeze & deadline adjustment, and workshop component
+//! resupply tenders, the `W-clock` consumers (post-outage unit quarantine, salvage deadline
+//! extension; the clock itself is the kernel's), and workshop component
 //! stripping, scrapping, rearming, cost quoting, and restoration across stock unit schemas.
 
 use std::collections::{BTreeMap, BTreeSet};
 use std::fmt;
 
 use mush_core::ObjId;
-use mush_core::clock::{WorldTimeline, WorldTimelineEpoch, WorldTimelineError};
 use mush_org::PrincipalId;
 use mush_roll::commerce::ic_claims::IcCloseKind;
 pub use mush_tactics::field_ops::{
-    ActiveFieldFreeze, ActiveFieldSortie, AdjustedSalvageClaimDeadline, AtRiskRepairEntry,
-    AttachTowRequest, AuthoritativeRecoveryRecord, AuthorityHandoffRequest, BayCapacitySpec,
-    BlackBoxFlightEntry, BlackBoxForensicReport, COMBAT_WALL_CLOCK_RATE,
-    CONTEST_WINDOW_AVAILABLE_REAL_SECS, CarrierDepartureOutcome, CarrierPersonnelManifest,
-    ClockFreezeError, ComponentCondition, ComponentProvenance, ConditionError, ContestGround,
-    ContestSuccessReason, ContrabandReason, CrewMemberKind, CrewSurvivalBook, CustodyAction,
-    CustodyTitleStatus, DEFAULT_FALLBACK_SAFE_PORT, DEFAULT_MAX_ATTACH_DISTANCE_CM,
-    DEFAULT_MAX_TENDER_SERVICE_DISTANCE_CM, DEFAULT_OUTAGE_COUNTDOWN_REAL_S,
-    DEFAULT_OUTAGE_FREEZE_THRESHOLD_REAL_S, DEFAULT_SPARE_PARTS_KG_PER_STRUCTURAL_POINT,
-    DEFAULT_UNJAM_SPARE_PARTS_KG, DemotionOutcome, DemotionSettlementGate, EmbarkationOrigin,
-    EmbarkedPersonRecord, EngagementError, FALLBACK_SECTION_SCRAP_KG, FieldAuthorityKind,
-    FieldClockCoordinator, FieldCloseOutcome, FieldCustodyLedger, FieldCustodyRecord,
-    FieldEngineeringActionKind, FieldEngineeringBook, FieldEngineeringError,
+    ActiveFieldSortie, AdjustedSalvageClaimDeadline, AtRiskRepairEntry, AttachTowRequest,
+    AuthoritativeRecoveryRecord, AuthorityHandoffRequest, BayCapacitySpec, BlackBoxFlightEntry,
+    BlackBoxForensicReport, COMBAT_WALL_CLOCK_RATE, CONTEST_WINDOW_AVAILABLE_REAL_SECS,
+    CarrierDepartureOutcome, CarrierPersonnelManifest, ComponentCondition, ComponentProvenance,
+    ConditionError, ContestGround, ContestSuccessReason, ContrabandReason, CrewMemberKind,
+    CrewSurvivalBook, CustodyAction, CustodyTitleStatus, DEFAULT_FALLBACK_SAFE_PORT,
+    DEFAULT_MAX_ATTACH_DISTANCE_CM, DEFAULT_MAX_TENDER_SERVICE_DISTANCE_CM,
+    DEFAULT_SPARE_PARTS_KG_PER_STRUCTURAL_POINT, DEFAULT_UNJAM_SPARE_PARTS_KG, DemotionOutcome,
+    DemotionSettlementGate, EmbarkationOrigin, EmbarkedPersonRecord, EngagementError,
+    FALLBACK_SECTION_SCRAP_KG, FieldAuthorityKind, FieldCloseOutcome, FieldCustodyLedger,
+    FieldCustodyRecord, FieldEngineeringActionKind, FieldEngineeringBook, FieldEngineeringError,
     FieldEngineeringLogEntry, FieldEpochDisposition, FieldInspectionReport, FieldObservationBook,
-    FieldOutageResolution, FieldPose, FieldPromotionTrigger, FieldSiteEngagementBook,
-    FieldTenderState, FieldUnitAssessment, GroundTenure, IC_DAY_SECONDS, IC_SURFACE_CLOCK_RATE,
-    LinkLossPosture, LoadIntoBayRequest, LoadedCasualtyOutcome, MAX_AUTHORITATIVE_RECOVERY_RECORDS,
+    FieldPose, FieldPromotionTrigger, FieldSiteEngagementBook, FieldTenderState,
+    FieldUnitAssessment, GroundTenure, IC_DAY_SECONDS, IC_SURFACE_CLOCK_RATE, LinkLossPosture,
+    LoadIntoBayRequest, LoadedCasualtyOutcome, MAX_AUTHORITATIVE_RECOVERY_RECORDS,
     MAX_BLACK_BOX_ENTRIES_PER_HULL, MAX_CLAIM_ENTRIES, MAX_CREW_POOL_CONTRACTS, MAX_CREW_RECORDS,
     MAX_FIELD_CUSTODY_UNITS, MAX_FIELD_ENGINEERING_LOGS, MAX_FIELD_TENDERS, MAX_MANIFEST_PERSONNEL,
     MAX_OBSERVATIONS_PER_ACTOR, MAX_QUARANTINED_UNITS, MAX_RECOVERY_OPERATIONS, MAX_SALVAGE_CLAIMS,
     MAX_SITE_UNITS, MAX_STRIPPED_COMPONENTS, MAX_TOW_MASS_RATIO_PERMILLE, MAX_WORKSHOP_ORDERS,
     MissionLeaderRoleGrant, MotionClockHandoff, NpcCrewContract, NpcMissionScope,
     ObservationSource, ObservedCombatFact, ObserverCombatEntry, OccupantSurvivalState,
-    OperationalState, OutageBroadcastMilestone, OutageFreezeConfig, OutageReconnectBanner,
-    OutageUnfreezeReport, PortCrewPool, ProvenanceLegalityStatus, QuarantinedUnitRecord,
-    RecoveryAuthorityContext, RecoveryBook, RecoveryEntitlement, RecoveryError, RecoveryOpId,
-    RecoveryOperation, RecoveryStage, ReplacementPartSpec, SCRAP_KG_PER_STRUCTURAL_POINT,
-    SafePortCandidate, SalvageClaim, SalvageClaimBook, SalvageClaimId, SalvageClaimState,
-    SalvageContest, SalvageError, SalvageEvidenceKind, SalvageEvidenceRecord, SalvageSubject,
-    ScrapYieldReport, SectionCondition, SiteUnitPresence, SortieError, SortieLaunchBlockReason,
-    SortieSlotLaunchState, StripAuthorization, StrippedComponentRecord, TowEvaluation,
-    TowRigProfile, TugInspectionContext, UnitAnatomyProfile, UnitExpenseCategory,
-    UnitExpensePolicy, UnitMassProfile, WithdrawalDestination, WorkshopBook, WorkshopCostQuote,
-    WorkshopError, WorkshopFacilityTariff, WorkshopOperationKind, WorkshopWorkOrderRecord,
-    assess_tactical_unit, check_custody_action_allowed, effective_component_condition,
-    effective_section_condition, evaluate_recovery_entitlement, ic_condition_plan,
-    inspect_field_unit, is_occupant_fit_for_duty, resolve_link_loss_posture, scaled_tow_speed_cms,
-    select_extraction_port, sync_detachment_availability_from_field, tow_mass_ratio_permille,
-    tow_speed_factor_permille, validate_close_outcome,
+    OperationalState, OutageQuarantineBook, PortCrewPool, ProvenanceLegalityStatus,
+    QuarantineError, QuarantinedUnitRecord, RecoveryAuthorityContext, RecoveryBook,
+    RecoveryEntitlement, RecoveryError, RecoveryOpId, RecoveryOperation, RecoveryStage,
+    ReplacementPartSpec, SCRAP_KG_PER_STRUCTURAL_POINT, SafePortCandidate, SalvageClaim,
+    SalvageClaimBook, SalvageClaimId, SalvageClaimState, SalvageContest, SalvageError,
+    SalvageEvidenceKind, SalvageEvidenceRecord, SalvageSubject, ScrapYieldReport, SectionCondition,
+    SiteUnitPresence, SortieError, SortieLaunchBlockReason, SortieSlotLaunchState,
+    StripAuthorization, StrippedComponentRecord, TowEvaluation, TowRigProfile,
+    TugInspectionContext, UnitAnatomyProfile, UnitExpenseCategory, UnitExpensePolicy,
+    UnitMassProfile, WithdrawalDestination, WorkshopBook, WorkshopCostQuote, WorkshopError,
+    WorkshopFacilityTariff, WorkshopOperationKind, WorkshopWorkOrderRecord, assess_tactical_unit,
+    check_custody_action_allowed, effective_component_condition, effective_section_condition,
+    evaluate_recovery_entitlement, ic_condition_plan, inspect_field_unit, is_occupant_fit_for_duty,
+    resolve_link_loss_posture, scaled_tow_speed_cms, select_extraction_port,
+    sync_detachment_availability_from_field, tow_mass_ratio_permille, tow_speed_factor_permille,
+    validate_close_outcome,
 };
 use mush_tactics::{
     CellAddr, CellId, ComponentId, SectionId, TacticalUnit, UnitError, UnitMutationPlan, apply,
@@ -718,108 +716,6 @@ pub fn reconcile_arena_to_field_engagement(
     })
 }
 
-/// Resolve a startup / unplanned-outage gap across both the kernel [`WorldTimeline`] and
-/// the [`FieldClockCoordinator`] (`W-clock`, `FO-11`, `Q-H11`, `Q-R4`, `P-4`).
-///
-/// - When `timeline.state().checkpoint` exists, syncs it into `clock_coord` before
-///   evaluating the gap at `boot_real_unix`.
-/// - When no checkpoint exists yet, records an initial checkpoint at `boot_real_unix` on
-///   both `timeline` and `clock_coord` and returns `SilentReanchor` with `lost_real_s: 0`.
-/// - For sub-threshold gaps (`< 30 s` default), silently re-anchors `timeline` from its
-///   last checkpoint with zero countdown and zero catch-up (`Q-R4`).
-/// - For threshold gaps (`>= 30 s` default), freezes `timeline` at `(frozen_at_real_s, frozen_ic_s)`
-///   under an [`WorldClockFreezeKind::OutageCountdown`](mush_core::clock::WorldClockFreezeKind::OutageCountdown)
-///   until `unfreeze_at_real_s` (`FO-11`, `Q-R4`).
-///
-/// # Errors
-/// Returns [`FieldOpsError`] if `boot_real_unix` precedes the recorded checkpoint or if
-/// `timeline` fails to re-anchor.
-pub fn resolve_world_outage_with_field_clock(
-    timeline: &mut WorldTimeline,
-    clock_coord: &mut FieldClockCoordinator,
-    salvage_book: &mut SalvageClaimBook,
-    boot_real_unix: i64,
-) -> Result<FieldOutageResolution, FieldOpsError> {
-    let Some(cp) = timeline.state().checkpoint else {
-        let cp = timeline.record_checkpoint(boot_real_unix);
-        clock_coord
-            .record_checkpoint(cp.real_unix, cp.ic_unix)
-            .map_err(FieldOpsError::Clock)?;
-        return Ok(FieldOutageResolution::InitialCheckpointSeeded {
-            real_s: cp.real_unix,
-            ic_s: cp.ic_unix,
-        });
-    };
-
-    clock_coord
-        .record_checkpoint(cp.real_unix, cp.ic_unix)
-        .map_err(FieldOpsError::Clock)?;
-    let resolution = clock_coord
-        .evaluate_restart_gap(boot_real_unix, salvage_book)
-        .map_err(FieldOpsError::Clock)?;
-    match &resolution {
-        FieldOutageResolution::InitialCheckpointSeeded { real_s, .. } => {
-            timeline.record_checkpoint(*real_s);
-        }
-        FieldOutageResolution::SilentReanchor { .. } => {
-            timeline
-                .reanchor_from_checkpoint(boot_real_unix)
-                .map_err(FieldOpsError::WorldTimeline)?;
-        }
-        FieldOutageResolution::OutageCountdownStarted {
-            frozen_at_real_s,
-            frozen_ic_s,
-            countdown_started_real_s,
-            unfreeze_at_real_s,
-            ..
-        } => {
-            timeline.freeze_for_outage(
-                *frozen_at_real_s,
-                *frozen_ic_s,
-                *countdown_started_real_s,
-                *unfreeze_at_real_s,
-            );
-        }
-        FieldOutageResolution::DeliberateFreezePreserved { .. } => {}
-    }
-    Ok(resolution)
-}
-
-/// Result payload returned by [`step_world_outage_countdown_with_field_clock`] (`W-clock`).
-pub type WorldOutageCountdownStep = (
-    Vec<OutageBroadcastMilestone>,
-    Option<(OutageUnfreezeReport, WorldTimelineEpoch)>,
-);
-
-/// Step or complete an active outage recovery countdown on both [`WorldTimeline`] and
-/// [`FieldClockCoordinator`], resuming the world IC clock from `frozen_ic_unix` with
-/// zero unseen catch-up and adjusting all pending 48-hour salvage claim deadlines by
-/// the newly accumulated outage seconds once the countdown finishes (`W-clock`, `FO-11`,
-/// `Q-F3`, `Q-F4`, `Q-R4`).
-///
-/// # Errors
-/// Returns [`FieldOpsError`] if no freeze is active or if `timeline.resume_at` fails.
-pub fn step_world_outage_countdown_with_field_clock(
-    timeline: &mut WorldTimeline,
-    clock_coord: &mut FieldClockCoordinator,
-    salvage_book: &mut SalvageClaimBook,
-    now_real_unix: i64,
-) -> Result<WorldOutageCountdownStep, FieldOpsError> {
-    let (milestones, report_opt) = clock_coord
-        .step_countdown(now_real_unix, salvage_book)
-        .map_err(FieldOpsError::Clock)?;
-    let unfreeze_pair = match report_opt {
-        Some(report) => {
-            let (_, resumed_epoch) = timeline
-                .resume_at(now_real_unix)
-                .map_err(FieldOpsError::WorldTimeline)?;
-            Some((report, resumed_epoch))
-        }
-        None => None,
-    };
-    Ok((milestones, unfreeze_pair))
-}
-
 /// Derive coupled surface [`DriveRates`] for an active [`RecoveryOperation`] (`H2-A`,
 /// `Q-S7`).
 ///
@@ -1211,12 +1107,8 @@ pub enum FieldOpsError {
     Workshop(WorkshopError),
     /// Underlying [`SortieError`].
     Sortie(SortieError),
-    /// Underlying [`ClockFreezeError`].
-    Clock(ClockFreezeError),
     /// Underlying [`FieldEngineeringError`].
     Engineering(FieldEngineeringError),
-    /// Underlying [`WorldTimelineError`].
-    WorldTimeline(WorldTimelineError),
 }
 
 impl fmt::Display for FieldOpsError {
@@ -1229,9 +1121,7 @@ impl fmt::Display for FieldOpsError {
             Self::Salvage(e) => write!(f, "field salvage error: {e}"),
             Self::Workshop(e) => write!(f, "field workshop error: {e}"),
             Self::Sortie(e) => write!(f, "field sortie error: {e}"),
-            Self::Clock(e) => write!(f, "field clock freeze error: {e}"),
             Self::Engineering(e) => write!(f, "field engineering error: {e}"),
-            Self::WorldTimeline(e) => write!(f, "world timeline error: {e}"),
         }
     }
 }
@@ -2746,143 +2636,6 @@ mod tests {
                 grants_persistent_org_authority: false,
                 granted_at_ic: 1_035,
             })
-        );
-
-        Ok(())
-    }
-
-    #[test]
-    fn w_clock_world_timeline_outage_freeze_countdown_and_salvage_claim_adjustment() -> TestResult {
-        let mut timeline = WorldTimeline::default();
-        let mut clock_coord =
-            FieldClockCoordinator::new(OutageFreezeConfig::default(), IC_SURFACE_CLOCK_RATE)?;
-        let mut salvage_book = SalvageClaimBook::new();
-
-        // 1. Seed initial checkpoint at real=1_000.
-        let init_res = resolve_world_outage_with_field_clock(
-            &mut timeline,
-            &mut clock_coord,
-            &mut salvage_book,
-            1_000,
-        )?;
-        let cp0 = timeline
-            .state()
-            .checkpoint
-            .ok_or("expected initial checkpoint")?;
-        check_eq!(cp0.real_unix, 1_000);
-        check_eq!(
-            init_res,
-            FieldOutageResolution::InitialCheckpointSeeded {
-                real_s: 1_000,
-                ic_s: cp0.ic_unix,
-            }
-        );
-
-        // 2. Sub-threshold restart gap (20s < 30s) silently re-anchors without freezing (`Q-R4`).
-        let sub_res = resolve_world_outage_with_field_clock(
-            &mut timeline,
-            &mut clock_coord,
-            &mut salvage_book,
-            1_020,
-        )?;
-        check_eq!(
-            sub_res,
-            FieldOutageResolution::SilentReanchor {
-                lost_real_s: 20,
-                anchored_real_s: 1_020,
-                anchored_ic_s: cp0.ic_unix,
-            }
-        );
-        check!(timeline.state().freeze.is_none());
-        check_eq!(timeline.stamp_at(1_020).at, cp0.ic_unix);
-
-        // 3. Advance 10 real seconds to real=1_030 and record a durable checkpoint.
-        let cp1 = timeline.record_checkpoint(1_030);
-        clock_coord.record_checkpoint(cp1.real_unix, cp1.ic_unix)?;
-
-        // Open a pending 48h salvage claim before the outage.
-        let op_id = RecoveryOpId::new(1)?;
-        let unit = ObjId(810);
-        salvage_book.record_physical_attach(
-            op_id,
-            unit,
-            ObjId(811),
-            &RecoveryAuthorityContext {
-                recoverer: ObjId(20),
-                unit_title_holder: ObjId(10),
-                has_owner_authorization: false,
-                has_landholder_authorization: false,
-                ground_tenure_at_attach: GroundTenure::Unclaimed,
-            },
-            cp1.ic_unix,
-        )?;
-        salvage_book.record_bay_load(op_id, ObjId(950), cp1.ic_unix + 10)?;
-        let custody_status = salvage_book.resolve_hull_recovery_custody(op_id, 1_030)?;
-        let (claim_id, initial_deadline) = match custody_status {
-            CustodyTitleStatus::PendingSalvageClaim {
-                claim_id,
-                deadline_real_s,
-                ..
-            } => (claim_id, deadline_real_s),
-            other => return Err(format!("expected pending salvage claim, got {other:?}").into()),
-        };
-
-        // 4. Unplanned outage of 300s (boot at real=1_330 >= 30s threshold) enters 5-min countdown (`FO-11`).
-        let freeze_res = resolve_world_outage_with_field_clock(
-            &mut timeline,
-            &mut clock_coord,
-            &mut salvage_book,
-            1_330,
-        )?;
-        check_eq!(
-            freeze_res,
-            FieldOutageResolution::OutageCountdownStarted {
-                lost_real_s: 300,
-                frozen_at_real_s: 1_030,
-                frozen_ic_s: cp1.ic_unix,
-                countdown_started_real_s: 1_330,
-                unfreeze_at_real_s: 1_630,
-                initial_milestones: vec![OutageBroadcastMilestone::FiveMinutes {
-                    remaining_real_s: 300,
-                }],
-            }
-        );
-        // While frozen, `timeline.stamp_at` holds `cp1.ic_unix` constant (`W-clock`).
-        check_eq!(timeline.stamp_at(1_500).at, cp1.ic_unix);
-        let banner = clock_coord
-            .reconnect_banner(1_500)
-            .ok_or("expected reconnect banner")?;
-        check_eq!(banner.remaining_countdown_real_s, Some(130));
-
-        // 5. Complete unfreeze at real=1_630: world IC clock resumes from `cp1.ic_unix` and
-        // the pending salvage claim deadline is extended by 600s (300s downtime + 300s countdown).
-        let (milestones, unfreeze_opt) = step_world_outage_countdown_with_field_clock(
-            &mut timeline,
-            &mut clock_coord,
-            &mut salvage_book,
-            1_630,
-        )?;
-        check_eq!(milestones, vec![OutageBroadcastMilestone::Unfrozen]);
-        let (unfreeze_report, resumed_epoch) = unfreeze_opt.ok_or("expected unfreeze report")?;
-        check_eq!(resumed_epoch.ic_anchor, cp1.ic_unix);
-        check_eq!(resumed_epoch.real_anchor, 1_630);
-        check_eq!(unfreeze_report.unavailable_real_s, 600);
-        check_eq!(unfreeze_report.adjusted_salvage_claims.len(), 1);
-        check_eq!(
-            unfreeze_report.adjusted_salvage_claims[0].claim_id,
-            claim_id
-        );
-        check_eq!(
-            unfreeze_report.adjusted_salvage_claims[0].previous_deadline_real_s,
-            initial_deadline
-        );
-        check_eq!(
-            unfreeze_report.adjusted_salvage_claims[0].adjusted_deadline_real_s,
-            initial_deadline + 600
-        );
-        check_eq!(
-            unfreeze_report.adjusted_salvage_claims[0].total_paused_real_s,
-            600
         );
 
         Ok(())
