@@ -32,6 +32,8 @@ mod boot_parity;
 mod boot_store;
 #[path = "split_boundary/cli_args.rs"]
 mod cli_args;
+#[path = "split_boundary/content_studio.rs"]
+mod content_studio;
 #[path = "split_boundary/dt_atlas_movement.rs"]
 mod dt_atlas_movement;
 #[path = "split_boundary/dt_atomic_scene_movement.rs"]
