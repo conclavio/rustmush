@@ -52,7 +52,7 @@ use tacsim::arena::perception::{SensorProfile, SignatureFactor};
 use tacsim::arena::rng::draw_contact_id;
 use tacsim::arena::state::{
     Arena, ArenaDefinition, ArenaTerrain, Channel, Classification, Controller, CustodyOut,
-    CustodyUnit, EntryZone, Pilot, SeenPose, ShadowContact, Team, TerrainCell, TrackedRules,
+    CustodyUnit, EntryZone, PartyId, Pilot, SeenPose, ShadowContact, TerrainCell, TrackedRules,
     Waypoint, Waypoints, WeaponSummary,
 };
 use tacsim::arena::step::StepOutput;
@@ -91,7 +91,7 @@ const BLUE: ObjId = ObjId(9);
 /// `red-1`, the squad every steering test orders.
 fn red_one() -> SquadId {
     SquadId {
-        team: Team::Red,
+        team: PartyId::RED,
         index: 1,
     }
 }
@@ -229,14 +229,14 @@ fn definition_painted(paint: &[(u16, u16, TerrainCell)]) -> ArenaDefinition {
         terrain: ArenaTerrain::new(SIDE, SIDE, CELL_CM, cells).expect("the test window"),
         entry_zones: vec![
             EntryZone {
-                team: Team::Red,
+                team: PartyId::RED,
                 x0: 0,
                 y0: 0,
                 x1: 1,
                 y1: SIDE - 1,
             },
             EntryZone {
-                team: Team::Blue,
+                team: PartyId::BLUE,
                 x0: SIDE - 2,
                 y0: 0,
                 x1: SIDE - 1,
@@ -313,13 +313,13 @@ const WIDE_SIGHT_CELLS: u16 = 35;
 /// test plants it.
 const NARROW_SIGHT_CELLS: u16 = 3;
 
-fn tank(id: ObjId, team: Team, pose: Pose, controller: Controller) -> CustodyUnit {
+fn tank(id: ObjId, team: PartyId, pose: Pose, controller: Controller) -> CustodyUnit {
     tank_seeing(id, team, pose, controller, WIDE_SIGHT_CELLS)
 }
 
 fn tank_seeing(
     id: ObjId,
-    team: Team,
+    team: PartyId,
     pose: Pose,
     controller: Controller,
     sight_cells: u16,
@@ -426,21 +426,21 @@ fn field_flown(
             units: vec![
                 tank_seeing(
                     RED_A,
-                    Team::Red,
+                    PartyId::RED,
                     centre(cells[0].0, cells[0].1),
                     controller,
                     sight_cells,
                 ),
                 tank_seeing(
                     RED_B,
-                    Team::Red,
+                    PartyId::RED,
                     centre(cells[1].0, cells[1].1),
                     controller,
                     sight_cells,
                 ),
                 tank_seeing(
                     BLUE,
-                    Team::Blue,
+                    PartyId::BLUE,
                     centre(cells[2].0, cells[2].1),
                     controller,
                     sight_cells,
@@ -450,6 +450,7 @@ fn field_flown(
             resolution: tacsim::match_::stock_resolution(),
             seed: SEED,
             mode: tacsim::arena::MatchMode::Skirmish,
+            host: tacsim::arena::FieldHost::all_hostile(),
         },
         cfg,
         &match_cfg(),
@@ -614,14 +615,14 @@ fn plot_of(arena: &Arena, target: ObjId) -> SeenPose {
     arena.unit(target).map(SeenPose::of).unwrap_or_default()
 }
 
-fn plant_contact(arena: &mut Arena, viewer: ObjId, target: ObjId, team: Team, at_ms: i64) {
+fn plant_contact(arena: &mut Arena, viewer: ObjId, target: ObjId, team: PartyId, at_ms: i64) {
     let id = draw_contact_id(SEED, viewer, target);
     arena.contacts.insert(
         viewer,
         id,
         ShadowContact::sighted(
             target,
-            Classification::Classified { team },
+            Classification::Classified { party: team },
             at_ms,
             plot_of(arena, target),
         ),
@@ -678,9 +679,9 @@ fn the_arena_and_the_grouping_agree_on_who_commands() {
     let arena = field(&cfg);
     let by_hand = squads_of(
         &[
-            (RED_A, Team::Red, true),
-            (RED_B, Team::Red, true),
-            (BLUE, Team::Blue, true),
+            (RED_A, PartyId::RED, true),
+            (RED_B, PartyId::RED, true),
+            (BLUE, PartyId::BLUE, true),
         ],
         cfg.squad_size,
     );
@@ -751,19 +752,19 @@ fn the_arena_and_the_grouping_agree_on_who_commands() {
     // "a reflex hull" half ceases, the controller it named being retired.
     const PILOTED: ObjId = ObjId(5);
     let units = vec![
-        tank(RED_A, Team::Red, centre(2, 8), Controller::Mind),
-        tank(PILOTED, Team::Red, centre(2, 10), Controller::Pilot),
-        tank(RED_B, Team::Red, centre(2, 9), Controller::Mind),
-        tank(BLUE, Team::Blue, centre(13, 8), Controller::Mind),
+        tank(RED_A, PartyId::RED, centre(2, 8), Controller::Mind),
+        tank(PILOTED, PartyId::RED, centre(2, 10), Controller::Pilot),
+        tank(RED_B, PartyId::RED, centre(2, 9), Controller::Mind),
+        tank(BLUE, PartyId::BLUE, centre(13, 8), Controller::Mind),
     ];
     let triples = CustodyUnit::squad_input(&units);
     assert_eq!(
         triples,
         vec![
-            (RED_A, Team::Red, true),
-            (PILOTED, Team::Red, false),
-            (RED_B, Team::Red, true),
-            (BLUE, Team::Blue, true),
+            (RED_A, PartyId::RED, true),
+            (PILOTED, PartyId::RED, false),
+            (RED_B, PartyId::RED, true),
+            (BLUE, PartyId::BLUE, true),
         ],
         "a mind's hull is a machine, a pilot's is not"
     );
@@ -780,6 +781,7 @@ fn the_arena_and_the_grouping_agree_on_who_commands() {
             resolution: tacsim::match_::stock_resolution(),
             seed: SEED,
             mode: tacsim::arena::MatchMode::Skirmish,
+            host: tacsim::arena::FieldHost::all_hostile(),
         },
         &cfg,
         &match_cfg(),
@@ -824,7 +826,7 @@ fn the_arena_and_the_grouping_agree_on_who_commands() {
 /// An arena over the plain window with `units` (id, team, cell), every one flown
 /// by a unit mind (17b cut M4.5a; the reflex controller before it) at the wide
 /// scope — [`field_placed`]'s shape for any number of tanks.
-fn field_of(cfg: &ArenaConfig, units: &[(ObjId, Team, (u16, u16))]) -> Arena {
+fn field_of(cfg: &ArenaConfig, units: &[(ObjId, PartyId, (u16, u16))]) -> Arena {
     let mut arena = Arena::new(
         CustodyOut {
             definition: definition(),
@@ -836,6 +838,7 @@ fn field_of(cfg: &ArenaConfig, units: &[(ObjId, Team, (u16, u16))]) -> Arena {
             resolution: tacsim::match_::stock_resolution(),
             seed: SEED,
             mode: tacsim::arena::MatchMode::Skirmish,
+            host: tacsim::arena::FieldHost::all_hostile(),
         },
         cfg,
         &match_cfg(),
@@ -848,15 +851,15 @@ fn field_of(cfg: &ArenaConfig, units: &[(ObjId, Team, (u16, u16))]) -> Arena {
 
 /// Five machines on red down column 2 and two on blue in column 13: at the
 /// shipped size red is `red-1` (`#20`–`#22`) and `red-2` (`#23`, `#24`).
-fn five_and_two() -> Vec<(ObjId, Team, (u16, u16))> {
+fn five_and_two() -> Vec<(ObjId, PartyId, (u16, u16))> {
     vec![
-        (ObjId(20), Team::Red, (2, 6)),
-        (ObjId(21), Team::Red, (2, 7)),
-        (ObjId(22), Team::Red, (2, 8)),
-        (ObjId(23), Team::Red, (2, 9)),
-        (ObjId(24), Team::Red, (2, 10)),
-        (ObjId(30), Team::Blue, (13, 7)),
-        (ObjId(31), Team::Blue, (13, 9)),
+        (ObjId(20), PartyId::RED, (2, 6)),
+        (ObjId(21), PartyId::RED, (2, 7)),
+        (ObjId(22), PartyId::RED, (2, 8)),
+        (ObjId(23), PartyId::RED, (2, 9)),
+        (ObjId(24), PartyId::RED, (2, 10)),
+        (ObjId(30), PartyId::BLUE, (13, 7)),
+        (ObjId(31), PartyId::BLUE, (13, 9)),
     ]
 }
 
@@ -878,11 +881,11 @@ fn z1_a_reported_squad_carries_its_members_in_roster_order() {
     let mut arena = field_of(
         &cfg,
         &[
-            (RED_A, Team::Red, (2, 8)),
-            (GONE, Team::Red, (2, 10)),
-            (EAST, Team::Red, (5, 8)),
-            (SOUTH, Team::Red, (2, 9)),
-            (BLUE, Team::Blue, (13, 8)),
+            (RED_A, PartyId::RED, (2, 8)),
+            (GONE, PartyId::RED, (2, 10)),
+            (EAST, PartyId::RED, (5, 8)),
+            (SOUTH, PartyId::RED, (2, 9)),
+            (BLUE, PartyId::BLUE, (13, 8)),
         ],
     );
     assert_eq!(
@@ -991,10 +994,10 @@ fn z1_a_later_signal_reads_each_members_own_state() {
     let mut arena = field_of(
         &cfg,
         &[
-            (RED_A, Team::Red, (2, 8)),
-            (EAST, Team::Red, (5, 8)),
-            (SOUTH, Team::Red, (2, 9)),
-            (BLUE, Team::Blue, (13, 8)),
+            (RED_A, PartyId::RED, (2, 8)),
+            (EAST, PartyId::RED, (5, 8)),
+            (SOUTH, PartyId::RED, (2, 9)),
+            (BLUE, PartyId::BLUE, (13, 8)),
         ],
     );
     hurt_to_withdraw(&mut arena, EAST);
@@ -1110,7 +1113,7 @@ fn replay_lance(cadence_ms: i64, until_ms: i64) -> LanceReplay {
     let mut arena = field_of(&cfg, &five_and_two());
     arena.clock.pin_tempo_for_tests(Tempo::Quiet);
     let red_two = SquadId {
-        team: Team::Red,
+        team: PartyId::RED,
         index: 2,
     };
     // The script: `red-1` holds where it stands for twenty seconds and `red-2`
@@ -1373,8 +1376,8 @@ fn a_hold_order_parks_the_squad_and_a_movement_order_does_not_pursue() {
     run(&mut arena, 2_000, &mut bytes);
     // A classified hostile the squad would ordinarily close on.
     let at = arena.now_ms;
-    plant_contact(&mut arena, RED_A, BLUE, Team::Blue, at);
-    plant_contact(&mut arena, RED_B, BLUE, Team::Blue, at);
+    plant_contact(&mut arena, RED_A, BLUE, PartyId::BLUE, at);
+    plant_contact(&mut arena, RED_B, BLUE, PartyId::BLUE, at);
     let told = order(Objective::Hold, 60_000);
     issue(&mut arena, &told);
     run(&mut arena, 5_000, &mut bytes);
@@ -1434,7 +1437,7 @@ fn a_withdraw_order_withdraws_and_stands_when_it_is_cornered() {
         "and its hull drives that patrol leg"
     );
     let at = arena.now_ms;
-    plant_contact(&mut arena, RED_A, BLUE, Team::Blue, at);
+    plant_contact(&mut arena, RED_A, BLUE, PartyId::BLUE, at);
     let told = order(Objective::Withdraw, 60_000);
     issue(&mut arena, &told);
     // `#6`'s first `Withdraw` landing is in, its stand is not.
@@ -1456,10 +1459,12 @@ fn a_withdraw_order_withdraws_and_stands_when_it_is_cornered() {
         "withdraw begins while the named patrol leg is still driving"
     );
     assert!(
-        !first_view
-            .contacts
-            .iter()
-            .any(|row| matches!(row.class, Classification::Classified { team: Team::Blue })),
+        !first_view.contacts.iter().any(|row| matches!(
+            row.class,
+            Classification::Classified {
+                party: PartyId::BLUE
+            }
+        )),
         "this member is uncornered; its commander is the cornered control"
     );
     let goal = named_goal(&arena, RED_B).expect("a withdrawing tank has somewhere to be");
@@ -1582,7 +1587,7 @@ fn a_withdraw_under_hold_fire_keeps_driving() {
     let mut bytes = Vec::new();
     run(&mut arena, 2_000, &mut bytes);
     let at = arena.now_ms;
-    plant_contact(&mut arena, RED_A, BLUE, Team::Blue, at);
+    plant_contact(&mut arena, RED_A, BLUE, PartyId::BLUE, at);
     let mut told = order(Objective::Withdraw, 60_000);
     told.constraints.hold_fire = true;
     issue(&mut arena, &told);
@@ -1612,7 +1617,7 @@ fn a_withdraw_under_hold_fire_keeps_driving() {
     let mut free_bytes = Vec::new();
     run(&mut free, 2_000, &mut free_bytes);
     let at = free.now_ms;
-    plant_contact(&mut free, RED_A, BLUE, Team::Blue, at);
+    plant_contact(&mut free, RED_A, BLUE, PartyId::BLUE, at);
     issue(&mut free, &order(Objective::Withdraw, 60_000));
     run(&mut free, 6_000, &mut free_bytes);
     assert!(
@@ -1635,7 +1640,7 @@ fn hold_fire_stops_the_trigger_and_leaves_the_lock() {
     let mut bytes = Vec::new();
     run(&mut arena, 2_000, &mut bytes);
     let at = arena.now_ms;
-    plant_contact(&mut arena, RED_A, BLUE, Team::Blue, at);
+    plant_contact(&mut arena, RED_A, BLUE, PartyId::BLUE, at);
 
     let mut told = order(Objective::Engage { target_hint: None }, 60_000);
     told.constraints.hold_fire = true;
@@ -1654,7 +1659,7 @@ fn hold_fire_stops_the_trigger_and_leaves_the_lock() {
     let mut free_bytes = Vec::new();
     run(&mut free, 2_000, &mut free_bytes);
     let at = free.now_ms;
-    plant_contact(&mut free, RED_A, BLUE, Team::Blue, at);
+    plant_contact(&mut free, RED_A, BLUE, PartyId::BLUE, at);
     issue(
         &mut free,
         &order(Objective::Engage { target_hint: None }, 60_000),
@@ -1679,7 +1684,7 @@ fn a_close_range_band_keeps_the_squad_from_shooting_across_the_window() {
     let mut bytes = Vec::new();
     run(&mut arena, 2_000, &mut bytes);
     let at = arena.now_ms;
-    plant_contact(&mut arena, RED_A, BLUE, Team::Blue, at);
+    plant_contact(&mut arena, RED_A, BLUE, PartyId::BLUE, at);
     // **16b cut E.1** re-based the ceiling: `close` is a third of the lesser of
     // the platform's own sight and the gun's last band, so on this fixture's
     // 35-cell scope it is 11,666 cm and not a third of the cannon's 2,500 m. The
@@ -1731,8 +1736,8 @@ fn an_order_is_refused_for_a_unit_a_pilot_is_flying() {
         CustodyOut {
             definition: definition(),
             units: vec![
-                tank(RED_A, Team::Red, centre(2, 8), Controller::Pilot),
-                tank(BLUE, Team::Blue, centre(13, 8), Controller::Mind),
+                tank(RED_A, PartyId::RED, centre(2, 8), Controller::Pilot),
+                tank(BLUE, PartyId::BLUE, centre(13, 8), Controller::Mind),
             ],
             pilots: vec![Pilot {
                 unit: RED_A,
@@ -1743,6 +1748,7 @@ fn an_order_is_refused_for_a_unit_a_pilot_is_flying() {
             resolution: tacsim::match_::stock_resolution(),
             seed: SEED,
             mode: tacsim::arena::MatchMode::Skirmish,
+            host: tacsim::arena::FieldHost::all_hostile(),
         },
         &cfg,
         &match_cfg(),
@@ -1915,7 +1921,7 @@ fn the_floor_holds_and_a_zero_floor_lets_every_trigger_through() {
 
     // Change the contact set twice inside the floor. Neither asks again.
     let at = arena.now_ms;
-    plant_contact(&mut arena, RED_A, BLUE, Team::Blue, at);
+    plant_contact(&mut arena, RED_A, BLUE, PartyId::BLUE, at);
     let inside = run(&mut arena, 6_000, &mut bytes);
     assert!(
         !inside.iter().any(|signal| signal.squad == red_one()),
@@ -1954,7 +1960,7 @@ fn the_floor_holds_and_a_zero_floor_lets_every_trigger_through() {
     let mut eager_bytes = Vec::new();
     let opening = run(&mut eager, 1_000, &mut eager_bytes);
     let at = eager.now_ms;
-    plant_contact(&mut eager, RED_A, BLUE, Team::Blue, at);
+    plant_contact(&mut eager, RED_A, BLUE, PartyId::BLUE, at);
     let next = run(&mut eager, 2_500, &mut eager_bytes);
     assert!(
         opening.iter().any(|s| s.squad == red_one()) && next.iter().any(|s| s.squad == red_one()),
@@ -2306,7 +2312,8 @@ fn replay_ordered_hashes_resumed_at(cadence_ms: i64, until_ms: i64, snap_ms: i64
             // cut M5.2 to 10 and M5rules to 11 for ordered typed rules.
             // Format 16 adds record-only accepted-order attribution (R4).
             // Doc 21 cut G.12a: 17, with `UnitState.weapons_hold` and `Arming::WeaponsFree`.
-            assert_eq!(SNAPSHOT_FORMAT, 18);
+            // DT.1b: 18. Doc 32 cut CF.0: 19, with party ids and relation books.
+            assert_eq!(SNAPSHOT_FORMAT, 19);
             let mut resumed = Snapshot::decode(&snapshot.document, (*arena.definition).clone())
                 .expect("the document decodes");
             let units: Vec<ObjId> = arena.units.iter().map(|unit| unit.id).collect();
@@ -2411,7 +2418,7 @@ async fn the_mock_provider_cost_table_has_the_right_shape() {
     let (llm, mock) = mock_service();
     let mut arena = field(&arena_cfg(0));
     let mut bytes = Vec::new();
-    plant_contact(&mut arena, RED_A, BLUE, Team::Blue, 0);
+    plant_contact(&mut arena, RED_A, BLUE, PartyId::BLUE, 0);
     let signals = run(&mut arena, 2_000, &mut bytes);
     assert!(!signals.is_empty(), "the field asked");
 
@@ -2661,7 +2668,8 @@ impl AccountIdentity for Accounts {
 #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
 async fn l2_the_world_says_the_leaders_order_lapsed_once() {
     let mut tw = TestWorld::with_modules(roster());
-    let (match_id, squads, pilots) = l2_running_match(&mut tw, &[Team::Red, Team::Red, Team::Blue]);
+    let (match_id, squads, pilots) =
+        l2_running_match(&mut tw, &[PartyId::RED, PartyId::RED, PartyId::BLUE]);
     let [(red_pilot, _), (wingmate, _), (blue_pilot, _)] = [pilots[0], pilots[1], pilots[2]];
     let (red, _) = l1_sides(&squads);
     let squad = red.id;
@@ -2763,7 +2771,7 @@ async fn l2_the_world_says_the_leaders_order_lapsed_once() {
 #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
 async fn l2_releasing_the_whole_squad_cancels_its_persona_lapse_notice() {
     let mut tw = TestWorld::with_modules(roster());
-    let (match_id, squads, pilots) = l2_running_match(&mut tw, &[Team::Red, Team::Blue]);
+    let (match_id, squads, pilots) = l2_running_match(&mut tw, &[PartyId::RED, PartyId::BLUE]);
     let (red, _) = l1_sides(&squads);
     let payload = y1_reply(match_id, red.id);
     l2_said(&mut tw, |ctx| {
@@ -2805,7 +2813,8 @@ async fn l2_releasing_the_whole_squad_cancels_its_persona_lapse_notice() {
 #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
 async fn l2_a_pilots_own_order_lapse_is_told_to_them_alone() {
     let mut tw = TestWorld::with_modules(roster());
-    let (match_id, squads, pilots) = l2_running_match(&mut tw, &[Team::Red, Team::Red, Team::Blue]);
+    let (match_id, squads, pilots) =
+        l2_running_match(&mut tw, &[PartyId::RED, PartyId::RED, PartyId::BLUE]);
     let [
         (issuer, issuer_tank),
         (wingmate, _),
@@ -2844,9 +2853,12 @@ async fn l2_a_pilots_own_order_lapse_is_told_to_them_alone() {
          their minds.",
         blue.id
     );
+    // Lapses are told in party order, and parties sort by letter (doc 32 cut
+    // CF.0): blue's staff line comes before red's.
     assert_eq!(
         l2_lapses(&said),
         vec![
+            (Audience::Actor(GOD), blue_line),
             (
                 Audience::Actor(issuer),
                 "Squad red-1: your hold order has run out; back on their minds.".to_owned()
@@ -2858,7 +2870,6 @@ async fn l2_a_pilots_own_order_lapse_is_told_to_them_alone() {
                      on their minds."
                 )
             ),
-            (Audience::Actor(GOD), blue_line),
         ],
         "the issuer and staff, and nobody else: {said:?}"
     );
@@ -2884,7 +2895,7 @@ async fn l2_a_pilots_own_order_lapse_is_told_to_them_alone() {
 #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
 async fn l2_status_prints_the_leaders() {
     let mut tw = TestWorld::with_modules(roster());
-    let (match_id, squads, pilots) = l2_running_match(&mut tw, &[Team::Red, Team::Blue]);
+    let (match_id, squads, pilots) = l2_running_match(&mut tw, &[PartyId::RED, PartyId::BLUE]);
     assert_eq!(squads.len(), 2, "a squad a side: {squads:?}");
     let staff = |tw: &mut TestWorld, actor: ObjId| {
         let events = tw.run(actor, "@arena/status");
@@ -2948,7 +2959,7 @@ async fn l2_status_prints_the_leaders() {
     let mut cfg = world_config();
     cfg.match_.ai_fill = false;
     let mut alone = TestWorld::with_modules(roster_of(cfg));
-    let (_, squads, _) = l2_running_match(&mut alone, &[Team::Red, Team::Blue]);
+    let (_, squads, _) = l2_running_match(&mut alone, &[PartyId::RED, PartyId::BLUE]);
     assert!(
         squads.is_empty(),
         "a pilot-only match has no squad: {squads:?}"
@@ -2974,7 +2985,7 @@ async fn l2_status_prints_the_leaders() {
 /// a side.
 fn l2_running_match(
     tw: &mut TestWorld,
-    sides: &[Team],
+    sides: &[PartyId],
 ) -> (
     tacsim::arena_task::MatchId,
     Vec<tacsim::deliberation::SquadRoster>,
@@ -3023,8 +3034,8 @@ fn l2_running_match(
     let mut seated = Vec::new();
     for (pilot, team) in pilots.iter().zip(sides) {
         let entry = match team {
-            Team::Red => tacsim::match_::RED_ROOM_ENTRY,
-            Team::Blue => tacsim::match_::BLUE_ROOM_ENTRY,
+            &PartyId::RED => tacsim::match_::RED_ROOM_ENTRY,
+            _ => tacsim::match_::BLUE_ROOM_ENTRY,
         };
         let room = tacsim::match_::centre_object(tw.world(), entry).expect("a centre room");
         tw.world_mut()
@@ -3168,7 +3179,7 @@ fn e1_an_ordered_close_caps_a_minds_squad_at_the_pilots_own_close() {
         state.pose = centre(14, 15);
     }
     let at = arena.now_ms;
-    plant_contact(&mut arena, RED_A, BLUE, Team::Blue, at);
+    plant_contact(&mut arena, RED_A, BLUE, PartyId::BLUE, at);
     let mut told = order(Objective::Engage { target_hint: None }, 60_000);
     told.constraints.max_range_band = Some(RangeBand::Close);
     issue(&mut arena, &told);
@@ -3329,7 +3340,7 @@ fn e1_an_ordered_close_caps_the_squad_at_the_pilots_own_close() {
         state.pose = centre(14, 15);
     }
     let at = held.now_ms;
-    plant_contact(&mut held, RED_A, BLUE, Team::Blue, at);
+    plant_contact(&mut held, RED_A, BLUE, PartyId::BLUE, at);
     issue(&mut held, &told);
     let until = held.now_ms + 20_000;
     run(&mut held, until, &mut held_bytes);
@@ -3361,7 +3372,7 @@ fn e1_an_ordered_close_caps_the_squad_at_the_pilots_own_close() {
         state.pose = centre(14, 15);
     }
     let at = free.now_ms;
-    plant_contact(&mut free, RED_A, BLUE, Team::Blue, at);
+    plant_contact(&mut free, RED_A, BLUE, PartyId::BLUE, at);
     issue(
         &mut free,
         &order(Objective::Engage { target_hint: None }, 60_000),
@@ -3848,7 +3859,7 @@ fn e2_b41_doctrine_is_back_the_tick_after_the_order_drops() {
     let expires = order_on(&arena, RED_A)
         .map(|order| order.expires_ms)
         .expect("the order stands");
-    plant_contact(&mut arena, RED_A, BLUE, Team::Blue, at);
+    plant_contact(&mut arena, RED_A, BLUE, PartyId::BLUE, at);
     run_counted(&mut arena, at + 1_000, &mut bytes);
     assert!(
         arena.now_ms >= lands_at(&arena, RED_A, 2) && arena.now_ms < lands_at(&arena, RED_A, 3),
@@ -3869,11 +3880,11 @@ fn e2_b41_doctrine_is_back_the_tick_after_the_order_drops() {
         .find(|(unit, t_ms, _, _)| *unit == RED_A && *t_ms == think_at(RED_A, 2))
         .expect("#4's order-live think was kept");
     assert!(
-        live.2
-            .contacts
-            .iter()
-            .any(|row| row.id == planted
-                && row.class == Classification::Classified { team: Team::Blue }),
+        live.2.contacts.iter().any(|row| row.id == planted
+            && row.class
+                == Classification::Classified {
+                    party: PartyId::BLUE
+                }),
         "the order-live think saw the planted hostile"
     );
     let answer = kept_memory(&live.3);
@@ -3892,7 +3903,7 @@ fn e2_b41_doctrine_is_back_the_tick_after_the_order_drops() {
 
     // On doctrine, the same contact is a target.
     let from = arena.now_ms;
-    plant_contact(&mut arena, RED_A, BLUE, Team::Blue, from);
+    plant_contact(&mut arena, RED_A, BLUE, PartyId::BLUE, from);
     run_counted(&mut arena, from + 1_250, &mut bytes);
     assert_eq!(
         state_of(&arena, RED_A),
@@ -3936,7 +3947,7 @@ fn e2_b41_a_failed_goal_that_is_not_the_ordered_cell_drops_nothing() {
     let mut ended = None;
     while arena.now_ms < at + 6_000 {
         let now = arena.now_ms;
-        plant_contact(&mut arena, RED_A, BLUE, Team::Blue, now);
+        plant_contact(&mut arena, RED_A, BLUE, PartyId::BLUE, now);
         // 17b cut M4.5a: settled, so the mind rows read below (`order_on`,
         // `ignore_until_ms`, `obeys`) hold the window's last think too.
         let out = arena.step_settled(wall_ms, &[], &[]);
@@ -4398,7 +4409,7 @@ fn aa1_an_advance_ends_for_the_machine_that_cannot_carry_it_out() {
 
     // On doctrine, it fights what it holds — from where it stands.
     let now = arena.now_ms;
-    plant_contact(&mut arena, RED_A, BLUE, Team::Blue, now);
+    plant_contact(&mut arena, RED_A, BLUE, PartyId::BLUE, now);
     run(&mut arena, now + 10_000, &mut bytes);
     assert!(
         fired_by(&events(&mut arena, &mut bytes), RED_A) > 0,
@@ -4427,7 +4438,7 @@ fn y1_running_match(
     ObjId,
     [ObjId; 2],
 ) {
-    let (match_id, squads, seated) = l2_running_match(tw, &[Team::Red, Team::Blue]);
+    let (match_id, squads, seated) = l2_running_match(tw, &[PartyId::RED, PartyId::BLUE]);
     let [(red, red_tank), (blue, blue_tank)] = seated.as_slice() else {
         panic!("one actual boarded pilot on each side");
     };
@@ -4525,7 +4536,7 @@ async fn y1_a_pilots_live_order_shields_the_squad_from_the_machines_commander() 
     let pilot_said = Some(CharacterRef::Character { id: red_pilot });
     let roster = squads
         .iter()
-        .find(|roster| roster.id.team == Team::Red)
+        .find(|roster| roster.id.team == PartyId::RED)
         .cloned()
         .expect("red fields machines");
     let squad = roster.id;
@@ -4665,14 +4676,14 @@ fn l1_sides(
     tacsim::deliberation::SquadRoster,
     tacsim::deliberation::SquadRoster,
 ) {
-    let side = |team: Team| {
+    let side = |team: PartyId| {
         squads
             .iter()
             .find(|roster| roster.id.team == team)
             .cloned()
             .unwrap_or_else(|| panic!("{} fields machines", team.as_str()))
     };
-    (side(Team::Red), side(Team::Blue))
+    (side(PartyId::RED), side(PartyId::BLUE))
 }
 
 /// **17b cut L.1 — the fixtures' orders carry an author and keep their scope.**
@@ -4850,7 +4861,7 @@ fn l1_a_reply_after_its_commander_falls_is_refused_at_landing() {
         .notices
         .push(notice.clone());
     let snapshot = Snapshot::encode(&control).expect("new refusal encodes");
-    assert_eq!(snapshot.document["format"], 18);
+    assert_eq!(snapshot.document["format"], 19);
     let restored = Snapshot::decode(&snapshot.document, definition()).expect("new refusal decodes");
     assert_eq!(
         restored
@@ -4869,12 +4880,12 @@ fn l1_a_reply_after_its_commander_falls_is_refused_at_landing() {
             Snapshot::head(&old).map(|head| head.format),
             Err(SnapshotError::Format {
                 found,
-                expected: 18
+                expected: tacsim::arena::snapshot::SNAPSHOT_FORMAT
             })
         );
         assert!(matches!(
             Snapshot::decode(&old, definition()),
-            Err(SnapshotError::Format { found: actual, expected: 18 }) if actual == found
+            Err(SnapshotError::Format { found: actual, expected: 19 }) if actual == found
         ));
     }
     assert_eq!(Refusal::NoCommander.as_str(), "no_commander");
@@ -5168,7 +5179,7 @@ async fn z2_a_scripted_screen_and_support_map_and_a_support_lands_on_every_unit(
     let (llm, mock) = mock_service();
     let mut arena = field(&arena_cfg(0));
     let mut bytes = Vec::new();
-    plant_contact(&mut arena, RED_A, BLUE, Team::Blue, 0);
+    plant_contact(&mut arena, RED_A, BLUE, PartyId::BLUE, 0);
     let signals = run(&mut arena, 2_000, &mut bytes);
     let signal = signals
         .iter()
@@ -5262,21 +5273,21 @@ fn o1_field(cfg: &ArenaConfig, mode: tacsim::arena::MatchMode) -> Arena {
     let units = vec![
         tank_seeing(
             RED_A,
-            Team::Red,
+            PartyId::RED,
             centre(2, 4),
             Controller::Mind,
             WIDE_SIGHT_CELLS,
         ),
         tank_seeing(
             RED_B,
-            Team::Red,
+            PartyId::RED,
             centre(2, 6),
             Controller::Mind,
             WIDE_SIGHT_CELLS,
         ),
         tank_seeing(
             BLUE,
-            Team::Blue,
+            PartyId::BLUE,
             centre(14, 4),
             Controller::Mind,
             WIDE_SIGHT_CELLS,
@@ -5290,6 +5301,7 @@ fn o1_field(cfg: &ArenaConfig, mode: tacsim::arena::MatchMode) -> Arena {
             resolution: tacsim::match_::stock_resolution(),
             seed: SEED,
             mode,
+            host: tacsim::arena::FieldHost::all_hostile(),
         },
         cfg,
         &match_cfg(),
@@ -5406,8 +5418,8 @@ fn o3_range(cfg: &ArenaConfig, targets: Controller) -> Arena {
     let spec = catalog.specs.get(&key).expect("the target is fielded");
     let binding = catalog.bindings.get(&key).expect("its binding");
     let mut units = vec![
-        tank(RED_A, Team::Red, centre(2, 8), Controller::Mind),
-        tank(RED_B, Team::Red, centre(2, 9), Controller::Mind),
+        tank(RED_A, PartyId::RED, centre(2, 8), Controller::Mind),
+        tank(RED_B, PartyId::RED, centre(2, 9), Controller::Mind),
     ];
     for (n, y) in (4_u16..10).enumerate() {
         let id = ObjId(40 + u32::try_from(n).unwrap_or(0));
@@ -5418,7 +5430,7 @@ fn o3_range(cfg: &ArenaConfig, targets: Controller) -> Arena {
                 &catalog,
                 cells,
                 id,
-                Team::Blue,
+                PartyId::BLUE,
                 centre(12, y),
                 0,
                 targets,
@@ -5436,6 +5448,7 @@ fn o3_range(cfg: &ArenaConfig, targets: Controller) -> Arena {
             resolution: tacsim::match_::resolution_for(&catalog),
             seed: SEED,
             mode: tacsim::arena::MatchMode::Range,
+            host: tacsim::arena::FieldHost::all_hostile(),
         },
         cfg,
         &match_cfg(),
@@ -5481,7 +5494,7 @@ async fn o3_a_range_asks_the_commander_nothing_for_its_targets() {
     let blue_squads: Vec<(String, usize)> = range
         .squads
         .iter()
-        .filter(|roster| roster.id.team == Team::Blue)
+        .filter(|roster| roster.id.team == PartyId::BLUE)
         .map(|roster| (roster.id.to_string(), roster.units.len()))
         .collect();
     assert_eq!(
@@ -5492,11 +5505,11 @@ async fn o3_a_range_asks_the_commander_nothing_for_its_targets() {
     let mut bytes = Vec::new();
     let signals = run(&mut range, 60_000, &mut bytes);
     assert!(
-        signals.iter().all(|signal| signal.team == Team::Red),
+        signals.iter().all(|signal| signal.team == PartyId::RED),
         "a target's squad asked: {:?}",
         signals
             .iter()
-            .filter(|signal| signal.team == Team::Blue)
+            .filter(|signal| signal.team == PartyId::BLUE)
             .map(|signal| signal.squad.to_string())
             .collect::<Vec<_>>()
     );
@@ -5513,7 +5526,7 @@ async fn o3_a_range_asks_the_commander_nothing_for_its_targets() {
         baseline
             .squads
             .iter()
-            .all(|roster| roster.id.team == Team::Red),
+            .all(|roster| roster.id.team == PartyId::RED),
         "seated targets are in no squad"
     );
     let mut bytes = Vec::new();
@@ -5529,7 +5542,7 @@ async fn o3_a_range_asks_the_commander_nothing_for_its_targets() {
         ));
         let brief = SquadBrief::from_signal(1, signal, 2, persona(signal.squad));
         let order = deliberate(&llm, &brief).await.expect("the mock answers");
-        assert_eq!(order.squad.team, Team::Red);
+        assert_eq!(order.squad.team, PartyId::RED);
     }
     assert_eq!(mock.call_count(), signals.len());
     assert!(

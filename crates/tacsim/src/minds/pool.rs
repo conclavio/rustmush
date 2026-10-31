@@ -351,7 +351,7 @@ mod tests {
     use super::*;
     use crate::arena::mind::{MindRunner, ThinkJob, ThinkResult, run_batch_inline};
     use crate::arena::motor::MotorCounters;
-    use crate::arena::state::{Arena, Controller, Team};
+    use crate::arena::state::{Arena, Controller, PartyId};
     use crate::arena::test_support::{arena_of, pose, tank};
 
     const RED: ObjId = ObjId(4);
@@ -359,11 +359,11 @@ mod tests {
 
     /// Red a mind, blue a machine, sealed under the fixture terms.
     fn minded() -> Arena {
-        let mut red = tank(RED, Team::Red, pose(1_500, 4_500));
+        let mut red = tank(RED, PartyId::RED, pose(1_500, 4_500));
         red.controller = Controller::Mind;
         red.reseal(&crate::match_::SealTerms::fixture())
             .expect("the fixture terms seal");
-        arena_of(vec![red, tank(BLUE, Team::Blue, pose(6_500, 4_500))])
+        arena_of(vec![red, tank(BLUE, PartyId::BLUE, pose(6_500, 4_500))])
     }
 
     /// **`n` collected thinks of red**, think 0 collected through

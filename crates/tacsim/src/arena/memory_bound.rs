@@ -80,7 +80,7 @@ pub(crate) fn validate_arena(arena: &Arena) -> Result<(), SnapshotError> {
 mod tests {
     use super::*;
     use crate::arena::core::CoreClass;
-    use crate::arena::state::Team;
+    use crate::arena::state::PartyId;
     use crate::arena::test_support::{arena_of, pose, tank};
     use mush_core::ObjId;
     use serde::Deserialize;
@@ -128,7 +128,7 @@ mod tests {
     #[test]
     fn m6_memory_recovery_uses_sealed_reachable_class_after_drop_or_damage() {
         let id = ObjId(1);
-        let mut arena = arena_of(vec![tank(id, Team::Red, pose(2, 2))]);
+        let mut arena = arena_of(vec![tank(id, PartyId::RED, pose(2, 2))]);
         arena.unit_mut(id).unwrap().seal.class = CoreClass::II;
         // Class-I hardware and a zero effective class must not discard keys
         // lawfully written earlier under the captured Class-II selection.

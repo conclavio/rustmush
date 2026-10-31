@@ -37,11 +37,11 @@ fn r14_leaders_row_covers_unbooked_and_booked_empty_records() {
 fn r14_leaders_row_names_live_character_and_marks_actual_swept_character() {
     let (mut tw, ada, bo) = dropped_world(crate::TacsimConfig::default());
     let red = SquadId {
-        team: Team::Red,
+        team: PartyId::RED,
         index: 1,
     };
     let blue = SquadId {
-        team: Team::Blue,
+        team: PartyId::BLUE,
         index: 1,
     };
     tw.world_mut()

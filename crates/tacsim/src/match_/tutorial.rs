@@ -322,12 +322,12 @@ pub fn frame_points(first: bool, frame: &Frame) -> Vec<HintPoint> {
     {
         points.push(HintPoint::Power);
     }
-    let hostile = frame.notices.iter().any(|notice| {
-        matches!(
-            notice,
-            FrameNotice::Contact { class, .. }
-                if class.team().is_some_and(|side| side != frame.team)
-        )
+    // Doc 32 cut CF.0: a contact notice about a row the frame holds hostile.
+    let hostile = frame.notices.iter().any(|notice| match notice {
+        FrameNotice::Contact { contact, .. } => frame.contacts.iter().any(|held| {
+            held.id == contact.id && held.relation == crate::arena::party::Relation::Hostile
+        }),
+        _ => false,
     });
     if frame.power == Power::Online && !frame.weapons.is_empty() && hostile {
         points.push(HintPoint::Contact);
@@ -522,7 +522,7 @@ mod tests {
     use super::*;
 
     use crate::arena::perception::{Named, NoticeKind};
-    use crate::arena::state::{Classification, ContactId, Designator, Team};
+    use crate::arena::state::{Classification, ContactId, Designator, PartyId};
     use crate::arena::test_support::{arena_at_epoch, pose, scout, tank};
 
     const RED: ObjId = ObjId(4);
@@ -643,8 +643,8 @@ mod tests {
     fn red_frame() -> Frame {
         let mut arena = arena_at_epoch(
             vec![
-                scout(RED, Team::Red, pose(1_500, 1_500)),
-                tank(BLUE, Team::Blue, pose(6_500, 6_500)),
+                scout(RED, PartyId::RED, pose(1_500, 1_500)),
+                tank(BLUE, PartyId::BLUE, pose(6_500, 6_500)),
             ],
             1,
         );
@@ -656,25 +656,58 @@ mod tests {
             .find(|frame| frame.unit == RED)
             .expect("red is sent its opening frame");
         assert!(!frame.weapons.is_empty(), "the scout carries its cannon");
-        assert_eq!(frame.team, Team::Red);
+        assert_eq!(frame.party, PartyId::RED);
         frame
     }
 
-    fn classified(team: Team) -> FrameNotice {
+    fn classified(team: PartyId) -> FrameNotice {
         FrameNotice::Contact {
             kind: NoticeKind::Classified,
             contact: Named {
                 id: ContactId(1),
-                designator: Designator::Slot { team, slot: 1 },
+                designator: Designator::Unit {
+                    party: team,
+                    letter: 'A',
+                },
             },
-            class: Classification::Classified { team },
+            class: Classification::Classified { party: team },
             was: None,
         }
     }
 
+    /// The frame at `power` carrying `notices`, and (doc 32 cut CF.0) a held
+    /// row for each contact notice, related as the OOC host relates it: its
+    /// own party own, any other hostile.
     fn with(frame: &Frame, power: Power, notices: Vec<FrameNotice>) -> Frame {
         let mut frame = frame.clone();
         frame.power = power;
+        for notice in &notices {
+            if let FrameNotice::Contact { contact, class, .. } = notice {
+                let relation = match class.party() {
+                    None => crate::arena::party::Relation::Unknown,
+                    Some(party) if party == frame.party => crate::arena::party::Relation::Own,
+                    Some(_) => crate::arena::party::Relation::Hostile,
+                };
+                frame.contacts.push(crate::arena::perception::FrameContact {
+                    id: contact.id,
+                    designator: contact.designator,
+                    alias: None,
+                    class: *class,
+                    relation,
+                    moving: false,
+                    bearing_mdeg: 0,
+                    range_cm: 10_000,
+                    age_ms: 0,
+                    cell: None,
+                    condition: None,
+                    aspect: crate::arena::perception::Aspect::Front,
+                    facing: crate::arena::perception::ContactFacing::Front,
+                    reads_dead: None,
+                    fatal: None,
+                    unit_type: None,
+                });
+            }
+        }
         frame.notices = notices;
         frame
     }
@@ -705,25 +738,25 @@ mod tests {
         assert_eq!(
             frame_points(
                 false,
-                &with(&base, Power::Online, vec![classified(Team::Blue)])
+                &with(&base, Power::Online, vec![classified(PartyId::BLUE)])
             ),
             vec![HintPoint::Contact]
         );
         assert_eq!(
             frame_points(
                 false,
-                &with(&base, Power::Online, vec![classified(Team::Red)])
+                &with(&base, Power::Online, vec![classified(PartyId::RED)])
             ),
             vec![],
             "a wingman told apart is no enemy"
         );
-        let mut gunless = with(&base, Power::Online, vec![classified(Team::Blue)]);
+        let mut gunless = with(&base, Power::Online, vec![classified(PartyId::BLUE)]);
         gunless.weapons.clear();
         assert_eq!(frame_points(false, &gunless), vec![], "no gun to FIRE");
         assert_eq!(
             frame_points(
                 false,
-                &with(&base, Power::Off, vec![classified(Team::Blue)])
+                &with(&base, Power::Off, vec![classified(PartyId::BLUE)])
             ),
             vec![],
             "FIRE would answer Power not online"
@@ -731,7 +764,7 @@ mod tests {
         assert_eq!(
             frame_points(
                 false,
-                &with(&base, Power::Starting, vec![classified(Team::Blue)])
+                &with(&base, Power::Starting, vec![classified(PartyId::BLUE)])
             ),
             vec![]
         );
@@ -754,7 +787,7 @@ mod tests {
                 &with(
                     &base,
                     Power::Online,
-                    vec![FrameNotice::PowerOnline, classified(Team::Blue)]
+                    vec![FrameNotice::PowerOnline, classified(PartyId::BLUE)]
                 )
             ),
             vec![HintPoint::Power, HintPoint::Contact]

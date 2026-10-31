@@ -69,7 +69,7 @@ use crate::arena::perception::{
 use crate::arena::resolution::{facet_band_seen, facing_band_seen};
 use crate::arena::state::{
     ActionHash, Arena, Classification, ContactId, Controller, DueEvent, DueKind, EndReason,
-    MatchEnd, Power, SPENT_NOTICE_MS, StopReason, Team,
+    MatchEnd, PartyId, Power, SPENT_NOTICE_MS, StopReason,
 };
 use crate::arena::weapons::FrameWeapon;
 use crate::definitions::unit::{armor_cell, internals_cell};
@@ -1039,7 +1039,7 @@ impl Arena {
         let mut settles: Vec<(usize, ObjId, ContactId, i64)> = Vec::new();
         // **16b cut O.1** (16c N11): the Hold win this loop confirmed, and its
         // millisecond — ended after the loop, before the two settles.
-        let mut hold_won: Option<(Team, i64)> = None;
+        let mut hold_won: Option<(PartyId, i64)> = None;
         // **17b cut M1a.5** (doc 17 §6, D-UM-20, D-UM-21): the mind kinds of
         // the millisecond being popped, held back — the landings until every
         // other kind due at that millisecond has popped, the thinks until the
@@ -1668,9 +1668,16 @@ impl Arena {
                 EndReason::Timeout,
             ),
             StopReason::Void => (EventKind::Void, EndReason::Void),
-            // 16b cut D.3: the side that conceded is the side that lost.
+            // 16b cut D.3: the side that conceded is the side that lost. Doc 32
+            // cut CF.0: the winner is the one other party, when exactly one is
+            // left; with more there is no winner to name.
             StopReason::Concede { by } => {
-                let reason = EndReason::Conceded { winner: by.other() };
+                let mut others = self.relations.parties().filter(|party| *party != by);
+                let winner = match (others.next(), others.next()) {
+                    (Some(only), None) => Some(only),
+                    _ => None,
+                };
+                let reason = EndReason::Conceded { winner };
                 (EventKind::MatchEnded { reason }, reason)
             }
             StopReason::Unattended => (

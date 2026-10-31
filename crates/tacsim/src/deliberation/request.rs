@@ -46,7 +46,7 @@ use mush_llm::{
 
 pub use crate::arena::command::BriefObjective;
 use crate::arena::command::{SignalReason, SquadSignal};
-use crate::arena::state::{Classification, ContactId};
+use crate::arena::state::ContactId;
 use crate::deliberation::order::{
     CharacterRef, Constraints, MAX_HORIZON_MS, MAX_TTL_MS, MIN_TTL_MS, Objective, Order, RangeBand,
 };
@@ -209,12 +209,15 @@ impl SquadBrief {
             .iter()
             .map(|contact| BriefContact {
                 id: contact.id.to_string(),
-                stance: match contact.class {
-                    Classification::Unknown => "unknown".to_string(),
-                    Classification::Classified { team } if team == signal.team => {
+                // Doc 32 cut CF.0: the commander's party's relation; a
+                // neutral is briefed as the word says.
+                stance: match contact.relation {
+                    crate::arena::party::Relation::Unknown => "unknown".to_string(),
+                    crate::arena::party::Relation::Own | crate::arena::party::Relation::Friend => {
                         "friendly".to_string()
                     }
-                    Classification::Classified { .. } => "hostile".to_string(),
+                    crate::arena::party::Relation::Hostile => "hostile".to_string(),
+                    crate::arena::party::Relation::Neutral => "neutral".to_string(),
                 },
                 // **16b cut E.1** (16c `T-81`): the pilot's own word. It used to be
                 // `range_band`'s — thirds of the gun's inner band alone — so a
@@ -702,17 +705,18 @@ mod tests {
     use super::*;
     use crate::arena::command::{SignalContact, SignalMember, SquadDigest};
     use crate::arena::doctrine::MachineState;
-    use crate::arena::state::Team;
+    use crate::arena::state::Classification;
+    use crate::arena::state::PartyId;
     use mush_core::ObjId;
 
     fn signal() -> SquadSignal {
         SquadSignal {
             squad: SquadId {
-                team: Team::Red,
+                team: PartyId::RED,
                 index: 1,
             },
             commander: ObjId(4),
-            team: Team::Red,
+            team: PartyId::RED,
             reason: SignalReason::ContactsChanged,
             at_ms: 1_000,
             digest: SquadDigest {
@@ -723,13 +727,17 @@ mod tests {
             contacts: vec![
                 SignalContact {
                     id: ContactId(0x2a),
-                    class: Classification::Classified { team: Team::Blue },
+                    class: Classification::Classified {
+                        party: PartyId::BLUE,
+                    },
+                    relation: crate::arena::party::Relation::Hostile,
                     bearing_mdeg: 90_000,
                     range_cm: 1_000,
                 },
                 SignalContact {
                     id: ContactId(0x2b),
                     class: Classification::Unknown,
+                    relation: crate::arena::party::Relation::Unknown,
                     bearing_mdeg: 180_000,
                     range_cm: 9_000,
                 },
@@ -778,7 +786,7 @@ mod tests {
     fn leader() -> CharacterRef {
         CharacterRef::Persona {
             squad: SquadId {
-                team: Team::Red,
+                team: PartyId::RED,
                 index: 1,
             },
         }
@@ -857,7 +865,10 @@ mod tests {
         stock.sight_cm = 60_000;
         stock.contacts = vec![SignalContact {
             id: ContactId(0x2a),
-            class: Classification::Classified { team: Team::Blue },
+            class: Classification::Classified {
+                party: PartyId::BLUE,
+            },
+            relation: crate::arena::party::Relation::Hostile,
             bearing_mdeg: 90_000,
             range_cm: 45_000,
         }];

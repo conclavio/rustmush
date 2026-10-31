@@ -984,7 +984,7 @@ impl PlayerWorld {
         );
         // The lead character is read during Boarding (`lead_character_of`).
         check_eq!(
-            match_::lobby::lead_character_of(&self.engine.world, crate::arena::Team::Red),
+            match_::lobby::lead_character_of(&self.engine.world, crate::arena::PartyId::RED),
             Some(BUYER)
         );
         Ok(())

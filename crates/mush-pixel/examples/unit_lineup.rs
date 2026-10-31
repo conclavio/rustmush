@@ -74,7 +74,7 @@ fn main() {
                 let bearing = -25.0 + 10.0 * i as f64;
                 Some(Sprite {
                     pose: Some(pose),
-                    ..Sprite::at_bearing(&cam, bearing, range, SpriteKind::Red)
+                    ..Sprite::at_bearing(&cam, bearing, range, SpriteKind::Hostile)
                 })
             })
             .collect();
@@ -112,6 +112,8 @@ fn main() {
             let mut c = json!({
                 "id": format!("C{i}"),
                 "class": "red",
+                "relation": "hostile",
+                "party": "R",
                 "bearing_deg": bearing,
                 "range_m": range,
                 "facing": "front_right",
@@ -121,13 +123,15 @@ fn main() {
                 c["unit_type"] = json!(unit);
             } else {
                 c["class"] = json!("unknown");
+                c["relation"] = json!("unknown");
+                c["party"] = json!(null);
             }
             c
         })
         .collect();
     let cockpit = json!({
         "seated": true,
-        "team": "blue",
+        "party": "B",
         "unit_type": "tacsim.unit.biped_mk1",
         "x_cm": 128_000,
         "y_cm": 128_000,

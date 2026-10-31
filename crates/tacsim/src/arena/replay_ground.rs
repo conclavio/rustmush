@@ -177,7 +177,7 @@ impl ReplayGround {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use crate::arena::state::{CostRow, Team};
+    use crate::arena::state::{CostRow, PartyId};
     use mush_atlas::TerrainClass;
 
     fn definition() -> ArenaDefinition {
@@ -205,7 +205,7 @@ mod tests {
             id: "captured".into(),
             terrain,
             entry_zones: vec![EntryZone {
-                team: Team::Red,
+                team: PartyId::RED,
                 x0: 0,
                 y0: 0,
                 x1: 1,

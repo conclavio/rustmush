@@ -25,6 +25,8 @@ import {
   cockpitView,
   cockpitViewLines,
   composeWindow,
+  contactGlyph,
+  contactKind,
   contactRows,
   contactText,
   damageText,
@@ -407,6 +409,55 @@ describe("the decoders", () => {
     )) {
       expect(line).not.toMatch(/[\u0000-\u001f\u007f-\u009f]/);
     }
+  });
+});
+
+// **Doc 32 cut CF.0** (Q-CF-12, frame 9): a contact is coloured by the
+// viewer's relation to it, never its party; the party letter rides beside it.
+describe("doc 32 cut CF.0: relation and party", () => {
+  it("decodes the fixture's relations and party letters", () => {
+    const rows = theFrame().contacts.map((c) => [c.designator, c.relation, c.party]);
+    expect(rows).toEqual([
+      ["BA", "hostile", "B"],
+      ["RB", "own", "R"],
+      ["X3", "unknown", null],
+      ["X4", "unknown", null],
+    ]);
+  });
+
+  it("folds the five relations into the three contact colours and glyphs", () => {
+    const base = json("cockpit_frame.json") as Record<string, unknown>;
+    const row = (contacts: Record<string, unknown>[]) =>
+      decodeCockpitFrame({ ...base, contacts })!.contacts;
+    const got = row(
+      ["own", "friend", "hostile", "neutral", "unknown", "nonsense"].map((relation, i) => ({
+        designator: `G${String.fromCharCode(65 + i)}`,
+        class: "g",
+        friendly: false,
+        relation,
+        party: "g",
+      })),
+    ).map((c) => [c.relation, c.party, contactKind(c), contactGlyph(c)]);
+    expect(got).toEqual([
+      ["own", "G", "friendly", "+"],
+      ["friend", "G", "friendly", "+"],
+      ["hostile", "G", "hostile", "x"],
+      ["neutral", "G", "unknown", "?"],
+      ["unknown", "G", "unknown", "?"],
+      // Not one of the five: the old rule's reading of class and friendly.
+      ["hostile", "G", "hostile", "x"],
+    ]);
+    // A server before frame 9: no relation, no party.
+    const old = row([
+      { designator: "RB", class: "red", friendly: true },
+      { designator: "BA", class: "blue", friendly: false },
+      { designator: "X3", class: "unknown", friendly: false, party: "RB" },
+    ]).map((c) => [c.relation, c.party]);
+    expect(old).toEqual([
+      ["friend", null],
+      ["hostile", null],
+      ["unknown", null],
+    ]);
   });
 });
 

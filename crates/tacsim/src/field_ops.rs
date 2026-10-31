@@ -2473,7 +2473,7 @@ mod tests {
             Slot,
         };
 
-        use crate::arena::state::Team;
+        use crate::arena::state::PartyId;
         use crate::arena::test_support::{arena_of, line_tank, pose as arena_pose};
 
         let site = ObjId(795);
@@ -2493,9 +2493,9 @@ mod tests {
         let red_anatomy = anatomy_for_unit_spec(&tank_spec)?;
         let blue_anatomy = anatomy_for_unit_spec(&tank_spec)?;
 
-        let mut red_custody = line_tank(red_tank_id, Team::Red, arena_pose(1_500, 1_500));
+        let mut red_custody = line_tank(red_tank_id, PartyId::RED, arena_pose(1_500, 1_500));
         red_custody.unit = red_before.clone();
-        let mut blue_custody = line_tank(blue_tank_id, Team::Blue, arena_pose(2_500, 1_500));
+        let mut blue_custody = line_tank(blue_tank_id, PartyId::BLUE, arena_pose(2_500, 1_500));
         blue_custody.unit = blue_before.clone();
 
         // 1. Assemble detachment roster, manifest, crew pool, and active sortie (`FO-6`–`FO-9`, `FO-15`, `FO-16`, `P-1`).

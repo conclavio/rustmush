@@ -185,7 +185,7 @@ impl BoundProgram {
                             view.contacts
                                 .iter()
                                 .filter(|c| {
-                                    c.class.team().is_some_and(|team| team != view.team)
+                                    c.relation == crate::arena::party::Relation::Hostile
                                         && c.reads_dead != Some(true)
                                 })
                                 .count()

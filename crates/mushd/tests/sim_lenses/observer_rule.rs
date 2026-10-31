@@ -769,7 +769,7 @@ fn unseated(feed: &str) -> Value {
         // to 3, M5rules to 4, M5r to 5, M6 to 6 for authored cards/rules,
         // M7 to 7 for odds, and DT.1b to 8 for opaque order identities.
         _ => json!({
-            "schema": { "id": "arena.cockpit", "version": 8, "retain": "latest" },
+            "schema": { "id": "arena.cockpit", "version": 9, "retain": "latest" },
             "seated": false,
         }),
     }
@@ -1217,6 +1217,15 @@ async fn nothing_about_an_undetected_unit_crosses_on_any_surface() {
     // hints. Ada is a fresh account, so her first frame (power off) carries the
     // panel hint in the same drain that writes her mirror — the fence.
     ada.expect("Hint: the panel").await;
+    // Doc 32 cut CF.0 (Q-CF-11): the unit letters are drawn at check-out, so
+    // both tanks' callsigns are read off the match's own record.
+    let drawn = support::drawn_callsigns(&server.store, 1).await;
+    let (ra, ba) = (drawn[&red].clone(), drawn[&blue].clone());
+    let (lock_ba, lock_ra) = (format!("LOCK {ba}"), format!("LOCK {ra}"));
+    let (range_ba, bearing_ba) = (format!("RANGE {ba}"), format!("BEARING {ba}"));
+    let (view_ba, watch_ra) = (format!("VIEW {ba}"), format!("Watch {ra}: "));
+    let engage_ba = format!("ORDER red-1 ENGAGE {ba}");
+    let support_ba = format!("ORDER red-1 SUPPORT {ba}");
 
     // The placement took, which is what makes "before detection" true.
     let seen = ask(&mut ada, "STATUS", "m east").await;
@@ -1372,7 +1381,7 @@ async fn nothing_about_an_undetected_unit_crosses_on_any_surface() {
     assert!(
         sentences
             .iter()
-            .any(|sentence| sentence.starts_with("Window around BA:")),
+            .any(|sentence| sentence.starts_with(&format!("Window around {ba}:"))),
         "Bo's brief names his own callsign:\n{seen}"
     );
     assert!(
@@ -1417,7 +1426,7 @@ async fn nothing_about_an_undetected_unit_crosses_on_any_surface() {
     let watching = ask_whole(&mut ada, "WATCH ON").await;
     let flat = watching.split_whitespace().collect::<Vec<&str>>().join(" ");
     assert!(
-        flat.contains(tacsim::match_::cockpit::WATCHING) && flat.contains("Watch RA: "),
+        flat.contains(tacsim::match_::cockpit::WATCHING) && flat.contains(&watch_ra),
         "`WATCH ON` said its reply and then the held frame's block:\n{watching}"
     );
     // And the switch tells a bystander nothing: Cy, unseated, is refused with
@@ -1447,14 +1456,14 @@ async fn nothing_about_an_undetected_unit_crosses_on_any_surface() {
     // not a designator at all.
     let mut refusals: Vec<String> = Vec::new();
     for line in [
-        "LOCK BA",
-        "LOCK RA",
+        lock_ba.as_str(),
+        lock_ra.as_str(),
         "LOCK X1",
         "LOCK ZZ",
         "LOCK ffffffffffffffff",
         "LOCK zzzz",
-        "RANGE BA",
-        "BEARING BA",
+        range_ba.as_str(),
+        bearing_ba.as_str(),
         // 16b cut V.1: the second resolution arm tells nothing either — a
         // designator of nothing and a spot that does not exist are one answer.
         "RANGE ZZ",
@@ -1465,14 +1474,14 @@ async fn nothing_about_an_undetected_unit_crosses_on_any_surface() {
     }
     let first = refusals.first().cloned().unwrap_or_default();
     for (line, answer) in [
-        "LOCK BA",
-        "LOCK RA",
+        lock_ba.as_str(),
+        lock_ra.as_str(),
         "LOCK X1",
         "LOCK ZZ",
         "LOCK ffffffffffffffff",
         "LOCK zzzz",
-        "RANGE BA",
-        "BEARING BA",
+        range_ba.as_str(),
+        bearing_ba.as_str(),
         "RANGE ZZ",
         "RANGE The Fjord",
     ]
@@ -1489,16 +1498,16 @@ async fn nothing_about_an_undetected_unit_crosses_on_any_surface() {
     // other with one usage line — the slot designator of the tank out there and
     // a designator of nothing are the same bytes, so the refusal is no oracle.
     let usage = "VIEW [BRIEF]; BRIEF says the window in sentences.";
-    let a = ask(&mut ada, "VIEW BA", usage).await;
+    let a = ask(&mut ada, view_ba.as_str(), usage).await;
     let b = ask(&mut ada, "VIEW ZZ", usage).await;
     names_nothing(&a, red, blue, "`VIEW BA`");
     names_nothing(&b, red, blue, "`VIEW ZZ`");
     assert_eq!(
-        a.trim_start_matches("VIEW BA").trim(),
+        a.trim_start_matches(view_ba.as_str()).trim(),
         b.trim_start_matches("VIEW ZZ").trim(),
         "one refusal for a tank out there and for nothing"
     );
-    assert_eq!(a.trim_start_matches("VIEW BA").trim(), usage);
+    assert_eq!(a.trim_start_matches(view_ba.as_str()).trim(), usage);
     // **16b cut Y.1: `ORDER` refuses the squad before it looks at a contact.**
     //
     // This match fields no machine, so nobody holds a squad, and authority is
@@ -1513,11 +1522,11 @@ async fn nothing_about_an_undetected_unit_crosses_on_any_surface() {
     // the callsign is looked at, so it says nothing of whether `BA` flies — and
     // no answer names a tank.
     let orders = [
-        "ORDER red-1 ENGAGE BA",
+        engage_ba.as_str(),
         "ORDER red-1 ENGAGE ZZ",
         "ORDER blue-1 HOLD",
         "ORDER red-9 HOLD",
-        "ORDER red-1 SUPPORT BA",
+        support_ba.as_str(),
         "ORDER red-1 SCREEN 90",
         "ORDER red-1 RELEASE",
     ];
@@ -1640,7 +1649,7 @@ async fn nothing_about_an_undetected_unit_crosses_on_any_surface() {
     assert!(
         sentences
             .iter()
-            .any(|sentence| sentence.starts_with("Window around RA:")),
+            .any(|sentence| sentence.starts_with(&format!("Window around {ra}:"))),
         "the brief names the pilot's own callsign:\n{brief}"
     );
     assert!(
@@ -1770,7 +1779,7 @@ async fn nothing_about_an_undetected_unit_crosses_on_any_surface() {
          {provisional}\n{unresolved}"
     );
     assert!(
-        !unresolved.contains("BA"),
+        !unresolved.contains(ba.as_str()),
         "the blue side's slot spelling reached the pilot before classification:\n{unresolved}"
     );
     assert!(
@@ -1805,7 +1814,7 @@ async fn nothing_about_an_undetected_unit_crosses_on_any_surface() {
         "a CONTACTS row before the acquisition:\n{before}"
     );
     assert!(
-        before.contains("Watch RA: "),
+        before.contains(&watch_ra),
         "`WATCH ON` said no block of the held frame:\n{before}"
     );
     ada.expect_after(detect_mark, "Watch contacts:").await;
@@ -1862,9 +1871,9 @@ async fn nothing_about_an_undetected_unit_crosses_on_any_surface() {
     // the byte-exact compares from here on read. Every block pushed before the
     // switch went off arrives before its reply, and none after.
     say(&mut ada, "WATCH OFF", "Watch off.").await;
-    let refused = ask(&mut ada, "LOCK BA", NO_SUCH_CONTACT).await;
+    let refused = ask(&mut ada, lock_ba.as_str(), NO_SUCH_CONTACT).await;
     assert_eq!(
-        refused.trim_start_matches("LOCK BA").trim(),
+        refused.trim_start_matches(lock_ba.as_str()).trim(),
         NO_SUCH_CONTACT,
         "a slot designator resolved against a row that is still unknown"
     );
@@ -2253,16 +2262,19 @@ async fn nothing_about_an_undetected_unit_crosses_on_any_surface() {
     // fired names nothing but the reader's own tank — no other callsign, no
     // shot, and none of what the pilot's platform never learned.
     let report = sim_report(&mut ada, "SIM REPORT").await;
-    assert!(report.contains("You flew RA:"), "{report}");
+    assert!(report.contains(&format!("You flew {ra}:")), "{report}");
     assert!(!report.contains("cannon at"), "{report}");
     // The one lock the tape holds was taken under the provisional number,
     // before the platform told the contact apart (the re-locks by the new
     // name journal nothing: it is the same contact), so it is named as it was
     // AT the lock — not as the platform knew it by the end.
     assert!(report.contains("locked a contact."), "{report}");
-    for callsign in ["BA", "BB", "BC", "BD", "RB", "RC", "RD"] {
+    // Doc 32 cut CF.0: any callsign but her own drawn one, of either side.
+    for callsign in words_of(&report) {
+        let named =
+            support::is_callsign_of(callsign, 'R') || support::is_callsign_of(callsign, 'B');
         assert!(
-            !words_of(&report).contains(&callsign),
+            !named || callsign == ra,
             "the report named {callsign}:\n{report}"
         );
     }
@@ -2349,12 +2361,17 @@ async fn the_switch_names_a_contact_at_the_first_pass_over_the_real_composition(
     // frame, a pulse after `Good hunting`; fenced so it cannot land inside the
     // byte-exact slice below.
     ada.expect("Hint: the panel").await;
+    // Doc 32 cut CF.0 (Q-CF-11): the unit letters are drawn at check-out, so
+    // the blue tank's callsign is read off the match's own record.
+    let drawn = support::drawn_callsigns(&server.store, 1).await;
+    let ba = drawn[&blue].clone();
+    let lock_ba = format!("LOCK {ba}");
 
     // Before anything is held, the refusal is what it always was: the switch
     // relaxes what a *held* contact is called and nothing else.
-    let refused = ask(&mut ada, "LOCK BA", NO_SUCH_CONTACT).await;
+    let refused = ask(&mut ada, lock_ba.as_str(), NO_SUCH_CONTACT).await;
     assert_eq!(
-        refused.trim_start_matches("LOCK BA").trim(),
+        refused.trim_start_matches(lock_ba.as_str()).trim(),
         NO_SUCH_CONTACT,
         "the switch made an undetected tank nameable"
     );
@@ -2391,11 +2408,11 @@ async fn the_switch_names_a_contact_at_the_first_pass_over_the_real_composition(
         "the two tanks never detected each other within the observation deadline"
     );
 
-    // **The first row already carries the slot designator.** The blue tank is in
-    // slot 1 of its side, so the name is the team letter and the first slot.
+    // **The first row already carries the public callsign.** Doc 32 cut CF.0:
+    // the side's letter and the unit letter drawn at check-out.
     let named = designator_of(&held).unwrap_or_else(|| panic!("a contact designator in:\n{held}"));
     assert_eq!(
-        named, "BA",
+        named, ba,
         "with the switch on the first pass names the target's team and pod:\n{held}"
     );
     // And no provisional number was issued: nothing the pilot has been sent
@@ -2466,7 +2483,7 @@ async fn the_switch_names_a_contact_at_the_first_pass_over_the_real_composition(
     .await;
     assert_eq!(
         designator_of(&classified).as_deref(),
-        Some("BA"),
+        Some(ba.as_str()),
         "the name moved across a classification that had nothing to rename:\n{classified}"
     );
     let whole = strip_ansi(&ada.seen);
@@ -2518,6 +2535,11 @@ async fn neither_arena_feed_tells_a_panel_client_about_a_unit_it_has_not_found()
     // which is the whole reason the resync handlers exist.)
     let mut ada_web = web_session(&server, "ada", PILOT_PASSWORD, "Ada").await;
     take_off(&mut ada, &mut bo).await;
+    // Doc 32 cut CF.0 (Q-CF-11): the unit letters are drawn at check-out, so
+    // both tanks' callsigns are read off the match's own record.
+    let drawn = support::drawn_callsigns(&server.store, 1).await;
+    let (ra, ba) = (drawn[&red].clone(), drawn[&blue].clone());
+    let ba_quoted = format!("\"{ba}\"");
 
     // The two tanks are 70 cells apart and neither has moved, so nothing is held
     // by anybody.
@@ -2538,10 +2560,10 @@ async fn neither_arena_feed_tells_a_panel_client_about_a_unit_it_has_not_found()
         "the frame carries its arena millisecond: {cockpit}"
     );
     assert_eq!(cockpit.get("order"), Some(&Value::Null), "{cockpit}");
-    assert_eq!(cockpit.pointer("/schema/version"), Some(&json!(8)));
+    assert_eq!(cockpit.pointer("/schema/version"), Some(&json!(9)));
     assert_eq!(
         cockpit.get("callsign").and_then(Value::as_str),
-        Some("RA"),
+        Some(ra.as_str()),
         "her own public name is hers to have: {cockpit}"
     );
     assert_eq!(
@@ -2614,7 +2636,7 @@ async fn neither_arena_feed_tells_a_panel_client_about_a_unit_it_has_not_found()
         let whole = payload.to_string();
         names_nothing(&whole, red, blue, what);
         no_sixteen_digit_word(&whole, what);
-        for leak in ["Bo", "\"BA\"", "Ada"] {
+        for leak in ["Bo", ba_quoted.as_str(), "Ada"] {
             assert!(!whole.contains(leak), "{what} leaked {leak:?}:\n{whole}");
         }
     }
@@ -2679,7 +2701,7 @@ async fn neither_arena_feed_tells_a_panel_client_about_a_unit_it_has_not_found()
         BLUE_TANK.to_string(),
         format!("#{blue}"),
         "Bo".to_string(),
-        "\"BA\"".to_string(),
+        ba_quoted.clone(),
     ] {
         assert!(
             !whole.contains(&leak),
@@ -3192,6 +3214,10 @@ async fn nothing_of_the_shooting_crosses_to_the_world_or_to_the_target() {
     let (red, blue, _muster, domain) = seat_the_witnesses(&mut god).await;
     close_to_muzzle_range(&mut god, red, blue, domain).await;
     take_off(&mut ada, &mut bo).await;
+    // Doc 32 cut CF.0 (Q-CF-11): the unit letters are drawn at check-out, so
+    // both tanks' callsigns are read off the match's own record.
+    let drawn = support::drawn_callsigns(&server.store, 1).await;
+    let (ra, ba) = (drawn[&red].clone(), drawn[&blue].clone());
     power_up(&mut ada).await;
     power_up(&mut bo).await;
 
@@ -3546,7 +3572,7 @@ async fn nothing_of_the_shooting_crosses_to_the_world_or_to_the_target() {
     // which tanks are out there: it has three different answers of its own for a
     // contact it *does* hold, so a fourth for one it does not would be the leak.
     let mut refusals: Vec<String> = Vec::new();
-    for name in ["ZZ", "X9", "RA", "0123456789abcdef", "zzzz"] {
+    for name in ["ZZ", "X9", ra.as_str(), "0123456789abcdef", "zzzz"] {
         let said = ask(&mut ada, &format!("SCAN {name}"), NO_SUCH_CONTACT).await;
         assert!(
             !said.contains("Scan of ") && !said.contains("not identified"),
@@ -3628,16 +3654,16 @@ async fn nothing_of_the_shooting_crosses_to_the_world_or_to_the_target() {
             .any(|event| event.get("kind").and_then(Value::as_str) == Some("fired")),
         "the tape holds the shots"
     );
-    let callsigns = [("RA", red), ("BA", blue)];
+    let callsigns = [(ra.as_str(), red), (ba.as_str(), blue)];
     let adas = sim_report(&mut ada, "SIM REPORT").await;
     assert!(adas.contains("cannon at"), "{adas}");
     assert!(adas.contains(": hit"), "{adas}");
-    assert!(adas.contains("You flew RA:"), "{adas}");
+    assert!(adas.contains(&format!("You flew {ra}:")), "{adas}");
     report_is_the_pilots_own(&adas, red, blue, "Ada's report");
-    names_only_what_it_classified(&adas, "RA", red, &callsigns, &events);
+    names_only_what_it_classified(&adas, &ra, red, &callsigns, &events);
     let bos = sim_report(&mut bo, "SIM REPORT").await;
     assert!(bos.contains("hit on the "), "{bos}");
-    assert!(bos.contains("You flew BA:"), "{bos}");
+    assert!(bos.contains(&format!("You flew {ba}:")), "{bos}");
     assert!(bos.contains("You fired nothing."), "{bos}");
     for leak in ["cannon at", "You fired 1", " at "] {
         assert!(
@@ -3646,11 +3672,11 @@ async fn nothing_of_the_shooting_crosses_to_the_world_or_to_the_target() {
         );
     }
     assert!(
-        !words_of(&bos).contains(&"RA"),
+        !words_of(&bos).contains(&ra.as_str()),
         "the target's report named the shooter:\n{bos}"
     );
     report_is_the_pilots_own(&bos, red, blue, "Bo's report");
-    names_only_what_it_classified(&bos, "BA", blue, &callsigns, &events);
+    names_only_what_it_classified(&bos, &ba, blue, &callsigns, &events);
 
     // A bystander in the centre flew nothing, and is told exactly that.
     let listing = ask(&mut god, "@find Simulator Lobby", "END OF LIST").await;
@@ -3668,7 +3694,7 @@ async fn nothing_of_the_shooting_crosses_to_the_world_or_to_the_target() {
     let page = staff_page(&mut god, "@arena/report 1").await;
     assert!(page.contains("seed "), "{page}");
     assert!(page.contains(&format!("#{blue}")), "{page}");
-    assert!(page.contains("fired unit=RA("), "{page}");
+    assert!(page.contains(&format!("fired unit={ra}(")), "{page}");
 }
 
 /// Whether any facet's armour cell in a `@unit/show` listing is below its
@@ -3868,6 +3894,10 @@ async fn the_tui_cockpit_shows_a_pilot_no_more_than_their_own_sensors_found() {
     let (red, blue, _muster, domain) = seat_the_witnesses(&mut god).await;
     close_the_gap(&mut god, red, blue, domain).await;
     take_off(&mut ada, &mut bo).await;
+    // Doc 32 cut CF.0 (Q-CF-11): the unit letters are drawn at check-out, so
+    // both tanks' callsigns are read off the match's own record.
+    let drawn = support::drawn_callsigns(&server.store, 1).await;
+    let (ra, ba) = (drawn[&red].clone(), drawn[&blue].clone());
     // Her power comes up in LINE mode, before the full screen takes over: a
     // cold platform's sensors find nothing, and the question here is what a
     // WARM one's screen says about a tank it has not found yet.
@@ -3922,7 +3952,7 @@ async fn the_tui_cockpit_shows_a_pilot_no_more_than_their_own_sensors_found() {
     ada.expect_squeezed_after(opened, "Nolock").await;
     let before = squeezed(&ada.seen[opened..]);
     assert!(
-        before.contains("CallsignRA"),
+        before.contains(&format!("Callsign{ra}")),
         "her own tank's callsign is hers to have:\n{before}"
     );
     assert!(
@@ -3939,7 +3969,7 @@ async fn the_tui_cockpit_shows_a_pilot_no_more_than_their_own_sensors_found() {
         &strip_ansi(&ada.seen[opened..]),
         "the TUI cockpit before detection",
     );
-    for trace in ["X1", "BA"] {
+    for trace in ["X1", ba.as_str()] {
         assert!(
             !before.contains(trace),
             "the screen carried {trace:?} before anything was detected:\n{before}"
@@ -3964,10 +3994,10 @@ async fn the_tui_cockpit_shows_a_pilot_no_more_than_their_own_sensors_found() {
     // The provisional designator her own platform issued, or the callsign the
     // row is renamed to the moment the return is told apart: either is a word
     // she may have, and nothing else on the screen may identify the tank.
-    let named = ada.expect_one_of_after(closing, &["X1", "BA"]).await;
+    let named = ada.expect_one_of_after(closing, &["X1", ba.as_str()]).await;
     let after = squeezed(&ada.seen[closing..]);
     assert!(
-        after.contains(if named == 0 { "X1" } else { "BA" }),
+        after.contains(if named == 0 { "X1" } else { ba.as_str() }),
         "{after}"
     );
     tui_names_nothing(&after, red, blue);
@@ -4067,8 +4097,11 @@ async fn the_board_withholds_the_other_sides_standing_from_a_seated_pilot() {
     let (_a, mut ada) = login(server.addr, "ada", PILOT_PASSWORD, "Ada").await;
     let (_b, mut bo) = login(server.addr, "bo", PILOT_PASSWORD, "Bo").await;
 
-    seat_the_witnesses(&mut god).await;
+    let (_, blue_tank, _, _) = seat_the_witnesses(&mut god).await;
     take_off(&mut ada, &mut bo).await;
+    // Doc 32 cut CF.0 (Q-CF-11): blue's unit letter is drawn at check-out;
+    // read it off the match's own record.
+    let ba = support::drawn_callsigns(&server.store, 1).await[&blue_tank].clone();
 
     /// One side's row off a board.
     fn row(board: &str, head: &str) -> String {
@@ -4089,7 +4122,10 @@ async fn the_board_withholds_the_other_sides_standing_from_a_seated_pilot() {
     );
     // The callsign and the pilot's name stay: both were public through the whole
     // of `Selection` and neither can change while the match runs.
-    assert!(blue.contains("(BA)") && blue.contains("Bo"), "{board}");
+    assert!(
+        blue.contains(&format!("({ba})")) && blue.contains("Bo"),
+        "{board}"
+    );
     // **16b cut Y.3**: and not the drop's word either — a dropped pilot's
     // row reads `flown by its mind` on the full board (17b cut M5.3; `flown
     // by doctrine` before), which is as much the other side's standing as
@@ -4105,7 +4141,7 @@ async fn the_board_withholds_the_other_sides_standing_from_a_seated_pilot() {
     // and the machine flies BA meanwhile. Staff read `flown by its mind`; Ada's
     // board does not move by one byte and carries neither word.
     bo.send_line("QUIT").await;
-    support::wait_arena_pilot_out(&mut god, "BA", "Bo", "flown by its mind").await;
+    support::wait_arena_pilot_out(&mut god, &ba, "Bo", "flown by its mind").await;
     let dropped = strip_ansi(&ask(&mut ada, "SIM STATUS", "blue:").await);
     assert_eq!(
         row(&dropped, "blue:"),
@@ -4126,7 +4162,7 @@ async fn the_board_withholds_the_other_sides_standing_from_a_seated_pilot() {
     bo.expect("BOARD takes it back.").await;
     say(&mut bo, "EXIT", "climb").await;
     // EXIT acknowledges world custody before the arena publishes its release.
-    support::wait_arena_pilot_left(&mut god, "BA", "Bo").await;
+    support::wait_arena_pilot_left(&mut god, &ba, "Bo").await;
     let after = strip_ansi(&ask(&mut ada, "SIM STATUS", "blue:").await);
     assert_eq!(
         row(&after, "blue:"),
@@ -4366,6 +4402,9 @@ async fn the_ends_of_a_match_name_sides_and_pilots_and_nothing_of_the_field() {
     // nothing an arena holds.
     let (red_tank, blue_tank, _muster, _domain) = seat_the_witnesses(&mut god).await;
     take_off(&mut ada, &mut bo).await;
+    // Doc 32 cut CF.0 (Q-CF-11): Bo's unit letter is drawn at check-out; read
+    // it off the match's own record while the match runs.
+    let ba = support::drawn_callsigns(&server.store, 1).await[&blue_tank].clone();
 
     // The second witness for that rule: during `Running`, God's `@find` counts
     // the blue tank out and names it nowhere.
@@ -4428,7 +4467,7 @@ async fn the_ends_of_a_match_name_sides_and_pilots_and_nothing_of_the_field() {
         "{history}"
     );
     assert!(
-        flat.contains(" (you flew BA)"),
+        flat.contains(&format!(" (you flew {ba})")),
         "the reader's own callsign: {history}"
     );
     for leak in [
@@ -4451,16 +4490,17 @@ async fn the_ends_of_a_match_name_sides_and_pilots_and_nothing_of_the_field() {
     // And no bare number either: the row is read word by word against its whole
     // public shape, so any word it does not account for — an object number
     // without its `#`, a pilot's name, a coordinate — fails it.
-    history_row_is_public(&flat, 1, "#1 blue won (red conceded)", Some("BA"));
+    history_row_is_public(&flat, 1, "#1 blue won (red conceded)", Some(&ba));
 
     // **16b cut V.3 (16c N2)**: and Bo's own debrief of it — the same public
     // outcome at its head, what Bo's own tank did (nothing), and the end in the
     // same words, with nothing of the field.
     let report = sim_report(&mut bo, "SIM REPORT").await;
     let flat = report.split_whitespace().collect::<Vec<_>>().join(" ");
+    let flew = format!("You flew {ba}: intact; 0 shots, 0 hits.");
     for want in [
         "blue won (red conceded)",
-        "You flew BA: intact; 0 shots, 0 hits.",
+        flew.as_str(),
         "You fired nothing.",
         "the match ended: red conceded.",
     ] {
@@ -4511,16 +4551,16 @@ fn d4_stub_frame(lock: tacsim::arena::state::ContactId) -> tacsim::arena::step::
         unit_type: "tacsim.unit.line_tank".into(),
         side_unit_types: vec!["tacsim.unit.line_tank".into()],
         sensor_height_cm: 150,
-        callsign: tacsim::arena::state::Designator::Slot {
-            team: tacsim::arena::state::Team::Red,
-            slot: 1,
+        callsign: tacsim::arena::state::Designator::Unit {
+            party: tacsim::arena::state::PartyId::RED,
+            letter: 'A',
         },
         cell: Some((6, 4)),
         mode: tacsim::arena::state::MatchMode::Skirmish,
         objective: None,
         motor: None,
         own_last_hit_ms: None,
-        team: tacsim::arena::state::Team::Red,
+        party: tacsim::arena::state::PartyId::RED,
         pose: mush_sim::data::Pose::at(6_500, 4_500, 0, posture),
         speed_cms: 0,
         power: tacsim::arena::state::Power::Online,
@@ -4591,7 +4631,7 @@ fn d4_stub_frame(lock: tacsim::arena::state::ContactId) -> tacsim::arena::step::
 #[test]
 fn the_receiver_and_the_regression_name_only_what_that_pilot_already_holds() {
     use tacsim::arena::perception::{FrameNotice, Named, NoticeKind, Receiver};
-    use tacsim::arena::state::{Classification, ContactId, Designator, Team};
+    use tacsim::arena::state::{Classification, ContactId, Designator, PartyId};
     use tacsim::match_::cockpit;
 
     // (1) The two sentences and the `STATUS` line, whole.
@@ -4656,6 +4696,7 @@ fn the_receiver_and_the_regression_name_only_what_that_pilot_already_holds() {
         designator: Designator::Provisional(2),
         alias: None,
         class: smol_str::SmolStr::new("unknown"),
+        relation: tacsim::arena::Relation::Unknown,
         bearing_deg: 45,
         relative_deg: 0,
         band: smol_str::SmolStr::new("far"),
@@ -4674,9 +4715,9 @@ fn the_receiver_and_the_regression_name_only_what_that_pilot_already_holds() {
             designator: Designator::Provisional(2),
         },
         class: Classification::Unknown,
-        was: Some(Designator::Slot {
-            team: Team::Blue,
-            slot: 1,
+        was: Some(Designator::Unit {
+            party: PartyId::BLUE,
+            letter: 'A',
         }),
     };
     assert_eq!(regressed.kind().as_str(), "unidentified");
@@ -4698,12 +4739,15 @@ fn the_receiver_and_the_regression_name_only_what_that_pilot_already_holds() {
     // — the only two names this notice may quote, and both designators.
     let earlier = tacsim::arena::perception::FrameContact {
         id,
-        designator: Designator::Slot {
-            team: Team::Blue,
-            slot: 1,
+        designator: Designator::Unit {
+            party: PartyId::BLUE,
+            letter: 'A',
         },
         alias: Some(2),
-        class: Classification::Classified { team: Team::Blue },
+        class: Classification::Classified {
+            party: PartyId::BLUE,
+        },
+        relation: tacsim::arena::Relation::Hostile,
         moving: false,
         bearing_mdeg: 45_000,
         range_cm: 45_000,
@@ -4935,6 +4979,10 @@ async fn a_reclaimed_pilots_catch_up_names_nothing_the_platform_never_held() {
         .await;
     }
     take_off(&mut ada, &mut bo).await;
+    // Doc 32 cut CF.0 (Q-CF-11): the unit letters are drawn at check-out, so
+    // both tanks' callsigns are read off the match's own record.
+    let drawn = support::drawn_callsigns(&server.store, 1).await;
+    let (ra, ba) = (drawn[&red].clone(), drawn[&blue].clone());
     let seen = ask(&mut ada, "CONTACTS", NO_CONTACTS).await;
     assert!(seen.contains(NO_CONTACTS), "RA holds nothing yet: {seen}");
 
@@ -4942,7 +4990,7 @@ async fn a_reclaimed_pilots_catch_up_names_nothing_the_platform_never_held() {
     // `flown by its mind`, `flown by doctrine` until 17b cut M5.3).
     drop(ada);
     drop(ada_handle);
-    support::wait_arena_pilot_out(&mut god, "RA", "Ada", "flown by its mind").await;
+    support::wait_arena_pilot_out(&mut god, &ra, "Ada", "flown by its mind").await;
 
     // Bo drives east, the machine drives `RA` west: wait until Bo's own plot of
     // `RA` is well inside the stock sight, so `RA`'s (the same sight, both on
@@ -4953,7 +5001,7 @@ async fn a_reclaimed_pilots_catch_up_names_nothing_the_platform_never_held() {
         "the two tanks to close inside the stock sight",
         async || {
             let listing = ask_whole(&mut bo, "CONTACTS").await;
-            contact_range_m(&listing, "RA").is_some_and(|range| range <= 500)
+            contact_range_m(&listing, &ra).is_some_and(|range| range <= 500)
         },
     )
     .await;
@@ -4989,12 +5037,13 @@ async fn a_reclaimed_pilots_catch_up_names_nothing_the_platform_never_held() {
     })
     .await;
     let boarded = boarded.expect("the BOARD that re-seated Ada");
-    ada.expect("Back aboard RA").await;
+    let back_aboard = format!("Back aboard {ra}");
+    ada.expect(&back_aboard).await;
     ada.expect("  Power ").await;
     let sent = strip_ansi(&ada.seen[window..]);
     // The block: its first line to its power line (and a wreck line after it).
     let block: String = sent
-        .get(sent.find("Back aboard RA").unwrap_or(0)..)
+        .get(sent.find(&back_aboard).unwrap_or(0)..)
         .unwrap_or_default()
         .lines()
         .scan(false, |past_power, line| {
@@ -5006,7 +5055,7 @@ async fn a_reclaimed_pilots_catch_up_names_nothing_the_platform_never_held() {
         })
         .collect();
     assert!(
-        block.contains("Contacts: new BA; none lost."),
+        block.contains(&format!("Contacts: new {ba}; none lost.")),
         "the report names the one contact the platform holds:\n{block}"
     );
     names_nothing(&block, red, blue, "the catch-up block");
@@ -5115,7 +5164,7 @@ async fn a_reclaimed_pilots_catch_up_names_nothing_the_platform_never_held() {
         gained, held,
         "the report's new contacts are the frame's own"
     );
-    assert_eq!(gained, vec!["BA".to_string()]);
+    assert_eq!(gained, vec![ba.clone()]);
     assert_eq!(
         report.get("contacts_lost"),
         Some(&json!([])),
@@ -5297,14 +5346,31 @@ async fn z4_a_net_line_names_the_callsign_the_speaker_and_the_words_and_reaches_
 
     let (red, blue, _muster, _domain) = seat_the_witnesses(&mut god).await;
     take_off(&mut ada, &mut bo).await;
-    ada.expect("You have been joined to channel RedNet (alias: ra).")
-        .await;
-    bo.expect("You have been joined to channel BlueNet (alias: ba).")
-        .await;
+    // Doc 32 cut CF.0 (Q-CF-11): each pilot joins their side's net under the
+    // callsign drawn at check-out, lower-cased; read both off the record.
+    let drawn = support::drawn_callsigns(&server.store, 1).await;
+    let (ra, ba) = (drawn[&red].clone(), drawn[&blue].clone());
+    ada.expect(&format!(
+        "You have been joined to channel RedNet (alias: {}).",
+        ra.to_lowercase()
+    ))
+    .await;
+    bo.expect(&format!(
+        "You have been joined to channel BlueNet (alias: {}).",
+        ba.to_lowercase()
+    ))
+    .await;
 
     let bo_mark = bo.mark();
     let ada_mark = ada.mark();
-    say(&mut ada, "ra contact east", "[RedNet] RA Ada: contact east").await;
+    let said = format!("[RedNet] {ra} Ada: contact east");
+    say(
+        &mut ada,
+        &format!("{} contact east", ra.to_lowercase()),
+        &said,
+    )
+    .await;
+    let ra_ada = format!("{ra} Ada");
     // Blue's window closes on its own sentinel's refusal.
     let seen = ask_whole(&mut bo, SENTINEL).await;
     let window = strip_ansi(&bo.seen[bo_mark..]);
@@ -5313,7 +5379,7 @@ async fn z4_a_net_line_names_the_callsign_the_speaker_and_the_words_and_reaches_
         "the window is the whole of what Bo read"
     );
     names_nothing(&window, red, blue, "blue while red spoke on its net");
-    for leak in ["RedNet", "contact east", "RA Ada"] {
+    for leak in ["RedNet", "contact east", ra_ada.as_str()] {
         assert!(
             !window.contains(leak),
             "blue read {leak:?} while red spoke on its net:\n{window}"
@@ -5328,7 +5394,7 @@ async fn z4_a_net_line_names_the_callsign_the_speaker_and_the_words_and_reaches_
         .map(str::trim)
         .find(|line| line.starts_with("[RedNet]"))
         .expect("Ada reads her own line back");
-    assert_eq!(line, "[RedNet] RA Ada: contact east");
+    assert_eq!(line, said);
     names_nothing(&ada_seen, red, blue, "red's own net line");
 }
 
@@ -5379,6 +5445,10 @@ async fn i1_a_replay_is_public_names_nobody_and_a_running_match_has_none() {
     .await;
 
     take_off(&mut ada, &mut bo).await;
+    // Doc 32 cut CF.0 (Q-CF-11): the unit letters are drawn at check-out, so
+    // both tanks' callsigns are read off the match's own record.
+    let drawn = support::drawn_callsigns(&server.store, 1).await;
+    let (ra, ba) = (drawn[&red].clone(), drawn[&blue].clone());
 
     // (1) While match 1 runs: the one refusal, from every seat, and nothing else.
     for (who, term) in [
@@ -5415,7 +5485,7 @@ async fn i1_a_replay_is_public_names_nobody_and_a_running_match_has_none() {
         ] {
             assert!(!seen.contains(leak), "{who} was told {leak:?}:\n{seen}");
         }
-        for callsign in ["RA", "BA"] {
+        for callsign in [ra.as_str(), ba.as_str()] {
             assert!(
                 !words_of(&seen).contains(&callsign),
                 "{who}'s refusal named {callsign}:\n{seen}"
@@ -5445,7 +5515,7 @@ async fn i1_a_replay_is_public_names_nobody_and_a_running_match_has_none() {
         flat.contains("both sides as the arena recorded them"),
         "{flat}"
     );
-    for callsign in ["RA", "BA"] {
+    for callsign in [ra.as_str(), ba.as_str()] {
         assert!(
             words_of(&seen).contains(&callsign),
             "Cy's replay does not name {callsign}:\n{seen}"
@@ -5478,9 +5548,9 @@ async fn i1_a_replay_is_public_names_nobody_and_a_running_match_has_none() {
     );
     assert_eq!(document.get("match").and_then(Value::as_u64), Some(1));
     let whole = document.to_string();
-    for callsign in ["\"RA\"", "\"BA\""] {
+    for callsign in [format!("\"{ra}\""), format!("\"{ba}\"")] {
         assert!(
-            whole.contains(callsign),
+            whole.contains(&callsign),
             "the document lacks {callsign}: {whole}"
         );
     }
@@ -5569,6 +5639,10 @@ async fn i2_the_replay_screen_shows_both_sides_and_a_refusal_opens_nothing() {
 
     // Match 1, fought for a second of arena time and aborted.
     take_off(&mut ada, &mut bo).await;
+    // Doc 32 cut CF.0 (Q-CF-11): the unit letters are drawn at check-out, so
+    // both tanks' callsigns are read off match 1's own record.
+    let drawn = support::drawn_callsigns(&server.store, 1).await;
+    let (ra, ba) = (drawn[&red].clone(), drawn[&blue].clone());
     wait_until(
         STEP_TIMEOUT,
         "the arena clock to pass a second",
@@ -5605,9 +5679,9 @@ async fn i2_the_replay_screen_shows_both_sides_and_a_refusal_opens_nothing() {
         frame.contains("Bothsidesshown:matchover."),
         "the status pane says both sides:\n{frame}"
     );
-    for row in ["RAred", "BAblue"] {
+    for row in [format!("{ra}red"), format!("{ba}blue")] {
         assert!(
-            frame.contains(row),
+            frame.contains(&row),
             "the contacts pane names {row:?} by callsign:\n{frame}"
         );
     }
@@ -6037,6 +6111,10 @@ async fn i4_a_watch_reaches_the_staffer_who_asked_and_no_one_else() {
     let (red, blue, _muster, _domain) = seat_the_witnesses(&mut god).await;
     take_off(&mut ada, &mut bo).await;
     let id = i3_match_id(&mut god).await;
+    // Doc 32 cut CF.0 (Q-CF-11): the unit letters are drawn at check-out, so
+    // both tanks' callsigns are read off the match's own record.
+    let drawn = support::drawn_callsigns(&server.store, id).await;
+    let (ra, ba) = (drawn[&red].clone(), drawn[&blue].clone());
     let mut god_web = web_session(&server, "boss", GM_PASSWORD, "God").await;
     let mut ada_web = web_session(&server, "ada", PILOT_PASSWORD, "Ada").await;
     let mut cy_web = web_session(&server, "cy", PILOT_PASSWORD, "Cy").await;
@@ -6079,7 +6157,7 @@ async fn i4_a_watch_reaches_the_staffer_who_asked_and_no_one_else() {
     let picture = pictures.last().cloned().expect("a picture");
     assert_eq!(picture["match"], json!(id), "{picture}");
     let rows = picture["units"].as_array().cloned().unwrap_or_default();
-    for (callsign, tank) in [("RA", red), ("BA", blue)] {
+    for (callsign, tank) in [(ra.as_str(), red), (ba.as_str(), blue)] {
         assert!(
             rows.iter()
                 .any(|row| row[0] == json!(callsign) && row[5] == json!(tank)),
@@ -6122,7 +6200,7 @@ async fn i4_a_watch_reaches_the_staffer_who_asked_and_no_one_else() {
             "God's line client printed {leak:?} of the feed:\n{god_seen}"
         );
     }
-    for callsign in ["RA", "BA"] {
+    for callsign in [ra.as_str(), ba.as_str()] {
         assert!(
             !words_of(&god_seen).contains(&callsign),
             "God's line client named {callsign}:\n{god_seen}"
@@ -6177,9 +6255,11 @@ const O1_BOARD_LINE: &str = "mode: hold — keep The Crossroads (B) uncontested 
 /// A running board read, as **every** line of the board — the contiguous block
 /// from its `Simulator centre` head through its `arena time` row, nothing
 /// filtered out of it — with every digit made `#`: its shape, which is the
-/// same across two matches whatever their ids and clocks. A row a later change
-/// adds anywhere in the block is therefore in the shape, and a Hold board that
-/// carried one would no longer be the skirmish board plus the `mode:` line.
+/// same across two matches whatever their ids and clocks. **Doc 32 cut CF.0
+/// (Q-CF-11)**: and every slot's drawn unit letter made `?` (`(R?)`), because
+/// each match draws its own from its seed. A row a later change adds anywhere
+/// in the block is therefore in the shape, and a Hold board that carried one
+/// would no longer be the skirmish board plus the `mode:` line.
 fn o1_board_shape(answer: &str) -> Vec<String> {
     let lines: Vec<&str> = answer.lines().map(str::trim).collect();
     let head = lines
@@ -6197,9 +6277,21 @@ fn o1_board_shape(answer: &str) -> Vec<String> {
         .unwrap_or_default()
         .iter()
         .map(|line| {
-            line.chars()
+            let mut shape: Vec<char> = line
+                .chars()
                 .map(|c| if c.is_ascii_digit() { '#' } else { c })
-                .collect::<String>()
+                .collect();
+            for at in 0..shape.len().saturating_sub(3) {
+                let drawn = shape[at] == '('
+                    && matches!(shape[at + 1], 'R' | 'B')
+                    && u8::try_from(shape[at + 2])
+                        .is_ok_and(|unit| tacsim::arena::PARTY_LETTERS.contains(&unit))
+                    && shape[at + 3] == ')';
+                if drawn {
+                    shape[at + 2] = '?';
+                }
+            }
+            shape.into_iter().collect::<String>()
         })
         .collect()
 }
@@ -6340,6 +6432,9 @@ async fn o1_the_hold_rule_is_public_and_its_clock_reaches_no_pilot() {
     say(&mut bo, "BOARD", "climb into").await;
     ada.expect_after(ada_from, "Good hunting").await;
     bo.expect_after(bo_from, "Good hunting").await;
+    // Doc 32 cut CF.0 (Q-CF-11): her tank's unit letter is drawn at check-out
+    // from match 2's seed; read it off that match's record.
+    let ra = support::drawn_callsigns(&server.store, 2).await[&red].clone();
 
     // The frame: the skirmish's keys, and not one more.
     let mut ada_web = web_session(&server, "ada", PILOT_PASSWORD, "Ada").await;
@@ -6435,7 +6530,7 @@ async fn o1_the_hold_rule_is_public_and_its_clock_reaches_no_pilot() {
     history_row_is_public(&flat, 2, "#2 aborted [hold]", None);
     let history = ask_whole(&mut ada, "SIM HISTORY").await;
     let flat = history.split_whitespace().collect::<Vec<&str>>().join(" ");
-    history_row_is_public(&flat, 2, "#2 aborted [hold]", Some("RA"));
+    history_row_is_public(&flat, 2, "#2 aborted [hold]", Some(&ra));
 }
 
 // ---------------------------------------------------------------------------
@@ -6762,16 +6857,23 @@ async fn o3_the_range_is_public_in_selection_and_the_report_is_the_pilots_own() 
     let from = ada.mark();
     say(&mut ada, "BOARD", "climb into").await;
     ada.expect_after(from, "Good hunting").await;
+    // Doc 32 cut CF.0 (Q-CF-11): the unit letters are drawn at check-out (the
+    // staff pod names in `@arena/pose` above are unchanged), so both tanks'
+    // callsigns are read off the match's own record.
+    let drawn = support::drawn_callsigns(&server.store, 1).await;
+    let (ra, ba) = (drawn[&red].clone(), drawn[&blue].clone());
     power_up(&mut ada).await;
+    let ba_row = format!("{ba} ");
     wait_until(STEP_TIMEOUT, "the target to be told apart", async || {
-        ask_whole(&mut ada, "CONTACTS").await.contains("BA ")
+        ask_whole(&mut ada, "CONTACTS").await.contains(&ba_row)
     })
     .await;
     // The lock is the arena's at its next pulse: a `FIRE` sent before it lands
     // is refused `No lock`, so the lock is waited for on the lock's own line.
     let locking = ada.mark();
-    say(&mut ada, "LOCK BA", "Locking").await;
-    ada.expect_after(locking, "Locked on BA").await;
+    say(&mut ada, &format!("LOCK {ba}"), "Locking").await;
+    ada.expect_after(locking, &format!("Locked on {ba}")).await;
+    let (hit_on, miss_on) = (format!("Hit on {ba}"), format!("Miss on {ba}"));
     let mut hit = false;
     for _ in 0..20 {
         wait_until(
@@ -6788,7 +6890,7 @@ async fn o3_the_range_is_public_in_selection_and_the_report_is_the_pilots_own() 
         let shot = ada.mark();
         ada.send_line("FIRE").await;
         if ada
-            .expect_one_of_after(shot, &["Hit on BA", "Miss on BA", "refused"])
+            .expect_one_of_after(shot, &[hit_on.as_str(), miss_on.as_str(), "refused"])
             .await
             == 0
         {
@@ -6819,15 +6921,15 @@ async fn o3_the_range_is_public_in_selection_and_the_report_is_the_pilots_own() 
     let report = sim_report(&mut ada, "SIM REPORT").await;
     let flat = report.split_whitespace().collect::<Vec<_>>().join(" ");
     let line = flat
-        .split("You flew RA: ")
+        .split(&format!("You flew {ra}: "))
         .nth(1)
         .and_then(|rest| rest.split('.').next())
-        .unwrap_or_else(|| panic!("no `You flew RA:` in:\n{report}"));
+        .unwrap_or_else(|| panic!("no `You flew {ra}:` in:\n{report}"));
     let rate: u64 = line
         .rsplit_once('(')
         .and_then(|(_, tail)| tail.split_once("%)"))
         .and_then(|(per_cent, _)| per_cent.parse().ok())
-        .unwrap_or_else(|| panic!("`You flew RA: {line}` carries no rate"));
+        .unwrap_or_else(|| panic!("`You flew {ra}: {line}` carries no rate"));
     assert!((1..=100).contains(&rate), "{rate}% in:\n{report}");
     assert!(
         !flat.contains("hit on ") && !flat.contains("your hull"),
@@ -7009,6 +7111,11 @@ async fn ae2_a_missile_in_flight_tells_its_target_nothing_and_a_lost_contact_rea
     power_up(&mut ada).await;
     power_up(&mut bo).await;
     let id = i3_match_id(&mut god).await;
+    // Doc 32 cut CF.0 (Q-CF-11): the unit letters are drawn at check-out (the
+    // staff pod names in `@arena/pose` above are unchanged), so both tanks'
+    // callsigns are read off the match's own record.
+    let drawn = support::drawn_callsigns(&server.store, id).await;
+    let (ra, ba) = (drawn[&red].clone(), drawn[&blue].clone());
 
     // Each holds the other, told apart.
     for term in [&mut ada, &mut bo] {
@@ -7020,8 +7127,9 @@ async fn ae2_a_missile_in_flight_tells_its_target_nothing_and_a_lost_contact_rea
         .await;
     }
     let locking = bo.mark();
-    say(&mut bo, "LOCK RA", "Locking").await;
-    bo.expect_after(locking, "Locked on RA").await;
+    say(&mut bo, &format!("LOCK {ra}"), "Locking").await;
+    bo.expect_after(locking, &format!("Locked on {ra}")).await;
+    let (hit_on, miss_on) = (format!("Hit on {ra}"), format!("Miss on {ra}"));
 
     // ---- (1) in flight, nothing --------------------------------------------
     let mut hit = false;
@@ -7049,7 +7157,12 @@ async fn ae2_a_missile_in_flight_tells_its_target_nothing_and_a_lost_contact_rea
         let outcome = bo
             .expect_one_of_after(
                 shot,
-                &["Hit on RA", "Miss on RA", "Still cycling", "refused"],
+                &[
+                    hit_on.as_str(),
+                    miss_on.as_str(),
+                    "Still cycling",
+                    "refused",
+                ],
             )
             .await;
         assert_ne!(
@@ -7079,7 +7192,7 @@ async fn ae2_a_missile_in_flight_tells_its_target_nothing_and_a_lost_contact_rea
         let told = ae2_told(&strip_ansi(&ada.seen[from..]));
         let whole = told.join("\n");
         for leak in [
-            "BA".to_owned(),
+            ba.clone(),
             "missile".to_owned(),
             "Firing".to_owned(),
             "bearing".to_owned(),
@@ -7421,15 +7534,21 @@ async fn ae3_the_drones_refusals_are_the_callers_and_its_mesh_is_the_mesh() {
     power_up(&mut ada).await;
     power_up(&mut cy).await;
     power_up(&mut bo).await;
+    // Doc 32 cut CF.0 (Q-CF-11): the unit letters are drawn at check-out (the
+    // staff pod names in `@arena/pose` above are unchanged): blue fields one
+    // tank, read off the match's record, and the drone's is Ada's own `STATUS`.
+    let ba = support::party_callsign(&server.store, 1, 'B').await;
+    let ra = support::own_callsign(&mut ada).await;
+    let (ba_row, ra_row) = (format!("{ba} "), format!("{ra} "));
 
     // The drone holds BA on its own sight, and carries nothing that fires.
     let mut drone_row = String::new();
     wait_until(STEP_TIMEOUT, "the drone to tell BA apart", async || {
         drone_row = ask_whole(&mut ada, "CONTACTS").await;
-        contact_range_m(&drone_row, "BA").is_some()
+        contact_range_m(&drone_row, &ba).is_some()
     })
     .await;
-    let drone_m = contact_range_m(&drone_row, "BA").expect("the drone's row");
+    let drone_m = contact_range_m(&drone_row, &ba).expect("the drone's row");
     assert!(
         drone_m <= 600,
         "the drone saw BA with its own 600 m sight: {drone_row}"
@@ -7438,10 +7557,10 @@ async fn ae3_the_drones_refusals_are_the_callers_and_its_mesh_is_the_mesh() {
     let mut tank_row = String::new();
     wait_until(STEP_TIMEOUT, "the tank to hold BA", async || {
         tank_row = ask_whole(&mut cy, "CONTACTS").await;
-        contact_range_m(&tank_row, "BA").is_some()
+        contact_range_m(&tank_row, &ba).is_some()
     })
     .await;
-    let tank_m = contact_range_m(&tank_row, "BA").expect("the tank's row");
+    let tank_m = contact_range_m(&tank_row, &ba).expect("the tank's row");
     assert!(
         (600..=900).contains(&tank_m),
         "a plot past the tank's own 600 m and inside one mesh hop is the drone's share: \
@@ -7449,7 +7568,7 @@ async fn ae3_the_drones_refusals_are_the_callers_and_its_mesh_is_the_mesh() {
     );
     let row = strip_ansi(&tank_row)
         .lines()
-        .find(|line| line.trim_start().starts_with("BA "))
+        .find(|line| line.trim_start().starts_with(&ba_row))
         .unwrap_or_default()
         .to_owned();
     for leak in ["drone", "Ada", "shared", "#"] {
@@ -7459,7 +7578,7 @@ async fn ae3_the_drones_refusals_are_the_callers_and_its_mesh_is_the_mesh() {
         );
     }
     assert!(
-        !row.split_whitespace().any(|word| word == "RA"),
+        !row.split_whitespace().any(|word| word == ra),
         "the shared row names the teammate that shared it: {row}"
     );
     // **17b cut M1b.3** (Q2): Cy's tank holds the drone on its own sight, 250
@@ -7469,12 +7588,12 @@ async fn ae3_the_drones_refusals_are_the_callers_and_its_mesh_is_the_mesh() {
     let mut friend_row = String::new();
     wait_until(STEP_TIMEOUT, "Cy's tank to tell RA apart", async || {
         friend_row = ask_whole(&mut cy, "CONTACTS").await;
-        contact_range_m(&friend_row, "RA").is_some()
+        contact_range_m(&friend_row, &ra).is_some()
     })
     .await;
     let row = strip_ansi(&friend_row)
         .lines()
-        .find(|line| line.trim_start().starts_with("RA "))
+        .find(|line| line.trim_start().starts_with(&ra_row))
         .unwrap_or_default()
         .to_owned();
     assert!(row.contains(" red "), "the friendly row is red's: {row}");
@@ -7490,12 +7609,12 @@ async fn ae3_the_drones_refusals_are_the_callers_and_its_mesh_is_the_mesh() {
     let mut bo_row = String::new();
     wait_until(STEP_TIMEOUT, "Bo's tank to tell RA apart", async || {
         bo_row = ask_whole(&mut bo, "CONTACTS").await;
-        contact_range_m(&bo_row, "RA").is_some()
+        contact_range_m(&bo_row, &ra).is_some()
     })
     .await;
     let row = strip_ansi(&bo_row)
         .lines()
-        .find(|line| line.trim_start().starts_with("RA "))
+        .find(|line| line.trim_start().starts_with(&ra_row))
         .unwrap_or_default()
         .to_owned();
     for leak in ["drone", "Ada", "#"] {
@@ -7574,6 +7693,14 @@ async fn af3_the_resume_names_nothing_a_pilot_or_a_bystander_may_not_read() {
     let refused_before = ask(&mut ada, "@arena/status", "Permission denied.").await;
     take_off(&mut ada, &mut bo).await;
     let store = Arc::clone(&first.store);
+    // Doc 32 cut CF.0 (Q-CF-11): blue's one tank answers to a unit letter drawn
+    // at check-out; read it off the match's record before the crash.
+    let ba = support::party_callsign(&store, 1, 'B').await;
+    let (lock_ba, range_ba, bearing_ba) = (
+        format!("LOCK {ba}"),
+        format!("RANGE {ba}"),
+        format!("BEARING {ba}"),
+    );
     wait_until(STEP_TIMEOUT, "the snapshot to land", async || {
         store
             .module_json_get("tacsim", "tacsim:snapshot:1")
@@ -7648,7 +7775,7 @@ async fn af3_the_resume_names_nothing_a_pilot_or_a_bystander_may_not_read() {
         .unwrap_or_default()
         .trim()
         .to_owned();
-    assert_eq!(blue_row, "blue: 1 (BA): Bo", "{board}");
+    assert_eq!(blue_row, format!("blue: 1 ({ba}): Bo"), "{board}");
 
     // Ada takes her tank back; every unheld designator answers one sentence.
     wait_until(STEP_TIMEOUT, "the tank to come back", async || {
@@ -7672,7 +7799,13 @@ async fn af3_the_resume_names_nothing_a_pilot_or_a_bystander_may_not_read() {
     ada.expect("Back aboard").await;
     say(&mut ada, SENTINEL, HUH).await;
     let mut refusals: Vec<String> = Vec::new();
-    for line in ["LOCK BA", "LOCK X1", "LOCK ZZ", "RANGE BA", "BEARING BA"] {
+    for line in [
+        lock_ba.as_str(),
+        "LOCK X1",
+        "LOCK ZZ",
+        range_ba.as_str(),
+        bearing_ba.as_str(),
+    ] {
         let seen = ask(&mut ada, line, NO_SUCH_CONTACT).await;
         refusals.push(seen.trim_start_matches(line).trim().to_owned());
     }
@@ -7743,6 +7876,10 @@ async fn m1a4_drive_refuses_a_designator_in_one_sentence_before_and_after_detect
     let (red, blue, _muster, domain) = seat_the_witnesses(&mut god).await;
     close_the_gap(&mut god, red, blue, domain).await;
     take_off(&mut ada, &mut bo).await;
+    // Doc 32 cut CF.0 (Q-CF-11): Bo's unit letter is drawn at check-out; read
+    // it off the match's own record.
+    let ba = support::drawn_callsigns(&server.store, 1).await[&blue].clone();
+    let drive_ba = format!("DRIVE {ba}");
 
     // The bystander: the gate's one line, byte for byte.
     let seen = ask(&mut cy, "DRIVE a", OUTSIDE_COCKPIT).await;
@@ -7760,7 +7897,7 @@ async fn m1a4_drive_refuses_a_designator_in_one_sentence_before_and_after_detect
         held.contains(NO_CONTACTS),
         "the premise: nothing held\n{held}"
     );
-    let before = ask(&mut ada, "DRIVE BA", "DRIVE refused").await;
+    let before = ask(&mut ada, &drive_ba, "DRIVE refused").await;
     names_nothing(&before, red, blue, "`DRIVE BA` before detection");
     let before = m1a4_drive_refusal(&before);
     assert_eq!(before, DRIVE_NOT_A_GOAL);
@@ -7774,14 +7911,14 @@ async fn m1a4_drive_refuses_a_designator_in_one_sentence_before_and_after_detect
         "the contact to be told apart as BA",
         async || {
             let listing = ask_whole(&mut ada, "CONTACTS").await;
-            designator_of(&listing).as_deref() == Some("BA")
+            designator_of(&listing).as_deref() == Some(ba.as_str())
         },
     )
     .await;
     say(&mut ada, "SPEED 0", "Making 0 kph").await;
 
     // After detection: the same bytes, for the held name and the first one.
-    for line in ["DRIVE BA", &format!("DRIVE {provisional}")] {
+    for line in [drive_ba.as_str(), &format!("DRIVE {provisional}")] {
         let seen = ask(&mut ada, line, "DRIVE refused").await;
         names_nothing(&seen, red, blue, line);
         assert_eq!(
@@ -7854,6 +7991,11 @@ async fn m1b3_the_arming_names_nothing_but_the_pilots_own_slot() {
     let mut ada_web = web_session(&server, "ada", PILOT_PASSWORD, "Ada").await;
     let mut bo_web = web_session(&server, "bo", PILOT_PASSWORD, "Bo").await;
     take_off(&mut ada, &mut bo).await;
+    // Doc 32 cut CF.0 (Q-CF-11): the unit letters are drawn at check-out, so
+    // both tanks' callsigns are read off the match's own record.
+    let drawn = support::drawn_callsigns(&server.store, 1).await;
+    let (ra, ba) = (drawn[&red].clone(), drawn[&blue].clone());
+    let (ra_quoted, ba_quoted) = (format!("\"{ra}\""), format!("\"{ba}\""));
 
     // Ada's arming, offered straight to her arena.
     let tasks = server.tasks.clone().expect("the arena tasks");
@@ -7917,7 +8059,14 @@ async fn m1b3_the_arming_names_nothing_but_the_pilots_own_slot() {
         let object = expected.to_string();
         names_nothing(&object, red, blue, "the armed object");
         no_sixteen_digit_word(&object, "the armed object");
-        for leak in ["\"BA\"", "\"RA\"", "designator", "contact", "Bo", "Ada"] {
+        for leak in [
+            ba_quoted.as_str(),
+            ra_quoted.as_str(),
+            "designator",
+            "contact",
+            "Bo",
+            "Ada",
+        ] {
             assert!(
                 !object.contains(leak),
                 "{stage}: the armed object said {leak}"
@@ -7990,7 +8139,11 @@ async fn m1b3_the_arming_names_nothing_but_the_pilots_own_slot() {
     wait_until(
         STEP_TIMEOUT,
         "Ada's sensor to tell Bo's tank apart",
-        async || ask_whole(&mut ada, "CONTACTS").await.contains("BA  blue"),
+        async || {
+            ask_whole(&mut ada, "CONTACTS")
+                .await
+                .contains(&format!("{ba}  blue"))
+        },
     )
     .await;
     query += 1;
@@ -8118,6 +8271,10 @@ async fn m1b4_arming_and_its_sentences_name_only_what_the_pilot_holds() {
     let (red, blue, _muster, domain) = seat_the_witnesses(&mut god).await;
     close_the_gap(&mut god, red, blue, domain).await;
     take_off(&mut ada, &mut bo).await;
+    // Doc 32 cut CF.0 (Q-CF-11): Bo's unit letter is drawn at check-out; read
+    // it off the match's own record.
+    let ba = support::drawn_callsigns(&server.store, 1).await[&blue].clone();
+    let fires_at = format!("Cannon fires at {ba} by S1 (");
     let bo_mark = bo.mark();
 
     // The bystander: the gate's one line, byte for byte.
@@ -8172,7 +8329,7 @@ async fn m1b4_arming_and_its_sentences_name_only_what_the_pilot_holds() {
         "the contact to be told apart as BA",
         async || {
             let listing = ask_whole(&mut ada, "CONTACTS").await;
-            designator_of(&listing).as_deref() == Some("BA")
+            designator_of(&listing).as_deref() == Some(ba.as_str())
         },
     )
     .await;
@@ -8202,13 +8359,13 @@ async fn m1b4_arming_and_its_sentences_name_only_what_the_pilot_holds() {
     )
     .await;
     let mark = ada.mark();
-    say(&mut ada, "LOCK BA", "Locking BA").await;
+    say(&mut ada, &format!("LOCK {ba}"), &format!("Locking {ba}")).await;
     ada.expect_after(mark, "S1 held the cannon:").await;
     let seen = strip_ansi(&ada.seen[mark..]);
     names_nothing(&seen, red, blue, "the held sentence");
     assert_eq!(
         m1b4_lines(&seen, "S1 held the cannon:"),
-        vec!["S1 held the cannon: BA shows its front.".to_owned()],
+        vec![format!("S1 held the cannon: {ba} shows its front.")],
         "{seen}"
     );
 
@@ -8223,7 +8380,7 @@ async fn m1b4_arming_and_its_sentences_name_only_what_the_pilot_holds() {
         "Queued: cannon",
     )
     .await;
-    ada.expect_after(mark, "Cannon fires at BA by S1 (").await;
+    ada.expect_after(mark, &fires_at).await;
     say(
         &mut ada,
         "FIRE cannon OFF",
@@ -8236,7 +8393,7 @@ async fn m1b4_arming_and_its_sentences_name_only_what_the_pilot_holds() {
     assert!(!fired.is_empty(), "{seen}");
     for line in &fired {
         let rest = line
-            .strip_prefix("Cannon fires at BA by S1 (")
+            .strip_prefix(fires_at.as_str())
             .and_then(|rest| rest.strip_suffix("%, front)."))
             .unwrap_or_else(|| panic!("not her slot's sentence: {line}"));
         assert!(rest.bytes().all(|b| b.is_ascii_digit()), "{line}");
@@ -8257,7 +8414,7 @@ async fn m1b4_arming_and_its_sentences_name_only_what_the_pilot_holds() {
         names_nothing(&text, red, blue, "a slot notice object");
         assert_eq!(notice.get("slot"), Some(&json!(1)), "{text}");
         assert_eq!(notice.get("weapon"), Some(&json!("cannon")), "{text}");
-        assert_eq!(notice.get("designator"), Some(&json!("BA")), "{text}");
+        assert_eq!(notice.get("designator"), Some(&json!(ba)), "{text}");
         for key in ["unit", "target", "pilot", "shooter"] {
             assert!(notice.get(key).is_none(), "{key} on {text}");
         }
@@ -8913,6 +9070,8 @@ async fn m5_a_slots_mind_is_read_by_its_own_character_alone() {
 
     // The board, per reader: Ada's own names both of hers; Bo's and Cy's
     // mark them; nobody reads anything against Bo's unchosen row.
+    // Doc 32 cut CF.0 (Q-CF-11): in `Selection` no tank is checked out, so the
+    // board names each pod by its own label (`BA`, `RA`) until one is.
     let unchosen = "blue: 1 (BA): Bo";
     let rows = m5_fog_rows(&ask_whole(&mut ada, "SIM STATUS").await);
     assert!(
@@ -9029,6 +9188,10 @@ async fn m5_a_slots_mind_is_read_by_its_own_character_alone() {
     say(&mut bo, "BOARD", "climb into").await;
     ada.expect_after(started.0, "Good hunting").await;
     bo.expect_after(started.1, "Good hunting").await;
+    // Doc 32 cut CF.0 (Q-CF-11): from the check-out on, the board prints each
+    // tank's drawn unit letter; read both off the match's own record.
+    let drawn = support::drawn_callsigns(&server.store, 1).await;
+    let (ra, ba) = (drawn[&red].clone(), drawn[&blue].clone());
     // Fresh accounts read the panel hint on their first frame, one pulse
     // after `Good hunting` (16b cut AH.1): fenced, so it cannot land inside
     // the whole answers read below.
@@ -9059,11 +9222,13 @@ async fn m5_a_slots_mind_is_read_by_its_own_character_alone() {
     // each reader's rows pinned whole (a row naming the mind without the
     // word `mind` fails it), and no reader's rows carry `Doctrine` or any of
     // the six presets.
-    let seated = [
-        "red: 1 (RA): Ada, pod Red Pod 1, seated",
-        "blue: 1 (BA): Bo, pod Blue Pod 1, seated",
+    let seated_rows = [
+        format!("red: 1 ({ra}): Ada, pod Red Pod 1, seated"),
+        format!("blue: 1 ({ba}): Bo, pod Blue Pod 1, seated"),
     ];
-    let reduced = ["red: 1 (RA): Ada", "blue: 1 (BA): Bo"];
+    let reduced_rows = [format!("red: 1 ({ra}): Ada"), format!("blue: 1 ({ba}): Bo")];
+    let seated = [seated_rows[0].as_str(), seated_rows[1].as_str()];
+    let reduced = [reduced_rows[0].as_str(), reduced_rows[1].as_str()];
     let no_mind_named = |who: &str, rows: &[String]| {
         for row in rows {
             let words = words_of(row);
@@ -9134,7 +9299,7 @@ async fn m5_a_slots_mind_is_read_by_its_own_character_alone() {
     let ended = cy.mark();
     say(&mut bo, "SIM ABORT", "aborts match").await;
     cy.expect_after(ended, "Its units are checked in.").await;
-    for (who, term, flew) in [("Bo", &mut bo, Some("BA")), ("Cy", &mut cy, None)] {
+    for (who, term, flew) in [("Bo", &mut bo, Some(ba.as_str())), ("Cy", &mut cy, None)] {
         let history = ask_whole(term, "SIM HISTORY").await;
         let flat = history.split_whitespace().collect::<Vec<&str>>().join(" ");
         history_row_is_public(&flat, 1, "#1 aborted", flew);

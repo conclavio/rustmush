@@ -452,7 +452,17 @@ async fn fly_as_wingman() {
     assert_eq!(matches.len(), 1, "one match: {}", landed.report_text);
     let flown = &matches[0];
     assert_eq!(flown["lead"], false, "{}", landed.report_text);
-    assert_eq!(flown["callsign"], "RB", "the second red slot");
+    // Doc 32 cut CF.0 (Q-CF-11): the second red slot's tank answers to red's
+    // letter and a unit letter drawn at check-out, one of the 23.
+    let callsign = flown["callsign"].as_str().unwrap_or_default();
+    assert!(
+        callsign.len() == 2
+            && callsign.starts_with('R')
+            && callsign[1..]
+                .chars()
+                .all(|c| "ABCDEFGHJKLMNPQRSTUVWYZ".contains(c)),
+        "the second red slot's callsign: {callsign}"
+    );
     assert_eq!(flown["result"], "abort");
     assert_eq!(flown["won"], false);
     assert_eq!(landed.report["success"], false);

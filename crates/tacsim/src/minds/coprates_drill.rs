@@ -11,7 +11,7 @@ use crate::arena::{
     profile_rules::BoundProgram,
     profile_runtime::ProfileToken,
     runtime_card::{CardCatalog, CardDefinition, ProfileDefinition, ProfileKey, RuntimeCard},
-    state::{Channel, Classification, ContactId, Controller, Power, Team},
+    state::{Channel, Classification, ContactId, Controller, PartyId, Power},
     test_support::{arena_painted, ground, line_tank, pose},
 };
 use crate::config::ArenaConfig;
@@ -707,7 +707,7 @@ fn drill_actual_native_no_route_repeats_only_after_each_fresh_delay() -> TestRes
         (4, 7),
     ]
     .map(|(x, y)| (x, y, wall));
-    let mut hull = line_tank(fixture::UNIT, Team::Red, pose(3500, 3500));
+    let mut hull = line_tank(fixture::UNIT, PartyId::RED, pose(3500, 3500));
     hull.controller = Controller::Mind;
     hull.reseal(&crate::match_::SealTerms::fixture())?;
     let mut arena = arena_painted(vec![hull], &paint);
@@ -795,7 +795,7 @@ fn drill_actual_native_no_route_repeats_only_after_each_fresh_delay() -> TestRes
 
 #[test]
 fn drill_actual_native_arrival_holds_without_firing() -> TestResult {
-    let mut hull = line_tank(fixture::UNIT, Team::Red, pose(3500, 3500));
+    let mut hull = line_tank(fixture::UNIT, PartyId::RED, pose(3500, 3500));
     hull.controller = Controller::Mind;
     hull.reseal(&crate::match_::SealTerms::fixture())?;
     let mut arena = arena_painted(vec![hull], &[]);

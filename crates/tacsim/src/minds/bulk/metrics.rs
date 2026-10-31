@@ -155,7 +155,7 @@ impl Metrics {
         game: &mut Game,
         ops: &Mutex<Operations>,
         arena: &Arena,
-        focus: crate::arena::Team,
+        focus: crate::arena::PartyId,
     ) -> Result<(), BulkError> {
         let ops = ops
             .lock()

@@ -65,8 +65,8 @@ use crate::arena::path::{
 use crate::arena::perception::{DriveOutcome, FrameNotice, bearing_of};
 use crate::arena::slope;
 use crate::arena::state::{
-    Arena, ArenaDefinition, ArenaTerrain, Channel, CostRow, DueKind, HoldObjective, Power,
-    SeenPose, Team, UnitState,
+    Arena, ArenaDefinition, ArenaTerrain, Channel, CostRow, DueKind, HoldObjective, PartyId, Power,
+    SeenPose, UnitState,
 };
 use crate::config::ReflexConfig;
 
@@ -2384,7 +2384,7 @@ pub fn stand_off_cell(
 #[must_use]
 pub fn entry_cell(
     def: &ArenaDefinition,
-    team: Team,
+    team: PartyId,
     cost_row: CostRow,
     here: (u16, u16),
 ) -> Option<(u16, u16)> {
@@ -2431,7 +2431,7 @@ pub fn entry_cell(
 #[must_use]
 pub fn entry_interior_cell(
     def: &ArenaDefinition,
-    team: Team,
+    team: PartyId,
     cost_row: CostRow,
     here: (u16, u16),
 ) -> Option<(u16, u16)> {
@@ -2488,7 +2488,7 @@ pub fn entry_interior_cell(
 #[must_use]
 pub fn far_entry_cell(
     def: &ArenaDefinition,
-    team: Team,
+    team: PartyId,
     cost_row: CostRow,
     here: (u16, u16),
     taken: &[(u16, u16)],
@@ -3273,7 +3273,7 @@ fn edge_is_open(
 mod tests {
     use super::*;
     use crate::arena::doctrine::MachineState;
-    use crate::arena::state::{Controller, Team};
+    use crate::arena::state::{Controller, PartyId};
     use crate::arena::test_support::{arena_of, pose, tank};
 
     #[test]
@@ -3365,7 +3365,7 @@ mod tests {
     #[test]
     // Moved from reflex.rs by 17b cut M1a.1; proves what it proved.
     fn the_avoided_cells_are_bounded_and_a_repeat_refreshes_its_stamp() {
-        let mut arena = arena_of(vec![tank(ObjId(4), Team::Red, pose(1_500, 1_500))]);
+        let mut arena = arena_of(vec![tank(ObjId(4), PartyId::RED, pose(1_500, 1_500))]);
         // 17b cut M4.5a: a mind's hull, with the motor row a controller that
         // takes a hull over steers it through (`set_controller` lays none for a
         // mind: its first landing's would).
@@ -3534,7 +3534,7 @@ mod tests {
         fn asked(edit: impl FnOnce(&mut Arena)) -> (i32, u32) {
             // Cell (3, 3) of a 1,000 cm window, facing north, which
             // `octant_step(0)` makes the step onto (3, 4).
-            let mut arena = arena_of(vec![tank(ObjId(4), Team::Red, pose(3_500, 3_500))]);
+            let mut arena = arena_of(vec![tank(ObjId(4), PartyId::RED, pose(3_500, 3_500))]);
             if let Some(state) = arena.unit_mut(ObjId(4)) {
                 state.power = Power::Online;
                 state.desired_speed_cms = 800;
@@ -3650,7 +3650,7 @@ mod tests {
         /// Cell (3, 3) facing north onto (3, 4), as in the E.3 fixture; `bluff`
         /// raises (3, 4) by 800 cm and `remembered` puts it on the avoid list.
         fn asked(bluff: bool, remembered: bool) -> (i32, u32) {
-            let mut arena = arena_of(vec![tank(ObjId(4), Team::Red, pose(3_500, 3_500))]);
+            let mut arena = arena_of(vec![tank(ObjId(4), PartyId::RED, pose(3_500, 3_500))]);
             if bluff {
                 let mut cells = vec![ground(); 8 * 8];
                 if let Some(slot) = cells.get_mut(4 * 8 + 3) {
@@ -3741,12 +3741,12 @@ mod tests {
         use crate::arena::stock_mind::StockMemory;
         use crate::deliberation::order::{Constraints, Objective, Order, StandingOrder};
         let unit = ObjId(4);
-        let mut arena = arena_of(vec![tank(unit, Team::Red, pose(1_500, 1_500))]);
+        let mut arena = arena_of(vec![tank(unit, PartyId::RED, pose(1_500, 1_500))]);
         arena.set_controller(unit, Controller::Mind, MachineState::Patrol);
         let standing = StandingOrder::accepted(
             Order {
                 squad: crate::deliberation::squad::SquadId {
-                    team: Team::Red,
+                    team: PartyId::RED,
                     index: 1,
                 },
                 objective: Objective::Advance { to: (6, 6) },
@@ -3758,7 +3758,7 @@ mod tests {
                 issuer: None,
                 by: crate::deliberation::order::CharacterRef::Persona {
                     squad: crate::deliberation::squad::SquadId {
-                        team: crate::arena::state::Team::Red,
+                        team: crate::arena::state::PartyId::RED,
                         index: 1,
                     },
                 },
@@ -3841,9 +3841,9 @@ mod tests {
         let hull = ObjId(6);
         let at = |x: u16, y: u16| pose(i64::from(x) * 1_000 + 500, i64::from(y) * 1_000 + 500);
         let mut units = vec![
-            tank(car, Team::Red, at(4, 4)),
-            tank(walker, Team::Red, at(1, 3)),
-            tank(hull, Team::Red, at(4, 5)),
+            tank(car, PartyId::RED, at(4, 4)),
+            tank(walker, PartyId::RED, at(1, 3)),
+            tank(hull, PartyId::RED, at(4, 5)),
         ];
         if let Some(unit) = units.get_mut(0) {
             unit.unit = tactical_unit_on(car, crate::definitions::unit::WHEELED);
@@ -3948,7 +3948,7 @@ mod tests {
     /// one `MotorTick` on the `decide_ms` grid) — the drive the refusal memory
     /// is the follower's of, under either policy.
     fn ai1_machine() -> Arena {
-        let mut arena = arena_of(vec![tank(ObjId(4), Team::Red, pose(3_500, 3_500))]);
+        let mut arena = arena_of(vec![tank(ObjId(4), PartyId::RED, pose(3_500, 3_500))]);
         arena.mind_runner = std::sync::Arc::new(crate::arena::mind::NoMind);
         arena.set_controller(ObjId(4), Controller::Mind, MachineState::Patrol);
         if let Some(state) = arena.unit_mut(ObjId(4)) {
@@ -4137,14 +4137,14 @@ mod tests {
         let mut def = crate::arena::test_support::definition();
         for zone in [
             EntryZone {
-                team: Team::Red,
+                team: PartyId::RED,
                 x0: 0,
                 x1: 3,
                 y0: 0,
                 y1: 7,
             },
             EntryZone {
-                team: Team::Blue,
+                team: PartyId::BLUE,
                 x0: 7,
                 x1: 4,
                 y0: 7,
@@ -4164,22 +4164,22 @@ mod tests {
             }
         }
         def.entry_zones = vec![EntryZone {
-            team: Team::Red,
+            team: PartyId::RED,
             x0: 0,
             x1: 3,
             y0: 0,
             y1: 7,
         }];
         assert_eq!(
-            entry_cell(&def, Team::Red, CostRow::Tracked, (7, 4)),
+            entry_cell(&def, PartyId::RED, CostRow::Tracked, (7, 4)),
             Some((3, 4))
         );
         assert_eq!(
-            entry_interior_cell(&def, Team::Red, CostRow::Tracked, (7, 4)),
+            entry_interior_cell(&def, PartyId::RED, CostRow::Tracked, (7, 4)),
             Some((2, 4))
         );
         assert_eq!(
-            entry_interior_cell(&def, Team::Blue, CostRow::Tracked, (7, 4)),
+            entry_interior_cell(&def, PartyId::BLUE, CostRow::Tracked, (7, 4)),
             None
         );
     }
@@ -4192,11 +4192,11 @@ mod tests {
         let mut def = crate::arena::test_support::definition();
         // The unchanged two-cell own zone has no complete arrival square.
         assert_eq!(
-            entry_interior_cell(&def, Team::Red, CostRow::Tracked, (7, 4)),
+            entry_interior_cell(&def, PartyId::RED, CostRow::Tracked, (7, 4)),
             None
         );
         def.entry_zones = vec![EntryZone {
-            team: Team::Red,
+            team: PartyId::RED,
             x0: 0,
             x1: 3,
             y0: 0,
@@ -4204,33 +4204,33 @@ mod tests {
         }];
         def.terrain = priced_terrain(8, 8, TerrainClass::Rubble, &[((1, 4), TerrainClass::Grass)]);
         assert_eq!(
-            entry_interior_cell(&def, Team::Red, CostRow::Tracked, (7, 4)),
+            entry_interior_cell(&def, PartyId::RED, CostRow::Tracked, (7, 4)),
             Some((2, 4))
         );
         assert_eq!(
-            entry_interior_cell(&def, Team::Red, CostRow::Wheeled, (7, 4)),
+            entry_interior_cell(&def, PartyId::RED, CostRow::Wheeled, (7, 4)),
             Some((1, 4))
         );
         let interior = (1..=6).flat_map(|y| [(1, y), (2, y)]).collect::<Vec<_>>();
         def.terrain = ai1_walled(&interior);
         assert_eq!(
-            entry_cell(&def, Team::Red, CostRow::Tracked, (7, 4)),
+            entry_cell(&def, PartyId::RED, CostRow::Tracked, (7, 4)),
             Some((3, 4))
         );
         assert_eq!(
-            entry_interior_cell(&def, Team::Red, CostRow::Tracked, (7, 4)),
+            entry_interior_cell(&def, PartyId::RED, CostRow::Tracked, (7, 4)),
             None
         );
         for coordinate in [0, u16::MAX] {
             def.entry_zones = vec![EntryZone {
-                team: Team::Red,
+                team: PartyId::RED,
                 x0: coordinate,
                 x1: coordinate,
                 y0: coordinate,
                 y1: coordinate,
             }];
             assert_eq!(
-                entry_interior_cell(&def, Team::Red, CostRow::Tracked, (7, 4)),
+                entry_interior_cell(&def, PartyId::RED, CostRow::Tracked, (7, 4)),
                 None
             );
         }
@@ -4249,14 +4249,14 @@ mod tests {
         def.terrain = ArenaTerrain::new(64, 64, 1_000, cells).expect("bounded map");
         def.entry_zones = vec![
             EntryZone {
-                team: Team::Red,
+                team: PartyId::RED,
                 x0: 0,
                 x1: 63,
                 y0: 0,
                 y1: 63,
             },
             EntryZone {
-                team: Team::Red,
+                team: PartyId::RED,
                 x0: 61,
                 x1: 63,
                 y0: 61,
@@ -4264,12 +4264,12 @@ mod tests {
             },
         ];
         assert_eq!(
-            entry_interior_cell(&def, Team::Red, CostRow::Tracked, (0, 0)),
+            entry_interior_cell(&def, PartyId::RED, CostRow::Tracked, (0, 0)),
             None
         );
         def.entry_zones.remove(0);
         assert_eq!(
-            entry_interior_cell(&def, Team::Red, CostRow::Tracked, (0, 0)),
+            entry_interior_cell(&def, PartyId::RED, CostRow::Tracked, (0, 0)),
             Some((62, 62))
         );
     }
@@ -4280,12 +4280,12 @@ mod tests {
         let def = std::sync::Arc::make_mut(&mut arena.definition);
         def.entry_zones
             .iter_mut()
-            .find(|zone| zone.team == Team::Red)
+            .find(|zone| zone.team == PartyId::RED)
             .expect("own zone")
             .x1 = 2;
-        let old = entry_cell(def, Team::Red, CostRow::Tracked, (3, 3)).expect("boundary");
+        let old = entry_cell(def, PartyId::RED, CostRow::Tracked, (3, 3)).expect("boundary");
         let interior =
-            entry_interior_cell(def, Team::Red, CostRow::Tracked, (3, 3)).expect("interior");
+            entry_interior_cell(def, PartyId::RED, CostRow::Tracked, (3, 3)).expect("interior");
         assert_eq!((old, interior), ((2, 3), (1, 3)));
         let row = |goal| MotorRow {
             goal: Some(goal),
@@ -4315,7 +4315,7 @@ mod tests {
                 .definition
                 .entry_zones
                 .iter()
-                .any(|zone| zone.team == Team::Red
+                .any(|zone| zone.team == PartyId::RED
                     && (zone.x0..=zone.x1).contains(&here.0)
                     && (zone.y0..=zone.y1).contains(&here.1))
         );
@@ -4661,7 +4661,7 @@ mod tests {
         }
 
         // And the circle a unit is on by its next tick.
-        let arena = arena_of(vec![tank(ObjId(4), Team::Red, pose(1_500, 1_500))]);
+        let arena = arena_of(vec![tank(ObjId(4), PartyId::RED, pose(1_500, 1_500))]);
         let mut unit = arena.units.first().cloned().expect("the tank");
         unit.speed_cms = 600;
         // min(1,000, 600 + 200 × 1,000 / 1,000) = 800 cm/s at 30,000 mdeg/s.
@@ -4881,7 +4881,7 @@ mod tests {
             ..MotorRow::default()
         };
         // Level.
-        let mut arena = arena_of(vec![tank(ObjId(4), Team::Red, pose(500, 500))]);
+        let mut arena = arena_of(vec![tank(ObjId(4), PartyId::RED, pose(500, 500))]);
         let followed = ai1_followed(&mut arena, row.clone());
         assert_eq!(
             followed.route.first().copied(),
@@ -4892,7 +4892,7 @@ mod tests {
         assert_eq!(followed.route.len(), 4);
 
         // (0, 1) up a bluff, for a limited unit.
-        let mut arena = arena_of(vec![tank(ObjId(4), Team::Red, pose(500, 500))]);
+        let mut arena = arena_of(vec![tank(ObjId(4), PartyId::RED, pose(500, 500))]);
         let mut cells = vec![crate::arena::test_support::ground(); 8 * 8];
         if let Some(slot) = cells.get_mut(8) {
             slot.elev_cm = 800;
@@ -4911,7 +4911,7 @@ mod tests {
         );
 
         // Both shoulders of (1, 1) walls, the route ending there: nothing.
-        let mut arena = arena_of(vec![tank(ObjId(4), Team::Red, pose(500, 500))]);
+        let mut arena = arena_of(vec![tank(ObjId(4), PartyId::RED, pose(500, 500))]);
         std::sync::Arc::make_mut(&mut arena.definition).terrain = ai1_walled(&[(1, 0), (0, 1)]);
         let short = MotorRow {
             route: vec![(1, 0), (2, 0), (2, 1), (1, 1)],
@@ -4950,13 +4950,13 @@ mod tests {
         let red = |id: u32, x: u16, y: u16| {
             tank(
                 ObjId(id),
-                Team::Red,
+                PartyId::RED,
                 pose(i64::from(x) * 1_000 + 500, i64::from(y) * 1_000 + 500),
             )
         };
         // (a) The answer itself.
         let mut arena = arena_of(vec![
-            tank(ObjId(3), Team::Blue, pose(7_500, 7_500)),
+            tank(ObjId(3), PartyId::BLUE, pose(7_500, 7_500)),
             red(4, 2, 3),
             red(5, 3, 3),
             red(6, 4, 3),

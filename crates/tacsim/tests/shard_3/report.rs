@@ -24,7 +24,7 @@ use mush_core::ObjId;
 use smol_str::SmolStr;
 use support::{Muster, booted_world, ledger_events, run_until, shipped_arena_seeded};
 use tacsim::arena::ledger::{EventKind, LedgerEvent};
-use tacsim::arena::state::{Arena, EndReason, Team};
+use tacsim::arena::state::{Arena, EndReason, PartyId};
 use tacsim::match_::HistoryRow;
 use tacsim::match_::report::{
     Fold, HandOver, OwnMind, Page, Reader, Report, ReportRules, Roster, fold, header_lines, stamp,
@@ -216,19 +216,19 @@ fn v3_a_real_fight_folds_to_each_pilots_own_projection() {
     let mut arena = shipped_arena_seeded(
         &world,
         &[
-            &[Muster::mind(Team::Red, 1).dry()],
-            &[Muster::mind(Team::Blue, 1).at(BLUE_AT)],
+            &[Muster::mind(PartyId::RED, 1).dry()],
+            &[Muster::mind(PartyId::BLUE, 1).at(BLUE_AT)],
         ],
         FIGHT_SEED,
     );
-    let loser = support::tank(&world, Team::Red, 1);
-    let winner = support::tank(&world, Team::Blue, 1);
+    let loser = support::tank(&world, PartyId::RED, 1);
+    let winner = support::tank(&world, PartyId::BLUE, 1);
     let mut bytes = run_until(&mut arena, BOUND_MS, 1_000, |_, _| {});
     assert!(
         matches!(
             arena.ended.map(|end| end.reason),
             Some(EndReason::Elimination {
-                winner: Some(Team::Blue)
+                winner: Some(PartyId::BLUE)
             })
         ),
         "the armed tank did not eliminate the dry one inside {BOUND_MS} ms: {:?} at {} ms",
@@ -420,13 +420,15 @@ fn o1_a_hold_ends_the_pilots_report_and_tags_the_header() {
     let red = ObjId(101);
     let blue = ObjId(201);
     let mut roster = Roster::new();
-    roster.insert(red, Some(Team::Red), SmolStr::new("RA"), None);
-    roster.insert(blue, Some(Team::Blue), SmolStr::new("BA"), None);
+    roster.insert(red, Some(PartyId::RED), SmolStr::new("RA"), None);
+    roster.insert(blue, Some(PartyId::BLUE), SmolStr::new("BA"), None);
     let end = LedgerEvent {
         seq: 1,
         t_ms: 120_250,
         kind: EventKind::MatchEnded {
-            reason: EndReason::Hold { winner: Team::Red },
+            reason: EndReason::Hold {
+                winner: PartyId::RED,
+            },
         },
         draws: Vec::new(),
         hash: 0,
@@ -503,8 +505,8 @@ fn o2_the_pods_switch_is_the_pilots_own_line_and_a_staff_field() {
     let red = ObjId(101);
     let blue = ObjId(201);
     let mut roster = Roster::new();
-    roster.insert(red, Some(Team::Red), SmolStr::new("RA"), None);
-    roster.insert(blue, Some(Team::Blue), SmolStr::new("BA"), None);
+    roster.insert(red, Some(PartyId::RED), SmolStr::new("RA"), None);
+    roster.insert(blue, Some(PartyId::BLUE), SmolStr::new("BA"), None);
     let event = |seq: u64, t_ms: i64, unit: ObjId, on: bool| LedgerEvent {
         seq,
         t_ms,
@@ -805,7 +807,7 @@ fn af3_the_tape_reader_truncates_at_the_marker() {
         ),
     ];
     let mut roster = Roster::new();
-    roster.insert(unit, Some(Team::Red), SmolStr::new("RA"), None);
+    roster.insert(unit, Some(PartyId::RED), SmolStr::new("RA"), None);
     let folded =
         tacsim::match_::report::fold_page(&docs, "match.12", 0, &roster).expect("a valid page");
     assert!(!folded.report.gap, "{:?}", folded.report.lines);
@@ -837,19 +839,19 @@ fn the_fight() -> (Arena, Vec<LedgerEvent>, Roster, ObjId, ObjId) {
     let mut arena = shipped_arena_seeded(
         &world,
         &[
-            &[Muster::mind(Team::Red, 1).dry()],
-            &[Muster::mind(Team::Blue, 1).at(BLUE_AT)],
+            &[Muster::mind(PartyId::RED, 1).dry()],
+            &[Muster::mind(PartyId::BLUE, 1).at(BLUE_AT)],
         ],
         FIGHT_SEED,
     );
-    let loser = support::tank(&world, Team::Red, 1);
-    let winner = support::tank(&world, Team::Blue, 1);
+    let loser = support::tank(&world, PartyId::RED, 1);
+    let winner = support::tank(&world, PartyId::BLUE, 1);
     let mut bytes = run_until(&mut arena, BOUND_MS, 1_000, |_, _| {});
     assert!(
         matches!(
             arena.ended.map(|end| end.reason),
             Some(EndReason::Elimination {
-                winner: Some(Team::Blue)
+                winner: Some(PartyId::BLUE)
             })
         ),
         "the armed tank did not eliminate the dry one inside {BOUND_MS} ms: {:?}",

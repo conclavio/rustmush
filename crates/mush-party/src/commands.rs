@@ -51,7 +51,7 @@
 //!
 //! One [`CommandSpec`] with [`ArgShape::EqPair`], because `/role <who>=<label>` needs
 //! the split and `lhs()` is the whole (trimmed) argument for every other switch. Only
-//! `/create` reads `raw()`, so a party may be called `The A=Team`.
+//! `/create` reads `raw()`, so a party may be called `The A=PartyId`.
 
 use std::sync::Arc;
 

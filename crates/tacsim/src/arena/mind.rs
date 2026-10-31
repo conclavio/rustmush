@@ -113,7 +113,7 @@ use crate::arena::perception::{
 };
 use crate::arena::state::{
     Arena, ArenaDefinition, Channel, Classification, ContactId, Controller, Designator, DueKind,
-    Power, Team,
+    PartyId, Power,
 };
 use crate::arena::step::{FrameHeat, FrameSection};
 use crate::arena::view::ContactRow;
@@ -1187,8 +1187,9 @@ pub struct MindView {
     pub unit: u32,
     /// Its public name (`callsign`).
     pub callsign: Designator,
-    /// Its side.
-    pub team: Team,
+    /// Its party: what the entry-zone kernels read, never a mind (doc 32
+    /// Q-CF-3: the mind API exposes relation, not party).
+    pub party: PartyId,
     /// The cell it stands in (`cell`).
     pub cell: Option<(u16, u16)>,
     /// Public match mode (`mode`).
@@ -1283,8 +1284,11 @@ pub struct ViewContact {
     pub alias: Option<u16>,
     /// What the platform knows of it (`class`, the word's source).
     pub class: Classification,
-    /// Whether it is on the hull's own side (`friendly`).
+    /// Whether it is own or a friend (`friendly`).
     pub friendly: bool,
+    /// **The hull's party's relation to it** (`relation`; doc 32 Q-CF-3: the
+    /// mind API exposes relation, not party).
+    pub relation: crate::arena::party::Relation,
     /// Whether the last earned plot showed motion (`moving` on the keyframe).
     pub moving: bool,
     /// The bearing to its plot, whole degrees (`bearing_deg`).
@@ -1827,6 +1831,7 @@ impl Arena {
                     alias: row.alias,
                     class: held.class,
                     friendly: row.friendly,
+                    relation: row.relation,
                     moving: held.moving,
                     bearing_deg: row.bearing_deg,
                     relative_deg: row.relative_deg,
@@ -1850,7 +1855,7 @@ impl Arena {
         Some(MindView {
             unit: frame.unit.0,
             callsign: frame.callsign,
-            team: frame.team,
+            party: frame.party,
             cell: frame.cell,
             mode: frame.mode,
             own_last_hit_ms: frame.own_last_hit_ms,
@@ -3092,21 +3097,21 @@ mod tests {
 
     /// One mind (red) and one pilot (blue) on the eight-cell window.
     fn minded() -> Arena {
-        let mut red = tank(RED, Team::Red, pose(1_500, 4_500));
+        let mut red = tank(RED, PartyId::RED, pose(1_500, 4_500));
         red.controller = Controller::Mind;
         red.reseal(&crate::match_::SealTerms::fixture())
             .expect("the fixture terms seal");
-        arena_of(vec![red, tank(BLUE, Team::Blue, pose(6_500, 4_500))])
+        arena_of(vec![red, tank(BLUE, PartyId::BLUE, pose(6_500, 4_500))])
     }
 
     /// Seal the weapon facts before arena admission, as real custody does.
     fn minded_with_weapons(weapons: Vec<crate::arena::state::WeaponSummary>) -> Arena {
-        let mut red = tank(RED, Team::Red, pose(1_500, 4_500));
+        let mut red = tank(RED, PartyId::RED, pose(1_500, 4_500));
         red.controller = Controller::Mind;
         red.weapons = weapons;
         red.reseal(&crate::match_::SealTerms::fixture())
             .expect("armed fixture terms seal");
-        arena_of(vec![red, tank(BLUE, Team::Blue, pose(6_500, 4_500))])
+        arena_of(vec![red, tank(BLUE, PartyId::BLUE, pose(6_500, 4_500))])
     }
 
     #[test]
@@ -3684,6 +3689,7 @@ mod tests {
                 resolution: resolution(),
                 seed: 2_350,
                 mode: MatchMode::Skirmish,
+                host: crate::arena::FieldHost::all_hostile(),
             },
             &ArenaConfig::default(),
             &MatchConfig::default(),
@@ -3766,7 +3772,7 @@ mod tests {
             (0, 50_000),
         ];
         let (x0, y0) = (1_500_i64, 1_500_i64);
-        let mut red = laser_tank(RED, Team::Red, pose(x0, y0));
+        let mut red = laser_tank(RED, PartyId::RED, pose(x0, y0));
         red.controller = Controller::Mind;
         red.reseal(&crate::match_::SealTerms::fixture())
             .expect("the fixture terms seal");
@@ -3774,7 +3780,11 @@ mod tests {
         let mut others: Vec<ObjId> = Vec::new();
         for (k, (dx, dy)) in (0_u16..).zip(offsets) {
             let id = ObjId(10 + u32::from(k));
-            let team = if k % 2 == 0 { Team::Blue } else { Team::Red };
+            let team = if k % 2 == 0 {
+                PartyId::BLUE
+            } else {
+                PartyId::RED
+            };
             units.push(line_tank(id, team, pose(x0 + dx, y0 + dy)));
             others.push(id);
         }
@@ -3786,7 +3796,7 @@ mod tests {
             let class = if k % 5 == 4 {
                 Classification::Unknown
             } else {
-                Classification::Classified { team: target.team }
+                Classification::Classified { party: target.team }
             };
             let plot = SeenPose::of(target);
             arena.contacts.insert(
@@ -4169,7 +4179,7 @@ mod tests {
     fn m4_6b_a_hull_authored_with_no_speed_reads_immobile_on_the_view_once_online() {
         use crate::arena::test_support::laser_tank;
         use crate::match_::cockpit::status_frame_held;
-        let mut red = laser_tank(RED, Team::Red, pose(1_500, 1_500));
+        let mut red = laser_tank(RED, PartyId::RED, pose(1_500, 1_500));
         red.controller = Controller::Mind;
         red.mobility.max_speed_cms = 0;
         red.reseal(&crate::match_::SealTerms::fixture())
@@ -4236,12 +4246,12 @@ mod tests {
     /// at that offset in centimetres, classified on its own side or
     /// `unknown`, held under [`view_row_id`]`(k)` for the `k`th entry, so the
     /// frame's own row order (by id) is the reverse of the entries'.
-    fn rom_among(field: &[(i64, i64, Team, bool)]) -> Arena {
+    fn rom_among(field: &[(i64, i64, PartyId, bool)]) -> Arena {
         use crate::arena::core::CoreClass;
         use crate::arena::state::{SeenPose, ShadowContact};
         use crate::arena::test_support::line_tank;
         let (x0, y0) = (1_500_i64, 1_500_i64);
-        let mut red = line_tank(RED, Team::Red, pose(x0, y0));
+        let mut red = line_tank(RED, PartyId::RED, pose(x0, y0));
         red.controller = Controller::Mind;
         red.reseal(&crate::match_::SealTerms {
             class_cap: CoreClass::Zero,
@@ -4259,7 +4269,7 @@ mod tests {
                 panic!("a fielded unit");
             };
             let class = if *classified {
-                Classification::Classified { team: target.team }
+                Classification::Classified { party: target.team }
             } else {
                 Classification::Unknown
             };
@@ -4333,19 +4343,19 @@ mod tests {
         // (dx, dy) in centimetres from the mind, nearest first: nine friends
         // at 50, 100, 150, 200, 250, 250, 300, 350 and 400 m; two hostiles at
         // 450 and 500 m; a red hull unresolved at 550 m.
-        let field: [(i64, i64, Team, bool); 12] = [
-            (0, 5_000, Team::Red, true),
-            (10_000, 0, Team::Red, true),
-            (0, 15_000, Team::Red, true),
-            (20_000, 0, Team::Red, true),
-            (0, 25_000, Team::Red, true),
-            (25_000, 0, Team::Red, true),
-            (0, 30_000, Team::Red, true),
-            (35_000, 0, Team::Red, true),
-            (0, 40_000, Team::Red, true),
-            (45_000, 0, Team::Blue, true),
-            (30_000, 40_000, Team::Blue, true),
-            (33_000, 44_000, Team::Red, false),
+        let field: [(i64, i64, PartyId, bool); 12] = [
+            (0, 5_000, PartyId::RED, true),
+            (10_000, 0, PartyId::RED, true),
+            (0, 15_000, PartyId::RED, true),
+            (20_000, 0, PartyId::RED, true),
+            (0, 25_000, PartyId::RED, true),
+            (25_000, 0, PartyId::RED, true),
+            (0, 30_000, PartyId::RED, true),
+            (35_000, 0, PartyId::RED, true),
+            (0, 40_000, PartyId::RED, true),
+            (45_000, 0, PartyId::BLUE, true),
+            (30_000, 40_000, PartyId::BLUE, true),
+            (33_000, 44_000, PartyId::RED, false),
         ];
         let mut arena = rom_among(&field);
         let held = held_rows(&arena);
@@ -4438,13 +4448,13 @@ mod tests {
         }
 
         // No more contacts than rows: the old cut, row for row.
-        let field: [(i64, i64, Team, bool); 6] = [
-            (0, 10_000, Team::Red, true),
-            (10_000, 0, Team::Blue, true),
-            (0, 20_000, Team::Blue, true),
-            (20_000, 0, Team::Red, true),
-            (0, 30_000, Team::Blue, false),
-            (0, 40_000, Team::Red, true),
+        let field: [(i64, i64, PartyId, bool); 6] = [
+            (0, 10_000, PartyId::RED, true),
+            (10_000, 0, PartyId::BLUE, true),
+            (0, 20_000, PartyId::BLUE, true),
+            (20_000, 0, PartyId::RED, true),
+            (0, 30_000, PartyId::BLUE, false),
+            (0, 40_000, PartyId::RED, true),
         ];
         let mut arena = rom_among(&field);
         let old = nearest_cut(held_rows(&arena), 8);
@@ -4547,18 +4557,18 @@ mod tests {
     #[test]
     fn m4_5c_the_rom_seats_its_lock_and_its_order_s_contact_before_the_cut() {
         // (a) and (b): the lock and the Support charge, in one view.
-        let field: [(i64, i64, Team, bool); 11] = [
-            (0, 5_000, Team::Red, true),
-            (10_000, 0, Team::Blue, true),
-            (0, 15_000, Team::Blue, true),
-            (20_000, 0, Team::Blue, true),
-            (0, 25_000, Team::Blue, true),
-            (30_000, 0, Team::Blue, true),
-            (0, 35_000, Team::Blue, true),
-            (40_000, 0, Team::Blue, true),
-            (0, 45_000, Team::Blue, true),
-            (30_000, 40_000, Team::Blue, true),
-            (33_000, 44_000, Team::Red, true),
+        let field: [(i64, i64, PartyId, bool); 11] = [
+            (0, 5_000, PartyId::RED, true),
+            (10_000, 0, PartyId::BLUE, true),
+            (0, 15_000, PartyId::BLUE, true),
+            (20_000, 0, PartyId::BLUE, true),
+            (0, 25_000, PartyId::BLUE, true),
+            (30_000, 0, PartyId::BLUE, true),
+            (0, 35_000, PartyId::BLUE, true),
+            (40_000, 0, PartyId::BLUE, true),
+            (0, 45_000, PartyId::BLUE, true),
+            (30_000, 40_000, PartyId::BLUE, true),
+            (33_000, 44_000, PartyId::RED, true),
         ];
         let mut arena = rom_among(&field);
         let (locked, charge) = (view_row_id(9), view_row_id(10));
@@ -4608,18 +4618,18 @@ mod tests {
             "the nearest friend, not seated, is cut"
         );
         // (c): the Engage target, separately.
-        let field: [(i64, i64, Team, bool); 11] = [
-            (0, 5_000, Team::Red, true),
-            (10_000, 0, Team::Blue, true),
-            (0, 15_000, Team::Blue, true),
-            (20_000, 0, Team::Blue, true),
-            (0, 25_000, Team::Blue, true),
-            (30_000, 0, Team::Blue, true),
-            (0, 35_000, Team::Blue, true),
-            (40_000, 0, Team::Blue, true),
-            (0, 45_000, Team::Blue, true),
-            (30_000, 40_000, Team::Blue, true),
-            (33_000, 44_000, Team::Blue, true),
+        let field: [(i64, i64, PartyId, bool); 11] = [
+            (0, 5_000, PartyId::RED, true),
+            (10_000, 0, PartyId::BLUE, true),
+            (0, 15_000, PartyId::BLUE, true),
+            (20_000, 0, PartyId::BLUE, true),
+            (0, 25_000, PartyId::BLUE, true),
+            (30_000, 0, PartyId::BLUE, true),
+            (0, 35_000, PartyId::BLUE, true),
+            (40_000, 0, PartyId::BLUE, true),
+            (0, 45_000, PartyId::BLUE, true),
+            (30_000, 40_000, PartyId::BLUE, true),
+            (33_000, 44_000, PartyId::BLUE, true),
         ];
         let mut engaged = rom_among(&field);
         let target = view_row_id(10);
@@ -4677,12 +4687,12 @@ mod tests {
 
         // No more contacts than rows: the old cut, row for row, whatever is
         // seated.
-        let field: [(i64, i64, Team, bool); 5] = [
-            (0, 10_000, Team::Red, true),
-            (10_000, 0, Team::Blue, true),
-            (0, 20_000, Team::Blue, false),
-            (20_000, 0, Team::Red, true),
-            (0, 30_000, Team::Blue, true),
+        let field: [(i64, i64, PartyId, bool); 5] = [
+            (0, 10_000, PartyId::RED, true),
+            (10_000, 0, PartyId::BLUE, true),
+            (0, 20_000, PartyId::BLUE, false),
+            (20_000, 0, PartyId::RED, true),
+            (0, 30_000, PartyId::BLUE, true),
         ];
         let mut few = rom_among(&field);
         if let Some(state) = few.unit_mut(RED) {
@@ -4737,18 +4747,18 @@ mod tests {
     fn m4_5c_the_seat_holds_only_held_contacts_once_each_and_cuts_by_the_rest_of_the_key() {
         // A friend at 50 m, then ten hostiles at 100, 150, 200, 250, 300,
         // 350, 400, 450, 500 and 550 m.
-        let field: [(i64, i64, Team, bool); 11] = [
-            (0, 5_000, Team::Red, true),
-            (10_000, 0, Team::Blue, true),
-            (0, 15_000, Team::Blue, true),
-            (20_000, 0, Team::Blue, true),
-            (0, 25_000, Team::Blue, true),
-            (30_000, 0, Team::Blue, true),
-            (0, 35_000, Team::Blue, true),
-            (40_000, 0, Team::Blue, true),
-            (0, 45_000, Team::Blue, true),
-            (30_000, 40_000, Team::Blue, true),
-            (33_000, 44_000, Team::Blue, true),
+        let field: [(i64, i64, PartyId, bool); 11] = [
+            (0, 5_000, PartyId::RED, true),
+            (10_000, 0, PartyId::BLUE, true),
+            (0, 15_000, PartyId::BLUE, true),
+            (20_000, 0, PartyId::BLUE, true),
+            (0, 25_000, PartyId::BLUE, true),
+            (30_000, 0, PartyId::BLUE, true),
+            (0, 35_000, PartyId::BLUE, true),
+            (40_000, 0, PartyId::BLUE, true),
+            (0, 45_000, PartyId::BLUE, true),
+            (30_000, 40_000, PartyId::BLUE, true),
+            (33_000, 44_000, PartyId::BLUE, true),
         ];
 
         // (i) An order naming a contact the hull does not hold: the id a
@@ -4831,12 +4841,12 @@ mod tests {
         );
 
         // (iii) One row: between seated rows the rest of the key decides.
-        let field: [(i64, i64, Team, bool); 5] = [
-            (0, 5_000, Team::Red, true),
-            (10_000, 0, Team::Blue, true),
-            (0, 15_000, Team::Blue, true),
-            (20_000, 0, Team::Blue, true),
-            (0, 30_000, Team::Blue, true),
+        let field: [(i64, i64, PartyId, bool); 5] = [
+            (0, 5_000, PartyId::RED, true),
+            (10_000, 0, PartyId::BLUE, true),
+            (0, 15_000, PartyId::BLUE, true),
+            (20_000, 0, PartyId::BLUE, true),
+            (0, 30_000, PartyId::BLUE, true),
         ];
         let one_row = || {
             let mut arena = rom_among(&field);
@@ -4905,7 +4915,7 @@ mod tests {
         use crate::arena::conditions::{Arming, FireCondition, SlotTarget};
         use crate::arena::test_support::{cannon, line_tank};
         use crate::match_::cockpit::{arming_json, status_frame_held};
-        let mut red = line_tank(RED, Team::Red, pose(1_500, 1_500));
+        let mut red = line_tank(RED, PartyId::RED, pose(1_500, 1_500));
         red.controller = Controller::Mind;
         red.reseal(&crate::match_::SealTerms::fixture())
             .expect("the fixture terms seal");
@@ -4915,7 +4925,10 @@ mod tests {
         red.weapons.push(mg);
         red.reseal(&crate::match_::SealTerms::fixture())
             .expect("seal the complete initial weapon rack");
-        let mut arena = wide(vec![red, line_tank(BLUE, Team::Blue, pose(1_500, 21_500))]);
+        let mut arena = wide(vec![
+            red,
+            line_tank(BLUE, PartyId::BLUE, pose(1_500, 21_500)),
+        ]);
         arena.odds_floor_permille = 50;
         let arm = Arming::Arm(FireCondition {
             weapon: SmolStr::new("machine_gun"),
@@ -5007,13 +5020,13 @@ mod tests {
         use crate::arena::state::{SeenPose, ShadowContact};
         use crate::arena::test_support::line_tank;
         use crate::arena::view::range_m_rounded;
-        let mut red = crate::arena::test_support::scout(RED, Team::Red, pose(1_500, 1_500));
+        let mut red = crate::arena::test_support::scout(RED, PartyId::RED, pose(1_500, 1_500));
         red.controller = Controller::Mind;
         red.reseal(&crate::match_::SealTerms::fixture())
             .expect("the fixture terms seal");
         let mut arena = wide(vec![
             red,
-            line_tank(BLUE, Team::Blue, pose(1_500, 1_500 + 42_000)),
+            line_tank(BLUE, PartyId::BLUE, pose(1_500, 1_500 + 42_000)),
         ]);
         let Some(target) = arena.unit(BLUE) else {
             panic!("blue");
@@ -5025,7 +5038,9 @@ mod tests {
             row,
             ShadowContact::sighted(
                 BLUE,
-                Classification::Classified { team: Team::Blue },
+                Classification::Classified {
+                    party: PartyId::BLUE,
+                },
                 0,
                 plot,
             ),
@@ -5730,13 +5745,13 @@ mod tests {
         );
 
         // Sealed without a core: the ROM from the first think, no line.
-        let mut red = tank(RED, Team::Red, pose(1_500, 4_500));
+        let mut red = tank(RED, PartyId::RED, pose(1_500, 4_500));
         red.controller = Controller::Mind;
         red.unit = crate::arena::test_support::tactical_unit(RED);
         let red = red.sealed();
         assert_eq!(red.seal.core_class, CoreClass::Zero);
         assert!(red.seal.fallback.is_some(), "its seal says so");
-        let mut arena = arena_of(vec![red, tank(BLUE, Team::Blue, pose(6_500, 4_500))]);
+        let mut arena = arena_of(vec![red, tank(BLUE, PartyId::BLUE, pose(6_500, 4_500))]);
         let runner = recording();
         arena.mind_runner = runner.clone();
         for n in 0..3_u64 {
@@ -6125,7 +6140,7 @@ mod tests {
     fn m4_6c_a_mind_not_sealed_on_doctrine_reads_unknown_raises_no_tempo_and_counts_unknown() {
         use crate::arena::doctrine::MachineState;
         let sealed = || {
-            let mut red = tank(RED, Team::Red, pose(1_500, 4_500));
+            let mut red = tank(RED, PartyId::RED, pose(1_500, 4_500));
             red.controller = Controller::Mind;
             red.reseal(&crate::match_::SealTerms::fixture())
                 .expect("the fixture terms seal");

@@ -331,7 +331,7 @@ impl FrozenStarts {
 mod tests {
     use super::*;
     use crate::arena::{
-        Team,
+        PartyId,
         input_tape::TapeRecorder,
         test_support::{arena_of, pose, tank},
     };
@@ -340,8 +340,8 @@ mod tests {
     fn header_for(match_id: u64, scripted: bool) -> TapeHeader {
         // Full lawful custody and the opaque format13 state string travel
         // through the real capture. The scripted case also stages shared source.
-        let mut red = tank(ObjId(4), Team::Red, pose(1500, 1500));
-        let mut blue = tank(ObjId(5), Team::Blue, pose(5500, 1500));
+        let mut red = tank(ObjId(4), PartyId::RED, pose(1500, 1500));
+        let mut blue = tank(ObjId(5), PartyId::BLUE, pose(5500, 1500));
         let terms = crate::match_::SealTerms {
             match_id: crate::arena_task::MatchId(match_id),
             engine_for_minds: if scripted {

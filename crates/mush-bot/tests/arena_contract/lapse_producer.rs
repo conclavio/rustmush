@@ -42,11 +42,11 @@ fn r14_actual_lapse_events_are_neutral_through_the_bot_reader() {
         .modules_loaded(Default::default(), &mut Outbox::new(), &mut Effects::new())
         .expect("actual empty boot");
     let red = SquadId {
-        team: Team::Red,
+        team: PartyId::RED,
         index: 1,
     };
     let blue = SquadId {
-        team: Team::Blue,
+        team: PartyId::BLUE,
         index: 1,
     };
     let watch = engine

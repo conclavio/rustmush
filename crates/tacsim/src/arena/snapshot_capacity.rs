@@ -379,7 +379,7 @@ pub(crate) fn json_bytes<T: Serialize + ?Sized>(
 mod tests {
     use super::*;
     use crate::arena::core::ClassTable;
-    use crate::arena::state::Team;
+    use crate::arena::state::PartyId;
     use crate::arena::test_support::{arena_of, pose, tank};
     use mush_core::ObjId;
 
@@ -445,7 +445,7 @@ mod tests {
 
     #[test]
     fn m6_snapshot_limit_applies_to_full_document_and_decode_before_state() {
-        let arena = arena_of(vec![tank(ObjId(1), Team::Red, pose(2, 2))]);
+        let arena = arena_of(vec![tank(ObjId(1), PartyId::RED, pose(2, 2))]);
         let snapshot = Snapshot::encode(&arena).unwrap();
         let size = json_len(&snapshot.document, SNAPSHOT_MAX_BYTES).unwrap();
         assert!(size > snapshot.bytes().len() as u64);
@@ -477,7 +477,7 @@ mod tests {
         use crate::arena::core::CoreClass;
         use crate::arena::test_support::tactical_unit_cored;
         let id = ObjId(1);
-        let mut arena = arena_of(vec![tank(id, Team::Red, pose(2, 2))]);
+        let mut arena = arena_of(vec![tank(id, PartyId::RED, pose(2, 2))]);
         assert_eq!(arena.unit(id).unwrap().seal.class, CoreClass::I);
         let lower = admit(&arena).unwrap();
         arena.unit_mut(id).unwrap().unit = tactical_unit_cored(id, CoreClass::III);
@@ -513,15 +513,17 @@ mod tests {
         };
         let mut contact = ShadowContact::sighted(
             id,
-            Classification::Classified { team: Team::Blue },
+            Classification::Classified {
+                party: PartyId::BLUE,
+            },
             i64::MIN,
             plot,
         );
         contact.seen_condition = Some(reading);
         contact.own_seen.as_mut().unwrap().condition = Some(reading);
-        let designator = Designator::Slot {
-            team: Team::Blue,
-            slot: u16::MAX,
+        let designator = Designator::Unit {
+            party: PartyId::BLUE,
+            letter: 'Z',
         };
         let loss = DueEvent {
             t_ms: i64::MIN,
@@ -561,7 +563,7 @@ mod tests {
             .map(|index| {
                 tank(
                     ObjId(index + 1),
-                    Team::Red,
+                    PartyId::RED,
                     pose(
                         i64::from(index % 8) * 1000 + 500,
                         i64::from(index / 8) * 1000 + 500,

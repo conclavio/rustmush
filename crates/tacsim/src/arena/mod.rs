@@ -321,6 +321,7 @@ pub mod motion;
 pub mod motor;
 pub mod observer;
 pub(crate) mod order_watch;
+pub mod party;
 pub mod path;
 pub mod perception;
 pub mod profile_rules;
@@ -402,6 +403,9 @@ pub use motor::{
     REFLEX_AVOID_MAX, REFLEX_AVOID_TTL_MS,
 };
 pub use observer::{Observer, ObserverUnit};
+pub use party::{
+    Book, EndCondition, FieldHost, LETTERS as PARTY_LETTERS, Mark, Relation, Relations,
+};
 pub use path::{PathFailure, PathResult, PathScratch, min_move_cost, path_with};
 pub use perception::{
     Aspect, ContactFacing, DriveOutcome, FULL_SIGNATURE_PERMILLE, FrameCondition, FrameContact,
@@ -422,9 +426,9 @@ pub use state::{
     Classification, ContactId, Controller, CostRow, CustodyOut, CustodyUnit,
     DEFAULT_SENSOR_HEIGHT_CM, Designator, DesignatorBook, DueEvent, DueHeap, DueKind, EndReason,
     EntryZone, EpochTable, HeatState, HoldRule, HoldState, KeySpot, MatchEnd, MatchMode,
-    MotionCarry, MotionLimits, NO_SUCH_CONTACT, PROVISIONAL_PREFIX, Pilot, Power, SPOT_LETTERS,
-    ShadowContact, ShadowContacts, Side, StopReason, Team, TerrainCell, TrackedRules, UnitState,
-    Waypoint, Waypoints, WeaponSummary, spot_letter,
+    MotionCarry, MotionLimits, NO_SUCH_CONTACT, PROVISIONAL_PREFIX, PartyId, Pilot, Power,
+    SPOT_LETTERS, ShadowContact, ShadowContacts, Side, StopReason, TerrainCell, TrackedRules,
+    UnitState, Waypoint, Waypoints, WeaponSummary, spot_letter,
 };
 pub use step::{Frame, FrameHeat, FrameSlots, STOCK_ODDS_ROWS, StepOutput};
 pub use stock_mind::{NativeStockMind, STOCK_MEMORY_KEY_NAMES, StockMemory, arming_for};
@@ -458,8 +462,8 @@ pub(crate) mod test_support {
     use crate::arena::perception::{SensorProfile, SignatureFactor};
     use crate::arena::resolution::{BandProfile, Consequence, SectionProfile, UnitProfile};
     use crate::arena::state::{
-        Arena, ArenaDefinition, ArenaTerrain, CustodyOut, CustodyUnit, EntryZone, MatchMode, Pilot,
-        Side, Team, TerrainCell, TrackedRules, WeaponSummary,
+        Arena, ArenaDefinition, ArenaTerrain, CustodyOut, CustodyUnit, EntryZone, MatchMode,
+        PartyId, Pilot, Side, TerrainCell, TrackedRules, WeaponSummary,
     };
     use crate::config::{ArenaConfig, MatchConfig, SensorsConfig};
     use crate::definitions::resolution::ResolutionDef;
@@ -695,14 +699,14 @@ pub(crate) mod test_support {
                 .expect("the test window"),
             entry_zones: vec![
                 EntryZone {
-                    team: Team::Red,
+                    team: PartyId::RED,
                     x0: 0,
                     y0: 0,
                     x1: 1,
                     y1: 7,
                 },
                 EntryZone {
-                    team: Team::Blue,
+                    team: PartyId::BLUE,
                     x0: 6,
                     y0: 0,
                     x1: 7,
@@ -739,7 +743,7 @@ pub(crate) mod test_support {
     /// **17b cut M3.1**: and a Class I core in its hull
     /// ([`tactical_unit_cored`]) — every fixture built on it ([`scout`] among
     /// them) is Class I.)
-    pub(crate) fn tank(id: ObjId, team: Team, pose: Pose) -> CustodyUnit {
+    pub(crate) fn tank(id: ObjId, team: PartyId, pose: Pose) -> CustodyUnit {
         CustodyUnit {
             id,
             team,
@@ -774,7 +778,7 @@ pub(crate) mod test_support {
     /// **A drone** (16b cut AE.3): [`tank`] — no sight, no weapon — whose rules
     /// blob declares `"class": "drone"`, so `Arena::new` reads it as
     /// [`crate::definitions::UnitClass::Drone`] and counts it against the cap.
-    pub(crate) fn drone(id: ObjId, team: Team, pose: Pose) -> CustodyUnit {
+    pub(crate) fn drone(id: ObjId, team: PartyId, pose: Pose) -> CustodyUnit {
         CustodyUnit {
             unit: tactical_unit_with(id, serde_json::json!({ "class": "drone" })),
             ..tank(id, team, pose)
@@ -786,7 +790,7 @@ pub(crate) mod test_support {
     /// `"class": "hauler"`, so `Arena::new` reads it as
     /// [`crate::definitions::UnitClass::Hauler`] and refuses it at the custody
     /// seam.
-    pub(crate) fn hauler(id: ObjId, team: Team, pose: Pose) -> CustodyUnit {
+    pub(crate) fn hauler(id: ObjId, team: PartyId, pose: Pose) -> CustodyUnit {
         CustodyUnit {
             unit: tactical_unit_with(id, serde_json::json!({ "class": "hauler" })),
             ..tank(id, team, pose)
@@ -798,7 +802,7 @@ pub(crate) mod test_support {
     /// whose rules blob declares `"class": "vehicle"`, so `Arena::new` reads it
     /// as [`crate::definitions::UnitClass::Vehicle`] and refuses it at the
     /// custody seam.
-    pub(crate) fn vehicle(id: ObjId, team: Team, pose: Pose) -> CustodyUnit {
+    pub(crate) fn vehicle(id: ObjId, team: PartyId, pose: Pose) -> CustodyUnit {
         CustodyUnit {
             unit: tactical_unit_with(id, serde_json::json!({ "class": "vehicle" })),
             ..tank(id, team, pose)
@@ -895,7 +899,7 @@ pub(crate) mod test_support {
     /// shipped cannon, and **no** silhouette or facet table — which is cut A's and
     /// cut S's arena exactly: it can fire, and every shot resolves at zero because
     /// there is nothing authored for a round to strike.
-    pub(crate) fn scout(id: ObjId, team: Team, pose: Pose) -> CustodyUnit {
+    pub(crate) fn scout(id: ObjId, team: PartyId, pose: Pose) -> CustodyUnit {
         CustodyUnit {
             sensor: Some(visual()),
             weapons: vec![cannon()],
@@ -1115,7 +1119,7 @@ pub(crate) mod test_support {
 
     /// **The stock tank**, whole: the sight, the cannon, the structure and the facet
     /// table — the fixture every damage test fights with.
-    pub(crate) fn line_tank(id: ObjId, team: Team, pose: Pose) -> CustodyUnit {
+    pub(crate) fn line_tank(id: ObjId, team: PartyId, pose: Pose) -> CustodyUnit {
         CustodyUnit {
             sensor: Some(visual()),
             weapons: vec![cannon()],
@@ -1273,7 +1277,7 @@ pub(crate) mod test_support {
 
     /// **The laser tank**, whole (16b cut X.1): the stock tank's structure and
     /// facet table, a beam in the turret and a heat cell on the hull.
-    pub(crate) fn laser_tank(id: ObjId, team: Team, pose: Pose) -> CustodyUnit {
+    pub(crate) fn laser_tank(id: ObjId, team: PartyId, pose: Pose) -> CustodyUnit {
         CustodyUnit {
             sensor: Some(visual()),
             weapons: vec![laser()],
@@ -1300,6 +1304,7 @@ pub(crate) mod test_support {
             resolution: resolution(),
             seed: 2350,
             mode: MatchMode::Skirmish,
+            host: crate::arena::FieldHost::all_hostile(),
         }
     }
 
@@ -1342,6 +1347,7 @@ pub(crate) mod test_support {
                 resolution: resolution(),
                 seed: 2_350,
                 mode: MatchMode::Skirmish,
+                host: crate::arena::FieldHost::all_hostile(),
             },
             &ArenaConfig::default(),
             &MatchConfig::default(),

@@ -416,7 +416,7 @@ mod tests {
     use super::*;
     use crate::arena::intents::{Control, ControlState, apply_control};
     use crate::arena::rng::draw_contact_id;
-    use crate::arena::state::{Channel, Classification, Pilot, SeenPose, ShadowContact, Team};
+    use crate::arena::state::{Channel, Classification, PartyId, Pilot, SeenPose, ShadowContact};
     use crate::arena::test_support::{line_tank, pose, tank};
     use mush_tactics::{CellAddr, CellId, ConditionId, FacetId, SectionId, UnitMutationOp};
 
@@ -426,13 +426,13 @@ mod tests {
     /// A stock tank for red, and `blues` plain blue tanks to hold, one a cell
     /// along the rows of the 8 by 8 window from `(2, 0)`.
     fn arena(blues: u32) -> Arena {
-        let mut units = vec![line_tank(RED, Team::Red, pose(500, 500))];
+        let mut units = vec![line_tank(RED, PartyId::RED, pose(500, 500))];
         for n in 0..blues {
             let x = 2 + i64::from(n % 6);
             let y = i64::from(n / 6);
             units.push(tank(
                 ObjId(10 + n),
-                Team::Blue,
+                PartyId::BLUE,
                 pose(x * 1_000 + 500, y * 1_000 + 500),
             ));
         }
@@ -459,7 +459,9 @@ mod tests {
     fn hold(arena: &mut Arena, target: ObjId, classified: bool) -> ContactId {
         let id = draw_contact_id(arena.seed, RED, target);
         let class = if classified {
-            Classification::Classified { team: Team::Blue }
+            Classification::Classified {
+                party: PartyId::BLUE,
+            }
         } else {
             arena.designators.assign(RED, target);
             Classification::Unknown
@@ -509,11 +511,13 @@ mod tests {
         }
     }
 
-    fn slot(slot: u16) -> Designator {
-        Designator::Slot {
-            team: Team::Blue,
-            slot,
-        }
+    /// The callsign the arena drew for the `n`-th blue (`#9 + n`): since doc 32
+    /// cut CF.0 a unit letter is drawn, not spelled from a slot.
+    fn slot(arena: &Arena, n: u32) -> Designator {
+        arena
+            .unit(ObjId(9 + n))
+            .map(|unit| unit.callsign)
+            .expect("a blue")
     }
 
     #[test]
@@ -539,10 +543,10 @@ mod tests {
         arena.now_ms = 42_500;
         let report = arena.catchup_since(RED, &then, None);
         assert_eq!(report.away_ms, 42_500);
-        assert_eq!(report.contacts_new, vec![slot(3)]);
+        assert_eq!(report.contacts_new, vec![slot(&arena, 3)]);
         assert_eq!(
             report.contacts_lost,
-            vec![slot(1), Designator::Provisional(1)],
+            vec![slot(&arena, 1), Designator::Provisional(1)],
             "the slot names first, then the numbers"
         );
         assert_eq!(report.contacts_more, 0);
@@ -572,7 +576,7 @@ mod tests {
                 .iter()
                 .map(|(_, designator)| *designator)
                 .collect::<Vec<_>>(),
-            vec![slot(1)],
+            vec![slot(&arena, 1)],
             "the snapshot is the frame's scope: {:?}",
             then.contacts
         );
@@ -599,7 +603,7 @@ mod tests {
                 .iter()
                 .map(|row| row.designator)
                 .collect::<Vec<_>>(),
-            vec![slot(1)]
+            vec![slot(&arena, 1)]
         );
     }
 
@@ -613,8 +617,11 @@ mod tests {
         }
         let report = arena.catchup_since(RED, &then, None);
         assert_eq!(report.contacts_new.len(), MAX_CATCHUP_CONTACTS);
-        assert_eq!(report.contacts_new.first(), Some(&slot(1)));
-        assert_eq!(report.contacts_new.last(), Some(&slot(12)));
+        // Said in designator order: the twelve least of the sixteen drawn.
+        let mut drawn: Vec<Designator> = (1..=16).map(|n| slot(&arena, n)).collect();
+        drawn.sort();
+        drawn.truncate(MAX_CATCHUP_CONTACTS);
+        assert_eq!(report.contacts_new, drawn);
         assert_eq!(report.contacts_more, 4);
         assert!(report.contacts_lost.is_empty());
     }
@@ -775,7 +782,7 @@ mod tests {
                 })
                 .collect(),
             unit: mush_tactics::TacticalUnit::from_spec(&spec, id).expect("the big unit"),
-            ..tank(id, Team::Red, pose(500, 500))
+            ..tank(id, PartyId::RED, pose(500, 500))
         }
         .sealed()
     }
@@ -929,7 +936,7 @@ mod tests {
             .get(&PILOT)
             .expect("the pilot's report");
         assert_eq!(report.away_ms, 8_500, "counted from the Linkdead");
-        assert_eq!(report.contacts_new, vec![slot(2)]);
+        assert_eq!(report.contacts_new, vec![slot(&arena, 2)]);
         assert_eq!(report.machine, machine, "read before the row went");
     }
 
@@ -945,7 +952,7 @@ mod tests {
         use crate::arena::doctrine::MachineState;
         let mut arena = arena(0);
         let seal = {
-            let mut red = line_tank(RED, Team::Red, pose(500, 500));
+            let mut red = line_tank(RED, PartyId::RED, pose(500, 500));
             let terms = crate::match_::SealTerms {
                 identity: crate::match_::SealIdentity {
                     mind: "Fixture I".into(),
@@ -993,9 +1000,9 @@ mod tests {
             Some("unknown"),
             "the wire's word is unchanged"
         );
-        let red = Designator::Slot {
-            team: Team::Red,
-            slot: 1,
+        let red = Designator::Unit {
+            party: PartyId::RED,
+            letter: 'A',
         };
         let lines = crate::match_::cockpit::catchup_lines(red, report);
         assert_eq!(
@@ -1074,6 +1081,6 @@ mod tests {
     }
 
     fn arena_at_no_pilot() -> Arena {
-        crate::arena::test_support::arena_of(vec![line_tank(RED, Team::Red, pose(500, 500))])
+        crate::arena::test_support::arena_of(vec![line_tank(RED, PartyId::RED, pose(500, 500))])
     }
 }

@@ -45,7 +45,7 @@ use crate::arena::clock::Tempo;
 use crate::arena::core::CoreClass;
 use crate::arena::mind::SortieId;
 use crate::arena::snapshot::SnapshotError;
-use crate::arena::state::{ContactId, EndReason, Team};
+use crate::arena::state::{ContactId, EndReason, PartyId};
 use crate::config::LedgerConfig;
 use crate::deliberation::order::CharacterRef;
 
@@ -187,7 +187,7 @@ pub enum EventKind {
         /// What is held.
         target: ObjId,
         /// The side it was resolved to.
-        team: Team,
+        team: PartyId,
     },
     /// **A viewer lost a contact** (16b cut S.1; doc 16 §3.6 step 4's TTL:
     /// `sensors.pass_ms × sensors.lost_after_passes` without a refresh).
@@ -1210,7 +1210,7 @@ fn resume_sha256(bytes: &[u8], which: &str) -> Result<Sha256, SnapshotError> {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use crate::arena::state::Team;
+    use crate::arena::state::PartyId;
 
     fn ledger(max_bytes: u64, max_unflushed_chunks: u32) -> Ledger {
         Ledger::new(&LedgerConfig {
@@ -1359,7 +1359,7 @@ mod tests {
                 viewer: ObjId(4),
                 contact: ContactId(0x0123_4567_89ab_cdef),
                 target: ObjId(9),
-                team: Team::Blue,
+                team: PartyId::BLUE,
             },
             EventKind::Lost {
                 viewer: ObjId(4),
@@ -1511,7 +1511,7 @@ mod tests {
             EventKind::Lagged { dt_ms: 20_000 },
             EventKind::MatchEnded {
                 reason: EndReason::Elimination {
-                    winner: Some(Team::Red),
+                    winner: Some(PartyId::RED),
                 },
             },
             EventKind::Aborted,

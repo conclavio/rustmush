@@ -7,12 +7,12 @@ use super::*;
 
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub(super) struct Hull {
-    pub team: Team,
+    pub team: PartyId,
     pub index: u8,
     pub class: CoreClass,
 }
 
-pub(super) fn fill_cap(w: &World, centre: &Centre, team: Team) -> CoreClass {
+pub(super) fn fill_cap(w: &World, centre: &Centre, team: PartyId) -> CoreClass {
     minds_config(w).unwrap_or_default().fill_cap(
         centre
             .fill_classes
@@ -46,7 +46,7 @@ pub(super) fn slot_choice(
 fn resolved_slot_choice(centre: &Centre, choice: &MindChoice, held: HeldMind) -> SealChoice {
     let doctrine_only = centre.doctrine_only
         || (centre.state == MatchState::Selection
-            && Team::ALL.iter().all(|team| centre.side_len(*team) > 0));
+            && PartyId::OOC.iter().all(|team| centre.side_len(*team) > 0));
     if doctrine_only && !held.is_doctrine() {
         SealChoice {
             held: HeldMind::doctrine(),
@@ -71,7 +71,7 @@ pub(super) fn preview(access: &HoldingAccess<'_>, centre: &Centre) -> Result<Vec
 pub(super) fn preview_visible(
     access: &HoldingAccess<'_>,
     centre: &Centre,
-    visible: Option<Team>,
+    visible: Option<PartyId>,
     viewer: Option<ObjId>,
 ) -> Result<Vec<Hull>, SimError> {
     let w = access.world();
@@ -81,8 +81,8 @@ pub(super) fn preview_visible(
     let range = range_sides(centre);
     let doctrine_only = centre.doctrine_only
         || (centre.state == MatchState::Selection
-            && Team::ALL.iter().all(|team| centre.side_len(*team) > 0));
-    for team in Team::ALL {
+            && PartyId::OOC.iter().all(|team| centre.side_len(*team) > 0));
+    for team in PartyId::OOC {
         let privileged = viewer.is_none_or(|viewer| is_staff(w, viewer));
         let mut disclose = privileged;
         let result = (|| -> Result<(), SimError> {
@@ -240,10 +240,10 @@ pub(super) fn admit(
     admit_rows(access.world(), &rows, visible)
 }
 
-fn admit_rows(w: &World, rows: &[Hull], visible: Option<Team>) -> Result<(), SimError> {
+fn admit_rows(w: &World, rows: &[Hull], visible: Option<PartyId>) -> Result<(), SimError> {
     let cfg = minds_config(w).unwrap_or_default();
     let pool = crate::match_::pool::pool_for(&cfg, rows.len());
-    for team in Team::ALL {
+    for team in PartyId::OOC {
         crate::match_::pool::admit_side(
             pool,
             rows.iter()
@@ -284,10 +284,10 @@ pub(super) fn admit_change(
                 .fold(0_u64, u64::saturating_add)
         };
         if next.len() <= previous.len()
-            && Team::ALL
+            && PartyId::OOC
                 .iter()
                 .all(|team| load(&next, *team) <= load(&previous, *team))
-            && Team::ALL
+            && PartyId::OOC
                 .iter()
                 .any(|team| load(&next, *team) < load(&previous, *team))
         {

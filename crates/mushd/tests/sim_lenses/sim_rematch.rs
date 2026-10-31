@@ -692,6 +692,10 @@ async fn two_players_start_a_second_match_with_no_staff_and_find_both_tanks_at_s
 
     // ---- match one, to a kill -------------------------------------------
     take_off(&mut ada, &mut bo).await;
+    // Doc 32 cut CF.0 (Q-CF-11): each tank's unit letter is drawn at check-out
+    // from the match seed, so each match's callsigns are read off its record.
+    let one = support::drawn_callsigns(&server.store, 1).await;
+    let (red_one, blue_one) = (one[&red].clone(), one[&blue].clone());
     power_up(&mut ada).await;
     power_up(&mut bo).await;
     let contact = wait_for_contact(&mut ada).await;
@@ -736,7 +740,7 @@ async fn two_players_start_a_second_match_with_no_staff_and_find_both_tanks_at_s
     );
     let row = history_row(&history, 1);
     assert!(
-        row.contains(" 1 v 1 ") && row.ends_with(" (you flew RA)"),
+        row.contains(" 1 v 1 ") && row.ends_with(&format!(" (you flew {red_one})")),
         "the winner's row: {row}"
     );
     // A third character, standing in the lobby, reads the same row and no
@@ -807,6 +811,7 @@ async fn two_players_start_a_second_match_with_no_staff_and_find_both_tanks_at_s
     say(&mut ada, "BOARD", "climb into").await;
     say(&mut bo, "BOARD", "climb into").await;
     ada.expect("Good hunting").await;
+    let blue_two = support::drawn_callsigns(&server.store, 2).await[&blue].clone();
 
     // The cockpits: the arena opened on the pack's own muster, not on the kill
     // site, and on a full magazine.
@@ -846,10 +851,10 @@ async fn two_players_start_a_second_match_with_no_staff_and_find_both_tanks_at_s
         history_row(&history, 1).starts_with(&flat(MATCH_ONE_WON)),
         "{history}"
     );
-    for id in [1, 2] {
+    for (id, flew) in [(1, &blue_one), (2, &blue_two)] {
         let row = history_row(&history, id);
         assert!(
-            row.contains(" 1 v 1 ") && row.ends_with(" (you flew BA)"),
+            row.contains(" 1 v 1 ") && row.ends_with(&format!(" (you flew {flew})")),
             "Bo flew blue slot 1 both times: {row}"
         );
     }
@@ -866,10 +871,16 @@ async fn two_players_start_a_second_match_with_no_staff_and_find_both_tanks_at_s
     // and still driving — which `UnitOutcome` (untouched by the cut) calls
     // `intact`, the debrief's own line saying what the turret cost.
     if wrecked {
-        assert!(first.contains("You flew BA: destroyed;"), "{first}");
+        assert!(
+            first.contains(&format!("You flew {blue_one}: destroyed;")),
+            "{first}"
+        );
         assert!(first.contains("your tank destroyed."), "{first}");
     } else {
-        assert!(first.contains("You flew BA: intact;"), "{first}");
+        assert!(
+            first.contains(&format!("You flew {blue_one}: intact;")),
+            "{first}"
+        );
         assert!(
             // 17b cut M3.6: and the line core the turret carried (was
             // "your turret destroyed: its weapons are gone.").
@@ -976,6 +987,9 @@ async fn a_restart_mid_match_through_the_lobby_resumes_and_the_pilots_board_agai
     for (unit, who) in [(red, RED_TANK), (blue, BLUE_TANK)] {
         wait_for_cockpit(&first.store, unit, true, who).await;
     }
+    // Doc 32 cut CF.0 (Q-CF-11): her tank's unit letter is drawn at check-out
+    // from the match seed; read it off the match's record.
+    let red_one = support::drawn_callsigns(&first.store, 1).await[&red].clone();
     say(&mut ada, "STATUS", "power").await;
     // The markers and the arena's snapshot are on disk.
     wait_until(STEP_TIMEOUT, "the markers and the snapshot", async || {
@@ -1087,7 +1101,7 @@ async fn a_restart_mid_match_through_the_lobby_resumes_and_the_pilots_board_agai
     say(&mut ada, "SIM ABORT", "aborts match").await;
     let history = poll_whole(&mut ada, "SIM HISTORY", "#1  aborted  ").await;
     assert!(
-        history_row(&history, 1).ends_with(" (you flew RA)"),
+        history_row(&history, 1).ends_with(&format!(" (you flew {red_one})")),
         "{history}"
     );
     assert!(
@@ -1095,12 +1109,13 @@ async fn a_restart_mid_match_through_the_lobby_resumes_and_the_pilots_board_agai
         "a resumed match is not a restart row: {history}"
     );
     let report = flat(&sim_report(&mut ada, "SIM REPORT 1").await);
-    assert!(report.contains("You flew RA:"), "{report}");
+    assert!(report.contains(&format!("You flew {red_one}:")), "{report}");
 
     // A second match through the lobby opens at spec and at muster.
     back_to_the_lobby(&mut ada).await;
     back_to_the_lobby(&mut bo).await;
     take_off(&mut ada, &mut bo).await;
+    let red_two = support::drawn_callsigns(&store, 2).await[&red].clone();
     assert_eq!(easting_m(&mut ada).await, RED_MUSTER_M);
     assert_eq!(easting_m(&mut bo).await, BLUE_MUSTER_M);
     let seen = ask_whole(&mut bo, "WEAPONSTATUS").await;
@@ -1150,9 +1165,9 @@ async fn a_restart_mid_match_through_the_lobby_resumes_and_the_pilots_board_agai
     );
     assert!(row_at(&history, 2) < row_at(&history, 1), "{history}");
     assert!(!history.contains("the server restarted"), "{history}");
-    for id in [1, 2] {
+    for (id, flew) in [(1, &red_one), (2, &red_two)] {
         assert!(
-            history_row(&history, id).ends_with(" (you flew RA)"),
+            history_row(&history, id).ends_with(&format!(" (you flew {flew})")),
             "{history}"
         );
     }

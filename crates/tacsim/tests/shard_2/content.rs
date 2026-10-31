@@ -24,7 +24,7 @@ use std::path::{Path, PathBuf};
 use mush_atlas::TerrainClass;
 use mush_core::ObjId;
 use mush_testkit::TestWorld;
-use tacsim::arena::state::Team;
+use tacsim::arena::state::PartyId;
 use tacsim::definitions::{Catalog, ResourceTable, content};
 use tacsim::match_::{PODS_PER_SIDE, PROVING_GROUND as PROVING_GROUND_ARENA};
 
@@ -531,7 +531,7 @@ fn the_band_word_the_shipped_content_can_print() {
 fn e1_the_ranges_the_shipped_machines_fight_at() {
     use mush_core::ObjId;
     use smol_str::SmolStr;
-    use tacsim::arena::state::{Arena, Controller, CustodyOut, Team, WeaponSummary};
+    use tacsim::arena::state::{Arena, Controller, CustodyOut, PartyId, WeaponSummary};
     use tacsim::config::{ArenaConfig, MatchConfig, ReflexConfig, SensorsConfig};
     use tacsim::match_::{ARENA_CELL_CM, STAND_IN, custody_unit, stock_definition};
 
@@ -590,7 +590,7 @@ fn e1_the_ranges_the_shipped_machines_fight_at() {
                 &catalog,
                 cells,
                 id,
-                Team::Red,
+                PartyId::RED,
                 pose,
                 0,
                 Controller::Mind,
@@ -608,6 +608,7 @@ fn e1_the_ranges_the_shipped_machines_fight_at() {
             resolution: tacsim::match_::resolution_for(&catalog),
             seed: 2_350,
             mode: tacsim::arena::MatchMode::Skirmish,
+            host: tacsim::arena::FieldHost::all_hostile(),
         },
         &ArenaConfig::default(),
         &MatchConfig::default(),
@@ -1406,7 +1407,7 @@ fn z3_the_arena_fields_six_a_side_in_the_authored_order() {
         .expect("the proving ground is shipped");
     assert_eq!(arena.tanks.len(), 12);
     assert!(arena.tanks.len() <= tacsim::definitions::arena::MAX_ARENA_UNITS);
-    for (team, word) in [(Team::Red, "red"), (Team::Blue, "blue")] {
+    for (team, word) in [(PartyId::RED, "red"), (PartyId::BLUE, "blue")] {
         let side: Vec<&str> = arena
             .tanks
             .iter()
@@ -1498,10 +1499,10 @@ fn world_at_arena_v2() -> TestWorld {
 #[test]
 fn z3_a_renamed_stock_tank_is_adopted_by_the_roster_and_no_thirteenth_is_made() {
     let mut tw = world_at_arena_v2();
-    let red_one = tacsim::match_::tank_for_slot(tw.world(), Team::Red, 1).expect("red 1");
-    let red_two = tacsim::match_::tank_for_slot(tw.world(), Team::Red, 2).expect("red 2");
-    let red_three = tacsim::match_::tank_for_slot(tw.world(), Team::Red, 3).expect("red 3");
-    let before: Vec<(Team, u8, ObjId)> = Team::ALL
+    let red_one = tacsim::match_::tank_for_slot(tw.world(), PartyId::RED, 1).expect("red 1");
+    let red_two = tacsim::match_::tank_for_slot(tw.world(), PartyId::RED, 2).expect("red 2");
+    let red_three = tacsim::match_::tank_for_slot(tw.world(), PartyId::RED, 3).expect("red 3");
+    let before: Vec<(PartyId, u8, ObjId)> = PartyId::OOC
         .into_iter()
         .flat_map(|team| (1..=4_u8).map(move |index| (team, index)))
         .map(|(team, index)| {
@@ -1574,7 +1575,7 @@ fn z3_a_renamed_stock_tank_is_adopted_by_the_roster_and_no_thirteenth_is_made() 
         Some("Old Faithful".to_owned()),
         "the applier adopts; it does not rename"
     );
-    let red_five = tacsim::match_::tank_for_slot(tw.world(), Team::Red, 5).expect("red 5");
+    let red_five = tacsim::match_::tank_for_slot(tw.world(), PartyId::RED, 5).expect("red 5");
     assert_ne!(
         red_five, red_two,
         "a tank the roster names for slot 2 is not taken for slot 5 by its new name"
@@ -1587,7 +1588,7 @@ fn z3_a_renamed_stock_tank_is_adopted_by_the_roster_and_no_thirteenth_is_made() 
         .and_then(|store| store.arena_roster(&arena).cloned())
         .expect("the roster is written");
     assert_eq!(roster.units.len(), 12, "{:?}", roster.units);
-    for team in Team::ALL {
+    for team in PartyId::OOC {
         for index in 1..=PODS_PER_SIDE {
             let slot = format!("{}_{index}", team.as_str());
             let tank = tacsim::match_::tank_for_slot(tw.world(), team, index)
@@ -1610,10 +1611,10 @@ fn z3_a_renamed_stock_tank_is_adopted_by_the_roster_and_no_thirteenth_is_made() 
         "adoption leaves the owner alone"
     );
     for (team, index) in [
-        (Team::Red, 5),
-        (Team::Red, 6),
-        (Team::Blue, 5),
-        (Team::Blue, 6),
+        (PartyId::RED, 5),
+        (PartyId::RED, 6),
+        (PartyId::BLUE, 5),
+        (PartyId::BLUE, 6),
     ] {
         let made = tacsim::match_::tank_for_slot(tw.world(), team, index).expect("made");
         assert_eq!(
@@ -1633,7 +1634,7 @@ fn z3_a_renamed_stock_tank_is_adopted_by_the_roster_and_no_thirteenth_is_made() 
 #[test]
 fn z3_a_deployed_roster_tank_refuses_the_apply_and_writes_nothing() {
     let mut tw = world_at_arena_v2();
-    let blue_two = tacsim::match_::tank_for_slot(tw.world(), Team::Blue, 2).expect("blue 2");
+    let blue_two = tacsim::match_::tank_for_slot(tw.world(), PartyId::BLUE, 2).expect("blue 2");
     mush_sim::deployed::mark(
         tw.world_mut(),
         blue_two,
@@ -1672,7 +1673,7 @@ fn z3_a_deployed_roster_tank_refuses_the_apply_and_writes_nothing() {
     assert_eq!(census(&tw), before, "nothing was made, renamed or moved");
     assert_eq!(units_in(&tw).len(), 8);
     assert_eq!(
-        tacsim::match_::tank_for_slot(tw.world(), Team::Red, 5),
+        tacsim::match_::tank_for_slot(tw.world(), PartyId::RED, 5),
         None
     );
 
@@ -1732,7 +1733,7 @@ fn o1_the_shipped_ground_declares_hold_at_the_crossroads() {
         );
     }
     // 120 cells from the blue muster (column 249) and 123 from the red (6).
-    let muster = |team: Team| {
+    let muster = |team: PartyId| {
         arena
             .tanks
             .iter()
@@ -1740,8 +1741,8 @@ fn o1_the_shipped_ground_declares_hold_at_the_crossroads() {
             .map(|tank| tank.x)
             .expect("slot 1")
     };
-    assert_eq!(muster(Team::Blue) - spot.x, 120);
-    assert_eq!(spot.x - muster(Team::Red), 123);
+    assert_eq!(muster(PartyId::BLUE) - spot.x, 120);
+    assert_eq!(spot.x - muster(PartyId::RED), 123);
     let note = &arena.note;
     assert!(note.contains("VERSION 4 (16b cut O.1)"), "{note}");
     assert!(note.len() <= 1_024, "{} bytes", note.len());
@@ -2202,7 +2203,7 @@ fn ae1_the_rebuilt_fixtures_are_version_one_of_the_ground_and_four_of_the_arena(
 /// `95ee741e70fa804e671e8b34f8fb62ea317b15f6a4bc2bdc5190971180802ecd` (17b
 /// cut M2.5, the helm half).
 const STANDARD_DOCTRINE_SHA256: &str =
-    "c0737fdc45994c226b7861bd6f488383408d11764e30b889487b4f7498e76100";
+    "a37766b55993879fecb78e4cb3e1470b27df617d7e7a5b3b8a6971c24b6e5336";
 
 /// **Standard Doctrine's source is pinned** (17b cut M2.5; doc 17 §11, §13,
 /// §22's italics; 17b §5's feas F9):
@@ -2258,7 +2259,7 @@ fn m2_the_standard_doctrine_source_is_pinned() {
         MindManifest {
             name: "Standard Doctrine".to_owned(),
             role: "combat".to_owned(),
-            api: 6,
+            api: 7,
             stock: 3,
             rated_class: "I".to_owned(),
             ops_ceiling: 1_500,
@@ -2272,7 +2273,7 @@ fn m2_the_standard_doctrine_source_is_pinned() {
     assert!(
         header.starts_with("// Standard Doctrine \u{2014} the combat role's stock mind")
             && header.contains(
-                "name: Standard Doctrine; role: combat; api: 6; stock: 3; rated: class I \
+                "name: Standard Doctrine; role: combat; api: 7; stock: 3; rated: class I \
                  (1,500 ops a think)"
             )
             && header.contains("T1 is the oracle (Gate A)"),

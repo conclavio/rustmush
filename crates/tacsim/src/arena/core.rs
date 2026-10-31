@@ -626,17 +626,17 @@ pub(crate) mod tests {
     /// is rated II on II, lawful.
     #[test]
     fn m3_a_mind_thinks_at_the_lesser_of_its_rating_and_its_core() {
-        use crate::arena::state::{Controller, Team};
+        use crate::arena::state::{Controller, PartyId};
         use crate::arena::test_support::{arena_of, line_tank, pose, scout};
         const RED: ObjId = ObjId(4);
         const BLUE: ObjId = ObjId(9);
-        let mut red = line_tank(RED, Team::Red, pose(1_500, 4_500));
+        let mut red = line_tank(RED, PartyId::RED, pose(1_500, 4_500));
         red.controller = Controller::Mind;
         red.reseal(&crate::match_::SealTerms::fixture())
             .expect("the fixture terms seal");
         let bare = crate::arena::state::CustodyUnit {
             unit: tactical_unit(BLUE),
-            ..scout(BLUE, Team::Blue, pose(6_500, 4_500))
+            ..scout(BLUE, PartyId::BLUE, pose(6_500, 4_500))
         }
         .sealed();
         let mut arena = arena_of(vec![red, bare]);
@@ -652,7 +652,7 @@ pub(crate) mod tests {
         assert_eq!(arena.slot_capacity(BLUE), 1);
         // 17b cut M4.1: the rating is the seal's (`SealTerms::rated`), read
         // off `UnitState::seal.class` — `min(rated, core, cap)` at the seal.
-        let rated_ii = line_tank(RED, Team::Red, pose(1_500, 4_500));
+        let rated_ii = line_tank(RED, PartyId::RED, pose(1_500, 4_500));
         let mut rated_ii = crate::arena::state::CustodyUnit {
             controller: Controller::Mind,
             ..rated_ii

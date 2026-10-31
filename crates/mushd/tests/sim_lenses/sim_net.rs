@@ -74,19 +74,47 @@ const CONTROL_UNKNOWN: &str = "control state unknown";
 const RETRY_BUDGET: usize = 40;
 
 /// The three pilots, created before the world task spawns so their ids are
-/// stable: Ada and Cy fly red (`RA`, `RB`), Bo flies blue (`BA`).
+/// stable: Ada and Cy fly red, Bo flies blue. Doc 32 cut CF.0 (Q-CF-11):
+/// their callsigns are the side's letter and a unit letter drawn at check-out,
+/// so the test reads each pilot's off the join line and `STATUS`.
 const ADA: ObjId = ObjId(2);
 const BO: ObjId = ObjId(3);
 const CY: ObjId = ObjId(4);
 
 /// comsys's own lines, spelled out: this is a test over a real wire, and the
-/// sentence a pilot reads is what it asserts.
-const RED_JOINED_ADA: &str = "You have been joined to channel RedNet (alias: ra).";
-const RED_JOINED_CY: &str = "You have been joined to channel RedNet (alias: rb).";
-const BLUE_JOINED_BO: &str = "You have been joined to channel BlueNet (alias: ba).";
+/// sentence a pilot reads is what it asserts. The join line's alias is the
+/// pilot's drawn callsign, lower-cased (doc 32 cut CF.0).
+const JOINED: &str = "You have been joined to channel ";
 const RED_REMOVED: &str = "You have been removed from channel RedNet.";
-/// The one line a net line reads as, on line mode.
-const ADA_ON_THE_NET: &str = "[RedNet] RA Ada: contact east";
+
+/// `You have been joined to channel <net> (alias: <alias>).`, spelled out.
+fn joined_line(net: &str, alias: &str) -> String {
+    format!("{JOINED}{net} (alias: {alias}).")
+}
+
+/// **The alias `term` was joined to `net` under** (doc 32 cut CF.0): waits
+/// for the whole join line and reads the alias off it, which must be a callsign
+/// of `party`, lower-cased.
+async fn joined_alias(term: &mut Term, net: &str, party: char) -> String {
+    let head = format!("{JOINED}{net} (alias: ");
+    term.expect(&head).await;
+    let at = term
+        .seen
+        .find(&head)
+        .unwrap_or_else(|| panic!("the join line, raw: {:?}", term.seen));
+    term.expect_after(at, ").").await;
+    let seen = strip_ansi(&term.seen[at..]);
+    let alias = seen
+        .split_once("(alias: ")
+        .and_then(|(_, rest)| rest.split_once(")."))
+        .map(|(alias, _)| alias.to_owned())
+        .unwrap_or_default();
+    assert!(
+        support::is_callsign_of(&alias.to_uppercase(), party) && alias == alias.to_lowercase(),
+        "the join's alias is a drawn {party} callsign, lower-cased: {alias:?}"
+    );
+    alias
+}
 
 /// A sentinel whose refusal closes a window: the world answers commands in the
 /// order it took them, so everything that reached the terminal before the
@@ -587,12 +615,16 @@ async fn a_sides_net_carries_its_pilots_words_to_its_own_side_and_nothing_to_the
     // The join rides the check-out's batch ahead of `Good hunting`, so the
     // line every client waits on to know the match is theirs comes last.
     ada.expect("Good hunting").await;
-    assert!(strip_ansi(&ada.seen[ada_mark..]).contains(RED_JOINED_ADA));
-    cy.expect(RED_JOINED_CY).await;
-    bo.expect(BLUE_JOINED_BO).await;
+    let ada_alias = joined_alias(&mut ada, "RedNet", 'R').await;
+    let cy_alias = joined_alias(&mut cy, "RedNet", 'R').await;
+    let bo_alias = joined_alias(&mut bo, "BlueNet", 'B').await;
+    assert_ne!(ada_alias, cy_alias, "two red tanks, two drawn letters");
+    let red_joined_ada = joined_line("RedNet", &ada_alias);
+    let blue_joined_bo = joined_line("BlueNet", &bo_alias);
+    assert!(strip_ansi(&ada.seen[ada_mark..]).contains(&red_joined_ada));
     let ada_seen = strip_ansi(&ada.seen[ada_mark..]);
     let hunting = ada_seen.find("Good hunting").expect("the start");
-    let joined = ada_seen.find(RED_JOINED_ADA).expect("the join");
+    let joined = ada_seen.find(&red_joined_ada).expect("the join");
     assert!(
         joined < hunting,
         "the join is said ahead of the start's last line:\n{ada_seen}"
@@ -600,15 +632,30 @@ async fn a_sides_net_carries_its_pilots_words_to_its_own_side_and_nothing_to_the
     // Nobody is told of the other side's net.
     let bo_window = close_window(&mut bo, bo_start).await;
     assert!(!bo_window.contains("RedNet"), "{bo_window}");
-    assert!(bo_window.contains(BLUE_JOINED_BO), "{bo_window}");
+    assert!(bo_window.contains(&blue_joined_bo), "{bo_window}");
+    // The alias is the callsign the tank answers to, lower-cased.
+    let ada_callsign = support::own_callsign(&mut ada).await;
+    let cy_callsign = support::own_callsign(&mut cy).await;
+    assert_eq!(ada_alias, ada_callsign.to_lowercase());
+    assert_eq!(cy_alias, cy_callsign.to_lowercase());
+    assert_eq!(
+        bo_alias,
+        support::own_callsign(&mut bo).await.to_lowercase()
+    );
+    let ada_on_the_net = format!("[RedNet] {ada_callsign} Ada: contact east");
     let _ = web_window(&mut blue_web).await;
     let _ = web_window(&mut red_web).await;
 
     // (2) Ada speaks on red's net, and Cy reads comsys's own line.
     let bo_mark = bo.mark();
     let cy_mark = cy.mark();
-    say(&mut ada, "ra contact east", ADA_ON_THE_NET).await;
-    cy.expect_after(cy_mark, ADA_ON_THE_NET).await;
+    say(
+        &mut ada,
+        &format!("{ada_alias} contact east"),
+        &ada_on_the_net,
+    )
+    .await;
+    cy.expect_after(cy_mark, &ada_on_the_net).await;
     // ... and on the web, as the `Channel` event the channel screen renders.
     let red_seen = web_window(&mut red_web).await;
     assert!(
@@ -616,7 +663,7 @@ async fn a_sides_net_carries_its_pilots_words_to_its_own_side_and_nothing_to_the
             &env.event,
             OutputEvent::Channel { channel, title, actor, text, .. }
                 if channel.as_str() == "RedNet"
-                    && title.as_deref() == Some("RA")
+                    && title.as_deref() == Some(ada_callsign.as_str())
                     && actor.name == "Ada"
                     && text.to_plain_text() == "contact east"
         )),
@@ -666,10 +713,8 @@ async fn a_sides_net_carries_its_pilots_words_to_its_own_side_and_nothing_to_the
     );
     // Cy is still on red's net, and still reads it.
     let cy_mark = cy.mark();
-    say(&mut cy, "rb still here", "[RedNet] RB Cy: still here").await;
+    let cy_on_the_net = format!("[RedNet] {cy_callsign} Cy: still here");
+    say(&mut cy, &format!("{cy_alias} still here"), &cy_on_the_net).await;
     let cy_window = close_window(&mut cy, cy_mark).await;
-    assert!(
-        cy_window.contains("[RedNet] RB Cy: still here"),
-        "{cy_window}"
-    );
+    assert!(cy_window.contains(&cy_on_the_net), "{cy_window}");
 }

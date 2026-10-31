@@ -101,7 +101,7 @@ fn picture_rows(berm_m: u16, contact_m: u16) -> usize {
     let contact = Sprite {
         x_cm: centre(EYE_CELL.0),
         y_cm: centre(EYE_CELL.1 + contact_m / 10),
-        kind: SpriteKind::Red,
+        kind: SpriteKind::Hostile,
         pose: SpritePose::of_look(tank, Facing::Front, false, 0),
     };
     heightfield::visible_rows(&terrain, &cam, Some(i64::from(EYE_CM)), FRAME, &contact)

@@ -26,8 +26,8 @@ use crate::arena::runtime_card::{CardDefinition, ProfileDefinition};
 use crate::arena::schema::validate_envelope;
 use crate::arena::state::{
     Arena, ArenaDefinition, ArenaTerrain, Classification, ContactId, Controller, CustodyOut,
-    CustodyUnit, EntryZone, MatchMode, Power, SeenPose, ShadowContact, Team, TerrainCell, Waypoint,
-    Waypoints,
+    CustodyUnit, EntryZone, MatchMode, PartyId, Power, SeenPose, ShadowContact, TerrainCell,
+    Waypoint, Waypoints,
 };
 use crate::config::{ArenaConfig, MatchConfig, MindsConfig, SensorsConfig};
 use crate::definitions::{Catalog, content};
@@ -163,7 +163,7 @@ impl ProbeArena {
         let mut own = hull(
             catalog,
             OWN,
-            Team::Red,
+            PartyId::RED,
             5_000,
             5_000,
             class,
@@ -183,7 +183,7 @@ impl ProbeArena {
             units.push(hull(
                 catalog,
                 HOSTILE,
-                Team::Blue,
+                PartyId::BLUE,
                 50_000,
                 5_000,
                 CoreClass::I,
@@ -195,7 +195,7 @@ impl ProbeArena {
             units.push(hull(
                 catalog,
                 SECOND,
-                Team::Blue,
+                PartyId::BLUE,
                 50_000,
                 30_000,
                 CoreClass::I,
@@ -216,6 +216,7 @@ impl ProbeArena {
                 resolution,
                 seed: SEED,
                 mode: MatchMode::Skirmish,
+                host: crate::arena::FieldHost::all_hostile(),
             },
             cfg,
             &MatchConfig::default(),
@@ -232,7 +233,7 @@ impl ProbeArena {
             if let Some(target) = arena.unit(id) {
                 let held = ShadowContact::sighted(
                     id,
-                    Classification::Classified { team: target.team },
+                    Classification::Classified { party: target.team },
                     0,
                     SeenPose::of(target),
                 );
@@ -389,7 +390,7 @@ impl ProbeArena {
 fn hull(
     catalog: &Catalog,
     id: ObjId,
-    team: Team,
+    team: PartyId,
     x: i64,
     y: i64,
     class: CoreClass,
@@ -469,14 +470,14 @@ fn ground() -> Result<ArenaDefinition, RollError> {
         terrain,
         entry_zones: vec![
             EntryZone {
-                team: Team::Red,
+                team: PartyId::RED,
                 x0: 0,
                 y0: 0,
                 x1: 4,
                 y1: 63,
             },
             EntryZone {
-                team: Team::Blue,
+                team: PartyId::BLUE,
                 x0: 59,
                 y0: 0,
                 x1: 63,

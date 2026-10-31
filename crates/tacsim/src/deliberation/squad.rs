@@ -66,7 +66,7 @@ use std::fmt;
 use mush_core::ObjId;
 use serde::{Deserialize, Serialize};
 
-use crate::arena::state::Team;
+use crate::arena::state::PartyId;
 use crate::deliberation::order::CharacterRef;
 
 /// **The most `[tacsim.arena].squad_size` may be** (16b cut Z.1, 16c N6), and
@@ -96,7 +96,7 @@ pub const MAX_SQUADS_PER_SIDE: usize = 32;
 #[serde(deny_unknown_fields)]
 pub struct SquadId {
     /// The side.
-    pub team: Team,
+    pub team: PartyId,
     /// The ordinal within the side, from `1`.
     pub index: u16,
 }
@@ -113,8 +113,8 @@ impl SquadId {
     pub fn parse(text: &str) -> Option<SquadId> {
         let (team, index) = text.rsplit_once('-')?;
         let team = match team {
-            "red" => Team::Red,
-            "blue" => Team::Blue,
+            "red" => PartyId::RED,
+            "blue" => PartyId::BLUE,
             _ => return None,
         };
         Some(SquadId {
@@ -146,7 +146,7 @@ pub struct SquadRoster {
 impl SquadRoster {
     /// The side this squad is on.
     #[must_use]
-    pub const fn team(&self) -> Team {
+    pub const fn team(&self) -> PartyId {
         self.id.team
     }
 
@@ -185,10 +185,10 @@ impl SquadRoster {
 /// The answer is deterministic — one pass in unit-id order per side — so two boots
 /// of the same match produce the same squads and the same commanders.
 #[must_use]
-pub fn squads_of(units: &[(ObjId, Team, bool)], size: u32) -> Vec<SquadRoster> {
+pub fn squads_of(units: &[(ObjId, PartyId, bool)], size: u32) -> Vec<SquadRoster> {
     let size = usize::try_from(size.clamp(1, SQUAD_SIZE_MAX)).unwrap_or(1);
     let mut out = Vec::new();
-    for team in Team::ALL {
+    for team in PartyId::OOC {
         let mut side: Vec<ObjId> = units
             .iter()
             .filter(|(_, on, machine)| *on == team && *machine)
@@ -284,9 +284,9 @@ mod tests {
     fn l1_fill_leaders_mints_one_persona_per_roster_and_leader_of_finds_it() {
         let squads = squads_of(
             &[
-                reflex(4, Team::Red),
-                reflex(5, Team::Red),
-                reflex(7, Team::Blue),
+                reflex(4, PartyId::RED),
+                reflex(5, PartyId::RED),
+                reflex(7, PartyId::BLUE),
             ],
             1,
         );
@@ -297,7 +297,7 @@ mod tests {
             assert_eq!(leader.by, CharacterRef::Persona { squad: roster.id });
         }
         let red_two = SquadId {
-            team: Team::Red,
+            team: PartyId::RED,
             index: 2,
         };
         assert_eq!(
@@ -305,7 +305,7 @@ mod tests {
             Some(&CharacterRef::Persona { squad: red_two })
         );
         let blue_two = SquadId {
-            team: Team::Blue,
+            team: PartyId::BLUE,
             index: 2,
         };
         assert_eq!(leader_of(&leaders, blue_two), None, "no such squad");
@@ -313,14 +313,14 @@ mod tests {
         assert!(fill_leaders(&[]).is_empty());
     }
 
-    fn reflex(id: u32, team: Team) -> (ObjId, Team, bool) {
+    fn reflex(id: u32, team: PartyId) -> (ObjId, PartyId, bool) {
         (ObjId(id), team, true)
     }
 
     #[test]
     fn a_squad_id_round_trips_its_rendered_form() {
         let id = SquadId {
-            team: Team::Blue,
+            team: PartyId::BLUE,
             index: 3,
         };
         assert_eq!(id.to_string(), "blue-3");
@@ -336,8 +336,8 @@ mod tests {
     }
 
     /// `n` red machines with ids `10..10 + n`.
-    fn side_of(n: u32) -> Vec<(ObjId, Team, bool)> {
-        (0..n).map(|at| reflex(10 + at, Team::Red)).collect()
+    fn side_of(n: u32) -> Vec<(ObjId, PartyId, bool)> {
+        (0..n).map(|at| reflex(10 + at, PartyId::RED)).collect()
     }
 
     /// **16b cut Z.1 (16c N6): a side is dealt, not chunked.** Rewrites cut N.2's
@@ -349,9 +349,9 @@ mod tests {
     fn z1_a_side_is_dealt_into_squads_whose_sizes_differ_by_at_most_one() {
         let three = squads_of(
             &[
-                reflex(9, Team::Red),
-                reflex(4, Team::Red),
-                reflex(6, Team::Red),
+                reflex(9, PartyId::RED),
+                reflex(4, PartyId::RED),
+                reflex(6, PartyId::RED),
             ],
             4,
         );
@@ -398,37 +398,37 @@ mod tests {
         // Size two, so blue's four are two squads and the ordinals are per side.
         let mixed = squads_of(
             &[
-                reflex(4, Team::Red),
-                reflex(5, Team::Red),
-                (ObjId(6), Team::Red, false),
-                reflex(7, Team::Blue),
-                reflex(8, Team::Blue),
-                reflex(9, Team::Blue),
-                reflex(10, Team::Blue),
+                reflex(4, PartyId::RED),
+                reflex(5, PartyId::RED),
+                (ObjId(6), PartyId::RED, false),
+                reflex(7, PartyId::BLUE),
+                reflex(8, PartyId::BLUE),
+                reflex(9, PartyId::BLUE),
+                reflex(10, PartyId::BLUE),
             ],
             2,
         );
         assert_eq!(mixed.len(), 3);
-        assert_eq!(mixed[0].id.team, Team::Red);
+        assert_eq!(mixed[0].id.team, PartyId::RED);
         assert!(!mixed[0].holds(ObjId(6)), "a seated tank takes no order");
         assert_eq!(mixed[1].id.to_string(), "blue-1");
         assert_eq!(mixed[2].id.to_string(), "blue-2");
         assert!(mixed[2].holds(ObjId(9)));
-        assert_eq!(mixed[2].team(), Team::Blue);
+        assert_eq!(mixed[2].team(), PartyId::BLUE);
 
         // **16b cut Z.1**: at the shipped size the pilot's tank is still skipped
         // (red's two machines are one squad of two, not three), and each side is
         // its own `red-1` / `blue-1`.
         let lances = squads_of(
             &[
-                reflex(4, Team::Red),
-                (ObjId(5), Team::Red, false),
-                reflex(6, Team::Red),
-                reflex(7, Team::Blue),
-                reflex(8, Team::Blue),
-                reflex(9, Team::Blue),
-                reflex(10, Team::Blue),
-                reflex(11, Team::Blue),
+                reflex(4, PartyId::RED),
+                (ObjId(5), PartyId::RED, false),
+                reflex(6, PartyId::RED),
+                reflex(7, PartyId::BLUE),
+                reflex(8, PartyId::BLUE),
+                reflex(9, PartyId::BLUE),
+                reflex(10, PartyId::BLUE),
+                reflex(11, PartyId::BLUE),
             ],
             4,
         );
@@ -441,8 +441,9 @@ mod tests {
 
     #[test]
     fn the_side_is_capped_so_a_field_of_three_hundred_has_a_bounded_command() {
-        let many: Vec<(ObjId, Team, bool)> =
-            (0..300).map(|n| reflex(100_000 + n, Team::Red)).collect();
+        let many: Vec<(ObjId, PartyId, bool)> = (0..300)
+            .map(|n| reflex(100_000 + n, PartyId::RED))
+            .collect();
         let squads = squads_of(&many, 4);
         assert_eq!(squads.len(), MAX_SQUADS_PER_SIDE);
         assert_eq!(squads[0].commander, ObjId(100_000));
@@ -460,8 +461,9 @@ mod tests {
         );
         // And 150 a side (the CI cohort) deals into more than the cap, so it is
         // still 32 squads of four.
-        let cohort: Vec<(ObjId, Team, bool)> =
-            (0..150).map(|n| reflex(200_000 + n, Team::Blue)).collect();
+        let cohort: Vec<(ObjId, PartyId, bool)> = (0..150)
+            .map(|n| reflex(200_000 + n, PartyId::BLUE))
+            .collect();
         assert_eq!(sizes(&squads_of(&cohort, 4)), vec![4; MAX_SQUADS_PER_SIDE]);
     }
 
@@ -511,6 +513,6 @@ mod tests {
     #[test]
     fn an_empty_field_has_no_squads() {
         assert!(squads_of(&[], 4).is_empty());
-        assert!(squads_of(&[(ObjId(4), Team::Red, false)], 4).is_empty());
+        assert!(squads_of(&[(ObjId(4), PartyId::RED, false)], 4).is_empty());
     }
 }

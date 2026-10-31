@@ -1,5 +1,5 @@
 //! **What a round does when it arrives** (16b cut W.2, W3; doc 16 §3.5 "Scheduled
-//! impact" and "Damage", §3.3 "A wreck" and "Facet attribution", §3.8 "Team
+//! impact" and "Damage", §3.3 "A wreck" and "Facet attribution", §3.8 "PartyId
 //! elimination").
 //!
 //! One entry point — [`Arena::resolve_impact`], the body of the
@@ -87,7 +87,7 @@ use crate::arena::ledger::EventKind;
 use crate::arena::perception::Notice;
 use crate::arena::resolution::{Consequence, Resolution};
 use crate::arena::rng::{DrawLabel, draw};
-use crate::arena::state::{Arena, DueKind, EndReason, MatchEnd, Power, Team, UnitState};
+use crate::arena::state::{Arena, DueKind, EndReason, MatchEnd, PartyId, Power, UnitState};
 use crate::definitions::unit::{UnitClass, armor_cell, internals_cell};
 
 // ---------------------------------------------------------------------------
@@ -384,6 +384,15 @@ impl Arena {
             },
             Vec::new(),
         ));
+        // **Doc 32 cut CF.0** (Q-CF-5, Q-CF-9): the round arriving is the fire
+        // the target's party sees, hit or miss; its book, and its friends',
+        // now hold the shooter's party hostile under whatever mark they hold.
+        if let (Some(shooter), Some(victim)) = (
+            self.unit(shot.shooter).map(|unit| unit.team),
+            self.unit(shot.target).map(|unit| unit.team),
+        ) {
+            self.relations.note_fire(shooter, victim);
+        }
         let miss = |reason: &str, journal: &mut Vec<Notice>| {
             journal.push((
                 t_ms,
@@ -1459,17 +1468,17 @@ impl Arena {
     /// elimination is (inside the substep by `Arena::substep`, phase 5 the
     /// backstop), and folded into no hash.
     #[must_use]
-    pub fn eliminated(&self) -> Option<Option<Team>> {
-        let mut standing: Vec<Team> = Vec::new();
-        let mut present: Vec<Team> = Vec::new();
+    pub fn eliminated(&self) -> Option<Option<PartyId>> {
+        let mut standing: Vec<PartyId> = Vec::new();
+        let mut present: Vec<PartyId> = Vec::new();
         // 16b cut AE.3: the sides that fielded a non-drone at all, and the ones
         // with a non-drone still in action.
-        let mut fielded_gun: Vec<Team> = Vec::new();
-        let mut standing_gun: Vec<Team> = Vec::new();
+        let mut fielded_gun: Vec<PartyId> = Vec::new();
+        let mut standing_gun: Vec<PartyId> = Vec::new();
         // 16b cut AP.2: the sides with an in-action unit that came in armed, and
         // the ones with an in-action unit that still carries a weapon.
-        let mut armed_in_action: Vec<Team> = Vec::new();
-        let mut carries_gun: Vec<Team> = Vec::new();
+        let mut armed_in_action: Vec<PartyId> = Vec::new();
+        let mut carries_gun: Vec<PartyId> = Vec::new();
         for unit in &self.units {
             if !present.contains(&unit.team) {
                 present.push(unit.team);
@@ -1500,7 +1509,8 @@ impl Arena {
         // A side left with drones alone, having fielded something else, is out.
         standing.retain(|team| standing_gun.contains(team) || !fielded_gun.contains(team));
         // 16b cut AP.2: and so is a side that came in armed and has no gun left.
-        let disarmed = |team: &Team| armed_in_action.contains(team) && !carries_gun.contains(team);
+        let disarmed =
+            |team: &PartyId| armed_in_action.contains(team) && !carries_gun.contains(team);
         standing.retain(|team| !disarmed(team));
         match standing.len() {
             0 => Some(None),
@@ -1514,7 +1524,8 @@ impl Arena {
     /// Answers the end it recorded, so phase 5 can journal it against the hash it
     /// already has. A match that has already ended is left alone.
     pub fn settle_elimination(&mut self) -> Option<MatchEnd> {
-        if self.ended.is_some() {
+        // Doc 32 cut CF.0: only a host that supplies elimination ends on it.
+        if self.ended.is_some() || self.end != crate::arena::party::EndCondition::Elimination {
             return None;
         }
         let winner = self.eliminated()?;
@@ -1548,8 +1559,8 @@ impl Arena {
     ///    kill.
     #[must_use]
     pub fn spent(&self) -> bool {
-        let mut present: Vec<Team> = Vec::new();
-        let mut armed: Vec<Team> = Vec::new();
+        let mut present: Vec<PartyId> = Vec::new();
+        let mut armed: Vec<PartyId> = Vec::new();
         for unit in &self.units {
             if !present.contains(&unit.team) {
                 present.push(unit.team);
@@ -1584,7 +1595,10 @@ impl Arena {
     /// eliminated on the same substep is an elimination with a winner, and a draw
     /// over the top of it would lose the result.
     pub fn settle_spent(&mut self) -> Option<MatchEnd> {
-        if self.ended.is_some() || !self.spent() {
+        if self.ended.is_some()
+            || self.end != crate::arena::party::EndCondition::Elimination
+            || !self.spent()
+        {
             return None;
         }
         let end = MatchEnd {
@@ -1619,9 +1633,9 @@ impl Arena {
     ///
     /// One Chebyshev comparison per unit, in unit-id order, with no allocation.
     #[must_use]
-    pub fn hold_presence(&self) -> Option<Team> {
+    pub fn hold_presence(&self) -> Option<PartyId> {
         let hold = self.hold.as_ref()?;
-        let mut alone: Option<Team> = None;
+        let mut alone: Option<PartyId> = None;
         for unit in &self.units {
             if unit.limits.wreck || unit.disabled || unit.class == UnitClass::Drone {
                 continue;
@@ -1760,7 +1774,7 @@ impl Arena {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use crate::arena::state::Team;
+    use crate::arena::state::PartyId;
     use crate::arena::test_support::{arena_of, line_tank, line_tank_unit, pose};
     use crate::definitions::unit::{ARMOR_CELL, INTERNALS_CELL};
 
@@ -1769,8 +1783,8 @@ mod tests {
 
     fn duel() -> Arena {
         let mut arena = arena_of(vec![
-            line_tank(RED, Team::Red, pose(1_500, 1_500)),
-            line_tank(BLUE, Team::Blue, pose(1_500, 2_500)),
+            line_tank(RED, PartyId::RED, pose(1_500, 1_500)),
+            line_tank(BLUE, PartyId::BLUE, pose(1_500, 2_500)),
         ]);
         for id in [RED, BLUE] {
             if let Some(state) = arena.unit_mut(id) {
@@ -2050,12 +2064,15 @@ mod tests {
 
     /// One record checked out into a duel, and the arena it makes of it.
     fn enter_with(record: mush_tactics::TacticalUnit) -> Arena {
-        let mut custody = line_tank(BLUE, Team::Blue, pose(1_500, 2_500));
+        let mut custody = line_tank(BLUE, PartyId::BLUE, pose(1_500, 2_500));
         custody.unit = record;
         custody
             .reseal(&crate::match_::SealTerms::fixture())
             .expect("the fixture terms seal");
-        arena_of(vec![line_tank(RED, Team::Red, pose(1_500, 1_500)), custody])
+        arena_of(vec![
+            line_tank(RED, PartyId::RED, pose(1_500, 1_500)),
+            custody,
+        ])
     }
 
     /// What a record becomes when the match opens on it.
@@ -2751,7 +2768,7 @@ mod tests {
             arena.unit(BLUE).is_some_and(|state| state.limits.wreck),
             "the destroy consequence did not wreck it"
         );
-        assert_eq!(arena.eliminated(), Some(Some(Team::Red)));
+        assert_eq!(arena.eliminated(), Some(Some(PartyId::RED)));
     }
 
     #[test]
@@ -2797,7 +2814,7 @@ mod tests {
             "said once"
         );
         // And that is an elimination, because blue was the whole blue side.
-        assert_eq!(arena.eliminated(), Some(Some(Team::Red)));
+        assert_eq!(arena.eliminated(), Some(Some(PartyId::RED)));
     }
 
     #[test]
@@ -2868,7 +2885,7 @@ mod tests {
         journal.clear();
         arena.destroy_unit(BLUE, 600, None, &mut journal);
         assert!(journal.is_empty(), "destroyed once");
-        assert_eq!(arena.eliminated(), Some(Some(Team::Red)));
+        assert_eq!(arena.eliminated(), Some(Some(PartyId::RED)));
     }
 
     #[test]
@@ -2927,9 +2944,9 @@ mod tests {
         const DRONE: ObjId = ObjId(5);
         let three = || {
             let mut arena = arena_of(vec![
-                line_tank(RED, Team::Red, pose(1_500, 1_500)),
-                drone(DRONE, Team::Red, pose(2_500, 1_500)),
-                line_tank(BLUE, Team::Blue, pose(6_500, 6_500)),
+                line_tank(RED, PartyId::RED, pose(1_500, 1_500)),
+                drone(DRONE, PartyId::RED, pose(2_500, 1_500)),
+                line_tank(BLUE, PartyId::BLUE, pose(6_500, 6_500)),
             ]);
             for id in [RED, DRONE, BLUE] {
                 if let Some(state) = arena.unit_mut(id) {
@@ -2949,13 +2966,13 @@ mod tests {
         assert!(!arena.out_of_action(DRONE), "the drone still runs");
         assert_eq!(
             arena.eliminated(),
-            Some(Some(Team::Blue)),
+            Some(Some(PartyId::BLUE)),
             "red's guns are gone; its drone decides nothing"
         );
         assert_eq!(
             arena.settle_elimination().map(|end| end.reason),
             Some(EndReason::Elimination {
-                winner: Some(Team::Blue)
+                winner: Some(PartyId::BLUE)
             })
         );
         // Both tanks dry and standing, red's drone beside its tank: spent.
@@ -2973,19 +2990,19 @@ mod tests {
         );
         // Unarmed armour against a wrecked armed side: the old rule, untouched.
         let mut unarmed = arena_of(vec![
-            tank(RED, Team::Red, pose(1_500, 1_500)),
-            line_tank(BLUE, Team::Blue, pose(6_500, 6_500)),
+            tank(RED, PartyId::RED, pose(1_500, 1_500)),
+            line_tank(BLUE, PartyId::BLUE, pose(6_500, 6_500)),
         ]);
         unarmed.destroy_unit(BLUE, 100, None, &mut journal);
         assert_eq!(
             unarmed.eliminated(),
-            Some(Some(Team::Red)),
+            Some(Some(PartyId::RED)),
             "an unarmed tank is armour, and armour stands"
         );
         // A side of drones alone against a tank is still standing.
         let drones = arena_of(vec![
-            drone(RED, Team::Red, pose(1_500, 1_500)),
-            line_tank(BLUE, Team::Blue, pose(6_500, 6_500)),
+            drone(RED, PartyId::RED, pose(1_500, 1_500)),
+            line_tank(BLUE, PartyId::BLUE, pose(6_500, 6_500)),
         ]);
         assert_eq!(
             drones.eliminated(),
@@ -3047,18 +3064,18 @@ mod tests {
             "it is not disabled: its motion is whole"
         );
         assert!(journal.is_empty(), "and nothing is said of it");
-        assert_eq!(arena.eliminated(), Some(Some(Team::Red)));
+        assert_eq!(arena.eliminated(), Some(Some(PartyId::RED)));
         assert_eq!(
             arena.settle_elimination().map(|end| end.reason),
             Some(EndReason::Elimination {
-                winner: Some(Team::Red)
+                winner: Some(PartyId::RED)
             })
         );
 
         // Symmetric (D-16-5): red's turret gives blue.
         let mut arena = duel();
         disarm(&mut arena, RED);
-        assert_eq!(arena.eliminated(), Some(Some(Team::Blue)));
+        assert_eq!(arena.eliminated(), Some(Some(PartyId::BLUE)));
 
         // Both turrets: nobody stands, the elimination draw, and `Spent` never
         // gets to say "out of ammunition" of two tanks with full magazines.
@@ -3096,35 +3113,35 @@ mod tests {
         // The never-armed side: red's unarmed armour stands, blue came in armed
         // and has lost its gun, so blue is out and red wins.
         let mut unarmed = arena_of(vec![
-            tank(RED, Team::Red, pose(1_500, 1_500)),
-            line_tank(BLUE, Team::Blue, pose(6_500, 6_500)),
+            tank(RED, PartyId::RED, pose(1_500, 1_500)),
+            line_tank(BLUE, PartyId::BLUE, pose(6_500, 6_500)),
         ]);
         assert_eq!(unarmed.eliminated(), None);
         disarm(&mut unarmed, BLUE);
         assert_eq!(
             unarmed.eliminated(),
-            Some(Some(Team::Red)),
+            Some(Some(PartyId::RED)),
             "no 'while the other side still carries one' test"
         );
 
         // AE.3's interplay: red's gunless tank beside its live drone is out.
         const DRONE: ObjId = ObjId(5);
         let mut with_drone = arena_of(vec![
-            line_tank(RED, Team::Red, pose(1_500, 1_500)),
-            drone(DRONE, Team::Red, pose(2_500, 1_500)),
-            line_tank(BLUE, Team::Blue, pose(6_500, 6_500)),
+            line_tank(RED, PartyId::RED, pose(1_500, 1_500)),
+            drone(DRONE, PartyId::RED, pose(2_500, 1_500)),
+            line_tank(BLUE, PartyId::BLUE, pose(6_500, 6_500)),
         ]);
         disarm(&mut with_drone, RED);
         assert!(!with_drone.out_of_action(DRONE), "the drone still runs");
         assert_eq!(
             with_drone.eliminated(),
-            Some(Some(Team::Blue)),
+            Some(Some(PartyId::BLUE)),
             "the drone decides nothing and red cannot shoot"
         );
         // And a side of drones alone, never armed, is untouched by either clause.
         let drones = arena_of(vec![
-            drone(RED, Team::Red, pose(1_500, 1_500)),
-            line_tank(BLUE, Team::Blue, pose(6_500, 6_500)),
+            drone(RED, PartyId::RED, pose(1_500, 1_500)),
+            line_tank(BLUE, PartyId::BLUE, pose(6_500, 6_500)),
         ]);
         assert_eq!(drones.eliminated(), None);
 
@@ -3134,9 +3151,9 @@ mod tests {
         const WINGMAN: ObjId = ObjId(6);
         let side = || {
             arena_of(vec![
-                line_tank(RED, Team::Red, pose(1_500, 1_500)),
-                line_tank(WINGMAN, Team::Red, pose(2_500, 1_500)),
-                line_tank(BLUE, Team::Blue, pose(6_500, 6_500)),
+                line_tank(RED, PartyId::RED, pose(1_500, 1_500)),
+                line_tank(WINGMAN, PartyId::RED, pose(2_500, 1_500)),
+                line_tank(BLUE, PartyId::BLUE, pose(6_500, 6_500)),
             ])
         };
         let mut lance = side();
@@ -3149,7 +3166,7 @@ mod tests {
         disarm(&mut lance, WINGMAN);
         assert_eq!(
             lance.eliminated(),
-            Some(Some(Team::Blue)),
+            Some(Some(PartyId::BLUE)),
             "and with the last gun gone the side is out"
         );
         // A wreck beside a disarmed teammate: the wreck is out of action and
@@ -3165,7 +3182,7 @@ mod tests {
         disarm(&mut wrecked, RED);
         assert_eq!(
             wrecked.eliminated(),
-            Some(Some(Team::Blue)),
+            Some(Some(PartyId::BLUE)),
             "a wreck keeps no gunless side standing"
         );
     }

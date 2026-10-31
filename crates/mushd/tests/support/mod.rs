@@ -106,6 +106,130 @@ pub async fn wait_arena_pilot_out(term: &mut Term, callsign: &str, pilot: &str, 
     .await;
 }
 
+/// **The drawn unit letter after `prefix`** (doc 32 cut CF.0, Q-CF-11): the
+/// first occurrence of `prefix` in `hay` followed by one of the 23
+/// [`tacsim::arena::PARTY_LETTERS`], returned with `prefix`'s last character —
+/// so `callsign_after(seen, "Locked on B")` reads `BK`. `prefix` must end in
+/// the party letter; the unit letter after it is drawn at check-out from the
+/// match seed and no longer spells the slot.
+pub fn callsign_after(hay: &str, prefix: &str) -> Option<String> {
+    let party = prefix.chars().last()?;
+    hay.match_indices(prefix).find_map(|(at, _)| {
+        let unit = *hay.as_bytes().get(at + prefix.len())?;
+        tacsim::arena::PARTY_LETTERS
+            .contains(&unit)
+            .then(|| format!("{party}{}", unit as char))
+    })
+}
+
+/// **Whether `word` is a callsign of `party`** (doc 32 cut CF.0): the party's
+/// pinned letter, then one drawn unit letter, and nothing else.
+pub fn is_callsign_of(word: &str, party: char) -> bool {
+    let bytes = word.as_bytes();
+    bytes.len() == 2 && bytes[0] == party as u8 && tacsim::arena::PARTY_LETTERS.contains(&bytes[1])
+}
+
+/// **A seated pilot's own callsign, read off `STATUS`** (doc 32 cut CF.0):
+/// `Callsign RK.`. Retries until the panel has a frame (the first line of a
+/// `STATUS` before it is `power off. The panel has told you nothing yet.`)
+/// and over the command's transients, inside one deadline.
+pub async fn own_callsign(term: &mut Term) -> String {
+    let mut callsign = None;
+    wait_until(STEP_TIMEOUT, "the pilot's own callsign", async || {
+        let mark = term.mark();
+        term.send_line("STATUS").await;
+        if term
+            .expect_one_of_after(
+                mark,
+                &[
+                    "Callsign ",
+                    "told you nothing yet",
+                    "please retry in a moment",
+                    "control state unknown",
+                    "ledger writes awaiting",
+                ],
+            )
+            .await
+            != 0
+        {
+            return false;
+        }
+        // A read that stopped mid-word parses nothing and is simply retried.
+        let seen = strip_ansi(&term.seen[mark..]);
+        callsign = seen.split("Callsign ").nth(1).and_then(|rest| {
+            let word: String = rest
+                .chars()
+                .take_while(char::is_ascii_alphanumeric)
+                .collect();
+            let complete = rest[word.len()..].starts_with('.');
+            (complete && is_callsign_of(&word, word.chars().next()?)).then_some(word)
+        });
+        callsign.is_some()
+    })
+    .await;
+    callsign.expect("the pilot's own callsign")
+}
+
+/// **Every unit's drawn callsign in a running match** (doc 32 cut CF.0,
+/// Q-CF-11), keyed by the unit's object number: read off the match's live
+/// record in the store (`tacsim:live:<n>`), which carries the record's
+/// `callsigns` once the match is `Running`. Waits for that rewrite inside one
+/// deadline.
+pub async fn drawn_callsigns(
+    store: &Arc<dyn mush_store::ObjectStore>,
+    match_id: u64,
+) -> std::collections::BTreeMap<u32, String> {
+    let key = tacsim::match_::live_key(tacsim::arena_task::MatchId(match_id));
+    let mut drawn = std::collections::BTreeMap::new();
+    wait_until(STEP_TIMEOUT, "the match's drawn callsigns", async || {
+        let Some(document) = store
+            .module_json_get("tacsim", key.as_str())
+            .await
+            .expect("the live record read")
+        else {
+            return false;
+        };
+        let Ok(live) = tacsim::match_::LiveRecord::from_document(&document) else {
+            return false;
+        };
+        drawn = live
+            .record
+            .callsigns
+            .iter()
+            .map(|(unit, callsign)| (unit.0, callsign.to_string()))
+            .collect();
+        !drawn.is_empty()
+    })
+    .await;
+    drawn
+}
+
+/// **The one drawn callsign of `party`'s units in a running match** (doc 32
+/// cut CF.0) — for a side the test knows fields exactly one unit.
+pub async fn party_callsign(
+    store: &Arc<dyn mush_store::ObjectStore>,
+    match_id: u64,
+    party: char,
+) -> String {
+    let of_party: Vec<String> = drawn_callsigns(store, match_id)
+        .await
+        .into_values()
+        .filter(|callsign| callsign.starts_with(party))
+        .collect();
+    assert_eq!(of_party.len(), 1, "one unit of party {party}: {of_party:?}");
+    of_party[0].clone()
+}
+
+/// **A designator of `party` no unit of the match holds** (doc 32 cut CF.0):
+/// the first of the party's 23 possible callsigns the match did not draw.
+pub fn undrawn_callsign(drawn: &std::collections::BTreeMap<u32, String>, party: char) -> String {
+    tacsim::arena::PARTY_LETTERS
+        .iter()
+        .map(|&unit| format!("{party}{}", unit as char))
+        .find(|guess| !drawn.values().any(|held| held == guess))
+        .expect("a party of fewer than 23 units leaves a letter undrawn")
+}
+
 /// Wait for simulation time rather than assuming that a wall-clock sleep
 /// schedules enough arena pulses on a loaded test worker.
 pub async fn wait_arena_seconds(term: &mut Term, seconds: u64) {

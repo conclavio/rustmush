@@ -161,14 +161,14 @@ fn golden_cases(out_dir: &str) {
     }
 }
 
-/// The team a look is shown on here: the tank red, the biped blue, the
-/// `unknown` look grey.
+/// The relation a look is shown as here (doc 32 cut CF.0): the tank hostile,
+/// the biped friend, the `unknown` look grey.
 fn team_of(look: &Look) -> SpriteKind {
     if look.units.iter().any(|u| u == look::UNKNOWN) {
         SpriteKind::Unknown
     } else if look.units.iter().any(|u| u.contains("biped")) {
-        SpriteKind::Blue
+        SpriteKind::Friend
     } else {
-        SpriteKind::Red
+        SpriteKind::Hostile
     }
 }

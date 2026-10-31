@@ -310,11 +310,21 @@ export function gateWord(weaponsFree: boolean | null): string {
  * tempo); past it, or once the frame shows it, the frame's lock is the one. */
 export const LOCK_PENDING_MS = 1_500;
 
-/** A contact's band in the lock cycle: hostiles, then unidentified, then the
- * rest (the friends). The classes are `contactKind`'s. */
+/** A contact's band in the lock cycle, by the viewer's relation (doc 32 cut
+ * CF.0): hostiles, then unidentified, then neutrals, then own and friends —
+ * the TUI's `lock_order`. */
 function lockRank(c: CockpitContact): number {
-  if (c.class === "unknown") return 1;
-  return c.friendly ? 2 : 0;
+  switch (c.relation) {
+    case "hostile":
+      return 0;
+    case "neutral":
+      return 2;
+    case "own":
+    case "friend":
+      return 3;
+    default:
+      return 1;
+  }
 }
 
 /** The contacts in the lock cycle's order: hostiles first, then unidentified,

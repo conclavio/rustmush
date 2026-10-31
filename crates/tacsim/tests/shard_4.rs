@@ -52,6 +52,8 @@ mod m8_leaks;
 mod m8_world;
 #[path = "shard_4/match_lifecycle.rs"]
 mod match_lifecycle;
+#[path = "shard_4/parties.rs"]
+mod parties;
 #[path = "shard_4/resolution.rs"]
 mod resolution;
 #[path = "shard_4/sky.rs"]

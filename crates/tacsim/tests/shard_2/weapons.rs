@@ -67,8 +67,8 @@ use tacsim::arena::perception::{NoticeKind, SensorProfile, SignatureFactor};
 use tacsim::arena::rng::draw_contact_id;
 use tacsim::arena::state::{
     Arena, ArenaDefinition, ArenaTerrain, Classification, ContactId, CustodyOut, CustodyUnit,
-    Designator, EntryZone, Pilot, Power, SeenPose, ShadowContact, Team, TerrainCell, TrackedRules,
-    WeaponSummary,
+    Designator, EntryZone, PartyId, Pilot, Power, SeenPose, ShadowContact, TerrainCell,
+    TrackedRules, WeaponSummary,
 };
 use tacsim::arena::step::{Frame, StepOutput};
 use tacsim::arena::weapons::WeaponBand;
@@ -205,14 +205,14 @@ fn definition(paint: &[(u16, u16, TerrainCell)]) -> ArenaDefinition {
         terrain: ArenaTerrain::new(SIDE, SIDE, CELL_CM, cells).expect("the test window"),
         entry_zones: vec![
             EntryZone {
-                team: Team::Red,
+                team: PartyId::RED,
                 x0: 0,
                 y0: 0,
                 x1: 1,
                 y1: SIDE - 1,
             },
             EntryZone {
-                team: Team::Blue,
+                team: PartyId::BLUE,
                 x0: SIDE - 2,
                 y0: 0,
                 x1: SIDE - 1,
@@ -286,7 +286,7 @@ fn cannon() -> WeaponSummary {
 }
 
 /// A tank that sees and shoots, with `weapons` for what it shoots with.
-fn scout(id: ObjId, team: Team, pose: Pose, weapons: Vec<WeaponSummary>) -> CustodyUnit {
+fn scout(id: ObjId, team: PartyId, pose: Pose, weapons: Vec<WeaponSummary>) -> CustodyUnit {
     CustodyUnit {
         id,
         team,
@@ -345,6 +345,7 @@ fn arena_of(
             resolution: tacsim::match_::stock_resolution(),
             seed: SEED,
             mode: tacsim::arena::MatchMode::Skirmish,
+            host: tacsim::arena::FieldHost::all_hostile(),
         },
         &ArenaConfig::default(),
         match_cfg,
@@ -357,8 +358,8 @@ fn arena_of(
 fn duel() -> Arena {
     arena_of(
         vec![
-            scout(RED, Team::Red, centre(5, 8), vec![cannon()]),
-            scout(BLUE, Team::Blue, centre(9, 8), Vec::new()),
+            scout(RED, PartyId::RED, centre(5, 8), vec![cannon()]),
+            scout(BLUE, PartyId::BLUE, centre(9, 8), Vec::new()),
         ],
         &[],
         &match_cfg(),
@@ -725,8 +726,8 @@ fn a_beam_is_scheduled_at_now() {
     };
     let mut arena = arena_of(
         vec![
-            scout(RED, Team::Red, centre(5, 8), vec![beam]),
-            scout(BLUE, Team::Blue, centre(9, 8), Vec::new()),
+            scout(RED, PartyId::RED, centre(5, 8), vec![beam]),
+            scout(BLUE, PartyId::BLUE, centre(9, 8), Vec::new()),
         ],
         &[],
         &match_cfg(),
@@ -790,8 +791,8 @@ fn a_blocked_shot_is_accepted_and_costs_its_round() {
     // tanks never see each other.
     let mut arena = arena_of(
         vec![
-            scout(RED, Team::Red, centre(5, 8), vec![cannon()]),
-            scout(BLUE, Team::Blue, centre(9, 8), Vec::new()),
+            scout(RED, PartyId::RED, centre(5, 8), vec![cannon()]),
+            scout(BLUE, PartyId::BLUE, centre(9, 8), Vec::new()),
         ],
         &[(7, 8, wall())],
         &match_cfg(),
@@ -819,7 +820,9 @@ fn a_blocked_shot_is_accepted_and_costs_its_round() {
         contact,
         ShadowContact::sighted(
             BLUE,
-            Classification::Classified { team: Team::Blue },
+            Classification::Classified {
+                party: PartyId::BLUE,
+            },
             arena.now_ms,
             plot_of(&arena, BLUE),
         ),
@@ -939,7 +942,7 @@ fn the_engaged_tempo_is_entered_on_a_shot_and_held() {
     // wins. So the gun's record goes too (`ammo`, which is what
     // `UnitState::armed_at_checkout` reads): red is then a side that never had
     // a gun, which the clause leaves standing.
-    assert_eq!(arena.eliminated(), Some(Some(Team::Blue)));
+    assert_eq!(arena.eliminated(), Some(Some(PartyId::BLUE)));
     if let Some(state) = arena.unit_mut(RED) {
         state.ammo.clear();
     }
@@ -1303,8 +1306,8 @@ fn script() -> Vec<Beat> {
 fn scripted_arena() -> Arena {
     arena_of(
         vec![
-            scout(RED, Team::Red, centre(5, 8), vec![cannon()]),
-            scout(BLUE, Team::Blue, centre(9, 8), Vec::new()),
+            scout(RED, PartyId::RED, centre(5, 8), vec![cannon()]),
+            scout(BLUE, PartyId::BLUE, centre(9, 8), Vec::new()),
         ],
         &[],
         &MatchConfig::default(),
@@ -1411,180 +1414,180 @@ type PinnedLine = (i64, &'static str, &'static [(&'static str, u64)], u64);
 /// origin says); the state is the line's parameter, never the seal's (M8a's A1), so
 /// no seal digest and no `hash` moved, and every other byte is equal.
 const M1B0_SEAT_LINES: &[PinnedLine] = &[
-    (0, r#"{"kind":"match_started"}"#, &[], 11490487983787810992),
+    (0, r#"{"kind":"match_started"}"#, &[], 11419726640622680787),
     (
         0,
-        r#"{"kind":"mind_sealed","unit":4,"sortie":4,"mind":"Standard Doctrine","source":"c0737fdc45994c22","card_digest":"f2491a868a5707936f2abf1db211ed6bba20971b2c364e31433bafb33fc07f90","class":"I","governed":true,"licence":"doctrine","licence_state":"doctrine"}"#,
+        r#"{"kind":"mind_sealed","unit":4,"sortie":4,"mind":"Standard Doctrine","source":"a37766b55993879f","card_digest":"f2491a868a5707936f2abf1db211ed6bba20971b2c364e31433bafb33fc07f90","class":"I","governed":true,"licence":"doctrine","licence_state":"doctrine"}"#,
         &[],
-        11_490_487_983_787_810_992,
+        11_419_726_640_622_680_787,
     ),
     (
         0,
-        r#"{"kind":"mind_sealed","unit":9,"sortie":9,"mind":"Standard Doctrine","source":"c0737fdc45994c22","card_digest":"f2491a868a5707936f2abf1db211ed6bba20971b2c364e31433bafb33fc07f90","class":"I","governed":true,"licence":"doctrine","licence_state":"doctrine"}"#,
+        r#"{"kind":"mind_sealed","unit":9,"sortie":9,"mind":"Standard Doctrine","source":"a37766b55993879f","card_digest":"f2491a868a5707936f2abf1db211ed6bba20971b2c364e31433bafb33fc07f90","class":"I","governed":true,"licence":"doctrine","licence_state":"doctrine"}"#,
         &[],
-        11_490_487_983_787_810_992,
+        11_419_726_640_622_680_787,
     ),
     (
         0,
         r#"{"kind":"startup","unit":4}"#,
         &[],
-        6_266_204_108_868_143_138,
+        493_065_128_556_521_699,
     ),
     (
         189,
         r#"{"kind":"detected","viewer":9,"contact":15474813515948476951,"target":4}"#,
         &[],
-        11_878_067_808_472_836_474,
+        6_350_416_531_042_971_261,
     ),
     (
         482,
         r#"{"kind":"detected","viewer":4,"contact":5852833454602713067,"target":9}"#,
         &[],
-        6_750_725_117_090_703_121,
+        11_156_220_489_855_152_096,
     ),
     (
         3189,
         r#"{"kind":"classified","viewer":9,"contact":15474813515948476951,"target":4,"team":"red"}"#,
         &[("classify:9:4:4", 3_682_179_631_169_270_960)],
-        14_620_521_698_624_164_646,
+        9_586_158_006_780_117_325,
     ),
     (
         3482,
         r#"{"kind":"classified","viewer":4,"contact":5852833454602713067,"target":9,"team":"blue"}"#,
         &[("classify:4:9:4", 2_838_647_583_109_313_249)],
-        4_842_648_823_436_787_687,
+        15_392_460_794_815_706_186,
     ),
     (
         5000,
         r#"{"kind":"position_summary","units":[[4,5500,8500,0,0],[9,9500,8500,0,0]]}"#,
         &[],
-        6_678_294_235_538_673_834,
+        18_257_055_061_047_243_162,
     ),
     (
         10_000,
         r#"{"kind":"power_online","unit":4}"#,
         &[],
-        17_278_089_418_900_580_878,
+        13_599_975_099_265_188_386,
     ),
     (
         10_000,
         r#"{"kind":"position_summary","units":[[4,5500,8500,0,0],[9,9500,8500,0,0]]}"#,
         &[],
-        17_278_089_418_900_580_878,
+        13_599_975_099_265_188_386,
     ),
     (
         10_000,
         r#"{"kind":"locked","unit":4,"contact":5852833454602713067,"target":9}"#,
         &[],
-        14_506_960_988_088_143_587,
+        10_216_397_920_794_136_372,
     ),
     (
         10_000,
         r#"{"kind":"fired","unit":4,"weapon":"cannon","shot_seq":1,"target":9,"range_cm":4000,"rounds":1}"#,
         &[],
-        14_506_960_988_088_143_587,
+        10_216_397_920_794_136_372,
     ),
     (
         10_027,
         r#"{"kind":"impact","shot_seq":1,"unit":4,"target":9}"#,
         &[],
-        13_923_749_439_055_375_833,
+        197_777_426_824_918_089,
     ),
     (
         10_027,
         r#"{"kind":"miss","shot_seq":1,"reason":"dispersion"}"#,
         &[("hit:1", 12_072_725_193_963_834_385)],
-        13_923_749_439_055_375_833,
+        197_777_426_824_918_089,
     ),
     (
         15_000,
         r#"{"kind":"position_summary","units":[[4,5500,8500,0,0],[9,9500,8500,0,0]]}"#,
         &[],
-        4_035_523_008_237_663_112,
+        17_141_340_462_933_690_862,
     ),
     (
         15_000,
         r#"{"kind":"fired","unit":4,"weapon":"cannon","shot_seq":2,"target":9,"range_cm":4000,"rounds":1}"#,
         &[],
-        8_542_036_358_920_976_083,
+        13_271_311_094_043_964_831,
     ),
     (
         15_027,
         r#"{"kind":"impact","shot_seq":2,"unit":4,"target":9}"#,
         &[],
-        8_768_827_618_194_302_923,
+        1_231_038_730_672_885_450,
     ),
     (
         15_027,
         r#"{"kind":"miss","shot_seq":2,"reason":"dispersion"}"#,
         &[("hit:2", 11_307_540_289_106_727_687)],
-        8_768_827_618_194_302_923,
+        1_231_038_730_672_885_450,
     ),
     (
         20_000,
         r#"{"kind":"position_summary","units":[[4,5500,8500,0,0],[9,9500,8500,0,0]]}"#,
         &[],
-        13_753_631_124_326_814_778,
+        14_429_969_477_828_655_266,
     ),
     (
         20_000,
         r#"{"kind":"fired","unit":4,"weapon":"cannon","shot_seq":3,"target":9,"range_cm":4000,"rounds":1}"#,
         &[],
-        13_314_301_882_373_381_192,
+        1_159_926_614_928_516_314,
     ),
     (
         20_027,
         r#"{"kind":"impact","shot_seq":3,"unit":4,"target":9}"#,
         &[],
-        8_146_373_272_282_065_804,
+        16_750_282_506_553_118_874,
     ),
     (
         20_027,
         r#"{"kind":"miss","shot_seq":3,"reason":"dispersion"}"#,
         &[("hit:3", 17_241_375_169_118_599_602)],
-        8_146_373_272_282_065_804,
+        16_750_282_506_553_118_874,
     ),
     (
         25_000,
         r#"{"kind":"position_summary","units":[[4,5500,8500,0,0],[9,9500,8500,0,0]]}"#,
         &[],
-        15_574_358_926_057_370_667,
+        17_427_369_464_390_440_598,
     ),
     (
         25_000,
         r#"{"kind":"fired","unit":4,"weapon":"cannon","shot_seq":4,"target":9,"range_cm":4000,"rounds":1}"#,
         &[],
-        17_545_834_288_683_893_045,
+        529_253_390_620_375_000,
     ),
     (
         25_027,
         r#"{"kind":"impact","shot_seq":4,"unit":4,"target":9}"#,
         &[],
-        15_604_770_992_314_224_625,
+        9_235_263_153_054_880_155,
     ),
     (
         25_027,
         r#"{"kind":"miss","shot_seq":4,"reason":"dispersion"}"#,
         &[("hit:4", 9_783_297_951_381_390_390)],
-        15_604_770_992_314_224_625,
+        9_235_263_153_054_880_155,
     ),
     (
         30_000,
         r#"{"kind":"position_summary","units":[[4,5500,8500,0,0],[9,9500,8500,0,0]]}"#,
         &[],
-        4_123_647_597_279_783_664,
+        5_213_415_015_332_269_647,
     ),
     (
         35_000,
         r#"{"kind":"position_summary","units":[[4,5500,8500,0,0],[9,9500,8500,0,0]]}"#,
         &[],
-        17_176_501_010_499_874_751,
+        8_685_618_835_039_614_001,
     ),
     (
         40_000,
         r#"{"kind":"position_summary","units":[[4,5500,8500,0,0],[9,9500,8500,0,0]]}"#,
         &[],
-        14_731_953_752_344_163_190,
+        1_908_814_572_293_620_480,
     ),
 ];
 
@@ -2053,8 +2056,8 @@ fn i3_a_beam_fired_in_a_floored_pulse_of_no_time_lands_in_it() {
     for (no_time, sliced) in [(false, false), (true, false), (false, true), (true, true)] {
         let mut arena = arena_of(
             vec![
-                scout(RED, Team::Red, centre(5, 8), vec![beam.clone()]),
-                scout(BLUE, Team::Blue, centre(9, 8), Vec::new()),
+                scout(RED, PartyId::RED, centre(5, 8), vec![beam.clone()]),
+                scout(BLUE, PartyId::BLUE, centre(9, 8), Vec::new()),
             ],
             &[],
             &match_cfg(),
@@ -2210,7 +2213,9 @@ fn a_lock_taken_on_a_provisional_number_survives_the_contact_being_told_apart() 
     );
     assert_eq!(
         arena.contacts.get(RED, contact).map(|held| held.class),
-        Some(Classification::Classified { team: Team::Blue }),
+        Some(Classification::Classified {
+            party: PartyId::BLUE
+        }),
         "the return was never told apart"
     );
     let named_frame = frames
@@ -2220,15 +2225,26 @@ fn a_lock_taken_on_a_provisional_number_survives_the_contact_being_told_apart() 
         .map(|(_, frame)| frame.clone())
         .expect("the classification changes the gunner's view");
     let renamed = cockpit::lock_designator(&named_frame).expect("the lock is still on a held row");
+    // The target's own callsign is the one the arena drew for it at check-out.
+    let blue_callsign = arena
+        .unit(BLUE)
+        .map(|state| state.callsign)
+        .expect("the blue tank is in the arena");
+    assert!(
+        matches!(
+            blue_callsign,
+            Designator::Unit {
+                party: PartyId::BLUE,
+                ..
+            }
+        ),
+        "blue's callsign is a blue unit callsign: {blue_callsign:?}"
+    );
     assert_eq!(
-        renamed,
-        Designator::Slot {
-            team: Team::Blue,
-            slot: 1
-        },
+        renamed, blue_callsign,
         "the lock now renders as the target's own callsign"
     );
-    assert_eq!(renamed.to_string(), "BA");
+    assert_eq!(renamed.to_string(), blue_callsign.to_string());
 
     // (5) Neither of the two events that break a lock happened — in the black box
     //     or in the pilot's lines.
@@ -2337,7 +2353,7 @@ fn fielded_unit(
     catalog: &tacsim::definitions::Catalog,
     entry: &str,
     id: ObjId,
-    team: Team,
+    team: PartyId,
     pose: Pose,
     controller: tacsim::arena::state::Controller,
     slot: u8,
@@ -2410,7 +2426,7 @@ fn range_field(blue: &str, controller: tacsim::arena::state::Controller) -> Aren
             &catalog,
             line_tank,
             RED,
-            Team::Red,
+            PartyId::RED,
             facing(6, 4, 90_000),
             Controller::Pilot,
             1,
@@ -2419,7 +2435,7 @@ fn range_field(blue: &str, controller: tacsim::arena::state::Controller) -> Aren
             &catalog,
             line_tank,
             RED2,
-            Team::Red,
+            PartyId::RED,
             facing(6, 10, 90_000),
             Controller::Pilot,
             2,
@@ -2428,7 +2444,7 @@ fn range_field(blue: &str, controller: tacsim::arena::state::Controller) -> Aren
             &catalog,
             target,
             TARGET_FRONT,
-            Team::Blue,
+            PartyId::BLUE,
             facing(10, 4, 270_000),
             controller,
             1,
@@ -2437,7 +2453,7 @@ fn range_field(blue: &str, controller: tacsim::arena::state::Controller) -> Aren
             &catalog,
             target,
             TARGET_REAR,
-            Team::Blue,
+            PartyId::BLUE,
             facing(10, 10, 90_000),
             controller,
             2,
@@ -2461,6 +2477,7 @@ fn range_field(blue: &str, controller: tacsim::arena::state::Controller) -> Aren
             resolution: tacsim::match_::resolution_for(&catalog),
             seed: SEED,
             mode: tacsim::arena::MatchMode::Range,
+            host: tacsim::arena::FieldHost::all_hostile(),
         },
         &ArenaConfig::default(),
         &MatchConfig::default(),
@@ -2729,7 +2746,7 @@ fn o3_a_range_whose_shooters_run_dry_is_not_spent() {
         arena
             .units
             .iter()
-            .filter(|unit| unit.team == Team::Red)
+            .filter(|unit| unit.team == PartyId::RED)
             .all(|unit| unit.armed_at_checkout() && !unit.ammo.is_empty()),
         "the shooters came in armed"
     );
@@ -2785,7 +2802,7 @@ fn ap2_duel() -> Arena {
         &catalog,
         line_tank,
         RED,
-        Team::Red,
+        PartyId::RED,
         facing(6, 4, 90_000),
         Controller::Pilot,
         1,
@@ -2794,7 +2811,7 @@ fn ap2_duel() -> Arena {
         &catalog,
         line_tank,
         BLUE,
-        Team::Blue,
+        PartyId::BLUE,
         facing(10, 4, 270_000),
         Controller::Pilot,
         1,
@@ -2825,6 +2842,7 @@ fn ap2_duel() -> Arena {
             resolution: tacsim::match_::resolution_for(&catalog),
             seed: SEED,
             mode: tacsim::arena::MatchMode::Skirmish,
+            host: tacsim::arena::FieldHost::all_hostile(),
         },
         &ArenaConfig::default(),
         &MatchConfig::default(),
@@ -2903,7 +2921,7 @@ fn ap2_a_disarming_hit_ends_the_match_at_its_own_substep_at_every_tempo() {
         assert_eq!(
             arena.ended.map(|end| end.reason),
             Some(tacsim::arena::EndReason::Elimination {
-                winner: Some(Team::Red)
+                winner: Some(PartyId::RED)
             }),
             "cadence {cadence}: the disarmed side is out by {}",
             arena.now_ms
@@ -3007,14 +3025,14 @@ fn ae2_field(walled: bool) -> ArenaDefinition {
         terrain: ArenaTerrain::new(SIDE_AE2, SIDE_AE2, CELL_CM, cells).expect("the field"),
         entry_zones: vec![
             EntryZone {
-                team: Team::Red,
+                team: PartyId::RED,
                 x0: 0,
                 y0: 0,
                 x1: 1,
                 y1: SIDE_AE2 - 1,
             },
             EntryZone {
-                team: Team::Blue,
+                team: PartyId::BLUE,
                 x0: SIDE_AE2 - 2,
                 y0: 0,
                 x1: SIDE_AE2 - 1,
@@ -3059,7 +3077,7 @@ fn ae2_arena_on(
             &catalog,
             shooter,
             RED,
-            Team::Red,
+            PartyId::RED,
             facing(red.0, red.1, red.2),
             Controller::Pilot,
             1,
@@ -3068,7 +3086,7 @@ fn ae2_arena_on(
             &catalog,
             tacsim::definitions::content::LINE_TANK,
             BLUE,
-            Team::Blue,
+            PartyId::BLUE,
             facing(blue.0, blue.1, blue.2),
             Controller::Pilot,
             1,
@@ -3092,6 +3110,7 @@ fn ae2_arena_on(
             resolution: tacsim::match_::resolution_for(&catalog),
             seed: SEED,
             mode: tacsim::arena::MatchMode::Skirmish,
+            host: tacsim::arena::FieldHost::all_hostile(),
         },
         &ArenaConfig::default(),
         &MatchConfig::default(),

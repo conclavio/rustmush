@@ -171,8 +171,8 @@ use crate::arena::index::{Candidate, reach_bound_sq, square_between, square_cm};
 use crate::arena::ledger::EventKind;
 use crate::arena::rng::{DrawLabel, draw, draw_contact_id};
 use crate::arena::state::{
-    Arena, Classification, ContactId, Designator, DueKind, OwnSighting, Power, SeenPose,
-    ShadowContact, Team, UnitState,
+    Arena, Classification, ContactId, Designator, DueKind, OwnSighting, PartyId, Power, SeenPose,
+    ShadowContact, UnitState,
 };
 
 /// The factor of a target that hides nothing, per mille.
@@ -693,7 +693,7 @@ pub type Notice = (i64, EventKind, Vec<(String, u64)>);
 /// A candidate that passed every test of the pass.
 struct Detection {
     target: ObjId,
-    team: Team,
+    team: PartyId,
     /// **Where it stood at this sighting** (16b cut F.3), taken from the same
     /// snapshot the range test and the trace were decided against — so the plot a
     /// contact records is the substep boundary's position and not the position at
@@ -731,7 +731,7 @@ struct Detection {
 /// than being refreshed to "now".
 struct Shared {
     target: ObjId,
-    team: Team,
+    team: PartyId,
     /// The sharer's own last sighting: when, and where the target stood at it.
     own: OwnSighting,
 }
@@ -815,7 +815,9 @@ impl Arena {
     #[must_use]
     pub fn alias_for(&self, viewer: ObjId, held: &ShadowContact) -> Option<u16> {
         match self.designator_for(viewer, held) {
-            Designator::Slot { .. } => self.designators.provisional(viewer, held.target),
+            Designator::Unit { .. } | Designator::Wide { .. } => {
+                self.designators.provisional(viewer, held.target)
+            }
             Designator::Provisional(_) => None,
         }
     }
@@ -1018,7 +1020,7 @@ impl Arena {
                     if held.class == Classification::Unknown
                         && t_ms.saturating_sub(held.first_seen_ms) >= classify_after_ms
                     {
-                        held.class = Classification::Classified { team };
+                        held.class = Classification::Classified { party: team };
                         // The draw doc 16 §3.5 pins for this transition. It
                         // decides **nothing** — classification is the elapsed-time
                         // rule above — and it is recorded so that the label stays
@@ -1757,7 +1759,7 @@ impl Arena {
                             });
                         }
                         if held.class == Classification::Unknown {
-                            held.class = Classification::Classified { team };
+                            held.class = Classification::Classified { party: team };
                             journal.push((
                                 t_ms,
                                 EventKind::Classified {
@@ -1784,7 +1786,7 @@ impl Arena {
                             id,
                             ShadowContact {
                                 target,
-                                class: Classification::Classified { team },
+                                class: Classification::Classified { party: team },
                                 // The sighting's own stamp on both, so a copy that
                                 // arrives already two passes old is two passes old
                                 // and expires accordingly.
@@ -2070,6 +2072,9 @@ pub struct FrameContact {
     pub alias: Option<u16>,
     /// `unknown`, or the side the platform has resolved.
     pub class: Classification,
+    /// **What the platform's party makes of it** (doc 32 Q-CF-5, Q-CF-12): off
+    /// the arena's relation books at the frame, `unknown` while `class` is.
+    pub relation: crate::arena::party::Relation,
     /// Bearing from the platform, millidegrees clockwise from north.
     pub bearing_mdeg: u32,
     /// Range from the platform **to the plot**, centimetres (doc 16 §3.2's one
@@ -2538,6 +2543,7 @@ impl FrameContact {
             designator,
             alias,
             class,
+            relation,
             bearing_mdeg,
             range_cm,
             age_ms,
@@ -2555,6 +2561,7 @@ impl FrameContact {
             designator: their_designator,
             alias: their_alias,
             class: their_class,
+            relation: their_relation,
             bearing_mdeg: their_bearing_mdeg,
             range_cm: their_range_cm,
             age_ms: their_age_ms,
@@ -2571,6 +2578,7 @@ impl FrameContact {
             && designator == their_designator
             && alias == their_alias
             && class == their_class
+            && relation == their_relation
             && bearing_mdeg == their_bearing_mdeg
             && range_cm == their_range_cm
             && moving == their_moving
@@ -3525,7 +3533,7 @@ mod tests {
 
     #[test]
     fn the_time_to_live_is_the_cadence_times_the_passes() {
-        let arena = arena_of(vec![tank(ObjId(4), Team::Red, pose(1_500, 1_500))]);
+        let arena = arena_of(vec![tank(ObjId(4), PartyId::RED, pose(1_500, 1_500))]);
         // The shipped cadence and band: 1,000 ms, three passes.
         assert_eq!(arena.contact_ttl_ms(), 3_000);
     }
@@ -3548,8 +3556,8 @@ mod tests {
     #[test]
     fn a_wreck_observes_nothing_and_an_unsensored_unit_runs_no_pass() {
         let mut arena = arena_of(vec![
-            tank(ObjId(4), Team::Red, pose(1_500, 1_500)),
-            tank(ObjId(9), Team::Blue, pose(2_500, 1_500)),
+            tank(ObjId(4), PartyId::RED, pose(1_500, 1_500)),
+            tank(ObjId(9), PartyId::BLUE, pose(2_500, 1_500)),
         ]);
         // No sensor at all: `test_support`'s tank carries none.
         let mut counters = PerceptionCounters::default();
@@ -3582,8 +3590,8 @@ mod tests {
     #[test]
     fn a_wreck_is_no_candidate_unless_the_sensor_sees_wrecks() {
         let mut arena = arena_of(vec![
-            tank(ObjId(4), Team::Red, pose(1_500, 1_500)),
-            tank(ObjId(9), Team::Blue, pose(2_500, 1_500)),
+            tank(ObjId(4), PartyId::RED, pose(1_500, 1_500)),
+            tank(ObjId(9), PartyId::BLUE, pose(2_500, 1_500)),
         ]);
         for id in [ObjId(4), ObjId(9)] {
             if let Some(unit) = arena.unit_mut(id) {
@@ -3630,7 +3638,7 @@ mod tests {
                 .map(|(n, id)| {
                     let x = i64::try_from(n % 8).unwrap_or(0) * 1_000 + 500;
                     let y = i64::try_from(n / 8).unwrap_or(0) * 1_000 + 500;
-                    tank(*id, Team::Red, pose(x, y))
+                    tank(*id, PartyId::RED, pose(x, y))
                 })
                 .collect();
             let mut cfg = crate::config::ArenaConfig::default();
@@ -3693,8 +3701,8 @@ mod tests {
         ] {
             let mut arena = arena_painted(
                 vec![
-                    tank(ObjId(4), Team::Red, pose(500, 500)),
-                    tank(ObjId(9), Team::Blue, pose(3_500, 500)),
+                    tank(ObjId(4), PartyId::RED, pose(500, 500)),
+                    tank(ObjId(9), PartyId::BLUE, pose(3_500, 500)),
                 ],
                 // The cell the target stands in, and nothing else: the trace runs
                 // over open ground either way, so the only thing that differs is
@@ -3768,10 +3776,10 @@ mod tests {
     fn u2_field() -> Arena {
         use crate::arena::test_support::line_tank;
         let mut arena = arena_of(vec![
-            line_tank(U2_RED, Team::Red, pose(1_500, 1_500)),
-            line_tank(U2_MATE, Team::Red, pose(1_500, 2_500)),
-            line_tank(U2_BLUE, Team::Blue, pose(5_500, 1_500)),
-            line_tank(U2_POD, Team::Blue, pose(3_500, 3_500)),
+            line_tank(U2_RED, PartyId::RED, pose(1_500, 1_500)),
+            line_tank(U2_MATE, PartyId::RED, pose(1_500, 2_500)),
+            line_tank(U2_BLUE, PartyId::BLUE, pose(5_500, 1_500)),
+            line_tank(U2_POD, PartyId::BLUE, pose(3_500, 3_500)),
         ]);
         for id in [U2_RED, U2_MATE, U2_BLUE, U2_POD] {
             if let Some(state) = arena.unit_mut(id) {
@@ -3842,10 +3850,10 @@ mod tests {
         // Every unit holds its enemy classified, as its own sighting, so every
         // share has something to say and every teammate is a mate.
         for (viewer, target, team) in [
-            (U2_RED, U2_BLUE, Team::Blue),
-            (U2_MATE, U2_BLUE, Team::Blue),
-            (U2_BLUE, U2_RED, Team::Red),
-            (U2_POD, U2_RED, Team::Red),
+            (U2_RED, U2_BLUE, PartyId::BLUE),
+            (U2_MATE, U2_BLUE, PartyId::BLUE),
+            (U2_BLUE, U2_RED, PartyId::RED),
+            (U2_POD, U2_RED, PartyId::RED),
         ] {
             let plot = arena
                 .unit(target)
@@ -3857,7 +3865,7 @@ mod tests {
                 id,
                 crate::arena::state::ShadowContact::sighted(
                     target,
-                    Classification::Classified { team },
+                    Classification::Classified { party: team },
                     0,
                     plot,
                 ),
@@ -3929,8 +3937,8 @@ mod tests {
     fn u2_a_pod_that_comes_online_between_two_folds_is_seen_by_the_second() {
         use crate::arena::test_support::line_tank;
         let mut arena = u2_fast_passes(vec![
-            line_tank(U2_RED, Team::Red, pose(1_500, 1_500)),
-            tank(U2_POD, Team::Blue, pose(3_500, 3_500)),
+            line_tank(U2_RED, PartyId::RED, pose(1_500, 1_500)),
+            tank(U2_POD, PartyId::BLUE, pose(3_500, 3_500)),
         ]);
         u2_fit_pod(&mut arena, U2_POD, Power::Starting);
         let (first, substep) = u2_first_pass(&arena);
@@ -3975,9 +3983,9 @@ mod tests {
     fn u2_a_pod_wrecked_by_an_impact_between_two_folds_is_not_seen_by_the_second() {
         use crate::arena::test_support::line_tank;
         let mut arena = u2_fast_passes(vec![
-            line_tank(U2_RED, Team::Red, pose(1_500, 1_500)),
-            line_tank(U2_POD, Team::Blue, pose(3_500, 3_500)),
-            tank(U2_SPARE, Team::Blue, pose(7_500, 7_500)),
+            line_tank(U2_RED, PartyId::RED, pose(1_500, 1_500)),
+            line_tank(U2_POD, PartyId::BLUE, pose(3_500, 3_500)),
+            tank(U2_SPARE, PartyId::BLUE, pose(7_500, 7_500)),
         ]);
         u2_fit_pod(&mut arena, U2_POD, Power::Online);
         // The carrier sees nothing (so it folds nothing of its own) and every
@@ -4072,8 +4080,8 @@ mod tests {
     #[test]
     fn u2_the_memo_is_empty_after_a_rebuild() {
         let mut arena = arena_of(vec![
-            tank(U2_RED, Team::Red, pose(1_500, 1_500)),
-            tank(U2_POD, Team::Blue, pose(3_500, 3_500)),
+            tank(U2_RED, PartyId::RED, pose(1_500, 1_500)),
+            tank(U2_POD, PartyId::BLUE, pose(3_500, 3_500)),
         ]);
         u2_fit_pod(&mut arena, U2_POD, Power::Online);
         let mut counters = PerceptionCounters::default();
@@ -4096,9 +4104,9 @@ mod tests {
     fn u2_a_stock_match_counts_no_jam_check_and_touches_no_memo() {
         use crate::arena::test_support::line_tank;
         let mut arena = arena_of(vec![
-            line_tank(U2_RED, Team::Red, pose(1_500, 1_500)),
-            line_tank(U2_MATE, Team::Red, pose(1_500, 2_500)),
-            line_tank(U2_BLUE, Team::Blue, pose(5_500, 1_500)),
+            line_tank(U2_RED, PartyId::RED, pose(1_500, 1_500)),
+            line_tank(U2_MATE, PartyId::RED, pose(1_500, 2_500)),
+            line_tank(U2_BLUE, PartyId::BLUE, pose(5_500, 1_500)),
         ]);
         assert_eq!(arena.jam_radius_cm, 0);
         let mut counters = PerceptionCounters::default();
@@ -4158,10 +4166,10 @@ mod tests {
         use crate::arena::test_support::line_tank;
         let field = |on: bool| -> bool {
             let mut arena = arena_of(vec![
-                line_tank(U2_RED, Team::Red, pose(500, 500)),
-                line_tank(U2_MATE, Team::Red, pose(6_500, 500)),
-                tank(U2_BLUE, Team::Blue, pose(500, 5_500)),
-                tank(U2_POD, Team::Blue, pose(7_500, 2_500)),
+                line_tank(U2_RED, PartyId::RED, pose(500, 500)),
+                line_tank(U2_MATE, PartyId::RED, pose(6_500, 500)),
+                tank(U2_BLUE, PartyId::BLUE, pose(500, 5_500)),
+                tank(U2_POD, PartyId::BLUE, pose(7_500, 2_500)),
             ]);
             u2_fit_pod(&mut arena, U2_POD, Power::Online);
             if let Some(state) = arena.unit_mut(U2_POD) {
@@ -4177,7 +4185,9 @@ mod tests {
                 id,
                 crate::arena::state::ShadowContact::sighted(
                     U2_BLUE,
-                    Classification::Classified { team: Team::Blue },
+                    Classification::Classified {
+                        party: PartyId::BLUE,
+                    },
                     0,
                     plot,
                 ),
@@ -4209,9 +4219,9 @@ mod tests {
 
         let mut arena = arena_at_epoch(
             vec![
-                line_tank(U2_RED, Team::Red, pose(1_500, 1_500)),
-                tank(U2_POD, Team::Blue, pose(3_500, 3_500)),
-                tank(U2_SPARE, Team::Red, pose(7_500, 7_500)),
+                line_tank(U2_RED, PartyId::RED, pose(1_500, 1_500)),
+                tank(U2_POD, PartyId::BLUE, pose(3_500, 3_500)),
+                tank(U2_SPARE, PartyId::RED, pose(7_500, 7_500)),
             ],
             1,
         );
@@ -4343,9 +4353,9 @@ mod tests {
         const MATE: ObjId = ObjId(5);
         const TARGET: ObjId = ObjId(9);
         let mut arena = arena_of(vec![
-            line_tank(SHARER, Team::Red, pose(1_500, 1_500)),
-            line_tank(MATE, Team::Red, pose(1_500, 2_500)),
-            line_tank(TARGET, Team::Blue, pose(5_500, 1_500)),
+            line_tank(SHARER, PartyId::RED, pose(1_500, 1_500)),
+            line_tank(MATE, PartyId::RED, pose(1_500, 2_500)),
+            line_tank(TARGET, PartyId::BLUE, pose(5_500, 1_500)),
         ]);
         let plot = arena
             .unit(TARGET)
@@ -4354,7 +4364,9 @@ mod tests {
         let sighted = |at: i64| {
             crate::arena::state::ShadowContact::sighted(
                 TARGET,
-                Classification::Classified { team: Team::Blue },
+                Classification::Classified {
+                    party: PartyId::BLUE,
+                },
                 at,
                 plot,
             )
@@ -4441,7 +4453,7 @@ mod tests {
         fn watcher(id: ObjId) -> CustodyUnit {
             CustodyUnit {
                 sensor: Some(short_sight()),
-                ..tank(id, Team::Red, pose(500, 500))
+                ..tank(id, PartyId::RED, pose(500, 500))
             }
             .sealed()
         }
@@ -4533,7 +4545,7 @@ mod tests {
             for &(dx, dy, dz) in offsets {
                 let mut arena = arena_of(vec![
                     watcher(OBS),
-                    tank(TGT, Team::Blue, pose(500 + dx, 500 + dy)),
+                    tank(TGT, PartyId::BLUE, pose(500 + dx, 500 + dy)),
                 ]);
                 // Check-out puts a unit at its cell's elevation; the climb is after.
                 if let Some(unit) = arena.unit_mut(TGT) {
@@ -4581,7 +4593,7 @@ mod tests {
         // bubble — the carrier declares 2,000 cm and the match's widest
         // (`jam_radius_cm`) is 3,000 — so the cull offers every pose below and
         // the per-pod compare is what decides.
-        let mut arena = arena_of(vec![tank(POD, Team::Blue, pose(3_500, 3_500))]);
+        let mut arena = arena_of(vec![tank(POD, PartyId::BLUE, pose(3_500, 3_500))]);
         if let Some(state) = arena.unit_mut(POD) {
             state.jammer = Some(Jammer {
                 radius_cm: 2_000,
@@ -4666,9 +4678,9 @@ mod tests {
             for (dx, dy) in offsets {
                 let mut arena = arena_of(vec![
                     watcher(OBS),
-                    tank(MATE, Team::Red, pose(500 + dx, 500 + dy)),
-                    tank(TGT, Team::Blue, pose(7_500, 7_500)),
-                    tank(POD, Team::Blue, pose(7_500, 500)),
+                    tank(MATE, PartyId::RED, pose(500 + dx, 500 + dy)),
+                    tank(TGT, PartyId::BLUE, pose(7_500, 7_500)),
+                    tank(POD, PartyId::BLUE, pose(7_500, 500)),
                 ]);
                 if halved {
                     if let Some(state) = arena.unit_mut(POD) {
@@ -4693,7 +4705,9 @@ mod tests {
                     theirs,
                     crate::arena::state::ShadowContact::sighted(
                         TGT,
-                        Classification::Classified { team: Team::Blue },
+                        Classification::Classified {
+                            party: PartyId::BLUE,
+                        },
                         100,
                         plot,
                     ),
@@ -4756,7 +4770,7 @@ mod tests {
                 height_cm: i32::try_from(unit.sensor_height_cm).unwrap_or(i32::MAX),
             })
         };
-        let mut arena = arena_of(vec![tank(ObjId(4), Team::Red, pose(1_500, 1_500))]);
+        let mut arena = arena_of(vec![tank(ObjId(4), PartyId::RED, pose(1_500, 1_500))]);
         let mut compared = 0_u32;
         let mut accepted = 0_u32;
         for height in [150_u32, u32::MAX] {
@@ -4868,12 +4882,12 @@ mod tests {
         let mut headings: Vec<(ObjId, u32)> = Vec::new();
         for (n, (x, y, heading)) in RED.iter().enumerate() {
             let id = ObjId(10 + u32::try_from(n).unwrap_or(0));
-            units.push(line_tank(id, Team::Red, pose(*x, *y)));
+            units.push(line_tank(id, PartyId::RED, pose(*x, *y)));
             headings.push((id, *heading));
         }
         for (n, (x, y, heading)) in BLUE.iter().enumerate() {
             let id = ObjId(30 + u32::try_from(n).unwrap_or(0));
-            units.push(line_tank(id, Team::Blue, pose(*x, *y)));
+            units.push(line_tank(id, PartyId::BLUE, pose(*x, *y)));
             headings.push((id, *heading));
         }
         let mut arena = arena_of(units);

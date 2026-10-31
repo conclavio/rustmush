@@ -30,7 +30,7 @@ async fn r4_actual_boot_restores_accepted_character_and_persona_attribution() {
         let squad = record
             .squads
             .iter()
-            .find(|s| s.id.team == Team::Red)
+            .find(|s| s.id.team == PartyId::RED)
             .expect("actual fill squad")
             .id;
         let expected = if persona {

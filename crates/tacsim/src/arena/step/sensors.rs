@@ -237,7 +237,7 @@ impl Arena {
                     FrameNotice::Contact {
                         kind: NoticeKind::Classified,
                         contact: self.name_of(viewer, contact),
-                        class: Classification::Classified { team },
+                        class: Classification::Classified { party: team },
                         was,
                     },
                 );
@@ -788,6 +788,8 @@ impl Arena {
                 designator: self.designator_for(platform, held),
                 alias: self.alias_for(platform, held),
                 class: held.class,
+                // Doc 32 cut CF.0: the viewer's party's belief, now.
+                relation: self.relations.of_class(from.team, held.class),
                 moving: held.seen_at.speed_cms != 0,
                 bearing_mdeg: held.seen_at.bearing_from(&from.pose),
                 range_cm: held.seen_at.range_from(&from.pose),
@@ -802,7 +804,7 @@ impl Arena {
                 reads_dead,
                 fatal,
                 // Doc 22 D-22-5: the type with the team, never before it.
-                unit_type: held.class.team().map(|_| words.unit_type.clone()),
+                unit_type: held.class.party().map(|_| words.unit_type.clone()),
             });
         }
         (rows, tables)

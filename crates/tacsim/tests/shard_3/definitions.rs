@@ -1167,7 +1167,7 @@ fn m4_an_entry_zone_of_water_is_refused_by_name() {
         .expect("the proving ground has deep water");
     let mut wet = def.clone();
     for zone in &mut wet.entry_zones {
-        if zone.team == tacsim::arena::state::Team::Red {
+        if zone.team == tacsim::arena::state::PartyId::RED {
             zone.x0 = x;
             zone.x1 = x;
             zone.y0 = y;

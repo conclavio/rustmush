@@ -521,10 +521,16 @@ async fn one_pilot_alone_starts_a_match_and_fights_the_machine() {
     // `crates/mushd/tests/sim_lenses/observer_rule.rs` controls its own timing and makes
     // the cold-platform claim there. What cannot race is a byte-identical
     // refusal for a designator this platform will never hold — blue fields one
-    // machine, in its lowest pod, so `BB` is nobody — and the rule that no
-    // surface ever names another unit, which the sweep at the end of this test
-    // reads over every byte the session saw.
-    let seen = ask(&mut ada, "LOCK BB", "No such contact.").await;
+    // machine, so any blue callsign the match did not draw is nobody (doc 32
+    // cut CF.0: the unit letter is drawn at check-out, so the guess is read off
+    // the match's own record) — and the rule that no surface ever names
+    // another unit, which the sweep at the end of this test reads over every
+    // byte the session saw.
+    let drawn = support::drawn_callsigns(&server.store, 1).await;
+    let nobody = support::undrawn_callsign(&drawn, 'B');
+    let own = support::own_callsign(&mut ada).await;
+    let blue = support::party_callsign(&server.store, 1, 'B').await;
+    let seen = ask(&mut ada, &format!("LOCK {nobody}"), "No such contact.").await;
     assert!(
         seen.contains("No such contact."),
         "a guessed designator is one byte-identical refusal: {seen}"
@@ -579,7 +585,7 @@ async fn one_pilot_alone_starts_a_match_and_fights_the_machine() {
     // `VIEW` above was read whole; measure this slice from the brief's own header.
     let seen = ask_whole(&mut ada, "VIEW BRIEF").await;
     let at = seen
-        .find("Window around RA:")
+        .find(&format!("Window around {own}:"))
         .unwrap_or_else(|| panic!("the brief's header: {seen}"));
     let brief = &seen[at..];
     let sentences = support::brief_sentences(brief);
@@ -634,8 +640,9 @@ async fn one_pilot_alone_starts_a_match_and_fights_the_machine() {
     say(&mut ada, "SPEED 10", "Making").await;
     let start = ada.mark();
     let mut ended = false;
+    let lock = format!("LOCK {blue}");
     for _ in 0..30 {
-        for line in ["LOCK BA", "FIRE"] {
+        for line in [lock.as_str(), "FIRE"] {
             let mark = ada.mark();
             ada.send_line(line).await;
             ada.expect_after(mark, line).await;
@@ -648,7 +655,8 @@ async fn one_pilot_alone_starts_a_match_and_fights_the_machine() {
     }
     let fight = strip_ansi(&ada.seen[start..]);
     assert!(
-        fight.contains("identified: BA") || fight.contains("Locked on BA"),
+        fight.contains(&format!("identified: {blue}"))
+            || fight.contains(&format!("Locked on {blue}")),
         "the machine was never identified, so there was no fight: {fight}"
     );
 
@@ -917,10 +925,19 @@ async fn y1_a_lone_pilot_orders_their_wingman() {
     // one pulse after `Good hunting`; fenced here so it cannot land inside the
     // byte-exact slices below.
     ada.expect("Hint: the panel").await;
+    // Doc 32 cut CF.0 (Q-CF-11): the unit letters are drawn at check-out, so
+    // her tank's and blue's first tank's callsigns are read off the match's
+    // own record (the store, not a terminal: the slices below are byte-exact).
+    let drawn = support::drawn_callsigns(&server.store, 1).await;
+    let blue_callsign = drawn[&blue].clone();
+    let own_callsign = drawn[&own].clone();
+    assert!(support::is_callsign_of(&blue_callsign, 'B'), "{drawn:?}");
+    assert!(support::is_callsign_of(&own_callsign, 'R'), "{drawn:?}");
+    let engage = format!("ORDER red-1 ENGAGE {blue_callsign}");
 
     // A contact her platform does not hold: `LOCK ZZ`'s refusal, byte for byte.
     let mut answers: Vec<String> = Vec::new();
-    for line in ["LOCK ZZ", "ORDER red-1 ENGAGE BA"] {
+    for line in ["LOCK ZZ", engage.as_str()] {
         let seen = ask(&mut ada, line, "No such contact.").await;
         answers.push(seen.trim_start_matches(line).trim().to_owned());
     }
@@ -969,17 +986,24 @@ async fn y1_a_lone_pilot_orders_their_wingman() {
     );
     // 17b cut M5.6 (OQ-6; STOP D, the text made true): `… and fires first on
     // what RA is fighting.` until that cut.
-    let seen = ask(&mut ada, "ORDER red-1 SUPPORT RA", "order to it.").await;
+    let seen = ask(
+        &mut ada,
+        &format!("ORDER red-1 SUPPORT {own_callsign}"),
+        "order to it.",
+    )
+    .await;
     let seen = unwrapped(&seen);
     assert!(
-        seen.contains(
-            "Ordered red-1 to support RA: it keeps within 150 m of RA and fights what it finds \
-             there. It stands for 10 minutes or until your next order to it."
-        ),
+        seen.contains(&format!(
+            "Ordered red-1 to support {own_callsign}: it keeps within 150 m of {own_callsign} \
+             and fights what it finds there. It stands for 10 minutes or until your next order \
+             to it."
+        )),
         "{seen}"
     );
     let mut refusals: Vec<String> = Vec::new();
-    for line in ["ORDER red-1 SUPPORT BA", "ORDER red-1 SUPPORT ZZ"] {
+    let support_blue = format!("ORDER red-1 SUPPORT {blue_callsign}");
+    for line in [support_blue.as_str(), "ORDER red-1 SUPPORT ZZ"] {
         let seen = ask(&mut ada, line, "that callsign.").await;
         refusals.push(seen.trim_start_matches(line).trim().to_owned());
     }
@@ -1255,23 +1279,31 @@ async fn ah1_a_first_account_reads_six_hints_once_an_alt_none_and_a_restart_keep
     // Drive at the machine and lock and fire, as the main test does, until the
     // platform tells it apart. Every line waits on its own echo, which keeps
     // the channel read.
+    //
+    // Doc 32 cut CF.0 (Q-CF-11): blue's one machine answers to a drawn unit
+    // letter, read off the match's record in the store (no command, so no
+    // hint is spent on the read).
+    let blue_callsign = support::party_callsign(&server.store, 1, 'B').await;
+    let lock = format!("LOCK {blue_callsign}");
+    let identified = format!("identified: {blue_callsign}");
+    let locked = format!("Locked on {blue_callsign}");
     say(&mut ada, "SPEED 54", "Making").await;
     let start = ada.mark();
     for _ in 0..60 {
-        for line in ["LOCK BA", "FIRE"] {
+        for line in [lock.as_str(), "FIRE"] {
             let mark = ada.mark();
             ada.send_line(line).await;
             ada.expect_after(mark, line).await;
         }
         let fight = strip_ansi(&ada.seen[start..]);
-        if fight.contains("identified: BA") || fight.contains("Locked on BA") {
+        if fight.contains(&identified) || fight.contains(&locked) {
             break;
         }
         tokio::time::sleep(Duration::from_millis(400)).await;
     }
     let fight = strip_ansi(&ada.seen[start..]);
     assert!(
-        fight.contains("identified: BA") || fight.contains("Locked on BA"),
+        fight.contains(&identified) || fight.contains(&locked),
         "the machine was never identified: {fight}"
     );
     ada.expect("Hint: LOCK").await;

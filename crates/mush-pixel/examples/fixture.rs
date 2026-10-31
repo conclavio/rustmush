@@ -200,7 +200,7 @@ fn main() {
         let tank = Sprite {
             x_cm: 138_000,
             y_cm: 124_000,
-            kind: SpriteKind::Red,
+            kind: SpriteKind::Hostile,
             pose: None,
         };
         let mut relief = Frame::new(640, 480);
@@ -313,10 +313,10 @@ fn main() {
             ..Sprite::at_bearing(&cam, bearing, range, kind)
         };
         let lineup = [
-            at(-24.0, 70.0, SpriteKind::Red, tank, Facing::Right, true),
-            at(-12.0, 90.0, SpriteKind::Blue, tank, Facing::Front, false),
-            at(-3.0, 60.0, SpriteKind::Blue, biped, Facing::Front, true),
-            at(6.0, 80.0, SpriteKind::Red, biped, Facing::Left, true),
+            at(-24.0, 70.0, SpriteKind::Hostile, tank, Facing::Right, true),
+            at(-12.0, 90.0, SpriteKind::Friend, tank, Facing::Front, false),
+            at(-3.0, 60.0, SpriteKind::Friend, biped, Facing::Front, true),
+            at(6.0, 80.0, SpriteKind::Hostile, biped, Facing::Left, true),
             at(
                 15.0,
                 120.0,

@@ -1419,7 +1419,7 @@ mod tests {
     fn m4_every_step_of_a_found_route_is_one_motion_accepts() {
         use crate::arena::index::SpatialIndex;
         use crate::arena::motion::step_refusal;
-        use crate::arena::state::Team;
+        use crate::arena::state::PartyId;
         use crate::arena::test_support::{arena_of, pose, priced_cell, tank};
         use mush_atlas::TerrainClass;
 
@@ -1448,7 +1448,7 @@ mod tests {
         const SIDE: u16 = 24;
         let base = arena_of(vec![tank(
             mush_core::ObjId(4),
-            Team::Red,
+            PartyId::RED,
             pose(1_500, 1_500),
         )]);
         let template = base

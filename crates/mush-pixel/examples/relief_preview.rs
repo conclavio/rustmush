@@ -63,7 +63,7 @@ fn main() {
         let tank = Sprite {
             x_cm: cam.x_cm + 4_000,
             y_cm: cam.y_cm + 2_000,
-            kind: SpriteKind::Blue,
+            kind: SpriteKind::Friend,
             pose: None,
         };
         let mut frame = Frame::new(640, 480);
@@ -77,7 +77,7 @@ fn main() {
         // Also render the three live cockpit views (FirstPerson + HUD, Overhead, and 2.5D Tactical)
         let cockpit_frame = json!({
             "seated": true,
-            "team": "red",
+            "party": "R",
             "unit_type": if eye > 300 { "tacsim.unit.biped_mk1" } else { "tacsim.unit.line_tank" },
             "x_cm": cam.x_cm,
             "y_cm": cam.y_cm,
@@ -97,6 +97,8 @@ fn main() {
                     "id": "BA",
                     "designator": "BA",
                     "class": "blue",
+                    "relation": "hostile",
+                    "party": "B",
                     "unit_type": "tacsim.unit.line_tank",
                     "bearing_deg": (heading + 15) % 360,
                     "range_m": 65.0,
@@ -109,6 +111,8 @@ fn main() {
                     "id": "BB",
                     "designator": "BB",
                     "class": "blue",
+                    "relation": "hostile",
+                    "party": "B",
                     "unit_type": "tacsim.unit.biped_mk1",
                     "bearing_deg": (heading + 335) % 360,
                     "range_m": 95.0,
@@ -121,6 +125,8 @@ fn main() {
                     "id": "RB",
                     "designator": "RB",
                     "class": "red",
+                    "relation": "own",
+                    "party": "R",
                     "unit_type": "tacsim.unit.scout_mk1",
                     "bearing_deg": (heading + 353) % 360,
                     "range_m": 135.0,

@@ -69,6 +69,7 @@ pub(crate) mod selection_refs;
 // its own module and never the cockpit's, which builds only what a pilot is
 // sent. Documented by its own module doc.
 pub mod observer;
+mod parties;
 // 17b cut M3.5 (doc 17 §9, D-UM-36): the compute pool — the allotment, the
 // class loads and the admission, at `SIM UNIT` and at check-out. Documented by
 // its own module doc.
@@ -159,7 +160,7 @@ use smol_str::SmolStr;
 
 use crate::arena::damage::UnitReturn;
 use crate::arena::state::{
-    CustodyOut, CustodyUnit, EndReason, MatchEnd, MatchMode, Pilot, StopReason, Team,
+    CustodyOut, CustodyUnit, EndReason, MatchEnd, MatchMode, PartyId, Pilot, StopReason,
 };
 use crate::arena_bridge::{ArenaRegistry, OpenMatchError, match_log_id};
 use crate::arena_task::MatchId;
@@ -241,7 +242,7 @@ pub struct MatchBook {
     /// [`lobby::Centre::default`], and a player's lone `SIM TEAM` on a terminal
     /// centre is one of those returns — an override kept on the centre would be
     /// wiped by the very claim that starts the match it was set for.
-    opening_cells: BTreeMap<(Team, u8), OpeningCell>,
+    opening_cells: BTreeMap<(PartyId, u8), OpeningCell>,
     /// **16b cut U.4** — the match whose check-out used [`Self::opening_cells`],
     /// so that match's end, and no other, clears them.
     opening_consumed_by: Option<MatchId>,
@@ -417,13 +418,13 @@ impl MatchBook {
     /// **The opening cells overridden for the next match** (16b cut U.4), by
     /// `(team, slot)`, in team-then-slot order.
     #[must_use]
-    pub fn opening_cells(&self) -> &BTreeMap<(Team, u8), OpeningCell> {
+    pub fn opening_cells(&self) -> &BTreeMap<(PartyId, u8), OpeningCell> {
         &self.opening_cells
     }
 
     /// One slot's overridden opening cell, if staff set one.
     #[must_use]
-    pub fn opening_cell(&self, team: Team, slot: u8) -> Option<OpeningCell> {
+    pub fn opening_cell(&self, team: PartyId, slot: u8) -> Option<OpeningCell> {
         self.opening_cells.get(&(team, slot)).copied()
     }
 
@@ -436,12 +437,12 @@ impl MatchBook {
 
     /// Set one slot's opening cell (`@arena/pose <callsign>=<x> <y>`), replacing
     /// any it had. The caller has validated it.
-    pub(crate) fn set_opening_cell(&mut self, team: Team, slot: u8, cell: OpeningCell) {
+    pub(crate) fn set_opening_cell(&mut self, team: PartyId, slot: u8, cell: OpeningCell) {
         self.opening_cells.insert((team, slot), cell);
     }
 
     /// Give one slot its authored cell back (`@arena/pose <callsign>=off`).
-    pub(crate) fn clear_opening_cell(&mut self, team: Team, slot: u8) {
+    pub(crate) fn clear_opening_cell(&mut self, team: PartyId, slot: u8) {
         self.opening_cells.remove(&(team, slot));
     }
 
@@ -739,12 +740,9 @@ pub fn seq_from_document(value: &serde_json::Value) -> u64 {
 
 /// **One unit a side fields, and the pod it came out of** (16b cut Q.1).
 ///
-/// The slot is what [`crate::arena::state::Designator::Slot`] renders, so the
-/// `BA` a pilot locks is the pod `SIM STATUS` prints as `1` on blue. `0` is *no
-/// pod*: a staff `@arena/start`, a fixture, the harness's field of three
-/// hundred — and `Arena::new` then gives the unit the lowest free slot of its
-/// team in unit-id order, so every unit in every match has a stable callsign
-/// whether a lobby fielded it or not.
+/// The slot is the pod `SIM STATUS` prints; `0` is *no pod* (a staff
+/// `@arena/start`, a fixture, the harness's field of three hundred). Since doc
+/// 32 cut CF.0 the callsign is drawn at check-out and does not spell it.
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub struct Fielded {
     /// The unit.
@@ -760,6 +758,36 @@ pub struct Fielded {
     /// defaults. Diagnostic only: checkout charges each completed seal's
     /// actual class rather than trusting a caller-supplied preview.
     pub mind_class: Option<crate::arena::core::CoreClass>,
+}
+
+/// **A side's units in pod-slot order** (doc 32 cut CF.0): every unit at its
+/// centre slot, and every unslotted one (`0`: a staff `@arena/start`, a
+/// fixture) at the lowest slot left, in unit-id order — the order 16b cut
+/// Q.1's slot callsigns spelled. Since CF.0 a callsign is drawn and says
+/// nothing about a slot, so the roster carries the order instead, and the
+/// detachment adapter numbers its members by it (slot 1 leads).
+fn slot_order(units: &[Fielded]) -> Vec<ObjId> {
+    let mut placed: Vec<(u16, ObjId)> = units
+        .iter()
+        .filter(|fielded| fielded.slot != 0)
+        .map(|fielded| (u16::from(fielded.slot), fielded.unit))
+        .collect();
+    let mut unslotted: Vec<ObjId> = units
+        .iter()
+        .filter(|fielded| fielded.slot == 0)
+        .map(|fielded| fielded.unit)
+        .collect();
+    unslotted.sort_unstable();
+    let mut next: u16 = 1;
+    for unit in unslotted {
+        while placed.iter().any(|(slot, _)| *slot == next) {
+            next = next.saturating_add(1);
+        }
+        placed.push((next, unit));
+        next = next.saturating_add(1);
+    }
+    placed.sort_unstable();
+    placed.into_iter().map(|(_, unit)| unit).collect()
 }
 
 impl Fielded {
@@ -779,7 +807,7 @@ impl Fielded {
 #[derive(Clone, Debug, PartialEq, Eq)]
 pub struct Side {
     /// Which side.
-    pub team: Team,
+    pub team: PartyId,
     /// Its units, in the order they were named, each with the centre slot it was
     /// fielded from (16b cut Q.1).
     pub units: Vec<Fielded>,
@@ -1195,7 +1223,7 @@ pub fn start(
     for side in sides {
         let mut roster = TeamRoster {
             team: side.team,
-            units: side.units.iter().map(|fielded| fielded.unit).collect(),
+            units: slot_order(&side.units),
             pilots: Vec::new(),
         };
         for fielded in &side.units {
@@ -1443,6 +1471,7 @@ pub fn start(
             resolution: arena_def::resolution_for(&catalog),
             seed: seed_for(match_id, ctx.w.now()),
             mode,
+            host: crate::arena::FieldHost::all_hostile(),
         },
         arena_cfg,
         match_cfg,
@@ -1623,6 +1652,7 @@ pub fn start(
         resolution,
         seed,
         mode,
+        host: crate::arena::FieldHost::all_hostile(),
     };
     let callsigns = match crate::arena_bridge::open_match(
         ctx,
@@ -1703,7 +1733,7 @@ pub fn start(
         // opening captured above and fed the tape by `on_chunk` beside the
         // debrief folds. A staff `@arena/start` match gets one too: it is this
         // same function.
-        let roster: Vec<(ObjId, crate::arena::state::Designator, Team)> = record
+        let roster: Vec<(ObjId, crate::arena::state::Designator, PartyId)> = record
             .callsigns
             .iter()
             .filter_map(|(unit, designator)| {
@@ -1805,15 +1835,16 @@ fn gunnery_of(ctx: &Ctx<'_>, unit: ObjId) -> u8 {
 /// designator — the callsign 16b cut Q.1's first pass will give it, `RA` —
 /// and a staff `@arena/start` unit (slot 0, no pod) by its world name, which
 /// is what that staff console already calls it.
-pub(crate) fn unsealed_callsign(w: &mush_core::World, unit: ObjId, team: Team, slot: u8) -> String {
+pub(crate) fn unsealed_callsign(
+    w: &mush_core::World,
+    unit: ObjId,
+    team: PartyId,
+    slot: u8,
+) -> String {
     if slot == 0 {
         return mush_core::output::display_name(w, unit);
     }
-    crate::arena::state::Designator::Slot {
-        team,
-        slot: u16::from(slot),
-    }
-    .to_string()
+    self::parties::pod_label(team, slot)
 }
 
 /// Every actor seated on a station of `unit`, with the station's id.
@@ -2624,7 +2655,7 @@ mod tests {
             "the long form is the Display's"
         );
         let sides = vec![Side {
-            team: Team::Red,
+            team: PartyId::RED,
             units: vec![Fielded {
                 unit: ObjId(90),
                 slot: 3,

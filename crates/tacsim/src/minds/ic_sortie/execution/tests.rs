@@ -2,7 +2,7 @@
 //! audited active owner record. These tests cannot manufacture a host permit.
 use super::*;
 use crate::arena::{
-    Arena, Controller, EventKind, Team,
+    Arena, Controller, EventKind, PartyId,
     core::CoreClass,
     mind::{DropCause, MemValue, Memory, encode_memory},
     motor::MotorCounters,
@@ -22,7 +22,7 @@ const OLD_ABI: &str = "rhai=1.26.0;api=4;stock=2";
 const SOURCE: &str = "fn think(v,c) { this.marker = 73; }";
 
 fn fixture(abi: &str, source: &str) -> Result<(Execution, Arena), Box<dyn std::error::Error>> {
-    let mut hull = tank(UNIT, Team::Red, pose(1500, 1500));
+    let mut hull = tank(UNIT, PartyId::RED, pose(1500, 1500));
     hull.controller = Controller::Mind;
     let mut terms = SealTerms::fixture();
     terms.match_id = MatchId(7);
@@ -67,7 +67,7 @@ fn fixture(abi: &str, source: &str) -> Result<(Execution, Arena), Box<dyn std::e
         classes: terms.classes,
     };
     execution.validate()?;
-    let mut arena = arena_of(vec![hull, tank(ObjId(9), Team::Blue, pose(6500, 4500))]);
+    let mut arena = arena_of(vec![hull, tank(ObjId(9), PartyId::BLUE, pose(6500, 4500))]);
     arena.unit_mut(UNIT).ok_or("unit")?.power = Power::Online;
     Ok((execution, arena))
 }
@@ -289,7 +289,7 @@ fn m8b_an_ungoverned_core_admits_an_unfiled_draft_and_records_it() -> TestResult
     use crate::arena::mind_seal::Admission;
     use crate::minds::licence_state::SealLicenceState;
     for governed in [true, false] {
-        let mut hull = tank(UNIT, Team::Red, pose(1500, 1500));
+        let mut hull = tank(UNIT, PartyId::RED, pose(1500, 1500));
         hull.controller = Controller::Mind;
         if !governed {
             ungovern(&mut hull.unit)?;
@@ -386,7 +386,7 @@ fn m8b_an_ungoverned_core_seals_under_the_floor_and_over_its_class() -> TestResu
     use crate::minds::licence_state::SealLicenceState;
     for governed in [true, false] {
         // The fixture tank's Class I core, and a cannon: a fire station, so the floor applies.
-        let mut hull = tank(UNIT, Team::Red, pose(1500, 1500));
+        let mut hull = tank(UNIT, PartyId::RED, pose(1500, 1500));
         hull.weapons.push(crate::arena::test_support::cannon());
         hull.controller = Controller::Mind;
         if !governed {

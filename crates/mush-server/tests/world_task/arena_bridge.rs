@@ -56,7 +56,7 @@ use mush_tactics::{
 };
 use smol_str::SmolStr;
 use tacsim::arena::state::{
-    ArenaDefinition, ArenaTerrain, CustodyOut, CustodyUnit, EntryZone, Pilot, Team, TerrainCell,
+    ArenaDefinition, ArenaTerrain, CustodyOut, CustodyUnit, EntryZone, PartyId, Pilot, TerrainCell,
     TrackedRules,
 };
 use tacsim::arena_task::{ArenaMsg, ArenaOut, MatchId};
@@ -214,7 +214,7 @@ fn custody() -> CustodyOut {
             id: SmolStr::new("tacsim.arena.bridge"),
             terrain: ArenaTerrain::uniform(8, 8, 1_000, ground()).expect("the test window"),
             entry_zones: vec![EntryZone {
-                team: Team::Red,
+                team: PartyId::RED,
                 x0: 0,
                 y0: 0,
                 x1: 1,
@@ -228,7 +228,7 @@ fn custody() -> CustodyOut {
         units: vec![
             CustodyUnit {
                 id: UNIT,
-                team: Team::Red,
+                team: PartyId::RED,
                 pose: Pose::at(1_500, 1_500, 0, rules()),
                 mobility: TrackedRules {
                     max_speed_cms: 1_000,
@@ -259,6 +259,7 @@ fn custody() -> CustodyOut {
         resolution: tacsim::match_::stock_resolution(),
         seed: 7_777,
         mode: tacsim::arena::MatchMode::Skirmish,
+        host: tacsim::arena::FieldHost::all_hostile(),
     }
 }
 

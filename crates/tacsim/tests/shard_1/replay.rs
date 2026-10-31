@@ -31,7 +31,7 @@ use mush_core::ObjId;
 use smol_str::SmolStr;
 use support::{Muster, booted_world, ledger_events, run_until, shipped_arena_seeded};
 use tacsim::arena::ledger::{EventKind, LedgerEvent};
-use tacsim::arena::state::{ArenaDefinition, EndReason, Team, Waypoints};
+use tacsim::arena::state::{ArenaDefinition, EndReason, PartyId, Waypoints};
 use tacsim::arena_task::MatchId;
 use tacsim::match_::MatchOutcome;
 use tacsim::match_::replay::{
@@ -89,17 +89,17 @@ fn i1_a_real_fight_folds_to_one_objective_picture() {
     let mut arena = shipped_arena_seeded(
         &world,
         &[
-            &[Muster::mind(Team::Red, 1).dry()],
-            &[Muster::mind(Team::Blue, 1).at(BLUE_AT)],
+            &[Muster::mind(PartyId::RED, 1).dry()],
+            &[Muster::mind(PartyId::BLUE, 1).at(BLUE_AT)],
         ],
         FIGHT_SEED,
     );
-    let loser = support::tank(&world, Team::Red, 1);
-    let winner = support::tank(&world, Team::Blue, 1);
+    let loser = support::tank(&world, PartyId::RED, 1);
+    let winner = support::tank(&world, PartyId::BLUE, 1);
 
     // The fold, seeded exactly as `match_::start` seeds it: the arena's own
     // callsigns and sides, the check-out poses, the ground's grid and digest.
-    let roster: Vec<(ObjId, tacsim::arena::state::Designator, Team)> = arena
+    let roster: Vec<(ObjId, tacsim::arena::state::Designator, PartyId)> = arena
         .callsigns()
         .into_iter()
         .filter_map(|(unit, designator)| arena.unit(unit).map(|held| (unit, designator, held.team)))
@@ -139,7 +139,7 @@ fn i1_a_real_fight_folds_to_one_objective_picture() {
         matches!(
             arena.ended.map(|end| end.reason),
             Some(EndReason::Elimination {
-                winner: Some(Team::Blue)
+                winner: Some(PartyId::BLUE)
             })
         ),
         "the armed tank did not eliminate the dry one inside {BOUND_MS} ms: {:?} at {} ms",
@@ -364,7 +364,7 @@ fn fixture_replay() -> Replay {
         waypoints: Waypoints::default(),
         modes: Vec::new(),
     };
-    let roster = |callsign: &str, team: Team| ReplayRoster {
+    let roster = |callsign: &str, team: PartyId| ReplayRoster {
         callsign: SmolStr::new(callsign),
         team,
     };
@@ -380,10 +380,10 @@ fn fixture_replay() -> Replay {
         outcome: MatchOutcome::Abort,
         reason: SmolStr::new("abort"),
         roster: vec![
-            roster("RA", Team::Red),
-            roster("RB", Team::Red),
-            roster("BA", Team::Blue),
-            roster("BB", Team::Blue),
+            roster("RA", PartyId::RED),
+            roster("RB", PartyId::RED),
+            roster("BA", PartyId::BLUE),
+            roster("BB", PartyId::BLUE),
         ],
         keyframes: vec![
             Keyframe {

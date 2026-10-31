@@ -5,10 +5,10 @@
   "status": "unfiled_combat_content",
   "declared_class": "II",
   "ops_ceiling": 3000,
-  "mind_abi": "rhai=1.26.0;api=6;stock=3",
+  "mind_abi": "rhai=1.26.0;api=7;stock=3",
   "source_sha256": "023fb6af43b0c49a216760b10755dadda2ed0de28e1c4ade2c7bd0a1026e6870",
   "source_bytes": 4986,
-  "envelope_sha256": "28e6a4744216112f9d01588e14963a9287d2f708199b723b1d76708f25d056d3",
+  "envelope_sha256": "5b3d60ed32fad1463d5c525d542a92d19acff14f4c224c463f8aff3be75ca3fa",
   "profiles": [
     {
       "name": "Drill",

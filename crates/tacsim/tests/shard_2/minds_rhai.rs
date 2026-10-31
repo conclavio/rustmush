@@ -81,7 +81,7 @@ use tacsim::arena::rng::{DrawLabel, draw, stagger_ms};
 use tacsim::arena::snapshot::Snapshot;
 use tacsim::arena::state::{
     Arena, ArenaDefinition, ArenaTerrain, Channel, Controller, CostRow, CustodyOut, CustodyUnit,
-    DueKind, EntryZone, HeatState, KeySpot, Pilot, Team, TerrainCell, TrackedRules, Waypoint,
+    DueKind, EntryZone, HeatState, KeySpot, PartyId, Pilot, TerrainCell, TrackedRules, Waypoint,
     Waypoints, WeaponSummary,
 };
 use tacsim::arena::step::{Frame, StepOutput};
@@ -223,14 +223,14 @@ fn definition() -> ArenaDefinition {
         .expect("the test window"),
         entry_zones: vec![
             EntryZone {
-                team: Team::Red,
+                team: PartyId::RED,
                 x0: 0,
                 y0: 0,
                 x1: 1,
                 y1: SIDE - 1,
             },
             EntryZone {
-                team: Team::Blue,
+                team: PartyId::BLUE,
                 x0: SIDE - 2,
                 y0: 0,
                 x1: SIDE - 1,
@@ -298,7 +298,7 @@ fn cannon() -> WeaponSummary {
 /// A tank that sees, with `weapons` and `controller`.
 fn tank(
     id: ObjId,
-    team: Team,
+    team: PartyId,
     pose: Pose,
     weapons: Vec<WeaponSummary>,
     controller: Controller,
@@ -357,6 +357,7 @@ fn arena_on(units: Vec<CustodyUnit>, seated: &[ObjId], reflex: ReflexConfig) -> 
             resolution: tacsim::match_::stock_resolution(),
             seed: SEED,
             mode: tacsim::arena::MatchMode::Skirmish,
+            host: tacsim::arena::FieldHost::all_hostile(),
         },
         &ArenaConfig {
             reflex,
@@ -418,15 +419,21 @@ fn the_j_field(controller: Controller) -> Arena {
         vec![
             seeing(tank(
                 RED,
-                Team::Red,
+                PartyId::RED,
                 centre(6, 8),
                 vec![cannon()],
                 controller,
             )),
-            seeing(tank(RED2, Team::Red, centre(6, 10), Vec::new(), controller)),
+            seeing(tank(
+                RED2,
+                PartyId::RED,
+                centre(6, 10),
+                Vec::new(),
+                controller,
+            )),
             presenting(seeing(tank(
                 BLUE,
-                Team::Blue,
+                PartyId::BLUE,
                 centre(9, 8),
                 Vec::new(),
                 Controller::Pilot,
@@ -1802,7 +1809,7 @@ fn m2_every_getter_matches_the_keyframe_through_the_parity_table() {
         letter: Some('A'),
         radius_cells: 2,
         hold_ms: 60_000,
-        held_by: Some((Team::Red, now)),
+        held_by: Some((PartyId::RED, now)),
     });
     for outcome in [
         None,
@@ -1922,7 +1929,9 @@ fn written(
                 id: friend,
                 designator: friend_designator,
             },
-            class: tacsim::arena::state::Classification::Classified { team: Team::Red },
+            class: tacsim::arena::state::Classification::Classified {
+                party: PartyId::RED,
+            },
             was: Some(tacsim::arena::state::Designator::Provisional(1)),
         },
         FrameNotice::Hit {
@@ -2772,13 +2781,13 @@ fn kernels_by_hand(view: &MindView, def: &ArenaDefinition) -> Memory {
     );
     put(
         "entry",
-        cell_value(motor::entry_cell(def, view.team, CostRow::Tracked, here)),
+        cell_value(motor::entry_cell(def, view.party, CostRow::Tracked, here)),
     );
     put(
         "far",
         cell_value(motor::far_entry_cell(
             def,
-            view.team,
+            view.party,
             CostRow::Tracked,
             here,
             &[],
@@ -3539,34 +3548,39 @@ const M2_FLOAT_PROBE_BITMASK: i64 = (1 << 25) - 1 + (1 << 26) + (1 << 28);
 /// `7b35b9ee…`, `47b8afcf…`; M8a alone over the API 5 tree had re-pinned
 /// `91c474d0…`, `929f1c49…`, `22d34325…`, `de7720f6…` to `a8ef4a30…`,
 /// `e1e7a26b…`, `b2c1dada…`, `2e9d2e80…`.
+// **Doc 32 cut CF.0's one re-bless** (an encoding re-bless, D-UM-28): the
+// state hash folds every party's relation books and the end condition (item
+// 13) and the Standard source moved with the API 7 header, so every ledger
+// line's hash moved with it. Every row's end millisecond is unchanged (170 250,
+// 192 500, 170 000, 900 000): the fights are the same fights.
 const M2_CROSS_PLATFORM_PINS: [(u64, i64, u64, &str, &str); 4] = [
     (
         2350,
         170250,
-        4036052986693953416,
-        "daa4e8666cd9bc4c45ac5173a0ad30e65007e6bed38ec1483078b3a010ba8e5f",
-        "442550cd793fa83e891dd464a7e3df7f5acf8b1ff093360f5685959adac86c64",
+        3226764797738367208,
+        "6f6a741fbddf0326b2a4da37e615da2ccf5a883b5b876555427bcda249378358",
+        "d5afe91b1f12a2f15f286a3f45c9959785dd988c3008198a9194190316828e4d",
     ),
     (
         2351,
         192500,
-        14776315943276034554,
-        "4d137f25c8106433355566b13b22bf111b9c1c1d0b1bb1e9e617fb2fb424d585",
-        "1db6e56d1d325ce14a473c418a1a28f9cd64d3f078b960febf3e9f46efed8dd9",
+        12250106977832258330,
+        "8e2eb0c3f1d2f60f1f7d068b7119c1a44f1fd4c1a9c8c9350384272658e0f735",
+        "af0ec279cc1a153bc4c5ed3a1c9b32ceb51d8fb66070bf86af1d0ef8372cb86e",
     ),
     (
         2352,
         170000,
-        714931300200473704,
-        "f74b2d5b90f5838ca03216ef0383efa77eddaac021757f026ffd44a3a7241fb7",
-        "3182ce00a314f9b409a1a448676f46127f719e154ffa7e5ab7c395b20c0fd840",
+        3632269934981072382,
+        "2a3b4b62e66285946347adfe6bba87c306daca8561645b18199c846ac94b02dc",
+        "0288486f88cc586d55bef4d54d08cc71dd4a8b63e19a608ab01fd1eedb065725",
     ),
     (
         2350,
         900000,
-        5234968803354853599,
-        "e2733d3bd2aa6a02eeededaf9256252c446a4b862e84227b33bc5194f28f6e2b",
-        "c26a43090e34bf2532990fe238ff9df9f150dce8ee86f5d0360aac3d73c756ec",
+        13918973238022319229,
+        "d7f6a735bdd09227055e1ad4602cc1c8a4bf184d92332e78f6c57e2a8821d19a",
+        "f479f87dabf782c0bd5357f643bac7947305e3afc92c64437f058adc23ffc1e9",
     ),
 ];
 
@@ -3665,8 +3679,11 @@ fn m2_the_twin_corpus_hashes_the_same_on_every_host() {
     );
     let world = support::booted_world();
     let cfg = ArenaConfig::default();
-    let reds = [Muster::mind(Team::Red, 1), Muster::mind(Team::Red, 2)];
-    let blues = [Muster::mind(Team::Blue, 1), Muster::mind(Team::Blue, 2)];
+    let reds = [Muster::mind(PartyId::RED, 1), Muster::mind(PartyId::RED, 2)];
+    let blues = [
+        Muster::mind(PartyId::BLUE, 1),
+        Muster::mind(PartyId::BLUE, 2),
+    ];
     let mut rows: Vec<(u64, i64, u64, String, String)> = Vec::new();
     // (a) The stock corpus, T2 against T2.
     for seed in [2_350_u64, 2_351, 2_352] {
@@ -3818,7 +3835,9 @@ fn classed_field(
         contact,
         ShadowContact::sighted(
             BLUE,
-            Classification::Classified { team: Team::Blue },
+            Classification::Classified {
+                party: PartyId::BLUE,
+            },
             0,
             plot,
         ),
@@ -4112,14 +4131,14 @@ fn gate_field() -> Arena {
         vec![
             seeing(tank(
                 GATE_UNIT,
-                Team::Red,
+                PartyId::RED,
                 centre(2, 8),
                 Vec::new(),
                 Controller::Mind,
             )),
             seeing(tank(
                 BLUE,
-                Team::Blue,
+                PartyId::BLUE,
                 centre(9, 8),
                 vec![beam()],
                 Controller::Pilot,
@@ -4475,21 +4494,21 @@ fn two_gun_field() -> Arena {
         vec![
             seeing(tank(
                 RED,
-                Team::Red,
+                PartyId::RED,
                 centre(6, 8),
                 vec![cannon(), second_gun()],
                 Controller::Mind,
             )),
             seeing(tank(
                 RED2,
-                Team::Red,
+                PartyId::RED,
                 centre(6, 10),
                 Vec::new(),
                 Controller::Mind,
             )),
             presenting(seeing(tank(
                 BLUE,
-                Team::Blue,
+                PartyId::BLUE,
                 centre(9, 8),
                 Vec::new(),
                 Controller::Pilot,
@@ -4977,7 +4996,7 @@ fn doctored_hull(
         catalog,
         cells,
         id,
-        Team::Red,
+        PartyId::RED,
         centre(2, 8),
         0,
         controller,
@@ -5027,7 +5046,7 @@ fn consequence_field(victim: CustodyUnit, seated: bool) -> Arena {
         }),
         ..tank(
             BLUE,
-            Team::Blue,
+            PartyId::BLUE,
             centre(9, 8),
             vec![heavy_beam()],
             Controller::Pilot,
@@ -5929,7 +5948,7 @@ fn m3_a_never_cored_mind_runs_the_rom_from_its_first_think_with_no_drop_line() {
         }),
         ..tank(
             RED,
-            Team::Red,
+            PartyId::RED,
             centre(6, 8),
             vec![cannon()],
             Controller::Mind,
@@ -5943,7 +5962,7 @@ fn m3_a_never_cored_mind_runs_the_rom_from_its_first_think_with_no_drop_line() {
             red,
             presenting(tank(
                 BLUE,
-                Team::Blue,
+                PartyId::BLUE,
                 centre(9, 8),
                 Vec::new(),
                 Controller::Pilot,

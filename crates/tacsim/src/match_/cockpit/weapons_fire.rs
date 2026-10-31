@@ -898,7 +898,7 @@ pub fn range_sentence(frame: &Frame) -> String {
     if on_range(frame) {
         format!(
             " On the range: targets on the {} side.",
-            frame.team.other().as_str()
+            frame.party.ooc_other().as_str()
         )
     } else {
         String::new()
@@ -1014,7 +1014,7 @@ pub(super) fn status(ctx: &mut Ctx<'_>, seat: &Seat) -> Result<(), CockpitError>
 /// callsign — the team and slot the lobby fielded this tank from — and then the
 /// pod is asked for **its own tank by name**, because
 /// [`crate::arena::state::Arena`]'s `resolve_callsigns` gives *every* unit a
-/// `Designator::Slot`: the harness's three hundred and a staff `@arena/start`'s
+/// `Designator::Unit`: the harness's three hundred and a staff `@arena/start`'s
 /// two included. The designator alone therefore says nothing about where a tank
 /// came from, and without the second question a staff-fielded biped would be
 /// bracketed against the authored type of a centre pod it was never in. A unit
@@ -1023,16 +1023,17 @@ pub(super) fn status(ctx: &mut Ctx<'_>, seat: &Seat) -> Result<(), CockpitError>
 /// It is the pilot's own tank, so the observer rule is not in play: doc 16 §5
 /// puts a pilot's own platform outside it entirely.
 pub(super) fn fitted_bracket(w: &World, unit: ObjId, frame: &Frame) -> String {
-    let Designator::Slot { team, slot } = frame.callsign else {
+    // Doc 32 cut CF.0: the callsign no longer spells the slot, so the pod is
+    // the centre's own whose tank this is, on the frame's side, and no other.
+    let team = frame.party;
+    let Some(index) = centre::POD_ENTRIES
+        .iter()
+        .filter(|(side, _, _)| *side == team)
+        .map(|(_, index, _)| *index)
+        .find(|index| centre::tank_for_slot(w, team, *index) == Some(unit))
+    else {
         return String::new();
     };
-    let Ok(index) = u8::try_from(slot) else {
-        return String::new();
-    };
-    // The centre's own pod, and no other unit's: see the head.
-    if centre::tank_for_slot(w, team, index) != Some(unit) {
-        return String::new();
-    }
     let Some(authored) = lobby::authored_unit_type(w, team, index) else {
         return String::new();
     };

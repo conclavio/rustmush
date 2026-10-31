@@ -13,7 +13,7 @@ use super::{
 use crate::{
     arena::{
         Arena, ArenaDefinition, ArenaTerrain, Classification, ContactId, Controller, CustodyOut,
-        CustodyUnit, EntryZone, MatchMode, Power, ShadowContact, Team, TerrainCell, Waypoint,
+        CustodyUnit, EntryZone, MatchMode, PartyId, Power, ShadowContact, TerrainCell, Waypoint,
         Waypoints, core::CoreClass, mind::SealEngine, motor::MotorCounters,
         profile_seal::SealedCards, state::SeenPose,
     },
@@ -178,7 +178,13 @@ impl Single {
             return Err(RatingError::Incomplete);
         }
         if view.contacts.iter().any(|row| {
-            row.friendly || !matches!(row.class, Classification::Classified { team: Team::Blue })
+            row.friendly
+                || !matches!(
+                    row.class,
+                    Classification::Classified {
+                        party: PartyId::BLUE
+                    }
+                )
         }) {
             return Err(RatingError::Incomplete);
         }
@@ -427,7 +433,7 @@ fn opening_on(
     let mut own = hull(
         policy,
         OWN,
-        Team::Red,
+        PartyId::RED,
         own_position,
         class,
         matches!(recipe.picture, Picture::HurtTwo | Picture::OrderLoss),
@@ -460,7 +466,7 @@ fn opening_on(
         units.push(hull(
             policy,
             ObjId(u32::try_from(n + 2).map_err(|_| RatingError::Bound)?),
-            Team::Blue,
+            PartyId::BLUE,
             position,
             class,
             false,
@@ -482,6 +488,7 @@ fn opening_on(
             resolution,
             seed: SEED,
             mode: MatchMode::Skirmish,
+            host: crate::arena::FieldHost::all_hostile(),
         },
         &policy.cfg.arena,
         &policy.cfg.match_,
@@ -498,7 +505,7 @@ fn opening_on(
         let state = arena.unit(target).ok_or(RatingError::Incomplete)?;
         let contact = ShadowContact::sighted(
             target,
-            Classification::Classified { team: state.team },
+            Classification::Classified { party: state.team },
             0,
             SeenPose::of(state),
         );
@@ -514,7 +521,7 @@ fn opening_on(
 fn hull(
     policy: &FrozenPolicy,
     object: ObjId,
-    team: Team,
+    team: PartyId,
     position: [i64; 2],
     class: CoreClass,
     hurt: bool,
@@ -588,14 +595,14 @@ fn ground() -> Result<ArenaDefinition, RatingError> {
         terrain,
         entry_zones: vec![
             EntryZone {
-                team: Team::Red,
+                team: PartyId::RED,
                 x0: 0,
                 y0: 0,
                 x1: 4,
                 y1: 63,
             },
             EntryZone {
-                team: Team::Blue,
+                team: PartyId::BLUE,
                 x0: 59,
                 y0: 0,
                 x1: 63,
