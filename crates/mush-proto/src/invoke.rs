@@ -1546,7 +1546,10 @@ mod tests {
         let catalog_req = InvokeRequest::ContentStudio(ContentStudioRequest::Catalog {});
         catalog_req.validate()?;
         let wire = serde_json::to_string(&catalog_req)?;
-        check_eq!(wire, r#"{"service":"content_studio","request":{"op":"catalog"}}"#);
+        check_eq!(
+            wire,
+            r#"{"service":"content_studio","request":{"op":"catalog"}}"#
+        );
         check_eq!(serde_json::from_str::<InvokeRequest>(&wire)?, catalog_req);
 
         let check_req = InvokeRequest::ContentStudio(ContentStudioRequest::Check {
@@ -1556,9 +1559,17 @@ mod tests {
         });
         check_req.validate()?;
         let check_wire = serde_json::to_string(&check_req)?;
-        check_eq!(serde_json::from_str::<InvokeRequest>(&check_wire)?, check_req);
+        check_eq!(
+            serde_json::from_str::<InvokeRequest>(&check_wire)?,
+            check_req
+        );
 
-        for bad_id in ["", "bad id", "bad\0id", &"x".repeat(MAX_CONTENT_STUDIO_ID_BYTES + 1)] {
+        for bad_id in [
+            "",
+            "bad id",
+            "bad\0id",
+            &"x".repeat(MAX_CONTENT_STUDIO_ID_BYTES + 1),
+        ] {
             check!(
                 InvokeRequest::ContentStudio(ContentStudioRequest::Read { id: bad_id.into() })
                     .validate()
