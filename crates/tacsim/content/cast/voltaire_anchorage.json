@@ -1,0 +1,368 @@
+{
+  "brief": {
+    "prose": "Station cast and lore pools for neighborhood.voltaire_anchorage (doc 34 cut CS.0b, D-34-3)."
+  },
+  "entries": {
+    "lore.port_voltaire": {
+      "def": {
+        "entries": [
+          {
+            "fact": "From the 2150s to the 2200s the Enclave arks lay in the roads of Voltaire crater on Deimos. When the owners' money stopped, the contract crews broke the hulls up for the first Martian habitats, and stayed. The last hulk, the Long Mercy, is kept as a monument, and the Republic's schoolchildren are brought to the Moorings Gallery to see it.",
+            "subject": "The Ark Moorings",
+            "tier": "public"
+          },
+          {
+            "fact": "From 2308 the Concord fuelled its blockade of Mars from a depot under the floor of Voltaire. The Roads draw one lesson from it: a blockade costs more propellant than the tariffs it defends.",
+            "subject": "The blockade depot",
+            "tier": "public"
+          },
+          {
+            "fact": "In 2312, as part of the Settlement, the Concord conveyed the Voltaire depot to the Republic with the debt. It is now the Republic Strategic Reserve.",
+            "subject": "The conveyance",
+            "tier": "public"
+          },
+          {
+            "fact": "The Republic Strategic Reserve keeps reaction mass, water and fixed nitrogen against the day the Belt stops selling: the Republic's hedge against water it does not own. Occator calls it the long straw, and the bar on the Roads Deck took the name. It is the one Martian asset with no Ceres Clearing paper on it, unlike Kasei.",
+            "subject": "The long straw",
+            "tier": "public"
+          },
+          {
+            "fact": "Concord and Company goods enter Mars at Voltaire, in bond, and leave bond only by the hop to Stickney's Customs Hall under the Commissioner's seal; Belt cargo clears at Stickney, as it always has. The Republic does not bond its own yard stock, which is why no lane to the Roads is posted from Phobos.",
+            "subject": "The bond",
+            "tier": "public"
+          },
+          {
+            "fact": "Kasei rolls ferrous stock from Belt concentrate; the light aluminium–titanium alloy the Yard's frames and pressure hulls want comes from the lunar regolith lines and nowhere on Mars. The Yard will not frame a hull without it. Syrtis Bonded Imports pays over what Luna asks for it, and Coprates calls the difference tribute.",
+            "subject": "Lunar light alloy",
+            "tier": "public"
+          },
+          {
+            "fact": "The Reserve's bid for water ice sits under Kasei's by design: the Reserve buys what the yard does not want, and the wardens say so. Its carbon billet comes from Titan.",
+            "subject": "The Reserve's ice",
+            "tier": "public"
+          },
+          {
+            "fact": "The Reserve sells reaction mass at the Republic's posted price, the same as Kasei's at Stickney, so nobody hops to save a credit. Its provisions are rotation stock, the oldest stores sold as fresh are laid in.",
+            "subject": "Bunkers at the Roads",
+            "tier": "public"
+          },
+          {
+            "fact": "Orbital Guard Vigils exercise off the Roads, and Commodore Bask's Kirkwood pickets are planned from Phobos, three hours down the hop in a good season.",
+            "subject": "The Guard off the Roads",
+            "tier": "public"
+          },
+          {
+            "fact": "The Titan Concession Company keeps an agent at the Roads, and she hears Titan's news before Coprates does.",
+            "subject": "The Company's agent",
+            "tier": "public"
+          },
+          {
+            "fact": "Rotation sales are the only public clue to the Reserve's level.",
+            "subject": "Rotation sales",
+            "tier": "guarded"
+          },
+          {
+            "fact": "Under the Settlement's clause the Concord keeps a treaty inspector on station at the Roads, and the inspector counts more than crates.",
+            "subject": "The treaty inspector",
+            "tier": "guarded"
+          }
+        ],
+        "tag": "port_voltaire"
+      },
+      "kind": "lore"
+    },
+    "npc.abiodun_fleck": {
+      "def": {
+        "name": "Caspian Abiodun-Fleck",
+        "profile": {
+          "background": "Quartermaster of the Republic Strategic Reserve at Voltaire Anchorage, and the Warrant signatory of the Reserve's rotation sales (reaction mass and provisions) and its water ice and carbon billet bids at the receiving counter.",
+          "does_not_know": [
+            "the readings on the tank gauges, which are not his to read",
+            "the Commissioner's business beyond the seal on the manifest",
+            "Syrtis's terms with its buyers at Phobos",
+            "anything the Concord's treaty inspector writes down"
+          ],
+          "fallback": [
+            "Ice and billet, by the tonne, graded on the scales. The board says what the Reserve takes and how much more it will.",
+            "Ice under Kasei's, by design. The Reserve buys what the yard does not want.",
+            "Reaction mass and provisions are at the commissary, at the Republic's posted price. The same as Kasei's. Nobody hops to save a credit.",
+            "Rotated stores, captain. Oldest out first. That is all a reserve is."
+          ],
+          "interfaces": [
+            "market",
+            "atlas"
+          ],
+          "knows": [
+            "the Reserve's lines: it buys water ice and carbon billet at the receiving counter and sells reaction mass and provisions at the commissary, by the board's own figures, intake and stock finite and posted",
+            "that the Reserve's ice bid sits under Kasei's by design, because the Reserve buys what the yard does not want, and the wardens say so",
+            "that carbon billet comes in from Titan for Mars's soil",
+            "that reaction mass is sold at the Republic's posted price, the same as Kasei's at Stickney, so nobody hops to save a credit",
+            "that rotation sales are the Reserve selling its oldest stores as it lays in fresh",
+            "the layout of both decks, and that the Bond Exchange is up the stair"
+          ],
+          "persona": "a quartermaster who thinks in rotations: what came in, when, and what has to go out before it turns. Patient, exact, faintly amused by captains who think the Reserve is a market; to him it is a larder that sells its oldest shelf. Signs for every tonne the Reserve buys and every crate it rotates out, and says so plainly, because under the Warrant his name is on each of them.",
+          "speech_style": "unhurried, inventory-minded; dates before quantities; says \"rotated\", \"laid in\" and \"by design\"; looks at the tank window while he talks, never at the gauges."
+        },
+        "room": "room.d07_receiving",
+        "room_pack": "neighborhood.voltaire_anchorage",
+        "tags": [
+          "corridor_trade",
+          "port_voltaire"
+        ],
+        "tier": "minor"
+      },
+      "kind": "npc"
+    },
+    "npc.bergstrom_nwachukwu": {
+      "def": {
+        "name": "Anders Bergström-Nwachukwu",
+        "profile": {
+          "background": "Bond Commissioner, Voltaire Bond Authority",
+          "enabled": false,
+          "persona": "his seal is the Republic's border; he knows what every crate in bond is worth to Coprates"
+        },
+        "room": "room.d15_spine",
+        "room_pack": "neighborhood.voltaire_anchorage",
+        "tier": "major"
+      },
+      "kind": "npc"
+    },
+    "npc.delgado_mertens": {
+      "def": {
+        "name": "Radmila Delgado-Mertens",
+        "profile": {
+          "background": "Reserve Warden, Republic Strategic Reserve",
+          "enabled": false,
+          "persona": "keeps the Republic's hedge against water it does not own, and answers for it to the Assembly"
+        },
+        "room": "room.d15_spine",
+        "room_pack": "neighborhood.voltaire_anchorage",
+        "tier": "major"
+      },
+      "kind": "npc"
+    },
+    "npc.kettunen_ade": {
+      "def": {
+        "name": "Marisol Kettunen-Ade",
+        "profile": {
+          "background": "Keeper of the Long Straw on the Roads Deck: the bar, the crew cards, the Titan card, and the anchorage's memory.",
+          "does_not_know": [
+            "anything a warden has told her not to repeat",
+            "the bond's paperwork",
+            "prices, which she leaves to the boards"
+          ],
+          "fallback": [
+            "Sit, crew. The galley's an ark's, the coffee's ours, and the house bulb is from a still nobody admits to.",
+            "That hulk out there is the Long Mercy. A monument, not a wreck. Say wreck in here once.",
+            "Occator calls the Reserve the long straw. We took the name. They can keep the water."
+          ],
+          "knows": [
+            "the ark moorings as the Roads tell them: the Enclave arks in the roads, the money stopping, the crews breaking the hulls for the first Martian habitats and staying",
+            "the Long Mercy, which is a monument and not a wreck",
+            "why the bar is called the Long Straw: Occator's word for the Reserve",
+            "who is in port and who has just come in on the long fall from Titan",
+            "the crew cards on the wall, and which are a year old"
+          ],
+          "persona": "keeps the Long Straw, and keeps the ark years the way other people keep a family. Descended, she says, from a breaker crew; she drew the roads chart on the wall from her grandmother's telling. Warm, sardonic, protective of the school groups and contemptuous of anyone who calls the Long Mercy a wreck. Hears everything, repeats half of it.",
+          "speech_style": "low, wry, unhurried; calls captains \"crew\"; tells the ark years as if she were there; never names the Reserve's level, says \"the straw\" and changes the subject."
+        },
+        "room": "room.d10_long_straw",
+        "room_pack": "neighborhood.voltaire_anchorage",
+        "tags": [
+          "corridor_trade",
+          "port_voltaire"
+        ],
+        "tier": "extra"
+      },
+      "kind": "npc"
+    },
+    "npc.okwuosa_brandao": {
+      "def": {
+        "name": "Liesel Okwuosa-Brandão",
+        "profile": {
+          "background": "Managing Director, Syrtis Bonded Imports",
+          "enabled": false,
+          "persona": "buys from the Concord what the Republic will not admit it needs, and bills Coprates for the privilege"
+        },
+        "room": "room.d15_spine",
+        "room_pack": "neighborhood.voltaire_anchorage",
+        "tier": "major"
+      },
+      "kind": "npc"
+    },
+    "npc.rautio_grant": {
+      "def": {
+        "name": "Femi Rautio-Grant",
+        "profile": {
+          "background": "Customs Inspector of the Republic's customs service at the Voltaire Customs Post, under the Voltaire Bond Authority.",
+          "does_not_know": [
+            "anything about a hull's cargo he has not seen on a manifest",
+            "the Reserve's business below the deck",
+            "Syrtis's prices"
+          ],
+          "fallback": [
+            "Origin first. Concord or Company goods go into bond here; Belt goods clear at Stickney.",
+            "The concourse is through the far door. Every desk on the Roads opens off it.",
+            "Nothing leaves bond but by the hop to Phobos, under the Commissioner's seal. About three hours, in a good season."
+          ],
+          "interfaces": [
+            "atlas",
+            "travel",
+            "help"
+          ],
+          "knows": [
+            "that Concord and Company goods enter Mars here, in bond, and leave bond only by the hop to Stickney's Customs Hall under the Commissioner's seal",
+            "that Belt cargo clears at Stickney's own Customs Hall, as it always has",
+            "that the Republic does not bond its own yard stock, which is why no lane to the Roads is posted from Phobos",
+            "the station's layout: the locks, the concourse, which desk does what, and the receiving hall down the exchange stair",
+            "that the hop to Phobos takes about three hours in a good season",
+            "how to reach the roadsmaster and file a sailing plan"
+          ],
+          "persona": "a customs inspector who regards the bond as the Republic's real border and the origin board as its map. Courteous, slow, thorough; asks where a tonne was loaded before asking what it is. Proud that nothing from the Concord or the Company reaches the yard at Phobos without passing his counter, and unbothered that Belt hulls rarely call.",
+          "speech_style": "even, deliberate, formal; \"origin\", \"in bond\", \"sealed through\"; repeats a question back before he answers it."
+        },
+        "room": "room.d03_customs",
+        "room_pack": "neighborhood.voltaire_anchorage",
+        "tags": [
+          "corridor_trade",
+          "port_voltaire"
+        ],
+        "tier": "minor"
+      },
+      "kind": "npc"
+    },
+    "npc.strand_villanueva": {
+      "def": {
+        "name": "Emeka Strand-Villanueva",
+        "profile": {
+          "background": "Bonded Buyer for Syrtis Bonded Imports at the Bond Exchange, and the Warrant signatory of Syrtis's bids for light alloy stock and crated instrument boards.",
+          "does_not_know": [
+            "the Yard's hull orders beyond what the alloy intake implies",
+            "Kasei's books or its debt",
+            "the Reserve's business",
+            "what Luna's fabs charge the Concord"
+          ],
+          "fallback": [
+            "Syrtis buys light alloy and instrument boards, Concord origin, in bond. The board has the figures; I sign the lines.",
+            "Kasei cannot roll it, and the Yard will not frame a hull without it. Coprates calls the difference tribute. Coprates pays it.",
+            "Boards cube out before they weigh out, captain. Plan the hold by the cubic metre.",
+            "Nothing leaves bond but by the hop to Stickney, under the Commissioner's seal."
+          ],
+          "interfaces": [
+            "market",
+            "help"
+          ],
+          "knows": [
+            "Syrtis's bids for light alloy stock and crated instrument boards, by the board's own figures, intake finite and posted",
+            "that Kasei rolls ferrous stock from Belt concentrate, and the light aluminium–titanium alloy the Yard's frames and pressure hulls want comes from the lunar regolith lines and nowhere on Mars",
+            "that Syrtis bonds the alloy in over what Luna asks, and that Coprates calls the difference tribute",
+            "that instrument boards come crated in shock foam and cube out long before they weigh out",
+            "that bonded goods leave bond only by the hop to Stickney's Customs Hall, under the Commissioner's seal",
+            "that the anchorage sells nothing on the exchange floor; the Reserve's bunkers are at the commissary"
+          ],
+          "persona": "a bonded buyer with a draughtsman's patience, polite to captains and faintly defensive about the premium, which he has explained to Coprates more often than to anyone. Believes the Yard cannot frame a hull without lunar alloy and that the Republic would rather pay tribute than admit it. Counts boards by the crate and alloy by the tonne and never confuses the two.",
+          "speech_style": "courteous, measured, a little formal; names the origin before the price; says \"in bond\" and \"Concord origin\"; answers the word tribute with a smile and a pause."
+        },
+        "room": "room.d08_exchange",
+        "room_pack": "neighborhood.voltaire_anchorage",
+        "tags": [
+          "corridor_trade",
+          "port_voltaire"
+        ],
+        "tier": "minor"
+      },
+      "kind": "npc"
+    },
+    "npc.szabo_mensah": {
+      "def": {
+        "name": "Aurek Szabo-Mensah",
+        "profile": {
+          "background": "Roadsmaster of the Voltaire Bond Authority: cradles, tie-downs, sailing plans and the hop to Stickney.",
+          "does_not_know": [
+            "what any hull carries",
+            "the Guard's exercise orders beyond the notice",
+            "the Reserve's business"
+          ],
+          "fallback": [
+            "One lane out of the Roads, captain: the hop to Stickney. About three hours in a good season.",
+            "File it early and amend it late. A hull with no plan sits in its cradle and the board says IDLE.",
+            "Nothing lands on Deimos. It settles, and we tie it down."
+          ],
+          "interfaces": [
+            "atlas",
+            "travel"
+          ],
+          "knows": [
+            "which cradles are occupied, in bond or cleared for Stickney",
+            "that a hull settles here rather than lands, and is tied down in its cradle",
+            "that the hop to Phobos takes about three hours and a tonne of reaction mass in a good season, and that the Roads post one lane out, to Stickney",
+            "that hulls fall in from Luna and from Titan, the Titan falls the longest in the system, throttled and slow",
+            "that a sailing plan is filed and amended until the burn, and that a docked hull with no plan is idle",
+            "the layout of the Roads Deck and the old ark moorings"
+          ],
+          "persona": "the roadsmaster, who keeps the cradles, the approach lanes and the hop the way a ferryman keeps a river. Dry, unhurried, fond of the old ark moorings and of nobody who files late. Watches the outer lane for the long throttled falls from Titan and is quietly pleased each time one settles.",
+          "speech_style": "laconic, nautical, a ferryman's vocabulary; \"settle\", \"tie down\", \"the hop\"; gives the hour in Coprates standard and leaves Freeport time to the clock."
+        },
+        "room": "room.d05_harbourmaster",
+        "room_pack": "neighborhood.voltaire_anchorage",
+        "tags": [
+          "corridor_trade",
+          "port_voltaire"
+        ],
+        "tier": "extra"
+      },
+      "kind": "npc"
+    },
+    "npc.tsai_barros": {
+      "def": {
+        "name": "Wilhelmina Tsai-Barros",
+        "profile": {
+          "background": "Agent of the Titan Concession Company at Voltaire Anchorage, for the Company's houses at Ligeia Terminal: its billet into the Reserve, its news into the Roads.",
+          "does_not_know": [
+            "the Company's books",
+            "what the Townships Board says in private",
+            "the Reserve's business beyond what it buys"
+          ],
+          "fallback": [
+            "Titan news, crew, first and fresh. The card in here is newer than anything Coprates has.",
+            "The lane to Titan runs from Luna, not from here. Come slow or don't come; that is the Company's own word.",
+            "Billet for the Reserve, ice for anyone, and the cheapest reaction mass in the system at Ligeia. The Company's price, of course."
+          ],
+          "interfaces": [
+            "help"
+          ],
+          "knows": [
+            "that Ligeia Terminal is the Company's unspun spar in low Titan orbit, named for the methane sea the lifters climb from",
+            "that the Company governs Titan as proprietor under the Concord's Saturn Charter of 2291, a ninety-nine-year grant recorded at the Registry, and clears through Luna",
+            "that the Selk Townships petition Shackleton for a charter of their own, and the petitions are lodged at the Registry",
+            "that Titan sells carbon billet, cheap ice and the cheapest reaction mass in the system, and provisions at the Company's price",
+            "that a Dray reaches Titan only throttled, on the longest leg it flies, mostly single-handed, and that the lane to Titan runs from Luna, not from the Roads",
+            "that the Reserve buys Titan's carbon billet for Mars's soil"
+          ],
+          "persona": "the Titan Concession Company's agent at the Roads: polished, cheerful, always the first in the room with Titan's news and never the last to know what it is worth. Speaks of the Company as a proprietor speaks of an estate, and of the Selk Townships with a courtesy that is not quite warmth. Keeps the Titan card in the Long Straw more current than the Company's own notices.",
+          "speech_style": "bright, brisk, a saleswoman's ease; \"the Company\" always capitalised in her voice; gives Titan's news first and its meaning second."
+        },
+        "room": "room.d10_long_straw",
+        "room_pack": "neighborhood.voltaire_anchorage",
+        "tags": [
+          "corridor_trade",
+          "port_voltaire"
+        ],
+        "tier": "extra"
+      },
+      "kind": "npc"
+    }
+  },
+  "manifest": {
+    "digest": "ec8e5696c59fb91c0c08d5c0d9d3892afc2b33ee2c58d1ffc49aedc17ab957da",
+    "id": "tacsim.cast.voltaire_anchorage",
+    "kind": "campaign_seed",
+    "requires": [
+      {
+        "id": "neighborhood.voltaire_anchorage",
+        "version": 1
+      }
+    ],
+    "version": 1
+  }
+}

@@ -308,6 +308,36 @@ pub const STATION_SOURCES: [(&str, &str); 10] = [
     (LIGEIA_REGION_PACK, LIGEIA_REGION_JSON),
     (LIGEIA_PACK, LIGEIA_JSON),
 ];
+/// Ceres Freeport's cast pack (`tacsim.cast.ceres_freeport`, doc 34 cut CS.0b, D-34-3).
+pub const CAST_CERES_PACK: &str = "tacsim.cast.ceres_freeport";
+/// Stickney Yards' cast pack (`tacsim.cast.stickney_yards`, doc 34 cut CS.0b, D-34-3).
+pub const CAST_STICKNEY_PACK: &str = "tacsim.cast.stickney_yards";
+/// Aitken Highport's cast pack (`tacsim.cast.aitken_highport`, doc 34 cut CS.0b, D-34-3).
+pub const CAST_AITKEN_PACK: &str = "tacsim.cast.aitken_highport";
+/// Voltaire Anchorage's cast pack (`tacsim.cast.voltaire_anchorage`, doc 34 cut CS.0b, D-34-3).
+pub const CAST_VOLTAIRE_PACK: &str = "tacsim.cast.voltaire_anchorage";
+/// Ligeia Terminal's cast pack (`tacsim.cast.ligeia_terminal`, doc 34 cut CS.0b, D-34-3).
+pub const CAST_LIGEIA_PACK: &str = "tacsim.cast.ligeia_terminal";
+/// `crates/tacsim/content/cast/ceres_freeport.json`.
+pub const CAST_CERES_JSON: &str = include_str!("../../content/cast/ceres_freeport.json");
+/// `crates/tacsim/content/cast/stickney_yards.json`.
+pub const CAST_STICKNEY_JSON: &str = include_str!("../../content/cast/stickney_yards.json");
+/// `crates/tacsim/content/cast/aitken_highport.json`.
+pub const CAST_AITKEN_JSON: &str = include_str!("../../content/cast/aitken_highport.json");
+/// `crates/tacsim/content/cast/voltaire_anchorage.json`.
+pub const CAST_VOLTAIRE_JSON: &str = include_str!("../../content/cast/voltaire_anchorage.json");
+/// `crates/tacsim/content/cast/ligeia_terminal.json`.
+pub const CAST_LIGEIA_JSON: &str = include_str!("../../content/cast/ligeia_terminal.json");
+/// The five station cast packs in `requires` order (doc 34 cut CS.0b, D-34-3):
+/// Ceres first because Stickney and the moon stations draw `corridor_trade` and `tycho`
+/// lore pools authored in `tacsim.cast.ceres_freeport`.
+pub const CAST_SOURCES: [(&str, &str); 5] = [
+    (CAST_CERES_PACK, CAST_CERES_JSON),
+    (CAST_STICKNEY_PACK, CAST_STICKNEY_JSON),
+    (CAST_AITKEN_PACK, CAST_AITKEN_JSON),
+    (CAST_VOLTAIRE_PACK, CAST_VOLTAIRE_JSON),
+    (CAST_LIGEIA_PACK, CAST_LIGEIA_JSON),
+];
 /// Freeport Commons's region pack (Ceres; doc 20 cut SM.2).
 pub const COMMONS_REGION_PACK: &str = "region.freeport_commons";
 /// Freeport Commons: a mining site's pad (doc 20 cut SM.2, §3.1).
@@ -1118,13 +1148,65 @@ pub fn mars_canyon_packs() -> Result<Vec<mush_content::Pack>, String> {
     .collect()
 }
 
+/// The five station cast packs, loaded and digest-verified (doc 34 cut CS.0b, D-34-3).
+///
+/// # Errors
+///
+/// A message naming the pack when a shipped pack does not verify.
+pub fn cast_packs() -> Result<Vec<mush_content::Pack>, String> {
+    CAST_SOURCES
+        .iter()
+        .map(|(name, json)| {
+            mush_content::load_pack(json).map_err(|error| format!("{name}: {error}"))
+        })
+        .collect()
+}
+
+/// Recombine a split station neighborhood JSON document with its companion cast pack
+/// JSON (inserting `npc` and `lore` entries before the trailing `secret` entries, with
+/// `"room_pack"` stripped from each `npc` def) so tests that reconstruct historical
+/// pre-split v1/v2/v3 neighborhood packs reproduce the exact historical SHA-256 digests.
+///
+/// # Errors
+///
+/// Returns an error if either JSON document does not parse or lacks an `entries` array.
+pub fn station_with_cast_value(
+    station_json: &str,
+    cast_json: &str,
+) -> Result<serde_json::Value, String> {
+    let mut doc: serde_json::Value =
+        serde_json::from_str(station_json).map_err(|e| format!("station json: {e}"))?;
+    let cast_doc: serde_json::Value =
+        serde_json::from_str(cast_json).map_err(|e| format!("cast json: {e}"))?;
+    let cast_entries = cast_doc
+        .get("entries")
+        .and_then(serde_json::Value::as_object)
+        .ok_or_else(|| "cast json missing entries".to_owned())?;
+    let entries = doc
+        .get_mut("entries")
+        .and_then(serde_json::Value::as_object_mut)
+        .ok_or_else(|| "station json missing entries".to_owned())?;
+    for (id, entry) in cast_entries {
+        let mut entry = entry.clone();
+        if entry.get("kind").and_then(serde_json::Value::as_str) == Some("npc")
+            && let Some(def) = entry
+                .get_mut("def")
+                .and_then(serde_json::Value::as_object_mut)
+        {
+            def.remove("room_pack");
+        }
+        entries.insert(id.clone(), entry);
+    }
+    Ok(doc)
+}
+
 /// The station packs, loaded and digest-verified, in apply order
-/// ([`STATION_SOURCES`], then since doc 20 cut SM.2 the twelve [`SITE_SOURCES`]: a
-/// site port's apply needs its pad room, so the site packs ride wherever the lane is
-/// applied). They are the 2350 game's content: the production boot list appends them
-/// after [`boot_packs`] when `[tacsim].enabled` (doc 18 §4.7), and the atlas shelves
-/// them always. [`boot_packs`] itself stays the proving ground's two, because the
-/// arena fixtures `pop()` the arena off its end.
+/// ([`STATION_SOURCES`], the five [`CAST_SOURCES`] of doc 34 cut CS.0b, then since doc 20
+/// cut SM.2 the twelve [`SITE_SOURCES`]: a site port's apply needs its pad room, so the
+/// site packs ride wherever the lane is applied). They are the 2350 game's content: the
+/// production boot list appends them after [`boot_packs`] when `[tacsim].enabled`
+/// (doc 18 §4.7), and the atlas shelves them always. [`boot_packs`] itself stays the
+/// proving ground's two, because the arena fixtures `pop()` the arena off its end.
 ///
 /// # Errors
 ///
@@ -1134,6 +1216,7 @@ pub fn mars_canyon_packs() -> Result<Vec<mush_content::Pack>, String> {
 pub fn station_packs() -> Result<Vec<mush_content::Pack>, String> {
     STATION_SOURCES
         .iter()
+        .chain(CAST_SOURCES.iter())
         .chain(SITE_SOURCES.iter())
         .map(|(name, json)| {
             mush_content::load_pack(json).map_err(|error| format!("{name}: {error}"))

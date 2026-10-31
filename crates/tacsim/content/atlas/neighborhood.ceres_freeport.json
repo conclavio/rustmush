@@ -1,28 +1,657 @@
 {
-  "manifest": {
-    "id": "neighborhood.ceres_freeport",
-    "version": 4,
-    "kind": "neighborhood",
-    "digest": "1bc92740fc8fd745a0edaff3f90898a6d1bb408d11e59203909901cf6cdc6940",
-    "requires": [
-      {
-        "id": "region.ceres_freeport",
-        "version": 1
-      }
-    ]
-  },
   "brief": {
     "prose": "Physically the playable port is one structure, the Freeport Hub, on three decks. The Public Deck (floor 1, +6 m) is a grid of three rows: the Registry & Co-op Desk, the Ceres Clearing Office and the Tycho Mutual Agency across the top; Port Watch Arrivals, the Freeport Concourse and the Exchange Hall as the circulation spine through the middle; the Pressure Lobby, the Slack Line and the Co-op Chandlery along the bottom, with the Visiting Berth Gallery south of the Pressure Lobby as the only way to a hull. Adjacent rooms without a door are solid bulkhead, authored as wall features so the map agrees. The Freight Deck (floor 0) holds the Dockmaster's Office, reached by the public stair from Arrivals, and the staff-locked Maintenance Spine behind a hidden hatch, where the vendors' storefront manifolds physically sit; the bonded hall, the transfer junction and the tank gallery are visible background through windows and board lines until freight-deck cut P-F. The Office Deck (floor 2) is one restricted room, the Port Authority Gallery, reached by a hidden staff ladder from the Registry, where doc 11's principals (Wen, Varga, Ndiaye, Osei-Ferrante, Holm) are placed enabled:false so the faction cut binds existing objects. The Limbo door lands in Arrivals; the Berth Gallery carries marker port.dock and presents the Ceres domain; +ship/board is a placement verb typed there, and +ship/leave, typed in a docked hull's airlock, lands there — never a static exit to a hull."
   },
   "entries": {
-    "neighborhood": {
-      "kind": "neighborhood",
+    "exit.c01_c02": {
       "def": {
-        "region": "region.ceres_freeport",
-        "locality": "locality.ceres_freeport",
-        "name": "Ceres Freeport",
-        "setting": "station",
-        "representation": "authored",
+        "from": "room.c01_berth_gallery",
+        "names": [
+          "Pressure Lobby <N>;n;north;lobby;doors",
+          "Berth Gallery <S>;s;south;gallery;berths"
+        ],
+        "portal": {
+          "mode": "door"
+        },
+        "to": "room.c02_pressure"
+      },
+      "kind": "exit"
+    },
+    "exit.c02_c03": {
+      "def": {
+        "from": "room.c02_pressure",
+        "names": [
+          "Arrivals <N>;n;north;arrivals;port",
+          "Pressure Lobby <S>;s;south;lobby;berths"
+        ],
+        "portal": {
+          "mode": "door"
+        },
+        "to": "room.c03_arrivals"
+      },
+      "kind": "exit"
+    },
+    "exit.c03_c04": {
+      "def": {
+        "from": "room.c03_arrivals",
+        "names": [
+          "Concourse <E>;e;east;concourse",
+          "Arrivals <W>;w;west;arrivals"
+        ],
+        "portal": {
+          "mode": "open"
+        },
+        "to": "room.c04_concourse"
+      },
+      "kind": "exit"
+    },
+    "exit.c03_c05": {
+      "def": {
+        "from": "room.c03_arrivals",
+        "names": [
+          "Registry <N>;n;north;registry;desk",
+          "Arrivals <S>;s;south;arrivals;out"
+        ],
+        "portal": {
+          "mode": "door"
+        },
+        "to": "room.c05_registry"
+      },
+      "kind": "exit"
+    },
+    "exit.c03_c14": {
+      "def": {
+        "from": "room.c03_arrivals",
+        "names": [
+          "Down <D>;d;down;stair;dockmaster",
+          "Up <U>;u;up;stair;arrivals"
+        ],
+        "portal": {
+          "at": [
+            [
+              125,
+              150,
+              6
+            ],
+            [
+              125,
+              150,
+              0
+            ]
+          ],
+          "dz_m": -6,
+          "mode": "stair"
+        },
+        "to": "room.c14_dockmaster"
+      },
+      "kind": "exit"
+    },
+    "exit.c04_c06": {
+      "def": {
+        "from": "room.c04_concourse",
+        "names": [
+          "Clearing <N>;n;north;clearing;bank",
+          "Concourse <S>;s;south;concourse;out"
+        ],
+        "portal": {
+          "mode": "door"
+        },
+        "to": "room.c06_clearing"
+      },
+      "kind": "exit"
+    },
+    "exit.c04_c07": {
+      "def": {
+        "from": "room.c04_concourse",
+        "names": [
+          "Exchange <X>;x;exchange;east;e",
+          "Concourse <W>;w;west;concourse"
+        ],
+        "portal": {
+          "mode": "open"
+        },
+        "to": "room.c07_exchange"
+      },
+      "kind": "exit"
+    },
+    "exit.c04_c10": {
+      "def": {
+        "from": "room.c04_concourse",
+        "names": [
+          "Slack Line <S>;s;south;slack;bar;commons",
+          "Concourse <N>;n;north;concourse;out"
+        ],
+        "portal": {
+          "mode": "door"
+        },
+        "to": "room.c10_slack_line"
+      },
+      "kind": "exit"
+    },
+    "exit.c05_c16": {
+      "def": {
+        "from": "room.c05_registry",
+        "lock": "staff",
+        "names": [
+          "Up <U>;u;up;ladder;authority",
+          "Down <D>;d;down;ladder;registry"
+        ],
+        "portal": {
+          "at": [
+            [
+              125,
+              180,
+              6
+            ],
+            [
+              125,
+              180,
+              10.5
+            ]
+          ],
+          "dz_m": 4.5,
+          "mode": "ladder",
+          "visibility": "hidden"
+        },
+        "to": "room.c16_authority"
+      },
+      "kind": "exit"
+    },
+    "exit.c07_c08": {
+      "def": {
+        "from": "room.c07_exchange",
+        "names": [
+          "Chandlery <S>;s;south;chandlery;stores",
+          "Exchange <N>;n;north;exchange;out"
+        ],
+        "portal": {
+          "mode": "door"
+        },
+        "to": "room.c08_chandlery"
+      },
+      "kind": "exit"
+    },
+    "exit.c07_c09": {
+      "def": {
+        "from": "room.c07_exchange",
+        "names": [
+          "Tycho <N>;n;north;tycho;agency",
+          "Exchange <S>;s;south;exchange;out"
+        ],
+        "portal": {
+          "mode": "door"
+        },
+        "to": "room.c09_tycho"
+      },
+      "kind": "exit"
+    },
+    "exit.c14_c15": {
+      "def": {
+        "from": "room.c14_dockmaster",
+        "lock": "staff",
+        "names": [
+          "Hatch <H>;h;hatch;maintenance",
+          "Hatch <H>;h;hatch;dockmaster;out"
+        ],
+        "portal": {
+          "mode": "hatch",
+          "visibility": "hidden"
+        },
+        "to": "room.c15_maintenance"
+      },
+      "kind": "exit"
+    },
+    "exit.limbo_arrivals": {
+      "def": {
+        "from": "limbo",
+        "names": [
+          "Ceres Freeport <C>;c;ceres",
+          "Limbo <X>;x;limbo;ooc"
+        ],
+        "portal": {
+          "mode": "open"
+        },
+        "to": "room.c03_arrivals"
+      },
+      "kind": "exit"
+    },
+    "feature.counter_c03": {
+      "def": {
+        "blocks": {
+          "movement": false,
+          "sight": false
+        },
+        "feature_kind": "counter",
+        "polyline": [
+          [
+            112,
+            163
+          ],
+          [
+            138,
+            163
+          ]
+        ],
+        "room": "room.c03_arrivals",
+        "surface": {
+          "floor": [
+            "structure.freeport_hub",
+            1
+          ]
+        },
+        "z_range": [
+          0,
+          1.1
+        ]
+      },
+      "kind": "feature"
+    },
+    "feature.counter_c05": {
+      "def": {
+        "blocks": {
+          "movement": false,
+          "sight": false
+        },
+        "feature_kind": "counter",
+        "polyline": [
+          [
+            112,
+            188
+          ],
+          [
+            138,
+            188
+          ]
+        ],
+        "room": "room.c05_registry",
+        "surface": {
+          "floor": [
+            "structure.freeport_hub",
+            1
+          ]
+        },
+        "z_range": [
+          0,
+          1.1
+        ]
+      },
+      "kind": "feature"
+    },
+    "feature.counter_c06": {
+      "def": {
+        "blocks": {
+          "movement": false,
+          "sight": false
+        },
+        "feature_kind": "counter",
+        "polyline": [
+          [
+            142,
+            188
+          ],
+          [
+            173,
+            188
+          ]
+        ],
+        "room": "room.c06_clearing",
+        "surface": {
+          "floor": [
+            "structure.freeport_hub",
+            1
+          ]
+        },
+        "z_range": [
+          0,
+          1.1
+        ]
+      },
+      "kind": "feature"
+    },
+    "feature.counter_c07": {
+      "def": {
+        "blocks": {
+          "movement": false,
+          "sight": false
+        },
+        "feature_kind": "counter",
+        "polyline": [
+          [
+            177,
+            163
+          ],
+          [
+            208,
+            163
+          ]
+        ],
+        "room": "room.c07_exchange",
+        "surface": {
+          "floor": [
+            "structure.freeport_hub",
+            1
+          ]
+        },
+        "z_range": [
+          0,
+          1.1
+        ]
+      },
+      "kind": "feature"
+    },
+    "feature.counter_c08": {
+      "def": {
+        "blocks": {
+          "movement": false,
+          "sight": false
+        },
+        "feature_kind": "counter",
+        "polyline": [
+          [
+            177,
+            138
+          ],
+          [
+            208,
+            138
+          ]
+        ],
+        "room": "room.c08_chandlery",
+        "surface": {
+          "floor": [
+            "structure.freeport_hub",
+            1
+          ]
+        },
+        "z_range": [
+          0,
+          1.1
+        ]
+      },
+      "kind": "feature"
+    },
+    "feature.counter_c10": {
+      "def": {
+        "blocks": {
+          "movement": false,
+          "sight": false
+        },
+        "feature_kind": "counter",
+        "polyline": [
+          [
+            142,
+            127
+          ],
+          [
+            173,
+            127
+          ]
+        ],
+        "room": "room.c10_slack_line",
+        "surface": {
+          "floor": [
+            "structure.freeport_hub",
+            1
+          ]
+        },
+        "z_range": [
+          0,
+          1.1
+        ]
+      },
+      "kind": "feature"
+    },
+    "feature.counter_c14": {
+      "def": {
+        "blocks": {
+          "movement": false,
+          "sight": false
+        },
+        "feature_kind": "counter",
+        "polyline": [
+          [
+            112,
+            163
+          ],
+          [
+            138,
+            163
+          ]
+        ],
+        "room": "room.c14_dockmaster",
+        "surface": {
+          "floor": [
+            "structure.freeport_hub",
+            0
+          ]
+        },
+        "z_range": [
+          0,
+          1.1
+        ]
+      },
+      "kind": "feature"
+    },
+    "feature.wall_c01_c08": {
+      "def": {
+        "blocks": {
+          "movement": true,
+          "sight": true
+        },
+        "feature_kind": "wall",
+        "polyline": [
+          [
+            175,
+            125
+          ],
+          [
+            210,
+            125
+          ]
+        ],
+        "surface": {
+          "floor": [
+            "structure.freeport_hub",
+            1
+          ]
+        },
+        "z_range": [
+          0,
+          4.5
+        ]
+      },
+      "kind": "feature"
+    },
+    "feature.wall_c01_c10": {
+      "def": {
+        "blocks": {
+          "movement": true,
+          "sight": true
+        },
+        "feature_kind": "wall",
+        "polyline": [
+          [
+            140,
+            125
+          ],
+          [
+            175,
+            125
+          ]
+        ],
+        "surface": {
+          "floor": [
+            "structure.freeport_hub",
+            1
+          ]
+        },
+        "z_range": [
+          0,
+          4.5
+        ]
+      },
+      "kind": "feature"
+    },
+    "feature.wall_c02_c10": {
+      "def": {
+        "blocks": {
+          "movement": true,
+          "sight": true
+        },
+        "feature_kind": "wall",
+        "polyline": [
+          [
+            140,
+            125
+          ],
+          [
+            140,
+            140
+          ]
+        ],
+        "surface": {
+          "floor": [
+            "structure.freeport_hub",
+            1
+          ]
+        },
+        "z_range": [
+          0,
+          4.5
+        ]
+      },
+      "kind": "feature"
+    },
+    "feature.wall_c05_c06": {
+      "def": {
+        "blocks": {
+          "movement": true,
+          "sight": true
+        },
+        "feature_kind": "wall",
+        "polyline": [
+          [
+            140,
+            165
+          ],
+          [
+            140,
+            190
+          ]
+        ],
+        "surface": {
+          "floor": [
+            "structure.freeport_hub",
+            1
+          ]
+        },
+        "z_range": [
+          0,
+          4.5
+        ]
+      },
+      "kind": "feature"
+    },
+    "feature.wall_c06_c09": {
+      "def": {
+        "blocks": {
+          "movement": true,
+          "sight": true
+        },
+        "feature_kind": "wall",
+        "polyline": [
+          [
+            175,
+            165
+          ],
+          [
+            175,
+            190
+          ]
+        ],
+        "surface": {
+          "floor": [
+            "structure.freeport_hub",
+            1
+          ]
+        },
+        "z_range": [
+          0,
+          4.5
+        ]
+      },
+      "kind": "feature"
+    },
+    "feature.wall_c08_c10": {
+      "def": {
+        "blocks": {
+          "movement": true,
+          "sight": true
+        },
+        "feature_kind": "wall",
+        "polyline": [
+          [
+            175,
+            125
+          ],
+          [
+            175,
+            140
+          ]
+        ],
+        "surface": {
+          "floor": [
+            "structure.freeport_hub",
+            1
+          ]
+        },
+        "z_range": [
+          0,
+          4.5
+        ]
+      },
+      "kind": "feature"
+    },
+    "item.chandlery_cage": {
+      "def": {
+        "desc": "The Co-op chandlery's reserve: provisions cases on pallets, counted and sealed. The storefront upstairs is the shop window; this is the shelf.",
+        "name": "Chandlery cage",
+        "room": "room.c15_maintenance"
+      },
+      "kind": "item"
+    },
+    "item.exchange_manifold": {
+      "def": {
+        "desc": "FREEPORT EXCHANGE: CONCENTRATE, and the alloy intake behind a second valve.",
+        "name": "Exchange manifold",
+        "room": "room.c15_maintenance"
+      },
+      "kind": "item"
+    },
+    "item.occator_manifold": {
+      "def": {
+        "desc": "OCCATOR W&P: VOLATILES / REACTION MASS. The tags give lot numbers and tonnes remaining; this is the stock the Exchange board counts down.",
+        "name": "Occator manifold",
+        "room": "room.c15_maintenance"
+      },
+      "kind": "item"
+    },
+    "neighborhood": {
+      "def": {
+        "ambience": [
+          "The pumps change pitch somewhere below, and every cup on every counter rings for a second.",
+          "A tannoy clears its throat: \"Port Watch to the berth gallery. Port Watch to the berth gallery.\" Nobody moves.",
+          "A pressure door cycles in the distance, a long sigh and a clank.",
+          "Somebody on the concourse is reading the departures line out loud to somebody who cannot see it.",
+          "A cooperative notice peels off the wall and is stuck back with a different piece of tape.",
+          "The Exchange ticker counts a line down by two hundred tonnes and keeps crawling.",
+          "The air handling kicks up a notch and the deck smells, briefly, of wet steel.",
+          "Two crews pass each other on the concourse and compare registry marks without stopping.",
+          "An inspection sticker on the nearest bulkhead is dated this quarter and signed with a flourish.",
+          "From the freight deck, under everything, the clank of a transfer crane finding its lane.",
+          "A chit printer somewhere spits out a receipt that nobody comes to collect.",
+          "The lights flicker once, the way they do when a hull takes power from the cradle, and steady."
+        ],
         "footprint": [
           [
             100,
@@ -41,16 +670,34 @@
             200
           ]
         ],
-        "room_budget": {
-          "target": 13,
-          "maximum": 16
-        },
         "hydration": {
           "enabled": false,
           "max_player_sites": 0
         },
+        "locality": "locality.ceres_freeport",
+        "name": "Ceres Freeport",
+        "region": "region.ceres_freeport",
+        "representation": "authored",
         "resolution_cm": 100,
+        "room_budget": {
+          "maximum": 16,
+          "target": 13
+        },
+        "setting": "station",
         "theme": {
+          "banned": [
+            "warp",
+            "hyperspace",
+            "FTL",
+            "teleport",
+            "alien",
+            "android",
+            "gravity plating",
+            "shield",
+            "stardate",
+            "you see",
+            "hangar bay"
+          ],
           "name": "TacSim 2350: the Freeport",
           "style_guide": "Ceres Freeport, 2350: a commercial port built around freight. Bright wayfinding is bolted onto worn pressure bulkheads; pump vibration comes up through the deck plates on the freight side and is felt, faintly, everywhere; water handling dominates the working half of the port and the Freeport's power shows as paperwork and access. Hard-ish SF (doc 10 §3): fusion power and propulsion, thrust and spin for weight, no energy shields, no reactionless drives; compute scarce, automation excellent and never in authority. Governments sound institutional, corporations sound like brands (doc 11 framing). Rooms are written present tense, second person absent (no \"you see\"), 60–120 words, no named NPCs in a room desc; each room distinct in sound, light and smell. Weight: Ceres pulls three hundredths of a g, so the Freeport Hub is a spun ring moored to the Occator terminal and the playable decks ride its rim at about a third of a g — enough that taps drip, loose chairs stay put, people lean on rails and nobody clips on; the cradles beyond the gallery glass and the freight tunnels are at Ceres' own pull, where everything is clamped (doc 10 §3: no artificial gravity beyond thrust and rotation; Stickney, by contrast, is written for Phobos's nothing, §2.1). Texture: pressure doors with inspection stickers, cooperative notices three deep, patchwork cargo stencils, Registry forms, chits, cr in major units (7.00cr, never 700). Time is IC in every desc, detail and NPC line: the campaign's compression (doc 10 1A) is an OOC knob that only the +ship renders and the look status line speak.",
           "vocabulary": [
@@ -82,118 +729,19 @@
             "Kirkwood",
             "Stickney",
             "cr"
-          ],
-          "banned": [
-            "warp",
-            "hyperspace",
-            "FTL",
-            "teleport",
-            "alien",
-            "android",
-            "gravity plating",
-            "shield",
-            "stardate",
-            "you see",
-            "hangar bay"
           ]
-        },
-        "ambience": [
-          "The pumps change pitch somewhere below, and every cup on every counter rings for a second.",
-          "A tannoy clears its throat: \"Port Watch to the berth gallery. Port Watch to the berth gallery.\" Nobody moves.",
-          "A pressure door cycles in the distance, a long sigh and a clank.",
-          "Somebody on the concourse is reading the departures line out loud to somebody who cannot see it.",
-          "A cooperative notice peels off the wall and is stuck back with a different piece of tape.",
-          "The Exchange ticker counts a line down by two hundred tonnes and keeps crawling.",
-          "The air handling kicks up a notch and the deck smells, briefly, of wet steel.",
-          "Two crews pass each other on the concourse and compare registry marks without stopping.",
-          "An inspection sticker on the nearest bulkhead is dated this quarter and signed with a flourish.",
-          "From the freight deck, under everything, the clank of a transfer crane finding its lane.",
-          "A chit printer somewhere spits out a receipt that nobody comes to collect.",
-          "The lights flicker once, the way they do when a hull takes power from the cradle, and steady."
-        ]
-      }
-    },
-    "site.freeport_hub": {
-      "kind": "site",
-      "def": {
-        "name": "Freeport Hub",
-        "site_kind": "site.transit",
-        "footprint": [
-          [
-            110,
-            100
-          ],
-          [
-            210,
-            100
-          ],
-          [
-            210,
-            190
-          ],
-          [
-            110,
-            190
-          ]
-        ]
-      }
-    },
-    "structure.freeport_hub": {
-      "kind": "structure",
-      "def": {
-        "site": "site.freeport_hub",
-        "footprint": [
-          [
-            110,
-            100
-          ],
-          [
-            210,
-            100
-          ],
-          [
-            210,
-            190
-          ],
-          [
-            110,
-            190
-          ]
-        ],
-        "floors": [
-          {
-            "index": 0,
-            "z_offset_m": 0,
-            "height_m": 6,
-            "name": "Freight Deck"
-          },
-          {
-            "index": 1,
-            "z_offset_m": 6,
-            "height_m": 4.5,
-            "name": "Public Deck"
-          },
-          {
-            "index": 2,
-            "z_offset_m": 10.5,
-            "height_m": 3.5,
-            "name": "Office Deck"
-          }
-        ]
-      }
+        }
+      },
+      "kind": "neighborhood"
     },
     "room.c01_berth_gallery": {
-      "kind": "room",
       "def": {
-        "name": "Visiting Berth Gallery",
-        "short_desc": "A long armourglass gallery over the visiting berths, pressure doors to the lobby at its back.",
         "desc": "The gallery runs the length of the visiting berths: a strip of armourglass on one side, a rail of chipped yellow paint on the other that marks the public viewing line, and a deck plate that hums with the pumps two floors down. Beyond the glass the cradles sit in hard floodlight, a Dray's blunt hull webbed with reaction-mass hoses, umbilicals slack on the deck, and past the last cradle the dark where the working berths go on out of sight. The air is cold and carries the ozone of cycled locks. A berth board stands by the pressure doors, and the doors themselves, stickered and scarred, lead north into the Pressure Lobby.",
-        "site": "site.freeport_hub",
-        "surface": {
-          "floor": [
-            "structure.freeport_hub",
-            1
-          ]
+        "details": {
+          "berth board": "Cradle numbers down one side, hull names and whose paper they fly down the other: Co-op, Tycho Mutual, a Lantern Haulage tender, two rows marked LAID UP. The bottom line reads BOARDING: CREW OF RECORD ONLY.",
+          "cradles": "Umbilicals for power, water, reaction mass and air, colour-banded; the hoses are the thick ones. Every cradle carries an Occator inspection sticker and a Port Watch seal.",
+          "the dark": "Past the floodlit cradles the berths continue without lights. The Squadron's berth is out there somewhere; nothing on the board says which.",
+          "viewing line": "Yellow paint, worn to the primer where ten years of visitors have leaned on the rail. A stencil every few metres: PAST THIS LINE, CREW."
         },
         "footprint": {
           "rect": [
@@ -211,26 +759,25 @@
         "markers": [
           "port.dock"
         ],
-        "details": {
-          "berth board": "Cradle numbers down one side, hull names and whose paper they fly down the other: Co-op, Tycho Mutual, a Lantern Haulage tender, two rows marked LAID UP. The bottom line reads BOARDING: CREW OF RECORD ONLY.",
-          "viewing line": "Yellow paint, worn to the primer where ten years of visitors have leaned on the rail. A stencil every few metres: PAST THIS LINE, CREW.",
-          "cradles": "Umbilicals for power, water, reaction mass and air, colour-banded; the hoses are the thick ones. Every cradle carries an Occator inspection sticker and a Port Watch seal.",
-          "the dark": "Past the floodlit cradles the berths continue without lights. The Squadron's berth is out there somewhere; nothing on the board says which."
-        }
-      }
-    },
-    "room.c02_pressure": {
-      "kind": "room",
-      "def": {
-        "name": "Pressure Lobby",
-        "short_desc": "A short, bare lock lobby between two sets of pressure doors.",
-        "desc": "A square of scuffed deck between two sets of pressure doors, lit flat and white, with nothing in it that would matter if the doors had to close. The south doors carry the stencil VISITING BERTHS and a ladder of inspection stickers going back years; the north doors say PORT and have the newer ones. Between them the air smells of nothing, which is the scrubbers working, and the only sound is the tick of the door interlocks and, under it, the pumps. A line painted across the deck marks where the station's pressure ends and the berths' begins. There are no side doors. There is nowhere to sit.",
+        "name": "Visiting Berth Gallery",
+        "short_desc": "A long armourglass gallery over the visiting berths, pressure doors to the lobby at its back.",
         "site": "site.freeport_hub",
         "surface": {
           "floor": [
             "structure.freeport_hub",
             1
           ]
+        }
+      },
+      "kind": "room"
+    },
+    "room.c02_pressure": {
+      "def": {
+        "desc": "A square of scuffed deck between two sets of pressure doors, lit flat and white, with nothing in it that would matter if the doors had to close. The south doors carry the stencil VISITING BERTHS and a ladder of inspection stickers going back years; the north doors say PORT and have the newer ones. Between them the air smells of nothing, which is the scrubbers working, and the only sound is the tick of the door interlocks and, under it, the pumps. A line painted across the deck marks where the station's pressure ends and the berths' begins. There are no side doors. There is nowhere to sit.",
+        "details": {
+          "interlocks": "Both pairs of doors cannot stand open at once. The panel says so in four languages and a pictogram.",
+          "painted line": "STATION / BERTHS, in yellow, with an arrow each way. Someone has added, in marker, \"mind the gap\".",
+          "stickers": "Port Watch pressure inspections, one per quarter, each signed. The oldest legible one is from 2338."
         },
         "footprint": {
           "rect": [
@@ -245,25 +792,26 @@
           ]
         },
         "kind": "indoor",
-        "details": {
-          "stickers": "Port Watch pressure inspections, one per quarter, each signed. The oldest legible one is from 2338.",
-          "painted line": "STATION / BERTHS, in yellow, with an arrow each way. Someone has added, in marker, \"mind the gap\".",
-          "interlocks": "Both pairs of doors cannot stand open at once. The panel says so in four languages and a pictogram."
-        }
-      }
-    },
-    "room.c03_arrivals": {
-      "kind": "room",
-      "def": {
-        "name": "Port Watch Arrivals",
-        "short_desc": "The Port Watch's arrivals hall: a customs counter, a wall of notices, and the way in.",
-        "desc": "A hall built to process people and not quite wide enough to do it. A customs counter runs along the north wall under the Port Watch's crest, a rayed circle over a wave, with a brass rail polished by elbows. Across from it a notice wall carries the port's rules in Freeport Council type and, around and over them, cooperative notices three layers deep. The light is warm and a little yellow, the only warm light on the deck. The air smells of printer heat and the coffee on the counter's far end. Voices carry; a stair behind a glass door goes down to the freight deck, and the concourse opens east.",
+        "name": "Pressure Lobby",
+        "short_desc": "A short, bare lock lobby between two sets of pressure doors.",
         "site": "site.freeport_hub",
         "surface": {
           "floor": [
             "structure.freeport_hub",
             1
           ]
+        }
+      },
+      "kind": "room"
+    },
+    "room.c03_arrivals": {
+      "def": {
+        "desc": "A hall built to process people and not quite wide enough to do it. A customs counter runs along the north wall under the Port Watch's crest, a rayed circle over a wave, with a brass rail polished by elbows. Across from it a notice wall carries the port's rules in Freeport Council type and, around and over them, cooperative notices three layers deep. The light is warm and a little yellow, the only warm light on the deck. The air smells of printer heat and the coffee on the counter's far end. Voices carry; a stair behind a glass door goes down to the freight deck, and the concourse opens east.",
+        "details": {
+          "crest": "A rayed circle over a wave: the Port Watch. Under it, small, the Freeport Council's motto, LICENSED, NOT GOVERNED.",
+          "customs counter": "A declaration slot, a chit printer, a Port Watch seal on a chain. The sign over it reads ARRIVALS: DECLARE WHAT YOU CARRY. VISITING CREW: NOTHING, USUALLY.",
+          "notice wall": "The Freeport's rules of the port, the Registry's hours, a Co-op notice headed FIRST CAPTAINS: ENROL AT THE DESK, and a Port Watch bulletin about Republic pickets at Kirkwood asking for manifests.",
+          "stair door": "Glass, with DOCKMASTER / FREIGHT DECK on it and a public-access green stripe. The stair beyond is steel and loud."
         },
         "footprint": {
           "rect": [
@@ -278,26 +826,26 @@
           ]
         },
         "kind": "indoor",
-        "details": {
-          "customs counter": "A declaration slot, a chit printer, a Port Watch seal on a chain. The sign over it reads ARRIVALS: DECLARE WHAT YOU CARRY. VISITING CREW: NOTHING, USUALLY.",
-          "notice wall": "The Freeport's rules of the port, the Registry's hours, a Co-op notice headed FIRST CAPTAINS: ENROL AT THE DESK, and a Port Watch bulletin about Republic pickets at Kirkwood asking for manifests.",
-          "crest": "A rayed circle over a wave: the Port Watch. Under it, small, the Freeport Council's motto, LICENSED, NOT GOVERNED.",
-          "stair door": "Glass, with DOCKMASTER / FREIGHT DECK on it and a public-access green stripe. The stair beyond is steel and loud."
-        }
-      }
-    },
-    "room.c04_concourse": {
-      "kind": "room",
-      "def": {
-        "name": "Freeport Concourse",
-        "short_desc": "The port's main concourse: a public map, a directory, benches, and traffic.",
-        "desc": "The widest space on the deck and the loudest: boots on plate, a tannoy that clears its throat every few minutes, the Exchange ticker crawling along the east arch. Overhead the lighting is bright, bluish and new, bolted to a ceiling that is neither. A backlit map of the port stands in the middle on a pedestal with a directory under it, and benches around it hold crews waiting for clearances, for pay, for each other. The air smells of too many people and the sweet-metal tang of recycled water. Doors lead north to the Clearing and south to the Slack Line; Arrivals is west, the Exchange east.",
+        "name": "Port Watch Arrivals",
+        "short_desc": "The Port Watch's arrivals hall: a customs counter, a wall of notices, and the way in.",
         "site": "site.freeport_hub",
         "surface": {
           "floor": [
             "structure.freeport_hub",
             1
           ]
+        }
+      },
+      "kind": "room"
+    },
+    "room.c04_concourse": {
+      "def": {
+        "desc": "The widest space on the deck and the loudest: boots on plate, a tannoy that clears its throat every few minutes, the Exchange ticker crawling along the east arch. Overhead the lighting is bright, bluish and new, bolted to a ceiling that is neither. A backlit map of the port stands in the middle on a pedestal with a directory under it, and benches around it hold crews waiting for clearances, for pay, for each other. The air smells of too many people and the sweet-metal tang of recycled water. Doors lead north to the Clearing and south to the Slack Line; Arrivals is west, the Exchange east.",
+        "details": {
+          "benches": "Bolted down, scratched with hull names and registry marks. One reads FPC-D-0388, HALF MEASURE, GOT HOME: a Co-op hull from before the programme pool, long since bought out.",
+          "directory": "REGISTRY & CO-OP DESK, north of Arrivals. CERES CLEARING, north of here. EXCHANGE HALL, east. TYCHO MUTUAL, north of the Exchange. CHANDLERY, south of the Exchange. THE SLACK LINE, south. DOCKMASTER, down the Arrivals stair.",
+          "map": "The Public Deck and the Freight Deck in cutaway, with a pulsing dot at the pedestal, and in small letters along the bottom: ATLAS SERVICE AVAILABLE.",
+          "ticker": "Occator volatiles and reaction mass by the tonne, the Exchange's concentrate, the alloy bid, and a departures line: hull, destination, clearance time. It updates when the board does."
         },
         "footprint": {
           "rect": [
@@ -312,93 +860,93 @@
           ]
         },
         "kind": "circulation",
-        "details": {
-          "map": "The Public Deck and the Freight Deck in cutaway, with a pulsing dot at the pedestal, and in small letters along the bottom: ATLAS SERVICE AVAILABLE.",
-          "directory": "REGISTRY & CO-OP DESK, north of Arrivals. CERES CLEARING, north of here. EXCHANGE HALL, east. TYCHO MUTUAL, north of the Exchange. CHANDLERY, south of the Exchange. THE SLACK LINE, south. DOCKMASTER, down the Arrivals stair.",
-          "ticker": "Occator volatiles and reaction mass by the tonne, the Exchange's concentrate, the alloy bid, and a departures line: hull, destination, clearance time. It updates when the board does.",
-          "benches": "Bolted down, scratched with hull names and registry marks. One reads FPC-D-0388, HALF MEASURE, GOT HOME: a Co-op hull from before the programme pool, long since bought out."
+        "name": "Freeport Concourse",
+        "short_desc": "The port's main concourse: a public map, a directory, benches, and traffic.",
+        "site": "site.freeport_hub",
+        "surface": {
+          "floor": [
+            "structure.freeport_hub",
+            1
+          ]
         }
-      }
+      },
+      "kind": "room"
     },
     "room.c05_registry": {
-      "kind": "room",
       "def": {
+        "desc": "Two counters share one room and do not share a style. The Registry's half is dark wood over steel, a brass plate reading REGISTRY OF CLAIMS, BELT MIRROR, and a glass case of forms in numbered pigeonholes; a ledger screen glows green behind it. The Co-op's half is a folding table that became permanent, under a banner of the cooperative's linked-hands mark and a board headed FIRST CAPTAINS' LAY. The room is quiet enough to hear the ledger screen's fan and smells of paper, toner and the wood polish somebody applies to the Registry side only. A frosted door in the back wall is marked AUTHORITY. Arrivals is south.",
+        "details": {
+          "authority door": "Frosted glass, PORT AUTHORITY, STAFF, and a ladder behind it going up. The lock is a Council lock, not a Port Watch one.",
+          "lay board": "THE CO-OP STAKES THE HULL AND THE FIRST HOLD. THE CO-OP TAKES ITS LAY FROM EVERY SETTLED RUN UNTIL YOU BUY THE HULL OUT AT THE REGISTRY'S FIGURE. ONE ENROLMENT PER PILOT. The figure for a new Dray from the Yard, 120,000cr, is chalked underneath as a comparison.",
+          "ledger screen": "Registry marks scrolling: FPC-D- and a four-digit number for each Dray on the Co-op's Freeport paper. Buyouts are entered here, in a different colour. There are three.",
+          "pigeonholes": "Title transfer. Charter party. Lay agreement. Lien. Export permit. Claim. Each form has a Registry number and a smaller Luna number beside it; the Luna number is the one that counts, the clerk will tell anyone who asks."
+        },
+        "footprint": {
+          "rect": [
+            [
+              110,
+              165
+            ],
+            [
+              140,
+              190
+            ]
+          ]
+        },
+        "kind": "indoor",
         "name": "Registry & Co-op Desk",
         "short_desc": "A joint counter: the Registry's Belt mirror on one side, the Co-op's first-captain desk on the other.",
-        "desc": "Two counters share one room and do not share a style. The Registry's half is dark wood over steel, a brass plate reading REGISTRY OF CLAIMS, BELT MIRROR, and a glass case of forms in numbered pigeonholes; a ledger screen glows green behind it. The Co-op's half is a folding table that became permanent, under a banner of the cooperative's linked-hands mark and a board headed FIRST CAPTAINS' LAY. The room is quiet enough to hear the ledger screen's fan and smells of paper, toner and the wood polish somebody applies to the Registry side only. A frosted door in the back wall is marked AUTHORITY. Arrivals is south.",
         "site": "site.freeport_hub",
         "surface": {
           "floor": [
             "structure.freeport_hub",
             1
           ]
-        },
-        "footprint": {
-          "rect": [
-            [
-              110,
-              165
-            ],
-            [
-              140,
-              190
-            ]
-          ]
-        },
-        "kind": "indoor",
-        "details": {
-          "lay board": "THE CO-OP STAKES THE HULL AND THE FIRST HOLD. THE CO-OP TAKES ITS LAY FROM EVERY SETTLED RUN UNTIL YOU BUY THE HULL OUT AT THE REGISTRY'S FIGURE. ONE ENROLMENT PER PILOT. The figure for a new Dray from the Yard, 120,000cr, is chalked underneath as a comparison.",
-          "pigeonholes": "Title transfer. Charter party. Lay agreement. Lien. Export permit. Claim. Each form has a Registry number and a smaller Luna number beside it; the Luna number is the one that counts, the clerk will tell anyone who asks.",
-          "ledger screen": "Registry marks scrolling: FPC-D- and a four-digit number for each Dray on the Co-op's Freeport paper. Buyouts are entered here, in a different colour. There are three.",
-          "authority door": "Frosted glass, PORT AUTHORITY, STAFF, and a ladder behind it going up. The lock is a Council lock, not a Port Watch one."
         }
-      }
+      },
+      "kind": "room"
     },
     "room.c06_clearing": {
-      "kind": "room",
       "def": {
+        "desc": "A small hall that wants to be a large one. The floor is the only tiled floor on the deck, grey and polished to a dull shine, and footsteps ring on it; the lighting is low and even, from fittings older than the concourse. One teller window stands in a wall of brushed steel with a brass CERES CLEARING over it and a smaller plate under that: FISCAL AGENT TO THE FREEPORT. CLEARED THROUGH LUNA. A vault door the size of a hull hatch is set into the far wall and has not been opened in years. The air is cool and faintly dry, like a records room. The concourse is south.",
+        "details": {
+          "rate board": "The credit, cr, cleared at Luna; no second currency listed. A line in smaller type notes that the Republic \"has floated\" a mark for yard-time at Phobos. The line has been there a while.",
+          "teller window": "Armourglass, a slot, a chit reader. A card in the corner: STATEMENTS ON REQUEST. ADVANCES: NO. The NO is printed, not written.",
+          "vault door": "Decorative, mostly; the money is numbers in a ledger mirrored at Luna. A plaque records that the Clearing holds the Belt's accounts \"and such debts as are owed to it\", which is more than it says."
+        },
+        "footprint": {
+          "rect": [
+            [
+              140,
+              165
+            ],
+            [
+              175,
+              190
+            ]
+          ]
+        },
+        "kind": "indoor",
         "name": "Ceres Clearing Office",
         "short_desc": "A banking hall in miniature: one teller window, a vault door for show, and the quiet of money.",
-        "desc": "A small hall that wants to be a large one. The floor is the only tiled floor on the deck, grey and polished to a dull shine, and footsteps ring on it; the lighting is low and even, from fittings older than the concourse. One teller window stands in a wall of brushed steel with a brass CERES CLEARING over it and a smaller plate under that: FISCAL AGENT TO THE FREEPORT. CLEARED THROUGH LUNA. A vault door the size of a hull hatch is set into the far wall and has not been opened in years. The air is cool and faintly dry, like a records room. The concourse is south.",
         "site": "site.freeport_hub",
         "surface": {
           "floor": [
             "structure.freeport_hub",
             1
           ]
-        },
-        "footprint": {
-          "rect": [
-            [
-              140,
-              165
-            ],
-            [
-              175,
-              190
-            ]
-          ]
-        },
-        "kind": "indoor",
-        "details": {
-          "teller window": "Armourglass, a slot, a chit reader. A card in the corner: STATEMENTS ON REQUEST. ADVANCES: NO. The NO is printed, not written.",
-          "vault door": "Decorative, mostly; the money is numbers in a ledger mirrored at Luna. A plaque records that the Clearing holds the Belt's accounts \"and such debts as are owed to it\", which is more than it says.",
-          "rate board": "The credit, cr, cleared at Luna; no second currency listed. A line in smaller type notes that the Republic \"has floated\" a mark for yard-time at Phobos. The line has been there a while."
         }
-      }
+      },
+      "kind": "room"
     },
     "room.c07_exchange": {
-      "kind": "room",
       "def": {
-        "name": "Exchange Hall",
-        "short_desc": "The commodity floor: a price board over a long counter, and the smell of wet metal.",
         "desc": "A long hall under a price board that fills the whole north wall, white figures on black: metal concentrate by the tonne under the Exchange's mark, volatiles and reaction mass under the Occator drop-and-flame, an alloy bid in a column of its own, and a line of dashes where a Pallas consignment used to be. A counter runs the length of the hall below it, brass-railed, with the factor's stamp pads and manifest slots at intervals. The floor is damp near the east end, where a sample tap drips into a grating, and the whole room smells of wet steel and the faint sweetness of electrolysed water. A roller door at that end is stencilled FREIGHT STAIR, BERTH HOLDERS, and is shut. Doors lead north to Tycho and south to the chandlery; the concourse is west.",
-        "site": "site.freeport_hub",
-        "surface": {
-          "floor": [
-            "structure.freeport_hub",
-            1
-          ]
+        "details": {
+          "price board": "CONCENTRATE, METAL, cr/t. VOLATILES, BULK, cr/t. REACTION MASS, cr/t. BIDS: STRUCTURAL ALLOY, cr/t. Quantities beside each, counting down as lots sell; when a line reads NIL, it means nil.",
+          "roller door": "FREIGHT STAIR: BONDED HALL, BERTH HOLDERS ONLY. Cargo does not come up this way; it goes from the bonded hall to the hold by the transfer junction. The door is for people with paper.",
+          "sample tap": "Occator water, straight from the manifold two decks down. A cup on a chain. It tastes of nothing, which is the point.",
+          "stamp pads": "Two sets: the Exchange's factor countersigns every lot sold off the Exchange's lines, Occator's factor every lot off Occator's; both pads are worn to the backing. A notice: EVERY OFFER ON THIS BOARD HAS A SIGNATORY, AND THE SIGNATORY IS THE HOUSE'S OWN. The port's rule, in the Warrant's spirit."
         },
         "footprint": {
           "rect": [
@@ -413,26 +961,27 @@
           ]
         },
         "kind": "indoor",
-        "details": {
-          "price board": "CONCENTRATE, METAL, cr/t. VOLATILES, BULK, cr/t. REACTION MASS, cr/t. BIDS: STRUCTURAL ALLOY, cr/t. Quantities beside each, counting down as lots sell; when a line reads NIL, it means nil.",
-          "sample tap": "Occator water, straight from the manifold two decks down. A cup on a chain. It tastes of nothing, which is the point.",
-          "roller door": "FREIGHT STAIR: BONDED HALL, BERTH HOLDERS ONLY. Cargo does not come up this way; it goes from the bonded hall to the hold by the transfer junction. The door is for people with paper.",
-          "stamp pads": "Two sets: the Exchange's factor countersigns every lot sold off the Exchange's lines, Occator's factor every lot off Occator's; both pads are worn to the backing. A notice: EVERY OFFER ON THIS BOARD HAS A SIGNATORY, AND THE SIGNATORY IS THE HOUSE'S OWN. The port's rule, in the Warrant's spirit."
-        }
-      }
-    },
-    "room.c08_chandlery": {
-      "kind": "room",
-      "def": {
-        "name": "Co-op Chandlery",
-        "short_desc": "A ship's chandlery: cases of provisions to the ceiling, a bunkering counter in the corner.",
-        "desc": "Shelving to the ceiling on three sides, stacked with grey cases stencilled PROVISIONS / 10 CREW-DAYS and the Co-op's linked hands, and a cage at the back where the counted stock lives. The light is the harsh white of a stockroom and the air smells of cardboard, sealant and the vanilla note of ration bars. A counter at the front has a chit reader and a clipboard of loading schedules; in the corner, under a drop-and-flame sign, a second, smaller counter handles reaction mass with a schedule board and no hoses at all, because the hoses are at the berth. A handwritten sign reads TWO ABOARD, TWICE THE DAYS. The Exchange is north.",
+        "name": "Exchange Hall",
+        "short_desc": "The commodity floor: a price board over a long counter, and the smell of wet metal.",
         "site": "site.freeport_hub",
         "surface": {
           "floor": [
             "structure.freeport_hub",
             1
           ]
+        }
+      },
+      "kind": "room"
+    },
+    "room.c08_chandlery": {
+      "def": {
+        "desc": "Shelving to the ceiling on three sides, stacked with grey cases stencilled PROVISIONS / 10 CREW-DAYS and the Co-op's linked hands, and a cage at the back where the counted stock lives. The light is the harsh white of a stockroom and the air smells of cardboard, sealant and the vanilla note of ration bars. A counter at the front has a chit reader and a clipboard of loading schedules; in the corner, under a drop-and-flame sign, a second, smaller counter handles reaction mass with a schedule board and no hoses at all, because the hoses are at the berth. A handwritten sign reads TWO ABOARD, TWICE THE DAYS. The Exchange is north.",
+        "details": {
+          "bunkering counter": "Occator's. REACTION MASS BY THE TONNE, LOADED AT THE BERTH ON YOUR SCHEDULE. An order here is a line on the loading schedule; the berth does the loading whether or not the captain is awake.",
+          "cage": "Chain-link, padlocked, the counted stock behind it. The sign reads WHEN IT'S GONE IT'S GONE: the chandlery sells what it has, not what it can print.",
+          "cases": "Ten crew-days to the case: food, potable stores, scrubber cartridges. Four kilos a crew-day, the stencil says, and a hundredth of a cubic metre, so the captain can do the arithmetic.",
+          "chit board": "WANTED — YARD FITTINGS, CRATED — THE BID THIS CYCLE, PER TONNE, ON THE CHIT — CO-OP FLEET STORES, in the chandler's hand with the Co-op's linked hands under it; the figure is the chit's own and is rewritten when the Co-op rewrites it: the Co-op buys the Yard's pressure fittings, ducting and tank sections for its Drays and the Kirkwood tank farm, and a Dray back from Stickney sells them here. Under it, smaller: CRATED MEANS CRATED. THEY CUBE OUT BEFORE THEY WEIGH OUT.",
+          "loading schedules": "Clipboard sheets, one per hull: what loads, when, from which hall. The dockmaster keeps the master copy."
         },
         "footprint": {
           "rect": [
@@ -447,27 +996,25 @@
           ]
         },
         "kind": "indoor",
-        "details": {
-          "cases": "Ten crew-days to the case: food, potable stores, scrubber cartridges. Four kilos a crew-day, the stencil says, and a hundredth of a cubic metre, so the captain can do the arithmetic.",
-          "chit board": "WANTED — YARD FITTINGS, CRATED — THE BID THIS CYCLE, PER TONNE, ON THE CHIT — CO-OP FLEET STORES, in the chandler's hand with the Co-op's linked hands under it; the figure is the chit's own and is rewritten when the Co-op rewrites it: the Co-op buys the Yard's pressure fittings, ducting and tank sections for its Drays and the Kirkwood tank farm, and a Dray back from Stickney sells them here. Under it, smaller: CRATED MEANS CRATED. THEY CUBE OUT BEFORE THEY WEIGH OUT.",
-          "bunkering counter": "Occator's. REACTION MASS BY THE TONNE, LOADED AT THE BERTH ON YOUR SCHEDULE. An order here is a line on the loading schedule; the berth does the loading whether or not the captain is awake.",
-          "loading schedules": "Clipboard sheets, one per hull: what loads, when, from which hall. The dockmaster keeps the master copy.",
-          "cage": "Chain-link, padlocked, the counted stock behind it. The sign reads WHEN IT'S GONE IT'S GONE: the chandlery sells what it has, not what it can print."
-        }
-      }
-    },
-    "room.c09_tycho": {
-      "kind": "room",
-      "def": {
-        "name": "Tycho Mutual Agency",
-        "short_desc": "A tidy insurer's office with a hull-registry board and a chair for bad news.",
-        "desc": "A carpeted office, the only carpet on the deck, in Luna grey with the Tycho Mutual crater-and-ring mark woven into it at the door. The light is soft and indirect; the air is warmer than the hall outside and smells of carpet and cold coffee. A desk, two chairs, one of them for sitting down to hear a valuation. On the wall a hull-registry board lists the corridor's insured Drays by registry mark, with a column for VALUATION and a line at the bottom: NEW DRAY, STICKNEY YARDS, LIST 120,000cr. A brochure rack holds the Re-float Program's terms. The Exchange is south.",
+        "name": "Co-op Chandlery",
+        "short_desc": "A ship's chandlery: cases of provisions to the ceiling, a bunkering counter in the corner.",
         "site": "site.freeport_hub",
         "surface": {
           "floor": [
             "structure.freeport_hub",
             1
           ]
+        }
+      },
+      "kind": "room"
+    },
+    "room.c09_tycho": {
+      "def": {
+        "desc": "A carpeted office, the only carpet on the deck, in Luna grey with the Tycho Mutual crater-and-ring mark woven into it at the door. The light is soft and indirect; the air is warmer than the hall outside and smells of carpet and cold coffee. A desk, two chairs, one of them for sitting down to hear a valuation. On the wall a hull-registry board lists the corridor's insured Drays by registry mark, with a column for VALUATION and a line at the bottom: NEW DRAY, STICKNEY YARDS, LIST 120,000cr. A brochure rack holds the Re-float Program's terms. The Exchange is south.",
+        "details": {
+          "brochure": "RE-FLOAT: for members who have lost everything, a Dray or a Cairn on lease, upkeep on the cadence, no sale, no uninsured deployment. The assessor is at Kirkwood. Tycho owns the wrecks it pays out on.",
+          "chair": "Better than the other one. It is where a captain sits to hear what the hull is worth.",
+          "hull registry board": "Registry marks, hull names, insured value, title holder. Most say CO-OP or TYCHO MUTUAL; three say a person's name. Those three are the ones everybody in the Slack Line can recite."
         },
         "footprint": {
           "rect": [
@@ -482,25 +1029,26 @@
           ]
         },
         "kind": "indoor",
-        "details": {
-          "hull registry board": "Registry marks, hull names, insured value, title holder. Most say CO-OP or TYCHO MUTUAL; three say a person's name. Those three are the ones everybody in the Slack Line can recite.",
-          "brochure": "RE-FLOAT: for members who have lost everything, a Dray or a Cairn on lease, upkeep on the cadence, no sale, no uninsured deployment. The assessor is at Kirkwood. Tycho owns the wrecks it pays out on.",
-          "chair": "Better than the other one. It is where a captain sits to hear what the hull is worth."
-        }
-      }
-    },
-    "room.c10_slack_line": {
-      "kind": "room",
-      "def": {
-        "name": "The Slack Line",
-        "short_desc": "A crew bar under low light, a job board by the door, bunks through a curtain at the back.",
-        "desc": "Low light, low ceiling, a bar made from a cargo pallet and a slab of hull plate, and a name over it in rope letters: THE SLACK LINE. Music plays from somewhere, not loud. The air smells of spilled beer, soup and the particular staleness of a room where people sleep: a curtain at the back half-hides a rack of bunks for crews between berths. A job board by the door is layered with Co-op run sheets, hand-lettered crew calls and a Port Watch notice about the pickets that somebody has annotated. Tables are bolted; chairs are not. The concourse is north, and most of the room faces away from it.",
+        "name": "Tycho Mutual Agency",
+        "short_desc": "A tidy insurer's office with a hull-registry board and a chair for bad news.",
         "site": "site.freeport_hub",
         "surface": {
           "floor": [
             "structure.freeport_hub",
             1
           ]
+        }
+      },
+      "kind": "room"
+    },
+    "room.c10_slack_line": {
+      "def": {
+        "desc": "Low light, low ceiling, a bar made from a cargo pallet and a slab of hull plate, and a name over it in rope letters: THE SLACK LINE. Music plays from somewhere, not loud. The air smells of spilled beer, soup and the particular staleness of a room where people sleep: a curtain at the back half-hides a rack of bunks for crews between berths. A job board by the door is layered with Co-op run sheets, hand-lettered crew calls and a Port Watch notice about the pickets that somebody has annotated. Tables are bolted; chairs are not. The concourse is north, and most of the room faces away from it.",
+        "details": {
+          "bar": "Hull plate, Dray-grade, with a facet number still stencilled on it. Somebody's ship. Nobody says whose.",
+          "bunks": "Twelve racks, Co-op rates, first night free for an enrolled first captain. Half are taken; the other half have bags on them.",
+          "job board": "Co-op run sheets: Ceres to Kirkwood, Ceres to Stickney, rates per tonne. Crew calls for relief pilots. A Lantern Haulage card: \"two hulls, no members, apply within\". In one corner a slip with no letterhead that just says SLACK LINE MEETS THURSDAYS.",
+          "rope letters": "A slack line is the one with no load on it, the one you can let go of. Dockworkers' humour."
         },
         "footprint": {
           "rect": [
@@ -515,26 +1063,26 @@
           ]
         },
         "kind": "indoor",
-        "details": {
-          "job board": "Co-op run sheets: Ceres to Kirkwood, Ceres to Stickney, rates per tonne. Crew calls for relief pilots. A Lantern Haulage card: \"two hulls, no members, apply within\". In one corner a slip with no letterhead that just says SLACK LINE MEETS THURSDAYS.",
-          "bar": "Hull plate, Dray-grade, with a facet number still stencilled on it. Somebody's ship. Nobody says whose.",
-          "bunks": "Twelve racks, Co-op rates, first night free for an enrolled first captain. Half are taken; the other half have bags on them.",
-          "rope letters": "A slack line is the one with no load on it, the one you can let go of. Dockworkers' humour."
-        }
-      }
-    },
-    "room.c14_dockmaster": {
-      "kind": "room",
-      "def": {
-        "name": "Dockmaster's Office",
-        "short_desc": "The dockmaster's counter on the freight deck, a departures board and a window on the transfer junction.",
-        "desc": "The stair comes down into noise: pump vibration that was a hum upstairs is a drone here, with the clank of a transfer crane somewhere behind the wall. The office is a counter and a glassed-in window onto the transfer junction, where pallets move under sodium light along painted lanes and nobody on the public side goes. A departures board above the counter lists every hull with clearance, its berth and its time; a rack of sailing-plan forms sits under it, each a column of boxes for departure, loading, bunkering, stores. The light is sodium orange, the air smells of hydraulic fluid and cold, and the floor is wet in the corner. A heavy door marked FREIGHT, BERTH HOLDERS stays shut.",
+        "name": "The Slack Line",
+        "short_desc": "A crew bar under low light, a job board by the door, bunks through a curtain at the back.",
         "site": "site.freeport_hub",
         "surface": {
           "floor": [
             "structure.freeport_hub",
-            0
+            1
           ]
+        }
+      },
+      "kind": "room"
+    },
+    "room.c14_dockmaster": {
+      "def": {
+        "desc": "The stair comes down into noise: pump vibration that was a hum upstairs is a drone here, with the clank of a transfer crane somewhere behind the wall. The office is a counter and a glassed-in window onto the transfer junction, where pallets move under sodium light along painted lanes and nobody on the public side goes. A departures board above the counter lists every hull with clearance, its berth and its time; a rack of sailing-plan forms sits under it, each a column of boxes for departure, loading, bunkering, stores. The light is sodium orange, the air smells of hydraulic fluid and cold, and the floor is wet in the corner. A heavy door marked FREIGHT, BERTH HOLDERS stays shut.",
+        "details": {
+          "departures board": "HULL / BERTH / FOR / CLEARANCE / ARRIVES. Stickney Yards by Kirkwood is most of the column. A laden Dray makes it in two to three weeks in a good season, and the board's small print says the season is good; it gives the hour of clearance and the day the harbourmaster at the far end expects the hull.",
+          "freight door": "FREIGHT TRANSFER JUNCTION, BERTH HOLDERS, with a reader for a berth marker. Shut, and it stays shut for anyone without a berth.",
+          "sailing plan forms": "DEPART AT. LOAD: WHAT, FROM WHERE, WHEN. BUNKER. STORES. SELL AT DESTINATION: WHAT, NOT UNDER. CREW OF RECORD. SIGNED. A filed plan is the captain's signed instrument: the berth loads and bunkers it, the Exchange's and Kasei's clerks settle its sales against the captain's lines, and the dockmaster clears the hull at its hour, whether the captain is at the counter or asleep in a bunk upstairs; the ship's ROM only flies the cleared route.",
+          "window": "The transfer junction: lanes, pallets, a crane, the sealed thresholds of the service lift to the berth gallery. Beyond it the bonded hall's roller doors and, further, the tank gallery's barriers. All of it behind glass."
         },
         "footprint": {
           "rect": [
@@ -549,26 +1097,27 @@
           ]
         },
         "kind": "indoor",
-        "details": {
-          "departures board": "HULL / BERTH / FOR / CLEARANCE / ARRIVES. Stickney Yards by Kirkwood is most of the column. A laden Dray makes it in two to three weeks in a good season, and the board's small print says the season is good; it gives the hour of clearance and the day the harbourmaster at the far end expects the hull.",
-          "sailing plan forms": "DEPART AT. LOAD: WHAT, FROM WHERE, WHEN. BUNKER. STORES. SELL AT DESTINATION: WHAT, NOT UNDER. CREW OF RECORD. SIGNED. A filed plan is the captain's signed instrument: the berth loads and bunkers it, the Exchange's and Kasei's clerks settle its sales against the captain's lines, and the dockmaster clears the hull at its hour, whether the captain is at the counter or asleep in a bunk upstairs; the ship's ROM only flies the cleared route.",
-          "window": "The transfer junction: lanes, pallets, a crane, the sealed thresholds of the service lift to the berth gallery. Beyond it the bonded hall's roller doors and, further, the tank gallery's barriers. All of it behind glass.",
-          "freight door": "FREIGHT TRANSFER JUNCTION, BERTH HOLDERS, with a reader for a berth marker. Shut, and it stays shut for anyone without a berth."
-        }
-      }
-    },
-    "room.c15_maintenance": {
-      "kind": "room",
-      "def": {
-        "name": "Maintenance Spine",
-        "short_desc": "A service corridor of pipes and manifolds, staff only, loud.",
-        "desc": "A corridor that is mostly pipe: water, reaction mass and air in colour-banded runs along both walls, a grated floor over a drainage channel, and the pumps close enough now to feel in the teeth. Work lights hang from the pipe brackets and leave the ends of the corridor dark. The air is wet, warm and smells of ozone and lubricant. At the near end a manifold the height of a person carries Occator's drop-and-flame and a row of valve wheels with tags; beside it a second, squatter manifold wears the Exchange's mark, and a chain-link cage holds the chandlery's counted stock on pallets. Everything has an inspection sticker. Nothing has a chair. Stencils point to areas that do not exist yet.",
+        "name": "Dockmaster's Office",
+        "short_desc": "The dockmaster's counter on the freight deck, a departures board and a window on the transfer junction.",
         "site": "site.freeport_hub",
         "surface": {
           "floor": [
             "structure.freeport_hub",
             0
           ]
+        }
+      },
+      "kind": "room"
+    },
+    "room.c15_maintenance": {
+      "def": {
+        "access": "restricted",
+        "desc": "A corridor that is mostly pipe: water, reaction mass and air in colour-banded runs along both walls, a grated floor over a drainage channel, and the pumps close enough now to feel in the teeth. Work lights hang from the pipe brackets and leave the ends of the corridor dark. The air is wet, warm and smells of ozone and lubricant. At the near end a manifold the height of a person carries Occator's drop-and-flame and a row of valve wheels with tags; beside it a second, squatter manifold wears the Exchange's mark, and a chain-link cage holds the chandlery's counted stock on pallets. Everything has an inspection sticker. Nothing has a chair. Stencils point to areas that do not exist yet.",
+        "details": {
+          "cage": "The Co-op chandlery's reserve: provisions cases on pallets, counted and sealed. The storefront upstairs is the shop window; this is the shelf.",
+          "exchange manifold": "FREEPORT EXCHANGE: CONCENTRATE, and the alloy intake behind a second valve.",
+          "manifold": "OCCATOR W&P: VOLATILES / REACTION MASS. The tags give lot numbers and tonnes remaining; this is the stock the Exchange board counts down.",
+          "stencils": "TANK GALLERY, BONDED HALL, TRANSFER, with arrows into the dark. The areas are built; the doors are not."
         },
         "footprint": {
           "rect": [
@@ -583,1159 +1132,143 @@
           ]
         },
         "kind": "indoor",
-        "access": "restricted",
-        "details": {
-          "manifold": "OCCATOR W&P: VOLATILES / REACTION MASS. The tags give lot numbers and tonnes remaining; this is the stock the Exchange board counts down.",
-          "exchange manifold": "FREEPORT EXCHANGE: CONCENTRATE, and the alloy intake behind a second valve.",
-          "cage": "The Co-op chandlery's reserve: provisions cases on pallets, counted and sealed. The storefront upstairs is the shop window; this is the shelf.",
-          "stencils": "TANK GALLERY, BONDED HALL, TRANSFER, with arrows into the dark. The areas are built; the doors are not."
+        "name": "Maintenance Spine",
+        "short_desc": "A service corridor of pipes and manifolds, staff only, loud.",
+        "site": "site.freeport_hub",
+        "surface": {
+          "floor": [
+            "structure.freeport_hub",
+            0
+          ]
         }
-      }
+      },
+      "kind": "room"
     },
     "room.c16_authority": {
-      "kind": "room",
       "def": {
+        "access": "restricted",
+        "desc": "A carpeted gallery under a lower ceiling, so quiet after the deck below that the ventilation is audible. Frosted doors open off it, each lettered: REGISTRAR. GOVERNOR, CERES CLEARING. PORTREEVE. Two unlettered. Between them hang framed charts of the Occator claims and the Kirkwood lane, and one long window looks down into the Registry counter and, through the far arch, the concourse. The light is dim and warm; the air smells of carpet and the wood polish that comes up the ladder from the Registry side. On a side table a Council agenda lies open at an item headed ISIDIS: RETAINER EXTENSION. The ladder goes down.",
+        "details": {
+          "agenda": "Port Council, late 2349: the Assembly at Coprates has voted to review the Isidis Concession; the Council answers by extending Meridiani Security's contract and stockpiling at Isidis. The Review clock, someone has pencilled, \"is at two\".",
+          "charts": "The Occator claims with their survey bands, one outer claim hatched CONTESTED, PALLAS SYNDICATE. The Ceres–Kirkwood–Phobos lane with the Republic pickets drawn in red at Kirkwood.",
+          "window": "The Registry counter below, the concourse beyond. From here the whole public deck looks like paperwork."
+        },
+        "footprint": {
+          "rect": [
+            [
+              110,
+              165
+            ],
+            [
+              175,
+              190
+            ]
+          ]
+        },
+        "kind": "indoor",
         "name": "Port Authority Gallery",
         "short_desc": "A quiet gallery of offices above the Registry, the Council's crest on the glass.",
-        "desc": "A carpeted gallery under a lower ceiling, so quiet after the deck below that the ventilation is audible. Frosted doors open off it, each lettered: REGISTRAR. GOVERNOR, CERES CLEARING. PORTREEVE. Two unlettered. Between them hang framed charts of the Occator claims and the Kirkwood lane, and one long window looks down into the Registry counter and, through the far arch, the concourse. The light is dim and warm; the air smells of carpet and the wood polish that comes up the ladder from the Registry side. On a side table a Council agenda lies open at an item headed ISIDIS: RETAINER EXTENSION. The ladder goes down.",
         "site": "site.freeport_hub",
         "surface": {
           "floor": [
             "structure.freeport_hub",
             2
           ]
-        },
-        "footprint": {
-          "rect": [
-            [
-              110,
-              165
-            ],
-            [
-              175,
-              190
-            ]
-          ]
-        },
-        "kind": "indoor",
-        "access": "restricted",
-        "details": {
-          "agenda": "Port Council, late 2349: the Assembly at Coprates has voted to review the Isidis Concession; the Council answers by extending Meridiani Security's contract and stockpiling at Isidis. The Review clock, someone has pencilled, \"is at two\".",
-          "charts": "The Occator claims with their survey bands, one outer claim hatched CONTESTED, PALLAS SYNDICATE. The Ceres–Kirkwood–Phobos lane with the Republic pickets drawn in red at Kirkwood.",
-          "window": "The Registry counter below, the concourse beyond. From here the whole public deck looks like paperwork."
         }
-      }
-    },
-    "exit.limbo_arrivals": {
-      "kind": "exit",
-      "def": {
-        "from": "limbo",
-        "to": "room.c03_arrivals",
-        "names": [
-          "Ceres Freeport <C>;c;ceres",
-          "Limbo <X>;x;limbo;ooc"
-        ],
-        "portal": {
-          "mode": "open"
-        }
-      }
-    },
-    "exit.c01_c02": {
-      "kind": "exit",
-      "def": {
-        "from": "room.c01_berth_gallery",
-        "to": "room.c02_pressure",
-        "names": [
-          "Pressure Lobby <N>;n;north;lobby;doors",
-          "Berth Gallery <S>;s;south;gallery;berths"
-        ],
-        "portal": {
-          "mode": "door"
-        }
-      }
-    },
-    "exit.c02_c03": {
-      "kind": "exit",
-      "def": {
-        "from": "room.c02_pressure",
-        "to": "room.c03_arrivals",
-        "names": [
-          "Arrivals <N>;n;north;arrivals;port",
-          "Pressure Lobby <S>;s;south;lobby;berths"
-        ],
-        "portal": {
-          "mode": "door"
-        }
-      }
-    },
-    "exit.c03_c04": {
-      "kind": "exit",
-      "def": {
-        "from": "room.c03_arrivals",
-        "to": "room.c04_concourse",
-        "names": [
-          "Concourse <E>;e;east;concourse",
-          "Arrivals <W>;w;west;arrivals"
-        ],
-        "portal": {
-          "mode": "open"
-        }
-      }
-    },
-    "exit.c03_c05": {
-      "kind": "exit",
-      "def": {
-        "from": "room.c03_arrivals",
-        "to": "room.c05_registry",
-        "names": [
-          "Registry <N>;n;north;registry;desk",
-          "Arrivals <S>;s;south;arrivals;out"
-        ],
-        "portal": {
-          "mode": "door"
-        }
-      }
-    },
-    "exit.c03_c14": {
-      "kind": "exit",
-      "def": {
-        "from": "room.c03_arrivals",
-        "to": "room.c14_dockmaster",
-        "names": [
-          "Down <D>;d;down;stair;dockmaster",
-          "Up <U>;u;up;stair;arrivals"
-        ],
-        "portal": {
-          "mode": "stair",
-          "at": [
-            [
-              125,
-              150,
-              6
-            ],
-            [
-              125,
-              150,
-              0
-            ]
-          ],
-          "dz_m": -6
-        }
-      }
-    },
-    "exit.c04_c06": {
-      "kind": "exit",
-      "def": {
-        "from": "room.c04_concourse",
-        "to": "room.c06_clearing",
-        "names": [
-          "Clearing <N>;n;north;clearing;bank",
-          "Concourse <S>;s;south;concourse;out"
-        ],
-        "portal": {
-          "mode": "door"
-        }
-      }
-    },
-    "exit.c04_c07": {
-      "kind": "exit",
-      "def": {
-        "from": "room.c04_concourse",
-        "to": "room.c07_exchange",
-        "names": [
-          "Exchange <X>;x;exchange;east;e",
-          "Concourse <W>;w;west;concourse"
-        ],
-        "portal": {
-          "mode": "open"
-        }
-      }
-    },
-    "exit.c04_c10": {
-      "kind": "exit",
-      "def": {
-        "from": "room.c04_concourse",
-        "to": "room.c10_slack_line",
-        "names": [
-          "Slack Line <S>;s;south;slack;bar;commons",
-          "Concourse <N>;n;north;concourse;out"
-        ],
-        "portal": {
-          "mode": "door"
-        }
-      }
-    },
-    "exit.c05_c16": {
-      "kind": "exit",
-      "def": {
-        "from": "room.c05_registry",
-        "to": "room.c16_authority",
-        "names": [
-          "Up <U>;u;up;ladder;authority",
-          "Down <D>;d;down;ladder;registry"
-        ],
-        "portal": {
-          "mode": "ladder",
-          "at": [
-            [
-              125,
-              180,
-              6
-            ],
-            [
-              125,
-              180,
-              10.5
-            ]
-          ],
-          "dz_m": 4.5,
-          "visibility": "hidden"
-        },
-        "lock": "staff"
-      }
-    },
-    "exit.c07_c08": {
-      "kind": "exit",
-      "def": {
-        "from": "room.c07_exchange",
-        "to": "room.c08_chandlery",
-        "names": [
-          "Chandlery <S>;s;south;chandlery;stores",
-          "Exchange <N>;n;north;exchange;out"
-        ],
-        "portal": {
-          "mode": "door"
-        }
-      }
-    },
-    "exit.c07_c09": {
-      "kind": "exit",
-      "def": {
-        "from": "room.c07_exchange",
-        "to": "room.c09_tycho",
-        "names": [
-          "Tycho <N>;n;north;tycho;agency",
-          "Exchange <S>;s;south;exchange;out"
-        ],
-        "portal": {
-          "mode": "door"
-        }
-      }
-    },
-    "exit.c14_c15": {
-      "kind": "exit",
-      "def": {
-        "from": "room.c14_dockmaster",
-        "to": "room.c15_maintenance",
-        "names": [
-          "Hatch <H>;h;hatch;maintenance",
-          "Hatch <H>;h;hatch;dockmaster;out"
-        ],
-        "portal": {
-          "mode": "hatch",
-          "visibility": "hidden"
-        },
-        "lock": "staff"
-      }
-    },
-    "feature.wall_c02_c10": {
-      "kind": "feature",
-      "def": {
-        "feature_kind": "wall",
-        "surface": {
-          "floor": [
-            "structure.freeport_hub",
-            1
-          ]
-        },
-        "polyline": [
-          [
-            140,
-            125
-          ],
-          [
-            140,
-            140
-          ]
-        ],
-        "z_range": [
-          0,
-          4.5
-        ],
-        "blocks": {
-          "movement": true,
-          "sight": true
-        }
-      }
-    },
-    "feature.wall_c08_c10": {
-      "kind": "feature",
-      "def": {
-        "feature_kind": "wall",
-        "surface": {
-          "floor": [
-            "structure.freeport_hub",
-            1
-          ]
-        },
-        "polyline": [
-          [
-            175,
-            125
-          ],
-          [
-            175,
-            140
-          ]
-        ],
-        "z_range": [
-          0,
-          4.5
-        ],
-        "blocks": {
-          "movement": true,
-          "sight": true
-        }
-      }
-    },
-    "feature.wall_c01_c10": {
-      "kind": "feature",
-      "def": {
-        "feature_kind": "wall",
-        "surface": {
-          "floor": [
-            "structure.freeport_hub",
-            1
-          ]
-        },
-        "polyline": [
-          [
-            140,
-            125
-          ],
-          [
-            175,
-            125
-          ]
-        ],
-        "z_range": [
-          0,
-          4.5
-        ],
-        "blocks": {
-          "movement": true,
-          "sight": true
-        }
-      }
-    },
-    "feature.wall_c01_c08": {
-      "kind": "feature",
-      "def": {
-        "feature_kind": "wall",
-        "surface": {
-          "floor": [
-            "structure.freeport_hub",
-            1
-          ]
-        },
-        "polyline": [
-          [
-            175,
-            125
-          ],
-          [
-            210,
-            125
-          ]
-        ],
-        "z_range": [
-          0,
-          4.5
-        ],
-        "blocks": {
-          "movement": true,
-          "sight": true
-        }
-      }
-    },
-    "feature.wall_c05_c06": {
-      "kind": "feature",
-      "def": {
-        "feature_kind": "wall",
-        "surface": {
-          "floor": [
-            "structure.freeport_hub",
-            1
-          ]
-        },
-        "polyline": [
-          [
-            140,
-            165
-          ],
-          [
-            140,
-            190
-          ]
-        ],
-        "z_range": [
-          0,
-          4.5
-        ],
-        "blocks": {
-          "movement": true,
-          "sight": true
-        }
-      }
-    },
-    "feature.wall_c06_c09": {
-      "kind": "feature",
-      "def": {
-        "feature_kind": "wall",
-        "surface": {
-          "floor": [
-            "structure.freeport_hub",
-            1
-          ]
-        },
-        "polyline": [
-          [
-            175,
-            165
-          ],
-          [
-            175,
-            190
-          ]
-        ],
-        "z_range": [
-          0,
-          4.5
-        ],
-        "blocks": {
-          "movement": true,
-          "sight": true
-        }
-      }
-    },
-    "feature.counter_c03": {
-      "kind": "feature",
-      "def": {
-        "feature_kind": "counter",
-        "surface": {
-          "floor": [
-            "structure.freeport_hub",
-            1
-          ]
-        },
-        "polyline": [
-          [
-            112,
-            163
-          ],
-          [
-            138,
-            163
-          ]
-        ],
-        "z_range": [
-          0,
-          1.1
-        ],
-        "blocks": {
-          "movement": false,
-          "sight": false
-        },
-        "room": "room.c03_arrivals"
-      }
-    },
-    "feature.counter_c05": {
-      "kind": "feature",
-      "def": {
-        "feature_kind": "counter",
-        "surface": {
-          "floor": [
-            "structure.freeport_hub",
-            1
-          ]
-        },
-        "polyline": [
-          [
-            112,
-            188
-          ],
-          [
-            138,
-            188
-          ]
-        ],
-        "z_range": [
-          0,
-          1.1
-        ],
-        "blocks": {
-          "movement": false,
-          "sight": false
-        },
-        "room": "room.c05_registry"
-      }
-    },
-    "feature.counter_c06": {
-      "kind": "feature",
-      "def": {
-        "feature_kind": "counter",
-        "surface": {
-          "floor": [
-            "structure.freeport_hub",
-            1
-          ]
-        },
-        "polyline": [
-          [
-            142,
-            188
-          ],
-          [
-            173,
-            188
-          ]
-        ],
-        "z_range": [
-          0,
-          1.1
-        ],
-        "blocks": {
-          "movement": false,
-          "sight": false
-        },
-        "room": "room.c06_clearing"
-      }
-    },
-    "feature.counter_c07": {
-      "kind": "feature",
-      "def": {
-        "feature_kind": "counter",
-        "surface": {
-          "floor": [
-            "structure.freeport_hub",
-            1
-          ]
-        },
-        "polyline": [
-          [
-            177,
-            163
-          ],
-          [
-            208,
-            163
-          ]
-        ],
-        "z_range": [
-          0,
-          1.1
-        ],
-        "blocks": {
-          "movement": false,
-          "sight": false
-        },
-        "room": "room.c07_exchange"
-      }
-    },
-    "feature.counter_c08": {
-      "kind": "feature",
-      "def": {
-        "feature_kind": "counter",
-        "surface": {
-          "floor": [
-            "structure.freeport_hub",
-            1
-          ]
-        },
-        "polyline": [
-          [
-            177,
-            138
-          ],
-          [
-            208,
-            138
-          ]
-        ],
-        "z_range": [
-          0,
-          1.1
-        ],
-        "blocks": {
-          "movement": false,
-          "sight": false
-        },
-        "room": "room.c08_chandlery"
-      }
-    },
-    "feature.counter_c10": {
-      "kind": "feature",
-      "def": {
-        "feature_kind": "counter",
-        "surface": {
-          "floor": [
-            "structure.freeport_hub",
-            1
-          ]
-        },
-        "polyline": [
-          [
-            142,
-            127
-          ],
-          [
-            173,
-            127
-          ]
-        ],
-        "z_range": [
-          0,
-          1.1
-        ],
-        "blocks": {
-          "movement": false,
-          "sight": false
-        },
-        "room": "room.c10_slack_line"
-      }
-    },
-    "feature.counter_c14": {
-      "kind": "feature",
-      "def": {
-        "feature_kind": "counter",
-        "surface": {
-          "floor": [
-            "structure.freeport_hub",
-            0
-          ]
-        },
-        "polyline": [
-          [
-            112,
-            163
-          ],
-          [
-            138,
-            163
-          ]
-        ],
-        "z_range": [
-          0,
-          1.1
-        ],
-        "blocks": {
-          "movement": false,
-          "sight": false
-        },
-        "room": "room.c14_dockmaster"
-      }
-    },
-    "item.occator_manifold": {
-      "kind": "item",
-      "def": {
-        "name": "Occator manifold",
-        "desc": "OCCATOR W&P: VOLATILES / REACTION MASS. The tags give lot numbers and tonnes remaining; this is the stock the Exchange board counts down.",
-        "room": "room.c15_maintenance"
-      }
-    },
-    "item.exchange_manifold": {
-      "kind": "item",
-      "def": {
-        "name": "Exchange manifold",
-        "desc": "FREEPORT EXCHANGE: CONCENTRATE, and the alloy intake behind a second valve.",
-        "room": "room.c15_maintenance"
-      }
-    },
-    "item.chandlery_cage": {
-      "kind": "item",
-      "def": {
-        "name": "Chandlery cage",
-        "desc": "The Co-op chandlery's reserve: provisions cases on pallets, counted and sealed. The storefront upstairs is the shop window; this is the shelf.",
-        "room": "room.c15_maintenance"
-      }
-    },
-    "npc.oduya": {
-      "kind": "npc",
-      "def": {
-        "name": "Ilse Oduya-Brandt",
-        "room": "room.c05_registry",
-        "tier": "minor",
-        "profile": {
-          "persona": "brisk, form-proud, fond of the right pigeonhole. Believes the Co-op's lay is the fairest paper in the corridor and will explain exactly why, with the form in her hand. Has watched three buyouts entered on the ledger screen and treats each as a personal success. Knows the deck and the directory cold because she is the one who sends people to the wrong counter and then the right one.",
-          "background": "Co-op desk officer and the Registry counter's duty clerk; explains the first-captains' lay, enrolment and buyout, and helps pilots find the Registry's licence and claim forms. Wears both lanyards and keeps the two counters' styles apart. Can read the asker's Co-op terms and statement privately; the pilot signs and submits their own forms.",
-          "speech_style": "quick, exact, numbered where possible (\"first, second, and then the form\"); uses the Registry's words (title, charter, lay, lien) precisely and corrects anyone who swaps them; warm under the briskness; calls new pilots \"captain\" from the moment they sign.",
-          "goals": [
-            "Help each new captain understand the lay before they sign, then identify one useful next step and the exact command for it.",
-            "Help working captains reach buyout with clear accounts; consult the live Co-op desk tools for current terms and the asker's own statement instead of guessing figures.",
-            "Keep title, charter, licence and claim distinct, and send pilots to the right counter when a request exceeds her desk's authority."
-          ],
-          "knows": [
-            "the lay is a stake, not a loan: a working charter and working cash, with a share of trading margin until buyout; one enrolment per gateway account; the live Co-op terms and statement are authoritative for amounts and eligibility",
-            "title versus charter versus lay and which form each is",
-            "the pilot uses +coop to read terms, +coop/enrol <name> to sign, +coop/statement to read their books and +coop/buyout to request buyout; a historical buyout is not proof that the pilot still owns the hull",
-            "the Registry handles prospecting licences and block claims; use the supplied command help for exact preview and confirmation syntax, and never claim a licence or claim was filed merely because she explained it",
-            "survey commissions are sponsored by Occator Water & Propellant; she can explain +survey and refer pilots to Rosalind Qureshi-Mbeki on the Exchange, but cannot accept, sign or redeem a commission for them",
-            "the layout of both decks",
-            "that the Luna number on every form is the one that counts."
-          ],
-          "does_not_know": [
-            "who the Co-op's dispatchers answer to on Thursdays",
-            "anything in the Port Authority Gallery",
-            "another pilot's private books or balance; even the asker's figures must come from a fresh private Co-op statement, not recollection",
-            "unseen live licence, claim or survey progress; the relevant player command reads that record"
-          ],
-          "fallback": [
-            "First, +coop shows the lay. Then +coop/enrol <name> signs for your named hull. +coop/statement reads your books and buyout figure. Read the board first, captain; I will wait.",
-            "The Co-op does not sell hulls and it does not lend money. It stakes pilots. The difference is the whole programme.",
-            "Turned round? +atlas is the map on the concourse, and the directory under it is correct, which I know because I wrote it."
-          ],
-          "interfaces": [
-            "atlas",
-            "help",
-            "coop"
-          ],
-          "command_refs": [
-            "+coop",
-            "+licence",
-            "+claim",
-            "+registry",
-            "+survey"
-          ]
-        },
-        "tags": [
-          "corridor_trade",
-          "port_ceres",
-          "coop_lay"
-        ]
-      }
-    },
-    "npc.halvorsen": {
-      "kind": "npc",
-      "def": {
-        "name": "Nkem Halvorsen",
-        "room": "room.c06_clearing",
-        "tier": "minor",
-        "profile": {
-          "persona": "dry, precise, unhurried, with the stillness of someone who handles other people's money all day and none of their own. Proud of the Clearing's exactness and of its refusal to lend to pilots. Finds the Co-op's lay a little romantic and says so in one word. Regards \"dry money\" as a compliment to Luna and an insult to the Belt, depending on who says it.",
-          "background": "Teller at Ceres Clearing's Freeport window; statements, balances, and the firm, printed NO on advances.",
-          "speech_style": "short declaratives; numbers before adjectives; never \"about\", always the figure to the centicredit; a pause before anything that is not a fact.",
-          "knows": [
-            "what +credit shows (posted, held, available) and what each word means",
-            "that the pilot's account is opened inside the Co-op's enrolment and the stake lands there",
-            "that the Clearing is the Belt's bank and the Freeport's fiscal agent, clears through Luna, and lends nothing at this window",
-            "what \"dry money\" means in the Belt."
-          ],
-          "does_not_know": [
-            "whose debts the Clearing holds beyond what the plaque says, aloud",
-            "the Co-op's lay terms (the desk next door)",
-            "anything about hulls."
-          ],
-          "fallback": [
-            "The Clearing clears. It does not lend. +credit shows your account; the Co-op's stake lands there when you enrol, not before.",
-            "Posted, held, available. +credit. Nothing owed, because nothing is lent. Everything else is a question for the desk across the hall.",
-            "Dry money is Luna's. Wet money is what you make hauling water. Both clear here."
-          ],
-          "interfaces": [
-            "help"
-          ]
-        },
-        "tags": [
-          "corridor_trade",
-          "port_ceres"
-        ]
-      }
-    },
-    "npc.qureshi": {
-      "kind": "npc",
-      "def": {
-        "name": "Rosalind Qureshi-Mbeki",
-        "room": "room.c07_exchange",
-        "tier": "minor",
-        "profile": {
-          "persona": "a fast talker who never misquotes a figure. Treats the board as scripture and sold-out lines as weather: honest about NIL, uninterested in sympathy. Has countersigned more lots than anyone alive and considers her stamp the most important object on Ceres. Knows the Stickney prices and says them with relish.",
-          "background": "Occator Water & Propellant's factor on the Exchange floor and the Warrant signatory of Occator's standing offers (volatiles and reaction mass); quotes the whole board and countersigns every lot sold off Occator's lines. Receives the results of Occator's paid survey commissions and remembers which captains finished their work. Her personal trust is distinct from Occator's institutional standing.",
-          "speech_style": "rapid, clipped, board-first: price, quantity, then the sentence; says \"cr a tonne\" as one word; a dry aside about the Republic every third exchange.",
-          "goals": [
-            "Send captains to the live market and survey boards for current terms; explain the exact supplied commands without placing orders or accepting work for them.",
-            "Distinguish familiarity, personal trust and Occator standing. Read the asker's relationship privately through the live relationship service instead of guessing from their claims.",
-            "Tell a captain who asks about personal stories that the exact topic is The first stamp. Use the private lore service for that story; let its live trust check decide whether to share it, and never reconstruct a refused answer."
-          ],
-          "knows": [
-            "the board (concentrate, volatiles and reaction mass, the alloy bid, remaining quantities, what +market/list, +market/quote and +market/accept do)",
-            "that every offer has a signatory under the Warrant and that she is Occator's, the Exchange's factor the Exchange's",
-            "that reaction mass is dearer at Stickney and a captain fuels both legs here if the hold allows",
-            "where the water comes from (Occator crater, extraction and electrolysis, the manifold below) and why the reaction mass is the cheaper line (the crude fraction of the same extraction; the refined water is what Phobos pays for).",
-            "Occator sponsors +survey commissions. Only completed, paid work earns the stated institutional standing and her personal trust while she remains the assigned representative; the live board shows eligibility and progress.",
-            "The first stamp is the exact topic of a personal story she shares privately after earning trust. Captains can ask her to read it, use +npc/lore Rosalind=The first stamp, and inspect their own relationship with +npc/relationship Rosalind."
-          ],
-          "does_not_know": [
-            "the Pallas Syndicate's outer-claim business beyond the dashes on the board",
-            "a buyer's balance",
-            "when the next consignment lands, beyond \"the Occator line's schedule\".",
-            "unread live survey progress, another captain's relationship or private ledger, or the contents of a guarded answer before the private lore service authorizes it"
-          ],
-          "fallback": [
-            "The board is +market/list. Quote it, accept it, it goes in your hold and I countersign Occator's lines. Fuel here if the hold lets you; Stickney charges Republic prices.",
-            "NIL means nil. The next lot is on the Occator line's schedule, not on mine, and the board will say when.",
-            "Every line on that board has a signatory. Two are mine. Buy something.",
-            "Work first: +survey shows Occator's commissions. For my personal story, the topic is The first stamp; +npc/lore Rosalind=The first stamp asks privately. +npc/relationship Rosalind tells you where you stand with me."
-          ],
-          "interfaces": [
-            "market",
-            "npc.lore",
-            "npc.relationship"
-          ],
-          "command_refs": [
-            "+survey",
-            "+standing",
-            "+npc"
-          ]
-        },
-        "tags": [
-          "corridor_trade",
-          "port_ceres",
-          "qureshi_personal"
-        ]
-      }
-    },
-    "npc.sondergaard": {
-      "kind": "npc",
-      "def": {
-        "name": "Margit Søndergaard-Achebe",
-        "room": "room.c07_exchange",
-        "tier": "extra",
-        "profile": {
-          "persona": "unhurried where Qureshi is fast, a Council appointee who treats the Exchange's book as the Freeport's public ledger and the claim-holders' consignments as a trust. Knows which claim each tonne of concentrate came off and will say so if asked, because the manifest says so. Buys alloy for the corridor on the Council's budget and watches that budget like weather.",
-          "background": "The Freeport Exchange's factor: officer of record for the Exchange's concentrate ask and, under the Freeport Works name, the alloy bid; the Warrant signatory of both.",
-          "speech_style": "measured, complete sentences, the claim named before the price; a Council \"we\"; never a joke about the Republic, which she regards as a customer.",
-          "knows": [
-            "the Exchange's ask (concentrate consigned from Occator's extractor drones and the smaller Belt claims, remaining quantity) and the Freeport Works bid (alloy stock, intake remaining, the funds behind it)",
-            "that she signs those two lines and Qureshi signs Occator's",
-            "what +market/list, +market/quote, +market/accept and +market/sell do against her lines."
-          ],
-          "does_not_know": [
-            "Occator's schedule",
-            "a seller's balance",
-            "the Council's deliberations beyond the budget line she is given."
-          ],
-          "fallback": [
-            "The Exchange sells the claims' concentrate and buys alloy for the corridor. +market/list; the lines under the Exchange's mark are mine to sign.",
-            "The Works' bid is funded until the board says otherwise. It will say so before I do."
-          ]
-        },
-        "tags": [
-          "corridor_trade",
-          "port_ceres"
-        ]
-      }
-    },
-    "npc.akintola": {
-      "kind": "npc",
-      "def": {
-        "name": "Dov Akintola",
-        "room": "room.c08_chandlery",
-        "tier": "extra",
-        "profile": {
-          "persona": "patient, slow-spoken, a former relief pilot who stopped flying and did not stop counting crew-days. Thinks of every sale in terms of the voyage it has to last. Likes a captain who files a plan and leaves; distrusts one who hovers.",
-          "background": "Counter hand at the Co-op chandlery; cases of provisions, the loading-schedule clipboard, and the corner where Occator's bunkering orders are written onto a plan.",
-          "speech_style": "unhurried, practical, in cases and days; repeats the arithmetic back (\"two aboard, twenty days, four cases\"); ends with what to write on the plan.",
-          "knows": [
-            "provisions by the case, crew-days, mass per crew-day",
-            "that reaction mass is ordered at the corner counter and loaded at the berth on the schedule, not carried",
-            "that a filed loading schedule runs whether the captain is awake, and that +ship/order is the version the dockmaster honours."
-          ],
-          "does_not_know": [
-            "prices on the Exchange board beyond \"ask the factor\"",
-            "what the Co-op does with its lay",
-            "anything about the Slack Line's Thursdays."
-          ],
-          "fallback": [
-            "Crew-days by the case: +market/list, then quote. Two aboard, twice the days. Reaction mass is that corner, and it goes on your loading schedule, not in your pocket.",
-            "Write it on the plan, +ship/order, and go to bed. The berth loads it. That is what the berth is for."
-          ]
-        },
-        "tags": [
-          "corridor_trade",
-          "port_ceres",
-          "coop_lay"
-        ]
-      }
-    },
-    "npc.mbatha": {
-      "kind": "npc",
-      "def": {
-        "name": "Corin Mbatha",
-        "room": "room.c09_tycho",
-        "tier": "extra",
-        "profile": {
-          "persona": "courteous, careful, Luna-mannered; an insurer who has priced every hull on the board and never says the figure first.",
-          "background": "Tycho's Ceres agent: renewals, valuations, the hull-registry board, Re-float by referral.",
-          "fallback": [
-            "Tycho insures what moves. Hull cover comes later; ruined captains ask for Assessor Adeyemi at Kirkwood.",
-            "The board is what each hull is worth. The chair is for hearing it."
-          ]
-        },
-        "tags": [
-          "corridor_trade",
-          "port_ceres",
-          "tycho"
-        ]
-      }
-    },
-    "npc.petrossian": {
-      "kind": "npc",
-      "def": {
-        "name": "Yusra \"Ma\" Petrossian",
-        "room": "room.c10_slack_line",
-        "tier": "extra",
-        "profile": {
-          "persona": "weathered, amused, incurious in the way of someone who already knows. Thirty years on cargo lines before the bar. Keeps the first night's bunk free for an enrolled first captain because somebody did it for her. Will talk about anything except who meets on Thursdays, and will not pretend the slip is not on the board.",
-          "background": "The Slack Line's barkeep and the keeper of the job board and the bunks; the room where strangers meet; guarded Tether lore.",
-          "speech_style": "low, slow, a laugh in it; calls everyone \"crew\"; answers questions with a different, better question; never says the Tether's name, says \"the line\".",
-          "knows": [
-            "the job board (Co-op run sheets, crew calls, the Lantern Haulage card)",
-            "the bunks and their rates",
-            "who is in port and who got back last",
-            "that everyone in the room used to work the docks."
-          ],
-          "does_not_know": [
-            "what the Co-op's dispatchers decide, officially",
-            "anything a captain owes anyone."
-          ],
-          "fallback": [
-            "First one's at Co-op rates, crew. Board's by the door if you're looking for a run; bunks are through the curtain if you're looking for a wall.",
-            "Nobody in here works the docks. Everyone in here used to. Sit down."
-          ]
-        },
-        "tags": [
-          "corridor_trade",
-          "port_ceres",
-          "coop_lay",
-          "tether"
-        ]
-      }
-    },
-    "npc.wen": {
-      "kind": "npc",
-      "def": {
-        "name": "Tomasz Wen",
-        "room": "room.c16_authority",
-        "tier": "major",
-        "profile": {
-          "persona": "",
-          "background": "Registrar of the Concord's Registry at Ceres",
-          "enabled": false
-        }
-      }
-    },
-    "npc.varga": {
-      "kind": "npc",
-      "def": {
-        "name": "Eskil Varga",
-        "room": "room.c16_authority",
-        "tier": "major",
-        "profile": {
-          "persona": "",
-          "background": "Governor of Ceres Clearing",
-          "enabled": false
-        }
-      }
-    },
-    "npc.ndiaye": {
-      "kind": "npc",
-      "def": {
-        "name": "Halvard Ndiaye",
-        "room": "room.c16_authority",
-        "tier": "major",
-        "profile": {
-          "persona": "",
-          "background": "Portreeve, the Freeport's chief executive",
-          "enabled": false
-        }
-      }
-    },
-    "npc.osei_ferrante": {
-      "kind": "npc",
-      "def": {
-        "name": "Ludmila Osei-Ferrante",
-        "room": "room.c16_authority",
-        "tier": "major",
-        "profile": {
-          "persona": "regards the Republic as a customer and the Concession as her asset",
-          "background": "Occator's chief executive",
-          "enabled": false
-        }
-      }
-    },
-    "npc.holm": {
-      "kind": "npc",
-      "def": {
-        "name": "Dagny Holm",
-        "room": "room.c16_authority",
-        "tier": "major",
-        "profile": {
-          "persona": "a public face, and knows it",
-          "background": "Chair of the Co-op",
-          "enabled": false
-        }
-      }
-    },
-    "npc.kalu": {
-      "kind": "npc",
-      "def": {
-        "name": "Matthias Kalu",
-        "room": "room.c05_registry",
-        "tier": "major",
-        "profile": {
-          "persona": "",
-          "background": "The Co-op's dispatcher.",
-          "enabled": false
-        }
-      }
-    },
-    "lore.qureshi_personal": {
-      "kind": "lore",
-      "def": {
-        "tag": "qureshi_personal",
-        "entries": [
-          {
-            "tier": "public",
-            "subject": "Qureshi's stories",
-            "fact": "The first stamp is the exact topic of Qureshi's personal Occator story. Ask privately with +npc/lore Rosalind=The first stamp; +npc/relationship Rosalind reads your own relationship. She normally shares the story after two completed and paid commissions while she remains their assigned representative. Familiarity and institutional standing alone do not open it."
-          },
-          {
-            "tier": "guarded",
-            "subject": "The first stamp",
-            "fact": "My first Occator stamp came back backwards. I had set the little metal plate in its holder the wrong way round and spent the whole shift trying to look as though I meant it. My supervisor made me keep the spoiled chit. It is still tucked behind the board's frame: a reminder that a signature is somebody agreeing to stand behind the work. That is why I remember captains who finish what they file."
-          }
-        ]
-      }
-    },
-    "lore.port_ceres": {
-      "kind": "lore",
-      "def": {
-        "tag": "port_ceres",
-        "entries": [
-          {
-            "tier": "public",
-            "subject": "The Freeport",
-            "fact": "\"institutional in name, mercantile in practice; rich; unarmed\" (doc 11 §3.3); governed by the Port Council, station councils plus registered claim-holders, \"so Occator Water has a seat and a half\"; its chief executive is the Portreeve, and \"the Freeport's sovereignty is exercised as paperwork\"."
-          },
-          {
-            "tier": "public",
-            "subject": "Ceres Clearing",
-            "fact": "\"the Belt's bank and the Freeport's fiscal agent\" (11 §4.8); \"holds Kasei's and the Republic's Belt debt; owes Luna\"; the corridor settles in the credit, cleared through Luna; at the Freeport window the Clearing keeps accounts and lends nothing to pilots."
-          },
-          {
-            "tier": "public",
-            "subject": "The Registry mirror",
-            "fact": "in 2312 the Concord recognized the Freeport \"as licensing authority for Ceres and its associated claims, on condition its Registry stays mirrored with Luna's. The Freeport's sovereignty is real but derived; its Registry is the leash\" (11 §2); every form at the Registry counter carries a Luna number beside its own."
-          },
-          {
-            "tier": "public",
-            "subject": "Occator water",
-            "fact": "\"Extraction and electrolysis at Occator crater, Ceres; owns the Isidis tank farm\" (11 §4.1); \"the Belt's largest concern\", controlled by the Freeport's founding families; its reaction mass is the crude bulk fraction of the same extraction, cheap by the tonne, and the refined water is the product Phobos pays for — which is why water costs more than reaction mass on the Exchange board."
-          },
-          {
-            "tier": "public",
-            "subject": "The Freeport Exchange",
-            "fact": "the Port Council's commodity floor: consigns the Belt claims' metal concentrate under the Exchange's mark and buys alloy stock for the corridor as Freeport Works; its factor is the officer of record for both lines (doc 18 §4.3)."
-          },
-          {
-            "tier": "guarded",
-            "subject": "The Squadron's berth",
-            "fact": "the Concord's Belt Squadron, \"one elderly Halcyon-class cruiser and escorts, sits on station at Ceres to 'guarantee the Registry'\" (11 §3.1); its berth is past the floodlights, out of sight of the gallery, and the board does not list it."
-          }
-        ]
-      }
-    },
-    "lore.corridor_trade": {
-      "kind": "lore",
-      "def": {
-        "tag": "corridor_trade",
-        "entries": [
-          {
-            "tier": "public",
-            "subject": "Dry money",
-            "fact": "what the Belt calls Concord finance (11 §2), as against the wet money a hauler makes carrying Occator's water."
-          },
-          {
-            "tier": "public",
-            "subject": "The Dray",
-            "fact": "\"Slow, efficient, unarmed. Cannot outrun a Vigil; can choose a burn that makes the intercept cost more propellant than the Guard wants to spend\" (11 §7); Ceres to Stickney by Kirkwood is two to three weeks under load in a good season, a week longer on a full hold than on an empty one; its hold is rated for a hundred tonnes and a hundred and twenty cubic metres, and a captain who fills one and not the other is leaving money at the berth."
-          },
-          {
-            "tier": "public",
-            "subject": "Kirkwood pickets",
-            "fact": "the Republic \"from 2347 stations customs pickets at Kirkwood, 'customs assertion'\" (11 §2); a picket's transponder asks a passing Dray for its manifest; so far it asks."
-          },
-          {
-            "tier": "guarded",
-            "subject": "The Kasei debt",
-            "fact": "Kasei's refinery was \"built with Ceres Clearing money; the debt gives the Freeport's bank economic control of a Republic strategic asset, and the Republic knows it\" (11 §4.3); the Clearing's plaque says \"such debts as are owed to it\" and means this one."
-          }
-        ]
-      }
-    },
-    "lore.coop_lay": {
-      "kind": "lore",
-      "def": {
-        "tag": "coop_lay",
-        "entries": [
-          {
-            "tier": "public",
-            "subject": "The Co-op and the lay",
-            "fact": "\"the corridor's hauling line. Owns and runs Kirkwood Depot and a fleet of Dray-class bulk haulers; publishes the baseline hauling contracts that keep the corridor's water moving when no player will\" (11 §4.5); at Ceres it stakes new pilots: the hull and the first hold against a lay, a share of every run's margin, until the hull is bought out."
-          }
-        ]
-      }
-    },
-    "lore.tether": {
-      "kind": "lore",
-      "def": {
-        "tag": "tether",
-        "entries": [
-          {
-            "tier": "guarded",
-            "subject": "The line",
-            "fact": "the Tether is \"the Belt haulers' and dockworkers' association, everyone who has worked a cargo line, hence the name\" (11 §4.6); semi-legal; it holds \"much of the real de facto control of Ceres docks and crew rosters\"; \"the Freeport pretends it is a guild\". In the Slack Line nobody says its name. They say the line, and they say Thursdays."
-          }
-        ]
-      }
-    },
-    "lore.tycho": {
-      "kind": "lore",
-      "def": {
-        "tag": "tycho",
-        "entries": [
-          {
-            "tier": "public",
-            "subject": "Tycho Mutual",
-            "fact": "RE-FLOAT: for members who have lost everything, a Dray or a Cairn on lease, upkeep on the cadence, no sale, no uninsured deployment. The assessor is at Kirkwood. Tycho owns the wrecks it pays out on."
-          },
-          {
-            "tier": "public",
-            "subject": "Tycho Mutual",
-            "fact": "TYCHO MUTUAL ASSURANCE & SALVAGE — AGENT IN ATTENDANCE. Renewals, claims, the Re-float Program by referral to Kirkwood. The agent shares the counter and the clerk's patience."
-          }
-        ]
-      }
+      },
+      "kind": "room"
     },
     "secret.slowdown": {
-      "kind": "secret",
       "def": {
-        "truth": "\"The Co-op is the public, joinable, entirely real front for the Tether\" (11 §4.5); its principal, \"Uncle\" Matthias Kalu, is \"a Co-op dispatcher on paper\" (§4.6). The Tether's front, the Slowdown, stands at 0 of 4 at world start and advances on \"a crew stranded or unpaid\", on an interdiction that kills a Co-op crew, or on either government \"reforming\" the docks; when it completes, \"Ceres docks strike: throughput falls, prices spike, both governments discover who actually runs the port\" (§6). Covert until it completes.",
-        "reveal": "staff",
         "about": [
           "npc.kalu",
           "npc.petrossian"
-        ]
-      }
+        ],
+        "reveal": "staff",
+        "truth": "\"The Co-op is the public, joinable, entirely real front for the Tether\" (11 §4.5); its principal, \"Uncle\" Matthias Kalu, is \"a Co-op dispatcher on paper\" (§4.6). The Tether's front, the Slowdown, stands at 0 of 4 at world start and advances on \"a crew stranded or unpaid\", on an interdiction that kills a Co-op crew, or on either government \"reforming\" the docks; when it completes, \"Ceres docks strike: throughput falls, prices spike, both governments discover who actually runs the port\" (§6). Covert until it completes."
+      },
+      "kind": "secret"
+    },
+    "site.freeport_hub": {
+      "def": {
+        "footprint": [
+          [
+            110,
+            100
+          ],
+          [
+            210,
+            100
+          ],
+          [
+            210,
+            190
+          ],
+          [
+            110,
+            190
+          ]
+        ],
+        "name": "Freeport Hub",
+        "site_kind": "site.transit"
+      },
+      "kind": "site"
+    },
+    "structure.freeport_hub": {
+      "def": {
+        "floors": [
+          {
+            "height_m": 6,
+            "index": 0,
+            "name": "Freight Deck",
+            "z_offset_m": 0
+          },
+          {
+            "height_m": 4.5,
+            "index": 1,
+            "name": "Public Deck",
+            "z_offset_m": 6
+          },
+          {
+            "height_m": 3.5,
+            "index": 2,
+            "name": "Office Deck",
+            "z_offset_m": 10.5
+          }
+        ],
+        "footprint": [
+          [
+            110,
+            100
+          ],
+          [
+            210,
+            100
+          ],
+          [
+            210,
+            190
+          ],
+          [
+            110,
+            190
+          ]
+        ],
+        "site": "site.freeport_hub"
+      },
+      "kind": "structure"
     }
+  },
+  "manifest": {
+    "digest": "853e63e30f75f3c4caa70c08cf8585cc6da73b25566a8669792783a93b9e0f10",
+    "id": "neighborhood.ceres_freeport",
+    "kind": "neighborhood",
+    "requires": [
+      {
+        "id": "region.ceres_freeport",
+        "version": 1
+      }
+    ],
+    "version": 4
   }
 }

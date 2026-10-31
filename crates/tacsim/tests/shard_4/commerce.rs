@@ -2769,7 +2769,8 @@ fn ic14_the_accept_line_names_the_signatory() {
         .strip_prefix(&format!("{}.", def.area))
         .expect("an npc of the area");
     let ceres: serde_json::Value =
-        serde_json::from_str(tacsim::definitions::content::CERES_JSON).expect("the Ceres pack");
+        serde_json::from_str(tacsim::definitions::content::CAST_CERES_JSON)
+            .expect("the Ceres cast pack");
     let signatory = ceres["entries"][entry]["def"]["name"]
         .as_str()
         .expect("the signatory's name")

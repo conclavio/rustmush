@@ -9,23 +9,31 @@ use mush_core::{Attr, CanonicalId, Ctx, Flags, ObjId, ObjKind, World};
 use mush_faction::FactionId;
 use mush_org::OrgId;
 
+const CERES_CAST: &str = "tacsim.cast.ceres_freeport";
 const CERES: &str = "neighborhood.ceres_freeport";
 const BINDING_ATTR: &str = "tacsim.public_desk_binding";
 
 fn desk(w: &World, entry: &str) -> Option<ObjId> {
-    let pack = CanonicalId::new(CERES).ok()?;
     let entry = CanonicalId::new(entry).ok()?;
-    let applied = w
-        .module_state::<mush_content::ContentState>()?
-        .latches
-        .applied(&pack)?;
-    if applied.is_retired() || applied.anomaly().is_some() {
-        return None;
+    let latches = &w.module_state::<mush_content::ContentState>()?.latches;
+    for pack_name in [CERES_CAST, CERES] {
+        let Ok(pack) = CanonicalId::new(pack_name) else {
+            continue;
+        };
+        let Some(applied) = latches.applied(&pack) else {
+            continue;
+        };
+        if applied.is_retired() || applied.anomaly().is_some() {
+            continue;
+        }
+        if let Some(npc) = applied.entries().get(&entry).and_then(|e| e.object())
+            && w.get(npc)
+                .is_some_and(|o| o.kind == ObjKind::Npc && !o.flags.contains(Flags::GOING))
+        {
+            return Some(npc);
+        }
     }
-    let npc = applied.entries().get(&entry)?.object()?;
-    w.get(npc)
-        .filter(|object| object.kind == ObjKind::Npc && !object.flags.contains(Flags::GOING))
-        .map(|_| npc)
+    None
 }
 
 /// Install each public role once. The marker deliberately survives later staff

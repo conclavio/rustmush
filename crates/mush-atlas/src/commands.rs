@@ -548,6 +548,21 @@ fn pack_apply(
         pack.clone()
     };
     let (applied, report) = apply_pack(ctx, &pack).map_err(|e| CmdError::msg(e.to_string()))?;
+    if report.anomaly.is_none()
+        && let Some(station) = id.as_str().strip_prefix("neighborhood.")
+        && let Ok(cast_id) = mush_core::CanonicalId::new(format!("tacsim.cast.{station}"))
+    {
+        let companion = ctx
+            .state::<AtlasState>()
+            .and_then(|atlas| atlas.shelf.get(&cast_id).cloned())
+            .filter(|_| {
+                ctx.state::<ContentState>()
+                    .is_some_and(|c| c.latches.applied(&cast_id).is_none())
+            });
+        if let Some(cast_pack) = companion {
+            let _ = apply_pack(ctx, &cast_pack);
+        }
+    }
     if let Some(state) = ctx.state_mut::<AtlasState>() {
         state.last_plan.remove(&actor);
     }

@@ -965,8 +965,15 @@ fn driver_name(ctx: &Ctx<'_>, conn: &ConnectionRec) -> String {
 #[must_use]
 pub fn latched_object(w: &World, key: &RecordKey) -> Option<ObjId> {
     let content = w.module_state::<ContentState>()?;
-    let latch = content.latches.applied(&key.pack)?;
-    let obj = latch.object_of(&key.entry)?;
+    let obj = content
+        .latches
+        .applied(&key.pack)
+        .and_then(|latch| latch.object_of(&key.entry))
+        .or_else(|| {
+            let station = key.pack.as_str().strip_prefix("neighborhood.")?;
+            let cast_pack = mush_core::CanonicalId::new(format!("tacsim.cast.{station}")).ok()?;
+            content.latches.applied(&cast_pack)?.object_of(&key.entry)
+        })?;
     w.get(obj)
         .filter(|o| !o.flags.contains(Flags::GOING))
         .map(|o| o.id)

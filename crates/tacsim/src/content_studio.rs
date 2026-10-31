@@ -29,7 +29,7 @@ use serde_json::{Value, json};
 
 use crate::definitions::Catalog;
 use crate::definitions::content::{
-    AUTOCANNON_30_JSON, BALL_762_JSON, BATTERY_MK1_JSON, CANNON_105_JSON, CORES_JSON,
+    AUTOCANNON_30_JSON, BALL_762_JSON, BATTERY_MK1_JSON, CANNON_105_JSON, CAST_SOURCES, CORES_JSON,
     DRILL_CORE_MK1_JSON, ECCM_MK1_JSON, ECM_MK1_JSON, HE_105_JSON, LANE_JSON, LANE_PACK,
     LASER_CHARGE_JSON, LASER_MK1_JSON, MG_COAX_JSON, MISSILE_LR_JSON, MISSILE_ROUND_JSON,
     RESOLUTION_JSON, RESOURCES_JSON, SCANNER_MK1_JSON, SITE_SOURCES, STATION_SOURCES,
@@ -320,25 +320,22 @@ fn shipped_docs() -> Vec<DocSpec> {
             bytes: include_str!("../content/relays/manufacture-v1.json"),
         },
     ];
-    // Station neighborhood packs (which currently hold the 52 station NPCs and 20 lore pools,
-    // and in CS.0b split their cast into `cast/<station>.json`).
-    for (pack_id, bytes) in STATION_SOURCES {
-        if pack_id.starts_with("neighborhood.") {
-            let repo_path = match pack_id {
-                "neighborhood.ceres_freeport" => "atlas/neighborhood.ceres_freeport.json",
-                "neighborhood.stickney_yards" => "atlas/neighborhood.stickney_yards.json",
-                "neighborhood.aitken_highport" => "atlas/neighborhood.aitken_highport.json",
-                "neighborhood.voltaire_anchorage" => "atlas/neighborhood.voltaire_anchorage.json",
-                "neighborhood.ligeia_terminal" => "atlas/neighborhood.ligeia_terminal.json",
-                _ => "atlas/neighborhood.json",
-            };
-            docs.push(DocSpec {
-                id: pack_id,
-                repo_path,
-                family: "npc",
-                bytes,
-            });
-        }
+    // Station cast packs (52 station NPCs and 20 lore pools split from `atlas/neighborhood.*.json`, D-34-3).
+    for (pack_id, bytes) in CAST_SOURCES {
+        let repo_path = match pack_id {
+            "tacsim.cast.ceres_freeport" => "cast/ceres_freeport.json",
+            "tacsim.cast.stickney_yards" => "cast/stickney_yards.json",
+            "tacsim.cast.aitken_highport" => "cast/aitken_highport.json",
+            "tacsim.cast.voltaire_anchorage" => "cast/voltaire_anchorage.json",
+            "tacsim.cast.ligeia_terminal" => "cast/ligeia_terminal.json",
+            _ => "cast/station.json",
+        };
+        docs.push(DocSpec {
+            id: pack_id,
+            repo_path,
+            family: "npc",
+            bytes,
+        });
     }
     docs
 }
@@ -420,15 +417,19 @@ fn code_bound_npcs() -> BTreeMap<(String, String), Vec<String>> {
                 for vendor in vendors {
                     let v_id = vendor.get("id").and_then(Value::as_str).unwrap_or("vendor");
                     if let Some(sig) = vendor.get("signatory").and_then(Value::as_str) {
+                        let npc_id = sig
+                            .strip_prefix(&format!("{area}."))
+                            .unwrap_or(sig)
+                            .to_string();
                         let reason =
                             format!("lane/ceres_phobos.json ({port_id} vendor `{v_id}` signatory)");
                         bound
-                            .entry((area.clone(), sig.to_string()))
+                            .entry((area.clone(), npc_id.clone()))
                             .or_default()
                             .push(reason.clone());
                         if let Some(station) = area.strip_prefix("neighborhood.") {
                             bound
-                                .entry((format!("tacsim.cast.{station}"), sig.to_string()))
+                                .entry((format!("tacsim.cast.{station}"), npc_id))
                                 .or_default()
                                 .push(reason);
                         }
@@ -1645,6 +1646,7 @@ mod tests {
 
         // Read + Check a shipped campaign_seed pack (`tacsim.crew.ceres`) and a standalone table (`market/goods.json`)
         for doc_id in [
+            "tacsim.cast.ceres_freeport",
             "tacsim.crew.ceres",
             "market/goods.json",
             "tacsim.pack.cannon_105",

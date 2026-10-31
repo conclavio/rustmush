@@ -1,0 +1,351 @@
+{
+  "brief": {
+    "prose": "Station cast and lore pools for neighborhood.ligeia_terminal (doc 34 cut CS.0b, D-34-3)."
+  },
+  "entries": {
+    "lore.port_ligeia": {
+      "def": {
+        "entries": [
+          {
+            "fact": "the Concord's Saturn Charter of 2291 granted the Saturn system to a consortium of habitat houses under the Outbound's mandate: a ninety-nine-year grant recorded at the Registry, lapsing in 2390. The Titan Concession Company governs by it as proprietor, headed by its Chief Factor, clears through Luna and is months from anyone who could overrule it. Every Titan captain has an opinion on renewal.",
+            "subject": "The Saturn Charter",
+            "tier": "public"
+          },
+          {
+            "fact": "the Company's orbital terminal, a long unspun spar in low Titan orbit named for the methane sea the lifters climb from. The spar crosses the sea for a run of orbits each Titan day and then not for a fortnight, never standing over it; the lifters come up out of the orange haze with billet and ice and take the inbound down. No Dray could leave Titan's surface at its thrust.",
+            "subject": "Ligeia Terminal",
+            "tier": "public"
+          },
+          {
+            "fact": "Selk, the first township, wants a Concord charter of its own; the Selk Townships Board petitions Shackleton, the Concord Executive whose charters these are, and the petitions are lodged at the Registry, a notary and not a grantor. A petition takes over an hour by light and two months by ship, and the Chief Factor reads them first.",
+            "subject": "The Company and the townships",
+            "tier": "public"
+          },
+          {
+            "fact": "the Terminal has no relay half. The sales floor posts Luna's prices an hour and more old, and the light lag runs up to an hour and a half; the Company prices for the two months it takes a hull. The Malapert Exchange quotes for a half every decade, and the Company declines every decade.",
+            "subject": "No relay half",
+            "tier": "public"
+          },
+          {
+            "fact": "\"everything breaks at ninety-four kelvin\", the surface temperature below; it is why the townships pay frontier prices for alloy stock and instrument boards, far above what those fetch at Luna, to keep their rigs working. The Terminal's bar is named for it.",
+            "subject": "Ninety-four kelvin",
+            "tier": "public"
+          },
+          {
+            "fact": "the Terminal sells the cheapest reaction mass in the system and the dearest stores in the system, both at the Company's price, in the one currency the system settles in. A captain going home fills the tank here and buys no more crew-days than the passage needs.",
+            "subject": "The Company's price",
+            "tier": "public"
+          },
+          {
+            "fact": "the lifters quarry water-ammonia ice to reach the organics underneath, and the Company sells that ice at its handling cost. Occator would call that dumping if it were nearer. The organics come up as carbon billet, pressed, the dense Titan cargo.",
+            "subject": "The overburden",
+            "tier": "public"
+          },
+          {
+            "fact": "the dockmaster's board reads \"come slow or don't come\": the passage from Luna, or home to Luna or Mars, fits an eighty-tonne tank only at half throttle, and the dockmaster's word for every listed leg is throttle=450 with one soul aboard. Every Dray that reaches the Terminal was throttled and most were single-handed; the dockmaster keeps a board of the slowest arrivals.",
+            "subject": "Come slow or don't come",
+            "tier": "public"
+          },
+          {
+            "fact": "the Terminal is a company town: the Company's arrivals desk, the Company's sales floor, the Company's store and the Company's book. The one counter the Company does not own is Townships Receiving at the foot of the stair, where the Selk Townships Board buys alloy and boards.",
+            "subject": "A company town",
+            "tier": "public"
+          },
+          {
+            "fact": "the Company Store's prices are the dearest in the system, and nobody on the spar will say what the margin pays for; the store's book clears through Luna, and the storekeeper says it is not his to know.",
+            "subject": "The store's margin",
+            "tier": "guarded"
+          },
+          {
+            "fact": "for all that it prices everything on the spar as it likes, the Company pays Luna's board price for what it buys there without arguing, which on Titan is remarked on.",
+            "subject": "Luna's board price",
+            "tier": "guarded"
+          },
+          {
+            "fact": "the Board's office is on the Company's service deck, not in a township, by the Charter's common-services clause; the Speaker calls the clause the leash.",
+            "subject": "The leash",
+            "tier": "guarded"
+          }
+        ],
+        "tag": "port_ligeia"
+      },
+      "kind": "lore"
+    },
+    "npc.abara_vos": {
+      "def": {
+        "name": "Kenji Abara-Vos",
+        "profile": {
+          "background": "Dockmaster of Ligeia Terminal: berths, clearances, sailing plans and the board of the slowest arrivals.",
+          "does_not_know": [
+            "what any hull carries beyond its sailing plan",
+            "the Company's politics, which he says are not his deck",
+            "Luna's prices or the townships' bids"
+          ],
+          "fallback": [
+            "Come slow or don't come: throttle=450, one soul aboard, every leg we list.",
+            "Your hull is on the board if it is on a collar. File a plan before you think about leaving.",
+            "Fill the tank before you go. It is the cheapest reaction mass you will ever buy.",
+            "Luna is over an hour away by light. Anything it told us is already old."
+          ],
+          "interfaces": [
+            "atlas",
+            "travel"
+          ],
+          "knows": [
+            "the motto and why: the passage from Luna, or home to Luna or Mars, fits an eighty-tonne tank only at half throttle, and his word for every listed leg is throttle=450 with one soul aboard",
+            "that most arrivals are single-handed, and that two aboard is for a good season only",
+            "which collars are occupied, cleared or held, and that a hull with no sailing plan sits idle",
+            "the slow board: every hull on it came in throttled, the longest passages at the top",
+            "that the Terminal has no relay half, so news from Luna comes by light over an hour stale and up to an hour and a half",
+            "that the Terminal's reaction mass is the cheapest in the system, and a hull should leave with its tank full"
+          ],
+          "persona": "the dockmaster, lean and dry, who lettered the motto on the board himself and keeps the slow board as a kind of roll of honour. Has watched captains come in on the last tonne of their tank and treats every arrival as a small survival. Gives the same advice to everyone, in the same words, because the words are what keep people alive.",
+          "speech_style": "quiet, unhurried, repeats himself on purpose; \"come slow or don't come\"; gives the hour in Luna time and then the light lag."
+        },
+        "room": "room.t05_dockmaster",
+        "room_pack": "neighborhood.ligeia_terminal",
+        "tags": [
+          "corridor_trade",
+          "port_ligeia"
+        ],
+        "tier": "minor"
+      },
+      "kind": "npc"
+    },
+    "npc.adichie_brun": {
+      "def": {
+        "name": "Noor Adichie-Brun",
+        "profile": {
+          "background": "Lift Marshal of the Titan Concession Company: the arrivals desk and the schedule of the lifters between Ligeia and the spar.",
+          "does_not_know": [
+            "the townships' business",
+            "the Company's prices beyond what the sales floor posts",
+            "anything the Chief Factor has not put on a notice"
+          ],
+          "fallback": [
+            "Declaration, roster, waiver. Clip them to the desk. The concourse is through the far door.",
+            "The lifter board is behind me. Passes over Ligeia, then a long gap. It says so.",
+            "The Company is proprietor here. The notice above my head says how and since when."
+          ],
+          "interfaces": [
+            "atlas",
+            "help"
+          ],
+          "knows": [
+            "the arrivals forms and what each asks: the declaration, the crew roster, the billet-lock waiver",
+            "the lifter windows: the spar crosses Ligeia for a run of orbits each Titan day and then not for about a fortnight",
+            "that the lifters come up out of the haze with billet and ice and go back down with the inbound",
+            "the Charter notice over the desk: the Company is proprietor and government of the Saturn system under the Concord's Saturn Charter of 2291",
+            "the Terminal's layout and which desk does what"
+          ],
+          "persona": "the Lift Marshal, who runs the arrivals desk and the lifter schedule from the same chair and does both briskly. Knows the windows over Ligeia by heart and resents any question that could have been answered by the board behind her. Company-born and Company-schooled, and not ashamed of either.",
+          "speech_style": "quick and procedural; points at the board before she speaks; says \"window\", \"pass\" and \"the Company\" more than anything else."
+        },
+        "room": "room.t03_arrivals",
+        "room_pack": "neighborhood.ligeia_terminal",
+        "tags": [
+          "corridor_trade",
+          "port_ligeia"
+        ],
+        "tier": "extra"
+      },
+      "kind": "npc"
+    },
+    "npc.asante_pryce": {
+      "def": {
+        "name": "Hallgerd Asante-Pryce",
+        "profile": {
+          "background": "Speaker of the Selk Townships; the Board's office is on the Company's service deck by the Charter's common-services clause, which the Speaker calls the leash",
+          "enabled": false,
+          "persona": "the townships' voice; files petition after petition to Shackleton and expects the answer to outlast her"
+        },
+        "room": "room.t15_spine",
+        "room_pack": "neighborhood.ligeia_terminal",
+        "tier": "major"
+      },
+      "kind": "npc"
+    },
+    "npc.marangoni_teague": {
+      "def": {
+        "name": "Ysolde Marangoni-Teague",
+        "profile": {
+          "background": "Sales Clerk of the Titan Concession Company on the Company Sales Floor; the Warrant signatory of the Company's asks for carbon billet, water ice and reaction mass.",
+          "does_not_know": [
+            "what the Company Store's margin pays for",
+            "the Chief Factor's correspondence or the Company's dealings at Shackleton",
+            "the Townships Board's funds or what it will bid next",
+            "Luna's prices beyond the stale board on the far wall"
+          ],
+          "fallback": [
+            "Billet, ice, reaction mass. The board says what is left and what the Company asks; I sign for what goes out.",
+            "The ice is overburden. We sell it for what it costs to handle, and Occator may say what it likes.",
+            "Going home? Fill the tank here. Nowhere else in the system sells reaction mass for less.",
+            "Alloy and boards are the townships' business, down the stair. Their counter, their board."
+          ],
+          "interfaces": [
+            "market",
+            "atlas"
+          ],
+          "knows": [
+            "the Company's asks as the board posts them: carbon billet, pressed; water ice; reaction mass; each with the quantity left, at the Company's price",
+            "that the ice is the lifters' overburden, quarried to reach the organics and sold at its handling cost, and that Occator would call that dumping if it were nearer",
+            "that the Terminal's reaction mass is the cheapest in the system and a captain going home should fill the tank here",
+            "that the Selk Townships buy alloy stock and instrument boards at their own counter at the foot of the stair, which the Company does not own",
+            "the Terminal's layout: the concourse, the arrivals desk, the dockmaster, the store, the Ninety-Four, the lifter gallery and the stair down to receiving"
+          ],
+          "persona": "the Company's sales clerk, polished and patient, who has sold billet and ice off this floor long enough to quote the board without turning to look at it. Loyal to the Company in the way of someone whose whole life is on its book; courteous to captains because a captain who came this far came slowly and deserves it.",
+          "speech_style": "smooth and exact; gives the good, then the quantity left, then the Company's price as a phrase rather than a number; calls the ice \"overburden\" without apology."
+        },
+        "room": "room.t07_exchange",
+        "room_pack": "neighborhood.ligeia_terminal",
+        "tags": [
+          "corridor_trade",
+          "port_ligeia"
+        ],
+        "tier": "minor"
+      },
+      "kind": "npc"
+    },
+    "npc.oyelowo_krauss": {
+      "def": {
+        "name": "Barnabas Oyelowo-Krauss",
+        "profile": {
+          "background": "Storekeeper of the Company Store for Concession Stores; the Warrant signatory of the store's provisions ask.",
+          "does_not_know": [
+            "what the Company Store's margin pays for, which he says is not his to know",
+            "the Townships Board's business",
+            "the Company's dealings at Luna or Shackleton"
+          ],
+          "fallback": [
+            "Crew-days, how many? The posting says the price. At the Company's price.",
+            "One soul, one crate a day, and a few over if the passage runs long. I would not sell you less.",
+            "Dear? Yes. It is the only store for a long way in any direction."
+          ],
+          "interfaces": [
+            "market"
+          ],
+          "knows": [
+            "the posted price per crew-day, its date, and that it is the Company's price and the only one on the spar",
+            "the crates remaining, which he counts and signs for every shift",
+            "that two aboard need twice the days, and that most captains who reach the Terminal came single-handed",
+            "that the store keeps a book in one currency, settled through Luna",
+            "that the Company Store's stores are the dearest in the system, and the Terminal's reaction mass the cheapest"
+          ],
+          "persona": "a heavy, unhurried storekeeper who has heard every complaint about the Company's price and answers all of them with the same shrug. Not unkind: will tell a single-handed captain exactly how many crew-days the passage needs and sell no more than that. Considers the margin none of his business and says so before anyone asks.",
+          "speech_style": "slow, plain, a little weary; counts in crew-days; ends most answers with \"at the Company's price\" as if it were a full stop."
+        },
+        "room": "room.t09_commissary",
+        "room_pack": "neighborhood.ligeia_terminal",
+        "tags": [
+          "corridor_trade",
+          "port_ligeia"
+        ],
+        "tier": "minor"
+      },
+      "kind": "npc"
+    },
+    "npc.quayle_ibekwe": {
+      "def": {
+        "name": "Ottoline Quayle-Ibekwe",
+        "profile": {
+          "background": "Keeper of the Ninety-Four, the Terminal's bar and crew commons.",
+          "does_not_know": [
+            "what the Speaker and the Chief Factor say to each other in private",
+            "what the Company Store's margin pays for",
+            "anything she has been asked to forget, which she says is most of it"
+          ],
+          "fallback": [
+            "Sit anywhere, slow one. Townships by the wall, Company by the hatch, captains wherever they like.",
+            "Ninety-four kelvin. Everything breaks at it. We named the bar so nobody forgets.",
+            "Renewal? Ask anyone in here. Ask twice and the answers change."
+          ],
+          "knows": [
+            "the Saturn Charter of 2291 as everyone tells it: the Concord granted the Saturn system to a consortium of habitat houses under the Outbound's mandate, and it lapses in 2390",
+            "that every Titan captain has an opinion on renewal, and most of the opinions she has heard",
+            "the custom of the sides: townships by the far wall, the Company by the hatch, captains wherever they like",
+            "why the bar is named for ninety-four kelvin, and that everything breaks at it",
+            "that the Malapert Exchange quotes for a relay half every decade and the Company declines every decade",
+            "which notices on the wall are current and which are a year old"
+          ],
+          "persona": "keeps the Ninety-Four, and keeps it neutral: serves the Company's crews at the hatch end and the townships' at the far wall and lets nobody start anything in between. Talkative, wry, a collector of opinions on the Charter's renewal, which she rates like vintages. Knows everyone's tally and nobody's secrets, or says so.",
+          "speech_style": "warm and amused, fond of a question back; calls every captain \"slow one\" as a compliment; tells the room's name like a joke she never tires of."
+        },
+        "room": "room.t10_ninety_four",
+        "room_pack": "neighborhood.ligeia_terminal",
+        "tags": [
+          "corridor_trade",
+          "port_ligeia"
+        ],
+        "tier": "extra"
+      },
+      "kind": "npc"
+    },
+    "npc.tupou_lindahl": {
+      "def": {
+        "name": "Saoirse Tupou-Lindahl",
+        "profile": {
+          "background": "Purchasing Delegate of the Selk Townships Board at Townships Receiving; the Warrant signatory of the Board's bids for structural alloy stock and instrument boards.",
+          "does_not_know": [
+            "what becomes of a petition between this spar and Shackleton",
+            "the Company's books or the Company Store's margin",
+            "Luna's prices beyond the stale board upstairs"
+          ],
+          "fallback": [
+            "Alloy and boards, crated. The placard says what the Board pays and how much more it will take.",
+            "Everything breaks at ninety-four kelvin. That is why we pay what we pay.",
+            "This counter is ours. The heat on this side of the stair is ours. Mind the frost on the seams.",
+            "Sign the petition on the wall if you like. It goes to the Registry, the same as the rest."
+          ],
+          "interfaces": [
+            "market",
+            "help"
+          ],
+          "knows": [
+            "the Board's bids as the placard posts them: structural alloy stock and instrument boards, crated, by the tonne, with the intake left",
+            "why the townships pay frontier prices: everything breaks at ninety-four kelvin, and the rigs need alloy and boards to keep working",
+            "that this is the one counter on the spar the Company does not own, and the heaters on this side are the Board's",
+            "that Selk was the first township and the Board petitions Shackleton for a Concord charter of the townships' own, the petitions lodged at the Registry",
+            "that the Board's office sits on the Company's service deck by the Charter's common-services clause, which the Speaker calls the leash",
+            "that alloy and boards come out to Titan from Luna, two months by hull for a captain who comes slow"
+          ],
+          "persona": "the townships' purchasing delegate, sharp and tired and proud of the one counter on the spar the Company does not own. Grew up on a Selk rig and still checks a crate's seals with bare fingers. Pays frontier prices without complaint, because the alternative is a rig that stops working at ninety-four kelvin; complains about everything else.",
+          "speech_style": "brisk, direct, a township's flat vowels; says \"the Board\" and \"the Company\" as two different weathers; quotes the placard: \"everything breaks at ninety-four kelvin\"."
+        },
+        "room": "room.t08_receiving",
+        "room_pack": "neighborhood.ligeia_terminal",
+        "tags": [
+          "corridor_trade",
+          "port_ligeia"
+        ],
+        "tier": "minor"
+      },
+      "kind": "npc"
+    },
+    "npc.varela_nwosu": {
+      "def": {
+        "name": "Augustin Varela-Nwosu",
+        "profile": {
+          "background": "Chief Factor of the Titan Concession Company, proprietor and government under the Concord's Saturn Charter of 2291",
+          "enabled": false,
+          "persona": "courteous, patient and certain; governs the Saturn system as a proprietor governs a property, months from anyone who could overrule him"
+        },
+        "room": "room.t15_spine",
+        "room_pack": "neighborhood.ligeia_terminal",
+        "tier": "major"
+      },
+      "kind": "npc"
+    }
+  },
+  "manifest": {
+    "digest": "0b87c57cbc11816f9fa12c50e0de39023ec01d0c3572a947a3a74344ae7ebef2",
+    "id": "tacsim.cast.ligeia_terminal",
+    "kind": "campaign_seed",
+    "requires": [
+      {
+        "id": "neighborhood.ligeia_terminal",
+        "version": 1
+      }
+    ],
+    "version": 1
+  }
+}
