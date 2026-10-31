@@ -1237,7 +1237,7 @@ fn value_of(tw: &mut TestWorld, tv: ObjId) -> u32 {
 
 /// **The `site.map` frame `who` gets** through the feed's own query (the engine's query seam,
 /// the typed snapshot): `args` the feed's params.
-fn map_frame(rig: &mut Rig, who: ObjId, args: Value) -> Value {
+pub(crate) fn map_frame(rig: &mut Rig, who: ObjId, args: Value) -> Value {
     let (mut out, mut fx) = (mush_core::Outbox::new(), mush_core::Effects::new());
     rig.tw.engine_mut().step(
         mush_core::Inbound::Query {
@@ -2564,8 +2564,9 @@ fn sm4b_the_cheap_gates_answer_before_the_search() {
 /// **The map shows only its own site's rigs** (the review's correctness/F1): B docked on Ahuna
 /// Flank, C on Occator Rim. C's rig driving on Occator — its leg in Occator's cells — is never
 /// drawn on B's Ahuna map: B's frames mid-drive are byte-identical to before it. Then C's rig,
-/// fresh from a loud sounding on Occator, is staff-placed onto Ahuna's ground: B sees it as an
-/// `o` with no sounding mark (the sounding was another site's), and C — none of whose rigs is on
+/// fresh from a loud sounding on Occator, is staff-placed onto Ahuna's ground: B, with no rig on
+/// the ground, sees it as a presence band (doc 32 cut CF.4: never an `o` beyond sight) with no
+/// sounding mark (the sounding was another site's), and C — none of whose rigs is on
 /// Occator's ground or in the bay now — is refused with `MAP_NO_RIGS`, naming no slot.
 #[test]
 #[allow(clippy::too_many_lines)]
@@ -2639,12 +2640,16 @@ fn sm4b_the_map_shows_only_its_own_sites_rigs() {
     );
     to_cell(&mut rig, c_tv, (150, 150));
     let site = map_frame(&mut rig, b, json!({ "view": "site" }));
-    let others = site["site"]["others"].as_array().expect("others");
-    assert_eq!(others.len(), 1, "{others:?}");
-    assert_eq!(others[0]["cell"], json!([150, 150]));
     assert_eq!(
-        others[0]["sounding"],
-        json!(false),
+        site["site"]["others"],
+        json!([]),
+        "beyond the sight of B's rigs (none out): a band, never a cell"
+    );
+    let presence = site["site"]["presence"].as_array().expect("presence");
+    assert_eq!(presence.len(), 1, "{presence:?}");
+    assert_eq!(
+        presence[0].get("sounding"),
+        None,
         "a sounding on another site is no mark here"
     );
     let out = run(&mut rig.tw, b, "+tv/map site");
@@ -2986,6 +2991,17 @@ fn without_mark(mut frame: Value) -> Value {
             other["sounding"] = json!(false);
         }
     }
+    // Doc 32 cut CF.4: beyond sight the mark rides the presence row and its line.
+    if let Some(rows) = frame["site"]["presence"].as_array_mut() {
+        for row in rows {
+            if let Some(object) = row.as_object_mut() {
+                object.remove("sounding");
+            }
+        }
+    }
+    if let Some(text) = frame["site"]["presence_line"].as_str() {
+        frame["site"]["presence_line"] = json!(text.replace(" (a sounding)", ""));
+    }
     for key in ["lines", "print"] {
         if let Some(lines) = frame["site"][key].as_array_mut() {
             for line in lines {
@@ -3021,9 +3037,10 @@ fn two_parties(rig: &mut Rig, stand: (i64, i64)) -> (ObjId, ObjId, ObjId, ObjId)
 /// the same pad, B's one rig in the bay at full charge. B's `site.map` frames (both views) and
 /// B's `+tv/map site` print before and after A's scan and quiet sounding are byte-identical — A's
 /// rig unmoved — none of B's grid rows holds `1`, `2`, `3`, `+` or `.`, B's readings are empty,
-/// and A's rig is an `o` whose only id is `other-1`. A's loud sounding then changes exactly one
-/// thing for B — the `others` row's `sounding` and the print's ` (a sounding)` — inside the IC
-/// hour, and nothing after it. No field, tier or address of A's reaches B.
+/// and A's rig, beyond the sight of B's rigs (none out), is a presence band and never an `o` (doc
+/// 32 cut CF.4). A's loud sounding then changes exactly one thing for B — the presence row's
+/// `sounding` and the print's ` (a sounding)` — inside the IC hour, and nothing after it. No
+/// field, tier or address of A's reaches B.
 #[test]
 #[allow(clippy::too_many_lines)]
 fn sm4b_a_second_principal_sees_no_ore_glyph() {
@@ -3072,17 +3089,14 @@ fn sm4b_a_second_principal_sees_no_ore_glyph() {
         }
         assert_eq!(frame["site"]["readings"], json!([]));
         let units = frame["units"].as_array().expect("units");
-        let others: Vec<&Value> = units.iter().filter(|u| u["glyph"] == "o").collect();
-        assert!(
-            others
-                .iter()
-                .all(|u| u["id"] == "other-1" && u["name"] == "rig")
-        );
+        assert!(units.iter().all(|u| u["glyph"] != "o"), "{units:?}");
     }
-    assert!(
-        after[1]["units"]
+    assert_eq!(
+        after[1]["site"]["presence"]
             .as_array()
-            .is_some_and(|units| units.iter().any(|u| u["id"] == "other-1"))
+            .map(std::vec::Vec::len),
+        Some(1),
+        "A's rig on B's presence picture"
     );
     // Past the title, the legend and the grid (the footer on): no class word, no address of A's.
     let vector: Vec<&str> = print_after.lines().skip(3 + 32).collect();
@@ -3103,7 +3117,7 @@ fn sm4b_a_second_principal_sees_no_ore_glyph() {
     let sounded_at = due_of(&mut rig.tw, a_tv);
     let _ = finish(&mut rig, a_tv, a);
     let loud = frames(&mut rig);
-    assert_eq!(loud[1]["site"]["others"][0]["sounding"], json!(true));
+    assert_eq!(loud[1]["site"]["presence"][0]["sounding"], json!(true));
     let unmarked: Vec<Value> = loud.iter().cloned().map(without_mark).collect();
     assert_eq!(unmarked, before, "only the mark changed");
     let print_loud = run(&mut rig.tw, b, "+tv/map site");

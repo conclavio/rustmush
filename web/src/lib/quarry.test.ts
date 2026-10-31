@@ -106,16 +106,16 @@ describe("site.map", () => {
       expect(frame.site!.addressed).toBe(mine ? 1 : null);
       expect(frame.grid.legend.map(([g]) => g)).toContain("V");
       // The side pane's two sentences ride as keys, whole (the pre-commit round, F10): the
-      // viewer's frame reads pockets and sees no other rig; the second principal's reads none
-      // and sees the viewer's rig — the very sentences its `lines` prints.
+      // viewer's frame reads pockets and sees no other rig; the second principal's reads none,
+      // and — with no rig of its own on the ground (doc 32 cut CF.4: exact cells only within
+      // sight) — sees the viewer's rig as a presence band, never an `Other rigs:` distance.
+      expect(frame.site!.other_rigs).toBeNull();
       if (mine) {
         expect(frame.site!.no_readings).toBeNull();
-        expect(frame.site!.other_rigs).toBeNull();
       } else {
         expect(frame.site!.no_readings).toBe("You have no readings of metals in view.");
-        expect(frame.site!.other_rigs).toBe("Other rigs: 500 m N");
         expect(frame.site!.lines).toContain(frame.site!.no_readings);
-        expect(frame.site!.lines).toContain(frame.site!.other_rigs);
+        expect(frame.site!.lines).toContain("Presence: N 200-500 m.");
       }
       if (mine) {
         expect(frame.site!.readings.every((r) => r.line.startsWith(r.text))).toBe(true);

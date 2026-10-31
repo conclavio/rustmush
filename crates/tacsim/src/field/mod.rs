@@ -57,6 +57,7 @@ pub mod carrier;
 pub(crate) mod close;
 pub(crate) mod commands;
 pub(crate) mod ground;
+pub(crate) mod known;
 pub(crate) mod parties;
 pub mod provider;
 pub mod record;
@@ -246,6 +247,7 @@ pub(crate) fn tell_site(ctx: &mut Ctx<'_>, site: &CanonicalId, text: &str) {
 pub fn register(reg: &mut Registrar<'_>) -> Result<(), ModError> {
     reg.state(FieldBook::default());
     reg.state(admit::OwedCloses::default());
+    reg.state(known::Sightings::default());
     // `+field` submits the host's authoritative action: the cockpit's command lane, then the
     // module's own default restored for whatever registers after.
     reg.classify_commands(mush_core::CommandCompatibility::Authoritative);
@@ -320,6 +322,8 @@ pub(crate) fn on_frames(
     frames: &[(ObjId, crate::arena::step::Frame)],
     now_ms: i64,
 ) {
+    // Doc 32 cut CF.4 (Q-CF-28): what each party's seated units hold on the ground.
+    known::note(ctx, task, frames);
     let Some((site, pending)) = ctx.w.module_state::<FieldBook>().and_then(|book| {
         let site = book.site_of_task(task)?.clone();
         let pending = book.fire.get(&site)?.clone();

@@ -215,6 +215,8 @@ fn refresh(ctx: &mut Ctx<'_>) {
         actor,
         cockpit::status_frame_held(held.match_id, &held.frame, &held.ranges),
     );
+    // Doc 32 cut CF.4: a field's picture, as every cockpit keyframe carries it.
+    let data = crate::port::site_map::cockpit_payload(ctx.w, &*ctx, actor, data);
     ctx.out.push(
         mush_core::Audience::Actor(actor),
         mush_proto::OutputEvent::Panel {

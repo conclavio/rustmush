@@ -21,8 +21,8 @@ use crate::heightfield::{self, Terrain};
 use crate::look::{self, Facing};
 use crate::overhead::{OverheadPicture, Up};
 use crate::overlay::{
-    self, Facet, Health, HealthMark, Heat, Hud, HudLock, LockAt, MapMark, Section, Spot, Status,
-    TapeMark, WeaponRow,
+    self, Facet, Health, HealthMark, Heat, Hud, HudLock, LockAt, MapGlyph, MapMark, Section, Spot,
+    Status, TapeMark, WeaponRow,
 };
 use crate::picture::{BUCKET_A_INTERVAL, Feeds, Look, Picture};
 use crate::raycast::{
@@ -763,6 +763,46 @@ pub fn sections_from(cockpit: &Value) -> Vec<Section> {
         .collect()
 }
 
+/// **The campaign layer an IC field's cockpit frame carries** (doc 32 cut
+/// CF.4; Q-CF-48, Q-CF-50): `campaign.marks` (`[x, y, glyph]`) in order, then
+/// each `ground` row's glyph at its cell — the same list, in the same order,
+/// the TUI's and the web's cockpit maps draw. Empty on a simulator frame.
+#[must_use]
+pub fn campaign_glyphs(cockpit: &Value) -> Vec<MapGlyph> {
+    let one = |v: Option<&Value>| {
+        let s = v?.as_str()?;
+        let mut chars = s.chars();
+        match (chars.next(), chars.next()) {
+            (Some(c), None) if !c.is_control() => Some(c),
+            _ => None,
+        }
+    };
+    let marks = cockpit
+        .pointer("/campaign/marks")
+        .and_then(Value::as_array)
+        .into_iter()
+        .flatten()
+        .filter_map(|mark| {
+            let row = mark.as_array()?;
+            Some(MapGlyph {
+                cell: (row.first()?.as_i64()?, row.get(1)?.as_i64()?),
+                glyph: one(row.get(2))?,
+            })
+        });
+    let ground = cockpit
+        .get("ground")
+        .and_then(Value::as_array)
+        .into_iter()
+        .flatten()
+        .filter_map(|row| {
+            Some(MapGlyph {
+                cell: cell_of(row.get("cell"))?,
+                glyph: one(row.get("glyph"))?,
+            })
+        });
+    marks.chain(ground).collect()
+}
+
 /// Draw the instruments over a rendered frame from the cockpit keyframe and
 /// the held `arena.map` (for its named spots): minimap, heat, weapons, the
 /// armour doll and the status strip.
@@ -800,7 +840,14 @@ pub fn draw_instruments(
         .collect();
     let cell = i64::from(arena.cell_cm().max(1));
     let you = cell_of(cockpit.get("cell")).unwrap_or((cam.x_cm / cell, cam.y_cm / cell));
-    overlay::draw_minimap(frame, arena, you, cam.heading_mdeg, &marks, &spots);
+    overlay::draw_minimap_with(
+        frame,
+        arena,
+        (you, cam.heading_mdeg),
+        &marks,
+        &spots,
+        &campaign_glyphs(cockpit),
+    );
 
     // Heat: the stock tanks on dev2 carry no heat model (`heat` is null), so
     // the gauge is drawn empty with a dash rather than left out.
@@ -887,6 +934,41 @@ mod tests {
         let parsed = serde_json::from_str::<Value>(text);
         assert!(parsed.is_ok(), "fixture: {parsed:?}");
         parsed.unwrap_or_default()
+    }
+
+    /// **Doc 32 cut CF.4** (Q-CF-48): the shared `field_frame.json` — keys held to
+    /// the server's by the tacsim gate — gives the map window its campaign layer:
+    /// every `campaign.marks` entry then every `ground` row, the order the TUI
+    /// and the web draw; the window draws them (the crate's square in its own
+    /// colour at its cell); a simulator frame has none and draws as before.
+    #[test]
+    fn cf4_the_map_window_draws_the_campaign_layer() {
+        let field = parsed(include_str!(
+            "../../../web/src/lib/fixtures/cockpit/field_frame.json"
+        ));
+        let glyphs = campaign_glyphs(&field);
+        let drawn: Vec<char> = glyphs.iter().map(|mark| mark.glyph).collect();
+        assert_eq!(drawn, ['D', '#', '#', '#', '3', '%', '&', '&']);
+        assert_eq!(glyphs.last().map(|mark| mark.cell), Some((9, 4)));
+        assert!(campaign_glyphs(&parsed(COCKPIT)).is_empty());
+        let map = map_from_feed(&parsed(MAP));
+        let mut with = Frame::new(320, 220);
+        let mut without = Frame::new(320, 220);
+        let mark = |kind| MapMark {
+            cell: (36, 14),
+            kind,
+        };
+        let marks = [mark(SpriteKind::Hostile)];
+        overlay::draw_minimap_with(&mut with, &map, ((6, 4), 0), &marks, &[], &glyphs);
+        overlay::draw_minimap_with(&mut without, &map, ((6, 4), 0), &marks, &[], &[]);
+        assert!(with != without, "the campaign layer is drawn");
+        let mut plain = Frame::new(320, 220);
+        overlay::draw_minimap(&mut plain, &map, (6, 4), 0, &marks, &[]);
+        assert!(plain == without, "no campaign layer, the minimap as before");
+        let crate_rgb = [180, 140, 90];
+        let found =
+            (0..with.height()).any(|y| (0..with.width()).any(|x| with.get(x, y) == crate_rgb));
+        assert!(found, "the crate's square, in its colour");
     }
 
     #[test]

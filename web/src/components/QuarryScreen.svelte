@@ -245,6 +245,7 @@
         </ul>
       {/if}
       {#if block.other_rigs}<p class="muted other-rigs">{block.other_rigs}</p>{/if}
+      {#if block.presence_line}<p class="muted presence">{block.presence_line}</p>{/if}
       <h3>log</h3>
       <ul>
         {#each block.log as l, i (i)}

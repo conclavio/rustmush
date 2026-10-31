@@ -97,7 +97,10 @@ export type MarkerKind =
   | "spot"
   | "red"
   | "blue"
-  | "wreck";
+  | "wreck"
+  // Doc 32 cut CF.4: a campaign-layer mark or a sensed ground object — ground,
+  // drawn as its glyph, never labelled, never clicked to lock (Q-CF-50).
+  | "campaign";
 
 /** **The viewer's relation to a contact** (doc 32 cut CF.0, Q-CF-12; frame
  * 9): what the body is coloured by, never its party. `own` and `friend` share
@@ -493,6 +496,34 @@ export interface CockpitFrame {
    * without a round trip; `null` from a server that does not send them. */
   max_speed_kph: number | null;
   reverse_kph: number | null;
+  /** **The campaign layer** (doc 32 cut CF.4; Q-CF-48, Q-CF-50): only an IC
+   * field's frame carries it, `null` otherwise. Its `marks` go down under the
+   * contacts in order; `legend` names their glyphs. */
+  campaign: CockpitCampaign | null;
+  /** **The ground objects the unit's sensors hold** (doc 32 cut CF.4;
+   * Q-CF-26): each at its absolute cell, drawn as its glyph. */
+  ground: CockpitGround[];
+  /** **The rig panel** (doc 32 cut CF.4; Q-CF-49): a rig's quarry-screen line,
+   * `null` on any other hull. */
+  rig: string | null;
+}
+
+/** One campaign-layer mark: its absolute cell and the glyph the server chose. */
+export interface CockpitMark {
+  cell: [number, number];
+  glyph: string;
+}
+
+/** The campaign layer a field's cockpit frame carries (doc 32 cut CF.4). */
+export interface CockpitCampaign {
+  marks: CockpitMark[];
+  legend: [string, string][];
+}
+
+/** One sensed ground object (doc 32 cut CF.4). */
+export interface CockpitGround {
+  cell: [number, number];
+  glyph: string;
 }
 
 /** One of the ground's named places, as `arena.map` carries it (16b cut V.1):
@@ -549,6 +580,9 @@ export interface ComposedWindow {
    * because a contact happened to be standing there. */
   terrain: string[];
   markers: Marker[];
+  /** Doc 32 cut CF.4: the campaign layer's legend pairs, present only when the
+   * frame carried a `campaign` block. */
+  legend?: [string, string][];
 }
 
 // ---------------------------------------------------------------------------
@@ -1081,7 +1115,43 @@ export function decodeCockpitFrame(data: unknown): CockpitFrame | null {
     weapons_free: typeof data.weapons_free === "boolean" ? data.weapons_free : null,
     max_speed_kph: optInt(data.max_speed_kph),
     reverse_kph: optInt(data.reverse_kph),
+    campaign: decodeCampaign(data.campaign),
+    ground: (Array.isArray(data.ground) ? data.ground : []).flatMap((g) => {
+      if (!isObj(g)) return [];
+      const cell = cellPair(g.cell);
+      const glyph = oneGlyph(g.glyph);
+      return cell !== null && glyph !== null ? [{ cell, glyph }] : [];
+    }),
+    rig: isObj(data.rig) ? optStr(data.rig.line, 160) : null,
   };
+}
+
+/** A one-character, non-control glyph, or `null` (server text). */
+function oneGlyph(raw: unknown): string | null {
+  if (typeof raw !== "string") return null;
+  const chars = [...raw];
+  if (chars.length !== 1) return null;
+  const c = chars[0] ?? "";
+  return c.charCodeAt(0) < 32 || c.charCodeAt(0) === 127 ? null : c;
+}
+
+/** Decode a frame's `campaign` block (doc 32 cut CF.4); `null` when absent. */
+function decodeCampaign(raw: unknown): CockpitCampaign | null {
+  if (!isObj(raw)) return null;
+  const marks = (Array.isArray(raw.marks) ? raw.marks : []).flatMap((m) => {
+    if (!Array.isArray(m) || m.length < 3) return [];
+    const cell = cellPair([m[0], m[1]]);
+    const glyph = oneGlyph(m[2]);
+    return cell !== null && glyph !== null ? [{ cell, glyph }] : [];
+  });
+  const legend = (Array.isArray(raw.legend) ? raw.legend : []).flatMap((p) => {
+    if (!Array.isArray(p) || p.length < 2) return [];
+    const glyph = oneGlyph(p[0]);
+    return glyph !== null && typeof p[1] === "string"
+      ? [[glyph, clean(p[1], "", 40)] as [string, string]]
+      : [];
+  });
+  return { marks, legend };
 }
 
 /**
@@ -1287,6 +1357,14 @@ export function composeWindow(
   for (const spot of map.spots) {
     put(spot.cell, spot.letter, "spot", spot.name);
   }
+  // Doc 32 cut CF.4 (Q-CF-48): the campaign layer, then the sensed ground
+  // objects — the TUI's `campaign_marks`, in its order.
+  for (const mark of frame.campaign?.marks ?? []) {
+    put(mark.cell, mark.glyph, "campaign", "");
+  }
+  for (const thing of frame.ground) {
+    put(thing.cell, thing.glyph, "campaign", "");
+  }
   if (frame.cell) {
     put(frame.cell, "@", "you", frame.callsign);
   }
@@ -1300,7 +1378,16 @@ export function composeWindow(
   for (let y = h - 1; y >= 0; y -= 1) {
     grid.push((south[y] ?? []).join(""));
   }
-  return { x0, y0, w, h, grid, terrain, markers };
+  return {
+    x0,
+    y0,
+    w,
+    h,
+    grid,
+    terrain,
+    markers,
+    ...(frame.campaign !== null ? { legend: frame.campaign.legend } : {}),
+  };
 }
 
 // ---------------------------------------------------------------------------
@@ -1797,6 +1884,10 @@ export function statusLines(frame: CockpitFrame): string[] {
   const pod = frame.ecm === null ? "" : `  EMCON ${frame.ecm}`;
   lines.push(`scope ${frame.scope}${pod}`);
   lines.push(lockLine(frame));
+  // Doc 32 cut CF.4 (Q-CF-49): a rig's quarry-screen line, as the TUI's.
+  if (frame.rig !== null) {
+    lines.push(frame.rig);
+  }
   return lines;
 }
 
@@ -2072,9 +2163,27 @@ export function markerLegend(win: ComposedWindow | null): string {
   const owns = markerOwners(win.markers);
   const named = (spots: boolean): string[] =>
     win.markers
-      .filter((m, i) => m.kind !== "you" && (m.kind === "spot") === spots && owns[i] === true)
+      .filter(
+        (m, i) =>
+          m.kind !== "you" &&
+          m.kind !== "campaign" &&
+          (m.kind === "spot") === spots &&
+          owns[i] === true,
+      )
       .map((m) => `${m.glyph} ${m.designator}`);
-  return [...named(false), ...named(true)].join("  ");
+  return [...named(false), ...named(true), ...campaignLegend(win)].join("  ");
+}
+
+/** Doc 32 cut CF.4: the campaign layer's legend pairs whose glyph still owns a
+ * cell, in the frame's order — last, as the TUI's (`campaign_legend`). */
+function campaignLegend(win: ComposedWindow): string[] {
+  const owns = markerOwners(win.markers);
+  const owned = new Set(
+    win.markers.filter((m, i) => m.kind === "campaign" && owns[i] === true).map((m) => m.glyph),
+  );
+  return (win.legend ?? [])
+    .filter(([glyph]) => owned.has(glyph))
+    .map(([glyph, label]) => `${glyph} ${label}`);
 }
 
 /** The cell size, in canvas pixels, from which every marker is labelled — and
@@ -2101,6 +2210,9 @@ export function labelledAt(
 ): boolean {
   if (kind === "spot") {
     return px >= LABEL_ALL_PX;
+  }
+  if (kind === "campaign") {
+    return false;
   }
   return kind === "hostile" || designator === lock || px >= LABEL_ALL_PX;
 }

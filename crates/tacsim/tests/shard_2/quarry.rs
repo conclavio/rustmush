@@ -1900,8 +1900,9 @@ fn sm9_the_site_map_frame_carries_what_the_screens_read() {
     assert_eq!(theirs["site"]["log"], json!([]));
     // The side panes' two sentences ride as keys, whole (the pre-commit round; the judge's
     // correctness/F10): A reads pockets, so no no-readings sentence; B reads none, so B's is
-    // `MAP_NO_READINGS` exactly, the very line `lines` prints; A's two rigs are B's other rigs,
-    // and `lines`' other-rigs run, its continuations unwrapped, is that sentence word for word.
+    // `MAP_NO_READINGS` exactly, the very line `lines` prints; A's two rigs, beyond the sight of
+    // B's (none out), are B's presence picture (doc 32 cut CF.4), and `lines`' presence run, its
+    // continuations unwrapped, is that sentence word for word.
     assert_eq!(site["no_readings"], Value::Null);
     let theirs_lines: Vec<&str> = theirs["site"]["lines"]
         .as_array()
@@ -1915,13 +1916,14 @@ fn sm9_the_site_map_frame_carries_what_the_screens_read() {
     );
     assert_eq!(theirs["site"]["no_readings"], none.as_str());
     assert_eq!(theirs_lines.first().copied(), Some(none.as_str()));
-    let other_rigs = theirs["site"]["other_rigs"]
+    assert_eq!(theirs["site"]["other_rigs"], Value::Null, "no rig in sight");
+    let other_rigs = theirs["site"]["presence_line"]
         .as_str()
-        .expect("A's rigs are B's other rigs");
+        .expect("A's rigs are B's presence picture");
     let at = theirs_lines
         .iter()
-        .position(|line| line.starts_with("Other rigs: "))
-        .expect("the other-rigs line");
+        .position(|line| line.starts_with("Presence: "))
+        .expect("the presence line");
     let mut unwrapped = theirs_lines[at].to_owned();
     for more in theirs_lines[at + 1..]
         .iter()

@@ -3292,9 +3292,9 @@ fn sm12b_the_restart_changes_nothing() {
 
 /// **T10 — players see the drones as other rigs** (doc 20 cut SM.12b; §12.3): a licensed pilot's
 /// Dray-P on the pad with a leased rig: the house's first loud sounding reaches the pilot as
-/// SM.4a's bearing-and-band line, naming nothing; `+tv/1 map` lists a yard rig among "Other rigs:"
-/// while it is out, and the player's `site.map` frame carries one `site.others` row for each
-/// yard rig on the ground; standing in F the player's rig is refused mining and staking ("That
+/// SM.4a's bearing-and-band line, naming nothing; the player's `site.map` frame carries one
+/// presence row for each yard rig on the ground, and a `site.others` row (an `Other rigs:` entry)
+/// for each within sight of the player's rig (doc 32 cut CF.4); standing in F the player's rig is refused mining and staking ("That
 /// block is under claim.") and the contest (`CONTEST_HELD`); it drives home from F.
 #[test]
 #[allow(clippy::too_many_lines)]
@@ -3354,8 +3354,11 @@ fn sm12b_players_see_the_drones_as_other_rigs() {
     let _ = act_go(&mut rig, pilot, "+tv/1 launch go");
     let _ = finish(&mut rig, tv, pilot);
     let map = run(&mut rig.tw, pilot, "+tv/1 map");
-    assert!(map.contains("Other rigs: "), "{map}");
+    assert!(map.contains("Presence: "), "{map}");
     let frame = map_frame(&mut rig, pilot, json!({ "view": "site" }));
+    let seen = frame["site"]["presence"]
+        .as_array()
+        .map_or(0, std::vec::Vec::len);
     let others = frame["site"]["others"]
         .as_array()
         .expect("the others")
@@ -3371,13 +3374,15 @@ fn sm12b_players_see_the_drones_as_other_rigs() {
     println!("SM.12b T10 the frame's others: {others}; yard rigs on the ground: {on_ground}");
     assert!(on_ground >= 1, "a yard rig is out on the ground");
     assert_eq!(
-        others, on_ground,
-        "the frame's other rigs are the yard's on the ground"
+        seen, on_ground,
+        "the frame's presence picture is the yard's rigs on the ground"
     );
+    assert!(others <= on_ground, "exact cells only within sight");
     assert!(
-        frame["site"]["other_rigs"]
-            .as_str()
-            .is_some_and(|line| line.starts_with("Other rigs: ")),
+        others == 0
+            || frame["site"]["other_rigs"]
+                .as_str()
+                .is_some_and(|line| line.starts_with("Other rigs: ")),
         "{}",
         frame["site"]
     );

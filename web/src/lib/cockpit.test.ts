@@ -1782,3 +1782,50 @@ describe("17b cut M5.5", () => {
     expect(widest).toBe(42);
   });
 });
+
+// Doc 32 cut CF.4 (Q-CF-48, Q-CF-49): an IC field's cockpit frame — the shared
+// `field_frame.json`, whose keys the tacsim gate holds to the server's — draws
+// its campaign layer under the field layer, glyph for glyph where the TUI's
+// `render_cockpit_map_rows` does (its `cf4_the_cockpit_map_draws_the_campaign_layer_under_the_field_layer`).
+describe("the campaign layer (doc 32 cut CF.4)", () => {
+  function theFieldFrame(): CockpitFrame {
+    const frame = decodeCockpitFrame(json("field_frame.json"));
+    if (frame === null) {
+      throw new Error("the committed field frame did not decode");
+    }
+    return frame;
+  }
+
+  it("draws the marks and the ground under the contacts and names their pairs last", () => {
+    const win = composeWindow(theMap(), theFieldFrame(), 96, 20);
+    const at = (x: number, y: number): string => (win.grid[win.h - 1 - y] ?? "").charAt(x);
+    expect(at(3, 1)).toBe("D");
+    expect(at(11, 5)).toBe("#");
+    expect(at(8, 2)).toBe("3");
+    expect(at(4, 6)).toBe("%");
+    expect(at(9, 4)).toBe("&");
+    expect(at(6, 4)).toBe("@");
+    expect(at(2, 9)).toBe("+");
+    expect(markerLegend(win)).toBe(
+      "x BA  + RB  ? X3  A The Ford  # claim  3 rich, 3 t a cycle  % wreck or remains  & crate",
+    );
+  });
+
+  it("never labels a campaign mark or offers it to lock", () => {
+    expect(labelledAt("campaign", "", null, 64)).toBe(false);
+    const win = composeWindow(theMap(), theFieldFrame(), 96, 20);
+    const plan = labelPlan(win.markers, null, 64);
+    win.markers.forEach((m, i) => {
+      if (m.kind === "campaign") expect(plan[i]).toBe(false);
+    });
+  });
+
+  it("carries the rig line on the status block, and a simulator frame none of it", () => {
+    expect(statusLines(theFieldFrame())).toContain("Rig 1: (6, 4), charge 82 %, hopper 0.4 of 2 t.");
+    const plain = theFrame();
+    expect(plain.campaign).toBeNull();
+    expect(plain.ground).toEqual([]);
+    expect(plain.rig).toBeNull();
+    expect(composeWindow(theMap(), plain, 39, 20).legend).toBeUndefined();
+  });
+});

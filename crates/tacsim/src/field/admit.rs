@@ -34,6 +34,8 @@ pub(crate) struct OwedClose {
     pub ordinal: u32,
     /// The units it leaves: the record's new unit index.
     pub units: Vec<crate::surface::site_record::LeftUnit>,
+    /// **What each principal learned on the ground** (doc 32 cut CF.4; Q-CF-28).
+    pub known: Vec<super::known::Learned>,
 }
 
 /// The owed closes, by site (module state beside [`FieldBook`]).
@@ -120,7 +122,7 @@ pub(crate) fn tick(ctx: &mut Ctx<'_>, _tag: &str, _scene: Option<mush_core::Scen
                     ),
                 );
             }
-            owe_close(ctx, &site, &record, None);
+            owe_close(ctx, &site, &record, None, Vec::new());
         }
     }
 }
@@ -147,6 +149,7 @@ pub(crate) fn owe_close(
     site: &CanonicalId,
     record: &SiteRecord,
     left: Option<Vec<crate::surface::site_record::LeftUnit>>,
+    known: Vec<super::known::Learned>,
 ) {
     let Some(open) = record.promoted.as_ref() else {
         return;
@@ -165,6 +168,7 @@ pub(crate) fn owe_close(
                 actor,
                 ordinal: open.ordinal,
                 units,
+                known,
             },
         );
     }

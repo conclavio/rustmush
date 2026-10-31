@@ -58,6 +58,9 @@ use crate::surface::excursion::{
 use crate::surface::geology::{FieldGround, OreFamily, Word, by_family};
 use crate::surface::reading::{FieldReading, Footing, READING_RULE_VERSION, read_r1, read_r2};
 
+pub(crate) mod picture;
+pub(crate) use picture::cockpit_payload;
+
 /// The feed (doc 20 §10). Registered by the tacsim layer whether or not it is enabled, as every
 /// tacsim feed is: a disabled layer answers with the reason.
 pub const SITE_MAP_FEED: &str = "site.map";
@@ -1106,7 +1109,7 @@ fn claim_edges(letters: &[char]) -> Vec<((i64, i64), char)> {
 /// **One claimed block on the map** (doc 20 cut SM.10): its letter, whether an org holds it, the
 /// holder's name and whether it is the viewer's. Public facts only (D13).
 #[derive(Clone, Debug, PartialEq, Eq)]
-struct ClaimMark {
+pub(crate) struct ClaimMark {
     letter: char,
     held: bool,
     holder: String,
@@ -1159,9 +1162,25 @@ struct Overlays {
     claims: Vec<((usize, usize), char)>,
     pits: Vec<((usize, usize), char)>,
     readings: BTreeMap<(usize, usize), char>,
+    /// Doc 32 cut CF.4 (Q-CF-28): the salvage the viewer sees or remembers, `%` or `&`.
+    salvage: Vec<((usize, usize), char)>,
     hull: Option<(usize, usize)>,
     others: Vec<(usize, usize)>,
+    /// Doc 32 cut CF.4 (Q-CF-48): the field layer's contacts, in the cockpit's glyphs.
+    contacts: Vec<FieldMark>,
+    /// Doc 32 cut CF.4: the unit the viewer sits in, when it is not one of their rigs.
+    unit: Option<FieldMark>,
     mine: Vec<MineOnMap>,
+}
+
+/// **A field-layer marker on the map** (doc 32 cut CF.4): its frame cell, its glyph, the
+/// designator a pilot types and its class word.
+#[derive(Clone, Debug, PartialEq, Eq)]
+struct FieldMark {
+    at: (usize, usize),
+    glyph: char,
+    id: String,
+    name: String,
 }
 
 /// **The best reading glyph of each frame cell** (the site view shows the best of a cell's four
@@ -1180,8 +1199,9 @@ fn best_readings(
 }
 
 /// **Paint the layers over the terrain** (pure): each later layer over the earlier — the letters,
-/// the edges, the pits, the readings, `H`, every other rig's `o`, the viewer's slot digits (two or
-/// more on the ground) and last each of the viewer's rigs' `@`.
+/// the edges, the pits, the readings, the salvage (doc 32 cut CF.4), `H`, every other rig's `o`,
+/// the field layer's contacts and the viewer's own unit in a field (CF.4), the viewer's slot
+/// digits (two or more on the ground) and last each of the viewer's rigs' `@`.
 fn compose(grid: &mut [Vec<char>], layers: &Overlays) {
     let mut put = |(fx, fy): (usize, usize), glyph: char| {
         if let Some(cell) = grid.get_mut(fy).and_then(|row| row.get_mut(fx)) {
@@ -1199,11 +1219,17 @@ fn compose(grid: &mut [Vec<char>], layers: &Overlays) {
     for (at, glyph) in &layers.readings {
         put(*at, *glyph);
     }
+    for (at, glyph) in &layers.salvage {
+        put(*at, *glyph);
+    }
     if let Some(at) = layers.hull {
         put(at, 'H');
     }
     for at in &layers.others {
         put(*at, 'o');
+    }
+    for mark in layers.contacts.iter().chain(layers.unit.iter()) {
+        put(mark.at, mark.glyph);
     }
     if layers.mine.len() >= 2 {
         for (slot, _, east) in &layers.mine {
@@ -1239,13 +1265,25 @@ fn frame_marks(grid: &[Vec<char>], layers: &Overlays) -> Value {
     } else {
         BTreeSet::new()
     };
-    let others: BTreeSet<(usize, usize)> = layers.others.iter().copied().collect();
+    let others: BTreeSet<(usize, usize)> = layers
+        .others
+        .iter()
+        .copied()
+        .chain(
+            layers
+                .contacts
+                .iter()
+                .chain(layers.unit.iter())
+                .map(|mark| mark.at),
+        )
+        .collect();
     let over_hull =
         |at: &(usize, usize)| others.contains(at) || digits.contains(at) || rigs.contains(at);
     let over_letter = |at: &(usize, usize)| {
         layers.claims.iter().any(|(c, _)| c == at)
             || layers.pits.iter().any(|(c, _)| c == at)
             || layers.readings.contains_key(at)
+            || layers.salvage.iter().any(|(c, _)| c == at)
             || layers.hull.as_ref() == Some(at)
             || over_hull(at)
     };
@@ -1291,6 +1329,15 @@ fn list_units(grid: &[Vec<char>], layers: &Overlays, addressed: Option<u8>) -> V
             units.push(json!({
                 "id": format!("other-{k}"), "name": "rig", "cell": [at.0, at.1],
                 "glyph": "o", "you": false,
+            }));
+        }
+    }
+    // Doc 32 cut CF.4: the field layer's markers, by designator, then the viewer's own unit.
+    for mark in layers.contacts.iter().chain(layers.unit.iter()) {
+        if glyph_at(mark.at) == Some(mark.glyph) {
+            units.push(json!({
+                "id": mark.id, "name": mark.name, "cell": [mark.at.0, mark.at.1],
+                "glyph": mark.glyph.to_string(), "you": false,
             }));
         }
     }
@@ -1723,9 +1770,75 @@ pub(crate) fn site_map_frame(
         }
         Some((usize::try_from(fx).ok()?, usize::try_from(fy).ok()?))
     };
+    // Doc 32 cut CF.4 (Q-CF-48): the campaign layer, built once by the builder the cockpit's
+    // `campaign` block uses, and mapped into this window below. Every flight on the ground at the
+    // frame's instant (the tick's placement rule, so the bands never lag the grid), the viewer's
+    // rigs on the ground as the eyes, and a loud sounding inside the IC hour made on THIS site
+    // (the review's correctness/F1) as heard.
+    let mine: BTreeSet<ObjId> = rigs.iter().map(|rig| rig.rig.tv).collect();
+    let flying: Vec<(ObjId, Option<RigRecord>, (i64, i64))> = crate::surface::act::world_rigs(w)
+        .into_iter()
+        .filter(|tv| !mine.contains(tv))
+        .filter_map(|tv| {
+            let record = reads.rig(tv).ok().flatten();
+            match place_of(w, record.as_ref(), tv, (&entry, berth.domain), None, now) {
+                Place::Ground(cell) => Some((tv, record, cell)),
+                Place::Bay | Place::Away => None,
+            }
+        })
+        .collect();
+    let observers: Vec<(u8, (i64, i64))> = on_ground
+        .iter()
+        .filter_map(|rig| match rig.place {
+            Place::Ground(cell) => Some((rig.rig.slot, cell)),
+            Place::Bay | Place::Away => None,
+        })
+        .collect();
+    let heard: BTreeSet<ObjId> = flying
+        .iter()
+        .filter(|(_, record, _)| loud_sounding(record.as_ref(), &entry, now))
+        .map(|(tv, _, _)| *tv)
+        .collect();
+    let flights: Vec<crate::surface::presence::Flight> = flying
+        .iter()
+        .map(|(tv, _, cell)| crate::surface::presence::Flight {
+            tv: *tv,
+            cell: *cell,
+            class: crate::surface::presence::hull_class(w, *tv),
+        })
+        .collect();
+    let layer = picture::campaign_layer(
+        w,
+        reads,
+        actor,
+        &picture::LayerInputs {
+            entry: &entry,
+            site: &site,
+            ground: &ground,
+            observers: &observers,
+            flights: &flights,
+            own: &mine,
+            heard: &heard,
+            eyes: picture::Eyes::Surface(&observers),
+            now,
+        },
+    );
+    // Doc 32 cut CF.4 — what Q-CF-48 and Q-CF-49 make of SM.4b's exact rig cells: the campaign
+    // layer carries the presence picture (Q-CF-15), so another flight is drawn at its cell, and
+    // named in metres, only within sight of one of the viewer's rigs on the ground — the same
+    // sight the presence picture names a hull's class at and the record's ground is shown within
+    // (Q-CF-28). Beyond it the flight is its band; inside a field, a sensor contact.
+    let others: Vec<(ObjId, Option<RigRecord>, (i64, i64))> = flying
+        .iter()
+        .filter(|(_, _, cell)| {
+            observers
+                .iter()
+                .any(|(_, at)| cells_apart(*at, *cell) <= crate::surface::presence::SIGHT_CELLS)
+        })
+        .cloned()
+        .collect();
     // The viewer's own readings, the family shown, and its counts.
-    let row = reads.chart(actor, &entry).ok().flatten();
-    let (sounded, scanned) = viewer_readings(&site, row.as_ref());
+    let (sounded, scanned) = (&layer.sounded, &layer.scanned);
     let in_view_pocket = |s: &&Sounded| frame_cell(pocket_cell(s.pocket)).is_some();
     let in_view_field = |s: &&Scanned| frame_cell(field_cell(s.field)).is_some();
     let family = family.unwrap_or_else(|| {
@@ -1817,66 +1930,72 @@ pub(crate) fn site_map_frame(
             }
         }
     }
-    // ---- the layers above the terrain, in frame cells ----
-    let block_side = address::CELLS_PER_BLOCK;
-    let mut layers = Overlays::default();
-    for by in 0..crate::surface::ground::SITE_BLOCKS {
-        for bx in 0..crate::surface::ground::SITE_BLOCKS {
-            let Some(letter) = address::letter_of_block(bx, by) else {
-                continue;
-            };
-            let corner = (bx * block_side, by * block_side + block_side - 1);
-            if let Some(at) = frame_cell(corner) {
-                layers.letters.push((at, letter));
-            }
-        }
-    }
+    // ---- the layers above the terrain, in frame cells: the campaign layer's (CF.4) ----
+    let mut layers = Overlays {
+        letters: layer
+            .letters
+            .iter()
+            .filter_map(|(corner, letter)| frame_cell(*corner).map(|at| (at, *letter)))
+            .collect(),
+        ..Overlays::default()
+    };
     // Doc 20 cut SM.10 (the brief's 3.8 item 22): a live claim's block edge, the same for every
     // viewer, never over a block's letter.
-    let claimed = claimed_blocks(w, reads, &entry, actor, now);
-    let claimed_letters: Vec<char> = claimed.iter().map(|mark| mark.letter).collect();
-    let claim_cells: BTreeSet<(usize, usize)> = claim_edges(&claimed_letters)
-        .into_iter()
-        .filter_map(|(cell, _)| frame_cell(cell))
+    let claimed = &layer.claimed;
+    let claim_cells: BTreeSet<(usize, usize)> = layer
+        .claim_cells
+        .iter()
+        .filter_map(|cell| frame_cell(*cell))
         .filter(|at| !layers.letters.iter().any(|(letter_at, _)| letter_at == at))
         .collect();
     layers.claims = claim_cells.into_iter().map(|at| (at, '#')).collect();
-    layers.pits = pit_layer(reads, &entry, &ground)
-        .into_iter()
-        .filter_map(|(pocket, glyph)| frame_cell(pocket_cell(pocket)).map(|at| (at, glyph)))
+    layers.pits = layer
+        .pits
+        .iter()
+        .filter_map(|(cell, glyph)| frame_cell(*cell).map(|at| (at, *glyph)))
         .collect();
     layers.readings = best_readings(sounded.iter().filter_map(|s| {
         frame_cell(pocket_cell(s.pocket)).map(|at| (at, reading_glyph(&s.classes, family)))
     }));
-    let hull_here = crate::port::coop::programme_port(w).is_some_and(|port| {
-        port.map.hulls.iter().any(|row| {
-            matches!(
-                crate::port::ship::berth_of(w, ObjId(row.hull)),
-                crate::port::ship::Berth::Docked { map, .. } if map.entry == entry
-            )
-        })
-    });
-    layers.hull = if hull_here {
-        frame_cell(PAD_CELL)
-    } else {
-        None
-    };
-    let mine: BTreeSet<ObjId> = rigs.iter().map(|rig| rig.rig.tv).collect();
-    let others: Vec<(ObjId, Option<RigRecord>, (i64, i64))> = crate::surface::act::world_rigs(w)
-        .into_iter()
-        .filter(|tv| !mine.contains(tv))
-        .filter_map(|tv| {
-            let record = reads.rig(tv).ok().flatten();
-            match place_of(w, record.as_ref(), tv, (&entry, berth.domain), None, now) {
-                Place::Ground(cell) => Some((tv, record, cell)),
-                Place::Bay | Place::Away => None,
-            }
-        })
+    layers.hull = layer.pad.and_then(frame_cell);
+    // Doc 32 cut CF.4 (Q-CF-28): the salvage the viewer sees now or remembers, drawn.
+    layers.salvage = layer
+        .salvage
+        .iter()
+        .filter_map(|thing| frame_cell(thing.cell).map(|at| (at, thing.glyph())))
         .collect();
     layers.others = others
         .iter()
         .filter_map(|(_, _, cell)| frame_cell(*cell))
         .collect();
+    // Doc 32 cut CF.4 (Q-CF-48): the field layer — the viewer's own held cockpit frame of the
+    // field open here, its contacts in the cockpit's glyphs and the unit they sit in.
+    let field_layer = picture::field_layer(w, actor, &entry);
+    if let Some(field) = &field_layer {
+        layers.contacts = field
+            .contacts
+            .iter()
+            .filter_map(|contact| {
+                frame_cell(contact.cell).map(|at| FieldMark {
+                    at,
+                    glyph: contact.glyph,
+                    id: contact.designator.clone(),
+                    name: contact.class.clone(),
+                })
+            })
+            .collect();
+        layers.unit = field
+            .unit
+            .1
+            .filter(|_| !mine.contains(&field.unit.0))
+            .and_then(frame_cell)
+            .map(|at| FieldMark {
+                at,
+                glyph: '@',
+                id: field.callsign.clone(),
+                name: field.callsign.clone(),
+            });
+    }
     layers.mine = on_ground
         .iter()
         .filter_map(|rig| match rig.place {
@@ -1972,126 +2091,35 @@ pub(crate) fn site_map_frame(
     }
     readings.sort_by(|a, b| (a.0, &a.1).cmp(&(b.0, &b.1)));
     readings.truncate(MAX_READING_ROWS);
-    let battery_of = |tv: ObjId| {
-        w.module_state::<PortHandles>()
-            .and_then(|handles| handles.surface_tools.clone())
-            .and_then(|tools| {
-                crate::surface::act::rig_battery_id(w, tv)
-                    .and_then(|id| crate::surface::act::battery_of(&tools, &id).cloned())
-            })
-    };
-    let pool_unit = tv::pool_unit(w);
     let read = |endpoint: EndpointRef, good: &CanonicalId| reads.pool(endpoint, good);
-    let ramp = berth.ramp_label.clone();
     let mut rig_rows: Vec<Value> = Vec::new();
     let mut rig_lines: Vec<String> = Vec::new();
     let mut moving = false;
     for rig in &rigs {
-        let battery = battery_of(rig.rig.tv);
-        let charge = match (&battery, &rig.record) {
-            (Some(battery), record) => {
-                let record = record
-                    .clone()
-                    .unwrap_or_else(|| RigRecord::fresh(rig.rig.tv, battery));
-                Some(crate::surface::act::percent(
-                    charge_shown(&record, now, battery),
-                    battery,
-                ))
-            }
-            (None, _) => None,
-        };
-        let hopper = tv::hopper_load_with(w, rig.rig.tv, pool_unit.as_ref(), &read)
-            .map_or_else(|_| "?".to_owned(), |(kg, cap)| tv::hopper_text(kg, cap));
-        let act = rig.record.as_ref().and_then(|record| record.act.as_ref());
         let cell = match rig.place {
             Place::Ground(cell) => Some(cell),
             Place::Bay | Place::Away => None,
         };
-        // Only an act on this very site carries its leg here — [`place_of`]'s own rule (a leg on
-        // another site's ground is in that site's cells), so a client that places the viewer's
-        // rigs along their legs (the SM.9 lead's 0z ruling 1) never draws one this map does not.
-        let leg = act.filter(|act| act.site == entry).and_then(|act| {
-            act.params.leg().map(|(waypoints, _)| {
-                moving = true;
-                let launch = if act.params.launches() {
-                    i64::from(LAUNCH_S)
-                } else {
-                    0
-                };
-                json!({
-                    "started_ic": act.started_ic.saturating_add(launch),
-                    "waypoints": waypoints,
-                })
-            })
-        });
-        let doing = act.map_or_else(String::new, |act| {
-            format!(
-                "; {}, there {}",
-                crate::surface::act::doing_words(act.kind, &act.params, &ramp),
-                tv::due_words(w, act.due_ic)
-            )
-        });
-        let place = match (rig.place, cell) {
-            (_, Some((x, y))) => format!("({x}, {y})"),
-            (Place::Bay, None) => "in the bay".to_owned(),
-            (_, None) => "away".to_owned(),
-        };
-        let rig_line = format!(
-            "Rig {}: {place}, charge {} %, hopper {hopper}{doing}.",
-            rig.rig.slot,
-            charge.map_or_else(|| "?".to_owned(), |c| c.to_string())
+        let row = rig_row(
+            w,
+            reads,
+            actor,
+            (&rig.rig, rig.record.as_ref()),
+            (rig.place, cell),
+            (&entry, &berth.ramp_label),
+            now,
         );
-        // Doc 20 cut SM.9 (the brief's 3.3 item 7, lead ruling 4): the run as the operator's
-        // own projection shows it — never `RigRecord.run`, which holds the pocket's truth.
-        let run = projected_run(w, actor, rig.rig.tv);
-        // Doc 20 cut SM.8's queue (its lead note): a rig in the bay with an unload queued says
-        // so, in `+tv` status's own words, from the record — never "idle".
-        let queued = rig
-            .record
-            .as_ref()
-            .and_then(|record| record.queued.as_ref())
-            .map(|_| tv::QUEUED_LINE.trim());
-        // Doc 20 cut SM.11 (lead ruling 10): the viewer's own plan as `PlanView` shows it — step
-        // words, the step, the deadline and the end's word, never a class or a tonnage.
-        let plan = rig
-            .record
-            .as_ref()
-            .and_then(|record| record.plan.as_ref())
-            .filter(|plan| plan.author == actor)
-            .map_or(Value::Null, plan_value);
-        rig_rows.push(json!({
-            "slot": rig.rig.slot,
-            "mark": rig.rig.mark,
-            "cell": cell.map(|(x, y)| json!([x, y])),
-            "charge_pct": charge,
-            "hopper": hopper,
-            "act": act.map(|act| json!({ "kind": act.kind.word(), "due_ic": act.due_ic })),
-            "leg": leg,
-            "line": rig_line,
-            "run": run,
-            "queued": queued,
-            "plan": plan,
-        }));
-        rig_lines.push(rig_line);
+        moving |= row.moving;
+        rig_rows.push(row.value);
+        rig_lines.push(row.line);
     }
     // Other rigs: where, and a loud sounding inside the IC hour (§5's transient mark) — one
     // made on THIS site (the review's correctness/F1: a sounding heard on another site's ground
     // is no mark here).
     let mut other_rows: Vec<Value> = Vec::new();
     let mut other_words: Vec<String> = Vec::new();
-    for (_, record, cell) in &others {
-        let sounding = record
-            .as_ref()
-            .and_then(|record| record.last.as_ref())
-            .is_some_and(|last| {
-                last.site == entry
-                    && last.result == crate::surface::excursion::ActResult::Done
-                    && matches!(
-                        last.span,
-                        Some(crate::surface::excursion::ReadSpan::Sound { quiet: false, .. })
-                    )
-                    && last.at_ic >= now.saturating_sub(crate::surface::excursion::IC_HOUR)
-            });
+    for (tv, _, cell) in &others {
+        let sounding = heard.contains(tv);
         let (m, dir) = bearing_words(reference, *cell);
         other_rows
             .push(json!({ "cell": [cell.0, cell.1], "m": m, "dir": dir, "sounding": sounding }));
@@ -2101,41 +2129,25 @@ pub(crate) fn site_map_frame(
         ));
     }
     // Doc 32 cut CF.1 (Q-CF-15): the presence picture, seen from the viewer's nearest rig on the
-    // ground, else from the pad.
-    let observers: Vec<(u8, (i64, i64))> = on_ground
-        .iter()
-        .filter_map(|rig| match rig.place {
-            Place::Ground(cell) => Some((rig.rig.slot, cell)),
-            Place::Bay | Place::Away => None,
-        })
-        .collect();
-    // Rendered from the frame's own `others` (the tick's placement rule at the frame's instant), so
-    // the bands never lag the grid; the tick publishes the same rule as its book for CF.2.
-    let flights: Vec<crate::surface::presence::Flight> = others
-        .iter()
-        .map(|(tv, _, cell)| crate::surface::presence::Flight {
-            tv: *tv,
-            cell: *cell,
-            class: crate::surface::presence::hull_class(w, *tv),
-        })
-        .collect();
-    let seen = crate::surface::presence::seen_from(&flights, &mine, &observers, PAD_CELL);
-    let presence_line = crate::surface::presence::presence_line(&seen);
+    // ground, else from the pad — the campaign layer's.
+    let seen = &layer.seen;
+    let presence_line = crate::surface::presence::presence_line(seen);
     // Doc 32 cut CF.1 (Q-CF-30, Q-CF-28): the field open on the site, named; and what the record
     // holds within sight of the viewer's own rigs on the ground — never the whole record.
-    let site_record = reads.site_record(&entry).ok().flatten();
-    let field_line = site_record
-        .as_ref()
-        .and_then(crate::surface::site_record::SiteRecord::open_field)
-        .map(|field| {
-            crate::surface::site_record::MAP_FIELD_OPEN
-                .replace("{ordinal}", &field.ordinal.to_string())
-                .replace("{site}", &berth.name)
-        });
-    let ground_seen: Vec<(u64, String, Value)> = site_record
-        .as_ref()
-        .map(|record| ground_in_sight(record, &observers))
-        .unwrap_or_default();
+    let field_line = layer.field.as_ref().map(|field| {
+        let open = crate::surface::site_record::MAP_FIELD_OPEN
+            .replace("{ordinal}", &field.ordinal.to_string())
+            .replace("{site}", &berth.name);
+        // Doc 32 cut CF.4: what the field layer drew, or why it drew nothing.
+        match &field_layer {
+            Some(layer) => format!(
+                "{open} {}",
+                field_words(layer.contacts.len(), layer.lock.as_deref())
+            ),
+            None => format!("{open} {MAP_FIELD_UNSEATED}"),
+        }
+    });
+    let ground_seen: Vec<(u64, String, Value)> = ground_rows(&layer.salvage, &observers);
     let ground_line = (!ground_seen.is_empty()).then(|| {
         format!(
             "On the ground: {}.",
@@ -2198,6 +2210,18 @@ pub(crate) fn site_map_frame(
     if let Some(line) = &hold_line {
         lines.push(line.clone());
     }
+    // Doc 32 cut CF.4: the glyphs doc 20's legend line does not name, only when drawn.
+    let extras = extra_legend(&grid, &layers);
+    if !extras.is_empty() {
+        lines.extend(wrap(&format!(
+            "Also on this map: {}.",
+            extras
+                .iter()
+                .map(|(glyph, label)| format!("{glyph} {label}"))
+                .collect::<Vec<_>>()
+                .join("  ")
+        )));
+    }
     let title = match (view, addressed) {
         (MapView::Drive { .. }, Some(rig)) => MAP_TITLE_DRIVE
             .replace("{n}", &rig.rig.slot.to_string())
@@ -2241,6 +2265,17 @@ pub(crate) fn site_map_frame(
         ["V", "pit, worked out"],
         ["#", "claim"],
     ]);
+    let legend = match legend {
+        Value::Array(mut pairs) => {
+            pairs.extend(
+                extras
+                    .iter()
+                    .map(|(glyph, label)| json!([glyph.to_string(), label])),
+            );
+            Value::Array(pairs)
+        }
+        other => other,
+    };
     // Doc 20 cut SM.9 (the brief's 3.3 item 9, D16): the addressed rig's own projection's log,
     // only this operator's and this excursion's lines.
     let log = addressed
@@ -2330,6 +2365,34 @@ pub(crate) fn site_map_frame(
         if let Some(line) = &field_line {
             block.insert("field".to_owned(), json!(line));
         }
+        // Doc 32 cut CF.4 (Q-CF-48): the field layer's vector form, only while the viewer holds a
+        // frame of the field open here — window-relative cells, as `units` are.
+        if let Some(field) = &field_layer {
+            let contacts: Vec<Value> = layers
+                .contacts
+                .iter()
+                .map(|mark| {
+                    let relation = field
+                        .contacts
+                        .iter()
+                        .find(|contact| contact.designator == mark.id)
+                        .map_or("unknown", |contact| contact.relation);
+                    json!({
+                        "id": mark.id, "cell": [mark.at.0, mark.at.1],
+                        "glyph": mark.glyph.to_string(), "relation": relation,
+                    })
+                })
+                .collect();
+            block.insert(
+                "field_layer".to_owned(),
+                json!({
+                    "unit": field.callsign,
+                    "contacts": contacts,
+                    "held": field.contacts.len(),
+                    "lock": field.lock,
+                }),
+            );
+        }
         // Doc 20 cut SM.10 (D13): the live claims, omitted when there are none, so a frame with
         // no claim is byte-identical to SM.9's.
         if !claimed.is_empty() {
@@ -2350,52 +2413,261 @@ pub(crate) fn site_map_frame(
     Ok(frame)
 }
 
-/// **What the site record holds within sight of the viewer's rigs on the ground** (doc 32 cut
-/// CF.1; Q-CF-28: what a party sees, never the whole record): each left unit and object within
-/// [`crate::surface::presence::SIGHT_CELLS`] of the nearest observer, as `(metres, words, row)`,
-/// nearest first. A viewer with no rig on the ground sees none of it.
-fn ground_in_sight(
-    record: &crate::surface::site_record::SiteRecord,
+/// **One rig's row of the vector block** (doc 20 cuts SM.4b–SM.11; factored by doc 32 cut CF.4 so
+/// the cockpit's `rig` panel is the same row, Q-CF-49): `site.rigs[]`'s value, its line, and
+/// whether it is moving along a leg on `entry`.
+struct RigRow {
+    value: Value,
+    line: String,
+    moving: bool,
+}
+
+/// [`RigRow`] for `rig` with its `record`, standing at `place` (`cell` when on the ground), on the
+/// site `entry` whose ramp reads `ramp`.
+fn rig_row(
+    w: &World,
+    reads: &dyn SurfaceReads,
+    actor: ObjId,
+    (lease, record): (&crate::surface::act::RigAt, Option<&RigRecord>),
+    (place, cell): (Place, Option<(i64, i64)>),
+    (entry, ramp): (&CanonicalId, &str),
+    now: i64,
+) -> RigRow {
+    use crate::port::tv;
+    let battery = w
+        .module_state::<PortHandles>()
+        .and_then(|handles| handles.surface_tools.clone())
+        .and_then(|tools| {
+            crate::surface::act::rig_battery_id(w, lease.tv)
+                .and_then(|id| crate::surface::act::battery_of(&tools, &id).cloned())
+        });
+    let pool_unit = tv::pool_unit(w);
+    let read = |endpoint: EndpointRef, good: &CanonicalId| reads.pool(endpoint, good);
+    let charge = battery.as_ref().map(|battery| {
+        let record = record
+            .cloned()
+            .unwrap_or_else(|| RigRecord::fresh(lease.tv, battery));
+        crate::surface::act::percent(charge_shown(&record, now, battery), battery)
+    });
+    let hopper = tv::hopper_load_with(w, lease.tv, pool_unit.as_ref(), &read)
+        .map_or_else(|_| "?".to_owned(), |(kg, cap)| tv::hopper_text(kg, cap));
+    let act = record.and_then(|record| record.act.as_ref());
+    let mut moving = false;
+    // Only an act on this very site carries its leg here — [`place_of`]'s own rule (a leg on
+    // another site's ground is in that site's cells), so a client that places the viewer's
+    // rigs along their legs (the SM.9 lead's 0z ruling 1) never draws one this map does not.
+    let leg = act.filter(|act| act.site == *entry).and_then(|act| {
+        act.params.leg().map(|(waypoints, _)| {
+            moving = true;
+            let launch = if act.params.launches() {
+                i64::from(LAUNCH_S)
+            } else {
+                0
+            };
+            json!({
+                "started_ic": act.started_ic.saturating_add(launch),
+                "waypoints": waypoints,
+            })
+        })
+    });
+    let doing = act.map_or_else(String::new, |act| {
+        format!(
+            "; {}, there {}",
+            crate::surface::act::doing_words(act.kind, &act.params, ramp),
+            tv::due_words(w, act.due_ic)
+        )
+    });
+    let at = match (place, cell) {
+        (_, Some((x, y))) => format!("({x}, {y})"),
+        (Place::Bay, None) => "in the bay".to_owned(),
+        (_, None) => "away".to_owned(),
+    };
+    let line = format!(
+        "Rig {}: {at}, charge {} %, hopper {hopper}{doing}.",
+        lease.slot,
+        charge.map_or_else(|| "?".to_owned(), |c| c.to_string())
+    );
+    // Doc 20 cut SM.9 (the brief's 3.3 item 7, lead ruling 4): the run as the operator's
+    // own projection shows it — never `RigRecord.run`, which holds the pocket's truth.
+    let run = projected_run(w, actor, lease.tv);
+    // Doc 20 cut SM.8's queue (its lead note): a rig in the bay with an unload queued says
+    // so, in `+tv` status's own words, from the record — never "idle".
+    let queued = record
+        .and_then(|record| record.queued.as_ref())
+        .map(|_| tv::QUEUED_LINE.trim());
+    // Doc 20 cut SM.11 (lead ruling 10): the viewer's own plan as `PlanView` shows it — step
+    // words, the step, the deadline and the end's word, never a class or a tonnage.
+    let plan = record
+        .and_then(|record| record.plan.as_ref())
+        .filter(|plan| plan.author == actor)
+        .map_or(Value::Null, plan_value);
+    RigRow {
+        value: json!({
+            "slot": lease.slot,
+            "mark": lease.mark,
+            "cell": cell.map(|(x, y)| json!([x, y])),
+            "charge_pct": charge,
+            "hopper": hopper,
+            "act": act.map(|act| json!({ "kind": act.kind.word(), "due_ic": act.due_ic })),
+            "leg": leg,
+            "line": line,
+            "run": run,
+            "queued": queued,
+            "plan": plan,
+        }),
+        line,
+        moving,
+    }
+}
+
+/// **The rig panel of a cockpit in a field** (doc 32 cut CF.4; Q-CF-49: the quarry screen's rig
+/// state as a panel on the cockpit frame): `unit`'s [`RigRow`] value at its field cell `from`,
+/// when `unit` is a leased rig — the same row `site.rigs` carries, its run and plan as `actor`'s
+/// own projection shows them. `None` for any other hull.
+pub(crate) fn rig_panel(
+    w: &World,
+    reads: &dyn SurfaceReads,
+    actor: ObjId,
+    unit: ObjId,
+    from: (i64, i64),
+) -> Option<Value> {
+    let lease = w
+        .module_state::<crate::TacsimStore>()?
+        .tv_lease_on(unit)
+        .filter(|lease| lease.live())?
+        .clone();
+    let rig = crate::surface::act::RigAt {
+        crew: None,
+        field_order: None,
+        tv: lease.tv,
+        slot: lease.slot,
+        mark: lease.mark.clone(),
+        hull: lease.hull,
+        record: lease,
+    };
+    let record = reads.rig(unit).ok().flatten();
+    let entry = record
+        .as_ref()
+        .and_then(|record| record.excursion.as_ref())
+        .map(|out| out.site.clone())?;
+    // The ramp's words from the rig's own hull's berth, as the map's are.
+    let ramp = crate::port::ship::hull_view(w, rig.hull)
+        .and_then(|hull| crate::surface::act::site_berth(w, &hull).ok())
+        .map_or_else(|| "the ramp".to_owned(), |berth| berth.ramp_label);
+    let row = rig_row(
+        w,
+        reads,
+        actor,
+        (&rig, record.as_ref()),
+        (Place::Ground(from), Some(from)),
+        (&entry, &ramp),
+        w.world_ic_now().at,
+    );
+    Some(row.value)
+}
+
+/// **The ground rows `site.map` lists** (doc 32 cut CF.1's `site.ground`; CF.4's campaign layer):
+/// each thing the viewer sees now, nearest first, as `(metres, words, row)` from the nearest of
+/// their rigs on the ground — then each thing they remember (Q-CF-28) and the eyes do not cover,
+/// from the nearest rig or, with none out, from the pad, its row marked `remembered`. A viewer with
+/// no rig on the ground sees nothing now (CF.1's rule) and may still remember.
+fn ground_rows(
+    salvage: &[picture::Salvage],
     observers: &[(u8, (i64, i64))],
 ) -> Vec<(u64, String, Value)> {
-    use crate::surface::site_record::{GroundKind, object_words};
-    let near = |cell: (i64, i64)| {
+    let from = |cell: (i64, i64)| {
         observers
             .iter()
             .map(|(_, at)| (cells_apart(*at, cell), *at))
             .min()
-            .filter(|(cells, _)| *cells <= crate::surface::presence::SIGHT_CELLS)
+            .map_or(PAD_CELL, |(_, at)| at)
     };
-    let mut out: Vec<(u64, String, Value)> = Vec::new();
-    for unit in &record.units {
-        let cell = unit.pose.cell();
-        if let Some((_, at)) = near(cell) {
-            let (m, dir) = bearing_words(at, cell);
-            let what = format!("a {}", unit.condition.word());
-            out.push((
-                m,
-                reading_line(&what, m, &dir),
-                json!({ "what": unit.condition.word(), "m": m, "dir": dir }),
-            ));
-        }
-    }
-    for object in &record.objects {
-        let cell = object.pose.cell();
-        if let Some((_, at)) = near(cell) {
-            let (m, dir) = bearing_words(at, cell);
-            let what = match &object.kind {
-                GroundKind::Remains { .. } => "remains".to_owned(),
-                GroundKind::Cargo { .. } => object_words(&object.kind),
+    salvage
+        .iter()
+        .map(|thing| {
+            let (m, dir) = bearing_words(from(thing.cell), thing.cell);
+            // CF.1's words: a crate's row says `cargo`, a unit's its condition.
+            let what = match thing.what {
+                crate::surface::site_record::KnownWhat::Crate => "cargo",
+                other => other.word(),
             };
-            out.push((
-                m,
-                reading_line(&what, m, &dir),
-                json!({ "what": object.kind.word(), "m": m, "dir": dir }),
-            ));
-        }
+            let mut row = json!({ "what": what, "m": m, "dir": dir });
+            let mut words = reading_line(&thing.words, m, &dir);
+            if !thing.now {
+                words.push_str(" (remembered)");
+                if let Some(object) = row.as_object_mut() {
+                    object.insert("remembered".to_owned(), Value::Bool(true));
+                }
+            }
+            (m, words, row)
+        })
+        .collect()
+}
+
+/// **A loud sounding of `record`'s rig inside the IC hour, made on `entry`** (doc 20 §5's
+/// transient mark; the review's correctness/F1: a sounding heard on another site's ground is no
+/// mark here).
+fn loud_sounding(record: Option<&RigRecord>, entry: &CanonicalId, now: i64) -> bool {
+    record
+        .and_then(|record| record.last.as_ref())
+        .is_some_and(|last| {
+            last.site == *entry
+                && last.result == crate::surface::excursion::ActResult::Done
+                && matches!(
+                    last.span,
+                    Some(crate::surface::excursion::ReadSpan::Sound { quiet: false, .. })
+                )
+                && last.at_ic >= now.saturating_sub(crate::surface::excursion::IC_HOUR)
+        })
+}
+
+/// `+tv/map`'s words on a promoted site for a viewer who sits in no unit of its field (doc 32 cut
+/// CF.4): the field layer is the cockpit's, and only a seat holds contacts.
+pub const MAP_FIELD_UNSEATED: &str =
+    "You hold no contacts there: only a seat in a unit on the ground does (+focus).";
+
+/// **What the field layer drew** (doc 32 cut CF.4): `Your sensors hold 3 contacts; locked on BA.`
+fn field_words(held: usize, lock: Option<&str>) -> String {
+    let held = match held {
+        0 => "Your sensors hold no contact".to_owned(),
+        1 => "Your sensors hold 1 contact".to_owned(),
+        many => format!("Your sensors hold {many} contacts"),
+    };
+    match lock {
+        Some(lock) => format!("{held}; locked on {lock}."),
+        None => format!("{held}."),
     }
-    out.sort_by(|a, b| (a.0, &a.1).cmp(&(b.0, &b.1)));
-    out
+}
+
+/// **The glyphs doc 20's legend does not name, where the composed grid shows them** (doc 32 cut
+/// CF.4): the salvage's and the field layer's, in a fixed order, each named once.
+fn extra_legend(grid: &[Vec<char>], layers: &Overlays) -> Vec<(char, &'static str)> {
+    let shown = |at: (usize, usize), glyph: char| {
+        grid.get(at.1).and_then(|row| row.get(at.0)).copied() == Some(glyph)
+    };
+    let mut drawn: BTreeSet<char> = layers
+        .salvage
+        .iter()
+        .filter(|(at, glyph)| shown(*at, *glyph))
+        .map(|(_, glyph)| *glyph)
+        .collect();
+    drawn.extend(
+        layers
+            .contacts
+            .iter()
+            .filter(|mark| shown(mark.at, mark.glyph))
+            .map(|mark| mark.glyph),
+    );
+    [
+        (picture::SALVAGE_GLYPH, picture::SALVAGE_LABEL),
+        (picture::CRATE_GLYPH, picture::CRATE_LABEL),
+        ('x', "hostile"),
+        ('+', "friendly"),
+        ('?', "contact"),
+    ]
+    .into_iter()
+    .filter(|(glyph, _)| drawn.contains(glyph))
+    .collect()
 }
 
 /// **The run clause of `tv`'s run** from its operator's own projection (doc 20 cut SM.9; the
@@ -2788,6 +3060,7 @@ mod tests {
             hull: Some(stack),
             others: vec![stack, (6, 0)],
             mine: vec![(1, stack, Some((0, 1))), (2, (7, 0), Some((8, 0)))],
+            ..Overlays::default()
         };
         compose(&mut grid, &layers);
         let row = |y: usize| grid.get(y).map(|r| r.iter().collect::<String>());
