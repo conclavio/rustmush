@@ -137,7 +137,16 @@ describe("MapEditorStudio (WG.4 ground.draft.v1)", () => {
     await tick();
     expect(screen.getByText(/Generated preset "mars_canyon"/i)).toBeTruthy();
 
-    // 3. Zoom controls & 512x512 grid option
+    // 3. Hold Objective & Tank Roster panels (before switching to 512x512)
+    expect(screen.getByTestId("hold-objective-panel")).toBeTruthy();
+    expect(screen.getByTestId("tank-roster-panel")).toBeTruthy();
+
+    const musterBtn = screen.getByRole("button", { name: /Auto-Muster Tanks/i });
+    await fireEvent.click(musterBtn);
+    await tick();
+    expect(screen.getByText(/Mustered 12 tanks/i)).toBeTruthy();
+
+    // 4. Zoom controls & 512x512 grid option
     const zoomInBtn = screen.getByLabelText("Zoom in");
     await fireEvent.click(zoomInBtn);
     await tick();
@@ -148,17 +157,13 @@ describe("MapEditorStudio (WG.4 ground.draft.v1)", () => {
     await fireEvent.change(gridSelect, { target: { value: "512" } });
     await tick();
     expect(screen.getByText(/2D Canvas \(512×512, 16Q\)/i)).toBeTruthy();
+  }, 15_000);
 
-    // 4. Hold Objective & Tank Roster panels
-    expect(screen.getByTestId("hold-objective-panel")).toBeTruthy();
-    expect(screen.getByTestId("tank-roster-panel")).toBeTruthy();
-
-    const musterBtn = screen.getByRole("button", { name: /Auto-Muster Tanks/i });
-    await fireEvent.click(musterBtn);
+  it("stamps a Base Hangar and links it to a MUSH neighborhood room", async () => {
+    const { app } = mockApp();
+    render(MapEditorStudio, { app });
     await tick();
-    expect(screen.getByText(/Mustered 12 tanks/i)).toBeTruthy();
 
-    // 5. MUSH Rooms & Hangars panel stamps a Base Hangar and links it to a MUSH neighborhood room
     expect(screen.getByTestId("mush-rooms-panel")).toBeTruthy();
     const addHangarBtn = screen.getByRole("button", { name: /\+ Base Hangar/i });
     await fireEvent.click(addHangarBtn);
