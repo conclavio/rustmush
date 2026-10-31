@@ -24,7 +24,7 @@ pub mod registration;
 pub mod score;
 pub mod service_read;
 pub use families::RatingFamilies;
-pub use score::{RatingScore, RatingTally, rating_score, score_per_credit};
+pub use score::{RatingScore, RatingTally, rating_score};
 
 pub const FORMAT: u16 = 1;
 pub const MAX_CASES: usize = 1_755;

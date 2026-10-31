@@ -2301,6 +2301,44 @@ async fn m8d2_an_ungoverned_rig_is_seized_impounded_and_forfeited_after_its_hold
     Ok(())
 }
 
+/// **Doc 17h cut M8d2, the M8-2b review fix: a bare forfeit finds its seizure off the ring.**
+/// The seizure stands on inspection 1; 65 more inspections during the hold overwrite its slot
+/// in the hull's 64-slot ring (seq 65 lands in slot 1). Once the hold has run, the bare
+/// `@registry/forfeit #<hull>` still finds the live seizure (it reads the seizure family by the
+/// hull's key prefix, not the ring) and submits the forfeit.
+#[tokio::test(flavor = "current_thread")]
+async fn m8d2_a_bare_forfeit_finds_a_seizure_whose_inspection_left_the_ring() -> Result {
+    use crate::minds::registry_inspection::seizure::SEIZE_ACTION;
+    use mush_roll::commerce::registry_inspection::INSPECTIONS_PER_HULL;
+    let mut r = Rig::new()?;
+    let (hull, _core) = ungoverned_rig(&mut r)?;
+    let (operator, policy) = name_registry(&mut r)?;
+    let n = hull.0;
+    check_eq!(seed_inspection(&mut r, hull, operator, &policy)?, 1);
+    r.perform("tacsim", SEIZE_ACTION, operator, json!({"hull": n}))?;
+    check_eq!(seizures(&r)?.len(), 1);
+    let mut newest = 1;
+    while newest <= INSPECTIONS_PER_HULL {
+        newest = seed_inspection(&mut r, hull, operator, &policy)?;
+    }
+    check_eq!(
+        newest,
+        INSPECTIONS_PER_HULL + 1,
+        "inspection 1's slot is overwritten"
+    );
+    let now = r.world().world().now();
+    r.world_mut().world_mut().set_now(now + 3 * 86_400);
+    r.flush();
+    check_eq!(
+        said(&mut r, operator, &format!("@registry/forfeit #{n}")),
+        format!(
+            "Forfeiting the core seized from hull #{n}.
+Queued."
+        )
+    );
+    Ok(())
+}
+
 /// **Doc 17h cut M8d2: a governed rig cannot be seized** (S4, the record's word): its newest
 /// inspection read a governed certified core, so the provider refuses and the command says the
 /// lead's sentence; its title carries no claim and it seals governed Class I as before.
