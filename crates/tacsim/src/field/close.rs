@@ -188,7 +188,10 @@ pub(crate) fn demote_units(
             tracing::error!(unit = unit.0, %error, "tacsim: a field unit's check-in refused; its marker is cleared and its cells stand");
             mush_sim::deployed::clear(ctx.w, *unit);
         }
-        let pose = back.map(|back| back.pose.clone());
+        // CF.3: a carrier never moved; its surface placement stands, and the record keeps the
+        // pad pose it was fought at.
+        let carrier = super::carrier::is_carrier(ctx.w, *unit);
+        let pose = back.map(|back| back.pose.clone()).filter(|_| !carrier);
         if let (Some(pose), Some(domain)) = (pose.clone(), domain)
             && mush_sim::pose_of(ctx.w, *unit).is_none_or(|(_, at)| {
                 at.x_cm != pose.x_cm || at.y_cm != pose.y_cm || at.heading_mdeg != pose.heading_mdeg
@@ -211,8 +214,14 @@ pub(crate) fn demote_units(
         let Some(condition) = condition else {
             continue;
         };
-        let Some((_, at)) = mush_sim::pose_of(ctx.w, *unit) else {
-            continue;
+        let at = match back.filter(|_| carrier) {
+            Some(back) => back.pose.clone(),
+            None => {
+                let Some((_, at)) = mush_sim::pose_of(ctx.w, *unit) else {
+                    continue;
+                };
+                at
+            }
         };
         let pose = SitePose {
             x_cm: at.x_cm,

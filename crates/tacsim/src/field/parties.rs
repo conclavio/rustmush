@@ -3,8 +3,9 @@
 //!
 //! Everyone on the ground is admitted (Q-CF-16): every tactical unit placed directly on the
 //! site's own domain, at its placement — rigs mid-drive and mid-mining included, after the
-//! promotion settled them (Q-CF-31). Programme hulls on their pads are the carriers, and the
-//! carrier as a unit is doc 32 cut CF.3's; until then a hull is left out by name.
+//! promotion settled them (Q-CF-31). Programme hulls on their pads are the carriers, admitted as
+//! units at their pad poses since doc 32 cut CF.3 (Q-CF-19, [`super::carrier`]): a carrier is in
+//! the party of the roster it launched, else a party of one led by its commander.
 //!
 //! A unit's party is its detachment activation when it flies an open DT flight on this site, else
 //! a party of one (the degenerate detachment, F-5). A party's **leader** is the roster's current
@@ -43,6 +44,8 @@ pub(crate) struct Entrant {
     pub pilot: Option<(ObjId, SmolStr)>,
     /// Its open hull epoch.
     pub epoch: Option<SortieId>,
+    /// Everyone physically aboard it at admission, when it is a carrier (Q-CF-38).
+    pub aboard: Vec<ObjId>,
 }
 
 /// **The site's passive domain** (its port map's), when it is a lane site.
@@ -57,7 +60,7 @@ pub(crate) fn site_domain(w: &World, entry: &CanonicalId) -> Option<DomainId> {
 }
 
 /// **Every unit on the site's ground**, in unit order: a tactical unit placed directly on the
-/// domain that is not a programme hull (the carriers are CF.3's).
+/// domain, the carriers on their pads included (doc 32 cut CF.3, Q-CF-19).
 #[must_use]
 pub(crate) fn on_ground(w: &World, domain: DomainId) -> Vec<ObjId> {
     let Some(store) = w.module_state::<mush_tactics::module::UnitStore>() else {
@@ -73,7 +76,6 @@ pub(crate) fn on_ground(w: &World, domain: DomainId) -> Vec<ObjId> {
                 crate::surface::act::Where::Ground { domain: on, .. } if on == domain
             )
         })
-        .filter(|unit| crate::port::ship::hull_view(w, *unit).is_none())
         .collect()
 }
 
@@ -88,12 +90,13 @@ pub(crate) fn seated(w: &World, unit: ObjId) -> Option<(ObjId, SmolStr)> {
         .map(|(station, seat)| (seat.actor, SmolStr::new(station.as_str())))
 }
 
-/// An open flight's operation, its epoch, its roster's leader and its organizer.
+/// An open flight's operation, its epoch, its roster's leader, its organizer and its carrier.
 type FlightFacts = (
     crate::detachment::sortie::OperationId,
     Option<SortieId>,
     Option<ObjId>,
     Option<ObjId>,
+    ObjId,
 );
 
 /// **The open DT flight `unit` flies on `entry`**, as its operation and the flight's epoch.
@@ -132,6 +135,7 @@ fn flight_of(ctx: &Ctx<'_>, unit: ObjId, entry: &CanonicalId) -> Option<FlightFa
         flight.epoch.as_ref().map(|open| open.id),
         leader,
         Some(flight.operation.organizer),
+        flight.carrier,
     ))
 }
 
@@ -147,21 +151,35 @@ fn rig_record(ctx: &Ctx<'_>, unit: ObjId) -> Option<crate::surface::excursion::R
     .cloned()
 }
 
-/// **Each unit on the ground as the field admits it** (this module's head), in unit order.
+/// **Each unit on the ground as the field admits it** (this module's head), in unit order. A
+/// carrier takes the party of the first open flight on this site it launched (by operation),
+/// else a party of one led by its commander (doc 32 cut CF.3).
 #[must_use]
 pub(crate) fn entrants(ctx: &Ctx<'_>, entry: &CanonicalId, units: &[ObjId]) -> Vec<Entrant> {
+    let flights: Vec<(ObjId, FlightFacts)> = units
+        .iter()
+        .filter_map(|unit| flight_of(ctx, *unit, entry).map(|facts| (*unit, facts)))
+        .collect();
     units
         .iter()
         .map(|unit| {
+            if super::carrier::is_carrier(ctx.w, *unit) {
+                return carrier_entrant(ctx, *unit, &flights);
+            }
             let pilot = seated(ctx.w, *unit);
-            if let Some((operation, epoch, leader, organizer)) = flight_of(ctx, *unit, entry) {
+            if let Some((_, (operation, epoch, leader, organizer, _))) =
+                flights.iter().find(|(flier, _)| flier == unit)
+            {
                 return Entrant {
                     unit: *unit,
-                    key: PartyKey::Operation { operation },
-                    leader,
-                    owner: organizer,
+                    key: PartyKey::Operation {
+                        operation: *operation,
+                    },
+                    leader: *leader,
+                    owner: *organizer,
                     pilot,
-                    epoch,
+                    epoch: *epoch,
+                    aboard: Vec::new(),
                 };
             }
             let record = rig_record(ctx, *unit);
@@ -178,9 +196,41 @@ pub(crate) fn entrants(ctx: &Ctx<'_>, entry: &CanonicalId, units: &[ObjId]) -> V
                 epoch: record
                     .as_ref()
                     .and_then(|record| record.sortie.as_ref().map(|open| open.id)),
+                aboard: Vec::new(),
             }
         })
         .collect()
+}
+
+/// **A carrier as the field admits it** (Q-CF-19, Q-CF-38): the roster it launched, else its
+/// commander's party of one; no pilot (its helm is not a cockpit); its own hull epoch; everyone
+/// aboard.
+fn carrier_entrant(ctx: &Ctx<'_>, carrier: ObjId, flights: &[(ObjId, FlightFacts)]) -> Entrant {
+    let roster = flights
+        .iter()
+        .map(|(_, facts)| facts)
+        .filter(|facts| facts.4 == carrier)
+        .min_by_key(|facts| facts.0);
+    let commander = crate::port::coop::helm_holder(ctx.w, carrier);
+    let (key, leader, owner) = match roster {
+        Some((operation, _, leader, organizer, _)) => (
+            PartyKey::Operation {
+                operation: *operation,
+            },
+            *leader,
+            *organizer,
+        ),
+        None => (PartyKey::Unit { unit: carrier }, commander, commander),
+    };
+    Entrant {
+        unit: carrier,
+        key,
+        leader,
+        owner,
+        pilot: None,
+        epoch: super::carrier::open_epoch(ctx, carrier),
+        aboard: super::carrier::souls_aboard(ctx.w, carrier),
+    }
 }
 
 /// **The parties the entrants form, lettered in admission order**, and each unit's row.
@@ -216,6 +266,7 @@ pub(crate) fn letter(
                 party: *letters.get(&entrant.key)?,
                 pilot: entrant.pilot.clone(),
                 epoch: entrant.epoch,
+                aboard: entrant.aboard.clone(),
             })
         })
         .collect();
@@ -263,6 +314,7 @@ mod tests {
             owner: leader.map(ObjId),
             pilot: None,
             epoch: None,
+            aboard: Vec::new(),
         }
     }
 

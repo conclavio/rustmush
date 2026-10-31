@@ -785,3 +785,43 @@ irrecoverable hull's remains wait for the epoch close-destroyed rule, 27a H3, an
 crate for the inventory transfer that empties it); a hull under **dedicated IC custody** (a
 licensed mind's sortie) refuses its site's field until doc 23 S.4b; **organization**
 friendships (F-1).
+
+## 8. CF.3 as built (the carrier as a unit)
+
+Built 2026-10-31 on `main` at `d4d81c89`; the module is `crates/tacsim/src/field/carrier.rs`.
+What the cut had to decide where the rulings left it open, for the owner to object to:
+
+- **The pad pose.** A settled hull's own placement is its domain's passive pose (the origin),
+  not the pad the surface draws at the site's centre. The field stands each carrier on the pad's
+  cell. Several hulls can be settled on one pad and the kernel stands one unit in a cell, so the
+  second carrier takes the nearest free passable cell, nearest ring first and row-major within a
+  ring, up to eight cells out (`PAD_SPREAD_CELLS`). The hull's surface placement is never moved.
+  A carrier's spec has a top speed of nil, so it goes home where it was, and the site record
+  keeps the pad pose it was fought at.
+- **Its party.** The carrier is in the party of the first open DT flight on the site that names
+  it as its carrier, by operation. Otherwise it is a party of one led by its commander
+  (`helm_holder`: the live charter's tenant, else the title holder). One commander behind a
+  carrier and its excursion rigs makes them Friends by the standing rule (Q-CF-5).
+- **No pilot.** A carrier's helm is not a cockpit. It is admitted on its ROM seal, over its own
+  hull epoch (doc 23 S.2).
+- **Its crew** (Q-CF-38). Everyone physically aboard at admission (the carrier's bounded subtree,
+  as departure counts souls) is listed on the carrier's row of the field's live record.
+  `tacsim::field::crew_location` reads them as `AboardCarrier`. This marker is CF.3's until CF.5's
+  crew state lands on the character.
+- **Damage in port.** The IC check-in already writes the field's hits into the hull's own unit
+  record (Q-CF-36). `+ship` now prints a `Damage:` line for every section below full structure.
+  Until this cut nothing in port read a hull's sections.
+- **Never towed** (FO-13). No tow verb exists yet. Every shipped carrier is already past twice the
+  tonnage of every shipped mobile design, and a test holds that. `field::carrier::refuse_tow` is
+  the named gate a tow verb calls first.
+- **Departure while the field holds it.** `+ship/lift`, `+ship/undock` and a queued depart are
+  refused with `InField`, naming the units on the ground. The kernel has no withdrawal for a
+  unit in a running arena, so a confirmed departure has nothing to confirm yet. Q-H10's
+  leave-behind confirmation is CF.5's row. A carrier leaving mid-field is F-6, and what a drive
+  hit does to lift is F-3.
+
+Not built in CF.3: the carrier on the **presence picture** (CF.1's book still leaves hulls out,
+so a fire order or mark on the surface cannot name a carrier; inside the field it is an ordinary
+contact; CF.4's picture); the carrier's **footprint** (it is one cell, as every unit is);
+**F-3's consequences** of a hit beyond section damage (the spec's own consequences apply in the
+field: a destroyed drive section disables motion, a destroyed hull section destroys the unit).

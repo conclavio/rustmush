@@ -751,6 +751,40 @@ pub(crate) fn ship_cmd(ctx: &mut Ctx<'_>) -> Result<(), CmdError> {
     }
 }
 
+/// **`+ship`'s damage line** (doc 32 cut CF.3; Q-CF-19): `{sections}`, each section below its
+/// structure as `<section> <left>/<full>`, or `<section> destroyed` at its floor.
+pub const SHIP_DAMAGE: &str = "Damage: {sections}.";
+
+/// **The hull's damage, read off its own unit record** (doc 32 cut CF.3): every section whose
+/// internals are below full, in section order; `None` for an undamaged hull or one with no
+/// record. A field's hits come home through the IC check-in into this record (Q-CF-36).
+#[must_use]
+pub fn damage_line(w: &World, hull: ObjId) -> Option<String> {
+    let cells = mush_tactics::module::unit_of(w, hull)?;
+    let hurt: Vec<String> = cells
+        .cells()
+        .filter_map(|(addr, cell)| match addr {
+            mush_tactics::CellAddr::Section { section, cell: id }
+                if id.as_str() == crate::definitions::unit::INTERNALS_CELL
+                    && cell.current < cell.max =>
+            {
+                Some(if cell.current <= cell.min {
+                    format!("{} destroyed", section.as_str())
+                } else {
+                    format!(
+                        "{} {}/{}",
+                        section.as_str(),
+                        cell.current.saturating_sub(cell.min),
+                        cell.max.saturating_sub(cell.min)
+                    )
+                })
+            }
+            _ => None,
+        })
+        .collect();
+    (!hurt.is_empty()).then(|| SHIP_DAMAGE.replace("{sections}", &hurt.join(", ")))
+}
+
 /// Render `view`'s hold readings, read through the command lens, with
 /// `render` (the layer's goods table, never re-parsed).
 fn with_readings<T>(
@@ -848,6 +882,8 @@ fn status(ctx: &mut Ctx<'_>) -> Result<(), CmdError> {
         // Doc 20 cut SM.2 (§1 beat 3): on a pad, the stores line after the hold line.
         let stores = crate::port::voyage::settled_stores_line(ctx, &view);
         let mut lines = vec![first, hold];
+        // Doc 32 cut CF.3 (Q-CF-19): a field's hits persist into the hull's record and read here.
+        lines.extend(damage_line(ctx.w, charter.hull));
         // Only an observer aboard can read the hull's current physical lag.
         // An ashore charter holder must not gain instant remote telemetry.
         if crate::port::voyage::aboard(ctx.w, charter.hull, actor) {

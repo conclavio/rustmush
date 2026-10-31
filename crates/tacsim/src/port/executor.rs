@@ -3075,7 +3075,8 @@ fn decide(ctx: &mut Ctx<'_>, state: &mut PortTickState, hull: ObjId, pilot: ObjI
                         | K::Landing
                         | K::SiteClosed
                         | K::TvOut
-                        | K::HopperLoaded => refusal.line.clone(),
+                        | K::HopperLoaded
+                        | K::InField => refusal.line.clone(),
                         K::PlanDark | K::VoyageDark | K::Unwired => {
                             if state.depart_dark_warned.insert(hull.0) {
                                 tracing::error!(hull = hull.0, order = id, line = %refusal.line, "tacsim: a queued departure meets a dark plan; it waits");

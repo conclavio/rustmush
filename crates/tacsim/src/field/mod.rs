@@ -53,6 +53,7 @@
 
 pub(crate) mod admit;
 pub(crate) mod boot;
+pub mod carrier;
 pub(crate) mod close;
 pub(crate) mod commands;
 pub(crate) mod ground;
@@ -68,6 +69,7 @@ use mush_core::module::{ModError, Registrar};
 use mush_core::{ArgShape, CanonicalId, CommandSpec, Ctx, ObjId, TickCadence, World};
 
 use crate::arena_task::MatchId;
+pub use carrier::{CrewLocation, crew_location};
 pub use commands::mark_from_order;
 pub use provider::{FIELD_ACTION, FIELD_OUTCOME};
 pub use record::{FieldLive, FieldParty, FieldUnit, PartyKey};
