@@ -82,6 +82,26 @@ pub(crate) fn on_ground(w: &World, domain: DomainId) -> Vec<ObjId> {
         .collect()
 }
 
+/// **How many of `units` count against `[tacsim.field].max_units`** (Q-CF-21; doc 32 §15, the
+/// review's CF-3a): every one but the casualties and wrecks the site record's index holds from
+/// an earlier field (Q-CF-26, Q-CF-45), which are admitted all the same. Carriers count.
+#[must_use]
+pub(crate) fn counted(units: &[ObjId], record: &crate::surface::site_record::SiteRecord) -> usize {
+    use crate::surface::site_record::LeftCondition;
+    units
+        .iter()
+        .filter(|unit| {
+            !record.units.iter().any(|left| {
+                left.unit == **unit
+                    && matches!(
+                        left.condition,
+                        LeftCondition::Casualty | LeftCondition::Wreck
+                    )
+            })
+        })
+        .count()
+}
+
 /// **Who sits in `unit`**: the first occupied station, by station id.
 #[must_use]
 pub(crate) fn seated(w: &World, unit: ObjId) -> Option<(ObjId, SmolStr)> {

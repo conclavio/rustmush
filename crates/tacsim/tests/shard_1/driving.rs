@@ -221,6 +221,12 @@ pub(crate) fn stocked() -> Rig {
     stocked_with(true)
 }
 
+/// **Change the `[tacsim]` the next [`reboot`] boots under** (the 2026-10-31 review's CF-3a gate
+/// lowers the field cap between two fields).
+pub(crate) fn retune(rig: &mut Rig, tune: impl FnOnce(&mut TacsimConfig)) {
+    tune(&mut rig.cfg);
+}
+
 /// Fold every write since the first boot and reboot keyed into the same roster; every
 /// connection drops (a real restart has no sessions) and `reconnect` come back.
 pub(crate) fn reboot(rig: Rig, reconnect: &[ObjId]) -> Rig {

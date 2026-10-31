@@ -82,7 +82,7 @@ use crate::arena_task::MatchId;
 pub use commands::mark_from_order;
 pub use crew::{CrewCondition, CrewLocation, CrewRecord, crew_location, crew_of};
 pub use provider::{FIELD_ACTION, FIELD_OUTCOME};
-pub use record::{FieldLive, FieldParty, FieldUnit, PartyKey};
+pub use record::{FieldLive, FieldParty, FieldUnit, OwedExit, PartyKey, PendingFire};
 
 /// The field host's tick: admission, the fire door's lock, and the held resumes' retry.
 pub const FIELD_TICK: &str = "tacsim.field";
@@ -104,21 +104,9 @@ pub(crate) struct Hosted {
     pub live: FieldLive,
 }
 
-/// **A fire order waiting for its first pulses** (Q-CF-14).
-#[derive(Clone, Debug, PartialEq, Eq)]
-pub(crate) struct PendingFire {
-    /// The pilot who ordered it.
-    pub pilot: ObjId,
-    /// The unit that fires.
-    pub shooter: ObjId,
-    /// The target's cell at admission.
-    pub target_cell: (u16, u16),
-    /// The arena millisecond past which it lapses.
-    pub until_ms: i64,
-}
-
-/// **The host's RAM book** (module state). Everything durable is on the site record and the live
-/// record; this is rebuilt by the boot.
+/// **The host's RAM book** (module state). Everything durable is on the site record, the live
+/// record (its pending fire order among it, doc 32 §15) and the closing tombstone; this is
+/// rebuilt by the boot.
 #[derive(Clone, Debug, Default)]
 pub struct FieldBook {
     live: BTreeMap<CanonicalId, Hosted>,
@@ -322,8 +310,12 @@ pub(crate) fn on_snapshot(ctx: &mut Ctx<'_>, task: MatchId, snapshot: Arc<crate:
         return;
     };
     book.snapshots.insert(site.clone(), document.clone());
+    // Doc 32 §15 (the review's CF-6): the opening shot as it stands at this snapshot, so a
+    // resume that rewinds to it owes the shot again if it had not left yet.
+    let fire = book.fire.get(&site).cloned();
     let live = book.live.get_mut(&site).map(|hosted| {
         hosted.live.at_ms = at_ms;
+        hosted.live.fire = fire;
         hosted.live.clone()
     });
     if let Some(registry) = ctx

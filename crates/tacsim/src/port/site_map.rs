@@ -1799,6 +1799,17 @@ pub(crate) fn site_map_frame(
         .filter(|(_, record, _)| loud_sounding(record.as_ref(), &entry, now))
         .map(|(tv, _, _)| *tv)
         .collect();
+    // Doc 32 §15 (the review's CF-2): every other flight the presence book holds — the non-hull
+    // units on the ground since CF.2, a raider's hulls and an escort's among them — as the
+    // cockpit's half reads it (`picture::enrich_cockpit`), so the two halves draw one picture (§9).
+    // The rigs keep the placement above at the frame's own instant.
+    let rigs_drawn: BTreeSet<ObjId> = crate::surface::act::world_rigs(w).into_iter().collect();
+    let booked: Vec<crate::surface::presence::Flight> = crate::surface::tick::presence_book(w)
+        .and_then(|book| book.sites.get(&entry).cloned())
+        .unwrap_or_default()
+        .into_iter()
+        .filter(|flight| !mine.contains(&flight.tv) && !rigs_drawn.contains(&flight.tv))
+        .collect();
     let flights: Vec<crate::surface::presence::Flight> = flying
         .iter()
         .map(|(tv, _, cell)| crate::surface::presence::Flight {
@@ -1806,6 +1817,7 @@ pub(crate) fn site_map_frame(
             cell: *cell,
             class: crate::surface::presence::hull_class(w, *tv),
         })
+        .chain(booked)
         .collect();
     let layer = picture::campaign_layer(
         w,

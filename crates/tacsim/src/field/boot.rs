@@ -10,13 +10,21 @@
 //! decode resumes from the snapshot on a fresh task — its seated pilots rebound to their seats,
 //! the quiet interval restarted, the black box on a new segment's log; anything else is the IC
 //! void rule: its units demote from the last snapshot, or as they went out with none.
+//!
+//! **The host's owed writes** (doc 32 §15): a site's closing tombstone owes its `close` again and
+//! holds the site closing, so the tick never re-admits a field that ended before its close
+//! landed; a live record's `owed_exits` owe their `exit`s again; a live record's pending fire
+//! order is the resumed field's opening shot.
 
 use std::collections::BTreeSet;
 
 use mush_core::{CanonicalId, Ctx, ObjId, WorldEvent};
 
 use super::FieldBook;
-use super::record::{FieldLive, live_site_of_key, snapshot_site_of_key};
+use super::record::{
+    FIELD_CLOSING_FORMAT, FieldClosing, FieldLive, closing_site_of_key, live_site_of_key,
+    snapshot_site_of_key,
+};
 
 /// **What the boot read for one site.**
 #[derive(Clone, Debug, Default)]
@@ -38,6 +46,31 @@ pub(crate) struct Held {
 
 /// **Read the boot's documents** into the book (`on_world_loaded`).
 pub(crate) fn read(ctx: &mut Ctx<'_>, kv: &[(smol_str::SmolStr, serde_json::Value)]) {
+    // Doc 32 §15 (the review's CF-1): the closes and exits the host owed when it went down, owed
+    // again before anything else reads the book.
+    for (key, value) in kv {
+        if let Some(site) = closing_site_of_key(key.as_str()) {
+            match serde_json::from_value::<FieldClosing>(value.clone()) {
+                Ok(closing) if closing.site == site && closing.format == FIELD_CLOSING_FORMAT => {
+                    super::admit::restore_closing(ctx.w, closing);
+                }
+                Ok(_) | Err(_) => {
+                    tracing::warn!(site = %site, "tacsim: a field's closing tombstone did not decode; its close is lost");
+                }
+            }
+        } else if let Some(site) = live_site_of_key(key.as_str())
+            && let Ok(live) = FieldLive::from_document(value)
+            && live.field.site == site
+            && let Some(owed) = ctx.w.module_state_mut::<super::exit::OwedExits>()
+        {
+            for exit in &live.owed_exits {
+                owed.0
+                    .entry(site.clone())
+                    .or_default()
+                    .insert(exit.unit, exit.actor);
+            }
+        }
+    }
     let Some(book) = ctx.w.module_state_mut::<FieldBook>() else {
         return;
     };
@@ -165,6 +198,11 @@ fn resume(ctx: &mut Ctx<'_>, site: &CanonicalId, held: &Held) -> Result<(), Stri
             },
         );
         book.snapshots.insert(site.clone(), document);
+        // Doc 32 §15 (the review's CF-6): a fire-promoted field resumes with its opening shot
+        // still owed when the snapshot it rewinds to was taken before the shot left.
+        if let Some(fire) = live.fire.clone() {
+            book.fire.insert(site.clone(), fire);
+        }
     }
     let terms = crate::arena_task::FieldTerms {
         disengage_ms: super::config(ctx.w).disengage_ms(),

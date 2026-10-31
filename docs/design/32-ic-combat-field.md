@@ -1059,10 +1059,13 @@ paths, as every CF gate does, and passes as far as it is written:
    armed hulls beside it. A bystander rig from another captain works the next block.
 2. The raider arrives and declares (`+field/mark`). The site promotes with everyone at their
    poses, the miners' carrier on its pad among them, and the miner's quarry screen draws the
-   raiders as contacts (Q-CF-48). **One clause is pinned at its gap, not passed:** the raider is
-   not on the presence picture (Q-CF-15). The presence book holds rigs only, so hulls seeded on
-   the ground never appear there (G-1). The story asserts the gap, and the assert flips when the
-   raider arrives as a flight.
+   raiders as contacts (Q-CF-48). **One clause was pinned at its gap, not passed:** the raider was
+   not on `+tv/map`'s presence picture (Q-CF-15), and the story asserted that. The reason first
+   given here, that the presence book holds rigs only, was wrong: the book has held every
+   non-hull unit on the ground since CF.2, and the cockpit's half of the picture already read it.
+   `+tv/map` drew its flights from the lane's rigs alone, so the assert passed only because of
+   that bug. Fixed by §15 (the review's CF-2): the clause now passes, each raider hull a row of
+   the miner's picture.
 3. The escort fights while the miners hold. The raider opens fire with the carrier on its pad,
    the escort answers, and neither miner fires. The escort stands nearer the raider than the
    carrier, so the doctrine's best hostile has a line in this layout; G-2 did not bite here.
@@ -1074,8 +1077,8 @@ ignored test to be run by a CI job, and an ignored test failing at its stop coul
 
 - **G-1, the raider's carrier.** Q-CF-47's raider launches from a fixture carrier. The fixture
   raider (`content/field/raiders.json`) has no carrier; its hulls are seeded straight onto the
-  ground, which is how the story stands it in. Seeded hulls are no flight, so the presence picture
-  never shows them, and that is the story's one pinned step.
+  ground, which is how the story stands it in. (The presence-picture step this gap was blamed
+  for was `+tv/map`'s own bug, not the seeding; §15.)
 - **G-2, the doctrine's line.** The stand ranks every Hostile row (`stock_mind.rs`, the stand's
   `best_hostile(.., |_| true)`) and fires only at the first. Admitting only rows with a line
   changes the doctrine and its reflex twin, and can move the practice hashes, which would be the
@@ -1100,7 +1103,7 @@ ignored test to be run by a CI job, and an ignored test failing at its stop coul
 **Who owns them** (the owner, 2026-10-31): G-1, G-2 with its rebless, and G-3 are cut **CF.6b**,
 its own cut. G-4 is a later **bot cut**. G-5 stays CF.6's deferral. G-6 and G-7 are left for the
 story's finish. CF.7's story is finished, with its 256 and 512 a side runs and the bot's run,
-once CF.6b and the bot cut land. CF.6b is §13; G-1's presence clause is still open there.
+once CF.6b and the bot cut land. CF.6b is §13; G-1's presence clause is closed by §15.
 
 ## 13. CF.6b as built (the raider's carrier, the doctrine's line, NPC withdrawal)
 
@@ -1286,3 +1289,88 @@ deposit, the 28-day bar and the dry mass are lane or code data and cheap to chan
 written-off wreck; a mixed bay's payload headroom check at lease time (an escort beside a
 prospector with a full hopper can exceed the Dray-P's ceiling, and the departure refuses as it
 would for any overload).
+
+## 15. The 2026-10-31 review's fixes (CF-1, CF-2, CF-3a, CF-5a, CF-5b, CF-6)
+
+Built 2026-10-31 on `main` after CF.6c. An external review of `830f2265` raised 18 findings; the
+coordinator checked each against the code, and these six were real. What each fix had to decide,
+for the owner to object to:
+
+- **CF-1, the crash windows.** The host's own writes to the site record (`tacsim_field
+  op=close` and `op=exit`) run on the K3 lane after the legacy batch that checked the units in.
+  The two lanes never share a turn, and what the host owed lived in RAM only. A crash between
+  them lost the close: the live record and the snapshot were already deleted and the units
+  checked in, but the record was still promoted. The tick then admitted the finished field again
+  and dropped its casualties, wrecks and `learned`. A lost exit left the unit refused its recover
+  until the field closed. Reconciling at boot cannot tell that case from "promoted, not admitted
+  yet". **The fix makes each owed write durable on the legacy lane, in the batch that owes it.**
+  - **A close** is the site's **closing tombstone**, `tacsim:field:closing:<site>`
+    (`field::record::FieldClosing`). It carries the close (actor, ordinal, the units left, what
+    was learned) and the exits still owed. `owe_close` writes it, so all three ways to close (a
+    demotion, a refused admission, the boot's void) are covered, including those with no live
+    record. It is a document of its own beside the live record rather than the live record
+    rewritten, and is written in the same batch that deletes the live record and the snapshot,
+    so it is equally atomic. The boot reads it, owes the close again and holds the site
+    closing, so the tick never admits it again. It is deleted once the record shows the close
+    landed (not promoted, or promoted under a later ordinal).
+  - **An exit** is a row of the live record's `owed_exits`, written by the same `write_live`
+    that drops the unit from the record, beside its check-in. The boot owes it again and the
+    tick removes the row once the record names the exit.
+  - What stays RAM: the exit's continuation (the recover the host submits as its player). After
+    a restart the player runs their own `+tv/<n> recover go`, which passes because the record
+    names the exit.
+- **CF-2, the presence picture.** `+tv/map` passed the shared picture builder only the lane's
+  rigs (`surface::act::world_rigs`). The presence book has held every non-hull unit on the
+  ground since CF.2, and the cockpit half of the picture already reads it, so a raider's or an
+  escort's hulls were missing from an unpromoted site's map. That broke §9's one picture. The
+  map now adds every other flight the book holds, minus the viewer's own. The rigs keep the
+  map's own placement at the frame's instant (`place_of`), so their bands still never lag the
+  grid, and a rig the book has not caught yet is still drawn. §12's G-1 reason is corrected
+  there, and the story's G-1 assert is flipped: each raider hull is a row of the miner's picture,
+  one new row per hull.
+- **CF-3a, the cap.** Admission compared everything on the ground with
+  `[tacsim.field].max_units`. Q-CF-26 and Q-CF-45 say casualties and wrecks don't count, and
+  Q-CF-21 says a promotion can always admit everyone. The count now leaves out every unit the
+  site record's index holds as a casualty or a wreck (`field::parties::counted`), and admits them
+  all the same. No ruling exempts carriers, so they still count.
+- **CF-5a, the landing release.** An extraction landing a pilot out of a running field unbound
+  the seat and cleared the cockpit locally, but never told the arena. The arena kept building
+  frames for an absent pilot, and the hull's controller stayed Pilot rather than Mind. The
+  landing now sends `Control { Released }` on every channel (`arena_bridge::control_all_channels`),
+  which unbinds and clears through `send_control`, as an `EXIT` does. The DT flight record stays
+  open (Q-CF-39, by design).
+- **CF-6, the opening shot.** A fire-promoted field's pending fire order was RAM only, though the
+  book's doc said the boot rebuilds it. **Carried, not re-documented:** the live record gains
+  `fire`, refreshed at every snapshot to the order as it stands then. Q-CF-34's resume rewinds
+  to that snapshot, so a shot that had not left by then is owed again on the resumed task, and a
+  shot that left after it is rewound away and owed again too. The window (`FIRE_WINDOW_MS`) is in
+  arena milliseconds, which the resume carries on from the snapshot.
+- **CF-5b, a test only.** An ENGAGE on open ground becomes the leader's Hostile mark plus a
+  WILCO. Inside the field `EngageAt::Row` is refused by design (§11): the doctrine fights Hostile
+  rows. No test showed a hired NPC firing after the open-ground order. One does now.
+
+**The gates.**
+- `tacsim/tests/shard_1/field_crash.rs`. **CF-1's close window and CF-3a:** a wreck, the
+  field's close dropped on its way to the K3 lane (the injected fault), a restart. The field is
+  never admitted again, the close lands with the wreck where it fell, and with the cap one below
+  everyone on the ground a second field admits them all, the wreck among them. **CF-1's exit
+  window:** a prospector out at the ramp, its exit dropped, a restart. The field resumes, the
+  exit lands, the live record forgets it, and the player's recover passes. **CF-5a:** a biped's
+  head destroyed, its pilot incapacitated in the field's first frames and extracted while the
+  field runs. The world's mirror of the task holds the hull as the mind's, and the pilot is no
+  pilot of the task.
+- `tacsim/tests/shard_1/field_story.rs`: G-1, flipped.
+- `mush-server/tests/split_boundary/dt_preparation_plans.rs`
+  (`cf_review_an_open_ground_engage_ends_in_the_hired_escorts_fire`), **CF-5b.** It reuses CF.6's
+  transport fixture, with the escort's rig rebuilt by a staff hand as a line tank (the armed
+  lease's loan does not land in that harness). The escort stands between its leader and a
+  bystander's hull. `ENGAGE E` is answered WILCO and is the leader's mark, and inside the field
+  the escort's own rounds leave the gun with no further order.
+
+**Ruled by design and left alone** (the review's CF-4 and the rest): a live lift with nothing out
+needs no `leave=` (F-6); the raider's seed is refused while a wreck stands (Q-CF-44); wrecks are
+admitted to later fields (Q-CF-26); the unarmed barge holding a field open is a known unbuilt gap.
+
+**Expensive to reverse:** the tombstone's key (`tacsim:field:closing:`) and its document, and the
+live record's two new fields (`fire`, `owed_exits`, both omitted when empty, so a live record
+written before this cut still decodes).

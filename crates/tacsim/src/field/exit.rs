@@ -26,9 +26,12 @@
 //! departure is submitted again as its pilot once the record names the exit. The units it left
 //! stay in the field.
 //!
-//! **Across a restart** the check-in, the live record and the exit are each durable; the RAM
-//! continuation is not. A unit whose exit landed and whose recover had not been submitted stands
-//! beside the ramp out of the field, and the player's own recover passes (the record names it).
+//! **Across a restart** the check-in, the live record and the exit are each durable, and the owed
+//! exit is durable from the check-in's own batch (the live record's `owed_exits`, doc 32 §15): a
+//! boot owes it again, so a crash before the K3 write never leaves the unit refused its recover
+//! until the field closes. The RAM continuation is not durable: a unit whose exit landed and
+//! whose recover had not been submitted stands beside the ramp out of the field, and the player's
+//! own recover passes (the record names it).
 //! A resumed field drops every unit its live record no longer holds from the snapshot it resumes
 //! from (`super::boot`).
 
@@ -232,15 +235,9 @@ pub(crate) fn on_withdrawn(
         }
         crate::arena_bridge::clear_cockpit(ctx, pilot);
     }
-    let live = ctx.w.module_state_mut::<FieldBook>().and_then(|book| {
-        let hosted = book.live.get_mut(&site)?;
-        hosted.live.units.retain(|row| row.unit != unit);
-        Some(hosted.live.clone())
-    });
-    if let Some(live) = live {
-        super::record::write_live(ctx, &live);
-    }
-    // The record's `exit`, submitted by whoever asked (else the field's first leader).
+    // The record's `exit`, submitted by whoever asked (else the field's first leader), owed on
+    // the live record in this batch, beside the check-in (doc 32 §15, the review's CF-1): a crash
+    // before the K3 write lands owes it again at boot.
     let actor = asked
         .as_ref()
         .map(|asked| asked.requester)
@@ -250,6 +247,21 @@ pub(crate) fn on_withdrawn(
         && let Some(owed) = ctx.w.module_state_mut::<OwedExits>()
     {
         owed.0.entry(site.clone()).or_default().insert(unit, actor);
+    }
+    let live = ctx.w.module_state_mut::<FieldBook>().and_then(|book| {
+        let hosted = book.live.get_mut(&site)?;
+        hosted.live.units.retain(|row| row.unit != unit);
+        if let Some(actor) = actor {
+            hosted.live.owed_exits.retain(|owed| owed.unit != unit);
+            hosted
+                .live
+                .owed_exits
+                .push(super::record::OwedExit { unit, actor });
+        }
+        Some(hosted.live.clone())
+    });
+    if let Some(live) = live {
+        super::record::write_live(ctx, &live);
     }
     if let Some(book) = ctx.w.module_state_mut::<ExitBook>()
         && let Some(asked) = book.0.get_mut(&unit)
@@ -358,6 +370,16 @@ pub(crate) fn tick(ctx: &mut Ctx<'_>) {
             if units.is_empty() {
                 owed.0.remove(&site);
             }
+        }
+        // The live record forgets each landed exit too.
+        let live = ctx.w.module_state_mut::<FieldBook>().and_then(|book| {
+            let hosted = book.live.get_mut(&site)?;
+            let before = hosted.live.owed_exits.len();
+            hosted.live.owed_exits.retain(|owed| !landed(owed.unit));
+            (hosted.live.owed_exits.len() != before).then(|| hosted.live.clone())
+        });
+        if let Some(live) = live {
+            super::record::write_live(ctx, &live);
         }
         if let Some(book) = ctx.w.module_state::<ExitBook>() {
             ready.extend(

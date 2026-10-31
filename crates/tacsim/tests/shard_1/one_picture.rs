@@ -141,7 +141,15 @@ async fn cf4_one_picture_of_the_site_in_both_layers_and_what_a_party_remembers()
     assert_eq!(site_glyph(&surface, (98, 116)), Some('&'), "{words}");
     assert!(words.contains("Also on this map: & crate."), "{words}");
     assert!(words.contains("a crate of 2 metal_ore"), "{words}");
-    assert!(words.contains("Presence: E 200-500 m"), "{words}");
+    // Every other flight on the ground (doc 32 §15, the review's CF-2): A's and B's armed hulls,
+    // which are no lane rigs, in sight, and D's rig to the east beyond it.
+    assert!(
+        words.contains(
+            "Presence: N within 200 m, a tacsim.unit.line tank; \
+             NW within 200 m, a tacsim.unit.line tank; E 200-500 m."
+        ),
+        "{words}"
+    );
     assert!(
         !words.contains("Other rigs:"),
         "a flight beyond sight is a band, never a distance: {words}"
