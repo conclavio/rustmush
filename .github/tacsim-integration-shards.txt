@@ -18,6 +18,21 @@
 # wall of both PR runs): unloading (9.5) to shard_6 and deposits (7.2) to
 # shard_3, for 46.4, 30.7 (49.9 with cost_lane's three idle threads), 53.9,
 # 47.7, 48.7 and 54.5. A run-alone binary's minutes count once per thread.
+# 2026-10-31: knowing (shard_1 -> shard_4) and match_lifecycle (shard_4 ->
+# shard_1) SWAPPED. Over main's runs 41207463088, 41221342735 and
+# 41221363161 the mean summed minutes were shard_1 66.5 (knowing 32.4 of
+# it, driving 10.5), shard_2 34 + cost_lane 7 alone, shard_3 52.5, shard_4
+# 47.0 (match_lifecycle 19.4), shard_5 53.5, shard_6 63.4; the swap makes
+# shard_1 53.5 and shard_4 60.0. A single shard's figure swings ~2x with the
+# hosted runner's machine (shard_1 was 40 / 78 / 77), so a balance is judged
+# on several runs; shard_1 was the highest in each. The cheaper-looking
+# move, driving alone, is not one: crew_exit, the four field_* modules,
+# one_picture and site_record import its Rig, so driving goes nowhere
+# without them (19.5 together, which would only swap the imbalance). A
+# module's companions move with it: knowing declares passengers, quests,
+# onboarding_*, quest_* with `#[path]` beside it, match_lifecycle has
+# match_lifecycle/resume_watch.rs. shard_6 is three large modules (plans 26,
+# cockpit 24, unloading 13) and has no cheap move.
 # The three named #[ignore]d mind-hash tests (minds_pool, minds_rhai, twin) sit
 # together in shard_2 and run in the `tacsim-minds` matrix cell, not here.
 #
