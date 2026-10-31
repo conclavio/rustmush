@@ -15,15 +15,20 @@
 //!   same shape for all of them (see [`Onboarding`]);
 //! - the deploy-time `EXTERNAL_IP` marker is substituted before a render and is
 //!   in nothing after one — and, so that rule is not a check on itself, the
-//!   unresolved render really does produce listeners nothing can bind;
+//!   unresolved render really does produce an SSH listener nothing can bind;
+//! - each box's `[web]` table is the shape that box CHOSE — native TLS on the
+//!   external address, or plain HTTP on loopback behind a TLS-terminating
+//!   reverse proxy on the same box, trusting that proxy's `X-Forwarded-For`
+//!   (see [`WebShape`]);
 //! - and `mushd.toml.example` declares exactly the template's section set, so a
 //!   section added to one and forgotten in the other is a red test.
 //!
-//! Cut L removed the unused hand-written dev2 lane. A second instance supplies
-//! another `instance.env` and joins [`SHIPPED`] when committed.
+//! Cut L removed the unused hand-written dev2 lane; dev2 came back as a render
+//! of the same template (deploy/dev2/instance.env) and sits in [`SHIPPED`]
+//! beside dev1. A further instance joins the same way when committed.
 
 use std::collections::{BTreeMap, BTreeSet};
-use std::net::SocketAddr;
+use std::net::{IpAddr, SocketAddr};
 use std::path::{Path, PathBuf};
 use std::sync::atomic::{AtomicU64, Ordering};
 
@@ -88,6 +93,26 @@ enum Onboarding {
     Open,
 }
 
+/// How a box's `[web]` listener meets the internet. Three instance.env keys
+/// (`WEB_BIND`, `WEB_TLS`, `WEB_TRUSTED_PROXIES`) render it, and the two shapes
+/// they are meant to produce differ in every live line of the table — so a box
+/// that mixed them (loopback with a cert, or a public bind that trusts a
+/// forwarded header) is a box nobody chose, and this is where it is caught.
+#[derive(Clone, Copy, PartialEq, Eq, Debug)]
+enum WebShape {
+    /// The gateway terminates HTTPS itself: `listen` is the SAME external
+    /// address `[ssh].listen` uses, `tls` names a cert and a key, and nothing
+    /// is trusted about `X-Forwarded-For` because nothing is in front.
+    NativeTls,
+    /// A TLS-terminating reverse proxy on the SAME box (Caddy on dev1/dev2):
+    /// `listen` is loopback, there is no `tls` key at all (plain HTTP — not a
+    /// `tls` pointing at files nobody reads), and `trusted_proxies` is
+    /// non-empty and entirely loopback, so the client address behind bans and
+    /// the auth rate limit is the proxy's header and not the proxy — and no
+    /// peer other than the box itself can ever be believed about it.
+    BehindLoopbackProxy,
+}
+
 /// One shipped `instance.env`, and the claims that are ITS rather than the
 /// template's. A knob a box is free to choose does not belong in a rule applied
 /// to every box; it belongs here, next to the box that chose it.
@@ -111,6 +136,8 @@ struct ShippedInstance {
     /// The IC date and time at unix 0 this box renders into `[game].ic_epoch`,
     /// as the parsed config carries it — the quotes are the template's.
     ic_epoch: &'static str,
+    /// The `[web]` shape this box chose.
+    web: WebShape,
 }
 
 /// The shipped parameterisations. 16b cut R-b: one game — the Shadowrun env left
@@ -125,6 +152,7 @@ const SHIPPED: &[ShippedInstance] = &[
         onboarding: Onboarding::Gated,
         ic_ratio: 1,
         ic_epoch: "2020-01-01 00:00",
+        web: WebShape::NativeTls,
     },
     ShippedInstance {
         env: "deploy/dev1/instance.env",
@@ -135,6 +163,18 @@ const SHIPPED: &[ShippedInstance] = &[
         // epoch, one IC day per real hour. (Before: rate 4 from 2123-01-19 11:15, 16c T-88.)
         ic_ratio: 24,
         ic_epoch: "0987-04-20 06:00",
+        // Caddy on conclav.io since 2026-10-31 (deploy/README.md → "Behind Caddy").
+        web: WebShape::BehindLoopbackProxy,
+    },
+    ShippedInstance {
+        env: "deploy/dev2/instance.env",
+        log_format: "pretty",
+        onboarding: Onboarding::Open,
+        // The same lane as dev1: both boxes run the gateway generations on the
+        // same clock (deploy plan of 2026-10-31).
+        ic_ratio: 24,
+        ic_epoch: "0987-04-20 06:00",
+        web: WebShape::BehindLoopbackProxy,
     },
 ];
 
@@ -499,14 +539,123 @@ fn the_rendered_listeners_are_addresses() {
     }
 }
 
+/// Each box's `[web]` table is the shape that box chose, in every live line of
+/// it (see [`WebShape`]). The three keys that render it are free per box, so
+/// like `[onboarding]` this is asserted against the box's own declaration and
+/// not against one rule for all of them — but the two shapes must not be mixed
+/// on any box: a loopback listener that still names a cert is a cert nobody
+/// reads, and a public listener that trusts a forwarded header is a ban and a
+/// rate limit any client can move onto someone else's address.
+///
+/// `[web]` is a raw `toml::Value` to mush-config; `mush-gateway --check-config`
+/// and `mushd --check-config` deserialize it into `mush_net_web::WebConfig`
+/// (and CI's provisioning job runs both over every render here), so what THIS
+/// test adds is the shape, which no deserializer can know.
+#[test]
+fn the_web_listener_has_the_shape_its_box_chose() {
+    for instance in SHIPPED {
+        let env_file = instance.env;
+        let (_, cfg) = rendered_instance(instance);
+        let table = cfg
+            .web
+            .as_table()
+            .unwrap_or_else(|| panic!("{env_file}: [web] is not a table"));
+        let listen: SocketAddr = table
+            .get("listen")
+            .and_then(toml::Value::as_str)
+            .unwrap_or_else(|| panic!("{env_file}: [web].listen is missing"))
+            .parse()
+            .unwrap_or_else(|e| panic!("{env_file}: [web].listen: {e}"));
+        let ssh: SocketAddr = cfg
+            .ssh
+            .listen
+            .parse()
+            .unwrap_or_else(|e| panic!("{env_file}: [ssh].listen: {e}"));
+        let proxies: Vec<IpAddr> = table
+            .get("trusted_proxies")
+            .and_then(toml::Value::as_array)
+            .unwrap_or_else(|| panic!("{env_file}: [web].trusted_proxies is not an array"))
+            .iter()
+            .map(|v| {
+                v.as_str()
+                    .unwrap_or_else(|| {
+                        panic!("{env_file}: [web].trusted_proxies entry {v} is not a string")
+                    })
+                    .parse::<IpAddr>()
+                    .unwrap_or_else(|e| panic!("{env_file}: [web].trusted_proxies entry {v}: {e}"))
+            })
+            .collect();
+        let tls = table.get("tls");
+
+        match instance.web {
+            WebShape::NativeTls => {
+                assert_eq!(
+                    listen.ip(),
+                    ssh.ip(),
+                    "{env_file}: a box that terminates TLS itself binds the web client \
+                     on the SAME external address as SSH; it binds {listen}"
+                );
+                assert!(
+                    !listen.ip().is_loopback(),
+                    "{env_file}: a native-TLS web listener on loopback serves nobody"
+                );
+                let tls = tls
+                    .and_then(toml::Value::as_table)
+                    .unwrap_or_else(|| panic!("{env_file}: native TLS needs a [web].tls table"));
+                for key in ["cert", "key"] {
+                    assert!(
+                        tls.get(key)
+                            .and_then(toml::Value::as_str)
+                            .is_some_and(|p| !p.is_empty()),
+                        "{env_file}: [web].tls.{key} must name a file"
+                    );
+                }
+                assert!(
+                    proxies.is_empty(),
+                    "{env_file}: nothing is in front of a native-TLS listener, so no \
+                     peer may be believed about X-Forwarded-For; it trusts {proxies:?}"
+                );
+            }
+            WebShape::BehindLoopbackProxy => {
+                assert!(
+                    listen.ip().is_loopback(),
+                    "{env_file}: behind a proxy on the same box the web client binds \
+                     loopback and nothing public; it binds {listen}"
+                );
+                assert!(
+                    tls.is_none(),
+                    "{env_file}: the proxy terminates TLS; a [web].tls key here is a \
+                     cert nobody reads (and a gateway built without the tls feature \
+                     refuses it): {tls:?}"
+                );
+                assert!(
+                    !proxies.is_empty(),
+                    "{env_file}: with no trusted proxy every web client is the proxy's \
+                     address to the IP guard, so one address carries every ban and \
+                     every auth rate-limit bucket"
+                );
+                for proxy in &proxies {
+                    assert!(
+                        proxy.is_loopback(),
+                        "{env_file}: the proxy is on this box, so only loopback may be \
+                         believed about who the client is; {proxy} is listed"
+                    );
+                }
+            }
+        }
+    }
+}
+
 /// The marker rule inside [`rendered_instance`] is a check on a substitution
 /// that has already happened, so on its own it can only ever say yes. This is
 /// the negative control for it: render a committed env VERBATIM — the way a
 /// hand re-render on the box does, with no deploy script resolving the line
-/// first — and watch `auto` land in the listeners.
+/// first — and watch `auto` land in the SSH listener. (Only that one: the web
+/// listener's address is its own key, `WEB_BIND`, since the boxes went behind
+/// Caddy, and on every shipped box it is a literal address.)
 ///
 /// What that proves is why the marker is guarded in three places and not one.
-/// `[ssh].listen` and `[web].listen` are on no `--check-config` list, so the
+/// `[ssh].listen` is on no `--check-config` list, so the
 /// unresolved render passes every preflight and installs a box that comes up
 /// and answers on no port. The gates that actually stop it are the deploy
 /// scripts' `grep -q "^EXTERNAL_IP=$EXT_IP$"` over the env they just wrote and
@@ -539,9 +688,9 @@ fn the_unresolved_deploy_time_marker_reaches_the_listeners() {
             .filter(|l| live(l).trim_start().starts_with("listen"))
             .collect();
         assert!(
-            listeners.len() >= 2,
+            !listeners.is_empty(),
             "{env_file}: rendering the committed env unresolved should put \
-             {DEPLOY_TIME_MARKER:?} in both listeners, so that the deploy's \
+             {DEPLOY_TIME_MARKER:?} in the SSH listener, so that the deploy's \
              substitution and render.sh's refusal have something to be about; \
              it put it in {listeners:?}"
         );

@@ -2726,11 +2726,21 @@ Production is Linux, where `systemctl restart <name>mush-server` and
 
 ### Web client (M16d): served by the gateway + survives the hot restart
 
-The gateway serves the **web client (HTTPS)** itself — the axum web ingress is
+The gateway serves the **web client** itself — the axum web ingress is
 wired into `mush-gateway::serve` on the SAME session layer, accounts, IP guard,
-store, and boundary link as SSH. It reads the same `[web]` block (`listen` +
-`[web.tls]`) from `mushd.toml` the all-in-one uses, so **build the gateway with
-`--features tls`** to terminate HTTPS from the on-disk cert/key. A WS player
+store, and boundary link as SSH. It reads the same `[web]` block from
+`mushd.toml` the all-in-one uses. That block has two shapes, chosen per
+instance by `WEB_BIND` / `WEB_TLS` / `WEB_TRUSTED_PROXIES` in `instance.env`
+(`deploy/README.md` → *Behind Caddy*): **native TLS** — `listen` on the external
+address, `tls = { cert, key }`, which needs the gateway **built with
+`--features tls`**; or **behind a TLS-terminating reverse proxy on the same
+box** — `listen` on loopback, no `tls` key (plain HTTP), and
+`trusted_proxies = ["127.0.0.1"]` so bans and the auth rate limit key on the
+proxy's `X-Forwarded-For` rather than on the proxy. dev1 and dev2 run the
+second shape behind Caddy since 2026-10-31. Both `mush-gateway --check-config`
+and `mushd --check-config` refuse a `[web]` table that does not deserialize
+(the gateway would otherwise learn it at serve time, where a bad `[web]` is
+non-fatal and simply leaves the box without a web client). A WS player
 authenticates with a token and receives the SAME `hello` manifest the all-in-one
 advertises (who / channels / mail / `<ruleset>.sheet`) — carried from the
 server's boot `Hello` over the `[ipc]` boundary and cached in the gateway,

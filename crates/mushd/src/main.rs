@@ -287,12 +287,15 @@ fn main() -> ExitCode {
     // the config loads, before ANYTHING is opened — precisely so it is safe to
     // run beside a live instance.
     if cli.check_config {
-        return mush_config::preflight::verdict(
-            CLI.program,
-            &cli.config,
-            &mush_server::boot::check_config(&config),
-        )
-        .exit_code();
+        let mut refusals = mush_server::boot::check_config(&config);
+        // The `[web]` table is a raw `toml::Value` to mush-config; this binary
+        // is one of the two that deserialize it (below, at boot, where a bad
+        // one fails the boot). The deploy's `render.sh` preflight should hear
+        // about it first.
+        if let Err(e) = WebConfig::deserialize(config.web.clone()) {
+            refusals.push(format!("[web] config: {e}"));
+        }
+        return mush_config::preflight::verdict(CLI.program, &cli.config, &refusals).exit_code();
     }
 
     if let Some(account) = &cli.bootstrap_staff {

@@ -57,7 +57,7 @@
 //!
 //! # What is overridden, and why
 //!
-//! The shipped envs describe a real box: `DATA_DIR`/`BUILD_DIR`/`TLS_DIR` under
+//! The shipped envs describe a real box: `DATA_DIR`/`BUILD_DIR` under
 //! `/opt/rustmush/dev3`, and `[store].store = "redis"` on this instance's own
 //! port with `receipt_policy = "applied"`. Neither exists here.
 //!
@@ -65,7 +65,7 @@
 //!   check set opens a path or a socket — that is the property that makes the
 //!   flag safe to run beside a live instance — so the `/opt` paths are exactly
 //!   as checkable here as they are on the box.
-//! - The BOOT case renders with the three path keys pointed at a scratch
+//! - The BOOT case renders with the two path keys pointed at a scratch
 //!   directory (still through the same substitution: they are `__KEY__` tokens
 //!   like any other) and then sets `[store].store = "memory"` on the parsed
 //!   config, which `boot::open_store` allows and warns about. That is the one
@@ -157,7 +157,7 @@ fn toml_path(path: &Path) -> String {
 /// hand back `(path, text)`.
 ///
 /// `overrides` replaces the value of a key before substitution — the boot case
-/// re-points the three path keys at a scratch tree. It is applied to the ENV,
+/// re-points the two path keys at a scratch tree. It is applied to the ENV,
 /// not to the rendered text, so the substitution under test is still the only
 /// mechanism that fills the template.
 fn render_instance(env_file: &str, into: &Path, overrides: &[(&str, String)]) -> (PathBuf, String) {
@@ -353,7 +353,6 @@ async fn the_rendered_instance_boots_and_advertises_its_layers() {
         &[
             ("DATA_DIR", toml_path(&data)),
             ("BUILD_DIR", toml_path(&dir.join("build"))),
-            ("TLS_DIR", toml_path(&dir.join("tls"))),
             // 16b cut AC.2 (16c T-88): the IC clock, at values that equal no
             // `GameCfg` default, no literal the template used to carry and no
             // shipped env — the reference env's `1` / `2020-01-01 00:00` are all

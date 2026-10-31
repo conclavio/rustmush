@@ -26,11 +26,14 @@
 #                     dev1mush-gateway.service to the generations (connections
 #                     drop once); cut GG.5, with the owner
 #
-# NOTE (web): as of M16d the gateway ALSO serves the web client (HTTPS :6790) on
-# the same session layer as SSH, and web connections survive the hot restart
-# AND the swap. The gateway must be BUILT with `--features tls` to terminate
-# HTTPS from the on-disk cert/key (see README.md here for the build step). This
-# deploy.sh only installs config/units + (re)starts; it does not build.
+# NOTE (web): as of M16d the gateway ALSO serves the web client on the same
+# session layer as SSH, and web connections survive the hot restart AND the
+# swap. Since 2026-10-31 that listener is PLAIN HTTP on 127.0.0.1:6790 behind
+# Caddy, which terminates TLS for dev1.conclav.io (instance.env's WEB_BIND /
+# WEB_TLS / WEB_TRUSTED_PROXIES; deploy/README.md → "Behind Caddy"). A change
+# to the [web] block is a GATEWAY change the binary comparison cannot see:
+# deploy it with GATEWAY_SWAP=1. This deploy.sh only installs config/units +
+# (re)starts; it does not build.
 set -euo pipefail
 
 ROOT=/opt/rustmush/dev1
@@ -131,8 +134,10 @@ bash "$INSTANCE_DIR/render.sh" \
   "$ROOT/instance.env" "$INSTANCE_DIR/mushd.toml.tmpl" "$ROOT/mushd.toml" \
   "$BUILD/target/release/mush-gateway --generation a" "$BUILD/target/release/mush-server"
 
-# 5. TLS cert — the gateway serves the web client (HTTPS :6790) and terminates
-#    TLS from this cert/key (M16d; gateway built with --features tls).
+# 5. TLS cert — read by the gateway only when instance.env renders the native
+#    TLS shape (WEB_TLS = a `tls = { ... }` line; gateway built with --features
+#    tls). dev1 is behind Caddy and renders no `tls` key, so nothing reads this
+#    pair there; it is kept for an env that does.
 if [ ! -f "$ROOT/tls/cert.pem" ]; then
   openssl req -x509 -newkey rsa:2048 -nodes -days 825 \
     -keyout "$ROOT/tls/key.pem" -out "$ROOT/tls/cert.pem" \
@@ -359,4 +364,4 @@ for g in a b; do
     systemctl --no-pager --lines=0 status "$GW_UNIT@$g.service" | head -4 || true
   fi
 done
-echo "== done. ssh -p 6789 play@$EXT_IP  |  web https://$EXT_IP:6790  (server change: hot restart, held; gateway change: generation swap, drained; see README.md) =="
+echo "== done. ssh -p 6789 play@$EXT_IP  |  web https://dev1.conclav.io (Caddy -> 127.0.0.1:6790)  (server change: hot restart, held; gateway change: generation swap, drained; see README.md) =="

@@ -81,8 +81,9 @@ fi
 # committed instance.env that resolves its address at deploy time writes
 # `EXTERNAL_IP=auto` — a marker, not an address — and the deploy script replaces
 # that whole line before it calls this script. Rendered unresolved it produces
-# `[ssh].listen = "auto:6789"` and `[web].listen = "auto:6790"`, which no
-# `--check-config` below refuses (neither key is on any preflight list), so the
+# `[ssh].listen = "auto:6789"` (the web listener's address is its own key,
+# WEB_BIND, since the boxes went behind Caddy), which no `--check-config` below
+# refuses (`[ssh].listen` is on no preflight list), so the
 # symptom would be a box that boots clean, logs nothing wrong, and answers on no
 # port. That refusal belongs HERE, with the completeness rule it is a case of,
 # and not only in CI and in crates/mush-config/tests/shipped_configs.rs — an

@@ -1,0 +1,31 @@
+# /etc/caddy/Caddyfile for conclav.io — Caddy owns 80/443 on the box, terminates
+# TLS for the dev instances by name, and proxies PLAIN HTTP to each gateway's
+# web listener on loopback. This file is the source of truth; the on-box copy is
+# installed from it (deploy/README.md → "Behind Caddy").
+#
+# The pairing on the gateway side is the instance.env of each box:
+#   WEB_BIND=127.0.0.1                       the listener Caddy proxies to
+#   WEB_TLS=# ...                            no native TLS (plain HTTP)
+#   WEB_TRUSTED_PROXIES=["127.0.0.1"]        believe X-Forwarded-For from Caddy
+# Caddy's reverse_proxy sets X-Forwarded-For (and -Proto, -Host) on every
+# request, and since 2.7 it does not trust the header a client sends it unless
+# that client is a configured trusted proxy — none is — so the address the
+# gateway reads is the connecting client's. WebSocket upgrades (/ws) are proxied
+# as-is.
+#
+# `tls internal` issues from Caddy's own CA (browsers warn, like the old
+# self-signed cert did). Once port 80 is reachable from the internet, delete
+# that line and Caddy obtains and renews a Let's Encrypt certificate itself.
+
+(game) {
+	tls internal
+	reverse_proxy http://127.0.0.1:{args[0]}
+}
+
+dev1.conclav.io {
+	import game 6790
+}
+
+dev2.conclav.io {
+	import game 6793
+}
