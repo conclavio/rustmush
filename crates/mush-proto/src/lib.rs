@@ -74,12 +74,14 @@ pub use event::{
     Vital, VitalRole, VitalState, VitalValue, VitalsFrame, VitalsFrameError, WhoEntry,
 };
 pub use invoke::{
-    InvokeRequest, InvokeResult, LISTING_CODE_CHARACTERS, ListingCode, ListingCodeError,
-    MAX_INVOKE_BYTES, MAX_INVOKE_DEPTH, MAX_MARKET_PLAYER_CHARS, MAX_MARKET_PRICE_BYTES,
-    MAX_MARKET_ROYALTY_PERMILLE, MAX_MIND_ENVELOPE_BYTES, MAX_MIND_SOURCE_BYTES,
-    MAX_UNIT_DESIGN_BYTES, MAX_UNIT_DESIGN_ID_BYTES, MarketAction, MarketListingForm,
-    MindDiagnostic, MindDraft, MindEdit, MindEditBase, MindLifecycle, MindPictureReport,
-    MindRequest, MindResponse, UnitDesignRequest, UnitDesignResponse, validate_invoke_json,
+    ContentStudioRequest, ContentStudioResponse, InvokeRequest, InvokeResult,
+    LISTING_CODE_CHARACTERS, ListingCode, ListingCodeError, MAX_CONTENT_STUDIO_BRIEF_BYTES,
+    MAX_CONTENT_STUDIO_BYTES, MAX_CONTENT_STUDIO_ID_BYTES, MAX_INVOKE_BYTES, MAX_INVOKE_DEPTH,
+    MAX_MARKET_PLAYER_CHARS, MAX_MARKET_PRICE_BYTES, MAX_MARKET_ROYALTY_PERMILLE,
+    MAX_MIND_ENVELOPE_BYTES, MAX_MIND_SOURCE_BYTES, MAX_UNIT_DESIGN_BYTES,
+    MAX_UNIT_DESIGN_ID_BYTES, MarketAction, MarketListingForm, MindDiagnostic, MindDraft, MindEdit,
+    MindEditBase, MindLifecycle, MindPictureReport, MindRequest, MindResponse, UnitDesignRequest,
+    UnitDesignResponse, validate_invoke_json,
 };
 pub use legal_action::{
     LegalActionInteger, LegalActionParameters, LegalActionRequest, LegalActionResponse,

@@ -33,12 +33,13 @@ pub mod pack;
 
 pub use apply::{
     Appliers, ApplyError, ApplyReport, EntryApplier, PLAN_FINGERPRINT_CHARS,
-    PLAN_FINGERPRINT_DOMAIN, Plan, PlannedEntry, Step, apply, plan, retire_pack,
+    PLAN_FINGERPRINT_DOMAIN, Plan, PlannedEntry, Step, apply, check_pack as check_pack_with, plan,
+    retire_pack,
 };
 pub use latch::{
     Applied, AppliedEntry, AppliedEntryWire, AppliedWire, LatchError, Latches, NS, applied_key,
 };
-pub use module::{ContentModule, ContentState, apply_pack};
+pub use module::{ContentModule, ContentState, apply_pack, check_pack};
 pub use pack::{
     ENTRY_DIGEST_DOMAIN, EntryKinds, LoadedPack, MAX_ENTRY_BYTES, MAX_PACK_BYTES, MAX_PACK_ENTRIES,
     MAX_REQUIRES, PACK_DIGEST_DOMAIN, Pack, PackError, PackKind, PackManifest, PackManifestWire,

@@ -30,6 +30,9 @@ pub enum InvokeRequest {
     /// Staff unit designer (doc 31 cut UD.2): a design's rules checked by the
     /// server's own loader and catalogue build.
     UnitDesign(UnitDesignRequest),
+    /// Staff content studio (doc 34 cut CS.0a, D-34-7): catalog query, pack
+    /// check and canonical digest signing, live dev-world apply, and LLM assist.
+    ContentStudio(ContentStudioRequest),
 }
 impl InvokeRequest {
     /// Registration key, independent of caller-controlled strings.
@@ -39,6 +42,7 @@ impl InvokeRequest {
             Self::Mind(_) => "mind",
             Self::LegalAction(_) => "legal_action",
             Self::UnitDesign(_) => "unit_design",
+            Self::ContentStudio(_) => "content_studio",
         }
     }
     /// A request-family-correct transport refusal, without declaring an action absent.
@@ -47,6 +51,10 @@ impl InvokeRequest {
         match self {
             Self::Mind(_) => InvokeResult::error("unavailable", "This service is unavailable."),
             Self::UnitDesign(_) => InvokeResult::UnitDesign(UnitDesignResponse::Error {
+                code: "unavailable".into(),
+                message: "This service is unavailable.".into(),
+            }),
+            Self::ContentStudio(_) => InvokeResult::ContentStudio(ContentStudioResponse::Error {
                 code: "unavailable".into(),
                 message: "This service is unavailable.".into(),
             }),
@@ -68,6 +76,10 @@ impl InvokeRequest {
                 code: "invalid".into(),
                 message: "Invalid or oversized structured request.".into(),
             }),
+            Self::ContentStudio(_) => InvokeResult::ContentStudio(ContentStudioResponse::Error {
+                code: "invalid".into(),
+                message: "Invalid or oversized structured request.".into(),
+            }),
             Self::LegalAction(_) => {
                 InvokeResult::LegalAction(crate::LegalActionResponse::Invalid {})
             }
@@ -81,6 +93,7 @@ impl InvokeRequest {
             Self::Mind(request) => request,
             Self::LegalAction(request) => return request.validate(),
             Self::UnitDesign(request) => return request.validate(),
+            Self::ContentStudio(request) => return request.validate(),
         };
         if let MindRequest::FiledSource {
             licence,
@@ -806,6 +819,8 @@ pub enum InvokeResult {
     LegalAction(crate::LegalActionResponse),
     /// Staff unit designer result (doc 31 cut UD.2).
     UnitDesign(UnitDesignResponse),
+    /// Staff content studio result (doc 34 cut CS.0a).
+    ContentStudio(ContentStudioResponse),
 }
 impl InvokeResult {
     /// Generic ingress/registration refusal in the current service family.
@@ -830,6 +845,10 @@ impl InvokeResult {
                     Self::LegalAction(crate::LegalActionResponse::Unavailable { reference: None })
                 }
                 Self::UnitDesign(_) => Self::UnitDesign(UnitDesignResponse::Error {
+                    code: "too_large".into(),
+                    message: "Result exceeds the structured response limit.".into(),
+                }),
+                Self::ContentStudio(_) => Self::ContentStudio(ContentStudioResponse::Error {
                     code: "too_large".into(),
                     message: "Result exceeds the structured response limit.".into(),
                 }),
@@ -943,6 +962,214 @@ pub enum UnitDesignResponse {
         /// A short code.
         code: String,
         /// The sentence to show.
+        message: String,
+    },
+}
+
+/// The longest content pack or document id (`tacsim.cast.<slug>`), bytes.
+pub const MAX_CONTENT_STUDIO_ID_BYTES: usize = 128;
+/// The largest content pack or document payload in a studio request, bytes.
+pub const MAX_CONTENT_STUDIO_BYTES: usize = 240 * 1024;
+/// Maximum bytes in an LLM co-authoring brief or direction.
+pub const MAX_CONTENT_STUDIO_BRIEF_BYTES: usize = 4 * 1024;
+
+/// **The staff content studio's requests** (doc 34 cut CS.0a, D-34-7:
+/// catalog indexing, server-authoritative pack/table check and canonical
+/// digest signing, live dev-world apply, and `BUILDER_LLM`-gated structured
+/// co-authoring).
+#[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize)]
+#[cfg_attr(feature = "ts", derive(ts_rs::TS))]
+#[serde(tag = "op", rename_all = "snake_case", deny_unknown_fields)]
+pub enum ContentStudioRequest {
+    /// Fetch the live reference catalog (ports, station rooms + details, NPCs
+    /// with code-binding flags, lore pools, goods, registered interfaces and
+    /// command refs, and shipped/published pack summaries).
+    Catalog {},
+    /// Read a shipped or studio-published pack or standalone content document
+    /// by its id (or relative content path for standalone tables).
+    Read {
+        /// Pack id (e.g. `tacsim.crew.ceres`) or standalone table key
+        /// (`market/goods.json`, `resources.json`, `tools/drill_core_mk1.json`).
+        id: String,
+    },
+    /// Validate a content pack (or standalone table), infer/reconcile its
+    /// `manifest.requires`, compute its canonical SHA-256 `manifest.digest`,
+    /// and optionally run applier checks against the attached live world.
+    Check {
+        /// Pack id or standalone table key.
+        id: String,
+        /// The draft JSON document (`mush_content::Pack`, `RulesPack`, or
+        /// standalone table object).
+        content: serde_json::Value,
+        /// When true, also run `EntryApplier::check` against the live world.
+        #[serde(default)]
+        live_check: bool,
+    },
+    /// Publish a validated pack to the running dev instance (D-34-2):
+    /// `campaign_seed` packs apply live via `mush_content::module::apply_pack`
+    /// and shelf into `AtlasState`; `rules_definition` packs write a studio
+    /// registry row loaded at next boot.
+    Publish {
+        /// Pack id.
+        id: String,
+        /// The draft pack JSON.
+        content: serde_json::Value,
+        /// Entry ids (`npc.<slug>`) whose live `ObjId` should also be moved to
+        /// their authored `room` on the running world (D-34-9).
+        #[serde(default)]
+        relocate_npcs: Vec<String>,
+    },
+    /// Structured LLM co-authoring (`LlmFeature::ContentAssist`, D-34-8):
+    /// draft a card from a natural-language brief, regenerate a single field
+    /// or list while respecting pinned fields, or adapt location references
+    /// after moving an NPC between ports.
+    Assist {
+        /// Target content family (`"npc"`, `"quest"`, `"component"`).
+        family: String,
+        /// Scope (`"full"`, `"persona"`, `"background"`, `"speech_style"`,
+        /// `"goals"`, `"knows"`, `"does_not_know"`, `"fallback"`, `"lore"`,
+        /// `"relocate"`, `"quest_full"`, `"introduction"`, `"completion"`,
+        /// `"checkpoint_instructions"`).
+        scope: String,
+        /// Staff brief or regeneration direction.
+        brief: String,
+        /// Current card state (including locked/context fields).
+        context: serde_json::Value,
+    },
+}
+
+impl ContentStudioRequest {
+    /// Validate request field bounds before dispatch.
+    pub fn validate(&self) -> Result<(), &'static str> {
+        let valid_id = |id: &str| {
+            !id.is_empty()
+                && id.len() <= MAX_CONTENT_STUDIO_ID_BYTES
+                && !id.contains('\0')
+                && id
+                    .bytes()
+                    .all(|b| b.is_ascii_alphanumeric() || b"._-/".contains(&b))
+        };
+        let valid_doc = |doc: &serde_json::Value| -> Result<(), &'static str> {
+            if !doc.is_object() {
+                return Err("content studio document must be a JSON object");
+            }
+            let bytes = serde_json::to_vec(doc).map_err(|_| "invalid content document")?;
+            if bytes.len() > MAX_CONTENT_STUDIO_BYTES {
+                return Err("content studio document exceeds 240 KiB");
+            }
+            Ok(())
+        };
+        match self {
+            Self::Catalog {} => Ok(()),
+            Self::Read { id } => {
+                if !valid_id(id) {
+                    return Err("invalid content studio document id");
+                }
+                Ok(())
+            }
+            Self::Check { id, content, .. } => {
+                if !valid_id(id) {
+                    return Err("invalid content studio document id");
+                }
+                valid_doc(content)
+            }
+            Self::Publish {
+                id,
+                content,
+                relocate_npcs,
+            } => {
+                if !valid_id(id) {
+                    return Err("invalid content studio pack id");
+                }
+                if relocate_npcs.len() > 64 || relocate_npcs.iter().any(|entry| !valid_id(entry)) {
+                    return Err("invalid relocate_npcs entry list");
+                }
+                valid_doc(content)
+            }
+            Self::Assist {
+                family,
+                scope,
+                brief,
+                context,
+            } => {
+                if !valid_id(family) || !valid_id(scope) {
+                    return Err("invalid content assist family or scope");
+                }
+                if brief.len() > MAX_CONTENT_STUDIO_BRIEF_BYTES || brief.contains('\0') {
+                    return Err("content assist brief exceeds 4 KiB or contains NUL");
+                }
+                valid_doc(context)
+            }
+        }
+    }
+}
+
+/// **The staff content studio's answers** (doc 34 cut CS.0a, D-34-7).
+#[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize)]
+#[cfg_attr(feature = "ts", derive(ts_rs::TS))]
+#[serde(tag = "status", rename_all = "snake_case", deny_unknown_fields)]
+pub enum ContentStudioResponse {
+    /// Reference catalog snapshot for hydrating studio dropdowns and pickers.
+    Catalog {
+        /// Catalog payload (`ports`, `stations`, `npcs`, `lore_pools`, `goods`,
+        /// `interfaces`, `command_refs`, `packs`).
+        catalog: serde_json::Value,
+    },
+    /// Full JSON content of one requested pack or standalone table.
+    Document {
+        /// Pack id or standalone table key.
+        id: String,
+        /// Suggested repository path under `crates/tacsim/content/`.
+        repo_path: String,
+        /// Latched version on the running world, if any.
+        latched_version: Option<u32>,
+        /// Whether the pack is retired on the running world.
+        retired: bool,
+        /// The parsed JSON document.
+        content: serde_json::Value,
+    },
+    /// Result of checking and signing a pack or standalone table.
+    Checked {
+        /// Pack id or standalone table key.
+        id: String,
+        /// Suggested repository path under `crates/tacsim/content/`.
+        repo_path: String,
+        /// Validation or applier refusals (empty when valid).
+        refusals: Vec<String>,
+        /// Signed canonical JSON document when `refusals` is empty.
+        pack: Option<serde_json::Value>,
+        /// Computed hex digest when the document is a signed pack.
+        digest: Option<String>,
+        /// Dependent packs that also need re-signing if this pack's version changed.
+        cascade: Vec<serde_json::Value>,
+    },
+    /// Result of publishing a pack to the running world.
+    Published {
+        /// Pack id.
+        id: String,
+        /// Applied or registered version.
+        version: u32,
+        /// Refusals when not published (empty on success).
+        refusals: Vec<String>,
+        /// Summary line (`Applied ...: N created, M updated` or `Fieldable after restart`).
+        summary: String,
+        /// Signed pack JSON that was published.
+        pack: Option<serde_json::Value>,
+    },
+    /// Result of a structured LLM co-authoring call (`LlmFeature::ContentAssist`).
+    Assisted {
+        /// Generated JSON patch / card fields matching the requested `scope`.
+        patch: serde_json::Value,
+        /// Model name used.
+        model: String,
+        /// Audit prompt hash.
+        prompt_hash: String,
+    },
+    /// Refusal (not staff, missing `BUILDER_LLM`, invalid bounds, etc.).
+    Error {
+        /// Short machine code.
+        code: String,
+        /// Human-readable refusal sentence.
         message: String,
     },
 }
@@ -1311,6 +1538,69 @@ mod tests {
                 name: "mine".into()
             }
         );
+        Ok(())
+    }
+
+    #[test]
+    fn content_studio_wire_is_closed_and_bounded() -> Result<(), Box<dyn std::error::Error>> {
+        let catalog_req = InvokeRequest::ContentStudio(ContentStudioRequest::Catalog {});
+        catalog_req.validate()?;
+        let wire = serde_json::to_string(&catalog_req)?;
+        check_eq!(
+            wire,
+            r#"{"service":"content_studio","request":{"op":"catalog"}}"#
+        );
+        check_eq!(serde_json::from_str::<InvokeRequest>(&wire)?, catalog_req);
+
+        let check_req = InvokeRequest::ContentStudio(ContentStudioRequest::Check {
+            id: "tacsim.crew.ceres".into(),
+            content: serde_json::json!({"manifest":{"id":"tacsim.crew.ceres"}}),
+            live_check: true,
+        });
+        check_req.validate()?;
+        let check_wire = serde_json::to_string(&check_req)?;
+        check_eq!(
+            serde_json::from_str::<InvokeRequest>(&check_wire)?,
+            check_req
+        );
+
+        for bad_id in [
+            "",
+            "bad id",
+            "bad\0id",
+            &"x".repeat(MAX_CONTENT_STUDIO_ID_BYTES + 1),
+        ] {
+            check!(
+                InvokeRequest::ContentStudio(ContentStudioRequest::Read { id: bad_id.into() })
+                    .validate()
+                    .is_err(),
+                "{bad_id:?}"
+            );
+        }
+
+        check!(
+            InvokeRequest::ContentStudio(ContentStudioRequest::Check {
+                id: "tacsim.crew.ceres".into(),
+                content: serde_json::json!(["not_an_object"]),
+                live_check: false,
+            })
+            .validate()
+            .is_err()
+        );
+
+        check!(
+            serde_json::from_str::<InvokeRequest>(
+                r#"{"service":"content_studio","request":{"op":"catalog","actor":1}}"#
+            )
+            .is_err()
+        );
+
+        let reply = InvokeResult::ContentStudio(ContentStudioResponse::Error {
+            code: "not_staff".into(),
+            message: "Permission denied.".into(),
+        });
+        let reply_wire = serde_json::to_string(&reply)?;
+        check_eq!(serde_json::from_str::<InvokeResult>(&reply_wire)?, reply);
         Ok(())
     }
 }

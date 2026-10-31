@@ -354,6 +354,46 @@ fn tag_in_use(ctx: &Ctx<'_>, tag: &str, placed: &BTreeMap<CanonicalId, ObjId>) -
         .map(|o| format!("{} ({})", o.name, o.id))
 }
 
+/// Validate an authored `npc` or `lore` entry against schema and profile/lore
+/// bounds without requiring a live world (doc 34 cut CS.0a).
+///
+/// # Errors
+///
+/// Human-readable refusal naming the entry id and field.
+pub fn validate_entry(id: &CanonicalId, entry: &RawEntry) -> Result<(), String> {
+    match entry.kind().as_str() {
+        "npc" => {
+            let def: NpcDef = decode(id, entry)?;
+            let name = def.name.trim();
+            if name.is_empty()
+                || name.len() > 64
+                || name.contains('/')
+                || name.contains('=')
+                || name.contains(';')
+            {
+                return Err(format!("{id}: {name:?} is not an NPC name"));
+            }
+            CanonicalId::new(def.room.trim()).map_err(|e| format!("{id}: room: {e}"))?;
+            if let Some(pack_name) = &def.room_pack {
+                CanonicalId::new(pack_name.trim()).map_err(|e| format!("{id}: room_pack: {e}"))?;
+            }
+            profile_of(&def).map_err(|e| format!("{id}: {e}"))?;
+            knowledge_of(&def).map_err(|e| format!("{id}: {e}"))?;
+            Ok(())
+        }
+        "lore" => {
+            let def: LorePoolDef = decode(id, entry)?;
+            let pool = LorePool {
+                tag: def.tag.trim().to_string(),
+                entries: def.entries.iter().map(LoreDef::to_entry).collect(),
+            };
+            pool.validate().map_err(|e| format!("{id}: {e}"))?;
+            Ok(())
+        }
+        other => Err(format!("{id}: unsupported NPC content kind {other}")),
+    }
+}
+
 impl EntryApplier for NpcApplier {
     fn kinds(&self) -> Vec<CanonicalId> {
         vec![self.kind.clone()]
@@ -370,6 +410,7 @@ impl EntryApplier for NpcApplier {
         id: &CanonicalId,
         entry: &RawEntry,
     ) -> Result<(), String> {
+        validate_entry(id, entry)?;
         if self.kind.as_str() == "npc" {
             let def: NpcDef = decode(id, entry)?;
             if def.room_pack.is_some() {

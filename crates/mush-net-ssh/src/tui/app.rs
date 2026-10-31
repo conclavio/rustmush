@@ -2054,9 +2054,11 @@ impl TuiApp {
                         self.workshop.accept(*id, result);
                         self.market.accept(*id, result);
                     }
-                    // Doc 31 cut UD.2: the unit designer is the web studio's;
-                    // the TUI never asks, so an answer is not its.
-                    mush_proto::InvokeResult::UnitDesign(_) => {}
+                    // Doc 31 cut UD.2 / Doc 34 cut CS.0a: the unit designer
+                    // and content studio are the web studio's; the TUI never
+                    // asks, so an answer is not its.
+                    mush_proto::InvokeResult::UnitDesign(_)
+                    | mush_proto::InvokeResult::ContentStudio(_) => {}
                 }
                 queries.extend(self.market.take_queries());
                 return queries; // private source never enters scrollback

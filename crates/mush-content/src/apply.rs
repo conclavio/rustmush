@@ -384,7 +384,9 @@ impl Appliers {
         &self.kinds
     }
 
-    fn for_kind(&self, kind: &CanonicalId) -> Option<&std::sync::Arc<dyn EntryApplier>> {
+    /// Look up the applier registered for `kind`.
+    #[must_use]
+    pub fn for_kind(&self, kind: &CanonicalId) -> Option<&std::sync::Arc<dyn EntryApplier>> {
         self.by_kind.get(kind)
     }
 
@@ -460,6 +462,73 @@ pub enum ApplyError {
         /// The pack.
         pack: String,
     },
+}
+
+/// Run every pre-mutation check (`apply`'s fallible half) against `ctx`, `latches`,
+/// and `appliers` without writing anything (doc 34 cut CS.0a).
+///
+/// # Errors
+///
+/// [`ApplyError`] for any refusal `apply` would return before mutating the world.
+pub fn check_pack(
+    ctx: &Ctx<'_>,
+    latches: &Latches,
+    appliers: &Appliers,
+    pack: &Pack,
+) -> Result<Plan, ApplyError> {
+    let pack_id = pack.manifest().id().clone();
+    if latches.is_held(&pack_id) {
+        return Err(ApplyError::Held {
+            pack: pack_id.to_string(),
+        });
+    }
+    appliers.kinds().check(pack)?;
+    crate::pack::check_requires(pack, &latches.loaded())?;
+    let previous = latches.applied(&pack_id);
+    let plan = plan(pack, previous)?;
+
+    let placed: BTreeMap<CanonicalId, ObjId> = previous
+        .filter(|p| !p.is_retired())
+        .map(|p| {
+            p.entries()
+                .iter()
+                .filter_map(|(id, e)| e.object().map(|o| (id.clone(), o)))
+                .collect()
+        })
+        .unwrap_or_default();
+
+    for planned in plan.at(Step::Retire) {
+        let Some(applier) = appliers.for_kind(&planned.kind) else {
+            return Err(ApplyError::RetireRefused {
+                entry: planned.id.to_string(),
+                reason: format!("nothing on this server owns kind {}", planned.kind),
+            });
+        };
+        applier
+            .retire_check(ctx, &pack_id, &planned.id, planned.existing, &placed)
+            .map_err(|reason| ApplyError::RetireRefused {
+                entry: planned.id.to_string(),
+                reason,
+            })?;
+    }
+
+    for planned in &plan.entries {
+        if !matches!(planned.step, Step::Create | Step::Update) {
+            continue;
+        }
+        let (Some(applier), Some(entry)) =
+            (appliers.for_kind(&planned.kind), pack.entry(&planned.id))
+        else {
+            continue;
+        };
+        applier
+            .check(ctx, pack, &planned.id, entry)
+            .map_err(|reason| ApplyError::EntryRefused {
+                entry: planned.id.to_string(),
+                reason,
+            })?;
+    }
+    Ok(plan)
 }
 
 /// Apply `pack` to the world through the composed appliers, honestly latching.
