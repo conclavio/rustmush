@@ -4107,7 +4107,8 @@ impl Rig {
         packs.retain(|p| {
             !matches!(
                 p.manifest().id().as_str(),
-                "tacsim.passengers.stickney"
+                tacsim::definitions::content::CAST_CERES_PACK
+                    | "tacsim.passengers.stickney"
                     | "tacsim.passengers.ceres"
                     | "tacsim.crew.ceres"
                     | "tacsim.quests.first_steps"
@@ -4142,6 +4143,7 @@ impl Rig {
         // historical topology migration exercised by these stories.
         rig.apply_content(vec![
             mush_content::load_pack(tacsim::definitions::content::CERES_JSON).unwrap(),
+            mush_content::load_pack(tacsim::definitions::content::CAST_CERES_JSON).unwrap(),
         ])
         .await;
         rig.flush().await;
@@ -4221,8 +4223,11 @@ fn resigned(mut value: serde_json::Value) -> mush_content::Pack {
 }
 /// Published Ceres v2, before Oduya's role-aware guidance profile.
 fn ceres_v2() -> mush_content::Pack {
-    let mut ceres: serde_json::Value =
-        serde_json::from_str(tacsim::definitions::content::CERES_JSON).unwrap();
+    let mut ceres = tacsim::definitions::content::station_with_cast_value(
+        tacsim::definitions::content::CERES_JSON,
+        tacsim::definitions::content::CAST_CERES_JSON,
+    )
+    .unwrap();
     ceres["manifest"]["version"] = 2.into();
     ceres["entries"]["npc.oduya"]["def"]["profile"] = serde_json::from_str(include_str!(
         "../../../tacsim/tests/support/oduya_v2_profile.json"
@@ -4316,7 +4321,8 @@ impl Rig {
         packs.retain(|p| {
             !matches!(
                 p.manifest().id().as_str(),
-                "tacsim.passengers.stickney"
+                tacsim::definitions::content::CAST_CERES_PACK
+                    | "tacsim.passengers.stickney"
                     | "tacsim.passengers.ceres"
                     | "tacsim.crew.ceres"
                     | "tacsim.quests.first_steps"
@@ -4394,6 +4400,7 @@ async fn sm12b_a_kept_v13_star_takes_lane_v15_and_relay_v6() {
 
     rig.apply_content(vec![
         mush_content::load_pack(tacsim::definitions::content::CERES_JSON).unwrap(),
+        mush_content::load_pack(tacsim::definitions::content::CAST_CERES_JSON).unwrap(),
     ])
     .await;
 

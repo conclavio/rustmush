@@ -112,9 +112,31 @@ fn external_object(
                     .is_none_or(|digest| digest == latch.digest())
         })
         .ok_or("quest binding has no matching active dependency latch")?;
-    latch
-        .entries()
-        .get(entry)
+    let applied_entry = latch.entries().get(entry).or_else(|| {
+        if kind != "npc" {
+            return None;
+        }
+        if let Some(station) = dependency.as_str().strip_prefix("neighborhood.") {
+            let cast_id = CanonicalId::new(format!("tacsim.cast.{station}")).ok()?;
+            return content
+                .latches
+                .applied(&cast_id)
+                .filter(|l| !content.latches.is_held(&cast_id) && !l.is_retired() && l.anomaly().is_none())?
+                .entries()
+                .get(entry);
+        }
+        if let Some(station) = dependency.as_str().strip_prefix("tacsim.cast.") {
+            let nb_id = CanonicalId::new(format!("neighborhood.{station}")).ok()?;
+            return content
+                .latches
+                .applied(&nb_id)
+                .filter(|l| !content.latches.is_held(&nb_id) && !l.is_retired() && l.anomaly().is_none())?
+                .entries()
+                .get(entry);
+        }
+        None
+    });
+    applied_entry
         .filter(|entry| entry.kind().as_str() == kind)
         .and_then(mush_content::AppliedEntry::object)
         .filter(|id| {

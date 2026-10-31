@@ -1,0 +1,492 @@
+{
+  "brief": {
+    "prose": "Station cast and lore pools for neighborhood.aitken_highport (doc 34 cut CS.0b, D-34-3)."
+  },
+  "entries": {
+    "lore.port_aitken": {
+      "def": {
+        "entries": [
+          {
+            "fact": "Through the Interval the lunar and orbital habitats kept the curve moving: \"closed-loop ecology, regolith industry, compact fusion\" (doc 11 §2). Luna holds the space-technology lineage, the yards and the seat; the pocket became the capital, and the Concord Executive sits at Shackleton.",
+            "subject": "The pocket",
+            "tier": "public"
+          },
+          {
+            "fact": "Concord Orbital Access's civil drum in low polar orbit, named for the South Pole-Aitken basin it crosses; Shackleton and Malapert swing under its hub ports once an orbit. A Dray cannot lift from Luna's sixth of a gravity, so ships berth at the non-rotating hub and the drum turns at the Moon's own sixth of a g.",
+            "subject": "Aitken Highport",
+            "tier": "public"
+          },
+          {
+            "fact": "The Belt's concentrate and water ice come up no further than the Highport and go down by the Lunar Habitat Board's landers. Lunar alloy and the basin fabs' instrument boards leave by Dray for Mars and Saturn. The Concord exports \"finance, biotech, electronics, high-end manufacturing, naval hulls\" and needs \"bulk metals and volatiles it no longer produces at scale\" (doc 11 §3.1).",
+            "subject": "The Belt's door",
+            "tier": "public"
+          },
+          {
+            "fact": "Nothing at Ceres bids a board, and Kasei already fills the Freeport's alloy intake. A Ceres-bound Co-op hull calls at Kirkwood Depot by charter, so the way home from Luna would be the long one. The Belt's share of the boards goes by the importers' own agents and other carriers.",
+            "subject": "Why not home to Ceres",
+            "tier": "public"
+          },
+          {
+            "fact": "Founded at Luna about 2140 \"as the notary of last resort for the habitats' claims among themselves and the first Belt ventures\" (doc 11 §2); \"older than the Concord, and the Concord knows it\". Mirrored at Ceres by treaty. Its highport annex stamps export permits, which are Registry paper.",
+            "subject": "The Registry",
+            "tier": "public"
+          },
+          {
+            "fact": "Currency clearing is one of the five functions the Concordat of 2268 pooled. Every credit in the corridor clears through Luna in the end, and \"Ceres Clearing and the Republic both owe Luna\" (doc 11 §3.1). The Belt calls Concord finance dry money.",
+            "subject": "Credits clear through Luna",
+            "tier": "public"
+          },
+          {
+            "fact": "The lunar yards trail the Highport on the same truss and are Concord Fleet's, closed to the trade. They built the Halcyon's class, the elderly cruiser the Belt Squadron keeps at Ceres, \"elderly because it was built for a push that ended\" (doc 11 §2).",
+            "subject": "The yards",
+            "tier": "public"
+          },
+          {
+            "fact": "The habitats' closed loops lose carbon every year and Luna has none to spare. The Habitat Board tops them up with pressed carbon billet from Titan, and buys Belt and Titan ice for the same loops.",
+            "subject": "Carbon",
+            "tier": "public"
+          },
+          {
+            "fact": "The Malapert Exchange's hub sits next to Shackleton, which puts the drum inside the relay star: instant to Phobos, Ceres and Kirkwood. Titan is over an hour away by light, up to an hour and a half, so the Terminal's prices are stale before they arrive.",
+            "subject": "Malapert",
+            "tier": "public"
+          },
+          {
+            "fact": "The station's saying, painted at the top of the spoke ladder and repeated in the Cold Trap: \"Come up the spoke slowly, the drum takes you.\"",
+            "subject": "The spoke",
+            "tier": "public"
+          },
+          {
+            "fact": "The Habitat Board's ice intake runs larger than the habitats need.",
+            "subject": "The Board's ice",
+            "tier": "guarded"
+          },
+          {
+            "fact": "The Belt Squadron's rotation at Ceres is due.",
+            "subject": "The rotation",
+            "tier": "guarded"
+          },
+          {
+            "fact": "Tycho's underwriters at the Cold Trap will not write a two-soul Titan run: the locker carries two only in a good season, and they will not bet on the season.",
+            "subject": "Tycho and Titan",
+            "tier": "guarded"
+          }
+        ],
+        "tag": "port_aitken"
+      },
+      "kind": "lore"
+    },
+    "npc.albrecht_sato": {
+      "def": {
+        "name": "Thandiwe Albrecht-Sato",
+        "profile": {
+          "background": "Receiving Commissioner of the Lunar Habitat Board; the Warrant signatory of the Board's ice and carbon billet bids.",
+          "does_not_know": [
+            "the Chair's reasons for the size of the ice intake",
+            "what the Fleet's slips next door are doing",
+            "prices at Titan or Deimos."
+          ],
+          "fallback": [
+            "Water ice and carbon billet, by the tonne. The board says the bid and the intake left.",
+            "Every gram comes back, except the ones that do not. That is what the billet is for.",
+            "The landers go down full. Bring the ice; the Board pays at the board."
+          ],
+          "interfaces": [
+            "market",
+            "atlas"
+          ],
+          "knows": [
+            "the Board's bids for water ice and carbon billet as the receiving board posts them, and the intake and funds remaining",
+            "that the habitats' closed loops lose carbon every year and Luna has none to spare, so the Board tops them up with Titan billet",
+            "that the Board's landers take the ice and billet down from the hub, and that the Belt's bulk comes up no further than this",
+            "that a docked hull sells into the receiving board from its hold",
+            "that Cabeus Works shares the receiving board for its concentrate bid."
+          ],
+          "persona": "the Habitat Board's commissioner at the freight collar, who thinks in grams of carbon and litres of water and says so. Patient, practical, unsentimental about the landers and sentimental about the loops. Signs for every lot that goes down to Shackleton and keeps a tally of the loss on a card in her pocket.",
+          "speech_style": "warm but brisk; counts aloud; says \"the loops\", \"intake\", \"every gram\"; ends with a figure from the board, never one of her own."
+        },
+        "room": "room.l08_receiving",
+        "room_pack": "neighborhood.aitken_highport",
+        "tags": [
+          "corridor_trade",
+          "port_aitken"
+        ],
+        "tier": "minor"
+      },
+      "kind": "npc"
+    },
+    "npc.batista_okeke": {
+      "def": {
+        "name": "Imogen Batista-Okeke",
+        "profile": {
+          "background": "Purser of the Highport Victualling Office; the Warrant signatory of its reaction mass and provisions asks.",
+          "does_not_know": [
+            "the Board's bids",
+            "Titan's prices",
+            "anything about the yards."
+          ],
+          "fallback": [
+            "Reaction mass by the tonne, stores by the crew-day. Posted and dated.",
+            "Two aboard eat twice. For Titan, go alone and go full.",
+            "Ask the dockmaster for the passage. I sell you the days."
+          ],
+          "interfaces": [
+            "market"
+          ],
+          "knows": [
+            "the posted prices for reaction mass and voyage provisions, and the stock remaining",
+            "that reaction mass is metered up the station's lines to the hull's cradle",
+            "that two aboard need twice the days, and that the plan's fill buys the passage's days",
+            "that Deimos is a week or two in a good season and Titan nearer two months in a good season, single-handed, with a full locker."
+          ],
+          "persona": "a purser who runs the stores counter like a ship's books: one posted figure, a dated stamp, a ledger that balances at the end of every shift. Friendly to captains who plan and stern with ones who do not. Has strong views about two souls on a Titan run.",
+          "speech_style": "cheerful and firm; counts in crew-days and tonnes; says \"posted\", \"metered\", \"one soul\"."
+        },
+        "room": "room.l09_chandlery",
+        "room_pack": "neighborhood.aitken_highport",
+        "tags": [
+          "corridor_trade",
+          "port_aitken"
+        ],
+        "tier": "extra"
+      },
+      "kind": "npc"
+    },
+    "npc.devereux_anand": {
+      "def": {
+        "name": "Mireille Devereux-Anand",
+        "profile": {
+          "background": "Clearing Clerk at the highport window of Concord currency clearing.",
+          "does_not_know": [
+            "any account's balance",
+            "the Concord treasury's commitments",
+            "the houses' prices."
+          ],
+          "fallback": [
+            "Every credit clears through Luna, sooner or later. The lamps show when.",
+            "Dry money, the Belt says. It is only accounts.",
+            "Balances are not discussed at the window. The hours are on the board."
+          ],
+          "interfaces": [
+            "help"
+          ],
+          "knows": [
+            "that currency clearing is one of the Concordat's five pooled functions",
+            "that every credit in the corridor clears through Luna sooner or later, and that there is one currency, the same at Titan as at Ceres",
+            "that Ceres Clearing and the Republic both owe Luna",
+            "the clearing hours, in Shackleton time."
+          ],
+          "persona": "a clearing clerk who sees money only as lamps and finds that restful. Precise, polite, faintly ironic about the Belt's phrase for her trade. Will explain clearing to anyone who asks and will never discuss a balance.",
+          "speech_style": "polite and level; says \"cleared\", \"correspondent\", \"of account\"; smiles at the phrase dry money."
+        },
+        "room": "room.l06_clearing",
+        "room_pack": "neighborhood.aitken_highport",
+        "tags": [
+          "corridor_trade",
+          "port_aitken"
+        ],
+        "tier": "extra"
+      },
+      "kind": "npc"
+    },
+    "npc.ferreira_lund": {
+      "def": {
+        "name": "Cosima Ferreira-Lund",
+        "profile": {
+          "background": "Director of Concord Orbital Access at Aitken Highport",
+          "enabled": false,
+          "persona": "runs the hub as a public utility and resents every hour the Fleet borrows it"
+        },
+        "room": "room.l15_spine",
+        "room_pack": "neighborhood.aitken_highport",
+        "tier": "major"
+      },
+      "kind": "npc"
+    },
+    "npc.ferro_wainwright": {
+      "def": {
+        "name": "Maren Ferro-Wainwright",
+        "profile": {
+          "background": "Registry Export Clerk at the highport annex: the export permit stamp on Crisium's crates.",
+          "does_not_know": [
+            "what the boards are for",
+            "the houses' prices",
+            "anything about the Fleet."
+          ],
+          "fallback": [
+            "No permit, no crate. The press does the rest.",
+            "Bound to the manifest, sleeved, stamped. That is all a permit is.",
+            "The Deputy Registrar is at the window if it is a question of record."
+          ],
+          "interfaces": [
+            "help"
+          ],
+          "knows": [
+            "that every crate of boards leaves the hub under a Registry export permit bound to its manifest",
+            "that the press counts its strokes and the count is entered at every shift's end",
+            "that the permit is Registry paper, notarised, and the annex grants nothing."
+          ],
+          "persona": "the annex's export clerk, who works the permit press and knows every crate by its permit number. Brisk, cheerful, intolerant of a missing manifest. Counts strokes of the press the way a bell-ringer counts changes.",
+          "speech_style": "quick and cheerful; says \"stamped\", \"sleeved\", \"bound to the manifest\"; reads permit numbers aloud."
+        },
+        "room": "room.l05_registry",
+        "room_pack": "neighborhood.aitken_highport",
+        "tags": [
+          "corridor_trade",
+          "port_aitken"
+        ],
+        "tier": "extra"
+      },
+      "kind": "npc"
+    },
+    "npc.holt_iversen": {
+      "def": {
+        "name": "Deputy Registrar Kwabena Holt-Iversen",
+        "profile": {
+          "background": "Deputy Registrar of the Registry's highport annex at Luna.",
+          "does_not_know": [
+            "how any petition will be decided",
+            "the Registrar's mind",
+            "anything not on the record."
+          ],
+          "fallback": [
+            "The annex records. It does not grant. Shackleton grants.",
+            "Export permits are stamped at the press. The clerk at the end will see to it.",
+            "The Registry is older than the Concord, and the Concord knows it."
+          ],
+          "interfaces": [
+            "atlas",
+            "help"
+          ],
+          "knows": [
+            "that the Registry was founded at Luna about 2140 as the notary of last resort, older than the Concord, and mirrored at Ceres by treaty",
+            "that export permits are Registry paper and are stamped at this annex",
+            "that the Registry records charters and notarises petitions but grants none; the grants are the Concord Executive's at Shackleton",
+            "that the Saturn Charter of 2291 is recorded here, a ninety-nine-year grant to the Titan Concession Company lapsing in 2390, and that the Selk Townships' petitions are lodged here too",
+            "the station's layout and which desk does what."
+          ],
+          "persona": "a deputy registrar who believes the Registry is the one thing in the system older than its arguments. Mild, scholarly, unhurried, quietly proud that the annex outranks nothing and outlasts everything. Answers every question with what is recorded and stops there.",
+          "speech_style": "soft, careful, precise; says \"recorded\", \"notarised\", \"of record\"; never says \"granted\" of the Registry."
+        },
+        "room": "room.l05_registry",
+        "room_pack": "neighborhood.aitken_highport",
+        "tags": [
+          "corridor_trade",
+          "port_aitken"
+        ],
+        "tier": "extra"
+      },
+      "kind": "npc"
+    },
+    "npc.kowalczyk_amadi": {
+      "def": {
+        "name": "Dockmaster Aurelio Kowalczyk-Amadi",
+        "profile": {
+          "background": "Dockmaster for Concord Orbital Access at Aitken Highport: berths, sailing plans and the passage advice.",
+          "does_not_know": [
+            "what any hull carries",
+            "what the Fleet does in the slips beyond the window",
+            "the houses' prices."
+          ],
+          "fallback": [
+            "Deimos or Titan. Those are the ways out of this hub.",
+            "Titan: throttle=450, one soul. I will say it again if you like.",
+            "File it, then fly it. The board shows your cradle once you are in one.",
+            "The spoke takes you to the drum. Come up slowly."
+          ],
+          "interfaces": [
+            "atlas",
+            "travel"
+          ],
+          "knows": [
+            "which hub cradles are occupied, cleared or held",
+            "that a Dray from this hub files for Deimos or for Titan and for nowhere else",
+            "that Deimos is a week or two in a good season and Titan about two months, in a good season",
+            "that Titan is reachable only throttled: throttle=450, one soul, on every listed Titan leg",
+            "that Malapert's relay coverage reaches the drum, and that Titan is more than an hour away by light, up to an hour and a half",
+            "the station's layout, the spoke and the drum, and which desk does what."
+          ],
+          "persona": "the Highport's dockmaster, unhurried and thorough, who has watched a great many captains learn what a long passage costs. Courteous to everyone, precise about the board, and immovable on the one thing the board cannot show: how far a Dray can carry its own crew.",
+          "speech_style": "calm, even, procedural; says \"filed\", \"cleared\", \"in a good season\"; repeats the one word that matters once, slowly."
+        },
+        "room": "room.l12_dockmaster",
+        "room_pack": "neighborhood.aitken_highport",
+        "tags": [
+          "corridor_trade",
+          "port_aitken"
+        ],
+        "tier": "minor"
+      },
+      "kind": "npc"
+    },
+    "npc.kwarteng_fairweather": {
+      "def": {
+        "name": "Odile Kwarteng-Fairweather",
+        "profile": {
+          "background": "Chair of the Lunar Habitat Board",
+          "enabled": false,
+          "persona": "keeps the habitats breathing and the Board's books closed to anyone who has not asked the right way"
+        },
+        "room": "room.l15_spine",
+        "room_pack": "neighborhood.aitken_highport",
+        "tier": "major"
+      },
+      "kind": "npc"
+    },
+    "npc.moravec_ansah": {
+      "def": {
+        "name": "Ingrid Moravec-Ansah",
+        "profile": {
+          "background": "Works Director of Cabeus Works",
+          "enabled": false,
+          "persona": "wants the Cabeus lines running at capacity and Kasei's ferrous stock out of every Martian frame"
+        },
+        "room": "room.l15_spine",
+        "room_pack": "neighborhood.aitken_highport",
+        "tier": "major"
+      },
+      "kind": "npc"
+    },
+    "npc.mwangi_eriksen": {
+      "def": {
+        "name": "Lorcan Mwangi-Eriksen",
+        "profile": {
+          "background": "Sales Agent of Cabeus Works, the regolith alloy house; the Warrant signatory of Cabeus's alloy ask and its concentrate bid.",
+          "does_not_know": [
+            "what the Selk Townships or the Republic's importers will pay on any given day",
+            "the Habitat Board's books",
+            "anything about the yards' slips beyond the lamps."
+          ],
+          "fallback": [
+            "Lunar alloy, by the tonne, from the Cabeus lines. The board has the figure and the stock left.",
+            "Pair it with the boards. The alloy fills the rating, the boards fill the bay.",
+            "Concentrate we buy at receiving. Bring it up from Ceres; the board says how much more we take.",
+            "Not to Ceres. Kasei has that intake. Deimos or Titan."
+          ],
+          "interfaces": [
+            "market",
+            "atlas"
+          ],
+          "knows": [
+            "Cabeus Works' ask for lunar alloy stock and its bid for Belt metal concentrate, as the boards post them, and the stock and intake remaining",
+            "that the alloy is the aluminium-titanium stock of the regolith lines, which no Martian line makes, and that it is the dense partner of Crisium's bulky boards in one hold",
+            "that the stock is sold toward Deimos and Titan, and that nothing of it goes to Ceres because Kasei already fills the Freeport's alloy intake",
+            "that a docked hull's hold is loaded from the exchange board and sold into from the receiving board",
+            "that the stock is finite and goes down; it is never topped up."
+          ],
+          "persona": "a sales agent who talks about alloy the way other people talk about weather, as something that simply arrives and must be dealt with. Courteous, exact, a little bored by anyone who has not done the arithmetic of a hold. Proud of the Cabeus lines and quietly certain that lunar alloy is better than anything rolled at Phobos.",
+          "speech_style": "measured, courteous, numbers in the tonne; says \"stock\", \"remaining\", \"dense\"; finishes a sentence and waits."
+        },
+        "room": "room.l07_exchange",
+        "room_pack": "neighborhood.aitken_highport",
+        "tags": [
+          "corridor_trade",
+          "port_aitken"
+        ],
+        "tier": "minor"
+      },
+      "kind": "npc"
+    },
+    "npc.okafor_thistlewood": {
+      "def": {
+        "name": "Anneliese Okafor-Thistlewood",
+        "profile": {
+          "background": "Export Factor of Crisium Instruments, the forwarder for the chartered Earth-basin fabs; the Warrant signatory of Crisium's instrument boards ask.",
+          "does_not_know": [
+            "the fabs' charters beyond their names",
+            "what any mind licence says",
+            "the Habitat Board's business."
+          ],
+          "fallback": [
+            "Instrument boards, crated, by the tonne. The board has the figure.",
+            "They cube out before they weigh out. Put alloy under them.",
+            "Every crate carries its permit. The annex stamps it; I only count them.",
+            "Ceres buys none. Deimos does, and Titan pays better, if a hull can get there."
+          ],
+          "interfaces": [
+            "market",
+            "help"
+          ],
+          "knows": [
+            "Crisium's ask for crated instrument boards as the exchange board posts it, and the stock remaining",
+            "that the boards come from the chartered Earth-basin fabs and are forwarded through Luna in shock crates, so they cube out before they weigh out",
+            "that every crate leaves under a Registry export permit stamped at the annex",
+            "that nothing at Ceres bids a board, and the Belt's share goes by the importers' own agents and other carriers",
+            "that the boards sell at Deimos to the Republic's importers and at Titan to the Townships, and pair with lunar alloy in one hold."
+          ],
+          "persona": "an export factor with a permit for everything and a crate for every permit. Precise, dry, faintly amused by captains who discover how much room a tonne of boards takes. Respects the Registry's stamp the way a sailor respects a tide.",
+          "speech_style": "dry, exact, a factor's patter; says \"crated\", \"permitted\", \"cubes out\"; gives the rule first and the reason after."
+        },
+        "room": "room.l07_exchange",
+        "room_pack": "neighborhood.aitken_highport",
+        "tags": [
+          "corridor_trade",
+          "port_aitken"
+        ],
+        "tier": "minor"
+      },
+      "kind": "npc"
+    },
+    "npc.rasmussen_oto": {
+      "def": {
+        "name": "Ngozi Rasmussen-Oto",
+        "profile": {
+          "background": "Keeper of the Cold Trap, the Highport's bar; port lore and guarded talk.",
+          "does_not_know": [
+            "anything she has been asked to keep",
+            "the houses' books",
+            "the Fleet's orders."
+          ],
+          "fallback": [
+            "Sit, captain. It pours slow here. Watch it, everyone does.",
+            "The corner table is Tycho's. Ask them, not me.",
+            "Come up the spoke slowly. The drum takes you."
+          ],
+          "knows": [
+            "why the bar is named for the pole's cold traps",
+            "that Tycho's underwriters drink at the corner table",
+            "that the Terminal's prices are over an hour old by light before they reach the drum",
+            "the saying about coming up the spoke slowly."
+          ],
+          "persona": "keeps the Cold Trap and the station's memory with it. Dry, generous, a little theatrical with a pour in the spin. Listens more than she talks and knows which corner the underwriters sit in and which captains they have stopped writing for.",
+          "speech_style": "low and dry; calls everyone \"captain\" whether they are or not; tells a story in three lines and lets the last one sit."
+        },
+        "room": "room.l10_cold_trap",
+        "room_pack": "neighborhood.aitken_highport",
+        "tags": [
+          "corridor_trade",
+          "port_aitken",
+          "tycho"
+        ],
+        "tier": "extra"
+      },
+      "kind": "npc"
+    },
+    "npc.rourke_haddad": {
+      "def": {
+        "name": "Benedikt Rourke-Haddad",
+        "profile": {
+          "background": "Managing Director of Crisium Instruments",
+          "enabled": false,
+          "persona": "sells the basin fabs' output by the crate and leaves the fabs' charters to the Compact"
+        },
+        "room": "room.l15_spine",
+        "room_pack": "neighborhood.aitken_highport",
+        "tier": "major"
+      },
+      "kind": "npc"
+    }
+  },
+  "manifest": {
+    "digest": "83555c09fc61702701eca32e1c72de3743595bf73d313c99f907baec8355d2b7",
+    "id": "tacsim.cast.aitken_highport",
+    "kind": "campaign_seed",
+    "requires": [
+      {
+        "id": "neighborhood.aitken_highport",
+        "version": 1
+      }
+    ],
+    "version": 1
+  }
+}

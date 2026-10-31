@@ -78,6 +78,14 @@ pub(crate) fn authored_object(
         .ok_or_else(|| format!("the station pack {area} is not on the atlas shelf"))?;
     let entry = pack
         .entry(&record.entry)
+        .or_else(|| {
+            if kind != "npc" {
+                return None;
+            }
+            let station = area.as_str().strip_prefix("neighborhood.")?;
+            let cast_id = CanonicalId::new(format!("tacsim.cast.{station}")).ok()?;
+            atlas.shelf.get(&cast_id)?.entry(&record.entry)
+        })
         .ok_or_else(|| format!("{reference} is not an entry of {area}"))?;
     if entry.kind().as_str() != kind {
         return Err(format!("{reference} is not an {kind} entry"));

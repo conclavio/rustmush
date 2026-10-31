@@ -1,28 +1,582 @@
 {
-  "manifest": {
-    "id": "neighborhood.stickney_yards",
-    "version": 4,
-    "kind": "neighborhood",
-    "digest": "f1bdc803c5adca043d576013fb5c94bc2b4b6f0434e91f82fe123fcbab2f16f6",
-    "requires": [
-      {
-        "id": "region.stickney_yards",
-        "version": 1
-      }
-    ]
-  },
   "brief": {
     "prose": "The station is laid out as a curve. The visiting berths and the pressure lobby are at one end; the Republic Customs Hall is the first room every arrival stands in; the Yard Concourse is the spine, and every public desk opens off it: the harbourmaster, the Materials Exchange (with its public rung stair down to Kasei's receiving counter on the Freight Deck), the commissary, the Stickney service counter, the Shift Board mess and the observation gallery over the drydocks. Twelve rooms carry the slice; the pasted P06 Bonded Freight Hall, P13 Freight Transfer Junction and P14 Tank Service Gallery are reconciled out as §0.3 says (their only loop purpose arrives with the freight-deck cut P-F) and stay visible as background through the receiving office's barred window and the gallery's ports. One restricted room, the Yard Maintenance Spine, is staff-locked and hidden off the receiving office on the staff-lobby precedent; it holds the storefront items that back the counters and the dark desks where doc 11's principals sit enabled:false until the faction cut binds them."
   },
   "entries": {
-    "neighborhood": {
-      "kind": "neighborhood",
+    "exit.p01_p02": {
       "def": {
-        "region": "region.stickney_yards",
-        "locality": "locality.stickney_yards",
-        "name": "Stickney Yards",
-        "setting": "station",
-        "representation": "authored",
+        "from": "room.p01_berth_gallery",
+        "names": [
+          "Pressure Lobby <PL>;pl;lobby;in",
+          "Berth Gallery <BG>;bg;gallery;berths;out"
+        ],
+        "portal": {
+          "mode": "door"
+        },
+        "to": "room.p02_pressure"
+      },
+      "kind": "exit"
+    },
+    "exit.p02_p03": {
+      "def": {
+        "from": "room.p02_pressure",
+        "names": [
+          "Customs Hall <CH>;ch;customs;in",
+          "Pressure Lobby <PL>;pl;lobby;out"
+        ],
+        "portal": {
+          "mode": "door"
+        },
+        "to": "room.p03_customs"
+      },
+      "kind": "exit"
+    },
+    "exit.p03_p04": {
+      "def": {
+        "from": "room.p03_customs",
+        "names": [
+          "Concourse <C>;c;concourse;yard;in",
+          "Customs Hall <CH>;ch;customs;locks"
+        ],
+        "portal": {
+          "mode": "door"
+        },
+        "to": "room.p04_concourse"
+      },
+      "kind": "exit"
+    },
+    "exit.p04_p05": {
+      "def": {
+        "from": "room.p04_concourse",
+        "names": [
+          "Harbourmaster <HM>;hm;harbourmaster;harbour",
+          "Concourse <C>;c;concourse;out"
+        ],
+        "portal": {
+          "mode": "door"
+        },
+        "to": "room.p05_harbourmaster"
+      },
+      "kind": "exit"
+    },
+    "exit.p04_p08": {
+      "def": {
+        "from": "room.p04_concourse",
+        "names": [
+          "Exchange <X>;x;exchange;materials;market",
+          "Concourse <C>;c;concourse;out"
+        ],
+        "portal": {
+          "mode": "door"
+        },
+        "to": "room.p08_exchange"
+      },
+      "kind": "exit"
+    },
+    "exit.p04_p09": {
+      "def": {
+        "from": "room.p04_concourse",
+        "names": [
+          "Commissary <CM>;cm;commissary;stores",
+          "Concourse <C>;c;concourse;out"
+        ],
+        "portal": {
+          "mode": "door"
+        },
+        "to": "room.p09_commissary"
+      },
+      "kind": "exit"
+    },
+    "exit.p04_p10": {
+      "def": {
+        "from": "room.p04_concourse",
+        "names": [
+          "Shift Board <SB>;sb;mess;commons;bar",
+          "Concourse <C>;c;concourse;out"
+        ],
+        "portal": {
+          "mode": "door"
+        },
+        "to": "room.p10_shift_board"
+      },
+      "kind": "exit"
+    },
+    "exit.p04_p11": {
+      "def": {
+        "from": "room.p04_concourse",
+        "names": [
+          "Service Counter <SC>;sc;service;counter;yard",
+          "Concourse <C>;c;concourse;out"
+        ],
+        "portal": {
+          "mode": "door"
+        },
+        "to": "room.p11_service"
+      },
+      "kind": "exit"
+    },
+    "exit.p04_p12": {
+      "def": {
+        "from": "room.p04_concourse",
+        "names": [
+          "Observation <OB>;ob;observation;gallery;windows",
+          "Concourse <C>;c;concourse;out"
+        ],
+        "portal": {
+          "mode": "door"
+        },
+        "to": "room.p12_observation"
+      },
+      "kind": "exit"
+    },
+    "exit.p07_p15": {
+      "def": {
+        "from": "room.p07_receiving",
+        "lock": "staff",
+        "names": [
+          "Maintenance <MS>;ms;maintenance;hatch",
+          "Receiving Hatch <RH>;rh;receiving;out"
+        ],
+        "portal": {
+          "mode": "hatch",
+          "visibility": "hidden"
+        },
+        "to": "room.p15_maintenance"
+      },
+      "kind": "exit"
+    },
+    "exit.p08_p07": {
+      "def": {
+        "from": "room.p08_exchange",
+        "names": [
+          "Receiving Stair <RS>;rs;receiving;kasei;down;d",
+          "Exchange Stair <ES>;es;exchange;up;u"
+        ],
+        "portal": {
+          "at": [
+            [
+              136,
+              165,
+              7
+            ],
+            [
+              136,
+              165,
+              0
+            ]
+          ],
+          "dz_m": -7,
+          "mode": "stair"
+        },
+        "to": "room.p07_receiving"
+      },
+      "kind": "exit"
+    },
+    "feature.counter_p03": {
+      "def": {
+        "blocks": {
+          "movement": false,
+          "sight": false
+        },
+        "feature_kind": "counter",
+        "polyline": [
+          [
+            112,
+            153
+          ],
+          [
+            123,
+            153
+          ]
+        ],
+        "room": "room.p03_customs",
+        "surface": {
+          "floor": [
+            "structure.yard_rim",
+            1
+          ]
+        },
+        "z_range": [
+          0,
+          1.1
+        ]
+      },
+      "kind": "feature"
+    },
+    "feature.counter_p05": {
+      "def": {
+        "blocks": {
+          "movement": false,
+          "sight": false
+        },
+        "feature_kind": "counter",
+        "polyline": [
+          [
+            112,
+            157
+          ],
+          [
+            130,
+            157
+          ]
+        ],
+        "room": "room.p05_harbourmaster",
+        "surface": {
+          "floor": [
+            "structure.yard_rim",
+            1
+          ]
+        },
+        "z_range": [
+          0,
+          1.1
+        ]
+      },
+      "kind": "feature"
+    },
+    "feature.counter_p07": {
+      "def": {
+        "blocks": {
+          "movement": false,
+          "sight": false
+        },
+        "feature_kind": "counter",
+        "polyline": [
+          [
+            112,
+            177
+          ],
+          [
+            138,
+            177
+          ]
+        ],
+        "room": "room.p07_receiving",
+        "surface": {
+          "floor": [
+            "structure.yard_rim",
+            0
+          ]
+        },
+        "z_range": [
+          0,
+          1.1
+        ]
+      },
+      "kind": "feature"
+    },
+    "feature.counter_p09": {
+      "def": {
+        "blocks": {
+          "movement": false,
+          "sight": false
+        },
+        "feature_kind": "counter",
+        "polyline": [
+          [
+            187,
+            132
+          ],
+          [
+            187,
+            153
+          ]
+        ],
+        "room": "room.p09_commissary",
+        "surface": {
+          "floor": [
+            "structure.yard_rim",
+            1
+          ]
+        },
+        "z_range": [
+          0,
+          1.1
+        ]
+      },
+      "kind": "feature"
+    },
+    "feature.counter_p11": {
+      "def": {
+        "blocks": {
+          "movement": false,
+          "sight": false
+        },
+        "feature_kind": "counter",
+        "polyline": [
+          [
+            157,
+            176
+          ],
+          [
+            175,
+            176
+          ]
+        ],
+        "room": "room.p11_service",
+        "surface": {
+          "floor": [
+            "structure.yard_rim",
+            1
+          ]
+        },
+        "z_range": [
+          0,
+          1.1
+        ]
+      },
+      "kind": "feature"
+    },
+    "feature.wall_p01_p10": {
+      "def": {
+        "blocks": {
+          "movement": true,
+          "sight": true
+        },
+        "feature_kind": "wall",
+        "polyline": [
+          [
+            125,
+            115
+          ],
+          [
+            185,
+            115
+          ]
+        ],
+        "surface": {
+          "floor": [
+            "structure.yard_rim",
+            1
+          ]
+        },
+        "z_range": [
+          0,
+          4.5
+        ]
+      },
+      "kind": "feature"
+    },
+    "feature.wall_p02_p10": {
+      "def": {
+        "blocks": {
+          "movement": true,
+          "sight": true
+        },
+        "feature_kind": "wall",
+        "polyline": [
+          [
+            125,
+            115
+          ],
+          [
+            125,
+            130
+          ]
+        ],
+        "surface": {
+          "floor": [
+            "structure.yard_rim",
+            1
+          ]
+        },
+        "z_range": [
+          0,
+          4.5
+        ]
+      },
+      "kind": "feature"
+    },
+    "feature.wall_p03_p05": {
+      "def": {
+        "blocks": {
+          "movement": true,
+          "sight": true
+        },
+        "feature_kind": "wall",
+        "polyline": [
+          [
+            110,
+            155
+          ],
+          [
+            125,
+            155
+          ]
+        ],
+        "surface": {
+          "floor": [
+            "structure.yard_rim",
+            1
+          ]
+        },
+        "z_range": [
+          0,
+          4.5
+        ]
+      },
+      "kind": "feature"
+    },
+    "feature.wall_p05_p08": {
+      "def": {
+        "blocks": {
+          "movement": true,
+          "sight": true
+        },
+        "feature_kind": "wall",
+        "polyline": [
+          [
+            132,
+            155
+          ],
+          [
+            132,
+            180
+          ]
+        ],
+        "surface": {
+          "floor": [
+            "structure.yard_rim",
+            1
+          ]
+        },
+        "z_range": [
+          0,
+          4.5
+        ]
+      },
+      "kind": "feature"
+    },
+    "feature.wall_p08_p11": {
+      "def": {
+        "blocks": {
+          "movement": true,
+          "sight": true
+        },
+        "feature_kind": "wall",
+        "polyline": [
+          [
+            155,
+            155
+          ],
+          [
+            155,
+            180
+          ]
+        ],
+        "surface": {
+          "floor": [
+            "structure.yard_rim",
+            1
+          ]
+        },
+        "z_range": [
+          0,
+          4.5
+        ]
+      },
+      "kind": "feature"
+    },
+    "feature.wall_p09_p12": {
+      "def": {
+        "blocks": {
+          "movement": true,
+          "sight": true
+        },
+        "feature_kind": "wall",
+        "polyline": [
+          [
+            185,
+            155
+          ],
+          [
+            200,
+            155
+          ]
+        ],
+        "surface": {
+          "floor": [
+            "structure.yard_rim",
+            1
+          ]
+        },
+        "z_range": [
+          0,
+          4.5
+        ]
+      },
+      "kind": "feature"
+    },
+    "feature.wall_p11_p12": {
+      "def": {
+        "blocks": {
+          "movement": true,
+          "sight": true
+        },
+        "feature_kind": "wall",
+        "polyline": [
+          [
+            177,
+            155
+          ],
+          [
+            177,
+            180
+          ]
+        ],
+        "surface": {
+          "floor": [
+            "structure.yard_rim",
+            1
+          ]
+        },
+        "z_range": [
+          0,
+          4.5
+        ]
+      },
+      "kind": "feature"
+    },
+    "item.commissary_locker": {
+      "def": {
+        "desc": "KASEI — INTAKE & STORE. COMMISSARY — PROVISIONS. YARD — SPARES. Each cage has a manifest clipped to it, and the manifests are the station's real stock, not the boards upstairs.",
+        "name": "Commissary provisions locker",
+        "room": "room.p15_maintenance"
+      },
+      "kind": "item"
+    },
+    "item.kasei_manifold": {
+      "def": {
+        "desc": "KASEI — INTAKE & STORE. COMMISSARY — PROVISIONS. YARD — SPARES. Each cage has a manifest clipped to it, and the manifests are the station's real stock, not the boards upstairs.",
+        "name": "Kasei intake manifold",
+        "room": "room.p15_maintenance"
+      },
+      "kind": "item"
+    },
+    "item.yard_spares": {
+      "def": {
+        "desc": "KASEI — INTAKE & STORE. COMMISSARY — PROVISIONS. YARD — SPARES. Each cage has a manifest clipped to it, and the manifests are the station's real stock, not the boards upstairs.",
+        "name": "Yard spares cage",
+        "room": "room.p15_maintenance"
+      },
+      "kind": "item"
+    },
+    "neighborhood": {
+      "def": {
+        "ambience": [
+          "The shift bell sounds twice, and the handline traffic on the concourse reverses direction.",
+          "A pressure door cycles somewhere toward the berths; the counter above it clicks over.",
+          "Pump vibration from the refinery rises through the deck, holds, and settles back into the boot-cleats.",
+          "A work lamp on the crater floor goes out, and a moment later another comes on two cradles over.",
+          "The approach-control channel mutters a cutter's callsign and a bearing, then returns to static.",
+          "Frost from the refinery stacks falls back across the pad in a slow white curtain.",
+          "Someone pins a new card to the Shift Board wall and takes an older one down without reading it.",
+          "The commissary's cold-locker drips into its tray, once, and the hum changes pitch.",
+          "A dolly alarm chirps in the bonded hall and stops.",
+          "Mars has turned by a degree that nobody noticed, and the terminator has moved onto Coprates.",
+          "A Guard recruiting bill loses a corner to the ventilation and curls a little further.",
+          "The berth board updates: one cradle goes from IDLE to CLEARED, and the room's attention goes with it."
+        ],
         "footprint": [
           [
             100,
@@ -41,16 +595,32 @@
             190
           ]
         ],
-        "room_budget": {
-          "target": 12,
-          "maximum": 16
-        },
         "hydration": {
           "enabled": false,
           "max_player_sites": 0
         },
+        "locality": "locality.stickney_yards",
+        "name": "Stickney Yards",
+        "region": "region.stickney_yards",
+        "representation": "authored",
         "resolution_cm": 100,
+        "room_budget": {
+          "maximum": 16,
+          "target": 12
+        },
+        "setting": "station",
         "theme": {
+          "banned": [
+            "warp",
+            "hyperspace",
+            "FTL",
+            "teleport",
+            "alien",
+            "android",
+            "gravity plating",
+            "shields",
+            "you see"
+          ],
           "name": "TacSim 2350: the Yards",
           "style_guide": "Present tense, no second person, no named NPCs in a room desc. Each room is distinct in sound, light and smell before it is distinct in furniture. Phobos holds nothing down (doc 10 §3: no artificial gravity beyond thrust and rotation): decks are painted conventions, handlines run everywhere, benches have tether loops, and \"down\" is where the arrows point. The Republic sounds institutional (doc 11 framing: governments institutional, corporations brands): forms in triplicate, posted charges initialled, crests, shift boards instead of advertising. Kasei and the Yard sound like brands: stencils, price cards, RESERVED. Power shows as paperwork and as who may walk through which door. Mars is in the sky and the refinery is in the floor. Desc length medium (60–120 words); details are one or two sentences, dry, with a fact in them. Exit aliases avoid the kernel words.",
           "vocabulary": [
@@ -92,110 +662,19 @@
             "cr",
             "crew-day",
             "tonne"
-          ],
-          "banned": [
-            "warp",
-            "hyperspace",
-            "FTL",
-            "teleport",
-            "alien",
-            "android",
-            "gravity plating",
-            "shields",
-            "you see"
           ]
-        },
-        "ambience": [
-          "The shift bell sounds twice, and the handline traffic on the concourse reverses direction.",
-          "A pressure door cycles somewhere toward the berths; the counter above it clicks over.",
-          "Pump vibration from the refinery rises through the deck, holds, and settles back into the boot-cleats.",
-          "A work lamp on the crater floor goes out, and a moment later another comes on two cradles over.",
-          "The approach-control channel mutters a cutter's callsign and a bearing, then returns to static.",
-          "Frost from the refinery stacks falls back across the pad in a slow white curtain.",
-          "Someone pins a new card to the Shift Board wall and takes an older one down without reading it.",
-          "The commissary's cold-locker drips into its tray, once, and the hum changes pitch.",
-          "A dolly alarm chirps in the bonded hall and stops.",
-          "Mars has turned by a degree that nobody noticed, and the terminator has moved onto Coprates.",
-          "A Guard recruiting bill loses a corner to the ventilation and curls a little further.",
-          "The berth board updates: one cradle goes from IDLE to CLEARED, and the room's attention goes with it."
-        ]
-      }
-    },
-    "site.yard_rim": {
-      "kind": "site",
-      "def": {
-        "name": "Yard Rim",
-        "site_kind": "site.transit",
-        "footprint": [
-          [
-            110,
-            90
-          ],
-          [
-            200,
-            90
-          ],
-          [
-            200,
-            180
-          ],
-          [
-            110,
-            180
-          ]
-        ]
-      }
-    },
-    "structure.yard_rim": {
-      "kind": "structure",
-      "def": {
-        "site": "site.yard_rim",
-        "footprint": [
-          [
-            110,
-            90
-          ],
-          [
-            200,
-            90
-          ],
-          [
-            200,
-            180
-          ],
-          [
-            110,
-            180
-          ]
-        ],
-        "floors": [
-          {
-            "index": 0,
-            "z_offset_m": 0,
-            "height_m": 7,
-            "name": "Freight Deck"
-          },
-          {
-            "index": 1,
-            "z_offset_m": 7,
-            "height_m": 4.5,
-            "name": "Public Deck"
-          }
-        ]
-      }
+        }
+      },
+      "kind": "neighborhood"
     },
     "room.p01_berth_gallery": {
-      "kind": "room",
       "def": {
-        "name": "Visiting Berth Gallery",
-        "short_desc": "A long pressurised gallery along the visiting berths, handlines strung the length of it.",
         "desc": "The gallery runs the length of the visiting berths behind a wall of thick ports, each framing a cradle, a boarding tube and the stencilled number of the berth beyond. Handlines are strung the full length at shoulder height; Phobos holds nothing down, and the deck is a convention painted in yellow arrows. The air carries the cold-metal tang of a lock that has just cycled and a faint ozone of welders somewhere out in the crater. A berth board lists what sits in each cradle, who it answers to and what it owes. The pressure lobby is inward, and everything else is through the lobby.",
-        "site": "site.yard_rim",
-        "surface": {
-          "floor": [
-            "structure.yard_rim",
-            1
-          ]
+        "details": {
+          "berth board": "Cradle by cradle: the hull, its registry, its agent of record, CLEARED or HELD. A docked hull's name lights when a pilot is aboard.",
+          "boarding tubes": "Each tube ends at a lock plate and a cycle counter. The tubes are the station's: a ship's own lock is on the other side of the counter.",
+          "handlines": "Braided line at shoulder height, clip points every two metres. The convention is right-hand traffic; the sign says so in Coprates typeface.",
+          "ports": "Thick laminated glass with a Republic inspection sticker in each corner, dated. Beyond them the boarding tubes, and past those the crater floor's work lamps."
         },
         "footprint": {
           "rect": [
@@ -213,26 +692,25 @@
         "markers": [
           "port.dock"
         ],
-        "details": {
-          "berth board": "Cradle by cradle: the hull, its registry, its agent of record, CLEARED or HELD. A docked hull's name lights when a pilot is aboard.",
-          "ports": "Thick laminated glass with a Republic inspection sticker in each corner, dated. Beyond them the boarding tubes, and past those the crater floor's work lamps.",
-          "handlines": "Braided line at shoulder height, clip points every two metres. The convention is right-hand traffic; the sign says so in Coprates typeface.",
-          "boarding tubes": "Each tube ends at a lock plate and a cycle counter. The tubes are the station's: a ship's own lock is on the other side of the counter."
-        }
-      }
-    },
-    "room.p02_pressure": {
-      "kind": "room",
-      "def": {
-        "name": "Pressure Lobby",
-        "short_desc": "A square chamber between two pressure doors and nothing else.",
-        "desc": "A square chamber between two pressure doors, each a hand-span of Stickney alloy with a Republic inspection sticker on its frame and a cycle counter glowing above it. There is no side exit and nothing to buy; the room exists so that nobody is ever one door from vacuum. Tether clips hang from a rail by the inner door, and a wall placard in Republic typeface lists the order of operations if the gallery door fails to seal. The air is still, a little over-pressured, and smells of door grease. The berth gallery is outward; the customs hall is inward.",
+        "name": "Visiting Berth Gallery",
+        "short_desc": "A long pressurised gallery along the visiting berths, handlines strung the length of it.",
         "site": "site.yard_rim",
         "surface": {
           "floor": [
             "structure.yard_rim",
             1
           ]
+        }
+      },
+      "kind": "room"
+    },
+    "room.p02_pressure": {
+      "def": {
+        "desc": "A square chamber between two pressure doors, each a hand-span of Stickney alloy with a Republic inspection sticker on its frame and a cycle counter glowing above it. There is no side exit and nothing to buy; the room exists so that nobody is ever one door from vacuum. Tether clips hang from a rail by the inner door, and a wall placard in Republic typeface lists the order of operations if the gallery door fails to seal. The air is still, a little over-pressured, and smells of door grease. The berth gallery is outward; the customs hall is inward.",
+        "details": {
+          "cycle counter": "Six digits over each door. The gallery side is higher by a hundred thousand; ships come and go more than people do.",
+          "inspection sticker": "Orbital Guard Harbour Safety, a date, a stamp, a signature that is only a line.",
+          "placard": "IN THE EVENT OF SEAL FAILURE: 1. Do not open the inner door. 2. Clip on. 3. Wait. Initialled by three inspectors, the last one this month."
         },
         "footprint": {
           "rect": [
@@ -247,25 +725,26 @@
           ]
         },
         "kind": "indoor",
-        "details": {
-          "placard": "IN THE EVENT OF SEAL FAILURE: 1. Do not open the inner door. 2. Clip on. 3. Wait. Initialled by three inspectors, the last one this month.",
-          "cycle counter": "Six digits over each door. The gallery side is higher by a hundred thousand; ships come and go more than people do.",
-          "inspection sticker": "Orbital Guard Harbour Safety, a date, a stamp, a signature that is only a line."
-        }
-      }
-    },
-    "room.p03_customs": {
-      "kind": "room",
-      "def": {
-        "name": "Republic Customs Hall",
-        "short_desc": "A low hall of numbered queue rails under a Republic crest.",
-        "desc": "Queue rails in brushed alloy divide the hall into numbered lanes that end at a counter with a slot for forms and a scanner for manifests. The Republic's crest is set into the far wall over a board of posted charges, every line of it initialled. Form racks stand by the door — Entry Declaration, Manifest Attestation, Crew Roster — in triplicate pads with the carbons still in. The light is flat and white and the ventilation loud; the hall smells of toner and of coffee gone cold on a hotplate. The pressure lobby is outward; the yard concourse is through the far doors.",
+        "name": "Pressure Lobby",
+        "short_desc": "A square chamber between two pressure doors and nothing else.",
         "site": "site.yard_rim",
         "surface": {
           "floor": [
             "structure.yard_rim",
             1
           ]
+        }
+      },
+      "kind": "room"
+    },
+    "room.p03_customs": {
+      "def": {
+        "desc": "Queue rails in brushed alloy divide the hall into numbered lanes that end at a counter with a slot for forms and a scanner for manifests. The Republic's crest is set into the far wall over a board of posted charges, every line of it initialled. Form racks stand by the door — Entry Declaration, Manifest Attestation, Crew Roster — in triplicate pads with the carbons still in. The light is flat and white and the ventilation loud; the hall smells of toner and of coffee gone cold on a hotplate. The pressure lobby is outward; the yard concourse is through the far doors.",
+        "details": {
+          "crest": "The Assembly's crest in cast alloy, Stickney-made, with the Settlement year under it.",
+          "forms": "Three pads, Republic typeface, triplicate. The Crew Roster asks for every manifested person and the hull's agent of record; the Entry Declaration asks what the hold carries and who signed for it at origin.",
+          "posted charges": "Berthing, by the IC day. Manifest attestation, per hull. Inspection, at the Guard's discretion. Every figure initialled; the column for Belt-flagged hulls has been re-stuck twice.",
+          "scanner": "A manifest reader bolted to the counter. It reads; a petty officer decides. The placard under it says so, in the Warrant's own words."
         },
         "footprint": {
           "rect": [
@@ -280,26 +759,26 @@
           ]
         },
         "kind": "indoor",
-        "details": {
-          "posted charges": "Berthing, by the IC day. Manifest attestation, per hull. Inspection, at the Guard's discretion. Every figure initialled; the column for Belt-flagged hulls has been re-stuck twice.",
-          "forms": "Three pads, Republic typeface, triplicate. The Crew Roster asks for every manifested person and the hull's agent of record; the Entry Declaration asks what the hold carries and who signed for it at origin.",
-          "crest": "The Assembly's crest in cast alloy, Stickney-made, with the Settlement year under it.",
-          "scanner": "A manifest reader bolted to the counter. It reads; a petty officer decides. The placard under it says so, in the Warrant's own words."
-        }
-      }
-    },
-    "room.p04_concourse": {
-      "kind": "room",
-      "def": {
-        "name": "Yard Concourse",
-        "short_desc": "The yard's one wide corridor, shift boards down both walls.",
-        "desc": "A wide corridor curves with the crater wall, its outer face studded with viewports and its inner face given over to shift boards: crew call lists, drydock rotations, a Guard recruiting bill with its corners curling. There is no advertising. Handlines run both ways down the middle and traffic keeps right by habit. Pump vibration from the refinery comes up through the deck, a hum felt in the boot-cleats before it is heard. The air is warm and tastes of alloy dust. Doors open off the concourse to the harbourmaster, the materials exchange, the commissary, the service counter, the Shift Board mess and the observation gallery; the customs hall is back toward the locks.",
+        "name": "Republic Customs Hall",
+        "short_desc": "A low hall of numbered queue rails under a Republic crest.",
         "site": "site.yard_rim",
         "surface": {
           "floor": [
             "structure.yard_rim",
             1
           ]
+        }
+      },
+      "kind": "room"
+    },
+    "room.p04_concourse": {
+      "def": {
+        "desc": "A wide corridor curves with the crater wall, its outer face studded with viewports and its inner face given over to shift boards: crew call lists, drydock rotations, a Guard recruiting bill with its corners curling. There is no advertising. Handlines run both ways down the middle and traffic keeps right by habit. Pump vibration from the refinery comes up through the deck, a hum felt in the boot-cleats before it is heard. The air is warm and tastes of alloy dust. Doors open off the concourse to the harbourmaster, the materials exchange, the commissary, the service counter, the Shift Board mess and the observation gallery; the customs hall is back toward the locks.",
+        "details": {
+          "handlines": "Two lines, inbound and outbound, with a painted arrow every five metres. Newcomers hold both.",
+          "recruiting bill": "ORBITAL GUARD — THE CORRIDOR IS OURS TO KEEP. A Vigil at full torch, drawn larger than it is. Someone has pencilled a tally under it.",
+          "shift boards": "Drydock 2 on third rotation; Drydock 4 RESERVED — GUARD; a crew call for a Hod refit, Settlement citizens preferred. A public map of the station hangs at the end, the Freight Deck drawn as a grey band marked YARD PERSONNEL.",
+          "viewports": "Small, round, thick. Through each one a slice of crater floor, a truss, a work lamp, and a scrap of Mars."
         },
         "footprint": {
           "rect": [
@@ -314,26 +793,26 @@
           ]
         },
         "kind": "circulation",
-        "details": {
-          "shift boards": "Drydock 2 on third rotation; Drydock 4 RESERVED — GUARD; a crew call for a Hod refit, Settlement citizens preferred. A public map of the station hangs at the end, the Freight Deck drawn as a grey band marked YARD PERSONNEL.",
-          "viewports": "Small, round, thick. Through each one a slice of crater floor, a truss, a work lamp, and a scrap of Mars.",
-          "recruiting bill": "ORBITAL GUARD — THE CORRIDOR IS OURS TO KEEP. A Vigil at full torch, drawn larger than it is. Someone has pencilled a tally under it.",
-          "handlines": "Two lines, inbound and outbound, with a painted arrow every five metres. Newcomers hold both."
-        }
-      }
-    },
-    "room.p05_harbourmaster": {
-      "kind": "room",
-      "def": {
-        "name": "Harbourmaster's Office",
-        "short_desc": "A narrow office behind a half-door, the berth board glowing on the back wall.",
-        "desc": "A half-door with a counter on top of it closes off a narrow office papered in berth assignments. On the back wall a board shows every cradle in the visiting berths — occupied, cleared, overdue — and under it two clocks, one in Freeport time and one in Coprates standard, disagreeing by the margin two governments can keep up over a calendar. Clearance stamps sit in a tray; a sailing-plan pad lies open to today's page. A radio mutters the Guard's approach-control channel at a volume that is just not words. The office smells of stamp ink and strong tea. The concourse is out the half-door.",
+        "name": "Yard Concourse",
+        "short_desc": "The yard's one wide corridor, shift boards down both walls.",
         "site": "site.yard_rim",
         "surface": {
           "floor": [
             "structure.yard_rim",
             1
           ]
+        }
+      },
+      "kind": "room"
+    },
+    "room.p05_harbourmaster": {
+      "def": {
+        "desc": "A half-door with a counter on top of it closes off a narrow office papered in berth assignments. On the back wall a board shows every cradle in the visiting berths — occupied, cleared, overdue — and under it two clocks, one in Freeport time and one in Coprates standard, disagreeing by the margin two governments can keep up over a calendar. Clearance stamps sit in a tray; a sailing-plan pad lies open to today's page. A radio mutters the Guard's approach-control channel at a volume that is just not words. The office smells of stamp ink and strong tea. The concourse is out the half-door.",
+        "details": {
+          "berth board": "Cradle, hull, CLEARED or OVERDUE, and the hour of the next filed departure. A hull with no sailing plan is listed as IDLE, in a colour meant to shame.",
+          "clocks": "Freeport time on the left, Coprates standard on the right. A card between them gives the offset, in case anyone asks why the Belt's day and the Republic's disagree; the clerk has an opinion about which is right.",
+          "radio": "Approach control, the Guard's voice, a cutter's callsign, a bearing. Then static, which is most of it.",
+          "sailing plan pad": "Departure at, destination, manifest sealed Y/N, sell at destination, agent of record, SIGNED. A plan can be filed days ahead and amended until the burn; after it, the pad says SAILED and nothing else, and the harbourmaster's office runs its lines under the captain's signature whether the captain is awake or not."
         },
         "footprint": {
           "rect": [
@@ -348,26 +827,26 @@
           ]
         },
         "kind": "indoor",
-        "details": {
-          "berth board": "Cradle, hull, CLEARED or OVERDUE, and the hour of the next filed departure. A hull with no sailing plan is listed as IDLE, in a colour meant to shame.",
-          "sailing plan pad": "Departure at, destination, manifest sealed Y/N, sell at destination, agent of record, SIGNED. A plan can be filed days ahead and amended until the burn; after it, the pad says SAILED and nothing else, and the harbourmaster's office runs its lines under the captain's signature whether the captain is awake or not.",
-          "clocks": "Freeport time on the left, Coprates standard on the right. A card between them gives the offset, in case anyone asks why the Belt's day and the Republic's disagree; the clerk has an opinion about which is right.",
-          "radio": "Approach control, the Guard's voice, a cutter's callsign, a bearing. Then static, which is most of it."
-        }
-      }
-    },
-    "room.p07_receiving": {
-      "kind": "room",
-      "def": {
-        "name": "Kasei Receiving Office",
-        "short_desc": "A counter on the warehouse side, an assay bench behind it, the bonded hall through a barred window.",
-        "desc": "The receiving office stands at the boundary between paperwork and freight: a scarred counter with a manifest scanner and a set of assay scales, and behind it a barred window onto the bonded hall, where pallets move on tracked dollies under yellow light. A board over the counter states Kasei's remaining intake for the cycle and what it pays, line by line. Warehouse air blows through — colder, drier, sharp with hydraulic fluid — and somewhere beyond the bars a dolly alarm chirps and stops. The exchange is up the stair; a hatch in the back wall is stencilled YARD PERSONNEL.",
+        "name": "Harbourmaster's Office",
+        "short_desc": "A narrow office behind a half-door, the berth board glowing on the back wall.",
         "site": "site.yard_rim",
         "surface": {
           "floor": [
             "structure.yard_rim",
-            0
+            1
           ]
+        }
+      },
+      "kind": "room"
+    },
+    "room.p07_receiving": {
+      "def": {
+        "desc": "The receiving office stands at the boundary between paperwork and freight: a scarred counter with a manifest scanner and a set of assay scales, and behind it a barred window onto the bonded hall, where pallets move on tracked dollies under yellow light. A board over the counter states Kasei's remaining intake for the cycle and what it pays, line by line. Warehouse air blows through — colder, drier, sharp with hydraulic fluid — and somewhere beyond the bars a dolly alarm chirps and stops. The exchange is up the stair; a hatch in the back wall is stencilled YARD PERSONNEL.",
+        "details": {
+          "assay scales": "A bench of grade scales and a core sampler. A lot's grade is read here and written on the manifest; the price is per tonne of what the scales say, not what the seller says.",
+          "barred window": "The bonded hall: racked pallets under yellow lamps, tracked dollies, a manifest clerk on a tether, and a freight door at the far end with a berth number beside it. No public way in.",
+          "hatch": "An alloy hatch with a card reader and no handle on this side. YARD PERSONNEL ONLY, and under it, smaller, THAT MEANS YOU.",
+          "intake board": "CONCENTRATE — the bid, per tonne — intake remaining. WATER ICE — the bid, per tonne — intake remaining; the figures are the board's own and change when Kasei says so. The concentrate line has been painted over once, downward; the refinery is water-starved and bids the ice up and the ore down, and the clerk will say so if asked. FUNDS: a figure Kasei does not hide, because it is the figure that decides whether a hull gets paid today."
         },
         "footprint": {
           "rect": [
@@ -382,26 +861,26 @@
           ]
         },
         "kind": "indoor",
-        "details": {
-          "intake board": "CONCENTRATE — the bid, per tonne — intake remaining. WATER ICE — the bid, per tonne — intake remaining; the figures are the board's own and change when Kasei says so. The concentrate line has been painted over once, downward; the refinery is water-starved and bids the ice up and the ore down, and the clerk will say so if asked. FUNDS: a figure Kasei does not hide, because it is the figure that decides whether a hull gets paid today.",
-          "assay scales": "A bench of grade scales and a core sampler. A lot's grade is read here and written on the manifest; the price is per tonne of what the scales say, not what the seller says.",
-          "barred window": "The bonded hall: racked pallets under yellow lamps, tracked dollies, a manifest clerk on a tether, and a freight door at the far end with a berth number beside it. No public way in.",
-          "hatch": "An alloy hatch with a card reader and no handle on this side. YARD PERSONNEL ONLY, and under it, smaller, THAT MEANS YOU."
-        }
-      }
-    },
-    "room.p08_exchange": {
-      "kind": "room",
-      "def": {
-        "name": "Materials Exchange",
-        "short_desc": "A trading floor the size of a cargo bay, asks on one wall and bids on the other.",
-        "desc": "Kasei's prices fill one wall: structural alloy stock by the tonne, drive propellant by the tonne, each line with a quantity beside it that goes down and never, in anyone's memory here, up. The opposite wall is bids, mostly Kasei's own for metal concentrate and water ice, a few private lines from yard contractors in smaller type. Between the walls the floor is bare alloy scored by pallet feet, and a rung stair in a railed well goes down to the receiving counter. The room is cold — warehouse air leaks up the well — and smells of machine oil. The concourse is out; receiving is down the stair.",
+        "name": "Kasei Receiving Office",
+        "short_desc": "A counter on the warehouse side, an assay bench behind it, the bonded hall through a barred window.",
         "site": "site.yard_rim",
         "surface": {
           "floor": [
             "structure.yard_rim",
-            1
+            0
           ]
+        }
+      },
+      "kind": "room"
+    },
+    "room.p08_exchange": {
+      "def": {
+        "desc": "Kasei's prices fill one wall: structural alloy stock by the tonne, drive propellant by the tonne, each line with a quantity beside it that goes down and never, in anyone's memory here, up. The opposite wall is bids, mostly Kasei's own for metal concentrate and water ice, a few private lines from yard contractors in smaller type. Between the walls the floor is bare alloy scored by pallet feet, and a rung stair in a railed well goes down to the receiving counter. The room is cold — warehouse air leaks up the well — and smells of machine oil. The concourse is out; receiving is down the stair.",
+        "details": {
+          "bids board": "KASEI METALS BUYS: concentrate and water ice, the bid per tonne beside each line with the intake left this cycle; the figures are the board's own, never the paint's. Under it, contractors' chits: a tonne of alloy offcuts wanted, a Hod seat to Isidis offered.",
+          "floor": "Pallet scoring in the alloy, in parallel lines from the well to the door. Freight used to come up this way. Now it does not, and the lines are a record.",
+          "price board": "ALLOY STOCK, STRUCTURAL — per t — remaining. PROPELLANT, DRIVE — per t — remaining. The figures are Kasei's and change when Kasei says so. Below Kasei's lines, in the Yard's own stencil: YARD FITTINGS, CRATED — PER TONNE, THE YARD'S FIGURE — STICKNEY YARDS — SIGNED AT THE SERVICE COUNTER, with a chalked note beside it, CRATED: 2.3 CUBES TO THE TONNE. A Dray captain who reads both boards sees the return run's arithmetic: alloy stock fills the rating, fittings fill the bay, and the hull that leaves with both full pays best.",
+          "stair well": "A rung stair in a railed well, seven metres down to the Freight Deck, with a handline beside the rungs for those who prefer to float it. RECEIVING COUNTER — PUBLIC; the arrow is green."
         },
         "footprint": {
           "rect": [
@@ -416,26 +895,25 @@
           ]
         },
         "kind": "indoor",
-        "details": {
-          "price board": "ALLOY STOCK, STRUCTURAL — per t — remaining. PROPELLANT, DRIVE — per t — remaining. The figures are Kasei's and change when Kasei says so. Below Kasei's lines, in the Yard's own stencil: YARD FITTINGS, CRATED — PER TONNE, THE YARD'S FIGURE — STICKNEY YARDS — SIGNED AT THE SERVICE COUNTER, with a chalked note beside it, CRATED: 2.3 CUBES TO THE TONNE. A Dray captain who reads both boards sees the return run's arithmetic: alloy stock fills the rating, fittings fill the bay, and the hull that leaves with both full pays best.",
-          "bids board": "KASEI METALS BUYS: concentrate and water ice, the bid per tonne beside each line with the intake left this cycle; the figures are the board's own, never the paint's. Under it, contractors' chits: a tonne of alloy offcuts wanted, a Hod seat to Isidis offered.",
-          "stair well": "A rung stair in a railed well, seven metres down to the Freight Deck, with a handline beside the rungs for those who prefer to float it. RECEIVING COUNTER — PUBLIC; the arrow is green.",
-          "floor": "Pallet scoring in the alloy, in parallel lines from the well to the door. Freight used to come up this way. Now it does not, and the lines are a record."
-        }
-      }
-    },
-    "room.p09_commissary": {
-      "kind": "room",
-      "def": {
-        "name": "Yard Commissary",
-        "short_desc": "A stores counter under a Republic posting, shelves of ration crates behind.",
-        "desc": "Shelving in alloy racks runs back from a counter, crates of voyage provisions stacked by the crew-day, and the Republic's posted price stencilled on a board beside the till — one figure, no haggling line. A cold-locker hums at the back and drips into a tray. The counter has a cage over it that is only half closed, and a hand-lettered sign gives the hours, which are the shift bells. The room smells of cardboard and the sweet tang of ration bars and is the warmest on the deck. The concourse is out.",
+        "name": "Materials Exchange",
+        "short_desc": "A trading floor the size of a cargo bay, asks on one wall and bids on the other.",
         "site": "site.yard_rim",
         "surface": {
           "floor": [
             "structure.yard_rim",
             1
           ]
+        }
+      },
+      "kind": "room"
+    },
+    "room.p09_commissary": {
+      "def": {
+        "desc": "Shelving in alloy racks runs back from a counter, crates of voyage provisions stacked by the crew-day, and the Republic's posted price stencilled on a board beside the till — one figure, no haggling line. A cold-locker hums at the back and drips into a tray. The counter has a cage over it that is only half closed, and a hand-lettered sign gives the hours, which are the shift bells. The room smells of cardboard and the sweet tang of ration bars and is the warmest on the deck. The concourse is out.",
+        "details": {
+          "crates": "Sealed crew-day crates, four kilos a day: food, potable stores, scrubber cartridges. A crate opened on a shelf shows what a day looks like. It does not look like much.",
+          "price posting": "VOYAGE PROVISIONS — per crew-day — posted by the Assembly's Office of Supply. The figure has a date. There is no second figure.",
+          "sign": "OPEN FIRST BELL TO LAST BELL. CLOSED FOR INVENTORY WHEN THE DOOR IS SHUT. Both in the same hand."
         },
         "footprint": {
           "rect": [
@@ -450,25 +928,26 @@
           ]
         },
         "kind": "indoor",
-        "details": {
-          "price posting": "VOYAGE PROVISIONS — per crew-day — posted by the Assembly's Office of Supply. The figure has a date. There is no second figure.",
-          "crates": "Sealed crew-day crates, four kilos a day: food, potable stores, scrubber cartridges. A crate opened on a shelf shows what a day looks like. It does not look like much.",
-          "sign": "OPEN FIRST BELL TO LAST BELL. CLOSED FOR INVENTORY WHEN THE DOOR IS SHUT. Both in the same hand."
-        }
-      }
-    },
-    "room.p10_shift_board": {
-      "kind": "room",
-      "def": {
-        "name": "The Shift Board",
-        "short_desc": "A mess hall that doubles as a bar after the shift bell.",
-        "desc": "Long tables bolted to the deck, benches with tether loops under them, and a serving hatch with a chalk menu that has not changed in a year. After the shift bell the hatch turns into a bar. The walls are the station's unofficial notice board — crew wanted, a bunk for rent, a Dray's worth of alloy offcuts going cheap, a card for a dockworkers' meeting that nobody has taken down. A Settlement-era photograph of the yard strike hangs over the hatch. The room is loud and warm and smells of fried protein and coffee that has been on the heater since the last shift. The concourse is out.",
+        "name": "Yard Commissary",
+        "short_desc": "A stores counter under a Republic posting, shelves of ration crates behind.",
         "site": "site.yard_rim",
         "surface": {
           "floor": [
             "structure.yard_rim",
             1
           ]
+        }
+      },
+      "kind": "room"
+    },
+    "room.p10_shift_board": {
+      "def": {
+        "desc": "Long tables bolted to the deck, benches with tether loops under them, and a serving hatch with a chalk menu that has not changed in a year. After the shift bell the hatch turns into a bar. The walls are the station's unofficial notice board — crew wanted, a bunk for rent, a Dray's worth of alloy offcuts going cheap, a card for a dockworkers' meeting that nobody has taken down. A Settlement-era photograph of the yard strike hangs over the hatch. The room is loud and warm and smells of fried protein and coffee that has been on the heater since the last shift. The concourse is out.",
+        "details": {
+          "chalk menu": "Protein, fried. Protein, not fried. Soup (ask). Coffee. After the bell the word BEER appears under it in a different chalk.",
+          "hatch": "A serving hatch with a heat lamp over it and a tally sheet beside it for crews who settle on payday.",
+          "notice wall": "CREW WANTED, DRAY, CERES RUN, SHARE BASIS. BUNK TO LET, QUIET, NO GUARD. And a plain card, no name: DOCKWORKERS — THURSDAY — THE USUAL PLACE.",
+          "photograph": "The Phobos yard strike, 2309: a drydock floor full of people on tethers, holding a banner that reads OUR YARD. One young face at the front is circled in pencil, and someone has written the word YARDMASTER beside it with no comment."
         },
         "footprint": {
           "rect": [
@@ -483,26 +962,28 @@
           ]
         },
         "kind": "indoor",
-        "details": {
-          "notice wall": "CREW WANTED, DRAY, CERES RUN, SHARE BASIS. BUNK TO LET, QUIET, NO GUARD. And a plain card, no name: DOCKWORKERS — THURSDAY — THE USUAL PLACE.",
-          "photograph": "The Phobos yard strike, 2309: a drydock floor full of people on tethers, holding a banner that reads OUR YARD. One young face at the front is circled in pencil, and someone has written the word YARDMASTER beside it with no comment.",
-          "chalk menu": "Protein, fried. Protein, not fried. Soup (ask). Coffee. After the bell the word BEER appears under it in a different chalk.",
-          "hatch": "A serving hatch with a heat lamp over it and a tally sheet beside it for crews who settle on payday."
-        }
-      }
-    },
-    "room.p11_service": {
-      "kind": "room",
-      "def": {
-        "name": "Stickney Service Counter",
-        "short_desc": "A yard counter with a rack of hull cards and a window onto a drydock.",
-        "desc": "A counter of worn alloy under the Yard's stencil, with a card rack of every hull class Stickney builds — Vigil, Hod, Anvil, Cairn, Dray — and a price card for a new Dray clipped to the front of it. A window behind the counter frames a drydock cradle with a hull in it and a work crew on tethers under a lamp. A board lists yard-time by the drydock-day, most lines marked RESERVED. Nothing here promises a repair; the board says ENQUIRE. A second, smaller sign on the counter's end carries a Luna insurer's mark. The room smells of solvent from the shop beyond the wall. The concourse is out.",
+        "name": "The Shift Board",
+        "short_desc": "A mess hall that doubles as a bar after the shift bell.",
         "site": "site.yard_rim",
         "surface": {
           "floor": [
             "structure.yard_rim",
             1
           ]
+        }
+      },
+      "kind": "room"
+    },
+    "room.p11_service": {
+      "def": {
+        "desc": "A counter of worn alloy under the Yard's stencil, with a card rack of every hull class Stickney builds — Vigil, Hod, Anvil, Cairn, Dray — and a price card for a new Dray clipped to the front of it. A window behind the counter frames a drydock cradle with a hull in it and a work crew on tethers under a lamp. A board lists yard-time by the drydock-day, most lines marked RESERVED. Nothing here promises a repair; the board says ENQUIRE. A second, smaller sign on the counter's end carries a Luna insurer's mark. The room smells of solvent from the shop beyond the wall. The concourse is out.",
+        "details": {
+          "Dray price card": "DRAY-CLASS BULK HAULER, NEW, STICKNEY BUILD — 120,000cr, delivery subject to yard-time. The card is the figure a charter pilot measures a career against. Under it, in pencil: \"used ones exist, ask Tycho\".",
+          "fittings card": "YARD FITTINGS, CRATED — PER TONNE — REMAINING — pressure fittings, ducting and tank sections, Stickney build, crated with dunnage for the Belt run. In pen under it: \"2.3 cubes to the tonne. Your problem, captain.\" The Yard's one line of trade, signed by the clerk; the figures under it are the Yard's own and change when the Yard says so.",
+          "hull cards": "A card per class with a profile drawing and a dry mass. The Dray's reads \"slow, efficient, unarmed\"; the Vigil's reads \"fast, expensive, visible from a long way off\", which is the Yard quoting the Guard's own brochure.",
+          "insurers mark": "TYCHO MUTUAL ASSURANCE & SALVAGE — AGENT IN ATTENDANCE. Renewals, claims, the Re-float Program by referral to Kirkwood. The agent shares the counter and the clerk's patience.",
+          "window": "A cradle, a hull with its drive section open, three workers on tethers and one supervisor who is not. The work is slow. It is always slow, and it is always going on.",
+          "yard time board": "Drydock-days by cradle. RESERVED — GUARD. RESERVED — KASEI. One line reads ENQUIRE and that is the refit queue; no date is promised on it."
         },
         "footprint": {
           "rect": [
@@ -517,28 +998,26 @@
           ]
         },
         "kind": "indoor",
-        "details": {
-          "Dray price card": "DRAY-CLASS BULK HAULER, NEW, STICKNEY BUILD — 120,000cr, delivery subject to yard-time. The card is the figure a charter pilot measures a career against. Under it, in pencil: \"used ones exist, ask Tycho\".",
-          "hull cards": "A card per class with a profile drawing and a dry mass. The Dray's reads \"slow, efficient, unarmed\"; the Vigil's reads \"fast, expensive, visible from a long way off\", which is the Yard quoting the Guard's own brochure.",
-          "fittings card": "YARD FITTINGS, CRATED — PER TONNE — REMAINING — pressure fittings, ducting and tank sections, Stickney build, crated with dunnage for the Belt run. In pen under it: \"2.3 cubes to the tonne. Your problem, captain.\" The Yard's one line of trade, signed by the clerk; the figures under it are the Yard's own and change when the Yard says so.",
-          "window": "A cradle, a hull with its drive section open, three workers on tethers and one supervisor who is not. The work is slow. It is always slow, and it is always going on.",
-          "yard time board": "Drydock-days by cradle. RESERVED — GUARD. RESERVED — KASEI. One line reads ENQUIRE and that is the refit queue; no date is promised on it.",
-          "insurers mark": "TYCHO MUTUAL ASSURANCE & SALVAGE — AGENT IN ATTENDANCE. Renewals, claims, the Re-float Program by referral to Kirkwood. The agent shares the counter and the clerk's patience."
-        }
-      }
-    },
-    "room.p12_observation": {
-      "kind": "room",
-      "def": {
-        "name": "Yard Observation Gallery",
-        "short_desc": "A dim curved gallery of windows over Stickney crater.",
-        "desc": "The gallery is a curve of floor-to-ceiling ports along the crater's rim. Below, the drydock trusses stand in rows across the crater floor, cradles lit by work lamps, and beyond them the Guard's pad with two cutters berthed nose-out and a third cradle empty. Past the pad the refinery's stacks vent in slow white plumes that fall back as frost. Above, Mars fills a quarter of the sky, rust and white, turning so slowly it seems not to. The gallery is kept dim so the view reads; the only sound is the air plant and the tick of the ports cooling. It smells of nothing, which on Phobos is a luxury. Benches with tether loops face the glass. The concourse is out.",
+        "name": "Stickney Service Counter",
+        "short_desc": "A yard counter with a rack of hull cards and a window onto a drydock.",
         "site": "site.yard_rim",
         "surface": {
           "floor": [
             "structure.yard_rim",
             1
           ]
+        }
+      },
+      "kind": "room"
+    },
+    "room.p12_observation": {
+      "def": {
+        "desc": "The gallery is a curve of floor-to-ceiling ports along the crater's rim. Below, the drydock trusses stand in rows across the crater floor, cradles lit by work lamps, and beyond them the Guard's pad with two cutters berthed nose-out and a third cradle empty. Past the pad the refinery's stacks vent in slow white plumes that fall back as frost. Above, Mars fills a quarter of the sky, rust and white, turning so slowly it seems not to. The gallery is kept dim so the view reads; the only sound is the air plant and the tick of the ports cooling. It smells of nothing, which on Phobos is a luxury. Benches with tether loops face the glass. The concourse is out.",
+        "details": {
+          "Guard pad": "Two Vigil-class cutters, torch nozzles capped, berthed nose-out toward the lane. A cutter leaves the pad maybe once a week, and the whole crater watches it go.",
+          "Mars": "A quarter of the sky, Coprates somewhere under the dust, the terminator a soft line. Phobos keeps one face to it, so it never sets.",
+          "drydocks": "Six cradles in two rows on the crater floor, trusses taller than the rim walk. Three hold hulls; one holds a Dray with its hold open like a jaw. The Yard builds for the Republic and \"for a price, for anyone the Republic licenses\".",
+          "refinery": "Kasei's stacks beyond the pad, venting. Water ice goes in at one end; propellant and alloy stock come out the other, and the Freeport's bank holds the paper on the whole of it."
         },
         "footprint": {
           "rect": [
@@ -553,26 +1032,26 @@
           ]
         },
         "kind": "indoor",
-        "details": {
-          "drydocks": "Six cradles in two rows on the crater floor, trusses taller than the rim walk. Three hold hulls; one holds a Dray with its hold open like a jaw. The Yard builds for the Republic and \"for a price, for anyone the Republic licenses\".",
-          "Guard pad": "Two Vigil-class cutters, torch nozzles capped, berthed nose-out toward the lane. A cutter leaves the pad maybe once a week, and the whole crater watches it go.",
-          "Mars": "A quarter of the sky, Coprates somewhere under the dust, the terminator a soft line. Phobos keeps one face to it, so it never sets.",
-          "refinery": "Kasei's stacks beyond the pad, venting. Water ice goes in at one end; propellant and alloy stock come out the other, and the Freeport's bank holds the paper on the whole of it."
-        }
-      }
-    },
-    "room.p15_maintenance": {
-      "kind": "room",
-      "def": {
-        "name": "Yard Maintenance Spine",
-        "short_desc": "A service corridor of cable trays and storefront cages, the yard office glassed off at its end.",
-        "desc": "A service corridor runs behind the freight deck, cable trays overhead, pump manifolds along one wall, and three wire cages holding the manifolds and lockers that feed the counters above: Kasei's intake and store, the commissary's provisions, the Yard's spares. At the far end a glassed office looks down into the bonded hall — three desks, three dark terminals, nameplates face down. The air is cold and loud with pumps and smells of hydraulic fluid. YARD PERSONNEL ONLY is stencilled every ten metres. The receiving hatch is the way out.",
+        "name": "Yard Observation Gallery",
+        "short_desc": "A dim curved gallery of windows over Stickney crater.",
         "site": "site.yard_rim",
         "surface": {
           "floor": [
             "structure.yard_rim",
-            0
+            1
           ]
+        }
+      },
+      "kind": "room"
+    },
+    "room.p15_maintenance": {
+      "def": {
+        "access": "restricted",
+        "desc": "A service corridor runs behind the freight deck, cable trays overhead, pump manifolds along one wall, and three wire cages holding the manifolds and lockers that feed the counters above: Kasei's intake and store, the commissary's provisions, the Yard's spares. At the far end a glassed office looks down into the bonded hall — three desks, three dark terminals, nameplates face down. The air is cold and loud with pumps and smells of hydraulic fluid. YARD PERSONNEL ONLY is stencilled every ten metres. The receiving hatch is the way out.",
+        "details": {
+          "cages": "KASEI — INTAKE & STORE. COMMISSARY — PROVISIONS. YARD — SPARES. Each cage has a manifest clipped to it, and the manifests are the station's real stock, not the boards upstairs.",
+          "manifolds": "Propellant from the refinery, water from the bunker, air from the plant, each valve tagged with a date and an initial.",
+          "office": "Three desks: the managing director's, the yardmaster's, and one with a Guard crest, kept for a commodore who prefers the pad. The terminals are dark. The nameplates are face down on purpose."
         },
         "footprint": {
           "rect": [
@@ -587,896 +1066,110 @@
           ]
         },
         "kind": "indoor",
-        "access": "restricted",
-        "details": {
-          "cages": "KASEI — INTAKE & STORE. COMMISSARY — PROVISIONS. YARD — SPARES. Each cage has a manifest clipped to it, and the manifests are the station's real stock, not the boards upstairs.",
-          "office": "Three desks: the managing director's, the yardmaster's, and one with a Guard crest, kept for a commodore who prefers the pad. The terminals are dark. The nameplates are face down on purpose.",
-          "manifolds": "Propellant from the refinery, water from the bunker, air from the plant, each valve tagged with a date and an initial."
-        }
-      }
-    },
-    "exit.p01_p02": {
-      "kind": "exit",
-      "def": {
-        "from": "room.p01_berth_gallery",
-        "to": "room.p02_pressure",
-        "names": [
-          "Pressure Lobby <PL>;pl;lobby;in",
-          "Berth Gallery <BG>;bg;gallery;berths;out"
-        ],
-        "portal": {
-          "mode": "door"
-        }
-      }
-    },
-    "exit.p02_p03": {
-      "kind": "exit",
-      "def": {
-        "from": "room.p02_pressure",
-        "to": "room.p03_customs",
-        "names": [
-          "Customs Hall <CH>;ch;customs;in",
-          "Pressure Lobby <PL>;pl;lobby;out"
-        ],
-        "portal": {
-          "mode": "door"
-        }
-      }
-    },
-    "exit.p03_p04": {
-      "kind": "exit",
-      "def": {
-        "from": "room.p03_customs",
-        "to": "room.p04_concourse",
-        "names": [
-          "Concourse <C>;c;concourse;yard;in",
-          "Customs Hall <CH>;ch;customs;locks"
-        ],
-        "portal": {
-          "mode": "door"
-        }
-      }
-    },
-    "exit.p04_p05": {
-      "kind": "exit",
-      "def": {
-        "from": "room.p04_concourse",
-        "to": "room.p05_harbourmaster",
-        "names": [
-          "Harbourmaster <HM>;hm;harbourmaster;harbour",
-          "Concourse <C>;c;concourse;out"
-        ],
-        "portal": {
-          "mode": "door"
-        }
-      }
-    },
-    "exit.p04_p08": {
-      "kind": "exit",
-      "def": {
-        "from": "room.p04_concourse",
-        "to": "room.p08_exchange",
-        "names": [
-          "Exchange <X>;x;exchange;materials;market",
-          "Concourse <C>;c;concourse;out"
-        ],
-        "portal": {
-          "mode": "door"
-        }
-      }
-    },
-    "exit.p04_p09": {
-      "kind": "exit",
-      "def": {
-        "from": "room.p04_concourse",
-        "to": "room.p09_commissary",
-        "names": [
-          "Commissary <CM>;cm;commissary;stores",
-          "Concourse <C>;c;concourse;out"
-        ],
-        "portal": {
-          "mode": "door"
-        }
-      }
-    },
-    "exit.p04_p10": {
-      "kind": "exit",
-      "def": {
-        "from": "room.p04_concourse",
-        "to": "room.p10_shift_board",
-        "names": [
-          "Shift Board <SB>;sb;mess;commons;bar",
-          "Concourse <C>;c;concourse;out"
-        ],
-        "portal": {
-          "mode": "door"
-        }
-      }
-    },
-    "exit.p04_p11": {
-      "kind": "exit",
-      "def": {
-        "from": "room.p04_concourse",
-        "to": "room.p11_service",
-        "names": [
-          "Service Counter <SC>;sc;service;counter;yard",
-          "Concourse <C>;c;concourse;out"
-        ],
-        "portal": {
-          "mode": "door"
-        }
-      }
-    },
-    "exit.p04_p12": {
-      "kind": "exit",
-      "def": {
-        "from": "room.p04_concourse",
-        "to": "room.p12_observation",
-        "names": [
-          "Observation <OB>;ob;observation;gallery;windows",
-          "Concourse <C>;c;concourse;out"
-        ],
-        "portal": {
-          "mode": "door"
-        }
-      }
-    },
-    "exit.p08_p07": {
-      "kind": "exit",
-      "def": {
-        "from": "room.p08_exchange",
-        "to": "room.p07_receiving",
-        "names": [
-          "Receiving Stair <RS>;rs;receiving;kasei;down;d",
-          "Exchange Stair <ES>;es;exchange;up;u"
-        ],
-        "portal": {
-          "mode": "stair",
-          "at": [
-            [
-              136,
-              165,
-              7
-            ],
-            [
-              136,
-              165,
-              0
-            ]
-          ],
-          "dz_m": -7
-        }
-      }
-    },
-    "exit.p07_p15": {
-      "kind": "exit",
-      "def": {
-        "from": "room.p07_receiving",
-        "to": "room.p15_maintenance",
-        "names": [
-          "Maintenance <MS>;ms;maintenance;hatch",
-          "Receiving Hatch <RH>;rh;receiving;out"
-        ],
-        "portal": {
-          "mode": "hatch",
-          "visibility": "hidden"
-        },
-        "lock": "staff"
-      }
-    },
-    "feature.wall_p05_p08": {
-      "kind": "feature",
-      "def": {
-        "feature_kind": "wall",
-        "surface": {
-          "floor": [
-            "structure.yard_rim",
-            1
-          ]
-        },
-        "polyline": [
-          [
-            132,
-            155
-          ],
-          [
-            132,
-            180
-          ]
-        ],
-        "z_range": [
-          0,
-          4.5
-        ],
-        "blocks": {
-          "movement": true,
-          "sight": true
-        }
-      }
-    },
-    "feature.wall_p08_p11": {
-      "kind": "feature",
-      "def": {
-        "feature_kind": "wall",
-        "surface": {
-          "floor": [
-            "structure.yard_rim",
-            1
-          ]
-        },
-        "polyline": [
-          [
-            155,
-            155
-          ],
-          [
-            155,
-            180
-          ]
-        ],
-        "z_range": [
-          0,
-          4.5
-        ],
-        "blocks": {
-          "movement": true,
-          "sight": true
-        }
-      }
-    },
-    "feature.wall_p11_p12": {
-      "kind": "feature",
-      "def": {
-        "feature_kind": "wall",
-        "surface": {
-          "floor": [
-            "structure.yard_rim",
-            1
-          ]
-        },
-        "polyline": [
-          [
-            177,
-            155
-          ],
-          [
-            177,
-            180
-          ]
-        ],
-        "z_range": [
-          0,
-          4.5
-        ],
-        "blocks": {
-          "movement": true,
-          "sight": true
-        }
-      }
-    },
-    "feature.wall_p03_p05": {
-      "kind": "feature",
-      "def": {
-        "feature_kind": "wall",
-        "surface": {
-          "floor": [
-            "structure.yard_rim",
-            1
-          ]
-        },
-        "polyline": [
-          [
-            110,
-            155
-          ],
-          [
-            125,
-            155
-          ]
-        ],
-        "z_range": [
-          0,
-          4.5
-        ],
-        "blocks": {
-          "movement": true,
-          "sight": true
-        }
-      }
-    },
-    "feature.wall_p09_p12": {
-      "kind": "feature",
-      "def": {
-        "feature_kind": "wall",
-        "surface": {
-          "floor": [
-            "structure.yard_rim",
-            1
-          ]
-        },
-        "polyline": [
-          [
-            185,
-            155
-          ],
-          [
-            200,
-            155
-          ]
-        ],
-        "z_range": [
-          0,
-          4.5
-        ],
-        "blocks": {
-          "movement": true,
-          "sight": true
-        }
-      }
-    },
-    "feature.wall_p02_p10": {
-      "kind": "feature",
-      "def": {
-        "feature_kind": "wall",
-        "surface": {
-          "floor": [
-            "structure.yard_rim",
-            1
-          ]
-        },
-        "polyline": [
-          [
-            125,
-            115
-          ],
-          [
-            125,
-            130
-          ]
-        ],
-        "z_range": [
-          0,
-          4.5
-        ],
-        "blocks": {
-          "movement": true,
-          "sight": true
-        }
-      }
-    },
-    "feature.wall_p01_p10": {
-      "kind": "feature",
-      "def": {
-        "feature_kind": "wall",
-        "surface": {
-          "floor": [
-            "structure.yard_rim",
-            1
-          ]
-        },
-        "polyline": [
-          [
-            125,
-            115
-          ],
-          [
-            185,
-            115
-          ]
-        ],
-        "z_range": [
-          0,
-          4.5
-        ],
-        "blocks": {
-          "movement": true,
-          "sight": true
-        }
-      }
-    },
-    "feature.counter_p03": {
-      "kind": "feature",
-      "def": {
-        "feature_kind": "counter",
-        "surface": {
-          "floor": [
-            "structure.yard_rim",
-            1
-          ]
-        },
-        "polyline": [
-          [
-            112,
-            153
-          ],
-          [
-            123,
-            153
-          ]
-        ],
-        "z_range": [
-          0,
-          1.1
-        ],
-        "blocks": {
-          "movement": false,
-          "sight": false
-        },
-        "room": "room.p03_customs"
-      }
-    },
-    "feature.counter_p05": {
-      "kind": "feature",
-      "def": {
-        "feature_kind": "counter",
-        "surface": {
-          "floor": [
-            "structure.yard_rim",
-            1
-          ]
-        },
-        "polyline": [
-          [
-            112,
-            157
-          ],
-          [
-            130,
-            157
-          ]
-        ],
-        "z_range": [
-          0,
-          1.1
-        ],
-        "blocks": {
-          "movement": false,
-          "sight": false
-        },
-        "room": "room.p05_harbourmaster"
-      }
-    },
-    "feature.counter_p07": {
-      "kind": "feature",
-      "def": {
-        "feature_kind": "counter",
+        "name": "Yard Maintenance Spine",
+        "short_desc": "A service corridor of cable trays and storefront cages, the yard office glassed off at its end.",
+        "site": "site.yard_rim",
         "surface": {
           "floor": [
             "structure.yard_rim",
             0
           ]
-        },
-        "polyline": [
-          [
-            112,
-            177
-          ],
-          [
-            138,
-            177
-          ]
-        ],
-        "z_range": [
-          0,
-          1.1
-        ],
-        "blocks": {
-          "movement": false,
-          "sight": false
-        },
-        "room": "room.p07_receiving"
-      }
-    },
-    "feature.counter_p09": {
-      "kind": "feature",
-      "def": {
-        "feature_kind": "counter",
-        "surface": {
-          "floor": [
-            "structure.yard_rim",
-            1
-          ]
-        },
-        "polyline": [
-          [
-            187,
-            132
-          ],
-          [
-            187,
-            153
-          ]
-        ],
-        "z_range": [
-          0,
-          1.1
-        ],
-        "blocks": {
-          "movement": false,
-          "sight": false
-        },
-        "room": "room.p09_commissary"
-      }
-    },
-    "feature.counter_p11": {
-      "kind": "feature",
-      "def": {
-        "feature_kind": "counter",
-        "surface": {
-          "floor": [
-            "structure.yard_rim",
-            1
-          ]
-        },
-        "polyline": [
-          [
-            157,
-            176
-          ],
-          [
-            175,
-            176
-          ]
-        ],
-        "z_range": [
-          0,
-          1.1
-        ],
-        "blocks": {
-          "movement": false,
-          "sight": false
-        },
-        "room": "room.p11_service"
-      }
-    },
-    "item.kasei_manifold": {
-      "kind": "item",
-      "def": {
-        "name": "Kasei intake manifold",
-        "desc": "KASEI — INTAKE & STORE. COMMISSARY — PROVISIONS. YARD — SPARES. Each cage has a manifest clipped to it, and the manifests are the station's real stock, not the boards upstairs.",
-        "room": "room.p15_maintenance"
-      }
-    },
-    "item.commissary_locker": {
-      "kind": "item",
-      "def": {
-        "name": "Commissary provisions locker",
-        "desc": "KASEI — INTAKE & STORE. COMMISSARY — PROVISIONS. YARD — SPARES. Each cage has a manifest clipped to it, and the manifests are the station's real stock, not the boards upstairs.",
-        "room": "room.p15_maintenance"
-      }
-    },
-    "item.yard_spares": {
-      "kind": "item",
-      "def": {
-        "name": "Yard spares cage",
-        "desc": "KASEI — INTAKE & STORE. COMMISSARY — PROVISIONS. YARD — SPARES. Each cage has a manifest clipped to it, and the manifests are the station's real stock, not the boards upstairs.",
-        "room": "room.p15_maintenance"
-      }
-    },
-    "npc.ilunga_brandt": {
-      "kind": "npc",
-      "def": {
-        "name": "Petty Officer Teodora Ilunga-Brandt",
-        "room": "room.p03_customs",
-        "tier": "minor",
-        "profile": {
-          "persona": "a petty officer on the customs rotation, which the Guard treats as a punishment and she treats as a posting. Formal, correct, faintly proud of the forms; believes the corridor is the Republic's to keep and that a manifest tells you more than a scan does. Local, Settlement-born, has never been to Coprates.",
-          "background": "Orbital Guard customs detail: the Republic customs officer.",
-          "speech_style": "clipped, procedural, every sentence a line from a form; says \"declare\", \"attest\", \"in order\"; never raises her voice, lowers it instead.",
-          "knows": [
-            "the posted charges and what each form is for (none collected in the slice; she says so if asked, as \"waived under the current notice\")",
-            "the station's layout, the locks, the concourse, which desk does what",
-            "that the Guard pickets Kirkwood from 2347 and calls it customs assertion",
-            "how to reach the harbourmaster and file a sailing plan."
-          ],
-          "does_not_know": [
-            "anything about a specific hull's cargo she has not seen on a manifest",
-            "the Guard's standing orders at Kirkwood",
-            "Kasei's prices or funds."
-          ],
-          "fallback": [
-            "Declare, attest, proceed. The concourse is through the far doors; +atlas names the rest.",
-            "Berthing is the harbourmaster's; +ship tells you where your hull stands. The Guard reads manifests, not minds."
-          ],
-          "interfaces": [
-            "atlas",
-            "travel"
-          ]
-        },
-        "tags": [
-          "corridor_trade",
-          "port_stickney"
-        ]
-      }
-    },
-    "npc.achterberg": {
-      "kind": "npc",
-      "def": {
-        "name": "Jonas Achterberg-Nkemelu",
-        "room": "room.p07_receiving",
-        "tier": "minor",
-        "profile": {
-          "persona": "terse, assay-minded, more interested in a lot's grade than in the person selling it. Has worked the receiving counter for eleven years and has signed for every tonne that came through it, which under the Warrant means his name is on it. Honest about the intake left and the money left, because both are on the board behind him and he dislikes being asked twice.",
-          "background": "Kasei Metals receiving clerk, the Warrant signatory of Kasei's bids.",
-          "speech_style": "short declaratives; numbers before nouns; \"Grade first. Then price.\"; looks at the scales when he talks, not at the seller.",
-          "knows": [
-            "Kasei's bids (concentrate and water ice per tonne as the board posts them this cycle, the intake remaining and the funded balance; that the refinery is water-starved, which is why the ice bid stands and the ore bid came down)",
-            "that +market/list shows the bid and +market/sell <listing>=<qty> sells into it from a docked hull's hold",
-            "that Kasei sells alloy stock and propellant upstairs at the exchange and the Yard sells crated fittings from the service counter, \"which cube out before they weigh out\"",
-            "that the refinery turns water ice into propellant and concentrate into alloy stock."
-          ],
-          "does_not_know": [
-            "Kasei's debt terms with Ceres Clearing (he knows there is a debt; everyone does)",
-            "who signed a lot at Ceres beyond the name on its manifest",
-            "anything about the Guard's pickets."
-          ],
-          "fallback": [
-            "We buy concentrate and ice. +market/list, then +market/sell. The grade is what the scales say.",
-            "Intake left and funds left are on the board. When either reads zero, so do I.",
-            "Ice we need. Ore we can wait for. The board says which."
-          ],
-          "interfaces": [
-            "market"
-          ]
-        },
-        "tags": [
-          "corridor_trade",
-          "port_stickney"
-        ]
-      }
-    },
-    "npc.castillo_haugen": {
-      "kind": "npc",
-      "def": {
-        "name": "Wren Castillo-Haugen",
-        "room": "room.p11_service",
-        "tier": "minor",
-        "profile": {
-          "persona": "yard-weary, dry, competent; has heard every version of \"can you just look at it\" and answers all of them with the board. Knows every hull class the Yard builds by its dry mass and its faults. Holds the Tycho agent's referral book as a second job and resents it exactly enough to be funny about it.",
-          "background": "Stickney Yards service clerk and the Warrant signatory of the Yard's one listing, the crated-fittings ask (doc 18 §4.3; signs only Stickney Yards' offer, never Tycho's business, as the Warrant requires); also sits the Tycho Mutual agent's chair at the same counter.",
-          "speech_style": "flat, patient, with a long pause before \"no\"; quotes the price card as if it were scripture and the refit queue as if it were weather.",
-          "knows": [
-            "the five classes the Yard builds and their profiles",
-            "that the Dray is \"slow, efficient, unarmed\" and cannot outrun a Vigil",
-            "the new-Dray price (120,000cr) and that it is the figure a charter pilot measures a buyout against",
-            "that yard-time is a reservation, not a cargo, and the refit queue has no promised date",
-            "the fittings ask (the card's figure per tonne, crated, \"two point three cubes to the tonne, so it's your problem, captain\"; that the Co-op at Ceres wants them for the fleet and the tank farm; that +market/quote draws them into a docked hull)",
-            "Tycho's part: renewals and claims here, the Re-float Program by referral to Assessor Adeyemi at Kirkwood."
-          ],
-          "does_not_know": [
-            "whether any particular hull can be repaired, or when",
-            "the Guard's cradle reservations beyond the word RESERVED",
-            "the Yard's books, or the golden share's terms",
-            "what the Co-op pays."
-          ],
-          "fallback": [
-            "Hull information, yard-time, fittings by the crate, Tycho renewals. Repairs: the board says ENQUIRE, and it means it. +ship tells you what you fly.",
-            "New Dray, a hundred and twenty thousand. Used ones exist. Ask Tycho, who is also me, on Tuesdays.",
-            "Fittings, the figure on the card, by the tonne. Crated, so they cube out; that's your problem, captain. +market/list."
-          ],
-          "interfaces": [
-            "help",
-            "market"
-          ]
-        },
-        "tags": [
-          "corridor_trade",
-          "port_stickney",
-          "tycho"
-        ]
-      }
-    },
-    "npc.adeyinka_rusk": {
-      "kind": "npc",
-      "def": {
-        "name": "Pavla Adeyinka-Rusk",
-        "room": "room.p05_harbourmaster",
-        "tier": "extra",
-        "profile": {
-          "persona": "the harbourmaster's clerk, which is to say the harbourmaster on every day the harbourmaster is at the pad. Brisk, exact about hours, kind to anyone who files early and curt to anyone who files late. Keeps two clocks and resents the question about them.",
-          "background": "Harbourmaster's clerk: berth status, sailing plans, the captain's minutiae.",
-          "speech_style": "quick, administrative, fond of \"filed\" and \"cleared\"; gives the hour in Freeport time, then in Coprates standard, then sighs.",
-          "knows": [
-            "which cradles are occupied, cleared, overdue or idle",
-            "that a sailing plan is filed and amended with +ship/order until the burn, that the office runs a filed plan's lines under the captain's signature, and that a docked hull with no plan is IDLE",
-            "that +ship/board works from the berth gallery and +ship/leave from the hull's own airlock, and neither anywhere else",
-            "the clocks, Freeport time against Coprates standard, and the offset."
-          ],
-          "does_not_know": [
-            "what any hull carries",
-            "why the Guard holds a cradle on the pad empty",
-            "Kasei's board."
-          ],
-          "fallback": [
-            "File it early, amend it late, sail on the hour. +ship/order. The board does not lie; it just does not forgive.",
-            "Your hull is on the board if it is in a cradle. +ship says the same with fewer stamps."
-          ]
-        },
-        "tags": [
-          "corridor_trade",
-          "port_stickney"
-        ]
-      }
-    },
-    "npc.okonkwo": {
-      "kind": "npc",
-      "def": {
-        "name": "Hanne Okonkwo-Steyn",
-        "room": "room.p09_commissary",
-        "tier": "extra",
-        "profile": {
-          "persona": "a Settlement civil servant who runs a stores counter the way the Republic runs a customs hall: one posted figure, a dated stamp, a ledger that balances. Counts crew-days the way Akintola does at Ceres, with less patience and more initialling. Will sell a captain exactly what the plan says and not a crate more without a signature.",
-          "background": "Storekeeper of the Yard Commissary under the Assembly's Office of Supply; the officer of record for the commissary's provisions ask and its Warrant signatory.",
-          "speech_style": "clipped, numbered, Republic typeface spoken aloud; \"posted\", \"initialled\", \"per crew-day\"; the shift bells are her clock.",
-          "knows": [
-            "the posted price per crew-day and its date",
-            "the crates remaining, which she signs for every shift",
-            "that +market/list shows the posting and +market/quote/+market/accept fill a docked hull's locker",
-            "that two aboard need twice the days and the plan's fill buys the passage's days",
-            "that the price is the Assembly's, not hers."
-          ],
-          "does_not_know": [
-            "Kasei's board",
-            "the Guard's business",
-            "anything the Shift Board's wall says."
-          ],
-          "fallback": [
-            "One figure, posted, dated. +market/list, quote it, accept it; I sign for the crates and you sign for the days.",
-            "Closed for inventory when the door is shut. It is not shut. Crew-days, how many?"
-          ]
-        },
-        "tags": [
-          "corridor_trade",
-          "port_stickney"
-        ]
-      }
-    },
-    "npc.abubakar_lange": {
-      "kind": "npc",
-      "def": {
-        "name": "Dmitri \"Mitya\" Abubakar-Lange",
-        "room": "room.p10_shift_board",
-        "tier": "extra",
-        "profile": {
-          "persona": "the cook, and after the bell the barman, and at all hours the memory of the yard. Was a strike kid in 2309, a dockhand after, a cook when his back went. Loud, generous, sentimental about the strike and cynical about everyone who profited from it. Knows who is in the room because he fed them.",
-          "background": "Cook at the Shift Board; the mess, the bar, Settlement lore, guarded dock lore.",
-          "speech_style": "big, warm, interrupting himself; calls everyone \"crew\"; tells the same three stories and makes them land each time.",
-          "knows": [
-            "the strike, as he tells it: who stood on the drydock floor and who is on the shift boards now",
-            "that the Co-op's Drays run the Ceres lane on a share basis and the notice wall says who is hiring",
-            "which of the cards on the wall are real and which are a year old",
-            "what the Guard pays for a cutter crew and why the yard hates it."
-          ],
-          "does_not_know": [
-            "anything he has been asked to keep, which he says is a great deal",
-            "the Yard's books",
-            "what the Thursday card on the wall is for, out loud."
-          ],
-          "fallback": [
-            "Sit, crew. Protein's fried, coffee's old, the wall's got work on it if you can read. Everything else is +market and +credit and none of my business.",
-            "That photo? That's the yard before it had a yardmaster. Some of us are still in it."
-          ]
-        },
-        "tags": [
-          "corridor_trade",
-          "port_stickney"
-        ]
-      }
-    },
-    "npc.castellanos": {
-      "kind": "npc",
-      "def": {
-        "name": "Priya Castellanos",
-        "room": "room.p15_maintenance",
-        "tier": "major",
-        "profile": {
-          "persona": "serves two masters and is precise about which one she is serving on any given day",
-          "background": "Managing Director of Kasei Metals",
-          "enabled": false
         }
-      }
-    },
-    "npc.tanaka": {
-      "kind": "npc",
-      "def": {
-        "name": "Ruaridh Tanaka",
-        "room": "room.p15_maintenance",
-        "tier": "major",
-        "profile": {
-          "persona": "a strike leader in 2309, an oligarch in 2350; wants the Yard busy and the Guard buying",
-          "background": "Yardmaster of Stickney Yards",
-          "enabled": false
-        }
-      }
-    },
-    "npc.bask": {
-      "kind": "npc",
-      "def": {
-        "name": "Teodor Bask",
-        "room": "room.p15_maintenance",
-        "tier": "major",
-        "profile": {
-          "persona": "the hawk; believes one seized hauler ends the argument",
-          "background": "Commodore of the Orbital Guard, Phobos",
-          "enabled": false
-        }
-      }
-    },
-    "lore.port_stickney": {
-      "kind": "lore",
-      "def": {
-        "tag": "port_stickney",
-        "entries": [
-          {
-            "tier": "public",
-            "subject": "Stickney Yards",
-            "fact": "Phobos's drydocks, made \"a real yard\" by the Republic in the 2340s (doc 11 §2). The Yard builds Vigil cutters, Hod dropships, Anvil mechs and Cairn GCVs for the Republic \"and, for a price, for anyone the Republic licenses\", and sells yard time, \"a reservation, not a cargo\" (§4.2). It is state-adjacent: the Republic holds a golden share."
-          },
-          {
-            "tier": "public",
-            "subject": "The Dray",
-            "fact": "every Dray in the corridor was built here: \"Slow, efficient, unarmed. Cannot outrun a Vigil; can choose a burn that makes the intercept cost more propellant than the Guard wants to spend\" (§7). The Co-op, Lantern and Tycho's loaner pool fly them. A new one is a hundred and twenty thousand credits on the service counter's card."
-          },
-          {
-            "tier": "public",
-            "subject": "Kasei Metals",
-            "fact": "the corridor's one refinery, at Phobos: \"metals → structural alloys, volatiles → propellant\" (§4.3). Kasei buys Ceres concentrate and water ice at the receiving counter and sells alloy stock and propellant at the exchange. Its intake and its funds are finite and posted; when either reads zero the clerk stops signing. The ice it buys is Phobos's water — the refinery's process water, the Yard's and the habitat's, and the Republic's reserve — which is why the bid stands above anything the stacks alone would pay; its reaction mass sells at a Republic-posted price, a strategic asset the Republic keeps fuelled for the Guard and the Yard, dearer than Occator's crude and unrelated to the ice bid (doc 18 §4.3)."
-          },
-          {
-            "tier": "public",
-            "subject": "The Orbital Guard",
-            "fact": "the Republic's small space force: \"torch-drive Vigil-class cutters based at Phobos; the corridor's interceptors\" (§3.2). The cutters are \"fast, expensive, visible from a long way off\" (§7). Two sit on the pad below the observation gallery; the Guard's customs detail staffs the hall."
-          },
-          {
-            "tier": "public",
-            "subject": "Customs assertion",
-            "fact": "from 2347 the Republic \"stations customs pickets at Kirkwood\" (§2). A Dray on the Ceres lane passes a Republic picket's transponder asking for its manifest at the Kirkwood leg. The posted charges in the customs hall are the policy's paperwork; in the slice nothing is collected."
-          },
-          {
-            "tier": "public",
-            "subject": "The Settlement",
-            "fact": "\"A decade of tax refusal and the Phobos yard strike; two years of intermittent shooting in orbit\" ended with the Republic of Mars recognised in 2312, inheriting Concord-era treaties and debt (§2). The strike photograph over the Shift Board's hatch is the yard's founding document; the Yardmaster is in it."
-          },
-          {
-            "tier": "public",
-            "subject": "The Exchange compound",
-            "fact": "the Malapert Exchange runs the Phobos relay half from its own compound under \"the 2312 Settlement's extraterritoriality clause, inherited by the Republic\" (doc 15 §4). Every message to Ceres goes through Luna's queue. Standard traffic waits by the congestion board; the board overstates the truth and \"the gap is the upsell\" (doc 15 §5.2)."
-          },
-          {
-            "tier": "guarded",
-            "subject": "Who holds the refinery",
-            "fact": "Kasei was \"built with Ceres Clearing money; the debt gives the Freeport's bank economic control of a Republic strategic asset, and the Republic knows it\" (§4.3). Phobos's economic control is shared, Republic and Ceres Clearing (§5). The Republic wants \"its Phobos refinery out from under Belt debt\" (§3.2); the receiving clerk's funds are, in the end, Freeport money."
-          },
-          {
-            "tier": "guarded",
-            "subject": "The Republic's wants",
-            "fact": "\"The Concession ended and Isidis administered from Coprates; customs authority over the Kirkwood approach; its Phobos refinery out from under Belt debt; a fleet; a fab of its own, which the Compact forbids. It has the army and the cutters, and lacks the water, the money, and the legal case\" (§3.2). The Concession Review clock stands at 2 of 6 (§6)."
-          },
-          {
-            "tier": "guarded",
-            "subject": "The mark",
-            "fact": "\"The Republic has floated pricing Phobos yard-time in a Martian mark — a political act, not a monetary one\" (§1). The yard-time board still reads in credits. Ask the service clerk which column comes first on the next printing and get the long pause."
-          }
-        ]
-      }
+      },
+      "kind": "room"
     },
     "secret.hawk": {
-      "kind": "secret",
       "def": {
-        "truth": "Commodore Bask \"believes one seized hauler ends the argument\" (§3.2). The empty third cradle on the Guard's pad is kept empty for a reason, and the Customs Assertion clock advances on \"each successful interdiction at Kirkwood\" (§6). A Freeport-flagged Dray is the hauler he means.",
-        "reveal": "staff",
         "about": [
           "npc.bask"
-        ]
-      }
+        ],
+        "reveal": "staff",
+        "truth": "Commodore Bask \"believes one seized hauler ends the argument\" (§3.2). The empty third cradle on the Guard's pad is kept empty for a reason, and the Customs Assertion clock advances on \"each successful interdiction at Kirkwood\" (§6). A Freeport-flagged Dray is the hauler he means."
+      },
+      "kind": "secret"
     },
     "secret.tap": {
-      "kind": "secret",
       "def": {
-        "truth": "the Office of Territorial Security \"wants a tap\" on the Phobos relay half; \"whether it has one is a seed-pack secret\" (doc 15 §4). OTS is also \"trying to buy\" the Tether (§4.6). The Thursday card on the Shift Board's wall is watched by someone who is not a dockworker.",
+        "about": [],
         "reveal": "staff",
-        "about": []
-      }
+        "truth": "the Office of Territorial Security \"wants a tap\" on the Phobos relay half; \"whether it has one is a seed-pack secret\" (doc 15 §4). OTS is also \"trying to buy\" the Tether (§4.6). The Thursday card on the Shift Board's wall is watched by someone who is not a dockworker."
+      },
+      "kind": "secret"
+    },
+    "site.yard_rim": {
+      "def": {
+        "footprint": [
+          [
+            110,
+            90
+          ],
+          [
+            200,
+            90
+          ],
+          [
+            200,
+            180
+          ],
+          [
+            110,
+            180
+          ]
+        ],
+        "name": "Yard Rim",
+        "site_kind": "site.transit"
+      },
+      "kind": "site"
+    },
+    "structure.yard_rim": {
+      "def": {
+        "floors": [
+          {
+            "height_m": 7,
+            "index": 0,
+            "name": "Freight Deck",
+            "z_offset_m": 0
+          },
+          {
+            "height_m": 4.5,
+            "index": 1,
+            "name": "Public Deck",
+            "z_offset_m": 7
+          }
+        ],
+        "footprint": [
+          [
+            110,
+            90
+          ],
+          [
+            200,
+            90
+          ],
+          [
+            200,
+            180
+          ],
+          [
+            110,
+            180
+          ]
+        ],
+        "site": "site.yard_rim"
+      },
+      "kind": "structure"
     }
+  },
+  "manifest": {
+    "digest": "43fc3279b531a93eb1479371549bfdc1270216dc6a6ebdaba56043c5009daafd",
+    "id": "neighborhood.stickney_yards",
+    "kind": "neighborhood",
+    "requires": [
+      {
+        "id": "region.stickney_yards",
+        "version": 1
+      }
+    ],
+    "version": 4
   }
 }

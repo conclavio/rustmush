@@ -2590,7 +2590,8 @@ pub fn boot_packs_with_lane(lane: mush_content::Pack) -> Vec<mush_content::Pack>
     // of this historical fixture as well as their original prerequisite packs.
     packs.retain(|pack| {
         let id = pack.manifest().id().as_str();
-        !id.starts_with("tacsim.passengers.")
+        id != tacsim::definitions::content::CAST_CERES_PACK
+            && !id.starts_with("tacsim.passengers.")
             && !id.starts_with("tacsim.crew.")
             && !id.starts_with("tacsim.quests.")
     });
@@ -2603,8 +2604,11 @@ pub fn boot_packs_with_lane(lane: mush_content::Pack) -> Vec<mush_content::Pack>
         .iter_mut()
         .find(|p| p.manifest().id().as_str() == tacsim::definitions::content::CERES_PACK)
         .expect("Ceres in boot order");
-    let mut old_ceres: serde_json::Value =
-        serde_json::from_str(tacsim::definitions::content::CERES_JSON).expect("Ceres JSON");
+    let mut old_ceres = tacsim::definitions::content::station_with_cast_value(
+        tacsim::definitions::content::CERES_JSON,
+        tacsim::definitions::content::CAST_CERES_JSON,
+    )
+    .expect("Ceres JSON");
     old_ceres["manifest"]["version"] = 2.into();
     old_ceres["manifest"]["digest"] = ground::UNSIGNED.into();
     old_ceres["entries"]["npc.oduya"]["def"]["profile"] =

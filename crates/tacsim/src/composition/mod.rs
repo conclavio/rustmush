@@ -695,6 +695,9 @@ pub fn content_module_with(
     let mut module = mush_content::ContentModule::new().with_appliers(appliers);
     let packs = boot_pack_list(starter_area, game_content)?;
     if game_content {
+        for pack in crate::definitions::content::cast_packs()? {
+            module = module.wait_for_dependency_upgrades(pack.manifest().id().clone());
+        }
         for pack in crate::relay_content::packs()? {
             module = module.wait_for_dependency_upgrades(pack.manifest().id().clone());
         }

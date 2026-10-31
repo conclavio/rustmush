@@ -46,10 +46,12 @@ use mush_testkit::{TestWorld, fold_module_ops, fold_module_ops_into};
 use serde_json::Value;
 use tacsim::TacsimConfig;
 use tacsim::definitions::content::{
-    AITKEN_PACK, AITKEN_REGION_PACK, AITKEN_ROOMS, CERES_PACK, CERES_REGION_PACK, CERES_ROOMS,
-    LANE_PACK, LANE_VERSION, LIGEIA_PACK, LIGEIA_REGION_PACK, LIGEIA_ROOMS, SITE_SOURCES,
-    STATION_SOURCES, STICKNEY_PACK, STICKNEY_REGION_PACK, STICKNEY_ROOMS, VOLTAIRE_PACK,
-    VOLTAIRE_REGION_PACK, VOLTAIRE_ROOMS, boot_packs, station_packs,
+    AITKEN_PACK, AITKEN_REGION_PACK, AITKEN_ROOMS, CAST_AITKEN_PACK, CAST_CERES_PACK,
+    CAST_LIGEIA_PACK, CAST_SOURCES, CAST_STICKNEY_PACK, CAST_VOLTAIRE_PACK, CERES_PACK,
+    CERES_REGION_PACK, CERES_ROOMS, LANE_PACK, LANE_VERSION, LIGEIA_PACK, LIGEIA_REGION_PACK,
+    LIGEIA_ROOMS, SITE_SOURCES, STATION_SOURCES, STICKNEY_PACK, STICKNEY_REGION_PACK,
+    STICKNEY_ROOMS, VOLTAIRE_PACK, VOLTAIRE_REGION_PACK, VOLTAIRE_ROOMS, boot_packs,
+    station_packs, station_with_cast_value,
 };
 use tacsim::ic_return::{self, PORTS};
 
@@ -86,7 +88,7 @@ const PINNED: [(&str, &str); 10] = [
     ),
     (
         CERES_PACK,
-        "1bc92740fc8fd745a0edaff3f90898a6d1bb408d11e59203909901cf6cdc6940",
+        "853e63e30f75f3c4caa70c08cf8585cc6da73b25566a8669792783a93b9e0f10",
     ),
     (
         STICKNEY_REGION_PACK,
@@ -94,7 +96,7 @@ const PINNED: [(&str, &str); 10] = [
     ),
     (
         STICKNEY_PACK,
-        "f1bdc803c5adca043d576013fb5c94bc2b4b6f0434e91f82fe123fcbab2f16f6",
+        "43fc3279b531a93eb1479371549bfdc1270216dc6a6ebdaba56043c5009daafd",
     ),
     // Doc 19 cut A.8: the three moon stations.
     (
@@ -103,7 +105,7 @@ const PINNED: [(&str, &str); 10] = [
     ),
     (
         AITKEN_PACK,
-        "7835fd46cb5d2e6fb6c8110e3e17ff3173fc2abf7c16e9a2ff257eebbaf42eaa",
+        "d1803b265e71364964ca1538c0a8023bf1b77e8d4028114e20e13432ff8b278e",
     ),
     (
         VOLTAIRE_REGION_PACK,
@@ -111,7 +113,7 @@ const PINNED: [(&str, &str); 10] = [
     ),
     (
         VOLTAIRE_PACK,
-        "790d3363d00cdbdf72dc2c753e587b9f6f86b36cd17e89e71ded6ed02e4e4bfc",
+        "362430c60f0c79e718e6a272b3bd502c380da6867b10c52e5a0abe6cdfcabd0e",
     ),
     (
         LIGEIA_REGION_PACK,
@@ -119,7 +121,7 @@ const PINNED: [(&str, &str); 10] = [
     ),
     (
         LIGEIA_PACK,
-        "7ef48113fdf50c208c62c102228da9f017f4ae7e8deecb4871000bb2de9436c0",
+        "4826b8fb58848615537fb768d156a28bad67fa9a854681a24d11d031d27d4086",
     ),
 ];
 
@@ -294,12 +296,20 @@ fn live_objects(tw: &TestWorld) -> usize {
         .count()
 }
 
-/// The decoded JSON of a station pack's file.
+/// The decoded JSON of a station pack's file (with its companion `tacsim.cast.<station>`
+/// entries recombined for neighborhood packs so historical v1/v2/v3 rebuilds and
+/// `entries_of(pack, "npc")` work across the CS.0b split).
 fn pack_json(pack: &str) -> Value {
     let (_, json) = STATION_SOURCES
         .iter()
         .find(|(name, _)| *name == pack)
         .expect("a station pack");
+    if let Some(station) = pack.strip_prefix("neighborhood.") {
+        let cast_id = format!("tacsim.cast.{station}");
+        if let Some((_, cast_json)) = CAST_SOURCES.iter().find(|(name, _)| *name == cast_id) {
+            return station_with_cast_value(json, cast_json).expect("station with cast");
+        }
+    }
     serde_json::from_str(json).expect("the pack is JSON")
 }
 
@@ -427,8 +437,8 @@ fn ic1_the_station_packs_load_and_their_digests_are_pinned() {
     );
     assert_eq!(
         station_packs().expect("the station packs verify").len(),
-        22,
-        "the corridor's four, doc 19 cut A.8's six and doc 20 cut SM.2's twelve site packs"
+        27,
+        "the corridor's four, doc 19 cut A.8's six, doc 34 cut CS.0b's five cast packs, and doc 20 cut SM.2's twelve site packs"
     );
 }
 
@@ -471,6 +481,8 @@ fn ic1_the_boot_list_and_the_shelf_carry_the_stations_in_order() {
         .collect();
     want.extend(ids(&boot_packs().expect("the game packs")));
     want.extend(STATION_SOURCES.iter().map(|(name, _)| (*name).to_string()));
+    // Doc 34 cut CS.0b: the five station cast packs ride `station_packs()` after `STATION_SOURCES`.
+    want.extend(CAST_SOURCES.iter().map(|(name, _)| (*name).to_string()));
     // Doc 20 cut SM.2: the twelve site packs ride `station_packs()` after the stations.
     want.extend(SITE_SOURCES.iter().map(|(name, _)| (*name).to_string()));
     // Doc 18 cut IC2: the lane after the stations (the game's thirteen boot packs
@@ -500,9 +512,10 @@ fn ic1_the_boot_list_and_the_shelf_carry_the_stations_in_order() {
     assert_eq!(ids(&full), want);
     assert_eq!(
         full.len(),
-        43,
-        "three starter, two proving ground, ten stations, the twelve site packs (doc 20 cut \
-         SM.2), the lane, seven R10 relay/geography packs, two passenger packs, the crew pack and the optional quests"
+        48,
+        "three starter, two proving ground, ten stations, five station cast packs (doc 34 cut \
+         CS.0b), the twelve site packs (doc 20 cut SM.2), the lane, seven R10 relay/geography \
+         packs, two passenger packs, the crew pack and the optional quests"
     );
     let site_regions: Vec<&str> = SITE_SOURCES
         .iter()
@@ -526,6 +539,12 @@ fn ic1_the_boot_list_and_the_shelf_carry_the_stations_in_order() {
             AITKEN_PACK => assert_eq!(requires, vec![(AITKEN_REGION_PACK.to_string(), 1)]),
             VOLTAIRE_PACK => assert_eq!(requires, vec![(VOLTAIRE_REGION_PACK.to_string(), 1)]),
             LIGEIA_PACK => assert_eq!(requires, vec![(LIGEIA_REGION_PACK.to_string(), 1)]),
+            // Doc 34 cut CS.0b: the five station cast packs.
+            CAST_CERES_PACK => assert_eq!(requires, vec![(CERES_PACK.to_string(), 4)]),
+            CAST_STICKNEY_PACK => assert_eq!(requires, vec![(STICKNEY_PACK.to_string(), 4)]),
+            CAST_AITKEN_PACK => assert_eq!(requires, vec![(AITKEN_PACK.to_string(), 1)]),
+            CAST_VOLTAIRE_PACK => assert_eq!(requires, vec![(VOLTAIRE_PACK.to_string(), 1)]),
+            CAST_LIGEIA_PACK => assert_eq!(requires, vec![(LIGEIA_PACK.to_string(), 1)]),
             // Doc 18 cut IC2: the lane requires nothing.
             LANE_PACK => assert!(requires.is_empty()),
             "tacsim.relay.luna_ceres" => assert_eq!(
@@ -1391,8 +1410,8 @@ fn ic1_a_kept_world_takes_the_stations_at_its_next_boot() {
     }
     assert_eq!(
         after.len(),
-        43,
-        "five, ten stations, the twelve site packs (doc 20 cut SM.2), the lane, seven R10 relay/geography packs, two passenger packs, the crew pack and the optional quests"
+        48,
+        "five, ten stations, five station cast packs, the twelve site packs (doc 20 cut SM.2), the lane, seven R10 relay/geography packs, two passenger packs, the crew pack and the optional quests"
     );
     // Doc 20 cut SM.12a: the relay seed ships at 3 (v2 re-signed for lane v14).
     // Doc 20 cut SM.12b: relay v4 requires lane v15.
@@ -1938,6 +1957,11 @@ fn ic14_stickney_v4_strikes_three_clauses_and_nothing_else() {
         };
         old.push(mush_content::load_pack(&bytes).expect("the station pack verifies"));
     }
+    for (name, json) in CAST_SOURCES {
+        if name != CAST_STICKNEY_PACK {
+            old.push(mush_content::load_pack(json).expect("the cast pack verifies"));
+        }
+    }
     let mut tw = TestWorld::with_modules(support::roster_booting(config(), old));
     let version = |tw: &TestWorld| {
         content(tw)
@@ -2090,6 +2114,11 @@ fn ic12_a_world_latched_at_the_old_station_versions_takes_the_new_through_plan_a
         };
         old.push(mush_content::load_pack(&bytes).expect("the station pack verifies"));
     }
+    for (name, json) in CAST_SOURCES {
+        if !matches!(name, CAST_CERES_PACK | CAST_STICKNEY_PACK) {
+            old.push(mush_content::load_pack(json).expect("the cast pack verifies"));
+        }
+    }
     let mut tw = TestWorld::with_modules(support::roster_booting(config(), old));
     let version = |tw: &TestWorld, pack: &str| {
         content(tw)
@@ -2195,6 +2224,11 @@ fn oduya_desk_upgrade_preserves_identity_location_inventory_and_memory() {
                 .expect("published pack"),
         );
     }
+    for (name, json) in CAST_SOURCES {
+        if name != CAST_CERES_PACK {
+            packs.push(mush_content::load_pack(json).expect("published cast pack"));
+        }
+    }
     let mut tw = TestWorld::with_modules(support::roster_booting(config(), packs));
     let oduya = obj(&tw, CERES_PACK, "npc.oduya");
     let moved_to = obj(&tw, CERES_PACK, "room.c04_concourse");
@@ -2267,7 +2301,8 @@ fn qureshi_trust_upgrade_keeps_identity_memory_and_staff_affiliation() {
     packs.retain(|pack| {
         !matches!(
             pack.manifest().id().as_str(),
-            "tacsim.relay.luna_ceres"
+            CAST_CERES_PACK
+                | "tacsim.relay.luna_ceres"
                 | "tacsim.passengers.stickney"
                 | "tacsim.passengers.ceres"
                 | "tacsim.crew.ceres"

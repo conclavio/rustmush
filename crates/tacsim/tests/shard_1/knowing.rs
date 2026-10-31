@@ -3912,7 +3912,7 @@ fn survey_commission_pays_fresh_complete_soundings_once_across_restart_and_forge
         .module_state::<mush_content::ContentState>()
         .unwrap()
         .latches
-        .applied(&cid("neighborhood.ceres_freeport"))
+        .applied(&cid(tacsim::definitions::content::CAST_CERES_PACK))
         .unwrap()
         .entries()[&cid("npc.qureshi")]
         .object()

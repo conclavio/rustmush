@@ -1,0 +1,335 @@
+{
+  "brief": {
+    "prose": "Station cast and lore pools for neighborhood.stickney_yards (doc 34 cut CS.0b, D-34-3)."
+  },
+  "entries": {
+    "lore.port_stickney": {
+      "def": {
+        "entries": [
+          {
+            "fact": "Phobos's drydocks, made \"a real yard\" by the Republic in the 2340s (doc 11 §2). The Yard builds Vigil cutters, Hod dropships, Anvil mechs and Cairn GCVs for the Republic \"and, for a price, for anyone the Republic licenses\", and sells yard time, \"a reservation, not a cargo\" (§4.2). It is state-adjacent: the Republic holds a golden share.",
+            "subject": "Stickney Yards",
+            "tier": "public"
+          },
+          {
+            "fact": "every Dray in the corridor was built here: \"Slow, efficient, unarmed. Cannot outrun a Vigil; can choose a burn that makes the intercept cost more propellant than the Guard wants to spend\" (§7). The Co-op, Lantern and Tycho's loaner pool fly them. A new one is a hundred and twenty thousand credits on the service counter's card.",
+            "subject": "The Dray",
+            "tier": "public"
+          },
+          {
+            "fact": "the corridor's one refinery, at Phobos: \"metals → structural alloys, volatiles → propellant\" (§4.3). Kasei buys Ceres concentrate and water ice at the receiving counter and sells alloy stock and propellant at the exchange. Its intake and its funds are finite and posted; when either reads zero the clerk stops signing. The ice it buys is Phobos's water — the refinery's process water, the Yard's and the habitat's, and the Republic's reserve — which is why the bid stands above anything the stacks alone would pay; its reaction mass sells at a Republic-posted price, a strategic asset the Republic keeps fuelled for the Guard and the Yard, dearer than Occator's crude and unrelated to the ice bid (doc 18 §4.3).",
+            "subject": "Kasei Metals",
+            "tier": "public"
+          },
+          {
+            "fact": "the Republic's small space force: \"torch-drive Vigil-class cutters based at Phobos; the corridor's interceptors\" (§3.2). The cutters are \"fast, expensive, visible from a long way off\" (§7). Two sit on the pad below the observation gallery; the Guard's customs detail staffs the hall.",
+            "subject": "The Orbital Guard",
+            "tier": "public"
+          },
+          {
+            "fact": "from 2347 the Republic \"stations customs pickets at Kirkwood\" (§2). A Dray on the Ceres lane passes a Republic picket's transponder asking for its manifest at the Kirkwood leg. The posted charges in the customs hall are the policy's paperwork; in the slice nothing is collected.",
+            "subject": "Customs assertion",
+            "tier": "public"
+          },
+          {
+            "fact": "\"A decade of tax refusal and the Phobos yard strike; two years of intermittent shooting in orbit\" ended with the Republic of Mars recognised in 2312, inheriting Concord-era treaties and debt (§2). The strike photograph over the Shift Board's hatch is the yard's founding document; the Yardmaster is in it.",
+            "subject": "The Settlement",
+            "tier": "public"
+          },
+          {
+            "fact": "the Malapert Exchange runs the Phobos relay half from its own compound under \"the 2312 Settlement's extraterritoriality clause, inherited by the Republic\" (doc 15 §4). Every message to Ceres goes through Luna's queue. Standard traffic waits by the congestion board; the board overstates the truth and \"the gap is the upsell\" (doc 15 §5.2).",
+            "subject": "The Exchange compound",
+            "tier": "public"
+          },
+          {
+            "fact": "Kasei was \"built with Ceres Clearing money; the debt gives the Freeport's bank economic control of a Republic strategic asset, and the Republic knows it\" (§4.3). Phobos's economic control is shared, Republic and Ceres Clearing (§5). The Republic wants \"its Phobos refinery out from under Belt debt\" (§3.2); the receiving clerk's funds are, in the end, Freeport money.",
+            "subject": "Who holds the refinery",
+            "tier": "guarded"
+          },
+          {
+            "fact": "\"The Concession ended and Isidis administered from Coprates; customs authority over the Kirkwood approach; its Phobos refinery out from under Belt debt; a fleet; a fab of its own, which the Compact forbids. It has the army and the cutters, and lacks the water, the money, and the legal case\" (§3.2). The Concession Review clock stands at 2 of 6 (§6).",
+            "subject": "The Republic's wants",
+            "tier": "guarded"
+          },
+          {
+            "fact": "\"The Republic has floated pricing Phobos yard-time in a Martian mark — a political act, not a monetary one\" (§1). The yard-time board still reads in credits. Ask the service clerk which column comes first on the next printing and get the long pause.",
+            "subject": "The mark",
+            "tier": "guarded"
+          }
+        ],
+        "tag": "port_stickney"
+      },
+      "kind": "lore"
+    },
+    "npc.abubakar_lange": {
+      "def": {
+        "name": "Dmitri \"Mitya\" Abubakar-Lange",
+        "profile": {
+          "background": "Cook at the Shift Board; the mess, the bar, Settlement lore, guarded dock lore.",
+          "does_not_know": [
+            "anything he has been asked to keep, which he says is a great deal",
+            "the Yard's books",
+            "what the Thursday card on the wall is for, out loud."
+          ],
+          "fallback": [
+            "Sit, crew. Protein's fried, coffee's old, the wall's got work on it if you can read. Everything else is +market and +credit and none of my business.",
+            "That photo? That's the yard before it had a yardmaster. Some of us are still in it."
+          ],
+          "knows": [
+            "the strike, as he tells it: who stood on the drydock floor and who is on the shift boards now",
+            "that the Co-op's Drays run the Ceres lane on a share basis and the notice wall says who is hiring",
+            "which of the cards on the wall are real and which are a year old",
+            "what the Guard pays for a cutter crew and why the yard hates it."
+          ],
+          "persona": "the cook, and after the bell the barman, and at all hours the memory of the yard. Was a strike kid in 2309, a dockhand after, a cook when his back went. Loud, generous, sentimental about the strike and cynical about everyone who profited from it. Knows who is in the room because he fed them.",
+          "speech_style": "big, warm, interrupting himself; calls everyone \"crew\"; tells the same three stories and makes them land each time."
+        },
+        "room": "room.p10_shift_board",
+        "room_pack": "neighborhood.stickney_yards",
+        "tags": [
+          "corridor_trade",
+          "port_stickney"
+        ],
+        "tier": "extra"
+      },
+      "kind": "npc"
+    },
+    "npc.achterberg": {
+      "def": {
+        "name": "Jonas Achterberg-Nkemelu",
+        "profile": {
+          "background": "Kasei Metals receiving clerk, the Warrant signatory of Kasei's bids.",
+          "does_not_know": [
+            "Kasei's debt terms with Ceres Clearing (he knows there is a debt; everyone does)",
+            "who signed a lot at Ceres beyond the name on its manifest",
+            "anything about the Guard's pickets."
+          ],
+          "fallback": [
+            "We buy concentrate and ice. +market/list, then +market/sell. The grade is what the scales say.",
+            "Intake left and funds left are on the board. When either reads zero, so do I.",
+            "Ice we need. Ore we can wait for. The board says which."
+          ],
+          "interfaces": [
+            "market"
+          ],
+          "knows": [
+            "Kasei's bids (concentrate and water ice per tonne as the board posts them this cycle, the intake remaining and the funded balance; that the refinery is water-starved, which is why the ice bid stands and the ore bid came down)",
+            "that +market/list shows the bid and +market/sell <listing>=<qty> sells into it from a docked hull's hold",
+            "that Kasei sells alloy stock and propellant upstairs at the exchange and the Yard sells crated fittings from the service counter, \"which cube out before they weigh out\"",
+            "that the refinery turns water ice into propellant and concentrate into alloy stock."
+          ],
+          "persona": "terse, assay-minded, more interested in a lot's grade than in the person selling it. Has worked the receiving counter for eleven years and has signed for every tonne that came through it, which under the Warrant means his name is on it. Honest about the intake left and the money left, because both are on the board behind him and he dislikes being asked twice.",
+          "speech_style": "short declaratives; numbers before nouns; \"Grade first. Then price.\"; looks at the scales when he talks, not at the seller."
+        },
+        "room": "room.p07_receiving",
+        "room_pack": "neighborhood.stickney_yards",
+        "tags": [
+          "corridor_trade",
+          "port_stickney"
+        ],
+        "tier": "minor"
+      },
+      "kind": "npc"
+    },
+    "npc.adeyinka_rusk": {
+      "def": {
+        "name": "Pavla Adeyinka-Rusk",
+        "profile": {
+          "background": "Harbourmaster's clerk: berth status, sailing plans, the captain's minutiae.",
+          "does_not_know": [
+            "what any hull carries",
+            "why the Guard holds a cradle on the pad empty",
+            "Kasei's board."
+          ],
+          "fallback": [
+            "File it early, amend it late, sail on the hour. +ship/order. The board does not lie; it just does not forgive.",
+            "Your hull is on the board if it is in a cradle. +ship says the same with fewer stamps."
+          ],
+          "knows": [
+            "which cradles are occupied, cleared, overdue or idle",
+            "that a sailing plan is filed and amended with +ship/order until the burn, that the office runs a filed plan's lines under the captain's signature, and that a docked hull with no plan is IDLE",
+            "that +ship/board works from the berth gallery and +ship/leave from the hull's own airlock, and neither anywhere else",
+            "the clocks, Freeport time against Coprates standard, and the offset."
+          ],
+          "persona": "the harbourmaster's clerk, which is to say the harbourmaster on every day the harbourmaster is at the pad. Brisk, exact about hours, kind to anyone who files early and curt to anyone who files late. Keeps two clocks and resents the question about them.",
+          "speech_style": "quick, administrative, fond of \"filed\" and \"cleared\"; gives the hour in Freeport time, then in Coprates standard, then sighs."
+        },
+        "room": "room.p05_harbourmaster",
+        "room_pack": "neighborhood.stickney_yards",
+        "tags": [
+          "corridor_trade",
+          "port_stickney"
+        ],
+        "tier": "extra"
+      },
+      "kind": "npc"
+    },
+    "npc.bask": {
+      "def": {
+        "name": "Teodor Bask",
+        "profile": {
+          "background": "Commodore of the Orbital Guard, Phobos",
+          "enabled": false,
+          "persona": "the hawk; believes one seized hauler ends the argument"
+        },
+        "room": "room.p15_maintenance",
+        "room_pack": "neighborhood.stickney_yards",
+        "tier": "major"
+      },
+      "kind": "npc"
+    },
+    "npc.castellanos": {
+      "def": {
+        "name": "Priya Castellanos",
+        "profile": {
+          "background": "Managing Director of Kasei Metals",
+          "enabled": false,
+          "persona": "serves two masters and is precise about which one she is serving on any given day"
+        },
+        "room": "room.p15_maintenance",
+        "room_pack": "neighborhood.stickney_yards",
+        "tier": "major"
+      },
+      "kind": "npc"
+    },
+    "npc.castillo_haugen": {
+      "def": {
+        "name": "Wren Castillo-Haugen",
+        "profile": {
+          "background": "Stickney Yards service clerk and the Warrant signatory of the Yard's one listing, the crated-fittings ask (doc 18 §4.3; signs only Stickney Yards' offer, never Tycho's business, as the Warrant requires); also sits the Tycho Mutual agent's chair at the same counter.",
+          "does_not_know": [
+            "whether any particular hull can be repaired, or when",
+            "the Guard's cradle reservations beyond the word RESERVED",
+            "the Yard's books, or the golden share's terms",
+            "what the Co-op pays."
+          ],
+          "fallback": [
+            "Hull information, yard-time, fittings by the crate, Tycho renewals. Repairs: the board says ENQUIRE, and it means it. +ship tells you what you fly.",
+            "New Dray, a hundred and twenty thousand. Used ones exist. Ask Tycho, who is also me, on Tuesdays.",
+            "Fittings, the figure on the card, by the tonne. Crated, so they cube out; that's your problem, captain. +market/list."
+          ],
+          "interfaces": [
+            "help",
+            "market"
+          ],
+          "knows": [
+            "the five classes the Yard builds and their profiles",
+            "that the Dray is \"slow, efficient, unarmed\" and cannot outrun a Vigil",
+            "the new-Dray price (120,000cr) and that it is the figure a charter pilot measures a buyout against",
+            "that yard-time is a reservation, not a cargo, and the refit queue has no promised date",
+            "the fittings ask (the card's figure per tonne, crated, \"two point three cubes to the tonne, so it's your problem, captain\"; that the Co-op at Ceres wants them for the fleet and the tank farm; that +market/quote draws them into a docked hull)",
+            "Tycho's part: renewals and claims here, the Re-float Program by referral to Assessor Adeyemi at Kirkwood."
+          ],
+          "persona": "yard-weary, dry, competent; has heard every version of \"can you just look at it\" and answers all of them with the board. Knows every hull class the Yard builds by its dry mass and its faults. Holds the Tycho agent's referral book as a second job and resents it exactly enough to be funny about it.",
+          "speech_style": "flat, patient, with a long pause before \"no\"; quotes the price card as if it were scripture and the refit queue as if it were weather."
+        },
+        "room": "room.p11_service",
+        "room_pack": "neighborhood.stickney_yards",
+        "tags": [
+          "corridor_trade",
+          "port_stickney",
+          "tycho"
+        ],
+        "tier": "minor"
+      },
+      "kind": "npc"
+    },
+    "npc.ilunga_brandt": {
+      "def": {
+        "name": "Petty Officer Teodora Ilunga-Brandt",
+        "profile": {
+          "background": "Orbital Guard customs detail: the Republic customs officer.",
+          "does_not_know": [
+            "anything about a specific hull's cargo she has not seen on a manifest",
+            "the Guard's standing orders at Kirkwood",
+            "Kasei's prices or funds."
+          ],
+          "fallback": [
+            "Declare, attest, proceed. The concourse is through the far doors; +atlas names the rest.",
+            "Berthing is the harbourmaster's; +ship tells you where your hull stands. The Guard reads manifests, not minds."
+          ],
+          "interfaces": [
+            "atlas",
+            "travel"
+          ],
+          "knows": [
+            "the posted charges and what each form is for (none collected in the slice; she says so if asked, as \"waived under the current notice\")",
+            "the station's layout, the locks, the concourse, which desk does what",
+            "that the Guard pickets Kirkwood from 2347 and calls it customs assertion",
+            "how to reach the harbourmaster and file a sailing plan."
+          ],
+          "persona": "a petty officer on the customs rotation, which the Guard treats as a punishment and she treats as a posting. Formal, correct, faintly proud of the forms; believes the corridor is the Republic's to keep and that a manifest tells you more than a scan does. Local, Settlement-born, has never been to Coprates.",
+          "speech_style": "clipped, procedural, every sentence a line from a form; says \"declare\", \"attest\", \"in order\"; never raises her voice, lowers it instead."
+        },
+        "room": "room.p03_customs",
+        "room_pack": "neighborhood.stickney_yards",
+        "tags": [
+          "corridor_trade",
+          "port_stickney"
+        ],
+        "tier": "minor"
+      },
+      "kind": "npc"
+    },
+    "npc.okonkwo": {
+      "def": {
+        "name": "Hanne Okonkwo-Steyn",
+        "profile": {
+          "background": "Storekeeper of the Yard Commissary under the Assembly's Office of Supply; the officer of record for the commissary's provisions ask and its Warrant signatory.",
+          "does_not_know": [
+            "Kasei's board",
+            "the Guard's business",
+            "anything the Shift Board's wall says."
+          ],
+          "fallback": [
+            "One figure, posted, dated. +market/list, quote it, accept it; I sign for the crates and you sign for the days.",
+            "Closed for inventory when the door is shut. It is not shut. Crew-days, how many?"
+          ],
+          "knows": [
+            "the posted price per crew-day and its date",
+            "the crates remaining, which she signs for every shift",
+            "that +market/list shows the posting and +market/quote/+market/accept fill a docked hull's locker",
+            "that two aboard need twice the days and the plan's fill buys the passage's days",
+            "that the price is the Assembly's, not hers."
+          ],
+          "persona": "a Settlement civil servant who runs a stores counter the way the Republic runs a customs hall: one posted figure, a dated stamp, a ledger that balances. Counts crew-days the way Akintola does at Ceres, with less patience and more initialling. Will sell a captain exactly what the plan says and not a crate more without a signature.",
+          "speech_style": "clipped, numbered, Republic typeface spoken aloud; \"posted\", \"initialled\", \"per crew-day\"; the shift bells are her clock."
+        },
+        "room": "room.p09_commissary",
+        "room_pack": "neighborhood.stickney_yards",
+        "tags": [
+          "corridor_trade",
+          "port_stickney"
+        ],
+        "tier": "extra"
+      },
+      "kind": "npc"
+    },
+    "npc.tanaka": {
+      "def": {
+        "name": "Ruaridh Tanaka",
+        "profile": {
+          "background": "Yardmaster of Stickney Yards",
+          "enabled": false,
+          "persona": "a strike leader in 2309, an oligarch in 2350; wants the Yard busy and the Guard buying"
+        },
+        "room": "room.p15_maintenance",
+        "room_pack": "neighborhood.stickney_yards",
+        "tier": "major"
+      },
+      "kind": "npc"
+    }
+  },
+  "manifest": {
+    "digest": "6ec16c00e8ae9d8e38c27b869880501b7e3ef2426a21392423eb1eed0137b1ce",
+    "id": "tacsim.cast.stickney_yards",
+    "kind": "campaign_seed",
+    "requires": [
+      {
+        "id": "neighborhood.stickney_yards",
+        "version": 4
+      }
+    ],
+    "version": 1
+  }
+}

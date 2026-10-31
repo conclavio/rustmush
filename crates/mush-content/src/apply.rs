@@ -180,8 +180,19 @@ pub fn plan(pack: &Pack, previous: Option<&Applied>) -> Result<Plan, ApplyError>
         });
     }
     if let Some(prev) = live {
+        let mut carried_cast = false;
         for (id, applied) in prev.entries() {
             if pack.entry(id).is_none() {
+                // Doc 34 cut CS.0b (D-34-3): when a neighborhood pack splits its
+                // `npc.*` and `lore.*` entries into a companion `tacsim.cast.<station>`
+                // pack, carry those entries forward in the neighborhood latch until
+                // the cast pack adopts them instead of retiring live NPCs or lore pools.
+                if pack.manifest().kind() == crate::pack::PackKind::Neighborhood
+                    && matches!(applied.kind().as_str(), "npc" | "lore")
+                {
+                    carried_cast = true;
+                    continue;
+                }
                 entries.push(PlannedEntry {
                     id: id.clone(),
                     kind: applied.kind().clone(),
@@ -190,6 +201,15 @@ pub fn plan(pack: &Pack, previous: Option<&Applied>) -> Result<Plan, ApplyError>
                 });
             }
         }
+        if carried_cast
+            && prev.version() < manifest.version()
+            && entries.iter().all(|e| e.step == Step::Unchanged)
+            && let Some(nb) = entries
+                .iter_mut()
+                .find(|e| e.kind.as_str() == "neighborhood")
+        {
+            nb.step = Step::Update;
+        }
     }
     Ok(Plan {
         pack: manifest.id().clone(),
@@ -197,6 +217,51 @@ pub fn plan(pack: &Pack, previous: Option<&Applied>) -> Result<Plan, ApplyError>
         digest: manifest.digest(),
         entries,
     })
+}
+
+/// Synthesize a baseline latch from a required `neighborhood.<station>` donor latch
+/// when a `tacsim.cast.<station>` pack is applied for the first time over a kept
+/// world that previously latched those `npc.*` and `lore.*` entries in the
+/// neighborhood pack (doc 34 cut CS.0b, D-34-3).
+fn adopted_donor_previous(
+    latches: &Latches,
+    pack: &Pack,
+) -> Option<(CanonicalId, Applied)> {
+    let pack_id = pack.manifest().id();
+    if latches.applied(pack_id).is_some() || !pack_id.as_str().starts_with("tacsim.cast.") {
+        return None;
+    }
+    for req in pack.manifest().requires() {
+        if !req.id.as_str().starts_with("neighborhood.") {
+            continue;
+        }
+        let Some(donor) = latches.applied(&req.id).filter(|l| !l.is_retired()) else {
+            continue;
+        };
+        let adopted: BTreeMap<CanonicalId, AppliedEntry> = donor
+            .entries()
+            .iter()
+            .filter(|(id, applied)| {
+                pack.entry(id)
+                    .is_some_and(|e| e.kind() == applied.kind())
+            })
+            .map(|(id, applied)| (id.clone(), applied.clone()))
+            .collect();
+        if !adopted.is_empty()
+            && let Ok(synth) = Applied::new(
+                pack_id.clone(),
+                1,
+                donor.digest(),
+                donor.applied_at().clone(),
+                adopted,
+                false,
+                None,
+            )
+        {
+            return Some((req.id.clone(), synth));
+        }
+    }
+    None
 }
 
 /// What one entry kind's owner does with an entry.
@@ -484,7 +549,10 @@ pub fn check_pack(
     }
     appliers.kinds().check(pack)?;
     crate::pack::check_requires(pack, &latches.loaded())?;
-    let previous = latches.applied(&pack_id);
+    let adopted = adopted_donor_previous(latches, pack);
+    let previous = latches
+        .applied(&pack_id)
+        .or_else(|| adopted.as_ref().map(|(_, synth)| synth));
     let plan = plan(pack, previous)?;
 
     let placed: BTreeMap<CanonicalId, ObjId> = previous
@@ -555,7 +623,11 @@ pub fn apply(
     }
     appliers.kinds().check(pack)?;
     crate::pack::check_requires(pack, &latches.loaded())?;
-    let previous = latches.applied(&pack_id).cloned();
+    let adopted = adopted_donor_previous(latches, pack);
+    let previous = latches
+        .applied(&pack_id)
+        .cloned()
+        .or_else(|| adopted.as_ref().map(|(_, synth)| synth.clone()));
     let plan = plan(pack, previous.as_ref())?;
 
     let mut entries: BTreeMap<CanonicalId, AppliedEntry> = previous
@@ -703,6 +775,25 @@ pub fn apply(
         report.anomaly.clone(),
     )?;
     persist(ctx, latches, applied.clone());
+    if let Some((donor_id, synth)) = adopted
+        && let Some(donor) = latches.applied(&donor_id).cloned()
+    {
+        let mut donor_entries = donor.entries().clone();
+        for adopted_id in synth.entries().keys() {
+            donor_entries.remove(adopted_id);
+        }
+        if let Ok(updated_donor) = Applied::new(
+            donor_id,
+            donor.version(),
+            donor.digest(),
+            donor.applied_at().clone(),
+            donor_entries,
+            donor.is_retired(),
+            donor.anomaly().map(str::to_string),
+        ) {
+            persist(ctx, latches, updated_donor);
+        }
+    }
     if let Some(anomaly) = &report.anomaly {
         tracing::warn!(pack = %applied.pack(), %anomaly, "content: an apply stopped part way; latched honestly");
     }
