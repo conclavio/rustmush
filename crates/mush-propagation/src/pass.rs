@@ -500,6 +500,15 @@ fn step_envelope(
         let from = crate::context::place_of(state, world, envelope.issuer());
         let to = crate::context::place_of(state, world, envelope.recipient());
         if from.is_some() && from == to {
+            // Doc 32 cut CF.6: a declared jamming level at the shared place holds an IC order
+            // and its reply as it holds any envelope there — delivery-affecting only (R4), the
+            // envelope waits and is never lost.
+            if to.is_some_and(|place| {
+                jamming.get(&place).copied().unwrap_or(0) >= crate::context::JAMMING_BLOCKS_AT
+            }) {
+                report.jammed.push(envelope.id());
+                return None;
+            }
             report.delivered.push(envelope.id());
             return Some(envelope.in_state(EnvelopeState::Delivered, now.clone()));
         }

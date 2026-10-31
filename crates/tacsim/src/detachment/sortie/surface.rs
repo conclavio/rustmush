@@ -49,10 +49,12 @@ pub(super) fn selected(
     };
     let op = prepare::operation(read, h, id)?;
     if op.ended.is_some()
-        || op.roster.duty != CrewDuty::Mining
+        || !matches!(op.roster.duty, CrewDuty::Mining | CrewDuty::Combat)
         || read.get(&h.active, &id.reference())?.as_ref() != Some(&op.roster)
     {
-        return Err("No active mining assignment.".into());
+        // Doc 32 cut CF.6: an escort's combat contract drives its unit over the open ground
+        // like a mining crew's; recovery stays its own duty's.
+        return Err("No active mining or combat assignment.".into());
     }
     facts::reservation(&op.roster, actor, Some(reservation))?;
     facts::reservation(&op.roster, unit, read.get(&h.reservations, &unit)?)?;
@@ -101,11 +103,12 @@ pub(super) fn selected(
         if c.npc != actor
             || c.employer != id.organizer
             || lease.pilot != c.employer
-            || !c.terms.duties.contains(&CrewDuty::Mining)
+            || !c.terms.duties.contains(&op.roster.duty)
             || op.roster.npc_terms.get(&actor) != Some(&c.terms_hash)
         {
             return Err(
-                "The rig's lessee must employ this operator for the accepted mining duty.".into(),
+                "The rig's lessee must employ this operator for the assignment's accepted duty."
+                    .into(),
             );
         }
     } else if lease.pilot != actor {

@@ -63,6 +63,20 @@ pub enum PartyKey {
         /// The unit.
         unit: ObjId,
     },
+    /// **A fixture raider party** (doc 32 cut CF.6, Q-CF-44): every hull one seeded raider
+    /// leader stands behind, authored as content (`super::raiders`).
+    Fixture {
+        /// The raider's leader (an NPC).
+        leader: ObjId,
+    },
+}
+
+impl PartyKey {
+    /// Whether the party is a fixture raider's.
+    #[must_use]
+    pub const fn is_fixture(&self) -> bool {
+        matches!(self, PartyKey::Fixture { .. })
+    }
 }
 
 /// **One party in a field**: its letter in admission order, what it is, and who leads it.

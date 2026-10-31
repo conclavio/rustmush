@@ -1,9 +1,9 @@
 {
   "manifest": {
     "id": "tacsim.crew.ceres",
-    "version": 1,
+    "version": 2,
     "kind": "campaign_seed",
-    "digest": "a05b56f1e55872e72da56c8c77eb16d551ea3b57d337424c4fec290cbea4c5c8",
+    "digest": "4eed4d50885466bdef44aee3e4428171f22d45821fefb5daae6b2006d9bd482f",
     "requires": [
       {
         "id": "neighborhood.ceres_freeport",
@@ -12,7 +12,7 @@
     ]
   },
   "brief": {
-    "prose": "Two persistent people at the Slack Line offer mining and recovery service. Their consent is authored; hiring writes the actual contract. Neither boot nor a content update moves them back to port, clears employment, or replaces someone already hired."
+    "prose": "Three persistent people at the Slack Line offer service: two for mining and recovery, one as an armed escort under a combat contract. Their consent is authored; hiring writes the actual contract. Neither boot nor a content update moves them back to port, clears employment, or replaces someone already hired."
   },
   "entries": {
     "npc.ilya_mendes": {
@@ -106,6 +106,60 @@
           "corridor_trade",
           "port_ceres"
         ]
+      }
+    },
+    "npc.rook_adeyemi": {
+      "kind": "npc",
+      "def": {
+        "name": "Rook Adeyemi",
+        "room_pack": "neighborhood.ceres_freeport",
+        "room": "room.c10_slack_line",
+        "tier": "minor",
+        "profile": {
+          "persona": "A quiet escort driver who sits facing the door and asks which unit carries the guns before asking about the pay.",
+          "background": "A former convoy gunner between contracts at Ceres. Drives and fights an armed unit under a captain's orders; does not own the unit or lend its rights, and takes no mining work.",
+          "speech_style": "Short and level. Discuss the work without claiming that a conversation signed a contract, moved a unit or fired a shot.",
+          "goals": [
+            "Meet captains looking for an escort; point them to +sortie/crew to inspect the current offer.",
+            "After hiring, respect the actual contract and assignment. Answer orders honestly: WILCO only for what can be done, NEGATIVE for what cannot."
+          ],
+          "knows": [
+            "+sortie/crew lists the standing terms while the captain and worker are in the same port room.",
+            "Hiring currently has no wage charge; any later wages belong to the agreed contract.",
+            "The captain boards a hired person with +sortie/board. Equipment rights and station control are separate checks.",
+            "In a field the unit holds fire until told otherwise, and fires only on parties its own side holds hostile."
+          ],
+          "does_not_know": [
+            "Another character's permissions, private orders, accounts, readings or unseen field outcomes."
+          ],
+          "interfaces": [
+            "help"
+          ],
+          "command_refs": [
+            "+sortie"
+          ],
+          "fallback": [
+            "If you need an escort, +sortie/crew shows my current terms. Talking about work does not sign the contract."
+          ]
+        },
+        "tags": [
+          "corridor_trade",
+          "port_ceres"
+        ]
+      }
+    },
+    "crew.rook_adeyemi": {
+      "kind": "crew_offer",
+      "def": {
+        "npc": "npc.rook_adeyemi",
+        "terms": {
+          "schema": 1,
+          "port": "ceres",
+          "mission_scope": "subordinate_operator",
+          "duties": [
+            "combat"
+          ]
+        }
       }
     },
     "crew.sana_okonkwo": {

@@ -284,3 +284,26 @@ fn the_kernel_runs_on_a_window_of_the_regions_own_side() {
     let _ = run_until(&mut arena, 30_000, 1_000, |_, _| {});
     assert_eq!(arena.now_ms, 30_000);
 }
+
+/// **Doc 32 cut CF.6, Q-CF-41**: an IC host opens every seat at weapons hold — an accidental
+/// first shot declares hostility in IC — while the simulator's host keeps FREE (Q-21-9).
+#[test]
+fn an_ic_host_opens_every_seat_at_hold_and_the_simulator_stays_free() {
+    let world = booted_world();
+    let ic = three_parties(
+        &world,
+        FieldHost {
+            end: EndCondition::Host,
+            every_class: true,
+            weapons_hold: true,
+            ..FieldHost::default()
+        },
+    );
+    assert!(!ic.units.is_empty());
+    assert!(ic.units.iter().all(|unit| unit.weapons_hold), "IC: HOLD");
+    let practice = three_parties(&world, FieldHost::all_hostile());
+    assert!(
+        practice.units.iter().all(|unit| !unit.weapons_hold),
+        "the simulator: FREE"
+    );
+}

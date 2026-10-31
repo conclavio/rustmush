@@ -146,41 +146,14 @@ fn issue(
             .map_err(|e| e.to_string())?,
         }),
         ObjectiveWords::Engage { contact } => {
-            let contact = if let Some(wanted) = contact {
-                let unit = op
-                    .roster
-                    .plan
-                    .slots
-                    .iter()
-                    .find(|s| s.controller.character() == Some(ctx.actor))
-                    .and_then(|s| s.unit)
-                    .ok_or("Own field unit unavailable.")?;
-                let holders = [
-                    PrincipalId::Object { id: ctx.actor },
-                    PrincipalId::Object { id: unit },
-                ];
-                let wanted = wanted.to_ascii_lowercase();
-                let contacts = ctx
-                    .w
-                    .module_state::<mush_core::ContactLedgerState>()
-                    .into_iter()
-                    .flat_map(|l| l.rows())
-                    .filter(|r| {
-                        r.active
-                            && holders.contains(&r.holder)
-                            && !wanted.is_empty()
-                            && r.contact.to_hex().starts_with(&wanted)
-                    })
-                    .map(|r| r.contact)
-                    .collect::<std::collections::BTreeSet<_>>();
-                if contacts.len() != 1 {
-                    return Err("No such contact in your own observation.".into());
-                }
-                contacts.into_iter().next()
+            if let Some(wanted) = contact {
+                engage_at(ctx, op, &wanted)?
             } else {
-                None
-            };
-            Some(FieldObjective::Engage { contact })
+                Some(FieldObjective::Engage {
+                    contact: None,
+                    at: None,
+                })
+            }
         }
     };
     let directive = objective.map_or(Directive::Cancel, |objective| {
@@ -201,6 +174,52 @@ fn issue(
             expires_at_ms,
         },
     )
+}
+/// **What an `ENGAGE <word>` names** (doc 32 cut CF.6): inside a field a contact of the leader's
+/// own cockpit by its designator; else a campaign contact by its key's prefix; else, on open
+/// ground, a flight on the presence picture (`NE`, `NE-near`).
+fn engage_at(
+    ctx: &Ctx<'_>,
+    op: &OperationRecord,
+    wanted: &str,
+) -> Result<Option<FieldObjective>, String> {
+    let unit = op
+        .roster
+        .plan
+        .slots
+        .iter()
+        .find(|s| s.controller.character() == Some(ctx.actor))
+        .and_then(|s| s.unit)
+        .ok_or("Own field unit unavailable.")?;
+    let engage = |contact, at| Ok(Some(FieldObjective::Engage { contact, at }));
+    if let Some(at) = crate::field::orders::leader_contact(ctx.w, ctx.actor, unit, wanted) {
+        return engage(None, Some(at));
+    }
+    let holders = [
+        PrincipalId::Object { id: ctx.actor },
+        PrincipalId::Object { id: unit },
+    ];
+    let folded = wanted.to_ascii_lowercase();
+    let contacts = ctx
+        .w
+        .module_state::<mush_core::ContactLedgerState>()
+        .into_iter()
+        .flat_map(|l| l.rows())
+        .filter(|r| {
+            r.active
+                && holders.contains(&r.holder)
+                && !folded.is_empty()
+                && r.contact.to_hex().starts_with(&folded)
+        })
+        .map(|r| r.contact)
+        .collect::<std::collections::BTreeSet<_>>();
+    if contacts.len() == 1 {
+        return engage(contacts.into_iter().next(), None);
+    }
+    match crate::field::orders::row_of_words(wanted) {
+        Some(at) => engage(None, Some(at)),
+        None => Err("No such contact in your own observation.".into()),
+    }
 }
 pub(crate) fn field_response(
     ctx: &mut Ctx<'_>,
@@ -242,9 +261,17 @@ fn directive_text(directive: &Directive<FieldPayload>) -> String {
     let mut text = match &payload.objective {
         FieldObjective::Hold => "HOLD".into(),
         FieldObjective::Advance { to: (x, y) } => format!("ADVANCE {x},{y}"),
-        FieldObjective::Engage { contact } => contact
-            .as_ref()
-            .map_or_else(|| "ENGAGE".into(), |id| format!("ENGAGE {}", id.to_hex())),
+        FieldObjective::Engage { contact, at } => match (contact, at) {
+            (Some(id), _) => format!("ENGAGE {}", id.to_hex()),
+            (None, Some(field_orders::EngageAt::Contact { designator, .. })) => {
+                format!("ENGAGE {designator}")
+            }
+            (None, Some(field_orders::EngageAt::Row { bearing, band })) => match band {
+                Some(band) => format!("ENGAGE {bearing}-{band}"),
+                None => format!("ENGAGE {bearing}"),
+            },
+            (None, None) => "ENGAGE".into(),
+        },
         FieldObjective::Withdraw => "WITHDRAW".into(),
         FieldObjective::Screen { bearing_mdeg } => format!("SCREEN {}", bearing_mdeg / 1000),
         FieldObjective::Support { slot } => format!("SUPPORT {}", slot.get()),

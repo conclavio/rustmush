@@ -73,7 +73,7 @@ fn cell_of(ctx: &Ctx<'_>, unit: ObjId) -> Option<(i64, i64)> {
 
 /// **The flight a presence row names** (this module's head): `bearing` and an optional `band`
 /// from the nearest of `own`, the nearest match, ties to the lower object number (never shown).
-fn resolve_row(
+pub(crate) fn resolve_row(
     ctx: &Ctx<'_>,
     own: &[ObjId],
     others: &[ObjId],
@@ -109,7 +109,7 @@ fn resolve_row(
 }
 
 /// `NE` / `n` / `sw` → the octant.
-fn octant(word: &str) -> Option<Octant> {
+pub(crate) fn octant(word: &str) -> Option<Octant> {
     [
         Octant::N,
         Octant::NE,
@@ -125,7 +125,7 @@ fn octant(word: &str) -> Option<Octant> {
 }
 
 /// `close` / `near` / `far` / `distant` → the band.
-fn band(word: &str) -> Option<Band> {
+pub(crate) fn band(word: &str) -> Option<Band> {
     [Band::Close, Band::Near, Band::Far, Band::Distant]
         .into_iter()
         .find(|band| band.word().eq_ignore_ascii_case(word))
@@ -208,8 +208,9 @@ fn mark(ctx: &mut Ctx<'_>, raw: &str) -> Result<(), CmdError> {
         _ => return Err(CmdError::msg(USAGE)),
     };
     let actor = ctx.actor;
-    // Inside a field: a party letter.
-    if target.len() == 1 {
+    // Inside a field: a party letter. On open ground a lone `N`, `E`, `S` or `W` is an octant
+    // (doc 32 cut CF.6: the two readings of one letter split on where the leader stands).
+    if target.len() == 1 && in_field(ctx, actor).is_some() {
         let letter = target.as_bytes().first().copied().unwrap_or(0);
         let party = PartyId::from_letter(char::from(letter.to_ascii_uppercase()))
             .ok_or_else(|| CmdError::msg(USAGE))?;

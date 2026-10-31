@@ -1094,6 +1094,16 @@ async fn rented_mining_fixture(store: &InMemoryStore) -> TestResult<(Rig, ObjId)
     Ok((rig, cab))
 }
 async fn mining_field_fixture(store: &InMemoryStore, pair: bool) -> TestResult<(Rig, ObjId)> {
+    pair_field_fixture(store, pair, "crew.ilya_mendes", "mining").await
+}
+/// The shipped crew member `crew` hired for `duty`, flying rig 1 onto Ahuna Flank; with `pair`,
+/// the organizer leads from rig 2 beside them.
+async fn pair_field_fixture(
+    store: &InMemoryStore,
+    pair: bool,
+    crew: &str,
+    duty: &str,
+) -> TestResult<(Rig, ObjId)> {
     let (mut rig, cab) = rented_mining_fixture(store).await?;
     commit(&mut rig.world, store, rig.organizer, "+tv/1/permissions go").await?;
     let rented_leader = if pair {
@@ -1123,12 +1133,9 @@ async fn mining_field_fixture(store: &InMemoryStore, pair: bool) -> TestResult<(
                 &mush_core::CanonicalId::new(tacsim::detachment::crew::content::PACK).ok()?,
             )
         })
-        .and_then(|l| {
-            l.entries()
-                .get(&mush_core::CanonicalId::new("crew.ilya_mendes").ok()?)
-        })
+        .and_then(|l| l.entries().get(&mush_core::CanonicalId::new(crew).ok()?))
         .and_then(mush_content::AppliedEntry::object)
-        .ok_or("shipped mining crew")?;
+        .ok_or("shipped crew")?;
     let terms: tacsim::detachment::crew::HireTerms = serde_json::from_value(
         rig.world
             .world()
@@ -1294,7 +1301,7 @@ async fn mining_field_fixture(store: &InMemoryStore, pair: bool) -> TestResult<(
         &mut rig.world,
         store,
         rig.organizer,
-        "+sortie/activate 1:1=mining",
+        &format!("+sortie/activate 1:1={duty}"),
     )
     .await?;
     let seating = submit(&mut rig.world, rig.organizer, "+sortie/seat 1:1=1")?;
@@ -3999,5 +4006,389 @@ async fn carrier_bay_access_stays_between_its_actual_hold_and_bay() -> TestResul
         rig.world.world().get(actor).and_then(|o| o.location),
         Some(hold)
     );
+    Ok(())
+}
+
+/// **The world loop's `Wake::ArenaEgress` arm, by hand** (doc 32 cut CF.6's story): every
+/// message the field's task sent, staged and taken, its ledger acknowledged.
+fn pump_arena(
+    world: &mut TestWorld,
+    rx: &mut tokio::sync::mpsc::Receiver<tacsim::arena_task::ArenaOut>,
+) {
+    let Some(tasks) = world
+        .world()
+        .module_state::<tacsim::arena_bridge::ArenaRegistry>()
+        .map(|registry| registry.tasks().clone())
+    else {
+        return;
+    };
+    let mut staged = 0;
+    while let Ok(message) = rx.try_recv() {
+        if !tasks.stage(message) {
+            break;
+        }
+        staged += 1;
+    }
+    if staged > 0 {
+        world.apply(mush_core::WorldCommand::ModuleAsyncDone {
+            module: smol_str::SmolStr::new_static(tacsim::arena_bridge::MODULE),
+            actor: GOD,
+            correlation: 0,
+            payload: tacsim::arena_bridge::EGRESS_PAYLOAD.to_owned(),
+        });
+        tasks.stamp_ledger_writes(1);
+        tasks.ack_ledger_upto(1);
+    }
+}
+
+/// **Staff place `unit` at the centre of Ahuna Flank's cell `cell`** (the placement seam).
+fn staff_place_on_ahuna(world: &mut TestWorld, unit: ObjId, cell: (i64, i64)) -> TestResult {
+    let domain = world
+        .world()
+        .module_state::<tacsim::TacsimStore>()
+        .ok_or("tacsim")?
+        .port_maps()
+        .find(|m| m.entry.as_str() == "ahuna_port")
+        .and_then(|m| m.domain)
+        .ok_or("Ahuna domain")?;
+    let pose = tacsim::surface::excursion::cell_pose([cell.0, cell.1], 90_000)?;
+    let mut out = mush_core::Outbox::new();
+    let engine = world.engine_mut();
+    let mut ctx = mush_core::Ctx {
+        w: &mut engine.world,
+        actor: GOD,
+        switches: mush_core::SwitchSet::default(),
+        args: mush_core::ParsedArgs::default(),
+        out: &mut out,
+        reg: &engine.registry,
+        module: Some(smol_str::SmolStr::new(tacsim::NS)),
+        typed_state: mush_core::ModuleActionState::unavailable(),
+    };
+    mush_sim::place(&mut ctx, unit, mush_sim::DomainId(domain), pose)?;
+    Ok(())
+}
+
+/// The last cockpit frame the arena sent `pilot`.
+fn arena_frame(world: &TestWorld, pilot: ObjId) -> Option<tacsim::arena::step::Frame> {
+    world
+        .world()
+        .module_state::<tacsim::arena_bridge::ArenaRegistry>()
+        .and_then(|registry| registry.last_frame(pilot))
+        .map(|cockpit| cockpit.frame.clone())
+}
+
+/// The slot's delivered order: its sequence and its acknowledgement.
+fn delivered_of(
+    world: &TestWorld,
+    organizer: ObjId,
+    slot: mush_tactics::detachment::Slot,
+) -> TestResult<Option<(u64, Option<mush_tactics::detachment::Response>)>> {
+    let orders = field_orders(world, organizer)?;
+    let roster = field_roster(world, organizer)?;
+    let book = mush_tactics::detachment::OrderBook::restore(&orders.book, &roster)?;
+    Ok(book.delivered(slot).map(|d| {
+        (
+            d.order.sequence,
+            d.acknowledgement.as_ref().map(|a| a.response),
+        )
+    }))
+}
+
+/// One world second and the field's egress: ticks, landed submissions, pumped frames.
+async fn field_second(
+    world: &mut TestWorld,
+    store: &InMemoryStore,
+    rx: &mut tokio::sync::mpsc::Receiver<tacsim::arena_task::ArenaOut>,
+) -> TestResult {
+    for _ in 0..4 {
+        tokio::time::sleep(std::time::Duration::from_millis(30)).await;
+        pump_arena(world, rx);
+    }
+    pulse(world, store, 1).await?;
+    pump_arena(world, rx);
+    Ok(())
+}
+
+/// **CF.6's transport gate** (doc 32 §6; Q-CF-7, Q-CF-9, Q-CF-41, Q-CF-42, §4a): a hired escort
+/// under a combat contract on Ahuna Flank, its player leader beside it, a bystander's armed hull
+/// on the ground. A delivered ENGAGE naming a presence row on open ground is the leader's Hostile
+/// mark and opens the field. Inside it the escort's hull is the doctrine's: an ENGAGE naming a
+/// contact the escort does not hold is answered NEGATIVE; an ENGAGE through jamming arrives
+/// late and its WILCO later still; a HOLD FIRE stands on the escort's own order row the pulse
+/// it lands.
+#[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+#[allow(clippy::too_many_lines)]
+async fn cf6_escort_orders_in_a_field_cross_jamming_hold_fire_and_lost_contact() -> TestResult {
+    use mush_tactics::detachment::{Response, Slot};
+    use tacsim::surface::site_record::{PromotedBy, SiteKey};
+    let store = InMemoryStore::new();
+    let (mut rig, _) = pair_field_fixture(&store, true, "crew.rook_adeyemi", "combat").await?;
+    let (organizer, npc, escort) = (rig.organizer, rig.invitee, rig.unit);
+    let leader_unit = rig
+        .world
+        .world()
+        .module_state::<tacsim::TacsimStore>()
+        .ok_or("rentals")?
+        .tv_leases_of(organizer)
+        .find(|r| r.live() && r.slot == 2)
+        .ok_or("leader rig")?
+        .tv;
+    // A bystander's armed hull stands within the leader's sight; the escort stands far west,
+    // past its sensors' reach of both and of its leader's shared picture.
+    let bystander = rig
+        .world
+        .world_mut()
+        .create(ObjKind::Thing, "Bystander tank", GOD, None)?;
+    rig.world.world_mut().attach_behavior(
+        bystander,
+        BehaviorId::new("sim.participant")?,
+        BehaviorBinding {
+            schema_version: 1,
+            attached_by: GOD,
+            attached_at: 0,
+        },
+    )?;
+    ordinary(
+        &mut rig.world,
+        GOD,
+        &format!("@unit/create #{}=tacsim.unit.line_tank", bystander.0),
+    )?;
+    staff_place_on_ahuna(&mut rig.world, escort, (40, 126))?;
+    staff_place_on_ahuna(&mut rig.world, leader_unit, (110, 126))?;
+    staff_place_on_ahuna(&mut rig.world, bystander, (118, 126))?;
+    persist_legacy(&mut rig.world, &store).await?;
+    let mut rx = rig
+        .world
+        .world()
+        .module_state::<tacsim::arena_bridge::ArenaRegistry>()
+        .map(|registry| registry.tasks().clone())
+        .and_then(|tasks| tasks.take_egress())
+        .ok_or("the registry's egress")?;
+    let roster = field_roster(&rig.world, organizer)?;
+    let fence = format!(
+        "DT:{}:{}:{}",
+        roster.id().0,
+        roster.revision(),
+        roster.term()
+    );
+    let slot = Slot::new(1)?;
+    let site = mush_core::CanonicalId::new("ahuna_port")?;
+    let promoted = |world: &TestWorld| -> TestResult<Option<PromotedBy>> {
+        let h = world
+            .world()
+            .module_state::<tacsim::port::families::PortHandles>()
+            .ok_or("port handles")?;
+        Ok(world
+            .engine()
+            .action_state()
+            .get(&h.families.sites, &SiteKey(site.clone()))?
+            .and_then(|record| record.promoted.clone())
+            .map(|open| open.by))
+    };
+
+    // (1) Open ground (§4a): ENGAGE at the flight seen to the east, from the escort.
+    commit(
+        &mut rig.world,
+        &store,
+        organizer,
+        &format!("ORDER {fence} 1 ENGAGE E"),
+    )
+    .await?;
+    let mut answered = None;
+    for _ in 0..120 {
+        field_second(&mut rig.world, &store, &mut rx).await?;
+        if let Some((_, Some(response))) = delivered_of(&rig.world, organizer, slot)? {
+            answered = Some(response);
+            break;
+        }
+    }
+    assert_eq!(
+        answered,
+        Some(Response::Wilco),
+        "the escort answers its ENGAGE once the mark is made"
+    );
+    assert!(
+        matches!(promoted(&rig.world)?, Some(PromotedBy::Mark { leader, .. }) if leader == organizer),
+        "the delivered ENGAGE is the leader's Hostile mark: {:?}",
+        promoted(&rig.world)?
+    );
+    // The field opens with everyone on the ground; the escort's own frame reaches the host.
+    let mut opened = false;
+    for _ in 0..60 {
+        field_second(&mut rig.world, &store, &mut rx).await?;
+        if tacsim::field::field_of_unit(rig.world.world(), escort).is_some()
+            && arena_frame(&rig.world, npc).is_some()
+            && arena_frame(&rig.world, organizer).is_some_and(|f| !f.contacts.is_empty())
+        {
+            opened = true;
+            break;
+        }
+    }
+    assert!(
+        opened,
+        "the field opens with the escort's and the leader's frames"
+    );
+    assert!(
+        arena_frame(&rig.world, organizer).is_some_and(|f| !f.weapons_free),
+        "an IC field opens every seat at HOLD (Q-CF-41)"
+    );
+
+    // (2) A lost contact: the leader names a contact its own cockpit holds and the escort's
+    // does not; the escort answers NEGATIVE.
+    let leader_frame = arena_frame(&rig.world, organizer).ok_or("leader frame")?;
+    let escort_frame = arena_frame(&rig.world, npc).ok_or("escort frame")?;
+    let unseen = leader_frame
+        .contacts
+        .iter()
+        .map(|contact| contact.designator.to_string())
+        .find(|name| {
+            !escort_frame
+                .contacts
+                .iter()
+                .any(|contact| contact.designator.to_string() == *name)
+        })
+        .ok_or("a contact the leader holds and the escort does not")?;
+    let before = delivered_of(&rig.world, organizer, slot)?.map(|(seq, _)| seq);
+    commit(
+        &mut rig.world,
+        &store,
+        organizer,
+        &format!("ORDER {fence} 1 ENGAGE {unseen}"),
+    )
+    .await?;
+    let mut lost = None;
+    for _ in 0..60 {
+        field_second(&mut rig.world, &store, &mut rx).await?;
+        if let Some((seq, Some(response))) = delivered_of(&rig.world, organizer, slot)?
+            && Some(seq) != before
+        {
+            lost = Some(response);
+            break;
+        }
+    }
+    assert_eq!(
+        lost,
+        Some(Response::Negative),
+        "an ENGAGE on a contact the escort does not hold is NEGATIVE"
+    );
+
+    // (3) Jamming at the escort's place: the ENGAGE waits, arrives once it clears, and the
+    // WILCO, held by jamming in turn, arrives later still.
+    // Both ends' places: the order is held where it is going, the reply where it returns.
+    let places: Vec<ObjId> = {
+        let state = rig
+            .world
+            .world()
+            .module_state::<mush_sim::data::SpatialState>()
+            .ok_or("spatial")?;
+        let mut places = Vec::new();
+        for who in [npc, organizer] {
+            let place = mush_propagation::context::place_of(state, rig.world.world(), who)
+                .ok_or("place")?;
+            if !places.contains(&place) {
+                places.push(place);
+            }
+        }
+        places
+    };
+    let jam = |world: &mut TestWorld, level: u32| -> TestResult {
+        for place in &places {
+            ordinary(world, GOD, &format!("@prop/jam #{}={level}", place.0))?;
+        }
+        Ok(())
+    };
+    jam(&mut rig.world, 9)?;
+    persist_legacy(&mut rig.world, &store).await?;
+    let before = delivered_of(&rig.world, organizer, slot)?.map(|(seq, _)| seq);
+    commit(
+        &mut rig.world,
+        &store,
+        organizer,
+        &format!("ORDER {fence} 1 ENGAGE"),
+    )
+    .await?;
+    for _ in 0..10 {
+        field_second(&mut rig.world, &store, &mut rx).await?;
+    }
+    assert_eq!(
+        delivered_of(&rig.world, organizer, slot)?.map(|(seq, _)| seq),
+        before,
+        "a jammed ENGAGE is not delivered"
+    );
+    jam(&mut rig.world, 0)?;
+    persist_legacy(&mut rig.world, &store).await?;
+    let mut arrived = None;
+    for _ in 0..60 {
+        field_second(&mut rig.world, &store, &mut rx).await?;
+        if let Some((seq, ack)) = delivered_of(&rig.world, organizer, slot)?
+            && Some(seq) != before
+        {
+            arrived = Some((seq, ack));
+            break;
+        }
+    }
+    let (sequence, ack) = arrived.ok_or("the ENGAGE arrives once the jamming clears")?;
+    assert_eq!(ack, None, "delivery is not an answer");
+    // The reply travels into fresh jamming.
+    jam(&mut rig.world, 9)?;
+    persist_legacy(&mut rig.world, &store).await?;
+    let mut wilco = false;
+    for _ in 0..60 {
+        field_second(&mut rig.world, &store, &mut rx).await?;
+        if delivered_of(&rig.world, organizer, slot)? == Some((sequence, Some(Response::Wilco))) {
+            wilco = true;
+            break;
+        }
+    }
+    assert!(
+        wilco,
+        "the escort answers WILCO once its order stands: {:?}; leader wreck {:?}; escort order {:?}",
+        delivered_of(&rig.world, organizer, slot)?,
+        arena_frame(&rig.world, organizer).map(|f| f.wreck),
+        arena_frame(&rig.world, npc).and_then(|f| f.order)
+    );
+    for _ in 0..5 {
+        field_second(&mut rig.world, &store, &mut rx).await?;
+    }
+    let received = format!("order {sequence}: WILCO received");
+    let held = text(&mut rig.world, organizer, "+sortie/orders 1:1");
+    assert!(
+        !held.contains(&received),
+        "a jammed reply has not reached the leader: {held}"
+    );
+    jam(&mut rig.world, 0)?;
+    persist_legacy(&mut rig.world, &store).await?;
+    let mut heard = false;
+    for _ in 0..60 {
+        field_second(&mut rig.world, &store, &mut rx).await?;
+        if text(&mut rig.world, organizer, "+sortie/orders 1:1").contains(&received) {
+            heard = true;
+            break;
+        }
+    }
+    assert!(heard, "the WILCO arrives after the jamming clears");
+
+    // (4) HOLD FIRE: the escort's own order row holds fire as soon as the command lands.
+    commit(
+        &mut rig.world,
+        &store,
+        organizer,
+        &format!("ORDER {fence} 1 ENGAGE HOLD FIRE"),
+    )
+    .await?;
+    let mut holding = false;
+    for _ in 0..60 {
+        field_second(&mut rig.world, &store, &mut rx).await?;
+        let delivered = delivered_of(&rig.world, organizer, slot)?;
+        if delivered.is_some_and(|(seq, _)| seq != sequence)
+            && arena_frame(&rig.world, npc)
+                .and_then(|frame| frame.order)
+                .is_some_and(|order| order.hold_fire)
+        {
+            holding = true;
+            break;
+        }
+    }
+    assert!(holding, "HOLD FIRE stands on the escort's own order row");
     Ok(())
 }

@@ -4835,8 +4835,9 @@ impl Arena {
                 // **17b cut M5.2**: every hull checks out on its first
                 // sealed profile, never switched.
                 card_profile: crate::arena::card::ActiveProfile::FIRST,
-                // Doc 21 cut G.12a (Q-21-9): every seat starts weapons free.
-                weapons_hold: false,
+                // Doc 21 cut G.12a (Q-21-9): every seat starts weapons free in the
+                // simulator; doc 32 Q-CF-41: an IC field opens every seat at HOLD.
+                weapons_hold: host.weapons_hold,
                 unit: unit.unit,
                 condition,
                 lock: None,

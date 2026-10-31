@@ -695,6 +695,32 @@ mod tests {
         );
     }
 
+    /// **Doc 32 cut CF.6** (Q-CF-41): a delivered `HOLD FIRE` binds the mind's own shots from
+    /// the moment the command lands — the pulse head the host's message is applied at — over
+    /// the seat's gate, and a later order without it frees them again.
+    #[test]
+    fn cf6_a_delivered_hold_fire_binds_the_minds_shots_from_the_pulse_it_lands() {
+        let mut arena = field();
+        assert!(arena.apply_detachment_control(control(1, 1)));
+        let mut engage = command(1, 1, 1);
+        engage.directive.as_mut().unwrap().objective = Objective::Engage { target_hint: None };
+        assert_eq!(
+            issue(&mut arena, engage.clone()),
+            IntentOutcome::AppliedContinuous
+        );
+        assert!(!arena.holds_fire(MEMBER), "an ENGAGE leaves the mind free");
+        let mut hold = engage.clone();
+        hold.sequence = 2;
+        hold.directive.as_mut().unwrap().constraints.hold_fire = true;
+        assert_eq!(issue(&mut arena, hold), IntentOutcome::AppliedContinuous);
+        assert!(arena.holds_fire(MEMBER), "HOLD FIRE binds at once");
+        assert!(held(&arena).is_some_and(|order| order.hold_fire));
+        let mut free = engage;
+        free.sequence = 3;
+        assert_eq!(issue(&mut arena, free), IntentOutcome::AppliedContinuous);
+        assert!(!arena.holds_fire(MEMBER), "a fresh ENGAGE frees it");
+    }
+
     #[test]
     fn dt_native_mind_executes_standing_objective_and_expires_finite_order() {
         let mut arena = field();

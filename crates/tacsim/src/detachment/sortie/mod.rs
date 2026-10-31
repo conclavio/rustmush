@@ -16,7 +16,7 @@ pub(crate) mod work;
 pub(crate) use commands::{SWITCHES, command, handles, id as operation_id, recover_after_exit};
 pub use field::mission_binding;
 pub(crate) use field_commands::{field_order, field_response};
-pub use field_orders::{FieldObjective, FieldOrders, FieldPayload};
+pub use field_orders::{EngageAt, FieldObjective, FieldOrders, FieldPayload};
 pub use model::{Flight, FlightClose, FlightKey, OperationId, OperationRecord, Phase, UnitHead};
 pub use runtime::SortieHandles;
 pub use runtime::transport_action_ref;

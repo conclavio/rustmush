@@ -182,6 +182,18 @@ pub(crate) fn entrants(ctx: &Ctx<'_>, entry: &CanonicalId, units: &[ObjId]) -> V
                     aboard: Vec::new(),
                 };
             }
+            // A fixture raider's hull: its leader's party (doc 32 cut CF.6, Q-CF-44).
+            if let Some(leader) = super::raiders::leader_of(ctx.w, *unit) {
+                return Entrant {
+                    unit: *unit,
+                    key: PartyKey::Fixture { leader },
+                    leader: Some(leader),
+                    owner: Some(leader),
+                    pilot,
+                    epoch: None,
+                    aboard: Vec::new(),
+                };
+            }
             let record = rig_record(ctx, *unit);
             let operator = record
                 .as_ref()

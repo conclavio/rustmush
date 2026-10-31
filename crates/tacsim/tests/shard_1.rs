@@ -35,6 +35,8 @@ mod driving;
 mod field_carrier;
 #[path = "shard_1/field_host.rs"]
 mod field_host;
+#[path = "shard_1/field_raiders.rs"]
+mod field_raiders;
 #[path = "shard_1/hulls.rs"]
 mod hulls;
 #[path = "shard_1/knowing.rs"]

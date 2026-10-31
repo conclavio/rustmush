@@ -440,10 +440,12 @@ fn custody(
             *next = next.saturating_add(1);
             *next
         };
-        let controller = if entrant.pilot.is_some() {
-            Controller::Pilot
-        } else {
-            Controller::Mind
+        // A hired NPC in the seat flies the doctrine under its delivered orders (doc 32 cut CF.6,
+        // Q-CF-42): its hull is the mind's, and its seat stays bound below so its own frame —
+        // what the NPC sees — reaches the host's executor (`super::orders`).
+        let controller = match &entrant.pilot {
+            Some((pilot, _)) if !super::orders::is_npc(ctx.w, *pilot) => Controller::Pilot,
+            _ => Controller::Mind,
         };
         let weapons = crate::match_::weapon_summaries(&catalog, &cells);
         let rule_weapons: Vec<crate::arena::rules::RuleWeapon> = weapons
@@ -508,6 +510,13 @@ fn custody(
     {
         marks.push((by, of, Mark::Hostile));
     }
+    // A fixture raider's leader holds a standing Hostile mark on every other party (doc 32 cut
+    // CF.6, Q-CF-44): the raider fights whoever it finds, with no player connected.
+    for raider in parties.iter().filter(|party| party.key.is_fixture()) {
+        for other in parties.iter().filter(|other| other.party != raider.party) {
+            marks.push((raider.party, other.party, Mark::Hostile));
+        }
+    }
     let friends = parties::friends(entrants, parties);
     let seed = crate::match_::seed_for(
         crate::arena_task::MatchId(u64::from(field.ordinal)),
@@ -526,6 +535,7 @@ fn custody(
             friends,
             end: EndCondition::Host,
             every_class: true,
+            weapons_hold: true,
         },
     })
 }
