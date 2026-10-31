@@ -202,7 +202,7 @@ pub fn server_modules_with_launch(
     )
 }
 
-#[derive(Clone, Copy)]
+#[derive(Clone)]
 enum TacsimComposition<'a> {
     Absent,
     /// The layer, its tactics catalogue the shipped content's (`None`) or the
