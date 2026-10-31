@@ -658,9 +658,11 @@ wipe, read the date the fresh world came up with through `time` (or
 `@tacsim/time show` for the generation and its rate).
 
 **Outages (W-clock, doc 27).** The running world durably checkpoints its IC
-clock every `[game].world_clock_checkpoint_s` real seconds (default `10`) —
-the moment it was last known to be running — and every boot measures its
-outage from the last checkpoint on the store. Lost wall time under
+clock in every batch it commits and, when idle, every
+`[game].world_clock_checkpoint_s` real seconds (default `10`) — the last
+second it is known to have reached — and every boot measures its outage from
+the last checkpoint on the store and resumes the IC clock exactly there, never
+before a write the store holds. Lost wall time under
 `outage_freeze_threshold_s` (default `30`) re-anchors the clock silently with
 no IC catch-up; at or above it the world freezes at the pre-outage checkpoint
 for `outage_countdown_s` (default `300`), warns connected players at 5, 2 and
@@ -668,8 +670,8 @@ for `outage_countdown_s` (default `300`), warns connected players at 5, 2 and
 `boot_outage=` on the `world timeline installed` line: `NoPriorCheckpoint` is
 a fresh store's first boot and nothing else (every boot writes its checkpoint;
 until 2026-10-31 a fresh store never did, and every restart read as a first
-boot). The measured downtime over-reads by up to one cadence, so keep the
-cadence well under the threshold; the boot warns when it is not. A frozen
+boot). An idle world's measured downtime over-reads by up to one cadence, so
+keep the cadence well under the threshold; the boot warns when it is not. A frozen
 clock, deliberate (`@tacsim/time freeze`) or in a countdown, is never
 checkpointed, so a restart during a countdown restarts the countdown in full.
 

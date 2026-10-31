@@ -134,8 +134,9 @@ starter_area = true                # (S1) apply the shipped starter area — the
 # outage_freeze_threshold_s = 30   # (W-clock, doc 27) lost wall-clock seconds at or above which a restart freezes the
 #                                  # IC clock for the recovery countdown; under it the world re-anchors silently
 # outage_countdown_s = 300         # (W-clock) the recovery countdown in real seconds: 5m / 2m / 1m warnings, then unfreeze
-# world_clock_checkpoint_s = 10    # (W-clock) how often the running world durably checkpoints its IC clock; a restart
-#                                  # is measured from the last checkpoint, so keep this well under the threshold
+# world_clock_checkpoint_s = 10    # (W-clock) how often an idle world durably checkpoints its IC clock (every batch it
+#                                  # commits carries one); a restart is measured from the last checkpoint, so keep
+#                                  # this well under the threshold
 
 # (M5) The scripting and weather modules are compiled in and always active.
 # mush-script's sandbox budgets and mush-weather's tick/ambient knobs use

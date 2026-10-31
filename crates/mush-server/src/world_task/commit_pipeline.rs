@@ -223,6 +223,14 @@ pub(super) async fn flush_dirty(
     if dirty.is_empty() && module_ops.is_empty() && reemit.is_empty() {
         return FlushOutcome::Clean;
     }
+    // W-clock / Q-R4: the batch carries the world-clock checkpoint of its own
+    // second, ahead of the writes it covers, so the persisted checkpoint is
+    // never earlier than an IC stamp the store holds and a restart re-anchors
+    // the clock at or after every persisted write (one op per second at most,
+    // none while frozen; `world_clock_checkpoint_rider`).
+    if let Some(op) = world_clock_checkpoint_rider(engine) {
+        module_ops.insert(0, op);
+    }
     // `destroy` dirties everything it marks GOING, and every flush sweeps,
     // so scanning the dirty set finds every husk — never the whole world.
     if dirty.iter().any(|&id| {
