@@ -184,7 +184,7 @@ async fn content_studio_ipc_roundtrip_over_split_gateway_link() {
     let npcs = catalog["npcs"].as_array().expect("npcs array");
     let goods = catalog["goods"].as_array().expect("goods array");
     assert_eq!(ports.len(), 11, "expected 11 real corridor ports");
-    assert_eq!(npcs.len(), 56, "expected 56 total seeded NPCs");
+    assert_eq!(npcs.len(), 57, "expected 57 total seeded NPCs");
     assert_eq!(goods.len(), 12, "expected 12 goods from goods.json");
 
     // 2. Read tacsim.crew.ceres over the split IPC boundary
@@ -208,7 +208,7 @@ async fn content_studio_ipc_roundtrip_over_split_gateway_link() {
         panic!("expected Document response, got {read_resp:?}");
     };
     assert_eq!(id, "tacsim.crew.ceres");
-    assert_eq!(latched_version, Some(1));
+    assert_eq!(latched_version, Some(2));
 
     // 3. Assist over the split IPC boundary
     let assist_resp = invoke_over_ipc(
@@ -235,8 +235,8 @@ async fn content_studio_ipc_roundtrip_over_split_gateway_link() {
         .to_string();
     assert!(!assisted_speech.is_empty());
 
-    // 4. Bump version to 2, relocate npc.ilya_mendes to room.c15_maintenance, and Check
-    content["manifest"]["version"] = json!(2);
+    // 4. Bump version to 3, relocate npc.ilya_mendes to room.c15_maintenance, and Check
+    content["manifest"]["version"] = json!(3);
     content["entries"]["npc.ilya_mendes"]["def"]["room"] = json!("room.c15_maintenance");
     content["entries"]["npc.ilya_mendes"]["def"]["profile"]["speech_style"] =
         Value::String(assisted_speech.clone());
@@ -291,7 +291,7 @@ async fn content_studio_ipc_roundtrip_over_split_gateway_link() {
         pub_refusals.is_empty(),
         "publish refusals: {pub_refusals:?}"
     );
-    assert_eq!(version, 2);
+    assert_eq!(version, 3);
     assert!(
         summary.contains("1 relocated"),
         "expected summary to report NPC relocation, got: {summary}"
@@ -359,7 +359,7 @@ async fn content_studio_publish_and_npc_relocation_survive_restart() {
         .expect("Read tacsim.crew.ceres");
 
     // Bump version to 2 and move npc.ilya_mendes from room.c10_slack_line to room.c15_maintenance
-    doc["manifest"]["version"] = json!(2);
+    doc["manifest"]["version"] = json!(3);
     doc["entries"]["npc.ilya_mendes"]["def"]["room"] = json!("room.c15_maintenance");
     doc["entries"]["npc.ilya_mendes"]["def"]["profile"]["speech_style"] =
         json!("Short, clipped maintenance shorthand.");
@@ -391,12 +391,12 @@ async fn content_studio_publish_and_npc_relocation_survive_restart() {
                     }),
             } => {
                 assert!(refusals.is_empty(), "publish refusals: {refusals:?}");
-                assert_eq!(version, 2);
+                assert_eq!(version, 3);
                 Some(summary)
             }
             _ => None,
         })
-        .expect("Publish tacsim.crew.ceres@2");
+        .expect("Publish tacsim.crew.ceres@3");
     assert!(pub_summary.contains("1 relocated"), "{pub_summary}");
 
     // Flush to persistent store
@@ -426,8 +426,8 @@ async fn content_studio_publish_and_npc_relocation_survive_restart() {
     let applied = cs.latches.applied(&crew_cid).expect("crew latch");
     assert_eq!(
         applied.version(),
-        2,
-        "latched version 2 must survive restart without downgrade"
+        3,
+        "latched version 3 must survive restart without downgrade"
     );
 
     let ilya_cid = CanonicalId::new("npc.ilya_mendes").unwrap();
