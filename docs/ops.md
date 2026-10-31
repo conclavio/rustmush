@@ -2668,9 +2668,11 @@ gateway's `SIGHUP` is reserved (doc 33 §4.5): logged, ignored. Full walkthrough
 `deploy/dev1-split/README.md`.
 
 **Stopping one half stops that half.** `systemctl stop <name>mush-gateway`
-stops the gateway only; the server unit keeps running the world (until doc 33
-GG.2 lands the server still exits on the gateway's EOF and its unit brings it
-back, so a gateway restart bounces the server too, briefly). `systemctl stop`
+stops the gateway only; the server unit keeps running the world (doc 33 GG.2:
+the gateway's link ending detaches that gateway's connections, which go
+link-dead in the world and are reaped after `[game].linkdead_grace_s` by the
+server itself; the gateway that comes back dials in as a new link and its
+players log in again). `systemctl stop`
 / `restart <name>mush-server` SIGTERMs the server directly, which drains the
 world (the world task, the store writer's flush) and exits zero; the gateway
 sees EOF and holds. Before 2026-10-22 the gateway had no `SIGTERM` handler and

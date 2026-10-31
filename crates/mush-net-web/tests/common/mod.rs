@@ -39,6 +39,9 @@ pub struct MockState {
     /// [`TokenVerdict::Unavailable`], whatever token is presented (a Redis
     /// restart, a reconnecting pool).
     pub token_store_down: bool,
+    /// The bit the mock's gateway generation sets on every connection id
+    /// (doc 33 §4.3); zero for a gateway of no generation.
+    pub conn_id_bit: u64,
     pub login_err: Option<LoginErr>,
     pub register_result: Option<Result<LoginOk, RegisterErr>>,
     pub connect_err: Option<AttachErr>,
@@ -279,6 +282,10 @@ impl WebHooks for MockWebHooks {
 
     fn metrics(&self) -> Arc<mush_net_web::Metrics> {
         Arc::clone(&self.metrics)
+    }
+
+    fn conn_id_bit(&self) -> u64 {
+        self.state().conn_id_bit
     }
 }
 

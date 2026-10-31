@@ -1222,7 +1222,10 @@ async fn stop_ledger_archive_joins_the_pass_rather_than_detaching_it() {
 /// A tail that awaited the pass WITHOUT cancelling it would hang here forever,
 /// because the pass has no shutdown seam: this boots the split server with the
 /// archive tier armed (the `open_store` branch — no caller-supplied store), lets
-/// a gateway connect and disconnect, and requires `serve` to return.
+/// a gateway connect and send the operator shutdown, and requires `serve` to
+/// return. (Until doc 33 GG.2 the gateway's EOF was the shutdown; now a link's
+/// end detaches only that link's connections and the world runs on, so the
+/// stop has to be asked for.)
 #[tokio::test]
 async fn the_split_shutdown_awaits_the_archive_job() {
     let mut cfg = stock_config("shutdown");
@@ -1246,21 +1249,36 @@ async fn the_split_shutdown_awaits_the_archive_job() {
         .expect("the split server bound its socket")
         .expect("the bound endpoint");
 
-    let (reader, writer) = mush_ipc::connect(&endpoint).await.unwrap();
+    let (reader, mut writer) = mush_ipc::connect(&endpoint).await.unwrap();
     let mut frames = mush_ipc::FrameReader::new(reader);
     assert!(matches!(
         frames.read::<mush_ipc::ToGateway>().await.unwrap().unwrap(),
         mush_ipc::ToGateway::Hello { .. }
     ));
-    // Clean EOF: the boundary is gone, so the server shuts the world down and
-    // walks its whole tail — including the archive join.
-    drop(frames);
-    drop(writer);
+    // The operator shutdown over the link: the server shuts the world down
+    // and walks its whole tail — including the archive join.
+    mush_ipc::write_frame(
+        &mut writer,
+        &mush_ipc::ToServer::Hello {
+            proto: mush_ipc::IPC_VERSION,
+            min_proto: mush_ipc::IPC_MIN_PROTO,
+        },
+    )
+    .await
+    .unwrap();
+    mush_ipc::write_frame(
+        &mut writer,
+        &mush_ipc::ToServer::Control(mush_core::ControlMsg::Shutdown),
+    )
+    .await
+    .unwrap();
 
     done_rx
         .recv_timeout(Duration::from_secs(60))
         .expect("the shutdown tail must not wedge on the never-ending archive pass")
-        .expect("a clean EOF is an ordinary exit");
+        .expect("an operator shutdown is an ordinary exit");
+    drop(frames);
+    drop(writer);
     let _ = std::fs::remove_dir_all(&data_dir);
 }
 
@@ -1684,11 +1702,27 @@ async fn a_caller_supplied_store_says_the_archive_tier_is_ignored() {
          the boot logged: {logged}"
     );
 
-    // Clean EOF ends the server, so the thread and its scratch dir go away.
-    let (reader, writer) = mush_ipc::connect(&endpoint).await.unwrap();
+    // The operator shutdown over a link ends the server (a link's EOF no
+    // longer does, doc 33 GG.2), so the thread and its scratch dir go away.
+    let (reader, mut writer) = mush_ipc::connect(&endpoint).await.unwrap();
+    mush_ipc::write_frame(
+        &mut writer,
+        &mush_ipc::ToServer::Hello {
+            proto: mush_ipc::IPC_VERSION,
+            min_proto: mush_ipc::IPC_MIN_PROTO,
+        },
+    )
+    .await
+    .unwrap();
+    mush_ipc::write_frame(
+        &mut writer,
+        &mush_ipc::ToServer::Control(mush_core::ControlMsg::Shutdown),
+    )
+    .await
+    .unwrap();
+    let _ = done_rx.recv_timeout(Duration::from_secs(60));
     drop(reader);
     drop(writer);
-    let _ = done_rx.recv_timeout(Duration::from_secs(60));
     let _ = std::fs::remove_dir_all(&data_dir);
 }
 

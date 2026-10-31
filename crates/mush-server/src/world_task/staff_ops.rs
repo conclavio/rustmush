@@ -504,6 +504,8 @@ pub struct StatsExtra {
     pub ipc_hw_to_server: u64,
     /// High-water mark of the server->gateway (`to_gw`) queue depth (M18).
     pub ipc_hw_to_gw: u64,
+    /// Gateway links open right now (doc 33 §4.3; 0 in the all-in-one).
+    pub ipc_links: u64,
     /// Today's LLM spend, when a service is wired.
     pub llm: Option<LlmStatsLine>,
     /// J1 (doc 12 D-12-1): the economy journal — entries held, posted per hour
@@ -582,6 +584,7 @@ pub(super) fn stats_extra(metrics: &Metrics, llm: Option<&Arc<LlmService>>) -> S
         ipc_to_gw_overflow: snap.ipc_to_gw_overflow_total,
         ipc_hw_to_server: snap.ipc_queue_high_water_to_server,
         ipc_hw_to_gw: snap.ipc_queue_high_water_to_gw,
+        ipc_links: snap.ipc_links,
         llm: llm_line,
         economy_journal: [
             snap.economy_journal_entries,
@@ -693,7 +696,9 @@ pub fn render_stats(
         extra.npc_decisions[0], extra.npc_decisions[1], extra.npc_decisions[2]
     ));
     text.push_str(&format!(
-        "\nIPC boundary: {} frames shed, {} write timeouts, {} to_gw overflows; high-water to_server {}, to_gw {}",
+        "\nIPC boundary: {} gateway link{}; {} frames shed, {} write timeouts, {} to_gw overflows; high-water to_server {}, to_gw {}",
+        extra.ipc_links,
+        if extra.ipc_links == 1 { "" } else { "s" },
         extra.ipc_frames_shed,
         extra.ipc_write_timeouts,
         extra.ipc_to_gw_overflow,

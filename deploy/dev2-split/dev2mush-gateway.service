@@ -43,9 +43,9 @@ Restart=on-failure
 RestartSec=5
 # One process now, with no child to sweep: systemd's default KillMode
 # (control-group) and stop timeout are right. `systemctl stop dev2mush-gateway`
-# stops ONLY the gateway; the server keeps running under its own unit. (Until
-# doc 33 GG.2 the server still exits when the boundary closes and its unit
-# brings it straight back.)
+# stops ONLY the gateway; the server keeps running under its own unit, and the
+# world with it (doc 33 GG.2: the gateway's connections go link-dead there,
+# nothing else happens).
 
 # No RuntimeDirectory: /run/rustmush-dev2 and the socket in it belong to
 # dev2mush-server.service. Connecting to a unix socket needs no write access

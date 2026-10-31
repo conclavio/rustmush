@@ -41,17 +41,18 @@ use std::time::Duration;
 
 use mush_config::config::{Config, StoreBackend};
 use mush_config::exit::{ExitClass, ExitFailure};
+use mush_config::generation::Generation;
 use mush_config::ipguard::IpGuard;
 use mush_config::metrics::Metrics;
-use mush_core::{ControlMsg, Inbound, OfferRouteTable, OfferSubmission};
+use mush_core::{ControlMsg, DisconnectKind, Inbound, ObjId, OfferRouteTable, OfferSubmission};
 use mush_ipc::{
-    BoxWrite, EmissionGate, FrameReader, GatewayInput, GatewayRequest, GatewayRequestDisposition,
-    IPC_MIN_PROTO, IPC_PRE_HELLO_VERSION, IPC_VERSION, IPC_VERSION_SKEW_MARKER, IpcEndpoint,
-    LegalActionsError, LinkVersion, MAX_IN_FLIGHT_GATEWAY_INPUT_BYTES,
-    MAX_IN_FLIGHT_GATEWAY_INPUT_BYTES_PER_CONNECTION, MAX_IN_FLIGHT_GATEWAY_INPUTS,
-    MAX_IN_FLIGHT_GATEWAY_INPUTS_PER_CONNECTION, MAX_IN_FLIGHT_LIFECYCLE_OBLIGATIONS,
-    MAX_IN_FLIGHT_SERVICE_REQUESTS, ProtoWindow, RequestUid, ServiceReq, ServiceResp, ToGateway,
-    ToServer,
+    BoxRead, BoxWrite, DetachCause, EmissionGate, FrameReader, GatewayInput, GatewayRequest,
+    GatewayRequestDisposition, IPC_MIN_PROTO, IPC_PRE_HELLO_VERSION, IPC_VERSION,
+    IPC_VERSION_SKEW_MARKER, IpcEndpoint, IpcListener, LegalActionsError, LinkVersion,
+    MAX_IN_FLIGHT_GATEWAY_INPUT_BYTES, MAX_IN_FLIGHT_GATEWAY_INPUT_BYTES_PER_CONNECTION,
+    MAX_IN_FLIGHT_GATEWAY_INPUTS, MAX_IN_FLIGHT_GATEWAY_INPUTS_PER_CONNECTION,
+    MAX_IN_FLIGHT_LIFECYCLE_OBLIGATIONS, MAX_IN_FLIGHT_SERVICE_REQUESTS, ProtoWindow, RequestUid,
+    ServiceReq, ServiceResp, ToGateway, ToServer,
 };
 use mush_store::{BundleStatus, InMemoryStore, ObjectStore, RedisStore};
 use tokio::sync::mpsc;
@@ -82,6 +83,7 @@ pub mod durable_outbox;
 pub mod gateway_link;
 pub mod gateway_sink;
 pub mod help;
+pub mod links;
 pub mod modules;
 // The composition adapters live in `mush-composition` and `tacsim::composition`;
 // the paths the integration tests use keep resolving.
@@ -101,7 +103,8 @@ pub mod world_task;
 use crate::action_coordinator::{
     ActionCoordinator, ActionPreflight, MAX_PREFLIGHT_ATTEMPTS, PREFLIGHT_RETRY_WINDOW,
 };
-use crate::gateway_sink::SocketSink;
+use crate::gateway_sink::{LinkSink, SocketSink};
+use crate::links::{Claim, Link, LinkId, LinkRegistry, Release};
 use crate::persist::AuthoritativeCommitFailure;
 use crate::persist::WorldExitStatus;
 use crate::quarantine::QuarantineSpool;
@@ -110,6 +113,7 @@ use crate::world_task::{
 };
 
 pub use gateway_sink::{GatewaySink, SocketSink as ServerSocketSink};
+pub use links::IPC_DUPLICATE_CONN_ID_MARKER;
 
 /// WS01-S8's world-turn fault arming, for a supervised proof whose server
 /// halves are threads in the test process. Feature-gated; no shipped build
@@ -319,28 +323,34 @@ pub async fn serve_classified(
     // advertises.
     let (features, panels) = boot::build_hello_manifest(&booted.engine);
 
-    // The server -> gateway boundary: every `ToGateway` the world loop (and the
-    // request handlers) produce is queued here and drained to the socket by the
-    // writer task. BOUNDED (M18, `[ipc].to_gw_cap`): every `to_gw` frame is
-    // must-deliver, so it is NEVER per-message dropped — on overflow the whole
-    // boundary is torn down (the gateway's re-attach re-renders every
-    // session, healing the loss). The world loop's `transmit` still never awaits
-    // the boundary (D4): the [`SocketSink`] uses `try_send`, and the teardown
-    // decision + socket drop live in the writer task, which waits on `teardown`.
-    // The forked server holds no `SessionManager` — the gateway process owns it —
-    // so the world loop's session control (`@boot`, `@newpassword`) goes out as
-    // fire-and-forget `ToGateway` frames through the [`SocketSink`] too.
+    // The server -> gateway boundary (doc 33 §4.3, cut GG.2): every gateway
+    // that connects is a LINK of its own — its own reader, writer, Hello,
+    // negotiated version and bounded outbox (`[ipc].to_gw_cap`; M18: every
+    // `to_gw` frame is must-deliver, so it is NEVER per-message dropped — on
+    // overflow THAT link is torn down and its gateway's re-attach re-renders
+    // its sessions). The world loop holds ONE [`SocketSink`] over the link
+    // registry and routes each message by its target: a connection-addressed
+    // frame to the link that owns the connection, a character- or
+    // world-addressed one to every link. The world loop still never awaits the
+    // boundary (D4): each link's [`LinkSink`] uses `try_send`, and the teardown
+    // decision + socket drop live in that link's writer task. The forked server
+    // holds no `SessionManager` — the gateway processes own theirs — so the
+    // world loop's session control (`@boot`, `@newpassword`) goes out as
+    // fire-and-forget `ToGateway` frames to every link too.
     let to_gw_cap = config.ipc_to_gw_cap();
     let write_timeout = Duration::from_millis(config.ipc_write_timeout_ms());
     let high_water_pct = config.ipc_high_water_warn_pct();
-    let (to_gw_tx, to_gw_rx) = mpsc::channel::<ToGateway>(to_gw_cap);
+    // A link that ends leaves its connections' actors link-dead; the server
+    // reaps them after the same grace the gateway would have given them.
+    let linkdead_grace = Duration::from_secs(config.game.linkdead_grace_s);
 
     let guard = Arc::new(IpGuard::new());
     // The one metrics registry of this process (PLAN "Observability"): the
-    // `SocketSink`, the writer and reader loops, the archive pass and the world
-    // loop all stamp it, and `@stats` reads it back. It used to be the throwaway
-    // registry the in-memory deps made, shared by accident; now it is made here
-    // and shared on purpose (a parity test counts this line: one registry).
+    // link registry and sinks, every link's writer and reader, the archive
+    // pass and the world loop all stamp it, and `@stats` reads it back. It used
+    // to be the throwaway registry the in-memory deps made, shared by accident;
+    // now it is made here and shared on purpose (a parity test counts this
+    // line: one registry).
     let metrics = Arc::new(Metrics::new());
     // 16b cut AC.1 (16c B-82): the world task's dependencies through the ONE
     // production constructor `mushd::main` calls too — the booted staff queue
@@ -365,20 +375,12 @@ pub async fn serve_classified(
         ..
     } = booted;
 
-    // `teardown` is the one-shot the [`SocketSink`] notifies on overflow and the
-    // writer waits on.
-    let teardown = Arc::new(Notify::new());
-    let sink = SocketSink::new(
-        to_gw_tx.clone(),
-        Arc::clone(&metrics),
-        Arc::clone(&teardown),
-        to_gw_cap,
-        high_water_pct,
-    );
-    // The reader's detached `Reply` sends ride the SAME sink (shared teardown +
-    // overflow counter) so a full channel tears the boundary down there too — a
-    // dropped `Reply` would hang its `ServiceReq` oneshot (I1).
-    let reply_sink = sink.clone();
+    // The link registry (`links.rs`): every gateway connected to this server,
+    // and which connections each one owns. The world's sink routes over it;
+    // each link's reader books into it; the accept loop opens links in it and
+    // each link's supervisor closes its own.
+    let links = Arc::new(LinkRegistry::new(Arc::clone(&metrics)));
+    let sink = SocketSink::new(Arc::clone(&links));
     let ingress_store = Arc::clone(&store);
     // J5: the nightly ledger archive pass, once a UTC day inside its window,
     // beside the store writer and never on the world task — the WRITE/purge half
@@ -411,7 +413,7 @@ pub async fn serve_classified(
         decision_workers,
         move |_weak_inbound| {
             // The forked server never polices (it owns no connection buffers), so it
-            // ignores the loop's inbound weak sender and just serializes to the boundary.
+            // ignores the loop's inbound weak sender and just serializes to the links.
             Arc::new(sink)
         },
     )?;
@@ -421,9 +423,9 @@ pub async fn serve_classified(
     let outbox_join = handles.outbox_join;
     // 16b cut T.2 (T1): the arena tasks, stopped and joined in the tail below.
     let arenas = handles.arenas;
-    // The reader's shutdown-provenance source. The world loop sets this as the
-    // LAST statement of its own function — before its receiver drops — so a
-    // reader that finds the channel closed can already tell an ordinary exit
+    // Each reader's shutdown-provenance source. The world loop sets this as
+    // the LAST statement of its own function — before its receiver drops — so
+    // a reader that finds the channel closed can already tell an ordinary exit
     // from a fault without waiting on the join handle it does not own.
     let world_exit = handles.world_exit.clone();
 
@@ -433,9 +435,9 @@ pub async fn serve_classified(
     let actual = listener
         .tcp_addr()
         .map_or_else(|| endpoint.clone(), IpcEndpoint::Tcp);
-    tracing::info!(ipc = %listener.describe(), "mush-server up; awaiting gateway");
+    tracing::info!(ipc = %listener.describe(), "mush-server up; accepting gateways");
     // Doc 33 GG.1: the server is its own `Type=notify` unit. READY=1 goes out
-    // the moment the socket is bound — the gateway can dial from here on —
+    // the moment the socket is bound — a gateway can dial from here on —
     // and never before it (29a §7 H2/H3: a boot that dies first must be a
     // failed start, not a started unit). A no-op outside systemd.
     mush_drain::notify::ready();
@@ -443,111 +445,87 @@ pub async fn serve_classified(
         let _ = tx.send(actual);
     }
 
-    // One gateway connection per boundary (M16b; M16c adds restart/re-attach).
-    let (reader_half, writer_half) = listener
-        .accept()
-        .await
-        .map_err(|e| format!("ipc accept: {e}"))?;
-    tracing::info!("gateway connected");
-
-    // The protocol version this link's gateway announces (doc 33 §4.1): the
-    // reader records it from the first frame, the writer's emission gate reads
-    // it on every frame, so a frame the gateway cannot decode is never sent.
-    let link_version = LinkVersion::unknown();
-
-    // Writer: greet (with the panel manifest), then drain the world's output to
-    // the socket. Exits when every `to_gw_tx` (held by the world loop + request
-    // handlers) is dropped, OR early on a per-frame write timeout / a `teardown`
-    // notification (a `to_gw` overflow) — either drops the writer's socket half,
-    // EOFing the boundary: this process exits, its unit restarts it, and the
-    // gateway re-attaches every held session (M18; doc 33 GG.1).
-    let ipc_writer_join = tokio::spawn(writer_loop(
-        writer_half,
-        to_gw_rx,
-        EmissionGate::new(link_version.clone()),
-        features,
-        panels,
-        Arc::clone(&metrics),
-        Arc::clone(&teardown),
-        write_timeout,
-    ));
-
-    // Reader: pump the gateway's `ToServer` traffic into the world. Runs until
-    // the gateway closes the boundary (clean EOF), a protocol fault, or the
-    // world stops accepting — a closed world channel is permanent, so the
-    // reader refuses to keep answering frames it can never deliver.
-    //
-    // BOXED, therefore pinned: the world's own completion is raced against it
-    // below, and a `select!` that moved the reader between polls could drop a
-    // half-read frame mid-await. Owning the box also lets this function DROP
-    // the reader — and with it the `WorldHandle` clone and the `to_gw` sender
-    // inside `reply_sink` — before the joins below wait for those very channels
-    // to close.
-    let mut reader = Box::pin(reader_loop(
-        reader_half,
-        world.clone(),
-        ingress_store,
-        offer_routes,
-        reply_sink,
-        &metrics,
-        world_exit,
-        link_version,
+    // The accept loop (doc 33 §4.3, GG.2): every gateway that connects is
+    // served as a link of its own for as long as it stays, and the server
+    // outlives every one of them. A link's end detaches that link's
+    // connections — each as if it had sent `ConnDown { reason: Lost }` — and
+    // nothing else: the world runs on, and the next gateway (the same one
+    // restarted, or the other generation) re-announces what it holds. Until
+    // this cut the server accepted ONE gateway and a gateway EOF was its cue
+    // to shut the world down; now the operator stops it with `systemctl stop`
+    // (the signal arm below) or the in-game shutdown.
+    let tasks = Arc::new(LinkTasks::default());
+    let mut accept = tokio::spawn(accept_links(
+        listener,
+        LinkEnv {
+            links: Arc::clone(&links),
+            tasks: Arc::clone(&tasks),
+            world: world.clone(),
+            store: ingress_store,
+            offer_routes,
+            metrics: Arc::clone(&metrics),
+            world_exit,
+            features,
+            panels,
+            to_gw_cap,
+            high_water_pct,
+            write_timeout,
+            linkdead_grace,
+        },
     ));
     let mut world_join = world_join;
 
-    // The world half of the fork is only useful while the world task is alive.
-    // Before this race the reader was awaited to completion first, so a world
-    // that died under a still-connected gateway left this process up with its
-    // IPC listener bound, dropping every frame forever and giving systemd
-    // nothing to restart (D2). Whichever side ends first ends service.
-    //
-    // The third arm is the unit's own stop (doc 33 GG.1): `systemctl stop` /
-    // `restart` is a SIGTERM to THIS process now, where it used to be an EOF
-    // from a gateway closing the boundary. Without the arm the signal's default
-    // action killed the server mid-write; with it a stop is the same orderly
-    // drain the EOF path runs. `mushd` spends the same future the same way.
+    // Whichever ends first ends service. The world task ending is a fault or
+    // an in-game `@shutdown` (D2: a world that died must not leave this
+    // process up with its listener bound, dropping every frame forever and
+    // giving systemd nothing to restart). The unit's own stop (doc 33 GG.1) is
+    // a SIGTERM to THIS process, and the same orderly drain. The accept task
+    // never returns on its own; if it does (a listener broken for good) the
+    // server would run a world nobody can reach, so that is a stop too, and
+    // a loud one. The signal handler is installed here, right after the bind,
+    // so a `systemctl stop` before any gateway has dialed is an orderly exit.
     let end = tokio::select! {
-        reader_result = &mut reader => BoundaryEnd::Reader(reader_result),
         joined = &mut world_join => BoundaryEnd::World(joined),
         signal = mush_config::signals::shutdown_signal() => BoundaryEnd::Signal(signal),
+        ended = &mut accept => BoundaryEnd::AcceptEnded(ended),
     };
     let world_result = match end {
-        BoundaryEnd::Reader(reader_result) => {
-            match reader_result {
-                Ok(()) => tracing::info!("gateway disconnected (clean EOF)"),
-                // A reader that ended because the world is gone already logged
-                // that at its own provenance severity; repeating it as a warn
-                // would make every ordinary `@shutdown` look like a fault.
-                Err(e) if e.kind() == std::io::ErrorKind::BrokenPipe => {
-                    tracing::info!(error = %e, "ipc reader ended with the world already gone");
-                }
-                Err(e) => tracing::warn!(error = %e, "ipc reader ended on error"),
-            }
-            // Boundary gone: shut the world down cleanly, then let the writer
-            // flush its Bye and exit (it stops when the world drops its
-            // `to_gw_tx` clones).
+        BoundaryEnd::Signal(signal) => {
+            tracing::info!(%signal, links = links.links(), "shutting down on signal");
+            // Every link's reader is dropped below, which EOFs each gateway
+            // into its gap; each gateway holds its connections and
+            // re-attaches when the unit is back.
             stop_world(&world, &mut world_join).await
         }
-        BoundaryEnd::Signal(signal) => {
-            tracing::info!(%signal, "shutting down on signal");
-            // The same drain as a closed boundary. The reader is dropped
-            // below, which EOFs the gateway into its gap; the gateway holds
-            // every connection and re-attaches when the unit is back.
+        BoundaryEnd::AcceptEnded(ended) => {
+            match ended {
+                Ok(()) => tracing::error!("the ipc accept loop ended; shutting down"),
+                Err(e) => tracing::error!(error = %e, "the ipc accept loop died; shutting down"),
+            }
             stop_world(&world, &mut world_join).await
         }
         BoundaryEnd::World(joined) => {
-            // The world stopped under a live gateway. It is already gone, so
-            // this path sends NO second `ControlMsg::Shutdown`: the ordinary
-            // sequence above is the only one that ever issues it, and a second
-            // teardown here would race it.
-            tracing::info!("world task ended while the gateway was still connected");
+            // The world stopped under live links. It is already gone, so this
+            // path sends NO second `ControlMsg::Shutdown`: the two arms above
+            // are the only ones that ever issue it, and a second teardown here
+            // would race it.
+            tracing::info!(links = links.links(), "world task ended");
             Some(joined)
         }
     };
-    // Release the reader's captures before waiting on the channels they hold.
-    drop(reader);
-    drop(to_gw_tx);
+    // Stop taking gateways, then end every link: abort each reader (and the
+    // link supervisor around it — the world is stopping or stopped, so a
+    // link's end detaches nothing into it now) and drain the registry, so
+    // each writer sees its outbox close once the world's sink is gone, sends
+    // `Bye`, and ends. The writers are waited for in the tail, bounded.
+    accept.abort();
+    let _ = accept.await;
+    let link_tasks = tasks.take_all();
+    for (supervisor, _) in &link_tasks {
+        supervisor.abort();
+    }
     drop(world);
+    links.drain();
     // 16b cut T.2 (T1): the arena tasks, after the world has stopped (so nothing
     // is starting another match) and before the store writer's drain (an arena
     // task holds no store handle, so it is not something the writer waits for).
@@ -555,18 +533,30 @@ pub async fn serve_classified(
     world_task::arena_shutdown(arenas).await;
     let _ = outbox_join.await;
     // Keep custody of the actual persistence writer (distinct from the IPC
-    // writer above) and wait for it to drain before this runtime can return.
+    // writers above) and wait for it to drain before this runtime can return.
     // Detaching it here would let process teardown discard a batch after the
     // world believed shutdown sequencing had transferred custody.
     let _ = store_writer_join.await;
-    let _ = ipc_writer_join.await;
-    // The J5 pass is the fourth task this function owns, and it is joined like
-    // the other three. It has no shutdown seam of its own (it sleeps in a loop
+    // Each link's writer: it ends with its `Bye` once every holder of its
+    // outbox is gone (the registry drained above, its reader aborted, any
+    // request handler finished). A writer wedged on a peer that will not read
+    // is abandoned after the write timeout it is itself bounded by.
+    for (_, mut writer) in link_tasks {
+        if tokio::time::timeout(write_timeout.saturating_mul(2), &mut writer)
+            .await
+            .is_err()
+        {
+            tracing::warn!("a link writer did not end in time; aborting it");
+            writer.abort();
+        }
+    }
+    // The J5 pass is the last task this function owns, and it is joined like
+    // the others. It has no shutdown seam of its own (it sleeps in a loop
     // for the life of the process), so the join is a cancel-then-await; both
     // halves of a pass are idempotent, so a cancelled one costs the next night's
     // pass a re-copy and nothing else.
     boot::stop_ledger_archive(archive_job).await;
-    // Only now, with the outbox, the store writer, the IPC writer and the
+    // Only now, with the outbox, the store writer, the link writers and the
     // archive pass all joined, is the failure raised: an exit code is never
     // worth bypassing a
     // drain, and it is never raised by `process::exit`/`abort` from inside a
@@ -592,15 +582,251 @@ pub async fn serve_classified(
     Ok(())
 }
 
-/// Which half of the boundary ended first.
+/// What ended service.
 enum BoundaryEnd {
-    /// The gateway-facing reader returned (clean EOF, protocol fault, or a
-    /// world it can no longer reach).
-    Reader(std::io::Result<()>),
-    /// The world task's join handle resolved while the reader was still live.
+    /// The world task's join handle resolved (a fault, or the in-game
+    /// shutdown) while links were still live.
     World(Result<WorldOutcome, tokio::task::JoinError>),
     /// The operator (or the unit) asked this process to stop (doc 33 GG.1).
     Signal(mush_config::signals::ShutdownSignal),
+    /// The accept loop returned, which it never does on its own (doc 33 GG.2).
+    AcceptEnded(Result<(), tokio::task::JoinError>),
+}
+
+/// Between a failed `accept` and the next: long enough not to spin on an
+/// exhausted descriptor table, short enough that a gateway dialing through a
+/// transient fault is not kept waiting.
+const ACCEPT_RETRY: Duration = Duration::from_millis(250);
+
+/// How long a link's writer is given, after its reader ended, to drain what
+/// it holds and send its `Bye` before the supervisor abandons it.
+const LINK_WRITER_WAIT: Duration = Duration::from_secs(5);
+
+/// Everything a link needs beyond its own socket halves; one per server,
+/// cloned into each link's supervisor.
+#[derive(Clone)]
+struct LinkEnv {
+    links: Arc<LinkRegistry>,
+    tasks: Arc<LinkTasks>,
+    world: WorldHandle,
+    store: Arc<dyn ObjectStore>,
+    offer_routes: Arc<OfferRouteTable>,
+    metrics: Arc<Metrics>,
+    world_exit: WorldExitStatus,
+    /// The web `hello` manifest every link's greeting carries.
+    features: Vec<String>,
+    panels: Vec<String>,
+    to_gw_cap: usize,
+    high_water_pct: u8,
+    write_timeout: Duration,
+    linkdead_grace: Duration,
+}
+
+/// The tasks of every open link — the supervisor (which runs the reader) to
+/// abort and the writer to wait for — so the shutdown tail can end each link
+/// the way the single boundary used to be ended: reader dropped, writer
+/// drained to its `Bye`.
+#[derive(Default)]
+struct LinkTasks {
+    table: Mutex<HashMap<LinkId, (tokio::task::AbortHandle, tokio::task::JoinHandle<()>)>>,
+}
+
+impl LinkTasks {
+    fn table(
+        &self,
+    ) -> MutexGuard<'_, HashMap<LinkId, (tokio::task::AbortHandle, tokio::task::JoinHandle<()>)>>
+    {
+        self.table.lock().unwrap_or_else(PoisonError::into_inner)
+    }
+
+    fn insert(
+        &self,
+        link: LinkId,
+        supervisor: tokio::task::AbortHandle,
+        writer: tokio::task::JoinHandle<()>,
+    ) {
+        self.table().insert(link, (supervisor, writer));
+    }
+
+    /// A link's writer handle, once its supervisor is done with the reader.
+    fn take_writer(&self, link: LinkId) -> Option<tokio::task::JoinHandle<()>> {
+        self.table().remove(&link).map(|(_, writer)| writer)
+    }
+
+    fn take_all(&self) -> Vec<(tokio::task::AbortHandle, tokio::task::JoinHandle<()>)> {
+        self.table().drain().map(|(_, tasks)| tasks).collect()
+    }
+}
+
+/// Accept gateways for the life of the server (doc 33 §4.3): each one becomes
+/// a link with its own writer and supervisor. Never returns on its own; a
+/// failed `accept` is logged and retried after [`ACCEPT_RETRY`].
+async fn accept_links(listener: IpcListener, env: LinkEnv) {
+    loop {
+        match listener.accept().await {
+            Ok((reader_half, writer_half)) => open_link(&env, reader_half, writer_half),
+            Err(e) => {
+                // A transient accept failure (descriptors exhausted, a peer
+                // reset mid-handshake) is not the end of the server.
+                tracing::error!(error = %e, "ipc accept failed; retrying");
+                tokio::time::sleep(ACCEPT_RETRY).await;
+            }
+        }
+    }
+}
+
+/// Wire one accepted gateway as a link: its outbox, its version cell, its
+/// writer task (greeting first) and its supervisor (the reader, then the
+/// detach).
+fn open_link(env: &LinkEnv, reader_half: BoxRead, writer_half: BoxWrite) {
+    // The protocol version this link's gateway announces (doc 33 §4.1): the
+    // reader records it from the first frame, the writer's emission gate reads
+    // it on every frame, so a frame the gateway cannot decode is never sent.
+    let version = LinkVersion::unknown();
+    let (to_gw_tx, to_gw_rx) = mpsc::channel::<ToGateway>(env.to_gw_cap);
+    // `teardown` is the one-shot this link's [`LinkSink`] notifies on overflow
+    // and its writer waits on.
+    let teardown = Arc::new(Notify::new());
+    let sink = LinkSink::new(
+        to_gw_tx,
+        Arc::clone(&env.metrics),
+        Arc::clone(&teardown),
+        env.to_gw_cap,
+        env.high_water_pct,
+    );
+    let link = env.links.open_link(sink, version.clone());
+    let id = link.id();
+    tracing::info!(link = id, "gateway connected");
+
+    // Writer: greet (with the panel manifest), then drain this link's outbox
+    // to its socket. Exits when every holder of the outbox is gone (the
+    // registry entry, the reader's handle, any request handler), OR early on a
+    // per-frame write timeout / a `teardown` notification (a `to_gw` overflow)
+    // — either drops the writer's socket half, EOFing the link: the gateway
+    // enters its gap, reconnects, and re-attaches every held session (M18).
+    let (writer_done_tx, writer_done) = oneshot::channel::<()>();
+    let writer = writer_loop(
+        writer_half,
+        to_gw_rx,
+        EmissionGate::new(version),
+        env.features.clone(),
+        env.panels.clone(),
+        Arc::clone(&env.metrics),
+        teardown,
+        env.write_timeout,
+    );
+    let writer = tokio::spawn(async move {
+        writer.await;
+        let _ = writer_done_tx.send(());
+    });
+    let supervisor = tokio::spawn(supervise_link(env.clone(), link, reader_half, writer_done));
+    env.tasks.insert(id, supervisor.abort_handle(), writer);
+}
+
+/// Run one link's reader to its end, then detach what the link owned.
+///
+/// The reader pumps the gateway's `ToServer` traffic into the world until the
+/// gateway closes the link (clean EOF), a protocol fault, or the world stops
+/// accepting (a closed world channel is permanent, so the reader refuses to
+/// keep answering frames it can never deliver). The writer ending first (a
+/// write timeout, a `to_gw` overflow) ends the reader too: its socket half is
+/// gone, and the link with it. Either way the link's connections go down as
+/// `Lost` and the server runs on.
+async fn supervise_link(
+    env: LinkEnv,
+    link: Link,
+    reader_half: BoxRead,
+    mut writer_done: oneshot::Receiver<()>,
+) {
+    let id = link.id();
+    // Pinned on this task's stack: a `select!` that moved the reader between
+    // polls could drop a half-read frame mid-await. The block ends it before
+    // the detach, releasing its `Link` (an outbox sender) and its
+    // `WorldHandle` clone.
+    {
+        let reader = reader_loop(
+            reader_half,
+            env.world.clone(),
+            Arc::clone(&env.store),
+            Arc::clone(&env.offer_routes),
+            link.clone(),
+            &env.metrics,
+            env.world_exit.clone(),
+        );
+        tokio::pin!(reader);
+        tokio::select! {
+            result = &mut reader => match result {
+                Ok(()) => tracing::info!(link = id, "gateway disconnected (clean EOF)"),
+                // A reader that ended because the world is gone already logged
+                // that at its own provenance severity; repeating it as a warn
+                // would make every ordinary `@shutdown` look like a fault.
+                Err(e) if e.kind() == std::io::ErrorKind::BrokenPipe => {
+                    tracing::info!(link = id, error = %e, "ipc reader ended with the world already gone");
+                }
+                Err(e) => tracing::warn!(link = id, error = %e, "ipc reader ended on error"),
+            },
+            _ = &mut writer_done => {
+                tracing::warn!(link = id, "link writer ended; closing the link");
+            }
+        }
+    }
+    drop(link);
+    detach_link(&env, id).await;
+    // The writer ends with its `Bye` once the outbox's last sender is gone:
+    // the registry entry went with the close, the reader's handle above, and
+    // any request handler still running finishes shortly. Bounded, so a peer
+    // that stopped reading cannot hold this task.
+    if let Some(mut writer) = env.tasks.take_writer(id)
+        && tokio::time::timeout(LINK_WRITER_WAIT, &mut writer)
+            .await
+            .is_err()
+    {
+        tracing::warn!(link = id, "link writer did not end in time; aborting it");
+        writer.abort();
+    }
+}
+
+/// A link ended: detach every connection it owned, each as if its gateway had
+/// sent `ConnDown { reason: Lost }`, and reap the actors it leaves link-dead
+/// after the grace the gateway would have given them. Under the registry's
+/// lifecycle lock, so a link re-announcing one of these connections cannot
+/// get its `ConnUp` into the world ahead of this `ConnDown`.
+async fn detach_link(env: &LinkEnv, id: LinkId) {
+    let _lifecycle = env.links.lifecycle().lock().await;
+    let Some(detached) = env.links.close(id) else {
+        return;
+    };
+    for (conn, actor) in &detached.conns {
+        if !env
+            .world
+            .inbound(Inbound::ConnDown {
+                conn: *conn,
+                actor: *actor,
+                reason: DisconnectKind::Lost,
+            })
+            .await
+        {
+            // The world is gone; there is nobody to tell.
+            return;
+        }
+    }
+    if detached.actors.is_empty() {
+        return;
+    }
+    // The gateway's own reaper would have sent each `SessionGone` after its
+    // grace; the gateway is gone, so the server sends them. The world ignores
+    // a stale one (the actor reconnected, here or on another link).
+    let world = env.world.clone();
+    let grace = env.linkdead_grace;
+    let actors = detached.actors;
+    tokio::spawn(async move {
+        tokio::time::sleep(grace).await;
+        for actor in actors {
+            if !world.inbound(Inbound::SessionGone { actor }).await {
+                break;
+            }
+        }
+    });
 }
 
 /// Stop the world and wait for it, bounded.
@@ -661,15 +887,15 @@ fn world_exit_result(result: Result<WorldOutcome, tokio::task::JoinError>) -> Re
 /// The greeting and the health tick bypass the gate: both predate the window,
 /// and the greeting goes out before the gateway has announced anything.
 ///
-/// Two M18 teardown paths return early, each dropping `w` (the boundary EOFs;
-/// this process exits, its unit restarts it, and the gateway heals the held
-/// sessions via ReAnnounce → re-attach):
+/// Two M18 teardown paths return early, each dropping `w` (the link EOFs; the
+/// gateway enters its gap, reconnects, and heals the held sessions via
+/// ReAnnounce → re-attach; the server and its other links run on, doc 33 GG.2):
 ///
 /// - **write timeout** — each [`write_frame`](mush_ipc::write_frame) is wrapped
 ///   in `write_timeout`; a connected-but-not-draining peer that blocks past it
 ///   is wedged, so we count it (`ipc_write_timeouts_total`), warn, and return.
-/// - **`to_gw` overflow** — the [`SocketSink`] `notify`s `teardown` when it hits
-///   a full channel; the drain `select!` takes that arm and returns.
+/// - **`to_gw` overflow** — the link's [`LinkSink`] `notify`s `teardown` when it
+///   hits a full channel; the drain `select!` takes that arm and returns.
 ///
 /// Never skip-a-message-and-continue: a full socket buffer means the next write
 /// blocks too, and skipping could drop a keyframe — the boundary teardown +
@@ -750,9 +976,9 @@ async fn writer_loop(
                 None => break,
             },
             // A `to_gw` overflow: the sink notified us. Drop `w` (return) to EOF
-            // the boundary — the gateway's re-attach re-renders every session.
+            // the link — the gateway's re-attach re-renders every session.
             () = teardown.notified() => {
-                tracing::warn!(dir = "to_gw", "ipc queue overflow; tearing down boundary");
+                tracing::warn!(dir = "to_gw", "ipc queue overflow; tearing down the link");
                 return;
             }
         }
@@ -1198,7 +1424,7 @@ pub(crate) fn admit_with_custody_snapshot(
 }
 
 fn request_disposition(
-    sink: &SocketSink,
+    sink: &LinkSink,
     request: RequestUid,
     disposition: GatewayRequestDisposition,
 ) {
@@ -1328,7 +1554,7 @@ async fn handle_authoritative_input(
     routes: Arc<OfferRouteTable>,
     world: WorldHandle,
     store: Arc<dyn ObjectStore>,
-    sink: SocketSink,
+    sink: LinkSink,
     claims: Arc<Mutex<ServerInputClaims>>,
     metrics: Arc<Metrics>,
 ) {
@@ -1672,30 +1898,39 @@ fn world_is_gone(
     std::io::Error::new(std::io::ErrorKind::BrokenPipe, "world task is gone")
 }
 
-/// Pump the gateway's `ToServer` traffic into the world.
+/// Pump one gateway link's `ToServer` traffic into the world.
 ///
 /// The first frame decides the link's protocol version (doc 33 §4.1): a
 /// [`ToServer::Hello`] inside this server's window is admitted and recorded in
-/// `link` for the writer's emission gate; one outside it is refused with
-/// [`IPC_VERSION_SKEW_MARKER`]; any other first frame is a pre-window gateway
-/// ([`IPC_PRE_HELLO_VERSION`]), admitted while that version is in the window.
-/// See [`admit_gateway`].
+/// the link's version cell for the writer's emission gate; one outside it is
+/// refused with [`IPC_VERSION_SKEW_MARKER`]; any other first frame is a
+/// pre-window gateway ([`IPC_PRE_HELLO_VERSION`]), admitted while that version
+/// is in the window. See [`admit_gateway`].
+///
+/// Lifecycle frames book into the link registry (doc 33 §4.3, GG.2): a
+/// `ConnUp`, `Attach` or `ReAnnounce` record claims its connection for this
+/// link (a connection another live link owns is refused, see
+/// [`refuse_duplicate`]); a `ConnDown` or `Detach` releases it (a stranger's
+/// is dropped). Correlated replies and request dispositions go back on THIS
+/// link's outbox, so a reply reaches the gateway that asked.
 ///
 /// **Exposed only so `tests/world_task/dead_world_reader.rs` can drive it against a world
 /// task it has already stopped.** Nothing outside this crate composes a
-/// boundary; [`serve`] is the entry point.
+/// link; [`serve`] is the entry point.
 #[doc(hidden)]
-#[allow(clippy::too_many_arguments)] // GG.0 added the link-version cell; see `writer_loop`
 pub async fn reader_loop(
     r: mush_ipc::BoxRead,
     world: WorldHandle,
     store: Arc<dyn ObjectStore>,
     offer_routes: Arc<OfferRouteTable>,
-    reply_sink: SocketSink,
+    link: Link,
     metrics: &Arc<Metrics>,
     world_exit: WorldExitStatus,
-    link: LinkVersion,
 ) -> std::io::Result<()> {
+    // Replies and dispositions ride this link's own bounded outbox, so a full
+    // one tears THIS link down (a dropped `Reply` would hang its `ServiceReq`
+    // oneshot — I1) and no other.
+    let reply_sink = link.sink().clone();
     let mut reader = FrameReader::new(r);
     let service_requests = ServiceRequestLimiter::new();
     let input_claims = Arc::new(Mutex::new(ServerInputClaims::default()));
@@ -1712,10 +1947,10 @@ pub async fn reader_loop(
         if first_frame {
             first_frame = false;
             if let ToServer::Hello { proto, min_proto } = &msg {
-                admit_gateway(&link, *proto, Some(*min_proto))?;
+                admit_gateway(link.version(), *proto, Some(*min_proto))?;
                 continue;
             }
-            admit_gateway(&link, IPC_PRE_HELLO_VERSION, None)?;
+            admit_gateway(link.version(), IPC_PRE_HELLO_VERSION, None)?;
         }
         match msg {
             ToServer::Hello { proto, min_proto } => {
@@ -1742,9 +1977,23 @@ pub async fn reader_loop(
                         "player input requires GatewayRequest custody",
                     ));
                 }
-                if !world.inbound(Inbound::from(wire)).await {
+                let inbound = Inbound::from(wire);
+                // A lifecycle frame (doc 33 §4.3) is booked into the link
+                // registry under its lifecycle lock, held across the forward,
+                // so another link's end cannot interleave its detach of the
+                // same connection with this attach.
+                let lifecycle = if is_lifecycle(&inbound) {
+                    Some(link.registry().lifecycle().lock().await)
+                } else {
+                    None
+                };
+                if !bookkeep_inbound(&link, &inbound) {
+                    continue;
+                }
+                if !world.inbound(inbound).await {
                     return Err(world_is_gone("inbound", shutdown_seen, &world_exit));
                 }
+                drop(lifecycle);
             }
             ToServer::Input(request) => {
                 let uid = request.uid;
@@ -1978,10 +2227,10 @@ pub async fn reader_loop(
                 match service_requests.try_admit() {
                     Ok(permit) => {
                         let world = world.clone();
-                        // The `Reply` is must-deliver: `SocketSink::send` tries the
-                        // bounded `to_gw` and, on a full channel, tears the boundary
-                        // down rather than dropping it (a dropped Reply would hang the
-                        // caller's oneshot — I1).
+                        // The `Reply` is must-deliver: `LinkSink::send` tries this
+                        // link's bounded `to_gw` and, on a full channel, tears the
+                        // link down rather than dropping it (a dropped Reply would
+                        // hang the caller's oneshot — I1).
                         let sink = reply_sink.clone();
                         tokio::spawn(async move {
                             // Hold the owned permit through response enqueue; task
@@ -2023,36 +2272,78 @@ pub async fn reader_loop(
                         ),
                     ));
                 }
-                let recs = recs
+                // Each record claims its connection for this link (doc 33
+                // §4.3): one another live link owns is refused on this link
+                // and left out of the batch, the rest re-attach. Under the
+                // lifecycle lock across the forward, like a `ConnUp`.
+                let lifecycle = link.registry().lifecycle().lock().await;
+                let recs: Vec<world_task::ReAttachRec> = recs
                     .into_iter()
-                    .map(|r| world_task::ReAttachRec {
-                        output_brackets: r.output_brackets,
-                        conn: r.conn,
-                        actor: r.actor,
-                        caps_structured: r.caps_structured,
+                    .filter_map(|r| match link.claim(r.conn, r.actor) {
+                        Claim::Owned => Some(world_task::ReAttachRec {
+                            output_brackets: r.output_brackets,
+                            conn: r.conn,
+                            actor: r.actor,
+                            caps_structured: r.caps_structured,
+                        }),
+                        Claim::Duplicate { owner } => {
+                            refuse_duplicate(&link, r.conn, r.actor, owner);
+                            None
+                        }
                     })
                     .collect();
                 if !world.reattach(recs).await {
                     tracing::error!(
-                        "world refused ReAnnounce; tearing down boundary so the gateway can replay its retained roster"
+                        "world refused ReAnnounce; tearing down the link so the gateway can replay its retained roster"
                     );
                     return Err(std::io::Error::new(
                         std::io::ErrorKind::BrokenPipe,
                         "world unavailable or refused ReAnnounce",
                     ));
                 }
+                drop(lifecycle);
             }
             // Per-connection session bookkeeping — the forked server keeps no
-            // session mirror (the gateway owns it), so an attach is accepted
-            // and ignored.
-            ToServer::Attach { .. } => {}
-            // A detach is not: this connection's RETAINED claims are waiting on
-            // a replay it can no longer send, and their custody is charged to a
-            // `per_connection` account a reconnect reuses. Free them here
-            // rather than leave them to the TTL. Active claims stay — a handler
-            // still owns each one's single disposition — and nothing is
-            // published, exactly as at the reaper.
-            ToServer::Detach { conn, .. } => {
+            // session mirror (the gateway owns it), but the link registry
+            // records which link each connection belongs to (doc 33 §4.3), so
+            // an attach claims it as a `ConnUp` does, and a duplicate is
+            // refused the same way.
+            ToServer::Attach { conn, actor, .. } => {
+                let _lifecycle = link.registry().lifecycle().lock().await;
+                if let Claim::Duplicate { owner } = link.claim(conn, actor) {
+                    refuse_duplicate(&link, conn, actor, owner);
+                }
+            }
+            // A detach releases the connection from this link; a stranger's
+            // (another link owns the id) is dropped. Then this connection's
+            // RETAINED claims: they are waiting on a replay it can no longer
+            // send, and their custody is charged to a `per_connection` account
+            // a reconnect reuses. Free them here rather than leave them to the
+            // TTL. Active claims stay — a handler still owns each one's single
+            // disposition — and nothing is published, exactly as at the reaper.
+            ToServer::Detach {
+                conn,
+                actor,
+                reason,
+            } => {
+                let _lifecycle = link.registry().lifecycle().lock().await;
+                match link.release(conn) {
+                    Release::OtherLink(owner) => {
+                        tracing::warn!(
+                            conn,
+                            %actor,
+                            link = link.id(),
+                            owner_link = owner,
+                            "Detach for a connection another link owns; dropped"
+                        );
+                        continue;
+                    }
+                    Release::Owned | Release::Unknown => {
+                        if reason == DisconnectKind::Lost {
+                            link.note_linkdead(actor);
+                        }
+                    }
+                }
                 let released = claims_guard(&input_claims).release_connection_retained(conn);
                 if !released.is_empty() {
                     tracing::warn!(
@@ -2065,6 +2356,86 @@ pub async fn reader_loop(
         }
     }
     Ok(())
+}
+
+/// Whether an inbound frame changes which connections a link owns.
+fn is_lifecycle(inbound: &Inbound) -> bool {
+    matches!(
+        inbound,
+        Inbound::ConnUp { .. } | Inbound::ConnDown { .. } | Inbound::SessionGone { .. }
+    )
+}
+
+/// Book a lifecycle frame into the link registry (doc 33 §4.3). `false` means
+/// the frame must NOT reach the world: a `ConnUp` for a connection id another
+/// live link owns (refused, see [`refuse_duplicate`]), or a `ConnDown` for one
+/// (a stranger's release would take the owner's connection down). A `ConnDown`
+/// that went `Lost` leaves the link owing a `SessionGone`, which the server
+/// sends in the gateway's stead should the link end first; the link's own
+/// `SessionGone` (or a new `ConnUp` for the actor) clears the debt.
+fn bookkeep_inbound(link: &Link, inbound: &Inbound) -> bool {
+    match inbound {
+        Inbound::ConnUp { conn, actor, .. } => match link.claim(*conn, *actor) {
+            Claim::Owned => true,
+            Claim::Duplicate { owner } => {
+                refuse_duplicate(link, *conn, *actor, owner);
+                false
+            }
+        },
+        Inbound::ConnDown {
+            conn,
+            actor,
+            reason,
+        } => match link.release(*conn) {
+            Release::OtherLink(owner) => {
+                tracing::warn!(
+                    conn,
+                    %actor,
+                    link = link.id(),
+                    owner_link = owner,
+                    "ConnDown for a connection another link owns; dropped"
+                );
+                false
+            }
+            Release::Owned | Release::Unknown => {
+                if *reason == DisconnectKind::Lost {
+                    link.note_linkdead(*actor);
+                }
+                true
+            }
+        },
+        Inbound::SessionGone { actor } => {
+            link.clear_linkdead(*actor);
+            true
+        }
+        _ => true,
+    }
+}
+
+/// Refuse a connection id announced on this link while another live link owns
+/// it (doc 33 §4.3): log it with both links under
+/// [`IPC_DUPLICATE_CONN_ID_MARKER`] and close the connection on THIS link (the
+/// newer announce) with a [`ToGateway::Detach`]; the owner keeps its connection
+/// and the world never hears of the second. The registry counts it
+/// (`ipc_duplicate_conn_ids_total`). Two live gateways can only collide this
+/// way when they are of one generation — or one was started without
+/// `--generation` (doc 33 Q-33-1), which the log line says.
+fn refuse_duplicate(link: &Link, conn: u64, actor: ObjId, owner: LinkId) {
+    tracing::error!(
+        marker = IPC_DUPLICATE_CONN_ID_MARKER,
+        conn,
+        generation = %Generation::of_conn_id(conn),
+        %actor,
+        link = link.id(),
+        owner_link = owner,
+        "a connection id announced on two live links (two gateways of one generation, or \
+         `--generation` left off one of them, doc 33 §4.3); closing the connection on the \
+         newer link, the owner keeps it"
+    );
+    link.sink().send(ToGateway::Detach {
+        conn,
+        cause: DetachCause::Booted,
+    });
 }
 
 /// Admit or refuse the gateway on a link from what its first frame said (doc
@@ -2280,11 +2651,11 @@ mod world_exit_tests {
 #[cfg(test)]
 mod service_request_tests {
     use super::{
-        Arc, CreatePlayerErr, GatewayInput, GatewayRequest, MAX_CLAIM_REARMS,
+        Arc, CreatePlayerErr, GatewayInput, GatewayRequest, LinkSink, MAX_CLAIM_REARMS,
         MAX_IN_FLIGHT_GATEWAY_INPUTS_PER_CONNECTION, MAX_IN_FLIGHT_SERVICE_REQUESTS, Metrics,
         Mutex, Notify, RETAINED_CLAIM_REAP_INTERVAL, RETAINED_CLAIM_TTL, ServerClaimAdmission,
-        ServerClaimRelease, ServerInputClaims, ServiceRequestLimiter, ServiceResp, SocketSink,
-        ToGateway, WorldReadError, admit_with_custody_snapshot, barrier_response, claims_guard,
+        ServerClaimRelease, ServerInputClaims, ServiceRequestLimiter, ServiceResp, ToGateway,
+        WorldReadError, admit_with_custody_snapshot, barrier_response, claims_guard,
         create_player_response, release_input_claim, spawn_retained_claim_reaper,
     };
     use mush_core::{ActionOfferId, CanonicalHash, Inbound, ObjId, PerceivedRef};
@@ -2764,7 +3135,7 @@ mod service_request_tests {
         // The real reply path every disposition travels, kept alive for the
         // whole test so an empty receiver means "nothing was sent", never "the
         // sink was gone".
-        let _sink = SocketSink::new(tx, Arc::clone(&metrics), Arc::new(Notify::new()), 8, 90);
+        let _sink = LinkSink::new(tx, Arc::clone(&metrics), Arc::new(Notify::new()), 8, 90);
 
         let claims = Arc::new(Mutex::new(ServerInputClaims::default()));
         let request = action_request(1, 9);
@@ -2927,7 +3298,7 @@ mod writer_tests {
             Arc::clone(&teardown),
             Duration::from_secs(30),
         ));
-        // Simulate the SocketSink hitting a full channel.
+        // Simulate the LinkSink hitting a full channel.
         teardown.notify_one();
         tokio::time::timeout(Duration::from_secs(5), join)
             .await

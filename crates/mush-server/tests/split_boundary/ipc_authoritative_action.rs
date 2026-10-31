@@ -1510,12 +1510,18 @@ fn an_early_reader_loop_error_does_not_leave_a_reaper_running() {
     let reader = rt.spawn(async move {
         let (tx, _replies) = tokio::sync::mpsc::channel(64);
         let metrics = Arc::new(mush_config::metrics::Metrics::new());
-        let sink = mush_server::gateway_sink::SocketSink::new(
-            tx,
-            Arc::clone(&metrics),
-            Arc::new(tokio::sync::Notify::new()),
-            64,
-            90,
+        // The link this reader serves (doc 33 GG.2). Opening one spawns no
+        // task: the alive-task counts below are the reader's and its reaper's.
+        let registry = Arc::new(mush_server::links::LinkRegistry::new(Arc::clone(&metrics)));
+        let link = registry.open_link(
+            mush_server::gateway_sink::LinkSink::new(
+                tx,
+                Arc::clone(&metrics),
+                Arc::new(tokio::sync::Notify::new()),
+                64,
+                90,
+            ),
+            mush_ipc::LinkVersion::unknown(),
         );
         let store: Arc<dyn ObjectStore> = Arc::new(InMemoryStore::new());
         mush_server::reader_loop(
@@ -1523,10 +1529,9 @@ fn an_early_reader_loop_error_does_not_leave_a_reaper_running() {
             world,
             store,
             Arc::new(mush_core::OfferRouteTable::default()),
-            sink,
+            link,
             &metrics,
             world_exit,
-            mush_ipc::LinkVersion::unknown(),
         )
         .await
     });

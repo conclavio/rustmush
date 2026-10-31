@@ -115,6 +115,7 @@ async fn start_split() -> SocketAddr {
                 web_ready: None,
                 siteban_refresh: None,
                 give_up_after: None,
+                generation: None,
             },
         ));
     });

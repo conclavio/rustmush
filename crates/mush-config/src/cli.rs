@@ -35,6 +35,7 @@
 use std::path::{Path, PathBuf};
 
 use crate::config::{Config, ConfigError};
+use crate::generation::Generation;
 
 /// The config file read when no `--config` is given, relative to the working
 /// directory.
@@ -58,6 +59,9 @@ pub struct CliSpec {
     pub check_config: bool,
     /// Accept the offline `--bootstrap-staff <account>` operation.
     pub bootstrap_staff: bool,
+    /// Accept `--generation <a|b>` (the gateway half, doc 33 §4.3: which of
+    /// the two gateway generations this process is).
+    pub generation: bool,
 }
 
 /// A parsed command line.
@@ -79,6 +83,9 @@ pub struct Cli {
     pub check_config: bool,
     /// Create the first durable account, linked to God, then exit.
     pub bootstrap_staff: Option<String>,
+    /// The `--generation <a|b>` value, when given (doc 33 §4.3). `None` is
+    /// generation `a` for the connection-id bit and says nothing else.
+    pub generation: Option<Generation>,
     /// `--help`/`-h` was given; the caller prints [`CliSpec::usage`] and exits
     /// successfully without touching the config.
     pub help: bool,
@@ -94,6 +101,7 @@ impl Cli {
             repl: false,
             check_config: false,
             bootstrap_staff: None,
+            generation: None,
             help: false,
         }
     }
@@ -148,6 +156,8 @@ pub enum CliError {
     /// A flag given more than once, where the second would have silently won
     /// or silently lost.
     Repeated { flag: &'static str },
+    /// A value-taking flag given a value it does not take.
+    InvalidValue { flag: &'static str, value: String },
     /// Two operations that cannot safely run together.
     ConflictingOperations,
     /// An explicit `--config` naming a file that is not there.
@@ -162,6 +172,9 @@ impl std::fmt::Display for CliError {
             CliError::UnknownArg { arg } => write!(f, "unrecognised argument `{arg}`"),
             CliError::MissingValue { flag } => write!(f, "`{flag}` needs a value"),
             CliError::Repeated { flag } => write!(f, "`{flag}` given more than once"),
+            CliError::InvalidValue { flag, value } => {
+                write!(f, "`{flag}` does not take `{value}`")
+            }
             CliError::ConflictingOperations => write!(
                 f,
                 "`--bootstrap-staff` cannot be combined with `--check-config`, `--repl` or `--ipc`"
@@ -208,8 +221,8 @@ fn take_once(
 ///
 /// # Errors
 ///
-/// [`CliError::UnknownArg`], [`CliError::MissingValue`] or
-/// [`CliError::Repeated`] — never a silent acceptance.
+/// [`CliError::UnknownArg`], [`CliError::MissingValue`], [`CliError::Repeated`]
+/// or [`CliError::InvalidValue`] — never a silent acceptance.
 pub fn parse<I, S>(argv: I, spec: &CliSpec) -> Result<Cli, CliError>
 where
     I: IntoIterator<Item = S>,
@@ -231,6 +244,7 @@ where
     let mut repl = false;
     let mut check_config = false;
     let mut bootstrap_staff = None;
+    let mut generation: Option<String> = None;
     let mut rest = args.into_iter();
     while let Some(arg) = rest.next() {
         match arg.as_str() {
@@ -253,9 +267,23 @@ where
                 }
                 check_config = true;
             }
+            "--generation" if spec.generation => {
+                take_once(&mut generation, "--generation", rest.next())?;
+            }
             _ => return Err(CliError::UnknownArg { arg }),
         }
     }
+    let generation = match generation {
+        None => None,
+        Some(value) => Some(
+            value
+                .parse::<Generation>()
+                .map_err(|_| CliError::InvalidValue {
+                    flag: "--generation",
+                    value,
+                })?,
+        ),
+    };
 
     if bootstrap_staff.is_some() && (check_config || repl || ipc.is_some()) {
         return Err(CliError::ConflictingOperations);
@@ -268,6 +296,7 @@ where
         repl,
         check_config,
         bootstrap_staff,
+        generation,
         help: false,
     })
 }
@@ -292,6 +321,7 @@ mod tests {
         repl: true,
         check_config: true,
         bootstrap_staff: true,
+        generation: false,
     };
     const SERVER: CliSpec = CliSpec {
         program: "mush-server",
@@ -300,6 +330,16 @@ mod tests {
         repl: false,
         check_config: true,
         bootstrap_staff: true,
+        generation: false,
+    };
+    const GATEWAY: CliSpec = CliSpec {
+        program: "mush-gateway",
+        usage: "Usage: mush-gateway [--check-config] [--generation a|b] [--config <path>]",
+        ipc: false,
+        repl: false,
+        check_config: true,
+        bootstrap_staff: false,
+        generation: true,
     };
     /// A spec that declares NOTHING beyond the universal flags, so the
     /// opt-in-ness of `--check-config` is provable rather than assumed.
@@ -310,6 +350,7 @@ mod tests {
         repl: false,
         check_config: false,
         bootstrap_staff: false,
+        generation: false,
     };
 
     fn scratch(tag: &str) -> PathBuf {
@@ -453,6 +494,60 @@ mod tests {
             matches!(&err, CliError::UnknownArg { arg } if arg == "--check-config"),
             "{err:?}"
         );
+    }
+
+    /// Doc 33 §4.3: `--generation` is the gateway's, takes exactly `a` or
+    /// `b`, once; absent means `None` (generation `a` for the id bit).
+    #[test]
+    fn generation_is_the_gateways_and_takes_a_or_b_once() {
+        assert_eq!(
+            parse(["--generation", "a"], &GATEWAY).unwrap().generation,
+            Some(Generation::A)
+        );
+        assert_eq!(
+            parse(["--generation", "B"], &GATEWAY).unwrap().generation,
+            Some(Generation::B)
+        );
+        assert_eq!(
+            parse(std::iter::empty::<&str>(), &GATEWAY)
+                .unwrap()
+                .generation,
+            None
+        );
+        let err = parse(["--generation"], &GATEWAY).unwrap_err();
+        assert!(
+            matches!(
+                err,
+                CliError::MissingValue {
+                    flag: "--generation"
+                }
+            ),
+            "{err:?}"
+        );
+        let err = parse(["--generation", "c"], &GATEWAY).unwrap_err();
+        assert!(
+            matches!(&err, CliError::InvalidValue { flag: "--generation", value } if value == "c"),
+            "{err:?}"
+        );
+        assert!(err.to_string().contains("`c`"), "{err}");
+        let err = parse(["--generation", "a", "--generation", "b"], &GATEWAY).unwrap_err();
+        assert!(
+            matches!(
+                err,
+                CliError::Repeated {
+                    flag: "--generation"
+                }
+            ),
+            "{err:?}"
+        );
+        // The other two binaries have no generations.
+        for spec in [&MUSHD, &SERVER, &BARE] {
+            let err = parse(["--generation", "a"], spec).unwrap_err();
+            assert!(
+                matches!(&err, CliError::UnknownArg { arg } if arg == "--generation"),
+                "{err:?}"
+            );
+        }
     }
 
     #[test]

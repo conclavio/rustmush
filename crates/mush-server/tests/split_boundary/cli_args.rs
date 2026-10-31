@@ -137,11 +137,13 @@ fn an_explicit_config_that_is_not_there_is_refused() {
     assert_refused(&["--config", &missing.display().to_string()], "nope.toml");
 }
 
-/// `--repl` belongs to the all-in-one. The server half accepting it silently
-/// would be a flag that looks honoured and is not.
+/// `--repl` belongs to the all-in-one and `--generation` to the gateway (doc
+/// 33 §4.3). The server half accepting either silently would be a flag that
+/// looks honoured and is not.
 #[test]
 fn a_flag_from_another_binary_is_refused() {
     assert_refused(&["--repl"], "--repl");
+    assert_refused(&["--generation", "b"], "--generation");
 }
 
 /// `--ipc` IS this binary's, and still needs a value.

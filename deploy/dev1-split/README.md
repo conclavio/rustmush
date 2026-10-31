@@ -119,10 +119,11 @@ the gateway answers 503 ("cannot check right now"), which a tab retries with
 its token kept — and neither is a server restart: a reconnect that lands while
 the server half is down is answered 1012, not "session ended".
 
-> **Until doc 33 GG.2 lands**, a gateway restart still bounces the server too:
-> the server exits on the gateway's EOF and its unit brings it back. The
-> reverse is not true any more — `systemctl stop dev1mush-gateway` stops only
-> the gateway; the server unit keeps running the world.
+> **Each half stops alone** (doc 33 GG.1 + GG.2). `systemctl stop
+> dev1mush-gateway` stops only the gateway: the server unit keeps running the
+> world, the gateway's connections go link-dead in it, and the gateway that
+> comes back dials in as a new link. `systemctl stop dev1mush-server` stops
+> only the server: the gateway holds every connection through the gap.
 
 > **On a gateway older than 2026-09-20**, an open tab holding a token the store
 > no longer knew could **tempban its own address for fifteen minutes** — and

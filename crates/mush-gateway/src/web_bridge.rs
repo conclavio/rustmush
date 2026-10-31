@@ -121,6 +121,10 @@ pub struct WebBridge<A: AuthBackend + 'static> {
     /// [`WebHooks::metrics`]). Defaults to a throwaway registry (tests); the
     /// real server injects the shared one via [`WebBridge::with_metrics`].
     metrics: Arc<mush_net_web::Metrics>,
+    /// The bit set on every connection id the web transport allocates (doc 33
+    /// §4.3): the gateway generation's, none until
+    /// [`WebBridge::with_conn_id_bit`] sets it.
+    conn_id_bit: u64,
 }
 
 impl<A: AuthBackend + 'static> WebBridge<A> {
@@ -157,7 +161,18 @@ impl<A: AuthBackend + 'static> WebBridge<A> {
             conn_tokens: Mutex::new(HashMap::new()),
             composing: Mutex::new(crate::composing::ComposingLimiter::default()),
             metrics: Arc::new(mush_net_web::Metrics::new()),
+            conn_id_bit: 0,
         }
+    }
+
+    /// The bit every connection id the web transport allocates carries (doc
+    /// 33 §4.3): the gateway generation's
+    /// (`mush_config::generation::Generation::conn_id_bit`). The split gateway
+    /// sets it from `--generation`; `mushd` and the tests leave it at none.
+    #[must_use]
+    pub fn with_conn_id_bit(mut self, bit: u64) -> WebBridge<A> {
+        self.conn_id_bit = bit;
+        self
     }
 
     /// Point web connection counters — and the `/healthz` + `/metrics`
@@ -512,17 +527,20 @@ impl<A: AuthBackend + 'static> WebHooks for WebBridge<A> {
                 Ok(entered) => entered,
                 Err(e) => {
                     locked(&self.conn_tokens, "conn_tokens").remove(&conn_id);
-                    // `enter_game` refuses for two transient reasons — full
-                    // lifecycle custody, and the server half being gone
-                    // mid-setup (the ordinary split `reload`). Neither says
-                    // anything about the token, so neither may reach the
-                    // client as the close that deletes it; the resume path
-                    // has always mapped the same two to 1013/1012.
+                    // `enter_game` refuses for transient reasons — full
+                    // lifecycle custody, the server half being gone
+                    // mid-setup (the ordinary split `reload`), and a live
+                    // server that did not bind the connection (doc 33 GG.2,
+                    // a duplicate id across gateways). None says anything
+                    // about the token, so none may reach the client as the
+                    // close that deletes it; the resume path has always
+                    // mapped the same to 1013/1012.
                     return Err(match e {
                         ConnectErr::Busy => AttachErr::Busy,
-                        ConnectErr::WorldGone | ConnectErr::Restarting | ConnectErr::ServerDown => {
-                            AttachErr::Unavailable
-                        }
+                        ConnectErr::WorldGone
+                        | ConnectErr::Restarting
+                        | ConnectErr::ServerDown
+                        | ConnectErr::NotAdmitted => AttachErr::Unavailable,
                         ConnectErr::NotYourCharacter => AttachErr::Refused(format!("{e}.")),
                     });
                 }
@@ -919,6 +937,10 @@ impl<A: AuthBackend + 'static> WebHooks for WebBridge<A> {
 
     fn metrics(&self) -> Arc<mush_net_web::Metrics> {
         Arc::clone(&self.metrics)
+    }
+
+    fn conn_id_bit(&self) -> u64 {
+        self.conn_id_bit
     }
 }
 

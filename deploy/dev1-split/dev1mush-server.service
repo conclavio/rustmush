@@ -40,12 +40,10 @@ TimeoutStopSec=60
 # Doc 33 Q-33-5: a crash is back in 2 s, up to the start limit above.
 Restart=on-failure
 RestartSec=2
-# GG.1 INTERIM — GG.2 removes this line. Until GG.2 the server still exits (0)
-# when the gateway closes the boundary, so a gateway restart or crash would
-# otherwise leave the server dead and the gateway in its gap for good. This
-# makes that clean exit a restart too. (`@shutdown` is also an exit 0 and
-# comes straight back — which is what it did under the gateway's supervision.)
-RestartForceExitStatus=0
+# Doc 33 GG.2: a gateway's link ending is that link's alone. The server runs
+# on through a gateway restart or crash (its connections go link-dead, nothing
+# else), so a clean exit here is only an in-game `@shutdown` or `systemctl
+# stop`, and stays an exit: `Restart=on-failure` is the whole rule.
 
 # The gateway<->server IPC UNIX SOCKET lives at /run/rustmush/dev1.sock.
 # RuntimeDirectory makes systemd create /run/rustmush owned by the mush user

@@ -5,7 +5,11 @@
 //! server at `[ipc].listen`, holds every connection while the server is away,
 //! and re-attaches them when it answers. It never starts or stops the server.
 //!
-//! Usage: `mush-gateway [--check-config] [--config <path>]`.
+//! Usage: `mush-gateway [--check-config] [--generation a|b] [--config <path>]`.
+//! `--generation a|b` names this gateway's generation (doc 33 §4.3): a `b`
+//! gateway sets bit 62 on every connection id it allocates, so the two
+//! gateways of a swap never hand the server the same id. Optional; absent is
+//! `a` for that purpose.
 //! `--check-config` loads the config, reports the refusals on the preflight
 //! list — `mush_config::preflight::check`, plus `preflight::check_ipc` for the
 //! boundary this half also dies on — and exits. Those functions are the list of
@@ -32,14 +36,16 @@ use mush_gateway::{GatewayOptions, serve};
 
 /// This binary's half of the one command line the three binaries share
 /// (WS22-S1). The gateway takes neither `--ipc` (it reads `[ipc].listen` from
-/// the config, the same value the server binds) nor `--repl`.
+/// the config, the same value the server binds) nor `--repl`; `--generation`
+/// is its alone (doc 33 §4.3).
 const CLI: CliSpec = CliSpec {
     program: "mush-gateway",
-    usage: "Usage: mush-gateway [--check-config] [--config <path>]",
+    usage: "Usage: mush-gateway [--check-config] [--generation a|b] [--config <path>]",
     ipc: false,
     repl: false,
     check_config: true,
     bootstrap_staff: false,
+    generation: true,
 };
 
 fn main() -> ExitCode {
@@ -89,6 +95,7 @@ fn main() -> ExitCode {
         web_ready: None,
         siteban_refresh: None,
         give_up_after: None,
+        generation: cli.generation,
     };
     match runtime.block_on(serve(config, opts)) {
         Ok(()) => ExitCode::SUCCESS,

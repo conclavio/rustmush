@@ -22,6 +22,11 @@
 //! pointed at the unit with [`aim`](ServerUnit::aim) and started after the
 //! unit's first boot (the units say `After=`), or before it, for the proof
 //! that a boot with no server is a gap from the start.
+//!
+//! [`GatewayUnit`] (doc 33 GG.2) is the same shape for the other half: a real
+//! `mush-gateway` on its own thread + runtime, so a module can run two of them
+//! against one server unit and stop one the way a crash or `systemctl stop`
+//! does.
 
 use std::sync::atomic::{AtomicUsize, Ordering};
 use std::sync::{Arc, Mutex};
@@ -193,6 +198,93 @@ impl ServerUnit {
     pub async fn restart(&self) -> IpcEndpoint {
         self.stop().await;
         self.start().await
+    }
+}
+
+/// One running gateway half, as a thread with its own runtime: a stand-in for
+/// `<inst>mush-gateway.service` (doc 33 GG.2), so a module can run TWO of them
+/// against one [`ServerUnit`] — the draining gateway and its successor during a
+/// swap, or a crashed gateway and the one systemd brings back.
+///
+/// [`stop`](GatewayUnit::stop) makes the gateway exit the way a crash or
+/// `systemctl stop` does: the runtime drops with every socket, the server sees
+/// the link's EOF and detaches that link's connections only. Dropping the
+/// handle stops nothing, as with the server unit.
+pub struct GatewayUnit {
+    ssh: std::net::SocketAddr,
+    running: Mutex<Option<Running>>,
+}
+
+impl GatewayUnit {
+    /// Start a gateway over `cfg` (already [aimed](ServerUnit::aim) at its
+    /// unit) and `store`, of `generation` (`None` is what the binary gets with
+    /// no `--generation`), and wait until its SSH listener is bound.
+    pub async fn start(
+        cfg: Config,
+        store: Arc<dyn ObjectStore>,
+        generation: Option<mush_config::generation::Generation>,
+    ) -> GatewayUnit {
+        let (ssh_tx, ssh_rx) = oneshot::channel();
+        let (crash_tx, crash_rx) = oneshot::channel::<()>();
+        let (exit_tx, exit_rx) = oneshot::channel();
+        std::thread::spawn(move || {
+            let Ok(rt) = tokio::runtime::Builder::new_multi_thread()
+                .enable_all()
+                .build()
+            else {
+                return;
+            };
+            rt.block_on(async move {
+                tokio::select! {
+                    _ = mush_gateway::serve(
+                        cfg,
+                        mush_gateway::GatewayOptions {
+                            store: Some(store),
+                            ssh_ready: Some(ssh_tx),
+                            web_ready: None,
+                            siteban_refresh: None,
+                            give_up_after: None,
+                            generation,
+                        },
+                    ) => {}
+                    () = async {
+                        if crash_rx.await.is_err() {
+                            std::future::pending::<()>().await;
+                        }
+                    } => {}
+                }
+            });
+            drop(rt);
+            let _ = exit_tx.send(());
+        });
+        let ssh = tokio::time::timeout(BIND_TIMEOUT, ssh_rx)
+            .await
+            .expect("the gateway bound its SSH listener in time")
+            .expect("the gateway dropped its ssh oneshot (a failed boot)");
+        GatewayUnit {
+            ssh,
+            running: Mutex::new(Some(Running {
+                crash: crash_tx,
+                exited: exit_rx,
+            })),
+        }
+    }
+
+    /// Where this gateway's SSH listener is bound.
+    pub fn ssh_addr(&self) -> std::net::SocketAddr {
+        self.ssh
+    }
+
+    /// Make the gateway exit (every socket closes, the server sees this
+    /// link's EOF) and wait until it has.
+    pub async fn stop(&self) {
+        let Some(running) = lock(&self.running).take() else {
+            return;
+        };
+        let _ = running.crash.send(());
+        let _ = tokio::time::timeout(EXIT_TIMEOUT, running.exited)
+            .await
+            .expect("the stopped gateway exited in time");
     }
 }
 

@@ -144,6 +144,23 @@ async fn hello_is_first_frame_and_subprotocol_is_echoed() {
     assert_eq!(character, CHAR_KEY);
 }
 
+/// Doc 33 §4.3: a gateway of generation `b` sets its bit on every web
+/// connection id too, above the web range's base, which survives it.
+#[tokio::test]
+async fn a_generation_bit_rides_every_web_connection_id() {
+    const BIT: u64 = 1 << 62;
+    let hooks = Arc::new(MockWebHooks::new());
+    hooks.state().conn_id_bit = BIT;
+    let addr = spawn_server(hooks.clone(), test_config()).await;
+    let (mut ws, _) = connect_ws(addr, "char=7").await.unwrap();
+    expect_hello(&recv_env(&mut ws).await);
+    let st = hooks.state();
+    assert_eq!(st.connects.len(), 1);
+    let conn = st.connects[0].0;
+    assert_eq!(conn & BIT, BIT, "the generation bit is set");
+    assert!(conn & !BIT >= WEB_CONN_ID_BASE, "the web base survives it");
+}
+
 #[tokio::test]
 async fn token_via_query_is_no_longer_accepted() {
     // LOW finding: the `?token=` fallback was removed (proxies log full

@@ -139,6 +139,8 @@ fn an_explicit_config_that_is_not_there_is_refused() {
 #[test]
 fn a_flag_from_another_binary_is_refused() {
     assert_refused(&["--ipc", "127.0.0.1:6791"], "--ipc");
+    // `--generation` is the gateway's too (doc 33 §4.3): `mushd` has no second gateway.
+    assert_refused(&["--generation", "b"], "--generation");
 }
 
 /// A config whose `[store].receipt_policy` is a typo — the boot-fatal value

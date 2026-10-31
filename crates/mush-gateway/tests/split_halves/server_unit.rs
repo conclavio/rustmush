@@ -132,6 +132,7 @@ async fn start_gateway(
                 web_ready: Some(web_tx),
                 siteban_refresh: None,
                 give_up_after,
+                generation: None,
             },
         ));
     });

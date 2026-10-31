@@ -219,14 +219,11 @@ fn complete(
     result: Result<(), AuthoritativeCommitFailure>,
     store: Arc<dyn mush_store::ObjectStore>,
 ) -> bool {
-    let (gateway_tx, _gateway_rx) = tokio::sync::mpsc::channel(16);
-    let gateway: super::super::Gateway = Arc::new(crate::gateway_sink::SocketSink::new(
-        gateway_tx,
-        Arc::new(mush_config::metrics::Metrics::new()),
-        Arc::new(tokio::sync::Notify::new()),
-        16,
-        90,
-    ));
+    // The split sink over an empty link registry: nothing is connected, so
+    // whatever the completion sends to a gateway is routed to nobody.
+    let gateway: super::super::Gateway = Arc::new(crate::gateway_sink::SocketSink::new(Arc::new(
+        crate::links::LinkRegistry::new(Arc::new(mush_config::metrics::Metrics::new())),
+    )));
     let mut health = super::super::StoreHealth::new();
     let integrity = super::super::PersistenceIntegrityLatch::new();
     let (world_tx, _world_rx) = tokio::sync::mpsc::channel(1);

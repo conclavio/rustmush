@@ -225,6 +225,7 @@ async fn two_process_connect_play_boot_disconnect() {
                 web_ready: None,
                 siteban_refresh: None,
                 give_up_after: None,
+                generation: None,
             },
         ))
         .unwrap();
@@ -335,6 +336,7 @@ async fn boot_split(
                 web_ready: None,
                 siteban_refresh: None,
                 give_up_after: None,
+                generation: None,
             },
         ))
         .unwrap();
@@ -524,6 +526,7 @@ async fn boot_split_sharing_store(
                 web_ready: None,
                 siteban_refresh: Some(refresh),
                 give_up_after: None,
+                generation: None,
             },
         ))
         .unwrap();

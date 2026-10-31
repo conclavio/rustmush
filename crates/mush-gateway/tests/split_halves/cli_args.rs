@@ -128,10 +128,33 @@ fn flags_from_the_other_binaries_are_refused() {
     assert_refused(&["--repl"], "--repl");
 }
 
-/// `--help` still works, and still exits zero.
+/// `--generation` (doc 33 §4.3) takes `a` or `b`, once. Anything else would
+/// be a gateway of no generation that LOOKED like one, and two of those hand
+/// the server the same connection ids.
+#[test]
+fn generation_takes_a_or_b_once() {
+    let dir = scratch("generation");
+    let config = throwaway_config(&dir).display().to_string();
+    assert_refused(&["--generation", "c", "--config", &config], "--generation");
+    assert_refused(&["--config", &config, "--generation"], "--generation");
+    assert_refused(
+        &[
+            "--generation",
+            "a",
+            "--generation",
+            "b",
+            "--config",
+            &config,
+        ],
+        "--generation",
+    );
+}
+
+/// `--help` still works, and still exits zero, and names the generation flag.
 #[test]
 fn help_exits_zero_with_the_usage() {
     let (status, log) = run(&["--help"]);
     assert!(status.success(), "--help exited {status}; output:\n{log}");
     assert!(log.contains("Usage: mush-gateway"), "output:\n{log}");
+    assert!(log.contains("--generation a|b"), "output:\n{log}");
 }

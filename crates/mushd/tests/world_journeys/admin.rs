@@ -555,6 +555,7 @@ fn render_stats_reports_counts_lag_and_store_health() {
         ipc_to_gw_overflow: 3,
         ipc_hw_to_server: 900,
         ipc_hw_to_gw: 4096,
+        ipc_links: 0,
         llm: Some(LlmStatsLine {
             globally_disabled: false,
             today_input: 1200,
@@ -628,7 +629,7 @@ fn render_stats_reports_counts_lag_and_store_health() {
     );
     assert!(
         text.contains(
-            "IPC boundary: 7 frames shed, 2 write timeouts, 3 to_gw overflows; high-water to_server 900, to_gw 4096"
+            "IPC boundary: 0 gateway links; 7 frames shed, 2 write timeouts, 3 to_gw overflows; high-water to_server 900, to_gw 4096"
         ),
         "{text}"
     );

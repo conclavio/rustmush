@@ -13,7 +13,9 @@
 //! Conn ids are plain `u64`s allocated by this crate, unique per process.
 //! They start at [`WEB_CONN_ID_BASE`] so they can never collide with the ids
 //! `mush-net-ssh` allocates (which count up from 1) inside the binary's
-//! single `mush_session::ConnId` space.
+//! single `mush_session::ConnId` space; a gateway of generation `b` (doc 33
+//! §4.3) also sets [`WebHooks::conn_id_bit`] on each, so two gateways of one
+//! server never allocate the same id.
 //!
 //! Raw tokens cross this boundary (`login` mints one, `validate_token` /
 //! `resume` / `logout` present one) but are **never logged** on either side;
@@ -358,6 +360,15 @@ pub trait WebHooks: Send + Sync {
     /// Release the slot claimed by
     /// [`connection_opened`](Self::connection_opened). Default: no-op.
     fn connection_closed(&self, _addr: IpAddr) {}
+
+    /// The bit this process sets on every connection id it allocates (doc 33
+    /// §4.3): a gateway of generation `b` sets bit 62 on the ids of all its
+    /// transports, so two gateways serving one server never hand out the same
+    /// id. ORed into [`WEB_CONN_ID_BASE`]. Default: none (mirrors
+    /// `mush_net_ssh::SshHooks::conn_id_bit`).
+    fn conn_id_bit(&self) -> u64 {
+        0
+    }
 
     /// The shared in-process metrics registry the `/healthz` and `/metrics`
     /// endpoints read. The binary hands the same `Arc<Metrics>` it publishes

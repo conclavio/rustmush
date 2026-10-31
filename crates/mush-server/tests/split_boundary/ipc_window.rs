@@ -15,9 +15,9 @@
 //!   ends the link without answering anything the gateway sent on it. The
 //!   `IPC-VERSION-SKEW` marker on that refusal is pinned by `mush_server`'s own
 //!   unit test of `admit_gateway`; here the proof is the link ending unanswered.
-//!   (Today a link's end is the server's end — GG.1/GG.2 change that — so the
-//!   shutdown broadcast to `All` and the `Bye` may precede the close; neither
-//!   answers the gateway.)
+//!   (Since GG.2 a link's end is that link's alone: the server runs on, and the
+//!   refused link sees at most the writer's `Bye` before the close, which
+//!   answers nothing the gateway sent.)
 
 use std::path::PathBuf;
 use std::sync::Arc;

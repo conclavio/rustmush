@@ -270,6 +270,17 @@ pub struct Metrics {
     /// High-water mark of the server->gateway (`to_gw`) queue depth
     /// (`fetch_max` gauge).
     ipc_queue_high_water_to_gw: AtomicU64,
+    /// Gateway links the server has open right now (doc 33 §4.3; gauge).
+    ipc_links: AtomicU64,
+    /// Gateway links accepted since boot (monotonic counter).
+    ipc_links_total: AtomicU64,
+    /// Connection ids announced on a link while another live link owned them,
+    /// refused on the newer link (doc 33 §4.3). Monotonic counter: a non-zero
+    /// value is two gateways of one generation, or `--generation` left off.
+    ipc_duplicate_conn_ids_total: AtomicU64,
+    /// Connections detached by the server because their link ended (each as a
+    /// `ConnDown { Lost }`), since boot. Monotonic counter.
+    ipc_link_detached_conns_total: AtomicU64,
 
     // -- exact-receipt operational custody (event-driven, always live) --
     commit_pending_barrier_refused_total: AtomicU64,
@@ -734,6 +745,32 @@ impl Metrics {
         self.ipc_frames_shed_total.load(Ordering::Relaxed)
     }
 
+    /// A gateway link was accepted (doc 33 §4.3): the gauge rises, the
+    /// counter counts it.
+    pub fn ipc_link_opened(&self) {
+        self.ipc_links.fetch_add(1, Ordering::Relaxed);
+        self.ipc_links_total.fetch_add(1, Ordering::Relaxed);
+    }
+
+    /// A gateway link ended, taking `detached` connections down with it: the
+    /// gauge falls (never below zero), the detached count accumulates.
+    pub fn ipc_link_closed(&self, detached: u64) {
+        let _ = self
+            .ipc_links
+            .fetch_update(Ordering::Relaxed, Ordering::Relaxed, |n| {
+                Some(n.saturating_sub(1))
+            });
+        self.ipc_link_detached_conns_total
+            .fetch_add(detached, Ordering::Relaxed);
+    }
+
+    /// Count one connection id announced on a link while another live link
+    /// owned it (refused on the newer link, doc 33 §4.3).
+    pub fn ipc_duplicate_conn_id(&self) {
+        self.ipc_duplicate_conn_ids_total
+            .fetch_add(1, Ordering::Relaxed);
+    }
+
     // -- exact-receipt operational custody -------------------------------
 
     /// Count one barrier waiter refused at the fixed pending-receipt cap.
@@ -925,6 +962,12 @@ impl Metrics {
                 .ipc_queue_high_water_to_server
                 .load(Ordering::Relaxed),
             ipc_queue_high_water_to_gw: self.ipc_queue_high_water_to_gw.load(Ordering::Relaxed),
+            ipc_links: self.ipc_links.load(Ordering::Relaxed),
+            ipc_links_total: self.ipc_links_total.load(Ordering::Relaxed),
+            ipc_duplicate_conn_ids_total: self.ipc_duplicate_conn_ids_total.load(Ordering::Relaxed),
+            ipc_link_detached_conns_total: self
+                .ipc_link_detached_conns_total
+                .load(Ordering::Relaxed),
             commit_pending_barrier_refused_total: self
                 .commit_pending_barrier_refused_total
                 .load(Ordering::Relaxed),
@@ -1177,6 +1220,14 @@ pub struct MetricsSnapshot {
     pub ipc_queue_high_water_to_server: u64,
     /// High-water mark of the server->gateway (`to_gw`) queue depth (M18).
     pub ipc_queue_high_water_to_gw: u64,
+    /// Gateway links open right now (doc 33 §4.3).
+    pub ipc_links: u64,
+    /// Gateway links accepted since boot.
+    pub ipc_links_total: u64,
+    /// Connection ids refused as duplicates across live links since boot.
+    pub ipc_duplicate_conn_ids_total: u64,
+    /// Connections detached because their link ended, since boot.
+    pub ipc_link_detached_conns_total: u64,
     /// Barrier waiters refused at the pending-receipt cap since boot.
     pub commit_pending_barrier_refused_total: u64,
     /// Older full reattach snapshots coalesced since boot.
@@ -1506,6 +1557,36 @@ impl MetricsSnapshot {
                 ),
                 (&[("dir", "to_gw")], self.ipc_queue_high_water_to_gw as f64),
             ],
+        );
+        // The gateway links (doc 33 §4.3): how many are open, how many ever
+        // were, and the two things a link's life can go wrong by.
+        metric(
+            &mut o,
+            "mush_ipc_links",
+            "gauge",
+            "Gateway links the server has open.",
+            &[(&[], self.ipc_links as f64)],
+        );
+        metric(
+            &mut o,
+            "mush_ipc_links_total",
+            "counter",
+            "Gateway links accepted since boot.",
+            &[(&[], self.ipc_links_total as f64)],
+        );
+        metric(
+            &mut o,
+            "mush_ipc_duplicate_conn_ids_total",
+            "counter",
+            "Connection ids announced on a link while another live link owned them (refused).",
+            &[(&[], self.ipc_duplicate_conn_ids_total as f64)],
+        );
+        metric(
+            &mut o,
+            "mush_ipc_link_detached_conns_total",
+            "counter",
+            "Connections the server detached because their gateway link ended.",
+            &[(&[], self.ipc_link_detached_conns_total as f64)],
         );
 
         // Operational custody behind one unresolved exact receipt. Barrier and
@@ -2213,6 +2294,46 @@ mod tests {
         assert_eq!(m.snapshot().loop_lag_p99_ms(), 1000);
         // Empty: zero.
         assert_eq!(Metrics::new().snapshot().loop_lag_p99_ms(), 0);
+    }
+
+    /// The link gauge rises and falls with the links, never below zero; the
+    /// link, duplicate and detached counters only rise.
+    #[test]
+    fn ipc_link_gauge_and_counters() {
+        let m = Metrics::new();
+        let s = m.snapshot();
+        assert_eq!(
+            (
+                s.ipc_links,
+                s.ipc_links_total,
+                s.ipc_duplicate_conn_ids_total,
+                s.ipc_link_detached_conns_total
+            ),
+            (0, 0, 0, 0)
+        );
+        m.ipc_link_opened();
+        m.ipc_link_opened();
+        m.ipc_duplicate_conn_id();
+        m.ipc_link_closed(3);
+        let s = m.snapshot();
+        assert_eq!(s.ipc_links, 1);
+        assert_eq!(s.ipc_links_total, 2);
+        assert_eq!(s.ipc_duplicate_conn_ids_total, 1);
+        assert_eq!(s.ipc_link_detached_conns_total, 3);
+        m.ipc_link_closed(0);
+        m.ipc_link_closed(0);
+        assert_eq!(m.snapshot().ipc_links, 0, "the gauge saturates at zero");
+        let text = m.snapshot().to_prometheus(0);
+        assert!(text.contains("mush_ipc_links 0"), "{text}");
+        assert!(text.contains("mush_ipc_links_total 2"), "{text}");
+        assert!(
+            text.contains("mush_ipc_duplicate_conn_ids_total 1"),
+            "{text}"
+        );
+        assert!(
+            text.contains("mush_ipc_link_detached_conns_total 3"),
+            "{text}"
+        );
     }
 
     #[test]

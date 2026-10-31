@@ -415,12 +415,15 @@ impl Ingress {
     /// manager, and two listeners both counting from 1 would hand two players
     /// the same id (doc 29a §8 B-1). The public port starts at 1, the trusted
     /// ingress at [`crate::trusted::TRUSTED_CONN_ID_BASE`]; the web side
-    /// starts at 2^32 and Discord at 2^48.
+    /// starts at 2^32 and Discord at 2^48. The hooks' generation bit
+    /// ([`SshHooks::conn_id_bit`], doc 33 §4.3) is ORed into the base, so
+    /// two gateways of one server allocate from disjoint ranges too.
     pub(crate) fn with_base(hooks: Arc<dyn SshHooks>, banner: &str, base: u64) -> Ingress {
+        let first = base | hooks.conn_id_bit();
         Ingress {
             hooks,
             banner: Arc::from(banner),
-            next_conn: Arc::new(AtomicU64::new(base)),
+            next_conn: Arc::new(AtomicU64::new(first)),
         }
     }
 

@@ -155,6 +155,7 @@ async fn start_split_web(unit: &ServerUnit) -> SocketAddr {
                 web_ready: Some(web_tx),
                 siteban_refresh: None,
                 give_up_after: None,
+                generation: None,
             },
         ))
         .unwrap();

@@ -36,7 +36,8 @@ use mush_ipc::{
     SendTarget, ToGateway, ToServer, WireInbound, write_frame,
 };
 use mush_proto::OutputEvent;
-use mush_server::gateway_sink::{GatewaySink, SocketSink};
+use mush_server::gateway_sink::{GatewaySink, LinkSink};
+use mush_server::links::LinkRegistry;
 use mush_server::persist::WorldExitStatus;
 use mush_server::quarantine::QuarantineSpool;
 use mush_server::staff::StaffQueue;
@@ -243,17 +244,22 @@ async fn drive(death: Death, frames: &[ToServer]) -> (std::io::Result<()>, Answe
     let (world, world_exit) = dead_world(death).await;
     let (tx, rx) = mpsc::channel::<ToGateway>(64);
     let metrics = Arc::new(Metrics::new());
-    let sink = SocketSink::new(tx, Arc::clone(&metrics), Arc::new(Notify::new()), 64, 90);
+    // The link this reader serves (doc 33 GG.2): its outbox is the reply path
+    // the answers below are read from.
+    let registry = Arc::new(LinkRegistry::new(Arc::clone(&metrics)));
+    let link = registry.open_link(
+        LinkSink::new(tx, Arc::clone(&metrics), Arc::new(Notify::new()), 64, 90),
+        mush_ipc::LinkVersion::unknown(),
+    );
     let store: Arc<dyn ObjectStore> = Arc::new(InMemoryStore::new());
     let result = mush_server::reader_loop(
         wire(frames).await,
         world,
         store,
         Arc::new(OfferRouteTable::default()),
-        sink,
+        link,
         &metrics,
         world_exit,
-        mush_ipc::LinkVersion::unknown(),
     )
     .await;
     (result, Answers { rx })

@@ -466,6 +466,8 @@ mod tests {
 
     #[derive(Default)]
     struct Hooks {
+        /// The generation bit the hooks report (doc 33 §4.3).
+        conn_id_bit: u64,
         opened: Mutex<Vec<IpAddr>>,
         open_now: Mutex<i64>,
         cap_full: bool,
@@ -474,6 +476,9 @@ mod tests {
     }
 
     impl SshHooks for Hooks {
+        fn conn_id_bit(&self) -> u64 {
+            self.conn_id_bit
+        }
         fn auth_account<'a>(&'a self, _: &'a str, _: &'a str) -> BoxFuture<'a, AuthResult> {
             Box::pin(async { AuthResult::BadCreds })
         }
@@ -552,6 +557,26 @@ mod tests {
         assert_eq!(b.conn_id(), TRUSTED_CONN_ID_BASE);
         // That it sits below the web side's base (2^32) is asserted at
         // compile time beside the constant.
+    }
+
+    /// Doc 33 §4.3: a gateway of generation `b` sets its bit on the ids of
+    /// both SSH ingresses, each range's base intact beneath it.
+    #[tokio::test]
+    async fn a_generation_bit_rides_both_ssh_ranges() {
+        const BIT: u64 = 1 << 62;
+        let hooks = Arc::new(Hooks {
+            conn_id_bit: BIT,
+            ..Hooks::default()
+        });
+        let public = Ingress::new(Arc::clone(&hooks) as Arc<dyn SshHooks>, "b");
+        let trusted = ingress(hooks);
+        let addr: IpAddr = "198.51.100.7".parse().unwrap();
+        assert_eq!(public.handler_for(addr, true).conn_id(), BIT | 1);
+        assert_eq!(public.handler_for(addr, true).conn_id(), BIT | 2);
+        assert_eq!(
+            trusted.handler_for(addr, true).conn_id(),
+            BIT | TRUSTED_CONN_ID_BASE
+        );
     }
 
     fn hello() -> DoorwayMsg {
