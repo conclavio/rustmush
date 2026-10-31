@@ -15,6 +15,7 @@
     TERRAIN_PALETTE,
     GENERATOR_PRESETS,
     SHIPPED_ARENA_IDS,
+    BASE_ROOM_PRESETS,
     DEFAULT_SLIDER_MIN_ELEV_CM,
     DEFAULT_SLIDER_MAX_ELEV_CM,
     DEFAULT_HULL_SIZE_CM,
@@ -39,13 +40,19 @@
     setTankHeadingDeg,
     getHoldObjective,
     setHoldObjective,
+    stampRoomOnGrid,
+    updateEditorRoom,
+    removeEditorRoom,
+    inferEntranceSide,
     generatePresetMap,
     markStudioEdited,
     type BiomeName,
     type BrushShape,
     type DriveName,
     type EditorCameraPin,
+    type EditorEntranceSide,
     type EditorMapState,
+    type EditorRoomRole,
     type EditorTool,
     type GeneratorPresetName,
     type GroundCheckReport,
@@ -118,6 +125,9 @@
   let draggingWaypointIdx = $state<number | null>(null);
   let selectedTankIdx = $state<number>(0);
   let draggingTankIdx = $state<number | null>(null);
+  let roomToolRole = $state<EditorRoomRole>('hangar');
+  let roomToolSide = $state<EditorEntranceSide>('south');
+  let selectedRoomIdx = $state<number>(0);
   let statusNotice = $state<string | null>(null);
 
   // WASM Engine for Live Preview
@@ -274,6 +284,78 @@
     pushSnapshot();
     setHoldObjective(editorState, { enabled: true, ...patch });
     refreshPreview();
+  }
+
+  function handleStampQuickBaseHangar() {
+    pushSnapshot();
+    const w = editorState.width;
+    const h = editorState.height;
+    const redZone = editorState.entryZones.find((z) => z.team === 'red');
+    const zx1 = redZone ? Math.max(redZone.x0, redZone.x1) : 15;
+    const x0 = Math.min(w - 14, zx1 + 2);
+    const x1 = Math.min(w - 4, x0 + 10);
+    const midY = Math.floor(h * 0.38);
+    const y0 = Math.max(4, midY - 4);
+    const y1 = Math.min(h - 4, y0 + 8);
+    const preset = BASE_ROOM_PRESETS[0]!;
+    const stamped = stampRoomOnGrid(editorState, {
+      x0,
+      y0,
+      x1,
+      y1,
+      role: 'hangar',
+      side: 'south',
+      id: `red_hangar_${editorState.rooms.length + 1}`,
+      name: `Red Base Hangar ${editorState.rooms.length + 1}`,
+      short_desc: 'Armored vehicle hangar bay with blast doors opening onto the tactical field.',
+      connects_to: {
+        pack: preset.pack,
+        room: preset.room,
+        pack_version: preset.pack_version,
+        exit_name: preset.exit_name,
+        back_name: preset.back_name
+      }
+    });
+    if (stamped) {
+      selectedRoomIdx = editorState.rooms.length - 1;
+      lastRepairNotice = `Stamped "${stamped.name}" (${stamped.id}) linked to ${preset.pack}:${preset.room}`;
+      refreshPreview();
+    } else {
+      statusNotice = 'Could not stamp quick hangar (footprint overlaps an existing room)';
+    }
+  }
+
+  function handleUpdateSelectedRoom(patch: Parameters<typeof updateEditorRoom>[2]) {
+    if (!editorState.rooms[selectedRoomIdx]) return;
+    pushSnapshot();
+    if (updateEditorRoom(editorState, selectedRoomIdx, patch)) {
+      refreshPreview();
+    }
+  }
+
+  function handleApplyBasePreset(presetIdx: number) {
+    const preset = BASE_ROOM_PRESETS[presetIdx];
+    if (!preset || !editorState.rooms[selectedRoomIdx]) return;
+    handleUpdateSelectedRoom({
+      connects_to: {
+        pack: preset.pack,
+        room: preset.room,
+        pack_version: preset.pack_version,
+        exit_name: preset.exit_name,
+        back_name: preset.back_name
+      }
+    });
+  }
+
+  function handleDeleteSelectedRoom() {
+    const rm = editorState.rooms[selectedRoomIdx];
+    if (!rm) return;
+    pushSnapshot();
+    if (removeEditorRoom(editorState, selectedRoomIdx, true)) {
+      selectedRoomIdx = Math.max(0, Math.min(selectedRoomIdx, editorState.rooms.length - 1));
+      lastRepairNotice = `Removed room "${rm.name}" (${rm.id})`;
+      refreshPreview();
+    }
   }
 
   function handleStageToServer(apply = true) {
@@ -506,7 +588,20 @@
     isDragging = true;
     dragStartCell = cell;
     hoverCell = cell;
-    if (activeTool === 'line' || activeTool === 'zone_red' || activeTool === 'zone_blue') {
+    if (
+      activeTool === 'line' ||
+      activeTool === 'zone_red' ||
+      activeTool === 'zone_blue' ||
+      activeTool === 'room'
+    ) {
+      if (activeTool === 'room') {
+        const hitRoomIdx = editorState.rooms.findIndex(
+          (r) => cell[0] >= r.x0 && cell[0] <= r.x1 && cell[1] >= r.y0 && cell[1] <= r.y1
+        );
+        if (hitRoomIdx >= 0) {
+          selectedRoomIdx = hitRoomIdx;
+        }
+      }
       pushSnapshot();
     } else {
       applyToolAt(cell[0], cell[1], true, e.shiftKey);
@@ -576,6 +671,43 @@
         }
         markStudioEdited(editorState);
         refreshPreview();
+      } else if (activeTool === 'room') {
+        let x0 = Math.min(dragStartCell[0], cell[0]);
+        let x1 = Math.max(dragStartCell[0], cell[0]);
+        let y0 = Math.min(dragStartCell[1], cell[1]);
+        let y1 = Math.max(dragStartCell[1], cell[1]);
+        // Single-click stamps a default 8×6 hangar/building centered on the click cell
+        if (x1 - x0 < 2 && y1 - y0 < 2) {
+          x0 = Math.max(0, cell[0] - 4);
+          x1 = Math.min(editorState.width - 1, x0 + 8);
+          y0 = Math.max(0, cell[1] - 3);
+          y1 = Math.min(editorState.height - 1, y0 + 6);
+        }
+        const preset = roomToolRole === 'hangar' ? BASE_ROOM_PRESETS[0] : undefined;
+        const stamped = stampRoomOnGrid(editorState, {
+          x0,
+          y0,
+          x1,
+          y1,
+          role: roomToolRole,
+          side: roomToolSide,
+          ...(preset
+            ? {
+                connects_to: {
+                  pack: preset.pack,
+                  room: preset.room,
+                  pack_version: preset.pack_version,
+                  exit_name: preset.exit_name,
+                  back_name: preset.back_name
+                }
+              }
+            : {})
+        });
+        if (stamped) {
+          selectedRoomIdx = editorState.rooms.length - 1;
+          lastRepairNotice = `Stamped ${stamped.role} "${stamped.name}" (${stamped.x0},${stamped.y0})..(${stamped.x1},${stamped.y1})`;
+          refreshPreview();
+        }
       }
     }
     isDragging = false;
@@ -810,6 +942,55 @@
       });
     }
 
+    // 6b. MUSH Rooms & Base Hangars (Footprints, Door/Ramp Bays & Labels)
+    editorState.rooms.forEach((rm, idx) => {
+      const rx0 = Math.min(rm.x0, rm.x1);
+      const rx1 = Math.max(rm.x0, rm.x1);
+      const ry0 = Math.min(rm.y0, rm.y1);
+      const ry1 = Math.max(rm.y0, rm.y1);
+      const rx = rx0 * cellW;
+      const ry = ch - (ry1 + 1) * cellH;
+      const rw = (rx1 - rx0 + 1) * cellW;
+      const rh = (ry1 - ry0 + 1) * cellH;
+      const isSelected = idx === selectedRoomIdx;
+      const isDock = rm.role === 'hangar' || rm.role === 'pad';
+
+      ctx.fillStyle = isDock ? 'rgba(16, 185, 129, 0.22)' : 'rgba(168, 85, 247, 0.20)';
+      ctx.strokeStyle = isSelected ? '#facc15' : isDock ? '#10b981' : '#a855f7';
+      ctx.lineWidth = (isSelected ? 2.4 : 1.6) / canvasZoom;
+      ctx.fillRect(rx, ry, rw, rh);
+      ctx.strokeRect(rx, ry, rw, rh);
+
+      // Doorway / hangar bay marker
+      const [dx, dy] = rm.door;
+      const dpx = (dx + 0.5) * cellW;
+      const dpy = ch - (dy + 0.5) * cellH;
+      ctx.fillStyle = '#f59e0b';
+      ctx.strokeStyle = '#000';
+      ctx.lineWidth = 1.4 / canvasZoom;
+      ctx.beginPath();
+      ctx.arc(dpx, dpy, 4.5 / canvasZoom, 0, Math.PI * 2);
+      ctx.fill();
+      ctx.stroke();
+
+      // Label inside footprint
+      const cx = rx + rw / 2;
+      const cy = ry + rh / 2;
+      const tag =
+        rm.role === 'hangar'
+          ? 'HGR'
+          : rm.role === 'pad'
+            ? 'PAD'
+            : rm.role === 'bunker'
+              ? 'BNK'
+              : 'BLD';
+      ctx.fillStyle = '#f8fafc';
+      ctx.font = `bold ${Math.max(6, Math.round(9 / canvasZoom))}px monospace`;
+      ctx.textAlign = 'center';
+      ctx.textBaseline = 'middle';
+      ctx.fillText(`[${tag}] ${rm.name}`, cx, cy);
+    });
+
     // 7. Key Spots
     editorState.keySpots.forEach((spot, idx) => {
       const sx = (spot.x + 0.5) * cellW;
@@ -885,8 +1066,28 @@
     ctx.arc(camX, camY, 5 / canvasZoom, 0, Math.PI * 2);
     ctx.fill();
 
-    // 9. Hover Brush Outline
-    if (hoverCell) {
+    // 9. Hover Brush Outline & Drag-Box Preview
+    if (isDragging && dragStartCell && hoverCell && (activeTool === 'room' || activeTool === 'zone_red' || activeTool === 'zone_blue')) {
+      const x0 = Math.min(dragStartCell[0], hoverCell[0]);
+      const x1 = Math.max(dragStartCell[0], hoverCell[0]);
+      const y0 = Math.min(dragStartCell[1], hoverCell[1]);
+      const y1 = Math.max(dragStartCell[1], hoverCell[1]);
+      const bx = x0 * cellW;
+      const by = ch - (y1 + 1) * cellH;
+      const bw = (x1 - x0 + 1) * cellW;
+      const bh = (y1 - y0 + 1) * cellH;
+      ctx.fillStyle =
+        activeTool === 'room'
+          ? 'rgba(16, 185, 129, 0.25)'
+          : activeTool === 'zone_red'
+            ? 'rgba(239, 68, 68, 0.25)'
+            : 'rgba(59, 130, 246, 0.25)';
+      ctx.strokeStyle =
+        activeTool === 'room' ? '#10b981' : activeTool === 'zone_red' ? '#ef4444' : '#3b82f6';
+      ctx.lineWidth = 2 / canvasZoom;
+      ctx.fillRect(bx, by, bw, bh);
+      ctx.strokeRect(bx, by, bw, bh);
+    } else if (hoverCell) {
       const [hx, hy] = hoverCell;
       const r = activeTool === 'paint' || activeTool === 'sculpt' || activeTool === 'line' ? brushRadius : 0;
       ctx.strokeStyle = 'rgba(255, 255, 255, 0.85)';
@@ -938,6 +1139,8 @@
     void canvasZoom;
     void canvasPan;
     void selectedTankIdx;
+    void selectedRoomIdx;
+    void isDragging;
     untrack(() => draw2DGridCanvas());
   });
 
@@ -1157,6 +1360,15 @@
           <button
             type="button"
             class="tool-btn"
+            class:active={activeTool === 'room'}
+            onclick={() => (activeTool = 'room')}
+            title="Drag a rectangle on the canvas to stamp a MUSH Room or Base Hangar"
+          >
+            Hangar / Room
+          </button>
+          <button
+            type="button"
+            class="tool-btn"
             class:active={activeTool === 'waypoint'}
             onclick={() => (activeTool = 'waypoint')}
           >
@@ -1271,6 +1483,27 @@
           <span>Radius: {brushRadius} cells</span>
           <input type="range" min="0" max="16" step="1" bind:value={brushRadius} />
         </label>
+
+        {#if activeTool === 'room'}
+          <div class="brush-row">
+            <span>Stamp Role</span>
+            <select aria-label="Stamp room role" bind:value={roomToolRole}>
+              <option value="hangar">Hangar Bay (Sheltered Dock + Base Link)</option>
+              <option value="pad">Landing Pad (Outdoor Dock)</option>
+              <option value="building">Building (Sheltered Room)</option>
+              <option value="bunker">Bunker (Fortified Room)</option>
+            </select>
+          </div>
+          <div class="brush-row">
+            <span>Entrance Side</span>
+            <select aria-label="Stamp room entrance side" bind:value={roomToolSide}>
+              <option value="south">South (Y0)</option>
+              <option value="north">North (Y1)</option>
+              <option value="east">East (X1)</option>
+              <option value="west">West (X0)</option>
+            </select>
+          </div>
+        {/if}
 
         {#if activeTool === 'sculpt'}
           <div class="brush-row">
@@ -1563,8 +1796,8 @@
             {checkReport.tracked_passable_pct}% / {checkReport.legged_passable_pct}%
           </span>
           <span>Wheeled Reach</span>
-          <span>
-            {checkReport.wheeled_passable_pct}% (Spots: {checkReport.key_spots_wheeled_reachable ? 'OK' : 'FAIL'})
+          <span class:bad={!checkReport.key_spots_wheeled_reachable || !checkReport.rooms_wheeled_reachable}>
+            {checkReport.wheeled_passable_pct}% (Spots: {checkReport.key_spots_wheeled_reachable ? 'OK' : 'FAIL'}, Rooms: {checkReport.rooms_wheeled_reachable ? 'OK' : 'FAIL'})
           </span>
           <span>Zones Mutual</span>
           <span class:bad={!checkReport.zones_reachable_tracked || !checkReport.zones_reachable_legged}>
@@ -1721,6 +1954,275 @@
             >
               Cam
             </button>
+          </div>
+        {/if}
+      </section>
+
+      <section class="dock-section" data-testid="mush-rooms-panel">
+        <div class="report-title-row">
+          <h3>MUSH Rooms & Hangars ({editorState.rooms.length})</h3>
+          <button
+            type="button"
+            class="btn"
+            onclick={handleStampQuickBaseHangar}
+            title="Stamp a Red Base Hangar bay linked to Malapert Exchange Freight Apron"
+          >
+            + Base Hangar
+          </button>
+        </div>
+        {#if editorState.rooms.length > 0}
+          <div class="room-chip-list">
+            {#each editorState.rooms as rm, idx (rm.id)}
+              <button
+                type="button"
+                class="room-chip"
+                class:dock={rm.role === 'hangar' || rm.role === 'pad'}
+                class:active={selectedRoomIdx === idx}
+                onclick={() => {
+                  selectedRoomIdx = idx;
+                  activeTool = 'room';
+                }}
+                title={`${rm.name} (${rm.id}) [${rm.x0},${rm.y0}..${rm.x1},${rm.y1}]`}
+              >
+                <span>[{rm.role.toUpperCase()}] {rm.name}</span>
+                <small>door ({rm.door[0]},{rm.door[1]})</small>
+              </button>
+            {/each}
+          </div>
+          {#if editorState.rooms[selectedRoomIdx]}
+            {@const selRoom = editorState.rooms[selectedRoomIdx]!}
+            {@const selSide = inferEntranceSide(selRoom)}
+            <div class="room-inspector">
+              <div class="room-row-2col">
+                <label class="brush-row">
+                  <span>Room Name</span>
+                  <input
+                    type="text"
+                    aria-label="Room name"
+                    value={selRoom.name}
+                    oninput={(e) =>
+                      handleUpdateSelectedRoom({
+                        name: (e.currentTarget as HTMLInputElement).value
+                      })}
+                  />
+                </label>
+                <label class="brush-row">
+                  <span>Room ID (`room.&lt;id&gt;`)</span>
+                  <input
+                    type="text"
+                    aria-label="Room ID"
+                    value={selRoom.id}
+                    onchange={(e) =>
+                      handleUpdateSelectedRoom({
+                        id: (e.currentTarget as HTMLInputElement).value
+                      })}
+                  />
+                </label>
+              </div>
+              <div class="room-row-2col">
+                <label class="brush-row">
+                  <span>Role</span>
+                  <select
+                    aria-label="Room role"
+                    value={selRoom.role}
+                    onchange={(e) =>
+                      handleUpdateSelectedRoom({
+                        role: (e.currentTarget as HTMLSelectElement).value as EditorRoomRole,
+                        restamp: true
+                      })}
+                  >
+                    <option value="hangar">Hangar Bay (Dock)</option>
+                    <option value="pad">Landing Pad (Dock)</option>
+                    <option value="building">Building (Indoor)</option>
+                    <option value="bunker">Bunker (Fortified)</option>
+                  </select>
+                </label>
+                <label class="brush-row">
+                  <span>Entrance Side</span>
+                  <select
+                    aria-label="Room entrance side"
+                    value={selSide}
+                    onchange={(e) =>
+                      handleUpdateSelectedRoom({
+                        side: (e.currentTarget as HTMLSelectElement).value as EditorEntranceSide,
+                        restamp: true
+                      })}
+                  >
+                    <option value="south">South ({selRoom.door[0]},{selRoom.y0})</option>
+                    <option value="north">North ({selRoom.door[0]},{selRoom.y1})</option>
+                    <option value="east">East ({selRoom.x1},{selRoom.door[1]})</option>
+                    <option value="west">West ({selRoom.x0},{selRoom.door[1]})</option>
+                  </select>
+                </label>
+              </div>
+              <label class="brush-row">
+                <span>Short Description</span>
+                <input
+                  type="text"
+                  aria-label="Room short description"
+                  placeholder="One-line MUSH room glance description..."
+                  value={selRoom.short_desc ?? ''}
+                  oninput={(e) =>
+                    handleUpdateSelectedRoom({
+                      short_desc: (e.currentTarget as HTMLInputElement).value
+                    })}
+                />
+              </label>
+
+              <div class="room-link-box">
+                <div class="report-title-row">
+                  <span>Base / Neighborhood Room Link (`exit.{selRoom.id}_link`)</span>
+                </div>
+                <label class="brush-row">
+                  <span>Quick-Pick Base Room Preset</span>
+                  <select
+                    aria-label="Quick-pick base room preset"
+                    value=""
+                    onchange={(e) => {
+                      const val = (e.currentTarget as HTMLSelectElement).value;
+                      if (val !== '') {
+                        handleApplyBasePreset(Number(val));
+                        (e.currentTarget as HTMLSelectElement).value = '';
+                      }
+                    }}
+                  >
+                    <option value="">— Select Base / Neighborhood Room —</option>
+                    {#each BASE_ROOM_PRESETS as preset, pIdx (preset.label)}
+                      <option value={pIdx}>{preset.label} ({preset.pack}:{preset.room})</option>
+                    {/each}
+                  </select>
+                </label>
+                <div class="room-row-2col">
+                  <label class="brush-row">
+                    <span>Target Pack (blank = local map)</span>
+                    <input
+                      type="text"
+                      aria-label="Linked pack ID"
+                      placeholder="neighborhood.malapert_exchange"
+                      value={selRoom.connects_to?.pack ?? ''}
+                      oninput={(e) =>
+                        handleUpdateSelectedRoom({
+                          connects_to: {
+                            pack: (e.currentTarget as HTMLInputElement).value.trim() || undefined,
+                            room: selRoom.connects_to?.room ?? 'room.freight_apron',
+                            pack_version: selRoom.connects_to?.pack_version ?? 1,
+                            exit_name: selRoom.connects_to?.exit_name,
+                            back_name: selRoom.connects_to?.back_name
+                          }
+                        })}
+                    />
+                  </label>
+                  <label class="brush-row">
+                    <span>Target Room ID</span>
+                    <input
+                      type="text"
+                      aria-label="Linked room ID"
+                      placeholder="room.freight_apron"
+                      value={selRoom.connects_to?.room ?? ''}
+                      oninput={(e) => {
+                        const roomVal = (e.currentTarget as HTMLInputElement).value.trim();
+                        if (!roomVal) {
+                          handleUpdateSelectedRoom({ connects_to: null });
+                        } else {
+                          handleUpdateSelectedRoom({
+                            connects_to: {
+                              pack: selRoom.connects_to?.pack,
+                              room: roomVal,
+                              pack_version: selRoom.connects_to?.pack_version ?? 1,
+                              exit_name: selRoom.connects_to?.exit_name,
+                              back_name: selRoom.connects_to?.back_name
+                            }
+                          });
+                        }
+                      }}
+                    />
+                  </label>
+                </div>
+                <div class="room-row-2col">
+                  <label class="brush-row">
+                    <span>Exit Name (to Base/Room)</span>
+                    <input
+                      type="text"
+                      aria-label="Exit name to linked room"
+                      placeholder="Base Concourse;concourse;base"
+                      value={selRoom.connects_to?.exit_name ?? ''}
+                      oninput={(e) =>
+                        handleUpdateSelectedRoom({
+                          connects_to: {
+                            pack: selRoom.connects_to?.pack,
+                            room: selRoom.connects_to?.room ?? 'room.freight_apron',
+                            pack_version: selRoom.connects_to?.pack_version ?? 1,
+                            exit_name: (e.currentTarget as HTMLInputElement).value,
+                            back_name: selRoom.connects_to?.back_name
+                          }
+                        })}
+                    />
+                  </label>
+                  <label class="brush-row">
+                    <span>Return Exit Name (to Hangar)</span>
+                    <input
+                      type="text"
+                      aria-label="Return exit name"
+                      placeholder="Hangar Bay;hangar;field"
+                      value={selRoom.connects_to?.back_name ?? ''}
+                      oninput={(e) =>
+                        handleUpdateSelectedRoom({
+                          connects_to: {
+                            pack: selRoom.connects_to?.pack,
+                            room: selRoom.connects_to?.room ?? 'room.freight_apron',
+                            pack_version: selRoom.connects_to?.pack_version ?? 1,
+                            exit_name: selRoom.connects_to?.exit_name,
+                            back_name: (e.currentTarget as HTMLInputElement).value
+                          }
+                        })}
+                    />
+                  </label>
+                </div>
+              </div>
+
+              <div class="room-actions-bar">
+                <span>
+                  Footprint [{selRoom.x0}..{selRoom.x1}, {selRoom.y0}..{selRoom.y1}] · Door ({selRoom.door[0]},{selRoom.door[1]})
+                </span>
+                <div class="pill-group">
+                  <button
+                    type="button"
+                    class="spot-Jump"
+                    onclick={() => {
+                      previewPin = {
+                        x: selRoom.door[0],
+                        y: selRoom.door[1],
+                        headingDeg:
+                          selSide === 'south'
+                            ? 0
+                            : selSide === 'north'
+                              ? 180
+                              : selSide === 'east'
+                                ? 270
+                                : 90
+                      };
+                      refreshPreview();
+                    }}
+                    title="Jump 3D camera pin to this room's doorway"
+                  >
+                    Cam
+                  </button>
+                  <button
+                    type="button"
+                    class="btn"
+                    aria-label="Delete selected room"
+                    onclick={handleDeleteSelectedRoom}
+                  >
+                    Delete Room
+                  </button>
+                </div>
+              </div>
+            </div>
+          {/if}
+        {:else}
+          <div class="room-empty-hint">
+            Use the <strong>Hangar / Room</strong> tool to drag a footprint on the map, or click
+            <strong>+ Base Hangar</strong> to stamp a ready-linked hangar bay.
           </div>
         {/if}
       </section>
@@ -2295,5 +2797,91 @@
     background: #161f2e;
     border-radius: 4px;
     padding: 4px 6px;
+  }
+
+  .room-chip-list {
+    display: flex;
+    flex-wrap: wrap;
+    gap: 4px;
+  }
+
+  .room-chip {
+    display: flex;
+    flex-direction: column;
+    align-items: flex-start;
+    gap: 1px;
+    background: #161f2e;
+    border: 1px solid rgba(168, 85, 247, 0.35);
+    color: #e2e8f0;
+    border-radius: 4px;
+    padding: 3px 6px;
+    font-family: inherit;
+    font-size: 10px;
+    cursor: pointer;
+  }
+
+  .room-chip.dock {
+    border-color: rgba(16, 185, 129, 0.45);
+    color: #6ee7b7;
+  }
+
+  .room-chip.active {
+    background: rgba(56, 189, 248, 0.22);
+    border-color: #38bdf8;
+    color: #fff;
+  }
+
+  .room-inspector {
+    display: flex;
+    flex-direction: column;
+    gap: 6px;
+    padding: 6px;
+    background: rgba(15, 23, 42, 0.65);
+    border: 1px solid rgba(148, 163, 184, 0.2);
+    border-radius: 4px;
+  }
+
+  .room-row-2col {
+    display: grid;
+    grid-template-columns: 1fr 1fr;
+    gap: 6px;
+  }
+
+  .room-inspector input,
+  .room-inspector select {
+    background: #161f2e;
+    border: 1px solid rgba(148, 163, 184, 0.28);
+    color: inherit;
+    border-radius: 3px;
+    padding: 3px 5px;
+    font-family: inherit;
+    font-size: 10px;
+    min-width: 0;
+  }
+
+  .room-link-box {
+    display: flex;
+    flex-direction: column;
+    gap: 5px;
+    padding: 5px;
+    background: rgba(16, 185, 129, 0.08);
+    border: 1px solid rgba(16, 185, 129, 0.28);
+    border-radius: 4px;
+    font-size: 10px;
+  }
+
+  .room-actions-bar {
+    display: flex;
+    align-items: center;
+    justify-content: space-between;
+    gap: 6px;
+    font-size: 10px;
+    color: #94a3b8;
+  }
+
+  .room-empty-hint {
+    font-size: 10px;
+    color: #94a3b8;
+    line-height: 1.4;
   }
 </style>

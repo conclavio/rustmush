@@ -104,12 +104,90 @@ export type EditorTool =
   | 'fill'
   | 'sculpt'
   | 'spot'
+  | 'room'
   | 'waypoint'
   | 'tanks'
   | 'zone_red'
   | 'zone_blue'
   | 'camera_pin'
   | 'pan';
+
+export type EditorRoomRole = 'hangar' | 'pad' | 'building' | 'bunker';
+export type EditorEntranceSide = 'south' | 'north' | 'east' | 'west';
+
+export interface EditorRoomLink {
+  pack?: string;
+  room: string;
+  pack_version?: number;
+  exit_name?: string;
+  back_name?: string;
+}
+
+export interface EditorRoomDef {
+  id: string;
+  name: string;
+  role: EditorRoomRole;
+  x0: number;
+  y0: number;
+  x1: number;
+  y1: number;
+  door: [number, number];
+  short_desc?: string;
+  desc?: string;
+  connects_to?: EditorRoomLink;
+}
+
+export interface BaseRoomPreset {
+  label: string;
+  pack: string;
+  room: string;
+  pack_version: number;
+  exit_name: string;
+  back_name: string;
+}
+
+export const BASE_ROOM_PRESETS: readonly BaseRoomPreset[] = [
+  {
+    label: 'Malapert Exchange — Public Counter (Base)',
+    pack: 'neighborhood.malapert_exchange',
+    room: 'room.counter',
+    pack_version: 1,
+    exit_name: 'Malapert Counter;counter;base;in',
+    back_name: 'Hangar Bay;hangar;field;out'
+  },
+  {
+    label: 'Malapert Exchange — Relay Hall',
+    pack: 'neighborhood.malapert_exchange',
+    room: 'room.relay',
+    pack_version: 1,
+    exit_name: 'Malapert Relay Hall;relay;base',
+    back_name: 'Hangar Bay;hangar;field;out'
+  },
+  {
+    label: 'Ahuna Flank — Landing Pad (Dock)',
+    pack: 'neighborhood.ahuna_flank',
+    room: 'room.pad',
+    pack_version: 1,
+    exit_name: 'Ahuna Flank Pad;pad;base',
+    back_name: 'Hangar Bay;hangar;field;out'
+  },
+  {
+    label: 'Kerwan Floor — Landing Pad (Dock)',
+    pack: 'neighborhood.kerwan_floor',
+    room: 'room.pad',
+    pack_version: 1,
+    exit_name: 'Kerwan Floor Pad;pad;base',
+    back_name: 'Landing Pad;pad;field;out'
+  },
+  {
+    label: 'OOC Area — Simulator Lobby',
+    pack: 'neighborhood.ooc_area',
+    room: 'room.sim_lobby',
+    pack_version: 7,
+    exit_name: 'Simulator Lobby;lobby;base',
+    back_name: 'Hangar Bay;hangar;field;out'
+  }
+] as const;
 
 export type SculptMode = 'raise' | 'lower' | 'flatten' | 'smooth';
 export type BrushShape = 'circle' | 'square';
@@ -239,6 +317,7 @@ export interface EditorMapState {
   classes: Uint8Array;
   elevCm: Int16Array;
   keySpots: EditorKeySpot[];
+  rooms: EditorRoomDef[];
   entryZones: EditorEntryZone[];
   waypoints: EditorWaypointGraph;
   modes: EditorArenaMode[];
@@ -268,6 +347,7 @@ export interface GroundDraftJson {
   elev: string;
   entry_zones: EditorEntryZone[];
   key_spots: EditorKeySpot[];
+  rooms?: EditorRoomDef[];
   waypoints: EditorWaypointGraph;
   modes?: EditorArenaMode[];
   tanks?: EditorTankDef[];
@@ -295,6 +375,8 @@ export interface GroundCheckReport {
   zones_reachable_legged: boolean;
   key_spots_wheeled_reachable: boolean;
   unreachable_key_spots: string[];
+  rooms_wheeled_reachable: boolean;
+  unreachable_rooms: string[];
   waypoints_reachable: boolean;
   unreachable_waypoints: string[];
   max_grade_pct: number;
@@ -487,6 +569,7 @@ export function createEditorMap(
       { name: 'Signal Hill', x: Math.floor(w * 0.5), y: Math.floor(h * 0.55) },
       { name: 'Crossroads', x: Math.floor(w * 0.65), y: Math.floor(h * 0.45) }
     ],
+    rooms: [],
     entryZones,
     waypoints: { nodes: [], edges: [] },
     modes: [{ mode: 'hold', spot: 'Crossroads', radius_cells: 6, hold_ms: 120_000 }],
@@ -514,6 +597,11 @@ export function cloneEditorMap(state: EditorMapState): EditorMapState {
     classes: new Uint8Array(state.classes),
     elevCm: new Int16Array(state.elevCm),
     keySpots: state.keySpots.map((s) => ({ ...s })),
+    rooms: state.rooms.map((r) => ({
+      ...r,
+      door: [r.door[0], r.door[1]],
+      ...(r.connects_to ? { connects_to: { ...r.connects_to } } : {})
+    })),
     entryZones: state.entryZones.map((z) => ({ ...z })),
     waypoints: {
       nodes: state.waypoints.nodes.map((n) => ({ ...n })),
@@ -1103,6 +1191,35 @@ export function exportGroundDraftJson(state: EditorMapState): GroundDraftJson {
       x: s.x,
       y: s.y
     })),
+    ...(state.rooms.length > 0
+      ? {
+          rooms: state.rooms.map((r) => ({
+            id: r.id,
+            name: r.name,
+            role: r.role,
+            x0: Math.min(r.x0, r.x1),
+            y0: Math.min(r.y0, r.y1),
+            x1: Math.max(r.x0, r.x1),
+            y1: Math.max(r.y0, r.y1),
+            door: [r.door[0], r.door[1]] as [number, number],
+            ...(r.short_desc ? { short_desc: r.short_desc } : {}),
+            ...(r.desc ? { desc: r.desc } : {}),
+            ...(r.connects_to && r.connects_to.room
+              ? {
+                  connects_to: {
+                    ...(r.connects_to.pack ? { pack: r.connects_to.pack } : {}),
+                    room: r.connects_to.room,
+                    ...(r.connects_to.pack_version !== undefined
+                      ? { pack_version: r.connects_to.pack_version }
+                      : {}),
+                    ...(r.connects_to.exit_name ? { exit_name: r.connects_to.exit_name } : {}),
+                    ...(r.connects_to.back_name ? { back_name: r.connects_to.back_name } : {})
+                  }
+                }
+              : {})
+          }))
+        }
+      : {}),
     waypoints: {
       nodes: state.waypoints.nodes.map((n) => ({ id: n.id, x: n.x, y: n.y })),
       edges: state.waypoints.edges.map((e) => [e[0], e[1]])
@@ -1168,6 +1285,35 @@ export function importGroundDraftJson(draft: GroundDraftJson): EditorMapState {
       name: s.name,
       x: s.x,
       y: s.y
+    })),
+    rooms: (draft.rooms ?? []).map((r) => ({
+      id: r.id,
+      name: r.name || r.id,
+      role:
+        r.role === 'hangar' || r.role === 'pad' || r.role === 'bunker' ? r.role : 'building',
+      x0: Math.min(r.x0, r.x1),
+      y0: Math.min(r.y0, r.y1),
+      x1: Math.max(r.x0, r.x1),
+      y1: Math.max(r.y0, r.y1),
+      door: [
+        r.door?.[0] ?? Math.floor((r.x0 + r.x1) / 2),
+        r.door?.[1] ?? Math.min(r.y0, r.y1)
+      ],
+      ...(r.short_desc ? { short_desc: r.short_desc } : {}),
+      ...(r.desc ? { desc: r.desc } : {}),
+      ...(r.connects_to && r.connects_to.room
+        ? {
+            connects_to: {
+              ...(r.connects_to.pack ? { pack: r.connects_to.pack } : {}),
+              room: r.connects_to.room,
+              ...(r.connects_to.pack_version !== undefined
+                ? { pack_version: r.connects_to.pack_version }
+                : {}),
+              ...(r.connects_to.exit_name ? { exit_name: r.connects_to.exit_name } : {}),
+              ...(r.connects_to.back_name ? { back_name: r.connects_to.back_name } : {})
+            }
+          }
+        : {})
     })),
     entryZones: (draft.entry_zones ?? []).map((z) => ({
       team: z.team,
@@ -1918,6 +2064,21 @@ export function checkEditorMap(state: EditorMapState): GroundCheckReport {
   }
   const keySpotsWheeledReachable = unreachableKeySpots.length === 0;
 
+  const unreachableRooms: string[] = [];
+  for (const room of state.rooms) {
+    const [dx, dy] = room.door;
+    if (
+      dx < 0 ||
+      dx >= state.width ||
+      dy < 0 ||
+      dy >= state.height ||
+      wheeledUnion[dy * state.width + dx] === 0
+    ) {
+      unreachableRooms.push(`${room.name} (${room.id})`);
+    }
+  }
+  const roomsWheeledReachable = unreachableRooms.length === 0;
+
   const unreachableWaypoints: string[] = [];
   for (const node of state.waypoints.nodes) {
     if (
@@ -2018,6 +2179,9 @@ export function checkEditorMap(state: EditorMapState): GroundCheckReport {
   if (!keySpotsWheeledReachable) {
     failures.push(`key spots not reachable by wheeled: ${unreachableKeySpots.join(', ')}`);
   }
+  if (!roomsWheeledReachable) {
+    failures.push(`room entrances not reachable by wheeled: ${unreachableRooms.join(', ')}`);
+  }
   if (!waypointsReachable) {
     failures.push(`waypoints not reachable by tracked: ${unreachableWaypoints.join(', ')}`);
   }
@@ -2044,6 +2208,8 @@ export function checkEditorMap(state: EditorMapState): GroundCheckReport {
     zones_reachable_legged: zonesReachableLegged,
     key_spots_wheeled_reachable: keySpotsWheeledReachable,
     unreachable_key_spots: unreachableKeySpots,
+    rooms_wheeled_reachable: roomsWheeledReachable,
+    unreachable_rooms: unreachableRooms,
     waypoints_reachable: waypointsReachable,
     unreachable_waypoints: unreachableWaypoints,
     max_grade_pct: maxGradePct,
@@ -2104,6 +2270,15 @@ export function routeEditorMap(state: EditorMapState): EditorWaypointGraph {
     }
     spotAnchors.push([spot.x, spot.y]);
   });
+  for (const room of state.rooms) {
+    const [dx, dy] = room.door;
+    if (!nodes.some((n) => n.x === dx && n.y === dy) && nodes.length < 256) {
+      nodes.push({ id: `room_${room.id}`, x: dx, y: dy });
+    }
+    if (!spotAnchors.some(([sx, sy]) => sx === dx && sy === dy)) {
+      spotAnchors.push([dx, dy]);
+    }
+  }
 
   const pairs: [[number, number], [number, number]][] = [];
   if (spotAnchors.length === 0) {
@@ -2301,6 +2476,17 @@ export function relaxEditorSlopes(
       }
     }
   }
+  for (const r of state.rooms) {
+    const x0 = Math.max(0, Math.min(r.x0, r.x1));
+    const x1 = Math.min(w - 1, Math.max(r.x0, r.x1));
+    const y0 = Math.max(0, Math.min(r.y0, r.y1));
+    const y1 = Math.min(h - 1, Math.max(r.y0, r.y1));
+    for (let y = y0; y <= y1; y++) {
+      for (let x = x0; x <= x1; x++) {
+        inZone[y * w + x] = 1;
+      }
+    }
+  }
 
   const isPassable = (c: number) => c !== 0 && c !== 10 && c !== 15 && c !== 14;
   const isRoad = (c: number) => c === 7 || c === 1;
@@ -2393,6 +2579,12 @@ export function despeckleEditorMap(state: EditorMapState, minCells = 3): number[
   for (const s of state.keySpots) {
     if (s.x >= 0 && s.x < w && s.y >= 0 && s.y < h) {
       spotCells.add(s.y * w + s.x);
+    }
+  }
+  for (const r of state.rooms) {
+    const [dx, dy] = r.door;
+    if (dx >= 0 && dx < w && dy >= 0 && dy < h) {
+      spotCells.add(dy * w + dx);
     }
   }
 
@@ -2622,6 +2814,324 @@ export function setHoldObjective(
   state.modes = [nextMode];
   markStudioEdited(state);
   return nextMode;
+}
+
+// ---------------------------------------------------------------------------
+// MUSH Room & Base Hangar Stamping & Linking
+// ---------------------------------------------------------------------------
+
+/**
+ * Compute the doorway cell `[dx, dy]` on the chosen perimeter side of `[x0..x1, y0..y1]`.
+ */
+export function doorForSide(
+  x0: number,
+  y0: number,
+  x1: number,
+  y1: number,
+  side: EditorEntranceSide
+): [number, number] {
+  const minX = Math.min(x0, x1);
+  const maxX = Math.max(x0, x1);
+  const minY = Math.min(y0, y1);
+  const maxY = Math.max(y0, y1);
+  const midX = Math.floor((minX + maxX) / 2);
+  const midY = Math.floor((minY + maxY) / 2);
+  switch (side) {
+    case 'north':
+      return [midX, maxY];
+    case 'east':
+      return [maxX, midY];
+    case 'west':
+      return [minX, midY];
+    case 'south':
+    default:
+      return [midX, minY];
+  }
+}
+
+/**
+ * Infer the perimeter side (`south`, `north`, `east`, `west`) of `room.door`.
+ */
+export function inferEntranceSide(room: EditorRoomDef): EditorEntranceSide {
+  const [dx, dy] = room.door;
+  if (dy === room.y1 && dy !== room.y0) return 'north';
+  if (dx === room.x1 && dx !== room.x0) return 'east';
+  if (dx === room.x0 && dx !== room.x1) return 'west';
+  return 'south';
+}
+
+function sanitizeRoomSlug(raw: string): string {
+  const cleaned = raw
+    .trim()
+    .toLowerCase()
+    .replace(/[^a-z0-9_]+/g, '_')
+    .replace(/^_+|_+$/g, '');
+  if (!cleaned) return 'hangar_1';
+  return /^[a-z]/.test(cleaned) ? cleaned : `r_${cleaned}`;
+}
+
+/**
+ * Stamp a MUSH room or base hangar onto the map grid (`[x0..x1, y0..y1]` inclusive):
+ * - Flattens the footprint elevation to the median elevation of the footprint
+ * - Stamps terrain classes matching `role`:
+ *   - `hangar`: `Wall` (`10`) perimeter, `Floor` (`5`) interior, 3-cell wide `Door` (`11`) bay on the entrance side, and a 2-cell `Paved` (`1`) apron outside the bay
+ *   - `pad`: `Platform` (`12`) pad with `Paved` (`1`) entrance threshold
+ *   - `building`: `Wall` (`10`) perimeter, `Floor` (`5`) interior, 1-cell `Door` (`11`)
+ *   - `bunker`: `Wall` (`10`) perimeter, `Floor` (`5`) interior, 1-cell `Door` (`11`), and `Rubble` (`6`) revetments on outer corners
+ * - Appends or updates the `EditorRoomDef` in `state.rooms` (rejecting overlapping rooms).
+ */
+export function stampRoomOnGrid(
+  state: EditorMapState,
+  opts: {
+    x0: number;
+    y0: number;
+    x1: number;
+    y1: number;
+    role?: EditorRoomRole;
+    side?: EditorEntranceSide;
+    id?: string;
+    name?: string;
+    short_desc?: string;
+    desc?: string;
+    connects_to?: EditorRoomLink;
+  }
+): EditorRoomDef | null {
+  const w = state.width;
+  const h = state.height;
+  const rx0 = Math.max(0, Math.min(w - 1, Math.min(opts.x0, opts.x1)));
+  const rx1 = Math.max(0, Math.min(w - 1, Math.max(opts.x0, opts.x1)));
+  const ry0 = Math.max(0, Math.min(h - 1, Math.min(opts.y0, opts.y1)));
+  const ry1 = Math.max(0, Math.min(h - 1, Math.max(opts.y0, opts.y1)));
+  if (rx1 - rx0 < 2 || ry1 - ry0 < 2) {
+    return null;
+  }
+  const role: EditorRoomRole = opts.role ?? 'hangar';
+  const side: EditorEntranceSide = opts.side ?? 'south';
+
+  // Reject overlap with any existing room (unless updating the exact same room id).
+  for (const other of state.rooms) {
+    if (opts.id && other.id === opts.id) continue;
+    if (rx0 <= other.x1 && rx1 >= other.x0 && ry0 <= other.y1 && ry1 >= other.y0) {
+      return null;
+    }
+  }
+
+  let baseId = opts.id ? sanitizeRoomSlug(opts.id) : '';
+  if (!baseId) {
+    const prefix = role === 'hangar' ? 'hangar' : role === 'pad' ? 'pad' : role === 'bunker' ? 'bunker' : 'bldg';
+    let seq = state.rooms.length + 1;
+    baseId = `${prefix}_${seq}`;
+    while (state.rooms.some((r) => r.id === baseId)) {
+      seq++;
+      baseId = `${prefix}_${seq}`;
+    }
+  }
+
+  const defaultName =
+    opts.name?.trim() ||
+    (role === 'hangar'
+      ? `Hangar Bay ${state.rooms.length + 1}`
+      : role === 'pad'
+        ? `Landing Pad ${state.rooms.length + 1}`
+        : role === 'bunker'
+          ? `Bunker ${state.rooms.length + 1}`
+          : `Building ${state.rooms.length + 1}`);
+
+  const door = doorForSide(rx0, ry0, rx1, ry1, side);
+
+  // Compute median footprint elevation so the building/hangar pad sits level.
+  const elevSamples: number[] = [];
+  for (let y = ry0; y <= ry1; y++) {
+    for (let x = rx0; x <= rx1; x++) {
+      elevSamples.push(state.elevCm[y * w + x] ?? 0);
+    }
+  }
+  elevSamples.sort((a, b) => a - b);
+  const padElev = elevSamples[Math.floor(elevSamples.length / 2)] ?? 0;
+
+  for (let y = ry0; y <= ry1; y++) {
+    for (let x = rx0; x <= rx1; x++) {
+      const idx = y * w + x;
+      state.elevCm[idx] = padElev;
+      const isBorder = x === rx0 || x === rx1 || y === ry0 || y === ry1;
+      const isDoor =
+        x === door[0] && y === door[1]
+          ? true
+          : role === 'hangar' &&
+            ((side === 'south' && y === ry0 && Math.abs(x - door[0]) <= 1 && x > rx0 && x < rx1) ||
+              (side === 'north' && y === ry1 && Math.abs(x - door[0]) <= 1 && x > rx0 && x < rx1) ||
+              (side === 'east' && x === rx1 && Math.abs(y - door[1]) <= 1 && y > ry0 && y < ry1) ||
+              (side === 'west' && x === rx0 && Math.abs(y - door[1]) <= 1 && y > ry0 && y < ry1));
+
+      if (role === 'pad') {
+        state.classes[idx] = isDoor ? 1 : 12; // Paved threshold, Platform interior
+      } else if (isDoor) {
+        state.classes[idx] = 11; // Door
+      } else if (isBorder) {
+        state.classes[idx] = 10; // Wall
+      } else {
+        state.classes[idx] = 5; // Floor
+      }
+    }
+  }
+
+  // Stamp a 2-cell paved ramp/apron outside the door so wheeled units can drive right up to the bay.
+  const [outDx, outDy] =
+    side === 'north'
+      ? [0, 1]
+      : side === 'east'
+        ? [1, 0]
+        : side === 'west'
+          ? [-1, 0]
+          : [0, -1];
+  const halfSpan = role === 'hangar' ? 1 : 0;
+  for (let step = 1; step <= 2; step++) {
+    for (let ortho = -halfSpan; ortho <= halfSpan; ortho++) {
+      const ax = door[0] + outDx * step + (outDy !== 0 ? ortho : 0);
+      const ay = door[1] + outDy * step + (outDx !== 0 ? ortho : 0);
+      if (ax >= 0 && ax < w && ay >= 0 && ay < h) {
+        const aIdx = ay * w + ax;
+        state.classes[aIdx] = 1; // Paved apron
+        state.elevCm[aIdx] = padElev;
+      }
+    }
+  }
+
+  const roomDef: EditorRoomDef = {
+    id: baseId,
+    name: defaultName,
+    role,
+    x0: rx0,
+    y0: ry0,
+    x1: rx1,
+    y1: ry1,
+    door,
+    ...(opts.short_desc ? { short_desc: opts.short_desc } : {}),
+    ...(opts.desc ? { desc: opts.desc } : {}),
+    ...(opts.connects_to ? { connects_to: { ...opts.connects_to } } : {})
+  };
+
+  const existingIdx = state.rooms.findIndex((r) => r.id === baseId);
+  if (existingIdx >= 0) {
+    state.rooms[existingIdx] = roomDef;
+  } else {
+    state.rooms.push(roomDef);
+  }
+  markStudioEdited(state);
+  return roomDef;
+}
+
+/**
+ * Update metadata, role, entrance side, or MUSH room link (`connects_to`) for `roomIndex`,
+ * re-stamping the footprint if `role` or `side` changed.
+ */
+export function updateEditorRoom(
+  state: EditorMapState,
+  roomIndex: number,
+  patch: {
+    id?: string;
+    name?: string;
+    role?: EditorRoomRole;
+    side?: EditorEntranceSide;
+    short_desc?: string;
+    desc?: string;
+    connects_to?: EditorRoomLink | null;
+    restamp?: boolean;
+  }
+): EditorRoomDef | null {
+  const cur = state.rooms[roomIndex];
+  if (!cur) return null;
+  const nextId = patch.id !== undefined ? sanitizeRoomSlug(patch.id) : cur.id;
+  if (
+    nextId !== cur.id &&
+    state.rooms.some((other, idx) => idx !== roomIndex && other.id === nextId)
+  ) {
+    return null;
+  }
+  const nextRole = patch.role ?? cur.role;
+  const curSide = inferEntranceSide(cur);
+  const nextSide = patch.side ?? curSide;
+  const nextDoor =
+    patch.side !== undefined
+      ? doorForSide(cur.x0, cur.y0, cur.x1, cur.y1, nextSide)
+      : cur.door;
+  const nextName = patch.name !== undefined ? patch.name : cur.name;
+  const nextShort = patch.short_desc !== undefined ? patch.short_desc : cur.short_desc;
+  const nextDesc = patch.desc !== undefined ? patch.desc : cur.desc;
+  const nextLink =
+    patch.connects_to === null
+      ? undefined
+      : patch.connects_to !== undefined
+        ? patch.connects_to.room.trim()
+          ? { ...patch.connects_to, room: patch.connects_to.room.trim() }
+          : undefined
+        : cur.connects_to;
+
+  if (patch.restamp || patch.role !== undefined || patch.side !== undefined) {
+    cur.id = nextId;
+    return stampRoomOnGrid(state, {
+      x0: cur.x0,
+      y0: cur.y0,
+      x1: cur.x1,
+      y1: cur.y1,
+      role: nextRole,
+      side: nextSide,
+      id: nextId,
+      name: nextName,
+      ...(nextShort ? { short_desc: nextShort } : {}),
+      ...(nextDesc ? { desc: nextDesc } : {}),
+      ...(nextLink ? { connects_to: nextLink } : {})
+    });
+  }
+
+  const updated: EditorRoomDef = {
+    id: nextId,
+    name: nextName,
+    role: nextRole,
+    x0: cur.x0,
+    y0: cur.y0,
+    x1: cur.x1,
+    y1: cur.y1,
+    door: nextDoor,
+    ...(nextShort ? { short_desc: nextShort } : {}),
+    ...(nextDesc ? { desc: nextDesc } : {}),
+    ...(nextLink ? { connects_to: nextLink } : {})
+  };
+  state.rooms[roomIndex] = updated;
+  markStudioEdited(state);
+  return updated;
+}
+
+/**
+ * Remove `roomIndex` from `state.rooms`, optionally clearing its grid footprint back to `fillClass`.
+ */
+export function removeEditorRoom(
+  state: EditorMapState,
+  roomIndex: number,
+  clearGrid = true
+): boolean {
+  const rm = state.rooms[roomIndex];
+  if (!rm) return false;
+  if (clearGrid) {
+    const fill: TerrainClassCode =
+      state.biome === 'mars'
+        ? 8
+        : state.biome === 'lunar'
+          ? 17
+          : state.biome === 'ice'
+            ? 16
+            : 3;
+    for (let y = rm.y0; y <= rm.y1; y++) {
+      for (let x = rm.x0; x <= rm.x1; x++) {
+        if (x >= 0 && x < state.width && y >= 0 && y < state.height) {
+          state.classes[y * state.width + x] = fill;
+        }
+      }
+    }
+  }
+  state.rooms.splice(roomIndex, 1);
+  markStudioEdited(state);
+  return true;
 }
 
 const PG_RIVER: [number, number] = [62, 66];
@@ -2885,6 +3395,7 @@ export function generatePresetMap(
       classes,
       elevCm,
       keySpots,
+      rooms: [],
       entryZones,
       waypoints,
       modes,
@@ -3057,6 +3568,7 @@ export function generatePresetMap(
     classes,
     elevCm,
     keySpots,
+    rooms: [],
     entryZones,
     waypoints,
     modes,
