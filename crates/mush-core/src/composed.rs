@@ -3,6 +3,7 @@
 //! This is the synchronous half of the existing authoritative writer protocol.
 //! It adds neither a second receipt nor a callback after acknowledgement.
 
+use crate::World;
 use crate::action_state::{
     ActionStateError, ActionStateStore, PreparedInstallation, PreparedTxn, StateFamilyId,
 };
@@ -12,7 +13,6 @@ use crate::authoritative::{
 };
 use crate::mechanics::{OwnerId, canonical_json_bytes_with_limit};
 use crate::participant::{OwnerImages, ParticipantError};
-use crate::World;
 use smol_str::SmolStr;
 
 /// A complete immutable union, with the typed reservation retaining every owner

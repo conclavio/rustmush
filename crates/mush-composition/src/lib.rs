@@ -320,13 +320,11 @@ fn compose_server_modules<E>(
             .with_unit_authority(tacsim::composition::domain_unit_authority(tacsim_delegate)),
         ),
         Box::new(mush_faction::FactionModule::new()),
-        Box::new(
-            mush_scenes::ScenesModule::new().with_sealer_gate(Arc::new(
-                    |w: &mush_core::World, run: u64, who: mush_core::ObjId| {
-                        mush_economy::stands_in_contract(w, mush_economy::ContractId(run), who)
-                    },
-                )),
-        ),
+        Box::new(mush_scenes::ScenesModule::new().with_sealer_gate(Arc::new(
+            |w: &mush_core::World, run: u64, who: mush_core::ObjId| {
+                mush_economy::stands_in_contract(w, mush_economy::ContractId(run), who)
+            },
+        ))),
         Box::new(simulation),
         Box::new(tacsim::composition::atlas_module_builder(atlas)),
         Box::new(tactics),

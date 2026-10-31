@@ -1120,10 +1120,7 @@ fn dt_self_loop_exit_still_teaches_its_neighborhood() {
             }
         })
         .collect();
-    assert_eq!(
-        writes,
-        vec![serde_json::json!({ "places": planned })]
-    );
+    assert_eq!(writes, vec![serde_json::json!({ "places": planned })]);
 }
 
 #[test]

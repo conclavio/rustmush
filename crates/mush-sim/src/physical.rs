@@ -238,10 +238,7 @@ pub(crate) fn register(
 ) -> Result<(), ModError> {
     let descriptor = participant_descriptor()?;
     let historical = participant_descriptor_v1()?;
-    let expected = [
-        descriptor.clone(),
-        historical.clone(),
-    ];
+    let expected = [descriptor.clone(), historical.clone()];
     // A configured IC custody owner installs the one exact participant
     // validator for the physical descriptors, retaining its
     // composition references.

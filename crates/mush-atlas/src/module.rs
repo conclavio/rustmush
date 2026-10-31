@@ -297,10 +297,7 @@ impl AtlasModule {
                 }
             }
         }
-        AtlasModule {
-            config,
-            shelf,
-        }
+        AtlasModule { config, shelf }
     }
 
     /// Put packs on the shelf (the composition root adds the starter packs
@@ -312,7 +309,6 @@ impl AtlasModule {
         self.shelf = packs;
         self
     }
-
 }
 
 impl Default for AtlasModule {

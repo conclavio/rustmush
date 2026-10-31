@@ -20,9 +20,9 @@ use crate::mechanics::{
 };
 use crate::module::{ErasedSlotCapture, ModuleStateMap, StateInit};
 
-/// The full optional production roster has seventeen adapters, including the
-/// physical and ordinary locomotion protocols and atomic Scenes completion.
-/// Registration headroom does not expand any invocation's images or modules;
+/// The full optional production roster registers up to fourteen adapters: the
+/// twenty-three measured on 2026-10-31 less the nine the removed 26g–26j
+/// movement stacks held. Registration headroom does not expand any invocation's images or modules;
 /// adapters sharing an actual state slot still require disjoint full action refs.
 pub const MAX_OWNER_PARTICIPANTS: usize = 24;
 /// An invocation binds at most three distinct slots belonging to two modules.
@@ -541,7 +541,6 @@ impl ParticipantRegistry {
                 })
         })
     }
-
 }
 
 pub(crate) struct ParticipantPreparation<'a> {
@@ -976,8 +975,7 @@ impl ParticipantRegistry {
             .participant_slot(r.state_type)
             .ok_or(ParticipantError::Slot)?;
         let prepared = r.adapter.prepare(state, context, Box::new(request))?;
-        if prepared.writes.is_empty() || prepared.writes.len() > MAX_AUTHORITATIVE_REPLAY_WRITES
-        {
+        if prepared.writes.is_empty() || prepared.writes.len() > MAX_AUTHORITATIVE_REPLAY_WRITES {
             return Err(ParticipantError::ImageLimit);
         }
         for write in &prepared.writes {

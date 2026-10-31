@@ -698,13 +698,7 @@ impl Registry {
         spec: CommandSpec,
         handler: Arc<dyn CommandHandler>,
     ) -> Result<(), RegistryError> {
-        self.insert_entry(
-            spec,
-            handler,
-            None,
-            CommandCompatibility::ReadOnly,
-            true,
-        )
+        self.insert_entry(spec, handler, None, CommandCompatibility::ReadOnly, true)
     }
 
     /// Register a command tagged with the registering module's identity

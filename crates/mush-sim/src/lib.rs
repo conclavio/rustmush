@@ -286,7 +286,6 @@ impl SimulationModule {
     fn audit_movement_history(&self, ctx: &ModuleCtx<'_>) -> Result<(), ModError> {
         physical::loaded(ctx)
     }
-
 }
 
 fn bid(s: &str) -> BehaviorId {

@@ -117,9 +117,7 @@ impl ScenesModule {
     /// A fresh module instance, with no sealer gate (conferral is unrestricted).
     #[must_use]
     pub fn new() -> ScenesModule {
-        ScenesModule {
-            sealer_gate: None,
-        }
+        ScenesModule { sealer_gate: None }
     }
 
     /// Freeze the **sealer gate** at wiring (E6b independent verify fold, M4).
@@ -133,7 +131,6 @@ impl ScenesModule {
         self.sealer_gate = Some(gate);
         self
     }
-
 }
 
 impl Default for ScenesModule {
