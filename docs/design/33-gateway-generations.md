@@ -297,8 +297,9 @@ the restarting notice is today, never a raw write into a kitty escape. Web conne
 the same `Sys` lines and, at the deadline, a close frame with the existing
 `close_code::SERVICE_RESTART` and a reason the client can show. Q-33-4 is ruled: the client
 reconnects by itself with its resume sequence once the warnings have been shown as `Sys`
-lines, and shows the reason only when the reconnect fails. The Discord bridge is not connection-bound: exactly one generation runs the
-bot, under an `flock` on `$STATE_DIRECTORY/discord.lock`; the draining generation stops its
+lines, and shows the reason only when the reconnect fails. The Discord bridge is not
+connection-bound: exactly one generation runs the bot, under an `flock` on
+`$STATE_DIRECTORY/discord.lock`; the draining generation stops its
 bot at `SIGUSR1` and the new one, blocked on the lock since its start, connects. Its follows
 are rebuilt by whichever generation holds the bot.
 
