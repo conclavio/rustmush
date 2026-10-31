@@ -161,6 +161,23 @@ fn visit(
         if !valid || negative {
             return Step::Idle;
         }
+        // Doc 32 cut CF.6b: a WITHDRAW it has answered WILCO drives it home, and the host asks
+        // it out at its carrier's ramp until the kernel lets it go there.
+        if matches!(objective, Some(FieldObjective::Withdraw))
+            && delivered
+                .acknowledgement
+                .is_some_and(|a| a.response == Response::Wilco)
+        {
+            crate::field::home::ask_out(
+                ctx,
+                unit,
+                actor,
+                crate::field::exit::Then::Sortie {
+                    operation: flight.operation,
+                    slot: slot.into(),
+                },
+            );
+        }
         let step = crate::field::orders::step(ctx, &site, (unit, actor), &roster, &delivered);
         return match step {
             crate::field::orders::Step::Idle => Step::Idle,

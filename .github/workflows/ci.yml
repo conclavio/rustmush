@@ -331,13 +331,31 @@ jobs:
     # two bot cells. Expected: about 18-21 min each, level with the tacsim
     # shards. mushd (32 summed, sim_lenses 28) and the gateway (4) stay one
     # cell each.
+    #
+    # 2026-10-31, later: THE OVERHEADS, read off main's run 41221363161 (the
+    # first on sixteen cells). (1) The root-disk step is gone: it freed 27 GB
+    # a cell and the cells now bottom out at 85 GB free (rest-libs, the
+    # biggest build) to 113 GB, so without it the worst case is ~58 GB of
+    # headroom; its wait after checkout, toolchain and cache restore was
+    # 0.5-2.4 min on every cell, the longest included, ~25 runner-min a run.
+    # (2) The `--build-jobs 2` / `-j 2` link cap is lifted everywhere in this
+    # job: it dates from the loop-device layout, and on the per-crate cells
+    # peak memory was 5.7-8.0 GB of the runner's 16 GB with no swap and zero
+    # memory pressure, while the compile was 2.5-6 min of every cell on two of
+    # four vCPUs. (3) tacsim-lib runs its unit tests on the pool's four
+    # threads, not two (18 summed minutes). (4) knowing (32 min) and
+    # match_lifecycle (19) swap shards, shard_1 <-> shard_4
+    # (.github/tacsim-integration-shards.txt has the figures).
+    # (5) The release job runs on the nightly and dispatches only, not on
+    # pushes to main: 27 min of runner that uploaded nothing and set main's
+    # wall. Measured on the cut's own PR run.
     strategy:
       fail-fast: false
       matrix:
         shard:
-          # (a) tacsim's lib unit tests (1,275 tests, ~4 min) on two test
-          # threads, where the default is four, then tacsim's doc-tests,
-          # which rest-libs' `--exclude tacsim` drops with the lib.
+          # (a) tacsim's lib unit tests (2,053 tests, 18 summed minutes) on
+          # the pool's four threads (two until 2026-10-31), then tacsim's
+          # doc-tests, which rest-libs' `--exclude tacsim` drops with the lib.
           - tacsim-lib
           # (b) tacsim's integration test binaries, a sixth each by measured
           # time (lines 1 to 6 of .github/tacsim-integration-shards.txt; four
@@ -386,47 +404,24 @@ jobs:
           - bot
           - bot-stories
     steps:
-      # 2026-10-18: the workspace builds 392 test binaries (157 MB each at
-      # opt-level 0 with line-table debuginfo), more than the ~25 GB a hosted
-      # runner had free at the workspace, so every run until then died in the
-      # Build step with 0 MB free, and the job got easimon/maximize-build-space:
-      # an LVM volume spanned over a loop file on the root OS disk and the temp
-      # disk, plus 4 GB of swap, mounted at the workspace before checkout.
-      #
-      # 2026-10-20: that volume is gone. Eight of the twenty pushes to main
-      # since 2026-10-18 (3160cdd0, da9618ce, c44c0bb6, e962b662, 4465bf06,
-      # 61324cba, 6f797974, eb99c9be) ended with "The hosted runner lost
-      # communication with the server", independent of the code (e7f2da90 and
-      # 6f797974 ran identical test code; one passed, the other died). A dead
-      # job's log archive is BlobNotFound, but the UI kept the live stream of
-      # job 118758464237 (eb99c9be): its Test step started 16:58:27Z and its
-      # last line is the monitor sample at 17:02:57Z, 4.5 min in, while cargo
-      # was still LINKING test binaries -- 81 GB free on the volume, 1.2 GB of
-      # memory used, root 1,644 MB free -- and GitHub declared the loss 44 min
-      # later, at 17:47:28Z. With that gap subtracted, every one of the eight
-      # losses falls in a heavy link phase: the 55-minute one inside the three
-      # mind-hash steps (which linked tacsim test binaries with no -j cap), the
-      # 58-to-60-minute ones in the first minutes of the Test step's workspace
-      # compile (~110 MB/s of binaries for ~7 min). The common factor was the
-      # layout: the 61 GB of binaries, /tmp, the swap and the runner agent's
-      # own log and diagnostic writes all went through one throttled Azure OS
-      # disk by way of a loop device, with the root itself left ~1.6 GB free
-      # (which is also why Swatinem/rust-cache's archive download failed with
-      # ENOSPC on every run, e.g. run 39371305030 at 04:52:29Z, so every job
-      # compiled cold). So the first step below frees the root disk itself --
-      # 145 GB, ~86 GB free at job start, ~25 GB more once the preinstalled
-      # toolchains this job never uses are removed, against ~61 GB of test
-      # binaries for the whole workspace (the old rest shard, the biggest, built
-      # about 53 GB of them) -- and the build runs on it directly: no LVM, no loop
-      # file, no swap.
-      #
-      # 2026-10-27: that step runs in the background. It was 0.8-3.0 min a
-      # cell on main's run 40428411078 (`docker image prune` and the
-      # unlinking), ahead of everything else; now its body,
-      # scripts/ci-free-root-disk.sh, is started detached right after
-      # checkout, the toolchain install and the cache restore run meanwhile,
-      # and the "Root disk freed" step waits for it, prints its log and
-      # fails on its failure before the first cargo build.
+      # DISK, 2026-10-18 to 2026-10-31. The whole-workspace run of 2026-10-18
+      # built 392 test binaries (157 MB each) and ran out of the ~25 GB a
+      # hosted runner had free, so the job got easimon/maximize-build-space's
+      # LVM volume over a loop file on the root disk; eight of the next twenty
+      # pushes to main died with "The hosted runner lost communication with
+      # the server", every one in a heavy link phase, with the 61 GB of
+      # binaries, /tmp, the swap and the runner agent's own writes all going
+      # through one throttled Azure OS disk by way of that loop device. From
+      # 2026-10-20 the build ran on the root disk itself (145 GB, ~86 GB free
+      # at job start) after a step that removed the preinstalled toolchains
+      # this job never uses (~27 GB more), run in the background of checkout
+      # from 2026-10-27. Since 2026-10-31 there is no such step: with the
+      # tests split into per-crate cells the biggest build (rest-libs) writes
+      # ~29 GB and the others 2-6, main's run 41221363161 bottomed out at
+      # 85-113 GB free WITH the 27 GB freed, and the step's wait was 0.5-2.4
+      # min on every cell. The `-j 2` link cap of the same era went with it
+      # (peak memory 5.7-8.0 GB of 16 on that run, no swap). The monitor loop
+      # in the Test step still prints the free root disk every ten seconds.
       #
       # This job runs on Linux only (owner, 2026-10-18): development happens on
       # the owner's Windows box, so a Windows-only break is seen first-hand
@@ -436,9 +431,6 @@ jobs:
       # still hold: their pins are blessed on Windows, so the Linux run is the
       # cross-platform comparison.
       - uses: actions/checkout@v4
-      - name: Free the root disk (in the background)
-        run: |
-          nohup bash -c 'scripts/ci-free-root-disk.sh; echo $? > "$RUNNER_TEMP/free-root-disk.status"' > "$RUNNER_TEMP/free-root-disk.log" 2>&1 &
       # WS01-S11B: rust-toolchain.toml at the repo root is the only place in
       # this repo that names a Rust version. `rustup toolchain install` with no
       # argument installs the toolchain that file pins, with the `clippy` and
@@ -476,16 +468,6 @@ jobs:
       - name: cargo-nextest 0.9.148
         if: matrix.shard != 'lint'
         run: curl -LsSf https://get.nexte.st/0.9.148/linux | tar zxf - -C "${CARGO_HOME:-$HOME/.cargo}/bin"
-      # 2026-10-27: the background step above, waited for before anything
-      # builds (the lint cell's Clippy, the minds cell's named steps, the
-      # Test step and the bot cells' steps all come after this).
-      - name: Root disk freed
-        run: |
-          t0=$SECONDS
-          until [ -f "$RUNNER_TEMP/free-root-disk.status" ]; do sleep 2; done
-          echo "waited $(( SECONDS - t0 )) s for scripts/ci-free-root-disk.sh"
-          cat "$RUNNER_TEMP/free-root-disk.log"
-          exit "$(cat "$RUNNER_TEMP/free-root-disk.status")"
       # 2026-10-20: Format and Clippy run once each. Both are workspace-wide
       # (12 s and 3 min 18 s at 96cc7303), so once is the whole answer; since
       # 2026-10-25 they are shard (c), so a format or clippy failure fails
@@ -519,9 +501,10 @@ jobs:
       # (the only example target in the workspace, mush-bot's, is built by its
       # own test step), and the duplicate was what ran the runners out of disk.
       # 2026-10-20: `-j 2` on the three mind-hash steps below. Each links
-      # tacsim test binaries, until now with no cap on parallel links (the Test
+      # tacsim test binaries, until then with no cap on parallel links (the Test
       # step's `-j 2` never applied to them), and the 55-minute loss fell
-      # inside them. Until 2026-10-27 each ran in the tacsim-integration shard
+      # inside them; the cap went with the loop-device layout's other
+      # remedies on 2026-10-31 (see the disk note above). Until 2026-10-27 each ran in the tacsim-integration shard
       # that built its target anyway, and the 5-min pooled-seam step on top of
       # the longest shard set the run's wall; since then all three run in the
       # tacsim-minds cell (one binary, shard_2, holds their three modules), in
@@ -539,7 +522,7 @@ jobs:
       # naming it here is what covers it in the gated-test inventory.
       - name: Cross-platform mind hashes (17b cut M2.7; D-UM-28)
         if: matrix.shard == 'tacsim-minds'
-        run: cargo test -p tacsim --test shard_2 minds_rhai::m2_the_twin_corpus_hashes_the_same_on_every_host -j 2 -- --ignored --exact --nocapture
+        run: cargo test -p tacsim --test shard_2 minds_rhai::m2_the_twin_corpus_hashes_the_same_on_every_host -- --ignored --exact --nocapture
       # 17b cut M2.7 (doc 17 §22's M2 gate, "Gate A on whole-match hashes"):
       # the pooled lane's matches flown by T1 and by the Rhai Standard
       # Doctrine alone, every substep hash equal (fifteen T1-v-T1 matches since
@@ -548,7 +531,7 @@ jobs:
       # run (17b §1 (iii)), so the test is #[ignore]d and run here by name.
       - name: Whole-match mind hashes (17b cut M2.7; Gate A)
         if: matrix.shard == 'tacsim-minds'
-        run: cargo test -p tacsim --test shard_2 twin::m2_whole_match_hashes_are_equal_between_the_runners_over_the_pool -j 2 -- --ignored --exact --nocapture
+        run: cargo test -p tacsim --test shard_2 twin::m2_whole_match_hashes_are_equal_between_the_runners_over_the_pool -- --ignored --exact --nocapture
       # 17b cut M4.1 (doc 17 §6 "Execution policy", D-UM-22; the M4 row's
       # gate): the pooled lane's matches through the real arena task on a
       # private think pool of one, two and four workers, each held to the
@@ -559,7 +542,7 @@ jobs:
       # run, so the test is #[ignore]d and run here, by name.
       - name: Pooled think seam over the twin's thirty (17b cut M4.1)
         if: matrix.shard == 'tacsim-minds'
-        run: cargo test -p tacsim --test shard_2 minds_pool::m4_real_tasks_over_the_twin_s_thirty_hash_as_the_library -j 2 -- --ignored --exact --nocapture
+        run: cargo test -p tacsim --test shard_2 minds_pool::m4_real_tasks_over_the_twin_s_thirty_hash_as_the_library -- --ignored --exact --nocapture
       # The bot crate is tested in its own shards (`bot` and `bot-stories`) for
       # shard wall-clock balance; it no longer enables serde_json
       # `arbitrary_precision`, so workspace builds unify cleanly. See
@@ -633,17 +616,18 @@ jobs:
             done ) &
           # 2026-10-26 (cut T.1): the sweeps are `cargo nextest run -P ci`
           # (.config/nextest.toml: no fail-fast, a hung test terminated at 20
-          # min, the JUnit report). `--build-jobs 2` is the link cap `-j 2`
-          # was (under nextest `-j` is test threads). nextest runs no
+          # min, the JUnit report). No `--build-jobs` cap since 2026-10-31
+          # (`--build-jobs 2` was the link cap the old `-j 2` was; see the
+          # disk note above): cargo builds on all four vCPUs. nextest runs no
           # doc-tests, so each sweep's `cargo test --doc` follows it, on the
           # same build: both are `cargo test --no-run`'s artifacts.
           case "$SHARD" in
             tacsim-lib)
-              # Two test threads, where the default is four.
-              cargo nextest run -P ci -p tacsim --lib --test-threads 2 --build-jobs 2
+              # The pool's four threads (`--test-threads 2` until 2026-10-31).
+              cargo nextest run -P ci -p tacsim --lib
               # tacsim's doc-tests, once: rest-libs' `--exclude tacsim` drops
               # them with the lib.
-              cargo test -p tacsim --doc -j 2
+              cargo test -p tacsim --doc
               ;;
             tacsim-integration-*)
               # One line of .github/tacsim-integration-shards.txt, each target
@@ -665,8 +649,8 @@ jobs:
               # 2026-10-25), and the drift assertions keep running under the
               # libs' own tests. The doc-test line selects the same packages
               # with the same features, so it rebuilds nothing.
-              cargo nextest run -P ci --workspace --exclude mush-bot --exclude tacsim --exclude mushd --exclude mush-server --exclude mush-gateway --features mush-sim/debug-checks,mush-housing/debug-checks,mush-server/fault-injection,tacsim/fault-injection --build-jobs 2
-              cargo test --doc --workspace --exclude mush-bot --exclude tacsim --exclude mushd --exclude mush-server --exclude mush-gateway --features mush-sim/debug-checks,mush-housing/debug-checks,mush-server/fault-injection,tacsim/fault-injection --no-fail-fast -j 2
+              cargo nextest run -P ci --workspace --exclude mush-bot --exclude tacsim --exclude mushd --exclude mush-server --exclude mush-gateway --features mush-sim/debug-checks,mush-housing/debug-checks,mush-server/fault-injection,tacsim/fault-injection
+              cargo test --doc --workspace --exclude mush-bot --exclude tacsim --exclude mushd --exclude mush-server --exclude mush-gateway --features mush-sim/debug-checks,mush-housing/debug-checks,mush-server/fault-injection,tacsim/fault-injection --no-fail-fast
               ;;
             rest-mushd|rest-gateway)
               # One server package a shard (2026-10-26, cut T.0; one line for
@@ -683,8 +667,8 @@ jobs:
                 rest-mushd) pkg=mushd ;;
                 rest-gateway) pkg=mush-gateway ;;
               esac
-              cargo nextest run -P ci -p "$pkg" --build-jobs 2
-              cargo test -p "$pkg" --doc --no-fail-fast -j 2
+              cargo nextest run -P ci -p "$pkg"
+              cargo test -p "$pkg" --doc --no-fail-fast
               ;;
             rest-server)
               # mush-server, in two cells since 2026-10-31 (see the job's
@@ -693,15 +677,15 @@ jobs:
               # binaries and the doc-tests; split_boundary is the next cell's.
               # The same package and features as the one-cell run, so the
               # dependency set is the same and both cells share one cache key.
-              cargo nextest run -P ci -p mush-server --test commerce_composition --test world_task --lib --bins --build-jobs 2
-              cargo test -p mush-server --doc --no-fail-fast -j 2
+              cargo nextest run -P ci -p mush-server --test commerce_composition --test world_task --lib --bins
+              cargo test -p mush-server --doc --no-fail-fast
               ;;
             rest-server-boundary)
               # mush-server's split_boundary group binary alone: 48 of the
               # package's 105 summed test-minutes (relay_registry and the
               # eleven dt_* modules of the DT line, 2026-10-31). The lib it
               # links is built here too, as its dependency, never tested twice.
-              cargo nextest run -P ci -p mush-server --test split_boundary --build-jobs 2
+              cargo nextest run -P ci -p mush-server --test split_boundary
               ;;
             *)
               echo "no test line for shard $SHARD" >&2
@@ -711,13 +695,13 @@ jobs:
       - name: Test the bot on its own feature set
         if: matrix.shard == 'bot'
         run: |
-          cargo nextest run -P ci -p mush-bot -E 'not (binary_id(mush-bot::mining_cohort) | binary_id(mush-bot::arena_mind_isolation))' --build-jobs 2
-          cargo test -p mush-bot --doc -j 2
+          cargo nextest run -P ci -p mush-bot -E 'not (binary_id(mush-bot::mining_cohort) | binary_id(mush-bot::arena_mind_isolation))'
+          cargo test -p mush-bot --doc
       # The two long stories, their two binaries built and run on their own
       # (matrix (f) above).
       - name: The bot's two long stories
         if: matrix.shard == 'bot-stories'
-        run: cargo nextest run -P ci -p mush-bot --test mining_cohort --test arena_mind_isolation --build-jobs 2
+        run: cargo nextest run -P ci -p mush-bot --test mining_cohort --test arena_mind_isolation
       # 2026-10-26 (cut T.1): the sweep's JUnit report, one <testcase> a test
       # with its time (.config/nextest.toml's `ci` profile writes it). The
       # per-test and per-binary times a rebalance of the tacsim shards needs
@@ -793,14 +777,23 @@ jobs:
         run: cargo doc --locked --workspace --no-deps --document-private-items
 
   release:
-    name: Deployable release binaries
+    name: Release-profile build check (nightly)
     # 2026-10-27: pushes to main, the nightly and dispatches, not pull
     # requests. The build step is 16 min of a hosted runner (15.8 at main's
     # run 40428411078), the next-longest job behind the test cells on a PR
     # run, for a release-profile build of the three binaries whose code the
     # PR's test cells compile in the test profile anyway; the embed guard,
     # thin LTO and native TLS are proven on main's own run after the merge.
-    if: github.event_name != 'pull_request'
+    #
+    # 2026-10-31: the nightly and dispatches only. The job uploads nothing
+    # and nothing downloads from it (the boxes build their own binaries from
+    # a checkout: deploy/*/deploy.sh), so it is a configuration check, and
+    # at 27-28 min on main's runs of 2026-10-31 (the 49 workspace crates
+    # rebuilt in the release profile with thin LTO on every push; rust-cache
+    # keeps only the dependencies) it set main's wall, 2-3 min above the
+    # longest test cell. A release-profile or LTO break now surfaces within
+    # a day instead of on the merge.
+    if: github.event_name == 'schedule' || github.event_name == 'workflow_dispatch'
     runs-on: ubuntu-latest
     steps:
       - uses: actions/checkout@v4

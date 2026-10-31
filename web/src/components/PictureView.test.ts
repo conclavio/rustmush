@@ -126,6 +126,7 @@ afterEach(() => {
   vi.unstubAllGlobals();
   vi.useRealTimers();
   localStorage.removeItem(PICTURE_PREF_KEY);
+  localStorage.removeItem("rustmush.pictureHd");
   delete (document as { visibilityState?: unknown }).visibilityState;
 });
 
@@ -586,6 +587,18 @@ describe("PictureView mounted, drawn here: a fresh canvas is painted", () => {
     // Releasing the key orders the predicted 60° heading, not the stale 45° keyframe heading.
     await fireEvent.keyUp(frame, { key: "d" });
     expect(helm.mock.calls.at(-1)).toEqual(["HEADING 60 QUIET"]);
+
+    // Clicking the HD resolution toggle switches rendering to 1280×720.
+    const hdBtn = screen.getByLabelText("HD resolution toggle");
+    expect(hdBtn.textContent).toBe("640p");
+    await fireEvent.click(hdBtn);
+    expect(hdBtn.textContent).toBe("1280p");
+    await frameTime();
+    expect(renderSpy).toHaveBeenLastCalledWith(
+      1280,
+      720,
+      expect.any(Object),
+    );
     unmount();
   });
 

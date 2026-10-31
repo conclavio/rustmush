@@ -6,8 +6,9 @@
 # the shard's binaries' tests run in one pool of four, each in its own
 # process, under .config/nextest.toml's `ci` profile — no fail-fast, a hung
 # test terminated at 20 min, the JUnit report at target/nextest/ci/junit.xml).
-# `--build-jobs 2` is the link cap the old `-j 2` was. tacsim's doc-tests are
-# the tacsim-lib shard's.
+# No build-jobs cap since 2026-10-31 (`--build-jobs 2` was the link cap the
+# old `-j 2` was, from the loop-device era). tacsim's doc-tests are the
+# tacsim-lib shard's.
 set -euo pipefail
 shard="${1:?usage: scripts/ci-tacsim-shard.sh <shard number>}"
 root="$(cd "$(dirname "$0")/.." && pwd)"
@@ -21,4 +22,4 @@ for target in ${line#*:}; do
   args+=(--test "$target")
 done
 echo "tacsim integration shard ${shard}: $(( ${#args[@]} / 2 )) targets"
-cargo nextest run -P ci -p tacsim "${args[@]}" --build-jobs 2
+cargo nextest run -P ci -p tacsim "${args[@]}"

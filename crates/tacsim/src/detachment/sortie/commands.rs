@@ -74,7 +74,7 @@ fn readable(ctx: &Ctx<'_>, op: &OperationRecord) -> bool {
         )
 }
 /// **The ramp `unit`'s open flight returns to** (doc 32 cut CF.5), as a site position (cm).
-fn field_ramp(ctx: &Ctx<'_>, unit: ObjId) -> Option<(i64, i64)> {
+pub(crate) fn field_ramp(ctx: &Ctx<'_>, unit: ObjId) -> Option<(i64, i64)> {
     let h = ctx.w.module_state::<runtime::SortieHandles>()?;
     let head = ctx.action_state(&h.heads, &unit).ok()??;
     let flight = ctx.action_state(&h.flights, &head.flight).ok()??;

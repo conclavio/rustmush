@@ -68,6 +68,8 @@ pub(crate) fn tick(ctx: &mut Ctx<'_>, _tag: &str, _scene: Option<mush_core::Scen
     // Doc 32 cut CF.5: the exits at the ramp and the extractions due.
     super::exit::tick(ctx);
     super::crew::tick(ctx);
+    // Doc 32 cut CF.6b: every NPC under an ordered withdrawal asks out at its ramp.
+    super::home::tick(ctx);
     let Some(handles) = ctx
         .w
         .module_state::<crate::port::families::PortHandles>()
@@ -275,7 +277,8 @@ fn admit(ctx: &mut Ctx<'_>, site: &CanonicalId, record: &SiteRecord) -> Result<(
     }
     let entrants = parties::entrants(ctx, site, &units);
     let (lettered, rows) = parties::letter(&entrants).map_err(str::to_owned)?;
-    let definition = super::ground::definition(ctx.w, site, record)?;
+    let homes = super::home::homes(ctx.w, &entrants, &rows);
+    let definition = super::ground::definition(ctx.w, site, record, homes.clone())?;
     // CF.3 (Q-CF-19): the carriers stand on the pad, clear of everyone else.
     let (carriers, others): (Vec<ObjId>, Vec<ObjId>) = units
         .iter()
@@ -319,6 +322,7 @@ fn admit(ctx: &mut Ctx<'_>, site: &CanonicalId, record: &SiteRecord) -> Result<(
         at_ms: 0,
         parties: lettered,
         units: rows,
+        homes,
     };
     if let Some(book) = ctx.w.module_state_mut::<FieldBook>() {
         book.live.insert(

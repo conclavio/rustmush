@@ -2073,7 +2073,7 @@ const LANCE_SEEDS: u64 = 3;
 
 /// **The authored lane's runner**: the asserting twin, and beside it the Rhai
 /// Standard Doctrine with every `line_to` call counted — the shipped script
-/// with its three `line_to(view, …)` sites routed through one more function
+/// with its five `line_to(view, …)` sites routed through one more function
 /// that writes a trace line first (`counted_line_to`), run on the same job
 /// after the twin. The twin's answer is flown; the counting runner is held
 /// to answer the same intents (it is the same script but for the trace), and
@@ -2101,10 +2101,12 @@ struct LanceThought {
 /// The shipped script with its `line_to` calls counted ([`LanceProbe`]).
 fn counted_line_to_script() -> String {
     let source = tacsim::minds::STANDARD_RHAI;
+    // Doc 32 cut CF.6b: two in each stand (the best, then a nearer one when the best has no
+    // line) and `approach_arm`'s one; was three.
     assert_eq!(
         source.matches("line_to(view, ").count(),
-        3,
-        "the stock script's three line_to sites"
+        5,
+        "the stock script's five line_to sites"
     );
     format!(
         "{}\nfn counted_line_to(view, id) {{\n    trace(\"line_to\");\n    line_to(view, id)\n}}\n",

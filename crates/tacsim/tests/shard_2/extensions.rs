@@ -405,6 +405,7 @@ fn definition(paint: &[(u16, u16, TerrainCell)]) -> ArenaDefinition {
         key_spots: Vec::new(),
         waypoints: Waypoints::default(),
         modes: Vec::new(),
+        homes: Vec::new(),
     }
 }
 
@@ -3462,6 +3463,7 @@ fn relief(width: u16, height: u16, profile: &dyn Fn(u16, u16) -> i16) -> ArenaDe
         key_spots: Vec::new(),
         waypoints: Waypoints::default(),
         modes: Vec::new(),
+        homes: Vec::new(),
     }
 }
 
@@ -5906,6 +5908,7 @@ fn q6_window(width: u16, height: u16) -> ArenaDefinition {
         key_spots: Vec::new(),
         waypoints: Waypoints::default(),
         modes: Vec::new(),
+        homes: Vec::new(),
     }
 }
 

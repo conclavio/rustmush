@@ -24,15 +24,17 @@ use crate::arena_task::MatchId;
 use crate::field_ops::OperationalState;
 use crate::surface::site_record::{LeftCondition, LeftUnit, SitePose, SiteRecord};
 
-/// **The units the last snapshot holds**, as returns (the void rule), when it decodes.
+/// **The units the last snapshot holds**, as returns (the void rule), when it decodes on the
+/// field's own ground (its `homes` from its live record, doc 32 cut CF.6b).
 pub(crate) fn snapshot_returns(
     ctx: &Ctx<'_>,
     site: &CanonicalId,
     document: Option<&serde_json::Value>,
+    homes: Vec<crate::arena::state::EntryZone>,
 ) -> Option<Vec<UnitReturn>> {
     let document = document?;
     let record = site_record(ctx, site)?;
-    let ground = super::ground::definition(ctx.w, site, &record).ok()?;
+    let ground = super::ground::definition(ctx.w, site, &record, homes).ok()?;
     let limit = ctx.w.module_state::<crate::store::TacsimStore>().map_or(
         crate::arena::snapshot_capacity::SNAPSHOT_MAX_BYTES,
         |store| store.config().arena.snapshot_max_bytes,
@@ -69,7 +71,13 @@ pub(crate) fn on_ended(ctx: &mut Ctx<'_>, task: MatchId, end: MatchEnd, units: &
             .w
             .module_state::<FieldBook>()
             .and_then(|book| book.snapshot(&site).cloned());
-        snapshot_returns(ctx, &site, document.as_ref()).unwrap_or_default()
+        let homes = ctx
+            .w
+            .module_state::<FieldBook>()
+            .and_then(|book| book.hosted(&site))
+            .map(|hosted| hosted.live.homes.clone())
+            .unwrap_or_default();
+        snapshot_returns(ctx, &site, document.as_ref(), homes).unwrap_or_default()
     } else {
         units.to_vec()
     };

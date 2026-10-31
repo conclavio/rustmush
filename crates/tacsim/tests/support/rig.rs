@@ -234,6 +234,7 @@ pub fn definition_with(paint: &[(u16, u16, TerrainCell)], waypoints: Waypoints) 
         key_spots: Vec::new(),
         waypoints,
         modes: Vec::new(),
+        homes: Vec::new(),
     }
 }
 

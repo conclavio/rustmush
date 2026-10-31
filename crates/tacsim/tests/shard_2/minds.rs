@@ -253,6 +253,7 @@ fn definition() -> ArenaDefinition {
             &[(SmolStr::new("west"), SmolStr::new("east"))],
         ),
         modes: Vec::new(),
+        homes: Vec::new(),
     }
 }
 
@@ -3472,7 +3473,10 @@ fn m1a5_the_production_hash_does_not_move() {
     // advances Standard's API/source identity. DT.1b advances the source/API
     // again (API 6, stock 3, frame 8) for standing-order identity. These pins
     // were observed in Linux CI run 40739168466; the behavior assertions above
-    // remain. Keep them together so a format change exposes every actual.
+    // remain. Keep them together so a format change exposes every actual. Doc 32 cut CF.6b:
+    // the Standard source moved (the stands' line fallback) and every seal folds it, so all three
+    // moved; the duel's 34 ledger lines are byte-equal but for `hash` (`tests/motor.rs`), and the
+    // API 4 identity control there still holds.
     let actual = [
         first_hash,
         last_hash,
@@ -3481,9 +3485,9 @@ fn m1a5_the_production_hash_does_not_move() {
     assert_eq!(
         actual,
         [
-            Some(0x3bf7_27cf_a12f_29e0),
-            Some(0x6c4b_ec03_5970_7532),
-            Some(0x286a_d6f9_d29a_a25d)
+            Some(0x0fdb_0891_df3e_f116),
+            Some(0xc541_d691_27e0_3a9f),
+            Some(0xdf2a_39a3_74d3_6329)
         ],
         "production encoding pins (first, last, shipped duel): {actual:x?}"
     );
@@ -6876,15 +6880,15 @@ const M1B5_TWO_T1_EVENTS: &[(i64, &str)] = &[
     (0, "{\"kind\":\"match_started\"}"),
     (
         0,
-        "{\"kind\":\"mind_sealed\",\"unit\":4,\"sortie\":4,\"mind\":\"Standard Doctrine\",\"source\":\"a37766b55993879f\",\"card_digest\":\"f2491a868a5707936f2abf1db211ed6bba20971b2c364e31433bafb33fc07f90\",\"class\":\"I\",\"governed\":true,\"licence\":\"doctrine\",\"licence_state\":\"doctrine\"}",
+        "{\"kind\":\"mind_sealed\",\"unit\":4,\"sortie\":4,\"mind\":\"Standard Doctrine\",\"source\":\"3837c3456fbf1e3b\",\"card_digest\":\"f2491a868a5707936f2abf1db211ed6bba20971b2c364e31433bafb33fc07f90\",\"class\":\"I\",\"governed\":true,\"licence\":\"doctrine\",\"licence_state\":\"doctrine\"}",
     ),
     (
         0,
-        "{\"kind\":\"mind_sealed\",\"unit\":6,\"sortie\":6,\"mind\":\"Standard Doctrine\",\"source\":\"a37766b55993879f\",\"card_digest\":\"f2491a868a5707936f2abf1db211ed6bba20971b2c364e31433bafb33fc07f90\",\"class\":\"I\",\"governed\":true,\"licence\":\"doctrine\",\"licence_state\":\"doctrine\"}",
+        "{\"kind\":\"mind_sealed\",\"unit\":6,\"sortie\":6,\"mind\":\"Standard Doctrine\",\"source\":\"3837c3456fbf1e3b\",\"card_digest\":\"f2491a868a5707936f2abf1db211ed6bba20971b2c364e31433bafb33fc07f90\",\"class\":\"I\",\"governed\":true,\"licence\":\"doctrine\",\"licence_state\":\"doctrine\"}",
     ),
     (
         0,
-        "{\"kind\":\"mind_sealed\",\"unit\":9,\"sortie\":9,\"mind\":\"Standard Doctrine\",\"source\":\"a37766b55993879f\",\"card_digest\":\"f2491a868a5707936f2abf1db211ed6bba20971b2c364e31433bafb33fc07f90\",\"class\":\"I\",\"governed\":true,\"licence\":\"doctrine\",\"licence_state\":\"doctrine\"}",
+        "{\"kind\":\"mind_sealed\",\"unit\":9,\"sortie\":9,\"mind\":\"Standard Doctrine\",\"source\":\"3837c3456fbf1e3b\",\"card_digest\":\"f2491a868a5707936f2abf1db211ed6bba20971b2c364e31433bafb33fc07f90\",\"class\":\"I\",\"governed\":true,\"licence\":\"doctrine\",\"licence_state\":\"doctrine\"}",
     ),
     (
         4,

@@ -50,7 +50,9 @@
   } from "$lib/replay";
   import {
     FRAME_H,
+    FRAME_H_HD,
     FRAME_W,
+    FRAME_W_HD,
     LocalReplayPicture,
     localCapable,
     pixelModule,
@@ -58,11 +60,63 @@
   } from "$lib/pixel/local";
   import { TERRAIN_COLOURS } from "$lib/stores/map.svelte";
 
+  const HD_STORAGE_KEY = "rustmush.pictureHd";
+
+  function loadHdPref(): boolean {
+    try {
+      return typeof localStorage !== "undefined" && localStorage.getItem(HD_STORAGE_KEY) === "1";
+    } catch {
+      return false;
+    }
+  }
+
   let { app }: { app: GameApp } = $props();
 
   let camera = $state<ReplayCameraMode>("overview");
   let zoomPermille = $state(1000);
+  let lookMdeg = $state(0);
+  let hdMode = $state<boolean>(loadHdPref());
   let localReplay = $state<LocalReplayPicture | null>(null);
+
+  const activeW = $derived(hdMode ? FRAME_W_HD : FRAME_W);
+  const activeH = $derived(hdMode ? FRAME_H_HD : FRAME_H);
+
+  function toggleHd(): void {
+    hdMode = !hdMode;
+    try {
+      if (typeof localStorage !== "undefined") {
+        localStorage.setItem(HD_STORAGE_KEY, hdMode ? "1" : "0");
+      }
+    } catch {
+      // Ignore storage quota / privacy errors.
+    }
+    localReplay?.forget();
+  }
+
+  function zoomIn(): void {
+    zoomPermille = Math.min(2000, zoomPermille + 250);
+    localReplay?.forget();
+  }
+
+  function zoomOut(): void {
+    zoomPermille = Math.max(500, zoomPermille - 250);
+    localReplay?.forget();
+  }
+
+  function zoomReset(): void {
+    zoomPermille = 1000;
+    localReplay?.forget();
+  }
+
+  function onCanvasWheel(ev: WheelEvent): void {
+    if (camera !== "iso25d") return;
+    ev.preventDefault();
+    if (ev.deltaY < 0) {
+      zoomIn();
+    } else if (ev.deltaY > 0) {
+      zoomOut();
+    }
+  }
 
   $effect(() => {
     if (!localCapable()) return;
@@ -98,13 +152,23 @@
     if (ev.key === "v") {
       ev.preventDefault();
       cycleCamera();
-    } else if (ev.key === "z" && camera === "iso25d") {
+    } else if ((ev.key === "z" || ev.key === "+" || ev.key === "=") && camera === "iso25d") {
       ev.preventDefault();
-      zoomPermille = Math.min(2000, zoomPermille + 200);
+      zoomIn();
+    } else if ((ev.key === "Z" || ev.key === "-" || ev.key === "_") && camera === "iso25d") {
+      ev.preventDefault();
+      zoomOut();
+    } else if (ev.key === "q" && camera === "first_person") {
+      ev.preventDefault();
+      lookMdeg = ((lookMdeg - 15_000 + 540_000) % 360_000) - 180_000;
       localReplay?.forget();
-    } else if (ev.key === "Z" && camera === "iso25d") {
+    } else if (ev.key === "e" && camera === "first_person") {
       ev.preventDefault();
-      zoomPermille = Math.max(500, zoomPermille - 200);
+      lookMdeg = ((lookMdeg + 15_000 + 540_000) % 360_000) - 180_000;
+      localReplay?.forget();
+    } else if (ev.key === "c" && camera === "first_person") {
+      ev.preventDefault();
+      lookMdeg = 0;
       localReplay?.forget();
     }
   }
@@ -197,6 +261,9 @@
     const d = doc;
     const mode = camera;
     const z = zoomPermille;
+    const look = lookMdeg;
+    const wPx = activeW;
+    const hPx = activeH;
     const cursorMs = app.replay.cursorMs;
     const focusIdx = app.replay.focus;
     if (!w || !c || !g || !d) return;
@@ -204,11 +271,11 @@
     if (!ctx) return;
 
     if (mode !== "overview") {
-      c.width = FRAME_W;
-      c.height = FRAME_H;
+      c.width = wPx;
+      c.height = hPx;
       if (localReplay !== null && typeof ctx.putImageData === "function") {
         localReplay.forget();
-        if (localReplay.draw(d, g, d.match, cursorMs, focusIdx, mode, z)) {
+        if (localReplay.draw(d, g, d.match, cursorMs, focusIdx, mode, z, look, wPx, hPx)) {
           ctx.putImageData(localReplay.image(), 0, 0);
           return;
         }
@@ -319,6 +386,36 @@
             class:active={camera === "first_person"}
             onclick={() => (camera = "first_person")}>cockpit</button
           >
+          {#if camera !== "overview"}
+            <button
+              type="button"
+              class="ctrl-btn"
+              class:active={hdMode}
+              title="Toggle 1280×720 HD / 640×480 standard resolution"
+              onclick={toggleHd}>{hdMode ? "1280p" : "640p"}</button
+            >
+          {/if}
+          {#if camera === "iso25d"}
+            <button type="button" class="ctrl-btn" aria-label="zoom out" onclick={zoomOut}>−</button>
+            <button
+              type="button"
+              class="ctrl-btn"
+              aria-label="reset zoom"
+              onclick={zoomReset}>{Math.round(zoomPermille / 10)}%</button
+            >
+            <button type="button" class="ctrl-btn" aria-label="zoom in" onclick={zoomIn}>+</button>
+          {/if}
+          {#if camera === "first_person" && lookMdeg !== 0}
+            <button
+              type="button"
+              class="ctrl-btn"
+              aria-label="recentre look"
+              onclick={() => {
+                lookMdeg = 0;
+                localReplay?.forget();
+              }}>look {Math.round(lookMdeg / 1000)}°</button
+            >
+          {/if}
         </div>
       </header>
       {#if win === null}
@@ -328,7 +425,8 @@
           <canvas
             bind:this={canvas}
             aria-label="replay window"
-            style="width: {camera === 'overview' ? win.w * cellPx : FRAME_W}px; height: {camera === 'overview' ? win.h * cellPx : FRAME_H}px"
+            onwheel={onCanvasWheel}
+            style="width: {camera === 'overview' ? win.w * cellPx : activeW}px; height: {camera === 'overview' ? win.h * cellPx : activeH}px"
           ></canvas>
         </div>
       {/if}
@@ -445,7 +543,8 @@
     gap: 0.25rem;
   }
 
-  .view-btn {
+  .view-btn,
+  .ctrl-btn {
     background: none;
     border: 1px solid var(--border);
     border-radius: 4px;
@@ -456,7 +555,8 @@
     padding: 0.05rem 0.45rem;
   }
 
-  .view-btn.active {
+  .view-btn.active,
+  .ctrl-btn.active {
     border-color: var(--accent);
     color: var(--accent);
     font-weight: 600;

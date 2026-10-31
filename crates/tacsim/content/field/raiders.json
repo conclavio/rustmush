@@ -1,15 +1,16 @@
 {
-  "schema": 1,
-  "brief": "Doc 32 Q-CF-44: fixture-seeded opposing forces, authored as content. A raider is a party of armed hulls one NPC leader stands behind, seeded on a named frontier site by staff (@field/raiders <id>). It flies the kernel's doctrine (each hull's ROM seal, Standard Doctrine) and its leader holds a standing Hostile mark on every other party in any field it is admitted to. No generator, no respawn, no patrol: a seeded raider stays until it is destroyed, and seeding it again is refused while any of its hulls stands.",
+  "schema": 2,
+  "brief": "Doc 32 Q-CF-44, Q-CF-47: fixture-seeded opposing forces, authored as content. A raider is a party of armed hulls one NPC leader stands behind, and the fixture carrier they launch from, seeded on a named frontier site by staff (@field/raiders <id>): the carrier on the ground at its cell, the hulls aboard. @field/raiders/launch <id> puts the hulls on the ground beside the carrier's ramp; @field/raiders/withdraw <id> orders them home up it. The hulls fly the kernel's doctrine (each hull's ROM seal, Standard Doctrine) and the leader holds a standing Hostile mark on every other party in any field it is admitted to. No generator, no respawn, no patrol: a seeded raider stays until it is destroyed, and seeding it again is refused while any of its hulls stands.",
   "raiders": [
     {
       "id": "tacsim.raider.ahuna_skulks",
       "label": "Skulk raiders",
       "leader": "Varga Teodor",
       "site": "ahuna_port",
+      "carrier": { "unit": "tacsim.unit.dray", "name": "Skulk Barge", "cell": [156, 126], "heading_mdeg": 90000, "ramp": [159, 126] },
       "units": [
-        { "unit": "tacsim.unit.line_tank", "name": "Skulk One", "cell": [160, 124], "heading_mdeg": 270000 },
-        { "unit": "tacsim.unit.line_tank", "name": "Skulk Two", "cell": [160, 128], "heading_mdeg": 270000 }
+        { "unit": "tacsim.unit.line_tank", "name": "Skulk One", "heading_mdeg": 90000 },
+        { "unit": "tacsim.unit.line_tank", "name": "Skulk Two", "heading_mdeg": 90000 }
       ]
     }
   ]

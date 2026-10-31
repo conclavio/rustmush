@@ -66,11 +66,14 @@ use tacsim::arena::state::{Arena, HoldState, PartyId, Power, SeenPose};
 // condition, which the identity-only control does not strip: was
 // `0xd763_0ae7_1acf_63f7`.
 const DUEL_HASH_AT_HEAD: u64 = 0xd15b_cccc_3546_150f;
+// Doc 32 cut CF.6b: the Standard source moved (the stands' line fallback), folded in every seal;
+// was `2912376477516997213` (CF.0's). The fight did not move: the API 4 identity control below
+// still lands on its pin, and the 34 lines of [`M1B0_DUEL_LINES`] differ only in `hash`.
 // Doc 32 cut CF.0: API 7, with the parties' books folded (item 13); was DT.1b's
 // `4745814000650159526`. DT.1b's actual Linux observation under API6/stock3. The sealed source and
 // stock provenance identities changed; the independent API4 control below
 // still pins every other state byte to the preceding legacy hash.
-const DUEL_HASH_API6_OBSERVED: u64 = 2912376477516997213;
+const DUEL_HASH_API6_OBSERVED: u64 = 16080728793682240297;
 
 /// Two machines a side at their authored musters on the proving ground —
 /// **17b cut M4.3**: every one a mind sealed as the production fill is
@@ -217,45 +220,49 @@ fn m1a1_the_shipped_duel_hashes_as_before() {
 /// provenance identities account for the hash changes. The settled-clone
 /// API4 identity control above remains unchanged.
 ///
+/// **Doc 32 cut CF.6b — re-recorded, hashes only** (34 lines to 34): the Standard source moved
+/// (the stands' line fallback) and every seal folds it, so every `hash` moved; compared with
+/// every `hash` taken out, the 34 lines are byte-equal to the M8a record below.
+///
 /// **Doc 17h cut M8a — re-recorded, one key** (34 lines to 34): every `mind_sealed`
 /// line gains `licence_state` after `licence` (`doctrine`, what a doctrine seal's
 /// origin says); the state is the line's parameter, never the seal's (M8a's A1), so
 /// no seal digest and no `hash` moved, and every other byte is equal.
 const M1B0_DUEL_LINES: &[&str] = &[
-    r#"{"seq":1,"t_ms":0,"kind":"match_started","hash":8480736938844901576}"#,
-    r#"{"seq":2,"t_ms":0,"kind":"mind_sealed","unit":3,"sortie":3,"mind":"Standard Doctrine","source":"a37766b55993879f","card_digest":"f2491a868a5707936f2abf1db211ed6bba20971b2c364e31433bafb33fc07f90","class":"I","governed":true,"licence":"doctrine","licence_state":"doctrine","hash":8480736938844901576}"#,
-    r#"{"seq":3,"t_ms":0,"kind":"mind_sealed","unit":4,"sortie":4,"mind":"Standard Doctrine","source":"a37766b55993879f","card_digest":"f2491a868a5707936f2abf1db211ed6bba20971b2c364e31433bafb33fc07f90","class":"I","governed":true,"licence":"doctrine","licence_state":"doctrine","hash":8480736938844901576}"#,
-    r#"{"seq":4,"t_ms":0,"kind":"mind_sealed","unit":7,"sortie":7,"mind":"Standard Doctrine","source":"a37766b55993879f","card_digest":"f2491a868a5707936f2abf1db211ed6bba20971b2c364e31433bafb33fc07f90","class":"I","governed":true,"licence":"doctrine","licence_state":"doctrine","hash":8480736938844901576}"#,
-    r#"{"seq":5,"t_ms":0,"kind":"mind_sealed","unit":8,"sortie":8,"mind":"Standard Doctrine","source":"a37766b55993879f","card_digest":"f2491a868a5707936f2abf1db211ed6bba20971b2c364e31433bafb33fc07f90","class":"I","governed":true,"licence":"doctrine","licence_state":"doctrine","hash":8480736938844901576}"#,
-    r#"{"seq":6,"t_ms":258,"kind":"detected","viewer":8,"contact":8314046734819043908,"target":7,"hash":6143970903999325162}"#,
-    r#"{"seq":7,"t_ms":421,"kind":"detected","viewer":3,"contact":5844251635052541762,"target":4,"hash":6143970903999325162}"#,
-    r#"{"seq":8,"t_ms":482,"kind":"detected","viewer":4,"contact":5992554990774319474,"target":3,"hash":6143970903999325162}"#,
-    r#"{"seq":9,"t_ms":508,"kind":"startup","unit":8,"hash":15398136771418812861}"#,
-    r#"{"seq":10,"t_ms":671,"kind":"startup","unit":3,"hash":15398136771418812861}"#,
-    r#"{"seq":11,"t_ms":732,"kind":"startup","unit":4,"hash":15398136771418812861}"#,
-    r#"{"seq":12,"t_ms":594,"kind":"detected","viewer":7,"contact":3822974778006219272,"target":8,"hash":1959103385545100858}"#,
-    r#"{"seq":13,"t_ms":844,"kind":"startup","unit":7,"hash":12279853886207922909}"#,
-    r#"{"seq":14,"t_ms":1000,"kind":"tempo","from":"quiet","to":"alert","hash":16976389030483784078}"#,
-    r#"{"seq":15,"t_ms":3258,"kind":"classified","viewer":8,"contact":8314046734819043908,"target":7,"team":"blue","draws":[["classify:8:7:4",3884165266672269218]],"hash":2394235791628508748}"#,
-    r#"{"seq":16,"t_ms":3421,"kind":"classified","viewer":3,"contact":5844251635052541762,"target":4,"team":"red","draws":[["classify:3:4:4",16846213216163885984]],"hash":2394235791628508748}"#,
-    r#"{"seq":17,"t_ms":3482,"kind":"classified","viewer":4,"contact":5992554990774319474,"target":3,"team":"red","draws":[["classify:4:3:4",2094150884743799771]],"hash":2394235791628508748}"#,
-    r#"{"seq":18,"t_ms":3594,"kind":"classified","viewer":7,"contact":3822974778006219272,"target":8,"team":"blue","draws":[["classify:7:8:4",989486057018502202]],"hash":11880174610204719161}"#,
-    r#"{"seq":19,"t_ms":5000,"kind":"position_summary","units":[[3,6500,97500,100,90000],[4,6500,95500,100,90000],[7,249500,97500,-100,270000],[8,249500,95500,-100,270000]],"hash":6760158094792909415}"#,
-    r#"{"seq":20,"t_ms":10000,"kind":"position_summary","units":[[3,6500,97500,100,90000],[4,6500,95500,100,90000],[7,249500,97500,-100,270000],[8,249500,95500,-100,270000]],"hash":14629206245403804853}"#,
-    r#"{"seq":21,"t_ms":10508,"kind":"power_online","unit":8,"hash":16577271341592857052}"#,
-    r#"{"seq":22,"t_ms":10671,"kind":"power_online","unit":3,"hash":16577271341592857052}"#,
-    r#"{"seq":23,"t_ms":10732,"kind":"power_online","unit":4,"hash":16577271341592857052}"#,
-    r#"{"seq":24,"t_ms":10844,"kind":"power_online","unit":7,"hash":12186555467420651932}"#,
-    r#"{"seq":25,"t_ms":15000,"kind":"position_summary","units":[[3,7068,97500,100,90000],[4,6911,95885,100,43754],[7,249339,97647,-100,330000],[8,249088,95885,-100,316287]],"hash":15179263445570607777}"#,
-    r#"{"seq":26,"t_ms":20000,"kind":"position_summary","units":[[3,7740,99285,100,322500],[4,9358,96498,100,89214],[7,249484,99938,-100,1632],[8,246641,96498,-200,270899]],"hash":10377287959015683581}"#,
-    r#"{"seq":27,"t_ms":25000,"kind":"position_summary","units":[[3,6551,103217,100,358159],[4,14421,96500,100,90000],[7,249500,103859,-200,0],[8,241579,96500,-200,270000]],"hash":18403388134102154607}"#,
-    r#"{"seq":28,"t_ms":30000,"kind":"position_summary","units":[[3,5181,104876,100,260070],[4,21522,96500,200,90000],[7,251150,104776,-100,120000],[8,234360,96500,-200,270000]],"hash":5642027794246196082}"#,
-    r#"{"seq":29,"t_ms":35000,"kind":"position_summary","units":[[3,5467,101252,100,126057],[4,28493,96500,200,90000],[7,249987,100953,-100,227108],[8,227758,96500,-200,270000]],"hash":9212798363286019671}"#,
-    r#"{"seq":30,"t_ms":40000,"kind":"position_summary","units":[[3,7887,98377,100,112170],[4,31801,96500,200,90000],[7,248434,98572,-100,221080],[8,225080,96500,-200,270000]],"hash":563680028393716651}"#,
-    r#"{"seq":31,"t_ms":45000,"kind":"position_summary","units":[[3,12238,98497,100,89366],[4,35823,96500,200,90000],[7,245546,97500,-200,270000],[8,221603,96500,-300,270000]],"hash":9714739231496568701}"#,
-    r#"{"seq":32,"t_ms":50000,"kind":"position_summary","units":[[3,18787,97828,200,114667],[4,42331,96500,200,90000],[7,239763,97500,-200,270000],[8,215625,96500,-300,270000]],"hash":3442891309029935282}"#,
-    r#"{"seq":33,"t_ms":55000,"kind":"position_summary","units":[[3,26125,97497,200,89684],[4,49781,96638,200,75000],[7,232307,97500,-200,270000],[8,208140,96500,-300,270000]],"hash":7219049955831019510}"#,
-    r#"{"seq":34,"t_ms":60000,"kind":"position_summary","units":[[3,30797,97500,200,90000],[4,54548,97521,200,91283],[7,226714,97500,-200,270000],[8,202598,96500,-300,270000]],"hash":10950301118916580489}"#,
+    r#"{"seq":1,"t_ms":0,"kind":"match_started","hash":6281715430799928136}"#,
+    r#"{"seq":2,"t_ms":0,"kind":"mind_sealed","unit":3,"sortie":3,"mind":"Standard Doctrine","source":"3837c3456fbf1e3b","card_digest":"f2491a868a5707936f2abf1db211ed6bba20971b2c364e31433bafb33fc07f90","class":"I","governed":true,"licence":"doctrine","licence_state":"doctrine","hash":6281715430799928136}"#,
+    r#"{"seq":3,"t_ms":0,"kind":"mind_sealed","unit":4,"sortie":4,"mind":"Standard Doctrine","source":"3837c3456fbf1e3b","card_digest":"f2491a868a5707936f2abf1db211ed6bba20971b2c364e31433bafb33fc07f90","class":"I","governed":true,"licence":"doctrine","licence_state":"doctrine","hash":6281715430799928136}"#,
+    r#"{"seq":4,"t_ms":0,"kind":"mind_sealed","unit":7,"sortie":7,"mind":"Standard Doctrine","source":"3837c3456fbf1e3b","card_digest":"f2491a868a5707936f2abf1db211ed6bba20971b2c364e31433bafb33fc07f90","class":"I","governed":true,"licence":"doctrine","licence_state":"doctrine","hash":6281715430799928136}"#,
+    r#"{"seq":5,"t_ms":0,"kind":"mind_sealed","unit":8,"sortie":8,"mind":"Standard Doctrine","source":"3837c3456fbf1e3b","card_digest":"f2491a868a5707936f2abf1db211ed6bba20971b2c364e31433bafb33fc07f90","class":"I","governed":true,"licence":"doctrine","licence_state":"doctrine","hash":6281715430799928136}"#,
+    r#"{"seq":6,"t_ms":258,"kind":"detected","viewer":8,"contact":8314046734819043908,"target":7,"hash":3618923837747266797}"#,
+    r#"{"seq":7,"t_ms":421,"kind":"detected","viewer":3,"contact":5844251635052541762,"target":4,"hash":3618923837747266797}"#,
+    r#"{"seq":8,"t_ms":482,"kind":"detected","viewer":4,"contact":5992554990774319474,"target":3,"hash":3618923837747266797}"#,
+    r#"{"seq":9,"t_ms":508,"kind":"startup","unit":8,"hash":1382850667801176947}"#,
+    r#"{"seq":10,"t_ms":671,"kind":"startup","unit":3,"hash":1382850667801176947}"#,
+    r#"{"seq":11,"t_ms":732,"kind":"startup","unit":4,"hash":1382850667801176947}"#,
+    r#"{"seq":12,"t_ms":594,"kind":"detected","viewer":7,"contact":3822974778006219272,"target":8,"hash":12885979691697720132}"#,
+    r#"{"seq":13,"t_ms":844,"kind":"startup","unit":7,"hash":11992241616740203599}"#,
+    r#"{"seq":14,"t_ms":1000,"kind":"tempo","from":"quiet","to":"alert","hash":8534533197897847456}"#,
+    r#"{"seq":15,"t_ms":3258,"kind":"classified","viewer":8,"contact":8314046734819043908,"target":7,"team":"blue","draws":[["classify:8:7:4",3884165266672269218]],"hash":1372105034197112343}"#,
+    r#"{"seq":16,"t_ms":3421,"kind":"classified","viewer":3,"contact":5844251635052541762,"target":4,"team":"red","draws":[["classify:3:4:4",16846213216163885984]],"hash":1372105034197112343}"#,
+    r#"{"seq":17,"t_ms":3482,"kind":"classified","viewer":4,"contact":5992554990774319474,"target":3,"team":"red","draws":[["classify:4:3:4",2094150884743799771]],"hash":1372105034197112343}"#,
+    r#"{"seq":18,"t_ms":3594,"kind":"classified","viewer":7,"contact":3822974778006219272,"target":8,"team":"blue","draws":[["classify:7:8:4",989486057018502202]],"hash":17697115456916639844}"#,
+    r#"{"seq":19,"t_ms":5000,"kind":"position_summary","units":[[3,6500,97500,100,90000],[4,6500,95500,100,90000],[7,249500,97500,-100,270000],[8,249500,95500,-100,270000]],"hash":15373977326742816861}"#,
+    r#"{"seq":20,"t_ms":10000,"kind":"position_summary","units":[[3,6500,97500,100,90000],[4,6500,95500,100,90000],[7,249500,97500,-100,270000],[8,249500,95500,-100,270000]],"hash":12927868853271391082}"#,
+    r#"{"seq":21,"t_ms":10508,"kind":"power_online","unit":8,"hash":14736081237859529796}"#,
+    r#"{"seq":22,"t_ms":10671,"kind":"power_online","unit":3,"hash":14736081237859529796}"#,
+    r#"{"seq":23,"t_ms":10732,"kind":"power_online","unit":4,"hash":14736081237859529796}"#,
+    r#"{"seq":24,"t_ms":10844,"kind":"power_online","unit":7,"hash":6108943536909992548}"#,
+    r#"{"seq":25,"t_ms":15000,"kind":"position_summary","units":[[3,7068,97500,100,90000],[4,6911,95885,100,43754],[7,249339,97647,-100,330000],[8,249088,95885,-100,316287]],"hash":15387219847835451890}"#,
+    r#"{"seq":26,"t_ms":20000,"kind":"position_summary","units":[[3,7740,99285,100,322500],[4,9358,96498,100,89214],[7,249484,99938,-100,1632],[8,246641,96498,-200,270899]],"hash":5278338046963776365}"#,
+    r#"{"seq":27,"t_ms":25000,"kind":"position_summary","units":[[3,6551,103217,100,358159],[4,14421,96500,100,90000],[7,249500,103859,-200,0],[8,241579,96500,-200,270000]],"hash":9811331012851073640}"#,
+    r#"{"seq":28,"t_ms":30000,"kind":"position_summary","units":[[3,5181,104876,100,260070],[4,21522,96500,200,90000],[7,251150,104776,-100,120000],[8,234360,96500,-200,270000]],"hash":10665275483063849963}"#,
+    r#"{"seq":29,"t_ms":35000,"kind":"position_summary","units":[[3,5467,101252,100,126057],[4,28493,96500,200,90000],[7,249987,100953,-100,227108],[8,227758,96500,-200,270000]],"hash":12366518484127990048}"#,
+    r#"{"seq":30,"t_ms":40000,"kind":"position_summary","units":[[3,7887,98377,100,112170],[4,31801,96500,200,90000],[7,248434,98572,-100,221080],[8,225080,96500,-200,270000]],"hash":2977562978472538435}"#,
+    r#"{"seq":31,"t_ms":45000,"kind":"position_summary","units":[[3,12238,98497,100,89366],[4,35823,96500,200,90000],[7,245546,97500,-200,270000],[8,221603,96500,-300,270000]],"hash":11200368593340695766}"#,
+    r#"{"seq":32,"t_ms":50000,"kind":"position_summary","units":[[3,18787,97828,200,114667],[4,42331,96500,200,90000],[7,239763,97500,-200,270000],[8,215625,96500,-300,270000]],"hash":12824109714867770548}"#,
+    r#"{"seq":33,"t_ms":55000,"kind":"position_summary","units":[[3,26125,97497,200,89684],[4,49781,96638,200,75000],[7,232307,97500,-200,270000],[8,208140,96500,-300,270000]],"hash":8039664125984675548}"#,
+    r#"{"seq":34,"t_ms":60000,"kind":"position_summary","units":[[3,30797,97500,200,90000],[4,54548,97521,200,91283],[7,226714,97500,-200,270000],[8,202598,96500,-300,270000]],"hash":500989070352966771}"#,
 ];
 
 /// **17b cut M1b.0: the production line-hash pin, the reflex half.** The
@@ -3163,6 +3170,7 @@ fn m44b_road(len: u16, node: (u16, u16)) -> tacsim::arena::state::ArenaDefinitio
             &[],
         ),
         modes: Vec::new(),
+        homes: Vec::new(),
     }
 }
 
@@ -3855,6 +3863,7 @@ fn m44c_window(
         key_spots: Vec::new(),
         waypoints: Waypoints::new(points, &edges),
         modes: Vec::new(),
+        homes: Vec::new(),
     }
 }
 
@@ -5090,6 +5099,7 @@ fn m45a_relief(
         key_spots: Vec::new(),
         waypoints: tacsim::arena::state::Waypoints::default(),
         modes: Vec::new(),
+        homes: Vec::new(),
     }
 }
 

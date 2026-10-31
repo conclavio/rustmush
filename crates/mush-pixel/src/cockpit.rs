@@ -131,6 +131,12 @@ pub struct CockpitPicture {
     pub(crate) draws: usize,
     /// The HUD's inset (G.13): the overhead drawn small, with its own map.
     pub(crate) inset: OverheadPicture,
+    /// Last observed `t_ms` so combat FX only trigger on new keyframe pulses.
+    pub(crate) last_fx_t_ms: Option<i64>,
+    /// Active transient combat FX (weapon tracers, muzzle flash, hit burst, struck ring).
+    pub(crate) active_fx: Vec<crate::fx::CombatFx>,
+    /// Sub-pulse 20 Hz contact dead-reckoning tracker.
+    pub(crate) contact_tracker: crate::fx::ContactTracker,
     /// Retained Kitty compositor state for the First-Person cockpit view.
     #[cfg(feature = "encode")]
     pub(crate) kitty: crate::cockpit_kitty::CockpitKittyState,
@@ -163,6 +169,9 @@ impl CockpitPicture {
             overlay,
             draws: 0,
             inset: OverheadPicture::new(),
+            last_fx_t_ms: None,
+            active_fx: Vec::new(),
+            contact_tracker: crate::fx::ContactTracker::new(),
             #[cfg(feature = "encode")]
             kitty: crate::cockpit_kitty::CockpitKittyState::new(),
         }
@@ -208,14 +217,38 @@ impl Picture for CockpitPicture {
             return true;
         }
         let map = feeds.feed(ARENA_MAP_FEED);
-        let cam = camera(cockpit, look);
+        let mut cam = camera(cockpit, look);
         let base_cam = Camera {
             x_cm: num(cockpit.get("x_cm")),
             y_cm: num(cockpit.get("y_cm")),
             heading_mdeg: cam.heading_mdeg,
         };
         self.draws = self.draws.wrapping_add(1);
-        let sprites = contacts_as_sprites(cockpit, &base_cam, self.draws / ANIMATION_DRAWS);
+        let step = self.draws / ANIMATION_DRAWS;
+        self.contact_tracker.step_frame(
+            cockpit,
+            base_cam.x_cm as f32 * 0.01,
+            base_cam.y_cm as f32 * 0.01,
+        );
+        crate::fx::sync_combat_fx(&mut self.last_fx_t_ms, &mut self.active_fx, cockpit);
+        if !self.active_fx.is_empty() {
+            let (jolt_dx, _jolt_dy) = crate::fx::combat_jolt_px(&self.active_fx, 1);
+            if jolt_dx != 0 {
+                cam.heading_mdeg = (i64::from(cam.heading_mdeg) + i64::from(jolt_dx) * 350)
+                    .rem_euclid(360_000) as u32;
+            }
+        }
+        let sprites: Vec<Sprite> = cockpit
+            .get("contacts")
+            .and_then(Value::as_array)
+            .into_iter()
+            .flatten()
+            .enumerate()
+            .map(|(ci, c)| {
+                let (b_deg, r_m) = self.contact_tracker.contact_bearing_range(c, ci);
+                contact_sprite_at_bearing_range(c, &base_cam, step, b_deg, r_m)
+            })
+            .collect();
         let overlay = self.overlay;
         self.ensure_map(map);
         let arena = &self.arena;
@@ -228,6 +261,86 @@ impl Picture for CockpitPicture {
         match terrain {
             Some(terrain) => heightfield::render(frame, terrain, &cam, eye, &sprites),
             None => render_from(frame, arena, &cam, sensor_eye, &sprites),
+        }
+        let w = frame.width();
+        let h = frame.height();
+        let contacts_arr = cockpit
+            .get("contacts")
+            .and_then(Value::as_array)
+            .map(Vec::as_slice)
+            .unwrap_or_default();
+        let anim_tick = self.contact_tracker.anim_tick();
+        for (ci, c) in contacts_arr.iter().enumerate() {
+            let (is_wreck, has_low_hp, is_crippled) = crate::fx::contact_damage_state(c);
+            let show_plume = has_low_hp || ((is_wreck || is_crippled) && anim_tick > 0);
+            if !show_plume {
+                continue;
+            }
+            let (b_deg, r_m) = self.contact_tracker.contact_bearing_range(c, ci);
+            let sp = contact_sprite_at_bearing_range(c, &base_cam, 0, b_deg, r_m);
+            let Some(p) = (match terrain {
+                Some(t) => heightfield::project(t, &cam, eye, w, h, &sp),
+                None => project_from(arena, &cam, sensor_eye, w, h, &sp),
+            }) else {
+                continue;
+            };
+            if p.screenx < 0.0 || p.screenx >= w as f32 || p.height < 6.0 {
+                continue;
+            }
+            let tx = p.screenx.round() as i32;
+            let top_y = (p.bottom - p.height).round() as i32;
+            let sprite_h = p.height.round() as i32;
+            let w_i = w as i32;
+            let h_i = h as i32;
+            crate::fx::paint_damage_plume(
+                tx,
+                top_y,
+                sprite_h,
+                anim_tick,
+                is_wreck,
+                &mut |x, y, col| {
+                    if x >= 0 && x < w_i && y >= 0 && y < h_i {
+                        frame.put(x as usize, y as usize, crate::fx::rgba_to_frame_rgb(col));
+                    }
+                },
+            );
+        }
+        if !self.active_fx.is_empty() {
+            let gun_xy = (w as i32 / 2, (h as i32 * 6) / 7);
+            let struck_xy = (w as i32 / 2, h as i32 / 2);
+            let lock_id = cockpit.get("lock").and_then(Value::as_str);
+            let lock_desig = cockpit.get("lock_designator").and_then(Value::as_str);
+            crate::fx::draw_fx_on_frame(frame, &self.active_fx, gun_xy, struck_xy, |target_key| {
+                let found = contacts_arr
+                    .iter()
+                    .enumerate()
+                    .find(|(_, c)| {
+                        let cid = c.get("id").and_then(Value::as_str);
+                        let cdes = c.get("designator").and_then(Value::as_str);
+                        if let Some(tk) = target_key {
+                            cid == Some(tk) || cdes == Some(tk)
+                        } else {
+                            (lock_id.is_some() && cid == lock_id)
+                                || (lock_desig.is_some() && cdes == lock_desig)
+                        }
+                    })
+                    .or_else(|| contacts_arr.iter().enumerate().next());
+                let (ci, c) = found?;
+                let (b_deg, r_m) = self.contact_tracker.contact_bearing_range(c, ci);
+                let sp = contact_sprite_at_bearing_range(c, &base_cam, 0, b_deg, r_m);
+                let p = match terrain {
+                    Some(t) => heightfield::project(t, &cam, eye, w, h, &sp)?,
+                    None => project_from(arena, &cam, sensor_eye, w, h, &sp)?,
+                };
+                if p.screenx < 0.0 || p.screenx >= w as f32 {
+                    return None;
+                }
+                let tx = p.screenx.round() as i32;
+                let ty = (p.bottom - p.height * 0.5).round() as i32;
+                let tr = (p.height * 0.35).round().clamp(8.0, 24.0) as i32;
+                Some((tx, ty, tr))
+            });
+            crate::fx::step_combat_fx(&mut self.active_fx);
         }
         match overlay {
             // The inset first, the HUD over it (G.13): the tape, the lock's
@@ -532,6 +645,22 @@ pub fn contact_party(c: &Value) -> Option<char> {
 /// HUD boxes the lock with the same sprite, so its box is the drawn one's —
 /// the sheet's size, not the silhouette's (doc 21a `X-03`).
 pub(crate) fn contact_sprite(c: &Value, cam: &Camera, step: usize) -> Sprite {
+    contact_sprite_at_bearing_range(
+        c,
+        cam,
+        step,
+        c.get("bearing_deg").and_then(Value::as_f64).unwrap_or(0.0),
+        c.get("range_m").and_then(Value::as_f64).unwrap_or(0.0),
+    )
+}
+
+pub(crate) fn contact_sprite_at_bearing_range(
+    c: &Value,
+    cam: &Camera,
+    step: usize,
+    bearing_deg: f64,
+    range_m: f64,
+) -> Sprite {
     let kind = contact_kind(c);
     let look = match c.get("unit_type").and_then(Value::as_str) {
         Some(unit) => look::for_unit(unit),
@@ -553,12 +682,7 @@ pub(crate) fn contact_sprite(c: &Value, cam: &Camera, step: usize) -> Sprite {
     });
     Sprite {
         pose,
-        ..Sprite::at_bearing(
-            cam,
-            c.get("bearing_deg").and_then(Value::as_f64).unwrap_or(0.0),
-            c.get("range_m").and_then(Value::as_f64).unwrap_or(0.0),
-            kind,
-        )
+        ..Sprite::at_bearing(cam, bearing_deg, range_m, kind)
     }
 }
 

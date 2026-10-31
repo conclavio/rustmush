@@ -1070,6 +1070,7 @@ pub fn from_pack(
         // **16b cut O.1** (16c N11): the declared modes, each spot resolved from
         // its name to its index once, here, as the graph's edges are above.
         modes: def.arena_modes(),
+        homes: Vec::new(),
     })
 }
 

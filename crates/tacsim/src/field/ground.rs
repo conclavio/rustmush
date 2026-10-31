@@ -5,7 +5,8 @@
 //! priced per row as an authored arena is (`crate::definitions::arena::from_pack`'s rule), at the
 //! composite's own side — never a constant (Q-CF-51). The boundary is the window's edge,
 //! impassable as it is on the campaign surface (Q-CF-22). No entry zones (Q-CF-17: promotion is
-//! the only entry), no key spots, no patrol graph, no mode but the skirmish.
+//! the only entry), no key spots, no patrol graph, no mode but the skirmish. Its **homes** are the
+//! parties' own carriers' ramps (doc 32 cut CF.6b, `super::home`), where a `Withdraw` drives.
 //!
 //! **The site record's objects** (Q-CF-26): remains and crates are static obstacles over their
 //! footprints, and give cover by them (doc 32 cut CF.4): each footprint cell reads as a wall
@@ -20,7 +21,7 @@
 use mush_core::{CanonicalId, World};
 use smol_str::SmolStr;
 
-use crate::arena::state::{ArenaDefinition, ArenaTerrain, TerrainCell, Waypoints};
+use crate::arena::state::{ArenaDefinition, ArenaTerrain, EntryZone, TerrainCell, Waypoints};
 use crate::surface::site_record::SiteRecord;
 
 /// **The class an object's footprint cell reads as** (doc 32 cut CF.4; Q-CF-26): a wall —
@@ -33,7 +34,8 @@ pub(crate) fn ground_id(site: &CanonicalId) -> SmolStr {
     SmolStr::new(format!("field:{site}"))
 }
 
-/// **The window a field on `site` is fought on**, with `record`'s objects laid on it.
+/// **The window a field on `site` is fought on**, with `record`'s objects laid on it and its
+/// parties' `homes` (doc 32 cut CF.6b).
 ///
 /// # Errors
 ///
@@ -42,6 +44,7 @@ pub(crate) fn definition(
     w: &World,
     site: &CanonicalId,
     record: &SiteRecord,
+    homes: Vec<EntryZone>,
 ) -> Result<ArenaDefinition, String> {
     let (composite, biome) = crate::surface::ground::site_terrain_and_biome(w, site)?;
     let ground = composite
@@ -97,5 +100,6 @@ pub(crate) fn definition(
         key_spots: Vec::new(),
         waypoints: Waypoints::new(Vec::new(), &[]),
         modes: Vec::new(),
+        homes,
     })
 }

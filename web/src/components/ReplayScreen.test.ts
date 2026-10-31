@@ -160,6 +160,50 @@ describe("ReplayScreen mounted", () => {
     await tick();
     expect(viewBtns[0]?.classList.contains("active")).toBe(true);
   });
+
+  it("supports 640p/1280p HD toggle, tactical zoom controls, and cockpit look swing", async () => {
+    localStorage.removeItem("rustmush.pictureHd");
+    await opened();
+    const viewBtns = [...document.querySelectorAll("button.view-btn")];
+
+    // Switch to tactical (iso25d)
+    await fireEvent.click(viewBtns[1]!);
+    await tick();
+    const canvas = document.querySelector("canvas") as HTMLCanvasElement;
+    expect(canvas.width).toBe(640);
+    expect(canvas.height).toBe(480);
+
+    // Toggle HD mode (640p -> 1280p)
+    const hdBtn = screen.getByRole("button", { name: "640p" });
+    await fireEvent.click(hdBtn);
+    await tick();
+    expect(screen.getByRole("button", { name: "1280p" })).toBeTruthy();
+    expect(canvas.width).toBe(1280);
+    expect(canvas.height).toBe(720);
+    expect(localStorage.getItem("rustmush.pictureHd")).toBe("1");
+
+    // Zoom controls in tactical view
+    expect(screen.getByRole("button", { name: "reset zoom" }).textContent).toBe("100%");
+    await fireEvent.click(screen.getByRole("button", { name: "zoom in" }));
+    await tick();
+    expect(screen.getByRole("button", { name: "reset zoom" }).textContent).toBe("125%");
+    await fireEvent.keyDown(window, { key: "-" });
+    await tick();
+    expect(screen.getByRole("button", { name: "reset zoom" }).textContent).toBe("100%");
+
+    // Switch to cockpit (first_person) and swing look via q/e/c
+    await fireEvent.click(viewBtns[2]!);
+    await tick();
+    expect(screen.queryByRole("button", { name: "recentre look" })).toBeNull();
+    await fireEvent.keyDown(window, { key: "e" });
+    await tick();
+    expect(screen.getByRole("button", { name: "recentre look" }).textContent).toBe("look 15°");
+    await fireEvent.keyDown(window, { key: "c" });
+    await tick();
+    expect(screen.queryByRole("button", { name: "recentre look" })).toBeNull();
+
+    localStorage.removeItem("rustmush.pictureHd");
+  });
 });
 
 // The live picture (16b cut I.4; 16c N10): the same screen in LIVE mode — no

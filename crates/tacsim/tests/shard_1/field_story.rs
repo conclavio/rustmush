@@ -9,8 +9,9 @@
 //! there (G-1). That assert flips when CF.6b's raider arrives as a flight.
 //!
 //! What the story stands in for, each named in doc 32 §12:
-//! - the raider is **seeded on the ground** (`@field/raiders`); Q-CF-47 has it launch from a
-//!   fixture carrier, and the fixture raider has none (G-1);
+//! - the raider **launches from its fixture carrier** (`@field/raiders`, then
+//!   `@field/raiders/launch`; doc 32 cut CF.6b, §13), but its hulls are not a flight on the
+//!   presence picture (G-1's presence clause, still open);
 //! - the escort's two armed hulls are **fixture hulls with hired NPCs seated**, flying doctrine
 //!   (CF.6's raider gate); the armed rig lease is not built, and the delivered orders the escort
 //!   fights under are CF.6's transport gate's, in the split-boundary harness;
@@ -76,11 +77,13 @@ async fn cf7_the_field_story_to_the_escorts_fight() {
         let _ = second(&mut rig);
     }
 
-    // (2) A raider party arrives — seeded on the ground, standing in for its fixture carrier —
-    // is seen on the presence picture (Q-CF-15), declares, and the site promotes with everyone at
-    // their poses.
+    // (2) A raider party arrives — launched from its fixture carrier (doc 32 cut CF.6b) — is seen
+    // on the presence picture (Q-CF-15), declares, and the site promotes with everyone at their
+    // poses.
     let seeded = run(&mut rig.tw, GOD, &format!("@field/raiders {SKULKS}"));
     assert!(seeded.contains("seeded"), "{seeded}");
+    let launched_out = run(&mut rig.tw, GOD, &format!("@field/raiders/launch {SKULKS}"));
+    assert!(launched_out.contains("launch from"), "{launched_out}");
     let raiders = raider_hulls(&rig);
     assert_eq!(raiders.len(), 2, "the raider's two hulls stand");
     let leader = tacsim::field::raiders::leader_of(rig.tw.world(), raiders[0]).expect("a leader");

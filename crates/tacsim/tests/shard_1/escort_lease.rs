@@ -205,7 +205,7 @@ fn stand_up(rig: &mut Rig) -> (ObjId, ObjId, ObjId, ObjId) {
     (escort, hull, intruder, hostile)
 }
 
-/// **CF.6c's gate** (doc 32 §13): lease, fly out, fight from the line cockpit, withdraw, return.
+/// **CF.6c's gate** (doc 32 §14): lease, fly out, fight from the line cockpit, withdraw, return.
 #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
 #[allow(clippy::too_many_lines)]
 async fn cf6c_a_leased_escort_flies_out_fights_withdraws_and_goes_back() {
@@ -405,7 +405,7 @@ fn carrier_of(rig: &Rig, pilot: ObjId) -> ObjId {
         .hull
 }
 
-/// **The loss** (doc 32 §13's write-off rule): a leased escort wrecked in a field strands its
+/// **The loss** (doc 32 §14's write-off rule): a leased escort wrecked in a field strands its
 /// lessee; extracted to Ceres, they write it off at the counter — the lease ends, the deposit is
 /// Occator's, the wreck stays where it fell, and the escort clearance bars the next armed lease.
 #[tokio::test(flavor = "multi_thread", worker_threads = 2)]

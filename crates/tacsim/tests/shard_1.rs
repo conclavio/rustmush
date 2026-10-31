@@ -43,10 +43,10 @@ mod field_raiders;
 mod field_story;
 #[path = "shard_1/hulls.rs"]
 mod hulls;
-#[path = "shard_1/knowing.rs"]
-mod knowing;
 #[path = "shard_1/landing.rs"]
 mod landing;
+#[path = "shard_1/match_lifecycle.rs"]
+mod match_lifecycle;
 #[path = "shard_1/one_picture.rs"]
 mod one_picture;
 #[path = "shard_1/passage.rs"]

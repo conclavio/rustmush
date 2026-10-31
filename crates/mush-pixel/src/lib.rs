@@ -78,6 +78,7 @@ pub mod cockpit_kitty;
 pub mod design;
 pub mod doll;
 pub mod frame;
+pub mod fx;
 pub mod heightfield;
 pub mod iso25d;
 #[cfg(feature = "encode")]

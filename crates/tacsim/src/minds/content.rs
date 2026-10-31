@@ -68,9 +68,12 @@ pub const STANDARD_MANIFEST_JSON: &str = include_str!("../../content/minds/stand
 /// detachment order is distinct from an earlier completed goal with no expiry.
 /// **Re-blessed by doc 32 cut CF.0** for the header's `api: 7` alone (the mind
 /// API bump that took `View.team` for `Contact.relation`); DT.1b's was
-/// `c0737fdc…e76100`.
+/// `c0737fdc…e76100`. **Re-blessed by doc 32 cut CF.6b** with the line
+/// fallback: `stand` and `withdraw_stand`, when the best hostile has no line,
+/// fire on the best nearer than it that has one, mirrored in `NativeStockMind`
+/// (`nearer_in_line`, `STAND_TRIES`); CF.0's was `a37766b5…6e5336`.
 pub const STANDARD_SHA256: &str =
-    "a37766b55993879fecb78e4cb3e1470b27df617d7e7a5b3b8a6971c24b6e5336";
+    "3837c3456fbf1e3b8e012375a3d4e4cfcc2645d024fe203eef9359de1473a316";
 
 /// **The script's digest** — the SHA-256 of [`STANDARD_RHAI`], the key the
 /// sandbox caches its compilation under (with `MIND_ABI`). Computed from the
@@ -949,6 +952,83 @@ mod tests {
         );
         assert_eq!(memory.state, MachineState::Patrol);
         assert_eq!(memory.last_plot.map(|(cell, _)| cell), Some((20, 30)));
+    }
+
+    /// **Doc 32 cut CF.6b, through both runners: past a hostile it has no line to.** A ridge
+    /// hides the best-ranked hostile (`BLUE`, due north at 140 m, its rear to the viewer); a
+    /// nearer one (`BLUE2`, inside the same screen arc at 89 m, facing the viewer) is in the
+    /// open. A screen stands on the nearer one and locks it, where before it held the best and
+    /// fired nothing; a patrol still pursues the best, to close on it (the hostile edges are
+    /// untouched) — the same in T1 and in the Rhai twin, within Class I's two traces.
+    #[test]
+    fn cf6b_mirror_the_doctrine_falls_back_past_a_hostile_with_no_line() {
+        use crate::arena::stock_mind::{Weights, best_hostile, line_between};
+        let mut arena = field(vec![
+            minded(RED, PartyId::RED, 20_500, 20_500),
+            line_tank(BLUE, PartyId::BLUE, pose(20_500, 34_500)),
+            line_tank(BLUE2, PartyId::BLUE, {
+                let mut facing = pose(24_500, 27_500);
+                facing.heading_mdeg = 180_000;
+                facing
+            }),
+        ]);
+        let mut cells = vec![ground(); 56 * 56];
+        for x in 19..=21 {
+            if let Some(ridge) = cells.get_mut(25 * 56 + x) {
+                ridge.elev_cm = 10_000;
+            }
+        }
+        Arc::make_mut(&mut arena.definition).terrain =
+            ArenaTerrain::new(56, 56, 1_000, cells).expect("the ridge window");
+        online(&mut arena, RED);
+        hold(&mut arena, RED, BLUE, ContactId(0x11));
+        hold(&mut arena, RED, BLUE2, ContactId(0x22));
+        let view = view_of(&arena, RED);
+        let cfg = &arena.arena_cfg.reflex;
+        assert_eq!(
+            best_hostile(
+                &view,
+                &Weights::of(cfg),
+                health_permille(&view),
+                None,
+                |_| true
+            ),
+            Some(ContactId(0x11)),
+            "the hidden hostile ranks first"
+        );
+        let row = |id| {
+            view.contacts
+                .iter()
+                .find(|row| row.id == ContactId(id))
+                .and_then(|row| row.cell)
+        };
+        assert!(
+            !line_between(&arena.definition, view.cell, row(0x11)),
+            "the ridge"
+        );
+        assert!(
+            line_between(&arena.definition, view.cell, row(0x22)),
+            "the open"
+        );
+
+        let mut screen = view.clone();
+        screen.order = Some(order_of(MindObjective::Screen { facing_mdeg: 0 }));
+        let mut memory = patrolling(0);
+        let stood = think(&arena, &screen, &mut memory, 1_000);
+        assert!(
+            stood.contains(&IntentKind::Lock {
+                contact: ContactId(0x22)
+            }),
+            "the screen stands on the hostile it has a line to: {stood:?}"
+        );
+
+        let mut memory = patrolling(0);
+        let _ = think(&arena, &view, &mut memory, 1_000);
+        assert_eq!(
+            memory.target,
+            Some(ContactId(0x11)),
+            "the patrol closes on the best, line or none"
+        );
     }
 
     /// Two hostile rows a view holds, tied (`stock_mind.rs`' `tied`).

@@ -15,6 +15,8 @@ use super::state::{
 const MAX_CELLS: usize = 1024 * 1024;
 const MAX_NODES: usize = 4096;
 const MAX_WORD: usize = 128;
+/// One home a party at most, and a field holds at most 26 parties.
+const MAX_HOMES: usize = 26;
 
 #[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize)]
 #[serde(deny_unknown_fields)]
@@ -29,6 +31,9 @@ pub(crate) struct ReplayGround {
     key_spots: Vec<(SmolStr, u16, u16)>,
     nodes: Vec<(SmolStr, u16, u16, Vec<u16>)>,
     hold_modes: Vec<(u16, u16, u32)>,
+    /// Doc 32 cut CF.6b: an IC field's homes; absent on every authored arena's tape.
+    #[serde(default, skip_serializing_if = "Vec::is_empty")]
+    homes: Vec<EntryZone>,
 }
 
 impl ReplayGround {
@@ -66,6 +71,7 @@ impl ReplayGround {
                     ArenaMode::Hold(rule) => (rule.spot, rule.radius_cells, rule.hold_ms),
                 })
                 .collect(),
+            homes: definition.homes.clone(),
         };
         ground.validate()?;
         Ok(ground)
@@ -86,10 +92,11 @@ impl ReplayGround {
             || self.key_spots.len() > super::state::SPOT_LETTERS.len()
             || self.nodes.len() > MAX_NODES
             || self.hold_modes.len() > 1
+            || self.homes.len() > MAX_HOMES
         {
             return Err("invalid captured ground dimensions");
         }
-        for zone in &self.entry_zones {
+        for zone in self.entry_zones.iter().chain(&self.homes) {
             if zone.x0 > zone.x1 || zone.y0 > zone.y1 || !cell(zone.x1, zone.y1) {
                 return Err("invalid captured entry zone");
             }
@@ -170,6 +177,7 @@ impl ReplayGround {
                     })
                 })
                 .collect(),
+            homes: self.homes,
         })
     }
 }
@@ -236,6 +244,7 @@ mod tests {
                 radius_cells: 1,
                 hold_ms: 10_000,
             })],
+            homes: Vec::new(),
         }
     }
 

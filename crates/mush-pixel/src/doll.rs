@@ -25,16 +25,107 @@ use crate::picture::{BUCKET_B_INTERVAL, Feeds, Look, Picture};
 const BACK: Rgb = [10, 12, 16];
 const EDGE: Rgb = [96, 104, 120];
 
+#[cfg(feature = "encode")]
+use crate::overhead::{place_kitty_subrect, wrap_kitty_sync};
+
+/// Retained Kitty image ID (`i=181`) for the armour-status doll picture.
+#[cfg(feature = "encode")]
+pub const IMAGE_ID_DOLL: u32 = 181;
+/// Retained Kitty placement ID (`p=81`) for the armour-status doll picture.
+#[cfg(feature = "encode")]
+pub const PLACEMENT_DOLL: u32 = 81;
+#[cfg(feature = "encode")]
+const Z_DOLL: i32 = -50;
+
 /// The doll as a [`Picture`]: drawn from the held `arena.cockpit` on bucket
 /// B's clock (on change).
 #[derive(Debug, Default)]
-pub struct DollPicture;
+pub struct DollPicture {
+    #[cfg(feature = "encode")]
+    kitty_hash: Option<u64>,
+    #[cfg(feature = "encode")]
+    kitty_area: Option<(u16, u16, u16, u16)>,
+}
 
 impl DollPicture {
     /// A doll picture.
     #[must_use]
     pub fn new() -> DollPicture {
-        DollPicture
+        DollPicture::default()
+    }
+
+    /// Return Kitty Graphics escape bytes that delete the retained doll image
+    /// (`IMAGE_ID_DOLL`), and reset cached placement state.
+    #[cfg(feature = "encode")]
+    pub fn cleanup_kitty_bytes(&mut self) -> Vec<u8> {
+        let mut out = Vec::new();
+        if self.kitty_hash.is_some() {
+            crate::kitty::delete_image_bytes(&mut out, IMAGE_ID_DOLL);
+        }
+        self.kitty_hash = None;
+        self.kitty_area = None;
+        out
+    }
+
+    /// Invalidate the retained Kitty doll image if the terminal evicted it.
+    #[cfg(feature = "encode")]
+    pub fn invalidate_image(&mut self, image_id: u32) {
+        if image_id == IMAGE_ID_DOLL {
+            self.kitty_hash = None;
+            self.kitty_area = None;
+        }
+    }
+
+    /// Force the retained Kitty doll placement to re-emit on the next tick.
+    #[cfg(feature = "encode")]
+    pub fn invalidate_placements(&mut self) {
+        self.kitty_area = None;
+    }
+
+    /// Render the armour-status doll page as a retained Kitty Graphics stream
+    /// (`a=t` + `a=p`), scaling up to `1280x` when `cell` is known and
+    /// `!step_down` (`640x` fallback otherwise).
+    #[cfg(feature = "encode")]
+    pub fn draw_kitty(
+        &mut self,
+        feeds: &dyn Feeds,
+        look: &Look,
+        area: (u16, u16, u16, u16),
+        cell: Option<crate::caps::CellSize>,
+        step_down: bool,
+    ) -> Option<(crate::iso25d::Viewport25D, Vec<u8>)> {
+        let vp = crate::cockpit_kitty::viewport_fp(area.2, area.3, cell, step_down);
+        let (vw, vh) = (vp.width_px, vp.height_px);
+        let mut frame = Frame::new(vw, vh);
+        if !self.draw(&mut frame, feeds, look) {
+            return None;
+        }
+        let placed_area = (
+            area.0.saturating_add(vp.col_offset),
+            area.1.saturating_add(vp.row_offset),
+            vp.cols,
+            vp.rows,
+        );
+        let h = frame.hash();
+        let mut ops = Vec::new();
+        if self.kitty_hash != Some(h) {
+            let png = crate::png::encode(&frame);
+            crate::kitty::transmit_bytes(&mut ops, &png, IMAGE_ID_DOLL);
+            self.kitty_hash = Some(h);
+            self.kitty_area = None;
+        }
+        if self.kitty_area != Some(placed_area) {
+            place_kitty_subrect(
+                &mut ops,
+                IMAGE_ID_DOLL,
+                PLACEMENT_DOLL,
+                placed_area,
+                (0, 0, vw as u32, vh as u32),
+                Z_DOLL,
+            );
+            self.kitty_area = Some(placed_area);
+        }
+        Some((vp, wrap_kitty_sync(ops)))
     }
 }
 
@@ -316,5 +407,37 @@ mod tests {
         c["unit_type"] = "nothing_known".into();
         let f = draw(Some(c), 640, 230);
         assert!(has(&f, TEXT));
+    }
+
+    #[cfg(feature = "encode")]
+    #[test]
+    fn retained_kitty_doll_scales_to_1280_and_skips_unchanged_ticks() {
+        use crate::caps::CellSize;
+        let feeds: HashMap<String, Value> = [(COCKPIT_FEED.to_string(), cockpit())]
+            .into_iter()
+            .collect();
+        let mut pic = DollPicture::new();
+        let area = (1, 1, 128, 36);
+        let cell = Some(CellSize {
+            width: 10,
+            height: 20,
+        });
+        let (vp, b1) = pic
+            .draw_kitty(&feeds, &Look::default(), area, cell, false)
+            .expect("drawn");
+        assert_eq!(vp.width_px, 1280);
+        let s1 = String::from_utf8_lossy(&b1);
+        assert!(s1.contains("a=t,f=100,t=d,i=181"));
+        assert!(s1.contains("a=p,i=181,p=81"));
+
+        let (_, b2) = pic
+            .draw_kitty(&feeds, &Look::default(), area, cell, false)
+            .expect("drawn");
+        assert!(b2.is_empty(), "unchanged doll emits 0 bytes");
+
+        let (vp_fb, _) = pic
+            .draw_kitty(&feeds, &Look::default(), area, None, false)
+            .expect("fallback");
+        assert_eq!(vp_fb.width_px, 640);
     }
 }
