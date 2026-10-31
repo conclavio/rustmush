@@ -27,7 +27,6 @@ use crate::field_ops::condition::{
     effective_section_condition, install_point_section,
 };
 use crate::field_ops::recovery::FieldPose;
-use crate::field_ops::sortie::{UnitExpenseCategory, UnitExpensePolicy};
 use crate::unit::{
     CellAddr, CellId, ComponentId, ConditionId, SectionId, TacticalUnit, UnitError, UnitMutationOp,
     UnitMutationPlan, apply,
@@ -1023,3 +1022,52 @@ impl fmt::Display for FieldEngineeringError {
 }
 
 impl std::error::Error for FieldEngineeringError {}
+
+/// Category of sortie or post-sortie unit expense (`Q-A4`).
+#[derive(Clone, Copy, Debug, PartialEq, Eq, PartialOrd, Ord, Serialize, Deserialize)]
+#[serde(rename_all = "snake_case")]
+pub enum UnitExpenseCategory {
+    /// Ammunition, fuel, and expended tactical consumables.
+    AmmunitionAndConsumables,
+    /// Field towing, crane extraction, and recovery operations.
+    FieldRecoveryAndTowing,
+    /// Hangar/workshop structural repair, section reconstruction, and component replacement.
+    WorkshopRepairAndReplacement,
+}
+
+/// Explicit per-category expense payer policy for a deployed unit (`Q-A4`).
+///
+/// Defaults all categories to the detachment organizer so multi-owner detachments have
+/// unambiguous cost attribution unless the organizer and unit owner configure a split.
+#[derive(Clone, Copy, Debug, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(deny_unknown_fields)]
+pub struct UnitExpensePolicy {
+    /// Principal billed for ammunition and consumables.
+    pub ammo_payer: ObjId,
+    /// Principal billed for field recovery and towing.
+    pub recovery_payer: ObjId,
+    /// Principal billed for workshop repair and component replacement.
+    pub repair_payer: ObjId,
+}
+
+impl UnitExpensePolicy {
+    /// Default expense policy where `organizer` pays all categories (`Q-A4`).
+    #[must_use]
+    pub const fn organizer_pays_all(organizer: ObjId) -> Self {
+        Self {
+            ammo_payer: organizer,
+            recovery_payer: organizer,
+            repair_payer: organizer,
+        }
+    }
+
+    /// Resolve the payer principal for `category`.
+    #[must_use]
+    pub const fn payer_for(&self, category: UnitExpenseCategory) -> ObjId {
+        match category {
+            UnitExpenseCategory::AmmunitionAndConsumables => self.ammo_payer,
+            UnitExpenseCategory::FieldRecoveryAndTowing => self.recovery_payer,
+            UnitExpenseCategory::WorkshopRepairAndReplacement => self.repair_payer,
+        }
+    }
+}
