@@ -2,14 +2,14 @@
 //! restart — the WS analog of
 //! [`restart_survival::server_restart_keeps_connections_and_world`].
 //!
-//! The gateway supervises the server (launched here as a sibling thread over an
-//! ephemeral localhost IPC boundary — the same shape as a child process, and
-//! deterministic on Windows) AND serves the web client on its own ephemeral
-//! HTTP/WS listener. A real WebSocket client connects THROUGH the gateway,
-//! authenticates with a token, receives the hello manifest, and plays; then the
-//! server is RESTARTED through the gateway's programmatic [`RestartTrigger`] (the
-//! cross-platform stand-in for the Unix `SIGHUP` deploy signal). The proof
-//! asserts:
+//! The server is its own unit (doc 33 GG.1), stood in for by the
+//! [`ServerUnit`] rig (a sibling thread over a localhost IPC boundary the
+//! gateway dials — the same shape as the unit's socket, and deterministic on
+//! Windows); the gateway serves the web client on its own ephemeral HTTP/WS
+//! listener. A real WebSocket client connects THROUGH the gateway,
+//! authenticates with a token, receives the hello manifest, and plays; then
+//! the server is RESTARTED from outside the gateway, as `systemctl restart`
+//! does it. The proof asserts:
 //!
 //! - the WS connection SURVIVES — it is never sent a Close frame (`recv_env`
 //!   panics on a close, so a dropped WS fails the test);
@@ -34,7 +34,6 @@ use std::path::PathBuf;
 use std::sync::Arc;
 use std::time::Duration;
 
-use futures::future::BoxFuture;
 use futures::{SinkExt, StreamExt};
 use mush_core::GOD;
 use mush_store::{AccountRec, CharacterRef, InMemoryStore, ObjectStore};
@@ -46,10 +45,12 @@ use tokio_tungstenite::{MaybeTlsStream, WebSocketStream, connect_async};
 
 use mush_config::accounts::hash_password;
 use mush_config::config::Config;
-use mush_gateway::{GatewayOptions, LaunchedServer, RestartTrigger, ServerLauncher, ServerSource};
+use mush_gateway::GatewayOptions;
 use mush_proto::{ClientCommand, Envelope, OutputEvent};
 use mush_testkit::text_of;
 use serde_json::{Value, json};
+
+use super::harness::ServerUnit;
 
 const STEP_TIMEOUT: Duration = Duration::from_secs(60);
 const GM_PASSWORD: &str = "gm-secret-1";
@@ -102,49 +103,11 @@ fn gateway_config(tag: &str) -> Config {
     cfg
 }
 
-/// Boot one real `mush-server` on its own thread + runtime over an ephemeral IPC
-/// endpoint, sharing `store` so the world survives across restarts. Each restart
-/// re-runs this against the SAME store. `exited` fires when that server's `serve`
-/// returns.
-async fn launch_thread_server(store: Arc<dyn ObjectStore>) -> Result<LaunchedServer, String> {
-    let cfg = server_config("server");
-    let (ipc_tx, ipc_rx) = oneshot::channel();
-    let (exit_tx, exit_rx) = oneshot::channel();
-    std::thread::spawn(move || {
-        let rt = tokio::runtime::Builder::new_multi_thread()
-            .enable_all()
-            .build()
-            .unwrap();
-        let _ = rt.block_on(mush_server::serve_with_store(
-            cfg,
-            Some(ipc_tx),
-            Some(store),
-        ));
-        let _ = exit_tx.send(());
-    });
-    let endpoint = tokio::time::timeout(Duration::from_secs(30), ipc_rx)
-        .await
-        .map_err(|_| "server ipc bind timed out".to_string())?
-        .map_err(|_| "server dropped its ipc oneshot".to_string())?;
-    Ok(LaunchedServer {
-        endpoint,
-        exited: Box::pin(async move {
-            let _ = exit_rx.await;
-        }),
-    })
-}
-
-/// The restart-survival launcher: each `launch` boots a fresh `mush-server`
-/// against the ONE shared store, so the world survives every restart.
-struct ThreadLauncher {
-    store: Arc<dyn ObjectStore>,
-}
-
-impl ServerLauncher for ThreadLauncher {
-    fn launch(&self) -> BoxFuture<'static, Result<LaunchedServer, String>> {
-        let store = Arc::clone(&self.store);
-        Box::pin(launch_thread_server(store))
-    }
+/// The server unit over `store` (`harness.rs`): each restart re-runs a real
+/// `mush-server` against the SAME store at the SAME endpoint, so the world
+/// survives every restart.
+fn unit(store: Arc<dyn ObjectStore>) -> ServerUnit {
+    ServerUnit::new(store, || server_config("server"))
 }
 
 /// The gateway's own KV store (accounts), seeded with the God wizard so the web
@@ -169,42 +132,37 @@ async fn seeded_gw_store() -> Arc<dyn ObjectStore> {
     gw_store
 }
 
-/// Start the gateway (on its own thread/runtime, as the binary does) supervising
-/// `launcher` AND serving the web client on an ephemeral listener; return the
-/// bound WEB address plus the programmatic restart trigger. The gateway thread is
-/// detached — `serve` blocks until Ctrl-C, which never comes in-test; dropping at
-/// test end tears the process down.
-async fn start_split_web(launcher: Box<dyn ServerLauncher>) -> (SocketAddr, RestartTrigger) {
+/// Start the gateway (on its own thread/runtime, as the binary does) aimed at
+/// `unit` AND serving the web client on an ephemeral listener; return the
+/// bound WEB address. The gateway thread is detached — `serve` blocks until
+/// Ctrl-C, which never comes in-test; dropping at test end tears the process
+/// down.
+async fn start_split_web(unit: &ServerUnit) -> SocketAddr {
     let gw_store = seeded_gw_store().await;
     let (web_tx, web_rx) = oneshot::channel();
-    let (restart_tx, restart_rx) = oneshot::channel::<RestartTrigger>();
+    let mut cfg = gateway_config("gateway");
+    unit.aim(&mut cfg);
     std::thread::spawn(move || {
         let rt = tokio::runtime::Builder::new_multi_thread()
             .enable_all()
             .build()
             .unwrap();
         rt.block_on(mush_gateway::serve(
-            gateway_config("gateway"),
+            cfg,
             GatewayOptions {
-                source: ServerSource::Restartable(launcher),
                 store: Some(gw_store),
                 ssh_ready: None,
                 web_ready: Some(web_tx),
-                restart_ready: Some(restart_tx),
                 siteban_refresh: None,
+                give_up_after: None,
             },
         ))
         .unwrap();
     });
-    let web_addr = tokio::time::timeout(Duration::from_secs(30), web_rx)
+    tokio::time::timeout(Duration::from_secs(30), web_rx)
         .await
         .expect("gateway bound WEB")
-        .expect("web addr");
-    let trigger = tokio::time::timeout(Duration::from_secs(30), restart_rx)
-        .await
-        .expect("supervisor handed back a restart trigger")
-        .expect("restart trigger");
-    (web_addr, trigger)
+        .expect("web addr")
 }
 
 async fn post_json(url: &str, body: Value) -> reqwest::Response {
@@ -347,10 +305,9 @@ async fn web_connection_survives_server_restart_with_world_intact() {
     // The SERVER's world store — SHARED across every restart, so the world
     // survives (stands in for Redis on the dev box).
     let server_store: Arc<dyn ObjectStore> = Arc::new(InMemoryStore::new());
-    let (web_addr, trigger) = start_split_web(Box::new(ThreadLauncher {
-        store: Arc::clone(&server_store),
-    }))
-    .await;
+    let unit = unit(server_store);
+    unit.start().await;
+    let web_addr = start_split_web(&unit).await;
 
     // --- Log in over REST + open a WS through the gateway as the God wizard. ---
     let (token, key) = login(web_addr, "boss", GM_PASSWORD).await;
@@ -402,8 +359,8 @@ async fn web_connection_survives_server_restart_with_world_intact() {
     let pre = expect_env(&mut ws, "God says, \"pre-restart\"").await;
     assert!(matches!(pre.event, OutputEvent::Narrative { .. }));
 
-    // --- RESTART the server (the programmatic SIGHUP stand-in). ---
-    assert!(trigger.restart().await, "restart must be accepted");
+    // --- RESTART the server (`systemctl restart`: it exits, a fresh one binds). ---
+    unit.restart().await;
 
     // The WS is told the game is restarting, is pushed a fresh room render, and
     // receives Reconnected only after the exact readiness barrier — WITHOUT ever

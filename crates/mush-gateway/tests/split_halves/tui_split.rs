@@ -23,7 +23,6 @@ use std::path::PathBuf;
 use std::sync::Arc;
 use std::time::Duration;
 
-use futures::future::BoxFuture;
 use mush_core::{GOD, LIMBO, ObjId, ObjKind};
 use mush_store::{AccountRec, CharacterRef, InMemoryStore, ObjectStore, WriteBatch};
 use russh::ChannelMsg;
@@ -31,7 +30,9 @@ use tokio::sync::oneshot;
 
 use mush_config::accounts::hash_password;
 use mush_config::config::Config;
-use mush_gateway::{GatewayOptions, LaunchedServer, ServerLauncher, ServerSource};
+use mush_gateway::GatewayOptions;
+
+use super::harness::ServerUnit;
 
 const STEP_TIMEOUT: Duration = Duration::from_secs(60);
 const GM_PASSWORD: &str = "gm-secret-1";
@@ -87,7 +88,6 @@ fn test_config(tag: &str) -> Config {
     cfg.server.data_dir = scratch_dir(tag);
     cfg.ssh.listen = "127.0.0.1:0".to_string();
     cfg.ipc.listen = "127.0.0.1:0".to_string();
-    cfg.ipc.exit_on_abandoned_supervision = false;
     cfg.tacsim.enabled = true;
     cfg.tacsim.arena.tempo.quiet_ms = 100;
     cfg.tacsim.arena.tempo.alert_ms = 100;
@@ -150,49 +150,20 @@ async fn shared_store() -> Arc<dyn ObjectStore> {
     store
 }
 
-async fn launch_thread_server(store: Arc<dyn ObjectStore>) -> Result<LaunchedServer, String> {
-    let cfg = test_config("server");
-    let (ipc_tx, ipc_rx) = oneshot::channel();
-    let (exit_tx, exit_rx) = oneshot::channel();
-    std::thread::spawn(move || {
-        let Ok(rt) = tokio::runtime::Builder::new_multi_thread()
-            .enable_all()
-            .build()
-        else {
-            return;
-        };
-        let _ = rt.block_on(mush_server::serve_with_store(
-            cfg,
-            Some(ipc_tx),
-            Some(store),
-        ));
-        let _ = exit_tx.send(());
-    });
-    let endpoint = tokio::time::timeout(Duration::from_secs(60), ipc_rx)
-        .await
-        .map_err(|_| "server ipc bind timed out".to_string())?
-        .map_err(|_| "server dropped its ipc oneshot".to_string())?;
-    Ok(LaunchedServer {
-        endpoint,
-        exited: Box::pin(async move {
-            let _ = exit_rx.await;
-        }),
-    })
-}
-
-struct OneServer {
-    store: Arc<dyn ObjectStore>,
-}
-
-impl ServerLauncher for OneServer {
-    fn launch(&self) -> BoxFuture<'static, Result<LaunchedServer, String>> {
-        Box::pin(launch_thread_server(Arc::clone(&self.store)))
-    }
+/// The server unit over `store` (`harness.rs`): a real server on its own
+/// thread + runtime, which the gateway dials. Nothing here restarts it; the
+/// unit handle may be dropped (the server runs on until the process ends).
+fn unit(store: Arc<dyn ObjectStore>) -> ServerUnit {
+    ServerUnit::new(store, || test_config("server"))
 }
 
 async fn start_split(store: Arc<dyn ObjectStore>) -> SocketAddr {
+    let unit = unit(Arc::clone(&store));
+    unit.start().await;
     let (ssh_tx, ssh_rx) = oneshot::channel();
     let gw_store = Arc::clone(&store);
+    let mut cfg = test_config("gateway");
+    unit.aim(&mut cfg);
     std::thread::spawn(move || {
         let Ok(rt) = tokio::runtime::Builder::new_multi_thread()
             .enable_all()
@@ -201,14 +172,13 @@ async fn start_split(store: Arc<dyn ObjectStore>) -> SocketAddr {
             return;
         };
         let _ = rt.block_on(mush_gateway::serve(
-            test_config("gateway"),
+            cfg,
             GatewayOptions {
-                source: ServerSource::Restartable(Box::new(OneServer { store })),
                 store: Some(gw_store),
                 ssh_ready: Some(ssh_tx),
                 web_ready: None,
-                restart_ready: None,
                 siteban_refresh: None,
+                give_up_after: None,
             },
         ));
     });

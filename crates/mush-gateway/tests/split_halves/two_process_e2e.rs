@@ -35,7 +35,7 @@ use russh::ChannelMsg;
 
 use mush_config::accounts::hash_password;
 use mush_config::config::Config;
-use mush_gateway::{GatewayOptions, ServerSource};
+use mush_gateway::GatewayOptions;
 
 const STEP_TIMEOUT: Duration = Duration::from_secs(60);
 const GM_PASSWORD: &str = "gm-secret-1";
@@ -215,15 +215,16 @@ async fn two_process_connect_play_boot_disconnect() {
             .enable_all()
             .build()
             .unwrap();
+        let mut gw_cfg = test_config("gateway");
+        gw_cfg.ipc.listen = endpoint.describe();
         rt.block_on(mush_gateway::serve(
-            test_config("gateway"),
+            gw_cfg,
             GatewayOptions {
-                source: ServerSource::Connect(endpoint),
                 store: Some(gw_store),
                 ssh_ready: Some(ssh_tx),
                 web_ready: None,
-                restart_ready: None,
                 siteban_refresh: None,
+                give_up_after: None,
             },
         ))
         .unwrap();
@@ -324,15 +325,16 @@ async fn boot_split(
             .enable_all()
             .build()
             .unwrap();
+        let mut gw_cfg = test_config("gateway2");
+        gw_cfg.ipc.listen = endpoint.describe();
         rt.block_on(mush_gateway::serve(
-            test_config("gateway2"),
+            gw_cfg,
             GatewayOptions {
-                source: ServerSource::Connect(endpoint),
                 store: Some(gw_store),
                 ssh_ready: Some(ssh_tx),
                 web_ready: None,
-                restart_ready: None,
                 siteban_refresh: None,
+                give_up_after: None,
             },
         ))
         .unwrap();
@@ -507,7 +509,8 @@ async fn boot_split_sharing_store(
         .unwrap();
 
     let (ssh_tx, ssh_rx) = tokio::sync::oneshot::channel();
-    let gw_cfg = test_config(&format!("{tag}-gateway"));
+    let mut gw_cfg = test_config(&format!("{tag}-gateway"));
+    gw_cfg.ipc.listen = endpoint.describe();
     let gateway_thread = std::thread::spawn(move || {
         let rt = tokio::runtime::Builder::new_multi_thread()
             .enable_all()
@@ -516,12 +519,11 @@ async fn boot_split_sharing_store(
         rt.block_on(mush_gateway::serve(
             gw_cfg,
             GatewayOptions {
-                source: ServerSource::Connect(endpoint),
                 store: Some(store),
                 ssh_ready: Some(ssh_tx),
                 web_ready: None,
-                restart_ready: None,
                 siteban_refresh: Some(refresh),
+                give_up_after: None,
             },
         ))
         .unwrap();

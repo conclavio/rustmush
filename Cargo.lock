@@ -2839,6 +2839,7 @@ dependencies = [
  "mush-content",
  "mush-contract-tests",
  "mush-core",
+ "mush-drain",
  "mush-economy",
  "mush-faction",
  "mush-housing",

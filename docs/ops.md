@@ -2458,8 +2458,9 @@ hot-restart operational flow (and its accepted losses) is the next section.
   listeners. It binds the `[ipc]` socket and waits for the gateway.
 - **`mush-gateway`** owns the front door: the SSH **and web** listeners,
   the session layer, account auth + the IP guard, and slow-client / link-dead
-  policing (it owns the connection buffers). It **spawns and supervises** the
-  `mush-server` child and talks to it over the `[ipc]` socket.
+  policing (it owns the connection buffers). It **dials** the `mush-server`
+  unit over the `[ipc]` socket and holds every connection while the server
+  is away (doc 33 GG.1); it never starts, stops or restarts it — systemd does.
 
 The two halves are a **clean dependency split**: they depend on neither each
 other nor the other half's deps. The gateway links only connection-side crates
@@ -2499,41 +2500,41 @@ listen = "/run/rustmush/dev1.sock"   # Linux prod: a Unix-domain socket path
 #                             #   logged at warn + counted. Flood-exempt input (mail/chargen
 #                             #   paste) bypasses the shed.
 # to_gw_cap = 8192            # server->gateway queue depth; every frame is must-deliver, so
-#                             #   over cap the whole boundary is torn down — the supervisor
-#                             #   re-attach re-renders every session and heals the loss.
+#                             #   over cap the whole boundary is torn down — the server exits,
+#                             #   its unit restarts it, the gateway's re-attach re-renders
+#                             #   every session and heals the loss.
 # write_timeout_ms = 5000     # per-frame IPC write timeout; a connected-but-not-draining
 #                             #   ("wedged") peer past this tears the boundary down.
 # high_water_warn_pct = 80    # edge-gated high-water warn threshold, percent of a queue's cap.
-
-# WS22-S17: what the gateway does when its supervisor GIVES UP on the server half.
-# exit_on_abandoned_supervision = true   # exit non-zero after a ~3 s grace, so
-#                             #   Restart=on-failure brings the whole gateway back.
-#                             #   Set false on a dev box to keep the corpse attached
-#                             #   for inspection; the gauge and the marker below are
-#                             #   published either way.
 ```
 
-**When the supervisor gives up.** The gateway abandons supervision when the
-crash-loop guard trips, when an old server instance's exit cannot be
-established (it will never launch a replacement over an instance that might
-still be writing the store), or if the supervisor task itself dies. That state
-used to be invisible: the process stayed healthy and idle, every held session
-stayed connected, and every line those players typed was refused for ever.
-Now it:
+(`exit_on_abandoned_supervision`, WS22-S17's knob, is gone with the supervisor
+in doc 33 GG.1; an old `[ipc]` still parses, the key is ignored.)
 
-- logs one ERROR carrying the fixed marker `SUPERVISION-ABANDONED`, with a
-  `reason` field (`crash-loop`, `uncertain-exit`, `supervisor-died`) —
-  `journalctl -u dev1mush-gateway | grep SUPERVISION-ABANDONED`;
-- latches the `mush_supervision_abandoned` gauge on `/metrics`, which
-  `/healthz` also reports as `"supervision_ok": false` (alert on either);
-- tells the connected players once ("the server is down and could not be
-  restarted");
-- and then, unless `exit_on_abandoned_supervision = false`, stops accepting new
-  SSH logins at once and exits **1** after a short grace window (the window is
-  for the notice above to reach the sessions already held, not for new arrivals;
-  the web listener stays up through it so `/healthz` keeps answering) so the
-  init system restarts the pair. Connections that refuse every input are worth
-  less than a working game.
+**When the server stays down (doc 33 GG.1).** The gateway never gives up on
+the server: it dials the `[ipc]` socket for as long as it runs, and the next
+server to answer heals the gap with nobody reconnecting. What is bounded is
+systemd's patience — the server unit's start limit is five starts in sixty
+seconds (Q-33-5), so a gap past a minute means the unit has stopped
+restarting the server and an operator is needed. At that bound the gateway:
+
+- logs one ERROR carrying the fixed marker `SERVER-UNREACHABLE` —
+  `journalctl -u dev1mush-gateway | grep SERVER-UNREACHABLE`;
+- raises the `mush_server_unreachable` gauge on `/metrics`, which `/healthz`
+  also reports as `"server_ok": false` (alert on either; both clear on the
+  heal);
+- tells the held players once, in place of "restarting; hold on": `GAME: The
+  server is down and staff have been paged. You stay connected; play resumes
+  by itself when it is back.` — input is still refused with the same words,
+  and a new login is refused with `the server is down and staff have been
+  paged; please try again later`.
+
+The fix is the unit's: `systemctl status dev1mush-server` says why it stopped
+(`journalctl -u dev1mush-server` has the boot that failed); `systemctl
+reset-failed dev1mush-server && systemctl start dev1mush-server` brings it
+back, and every held session is re-attached. A version-skewed server (the
+`IPC-VERSION-SKEW` marker) is reachable, so it never trips this bound; it has
+its own notice and its own fix (deploy the matching build).
 
 Every shed, teardown, protocol violation, and write timeout logs and increments a counter
 surfaced on `/metrics` (`mush_ipc_frames_shed_total`, `mush_ipc_write_timeouts_total`,
@@ -2572,15 +2573,17 @@ the dir is set up at service start.
 **Running the split (manual, M16b):**
 
 ```sh
-# one config, two readers; the gateway spawns the server child itself
+# one config, two readers; start the server first, then the gateway dials it
+mush-server --config /etc/rustmush/mushd.toml &
 mush-gateway --config /etc/rustmush/mushd.toml
 ```
 
-`mush-gateway` locates the `mush-server` binary as a sibling of its own
-executable (same target/dir), spawns it with `--config` + `--ipc <addr>`,
-waits for the server's `Hello` handshake over the socket, then accepts SSH
-connections. Running the server standalone (`mush-server --config … --ipc …`)
-is supported for testing.
+Both read `[ipc].listen` from the one file: the server binds it, the gateway
+dials it, runs the `Hello` handshake, then accepts SSH connections. A gateway
+started with no server answering boots into the restart gap — its listeners
+come up, a player who connects is told the server is restarting, and the
+gateway heals the gap when the server answers. `--ipc <addr>` overrides the
+file for a standalone server under test.
 
 **The command line is strict (WS22-S1).** All three binaries share one parser
 (`mush_config::cli`) and refuse anything it does not recognise, with the
@@ -2596,10 +2599,7 @@ offending token on stderr and a non-zero exit:
 | `mushd` (no `--config`) | the implicit `./mushd.toml`; **absent is fine**, it means the built-in defaults |
 
 That last row is the one asymmetry: a config path you *named* must exist, and a
-config path you did not name need not. It crosses the process boundary too —
-a gateway started without `--config` spawns its child without one, so the child
-resolves `mushd.toml` from the same working directory rather than being handed
-an explicit path that may not be there. Every deployed unit in `deploy/` passes
+config path you did not name need not. Every deployed unit in `deploy/` passes
 exactly `--config <path>` and is unaffected; a wrapper script that passed an
 extra undocumented argument will now fail to start, loudly.
 
@@ -2612,16 +2612,17 @@ the split adds the **hot restart** below, and is proven by
 
 ## Hot-restart (split) deployment: restart the game, hold the connections
 
-The **split deployment** (M16c/M16d) is what makes a zero-drop deploy possible.
-One `mush-gateway` service owns the player SSH **and web** connections and the
-session layer and **spawns + supervises** a `mush-server` child over the `[ipc]`
-socket. Because the gateway (not the game process) holds the sockets, the server
-can be torn down and rebuilt underneath live players — on both transports:
+The **split deployment** (M16c/M16d; doc 33 GG.1) is what makes a zero-drop
+deploy possible. Two units: `<name>mush-server` is the world, and
+`<name>mush-gateway` owns the player SSH **and web** connections and the
+session layer and **dials** the server over the `[ipc]` socket. Because the
+gateway (not the game process) holds the sockets, the server can be torn down
+and rebuilt underneath live players — on both transports:
 
-- **A deploy is a SIGHUP, not a restart.** Build the new binaries, then
-  `systemctl reload <name>mush-gateway` (which sends `SIGHUP`). The gateway
-  restarts **only its server child** from the fresh binary. It does **not**
-  restart itself, so no SSH **or web** connection is dropped. Players see a
+- **A deploy is a server restart, not a gateway restart.** Build the new
+  binaries, then `systemctl restart <name>mush-server`. The fresh server binds
+  the same socket; the gateway, untouched, re-attaches every held session, so
+  no SSH **or web** connection is dropped. Players see a
   `GAME: The server is restarting; hold on…` line, then
   a fresh room render of wherever they were and
   `GAME: Reconnected. Resuming where you left off.` — mid-scene, no reconnect,
@@ -2630,27 +2631,20 @@ can be torn down and rebuilt underneath live players — on both transports:
   gap until the new server has accepted the complete attachment snapshot and an
   exact world-loop `Barrier` has crossed any startup `CommitPending` receipt.
   Thus **Reconnected means commit-ready**, not merely "the IPC Hello arrived";
-  a failed replay or barrier tears down that attempt and retries under the
-  crash-loop guard. Module working state that shapes that render survives the
-  restart (M17; see *Accepted losses across a restart*).
-- **A server crash is handled in-process.** If the child dies on its own, the
-  gateway auto-respawns it and re-attaches every held session — the same
-  hold-the-connection path as a deliberate restart. A **crash-loop guard**
-  bounds this two ways: at most 5 respawn attempts in a 30s window (a server that
-  boots then dies fast), **and** at most 5 consecutive failed relaunch/reconnect
-  attempts counted independent of wall-clock time (a server that never comes
-  back — a pre-bind boot crash, or a relaunch whose connect burns its full
-  deadline each time, which a wall-clock window alone would let slip through
-  forever). Backoff grows between consecutive fast restarts. If either bound
-  trips the supervisor gives up and tells players `GAME: The server is down and
-  could not be restarted`, still without dropping them (input stays refused with
-  a clear message). A one-off crash after a long healthy run resets the counter —
-  it is not a loop; a successful reconnect resets the consecutive-failure streak.
-  Independently, the supervisor will not respawn unless the previous server's
-  exit is positively confirmed inside the shutdown grace window. An uncertain
-  exit is fail-stop: connections remain held in the restart gap and staff see
-  the server-down notice, rather than risking two authoritative world/store
-  writers at once.
+  a failed replay or barrier tears down that attempt and the gateway dials
+  again, backing off. Module working state that shapes that render survives
+  the restart (M17; see *Accepted losses across a restart*).
+- **A server crash is systemd's to restart.** If the server dies on its own,
+  its unit's `Restart=on-failure` (after `RestartSec=2`) brings it back and the
+  gateway re-attaches every held session — the same hold-the-connection path
+  as a deliberate restart. The **crash loop** is bounded by the unit's start
+  limit, five starts in sixty seconds (Q-33-5): a server that keeps dying
+  stays down after that until an operator clears it, and the gateway, once
+  the gap has lasted that bound, tells players `GAME: The server is down and
+  staff have been paged`, still without dropping them (input stays refused
+  with a clear message) — see *When the server stays down*. The gateway
+  never starts a server, so there is never a second authoritative world/store
+  writer to worry about: one unit, one process.
 - **During the gap, input is refused, not dropped.** While the server is down
   the gateway rejects commands with the "restarting" notice rather than hanging
   or disconnecting; in-flight service requests fail fast (they do not wait for a
@@ -2663,31 +2657,38 @@ can be torn down and rebuilt underneath live players — on both transports:
 
 Set it up per instance with `deploy/<name>-split/` (the reference is
 `deploy/dev1-split/`, which switches dev1 to the split on the same ports/Redis).
-It runs **one** service, `<name>mush-gateway`, with `ExecReload=/bin/kill -HUP
-$MAINPID`. The LLM key `EnvironmentFile` is injected into the gateway and
-**inherited by the spawned server child**, so the game half still gets its keys.
-Full walkthrough (first switch, redeploy, switch back, adapting to another
-instance) is in `deploy/dev1-split/README.md`.
+It runs **two** services: `<name>mush-server` (`Type=notify`, READY=1 once the
+socket is bound; `Restart=on-failure`, `RestartSec=2`, `StartLimitBurst=5` in
+`StartLimitIntervalSec=60`; the LLM key `EnvironmentFile`, the `[ipc]` socket's
+`RuntimeDirectory`) and `<name>mush-gateway` (`Wants=` + `After=` the server
+unit, never `Requires=`: a server that is down is a gap the gateway serves, not
+a reason for the gateway to stop; no `EnvironmentFile`, no `ExecReload`). The
+gateway's `SIGHUP` is reserved (doc 33 §4.5): logged, ignored. Full walkthrough
+(first switch, redeploy, switch back, adapting to another instance) is in
+`deploy/dev1-split/README.md`.
 
-**A full restart waits for the server.** `systemctl stop` / `restart` (and
-`deploy.sh` with `GATEWAY_RESTART=1`) SIGTERMs the gateway, which closes its
-boundary so the server child shuts down cleanly (the world task, the store
-writer's flush), waits up to **20 s** for the child to exit, and only then exits
-itself; a child that overruns is killed. Before 2026-10-22 the gateway had no
-`SIGTERM` handler: it died at once, the unit's sweep SIGKILLed the server in the
-middle of its shutdown, and on hosts where systemd's control-group kill fails
-(`Failed to kill control group … Invalid argument`, as on conclav.io) the next
-instance started while the old child was still exiting and holding the
-quarantine spool's lifetime lock — `quarantine spool preflight failed: …
-operation would block`, a failed first start, and a 35 s detour through
-`Restart=on-failure`. As a second guard the server **waits up to 15 s** for that
-lock at boot (it prints that it is waiting) before refusing; a second LIVE
-server on the same data directory is still refused.
+**Stopping one half stops that half.** `systemctl stop <name>mush-gateway`
+stops the gateway only; the server unit keeps running the world (until doc 33
+GG.2 lands the server still exits on the gateway's EOF and its unit brings it
+back, so a gateway restart bounces the server too, briefly). `systemctl stop`
+/ `restart <name>mush-server` SIGTERMs the server directly, which drains the
+world (the world task, the store writer's flush) and exits zero; the gateway
+sees EOF and holds. Before 2026-10-22 the gateway had no `SIGTERM` handler and
+the unit's sweep SIGKILLed the server in the middle of its shutdown; on hosts
+where systemd's control-group kill fails (`Failed to kill control group …
+Invalid argument`, as on conclav.io) the next instance then started while the
+old one was still exiting and holding the quarantine spool's lifetime lock —
+`quarantine spool preflight failed: … operation would block`, a failed first
+start, and a 35 s detour through `Restart=on-failure`. The server still
+**waits up to 15 s** for that lock at boot (it prints that it is waiting)
+before refusing, inside its unit's `TimeoutStartSec`; a second LIVE server on
+the same data directory is still refused.
 
-**On Windows** there is no `SIGHUP`; the signal handler is `cfg(unix)`-gated and
-compiled out. Restarts there are driven programmatically (the restart-survival
-test's `RestartTrigger` path). Production is Linux, where `SIGHUP` is the deploy
-signal.
+**On Windows** there is no `SIGHUP` or `SIGTERM` handling; the handlers are
+`cfg(unix)`-gated and compiled out. Restarts there are driven by the test rig
+(`crates/mush-gateway/tests/split_halves/harness.rs`, which stands in for the
+server unit). Production is Linux, where `systemctl restart <name>mush-server`
+is the deploy.
 
 ### Web client (M16d): served by the gateway + survives the hot restart
 
@@ -2709,8 +2710,8 @@ a fresh room render as ordinary envelopes, with the world intact from Redis, and
 keeps playing. Proven by `crates/mush-gateway/tests/split_halves/web_restart_survival.rs`.
 
 A web **bind/serve failure is non-fatal**: the gateway logs it and keeps serving
-SSH (and supervising the server child), so a bad `[web]` config never takes the
-whole front door down.
+SSH (and keeping the boundary), so a bad `[web]` config never takes the whole
+front door down.
 
 ### Accepted losses across a restart
 

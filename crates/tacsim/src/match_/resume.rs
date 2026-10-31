@@ -42,7 +42,7 @@
 //! moment it resumed from. A process that resumed a match from a snapshot and
 //! died before the arena wrote the next one would find the same two documents
 //! again; the match is then voided rather than resumed a third time, so one
-//! match's fault can never become a crash loop the gateway's `CrashGuard` ends
+//! match's fault can never become a crash loop the server unit's start limit ends
 //! by giving up on the whole game.
 //!
 //! # The rewind

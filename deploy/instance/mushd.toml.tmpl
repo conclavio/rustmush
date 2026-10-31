@@ -134,13 +134,14 @@ diagnostics = __PIXEL_DIAGNOSTICS__
 # NOT OPTIONAL, and never left to the default. The unset default is the TCP
 # address 127.0.0.1:6791 — which is dev2's Redis port, so dev2 with no [ipc]
 # section would have bound the boundary on top of its own store and crash-looped
-# under the gateway's relaunch guard. `Config::ipc_endpoint()` refuses that now,
+# under its unit's restart policy. `Config::ipc_endpoint()` refuses that now,
 # but the refusal is a floor, not a plan: a per-instance UNIX SOCKET under the
 # unit's RuntimeDirectory has no port to collide with at all, and — because the
 # boundary is UNAUTHENTICATED, the server trusting whatever connects to assert
 # authenticated sessions — it is also the only form a local process cannot use
-# to impersonate the gateway. /run/rustmush is provided by the unit's
-# `RuntimeDirectory=rustmush` at mode 0750.
+# to impersonate the gateway. /run/rustmush is provided by the SERVER unit's
+# `RuntimeDirectory=rustmush` at mode 0750 (doc 33 GG.1: the server binds the
+# socket, the gateway dials it; both read this one value).
 [ipc]
 listen = "__IPC_SOCKET__"
 to_server_cap = 1024

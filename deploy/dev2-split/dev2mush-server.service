@@ -1,0 +1,76 @@
+[Unit]
+Description=rustmush dev2 (TacSim) — the SERVER half (world + persistence) behind dev2mush-gateway
+After=network-online.target redis-dev2mush.service
+Wants=network-online.target
+Requires=redis-dev2mush.service
+Documentation=file:/opt/rustmush/dev2/build/deploy/dev2-split/README.md
+# Doc 33 Q-33-5: five starts in sixty seconds, then systemd gives up and the
+# unit sits failed until an operator looks (`systemctl reset-failed` + start).
+# The gateway tells players "down, staff paged" after the same bound; it never
+# stops dialing, so a start by hand heals the gap on its own.
+StartLimitBurst=5
+StartLimitIntervalSec=60
+
+[Service]
+# READY=1 (mush_drain::notify) goes out the moment the IPC socket is bound, so
+# `systemctl start` returns when the gateway can dial, and a boot that dies
+# before that is a failed start rather than a started unit (29a §7 H2/H3).
+Type=notify
+NotifyAccess=main
+User=mush
+Group=mush
+WorkingDirectory=/opt/rustmush/dev2
+# LLM API keys (ANTHROPIC_API_KEY / OPENROUTER_API_KEY). root:mush, mode 640.
+# The server is the half that makes the LLM calls; since doc 33 GG.1 the
+# gateway never sees this file. Keys are never logged.
+EnvironmentFile=/opt/rustmush/dev2/dev2.env
+# One config, two readers: the server reads its own sections plus [ipc]. It
+# binds [ipc].listen — /run/rustmush-dev2/dev2.sock in the rendered mushd.toml
+# — and the gateway dials the same value from the same file, so the socket is
+# named exactly once. `--ipc` would override it here and is deliberately not
+# passed.
+ExecStart=/opt/rustmush/dev2/build/target/release/mush-server --config /opt/rustmush/dev2/mushd.toml
+# Hydrating a large world from Redis comes before READY=1, and so does the
+# wait for the quarantine spool's lock (15 s, for a predecessor still exiting).
+TimeoutStartSec=300
+# SIGTERM: the world stops (ControlMsg::Shutdown), the store writer drains,
+# the quarantine spool is released, exit 0. The binary bounds the world join
+# itself (WORLD_JOIN_TIMEOUT), so this sits comfortably past it.
+TimeoutStopSec=60
+# Doc 33 Q-33-5: a crash is back in 2 s, up to the start limit above.
+Restart=on-failure
+RestartSec=2
+# GG.1 INTERIM — GG.2 removes this line. Until GG.2 the server still exits (0)
+# when the gateway closes the boundary, so a gateway restart or crash would
+# otherwise leave the server dead and the gateway in its gap for good. This
+# makes that clean exit a restart too. (`@shutdown` is also an exit 0 and
+# comes straight back — which is what it did under the gateway's supervision.)
+RestartForceExitStatus=0
+
+# The gateway<->server IPC UNIX SOCKET lives at /run/rustmush-dev2/dev2.sock.
+# RuntimeDirectory makes systemd create /run/rustmush-dev2 owned by the mush
+# user and — crucially — WRITABLE inside this service namespace despite
+# ProtectSystem=strict below (which otherwise mounts /run read-only, so the
+# server could neither bind the socket nor unlink a stale one → "Read-only
+# file system" / "Address already in use"). systemd removes the dir on stop,
+# so no stale socket survives a restart. Mode 0750 → only the mush user (and
+# root) can reach the socket: the access control that stands in for
+# authentication on the trusted local boundary. The gateway only CONNECTS to
+# the socket, which a read-only /run permits, so it carries no RuntimeDirectory
+# of its own. Per instance: dev1 uses rustmush.
+RuntimeDirectory=rustmush-dev2
+RuntimeDirectoryMode=0750
+
+# Hardening: the service needs only its own tree, the loopback Redis and the
+# socket directory above. Every path the RENDERED mushd.toml writes to is
+# inside the one ReadWritePaths tree: the data dir and, under it, logs/
+# (server.log), archive/ (the J5 ledger tier), offer-keys/, resolution-keys/,
+# geology-keys/ and quarantine/ — all provisioned by deploy.sh.
+NoNewPrivileges=true
+ProtectSystem=strict
+ProtectHome=true
+PrivateTmp=true
+ReadWritePaths=/opt/rustmush/dev2
+
+[Install]
+WantedBy=multi-user.target

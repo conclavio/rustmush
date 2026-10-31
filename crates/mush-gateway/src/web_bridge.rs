@@ -520,7 +520,9 @@ impl<A: AuthBackend + 'static> WebHooks for WebBridge<A> {
                     // has always mapped the same two to 1013/1012.
                     return Err(match e {
                         ConnectErr::Busy => AttachErr::Busy,
-                        ConnectErr::WorldGone => AttachErr::Unavailable,
+                        ConnectErr::WorldGone | ConnectErr::Restarting | ConnectErr::ServerDown => {
+                            AttachErr::Unavailable
+                        }
                         ConnectErr::NotYourCharacter => AttachErr::Refused(format!("{e}.")),
                     });
                 }

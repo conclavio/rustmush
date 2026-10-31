@@ -17,14 +17,15 @@
 //!   did before. A process that cannot hear SIGTERM is a process an operator
 //!   has to `kill -9` — it is not a process that refuses to start.
 //! - **A supervised child ignores SIGINT, and only because the marker says
-//!   so.** `mush-gateway` spawns its `mush-server` child with no `setsid`
-//!   (`crates/mush-gateway/src/lib.rs`), so the child shares the gateway's
-//!   process group and a terminal Ctrl-C is delivered to BOTH halves. The
-//!   gateway must stay the only initiator of a split shutdown, so a child
-//!   started with [`SUPERVISED_CHILD_ENV`] set keeps waiting when SIGINT
-//!   arrives. The test is the env marker and nothing else: keying it off
-//!   "do I have a parent" would make a standalone `mush-server` under Ctrl-C
-//!   unstoppable.
+//!   so.** Until doc 33 GG.1 `mush-gateway` spawned its `mush-server` child
+//!   with no `setsid`, so the child shared the gateway's process group and a
+//!   terminal Ctrl-C was delivered to BOTH halves; a child started with
+//!   [`SUPERVISED_CHILD_ENV`] set keeps waiting when SIGINT arrives, so the
+//!   parent stays the only initiator. Since GG.1 the server is its own unit
+//!   and nothing in the tree sets the marker; it stays for any embedding that
+//!   owns a child. The test is the env marker and nothing else: keying it
+//!   off "do I have a parent" would make a standalone `mush-server` under
+//!   Ctrl-C unstoppable.
 //!
 //! Ignoring SIGINT still means *installing* its handler. An installed handler
 //! is what neutralises the keystroke; skipping the install would leave SIGINT
@@ -39,7 +40,8 @@ use std::future::pending;
 
 /// The env var a supervisor sets on the child process it owns.
 ///
-/// Set by `mush-gateway` when it spawns `mush-server` (WS22-S7); read here by
+/// Was set by `mush-gateway` when it spawned `mush-server` (WS22-S7); since
+/// doc 33 GG.1 nothing in the tree sets it. Read here by
 /// [`supervised_child`]. Any non-empty value other than `0` means yes.
 pub const SUPERVISED_CHILD_ENV: &str = "RUSTMUSH_SUPERVISED_CHILD";
 

@@ -107,10 +107,11 @@ Each instance can run one of **two ways**:
   web client; a deploy = `systemctl restart`, which drops connections briefly.
 - **split, hot-restartable** ([`dev1-split/`](dev1-split/), M16c/M16d — and what
   dev1 actually runs) — a
-  `mush-gateway` owns the SSH **and web** connections and supervises a
-  `mush-server` child; a deploy = `systemctl reload` → SIGHUP, which restarts
-  only the server child while **holding every SSH AND web connection** (players
-  resume mid-scene). As of M16d the gateway serves the web client (HTTPS) itself,
+  `mush-gateway` owns the SSH **and web** connections and dials a
+  `mush-server` that is its own systemd unit (doc 33 GG.1); a deploy =
+  `systemctl restart <inst>mush-server`, which restarts only the server while
+  the gateway **holds every SSH AND web connection** (players resume
+  mid-scene). As of M16d the gateway serves the web client (HTTPS) itself,
   and WS connections survive the hot restart just like SSH — so the split is now
   a full drop-in for the all-in-one, web included. Build the gateway with
   `--features tls` for HTTPS. See [`dev1-split/README.md`](dev1-split/README.md)
@@ -179,10 +180,10 @@ both Node and that target; building it on the box needs both.
 
 A commit that moved the **gateway half** — `web/`, `mush-gateway`,
 `mush-net-*`, `mush-session`, `mush-ansi`, `mush-proto`, `mush-ipc` — needs a
-full restart, because SIGHUP restarts only the server child and the gateway
-process would keep running the old binary. Set `GATEWAY_RESTART=1` on the
-deploy line (`ssh … 'GATEWAY_RESTART=1 bash …/deploy/dev1-split/deploy.sh'`) and
-connections drop once. Everything else stays a `reload`
+gateway restart, because the deploy restarts only the server unit and the
+gateway process would keep running the old binary. Set `GATEWAY_RESTART=1` on
+the deploy line (`ssh … 'GATEWAY_RESTART=1 bash …/deploy/dev1-split/deploy.sh'`)
+and connections drop once. Everything else stays a server restart
 ([`dev1-split/README.md`](dev1-split/README.md) has the table). 16b cut AC.1 —
 the split's world task holding the LLM service, so a squad's commander asks its
 provider on the split as it did on the all-in-one (16c `B-82`) — is a
@@ -225,9 +226,9 @@ gateway (the tempban is gateway memory and does not survive it).
 The deploy script is the redeploy because the config is rendered: it re-resolves
 the external IP, rewrites `instance.env`, **re-renders `mushd.toml`** from the
 shipped template and preflights it with both halves before it touches the unit,
-then `reload`s the already-running gateway — the hot restart that holds every
-SSH and web connection. `systemctl reload dev1mush-gateway` on its own is the
-faster form when nothing in the config or the template moved
+then restarts the server unit under the running gateway — the hot restart that
+holds every SSH and web connection. `systemctl restart dev1mush-server` on its
+own is the faster form when nothing in the config or the template moved
 ([`dev1-split/README.md`](dev1-split/README.md)). The IC clock is the instance
 env's too (`IC_RATIO` and `IC_EPOCH` render `[game].ic_ratio` and `ic_epoch`,
 16b cut AC.2), so a hand edit of the rendered `mushd.toml` does not survive a
@@ -252,8 +253,8 @@ which likewise re-renders before it restarts.
 ## Operate
 
 ```bash
-systemctl status dev1mush-gateway redis-dev1mush
-journalctl -u dev1mush-gateway -f        # gateway + its server child share this journal
+systemctl status dev1mush-server dev1mush-gateway redis-dev1mush
+journalctl -u dev1mush-server -f         # the world; -u dev1mush-gateway for the front door
 redis-cli -p 6788 info keyspace          # prod data (NOT the dev 6379)
 ```
 

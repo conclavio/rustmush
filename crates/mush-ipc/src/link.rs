@@ -133,8 +133,9 @@ pub trait GatewayLink: Send + Sync {
     fn request(&self, req: ServiceReq) -> BoxFuture<'_, Option<ServiceResp>>;
 
     /// Whether the boundary is currently in a **restart gap** — the server is
-    /// down and the gateway is respawning + re-attaching it (M16c). The
-    /// in-process all-in-one link is never in this state (the default), so its
+    /// down and the gateway is waiting for its unit to bring it back, to
+    /// re-attach every held session (M16c; doc 33 GG.1). The in-process
+    /// all-in-one link is never in this state (the default), so its
     /// behaviour is unchanged; the split gateway's socket link reports `true`
     /// between a server exit and the re-synced reconnect, letting the input path
     /// surface a clear "restarting" notice instead of silently dropping the line
@@ -143,9 +144,20 @@ pub trait GatewayLink: Send + Sync {
         false
     }
 
-    /// Generation of the supervised boundary. Capture before forwarding a line
+    /// Whether the gateway has stopped expecting the server back on its own
+    /// (doc 33 GG.1): the gap has outlasted the server unit's start-limit
+    /// bound, so systemd has given up restarting it and staff have been paged.
+    /// Only ever `true` while [`is_restarting`](Self::is_restarting) is; it
+    /// clears the moment a server answers. The input path uses it to say
+    /// "down" rather than "restarting; hold on". The in-process link never
+    /// sets it (the default).
+    fn server_unreachable(&self) -> bool {
+        false
+    }
+
+    /// Generation of the kept boundary. Capture before forwarding a line
     /// so a failed reply can recognize even a restart that already completed.
-    /// In-process links have no supervisor and retain the default generation.
+    /// In-process links have no boundary keeper and retain the default generation.
     fn recovery_generation(&self) -> u64 {
         0
     }

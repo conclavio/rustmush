@@ -7,10 +7,12 @@
 //! former file, unchanged but for its paths; its tests are `<module>::<fn>`.
 //!
 //! The gateway half of the split deploy, driven against a real mush-server
-//! child: the arena custody and story lenses, the authoritative process-kill
-//! proofs (PROCESS_LOCK: they run alone, .config/nextest.toml), the command
-//! line, the front door, restart survival over SSH and over the web, the
-//! abandoned supervision, the TUI, the two-process e2e and LLM journeys.
+//! it dials (the `harness` module's `ServerUnit` stands in for the server's
+//! systemd unit, doc 33 GG.1): the arena custody and story lenses, the
+//! authoritative process-kill proofs (PROCESS_LOCK: they run alone,
+//! .config/nextest.toml), the command line, the front door, restart survival
+//! over SSH and over the web, the server unit's gap and give-up, the TUI,
+//! the two-process e2e and LLM journeys.
 //! `authoritative_process_kill` and `server_panic_relaunch` re-exec this
 //! binary for their workers, by the full `<module>::<fn>` ids. One allowed
 //! exception to the suffix rule below: `restart_survival` is a suffix of
@@ -35,12 +37,14 @@ mod authoritative_process_kill;
 mod cli_args;
 #[path = "split_halves/front_door_split.rs"]
 mod front_door_split;
+#[path = "split_halves/harness.rs"]
+mod harness;
 #[path = "split_halves/restart_survival.rs"]
 mod restart_survival;
 #[path = "split_halves/server_panic_relaunch.rs"]
 mod server_panic_relaunch;
-#[path = "split_halves/supervision_abandoned.rs"]
-mod supervision_abandoned;
+#[path = "split_halves/server_unit.rs"]
+mod server_unit;
 #[path = "split_halves/tui_split.rs"]
 mod tui_split;
 #[path = "split_halves/two_process_e2e.rs"]

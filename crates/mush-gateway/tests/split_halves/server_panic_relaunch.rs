@@ -1,25 +1,23 @@
-//! WS01-S8: a forked server whose world dies stops being a server, and the
-//! supervisor heals it.
+//! WS01-S8: a forked server whose world dies stops being a server, and its
+//! unit heals it (doc 33 GG.1: the gateway only holds the connections).
 //!
-//! The proof splits in two, because it has to. [`LaunchedServer`] carries only
-//! `exited: BoxFuture<()>` and the production `SpawnLauncher` logs the child's
-//! status inside its own task, so NO supervisor-level assertion can see an exit
-//! code (widening that API is WS22's).
+//! The proof splits in two, because it has to: a thread-launched server has
+//! no exit code, and a process has no in-process fault switch.
 //!
 //! - **Process half.** A real `mush-server` in a real child process, with one
-//!   world turn armed to panic. The child must EXIT, and exit non-zero, so a
-//!   supervisor — or systemd — knows to relaunch it. Its contrast case is an
-//!   in-game `@shutdown`, which must exit *zero*: the same mechanism, a
+//!   world turn armed to panic. The child must EXIT, and exit non-zero, so
+//!   its unit (`Restart=on-failure`) knows to relaunch it. Its contrast case
+//!   is an in-game `@shutdown`, which must exit *zero*: the same mechanism, a
 //!   different verdict, and the reason the reader gates its log severity on
 //!   shutdown provenance rather than shouting on every closed channel.
-//! - **Supervisor half.** The gateway supervising a server whose first boot
-//!   faults the same way. The connection is never dropped: the player is told
-//!   the server is restarting, is reconnected into the reloaded world, and
-//!   keeps playing.
+//! - **Keeper half.** The gateway over a server whose first boot faults the
+//!   same way, and whose unit brings a healthy one back. The connection is
+//!   never dropped: the player is told the server is restarting, is
+//!   reconnected into the reloaded world, and keeps playing.
 //! - **Skew half (WS22-S16).** The contrast to a crash: a server half built at
 //!   another commit, which answers the handshake with a different
-//!   `IPC_VERSION`. That is an operator error, not a dying world, so it must
-//!   NOT spend the crash-loop budget — before this step five mismatched
+//!   `IPC_VERSION`. That is an operator error, not a dying world, so the
+//!   keeper must not give up on it — before this step five mismatched
 //!   handshakes abandoned supervision for good, leaving every held session
 //!   alive and permanently input-refused.
 //!
@@ -27,25 +25,19 @@
 //! to completion and only then looked at the world's join handle, so a world
 //! that died under a live, well-behaved gateway left the process up with its
 //! listener bound, accepting frames and dropping every one of them — for ever,
-//! with nothing for the supervisor to see.
-//!
-//! [`LaunchedServer`]: mush_gateway::LaunchedServer
+//! with nothing for a unit to see.
 
 use std::net::{SocketAddr, TcpListener};
 use std::path::PathBuf;
 use std::process::Stdio;
-use std::sync::atomic::{AtomicUsize, Ordering};
+use std::sync::atomic::Ordering;
 use std::sync::{Arc, Mutex};
 use std::time::Duration;
 
-use futures::future::BoxFuture;
 use mush_config::accounts::hash_password;
 use mush_config::config::Config;
 use mush_core::GOD;
-use mush_gateway::{
-    GatewayOptions, IPC_VERSION_SKEW_MARKER, LaunchedServer, RestartTrigger, ServerLauncher,
-    ServerSource,
-};
+use mush_gateway::{GatewayOptions, IPC_VERSION_SKEW_MARKER};
 use mush_ipc::{
     FrameReader, GatewayInput, GatewayRequest, GatewayRequestDisposition, IPC_VERSION, IpcEndpoint,
     ToGateway, ToServer, WireInbound, write_frame,
@@ -53,6 +45,8 @@ use mush_ipc::{
 use mush_store::{AccountRec, CharacterRef, InMemoryStore, ObjectStore};
 use russh::ChannelMsg;
 use tokio::sync::oneshot;
+
+use super::harness::ServerUnit;
 
 const STEP_TIMEOUT: Duration = Duration::from_secs(60);
 const GM_PASSWORD: &str = "gm-secret-1";
@@ -338,56 +332,14 @@ async fn an_in_game_shutdown_exits_the_forked_server_cleanly() {
 }
 
 // ---------------------------------------------------------------------------
-// Supervisor half
+// Keeper half
 // ---------------------------------------------------------------------------
 
-/// Boot one real server on its own thread + runtime (as the binary does — the
-/// module roster is not `Send`), sharing `store` so the world survives the
-/// relaunch. `exited` fires when that server's `serve` returns.
-async fn launch_thread_server(store: Arc<dyn ObjectStore>) -> Result<LaunchedServer, String> {
-    let cfg = test_config("server");
-    let (ipc_tx, ipc_rx) = oneshot::channel();
-    let (exit_tx, exit_rx) = oneshot::channel();
-    std::thread::spawn(move || {
-        let rt = tokio::runtime::Builder::new_multi_thread()
-            .enable_all()
-            .build()
-            .unwrap();
-        let _ = rt.block_on(mush_server::serve_with_store(
-            cfg,
-            Some(ipc_tx),
-            Some(store),
-        ));
-        let _ = exit_tx.send(());
-    });
-    let endpoint = tokio::time::timeout(Duration::from_secs(30), ipc_rx)
-        .await
-        .map_err(|_| "server ipc bind timed out".to_string())?
-        .map_err(|_| "server dropped its ipc oneshot".to_string())?;
-    Ok(LaunchedServer {
-        endpoint,
-        exited: Box::pin(async move {
-            let _ = exit_rx.await;
-        }),
-    })
-}
-
-/// A launcher whose FIRST boot has one world turn armed to panic; every boot
-/// after that is a healthy server. Arming is one-shot and in-process, so the
-/// relaunched half — which shares this process's environment — boots clean.
-struct FaultOnceLauncher {
-    store: Arc<dyn ObjectStore>,
-    launches: AtomicUsize,
-}
-
-impl ServerLauncher for FaultOnceLauncher {
-    fn launch(&self) -> BoxFuture<'static, Result<LaunchedServer, String>> {
-        if self.launches.fetch_add(1, Ordering::SeqCst) == 0 {
-            mush_server::arm_world_turn_panic(FAULT_LINE);
-        }
-        let store = Arc::clone(&self.store);
-        Box::pin(launch_thread_server(store))
-    }
+/// The server unit over `store` (`harness.rs`): each boot is a real server on
+/// its own thread + runtime at the unit's one endpoint, sharing `store` so the
+/// world survives the relaunch.
+fn unit(store: Arc<dyn ObjectStore>) -> ServerUnit {
+    ServerUnit::new(store, || test_config("server"))
 }
 
 /// The gateway's own KV store (accounts), seeded with the God wizard.
@@ -411,42 +363,34 @@ async fn seeded_gw_store() -> Arc<dyn ObjectStore> {
     gw_store
 }
 
-/// Start the gateway (on its own thread/runtime, as the binary does)
-/// supervising `launcher`, and return the bound SSH address plus the restart
-/// trigger. The trigger is a live handle on the supervisor and must be HELD for
-/// the life of the test: dropping the last one is a shutdown signal, and the
-/// next connect is refused with "the game is shutting down".
-async fn start_split(launcher: Box<dyn ServerLauncher>) -> (SocketAddr, RestartTrigger) {
+/// Start the gateway (on its own thread/runtime, as the binary does) aimed at
+/// `unit`, and return the bound SSH address.
+async fn start_split(unit: &ServerUnit) -> SocketAddr {
     let gw_store = seeded_gw_store().await;
     let (ssh_tx, ssh_rx) = oneshot::channel();
-    let (restart_tx, restart_rx) = oneshot::channel::<RestartTrigger>();
+    let mut cfg = test_config("gateway");
+    unit.aim(&mut cfg);
     std::thread::spawn(move || {
         let rt = tokio::runtime::Builder::new_multi_thread()
             .enable_all()
             .build()
             .unwrap();
         rt.block_on(mush_gateway::serve(
-            test_config("gateway"),
+            cfg,
             GatewayOptions {
-                source: ServerSource::Restartable(launcher),
                 store: Some(gw_store),
                 ssh_ready: Some(ssh_tx),
                 web_ready: None,
-                restart_ready: Some(restart_tx),
                 siteban_refresh: None,
+                give_up_after: None,
             },
         ))
         .unwrap();
     });
-    let ssh_addr = tokio::time::timeout(Duration::from_secs(30), ssh_rx)
+    tokio::time::timeout(Duration::from_secs(30), ssh_rx)
         .await
         .expect("gateway bound SSH")
-        .expect("ssh addr");
-    let trigger = tokio::time::timeout(Duration::from_secs(30), restart_rx)
-        .await
-        .expect("supervisor handed back a restart trigger")
-        .expect("restart trigger");
-    (ssh_addr, trigger)
+        .expect("ssh addr")
 }
 
 struct AcceptAll;
@@ -547,8 +491,8 @@ async fn play_client(addr: SocketAddr) -> (russh::client::Handle<AcceptAll>, Ter
 
 /// The heal (D2), end to end: a world panics under a supervised server, and
 /// the player never notices more than a blip. The server exits on its own, the
-/// supervisor takes its crash arm, the held session re-attaches into the
-/// reloaded world, and play continues.
+/// keeper takes its down arm, the unit relaunches the server, the held
+/// session re-attaches into the reloaded world, and play continues.
 ///
 /// Before this step there was no exit to take an arm on: the faulted server
 /// held its boundary open, so the supervisor saw a healthy connection to a
@@ -558,11 +502,13 @@ async fn a_faulted_world_is_relaunched_and_the_session_keeps_playing() {
     // Shared across every (re)boot, so the world survives the relaunch exactly
     // as it would on Redis.
     let server_store: Arc<dyn ObjectStore> = Arc::new(InMemoryStore::new());
-    let (ssh_addr, _trigger) = start_split(Box::new(FaultOnceLauncher {
-        store: Arc::clone(&server_store),
-        launches: AtomicUsize::new(0),
-    }))
-    .await;
+    let unit = unit(server_store);
+    // The FIRST boot has one world turn armed to panic; arming is one-shot
+    // and in-process, so the relaunched half — which shares this process's
+    // environment — boots clean.
+    mush_server::arm_world_turn_panic(FAULT_LINE);
+    unit.start().await;
+    let ssh_addr = start_split(&unit).await;
 
     let (_g, mut god) = play_client(ssh_addr).await;
     god.send_line(&format!("connect boss {GM_PASSWORD}")).await;
@@ -580,6 +526,11 @@ async fn a_faulted_world_is_relaunched_and_the_session_keeps_playing() {
     // dispatch boundary, not a simulated one.
     let fault_mark = god.mark();
     god.send_line(FAULT_LINE).await;
+    // The faulted server exits on its own (the process half proves the
+    // non-zero status); its unit's `Restart=on-failure` brings a clean one
+    // back at the same endpoint.
+    unit.wait_exit().await;
+    unit.start().await;
 
     // The connection survives: restarting -> Reconnected -> a fresh look.
     god.expect_after(fault_mark, "restarting").await;
@@ -599,8 +550,8 @@ async fn a_faulted_world_is_relaunched_and_the_session_keeps_playing() {
 // ---------------------------------------------------------------------------
 
 /// Skewed boots served before the operator "redeploys" the matching build. One
-/// more than the gateway's private `MAX_CONSECUTIVE_FAILURES` (5): the count at
-/// which the crash-loop guard used to give up and stop supervising.
+/// more than the five consecutive failures the retired crash-loop guard
+/// allowed: the count at which it used to give up and stop supervising.
 const SKEWED_BOOTS: usize = 6;
 
 /// A stand-in for a server half from before the compatibility window (doc 33
@@ -610,8 +561,10 @@ const SKEWED_BOOTS: usize = 6;
 /// codec). A 13 gateway speaks only 13, which `[12, 12]` does not contain, so
 /// the gateway must refuse it with the marker. Everything else about it is
 /// healthy — that is exactly the point, and why counting it as a crash was
-/// wrong.
-async fn launch_version_skewed_server() -> Result<LaunchedServer, String> {
+/// wrong. Binds `endpoint` (the unit's, while the unit is down) and answers
+/// with a receiver that resolves once the gateway has hung up and this
+/// server has exited.
+async fn launch_version_skewed_server(endpoint: &IpcEndpoint) -> oneshot::Receiver<()> {
     /// `ToGateway::Hello` as a version-12 server encodes it: no `min_proto`.
     #[derive(serde::Serialize)]
     enum ToGatewayV12 {
@@ -622,12 +575,9 @@ async fn launch_version_skewed_server() -> Result<LaunchedServer, String> {
             panels: Vec<String>,
         },
     }
-    let listener = mush_ipc::listen(&IpcEndpoint::parse("127.0.0.1:0")?)
+    let listener = mush_ipc::listen(endpoint)
         .await
-        .map_err(|e| format!("binding the skewed server: {e}"))?;
-    let addr = listener
-        .tcp_addr()
-        .ok_or_else(|| "the skewed server needs a tcp endpoint".to_string())?;
+        .expect("the skewed server binds the unit's endpoint");
     let (exit_tx, exit_rx) = oneshot::channel();
     tokio::spawn(async move {
         if let Ok((reader, mut writer)) = listener.accept().await {
@@ -642,40 +592,15 @@ async fn launch_version_skewed_server() -> Result<LaunchedServer, String> {
             )
             .await;
             // Stay up until the gateway hangs up on the mismatch: a skewed
-            // server is a live process, not a crashed one, and the supervisor
-            // confirms its exit before it launches the next.
+            // server is a live process, not a crashed one, and the operator
+            // (the test) replaces it only once it has gone.
             let mut frames = FrameReader::new(reader);
             while matches!(frames.read::<ToServer>().await, Ok(Some(_))) {}
         }
         drop(listener);
         let _ = exit_tx.send(());
     });
-    Ok(LaunchedServer {
-        endpoint: IpcEndpoint::Tcp(addr),
-        exited: Box::pin(async move {
-            let _ = exit_rx.await;
-        }),
-    })
-}
-
-/// The botched deploy, then the fix. Boot 0 is the gateway's own startup (a
-/// healthy server, so a player can get in and be held); the next
-/// [`SKEWED_BOOTS`] answer with the wrong protocol version; the one after that
-/// is the operator redeploying the matching build.
-struct SkewedThenRedeployedLauncher {
-    store: Arc<dyn ObjectStore>,
-    launches: Arc<AtomicUsize>,
-}
-
-impl ServerLauncher for SkewedThenRedeployedLauncher {
-    fn launch(&self) -> BoxFuture<'static, Result<LaunchedServer, String>> {
-        let n = self.launches.fetch_add(1, Ordering::SeqCst);
-        if (1..=SKEWED_BOOTS).contains(&n) {
-            return Box::pin(launch_version_skewed_server());
-        }
-        let store = Arc::clone(&self.store);
-        Box::pin(launch_thread_server(store))
-    }
+    exit_rx
 }
 
 /// A `tracing` writer that keeps the log in memory, so the proof can assert on
@@ -712,14 +637,13 @@ impl<'a> tracing_subscriber::fmt::MakeWriter<'a> for CapturedLog {
 /// Every relaunch handshakes and is refused, and the supervisor used to count
 /// each refusal as a crash — five of them and it broadcast "the server is down"
 /// and RETURNED, so the boundary stayed in its gap for ever: every SSH session
-/// still connected, none of them able to type, and `SIGHUP` powerless because
-/// the returned supervisor had dropped the restart receiver.
+/// still connected, none of them able to type.
 ///
 /// The mismatch must instead be its own verdict: logged with a fixed marker an
-/// operator can grep, told to players in words that name the action, kept OFF
-/// the crash-loop budget, and retried for as long as it takes — so redeploying
-/// the matching server build heals the game with no gateway restart and no
-/// dropped connection.
+/// operator can grep, told to players in words that name the action, never a
+/// reason to give up (doc 33 GG.1: a skew streak is a reachable server), and
+/// retried for as long as it takes — so redeploying the matching server build
+/// heals the game with no gateway restart and no dropped connection.
 #[tokio::test(flavor = "multi_thread", worker_threads = 4)]
 async fn a_version_skewed_server_is_not_a_crash_and_heals_on_redeploy() {
     let log = Arc::new(Mutex::new(Vec::new()));
@@ -735,12 +659,9 @@ async fn a_version_skewed_server_is_not_a_crash_and_heals_on_redeploy() {
     );
 
     let server_store: Arc<dyn ObjectStore> = Arc::new(InMemoryStore::new());
-    let launches = Arc::new(AtomicUsize::new(0));
-    let (ssh_addr, trigger) = start_split(Box::new(SkewedThenRedeployedLauncher {
-        store: Arc::clone(&server_store),
-        launches: Arc::clone(&launches),
-    }))
-    .await;
+    let unit = unit(server_store);
+    unit.start().await;
+    let ssh_addr = start_split(&unit).await;
 
     let (_g, mut god) = play_client(ssh_addr).await;
     god.send_line(&format!("connect boss {GM_PASSWORD}")).await;
@@ -748,22 +669,32 @@ async fn a_version_skewed_server_is_not_a_crash_and_heals_on_redeploy() {
         .await;
     god.expect("Limbo #0").await;
 
-    // The deploy: the operator restarts the server half, and every replacement
-    // for the next six attempts is the wrong build.
+    // The deploy: the operator stops the server half, and every replacement
+    // for the next six boots is the wrong build. Each skewed server is
+    // greeted, refused, and hung up on; the next binds once it has gone.
     let before_restart = god.mark();
-    assert!(
-        trigger.restart().await,
-        "the supervisor must accept a deliberate restart"
-    );
+    unit.stop().await;
     god.expect_after(before_restart, "restarting").await;
+    let endpoint = unit.endpoint();
+    let mut skewed_boots = 0;
+    for _ in 0..SKEWED_BOOTS {
+        let gone = launch_version_skewed_server(&endpoint).await;
+        skewed_boots += 1;
+        let _ = tokio::time::timeout(STEP_TIMEOUT, gone)
+            .await
+            .expect("the gateway hung up on the skewed server and it exited");
+    }
+    // The redeploy: the matching build, at the same endpoint.
+    unit.start().await;
     // The gap names the operator action instead of "could not be restarted",
     // and promises the session survives it.
     god.expect_after(before_restart, "different protocol versions")
         .await;
-    // ... and it does: the seventh launch is the corrected binary, and the held
+    // ... and it does: the seventh boot is the corrected binary, and the held
     // session re-attaches with no gateway restart. Reaching this line at all is
-    // the proof the guard never tripped — a tripped guard returns from
-    // `supervise`, and no later launch is ever made.
+    // the proof the keeper never gave up on the skew — a given-up gap would
+    // still heal, but with the "staff have been paged" line in between, and
+    // that line must never be said for an operator error.
     god.expect_after(before_restart, "Reconnected").await;
     god.expect_after(before_restart, "Limbo #0").await;
 
@@ -773,11 +704,15 @@ async fn a_version_skewed_server_is_not_a_crash_and_heals_on_redeploy() {
         .await;
 
     assert_eq!(
-        launches.load(Ordering::SeqCst),
-        SKEWED_BOOTS + 2,
-        "the supervisor must keep relaunching past MAX_CONSECUTIVE_FAILURES skewed \
-         handshakes (boot 0 + {SKEWED_BOOTS} skewed + the redeploy); a smaller count means \
-         the crash-loop guard tripped on an operator error and abandoned the boundary"
+        (skewed_boots, unit.boots()),
+        (SKEWED_BOOTS, 2),
+        "boot 0, {SKEWED_BOOTS} skewed servers each refused and gone, the redeploy"
+    );
+    let seen = strip_ansi(&god.seen[before_restart..]);
+    assert!(
+        !seen.contains("staff have been paged"),
+        "a skew streak is a reachable server: the keeper must never give up on it; seen: \
+         {seen:?}"
     );
     let captured = String::from_utf8_lossy(&log.lock().expect("log buffer poisoned")).to_string();
     assert!(
@@ -787,5 +722,4 @@ async fn a_version_skewed_server_is_not_a_crash_and_heals_on_redeploy() {
     );
 
     drop(god);
-    drop(trigger);
 }
