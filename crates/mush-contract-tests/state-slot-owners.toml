@@ -422,7 +422,7 @@ owner = "sim"
 reason = "E7 cut 11: wires the sim's account oracle for a propagation case."
 
 [[site]]
-path = "crates/tacsim/tests/shard_4/match_lifecycle.rs"
+path = "crates/tacsim/tests/shard_1/match_lifecycle.rs"
 accessor = "World::module_state_mut"
 slot = "AccountOracle"
 owner = "sim"
@@ -522,7 +522,7 @@ store, which a `TestWorld` has none of, so the rig installs the fixed account ma
 """
 
 [[site]]
-path = "crates/tacsim/tests/shard_1/knowing.rs"
+path = "crates/tacsim/tests/shard_4/knowing.rs"
 accessor = "World::module_state_mut"
 slot = "AccountOracle"
 owner = "sim"
@@ -788,7 +788,7 @@ registers a fresh production composition, so it no longer writes this slot.
 """
 
 [[site]]
-path = "crates/tacsim/tests/shard_4/match_lifecycle.rs"
+path = "crates/tacsim/tests/shard_1/match_lifecycle.rs"
 accessor = "World::module_state_mut"
 slot = "UnitStore"
 owner = "tactics"
@@ -1008,7 +1008,7 @@ world rather than on a hand-made `Records`.
 """
 
 [[site]]
-path = "crates/tacsim/tests/shard_1/knowing.rs"
+path = "crates/tacsim/tests/shard_4/knowing.rs"
 accessor = "World::module_state_mut"
 slot = "AtlasState"
 owner = "atlas"
@@ -1522,7 +1522,7 @@ owner = "tacsim"
 reason = "Test-only R14: seeds notice watches through the existing public integration seam, then renders actual egress-produced lapse events through the bot reader. No native order, match authority, or persistent state is created."
 
 [[site]]
-path = "crates/tacsim/tests/shard_4/match_lifecycle/resume_watch.rs"
+path = "crates/tacsim/tests/shard_1/match_lifecycle/resume_watch.rs"
 accessor = "World::module_state_mut"
 slot = "AccountOracle"
 owner = "sim"
@@ -1597,7 +1597,7 @@ every `cargo test` run instead of only the ignored 100 000-entry run.
 """
 
 [[site]]
-path = "crates/tacsim/tests/shard_1/quest_commissions.rs"
+path = "crates/tacsim/tests/shard_4/quest_commissions.rs"
 accessor = "World::module_state_mut"
 slot = "EconomyStore"
 owner = "economy"
