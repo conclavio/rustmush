@@ -158,4 +158,33 @@ if bash "$swap" dev2 2>/dev/null; then
 fi
 echo 'S6 instance guard'
 
-echo 'gateway swap: first start, swap, refused third, --force, stay-up failure, instance guard, binary comparison passed'
+# S7. A box without the doorway (dev2 on 2026-10-31, cut GG.5): the rendered
+# config has no [ssh].trusted_socket, so there is no link to re-point, and the
+# swap must not refuse the new generation for a socket it never binds. The
+# link overrides are withdrawn; the wrapper reads the fixture's config.
+printf '[ssh]\nlisten = "127.0.0.1:0"\n' > "$fixture/mushd.toml"
+rm -f "$fixture/run/dev1.sock"
+reset_log
+env -u GATEWAY_SWAP_LINK -u GATEWAY_SWAP_LINK_TARGET GATEWAY_SWAP_CONFIG="$fixture/mushd.toml" \
+  bash "$swap" dev1 > "$fixture/nolink"
+grep -q 'no \[ssh\].trusted_socket' "$fixture/nolink"
+[[ "$(state $unit@b)" == active ]]
+logged "start $unit@b"
+logged "kill --signal=USR1 $unit@a"
+[[ -e "$fixture/markers/draining-a" ]]
+[[ ! -e "$fixture/run/dev1.sock" ]]
+echo 'S7 no trusted socket configured: swapped without a link'
+
+# S8. The link comes from the rendered config when it names one: --force
+# finishes the draining a, starts it, and the link points at a's own socket.
+printf '[ssh]\nlisten = "127.0.0.1:0"\ntrusted_socket = "%s"\n' "$fixture/run/dev1.sock" > "$fixture/mushd.toml"
+reset_log
+env -u GATEWAY_SWAP_LINK -u GATEWAY_SWAP_LINK_TARGET GATEWAY_SWAP_CONFIG="$fixture/mushd.toml" \
+  bash "$swap" dev1 --force
+logged "kill --signal=TERM $unit@a"
+logged "start $unit@a"
+logged "kill --signal=USR1 $unit@b"
+[[ "$(link_target)" == "$fixture/run/dev1.a.sock" ]]
+echo 'S8 trusted socket from the config: link -> a'
+
+echo 'gateway swap: first start, swap, refused third, --force, stay-up failure, instance guard, no-doorway swap, config-derived link, binary comparison passed'

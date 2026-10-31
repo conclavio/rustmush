@@ -27,7 +27,8 @@
 # ../drain/swap.sh resolves as in the tree; $DRAIN_SWAP overrides that path.
 #
 # Environment overrides, for the shell test (scripts/tests/gateway-swap.sh)
-# and nothing else: GATEWAY_SWAP_MARKER_DIR, GATEWAY_SWAP_LINK,
+# and nothing else: GATEWAY_SWAP_MARKER_DIR, GATEWAY_SWAP_CONFIG (the rendered
+# config the trusted socket is read from), GATEWAY_SWAP_LINK,
 # GATEWAY_SWAP_LINK_TARGET (with %g for the generation), GATEWAY_SWAP_CHECK,
 # GATEWAY_SWAP_LOCK.
 set -euo pipefail
@@ -57,19 +58,36 @@ if [[ ! -x "$shared" ]]; then
     exit 1
 fi
 
+config="${GATEWAY_SWAP_CONFIG:-$ROOT/mushd.toml}"
 args=(
     --unit "$UNIT"
     # The unit's StateDirectory=dev2mush-gateway; the gateway reads $STATE_DIRECTORY.
     --marker-dir "${GATEWAY_SWAP_MARKER_DIR:-/var/lib/$UNIT}"
     # The gateway's own preflight over the installed config, as a generation
     # (without --generation a symlinked trusted socket is a refusal, doc 33 §4.4).
-    --check "${GATEWAY_SWAP_CHECK:-$ROOT/build/target/release/mush-gateway --config $ROOT/mushd.toml --check-config --generation a}"
-    # The doorway dials the configured [ssh].trusted_socket, a symlink; each
-    # generation binds its own <stem>.<gen>.sock beside it (doc 33 §4.4).
-    --symlink "${GATEWAY_SWAP_LINK:-/run/rustmush-ssh/$INST.sock}"
-    --symlink-target "${GATEWAY_SWAP_LINK_TARGET:-/run/rustmush-ssh/$INST.%g.sock}"
+    --check "${GATEWAY_SWAP_CHECK:-$ROOT/build/target/release/mush-gateway --config $config --check-config --generation a}"
     --drain-note "warnings at 12h/6h/2h/1h/15m/1m remaining; exits when empty or at 24 h"
 )
+# The doorway dials the configured [ssh].trusted_socket, a symlink that the
+# swap re-points at the new generation's own <stem>.<gen>.sock beside it (doc
+# 33 §4.4). The link is read from the rendered config, as deploy.sh reads it: a
+# box without the doorway renders no trusted_socket (dev2 on 2026-10-31, GG.5),
+# and then there is no link to re-point and the new generation must not be
+# refused for a socket it was never asked to bind. GATEWAY_SWAP_LINK names the
+# link outright (set and empty = no link), for the shell test.
+trusted_socket() {
+    sed -n 's/^[[:space:]]*trusted_socket[[:space:]]*=[[:space:]]*"\([^"]*\)".*/\1/p' "$1" 2>/dev/null | head -1
+}
+link="${GATEWAY_SWAP_LINK-$(trusted_socket "$config")}"
+if [[ -n "$link" ]]; then
+    case "$link" in
+        *.sock) target_default="${link%.sock}.%g.sock" ;;
+        *)      target_default="$link.%g" ;;
+    esac
+    args+=(--symlink "$link" --symlink-target "${GATEWAY_SWAP_LINK_TARGET:-$target_default}")
+else
+    echo "no [ssh].trusted_socket in $config: no doorway link to re-point; the swap runs without the symlink step"
+fi
 if [[ -n "${GATEWAY_SWAP_LOCK:-}" ]]; then
     args+=(--lock "$GATEWAY_SWAP_LOCK")
 fi
