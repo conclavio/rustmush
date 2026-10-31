@@ -426,9 +426,9 @@ pub use state::{
     Classification, ContactId, Controller, CostRow, CustodyOut, CustodyUnit,
     DEFAULT_SENSOR_HEIGHT_CM, Designator, DesignatorBook, DueEvent, DueHeap, DueKind, EndReason,
     EntryZone, EpochTable, HeatState, HoldRule, HoldState, KeySpot, MatchEnd, MatchMode,
-    MotionCarry, MotionLimits, NO_SUCH_CONTACT, PROVISIONAL_PREFIX, Pilot, Power, SPOT_LETTERS,
-    ShadowContact, ShadowContacts, Side, StopReason, PartyId, TerrainCell, TrackedRules, UnitState,
-    Waypoint, Waypoints, WeaponSummary, spot_letter,
+    MotionCarry, MotionLimits, NO_SUCH_CONTACT, PROVISIONAL_PREFIX, PartyId, Pilot, Power,
+    SPOT_LETTERS, ShadowContact, ShadowContacts, Side, StopReason, TerrainCell, TrackedRules,
+    UnitState, Waypoint, Waypoints, WeaponSummary, spot_letter,
 };
 pub use step::{Frame, FrameHeat, FrameSlots, STOCK_ODDS_ROWS, StepOutput};
 pub use stock_mind::{NativeStockMind, STOCK_MEMORY_KEY_NAMES, StockMemory, arming_for};
@@ -462,8 +462,8 @@ pub(crate) mod test_support {
     use crate::arena::perception::{SensorProfile, SignatureFactor};
     use crate::arena::resolution::{BandProfile, Consequence, SectionProfile, UnitProfile};
     use crate::arena::state::{
-        Arena, ArenaDefinition, ArenaTerrain, CustodyOut, CustodyUnit, EntryZone, MatchMode, Pilot,
-        Side, PartyId, TerrainCell, TrackedRules, WeaponSummary,
+        Arena, ArenaDefinition, ArenaTerrain, CustodyOut, CustodyUnit, EntryZone, MatchMode,
+        PartyId, Pilot, Side, TerrainCell, TrackedRules, WeaponSummary,
     };
     use crate::config::{ArenaConfig, MatchConfig, SensorsConfig};
     use crate::definitions::resolution::ResolutionDef;

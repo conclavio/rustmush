@@ -2,7 +2,7 @@ use super::*;
 use crate::arena::{
     mind::{CollectedThink, MindRunner},
     motor::MotorCounters,
-    state::{Controller, Power, PartyId},
+    state::{Controller, PartyId, Power},
     test_support::{arena_of, line_tank, pose},
 };
 use crate::minds::registry::{subject::PreparedSubject, tests::revision};

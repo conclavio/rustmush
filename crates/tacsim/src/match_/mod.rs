@@ -160,7 +160,7 @@ use smol_str::SmolStr;
 
 use crate::arena::damage::UnitReturn;
 use crate::arena::state::{
-    CustodyOut, CustodyUnit, EndReason, MatchEnd, MatchMode, Pilot, StopReason, PartyId,
+    CustodyOut, CustodyUnit, EndReason, MatchEnd, MatchMode, PartyId, Pilot, StopReason,
 };
 use crate::arena_bridge::{ArenaRegistry, OpenMatchError, match_log_id};
 use crate::arena_task::MatchId;
@@ -740,12 +740,9 @@ pub fn seq_from_document(value: &serde_json::Value) -> u64 {
 
 /// **One unit a side fields, and the pod it came out of** (16b cut Q.1).
 ///
-/// The slot is what [`crate::arena::state::Designator::Slot`] renders, so the
-/// `BA` a pilot locks is the pod `SIM STATUS` prints as `1` on blue. `0` is *no
-/// pod*: a staff `@arena/start`, a fixture, the harness's field of three
-/// hundred — and `Arena::new` then gives the unit the lowest free slot of its
-/// team in unit-id order, so every unit in every match has a stable callsign
-/// whether a lobby fielded it or not.
+/// The slot is the pod `SIM STATUS` prints; `0` is *no pod* (a staff
+/// `@arena/start`, a fixture, the harness's field of three hundred). Since doc
+/// 32 cut CF.0 the callsign is drawn at check-out and does not spell it.
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub struct Fielded {
     /// The unit.
@@ -1808,7 +1805,12 @@ fn gunnery_of(ctx: &Ctx<'_>, unit: ObjId) -> u8 {
 /// designator — the callsign 16b cut Q.1's first pass will give it, `RA` —
 /// and a staff `@arena/start` unit (slot 0, no pod) by its world name, which
 /// is what that staff console already calls it.
-pub(crate) fn unsealed_callsign(w: &mush_core::World, unit: ObjId, team: PartyId, slot: u8) -> String {
+pub(crate) fn unsealed_callsign(
+    w: &mush_core::World,
+    unit: ObjId,
+    team: PartyId,
+    slot: u8,
+) -> String {
     if slot == 0 {
         return mush_core::output::display_name(w, unit);
     }

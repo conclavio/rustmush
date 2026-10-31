@@ -496,7 +496,11 @@ async fn one_account_takes_one_slot_and_a_taken_slot_is_not_taken_twice() {
     rig.say(1, "sim team red");
     rig.say(2, "sim team red");
     let centre = rig.centre();
-    assert_eq!(centre.side_len(PartyId::RED), 3, "three accounts, three slots");
+    assert_eq!(
+        centre.side_len(PartyId::RED),
+        3,
+        "three accounts, three slots"
+    );
     let indices: Vec<u8> = centre.slots.iter().map(|slot| slot.index).collect();
     assert_eq!(indices, vec![1, 2, 3], "the lowest free slot each time");
 
@@ -1299,7 +1303,10 @@ async fn q7_a_claim_after_sim_ai_raises_the_fill_rather_than_splitting_the_sides
     let units = rig.match_units();
     assert_eq!(units.len(), 6, "three a side: {units:?}");
     assert_eq!(
-        units.iter().filter(|(team, _)| *team == PartyId::BLUE).count(),
+        units
+            .iter()
+            .filter(|(team, _)| *team == PartyId::BLUE)
+            .count(),
         3,
         "blue was filled to the size red brought: {units:?}"
     );
@@ -3168,8 +3175,8 @@ async fn d3_the_board_names_the_winner_of_a_concede_either_way() {
         "{said}"
     );
     rig.end_match(tacsim::arena::EndReason::Conceded {
-            winner: Some(PartyId::RED),
-        });
+        winner: Some(PartyId::RED),
+    });
     assert_eq!(
         rig.centre().outcome,
         Some(tacsim::match_::MatchOutcome::Red)
@@ -3950,7 +3957,10 @@ async fn b4_slot_left_promotes_the_next_pilot_in_the_tank() {
         !centre.leads_side(PartyId::RED, account(0)),
         "the lead who left leads nothing"
     );
-    assert!(centre.leads_side(PartyId::BLUE, account(3)), "blue untouched");
+    assert!(
+        centre.leads_side(PartyId::BLUE, account(3)),
+        "blue untouched"
+    );
 
     // The pilots who left are refused in the lead's words; the heir concedes.
     for n in [0, 1] {
@@ -5750,7 +5760,10 @@ async fn o3_the_boarding_deadline_on_a_range_asks_the_shooters_alone() {
     assert!(!heard.contains("aborted"), "{heard}");
     assert_eq!(rig.state(), MatchState::Running, "it ran with who was in");
     assert_eq!(rig.centre().slots.len(), 1);
-    assert_eq!(rig.match_units(), vec![(PartyId::RED, 1), (PartyId::BLUE, 1)]);
+    assert_eq!(
+        rig.match_units(),
+        vec![(PartyId::RED, 1), (PartyId::BLUE, 1)]
+    );
 
     // Nobody boards at all: that is an abort, in the centre's words and not in
     // a side's.
@@ -7732,7 +7745,8 @@ async fn af3_a_boot_voids_a_match_it_cannot_resume_for_each_reason() {
     // A marker on a unit the record does not field: red's second pod's tank,
     // marked as the match's with its own cells as the snapshot.
     let mut m = af3_match_boxed(0, true).await;
-    let stray = match_::tank_for_slot(m.rig.tw.world(), PartyId::RED, 2).expect("red's second tank");
+    let stray =
+        match_::tank_for_slot(m.rig.tw.world(), PartyId::RED, 2).expect("red's second tank");
     let (id, arena) = (m.match_id.0, m.head.arena.clone());
     af3_void(
         &mut m,

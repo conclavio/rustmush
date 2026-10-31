@@ -51,7 +51,7 @@ use tacsim::arena::perception::{
 use tacsim::arena::rng::{DrawLabel, draw, draw_contact_id, stagger_ms};
 use tacsim::arena::state::{
     Arena, ArenaDefinition, ArenaTerrain, Classification, ContactId, CustodyOut, CustodyUnit,
-    Designator, DueKind, EntryZone, Pilot, SeenPose, PartyId, TerrainCell, TrackedRules,
+    Designator, DueKind, EntryZone, PartyId, Pilot, SeenPose, TerrainCell, TrackedRules,
     WeaponSummary,
 };
 use tacsim::arena::step::Frame;
@@ -422,7 +422,9 @@ fn a_target_in_the_open_at_half_range_is_detected_and_then_classified() {
         .unwrap_or_else(|| panic!("still held"));
     assert_eq!(
         held.class,
-        Classification::Classified { party: PartyId::BLUE },
+        Classification::Classified {
+            party: PartyId::BLUE
+        },
         "the viewer resolved the wrong side"
     );
     // And it does not classify twice.
@@ -438,7 +440,12 @@ fn a_target_in_the_open_at_half_range_is_detected_and_then_classified() {
         .cloned()
         .unwrap_or_else(|| panic!("one contact"));
     assert_eq!(row.id, id);
-    assert_eq!(row.class, Classification::Classified { party: PartyId::BLUE });
+    assert_eq!(
+        row.class,
+        Classification::Classified {
+            party: PartyId::BLUE
+        }
+    );
     assert_eq!(row.range_cm, 30_000);
     assert_eq!(
         row.bearing_mdeg,
@@ -743,7 +750,9 @@ fn the_mesh_reaches_a_teammate_in_line_of_sight_and_not_one_behind_a_wall() {
                 .contacts
                 .resolve(EYE, draw_contact_id(arena.seed, EYE, MARK))
                 .map(|held| held.class),
-            Some(Classification::Classified { party: PartyId::BLUE })
+            Some(Classification::Classified {
+                party: PartyId::BLUE
+            })
         );
         let held = arena.contacts.resolve(MATE, target_id).copied();
         assert_eq!(
@@ -753,7 +762,12 @@ fn the_mesh_reaches_a_teammate_in_line_of_sight_and_not_one_behind_a_wall() {
         );
         if let Some(held) = held {
             // What arrives is classified, because only classified contacts travel.
-            assert_eq!(held.class, Classification::Classified { party: PartyId::BLUE });
+            assert_eq!(
+                held.class,
+                Classification::Classified {
+                    party: PartyId::BLUE
+                }
+            );
             assert_eq!(held.target, MARK);
             assert_eq!(held.first_seen_ms, 3_000, "the pass that classified it");
         }
@@ -1467,12 +1481,17 @@ fn a_notice_is_one_sentence_wherever_it_is_rendered() {
     // classification is still there to be read off the contact's class.
     let named = tacsim::arena::perception::Named {
         id,
-        designator: Designator::Unit { party: PartyId::BLUE, letter: 'A' },
+        designator: Designator::Unit {
+            party: PartyId::BLUE,
+            letter: 'A',
+        },
     };
     let silent = FrameNotice::Contact {
         kind: NoticeKind::Classified,
         contact: named,
-        class: Classification::Classified { party: PartyId::BLUE },
+        class: Classification::Classified {
+            party: PartyId::BLUE,
+        },
         was: None,
     };
     assert_eq!(cockpit::notice_line(&frame, &silent, &[]), "");
@@ -1495,7 +1514,9 @@ fn a_notice_is_one_sentence_wherever_it_is_rendered() {
     carrying.notices = vec![FrameNotice::Contact {
         kind: NoticeKind::Classified,
         contact: named,
-        class: Classification::Classified { party: PartyId::BLUE },
+        class: Classification::Classified {
+            party: PartyId::BLUE,
+        },
         was: Some(Designator::Provisional(1)),
     }];
     assert_eq!(
@@ -1516,7 +1537,10 @@ fn a_notice_is_one_sentence_wherever_it_is_rendered() {
     // accepts, so a panel that offered `1` would be offering something the verb
     // refuses.
     for contact in &mut carrying.contacts {
-        contact.designator = Designator::Unit { party: PartyId::BLUE, letter: 'A' };
+        contact.designator = Designator::Unit {
+            party: PartyId::BLUE,
+            letter: 'A',
+        };
         contact.alias = Some(1);
     }
     let payload = cockpit::status_frame(tacsim::arena_task::MatchId(1), &carrying);
@@ -2336,7 +2360,10 @@ fn a_callsign_is_the_party_letter_and_a_drawn_unit_letter_that_leaks_no_slot() {
             .map(|state| state.callsign.to_string())
             .unwrap_or_default()
     };
-    let blues: Vec<String> = [MARK, RELAY, BLIND].iter().map(|id| named(&arena, *id)).collect();
+    let blues: Vec<String> = [MARK, RELAY, BLIND]
+        .iter()
+        .map(|id| named(&arena, *id))
+        .collect();
     for name in &blues {
         assert_eq!(name.len(), 2, "{name}");
         assert!(name.starts_with('B'), "{name}");
@@ -2379,7 +2406,11 @@ fn a_callsign_is_the_party_letter_and_a_drawn_unit_letter_that_leaks_no_slot() {
         .collect();
     widths.sort_unstable();
     assert_eq!(widths.iter().filter(|w| **w == 2).count(), 23, "{widths:?}");
-    assert_eq!(widths.last(), Some(&3), "the overflow is a pair: {widths:?}");
+    assert_eq!(
+        widths.last(),
+        Some(&3),
+        "the overflow is a pair: {widths:?}"
+    );
 }
 
 #[test]
@@ -3399,7 +3430,9 @@ fn the_state_hash_moves_with_both_readings() {
             id,
             tacsim::arena::state::ShadowContact::sighted(
                 MARK,
-                Classification::Classified { party: PartyId::BLUE },
+                Classification::Classified {
+                    party: PartyId::BLUE,
+                },
                 0,
                 SeenPose::default(),
             ),
@@ -4176,7 +4209,9 @@ fn a_share_renames_a_hold_this_platform_opened_and_a_mesh_arrival_is_one_line() 
     // **`T-19`**: and the acquisition carries the class the row actually has.
     assert_eq!(
         acquired_class,
-        vec![Classification::Classified { party: PartyId::BLUE }],
+        vec![Classification::Classified {
+            party: PartyId::BLUE
+        }],
         "a mesh arrival's acquisition said `unknown` about a row already told apart"
     );
 }
@@ -4288,7 +4323,9 @@ fn a_mesh_share_inside_the_window_cancels_the_loss_and_says_no_regression() {
         theirs,
         tacsim::arena::state::ShadowContact::sighted(
             MARK,
-            Classification::Classified { party: PartyId::BLUE },
+            Classification::Classified {
+                party: PartyId::BLUE,
+            },
             6_000,
             SeenPose::default(),
         ),
@@ -4313,9 +4350,14 @@ fn a_mesh_share_inside_the_window_cancels_the_loss_and_says_no_regression() {
             kind: NoticeKind::Classified,
             contact: tacsim::arena::perception::Named {
                 id: draw_contact_id(arena.seed, EYE, MARK),
-                designator: Designator::Unit { party: PartyId::BLUE, letter: 'A' },
+                designator: Designator::Unit {
+                    party: PartyId::BLUE,
+                    letter: 'A'
+                },
             },
-            class: Classification::Classified { party: PartyId::BLUE },
+            class: Classification::Classified {
+                party: PartyId::BLUE
+            },
             was: Some(Designator::Provisional(1)),
         }),
         "the cancel said something other than the rename: {staged:?}"
@@ -5106,7 +5148,9 @@ fn m2_a_share_that_renames_a_held_loss_is_one_identification_at_every_cadence() 
         matches!(
             renamed.first(),
             Some(FrameNotice::Contact {
-                class: Classification::Classified { party: PartyId::BLUE },
+                class: Classification::Classified {
+                    party: PartyId::BLUE
+                },
                 was: Some(Designator::Provisional(1)),
                 ..
             })

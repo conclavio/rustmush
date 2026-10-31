@@ -36,7 +36,11 @@ struct GroupKey {
 
 impl GroupKey {
     fn id(self) -> Result<DetachmentId, LiveError> {
-        let side = if self.team == PartyId::BLUE { 65_536 } else { 0 };
+        let side = if self.team == PartyId::BLUE {
+            65_536
+        } else {
+            0
+        };
         self.match_id
             .0
             .checked_mul(131_072)

@@ -1297,7 +1297,9 @@ fn arena_for(
     actual: &IcWorld,
     seal: &crate::arena::MindSeal,
 ) -> TestResult<Box<crate::arena::Arena>> {
-    use crate::arena::{Arena, Controller, CustodyOut, CustodyUnit, MatchMode, PartyId, test_support};
+    use crate::arena::{
+        Arena, Controller, CustodyOut, CustodyUnit, MatchMode, PartyId, test_support,
+    };
     let unit = mush_tactics::module::unit_of(&actual.engine.world, seal.unit)
         .ok_or("physical unit")?
         .clone();

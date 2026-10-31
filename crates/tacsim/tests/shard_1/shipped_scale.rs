@@ -37,7 +37,7 @@ use support::{Muster, Timeline, booted_world, ledger_events, run_until, shipped_
 use tacsim::arena::clock::Tempo;
 use tacsim::arena::doctrine::MachineState;
 use tacsim::arena::mind::{STOCK_THINK_MS, decode_memory};
-use tacsim::arena::state::{Arena, EndReason, ShadowContact, PartyId};
+use tacsim::arena::state::{Arena, EndReason, PartyId, ShadowContact};
 use tacsim::arena::stock_mind::StockMemory;
 
 /// One cell of the shipped window, centimetres.
@@ -671,7 +671,10 @@ fn e4_a_hurt_machine_against_two_ends_by_elimination() {
         &world,
         &[
             &[Muster::mind(PartyId::RED, 1).hurt()],
-            &[Muster::mind(PartyId::BLUE, 1), Muster::mind(PartyId::BLUE, 2)],
+            &[
+                Muster::mind(PartyId::BLUE, 1),
+                Muster::mind(PartyId::BLUE, 2),
+            ],
         ],
     );
     let hurt = support::tank(&world, PartyId::RED, 1);
@@ -825,7 +828,9 @@ fn aa1_two_machines_with_their_engines_gone_still_fight_out_to_their_reach() {
         &world,
         &[
             &[Muster::mind(PartyId::RED, 1).engine_out()],
-            &[Muster::mind(PartyId::BLUE, 1).engine_out().at(ENGINE_OUT_BLUE)],
+            &[Muster::mind(PartyId::BLUE, 1)
+                .engine_out()
+                .at(ENGINE_OUT_BLUE)],
         ],
     );
     let red = support::tank(&world, PartyId::RED, 1);

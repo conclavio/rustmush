@@ -944,7 +944,7 @@ fn pose_inner(ctx: &mut Ctx<'_>) -> Result<(), CmdError> {
 }
 
 /// A centre slot's callsign as the board prints it: the team letter and the slot
-/// letter ([`Designator::Slot`]'s own rendering, so the two cannot differ).
+/// letter ([`super::parties::pod_label`]: since doc 32 cut CF.0 a pod's name, not a callsign).
 fn callsign(team: PartyId, slot: u8) -> String {
     super::parties::pod_label(team, slot)
 }

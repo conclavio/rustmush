@@ -372,7 +372,7 @@ pub(crate) mod fixture {
         NoticeKind, Receiver, RefusalDetail,
     };
     use crate::arena::state::{
-        ArenaDefinition, Classification, ContactId, Designator, Power, PartyId,
+        ArenaDefinition, Classification, ContactId, Designator, PartyId, Power,
     };
     use crate::arena::step::{FrameFacet, FrameHeat, FrameSection};
     use crate::arena::weapons::{FrameArming, FrameBand, FrameRule, FrameWeapon};
@@ -396,7 +396,10 @@ pub(crate) mod fixture {
 
     /// The hostile's designator, `BB`.
     pub(crate) const fn hostile_designator() -> Designator {
-        Designator::Unit { party: PartyId::BLUE, letter: 'B' }
+        Designator::Unit {
+            party: PartyId::BLUE,
+            letter: 'B',
+        }
     }
 
     /// **The full view**: a red hull at cell (1, 4) of the test window,
@@ -410,7 +413,10 @@ pub(crate) mod fixture {
         let hostile = named(HOSTILE, hostile_designator());
         MindView {
             unit: UNIT.0,
-            callsign: Designator::Unit { party: PartyId::RED, letter: 'A' },
+            callsign: Designator::Unit {
+                party: PartyId::RED,
+                letter: 'A',
+            },
             party: PartyId::RED,
             cell: Some((1, 4)),
             mode: crate::arena::state::MatchMode::Hold,
@@ -566,7 +572,9 @@ pub(crate) mod fixture {
                 FrameNotice::Contact {
                     kind: NoticeKind::Classified,
                     contact: hostile,
-                    class: Classification::Classified { party: PartyId::BLUE },
+                    class: Classification::Classified {
+                        party: PartyId::BLUE,
+                    },
                     was: Some(Designator::Provisional(3)),
                 },
                 FrameNotice::Hit {
@@ -624,7 +632,9 @@ pub(crate) mod fixture {
                     id: HOSTILE,
                     designator: hostile_designator(),
                     alias: Some(3),
-                    class: Classification::Classified { party: PartyId::BLUE },
+                    class: Classification::Classified {
+                        party: PartyId::BLUE,
+                    },
                     relation: crate::arena::party::Relation::Hostile,
                     friendly: false,
                     moving: false,
@@ -649,9 +659,14 @@ pub(crate) mod fixture {
                 },
                 ViewContact {
                     id: FRIEND,
-                    designator: Designator::Unit { party: PartyId::RED, letter: 'B' },
+                    designator: Designator::Unit {
+                        party: PartyId::RED,
+                        letter: 'B',
+                    },
                     alias: None,
-                    class: Classification::Classified { party: PartyId::RED },
+                    class: Classification::Classified {
+                        party: PartyId::RED,
+                    },
                     relation: crate::arena::party::Relation::Friend,
                     friendly: true,
                     moving: false,

@@ -3086,7 +3086,12 @@ mod tests {
     fn roster() -> Roster {
         let mut roster = Roster::new();
         roster.insert(ME, Some(PartyId::RED), SmolStr::new("RA"), Some(ObjId(5)));
-        roster.insert(THEM, Some(PartyId::BLUE), SmolStr::new("BA"), Some(ObjId(6)));
+        roster.insert(
+            THEM,
+            Some(PartyId::BLUE),
+            SmolStr::new("BA"),
+            Some(ObjId(6)),
+        );
         roster
     }
 

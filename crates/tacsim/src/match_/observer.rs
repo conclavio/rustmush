@@ -172,7 +172,9 @@ mod tests {
             unit: ObjId(unit),
             callsign: Designator::Unit {
                 party: team,
-                letter: char::from(b'A'.saturating_add(u8::try_from(slot).unwrap_or(1).saturating_sub(1))),
+                letter: char::from(
+                    b'A'.saturating_add(u8::try_from(slot).unwrap_or(1).saturating_sub(1)),
+                ),
             },
             team,
             cell,
@@ -266,7 +268,11 @@ mod tests {
     fn i4_a_three_hundred_unit_picture_fits_the_frame_bound() {
         let units: Vec<ObserverUnit> = (0..300_u16)
             .map(|n| {
-                let team = if n % 2 == 0 { PartyId::RED } else { PartyId::BLUE };
+                let team = if n % 2 == 0 {
+                    PartyId::RED
+                } else {
+                    PartyId::BLUE
+                };
                 let mut unit = row(
                     900_000 + u32::from(n),
                     team,

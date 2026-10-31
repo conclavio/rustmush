@@ -189,7 +189,7 @@ fn a_rock_cell_at_elev_cm_0_blocks_no_sight_line_in_any_picture() {
     let target = Sprite {
         x_cm: 16_500,
         y_cm: 20_500,
-        kind: SpriteKind::Red,
+        kind: SpriteKind::Hostile,
         pose: None,
     };
 

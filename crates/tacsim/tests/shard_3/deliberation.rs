@@ -52,7 +52,7 @@ use tacsim::arena::perception::{SensorProfile, SignatureFactor};
 use tacsim::arena::rng::draw_contact_id;
 use tacsim::arena::state::{
     Arena, ArenaDefinition, ArenaTerrain, Channel, Classification, Controller, CustodyOut,
-    CustodyUnit, EntryZone, Pilot, SeenPose, ShadowContact, PartyId, TerrainCell, TrackedRules,
+    CustodyUnit, EntryZone, PartyId, Pilot, SeenPose, ShadowContact, TerrainCell, TrackedRules,
     Waypoint, Waypoints, WeaponSummary,
 };
 use tacsim::arena::step::StepOutput;
@@ -1459,10 +1459,12 @@ fn a_withdraw_order_withdraws_and_stands_when_it_is_cornered() {
         "withdraw begins while the named patrol leg is still driving"
     );
     assert!(
-        !first_view
-            .contacts
-            .iter()
-            .any(|row| matches!(row.class, Classification::Classified { party: PartyId::BLUE })),
+        !first_view.contacts.iter().any(|row| matches!(
+            row.class,
+            Classification::Classified {
+                party: PartyId::BLUE
+            }
+        )),
         "this member is uncornered; its commander is the cornered control"
     );
     let goal = named_goal(&arena, RED_B).expect("a withdrawing tank has somewhere to be");
@@ -2665,7 +2667,8 @@ impl AccountIdentity for Accounts {
 #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
 async fn l2_the_world_says_the_leaders_order_lapsed_once() {
     let mut tw = TestWorld::with_modules(roster());
-    let (match_id, squads, pilots) = l2_running_match(&mut tw, &[PartyId::RED, PartyId::RED, PartyId::BLUE]);
+    let (match_id, squads, pilots) =
+        l2_running_match(&mut tw, &[PartyId::RED, PartyId::RED, PartyId::BLUE]);
     let [(red_pilot, _), (wingmate, _), (blue_pilot, _)] = [pilots[0], pilots[1], pilots[2]];
     let (red, _) = l1_sides(&squads);
     let squad = red.id;
@@ -2809,7 +2812,8 @@ async fn l2_releasing_the_whole_squad_cancels_its_persona_lapse_notice() {
 #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
 async fn l2_a_pilots_own_order_lapse_is_told_to_them_alone() {
     let mut tw = TestWorld::with_modules(roster());
-    let (match_id, squads, pilots) = l2_running_match(&mut tw, &[PartyId::RED, PartyId::RED, PartyId::BLUE]);
+    let (match_id, squads, pilots) =
+        l2_running_match(&mut tw, &[PartyId::RED, PartyId::RED, PartyId::BLUE]);
     let [
         (issuer, issuer_tank),
         (wingmate, _),
@@ -3873,11 +3877,11 @@ fn e2_b41_doctrine_is_back_the_tick_after_the_order_drops() {
         .find(|(unit, t_ms, _, _)| *unit == RED_A && *t_ms == think_at(RED_A, 2))
         .expect("#4's order-live think was kept");
     assert!(
-        live.2
-            .contacts
-            .iter()
-            .any(|row| row.id == planted
-                && row.class == Classification::Classified { party: PartyId::BLUE }),
+        live.2.contacts.iter().any(|row| row.id == planted
+            && row.class
+                == Classification::Classified {
+                    party: PartyId::BLUE
+                }),
         "the order-live think saw the planted hostile"
     );
     let answer = kept_memory(&live.3);

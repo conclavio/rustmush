@@ -89,7 +89,7 @@ use tacsim::arena::resolution::{BandProfile, Consequence, SectionProfile, UnitPr
 use tacsim::arena::rng::{DrawLabel, draw_contact_id, draw_permille};
 use tacsim::arena::state::{
     Arena, ArenaDefinition, ArenaTerrain, Classification, ContactId, CustodyOut, CustodyUnit,
-    EndReason, EntryZone, OwnSighting, Pilot, Power, SeenPose, ShadowContact, Side, PartyId,
+    EndReason, EntryZone, OwnSighting, PartyId, Pilot, Power, SeenPose, ShadowContact, Side,
     TerrainCell, TrackedRules, WeaponSummary,
 };
 use tacsim::arena::step::StepOutput;
@@ -714,7 +714,9 @@ fn hold(arena: &mut Arena, viewer: ObjId, target: ObjId) -> ContactId {
         id,
         ShadowContact::sighted(
             target,
-            Classification::Classified { party: PartyId::BLUE },
+            Classification::Classified {
+                party: PartyId::BLUE,
+            },
             now,
             plot_of(arena, target),
         ),
@@ -2125,7 +2127,9 @@ fn scripted_arena() -> Arena {
             }),
             ..ShadowContact::sighted(
                 BLUE,
-                Classification::Classified { party: PartyId::BLUE },
+                Classification::Classified {
+                    party: PartyId::BLUE,
+                },
                 0,
                 plot_of(&arena, BLUE),
             )
@@ -3303,7 +3307,9 @@ fn two_locks_in_one_pulse_each_name_their_own_contact() {
         second,
         ShadowContact::sighted(
             BLUE,
-            Classification::Classified { party: PartyId::BLUE },
+            Classification::Classified {
+                party: PartyId::BLUE,
+            },
             now,
             plot_of(&arena, BLUE),
         ),
@@ -4989,7 +4995,9 @@ fn d2_arena() -> Arena {
                 }),
                 ..ShadowContact::sighted(
                     target,
-                    Classification::Classified { party: PartyId::BLUE },
+                    Classification::Classified {
+                        party: PartyId::BLUE,
+                    },
                     0,
                     plot,
                 )

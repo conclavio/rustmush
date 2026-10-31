@@ -2383,7 +2383,7 @@ impl Arming {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use crate::arena::state::{Controller, Power, SeenPose, ShadowContact, PartyId};
+    use crate::arena::state::{Controller, PartyId, Power, SeenPose, ShadowContact};
     use crate::arena::test_support::{arena_of, cannon, line_tank, pose};
     use crate::arena::weapons::FiredBy;
 
@@ -2887,7 +2887,9 @@ mod tests {
                 .contacts
                 .get_mut(RED, id_of(RED, target))
                 .expect("plot");
-            held.class = Classification::Classified { party: PartyId::BLUE };
+            held.class = Classification::Classified {
+                party: PartyId::BLUE,
+            };
             held.seen_at.x_cm = x_cm;
             held.seen_at.y_cm = 3_500;
             held.seen_at.heading_mdeg = 0;
@@ -3346,8 +3348,9 @@ mod tests {
             .x_cm = 5_500;
         arena.contacts.get_mut(RED, target).expect("plot").class = Classification::Unknown;
         assert!(!arena.rule_predicates_hold(RED, &rule(RuleBand::Close), Some(target), 0));
-        arena.contacts.get_mut(RED, target).expect("plot").class =
-            Classification::Classified { party: PartyId::BLUE };
+        arena.contacts.get_mut(RED, target).expect("plot").class = Classification::Classified {
+            party: PartyId::BLUE,
+        };
         arena.unit_mut(RED).expect("own hull").weapons.clear();
         assert!(!arena.rule_predicates_hold(RED, &rule(RuleBand::Close), Some(target), 0));
     }
@@ -4164,7 +4167,12 @@ mod tests {
             arena.contacts.insert(
                 *id,
                 id_of(*id, target),
-                ShadowContact::sighted(target, Classification::Classified { party: team }, stamp, plot),
+                ShadowContact::sighted(
+                    target,
+                    Classification::Classified { party: team },
+                    stamp,
+                    plot,
+                ),
             );
             if let Some(state) = arena.unit_mut(*id) {
                 state.power = Power::Online;

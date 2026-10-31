@@ -282,7 +282,11 @@ pub(crate) enum Command {
 pub(crate) fn command_of(
     w: &World,
     seat: &Seat,
-) -> (Option<MatchId>, Option<crate::arena::state::PartyId>, Command) {
+) -> (
+    Option<MatchId>,
+    Option<crate::arena::state::PartyId>,
+    Command,
+) {
     let match_id = w
         .module_state::<ArenaRegistry>()
         .and_then(|registry| registry.match_of_unit(seat.unit));

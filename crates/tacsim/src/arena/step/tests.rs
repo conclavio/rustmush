@@ -1235,7 +1235,9 @@ fn watching_gunner() -> Arena {
             }),
             ..crate::arena::state::ShadowContact::sighted(
                 ObjId(9),
-                Classification::Classified { party: PartyId::BLUE },
+                Classification::Classified {
+                    party: PartyId::BLUE,
+                },
                 0,
                 plot,
             )
@@ -2132,7 +2134,9 @@ fn m2_a_renamed_cancel_is_said_once_and_only_for_a_mesh_insert_told_apart() {
     let mesh = run(&|arena: &mut Arena| {
         if let Some(held) = arena.contacts.get_mut(A, contact) {
             held.numbered = false;
-            held.class = Classification::Classified { party: PartyId::BLUE };
+            held.class = Classification::Classified {
+                party: PartyId::BLUE,
+            };
         }
     });
     let mesh_said = said(&mesh);
@@ -2153,7 +2157,9 @@ fn m2_a_renamed_cancel_is_said_once_and_only_for_a_mesh_insert_told_apart() {
     let own = run(&|arena: &mut Arena| {
         if let Some(held) = arena.contacts.get_mut(A, contact) {
             held.numbered = true;
-            held.class = Classification::Classified { party: PartyId::BLUE };
+            held.class = Classification::Classified {
+                party: PartyId::BLUE,
+            };
         }
     });
     assert_eq!(
@@ -2840,7 +2846,9 @@ fn i3_a_place_moves_the_unit_and_journals_placed_under_the_phase_four_hash() {
         contact,
         crate::arena::state::ShadowContact::sighted(
             A,
-            Classification::Classified { party: PartyId::RED },
+            Classification::Classified {
+                party: PartyId::RED,
+            },
             0,
             crate::arena::state::SeenPose::default(),
         ),
@@ -3255,7 +3263,9 @@ fn o1_a_hold_is_won_at_its_own_millisecond_and_nothing_after_it_lands() {
     assert_eq!(
         ended,
         Some(MatchEnd {
-            reason: EndReason::Hold { winner: PartyId::BLUE },
+            reason: EndReason::Hold {
+                winner: PartyId::BLUE
+            },
             t_ms: 10_350
         })
     );
@@ -3266,7 +3276,9 @@ fn o1_a_hold_is_won_at_its_own_millisecond_and_nothing_after_it_lands() {
         Some((
             10_350,
             EventKind::MatchEnded {
-                reason: EndReason::Hold { winner: PartyId::BLUE }
+                reason: EndReason::Hold {
+                    winner: PartyId::BLUE
+                }
             }
         ))
     );
@@ -3330,7 +3342,9 @@ fn o1_a_contest_drops_the_clock_and_its_stale_event_fires_into_nothing() {
     assert_eq!(
         out.ended,
         Some(MatchEnd {
-            reason: EndReason::Hold { winner: PartyId::BLUE },
+            reason: EndReason::Hold {
+                winner: PartyId::BLUE
+            },
             t_ms: 12_250
         })
     );
@@ -3408,7 +3422,9 @@ fn o1_tie_2_a_holder_wrecked_at_the_holds_own_millisecond_still_wins() {
     assert_eq!(
         out.ended,
         Some(MatchEnd {
-            reason: EndReason::Hold { winner: PartyId::BLUE },
+            reason: EndReason::Hold {
+                winner: PartyId::BLUE
+            },
             t_ms: impact_at
         })
     );
@@ -3430,7 +3446,9 @@ fn o1_tie_2_a_holder_wrecked_at_the_holds_own_millisecond_still_wins() {
     assert_eq!(
         log.last().map(|event| event.kind.clone()),
         Some(EventKind::MatchEnded {
-            reason: EndReason::Hold { winner: PartyId::BLUE }
+            reason: EndReason::Hold {
+                winner: PartyId::BLUE
+            }
         })
     );
 }
@@ -3460,7 +3478,9 @@ fn o1_a_round_due_after_the_holds_millisecond_in_its_substep_is_never_applied() 
     assert_eq!(
         out.ended,
         Some(MatchEnd {
-            reason: EndReason::Hold { winner: PartyId::BLUE },
+            reason: EndReason::Hold {
+                winner: PartyId::BLUE
+            },
             t_ms: won_at
         })
     );
@@ -3486,7 +3506,9 @@ fn o1_a_round_due_after_the_holds_millisecond_in_its_substep_is_never_applied() 
         Some((
             won_at,
             EventKind::MatchEnded {
-                reason: EndReason::Hold { winner: PartyId::BLUE }
+                reason: EndReason::Hold {
+                    winner: PartyId::BLUE
+                }
             }
         ))
     );
@@ -3519,7 +3541,9 @@ fn o1_an_enemy_driving_into_the_square_in_the_last_substep_voids_the_win() {
     assert_eq!(
         control.step(11_000, &[], &[]).ended,
         Some(MatchEnd {
-            reason: EndReason::Hold { winner: PartyId::BLUE },
+            reason: EndReason::Hold {
+                winner: PartyId::BLUE
+            },
             t_ms: 10_250
         })
     );
@@ -3576,7 +3600,9 @@ fn o1_tie_3_a_hold_at_the_deadlines_own_millisecond_beats_the_timeout() {
     assert_eq!(
         ended,
         Some(MatchEnd {
-            reason: EndReason::Hold { winner: PartyId::BLUE },
+            reason: EndReason::Hold {
+                winner: PartyId::BLUE
+            },
             t_ms: 3_000
         })
     );
@@ -3587,7 +3613,9 @@ fn o1_tie_3_a_hold_at_the_deadlines_own_millisecond_beats_the_timeout() {
         vec![(
             3_000,
             EventKind::MatchEnded {
-                reason: EndReason::Hold { winner: PartyId::BLUE }
+                reason: EndReason::Hold {
+                    winner: PartyId::BLUE
+                }
             }
         )],
         "one end, the hold, and no timeout beside it"
@@ -3605,7 +3633,7 @@ mod m1a3 {
     use super::super::*;
     use crate::arena::condition::{Condition, ConditionBand, Reading};
     use crate::arena::perception::{Notice, PerceptionCounters};
-    use crate::arena::state::{SeenPose, ShadowContact, PartyId, WeaponSummary};
+    use crate::arena::state::{PartyId, SeenPose, ShadowContact, WeaponSummary};
     use crate::arena::test_support::{arena_of, cannon, line_tank, pose};
 
     pub(super) const RED: ObjId = ObjId(4);
@@ -3712,7 +3740,9 @@ mod m1a3 {
             id,
             ShadowContact::sighted(
                 BLUE,
-                Classification::Classified { party: PartyId::BLUE },
+                Classification::Classified {
+                    party: PartyId::BLUE,
+                },
                 0,
                 seen,
             ),

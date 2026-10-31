@@ -1889,7 +1889,9 @@ mod tests {
     fn slot(team: PartyId, slot: u16) -> Designator {
         Designator::Unit {
             party: team,
-            letter: char::from(b'A'.saturating_add(u8::try_from(slot).unwrap_or(1).saturating_sub(1))),
+            letter: char::from(
+                b'A'.saturating_add(u8::try_from(slot).unwrap_or(1).saturating_sub(1)),
+            ),
         }
     }
 
@@ -2410,7 +2412,11 @@ mod tests {
     fn an_hour(units: u16, destroyed: u16) -> (Replay, usize) {
         let roster: Vec<(ObjId, Designator, PartyId)> = (1..=units)
             .map(|n| {
-                let team = if n % 2 == 1 { PartyId::RED } else { PartyId::BLUE };
+                let team = if n % 2 == 1 {
+                    PartyId::RED
+                } else {
+                    PartyId::BLUE
+                };
                 (ObjId(u32::from(n) + 1_000), slot(team, n.div_ceil(2)), team)
             })
             .collect();

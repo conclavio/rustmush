@@ -97,7 +97,7 @@ use tacsim::arena::intents::{Control, ControlState};
 use tacsim::arena::rng::draw_contact_id;
 use tacsim::arena::state::{
     Arena, ArenaDefinition, ArenaTerrain, Channel, Classification, Controller, CustodyUnit,
-    EntryZone, Power, ShadowContact, PartyId, TerrainCell, TrackedRules, Waypoint, Waypoints,
+    EntryZone, PartyId, Power, ShadowContact, TerrainCell, TrackedRules, Waypoint, Waypoints,
     WeaponSummary,
 };
 use tacsim::arena::weapons::WeaponBand;
@@ -1089,7 +1089,13 @@ fn t1_a_sealed_goal_escalates_without_cycling_and_keeps_its_avoided_cells() {
             ),
             // Parked on the way to the only node the fallback can reach: the
             // stop the machine has to remember while the escalation runs.
-            tank(RED2, PartyId::RED, centre(3, 8), Vec::new(), Controller::Pilot),
+            tank(
+                RED2,
+                PartyId::RED,
+                centre(3, 8),
+                Vec::new(),
+                Controller::Pilot,
+            ),
         ],
         &paint,
         &cfg,
@@ -1198,7 +1204,13 @@ fn j_field() -> Arena {
                 10,
             )),
             as_fill(seeing(
-                tank(RED2, PartyId::RED, centre(6, 10), Vec::new(), Controller::Mind),
+                tank(
+                    RED2,
+                    PartyId::RED,
+                    centre(6, 10),
+                    Vec::new(),
+                    Controller::Mind,
+                ),
                 10,
             )),
             as_fill(presenting(seeing(
@@ -10153,7 +10165,13 @@ fn m4_6c_the_issuer_goes_with_the_order_at_a_release_an_expiry_a_possess_and_a_c
 
     // The owner's STOP E: a `Support` whose charge leaves the match.
     let planted_ms = arena.now_ms;
-    plant_contact(&mut arena, Z2_SUPPORTER, Z2_CHARGE, PartyId::RED, planted_ms);
+    plant_contact(
+        &mut arena,
+        Z2_SUPPORTER,
+        Z2_CHARGE,
+        PartyId::RED,
+        planted_ms,
+    );
     land(&mut arena, Objective::Support { of: Z2_CHARGE }, 600_000);
     let support = held(&arena).expect("the support order");
     assert!(
@@ -10541,7 +10559,13 @@ fn t1_an_inert_target_is_the_same_at_three_cadences() {
     for cadence in [5_000_i64, 1_000, 500] {
         let mut arena = arena_of(
             vec![
-                tank(RED, PartyId::RED, centre(3, 8), Vec::new(), Controller::Mind),
+                tank(
+                    RED,
+                    PartyId::RED,
+                    centre(3, 8),
+                    Vec::new(),
+                    Controller::Mind,
+                ),
                 o3_target(BLUE, PartyId::BLUE, centre(12, 3)),
             ],
             &[],
@@ -11100,7 +11124,13 @@ mod m5r {
                         vec![cannon()],
                         Controller::Mind,
                     ),
-                    tank(RED2, PartyId::RED, centre(2, 12), Vec::new(), Controller::Mind),
+                    tank(
+                        RED2,
+                        PartyId::RED,
+                        centre(2, 12),
+                        Vec::new(),
+                        Controller::Mind,
+                    ),
                 ],
                 &[],
                 &arena_cfg(reflex_cfg()),

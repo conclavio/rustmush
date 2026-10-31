@@ -113,7 +113,7 @@ use crate::arena::perception::{
 };
 use crate::arena::state::{
     Arena, ArenaDefinition, Channel, Classification, ContactId, Controller, Designator, DueKind,
-    Power, PartyId,
+    PartyId, Power,
 };
 use crate::arena::step::{FrameHeat, FrameSection};
 use crate::arena::view::ContactRow;
@@ -3780,7 +3780,11 @@ mod tests {
         let mut others: Vec<ObjId> = Vec::new();
         for (k, (dx, dy)) in (0_u16..).zip(offsets) {
             let id = ObjId(10 + u32::from(k));
-            let team = if k % 2 == 0 { PartyId::BLUE } else { PartyId::RED };
+            let team = if k % 2 == 0 {
+                PartyId::BLUE
+            } else {
+                PartyId::RED
+            };
             units.push(line_tank(id, team, pose(x0 + dx, y0 + dy)));
             others.push(id);
         }
@@ -4921,7 +4925,10 @@ mod tests {
         red.weapons.push(mg);
         red.reseal(&crate::match_::SealTerms::fixture())
             .expect("seal the complete initial weapon rack");
-        let mut arena = wide(vec![red, line_tank(BLUE, PartyId::BLUE, pose(1_500, 21_500))]);
+        let mut arena = wide(vec![
+            red,
+            line_tank(BLUE, PartyId::BLUE, pose(1_500, 21_500)),
+        ]);
         arena.odds_floor_permille = 50;
         let arm = Arming::Arm(FireCondition {
             weapon: SmolStr::new("machine_gun"),
@@ -5031,7 +5038,9 @@ mod tests {
             row,
             ShadowContact::sighted(
                 BLUE,
-                Classification::Classified { party: PartyId::BLUE },
+                Classification::Classified {
+                    party: PartyId::BLUE,
+                },
                 0,
                 plot,
             ),

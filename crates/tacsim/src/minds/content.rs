@@ -204,7 +204,7 @@ mod tests {
     use crate::arena::perception::{Aspect, DriveOutcome, FrameNotice, FrameOrder, MindObjective};
     use crate::arena::state::{
         Arena, ArenaDefinition, ArenaTerrain, Classification, ContactId, Controller, CustodyOut,
-        CustodyUnit, MatchMode, Power, SeenPose, ShadowContact, PartyId,
+        CustodyUnit, MatchMode, PartyId, Power, SeenPose, ShadowContact,
     };
     use crate::arena::stock_mind::{NativeStockMind, StockMemory, health_permille, view_ranges};
     use crate::arena::test_support::{definition, ground, line_tank, pose, resolution, scout};
@@ -591,9 +591,14 @@ mod tests {
                 .any(|(_, result)| result.intents.contains(&IntentKind::Startup))
         );
         assert!(answers.iter().any(|(view, _)| {
-            view.contacts
-                .iter()
-                .any(|row| matches!(row.class, Classification::Classified { party: PartyId::BLUE }))
+            view.contacts.iter().any(|row| {
+                matches!(
+                    row.class,
+                    Classification::Classified {
+                        party: PartyId::BLUE
+                    }
+                )
+            })
         }));
         assert!(
             answers.iter().any(|(_, result)| result
@@ -1938,7 +1943,10 @@ mod tests {
         red.weapons.push(mg);
         red.reseal(&crate::match_::SealTerms::fixture())
             .expect("seal the complete initial weapon rack");
-        let mut arena = field(vec![red, line_tank(BLUE, PartyId::BLUE, pose(20_500, 40_500))]);
+        let mut arena = field(vec![
+            red,
+            line_tank(BLUE, PartyId::BLUE, pose(20_500, 40_500)),
+        ]);
         online(&mut arena, RED);
         hold(&mut arena, RED, BLUE, ContactId(0x77));
         let card = line(&arena.arena_cfg.reflex);

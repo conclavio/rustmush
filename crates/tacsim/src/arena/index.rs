@@ -1902,7 +1902,11 @@ mod tests {
             .enumerate()
             .map(|(n, (x_cm, y_cm))| {
                 let id = ObjId(10 + u32::try_from(n).unwrap_or(0));
-                let team = if n % 2 == 0 { PartyId::RED } else { PartyId::BLUE };
+                let team = if n % 2 == 0 {
+                    PartyId::RED
+                } else {
+                    PartyId::BLUE
+                };
                 tank(id, team, pose(*x_cm, *y_cm))
             })
             .collect();
@@ -2068,7 +2072,11 @@ mod tests {
             .enumerate()
             .map(|(n, (x_cm, y_cm))| {
                 let id = ObjId(10 + u32::try_from(n).unwrap_or(0));
-                let team = if n % 2 == 0 { PartyId::RED } else { PartyId::BLUE };
+                let team = if n % 2 == 0 {
+                    PartyId::RED
+                } else {
+                    PartyId::BLUE
+                };
                 let at = if transposed {
                     pose(*y_cm, *x_cm)
                 } else {

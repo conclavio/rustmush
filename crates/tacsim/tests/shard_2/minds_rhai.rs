@@ -81,7 +81,7 @@ use tacsim::arena::rng::{DrawLabel, draw, stagger_ms};
 use tacsim::arena::snapshot::Snapshot;
 use tacsim::arena::state::{
     Arena, ArenaDefinition, ArenaTerrain, Channel, Controller, CostRow, CustodyOut, CustodyUnit,
-    DueKind, EntryZone, HeatState, KeySpot, Pilot, PartyId, TerrainCell, TrackedRules, Waypoint,
+    DueKind, EntryZone, HeatState, KeySpot, PartyId, Pilot, TerrainCell, TrackedRules, Waypoint,
     Waypoints, WeaponSummary,
 };
 use tacsim::arena::step::{Frame, StepOutput};
@@ -424,7 +424,13 @@ fn the_j_field(controller: Controller) -> Arena {
                 vec![cannon()],
                 controller,
             )),
-            seeing(tank(RED2, PartyId::RED, centre(6, 10), Vec::new(), controller)),
+            seeing(tank(
+                RED2,
+                PartyId::RED,
+                centre(6, 10),
+                Vec::new(),
+                controller,
+            )),
             presenting(seeing(tank(
                 BLUE,
                 PartyId::BLUE,
@@ -1923,7 +1929,9 @@ fn written(
                 id: friend,
                 designator: friend_designator,
             },
-            class: tacsim::arena::state::Classification::Classified { party: PartyId::RED },
+            class: tacsim::arena::state::Classification::Classified {
+                party: PartyId::RED,
+            },
             was: Some(tacsim::arena::state::Designator::Provisional(1)),
         },
         FrameNotice::Hit {
@@ -3667,7 +3675,10 @@ fn m2_the_twin_corpus_hashes_the_same_on_every_host() {
     let world = support::booted_world();
     let cfg = ArenaConfig::default();
     let reds = [Muster::mind(PartyId::RED, 1), Muster::mind(PartyId::RED, 2)];
-    let blues = [Muster::mind(PartyId::BLUE, 1), Muster::mind(PartyId::BLUE, 2)];
+    let blues = [
+        Muster::mind(PartyId::BLUE, 1),
+        Muster::mind(PartyId::BLUE, 2),
+    ];
     let mut rows: Vec<(u64, i64, u64, String, String)> = Vec::new();
     // (a) The stock corpus, T2 against T2.
     for seed in [2_350_u64, 2_351, 2_352] {
@@ -3819,7 +3830,9 @@ fn classed_field(
         contact,
         ShadowContact::sighted(
             BLUE,
-            Classification::Classified { party: PartyId::BLUE },
+            Classification::Classified {
+                party: PartyId::BLUE,
+            },
             0,
             plot,
         ),

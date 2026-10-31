@@ -2179,7 +2179,11 @@ pub fn lance_arena(world: &TestWorld, seed: u64) -> Arena {
     let mut units: Vec<CustodyUnit> = Vec::new();
     for n in 0..2 * LANCE_PER_SIDE {
         let id = ObjId(100_000 + n);
-        let team = if n % 2 == 0 { PartyId::RED } else { PartyId::BLUE };
+        let team = if n % 2 == 0 {
+            PartyId::RED
+        } else {
+            PartyId::BLUE
+        };
         let entry = LANCE_COHORT
             .get(usize::try_from(n / 2).unwrap_or(0) % LANCE_COHORT.len())
             .copied()

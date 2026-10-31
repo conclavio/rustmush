@@ -235,8 +235,12 @@ impl From<EndReason> for MatchOutcome {
             } => MatchOutcome::Blue,
             // 16b cut O.1: a hold names its winner too, and the reason word
             // (`hold`) says how.
-            EndReason::Hold { winner: PartyId::RED } => MatchOutcome::Red,
-            EndReason::Hold { winner: PartyId::BLUE } => MatchOutcome::Blue,
+            EndReason::Hold {
+                winner: PartyId::RED,
+            } => MatchOutcome::Red,
+            EndReason::Hold {
+                winner: PartyId::BLUE,
+            } => MatchOutcome::Blue,
             // And a match every pilot had left is a `timeout`: doc 16 §4's
             // vocabulary is six words, and this is the one that means *the clock
             // ended it and nobody was eliminated*.
@@ -1891,18 +1895,24 @@ mod tests {
             // 16b cut D.3 (`B-33`): an end with a winner, and an end with none —
             // neither of them an abort and neither of them a void.
             (
-                EndReason::Conceded { winner: Some(PartyId::RED) },
+                EndReason::Conceded {
+                    winner: Some(PartyId::RED),
+                },
                 MatchState::Ended,
                 MatchOutcome::Red,
             ),
             (
-                EndReason::Conceded { winner: Some(PartyId::BLUE) },
+                EndReason::Conceded {
+                    winner: Some(PartyId::BLUE),
+                },
                 MatchState::Ended,
                 MatchOutcome::Blue,
             ),
             // 16b cut O.1: a hold names its winner, and ends like any fight.
             (
-                EndReason::Hold { winner: PartyId::RED },
+                EndReason::Hold {
+                    winner: PartyId::RED,
+                },
                 MatchState::Ended,
                 MatchOutcome::Red,
             ),
@@ -1941,7 +1951,9 @@ mod tests {
     fn v2_record() -> MatchRecord {
         let slot = |team: PartyId, slot: u16| Designator::Unit {
             party: team,
-            letter: char::from(b'A'.saturating_add(u8::try_from(slot).unwrap_or(1).saturating_sub(1))),
+            letter: char::from(
+                b'A'.saturating_add(u8::try_from(slot).unwrap_or(1).saturating_sub(1)),
+            ),
         };
         MatchRecord {
             id: MatchId(12),
@@ -2383,8 +2395,12 @@ mod tests {
             },
             EndReason::Spent,
             // 16b cut O.1.
-            EndReason::Hold { winner: PartyId::RED },
-            EndReason::Conceded { winner: Some(PartyId::BLUE) },
+            EndReason::Hold {
+                winner: PartyId::RED,
+            },
+            EndReason::Conceded {
+                winner: Some(PartyId::BLUE),
+            },
             EndReason::Unattended,
             EndReason::Timeout,
             EndReason::Abort,
@@ -2564,9 +2580,16 @@ mod tests {
             end_words(MatchOutcome::Red, "hold"),
             "red held the key spot"
         );
-        assert_eq!(reason_word(EndReason::Hold { winner: PartyId::BLUE }), "hold");
         assert_eq!(
-            MatchOutcome::from(EndReason::Hold { winner: PartyId::BLUE }),
+            reason_word(EndReason::Hold {
+                winner: PartyId::BLUE
+            }),
+            "hold"
+        );
+        assert_eq!(
+            MatchOutcome::from(EndReason::Hold {
+                winner: PartyId::BLUE
+            }),
             MatchOutcome::Blue
         );
         let mut record = v2_record();
@@ -2576,7 +2599,9 @@ mod tests {
             MatchId(3),
             MatchOutcome::Red,
             MatchEnd {
-                reason: EndReason::Hold { winner: PartyId::RED },
+                reason: EndReason::Hold {
+                    winner: PartyId::RED,
+                },
                 t_ms: 120_250,
             },
             "cd",

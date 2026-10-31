@@ -65,8 +65,8 @@ use crate::arena::path::{
 use crate::arena::perception::{DriveOutcome, FrameNotice, bearing_of};
 use crate::arena::slope;
 use crate::arena::state::{
-    Arena, ArenaDefinition, ArenaTerrain, Channel, CostRow, DueKind, HoldObjective, Power,
-    SeenPose, PartyId, UnitState,
+    Arena, ArenaDefinition, ArenaTerrain, Channel, CostRow, DueKind, HoldObjective, PartyId, Power,
+    SeenPose, UnitState,
 };
 use crate::config::ReflexConfig;
 

@@ -25,7 +25,7 @@ use tacsim::arena::CostRow;
 use tacsim::arena::motion::BlockedCause;
 use tacsim::arena::motor::MotorCounters;
 use tacsim::arena::motor::{MotorRow, Refusal};
-use tacsim::arena::state::{Arena, HoldState, Power, SeenPose, PartyId};
+use tacsim::arena::state::{Arena, HoldState, PartyId, Power, SeenPose};
 
 /// The final state hash of [`duel`] stepped at 1,000 ms for 60 s, read at
 /// `32a1cc23` — before `arena/motor.rs` existed — off this very run.
@@ -79,7 +79,10 @@ fn duel(world: &mush_testkit::TestWorld) -> Arena {
         world,
         &[
             &[Muster::fill(PartyId::RED, 1), Muster::fill(PartyId::RED, 2)],
-            &[Muster::fill(PartyId::BLUE, 1), Muster::fill(PartyId::BLUE, 2)],
+            &[
+                Muster::fill(PartyId::BLUE, 1),
+                Muster::fill(PartyId::BLUE, 2),
+            ],
         ],
     )
 }
@@ -117,7 +120,10 @@ fn m1a1_the_shipped_duel_hashes_as_before() {
         &world,
         &[
             &[Muster::fill(PartyId::RED, 1), Muster::fill(PartyId::RED, 2)],
-            &[Muster::fill(PartyId::BLUE, 1), Muster::fill(PartyId::BLUE, 2)],
+            &[
+                Muster::fill(PartyId::BLUE, 1),
+                Muster::fill(PartyId::BLUE, 2),
+            ],
         ],
     );
     let mut searched = 0_u32;
@@ -303,7 +309,9 @@ fn m1a1_stand_off_cell_reads_the_plot_and_not_the_target() {
         id,
         tacsim::arena::state::ShadowContact::sighted(
             blue,
-            tacsim::arena::state::Classification::Classified { party: PartyId::BLUE },
+            tacsim::arena::state::Classification::Classified {
+                party: PartyId::BLUE,
+            },
             0,
             seen,
         ),
@@ -1026,7 +1034,10 @@ fn m1a4_the_fan_keeps_two_same_side_goals_apart_in_a_far_zone() {
         let mut arena = shipped_arena(
             &world,
             &[
-                &[Muster::piloted(PartyId::RED, 1), Muster::piloted(PartyId::RED, 2)],
+                &[
+                    Muster::piloted(PartyId::RED, 1),
+                    Muster::piloted(PartyId::RED, 2),
+                ],
                 &[Muster::mind(PartyId::BLUE, 1)],
             ],
         );

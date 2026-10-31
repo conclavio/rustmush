@@ -85,7 +85,7 @@ use tacsim::arena::rng::{draw_contact_id, stagger_ms};
 use tacsim::arena::snapshot::Snapshot;
 use tacsim::arena::state::{
     Arena, ArenaDefinition, ArenaTerrain, Channel, Classification, ContactId, Controller,
-    CustodyOut, CustodyUnit, DueKind, EntryZone, Pilot, Power, SeenPose, ShadowContact, PartyId,
+    CustodyOut, CustodyUnit, DueKind, EntryZone, PartyId, Pilot, Power, SeenPose, ShadowContact,
     TerrainCell, TrackedRules, Waypoint, Waypoints, WeaponSummary,
 };
 use tacsim::arena::step::StepOutput;
@@ -691,7 +691,13 @@ fn two_minds(drive: Drive) -> (Run, Vec<Seen>) {
                 vec![cannon()],
                 Controller::Mind,
             ),
-            tank(RED2, PartyId::RED, centre(6, 10), Vec::new(), Controller::Mind),
+            tank(
+                RED2,
+                PartyId::RED,
+                centre(6, 10),
+                Vec::new(),
+                Controller::Mind,
+            ),
             presenting(tank(
                 BLUE,
                 PartyId::BLUE,
@@ -1354,7 +1360,13 @@ fn m1a5_a_mind_is_refused_order_release_and_place_with_channel_and_an_ungranted_
                 vec![cannon()],
                 Controller::Mind,
             ),
-            tank(RED2, PartyId::RED, centre(6, 10), Vec::new(), Controller::Mind),
+            tank(
+                RED2,
+                PartyId::RED,
+                centre(6, 10),
+                Vec::new(),
+                Controller::Mind,
+            ),
             presenting(tank(
                 BLUE,
                 PartyId::BLUE,
@@ -1834,7 +1846,13 @@ fn m1a5_mind_kinds_run_last_at_their_millisecond_in_unit_id_order() {
                 vec![cannon()],
                 Controller::Mind,
             ),
-            tank(RED2, PartyId::RED, centre(6, 10), Vec::new(), Controller::Mind),
+            tank(
+                RED2,
+                PartyId::RED,
+                centre(6, 10),
+                Vec::new(),
+                Controller::Mind,
+            ),
             tank(
                 BLUE,
                 PartyId::BLUE,
@@ -2109,7 +2127,11 @@ fn beam_field(
         let Some(plot) = arena.unit(target).map(SeenPose::of) else {
             panic!("a fielded target");
         };
-        let team = if target == red { PartyId::RED } else { PartyId::BLUE };
+        let team = if target == red {
+            PartyId::RED
+        } else {
+            PartyId::BLUE
+        };
         arena.contacts.insert(
             viewer,
             contact,
@@ -2534,7 +2556,9 @@ fn m1b0_a_mixed_chassis_view_carries_its_own_scan_tables() {
             let condition = Condition::of(&target_state.unit, 750, 350);
             let mut row = ShadowContact::sighted(
                 target,
-                Classification::Classified { party: PartyId::BLUE },
+                Classification::Classified {
+                    party: PartyId::BLUE,
+                },
                 0,
                 plot,
             );
@@ -2623,7 +2647,13 @@ fn arming_field(says_at_0: Vec<IntentKind>) -> (Arena, Arc<ScriptedMind>, i64) {
     let target = |id: ObjId, y: u16| {
         CustodyUnit {
             profile: every_band_profile(),
-            ..tank(id, PartyId::BLUE, centre(9, y), Vec::new(), Controller::Mind)
+            ..tank(
+                id,
+                PartyId::BLUE,
+                centre(9, y),
+                Vec::new(),
+                Controller::Mind,
+            )
         }
         .sealed()
     };
@@ -2655,7 +2685,9 @@ fn arming_field(says_at_0: Vec<IntentKind>) -> (Arena, Arc<ScriptedMind>, i64) {
             draw_contact_id(SEED, RED, target),
             ShadowContact::sighted(
                 target,
-                Classification::Classified { party: PartyId::BLUE },
+                Classification::Classified {
+                    party: PartyId::BLUE,
+                },
                 0,
                 plot,
             ),
@@ -3623,7 +3655,13 @@ fn rows_of(arena: &Arena, unit: ObjId) -> Rows {
 fn m1a5_every_controller_transition_releases_the_outgoing_rows() {
     let mut rig = Rig::new(arena_of(
         vec![
-            tank(RED, PartyId::RED, centre(6, 8), Vec::new(), Controller::Pilot),
+            tank(
+                RED,
+                PartyId::RED,
+                centre(6, 8),
+                Vec::new(),
+                Controller::Pilot,
+            ),
             tank(
                 BLUE,
                 PartyId::BLUE,
@@ -4014,7 +4052,13 @@ enum Beat {
 fn seat_run(cadence_ms: i64, until_ms: i64, beats: &[(i64, Beat)]) -> (Run, Arena) {
     let mut arena = arena_of(
         vec![
-            tank(RED, PartyId::RED, centre(6, 8), Vec::new(), Controller::Pilot),
+            tank(
+                RED,
+                PartyId::RED,
+                centre(6, 8),
+                Vec::new(),
+                Controller::Pilot,
+            ),
             tank(
                 BLUE,
                 PartyId::BLUE,
@@ -4258,7 +4302,13 @@ fn the_j_field_on(controller: Controller, reflex: ReflexConfig) -> Arena {
                 vec![cannon()],
                 controller,
             )),
-            seeing(tank(RED2, PartyId::RED, centre(6, 10), Vec::new(), controller)),
+            seeing(tank(
+                RED2,
+                PartyId::RED,
+                centre(6, 10),
+                Vec::new(),
+                controller,
+            )),
             presenting(seeing(tank(
                 BLUE,
                 PartyId::BLUE,
@@ -4726,7 +4776,13 @@ fn unarmed_run(cadence_ms: i64) -> (Run, Vec<Kept>, Arena) {
 fn unarmed_run_on(cadence_ms: i64, runner: Option<Arc<dyn MindRunner>>) -> (Run, Vec<Kept>, Arena) {
     let mut arena = arena_of(
         vec![
-            tank(RED, PartyId::RED, centre(6, 8), Vec::new(), Controller::Mind),
+            tank(
+                RED,
+                PartyId::RED,
+                centre(6, 8),
+                Vec::new(),
+                Controller::Mind,
+            ),
             tank(
                 BLUE,
                 PartyId::BLUE,
@@ -5358,7 +5414,13 @@ fn lance_field() -> Arena {
         });
         unit
     };
-    let mut blind = tank(RED3, PartyId::RED, centre(1, 1), Vec::new(), Controller::Mind);
+    let mut blind = tank(
+        RED3,
+        PartyId::RED,
+        centre(1, 1),
+        Vec::new(),
+        Controller::Mind,
+    );
     blind.sensor = None;
     let mut arena = arena_of(
         vec![
@@ -5553,7 +5615,9 @@ fn l2_two_minds_are_one_squad_under_a_leader_at_three_cadences() {
     let first = lance_run(5_000);
     let hint = draw_contact_id(SEED, RED, BLUE);
     let wingman_row = draw_contact_id(SEED, RED2, BLUE);
-    let blue = Some(Classification::Classified { party: PartyId::BLUE });
+    let blue = Some(Classification::Classified {
+        party: PartyId::BLUE,
+    });
     assert_ne!(wingman_row, hint, "the precondition");
     assert_eq!(
         first.rows_at_order,
@@ -5858,7 +5922,10 @@ fn l2_a_self_charged_support_fights_on_doctrine() {
                     .iter()
                     .find(|row| {
                         row.id == blue_row
-                            && row.class == Classification::Classified { party: PartyId::BLUE }
+                            && row.class
+                                == Classification::Classified {
+                                    party: PartyId::BLUE,
+                                }
                     })
                     .map(|row| (*t_ms, row.range_m))
             })
@@ -8516,7 +8583,9 @@ fn crowded_field(core_cell: i64) -> Arena {
             contact,
             ShadowContact::sighted(
                 *id,
-                Classification::Classified { party: PartyId::BLUE },
+                Classification::Classified {
+                    party: PartyId::BLUE,
+                },
                 0,
                 plot,
             ),

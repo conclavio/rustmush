@@ -1370,7 +1370,7 @@ impl Arena {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use crate::arena::state::{Classification, SeenPose, ShadowContact, PartyId};
+    use crate::arena::state::{Classification, PartyId, SeenPose, ShadowContact};
     use crate::arena::test_support::{arena_of, cannon, pose, scout, tank};
 
     const RED: ObjId = ObjId(4);
@@ -1455,7 +1455,9 @@ mod tests {
             id,
             ShadowContact::sighted(
                 target,
-                Classification::Classified { party: PartyId::BLUE },
+                Classification::Classified {
+                    party: PartyId::BLUE,
+                },
                 0,
                 // 16b cut F.3: the plot is where the target actually stands, so
                 // every range these fixtures assert is unchanged.
@@ -2085,7 +2087,10 @@ mod tests {
         red.controller = Controller::Mind;
         red.reseal(&crate::match_::SealTerms::fixture())
             .expect("the fixture terms seal");
-        let mut arena = arena_of(vec![red, line_tank(BLUE, PartyId::BLUE, pose(5_500, 3_500))]);
+        let mut arena = arena_of(vec![
+            red,
+            line_tank(BLUE, PartyId::BLUE, pose(5_500, 3_500)),
+        ]);
         arena.resolution.p_min = 500;
         arena.resolution.p_max = 500;
         let id = hold(&mut arena, RED, BLUE);

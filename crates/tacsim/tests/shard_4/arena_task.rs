@@ -66,7 +66,7 @@ use tacsim::arena::ledger::{EventKind, LedgerEvent};
 use tacsim::arena::perception::FrameNotice;
 use tacsim::arena::state::{
     Arena, ArenaDefinition, ArenaTerrain, Channel, CustodyOut, CustodyUnit, EndReason, EntryZone,
-    Pilot, Power, StopReason, PartyId, TerrainCell, TrackedRules,
+    PartyId, Pilot, Power, StopReason, TerrainCell, TrackedRules,
 };
 use tacsim::arena_bridge::{ArenaTasks, ControlRefusal};
 use tacsim::arena_task::{ArenaHandle, ArenaMsg, ArenaOut, MatchId, resume_arena, spawn_arena};

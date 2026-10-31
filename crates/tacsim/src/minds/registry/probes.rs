@@ -13,7 +13,7 @@ use super::{
 use crate::{
     arena::{
         Arena, ArenaDefinition, ArenaTerrain, Classification, ContactId, Controller, CustodyOut,
-        CustodyUnit, EntryZone, MatchMode, Power, ShadowContact, PartyId, TerrainCell, Waypoint,
+        CustodyUnit, EntryZone, MatchMode, PartyId, Power, ShadowContact, TerrainCell, Waypoint,
         Waypoints, core::CoreClass, mind::SealEngine, motor::MotorCounters,
         profile_seal::SealedCards, state::SeenPose,
     },
@@ -178,7 +178,13 @@ impl Single {
             return Err(RatingError::Incomplete);
         }
         if view.contacts.iter().any(|row| {
-            row.friendly || !matches!(row.class, Classification::Classified { party: PartyId::BLUE })
+            row.friendly
+                || !matches!(
+                    row.class,
+                    Classification::Classified {
+                        party: PartyId::BLUE
+                    }
+                )
         }) {
             return Err(RatingError::Incomplete);
         }

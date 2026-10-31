@@ -75,7 +75,7 @@ use tacsim::arena::rng::{DrawLabel, draw};
 use tacsim::arena::snapshot::{SNAPSHOT_FORMAT, Snapshot, SnapshotError};
 use tacsim::arena::state::{
     Arena, ArenaDefinition, ArenaError, ArenaTerrain, Channel, CustodyOut, CustodyUnit, EndReason,
-    EntryZone, Pilot, Power, StopReason, PartyId, TerrainCell, TrackedRules,
+    EntryZone, PartyId, Pilot, Power, StopReason, TerrainCell, TrackedRules,
 };
 use tacsim::arena::step::{Frame, StepOutput};
 use tacsim::config::{ArenaConfig, MatchConfig, SensorsConfig};
@@ -3419,11 +3419,15 @@ fn a_concede_and_an_unattended_match_end_with_their_own_reason() {
     for (stop, reason) in [
         (
             StopReason::Concede { by: PartyId::RED },
-            EndReason::Conceded { winner: Some(PartyId::BLUE) },
+            EndReason::Conceded {
+                winner: Some(PartyId::BLUE),
+            },
         ),
         (
             StopReason::Concede { by: PartyId::BLUE },
-            EndReason::Conceded { winner: Some(PartyId::RED) },
+            EndReason::Conceded {
+                winner: Some(PartyId::RED),
+            },
         ),
         (StopReason::Unattended, EndReason::Unattended),
         (StopReason::Abort, EndReason::Abort),
@@ -3939,7 +3943,9 @@ fn o1_a_hold_is_won_at_one_millisecond_at_three_cadences() {
     assert_eq!(
         first.ended,
         Some(tacsim::arena::state::MatchEnd {
-            reason: EndReason::Hold { winner: PartyId::RED },
+            reason: EndReason::Hold {
+                winner: PartyId::RED
+            },
             t_ms: won_at
         })
     );
@@ -4037,7 +4043,9 @@ fn o1_a_contested_hold_resets_and_the_match_runs_on_at_three_cadences() {
     );
     assert_eq!(
         first.ended.map(|end| end.reason),
-        Some(EndReason::Hold { winner: PartyId::RED })
+        Some(EndReason::Hold {
+            winner: PartyId::RED
+        })
     );
 }
 
@@ -4600,7 +4608,9 @@ fn ae3_a_drone_on_the_spot_contests_nothing_at_three_cadences() {
     let reference = o1_run(&mut reference, 5_000, 60_000, &o1_red_orders());
     assert_eq!(
         reference.ended.map(|end| end.reason),
-        Some(EndReason::Hold { winner: PartyId::RED })
+        Some(EndReason::Hold {
+            winner: PartyId::RED
+        })
     );
 
     let mut runs: Vec<(i64, HoldRun)> = Vec::new();

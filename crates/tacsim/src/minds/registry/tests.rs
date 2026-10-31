@@ -196,7 +196,7 @@ fn finite_schedule_covers_all_pairs_and_charges_actual_case_rosters() -> TestRes
 fn actual_runner_meter_preserves_answers_and_counts_host_fees_at_real_landing() -> TestResult {
     use crate::arena::{
         motor::MotorCounters,
-        state::{Controller, Power, PartyId},
+        state::{Controller, PartyId, Power},
         test_support::{arena_of, line_tank, pose},
     };
     let own = ObjId(4);

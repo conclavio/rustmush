@@ -179,7 +179,10 @@ fn sealed_arena(
     let mut arena = Arena::new(
         CustodyOut {
             definition: test_support::definition(),
-            units: vec![unit, test_support::tank(ObjId(42), PartyId::BLUE, blue_pose)],
+            units: vec![
+                unit,
+                test_support::tank(ObjId(42), PartyId::BLUE, blue_pose),
+            ],
             pilots: vec![],
             resolution: test_support::resolution(),
             seed: 93,

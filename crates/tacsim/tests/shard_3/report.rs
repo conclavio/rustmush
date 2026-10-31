@@ -426,7 +426,9 @@ fn o1_a_hold_ends_the_pilots_report_and_tags_the_header() {
         seq: 1,
         t_ms: 120_250,
         kind: EventKind::MatchEnded {
-            reason: EndReason::Hold { winner: PartyId::RED },
+            reason: EndReason::Hold {
+                winner: PartyId::RED,
+            },
         },
         draws: Vec::new(),
         hash: 0,

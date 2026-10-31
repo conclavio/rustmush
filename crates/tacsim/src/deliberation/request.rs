@@ -703,9 +703,9 @@ pub fn reason_of(brief: &SquadBrief) -> SignalReason {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use crate::arena::state::Classification;
     use crate::arena::command::{SignalContact, SignalMember, SquadDigest};
     use crate::arena::doctrine::MachineState;
+    use crate::arena::state::Classification;
     use crate::arena::state::PartyId;
     use mush_core::ObjId;
 
@@ -727,7 +727,9 @@ mod tests {
             contacts: vec![
                 SignalContact {
                     id: ContactId(0x2a),
-                    class: Classification::Classified { party: PartyId::BLUE },
+                    class: Classification::Classified {
+                        party: PartyId::BLUE,
+                    },
                     relation: crate::arena::party::Relation::Hostile,
                     bearing_mdeg: 90_000,
                     range_cm: 1_000,
@@ -863,7 +865,9 @@ mod tests {
         stock.sight_cm = 60_000;
         stock.contacts = vec![SignalContact {
             id: ContactId(0x2a),
-            class: Classification::Classified { party: PartyId::BLUE },
+            class: Classification::Classified {
+                party: PartyId::BLUE,
+            },
             relation: crate::arena::party::Relation::Hostile,
             bearing_mdeg: 90_000,
             range_cm: 45_000,

@@ -763,8 +763,14 @@ mod tests {
         let mut taken = Vec::new();
         let mut cells = Vec::new();
         for _ in 0..12 {
-            let pose = opening_pose(&definition, PartyId::RED, None, &mut taken, CostRow::Tracked)
-                .unwrap_or_else(|| panic!("an entry zone of 8 by 256 has twelve free cells"));
+            let pose = opening_pose(
+                &definition,
+                PartyId::RED,
+                None,
+                &mut taken,
+                CostRow::Tracked,
+            )
+            .unwrap_or_else(|| panic!("an entry zone of 8 by 256 has twelve free cells"));
             let cell = definition
                 .terrain
                 .cell_of(&pose)

@@ -1120,7 +1120,9 @@ mod tests {
         // The unidentified return, classified hostile: 600 m face-on at 135°.
         for row in &mut seen.contacts {
             if row.id == BLIP {
-                row.class = Classification::Classified { party: PartyId::BLUE };
+                row.class = Classification::Classified {
+                    party: PartyId::BLUE,
+                };
                 row.relation = crate::arena::party::Relation::Hostile;
                 row.reads_dead = Some(false);
             }

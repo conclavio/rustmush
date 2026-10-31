@@ -166,11 +166,9 @@ impl Observer {
             .iter()
             .filter(fresh)
             .find(|row| Some(row.id) == charge && row.relation.is_friendly());
-        let threat = view
-            .contacts
-            .iter()
-            .filter(fresh)
-            .any(|row| row.relation == crate::arena::party::Relation::Hostile && row.range_m <= threat_m);
+        let threat = view.contacts.iter().filter(fresh).any(|row| {
+            row.relation == crate::arena::party::Relation::Hostile && row.range_m <= threat_m
+        });
         let intents = &answer.result.intents;
         let drive = intents.iter().any(|intent| {
             matches!(intent, IntentKind::Goal(MotorGoal::Cell { .. }))

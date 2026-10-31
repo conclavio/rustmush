@@ -114,8 +114,7 @@ use crate::arena::motor::{
 };
 use crate::arena::perception::{Aspect, DriveOutcome, FrameNotice, FrameOrder, MindObjective};
 use crate::arena::state::{
-    ArenaDefinition, ContactId, CostRow, DEFAULT_SENSOR_HEIGHT_CM, HoldObjective,
-    Power,
+    ArenaDefinition, ContactId, CostRow, DEFAULT_SENSOR_HEIGHT_CM, HoldObjective, Power,
 };
 use crate::arena::weapons::{
     FrameArming, FrameWeapon, fight_inner_cm_of, fight_limit_cm_of, loaded_weapon_of,
@@ -1989,8 +1988,8 @@ mod tests {
         .slots;
     use crate::arena::mind::{MIND_INTENTS_MAX, memory_check};
     use crate::arena::state::{
-        Arena, ArenaTerrain, Controller, CustodyOut, CustodyUnit, MatchMode, SeenPose,
-        ShadowContact, PartyId,
+        Arena, ArenaTerrain, Controller, CustodyOut, CustodyUnit, MatchMode, PartyId, SeenPose,
+        ShadowContact,
     };
     use crate::arena::test_support::{definition, ground, line_tank, pose, resolution, scout};
     use crate::config::{ArenaConfig, MatchConfig, SensorsConfig};
@@ -2242,7 +2241,9 @@ mod tests {
         });
         assert_eq!(best(&unknown, None), None);
         let friends = with(&|row| {
-            row.class = Classification::Classified { party: PartyId::RED };
+            row.class = Classification::Classified {
+                party: PartyId::RED,
+            };
             row.relation = crate::arena::party::Relation::Own;
         });
         assert_eq!(best(&friends, None), None);
@@ -2617,10 +2618,14 @@ mod tests {
             .unwrap_or_default();
         assert!(answers.len() >= 55, "{} thinks", answers.len());
         assert!(
-            answers.iter().any(|(view, _)| view
-                .contacts
+            answers
                 .iter()
-                .any(|row| matches!(row.class, Classification::Classified { party: PartyId::BLUE }))),
+                .any(|(view, _)| view.contacts.iter().any(|row| matches!(
+                    row.class,
+                    Classification::Classified {
+                        party: PartyId::BLUE
+                    }
+                ))),
             "hostiles in view"
         );
         assert!(
@@ -3581,7 +3586,10 @@ mod tests {
         red.weapons.push(mg);
         red.reseal(&crate::match_::SealTerms::fixture())
             .expect("seal the complete initial weapon rack");
-        let mut arena = field(vec![red, line_tank(BLUE, PartyId::BLUE, pose(20_500, 40_500))]);
+        let mut arena = field(vec![
+            red,
+            line_tank(BLUE, PartyId::BLUE, pose(20_500, 40_500)),
+        ]);
         online(&mut arena, RED);
         hold(&mut arena, RED, BLUE, ContactId(0x77));
         let card = crate::arena::card::line(&arena.arena_cfg.reflex);

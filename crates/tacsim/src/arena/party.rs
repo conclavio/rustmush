@@ -485,7 +485,8 @@ pub fn draw_unit_letters(seed: u64, units: &[(PartyId, u32)]) -> Result<Vec<Unit
     let mut pairs: BTreeMap<PartyId, Vec<u16>> = BTreeMap::new();
     let mut out = Vec::with_capacity(units.len());
     for (party, id) in units {
-        let key = crate::arena::rng::splitmix64(seed ^ (u64::from(party.code()) << 40) ^ u64::from(*id));
+        let key =
+            crate::arena::rng::splitmix64(seed ^ (u64::from(party.code()) << 40) ^ u64::from(*id));
         let pick = |len: usize| usize::try_from(key % len.max(1) as u64).unwrap_or(0);
         let left = letters.entry(*party).or_insert_with(|| LETTERS.to_vec());
         if !left.is_empty() {
@@ -493,7 +494,9 @@ pub fn draw_unit_letters(seed: u64, units: &[(PartyId, u32)]) -> Result<Vec<Unit
             out.push(UnitName::Letter(left.remove(at)));
             continue;
         }
-        let wide = pairs.entry(*party).or_insert_with(|| (0..23 * 23).collect());
+        let wide = pairs
+            .entry(*party)
+            .or_insert_with(|| (0..23 * 23).collect());
         if wide.is_empty() {
             return Err(*party);
         }
@@ -562,12 +565,17 @@ mod tests {
     #[test]
     fn a_neutral_fired_on_holds_only_the_shooter_hostile() {
         let [miner, escort, raider, bystander] = [0, 1, 2, 3].map(|n| PartyId::nth(n).unwrap());
-        let mut books = FieldHost::default().open(&BTreeSet::from([miner, escort, raider, bystander]));
+        let mut books =
+            FieldHost::default().open(&BTreeSet::from([miner, escort, raider, bystander]));
         books.befriend(miner, escort);
         books.mark(raider, escort, Some(Mark::Hostile));
         books.note_fire(raider, bystander);
         assert_eq!(books.relation(bystander, raider), Relation::Hostile);
-        assert_eq!(books.relation(escort, raider), Relation::Neutral, "not the bystander's friend");
+        assert_eq!(
+            books.relation(escort, raider),
+            Relation::Neutral,
+            "not the bystander's friend"
+        );
         // Fire on the miner reaches the miner's friend the escort.
         books.note_fire(raider, miner);
         assert_eq!(books.relation(miner, raider), Relation::Hostile);
@@ -579,8 +587,10 @@ mod tests {
     fn unit_letters_are_distinct_per_party_stable_and_bounded() {
         let red = PartyId::from_letter('R').unwrap();
         let blue = PartyId::from_letter('B').unwrap();
-        let units: Vec<(PartyId, u32)> =
-            (1..=23).map(|id| (red, id)).chain((24..=30).map(|id| (blue, id))).collect();
+        let units: Vec<(PartyId, u32)> = (1..=23)
+            .map(|id| (red, id))
+            .chain((24..=30).map(|id| (blue, id)))
+            .collect();
         let names = draw_unit_letters(7, &units).unwrap();
         assert_eq!(names, draw_unit_letters(7, &units).unwrap(), "stable");
         let mut reds: Vec<u8> = names[..23]
@@ -592,13 +602,21 @@ mod tests {
             .collect();
         reds.sort_unstable();
         assert_eq!(reds, LETTERS.to_vec(), "every letter once");
-        assert_ne!(names, draw_unit_letters(8, &units).unwrap(), "keyed on the seed");
+        assert_ne!(
+            names,
+            draw_unit_letters(8, &units).unwrap(),
+            "keyed on the seed"
+        );
         // A party's twenty-fourth unit draws a pair; past the pairs, a refusal.
         let mut wide = units.clone();
         wide.push((red, 99));
-        assert!(matches!(draw_unit_letters(7, &wide).unwrap()[30], UnitName::Pair(_)));
-        let full: Vec<(PartyId, u32)> =
-            (0..u32::try_from(MAX_PARTY_UNITS).unwrap() + 1).map(|id| (red, id)).collect();
+        assert!(matches!(
+            draw_unit_letters(7, &wide).unwrap()[30],
+            UnitName::Pair(_)
+        ));
+        let full: Vec<(PartyId, u32)> = (0..u32::try_from(MAX_PARTY_UNITS).unwrap() + 1)
+            .map(|id| (red, id))
+            .collect();
         assert_eq!(draw_unit_letters(7, &full), Err(red));
     }
 }

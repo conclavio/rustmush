@@ -39,8 +39,14 @@ fn three_parties(world: &TestWorld, host: FieldHost) -> Arena {
         world,
         &[
             &[Muster::fill(PartyId::RED, 1), Muster::fill(PartyId::RED, 2)],
-            &[Muster::fill(PartyId::BLUE, 1), Muster::fill(PartyId::BLUE, 2)],
-            &[Muster::fill(PartyId::BLUE, 3), Muster::fill(PartyId::BLUE, 4)],
+            &[
+                Muster::fill(PartyId::BLUE, 1),
+                Muster::fill(PartyId::BLUE, 2),
+            ],
+            &[
+                Muster::fill(PartyId::BLUE, 3),
+                Muster::fill(PartyId::BLUE, 4),
+            ],
         ],
         SEED,
     );
@@ -89,7 +95,11 @@ fn a_three_party_practice_runs_and_resolves() {
             } else {
                 Relation::Hostile
             };
-            assert_eq!(arena.relation(*viewer, *other), expected, "{viewer} of {other}");
+            assert_eq!(
+                arena.relation(*viewer, *other),
+                expected,
+                "{viewer} of {other}"
+            );
         }
     }
     // Q-CF-11: the party letter, then a drawn unit letter, distinct within the
@@ -101,17 +111,25 @@ fn a_three_party_practice_runs_and_resolves() {
         .collect();
     for (unit, name) in arena.units.iter().zip(&names) {
         assert_eq!(name.len(), 2, "{name}");
-        assert!(name.starts_with(unit.team.letter()), "{name} on {}", unit.team);
+        assert!(
+            name.starts_with(unit.team.letter()),
+            "{name} on {}",
+            unit.team
+        );
     }
     names.sort();
     names.dedup();
     assert_eq!(names.len(), 6, "six distinct callsigns");
 
     let _ = run_until(&mut arena, 900_000, 1_000, |_, _| {});
-    let end = arena.ended.expect("the practice resolves inside its duration");
+    let end = arena
+        .ended
+        .expect("the practice resolves inside its duration");
     let left = standing(&arena);
     match end.reason {
-        EndReason::Elimination { winner: Some(winner) } => {
+        EndReason::Elimination {
+            winner: Some(winner),
+        } => {
             assert_eq!(left, vec![winner], "the one party standing wins");
         }
         EndReason::Elimination { winner: None } | EndReason::Spent => {
@@ -135,7 +153,11 @@ fn a_mark_is_private_fire_makes_a_belief_and_a_friendly_mark_cancels_it() {
     // Red's leader marks green hostile: red's book only.
     arena.mark_party(PartyId::RED, green(), Some(Mark::Hostile));
     assert_eq!(arena.relation(PartyId::RED, green()), Relation::Hostile);
-    assert_eq!(arena.relation(green(), PartyId::RED), Relation::Neutral, "private");
+    assert_eq!(
+        arena.relation(green(), PartyId::RED),
+        Relation::Neutral,
+        "private"
+    );
     assert_eq!(arena.relation(PartyId::BLUE, green()), Relation::Neutral);
 
     // Run until green has been fired on by red and so holds red hostile.
@@ -162,7 +184,10 @@ fn a_mark_is_private_fire_makes_a_belief_and_a_friendly_mark_cancels_it() {
     assert!(seen_hostile_row, "a red frame classified a green hull");
     assert!(seen_neutral_row, "a red frame classified a blue hull");
     assert!(
-        arena.ended.is_none() || arena.ended.is_some_and(|end| end.reason == EndReason::Timeout),
+        arena.ended.is_none()
+            || arena
+                .ended
+                .is_some_and(|end| end.reason == EndReason::Timeout),
         "the host's end: no elimination ({:?})",
         arena.ended
     );
@@ -171,14 +196,25 @@ fn a_mark_is_private_fire_makes_a_belief_and_a_friendly_mark_cancels_it() {
         Relation::Hostile,
         "green saw red's fire"
     );
-    assert_eq!(arena.relation(PartyId::BLUE, PartyId::RED), Relation::Neutral, "blue was never fired on");
+    assert_eq!(
+        arena.relation(PartyId::BLUE, PartyId::RED),
+        Relation::Neutral,
+        "blue was never fired on"
+    );
     let blue_book = arena.relations.book(PartyId::BLUE).expect("blue's book");
-    assert!(blue_book.fired.is_empty(), "nobody fired on a party nobody marked");
+    assert!(
+        blue_book.fired.is_empty(),
+        "nobody fired on a party nobody marked"
+    );
 
     // Green's leader cancels the fire-derived hostility.
     arena.mark_party(green(), PartyId::RED, Some(Mark::Friendly));
     assert_eq!(arena.relation(green(), PartyId::RED), Relation::Friend);
-    assert_eq!(arena.relation(PartyId::RED, green()), Relation::Hostile, "red's mark stands");
+    assert_eq!(
+        arena.relation(PartyId::RED, green()),
+        Relation::Hostile,
+        "red's mark stands"
+    );
     // And clearing the mark leaves the fire's belief underneath it.
     arena.mark_party(green(), PartyId::RED, None);
     assert_eq!(arena.relation(green(), PartyId::RED), Relation::Hostile);

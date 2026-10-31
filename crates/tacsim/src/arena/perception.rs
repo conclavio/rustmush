@@ -171,8 +171,8 @@ use crate::arena::index::{Candidate, reach_bound_sq, square_between, square_cm};
 use crate::arena::ledger::EventKind;
 use crate::arena::rng::{DrawLabel, draw, draw_contact_id};
 use crate::arena::state::{
-    Arena, Classification, ContactId, Designator, DueKind, OwnSighting, Power, SeenPose,
-    ShadowContact, PartyId, UnitState,
+    Arena, Classification, ContactId, Designator, DueKind, OwnSighting, PartyId, Power, SeenPose,
+    ShadowContact, UnitState,
 };
 
 /// The factor of a target that hides nothing, per mille.
@@ -4185,7 +4185,9 @@ mod tests {
                 id,
                 crate::arena::state::ShadowContact::sighted(
                     U2_BLUE,
-                    Classification::Classified { party: PartyId::BLUE },
+                    Classification::Classified {
+                        party: PartyId::BLUE,
+                    },
                     0,
                     plot,
                 ),
@@ -4362,7 +4364,9 @@ mod tests {
         let sighted = |at: i64| {
             crate::arena::state::ShadowContact::sighted(
                 TARGET,
-                Classification::Classified { party: PartyId::BLUE },
+                Classification::Classified {
+                    party: PartyId::BLUE,
+                },
                 at,
                 plot,
             )
@@ -4701,7 +4705,9 @@ mod tests {
                     theirs,
                     crate::arena::state::ShadowContact::sighted(
                         TGT,
-                        Classification::Classified { party: PartyId::BLUE },
+                        Classification::Classified {
+                            party: PartyId::BLUE,
+                        },
                         100,
                         plot,
                     ),

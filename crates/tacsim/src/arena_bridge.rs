@@ -5565,7 +5565,7 @@ mod tests {
         ArenaRegistry, dropped_line, lapse_line, open_match, sources_by_seal, staff_line, thousands,
     };
     use crate::arena::mind::DropCause;
-    use crate::arena::state::{Pilot, PartyId};
+    use crate::arena::state::{PartyId, Pilot};
     use crate::arena::test_support::{custody, pose, tank};
     use crate::arena_task::MatchId;
     use crate::deliberation::{CharacterRef, SquadId};
@@ -5790,7 +5790,9 @@ mod tests {
         use crate::arena::state::Designator;
         let slot = |team: PartyId, slot: u16| Designator::Unit {
             party: team,
-            letter: char::from(b'A'.saturating_add(u8::try_from(slot).unwrap_or(1).saturating_sub(1))),
+            letter: char::from(
+                b'A'.saturating_add(u8::try_from(slot).unwrap_or(1).saturating_sub(1)),
+            ),
         };
         let sealed = |unit: ObjId, principal: Option<CharacterRef>| {
             (

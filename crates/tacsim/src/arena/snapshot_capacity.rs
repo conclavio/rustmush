@@ -513,7 +513,9 @@ mod tests {
         };
         let mut contact = ShadowContact::sighted(
             id,
-            Classification::Classified { party: PartyId::BLUE },
+            Classification::Classified {
+                party: PartyId::BLUE,
+            },
             i64::MIN,
             plot,
         );

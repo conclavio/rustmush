@@ -489,7 +489,10 @@ fn play_on(
     runner: Option<Arc<dyn MindRunner>>,
 ) -> Played {
     let reds = [Muster::mind(PartyId::RED, 1), Muster::mind(PartyId::RED, 2)];
-    let blues = [Muster::mind(PartyId::BLUE, 1), Muster::mind(PartyId::BLUE, 2)];
+    let blues = [
+        Muster::mind(PartyId::BLUE, 1),
+        Muster::mind(PartyId::BLUE, 2),
+    ];
     let mut arena = support::shipped_arena_seeded(world, &[&reds, &blues], seed);
     let recording = Recording::new(runner.unwrap_or_else(|| runner_for(flier, &arena.arena_cfg)));
     arena.mind_runner = recording.clone();
@@ -1399,7 +1402,9 @@ fn m1a6_line_to_the_plot_parts_from_fire_line_once_the_target_drives_behind_cove
         id,
         ShadowContact::sighted(
             blue,
-            tacsim::arena::state::Classification::Classified { party: PartyId::BLUE },
+            tacsim::arena::state::Classification::Classified {
+                party: PartyId::BLUE,
+            },
             0,
             plot,
         ),
@@ -2624,7 +2629,10 @@ fn m2_whole_match_hashes_are_equal_between_the_runners_over_the_pool() {
     let world = support::booted_world();
     let cfg = tacsim::config::ArenaConfig::default();
     let reds = [Muster::mind(PartyId::RED, 1), Muster::mind(PartyId::RED, 2)];
-    let blues = [Muster::mind(PartyId::BLUE, 1), Muster::mind(PartyId::BLUE, 2)];
+    let blues = [
+        Muster::mind(PartyId::BLUE, 1),
+        Muster::mind(PartyId::BLUE, 2),
+    ];
     let (mut matches, mut substeps, mut lines) = (0_usize, 0_usize, 0_usize);
     for k in 0..SEEDS {
         let seed = SEED_0 + k;
@@ -2980,7 +2988,10 @@ fn twin_rhai_timing() {
     // M4.5: T1 against T1, one match a seed).
     let mut pooled: Vec<support::TwinThought> = Vec::new();
     let reds = [Muster::mind(PartyId::RED, 1), Muster::mind(PartyId::RED, 2)];
-    let blues = [Muster::mind(PartyId::BLUE, 1), Muster::mind(PartyId::BLUE, 2)];
+    let blues = [
+        Muster::mind(PartyId::BLUE, 1),
+        Muster::mind(PartyId::BLUE, 2),
+    ];
     for k in 0..pool_seeds {
         let seed = SEED_0 + k;
         let twin = Arc::new(support::TwinRunner::new(&cfg));

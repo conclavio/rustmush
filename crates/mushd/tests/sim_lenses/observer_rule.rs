@@ -4511,7 +4511,10 @@ fn d4_stub_frame(lock: tacsim::arena::state::ContactId) -> tacsim::arena::step::
         unit_type: "tacsim.unit.line_tank".into(),
         side_unit_types: vec!["tacsim.unit.line_tank".into()],
         sensor_height_cm: 150,
-        callsign: tacsim::arena::state::Designator::Unit { party: tacsim::arena::state::PartyId::RED, letter: 'A' },
+        callsign: tacsim::arena::state::Designator::Unit {
+            party: tacsim::arena::state::PartyId::RED,
+            letter: 'A',
+        },
         cell: Some((6, 4)),
         mode: tacsim::arena::state::MatchMode::Skirmish,
         objective: None,
@@ -4672,7 +4675,10 @@ fn the_receiver_and_the_regression_name_only_what_that_pilot_already_holds() {
             designator: Designator::Provisional(2),
         },
         class: Classification::Unknown,
-        was: Some(Designator::Unit { party: PartyId::BLUE, letter: 'A' }),
+        was: Some(Designator::Unit {
+            party: PartyId::BLUE,
+            letter: 'A',
+        }),
     };
     assert_eq!(regressed.kind().as_str(), "unidentified");
     // The sentence itself is pinned in `tacsim`; what is pinned here is that it
@@ -4693,9 +4699,14 @@ fn the_receiver_and_the_regression_name_only_what_that_pilot_already_holds() {
     // — the only two names this notice may quote, and both designators.
     let earlier = tacsim::arena::perception::FrameContact {
         id,
-        designator: Designator::Unit { party: PartyId::BLUE, letter: 'A' },
+        designator: Designator::Unit {
+            party: PartyId::BLUE,
+            letter: 'A',
+        },
         alias: Some(2),
-        class: Classification::Classified { party: PartyId::BLUE },
+        class: Classification::Classified {
+            party: PartyId::BLUE,
+        },
         relation: tacsim::arena::Relation::Hostile,
         moving: false,
         bearing_mdeg: 45_000,

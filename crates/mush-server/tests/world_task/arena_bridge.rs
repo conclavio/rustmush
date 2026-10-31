@@ -56,7 +56,7 @@ use mush_tactics::{
 };
 use smol_str::SmolStr;
 use tacsim::arena::state::{
-    ArenaDefinition, ArenaTerrain, CustodyOut, CustodyUnit, EntryZone, Pilot, PartyId, TerrainCell,
+    ArenaDefinition, ArenaTerrain, CustodyOut, CustodyUnit, EntryZone, PartyId, Pilot, TerrainCell,
     TrackedRules,
 };
 use tacsim::arena_task::{ArenaMsg, ArenaOut, MatchId};

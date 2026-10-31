@@ -179,8 +179,16 @@ impl ProvingMachine {
         let header = self.frozen.start.header(self.index)?;
         let mut arena = open_frozen_header(&header).map_err(tape_error)?;
         let plan = &self.frozen.plan;
-        let red = arena.units.iter().filter(|u| u.team == PartyId::RED).count();
-        let blue = arena.units.iter().filter(|u| u.team == PartyId::BLUE).count();
+        let red = arena
+            .units
+            .iter()
+            .filter(|u| u.team == PartyId::RED)
+            .count();
+        let blue = arena
+            .units
+            .iter()
+            .filter(|u| u.team == PartyId::BLUE)
+            .count();
         if arena.seed != game.seed
             || arena.now_ms != 0
             || arena.ended.is_some()
@@ -404,7 +412,11 @@ impl Machine for ProvingMachine {
             unmeasured_thinks: 0,
             odds_unobserved: 0,
         };
-        let focus = if game.swapped { PartyId::BLUE } else { PartyId::RED };
+        let focus = if game.swapped {
+            PartyId::BLUE
+        } else {
+            PartyId::RED
+        };
         std::mem::take(&mut active.metrics).finish(
             &mut game,
             &active.operations,

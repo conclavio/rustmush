@@ -327,7 +327,7 @@ impl Arena {
 #[cfg(test)]
 mod tests {
     use super::super::{
-        Intent, IntentKind, IntentOutcome, IntentSource, MachineState, Snapshot, PartyId,
+        Intent, IntentKind, IntentOutcome, IntentSource, MachineState, PartyId, Snapshot,
         apply_intent, state_hash,
         test_support::{arena_at_epoch, pose, tank},
     };
@@ -685,7 +685,11 @@ mod tests {
             .map(|id| {
                 tank(
                     ObjId(id),
-                    if id <= 150 { PartyId::RED } else { PartyId::BLUE },
+                    if id <= 150 {
+                        PartyId::RED
+                    } else {
+                        PartyId::BLUE
+                    },
                     pose(
                         i64::from((id - 1) % 20) * 1000 + 500,
                         i64::from((id - 1) / 20) * 1000 + 500,

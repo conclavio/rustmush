@@ -11,7 +11,7 @@ use crate::arena::{
     profile_rules::BoundProgram,
     profile_runtime::ProfileToken,
     runtime_card::{CardCatalog, CardDefinition, ProfileDefinition, ProfileKey, RuntimeCard},
-    state::{Channel, Classification, ContactId, Controller, Power, PartyId},
+    state::{Channel, Classification, ContactId, Controller, PartyId, Power},
     test_support::{arena_painted, ground, line_tank, pose},
 };
 use crate::config::ArenaConfig;

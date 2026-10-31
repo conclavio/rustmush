@@ -476,7 +476,11 @@ fn opening(
                 0,
                 posture,
             );
-            proposed.heading_mdeg = if team == PartyId::RED { 90_000 } else { 270_000 };
+            proposed.heading_mdeg = if team == PartyId::RED {
+                90_000
+            } else {
+                270_000
+            };
             let pose = crate::match_::opening_pose(
                 &policy.ground,
                 team,

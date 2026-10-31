@@ -389,7 +389,11 @@ impl ScenarioFactory {
                             0,
                             posture,
                         );
-                        proposed.heading_mdeg = if team == PartyId::RED { 90_000 } else { 270_000 };
+                        proposed.heading_mdeg = if team == PartyId::RED {
+                            90_000
+                        } else {
+                            270_000
+                        };
                         let pose = crate::match_::opening_pose(
                             &definition,
                             team,
@@ -578,7 +582,11 @@ mod tests {
                 assert_eq!(arena.units.len(), 2);
                 for team in [PartyId::RED, PartyId::BLUE] {
                     let unit = arena.units.iter().find(|unit| unit.team == team).unwrap();
-                    let expected = if team == PartyId::RED { 90_000 } else { 270_000 };
+                    let expected = if team == PartyId::RED {
+                        90_000
+                    } else {
+                        270_000
+                    };
                     assert_eq!(
                         unit.pose.heading_mdeg, expected,
                         "{scenario:?} game{index} {team:?}"
@@ -667,11 +675,19 @@ mod tests {
                 assert_eq!(arena.seed, index as u64 / 2 + 1);
                 assert_eq!(arena.units.len(), 12);
                 assert_eq!(
-                    arena.units.iter().filter(|u| u.team == PartyId::RED).count(),
+                    arena
+                        .units
+                        .iter()
+                        .filter(|u| u.team == PartyId::RED)
+                        .count(),
                     6
                 );
                 assert_eq!(
-                    arena.units.iter().filter(|u| u.team == PartyId::BLUE).count(),
+                    arena
+                        .units
+                        .iter()
+                        .filter(|u| u.team == PartyId::BLUE)
+                        .count(),
                     6
                 );
             }

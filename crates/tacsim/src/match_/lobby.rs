@@ -4243,7 +4243,7 @@ fn slot_callsign(w: &World, team: PartyId, index: u8) -> String {
 ///
 /// One join per slot of the centre, under the slot's callsign as
 /// `resolve_callsigns`' first pass gives that pilot's unit —
-/// `Designator::Slot { team, slot: index }`, so `RA`, `BE` — which needs no read
+/// read off the match record (doc 32 cut CF.0: the unit letter is drawn) — which needs no read
 /// of the arena. The slots are the humans: a machine the AI fill fields has no
 /// slot and no pilot, and never joins. Each side's roster is its own slots'
 /// pilots, and [`net::join_pilot`] sweeps whoever else is on that side's net
@@ -5773,9 +5773,12 @@ pub fn status_lines(w: &World, reader: BoardReader) -> Vec<String> {
         }
         // **16b cut D.3 (`B-33`)**: the same argument for the two new ends. The
         // outcome word is the winner's, which says who won and not how.
-        (Some(_), Some(EndReason::Conceded {
-            winner: Some(winner),
-        })) => format!(
+        (
+            Some(_),
+            Some(EndReason::Conceded {
+                winner: Some(winner),
+            }),
+        ) => format!(
             "{head} — {} wins: {} conceded",
             winner.as_str(),
             winner.ooc_other().as_str()
@@ -6474,7 +6477,10 @@ mod tests {
             held.left = true;
         }
         centre.resettle_leads();
-        assert!(centre.leads_side(PartyId::RED, b), "red's heir is in a tank");
+        assert!(
+            centre.leads_side(PartyId::RED, b),
+            "red's heir is in a tank"
+        );
         assert!(
             !centre.leads_side(PartyId::RED, a),
             "the lead who left does not lead"

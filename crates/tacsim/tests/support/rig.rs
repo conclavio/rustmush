@@ -20,7 +20,7 @@ use tacsim::arena::perception::{SensorProfile, SignatureFactor};
 use tacsim::arena::rng::draw_contact_id;
 use tacsim::arena::state::{
     Arena, ArenaDefinition, ArenaTerrain, Classification, Controller, CustodyOut, CustodyUnit,
-    EntryZone, Pilot, Power, SeenPose, ShadowContact, PartyId, TerrainCell, TrackedRules, Waypoint,
+    EntryZone, PartyId, Pilot, Power, SeenPose, ShadowContact, TerrainCell, TrackedRules, Waypoint,
     Waypoints, WeaponSummary,
 };
 use tacsim::arena::step::StepOutput;

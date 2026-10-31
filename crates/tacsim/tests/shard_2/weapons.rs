@@ -67,8 +67,8 @@ use tacsim::arena::perception::{NoticeKind, SensorProfile, SignatureFactor};
 use tacsim::arena::rng::draw_contact_id;
 use tacsim::arena::state::{
     Arena, ArenaDefinition, ArenaTerrain, Classification, ContactId, CustodyOut, CustodyUnit,
-    Designator, EntryZone, Pilot, Power, SeenPose, ShadowContact, PartyId, TerrainCell, TrackedRules,
-    WeaponSummary,
+    Designator, EntryZone, PartyId, Pilot, Power, SeenPose, ShadowContact, TerrainCell,
+    TrackedRules, WeaponSummary,
 };
 use tacsim::arena::step::{Frame, StepOutput};
 use tacsim::arena::weapons::WeaponBand;
@@ -820,7 +820,9 @@ fn a_blocked_shot_is_accepted_and_costs_its_round() {
         contact,
         ShadowContact::sighted(
             BLUE,
-            Classification::Classified { party: PartyId::BLUE },
+            Classification::Classified {
+                party: PartyId::BLUE,
+            },
             arena.now_ms,
             plot_of(&arena, BLUE),
         ),
@@ -2211,7 +2213,9 @@ fn a_lock_taken_on_a_provisional_number_survives_the_contact_being_told_apart() 
     );
     assert_eq!(
         arena.contacts.get(RED, contact).map(|held| held.class),
-        Some(Classification::Classified { party: PartyId::BLUE }),
+        Some(Classification::Classified {
+            party: PartyId::BLUE
+        }),
         "the return was never told apart"
     );
     let named_frame = frames
@@ -2223,7 +2227,10 @@ fn a_lock_taken_on_a_provisional_number_survives_the_contact_being_told_apart() 
     let renamed = cockpit::lock_designator(&named_frame).expect("the lock is still on a held row");
     assert_eq!(
         renamed,
-        Designator::Unit { party: PartyId::BLUE, letter: 'A' },
+        Designator::Unit {
+            party: PartyId::BLUE,
+            letter: 'A'
+        },
         "the lock now renders as the target's own callsign"
     );
     assert_eq!(renamed.to_string(), "BA");

@@ -353,8 +353,9 @@ mod m5rules {
             Err(Refusal::Unlawful),
             "classification is checked again at landing"
         );
-        arena.contacts.get_mut(RED, contact).expect("plot").class =
-            Classification::Classified { party: PartyId::BLUE };
+        arena.contacts.get_mut(RED, contact).expect("plot").class = Classification::Classified {
+            party: PartyId::BLUE,
+        };
         assert_eq!(
             arena.resolve_arming(
                 RED,
@@ -515,8 +516,8 @@ use tacsim::arena::resolution::{BandProfile, SectionProfile, UnitProfile};
 use tacsim::arena::rng::{draw_contact_id, stagger_ms};
 use tacsim::arena::state::{
     Arena, ArenaDefinition, ArenaTerrain, Channel, Classification, ContactId, Controller,
-    CustodyOut, CustodyUnit, EntryZone, Pilot, Power, SeenPose, ShadowContact, PartyId, TerrainCell,
-    TrackedRules, WeaponSummary,
+    CustodyOut, CustodyUnit, EntryZone, PartyId, Pilot, Power, SeenPose, ShadowContact,
+    TerrainCell, TrackedRules, WeaponSummary,
 };
 use tacsim::arena::step::StepOutput;
 use tacsim::arena::weapons::WeaponBand;
@@ -1507,7 +1508,13 @@ fn m1b1_a_slot_fires_when_a_pass_turns_the_plot_to_a_flank() {
     // (b) A sightless red, fed by a wingman's share.
     let wing = || {
         arena_of(vec![
-            unit(RED, PartyId::RED, facing(5, 8, 90_000), vec![cannon()], None),
+            unit(
+                RED,
+                PartyId::RED,
+                facing(5, 8, 90_000),
+                vec![cannon()],
+                None,
+            ),
             unit(BLUE, PartyId::BLUE, facing(9, 8, 270_000), Vec::new(), None),
             unit(
                 RED2,
@@ -2843,7 +2850,10 @@ fn m1b1_a_snapshot_carries_slots_a_card_the_floor_and_held_said_and_resumes_the_
     // a refusal carrying the floor.
     let named = tacsim::arena::perception::Named {
         id: contact_of(BLUE, RED),
-        designator: tacsim::arena::state::Designator::Unit { party: PartyId::RED, letter: 'A' },
+        designator: tacsim::arena::state::Designator::Unit {
+            party: PartyId::RED,
+            letter: 'A',
+        },
     };
     let mut carried = vec![
         FrameNotice::SlotFired {
@@ -3344,7 +3354,9 @@ fn cannon_fire(slot: Option<u8>) -> IntentKind {
 ///   field's line pins in `tests/reflex.rs` re-run unchanged).
 #[test]
 fn m1b2_the_law_refuses_an_uncited_and_an_unwarranted_mind_fire_and_a_cycling_one_reads_cycling() {
-    let classified = Classification::Classified { party: PartyId::BLUE };
+    let classified = Classification::Classified {
+        party: PartyId::BLUE,
+    };
     let cannon_word = Some(SmolStr::new("cannon"));
     let unwarranted = vec![(
         Refusal::Unwarranted,
@@ -3948,7 +3960,9 @@ fn arms(intents: &[IntentKind]) -> bool {
 /// 1,000 and 500 ms: one event list, one hash sequence, one sequence of views.
 #[test]
 fn m1b2_the_cited_fire_at_a_weapon_ready_reads_cycling_at_three_cadences() {
-    let classified = Classification::Classified { party: PartyId::BLUE };
+    let classified = Classification::Classified {
+        party: PartyId::BLUE,
+    };
     let make = || {
         mind_duel(
             classified,
@@ -4015,7 +4029,9 @@ fn m1b2_the_cited_fire_at_a_weapon_ready_reads_cycling_at_three_cadences() {
 ///   hold-fire.
 #[test]
 fn m1b2_the_law_reads_every_case_the_same_at_three_cadences() {
-    let classified = Classification::Classified { party: PartyId::BLUE };
+    let classified = Classification::Classified {
+        party: PartyId::BLUE,
+    };
     let cannon_word = Some(SmolStr::new("cannon"));
     let unwarranted = vec![(
         Refusal::Unwarranted,
@@ -4196,7 +4212,13 @@ fn stock_field(
         .sealed(),
     ];
     for (id, (x, y), heading, presents) in targets {
-        let mut blue = unit(*id, PartyId::BLUE, facing(*x, *y, *heading), Vec::new(), None);
+        let mut blue = unit(
+            *id,
+            PartyId::BLUE,
+            facing(*x, *y, *heading),
+            Vec::new(),
+            None,
+        );
         if !presents {
             blue.profile = UnitProfile::default();
         }
@@ -4212,7 +4234,9 @@ fn stock_field(
             &mut arena,
             RED,
             *id,
-            Classification::Classified { party: PartyId::BLUE },
+            Classification::Classified {
+                party: PartyId::BLUE,
+            },
         );
     }
     arena
@@ -4548,7 +4572,9 @@ fn laser_field() -> (Arena, u32) {
         &mut arena,
         RED,
         BLUE,
-        Classification::Classified { party: PartyId::BLUE },
+        Classification::Classified {
+            party: PartyId::BLUE,
+        },
     );
     arena.clock.pin_tempo_for_tests(Tempo::Quiet);
     (arena, sink)
@@ -5220,7 +5246,9 @@ fn two_gun_field() -> Arena {
         &mut arena,
         RED,
         BLUE,
-        Classification::Classified { party: PartyId::BLUE },
+        Classification::Classified {
+            party: PartyId::BLUE,
+        },
     );
     arena
 }
@@ -5386,7 +5414,9 @@ fn m1b3_an_order_hint_re_keys_only_to_a_classified_row_at_three_cadences() {
             &mut arena,
             RED2,
             BLUE,
-            Classification::Classified { party: PartyId::BLUE },
+            Classification::Classified {
+                party: PartyId::BLUE,
+            },
         );
         arena.mind_runner = Arc::new(Scripted::default());
         arena
@@ -5883,7 +5913,13 @@ fn range_duel() -> Arena {
                 ..sight(0)
             }),
         ),
-        unit(BLUE, PartyId::BLUE, facing(62, 8, 270_000), Vec::new(), None),
+        unit(
+            BLUE,
+            PartyId::BLUE,
+            facing(62, 8, 270_000),
+            Vec::new(),
+            None,
+        ),
     ];
     let pilots = units
         .iter()

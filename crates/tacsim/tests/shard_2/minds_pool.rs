@@ -60,7 +60,10 @@ use tokio::sync::mpsc;
 /// thinks on the pool's threads beside the native one, and an unarmed hull's
 /// helm-only thinks ride the same batches.
 fn red() -> [Muster; 2] {
-    [Muster::mind(PartyId::RED, 1), Muster::scripted(PartyId::RED, 2)]
+    [
+        Muster::mind(PartyId::RED, 1),
+        Muster::scripted(PartyId::RED, 2),
+    ]
 }
 
 /// See [`red`].

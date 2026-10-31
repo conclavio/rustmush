@@ -1743,7 +1743,7 @@ impl Arena {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use crate::arena::state::{DueEvent, Power, PartyId};
+    use crate::arena::state::{DueEvent, PartyId, Power};
     use crate::arena::test_support::{arena_at_epoch, pose, tank};
     use std::collections::VecDeque;
 

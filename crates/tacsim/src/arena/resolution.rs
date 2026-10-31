@@ -1021,7 +1021,7 @@ fn sight_condition(shooter: &UnitState) -> u32 {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use crate::arena::state::{Power, PartyId};
+    use crate::arena::state::{PartyId, Power};
     use crate::arena::test_support::{arena_of, cannon, line_tank, pose, scout};
 
     const RED: ObjId = ObjId(4);
@@ -1380,7 +1380,9 @@ mod tests {
             held,
             ShadowContact::sighted(
                 BLUE,
-                Classification::Classified { party: PartyId::BLUE },
+                Classification::Classified {
+                    party: PartyId::BLUE,
+                },
                 0,
                 plot,
             ),

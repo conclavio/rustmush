@@ -26,8 +26,8 @@ use crate::arena::runtime_card::{CardDefinition, ProfileDefinition};
 use crate::arena::schema::validate_envelope;
 use crate::arena::state::{
     Arena, ArenaDefinition, ArenaTerrain, Classification, ContactId, Controller, CustodyOut,
-    CustodyUnit, EntryZone, MatchMode, Power, SeenPose, ShadowContact, PartyId, TerrainCell, Waypoint,
-    Waypoints,
+    CustodyUnit, EntryZone, MatchMode, PartyId, Power, SeenPose, ShadowContact, TerrainCell,
+    Waypoint, Waypoints,
 };
 use crate::config::{ArenaConfig, MatchConfig, MindsConfig, SensorsConfig};
 use crate::definitions::{Catalog, content};

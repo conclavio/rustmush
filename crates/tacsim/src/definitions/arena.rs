@@ -301,9 +301,7 @@ impl ArenaDef {
                 entry,
                 format!(
                     "an arena window is 1 to {} cells a side; {}×{} is not",
-                    MAX_WINDOW_SIDE,
-                    self.cols,
-                    self.rows
+                    MAX_WINDOW_SIDE, self.cols, self.rows
                 ),
             ));
         }

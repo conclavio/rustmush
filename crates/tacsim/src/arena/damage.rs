@@ -87,7 +87,7 @@ use crate::arena::ledger::EventKind;
 use crate::arena::perception::Notice;
 use crate::arena::resolution::{Consequence, Resolution};
 use crate::arena::rng::{DrawLabel, draw};
-use crate::arena::state::{Arena, DueKind, EndReason, MatchEnd, Power, PartyId, UnitState};
+use crate::arena::state::{Arena, DueKind, EndReason, MatchEnd, PartyId, Power, UnitState};
 use crate::definitions::unit::{UnitClass, armor_cell, internals_cell};
 
 // ---------------------------------------------------------------------------
@@ -1509,7 +1509,8 @@ impl Arena {
         // A side left with drones alone, having fielded something else, is out.
         standing.retain(|team| standing_gun.contains(team) || !fielded_gun.contains(team));
         // 16b cut AP.2: and so is a side that came in armed and has no gun left.
-        let disarmed = |team: &PartyId| armed_in_action.contains(team) && !carries_gun.contains(team);
+        let disarmed =
+            |team: &PartyId| armed_in_action.contains(team) && !carries_gun.contains(team);
         standing.retain(|team| !disarmed(team));
         match standing.len() {
             0 => Some(None),
@@ -1596,7 +1597,8 @@ impl Arena {
     pub fn settle_spent(&mut self) -> Option<MatchEnd> {
         if self.ended.is_some()
             || self.end != crate::arena::party::EndCondition::Elimination
-            || !self.spent() {
+            || !self.spent()
+        {
             return None;
         }
         let end = MatchEnd {
@@ -2067,7 +2069,10 @@ mod tests {
         custody
             .reseal(&crate::match_::SealTerms::fixture())
             .expect("the fixture terms seal");
-        arena_of(vec![line_tank(RED, PartyId::RED, pose(1_500, 1_500)), custody])
+        arena_of(vec![
+            line_tank(RED, PartyId::RED, pose(1_500, 1_500)),
+            custody,
+        ])
     }
 
     /// What a record becomes when the match opens on it.

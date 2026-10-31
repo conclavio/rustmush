@@ -46,7 +46,7 @@
 use mush_core::ObjId;
 
 use crate::arena::clock::Tempo;
-use crate::arena::state::{Arena, Controller, Designator, Power, PartyId};
+use crate::arena::state::{Arena, Controller, Designator, PartyId, Power};
 
 /// **The field as staff see it** (16b cut I.4): the arena clock, the tempo,
 /// how many rounds are in flight and one row per unit in unit-id order.

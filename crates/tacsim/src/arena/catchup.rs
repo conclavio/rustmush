@@ -416,7 +416,7 @@ mod tests {
     use super::*;
     use crate::arena::intents::{Control, ControlState, apply_control};
     use crate::arena::rng::draw_contact_id;
-    use crate::arena::state::{Channel, Classification, Pilot, SeenPose, ShadowContact, PartyId};
+    use crate::arena::state::{Channel, Classification, PartyId, Pilot, SeenPose, ShadowContact};
     use crate::arena::test_support::{line_tank, pose, tank};
     use mush_tactics::{CellAddr, CellId, ConditionId, FacetId, SectionId, UnitMutationOp};
 
@@ -459,7 +459,9 @@ mod tests {
     fn hold(arena: &mut Arena, target: ObjId, classified: bool) -> ContactId {
         let id = draw_contact_id(arena.seed, RED, target);
         let class = if classified {
-            Classification::Classified { party: PartyId::BLUE }
+            Classification::Classified {
+                party: PartyId::BLUE,
+            }
         } else {
             arena.designators.assign(RED, target);
             Classification::Unknown
@@ -998,7 +1000,10 @@ mod tests {
             Some("unknown"),
             "the wire's word is unchanged"
         );
-        let red = Designator::Unit { party: PartyId::RED, letter: 'A' };
+        let red = Designator::Unit {
+            party: PartyId::RED,
+            letter: 'A',
+        };
         let lines = crate::match_::cockpit::catchup_lines(red, report);
         assert_eq!(
             lines.get(1).map(String::as_str),

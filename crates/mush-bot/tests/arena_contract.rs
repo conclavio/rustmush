@@ -53,7 +53,7 @@ use tacsim::arena::{
         Aspect, ContactFacing, DriveOutcome, FrameContact, FrameNotice, FrameOdds, Named,
         NoticeKind, Receiver, RefusalDetail,
     },
-    state::{Classification, ContactId, Designator, KeySpot, Power as ArenaPower, PartyId},
+    state::{Classification, ContactId, Designator, KeySpot, PartyId, Power as ArenaPower},
     step::{Frame, FrameFacet, FrameHeat, FrameSection},
     weapons::{FrameBand, FrameWeapon},
 };
@@ -155,12 +155,18 @@ const X2_ID: ContactId = ContactId(0x2222_2222_2222_2222);
 const RB_ID: ContactId = ContactId(0x3333_3333_3333_3333);
 
 fn ba() -> Designator {
-    Designator::Unit { party: PartyId::BLUE, letter: 'A' }
+    Designator::Unit {
+        party: PartyId::BLUE,
+        letter: 'A',
+    }
 }
 
 /// The own side's second tank: a friend on a red frame.
 fn rb() -> Designator {
-    Designator::Unit { party: PartyId::RED, letter: 'B' }
+    Designator::Unit {
+        party: PartyId::RED,
+        letter: 'B',
+    }
 }
 
 /// [`frame`] with a friend `RB` beside the two contacts, and the lock on it: the
@@ -171,7 +177,9 @@ fn friendly_frame() -> Frame {
         id: RB_ID,
         designator: rb(),
         alias: Some(2),
-        class: Classification::Classified { party: PartyId::RED },
+        class: Classification::Classified {
+            party: PartyId::RED,
+        },
         relation: tacsim::arena::Relation::Hostile,
         bearing_mdeg: 180_000,
         range_cm: 12_000,
@@ -229,7 +237,10 @@ fn frame() -> Frame {
         unit_type: "tacsim.unit.line_tank".into(),
         side_unit_types: vec!["tacsim.unit.line_tank".into()],
         sensor_height_cm: 150,
-        callsign: Designator::Unit { party: PartyId::RED, letter: 'A' },
+        callsign: Designator::Unit {
+            party: PartyId::RED,
+            letter: 'A',
+        },
         cell: Some((100, 97)),
         mode: tacsim::arena::state::MatchMode::Skirmish,
         objective: None,
@@ -255,7 +266,9 @@ fn frame() -> Frame {
                 id: BA_ID,
                 designator: ba(),
                 alias: Some(1),
-                class: Classification::Classified { party: PartyId::BLUE },
+                class: Classification::Classified {
+                    party: PartyId::BLUE,
+                },
                 relation: tacsim::arena::Relation::Hostile,
                 bearing_mdeg: 87_000,
                 range_cm: 45_000,
@@ -544,7 +557,9 @@ fn every_notice() -> Vec<FrameNotice> {
         notices.push(FrameNotice::Contact {
             kind,
             contact,
-            class: Classification::Classified { party: PartyId::BLUE },
+            class: Classification::Classified {
+                party: PartyId::BLUE,
+            },
             was,
         });
     }
@@ -1494,7 +1509,10 @@ fn the_parser_reads_what_the_cockpit_formatters_print() {
         }),
     };
     let block = cockpit::catchup_lines(
-        Designator::Unit { party: PartyId::RED, letter: 'A' },
+        Designator::Unit {
+            party: PartyId::RED,
+            letter: 'A',
+        },
         &catchup,
     );
     let lines = reader.say(&block.join("\n"));
@@ -3142,7 +3160,10 @@ fn m5_3_the_release_words_read_as_the_bot_reads_them() {
         }),
     };
     let block = cockpit::catchup_lines(
-        Designator::Unit { party: PartyId::RED, letter: 'A' },
+        Designator::Unit {
+            party: PartyId::RED,
+            letter: 'A',
+        },
         &catchup,
     );
     let d14 = "  The machine was flying on its own mind under no order.";

@@ -1449,7 +1449,7 @@ mod tests {
     use crate::arena::motor::MotorRow;
     use crate::arena::resolution::Resolution;
     use crate::arena::state::{
-        Channel, Classification, ContactId, Designator, Power, SeenPose, ShadowContact, PartyId,
+        Channel, Classification, ContactId, Designator, PartyId, Power, SeenPose, ShadowContact,
         UnitState,
     };
     use crate::arena::test_support::{arena_of, pose, scout, tank};
@@ -1656,7 +1656,10 @@ mod tests {
                 (ObjId(4), ContactId(u64::MAX)),
                 (
                     9_000_i64,
-                    Designator::Unit { party: PartyId::BLUE, letter: 'A' },
+                    Designator::Unit {
+                        party: PartyId::BLUE,
+                        letter: 'A',
+                    },
                 ),
             )]),
         });
@@ -1702,7 +1705,9 @@ mod tests {
                 ContactId(u64::MAX),
                 ShadowContact::sighted(
                     ObjId(9),
-                    Classification::Classified { party: PartyId::BLUE },
+                    Classification::Classified {
+                        party: PartyId::BLUE,
+                    },
                     5_000,
                     SeenPose::default(),
                 ),

@@ -543,7 +543,10 @@ fn a_contact_id_still_renders_as_sixteen_digits_and_is_no_longer_typable() {
     assert_eq!(id.to_string(), "0123456789abcdef");
     let rows = vec![row(
         id,
-        Designator::Unit { party: crate::arena::state::PartyId::BLUE, letter: 'A' },
+        Designator::Unit {
+            party: crate::arena::state::PartyId::BLUE,
+            letter: 'A',
+        },
         Some(2),
     )];
     assert_eq!(resolve_designator(&rows, &id.to_string()), None);
@@ -575,7 +578,10 @@ fn row(id: ContactId, designator: Designator, alias: Option<u16>) -> ContactRow 
 #[test]
 fn a_designator_resolves_by_its_current_name_or_by_the_number_behind_it() {
     let id = ContactId(7);
-    let slot = Designator::Unit { party: crate::arena::state::PartyId::BLUE, letter: 'A' };
+    let slot = Designator::Unit {
+        party: crate::arena::state::PartyId::BLUE,
+        letter: 'A',
+    };
     let rows = vec![row(id, slot, Some(2))];
     for word in ["BA", "ba", " Ba ", "X2", "x2"] {
         assert_eq!(resolve_designator(&rows, word), Some(id), "{word}");
@@ -1639,7 +1645,10 @@ fn ag1_the_contact_sentence_is_the_row_s_own_fields() {
     let rows = [
         row(
             1,
-            Designator::Unit { party: PartyId::BLUE, letter: 'A' },
+            Designator::Unit {
+                party: PartyId::BLUE,
+                letter: 'A',
+            },
             Some(1),
             "blue",
             (45, 0),
@@ -1650,7 +1659,10 @@ fn ag1_the_contact_sentence_is_the_row_s_own_fields() {
         ),
         row(
             2,
-            Designator::Unit { party: PartyId::RED, letter: 'B' },
+            Designator::Unit {
+                party: PartyId::RED,
+                letter: 'B',
+            },
             None,
             "red",
             (270, 225),
@@ -3314,7 +3326,10 @@ fn ap3_scene() -> Frame {
         .map(|(_, frame)| frame)
         .find(|frame| frame.unit == RED)
         .expect("red is sent its opening frame");
-    frame.callsign = Designator::Unit { party: PartyId::RED, letter: 'A' };
+    frame.callsign = Designator::Unit {
+        party: PartyId::RED,
+        letter: 'A',
+    };
     frame.party = PartyId::RED;
     frame.power = Power::Online;
     frame.speed_cms = 667;
@@ -3326,9 +3341,14 @@ fn ap3_scene() -> Frame {
     frame.contacts = vec![
         FrameContact {
             id: ContactId(1),
-            designator: Designator::Unit { party: PartyId::BLUE, letter: 'A' },
+            designator: Designator::Unit {
+                party: PartyId::BLUE,
+                letter: 'A',
+            },
             alias: Some(1),
-            class: Classification::Classified { party: PartyId::BLUE },
+            class: Classification::Classified {
+                party: PartyId::BLUE,
+            },
             relation: crate::arena::party::Relation::Hostile,
             moving: false,
             bearing_mdeg: 87_000,
@@ -3589,9 +3609,14 @@ fn ap3_watch_lines_are_the_three_lines_within_120_columns() {
     let mut friendly = scene.clone();
     friendly.contacts.push(FrameContact {
         id: ContactId(3),
-        designator: Designator::Unit { party: PartyId::RED, letter: 'B' },
+        designator: Designator::Unit {
+            party: PartyId::RED,
+            letter: 'B',
+        },
         alias: Some(2),
-        class: Classification::Classified { party: PartyId::RED },
+        class: Classification::Classified {
+            party: PartyId::RED,
+        },
         relation: crate::arena::party::Relation::Own,
         moving: false,
         bearing_mdeg: 180_000,

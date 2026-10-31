@@ -1878,11 +1878,9 @@ pub struct CustodyUnit {
     /// `0` for a unit no lobby placed — a staff `@arena/start`, a fixture, the
     /// harness's field of three hundred.
     ///
-    /// It is what [`Designator::Slot`] renders, so a pilot's `BA` is the pod
-    /// `SIM STATUS` prints as `1` on blue. A `0` is not a designator: [`Arena::new`]
-    /// gives every such unit the lowest free slot of its team in unit-id order, so
-    /// a harness unit and a staff-fielded tank have stable callsigns with no lobby
-    /// at all.
+    /// Since doc 32 cut CF.0 (Q-CF-11) it is the lobby's own business and no
+    /// part of the callsign: a unit's letter is drawn at check-out
+    /// ([`Designator::Unit`]), so a designator says nothing about a slot.
     pub slot: u8,
     /// **The seal it is checked out under** (17b cut M3.3; doc 17 §13, D-UM-45,
     /// D-UM-46) — beside `sensor`, `weapons` and `gunnery`, for every unit,
@@ -1990,8 +1988,10 @@ pub struct UnitState {
     /// Its side.
     pub team: PartyId,
     /// **The name every viewer that has told it apart calls it by** (16b cut
-    /// Q.1): always a [`Designator::Slot`], resolved once at check-out from
-    /// [`CustodyUnit::slot`] and fixed for the match.
+    /// Q.1; doc 32 Q-CF-11): its party's letter and a unit letter drawn once at
+    /// check-out from the seed, the party and the unit id
+    /// ([`Designator::Unit`], or [`Designator::Wide`] past a party's
+    /// twenty-third), and fixed for the field.
     ///
     /// It is **not** folded into [`crate::arena::hash::state_hash`] on its own: it
     /// is a pure function of the custody message, it never moves, and two replays
@@ -2418,10 +2418,10 @@ pub const PROVISIONAL_PREFIX: char = 'X';
 ///   order that platform's own sensors first found things. It is viewer-scoped
 ///   and says nothing about the target at all, which is exactly what a platform
 ///   holding an unclassified return knows.
-/// * [`Designator::Slot`] — the team's letter and the unit's centre slot in
-///   bijective base 26 (`RA`, `BC`, `BAA` past twenty-six a side). It is the
-///   **same for every viewer**, which is the point: once a tank has been told
-///   apart, two pilots on one side are talking about `BA` and mean one machine.
+/// * [`Designator::Unit`] — the party's letter and a unit letter drawn per unit
+///   per field (doc 32 Q-CF-11; `RK`, `GD`). It is the **same for every
+///   viewer**, which is the point: once a tank has been told apart, two pilots
+///   are talking about `RK` and mean one machine — and it leaks no slot.
 ///
 /// **Which one a contact renders as is read off the live contact and never off a
 /// flag.** A contact is not durable — [`ShadowContacts::expire`] removes the row
@@ -2431,7 +2431,7 @@ pub const PROVISIONAL_PREFIX: char = 'X';
 ///
 /// **Its serde derive is the snapshot's** (16b cut AF.1): a unit's callsign, a
 /// held loss's name and a release row's contact list are carried as
-/// `{"provisional": 3}` or `{"slot": {"team": "red", "slot": 1}}`. Every wire
+/// `{"provisional": 3}` or `{"unit": {"party": "red", "letter": "K"}}`. Every wire
 /// form a pilot, a frame or a ledger reads still carries the string
 /// [`std::fmt::Display`] produces, and never this one.
 #[derive(Clone, Copy, Debug, PartialEq, Eq, PartialOrd, Ord, Serialize, Deserialize)]
@@ -2562,7 +2562,10 @@ pub(crate) fn check_poses(terrain: &ArenaTerrain, units: &[UnitState]) -> Result
 /// [`ArenaError::PartyFull`], naming the party that fields more units than
 /// there are letters.
 fn resolve_callsigns(seed: u64, states: &mut [UnitState]) -> Result<(), ArenaError> {
-    let keys: Vec<(PartyId, u32)> = states.iter().map(|state| (state.team, state.id.0)).collect();
+    let keys: Vec<(PartyId, u32)> = states
+        .iter()
+        .map(|state| (state.team, state.id.0))
+        .collect();
     let letters = crate::arena::party::draw_unit_letters(seed, &keys).map_err(|party| {
         ArenaError::PartyFull {
             party: party.as_str(),
@@ -6345,7 +6348,9 @@ mod tests {
                 last_seen_ms: 4_000,
                 ..ShadowContact::sighted(
                     ObjId(10),
-                    Classification::Classified { party: PartyId::BLUE },
+                    Classification::Classified {
+                        party: PartyId::BLUE,
+                    },
                     1_000,
                     plot(0, 0),
                 )

@@ -2459,7 +2459,7 @@ mod fixture {
     use tacsim::arena::perception::{
         Aspect, FrameCondition, FrameContact, FrameNotice, FrameOdds, Named, NoticeKind,
     };
-    use tacsim::arena::state::{Classification, ContactId, Designator, Power, PartyId};
+    use tacsim::arena::state::{Classification, ContactId, Designator, PartyId, Power};
     use tacsim::arena::step::{Frame, FrameFacet, FrameHeat, FrameMind, FrameSection};
     use tacsim::arena::weapons::{FrameArming, FrameBand, FrameRule, FrameWeapon};
     use tacsim::arena_task::MatchId;
@@ -2532,7 +2532,10 @@ mod fixture {
             unit_type: "tacsim.unit.line_tank".into(),
             side_unit_types: vec!["tacsim.unit.line_tank".into()],
             sensor_height_cm: 150,
-            callsign: Designator::Unit { party: PartyId::RED, letter: 'A' },
+            callsign: Designator::Unit {
+                party: PartyId::RED,
+                letter: 'A',
+            },
             cell: Some(YOU),
             mode: tacsim::arena::state::MatchMode::Skirmish,
             objective: None,
@@ -2573,9 +2576,14 @@ mod fixture {
                 // Classified hostile, read two seconds ago, and the lock.
                 FrameContact {
                     id: HOSTILE,
-                    designator: Designator::Unit { party: PartyId::BLUE, letter: 'A' },
+                    designator: Designator::Unit {
+                        party: PartyId::BLUE,
+                        letter: 'A',
+                    },
                     alias: Some(1),
-                    class: Classification::Classified { party: PartyId::BLUE },
+                    class: Classification::Classified {
+                        party: PartyId::BLUE,
+                    },
                     relation: tacsim::arena::Relation::Hostile,
                     moving: false,
                     bearing_mdeg: 45_000,
@@ -2600,9 +2608,14 @@ mod fixture {
                 // what keeps its chassis out of `scan_tables`.
                 FrameContact {
                     id: FRIEND,
-                    designator: Designator::Unit { party: PartyId::RED, letter: 'B' },
+                    designator: Designator::Unit {
+                        party: PartyId::RED,
+                        letter: 'B',
+                    },
                     alias: None,
-                    class: Classification::Classified { party: PartyId::RED },
+                    class: Classification::Classified {
+                        party: PartyId::RED,
+                    },
                     relation: tacsim::arena::Relation::Hostile,
                     moving: false,
                     bearing_mdeg: 270_000,
@@ -2680,7 +2693,10 @@ mod fixture {
                 FrameNotice::TargetSectionLost {
                     contact: Named {
                         id: HOSTILE,
-                        designator: Designator::Unit { party: PartyId::BLUE, letter: 'A' },
+                        designator: Designator::Unit {
+                            party: PartyId::BLUE,
+                            letter: 'A',
+                        },
                     },
                     section: SmolStr::new_static("turret"),
                 },
@@ -3966,9 +3982,12 @@ fn d1_the_frame_carries_the_sight_and_the_pilots_own_scope() {
     let mut scene = fixture::frame();
     assert_eq!(cockpit::own_scope(&scene), "hostile");
     // Nothing but classified friends.
-    scene
-        .contacts
-        .retain(|held| held.class == Classification::Classified { party: PartyId::RED });
+    scene.contacts.retain(|held| {
+        held.class
+            == Classification::Classified {
+                party: PartyId::RED,
+            }
+    });
     assert!(
         !scene.contacts.is_empty(),
         "the friend is still in the list"
@@ -4443,12 +4462,18 @@ async fn d2_the_lock_echo_marks_a_friendly_and_never_a_blip() {
     };
     let friend = row(
         0xa1a1_a1a1_a1a1_a1a1,
-        Designator::Unit { party: seen.party, letter: 'B' },
+        Designator::Unit {
+            party: seen.party,
+            letter: 'B',
+        },
         Classification::Classified { party: seen.party },
     );
     let hostile = row(
         0xb2b2_b2b2_b2b2_b2b2,
-        Designator::Unit { party: other, letter: 'A' },
+        Designator::Unit {
+            party: other,
+            letter: 'A',
+        },
         Classification::Classified { party: other },
     );
     let blip = row(
@@ -4934,7 +4959,10 @@ async fn d3_status_brackets_a_refitted_chassis_and_nothing_else() {
     // frame carrying **blue 1's** slot: without the second question the line would
     // bracket its chassis against the authored type of a pod it was never in.
     let mut stray = rig.held_frame(0);
-    stray.callsign = tacsim::arena::state::Designator::Unit { party: PartyId::BLUE, letter: 'A' };
+    stray.callsign = tacsim::arena::state::Designator::Unit {
+        party: PartyId::BLUE,
+        letter: 'A',
+    };
     rig.push_frame(0, stray);
     let said = rig.say(0, "status");
     assert!(
@@ -5214,7 +5242,10 @@ fn d4_the_new_sentences_are_these_sentences() {
             designator: Designator::Provisional(2),
         },
         class: Classification::Unknown,
-        was: Some(Designator::Unit { party: PartyId::BLUE, letter: 'A' }),
+        was: Some(Designator::Unit {
+            party: PartyId::BLUE,
+            letter: 'A',
+        }),
     };
     assert_eq!(
         cockpit::notice_line(&frame, &regressed, &rows),
@@ -5358,7 +5389,10 @@ fn b1_the_victims_section_and_the_old_name_are_published() {
             .unwrap_or_else(|| panic!("one notice"))
     };
     let key = |value: &serde_json::Value, name: &str| value.get(name).cloned().unwrap_or_default();
-    let blue_one = Designator::Unit { party: PartyId::BLUE, letter: 'A' };
+    let blue_one = Designator::Unit {
+        party: PartyId::BLUE,
+        letter: 'A',
+    };
     let hostile = ContactId(0x1111_1111_1111_1111);
 
     // `X2 identified: BA` — the provisional number it was told apart from.
@@ -5368,7 +5402,9 @@ fn b1_the_victims_section_and_the_old_name_are_published() {
             id: hostile,
             designator: blue_one,
         },
-        class: Classification::Classified { party: PartyId::BLUE },
+        class: Classification::Classified {
+            party: PartyId::BLUE,
+        },
         was: Some(Designator::Provisional(2)),
     };
     assert_eq!(classified.was(), Some(Designator::Provisional(2)));
@@ -6852,8 +6888,8 @@ async fn y1_an_engage_carries_the_pilots_own_row_and_an_own_side_row_is_no_targe
     let middle = i64::from(match_::ARENA_CELLS / 2);
     rig.place(rig.tank(0), (middle, middle), 0);
     rig.place(rig.tank(1), (middle, middle + 14), 180_000);
-    let rb =
-        match_::centre::tank_for_slot(rig.tw.world(), PartyId::RED, 2).expect("red pod 2 has a tank");
+    let rb = match_::centre::tank_for_slot(rig.tw.world(), PartyId::RED, 2)
+        .expect("red pod 2 has a tank");
     rig.place(rb, (middle - 4, middle), 0);
     rig.walk_to(0, match_::RED_ROOM_ENTRY);
     rig.walk_to(1, match_::BLUE_ROOM_ENTRY);
@@ -12623,7 +12659,9 @@ async fn af3_the_pilots_board_the_resumed_match_through_the_reclaim() {
         if rig.frame(1).is_some_and(|frame| {
             frame.contacts.iter().any(|contact| {
                 contact.class
-                    == tacsim::arena::state::Classification::Classified { party: PartyId::BLUE }
+                    == tacsim::arena::state::Classification::Classified {
+                        party: PartyId::BLUE,
+                    }
             }) && frame
                 .contacts
                 .iter()
@@ -13121,7 +13159,10 @@ fn ah1_classified(team: PartyId) -> tacsim::arena::perception::FrameNotice {
         kind: NoticeKind::Classified,
         contact: Named {
             id: ContactId(0x5555_5555_5555_5555),
-            designator: Designator::Unit { party: team, letter: 'A' },
+            designator: Designator::Unit {
+                party: team,
+                letter: 'A',
+            },
         },
         class: Classification::Classified { party: team },
         was: None,
@@ -14789,7 +14830,13 @@ fn m1b3_the_odds_rows_seat_the_lock_first_and_never_a_friend() {
     let field = [
         (support::tank(&world, PartyId::RED, 2), rb, 0, 10_000, true),
         (support::tank(&world, PartyId::RED, 3), rc, 15_000, 0, true),
-        (support::tank(&world, PartyId::BLUE, 4), x5, 0, 20_000, false),
+        (
+            support::tank(&world, PartyId::BLUE, 4),
+            x5,
+            0,
+            20_000,
+            false,
+        ),
         (support::tank(&world, PartyId::BLUE, 1), ba, 0, 30_000, true),
         (support::tank(&world, PartyId::BLUE, 2), bb, 40_000, 0, true),
         (support::tank(&world, PartyId::BLUE, 3), bc, 0, 50_000, true),
@@ -18427,7 +18474,9 @@ mod m5rules_station {
         let mut frame = rig.held_frame(0);
         let mut contact = fixture::frame().contacts[0].clone();
         contact.id = tacsim::arena::state::ContactId(0x0bad_cafe);
-        contact.class = tacsim::arena::state::Classification::Classified { party: PartyId::BLUE };
+        contact.class = tacsim::arena::state::Classification::Classified {
+            party: PartyId::BLUE,
+        };
         let name = contact.designator.to_string();
         frame.contacts = vec![contact];
         rig.push_frame(0, frame);

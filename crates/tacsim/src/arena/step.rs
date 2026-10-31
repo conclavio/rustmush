@@ -69,7 +69,7 @@ use crate::arena::perception::{
 use crate::arena::resolution::{facet_band_seen, facing_band_seen};
 use crate::arena::state::{
     ActionHash, Arena, Classification, ContactId, Controller, DueEvent, DueKind, EndReason,
-    MatchEnd, Power, SPENT_NOTICE_MS, StopReason, PartyId,
+    MatchEnd, PartyId, Power, SPENT_NOTICE_MS, StopReason,
 };
 use crate::arena::weapons::FrameWeapon;
 use crate::definitions::unit::{armor_cell, internals_cell};

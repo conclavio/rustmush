@@ -2001,7 +2001,7 @@ fn field_with(
     Vec<tacsim::arena::state::CustodyUnit>,
     Vec<tacsim::arena::state::Pilot>,
 ) {
-    use tacsim::arena::state::{Pilot, PartyId};
+    use tacsim::arena::state::{PartyId, Pilot};
     let mut rng = ChaCha8Rng::seed_from_u64(knobs.seed ^ 0x000a_4e17);
     let mut pool: Vec<(u16, u16, i16)> = relief.to_vec();
     let middle = i32::from(SIDE) / 2;
@@ -2040,7 +2040,11 @@ fn field_with(
             pool.swap_remove(pick)
         };
         let id = ObjId(100_000 + n);
-        let team = if n % 2 == 0 { PartyId::RED } else { PartyId::BLUE };
+        let team = if n % 2 == 0 {
+            PartyId::RED
+        } else {
+            PartyId::BLUE
+        };
         let slot = slot_of(n);
         let key = CanonicalId::new(slot.entry).expect("a canonical entry id");
         let spec = catalog.specs.get(&key).expect("the cohort entry's spec");
@@ -8429,7 +8433,7 @@ fn lance_field_arena(units: u32) -> tacsim::arena::state::Arena {
 #[allow(clippy::too_many_lines)]
 fn measure_lance(knobs: &Knobs, lance: &LanceKnobs) -> LanceReport {
     use tacsim::arena::clock::Tempo as ArenaTempo;
-    use tacsim::arena::state::{Arena, CustodyOut, Power, PartyId};
+    use tacsim::arena::state::{Arena, CustodyOut, PartyId, Power};
     use tacsim::config::{ArenaConfig, MatchConfig};
 
     assert!(
@@ -12298,7 +12302,7 @@ fn m4_2_the_load_mind_is_calibrated_to_the_class_iii_row() {
     use tacsim::arena::clock::Tempo as ArenaTempo;
     use tacsim::arena::core::{ClassTable, CoreClass};
     use tacsim::arena::mind::{MindRunner, ThinkJob};
-    use tacsim::arena::state::{Arena, Controller, CustodyOut, Power, PartyId};
+    use tacsim::arena::state::{Arena, Controller, CustodyOut, PartyId, Power};
     use tacsim::config::{ArenaConfig, MatchConfig};
 
     // 1. The bytes and the digest.

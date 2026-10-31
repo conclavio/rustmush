@@ -1632,7 +1632,7 @@ fn fold_plot(fold: &mut Fold, plot: &crate::arena::state::SeenPose) {
 mod tests {
     use super::*;
     use crate::arena::clock::{Tempo, TempoSignals};
-    use crate::arena::state::{DueKind, Power, PartyId};
+    use crate::arena::state::{DueKind, PartyId, Power};
     use crate::arena::test_support::{arena_of, pose, tank};
     use crate::config::TempoConfig;
     use mush_core::ObjId;
@@ -1902,7 +1902,10 @@ mod tests {
         // The callsign is a fact about the check-out, not about the match.
         let mut renamed = two_tanks();
         if let Some(unit) = renamed.unit_mut(ObjId(9)) {
-            unit.callsign = crate::arena::state::Designator::Unit { party: PartyId::BLUE, letter: 'I' };
+            unit.callsign = crate::arena::state::Designator::Unit {
+                party: PartyId::BLUE,
+                letter: 'I',
+            };
         }
         assert_eq!(state_hash(&renamed), base);
     }

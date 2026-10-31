@@ -286,7 +286,7 @@ mod tests {
     use crate::arena::state::{Classification, ContactId, SeenPose, ShadowContact};
     use crate::arena::test_support::{arena_at_epoch, pose, tank};
     use crate::arena::{
-        Channel, Intent, IntentKind, MachineState, Snapshot, PartyId, apply_intent, state_hash,
+        Channel, Intent, IntentKind, MachineState, PartyId, Snapshot, apply_intent, state_hash,
     };
 
     const LEADER: ObjId = ObjId(1);
@@ -573,7 +573,9 @@ mod tests {
             ContactId(70),
             ShadowContact::sighted(
                 ENEMY,
-                Classification::Classified { party: PartyId::BLUE },
+                Classification::Classified {
+                    party: PartyId::BLUE,
+                },
                 0,
                 seen,
             ),
@@ -611,7 +613,9 @@ mod tests {
             ContactId(30),
             ShadowContact::sighted(
                 ENEMY,
-                Classification::Classified { party: PartyId::BLUE },
+                Classification::Classified {
+                    party: PartyId::BLUE,
+                },
                 0,
                 seen,
             ),

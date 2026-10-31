@@ -441,8 +441,9 @@ mod tests {
 
     #[test]
     fn the_side_is_capped_so_a_field_of_three_hundred_has_a_bounded_command() {
-        let many: Vec<(ObjId, PartyId, bool)> =
-            (0..300).map(|n| reflex(100_000 + n, PartyId::RED)).collect();
+        let many: Vec<(ObjId, PartyId, bool)> = (0..300)
+            .map(|n| reflex(100_000 + n, PartyId::RED))
+            .collect();
         let squads = squads_of(&many, 4);
         assert_eq!(squads.len(), MAX_SQUADS_PER_SIDE);
         assert_eq!(squads[0].commander, ObjId(100_000));
@@ -460,8 +461,9 @@ mod tests {
         );
         // And 150 a side (the CI cohort) deals into more than the cap, so it is
         // still 32 squads of four.
-        let cohort: Vec<(ObjId, PartyId, bool)> =
-            (0..150).map(|n| reflex(200_000 + n, PartyId::BLUE)).collect();
+        let cohort: Vec<(ObjId, PartyId, bool)> = (0..150)
+            .map(|n| reflex(200_000 + n, PartyId::BLUE))
+            .collect();
         assert_eq!(sizes(&squads_of(&cohort, 4)), vec![4; MAX_SQUADS_PER_SIDE]);
     }
 
