@@ -1189,7 +1189,9 @@ pub fn station_with_cast_value(
     for (id, entry) in cast_entries {
         let mut entry = entry.clone();
         if entry.get("kind").and_then(serde_json::Value::as_str) == Some("npc")
-            && let Some(def) = entry.get_mut("def").and_then(serde_json::Value::as_object_mut)
+            && let Some(def) = entry
+                .get_mut("def")
+                .and_then(serde_json::Value::as_object_mut)
         {
             def.remove("room_pack");
         }

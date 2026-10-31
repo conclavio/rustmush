@@ -121,7 +121,9 @@ fn external_object(
             return content
                 .latches
                 .applied(&cast_id)
-                .filter(|l| !content.latches.is_held(&cast_id) && !l.is_retired() && l.anomaly().is_none())?
+                .filter(|l| {
+                    !content.latches.is_held(&cast_id) && !l.is_retired() && l.anomaly().is_none()
+                })?
                 .entries()
                 .get(entry);
         }
@@ -130,7 +132,9 @@ fn external_object(
             return content
                 .latches
                 .applied(&nb_id)
-                .filter(|l| !content.latches.is_held(&nb_id) && !l.is_retired() && l.anomaly().is_none())?
+                .filter(|l| {
+                    !content.latches.is_held(&nb_id) && !l.is_retired() && l.anomaly().is_none()
+                })?
                 .entries()
                 .get(entry);
         }
