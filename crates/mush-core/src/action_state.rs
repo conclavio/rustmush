@@ -30,7 +30,7 @@ mod terminal_capacity;
 /// Industry and Inventory owners register exactly what the kernel audits.
 pub mod bay_refit_protocol {
     pub use super::terminal_capacity::bay_refit::{
-        ACTIONS, FAMILY_NAMES, action_descriptor, family_descriptor,
+        ACTIONS, FAMILY_NAMES, action_descriptor, family_descriptor, owner_action_descriptor,
     };
 }
 

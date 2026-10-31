@@ -63,6 +63,7 @@
 #[macro_use]
 mod test_checks;
 
+pub mod bay_part;
 pub mod commands;
 pub mod core_input;
 pub mod facts;

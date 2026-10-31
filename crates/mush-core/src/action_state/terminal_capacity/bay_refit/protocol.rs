@@ -178,6 +178,28 @@ pub(super) fn validate_policy(policy: &Value) -> Result<(), ActionStateError> {
     facilities(policy)?;
     Ok(())
 }
+/// The descriptor of Industry's own unpinned `action` (`initialize_bay_refit`
+/// or `offer_bay_refit`), here so every owner that joins an offer reads the
+/// one definition.
+pub fn owner_action_descriptor(
+    policy: &Value,
+    action: &str,
+) -> Result<DefinitionDescriptor, ActionStateError> {
+    validate_policy(policy)?;
+    let kind = match action {
+        "initialize_bay_refit" => "initialize_bay_census",
+        "offer_bay_refit" => "acknowledged_supplier_offer",
+        _ => return Err(refused("bay refit owner action")),
+    };
+    Ok(DefinitionDescriptor::new(
+        DefinitionKind::new("action").map_err(bad)?,
+        DefinitionId::new(action).map_err(bad)?,
+        1,
+        json!({"format":1,"protocol":"bay_refit_v1","policy":policy,"kind":kind,"offer_seconds":300}),
+    )
+    .map_err(bad)?
+    .with_references(vec![recipe(policy)?]))
+}
 pub fn action_descriptor(
     policy: &Value,
     index: usize,

@@ -1704,6 +1704,7 @@ struct EconomyModuleState {
     coverage: Option<crate::managed_coverage::CoverageConfig>,
     core_integration: Option<crate::core_integration::CoreIntegrationConfig>,
     core_refit: Option<crate::core_refit::CoreRefitConfig>,
+    bay_refit: Option<crate::bay_refit::BayRefitConfig>,
     initial_filing: Option<(
         crate::registry_filing::InitialFilingPolicy,
         mush_core::mechanics::DefinitionRef,
@@ -1749,6 +1750,7 @@ impl std::fmt::Debug for EconomyModule {
             .field("coverage", &self.state.coverage)
             .field("core_integration", &self.state.core_integration)
             .field("core_refit", &self.state.core_refit)
+            .field("bay_refit", &self.state.bay_refit)
             .field("initial_filing", &self.state.initial_filing)
             .field("original_purchases", &self.state.original_purchases)
             .field("house_purchases", &self.state.house_purchases)
@@ -1824,6 +1826,14 @@ impl EconomyModule {
     /// Core exchange audits must be present before any business activation.
     pub fn with_core_refit(mut self, config: crate::core_refit::CoreRefitConfig) -> Self {
         self.state.core_refit = Some(config);
+        self
+    }
+
+    /// Doc 31 UD.4b: the bay refit's fee leg, on the same Economy participant.
+    /// Industry's accepted-order audit and the kernel's bay protocol must be
+    /// composed beside it.
+    pub fn with_bay_refit(mut self, config: crate::bay_refit::BayRefitConfig) -> Self {
+        self.state.bay_refit = Some(config);
         self
     }
 
@@ -2290,6 +2300,7 @@ impl GameModule for EconomyModule {
                 self.state.original_major.as_ref(),
                 self.state.house_update.as_ref(),
                 self.state.seizure.as_ref(),
+                self.state.bay_refit.as_ref(),
             )?;
         }
         if (self.state.house_purchases.is_some()
@@ -2306,6 +2317,7 @@ impl GameModule for EconomyModule {
             || self.state.seizure.is_some()
             || self.state.core_integration.is_some()
             || self.state.core_refit.is_some()
+            || self.state.bay_refit.is_some()
             || self.state.charter_pending.is_some()
             || self.state.paid_resale.is_some()
             || self.state.coverage.is_some())
@@ -2450,6 +2462,17 @@ impl GameModule for EconomyModule {
                 .set(defs)
                 .map_err(|_| ModError::msg("Core refit definitions already captured"))?;
         }
+        if let Some(config) = &self.state.bay_refit {
+            let defs = ctx
+                .reg
+                .definitions()
+                .ok_or_else(|| ModError::msg("bay refit definitions unavailable"))?
+                .clone();
+            config
+                .definitions
+                .set(defs)
+                .map_err(|_| ModError::msg("bay refit definitions already captured"))?;
+        }
         let fetch_ms = data.fetch_ms;
         let started = std::time::Instant::now();
         let tail_max = if self.state.config.tx_tail_max == 0 {
@@ -2481,6 +2504,7 @@ impl GameModule for EconomyModule {
             self.state.core_refit.is_some(),
             self.state.coverage.is_some(),
             self.state.seizure.is_some(),
+            self.state.bay_refit.is_some(),
         )?;
         store
             .fold

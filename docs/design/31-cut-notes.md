@@ -321,3 +321,48 @@ Economy and Inventory; then TacSim.
   read the bay's hull heads. The Tactics revision fence settles it: whichever installs first moves
   the hull's revision and the other's Install is refused, leaving it to be cancelled and refunded.
 
+## UD.4b PR-C (2026-10-30) — the bay fee in Economy and the part custody in Inventory
+
+Built on `claude/ud4b-economy-inventory`, stacked on PR-B (#214). The two owners the bay order
+pays and draws parts through; each writes exactly the records the kernel's `bay_refit` protocol
+joins (PR-B's wire).
+
+- **Economy, `mush_economy::bay_refit`** (the sibling of `core_refit`, on the same
+  `economy/initial_filing` participant): a `BayPaymentPolicy` (issuer, currency, the `bay_refit`
+  recipe, each bay with its provider account, and a ceiling on a quote) and a `BaySubject` (the
+  order, the exact offer, payer, the hull and its revision, the roots before and after, the bay
+  and the quoted fee). Accept holds the quote on the requester's account; Install captures exactly
+  it to the bay's provider; Cancel releases it; each under its own idempotency key in the closed
+  namespace `industry.bay_refit.v1`. The receipts (`BayFundingReceipt`, `BayTerminalReceipt` with
+  `installed { refit }` or `cancelled`) fold from the journal like the core refit's, are covered
+  by the checkpoint, and are closed against the stored and journal holds at boot; one open order
+  per hull. Composed with `EconomyModule::with_bay_refit`, wired through the engine's plan guard,
+  the managed-contract checks, the fold, the boot recovery and the participant's request, output,
+  patch and bind dispatch. The supplier's operator needs `industry.bay.refit` on the bay's scope.
+- **The paid action definitions are the kernel's**: the policy derives the Industry policy
+  (`{format, recipe, facilities}`) and reads every action's descriptor from
+  `mush_core::bay_refit_protocol` — the four paid ones and now Industry's own Initialize and Offer
+  (`owner_action_descriptor`), which `mush_industry::bay_refit` also reads — so the three owners
+  and the kernel name one set of definitions.
+- **Inventory, `mush_inventory::bay_part`**: `BayPartBinding` (the three bay actions),
+  `BayPartCustody` in exactly the kernel's shape, the part heads and census, and a
+  `BayPartHandle` the Industry provider writes through: `reserve` (a one-unit lot in the bay's
+  stores, not held by another bay order or a core input), `release`, and `install` (consume the
+  held lot, return the part taken out to the same stores as a new lot, the stores' lot census moved
+  once). A held or consumed lot is refused by every ordinary Inventory verb, as a core input's is.
+  Composed with `InventoryModule::with_bay_parts`.
+- **Tests**: Economy (3) — the policy names the kernel's actions; a quote is bounded and paid to
+  its bay; the plans hold, capture and release exactly the quote. Inventory (3) — the binding; the
+  custody is the kernel's shape; a part hold with no bay protocol composed is refused by the kernel
+  at preparation.
+
+**Not done here, and why.**
+
+- **The Industry provider, owner participant and schedule source** that compose these two owners
+  with the kernel protocol and the Tactics `component_refit` participant: PR-D, with the
+  end-to-end rig (an order accepted, advanced, installed and cancelled through the real owners),
+  which is also the first place the live hold/capture/release and the part writes run.
+- **An Inventory-side cold audit of the bay part heads**: the kernel's boot audit already joins
+  every part custody to its order and refuses orphans; an Inventory reconcile like the core
+  input's lands with PR-D if the rig shows it is needed.
+

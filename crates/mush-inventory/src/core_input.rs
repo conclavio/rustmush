@@ -126,6 +126,10 @@ impl crate::InventoryFamilies {
         self.core_inputs
             .as_ref()
             .map_or(Ok(()), |h| h.require_unheld(txn, id))
+            .map_err(|_| crate::InventoryError::ExactInput)?;
+        self.bay_parts
+            .as_ref()
+            .map_or(Ok(()), |h| h.require_unheld(txn, id))
             .map_err(|_| crate::InventoryError::ExactInput)
     }
     pub(crate) fn require_new_lot(
@@ -134,6 +138,10 @@ impl crate::InventoryFamilies {
         id: crate::LotId,
     ) -> Result<(), crate::InventoryError> {
         self.core_inputs
+            .as_ref()
+            .map_or(Ok(()), |h| h.require_new(txn, id))
+            .map_err(|_| crate::InventoryError::ExactInput)?;
+        self.bay_parts
             .as_ref()
             .map_or(Ok(()), |h| h.require_new(txn, id))
             .map_err(|_| crate::InventoryError::ExactInput)

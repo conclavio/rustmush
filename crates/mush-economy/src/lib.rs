@@ -94,6 +94,7 @@ pub(crate) type AccountBeforeImage = (AccountId, Option<i128>, Option<u64>, Opti
 
 // E2a — the pure library.
 mod amount;
+pub mod bay_refit;
 pub mod core_integration;
 pub mod core_refit;
 mod engine;

@@ -105,7 +105,7 @@ impl CoreInputHandle {
             Ok(())
         }
     }
-    pub(super) fn require_unheld(&self, txn: &mut ActionTxn<'_>, lot: LotId) -> Result<(), Error> {
+    pub(crate) fn require_unheld(&self, txn: &mut ActionTxn<'_>, lot: LotId) -> Result<(), Error> {
         match self.current(txn, lot)?.map(|o| o.state()).transpose()? {
             Some(CoreInputState::Held | CoreInputState::Consumed) => Err(Error::Reserved),
             _ => Ok(()),

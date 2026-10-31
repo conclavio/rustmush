@@ -585,6 +585,13 @@ pub(crate) fn validate_core_refit(
 ) -> PlanResult {
     validate_guarded(proof.plan(), snapshot, env, PlanGuard::CoreRefit(proof))
 }
+pub(crate) fn validate_bay_refit(
+    proof: &crate::bay_refit::ClosedBayPlan,
+    snapshot: &EconomySnapshot,
+    env: &ValidateEnv<'_>,
+) -> PlanResult {
+    validate_guarded(proof.plan(), snapshot, env, PlanGuard::BayRefit(proof))
+}
 pub(crate) fn validate_hull_coverage(
     proof: &crate::managed_coverage::ClosedCoveragePlan,
     snapshot: &EconomySnapshot,
@@ -602,6 +609,7 @@ enum PlanGuard<'a> {
     Seizure(&'a crate::registry_filing::seizure::ClosedSeizurePlan),
     CoreIntegration(&'a crate::core_integration::ClosedCorePlan),
     CoreRefit(&'a crate::core_refit::ClosedRefitPlan),
+    BayRefit(&'a crate::bay_refit::ClosedBayPlan),
     Purchase(&'a crate::managed_purchase::ClosedPurchasePlan),
     Renewal(&'a crate::managed_renewal::ClosedRenewalPlan),
     HouseRenewal(&'a crate::managed_house_renewal::ClosedHouseRenewalPlan),
@@ -628,6 +636,7 @@ impl PlanGuard<'_> {
             Self::Purchase(proof) => proof.check(plan, snapshot),
             Self::CoreIntegration(proof) => proof.check(plan, snapshot),
             Self::CoreRefit(proof) => proof.check(plan, snapshot),
+            Self::BayRefit(proof) => proof.check(plan, snapshot),
             Self::Renewal(proof) => proof.check(plan, snapshot),
             Self::HouseRenewal(proof) => proof.check(plan, snapshot),
             Self::CompatibleUpdate(proof) => proof.check(plan, snapshot),
