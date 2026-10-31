@@ -8,6 +8,7 @@
   import type { GameApp } from "$lib/game.svelte";
   import type { JsonValue } from "$lib/proto";
   import { ContentStudioRpc } from "$lib/content/rpc";
+  import NpcStudio from "./NpcStudio.svelte";
   import {
     type CatalogData,
     DocumentHistory,
@@ -39,6 +40,8 @@
   let computedDigest = $state<string | null>(null);
   let cascadePacks = $state<JsonValue[]>([]);
   let liveIncrementExport = $state<boolean>(false);
+  let relocateNpcs = $state<string[]>([]);
+  let showRawJson = $state<boolean>(false);
 
   const history = new DocumentHistory<JsonValue>();
   let canUndo = $state<boolean>(false);
@@ -127,6 +130,16 @@
     }
   }
 
+  function applyStructuredEdit(nextDoc: JsonValue): void {
+    if (documentJson !== null) {
+      history.record(documentJson);
+    }
+    documentJson = nextDoc;
+    rawEditorText = JSON.stringify(nextDoc, null, 2);
+    errorMessage = "";
+    syncHistoryFlags();
+  }
+
   function applyRawJsonEdit(nextText: string): void {
     rawEditorText = nextText;
     try {
@@ -203,7 +216,7 @@
       op: "publish",
       id: selectedPackId,
       content: documentJson,
-      relocate_npcs: [],
+      relocate_npcs: relocateNpcs,
     });
     publishing = false;
     if (res.status === "error") {
@@ -386,15 +399,35 @@
     </div>
 
     <div class="editor-pane">
+      {#if subTab === "npcs"}
+        <NpcStudio
+          {documentJson}
+          {catalog}
+          {rpc}
+          bind:relocateNpcs
+          onChange={applyStructuredEdit}
+          onStatus={(msg) => (statusMessage = msg)}
+          onError={(msg) => (errorMessage = msg)}
+        />
+      {/if}
       <div class="pane-head">
         <span>Canonical Pack / Table JSON (<code>{selectedPackId}</code>)</span>
+        <button
+          type="button"
+          class="small-btn"
+          onclick={() => (showRawJson = !showRawJson)}
+        >
+          {showRawJson || subTab !== "npcs" ? "Hide Raw JSON" : "Show Raw JSON"}
+        </button>
       </div>
-      <textarea
-        class="json-textarea"
-        spellcheck="false"
-        value={rawEditorText}
-        oninput={(e) => applyRawJsonEdit((e.currentTarget as HTMLTextAreaElement).value)}
-      ></textarea>
+      {#if showRawJson || subTab !== "npcs"}
+        <textarea
+          class="json-textarea"
+          spellcheck="false"
+          value={rawEditorText}
+          oninput={(e) => applyRawJsonEdit((e.currentTarget as HTMLTextAreaElement).value)}
+        ></textarea>
+      {/if}
     </div>
   </div>
 </div>
