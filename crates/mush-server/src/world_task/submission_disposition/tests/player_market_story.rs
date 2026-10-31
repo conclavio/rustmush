@@ -901,10 +901,10 @@ async fn part_two(w: &mut World, filed: &str) -> TestResult<Sold> {
 /// C2g, built by 17g C2h): two resale offers at tiny prices to Cy, Cy's
 /// listing and confirmed accept (one balanced split), the stale offer and
 /// the `transfer=no` licence refused, the self-offer, renewal not due,
-/// withdrawal, the charter offer and accept, the renewal after the term
-/// (clearing what stands, the holder's retry, a strict decline, the retry,
-/// the offer at the market row's frozen price, the payment, funded, the
-/// grant; the front's words reaching the holder alone), revocation and
+/// the renewal after the term (clearing what stands, the holder's retry, a
+/// strict decline, the retry, the offer at the market row's frozen price,
+/// the payment, funded, the grant; the front's words reaching the holder
+/// alone), the author's attestation, withdrawal, the charter offer and accept, revocation and
 /// recall, and a restart. `NO_RENEWAL` is pinned in term.
 async fn part_three(w: &mut World, sold: &Sold) -> TestResult {
     let p = w.launch.principals;
@@ -1083,131 +1083,11 @@ async fn part_three(w: &mut World, sold: &Sold) -> TestResult {
         "no renewal operation"
     );
 
-    // The author withdraws: the Registry stops new sales of the revision
-    // (`withdraw_authored_mind`; the entitlement reader refuses a quote on a
-    // withdrawn revision), but the counter is policy-current only (17g C2e:
-    // `current_policy` reads the listing row, never the revision's status),
-    // so both listings still read byte-for-byte, a fresh quote on the sealed
-    // one is refused by the provider (the driver's line) with no quote row
-    // added, and Cy still holds the licence. Hiding a withdrawn revision's
-    // listings is a C4 ledger item (17g section 7, C2e as built).
-    let counter = w.server.command(cy, "+minds".into()).await?;
-    check!(
-        counter.len() == 4
-            && counter.first().map(String::as_str)
-                == Some("Minds for sale here (term and Grace in IC days):"),
-        "{counter:?}"
-    );
-    let quotes = rows(&w.launch.store, "market", "market_mind_entitlement_quote")
-        .await?
-        .len();
-    check_eq!(
-        submitted(w, author, format!("@mind/withdraw {filed}")).await?,
-        vec![
-            format!("Withdrawing filed revision {filed}."),
-            QUEUED.to_owned(),
-            "Done.".to_owned()
-        ]
-    );
-    check_eq!(w.server.command(cy, "+minds".into()).await?, counter);
-    check_eq!(
-        submitted(w, cy, format!("+minds/buy {code}")).await?,
-        vec![
-            format!(
-                "Asking for a quote on listing {code}. +minds {code} shows it once it is confirmed."
-            ),
-            QUEUED.to_owned(),
-            DRIVER.to_owned()
-        ]
-    );
-    check_eq!(
-        rows(&w.launch.store, "market", "market_mind_entitlement_quote")
-            .await?
-            .len(),
-        quotes,
-        "no quote row for a withdrawn revision"
-    );
-    check_eq!(holds(w, cy, 1).await?, vec![sealed.parse::<u64>()?]);
-
-    // The charter: the author offers it to Cy at 1.00; Cy reads the offer
-    // and accepts it; the clerk's service settles (no sortie is out). The
-    // owner row shows in neither holdings view afterwards: the revision is
-    // withdrawn and unpinned, which `owner_holdings::check_status` reads as
-    // not held (for the author before the transfer, for Cy after it), so the
-    // settlement is read from the store's pending row.
-    check_eq!(
-        submitted(w, author, format!("+minds/charter {filed}={CY} price=1.00")).await?,
-        vec![
-            format!("Offering filed mind {filed} and its charter to {CY} for 1cr."),
-            format!(
-                "Once that is confirmed, they accept with +minds/charter/accept {filed} price=1."
-            ),
-            QUEUED.to_owned(),
-            "Done.".to_owned()
-        ]
-    );
-    let listed = w
-        .server
-        .command(cy, format!("+minds/charter/accept {filed}"))
-        .await?;
-    check!(
-        listed.len() == 2
-            && listed.first().is_some_and(|l| offered(
-                l,
-                &format!(
-                    "Filed mind {filed} and its charter are offered to you for 1cr; the offer is open "
-                ),
-                " more minutes.",
-                1_400,
-                1_440
-            ))
-            && listed.get(1).map(String::as_str)
-                == Some(format!("Accept it with +minds/charter/accept {filed} price=1.").as_str()),
-        "{listed:?}"
-    );
-    check_eq!(
-        submitted(w, cy, format!("+minds/charter/accept {filed} price=1")).await?,
-        vec![
-            format!(
-                "Paying 1cr for filed mind {filed} into escrow; the transfer settles once no sortie under it is out."
-            ),
-            QUEUED.to_owned(),
-            "Done.".to_owned()
-        ]
-    );
-    // No sortie is out, so the clerk's last-claim-closed reason applies at
-    // once: the one pending row leaves `funded` for `settled`, its transfer a
-    // later ownership generation than the offer's.
-    let end = Instant::now() + STEP;
-    let settled = loop {
-        let _ = w.server.take_seen(cy)?;
-        let pending = rows(&w.launch.store, "roll", "roll_mind_charter_pending").await?;
-        if let Some(row) = pending
-            .iter()
-            .find(|row| row.pointer("/state/phase").and_then(Value::as_str) == Some("settled"))
-        {
-            break row.clone();
-        }
-        check!(
-            Instant::now() < end,
-            "the charter settles to Cy; the pending rows: {pending:?}"
-        );
-        tokio::time::sleep(Duration::from_millis(500)).await;
-    };
-    let generation = |path: &str| settled.pointer(path).and_then(Value::as_u64);
-    check!(
-        generation("/state/transfer/generation") > generation("/ownership/generation"),
-        "{settled}"
-    );
-    for (who, name) in [(author, "the author"), (cy, "Cy")] {
-        let held = w.server.command(who, "+minds/holdings".into()).await?;
-        check!(
-            !held.iter().any(|l| l.starts_with(&owner_prefix(filed))),
-            "{name}'s holdings after the transfer of a withdrawn revision: {held:?}"
-        );
-    }
-
-    // The renewal after the term. The IC clock runs fast (staff's
+    // The renewal after the term, before the withdrawal and the charter
+    // transfer below: the renewal reader reads the charter title owner's
+    // listed sale, which a withdrawn revision refuses, and the holder and
+    // that seller must be distinct personal accounts, so neither a withdrawn
+    // revision nor a charter the holder owns renews. The IC clock runs fast (staff's
     // `@tacsim/time`, one IC hour per real second) to four IC hours before
     // the sealed licence's term ends, then back at the launch's rate (24),
     // past the end, so the renewal offer is drafted and paid under the last
@@ -1374,23 +1254,23 @@ async fn part_three(w: &mut World, sold: &Sold) -> TestResult {
             ),
         "the grant carries the holder's funding"
     );
-    // The money: every account's sum unchanged; the author and the buyer
-    // untouched (the renewal's remainder goes to the charter's CURRENT title
-    // owner, the renewal reader's seller, which since the charter transfer
-    // above is Cy, so Cy's net debit is the Registry's and the venue's cuts
-    // alone, at most the frozen price).
-    let debit = paid_before.0 - minor(w, cy).await?;
+    // The money: every account's sum unchanged; Cy pays the frozen price,
+    // the buyer is untouched, and the remainder after the Registry's and the
+    // venue's cuts goes to the charter's title owner, the renewal reader's
+    // seller, still the author (the charter moves to Cy below).
+    check_eq!(
+        paid_before.0 - minor(w, cy).await?,
+        price_minor,
+        "Cy pays the frozen price"
+    );
+    let credit = minor(w, author).await? - paid_before.1;
     check!(
-        (0..=price_minor).contains(&debit),
-        "Cy's net debit {debit} within the frozen price {price_minor}"
+        (0..=price_minor).contains(&credit),
+        "the author's credit {credit} within the frozen price {price_minor}"
     );
     check_eq!(
-        (
-            minor(w, author).await?,
-            minor(w, buyer).await?,
-            total(w).await?
-        ),
-        (paid_before.1, paid_before.2, paid_before.3),
+        (minor(w, buyer).await?, total(w).await?),
+        (paid_before.2, paid_before.3),
         "the renewal moves money, it makes none"
     );
     term_end(w, sealed, "2").await?;
@@ -1400,6 +1280,145 @@ async fn part_three(w: &mut World, sold: &Sold) -> TestResult {
         renewed.len() == 1 && renewed.iter().all(|l| not_due(l)),
         "{renewed:?}"
     );
+
+    // The author attests: the owner licence's term began at the filing,
+    // before Cy's seat was bought, so the clock above ran past its end too,
+    // and a charter does not transfer past its owner term's end (the pending
+    // consent's deadline is the earlier of the term's end and the settle
+    // delay, so Fund refuses an acceptance after it). `@mind/attest` is due
+    // once the term has ended, within Grace, and is free: no balance moves.
+    check_eq!(
+        submitted(w, author, format!("@mind/attest {filed}")).await?,
+        vec![
+            format!("Renewing your owner's licence for filed mind {filed}."),
+            QUEUED.to_owned(),
+            "Done.".to_owned()
+        ]
+    );
+
+    // The author withdraws: the Registry stops new sales of the revision
+    // (`withdraw_authored_mind`; the entitlement reader refuses a quote on a
+    // withdrawn revision), but the counter is policy-current only (17g C2e:
+    // `current_policy` reads the listing row, never the revision's status),
+    // so both listings still read byte-for-byte, a fresh quote on the sealed
+    // one is refused by the provider (the driver's line) with no quote row
+    // added, and Cy still holds the licence. Hiding a withdrawn revision's
+    // listings is a C4 ledger item (17g section 7, C2e as built).
+    let counter = w.server.command(cy, "+minds".into()).await?;
+    check!(
+        counter.len() == 4
+            && counter.first().map(String::as_str)
+                == Some("Minds for sale here (term and Grace in IC days):"),
+        "{counter:?}"
+    );
+    let quotes = rows(&w.launch.store, "market", "market_mind_entitlement_quote")
+        .await?
+        .len();
+    check_eq!(
+        submitted(w, author, format!("@mind/withdraw {filed}")).await?,
+        vec![
+            format!("Withdrawing filed revision {filed}."),
+            QUEUED.to_owned(),
+            "Done.".to_owned()
+        ]
+    );
+    check_eq!(w.server.command(cy, "+minds".into()).await?, counter);
+    check_eq!(
+        submitted(w, cy, format!("+minds/buy {code}")).await?,
+        vec![
+            format!(
+                "Asking for a quote on listing {code}. +minds {code} shows it once it is confirmed."
+            ),
+            QUEUED.to_owned(),
+            DRIVER.to_owned()
+        ]
+    );
+    check_eq!(
+        rows(&w.launch.store, "market", "market_mind_entitlement_quote")
+            .await?
+            .len(),
+        quotes,
+        "no quote row for a withdrawn revision"
+    );
+    check_eq!(holds(w, cy, 1).await?, vec![sealed.parse::<u64>()?]);
+
+    // The charter: the author offers it to Cy at 1.00; Cy reads the offer
+    // and accepts it; the clerk's service settles (no sortie is out). The
+    // owner row shows in neither holdings view afterwards: the revision is
+    // withdrawn and unpinned, which `owner_holdings::check_status` reads as
+    // not held (for the author before the transfer, for Cy after it), so the
+    // settlement is read from the store's pending row.
+    check_eq!(
+        submitted(w, author, format!("+minds/charter {filed}={CY} price=1.00")).await?,
+        vec![
+            format!("Offering filed mind {filed} and its charter to {CY} for 1cr."),
+            format!(
+                "Once that is confirmed, they accept with +minds/charter/accept {filed} price=1."
+            ),
+            QUEUED.to_owned(),
+            "Done.".to_owned()
+        ]
+    );
+    let listed = w
+        .server
+        .command(cy, format!("+minds/charter/accept {filed}"))
+        .await?;
+    check!(
+        listed.len() == 2
+            && listed.first().is_some_and(|l| offered(
+                l,
+                &format!(
+                    "Filed mind {filed} and its charter are offered to you for 1cr; the offer is open "
+                ),
+                " more minutes.",
+                1_400,
+                1_440
+            ))
+            && listed.get(1).map(String::as_str)
+                == Some(format!("Accept it with +minds/charter/accept {filed} price=1.").as_str()),
+        "{listed:?}"
+    );
+    check_eq!(
+        submitted(w, cy, format!("+minds/charter/accept {filed} price=1")).await?,
+        vec![
+            format!(
+                "Paying 1cr for filed mind {filed} into escrow; the transfer settles once no sortie under it is out."
+            ),
+            QUEUED.to_owned(),
+            "Done.".to_owned()
+        ]
+    );
+    // No sortie is out, so the clerk's last-claim-closed reason applies at
+    // once: the one pending row leaves `funded` for `settled`, its transfer a
+    // later ownership generation than the offer's.
+    let end = Instant::now() + STEP;
+    let settled = loop {
+        let _ = w.server.take_seen(cy)?;
+        let pending = rows(&w.launch.store, "roll", "roll_mind_charter_pending").await?;
+        if let Some(row) = pending
+            .iter()
+            .find(|row| row.pointer("/state/phase").and_then(Value::as_str) == Some("settled"))
+        {
+            break row.clone();
+        }
+        check!(
+            Instant::now() < end,
+            "the charter settles to Cy; the pending rows: {pending:?}"
+        );
+        tokio::time::sleep(Duration::from_millis(500)).await;
+    };
+    let generation = |path: &str| settled.pointer(path).and_then(Value::as_u64);
+    check!(
+        generation("/state/transfer/generation") > generation("/ownership/generation"),
+        "{settled}"
+    );
+    for (who, name) in [(author, "the author"), (cy, "Cy")] {
+        let held = w.server.command(who, "+minds/holdings".into()).await?;
+        check!(
+            !held.iter().any(|l| l.starts_with(&owner_prefix(filed))),
+            "{name}'s holdings after the transfer of a withdrawn revision: {held:?}"
+        );
+    }
 
     // The Registry operator revokes Cy's licence (Cy's row reads `; revoked`)
     // and recalls the filed revision; the buyer's identical recall reads
@@ -1428,6 +1447,18 @@ async fn part_three(w: &mut World, sold: &Sold) -> TestResult {
             "Done.".to_owned()
         ]
     );
+    // The recall's notice reaches each live holder on the readback's own
+    // tick (`registry_recall::notice`, five seconds), so the buyer's (the
+    // open licence's holder) is awaited, and what the same tick said to the
+    // others dropped, before the buyer's own recall, whose reply is compared
+    // line for line.
+    let notice = format!(
+        "Registry recall: your mind licence {open} selects filed revision {filed}, recalled by operation "
+    );
+    await_own(&w.server, buyer, |l| l.starts_with(&notice)).await?;
+    for who in [author, cy] {
+        let _ = w.server.take_seen(who)?;
+    }
     const MISSING: &str = "999";
     let foreign = submitted(w, buyer, format!("@registry/recall {filed}")).await?;
     let missing = submitted(w, buyer, format!("@registry/recall {MISSING}")).await?;
