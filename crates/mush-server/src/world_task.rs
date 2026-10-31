@@ -3701,6 +3701,67 @@ async fn run(
                                 debug_assert!(deferred_world_msg.is_none());
                                 deferred_world_msg = Some(WorldMsg::Inbound(msg));
                                 StepOutcome::Continue
+                            } else if let Inbound::Invoke {
+                                conn,
+                                actor,
+                                id,
+                                request:
+                                    mush_proto::InvokeRequest::ContentStudio(
+                                        mush_proto::ContentStudioRequest::Assist {
+                                            family,
+                                            scope,
+                                            brief,
+                                            context,
+                                        },
+                                    ),
+                            } = &msg
+                                && let Some(llm_service) = llm.as_ref()
+                                && llm_service
+                                    .caps_for(mush_llm::LlmFeature::ContentAssist)
+                                    .is_some()
+                            {
+                                let conn = *conn;
+                                let id = *id;
+                                match tacsim::content_studio::prepare_assist_snapshot(
+                                    &engine.world,
+                                    conn,
+                                    *actor,
+                                    family,
+                                    scope,
+                                    brief,
+                                    context,
+                                ) {
+                                    None => {}
+                                    Some(Err(result)) => {
+                                        out.to_conn(
+                                            conn,
+                                            OutputEvent::InvokeResult {
+                                                id,
+                                                result: result.bounded(),
+                                            },
+                                        );
+                                    }
+                                    Some(Ok(snap)) => {
+                                        let llm_arc = Arc::clone(llm_service);
+                                        let gw = Arc::clone(&gateway);
+                                        tokio::spawn(async move {
+                                            let resp =
+                                                tacsim::content_studio::run_content_assist_async(
+                                                    &llm_arc, snap,
+                                                )
+                                                .await;
+                                            let event = Arc::new(OutputEvent::InvokeResult {
+                                                id,
+                                                result: mush_proto::InvokeResult::ContentStudio(
+                                                    resp,
+                                                )
+                                                .bounded(),
+                                            });
+                                            gw.transmit(vec![(SendTarget::Conn(conn), event)]);
+                                        });
+                                    }
+                                }
+                                StepOutcome::Continue
                             } else {
                                 guarded!("engine.step", {
                                     // WS01-S8's armed world fault (feature +

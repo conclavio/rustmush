@@ -442,8 +442,16 @@ fn code_bound_npcs() -> BTreeMap<(String, String), Vec<String>> {
 }
 
 fn build_catalog(ctx: &Ctx<'_>) -> InvokeResult {
-    let content_state = ctx.w.module_state::<mush_content::ContentState>();
-    let atlas_state = ctx.w.module_state::<mush_atlas::AtlasState>();
+    InvokeResult::ContentStudio(ContentStudioResponse::Catalog {
+        catalog: build_catalog_from_world(ctx.w),
+    })
+}
+
+/// Build the live reference catalog JSON from `w` without mutating world state.
+#[must_use]
+pub fn build_catalog_from_world(w: &mush_core::World) -> Value {
+    let content_state = w.module_state::<mush_content::ContentState>();
+    let atlas_state = w.module_state::<mush_atlas::AtlasState>();
 
     // 1. Ports from lane pack
     let mut ports = Vec::new();
@@ -524,7 +532,7 @@ fn build_catalog(ctx: &Ctx<'_>) -> InvokeResult {
                         .entries()
                         .get(&room_cid)
                         .and_then(mush_content::AppliedEntry::object)
-                    && let Some(obj) = ctx.w.get(room_obj)
+                    && let Some(obj) = w.get(room_obj)
                 {
                     detail_keys.clear();
                     for (attr_name, attr) in obj.attrs.iter() {
@@ -749,17 +757,15 @@ fn build_catalog(ctx: &Ctx<'_>) -> InvokeResult {
         "+credit", "+sortie", "look",
     ];
 
-    InvokeResult::ContentStudio(ContentStudioResponse::Catalog {
-        catalog: json!({
-            "ports": ports,
-            "stations": stations,
-            "npcs": npcs,
-            "lore_pools": lore_pools,
-            "goods": goods,
-            "interfaces": interfaces,
-            "command_refs": command_refs,
-            "packs": pack_summaries,
-        }),
+    json!({
+        "ports": ports,
+        "stations": stations,
+        "npcs": npcs,
+        "lore_pools": lore_pools,
+        "goods": goods,
+        "interfaces": interfaces,
+        "command_refs": command_refs,
+        "packs": pack_summaries,
     })
 }
 
@@ -1379,23 +1385,541 @@ fn relocate_live_npcs(
     moved
 }
 
-/// Structured co-authoring assistant (`LlmFeature::ContentAssist`, D-34-8).
-/// Deterministic, bounded synthesis that respects the `BUILDER_LLM` gate and
-/// pinned context fields when no external provider is attached, and expands in
-/// CS.1/CS.2 for NPC and Quest scopes.
-fn assist_document(
-    ctx: &Ctx<'_>,
+/// Snapshot of a `ContentStudioRequest::Assist` request validated on the world
+/// loop and ready to run off-loop against [`mush_llm::LlmService`] (cut CS.5a).
+#[derive(Clone, Debug)]
+pub struct ContentAssistSnapshot {
+    pub actor: Option<mush_core::ObjId>,
+    pub family: String,
+    pub scope: String,
+    pub brief: String,
+    pub context: Value,
+    pub catalog: Value,
+}
+
+/// Validate an incoming `ContentStudioRequest::Assist` on the world loop and
+/// snapshot the live catalog for off-loop execution.
+///
+/// Returns `None` if `actor` does not exist or is not bound to `conn` (matching
+/// `Engine::handle_invoke`), `Some(Err(InvokeResult))` on permission or schema
+/// refusal, or `Some(Ok(ContentAssistSnapshot))` when ready to dispatch.
+#[must_use]
+#[allow(clippy::too_many_arguments)]
+pub fn prepare_assist_snapshot(
+    w: &mush_core::World,
+    conn: ConnId,
+    actor: mush_core::ObjId,
     family: &str,
     scope: &str,
     brief: &str,
     context: &Value,
-) -> InvokeResult {
-    if !perm::has_power(ctx.w, ctx.actor, Powers::BUILDER_LLM) {
-        return error(
+) -> Option<Result<ContentAssistSnapshot, InvokeResult>> {
+    if w.get(actor).is_none()
+        || !w
+            .connection_binding(conn)
+            .is_some_and(|(bound, _)| bound == actor)
+    {
+        return None;
+    }
+    if !crate::commands::is_staff(w, actor) {
+        return Some(Err(error("not_staff", "Permission denied.")));
+    }
+    let req = ContentStudioRequest::Assist {
+        family: family.to_string(),
+        scope: scope.to_string(),
+        brief: brief.to_string(),
+        context: context.clone(),
+    };
+    if let Err(detail) = req.validate() {
+        return Some(Err(error("invalid", detail)));
+    }
+    if !perm::has_power(w, actor, Powers::BUILDER_LLM) {
+        return Some(Err(error(
             "missing_power",
             "You need the BUILDER_LLM power to use Content Assist.",
+        )));
+    }
+    let catalog = build_catalog_from_world(w);
+    Some(Ok(ContentAssistSnapshot {
+        actor: Some(actor),
+        family: family.to_string(),
+        scope: scope.to_string(),
+        brief: brief.to_string(),
+        context: context.clone(),
+        catalog,
+    }))
+}
+
+const CONTENT_ASSIST_TOOL_NAME: &str = "emit_content_patch";
+const CONTENT_ASSIST_MAX_TOKENS: u32 = 2048;
+
+/// Build the [`mush_llm::StructuredSpec`] for a Content Studio co-authoring call
+/// (`LlmFeature::ContentAssist`, D-34-8, cut CS.5a).
+#[must_use]
+pub fn build_content_assist_spec(snap: &ContentAssistSnapshot) -> mush_llm::StructuredSpec {
+    let ports: Vec<&str> = snap
+        .catalog
+        .get("ports")
+        .and_then(Value::as_array)
+        .map(|arr| {
+            arr.iter()
+                .filter_map(|p| p.get("id").and_then(Value::as_str))
+                .collect()
+        })
+        .unwrap_or_default();
+    let mut station_rooms = Vec::new();
+    if let Some(stations) = snap.catalog.get("stations").and_then(Value::as_array) {
+        for st in stations {
+            let Some(pack_id) = st.get("pack_id").and_then(Value::as_str) else {
+                continue;
+            };
+            let room_ids: Vec<&str> = st
+                .get("rooms")
+                .and_then(Value::as_array)
+                .map(|arr| {
+                    arr.iter()
+                        .filter_map(|r| r.get("id").and_then(Value::as_str))
+                        .collect()
+                })
+                .unwrap_or_default();
+            station_rooms.push(format!("  - {pack_id}: {}", room_ids.join(", ")));
+        }
+    }
+    let interfaces: Vec<&str> = snap
+        .catalog
+        .get("interfaces")
+        .and_then(Value::as_array)
+        .map(|arr| arr.iter().filter_map(Value::as_str).collect())
+        .unwrap_or_default();
+    let command_refs: Vec<&str> = snap
+        .catalog
+        .get("command_refs")
+        .and_then(Value::as_array)
+        .map(|arr| arr.iter().filter_map(Value::as_str).collect())
+        .unwrap_or_default();
+
+    let system = format!(
+        "You are the TacSim Content Studio co-authoring assistant (`content_assist`).\n\
+         Emit a JSON patch object via the `{CONTENT_ASSIST_TOOL_NAME}` tool matching the requested \
+         `family` (`{family}`) and `scope` (`{scope}`).\n\
+         Never invent station packs, rooms, ports, interfaces, or command_refs outside this catalog:\n\
+         Valid ports: {ports}\n\
+         Valid stations and rooms:\n{stations}\n\
+         Valid interfaces: {interfaces}\n\
+         Valid command_refs: {command_refs}\n\
+         Valid crew duties: mining, recovery, combat\n\
+         Caps: persona <= 8192 bytes, background <= 32768 bytes, speech_style <= 4096 bytes, \
+         goals/knows/does_not_know <= 64 items (each <= 2048 bytes), fallback <= 32 lines.\n\
+         Preserve any pinned fields provided in <pinned_context>.",
+        family = snap.family,
+        scope = snap.scope,
+        ports = ports.join(", "),
+        stations = station_rooms.join("\n"),
+        interfaces = interfaces.join(", "),
+        command_refs = command_refs.join(", "),
+    );
+
+    let user = format!(
+        "<family>{}</family>\n<scope>{}</scope>\n<brief>{}</brief>\n<pinned_context>{}</pinned_context>",
+        snap.family,
+        snap.scope,
+        snap.brief.trim(),
+        serde_json::to_string(&snap.context).unwrap_or_else(|_| "{}".to_string()),
+    );
+
+    let repair_hint = format!(
+        "Return a JSON object for family `{}` and scope `{}` using only catalog-known `room_pack`, \
+         `room`, `terms.port`, `interfaces`, and `command_refs`.",
+        snap.family, snap.scope
+    );
+
+    mush_llm::StructuredSpec {
+        feature: mush_llm::LlmFeature::ContentAssist,
+        priority: mush_llm::Priority::Interactive,
+        actor: snap.actor,
+        system,
+        user,
+        tool: mush_llm::ToolDef {
+            name: CONTENT_ASSIST_TOOL_NAME.to_string(),
+            description:
+                "Emit the structured Content Studio JSON patch for the requested family and scope."
+                    .to_string(),
+            input_schema: json!({
+                "type": "object",
+                "additionalProperties": true
+            }),
+            strict: false,
+        },
+        max_tokens: CONTENT_ASSIST_MAX_TOKENS,
+        repair_hint,
+    }
+}
+
+fn truncate_utf8(s: &str, max_bytes: usize) -> String {
+    if s.len() <= max_bytes {
+        return s.to_string();
+    }
+    let mut end = max_bytes;
+    while end > 0 && !s.is_char_boundary(end) {
+        end -= 1;
+    }
+    s[..end].to_string()
+}
+
+fn clamp_string_field(obj: &mut serde_json::Map<String, Value>, key: &str, max_bytes: usize) {
+    if let Some(val) = obj.get_mut(key)
+        && let Some(s) = val.as_str()
+    {
+        *val = Value::String(truncate_utf8(s, max_bytes));
+    }
+}
+
+fn clamp_string_list_field(
+    obj: &mut serde_json::Map<String, Value>,
+    key: &str,
+    max_items: usize,
+    max_item_bytes: usize,
+) {
+    if let Some(val) = obj.get_mut(key)
+        && let Some(arr) = val.as_array()
+    {
+        let clamped: Vec<Value> = arr
+            .iter()
+            .filter_map(Value::as_str)
+            .map(str::trim)
+            .filter(|s| !s.is_empty())
+            .take(max_items)
+            .map(|s| Value::String(truncate_utf8(s, max_item_bytes)))
+            .collect();
+        *val = Value::Array(clamped);
+    }
+}
+
+fn clamp_profile_map(
+    profile: &mut serde_json::Map<String, Value>,
+    valid_interfaces: &BTreeSet<&str>,
+    valid_commands: &BTreeSet<&str>,
+) {
+    clamp_string_field(profile, "persona", 8 * 1024);
+    clamp_string_field(profile, "background", 32 * 1024);
+    clamp_string_field(profile, "speech_style", 4 * 1024);
+    clamp_string_list_field(profile, "goals", 64, 2 * 1024);
+    clamp_string_list_field(profile, "knows", 64, 2 * 1024);
+    clamp_string_list_field(profile, "does_not_know", 64, 2 * 1024);
+    clamp_string_list_field(profile, "fallback", 32, 2 * 1024);
+    clamp_string_list_field(profile, "watch", 128, 256);
+
+    if let Some(ifaces) = profile.get_mut("interfaces")
+        && let Some(arr) = ifaces.as_array()
+    {
+        let filtered: Vec<Value> = arr
+            .iter()
+            .filter_map(Value::as_str)
+            .filter(|i| valid_interfaces.is_empty() || valid_interfaces.contains(i))
+            .map(|i| Value::String(i.to_string()))
+            .collect();
+        *ifaces = Value::Array(filtered);
+    }
+    if let Some(cmds) = profile.get_mut("command_refs")
+        && let Some(arr) = cmds.as_array()
+    {
+        let filtered: Vec<Value> = arr
+            .iter()
+            .filter_map(Value::as_str)
+            .filter(|c| valid_commands.is_empty() || valid_commands.contains(c))
+            .map(|c| Value::String(c.to_string()))
+            .collect();
+        *cmds = Value::Array(filtered);
+    }
+}
+
+/// Validate and clamp a candidate `Assist` patch against [`AgentProfile`] byte/count
+/// caps and the live reference catalog (`stations`, `ports`, `interfaces`,
+/// `command_refs`).
+///
+/// # Errors
+///
+/// Returns a human-readable error message suitable for [`mush_llm::call_structured`]'s
+/// repair turn when required scope keys are missing or when `room_pack`, `room`, or
+/// `terms.port` names a non-existent catalog entry.
+pub fn validate_and_clamp_assist_patch(
+    catalog: &Value,
+    family: &str,
+    scope: &str,
+    mut patch: Value,
+) -> Result<Value, String> {
+    let Some(obj) = patch.as_object_mut() else {
+        return Err("patch must be a JSON object".to_string());
+    };
+
+    let valid_interfaces: BTreeSet<&str> = catalog
+        .get("interfaces")
+        .and_then(Value::as_array)
+        .map(|arr| arr.iter().filter_map(Value::as_str).collect())
+        .unwrap_or_default();
+    let valid_commands: BTreeSet<&str> = catalog
+        .get("command_refs")
+        .and_then(Value::as_array)
+        .map(|arr| arr.iter().filter_map(Value::as_str).collect())
+        .unwrap_or_default();
+    let valid_ports: BTreeSet<&str> = catalog
+        .get("ports")
+        .and_then(Value::as_array)
+        .map(|arr| {
+            arr.iter()
+                .filter_map(|p| p.get("id").and_then(Value::as_str))
+                .collect()
+        })
+        .unwrap_or_default();
+    let mut station_rooms: BTreeMap<&str, BTreeSet<&str>> = BTreeMap::new();
+    if let Some(stations) = catalog.get("stations").and_then(Value::as_array) {
+        for st in stations {
+            if let Some(pack_id) = st.get("pack_id").and_then(Value::as_str) {
+                let rooms: BTreeSet<&str> = st
+                    .get("rooms")
+                    .and_then(Value::as_array)
+                    .map(|arr| {
+                        arr.iter()
+                            .filter_map(|r| r.get("id").and_then(Value::as_str))
+                            .collect()
+                    })
+                    .unwrap_or_default();
+                station_rooms.insert(pack_id, rooms);
+            }
+        }
+    }
+
+    // Clamp top-level profile fields (used by single-field scopes) and nested `profile`
+    clamp_profile_map(obj, &valid_interfaces, &valid_commands);
+    if let Some(profile) = obj.get_mut("profile").and_then(Value::as_object_mut) {
+        clamp_profile_map(profile, &valid_interfaces, &valid_commands);
+    }
+
+    if family == "npc" {
+        if let Some(rp) = obj.get("room_pack").and_then(Value::as_str)
+            && !station_rooms.is_empty()
+        {
+            let Some(rooms) = station_rooms.get(rp) else {
+                return Err(format!(
+                    "unknown `room_pack` `{rp}`; must be one of the catalog station packs"
+                ));
+            };
+            if let Some(room) = obj.get("room").and_then(Value::as_str)
+                && !rooms.is_empty()
+                && !rooms.contains(room)
+            {
+                return Err(format!(
+                    "unknown `room` `{room}` in `{rp}`; must be a valid room in that station"
+                ));
+            }
+        }
+        if let Some(terms) = obj.get_mut("terms").and_then(Value::as_object_mut) {
+            if let Some(port) = terms.get("port").and_then(Value::as_str)
+                && !valid_ports.is_empty()
+                && !valid_ports.contains(port)
+            {
+                return Err(format!(
+                    "unknown `terms.port` `{port}`; must be one of the catalog ports"
+                ));
+            }
+            if let Some(duties_val) = terms.get_mut("duties")
+                && let Some(arr) = duties_val.as_array()
+            {
+                let mut valid_duties: Vec<Value> = arr
+                    .iter()
+                    .filter_map(Value::as_str)
+                    .filter(|d| matches!(*d, "mining" | "recovery" | "combat"))
+                    .map(|d| Value::String(d.to_string()))
+                    .collect();
+                if valid_duties.is_empty() {
+                    valid_duties.push(Value::String("recovery".to_string()));
+                }
+                *duties_val = Value::Array(valid_duties);
+            }
+        }
+
+        // Verify required scope fields
+        match scope {
+            "persona" | "background" | "speech_style" => {
+                if obj
+                    .get(scope)
+                    .and_then(Value::as_str)
+                    .is_none_or(|s| s.trim().is_empty())
+                {
+                    return Err(format!(
+                        "scope `{scope}` requires non-empty `{scope}` string"
+                    ));
+                }
+            }
+            "goals" | "knows" | "does_not_know" | "fallback" => {
+                if obj
+                    .get(scope)
+                    .and_then(Value::as_array)
+                    .is_none_or(Vec::is_empty)
+                {
+                    return Err(format!(
+                        "scope `{scope}` requires non-empty `{scope}` array"
+                    ));
+                }
+            }
+            "relocate" => {
+                if obj
+                    .get("persona")
+                    .and_then(Value::as_str)
+                    .is_none_or(|s| s.trim().is_empty())
+                {
+                    return Err("scope `relocate` requires non-empty `persona`".to_string());
+                }
+            }
+            _ => {
+                if obj
+                    .get("name")
+                    .and_then(Value::as_str)
+                    .is_none_or(|s| s.trim().is_empty())
+                {
+                    return Err("full NPC patch requires non-empty `name`".to_string());
+                }
+                if !obj.get("profile").is_some_and(Value::is_object) {
+                    return Err("full NPC patch requires a `profile` object".to_string());
+                }
+            }
+        }
+    } else if family == "quest" {
+        clamp_string_field(obj, "title", 256);
+        clamp_string_field(obj, "destination", 256);
+        clamp_string_field(obj, "introduction", 4 * 1024);
+        clamp_string_field(obj, "completion", 4 * 1024);
+        clamp_string_field(obj, "instructions", 4 * 1024);
+
+        match scope {
+            "introduction" | "completion" => {
+                if obj
+                    .get(scope)
+                    .and_then(Value::as_str)
+                    .is_none_or(|s| s.trim().is_empty())
+                {
+                    return Err(format!(
+                        "quest scope `{scope}` requires non-empty `{scope}`"
+                    ));
+                }
+            }
+            "checkpoint_instructions" => {
+                if obj
+                    .get("instructions")
+                    .and_then(Value::as_str)
+                    .is_none_or(|s| s.trim().is_empty())
+                {
+                    return Err(
+                        "quest scope `checkpoint_instructions` requires non-empty `instructions`"
+                            .to_string(),
+                    );
+                }
+            }
+            _ => {
+                if obj
+                    .get("title")
+                    .and_then(Value::as_str)
+                    .is_none_or(|s| s.trim().is_empty())
+                {
+                    return Err("full quest patch requires non-empty `title`".to_string());
+                }
+            }
+        }
+    }
+
+    Ok(patch)
+}
+
+/// Run a Content Studio `Assist` request off the world loop via [`mush_llm::call_structured`]
+/// on [`mush_llm::LlmFeature::ContentAssist`], falling back to deterministic synthesis when
+/// no route is configured for `content_assist`.
+pub async fn run_content_assist_async(
+    llm: &mush_llm::LlmService,
+    snap: ContentAssistSnapshot,
+) -> ContentStudioResponse {
+    if llm.caps_for(mush_llm::LlmFeature::ContentAssist).is_none() {
+        return deterministic_assist_response(
+            &snap.catalog,
+            &snap.family,
+            &snap.scope,
+            &snap.brief,
+            &snap.context,
         );
     }
+    let spec = build_content_assist_spec(&snap);
+    let catalog = snap.catalog.clone();
+    let family = snap.family.clone();
+    let scope = snap.scope.clone();
+    match mush_llm::call_structured::<Value, _>(llm, &spec, move |candidate| {
+        validate_and_clamp_assist_patch(&catalog, &family, &scope, candidate)
+    })
+    .await
+    {
+        Ok(ok) => ContentStudioResponse::Assisted {
+            patch: ok.value,
+            model: ok.model,
+            prompt_hash: ok.prompt_hash,
+        },
+        Err(err) => {
+            let (code, message) = match &err {
+                mush_llm::StructuredError::Disabled { prompt_hash } => (
+                    "llm_disabled",
+                    format!(
+                        "Content Assist LLM is currently disabled (prompt_hash={prompt_hash})."
+                    ),
+                ),
+                mush_llm::StructuredError::Refused {
+                    category,
+                    prompt_hash,
+                } => (
+                    "llm_refused",
+                    format!(
+                        "Provider refused Content Assist request ({}, prompt_hash={prompt_hash}).",
+                        category.as_deref().unwrap_or("unspecified")
+                    ),
+                ),
+                mush_llm::StructuredError::Malformed { last, prompt_hash } => (
+                    "llm_malformed",
+                    format!(
+                        "Content Assist output failed schema validation after repair: {last} (prompt_hash={prompt_hash})."
+                    ),
+                ),
+                mush_llm::StructuredError::Call {
+                    err: call_err,
+                    prompt_hash,
+                } => {
+                    if err.is_budget() {
+                        (
+                            "budget_exceeded",
+                            format!(
+                                "Content Assist budget exceeded: {call_err} (prompt_hash={prompt_hash})."
+                            ),
+                        )
+                    } else {
+                        (
+                            "llm_error",
+                            format!(
+                                "Content Assist provider error: {call_err} (prompt_hash={prompt_hash})."
+                            ),
+                        )
+                    }
+                }
+            };
+            ContentStudioResponse::Error {
+                code: code.to_string(),
+                message,
+            }
+        }
+    }
+}
+
+fn deterministic_assist_response(
+    catalog: &Value,
+    family: &str,
+    scope: &str,
+    brief: &str,
+    context: &Value,
+) -> ContentStudioResponse {
     let feature = mush_llm::LlmFeature::ContentAssist;
     let prompt_hash = mush_core::DefinitionDigest::for_canonical_value_with_limit(
         feature.route_key(),
@@ -1410,12 +1934,36 @@ fn assist_document(
     .map(|d| d.to_hex())
     .unwrap_or_default();
 
-    let patch = synthesize_assist_patch(family, scope, brief, context);
-    InvokeResult::ContentStudio(ContentStudioResponse::Assisted {
+    let raw = synthesize_assist_patch(family, scope, brief, context);
+    let patch = validate_and_clamp_assist_patch(catalog, family, scope, raw.clone()).unwrap_or(raw);
+    ContentStudioResponse::Assisted {
         patch,
         model: format!("{}:studio-v1", feature.route_key()),
         prompt_hash,
-    })
+    }
+}
+
+/// Structured co-authoring assistant (`LlmFeature::ContentAssist`, D-34-8).
+/// Deterministic, bounded synthesis that respects the `BUILDER_LLM` gate and
+/// pinned context fields when no external provider is attached, and expands in
+/// CS.1/CS.2/CS.5a for NPC and Quest scopes.
+fn assist_document(
+    ctx: &Ctx<'_>,
+    family: &str,
+    scope: &str,
+    brief: &str,
+    context: &Value,
+) -> InvokeResult {
+    if !perm::has_power(ctx.w, ctx.actor, Powers::BUILDER_LLM) {
+        return error(
+            "missing_power",
+            "You need the BUILDER_LLM power to use Content Assist.",
+        );
+    }
+    let catalog = build_catalog_from_world(ctx.w);
+    InvokeResult::ContentStudio(deterministic_assist_response(
+        &catalog, family, scope, brief, context,
+    ))
 }
 
 fn synthesize_assist_patch(family: &str, scope: &str, brief: &str, context: &Value) -> Value {
@@ -1433,35 +1981,35 @@ fn synthesize_npc_patch(scope: &str, brief: &str, lower: &str, context: &Value) 
             (
                 "stickney_port",
                 "neighborhood.stickney_yards",
-                "room.visiting_berth_gallery",
+                "room.p10_shift_board",
                 "Stickney Yards",
             )
         } else if lower.contains("aitken") || lower.contains("luna") {
             (
                 "luna_port",
                 "neighborhood.aitken_highport",
-                "room.arrivals_concourse",
+                "room.l08_receiving",
                 "Aitken Highport",
             )
         } else if lower.contains("voltaire") || lower.contains("deimos") {
             (
                 "deimos_port",
                 "neighborhood.voltaire_anchorage",
-                "room.docking_spine",
+                "room.d07_receiving",
                 "Voltaire Anchorage",
             )
         } else if lower.contains("ligeia") || lower.contains("titan") {
             (
                 "titan_port",
                 "neighborhood.ligeia_terminal",
-                "room.transfer_concourse",
+                "room.t03_arrivals",
                 "Ligeia Terminal",
             )
         } else {
             (
                 "ceres_port",
                 "neighborhood.ceres_freeport",
-                "room.arrivals",
+                "room.c10_slack_line",
                 "Ceres Freeport",
             )
         };
@@ -1686,6 +2234,161 @@ mod tests {
                 .and_then(|t| t.get("port"))
                 .and_then(Value::as_str),
             Some("ceres_port")
+        );
+        Ok(())
+    }
+
+    #[tokio::test]
+    async fn content_assist_structured_llm_repairs_invalid_room_and_clamps_fences()
+    -> Result<(), Box<dyn std::error::Error>> {
+        let (mut w, _reg) = mush_testkit::boot_world();
+        let staff = w.create(ObjKind::Player, "Staff", GOD, None)?;
+        if let Some(obj) = w.get_mut(staff) {
+            obj.flags.insert(Flags::WIZARD);
+            obj.powers.insert(Powers::BUILDER_LLM);
+        }
+        let catalog = build_catalog_from_world(&w);
+
+        let mock = Arc::new(mush_llm::MockProvider::new("anthropic").with_caps(
+            mush_llm::ProviderCaps {
+                tool_calling: true,
+                forced_tool_choice: true,
+                ..Default::default()
+            },
+        ));
+        // Attempt 1: provider emits a hallucinated `room` ("room.nonexistent_deck")
+        mock.push_response(mush_llm::CompletionResponse {
+            content: vec![mush_llm::ContentBlock::ToolUse {
+                id: "t1".to_string(),
+                name: CONTENT_ASSIST_TOOL_NAME.to_string(),
+                input: json!({
+                    "slug": "hana_vos",
+                    "name": "Hana Vos",
+                    "room_pack": "neighborhood.ceres_freeport",
+                    "room": "room.nonexistent_deck",
+                    "tier": "supporting",
+                    "profile": {
+                        "persona": "Seasoned hull technician.",
+                        "interfaces": ["hire", "hallucinated_iface"],
+                        "command_refs": ["+crew", "+fake_cmd"]
+                    },
+                    "terms": {
+                        "schema": 1,
+                        "port": "ceres_port",
+                        "mission_scope": "subordinate_operator",
+                        "duties": ["recovery"]
+                    }
+                }),
+            }],
+            stop_reason: mush_llm::StopReason::ToolUse,
+            usage: mush_llm::Usage {
+                input_tokens: 120,
+                output_tokens: 80,
+                cache_read_tokens: 0,
+                reasoning_tokens: 0,
+                cost_usd: Some(0.001),
+            },
+            model: "claude-sonnet-4-5".to_string(),
+        });
+        // Attempt 2 (repair turn): provider fixes `room` to `room.c10_slack_line`; fence strips unknown interface/command_ref
+        mock.push_response(mush_llm::CompletionResponse {
+            content: vec![mush_llm::ContentBlock::ToolUse {
+                id: "t2".to_string(),
+                name: CONTENT_ASSIST_TOOL_NAME.to_string(),
+                input: json!({
+                    "slug": "hana_vos",
+                    "name": "Hana Vos",
+                    "room_pack": "neighborhood.ceres_freeport",
+                    "room": "room.c10_slack_line",
+                    "tier": "supporting",
+                    "profile": {
+                        "persona": "Seasoned hull technician.",
+                        "interfaces": ["hire", "hallucinated_iface"],
+                        "command_refs": ["+crew", "+fake_cmd"]
+                    },
+                    "terms": {
+                        "schema": 1,
+                        "port": "ceres_port",
+                        "mission_scope": "subordinate_operator",
+                        "duties": ["recovery", "bogus_duty"]
+                    }
+                }),
+            }],
+            stop_reason: mush_llm::StopReason::ToolUse,
+            usage: mush_llm::Usage {
+                input_tokens: 180,
+                output_tokens: 85,
+                cache_read_tokens: 0,
+                reasoning_tokens: 0,
+                cost_usd: Some(0.0015),
+            },
+            model: "claude-sonnet-4-5".to_string(),
+        });
+
+        let llm = mush_llm::LlmService::builder()
+            .global_enabled(true)
+            .provider("anthropic", mock.clone())
+            .route(
+                mush_llm::LlmFeature::ContentAssist.route_key(),
+                mush_llm::RouteConfig {
+                    model: "anthropic/claude-sonnet-4-5".to_string(),
+                    max_tokens: 2048,
+                    timeout_s: 5,
+                    reasoning: None,
+                    reasoning_max_tokens: None,
+                },
+            )
+            .build();
+
+        let snap = ContentAssistSnapshot {
+            actor: Some(staff),
+            family: "npc".to_string(),
+            scope: "full".to_string(),
+            brief: "Ceres hull repair specialist".to_string(),
+            context: json!({}),
+            catalog,
+        };
+
+        let resp = run_content_assist_async(&llm, snap).await;
+        let ContentStudioResponse::Assisted {
+            patch,
+            model,
+            prompt_hash,
+        } = resp
+        else {
+            return Err(format!("expected Assisted response, got {resp:?}").into());
+        };
+        check_eq!(
+            mock.call_count(),
+            2,
+            "expected 1 initial call + 1 repair turn"
+        );
+        check_eq!(model, "claude-sonnet-4-5");
+        check!(!prompt_hash.is_empty());
+        check_eq!(
+            patch.get("room").and_then(Value::as_str),
+            Some("room.c10_slack_line")
+        );
+        check_eq!(
+            patch
+                .get("profile")
+                .and_then(|p| p.get("interfaces"))
+                .and_then(Value::as_array),
+            Some(&vec![json!("hire")])
+        );
+        check_eq!(
+            patch
+                .get("profile")
+                .and_then(|p| p.get("command_refs"))
+                .and_then(Value::as_array),
+            Some(&vec![json!("+crew")])
+        );
+        check_eq!(
+            patch
+                .get("terms")
+                .and_then(|t| t.get("duties"))
+                .and_then(Value::as_array),
+            Some(&vec![json!("recovery")])
         );
         Ok(())
     }
