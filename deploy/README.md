@@ -135,6 +135,8 @@ never both.
 
 ```bash
 VPS=root@conclav.io ; KEY=./hostinger
+# Admin sshd listens on 2222 since 2026-10-31 (port 22 is sshdoorway's): every
+# ssh below is `ssh -p 2222`, every scp `scp -P 2222`.
 # 1. Toolchain (Rust; git+openssl already present, Node NOT needed — we ship dist)
 ssh -i $KEY $VPS 'command -v cargo || (curl --proto =https --tlsv1.2 -sSf https://sh.rustup.rs | sh -s -- -y && . ~/.cargo/env)'
 # 2. Ship the committed source (tracked files only — no target/, no .env)
