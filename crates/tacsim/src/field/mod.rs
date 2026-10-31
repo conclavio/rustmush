@@ -32,9 +32,13 @@
 //!    under the normal lock rules: the host locks the shooter's own contact on the target once its
 //!    sensors hold one, and fires its first weapon; no contact within the window, no shot.
 //!    Launches onto the site are refused with the reason (Q-CF-17). **Recovery as exit**
-//!    (Q-CF-18) is not built in this cut: the kernel has no way for a unit to leave a running
-//!    arena, and the surface recover stays refused while the site is promoted (CF.1), so a
-//!    unit leaves at demotion.
+//!    (Q-CF-18, cut CF.5, `exit`): `+tv/<n> recover` or `+sortie/recover` on a unit in the
+//!    field asks the kernel to let it go (`ArenaMsg::Withdraw`); beside its carrier's ramp and
+//!    under its own power it leaves at the next pulse, is checked in through the IC plan, is
+//!    named on the record's promotion, and its recover into the bay runs. The field carries on.
+//!    **Crew** (Q-CF-38, Q-CF-39, cut CF.5, [`crew`]): every check-in derives its pilot's
+//!    location and condition; a control-section kill incapacitates at once; a stranded character asks for
+//!    extraction (`+sortie/extract`) and is at a safe port after `[tacsim.field].extract_s`.
 //! 4. **Demotion** (Q-CF-20): the task stops itself with `Disengaged` once no hostile pair has
 //!    fired, held another in weapons range or had a round in flight for `[tacsim.field]
 //!    .disengage_s` ([`crate::arena_task::FieldTerms`]). `close` checks every unit in through
@@ -56,6 +60,8 @@ pub(crate) mod boot;
 pub mod carrier;
 pub(crate) mod close;
 pub(crate) mod commands;
+pub mod crew;
+pub(crate) mod exit;
 pub(crate) mod ground;
 pub(crate) mod known;
 pub(crate) mod parties;
@@ -72,6 +78,7 @@ use mush_core::{ArgShape, CanonicalId, CommandSpec, Ctx, ObjId, TickCadence, Wor
 use crate::arena_task::MatchId;
 pub use carrier::{CrewLocation, crew_location};
 pub use commands::mark_from_order;
+pub use crew::{CrewCondition, CrewLocation, CrewRecord, crew_of};
 pub use provider::{FIELD_ACTION, FIELD_OUTCOME};
 pub use record::{FieldLive, FieldParty, FieldUnit, PartyKey};
 
@@ -248,6 +255,9 @@ pub fn register(reg: &mut Registrar<'_>) -> Result<(), ModError> {
     reg.state(FieldBook::default());
     reg.state(admit::OwedCloses::default());
     reg.state(known::Sightings::default());
+    reg.state(exit::ExitBook::default());
+    reg.state(exit::OwedExits::default());
+    reg.state(crew::CrewBook::default());
     // `+field` submits the host's authoritative action: the cockpit's command lane, then the
     // module's own default restored for whatever registers after.
     reg.classify_commands(mush_core::CommandCompatibility::Authoritative);
@@ -324,6 +334,8 @@ pub(crate) fn on_frames(
 ) {
     // Doc 32 cut CF.4 (Q-CF-28): what each party's seated units hold on the ground.
     known::note(ctx, task, frames);
+    // Doc 32 cut CF.5 (Q-CF-38): a control-section kill incapacitates its pilot at once.
+    crew::on_frames(ctx, frames);
     let Some((site, pending)) = ctx.w.module_state::<FieldBook>().and_then(|book| {
         let site = book.site_of_task(task)?.clone();
         let pending = book.fire.get(&site)?.clone();

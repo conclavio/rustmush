@@ -1953,6 +1953,12 @@ pub struct TacsimConfig {
 /// seconds, so a field is never demoted between two volleys, and an hour.
 pub const FIELD_DISENGAGE_S: std::ops::RangeInclusive<u32> = 10..=3_600;
 
+/// **The shortest and longest extraction delay** (doc 32 cut CF.5): an IC minute, an IC week.
+pub const FIELD_EXTRACT_S: std::ops::RangeInclusive<u32> = 60..=604_800;
+
+/// **The longest rescue bound** (doc 32 cut CF.5): an IC day.
+pub const FIELD_RESCUE_BOUND_S: u32 = 86_400;
+
 /// **`[tacsim.field]`** (doc 32 cut CF.2; Q-CF-20, Q-CF-21, Q-CF-45): provisional (the owner's
 /// economy-defaults rule).
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
@@ -1964,6 +1970,13 @@ pub struct FieldConfig {
     /// surface takes (Q-CF-21). Never above the record's own bound
     /// ([`crate::surface::site_record::FIELD_MAX_UNITS`]).
     pub max_units: u32,
+    /// **Doc 32 cut CF.5** (Q-CF-39): IC seconds from a stranded character's extraction request to
+    /// their arrival at the safe port (21,600: six IC hours, a quarter of an hour of wall time at
+    /// the campaign rate).
+    pub extract_s: u32,
+    /// **Doc 32 cut CF.5** (Q-CF-39): the published bound — IC seconds past the due instant an
+    /// extraction waits while a Friend's recovery flight is on the site (7,200).
+    pub rescue_bound_s: u32,
 }
 
 impl Default for FieldConfig {
@@ -1971,6 +1984,8 @@ impl Default for FieldConfig {
         Self {
             disengage_s: 120,
             max_units: crate::surface::site_record::FIELD_MAX_UNITS,
+            extract_s: 21_600,
+            rescue_bound_s: 7_200,
         }
     }
 }
@@ -1996,6 +2011,20 @@ impl FieldConfig {
             return Err(format!(
                 "[tacsim.field].max_units must be 2 to {cap} (it is {})",
                 self.max_units
+            ));
+        }
+        if !FIELD_EXTRACT_S.contains(&self.extract_s) {
+            return Err(format!(
+                "[tacsim.field].extract_s must be {} to {} (it is {})",
+                FIELD_EXTRACT_S.start(),
+                FIELD_EXTRACT_S.end(),
+                self.extract_s
+            ));
+        }
+        if self.rescue_bound_s > FIELD_RESCUE_BOUND_S {
+            return Err(format!(
+                "[tacsim.field].rescue_bound_s must be 0 to {FIELD_RESCUE_BOUND_S} (it is {})",
+                self.rescue_bound_s
             ));
         }
         Ok(())

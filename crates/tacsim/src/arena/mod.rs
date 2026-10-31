@@ -343,6 +343,7 @@ pub mod stock_mind;
 pub(crate) mod trace_runtime;
 pub mod view;
 pub mod weapons;
+pub mod withdraw;
 
 pub use card::{
     AspectWord, CardChange, CardError, Opening, OrbitSense, PRESETS, Prefer, Stance, StockCard,

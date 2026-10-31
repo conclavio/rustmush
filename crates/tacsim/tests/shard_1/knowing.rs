@@ -2966,10 +2966,14 @@ fn sm4a_a_ground_reading_never_wedges_without_its_battery() {
     let (out, queued) = command(&mut rig, pilot, "+ship/lift ceres");
     assert_eq!(
         out.trim(),
-        TV_OUT
-            .replace("{n}", "1")
-            .replace("{site}", "Ahuna Flank")
-            .replace("{name}", "Salt Moth")
+        format!(
+            "{}{}",
+            TV_OUT
+                .replace("{n}", "1")
+                .replace("{site}", "Ahuna Flank")
+                .replace("{name}", "Salt Moth"),
+            tacsim::port::voyage::LEAVE_HINT.replace("{list}", "1")
+        )
     );
     assert!(queued.is_empty());
     // And the rig comes home without its battery.

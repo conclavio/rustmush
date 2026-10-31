@@ -83,6 +83,23 @@ pub(crate) fn on_ended(ctx: &mut Ctx<'_>, task: MatchId, end: MatchEnd, units: &
     // Doc 32 cut CF.4 (Q-CF-28): what each party saw, read while the host still holds the field.
     let learned = super::known::learned_at_close(ctx, task, &site, &returns, &left);
     super::known::forget(ctx, &site);
+    // Doc 32 cut CF.5 (Q-CF-38): every pilot's crew state, from the checked-in hulls.
+    let seats: Vec<(ObjId, Option<ObjId>)> = ctx
+        .w
+        .module_state::<FieldBook>()
+        .and_then(|book| book.hosted(&site))
+        .map(|hosted| {
+            hosted
+                .live
+                .units
+                .iter()
+                .map(|row| (row.unit, row.pilot.as_ref().map(|(pilot, _)| *pilot)))
+                .collect()
+        })
+        .unwrap_or_default();
+    for (unit, pilot) in seats {
+        super::crew::check_in(ctx, &site, unit, pilot);
+    }
     // The registry's rows, as the match's own finish lets them go.
     let pilots: Vec<ObjId> = ctx
         .w

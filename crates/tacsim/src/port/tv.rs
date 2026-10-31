@@ -283,6 +283,8 @@ pub const CAP_OPERATOR: &str =
     "You have {cap} rigs out already; that is as many as one pilot may run.";
 /// The site's cap: `{site}`, `{cap}`.
 pub const CAP_SITE: &str = "{site} has {cap} rigs out already; no more go down until one comes in.";
+/// **Doc 32 cut CF.5 (Q-CF-18)**: `+tv/{n} recover` without `go` while the rig is in a field.
+pub const FIELD_RECOVER_PREVIEW: &str = "Rig {n} is in a field: it comes in only from beside the ramp, under its own power, and leaves the field as it does. +tv/{n} recover go brings it in.";
 /// The world's cap: `{cap}`.
 pub const CAP_WORLD: &str =
     "The Registry has {cap} rigs out across the sites; no more go down until one comes in.";
@@ -2040,7 +2042,35 @@ pub(crate) fn tv_cmd(ctx: &mut Ctx<'_>) -> Result<(), CmdError> {
             mind,
         } => {
             let rig = select(ctx, slot, kind).map_err(CmdError::msg)?;
-            crate::surface::site_record::field_gate(ctx, rig.hull)?;
+            let recover = kind == crate::surface::excursion::ActKind::Recover;
+            // Doc 32 cut CF.5 (Q-CF-18): a rig in a running field leaves it at the ramp first,
+            // and its recover runs once it is out.
+            if recover && crate::field::field_of_unit(ctx.w, rig.tv).is_some() {
+                if !go {
+                    say(
+                        ctx,
+                        FIELD_RECOVER_PREVIEW.replace("{n}", &rig.slot.to_string()),
+                    );
+                    return Ok(());
+                }
+                let ramp = crate::field::exit::rig_ramp(ctx.w, rig.hull).ok_or_else(|| {
+                    CmdError::msg(crate::arena::withdraw::WithdrawRefusal::NotAtRamp.sentence())
+                })?;
+                return crate::field::exit::request(
+                    ctx,
+                    rig.tv,
+                    ramp,
+                    crate::field::exit::Then::Rig {
+                        slot: rig.slot,
+                        quiet,
+                    },
+                );
+            }
+            crate::surface::site_record::field_gate_except(
+                ctx,
+                rig.hull,
+                recover.then_some(rig.tv),
+            )?;
             crate::surface::act::act_cmd(ctx, &rig, kind, quiet, go, mind.as_ref())
         }
         Act::Forget { name, go } => forget(ctx, &name, go),
@@ -2296,6 +2326,20 @@ fn select(
     kind: crate::surface::excursion::ActKind,
 ) -> Result<crate::surface::act::RigAt, String> {
     select_word(ctx, named, kind.word())
+}
+
+/// [`select`] for the field host (doc 32 cut CF.5): the rig a player's recover named, read
+/// again as that player once the rig is out of the field.
+///
+/// # Errors
+///
+/// As [`select`].
+pub(crate) fn select_rig(
+    ctx: &Ctx<'_>,
+    named: Option<u8>,
+    kind: crate::surface::excursion::ActKind,
+) -> Result<crate::surface::act::RigAt, String> {
+    select(ctx, named, kind)
 }
 
 /// [`select`] for an act named by its words (doc 20 cut SM.11: `plan`, `plan show`, `plan

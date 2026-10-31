@@ -22,6 +22,7 @@ pub(crate) const SWITCHES: &[&str] = &[
     "field",
     "orders",
     "command-grants",
+    "extract",
 ];
 pub(crate) fn handles(ctx: &Ctx<'_>) -> bool {
     SWITCHES.iter().any(|s| ctx.switches.has(s))
@@ -72,6 +73,36 @@ fn readable(ctx: &Ctx<'_>, op: &OperationRecord) -> bool {
             |s| matches!(s.controller,PlannedController::Player{character} if character==ctx.actor),
         )
 }
+/// **The ramp `unit`'s open flight returns to** (doc 32 cut CF.5), as a site position (cm).
+fn field_ramp(ctx: &Ctx<'_>, unit: ObjId) -> Option<(i64, i64)> {
+    let h = ctx.w.module_state::<runtime::SortieHandles>()?;
+    let head = ctx.action_state(&h.heads, &unit).ok()??;
+    let flight = ctx.action_state(&h.flights, &head.flight).ok()??;
+    (flight.key.unit == unit && flight.phase.open()).then_some((flight.ramp.x_cm, flight.ramp.y_cm))
+}
+
+/// **The DT recover the field host submits once `unit` is out of its field** (doc 32 cut CF.5;
+/// Q-CF-18), as the player who asked (`ctx.actor`): the same command `+sortie/recover` submits.
+///
+/// # Errors
+///
+/// The submission's refusal.
+pub(crate) fn recover_after_exit(
+    ctx: &mut Ctx<'_>,
+    operation: OperationId,
+    slot: u16,
+    unit: ObjId,
+) -> Result<(), String> {
+    runtime::submit(
+        ctx,
+        Command::Recover {
+            operation,
+            slot,
+            unit,
+        },
+    )
+}
+
 pub(super) fn read(ctx: &Ctx<'_>, id: OperationId) -> Result<OperationRecord, CmdError> {
     let h = ctx
         .w
@@ -93,6 +124,13 @@ pub(crate) fn command(ctx: &mut Ctx<'_>) -> Result<(), CmdError> {
     let raw = ctx.args.raw().trim().to_owned();
     if ctx.switches.has("history") {
         return history(ctx, &raw);
+    }
+    // Doc 32 cut CF.5 (Q-CF-39): a stranded character asks for extraction; it takes no operation.
+    if ctx.switches.has("extract") {
+        if !raw.is_empty() {
+            return Err(CmdError::msg("Use +sortie/extract with nothing after it."));
+        }
+        return crate::field::crew::extract_cmd(ctx);
     }
     let (selector, selection) = raw
         .split_once('=')
@@ -179,6 +217,20 @@ pub(crate) fn command(ctx: &mut Ctx<'_>) -> Result<(), CmdError> {
             .and_then(|s| s.unit)
             .ok_or_else(error)?;
         if ctx.switches.has("recover") {
+            // Doc 32 cut CF.5 (Q-CF-18): a unit in a running field leaves it at the carrier's
+            // ramp first; the recover is submitted again once it is out.
+            if crate::field::field_of_unit(ctx.w, unit).is_some() {
+                let ramp = field_ramp(ctx, unit).ok_or_else(error)?;
+                return crate::field::exit::request(
+                    ctx,
+                    unit,
+                    ramp,
+                    crate::field::exit::Then::Sortie {
+                        operation: id,
+                        slot,
+                    },
+                );
+            }
             Command::Recover {
                 operation: id,
                 slot,

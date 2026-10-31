@@ -1256,6 +1256,8 @@ impl GameModule for TacsimRuleset {
         // Doc 32 cut CF.2: the fields' own documents, before the match resume takes the
         // custody marks (it hands every field's to the field host).
         field::boot::read(ctx, &kv);
+        // Doc 32 cut CF.5: the crew records.
+        field::crew::read(ctx, &kv);
         boot_matches(ctx, &kv, &data.ledger, &data.omitted);
         boot_reconcile(ctx)
     }

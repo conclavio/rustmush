@@ -258,6 +258,18 @@ pub enum ArenaMsg {
         /// The mark, or `None` to clear it.
         mark: Option<crate::arena::party::Mark>,
     },
+    /// **Take a unit out of the field at its carrier's ramp** (doc 32 cut
+    /// CF.5; Q-CF-18). Buffered latest-wins per unit and decided by
+    /// `Arena::withdraw` at the next pulse's head, before the step; the answer
+    /// is an [`ArenaOut::Withdrawn`], queued behind the ledger so it is never
+    /// lost. Only the IC field host sends it; held to the intent reserve at
+    /// [`ArenaHandle::offer`].
+    Withdraw {
+        /// The unit.
+        unit: ObjId,
+        /// The ramp's site position, centimetres.
+        ramp: (i64, i64),
+    },
 }
 
 /// **The IC field host's terms** (doc 32 cut CF.2; Q-CF-20): what the task
@@ -451,6 +463,20 @@ pub enum ArenaOut {
         /// world could commit before it knew whether the match was void.
         units: Vec<UnitReturn>,
     },
+    /// **The answer to an [`ArenaMsg::Withdraw`]** (doc 32 cut CF.5): the
+    /// unit's check-in row, taken out of the arena at that pulse's head, or
+    /// why it stays. Only an IC field's task sends it. Unlike a match's
+    /// returns it rides a message of its own: an IC field never restores a
+    /// check-out (Q-CF-35), so a unit that has driven up the ramp is checked
+    /// in when it leaves and is in no later snapshot.
+    Withdrawn {
+        /// Which task.
+        match_id: MatchId,
+        /// The unit.
+        unit: ObjId,
+        /// Its check-in row, or the refusal.
+        outcome: Result<UnitReturn, crate::arena::withdraw::WithdrawRefusal>,
+    },
 }
 
 impl ArenaOut {
@@ -466,7 +492,8 @@ impl ArenaOut {
             | ArenaOut::Lagged { match_id }
             | ArenaOut::Deliberate { match_id, .. }
             | ArenaOut::Snapshot { match_id, .. }
-            | ArenaOut::Ended { match_id, .. } => Some(*match_id),
+            | ArenaOut::Ended { match_id, .. }
+            | ArenaOut::Withdrawn { match_id, .. } => Some(*match_id),
         }
     }
 }
@@ -542,6 +569,7 @@ impl ArenaHandle {
                 | ArenaMsg::Watch { .. }
                 | ArenaMsg::MindCard { .. }
                 | ArenaMsg::Mark { .. }
+                | ArenaMsg::Withdraw { .. }
         ) && self.inbox.capacity() <= self.reserve
         {
             return Err(msg);
@@ -1035,6 +1063,11 @@ enum Outbound {
     Chunk(LedgerChunk),
     /// Sent as [`ArenaOut::Snapshot`]; at most one is ever queued.
     Snapshot(Arc<Snapshot>),
+    /// Sent as [`ArenaOut::Withdrawn`] (doc 32 cut CF.5).
+    Withdrawn {
+        unit: ObjId,
+        outcome: Result<UnitReturn, crate::arena::withdraw::WithdrawRefusal>,
+    },
 }
 
 impl Outbound {
@@ -1053,6 +1086,11 @@ impl Outbound {
             Outbound::Snapshot(snapshot) => ArenaOut::Snapshot {
                 match_id,
                 snapshot: Arc::clone(snapshot),
+            },
+            Outbound::Withdrawn { unit, outcome } => ArenaOut::Withdrawn {
+                match_id,
+                unit: *unit,
+                outcome: outcome.clone(),
             },
         }
     }
@@ -1368,6 +1406,9 @@ struct PrePulse {
     /// bounded by the parties' square.
     marks:
         BTreeMap<(crate::arena::PartyId, crate::arena::PartyId), Option<crate::arena::party::Mark>>,
+    /// **Doc 32 cut CF.5**: the units the host asked out at the ramp,
+    /// latest-wins per unit, so bounded by the field.
+    withdrawals: BTreeMap<ObjId, (i64, i64)>,
 }
 
 impl PrePulse {
@@ -1708,6 +1749,10 @@ async fn arena_loop(mut task: Task) {
                     Some(ArenaMsg::Mark { by, of, mark }) => {
                         waiting.marks.insert((by, of), mark);
                     }
+                    // Doc 32 cut CF.5: and so does a withdrawal.
+                    Some(ArenaMsg::Withdraw { unit, ramp }) => {
+                        waiting.withdrawals.insert(unit, ramp);
+                    }
                     // Every sender is gone: the world has forgotten this match
                     // and nothing can ever drive it again. End silently, for the
                     // same reason the stop signal does.
@@ -1738,6 +1783,12 @@ async fn arena_loop(mut task: Task) {
                 // Doc 32 cut CF.2: the leaders' marks, before the step.
                 for ((by, of), mark) in std::mem::take(&mut waiting.marks) {
                     task.arena.mark_party(by, of, mark);
+                }
+                // Doc 32 cut CF.5: the units leaving at the ramp, before the
+                // step, each answered behind the ledger.
+                for (unit, ramp) in std::mem::take(&mut waiting.withdrawals) {
+                    let outcome = task.arena.withdraw(unit, ramp);
+                    task.queue_withdrawn(unit, outcome);
                 }
                 match task.pulse(wall, &controls, &intents).await {
                     // 16b cut U.1: from the base, never from now.
@@ -2296,7 +2347,7 @@ impl Task {
                 .and_then(|at| self.backlog.remove(at))
                 .and_then(|entry| match entry {
                     Outbound::Chunk(chunk) => Some(chunk.seq),
-                    Outbound::Snapshot(_) | Outbound::Tape(_) => None,
+                    Outbound::Snapshot(_) | Outbound::Tape(_) | Outbound::Withdrawn { .. } => None,
                 });
             tracing::error!(
                 match_id = %self.match_id,
@@ -2318,6 +2369,20 @@ impl Task {
         self.backlog
             .retain(|entry| !matches!(entry, Outbound::Snapshot(_)));
         self.backlog.push_back(Outbound::Snapshot(snapshot));
+    }
+
+    /// **A withdrawal's answer** (doc 32 cut CF.5): queued behind whatever the
+    /// pulse before it left, then offered, so the world reads the unit's exit
+    /// in order and never loses it to a full egress. Bounded by the field: the
+    /// host asks once per unit.
+    fn queue_withdrawn(
+        &mut self,
+        unit: ObjId,
+        outcome: Result<UnitReturn, crate::arena::withdraw::WithdrawRefusal>,
+    ) {
+        self.backlog
+            .push_back(Outbound::Withdrawn { unit, outcome });
+        self.drain_backlog();
     }
 
     /// **The snapshot rule** (16b cut AF.2), run by `pulse` after its
@@ -3613,6 +3678,7 @@ mod tests {
                 Outbound::Chunk(chunk) => format!("c{}", chunk.seq),
                 Outbound::Snapshot(snapshot) => format!("s{}", snapshot.at_ms),
                 Outbound::Tape(_) => "tape".to_owned(),
+                Outbound::Withdrawn { unit, .. } => format!("w{}", unit.0),
             })
             .collect()
     }

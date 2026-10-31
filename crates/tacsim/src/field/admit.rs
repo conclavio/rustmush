@@ -9,7 +9,8 @@
 //! refusal anywhere demotes the site again at once with the reason told to whoever promoted it:
 //! no partial admission ever (Q-CF-21).
 //!
-//! The tick also submits the host's owed `close` writes (a principal with an action already in
+//! The tick also runs the exits at the ramp and the extractions due (doc 32 cut CF.5), and submits
+//! the host's owed `close` writes (a principal with an action already in
 //! flight waits a second), and forgets a close once the record shows it landed.
 
 use std::collections::BTreeMap;
@@ -64,6 +65,9 @@ pub(crate) fn tick(ctx: &mut Ctx<'_>, _tag: &str, _scene: Option<mush_core::Scen
     }
     super::boot::run_held(ctx);
     submit_owed(ctx);
+    // Doc 32 cut CF.5: the exits at the ramp and the extractions due.
+    super::exit::tick(ctx);
+    super::crew::tick(ctx);
     let Some(handles) = ctx
         .w
         .module_state::<crate::port::families::PortHandles>()
