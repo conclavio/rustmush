@@ -1640,7 +1640,12 @@ fn sm12a_a_restart_between_the_batch_and_its_restock_restocks_once() {
 #[test]
 fn sm12a_a_first_listing_writes_no_counter() {
     // Both seeded, so both boot the same historical relay seed (`boot_packs_with_lane`).
-    let mut a = stocked_with(Roster::seeded(lane_variant(LANE_VERSION, |_| {})));
+    // Doc 32 cut CF.6c: `strip_mill` strips v16's escort design as well (its rigs are map
+    // rows), so A drops it too and the two worlds differ by the mills alone.
+    let mut a = stocked_with(Roster::seeded(lane_variant(
+        LANE_VERSION,
+        support::drones::strip_designs,
+    )));
     let mut b = stocked_with(Roster::seeded(lane_variant(LANE_VERSION, strip_mill)));
     let key = tacsim::port::port_map_key(&lane_id(), &cid("ceres_port"));
     let doc_a = stored(&mut a, &key).expect("A's map");

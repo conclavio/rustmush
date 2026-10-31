@@ -4274,6 +4274,24 @@ fn relay_v4() -> mush_content::Pack {
     );
     pack
 }
+/// The published lane v15 (doc 20 cut SM.12b): the shipped lane less doc 32 cut CF.6c's
+/// escort design, at version 15, re-signed to its published digest.
+fn lane_v15() -> mush_content::Pack {
+    let mut lane: serde_json::Value =
+        serde_json::from_str(tacsim::definitions::content::LANE_JSON).unwrap();
+    lane["entries"]["ceres_port"]["def"]["vehicles"]
+        .as_object_mut()
+        .unwrap()
+        .remove("designs");
+    lane["manifest"]["version"] = 15.into();
+    let pack = resigned(lane);
+    assert_eq!(
+        pack.manifest().digest().to_hex(),
+        "eeb95c7adc4db753041722854fcc9e312bd8c69c620d86dba3217adf870829b3",
+        "the rebuild is the published lane v15"
+    );
+    pack
+}
 /// The published lane v13 (relay cut R9b): the shipped v15 less doc 20 cut SM.12b's yard and
 /// SM.12a's two `mill` rows, at version 13, re-signed to its published digest.
 fn lane_v13() -> mush_content::Pack {
@@ -4605,6 +4623,8 @@ async fn oduya_kept_ceres_v2_and_relay_v4_upgrade_without_replacing_the_live_sta
     for pack in &mut packs {
         match pack.manifest().id().as_str() {
             tacsim::definitions::content::CERES_PACK => *pack = ceres_v2(),
+            // Doc 32 cut CF.6c: relay v4 requires the lane it was published against.
+            tacsim::definitions::content::LANE_PACK => *pack = lane_v15(),
             "tacsim.relay.luna_ceres" => *pack = relay_v4(),
             _ => {}
         }
@@ -4645,11 +4665,13 @@ async fn oduya_kept_ceres_v2_and_relay_v4_upgrade_without_replacing_the_live_sta
 
     // Only the manifest changed; applying the checked seed advances its latch
     // without replacing the operator, node/half objects or disabled link state.
+    // Doc 32 cut CF.6c: the shipped relay requires lane v16, so the lane comes first.
     rig.apply_content(vec![
+        mush_content::load_pack(tacsim::definitions::content::LANE_JSON).unwrap(),
         mush_content::load_pack(tacsim::relay_content::JSON).unwrap(),
     ])
     .await;
-    assert_eq!((rig.latched(ceres), rig.latched(relay)), (Some(4), Some(6)));
+    assert_eq!((rig.latched(ceres), rig.latched(relay)), (Some(4), Some(7)));
     assert_eq!(rig.registry(), original);
     rig.flush().await;
     rig.restart().await.unwrap();
