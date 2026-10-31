@@ -359,7 +359,7 @@ where
 #[cfg(test)]
 mod tests {
     use super::*;
-    use crate::{IPC_VERSION, ToGateway, ToServer, WireInbound};
+    use crate::{IPC_MIN_PROTO, IPC_VERSION, ToGateway, ToServer, WireInbound};
     use mush_core::ObjId;
 
     #[cfg(unix)]
@@ -388,6 +388,7 @@ mod tests {
                 &mut w,
                 &ToGateway::Hello {
                     proto: IPC_VERSION,
+                    min_proto: IPC_MIN_PROTO,
                     server: "test".to_string(),
                     features: vec![],
                     panels: vec![],

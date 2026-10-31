@@ -60,6 +60,8 @@ mod gateway_link_parity;
 mod ipc_authoritative_action;
 #[path = "split_boundary/ipc_teardown.rs"]
 mod ipc_teardown;
+#[path = "split_boundary/ipc_window.rs"]
+mod ipc_window;
 #[path = "split_boundary/provisioning_smoke.rs"]
 mod provisioning_smoke;
 #[path = "split_boundary/quarantine_boot.rs"]

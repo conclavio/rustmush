@@ -257,6 +257,8 @@ const KINDS: [Ground; 8] = [
 #[derive(Clone, Debug, PartialEq)]
 struct BakedLevel {
     per_cell: usize,
+    x0: usize,
+    y0: usize,
     w: usize,
     h: usize,
     index: Vec<u8>,
@@ -264,9 +266,14 @@ struct BakedLevel {
 
 impl BakedLevel {
     fn get(&self, px: f32, py: f32) -> Option<u8> {
+        if self.w == 0 || self.h == 0 {
+            return None;
+        }
         let k = self.per_cell as f32;
-        let tx = ((px * k).floor().max(0.0) as usize).min(self.w.saturating_sub(1));
-        let ty = ((py * k).floor().max(0.0) as usize).min(self.h.saturating_sub(1));
+        let gx = (px * k).floor().max(self.x0 as f32) as usize;
+        let gy = (py * k).floor().max(self.y0 as f32) as usize;
+        let tx = gx.saturating_sub(self.x0).min(self.w.saturating_sub(1));
+        let ty = gy.saturating_sub(self.y0).min(self.h.saturating_sub(1));
         self.index.get(ty * self.w + tx).copied()
     }
 }
@@ -347,10 +354,16 @@ impl Terrain {
     /// so one map always bakes the same. Runs once a map; a later height
     /// change drops it.
     pub fn bake(&mut self, seed: u64) {
+        self.bake_window(seed, 0, 0, self.map.width(), self.map.height());
+    }
+
+    /// Bake the colour map over a sub-window `(cx0, cy0, win_w, win_h)` of
+    /// cells (doc 30 §7, §11 WG.6; `D-30-7`).
+    pub fn bake_window(&mut self, seed: u64, cx0: usize, cy0: usize, win_w: usize, win_h: usize) {
         let biome = self.map.biome();
         let horizon = biome.horizon_rgb();
-        let fine = self.bake_level(seed, TEXELS);
-        let coarse = self.bake_level(seed, 1);
+        let fine = self.bake_level(seed, TEXELS, cx0, cy0, win_w, win_h);
+        let coarse = self.bake_level(seed, 1, cx0, cy0, win_w, win_h);
         let mut table = Vec::with_capacity(KINDS.len() * LEVELS);
         for kind in KINDS {
             let rgb = base(kind, true).rgb_for_biome(biome);
@@ -382,21 +395,33 @@ impl Terrain {
     /// light from the surface at its centre, with 4 m topographic contour
     /// lines on sloped ground, cliff stratification, and dappled forest-floor
     /// canopy shading under woods (see the module docs).
-    fn bake_level(&self, seed: u64, per_cell: usize) -> BakedLevel {
-        let (cw, ch) = (self.map.width(), self.map.height());
+    fn bake_level(
+        &self,
+        seed: u64,
+        per_cell: usize,
+        cx0: usize,
+        cy0: usize,
+        win_w: usize,
+        win_h: usize,
+    ) -> BakedLevel {
+        let cw = win_w.min(self.map.width().saturating_sub(cx0));
+        let ch = win_h.min(self.map.height().saturating_sub(cy0));
+        let (x0, y0) = (cx0 * per_cell, cy0 * per_cell);
         let (w, h) = (cw * per_cell, ch * per_cell);
         let cell_m = (self.map.cell_cm() as f32 * 0.01).max(1.0);
         // The neighbourhood's mean height a cell, for the hollows.
         let mut mean = vec![0.0f32; cw * ch];
-        for y in 0..ch as i64 {
-            for x in 0..cw as i64 {
+        for y in 0..ch {
+            for x in 0..cw {
+                let gx = (cx0 + x) as i64;
+                let gy = (cy0 + y) as i64;
                 let mut sum = 0.0;
                 for dy in -2..=2 {
                     for dx in -2..=2 {
-                        sum += self.cell_height(x + dx, y + dy);
+                        sum += self.cell_height(gx + dx, gy + dy);
                     }
                 }
-                if let Some(m) = mean.get_mut(y as usize * cw + x as usize) {
+                if let Some(m) = mean.get_mut(y * cw + x) {
                     *m = sum / 25.0;
                 }
             }
@@ -410,7 +435,10 @@ impl Terrain {
         let mut index = vec![0u8; w * h];
         for ty in 0..h {
             for tx in 0..w {
-                let (px, py) = ((tx as f32 + 0.5) * step, (ty as f32 + 0.5) * step);
+                let (px, py) = (
+                    ((x0 + tx) as f32 + 0.5) * step,
+                    ((y0 + ty) as f32 + 0.5) * step,
+                );
                 let ground = self.map.get(px.floor() as i64, py.floor() as i64);
                 let kind = KINDS.iter().position(|k| *k == ground).unwrap_or(0);
                 let h_here = self.height(px, py);
@@ -421,8 +449,13 @@ impl Terrain {
                 let norm = (dhdx * dhdx + dhdy * dhdy + 1.0).sqrt();
                 let lambert = ((-dhdx * lx - dhdy * ly + lz) / norm).max(0.0);
                 let steep = (dhdx * dhdx + dhdy * dhdy).sqrt();
-                let cell = (py.floor().max(0.0) as usize).min(ch.saturating_sub(1)) * cw
-                    + (px.floor().max(0.0) as usize).min(cw.saturating_sub(1));
+                let local_cx = (px.floor().max(cx0 as f32) as usize)
+                    .saturating_sub(cx0)
+                    .min(cw.saturating_sub(1));
+                let local_cy = (py.floor().max(cy0 as f32) as usize)
+                    .saturating_sub(cy0)
+                    .min(ch.saturating_sub(1));
+                let cell = local_cy * cw + local_cx;
                 let hollow = mean.get(cell).map_or(0.0, |m| h_here - m);
                 let mottle =
                     0.6 * value_noise(seed, px, py, 2.0) + 0.4 * value_noise(seed ^ 1, px, py, 5.0);
@@ -466,6 +499,8 @@ impl Terrain {
         }
         BakedLevel {
             per_cell,
+            x0,
+            y0,
             w,
             h,
             index,

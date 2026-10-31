@@ -548,11 +548,15 @@ export function composeReplayWindow(
   const height = Math.max(0, Math.trunc(map.height));
   const w = Math.min(width, Math.max(1, Math.trunc(cols)));
   const h = Math.min(height, Math.max(1, Math.trunc(rows)));
+  const [ox, oy] = map.origin_cell;
   const centre = frame.units[focus] ?? null;
-  const [cx, cy] = centre === null ? [Math.floor(width / 2), Math.floor(height / 2)] : [centre.x, centre.y];
-  const x0 = Math.min(Math.max(cx - Math.floor(w / 2), 0), width - w);
-  const y0 = Math.min(Math.max(cy - Math.floor(h / 2), 0), height - h);
-  const south = windowGround(map, x0, y0, w, h);
+  const [cx, cy] =
+    centre === null ? [ox + Math.floor(width / 2), oy + Math.floor(height / 2)] : [centre.x, centre.y];
+  const lx0 = Math.min(Math.max(cx - ox - Math.floor(w / 2), 0), width - w);
+  const ly0 = Math.min(Math.max(cy - oy - Math.floor(h / 2), 0), height - h);
+  const south = windowGround(map, lx0, ly0, w, h);
+  const x0 = ox + lx0;
+  const y0 = oy + ly0;
   const terrain: string[] = [];
   for (let y = h - 1; y >= 0; y -= 1) {
     terrain.push((south[y] ?? []).join(""));

@@ -572,6 +572,30 @@ pub fn tacsim_test_world_module_wired(
     )
 }
 
+/// **The tactics catalogue over the host's packs** (doc 31 cut UD.3b, D-31-9):
+/// the fielded catalogue with `cfg`'s packs — the operator's `pack_paths` and
+/// the published unit designs — as [`crate::TacsimRuleset`] builds its own, so
+/// `@unit/create` resolves a design exactly when the arena can field it. With
+/// the layer off or no packs, [`tactics_catalog`]; a set that will not build
+/// (the host verified it, so a defect) is logged and falls back to it too.
+#[must_use]
+pub fn tactics_catalog_with(cfg: &crate::TacsimConfig) -> mush_tactics::UnitCatalog {
+    if !cfg.enabled || cfg.packs.is_empty() {
+        return tactics_catalog();
+    }
+    let built = crate::verify_sources(cfg).and_then(|packs| {
+        crate::definitions::Catalog::build_fielded(&packs, crate::NS)
+            .map_err(|error| error.to_string())
+    });
+    match built {
+        Ok(catalog) => catalog.units,
+        Err(error) => {
+            tracing::error!(%error, "tacsim: the host's packs did not bind; the tactics catalogue is the shipped one");
+            tactics_catalog()
+        }
+    }
+}
+
 #[must_use]
 pub fn tactics_catalog() -> mush_tactics::UnitCatalog {
     match crate::builtin_definitions() {
@@ -603,6 +627,10 @@ pub fn atlas_module_builder(cfg: mush_atlas::AtlasConfig) -> mush_atlas::AtlasMo
     match crate::definitions::content::winter_valley_packs() {
         Ok(wv) => shelf.extend(wv),
         Err(error) => tracing::error!(%error, "atlas: the winter_valley packs did not load"),
+    }
+    match crate::definitions::content::mars_canyon_packs() {
+        Ok(mc) => shelf.extend(mc),
+        Err(error) => tracing::error!(%error, "atlas: the mars_canyon packs did not load"),
     }
     match crate::definitions::content::station_packs() {
         Ok(stations) => shelf.extend(stations),

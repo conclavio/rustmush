@@ -253,6 +253,7 @@ async fn drive(death: Death, frames: &[ToServer]) -> (std::io::Result<()>, Answe
         sink,
         &metrics,
         world_exit,
+        mush_ipc::LinkVersion::unknown(),
     )
     .await;
     (result, Answers { rx })

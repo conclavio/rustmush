@@ -211,6 +211,13 @@ pub fn unit_types_in<'a>(feed: &'a Value, out: &mut Vec<Option<&'a str>>) {
     }
 }
 
+/// **The unit types the held feeds name that still lack a look** (doc 31 cut
+/// UD.3b): [`unit_types_in`]'s types through [`crate::look::wanted`].
+#[must_use]
+pub fn wanted_looks<'a>(unit_types: impl IntoIterator<Item = Option<&'a str>>) -> Vec<&'a str> {
+    crate::look::wanted(unit_types.into_iter().flatten())
+}
+
 /// Lower-case hex of `bytes`.
 #[cfg(feature = "encode")]
 fn hex(bytes: &[u8]) -> String {

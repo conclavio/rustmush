@@ -270,6 +270,11 @@ pub(crate) fn register_with_coverage(
         .get(crate::port::epoch::EPOCH_OUTCOME)
         .cloned()
         .ok_or_else(|| ModError::msg("the ship's epoch outcome did not register"))?;
+    // Doc 32 cut CF.1: the staff fixture over the site record.
+    let site_record_outcome = outcome_refs
+        .get(crate::surface::site_record::SITE_RECORD_OUTCOME)
+        .cloned()
+        .ok_or_else(|| ModError::msg("the site record's outcome did not register"))?;
     let passenger_outcome = outcome_refs
         .get(crate::port::passenger::store::OUTCOME)
         .cloned()
@@ -288,7 +293,7 @@ pub(crate) fn register_with_coverage(
         &recovery_outcome,
         &survey_outcome,
         &survey_cancel_outcome,
-        (&passenger_outcome, &epoch_outcome),
+        (&passenger_outcome, &epoch_outcome, &site_record_outcome),
     )?;
     actions.push(crate::quest::registration::action(&outcome_refs)?);
     actions.push(crate::detachment::planning::action_descriptor(
@@ -443,6 +448,24 @@ pub(crate) fn register_with_coverage(
         }
         None => None,
     };
+    // Doc 32 cut CF.1: `tacsim_site_record`, the staff fixture, needs only its family.
+    let site_record = match action_refs
+        .get(crate::surface::site_record::SITE_RECORD_ACTION)
+        .cloned()
+    {
+        Some(action) => {
+            reg.action_provider(
+                action.clone(),
+                crate::surface::site_record::SiteRecordProvider {
+                    action: action.clone(),
+                    outcome: site_record_outcome,
+                    sites: port_families.sites.clone(),
+                },
+            )?;
+            Some(action)
+        }
+        None => None,
+    };
     // Doc 20 cut SM.6 (§3.4): `tacsim_site_work`, the site clerk's worked transfer —
     // registered when the inventory cell is filled (the transfer rides the delegated
     // families; the stock provider's rule); the definitions register regardless.
@@ -513,6 +536,7 @@ pub(crate) fn register_with_coverage(
         quest,
         site_work,
         dispatch: dispatch_action.clone(),
+        site_record,
     });
     reg.state(PortTickState::new(
         probe_action,
@@ -576,7 +600,7 @@ fn append_receipt_actions(
     recovery: &DefinitionRef,
     survey_accept: &DefinitionRef,
     survey_cancel: &DefinitionRef,
-    (passenger, epoch): (&DefinitionRef, &DefinitionRef),
+    (passenger, epoch, site_record): (&DefinitionRef, &DefinitionRef, &DefinitionRef),
 ) -> Result<(), ModError> {
     actions.push(
         descriptor(
@@ -615,6 +639,19 @@ fn append_receipt_actions(
             }),
         )?
         .with_references(vec![epoch.clone()]),
+    );
+    // Doc 32 cut CF.1: the staff fixture writes the site's `tacsim.field` record.
+    actions.push(
+        descriptor(
+            "action",
+            crate::surface::site_record::SITE_RECORD_ACTION,
+            json!({
+                "subject": "self_actor",
+                "targets": 0,
+                "family": crate::surface::site_record::SITE_RECORD_FAMILY,
+            }),
+        )?
+        .with_references(vec![site_record.clone()]),
     );
     Ok(())
 }
@@ -703,6 +740,7 @@ fn register_surface_acts(
             excursions: families.excursions.clone(),
             charts: families.charts.clone(),
             pockets: families.pockets.clone(),
+            sites: families.sites.clone(),
             inventory: inventory.clone(),
             tools: Arc::clone(tools),
         },
@@ -1138,6 +1176,12 @@ fn outcome_descriptors(test_world: bool) -> Result<Vec<DefinitionDescriptor>, Mo
             "outcome",
             crate::port::epoch::EPOCH_OUTCOME,
             json!({ "fields": ["actor", "hull", "op", "written"] }),
+        )?,
+        // Doc 32 cut CF.1: the staff fixture's write over a site record.
+        descriptor(
+            "outcome",
+            crate::surface::site_record::SITE_RECORD_OUTCOME,
+            json!({ "fields": ["actor", "said", "site"] }),
         )?,
     ];
     if test_world {

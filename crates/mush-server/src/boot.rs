@@ -435,13 +435,16 @@ fn game_modules_with_optional_commerce(
             commerce,
         )
         .map_err(|e| e.to_string())?,
-        (None, None) => modules::server_modules_with_tacsim(
+        // Doc 31 cut UD.3b: the tactics module's catalogue from the same packs
+        // the layer loads (the operator's and the published designs).
+        (None, None) => modules::server_modules_with_tacsim_units(
             weather,
             economy,
             atlas,
             &onboarding,
             &game,
             recovery,
+            tacsim::composition::tactics_catalog_with(&tacsim),
         ),
     };
     mods.push(modules::worldgen_module_with(

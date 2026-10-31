@@ -50,6 +50,11 @@ impl GatewayLink for WorldHandle {
                 // in-process path. Accept and ignore so an early sender is a
                 // no-op, not a panic.
                 ToServer::Attach { .. } | ToServer::Detach { .. } | ToServer::ReAnnounce(_) => true,
+                // The gateway's Hello (doc 33 §4.1) names the version of a
+                // socket link, which the all-in-one binary does not have: both
+                // halves are one build, so there is no window to check and no
+                // link version to record. Accept and ignore, as above.
+                ToServer::Hello { .. } => true,
                 // A correlated request must go through `request` (it needs a
                 // reply); routing one here is a programming error.
                 ToServer::Request { .. } => {

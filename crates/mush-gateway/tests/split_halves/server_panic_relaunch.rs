@@ -603,11 +603,25 @@ async fn a_faulted_world_is_relaunched_and_the_session_keeps_playing() {
 /// which the crash-loop guard used to give up and stop supervising.
 const SKEWED_BOOTS: usize = 6;
 
-/// A stand-in for a server half built at another commit: it binds the boundary
-/// and greets the gateway properly, but announces the wrong [`IPC_VERSION`].
-/// Everything else about it is healthy — that is exactly the point, and why
-/// counting it as a crash was wrong.
+/// A stand-in for a server half from before the compatibility window (doc 33
+/// §4.1): it binds the boundary and greets the gateway properly, but with the
+/// version-12 `Hello` — `proto` 12 and no `min_proto` field at all, the exact
+/// bytes a 12 build writes (the shape below is the 12 variant under the same
+/// codec). A 13 gateway speaks only 13, which `[12, 12]` does not contain, so
+/// the gateway must refuse it with the marker. Everything else about it is
+/// healthy — that is exactly the point, and why counting it as a crash was
+/// wrong.
 async fn launch_version_skewed_server() -> Result<LaunchedServer, String> {
+    /// `ToGateway::Hello` as a version-12 server encodes it: no `min_proto`.
+    #[derive(serde::Serialize)]
+    enum ToGatewayV12 {
+        Hello {
+            proto: u32,
+            server: String,
+            features: Vec<String>,
+            panels: Vec<String>,
+        },
+    }
     let listener = mush_ipc::listen(&IpcEndpoint::parse("127.0.0.1:0")?)
         .await
         .map_err(|e| format!("binding the skewed server: {e}"))?;
@@ -619,9 +633,9 @@ async fn launch_version_skewed_server() -> Result<LaunchedServer, String> {
         if let Ok((reader, mut writer)) = listener.accept().await {
             let _ = write_frame(
                 &mut writer,
-                &ToGateway::Hello {
-                    proto: IPC_VERSION + 1,
-                    server: "mush-server (built at another commit)".to_string(),
+                &ToGatewayV12::Hello {
+                    proto: IPC_VERSION - 1,
+                    server: "mush-server (version 12, before the window)".to_string(),
                     features: vec![],
                     panels: vec![],
                 },
@@ -691,8 +705,10 @@ impl<'a> tracing_subscriber::fmt::MakeWriter<'a> for CapturedLog {
     }
 }
 
-/// The failure WS22-S16 closes: a deploy that rebuilds the server half against
-/// a bumped `IPC_VERSION` while the running gateway still speaks the old one.
+/// The failure WS22-S16 closes: a deploy whose server half serves protocol
+/// versions that do not include the running gateway's — here a server from
+/// before the window (12) under a 13 gateway, the one step the window does
+/// NOT cover (doc 33 §4.1: the server upgrades first, never the gateway).
 /// Every relaunch handshakes and is refused, and the supervisor used to count
 /// each refusal as a crash — five of them and it broadcast "the server is down"
 /// and RETURNED, so the boundary stayed in its gap for ever: every SSH session
