@@ -148,7 +148,7 @@ fn roles_admit_only_their_forms() -> TestResult {
 }
 
 /// The three listed lines of the zero-PC story's first month, with distinct score per credit:
-/// A 900‰ at 400cr (score per credit 22), B 800‰ at 400cr (20), C 900‰ at 900cr (10).
+/// A 900‰ at 400cr (2.25‰ a credit), B 800‰ at 400cr (2.0), C 900‰ at 900cr (1.0).
 fn lines() -> Result<[Candidate; 3], Box<dyn std::error::Error>> {
     Ok([
         Candidate {
@@ -213,7 +213,8 @@ fn the_best_per_credit_wins_and_ties_break_totally() -> TestResult {
         rank::choose(&by_score, 200_000, &held, 4, &none).map(|c| c.listing),
         Some(token(4))
     );
-    // Equal per credit and score: the cheaper (100‰ at 3,001 and at 3,000 both floor to 33).
+    // Per credit is exact: 100‰ at 3,001 and at 3,000 floored to the same truncated key (33),
+    // yet the cheaper is better per credit and wins on that key alone.
     let by_price = [
         Candidate {
             listing: token(8),
@@ -231,6 +232,25 @@ fn the_best_per_credit_wins_and_ties_break_totally() -> TestResult {
     check_eq!(
         rank::choose(&by_price, 200_000, &held, 4, &none).map(|c| c.listing),
         Some(token(9))
+    );
+    // Equal per credit and score (two 0‰ lines, admitted only by a test seam): the cheaper.
+    let zero = [
+        Candidate {
+            listing: token(8),
+            charter: charter(18)?,
+            price_minor: 3_001,
+            permille: 0,
+        },
+        Candidate {
+            listing: token(9),
+            charter: charter(19)?,
+            price_minor: 5_000,
+            permille: 0,
+        },
+    ];
+    check_eq!(
+        rank::choose(&zero, 200_000, &held, 4, &none).map(|c| c.listing),
+        Some(token(8))
     );
     // Equal per credit: the higher score, then the cheaper, then the token.
     let tied = [
@@ -250,6 +270,57 @@ fn the_best_per_credit_wins_and_ties_break_totally() -> TestResult {
     check_eq!(
         rank::choose(&tied, 200_000, &held, 4, &none).map(|c| c.listing),
         Some(token(6))
+    );
+    Ok(())
+}
+
+/// **The M8-1 review finding**: under the default 2,000cr budget the old truncated key
+/// `permille × 1000 / price_minor` read 5 for both of these, so the higher score won the tie,
+/// though B is 9% better per credit (550‰ at 1,000cr against 1000‰ at 1,990cr). The exact
+/// comparison buys B.
+#[test]
+fn per_credit_is_exact_where_truncation_tied() -> TestResult {
+    let lines = [
+        Candidate {
+            listing: token(1),
+            charter: charter(10)?,
+            price_minor: 199_000,
+            permille: 1000,
+        },
+        Candidate {
+            listing: token(2),
+            charter: charter(11)?,
+            price_minor: 100_000,
+            permille: 550,
+        },
+    ];
+    check_eq!(
+        (1000 * 1000 / 199_000, 550 * 1000 / 100_000),
+        (5, 5),
+        "the truncated keys tie"
+    );
+    let none = BTreeSet::new();
+    let held = BTreeMap::new();
+    check_eq!(
+        rank::choose(&lines, 200_000, &held, 4, &none).map(|c| c.listing),
+        Some(token(2)),
+        "B, the better per credit"
+    );
+    // The order is the same at any scale: a 1,000,000cr budget over lines priced in the
+    // hundreds of thousands, where the truncated key was zero for both.
+    let dear = [
+        Candidate {
+            price_minor: 99_000_000,
+            ..lines[0]
+        },
+        Candidate {
+            price_minor: 50_000_000,
+            ..lines[1]
+        },
+    ];
+    check_eq!(
+        rank::choose(&dear, 100_000_000, &held, 4, &none).map(|c| c.listing),
+        Some(token(2))
     );
     Ok(())
 }

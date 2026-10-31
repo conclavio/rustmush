@@ -77,7 +77,14 @@ impl SeizureConfig {
 /// `seq` only grows. Eight hex digits, never sixteen.
 #[must_use]
 pub fn inspection_key(hull: ObjId, seq: u64) -> String {
-    format!("hull/{:08x}/inspection/{seq}", hull.0)
+    format!("{}{seq}", inspection_prefix(hull))
+}
+
+/// The prefix every [`inspection_key`] of `hull` starts with (`hull/<8 hex>/inspection/`),
+/// so a reader can find a hull's seizures by scanning their family.
+#[must_use]
+pub fn inspection_prefix(hull: ObjId) -> String {
+    format!("hull/{:08x}/inspection/", hull.0)
 }
 
 /// **The producer's proof** (S2): the hull's newest inspection read ungoverned, named this

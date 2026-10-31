@@ -348,6 +348,9 @@ impl RefitPolicy for BayTacticsPolicy {
             return Err(refused());
         }
         let s = state(ctx.world()).map_err(|_| refused())?;
+        // The projection's row: its `terminal` stays `None` after an Install until the next
+        // boot (`BayRefitState::orders`), so this check is not what refuses a second Install;
+        // the provider's store read (`Provider::before`) is.
         let row = s.orders.get(id).ok_or_else(refused)?;
         row.validate().map_err(|_| refused())?;
         if row.intent.offer.requester != inv.actor()
@@ -414,6 +417,8 @@ impl BayOwnerAuthority for Acknowledged {
         subject: &BaySubject,
     ) -> Result<BayOrderAttribution, PayError> {
         let state = state(world).map_err(|_| PayError::Unavailable)?;
+        // The projection's row never shows an Install (`BayRefitState::orders`): whether this
+        // order already has a terminal is for Economy's own `bay_refit_history` to answer.
         let row = state
             .orders
             .get(&WorkOrderId(subject.order))

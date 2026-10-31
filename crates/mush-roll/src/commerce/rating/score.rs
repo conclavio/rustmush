@@ -126,13 +126,5 @@ pub fn rating_score(pages: &[PageContent]) -> Option<RatingScore> {
         .score()
 }
 
-/// Procurement's rank key: `permille × 1000 / price_minor` (checked). A
-/// price of zero or below is unrankable and answers `None`, never a division.
-#[must_use]
-pub fn score_per_credit(permille: u32, price_minor: i64) -> Option<u64> {
-    let price = u64::try_from(price_minor).ok().filter(|p| *p > 0)?;
-    u64::from(permille).checked_mul(1000)?.checked_div(price)
-}
-
 #[cfg(test)]
 mod tests;

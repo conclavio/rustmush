@@ -3,7 +3,7 @@ use super::super::{
     Applicability, CaseBinding, CaseKey, CaseKind, CaseOutcome, CaseResult, Coverage, MeterSummary,
     PageContent, Peak, ProbeName, RatingClass, RatingError, TrialEnd, TrialLayout, TrialOutcome,
 };
-use super::{RatingScore, RatingTally, rating_score, score_per_credit};
+use super::{RatingScore, RatingTally, rating_score};
 use mush_core::mechanics::DefinitionDigest;
 
 type TestResult = Result<(), Box<dyn std::error::Error>>;
@@ -150,24 +150,6 @@ fn a_trial_without_terminal_is_no_win() -> TestResult {
         (score.class, score.wins, score.cases, score.permille),
         (RatingClass::II, 1, 2, 500)
     );
-    Ok(())
-}
-
-#[test]
-fn score_per_credit_is_checked_and_refuses_a_free_line() -> TestResult {
-    check_eq!(score_per_credit(500, 40_000), Some(12));
-    check_eq!(score_per_credit(1000, 1), Some(1_000_000));
-    check_eq!(
-        score_per_credit(1000, 0),
-        None,
-        "a zero price is unrankable"
-    );
-    check_eq!(
-        score_per_credit(1000, -5),
-        None,
-        "a negative price is unrankable"
-    );
-    check_eq!(score_per_credit(0, 40_000), Some(0));
     Ok(())
 }
 

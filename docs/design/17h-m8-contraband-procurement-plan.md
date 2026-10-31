@@ -419,8 +419,12 @@ Recorded in both ledgers (here and doc 23 §14). Pending the owner's Q-M8-1. Thi
 - **The rating score.** The certificate holds no win count (`ClassOutcome` is the ops budget), so
   the score reads the result pages `RatingResultRef` names: `RatingScore = wins × 1000 / cases`
   over `CaseResult.terminal` for the revision's lowest passing class, computed at ranking time and
-  cached per `(revision, rating id)` in the tick's own bounded table, never stored on the Roll;
-  `score_per_credit = score × 1000 / price_minor`.
+  cached per `(revision, rating id)` in the tick's own bounded table, never stored on the Roll.
+  Score per credit is `score / price_minor`, compared exactly: line A ranks above line B when
+  `A.score × B.price_minor > B.score × A.price_minor` (in `u128`). *(Amended 2026-10-31, the
+  M8-1 review finding: this read `score_per_credit = score × 1000 / price_minor`, an integer
+  quotient that is a single digit under a 2,000cr budget and zero at operator budgets, so lines
+  that really differ per credit tied. See §7 M8f.)*
 - **The procurement policy.** `ProcurementPolicy { org, scope, budget_minor_per_ic_month, standing:
   Option<faction>, cap_permille (default 400), roles }` on the deployment beside `NamedHouses`; a
   tacsim tick `tacsim.procurement` (the recall notice drain's shape; the port houses' bid loop's
@@ -489,6 +493,11 @@ Recorded in both ledgers (here and doc 23 §14). Pending the owner's Q-M8-1. Thi
   seeded in content rather than tests): small, and not a channel; a follow-up of M8b if the owner
   wants the Class III scarcity live.
 - **17g §4's other follow-ups** (Registry pacing, the shared instrument lifecycle) stand.
+- **Small houses and the diversity cap** (the M8-2a review finding). `cap_for` is
+  `floor(cap_permille × hulls / 1000)`, so at the default 400‰ a House with one or two titled
+  hulls may hold no licence of any charter and buys nothing. **Owner ruling, 2026-10-31: leave
+  it as built** (the code and its pin, `procurement/tests.rs`, unchanged) until we learn whether
+  small houses need planning for.
 
 ## 5. Owner decisions
 
@@ -663,6 +672,8 @@ up to `75de08a7`.
   staff. Every non-reader gets the one sentence.
 - `@registry/inspect <hull>` needs `roll.registry.inspect`. The known-hull gate lives in the
   provider. The record lives in family `roll_registry_inspections`, 64 per hull, oldest evicted.
+  *(2026-10-31: the ring bounds inspections only. A seizure is found off its own family, not
+  through the ring; see §7 M8d2.)*
 - The inspection reply is "Inspecting hull #n." plus a one-line receipt rendered at prepare from
   the recorded facts. The driver's receipt is one line, so the record's facts cannot be printed
   as several.
@@ -826,6 +837,14 @@ The cut is `905df5b5`, plus merges of main.
 - **`@registry/seize`** produces `minds.seized`. **`@registry/forfeit`** acts after
   `seizure_hold_ic_days`.
 
+**Amended 2026-10-31 (the M8-2b review finding).** A bare `@registry/forfeit #<hull>` found
+the hull's live seizure by walking the 64-slot inspection ring, so 64 more inspections within
+the 3-day hold overwrote the grounding slot and lost the seizure (`#<hull>/<n>` still worked).
+It now scans `roll_registry_seizures` by the hull's key prefix (`hull/<8 hex>/inspection/`,
+`mush_economy::registry_filing::seizure::inspection_prefix`), so the ring bounds inspections
+only. Pinned by `m8d2_a_bare_forfeit_finds_a_seizure_whose_inspection_left_the_ring` (65
+inspections during a hold).
+
 **Owed:**
 - **M8d3**, physical removal and a Registry custody place.
 - **To M8g:** the real inspect-then-seize run on a managed core.
@@ -880,6 +899,18 @@ later fixed it, so the hotfix #107 was closed unmerged.
 **Test-only seams:** `assume_hulls` and `admit_zero_scores`.
 
 **Owed to M8g:** the zero-PC story.
+
+**Amended 2026-10-31 (the M8-1 review finding): the rank is exact.** `Candidate::rank` ranked
+first on `score_per_credit = permille × 1000 / price_minor`, the §3 formula. Under the default
+2,000cr budget that key is 5 at 1000‰ and 2 at 500‰, so lines up to ~50% apart per credit tied
+and fell to the higher score; at a 1,000,000cr budget every key is 0. The comparator now
+cross-multiplies in `u128` (`a.permille × b.price` against `b.permille × a.price`), then the
+score, the cheaper and the token as before. `mush_roll`'s `score_per_credit` is removed (nothing
+showed or stored it). **The rank changes** wherever two lines' truncated keys were equal and
+their true value per credit differed: the better per credit now wins where the higher score
+used to (pinned by `per_credit_is_exact_where_truncation_tied`: 550‰ at 1,000cr over 1000‰ at
+1,990cr). The zero-PC lines (900‰ and 800‰ at 400cr, 900‰ at 900cr) and the live story keep
+their order.
 
 ### M8h — House owner attestation in live play (PR #129, merged 2026-10-29 as `9d80f6bd`)
 

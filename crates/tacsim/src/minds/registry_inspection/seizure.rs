@@ -32,6 +32,7 @@ use mush_core::{
 };
 use mush_economy::registry_filing::seizure::{
     RegistryCoreSeizure, SeizureStep, inspection_key as seizure_key,
+    inspection_prefix as seizure_prefix,
 };
 use mush_economy::registry_filing::{EconomyRequest, InitialFilingParticipant};
 use mush_roll::commerce::registry_inspection::seizure::{self as proof, NotSeizable};
@@ -496,28 +497,40 @@ fn seizures(ctx: &Ctx<'_>, host: &InspectionHost, hull: ObjId) -> Vec<SeizureRec
     rows
 }
 
+/// The hull's seizure records, read off the seizure family by its key prefix
+/// (`hull/<8 hex>/inspection/`), never through the inspection ring: a ring slot overwritten
+/// within the hold must not lose the seizure it grounded (the M8-2b review finding).
 fn held(
     ctx: &Ctx<'_>,
     family: &StateFamilyHandle<String, SeizureRecord>,
     hull: ObjId,
 ) -> Vec<SeizureRecord> {
-    let Some(host) = InspectionHost::of(ctx.w) else {
-        return Vec::new();
-    };
-    let Ok(inspections) = host.writer.family() else {
-        return Vec::new();
-    };
-    mush_roll::commerce::registry_inspection::inspection_slots(hull)
-        .filter_map(|slot| ctx.action_state(&inspections, &slot).ok().flatten())
-        .filter(|r| r.hull == hull)
-        .filter_map(|r| {
-            ctx.action_state(family, &seizure_key(hull, r.seq))
-                .ok()
-                .flatten()
-                .cloned()
-        })
-        .collect()
+    let prefix = seizure_prefix(hull);
+    let mut rows = Vec::new();
+    let mut after = prefix.clone();
+    loop {
+        let Ok(page) = ctx.scan_action_state(family, Some(after.as_str()), SEIZURE_PAGE) else {
+            return rows;
+        };
+        let mut past = false;
+        for entry in page.entries() {
+            if !entry.encoded_key().starts_with(&prefix) {
+                past = true;
+                break;
+            }
+            if entry.value().hull == hull {
+                rows.push(entry.value().clone());
+            }
+        }
+        match page.next_after() {
+            Some(next) if !past => after = next.to_string(),
+            _ => return rows,
+        }
+    }
 }
+
+/// Seizure records one scan page reads.
+const SEIZURE_PAGE: usize = 64;
 
 /// **`@registry/seize #<hull>`**: the hull's newest inspection must ground a seizure. Every
 /// refusal is one sentence; a non-operator is told the driver's one sentence before any hull
@@ -607,8 +620,8 @@ pub(crate) fn forfeit_command(ctx: &mut Ctx<'_>, usage: &str) -> Result<(), CmdE
             .writer
             .authorize_forfeit(w, actor)
             .map_err(|_| CmdError::msg(words::INSPECT_REFUSED))?;
-        // A named inspection's seizure by its own key; the bare hull, its live seizure among
-        // the inspections its ring still holds.
+        // A named inspection's seizure by its own key; the bare hull, its live seizure from the
+        // seizure family itself (never the 64-slot inspection ring, which may have moved on).
         let record = match seq {
             Some(seq) => host.writer.seizures().ok().and_then(|family| {
                 ctx.action_state(&family, &seizure_key(hull, seq))
