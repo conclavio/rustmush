@@ -93,6 +93,11 @@ pub struct FieldUnit {
     /// The hull epoch it was in (Q-H9), kept for the site record at demotion.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub epoch: Option<SortieId>,
+    /// **Everyone aboard it at admission**, when it is a carrier (doc 32 cut CF.3; Q-CF-38's
+    /// "aboard the carrier", [`super::carrier::crew_location`]): CF.5's crew state replaces
+    /// this marker.
+    #[serde(default, skip_serializing_if = "Vec::is_empty")]
+    pub aboard: Vec<ObjId>,
 }
 
 /// **A running field's live record** (`tacsim:field:live:<site>`).
@@ -259,12 +264,14 @@ mod tests {
                     party: PartyId::nth(0).expect("A"),
                     pilot: Some((ObjId(3), SmolStr::new("cockpit"))),
                     epoch: None,
+                    aboard: Vec::new(),
                 },
                 FieldUnit {
                     unit: ObjId(9),
                     party: PartyId::nth(1).expect("B"),
                     pilot: None,
                     epoch: None,
+                    aboard: vec![ObjId(3)],
                 },
             ],
         }

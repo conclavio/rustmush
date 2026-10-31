@@ -28,7 +28,7 @@ use crate::driving::{
 
 /// A fast field: the simulator's lab tempo, a snapshot every half second, a short quiet
 /// interval before demotion.
-fn tune(cfg: &mut TacsimConfig) {
+pub(crate) fn tune(cfg: &mut TacsimConfig) {
     cfg.arena.tempo.quiet_ms = 100;
     cfg.arena.tempo.alert_ms = 100;
     cfg.arena.tempo.engaged_ms = 100;
@@ -45,14 +45,14 @@ const ARMED: [&str; 3] = [
 ];
 
 /// Ahuna Flank's record, as the family holds it.
-fn site_record(rig: &mut Rig) -> Option<SiteRecord> {
+pub(crate) fn site_record(rig: &mut Rig) -> Option<SiteRecord> {
     let h = handles(&rig.tw);
     typed(&mut rig.tw, &h.families.sites, &SiteKey(cid(AHUNA)))
 }
 
 /// **The fixture's armed hull**: a Thing with the first armed unit spec the lane binds, placed
 /// on Ahuna Flank's ground at `cell` facing `heading`.
-fn armed(rig: &mut Rig, name: &str, cell: (i64, i64), heading: u32) -> ObjId {
+pub(crate) fn armed(rig: &mut Rig, name: &str, cell: (i64, i64), heading: u32) -> ObjId {
     let domain = ahuna_domain(&rig.tw);
     staff_hand(rig, |ctx| {
         let spec = {
@@ -86,7 +86,7 @@ fn armed(rig: &mut Rig, name: &str, cell: (i64, i64), heading: u32) -> ObjId {
 /// **The fixture's seat**: `pilot` in `unit`'s cockpit station, every cockpit channel granted,
 /// its console the room the pilot stands in aboard the carrier — a remote cab, since the armed
 /// lease and its boarding are CF.6's.
-fn seat(rig: &mut Rig, unit: ObjId, pilot: ObjId) {
+pub(crate) fn seat(rig: &mut Rig, unit: ObjId, pilot: ObjId) {
     staff_hand(rig, |ctx| {
         ctx.actor = pilot;
         let console = ctx.w.get(pilot).and_then(|object| object.location);
@@ -156,7 +156,7 @@ fn fragile(rig: &mut Rig, unit: ObjId) {
 }
 
 /// The registry's egress, claimed once per process.
-fn egress(rig: &mut Rig) -> Receiver<ArenaOut> {
+pub(crate) fn egress(rig: &mut Rig) -> Receiver<ArenaOut> {
     rig.tw
         .world()
         .module_state::<tacsim::arena_bridge::ArenaRegistry>()
@@ -167,7 +167,11 @@ fn egress(rig: &mut Rig) -> Receiver<ArenaOut> {
 
 /// **The world loop's `Wake::ArenaEgress` arm, by hand**, keeping every ledger line the field
 /// wrote; answers how many messages it staged.
-fn pump(rig: &mut Rig, rx: &mut Receiver<ArenaOut>, lines: &mut Vec<LedgerEvent>) -> usize {
+pub(crate) fn pump(
+    rig: &mut Rig,
+    rx: &mut Receiver<ArenaOut>,
+    lines: &mut Vec<LedgerEvent>,
+) -> usize {
     let Some(tasks) = rig
         .tw
         .world()
@@ -205,7 +209,7 @@ fn pump(rig: &mut Rig, rx: &mut Receiver<ArenaOut>, lines: &mut Vec<LedgerEvent>
 }
 
 /// One world second: the ticks due, and every tacsim submission they queued, landed.
-fn second(rig: &mut Rig) -> Vec<String> {
+pub(crate) fn second(rig: &mut Rig) -> Vec<String> {
     let t = rig.tw.world().now().saturating_add(1);
     rig.tw.set_now(t);
     let _ = rig.tw.fire_due(t.saturating_mul(1_000));
@@ -217,7 +221,7 @@ fn second(rig: &mut Rig) -> Vec<String> {
 }
 
 /// Pump and tick until `done` holds or `secs` of wall time pass; answers whether it held.
-async fn until(
+pub(crate) async fn until(
     rig: &mut Rig,
     rx: &mut Receiver<ArenaOut>,
     lines: &mut Vec<LedgerEvent>,
@@ -241,7 +245,7 @@ async fn until(
 }
 
 /// The site's field task, when one runs.
-fn task(rig: &Rig) -> Option<tacsim::arena_task::MatchId> {
+pub(crate) fn task(rig: &Rig) -> Option<tacsim::arena_task::MatchId> {
     rig.tw
         .world()
         .module_state::<tacsim::arena_bridge::ArenaRegistry>()
@@ -249,7 +253,7 @@ fn task(rig: &Rig) -> Option<tacsim::arena_task::MatchId> {
 }
 
 /// The last cockpit frame `pilot` was sent.
-fn frame(rig: &Rig, pilot: ObjId) -> Option<tacsim::arena::step::Frame> {
+pub(crate) fn frame(rig: &Rig, pilot: ObjId) -> Option<tacsim::arena::step::Frame> {
     rig.tw
         .world()
         .module_state::<tacsim::arena_bridge::ArenaRegistry>()
@@ -258,7 +262,7 @@ fn frame(rig: &Rig, pilot: ObjId) -> Option<tacsim::arena::step::Frame> {
 }
 
 /// `unit`'s first weapon's component id.
-fn weapon_of(rig: &Rig, unit: ObjId) -> String {
+pub(crate) fn weapon_of(rig: &Rig, unit: ObjId) -> String {
     let store = rig
         .tw
         .world()

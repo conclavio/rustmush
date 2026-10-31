@@ -4,7 +4,8 @@
 //! the lane sites. A site whose record is promoted by a hosted door ([`PromotedBy::hosted`]) and
 //! has no field running, no resume pending and no close in flight is admitted — once no ramp
 //! handoff is in flight on it (Q-H4): every settled rig placed where its leg stopped, then every
-//! unit on the ground checked out under the field's custody mark and handed to a fresh task. A
+//! unit on the ground — the carriers on the pad included, each at a pad pose of its own (doc 32
+//! cut CF.3) — checked out under the field's custody mark and handed to a fresh task. A
 //! refusal anywhere demotes the site again at once with the reason told to whoever promoted it:
 //! no partial admission ever (Q-CF-21).
 //!
@@ -267,8 +268,18 @@ fn admit(ctx: &mut Ctx<'_>, site: &CanonicalId, record: &SiteRecord) -> Result<(
     let entrants = parties::entrants(ctx, site, &units);
     let (lettered, rows) = parties::letter(&entrants).map_err(str::to_owned)?;
     let definition = super::ground::definition(ctx.w, site, record)?;
+    // CF.3 (Q-CF-19): the carriers stand on the pad, clear of everyone else.
+    let (carriers, others): (Vec<ObjId>, Vec<ObjId>) = units
+        .iter()
+        .partition(|unit| super::carrier::is_carrier(ctx.w, **unit));
+    let mut taken: std::collections::BTreeSet<(u16, u16)> = others
+        .iter()
+        .filter_map(|unit| mush_sim::pose_of(ctx.w, *unit))
+        .filter_map(|(_, pose)| definition.terrain.cell_of(&pose))
+        .collect();
+    let pads = super::carrier::pad_poses(ctx.w, &definition.terrain, &carriers, &mut taken)?;
     let custody = custody(
-        ctx, &field, &open.by, &entrants, &lettered, &rows, definition,
+        ctx, &field, &open.by, &entrants, &lettered, &rows, &pads, definition,
     )?;
     // (4) The check-out, all or nothing.
     let mark = mush_sim::deployed::DeployedMark::field(site.as_str(), field.ordinal);
@@ -375,8 +386,8 @@ fn admit(ctx: &mut Ctx<'_>, site: &CanonicalId, record: &SiteRecord) -> Result<(
     Ok(())
 }
 
-/// **The check-out message** (Q-CF-3, Q-CF-41): each unit at its placement under its party's
-/// letter, sealed on the ROM over its epoch, its seated pilot carried; the opening mark from the
+/// **The check-out message** (Q-CF-3, Q-CF-41): each unit at its placement (a carrier at its
+/// pad pose, CF.3) under its party's letter, sealed on the ROM over its epoch, its seated pilot carried; the opening mark from the
 /// door, the standing friendships, and the host's own end.
 #[allow(clippy::too_many_arguments)] // the admission's parts, each read once
 fn custody(
@@ -386,6 +397,7 @@ fn custody(
     entrants: &[Entrant],
     parties: &[super::record::FieldParty],
     rows: &[super::record::FieldUnit],
+    pads: &BTreeMap<ObjId, mush_sim::data::Pose>,
     definition: crate::arena::state::ArenaDefinition,
 ) -> Result<CustodyOut, String> {
     let store = ctx
@@ -407,8 +419,14 @@ fn custody(
         let cells = mush_tactics::module::unit_of(ctx.w, entrant.unit)
             .cloned()
             .ok_or_else(|| format!("#{} has no tactical unit record", entrant.unit.0))?;
-        let (_, pose) = mush_sim::pose_of(ctx.w, entrant.unit)
-            .ok_or_else(|| format!("#{} is not placed", entrant.unit.0))?;
+        let pose = match pads.get(&entrant.unit) {
+            Some(pad) => pad.clone(),
+            None => {
+                mush_sim::pose_of(ctx.w, entrant.unit)
+                    .ok_or_else(|| format!("#{} is not placed", entrant.unit.0))?
+                    .1
+            }
+        };
         let slot = {
             let next = slots.entry(party).or_insert(0);
             *next = next.saturating_add(1);

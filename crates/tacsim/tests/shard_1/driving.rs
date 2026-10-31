@@ -538,7 +538,7 @@ fn pilot(rig: &mut Rig, who: &str, seed: i64) -> ObjId {
 }
 
 /// A chartered, licensed pilot whose hull the yard has made a Dray-P.
-fn prospector(rig: &mut Rig, who: &str, seed: i64, name: &str) -> (ObjId, HullRow) {
+pub(crate) fn prospector(rig: &mut Rig, who: &str, seed: i64, name: &str) -> (ObjId, HullRow) {
     let pilot = pilot(rig, who, seed);
     let out = run(&mut rig.tw, pilot, &format!("+coop/enrol {name}"));
     assert!(out.contains(&format!("now the {name}")), "{out}");

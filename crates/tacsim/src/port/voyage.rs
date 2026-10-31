@@ -2591,6 +2591,9 @@ pub(crate) enum DepartRefusalKind {
     TvOut,
     /// **Doc 20 cut SM.3b (§4.3)**: a rig's hopper holds ore ([`HOPPER_LOADED`]).
     HopperLoaded,
+    /// **Doc 32 cut CF.3 (Q-H10)**: the hull is held by a running field
+    /// ([`crate::field::carrier::DEPART_IN_FIELD`]).
+    InField,
 }
 
 /// A typed refusal: its kind and the line `+ship/undock` answers with.
@@ -3102,6 +3105,10 @@ pub(crate) fn prepare_departure(
     // Doc 20 cut SM.2 (lead override 3): a site whose pad is not ready takes no
     // departure (its lines never gate the desk, so they gate the passage here).
     let site_dest = site_gate(w, &dest)?;
+    // Doc 32 cut CF.3 (Q-H10): a carrier in a field is the field's until it settles.
+    if let Some(line) = crate::field::carrier::departure_refusal(w, hull) {
+        return Err(refusal(K::InField, line));
+    }
     // Doc 20 cut SM.3b (lead ruling 7): every rig in the bay, every hopper empty.
     bay_gate(ctx, &view, &name)?;
     // Lead ruling L13: promised goods hold the hull.
