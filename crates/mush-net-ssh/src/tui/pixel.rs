@@ -462,6 +462,14 @@ pub struct PixelView {
     /// frames-per-second, which is what the wire carries (the `sent` total
     /// says nothing about rate).
     sent_at: VecDeque<Instant>,
+    /// Whether the first-person cockpit canopy glass overlay is drawn (`b` toggles).
+    glass: bool,
+    /// The platform's ECM jamming pod state (`Some(true)` on, `Some(false)` off, `None` no pod).
+    ecm: Option<bool>,
+    /// Standing auto-target rule (`LOCK nearest WHEN nolock`) armed by `l`.
+    auto_lock_armed: bool,
+    /// Standing auto-fire rule (`FIRE ALL WHEN odds >= 60`) armed by `F`.
+    auto_fire_armed: bool,
     /// Counters.
     pub stats: Stats,
 }
@@ -522,6 +530,10 @@ impl PixelView {
             stepped_down: false,
             clean_since: None,
             sent_at: VecDeque::new(),
+            glass: true,
+            ecm: None,
+            auto_lock_armed: false,
+            auto_fire_armed: false,
             stats: Stats::default(),
         }
     }
@@ -854,6 +866,14 @@ impl PixelView {
         }
         // 16c Q-PT1: the match's public mode, every frame.
         self.range = cockpit.get("mode").and_then(Value::as_str) == Some("range");
+        self.ecm = cockpit
+            .get("ecm")
+            .and_then(Value::as_str)
+            .and_then(|s| match s {
+                "on" => Some(true),
+                "off" => Some(false),
+                _ => None,
+            });
         let t_ms = cockpit.get("t_ms").and_then(Value::as_i64);
         if t_ms.is_none() || t_ms != self.seen_t_ms {
             self.seen_t_ms = t_ms;
@@ -862,6 +882,12 @@ impl PixelView {
                 .and_then(Value::as_bool)
                 .unwrap_or(true);
         }
+    }
+
+    /// Whether the first-person cockpit canopy glass overlay is enabled.
+    #[must_use]
+    pub fn glass(&self) -> bool {
+        self.glass
     }
 
     /// The cockpit's camera (G.12b).
@@ -1186,6 +1212,59 @@ impl PixelView {
                 self.weapons_free = !self.weapons_free;
             }
             Key::Char('g') => self.orders.push("FIRE ALL".to_string()),
+            Key::Char('b') => {
+                self.glass = !self.glass;
+                self.last_sent = None;
+            }
+            Key::Char('n') => {
+                if let Some(lock) = self.lock_cursor.as_deref().or(self.frame_lock.as_deref()) {
+                    self.orders.push(format!("SCAN {lock}"));
+                }
+            }
+            Key::Char('z' | 'P') => self.orders.push("STARTUP".to_string()),
+            Key::Char('m') => {
+                if let Some(on) = self.ecm {
+                    let cmd = if on { "EMCON off" } else { "EMCON on" };
+                    self.orders.push(cmd.to_string());
+                    self.ecm = Some(!on);
+                }
+            }
+            Key::Char('l') => {
+                if self.auto_lock_armed {
+                    self.auto_lock_armed = false;
+                    self.orders.push("MIND RULE 1 OFF".to_string());
+                } else {
+                    self.auto_lock_armed = true;
+                    self.orders.push("LOCK nearest WHEN nolock".to_string());
+                }
+            }
+            Key::Char('F') => {
+                if self.auto_fire_armed {
+                    self.auto_fire_armed = false;
+                    self.orders.push("FIRE ALL OFF".to_string());
+                } else {
+                    self.auto_fire_armed = true;
+                    if !self.weapons_free {
+                        self.orders.push("FIRE FREE".to_string());
+                        self.weapons_free = true;
+                    }
+                    self.orders.push("FIRE ALL WHEN odds >= 60".to_string());
+                }
+            }
+            Key::Char('y') => {
+                if let Some(Some(dt)) = &self.detachment
+                    && let Some(cmd) = &dt.wilco_command
+                {
+                    self.orders.push(cmd.clone());
+                }
+            }
+            Key::Char('N') => {
+                if let Some(Some(dt)) = &self.detachment
+                    && let Some(cmd) = &dt.negative_command
+                {
+                    self.orders.push(cmd.clone());
+                }
+            }
             Key::Char(c @ ('t' | 'T')) => {
                 let dir = if c == 't' { 1 } else { -1 };
                 let current = self.lock_cursor.as_deref().or(self.frame_lock.as_deref());
@@ -1401,7 +1480,16 @@ impl PixelView {
             self.iso25d.draw(&mut self.frame, feeds, &look)
         } else {
             self.last_25d_size = None;
-            self.picture.draw(&mut self.frame, feeds, &look)
+            let ok = self.picture.draw(&mut self.frame, feeds, &look);
+            if ok
+                && self.kind == PictureKind::Cockpit
+                && self.glass
+                && let Some(c) = cockpit
+            {
+                let look_mdeg = self.look_mdeg();
+                mush_pixel::cockpit::draw_canopy_glass(&mut self.frame, c, look_mdeg);
+            }
+            ok
         };
         if !drawn {
             return Vec::new();
@@ -2902,5 +2990,77 @@ mod tests {
         }
         assert!(cockpit_legend(false, false, true).contains("f:hold"));
         assert!(cockpit_legend(false, false, false).contains("f:free"));
+    }
+
+    #[test]
+    fn cockpit_glass_toggle_and_direct_flight_hotkeys() {
+        let projection = serde_json::json!({
+            "id": "7",
+            "revision": "8",
+            "term": "9",
+            "leader_slot": 1,
+            "slots": [
+                {
+                    "slot": 1,
+                    "callsign": "RA",
+                    "pilot": "Aster",
+                    "controller": "player",
+                    "order_prefill": "ORDER DT:7:8:9 1 "
+                }
+            ],
+            "all_order_prefill": "ORDER DT:7:8:9 ALL ",
+            "my_order": {
+                "sequence": "3",
+                "from": "RA",
+                "objective": "Hold ridge",
+                "response": null
+            },
+            "wilco_command": "WILCO DT:7:8 3",
+            "negative_command": "NEGATIVE DT:7:8 3"
+        });
+        let (mut v, cockpit, t0) = flying(|c| {
+            c["ecm"] = "off".into();
+            c["detachment"] = projection;
+        });
+        let (_, map) = fixtures();
+        let both = feeds(Some(&cockpit), Some(&map));
+
+        // Canopy glass is on by default; `b` toggles it and triggers a repaint.
+        assert!(v.glass());
+        assert!(!v.paint(&both, 120, 40, t0).is_empty());
+        assert!(v.paint(&both, 120, 40, t0).is_empty(), "unchanged");
+        assert_eq!(v.key(Key::Char('b'), t0), KeyUse::Used);
+        assert!(!v.glass());
+        assert!(
+            !v.paint(&both, 120, 40, t0).is_empty(),
+            "repainted without glass"
+        );
+
+        // `n` scans the current lock (`BA`); `z` sends STARTUP.
+        v.key(Key::Char('n'), t0);
+        v.key(Key::Char('z'), t0);
+        assert_eq!(v.take_orders(), ["SCAN BA", "STARTUP"]);
+
+        // `m` toggles EMCON on/off when the hull carries an ECM pod.
+        v.key(Key::Char('m'), t0);
+        assert_eq!(v.take_orders(), ["EMCON on"]);
+        v.key(Key::Char('m'), t0);
+        assert_eq!(v.take_orders(), ["EMCON off"]);
+
+        // `l` toggles auto-target rule; `F` toggles auto-fire rule.
+        v.key(Key::Char('l'), t0);
+        v.key(Key::Char('F'), t0);
+        assert_eq!(
+            v.take_orders(),
+            ["LOCK nearest WHEN nolock", "FIRE ALL WHEN odds >= 60"]
+        );
+        v.key(Key::Char('l'), t0);
+        v.key(Key::Char('F'), t0);
+        assert_eq!(v.take_orders(), ["MIND RULE 1 OFF", "FIRE ALL OFF"]);
+
+        // `y` and `N` send detachment WILCO and NEGATIVE directly.
+        v.key(Key::Char('y'), t0);
+        v.key(Key::Char('N'), t0);
+        assert_eq!(v.take_orders(), ["WILCO DT:7:8 3", "NEGATIVE DT:7:8 3"]);
     }
 }

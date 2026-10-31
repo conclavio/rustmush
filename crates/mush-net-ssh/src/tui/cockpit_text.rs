@@ -481,10 +481,10 @@ fn short(id: &str) -> String {
 }
 
 /// The armour column: the doll from the unit's look ([`doll_rows`]) and a
-/// row a section — its name, a bar of its internals, and the numbers — or,
-/// where those would not fit in `rows`, two sections a row with shorter
-/// bars and no numbers (the dev2 smoke: a biped's eight doll rows and six
-/// sections left its torso off the bottom).
+/// row a section — its name, condition word and internals (without redundant
+/// block bars under the doll) — or, where those would not fit in `rows`, two
+/// sections a row (the dev2 smoke: a biped's eight doll rows and six sections
+/// left its torso off the bottom).
 #[must_use]
 pub fn armour_rows(cockpit: &Value, utf8: bool, rows: usize) -> Vec<Line<'static>> {
     let mut lines = doll_rows(cockpit, usize::from(ARMOUR_W), utf8);
@@ -500,10 +500,10 @@ pub fn armour_rows(cockpit: &Value, utf8: bool, rows: usize) -> Vec<Line<'static
             for sec in pair {
                 let (left, max) = internals(sec);
                 let id = sec.get("id").and_then(Value::as_str).unwrap_or("?");
-                let name: String = short(id).chars().take(8).collect();
-                spans.push(Span::raw(format!("{name:<8} ")));
+                let name: String = short(id).chars().take(7).collect();
+                spans.push(Span::raw(format!("{name:<7} ")));
                 spans.push(Span::styled(
-                    glyphs(&bar(left, max, 3), utf8),
+                    format!("{left}/{max:<3}"),
                     Style::default().fg(ramp(left, max)),
                 ));
                 spans.push(Span::raw(" "));
@@ -515,10 +515,15 @@ pub fn armour_rows(cockpit: &Value, utf8: bool, rows: usize) -> Vec<Line<'static
     for sec in sections {
         let (left, max) = internals(sec);
         let id = sec.get("id").and_then(Value::as_str).unwrap_or("?");
+        let cond = sec
+            .get("condition")
+            .and_then(Value::as_str)
+            .unwrap_or("intact");
+        let cond_short: String = cond.chars().take(7).collect();
         lines.push(Line::from(vec![
             Span::raw(format!("{:<10} ", short(id))),
             Span::styled(
-                glyphs(&bar(left, max, 5), utf8),
+                format!("{cond_short:<7}"),
                 Style::default().fg(ramp(left, max)),
             ),
             Span::raw(format!(" {left}/{max}")),
@@ -530,8 +535,9 @@ pub fn armour_rows(cockpit: &Value, utf8: bool, rows: usize) -> Vec<Line<'static
 // ---- weapons and heat ------------------------------------------------------
 
 /// The weapons column: the heat bar, then a row a weapon — its name,
-/// `READY` or the seconds to its next shot (`EMPTY` with no rounds), its
-/// rounds and the hit chance on the lock.
+/// `READY` or the seconds and a 4-cell reload bar to its next shot (`EMPTY`
+/// with no rounds), its rounds and the hit chance on the lock — followed by
+/// active standing rules and mind profile when present.
 #[must_use]
 pub fn weapon_rows(cockpit: &Value, utf8: bool) -> Vec<Line<'static>> {
     let mut lines = Vec::new();
@@ -583,15 +589,18 @@ pub fn weapon_rows(cockpit: &Value, utf8: bool) -> Vec<Line<'static>> {
             .take(12)
             .collect();
         let (rounds, rounds_max) = (num(w.get("rounds")), num(w.get("rounds_max")));
-        let (state, colour) = if rounds_max > 0 && rounds <= 0 {
-            ("EMPTY".to_string(), Color::Red)
-        } else if w.get("ready").and_then(Value::as_bool) == Some(true) {
-            ("READY".to_string(), Color::Green)
+        let ready = w.get("ready").and_then(Value::as_bool) == Some(true);
+        let ms = num(w.get("ready_in_ms"));
+        let (state, colour, cooldown_bar) = if rounds_max > 0 && rounds <= 0 {
+            ("EMPTY".to_string(), Color::Red, None)
+        } else if ready {
+            ("READY".to_string(), Color::Green, None)
         } else {
-            let ms = num(w.get("ready_in_ms"));
+            let progress = (3_000 - ms.clamp(0, 3_000)).max(250);
             (
                 format!("{}.{}s", ms / 1_000, ms % 1_000 / 100),
                 Color::Yellow,
+                Some(glyphs(&bar(progress, 3_000, 4), utf8)),
             )
         };
         let mut spans = vec![
@@ -604,6 +613,56 @@ pub fn weapon_rows(cockpit: &Value, utf8: bool) -> Vec<Line<'static>> {
         ];
         if let Some(p) = w.get("percent").and_then(Value::as_i64) {
             spans.push(Span::raw(format!(" {p:>3}%")));
+        }
+        if let Some(reload) = cooldown_bar {
+            spans.push(Span::styled(
+                format!(" {reload}"),
+                Style::default().fg(Color::Yellow),
+            ));
+        }
+        lines.push(Line::from(spans));
+    }
+
+    // Active standing rules (`S1:fire`, `S3:lock`) and active mind profile (`> Line`).
+    let rule_tags: Vec<String> = cockpit
+        .get("rules")
+        .and_then(Value::as_array)
+        .into_iter()
+        .flatten()
+        .filter_map(|r| {
+            let slot = r.get("slot").and_then(Value::as_i64)?;
+            let action = r
+                .pointer("/rule/action")
+                .or_else(|| r.get("action"))
+                .and_then(Value::as_str)?;
+            let short_act = if action == "hold_fire" {
+                "hold"
+            } else {
+                action
+            };
+            Some(format!("S{slot}:{short_act}"))
+        })
+        .collect();
+    let active_profile = cockpit.get("mind").and_then(|m| {
+        let active = usize::try_from(m.get("active")?.as_i64()?).ok()?;
+        m.get("profiles")?.as_array()?.get(active)?.as_str()
+    });
+    if active_profile.is_some() || !rule_tags.is_empty() {
+        let mut spans = Vec::new();
+        if let Some(prof) = active_profile {
+            spans.push(Span::styled(
+                format!("> {prof}"),
+                Style::default().fg(Color::Cyan),
+            ));
+            if !rule_tags.is_empty() {
+                spans.push(Span::raw("  "));
+            }
+        }
+        if !rule_tags.is_empty() {
+            spans.push(Span::styled(
+                format!("RULES {}", rule_tags.join(" ")),
+                Style::default().add_modifier(Modifier::DIM),
+            ));
         }
         lines.push(Line::from(spans));
     }
@@ -632,7 +691,8 @@ fn arrow(bearing_deg: f64, camera_mdeg: i64) -> &'static str {
 /// dark), so the colour never says friend or foe — the word does.
 #[must_use]
 pub fn contact_rows(cockpit: &Value, camera_mdeg: i64, utf8: bool) -> Vec<Line<'static>> {
-    let lock = cockpit.get("lock").and_then(Value::as_str);
+    let lock_id = cockpit.get("lock").and_then(Value::as_str);
+    let lock_des = cockpit.get("lock_designator").and_then(Value::as_str);
     let mut contacts: Vec<&Value> = cockpit
         .get("contacts")
         .and_then(Value::as_array)
@@ -679,17 +739,21 @@ pub fn contact_rows(cockpit: &Value, camera_mdeg: i64, utf8: bool) -> Vec<Line<'
             if let Some(p) = best {
                 text.push_str(&format!(" {p:>2}%"));
             }
-            let mut spans = vec![Span::styled(
-                glyphs(&text, utf8),
-                Style::default().fg(colour),
-            )];
+            let is_locked = (lock_id.is_some() && c.get("id").and_then(Value::as_str) == lock_id)
+                || (lock_des.is_some() && Some(designator) == lock_des);
+            let row_style = if is_locked {
+                Style::default().fg(colour).add_modifier(Modifier::BOLD)
+            } else {
+                Style::default().fg(colour)
+            };
+            let mut spans = vec![Span::styled(glyphs(&text, utf8), row_style)];
             if c.get("friendly").and_then(Value::as_bool) == Some(true) {
                 spans.push(Span::styled(
                     " friend",
                     Style::default().add_modifier(Modifier::DIM),
                 ));
             }
-            if lock.is_some() && c.get("id").and_then(Value::as_str) == lock {
+            if is_locked {
                 spans.push(Span::styled(
                     " LOCK",
                     Style::default()
@@ -780,14 +844,8 @@ mod tests {
         worn["sections"][1]["facets"][0]["armor"] = 40.into();
         let worn = armour_rows(&worn, true, 99);
         assert_eq!(cell_colours(&worn[0], 5).0, Some(Color::Yellow), "40 of 80");
-        assert_eq!(
-            rows[8],
-            "engine     \u{2588}\u{2588}\u{2588}\u{2588}\u{2588} 40/40"
-        );
-        assert_eq!(
-            rows[10],
-            "L track    \u{2588}\u{2588}\u{2591}\u{2591}\u{2591} 6/24"
-        );
+        assert_eq!(rows[8], "engine     intact  40/40");
+        assert_eq!(rows[10], "L track    intact  6/24");
         let ascii = texts(&armour_rows(&c, false, 99));
         assert!(ascii.iter().all(|r| r.is_ascii()), "{ascii:?}");
     }
@@ -845,7 +903,8 @@ mod tests {
             [
                 "HEAT \u{2588}\u{2588}\u{2588}\u{2588}\u{2591}\u{2591}\u{2591}\u{2591}\u{2591}\u{2591} 40/100",
                 "cannon      READY   14/20    62%",
-                "machine_gun 0.9s   380/500   21%",
+                "machine_gun 0.9s   380/500   21% \u{2588}\u{2588}\u{2588}\u{2591}",
+                "> Sniper  RULES S1:fire",
             ]
         );
         let mut cold = c.clone();
@@ -854,6 +913,7 @@ mod tests {
         let rows = texts(&weapon_rows(&cold, true));
         assert_eq!(rows[0], "HEAT - (no heat model)");
         assert!(rows[1].starts_with("cannon      EMPTY"), "{rows:?}");
+        assert_eq!(rows[3], "> Sniper  RULES S1:fire");
     }
 
     /// Nearest first, an arrow for where each lies from the camera (the
@@ -871,6 +931,22 @@ mod tests {
                 "\u{2191} BA  blue       450m 045\u{b0} 62% LOCK",
                 "\u{2191} X4  unknown    600m 030\u{b0}",
             ]
+        );
+        // Live v9 frames carry `lock_designator` without `lock`: BA still gets LOCK and bold.
+        let mut v9 = c.clone();
+        if let Some(obj) = v9.as_object_mut() {
+            obj.remove("lock");
+        }
+        let v9_lines = contact_rows(&v9, 45_000, true);
+        assert_eq!(
+            texts(&v9_lines)[2],
+            "\u{2191} BA  blue       450m 045\u{b0} 62% LOCK"
+        );
+        assert!(
+            v9_lines[2].spans[0]
+                .style
+                .add_modifier
+                .contains(Modifier::BOLD)
         );
         // A look of 90 to the right: BA now lies to the left.
         let swung = texts(&contact_rows(&c, 135_000, true));
