@@ -627,6 +627,18 @@ fn select_boot_checkpoint(
             .head
             .body
             .fold
+            .bay_refit_receipts
+            .checkpoint_complete(&saved.rows)
+    }) {
+        checkpoint_notes
+            .push("checkpoint lacks exact bay refit receipt coverage; full replay required".into());
+        checkpoint = None;
+    }
+    if checkpoint.as_ref().is_some_and(|saved| {
+        !saved
+            .head
+            .body
+            .fold
             .charter_pending_receipts
             .checkpoint_complete(&saved.rows)
     }) {
@@ -1688,6 +1700,7 @@ pub(crate) fn load_boot_with_coverage(
     require_refit_receipts: bool,
     require_coverage: bool,
     require_seizure_receipts: bool,
+    require_bay_refit_receipts: bool,
 ) -> Result<EconomyStore, ModError> {
     let ModuleBootData {
         kv,
@@ -2051,6 +2064,7 @@ pub(crate) fn load_boot_with_coverage(
         &stored_holds,
         (require_refit_receipts, require_seizure_receipts),
     )?;
+    crate::bay_refit::bridge::recover(&mut state, &stored_holds, require_bay_refit_receipts)?;
     let renewal_offers = crate::managed_renewal::bridge::recover(
         &mut state,
         &mut snapshot,

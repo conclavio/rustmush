@@ -20,9 +20,9 @@
 //! land with the Economy and Inventory owners that fill them.
 use crate::workorder::{PRODUCTION_CADENCE_SECS, WorkOrderId};
 use mush_core::{
-    CommitToken, DefinitionDescriptor, DefinitionDigest, DefinitionId, DefinitionKind,
-    DefinitionRef, DurableSchedule, ModError, ObjId, Registrar, ScheduleId, StateFamilyDescriptor,
-    StateFamilyHandle, bay_refit_protocol as kernel,
+    CommitToken, DefinitionDescriptor, DefinitionDigest, DefinitionRef, DurableSchedule, ModError,
+    ObjId, Registrar, ScheduleId, StateFamilyDescriptor, StateFamilyHandle,
+    bay_refit_protocol as kernel,
 };
 use serde::{Deserialize, Serialize};
 
@@ -112,20 +112,8 @@ impl BayRefitPolicy {
             return kernel::action_descriptor(&policy, index)
                 .map_err(|e| BayRefitError::Policy(e.to_string()));
         }
-        let kind = match action {
-            INITIALIZE => "initialize_bay_census",
-            OFFER => "acknowledged_supplier_offer",
-            _ => return Err(BayRefitError::Policy(format!("no action {action}"))),
-        };
-        let err = |e: &dyn std::fmt::Display| BayRefitError::Policy(e.to_string());
-        DefinitionDescriptor::new(
-            DefinitionKind::new("action").map_err(|e| err(&e))?,
-            DefinitionId::new(action).map_err(|e| err(&e))?,
-            1,
-            serde_json::json!({"format":1,"protocol":"bay_refit_v1","policy":policy,"kind":kind,"offer_seconds":OFFER_SECONDS}),
-        )
-        .map(|d| d.with_references(vec![self.recipe.clone()]))
-        .map_err(|e| err(&e))
+        kernel::owner_action_descriptor(&policy, action)
+            .map_err(|e| BayRefitError::Policy(e.to_string()))
     }
 }
 
@@ -394,7 +382,7 @@ pub fn digest(domain: &str, value: &serde_json::Value) -> Result<DefinitionDiges
 #[cfg(test)]
 mod tests {
     use super::*;
-    use mush_core::{DefinitionRegistryBuilder, OwnerId};
+    use mush_core::{DefinitionId, DefinitionKind, DefinitionRegistryBuilder, OwnerId};
     use std::collections::BTreeSet;
 
     fn recipe(id: &str) -> DefinitionRef {

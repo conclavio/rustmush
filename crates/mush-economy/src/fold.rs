@@ -117,6 +117,12 @@ pub struct FoldState {
         skip_serializing_if = "crate::core_refit::receipt::RefitReceiptAudit::uninitialized"
     )]
     pub(crate) refit_receipts: crate::core_refit::receipt::RefitReceiptAudit,
+    /// Doc 31 UD.4b: the bay refit's fee histories.
+    #[serde(
+        default,
+        skip_serializing_if = "crate::bay_refit::receipt::BayReceiptAudit::uninitialized"
+    )]
+    pub(crate) bay_refit_receipts: crate::bay_refit::receipt::BayReceiptAudit,
     #[serde(
         default,
         skip_serializing_if = "crate::registry_filing::update::UpdateReceiptAudit::uninitialized"
@@ -207,6 +213,7 @@ impl FoldState {
         self.core_receipts.observe(tx);
         self.seizure_receipts.observe(tx);
         self.refit_receipts.observe(tx);
+        self.bay_refit_receipts.observe(tx);
         self.filing_receipts.observe(tx);
         self.update_receipts.observe(tx);
         self.charter_pending_receipts.observe(tx);

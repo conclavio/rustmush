@@ -72,6 +72,7 @@ pub struct InventoryFamilies {
     /// any read or replay could still need (E7c2 owner decision D1).
     pub marker_ring: StateFamilyHandle<EndpointRef, crate::record::MarkerRing>,
     pub(crate) core_inputs: Option<crate::core_input::CoreInputHandle>,
+    pub(crate) bay_parts: Option<crate::bay_part::BayPartHandle>,
 }
 
 /// The `ResourceRef` one `(endpoint, commodity)` pool is keyed by.

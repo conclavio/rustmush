@@ -18,7 +18,9 @@ mod tests;
 mod transition;
 mod wire;
 pub(in crate::action_state) use protocol::Protocol;
-pub use protocol::{ACTIONS, action_descriptor, descriptor as family_descriptor};
+pub use protocol::{
+    ACTIONS, action_descriptor, descriptor as family_descriptor, owner_action_descriptor,
+};
 use protocol::{action_reference, descriptor};
 pub(in crate::action_state) use transition::bay_refit_change;
 pub(super) use transition::{audit_boot, validate_changes};

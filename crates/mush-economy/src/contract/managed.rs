@@ -362,7 +362,7 @@ pub(crate) fn legacy_contract(c: &EconomicContract, snapshot: &EconomySnapshot) 
 
 fn purpose(snapshot: &EconomySnapshot, purpose: &HoldPurpose) -> bool {
     matches!(purpose, HoldPurpose::Escrow { contract } if at(snapshot, *contract))
-        || matches!(purpose, HoldPurpose::Reservation { kind, .. } if kind == crate::core_integration::HOLD_PURPOSE || kind == crate::core_refit::HOLD_PURPOSE)
+        || matches!(purpose, HoldPurpose::Reservation { kind, .. } if kind == crate::core_integration::HOLD_PURPOSE || kind == crate::core_refit::HOLD_PURPOSE || kind == crate::bay_refit::HOLD_PURPOSE)
 }
 fn encumbrance(snapshot: &EconomySnapshot, value: &Encumbrance) -> bool {
     match value {
@@ -399,6 +399,7 @@ fn closed_money_namespace(namespace: &str) -> bool {
         || namespace == crate::registry_filing::charter_transfer::receipt::NAMESPACE
         || namespace == crate::core_integration::NAMESPACE
         || namespace == crate::core_refit::NAMESPACE
+        || namespace == crate::bay_refit::NAMESPACE
 }
 
 /// Refuse before idempotency lookup, custom authorization or approval replay.

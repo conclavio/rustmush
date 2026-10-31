@@ -58,6 +58,7 @@ pub struct InventoryModule {
     cell: Option<InventoryHandleCell>,
     salvage: Option<std::sync::Arc<dyn crate::salvage::SalvageSource>>,
     core_inputs: Option<crate::core_input::CoreInputBinding>,
+    bay_parts: Option<crate::bay_part::BayPartBinding>,
 }
 
 impl InventoryModule {
@@ -70,6 +71,7 @@ impl InventoryModule {
             cell: None,
             salvage: None,
             core_inputs: None,
+            bay_parts: None,
         }
     }
 
@@ -108,6 +110,14 @@ impl InventoryModule {
     #[must_use]
     pub fn with_core_inputs(mut self, binding: crate::core_input::CoreInputBinding) -> Self {
         self.core_inputs = Some(binding);
+        self
+    }
+
+    /// Doc 31 UD.4b: the closed bay part custody for the Industry bay refit;
+    /// absent, no bay family is registered.
+    #[must_use]
+    pub fn with_bay_parts(mut self, binding: crate::bay_part::BayPartBinding) -> Self {
+        self.bay_parts = Some(binding);
         self
     }
 
@@ -381,6 +391,19 @@ impl GameModule for InventoryModule {
                 )
             })
             .transpose()?;
+        let bay_parts = self
+            .bay_parts
+            .clone()
+            .map(|binding| {
+                crate::bay_part::register(
+                    reg,
+                    binding,
+                    lots.clone(),
+                    lot_census.clone(),
+                    core_inputs.clone(),
+                )
+            })
+            .transpose()?;
         let families = InventoryFamilies {
             pools,
             books: books.clone(),
@@ -392,6 +415,7 @@ impl GameModule for InventoryModule {
             reservations: reservations.clone(),
             marker_ring,
             core_inputs,
+            bay_parts,
         };
 
         // ---- E7c2: B4 — the first `Reservation` validator on the tree ----

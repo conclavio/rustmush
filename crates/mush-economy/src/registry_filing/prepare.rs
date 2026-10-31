@@ -195,6 +195,26 @@ impl InitialFilingParticipant {
         }
     }
     #[inline(never)]
+    pub(super) fn prepare_bay_refit_request(
+        &self,
+        state: &EconomyStore,
+        context: &OwnerPrepareContext<'_>,
+        request: crate::bay_refit::money::Request,
+    ) -> Result<OwnerPreparation<EconomyOutput, EconomyPatch>, ParticipantError> {
+        let config = self.bay_refit.as_ref().ok_or_else(refused)?;
+        let (output, patch, writes) =
+            crate::bay_refit::install::prepare(config, state, context, request)?;
+        let output = match output {
+            crate::bay_refit::money::Output::Funded(output) => EconomyOutput::BayFunding(output),
+            crate::bay_refit::money::Output::Terminal(output) => EconomyOutput::BayTerminal(output),
+        };
+        Ok(OwnerPreparation::new(
+            output,
+            EconomyPatch::BayMoney(patch),
+            writes,
+        ))
+    }
+    #[inline(never)]
     pub(super) fn prepare_refit_funding_request(
         &self,
         state: &EconomyStore,

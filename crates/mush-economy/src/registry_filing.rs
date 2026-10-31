@@ -158,6 +158,7 @@ pub struct InitialFilingParticipant {
     seizure: Option<seizure::SeizureConfig>,
     core_integration: Option<crate::core_integration::CoreIntegrationConfig>,
     core_refit: Option<crate::core_refit::CoreRefitConfig>,
+    bay_refit: Option<crate::bay_refit::BayRefitConfig>,
     charter_pending: Option<crate::managed_charter_transfer::CharterPendingConfig>,
     paid_resale: Option<crate::managed_paid_resale::PaidResaleConfig>,
     coverage: Option<crate::managed_coverage::CoverageConfig>,
@@ -176,6 +177,7 @@ impl InitialFilingParticipant {
             seizure: None,
             core_integration: None,
             core_refit: None,
+            bay_refit: None,
             charter_pending: None,
             paid_resale: None,
             coverage: None,
@@ -207,6 +209,7 @@ pub(crate) fn register_with_house_updates(
     original_major: Option<&mush_core::DefinitionRef>,
     house_update: Option<&update::house::HouseUpdateConfig>,
     seizure: Option<&seizure::SeizureConfig>,
+    bay_refit: Option<&crate::bay_refit::BayRefitConfig>,
 ) -> Result<(), mush_core::ModError> {
     use mush_core::mechanics::{
         DefinitionDescriptor, DefinitionId, DefinitionKind, DefinitionValidationContext,
@@ -480,6 +483,9 @@ pub(crate) fn register_with_house_updates(
         }
         actions.extend(crate::core_refit::bridge::register(reg, config)?);
     }
+    if let Some(config) = bay_refit {
+        actions.extend(crate::bay_refit::bridge::register(reg, config)?);
+    }
     reg.owner_participant(
         definition,
         actions,
@@ -495,6 +501,7 @@ pub(crate) fn register_with_house_updates(
             seizure: seizure.cloned(),
             core_integration: core_integration.cloned(),
             core_refit: core_refit.cloned(),
+            bay_refit: bay_refit.cloned(),
             charter_pending: charter_pending.cloned(),
             paid_resale: paid_resale.cloned(),
             coverage: coverage.cloned(),
@@ -1018,6 +1025,9 @@ pub enum EconomyRequest {
     RefitFunding(crate::core_refit::RefitFundingRequest),
     RefitInstallation(crate::core_refit::RefitInstallationRequest),
     RefitCancellation(crate::core_refit::RefitCancellationRequest),
+    BayFunding(crate::bay_refit::BayFundingRequest),
+    BayInstallation(crate::bay_refit::BayInstallationRequest),
+    BayCancellation(crate::bay_refit::BayCancellationRequest),
     CompatibleUpdate(update::RegistryCompatibleUpdate),
     DerivedCompatibleUpdate(update::RegistryCompatibleUpdate),
     OriginalMajor(update::RegistryCompatibleUpdate),
@@ -1099,6 +1109,8 @@ pub enum EconomyOutput {
     CoreTerminal(crate::core_integration::CoreTerminalOutput),
     RefitFunding(crate::core_refit::RefitFundingOutput),
     RefitTerminal(crate::core_refit::RefitTerminalOutput),
+    BayFunding(crate::bay_refit::BayFundingOutput),
+    BayTerminal(crate::bay_refit::BayTerminalOutput),
     CompatibleUpdate(update::CompatibleUpdateOutput),
     InitialFiling(InitialFilingOutput),
     PurchaseFunding(crate::managed_purchase::FundingOutput),
@@ -1194,6 +1206,20 @@ impl EconomyOutput {
     ) -> Result<crate::core_refit::RefitTerminalOutput, ParticipantError> {
         match self {
             Self::RefitTerminal(output) => Ok(output),
+            _ => Err(refused()),
+        }
+    }
+    /// Doc 31 UD.4b: the bay fee held at Accept.
+    pub fn bay_funding(self) -> Result<crate::bay_refit::BayFundingOutput, ParticipantError> {
+        match self {
+            Self::BayFunding(output) => Ok(output),
+            _ => Err(refused()),
+        }
+    }
+    /// Doc 31 UD.4b: the bay fee captured at Install or released at Cancel.
+    pub fn bay_terminal(self) -> Result<crate::bay_refit::BayTerminalOutput, ParticipantError> {
+        match self {
+            Self::BayTerminal(output) => Ok(output),
             _ => Err(refused()),
         }
     }
@@ -1294,6 +1320,7 @@ pub enum EconomyPatch {
     CoreSeizure(Box<seizure::CoreSeizurePatch>),
     CoreMoney(Box<crate::core_integration::CoreMoneyPatch>),
     RefitMoney(Box<crate::core_refit::RefitMoneyPatch>),
+    BayMoney(Box<crate::bay_refit::BayMoneyPatch>),
     CompatibleUpdate(Box<update::CompatibleUpdatePatch>),
     DerivedCompatibleUpdate(Box<update::CompatibleUpdatePatch>),
     OriginalMajor(Box<update::CompatibleUpdatePatch>),
@@ -1318,6 +1345,7 @@ pub enum BoundEconomy<'a> {
     CoreSeizure(seizure::BoundCoreSeizure<'a>),
     CoreMoney(crate::core_integration::BoundCoreMoney<'a>),
     RefitMoney(crate::core_refit::BoundRefitMoney<'a>),
+    BayMoney(crate::bay_refit::BoundBayMoney<'a>),
     CompatibleUpdate(update::BoundCompatibleUpdate<'a>),
     InitialFiling(BoundInitialFiling<'a>),
     Purchase(crate::managed_purchase::BoundPurchase<'a>),
@@ -1343,6 +1371,7 @@ impl BoundParticipant for BoundEconomy<'_> {
             Self::HouseRenewalMoney(bound) => bound.apply(),
             Self::CoreMoney(bound) => bound.apply(),
             Self::RefitMoney(bound) => bound.apply(),
+            Self::BayMoney(bound) => bound.apply(),
         }
     }
 }
@@ -1606,6 +1635,21 @@ impl OwnerParticipant for InitialFilingParticipant {
             EconomyRequest::RefitCancellation(request) => {
                 self.prepare_refit_cancellation_request(state, context, request)
             }
+            EconomyRequest::BayFunding(request) => self.prepare_bay_refit_request(
+                state,
+                context,
+                crate::bay_refit::money::Request::Fund(Box::new(request)),
+            ),
+            EconomyRequest::BayInstallation(request) => self.prepare_bay_refit_request(
+                state,
+                context,
+                crate::bay_refit::money::Request::Install(request),
+            ),
+            EconomyRequest::BayCancellation(request) => self.prepare_bay_refit_request(
+                state,
+                context,
+                crate::bay_refit::money::Request::Cancel(request),
+            ),
             EconomyRequest::RenewalDraft(request) => {
                 self.prepare_renewal_draft_request(state, context, request)
             }
@@ -1766,6 +1810,9 @@ impl OwnerParticipant for InitialFilingParticipant {
                 state,
                 context,
             ),
+            EconomyPatch::BayMoney(patch) => {
+                patch.recheck(self.bay_refit.as_ref().ok_or_else(refused)?, state, context)
+            }
             EconomyPatch::HouseCompatibleUpdate(patch) => update::recheck(
                 &self.policy,
                 &self.house_update.as_ref().ok_or_else(refused)?.action,
@@ -1833,6 +1880,7 @@ impl OwnerParticipant for InitialFilingParticipant {
             }
             EconomyPatch::CoreMoney(patch) => patch.bind(state).map(BoundEconomy::CoreMoney),
             EconomyPatch::RefitMoney(patch) => patch.bind(state).map(BoundEconomy::RefitMoney),
+            EconomyPatch::BayMoney(patch) => patch.bind(state).map(BoundEconomy::BayMoney),
             EconomyPatch::CompatibleUpdate(patch)
             | EconomyPatch::DerivedCompatibleUpdate(patch)
             | EconomyPatch::OriginalMajor(patch)
