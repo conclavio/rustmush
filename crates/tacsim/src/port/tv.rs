@@ -2059,7 +2059,7 @@ pub(crate) fn tv_cmd(ctx: &mut Ctx<'_>) -> Result<(), CmdError> {
                 return crate::field::exit::request(
                     ctx,
                     rig.tv,
-                    ramp,
+                    Some(ramp),
                     crate::field::exit::Then::Rig {
                         slot: rig.slot,
                         quiet,

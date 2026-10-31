@@ -18,18 +18,19 @@
 //!   from them at the carrier's check-in.
 //! - **It is never towed** (FO-13): the twice-own-tonnage rule already puts a carrier beyond any
 //!   tug, and [`refuse_tow`] says so by name before the tonnage is read.
-//! - **It does not depart mid-field without the leave-behind confirmation** (Q-H10):
-//!   [`departure_refusal`] is the departure's gate.
+//! - **It departs mid-field only live, on the leave-behind confirmation** (Q-H10; doc 32 F-6,
+//!   ruled 2026-10-31): a live `+ship/lift` naming every unit out removes it from the field
+//!   outright (`crate::field::exit`); [`departure_refusal`] is a queued departure's gate.
 
 use mush_core::{Ctx, ObjId, World};
 
 use super::FieldBook;
 
-/// **`+ship/lift` while the carrier is in a field** (Q-H10, doc 32 §4a): its units are out on
-/// a promoted site, so a departure leaves them; `{name}`, `{site}`, `{units}`.
+/// **A queued departure while the carrier is in a field** (Q-H10, doc 32 §4a, F-6): its units
+/// are out on a promoted site, so a departure leaves them; `{name}`, `{site}`, `{units}`.
 pub const DEPART_IN_FIELD: &str = "The {name} is in the field on {site}: lifting now leaves \
-     {units} on the ground. The field holds the hull until it settles; a departure under fire \
-     waits for the carrier's withdrawal from the field (doc 32 F-3, F-6).";
+     {units} on the ground. A queued departure never takes a carrier out of a field; lift live \
+     with leave= naming every unit you have out (doc 32 F-6).";
 
 /// **A tow naming a carrier** (FO-13): `{name}`.
 pub const TOW_CARRIER: &str =
@@ -136,8 +137,8 @@ fn ring_cells(centre: (u16, u16), ring: u16) -> Vec<(u16, u16)> {
 }
 
 /// **The departure gate** (Q-H10): `Some(line)` when `hull` is held by a running field. The
-/// kernel has no withdrawal for a unit in a running arena yet, so the confirmation has nothing
-/// to confirm; the line names the units a departure would leave.
+/// gate of a queued departure, which never presumes the confirmation; a live one takes the
+/// carrier out of the field instead (doc 32 F-6). The line names the units it would leave.
 #[must_use]
 pub fn departure_refusal(w: &World, hull: ObjId) -> Option<String> {
     let site = super::field_of_unit(w, hull)?;

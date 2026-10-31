@@ -37,6 +37,8 @@ mod field_carrier;
 mod field_host;
 #[path = "shard_1/field_raiders.rs"]
 mod field_raiders;
+#[path = "shard_1/field_story.rs"]
+mod field_story;
 #[path = "shard_1/hulls.rs"]
 mod hulls;
 #[path = "shard_1/knowing.rs"]

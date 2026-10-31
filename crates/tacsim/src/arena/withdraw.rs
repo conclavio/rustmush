@@ -8,6 +8,11 @@
 //! and either refuses with a [`WithdrawRefusal`] or takes the unit out and answers its check-in
 //! row, exactly the row the end would have carried ([`Arena::returned_units`]).
 //!
+//! **A carrier lifting off its pad** (doc 32 F-6, ruled 2026-10-31; built in cut CF.7) asks with
+//! no ramp. After the pilot's leave-behind confirmation the carrier is removed from the field
+//! outright and lifts: it stands on its pad, about four cells from its own ramp, and a lift is
+//! not a drive, so neither test below applies to it. What a hit does to lift is F-3's.
+//!
 //! **The rule** (recorded in doc 32 §8): the unit stands **beside the ramp** — its cell within
 //! one cell of the ramp's, Chebyshev, the surface recover's own rule (doc 20 SM.3b) and the DT
 //! recover's (`at_ramp`) — and it can **return under its own power**: no wreck, motion not
@@ -63,7 +68,8 @@ fn cells_apart(a: (u16, u16), b: (u16, u16)) -> u16 {
 
 impl Arena {
     /// **Take `unit` out of the field at the ramp standing at `ramp` (cm)**, answering its
-    /// check-in row (this module's head).
+    /// check-in row (this module's head). `None` is a carrier lifting off its pad (doc 32 F-6):
+    /// no ramp and no drive, so only [`WithdrawRefusal::NotHere`] refuses it.
     ///
     /// # Errors
     ///
@@ -71,9 +77,12 @@ impl Arena {
     pub fn withdraw(
         &mut self,
         unit: ObjId,
-        ramp: (i64, i64),
+        ramp: Option<(i64, i64)>,
     ) -> Result<UnitReturn, WithdrawRefusal> {
         let state = self.unit(unit).ok_or(WithdrawRefusal::NotHere)?;
+        let Some(ramp) = ramp else {
+            return self.take_out(unit);
+        };
         let terrain = &self.definition.terrain;
         let beside = match (
             terrain.cell_of(&state.pose),
@@ -94,6 +103,11 @@ impl Arena {
         if !beside {
             return Err(WithdrawRefusal::NotAtRamp);
         }
+        self.take_out(unit)
+    }
+
+    /// The unit's check-in row, and the unit out of the arena.
+    fn take_out(&mut self, unit: ObjId) -> Result<UnitReturn, WithdrawRefusal> {
         let back = self
             .returned_units()
             .into_iter()
@@ -148,13 +162,15 @@ mod tests {
     fn a_unit_beside_the_ramp_leaves_and_the_field_carries_on() {
         let mut arena = field();
         // The ramp in the next cell: within one cell, Chebyshev.
-        let back = arena.withdraw(NEAR, (2_500, 2_500)).expect("it leaves");
+        let back = arena
+            .withdraw(NEAR, Some((2_500, 2_500)))
+            .expect("it leaves");
         assert_eq!(back.unit, NEAR);
         assert_eq!((back.pose.x_cm, back.pose.y_cm), (1_500, 1_500));
         assert!(arena.unit(NEAR).is_none(), "gone from the arena");
         assert!(arena.pilots.iter().all(|pilot| pilot.unit != NEAR));
         assert_eq!(
-            arena.withdraw(NEAR, (2_500, 2_500)).err(),
+            arena.withdraw(NEAR, Some((2_500, 2_500))).err(),
             Some(WithdrawRefusal::NotHere)
         );
         // The rest of the field steps on.
@@ -169,14 +185,14 @@ mod tests {
     fn a_unit_away_from_the_ramp_or_unable_to_move_stays() {
         let mut arena = field();
         assert_eq!(
-            arena.withdraw(FAR, (1_500, 1_500)).err(),
+            arena.withdraw(FAR, Some((1_500, 1_500))).err(),
             Some(WithdrawRefusal::NotAtRamp)
         );
         if let Some(state) = arena.unit_mut(NEAR) {
             state.limits.motion_disabled = true;
         }
         assert_eq!(
-            arena.withdraw(NEAR, (1_500, 1_500)).err(),
+            arena.withdraw(NEAR, Some((1_500, 1_500))).err(),
             Some(WithdrawRefusal::NotUnderOwnPower)
         );
         if let Some(state) = arena.unit_mut(NEAR) {
@@ -184,9 +200,25 @@ mod tests {
             state.limits.wreck = true;
         }
         assert_eq!(
-            arena.withdraw(NEAR, (1_500, 1_500)).err(),
+            arena.withdraw(NEAR, Some((1_500, 1_500))).err(),
             Some(WithdrawRefusal::NotUnderOwnPower)
         );
         assert!(arena.unit(NEAR).is_some() && arena.unit(FAR).is_some());
+    }
+
+    #[test]
+    fn f6_a_lift_needs_no_ramp_and_no_drive() {
+        let mut arena = field();
+        if let Some(state) = arena.unit_mut(FAR) {
+            state.limits.motion_disabled = true;
+        }
+        let back = arena.withdraw(FAR, None).expect("it lifts");
+        assert_eq!(back.unit, FAR);
+        assert!(arena.unit(FAR).is_none(), "gone from the arena");
+        assert_eq!(
+            arena.withdraw(FAR, None).err(),
+            Some(WithdrawRefusal::NotHere)
+        );
+        assert!(arena.unit(NEAR).is_some(), "the unit it leaves stays");
     }
 }
