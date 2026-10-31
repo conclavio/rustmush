@@ -117,6 +117,35 @@ impl Rig {
             commit: token(n),
         })
     }
+    /// Prepare `name` directly, with no projected offer (doc 31 UD.4b: the
+    /// bay's actions publish none until the bay view, UD.4c).
+    pub(super) fn perform_direct(
+        &mut self,
+        owner: &str,
+        name: &str,
+        actor: ObjId,
+        parameters: Value,
+    ) -> Result<(CommitToken, Value)> {
+        self.serial += 1;
+        let n = self.serial;
+        let action = self.action(owner, name)?;
+        let invocation = request(n, actor, owner, parameters)?;
+        let e = self.world_mut().engine_mut();
+        let prepared =
+            e.prepare_registered_composed_authoritative_action(&action, &invocation, token(n))?;
+        let guards = e
+            .registry
+            .server_guard_set_builder(mush_core::RevisionSet::default())?
+            .finish()?;
+        let result = self.install(Planned {
+            action,
+            invocation,
+            guards,
+            prepared,
+            commit: token(n),
+        })?;
+        Ok((token(n), result))
+    }
     pub(super) fn perform(
         &mut self,
         owner: &str,

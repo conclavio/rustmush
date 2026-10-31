@@ -114,6 +114,11 @@ pub(crate) fn register(
         outcome,
     });
     reg.state(BayHandle(runtime.clone()));
+    let custody = Arc::new(BayCustody {
+        hulls: runtime.families.hulls().clone(),
+    });
+    reg.hook(mush_core::HookPoint::CarryAttempt, custody.clone());
+    reg.hook(mush_core::HookPoint::MoveAttempt, custody);
     super::provider::register(reg, runtime.clone())?;
     super::schedule::register(reg, runtime.clone())?;
     Ok(runtime)
@@ -194,4 +199,48 @@ pub(crate) fn terminal_room(world: &World, r: &BayRuntime, row: &BayOrder) -> Re
     object.insert("installation".into(), installation);
     canonical_json_bytes_with_limit(&projected, ORDER_BYTES).map_err(bad)?;
     Ok(())
+}
+
+/// **A hull held in a bay stays in it** (doc 31 UD.4b): neither carried out
+/// nor moved while an order holds it, so it can be neither launched nor taken
+/// elsewhere until Install or Cancel releases it.
+pub(crate) struct BayCustody {
+    pub(crate) hulls: mush_core::StateFamilyHandle<mush_core::ObjId, super::BayHullHead>,
+}
+impl BayCustody {
+    fn held(&self, ctx: &mush_core::HookReadContext<'_>, object: mush_core::ObjId) -> bool {
+        // An unreadable head refuses: a hull's custody is never assumed free.
+        ctx.action_state(&self.hulls, &object)
+            .map_or(true, |h| h.is_some_and(|h| h.pending().is_some()))
+    }
+}
+impl mush_core::EventHook for BayCustody {
+    fn carry_attempt(
+        &self,
+        ctx: &mush_core::HookReadContext<'_>,
+        _actor: mush_core::ObjId,
+        object: mush_core::ObjId,
+        _destination: mush_core::ObjId,
+    ) -> Result<(), mush_proto::RichText> {
+        if self.held(ctx, object) {
+            return Err(mush_proto::RichText::plain(
+                "That hull is held in a bay for a refit.",
+            ));
+        }
+        Ok(())
+    }
+    fn move_attempt(
+        &self,
+        ctx: &mush_core::HookReadContext<'_>,
+        actor: mush_core::ObjId,
+        _exit: Option<mush_core::ObjId>,
+        _dest: mush_core::ObjId,
+    ) -> Result<(), mush_proto::RichText> {
+        if self.held(ctx, actor) {
+            return Err(mush_proto::RichText::plain(
+                "That hull is held in a bay for a refit.",
+            ));
+        }
+        Ok(())
+    }
 }

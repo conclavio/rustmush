@@ -181,6 +181,7 @@ fn hardware(rig: &mut Rig) -> HardwareCoordinates {
     let ungovern = back_room(rig, agent);
     HardwareCoordinates {
         ungovern: Some(ungovern),
+        bay: None,
         importer: basin,
         stock_scope,
         depot: vault(rig, "HardwareStock0"),
