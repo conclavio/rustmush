@@ -4392,3 +4392,147 @@ async fn cf6_escort_orders_in_a_field_cross_jamming_hold_fire_and_lost_contact()
     assert!(holding, "HOLD FIRE stands on the escort's own order row");
     Ok(())
 }
+
+/// The rounds left across every weapon a frame shows.
+fn rounds_left(frame: &tacsim::arena::step::Frame) -> u64 {
+    frame
+        .weapons
+        .iter()
+        .map(|weapon| u64::from(weapon.rounds))
+        .sum()
+}
+
+/// **An open-ground ENGAGE ends in the hired escort's own fire** (doc 32 §15, the 2026-10-31
+/// review's CF-5b; Q-CF-42, §4a, §11). CF.6's gate above proves the delivered ENGAGE is the
+/// leader's Hostile mark; this one follows it into the field. The escort's rig is rebuilt as an
+/// armed design (a staff hand: the armed rig lease's loan does not land here), stands beside its
+/// leader with a bystander's hull to the east, and is ordered `ENGAGE E`: the field opens on the
+/// mark, the escort's hull is the doctrine's, and the doctrine fights the Hostile row — the
+/// escort's own rounds leave the gun with no order inside the field.
+#[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+async fn cf_review_an_open_ground_engage_ends_in_the_hired_escorts_fire() -> TestResult {
+    use mush_tactics::detachment::{Response, Slot};
+    use tacsim::surface::site_record::{PromotedBy, SiteKey};
+    let store = InMemoryStore::new();
+    let (mut rig, _) = pair_field_fixture(&store, true, "crew.rook_adeyemi", "combat").await?;
+    let (organizer, npc, escort) = (rig.organizer, rig.invitee, rig.unit);
+    let leader_unit = rig
+        .world
+        .world()
+        .module_state::<tacsim::TacsimStore>()
+        .ok_or("rentals")?
+        .tv_leases_of(organizer)
+        .find(|r| r.live() && r.slot == 2)
+        .ok_or("leader rig")?
+        .tv;
+    ordinary(&mut rig.world, GOD, &format!("@unit/remove #{}", escort.0))?;
+    ordinary(
+        &mut rig.world,
+        GOD,
+        &format!("@unit/create #{}=tacsim.unit.line_tank", escort.0),
+    )?;
+    let bystander = rig
+        .world
+        .world_mut()
+        .create(ObjKind::Thing, "Bystander tank", GOD, None)?;
+    rig.world.world_mut().attach_behavior(
+        bystander,
+        BehaviorId::new("sim.participant")?,
+        BehaviorBinding {
+            schema_version: 1,
+            attached_by: GOD,
+            attached_at: 0,
+        },
+    )?;
+    ordinary(
+        &mut rig.world,
+        GOD,
+        &format!("@unit/create #{}=tacsim.unit.line_tank", bystander.0),
+    )?;
+    // The escort between its leader and the bystander, all on one row: the bystander due east
+    // of the escort and in its sight.
+    staff_place_on_ahuna(&mut rig.world, leader_unit, (106, 126))?;
+    staff_place_on_ahuna(&mut rig.world, escort, (110, 126))?;
+    staff_place_on_ahuna(&mut rig.world, bystander, (118, 126))?;
+    persist_legacy(&mut rig.world, &store).await?;
+    let mut rx = rig
+        .world
+        .world()
+        .module_state::<tacsim::arena_bridge::ArenaRegistry>()
+        .map(|registry| registry.tasks().clone())
+        .and_then(|tasks| tasks.take_egress())
+        .ok_or("the registry's egress")?;
+    let roster = field_roster(&rig.world, organizer)?;
+    let fence = format!(
+        "DT:{}:{}:{}",
+        roster.id().0,
+        roster.revision(),
+        roster.term()
+    );
+    let slot = Slot::new(1)?;
+    let site = mush_core::CanonicalId::new("ahuna_port")?;
+
+    // The open-ground ENGAGE: the leader's Hostile mark and a WILCO.
+    commit(
+        &mut rig.world,
+        &store,
+        organizer,
+        &format!("ORDER {fence} 1 ENGAGE E"),
+    )
+    .await?;
+    let mut answered = None;
+    for _ in 0..120 {
+        field_second(&mut rig.world, &store, &mut rx).await?;
+        if let Some((_, Some(response))) = delivered_of(&rig.world, organizer, slot)? {
+            answered = Some(response);
+            break;
+        }
+    }
+    assert_eq!(answered, Some(Response::Wilco), "the escort answers WILCO");
+    let promoted = {
+        let h = rig
+            .world
+            .world()
+            .module_state::<tacsim::port::families::PortHandles>()
+            .ok_or("port handles")?;
+        rig.world
+            .engine()
+            .action_state()
+            .get(&h.families.sites, &SiteKey(site.clone()))?
+            .and_then(|record| record.promoted.clone())
+            .map(|open| open.by)
+    };
+    assert!(
+        matches!(promoted, Some(PromotedBy::Mark { leader, .. }) if leader == organizer),
+        "the delivered ENGAGE is the leader's Hostile mark: {promoted:?}"
+    );
+
+    // Inside the field the escort's hull is the doctrine's, and the doctrine fires on the row.
+    let mut full = None;
+    let mut fired = false;
+    for _ in 0..120 {
+        field_second(&mut rig.world, &store, &mut rx).await?;
+        let Some(frame) = arena_frame(&rig.world, npc) else {
+            continue;
+        };
+        let left = rounds_left(&frame);
+        match full {
+            None if left > 0 => full = Some(left),
+            Some(full) if left < full => {
+                fired = true;
+                break;
+            }
+            _ => {}
+        }
+    }
+    assert!(
+        tacsim::field::field_of_unit(rig.world.world(), escort).is_some(),
+        "the field opened with the escort in it"
+    );
+    assert!(full.is_some(), "the escort's armed frame reaches the host");
+    assert!(
+        fired,
+        "the hired escort fires on the Hostile row with no order inside the field"
+    );
+    Ok(())
+}

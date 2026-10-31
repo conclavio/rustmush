@@ -6,6 +6,14 @@
 //! record says who is in it — every admitted unit's party, its pilot and its epoch, and each
 //! party's letter, key and leader — and how far the last snapshot reached. A boot resumes from
 //! the two together, after the outage countdown (Q-CF-33).
+//!
+//! **The crash windows** (doc 32 §15, the 2026-10-31 review's CF-1): the host's own writes to the
+//! site record (`tacsim_field op=close`, `op=exit`) run on the K3 lane after the legacy batch that
+//! checked the units in, and the two lanes never share a turn. So each owed write is durable on
+//! this lane first, in the same batch as the check-ins it follows: an owed `exit` on the live
+//! record ([`FieldLive::owed_exits`]), an owed `close` as the site's **closing tombstone**
+//! (`FieldClosing`, `tacsim:field:closing:<site>`), which replaces the live record and the
+//! snapshot. A boot re-owes both, and each goes once the site record shows its write landed.
 
 use mush_core::{CanonicalId, Ctx, ObjId};
 use serde::{Deserialize, Serialize};
@@ -23,6 +31,10 @@ pub const FIELD_LIVE_FORMAT: u16 = 1;
 pub const LIVE_PREFIX: &str = "tacsim:field:live:";
 /// The snapshot's key prefix: `tacsim:field:snapshot:<site>`.
 pub const SNAPSHOT_PREFIX: &str = "tacsim:field:snapshot:";
+/// The closing tombstone's key prefix: `tacsim:field:closing:<site>`.
+pub const CLOSING_PREFIX: &str = "tacsim:field:closing:";
+/// The closing tombstone's document format.
+pub(crate) const FIELD_CLOSING_FORMAT: u16 = 1;
 
 /// `tacsim:field:live:<site>`.
 #[must_use]
@@ -34,6 +46,18 @@ pub fn live_key(site: &CanonicalId) -> SmolStr {
 #[must_use]
 pub fn snapshot_key(site: &CanonicalId) -> SmolStr {
     SmolStr::new(format!("{SNAPSHOT_PREFIX}{site}"))
+}
+
+/// `tacsim:field:closing:<site>`.
+#[must_use]
+pub fn closing_key(site: &CanonicalId) -> SmolStr {
+    SmolStr::new(format!("{CLOSING_PREFIX}{site}"))
+}
+
+/// The site a closing tombstone's key names.
+#[must_use]
+pub fn closing_site_of_key(key: &str) -> Option<CanonicalId> {
+    CanonicalId::new(key.strip_prefix(CLOSING_PREFIX)?).ok()
 }
 
 /// The site a live record's key names.
@@ -138,6 +162,57 @@ pub struct FieldLive {
     /// drives to, fixed at admission so a resume fights on the same ground.
     #[serde(default, skip_serializing_if = "Vec::is_empty")]
     pub homes: Vec<crate::arena::state::EntryZone>,
+    /// **The opening shot still waiting for the shooter's sensors** (Q-CF-14; doc 32 §15, the
+    /// review's CF-6), as it stood at the last snapshot: a resume rewinds to that snapshot, so
+    /// a shot that left after it is owed again.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub fire: Option<PendingFire>,
+    /// **The `exit` writes the host owes the site record** (doc 32 §15, the review's CF-1):
+    /// each unit checked in at the ramp whose exit the record does not name yet, and who submits
+    /// it. Written in the batch that checks the unit in; a boot owes them again.
+    #[serde(default, skip_serializing_if = "Vec::is_empty")]
+    pub owed_exits: Vec<OwedExit>,
+}
+
+/// **A fire order waiting for its first pulses** (Q-CF-14).
+#[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(deny_unknown_fields)]
+pub struct PendingFire {
+    /// The pilot who ordered it.
+    pub pilot: ObjId,
+    /// The unit that fires.
+    pub shooter: ObjId,
+    /// The target's cell at admission.
+    pub target_cell: (u16, u16),
+    /// The arena millisecond past which it lapses.
+    pub until_ms: i64,
+}
+
+/// **One `exit` the host owes the site record**: the unit, and who submits it.
+#[derive(Clone, Copy, Debug, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(deny_unknown_fields)]
+pub struct OwedExit {
+    /// The unit out at the ramp.
+    pub unit: ObjId,
+    /// Who submits the write.
+    pub actor: ObjId,
+}
+
+/// **A site's closing tombstone** (`tacsim:field:closing:<site>`; doc 32 §15, the review's
+/// CF-1): the `close` the host owes the site record, durable from the batch that checked the
+/// field's units in until the record shows the close landed.
+#[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(deny_unknown_fields)]
+pub(crate) struct FieldClosing {
+    /// [`FIELD_CLOSING_FORMAT`].
+    pub format: u16,
+    /// The site.
+    pub site: CanonicalId,
+    /// The close itself: who submits it, the ordinal, what it leaves and what was learned.
+    pub close: super::admit::OwedClose,
+    /// The `exit` writes still owed on the site when it closed.
+    #[serde(default, skip_serializing_if = "Vec::is_empty")]
+    pub exits: Vec<OwedExit>,
 }
 
 impl FieldLive {
@@ -243,6 +318,30 @@ pub(crate) fn write_snapshot(ctx: &mut Ctx<'_>, site: &CanonicalId, document: se
     );
 }
 
+/// **Write a closing tombstone** on the module's own lane.
+pub(crate) fn write_closing(ctx: &mut Ctx<'_>, closing: &FieldClosing) {
+    match serde_json::to_value(closing) {
+        Ok(value) => push_op(
+            ctx.out,
+            mush_core::ModuleWrite::JsonSet {
+                key: closing_key(&closing.site),
+                value,
+            },
+        ),
+        Err(error) => tracing::error!(%error, "tacsim: a field's closing tombstone did not encode"),
+    }
+}
+
+/// **Delete a closing tombstone** (its close landed).
+pub(crate) fn delete_closing(ctx: &mut Ctx<'_>, site: &CanonicalId) {
+    push_op(
+        ctx.out,
+        mush_core::ModuleWrite::Del {
+            key: closing_key(site),
+        },
+    );
+}
+
 /// **Delete both documents** (a field demoted or voided).
 pub(crate) fn delete(ctx: &mut Ctx<'_>, site: &CanonicalId) {
     for key in [live_key(site), snapshot_key(site)] {
@@ -257,6 +356,16 @@ mod tests {
     fn live() -> FieldLive {
         FieldLive {
             homes: Vec::new(),
+            fire: Some(PendingFire {
+                pilot: ObjId(3),
+                shooter: ObjId(7),
+                target_cell: (114, 124),
+                until_ms: 10_000,
+            }),
+            owed_exits: vec![OwedExit {
+                unit: ObjId(5),
+                actor: ObjId(3),
+            }],
             format: FIELD_LIVE_FORMAT,
             field: FieldId {
                 site: CanonicalId::new("ahuna_port").expect("canonical"),

@@ -4,14 +4,15 @@
 //! **Written up to the escort's fight** (doc 32 §12). Q-CF-47's steps run in order through the
 //! production command paths as far as the escort's fight, where the story ends until doc 32 cut
 //! CF.6b (the raider's carrier, the doctrine's fallback, the withdrawal to a ramp) and the bot's
-//! IC-field cut land. One step is pinned at the gap rather than passed: the raider is **not** on
-//! the presence picture, which holds rigs only, so a raider seeded on the ground is never seen
-//! there (G-1). That assert flips when CF.6b's raider arrives as a flight.
+//! IC-field cut land. G-1's presence step, pinned at the gap until the 2026-10-31 review, now
+//! passes: the presence book always held every unit on the ground, and `+tv/map` drew only the
+//! lane's rigs from it (the review's CF-2, doc 32 §15). Each raider hull is a row of the miner's
+//! picture.
 //!
 //! What the story stands in for, each named in doc 32 §12:
 //! - the raider **launches from its fixture carrier** (`@field/raiders`, then
-//!   `@field/raiders/launch`; doc 32 cut CF.6b, §13), but its hulls are not a flight on the
-//!   presence picture (G-1's presence clause, still open);
+//!   `@field/raiders/launch`; doc 32 cut CF.6b, §13), and its hulls are flights on the presence
+//!   picture (§15);
 //! - the escort's two armed hulls are **fixture hulls with hired NPCs seated**, flying doctrine
 //!   (CF.6's raider gate); the armed rig lease is not built, and the delivered orders the escort
 //!   fights under are CF.6's transport gate's, in the split-boundary harness;
@@ -26,6 +27,26 @@ use crate::driving::{
 };
 use crate::field_host::{armed, egress, frame, seat, second, task, until};
 use crate::field_raiders::{SKULKS, raider_hulls, seat_npc};
+
+/// The rows of `who`'s site map's presence line (`Presence: E within 200 m; SW 200-500 m.`),
+/// read from the frame, where the printed map would wrap it.
+fn presence_rows(rig: &mut crate::driving::Rig, who: ObjId) -> (Vec<String>, String) {
+    let frame = map_frame(rig, who, json!({ "view": "site" }));
+    let line = frame["site"]["presence_line"]
+        .as_str()
+        .unwrap_or_default()
+        .to_owned();
+    let rows = line
+        .strip_prefix("Presence: ")
+        .map(|rows| {
+            rows.trim_end_matches('.')
+                .split("; ")
+                .map(str::to_owned)
+                .collect()
+        })
+        .unwrap_or_default();
+    (rows, line)
+}
 
 /// **The field story** (doc 32 Q-CF-47), up to the escort's fight.
 #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
@@ -82,6 +103,12 @@ async fn cf7_the_field_story_to_the_escorts_fight() {
     // poses.
     let seeded = run(&mut rig.tw, GOD, &format!("@field/raiders {SKULKS}"));
     assert!(seeded.contains("seeded"), "{seeded}");
+    // The raider's fixture carrier stands on the ground, a flight like any other: the picture
+    // before its hulls launch.
+    for _ in 0..2 {
+        let _ = second(&mut rig);
+    }
+    let (before, _) = presence_rows(&mut rig, miner);
     let launched_out = run(&mut rig.tw, GOD, &format!("@field/raiders/launch {SKULKS}"));
     assert!(launched_out.contains("launch from"), "{launched_out}");
     let raiders = raider_hulls(&rig);
@@ -90,13 +117,39 @@ async fn cf7_the_field_story_to_the_escorts_fight() {
     for _ in 0..2 {
         let _ = second(&mut rig);
     }
-    // G-1, pinned (doc 32 §12): the presence book holds rigs only, so the raider seeded on the
-    // ground is not on it. CF.6b's raider launches from its carrier as a flight, and this flips to
-    // `contains`.
-    let picture = run(&mut rig.tw, miner, "+tv/map");
-    assert!(
-        !picture.contains("Presence: E"),
-        "the raider is on the presence picture now: flip this step (doc 32 §12, G-1): {picture}"
+    // G-1, passed (doc 32 §12 as corrected in §15, the review's CF-2): the presence book has held
+    // every unit on the ground since CF.2, and `+tv/map` now draws it, so each raider hull is a
+    // row of the miner's picture, seen from the miner's rig on the ground.
+    let (rows, picture) = presence_rows(&mut rig, miner);
+    let from = mush_sim::pose_of(rig.tw.world(), worker)
+        .map(|(_, pose)| tacsim::surface::excursion::site_cell(pose.x_cm, pose.y_cm))
+        .expect("the miner's rig stands on the ground");
+    for hull in &raiders {
+        let cell = mush_sim::pose_of(rig.tw.world(), *hull)
+            .map(|(_, pose)| tacsim::surface::excursion::site_cell(pose.x_cm, pose.y_cm))
+            .expect("the raider hull stands on the ground");
+        let flight = tacsim::surface::presence::Flight {
+            tv: *hull,
+            cell,
+            class: tacsim::surface::presence::hull_class(rig.tw.world(), *hull),
+        };
+        let seen = tacsim::surface::presence::seen_from(
+            &[flight],
+            &std::collections::BTreeSet::new(),
+            &[(1, from)],
+            from,
+        );
+        let row = seen.first().map(tacsim::surface::presence::Seen::words);
+        assert!(
+            row.as_ref().is_some_and(|row| rows.contains(row)),
+            "the raider hull #{} is on the miner's presence picture as {row:?}: {picture}",
+            hull.0
+        );
+    }
+    assert_eq!(
+        rows.len(),
+        before.len() + raiders.len(),
+        "one new row a raider hull: before {before:?}, after {rows:?}"
     );
     let (out, queued) = command(&mut rig, leader, "+field/mark W=hostile");
     assert_eq!(queued.len(), 1, "one promotion: {out}");

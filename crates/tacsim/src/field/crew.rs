@@ -628,14 +628,24 @@ fn land(
         && let Some((seated, station)) = super::parties::seated(ctx.w, unit)
         && seated == who
     {
+        // Doc 32 §15 (the review's CF-5a): the arena is told the seat is released, on every
+        // channel, so it stops building frames for an absent pilot and the hull is the mind's;
+        // `send_control(Released)` unbinds the pilot and clears the cockpit with it.
         if super::field_of_unit(ctx.w, unit).is_some() {
-            if let Some(registry) = ctx
+            crate::arena_bridge::control_all_channels(
+                ctx,
+                unit,
+                crate::arena::intents::ControlState::Released,
+                who,
+            );
+            // A control the registry could not route (no task holds the unit) unbinds nothing.
+            let unbound = ctx
                 .w
                 .module_state_mut::<crate::arena_bridge::ArenaRegistry>()
-            {
-                registry.unbind_pilot(who);
+                .is_some_and(|registry| registry.unbind_pilot(who));
+            if unbound {
+                crate::arena_bridge::clear_cockpit(ctx, who);
             }
-            crate::arena_bridge::clear_cockpit(ctx, who);
         }
         if let Some(station) = mush_sim::StationId::new(station.as_str())
             && let Err(error) = mush_sim::vacate_station(ctx, unit, &station, who)

@@ -11,7 +11,10 @@
 //!
 //! The tick also runs the exits at the ramp and the extractions due (doc 32 cut CF.5), and submits
 //! the host's owed `close` writes (a principal with an action already in
-//! flight waits a second), and forgets a close once the record shows it landed.
+//! flight waits a second), and forgets a close once the record shows it landed. Every owed close
+//! is durable from the batch that owes it: the site's closing tombstone
+//! ([`super::record::FieldClosing`]), written beside the check-ins and deleted with the forget,
+//! so a crash between the two lanes never re-admits a finished field (doc 32 §15).
 
 use std::collections::BTreeMap;
 
@@ -27,7 +30,8 @@ use crate::arena::state::{Controller, CustodyOut, CustodyUnit, MatchMode, Pilot}
 use crate::surface::site_record::{FieldId, PromotedBy, SiteKey, SiteRecord};
 
 /// **A `close` the host owes the record** (Q-CF-20): submitted by the tick as `actor`.
-#[derive(Clone, Debug, PartialEq, Eq)]
+#[derive(Clone, Debug, PartialEq, Eq, serde::Serialize, serde::Deserialize)]
+#[serde(deny_unknown_fields)]
 pub(crate) struct OwedClose {
     /// Who submits it: the character who opened the field.
     pub actor: ObjId,
@@ -138,13 +142,39 @@ pub(crate) fn site_name(ctx: &Ctx<'_>, site: &CanonicalId) -> String {
     crate::surface::act::site_name(ctx.w, site)
 }
 
-/// A close the record has caught up with, forgotten.
+/// A close the record has caught up with, forgotten, and its tombstone with it.
 fn forget_close(ctx: &mut Ctx<'_>, site: &CanonicalId) {
-    if let Some(owed) = ctx.w.module_state_mut::<OwedCloses>() {
-        owed.0.remove(site);
+    let owed = ctx
+        .w
+        .module_state_mut::<OwedCloses>()
+        .and_then(|owed| owed.0.remove(site))
+        .is_some();
+    let closing = ctx
+        .w
+        .module_state_mut::<FieldBook>()
+        .is_some_and(|book| book.closing.remove(site));
+    if owed || closing {
+        super::record::delete_closing(ctx, site);
     }
-    if let Some(book) = ctx.w.module_state_mut::<FieldBook>() {
-        book.closing.remove(site);
+}
+
+/// **A closing tombstone the boot found** (doc 32 §15): its close owed again and the site
+/// closing, so the tick neither re-admits the finished field nor loses what it left.
+pub(crate) fn restore_closing(w: &mut mush_core::World, closing: super::record::FieldClosing) {
+    let site = closing.site.clone();
+    if let Some(book) = w.module_state_mut::<FieldBook>() {
+        book.closing.insert(site.clone());
+    }
+    if let Some(owed) = w.module_state_mut::<super::exit::OwedExits>() {
+        for exit in &closing.exits {
+            owed.0
+                .entry(site.clone())
+                .or_default()
+                .insert(exit.unit, exit.actor);
+        }
+    }
+    if let Some(owed) = w.module_state_mut::<OwedCloses>() {
+        owed.0.insert(site, closing.close);
     }
 }
 
@@ -167,16 +197,39 @@ pub(crate) fn owe_close(
     if let Some(book) = ctx.w.module_state_mut::<FieldBook>() {
         book.closing.insert(site.clone());
     }
+    let close = OwedClose {
+        actor,
+        ordinal: open.ordinal,
+        units,
+        known,
+    };
+    // Doc 32 §15 (the review's CF-1): durable in this batch, beside the check-ins, before the
+    // K3 write that cannot share its turn.
+    let exits: Vec<super::record::OwedExit> = ctx
+        .w
+        .module_state::<super::exit::OwedExits>()
+        .and_then(|owed| owed.0.get(site))
+        .map(|units| {
+            units
+                .iter()
+                .map(|(unit, actor)| super::record::OwedExit {
+                    unit: *unit,
+                    actor: *actor,
+                })
+                .collect()
+        })
+        .unwrap_or_default();
+    super::record::write_closing(
+        ctx,
+        &super::record::FieldClosing {
+            format: super::record::FIELD_CLOSING_FORMAT,
+            site: site.clone(),
+            close: close.clone(),
+            exits,
+        },
+    );
     if let Some(owed) = ctx.w.module_state_mut::<OwedCloses>() {
-        owed.0.insert(
-            site.clone(),
-            OwedClose {
-                actor,
-                ordinal: open.ordinal,
-                units,
-                known,
-            },
-        );
+        owed.0.insert(site.clone(), close);
     }
     submit_owed(ctx);
 }
@@ -263,13 +316,15 @@ fn admit(ctx: &mut Ctx<'_>, site: &CanonicalId, record: &SiteRecord) -> Result<(
                 .map_err(|error| format!("a settled rig could not be placed ({error})"))?;
         }
     }
-    // (3) Everyone on the ground, and the cap (Q-CF-21).
+    // (3) Everyone on the ground, and the cap (Q-CF-21): the casualties and wrecks an earlier
+    // field left are admitted but never counted (Q-CF-26, Q-CF-45; doc 32 §15, the review's
+    // CF-3a). A carrier counts: no ruling exempts it.
     let units = parties::on_ground(ctx.w, domain);
     let cap = super::config(ctx.w).max_units;
-    if u32::try_from(units.len()).unwrap_or(u32::MAX) > cap {
+    let counted = parties::counted(&units, record);
+    if u32::try_from(counted).unwrap_or(u32::MAX) > cap {
         return Err(format!(
-            "{} units are on the ground and a field holds {cap}",
-            units.len()
+            "{counted} units are on the ground and a field holds {cap}"
         ));
     }
     if units.is_empty() {
@@ -323,6 +378,8 @@ fn admit(ctx: &mut Ctx<'_>, site: &CanonicalId, record: &SiteRecord) -> Result<(
         parties: lettered,
         units: rows,
         homes,
+        fire: None,
+        owed_exits: Vec::new(),
     };
     if let Some(book) = ctx.w.module_state_mut::<FieldBook>() {
         book.live.insert(
@@ -358,8 +415,9 @@ fn admit(ctx: &mut Ctx<'_>, site: &CanonicalId, record: &SiteRecord) -> Result<(
             other => format!("its task did not open ({other})"),
         });
     }
-    super::record::write_live(ctx, &live);
-    // (6) A fire order waits for the shooter's sensors (Q-CF-14).
+    // (6) A fire order waits for the shooter's sensors (Q-CF-14), on the live record too (doc 32
+    // §15, the review's CF-6): a restart before the shot owes it again.
+    let mut live = live;
     if let PromotedBy::Fire {
         pilot,
         shooter,
@@ -368,20 +426,23 @@ fn admit(ctx: &mut Ctx<'_>, site: &CanonicalId, record: &SiteRecord) -> Result<(
         && let Some((_, pose)) = mush_sim::pose_of(ctx.w, *target)
     {
         let (x, y) = crate::surface::excursion::site_cell(pose.x_cm, pose.y_cm);
-        if let (Ok(x), Ok(y)) = (u16::try_from(x), u16::try_from(y))
-            && let Some(book) = ctx.w.module_state_mut::<FieldBook>()
-        {
-            book.fire.insert(
-                site.clone(),
-                PendingFire {
-                    pilot: *pilot,
-                    shooter: *shooter,
-                    target_cell: (x, y),
-                    until_ms: super::FIRE_WINDOW_MS,
-                },
-            );
+        if let (Ok(x), Ok(y)) = (u16::try_from(x), u16::try_from(y)) {
+            let fire = PendingFire {
+                pilot: *pilot,
+                shooter: *shooter,
+                target_cell: (x, y),
+                until_ms: super::FIRE_WINDOW_MS,
+            };
+            live.fire = Some(fire.clone());
+            if let Some(book) = ctx.w.module_state_mut::<FieldBook>() {
+                book.fire.insert(site.clone(), fire);
+                if let Some(hosted) = book.live.get_mut(site) {
+                    hosted.live.fire = live.fire.clone();
+                }
+            }
         }
     }
+    super::record::write_live(ctx, &live);
     let line = format!(
         "Field {} is open on {}: the ground there is tactical until it settles.",
         field.ordinal,
