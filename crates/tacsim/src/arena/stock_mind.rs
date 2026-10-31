@@ -587,6 +587,41 @@ pub fn best_hostile(
         .map(|(_, id)| *id)
 }
 
+/// **How many hostiles a stand traces for a line** (doc 32 cut CF.6b): the
+/// best, and when it has none, the best of the hostiles nearer than it
+/// (`nearer_in_line`). Before this cut a stand (`stand`, `withdraw_stand`)
+/// traced the best alone and stood with nothing to fire when it had no line —
+/// so a carrier on its pad, ranked first by its exposed flank from where a
+/// raider stood and out of its line, held every hurt raider's gun silent past a
+/// nearer escort in the open. A farther hostile is never the fallback, and the
+/// hostile edges are untouched: a hull that pursues still closes on the best
+/// until it has a line. Two is Class I's `line_to` cap
+/// (`crate::minds::STOCK_LINE_TO_PER_THINK`), the lowest a scripted Standard
+/// Doctrine thinks under (Class Zero is always this native ROM,
+/// `match_::seal`), and a think that stands traces nothing else, so the Rhai
+/// twin never asks for a third.
+pub const STAND_TRIES: usize = 2;
+
+/// **The best hostile nearer than `blocked` that `admit` takes, when it has a
+/// line** (doc 32 cut CF.6b; [`STAND_TRIES`]'s second trace): the utility
+/// score over the rows whose held range is under `blocked`'s, so the Rhai twin
+/// asks `best_hostile` the same with `blocked`'s range less a centimetre as
+/// its ceiling.
+fn nearer_in_line<'v>(
+    view: &'v MindView,
+    def: &ArenaDefinition,
+    weights: &Weights,
+    (health, prefer): (u32, Option<ContactId>),
+    blocked: &ViewContact,
+    admit: impl Fn(&ViewContact) -> bool,
+) -> Option<&'v ViewContact> {
+    let reach = row_range_cm(blocked);
+    let id = best_hostile(view, weights, health, prefer, |row| {
+        row_range_cm(row) < reach && admit(row)
+    })?;
+    contact(view, id).filter(|row| line_between(def, view.cell, row.cell))
+}
+
 /// **Whether a shot from `own` would have a line to the plot's `cell`** (doc 17
 /// §7's kernel `line_to(contact)`): `mush_atlas::trace_cells` over the ground
 /// from the hull's eye to the cell's eye, both [`DEFAULT_SENSOR_HEIGHT_CM`]
@@ -1663,7 +1698,9 @@ impl NativeStockMind {
     /// **Whether a withdrawing hull is cornered, and by which row** (the
     /// reflex's `withdraw_stand`): never with nothing to fire or under
     /// `hold_fire`; the best hostile, inside `release_cm` once home and
-    /// `stand_cm` (and `stand_min_permille` of health) en route, with a line.
+    /// `stand_cm` (and `stand_min_permille` of health) en route, with a line —
+    /// and, since doc 32 cut CF.6b, when the best has no line, a nearer one
+    /// inside the same reach that has ([`nearer_in_line`]).
     fn withdraw_stand<'v>(
         &self,
         view: &'v MindView,
@@ -1676,10 +1713,8 @@ impl NativeStockMind {
         if is_dry(view) || order.is_some_and(|order| order.hold_fire) {
             return None;
         }
-        let row = contact(
-            view,
-            best_hostile(view, &Weights::of(&self.cfg), health, None, |_| true)?,
-        )?;
+        let weights = Weights::of(&self.cfg);
+        let row = contact(view, best_hostile(view, &weights, health, None, |_| true)?)?;
         let ceiling = if arrived {
             ranges.release_cm
         } else {
@@ -1691,15 +1726,18 @@ impl NativeStockMind {
         if !arrived && health < self.cfg.stand_min_permille {
             return None;
         }
-        if !line_between(def, view.cell, row.cell) {
-            return None;
+        if line_between(def, view.cell, row.cell) {
+            return Some(row);
         }
-        Some(row)
+        nearer_in_line(view, def, &weights, (health, None), row, |_| true)
+            .filter(|row| row_range_cm(row) <= ceiling.max(1))
     }
 
     /// **A stand** (the reflex's `stand`): the best hostile inside
     /// `release_cm` — and, for a screen, inside `half` of `facing` off the
     /// row's whole-degree bearing — with a line; `None` with nothing to fire.
+    /// Since doc 32 cut CF.6b, when the best has no line, a nearer one the
+    /// same admission takes, if it has one ([`nearer_in_line`]).
     fn stand<'v>(
         &self,
         view: &'v MindView,
@@ -1713,17 +1751,21 @@ impl NativeStockMind {
             return None;
         }
         let ceiling = ranges.release_cm.max(1);
-        let id = best_hostile(view, &Weights::of(&self.cfg), health, hint(order), |row| {
+        let admit = |row: &ViewContact| {
             row_range_cm(row) <= ceiling
                 && sector.is_none_or(|(facing, half)| {
                     arc_between(row.bearing_deg.saturating_mul(1_000), facing) <= half
                 })
-        })?;
-        let row = contact(view, id)?;
-        if !line_between(def, view.cell, row.cell) {
-            return None;
+        };
+        let weights = Weights::of(&self.cfg);
+        let row = contact(
+            view,
+            best_hostile(view, &weights, health, hint(order), admit)?,
+        )?;
+        if line_between(def, view.cell, row.cell) {
+            return Some(row);
         }
-        Some(row)
+        nearer_in_line(view, def, &weights, (health, hint(order)), row, admit)
     }
 }
 

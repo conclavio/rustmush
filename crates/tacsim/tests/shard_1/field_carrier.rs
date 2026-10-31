@@ -3,8 +3,9 @@
 //!
 //! The cut's gate: a Dray-P settled on Ahuna Flank's pad is admitted to a field at its pad pose
 //! with its real sections; its pilot, aboard, reads as aboard the carrier; a lift from the pad is
-//! refused while the field holds it (Q-H10); an armed hull's fire hits it; and after the field
-//! demotes the damage is on the hull's own unit record and `+ship` reads it in port.
+//! refused while the field holds it, without the leave-behind confirmation (Q-H10, F-6); an armed
+//! hull's fire hits it; and after the field demotes the damage is on the hull's own unit record
+//! and `+ship` reads it in port. F-6's own story is the second test.
 
 use mush_core::ObjId;
 use tacsim::field::CrewLocation;
@@ -104,9 +105,10 @@ async fn cf3_a_carrier_takes_a_hit_in_a_field_and_the_damage_shows_in_port() {
         "A, aboard, is aboard the carrier (Q-CF-38)"
     );
 
-    // (2) A lift from the pad while the field holds the hull is refused, naming who it leaves.
+    // (2) A lift from the pad while the field holds the hull is refused without the leave-behind
+    // confirmation, naming the rig it would leave (doc 32 F-6).
     let lift = run(&mut rig.tw, a, "+ship/lift ceres");
-    assert!(lift.contains("is in the field"), "{lift}");
+    assert!(lift.contains("add leave=1"), "{lift}");
 
     // (3) B locks the carrier on its pad and fires until rounds have left the gun at it.
     let gun = weapon_of(&rig, hull_b);
@@ -236,4 +238,92 @@ fn every_carrier_is_past_twice_any_tugs_tonnage() {
     let refused = tacsim::field::carrier::refuse_tow(rig.tw.world(), ObjId(row.hull))
         .expect("a carrier is never towed");
     assert!(refused.contains("never towed"), "{refused}");
+}
+
+/// **Doc 32 F-6, the carrier's departure from a running field** (ruled 2026-10-31; built in cut
+/// CF.7): without the leave-behind confirmation a live lift is refused, naming the rig it would
+/// leave; with it the carrier is removed from the field outright, its pilot's departure files,
+/// and the rig it left stays in the field.
+#[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+#[allow(clippy::too_many_lines)]
+async fn f6_a_carrier_lifts_out_of_a_running_field_only_on_the_confirmation() {
+    let mut rig = stocked_tuned(tune);
+    // CF.3's ground: A aboard the Dray-P on the pad, A's prospector out to the south of B's gun.
+    let (a, a_row, a_tvs) = on_pad(&mut rig, 1);
+    let carrier = ObjId(a_row.hull);
+    let rig_a = a_tvs[0];
+    launched(&mut rig, a, rig_a);
+    to_cell(&mut rig, rig_a, (120, 120));
+    let (b, _) = prospector(&mut rig, "Other", 2, "Tally Moth");
+    let hull_b = armed(&mut rig, "Grey Hound", (120, 128), 90_000);
+    seat(&mut rig, hull_b, b);
+    warm(&mut rig);
+    let mut rx = egress(&mut rig);
+    let mut lines = Vec::new();
+    for _ in 0..3 {
+        let _ = second(&mut rig);
+    }
+    let (out, queued) = command(&mut rig, b, "+field/fire S");
+    assert_eq!(queued.len(), 1, "one promotion: {out}");
+    land(&mut rig, &queued[0]).expect("the promotion lands");
+    assert!(
+        until(&mut rig, &mut rx, &mut lines, 10, |rig, _| task(rig)
+            .is_some()
+            && tacsim::field::field_of_unit(rig.tw.world(), carrier)
+                .is_some())
+        .await,
+        "the field opens with the carrier in it"
+    );
+
+    // Without the confirmation: refused, naming the rig and the remedy; nothing is filed.
+    let (refused, queued) = command(&mut rig, a, "+ship/lift ceres");
+    assert!(refused.contains("add leave=1"), "{refused}");
+    assert!(queued.is_empty(), "a refused lift submits nothing");
+    assert!(tacsim::field::field_of_unit(rig.tw.world(), carrier).is_some());
+
+    // With it: the carrier breaks off at the next pulse, and the departure files as A after.
+    let (asked, queued) = command(&mut rig, a, "+ship/lift ceres leave=1");
+    assert!(asked.contains("breaks off"), "{asked}");
+    assert!(
+        queued.is_empty(),
+        "nothing is filed while the field holds the hull"
+    );
+    let filed = |rig: &crate::driving::Rig| match rig
+        .tw
+        .world()
+        .module_state::<tacsim::TacsimStore>()
+        .map(|store| store.voyage_state(carrier))
+    {
+        Some(tacsim::port::voyage::VoyageState::Present(voyage)) => voyage
+            .pending
+            .as_ref()
+            .map(|pending| pending.left_behind.clone()),
+        _ => None,
+    };
+    assert!(
+        until(&mut rig, &mut rx, &mut lines, 20, |rig, _| filed(rig)
+            .is_some())
+        .await,
+        "the departure files once the carrier is out of the field"
+    );
+    assert_eq!(
+        filed(&rig),
+        Some(vec![rig_a]),
+        "the filed voyage records the rig left"
+    );
+    assert!(
+        !mush_sim::deployed::is_deployed(rig.tw.world(), carrier),
+        "the carrier is checked in, out of the field"
+    );
+    assert!(
+        site_record(&mut rig).is_some_and(|record| record.exited(carrier)),
+        "the open promotion names the carrier's exit"
+    );
+    // The field runs on, and the rig it left stays in it.
+    assert!(task(&rig).is_some(), "the field carries on");
+    let live = tacsim::field::live_on(rig.tw.world(), &cid(crate::driving::AHUNA))
+        .expect("the live record");
+    assert!(live.units.iter().all(|row| row.unit != carrier));
+    assert!(live.units.iter().any(|row| row.unit == rig_a));
+    assert!(tacsim::field::field_of_unit(rig.tw.world(), rig_a).is_some());
 }

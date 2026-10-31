@@ -44,14 +44,14 @@ mod excursions;
 mod geology;
 #[path = "shard_4/ic_sortie_surface.rs"]
 mod ic_sortie_surface;
+#[path = "shard_4/knowing.rs"]
+mod knowing;
 #[path = "shard_4/lane.rs"]
 mod lane;
 #[path = "shard_4/m8_leaks.rs"]
 mod m8_leaks;
 #[path = "shard_4/m8_world.rs"]
 mod m8_world;
-#[path = "shard_4/match_lifecycle.rs"]
-mod match_lifecycle;
 #[path = "shard_4/parties.rs"]
 mod parties;
 #[path = "shard_4/resolution.rs"]

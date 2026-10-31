@@ -1149,6 +1149,7 @@ fn arm_panic_for_seed(
                 key_spots: Vec::new(),
                 waypoints: crate::arena::state::Waypoints::default(),
                 modes: Vec::new(),
+                homes: Vec::new(),
             },
             units: vec![fault_unit],
             pilots: Vec::new(),

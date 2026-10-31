@@ -85,7 +85,7 @@ async fn r6b_real_bridge_delivers_only_to_arrived_observers_and_deduplicates_pro
         let sessions=Arc::new(mush_session::SessionManager::with_config(Default::default()));
         let guard=Arc::new(IpGuard::new());let controls=Arc::new(GatewayControls::default());
         let deps=ServerDeps::production(&boot,store.clone(),guard.clone(),Arc::new(mush_config::metrics::Metrics::new()),spool,vec![]);
-        let handles=world_task::spawn_persist_with_decision_workers(boot.engine,sessions.clone(),deps,mush_server::decision_dispatch::DEFAULT_DECISION_PROVIDER_WORKERS,controls.clone()).unwrap();
+        let handles=world_task::spawn_persist_with_decision_workers(boot.engine,sessions.clone(),deps,mush_server::decision_dispatch::DEFAULT_DECISION_PROVIDER_WORKERS,mush_server::world_task::DEFAULT_WORLD_CLOCK_CHECKPOINT_S,controls.clone()).unwrap();
         let api=FakeApi::new();
         let config=DiscordConfig{dm_coalesce_ms:50,relay:vec![RelayMap{channel:"Radio".into(),discord_channel_id:4242,..Default::default()},RelayMap{channel:"Public".into(),discord_channel_id:4243,..Default::default()}],..Default::default()};
         let accounts=Arc::new(Accounts::new(store.clone(),handles.handle.clone(),3));

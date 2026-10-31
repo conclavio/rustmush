@@ -3289,8 +3289,12 @@ pub(crate) fn prepare_departure(
     // Doc 20 cut SM.2 (lead override 3): a site whose pad is not ready takes no
     // departure (its lines never gate the desk, so they gate the passage here).
     let site_dest = site_gate(w, &dest)?;
-    // Doc 32 cut CF.3 (Q-H10): a carrier in a field is the field's until it settles.
-    if let Some(line) = crate::field::carrier::departure_refusal(w, hull) {
+    // Doc 32 cut CF.3 (Q-H10): a carrier in a field is the field's until it settles. Doc 32 F-6
+    // (cut CF.7): a live departure may take it out of the field, on the bay gate's confirmation
+    // below; a queued one never presumes it.
+    if queued != Queued::Live
+        && let Some(line) = crate::field::carrier::departure_refusal(w, hull)
+    {
         return Err(refusal(K::InField, line));
     }
     // Doc 20 cut SM.3b (lead ruling 7): every rig in the bay, every hopper empty. Doc 32 cut CF.5
@@ -3476,18 +3480,26 @@ pub(crate) fn prepare_departure(
 ///
 /// Every refusal is a [`CmdError`] line, and on every refusal nothing is written.
 pub(crate) fn undock_cmd(ctx: &mut Ctx<'_>) -> Result<(), CmdError> {
-    let actor = ctx.actor;
     let raw = ctx.args.raw().to_owned();
+    let lift = ctx.switches.has("lift");
+    undock_as(ctx, &raw, lift)
+}
+
+/// **`+ship/undock` (or, `lift`, `+ship/lift`) with `raw` as its arguments**, as `ctx.actor`:
+/// the command's body, which the field host also runs as the pilot once a departing carrier is
+/// out of a running field (doc 32 F-6; `crate::field::exit`).
+///
+/// # Errors
+///
+/// The command's refusals.
+pub(crate) fn undock_as(ctx: &mut Ctx<'_>, raw: &str, lift: bool) -> Result<(), CmdError> {
+    let actor = ctx.actor;
     // Doc 20 cut SM.2: `+ship/lift` is this verb, worded for a pad.
-    let usage = if ctx.switches.has("lift") {
-        LIFT_USAGE
-    } else {
-        UNDOCK_USAGE
-    };
+    let usage = if lift { LIFT_USAGE } else { UNDOCK_USAGE };
     if raw.split_whitespace().all(|token| token.contains('=')) {
         return Err(CmdError::msg(usage));
     }
-    let args = parse_args(&raw)?;
+    let args = parse_args(raw)?;
     let Some(word) = args.word.clone() else {
         return Err(CmdError::msg(usage));
     };
@@ -3496,6 +3508,20 @@ pub(crate) fn undock_cmd(ctx: &mut Ctx<'_>) -> Result<(), CmdError> {
         return Err(no_charter(ctx.w, actor));
     };
     let filing = prepare_departure(ctx, actor, charter.hull, &word, &options, Queued::Live)?;
+    // Doc 32 F-6 (ruled 2026-10-31; cut CF.7): every check passed, the units out confirmed left;
+    // a carrier a running field holds is removed from it outright first, and this command runs
+    // again as the pilot once the record names its exit. Nothing is filed until then.
+    if crate::field::field_of_unit(ctx.w, charter.hull).is_some() {
+        return crate::field::exit::request(
+            ctx,
+            charter.hull,
+            None,
+            crate::field::exit::Then::Lift {
+                raw: raw.to_owned(),
+                lift,
+            },
+        );
+    }
     let Some(pending) = filing.voyage.pending.clone() else {
         return Err(CmdError::msg(
             PLAN_DARK.replace("{name}", &name_of(ctx.w, charter.hull)),

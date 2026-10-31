@@ -130,7 +130,7 @@ fn resume(ctx: &mut Ctx<'_>, site: &CanonicalId, held: &Held) -> Result<(), Stri
     if units != held.units {
         return Err("its units' custody marks disagree with its live record".to_owned());
     }
-    let ground = super::ground::definition(ctx.w, site, &record)?;
+    let ground = super::ground::definition(ctx.w, site, &record, live.homes.clone())?;
     let limit = ctx.w.module_state::<crate::store::TacsimStore>().map_or(
         crate::arena::snapshot_capacity::SNAPSHOT_MAX_BYTES,
         |store| store.config().arena.snapshot_max_bytes,
@@ -215,8 +215,14 @@ fn resume(ctx: &mut Ctx<'_>, site: &CanonicalId, held: &Held) -> Result<(), Stri
 /// **The IC void rule at boot** (Q-CF-35): demote from the last snapshot, never the check-out.
 fn void(ctx: &mut Ctx<'_>, site: &CanonicalId, held: &Held) {
     let units: Vec<ObjId> = held.units.iter().copied().collect();
-    let returns =
-        super::close::snapshot_returns(ctx, site, held.docs.snapshot.as_ref()).unwrap_or_default();
+    let homes = held
+        .docs
+        .live
+        .as_ref()
+        .map(|live| live.homes.clone())
+        .unwrap_or_default();
+    let returns = super::close::snapshot_returns(ctx, site, held.docs.snapshot.as_ref(), homes)
+        .unwrap_or_default();
     let left = super::close::demote_units(ctx, site, &units, &returns);
     // Doc 32 cut CF.5 (Q-CF-38): the crew of every unit the live record seated.
     if let Some(live) = &held.docs.live {

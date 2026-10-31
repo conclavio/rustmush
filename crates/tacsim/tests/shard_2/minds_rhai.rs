@@ -254,6 +254,7 @@ fn definition() -> ArenaDefinition {
             &[(SmolStr::new("west"), SmolStr::new("east"))],
         ),
         modes: Vec::new(),
+        homes: Vec::new(),
     }
 }
 
@@ -3548,6 +3549,13 @@ const M2_FLOAT_PROBE_BITMASK: i64 = (1 << 25) - 1 + (1 << 26) + (1 << 28);
 /// `7b35b9ee…`, `47b8afcf…`; M8a alone over the API 5 tree had re-pinned
 /// `91c474d0…`, `929f1c49…`, `22d34325…`, `de7720f6…` to `a8ef4a30…`,
 /// `e1e7a26b…`, `b2c1dada…`, `2e9d2e80…`.
+// **Doc 32 cut CF.6b's re-bless** (the Standard source, D-UM-28): the stands' line fallback
+// moved the script, and every `mind_sealed` line names it and every seal folds it, so every
+// row's hashes moved. Every row's end millisecond is unchanged (170 250, 192 500, 170 000,
+// 900 000), the float probe's 3,600 thinks and its mask too: the fights are the same fights.
+// CF.0's rows were `3226764797738367208` / `6f6a741f…` / `d5afe91b…`, `12250106977832258330` /
+// `8e2eb0c3…` / `af0ec279…`, `3632269934981072382` / `2a3b4b62…` / `0288486f…`, and the fourth
+// as recorded before this cut.
 // **Doc 32 cut CF.0's one re-bless** (an encoding re-bless, D-UM-28): the
 // state hash folds every party's relation books and the end condition (item
 // 13) and the Standard source moved with the API 7 header, so every ledger
@@ -3557,30 +3565,30 @@ const M2_CROSS_PLATFORM_PINS: [(u64, i64, u64, &str, &str); 4] = [
     (
         2350,
         170250,
-        3226764797738367208,
-        "6f6a741fbddf0326b2a4da37e615da2ccf5a883b5b876555427bcda249378358",
-        "d5afe91b1f12a2f15f286a3f45c9959785dd988c3008198a9194190316828e4d",
+        4924910240422684525,
+        "0f0ad87d8b94b9644d68a6bda2bc2e217478a71f767c72d9f2d11af8f804f28f",
+        "0d2ba00b15df591ff3fd5acdb6e86e596fadba1f8787c28ed8a06560918bbace",
     ),
     (
         2351,
         192500,
-        12250106977832258330,
-        "8e2eb0c3f1d2f60f1f7d068b7119c1a44f1fd4c1a9c8c9350384272658e0f735",
-        "af0ec279cc1a153bc4c5ed3a1c9b32ceb51d8fb66070bf86af1d0ef8372cb86e",
+        8909812314400105102,
+        "212d8fe23430f8a32665839c16fd9d1e0ec8b4cd5643f32bf3aa2822d8091439",
+        "c2dc08a722d5e68b468fbdd54672bf7701426c53859a5a9070cb3c2fbbc63411",
     ),
     (
         2352,
         170000,
-        3632269934981072382,
-        "2a3b4b62e66285946347adfe6bba87c306daca8561645b18199c846ac94b02dc",
-        "0288486f88cc586d55bef4d54d08cc71dd4a8b63e19a608ab01fd1eedb065725",
+        4593528509461668393,
+        "469d2a995fd8e2cb0e6c3e3975720657a137f602220cff94be798d32c2becfd1",
+        "b51e9f23b017fe5fdbc5468a2462f198440b7ed05a7a2f340f5540ab8df1f77b",
     ),
     (
         2350,
         900000,
-        13918973238022319229,
-        "d7f6a735bdd09227055e1ad4602cc1c8a4bf184d92332e78f6c57e2a8821d19a",
-        "f479f87dabf782c0bd5357f643bac7947305e3afc92c64437f058adc23ffc1e9",
+        10559587572615102858,
+        "37d56f2b967eee2d77d39a2be5588cb1bbaf5e526a6a5f38f81cb9e38ad8918e",
+        "4ea397ba90963e86e06dc21a020dc5e97188890183e2d81d881e3717317fd510",
     ),
 ];
 

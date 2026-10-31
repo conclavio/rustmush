@@ -501,6 +501,7 @@ fn ground() -> Result<ArenaDefinition, RollError> {
             &[(SmolStr::new_static("west"), SmolStr::new_static("east"))],
         ),
         modes: Vec::new(),
+        homes: Vec::new(),
     })
 }
 

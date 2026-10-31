@@ -1847,6 +1847,7 @@ fn arena_definition(
         key_spots: Vec::new(),
         waypoints,
         modes: Vec::new(),
+        homes: Vec::new(),
     }
 }
 

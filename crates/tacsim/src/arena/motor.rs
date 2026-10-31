@@ -2381,6 +2381,10 @@ pub fn stand_off_cell(
 /// hull's cell `here`, passable to `cost_row`: the clamped corner first, then
 /// the nearest by Manhattan distance, the scan bounded by [`MAX_ENTRY_SCAN`]
 /// (past it the best so far, else the clamped corner).
+///
+/// **A party with no entry zone goes home** (doc 32 cut CF.6b): the same scan over its
+/// [`ArenaDefinition::homes`] — in an IC field, its own carrier's ramp. An authored arena gives
+/// every side a zone and no homes, so its answer is what it always was.
 #[must_use]
 pub fn entry_cell(
     def: &ArenaDefinition,
@@ -2391,7 +2395,12 @@ pub fn entry_cell(
     let (here_x, here_y) = here;
     let mut best: Option<(u32, (u16, u16))> = None;
     let mut read = 0_usize;
-    for zone in def.entry_zones.iter().filter(|zone| zone.team == team) {
+    let zones = if def.entry_zones.iter().any(|zone| zone.team == team) {
+        &def.entry_zones
+    } else {
+        &def.homes
+    };
+    for zone in zones.iter().filter(|zone| zone.team == team) {
         let (x0, x1) = (zone.x0.min(zone.x1), zone.x0.max(zone.x1));
         let (y0, y1) = (zone.y0.min(zone.y1), zone.y0.max(zone.y1));
         // The clamped corner first: it is the answer almost always, and it
@@ -4182,6 +4191,47 @@ mod tests {
             entry_interior_cell(&def, PartyId::BLUE, CostRow::Tracked, (7, 4)),
             None
         );
+    }
+
+    /// **Doc 32 cut CF.6b: a party with no entry zone goes home.** Its home is its `Withdraw`
+    /// goal; a party with an entry zone keeps it, and nobody hunts toward a home.
+    #[test]
+    fn cf6b_a_party_with_no_entry_zone_withdraws_to_its_home() {
+        use crate::arena::state::EntryZone;
+        let mut def = crate::arena::test_support::definition();
+        let home = |team, x, y| EntryZone {
+            team,
+            x0: x,
+            x1: x,
+            y0: y,
+            y1: y,
+        };
+        def.entry_zones = vec![EntryZone {
+            team: PartyId::RED,
+            x0: 0,
+            x1: 1,
+            y0: 0,
+            y1: 7,
+        }];
+        def.homes = vec![home(PartyId::RED, 6, 6), home(PartyId::BLUE, 5, 2)];
+        assert_eq!(
+            entry_cell(&def, PartyId::RED, CostRow::Tracked, (4, 4)),
+            Some((1, 4)),
+            "an entry zone outranks a home"
+        );
+        assert_eq!(
+            entry_cell(&def, PartyId::BLUE, CostRow::Tracked, (2, 6)),
+            Some((5, 2)),
+            "no zone: the home"
+        );
+        assert_eq!(
+            far_entry_cell(&def, PartyId::RED, CostRow::Tracked, (4, 4), &[]),
+            None,
+            "a home is never hunted"
+        );
+        let before = def.clone();
+        def.homes.clear();
+        assert_ne!(before.digest(), def.digest(), "homes are ground");
     }
 
     #[test]

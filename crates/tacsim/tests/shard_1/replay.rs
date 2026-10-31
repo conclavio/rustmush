@@ -363,6 +363,7 @@ fn fixture_replay() -> Replay {
         key_spots: support::yard::spots(),
         waypoints: Waypoints::default(),
         modes: Vec::new(),
+        homes: Vec::new(),
     };
     let roster = |callsign: &str, team: PartyId| ReplayRoster {
         callsign: SmolStr::new(callsign),

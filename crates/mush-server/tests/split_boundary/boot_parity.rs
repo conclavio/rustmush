@@ -64,6 +64,7 @@
 //! | `[tacsim].recovery` | `game_modules` (into the built-ins) | `the_split_boot_carries_the_operator_recovery_policy` |
 //! | `[tacsim].ground_pulse_ms` / `.space_pulse_ms` | `build_engine` post-composition | `the_engine_knobs_reach_the_booted_world` |
 //! | `[llm].decision_workers` | `build_engine` -> `BootedEngine` | `the_engine_knobs_reach_the_booted_world` |
+//! | `[game].world_clock_checkpoint_s` | `build_engine` -> `BootedEngine` | `the_engine_knobs_reach_the_booted_world` |
 //! | `[game].max_characters` | `build_engine` -> `@newchar` | `the_engine_knobs_reach_the_booted_world` |
 //! | `[offers].key_dir`, `[server].data_dir` (decision keys) | `build_engine` key rings | `the_engine_knobs_reach_the_booted_world` |
 //! | `[tacsim.economy].housing` / `.market` / `.reserved_rooms` | `game_modules` -> `server_modules_with` | `modules.rs`'s `lb_e5cc231_…`, `tests/commerce_composition/market_issuer.rs` |
@@ -1533,6 +1534,7 @@ async fn the_engine_knobs_reach_the_booted_world() {
     let mut fx = boot_fixture("knobs", |cfg| {
         cfg.llm = toml::from_str("decision_workers = 5").expect("[llm] is a table");
         cfg.game.max_characters = 7;
+        cfg.game.world_clock_checkpoint_s = 3;
         cfg.tacsim.ground_pulse_ms = 5_000;
         cfg.tacsim.space_pulse_ms = 11_000;
         cfg.offers.key_dir = Some(cfg.server.data_dir.join("secrets").join("offers"));
@@ -1544,6 +1546,13 @@ async fn the_engine_knobs_reach_the_booted_world() {
     assert_eq!(
         fx.booted.decision_workers, 5,
         "[llm].decision_workers must reach the serving half through BootedEngine"
+    );
+
+    // `[game].world_clock_checkpoint_s` — the W-clock checkpoint cadence, read
+    // once at boot and carried the same way into the production spawn.
+    assert_eq!(
+        fx.booted.world_clock_checkpoint_s, 3,
+        "[game].world_clock_checkpoint_s must reach the serving half through BootedEngine"
     );
 
     // `[tacsim].ground_pulse_ms` / `.space_pulse_ms` — the post-composition
