@@ -644,6 +644,7 @@ impl<'a> ModuleActionState<'a> {
     }
 
     /// The engine-stamped module identity, independent of compatibility fields.
+    #[cfg(test)]
     pub(crate) const fn module_owner(&self) -> Option<&OwnerId> {
         self.owner.as_ref()
     }

@@ -17,9 +17,7 @@ any later wages accrue from the contract, not evidence of time aboard. Injury
 risk and contracted scope remain relevant. DT.1 inherits P-1 (disconnect is the
 linkdead grace; a returning slot resumes after a hysteresis).
 
-Docs 26g–26j are superseded and must not be extended. Retain merged code for now;
-the closed movement path is inert on the live route. A later cleanup cut may
-delete the v2 provider if nothing adopts it. The next delivery sequence is
+Docs 26g–26j are superseded and must not be extended; their code was removed on 2026-10-31 by PR #262 (last on `main` at `61a670ce`). The next delivery sequence is
 [DT.2b3 hire, ordinary boarding, DT.2b4 activate, DT.3 launch](26c-detachment-preparation.md#current-delivery-sequence).
 
 ## 1. Goal and IC authority

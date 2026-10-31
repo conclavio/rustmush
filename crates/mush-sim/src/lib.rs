@@ -46,14 +46,8 @@ mod handoff;
 pub mod ic_exclusion;
 pub mod journey;
 pub mod links;
-mod locomotion;
-mod locomotion_capture;
-mod locomotion_composed;
-mod locomotion_scenes;
-mod locomotion_window;
 pub mod movement_custody;
 mod movement_reads;
-pub use locomotion_composed::ComposedMovementFactory;
 mod personnel;
 mod personnel_capture;
 pub mod physical;
@@ -64,10 +58,8 @@ pub mod station;
 pub mod tick;
 pub mod transition;
 pub mod window;
-pub mod window_movement;
-pub mod window_occupancy;
 
-use std::sync::{Arc, OnceLock};
+use std::sync::Arc;
 
 use std::time::Duration;
 
@@ -176,10 +168,6 @@ pub struct SimulationModule {
     /// composition root may upgrade it from `[tacsim]`.
     pulse: tick::PulseConfig,
     ic_custody: Option<ic_exclusion::IcExclusionConfig>,
-    atomic_scene_movement:
-        Option<Arc<OnceLock<mush_core::locomotion::scene_transition::SceneLocomotionReader>>>,
-    composed_movement: Option<ComposedMovementFactory>,
-    window_movement: Option<(window_movement::WindowSelector, ComposedMovementFactory)>,
     tactics_movement_reads: Option<movement_custody::CustodyReadFactory>,
     field_crew_control: bool,
 }
@@ -191,12 +179,6 @@ impl std::fmt::Debug for SimulationModule {
             .field("accounts", &self.accounts.is_some())
             .field("routes", &self.routes.is_some())
             .field("carrier_hooks", &self.carrier_hooks.is_some())
-            .field(
-                "atomic_scene_movement",
-                &self.atomic_scene_movement.is_some(),
-            )
-            .field("composed_movement", &self.composed_movement.is_some())
-            .field("window_movement", &self.window_movement.is_some())
             .field(
                 "tactics_movement_reads",
                 &self.tactics_movement_reads.is_some(),
@@ -222,9 +204,6 @@ impl SimulationModule {
             carrier_hooks: None,
             pulse: tick::PulseConfig::default(),
             ic_custody: None,
-            atomic_scene_movement: None,
-            composed_movement: None,
-            window_movement: None,
             tactics_movement_reads: None,
             field_crew_control: false,
         }
@@ -242,39 +221,6 @@ impl SimulationModule {
     #[must_use]
     pub fn with_field_crew_control(mut self, enabled: bool) -> Self {
         self.field_crew_control = enabled;
-        self
-    }
-
-    /// Compose the closed captured-locomotion action with Scenes' real atomic
-    /// transcript participant. The Scenes module must opt in as well. This
-    /// installs no command route and does not certify personnel history.
-    #[must_use]
-    pub fn with_atomic_scene_movement(
-        mut self,
-        reader: Arc<OnceLock<mush_core::locomotion::scene_transition::SceneLocomotionReader>>,
-    ) -> Self {
-        self.atomic_scene_movement = Some(reader);
-        self
-    }
-
-    /// Join composition-supplied actual observer adapters to the closed Sim
-    /// movement primary. This registers no command route or legal-action offer.
-    #[must_use]
-    pub fn with_composed_movement(mut self, factory: ComposedMovementFactory) -> Self {
-        self.composed_movement = Some(factory);
-        self
-    }
-
-    /// Add the closed v2 profile with actual observer adapters. The selector
-    /// proposes data only; Atlas independently attests it. No live route,
-    /// offer, completed output or personnel eligibility is granted.
-    #[must_use]
-    pub fn with_window_movement(
-        mut self,
-        selector: window_movement::WindowSelector,
-        factory: ComposedMovementFactory,
-    ) -> Self {
-        self.window_movement = Some((selector, factory));
         self
     }
 
@@ -338,37 +284,7 @@ impl SimulationModule {
     /// These audits read registered handles and already-hydrated typed history,
     /// not live placement projections or other modules' loaded state.
     fn audit_movement_history(&self, ctx: &ModuleCtx<'_>) -> Result<(), ModError> {
-        physical::loaded(ctx)?;
-        locomotion::loaded(ctx)?;
-        if self.atomic_scene_movement.is_some() {
-            locomotion_scenes::loaded(ctx)?;
-        }
-        if self.composed_movement.is_some() {
-            locomotion_composed::loaded(ctx)?;
-        }
-        if self.window_movement.is_some() {
-            locomotion_window::audit_typed(ctx)?;
-        }
-        Ok(())
-    }
-
-    fn audit_native_movement_history(&self, data: &ModuleBootData) -> Result<(), ModError> {
-        // Registration of passive history handles alone does not configure a
-        // publisher or its recovery join. Never restore this journal through
-        // the generic legacy recovery loader while that profile is unavailable.
-        let log = window_movement::WINDOW_MOVEMENT_LOG;
-        let key = format!("log:{log}");
-        let prefix = format!("{key}:");
-        let belongs = |candidate: &str| candidate == key || candidate.starts_with(&prefix);
-        if data.ledger.iter().any(|(key, _)| belongs(key))
-            || data.kv.iter().any(|(key, _)| belongs(key))
-            || data.omitted.get(log).is_some_and(|floor| *floor > 0)
-        {
-            return Err(ModError::msg(
-                "window movement journal requires a configured native publisher and recovery audit",
-            ));
-        }
-        Ok(())
+        physical::loaded(ctx)
     }
 }
 
@@ -1121,17 +1037,7 @@ impl GameModule for SimulationModule {
         if self.field_crew_control {
             crew_control::register(reg, control_leases_view.clone())?;
         }
-        physical::register(reg, self.ic_custody.is_some(), movement_reads.clone())?;
-        locomotion::register(reg, movement_reads.clone())?;
-        if let Some(reader) = &self.atomic_scene_movement {
-            locomotion_scenes::register(reg, reader, movement_reads.clone())?;
-        }
-        if let Some(factory) = &self.composed_movement {
-            locomotion_composed::register(reg, factory, movement_reads.clone())?;
-        }
-        if let Some((selector, factory)) = &self.window_movement {
-            locomotion_window::register(reg, selector.clone(), factory, movement_reads)?;
-        }
+        physical::register(reg, self.ic_custody.is_some(), movement_reads)?;
         // 16b cut T.3 (doc 16 §3.1 "Custody"): the world-side index of units an
         // arena holds. Always composed, even with no game layer above — the
         // admission sites read it unconditionally, and a missing slot would be
@@ -1241,18 +1147,6 @@ impl GameModule for SimulationModule {
         self.audit_movement_history(ctx)
     }
 
-    fn audit_boot_history(
-        &self,
-        ctx: &ModuleCtx<'_>,
-        data: &ModuleBootData,
-    ) -> Result<(), ModError> {
-        if self.window_movement.is_some() {
-            locomotion_window::audit_native(ctx, data)
-        } else {
-            self.audit_native_movement_history(data)
-        }
-    }
-
     fn on_world_loaded(
         &mut self,
         ctx: &mut ModuleCtx<'_>,
@@ -1262,7 +1156,6 @@ impl GameModule for SimulationModule {
         // loaders can quarantine, reconcile projections, or advance journeys.
         // The server hydrates the typed-state partition before any load hook.
         self.audit_movement_history(ctx)?;
-        self.audit_boot_history(ctx, &data)?;
         ic_exclusion::load(ctx, &mut data, self.ic_custody.is_some())?;
         if let Some(config) = &self.ic_custody {
             config.loaded(ctx)?;

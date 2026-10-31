@@ -238,16 +238,9 @@ pub(crate) fn register(
 ) -> Result<(), ModError> {
     let descriptor = participant_descriptor()?;
     let historical = participant_descriptor_v1()?;
-    let expected = [
-        descriptor.clone(),
-        historical.clone(),
-        crate::locomotion::participant_descriptor()?,
-        crate::locomotion_scenes::participant_descriptor()?,
-        crate::locomotion_composed::participant_descriptor()?,
-        crate::window_movement::WindowMovementParticipant::descriptor()?,
-    ];
+    let expected = [descriptor.clone(), historical.clone()];
     // A configured IC custody owner installs the one exact participant
-    // validator for the physical and locomotion descriptors, retaining its
+    // validator for the physical descriptors, retaining its
     // composition references.
     if !ic_custody {
         reg.definition_validator(

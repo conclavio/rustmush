@@ -91,49 +91,6 @@ fn placement(object: ObjId, parent: SpatialParent) -> PlacementRecord {
 }
 
 #[test]
-fn window_phase_keeps_a_brief_carrier_entry_and_exit_with_zero_net_crossing() -> TestResult {
-    let mut f = Fixture::new(1)?;
-    let actor = f.people[0];
-    f.world.move_to(actor, LIMBO)?;
-    let stamp = f.world.world_ic_now();
-    let dependencies = f.baseline();
-    let first = derive_window_admission(&f.state, &f.world, actor, f.bay, &stamp, &dependencies)?;
-    check_eq!(
-        first.crossings,
-        vec![Crossing {
-            character: actor,
-            carrier: f.first,
-            direction: CrossingDirection::Enter
-        }]
-    );
-    let plan = Plan {
-        projections: vec![(actor, LIMBO)],
-        ..Plan::default()
-    };
-    let second = derive_window_phase(
-        &f.state,
-        &f.world,
-        actor,
-        f.bay,
-        &plan,
-        &stamp,
-        &dependencies,
-    )?;
-    check_eq!(
-        second.crossings,
-        vec![Crossing {
-            character: actor,
-            carrier: f.first,
-            direction: CrossingDirection::Exit
-        }]
-    );
-    check_eq!(first.after_ancestry_digest, second.before_ancestry_digest);
-    check_eq!(first.before_ancestry_digest, second.after_ancestry_digest);
-    check_eq!(f.world.get(actor).ok_or("actor")?.location, Some(LIMBO));
-    Ok(())
-}
-
-#[test]
 fn dt_capture_reanchor_records_actual_unplaced_people_without_world_moves() -> TestResult {
     let f = Fixture::new(1)?;
     let (transition, plan) = f.reanchor()?;

@@ -459,7 +459,6 @@ fn location(tw: &TestWorld, who: ObjId) -> Option<ObjId> {
 
 #[test]
 fn walking_through_exits_places_by_the_portal_re_poses_across_rooms_and_releases_off_the_map() {
-    use mush_atlas::movement::{WindowEffect, capture};
     let mut tw = lot();
     let staff = GOD;
     let coffee = room_named(&tw, "Coffee Shop");
@@ -474,19 +473,6 @@ fn walking_through_exits_places_by_the_portal_re_poses_across_rooms_and_releases
     tw.world_mut()
         .move_to(rae, backlot)
         .expect("Rae to the backlot");
-    let arrival =
-        capture(tw.world(), rae, Some(backlot), coffee, tw.world().now()).expect("arrival capture");
-    assert_eq!(
-        arrival.window_effect(),
-        WindowEffect::NeedsOwnerComposition {
-            release: None,
-            place_or_repose: Some(domain.0),
-        }
-    );
-    assert!(
-        pose_of(&tw, rae).is_none(),
-        "capture does not place the actor"
-    );
     let events = tw.run(rae, "coffee");
     let t = text(&tw, &events, rae);
     assert!(t.contains("Coffee Shop"), "{t}");
@@ -505,20 +491,6 @@ fn walking_through_exits_places_by_the_portal_re_poses_across_rooms_and_releases
         Some(coffee)
     );
     // Out to the backlot, which the margin covers: re-posed, still on the map.
-    let crossing = capture(tw.world(), rae, Some(coffee), backlot, tw.world().now())
-        .expect("same-map capture");
-    assert_eq!(
-        crossing.window_effect(),
-        WindowEffect::NeedsOwnerComposition {
-            release: None,
-            place_or_repose: Some(domain.0),
-        }
-    );
-    assert_eq!(
-        pose_of(&tw, rae).as_ref(),
-        Some(&pose),
-        "capture does not re-pose"
-    );
     let events = tw.run(rae, "backlot");
     assert!(text(&tw, &events, rae).contains("Backlot"));
     assert_eq!(location(&tw, rae), Some(backlot));
@@ -528,37 +500,9 @@ fn walking_through_exits_places_by_the_portal_re_poses_across_rooms_and_releases
     tw.run(rae, "forecourt");
     assert_eq!(location(&tw, rae), Some(forecourt));
     assert!(pose_of(&tw, rae).is_some());
-    let departure = capture(
-        tw.world(),
-        rae,
-        Some(forecourt),
-        mush_core::LIMBO,
-        tw.world().now(),
-    )
-    .expect("departure capture");
-    assert_eq!(
-        departure.window_effect(),
-        WindowEffect::NeedsOwnerComposition {
-            release: Some(domain.0),
-            place_or_repose: None,
-        }
-    );
-    assert!(
-        pose_of(&tw, rae).is_some(),
-        "capture does not release the actor"
-    );
     tw.run(rae, "limbo");
     assert_eq!(location(&tw, rae), Some(mush_core::LIMBO));
     assert!(pose_of(&tw, rae).is_none(), "released where they stand");
-    let no_map = capture(
-        tw.world(),
-        rae,
-        Some(mush_core::LIMBO),
-        mush_core::LIMBO,
-        tw.world().now(),
-    )
-    .expect("off-map capture");
-    assert_eq!(no_map.window_effect(), WindowEffect::NoSelectedEffect);
 }
 
 #[test]

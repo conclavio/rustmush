@@ -2471,7 +2471,6 @@ pub fn begin_watch(ctx: &mut Ctx<'_>, who: ObjId, checkpoint: &RecordKey) -> Res
 
 /// Record that `who` knows `place`; persists when it changed.
 pub fn learn(ctx: &mut Ctx<'_>, who: ObjId, place: &RecordKey) {
-    let at_utc = ctx.w.now();
     let Some(st) = state_mut(ctx) else {
         return;
     };
@@ -2485,21 +2484,8 @@ pub fn learn(ctx: &mut Ctx<'_>, who: ObjId, place: &RecordKey) {
     ) else {
         return;
     };
-    // Once composed, every later legacy overwrite joins the owner's actual
-    // journal. A damaged/unavailable journal refuses learning without a partial
-    // document mutation; it cannot silently invalidate older prepared history.
-    let journal_write = match st.movement_history.legacy(who, at_utc, &doc) {
-        Ok(write) => write,
-        Err(error) => {
-            tracing::error!(%who, %error, "atlas: learning refused by knowledge history");
-            return;
-        }
-    };
     st.travel.known.insert(who, doc.places.clone());
     put_doc(ctx, known_key(who), &doc);
-    if let Some(write) = journal_write {
-        crate::module::push_op(ctx, write);
-    }
 }
 
 /// Shared policy, with no new legacy admission bounds. A repeated key leaves

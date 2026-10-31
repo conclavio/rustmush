@@ -82,7 +82,6 @@ pub mod flags;
 pub mod geology_key;
 pub mod ledger;
 pub mod lock;
-pub mod locomotion;
 pub mod matchit;
 pub mod mechanics;
 pub mod module;

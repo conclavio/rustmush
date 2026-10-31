@@ -369,7 +369,7 @@ fn home_cmd(ctx: &mut Ctx<'_>) -> Result<(), CmdError> {
 
 /// Register `goto` (aliases `go`, `move`) and `home`.
 pub(super) fn register(reg: &mut Registry) -> Result<(), RegistryError> {
-    reg.register_builtin_locomotion(
+    reg.register_tagged(
         CommandSpec {
             name: "goto".into(),
             aliases: vec!["go".into(), "move".into()],
@@ -381,9 +381,10 @@ pub(super) fn register(reg: &mut Registry) -> Result<(), RegistryError> {
             ..CommandSpec::default()
         },
         Arc::new(goto_cmd),
-        crate::cmd::BuiltinLocomotion::Goto,
+        None,
+        crate::cmd::CommandCompatibility::LegacyPostImage,
     )?;
-    reg.register_builtin_locomotion(
+    reg.register_tagged(
         CommandSpec {
             name: "home".into(),
             shape: ArgShape::None,
@@ -394,7 +395,8 @@ pub(super) fn register(reg: &mut Registry) -> Result<(), RegistryError> {
             ..CommandSpec::default()
         },
         Arc::new(home_cmd),
-        crate::cmd::BuiltinLocomotion::Home,
+        None,
+        crate::cmd::CommandCompatibility::LegacyPostImage,
     )?;
     Ok(())
 }

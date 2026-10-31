@@ -42,62 +42,36 @@ impl QueryHandler for ReadQuery {
         Ok(OutputEvent::Sys(mush_proto::RichText::plain("read")))
     }
 }
+/// The read grants only Sim, so the query module stands in under Sim's name.
+/// It requests the actual Tactics service; no Sim state or admission exists.
+struct SimRequester {
+    answers: Answers,
+}
+impl GameModule for SimRequester {
+    fn name(&self) -> &'static str {
+        "sim"
+    }
+    fn register(&mut self, reg: &mut Registrar<'_>) -> Result<(), ModError> {
+        let handle = MovementCustodyReader::request(reg)?;
+        reg.query_handler(
+            "test.movement_custody",
+            Arc::new(ReadQuery {
+                handle,
+                answers: self.answers.clone(),
+            }),
+        )
+    }
+}
 fn fixture() -> (TestWorld, Answers) {
     let answers = Answers::default();
-    let returned = answers.clone();
-    let atlas_reader = Arc::new(std::sync::OnceLock::new());
-    let returned_reader = atlas_reader.clone();
-    // The query is registered by the actual Sim module's composition hook;
-    // no replacement Sim owner, custody participant or admission is invented.
-    let sim =
-        mush_sim::SimulationModule::new().with_composed_movement(Arc::new(move |reg, builder| {
-            let handle = MovementCustodyReader::request(reg)?;
-            reg.query_handler(
-                "test.movement_custody",
-                Arc::new(ReadQuery {
-                    handle,
-                    answers: returned.clone(),
-                }),
-            )?;
-            let mut definitions = DefinitionRegistryBuilder::new();
-            let owner = OwnerId::new("atlas").map_err(|e| ModError::msg(e.to_string()))?;
-            let participant = definitions
-                .register(
-                    owner.clone(),
-                    mush_atlas::movement_participant::participant_descriptor()?,
-                )
-                .map_err(|e| ModError::msg(e.to_string()))?;
-            let observers = mush_atlas::movement_participant::observer_descriptors()?
-                .into_iter()
-                .map(|d| {
-                    definitions
-                        .register(owner.clone(), d)
-                        .map_err(|e| ModError::msg(e.to_string()))
-                })
-                .collect::<Result<Vec<_>, _>>()?;
-            let service = builder
-                .owner::<mush_atlas::movement_participant::AtlasMovementParticipant>(
-                    reg,
-                    participant.clone(),
-                    observers,
-                )?
-                .finish(reg)?;
-            returned_reader
-                .set(
-                    service
-                        .owner_reader(&participant)
-                        .map_err(|e| ModError::msg(e.to_string()))?,
-                )
-                .map_err(|_| ModError::msg("duplicate test reader"))?;
-            Ok(service)
-        }));
     let world = TestWorld::with_modules(vec![
         Box::new(TestRulesModule {
             owner: "tacsim",
             specs: vec![example_spec(), kitted_spec()],
         }),
-        Box::new(sim),
-        Box::new(mush_atlas::AtlasModule::default().with_composed_movement(atlas_reader)),
+        Box::new(SimRequester {
+            answers: answers.clone(),
+        }),
         Box::new(TacticsModule::with_catalog(example_catalog()).with_movement_custody_reads()),
     ]);
     (world, answers)

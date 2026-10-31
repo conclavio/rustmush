@@ -284,13 +284,17 @@ of the same CI step, `kill9_mid_play_world_survives_redis_gated` and
   restart exactly; one whose last second wrote nothing still measures "the real downtime plus
   up to one cadence". With a 10 s cadence under a 30 s threshold the difference never changes
   the decision, so a checkpoint forced into the shutdown tail is a follow-up.
-- **The K3 prepared-action lane carries no checkpoint.** `flush_prepared_action` sends a
-  closed, self-hashed `AuthoritativeBundle` (typed `ReplayWrite`s, no module ops), so a crash
-  between an authoritative action commit and the next legacy batch is still measured from the
-  last checkpoint — the cadence bound, as before this cut — and any IC stamp inside that
-  bundle may lie up to one cadence ahead of the re-anchored clock. Threading the timeline op
-  into the bundle, or a checkpoint-only legacy batch ahead of it in the writer's FIFO, is a
-  change to the exact-token lane's invariants and is not made here.
+- **The K3 prepared-action lane carried no checkpoint** (WC-1; fixed 2026-10-31 by PR
+  #262). `flush_prepared_action` sends a closed, self-hashed `AuthoritativeBundle` (typed
+  `ReplayWrite`s, no module ops), so a crash between an authoritative action commit and the
+  next legacy batch was measured from the last checkpoint, and an IC stamp inside that bundle
+  could lie up to one cadence ahead of the re-anchored clock. The fix leaves the bundle
+  closed: when `world_clock_checkpoint_rider` yields an op, the lane first queues a
+  checkpoint-only legacy batch (its own writer serial, no receipt) in the writer's FIFO. The
+  writer halts every job behind a batch that does not commit, so the bundle never lands
+  without its checkpoint. One per second, none while frozen, exactly as on the legacy lane.
+  Test: `w_clock_a_prepared_action_queues_its_checkpoint_ahead_of_the_bundle` restarts after
+  a K3 commit and before any legacy batch, and the IC clock re-anchors at the commit's second.
 - **A restart during a countdown still restarts the countdown in full**, as doc 27a §7
   states: the checkpoint does not advance while frozen, so a hot restart two minutes into the
   five is measured from the pre-outage checkpoint and read as a further outage. That is the

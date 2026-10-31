@@ -3,7 +3,7 @@
 use super::*;
 use crate::{PauseReason, SceneMode, ScenesModule};
 use mush_core::{ClockRef, ClockStamp, Effects, GOD, ObjKind, Outbox, WorldEvent};
-use serde_json::{Value, json};
+use serde_json::json;
 
 fn scene(id: u64, anchor: ObjId) -> SceneRecord {
     SceneRecord {
@@ -55,30 +55,18 @@ fn state() -> ScenesState {
     state
 }
 
-fn planned(state: &ScenesState) -> MovementCapture {
-    capture(state, ObjId(99), Some(ObjId(10)), ObjId(11), 1234).expect("bounded capture")
-}
-
-fn canonical(value: &Value) -> Vec<u8> {
-    canonical_json_bytes_with_limit(value, MAX_MOVEMENT_CAPTURE_BYTES).expect("bounded JSON")
+fn planned(state: &ScenesState) -> Vec<PlannedSceneEvent> {
+    legacy_events(state, ObjId(99), Some(ObjId(10)), ObjId(11), 1234)
 }
 
 #[test]
-fn capture_preserves_original_events_times_witnesses_and_legacy_order() {
+fn events_preserve_original_times_witnesses_and_order() {
     let state = state();
-    let capture = planned(&state);
+    let events = planned(&state);
+    assert_eq!(events.len(), 2);
+    assert_eq!(events[0].scene(), SceneUid(2));
     assert_eq!(
-        capture.events(),
-        legacy_events(&state, ObjId(99), Some(ObjId(10)), ObjId(11), 1234)
-    );
-    assert_eq!(capture.actor(), ObjId(99));
-    assert_eq!(capture.from(), Some(ObjId(10)));
-    assert_eq!(capture.to(), ObjId(11));
-    assert_eq!(capture.at(), 1234);
-    assert_eq!(capture.events().len(), 2);
-    assert_eq!(capture.events()[0].scene(), SceneUid(2));
-    assert_eq!(
-        capture.events()[0].event(),
+        events[0].event(),
         &SceneEvent::new(
             state.scenes.get(&SceneUid(2)).expect("destination"),
             1234,
@@ -87,16 +75,14 @@ fn capture_preserves_original_events_times_witnesses_and_legacy_order() {
             json!({}),
         )
     );
-    assert_eq!(capture.events()[1].scene(), SceneUid(1));
-    assert_eq!(capture.events()[1].event().kind, SceneEventKind::Left);
-    assert_eq!(capture.events()[0].event().ic_time, 700);
-    assert_eq!(capture.events()[1].event().ic_time, 512);
+    assert_eq!(events[1].scene(), SceneUid(1));
+    assert_eq!(events[1].event().kind, SceneEventKind::Left);
+    assert_eq!(events[0].event().ic_time, 700);
+    assert_eq!(events[1].event().ic_time, 512);
     assert_eq!(
-        capture.events()[0].event().witnesses,
+        events[0].event().witnesses,
         vec![ObjId(31), ObjId(30), ObjId(32), ObjId(31)]
     );
-    let bytes = capture.encode().expect("encode");
-    assert_eq!(MovementCapture::decode(&bytes).expect("decode"), capture);
 }
 
 #[test]
@@ -124,7 +110,7 @@ fn real_registered_observer_appends_each_original_event_once_after_movement() {
         .expect("scene state");
     state.scenes.insert(SceneUid(1), source_scene);
     state.scenes.insert(SceneUid(2), destination_scene);
-    let expected = capture(state, actor, Some(source), destination, 1234).expect("capture");
+    let expected = legacy_events(state, actor, Some(source), destination, 1234);
     assert!(state.events.open_entries("1").is_empty());
     assert!(state.events.open_entries("2").is_empty());
     world.take_module_ops();
@@ -149,7 +135,7 @@ fn real_registered_observer_appends_each_original_event_once_after_movement() {
         .world()
         .module_state::<ScenesState>()
         .expect("scene state");
-    for planned in expected.events() {
+    for planned in &expected {
         let entries = state.events.open_entries(&planned.scene().0.to_string());
         assert_eq!(entries.len(), 1);
         let event: SceneEvent = serde_json::from_value(entries[0].value.clone()).expect("event");
@@ -161,19 +147,8 @@ fn real_registered_observer_appends_each_original_event_once_after_movement() {
 #[test]
 fn self_loop_and_absent_or_inactive_scenes_produce_no_events() {
     let mut state = state();
-    assert!(
-        capture(&state, ObjId(99), Some(ObjId(10)), ObjId(10), 42)
-            .expect("self loop")
-            .events()
-            .is_empty()
-    );
     assert!(legacy_events(&state, ObjId(99), Some(ObjId(10)), ObjId(10), 42).is_empty());
-    assert!(
-        capture(&state, ObjId(99), None, ObjId(999), 42)
-            .expect("missing scene")
-            .events()
-            .is_empty()
-    );
+    assert!(legacy_events(&state, ObjId(99), None, ObjId(999), 42).is_empty());
     for status in [
         SceneStatus::Preparing,
         SceneStatus::Paused,
@@ -182,8 +157,7 @@ fn self_loop_and_absent_or_inactive_scenes_produce_no_events() {
         for scene in state.scenes.values_mut() {
             scene.status = status;
         }
-        assert!(planned(&state).events().is_empty());
-        assert!(legacy_events(&state, ObjId(99), Some(ObjId(10)), ObjId(11), 1234).is_empty());
+        assert!(planned(&state).is_empty());
     }
 }
 
@@ -194,216 +168,18 @@ fn first_paused_holding_scene_masks_later_active_scene_as_before() {
     first.status = SceneStatus::Paused;
     first.pause_reason = Some(PauseReason::ServerRestart);
     state.scenes.insert(SceneUid(3), scene(3, ObjId(10)));
-    let capture = planned(&state);
-    assert_eq!(capture.events().len(), 1);
-    assert_eq!(capture.events()[0].event().kind, SceneEventKind::Joined);
+    let events = planned(&state);
+    assert_eq!(events.len(), 1);
+    assert_eq!(events[0].event().kind, SceneEventKind::Joined);
     state.scenes.get_mut(&SceneUid(1)).expect("first").status = SceneStatus::Closed;
-    assert_eq!(planned(&state).events()[1].scene(), SceneUid(3));
+    assert_eq!(planned(&state)[1].scene(), SceneUid(3));
 }
 
 #[test]
-fn witness_bounds_are_inclusive_and_do_not_change_legacy_observers() {
+fn witnesses_are_unbounded_on_the_observer_path() {
     let mut state = state();
     let destination = state.scenes.get_mut(&SceneUid(2)).expect("destination");
     destination.participants = (0..128).map(ObjId).collect();
-    destination.observers = (128..256).map(ObjId).collect();
-    // Large unrelated scene fields are never cloned into a movement event.
-    destination.title = "x".repeat(MAX_MOVEMENT_CAPTURE_BYTES * 2);
-    let exact = planned(&state);
-    assert_eq!(
-        exact.events()[0].event().witnesses.len(),
-        MAX_MOVEMENT_WITNESSES
-    );
-    assert_eq!(
-        MovementCapture::decode(&exact.encode().expect("encode")).expect("decode"),
-        exact
-    );
-    state
-        .scenes
-        .get_mut(&SceneUid(2))
-        .expect("destination")
-        .observers
-        .push(ObjId(999));
-    assert_eq!(
-        capture(&state, ObjId(99), Some(ObjId(10)), ObjId(11), 1234),
-        Err(CaptureError::Limit)
-    );
-    assert_eq!(
-        legacy_events(&state, ObjId(99), Some(ObjId(10)), ObjId(11), 1234)[0]
-            .event()
-            .witnesses
-            .len(),
-        257
-    );
-}
-
-#[test]
-fn scene_map_is_bounded_before_lookup_but_legacy_and_self_loop_are_unchanged() {
-    let mut state = state();
-    for id in 3..=MAX_MOVEMENT_CAPTURE_SCENES as u64 {
-        state.scenes.insert(SceneUid(id), scene(id, ObjId(1000)));
-    }
-    assert_eq!(state.scenes.len(), MAX_MOVEMENT_CAPTURE_SCENES);
-    assert_eq!(planned(&state).events().len(), 2);
-    let id = MAX_MOVEMENT_CAPTURE_SCENES as u64 + 1;
-    state.scenes.insert(SceneUid(id), scene(id, ObjId(1000)));
-    assert_eq!(
-        capture(&state, ObjId(99), Some(ObjId(10)), ObjId(11), 1234),
-        Err(CaptureError::Limit)
-    );
-    assert_eq!(
-        legacy_events(&state, ObjId(99), Some(ObjId(10)), ObjId(11), 1234).len(),
-        2
-    );
-    assert!(
-        capture(&state, ObjId(99), Some(ObjId(10)), ObjId(10), 1234)
-            .expect("self loop")
-            .events()
-            .is_empty()
-    );
-}
-
-#[test]
-fn captured_facts_survive_later_scene_and_clock_changes() {
-    let mut state = state();
-    let capture = planned(&state);
-    let original = capture.encode().expect("capture");
-    for scene in state.scenes.values_mut() {
-        scene.participants.clear();
-        scene.observers.clear();
-        scene.round = 50;
-        scene.ic_floor = 999999;
-        scene.status = SceneStatus::Closed;
-    }
-    assert_eq!(capture.encode().expect("unchanged"), original);
-    assert_eq!(
-        MovementCapture::decode(&original).expect("decode").events()[0]
-            .event()
-            .at,
-        1234
-    );
-    assert!(planned(&state).events().is_empty());
-}
-
-#[test]
-fn strict_codec_requires_all_fields_and_explicit_null_source() {
-    let capture = capture(&state(), ObjId(99), None, ObjId(11), 1234).expect("unlocated");
-    let value = serde_json::to_value(&capture).expect("JSON");
-    assert_eq!(value["from"], Value::Null);
-    assert_eq!(
-        MovementCapture::decode(&canonical(&value)).expect("decode"),
-        capture
-    );
-    for key in ["format", "actor", "from", "to", "at", "events"] {
-        let mut changed = value.clone();
-        changed.as_object_mut().expect("object").remove(key);
-        assert!(
-            MovementCapture::decode(&canonical(&changed)).is_err(),
-            "missing {key}"
-        );
-    }
-    for key in ["kind", "actor", "ic_time", "at", "witnesses", "detail"] {
-        let mut changed = value.clone();
-        changed["events"][0]["event"]
-            .as_object_mut()
-            .expect("event")
-            .remove(key);
-        assert!(
-            MovementCapture::decode(&canonical(&changed)).is_err(),
-            "missing event {key}"
-        );
-    }
-    for key in ["scene", "event"] {
-        let mut changed = value.clone();
-        changed["events"][0]
-            .as_object_mut()
-            .expect("row")
-            .remove(key);
-        assert!(
-            MovementCapture::decode(&canonical(&changed)).is_err(),
-            "missing row {key}"
-        );
-    }
-    let mut changed = value;
-    changed["events"][0]["event"]["actor"] = Value::Null;
-    assert!(MovementCapture::decode(&canonical(&changed)).is_err());
-}
-
-#[test]
-fn strict_codec_rejects_unknown_data_and_forged_event_shape() {
-    let original = serde_json::to_value(planned(&state())).expect("JSON");
-    for target in ["root", "row", "event", "detail"] {
-        let mut changed = original.clone();
-        let object = match target {
-            "root" => &mut changed,
-            "row" => &mut changed["events"][0],
-            "event" => &mut changed["events"][0]["event"],
-            _ => &mut changed["events"][0]["event"]["detail"],
-        };
-        object["unexpected"] = json!(true);
-        assert!(
-            MovementCapture::decode(&canonical(&changed)).is_err(),
-            "unknown {target}"
-        );
-    }
-    for (field, value) in [
-        ("kind", json!("said")),
-        ("actor", json!(98)),
-        ("at", json!(1235)),
-        ("detail", Value::Null),
-    ] {
-        let mut changed = original.clone();
-        changed["events"][0]["event"][field] = value;
-        assert!(
-            MovementCapture::decode(&canonical(&changed)).is_err(),
-            "changed {field}"
-        );
-    }
-    let mut reversed = original.clone();
-    reversed["events"].as_array_mut().expect("events").reverse();
-    assert!(MovementCapture::decode(&canonical(&reversed)).is_err());
-    let mut self_loop = original.clone();
-    self_loop["from"] = self_loop["to"].clone();
-    assert!(MovementCapture::decode(&canonical(&self_loop)).is_err());
-    let mut no_source = original.clone();
-    no_source["from"] = Value::Null;
-    assert!(MovementCapture::decode(&canonical(&no_source)).is_err());
-    let mut duplicate_scene = original.clone();
-    duplicate_scene["events"][1]["scene"] = duplicate_scene["events"][0]["scene"].clone();
-    assert!(MovementCapture::decode(&canonical(&duplicate_scene)).is_err());
-    let mut wrong_version = original;
-    wrong_version["format"] = json!(2);
-    assert!(MovementCapture::decode(&canonical(&wrong_version)).is_err());
-}
-
-#[test]
-fn codec_enforces_event_witness_byte_and_canonical_bounds() {
-    let original = serde_json::to_value(planned(&state())).expect("JSON");
-    let mut too_many = original.clone();
-    let row = too_many["events"][0].clone();
-    too_many["events"].as_array_mut().expect("events").push(row);
-    assert_eq!(
-        MovementCapture::decode(&canonical(&too_many)),
-        Err(CaptureError::Limit)
-    );
-    let mut witnesses = original.clone();
-    witnesses["events"][0]["event"]["witnesses"] = json!(vec![42; MAX_MOVEMENT_WITNESSES + 1]);
-    assert_eq!(
-        MovementCapture::decode(&canonical(&witnesses)),
-        Err(CaptureError::Limit)
-    );
-    let bytes = canonical(&original);
-    let mut padded = bytes.clone();
-    padded.resize(MAX_MOVEMENT_CAPTURE_BYTES, b' ');
-    assert_eq!(MovementCapture::decode(&padded), Err(CaptureError::Invalid));
-    padded.push(b' ');
-    assert_eq!(MovementCapture::decode(&padded), Err(CaptureError::Limit));
-    let mut noncanonical = bytes;
-    noncanonical.push(b'\n');
-    assert_eq!(
-        MovementCapture::decode(&noncanonical),
-        Err(CaptureError::Invalid)
-    );
-    let duplicate = br#"{"format":1,"format":1,"actor":1,"from":null,"to":2,"at":3,"events":[]}"#;
-    assert!(MovementCapture::decode(duplicate).is_err());
+    destination.observers = (128..257).map(ObjId).collect();
+    assert_eq!(planned(&state)[0].event().witnesses.len(), 257);
 }

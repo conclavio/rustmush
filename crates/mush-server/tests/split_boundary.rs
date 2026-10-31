@@ -34,28 +34,14 @@ mod boot_store;
 mod cli_args;
 #[path = "split_boundary/content_studio.rs"]
 mod content_studio;
-#[path = "split_boundary/dt_atlas_movement.rs"]
-mod dt_atlas_movement;
-#[path = "split_boundary/dt_atomic_scene_movement.rs"]
-mod dt_atomic_scene_movement;
-#[path = "split_boundary/dt_composed_scene_movement.rs"]
-mod dt_composed_scene_movement;
 #[path = "split_boundary/dt_crew_hiring.rs"]
 mod dt_crew_hiring;
-#[path = "split_boundary/dt_locomotion.rs"]
-mod dt_locomotion;
-#[path = "split_boundary/dt_movement_completion.rs"]
-mod dt_movement_completion;
 #[path = "split_boundary/dt_physical_transitions.rs"]
 mod dt_physical_transitions;
 #[path = "split_boundary/dt_preparation_plans.rs"]
 mod dt_preparation_plans;
 #[path = "split_boundary/dt_unit_authority.rs"]
 mod dt_unit_authority;
-#[path = "split_boundary/dt_window_movement.rs"]
-mod dt_window_movement;
-#[path = "split_boundary/dt_window_scenes.rs"]
-mod dt_window_scenes;
 #[path = "split_boundary/gateway_link_parity.rs"]
 mod gateway_link_parity;
 #[path = "split_boundary/ipc_authoritative_action.rs"]

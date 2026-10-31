@@ -44,7 +44,10 @@ pub(super) async fn flush_engine_step(
     persistence_integrity: &PersistenceIntegrityLatch,
 ) -> FlushOutcome {
     if engine.has_staged_action() {
-        flush_prepared_action(engine, writer, health, metrics, retained, high_water).await
+        flush_prepared_action(
+            engine, writer, serial, health, metrics, retained, high_water,
+        )
+        .await
     } else {
         flush_dirty(
             engine,
@@ -65,12 +68,13 @@ pub(super) async fn flush_engine_step(
 /// Submit one already-built action-state write set and retain its typed RAM
 /// images for the matching acknowledgement. There is one lane: the caller
 /// transfers a complete exact-token bundle to the FIFO writer and installs
-/// only after its matching durable receipt. This path deliberately takes no
-/// writer serial — a K3 commit is named by its own token, and the legacy
-/// serial belongs to `flush_dirty` alone.
+/// only after its matching durable receipt. A K3 commit is named by its own
+/// token; the legacy `serial` is spent only on the world-clock checkpoint
+/// batch queued ahead of it (27a WC-1).
 pub(super) async fn flush_prepared_action(
     engine: &mut Engine,
     writer: &StoreWriter,
+    serial: &mut u64,
     health: &mut StoreHealth,
     _metrics: &Metrics,
     retained: &mut RetainedSeals,
@@ -119,6 +123,53 @@ pub(super) async fn flush_prepared_action(
             "prepared action reached submission with an unresolved legacy ledger predecessor"
                 .to_owned(),
         );
+    }
+    // W-clock / Q-R4 (27a WC-1): the bundle is a closed, self-hashed set, so
+    // the checkpoint of its second rides a checkpoint-only legacy batch queued
+    // just ahead of it. The writer is one FIFO and halts every job behind a
+    // batch that does not commit, so the bundle never lands without it and a
+    // restart never re-anchors the IC clock behind the bundle's stamps.
+    if let Some(op) = world_clock_checkpoint_rider(engine) {
+        let Some(next) = serial.checked_add(1) else {
+            release_prepared_installation(
+                engine,
+                installation,
+                "flush_prepared_action/serial-exhausted",
+            );
+            tracing::error!(
+                "authoritative writer serial exhausted; refusing to reuse a commit token"
+            );
+            return FlushOutcome::Rejected(
+                "authoritative writer serial exhausted; restart/recovery required".to_owned(),
+            );
+        };
+        *serial = next;
+        let mut batch = persist::batch_from_dirty(
+            &engine.world,
+            std::collections::BTreeSet::new(),
+            next,
+            false,
+        );
+        batch.module_ops = vec![op];
+        if writer
+            .send(StoreJob::Write {
+                batch,
+                notify: None,
+            })
+            .await
+            .is_err()
+        {
+            release_prepared_installation(
+                engine,
+                installation,
+                "flush_prepared_action/writer-gone-checkpoint",
+            );
+            tracing::error!(
+                serial = next,
+                "store writer gone before accepting the authoritative action's checkpoint"
+            );
+            return FlushOutcome::WriterGone;
+        }
     }
     let expected_token = bundle.token();
     let expected_hash = bundle.bundle_hash();

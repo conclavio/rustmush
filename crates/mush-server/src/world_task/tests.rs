@@ -5444,6 +5444,7 @@ async fn prepared_action_installs_only_after_its_exact_receipt() {
     let outcome = flush_prepared_action(
         &mut engine,
         &writer,
+        &mut 0,
         &mut health,
         &metrics,
         &mut retained,
@@ -5870,6 +5871,7 @@ async fn a_prepared_flush_with_nothing_staged_refuses_instead_of_asserting() {
     let outcome = flush_prepared_action(
         &mut engine,
         &writer,
+        &mut 0,
         &mut health,
         &metrics,
         &mut retained,
@@ -6043,6 +6045,7 @@ async fn committed_prepared_action_announces_the_touched_family_to_observers() {
     let outcome = flush_prepared_action(
         &mut engine,
         &writer,
+        &mut 0,
         &mut health,
         &metrics,
         &mut retained,
@@ -6482,6 +6485,7 @@ async fn prepared_action_writer_loss_aborts_before_receipt_custody() {
     let outcome = flush_prepared_action(
         &mut engine,
         &writer,
+        &mut 0,
         &mut health,
         &metrics,
         &mut retained,
@@ -12028,6 +12032,151 @@ async fn w_clock_a_batch_carries_the_checkpoint_of_its_second_so_a_restart_never
             .map(|cp| cp.real_unix),
         Some(1_007)
     );
+}
+
+/// 27a WC-1: the K3 prepared-action lane carries no module ops, so the
+/// checkpoint of its second rides a checkpoint-only legacy batch queued just
+/// ahead of the closed bundle. A restart after a K3 commit and before any
+/// legacy batch re-anchors the IC clock at the commit's second, never behind
+/// the stamps its bundle may hold (the K8 relay story's out-of-order canary).
+#[tokio::test]
+async fn w_clock_a_prepared_action_queues_its_checkpoint_ahead_of_the_bundle() {
+    use crate::timeline::{
+        OutageEvaluation, OutagePolicy, apply_boot_outage_policy, hydrate_world_timeline,
+        load_or_seed_world_timeline,
+    };
+    use mush_store::{InMemoryStore, WriteBatch};
+
+    /// Stage one K3 action and flush it; returns the jobs handed the writer.
+    async fn flush_k3(
+        engine: &mut Engine,
+        handle: &PreparedLaneHandle,
+        serial: &mut u64,
+        identity: u8,
+    ) -> (Option<WriteBatch>, AuthoritativeBundle) {
+        let mut transaction = engine.action_transaction(handle).expect("begins");
+        transaction
+            .insert(
+                handle,
+                &u64::from(identity),
+                PreparedLaneState { amount: identity },
+            )
+            .expect("valid");
+        let prepared = transaction.prepare().expect("prepares");
+        let bundle = prepared_lane_bundle(&prepared, identity);
+        let guards = empty_guards(engine);
+        engine
+            .stage_authoritative_action(prepared, guards, bundle)
+            .expect("stages");
+        let (writer, mut writer_rx) = persist::test_store_writer_channel(Arc::new(Metrics::new()));
+        let outcome = flush_prepared_action(
+            engine,
+            &writer,
+            serial,
+            &mut StoreHealth::new(),
+            &Metrics::new(),
+            &mut RetainedSeals::new(),
+            &AtomicU64::new(0),
+        )
+        .await;
+        let FlushOutcome::Queued {
+            prepared_installation: Some(installation),
+            ..
+        } = outcome
+        else {
+            panic!("the prepared action must queue");
+        };
+        let mut checkpoint = None;
+        let mut job = writer_rx.try_recv().expect("a job");
+        if let StoreJob::Write { batch, notify } = job {
+            assert!(notify.is_none(), "nobody waits on the checkpoint batch");
+            checkpoint = Some(batch);
+            job = writer_rx
+                .try_recv()
+                .expect("the bundle follows its checkpoint");
+        }
+        let bundle = settle_queued_authoritative_job(job).await;
+        assert!(writer_rx.try_recv().is_err(), "nothing else was queued");
+        engine
+            .install_composed_action(installation)
+            .expect("installs");
+        (checkpoint, bundle)
+    }
+    async fn persisted_checkpoint(
+        store: &InMemoryStore,
+        clock: mush_core::GameClock,
+    ) -> Option<(i64, i64)> {
+        load_or_seed_world_timeline(store, clock)
+            .await
+            .unwrap()
+            .checkpoint()
+            .map(|cp| (cp.real_unix, cp.ic_unix))
+    }
+
+    let store = InMemoryStore::new();
+    let clock = mush_core::GameClock {
+        ic_ratio: 4,
+        epoch_offset: 1_000,
+    };
+    let (mut engine, handle) = prepared_lane_fixture();
+    hydrate_world_timeline(&mut engine.world, &store, clock)
+        .await
+        .unwrap();
+    apply_boot_outage_policy(&mut engine.world, &store, 1_000, OutagePolicy::default())
+        .await
+        .unwrap();
+    let mut serial = 0;
+
+    // A K3 commit seven seconds on: one checkpoint-only legacy batch with its
+    // own serial, then the untouched bundle.
+    engine.set_now(1_007);
+    assert_eq!(engine.world.world_ic_now().at, 5_028);
+    let (checkpoint, bundle) = flush_k3(&mut engine, &handle, &mut serial, 7).await;
+    let checkpoint = checkpoint.expect("the checkpoint rides ahead of the bundle");
+    assert_eq!(checkpoint.serial, 1);
+    assert_eq!(serial, 1);
+    assert!(checkpoint.upserts.is_empty() && checkpoint.deletes.is_empty());
+    assert_eq!(checkpoint.module_ops.len(), 1);
+    assert_eq!(
+        checkpoint.module_ops[0].ns,
+        mush_core::WORLD_TIMELINE_NAMESPACE
+    );
+    assert_eq!(bundle.writes().len(), 1, "the bundle stays closed");
+    store.write(checkpoint).await.unwrap();
+    assert_eq!(
+        persisted_checkpoint(&store, clock).await,
+        Some((1_007, 5_028))
+    );
+
+    // A second K3 commit in the same second queues none: one per second.
+    let (checkpoint, _) = flush_k3(&mut engine, &handle, &mut serial, 8).await;
+    assert!(checkpoint.is_none());
+    assert_eq!(serial, 1);
+
+    // The crash twelve seconds later, before any legacy batch: the boot
+    // re-anchors at the K3 commit's second. Without the checkpoint batch it
+    // read the boot's (1_000) and resumed 28 IC seconds behind the bundle.
+    let mut rebooted = World::new_minimal();
+    hydrate_world_timeline(&mut rebooted, &store, clock)
+        .await
+        .unwrap();
+    let evaluation =
+        apply_boot_outage_policy(&mut rebooted, &store, 1_019, OutagePolicy::default())
+            .await
+            .unwrap();
+    assert_eq!(
+        evaluation,
+        OutageEvaluation::SilentReanchor { lost_secs: 12 }
+    );
+    assert_eq!(rebooted.world_ic_now().at, 5_028);
+
+    // Frozen: a K3 commit queues no checkpoint however far the second moved.
+    let mut frozen = engine.world.world_timeline().clone();
+    let _ = frozen.freeze_for_outage(1_007, 5_028, 1_030, 1_330);
+    engine.world.set_world_timeline(frozen);
+    engine.set_now(1_030);
+    let (checkpoint, _) = flush_k3(&mut engine, &handle, &mut serial, 9).await;
+    assert!(checkpoint.is_none());
 }
 
 /// The live loop: an idle world task with a one-second cadence writes its

@@ -15,11 +15,6 @@
 //! K3 bundle limits the records migrate to the family the allowlist entry already
 //! names.
 //!
-//! Composed movement is a separate closed owner protocol: it can write the
-//! real known-places book and its mutation journal with Core's captured move.
-//! Its original-history audit refuses corruption before ordinary derived-record
-//! cleanup. This grants no movement authority to authored map geometry.
-//!
 //! ## Boot
 //!
 //! Every document arrives through its wire (`deny_unknown_fields`) and its `validate`,
@@ -31,7 +26,7 @@
 //! after bumping its version to rebuild the record.
 
 use std::collections::BTreeMap;
-use std::sync::{Arc, Mutex, OnceLock};
+use std::sync::{Arc, Mutex};
 use std::time::Duration;
 
 use mush_content::{Pack, PackError, load_pack};
@@ -228,8 +223,6 @@ pub struct AtlasState {
     pub hydration: crate::hydrate::HydrationState,
     /// Windows (S4): the open tactical maps and their composites.
     pub windows: crate::window::Windows,
-    /// Real movement-knowledge journal open tails; no historical projection.
-    pub movement_history: crate::movement_history::MovementHistory,
 }
 
 impl Default for AtlasState {
@@ -253,7 +246,6 @@ impl Default for AtlasState {
             travel: crate::travel::TravelState::default(),
             world_theme: None,
             hydration: crate::hydrate::HydrationState::default(),
-            movement_history: crate::movement_history::MovementHistory::default(),
         }
     }
 }
@@ -270,8 +262,6 @@ pub fn is_staff(w: &World, who: ObjId) -> bool {
 pub struct AtlasModule {
     config: AtlasConfig,
     shelf: Vec<Pack>,
-    composed_movement: Option<Arc<OnceLock<mush_core::locomotion::composed::ComposedOwnerReader>>>,
-    window_movement: Option<Arc<OnceLock<mush_core::locomotion::composed::ComposedOwnerReader>>>,
 }
 
 impl std::fmt::Debug for AtlasModule {
@@ -279,8 +269,6 @@ impl std::fmt::Debug for AtlasModule {
         f.debug_struct("AtlasModule")
             .field("config", &self.config)
             .field("shelf", &self.shelf)
-            .field("composed_movement", &self.composed_movement.is_some())
-            .field("window_movement", &self.window_movement.is_some())
             .finish()
     }
 }
@@ -292,8 +280,6 @@ impl AtlasModule {
         AtlasModule {
             config: AtlasConfig::default(),
             shelf: Vec::new(),
-            composed_movement: None,
-            window_movement: None,
         }
     }
 
@@ -311,12 +297,7 @@ impl AtlasModule {
                 }
             }
         }
-        AtlasModule {
-            config,
-            shelf,
-            composed_movement: None,
-            window_movement: None,
-        }
+        AtlasModule { config, shelf }
     }
 
     /// Put packs on the shelf (the composition root adds the starter packs
@@ -327,68 +308,6 @@ impl AtlasModule {
         packs.extend(self.shelf);
         self.shelf = packs;
         self
-    }
-
-    /// Join the actual Atlas owner to Core's closed composed movement action.
-    /// The composition supplies this owner's scoped receipt reader.
-    #[must_use]
-    pub fn with_composed_movement(
-        mut self,
-        reader: Arc<OnceLock<mush_core::locomotion::composed::ComposedOwnerReader>>,
-    ) -> Self {
-        self.composed_movement = Some(reader);
-        self
-    }
-    /// Join discovery and selector attestation to the separate v2 action.
-    /// Window-arrival output remains outside this participant's coverage.
-    #[must_use]
-    pub fn with_window_composed_movement(
-        mut self,
-        reader: Arc<OnceLock<mush_core::locomotion::composed::ComposedOwnerReader>>,
-    ) -> Self {
-        self.window_movement = Some(reader);
-        self
-    }
-
-    fn movement_readers(
-        &self,
-    ) -> Result<Vec<&mush_core::locomotion::composed::ComposedOwnerReader>, ModError> {
-        [&self.composed_movement, &self.window_movement]
-            .into_iter()
-            .flatten()
-            .map(|reader| {
-                reader.get().ok_or_else(|| {
-                    ModError::msg("Atlas movement reader was not supplied by composition")
-                })
-            })
-            .collect()
-    }
-
-    fn inspect_movement_history(
-        &self,
-        ctx: &ModuleCtx<'_>,
-        data: &ModuleBootData,
-        travel: &crate::travel::TravelState,
-    ) -> Result<Option<mush_core::LedgerHistory>, ModError> {
-        if self.composed_movement.is_none() && self.window_movement.is_none() {
-            return if data.ledger.is_empty() {
-                Ok(None)
-            } else {
-                Err(ModError::msg(
-                    "Atlas knowledge history requires its composed owner",
-                ))
-            };
-        }
-        if !data.omitted.is_empty() {
-            return Err(ModError::RetryFullFetch {
-                module: NS.into(),
-                reason: "Atlas movement requires complete knowledge history".into(),
-            });
-        }
-        let owner = crate::movement_history::MovementHistory::default();
-        let history = owner.ledger.inspect(&data.ledger);
-        crate::movement_audit::audit_boot(ctx, data, &history, travel, &self.movement_readers()?)?;
-        Ok(Some(history))
     }
 }
 
@@ -431,7 +350,6 @@ impl GameModule for AtlasModule {
             ..AtlasState::default()
         };
         state.windows.margin_cm = i64::from(self.config.window_margin_m) * 100;
-        state.movement_history.enabled = self.composed_movement.is_some();
         state.windows.max_cells = self
             .config
             .window_max_cells
@@ -536,15 +454,6 @@ impl GameModule for AtlasModule {
         reg.subscribe_moved("travel_discovery", 1, Arc::new(crate::travel::on_moved))?;
         // S4: a character who walks onto, off or across a window's rooms.
         reg.subscribe_moved("window_arrival", 1, Arc::new(crate::window::on_moved))?;
-        if self.composed_movement.is_some() || self.window_movement.is_some() {
-            crate::movement_participant::register_validator(reg)?;
-        }
-        if self.composed_movement.is_some() {
-            crate::movement_participant::register(reg)?;
-        }
-        if self.window_movement.is_some() {
-            crate::movement_window_participant::register(reg)?;
-        }
         reg.subscribe(
             WorldEventKind::Disconnected,
             Arc::new(crate::travel::on_disconnected),
@@ -565,22 +474,6 @@ impl GameModule for AtlasModule {
         Ok(())
     }
 
-    fn audit_typed_history(&self, ctx: &ModuleCtx<'_>) -> Result<(), ModError> {
-        crate::movement_audit::audit_typed(ctx, &self.movement_readers()?)
-            .map_err(|e| ModError::msg(format!("Atlas typed movement proof audit failed: {e}")))
-    }
-
-    fn audit_boot_history(
-        &self,
-        ctx: &ModuleCtx<'_>,
-        data: &ModuleBootData,
-    ) -> Result<(), ModError> {
-        let Loaded { records, .. } = parse(data, ctx.w);
-        let (travel, _) = crate::travel::hydrate(&data.kv, ctx.w, &records);
-        self.inspect_movement_history(ctx, data, &travel)
-            .map(|_| ())
-    }
-
     fn on_world_loaded(
         &mut self,
         ctx: &mut ModuleCtx<'_>,
@@ -588,16 +481,6 @@ impl GameModule for AtlasModule {
     ) -> Result<(), ModError> {
         let Loaded { records, dropped } = parse(&data, ctx.w);
         let (travel, dropped_travel) = crate::travel::hydrate(&data.kv, ctx.w, &records);
-        let mut movement_history = crate::movement_history::MovementHistory {
-            enabled: self.composed_movement.is_some() || self.window_movement.is_some(),
-            ..Default::default()
-        };
-        if let Some(history) = self.inspect_movement_history(ctx, &data, &travel)? {
-            movement_history
-                .ledger
-                .restore_from_history(&history)
-                .map_err(|e| ModError::msg(e.to_string()))?;
-        }
         let (world_theme, dropped_theme) = hydrate_world_theme(&data.kv);
         let (hydration, dropped_hydration) = crate::hydrate::hydrate(&data.kv);
         let (windows, dropped_windows, orphans) = crate::window::hydrate(&data.kv, ctx.w);
@@ -607,7 +490,6 @@ impl GameModule for AtlasModule {
                 .ok_or_else(|| ModError::msg("atlas: state slot missing"))?;
             slot.records = records;
             slot.travel = travel;
-            slot.movement_history = movement_history;
             slot.world_theme = world_theme;
             slot.hydration = hydration;
             slot.windows.open = windows;

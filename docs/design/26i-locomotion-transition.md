@@ -1,14 +1,11 @@
 # DT.2b2b.3c — Closed ordinary locomotion transaction
 
-> **Superseded by the owner's 2026-10-29 correction. Do not extend this design.**
-> [Doc 27 FO-16](27-ic-field-operations-design-and-survey.md) requires current
-> containment at preparation and launch, with no embarkation intervals or
-> movement-history certification. The text below records historical work, not
-> an active migration plan. Leave merged code in place for now; the closed path
-> is inert on the live command route. A later cleanup cut may delete the v2
-> provider if nothing adopts it. Continue with NPC hiring contracts, ordinary
-> boarding, DT.2b4 activation and DT.3 launch as described in
-> [doc 26c](26c-detachment-preparation.md#current-delivery-sequence).
+> **Removed 2026-10-31 (owner ruling).** The code this document describes was
+> deleted by PR #262. The last `main` commit that has it is `61a670ce`; recover a
+> file with `git show 61a670ce:<path>`. It was superseded by the owner's 2026-10-29
+> correction: [doc 27 FO-16](27-ic-field-operations-design-and-survey.md) requires
+> current containment at preparation and launch, with no embarkation intervals or
+> movement-history certification. The text below is history, not a plan.
 
 This slice joins the captured command admission in [26h](26h-locomotion-dispatch.md)
 to a Core object image and a real Sim audit participant. Normal walking and HOME
