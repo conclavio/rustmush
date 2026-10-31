@@ -28,6 +28,7 @@ use mush_core::{
     AuthoritativeBundle, CanonicalHash, CommitToken, IdempotencyScope, Obj, ObjId, ReplayWrite,
     ScopedIdempotencyKey,
 };
+use serde::{Deserialize, Serialize};
 
 use crate::redis::{META_NEXT_ID, MOD_PREFIX, OBJ_PREFIX};
 use crate::store::{AuthoritativeStore, ModuleDocs, ObjectStore};
@@ -1999,6 +2000,228 @@ impl AuthoritativeStore for InMemoryStore {
             }
             Ok(false)
         })
+    }
+}
+
+/// Every table of an [`InMemoryStore`] as one serializable value: the
+/// documents exactly as the store holds them (serialized JSON strings), the id
+/// allocator, the schema version, the module streams with their sequence
+/// counters, and the authoritative tables. Test harnesses write one to disk and
+/// [`InMemoryStore::restore`] it into a fresh store to resume a long story
+/// where it stopped (mush-server's M7 commands story, `M7_STORY_CHECKPOINT`);
+/// nothing in production produces or consumes one, and the ledger archive tier
+/// is not part of it. Tables keyed by a typed id are lists of pairs, so the
+/// value is plain JSON whatever the key type.
+#[derive(Clone, Debug, Default, Deserialize, Serialize)]
+#[serde(deny_unknown_fields)]
+pub struct InMemoryDump {
+    objects: Vec<(u32, String)>,
+    next_id: Option<u32>,
+    schema_version: Option<u32>,
+    accounts: Vec<(String, String)>,
+    bans: Vec<(String, String)>,
+    tempban_lifts: Vec<(std::net::IpAddr, String)>,
+    tokens: Vec<(String, String)>,
+    discord_users: Vec<(u64, String)>,
+    discord_codes: Vec<(String, String)>,
+    discord_bans: Vec<(u64, String)>,
+    /// `(ns, key, doc)`.
+    module_kv: Vec<(String, String, String)>,
+    module_streams: Vec<DumpedStream>,
+    last_serial: Option<u64>,
+    authoritative_intents: Vec<(CommitToken, String)>,
+    authoritative_receipts: Vec<(CommitToken, String)>,
+    authoritative_quarantines: Vec<(CommitToken, String)>,
+    authoritative_idempotency: Vec<DumpedBinding>,
+    authoritative_minimum_epochs: Vec<(IdempotencyScope, u64)>,
+    authoritative_outbox: Vec<(CanonicalHash, String)>,
+    authoritative_outbox_pending: Vec<CanonicalHash>,
+    authoritative_pending: Vec<CommitToken>,
+    authoritative_retention_generation: u64,
+}
+
+/// One module stream of an [`InMemoryDump`]: its next sequence number and its
+/// `(seq, serialized value)` entries, oldest first.
+#[derive(Clone, Debug, Deserialize, Serialize)]
+#[serde(deny_unknown_fields)]
+pub struct DumpedStream {
+    ns: String,
+    key: String,
+    next_seq: u64,
+    entries: Vec<(u64, String)>,
+}
+
+/// One idempotency binding of an [`InMemoryDump`].
+#[derive(Clone, Debug, Deserialize, Serialize)]
+#[serde(deny_unknown_fields)]
+pub struct DumpedBinding {
+    key: ScopedIdempotencyKey,
+    token: CommitToken,
+    ingress_hash: CanonicalHash,
+    bundle_hash: CanonicalHash,
+}
+
+impl InMemoryStore {
+    /// Every table of the store, copied out as an [`InMemoryDump`]; the store
+    /// itself is unchanged. Fails only on a closed store.
+    pub fn dump(&self) -> Result<InMemoryDump, StoreError> {
+        let inner = self.lock()?;
+        let strings = |map: &HashMap<String, String>| -> Vec<(String, String)> {
+            map.iter().map(|(k, v)| (k.clone(), v.clone())).collect()
+        };
+        let tokens = |map: &BTreeMap<CommitToken, String>| -> Vec<(CommitToken, String)> {
+            map.iter().map(|(k, v)| (*k, v.clone())).collect()
+        };
+        Ok(InMemoryDump {
+            objects: inner
+                .objects
+                .iter()
+                .map(|(id, doc)| (*id, doc.clone()))
+                .collect(),
+            next_id: inner.next_id,
+            schema_version: inner.schema_version,
+            accounts: strings(&inner.accounts),
+            bans: strings(&inner.bans),
+            tempban_lifts: inner
+                .tempban_lifts
+                .iter()
+                .map(|(ip, doc)| (*ip, doc.clone()))
+                .collect(),
+            tokens: strings(&inner.tokens),
+            discord_users: inner
+                .discord_users
+                .iter()
+                .map(|(id, name)| (*id, name.clone()))
+                .collect(),
+            discord_codes: strings(&inner.discord_codes),
+            discord_bans: inner
+                .discord_bans
+                .iter()
+                .map(|(id, doc)| (*id, doc.clone()))
+                .collect(),
+            module_kv: inner
+                .module_kv
+                .iter()
+                .map(|((ns, key), doc)| (ns.clone(), key.clone(), doc.clone()))
+                .collect(),
+            module_streams: inner
+                .module_streams
+                .iter()
+                .map(|((ns, key), stream)| DumpedStream {
+                    ns: ns.clone(),
+                    key: key.clone(),
+                    next_seq: stream.next_seq,
+                    entries: stream.entries.iter().cloned().collect(),
+                })
+                .collect(),
+            last_serial: inner.last_serial,
+            authoritative_intents: tokens(&inner.authoritative_intents),
+            authoritative_receipts: tokens(&inner.authoritative_receipts),
+            authoritative_quarantines: tokens(&inner.authoritative_quarantines),
+            authoritative_idempotency: inner
+                .authoritative_idempotency
+                .iter()
+                .map(|(key, binding)| DumpedBinding {
+                    key: key.clone(),
+                    token: binding.token,
+                    ingress_hash: binding.ingress_hash,
+                    bundle_hash: binding.bundle_hash,
+                })
+                .collect(),
+            authoritative_minimum_epochs: inner
+                .authoritative_minimum_epochs
+                .iter()
+                .map(|(scope, epoch)| (scope.clone(), *epoch))
+                .collect(),
+            authoritative_outbox: inner
+                .authoritative_outbox
+                .iter()
+                .map(|(hash, doc)| (*hash, doc.clone()))
+                .collect(),
+            authoritative_outbox_pending: inner
+                .authoritative_outbox_pending
+                .iter()
+                .copied()
+                .collect(),
+            authoritative_pending: inner.authoritative_pending.iter().copied().collect(),
+            authoritative_retention_generation: inner.authoritative_retention_generation,
+        })
+    }
+
+    /// Make this store the one `dump` was taken from. Only an empty store (as
+    /// [`InMemoryStore::new`] returns it) is restored into; one that already
+    /// holds anything is refused unchanged with [`StoreError::Invalid`], so a
+    /// restore is never a merge.
+    pub fn restore(&self, dump: InMemoryDump) -> Result<(), StoreError> {
+        let mut inner = self.lock()?;
+        let empty = inner.objects.is_empty()
+            && inner.next_id.is_none()
+            && inner.schema_version.is_none()
+            && inner.accounts.is_empty()
+            && inner.module_kv.is_empty()
+            && inner.module_streams.is_empty()
+            && inner.authoritative_intents.is_empty()
+            && inner.last_serial.is_none();
+        if !empty {
+            return Err(StoreError::Invalid(
+                "restore into a store that already holds data".into(),
+            ));
+        }
+        *inner = Inner {
+            objects: dump.objects.into_iter().collect(),
+            next_id: dump.next_id,
+            schema_version: dump.schema_version,
+            accounts: dump.accounts.into_iter().collect(),
+            bans: dump.bans.into_iter().collect(),
+            tempban_lifts: dump.tempban_lifts.into_iter().collect(),
+            tokens: dump.tokens.into_iter().collect(),
+            discord_users: dump.discord_users.into_iter().collect(),
+            discord_codes: dump.discord_codes.into_iter().collect(),
+            discord_bans: dump.discord_bans.into_iter().collect(),
+            module_kv: dump
+                .module_kv
+                .into_iter()
+                .map(|(ns, key, doc)| ((ns, key), doc))
+                .collect(),
+            module_streams: dump
+                .module_streams
+                .into_iter()
+                .map(|stream| {
+                    (
+                        (stream.ns, stream.key),
+                        MemStream {
+                            next_seq: stream.next_seq,
+                            entries: stream.entries.into_iter().collect(),
+                        },
+                    )
+                })
+                .collect(),
+            last_serial: dump.last_serial,
+            authoritative_intents: dump.authoritative_intents.into_iter().collect(),
+            authoritative_receipts: dump.authoritative_receipts.into_iter().collect(),
+            authoritative_quarantines: dump.authoritative_quarantines.into_iter().collect(),
+            authoritative_idempotency: dump
+                .authoritative_idempotency
+                .into_iter()
+                .map(|binding| {
+                    (
+                        binding.key,
+                        IdempotencyBinding {
+                            token: binding.token,
+                            ingress_hash: binding.ingress_hash,
+                            bundle_hash: binding.bundle_hash,
+                        },
+                    )
+                })
+                .collect(),
+            authoritative_minimum_epochs: dump.authoritative_minimum_epochs.into_iter().collect(),
+            authoritative_outbox: dump.authoritative_outbox.into_iter().collect(),
+            authoritative_outbox_pending: dump.authoritative_outbox_pending.into_iter().collect(),
+            authoritative_pending: dump.authoritative_pending.into_iter().collect(),
+            authoritative_retention_generation: dump.authoritative_retention_generation,
+            closed: false,
+        };
+        Ok(())
     }
 }
 

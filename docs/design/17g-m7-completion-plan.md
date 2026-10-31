@@ -2621,3 +2621,33 @@ state family, definition, digest or deployment format; the launch stays at (33, 
     digit screen keys on both surfaces (Alt+digit still switches). (25) The web decoders drop
     an action word outside the row kind's own vocabulary where the TUI accepts any of the
     seven on either kind.
+
+### The story's checkpoint knob (2026-10-31, branch `claude/nice-yonath-d36982`)
+
+`M7_STORY_CHECKPOINT`, a harness knob of the C2 commands story (`player_market_story.rs`),
+for iterating on part 3 without the rating and parts 1–2 before it (about 35 and 10 minutes
+at the 50 ms pulse on conclav.dev; part 3 is where every recent failure was). `save:<dir>`
+stops the server once part 2 is done, as a restart stops it, and writes that world to
+`<dir>`: `store.json`, the in-memory store's every table (`InMemoryStore::dump`, new in
+mush-store with its `restore`; the test store forwards both); `data_dir/`, the launch
+document; `story.json`, part 2's `Sold` and the harness's ids (the alt, the bystander, the
+census principals, the save's wall and IC seconds). It then boots the world again with Cy
+connected and runs part 3 as usual, so a save run is a whole run. `load:<dir>` restores it
+into a fresh scratch dir and store, resumes the IC clock where the save left it (a world-clock
+checkpoint at the save's wall second, then the W-clock silent re-anchor of the current
+generation at the load's, `WorldTimeline::reanchor_from_checkpoint`, persisted as the
+timeline's state document; the story's `ic_now` reads the re-anchor as the world does), boots
+Active as `restart` does and runs part 3 alone. Unset or empty, the story is unchanged, and
+CI and the nightly schedule never set it. The load fails clearly when the restored clock is
+not at the save's IC second or is past the term's end less the fast run's four IC hours. The
+UTC-stamped rows a saved world holds are part 2's 30 s quotes, long expired, and nothing part
+3 reads; part 3's own offer windows open after the load; the rating is complete and settled
+before part 2, so no Registry lease is in flight. Measured on conclav.dev (32 cores):
+the save run (`ckpt-save.log`, 2026-10-31) rated in 2,080 s and wrote the checkpoint 35.5
+minutes in (17 MB: `store.json` 16.9 MB, the launch document, `story.json` 330 B), then ran
+part 3 to main's current failure (`"a renewal offer stands"`, the renewal after the term; 4,970 s
+in all); the load run from it (`ckpt-load.log`, 27 s later) re-anchored the clock, booted with
+the IC second 96 s past the save's (four boot seconds at rate 24) and ran part 3 to the same
+failure, byte for byte, in 2,837 s. A load saves the 35.5 minutes before part 3; part 3 itself is
+about 47 minutes (its fast IC run is 36 real minutes), which a later checkpoint inside it could
+cut further once part 3 is green.

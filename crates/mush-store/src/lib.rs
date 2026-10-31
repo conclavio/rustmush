@@ -33,9 +33,9 @@ pub mod suite;
 pub mod types;
 
 pub use archive::{ArchiveStats, ChunkLoc, DEFAULT_SEGMENT_CHUNKS, LedgerArchive};
-pub use memory::InMemoryStore;
 #[doc(hidden)]
 pub use memory::{AuthoritativeFaultMode, AuthoritativeFaultStore};
+pub use memory::{DumpedBinding, DumpedStream, InMemoryDump, InMemoryStore};
 pub use migrate::{
     CURRENT_SCHEMA_VERSION, Migration, MigrationFn, core_migrations, run_migrations,
 };
