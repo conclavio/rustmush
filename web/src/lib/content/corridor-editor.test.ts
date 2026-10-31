@@ -72,9 +72,12 @@ describe("corridor-editor (CS.4)", () => {
       origin: "ceres",
       destination: "stickney",
       duration_seconds: 259200,
-    }) as Record<string, Record<string, { def: Record<string, unknown> }>>;
+    });
+    const entries = extractCorridorEntries(updated);
+    const route = entries.find((e) => e.id === "ceres_to_stickney");
+    const port = entries.find((e) => e.id === "ceres_port");
 
-    expect(updated.entries.ceres_to_stickney.def.duration_seconds).toBe(259200);
-    expect(updated.entries.ceres_port.def.venue).toBe("Ceres Freeport");
+    expect(route?.def.duration_seconds).toBe(259200);
+    expect(port?.def.venue).toBe("Ceres Freeport");
   });
 });

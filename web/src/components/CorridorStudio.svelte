@@ -32,11 +32,12 @@
   );
 
   $effect(() => {
+    const first = filteredEntries[0];
     if (
-      filteredEntries.length > 0 &&
+      first &&
       (!selectedId || !filteredEntries.some((e) => e.id === selectedId))
     ) {
-      selectedId = filteredEntries[0].id;
+      selectedId = first.id;
     } else if (filteredEntries.length === 0) {
       selectedId = null;
     }
