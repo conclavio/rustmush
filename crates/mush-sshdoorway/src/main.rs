@@ -6,6 +6,11 @@
 //! | `SIGTERM`, `SIGINT` | finish now: stop accepting, one warning, close after the grace period |
 //! | `SIGHUP` | reload routing and limits (`[listen]` needs a swap) |
 //! | `SIGUSR2` | reopen the log file (logrotate) |
+//!
+//! The lifecycle itself is `mush_drain::lifecycle` (doc 33 §4.5, cut GG.3);
+//! this binary parses its arguments, builds the doorway, binds, probes
+//! readiness, and gives the lifecycle the doorway's reload, log reopen and
+//! drain settings.
 
 #![deny(
     clippy::unwrap_used,
@@ -23,9 +28,13 @@ use std::sync::Arc;
 #[cfg(unix)]
 use std::time::Duration;
 
+#[cfg(unix)]
+use mush_drain::lifecycle::{DrainConfig, Host, Signals};
+#[cfg(unix)]
+use mush_drain::{listen, marker, notify};
 use mush_sshdoorway::Config;
 #[cfg(unix)]
-use mush_sshdoorway::{Doorway, listen, logging, notify};
+use mush_sshdoorway::{Doorway, logging};
 
 struct Args {
     config: PathBuf,
@@ -48,15 +57,7 @@ fn parse_args() -> Result<Args, String> {
             other => return Err(format!("unknown argument {other:?}")),
         }
     }
-    let g = &args.generation;
-    if g.is_empty()
-        || g.len() > 16
-        || !g
-            .bytes()
-            .all(|b| b.is_ascii_lowercase() || b.is_ascii_digit())
-    {
-        return Err("--generation must be 1-16 lowercase letters or digits".into());
-    }
+    mush_drain::marker::check_generation(&args.generation)?;
     Ok(args)
 }
 
@@ -106,92 +107,64 @@ async fn run() -> Result<(), String> {
     }
 }
 
-/// The signal streams, installed before anything slow happens: a default
-/// `SIGHUP` or `SIGUSR2` (logrotate's postrotate) would otherwise kill a
-/// generation that is still starting.
+/// The doorway's side of the lifecycle: what `SIGHUP` reloads, what `SIGUSR2`
+/// reopens, and the drain settings of `[limits]`, read when a drain or a
+/// finish begins (so a reload counts).
 #[cfg(unix)]
-struct Signals {
-    hup: tokio::signal::unix::Signal,
-    usr1: tokio::signal::unix::Signal,
-    usr2: tokio::signal::unix::Signal,
-    term: tokio::signal::unix::Signal,
-    int: tokio::signal::unix::Signal,
+struct DoorwayHost<'a> {
+    args: &'a Args,
+    door: &'a Arc<Doorway>,
+    log: &'a logging::LogGuard,
 }
 
 #[cfg(unix)]
-impl Signals {
-    fn install() -> Result<Signals, String> {
-        use tokio::signal::unix::{SignalKind, signal};
-        let sig = |k: SignalKind| signal(k).map_err(|e| format!("signal handler: {e}"));
-        Ok(Signals {
-            hup: sig(SignalKind::hangup())?,
-            usr1: sig(SignalKind::user_defined1())?,
-            usr2: sig(SignalKind::user_defined2())?,
-            term: sig(SignalKind::terminate())?,
-            int: sig(SignalKind::interrupt())?,
-        })
+impl Host for DoorwayHost<'_> {
+    fn drain_config(&self) -> DrainConfig {
+        let cfg = self.door.config();
+        DrainConfig {
+            deadline: Duration::from_secs(cfg.limits.drain_deadline_secs),
+            warnings: cfg.warnings().unwrap_or_default(),
+            message: cfg.limits.drain_message.clone(),
+            grace: Duration::from_secs(cfg.limits.force_grace_secs),
+        }
     }
-}
 
-/// How long after the drain's close (or a finish's grace) the process exits
-/// even if some session never finished closing.
-#[cfg(unix)]
-const HARD_EXIT_AFTER: Duration = Duration::from_secs(60);
+    fn reload(&mut self) {
+        reload(self.args, self.door);
+    }
 
-/// The marker a draining generation leaves, so that nothing but swap.sh ever
-/// brings it back into service beside its successor: not `Restart=on-failure`
-/// after a crash, not `systemctl restart` (needrestart), not a reboot. The
-/// doorway never removes it; a start that finds it reports `READY=1` and exits
-/// 0, which systemd counts as a clean run (an exit *before* `READY=1` under
-/// `Type=notify` is a protocol failure, and would be restarted into service).
-/// swap.sh clears the marker right before it starts that generation.
-///
-/// Under systemd the marker lives in `$STATE_DIRECTORY` (`StateDirectory=`,
-/// `/var/lib/sshdoorway`), the directory swap.sh reads; elsewhere, beside the
-/// host key.
-#[cfg(unix)]
-fn draining_marker(cfg: &Config, generation: &str) -> PathBuf {
-    marker_dir(
-        std::env::var_os("STATE_DIRECTORY").as_deref(),
-        &cfg.listen.host_key,
-    )
-    .join(format!("draining-{generation}"))
-}
-
-/// The first `STATE_DIRECTORY` entry (systemd separates several with `:`),
-/// else the host key's directory.
-#[cfg(any(unix, test))]
-fn marker_dir(state_directory: Option<&std::ffi::OsStr>, host_key: &std::path::Path) -> PathBuf {
-    state_directory
-        .map(|v| PathBuf::from(v.to_string_lossy().split(':').next().unwrap_or_default()))
-        .filter(|p| !p.as_os_str().is_empty())
-        .unwrap_or_else(|| {
-            host_key
-                .parent()
-                .map(std::path::Path::to_path_buf)
-                .unwrap_or_default()
-        })
+    fn reopen_logs(&mut self) {
+        if let Some(f) = &self.log.file
+            && let Err(e) = f.reopen()
+        {
+            tracing::error!(error = %e, path = %f.path().display(), "log reopen failed");
+        }
+    }
 }
 
 #[cfg(unix)]
 async fn serve(args: Args, cfg: Config) -> Result<(), String> {
+    // The signal streams first, before anything slow happens: a default
+    // SIGHUP or SIGUSR2 (logrotate's postrotate) would otherwise kill a
+    // generation that is still starting.
     let mut sigs = Signals::install()?;
     let log = logging::init(&cfg.log, &args.generation)?;
-    let marker = draining_marker(&cfg, &args.generation);
-    if marker.exists() {
-        tracing::warn!(
-            marker = %marker.display(),
-            "this generation drained and was not swapped back in; not serving (swap.sh clears the marker)"
-        );
-        // A clean run in systemd's eyes, so Restart=on-failure leaves it be.
-        notify::notify("READY=1");
+    // Under systemd the marker lives in $STATE_DIRECTORY (StateDirectory=,
+    // /var/lib/sshdoorway), the directory swap.sh reads; elsewhere, beside
+    // the host key. The doorway never removes it: see `mush_drain::marker`.
+    let beside_key = cfg
+        .listen
+        .host_key
+        .parent()
+        .map(std::path::Path::to_path_buf)
+        .unwrap_or_default();
+    let marker = marker::path(&args.generation, &beside_key);
+    if marker::found(&marker) {
+        // READY=1 has been sent: a clean run in systemd's eyes, so
+        // Restart=on-failure leaves it be.
         return Ok(());
     }
-    if listen::migrate_req_enabled() == Some(false) {
-        tracing::warn!(
-            "net.ipv4.tcp_migrate_req is 0: connections queued on a draining generation will be reset"
-        );
-    }
+    listen::warn_if_migrate_req_off();
     let connector: Arc<dyn mush_sshdoorway::upstream::Connector> =
         Arc::new(mush_sshdoorway::upstream::UnixConnector);
     let door = Doorway::new(cfg.clone(), connector)?;
@@ -216,13 +189,17 @@ async fn serve(args: Args, cfg: Config) -> Result<(), String> {
     }
     ready(&door).await?;
     tokio::spawn(Arc::clone(&door).summarize_forever());
-    notify::notify("READY=1");
+    notify::ready();
     tracing::warn!("sshdoorway ready");
 
-    // The drain marker, if this run wrote one, stays: see `draining_marker`.
-    let result = signals(&args, &door, &log, &mut sigs, &marker).await;
+    let mut host = DoorwayHost {
+        args: &args,
+        door: &door,
+        log: &log,
+    };
+    mush_drain::lifecycle::run(&mut sigs, &door.drain, &marker, &mut host).await;
     tracing::warn!("sshdoorway exiting");
-    result
+    Ok(())
 }
 
 /// Readiness (29a A-3): at least one service must answer `Ping` within 30 s;
@@ -264,85 +241,8 @@ async fn ready(door: &Arc<Doorway>) -> Result<(), String> {
     }
 }
 
-/// The lifecycle (doc 29 §9.3, as amended by the ops review):
-///
-/// | Signal | Effect |
-/// |---|---|
-/// | `SIGUSR1` | **drain** (swap.sh): stop accepting, warn on schedule, close at the deadline |
-/// | `SIGTERM`, `SIGINT` | **finish**: stop accepting, one warning, close after the grace period |
-/// | `SIGHUP` | reload routing, limits and menu |
-/// | `SIGUSR2` | reopen the log file |
-///
-/// `SIGTERM` finishing quickly is what keeps `systemctl stop`/`restart`, a
-/// reboot or needrestart from turning into a 24 h outage; the 24 h drain is
-/// only ever asked for by swap.sh, after a successor is serving.
-#[cfg(unix)]
-async fn signals(
-    args: &Args,
-    door: &Arc<Doorway>,
-    log: &logging::LogGuard,
-    sigs: &mut Signals,
-    marker: &std::path::Path,
-) -> Result<(), String> {
-    let mut work: Option<tokio::task::JoinHandle<()>> = None;
-    let mut finishing = false;
-    let mut hard_exit: Option<tokio::time::Instant> = None;
-    loop {
-        let stopping = work.is_some();
-        let empty = async {
-            if stopping {
-                door.drain.wait_empty().await;
-            } else {
-                std::future::pending::<()>().await;
-            }
-        };
-        let work_done = async {
-            match work.as_mut() {
-                Some(task) if !task.is_finished() => {
-                    let _ = task.await;
-                }
-                _ => std::future::pending::<()>().await,
-            }
-        };
-        let hard = async {
-            match hard_exit {
-                Some(at) => tokio::time::sleep_until(at).await,
-                None => std::future::pending::<()>().await,
-            }
-        };
-        tokio::select! {
-            _ = sigs.hup.recv() => reload(args, door),
-            _ = sigs.usr2.recv() => {
-                if let Some(f) = &log.file
-                    && let Err(e) = f.reopen()
-                {
-                    tracing::error!(error = %e, path = %f.path().display(), "log reopen failed");
-                }
-            }
-            _ = sigs.usr1.recv() => {
-                if work.is_none() {
-                    if let Err(e) = std::fs::write(marker, b"draining\n") {
-                        tracing::error!(error = %e, marker = %marker.display(), "cannot write the drain marker");
-                    }
-                    work = Some(start_drain(door));
-                }
-            }
-            _ = sigs.term.recv() => finish(door, &mut work, &mut finishing),
-            _ = sigs.int.recv() => finish(door, &mut work, &mut finishing),
-            () = work_done => {
-                // The deadline (or the grace) has closed everything it could;
-                // whatever has not finished closing gets a minute.
-                hard_exit = Some(tokio::time::Instant::now() + HARD_EXIT_AFTER);
-            }
-            () = empty => return Ok(()),
-            () = hard => {
-                tracing::warn!(sessions = door.drain.live(), "sessions still closing; exiting anyway");
-                return Ok(());
-            }
-        }
-    }
-}
-
+/// `SIGHUP`: reload routing, limits and menu. A reload that fails validation,
+/// or that changes `[listen]`, keeps the old config.
 #[cfg(unix)]
 fn reload(args: &Args, door: &Arc<Doorway>) {
     match Config::load(&args.config) {
@@ -364,83 +264,5 @@ fn reload(args: &Args, door: &Arc<Doorway>) {
             }
         }
         Err(e) => tracing::error!(error = %e, "reload refused; keeping the old config"),
-    }
-}
-
-#[cfg(unix)]
-fn start_drain(door: &Arc<Doorway>) -> tokio::task::JoinHandle<()> {
-    door.drain.begin();
-    let cfg = door.config();
-    let deadline = Duration::from_secs(cfg.limits.drain_deadline_secs);
-    let warnings = cfg.warnings().unwrap_or_default();
-    let message = cfg.limits.drain_message.clone();
-    tracing::warn!(
-        sessions = door.drain.live(),
-        deadline_secs = deadline.as_secs(),
-        "draining: stopped accepting"
-    );
-    let door = Arc::clone(door);
-    tokio::spawn(async move { door.drain.run(deadline, &warnings, &message).await })
-}
-
-/// Finish now. A repeated signal does not restart the grace period.
-#[cfg(unix)]
-fn finish(
-    door: &Arc<Doorway>,
-    work: &mut Option<tokio::task::JoinHandle<()>>,
-    finishing: &mut bool,
-) {
-    if *finishing {
-        return;
-    }
-    *finishing = true;
-    notify::notify("STOPPING=1");
-    door.drain.begin();
-    if let Some(task) = work.take() {
-        task.abort();
-    }
-    let cfg = door.config();
-    let grace = Duration::from_secs(cfg.limits.force_grace_secs);
-    let message = cfg.limits.drain_message.clone();
-    tracing::warn!(
-        sessions = door.drain.live(),
-        grace_secs = grace.as_secs(),
-        "finishing now"
-    );
-    let door = Arc::clone(door);
-    *work = Some(tokio::spawn(async move {
-        door.drain.finish_now(grace, &message).await;
-    }));
-}
-
-#[cfg(test)]
-mod tests {
-    use super::marker_dir;
-    use std::ffi::OsStr;
-    use std::path::{Path, PathBuf};
-
-    #[test]
-    fn the_marker_lives_in_the_state_directory_when_systemd_gives_one() {
-        let key = Path::new("/etc/rustmush/host_ed25519");
-        assert_eq!(
-            marker_dir(Some(OsStr::new("/var/lib/sshdoorway")), key),
-            PathBuf::from("/var/lib/sshdoorway")
-        );
-        // Several directories: the first one.
-        assert_eq!(
-            marker_dir(Some(OsStr::new("/var/lib/sshdoorway:/var/lib/other")), key),
-            PathBuf::from("/var/lib/sshdoorway")
-        );
-    }
-
-    #[test]
-    fn the_marker_lives_beside_the_host_key_otherwise() {
-        let key = Path::new("/etc/rustmush/host_ed25519");
-        assert_eq!(marker_dir(None, key), PathBuf::from("/etc/rustmush"));
-        assert_eq!(
-            marker_dir(Some(OsStr::new("")), key),
-            PathBuf::from("/etc/rustmush")
-        );
-        assert_eq!(marker_dir(None, Path::new("host_ed25519")), PathBuf::new());
     }
 }

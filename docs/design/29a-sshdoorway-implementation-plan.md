@@ -119,6 +119,17 @@ Every new crate root denies all six panic-shaped restriction lints, and both new
 join `restriction_lints.rs` `MEASURED` at zero. Both new crates are network-facing, so they
 go in the panic budget's **ratchet** tier at zero.
 
+**GG.3 (doc 33 §4.5, 2026-10-30).** `drain.rs`, `kill.rs`, `listen.rs`, `notify.rs`, the
+marker and the signal lifecycle of `main.rs` were lifted into `crates/mush-drain`, generic
+over the session (`mush_drain::Session`: an inject sink and a close) and shared with the
+gateway from GG.4. In the doorway, `drain.rs` is now the adapter (`DoorwaySession`, the
+`Drain`/`LiveGuard` aliases, `INJECT_QUEUE`, the close reason); `kill`, `listen` and
+`notify` are re-exports of the shared modules; `config.rs` re-exports `Warning` and
+`parse_duration` and takes its drain defaults from the shared constants; `main.rs` keeps
+the argument parsing, readiness and the `Host` impl (reload, log reopen, the drain settings
+from `[limits]`). `deploy/sshdoorway/swap.sh` is a thin call into `deploy/drain/swap.sh`.
+No behaviour changed; the e2e suite is the proof ([33-cut-notes.md](33-cut-notes.md)).
+
 ## 4. Tests
 
 - **Windows and Linux.**

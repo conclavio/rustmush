@@ -1,6 +1,7 @@
-//! `sd_notify` (doc 29 §9.2): `READY=1` once every address is bound, the
-//! config parsed and every service answered a `Ping`; `STOPPING=1` when a
-//! drain begins. A no-op outside systemd (no `$NOTIFY_SOCKET`).
+//! `sd_notify` (doc 29 §9.2): `READY=1` once the generation serves (or,
+//! having found its marker, is exiting cleanly); `STOPPING=1` when a finish
+//! begins, never when a drain does (29a §7 H2). A no-op outside systemd (no
+//! `$NOTIFY_SOCKET`).
 
 /// Send one notification. Errors are logged, never fatal.
 pub fn notify(state: &str) {
@@ -17,6 +18,11 @@ pub fn notify(state: &str) {
     {
         let _ = state;
     }
+}
+
+/// `READY=1`.
+pub fn ready() {
+    notify("READY=1");
 }
 
 #[cfg(unix)]
@@ -50,7 +56,7 @@ mod tests {
     #[test]
     fn notifies_a_path_socket() {
         use super::send;
-        let dir = std::env::temp_dir().join(format!("sshdoorway-notify-{}", std::process::id()));
+        let dir = std::env::temp_dir().join(format!("mush-drain-notify-{}", std::process::id()));
         std::fs::create_dir_all(&dir).unwrap();
         let path = dir.join("notify.sock");
         let _ = std::fs::remove_file(&path);

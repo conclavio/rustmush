@@ -5,7 +5,8 @@
 //! a polite disconnect queues behind the very data that is stuck. The drain's
 //! deadline and the wedge path therefore cut the **stream**: once killed,
 //! every read and write fails, the session task ends, and the connection's
-//! handler (and its slots and live count) is dropped.
+//! handler (and its slots and live count) is dropped. Any daemon whose
+//! session task cannot be aborted from outside wraps its stream the same way.
 
 use std::pin::Pin;
 use std::sync::atomic::{AtomicBool, Ordering};
