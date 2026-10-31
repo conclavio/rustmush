@@ -13,19 +13,27 @@
 //! the buy steps and named offers (C2g) and the renewal front (C2h) were
 //! live (`part_two`, `part_three`).
 use super::paid_purchase::runtime::{STEP, rows};
+use super::paid_purchase::store::PurchaseFaultStore;
 use super::paid_purchase::{auth_account, open_wallet};
-use super::player_market::{CREDIT, acknowledged, character};
+use super::player_market::{CREDIT, Launch, Principals, acknowledged, character, config, scratch};
 use super::player_market_commands::{
     TestResult, World, active, assert_private, await_own, known_accounts, open_shells,
     same_refusal, saved, until_own, world_with_terms,
 };
-use mush_core::ObjId;
+use mush_core::{
+    ObjId, WORLD_TIMELINE_EPOCH_PREFIX, WORLD_TIMELINE_NAMESPACE, WORLD_TIMELINE_STATE_KEY,
+    WorldTimeline, WorldTimelineEpoch, WorldTimelineState, world_timeline_state_op,
+};
 use mush_economy::{Account, Amount};
 use mush_org::PrincipalId;
 use mush_roll::commerce::rating::{RatingJob, RatingJobState};
-use mush_store::ObjectStore;
+use mush_store::{ObjectStore, WriteBatch};
+use serde::{Deserialize, Serialize};
 use serde_json::Value;
+use std::path::{Path, PathBuf};
+use std::sync::Arc;
 use std::time::Duration;
+use tacsim::launch::LaunchDeployment;
 use tokio::time::{Instant, timeout};
 
 /// The genuine rating's finite hang guard (the server story's, `paid_purchase`).
@@ -391,13 +399,22 @@ async fn drafted_now(w: &World, licence: &str) -> TestResult {
 /// (`rustmush_kernel_time`'s newest epoch) and the wall clock, as the world
 /// reads `world_ic_now`.
 async fn ic_now(w: &World) -> TestResult<(i64, u64)> {
+    ic_at(w, unix_now()?).await
+}
+/// `ic_now` at the wall second `unix`.
+async fn ic_at(w: &World, unix: i64) -> TestResult<(i64, u64)> {
     let mut newest: Option<(u64, i64, i64, i64)> = None;
-    for (_, row) in w
+    let mut state = WorldTimelineState::default();
+    for (key, row) in w
         .launch
         .store
-        .module_json_list("rustmush_kernel_time")
+        .module_json_list(WORLD_TIMELINE_NAMESPACE)
         .await?
     {
+        if key == WORLD_TIMELINE_STATE_KEY {
+            state = serde_json::from_value(row)?;
+            continue;
+        }
         let (Some(generation), Some(real), Some(ic), Some(rate)) = (
             row.get("generation").and_then(Value::as_u64),
             row.get("real_anchor").and_then(Value::as_i64),
@@ -411,10 +428,13 @@ async fn ic_now(w: &World) -> TestResult<(i64, u64)> {
         }
     }
     let (generation, real, ic, rate) = newest.ok_or("a world timeline epoch")?;
-    let unix: i64 = std::time::SystemTime::now()
-        .duration_since(std::time::UNIX_EPOCH)?
-        .as_secs()
-        .try_into()?;
+    // A W-clock re-anchor of the newest generation moves its anchors (a
+    // checkpoint load's `resume_clock`; the world's `world_ic_now` reads it).
+    let (real, ic) = state
+        .reanchors
+        .iter()
+        .find(|r| r.generation == generation)
+        .map_or((real, ic), |r| (r.real_anchor, r.ic_anchor));
     Ok((ic + (unix - real) * rate, generation))
 }
 /// Staff open a world-IC rate generation (`@tacsim/time rate=<n>`, God);
@@ -469,6 +489,7 @@ fn offered(line: &str, head: &str, tail: &str, lowest: i64, highest: i64) -> boo
         .is_some_and(|m| (lowest..=highest).contains(&m))
 }
 /// What part 2 hands part 3.
+#[derive(Clone, Deserialize, Serialize)]
 struct Sold {
     /// The filed number (a decimal string).
     filed: String,
@@ -1458,6 +1479,239 @@ async fn part_three(w: &mut World, sold: &Sold) -> TestResult {
     Ok(())
 }
 
+// ---- The checkpoint knob, `M7_STORY_CHECKPOINT` (save/load part 3's world) ----
+//
+// The story's wall is the rating (about 35 minutes at the 50 ms pulse) and
+// parts 1 and 2 before part 3, where the work is. `M7_STORY_CHECKPOINT=save:<dir>`
+// stops the server once part 2 is done, as a restart stops it, and writes that
+// world to `<dir>`: the store's every table (`store.json`, the in-memory
+// store's dump), the data dir (`data_dir/`, the launch document) and the
+// harness's ids (`story.json`: part 2's `Sold`, the alt, the bystander and
+// the census principals); then it boots the world again and runs part 3 as
+// usual. `M7_STORY_CHECKPOINT=load:<dir>` restores that world into a fresh
+// scratch dir and store, boots it Active as `restart` does and runs part 3
+// alone. Unset or empty, the story is exactly the one above; CI and the
+// nightly schedule never set it.
+//
+// The clocks after a load. The IC clock resumes where the save left it: the
+// load records a world-clock checkpoint at the save's wall second and
+// re-anchors the current generation at its own (the W-clock silent re-anchor,
+// `WorldTimeline::reanchor_from_checkpoint`), so the saved world was paused
+// through the gap, not running: the sealed licence's term and the renewal's
+// due rule are IC-based and read as at the save, whatever the gap, and
+// `ic_now` reads the re-anchor as the world does. The UTC-stamped rows the
+// saved world holds are part 2's quotes (30 s, expired before the save) and
+// nothing part 3 reads; part 3's own offers (the resale and charter windows)
+// are opened after the load. The rating is complete and settled before part 2
+// (`rated`), so no Registry lease is in flight. The load fails clearly if the
+// restored clock is not where the save left it or is past the point part 3
+// needs (the term's end, less the fast run's four IC hours).
+
+/// The knob.
+const CHECKPOINT_VAR: &str = "M7_STORY_CHECKPOINT";
+/// `story.json`'s format; a load refuses another.
+const CHECKPOINT_FORMAT: u32 = 1;
+
+enum Checkpoint {
+    Save(PathBuf),
+    Load(PathBuf),
+}
+/// `M7_STORY_CHECKPOINT`, parsed: `save:<dir>`, `load:<dir>`, or unset.
+fn checkpoint() -> TestResult<Option<Checkpoint>> {
+    let raw = match std::env::var(CHECKPOINT_VAR) {
+        Ok(raw) if !raw.trim().is_empty() => raw,
+        _ => return Ok(None),
+    };
+    let usage = format!("{CHECKPOINT_VAR} is `save:<dir>` or `load:<dir>`, not {raw:?}");
+    let (mode, dir) = raw.trim().split_once(':').ok_or_else(|| usage.clone())?;
+    check!(!dir.is_empty(), "{usage}");
+    let dir = PathBuf::from(dir);
+    match mode {
+        "save" => Ok(Some(Checkpoint::Save(dir))),
+        "load" => Ok(Some(Checkpoint::Load(dir))),
+        _ => Err(usage.into()),
+    }
+}
+/// What `story.json` records beside the store and the data dir.
+#[derive(Deserialize, Serialize)]
+struct Saved {
+    format: u32,
+    /// The wall second the save stopped the server at.
+    saved_at_unix: i64,
+    /// The world-IC second at it, which the load's re-anchor resumes from.
+    ic_at_save: i64,
+    sold: Sold,
+    alt: ObjId,
+    bystander: ObjId,
+    god: ObjId,
+    author: ObjId,
+    buyer: ObjId,
+    clerk: ObjId,
+    operator: ObjId,
+    accountless: ObjId,
+}
+fn unix_now() -> TestResult<i64> {
+    Ok(std::time::SystemTime::now()
+        .duration_since(std::time::UNIX_EPOCH)?
+        .as_secs()
+        .try_into()?)
+}
+/// Copies the files under `from` into `to` (made if missing).
+fn copy_tree(from: &Path, to: &Path) -> TestResult {
+    std::fs::create_dir_all(to)?;
+    for entry in std::fs::read_dir(from)? {
+        let entry = entry?;
+        let target = to.join(entry.file_name());
+        if entry.file_type()?.is_dir() {
+            copy_tree(&entry.path(), &target)?;
+        } else {
+            std::fs::copy(entry.path(), target)?;
+        }
+    }
+    Ok(())
+}
+/// `save:<dir>`: the world after part 2, stopped as a restart stops it,
+/// written to `dir`; then booted again with Cy connected, as `restart` does.
+async fn save(w: &mut World, sold: &Sold, dir: &Path) -> TestResult {
+    let marker = dir.join("story.json");
+    check!(
+        !marker.exists(),
+        "{} already holds a checkpoint",
+        dir.display()
+    );
+    std::fs::create_dir_all(dir)?;
+    w.server.stop().await?;
+    let saved_at_unix = unix_now()?;
+    let (ic_at_save, _) = ic_at(w, saved_at_unix).await?;
+    std::fs::write(
+        dir.join("store.json"),
+        serde_json::to_vec(&w.launch.store.dump()?)?,
+    )?;
+    copy_tree(&w.data_dir, &dir.join("data_dir"))?;
+    let p = w.launch.principals;
+    let saved = Saved {
+        format: CHECKPOINT_FORMAT,
+        saved_at_unix,
+        ic_at_save,
+        sold: sold.clone(),
+        alt: w.alt,
+        bystander: w.bystander,
+        god: p.god,
+        author: p.author,
+        buyer: p.buyer,
+        clerk: p.clerk,
+        operator: p.operator,
+        accountless: p.accountless,
+    };
+    std::fs::write(&marker, serde_json::to_vec_pretty(&saved)?)?;
+    eprintln!(
+        "M7_STORY_CHECKPOINT saved {} at unix {saved_at_unix}, ic {ic_at_save}",
+        dir.display()
+    );
+    w.server = active(&w.launch, w.alt, w.bystander).await?;
+    w.server.connect(sold.cy).await?;
+    Ok(())
+}
+/// `load:<dir>`: the saved world in a fresh scratch dir and store, its IC
+/// clock resumed, booted Active with Cy connected; and part 2's `Sold`.
+async fn restore(dir: &Path) -> TestResult<(World, Sold)> {
+    let saved: Saved = serde_json::from_slice(&std::fs::read(dir.join("story.json"))?)?;
+    check_eq!(
+        saved.format,
+        CHECKPOINT_FORMAT,
+        "{}'s checkpoint format",
+        dir.display()
+    );
+    let data_dir = scratch("mush-c2-story")?;
+    copy_tree(&dir.join("data_dir"), &data_dir)?;
+    let store = Arc::new(PurchaseFaultStore::new());
+    store.restore(serde_json::from_slice(&std::fs::read(
+        dir.join("store.json"),
+    )?)?)?;
+    let path = data_dir.join("launch.json");
+    let deployment: LaunchDeployment = serde_json::from_slice(&std::fs::read(&path)?)?;
+    let mut config = config();
+    config.server.data_dir = data_dir.clone();
+    config.tacsim.minds.launch_path = Some(path.display().to_string());
+    let now = unix_now()?;
+    resume_clock(&store, saved.saved_at_unix, now).await?;
+    let launch = Launch {
+        config,
+        store,
+        path,
+        deployment,
+        principals: Principals {
+            god: saved.god,
+            author: saved.author,
+            buyer: saved.buyer,
+            clerk: saved.clerk,
+            operator: saved.operator,
+            accountless: saved.accountless,
+        },
+    };
+    let server = active(&launch, saved.alt, saved.bystander).await?;
+    server.connect(saved.sold.cy).await?;
+    let w = World {
+        data_dir,
+        launch,
+        server,
+        alt: saved.alt,
+        bystander: saved.bystander,
+    };
+    // The restored clock stands where the save left it (the boot's seconds at
+    // the launch's rate aside), inside the sealed licence's term with room for
+    // part 3's fast run to its end.
+    let (ic, _) = ic_now(&w).await?;
+    check!(
+        (-60..3_600).contains(&(ic - saved.ic_at_save)),
+        "the restored IC clock {ic} stands at the save's {}",
+        saved.ic_at_save
+    );
+    let end_of_term = term_end(&w, &saved.sold.sealed, "1").await?;
+    check!(
+        ic < end_of_term - 5 * 3_600,
+        "the restored world is in licence {}'s term: ic {ic}, term end {end_of_term}",
+        saved.sold.sealed
+    );
+    eprintln!(
+        "M7_STORY_CHECKPOINT loaded {} saved {} s ago, ic {ic}",
+        dir.display(),
+        now - saved.saved_at_unix
+    );
+    Ok((w, saved.sold))
+}
+/// Resumes the saved world's IC clock where the save left it: a world-clock
+/// checkpoint at `saved_at`, then the W-clock silent re-anchor of the current
+/// generation at `now` (`WorldTimeline::reanchor_from_checkpoint`), persisted
+/// as the timeline's state document for the boot to read.
+async fn resume_clock(store: &PurchaseFaultStore, saved_at: i64, now: i64) -> TestResult {
+    let mut epochs = Vec::new();
+    let mut state = WorldTimelineState::default();
+    for (key, value) in store.module_json_list(WORLD_TIMELINE_NAMESPACE).await? {
+        if key == WORLD_TIMELINE_STATE_KEY {
+            state = serde_json::from_value(value)?;
+        } else if key.starts_with(WORLD_TIMELINE_EPOCH_PREFIX) {
+            epochs.push(serde_json::from_value::<WorldTimelineEpoch>(value)?);
+        }
+    }
+    epochs.sort_by_key(|epoch| epoch.generation);
+    let mut timeline = WorldTimeline::from_epochs_and_state(epochs, state)?;
+    check!(!timeline.is_frozen(), "the saved world's IC clock runs");
+    let _ = timeline.record_checkpoint(saved_at);
+    let lost = timeline.reanchor_from_checkpoint(now)?;
+    let op = world_timeline_state_op(&timeline)?;
+    store
+        .write(WriteBatch {
+            serial: 0,
+            module_ops: vec![op],
+            durable: true,
+            ..WriteBatch::default()
+        })
+        .await?;
+    eprintln!("M7_STORY_CHECKPOINT world clock re-anchored, {lost:?} s excluded");
+    Ok(())
+}
+
 #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
 #[ignore = "17g C2 command story: one genuine Registry rating; run by the mind-commerce-acceptance dispatch"]
 async fn player_market_commands_story_two_accounts_alt_stale_tiny_and_restart() -> TestResult {
@@ -1465,8 +1719,19 @@ async fn player_market_commands_story_two_accounts_alt_stale_tiny_and_restart() 
         quote_seconds: 30,
         ..tacsim::launch::MarketTerms::PROVISIONAL
     };
-    let mut w = world_with_terms("mush-c2-story", market).await?;
+    let checkpoint = checkpoint()?;
+    let (mut w, restored) = match &checkpoint {
+        Some(Checkpoint::Load(dir)) => {
+            let (w, sold) = restore(dir).await?;
+            (w, Some(sold))
+        }
+        _ => (world_with_terms("mush-c2-story", market).await?, None),
+    };
     let result = timeout(STORY_GUARD, async {
+        if let Some(sold) = &restored {
+            // `load:<dir>`: part 3 alone, on the restored world.
+            return Box::pin(part_three(&mut w, sold)).await;
+        }
         let p = w.launch.principals;
         let author = p.author;
         // Part 1 (17g C2a): the author files by command.
@@ -1636,6 +1901,9 @@ async fn player_market_commands_story_two_accounts_alt_stale_tiny_and_restart() 
         // C2c: part 2 (publish, +minds, the alt pair, stale terms, the
         // purchase, holdings, the open listing and the paid fork, a restart).
         let sold = Box::pin(part_two(&mut w, &filed_number)).await?;
+        if let Some(Checkpoint::Save(dir)) = &checkpoint {
+            Box::pin(save(&mut w, &sold, dir)).await?;
+        }
         // C2d: part 3 (resale offers, renewal, the withdrawal, the charter
         // transfer, the renewal after the term, revocation and recall, a
         // restart).

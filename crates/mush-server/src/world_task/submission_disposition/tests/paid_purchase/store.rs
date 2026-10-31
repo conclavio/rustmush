@@ -12,8 +12,9 @@ use mush_store::{
     AuthoritativeOutboxRecord, AuthoritativeReceipt, AuthoritativeRetentionUsage,
     AuthoritativeScanCursor, AuthoritativeStore, BanRec, BootSkip, BoundIdempotencyStatus,
     BundleStatus, DiscordBanRec, DiscordCodeRecord, DiscordLinkRec, IdempotencyStatus,
-    InMemoryStore, IntentReceipt, ModuleDocs, ObjectStore, PendingAuthoritativeIntent, SshKeyRec,
-    StoreError, TokenRecord, WorldSnapshot, WriteBatch, WriteReceipt,
+    InMemoryDump, InMemoryStore, IntentReceipt, ModuleDocs, ObjectStore,
+    PendingAuthoritativeIntent, SshKeyRec, StoreError, TokenRecord, WorldSnapshot, WriteBatch,
+    WriteReceipt,
 };
 use std::sync::{
     Mutex,
@@ -115,6 +116,24 @@ impl PurchaseFaultStore {
             .map_err(|_| invalid("fault state poisoned"))?
             .events
             .clone())
+    }
+
+    /// The M7 commands story's checkpoint (`M7_STORY_CHECKPOINT`): the inner
+    /// store's every table (`InMemoryStore::dump`). The fixture's own fault
+    /// state is not part of it (that story arms no fault).
+    pub(in crate::world_task::submission_disposition::tests) fn dump(
+        &self,
+    ) -> Result<InMemoryDump, StoreError> {
+        self.inner.dump()
+    }
+
+    /// The checkpoint's restore into this fresh fixture store
+    /// (`InMemoryStore::restore`).
+    pub(in crate::world_task::submission_disposition::tests) fn restore(
+        &self,
+        dump: InMemoryDump,
+    ) -> Result<(), StoreError> {
+        self.inner.restore(dump)
     }
 
     fn authoritative(&self) -> &dyn AuthoritativeStore {
