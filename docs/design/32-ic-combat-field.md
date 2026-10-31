@@ -700,7 +700,7 @@ an addition never scheduled; docs 16 and 20 were not amended when doc 30 ruled.
 | F-3 | The carrier under fire: what a hit does to lift, sailing, the bay and the hold; the loss story for a destroyed carrier with crew and rigs aboard; parity with attack in space | Q-CF-19 |
 | F-4 | A reinforcement system for a promoted site | Q-CF-17 |
 | F-5 | The one-unit party reading: a rig launched with no roster is admitted as the degenerate detachment | Q-CF-4 |
-| F-6 | A carrier arriving by voyage during a field (admitted at its pad as a unit at the next pulse boundary, may not launch) and a carrier departing during one | Q-CF-17, Q-CF-19 |
+| F-6 | A carrier arriving by voyage during a field (admitted at its pad as a unit at the next pulse boundary, may not launch) and a carrier departing during one. **Departure ruled 2026-10-31, built in cut CF.7 (§12):** after the leave-behind confirmation (Q-H10, CF.5's `leave=`), a carrier departing a running field is removed from it outright and lifts; it is not a ramp withdrawal, and the units it leaves stay in the field. Arrival stays unruled. | Q-CF-17, Q-CF-19 |
 | F-7 | Persistent known-hostile memory per character and organization, the Epistemic Engine cut | Q-CF-8 |
 
 ## 5. Out of scope for this survey
@@ -1022,3 +1022,80 @@ The raider gate therefore takes the prospector's carrier off the ground before t
 only the hostiles with a line is a kernel change that can move the OOC practice hashes, so it is
 left to its own cut rather than slipped in here; CF.7's story, where the miners' carrier stands
 on the pad, needs it first.
+
+## 12. CF.7 as built (F-6 departure; the field story up to the escort's fight)
+
+Built 2026-10-31 on `main` after CF.6. The cut has two halves. F-6's departure is built.
+Q-CF-47's story is written up to the escort's fight; the rest waits on the gaps below.
+
+**F-6, the carrier's departure from a running field** (ruled 2026-10-31; §5a):
+
+- **The rule.** After the leave-behind confirmation (Q-H10, CF.5's `leave=`), a carrier departing
+  a running field is removed from the field outright and lifts. It is not a ramp withdrawal:
+  CF.5's `Arena::withdraw` frees a unit only within one cell of its ramp, and a carrier stands on
+  its pad about four cells from its own. The units it leaves stay in the field.
+- **The kernel.** `ArenaMsg::Withdraw` takes its ramp as an option. With none, `Arena::withdraw`
+  takes the unit out with no ramp test and no under-own-power test, since a lift is not a drive.
+  What a hit does to lift is still F-3's, so a damaged drive does not yet hold a carrier on the
+  pad.
+- **The host** (`field::exit`, `Then::Lift`). A live `+ship/lift` or `+ship/undock` first runs
+  every check a departure runs, CF.5's bay gate included. The bay gate demands `leave=` naming
+  every rig and DT unit the carrier has out. Only then does the host ask the field to let the
+  carrier go, and it files nothing yet. At the next pulse the carrier is checked in through the IC
+  plan, with the souls listed aboard its row, its pose unmoved (CF.3). The record's open promotion
+  names its exit (`tacsim_field op=exit`). The host then runs the same departure again as the
+  pilot, which files the voyage with the units left behind on it.
+- **Refused without it.** A live departure that does not name every unit out is refused with
+  CF.5's line and its `leave=` hint. A queued departure keeps CF.3's `InField` refusal, because a
+  confirmation is never presumed. A carrier with nothing of its own out has nothing to confirm,
+  and a live lift takes it out of the field without `leave=`.
+- **No bump.** The withdrawal message is RAM, never journalled or snapshotted, and no document
+  gains a field.
+
+**The field story** (`tacsim/tests/shard_1/field_story.rs`) runs through the production command
+paths, as every CF gate does, and passes as far as it is written:
+
+1. At Ahuna Flank a player's rig works a block by hand (`+tv/1 mine go`), with an escort of two
+   armed hulls beside it. A bystander rig from another captain works the next block.
+2. The raider arrives and declares (`+field/mark`). The site promotes with everyone at their
+   poses, the miners' carrier on its pad among them, and the miner's quarry screen draws the
+   raiders as contacts (Q-CF-48). **One clause is pinned at its gap, not passed:** the raider is
+   not on the presence picture (Q-CF-15). The presence book holds rigs only, so hulls seeded on
+   the ground never appear there (G-1). The story asserts the gap, and the assert flips when the
+   raider arrives as a flight.
+3. The escort fights while the miners hold. The raider opens fire with the carrier on its pad,
+   the escort answers, and neither miner fires. The escort stands nearer the raider than the
+   carrier, so the doctrine's best hostile has a line in this layout; G-2 did not bite here.
+
+The story is not `#[ignore]`d: the gated-proof guard (`ci_gated_test_inventory`) requires every
+ignored test to be run by a CI job, and an ignored test failing at its stop could never be.
+
+**Gaps the story found** (none of them small, so none was fixed here):
+
+- **G-1, the raider's carrier.** Q-CF-47's raider launches from a fixture carrier. The fixture
+  raider (`content/field/raiders.json`) has no carrier; its hulls are seeded straight onto the
+  ground, which is how the story stands it in. Seeded hulls are no flight, so the presence picture
+  never shows them, and that is the story's one pinned step.
+- **G-2, the doctrine's line.** The stand ranks every Hostile row (`stock_mind.rs`, the stand's
+  `best_hostile(.., |_| true)`) and fires only at the first. Admitting only rows with a line
+  changes the doctrine and its reflex twin, and can move the practice hashes, which would be the
+  second rebless after Q-CF-46's one. CF.6's gate met it with the carrier ranked first (§11);
+  this story's layout ranks the escort first and does not.
+- **G-3, the raiders' withdrawal to their ramp.** An ordered WITHDRAW in a field breaks off and
+  holds fire. It does not drive an NPC to a ramp and take CF.5's exit, and the raider has no ramp,
+  so a raider leaves a field only by dying.
+- **G-4, the bot.** `mush-bot` has no IC-field support: it never marks or fires on the surface and
+  never reads an IC cockpit frame. Q-CF-47's second run has no pilot to fly it.
+- **G-5, the armed rig lease** (CF.6's deferral). The escort flies fixture hulls with hired NPCs
+  seated. The delivered orders it fights under are proven by CF.6's transport gate in the
+  split-boundary harness, not by this story.
+- **G-6, the hits.** "One escort mission-killed by an engine hit and one raider by a
+  control-section hit" needs fixture-tuned sections; no player command aims at a section.
+- **G-7, the escort's map.** Q-CF-48's "the escort sees the worked block on its map" is the chart
+  of the person in its seat (CF.4). A hired NPC holds no chart, so an NPC escort's map shows no
+  worked block.
+
+**Who owns them** (the owner, 2026-10-31): G-1, G-2 with its rebless, and G-3 are cut **CF.6b**,
+its own cut. G-4 is a later **bot cut**. G-5 stays CF.6's deferral. G-6 and G-7 are left for the
+story's finish. CF.7's story is finished, with its 256 and 512 a side runs and the bot's run,
+once CF.6b and the bot cut land.

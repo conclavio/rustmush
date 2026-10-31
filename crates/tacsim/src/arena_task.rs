@@ -267,8 +267,9 @@ pub enum ArenaMsg {
     Withdraw {
         /// The unit.
         unit: ObjId,
-        /// The ramp's site position, centimetres.
-        ramp: (i64, i64),
+        /// The ramp's site position, centimetres; `None` is a carrier lifting
+        /// off its pad (doc 32 F-6), which takes no ramp.
+        ramp: Option<(i64, i64)>,
     },
 }
 
@@ -1408,7 +1409,7 @@ struct PrePulse {
         BTreeMap<(crate::arena::PartyId, crate::arena::PartyId), Option<crate::arena::party::Mark>>,
     /// **Doc 32 cut CF.5**: the units the host asked out at the ramp,
     /// latest-wins per unit, so bounded by the field.
-    withdrawals: BTreeMap<ObjId, (i64, i64)>,
+    withdrawals: BTreeMap<ObjId, Option<(i64, i64)>>,
 }
 
 impl PrePulse {

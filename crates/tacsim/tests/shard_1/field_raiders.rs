@@ -25,7 +25,7 @@ use crate::driving::{
 };
 
 /// The raider the content ships.
-const SKULKS: &str = "tacsim.raider.ahuna_skulks";
+pub(crate) const SKULKS: &str = "tacsim.raider.ahuna_skulks";
 
 /// A fast field: the lab tempo, a short quiet interval before demotion.
 fn tune(cfg: &mut TacsimConfig) {
@@ -70,7 +70,7 @@ fn armed(rig: &mut Rig, name: &str, cell: (i64, i64), heading: u32) -> ObjId {
 }
 
 /// **An NPC in `unit`'s cockpit station**, every cockpit channel granted.
-fn seat_npc(rig: &mut Rig, unit: ObjId, npc: ObjId) {
+pub(crate) fn seat_npc(rig: &mut Rig, unit: ObjId, npc: ObjId) {
     staff_hand(rig, |ctx| {
         ctx.actor = npc;
         let station = mush_sim::StationId::new("cockpit").expect("a station id");
@@ -226,7 +226,7 @@ fn frame(rig: &Rig, pilot: ObjId) -> Option<tacsim::arena::step::Frame> {
 }
 
 /// The hulls the seeded raider stands behind, by the staff attribute.
-fn raider_hulls(rig: &Rig) -> Vec<ObjId> {
+pub(crate) fn raider_hulls(rig: &Rig) -> Vec<ObjId> {
     let w = rig.tw.world();
     w.module_state::<mush_tactics::module::UnitStore>()
         .map(|store| {

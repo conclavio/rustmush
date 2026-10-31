@@ -19,6 +19,13 @@
 //!    recover — and CF.1's refusal of surface work on a promoted site passes that one act for
 //!    that one unit (`crate::surface::site_record::SiteRecord::exited`). The field carries on.
 //!
+//! **A carrier lifting out of a running field** (doc 32 F-6, ruled 2026-10-31; cut CF.7) takes
+//! the same three steps with no ramp: a live `+ship/lift` or `+ship/undock` whose leave-behind
+//! confirmation names every unit the carrier has out (`crate::port::voyage::undock_cmd`) asks the
+//! kernel to remove the carrier outright, the host checks it in with the souls aboard it, and the
+//! departure is submitted again as its pilot once the record names the exit. The units it left
+//! stay in the field.
+//!
 //! **Across a restart** the check-in, the live record and the exit are each durable; the RAM
 //! continuation is not. A unit whose exit landed and whose recover had not been submitted stands
 //! beside the ramp out of the field, and the player's own recover passes (the record names it).
@@ -52,6 +59,13 @@ pub(crate) enum Then {
         /// Its roster slot.
         slot: u16,
     },
+    /// `+ship/lift` or `+ship/undock` (doc 32 F-6): the carrier's live departure.
+    Lift {
+        /// The command's arguments, as the pilot typed them.
+        raw: String,
+        /// `+ship/lift` (else `+ship/undock`).
+        lift: bool,
+    },
 }
 
 /// **An exit asked for** (RAM).
@@ -80,9 +94,13 @@ pub const EXIT_ASKED: &str = "#{unit} makes for the ramp: it leaves field {ordin
 /// The line once it is out.
 pub const EXIT_OUT: &str =
     "#{unit} is up the ramp and out of field {ordinal}; its recover into the bay follows.";
+/// The line a pilot hears when the arena takes a departing carrier (doc 32 F-6).
+pub const LIFT_ASKED: &str = "The {name} breaks off: it leaves field {ordinal} at the next pulse, and its departure files once it is clear. The units it leaves stay in the field.";
+/// The line once it is out.
+pub const LIFT_OUT: &str = "The {name} is out of field {ordinal}; its departure files now.";
 
 /// **Ask the field holding `unit` to let it go at the ramp standing at `ramp` (cm)** (this
-/// module's head, step 1).
+/// module's head, step 1); `None` for a carrier lifting off its pad (doc 32 F-6).
 ///
 /// # Errors
 ///
@@ -91,7 +109,7 @@ pub const EXIT_OUT: &str =
 pub(crate) fn request(
     ctx: &mut Ctx<'_>,
     unit: ObjId,
-    ramp: (i64, i64),
+    ramp: Option<(i64, i64)>,
     then: Then,
 ) -> Result<(), CmdError> {
     let site = super::field_of_unit(ctx.w, unit)
@@ -121,6 +139,14 @@ pub(crate) fn request(
         .offer(task, crate::arena_task::ArenaMsg::Withdraw { unit, ramp })
         .map_err(|_| CmdError::msg("The field is busy; try the recover again."))?;
     let requester = ctx.actor;
+    let line = match &then {
+        Then::Lift { .. } => LIFT_ASKED
+            .replace("{name}", &crate::port::coop::name_of(ctx.w, unit))
+            .replace("{ordinal}", &ordinal.to_string()),
+        Then::Rig { .. } | Then::Sortie { .. } => EXIT_ASKED
+            .replace("{unit}", &unit.0.to_string())
+            .replace("{ordinal}", &ordinal.to_string()),
+    };
     if let Some(book) = ctx.w.module_state_mut::<ExitBook>() {
         book.0.insert(
             unit,
@@ -132,13 +158,7 @@ pub(crate) fn request(
             },
         );
     }
-    ctx.out.sys_to_actor(
-        requester,
-        "tacsim.field",
-        EXIT_ASKED
-            .replace("{unit}", &unit.0.to_string())
-            .replace("{ordinal}", &ordinal.to_string()),
-    );
+    ctx.out.sys_to_actor(requester, "tacsim.field", line);
     Ok(())
 }
 
@@ -180,27 +200,26 @@ pub(crate) fn on_withdrawn(
         );
         return;
     };
-    let (pilot, ordinal, promoter) = ctx
+    let (pilot, aboard, ordinal, promoter) = ctx
         .w
         .module_state::<FieldBook>()
         .and_then(|book| book.hosted(&site))
         .map(|hosted| {
+            let row = hosted.live.units.iter().find(|row| row.unit == unit);
             (
-                hosted
-                    .live
-                    .units
-                    .iter()
-                    .find(|row| row.unit == unit)
-                    .and_then(|row| row.pilot.as_ref().map(|(pilot, _)| *pilot)),
+                row.and_then(|row| row.pilot.as_ref().map(|(pilot, _)| *pilot)),
+                row.map(|row| row.aboard.clone()).unwrap_or_default(),
                 hosted.live.field.ordinal,
                 hosted.live.parties.iter().find_map(|party| party.leader),
             )
         })
-        .unwrap_or((None, 0, None));
+        .unwrap_or((None, Vec::new(), 0, None));
     // The check-in, at the field pose beside the ramp (Q-CF-36): a mobile unit leaves nothing on
-    // the record's unit index.
+    // the record's unit index. A departing carrier (F-6) checks its souls in aboard it, as its
+    // demotion would.
     let _ = super::close::demote_units(ctx, &site, &[unit], std::slice::from_ref(&back));
     super::crew::check_in(ctx, &site, unit, pilot);
+    super::crew::check_in_aboard(ctx, &site, unit, &aboard);
     if let Some(pilot) = pilot {
         if let Some(registry) = ctx
             .w
@@ -234,9 +253,14 @@ pub(crate) fn on_withdrawn(
     {
         asked.out = true;
     }
-    let line = EXIT_OUT
-        .replace("{unit}", &unit.0.to_string())
-        .replace("{ordinal}", &ordinal.to_string());
+    let line = match asked.as_ref().map(|asked| &asked.then) {
+        Some(Then::Lift { .. }) => LIFT_OUT
+            .replace("{name}", &crate::port::coop::name_of(ctx.w, unit))
+            .replace("{ordinal}", &ordinal.to_string()),
+        _ => EXIT_OUT
+            .replace("{unit}", &unit.0.to_string())
+            .replace("{ordinal}", &ordinal.to_string()),
+    };
     let mut told: BTreeSet<ObjId> = BTreeSet::new();
     for who in asked.map(|asked| asked.requester).into_iter().chain(pilot) {
         if told.insert(who) {
@@ -357,13 +381,14 @@ pub(crate) fn tick(ctx: &mut Ctx<'_>) {
         let ran = continue_recover(ctx, unit, &asked.then);
         ctx.actor = saved;
         if let Err(error) = ran {
+            let what = match asked.then {
+                Then::Lift { .. } => "departure did not file",
+                Then::Rig { .. } | Then::Sortie { .. } => "recover did not start",
+            };
             ctx.out.sys_to_actor(
                 asked.requester,
                 "tacsim.field",
-                format!(
-                    "#{} is out of the field, but its recover did not start: {error}",
-                    unit.0
-                ),
+                format!("#{} is out of the field, but its {what}: {error}", unit.0),
             );
         }
     }
@@ -393,6 +418,9 @@ fn continue_recover(ctx: &mut Ctx<'_>, unit: ObjId, then: &Then) -> Result<(), S
         }
         Then::Sortie { operation, slot } => {
             crate::detachment::sortie::recover_after_exit(ctx, *operation, *slot, unit)
+        }
+        Then::Lift { raw, lift } => {
+            crate::port::voyage::undock_as(ctx, raw, *lift).map_err(|error| error.to_string())
         }
     }
 }
