@@ -92,7 +92,7 @@ record the twin's retirement. The `field_ops` module docs in both crates say the
   doc 32 §3 records, not this cut's.
 - No deploy.
 
-## 2026-10-31 — W-clock: the checkpoint is written (the outage policy arms on a live world)
+## 2026-10-31 — W-clock: the checkpoint is written (the outage policy arms on a live world) — PR #245
 
 Doc 33 GG.5 found, on both boxes the day they were switched to the gateway generations, that
 every boot — the first on each wiped store and the hot restart one to four minutes later —
