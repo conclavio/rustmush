@@ -4,11 +4,12 @@ version.workspace = true
 edition.workspace = true
 license.workspace = true
 authors.workspace = true
-description = "rustmush forked GATEWAY half (M16b): owns the connection listeners (SSH/web), the session manager, accounts/ipguard, and SUPERVISES the mush-server child. Speaks the mush-ipc boundary protocol over a socket. Holds NO world/store-object/module code."
+description = "rustmush forked GATEWAY half (M16b): owns the connection listeners (SSH/web), the session manager, accounts/ipguard, and keeps the boundary to the mush-server unit (doc 33 GG.1). Speaks the mush-ipc boundary protocol over a socket. Holds NO world/store-object/module code."
 
 # M16b: the gateway half of the fork. It owns the network ingress + session
-# layer + account auth, and spawns/supervises the server child. It depends on
-# neither the game modules/rulesets/llm nor `mush-server`.
+# layer + account auth, and dials the server unit (doc 33 GG.1: systemd runs
+# the server; the gateway holds the connections while it is away). It depends
+# on neither the game modules/rulesets/llm nor `mush-server`.
 [[bin]]
 name = "mush-gateway"
 path = "src/main.rs"

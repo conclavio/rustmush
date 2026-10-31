@@ -1,12 +1,14 @@
 //! K8.2: real process death on both sides of authoritative IPC ownership.
 //!
-//! The parent runs the production gateway supervisor and a real SSH client.
-//! Its `ServerLauncher` starts this test binary as a separate server process;
-//! the worker calls `mush_server::serve` against disposable Redis. Debug-only
-//! one-shot hooks stop the writer at an exact durable boundary, then abort the
-//! server. The gateway stays alive, respawns the server, and either replays its
-//! still-owned request or exposes the already-owned transaction through
-//! `action/status`.
+//! The parent runs the production gateway and a real SSH client, and stands
+//! in for the server's systemd unit (doc 33 GG.1): it starts this test binary
+//! as a separate server process at the endpoint the gateway dials, and starts
+//! it again when it dies. The worker calls `mush_server::serve` against
+//! disposable Redis. Debug-only one-shot hooks stop the writer at an exact
+//! durable boundary, then abort the server. The gateway stays alive, holds the
+//! session through the gap, re-attaches it to the relaunched server, and
+//! either replays its still-owned request or exposes the already-owned
+//! transaction through `action/status`.
 
 use std::net::{SocketAddr, TcpListener};
 use std::path::{Path, PathBuf};
@@ -16,7 +18,6 @@ use std::sync::atomic::AtomicU64;
 use std::time::Duration;
 
 use fred::interfaces::KeysInterface as _;
-use futures::future::BoxFuture;
 use mush_config::accounts::hash_password;
 use mush_config::config::Config;
 use mush_config::metrics::Metrics;
@@ -26,8 +27,7 @@ use mush_core::{
     DefinitionRegistryBuilder, GOD, IdempotencyKey, IdempotencyScope, Ledger, OwnerId,
     PreparedCausalRef, PrincipalId, ReplayWrite, RequestUid, RulesValue, ScopedIdempotencyKey,
 };
-use mush_gateway::{GatewayOptions, LaunchedServer, RestartTrigger, ServerLauncher, ServerSource};
-use mush_ipc::IpcEndpoint;
+use mush_gateway::GatewayOptions;
 use mush_server::persist::{PersistenceIntegrityLatch, StoreJob};
 use mush_server::quarantine::QuarantineSpool;
 use mush_store::{
@@ -224,13 +224,16 @@ async fn seeded_gateway_store() -> Arc<dyn ObjectStore> {
     store
 }
 
-struct ProcessServerLauncher {
+/// The server worker process, and the stand-in for its unit: `spawn` is the
+/// unit starting it (first, and again after each cut, as `Restart=on-failure`
+/// would), `wait_exit` is the unit seeing it die.
+struct ServerProcess {
     config: PathBuf,
-    endpoint: IpcEndpoint,
     cut: &'static str,
     marker: PathBuf,
     release: PathBuf,
     stop: PathBuf,
+    child: Option<tokio::process::Child>,
 }
 
 struct StopGuard(PathBuf);
@@ -241,53 +244,42 @@ impl Drop for StopGuard {
     }
 }
 
-impl ServerLauncher for ProcessServerLauncher {
-    fn launch(&self) -> BoxFuture<'static, Result<LaunchedServer, String>> {
-        if self.stop.exists() {
-            return Box::pin(async { Err("K8 process worker stopped".to_owned()) });
+impl ServerProcess {
+    fn spawn(&mut self) {
+        assert!(!self.stop.exists(), "K8 process worker stopped");
+        let executable = std::env::current_exe().expect("the test binary knows its own path");
+        let child = tokio::process::Command::new(executable)
+            .arg("--exact")
+            .arg("authoritative_process_kill::authoritative_server_process_worker")
+            .arg("--nocapture")
+            .arg("--test-threads=1")
+            .env(WORKER_ENV, "1")
+            .env(CONFIG_ENV, &self.config)
+            .env(STOP_ENV, &self.stop)
+            .env(CUT_ENV, self.cut)
+            .env(CUT_MARKER_ENV, &self.marker)
+            .env(CUT_RELEASE_ENV, &self.release)
+            .stdin(Stdio::null())
+            .stdout(Stdio::inherit())
+            .stderr(Stdio::inherit())
+            .kill_on_drop(true)
+            .spawn()
+            .expect("spawning K8 server worker");
+        self.child = Some(child);
+    }
+
+    /// Wait for the running worker to exit (a cut, or the stop file).
+    async fn wait_exit(&mut self) {
+        if let Some(mut child) = self.child.take() {
+            let _ = tokio::time::timeout(STEP_TIMEOUT, child.wait())
+                .await
+                .expect("the server worker exited in time");
         }
-        let current_exe = std::env::current_exe();
-        let config = self.config.clone();
-        let endpoint = self.endpoint.clone();
-        let cut = self.cut;
-        let marker = self.marker.clone();
-        let release = self.release.clone();
-        let stop = self.stop.clone();
-        Box::pin(async move {
-            let executable = current_exe.map_err(|error| error.to_string())?;
-            let mut child = tokio::process::Command::new(executable)
-                .arg("--exact")
-                .arg("authoritative_process_kill::authoritative_server_process_worker")
-                .arg("--nocapture")
-                .arg("--test-threads=1")
-                .env(WORKER_ENV, "1")
-                .env(CONFIG_ENV, &config)
-                .env(STOP_ENV, &stop)
-                .env(CUT_ENV, cut)
-                .env(CUT_MARKER_ENV, &marker)
-                .env(CUT_RELEASE_ENV, &release)
-                .stdin(Stdio::null())
-                .stdout(Stdio::inherit())
-                .stderr(Stdio::inherit())
-                .kill_on_drop(true)
-                .spawn()
-                .map_err(|error| format!("spawning K8 server worker: {error}"))?;
-            // This gated proof may reach Redis through a WAN SSH tunnel. Let
-            // the worker finish module hydration before starting the
-            // production supervisor's intentionally short local-child connect
-            // window; the crash/replay path below remains fully process split.
-            tokio::time::sleep(Duration::from_secs(15)).await;
-            Ok(LaunchedServer {
-                endpoint,
-                exited: Box::pin(async move {
-                    let _ = child.wait().await;
-                }),
-            })
-        })
     }
 }
 
-fn gateway_config(root: &Path) -> Config {
+/// The gateway's config, aimed at the worker's reserved endpoint.
+fn gateway_config(root: &Path, endpoint: SocketAddr) -> Config {
     let mut config = Config::default();
     config.store.store = "memory".to_owned();
     config.server.data_dir = root.join("gateway-data");
@@ -296,55 +288,38 @@ fn gateway_config(root: &Path) -> Config {
         "listen".to_owned(),
         toml::Value::String("127.0.0.1:0".to_owned()),
     )]));
-    config.ipc.listen = "127.0.0.1:0".to_owned();
+    config.ipc.listen = endpoint.to_string();
     config
 }
 
-async fn start_gateway(
-    root: &Path,
-    launcher: ProcessServerLauncher,
-) -> (
-    SocketAddr,
-    RestartTrigger,
-    oneshot::Receiver<Result<(), String>>,
-) {
+/// Start the gateway (on its own thread/runtime) aimed at `endpoint`; return
+/// the bound SSH address. The thread is detached: the gateway dials the
+/// endpoint for as long as the process lives, which is the production shape
+/// (nothing but its own unit ever stops it).
+async fn start_gateway(root: &Path, endpoint: SocketAddr) -> SocketAddr {
     let store = seeded_gateway_store().await;
     let (ssh_tx, ssh_rx) = oneshot::channel();
-    let (restart_tx, restart_rx) = oneshot::channel();
-    let (done_tx, done_rx) = oneshot::channel();
-    let config = gateway_config(root);
+    let config = gateway_config(root, endpoint);
     std::thread::spawn(move || {
-        let result = {
-            let runtime = tokio::runtime::Builder::new_multi_thread()
-                .enable_all()
-                .build()
-                .unwrap();
-            runtime.block_on(mush_gateway::serve(
-                config,
-                GatewayOptions {
-                    source: ServerSource::Restartable(Box::new(launcher)),
-                    store: Some(store),
-                    ssh_ready: Some(ssh_tx),
-                    web_ready: None,
-                    restart_ready: Some(restart_tx),
-                    siteban_refresh: None,
-                },
-            ))
-        };
-        // Report after the runtime has dropped, so the next cut cannot race
-        // this gateway's remaining tasks or turn an expected shutdown into
-        // an unobserved thread panic.
-        let _ = done_tx.send(result);
+        let runtime = tokio::runtime::Builder::new_multi_thread()
+            .enable_all()
+            .build()
+            .unwrap();
+        let _ = runtime.block_on(mush_gateway::serve(
+            config,
+            GatewayOptions {
+                store: Some(store),
+                ssh_ready: Some(ssh_tx),
+                web_ready: None,
+                siteban_refresh: None,
+                give_up_after: None,
+            },
+        ));
     });
-    let address = tokio::time::timeout(Duration::from_secs(30), ssh_rx)
+    tokio::time::timeout(Duration::from_secs(60), ssh_rx)
         .await
         .expect("gateway SSH bind timed out")
-        .expect("gateway dropped SSH address");
-    let restart = tokio::time::timeout(Duration::from_secs(30), restart_rx)
-        .await
-        .expect("gateway restart trigger timed out")
-        .expect("gateway dropped restart trigger");
-    (address, restart, done_rx)
+        .expect("gateway dropped SSH address")
 }
 
 struct AcceptAll;
@@ -511,7 +486,7 @@ async fn wait_for_stop(path: PathBuf) {
     }
 }
 
-/// Separate-process server entry point selected by `ProcessServerLauncher`.
+/// Separate-process server entry point `ServerProcess` spawns.
 #[test]
 fn authoritative_server_process_worker() {
     if std::env::var_os(WORKER_ENV).is_none() {
@@ -630,15 +605,20 @@ async fn run_process_cut(base_redis: &str, db: u32, cut: &'static str, owned_cut
     let release = root.join("cut.release");
     let stop = root.join("server.stop");
     let _stop_guard = StopGuard(stop.clone());
-    let launcher = ProcessServerLauncher {
+    let mut worker = ServerProcess {
         config,
-        endpoint: IpcEndpoint::Tcp(endpoint),
         cut,
         marker: marker.clone(),
         release: release.clone(),
         stop: stop.clone(),
+        child: None,
     };
-    let (address, _restart, gateway_done) = start_gateway(&root, launcher).await;
+    // The unit starts the server first; the gateway dials it. This gated
+    // proof may reach Redis through a WAN SSH tunnel, so the worker's boot
+    // (module hydration included) can outlast the gateway's first dial — a
+    // boot into the gap, healed by the keeper, which is production's shape.
+    worker.spawn();
+    let address = start_gateway(&root, endpoint).await;
     let (_client, mut term) = connect(address).await;
     // SSH binds independently of the server boundary. Remote Redis boot and
     // module hydration can take several seconds, so avoid turning that normal
@@ -656,6 +636,10 @@ async fn run_process_cut(base_redis: &str, db: u32, cut: &'static str, owned_cut
             .await;
     }
     std::fs::write(&release, b"crash\n").unwrap();
+    // The cut kills the worker; its unit starts a fresh one at the same
+    // endpoint (`Restart=on-failure`), which boots from Redis.
+    worker.wait_exit().await;
+    worker.spawn();
 
     term.expect_after(action_mark, "restarting").await;
     term.expect_after(action_mark, "Reconnected").await;
@@ -682,21 +666,12 @@ async fn run_process_cut(base_redis: &str, db: u32, cut: &'static str, owned_cut
         "gateway replay must join rather than execute the action twice"
     );
 
+    // Stop the worker for good (its unit stays down). The gateway is left
+    // dialing this cut's private endpoint, which nothing will bind again:
+    // a gap that lasts, exactly as production holds one, and no part of the
+    // next cut, which has its own endpoint, database and gateway.
     std::fs::write(&stop, b"stop\n").unwrap();
-    // Stopping the worker also refuses every subsequent launch, so the
-    // production supervisor must abandon and exit. Its final SSH notice may
-    // race transport closure; observe the actual completion instead.
-    let stopped = tokio::time::timeout(STEP_TIMEOUT, gateway_done)
-        .await
-        .expect("stopped gateway did not finish")
-        .expect("gateway thread dropped its completion");
-    assert_eq!(
-        stopped.expect_err("a stopped launcher must exhaust supervision"),
-        format!(
-            "{}: supervision abandoned (crash-loop); exiting so a supervisor restarts the whole gateway",
-            mush_gateway::SUPERVISION_ABANDONED_MARKER
-        ),
-    );
+    worker.wait_exit().await;
     admin.wipe_namespaces().await.unwrap();
     admin.close().await.ok();
     let _ = std::fs::remove_dir_all(root);

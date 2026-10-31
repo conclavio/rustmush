@@ -120,8 +120,8 @@ fn an_explicit_config_that_is_not_there_is_refused() {
     assert_refused(&["--config", &missing.display().to_string()], "nope.toml");
 }
 
-/// Neither `--ipc` nor `--repl` is the gateway's: it reads `[ipc].listen` and
-/// hands it to the child, and it has no REPL.
+/// Neither `--ipc` nor `--repl` is the gateway's: it reads `[ipc].listen` from
+/// the config and dials it (doc 33 GG.1), and it has no REPL.
 #[test]
 fn flags_from_the_other_binaries_are_refused() {
     assert_refused(&["--ipc", "127.0.0.1:6791"], "--ipc");

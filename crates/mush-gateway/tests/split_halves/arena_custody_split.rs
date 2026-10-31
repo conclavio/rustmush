@@ -47,11 +47,8 @@
 use std::net::SocketAddr;
 use std::path::PathBuf;
 use std::sync::Arc;
-use std::sync::Mutex;
-use std::sync::atomic::{AtomicUsize, Ordering};
 use std::time::Duration;
 
-use futures::future::BoxFuture;
 use mush_core::{GOD, LIMBO, ObjId, ObjKind};
 use mush_store::{AccountRec, CharacterRef, InMemoryStore, ObjectStore, WriteBatch};
 use russh::ChannelMsg;
@@ -59,7 +56,9 @@ use tokio::sync::oneshot;
 
 use mush_config::accounts::hash_password;
 use mush_config::config::Config;
-use mush_gateway::{GatewayOptions, LaunchedServer, RestartTrigger, ServerLauncher, ServerSource};
+use mush_gateway::GatewayOptions;
+
+use super::harness::ServerUnit;
 
 const STEP_TIMEOUT: Duration = Duration::from_secs(60);
 const GM_PASSWORD: &str = "gm-secret-1";
@@ -112,7 +111,6 @@ fn test_config(tag: &str) -> Config {
     cfg.server.data_dir = scratch_dir(tag);
     cfg.ssh.listen = "127.0.0.1:0".to_string();
     cfg.ipc.listen = "127.0.0.1:0".to_string();
-    cfg.ipc.exit_on_abandoned_supervision = false;
     // 16b cut C.2: the layer on, which is what puts the game's own boot packs
     // in the content module — the proving ground's ground and its twelve stock
     // tanks. It is the one knob this file sets beyond the split rig's own,
@@ -121,94 +119,11 @@ fn test_config(tag: &str) -> Config {
     cfg
 }
 
-async fn launch_thread_server(store: Arc<dyn ObjectStore>) -> Result<LaunchedServer, String> {
-    let cfg = test_config("server");
-    let (ipc_tx, ipc_rx) = oneshot::channel();
-    let (exit_tx, exit_rx) = oneshot::channel();
-    std::thread::spawn(move || {
-        let Ok(rt) = tokio::runtime::Builder::new_multi_thread()
-            .enable_all()
-            .build()
-        else {
-            return;
-        };
-        let _ = rt.block_on(mush_server::serve_with_store(
-            cfg,
-            Some(ipc_tx),
-            Some(store),
-        ));
-        let _ = exit_tx.send(());
-    });
-    let endpoint = tokio::time::timeout(Duration::from_secs(30), ipc_rx)
-        .await
-        .map_err(|_| "server ipc bind timed out".to_string())?
-        .map_err(|_| "server dropped its ipc oneshot".to_string())?;
-    Ok(LaunchedServer {
-        endpoint,
-        exited: Box::pin(async move {
-            let _ = exit_rx.await;
-        }),
-    })
-}
-
-/// A server that can be made to drop its IPC boundary on its own — the crash /
-/// auto-restart path (D1a), reached without the `RestartTrigger`. This is the
-/// "kill the server child" of doc 16 §8's restart-mid-match test.
-async fn launch_thread_server_abortable(
-    store: Arc<dyn ObjectStore>,
-    crash: oneshot::Receiver<()>,
-) -> Result<LaunchedServer, String> {
-    let cfg = test_config("server");
-    let (ipc_tx, ipc_rx) = oneshot::channel();
-    let (exit_tx, exit_rx) = oneshot::channel();
-    std::thread::spawn(move || {
-        let Ok(rt) = tokio::runtime::Builder::new_multi_thread()
-            .enable_all()
-            .build()
-        else {
-            return;
-        };
-        rt.block_on(async move {
-            tokio::select! {
-                _ = mush_server::serve_with_store(cfg, Some(ipc_tx), Some(store)) => {}
-                _ = crash => {}
-            }
-        });
-        let _ = exit_tx.send(());
-    });
-    let endpoint = tokio::time::timeout(Duration::from_secs(30), ipc_rx)
-        .await
-        .map_err(|_| "server ipc bind timed out".to_string())?
-        .map_err(|_| "server dropped its ipc oneshot".to_string())?;
-    Ok(LaunchedServer {
-        endpoint,
-        exited: Box::pin(async move {
-            let _ = exit_rx.await;
-        }),
-    })
-}
-
-/// The first boot is crashable; every boot after it is a healthy server.
-struct CrashOnceLauncher {
-    store: Arc<dyn ObjectStore>,
-    launches: AtomicUsize,
-    crash: Arc<Mutex<Option<oneshot::Sender<()>>>>,
-}
-
-impl ServerLauncher for CrashOnceLauncher {
-    fn launch(&self) -> BoxFuture<'static, Result<LaunchedServer, String>> {
-        let n = self.launches.fetch_add(1, Ordering::SeqCst);
-        let store = Arc::clone(&self.store);
-        if n == 0 {
-            let (crash_tx, crash_rx) = oneshot::channel();
-            if let Ok(mut slot) = self.crash.lock() {
-                *slot = Some(crash_tx);
-            }
-            Box::pin(launch_thread_server_abortable(store, crash_rx))
-        } else {
-            Box::pin(launch_thread_server(store))
-        }
-    }
+/// The server unit over `store` (`harness.rs`): a real server on its own
+/// thread + runtime at the unit's one endpoint, and the "kill the server
+/// child" of doc 16 §8's restart-mid-match test is `stop` + `start`.
+fn unit(store: Arc<dyn ObjectStore>) -> ServerUnit {
+    ServerUnit::new(store, || test_config("server"))
 }
 
 async fn seeded_gw_store() -> Arc<dyn ObjectStore> {
@@ -229,10 +144,6 @@ async fn seeded_gw_store() -> Arc<dyn ObjectStore> {
         .await
         .expect("the account");
     gw_store
-}
-
-async fn start_split(launcher: Box<dyn ServerLauncher>) -> (SocketAddr, RestartTrigger) {
-    start_split_with(seeded_gw_store().await, launcher).await
 }
 
 /// **The one store both halves are pointed at** (16b cut U.4), as
@@ -272,13 +183,11 @@ async fn shared_store() -> Arc<dyn ObjectStore> {
     store
 }
 
-/// [`start_split`] over a given gateway store.
-async fn start_split_with(
-    gw_store: Arc<dyn ObjectStore>,
-    launcher: Box<dyn ServerLauncher>,
-) -> (SocketAddr, RestartTrigger) {
+/// The gateway over a given store, aimed at `unit` (started first: `After=`).
+async fn start_split_with(gw_store: Arc<dyn ObjectStore>, unit: &ServerUnit) -> SocketAddr {
     let (ssh_tx, ssh_rx) = oneshot::channel();
-    let (restart_tx, restart_rx) = oneshot::channel::<RestartTrigger>();
+    let mut cfg = test_config("gateway");
+    unit.aim(&mut cfg);
     std::thread::spawn(move || {
         let Ok(rt) = tokio::runtime::Builder::new_multi_thread()
             .enable_all()
@@ -287,26 +196,20 @@ async fn start_split_with(
             return;
         };
         let _ = rt.block_on(mush_gateway::serve(
-            test_config("gateway"),
+            cfg,
             GatewayOptions {
-                source: ServerSource::Restartable(launcher),
                 store: Some(gw_store),
                 ssh_ready: Some(ssh_tx),
                 web_ready: None,
-                restart_ready: Some(restart_tx),
                 siteban_refresh: None,
+                give_up_after: None,
             },
         ));
     });
-    let ssh_addr = tokio::time::timeout(Duration::from_secs(30), ssh_rx)
+    tokio::time::timeout(Duration::from_secs(30), ssh_rx)
         .await
         .expect("gateway bound SSH")
-        .expect("ssh addr");
-    let trigger = tokio::time::timeout(Duration::from_secs(30), restart_rx)
-        .await
-        .expect("supervisor handed back a restart trigger")
-        .expect("restart trigger");
-    (ssh_addr, trigger)
+        .expect("ssh addr")
 }
 
 struct AcceptAll;
@@ -596,13 +499,9 @@ fn count_since(term: &Term, mark: usize, needle: &str) -> usize {
 #[tokio::test(flavor = "multi_thread", worker_threads = 4)]
 async fn the_arena_surface_survives_the_split_and_a_server_restart() {
     let server_store: Arc<dyn ObjectStore> = Arc::new(InMemoryStore::new());
-    let crash: Arc<Mutex<Option<oneshot::Sender<()>>>> = Arc::new(Mutex::new(None));
-    let (ssh_addr, _trigger) = start_split(Box::new(CrashOnceLauncher {
-        store: Arc::clone(&server_store),
-        launches: AtomicUsize::new(0),
-        crash: Arc::clone(&crash),
-    }))
-    .await;
+    let unit = unit(Arc::clone(&server_store));
+    unit.start().await;
+    let ssh_addr = start_split_with(seeded_gw_store().await, &unit).await;
 
     let (_handle, mut god) = play_client(ssh_addr).await;
     god.connect_when_admitted(
@@ -674,12 +573,7 @@ async fn the_arena_surface_survives_the_split_and_a_server_restart() {
 
     // --- (3) make the server EXIT ON ITS OWN, mid-match --------------------
     let before_crash = god.mark();
-    let crash_tx = crash
-        .lock()
-        .ok()
-        .and_then(|mut slot| slot.take())
-        .expect("the first boot published its crash sender");
-    let _ = crash_tx.send(());
+    crash_now(&unit).await;
 
     god.expect_after(before_crash, "restarting").await;
     god.expect_after(before_crash, "Reconnected").await;
@@ -781,31 +675,19 @@ async fn claim_and_board(ada: &mut Term, bo: &mut Term, board: &[usize]) {
     }
 }
 
-/// The split with a crashable first boot, over one shared store.
-async fn crashable_split(
-    store: &Arc<dyn ObjectStore>,
-) -> (SocketAddr, Arc<Mutex<Option<oneshot::Sender<()>>>>) {
-    let crash: Arc<Mutex<Option<oneshot::Sender<()>>>> = Arc::new(Mutex::new(None));
-    let (ssh_addr, _trigger) = start_split_with(
-        Arc::clone(store),
-        Box::new(CrashOnceLauncher {
-            store: Arc::clone(store),
-            launches: AtomicUsize::new(0),
-            crash: Arc::clone(&crash),
-        }),
-    )
-    .await;
-    (ssh_addr, crash)
+/// The split over one shared store, with the unit in hand to crash.
+async fn crashable_split(store: &Arc<dyn ObjectStore>) -> (SocketAddr, ServerUnit) {
+    let unit = unit(Arc::clone(store));
+    unit.start().await;
+    let ssh_addr = start_split_with(Arc::clone(store), &unit).await;
+    (ssh_addr, unit)
 }
 
-/// Make the first boot's server half exit on its own.
-fn crash_now(crash: &Arc<Mutex<Option<oneshot::Sender<()>>>>) {
-    let crash_tx = crash
-        .lock()
-        .ok()
-        .and_then(|mut slot| slot.take())
-        .expect("the first boot published its crash sender");
-    let _ = crash_tx.send(());
+/// Make the server half exit on its own, then let its unit bring a healthy
+/// one back at the same endpoint.
+async fn crash_now(unit: &ServerUnit) {
+    unit.stop().await;
+    unit.start().await;
 }
 
 /// **A pilot in a pod across a server restart boards the resumed match** (16b
@@ -823,7 +705,7 @@ fn crash_now(crash: &Arc<Mutex<Option<oneshot::Sender<()>>>>) {
 #[tokio::test(flavor = "multi_thread", worker_threads = 4)]
 async fn a_pilot_in_a_pod_across_a_server_restart_boards_the_resumed_match() {
     let store = shared_store().await;
-    let (ssh_addr, crash) = crashable_split(&store).await;
+    let (ssh_addr, unit) = crashable_split(&store).await;
     let (_g, mut god) = play_client(ssh_addr).await;
     god.connect_when_admitted("boss", GM_PASSWORD, "Connected as God")
         .await;
@@ -855,7 +737,7 @@ async fn a_pilot_in_a_pod_across_a_server_restart_boards_the_resumed_match() {
     .await;
 
     let (ada_mark, bo_mark) = (ada.mark(), bo.mark());
-    crash_now(&crash);
+    crash_now(&unit).await;
 
     let resumed = tacsim::match_::RESUME_LINE;
     for (term, mark, tank) in [
@@ -916,7 +798,7 @@ async fn a_pilot_in_a_pod_across_a_server_restart_boards_the_resumed_match() {
 #[tokio::test(flavor = "multi_thread", worker_threads = 4)]
 async fn a_pilot_in_a_pod_across_a_boarding_crash_reads_the_hatch_line() {
     let store = shared_store().await;
-    let (ssh_addr, crash) = crashable_split(&store).await;
+    let (ssh_addr, unit) = crashable_split(&store).await;
     let (_g, mut god) = play_client(ssh_addr).await;
     god.connect_when_admitted("boss", GM_PASSWORD, "Connected as God")
         .await;
@@ -939,7 +821,7 @@ async fn a_pilot_in_a_pod_across_a_boarding_crash_reads_the_hatch_line() {
     assert!(!deployed(&store, red).await && !deployed(&store, blue).await);
 
     let ada_mark = ada.mark();
-    crash_now(&crash);
+    crash_now(&unit).await;
 
     ada.expect_after(ada_mark, "Reconnected").await;
     ada.expect_after(ada_mark, "The hatch of").await;

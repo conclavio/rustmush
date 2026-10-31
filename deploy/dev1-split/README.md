@@ -20,19 +20,20 @@ render `/opt/rustmush/dev1/mushd.toml` from
 [`../instance/mushd.toml.tmpl`](../instance/mushd.toml.tmpl) with
 [`../instance/render.sh`](../instance/render.sh). The render is preflighted with
 `mush-gateway --check-config` **and** `mush-server --check-config` before this
-script starts or reloads anything, and nothing is installed if either refuses —
+script starts or restarts anything, and nothing is installed if either refuses —
 so a bad config is a failed deploy, not a crash-looping unit.
 
 ## How it differs from the all-in-one
 
 | | all-in-one (`deploy/dev1`) | split (this dir) |
 |---|---|---|
-| service(s) | `dev1mush.service` (mushd) | `dev1mush-gateway.service` (mush-gateway) |
-| processes | one (`mushd`) | two (`mush-gateway` + its `mush-server` child) |
+| service(s) | `dev1mush.service` (mushd) | `dev1mush-server.service` (mush-server) + `dev1mush-gateway.service` (mush-gateway) |
+| processes | one (`mushd`) | two, each its own unit (doc 33 GG.1): the gateway dials the server over the `[ipc]` socket |
 | SSH :6789 | served by mushd | served by the gateway |
 | **HTTPS :6790 (web client)** | **served by mushd** | **served by the gateway** (M16d) |
-| deploy = restart | `systemctl restart dev1mush` — **drops connections** | `systemctl reload dev1mush-gateway` — **holds connections (SSH + web)** |
-| server crash | systemd restarts the whole process (players drop) | gateway auto-restarts the child in-process + re-attaches (players held) |
+| deploy = restart | `systemctl restart dev1mush` — **drops connections** | `systemctl restart dev1mush-server` — **holds connections (SSH + web)**; the gateway is not touched |
+| server crash | systemd restarts the whole process (players drop) | systemd restarts the server unit (`Restart=on-failure`); the gateway holds every connection and re-attaches (players held) |
+| server stays down | — | past the unit's start limit (5 starts / 60 s) the gateway tells players the server is down and staff are paged, `/healthz` says `server_ok: false`; `systemctl reset-failed dev1mush-server && systemctl start dev1mush-server` heals it, nobody reconnects |
 
 ### Web (M16d): now served + hot-restart-surviving
 
@@ -71,7 +72,7 @@ ssh -i $KEY $VPS 'cd /opt/rustmush/dev1/build/web && npm ci && npm run build'
 # (HTTPS :6790) now, so it needs --features tls to terminate TLS from the on-disk
 # cert/key; the server is the game half (no web) and needs no tls.
 ssh -i $KEY $VPS 'cd /opt/rustmush/dev1/build && ~/.cargo/bin/cargo build --release -p mush-gateway --features tls && ~/.cargo/bin/cargo build --release -p mush-server'
-# switch dev1 to the split (stops the all-in-one, starts the gateway)
+# switch dev1 to the split (stops the all-in-one, starts the server unit, then the gateway)
 ssh -i $KEY $VPS 'bash /opt/rustmush/dev1/build/deploy/dev1-split/deploy.sh'
 ```
 
@@ -81,25 +82,28 @@ ssh -i $KEY $VPS 'bash /opt/rustmush/dev1/build/deploy/dev1-split/deploy.sh'
 git archive HEAD | ssh -i $KEY $VPS 'tar -x -C /opt/rustmush/dev1/build'
 ssh -i $KEY $VPS 'cd /opt/rustmush/dev1/build/web && npm ci && npm run build'
 ssh -i $KEY $VPS 'cd /opt/rustmush/dev1/build && ~/.cargo/bin/cargo build --release -p mush-gateway --features tls && ~/.cargo/bin/cargo build --release -p mush-server'
-# SIGHUP the gateway → it restarts ONLY the server child from the fresh binary,
-# holding every SSH AND web connection. NOT `restart` — that would drop them.
-ssh -i $KEY $VPS 'systemctl reload dev1mush-gateway'
+# restart the SERVER unit → the fresh binary comes up at the same socket and the
+# gateway, untouched, re-attaches every SSH AND web connection. NOT
+# `restart dev1mush-gateway` — that would drop them.
+ssh -i $KEY $VPS 'systemctl restart dev1mush-server'
 ```
 
-`deploy.sh` also does the hot restart on a re-run (it `reload`s when the gateway
-is already up), so re-running it is equivalent.
+`deploy.sh` also does the hot restart on a re-run (it restarts the server unit
+when it is already up), so re-running it is equivalent. The gateway's `SIGHUP`
+is reserved (doc 33 §4.5): `systemctl reload dev1mush-gateway` is no longer a
+verb of this deployment, and the gateway unit has no `ExecReload=`.
 
-### Which half moved: `reload` or `restart` (16b cut Q.5)
+### Which half moved: the server unit, or the gateway too (16b cut Q.5)
 
-SIGHUP restarts only the **server child**. The gateway process itself keeps
+A server restart moves only the **server half**. The gateway process keeps
 running the binary it was started with — so a commit that changed the GATEWAY
-half is still live as old code after a reload, in the one half nothing says so.
-Pick by what the commit touched:
+half is still live as old code after a server restart, in the one half nothing
+says so. Pick by what the commit touched:
 
 | the commit touched | what to run |
 |---|---|
 | `web/`, `crates/mush-gateway`, `crates/mush-net-*`, `crates/mush-session`, `crates/mush-ansi`, `crates/mush-proto`, `crates/mush-ipc` | `GATEWAY_RESTART=1 bash …/deploy/dev1-split/deploy.sh` (or `systemctl restart dev1mush-gateway`) — **connections drop once** |
-| anything else (the game: `mush-server`, `tacsim`, modules, content, config) | `bash …/deploy/dev1-split/deploy.sh` — `reload`, connections held |
+| anything else (the game: `mush-server`, `tacsim`, modules, content, config) | `bash …/deploy/dev1-split/deploy.sh` — `systemctl restart dev1mush-server`, connections held |
 
 `web/` is on the restart list because the SPA is **embedded in the gateway
 binary** (`crates/mush-net-web`), not served from disk.
@@ -112,8 +116,13 @@ back in the game without a password. Only the store losing the token asks for a
 fresh sign-in: `scripts/reset-instance.sh` (which `FLUSHDB`s), `@newpassword`,
 logout, or the TTL. Redis merely being slow or restarting is not one of those —
 the gateway answers 503 ("cannot check right now"), which a tab retries with
-its token kept — and neither is a plain `reload`: a reconnect that lands while
+its token kept — and neither is a server restart: a reconnect that lands while
 the server half is down is answered 1012, not "session ended".
+
+> **Until doc 33 GG.2 lands**, a gateway restart still bounces the server too:
+> the server exits on the gateway's EOF and its unit brings it back. The
+> reverse is not true any more — `systemctl stop dev1mush-gateway` stops only
+> the gateway; the server unit keeps running the world.
 
 > **On a gateway older than 2026-09-20**, an open tab holding a token the store
 > no longer knew could **tempban its own address for fifteen minutes** — and
@@ -127,7 +136,7 @@ the server half is down is answered 1012, not "session ended".
 
 ### Building the SPA elsewhere
 
-`deploy.sh` refuses to start or reload anything when `web/dist/index.html` is
+`deploy.sh` refuses to start or restart anything when `web/dist/index.html` is
 missing, or its `web/dist/.commit` differs from the source commit — `web/dist` is
 git-ignored, so `git archive` never ships it and a stale bundle would otherwise
 embed in silence. It does **not** run npm itself, so if the box has no Node 22,
@@ -147,19 +156,30 @@ bundle. Archive the source and build the SPA from the same commit.
 ## Operate
 
 ```bash
-systemctl status dev1mush-gateway redis-dev1mush
-journalctl -u dev1mush-gateway -f          # gateway + child share this journal
-systemctl reload dev1mush-gateway          # hot-restart the server child
+systemctl status dev1mush-server dev1mush-gateway redis-dev1mush
+journalctl -u dev1mush-server -f           # the world (one journal per half)
+journalctl -u dev1mush-gateway -f          # the front door
+systemctl restart dev1mush-server          # hot-restart the server; connections held
+systemctl reset-failed dev1mush-server && systemctl start dev1mush-server
+                                           # after "staff have been paged": the unit
+                                           # exhausted its start limit (5 in 60 s)
 ```
 
-The child `mush-server` is not its own systemd unit — the gateway owns its
-lifecycle (spawns it, restarts it on crash with a crash-loop guard, reaps it on
-stop). Its logs interleave into the gateway's journal.
+`mush-server` is its own systemd unit (doc 33 GG.1): `Type=notify` (READY=1
+once the socket is bound), `Restart=on-failure`, `RestartSec=2`, and a start
+limit of five starts in sixty seconds. The gateway never starts, stops or
+restarts it — it dials the socket, holds every connection while the server is
+away, and re-attaches when it answers. Past the start-limit bound without a
+server, the gateway tells the held players the server is down and staff have
+been paged (in place of "restarting; hold on"), logs `SERVER-UNREACHABLE`,
+and reports `server_ok: false` on `/healthz` — and keeps dialing, so the
+`start` above heals it with nobody reconnecting. **`systemctl stop
+dev1mush-gateway` does not stop the server.**
 
 ## Switch back to the all-in-one
 
 ```bash
-systemctl disable --now dev1mush-gateway
+systemctl disable --now dev1mush-gateway dev1mush-server
 systemctl enable --now dev1mush          # re-run deploy/dev1/deploy.sh if the unit is gone
 ```
 
@@ -167,8 +187,9 @@ systemctl enable --now dev1mush          # re-run deploy/dev1/deploy.sh if the u
 
 The unused dev2 lane has been removed. Provision a new instance from
 [`../instance/instance.env.example`](../instance/instance.env.example) and the
-shared template. Copy the dev1 service shape, then give the new instance its own
-`ROOT`, Redis service and port, SSH/HTTPS ports, TLS paths, environment file,
+shared template. Copy the dev1 pair of unit files, then give the new instance
+its own `ROOT`, Redis service and port, SSH/HTTPS ports, TLS paths, environment
+file (the server unit's; the gateway has none), the server unit's
 `RuntimeDirectory`, and Unix `IPC_SOCKET` inside that directory. Render and run
 both halves' `--check-config` before starting it. See the
 [provisioning and reset guide](../README.md) for the commands, including

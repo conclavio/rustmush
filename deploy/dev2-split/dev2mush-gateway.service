@@ -1,7 +1,11 @@
 [Unit]
-Description=rustmush dev2 (TacSim) — forked GATEWAY (hot-restartable server) — SSH 6792 + web 6793
-After=network-online.target redis-dev2mush.service
-Wants=network-online.target
+Description=rustmush dev2 (TacSim) — the GATEWAY half (SSH 6792 + web 6793) in front of dev2mush-server
+# The server unit is WANTED, never required (doc 33 §4.2): a server that is
+# down or crash-looping must not take the gateway — and every player
+# connection it holds — down with it. The gateway serves its "restarting"
+# notice and keeps dialing until the server is back.
+After=network-online.target redis-dev2mush.service dev2mush-server.service
+Wants=network-online.target dev2mush-server.service
 Requires=redis-dev2mush.service
 Documentation=file:/opt/rustmush/dev2/build/deploy/dev2-split/README.md
 
@@ -15,63 +19,43 @@ Group=mush
 # must not starve the public port (doc 29a section 7, round 2).
 LimitNOFILE=65536
 WorkingDirectory=/opt/rustmush/dev2
-# LLM API keys (ANTHROPIC_API_KEY / OPENROUTER_API_KEY). root-owned, mode 640,
-# injected by systemd into the GATEWAY's environment; the gateway spawns the
-# mush-server child, which INHERITS this environment — so the server (which
-# makes the LLM calls) gets the keys without the file being read twice. Keys are
-# never logged by either half.
-EnvironmentFile=/opt/rustmush/dev2/dev2.env
-# The GATEWAY owns the SSH + WEB (HTTPS :6793) connections and spawns +
-# supervises the mush-server child (which it locates as a sibling of its own
-# binary in target/release). It always passes --ipc; it passes --config ONLY
-# because THIS unit gives the gateway one (WS22-S1: a gateway that resolved the
-# implicit mushd.toml forges no --config, so the child resolves it the same way
-# the parent did). A server-child crash is handled IN-PROCESS (auto-restart +
-# re-attach, M16c/M16d) — never by systemd.
+# No EnvironmentFile: the LLM keys in dev2.env belong to dev2mush-server
+# (doc 33 GG.1). The gateway makes no LLM call and reads nothing from them.
+#
+# The GATEWAY owns the SSH + WEB (HTTPS :6793) connections and DIALS the
+# server at [ipc].listen, read from the same rendered mushd.toml the server
+# binds it from. It does not start, stop or restart the server: that is
+# systemd's job (`systemctl restart dev2mush-server`), and a server that is
+# down is a gap the gateway rides out holding every connection, not a reason
+# to exit. Booted with no server up, it binds its listeners and waits.
 # The gateway binary must be built with `--features tls` to serve HTTPS here.
 ExecStart=/opt/rustmush/dev2/build/target/release/mush-gateway --config /opt/rustmush/dev2/mushd.toml
-# A deploy = build new binaries, then `systemctl reload` → SIGHUP → the gateway
-# restarts ONLY its server child from the fresh binary, HOLDING every SSH AND web
-# connection (M16c/M16d). The gateway process itself is NOT restarted, so players
-# are never disconnected.
-ExecReload=/bin/kill -HUP $MAINPID
-# Restart the GATEWAY only if the gateway itself dies (that DOES drop players —
-# it owns the SSH + web sockets). Server-child deaths never reach here.
+# No ExecReload: SIGHUP is reserved (doc 33 §4.5) — logged at info and
+# otherwise ignored. A deploy of the SERVER half is
+# `systemctl restart dev2mush-server` (connections held, players see
+# "restarting" then "Reconnected"); a deploy of the GATEWAY half is
+# `systemctl restart dev2mush-gateway` (GATEWAY_RESTART=1 in deploy.sh), which
+# drops every connection once.
+#
+# Restart the gateway only if the gateway itself dies (that DOES drop players:
+# it owns the SSH + web sockets). A server death never reaches here.
 Restart=on-failure
 RestartSec=5
-# On stop, SIGTERM the gateway; it closes the boundary so the server child shuts
-# down cleanly, waits up to 20 s for the child to exit, then exits itself (the
-# child is killed via kill_on_drop only if it overran). The stop therefore ends
-# with the child gone: the control-group sweep is a backstop that cannot be
-# relied on (on conclav.io it fails with EINVAL and systemd starts the next
-# instance at once). A server that still finds the quarantine spool's lock held
-# at boot waits up to 15 s for it before refusing.
-KillMode=mixed
+# One process now, with no child to sweep: systemd's default KillMode
+# (control-group) and stop timeout are right. `systemctl stop dev2mush-gateway`
+# stops ONLY the gateway; the server keeps running under its own unit. (Until
+# doc 33 GG.2 the server still exits when the boundary closes and its unit
+# brings it straight back.)
 
-# The gateway<->server IPC UNIX SOCKET lives at /run/rustmush-dev2/dev2.sock.
-# RuntimeDirectory makes systemd create /run/rustmush owned by the mush user and
-# — crucially — WRITABLE inside the service namespace despite ProtectSystem=strict
-# below (which otherwise mounts /run read-only, so the server could neither bind
-# the socket nor unlink a stale one → "Read-only file system" / "Address already
-# in use"). systemd also removes the dir on stop, so no stale socket survives a
-# restart. Mode 0750 → only the mush user (and root) can reach the socket: the
-# access control that stands in for authentication on the trusted local boundary
-# (a localhost TCP port would let ANY local process impersonate the gateway and
-# assert sessions). Rename this per instance (a dev2-split needs its own dir).
-RuntimeDirectory=rustmush-dev2
-RuntimeDirectoryMode=0750
+# No RuntimeDirectory: /run/rustmush-dev2 and the socket in it belong to
+# dev2mush-server.service. Connecting to a unix socket needs no write access
+# to its directory, so the read-only /run that ProtectSystem=strict leaves
+# this service is enough.
 
-# Hardening: the service needs only its own tree + the loopback Redis + the
-# /run/rustmush IPC socket (provided by RuntimeDirectory above). PrivateTmp is
-# shared with the spawned server child (same unit / cgroup), which is correct —
-# both halves see the same private tmp.
-#
-# Every path the RENDERED mushd.toml writes to is inside the one ReadWritePaths
-# tree: the data dir and, under it, logs/ (gateway.log + server.log), archive/
-# (the J5 ledger tier), offer-keys/, resolution-keys/, geology-keys/ and
-# quarantine/ — all
-# provisioned by deploy.sh. The only write OUTSIDE it is the boundary socket,
-# and that is what RuntimeDirectory above is for.
+# Hardening: the service needs only its own tree, the loopback Redis and the
+# two sockets it reaches. Every path the RENDERED mushd.toml has the gateway
+# write to is inside the one ReadWritePaths tree: the data dir and, under it,
+# logs/ (gateway.log) — provisioned by deploy.sh.
 NoNewPrivileges=true
 ProtectSystem=strict
 ProtectHome=true

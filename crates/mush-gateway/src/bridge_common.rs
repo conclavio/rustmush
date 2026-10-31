@@ -224,6 +224,13 @@ pub enum ConnectErr {
     /// The world task is gone (shutdown in progress).
     #[error("the game is shutting down")]
     WorldGone,
+    /// The split boundary is in its restart gap (doc 33 GG.1): the server is
+    /// down and the gateway is waiting for its unit to bring it back.
+    #[error("the server is restarting; hold on and try again in a moment")]
+    Restarting,
+    /// The gap has outlasted the server unit's start limit: staff are paged.
+    #[error("the server is down and staff have been paged; please try again later")]
+    ServerDown,
     /// The split boundary is live, but bounded lifecycle/IPC custody is full.
     #[error("the game is busy; please try again in a moment")]
     Busy,
@@ -534,6 +541,9 @@ impl<A: AuthBackend + 'static> GameBridge<A> {
                 return;
             }
             ActionSend::Busy => "The game is busy; try that action again.",
+            ActionSend::Gone if self.link.server_unreachable() => {
+                "The server is down and staff have been paged; your action was not submitted."
+            }
             ActionSend::Gone if self.link.is_restarting() => {
                 "The server is restarting; your action was not submitted."
             }
@@ -927,6 +937,20 @@ impl<A: AuthBackend + 'static> GameBridge<A> {
     /// The caller has verified the character belongs to
     /// the account and built the handle with the right
     /// [`Sink`](mush_session::Sink) for its wire.
+    /// The connect-time refusal for a boundary that is not there: the split
+    /// gap's own wording while the gateway is holding for the server (doc 33
+    /// GG.1), the shutdown wording otherwise (the all-in-one, where a gone
+    /// world is a game going down).
+    fn gone(&self) -> ConnectErr {
+        if self.link.server_unreachable() {
+            ConnectErr::ServerDown
+        } else if self.link.is_restarting() {
+            ConnectErr::Restarting
+        } else {
+            ConnectErr::WorldGone
+        }
+    }
+
     pub async fn enter_game(
         &self,
         handle: ConnectionHandle,
@@ -943,7 +967,7 @@ impl<A: AuthBackend + 'static> GameBridge<A> {
         match self.link.try_reserve_connection(conn_id.0, actor) {
             ConnectionAdmission::Reserved => {}
             ConnectionAdmission::Busy => return Err(ConnectErr::Busy),
-            ConnectionAdmission::Gone => return Err(ConnectErr::WorldGone),
+            ConnectionAdmission::Gone => return Err(self.gone()),
         }
         let (sess, outcome) = self
             .sessions
@@ -974,7 +998,7 @@ impl<A: AuthBackend + 'static> GameBridge<A> {
         {
             self.link.cancel_connection_reservation(conn_id.0);
             self.rollback_local_attach(conn_id, from_linkdead);
-            return Err(ConnectErr::WorldGone);
+            return Err(self.gone());
         }
         // `ConnUp` may run persistent connect/reconnect hooks. Fence their
         // exact durable outcome before publishing the local session or asking
@@ -985,7 +1009,7 @@ impl<A: AuthBackend + 'static> GameBridge<A> {
         if !self.delivery_barrier(conn_id, "connect readiness").await {
             self.compensate_announced_attach(conn_id, actor, from_linkdead)
                 .await;
-            return Err(ConnectErr::WorldGone);
+            return Err(self.gone());
         }
 
         // A barrier proves ordering/durability, but it does not by itself prove
@@ -1003,7 +1027,7 @@ impl<A: AuthBackend + 'static> GameBridge<A> {
         ) {
             self.compensate_announced_attach(conn_id, actor, from_linkdead)
                 .await;
-            return Err(ConnectErr::WorldGone);
+            return Err(self.gone());
         }
 
         send_event_to_conn(
@@ -1242,7 +1266,16 @@ impl<A: AuthBackend + 'static> GameBridge<A> {
             // default is `false`) and never sheds, so its behaviour is unchanged
             // (a `Gone` there is a shutdown, already terminal — stay silent).
             InputSend::Gone => {
-                if self.link.is_restarting() {
+                if self.link.server_unreachable() {
+                    send_event_to_conn(
+                        &self.sessions,
+                        conn,
+                        OutputEvent::Sys(RichText::tag(
+                            "error",
+                            "The server is down and staff have been paged; your input was not sent.",
+                        )),
+                    );
+                } else if self.link.is_restarting() {
                     send_event_to_conn(
                         &self.sessions,
                         conn,

@@ -55,7 +55,7 @@ use tokio::sync::oneshot;
 
 use mush_config::accounts::hash_password;
 use mush_config::config::Config;
-use mush_gateway::{GatewayOptions, ServerSource};
+use mush_gateway::GatewayOptions;
 
 const STEP_TIMEOUT: Duration = Duration::from_secs(60);
 const GM_PASSWORD: &str = "gm-secret-1";
@@ -139,7 +139,6 @@ fn test_config(tag: &str) -> Config {
     cfg.server.data_dir = scratch_dir(tag);
     cfg.ssh.listen = "127.0.0.1:0".to_string();
     cfg.ipc.listen = "127.0.0.1:0".to_string();
-    cfg.ipc.exit_on_abandoned_supervision = false;
     cfg.tacsim.enabled = true;
     cfg.tacsim.arena.tempo.quiet_ms = 100;
     cfg.tacsim.arena.tempo.alert_ms = 100;
@@ -200,7 +199,7 @@ async fn shared_store() -> Arc<dyn ObjectStore> {
 }
 
 /// Boot the server half on its own thread and runtime through the UNCHANGED
-/// `serve_with_store`, then the gateway on another over `ServerSource::Connect`,
+/// `serve_with_store`, then the gateway on another, aimed at its endpoint,
 /// both over `store` — `two_process_e2e.rs`'s `boot_split_sharing_store` shape.
 async fn boot_split(
     server_cfg: Config,
@@ -234,15 +233,16 @@ async fn boot_split(
             .enable_all()
             .build()
             .expect("the gateway runtime");
+        let mut gw_cfg = test_config("gateway");
+        gw_cfg.ipc.listen = endpoint.describe();
         let _ = rt.block_on(mush_gateway::serve(
-            test_config("gateway"),
+            gw_cfg,
             GatewayOptions {
-                source: ServerSource::Connect(endpoint),
                 store: Some(store),
                 ssh_ready: Some(ssh_tx),
                 web_ready: None,
-                restart_ready: None,
                 siteban_refresh: None,
+                give_up_after: None,
             },
         ));
     });

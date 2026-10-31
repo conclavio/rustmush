@@ -323,7 +323,7 @@ pub async fn serve_classified(
     // request handlers) produce is queued here and drained to the socket by the
     // writer task. BOUNDED (M18, `[ipc].to_gw_cap`): every `to_gw` frame is
     // must-deliver, so it is NEVER per-message dropped — on overflow the whole
-    // boundary is torn down (the M16c supervisor re-attach re-renders every
+    // boundary is torn down (the gateway's re-attach re-renders every
     // session, healing the loss). The world loop's `transmit` still never awaits
     // the boundary (D4): the [`SocketSink`] uses `try_send`, and the teardown
     // decision + socket drop live in the writer task, which waits on `teardown`.
@@ -434,6 +434,11 @@ pub async fn serve_classified(
         .tcp_addr()
         .map_or_else(|| endpoint.clone(), IpcEndpoint::Tcp);
     tracing::info!(ipc = %listener.describe(), "mush-server up; awaiting gateway");
+    // Doc 33 GG.1: the server is its own `Type=notify` unit. READY=1 goes out
+    // the moment the socket is bound — the gateway can dial from here on —
+    // and never before it (29a §7 H2/H3: a boot that dies first must be a
+    // failed start, not a started unit). A no-op outside systemd.
+    mush_drain::notify::ready();
     if let Some(tx) = bound {
         let _ = tx.send(actual);
     }
@@ -454,7 +459,8 @@ pub async fn serve_classified(
     // the socket. Exits when every `to_gw_tx` (held by the world loop + request
     // handlers) is dropped, OR early on a per-frame write timeout / a `teardown`
     // notification (a `to_gw` overflow) — either drops the writer's socket half,
-    // EOFing the boundary into the supervise → relaunch → re-attach heal (M18).
+    // EOFing the boundary: this process exits, its unit restarts it, and the
+    // gateway re-attaches every held session (M18; doc 33 GG.1).
     let ipc_writer_join = tokio::spawn(writer_loop(
         writer_half,
         to_gw_rx,
@@ -492,11 +498,18 @@ pub async fn serve_classified(
     // The world half of the fork is only useful while the world task is alive.
     // Before this race the reader was awaited to completion first, so a world
     // that died under a still-connected gateway left this process up with its
-    // IPC listener bound, dropping every frame forever and giving the
-    // supervisor nothing to heal (D2). Whichever side ends first ends service.
+    // IPC listener bound, dropping every frame forever and giving systemd
+    // nothing to restart (D2). Whichever side ends first ends service.
+    //
+    // The third arm is the unit's own stop (doc 33 GG.1): `systemctl stop` /
+    // `restart` is a SIGTERM to THIS process now, where it used to be an EOF
+    // from a gateway closing the boundary. Without the arm the signal's default
+    // action killed the server mid-write; with it a stop is the same orderly
+    // drain the EOF path runs. `mushd` spends the same future the same way.
     let end = tokio::select! {
         reader_result = &mut reader => BoundaryEnd::Reader(reader_result),
         joined = &mut world_join => BoundaryEnd::World(joined),
+        signal = mush_config::signals::shutdown_signal() => BoundaryEnd::Signal(signal),
     };
     let world_result = match end {
         BoundaryEnd::Reader(reader_result) => {
@@ -513,21 +526,14 @@ pub async fn serve_classified(
             // Boundary gone: shut the world down cleanly, then let the writer
             // flush its Bye and exit (it stops when the world drops its
             // `to_gw_tx` clones).
-            world.inbound(Inbound::Control(ControlMsg::Shutdown)).await;
-            // BOUNDED (WS22-S3): a world that will not stop must not hold this
-            // process open in silence. The bound is strictly longer than the
-            // world's own shutdown grace, so the designed slow path — waiting
-            // out a pending exact commit — is never read as a hung world.
-            match tokio::time::timeout(world_task::WORLD_JOIN_TIMEOUT, &mut world_join).await {
-                Ok(joined) => Some(joined),
-                Err(_) => {
-                    tracing::error!(
-                        bound_s = world_task::WORLD_JOIN_TIMEOUT.as_secs(),
-                        "world task did not join within its bound; shutting down without it"
-                    );
-                    None
-                }
-            }
+            stop_world(&world, &mut world_join).await
+        }
+        BoundaryEnd::Signal(signal) => {
+            tracing::info!(%signal, "shutting down on signal");
+            // The same drain as a closed boundary. The reader is dropped
+            // below, which EOFs the gateway into its gap; the gateway holds
+            // every connection and re-attaches when the unit is back.
+            stop_world(&world, &mut world_join).await
         }
         BoundaryEnd::World(joined) => {
             // The world stopped under a live gateway. It is already gone, so
@@ -566,10 +572,10 @@ pub async fn serve_classified(
     // drain, and it is never raised by `process::exit`/`abort` from inside a
     // catch handler or a driver.
     let Some(world_result) = world_result else {
-        // The tail above still ran, and each of its joins is the gateway
-        // supervisor's problem to bound (WS22-S6); what this process owes an
-        // operator is the distinction, and it is a code of its own so a
-        // supervisor can tell a slow stop from a dead world without parsing
+        // The tail above still ran, and each of its joins is the unit's stop
+        // timeout's problem to bound (WS22-S6); what this process owes an
+        // operator is the distinction, and it is a code of its own so an
+        // operator can tell a slow stop from a dead world without parsing
         // logs.
         return Err(ExitFailure::new(
             ExitClass::WorldJoinTimeout,
@@ -593,15 +599,41 @@ enum BoundaryEnd {
     Reader(std::io::Result<()>),
     /// The world task's join handle resolved while the reader was still live.
     World(Result<WorldOutcome, tokio::task::JoinError>),
+    /// The operator (or the unit) asked this process to stop (doc 33 GG.1).
+    Signal(mush_config::signals::ShutdownSignal),
+}
+
+/// Stop the world and wait for it, bounded.
+///
+/// BOUNDED (WS22-S3): a world that will not stop must not hold this process
+/// open in silence. The bound is strictly longer than the world's own
+/// shutdown grace, so the designed slow path — waiting out a pending exact
+/// commit — is never read as a hung world. `None` is the timeout, which the
+/// caller turns into [`ExitClass::WorldJoinTimeout`].
+async fn stop_world(
+    world: &WorldHandle,
+    world_join: &mut tokio::task::JoinHandle<WorldOutcome>,
+) -> Option<Result<WorldOutcome, tokio::task::JoinError>> {
+    world.inbound(Inbound::Control(ControlMsg::Shutdown)).await;
+    match tokio::time::timeout(world_task::WORLD_JOIN_TIMEOUT, world_join).await {
+        Ok(joined) => Some(joined),
+        Err(_) => {
+            tracing::error!(
+                bound_s = world_task::WORLD_JOIN_TIMEOUT.as_secs(),
+                "world task did not join within its bound; shutting down without it"
+            );
+            None
+        }
+    }
 }
 
 /// Turn the world task's ending into this process's exit.
 ///
 /// A world that walked out of its own state machine is an ordinary exit —
 /// `@shutdown` and the boundary's own `ControlMsg::Shutdown` both land here.
-/// Anything else is a fault the process must NOT survive quietly: the
-/// supervisor heals the forked half by relaunching it (D2), and it only knows
-/// to do that if this process stops and says so. `main` maps the `Err` to
+/// Anything else is a fault the process must NOT survive quietly: systemd
+/// heals the forked half by restarting the unit (D2; `Restart=on-failure`),
+/// and it only knows to do that if this process stops and says so. `main` maps the `Err` to
 /// [`ExitCode::FAILURE`](std::process::ExitCode).
 fn world_exit_result(result: Result<WorldOutcome, tokio::task::JoinError>) -> Result<(), String> {
     match result {
@@ -629,8 +661,9 @@ fn world_exit_result(result: Result<WorldOutcome, tokio::task::JoinError>) -> Re
 /// The greeting and the health tick bypass the gate: both predate the window,
 /// and the greeting goes out before the gateway has announced anything.
 ///
-/// Two M18 teardown paths return early, each dropping `w` (the boundary EOFs,
-/// which the gateway supervisor heals via relaunch → ReAnnounce → re-attach):
+/// Two M18 teardown paths return early, each dropping `w` (the boundary EOFs;
+/// this process exits, its unit restarts it, and the gateway heals the held
+/// sessions via ReAnnounce → re-attach):
 ///
 /// - **write timeout** — each [`write_frame`](mush_ipc::write_frame) is wrapped
 ///   in `write_timeout`; a connected-but-not-draining peer that blocks past it
@@ -717,7 +750,7 @@ async fn writer_loop(
                 None => break,
             },
             // A `to_gw` overflow: the sink notified us. Drop `w` (return) to EOF
-            // the boundary — the supervisor re-attach re-renders every session.
+            // the boundary — the gateway's re-attach re-renders every session.
             () = teardown.notified() => {
                 tracing::warn!(dir = "to_gw", "ipc queue overflow; tearing down boundary");
                 return;
@@ -1633,7 +1666,7 @@ fn world_is_gone(
     } else {
         tracing::error!(
             site,
-            "world task is gone with no shutdown on record; ending the boundary so the supervisor relaunches"
+            "world task is gone with no shutdown on record; ending the boundary so the unit restarts this process"
         );
     }
     std::io::Error::new(std::io::ErrorKind::BrokenPipe, "world task is gone")
@@ -2201,8 +2234,8 @@ fn create_player_response(result: Result<mush_core::ObjId, CreatePlayerErr>) -> 
 #[cfg(test)]
 mod world_exit_tests {
     //! What `serve` does with the world task's ending. `main` maps the `Err`
-    //! to `ExitCode::FAILURE`, and that exit code is the only thing a
-    //! supervisor can act on — so a fault that classified as `Ok` would leave
+    //! to `ExitCode::FAILURE`, and that exit code is the only thing systemd
+    //! can act on — so a fault that classified as `Ok` would leave
     //! the forked half looking healthy while its world was gone.
 
     use super::{WorldOutcome, world_exit_result};
@@ -2511,7 +2544,7 @@ mod service_request_tests {
     /// `GatewayReleased` for the same uid. The release path used to convert the
     /// released payload with an infallible `From` whose action arm was an
     /// `unreachable!`, so that frame *pair* panicked the IPC reader loop — in
-    /// split mode, an abort into the supervisor relaunch with every session
+    /// split mode, an abort into a unit restart with every session
     /// dropped. The peer may not take a coordinator claim at all: custody stays
     /// in the table for the in-flight handler to dispose.
     #[test]
@@ -2826,7 +2859,8 @@ mod writer_tests {
     //! isolated from a live world/gateway. The re-attach *survival* that rides
     //! these teardowns is proven by the gateway `restart_survival` suite (any
     //! boundary EOF — which a teardown produces by dropping the writer's socket
-    //! half — heals via supervise -> relaunch -> ReAnnounce -> re-attach).
+    //! half — heals via the unit restart -> the gateway's reconnect ->
+    //! ReAnnounce -> re-attach).
 
     use std::io;
     use std::pin::Pin;

@@ -36,7 +36,7 @@ use tokio_tungstenite::tungstenite::{Error as WsError, Message};
 use tokio_tungstenite::{MaybeTlsStream, WebSocketStream, connect_async};
 
 use mush_config::config::Config;
-use mush_gateway::{GatewayOptions, ServerSource};
+use mush_gateway::GatewayOptions;
 
 const STEP_TIMEOUT: Duration = Duration::from_secs(60);
 
@@ -110,15 +110,16 @@ async fn boot_split_web(
             .enable_all()
             .build()
             .unwrap();
+        let mut gw_cfg = gateway_config("gateway");
+        gw_cfg.ipc.listen = endpoint.describe();
         rt.block_on(mush_gateway::serve(
-            gateway_config("gateway"),
+            gw_cfg,
             GatewayOptions {
-                source: ServerSource::Connect(endpoint),
                 store: Some(gw_store),
                 ssh_ready: Some(ssh_tx),
                 web_ready: Some(web_tx),
-                restart_ready: None,
                 siteban_refresh: None,
+                give_up_after: None,
             },
         ))
         .unwrap();

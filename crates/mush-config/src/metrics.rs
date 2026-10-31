@@ -138,14 +138,13 @@ pub struct Metrics {
     /// above zero means the single writer was thrown out of its own state
     /// machine and the world is frozen; it is an alert, not a trend.
     world_panics_total: AtomicU64,
-    /// Set once the gateway supervisor has GIVEN UP on the server half
-    /// (WS22-S17): the crash-loop guard tripped, an old instance's exit could
-    /// not be established, or the supervisor task itself died. A latch, not a
-    /// counter — there is no second abandonment to count, because nothing is
-    /// supervising any more. Read by `/healthz` (`supervision_ok`) and
-    /// `/metrics`, and set only in the split gateway (the all-in-one has no
-    /// supervisor, so it reads false for ever).
-    supervision_abandoned: AtomicBool,
+    /// Raised while the split gateway has stopped expecting the server half
+    /// back on its own (doc 33 GG.1): the boundary has been in its gap longer
+    /// than the server unit's start-limit bound, so systemd has given up
+    /// restarting it and staff have been paged. A level, not a latch — it
+    /// clears the moment a server answers. Read by `/healthz` (`server_ok`)
+    /// and `/metrics`; the all-in-one never sets it.
+    server_unreachable: AtomicBool,
 
     // -- the terminal picture (doc 21 G.1b; the SSH TUI's ^G view) --
     /// Pictures sent to terminals since boot.
@@ -364,19 +363,20 @@ impl Metrics {
         self.world_panics_total.fetch_add(1, Ordering::Relaxed);
     }
 
-    /// Latch the supervision-abandoned gauge (WS22-S17).
+    /// Set or clear the server-unreachable gauge (doc 33 GG.1).
     ///
-    /// The gateway calls this at the ONE site that gives up on the server
-    /// half. It is idempotent on purpose: the point of the gauge is that a
-    /// scraper can see the state at all, not how many ways it was reached.
-    pub fn abandon_supervision(&self) {
-        self.supervision_abandoned.store(true, Ordering::Relaxed);
+    /// The gateway raises it at the one site that stops expecting the server
+    /// back (the give-up notice) and clears it when a server answers. The
+    /// point of the gauge is that a scraper can see the state at all.
+    pub fn set_server_unreachable(&self, unreachable: bool) {
+        self.server_unreachable
+            .store(unreachable, Ordering::Relaxed);
     }
 
-    /// Whether the gateway supervisor has given up on the server half.
+    /// Whether the gateway has stopped expecting the server half back.
     #[must_use]
-    pub fn supervision_abandoned(&self) -> bool {
-        self.supervision_abandoned.load(Ordering::Relaxed)
+    pub fn server_unreachable(&self) -> bool {
+        self.server_unreachable.load(Ordering::Relaxed)
     }
 
     // -- the terminal picture (doc 21 G.1b) --------------------------------
@@ -478,9 +478,9 @@ impl Metrics {
             stamp > 0 && (0..=WORLD_HEALTH_MAX_AGE_S).contains(&now.saturating_sub(stamp));
         let store_ok = self.store_ok();
         let integrity_ok = self.integrity_ok();
-        let supervision_ok = !self.supervision_abandoned();
+        let server_ok = !self.server_unreachable();
         serde_json::json!({
-            "ok": world_ok && store_ok && integrity_ok && supervision_ok,
+            "ok": world_ok && store_ok && integrity_ok && server_ok,
             "world_ok": world_ok,
             "world_max_age_s": WORLD_HEALTH_MAX_AGE_S,
             "uptime_s": uptime_s,
@@ -491,7 +491,7 @@ impl Metrics {
             "world_loop_unixtime": self.world_loop_last_iter_unix.load(Ordering::Relaxed),
             "store_ok": !self.store_read_only.load(Ordering::Relaxed),
             "integrity_ok": !self.integrity_frozen.load(Ordering::Relaxed),
-            "supervision_ok": !self.supervision_abandoned.load(Ordering::Relaxed),
+            "server_ok": server_ok,
         })
     }
 
@@ -838,7 +838,7 @@ impl Metrics {
                 .command_defer_timed_out_total
                 .load(Ordering::Relaxed),
             world_panics_total: self.world_panics_total.load(Ordering::Relaxed),
-            supervision_abandoned: self.supervision_abandoned.load(Ordering::Relaxed),
+            server_unreachable: self.server_unreachable.load(Ordering::Relaxed),
             pixel_frames_total: self.pixel_frames_total.load(Ordering::Relaxed),
             pixel_bytes_total: self.pixel_bytes_total.load(Ordering::Relaxed),
             pixel_slow_skips_total: self.pixel_slow_skips_total.load(Ordering::Relaxed),
@@ -1036,9 +1036,9 @@ pub struct MetricsSnapshot {
     pub command_defer_timed_out_total: u64,
     /// Panics caught at the world task's dispatch boundary since boot.
     pub world_panics_total: u64,
-    /// Whether the gateway supervisor has given up on the server half — see
-    /// [`Metrics::abandon_supervision`].
-    pub supervision_abandoned: bool,
+    /// Whether the gateway has stopped expecting the server half back — see
+    /// [`Metrics::set_server_unreachable`].
+    pub server_unreachable: bool,
     /// Pictures sent to terminals since boot (doc 21 G.1b).
     pub pixel_frames_total: u64,
     /// Their bytes on the wire since boot.
@@ -1309,10 +1309,10 @@ impl MetricsSnapshot {
         );
         metric(
             &mut o,
-            "mush_supervision_abandoned",
+            "mush_server_unreachable",
             "gauge",
-            "1 when the gateway supervisor gave up on the server half: players are connected, every input is refused, and no restart is coming.",
-            &[(&[], f64::from(u8::from(self.supervision_abandoned)))],
+            "1 while the gateway has stopped expecting the server half back: players are connected, every input is refused, the server unit hit its start limit and staff have been paged.",
+            &[(&[], f64::from(u8::from(self.server_unreachable)))],
         );
 
         // The terminal picture (doc 21 G.1b).
@@ -2325,8 +2325,10 @@ mod tests {
         assert_eq!(m.health_json_at(1, "test", 106)["ok"], false);
         m.receive_world_health(106, 17, true, true);
         assert_eq!(m.health_json_at(1, "test", 106)["ok"], true);
-        m.abandon_supervision();
+        m.set_server_unreachable(true);
         assert_eq!(m.health_json_at(1, "test", 106)["ok"], false);
+        m.set_server_unreachable(false);
+        assert_eq!(m.health_json_at(1, "test", 106)["ok"], true);
         m.set_world_loop_iteration(0);
         assert_eq!(m.health_json_at(1, "test", 106)["world_ok"], false);
     }
@@ -2351,37 +2353,39 @@ mod tests {
         assert_eq!(j["world_loop_unixtime"], 1_700_000_000);
         assert_eq!(j["store_ok"], true);
         assert_eq!(j["integrity_ok"], true);
-        assert_eq!(j["supervision_ok"], true);
+        assert_eq!(j["server_ok"], true);
     }
 
-    /// WS22-S17: the gauge a scraper alerts on when the gateway supervisor has
-    /// given up. The failure it exists to prevent is a gateway that is up,
-    /// serving `/healthz`, holding every player — and refusing every input
-    /// they type, with nothing anywhere saying so. It is a latch: unset until
-    /// abandonment, set for ever afterwards, and visible on BOTH surfaces.
+    /// Doc 33 GG.1 (after WS22-S17): the gauge a scraper alerts on when the
+    /// gateway has stopped expecting the server back. The failure it exists
+    /// to prevent is a gateway that is up, serving `/healthz`, holding every
+    /// player — and refusing every input they type, with nothing anywhere
+    /// saying so. It is a level, visible on BOTH surfaces, and it clears when
+    /// a server answers again.
     #[test]
-    fn abandoned_supervision_shows_on_healthz_and_metrics() {
+    fn server_unreachable_shows_on_healthz_and_metrics() {
         let m = Metrics::new();
-        assert!(!m.supervision_abandoned());
-        assert_eq!(m.health_json(1, "9.9.9")["supervision_ok"], true);
+        assert!(!m.server_unreachable());
+        assert_eq!(m.health_json(1, "9.9.9")["server_ok"], true);
         assert!(
             m.snapshot()
                 .to_prometheus(1)
-                .contains("mush_supervision_abandoned 0")
+                .contains("mush_server_unreachable 0")
         );
 
-        m.abandon_supervision();
-        assert!(m.supervision_abandoned());
-        assert_eq!(m.health_json(1, "9.9.9")["supervision_ok"], false);
+        m.set_server_unreachable(true);
+        assert!(m.server_unreachable());
+        assert_eq!(m.health_json(1, "9.9.9")["server_ok"], false);
         assert!(
             m.snapshot()
                 .to_prometheus(1)
-                .contains("mush_supervision_abandoned 1")
+                .contains("mush_server_unreachable 1")
         );
 
-        // Idempotent: a second call cannot un-set it or double it.
-        m.abandon_supervision();
-        assert!(m.supervision_abandoned());
+        // A level, not a latch: the heal clears it.
+        m.set_server_unreachable(false);
+        assert!(!m.server_unreachable());
+        assert_eq!(m.health_json(1, "9.9.9")["server_ok"], true);
     }
 
     #[test]
@@ -2456,10 +2460,10 @@ mod tests {
         assert!(text.contains("mush_objects{kind=\"room\"} 5"));
         assert!(text.contains("mush_store_read_only 0"));
         assert!(text.contains("mush_integrity_frozen 0"));
-        assert!(text.contains("# TYPE mush_supervision_abandoned gauge"));
+        assert!(text.contains("# TYPE mush_server_unreachable gauge"));
         assert!(text.contains("# TYPE mush_pixel_frames_total counter"));
         assert!(text.contains("mush_pixel_viewers 0"));
-        assert!(text.contains("mush_supervision_abandoned 0"));
+        assert!(text.contains("mush_server_unreachable 0"));
         assert!(text.contains("mush_store_write_queue_depth 6"));
         assert!(text.contains("mush_store_write_lane_depth{lane=\"legacy\"} 3"));
         assert!(text.contains("mush_store_write_lane_depth{lane=\"authoritative\"} 2"));

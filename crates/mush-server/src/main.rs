@@ -1,9 +1,11 @@
 //! mush-server — the forked SERVER half of rustmush (M16b).
 //!
 //! Boots the world task + persistence + modules and serves the gateway over
-//! the [`mush_ipc`] boundary socket. Normally spawned as a child of
-//! `mush-gateway` (which passes `--ipc <addr>`, and `--config` only when it was
-//! given one itself), but it also runs standalone for testing.
+//! the [`mush_ipc`] boundary socket. In production it is its own systemd unit
+//! beside `mush-gateway` (doc 33 GG.1): it binds `[ipc].listen` from the
+//! shared `mushd.toml`, tells systemd `READY=1` once the socket is bound, and
+//! the gateway dials the same address. `--ipc <addr>` overrides the listen
+//! address for tests and hand runs. SIGTERM is an orderly stop.
 //!
 //! Usage: `mush-server [--check-config] [--config <path>] [--ipc <addr>]`.
 //! `--check-config` loads the config, reports the refusals on the preflight
@@ -12,7 +14,7 @@
 //! binary's `[ipc].listen` — and exits without opening the store or the
 //! quarantine lifetime lock. Those two functions are the list of record; the
 //! flag is not a claim that a boot raises nothing else. It is the one preflight
-//! that covers the half a supervisor never starts directly, and where a bad
+//! that covers the half an operator rarely starts by hand, and where a bad
 //! `[store]`/`[tacsim]` value takes the world down.
 
 // WS01-S12: the panic-shaped restriction lints this crate measures zero of,
@@ -27,7 +29,7 @@ use mush_config::cli::CliSpec;
 use mush_config::exit::{ExitClass, ExitFailure};
 
 /// This binary's half of the one command line the three binaries share
-/// (WS22-S1). `--ipc <addr>` overrides `[ipc].listen` — the supervisor picks
+/// (WS22-S1). `--ipc <addr>` overrides `[ipc].listen` — a test harness picks
 /// the socket — and is applied by `Cli::load_config`.
 const CLI: CliSpec = CliSpec {
     program: "mush-server",
@@ -41,8 +43,8 @@ const CLI: CliSpec = CliSpec {
 /// How long a booting server waits for the quarantine spool's lifetime lock
 /// while another process holds it: long enough for a predecessor to finish
 /// exiting (a 900 MB world unmaps in well under a second), short enough that
-/// a second live server is refused before the supervisor's own connect
-/// timeout.
+/// a second live server is refused well inside the unit's start timeout
+/// (doc 33 Q-33-5 keeps the 15 s; the gateway keeps dialing meanwhile).
 const QUARANTINE_LOCK_WAIT: std::time::Duration = std::time::Duration::from_secs(15);
 
 /// This binary's ending, in the one exit vocabulary both halves speak
@@ -110,7 +112,7 @@ fn main() -> ExitCode {
     // lock) through the zero-write exact-target pass and into the writer.
     //
     // A predecessor still exiting may hold the spool's lifetime lock for a
-    // moment (a unit restart that did not wait for the old child), so the
+    // moment (a unit restart whose old instance is still draining), so the
     // lock is waited for, bounded; a second live server is still refused.
     let quarantine_spool = match mush_server::quarantine::QuarantineSpool::open_waiting(
         config.server.data_dir.join("quarantine"),
@@ -159,8 +161,8 @@ mod tests {
     use mush_config::exit::{ExitClass, ExitFailure};
 
     /// This binary's half of the shared exit table. The numbers are asserted as
-    /// literals because they are what leaves the process: a supervisor's
-    /// classifier and a systemd unit encode them out of tree, and the whole
+    /// literals because they are what leaves the process: a systemd unit's
+    /// `Restart=` policy encodes them out of tree, and the whole
     /// point of one vocabulary is that `mush-server` and `mushd` cannot drift
     /// into meaning different things by the same number.
     #[test]

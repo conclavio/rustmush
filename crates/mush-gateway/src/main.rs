@@ -1,16 +1,17 @@
 //! mush-gateway — the forked GATEWAY half of rustmush (M16b).
 //!
-//! Spawns and supervises the `mush-server` child, then serves SSH connections,
-//! bridging them to the server over the [`mush_ipc`] boundary socket.
+//! Serves the SSH and web connections, bridging them to the `mush-server`
+//! unit over the [`mush_ipc`] boundary socket (doc 33 GG.1): it dials the
+//! server at `[ipc].listen`, holds every connection while the server is away,
+//! and re-attaches them when it answers. It never starts or stops the server.
 //!
 //! Usage: `mush-gateway [--check-config] [--config <path>]`.
 //! `--check-config` loads the config, reports the refusals on the preflight
 //! list — `mush_config::preflight::check`, plus `preflight::check_ipc` for the
 //! boundary this half also dies on — and exits. Those functions are the list of
-//! record; the flag is not a claim that a boot raises nothing else. This is the
-//! process a supervisor actually starts, so it is where an operator's preflight
-//! lands; the world-half validations it cannot run (the `[tacsim]` pack block,
-//! the archive window) belong to `mush-server --check-config`, which reads the
+//! record; the flag is not a claim that a boot raises nothing else. The
+//! world-half validations it cannot run (the `[tacsim]` pack block, the
+//! archive window) belong to `mush-server --check-config`, which reads the
 //! same file.
 
 // WS01-S12: the panic-shaped restriction lints this crate measures zero of,
@@ -27,11 +28,11 @@
 use std::process::ExitCode;
 
 use mush_config::cli::CliSpec;
-use mush_gateway::{GatewayOptions, ServerSource, serve};
+use mush_gateway::{GatewayOptions, serve};
 
 /// This binary's half of the one command line the three binaries share
-/// (WS22-S1). The gateway takes neither `--ipc` (it reads `[ipc].listen` and
-/// hands it to the child) nor `--repl`.
+/// (WS22-S1). The gateway takes neither `--ipc` (it reads `[ipc].listen` from
+/// the config, the same value the server binds) nor `--repl`.
 const CLI: CliSpec = CliSpec {
     program: "mush-gateway",
     usage: "Usage: mush-gateway [--check-config] [--config <path>]",
@@ -54,11 +55,6 @@ fn main() -> ExitCode {
         println!("{}", CLI.usage);
         return ExitCode::SUCCESS;
     }
-    // Only an EXPLICIT `--config` crosses to the child. A gateway that booted
-    // the implicit `mushd.toml` — present or absent — must let the child
-    // resolve it the same way, or a defaults-booted gateway spawns a child
-    // that refuses to start on a path nobody wrote.
-    let child_config = cli.child_config_path().map(std::path::Path::to_path_buf);
     let config = match cli.load_config() {
         Ok(c) => c,
         Err(e) => {
@@ -88,14 +84,11 @@ fn main() -> ExitCode {
         }
     };
     let opts = GatewayOptions {
-        source: ServerSource::Spawn {
-            config_path: child_config,
-        },
         store: None,
         ssh_ready: None,
         web_ready: None,
-        restart_ready: None,
         siteban_refresh: None,
+        give_up_after: None,
     };
     match runtime.block_on(serve(config, opts)) {
         Ok(()) => ExitCode::SUCCESS,

@@ -863,8 +863,8 @@ async fn build_engine_inner(
 /// read; the two added here need crates the gateway half does not depend on:
 ///
 /// - `[tacsim]`, whose pack block is read and digest-verified host-side, so an
-///   unreadable or mismatched pack is found by an operator rather than by a
-///   supervisor watching a boot loop;
+///   unreadable or mismatched pack is found by an operator rather than by
+///   systemd watching a boot loop;
 /// - `[store.archive].window`, which refuses the boot inside
 ///   [`spawn_ledger_archive`] rather than leaving the nightly pass silently
 ///   unscheduled for the life of the deployment.

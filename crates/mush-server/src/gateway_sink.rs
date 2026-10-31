@@ -108,7 +108,7 @@ pub trait GatewaySink: Send + Sync {
 /// frame is must-deliver (a `Deliver` keyframe, a correlated `Reply`, sticky
 /// `SetFloodExempt` state, or a security `CloseSession`/`CloseWebSessions`), so
 /// there is NEVER a per-message drop: on a `Full` channel the whole boundary is
-/// torn down instead (the M16c supervisor re-attach re-renders every session,
+/// torn down instead (the gateway's re-attach re-renders every session,
 /// healing the loss). The world loop is the producer and must never `.await`
 /// the boundary (D4), so `send` uses `try_send` and the
 /// teardown decision + the socket drop live entirely in the writer task, which
@@ -124,7 +124,7 @@ pub struct SocketSink {
     /// One-shot teardown trigger the writer task waits on. Notified the first
     /// time (and every subsequent time) `try_send` sees a `Full` channel; the
     /// writer returns, drops its socket half, and the boundary EOFs — the
-    /// existing supervise → GAP → relaunch → ReAnnounce → re-attach path heals it.
+    /// gap → unit restart → reconnect → ReAnnounce → re-attach path heals it.
     teardown: Arc<Notify>,
     /// Count of frames that hit a full `to_gw` and forced a teardown. Drives the
     /// warn-once-per-crossing latch and gives tests a deterministic handle.
@@ -203,7 +203,7 @@ impl SocketSink {
                 self.teardown.notify_one();
             }
             Err(TrySendError::Closed(_)) => {
-                // The boundary is already torn down; the supervisor re-attach
+                // The boundary is already torn down; the gateway's re-attach
                 // re-renders every session, so a frame lost here is recovered.
             }
         }

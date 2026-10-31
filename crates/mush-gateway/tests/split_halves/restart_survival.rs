@@ -1,11 +1,12 @@
 //! The M16c PROOF: a real server restart WITHOUT dropping player connections.
 //!
-//! The gateway supervises the server (launching it, here, as a sibling thread
-//! over an ephemeral localhost TCP boundary — the same shape as a child
-//! process, and deterministic on Windows). A real SSH client connects and plays;
-//! then the server is RESTARTED through the gateway's programmatic
-//! [`RestartTrigger`] (the cross-platform stand-in for the Unix `SIGHUP` deploy
-//! signal). The proof asserts:
+//! The server is its own unit (doc 33 GG.1), stood in for here by the
+//! [`ServerUnit`] rig: a real `mush-server` on a sibling thread over a
+//! localhost TCP boundary the gateway DIALS — the same shape as the unit's
+//! socket, and deterministic on Windows. A real SSH client connects and
+//! plays; then the server is RESTARTED from outside the gateway, as
+//! `systemctl restart <inst>mush-server` does it: the running server exits,
+//! a fresh one binds the same endpoint. The proof asserts:
 //!
 //! - the SSH connection SURVIVES — it is never disconnected;
 //! - the player is told "restarting", is pushed a fresh room render from the
@@ -26,11 +27,8 @@
 use std::net::SocketAddr;
 use std::path::PathBuf;
 use std::sync::Arc;
-use std::sync::Mutex;
-use std::sync::atomic::{AtomicUsize, Ordering};
 use std::time::Duration;
 
-use futures::future::BoxFuture;
 use mush_core::GOD;
 use mush_store::{AccountRec, CharacterRef, InMemoryStore, ObjectStore};
 use russh::ChannelMsg;
@@ -38,7 +36,9 @@ use tokio::sync::oneshot;
 
 use mush_config::accounts::hash_password;
 use mush_config::config::Config;
-use mush_gateway::{GatewayOptions, LaunchedServer, RestartTrigger, ServerLauncher, ServerSource};
+use mush_gateway::GatewayOptions;
+
+use super::harness::ServerUnit;
 
 const STEP_TIMEOUT: Duration = Duration::from_secs(60);
 const GM_PASSWORD: &str = "gm-secret-1";
@@ -68,144 +68,14 @@ fn test_config(tag: &str) -> Config {
     cfg.server.data_dir = scratch_dir(tag);
     cfg.ssh.listen = "127.0.0.1:0".to_string();
     cfg.ipc.listen = "127.0.0.1:0".to_string();
-    // WS22-S17: an abandoned supervisor EXITS the gateway in production. The
-    // crash-loop proof below is about what the still-connected player is told,
-    // so this file keeps the corpse (the exit itself is proved in
-    // `tests/split_halves/supervision_abandoned.rs`).
-    cfg.ipc.exit_on_abandoned_supervision = false;
     cfg
 }
 
-/// The restart-survival [`ServerLauncher`]: each `launch` boots a fresh
-/// `mush-server` on its OWN thread + runtime (as the real binary does — the
-/// engine's module roster is not `Send`, so the boot future cannot be
-/// `tokio::spawn`ed) over an ephemeral IPC endpoint, reusing ONE shared store so
-/// the world survives every restart. `exited` fires when that server's `serve`
-/// returns.
-/// Boot one real `mush-server` on its own thread + runtime over an ephemeral IPC
-/// endpoint, sharing `store` so the world survives across restarts. Shared by
-/// the healthy [`ThreadLauncher`] and the [`FlakyLauncher`] (whose FIRST boot is
-/// real before it starts failing).
-async fn launch_thread_server(store: Arc<dyn ObjectStore>) -> Result<LaunchedServer, String> {
-    let cfg = test_config("server");
-    let (ipc_tx, ipc_rx) = oneshot::channel();
-    let (exit_tx, exit_rx) = oneshot::channel();
-    std::thread::spawn(move || {
-        let rt = tokio::runtime::Builder::new_multi_thread()
-            .enable_all()
-            .build()
-            .unwrap();
-        let _ = rt.block_on(mush_server::serve_with_store(
-            cfg,
-            Some(ipc_tx),
-            Some(store),
-        ));
-        let _ = exit_tx.send(());
-    });
-    let endpoint = tokio::time::timeout(Duration::from_secs(30), ipc_rx)
-        .await
-        .map_err(|_| "server ipc bind timed out".to_string())?
-        .map_err(|_| "server dropped its ipc oneshot".to_string())?;
-    Ok(LaunchedServer {
-        endpoint,
-        exited: Box::pin(async move {
-            let _ = exit_rx.await;
-        }),
-    })
-}
-
-struct ThreadLauncher {
-    store: Arc<dyn ObjectStore>,
-}
-
-impl ServerLauncher for ThreadLauncher {
-    fn launch(&self) -> BoxFuture<'static, Result<LaunchedServer, String>> {
-        let store = Arc::clone(&self.store);
-        Box::pin(launch_thread_server(store))
-    }
-}
-
-/// Like [`launch_thread_server`], but the booted server can be forced to drop its
-/// IPC boundary ON ITS OWN — firing `crash` returns from `block_on`, dropping the
-/// runtime and every socket, so the gateway's boundary reader hits EOF. That is
-/// the crash / auto-restart path (D1a), reached WITHOUT the `RestartTrigger`.
-async fn launch_thread_server_abortable(
-    store: Arc<dyn ObjectStore>,
-    crash: oneshot::Receiver<()>,
-) -> Result<LaunchedServer, String> {
-    let cfg = test_config("server");
-    let (ipc_tx, ipc_rx) = oneshot::channel();
-    let (exit_tx, exit_rx) = oneshot::channel();
-    std::thread::spawn(move || {
-        let rt = tokio::runtime::Builder::new_multi_thread()
-            .enable_all()
-            .build()
-            .unwrap();
-        rt.block_on(async move {
-            tokio::select! {
-                _ = mush_server::serve_with_store(cfg, Some(ipc_tx), Some(store)) => {}
-                // Forced self-exit (a crash stand-in): return from block_on so the
-                // runtime + IPC sockets drop and the gateway sees a boundary EOF,
-                // WITHOUT the gateway ever initiating the close.
-                _ = crash => {}
-            }
-        });
-        let _ = exit_tx.send(());
-    });
-    let endpoint = tokio::time::timeout(Duration::from_secs(30), ipc_rx)
-        .await
-        .map_err(|_| "server ipc bind timed out".to_string())?
-        .map_err(|_| "server dropped its ipc oneshot".to_string())?;
-    Ok(LaunchedServer {
-        endpoint,
-        exited: Box::pin(async move {
-            let _ = exit_rx.await;
-        }),
-    })
-}
-
-/// A launcher whose FIRST boot is a real server that can be crashed on demand
-/// (its crash sender is published into `crash` for the test to fire); every boot
-/// after that is a normal healthy server. Drives the AUTO-restart (D1a) path: the
-/// first server self-exits, the supervisor respawns a healthy one and re-attaches.
-struct CrashOnceLauncher {
-    store: Arc<dyn ObjectStore>,
-    launches: AtomicUsize,
-    crash: Arc<Mutex<Option<oneshot::Sender<()>>>>,
-}
-
-impl ServerLauncher for CrashOnceLauncher {
-    fn launch(&self) -> BoxFuture<'static, Result<LaunchedServer, String>> {
-        let n = self.launches.fetch_add(1, Ordering::SeqCst);
-        let store = Arc::clone(&self.store);
-        if n == 0 {
-            let (crash_tx, crash_rx) = oneshot::channel();
-            *self.crash.lock().unwrap() = Some(crash_tx);
-            Box::pin(launch_thread_server_abortable(store, crash_rx))
-        } else {
-            Box::pin(launch_thread_server(store))
-        }
-    }
-}
-
-/// A launcher whose FIRST boot is a real server, and every relaunch after that
-/// FAILS — the crash-loop shape (R3). Once the gateway is up and playing, a
-/// restart finds no server to respawn, so the supervisor exhausts the crash-loop
-/// guard and tells players the server is down (without dropping them).
-struct FlakyLauncher {
-    store: Arc<dyn ObjectStore>,
-    launches: AtomicUsize,
-}
-
-impl ServerLauncher for FlakyLauncher {
-    fn launch(&self) -> BoxFuture<'static, Result<LaunchedServer, String>> {
-        let n = self.launches.fetch_add(1, Ordering::SeqCst);
-        if n == 0 {
-            Box::pin(launch_thread_server(Arc::clone(&self.store)))
-        } else {
-            Box::pin(async move { Err("simulated relaunch failure".to_string()) })
-        }
-    }
+/// The server unit over `store` (`harness.rs`): every boot reads a fresh lean
+/// config and binds the endpoint the first boot bound, reusing ONE shared
+/// store so the world survives every restart.
+fn unit(store: Arc<dyn ObjectStore>) -> ServerUnit {
+    ServerUnit::new(store, || test_config("server"))
 }
 
 /// The gateway's own KV store (accounts), seeded with the God wizard.
@@ -229,41 +99,36 @@ async fn seeded_gw_store() -> Arc<dyn ObjectStore> {
     gw_store
 }
 
-/// Start the gateway (on its own thread/runtime, as the binary does) supervising
-/// `launcher`, and return the bound SSH address plus the programmatic restart
-/// trigger. The gateway thread handle is detached — `serve` blocks until Ctrl-C,
-/// which never comes in-test; dropping at test end tears the process down.
-async fn start_split(launcher: Box<dyn ServerLauncher>) -> (SocketAddr, RestartTrigger) {
+/// Start the gateway (on its own thread/runtime, as the binary does) aimed at
+/// `unit`, and return the bound SSH address. The gateway thread handle is
+/// detached — `serve` blocks until Ctrl-C, which never comes in-test; dropping
+/// at test end tears the process down.
+async fn start_split(unit: &ServerUnit) -> SocketAddr {
     let gw_store = seeded_gw_store().await;
     let (ssh_tx, ssh_rx) = oneshot::channel();
-    let (restart_tx, restart_rx) = oneshot::channel::<RestartTrigger>();
+    let mut cfg = test_config("gateway");
+    unit.aim(&mut cfg);
     std::thread::spawn(move || {
         let rt = tokio::runtime::Builder::new_multi_thread()
             .enable_all()
             .build()
             .unwrap();
         rt.block_on(mush_gateway::serve(
-            test_config("gateway"),
+            cfg,
             GatewayOptions {
-                source: ServerSource::Restartable(launcher),
                 store: Some(gw_store),
                 ssh_ready: Some(ssh_tx),
                 web_ready: None,
-                restart_ready: Some(restart_tx),
                 siteban_refresh: None,
+                give_up_after: None,
             },
         ))
         .unwrap();
     });
-    let ssh_addr = tokio::time::timeout(Duration::from_secs(30), ssh_rx)
+    tokio::time::timeout(Duration::from_secs(30), ssh_rx)
         .await
         .expect("gateway bound SSH")
-        .expect("ssh addr");
-    let trigger = tokio::time::timeout(Duration::from_secs(30), restart_rx)
-        .await
-        .expect("supervisor handed back a restart trigger")
-        .expect("restart trigger");
-    (ssh_addr, trigger)
+        .expect("ssh addr")
 }
 
 struct AcceptAll;
@@ -438,30 +303,28 @@ async fn server_restart_keeps_connections_and_world() {
         .unwrap();
 
     // The SERVER's world store — SHARED across every restart, so the world
-    // survives (stands in for Redis on the dev box).
+    // survives (stands in for Redis on the dev box). The unit boots first
+    // (`After=`), then the gateway on its own thread/runtime (as the binary
+    // does) dials it.
     let server_store: Arc<dyn ObjectStore> = Arc::new(InMemoryStore::new());
-    let launcher = ThreadLauncher {
-        store: Arc::clone(&server_store),
-    };
-
-    // The gateway runs on its own thread/runtime (as the binary does), owning
-    // the supervisor that launches + restarts the server.
+    let unit = unit(server_store);
+    unit.start().await;
     let (ssh_tx, ssh_rx) = oneshot::channel();
-    let (restart_tx, restart_rx) = oneshot::channel::<RestartTrigger>();
-    let gateway_thread = std::thread::spawn(move || {
+    let mut gw_cfg = test_config("gateway");
+    unit.aim(&mut gw_cfg);
+    std::thread::spawn(move || {
         let rt = tokio::runtime::Builder::new_multi_thread()
             .enable_all()
             .build()
             .unwrap();
         rt.block_on(mush_gateway::serve(
-            test_config("gateway"),
+            gw_cfg,
             GatewayOptions {
-                source: ServerSource::Restartable(Box::new(launcher)),
                 store: Some(gw_store),
                 ssh_ready: Some(ssh_tx),
                 web_ready: None,
-                restart_ready: Some(restart_tx),
                 siteban_refresh: None,
+                give_up_after: None,
             },
         ))
         .unwrap();
@@ -470,10 +333,6 @@ async fn server_restart_keeps_connections_and_world() {
         .await
         .expect("gateway bound SSH")
         .expect("ssh addr");
-    let trigger = tokio::time::timeout(Duration::from_secs(30), restart_rx)
-        .await
-        .expect("supervisor handed back a restart trigger")
-        .expect("restart trigger");
 
     // --- God connects on TWO connections (multi-connect) and plays. ---
     let (_g1, mut god1) = play_client(ssh_addr).await;
@@ -501,10 +360,10 @@ async fn server_restart_keeps_connections_and_world() {
     god2.expect_after(before_say, "God says, \"pre-restart\"")
         .await;
 
-    // --- RESTART the server (the programmatic SIGHUP stand-in). ---
+    // --- RESTART the server (`systemctl restart`: it exits, a fresh one binds). ---
     let restart_mark1 = god1.mark();
     let restart_mark2 = god2.mark();
-    assert!(trigger.restart().await, "restart must be accepted");
+    unit.restart().await;
 
     // Both connections are told the game is restarting, are pushed a fresh
     // room render from the reloaded world, then are told reconnected only after
@@ -541,7 +400,6 @@ async fn server_restart_keeps_connections_and_world() {
 
     drop(god1);
     drop(god2);
-    let _ = gateway_thread;
 }
 
 /// R1/R5, mid-scene: a restart while the player is standing in a room they built
@@ -551,10 +409,9 @@ async fn server_restart_keeps_connections_and_world() {
 #[tokio::test(flavor = "multi_thread", worker_threads = 4)]
 async fn restart_mid_scene_resumes_in_current_room() {
     let server_store: Arc<dyn ObjectStore> = Arc::new(InMemoryStore::new());
-    let (ssh_addr, trigger) = start_split(Box::new(ThreadLauncher {
-        store: Arc::clone(&server_store),
-    }))
-    .await;
+    let unit = unit(server_store);
+    unit.start().await;
+    let ssh_addr = start_split(&unit).await;
 
     let (_g, mut god) = play_client(ssh_addr).await;
     god.send_line(&format!("connect boss {GM_PASSWORD}")).await;
@@ -574,7 +431,7 @@ async fn restart_mid_scene_resumes_in_current_room() {
 
     // RESTART while standing in Vault.
     let restart_mark = god.mark();
-    assert!(trigger.restart().await, "restart must be accepted");
+    unit.restart().await;
 
     // The connection survives, and the re-attach look renders VAULT (the current
     // room), not Limbo — proving per-session current-room render on re-attach.
@@ -590,18 +447,17 @@ async fn restart_mid_scene_resumes_in_current_room() {
     drop(god);
 }
 
-/// R3, the crash-loop guard: when the server keeps failing to relaunch, the
-/// supervisor does NOT respawn forever — it exhausts the guard and tells the
-/// still-connected player the server is down, WITHOUT dropping the connection or
-/// hanging. Input during the gap is refused with a clear notice, not lost.
+/// A server unit that stays away (doc 33 GG.1): the gateway holds the player
+/// through the whole gap, refuses input with a clear notice rather than losing
+/// it, never drops or hangs the connection, and heals on its own the moment
+/// the unit is back. (Past the start-limit bound the notice changes to the
+/// give-up line; that is `server_unit.rs`'s proof.)
 #[tokio::test(flavor = "multi_thread", worker_threads = 4)]
-async fn crash_loop_guard_gives_up_without_dropping_players() {
+async fn a_server_that_stays_away_keeps_the_player_held_and_input_refused() {
     let server_store: Arc<dyn ObjectStore> = Arc::new(InMemoryStore::new());
-    let (ssh_addr, trigger) = start_split(Box::new(FlakyLauncher {
-        store: Arc::clone(&server_store),
-        launches: AtomicUsize::new(0),
-    }))
-    .await;
+    let unit = unit(server_store);
+    unit.start().await;
+    let ssh_addr = start_split(&unit).await;
 
     let (_g, mut god) = play_client(ssh_addr).await;
     god.send_line(&format!("connect boss {GM_PASSWORD}")).await;
@@ -609,37 +465,49 @@ async fn crash_loop_guard_gives_up_without_dropping_players() {
         .await;
     god.expect("Limbo #0").await;
 
-    // Trigger a restart the server can never come back from (every relaunch fails).
+    // The unit goes down and nothing brings it back for a while.
     let mark = god.mark();
-    assert!(trigger.restart().await, "restart must be accepted");
-
-    // The player is told it is restarting, then — once the crash-loop guard is
-    // exhausted — that the server is down. The connection is never dropped: it is
-    // still delivering system lines here.
+    unit.stop().await;
     god.expect_after(mark, "restarting").await;
-    god.expect_after(mark, "could not be restarted").await;
+
+    // Input during the gap is refused with a clear notice, not lost.
+    let input_mark = god.mark();
+    god.send_line("say anyone there").await;
+    god.expect_after(input_mark, "your input was not sent")
+        .await;
+    // Still away: still connected, still refused, not dropped.
+    tokio::time::sleep(Duration::from_secs(3)).await;
+    let input_mark = god.mark();
+    god.send_line("say still here").await;
+    god.expect_after(input_mark, "The server is restarting; hold on")
+        .await;
+
+    // The unit is back: the gateway heals on its own, nobody is asked.
+    let heal_mark = god.mark();
+    unit.start().await;
+    god.expect_after(heal_mark, "Reconnected").await;
+    god.expect_after(heal_mark, "Limbo #0").await;
+    let after = god.mark();
+    god.send_line("say back").await;
+    god.expect_after(after, "God says, \"back\"").await;
 
     drop(god);
 }
 
-/// R1/D1a, the AUTO-restart (crash) path: when the server exits ON ITS OWN — NOT
-/// through the deliberate `RestartTrigger` — the supervisor must respawn it and
-/// re-attach held sessions WITHOUT dropping the connection. This exercises the
-/// crash ARM of the supervisor's select, where the boundary reader has ALREADY
-/// terminated before the gap code runs: the gap must not re-await that completed
-/// down-handle (doing so panics the supervisor — "JoinHandle polled after
-/// completion" — and strands every player in the gap forever). Here the first
-/// server drops its IPC boundary on its own; the deliberate trigger is untouched.
+/// R1/D1a, the crash path: when the server exits ON ITS OWN — a crash, not a
+/// deploy — the keeper must enter the gap from the boundary reader's end and
+/// re-attach held sessions WITHOUT dropping the connection once the unit has
+/// brought the server back. This exercises the arm of the keeper's select
+/// where the boundary reader has ALREADY terminated before the gap code runs:
+/// the gap must not re-await that completed down-handle (doing so panics the
+/// keeper — "JoinHandle polled after completion" — and strands every player
+/// in the gap forever).
 #[tokio::test(flavor = "multi_thread", worker_threads = 4)]
 async fn server_self_exit_auto_restarts_without_dropping_players() {
     let server_store: Arc<dyn ObjectStore> = Arc::new(InMemoryStore::new());
-    let crash: Arc<Mutex<Option<oneshot::Sender<()>>>> = Arc::new(Mutex::new(None));
-    let (ssh_addr, _trigger) = start_split(Box::new(CrashOnceLauncher {
-        store: Arc::clone(&server_store),
-        launches: AtomicUsize::new(0),
-        crash: Arc::clone(&crash),
-    }))
-    .await;
+    let unit = unit(server_store);
+    unit.start().await;
+    let ssh_addr = start_split(&unit).await;
 
     let (_g, mut god) = play_client(ssh_addr).await;
     god.send_line(&format!("connect boss {GM_PASSWORD}")).await;
@@ -654,19 +522,16 @@ async fn server_self_exit_auto_restarts_without_dropping_players() {
     )
     .await;
 
-    // Make the server EXIT ON ITS OWN (the crash / auto-restart path, D1a) by
-    // firing the first server's crash signal — NOT the RestartTrigger. The
-    // gateway's boundary reader hits EOF and the supervisor takes its crash arm.
+    // Make the server EXIT ON ITS OWN (the crash path, D1a): the gateway's
+    // boundary reader hits EOF and the keeper takes its down arm. Then the
+    // unit's `Restart=on-failure` brings a fresh server up at the same
+    // endpoint.
     let crash_mark = god.mark();
-    let crash_tx = crash
-        .lock()
-        .unwrap()
-        .take()
-        .expect("first boot published its crash sender");
-    let _ = crash_tx.send(());
+    unit.stop().await;
+    unit.start().await;
 
     // The connection survives the self-exit: restarting → Reconnected → fresh
-    // look, never dropped (R1). Before the fix the supervisor panicked re-polling
+    // look, never dropped (R1). Before the fix the keeper panicked re-polling
     // the completed down-handle and this hung until the step timeout.
     god.expect_after(crash_mark, "restarting").await;
     god.expect_after(crash_mark, "Reconnected").await;
@@ -687,10 +552,9 @@ async fn server_self_exit_auto_restarts_without_dropping_players() {
 #[tokio::test(flavor = "multi_thread", worker_threads = 4)]
 async fn client_disconnect_during_gap_leaves_survivor_intact() {
     let server_store: Arc<dyn ObjectStore> = Arc::new(InMemoryStore::new());
-    let (ssh_addr, trigger) = start_split(Box::new(ThreadLauncher {
-        store: Arc::clone(&server_store),
-    }))
-    .await;
+    let unit = unit(server_store);
+    unit.start().await;
+    let ssh_addr = start_split(&unit).await;
 
     // Two connections on the same character (multi-connect).
     let (_s1, mut god1) = play_client(ssh_addr).await;
@@ -715,7 +579,7 @@ async fn client_disconnect_during_gap_leaves_survivor_intact() {
     // RESTART, then immediately drop the SECOND connection — it vanishes during
     // the restart gap, before the re-attach completes.
     let restart_mark = god1.mark();
-    assert!(trigger.restart().await, "restart must be accepted");
+    unit.restart().await;
     drop(god2);
     drop(s2);
 
@@ -739,7 +603,9 @@ async fn client_disconnect_during_gap_leaves_survivor_intact() {
 #[tokio::test(flavor = "multi_thread", worker_threads = 4)]
 async fn reply_settings_survive_restart_and_remain_connection_local() {
     let store: Arc<dyn ObjectStore> = Arc::new(InMemoryStore::new());
-    let (addr, trigger) = start_split(Box::new(ThreadLauncher { store })).await;
+    let unit = unit(store);
+    unit.start().await;
+    let addr = start_split(&unit).await;
     let (_a, mut a) = play_client(addr).await;
     a.send_line(&format!("connect boss {GM_PASSWORD}")).await;
     a.expect("Connected as God").await;
@@ -777,7 +643,7 @@ async fn reply_settings_survive_restart_and_remain_connection_local() {
     );
 
     let mark = a.mark();
-    assert!(trigger.restart().await);
+    unit.restart().await;
     a.expect_after(mark, "Reconnected").await;
     let mark = a.mark();
     a.send_line("think after-restart").await;

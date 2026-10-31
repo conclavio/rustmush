@@ -2158,9 +2158,9 @@ impl GameCfg {
 }
 
 /// `[ipc]` section (M16b): where the forked gateway<->server boundary socket
-/// lives. Read by `mush-gateway` (the supervisor connects here after spawning
-/// the server child) and `mush-server` (it binds here). The all-in-one `mushd`
-/// ignores it. A localhost TCP address works everywhere (the Windows dev path);
+/// lives. Read by `mush-gateway` (it dials here, and keeps dialing while the
+/// server is down) and `mush-server` (it binds here; its own systemd unit
+/// since doc 33 GG.1). The all-in-one `mushd` ignores it. A localhost TCP address works everywhere (the Windows dev path);
 /// a filesystem path selects a Unix-domain socket where available (Linux prod).
 #[derive(Clone, Debug, Deserialize)]
 #[serde(default)]
@@ -2173,7 +2173,7 @@ pub struct IpcCfg {
     pub to_server_cap: usize,
     /// Max frames queued server->gateway (`to_gw`) before an overflow tears
     /// the boundary down (every `to_gw` frame is must-deliver, so it is never
-    /// per-message dropped; the supervisor re-attach heals the loss). Default
+    /// per-message dropped; the gateway's re-attach heals the loss). Default
     /// `8192`.
     pub to_gw_cap: usize,
     /// Per-frame IPC write timeout, milliseconds. A connected-but-not-draining
@@ -2183,17 +2183,6 @@ pub struct IpcCfg {
     /// The high-water threshold (percent of a queue's cap) at which a crossing
     /// logs an edge-gated warn. Default `80`.
     pub high_water_warn_pct: u8,
-    /// Whether the gateway EXITS (non-zero) once its supervisor has given up on
-    /// the server half (WS22-S17). Default `true`.
-    ///
-    /// An abandoned supervisor leaves the worst state the split can be in: the
-    /// gateway process is healthy and idle, every held player is still
-    /// connected, and every line they type is refused for ever. Exiting trades
-    /// connections that are already useless for a `Restart=on-failure` that
-    /// brings the whole game back. Set it `false` on a dev box to keep the
-    /// corpse attached for inspection — the gauge and the log marker are
-    /// published either way.
-    pub exit_on_abandoned_supervision: bool,
 }
 
 impl Default for IpcCfg {
@@ -2204,7 +2193,6 @@ impl Default for IpcCfg {
             to_gw_cap: 8192,
             write_timeout_ms: 5000,
             high_water_warn_pct: 80,
-            exit_on_abandoned_supervision: true,
         }
     }
 }
@@ -2607,12 +2595,6 @@ impl Config {
     #[must_use]
     pub fn ipc_high_water_warn_pct(&self) -> u8 {
         self.ipc.high_water_warn_pct.clamp(1, 100)
-    }
-
-    /// Whether an abandoned gateway supervisor exits the process (WS22-S17).
-    #[must_use]
-    pub fn ipc_exit_on_abandoned_supervision(&self) -> bool {
-        self.ipc.exit_on_abandoned_supervision
     }
 
     /// The validated `[store].store` backend selection.
@@ -3033,9 +3015,6 @@ cap_permile = 400"
         assert_eq!(cfg.ipc_to_gw_cap(), 8192);
         assert_eq!(cfg.ipc_write_timeout_ms(), 5000);
         assert_eq!(cfg.ipc_high_water_warn_pct(), 80);
-        // WS22-S17: an abandoned supervisor is fatal unless an operator says
-        // otherwise. The default is the production posture, not the dev one.
-        assert!(cfg.ipc_exit_on_abandoned_supervision());
 
         // Back-compat: an old [ipc] with only `listen` (no M18 keys) still
         // parses and yields the defaults.
@@ -3045,7 +3024,6 @@ cap_permile = 400"
         assert_eq!(cfg.ipc_to_gw_cap(), 8192);
         assert_eq!(cfg.ipc_write_timeout_ms(), 5000);
         assert_eq!(cfg.ipc_high_water_warn_pct(), 80);
-        assert!(cfg.ipc_exit_on_abandoned_supervision());
 
         // Explicit overrides parse.
         let cfg: Config = toml::from_str(
@@ -3057,9 +3035,11 @@ cap_permile = 400"
         assert_eq!(cfg.ipc_write_timeout_ms(), 250);
         assert_eq!(cfg.ipc_high_water_warn_pct(), 90);
 
-        // The dev-box opt-out parses, and is the only way to keep the corpse.
+        // Doc 33 GG.1 retired `exit_on_abandoned_supervision` (there is no
+        // supervisor to abandon); `[ipc]` takes unknown keys, so a rendered
+        // config from before the cut still parses.
         let cfg: Config = toml::from_str("[ipc]\nexit_on_abandoned_supervision = false").unwrap();
-        assert!(!cfg.ipc_exit_on_abandoned_supervision());
+        assert_eq!(cfg.ipc_high_water_warn_pct(), 80);
 
         // An out-of-range warn pct clamps into 1..=100.
         let cfg: Config = toml::from_str("[ipc]\nhigh_water_warn_pct = 0").unwrap();

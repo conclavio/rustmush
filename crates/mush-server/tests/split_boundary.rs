@@ -68,3 +68,5 @@ mod provisioning_smoke;
 mod quarantine_boot;
 #[path = "split_boundary/relay_registry.rs"]
 mod relay_registry;
+#[path = "split_boundary/unit_signals.rs"]
+mod unit_signals;

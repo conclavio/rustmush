@@ -30,6 +30,9 @@ mush-config.workspace = true
 mush-core.workspace = true
 mush-proto.workspace = true
 mush-ipc.workspace = true
+# Doc 33 GG.1: `READY=1` to systemd once the IPC socket is bound (the
+# server runs as its own `Type=notify` unit).
+mush-drain.workspace = true
 mush-store.workspace = true
 # The M3 proving modules, wired at boot (modules.rs).
 mush-comsys.workspace = true
