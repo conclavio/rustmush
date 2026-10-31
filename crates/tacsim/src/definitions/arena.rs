@@ -46,7 +46,7 @@ pub const MAX_ARENA_TILES: usize = 16;
 
 /// The widest or tallest an arena's ground may be, cells (doc 30 §7, §11 WG.6;
 /// `D-30-7`): four 128-cell quadrants a side (`4 × 128 = 512`, matching
-/// [`MAX_ARENA_TILES`] and [`crate::ground::MAX_DRAFT_SIDE`]).
+/// [`MAX_ARENA_TILES`] and [`crate::ground::QUAD`]).
 pub const MAX_ARENA_SIDE: u16 = 512;
 
 /// The most named key spots one arena may carry (doc 16 §3.2: *three or four*).

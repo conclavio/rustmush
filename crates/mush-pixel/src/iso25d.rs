@@ -3657,7 +3657,7 @@ mod tests {
                 let dx_m = -105.0 + (i as f64) * 30.0;
                 let dy_m = 40.0;
                 let range_m = (dx_m * dx_m + dy_m * dy_m).sqrt();
-                let bearing_deg = dx_m.atan2(dy_m).to_degrees().rem_euclid(360.0);
+                let bearing_deg = (300.0 + (i as f64) * 15.0) % 360.0;
                 json!({
                     "id": format!("c-{i}"),
                     "designator": format!("R{}", (b'A' + i as u8) as char),

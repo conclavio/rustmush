@@ -859,7 +859,7 @@ pub(crate) fn terrain_rows(
 /// pilot at check-out), and they name no unit. A spot past [`SPOT_LETTERS`] —
 /// which the load-time cap refuses — is left out rather than drawn with no
 /// letter. [`MAP_VERSION`] stays `1`: a field added is not a version.
-/// Candidate square window sides (cells) tried by [`default_map_window`] when a
+/// Candidate square window sides (cells) tried by [`map_frame_for_focus`] when a
 /// whole arena exceeds [`mush_atlas::cells::MAX_TILE_SIDE`] or [`MAP_MAX_BYTES`]
 /// (doc 30 §7, §11 WG.6; `D-30-7`, `Q-30-6`).
 pub const MAP_WINDOW_SIDES: [u16; 6] = [256, 192, 160, 128, 96, 64];
