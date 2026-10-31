@@ -180,12 +180,14 @@ for tool in systemctl redis-cli install find; do
 	fi
 done
 
-# The instance runs one of two ways (deploy/README.md): the all-in-one
-# `<name>mush.service`, or the split, hot-restartable `<name>mush-gateway.service`
-# which supervises the mush-server child. Take whichever systemd knows about,
+# The instance runs one of three ways (deploy/README.md): the gateway
+# generations' own server unit `<name>mush-server.service` (doc 33 GG.4; the
+# gateway generations hold their connections while it is down), the earlier
+# split's `<name>mush-gateway.service` which supervised the mush-server child,
+# or the all-in-one `<name>mush.service`. Take whichever systemd knows about,
 # unless the operator named one.
 if [ -z "$unit" ]; then
-	for candidate in "${instance}mush-gateway.service" "${instance}mush.service"; do
+	for candidate in "${instance}mush-server.service" "${instance}mush-gateway.service" "${instance}mush.service"; do
 		if systemctl cat "$candidate" >/dev/null 2>&1; then
 			unit="$candidate"
 			break
@@ -193,7 +195,7 @@ if [ -z "$unit" ]; then
 	done
 fi
 if [ -z "$unit" ]; then
-	echo "$0: no unit found for instance '$instance' (tried ${instance}mush-gateway.service, ${instance}mush.service); pass --unit" >&2
+	echo "$0: no unit found for instance '$instance' (tried ${instance}mush-server.service, ${instance}mush-gateway.service, ${instance}mush.service); pass --unit" >&2
 	exit 1
 fi
 
