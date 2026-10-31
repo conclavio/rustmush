@@ -1892,6 +1892,37 @@ export class GameApp {
     );
   }
 
+  /**
+   * Stage (and optionally apply) a `ground.draft.v1` JSON document into the live world
+   * via `@ground/stage` (`Q-30-5`). Automatically streams multi-chunk buffers when the
+   * payload exceeds 6,000 chars so full 256×256 drafts stay under the gateway 8 KiB line cap.
+   */
+  stageGroundDraft(draftJson: string, apply = true): boolean {
+    const compact = draftJson.replace(/\r?\n/g, " ").trim();
+    const MAX_CHUNK = 6000;
+    if (compact.length <= MAX_CHUNK) {
+      const verb = apply ? "@ground/stage/apply" : "@ground/stage";
+      const ok = this.client.sendLine(`${verb} ${compact}`);
+      if (!ok) {
+        this.#localNotice("Not connected — ground stage command dropped.");
+      }
+      return ok;
+    }
+    if (!this.client.sendLine("@ground/stage/begin")) {
+      this.#localNotice("Not connected — ground stage command dropped.");
+      return false;
+    }
+    for (let i = 0; i < compact.length; i += MAX_CHUNK) {
+      const slice = compact.slice(i, i + MAX_CHUNK);
+      if (!this.client.sendLine(`@ground/stage/chunk ${slice}`)) {
+        this.#localNotice("Connection lost while streaming ground draft chunks.");
+        return false;
+      }
+    }
+    const endVerb = apply ? "@ground/stage/end/apply" : "@ground/stage/end";
+    return this.client.sendLine(endVerb);
+  }
+
   /** Re-subscribe every `.vitals` feed (the rolls screen's board, I6). A
    * lower revision in the answer is ignored by the store. */
   refreshVitals(): void {

@@ -165,6 +165,15 @@
     controller?.requestGroundDraft?.(editorState.id || 'proving_ground');
   }
 
+  function handleStageToServer(apply = true) {
+    const payload = exportGroundDraftJson(editorState);
+    const json = JSON.stringify(payload);
+    const sent = controller?.stageGroundDraft?.(json, apply) ?? false;
+    statusNotice = sent
+      ? `Staged "${editorState.id || 'custom_arena'}" (${json.length} B) to server (${apply ? '@ground/stage/apply' : '@ground/stage'})`
+      : `Unable to stage "${editorState.id || 'custom_arena'}" — no active server connection`;
+  }
+
   $effect(() => {
     const frame = controller?.groundDraftFrame ?? null;
     if (!frame || frame === lastLoadedDraftFrame) return;
@@ -824,8 +833,16 @@
       <button type="button" class="btn" onclick={handleLoadServerDraft} title="Load draft from server">
         Load Server Draft
       </button>
+      <button
+        type="button"
+        class="btn btn-primary"
+        onclick={() => handleStageToServer(true)}
+        title="Sign, stage, and apply this draft to the live server (@ground/stage/apply)"
+      >
+        Stage to Server
+      </button>
 
-      <button type="button" class="btn btn-primary" onclick={handleExportDraftJson}>
+      <button type="button" class="btn" onclick={handleExportDraftJson}>
         Export Draft
       </button>
       <label class="btn file-btn">

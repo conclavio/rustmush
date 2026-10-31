@@ -563,6 +563,12 @@ category = "read-only"
 note = "doc 20 cut SM.1 (§3.2, D-20-4): staff-only truth of the keyed geology at one body-fixed lattice point -- a pure read of the RAM GeologyState (the key's live handle and the installed body table), recomputing one province, one field and its 64 pockets by HMAC; no document, no economy post, no authoritative submission, no state family. Refuses while the layer is disabled, naming the reason. Doc 20 cut SM.4b adds the site form, @geology <site> <pocket>|<field> [province|field|pocket] (the site by its name, location or entry; the address through tacsim::surface::address), printing the same levels for that lattice pocket under the site's authored block shift -- still a pure read: no document, no post, no submission."
 
 [[handler]]
+name = "@ground"
+category = "legacy-post-image"
+family = "tacsim.ground"
+note = "doc 30 §8, §13 Q-30-5 (cut WG.7): staff-only live ground draft staging (@ground/stage, @ground/stage/apply, @ground/check, @ground/draft). Signs and hot-shelves a GroundDraft into the running TacsimStore and AtlasState.shelf, and optionally applies the region and arena packs via mush_content::apply_pack on the compatibility post-image lane."
+
+[[handler]]
 name = "@hold"
 category = "economy-carve-out"
 note = "Economy balance holds (@hold): places, captures, releases, or inspects validated hold records under the 09 §7 item 5 economy carve-out."
