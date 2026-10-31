@@ -113,6 +113,28 @@ const TRACK: Rgb = [48, 52, 62];
 const PLAYED: Rgb = [92, 98, 112];
 const FIELD_EDGE: Rgb = [96, 104, 120];
 
+/// Retained Kitty image ID (`170`) for the bottom replay/observer banner and
+/// timeline bar overlaid on `Iso25d` and `FirstPerson` follow-cams (`z = -1`).
+#[cfg(feature = "encode")]
+pub const IMAGE_ID_RP_BAR: u32 = 170;
+/// Retained Kitty image ID (`171`) for the full-arena `Overview` view (`z = -50`).
+#[cfg(feature = "encode")]
+pub const IMAGE_ID_RP_OVERVIEW: u32 = 171;
+
+/// Kitty placement ID (`70`) for `IMAGE_ID_RP_BAR`.
+#[cfg(feature = "encode")]
+pub const PLACEMENT_RP_BAR: u32 = 70;
+/// Kitty placement ID (`71`) for `IMAGE_ID_RP_OVERVIEW`.
+#[cfg(feature = "encode")]
+pub const PLACEMENT_RP_OVERVIEW: u32 = 71;
+
+#[cfg(feature = "encode")]
+const Z_RP_BAR: i32 = -1;
+#[cfg(feature = "encode")]
+const Z_RP_OVERVIEW: i32 = -50;
+#[cfg(feature = "encode")]
+const CHROMA_KEY_RP: Rgb = [1, 0, 1];
+
 /// The replay as a [`Picture`]: drawn from the held document, the ground and
 /// the cursor, on bucket B's clock (on change; the TUI runs it faster while
 /// playing). Keeps the ground drawn at the size it was last drawn at, plus
@@ -123,6 +145,16 @@ pub struct ReplayPicture {
     camera: ReplayCamera,
     iso25d: Iso25DPicture,
     cockpit: CockpitPicture,
+    #[cfg(feature = "encode")]
+    kitty_last_camera: Option<ReplayCamera>,
+    #[cfg(feature = "encode")]
+    kitty_overview_hash: Option<u64>,
+    #[cfg(feature = "encode")]
+    kitty_overview_area: Option<(u16, u16, u16, u16)>,
+    #[cfg(feature = "encode")]
+    kitty_bar_hash: Option<u64>,
+    #[cfg(feature = "encode")]
+    kitty_bar_area: Option<(u16, u16, u16, u16)>,
 }
 
 /// What a drawn ground was drawn from.
@@ -173,6 +205,259 @@ impl ReplayPicture {
     pub fn cycle_camera(&mut self) -> ReplayCamera {
         self.camera = self.camera.next();
         self.camera
+    }
+
+    /// Return Kitty Graphics escape bytes that delete all retained Replay and
+    /// follow-cam image IDs (`170`, `171`, `Iso25DPicture`, and `CockpitPicture`),
+    /// and reset cached placement state.
+    #[cfg(feature = "encode")]
+    pub fn cleanup_kitty_bytes(&mut self) -> Vec<u8> {
+        let mut out = Vec::new();
+        if self.kitty_bar_hash.is_some() {
+            crate::kitty::delete_image_bytes(&mut out, IMAGE_ID_RP_BAR);
+        }
+        if self.kitty_overview_hash.is_some() {
+            crate::kitty::delete_image_bytes(&mut out, IMAGE_ID_RP_OVERVIEW);
+        }
+        out.extend_from_slice(&self.iso25d.cleanup_kitty_bytes());
+        out.extend_from_slice(&self.cockpit.cleanup_kitty_bytes());
+        self.kitty_last_camera = None;
+        self.kitty_overview_hash = None;
+        self.kitty_overview_area = None;
+        self.kitty_bar_hash = None;
+        self.kitty_bar_area = None;
+        out
+    }
+
+    /// Invalidate a specific retained Kitty image ID if the terminal evicted it.
+    #[cfg(feature = "encode")]
+    pub fn invalidate_image(&mut self, image_id: u32) {
+        if image_id == IMAGE_ID_RP_BAR {
+            self.kitty_bar_hash = None;
+            self.kitty_bar_area = None;
+        } else if image_id == IMAGE_ID_RP_OVERVIEW {
+            self.kitty_overview_hash = None;
+            self.kitty_overview_area = None;
+        } else {
+            self.iso25d.invalidate_image(image_id);
+            self.cockpit.invalidate_image(image_id);
+        }
+    }
+
+    /// Force all retained Kitty placements to re-emit on the next tick.
+    #[cfg(feature = "encode")]
+    pub fn invalidate_placements(&mut self) {
+        self.kitty_overview_area = None;
+        self.kitty_bar_area = None;
+        self.iso25d.invalidate_placements();
+        self.cockpit.invalidate_placements();
+    }
+
+    /// Render the Replay or live `@arena/watch` picture as a retained Kitty
+    /// Graphics stream at `1280x` (`640x` fallback when `cell` is unknown or
+    /// `step_down` is true):
+    /// - `ReplayCamera::Iso25d` and `ReplayCamera::FirstPerson` delegate their
+    ///   world viewports to [`Iso25DPicture::draw_kitty`] and
+    ///   [`CockpitPicture::draw_kitty`], and composite the replay banner +
+    ///   timeline bar as a retained RGBA overlay (`IMAGE_ID_RP_BAR = 170`,
+    ///   `PLACEMENT_RP_BAR = 70`, `z = -1`).
+    /// - `ReplayCamera::Overview` renders at `1280x` (`640x` fallback) and
+    ///   retains `IMAGE_ID_RP_OVERVIEW = 171` (`PLACEMENT_RP_OVERVIEW = 71`,
+    ///   `z = -50`) when the frame hash is unchanged.
+    #[cfg(feature = "encode")]
+    pub fn draw_kitty(
+        &mut self,
+        feeds: &dyn Feeds,
+        look: &Look,
+        area: (u16, u16, u16, u16),
+        cell: Option<crate::caps::CellSize>,
+        step_down: bool,
+    ) -> Option<(crate::iso25d::Viewport25D, Vec<u8>)> {
+        let vp = crate::cockpit_kitty::viewport_fp(area.2, area.3, cell, step_down);
+        let (vw, vh) = (vp.width_px, vp.height_px);
+        let placed_area = (
+            area.0.saturating_add(vp.col_offset),
+            area.1.saturating_add(vp.row_offset),
+            vp.cols,
+            vp.rows,
+        );
+        let mut ops = Vec::new();
+
+        let Some(doc) = feeds
+            .feed(REPLAY_FEED)
+            .and_then(Replay::of)
+            .or_else(|| feeds.feed(OBSERVER_FEED).and_then(Replay::from_observer))
+        else {
+            if self.kitty_last_camera.is_some() {
+                ops.extend_from_slice(&self.cleanup_kitty_bytes());
+            }
+            let mut card = Frame::new(vw, vh);
+            draw_card(&mut card, "WAITING FOR THE REPLAY");
+            let h = card.hash();
+            if self.kitty_overview_hash != Some(h) {
+                let png = crate::png::encode(&card);
+                crate::kitty::transmit_bytes(&mut ops, &png, IMAGE_ID_RP_OVERVIEW);
+                self.kitty_overview_hash = Some(h);
+                self.kitty_overview_area = None;
+            }
+            if self.kitty_overview_area != Some(placed_area) {
+                crate::overhead::place_kitty_subrect(
+                    &mut ops,
+                    IMAGE_ID_RP_OVERVIEW,
+                    PLACEMENT_RP_OVERVIEW,
+                    placed_area,
+                    (0, 0, vw as u32, vh as u32),
+                    Z_RP_OVERVIEW,
+                );
+                self.kitty_overview_area = Some(placed_area);
+            }
+            return Some((vp, crate::overhead::wrap_kitty_sync(ops)));
+        };
+
+        let cursor = feeds.feed(REPLAY_CURSOR_FEED);
+        let t_ms = cursor
+            .and_then(|c| c.get("t_ms"))
+            .and_then(Value::as_i64)
+            .unwrap_or_else(|| doc.keyframes.first().map_or(0, |k| k.t_ms));
+        let focus = cursor
+            .and_then(|c| c.get("focus"))
+            .and_then(Value::as_u64)
+            .and_then(|f| usize::try_from(f).ok())
+            .unwrap_or(0);
+        let camera = cursor
+            .and_then(|c| c.get("view"))
+            .and_then(Value::as_str)
+            .and_then(ReplayCamera::from_name)
+            .unwrap_or(self.camera);
+        let ground = feeds
+            .feed(ARENA_MAP_FEED)
+            .filter(|m| m.get("seated").and_then(Value::as_bool) != Some(false))
+            .filter(|m| m.get("match").and_then(Value::as_i64) == Some(doc.match_id));
+
+        if self.kitty_last_camera != Some(camera) {
+            ops.extend_from_slice(&self.cleanup_kitty_bytes());
+            self.kitty_last_camera = Some(camera);
+        }
+
+        match camera {
+            ReplayCamera::Overview => {
+                let mut frame = Frame::new(vw, vh);
+                let scene = replay_scene(&frame, &doc, ground, t_ms, focus, &mut self.ground);
+                scene.draw(&mut frame);
+                let h = frame.hash();
+                if self.kitty_overview_hash != Some(h) {
+                    let png = crate::png::encode(&frame);
+                    crate::kitty::transmit_bytes(&mut ops, &png, IMAGE_ID_RP_OVERVIEW);
+                    self.kitty_overview_hash = Some(h);
+                    self.kitty_overview_area = None;
+                }
+                if self.kitty_overview_area != Some(placed_area) {
+                    crate::overhead::place_kitty_subrect(
+                        &mut ops,
+                        IMAGE_ID_RP_OVERVIEW,
+                        PLACEMENT_RP_OVERVIEW,
+                        placed_area,
+                        (0, 0, vw as u32, vh as u32),
+                        Z_RP_OVERVIEW,
+                    );
+                    self.kitty_overview_area = Some(placed_area);
+                }
+                Some((vp, crate::overhead::wrap_kitty_sync(ops)))
+            }
+            ReplayCamera::Iso25d | ReplayCamera::FirstPerson => {
+                let cell_cm = ground
+                    .and_then(|m| m.get("cell_cm"))
+                    .and_then(Value::as_i64)
+                    .unwrap_or(1_000)
+                    .max(100);
+                let Some(cockpit) = doc.cockpit_at(t_ms, focus, cell_cm) else {
+                    let mut frame = Frame::new(vw, vh);
+                    let scene = replay_scene(&frame, &doc, ground, t_ms, focus, &mut self.ground);
+                    scene.draw(&mut frame);
+                    let h = frame.hash();
+                    if self.kitty_overview_hash != Some(h) {
+                        let png = crate::png::encode(&frame);
+                        crate::kitty::transmit_bytes(&mut ops, &png, IMAGE_ID_RP_OVERVIEW);
+                        self.kitty_overview_hash = Some(h);
+                        self.kitty_overview_area = None;
+                    }
+                    if self.kitty_overview_area != Some(placed_area) {
+                        crate::overhead::place_kitty_subrect(
+                            &mut ops,
+                            IMAGE_ID_RP_OVERVIEW,
+                            PLACEMENT_RP_OVERVIEW,
+                            placed_area,
+                            (0, 0, vw as u32, vh as u32),
+                            Z_RP_OVERVIEW,
+                        );
+                        self.kitty_overview_area = Some(placed_area);
+                    }
+                    return Some((vp, crate::overhead::wrap_kitty_sync(ops)));
+                };
+                let fallback_map;
+                let map_val = if let Some(g) = ground {
+                    Some(g)
+                } else {
+                    let (cw, ch) = (doc.cells.0.max(16), doc.cells.1.max(16));
+                    fallback_map = serde_json::json!({
+                        "match": doc.match_id,
+                        "width": cw,
+                        "height": ch,
+                        "cell_cm": cell_cm,
+                        "legend": { ".": "grass" },
+                        "rows": vec![format!("{cw}."); ch],
+                    });
+                    Some(&fallback_map)
+                };
+                let follow = FollowFeeds {
+                    cockpit,
+                    map: map_val,
+                };
+                let (sub_vp, sub_bytes) = if camera == ReplayCamera::Iso25d {
+                    self.iso25d
+                        .draw_kitty(&follow, look, area, cell, step_down)?
+                } else {
+                    self.cockpit
+                        .draw_kitty(&follow, look, area, cell, step_down, true)?
+                };
+                ops.extend_from_slice(&sub_bytes);
+
+                let (bw, bh) = (sub_vp.width_px, sub_vp.height_px);
+                let sub_placed = (
+                    area.0.saturating_add(sub_vp.col_offset),
+                    area.1.saturating_add(sub_vp.row_offset),
+                    sub_vp.cols,
+                    sub_vp.rows,
+                );
+                let mut bar_frame = Frame::new(bw, bh);
+                fill_rect(&mut bar_frame, 0, 0, bw as i64, bh as i64, CHROMA_KEY_RP);
+                draw_follow_banner(&mut bar_frame, &doc, t_ms, focus, camera);
+                let rgba = crate::overhead::frame_to_rgba_chroma(&bar_frame, CHROMA_KEY_RP);
+                let bar_hash = crate::overhead::fnv1a_bytes(&rgba);
+                let mut bar_ops = Vec::new();
+                if self.kitty_bar_hash != Some(bar_hash) {
+                    let png = crate::png::encode_rgba(bw, bh, &rgba);
+                    crate::kitty::transmit_bytes(&mut bar_ops, &png, IMAGE_ID_RP_BAR);
+                    self.kitty_bar_hash = Some(bar_hash);
+                    self.kitty_bar_area = None;
+                }
+                if self.kitty_bar_area != Some(sub_placed) {
+                    crate::overhead::place_kitty_subrect(
+                        &mut bar_ops,
+                        IMAGE_ID_RP_BAR,
+                        PLACEMENT_RP_BAR,
+                        sub_placed,
+                        (0, 0, bw as u32, bh as u32),
+                        Z_RP_BAR,
+                    );
+                    self.kitty_bar_area = Some(sub_placed);
+                }
+                if !bar_ops.is_empty() {
+                    ops.extend_from_slice(&crate::overhead::wrap_kitty_sync(bar_ops));
+                }
+                Some((sub_vp, ops))
+            }
+        }
     }
 }
 
@@ -556,6 +841,13 @@ impl Replay {
             } else {
                 100i64.saturating_sub((hits_taken as i64) * 25).max(15)
             };
+            let moving = !wrecked
+                && at_next
+                    .units
+                    .get(i)
+                    .copied()
+                    .flatten()
+                    .is_some_and(|(nx, ny, _)| (nx - ux).abs() > 0.01 || (ny - uy).abs() > 0.01);
             contacts.push(serde_json::json!({
                 "designator": u.callsign,
                 "iff": iff,
@@ -565,6 +857,35 @@ impl Replay {
                 "range_m": range_m.max(1),
                 "heading_deg": uheading.round() as i64,
                 "health_pct": health_pct,
+                "moving": moving,
+            }));
+        }
+
+        let mut notices = Vec::new();
+        if let Some(shot) = recent_shot {
+            let target_call = self
+                .roster
+                .get(shot.target)
+                .map_or("?", |u| u.callsign.as_str());
+            let kind = if shot.hit && self.wrecked_by(shot.target, shot.t_ms) {
+                "kill"
+            } else if shot.hit {
+                "hit"
+            } else {
+                "miss"
+            };
+            notices.push(serde_json::json!({
+                "kind": kind,
+                "designator": target_call,
+            }));
+        }
+        if self
+            .shots
+            .iter()
+            .any(|s| s.target == idx && s.hit && s.t_ms <= t_ms && t_ms - s.t_ms < SHOT_SHOWN_MS)
+        {
+            notices.push(serde_json::json!({
+                "kind": if self.wrecked_by(idx, t_ms) { "section_lost" } else { "struck" },
             }));
         }
 
@@ -593,6 +914,7 @@ impl Replay {
                 { "name": "cannon", "state": weapon_state, "ammo": 40, "max_ammo": 40 }
             ],
             "contacts": contacts,
+            "notices": notices,
         }))
     }
 
@@ -1302,5 +1624,70 @@ mod tests {
         );
         let live_frame = draw(&live_feeds, 320, 220);
         assert!(live_frame.count_colours(256) > 8);
+    }
+
+    #[cfg(feature = "encode")]
+    #[test]
+    fn retained_kitty_replay_scales_to_1280_across_all_three_cameras() {
+        use crate::caps::CellSize;
+        let mut f = feeds(Some(6_100), true);
+        let mut pic = ReplayPicture::new();
+        let area = (1, 1, 128, 36);
+        let cell = Some(CellSize {
+            width: 10,
+            height: 20,
+        });
+
+        // 1. Overview at 1280x.
+        let (vp_ov, bytes_ov1) = pic
+            .draw_kitty(&f, &Look::default(), area, cell, false)
+            .expect("overview rendered");
+        assert_eq!(vp_ov.width_px, 1280);
+        let s_ov1 = String::from_utf8_lossy(&bytes_ov1);
+        assert!(s_ov1.contains("i=171"), "uploads overview image id=171");
+        assert!(s_ov1.contains("p=71"), "places overview placement p=71");
+        let (_, bytes_ov2) = pic
+            .draw_kitty(&f, &Look::default(), area, cell, false)
+            .expect("overview cached");
+        assert!(bytes_ov2.is_empty(), "idle overview tick emits 0 bytes");
+
+        // 2. Switch to Iso25d follow-cam -> cleans up previous camera, renders 2.5D + banner overlay (i=170).
+        f.insert(
+            REPLAY_CURSOR_FEED.into(),
+            serde_json::json!({"match": 7, "t_ms": 6_100, "focus": 0, "view": "iso25d"}),
+        );
+        let (vp_iso, bytes_iso) = pic
+            .draw_kitty(&f, &Look::default(), area, cell, false)
+            .expect("iso25d rendered");
+        assert_eq!(vp_iso.width_px, 1280);
+        let s_iso = String::from_utf8_lossy(&bytes_iso);
+        assert!(
+            s_iso.contains("a=d,d=I,i=171"),
+            "cleans up overview image on camera switch"
+        );
+        assert!(
+            s_iso.contains("i=170"),
+            "uploads replay banner overlay i=170"
+        );
+        assert!(s_iso.contains("p=70"), "places replay banner overlay p=70");
+
+        // 3. Switch to FirstPerson ride-along -> cleans up 2.5D, renders FP retained Kitty + banner overlay.
+        f.insert(
+            REPLAY_CURSOR_FEED.into(),
+            serde_json::json!({"match": 7, "t_ms": 6_100, "focus": 0, "view": "first_person"}),
+        );
+        let (vp_fp, bytes_fp) = pic
+            .draw_kitty(&f, &Look::default(), area, cell, false)
+            .expect("first_person rendered");
+        assert_eq!(vp_fp.width_px, 1280);
+        let s_fp = String::from_utf8_lossy(&bytes_fp);
+        assert!(s_fp.contains("i=140"), "uploads FP world layer i=140");
+        assert!(s_fp.contains("p=70"), "places replay banner overlay p=70");
+
+        // 4. Unknown cell geometry -> 640x fallback.
+        let (vp_fb, _) = pic
+            .draw_kitty(&f, &Look::default(), area, None, false)
+            .expect("fallback rendered");
+        assert_eq!(vp_fb.width_px, 640);
     }
 }

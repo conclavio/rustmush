@@ -24,6 +24,9 @@ export type ReplayCameraMode = "overview" | "iso25d" | "first_person";
 /** The frame drawn: 640x480 (doc 21 §5). */
 export const FRAME_W = 640;
 export const FRAME_H = 480;
+/** High-definition widescreen frame drawn when HD mode is enabled (`1280x720`). */
+export const FRAME_W_HD = 1280;
+export const FRAME_H_HD = 720;
 
 /** The clock: at most a frame every 50 ms (20 Hz, the cockpit's own). */
 export const LOCAL_FRAME_MS = 50;
@@ -84,6 +87,8 @@ export class LocalPicture {
     dxCm = 0,
     dyCm = 0,
     zoomPermille = 1000,
+    width = FRAME_W,
+    height = FRAME_H,
   ): boolean {
     if (kind !== this.#kind) {
       const wasmKind =
@@ -100,7 +105,7 @@ export class LocalPicture {
       this.#map = map;
     }
     if (
-      !this.#m.render(FRAME_W, FRAME_H, {
+      !this.#m.render(width, height, {
         offsetMdeg: hullOffsetMdeg + lookMdeg,
         hullOffsetMdeg,
         orderedMdeg,

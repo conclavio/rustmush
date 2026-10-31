@@ -72,7 +72,9 @@
   } from "$lib/picture";
   import {
     FRAME_H,
+    FRAME_H_HD,
     FRAME_W,
+    FRAME_W_HD,
     LOCAL_FRAME_MS,
     LocalPicture,
     localCapable,
@@ -109,9 +111,18 @@
   let zoomPermille = $state(ZOOM_DEFAULT_PERMILLE);
 
   const PICTURE_WIDTH_KEY = "rustmush.pictureWidth";
+  const PICTURE_HD_KEY = "rustmush.pictureHd";
   const DEFAULT_PICTURE_W = 780;
   const MIN_PICTURE_W = 280;
-  const MAX_PICTURE_W = 1120;
+  const MAX_PICTURE_W = 1280;
+
+  let hdMode = $state(storageGet(PICTURE_HD_KEY) === "on");
+
+  function toggleHd(): void {
+    hdMode = !hdMode;
+    storageSet(PICTURE_HD_KEY, hdMode ? "on" : "off");
+    local?.forget();
+  }
 
   function loadPictureWidth(): number {
     const raw = Number(storageGet(PICTURE_WIDTH_KEY));
@@ -401,6 +412,8 @@
         const { dxCm, dyCm } = canDeadReckon
           ? predictedOffsetCm(speedCms, predMdeg, now - frameArrivedAtMs)
           : { dxCm: 0, dyCm: 0 };
+        const targetW = hdMode ? FRAME_W_HD : FRAME_W;
+        const targetH = hdMode ? FRAME_H_HD : FRAME_H;
         if (
           l.draw(
             app.picture.cockpitData,
@@ -412,11 +425,13 @@
             dxCm,
             dyCm,
             zoomPermille,
+            targetW,
+            targetH,
           )
         ) {
-          if (c.width !== FRAME_W || c.height !== FRAME_H) {
-            c.width = FRAME_W;
-            c.height = FRAME_H;
+          if (c.width !== targetW || c.height !== targetH) {
+            c.width = targetW;
+            c.height = targetH;
           }
           c.getContext("2d")?.putImageData(l.image(), 0, 0);
           painted = c;
@@ -925,6 +940,15 @@
           >
         </span>
       {/if}
+      <button
+        type="button"
+        class="toggle wf-btn"
+        class:armed={hdMode}
+        aria-pressed={hdMode}
+        aria-label="HD resolution toggle"
+        title={hdMode ? "Switch to 640×480 SD" : "Switch to 1280×720 HD"}
+        onclick={toggleHd}>{hdMode ? "1280p" : "640p"}</button
+      >
       <span class="dim legend"
         >a d turn · w s speed · q e look · c centre · x stop · v view · f free/hold · g volley · t lock ·
         F1–F6 order</span
@@ -952,6 +976,7 @@
       <canvas
         bind:this={canvas}
         aria-hidden="true"
+        style={hdMode ? "aspect-ratio: 16 / 9" : undefined}
         onwheel={onCanvasWheel}
         onclick={onCanvasClick}
         ondblclick={onCanvasDblClick}
