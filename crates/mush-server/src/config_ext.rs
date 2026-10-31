@@ -838,6 +838,25 @@ fn read_pack_sources(paths: &[String], label: &str) -> Result<Vec<tacsim::PackSo
                 let candidate = item.path();
                 if candidate.extension().is_some_and(|e| e == "json") {
                     files.push(candidate);
+                } else if candidate.is_dir() {
+                    let sub_listing = std::fs::read_dir(&candidate).map_err(|error| {
+                        format!(
+                            "{label}: {} could not be listed: {error}",
+                            candidate.display()
+                        )
+                    })?;
+                    for sub_item in sub_listing {
+                        let sub_item = sub_item.map_err(|error| {
+                            format!(
+                                "{label}: {} could not be listed: {error}",
+                                candidate.display()
+                            )
+                        })?;
+                        let sub_path = sub_item.path();
+                        if sub_path.extension().is_some_and(|e| e == "json") {
+                            files.push(sub_path);
+                        }
+                    }
                 }
             }
             files.sort();
@@ -867,7 +886,99 @@ fn read_pack_sources(paths: &[String], label: &str) -> Result<Vec<tacsim::PackSo
         let (name, bytes) = read_pack_file(&file, section)?;
         out.push(tacsim::PackSource { name, bytes });
     }
+    sort_pack_sources_by_requires(&mut out);
     Ok(out)
+}
+
+/// Topologically order `sources` by `manifest.requires` while preserving their
+/// original (sorted/configured) index as the tie-breaker when no dependency
+/// connects two files (doc 34 cut CS.5e). Unparseable files or cycles remain in
+/// their original relative positions so `verify_sources` reports the exact file.
+fn sort_pack_sources_by_requires(sources: &mut Vec<tacsim::PackSource>) {
+    if sources.len() <= 1 {
+        return;
+    }
+    let n = sources.len();
+    let mut id_to_idx: std::collections::BTreeMap<String, usize> =
+        std::collections::BTreeMap::new();
+    let mut reqs_by_idx: Vec<Vec<String>> = Vec::with_capacity(n);
+
+    for (idx, src) in sources.iter().enumerate() {
+        let mut req_ids = Vec::new();
+        if let Ok(val) = serde_json::from_str::<serde_json::Value>(&src.bytes)
+            && let Some(manifest) = val.get("manifest").and_then(serde_json::Value::as_object)
+        {
+            if let Some(id) = manifest.get("id").and_then(serde_json::Value::as_str) {
+                id_to_idx.entry(id.to_string()).or_insert(idx);
+            }
+            if let Some(reqs) = manifest
+                .get("requires")
+                .and_then(serde_json::Value::as_array)
+            {
+                for r in reqs {
+                    if let Some(dep_id) = r.get("id").and_then(serde_json::Value::as_str) {
+                        req_ids.push(dep_id.to_string());
+                    }
+                }
+            }
+        }
+        reqs_by_idx.push(req_ids);
+    }
+
+    let mut in_degree = vec![0_usize; n];
+    let mut dependents: Vec<Vec<usize>> = vec![Vec::new(); n];
+    for (idx, reqs) in reqs_by_idx.iter().enumerate() {
+        for dep_id in reqs {
+            if let Some(&dep_idx) = id_to_idx.get(dep_id)
+                && dep_idx != idx
+                && let Some(deps) = dependents.get_mut(dep_idx)
+                && !deps.contains(&idx)
+            {
+                deps.push(idx);
+                if let Some(deg) = in_degree.get_mut(idx) {
+                    *deg += 1;
+                }
+            }
+        }
+    }
+
+    let mut ready: std::collections::BTreeSet<usize> = in_degree
+        .iter()
+        .enumerate()
+        .filter_map(|(idx, &deg)| (deg == 0).then_some(idx))
+        .collect();
+    let mut order: Vec<usize> = Vec::with_capacity(n);
+    while let Some(idx) = ready.pop_first() {
+        order.push(idx);
+        if let Some(deps) = dependents.get(idx) {
+            for &next in deps {
+                if let Some(deg) = in_degree.get_mut(next) {
+                    *deg = deg.saturating_sub(1);
+                    if *deg == 0 {
+                        ready.insert(next);
+                    }
+                }
+            }
+        }
+    }
+
+    if order.len() < n {
+        for idx in 0..n {
+            if !order.contains(&idx) {
+                order.push(idx);
+            }
+        }
+    }
+
+    let mut old: Vec<Option<tacsim::PackSource>> =
+        std::mem::take(sources).into_iter().map(Some).collect();
+    for idx in order {
+        if let Some(slot) = old.get_mut(idx)
+            && let Some(src) = slot.take()
+        {
+            sources.push(src);
+        }
+    }
 }
 
 /// Read one pack file for `section`, refusing anything over
@@ -1201,6 +1312,52 @@ mod tests {
             ..TacsimCfg::default()
         };
         assert_eq!(tacsim_config(&cfg).expect("one pack loads").packs.len(), 1);
+        let _ = std::fs::remove_dir_all(&dir);
+    }
+
+    /// **Doc 34 cut CS.5e**: a configured pack/seed directory discovers `.json`
+    /// files in nested subdirectories (`a_corridor/` vs `z_core/`) and
+    /// topologically orders them by `manifest.requires` so dependencies precede
+    /// dependents regardless of filename sort order.
+    #[test]
+    fn cs5e_pack_directory_discovers_subdirectories_and_sorts_by_requires() {
+        let dir = std::env::temp_dir().join(format!(
+            "cs5e-dir-{}-{}",
+            std::process::id(),
+            std::time::SystemTime::now()
+                .duration_since(std::time::UNIX_EPOCH)
+                .map(|d| d.as_nanos())
+                .unwrap_or_default()
+        ));
+        let sub_a = dir.join("a_corridor");
+        let sub_z = dir.join("z_core");
+        std::fs::create_dir_all(&sub_a).expect("a_corridor subdir");
+        std::fs::create_dir_all(&sub_z).expect("z_core subdir");
+        // Write the dependent pack (`tacsim.corridor.ceres_phobos`, which requires `tacsim.core@1`)
+        // under `a_corridor/00_corridor.json` so it sorts FIRST alphabetically.
+        std::fs::write(
+            sub_a.join("00_corridor.json"),
+            tacsim::fixture::CORRIDOR_JSON,
+        )
+        .expect("writes corridor");
+        // Write the required base pack (`tacsim.core@1`) under `z_core/99_core.json` so it sorts LAST alphabetically.
+        std::fs::write(sub_z.join("99_core.json"), tacsim::fixture::CORE_JSON)
+            .expect("writes core");
+
+        let sources =
+            read_pack_sources(&[dir.display().to_string()], "[tacsim].seed_paths").expect("reads");
+        assert_eq!(sources.len(), 2);
+        assert!(
+            sources[0].name.ends_with("99_core.json"),
+            "expected required base pack first, got {}",
+            sources[0].name
+        );
+        assert!(
+            sources[1].name.ends_with("00_corridor.json"),
+            "expected dependent pack second, got {}",
+            sources[1].name
+        );
+
         let _ = std::fs::remove_dir_all(&dir);
     }
 
