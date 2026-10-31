@@ -51,7 +51,26 @@ pub struct HardwareDeployment {
     /// it pays. The shipped launch composes none (who runs one is the Tether's
     /// back room, doc 17h §4); a test composes one.
     pub ungovern: Option<UngoverningSite>,
+    /// **A refit bay** (doc 31 cut UD.4b), when composed: a facility holding `bay_refit`,
+    /// its stores and the provider it pays. The bay refits a hull within its family of
+    /// fielded units, a part from its stores.
+    pub bay: Option<RefitBay>,
 }
+
+/// **A refit bay** (doc 31 cut UD.4b): who is paid, where, and from which stores.
+#[derive(Clone, Debug)]
+pub struct RefitBay {
+    pub provider: ScopedCoreAccount,
+    pub facility: ObjId,
+    pub stores: VaultId,
+    /// The highest fee a quote may charge, centicredits; `None` takes [`BAY_MAX_FEE_MINOR`].
+    pub max_fee_minor: Option<i64>,
+}
+/// The default ceiling on a bay's quoted fee, centicredits (provisional, per the owner's
+/// economy rule): ten core fittings.
+pub const BAY_MAX_FEE_MINOR: i64 = 100_000;
+/// The IC hours a bay refit works (provisional).
+pub const BAY_WORK_UNITS: u64 = 4;
 
 /// **An ungoverning shop** (doc 17h cut M8b C2): who is paid and where. The same shop is the
 /// ungoverning integration site (doc 17h cut M8b-2, H2), where a heirloom or grey die is
@@ -75,6 +94,9 @@ pub(crate) struct Registration {
     /// catalog, so its catalog is the whole fitted set.
     pub(crate) rig: Box<SurfaceRigCores>,
     content: DefinitionDescriptor,
+    /// Doc 31 UD.4b: the bay recipe, registered beside the shipped hardware
+    /// recipes when a bay is composed.
+    pub(crate) bay_recipe: Option<DefinitionDescriptor>,
 }
 impl Registration {
     /// The whole fitted catalog: the fielded units, the line roots, the rig roots.
@@ -105,6 +127,8 @@ struct GovernedHardwareState {
     origin: CoreOriginConfig,
     factory: CoreFactoryConfig,
     refit: CoreRefitFactoryConfig,
+    /// Doc 31 UD.4b: the refit bay, when the deployment names one.
+    bay: Option<Box<mush_industry::bay_refit::BayRefitConfig>>,
 }
 
 /// Configured modules returned by the explicit host entry. Add the host's real
@@ -131,21 +155,31 @@ struct RosterPolicyState {
     economy: mush_economy::core_integration::CoreIntegrationConfig,
     fitting: mush_economy::core_refit::CoreRefitConfig,
     install: mush_core::DefinitionRef,
+    bay_economy: Option<mush_economy::bay_refit::BayRefitConfig>,
+    bay_parts: Option<mush_inventory::bay_part::BayPartBinding>,
 }
 impl RosterPolicy {
     pub(crate) fn inventory(&self, module: InventoryModule) -> InventoryModule {
-        module.with_core_inputs(self.state.input.clone())
+        let module = module.with_core_inputs(self.state.input.clone());
+        match &self.state.bay_parts {
+            Some(binding) => module.with_bay_parts(binding.clone()),
+            None => module,
+        }
     }
     pub(crate) fn industry(&self, module: IndustryModule) -> IndustryModule {
         self.state.hardware.configure_industry(module)
     }
     pub(crate) fn economy(&self, module: EconomyModule) -> EconomyModule {
-        module
+        let module = module
             .with_core_integration(self.state.economy.clone())
-            .with_core_refit(self.state.fitting.clone())
+            .with_core_refit(self.state.fitting.clone());
+        match &self.state.bay_economy {
+            Some(config) => module.with_bay_refit(config.clone()),
+            None => module,
+        }
     }
     pub(crate) fn tactics(&self) -> TacticsModule {
-        TacticsModule::with_catalog(
+        let module = TacticsModule::with_catalog(
             self.state
                 .hardware
                 .state
@@ -166,7 +200,8 @@ impl RosterPolicy {
                 .roots()
                 .cloned()
                 .collect(),
-        )
+        );
+        self.state.hardware.with_bay(module)
     }
 }
 /// **The two fitting families over `layer`'s fielded catalog** (doc 17h cut M8b C1): the line
@@ -181,6 +216,47 @@ fn families(
     let family = Box::new(GovernedLineCores::build(catalog).map_err(bad)?);
     let rig = Box::new(SurfaceRigCores::build(family.catalog().clone()).map_err(bad)?);
     Ok((family, rig))
+}
+
+/// **The refit bay, when the deployment names one** (doc 31 UD.4b), and its
+/// recipe; built here, off `prepare`'s frame (the M7 memory-size gate).
+#[inline(never)]
+#[allow(clippy::type_complexity)]
+fn refit_bay(
+    layer: &TacsimRuleset,
+    site: Option<&super::RefitBay>,
+    issuer: &SystemPrincipalId,
+    instrument: &InstrumentId,
+    economy: &mush_core::DefinitionRef,
+) -> Result<
+    (
+        Option<Box<mush_industry::bay_refit::BayRefitConfig>>,
+        Option<DefinitionDescriptor>,
+    ),
+    ModError,
+> {
+    let Some(site) = site else {
+        return Ok((None, None));
+    };
+    let recipe = super::bay::recipe_descriptor()?;
+    let recipe_ref = DefinitionRegistryBuilder::new()
+        .register(OwnerId::new(crate::NS).map_err(bad)?, recipe.clone())
+        .map_err(bad)?;
+    let fielded = crate::definitions::Catalog::build_fielded(&layer.loaded_packs()?, crate::NS)
+        .map_err(bad)?
+        .bindings
+        .values()
+        .map(|b| b.spec.definition.clone())
+        .collect();
+    let config = super::bay::config(
+        site,
+        issuer.clone(),
+        instrument.clone(),
+        recipe_ref,
+        fielded,
+        economy.clone(),
+    )?;
+    Ok((Some(Box::new(config)), Some(recipe)))
 }
 
 impl GovernedHardware {
@@ -218,8 +294,38 @@ impl GovernedHardware {
                     .refit
                     .action(mush_economy::core_refit::INSTALL_ACTION)
                     .map_err(bad)?,
+                bay_economy: self
+                    .state
+                    .bay
+                    .as_ref()
+                    .map(|b| b.economy_config())
+                    .transpose()
+                    .map_err(bad)?,
+                bay_parts: self
+                    .state
+                    .bay
+                    .as_ref()
+                    .map(|b| b.part_binding())
+                    .transpose()
+                    .map_err(bad)?,
             }),
         })
+    }
+    /// Doc 31 UD.4b: Tactics' refit participant for the bay, when composed.
+    fn with_bay(&self, module: TacticsModule) -> TacticsModule {
+        match self.state.bay.as_deref() {
+            Some(bay) => match bay.action(mush_industry::bay_refit::INSTALL) {
+                Ok(action) => module.with_component_refit(
+                    bay.tactics_policy(),
+                    action,
+                    bay.roots().clone(),
+                    bay.derived().to_vec(),
+                ),
+                // `prepare` already derived this action; it cannot fail here.
+                Err(_) => module,
+            },
+            None => module,
+        }
     }
     pub fn prepare(
         layer: &TacsimRuleset,
@@ -380,6 +486,14 @@ impl GovernedHardware {
             tactics,
         )
         .map_err(bad)?;
+        // Doc 31 UD.4b: the refit bay, refitting within the fielded units.
+        let (bay, bay_recipe) = refit_bay(
+            layer,
+            deployment.bay.as_ref(),
+            &payment.issuer,
+            &payment.instrument,
+            &economy,
+        )?;
         let factory = CoreFactoryConfig::new(mode, payment, Arc::new(publication.clone()), economy)
             .map_err(bad)?
             .with_refits(refit.clone())
@@ -391,10 +505,12 @@ impl GovernedHardware {
                     family,
                     rig,
                     content,
+                    bay_recipe,
                 },
                 origin,
                 factory,
                 refit,
+                bay,
             }),
         })
     }
@@ -450,6 +566,10 @@ impl GovernedHardware {
         &self,
         module: InventoryModule,
     ) -> Result<InventoryModule, ModError> {
+        let module = match self.state.bay.as_deref() {
+            Some(bay) => module.with_bay_parts(bay.part_binding().map_err(bad)?),
+            None => module,
+        };
         Ok(module.with_core_inputs(
             mush_inventory::core_input::CoreInputBinding::new(
                 self.state
@@ -471,13 +591,21 @@ impl GovernedHardware {
     pub fn configure_industry(&self, module: IndustryModule) -> IndustryModule {
         // Doc 17h cut M8a fix round 1 (F6): tacsim reads the retained die certificates for a
         // core's provenance; every roster this composition builds carries tacsim.
-        module
+        let module = module
             .with_core_origins(self.state.origin.clone().with_certificate_reader(crate::NS))
-            .with_core_factory(self.state.factory.clone())
+            .with_core_factory(self.state.factory.clone());
+        match self.state.bay.as_deref() {
+            Some(bay) => module.with_bay_refit(bay.clone()),
+            None => module,
+        }
     }
     /// Preserves the caller's already configured initial filing owner and all
     /// other native profiles. Registration requires the exact captured owner.
     pub fn configure_economy(&self, module: EconomyModule) -> Result<EconomyModule, ModError> {
+        let module = match self.state.bay.as_deref() {
+            Some(bay) => module.with_bay_refit(bay.economy_config().map_err(bad)?),
+            None => module,
+        };
         Ok(module
             .with_core_integration(
                 self.state
@@ -493,7 +621,7 @@ impl GovernedHardware {
             ))
     }
     pub fn tactics(&self) -> Result<TacticsModule, ModError> {
-        Ok(
+        Ok(self.with_bay(
             TacticsModule::with_catalog(self.state.registration.catalog().units.clone())
                 .with_component_replacement(
                     self.state.refit.replacement_policy(),
@@ -504,7 +632,11 @@ impl GovernedHardware {
                     self.state.refit.component().clone(),
                     self.state.refit.payment().roots().cloned().collect(),
                 ),
-        )
+        ))
+    }
+    /// Doc 31 UD.4b: the refit bay, when the deployment names one.
+    pub fn bay(&self) -> Option<&mush_industry::bay_refit::BayRefitConfig> {
+        self.state.bay.as_deref()
     }
     /// Executable opt-in host entry. Keep the returned owners together with the
     /// host's real Org/Sim/Roll modules; no ordinary server roster calls this.

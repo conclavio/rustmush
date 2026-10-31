@@ -122,13 +122,21 @@ impl PublishedHardware {
     }
     /// Registers exact recipe definitions on Tacsim's actual owner registrar.
     /// No actor, account or stock is synthesized here.
-    pub(crate) fn register(&self, reg: &mut Registrar<'_>) -> Result<(), ModError> {
+    pub(crate) fn register(
+        &self,
+        reg: &mut Registrar<'_>,
+        further: Option<&DefinitionDescriptor>,
+    ) -> Result<(), ModError> {
+        // Doc 31 UD.4b: one exact recipe validator per owner, so a composed
+        // bay's recipe joins the shipped hardware recipes here.
+        let mut all = self.descriptors.to_vec();
+        all.extend(further.cloned());
         reg.definition_validator(
             DefinitionKind::new("recipe").map_err(|e| ModError::msg(e.to_string()))?,
-            crate::definitions::exact_validator(self.descriptors.to_vec()),
+            crate::definitions::exact_validator(all.clone()),
         )?;
-        for descriptor in &self.descriptors {
-            reg.definition(descriptor.clone())?;
+        for descriptor in all {
+            reg.definition(descriptor)?;
         }
         Ok(())
     }

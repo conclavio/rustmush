@@ -242,6 +242,7 @@ mod tests {
                 factory: ObjId(31),
                 output_container: ObjId(32),
                 ungovern: None,
+                bay: None,
             },
             market: None,
             procurement: Vec::new(),

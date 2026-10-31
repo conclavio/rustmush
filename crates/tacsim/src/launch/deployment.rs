@@ -84,6 +84,27 @@ pub struct HardwareCoordinates {
     /// M8 test world does.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub ungovern: Option<UngoverningCoordinates>,
+    /// **A refit bay** (doc 31 cut UD.4b): a facility holding `bay_refit`, its stores and the
+    /// provider it pays. Skipped when absent, so every deployment that names none, its
+    /// `launch_deployment` identity and its digest are as before.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub bay: Option<BayCoordinates>,
+}
+
+/// **A refit bay's coordinates** (doc 31 cut UD.4b): the deployment's serializable twin of
+/// `crate::hardware::RefitBay`.
+#[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(deny_unknown_fields)]
+pub struct BayCoordinates {
+    /// The bay's organisation, scope and treasury, which the fee pays.
+    pub provider: ScopedCoreAccount,
+    /// The facility holding `bay_refit`.
+    pub facility: ObjId,
+    /// The bay's stores: the vault parts come from and go back to.
+    pub stores: VaultId,
+    /// The highest fee a quote may charge, centicredits; absent, the hardware default.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub max_fee_minor: Option<i64>,
 }
 
 /// **The ungoverning shop's coordinates** (doc 17h cut M8g, ruling (a)): the deployment's
@@ -128,6 +149,12 @@ impl HardwareCoordinates {
                     output_container: u.output_container,
                     fee_minor: u.fee_minor,
                 }),
+            bay: self.bay.as_ref().map(|b| crate::hardware::RefitBay {
+                provider: b.provider.clone(),
+                facility: b.facility,
+                stores: b.stores,
+                max_fee_minor: b.max_fee_minor,
+            }),
         }
     }
 }

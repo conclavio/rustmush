@@ -437,12 +437,14 @@ pub fn market_title_issuer() -> mush_org::SystemPrincipalId {
 /// (`mush_industry::core_production`'s die issue on the importer's stock scope,
 /// and integration and refit on its factory scope). Doc 17h cut M8b (G8): and the ungoverning
 /// refit's operator capability on its shop's scope (`RefitKind::CoreUngovern`), so a
-/// deployment that composes a shop can grant it.
-pub const NAMED_LAUNCH_HARDWARE_CAPABILITIES: [&str; 4] = [
+/// deployment that composes a shop can grant it. Doc 31 UD.4b: and a refit bay's operator
+/// capability on the bay's scope.
+pub const NAMED_LAUNCH_HARDWARE_CAPABILITIES: [&str; 5] = [
     mush_industry::core_production::IMPORT_CAPABILITY,
     "industry.core.integrate",
     "industry.core.refit",
     "industry.core.ungovern",
+    mush_economy::bay_refit::OPERATOR_CAPABILITY,
 ];
 
 /// Domain capability vocabulary recognized by TacSim and its economy/industry/roll

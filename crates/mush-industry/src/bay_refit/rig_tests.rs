@@ -768,6 +768,13 @@ fn ud4b_a_bay_refit_holds_works_installs_and_survives_a_cold_boot() -> Result {
             .ok_or("hull head")?
             .clone();
     check_eq!(head.pending(), Some(id), "the hull is held in the bay");
+    let requester = r.requester;
+    r.w.run(requester, "get Bay hull");
+    check_eq!(
+        r.w.world().get(r.hull).and_then(|o| o.location),
+        Some(r.bay),
+        "a held hull cannot be carried out of the bay"
+    );
     check!(
         r.commit(4, r.requester, 22, json!({"order":id.to_string()}))
             .is_err(),
@@ -828,6 +835,13 @@ fn ud4b_a_cancelled_bay_order_releases_the_fee_the_hull_and_the_part() -> Result
             .ok_or("hull head")?
             .clone();
     check_eq!(head.pending(), None, "the hull is out of the bay");
+    let requester = r.requester;
+    r.w.run(requester, "get Bay hull");
+    check_eq!(
+        r.w.world().get(r.hull).and_then(|o| o.location),
+        Some(requester),
+        "a released hull can be taken again"
+    );
     r.restart()?;
     check!(r.order(id)?.terminal.is_some());
     Ok(())

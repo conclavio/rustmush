@@ -27,6 +27,8 @@ use mush_testkit::{TestWorld, fold_module_ops, fold_module_ops_into};
 use serde_json::{Value, json};
 use smol_str::SmolStr;
 use std::{collections::HashMap, sync::Arc};
+#[path = "flow/bay.rs"]
+mod bay;
 #[path = "flow/driver.rs"]
 mod driver;
 #[path = "flow/launch.rs"]
@@ -453,6 +455,7 @@ impl Rig {
             )?;
         }
         let deployment = HardwareDeployment {
+            bay: None,
             ungovern: Some(super::UngoverningSite {
                 provider: ScopedCoreAccount {
                     account: shop_account,
@@ -519,6 +522,9 @@ impl Rig {
             "initialize_core_refit",
         ] {
             r.perform("industry", action, GOD, json!({}))?;
+        }
+        if r.deployment.bay.is_some() {
+            r.perform_direct("industry", "initialize_bay_refit", GOD, json!({}))?;
         }
         check!(
             r.plan("industry", "issue_core_die", agent, json!({"class":"i"}))

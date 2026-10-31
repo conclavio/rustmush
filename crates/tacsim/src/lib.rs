@@ -966,7 +966,12 @@ impl GameModule for TacsimRuleset {
         }
         hardware::PublishedHardware::shipped()
             .map_err(|error| ModError::msg(error.to_string()))?
-            .register(reg)?;
+            .register(
+                reg,
+                self.governed_hardware
+                    .as_ref()
+                    .and_then(|h| h.bay_recipe.as_ref()),
+            )?;
         // Doc 31 cut UD.2: the staff unit designer's `unit_design` invoke —
         // a design's rules checked by the loader and catalogue build above.
         design::register(reg)?;

@@ -222,6 +222,7 @@ fn setup_with(format: u16) -> Result<(Rig, LaunchDeployment)> {
             factory: h.factory,
             output_container: h.output_container,
             ungovern: None,
+            bay: None,
         },
         market,
         procurement: Vec::new(),

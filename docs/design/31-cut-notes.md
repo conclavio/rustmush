@@ -418,3 +418,42 @@ participant, and the first end-to-end run of the whole bay.
 - **The bay view and the player commands**: UD.4c.
 - **A hull in a bay held against ordinary moves**: the core refit's custody hook refuses carrying a
   retained core; the bay's hull head is not yet consulted by a move or carry hook.
+
+## UD.4b PR-E (2026-10-31) — TacSim's composition of the bay
+
+Built on `claude/ud4b-tacsim-bay`, stacked on PR-D (#217). The last UD.4b PR: the bay on the
+shipped content, composed launch-only through the governed hardware composition, as the core
+refit is.
+
+- **The deployment**: `HardwareCoordinates.bay` (`BayCoordinates`: the provider's scoped account,
+  the facility holding `bay_refit`, its stores vault, an optional fee ceiling), skipped when absent
+  so every existing deployment, its `launch_deployment` identity and its digest are unchanged;
+  `HardwareDeployment.bay: Option<RefitBay>`.
+- **The content** (`tacsim::hardware::bay`): the bay recipe (`bay_refit` v1, four IC hours,
+  provisional), registered beside the shipped hardware recipes through TacSim's one exact recipe
+  validator only when a bay is composed — the shipped hardware pack and its digest are untouched;
+  `ShippedParts`, the part catalogue: a part is its component's id within its unit
+  (`tacsim.part.cannon`, so the cannon off one variant fits another), a core is no part (no bay
+  offer can move a core; cores move only through the governed core refit), and a part taken out
+  goes back at grade 9 intact or 3 otherwise; the roots are the fielded units (never the governed
+  or twin core roots), the derived cells the heat pair (`tacsim::refit::DERIVED_CELLS`), the fee
+  ceiling `BAY_MAX_FEE_MINOR` (100,000, provisional).
+- **The composition**: `GovernedHardware` builds the `BayRefitConfig` when the deployment names a
+  bay, and its `configure_inventory` / `configure_industry` / `configure_economy` / `tactics` and
+  the shared server roster's `RosterPolicy` give each owner its piece.
+  `NAMED_LAUNCH_HARDWARE_CAPABILITIES` gains `industry.bay.refit`, so a launch operator's grant
+  lands.
+- **A hull in a bay stays in it** (Industry, `BayCustody`): the carry and move hooks refuse a hull
+  an order holds, so it can be neither taken elsewhere nor launched (a launch needs the unit aboard
+  its carrier) until Install or Cancel releases it.
+- **Tests**: `hardware::flow::bay` — through the shipped composition, a buyer's line tank in a bay
+  is refitted to the laser variant (the heat pair added), the quote held then paid, the laser lot
+  consumed and the cannon returned to stores, and a reboot keeps it; `hardware::bay` — a part is
+  its mount's component and a core is none; Industry's rig — a held hull cannot be carried out of
+  the bay, a released one can.
+
+**Not done here, and why.**
+
+- **The bay view and the player commands** (projected offers, a `+bay` surface): UD.4c. The bay's
+  actions publish no legal-action offer yet; the shipped test prepares them directly.
+- **Repair and rearm** without a part change: their own action (PR-B's note).
