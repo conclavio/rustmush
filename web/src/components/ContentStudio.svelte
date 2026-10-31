@@ -9,6 +9,7 @@
   import type { JsonValue } from "$lib/proto";
   import { ContentStudioRpc } from "$lib/content/rpc";
   import CatalogStudio from "./CatalogStudio.svelte";
+  import CorridorStudio from "./CorridorStudio.svelte";
   import NpcStudio from "./NpcStudio.svelte";
   import QuestStudio from "./QuestStudio.svelte";
   import {
@@ -424,6 +425,8 @@
         />
       {:else if subTab === "components"}
         <CatalogStudio {documentJson} onChange={applyStructuredEdit} />
+      {:else if subTab === "corridor"}
+        <CorridorStudio {documentJson} onChange={applyStructuredEdit} />
       {/if}
       <div class="pane-head">
         <span>Canonical Pack / Table JSON (<code>{selectedPackId}</code>)</span>
@@ -432,10 +435,10 @@
           class="small-btn"
           onclick={() => (showRawJson = !showRawJson)}
         >
-          {showRawJson || subTab === "corridor" ? "Hide Raw JSON" : "Show Raw JSON"}
+          {showRawJson ? "Hide Raw JSON" : "Show Raw JSON"}
         </button>
       </div>
-      {#if showRawJson || subTab === "corridor"}
+      {#if showRawJson}
         <textarea
           class="json-textarea"
           spellcheck="false"
