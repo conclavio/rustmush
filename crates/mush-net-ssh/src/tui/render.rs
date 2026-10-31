@@ -2665,6 +2665,10 @@ fn designator_of(contact: &Value) -> String {
 ///    h)`: row `0` is the window's SOUTH row, each exactly `w` glyphs.
 /// 3. The markers go down in the order 16b cut V.1 fixed — the map's named
 ///    `spots` first, in authored order, each as its one-character `letter`;
+///    **then, in an IC field (doc 32 cut CF.4), the frame's `campaign.marks`
+///    in order — block letters, claim edges, pits, readings, the pad, the
+///    salvage — and its `ground` rows' glyphs (the objects the unit's sensors
+///    hold)**, each `[x, y, glyph]` at its absolute cell;
 ///    then the pilot's own `@`; then the contacts in the frame's own order —
 ///    each at its ABSOLUTE cell less the window origin, and a later marker
 ///    overwrites an earlier one on the same cell. So a contact or the `@`
@@ -2774,6 +2778,13 @@ pub fn render_cockpit_map_rows(data: &Value, ctx: &RenderCtx<'_>) -> PaneRows {
             spots_landed.push((index, letter, name, at));
         }
     }
+    // Doc 32 cut CF.4 (Q-CF-48, Q-CF-49): the campaign layer under the field
+    // layer — what the frame's `campaign.marks` and `ground` say, nothing more.
+    for (glyph, cell) in campaign_marks(data) {
+        if let Some(at) = put_marker(&mut grid, (x0, y0), cell, glyph) {
+            owner.insert(at, MapOwner::Campaign(glyph));
+        }
+    }
     // The `@` is recorded too (16b cut V.1): a spot under the pilot's own cell
     // is hidden by it exactly as by a contact. It is never listed.
     if let Some(cell) = you
@@ -2814,6 +2825,18 @@ pub fn render_cockpit_map_rows(data: &Value, ctx: &RenderCtx<'_>) -> PaneRows {
             .iter()
             .filter(|(index, _, _, at)| owner.get(at) == Some(&MapOwner::Spot(*index)))
             .map(|(_, letter, name, _)| format!("{letter} {name}")),
+    );
+    // Doc 32 cut CF.4: then the campaign layer's pairs, each only when its glyph
+    // still owns a cell — last, so a narrow pane drops them first.
+    legend.extend(
+        campaign_legend(data)
+            .into_iter()
+            .filter_map(|(glyph, label)| {
+                owner
+                    .values()
+                    .any(|who| *who == MapOwner::Campaign(glyph))
+                    .then(|| format!("{glyph} {label}"))
+            }),
     );
     let mut out = Vec::with_capacity(h + 2);
     if heading {
@@ -2903,6 +2926,56 @@ enum MapOwner {
     You,
     /// A contact, by its index in the frame's `contacts`.
     Contact(usize),
+    /// **A campaign-layer mark or a sensed ground object** (doc 32 cut CF.4), by
+    /// its glyph: the legend names glyphs, not marks.
+    Campaign(char),
+}
+
+/// **The campaign layer's marks a cockpit frame carries** (doc 32 cut CF.4;
+/// Q-CF-48, Q-CF-50), in drawing order: every `campaign.marks` entry
+/// `[x, y, glyph]`, then every `ground` row's `glyph` at its `cell`. Only an IC
+/// field's frame has either; a malformed entry is skipped (server text).
+pub(super) fn campaign_marks(data: &Value) -> Vec<(char, (usize, usize))> {
+    let empty = Vec::new();
+    let marks = data
+        .pointer("/campaign/marks")
+        .and_then(Value::as_array)
+        .unwrap_or(&empty)
+        .iter()
+        .filter_map(|mark| {
+            let row = mark.as_array()?;
+            let x = usize::try_from(row.first()?.as_u64()?).ok()?;
+            let y = usize::try_from(row.get(1)?.as_u64()?).ok()?;
+            let glyph = one_char(row.get(2)?.as_str()?)?;
+            Some((glyph, (x, y)))
+        });
+    let ground = data
+        .get("ground")
+        .and_then(Value::as_array)
+        .unwrap_or(&empty)
+        .iter()
+        .filter_map(|row| {
+            let glyph = one_char(row.get("glyph")?.as_str()?)?;
+            Some((glyph, cell_pair(row.get("cell"))?))
+        });
+    marks.chain(ground).collect()
+}
+
+/// **The campaign layer's legend pairs** (doc 32 cut CF.4): `campaign.legend`,
+/// each `[glyph, label]`, in the frame's order.
+pub(super) fn campaign_legend(data: &Value) -> Vec<(char, String)> {
+    data.pointer("/campaign/legend")
+        .and_then(Value::as_array)
+        .map(|pairs| {
+            pairs
+                .iter()
+                .filter_map(|pair| {
+                    let glyph = one_char(pair.get(0)?.as_str()?)?;
+                    Some((glyph, clean(pair.get(1)?.as_str()?)))
+                })
+                .collect()
+        })
+        .unwrap_or_default()
 }
 
 /// The one character of a one-character string (a spot's `letter`), or `None`
@@ -3038,6 +3111,11 @@ pub fn render_cockpit_status_rows(data: &Value, ctx: &RenderCtx<'_>) -> PaneRows
         None => "No lock".to_string(),
     };
     rows.push(PaneRow::plain(Line::from(Span::raw(lock))));
+    // Doc 32 cut CF.4 (Q-CF-49): a rig's cab is a cockpit — its quarry-screen
+    // line rides the status pane, the web's words in the web's place.
+    if let Some(rig) = data.pointer("/rig/line").and_then(Value::as_str) {
+        rows.push(PaneRow::plain(Line::from(Span::raw(clean(rig)))));
+    }
     if let Some(detachment) = data.get("detachment").and_then(super::detachment::decode) {
         rows.push(PaneRow::plain(Line::from("Detachment")));
         rows.extend(
@@ -5223,6 +5301,11 @@ pub fn render_quarry_side_rows(data: &Value, ctx: &RenderCtx<'_>) -> PaneRows {
     if let Some(line) = quarry_text(data, "/site/other_rigs") {
         rows.push(PaneRow::plain(Line::from(line)));
     }
+    // Doc 32 cut CF.4 (Q-CF-48): the campaign layer's presence picture, whole — the other
+    // flights beyond sight, which `other_rigs` no longer names.
+    if let Some(line) = quarry_text(data, "/site/presence_line") {
+        rows.push(PaneRow::plain(Line::from(line)));
+    }
     rows.push(PaneRow::plain(Line::from(Span::styled(
         "log".to_owned(),
         system,
@@ -6882,6 +6965,75 @@ mod tests {
             .iter()
             .map(PaneRow::text)
             .collect()
+    }
+
+    /// **Doc 32 cut CF.4** (Q-CF-48, Q-CF-49): an IC field's cockpit frame — the
+    /// shared `field_frame.json`, whose keys the tacsim gate holds to the
+    /// server's — draws its campaign layer under the field layer: each
+    /// `campaign.marks` glyph and each `ground` row's at its cell, the contacts
+    /// and the `@` over them, the layer's legend pairs after the spots; and the
+    /// status pane carries the rig line. The web's `composeWindow` draws the
+    /// same glyphs in the same cells (`cockpit.test.ts`).
+    #[test]
+    fn cf4_the_cockpit_map_draws_the_campaign_layer_under_the_field_layer() {
+        let frame: Value = serde_json::from_str(include_str!(
+            "../../../../web/src/lib/fixtures/cockpit/field_frame.json"
+        ))
+        .expect("field_frame.json");
+        let map: Value = serde_json::from_str(include_str!(
+            "../../../../web/src/lib/fixtures/cockpit/arena_map.json"
+        ))
+        .expect("arena_map.json");
+        // Ninety-six by twenty cells, the window clamped to the corner: window
+        // row `y` is pane line `20 - y`.
+        let rows = map_rows(&frame, Some(&map), (96, 22));
+        let at = |(x, y): (usize, usize)| rows.get(20 - y).and_then(|r| r.chars().nth(x));
+        assert_eq!(at((3, 1)), Some('D'), "a block letter: {rows:?}");
+        assert_eq!(at((11, 5)), Some('#'), "a claim's edge");
+        assert_eq!(at((8, 2)), Some('3'), "a reading");
+        assert_eq!(at((4, 6)), Some('%'), "a remembered wreck");
+        assert_eq!(at((9, 4)), Some('&'), "the crate the sensors hold");
+        assert_eq!(at((6, 4)), Some('@'), "the pilot over the ground");
+        assert_eq!(at((2, 9)), Some('+'), "a contact over the ground");
+        let legend = rows.last().cloned().unwrap_or_default();
+        assert!(
+            legend.ends_with("# claim  3 rich, 3 t a cycle  % wreck or remains  & crate"),
+            "the campaign pairs after the contacts and the spots: {legend}"
+        );
+        assert!(
+            legend.starts_with("x BA  + RB  ? X3  A The Ford"),
+            "{legend}"
+        );
+        // A simulator frame has no campaign layer: nothing changes.
+        let mut plain = frame.clone();
+        for key in ["campaign", "ground", "rig"] {
+            plain.as_object_mut().map(|object| object.remove(key));
+        }
+        let rows = map_rows(&plain, Some(&map), (96, 22));
+        assert_ne!(rows.get(20 - 4).and_then(|r| r.chars().nth(9)), Some('&'));
+        // The rig's line rides the status pane.
+        let theme = AnsiTheme::classic();
+        let store = PanelStore::new();
+        let ctx = RenderCtx {
+            theme: &theme,
+            depth: ColorDepth::Ansi16,
+            utf8: true,
+            store: &store,
+            selected_channel: None,
+            pane: None,
+            picture: None,
+        };
+        let status: Vec<String> = render_cockpit_status_rows(&frame, &ctx)
+            .rows
+            .iter()
+            .map(PaneRow::text)
+            .collect();
+        assert!(
+            status
+                .iter()
+                .any(|line| line == "Rig 1: (6, 4), charge 82 %, hopper 0.4 of 2 t."),
+            "{status:?}"
+        );
     }
 
     /// 16b cut Q.4: the window follows the platform and CLAMPS at the arena's

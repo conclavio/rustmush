@@ -66,6 +66,12 @@ pub const MAX_MANIFEST_GOODS: usize = 8;
 pub const MAX_FOOTPRINT_CELLS: u8 = 8;
 /// The record's ceiling, canonical JSON bytes (the family's own limit).
 pub const MAX_SITE_RECORD_BYTES: usize = 65_536;
+/// **The most principals one site remembers salvage for** (doc 32 cut CF.4, Q-CF-28; a
+/// record-size bound): past it the principal who learned longest ago is forgotten.
+pub const MAX_KNOWN_PRINCIPALS: usize = 24;
+/// **The most things one principal remembers on one site** (doc 32 cut CF.4; a record-size
+/// bound): past it the things learned longest ago go first.
+pub const MAX_KNOWN_ITEMS: usize = 32;
 
 // ---- the record -------------------------------------------------------------------------------
 
@@ -322,6 +328,85 @@ pub struct Promotion {
     pub settled: Vec<SettledRig>,
 }
 
+/// **What a remembered thing on the ground was** (doc 32 cut CF.4; Q-CF-25's four kinds, as the
+/// eye tells them: no manifest, no hull, no epoch).
+#[derive(Clone, Copy, Debug, PartialEq, Eq, PartialOrd, Ord, Serialize, Deserialize)]
+#[serde(rename_all = "snake_case")]
+pub enum KnownWhat {
+    /// A disabled, immobile or unarmed hull.
+    Casualty,
+    /// A wreck.
+    Wreck,
+    /// Remains.
+    Remains,
+    /// A crate (dropped cargo).
+    Crate,
+}
+
+impl KnownWhat {
+    /// The word a line prints and the frame carries.
+    #[must_use]
+    pub fn word(self) -> &'static str {
+        match self {
+            KnownWhat::Casualty => "casualty",
+            KnownWhat::Wreck => "wreck",
+            KnownWhat::Remains => "remains",
+            KnownWhat::Crate => "crate",
+        }
+    }
+
+    /// What a left unit looks like.
+    #[must_use]
+    pub fn of_unit(condition: LeftCondition) -> KnownWhat {
+        match condition {
+            LeftCondition::Casualty => KnownWhat::Casualty,
+            LeftCondition::Wreck => KnownWhat::Wreck,
+        }
+    }
+
+    /// What a ground object looks like.
+    #[must_use]
+    pub fn of_object(kind: &GroundKind) -> KnownWhat {
+        match kind {
+            GroundKind::Remains { .. } => KnownWhat::Remains,
+            GroundKind::Cargo { .. } => KnownWhat::Crate,
+        }
+    }
+}
+
+/// **One remembered thing**: what it was and the site cell it lay in, `[what, x, y]` on the wire
+/// (compact, so a site's memories fit the record's ceiling).
+#[derive(Clone, Copy, Debug, PartialEq, Eq, PartialOrd, Ord, Serialize, Deserialize)]
+pub struct KnownItem(pub KnownWhat, pub i64, pub i64);
+
+impl KnownItem {
+    /// Its cell.
+    #[must_use]
+    pub fn cell(&self) -> (i64, i64) {
+        (self.1, self.2)
+    }
+
+    /// Whether its cell is on the site's grid.
+    fn cell_on_site(&self) -> bool {
+        let side = i64::from(SITE_CELLS);
+        (0..side).contains(&self.1) && (0..side).contains(&self.2)
+    }
+}
+
+/// **What one principal remembers lying on a site** (doc 32 cut CF.4; Q-CF-28: a party knows the
+/// salvage it saw in a field it was in). Objective record, private row: only its own principal is
+/// ever shown it, and only where it is not in sight now (what is in sight is drawn live).
+#[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(deny_unknown_fields)]
+pub struct KnownSalvage {
+    /// The character who remembers.
+    pub principal: ObjId,
+    /// The IC instant they last learned anything here.
+    pub seen_ic: i64,
+    /// The things, most recently learned first, one per cell, at most [`MAX_KNOWN_ITEMS`].
+    pub items: Vec<KnownItem>,
+}
+
 /// **One site's record in `tacsim.field`** (doc 32 Q-CF-24).
 #[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize)]
 #[serde(deny_unknown_fields)]
@@ -346,6 +431,11 @@ pub struct SiteRecord {
     pub objects: Vec<GroundObject>,
     /// The last object number issued (0: none).
     pub next_object: u32,
+    /// **Who remembers what lies here** (doc 32 cut CF.4; Q-CF-28), strictly increasing by
+    /// principal, at most [`MAX_KNOWN_PRINCIPALS`]; omitted when empty, so a record nobody
+    /// learned from is byte-identical to CF.1's.
+    #[serde(default, skip_serializing_if = "Vec::is_empty")]
+    pub known: Vec<KnownSalvage>,
 }
 
 /// **Why a write to the record refuses.**
@@ -402,6 +492,7 @@ impl SiteRecord {
             units: Vec::new(),
             objects: Vec::new(),
             next_object: 0,
+            known: Vec::new(),
         }
     }
 
@@ -431,6 +522,88 @@ impl SiteRecord {
             && self.units.is_empty()
             && self.objects.is_empty()
             && self.next_object == 0
+            && self.known.is_empty()
+    }
+
+    /// **What `principal` remembers here** (doc 32 cut CF.4), most recently learned first.
+    #[must_use]
+    pub fn known_by(&self, principal: ObjId) -> &[KnownItem] {
+        self.known
+            .binary_search_by_key(&principal, |row| row.principal)
+            .ok()
+            .and_then(|at| self.known.get(at))
+            .map_or(&[], |row| row.items.as_slice())
+    }
+
+    /// **`principal` learns what lies on the ground** (doc 32 cut CF.4; Q-CF-28): `seen` is what
+    /// they saw, and `swept` says which cells they looked at — a remembered thing in a swept cell
+    /// they did not see again is forgotten (it is gone, or was never where they thought). The new
+    /// things come first, one per cell; past [`MAX_KNOWN_ITEMS`] the oldest go, and past
+    /// [`MAX_KNOWN_PRINCIPALS`] the principal who learned longest ago is forgotten. A principal
+    /// left remembering nothing is dropped.
+    pub fn learn(
+        &mut self,
+        principal: ObjId,
+        seen: &[KnownItem],
+        swept: impl Fn((i64, i64)) -> bool,
+        at_ic: i64,
+    ) {
+        let earlier: Vec<KnownItem> = self.known_by(principal).to_vec();
+        let mut items: Vec<KnownItem> = Vec::new();
+        for (fresh, item) in seen
+            .iter()
+            .map(|item| (true, item))
+            .chain(earlier.iter().map(|item| (false, item)))
+        {
+            if !item.cell_on_site()
+                || (!fresh && swept(item.cell()))
+                || items.iter().any(|kept| kept.cell() == item.cell())
+            {
+                continue;
+            }
+            items.push(*item);
+        }
+        items.truncate(MAX_KNOWN_ITEMS);
+        match self
+            .known
+            .binary_search_by_key(&principal, |row| row.principal)
+        {
+            Ok(at) if items.is_empty() => {
+                self.known.remove(at);
+            }
+            Ok(at) => {
+                if let Some(row) = self.known.get_mut(at) {
+                    row.items = items;
+                    row.seen_ic = at_ic;
+                }
+            }
+            Err(_) if items.is_empty() => {}
+            Err(at) => {
+                self.known.insert(
+                    at,
+                    KnownSalvage {
+                        principal,
+                        seen_ic: at_ic,
+                        items,
+                    },
+                );
+                while self.known.len() > MAX_KNOWN_PRINCIPALS {
+                    let oldest = self
+                        .known
+                        .iter()
+                        .enumerate()
+                        .filter(|(_, row)| row.principal != principal)
+                        .min_by_key(|(_, row)| (row.seen_ic, row.principal))
+                        .map(|(index, _)| index);
+                    match oldest {
+                        Some(index) => {
+                            self.known.remove(index);
+                        }
+                        None => break,
+                    }
+                }
+            }
+        }
     }
 
     /// **Open the site's next field** (doc 32 Q-CF-14; CF.2's promotion, CF.1's staff flag): the
@@ -707,6 +880,22 @@ impl SiteRecord {
             !kind_ok(&object.kind) || !(1..=MAX_FOOTPRINT_CELLS).contains(&object.footprint)
         }) {
             return Err("an object on a site record is malformed".to_owned());
+        }
+        if self.known.len() > MAX_KNOWN_PRINCIPALS
+            || self.known.windows(2).any(|pair| match pair {
+                [a, b] => a.principal >= b.principal,
+                _ => false,
+            })
+            || self.known.iter().any(|row| {
+                row.items.is_empty()
+                    || row.items.len() > MAX_KNOWN_ITEMS
+                    || row.items.iter().any(|item| !item.cell_on_site())
+            })
+        {
+            return Err(format!(
+                "a site record remembers for at most {MAX_KNOWN_PRINCIPALS} principals, in order, \
+                 each 1 to {MAX_KNOWN_ITEMS} things on the site's ground"
+            ));
         }
         Ok(())
     }
@@ -1655,5 +1844,61 @@ mod tests {
             ),
             "Field 2 is being fought on Ahuna Flank. Surface work there waits until it settles."
         );
+    }
+
+    /// **What a principal remembers** (doc 32 cut CF.4; Q-CF-28): new things first, one per
+    /// cell; a remembered thing in a swept cell not seen again is forgotten; the bounds hold; a
+    /// record nobody learned from serializes as CF.1's did, and one somebody did round-trips.
+    #[test]
+    fn cf4_a_principal_learns_and_forgets_what_lies_on_the_ground() {
+        let mut site = record();
+        let blank = serde_json::to_value(&site).unwrap_or_default();
+        assert!(blank.get("known").is_none(), "omitted when empty: {blank}");
+        let crate_at = KnownItem(KnownWhat::Crate, 100, 100);
+        let wreck_at = KnownItem(KnownWhat::Wreck, 140, 100);
+        site.learn(ObjId(7), &[crate_at, wreck_at], |_| false, 10);
+        assert_eq!(site.known_by(ObjId(7)), &[crate_at, wreck_at]);
+        assert_eq!(site.known_by(ObjId(8)), &[] as &[KnownItem]);
+        assert!(site.check().is_ok());
+        assert!(!site.is_blank());
+        // Seen again later: the crate looked at and gone, a casualty where the wreck was.
+        let casualty = KnownItem(KnownWhat::Casualty, 140, 100);
+        site.learn(
+            ObjId(7),
+            &[casualty],
+            |(x, y)| (x - 100).abs() <= 20 && (y - 100).abs() <= 20,
+            20,
+        );
+        assert_eq!(
+            site.known_by(ObjId(7)),
+            &[casualty],
+            "the crate swept and gone; one thing a cell"
+        );
+        // Nothing left: the principal is dropped.
+        site.learn(ObjId(7), &[], |_| true, 30);
+        assert!(site.known.is_empty());
+        // The bounds.
+        for principal in 1..=u32::try_from(MAX_KNOWN_PRINCIPALS + 2).unwrap_or(u32::MAX) {
+            let many: Vec<KnownItem> = (0..i64::try_from(MAX_KNOWN_ITEMS + 5).unwrap_or(0))
+                .map(|x| KnownItem(KnownWhat::Remains, x, 5))
+                .collect();
+            site.learn(ObjId(principal), &many, |_| false, i64::from(principal));
+        }
+        assert_eq!(site.known.len(), MAX_KNOWN_PRINCIPALS);
+        assert!(
+            site.known
+                .iter()
+                .all(|row| row.items.len() == MAX_KNOWN_ITEMS)
+        );
+        assert!(
+            site.known.iter().all(|row| row.principal.0 > 2),
+            "the principals who learned longest ago are forgotten"
+        );
+        assert!(site.check().is_ok());
+        let text = serde_json::to_string(&site).unwrap_or_default();
+        assert!(text.len() <= MAX_SITE_RECORD_BYTES, "{} bytes", text.len());
+        let back: SiteRecord = serde_json::from_str(&text).unwrap_or_else(|e| panic!("{e}"));
+        assert_eq!(back, site);
+        assert!(text.contains(r#"["remains",0,5]"#), "compact rows");
     }
 }

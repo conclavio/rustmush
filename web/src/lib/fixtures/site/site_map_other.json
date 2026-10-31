@@ -1613,7 +1613,7 @@
         1
       ],
       [
-        "o",
+        "^",
         1
       ],
       [
@@ -2343,7 +2343,6 @@
     "lines": [
       "You have no readings of metals in view.",
       "Rig 1: in the bay, charge 100 %, hopper empty.",
-      "Other rigs: 500 m N",
       "Presence: N 200-500 m.",
       "Hold: 86 t of room unreserved."
     ],
@@ -2438,18 +2437,8 @@
       "slots": []
     },
     "no_readings": "You have no readings of metals in view.",
-    "other_rigs": "Other rigs: 500 m N",
-    "others": [
-      {
-        "cell": [
-          146,
-          178
-        ],
-        "dir": "N",
-        "m": 500,
-        "sounding": false
-      }
-    ],
+    "other_rigs": null,
+    "others": [],
     "presence": [
       {
         "band": "near",
@@ -2473,7 +2462,7 @@
       ",,,,^^,,,,,,,,,,^^,,,,^^,,,,,,,,,,,,^^,,,,^^,,,,^^,,,,^^,,,,^^,,",
       ",,,,,,^^^^,,,,,,^^,,,,,,,,^^,,,,^^,,,,^^,,,,^^^^,,,,^^,,,,,,,,^^",
       "EE^^^^^^,,^^,,,,FF,,^^,,,,,,^^,,GG,,,,^^,,^^,,^^HH,,^^,,^^,,,,,,",
-      "^^,,,,,,^^,,,,,,,,^^,,^^,,,,,,^^^^,,oo,,^^,,^^,,,,,,,,,,,,^^,,,,",
+      "^^,,,,,,^^,,,,,,,,^^,,^^,,,,,,^^^^,,^^,,^^,,^^,,,,,,,,,,,,^^,,,,",
       ",,^^,,,,,,^^,,,,,,,,,,,,,,^^^^^^,,,,,,^^,,^^,,^^,,,,^^,,,,,,,,^^",
       ",,,,,,,,,,^^,,,,,,^^,,^^,,,,,,,,,,^^^^,,,,,,^^,,^^,,,,,,,,,,^^,,",
       ",,^^,,^^,,^^^^,,^^,,^^,,,,^^,,,,,,^^,,,,,,,,,,,,,,,,,,,,,,^^,,^^",
@@ -2499,7 +2488,6 @@
       "the whole site, 80 m a cell, north up",
       "You have no readings of metals in view.",
       "Rig 1: in the bay, charge 100 %, hopper empty.",
-      "Other rigs: 500 m N",
       "Presence: N 200-500 m.",
       "Hold: 86 t of room unreserved."
     ],
@@ -2526,18 +2514,7 @@
   "surface": "ground",
   "tick": 0,
   "title": "Ahuna Flank: metals shown",
-  "units": [
-    {
-      "cell": [
-        18,
-        22
-      ],
-      "glyph": "o",
-      "id": "other-1",
-      "name": "rig",
-      "you": false
-    }
-  ],
+  "units": [],
   "width": 32,
   "window": 0,
   "you": null

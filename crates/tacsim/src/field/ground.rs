@@ -8,14 +8,24 @@
 //! the only entry), no key spots, no patrol graph, no mode but the skirmish.
 //!
 //! **The site record's objects** (Q-CF-26): remains and crates are static obstacles over their
-//! footprints — their cells impassable — in this version. They are not yet sensor contacts and
-//! give no cover beyond their cells; both are CF.4's picture work.
+//! footprints, and give cover by them (doc 32 cut CF.4): each footprint cell reads as a wall
+//! ([`OBJECT_CLASS`]) — impassable to every ground row at the class's own price, opaque and
+//! `WALL_HEIGHT_CM` tall — so a unit behind one is out of the line of sight and fire of a unit
+//! beyond it. That is the kernel's one way to give cover by a cell nobody stands in: a class's own
+//! cover is the cover of the unit standing in it. CF.2 set the tracked price to 0 and kept the
+//! class, which stopped a tank and no biped. Every picture of the field draws the cells as the
+//! kernel holds them. Objects are also sensor returns, seen by line of sight over this ground
+//! (`crate::field::known::sensed`), never kernel contacts.
 
 use mush_core::{CanonicalId, World};
 use smol_str::SmolStr;
 
 use crate::arena::state::{ArenaDefinition, ArenaTerrain, TerrainCell, Waypoints};
 use crate::surface::site_record::SiteRecord;
+
+/// **The class an object's footprint cell reads as** (doc 32 cut CF.4; Q-CF-26): a wall —
+/// impassable on the ground, opaque, three metres tall.
+pub(crate) const OBJECT_CLASS: mush_atlas::TerrainClass = mush_atlas::TerrainClass::Wall;
 
 /// The ground's id: `field:<site>`.
 #[must_use]
@@ -54,7 +64,9 @@ pub(crate) fn definition(
             });
         }
     }
-    // Q-CF-26: every object's footprint, centred on its cell, is impassable.
+    // Q-CF-26: every object's footprint, centred on its cell, is impassable and hides what is
+    // behind it (doc 32 cut CF.4), at the class's own price so every row agrees.
+    let wall_cost = crate::definitions::arena::move_cost_of(table, OBJECT_CLASS);
     for object in &record.objects {
         let (cx, cy) = object.pose.cell();
         let half = i64::from(object.footprint) / 2;
@@ -69,7 +81,8 @@ pub(crate) fn definition(
                 }
                 let index = usize::from(y) * usize::from(width) + usize::from(x);
                 if let Some(cell) = cells.get_mut(index) {
-                    cell.move_cost = 0;
+                    cell.class = OBJECT_CLASS;
+                    cell.move_cost = wall_cost;
                 }
             }
         }

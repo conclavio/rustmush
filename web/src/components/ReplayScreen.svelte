@@ -120,6 +120,8 @@
     unknown: "#b9a23a",
     friendly: "#4fa86a",
     hostile: "#e05a5a",
+    // Doc 32 cut CF.4: a cockpit kind a replay never composes.
+    campaign: "#c8b88a",
   };
 
   /** Play steps the cursor by this much every this many milliseconds: 1×

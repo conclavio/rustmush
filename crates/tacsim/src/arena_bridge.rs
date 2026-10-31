@@ -3200,6 +3200,9 @@ fn on_frames(
         crate::detachment::live::sync(ctx);
         flush_detachment_dispatches(ctx);
         let payload = crate::detachment::commands::enrich(ctx.w, pilot, payload);
+        // Doc 32 cut CF.4 (Q-CF-49, Q-CF-50): a field's campaign layer, sensed ground and rig
+        // panel; nothing on a simulator frame.
+        let payload = crate::port::site_map::cockpit_payload(ctx.w, &*ctx, pilot, payload);
         feed.keyframe_to(ctx, Audience::Actor(pilot), payload);
         // **16b cut AP.3** (16c N19): the digest, AFTER the keyframe — a panel
         // client composes the frame before it rings anything, and the line
@@ -4569,20 +4572,21 @@ impl mush_core::QueryHandler for MapQuery {
 /// lobby.
 struct CockpitQuery;
 
-impl mush_core::QueryHandler for CockpitQuery {
-    fn query(
-        &self,
+impl CockpitQuery {
+    /// The answer, with a field's picture added when `reads` can read it (doc 32 cut CF.4: the
+    /// typed reads need the context's capability; the bare `query` has none).
+    fn answer(
         w: &mush_core::World,
+        reads: Option<&dyn crate::port::site_map::SurfaceReads>,
         actor: ObjId,
-        _params: &serde_json::Value,
-    ) -> Result<mush_proto::OutputEvent, mush_proto::RichText> {
+    ) -> mush_proto::OutputEvent {
         let data = w
             .module_state::<ArenaRegistry>()
             .filter(|registry| registry.seat_of_pilot(actor).is_some())
             .and_then(|registry| registry.last_frame(actor))
             .map_or_else(crate::match_::cockpit::cockpit_cleared, |held| {
                 // 16b cut B.4 (`T-60`): the ranges the pilot was last sent.
-                crate::detachment::commands::enrich(
+                let payload = crate::detachment::commands::enrich(
                     w,
                     actor,
                     crate::match_::cockpit::status_frame_held(
@@ -4590,13 +4594,37 @@ impl mush_core::QueryHandler for CockpitQuery {
                         &held.frame,
                         &held.ranges,
                     ),
-                )
+                );
+                match reads {
+                    Some(reads) => crate::port::site_map::cockpit_payload(w, reads, actor, payload),
+                    None => payload,
+                }
             });
-        Ok(mush_proto::OutputEvent::Panel {
+        mush_proto::OutputEvent::Panel {
             feed: SmolStr::new_static(FRAME_FEED),
             kind: mush_proto::PanelFrameKind::Keyframe,
             data,
-        })
+        }
+    }
+}
+
+impl mush_core::QueryHandler for CockpitQuery {
+    fn query(
+        &self,
+        w: &mush_core::World,
+        actor: ObjId,
+        _params: &serde_json::Value,
+    ) -> Result<mush_proto::OutputEvent, mush_proto::RichText> {
+        Ok(Self::answer(w, None, actor))
+    }
+
+    fn query_with_context(
+        &self,
+        context: &mush_core::HookReadContext<'_>,
+        actor: ObjId,
+        _params: &serde_json::Value,
+    ) -> Result<mush_proto::OutputEvent, mush_proto::RichText> {
+        Ok(Self::answer(context.world(), Some(context), actor))
     }
 }
 

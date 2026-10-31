@@ -209,6 +209,6 @@ fn void(ctx: &mut Ctx<'_>, site: &CanonicalId, held: &Held) {
             .as_ref()
             .is_some_and(|open| open.by.hosted())
     {
-        super::admit::owe_close(ctx, site, &record, Some(left));
+        super::admit::owe_close(ctx, site, &record, Some(left), Vec::new());
     }
 }

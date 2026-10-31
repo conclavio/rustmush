@@ -71,6 +71,8 @@
     red: "#e05a5a",
     blue: "#4f7fd1",
     wreck: "#777",
+    // Doc 32 cut CF.4: the campaign layer's glyphs, ground-toned.
+    campaign: "#c8b88a",
   };
 
   /** The viewport, in arena cells; `+`/`−` step through `COCKPIT_ZOOM_CELLS`. */
@@ -141,7 +143,8 @@
     let best: Marker | null = null;
     let bestDistSq = maxDist * maxDist;
     for (const marker of w.markers) {
-      if (marker.kind === "you" || marker.kind === "spot") continue;
+      // Doc 32 cut CF.4 (Q-CF-50): click-to-lock is the field layer's alone.
+      if (marker.kind === "you" || marker.kind === "spot" || marker.kind === "campaign") continue;
       const cx = marker.x * px + px / 2;
       const cy = (w.h - 1 - marker.y) * px + px / 2;
       const d2 = (mx - cx) * (mx - cx) + (my - cy) * (my - cy);
@@ -228,6 +231,16 @@
       const [cx, cy] = centre(marker);
       const colour = MARKER_COLOURS[marker.kind];
       ctx.fillStyle = colour;
+      if (marker.kind === "campaign") {
+        // Doc 32 cut CF.4: the server's glyph itself, small — ground, not a unit.
+        if (owns[i] !== true) continue;
+        ctx.font = `${Math.max(7, Math.floor(px * 0.9))}px ui-monospace, monospace`;
+        ctx.textAlign = "center";
+        ctx.textBaseline = "middle";
+        ctx.fillText(marker.glyph, cx, cy);
+        ctx.textAlign = "start";
+        continue;
+      }
       if (marker.kind === "spot") {
         // A hollow square, never a dot, a wedge or a ring: ground, not a unit.
         // `strokeRect` and not a path, so the lock ring stays the one `stroke`.

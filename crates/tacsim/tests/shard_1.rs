@@ -39,6 +39,8 @@ mod hulls;
 mod knowing;
 #[path = "shard_1/landing.rs"]
 mod landing;
+#[path = "shard_1/one_picture.rs"]
+mod one_picture;
 #[path = "shard_1/passage.rs"]
 mod passage;
 #[path = "shard_1/perception.rs"]

@@ -304,7 +304,7 @@ impl ActionProvider for FieldProvider {
                     .map(|(site, close)| {
                         (
                             site.to_string(),
-                            json!({ "ordinal": close.ordinal, "units": close.units }),
+                            json!({ "ordinal": close.ordinal, "units": close.units, "known": close.known }),
                         )
                     })
                     .collect()
@@ -405,6 +405,18 @@ impl ActionProvider for FieldProvider {
                 let field = record
                     .demote(now, units)
                     .map_err(|why| rejected(why.sentence()))?;
+                // Doc 32 cut CF.4 (Q-CF-28): each principal learns what their party saw, from the
+                // host's own rows fixed into the offer.
+                let known: Vec<super::known::Learned> = owed
+                    .get("known")
+                    .cloned()
+                    .map(serde_json::from_value)
+                    .transpose()
+                    .map_err(|_| invalid("a field's close lists what its parties learned"))?
+                    .unwrap_or_default();
+                for row in &known {
+                    record.learn(row.principal, &row.items, |cell| row.swept(cell), now);
+                }
                 format!("field {} closed", field.ordinal)
             }
         };

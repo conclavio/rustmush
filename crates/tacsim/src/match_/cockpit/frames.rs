@@ -1179,6 +1179,8 @@ pub fn view_frame_held(
         ctx.actor,
         status_frame_held(match_id, frame, ranges),
     );
+    // Doc 32 cut CF.4: a field's picture, as every cockpit keyframe carries it.
+    let payload = crate::port::site_map::cockpit_payload(ctx.w, ctx, ctx.actor, payload);
     let Some(ground) = ctx
         .w
         .module_state::<ArenaRegistry>()

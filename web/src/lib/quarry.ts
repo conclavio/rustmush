@@ -121,6 +121,9 @@ export interface SiteBlock {
   /** The other-rigs sentence whole and unwrapped, `null` with none in view (`lines` holds it
    * wrapped for line mode). */
   other_rigs: string | null;
+  /** Doc 32 cut CF.4: the presence sentence whole (`Presence: …`), `null` with no other flight
+   * on the site — the flights beyond sight, which `other_rigs` does not name. */
+  presence_line: string | null;
 }
 
 /** A decoded `site.map` frame: the grid, and the block (`null` on a reason frame). */
@@ -326,6 +329,7 @@ export function parseSiteFrame(raw: unknown): SiteFrame | null {
         : [],
       no_readings: typeof s.no_readings === "string" ? s.no_readings : null,
       other_rigs: typeof s.other_rigs === "string" ? s.other_rigs : null,
+      presence_line: typeof s.presence_line === "string" ? s.presence_line : null,
     },
   };
 }

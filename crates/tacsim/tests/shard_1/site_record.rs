@@ -25,7 +25,7 @@ fn site_record(rig: &mut Rig) -> Option<SiteRecord> {
 
 /// A staff character (`SIM_ADMIN`): a submitting hand of its own, never GOD (whom the harness
 /// forbids to submit).
-fn staff_member(rig: &mut Rig) -> ObjId {
+pub(crate) fn staff_member(rig: &mut Rig) -> ObjId {
     let staff = rig.tw.spawn_player("Site staff");
     rig.tw
         .world_mut()
@@ -37,7 +37,7 @@ fn staff_member(rig: &mut Rig) -> ObjId {
 }
 
 /// One staff fixture write by `who`, landed.
-fn staff(rig: &mut Rig, who: ObjId, line: &str) {
+pub(crate) fn staff(rig: &mut Rig, who: ObjId, line: &str) {
     let (out, queued) = command(rig, who, line);
     assert_eq!(queued.len(), 1, "{line}: one write: {out}");
     land_all(rig, &queued);

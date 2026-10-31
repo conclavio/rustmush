@@ -825,3 +825,59 @@ so a fire order or mark on the surface cannot name a carrier; inside the field i
 contact; CF.4's picture); the carrier's **footprint** (it is one cell, as every unit is);
 **F-3's consequences** of a hit beyond section damage (the spec's own consequences apply in the
 field: a destroyed drive section disables motion, a destroyed hull section destroys the unit).
+
+## 9. CF.4 as built (one picture)
+
+Built 2026-10-31 on `main` at `02ccdffc`; the shared builder is
+`crates/tacsim/src/port/site_map/picture.rs`, the field's half `crates/tacsim/src/field/known.rs`.
+What the cut had to decide where the rulings left it open, for the owner to object to:
+
+- **One builder, two renderings** (Q-CF-48, Q-CF-50). The campaign layer is built once
+  (`picture::campaign_layer`: block letters, live claims, public pits, the viewer's own readings,
+  the pad, the presence picture, the salvage the viewer sees or remembers). `site.map` maps it into
+  its grid (so `+tv/map`, the TUI's `q` and the web's quarry screen draw it as before); the cockpit
+  frame of a unit in an IC field carries it as a `campaign` block in site cells
+  (`{ site, side, block_side, field, marks: [[x, y, glyph]], legend, claims, salvage, presence,
+  presence_line }`), which the TUI's and the web's cockpit maps and the pixel cockpit's map window
+  draw under the contacts, in `marks` order. The field layer is the kernel's frame; `site.map` draws
+  it from the viewer's own held cockpit frame of the field open on that site (`site.field_layer`,
+  the contacts in the cockpit's glyphs `x` / `+` / `?`, the viewer's own unit as `@`). The surface
+  does not push a cockpit frame of its own on an unpromoted site: `site.map` is that frame there,
+  pulled as before with the `tv.status` nudge, because a second push renderer is what Q-CF-50's
+  alternative was. The block is added only to an IC field's frame, so no simulator frame changed and
+  `FRAME_VERSION` stays 9 (a key added is not a version).
+- **SM.4b's exact rig cells** (CF.1's open question). The campaign layer carries the presence
+  picture, so `site.map` draws another flight at its cell (`o`) and names it in metres
+  (`Other rigs:`) only within sight — `SIGHT_CELLS`, 200 m — of one of the viewer's rigs on the
+  ground, the sight the presence picture already names a hull's class at and CF.1 shows the record's
+  ground within. Beyond it the flight is its band; inside a field it is a sensor contact. Doc 20 §5's
+  loud-sounding mark moved with it: a sounding heard beyond sight marks the presence row
+  (`(a sounding)`, `presence[].sounding`).
+- **Ground objects in a field** (Q-CF-26). A remains or a crate's footprint is a **wall** on the
+  field's ground (impassable to every ground row at the class's own price, opaque, three metres):
+  the kernel's one way to give cover by a cell nobody stands in, since a class's own cover is the
+  cover of the unit standing in it. CF.2's tracked price of 0 on the old class stopped a tank and no
+  biped. An object is a **sensor return** by the world's trace (`mush_atlas::trace_cells`), seen in
+  line of sight within 200 m from the unit's sensor height; the frame carries the ones a unit holds
+  as `ground` rows. It has no `ContactId`, no lock, no place in the mind API, the snapshot or the
+  hash.
+- **Who remembers what** (Q-CF-28). The site record gains `known`: per principal, the things they
+  saw (`[what, x, y]`, at most 32 each, 24 principals a site). A field's parties note what their
+  seated units' sensors hold every pulse (RAM), and at demotion each party also looks once from
+  every unit's last pose at the objects and at the casualties and wrecks the field leaves (its own
+  always). The close writes it for each of the party's principals — its leader, the pilots who sat
+  in its units, its rigs' operators — and forgets a remembered thing in a cell they looked at again
+  and did not find. A character is shown what they remember only where they do not see now, marked
+  `(remembered)`. A restart mid-field loses the pulses' notes before it; the look at demotion runs.
+- **The rig's cab** (Q-CF-49). A rig in a field flies the kernel's cockpit frame like any hull
+  (CF.2 admits every class); its cockpit frame gains a `rig` panel, the same row `site.rigs`
+  carries, which the TUI's and the web's status blocks print. `+tv` status answers inside a field
+  as before. The escort's cockpit shows the claims, blocks and ore marks of the person in its seat —
+  the chart is per principal (doc 20 §5), so "its party knows" is read as "its pilot knows".
+
+Not built in CF.4, each for a reason: **a surface scan revealing salvage** (Q-CF-28's second
+source) — a scan reads geology into the chart, and which objects a scan's reach reveals is a rule
+no ruling states; **NPC scavengers** finding objects (objects are not in the mind API); the
+**web's own pixel map window** draws the campaign layer through the same `mush-pixel` code as the
+TUI's, so it needs no second change. The cockpit map's `#` for a claim's edge shares its glyph with
+the arena map's walls, which an object's footprint now is; the legend names both.

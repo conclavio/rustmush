@@ -39,7 +39,9 @@ describe("QuarryScreen's side pane", () => {
   it("shows the blessed frame's two sentences from their keys", () => {
     const raw = fixture("site_map_other.json");
     mount(raw);
-    expect(sideTexts()).toEqual([raw.site.no_readings, raw.site.other_rigs]);
+    // Doc 32 cut CF.4: the second principal's rig in the bay sees the viewer's as a band.
+    expect(sideTexts()).toEqual([raw.site.no_readings, raw.site.presence_line]);
+    expect(raw.site.other_rigs).toBeNull();
   });
 
   it("shows a wrapped other-rigs sentence whole, and never reads site.lines", () => {
@@ -58,7 +60,7 @@ describe("QuarryScreen's side pane", () => {
       "Hold: 86 t of room unreserved.",
     ];
     mount(raw);
-    expect(sideTexts()).toEqual(["Nothing of metals read in view.", other]);
+    expect(sideTexts()).toEqual(["Nothing of metals read in view.", other, raw.site.presence_line]);
     expect(screen.getByText(other).tagName).toBe("P");
   });
 
@@ -66,6 +68,7 @@ describe("QuarryScreen's side pane", () => {
     const raw = fixture("site_map_other.json");
     delete raw.site.no_readings;
     delete raw.site.other_rigs;
+    delete raw.site.presence_line;
     mount(raw);
     expect(sideTexts()).toEqual([]);
   });

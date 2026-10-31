@@ -1,0 +1,900 @@
+{
+  "blocked": false,
+  "callsign": "RA",
+  "catchup": null,
+  "cell": [
+    6,
+    4
+  ],
+  "contacts": [
+    {
+      "age_ms": 1200,
+      "age_s": 1,
+      "alias": "X1",
+      "aspect": "left",
+      "band": "far",
+      "bearing_deg": 45,
+      "cell": [
+        36,
+        14
+      ],
+      "class": "blue",
+      "condition": {
+        "age_ms": 2000,
+        "bands": "ggyrd",
+        "table": 0
+      },
+      "designator": "BA",
+      "facing": "left",
+      "fatal": [
+        "hull"
+      ],
+      "friendly": false,
+      "health": "crippled",
+      "id": "1111111111111111",
+      "moving": false,
+      "odds": [
+        {
+          "p_permille": 624,
+          "percent": 62,
+          "weapon": "cannon"
+        },
+        {
+          "p_permille": 210,
+          "percent": 21,
+          "weapon": "machine_gun"
+        }
+      ],
+      "party": "B",
+      "range_m": 450,
+      "reads_dead": false,
+      "relation": "hostile",
+      "relative_deg": 0,
+      "unit_type": "tacsim.unit.line_tank"
+    },
+    {
+      "age_ms": 400,
+      "age_s": 0,
+      "alias": null,
+      "aspect": "front",
+      "band": "close",
+      "bearing_deg": 270,
+      "cell": [
+        2,
+        9
+      ],
+      "class": "red",
+      "condition": null,
+      "designator": "RB",
+      "facing": "front",
+      "fatal": null,
+      "friendly": true,
+      "health": null,
+      "id": "2222222222222222",
+      "moving": false,
+      "odds": [],
+      "party": "R",
+      "range_m": 100,
+      "reads_dead": false,
+      "relation": "own",
+      "relative_deg": 225,
+      "unit_type": "tacsim.unit.line_tank"
+    },
+    {
+      "age_ms": 3500,
+      "age_s": 3,
+      "alias": null,
+      "aspect": "front",
+      "band": "effective",
+      "bearing_deg": 315,
+      "cell": [
+        14,
+        7
+      ],
+      "class": "unknown",
+      "condition": null,
+      "designator": "X3",
+      "facing": "front",
+      "fatal": null,
+      "friendly": false,
+      "health": null,
+      "id": "3333333333333333",
+      "moving": false,
+      "odds": [],
+      "party": null,
+      "range_m": 200,
+      "reads_dead": false,
+      "relation": "unknown",
+      "relative_deg": 270,
+      "unit_type": null
+    },
+    {
+      "age_ms": 6000,
+      "age_s": 6,
+      "alias": null,
+      "aspect": "rear",
+      "band": "far",
+      "bearing_deg": 30,
+      "cell": [
+        50,
+        33
+      ],
+      "class": "unknown",
+      "condition": null,
+      "designator": "X4",
+      "facing": "rear",
+      "fatal": null,
+      "friendly": false,
+      "health": null,
+      "id": "4444444444444444",
+      "moving": false,
+      "odds": [],
+      "party": null,
+      "range_m": 600,
+      "reads_dead": false,
+      "relation": "unknown",
+      "relative_deg": 345,
+      "unit_type": null
+    }
+  ],
+  "ecm": null,
+  "heading_deg": 45,
+  "heading_mdeg": 45000,
+  "heat": {
+    "heat": 40,
+    "max": 100,
+    "overheated": false
+  },
+  "immobile": false,
+  "lock": "1111111111111111",
+  "lock_designator": "BA",
+  "lock_p_permille": 624,
+  "lock_percent": 62,
+  "lock_range_m": 440,
+  "match": 7,
+  "max_speed_kph": 54,
+  "mind": {
+    "active": 0,
+    "card": {
+      "schema": {
+        "sections": [
+          {
+            "fields": [
+              {
+                "id": "close_m",
+                "label": "Close distance",
+                "widget": {
+                  "default": 200,
+                  "help": "Sealed in exact stored units; presets copy values, never behavior.",
+                  "kind": "slider",
+                  "max": 4294967295,
+                  "min": 0,
+                  "scale": 1,
+                  "step": 1,
+                  "unit": "m"
+                }
+              },
+              {
+                "id": "engage_band_permille",
+                "label": "Engage band",
+                "widget": {
+                  "default": 1000,
+                  "help": "Sealed in exact stored units; presets copy values, never behavior.",
+                  "kind": "slider",
+                  "max": 1000,
+                  "min": 0,
+                  "scale": 10,
+                  "step": 1,
+                  "unit": "%"
+                }
+              },
+              {
+                "id": "opening",
+                "label": "Opening",
+                "widget": {
+                  "choices": [
+                    "wait",
+                    "search",
+                    "advance"
+                  ],
+                  "default": "wait",
+                  "help": "Sealed in exact stored units; presets copy values, never behavior.",
+                  "kind": "choice"
+                }
+              },
+              {
+                "id": "orbit_sense",
+                "label": "Orbit direction",
+                "widget": {
+                  "choices": [
+                    "cw",
+                    "ccw",
+                    "auto"
+                  ],
+                  "default": "auto",
+                  "help": "Sealed in exact stored units; presets copy values, never behavior.",
+                  "kind": "choice"
+                }
+              },
+              {
+                "id": "screen_arc",
+                "label": "Screen arc",
+                "widget": {
+                  "default": 120,
+                  "help": "Sealed in exact stored units; presets copy values, never behavior.",
+                  "kind": "slider",
+                  "max": 360,
+                  "min": 0,
+                  "scale": 1,
+                  "step": 1,
+                  "unit": "degrees"
+                }
+              },
+              {
+                "id": "screen_bearing",
+                "label": "Screen bearing",
+                "widget": {
+                  "default": 0,
+                  "help": "Sealed in exact stored units; presets copy values, never behavior.",
+                  "kind": "slider",
+                  "max": 359,
+                  "min": 0,
+                  "scale": 1,
+                  "step": 1,
+                  "unit": "degrees"
+                }
+              },
+              {
+                "id": "stance",
+                "label": "Stance",
+                "widget": {
+                  "choices": [
+                    "hold",
+                    "close",
+                    "orbit",
+                    "hunt",
+                    "screen"
+                  ],
+                  "default": "hold",
+                  "help": "Sealed in exact stored units; presets copy values, never behavior.",
+                  "kind": "choice"
+                }
+              },
+              {
+                "id": "turn_into_hits",
+                "label": "Turn into hits",
+                "widget": {
+                  "default": true,
+                  "help": "Sealed in exact stored units; presets copy values, never behavior.",
+                  "kind": "toggle"
+                }
+              },
+              {
+                "id": "turn_s",
+                "label": "Turn duration",
+                "widget": {
+                  "default": 4,
+                  "help": "Sealed in exact stored units; presets copy values, never behavior.",
+                  "kind": "slider",
+                  "max": 4294967295,
+                  "min": 0,
+                  "scale": 1,
+                  "step": 1,
+                  "unit": "s"
+                }
+              }
+            ],
+            "id": "posture",
+            "label": "Posture",
+            "station": "helm"
+          },
+          {
+            "fields": [
+              {
+                "id": "aspect",
+                "label": "Aspect",
+                "widget": {
+                  "choices": [
+                    "any",
+                    "flank",
+                    "rear"
+                  ],
+                  "default": "any",
+                  "help": "Sealed in exact stored units; presets copy values, never behavior.",
+                  "kind": "choice"
+                }
+              },
+              {
+                "id": "min_odds_permille",
+                "label": "Minimum odds",
+                "widget": {
+                  "default": 650,
+                  "help": "Sealed in exact stored units; presets copy values, never behavior.",
+                  "kind": "slider",
+                  "max": 1000,
+                  "min": 0,
+                  "scale": 10,
+                  "step": 1,
+                  "unit": "%"
+                }
+              },
+              {
+                "id": "reserve_odds_pct",
+                "label": "Reserve odds",
+                "widget": {
+                  "default": 75,
+                  "help": "Sealed in exact stored units; presets copy values, never behavior.",
+                  "kind": "slider",
+                  "max": 100,
+                  "min": 0,
+                  "scale": 1,
+                  "step": 1,
+                  "unit": "%"
+                }
+              },
+              {
+                "id": "reserve_pct",
+                "label": "Reserve",
+                "widget": {
+                  "default": 30,
+                  "help": "Sealed in exact stored units; presets copy values, never behavior.",
+                  "kind": "slider",
+                  "max": 100,
+                  "min": 0,
+                  "scale": 1,
+                  "step": 1,
+                  "unit": "%"
+                }
+              }
+            ],
+            "id": "fire",
+            "label": "Fire discipline",
+            "station": "fire"
+          },
+          {
+            "fields": [
+              {
+                "id": "prefer",
+                "label": "Target preference",
+                "widget": {
+                  "choices": [
+                    "nearest",
+                    "exposed",
+                    "hurt",
+                    "balanced",
+                    "best_odds"
+                  ],
+                  "default": "balanced",
+                  "help": "Sealed in exact stored units; presets copy values, never behavior.",
+                  "kind": "choice"
+                }
+              },
+              {
+                "id": "switch_m",
+                "label": "Lock switch advantage",
+                "widget": {
+                  "default": 100,
+                  "help": "Sealed in exact stored units; presets copy values, never behavior.",
+                  "kind": "slider",
+                  "max": 4294967295,
+                  "min": 0,
+                  "scale": 1,
+                  "step": 1,
+                  "unit": "m"
+                }
+              },
+              {
+                "id": "weight_facet",
+                "label": "Facet weight",
+                "widget": {
+                  "default": 40,
+                  "help": "Sealed in exact stored units; presets copy values, never behavior.",
+                  "kind": "slider",
+                  "max": 4294967295,
+                  "min": 0,
+                  "scale": 1,
+                  "step": 1,
+                  "unit": ""
+                }
+              },
+              {
+                "id": "weight_health",
+                "label": "Health weight",
+                "widget": {
+                  "default": 30,
+                  "help": "Sealed in exact stored units; presets copy values, never behavior.",
+                  "kind": "slider",
+                  "max": 4294967295,
+                  "min": 0,
+                  "scale": 1,
+                  "step": 1,
+                  "unit": ""
+                }
+              },
+              {
+                "id": "weight_range",
+                "label": "Range weight",
+                "widget": {
+                  "default": 100,
+                  "help": "Sealed in exact stored units; presets copy values, never behavior.",
+                  "kind": "slider",
+                  "max": 4294967295,
+                  "min": 0,
+                  "scale": 1,
+                  "step": 1,
+                  "unit": ""
+                }
+              }
+            ],
+            "id": "targeting",
+            "label": "Targeting",
+            "station": "sensors"
+          },
+          {
+            "fields": [
+              {
+                "id": "hunt_after_ms",
+                "label": "Hunt delay",
+                "widget": {
+                  "default": 90000,
+                  "help": "Sealed in exact stored units; presets copy values, never behavior.",
+                  "kind": "slider",
+                  "max": 4294967295,
+                  "min": 0,
+                  "scale": 1000,
+                  "step": 1,
+                  "unit": "s"
+                }
+              },
+              {
+                "id": "rally_ms",
+                "label": "Rally delay",
+                "widget": {
+                  "default": 20000,
+                  "help": "Sealed in exact stored units; presets copy values, never behavior.",
+                  "kind": "slider",
+                  "max": 4294967295,
+                  "min": 0,
+                  "scale": 1000,
+                  "step": 1,
+                  "unit": "s"
+                }
+              },
+              {
+                "id": "search_ms",
+                "label": "Search duration",
+                "widget": {
+                  "default": 60000,
+                  "help": "Sealed in exact stored units; presets copy values, never behavior.",
+                  "kind": "slider",
+                  "max": 4294967295,
+                  "min": 0,
+                  "scale": 1000,
+                  "step": 1,
+                  "unit": "s"
+                }
+              },
+              {
+                "id": "stand_min_permille",
+                "label": "Fight home health",
+                "widget": {
+                  "default": 175,
+                  "help": "Sealed in exact stored units; presets copy values, never behavior.",
+                  "kind": "slider",
+                  "max": 1000,
+                  "min": 0,
+                  "scale": 10,
+                  "step": 1,
+                  "unit": "%"
+                }
+              },
+              {
+                "id": "stop_unseen",
+                "label": "Stop unseen",
+                "widget": {
+                  "default": true,
+                  "help": "Sealed in exact stored units; presets copy values, never behavior.",
+                  "kind": "toggle"
+                }
+              },
+              {
+                "id": "withdraw_permille",
+                "label": "Break off health",
+                "widget": {
+                  "default": 350,
+                  "help": "Sealed in exact stored units; presets copy values, never behavior.",
+                  "kind": "slider",
+                  "max": 1000,
+                  "min": 0,
+                  "scale": 10,
+                  "step": 1,
+                  "unit": "%"
+                }
+              }
+            ],
+            "id": "survival",
+            "label": "Survival and search",
+            "station": "helm"
+          }
+        ]
+      },
+      "values": {
+        "aspect": "any",
+        "close_m": 200,
+        "engage_band_permille": 1000,
+        "hunt_after_ms": 90000,
+        "min_odds_permille": 650,
+        "opening": "wait",
+        "orbit_sense": "auto",
+        "prefer": "balanced",
+        "rally_ms": 20000,
+        "reserve_odds_pct": 75,
+        "reserve_pct": 30,
+        "screen_arc": 120,
+        "screen_bearing": 0,
+        "search_ms": 60000,
+        "stance": "hold",
+        "stand_min_permille": 175,
+        "stop_unseen": true,
+        "switch_m": 100,
+        "turn_into_hits": true,
+        "turn_s": 4,
+        "weight_facet": 40,
+        "weight_health": 30,
+        "weight_range": 100,
+        "withdraw_permille": 350
+      }
+    },
+    "channels": [
+      "helm",
+      "sensors",
+      "fire"
+    ],
+    "class": "I",
+    "core": "II",
+    "name": "Standard Doctrine",
+    "next_switch_ms": null,
+    "off": false,
+    "profiles": [
+      "Sniper",
+      "Line"
+    ],
+    "sealed_rules": []
+  },
+  "mode": "skirmish",
+  "motor": null,
+  "notices": [
+    {
+      "cause": null,
+      "contact": "4444444444444444",
+      "designator": "X4",
+      "detail": null,
+      "friendly": false,
+      "kind": "acquired",
+      "order": null,
+      "refusal": null,
+      "section": null,
+      "spent": false,
+      "text": "New contact X4: bearing 030°, far.",
+      "was": null,
+      "weapon": null
+    },
+    {
+      "cause": null,
+      "contact": "1111111111111111",
+      "designator": "BA",
+      "detail": null,
+      "friendly": false,
+      "kind": "target_section_lost",
+      "order": null,
+      "refusal": null,
+      "section": "turret",
+      "spent": false,
+      "text": "BA's turret is destroyed.",
+      "was": null,
+      "weapon": null
+    }
+  ],
+  "objective": null,
+  "odds_floor_permille": 100,
+  "order": null,
+  "party": "R",
+  "power": "online",
+  "receiver": null,
+  "reverse_kph": 27,
+  "rules": [
+    {
+      "rule": {
+        "action": "fire",
+        "condition": {
+          "aspects": 14,
+          "max_range_m": 4294967295,
+          "min_permille": 600,
+          "min_range_m": 0,
+          "min_rounds_left": 8,
+          "target": {
+            "target": "lock"
+          },
+          "weapon": "cannon"
+        },
+        "implicit": true,
+        "independent": true,
+        "predicates": []
+      },
+      "slot": 1,
+      "text": "cannon fires at your identified lock when its chance to hit is at least 60% and the target shows its side or rear and cannon keeps 8 round(s)"
+    }
+  ],
+  "scan_tables": [
+    [
+      "engine",
+      "hull",
+      "left_track",
+      "right_track",
+      "turret"
+    ]
+  ],
+  "schema": {
+    "id": "arena.cockpit",
+    "retain": "latest",
+    "version": 9
+  },
+  "scope": "hostile",
+  "sections": [
+    {
+      "condition": "intact",
+      "facets": [],
+      "id": "engine",
+      "internals": 40,
+      "internals_max": 40
+    },
+    {
+      "condition": "intact",
+      "facets": [
+        {
+          "armor": 55,
+          "armor_max": 80,
+          "id": "front"
+        },
+        {
+          "armor": 30,
+          "armor_max": 30,
+          "id": "rear"
+        }
+      ],
+      "id": "hull",
+      "internals": 60,
+      "internals_max": 60
+    },
+    {
+      "condition": "intact",
+      "facets": [
+        {
+          "armor": 4,
+          "armor_max": 24,
+          "id": "left"
+        }
+      ],
+      "id": "left_track",
+      "internals": 6,
+      "internals_max": 24
+    },
+    {
+      "condition": "destroyed",
+      "facets": [
+        {
+          "armor": 0,
+          "armor_max": 24,
+          "id": "right"
+        }
+      ],
+      "id": "right_track",
+      "internals": 0,
+      "internals_max": 24
+    },
+    {
+      "condition": "intact",
+      "facets": [
+        {
+          "armor": 18,
+          "armor_max": 20,
+          "id": "top"
+        }
+      ],
+      "id": "turret",
+      "internals": 30,
+      "internals_max": 30
+    }
+  ],
+  "sensor_height_cm": 150,
+  "side_unit_types": [
+    "tacsim.unit.line_tank"
+  ],
+  "sight_m": 600,
+  "speed_cms": 1200,
+  "speed_kph": 43,
+  "t_ms": 61250,
+  "tempo": "engaged",
+  "unit": 101,
+  "unit_type": "tacsim.unit.line_tank",
+  "weapons": [
+    {
+      "armed": {
+        "aspects": [
+          "left",
+          "right",
+          "rear"
+        ],
+        "keeps": 8,
+        "max_range_m": null,
+        "min_permille": 600,
+        "min_range_m": null,
+        "percent": 60,
+        "slot": 1,
+        "target": "lock"
+      },
+      "bands_cm": [
+        100000,
+        300000
+      ],
+      "heat_per_shot": 0,
+      "id": "cannon",
+      "p_permille": 624,
+      "percent": 62,
+      "range_band": {
+        "dispersion_mrad": 4,
+        "index": 1,
+        "max_range_cm": 100000,
+        "of": 2
+      },
+      "ready": true,
+      "ready_in_ms": 0,
+      "rounds": 14,
+      "rounds_max": 20
+    },
+    {
+      "armed": null,
+      "bands_cm": [
+        40000
+      ],
+      "heat_per_shot": 0,
+      "id": "machine_gun",
+      "p_permille": 210,
+      "percent": 21,
+      "range_band": null,
+      "ready": false,
+      "ready_in_ms": 900,
+      "rounds": 380,
+      "rounds_max": 500
+    }
+  ],
+  "weapons_free": true,
+  "wreck": false,
+  "x_cm": 6500,
+  "y_cm": 4500,
+  "z_cm": 0,
+  "campaign": {
+    "site": "Ahuna Flank",
+    "side": 256,
+    "block_side": 64,
+    "field": 1,
+    "marks": [
+      [
+        3,
+        1,
+        "D"
+      ],
+      [
+        10,
+        5,
+        "#"
+      ],
+      [
+        11,
+        5,
+        "#"
+      ],
+      [
+        12,
+        5,
+        "#"
+      ],
+      [
+        8,
+        2,
+        "3"
+      ],
+      [
+        4,
+        6,
+        "%"
+      ],
+      [
+        9,
+        4,
+        "&"
+      ]
+    ],
+    "legend": [
+      [
+        "#",
+        "claim"
+      ],
+      [
+        "3",
+        "rich, 3 t a cycle"
+      ],
+      [
+        "%",
+        "wreck or remains"
+      ],
+      [
+        "&",
+        "crate"
+      ]
+    ],
+    "claims": [
+      {
+        "letter": "D",
+        "state": "claimed",
+        "holder": "Ann Sorrel",
+        "yours": false
+      }
+    ],
+    "salvage": [
+      {
+        "what": "crate",
+        "cell": [
+          9,
+          4
+        ],
+        "seen": "now",
+        "words": "a crate of 2 metal_ore",
+        "m": 30,
+        "dir": "E"
+      },
+      {
+        "what": "wreck",
+        "cell": [
+          4,
+          6
+        ],
+        "seen": "remembered",
+        "words": "a wreck",
+        "m": 20,
+        "dir": "NW"
+      }
+    ],
+    "presence": [],
+    "presence_line": null
+  },
+  "ground": [
+    {
+      "what": "crate",
+      "cell": [
+        9,
+        4
+      ],
+      "glyph": "&",
+      "words": "a crate of 2 metal_ore",
+      "m": 30,
+      "dir": "E"
+    }
+  ],
+  "rig": {
+    "slot": 1,
+    "mark": "TV-0001",
+    "cell": [
+      6,
+      4
+    ],
+    "charge_pct": 82,
+    "hopper": "0.4 of 2 t",
+    "act": null,
+    "leg": null,
+    "line": "Rig 1: (6, 4), charge 82 %, hopper 0.4 of 2 t.",
+    "run": null,
+    "queued": null,
+    "plan": null
+  }
+}

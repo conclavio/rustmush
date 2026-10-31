@@ -116,28 +116,39 @@ pub struct Seen {
     pub class: Option<SmolStr>,
     /// The viewer's rig it is seen from (its slot), or `None` from the pad.
     pub from: Option<u8>,
+    /// **A loud sounding of its inside the IC hour** (doc 20 §5's transient mark, which doc 32
+    /// cut CF.4 moved from the exact row SM.4b printed to this band): heard, so it marks the row.
+    pub heard: bool,
 }
 
 impl Seen {
     /// The frame's row.
     #[must_use]
     pub fn value(&self) -> Value {
-        json!({
+        let mut row = json!({
             "dir": self.dir.map(Octant::abbrev),
             "band": self.band.word(),
             "range": self.band.words(),
             "class": self.class.as_ref().map(SmolStr::as_str),
             "from": self.from,
-        })
+        });
+        // Omitted when nothing was heard, so a row with no sounding is byte-identical to CF.1's.
+        if self.heard
+            && let Some(object) = row.as_object_mut()
+        {
+            object.insert("sounding".to_owned(), Value::Bool(true));
+        }
+        row
     }
 
     /// The words one row prints: `NE 200-500 m`, `S within 200 m, a tv prospector`.
     #[must_use]
     pub fn words(&self) -> String {
         let dir = self.dir.map_or("here", Octant::abbrev);
+        let heard = if self.heard { " (a sounding)" } else { "" };
         match &self.class {
-            Some(class) => format!("{dir} {}, a {class}", self.band.words()),
-            None => format!("{dir} {}", self.band.words()),
+            Some(class) => format!("{dir} {}, a {class}{heard}", self.band.words()),
+            None => format!("{dir} {}{heard}", self.band.words()),
         }
     }
 }
@@ -152,6 +163,19 @@ pub fn seen_from(
     own: &BTreeSet<ObjId>,
     observers: &[(u8, (i64, i64))],
     pad: (i64, i64),
+) -> Vec<Seen> {
+    seen_from_heard(flights, own, observers, pad, &BTreeSet::new())
+}
+
+/// [`seen_from`], with each flight in `heard` — a loud sounding of its inside the IC hour (doc 20
+/// §5) — marking its row (doc 32 cut CF.4: the mark rides the band once the exact row is gone).
+#[must_use]
+pub fn seen_from_heard(
+    flights: &[Flight],
+    own: &BTreeSet<ObjId>,
+    observers: &[(u8, (i64, i64))],
+    pad: (i64, i64),
+    heard: &BTreeSet<ObjId>,
 ) -> Vec<Seen> {
     let mut seen: Vec<Seen> = flights
         .iter()
@@ -171,14 +195,16 @@ pub fn seen_from(
                 band,
                 class: (band == Band::Close).then(|| flight.class.clone()),
                 from,
+                heard: heard.contains(&flight.tv),
             }
         })
         .collect();
     seen.sort_by(|a, b| {
-        (a.band, a.dir.map(Octant::abbrev), &a.class).cmp(&(
+        (a.band, a.dir.map(Octant::abbrev), &a.class, a.heard).cmp(&(
             b.band,
             b.dir.map(Octant::abbrev),
             &b.class,
+            b.heard,
         ))
     });
     seen

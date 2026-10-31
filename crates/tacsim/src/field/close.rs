@@ -80,6 +80,9 @@ pub(crate) fn on_ended(ctx: &mut Ctx<'_>, task: MatchId, end: MatchEnd, units: &
         .map(|hosted| hosted.live.units.iter().map(|row| row.unit).collect())
         .unwrap_or_default();
     let left = demote_units(ctx, &site, &unit_ids, &returns);
+    // Doc 32 cut CF.4 (Q-CF-28): what each party saw, read while the host still holds the field.
+    let learned = super::known::learned_at_close(ctx, task, &site, &returns, &left);
+    super::known::forget(ctx, &site);
     // The registry's rows, as the match's own finish lets them go.
     let pilots: Vec<ObjId> = ctx
         .w
@@ -118,7 +121,7 @@ pub(crate) fn on_ended(ctx: &mut Ctx<'_>, task: MatchId, end: MatchEnd, units: &
         .map(|hosted| hosted.live.field.ordinal);
     super::record::delete(ctx, &site);
     if let Some(record) = site_record(ctx, &site) {
-        super::admit::owe_close(ctx, &site, &record, Some(left));
+        super::admit::owe_close(ctx, &site, &record, Some(left), learned);
     }
     let line = format!(
         "Field {} on {} has settled: the ground there is the surface's again.",

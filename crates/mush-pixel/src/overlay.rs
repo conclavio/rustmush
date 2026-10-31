@@ -43,6 +43,19 @@ pub struct MapMark {
     pub kind: SpriteKind,
 }
 
+/// **A campaign-layer mark on the minimap** (doc 32 cut CF.4; Q-CF-48): an IC
+/// field's frame says which glyph stands in which cell — a block letter, a
+/// claim's edge `#`, a pit `v`/`V`, a reading `1`–`3`/`+`/`.`, the pad `H`, a
+/// wreck or remains `%`, a crate `&` — and the minimap draws it as that
+/// glyph's one fixed shape (`campaign_item`), inventing none.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub struct MapGlyph {
+    /// Arena cell, `x` east, `y` north.
+    pub cell: (i64, i64),
+    /// The frame's glyph.
+    pub glyph: char,
+}
+
 /// A named spot on the minimap.
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub struct Spot {
@@ -144,6 +157,12 @@ const UNKNOWN: Rgb = [170, 170, 162];
 /// The lock's box and label: a marker, never a team's colour.
 pub(crate) const LOCK: Rgb = [240, 200, 60];
 pub(crate) const WRECK: Rgb = [110, 100, 90];
+/// Doc 32 cut CF.4: a claim's edge on the minimap.
+pub(crate) const CLAIM: Rgb = [150, 120, 60];
+/// Doc 32 cut CF.4: an ore reading on the minimap.
+pub(crate) const ORE: Rgb = [200, 170, 60];
+/// Doc 32 cut CF.4: a crate on the minimap.
+pub(crate) const CRATE: Rgb = [180, 140, 90];
 
 pub(crate) fn ground_rgb(ground: Ground) -> Rgb {
     match ground {
@@ -328,6 +347,19 @@ pub fn draw_minimap(
     minimap_scene(frame, map, you, heading_mdeg, marks, spots).draw(frame);
 }
 
+/// [`draw_minimap`] with an IC field's campaign layer under the spots and the
+/// contacts (doc 32 cut CF.4).
+pub fn draw_minimap_with(
+    frame: &mut Frame,
+    map: &Map,
+    (you, heading_mdeg): ((i64, i64), u32),
+    marks: &[MapMark],
+    spots: &[Spot],
+    campaign: &[MapGlyph],
+) {
+    minimap_scene_with(frame, map, (you, heading_mdeg), marks, spots, campaign).draw(frame);
+}
+
 /// The minimap's scene for `frame` (see [`draw_minimap`]).
 #[must_use]
 pub fn minimap_scene(
@@ -337,6 +369,62 @@ pub fn minimap_scene(
     heading_mdeg: u32,
     marks: &[MapMark],
     spots: &[Spot],
+) -> Scene {
+    minimap_scene_with(frame, map, (you, heading_mdeg), marks, spots, &[])
+}
+
+/// **How one campaign glyph is drawn on the minimap** (doc 32 cut CF.4): a
+/// block letter or the pad as text, a claim's edge or a pit as its cell
+/// filled, a reading as a dot, a wreck or a crate as a square. A glyph this
+/// build does not know is not drawn.
+fn campaign_item(at: (f64, f64), glyph: char, s: i64) -> Option<Item> {
+    let cell = |fill: Rgb| Item::Rect {
+        min: (at.0 - 0.5, at.1 - 0.5),
+        max: (at.0 + 0.5, at.1 + 0.5),
+        fill,
+    };
+    Some(match glyph {
+        'A'..='P' => Item::Text {
+            at,
+            offset: (-2 * s, -3 * s),
+            anchor: Anchor::TopLeft,
+            text: glyph.to_string(),
+            colour: DIM,
+            scale: s as usize,
+        },
+        '#' => cell(CLAIM),
+        'v' | 'V' => cell(GONE),
+        '1' | '2' | '3' | '+' | '.' => Item::Marker {
+            at,
+            half: (s / 2).max(1),
+            shape: Shape::Disc,
+            colour: if glyph == '.' { DIM } else { ORE },
+        },
+        '%' => Item::Marker {
+            at,
+            half: s,
+            shape: Shape::Square,
+            colour: WRECK,
+        },
+        '&' => Item::Marker {
+            at,
+            half: s,
+            shape: Shape::Square,
+            colour: CRATE,
+        },
+        _ => return None,
+    })
+}
+
+/// [`minimap_scene`] with the campaign layer (see [`draw_minimap_with`]).
+#[must_use]
+pub fn minimap_scene_with(
+    frame: &Frame,
+    map: &Map,
+    (you, heading_mdeg): ((i64, i64), u32),
+    marks: &[MapMark],
+    spots: &[Spot],
+    campaign: &[MapGlyph],
 ) -> Scene {
     let s = scale_for(frame) as i64;
     let view: i64 = 60; // cells on a side
@@ -380,6 +468,12 @@ pub fn minimap_scene(
         ((0..view).contains(&dx) && (0..view).contains(&dy))
             .then_some((cell.0 as f64 + 0.5, cell.1 as f64 + 0.5))
     };
+    // Doc 32 cut CF.4: the campaign layer, over the ground, under the spots.
+    for mark in campaign {
+        if let Some(item) = shown(mark.cell).and_then(|at| campaign_item(at, mark.glyph, s)) {
+            scene.push(item);
+        }
+    }
     for spot in spots {
         if let Some(at) = shown(spot.cell) {
             scene.push(Item::Text {
