@@ -426,7 +426,7 @@
       {:else if subTab === "components"}
         <CatalogStudio {documentJson} onChange={applyStructuredEdit} />
       {:else if subTab === "corridor"}
-        <CorridorStudio {documentJson} onChange={applyStructuredEdit} />
+        <CorridorStudio {documentJson} {catalog} onChange={applyStructuredEdit} />
       {/if}
       <div class="pane-head">
         <span>Canonical Pack / Table JSON (<code>{selectedPackId}</code>)</span>
