@@ -120,17 +120,20 @@ pub struct CockpitPicture {
     /// held `arena.map`'s [`MapStamp`].
     built_for: Option<MapStamp>,
     /// The arena map, open ground until an `arena.map` is held.
-    arena: Map,
+    pub(crate) arena: Map,
     /// The same map with its heights, baked, when the feed carries them
     /// (G.7b): what the picture is drawn from then.
-    terrain: Option<Terrain>,
+    pub(crate) terrain: Option<Terrain>,
     /// What is drawn over the view.
     overlay: Overlay,
     /// Draws so far: the sprites' animation clock (a moving cycle steps every
     /// [`ANIMATION_DRAWS`] draws).
-    draws: usize,
+    pub(crate) draws: usize,
     /// The HUD's inset (G.13): the overhead drawn small, with its own map.
-    inset: OverheadPicture,
+    pub(crate) inset: OverheadPicture,
+    /// Retained Kitty compositor state for the First-Person cockpit view.
+    #[cfg(feature = "encode")]
+    pub(crate) kitty: crate::cockpit_kitty::CockpitKittyState,
 }
 
 /// How many draws a moving cycle's frame is held for: three at 20 Hz is a
@@ -160,11 +163,13 @@ impl CockpitPicture {
             overlay,
             draws: 0,
             inset: OverheadPicture::new(),
+            #[cfg(feature = "encode")]
+            kitty: crate::cockpit_kitty::CockpitKittyState::new(),
         }
     }
 
     /// Build (or keep) the arena map from the held `arena.map`.
-    fn ensure_map(&mut self, map: Option<&Value>) -> &Map {
+    pub(crate) fn ensure_map(&mut self, map: Option<&Value>) -> &Map {
         let wanted = map_stamp(map);
         let keep = self.built_for == Some(wanted) && (map.is_some() || wanted.0.is_none());
         if !keep {
@@ -175,6 +180,8 @@ impl CockpitPicture {
             // G.7b: relief where the feed carries it, baked once a map.
             self.terrain = map.and_then(terrain_from_feed);
             self.built_for = Some(wanted);
+            #[cfg(feature = "encode")]
+            self.kitty.invalidate_world();
         }
         &self.arena
     }
@@ -244,7 +251,7 @@ impl Picture for CockpitPicture {
 /// The unit's sensor height above the ground, centimetres (doc 21a `W-10`),
 /// or `None` when the frame does not name it (which the raycaster takes as
 /// the stock [`EYE_HEIGHT_CM`]).
-fn sensor_height_cm(cockpit: &Value) -> Option<i64> {
+pub(crate) fn sensor_height_cm(cockpit: &Value) -> Option<i64> {
     cockpit.get("sensor_height_cm").and_then(Value::as_i64)
 }
 
@@ -262,7 +269,7 @@ fn eye_cm(cockpit: &Value) -> Option<i64> {
 /// Adjust [`eye_cm`] by the ground height delta when dead-reckoning (`look.dx_cm`,
 /// `look.dy_cm`) across sloped relief so the camera follows the terrain surface
 /// between keyframes without burrowing into hills.
-fn eye_at_cam_cm(
+pub(crate) fn eye_at_cam_cm(
     cockpit: &Value,
     arena: &Map,
     terrain: Option<&Terrain>,
@@ -524,7 +531,7 @@ pub fn contact_party(c: &Value) -> Option<char> {
 /// type whose look has no sheet (or that has no look) is the silhouette. The
 /// HUD boxes the lock with the same sprite, so its box is the drawn one's —
 /// the sheet's size, not the silhouette's (doc 21a `X-03`).
-fn contact_sprite(c: &Value, cam: &Camera, step: usize) -> Sprite {
+pub(crate) fn contact_sprite(c: &Value, cam: &Camera, step: usize) -> Sprite {
     let kind = contact_kind(c);
     let look = match c.get("unit_type").and_then(Value::as_str) {
         Some(unit) => look::for_unit(unit),

@@ -831,51 +831,75 @@ pub enum Art {
     Sheet(usize),
 }
 
-/// The art shipped look `index` draws in the 2.5D now: its model's bake when
-/// installed, else its sheet ([`Look::sheet`]); `None` for a look with
-/// neither.
+/// The art shipped look `index` draws in `view` now: its model's bake when
+/// installed with a chain for `view`, else its sheet ([`Look::sheet`]); `None`
+/// for a look with neither.
 #[must_use]
-pub fn iso_art(index: usize) -> Option<Art> {
+pub fn view_art(index: usize, view: View) -> Option<Art> {
     let look = look::by_index(index)?;
     if let Some(slot) = look.model.as_deref().and_then(model_slot)
-        && model_in_slot(slot).is_some_and(|m| m.chain(View::Iso).is_some())
+        && model_in_slot(slot).is_some_and(|m| m.chain(view).is_some())
     {
         return Some(Art::Model(slot));
     }
     look.sheet().map(|_| Art::Sheet(index))
 }
 
-/// The fallback chains, one a look ([`look::by_index`]), built on first use
-/// and leaked once, so a look installed at run time gets one too.
-static FALLBACK: std::sync::Mutex<std::collections::BTreeMap<usize, &'static Chain>> =
+/// The art shipped look `index` draws in the 2.5D now: its model's bake when
+/// installed, else its sheet ([`Look::sheet`]); `None` for a look with
+/// neither.
+#[must_use]
+pub fn iso_art(index: usize) -> Option<Art> {
+    view_art(index, View::Iso)
+}
+
+/// The fallback chains, one a `(look_index, view_tag)` ([`look::by_index`]),
+/// built on first use and leaked once, so a look installed at run time gets
+/// one too.
+static FALLBACK: std::sync::Mutex<std::collections::BTreeMap<(usize, u8), &'static Chain>> =
     std::sync::Mutex::new(std::collections::BTreeMap::new());
 
-/// **The `iso` chain `art` is drawn from**, with the height, centimetres,
+/// **The `view` chain `art` is drawn from**, with the height, centimetres,
 /// the size pick reads: the model's own, or the look's sheet as a chain
 /// ([`chain_from_sheet`]) at the look's `size_cm`.
 #[must_use]
-pub fn art_chain(art: Art) -> Option<(&'static Chain, u32)> {
+pub fn art_chain_for_view(art: Art, view: View) -> Option<(&'static Chain, u32)> {
     match art {
         Art::Model(slot) => {
             let bake = model_in_slot(slot)?;
-            Some((bake.chain(View::Iso)?, bake.size_cm.1))
+            Some((bake.chain(view)?, bake.size_cm.1))
         }
         Art::Sheet(index) => {
             let look = look::by_index(index)?;
             let sheet = look.sheet()?;
+            let key = (index, view.tag());
             let mut cache = FALLBACK.lock().unwrap_or_else(PoisonError::into_inner);
-            let chain: &'static Chain = match cache.get(&index) {
+            let chain: &'static Chain = match cache.get(&key) {
                 Some(chain) => chain,
                 None => {
                     let chain: &'static Chain =
-                        Box::leak(Box::new(chain_from_sheet(sheet, look.size_cm, View::Iso)));
-                    cache.insert(index, chain);
+                        Box::leak(Box::new(chain_from_sheet(sheet, look.size_cm, view)));
+                    cache.insert(key, chain);
                     chain
                 }
             };
             Some((chain, look.size_cm.1))
         }
     }
+}
+
+/// **The `iso` chain `art` is drawn from**, with the height, centimetres,
+/// the size pick reads: the model's own, or the look's sheet as a chain
+/// ([`chain_from_sheet`]) at the look's `size_cm`.
+#[must_use]
+pub fn art_chain(art: Art) -> Option<(&'static Chain, u32)> {
+    art_chain_for_view(art, View::Iso)
+}
+
+/// **The `view` chain `index` draws from** now ([`view_art`], [`art_chain_for_view`]).
+#[must_use]
+pub fn view_chain(index: usize, view: View) -> Option<(&'static Chain, u32)> {
+    art_chain_for_view(view_art(index, view)?, view)
 }
 
 /// **The `iso` chain the 2.5D draws shipped look `index` from** now
