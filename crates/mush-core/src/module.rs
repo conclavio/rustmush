@@ -2056,52 +2056,6 @@ impl ModuleStateMap {
         ))
     }
 
-    /// Closed composed movement borrows at most eight captured distinct slots.
-    /// Every identity and incarnation is checked before returning any borrow.
-    pub(crate) fn get_erased_movement_mut<'a>(
-        &'a mut self,
-        captures: &[&ErasedSlotCapture],
-    ) -> Result<Vec<&'a mut (dyn Any + Send)>, StateSlotBindError> {
-        struct UnusedMovementSlot<const N: u8>;
-        let mut ids = [
-            TypeId::of::<UnusedMovementSlot<0>>(),
-            TypeId::of::<UnusedMovementSlot<1>>(),
-            TypeId::of::<UnusedMovementSlot<2>>(),
-            TypeId::of::<UnusedMovementSlot<3>>(),
-            TypeId::of::<UnusedMovementSlot<4>>(),
-            TypeId::of::<UnusedMovementSlot<5>>(),
-            TypeId::of::<UnusedMovementSlot<6>>(),
-            TypeId::of::<UnusedMovementSlot<7>>(),
-        ];
-        if captures.len() > ids.len() {
-            return Err(StateSlotBindError::Aliased);
-        }
-        for (capture, id) in captures.iter().zip(ids.iter_mut()) {
-            *id = capture.type_id;
-        }
-        if ids.iter().collect::<std::collections::BTreeSet<_>>().len() != ids.len() {
-            return Err(StateSlotBindError::Aliased);
-        }
-        for capture in captures {
-            let slot = self
-                .slots
-                .get(&capture.type_id)
-                .ok_or(StateSlotBindError::Missing)?;
-            if !Arc::ptr_eq(&slot.incarnation, &capture.incarnation) {
-                return Err(StateSlotBindError::Replaced);
-            }
-        }
-        self.slots
-            .get_disjoint_mut(ids.each_ref())
-            .into_iter()
-            .take(captures.len())
-            .map(|slot| {
-                slot.map(|slot| slot.value.as_mut())
-                    .ok_or(StateSlotBindError::Missing)
-            })
-            .collect()
-    }
-
     pub(crate) fn get_erased_captured_triple_mut(
         &mut self,
         a: &ErasedSlotCapture,
@@ -2419,17 +2373,6 @@ pub struct ModuleTables {
     observers: Vec<ObserverReg>,
     /// Owners whose exact Moved descriptor validator was installed by Core.
     moved_observer_factories: BTreeSet<SmolStr>,
-    /// Closed protocols require a current callback, not merely retained metadata.
-    required_moved_observers: BTreeSet<crate::mechanics::DefinitionRef>,
-    moved_completion_factories: BTreeSet<SmolStr>,
-    movement_completion_builder: crate::locomotion::completion::MovementCompletionBuilder,
-    movement_manifest_invalidated: Arc<std::sync::atomic::AtomicBool>,
-    movement_manifests: Option<
-        std::collections::BTreeMap<
-            crate::DefinitionRef,
-            crate::locomotion::completion::FrozenMovementManifest,
-        >,
-    >,
     ticks: Vec<TickReg>,
     panel_feeds: Vec<(SmolStr, SmolStr)>,
     query_handlers: HashMap<SmolStr, (SmolStr, Arc<dyn QueryHandler>)>,
@@ -2517,24 +2460,6 @@ impl Registry {
         }
         // 17g C2h: an uncomposed continuation grantee refuses composition.
         self.check_continuation_delegates(module_owners)?;
-        for required in &self.mods.required_moved_observers {
-            if self
-                .mods
-                .observers
-                .iter()
-                .filter(|entry| {
-                    entry.kind == WorldEventKind::Moved
-                        && entry.module.as_str() == required.key().owner.as_str()
-                        && entry.moved_definition.as_ref() == Some(required)
-                })
-                .count()
-                != 1
-            {
-                return Err(ModError::msg(
-                    "joint locomotion requires the exact current Scenes Moved callback",
-                ));
-            }
-        }
         if self.definitions.is_some()
             || self.bridges.is_some()
             || self.definition_migrations.is_some()
@@ -2626,21 +2551,6 @@ impl Registry {
                 owner_readiness.clone(),
             )
             .map_err(|e| ModError::msg(format!("owner read registry: {e}")))?;
-        let completion_builder = std::mem::take(&mut self.mods.movement_completion_builder);
-        let movement_manifests = if completion_builder.is_empty() {
-            std::collections::BTreeMap::new()
-        } else {
-            let roster = crate::moved_observer::roster(
-                self.mods
-                    .observers
-                    .iter()
-                    .filter(|entry| entry.kind == WorldEventKind::Moved)
-                    .map(|entry| (entry.module.as_str(), entry.moved_definition.as_ref())),
-                Some(&definitions),
-            )?;
-            completion_builder.freeze(&roster, &definitions, &participants, &action_providers)?
-        };
-        self.mods.movement_manifests = Some(movement_manifests);
         self.owner_reads = Some(owner_reads);
         self.participants = Some(participants);
         self.definitions = Some(definitions);
@@ -2932,11 +2842,6 @@ impl Registry {
     }
 
     fn push_observer(&mut self, entry: ObserverReg) {
-        if self.mods.movement_manifests.is_some() && entry.kind == WorldEventKind::Moved {
-            self.mods
-                .movement_manifest_invalidated
-                .store(true, std::sync::atomic::Ordering::Release);
-        }
         self.mods.observers.push(entry);
     }
 
@@ -2954,25 +2859,6 @@ impl Registry {
                 .map(|entry| (entry.module.as_str(), entry.moved_definition.as_ref())),
             self.definitions.as_ref(),
         )
-    }
-
-    /// Inspect actual prepared coverage for one exact composed action. Missing
-    /// or partial coverage supplies no command route or execution authority.
-    /// Legacy callback registration after freeze invalidates the inspection.
-    pub fn movement_completion_manifest(
-        &self,
-        action: &crate::DefinitionRef,
-    ) -> Option<&crate::locomotion::completion::FrozenMovementManifest> {
-        if self
-            .mods
-            .movement_manifest_invalidated
-            .load(std::sync::atomic::Ordering::Acquire)
-        {
-            return None;
-        }
-        let frozen = self.mods.movement_manifests.as_ref()?.get(action)?;
-        let actual = self.moved_observer_roster().ok()?;
-        (actual.digest() == frozen.snapshot().roster_digest()).then_some(frozen)
     }
 
     /// The tick registered by `module` under `tag`, if any.
@@ -3280,19 +3166,6 @@ pub trait GameModule: Send {
     /// hydration. The immutable context permits no World, output or persistence
     /// mutation. Default: nothing.
     fn audit_typed_history(&self, _ctx: &ModuleCtx<'_>) -> Result<(), ModError> {
-        Ok(())
-    }
-
-    /// Read-only join of retained typed receipts to this owner's original
-    /// native boot documents, before migrations or any module load callback.
-    /// The driver normalizes ledger documents first. No loaded peer state or
-    /// callback reconstruction may substitute for original historical evidence.
-    /// A narrowed history may request one `RetryFullFetch` before mutations.
-    fn audit_boot_history(
-        &self,
-        _ctx: &ModuleCtx<'_>,
-        _data: &ModuleBootData,
-    ) -> Result<(), ModError> {
         Ok(())
     }
 
@@ -5008,109 +4881,6 @@ impl<'a> Registrar<'a> {
             observer,
             moved_definition: None,
         });
-    }
-
-    pub(crate) fn require_current_moved_observer(
-        &mut self,
-        reference: &crate::mechanics::DefinitionRef,
-    ) -> Result<(), ModError> {
-        self.require_mechanics_registration_authority()?;
-        self.reg
-            .tables_mut()
-            .required_moved_observers
-            .insert(reference.clone());
-        Ok(())
-    }
-
-    /// Bind this owner's actual participant type to its actual ordered Moved
-    /// callbacks. Freeze resolves the real slot, current definitions and exact
-    /// provider request/grant. Registration itself grants no mutation power.
-    pub fn register_moved_completion<P: crate::participant::OwnerParticipant>(
-        &mut self,
-        id: &str,
-        version: u32,
-        action: crate::DefinitionRef,
-        participant: crate::DefinitionRef,
-        observers: Vec<crate::DefinitionRef>,
-    ) -> Result<crate::DefinitionRef, ModError> {
-        self.require_mechanics_registration_authority()?;
-        if self.reg.mods.movement_manifests.is_some() {
-            return Err(ModError::msg("movement completion registry is frozen"));
-        }
-        if !self
-            .reg
-            .mods
-            .moved_completion_factories
-            .contains(&self.module)
-        {
-            self.definition_validator(
-                crate::locomotion::completion::kind()?,
-                crate::locomotion::completion::validate_definition,
-            )?;
-            self.reg
-                .mods
-                .moved_completion_factories
-                .insert(self.module.clone());
-        }
-        let descriptor = crate::locomotion::completion::binding_descriptor(
-            id,
-            version,
-            action.clone(),
-            participant.clone(),
-            observers.clone(),
-        )?
-        .as_current();
-        let binding = self.definition(descriptor)?;
-        let owner =
-            crate::OwnerId::new(self.module.as_str()).map_err(|e| ModError::msg(e.to_string()))?;
-        self.reg.mods.movement_completion_builder.register::<P>(
-            owner,
-            binding.clone(),
-            action,
-            participant,
-            observers,
-        )?;
-        Ok(binding)
-    }
-
-    pub(crate) fn require_moved_completion<P: crate::participant::OwnerParticipant>(
-        &mut self,
-        action: crate::DefinitionRef,
-        participant: crate::DefinitionRef,
-        observers: Vec<crate::DefinitionRef>,
-    ) -> Result<(), ModError> {
-        self.require_mechanics_registration_authority()?;
-        if self.reg.mods.movement_manifests.is_some()
-            || action.key().owner.as_str() != self.module.as_str()
-        {
-            return Err(ModError::msg(
-                "movement completion requires the actual unfrozen action owner",
-            ));
-        }
-        self.reg
-            .mods
-            .movement_completion_builder
-            .require::<P>(action, participant, observers)
-    }
-
-    pub(crate) fn request_movement_manifest(
-        &mut self,
-        action: crate::DefinitionRef,
-        participants: Vec<crate::DefinitionRef>,
-    ) -> Result<crate::locomotion::completion::MovementManifestLease, ModError> {
-        self.require_mechanics_registration_authority()?;
-        if self.reg.mods.movement_manifests.is_some()
-            || action.key().owner.as_str() != self.module.as_str()
-        {
-            return Err(ModError::msg(
-                "movement manifest scope requires the actual unfrozen action owner",
-            ));
-        }
-        self.reg.mods.movement_completion_builder.request_scope(
-            action,
-            participants,
-            Arc::clone(&self.reg.mods.movement_manifest_invalidated),
-        )
     }
 
     /// Subscribe the actual legacy Moved callback with a stable owner-stamped

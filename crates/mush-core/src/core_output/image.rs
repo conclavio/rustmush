@@ -298,7 +298,6 @@ pub(crate) enum BuiltinObjects {
     Delivery(Box<crate::core_delivery::DeliveryObjects>),
     Exchange(Box<crate::core_exchange::image::ExchangeObjects>),
     Physical(Box<crate::physical_transition::image::PhysicalTransitionObjects>),
-    Locomotion(Box<crate::locomotion::image::LocomotionObjects>),
 }
 impl From<ShellObjects> for BuiltinObjects {
     fn from(value: ShellObjects) -> Self {
@@ -316,24 +315,6 @@ impl BuiltinObjects {
         if let Self::Physical(image) = self {
             owners.require_exact_physical(&image.participant, &image.action, image.commit)?;
         }
-        if let Self::Locomotion(image) = self {
-            if let Some(composed) = &image.composed {
-                composed.check(&image.action)?;
-                owners.require_exact_composed(
-                    &composed.participants,
-                    &image.action,
-                    image.commit,
-                )?;
-            } else if let Some(scenes) = &image.scenes_participant {
-                owners.require_exact_exchange(
-                    &[image.participant.clone(), scenes.clone()],
-                    &image.action,
-                    image.commit,
-                )?;
-            } else {
-                owners.require_exact_physical(&image.participant, &image.action, image.commit)?;
-            }
-        }
         Ok(())
     }
     pub(crate) fn creates_object(&self) -> bool {
@@ -343,7 +324,6 @@ impl BuiltinObjects {
             Self::Delivery(_) => false,
             Self::Exchange(_) => false,
             Self::Physical(_) => false,
-            Self::Locomotion(_) => false,
         }
     }
     pub(crate) fn writes(&self) -> &[ReplayWrite] {
@@ -353,7 +333,6 @@ impl BuiltinObjects {
             Self::Delivery(x) => x.writes(),
             Self::Exchange(x) => x.writes(),
             Self::Physical(x) => x.writes(),
-            Self::Locomotion(x) => x.writes(),
         }
     }
     pub(crate) fn recheck(
@@ -367,7 +346,6 @@ impl BuiltinObjects {
             Self::Delivery(x) => x.recheck(world, lens),
             Self::Exchange(x) => x.recheck(world, lens),
             Self::Physical(x) => x.recheck(world, lens),
-            Self::Locomotion(x) => x.local(world),
         }
     }
     pub(crate) fn local(&self, world: &World) -> Result<(), ParticipantError> {
@@ -377,7 +355,6 @@ impl BuiltinObjects {
             Self::Delivery(x) => x.local(world),
             Self::Exchange(x) => x.local(world),
             Self::Physical(x) => x.local(world),
-            Self::Locomotion(x) => x.local(world),
         }
     }
     pub(crate) fn bind(
@@ -390,7 +367,6 @@ impl BuiltinObjects {
             Self::Delivery(x) => x.bind(storage).map(BoundBuiltinObjects::Delivery),
             Self::Exchange(x) => x.bind(storage).map(BoundBuiltinObjects::Exchange),
             Self::Physical(x) => x.bind(storage).map(BoundBuiltinObjects::Physical),
-            Self::Locomotion(x) => x.bind(storage).map(BoundBuiltinObjects::Locomotion),
         }
     }
 }
@@ -400,7 +376,6 @@ pub(crate) enum BoundBuiltinObjects<'a> {
     Delivery(crate::core_delivery::BoundDeliveryObjects<'a>),
     Exchange(crate::core_exchange::image::BoundExchangeObjects<'a>),
     Physical(crate::physical_transition::image::BoundPhysicalTransitionObjects<'a>),
-    Locomotion(crate::locomotion::image::BoundLocomotionObjects<'a>),
 }
 impl BoundBuiltinObjects<'_> {
     pub(crate) fn apply(self) {
@@ -410,7 +385,6 @@ impl BoundBuiltinObjects<'_> {
             Self::Delivery(x) => x.apply(),
             Self::Exchange(x) => x.apply(),
             Self::Physical(x) => x.apply(),
-            Self::Locomotion(x) => x.apply(),
         }
     }
 }

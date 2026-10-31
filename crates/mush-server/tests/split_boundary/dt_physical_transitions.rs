@@ -1146,6 +1146,123 @@ fn audit_captures(records: Vec<mush_core::ActionStateBootRecord>) -> TestResult 
     Ok(())
 }
 
+/// Sim's real first load hook over retained typed rows: a broken pair refuses
+/// before any projection repair runs.
+fn audit_before_projection_repair(
+    records: Vec<mush_core::ActionStateBootRecord>,
+    refused: bool,
+) -> TestResult {
+    use mush_sim::{
+        DomainClock, DomainId, DomainRecord, DomainStatus, PlacementRecord, Pose, SpatialParent,
+    };
+    let mut world = mush_core::World::new_minimal();
+    let from = world.create(ObjKind::Room, "unrepaired source", GOD, None)?;
+    let to = world.create(ObjKind::Room, "repair destination", GOD, None)?;
+    let object = world.create(
+        ObjKind::Thing,
+        "unrelated repair candidate",
+        GOD,
+        Some(from),
+    )?;
+    for (id, behavior) in [(object, "sim.participant"), (to, "sim.domain")] {
+        world.attach_behavior(
+            id,
+            mush_core::BehaviorId::new(behavior)?,
+            mush_core::BehaviorBinding {
+                schema_version: mush_core::BINDING_SCHEMA_VERSION,
+                attached_by: GOD,
+                attached_at: 0,
+            },
+        )?;
+    }
+    let domain = DomainRecord {
+        id: DomainId(1),
+        host: to,
+        driver: mush_sim::passive_definition_ref(),
+        status: DomainStatus::Active,
+        clock: DomainClock::Passive,
+        presentation_location: to,
+        revision: 1,
+        window: None,
+    };
+    let placement = PlacementRecord {
+        object,
+        parent: SpatialParent::Direct {
+            domain: domain.id,
+            pose: Pose::passive(mush_sim::passive_rules_value(json!({}))?),
+        },
+        revision: 1,
+        unplaced: None,
+    };
+    let data = mush_core::ModuleBootData {
+        kv: vec![
+            ("domain:1".into(), serde_json::to_value(domain)?),
+            (
+                format!("placement:{}", object.0).into(),
+                serde_json::to_value(placement)?,
+            ),
+        ],
+        ..Default::default()
+    };
+    let mut config = mush_config::config::Config::default();
+    config.tacsim.enabled = true;
+    let llm = Arc::new(mush_llm::LlmService::from_config(
+        &mush_llm::LlmConfig::default(),
+    )?);
+    let modules = mush_server::boot::game_modules(&config, &llm)?;
+    let mut engine = Box::new(Engine::with_modules(
+        world,
+        mush_server::world_task::base_registry(),
+        modules,
+    )?);
+    engine.hydrate_action_state(records)?;
+    let _ = engine.world.take_dirty();
+    let preflight = engine.audit_typed_history();
+    if refused {
+        assert!(
+            preflight.is_err(),
+            "global typed-history phase must reject the real Sim pair"
+        );
+    } else {
+        preflight?;
+    }
+    let mut out = mush_core::Outbox::new();
+    let result = engine.module_loaded("sim", data, &mut out, &mut mush_core::Effects::new());
+    if refused {
+        assert!(
+            result.is_err(),
+            "broken history must refuse in Sim's first load hook"
+        );
+        assert_eq!(
+            engine.world.get(object).ok_or("object")?.location,
+            Some(from)
+        );
+        assert!(engine.world.take_dirty().is_empty());
+        assert!(out.is_empty());
+        assert!(engine.take_module_ops().is_empty());
+        assert!(
+            engine
+                .world
+                .module_state::<mush_sim::SpatialState>()
+                .ok_or("actual Sim")?
+                .placements
+                .is_empty()
+        );
+    } else {
+        result?;
+        assert_eq!(engine.world.get(object).ok_or("object")?.location, Some(to));
+        assert!(
+            engine
+                .world
+                .module_state::<mush_sim::SpatialState>()
+                .ok_or("actual Sim")?
+                .placements
+                .contains_key(&object)
+        );
+    }
+    Ok(())
+}
+
 #[tokio::test]
 async fn personnel_capture_boot_audit_requires_exact_pair_and_retains_v1_without_backfill()
 -> TestResult {
@@ -1166,7 +1283,7 @@ async fn personnel_capture_boot_audit_requires_exact_pair_and_retains_v1_without
         .collect();
     assert_eq!(rows.len(), 2);
     audit_captures(rows.clone())?;
-    super::dt_locomotion::audit_before_projection_repair(rows.clone(), false)?;
+    audit_before_projection_repair(rows.clone(), false)?;
     let capture_index = rows
         .iter()
         .position(|row| row.key.contains("/personnel_crossings/"))
@@ -1176,13 +1293,13 @@ async fn personnel_capture_boot_audit_requires_exact_pair_and_retains_v1_without
         .position(|row| row.key.contains("/physical_transitions/"))
         .ok_or("physical")?;
     assert!(audit_captures(vec![rows.get(capture_index).ok_or("capture")?.clone()]).is_err());
-    super::dt_locomotion::audit_before_projection_repair(
+    audit_before_projection_repair(
         vec![rows.get(capture_index).ok_or("capture")?.clone()],
         true,
     )?;
     let mut missing = rows.clone();
     missing.remove(capture_index);
-    super::dt_locomotion::audit_before_projection_repair(missing.clone(), true)?;
+    audit_before_projection_repair(missing.clone(), true)?;
     assert!(audit_captures(missing).is_err());
     for field in ["operator", "root"] {
         let mut mismatched = rows.clone();

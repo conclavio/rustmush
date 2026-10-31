@@ -7,13 +7,12 @@ use crate::action_state::{
     ActionStateError, ActionStateStore, PreparedInstallation, PreparedTxn, StateFamilyId,
 };
 use crate::authoritative::{
-    AuthoritativeBundle, AuthoritativeBundleError, MAX_AUTHORITATIVE_BUNDLE_BYTES, ReplayWrite,
+    AuthoritativeBundleError, MAX_AUTHORITATIVE_BUNDLE_BYTES, ReplayWrite,
     canonicalize_replay_writes,
 };
-use crate::locomotion::dispatch_observation::BoundDispatchObservation;
 use crate::mechanics::{OwnerId, canonical_json_bytes_with_limit};
 use crate::participant::{OwnerImages, ParticipantError};
-use crate::{Registry, World};
+use crate::World;
 use smol_str::SmolStr;
 
 /// A complete immutable union, with the typed reservation retaining every owner
@@ -26,7 +25,6 @@ pub struct PreparedComposedTxn {
     shell: Option<crate::core_output::image::BuiltinObjects>,
     reads: crate::read_service::ReadObservations,
     accounts: crate::account::observation::AccountObservations,
-    dispatch: Option<Box<BoundDispatchObservation>>,
     writes: Vec<ReplayWrite>,
 }
 
@@ -74,7 +72,6 @@ impl PreparedComposedTxn {
             shell,
             reads,
             accounts,
-            dispatch: None,
             writes,
         })
     }
@@ -87,55 +84,6 @@ impl PreparedComposedTxn {
     #[must_use]
     pub fn authoritative_replay_writes(&self) -> Vec<ReplayWrite> {
         self.writes.clone()
-    }
-
-    /// Only the registered preparation path can retain genuine dispatch
-    /// provenance. Replacing or crossing the typed owner's custody refuses.
-    pub(crate) fn retain_dispatch(
-        &mut self,
-        observation: Box<BoundDispatchObservation>,
-    ) -> Result<(), ParticipantError> {
-        if self.dispatch.is_some() || observation.owner() != self.typed.owner() {
-            return Err(ParticipantError::Authority);
-        }
-        self.dispatch = Some(observation);
-        Ok(())
-    }
-
-    pub(crate) fn recheck_dispatch(
-        &self,
-        registry: &Registry,
-        world: &World,
-        lens: crate::action_state::TypedStateLens<'_>,
-    ) -> Result<(), ParticipantError> {
-        if let Some(dispatch) = &self.dispatch {
-            dispatch.recheck(registry, world, lens)?;
-        }
-        Ok(())
-    }
-
-    pub(crate) fn require_dispatch_bundle(
-        &self,
-        bundle: &AuthoritativeBundle,
-    ) -> Result<(), ParticipantError> {
-        if self
-            .dispatch
-            .as_ref()
-            .is_some_and(|dispatch| !dispatch.matches_bundle(bundle))
-        {
-            return Err(ParticipantError::Authority);
-        }
-        Ok(())
-    }
-
-    pub(crate) fn require_dispatch_ready(
-        &self,
-        registry: &Registry,
-    ) -> Result<(), ParticipantError> {
-        if let Some(dispatch) = &self.dispatch {
-            dispatch.require_ready(registry)?;
-        }
-        Ok(())
     }
 
     pub(crate) fn recheck_with_lens(
@@ -170,7 +118,6 @@ impl PreparedComposedTxn {
             || self.shell.is_some()
             || !self.reads.is_empty()
             || !self.accounts.is_empty()
-            || self.dispatch.is_some()
         {
             return Err(ParticipantError::Authority);
         }
@@ -190,7 +137,6 @@ impl PreparedComposedTxn {
                 shell: self.shell,
                 reads: self.reads,
                 accounts: self.accounts,
-                dispatch: self.dispatch,
             },
         )
     }
@@ -207,7 +153,6 @@ impl From<PreparedTxn> for PreparedComposedTxn {
             shell: None,
             reads: crate::read_service::ReadObservations::default(),
             accounts: crate::account::observation::AccountObservations::default(),
-            dispatch: None,
             writes,
         }
     }
@@ -223,7 +168,6 @@ pub struct ComposedInstallation {
     shell: Option<crate::core_output::image::BuiltinObjects>,
     reads: crate::read_service::ReadObservations,
     accounts: crate::account::observation::AccountObservations,
-    dispatch: Option<Box<BoundDispatchObservation>>,
 }
 
 #[derive(Debug, thiserror::Error)]
@@ -242,7 +186,6 @@ impl From<PreparedInstallation> for ComposedInstallation {
             shell: None,
             reads: crate::read_service::ReadObservations::default(),
             accounts: crate::account::observation::AccountObservations::default(),
-            dispatch: None,
         }
     }
 }
@@ -251,42 +194,6 @@ impl ComposedInstallation {
     #[must_use]
     pub fn touched_families(&self) -> Vec<(OwnerId, StateFamilyId, Vec<SmolStr>)> {
         self.typed.touched_families()
-    }
-
-    pub(crate) fn recheck_dispatch(
-        &self,
-        registry: &Registry,
-        world: &World,
-        lens: crate::action_state::TypedStateLens<'_>,
-    ) -> Result<(), ParticipantError> {
-        if let Some(dispatch) = &self.dispatch {
-            dispatch.recheck(registry, world, lens)?;
-        }
-        Ok(())
-    }
-
-    pub(crate) fn require_dispatch_bundle(
-        &self,
-        bundle: &AuthoritativeBundle,
-    ) -> Result<(), ParticipantError> {
-        if self
-            .dispatch
-            .as_ref()
-            .is_some_and(|dispatch| !dispatch.matches_bundle(bundle))
-        {
-            return Err(ParticipantError::Authority);
-        }
-        Ok(())
-    }
-
-    pub(crate) fn require_dispatch_ready(
-        &self,
-        registry: &Registry,
-    ) -> Result<(), ParticipantError> {
-        if let Some(dispatch) = &self.dispatch {
-            dispatch.require_ready(registry)?;
-        }
-        Ok(())
     }
 
     pub(crate) fn recheck_with_lens(
@@ -314,9 +221,6 @@ impl ComposedInstallation {
         // preimages; it must not rerun providers or external authority/read
         // callbacks.
         let typed_bound = typed.bind_installation(self.typed)?;
-        if let Some(dispatch) = &self.dispatch {
-            dispatch.local(world)?;
-        }
         self.reads.recheck(world)?;
         self.accounts.recheck(world)?;
         // Every owner binds before the first typed/owner apply. A later bind

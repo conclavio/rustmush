@@ -46,7 +46,7 @@ use smol_str::SmolStr;
 use crate::attr::{Attr, AttrFlags, AttrValue, UncasedName};
 use crate::flags::Flags;
 use crate::obj::ObjId;
-use crate::object_read::{ObjectRead, PlainRead, ReadLimit, SnapshotPreflight};
+use crate::object_read::{ObjectRead, PlainRead};
 use crate::world::World;
 
 /// The kinds of lock an object can carry (`@lock/<type>`).
@@ -411,36 +411,6 @@ fn charge_json_text<'w, R: ObjectRead<'w>>(
                     stack.push(Frame::Value(value));
                 }
             }
-        }
-    }
-    Ok(())
-}
-
-/// Inspect the AST before an object snapshot can use its recursive derives.
-/// This stays beside the sole evaluator and compound-node constructors.
-pub(crate) fn preflight_snapshot_lock(
-    expr: &LockExpr,
-    shape: &mut SnapshotPreflight<'_>,
-    outer_depth: usize,
-) -> Result<(), ReadLimit> {
-    let mut stack = vec![(expr, outer_depth)];
-    while let Some((expr, depth)) = stack.pop() {
-        shape.container(depth + 1)?; // Externally tagged enum object.
-        match expr {
-            LockExpr::Not(child) => stack.push((child, depth + 1)),
-            LockExpr::And(left, right) | LockExpr::Or(left, right) => {
-                shape.container(depth + 2)?; // Pair array.
-                stack.push((right, depth + 2));
-                stack.push((left, depth + 2));
-            }
-            LockExpr::AttrMatch { name, glob } => {
-                shape.container(depth + 2)?;
-                shape.text(name.as_str())?;
-                shape.text(glob)?;
-            }
-            LockExpr::HasFlag(name) => shape.text(name)?,
-            LockExpr::Indirect(..) => shape.container(depth + 2)?,
-            _ => {}
         }
     }
     Ok(())

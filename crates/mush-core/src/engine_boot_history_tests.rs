@@ -38,25 +38,6 @@ impl GameModule for Probe {
         }
         Ok(())
     }
-    fn audit_boot_history(
-        &self,
-        ctx: &crate::ModuleCtx<'_>,
-        data: &ModuleBootData,
-    ) -> Result<(), ModError> {
-        if ctx.module.as_deref() != Some(self.name)
-            || ctx.typed_state.module_owner().map(crate::OwnerId::as_str) != Some(self.name)
-            || data.kv.iter().any(|(key, _)| key.starts_with("log:"))
-        {
-            return Err(ModError::msg(
-                "wrong native audit context or unnormalized data",
-            ));
-        }
-        self.record("native")?;
-        if data.kv.iter().any(|(key, _)| key == "refuse_native") {
-            return Err(ModError::msg("native history refused"));
-        }
-        Ok(())
-    }
     fn on_world_loaded(
         &mut self,
         _: &mut crate::ModuleCtx<'_>,
@@ -103,8 +84,6 @@ fn every_read_only_owner_audit_precedes_the_first_load_callback() {
         vec![
             ("first", "audit"),
             ("second", "audit"),
-            ("first", "native"),
-            ("second", "native"),
             ("first", "load"),
             ("second", "load"),
             ("first", "final"),
@@ -129,40 +108,5 @@ fn a_later_owner_refusal_prevents_every_load_callback() {
         vec![("first", "audit"), ("second", "audit")]
     );
     assert!(out.is_empty());
-    assert!(engine.take_module_ops().is_empty());
-}
-
-#[test]
-fn later_native_refusal_prevents_every_load_and_normalizes_legacy_ledger_input() {
-    let events = Events::default();
-    let mut engine = engine(&events, false);
-    let mut boot = HashMap::new();
-    boot.insert(
-        "second".into(),
-        ModuleBootData {
-            kv: vec![
-                (
-                    "log:test:0".into(),
-                    serde_json::json!({"chunk":0,"sealed":false,"entries":[]}),
-                ),
-                ("refuse_native".into(), serde_json::Value::Bool(true)),
-            ],
-            ..Default::default()
-        },
-    );
-    assert!(
-        engine
-            .modules_loaded(boot, &mut Outbox::new(), &mut Effects::new())
-            .is_err()
-    );
-    assert_eq!(
-        *events.lock().unwrap(),
-        vec![
-            ("first", "audit"),
-            ("second", "audit"),
-            ("first", "native"),
-            ("second", "native"),
-        ]
-    );
     assert!(engine.take_module_ops().is_empty());
 }

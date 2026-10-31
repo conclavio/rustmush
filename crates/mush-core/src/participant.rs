@@ -542,19 +542,6 @@ impl ParticipantRegistry {
         })
     }
 
-    /// Completion coverage must resolve the declared concrete adapter, not just
-    /// another adapter publishing the same-shaped metadata.
-    pub(crate) fn grants_exact_type(
-        &self,
-        adapter_type: TypeId,
-        definition: &DefinitionRef,
-        requester: &OwnerId,
-        action: &DefinitionRef,
-    ) -> bool {
-        self.registrations.iter().any(|registration| {
-            registration.adapter_type == adapter_type && registration.definition == *definition
-        }) && self.grants_exact(definition, requester, action)
-    }
 }
 
 pub(crate) struct ParticipantPreparation<'a> {
@@ -566,12 +553,6 @@ pub(crate) struct ParticipantPreparation<'a> {
     invocation: &'a ActionInvocation,
 }
 
-#[derive(Clone, Copy)]
-enum ImagePermit<'a> {
-    Ordinary,
-    Scenes(&'a DefinitionRef),
-    Composed(&'a crate::locomotion::composed::ComposedMovementPermit),
-}
 impl<'a> ParticipantPreparation<'a> {
     pub(crate) fn matches_preparation(
         &self,
@@ -583,42 +564,6 @@ impl<'a> ParticipantPreparation<'a> {
 
     pub(crate) fn world(&self) -> &World {
         self.world
-    }
-
-    pub(crate) fn admit_locomotion(
-        &self,
-        commit: CommitToken,
-        hooks: &[crate::module::HookReg],
-        lens: crate::action_state::TypedStateLens<'_>,
-        request: crate::locomotion::LocomotionRequest,
-    ) -> Result<crate::locomotion::LocomotionDecision, ParticipantError> {
-        crate::locomotion::derive(
-            self.world,
-            self.invocation,
-            self.provider.action(),
-            commit,
-            hooks,
-            lens,
-            request,
-        )
-    }
-
-    pub(crate) fn require_locomotion_admission(
-        &self,
-        commit: CommitToken,
-        hooks: &[crate::module::HookReg],
-        lens: crate::action_state::TypedStateLens<'_>,
-        admission: &crate::locomotion::LocomotionAdmission,
-    ) -> Result<(), ParticipantError> {
-        crate::locomotion::recheck(
-            self.world,
-            self.invocation,
-            self.provider.action(),
-            commit,
-            hooks,
-            lens,
-            admission,
-        )
     }
 
     pub(crate) fn new(
@@ -659,73 +604,6 @@ impl<'a> ParticipantPreparation<'a> {
         };
         self.registry
             .prepare(handle, self.provider, &context, self.images, request)
-    }
-
-    pub(crate) fn prepare_composed_participant<P: OwnerParticipant>(
-        &mut self,
-        handle: &ParticipantHandle<P>,
-        commit: CommitToken,
-        request: P::Request,
-        permit: &crate::locomotion::composed::ComposedMovementPermit,
-    ) -> Result<P::Output, ParticipantError> {
-        let context = OwnerPrepareContext {
-            world: self.world,
-            invocation: self.invocation,
-            action: self.provider.action(),
-            commit_token: commit,
-        };
-        self.registry.prepare_inner(
-            handle,
-            self.provider,
-            &context,
-            self.images,
-            request,
-            ImagePermit::Composed(permit),
-        )
-    }
-    pub(crate) fn composed_writes(
-        &self,
-        participant: &DefinitionRef,
-    ) -> Result<&[ReplayWrite], ParticipantError> {
-        self.images
-            .0
-            .iter()
-            .find(|image| &image.definition == participant)
-            .map(|image| image.writes.as_slice())
-            .ok_or(ParticipantError::Authority)
-    }
-    pub(crate) fn require_composed_images(
-        &self,
-        permit: &crate::locomotion::composed::ComposedMovementPermit,
-        action: &DefinitionRef,
-        commit: CommitToken,
-    ) -> Result<(), ParticipantError> {
-        permit.check(action)?;
-        self.images
-            .require_exact_composed(&permit.participants, action, commit)
-    }
-    pub(crate) fn prepare_composed_locomotion(
-        &mut self,
-        service: &crate::locomotion::composed::ComposedLocomotion,
-        txn: &mut crate::action_state::ActionTxn<'_>,
-        commit: CommitToken,
-        admission: &crate::locomotion::LocomotionAdmission,
-        base: &crate::action_state::ActionReadBase,
-        provider: &crate::action::ProviderRegistrationOrdinal,
-    ) -> Result<crate::locomotion::composed::ComposedLocomotionReceipt, ParticipantError> {
-        if self.shell.is_some() || !self.images.is_empty() {
-            return Err(ParticipantError::Authority);
-        }
-        let world = self.world;
-        let invocation = self.invocation;
-        let action = self.provider.action().clone();
-        let (receipt, image) = service.prepare(
-            self, world, invocation, &action, commit, txn, admission, base, provider,
-        )?;
-        *self.shell = Some(crate::core_output::image::BuiltinObjects::Locomotion(
-            Box::new(image),
-        ));
-        Ok(receipt)
     }
 
     pub(crate) fn initialize_core_outputs<P: crate::core_output::CoreOutputPolicy>(
@@ -933,168 +811,6 @@ impl<'a> ParticipantPreparation<'a> {
         Ok(output)
     }
 
-    #[allow(clippy::too_many_arguments)]
-    pub(crate) fn prepare_locomotion<
-        P: OwnerParticipant<
-                Request = crate::locomotion::transition::LocomotionIntent,
-                Output = crate::locomotion::transition::LocomotionDraft,
-            >,
-    >(
-        &mut self,
-        service: &crate::locomotion::transition::CoreLocomotion<P>,
-        txn: &mut crate::action_state::ActionTxn<'_>,
-        commit: CommitToken,
-        admission: &crate::locomotion::LocomotionAdmission,
-        base: &crate::action_state::ActionReadBase,
-        provider: &crate::action::ProviderRegistrationOrdinal,
-    ) -> Result<crate::locomotion::transition::LocomotionReceipt, ParticipantError> {
-        if self.shell.is_some()
-            || !self.images.is_empty()
-            || !self.registry.grants_exact(
-                &service.participant,
-                self.provider.owner(),
-                self.provider.action(),
-            )
-        {
-            return Err(ParticipantError::Authority);
-        }
-        let intent = crate::locomotion::transition::LocomotionIntent::new(
-            self.world,
-            self.invocation,
-            self.provider.action(),
-            commit,
-            admission,
-        )?;
-        let draft = self.prepare(&service.handle, commit, intent)?;
-        if !self.matches_preparation(&draft.binding, commit) {
-            return Err(ParticipantError::Authority);
-        }
-        self.images
-            .require_exact_physical(&service.participant, self.provider.action(), commit)?;
-        let (receipt, image) = service.prepare(
-            self.world,
-            self.invocation,
-            self.provider.action(),
-            commit,
-            txn,
-            admission,
-            draft,
-            base,
-            provider,
-        )?;
-        *self.shell = Some(crate::core_output::image::BuiltinObjects::Locomotion(
-            Box::new(image),
-        ));
-        Ok(receipt)
-    }
-
-    #[allow(clippy::too_many_arguments)]
-    pub(crate) fn prepare_locomotion_with_scenes<P, S>(
-        &mut self,
-        service: &crate::locomotion::scene_transition::CoreLocomotionWithScenes<P, S>,
-        txn: &mut crate::action_state::ActionTxn<'_>,
-        commit: CommitToken,
-        admission: &crate::locomotion::LocomotionAdmission,
-        base: &crate::action_state::ActionReadBase,
-        provider: &crate::action::ProviderRegistrationOrdinal,
-    ) -> Result<crate::locomotion::scene_transition::SceneLocomotionReceipt, ParticipantError>
-    where
-        P: OwnerParticipant<
-                Request = crate::locomotion::transition::LocomotionIntent,
-                Output = crate::locomotion::transition::LocomotionDraft,
-            >,
-        S: OwnerParticipant<
-                Request = crate::locomotion::scene_transition::ScenesMovementIntent,
-                Output = crate::locomotion::scene_transition::ScenesMovementDraft,
-            >,
-    {
-        if self.shell.is_some()
-            || !self.images.is_empty()
-            || [&service.sim_participant, &service.scenes_participant]
-                .iter()
-                .any(|reference| {
-                    !self.registry.grants_exact(
-                        reference,
-                        self.provider.owner(),
-                        self.provider.action(),
-                    )
-                })
-        {
-            return Err(ParticipantError::Authority);
-        }
-        let sim_intent = crate::locomotion::transition::LocomotionIntent::new_with_scenes(
-            self.world,
-            self.invocation,
-            self.provider.action(),
-            commit,
-            admission,
-        )?;
-        let scenes_intent = crate::locomotion::scene_transition::ScenesMovementIntent::new(
-            self.world,
-            self.invocation,
-            self.provider.action(),
-            commit,
-            admission,
-            &service.observer,
-        )?;
-        let sim = self.prepare(&service.sim_handle, commit, sim_intent)?;
-        let context = OwnerPrepareContext {
-            world: self.world,
-            invocation: self.invocation,
-            action: self.provider.action(),
-            commit_token: commit,
-        };
-        // This exception is private to the closed joint protocol. An empty
-        // Scenes image still retains the real owner slot, recheck and bind.
-        let scenes = self.registry.prepare_inner(
-            &service.scenes_handle,
-            self.provider,
-            &context,
-            self.images,
-            scenes_intent,
-            ImagePermit::Scenes(&service.scenes_participant),
-        )?;
-        if !self.matches_preparation(&sim.binding, commit)
-            || !self.matches_preparation(&scenes.binding, commit)
-        {
-            return Err(ParticipantError::Authority);
-        }
-        self.images.require_exact_exchange(
-            &[
-                service.sim_participant.clone(),
-                service.scenes_participant.clone(),
-            ],
-            self.provider.action(),
-            commit,
-        )?;
-        let writes = &self
-            .images
-            .0
-            .iter()
-            .find(|image| image.definition == service.scenes_participant)
-            .ok_or(ParticipantError::Authority)?
-            .writes;
-        let writes_digest =
-            crate::locomotion::scene_transition::verify_scene_writes(&scenes, writes)?;
-        let (receipt, image) = service.prepare(
-            self.world,
-            self.invocation,
-            self.provider.action(),
-            commit,
-            txn,
-            admission,
-            sim,
-            scenes,
-            writes_digest,
-            base,
-            provider,
-        )?;
-        *self.shell = Some(crate::core_output::image::BuiltinObjects::Locomotion(
-            Box::new(image),
-        ));
-        Ok(receipt)
-    }
-
     pub(crate) fn reserve_shell(
         &mut self,
         service: &crate::reserved_shell::ShellReservations,
@@ -1194,25 +910,6 @@ impl ParticipantRegistry {
         images: &mut OwnerImages,
         request: P::Request,
     ) -> Result<P::Output, ParticipantError> {
-        self.prepare_inner(
-            handle,
-            provider,
-            context,
-            images,
-            request,
-            ImagePermit::Ordinary,
-        )
-    }
-
-    fn prepare_inner<P: OwnerParticipant>(
-        &self,
-        handle: &ParticipantHandle<P>,
-        provider: &ActionProviderEntry,
-        context: &OwnerPrepareContext<'_>,
-        images: &mut OwnerImages,
-        request: P::Request,
-        permit: ImagePermit<'_>,
-    ) -> Result<P::Output, ParticipantError> {
         if !Arc::ptr_eq(&handle.composition, &self.composition)
             || handle.action != *provider.action()
             || handle.requester != *provider.owner()
@@ -1243,22 +940,6 @@ impl ParticipantRegistry {
             .ic_claim
             .as_ref()
             .filter(|(actions, _)| actions.contains(provider.action()));
-        let composed = if let ImagePermit::Composed(composed) = permit {
-            composed.check(context.action)?;
-            if !composed.participants.contains(&r.definition)
-                || images.0.iter().any(|image| {
-                    !composed.participants.contains(&image.definition)
-                        || image.action != *context.action
-                        || image.commit_token != context.commit_token
-                        || image.invocation != *context.invocation
-                })
-            {
-                return Err(ParticipantError::Authority);
-            }
-            Some(composed)
-        } else {
-            None
-        };
         if let Some((_, participants)) = ic
             && (!participants.contains(&r.definition)
                 || images.0.iter().any(|image| {
@@ -1267,12 +948,7 @@ impl ParticipantRegistry {
         {
             return Err(ParticipantError::Authority);
         }
-        let (max_images, max_modules) = if composed.is_some() {
-            (
-                crate::locomotion::composed::MAX_COMPOSED_OWNERS,
-                crate::locomotion::composed::MAX_COMPOSED_OWNERS,
-            )
-        } else if ic.is_some() {
+        let (max_images, max_modules) = if ic.is_some() {
             (4, 4)
         } else {
             (MAX_OWNER_PARTICIPANT_IMAGES, MAX_OWNER_PARTICIPANT_MODULES)
@@ -1300,19 +976,7 @@ impl ParticipantRegistry {
             .participant_slot(r.state_type)
             .ok_or(ParticipantError::Slot)?;
         let prepared = r.adapter.prepare(state, context, Box::new(request))?;
-        let allow_empty = match permit {
-            ImagePermit::Ordinary => false,
-            ImagePermit::Composed(composed) => composed.permits_empty(&r.definition),
-            ImagePermit::Scenes(allowed) => {
-                allowed == &r.definition
-                    && allowed.key().owner.as_str() == "scenes"
-                    && allowed.key().id.as_str()
-                        == crate::locomotion::scene_transition::SCENES_PARTICIPANT
-                    && crate::locomotion::scene_transition::exact_action(context.action).is_ok()
-            }
-        };
-        if (prepared.writes.is_empty() && !allow_empty)
-            || prepared.writes.len() > MAX_AUTHORITATIVE_REPLAY_WRITES
+        if prepared.writes.is_empty() || prepared.writes.len() > MAX_AUTHORITATIVE_REPLAY_WRITES
         {
             return Err(ParticipantError::ImageLimit);
         }
@@ -1389,32 +1053,6 @@ impl fmt::Debug for OwnerImages {
 }
 
 impl OwnerImages {
-    pub(crate) fn require_exact_composed(
-        &self,
-        participants: &[DefinitionRef],
-        action: &DefinitionRef,
-        commit: CommitToken,
-    ) -> Result<(), ParticipantError> {
-        if participants.is_empty()
-            || participants.len() > crate::locomotion::composed::MAX_COMPOSED_OWNERS
-            || self.0.len() != participants.len()
-            || participants.iter().collect::<BTreeSet<_>>().len() != participants.len()
-            || self
-                .0
-                .iter()
-                .any(|image| image.action != *action || image.commit_token != commit)
-            || participants.iter().any(|reference| {
-                self.0
-                    .iter()
-                    .filter(|image| &image.definition == reference)
-                    .count()
-                    != 1
-            })
-        {
-            return Err(ParticipantError::Authority);
-        }
-        Ok(())
-    }
     pub(crate) fn require_exact_physical(
         &self,
         participant: &DefinitionRef,
@@ -1569,21 +1207,6 @@ impl OwnerImages {
             Ok::<(), ParticipantError>(())
         };
         require_ready()?;
-        if self.0.len() > 4 {
-            if self.0.len() > crate::locomotion::composed::MAX_COMPOSED_OWNERS {
-                return Err(ParticipantError::ImageLimit);
-            }
-            let captures: Vec<_> = self.0.iter().map(|image| &image.capture).collect();
-            let states = slots
-                .get_erased_movement_mut(&captures)
-                .map_err(|_| ParticipantError::Slot)?;
-            let mut bound = Vec::with_capacity(self.0.len());
-            for (image, state) in self.0.into_iter().zip(states) {
-                bound.push(image.adapter.bind(state, image.patch)?);
-            }
-            require_ready()?;
-            return Ok(BoundOwners::Many(bound));
-        }
         let mut rows = self.0.into_iter();
         let first = rows.next();
         let second = rows.next();
@@ -1652,7 +1275,6 @@ impl OwnerImages {
 }
 
 pub(crate) enum BoundOwners<'a> {
-    Many(Vec<Box<dyn ErasedBound + 'a>>),
     Four(
         Box<dyn ErasedBound + 'a>,
         Box<dyn ErasedBound + 'a>,
@@ -1671,11 +1293,6 @@ pub(crate) enum BoundOwners<'a> {
 impl BoundOwners<'_> {
     pub(crate) fn apply(self) {
         match self {
-            Self::Many(rows) => {
-                for row in rows {
-                    row.apply();
-                }
-            }
             Self::Four(a, b, c, d) => {
                 a.apply();
                 b.apply();
@@ -2019,7 +1636,7 @@ mod tests {
     }
 
     #[test]
-    fn empty_owner_images_remain_forbidden_outside_exact_scene_protocol() {
+    fn empty_owner_images_remain_forbidden() {
         let mut f = fixture();
         let registration = f
             .registry
@@ -2028,7 +1645,6 @@ mod tests {
             .find(|r| r.adapter_type == TypeId::of::<Adapter<1>>())
             .unwrap();
         registration.adapter = Arc::new(EmptyPreparation(Arc::clone(&registration.adapter)));
-        let definition = registration.definition.clone();
         let mut images = OwnerImages::default();
         assert!(matches!(
             f.prepare(
@@ -2039,28 +1655,6 @@ mod tests {
                     refuse: false
                 },
                 &mut images
-            ),
-            Err(ParticipantError::ImageLimit)
-        ));
-        assert!(images.is_empty());
-        let context = OwnerPrepareContext {
-            world: &f.world,
-            invocation: &f.invocation,
-            action: &f.action,
-            commit_token: CommitToken::from_bytes([9; 16]),
-        };
-        assert!(matches!(
-            f.registry.prepare_inner(
-                &f.left,
-                f.providers.get_exact(&f.action).unwrap(),
-                &context,
-                &mut images,
-                Patch {
-                    before: 10,
-                    after: 11,
-                    refuse: false
-                },
-                ImagePermit::Scenes(&definition)
             ),
             Err(ParticipantError::ImageLimit)
         ));

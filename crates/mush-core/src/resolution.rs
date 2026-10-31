@@ -180,8 +180,6 @@ pub struct PrepareCtx<'a> {
     owner_error: Option<crate::participant::ParticipantError>,
     carry_hooks: Option<&'a [crate::module::HookReg]>,
     move_hooks: Option<&'a [crate::module::HookReg]>,
-    captured_locomotion: Option<&'a crate::locomotion::CapturedLocomotion>,
-    captured_admission: Option<crate::locomotion::LocomotionAdmission>,
     owner_reads: Option<crate::read_service::PrepareReadContext<'a>>,
     accounts: Option<crate::account::observation::AccountPrepareContext<'a>>,
     registered_transaction: Option<(
@@ -220,8 +218,6 @@ impl<'a> PrepareCtx<'a> {
             owner_error: None,
             carry_hooks: None,
             move_hooks: None,
-            captured_locomotion: None,
-            captured_admission: None,
             owner_reads: None,
             accounts: None,
             registered_transaction: None,
@@ -235,71 +231,6 @@ impl<'a> PrepareCtx<'a> {
     ) -> Self {
         self.registered_transaction = Some((base, provider));
         self
-    }
-
-    pub(crate) fn with_captured_locomotion(
-        mut self,
-        capture: &'a crate::locomotion::CapturedLocomotion,
-    ) -> Self {
-        self.captured_locomotion = Some(capture);
-        self
-    }
-
-    pub(crate) fn take_captured_admission(
-        &mut self,
-    ) -> Option<crate::locomotion::LocomotionAdmission> {
-        self.captured_admission.take()
-    }
-
-    /// Admit only the locomotion selected by the actual captured command.
-    /// The Engine retains this admission through staging and final writer
-    /// handoff even if the provider ignores the returned reference. This is
-    /// an inert proof, not a physical image or movement completion capability.
-    /// AlreadyHome has no moving admission and refuses this preparation.
-    pub fn admit_captured_locomotion(
-        &mut self,
-        txn: &mut crate::action_state::ActionTxn<'_>,
-    ) -> Result<&crate::locomotion::LocomotionAdmission, crate::participant::ParticipantError> {
-        let result = (|| {
-            let capture = self
-                .captured_locomotion
-                .ok_or(crate::participant::ParticipantError::Unavailable)?;
-            if self.captured_admission.is_some() {
-                return Err(crate::participant::ParticipantError::Authority);
-            }
-            match self.admit_locomotion(txn, capture.request())? {
-                crate::locomotion::LocomotionDecision::Admitted(admission) => Ok(admission),
-                crate::locomotion::LocomotionDecision::AlreadyHome => Err(
-                    crate::participant::ParticipantError::refused("actor is already home"),
-                ),
-            }
-        })();
-        match result {
-            Ok(admission) => Ok(self.captured_admission.insert(admission)),
-            Err(error) => {
-                txn.poison_owner_read();
-                self.owner_error.get_or_insert(error.clone());
-                Err(error)
-            }
-        }
-    }
-
-    /// Read-only projection preview of this preparation's retained, genuinely
-    /// admitted captured command. This creates no movement image capability
-    /// and cannot replace or repeat admission after a refusal.
-    pub fn preview_captured_locomotion_projection(
-        &self,
-        dependencies: &std::collections::BTreeSet<crate::ObjId>,
-        projected_room: crate::ObjId,
-    ) -> Result<crate::locomotion::preview::LocomotionPreview, crate::participant::ParticipantError>
-    {
-        if let Some(error) = &self.owner_error {
-            return Err(error.clone());
-        }
-        self.captured_admission
-            .as_ref()
-            .ok_or(crate::participant::ParticipantError::Unavailable)?
-            .preview_projection(self.world()?, dependencies, projected_room)
     }
 
     /// Reserve the closed Registry job's exact future completion keys. The job
@@ -987,77 +918,6 @@ impl<'a> PrepareCtx<'a> {
         result
     }
 
-    /// Observe the actual actor's ordinary exit or HOME route using the installed
-    /// locks and MoveAttempt hooks. The result is inert: it moves nothing and
-    /// grants no publication capability or command-dispatch admission.
-    ///
-    /// The registered transaction supplies the committed typed-state lens; a
-    /// caller cannot substitute a principal, actor, hook list or destination.
-    /// Any refusal poisons preparation and transaction even if caught.
-    pub fn admit_locomotion(
-        &mut self,
-        txn: &mut crate::action_state::ActionTxn<'_>,
-        request: crate::locomotion::LocomotionRequest,
-    ) -> Result<crate::locomotion::LocomotionDecision, crate::participant::ParticipantError> {
-        let result = (|| {
-            if let Some(error) = &self.owner_error {
-                return Err(error.clone());
-            }
-            let (base, provider) = self
-                .registered_transaction
-                .ok_or(crate::participant::ParticipantError::Unavailable)?;
-            let lens = txn
-                .read_preimage(base, provider)
-                .map_err(|_| crate::participant::ParticipantError::Authority)?;
-            let hooks = self
-                .move_hooks
-                .ok_or(crate::participant::ParticipantError::Unavailable)?;
-            self.participants
-                .as_ref()
-                .ok_or(crate::participant::ParticipantError::Unavailable)?
-                .admit_locomotion(self.commit_token, hooks, lens, request)
-        })();
-        if let Err(error) = &result {
-            txn.poison_owner_read();
-            self.owner_error.get_or_insert_with(|| error.clone());
-        }
-        result
-    }
-
-    /// Recheck one inert admission against this exact invocation/action/commit,
-    /// its object preimages and the current registered MoveAttempt hooks.
-    /// This does not retain an installation fence or publish a movement.
-    /// Refusal poisons both preparation and transaction even if caught.
-    pub fn require_locomotion_admission(
-        &mut self,
-        txn: &mut crate::action_state::ActionTxn<'_>,
-        admission: &crate::locomotion::LocomotionAdmission,
-    ) -> Result<(), crate::participant::ParticipantError> {
-        let result = (|| {
-            if let Some(error) = &self.owner_error {
-                return Err(error.clone());
-            }
-            let (base, provider) = self
-                .registered_transaction
-                .ok_or(crate::participant::ParticipantError::Unavailable)?;
-            let lens = txn
-                .read_preimage(base, provider)
-                .map_err(|_| crate::participant::ParticipantError::Authority)?;
-            let hooks = self
-                .move_hooks
-                .ok_or(crate::participant::ParticipantError::Unavailable)?;
-            self.participants
-                .as_ref()
-                .ok_or(crate::participant::ParticipantError::Unavailable)?
-                .require_locomotion_admission(self.commit_token, hooks, lens, admission)
-        })();
-        if let Err(error) = &result {
-            txn.poison_owner_read();
-            self.owner_error.get_or_insert_with(|| error.clone());
-        }
-        result
-    }
-
     /// Prepare one registered owner's closed effect in this exact action.
     /// A refused request poisons this preparation even if provider code catches it.
     pub fn prepare_owner<P: crate::participant::OwnerParticipant>(
@@ -1260,143 +1120,6 @@ impl<'a> PrepareCtx<'a> {
                     service, txn, c, request, hooks, move_hooks, base, provider,
                 )
             })
-        })();
-        if let Err(error) = &result {
-            txn.poison_owner_read();
-            self.owner_error.get_or_insert_with(|| error.clone());
-        }
-        result
-    }
-
-    /// Join the already-admitted captured route to its exact Sim participant
-    /// and Core-built object images. Call `admit_captured_locomotion` first;
-    /// neither a request nor replacement postimages can be supplied here.
-    /// Any refusal poisons the entire preparation.
-    pub fn prepare_captured_locomotion<
-        P: crate::participant::OwnerParticipant<
-                Request = crate::locomotion::transition::LocomotionIntent,
-                Output = crate::locomotion::transition::LocomotionDraft,
-            >,
-    >(
-        &mut self,
-        txn: &mut crate::action_state::ActionTxn<'_>,
-        service: &crate::locomotion::transition::CoreLocomotion<P>,
-    ) -> Result<
-        crate::locomotion::transition::LocomotionReceipt,
-        crate::participant::ParticipantError,
-    > {
-        let result = (|| {
-            if let Some(error) = &self.owner_error {
-                return Err(error.clone());
-            }
-            let (base, provider) = self
-                .registered_transaction
-                .ok_or(crate::participant::ParticipantError::Unavailable)?;
-            txn.read_preimage(base, provider)
-                .map_err(|_| crate::participant::ParticipantError::Authority)?;
-            let admission = self
-                .captured_admission
-                .as_ref()
-                .ok_or(crate::participant::ParticipantError::Unavailable)?;
-            self.participants
-                .as_mut()
-                .ok_or(crate::participant::ParticipantError::Unavailable)?
-                .prepare_locomotion(service, txn, self.commit_token, admission, base, provider)
-        })();
-        if let Err(error) = &result {
-            txn.poison_owner_read();
-            self.owner_error.get_or_insert_with(|| error.clone());
-        }
-        result
-    }
-
-    /// Prepare every owner in the actual frozen manifest for this captured
-    /// route. Any caught refusal still poisons the whole transaction.
-    pub fn prepare_composed_locomotion(
-        &mut self,
-        txn: &mut crate::action_state::ActionTxn<'_>,
-        service: &crate::locomotion::composed::ComposedLocomotion,
-    ) -> Result<
-        crate::locomotion::composed::ComposedLocomotionReceipt,
-        crate::participant::ParticipantError,
-    > {
-        let result = (|| {
-            if let Some(error) = &self.owner_error {
-                return Err(error.clone());
-            }
-            let (base, provider) = self
-                .registered_transaction
-                .ok_or(crate::participant::ParticipantError::Unavailable)?;
-            txn.read_preimage(base, provider)
-                .map_err(|_| crate::participant::ParticipantError::Authority)?;
-            let admission = self
-                .captured_admission
-                .as_ref()
-                .ok_or(crate::participant::ParticipantError::Unavailable)?;
-            self.participants
-                .as_mut()
-                .ok_or(crate::participant::ParticipantError::Unavailable)?
-                .prepare_composed_locomotion(
-                    service,
-                    txn,
-                    self.commit_token,
-                    admission,
-                    base,
-                    provider,
-                )
-        })();
-        if let Err(error) = &result {
-            txn.poison_owner_read();
-            self.owner_error.get_or_insert_with(|| error.clone());
-        }
-        result
-    }
-
-    /// Join the captured route, Sim crossing capture and the exact Scenes
-    /// transcript owner in one acknowledged mutation. Empty Scenes output
-    /// remains an authenticated owner observation, never a synthetic write.
-    pub fn prepare_captured_locomotion_with_scenes<P, S>(
-        &mut self,
-        txn: &mut crate::action_state::ActionTxn<'_>,
-        service: &crate::locomotion::scene_transition::CoreLocomotionWithScenes<P, S>,
-    ) -> Result<
-        crate::locomotion::scene_transition::SceneLocomotionReceipt,
-        crate::participant::ParticipantError,
-    >
-    where
-        P: crate::participant::OwnerParticipant<
-                Request = crate::locomotion::transition::LocomotionIntent,
-                Output = crate::locomotion::transition::LocomotionDraft,
-            >,
-        S: crate::participant::OwnerParticipant<
-                Request = crate::locomotion::scene_transition::ScenesMovementIntent,
-                Output = crate::locomotion::scene_transition::ScenesMovementDraft,
-            >,
-    {
-        let result = (|| {
-            if let Some(error) = &self.owner_error {
-                return Err(error.clone());
-            }
-            let (base, provider) = self
-                .registered_transaction
-                .ok_or(crate::participant::ParticipantError::Unavailable)?;
-            txn.read_preimage(base, provider)
-                .map_err(|_| crate::participant::ParticipantError::Authority)?;
-            let admission = self
-                .captured_admission
-                .as_ref()
-                .ok_or(crate::participant::ParticipantError::Unavailable)?;
-            self.participants
-                .as_mut()
-                .ok_or(crate::participant::ParticipantError::Unavailable)?
-                .prepare_locomotion_with_scenes(
-                    service,
-                    txn,
-                    self.commit_token,
-                    admission,
-                    base,
-                    provider,
-                )
         })();
         if let Err(error) = &result {
             txn.poison_owner_read();

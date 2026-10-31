@@ -641,150 +641,7 @@ pub(crate) fn derive(
         }
     }
     let roots = seeds(state, transition, plan, baseline_dependencies, &mut reads)?;
-    derive_views(
-        before,
-        after,
-        reads,
-        roots,
-        stamp,
-        CaptureDomain::Structural,
-    )
-}
-
-/// Ordinary locomotion changes only the actual actor's Core projection. The
-/// canonical placement/space maps remain byte-for-byte unchanged, including an
-/// absent placement row. The caller supplies already-admitted route dependencies.
-pub(crate) fn derive_actor_move(
-    state: &SpatialState,
-    world: &World,
-    actor: ObjId,
-    destination: ObjId,
-    stamp: &ClockStamp,
-    baseline_dependencies: &BTreeSet<ObjId>,
-) -> Result<CaptureFacts, ParticipantError> {
-    derive_actor_move_in(
-        state,
-        world,
-        actor,
-        destination,
-        stamp,
-        baseline_dependencies,
-        CaptureDomain::Locomotion,
-    )
-}
-
-pub(crate) fn derive_window_admission(
-    state: &SpatialState,
-    world: &World,
-    actor: ObjId,
-    destination: ObjId,
-    stamp: &ClockStamp,
-    dependencies: &BTreeSet<ObjId>,
-) -> Result<CaptureFacts, ParticipantError> {
-    derive_actor_move_in(
-        state,
-        world,
-        actor,
-        destination,
-        stamp,
-        dependencies,
-        CaptureDomain::Window,
-    )
-}
-
-fn derive_actor_move_in(
-    state: &SpatialState,
-    world: &World,
-    actor: ObjId,
-    destination: ObjId,
-    stamp: &ClockStamp,
-    baseline_dependencies: &BTreeSet<ObjId>,
-    domain: CaptureDomain,
-) -> Result<CaptureFacts, ParticipantError> {
-    if !matches!(stamp.clock, ClockRef::WorldIc { generation } if generation > 0)
-        || baseline_dependencies.len() > MAX_DEPENDENCIES
-        || world
-            .get(actor)
-            .is_none_or(|object| !object.kind.is_actor())
-    {
-        return Err(refused("invalid locomotion capture boundary"));
-    }
-    let mut reads = Reads {
-        world,
-        dependencies: BTreeSet::new(),
-        contents: BTreeMap::new(),
-        steps: 0,
-    };
-    for &dependency in baseline_dependencies {
-        reads.touch(dependency)?;
-    }
-    reads.inverse(actor)?;
-    reads.touch(destination)?;
-    if world.get(actor).and_then(|object| object.location) != Some(destination)
-        && reads.contents(destination)?.contains(&actor)
-    {
-        return Err(refused("locomotion destination inverse disagrees"));
-    }
-    let before = View::before(state);
-    let mut after = View::before(state);
-    after.projections.insert(actor, destination);
-    derive_views(before, after, reads, BTreeSet::from([actor]), stamp, domain)
-}
-
-#[derive(Clone, Copy)]
-enum CaptureDomain {
-    Structural,
-    Locomotion,
-    Window,
-}
-
-/// Original World rows remain the read fences. Both semantic ancestry views
-/// overlay the genuine first Core move; the admitted native plan supplies only
-/// its subsequent actor projection. No World or actor record is substituted.
-pub(crate) fn derive_window_phase(
-    state: &SpatialState,
-    world: &World,
-    actor: ObjId,
-    current_room: ObjId,
-    plan: &Plan,
-    stamp: &ClockStamp,
-    dependencies: &BTreeSet<ObjId>,
-) -> Result<CaptureFacts, ParticipantError> {
-    if !matches!(stamp.clock, ClockRef::WorldIc {generation} if generation > 0)
-        || dependencies.len() > MAX_DEPENDENCIES
-        || !plan.set_spaces.is_empty()
-        || !plan.retire.is_empty()
-        || plan.set_placements.iter().any(|p| p.object != actor)
-        || plan.projections.iter().any(|(object, _)| *object != actor)
-    {
-        return Err(refused("unsupported window personnel phase"));
-    }
-    let mut reads = Reads {
-        world,
-        dependencies: BTreeSet::new(),
-        contents: BTreeMap::new(),
-        steps: 0,
-    };
-    for &dependency in dependencies {
-        reads.touch(dependency)?;
-    }
-    reads.inverse(actor)?;
-    reads.touch(current_room)?;
-    let mut before = View::before(state);
-    before.projections.insert(actor, current_room);
-    let mut after = View::after(state, plan)?;
-    after.projections.entry(actor).or_insert(current_room);
-    for &destination in after.projections.values() {
-        reads.touch(destination)?;
-    }
-    derive_views(
-        before,
-        after,
-        reads,
-        BTreeSet::from([actor]),
-        stamp,
-        CaptureDomain::Window,
-    )
+    derive_views(before, after, reads, roots, stamp)
 }
 
 fn derive_views(
@@ -793,7 +650,6 @@ fn derive_views(
     mut reads: Reads<'_>,
     roots: BTreeSet<ObjId>,
     stamp: &ClockStamp,
-    domain: CaptureDomain,
 ) -> Result<CaptureFacts, ParticipantError> {
     let people = actors(&mut reads, roots, &before, &after)?;
     let mut old = Vec::with_capacity(people.len());
@@ -825,33 +681,15 @@ fn derive_views(
         new.push(post);
     }
     crossings.sort_by_key(|row| (row.character, row.carrier));
-    let ancestry_domain = match domain {
-        CaptureDomain::Structural => "sim.personnel.ancestry.v1",
-        CaptureDomain::Locomotion => "sim.locomotion.ancestry.v1",
-        CaptureDomain::Window => "sim.window_locomotion.ancestry.v1",
-    };
+    let ancestry_domain = "sim.personnel.ancestry.v1";
     let before_ancestry_digest = digest(ancestry_domain, &old)?;
     let after_ancestry_digest = digest(ancestry_domain, &new)?;
-    let capture_digest = match domain {
-        CaptureDomain::Structural => crate::personnel::capture_digest(
-            stamp,
-            &before_ancestry_digest,
-            &after_ancestry_digest,
-            &crossings,
-        )?,
-        CaptureDomain::Locomotion => crate::locomotion_capture::capture_digest(
-            stamp,
-            &before_ancestry_digest,
-            &after_ancestry_digest,
-            &crossings,
-        )?,
-        CaptureDomain::Window => window_phase_digest(
-            stamp,
-            &before_ancestry_digest,
-            &after_ancestry_digest,
-            &crossings,
-        )?,
-    };
+    let capture_digest = crate::personnel::capture_digest(
+        stamp,
+        &before_ancestry_digest,
+        &after_ancestry_digest,
+        &crossings,
+    )?;
     Ok(CaptureFacts {
         prepared_at: stamp.clone(),
         before_ancestry_digest,
@@ -860,21 +698,6 @@ fn derive_views(
         crossings,
         read_dependencies: reads.dependencies,
     })
-}
-
-pub(crate) fn window_phase_digest(
-    stamp: &ClockStamp,
-    before: &DefinitionDigest,
-    after: &DefinitionDigest,
-    crossings: &[Crossing],
-) -> Result<DefinitionDigest, ParticipantError> {
-    crate::locomotion_capture::check_material(stamp, crossings)?;
-    digest(
-        "sim.window_locomotion.phase.v1",
-        &serde_json::json!({
-            "prepared_at":stamp,"before_ancestry_digest":before,"after_ancestry_digest":after,"crossings":crossings,
-        }),
-    )
 }
 
 #[cfg(test)]

@@ -47,8 +47,6 @@ use crate::behavior::{
 use crate::commands::movement;
 use crate::flags::{Powers, Privileges, Role};
 use crate::lock::{LockExpr, MAX_LOCK_DEPTH, eval_lock};
-use crate::locomotion::CapturedLocomotion;
-use crate::locomotion::dispatch::{GateTranscript, capture};
 use crate::matchit::MatchErr;
 use crate::module::{ContextOutcome, ModuleTables, restored_prompt};
 use crate::obj::ObjId;
@@ -518,13 +516,6 @@ pub enum LookupErr {
     Ambiguous(Vec<SmolStr>),
 }
 
-/// Stamped only by Core's movement registration, never inferred from a name.
-#[derive(Clone, Copy, Debug, PartialEq, Eq)]
-pub(crate) enum BuiltinLocomotion {
-    Goto,
-    Home,
-}
-
 struct Entry {
     spec: CommandSpec,
     handler: Arc<dyn CommandHandler>,
@@ -536,7 +527,6 @@ struct Entry {
     /// `lookup_idx` skips it. Set by [`Registry::register_exact`] alone
     /// (16b cut AP.4).
     exact: bool,
-    locomotion: Option<BuiltinLocomotion>,
 }
 
 struct AliasStageEntry {
@@ -714,7 +704,6 @@ impl Registry {
             None,
             CommandCompatibility::ReadOnly,
             true,
-            None,
         )
     }
 
@@ -727,23 +716,7 @@ impl Registry {
         module: Option<SmolStr>,
         compatibility: CommandCompatibility,
     ) -> Result<(), RegistryError> {
-        self.insert_entry(spec, handler, module, compatibility, false, None)
-    }
-
-    pub(crate) fn register_builtin_locomotion(
-        &mut self,
-        spec: CommandSpec,
-        handler: Arc<dyn CommandHandler>,
-        locomotion: BuiltinLocomotion,
-    ) -> Result<(), RegistryError> {
-        self.insert_entry(
-            spec,
-            handler,
-            None,
-            CommandCompatibility::LegacyPostImage,
-            false,
-            Some(locomotion),
-        )
+        self.insert_entry(spec, handler, module, compatibility, false)
     }
 
     /// The one insertion path behind [`register_tagged`](Self::register_tagged)
@@ -756,7 +729,6 @@ impl Registry {
         module: Option<SmolStr>,
         compatibility: CommandCompatibility,
         exact: bool,
-        locomotion: Option<BuiltinLocomotion>,
     ) -> Result<(), RegistryError> {
         let mut keys = vec![spec.name.to_lowercase()];
         keys.extend(spec.aliases.iter().map(|a| a.to_lowercase()));
@@ -772,7 +744,6 @@ impl Registry {
             module,
             compatibility,
             exact,
-            locomotion,
         });
         for k in keys {
             self.index.insert(k, idx);
@@ -1203,30 +1174,6 @@ impl Registry {
         let i = self.lookup_idx(verb)?;
         let e = &self.entries[i];
         Ok((&e.spec, Arc::clone(&e.handler), e.module.clone()))
-    }
-
-    /// Resolve only an actually registered Core movement entry, using the
-    /// same lookup and command-spec gate as ordinary dispatch. The caller has
-    /// already checked HOME and whole-line exit precedence.
-    pub(crate) fn locomotion_entry(
-        &self,
-        world: &World,
-        actor: ObjId,
-        line: &str,
-    ) -> Result<Option<(usize, BuiltinLocomotion, ParsedArgs)>, String> {
-        let (head, rest) = split_head(line);
-        let mut parts = head.split('/');
-        let verb = parts.next().unwrap_or("");
-        let Ok(index) = self.lookup_idx(verb) else {
-            return Ok(None);
-        };
-        let entry = &self.entries[index];
-        let Some(kind) = entry.locomotion else {
-            return Ok(None);
-        };
-        let switches: Vec<_> = parts.filter(|s| !s.is_empty()).collect();
-        let (args, _) = check_spec(world, actor, &entry.spec, &switches, rest)?;
-        Ok(Some((index, kind, args)))
     }
 
     fn lookup_idx(&self, verb: &str) -> Result<usize, LookupErr> {
@@ -1681,34 +1628,18 @@ pub fn dispatch(
     out: &mut Outbox,
     lens: crate::action_state::TypedStateLens<'_>,
 ) {
-    let _ = dispatch_mode(reg, w, actor, line, out, lens, false);
+    let _ = dispatch_line(reg, w, actor, line, out, lens);
 }
 
-/// Explicit inert capture path. Normal command dispatch never selects it.
-pub(crate) fn dispatch_capturing(
+/// The pipeline behind [`dispatch`]; `None` is every early stop.
+fn dispatch_line(
     reg: &Registry,
     w: &mut World,
     actor: ObjId,
     line: &str,
     out: &mut Outbox,
     lens: crate::action_state::TypedStateLens<'_>,
-) -> Option<CapturedLocomotion> {
-    dispatch_mode(reg, w, actor, line, out, lens, true)
-}
-
-fn dispatch_mode(
-    reg: &Registry,
-    w: &mut World,
-    actor: ObjId,
-    line: &str,
-    out: &mut Outbox,
-    lens: crate::action_state::TypedStateLens<'_>,
-    capturing: bool,
-) -> Option<CapturedLocomotion> {
-    if capturing && line.len() > crate::MAX_INGRESS_LINE_BYTES {
-        out.error(actor, "Locomotion command exceeds proof limits.");
-        return None;
-    }
+) -> Option<()> {
     w.get(actor)?;
     let trimmed = line.trim();
     if trimmed.is_empty() {
@@ -1761,7 +1692,7 @@ fn dispatch_mode(
                 ContextOutcome::PopAndRun(cmd) => {
                     let spec = restored_prompt(w, actor);
                     out.to_actor(actor, OutputEvent::Prompt(spec));
-                    return dispatch_mode(reg, w, actor, &cmd, out, lens, capturing);
+                    return dispatch_line(reg, w, actor, &cmd, out, lens);
                 }
             }
             return None;
@@ -1793,10 +1724,6 @@ fn dispatch_mode(
     if command_gates_refuse(reg, w, actor, &cur, out) {
         return None;
     }
-    let mut transcript = capturing.then(GateTranscript::new);
-    if let Some(transcript) = &mut transcript {
-        transcript.record(&cur);
-    }
 
     // 3. Alias stages: the kernel's macro stage first, then the modules'
     //    (comsys's channel aliases). Prefix-expanded lines skip them: the
@@ -1827,37 +1754,21 @@ fn dispatch_mode(
                     if command_gates_refuse(reg, w, actor, &cur, out) {
                         return None;
                     }
-                    if let Some(transcript) = &mut transcript {
-                        transcript.record(&cur);
-                    }
                 }
             }
         }
     }
 
-    if let Some(transcript) = transcript {
-        // The traced selector shares ordinary lookup precedence and recognizes
-        // only real Core handlers. A refused capture cannot execute movement.
-        match capture(reg, w, actor, transcript) {
-            Ok(Some(captured)) => return Some(captured),
-            Ok(None) => {}
-            Err(reason) => {
-                out.error(actor, reason.to_string());
-                return None;
-            }
-        }
-    } else {
-        // 4. HOME keyword.
-        if cur.trim().eq_ignore_ascii_case("home") {
-            movement::go_home(reg, w, actor, out, lens);
-            return None;
-        }
+    // 4. HOME keyword.
+    if cur.trim().eq_ignore_ascii_case("home") {
+        movement::go_home(reg, w, actor, out, lens);
+        return None;
+    }
 
-        // 5. Exit match (room → zone → global) against the whole line.
-        if let Some(exit) = movement::find_exit(w, actor, cur.trim()) {
-            movement::traverse_exit(reg, w, actor, exit, out, lens);
-            return None;
-        }
+    // 5. Exit match (room → zone → global) against the whole line.
+    if let Some(exit) = movement::find_exit(w, actor, cur.trim()) {
+        movement::traverse_exit(reg, w, actor, exit, out, lens);
+        return None;
     }
 
     // 6. Command table.
