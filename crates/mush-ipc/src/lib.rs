@@ -19,7 +19,7 @@
 //! - [`ToGateway`] — server → gateway: resolved per-target output
 //!   ([`ToGateway::Deliver`] carrying a [`SendTarget`] + [`OutputEvent`]),
 //!   correlated service replies ([`ServiceResp`]), and the [`ToGateway::Hello`]
-//!   handshake.
+//!   handshake, answered by the gateway's [`ToServer::Hello`].
 //!
 //! [`mush_core::Inbound::Apply`] (async effect completions) and
 //! [`mush_core::Inbound::Control`] (routed internally by the world loop) are
@@ -36,8 +36,12 @@
 //! because [`mush_core::Inbound::Query`] and [`OutputEvent::Panel`] carry
 //! `serde_json::Value` payloads whose shape is only known at runtime. The
 //! encoding is additive/version-tolerant like the client protocol: new enum
-//! arms and new struct fields extend the wire without breaking old peers, and
-//! [`IPC_VERSION`] is announced in [`ToGateway::Hello`].
+//! struct fields extend the wire without breaking old peers (a new enum arm
+//! does not, and is a version bump), and each half announces the versions it
+//! serves, `[min_proto, proto]`, in its Hello. The two halves may run one
+//! version apart in one direction (doc 33 §4.1): the server at N serves
+//! gateways at N-1 and N through the per-link [`EmissionGate`]; see
+//! [`protocol`]'s module docs for the rules a change follows.
 //!
 //! ## What this crate is NOT
 //!
@@ -63,8 +67,9 @@
 pub mod codec;
 pub mod io;
 mod link;
-mod protocol;
+pub mod protocol;
 mod target;
+mod window;
 
 pub use codec::{CodecError, FrameDecoder, MAX_FRAME_LEN, decode_frame, encode_frame};
 pub use io::{
@@ -74,13 +79,15 @@ pub use link::{ActionSend, ConnectionAdmission, GatewayLink, InputSend};
 pub use protocol::{
     AttachRec, ControlMsg, CreatePlayerError, DetachCause, DiscordControlOp, DiscordInteraction,
     DiscordInteractionError, GatewayAction, GatewayInput, GatewayInputSizeError, GatewayRequest,
-    GatewayRequestDisposition, IPC_VERSION, LegalActionsError, MAX_GATEWAY_INPUT_BYTES,
-    MAX_IN_FLIGHT_GATEWAY_INPUT_BYTES, MAX_IN_FLIGHT_GATEWAY_INPUT_BYTES_PER_CONNECTION,
-    MAX_IN_FLIGHT_GATEWAY_INPUTS, MAX_IN_FLIGHT_GATEWAY_INPUTS_PER_CONNECTION,
-    MAX_IN_FLIGHT_LIFECYCLE_OBLIGATIONS, MAX_IN_FLIGHT_SERVICE_REQUESTS, RelayError, RelaySpeak,
-    ServiceReq, ServiceResp, ToGateway, ToServer, WireInbound, WireInboundError,
+    GatewayRequestDisposition, IPC_MIN_PROTO, IPC_PRE_HELLO_VERSION, IPC_VERSION,
+    LegalActionsError, MAX_GATEWAY_INPUT_BYTES, MAX_IN_FLIGHT_GATEWAY_INPUT_BYTES,
+    MAX_IN_FLIGHT_GATEWAY_INPUT_BYTES_PER_CONNECTION, MAX_IN_FLIGHT_GATEWAY_INPUTS,
+    MAX_IN_FLIGHT_GATEWAY_INPUTS_PER_CONNECTION, MAX_IN_FLIGHT_LIFECYCLE_OBLIGATIONS,
+    MAX_IN_FLIGHT_SERVICE_REQUESTS, RelayError, RelaySpeak, ServiceReq, ServiceResp, ToGateway,
+    ToServer, WireInbound, WireInboundError,
 };
 pub use target::SendTarget;
+pub use window::{EmissionGate, IPC_VERSION_SKEW_MARKER, LinkVersion, PRE_WINDOW, ProtoWindow};
 
 // Re-export the borrowed vocabulary so downstream (the future gateway) can name
 // the boundary types through `mush_ipc` without also depending on `mush-core`

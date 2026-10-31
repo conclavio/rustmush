@@ -13,8 +13,8 @@ use mush_core::{
 };
 use mush_ipc::codec::{decode_frame, encode_frame_into};
 use mush_ipc::{
-    AttachRec, CanonicalHash, FrameDecoder, GatewayAction, GatewayInput, IPC_VERSION,
-    MAX_FRAME_LEN, MAX_IN_FLIGHT_GATEWAY_INPUT_BYTES, MAX_IN_FLIGHT_GATEWAY_INPUTS,
+    AttachRec, CanonicalHash, FrameDecoder, GatewayAction, GatewayInput, IPC_MIN_PROTO,
+    IPC_VERSION, MAX_FRAME_LEN, MAX_IN_FLIGHT_GATEWAY_INPUT_BYTES, MAX_IN_FLIGHT_GATEWAY_INPUTS,
     MAX_IN_FLIGHT_LIFECYCLE_OBLIGATIONS, MAX_IN_FLIGHT_SERVICE_REQUESTS, ToGateway, ToServer,
     WireInbound, WireInboundError, encode_frame,
 };
@@ -59,9 +59,11 @@ fn every_to_gateway_variant_round_trips() {
 fn version_is_present_and_travels_in_hello() {
     // Name-only attributed removal and its pending reply (9), authoritative
     // world health (10) and mirrored reply settings with reply-completion
-    // fences (11) extend the closed vocabulary. An older peer cannot decode or
-    // honor them; deploy both halves together.
-    assert_eq!(IPC_VERSION, 12, "the boundary protocol version is pinned");
+    // fences (11) extend the closed vocabulary; 13 (doc 33 GG.0) opens the
+    // one-step window, after which the server upgrades first and a gateway one
+    // step behind is served (the golden suite holds the recorded contract).
+    assert_eq!(IPC_VERSION, 13, "the boundary protocol version is pinned");
+    assert_eq!(IPC_MIN_PROTO, 12, "the window is exactly one step");
     assert_eq!(
         MAX_IN_FLIGHT_SERVICE_REQUESTS, 256,
         "service-request custody is a fixed cross-boundary contract"
@@ -74,6 +76,7 @@ fn version_is_present_and_travels_in_hello() {
     assert_eq!(MAX_IN_FLIGHT_GATEWAY_INPUT_BYTES, 8 * 1024 * 1024);
     let hello = ToGateway::Hello {
         proto: IPC_VERSION,
+        min_proto: IPC_MIN_PROTO,
         server: "mushd".to_string(),
         features: vec![],
         panels: vec![],
@@ -81,9 +84,66 @@ fn version_is_present_and_travels_in_hello() {
     let bytes = encode_frame(&hello).unwrap();
     let (got, _): (ToGateway, usize) = decode_frame(&bytes).unwrap().unwrap();
     match got {
-        ToGateway::Hello { proto, .. } => assert_eq!(proto, IPC_VERSION),
+        ToGateway::Hello {
+            proto, min_proto, ..
+        } => {
+            assert_eq!(proto, IPC_VERSION);
+            assert_eq!(min_proto, IPC_MIN_PROTO);
+        }
         other => panic!("expected Hello, got {other:?}"),
     }
+    // The gateway's half of the handshake (13) travels too.
+    let hello = ToServer::Hello {
+        proto: IPC_VERSION,
+        min_proto: IPC_MIN_PROTO,
+    };
+    let bytes = encode_frame(&hello).unwrap();
+    let (got, _): (ToServer, usize) = decode_frame(&bytes).unwrap().unwrap();
+    assert_eq!(got, hello);
+}
+
+/// A 12 server's Hello has no `min_proto`. Encoded by a 12-shaped mirror of
+/// the variant under the same codec, it decodes with `min_proto = 0`, which
+/// the window helper reads as "12 only" — so a 13 gateway refuses it.
+#[test]
+fn a_hello_without_min_proto_decodes_as_a_pre_window_server() {
+    #[derive(serde::Serialize)]
+    enum ToGatewayV12 {
+        Hello {
+            proto: u32,
+            server: String,
+            features: Vec<String>,
+            panels: Vec<String>,
+        },
+    }
+    let bytes = encode_frame(&ToGatewayV12::Hello {
+        proto: 12,
+        server: "mushd/12".to_string(),
+        features: vec!["channels".to_string()],
+        panels: vec!["who".to_string()],
+    })
+    .unwrap();
+    let (got, _): (ToGateway, usize) = decode_frame(&bytes).unwrap().unwrap();
+    let ToGateway::Hello {
+        proto,
+        min_proto,
+        server,
+        features,
+        panels,
+    } = got
+    else {
+        panic!("expected Hello, got {got:?}");
+    };
+    assert_eq!((proto, min_proto), (12, 0));
+    assert_eq!(server, "mushd/12");
+    assert_eq!(features, vec!["channels".to_string()]);
+    assert_eq!(panels, vec!["who".to_string()]);
+    let window = mush_ipc::ProtoWindow::announced(proto, min_proto);
+    assert!(window.contains(12));
+    assert!(
+        !window.contains(IPC_VERSION),
+        "a 13 gateway is outside a 12 server's window"
+    );
 }
 
 /// The lifecycle ceiling also bounds the one-frame restart snapshot. Account
@@ -386,7 +446,7 @@ fn licence_source_request_uses_v8_custody_and_closed_v7_request_cannot_decode_it
         serde_json::from_value::<OldMind>(value.get("request").expect("nested request").clone())
             .is_err()
     );
-    assert_eq!(IPC_VERSION, 12);
+    assert_eq!(IPC_VERSION, 13);
 }
 
 #[test]
@@ -424,6 +484,6 @@ fn attributed_remove_requires_new_closed_invoke_vocabulary()
         serde_json::from_slice::<mush_proto::InvokeResult>(&bytes)?,
         reply
     );
-    assert_eq!(IPC_VERSION, 12);
+    assert_eq!(IPC_VERSION, 13);
     Ok(())
 }

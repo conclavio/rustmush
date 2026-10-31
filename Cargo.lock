@@ -2308,6 +2308,7 @@ dependencies = [
  "mush-config",
  "mush-core",
  "mush-economy",
+ "mush-ipc",
  "mush-jobs",
  "mush-llm",
  "mush-npc",

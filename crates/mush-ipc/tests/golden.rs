@@ -12,15 +12,16 @@
 //!
 //! Three suites read the sets:
 //!
-//! - [`the_current_version_set_is_recorded_and_matches_the_codec`]: the set for
-//!   the current `IPC_VERSION` exists and is byte-for-byte what this build
-//!   encodes. Any wire change under a fixed version — a new sample, an added
-//!   field, a changed dependency type — fails it until the set is re-recorded,
-//!   so the diff of `tests/golden/` is the record of every change to the wire.
-//! - [`the_previous_version_set_decodes_under_the_current_codec`]: the
+//! - [`the_current_version_set_is_recorded_and_matches_the_codec`] proves the
+//!   set for the current `IPC_VERSION` exists and is byte-for-byte what this
+//!   build encodes. Any wire change under a fixed version — a new sample, an
+//!   added field, a changed dependency type — fails it until the set is
+//!   re-recorded, so the diff of `tests/golden/` is the record of every change
+//!   to the wire.
+//! - [`the_previous_version_set_decodes_under_the_current_codec`] proves the
 //!   window's promise, both directions. A removal that breaks it waits one
 //!   release (protocol.rs, "Inside the window, additive only").
-//! - `crates/mush-contract-tests/tests/ipc_golden_frames.rs`: the bump lint,
+//! - `crates/mush-contract-tests/tests/ipc_golden_frames.rs` is the bump lint,
 //!   which fails when `IPC_VERSION` is newer than the newest recorded set.
 //!
 //! Recording (the `#[ignore]`d test; it replaces the current version's set):

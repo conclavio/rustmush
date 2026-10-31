@@ -6,25 +6,53 @@
 //! `ConnectionReady`/`Barrier`) become correlated [`ServiceReq`]/[`ServiceResp`]
 //! pairs matched by a `u64` request id.
 //!
-//! # A new arm is not a free extension
+//! # The compatibility window (doc 33 §4.1, D-33-1)
 //!
-//! Adding a variant to either enum is wire-compatible in ONE direction only: a
-//! new peer reading an old peer's frames. The reverse — an old peer meeting a
-//! frame it has no arm for — is an rmp decode error, which [`crate::codec`]
-//! maps to an `io::Error` and [`crate::io`] treats as a dead boundary: the
-//! connection tears down and every player on it drops. Nor is there a
-//! gateway→server handshake to gate emission on ([`ToGateway::Hello`] carries
-//! `proto`/`features` server→gateway only; [`ToServer`] has no counterpart), so
-//! a sender cannot learn what its peer understands before it speaks.
+//! The two halves may run one protocol step apart, in one direction: a server
+//! at version N serves gateways at N-1 and N, and a gateway speaks only its own
+//! version. The server upgrades first (it already restarts under held
+//! connections); the gateways follow while the old generation drains. Each half
+//! announces the versions it serves as `[min_proto, proto]` in its Hello — the
+//! server's [`ToGateway::Hello`] first, then the gateway's [`ToServer::Hello`]
+//! as the link's first frame. The server records each link's version
+//! ([`crate::LinkVersion`]) and writes every frame through that link's
+//! [`crate::EmissionGate`]; the gateway refuses a server whose window does not
+//! contain its own [`IPC_VERSION`], logging [`crate::IPC_VERSION_SKEW_MARKER`].
+//! Normally `min_proto` is [`IPC_MIN_PROTO`], one below [`IPC_VERSION`].
 //!
-//! A new arm is therefore a deploy-order hazard, not an extension point, and
-//! the standing rule is: **reach for a new frame last.** Both halves already
-//! share the object store, so a fact one half needs from the other is usually
-//! already written down there, and re-reading it costs one small query and no
-//! version skew. The gateway's siteban mirror is the worked example —
-//! `@siteban` runs in the server, the guard that admits connections lives in
-//! the gateway, and the gap is closed by the gateway re-reading `ban:*` rather
-//! than by a `ToGateway::SetSiteban`.
+//! What a change to this file may do, and when:
+//!
+//! - **Inside the window, additive only.** A `ToGateway` variant added at N is
+//!   emitted only to links that announced N: list it in
+//!   [`ToGateway::introduced_at`], and give it an older form in
+//!   [`ToGateway::downgrade`] where an N-1 gateway should get something rather
+//!   than nothing. A new `ToServer` variant needs no gate (the server is never
+//!   behind a gateway) but is a bump like any new variant: an N-1 server has no
+//!   arm for it, and an unknown arm is an rmp decode error that tears the link
+//!   down with every player on it.
+//! - **A defaulted field is additive on its own.** The codec is self-describing
+//!   ([`rmp_serde`] with named fields), so an old decoder ignores a field it
+//!   does not know and a new decoder defaults one that is absent
+//!   (`#[serde(default)]`). No bump; re-record the golden set. A field whose
+//!   ABSENCE changes the old peer's behaviour is not additive: bump, and gate
+//!   the variant that carries it.
+//! - **A removal waits one release.** The server at N+1 must still decode
+//!   everything an N gateway sends, and the golden suite decodes the previous
+//!   version's set in both directions, so a variant or field that is to go is
+//!   first no longer SENT at N+1 (its gate arm, or the sender, drops it) and
+//!   deleted at N+2. Never narrower than the window.
+//! - **A bump records the contract.** `cargo test -p mush-ipc --test golden
+//!   record_golden_frames -- --ignored` writes `tests/golden/v<N>/`; the lint
+//!   in `mush-contract-tests` fails a bump with no set, and `tests/golden.rs`
+//!   decodes the previous version's set under the current codec.
+//!
+//! Still true: a frame is not the first tool. Both halves share the object
+//! store, so a fact one half needs from the other is often already written
+//! down there, and re-reading it costs one small query and no protocol change.
+//! The gateway's siteban mirror is the worked example — `@siteban` runs in the
+//! server, the guard that admits connections lives in the gateway, and the gap
+//! is closed by the gateway re-reading `ban:*` rather than by a
+//! `ToGateway::SetSiteban`.
 
 use mush_core::{
     AccountId, ActionOfferId, CommitToken, DisconnectKind, Inbound, ObjId, PerceivedRef,
@@ -45,9 +73,14 @@ use crate::target::SendTarget;
 /// [`ToServer::Control`].
 pub use mush_core::ControlMsg;
 
-/// The boundary protocol version, announced in [`ToGateway::Hello`]. Bump on a
-/// decoding or behavioral incompatibility. Defaulted fields under the
-/// self-describing encoding can be additive, provided old peers remain safe.
+/// The boundary protocol version, announced in [`ToGateway::Hello`] and
+/// [`ToServer::Hello`]. Bump on a decoding or behavioural incompatibility — a
+/// new variant in either direction, or a field whose absence misleads an old
+/// peer. Defaulted fields under the self-describing encoding are additive and
+/// need no bump (the module docs above say what each kind of change owes).
+/// A bump also records the golden set and widens nothing: the window stays
+/// `[IPC_VERSION - 1, IPC_VERSION]`, so each bump has exactly one
+/// compatibility case to think about.
 // Version 5 requires request epochs and account revocation controls.
 // Version 6 (16b cut F.4) requires the account on `ServiceReq::CreatePlayer`: a
 // v5 gateway would create characters that the server's account oracle never
@@ -67,7 +100,29 @@ pub use mush_core::ControlMsg;
 // Version 12 (17g C3a): `MindRequest::Market` and the `Staged`/`Shown`
 // responses cross the boundary (`WireInbound::Invoke` and the invoke reply); an
 // 11 peer cannot decode them. Deploy both halves together.
-pub const IPC_VERSION: u32 = 12;
+// Version 13 (doc 33 cut GG.0) opens the one-step compatibility window: the
+// gateway's first frame is the new `ToServer::Hello { proto, min_proto }`, and
+// `ToGateway::Hello` gains a defaulted `min_proto`. THE LAST BUMP THAT NEEDS A
+// LOCKSTEP DEPLOY: a 12 gateway accepts exactly its own version, so it refuses
+// a 13 server, and the two halves must be deployed together this once (one
+// gateway restart). From 13 on the server upgrades first and a gateway one
+// step behind keeps playing: a 13 server serves a 12 gateway by the bootstrap
+// rule (a first frame that is not `ToServer::Hello` is a 12 peer), and every
+// later server serves its N-1 gateway by the window.
+pub const IPC_VERSION: u32 = 13;
+
+/// The oldest protocol version this build still serves: the floor of the
+/// window, one step below [`IPC_VERSION`]. A server at [`IPC_VERSION`] accepts
+/// a gateway at this version or its own; a gateway announces it as the oldest
+/// server it would accept (and, speaking only its own version, is accepted by
+/// a server whose window contains [`IPC_VERSION`]).
+pub const IPC_MIN_PROTO: u32 = IPC_VERSION - 1;
+
+/// The version a link is assumed to speak when its first frame is not
+/// [`ToServer::Hello`]: 12, the last version with no gateway Hello (doc 33
+/// §4.1's bootstrap rule). The server serves such a link while 12 is inside
+/// its window and refuses it, with the skew marker, once 12 has left it.
+pub const IPC_PRE_HELLO_VERSION: u32 = 12;
 
 /// Maximum replayable player inputs held by either half of one split-process
 /// boundary. The gateway enforces the limit before accepting custody and the
@@ -999,6 +1054,25 @@ pub enum DetachCause {
 /// Gateway → server. Everything the gateway half sends across the boundary.
 #[derive(Clone, Debug, PartialEq, Serialize, Deserialize)]
 pub enum ToServer {
+    /// The gateway's opening handshake (version 13, doc 33 §4.1): the FIRST
+    /// frame on every link, announcing the window the gateway speaks. The
+    /// server accepts a gateway whose `proto` lies in its own
+    /// `[min_proto, proto]`, records it as the link's version (the input of
+    /// the emission gate), and otherwise refuses the link, logging
+    /// [`crate::IPC_VERSION_SKEW_MARKER`].
+    ///
+    /// Bootstrap rule: a link whose first frame is anything else is a
+    /// version-[`IPC_PRE_HELLO_VERSION`] peer, the last version with no Hello.
+    /// That rule is what lets a 13 server serve a 12 gateway; it lapses when
+    /// 12 leaves the window, and the server then refuses a Hello-less link.
+    Hello {
+        /// The gateway's [`IPC_VERSION`]. The one version it speaks.
+        proto: u32,
+        /// The oldest server version this gateway accepts (normally
+        /// [`IPC_MIN_PROTO`]). Recorded for the log: the server's check is on
+        /// `proto` alone, because a gateway speaks only its own version.
+        min_proto: u32,
+    },
     /// Live engine input — the cross-boundary subset of [`Inbound`].
     Inbound(WireInbound),
     /// A player command/query under bounded, replay-stable gateway custody.
@@ -1153,15 +1227,22 @@ pub enum ToGateway {
         /// Why (drives the gateway's close-vs-linkdead policy — `Booted` here).
         cause: DetachCause,
     },
-    /// The server's opening handshake: its protocol version, advertised
+    /// The server's opening handshake: its protocol window, advertised
     /// features, and the web `hello` panel manifest. Sent once when a gateway
     /// connects (and re-sent by a freshly (re)started server so the gateway can
     /// refresh its cached manifest across a restart). Additive: `panels` was
-    /// added after `features` under the self-describing rmp codec, so both wire
-    /// halves rebuild together and [`IPC_VERSION`] stays the same.
+    /// added after `features` under the self-describing rmp codec with no
+    /// bump, and `min_proto` (version 13) is defaulted so a 12 decoder ignores
+    /// it and a 13 decoder reads a 12 server's Hello as `min_proto = 0`,
+    /// which [`crate::ProtoWindow::announced`] reads as "`proto` only".
     Hello {
-        /// The server's [`IPC_VERSION`].
+        /// The server's [`IPC_VERSION`]: the newest version it serves.
         proto: u32,
+        /// The oldest version the server serves (normally [`IPC_MIN_PROTO`]);
+        /// `0` from a server that predates the window. A gateway accepts the
+        /// server when `[min_proto, proto]` contains its own [`IPC_VERSION`].
+        #[serde(default)]
+        min_proto: u32,
         /// A human-readable server identifier (build/version string).
         server: String,
         /// Advertised optional features (additive capability negotiation) —

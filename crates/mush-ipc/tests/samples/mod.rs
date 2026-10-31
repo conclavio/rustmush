@@ -15,8 +15,8 @@ use mush_core::{
 use mush_ipc::{
     AttachRec, CanonicalHash, CommitToken, CreatePlayerError, DetachCause, DiscordControlOp,
     DiscordInteraction, DiscordInteractionError, GatewayAction, GatewayInput, GatewayRequest,
-    GatewayRequestDisposition, IPC_VERSION, LegalActionsError, RelayError, RelaySpeak, RequestUid,
-    ServiceReq, ServiceResp, ToGateway, ToServer, WireInbound,
+    GatewayRequestDisposition, IPC_MIN_PROTO, IPC_VERSION, LegalActionsError, RelayError,
+    RelaySpeak, RequestUid, ServiceReq, ServiceResp, ToGateway, ToServer, WireInbound,
 };
 use mush_proto::{
     ActionStatusId, InvokeRequest, MindRequest, NarrativeKind, OutputEvent, PanelFrameKind,
@@ -64,6 +64,11 @@ pub fn every_to_server() -> Vec<ToServer> {
         },
     );
     vec![
+        // Version 13: the gateway's first frame (doc 33 §4.1).
+        ToServer::Hello {
+            proto: IPC_VERSION,
+            min_proto: IPC_MIN_PROTO,
+        },
         ToServer::Inbound(WireInbound::Cmd {
             conn: 7,
             actor: ObjId(42),
@@ -484,6 +489,7 @@ pub fn every_to_gateway() -> Vec<ToGateway> {
         },
         ToGateway::Hello {
             proto: IPC_VERSION,
+            min_proto: IPC_MIN_PROTO,
             server: "mushd/0.1.0".to_string(),
             features: vec!["reattach".to_string(), "compression".to_string()],
             panels: vec!["who".to_string(), "mail".to_string()],
