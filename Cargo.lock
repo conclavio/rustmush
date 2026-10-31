@@ -2308,6 +2308,7 @@ dependencies = [
  "mush-config",
  "mush-core",
  "mush-economy",
+ "mush-ipc",
  "mush-jobs",
  "mush-llm",
  "mush-npc",
@@ -2359,6 +2360,16 @@ dependencies = [
  "serde_json",
  "thiserror 2.0.20",
  "winnow",
+]
+
+[[package]]
+name = "mush-drain"
+version = "0.1.0"
+dependencies = [
+ "futures",
+ "socket2 0.6.5",
+ "tokio",
+ "tracing",
 ]
 
 [[package]]
@@ -2906,12 +2917,12 @@ version = "0.1.0"
 dependencies = [
  "futures",
  "getrandom 0.4.3",
+ "mush-drain",
  "mush-net-ssh",
  "mush-proto",
  "mush-sshdoorway-proto",
  "russh",
  "serde",
- "socket2 0.6.5",
  "thiserror 2.0.20",
  "tokio",
  "toml",

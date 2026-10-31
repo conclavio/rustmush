@@ -114,8 +114,7 @@ use crate::arena::motor::{
 };
 use crate::arena::perception::{Aspect, DriveOutcome, FrameNotice, FrameOrder, MindObjective};
 use crate::arena::state::{
-    ArenaDefinition, Classification, ContactId, CostRow, DEFAULT_SENSOR_HEIGHT_CM, HoldObjective,
-    Power,
+    ArenaDefinition, ContactId, CostRow, DEFAULT_SENSOR_HEIGHT_CM, HoldObjective, Power,
 };
 use crate::arena::weapons::{
     FrameArming, FrameWeapon, fight_inner_cm_of, fight_limit_cm_of, loaded_weapon_of,
@@ -451,8 +450,7 @@ pub fn would_overheat(view: &MindView, weapon: &FrameWeapon) -> bool {
 #[must_use]
 pub fn holds_a_hostile(view: &MindView) -> bool {
     view.contacts.iter().any(|row| {
-        matches!(row.class, Classification::Classified { team } if team != view.team)
-            && row.reads_dead != Some(true)
+        row.relation == crate::arena::party::Relation::Hostile && row.reads_dead != Some(true)
     })
 }
 
@@ -545,7 +543,7 @@ pub fn best_hostile_ranked(
         .contacts
         .iter()
         .filter(|row| {
-            matches!(row.class, Classification::Classified { team } if team != view.team)
+            row.relation == crate::arena::party::Relation::Hostile
                 && row.reads_dead != Some(true)
                 && admit(row)
         })
@@ -1473,7 +1471,7 @@ impl NativeStockMind {
                 MachineState::Withdraw => {
                     if goal.is_none() {
                         goal = here
-                            .and_then(|cell| entry_cell(def, view.team, CostRow::Tracked, cell))
+                            .and_then(|cell| entry_cell(def, view.party, CostRow::Tracked, cell))
                             .or(here);
                     }
                     let arrived = view.immobile
@@ -1650,7 +1648,7 @@ impl NativeStockMind {
             return false;
         }
         let Some(cell) =
-            here.and_then(|cell| far_entry_cell(def, view.team, CostRow::Tracked, cell, &[]))
+            here.and_then(|cell| far_entry_cell(def, view.party, CostRow::Tracked, cell, &[]))
         else {
             mem.unheld_since_ms = Some(t_ms);
             return false;
@@ -1982,6 +1980,7 @@ mod tests {
     use mush_core::ObjId;
 
     use super::*;
+    use crate::arena::state::Classification;
     /// Class I's slots (17b cut M3.2: the row's figure, read off the class
     /// table — the constant is left to its definition and its row-I pin).
     const CLASS_I_SLOTS: usize = crate::arena::core::ClassTable::STOCK
@@ -1989,8 +1988,8 @@ mod tests {
         .slots;
     use crate::arena::mind::{MIND_INTENTS_MAX, memory_check};
     use crate::arena::state::{
-        Arena, ArenaTerrain, Controller, CustodyOut, CustodyUnit, MatchMode, SeenPose,
-        ShadowContact, Team,
+        Arena, ArenaTerrain, Controller, CustodyOut, CustodyUnit, MatchMode, PartyId, SeenPose,
+        ShadowContact,
     };
     use crate::arena::test_support::{definition, ground, line_tank, pose, resolution, scout};
     use crate::config::{ArenaConfig, MatchConfig, SensorsConfig};
@@ -2014,6 +2013,7 @@ mod tests {
                 resolution: resolution(),
                 seed: 2_350,
                 mode: MatchMode::Skirmish,
+                host: crate::arena::FieldHost::all_hostile(),
             },
             &ArenaConfig::default(),
             &MatchConfig::default(),
@@ -2023,7 +2023,7 @@ mod tests {
     }
 
     /// A line tank flown by a mind.
-    fn minded(id: ObjId, team: Team, x: i64, y: i64) -> CustodyUnit {
+    fn minded(id: ObjId, team: PartyId, x: i64, y: i64) -> CustodyUnit {
         let mut unit = line_tank(id, team, pose(x, y));
         unit.controller = Controller::Mind;
         unit.reseal(&crate::match_::SealTerms::fixture())
@@ -2036,7 +2036,7 @@ mod tests {
         let Some(state) = arena.unit(target) else {
             panic!("a fielded target");
         };
-        let class = Classification::Classified { team: state.team };
+        let class = Classification::Classified { party: state.team };
         let plot = SeenPose::of(state);
         arena
             .contacts
@@ -2182,9 +2182,9 @@ mod tests {
     /// facet, ids `0x30` and `0x10`.
     fn tied() -> (Arena, MindView) {
         let mut arena = field(vec![
-            minded(RED, Team::Red, 20_500, 20_500),
-            line_tank(BLUE, Team::Blue, pose(20_500, 30_500)),
-            line_tank(BLUE2, Team::Blue, pose(30_500, 20_500)),
+            minded(RED, PartyId::RED, 20_500, 20_500),
+            line_tank(BLUE, PartyId::BLUE, pose(20_500, 30_500)),
+            line_tank(BLUE2, PartyId::BLUE, pose(30_500, 20_500)),
         ]);
         online(&mut arena, RED);
         hold(&mut arena, RED, BLUE, ContactId(0x30));
@@ -2235,9 +2235,17 @@ mod tests {
             }
         });
         assert_eq!(best(&dead, None), Some(ContactId(0x30)));
-        let unknown = with(&|row| row.class = Classification::Unknown);
+        let unknown = with(&|row| {
+            row.class = Classification::Unknown;
+            row.relation = crate::arena::party::Relation::Unknown;
+        });
         assert_eq!(best(&unknown, None), None);
-        let friends = with(&|row| row.class = Classification::Classified { team: Team::Red });
+        let friends = with(&|row| {
+            row.class = Classification::Classified {
+                party: PartyId::RED,
+            };
+            row.relation = crate::arena::party::Relation::Own;
+        });
         assert_eq!(best(&friends, None), None);
         let faces = with(&|row| {
             if row.id == ContactId(0x30) {
@@ -2259,8 +2267,8 @@ mod tests {
     #[test]
     fn m1a6_every_kernel_holds_the_plot_while_the_truth_moves() {
         let mut arena = field(vec![
-            minded(RED, Team::Red, 20_500, 20_500),
-            line_tank(BLUE, Team::Blue, pose(20_500, 40_500)),
+            minded(RED, PartyId::RED, 20_500, 20_500),
+            line_tank(BLUE, PartyId::BLUE, pose(20_500, 40_500)),
         ]);
         online(&mut arena, RED);
         hold(&mut arena, RED, BLUE, ContactId(0x77));
@@ -2322,8 +2330,8 @@ mod tests {
     #[test]
     fn m1a6_the_emission_order_and_its_two_rules() {
         let mut arena = field(vec![
-            minded(RED, Team::Red, 20_500, 20_500),
-            line_tank(BLUE, Team::Blue, pose(20_500, 40_500)),
+            minded(RED, PartyId::RED, 20_500, 20_500),
+            line_tank(BLUE, PartyId::BLUE, pose(20_500, 40_500)),
         ]);
         let mut memory = StockMemory::default();
         let cold = think(&arena, &view_of(&arena, RED), &mut memory, 0);
@@ -2384,7 +2392,7 @@ mod tests {
     /// as the next `Goal(Cell)`.
     #[test]
     fn m5r_a_matching_no_route_result_performs_the_give_ups_and_the_fallback() {
-        let mut arena = field(vec![minded(RED, Team::Red, 3_500, 4_500)]);
+        let mut arena = field(vec![minded(RED, PartyId::RED, 3_500, 4_500)]);
         online(&mut arena, RED);
         let failed = (6, 4);
         let mut view = view_of(&arena, RED);
@@ -2462,7 +2470,7 @@ mod tests {
     /// is the next goal. Without completion the hull drives on.
     #[test]
     fn m5r_motor_completion_is_arrival_wherever_the_fan_landed() {
-        let mut arena = field(vec![minded(RED, Team::Red, 3_500, 4_500)]);
+        let mut arena = field(vec![minded(RED, PartyId::RED, 3_500, 4_500)]);
         online(&mut arena, RED);
         let named = (50, 40);
         let start = StockMemory {
@@ -2499,7 +2507,7 @@ mod tests {
 
     #[test]
     fn m5r_nearby_cells_and_stale_drive_notices_do_not_complete_a_new_goal() {
-        let mut arena = field(vec![minded(RED, Team::Red, 3_500, 4_500)]);
+        let mut arena = field(vec![minded(RED, PartyId::RED, 3_500, 4_500)]);
         online(&mut arena, RED);
         let goal = (3, 4);
         let start = StockMemory {
@@ -2533,7 +2541,7 @@ mod tests {
 
     #[test]
     fn m5r_motor_completion_survives_withdraw_dwell_without_repeated_notices() {
-        let mut arena = field(vec![minded(RED, Team::Red, 20_500, 20_500)]);
+        let mut arena = field(vec![minded(RED, PartyId::RED, 20_500, 20_500)]);
         online(&mut arena, RED);
         let mut view = view_of(&arena, RED);
         let home = (1, 4);
@@ -2583,15 +2591,15 @@ mod tests {
     /// row, no odds and no `reads_dead`.
     #[test]
     fn m1a6_an_unarmed_hull_emits_no_lock_and_no_fire() {
-        let mut red = scout(RED, Team::Red, pose(20_500, 20_500));
+        let mut red = scout(RED, PartyId::RED, pose(20_500, 20_500));
         red.weapons.clear();
         red.controller = Controller::Mind;
         red.reseal(&crate::match_::SealTerms::fixture())
             .expect("the fixture terms seal");
         let mut arena = field(vec![
             red,
-            line_tank(BLUE, Team::Blue, pose(20_500, 30_500)),
-            line_tank(BLUE2, Team::Blue, pose(30_500, 20_500)),
+            line_tank(BLUE, PartyId::BLUE, pose(20_500, 30_500)),
+            line_tank(BLUE2, PartyId::BLUE, pose(30_500, 20_500)),
         ]);
         let kept = Arc::new(Kept {
             inner: NativeStockMind::with(&arena.arena_cfg.reflex),
@@ -2610,10 +2618,14 @@ mod tests {
             .unwrap_or_default();
         assert!(answers.len() >= 55, "{} thinks", answers.len());
         assert!(
-            answers.iter().any(|(view, _)| view
-                .contacts
+            answers
                 .iter()
-                .any(|row| matches!(row.class, Classification::Classified { team: Team::Blue }))),
+                .any(|(view, _)| view.contacts.iter().any(|row| matches!(
+                    row.class,
+                    Classification::Classified {
+                        party: PartyId::BLUE
+                    }
+                ))),
             "hostiles in view"
         );
         assert!(
@@ -2716,7 +2728,7 @@ mod tests {
     #[test]
     fn m1a6_the_hold_arms_drive_for_the_spot_park_on_it_and_retry_it() {
         let hold = spot();
-        let mut arena = field(vec![minded(RED, Team::Red, 20_500, 20_500)]);
+        let mut arena = field(vec![minded(RED, PartyId::RED, 20_500, 20_500)]);
         online(&mut arena, RED);
         let view = view_of(&arena, RED);
         let mut memory = patrolling(0);
@@ -2767,7 +2779,7 @@ mod tests {
         );
         assert_eq!(memory.hold_retry_ms, None);
         // On the spot: parked.
-        let mut there = field(vec![minded(RED, Team::Red, 31_500, 20_500)]);
+        let mut there = field(vec![minded(RED, PartyId::RED, 31_500, 20_500)]);
         online(&mut there, RED);
         let mut parked = StockMemory {
             goal: Some(hold.spot),
@@ -2790,8 +2802,8 @@ mod tests {
     fn m1a6_an_advance_into_the_square_ends_and_an_approach_inside_it_stays() {
         let hold = spot();
         let mut arena = field(vec![
-            minded(RED, Team::Red, 31_500, 20_500),
-            line_tank(BLUE, Team::Blue, pose(31_500, 55_500)),
+            minded(RED, PartyId::RED, 31_500, 20_500),
+            line_tank(BLUE, PartyId::BLUE, pose(31_500, 55_500)),
         ]);
         online(&mut arena, RED);
         let mut view = view_of(&arena, RED);
@@ -2858,7 +2870,7 @@ mod tests {
 
         let hold = spot();
         let edge = (27, 20);
-        let mut arena = field(vec![minded(RED, Team::Red, 26_500, 20_500)]);
+        let mut arena = field(vec![minded(RED, PartyId::RED, 26_500, 20_500)]);
         online(&mut arena, RED);
         let mut view = view_of(&arena, RED);
         view.order = Some(order_of(MindObjective::Advance { to: edge }));
@@ -2923,9 +2935,9 @@ mod tests {
     #[test]
     fn m1a6_a_screen_stands_on_a_row_inside_its_arc_and_not_outside() {
         let mut arena = field(vec![
-            minded(RED, Team::Red, 20_500, 20_500),
-            line_tank(BLUE, Team::Blue, pose(20_500, 30_500)),
-            line_tank(BLUE2, Team::Blue, pose(30_500, 20_500)),
+            minded(RED, PartyId::RED, 20_500, 20_500),
+            line_tank(BLUE, PartyId::BLUE, pose(20_500, 30_500)),
+            line_tank(BLUE2, PartyId::BLUE, pose(30_500, 20_500)),
         ]);
         online(&mut arena, RED);
         hold(&mut arena, RED, BLUE2, ContactId(0x22));
@@ -2979,9 +2991,9 @@ mod tests {
     #[test]
     fn m1a6_a_supporter_stands_blind_rejoins_off_the_leash_and_keeps_station() {
         let mut arena = field(vec![
-            minded(RED, Team::Red, 20_500, 20_500),
-            line_tank(BLUE, Team::Blue, pose(20_500, 30_500)),
-            line_tank(MATE, Team::Red, pose(20_500, 50_500)),
+            minded(RED, PartyId::RED, 20_500, 20_500),
+            line_tank(BLUE, PartyId::BLUE, pose(20_500, 30_500)),
+            line_tank(MATE, PartyId::RED, pose(20_500, 50_500)),
         ]);
         online(&mut arena, RED);
         hold(&mut arena, RED, BLUE, ContactId(0x11));
@@ -3033,8 +3045,8 @@ mod tests {
         assert_eq!(leashed.target, None);
         // (c) Inside its station: parked.
         let mut close = field(vec![
-            minded(RED, Team::Red, 20_500, 20_500),
-            line_tank(MATE, Team::Red, pose(20_500, 23_500)),
+            minded(RED, PartyId::RED, 20_500, 20_500),
+            line_tank(MATE, PartyId::RED, pose(20_500, 23_500)),
         ]);
         online(&mut close, RED);
         hold(&mut close, RED, MATE, ContactId(0x99));
@@ -3080,7 +3092,7 @@ mod tests {
     /// and a hurt one keeps going home with no order.
     #[test]
     fn m1a6_a_healthy_withdraw_with_no_order_returns_to_patrol() {
-        let mut arena = field(vec![minded(RED, Team::Red, 20_500, 20_500)]);
+        let mut arena = field(vec![minded(RED, PartyId::RED, 20_500, 20_500)]);
         online(&mut arena, RED);
         let view = view_of(&arena, RED);
         let withdrawing = StockMemory {
@@ -3131,8 +3143,8 @@ mod tests {
     #[test]
     fn m1a6_a_blocked_miss_notice_turns_engage_into_approach() {
         let mut arena = field(vec![
-            minded(RED, Team::Red, 20_500, 20_500),
-            line_tank(BLUE, Team::Blue, pose(20_500, 40_500)),
+            minded(RED, PartyId::RED, 20_500, 20_500),
+            line_tank(BLUE, PartyId::BLUE, pose(20_500, 40_500)),
         ]);
         online(&mut arena, RED);
         hold(&mut arena, RED, BLUE, ContactId(0x77));
@@ -3210,7 +3222,7 @@ mod tests {
     /// beside none); an unarmed hull answers nothing (D-UM-48).
     #[test]
     fn m1b2_arming_for_arms_the_first_two_weapons_whatever_the_heat() {
-        let mut arena = field(vec![minded(RED, Team::Red, 20_500, 20_500)]);
+        let mut arena = field(vec![minded(RED, PartyId::RED, 20_500, 20_500)]);
         online(&mut arena, RED);
         let mut view = view_of(&arena, RED);
         let Some(like) = view.weapons.first().cloned() else {
@@ -3317,8 +3329,8 @@ mod tests {
     #[test]
     fn m1b2_t1_arms_on_the_admitting_ceiling_and_cites_only_beside_a_fresh_lock() {
         let mut arena = field(vec![
-            minded(RED, Team::Red, 20_500, 20_500),
-            line_tank(BLUE, Team::Blue, pose(20_500, 40_500)),
+            minded(RED, PartyId::RED, 20_500, 20_500),
+            line_tank(BLUE, PartyId::BLUE, pose(20_500, 40_500)),
         ]);
         online(&mut arena, RED);
         hold(&mut arena, RED, BLUE, ContactId(0x77));
@@ -3498,8 +3510,8 @@ mod tests {
     #[test]
     fn m1b2_the_cited_shot_is_the_first_ready_armed_weapon_numbered_as_the_arena_does() {
         let mut arena = field(vec![
-            minded(RED, Team::Red, 20_500, 20_500),
-            line_tank(BLUE, Team::Blue, pose(20_500, 40_500)),
+            minded(RED, PartyId::RED, 20_500, 20_500),
+            line_tank(BLUE, PartyId::BLUE, pose(20_500, 40_500)),
         ]);
         online(&mut arena, RED);
         hold(&mut arena, RED, BLUE, ContactId(0x77));
@@ -3567,14 +3579,17 @@ mod tests {
     fn m1b2_residual_a_removed_weapon_parts_i_plus_one_from_the_arenas_number() {
         use crate::arena::resolution::Consequence;
         use crate::arena::weapons::FiredBy;
-        let mut red = minded(RED, Team::Red, 20_500, 20_500);
+        let mut red = minded(RED, PartyId::RED, 20_500, 20_500);
         let mut mg = crate::arena::test_support::cannon();
         mg.id = SmolStr::new("machine_gun");
         mg.mount_section = SmolStr::new("hull");
         red.weapons.push(mg);
         red.reseal(&crate::match_::SealTerms::fixture())
             .expect("seal the complete initial weapon rack");
-        let mut arena = field(vec![red, line_tank(BLUE, Team::Blue, pose(20_500, 40_500))]);
+        let mut arena = field(vec![
+            red,
+            line_tank(BLUE, PartyId::BLUE, pose(20_500, 40_500)),
+        ]);
         online(&mut arena, RED);
         hold(&mut arena, RED, BLUE, ContactId(0x77));
         let card = crate::arena::card::line(&arena.arena_cfg.reflex);
@@ -3694,7 +3709,7 @@ mod tests {
         use crate::arena::test_support::{arena_of, tank};
         use crate::arena::weapons::{DEFAULT_WEAPON, WeaponBand};
 
-        let mut fixture = tank(ObjId(4), Team::Red, pose(1_500, 1_500));
+        let mut fixture = tank(ObjId(4), PartyId::RED, pose(1_500, 1_500));
         fixture.sensor = Some(SensorProfile {
             component: smol_str::SmolStr::new("visual_sensor"),
             max_range_cells: 60,
@@ -3850,7 +3865,7 @@ mod tests {
         use crate::arena::state::{HeatState, UnitState, WeaponSummary};
         use crate::arena::test_support::{arena_of, cannon, tank};
 
-        let mut unit = tank(ObjId(4), Team::Red, pose(1_500, 1_500));
+        let mut unit = tank(ObjId(4), PartyId::RED, pose(1_500, 1_500));
         unit.unit = d11_hot_tactical_unit(ObjId(4));
         unit.weapons = ["laser", "machine_gun"]
             .into_iter()

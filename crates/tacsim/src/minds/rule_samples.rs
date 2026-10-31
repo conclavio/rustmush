@@ -81,18 +81,21 @@ mod tests {
     use crate::arena::intents::{IntentKind, MotorGoal};
     use crate::arena::mind::CollectedThink;
     use crate::arena::motor::MotorCounters;
-    use crate::arena::state::{Arena, Controller, Power, Team};
+    use crate::arena::state::{Arena, Controller, PartyId, Power};
     use crate::arena::test_support::{arena_of, line_tank, pose};
 
     const OWN: ObjId = ObjId(4);
     const SOURCE: &str = "fn think(v,c) { stock::rules(); goto([2,4]); this.landed = t_ms(); }";
 
     fn arena() -> Arena {
-        let mut own = line_tank(OWN, Team::Red, pose(1500, 4500));
+        let mut own = line_tank(OWN, PartyId::RED, pose(1500, 4500));
         own.controller = Controller::Mind;
         own.reseal(&crate::match_::SealTerms::fixture())
             .expect("fixture seal");
-        let mut arena = arena_of(vec![own, line_tank(ObjId(9), Team::Blue, pose(6500, 4500))]);
+        let mut arena = arena_of(vec![
+            own,
+            line_tank(ObjId(9), PartyId::BLUE, pose(6500, 4500)),
+        ]);
         arena.unit_mut(OWN).expect("own hull").power = Power::Online;
         arena.mind_runner = Arc::new(
             crate::minds::RhaiRunner::on(

@@ -4,9 +4,9 @@
 //! heading; around it the held `arena.map`'s ground (its colour map, shaded
 //! by G.7b's heights where the feed carries them, flat otherwise), the named
 //! spots lettered, the frame's range bands as faint rings, the look as a
-//! wedge from the tank, and every contact the frame lists in its team's
-//! colour (doc 22 D-22-3, as the first-person picture draws it), the lock
-//! ringed.
+//! wedge from the tank, and every contact the frame lists in its relation's
+//! colour (doc 32 cut CF.0, Q-CF-12, as the first-person picture draws it),
+//! its party letter beside its health pips, the lock ringed.
 //!
 //! **It draws only what the frame says** (D-21-14): the contacts are the ones
 //! the sim detected, placed where the frame's bearing and coarse range put
@@ -35,15 +35,15 @@ use serde_json::Value;
 
 use crate::Frame;
 use crate::cockpit::{
-    ARENA_MAP_FEED, COCKPIT_FEED, MapStamp, contact_health, contact_kind, map_from_feed, map_stamp,
-    terrain_from_feed,
+    ARENA_MAP_FEED, COCKPIT_FEED, MapStamp, contact_health, contact_kind, contact_party,
+    map_from_feed, map_stamp, terrain_from_feed,
 };
 use crate::frame::Rgb;
 use crate::heightfield::Terrain;
 use crate::math::Det as _;
 use crate::overlay::{
-    BLUE_TEAM, BORDER, DIM, GONE, HEALTH_PIPS, LOCK, RED_TEAM, TEXT, WRECK, YOU, draw_card,
-    ground_rgb, outline_rect,
+    BORDER, DIM, FRIEND, GONE, HEALTH_PIPS, HOSTILE, LOCK, TEXT, WRECK, YOU, draw_card, ground_rgb,
+    outline_rect,
 };
 use crate::picture::{BUCKET_A_INTERVAL, Feeds, Look, Picture};
 use crate::raycast::{Base, Biome, Ground, Map, SpriteKind};
@@ -70,6 +70,17 @@ const RING: Rgb = [74, 80, 94];
 const WEDGE: Rgb = [196, 196, 120];
 const UNKNOWN_CONTACT: Rgb = [170, 170, 162];
 const OFF_MAP: Rgb = [10, 12, 16];
+
+/// A contact's mark colour by the viewer's relation to it (doc 32 cut CF.0,
+/// Q-CF-12): friend, hostile, grey for neutral and unclassified, a wreck's.
+fn relation_rgb(kind: SpriteKind) -> Rgb {
+    match kind {
+        SpriteKind::Hostile => HOSTILE,
+        SpriteKind::Friend => FRIEND,
+        SpriteKind::Unknown => UNKNOWN_CONTACT,
+        SpriteKind::Wreck => WRECK,
+    }
+}
 /// The inset's `N` sits this far inside its rim, pixels.
 const RIM_INSET_PX: f64 = 6.0;
 
@@ -488,12 +499,7 @@ fn overhead_scene(
         .collect();
     for (at, c) in &placed {
         let kind = contact_kind(c);
-        let colour = match kind {
-            SpriteKind::Red => RED_TEAM,
-            SpriteKind::Blue => BLUE_TEAM,
-            SpriteKind::Unknown => UNKNOWN_CONTACT,
-            SpriteKind::Wreck => WRECK,
-        };
+        let colour = relation_rgb(kind);
         if kind == SpriteKind::Wreck {
             scene.push(Item::Marker {
                 at: *at,
@@ -535,7 +541,9 @@ fn overhead_scene(
         // are on the tape and the lock's readout already. The health pips
         // (G.14) under the designator, the camera's only for the same
         // reason — the inset's contacts carry theirs over their sprites in
-        // the picture itself.
+        // the picture itself. The party letter (doc 32 cut CF.0, Q-CF-12)
+        // right of the pips, centred on them, in the relation's colour, so
+        // parties stay distinct inside one relation colour.
         if dress == Dress::Camera {
             scene.push(Item::Text {
                 at: *at,
@@ -555,6 +563,16 @@ fn overhead_scene(
                     colour: health.rgb(),
                     dim: GONE,
                 });
+                if let Some(letter) = contact_party(c) {
+                    scene.push(Item::Text {
+                        at: *at,
+                        offset: (16 * s, -3 * s),
+                        anchor: Anchor::TopLeft,
+                        text: letter.to_string(),
+                        colour: relation_rgb(contact_kind(c)),
+                        scale: s as usize,
+                    });
+                }
             }
         }
     }
@@ -745,8 +763,8 @@ mod tests {
         let f = draw(&feeds(true), &Look::default(), 640, 276);
         assert_eq!(f.get(320, 138), YOU, "the tank at the centre");
         for want in [
-            BLUE_TEAM,
-            RED_TEAM,
+            FRIEND,
+            HOSTILE,
             UNKNOWN_CONTACT,
             LOCK,
             WEDGE,
@@ -781,7 +799,7 @@ mod tests {
     fn missing_feeds_are_drawn_or_refused_as_the_cockpit_is() {
         let bare = draw(&feeds(false), &Look::default(), 320, 220);
         assert!(!has(&bare, ground_rgb(crate::raycast::Ground::Grass)));
-        assert!(has(&bare, BLUE_TEAM));
+        assert!(has(&bare, FRIEND));
         let mut frame = Frame::new(320, 220);
         let empty: HashMap<String, Value> = HashMap::new();
         assert!(!OverheadPicture::new().draw(&mut frame, &empty, &Look::default()));
@@ -790,7 +808,7 @@ mod tests {
             c["seated"] = false.into();
         }
         assert!(OverheadPicture::new().draw(&mut frame, &out, &Look::default()));
-        assert!(!has(&frame, BLUE_TEAM), "a card, no contacts");
+        assert!(!has(&frame, FRIEND), "a card, no contacts");
     }
 
     /// The inset (G.13): the overhead drawn small into a corner, nothing
@@ -827,8 +845,8 @@ mod tests {
         for frame in [&camera, &north] {
             let inside = |c: Rgb| (8..112).any(|y| (8..112).any(|x| frame.get(x, y) == c));
             for want in [
-                BLUE_TEAM,
-                RED_TEAM,
+                FRIEND,
+                HOSTILE,
                 UNKNOWN_CONTACT,
                 LOCK,
                 WEDGE,
@@ -886,13 +904,36 @@ mod tests {
         assert_eq!(grey.len(), 32, "two unlit: {grey:?}");
         let (x, y) = red[0];
         assert!(grey.contains(&(x + 6, y)) && grey.contains(&(x + 12, y)));
-        // Beside BA's mark: right of it, and under its designator.
-        assert!(has(&full, BLUE_TEAM));
-        let blue = count(&full, BLUE_TEAM);
-        let (bx, by) = blue
+        // Beside BA's mark: right of it, and under its designator. BA is
+        // hostile to the fixture's red pilot (doc 32 cut CF.0, Q-CF-12): its
+        // mark is the hostile colour, and so is its party letter `B`, right
+        // of the pips — the mark is the hostile pixels left of them.
+        let hostile = count(&full, HOSTILE);
+        let mark: Vec<_> = hostile.iter().copied().filter(|&(hx, _)| hx < x).collect();
+        assert!(!mark.is_empty(), "BA's mark");
+        let (bx, by) = mark
             .iter()
             .fold((0, 0), |(sx, sy), &(x, y)| (sx + x, sy + y));
-        let (bx, by) = (bx / blue.len(), by / blue.len());
+        let (bx, by) = (bx / mark.len(), by / mark.len());
+        let letter: Vec<_> = hostile
+            .iter()
+            .copied()
+            .filter(|&(hx, hy)| hx >= x + 16 && hx < x + 30 && hy + 8 >= y && hy < y + 12)
+            .collect();
+        assert!(
+            letter.len() > 20,
+            "BA's party letter right of its pips: {letter:?}"
+        );
+        let (lx0, ly0) = letter
+            .iter()
+            .fold((usize::MAX, usize::MAX), |(a, b), &(x, y)| {
+                (a.min(x), b.min(y))
+            });
+        assert_eq!(
+            (lx0, ly0),
+            (x + 20, y - 4),
+            "the B's top-left, 2s past the pips"
+        );
         assert!(
             x > bx && x < bx + 24,
             "right of BA ({bx}, {by}): ({x}, {y})"

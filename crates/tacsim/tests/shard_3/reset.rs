@@ -249,7 +249,7 @@ impl Rig {
     }
 
     /// The tank behind one side's slot, through the arena's own roster.
-    fn tank(&self, team: tacsim::arena::state::Team, index: u8) -> ObjId {
+    fn tank(&self, team: tacsim::arena::state::PartyId, index: u8) -> ObjId {
         match_::tank_for_slot(self.tw.world(), team, index)
             .expect("the slot's tank is in the world")
     }
@@ -406,7 +406,7 @@ fn one_aboard(rig: &mut Rig) {
 #[test]
 fn a_wrecked_stock_tank_is_back_at_spec_and_at_muster_and_a_second_reset_says_nothing() {
     let mut rig = Rig::boot(1);
-    let red = rig.tank(tacsim::arena::state::Team::Red, 1);
+    let red = rig.tank(tacsim::arena::state::PartyId::RED, 1);
     let authored = rig.pose(red).expect("the applier placed it").1;
     rig.wreck(red);
 
@@ -535,7 +535,7 @@ fn the_boot_opens_the_pods_before_any_tick_and_the_first_tick_says_the_hatch() {
     let mut rig = Rig::boot(2);
     one_aboard(&mut rig);
     let pilot = rig.pilot(0);
-    let red = rig.tank(tacsim::arena::state::Team::Red, 1);
+    let red = rig.tank(tacsim::arena::state::PartyId::RED, 1);
     let pod = rig.pod(0).expect("red pod 1 is locked to the first pilot");
     let team_room = rig
         .tw
@@ -816,7 +816,7 @@ async fn a_deployed_roster_tank_is_skipped_and_said_so() {
     rig.say(0, "board");
     rig.say(1, "board");
     assert_eq!(rig.state(), MatchState::Running);
-    let red = rig.tank(tacsim::arena::state::Team::Red, 1);
+    let red = rig.tank(tacsim::arena::state::PartyId::RED, 1);
     assert!(mush_sim::deployed::is_deployed(rig.tw.world(), red));
 
     // The staff verb refuses outright while the centre is live, so the claim is
@@ -861,7 +861,7 @@ fn a_different_pilot_boards_red_pod_one(rig: &mut Rig, who: usize) {
 fn an_abort_during_boarding_frees_the_pod_for_a_different_pilot() {
     let mut rig = Rig::boot(3);
     one_aboard(&mut rig);
-    let red = rig.tank(tacsim::arena::state::Team::Red, 1);
+    let red = rig.tank(tacsim::arena::state::PartyId::RED, 1);
     assert_eq!(rig.billets(red).len(), 1, "the pilot holds the cockpit");
 
     // Blue calls it off from the blue room.
@@ -887,7 +887,7 @@ fn an_abort_during_boarding_frees_the_pod_for_a_different_pilot() {
 fn the_board_deadline_emptying_a_side_frees_the_pod_for_a_different_pilot() {
     let mut rig = Rig::boot(3);
     one_aboard(&mut rig);
-    let red = rig.tank(tacsim::arena::state::Team::Red, 1);
+    let red = rig.tank(tacsim::arena::state::PartyId::RED, 1);
 
     // Blue never boards, the deadline passes, the match aborts.
     rig.tick_to(120);
@@ -924,7 +924,7 @@ fn the_board_deadline_emptying_a_side_frees_the_pod_for_a_different_pilot() {
 fn f4_with_the_layer_off_the_board_deadline_drives_nothing() {
     let mut rig = Rig::boot(3);
     one_aboard(&mut rig);
-    let red = rig.tank(tacsim::arena::state::Team::Red, 1);
+    let red = rig.tank(tacsim::arena::state::PartyId::RED, 1);
     let pod = rig.pod(0).expect("red pod 1 is locked to the first pilot");
     let slots = rig.centre().slots.len();
 
@@ -963,7 +963,7 @@ fn f4_with_the_layer_off_the_board_deadline_drives_nothing() {
 fn sim_leave_by_a_seated_pilot_gives_the_seat_back() {
     let mut rig = Rig::boot(3);
     one_aboard(&mut rig);
-    let red = rig.tank(tacsim::arena::state::Team::Red, 1);
+    let red = rig.tank(tacsim::arena::state::PartyId::RED, 1);
     let pod = rig.pod(0).expect("red pod 1 is locked to the first pilot");
     assert_eq!(rig.location(0), Some(pod), "the pilot is inside the pod");
 
@@ -987,7 +987,7 @@ fn sim_leave_by_a_seated_pilot_gives_the_seat_back() {
 #[test]
 fn a_claim_on_a_terminal_centre_resets_it_and_claims_with_no_staff() {
     let mut rig = Rig::boot(2);
-    let red = rig.tank(tacsim::arena::state::Team::Red, 1);
+    let red = rig.tank(tacsim::arena::state::PartyId::RED, 1);
     rig.wreck(red);
     one_aboard(&mut rig);
     rig.say(1, "sim abort");
@@ -1049,7 +1049,7 @@ fn a_claim_on_a_terminal_centre_resets_it_and_claims_with_no_staff() {
 #[test]
 fn a_claim_that_could_not_put_every_tank_back_says_so_rather_than_promising_muster() {
     let mut rig = Rig::boot(2);
-    let red = rig.tank(tacsim::arena::state::Team::Red, 1);
+    let red = rig.tank(tacsim::arena::state::PartyId::RED, 1);
     rig.wreck(red);
     one_aboard(&mut rig);
     // The marker a refused check-in leaves behind, planted **before** the end.
@@ -1121,7 +1121,7 @@ fn the_other_sim_selectors_keep_their_state_guards_on_a_terminal_centre() {
 fn an_arena_reset_on_an_already_idle_centre_sweeps_a_stranded_body_and_billet() {
     let mut rig = Rig::boot(2);
     one_aboard(&mut rig);
-    let red = rig.tank(tacsim::arena::state::Team::Red, 1);
+    let red = rig.tank(tacsim::arena::state::PartyId::RED, 1);
     let pod = rig.pod(0).expect("red pod 1 is locked to the first pilot");
     assert_eq!(rig.billets(red).len(), 1);
 

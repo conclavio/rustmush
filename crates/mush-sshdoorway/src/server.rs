@@ -42,7 +42,7 @@ use tokio::net::{TcpListener, TcpStream};
 use tokio::sync::{mpsc, oneshot};
 
 use crate::config::Config;
-use crate::drain::{Drain, INJECT_QUEUE, LiveGuard, Phase};
+use crate::drain::{DoorwaySession, Drain, INJECT_QUEUE, LiveGuard, Phase};
 use crate::limits::{Admission, Caps, Limits, Slot};
 use crate::route::{Route, log_segment, route};
 use crate::upstream::{
@@ -1057,9 +1057,10 @@ impl Conn {
         let pending: Pending = Arc::default();
         let inject = if self.pairs.is_empty() {
             let (tx, rx) = mpsc::channel(INJECT_QUEUE);
-            self.door
-                .drain
-                .register(self.id, handle.clone(), Some(down_id), Some(tx));
+            self.door.drain.register(
+                self.id,
+                DoorwaySession::new(handle.clone(), Some(down_id), Some(tx)),
+            );
             Some(rx)
         } else {
             None
@@ -1503,7 +1504,7 @@ impl Handler for Conn {
         // any channel exists.
         self.door
             .drain
-            .register(self.id, session.handle(), None, None);
+            .register(self.id, DoorwaySession::new(session.handle(), None, None));
         Ok(())
     }
 
@@ -1740,9 +1741,10 @@ impl Handler for Conn {
                 }
                 reply.accept().await;
                 self.opened.store(true, Ordering::SeqCst);
-                self.door
-                    .drain
-                    .register(self.id, session.handle(), Some(id), None);
+                self.door.drain.register(
+                    self.id,
+                    DoorwaySession::new(session.handle(), Some(id), None),
+                );
                 self.front = Some((id, write));
                 // The idle clock starts at the channel, not the shell request:
                 // a channel that never asks for a shell still times out.

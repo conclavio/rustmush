@@ -132,8 +132,14 @@ pub(crate) const WARN: Rgb = [230, 180, 50];
 pub(crate) const BAD: Rgb = [220, 60, 50];
 pub(crate) const GONE: Rgb = [60, 60, 66];
 pub(crate) const YOU: Rgb = [255, 255, 255];
-pub(crate) const RED_TEAM: Rgb = [230, 70, 60];
-pub(crate) const BLUE_TEAM: Rgb = [90, 150, 240];
+/// A hostile contact's marks (doc 32 cut CF.0, Q-CF-12: by relation).
+pub(crate) const HOSTILE: Rgb = [230, 70, 60];
+/// The own unit's and a friend's marks.
+pub(crate) const FRIEND: Rgb = [90, 150, 240];
+/// The replay's red team: a replay is the omniscient record, drawn by team.
+pub(crate) const RED_TEAM: Rgb = HOSTILE;
+/// The replay's blue team.
+pub(crate) const BLUE_TEAM: Rgb = FRIEND;
 const UNKNOWN: Rgb = [170, 170, 162];
 /// The lock's box and label: a marker, never a team's colour.
 pub(crate) const LOCK: Rgb = [240, 200, 60];
@@ -154,8 +160,8 @@ pub(crate) fn ground_rgb(ground: Ground) -> Rgb {
 
 fn kind_rgb(kind: SpriteKind) -> Rgb {
     match kind {
-        SpriteKind::Red => RED_TEAM,
-        SpriteKind::Blue => BLUE_TEAM,
+        SpriteKind::Hostile => HOSTILE,
+        SpriteKind::Friend => FRIEND,
         SpriteKind::Unknown => UNKNOWN,
         SpriteKind::Wreck => WRECK,
     }
@@ -721,6 +727,11 @@ pub struct HealthMark {
     pub top: i64,
     /// What it reads.
     pub health: Health,
+    /// The contact's party letter, drawn right of the pips (doc 32 cut
+    /// CF.0, Q-CF-12), `None` while unclassified.
+    pub party: Option<char>,
+    /// How the contact is drawn: the letter's colour, its relation's.
+    pub kind: SpriteKind,
 }
 
 /// What the flight HUD draws.
@@ -973,7 +984,9 @@ pub fn health_rect(
 
 /// The health gauges (G.14): over each marked sprite, its lit pips in the
 /// tier's colour and the rest in the doll's `gone` grey, where
-/// [`health_rect`] puts them.
+/// [`health_rect`] puts them; and the contact's party letter `2s` right of
+/// the pips in its relation's colour, its bottom on the gauge's (doc 32 cut
+/// CF.0, Q-CF-12), kept inside the frame.
 fn draw_health(
     frame: &mut Frame,
     marks: &[HealthMark],
@@ -992,7 +1005,37 @@ fn draw_health(
             };
             fill_rect(frame, x + pip * 3 * s, y, 2 * s, gh, px);
         }
+        if let Some(letter) = mark.party {
+            let (lx, ly) = party_letter_at(x, y, gh, s, w);
+            let mut buf = [0u8; 4];
+            text(
+                frame,
+                lx,
+                ly,
+                letter.encode_utf8(&mut buf),
+                kind_rgb(mark.kind),
+                s as usize,
+            );
+        }
     }
+}
+
+/// Where a gauge's party letter goes (doc 32 cut CF.0, Q-CF-12): `2s` right
+/// of the pips starting at `x` (`8s` wide), its 7-row glyph's bottom on the
+/// gauge's bottom row (`y + gh`); left of the pips instead where the right
+/// would leave the frame `w` wide. The glyph's top may run over the frame's
+/// top edge, and is clipped there.
+#[must_use]
+pub fn party_letter_at(x: i64, y: i64, gh: i64, s: i64, w: i64) -> (i64, i64) {
+    let gw = (HEALTH_PIPS * 3 - 1) * s;
+    let lw = 5 * s;
+    let right = x + gw + 2 * s;
+    let lx = if right + lw <= w {
+        right
+    } else {
+        x - 2 * s - lw
+    };
+    (lx, y + gh - 7 * s)
 }
 
 /// The speed bar, right of centre: filled from the bottom against
@@ -1147,11 +1190,11 @@ mod tests {
         let marks = [
             MapMark {
                 cell: (30, 30),
-                kind: SpriteKind::Red,
+                kind: SpriteKind::Hostile,
             },
             MapMark {
                 cell: (50, 10),
-                kind: SpriteKind::Blue,
+                kind: SpriteKind::Friend,
             },
             MapMark {
                 cell: (2, 60),
@@ -1282,11 +1325,11 @@ mod tests {
             &[
                 MapMark {
                     cell: (36, 14),
-                    kind: SpriteKind::Red,
+                    kind: SpriteKind::Hostile,
                 },
                 MapMark {
                     cell: (2, 9),
-                    kind: SpriteKind::Blue,
+                    kind: SpriteKind::Friend,
                 },
             ],
             &[Spot {

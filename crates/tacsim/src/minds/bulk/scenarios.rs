@@ -10,7 +10,7 @@ use super::{
 };
 use crate::{
     arena::{
-        Arena, ArenaMode, Controller, CustodyOut, MatchMode, Team,
+        Arena, ArenaMode, Controller, CustodyOut, MatchMode, PartyId,
         input_tape::{EngineStamp, TapeHeader},
         profile_seal::MindOrigin,
     },
@@ -324,8 +324,8 @@ impl ScenarioFactory {
                 let mut units = Vec::new();
                 let mut occupied = Vec::new();
                 let mut sources = BTreeMap::new();
-                for team in [Team::Red, Team::Blue] {
-                    let candidate = if (team == Team::Red) != swapped {
+                for team in [PartyId::RED, PartyId::BLUE] {
+                    let candidate = if (team == PartyId::RED) != swapped {
                         &recipe.candidate
                     } else {
                         &recipe.opponent
@@ -357,7 +357,7 @@ impl ScenarioFactory {
                         profiles,
                         fallback: None,
                     };
-                    let positions = if team == Team::Red {
+                    let positions = if team == PartyId::RED {
                         &layout.red
                     } else {
                         &layout.blue
@@ -369,7 +369,7 @@ impl ScenarioFactory {
                         .collect::<Vec<_>>();
                     for n in 0..recipe.per_side {
                         let object =
-                            ObjId((if team == Team::Red { 100 } else { 200 }) + u32::from(n));
+                            ObjId((if team == PartyId::RED { 100 } else { 200 }) + u32::from(n));
                         let [x, y] = if positions.is_empty() {
                             let slot = authored_slots.get(usize::from(n)).ok_or_else(|| {
                                 invalid("proving content has too few deployment slots")
@@ -389,7 +389,11 @@ impl ScenarioFactory {
                             0,
                             posture,
                         );
-                        proposed.heading_mdeg = if team == Team::Red { 90_000 } else { 270_000 };
+                        proposed.heading_mdeg = if team == PartyId::RED {
+                            90_000
+                        } else {
+                            270_000
+                        };
                         let pose = crate::match_::opening_pose(
                             &definition,
                             team,
@@ -432,6 +436,7 @@ impl ScenarioFactory {
                         resolution: resolution.clone(),
                         seed: *seed,
                         mode,
+                        host: crate::arena::FieldHost::all_hostile(),
                     },
                     &self.cfg.arena,
                     &self.cfg.match_,
@@ -575,9 +580,13 @@ mod tests {
                 let header = starts.header(index).unwrap();
                 let arena = crate::minds::resimulation::open_frozen_header(&header).unwrap();
                 assert_eq!(arena.units.len(), 2);
-                for team in [Team::Red, Team::Blue] {
+                for team in [PartyId::RED, PartyId::BLUE] {
                     let unit = arena.units.iter().find(|unit| unit.team == team).unwrap();
-                    let expected = if team == Team::Red { 90_000 } else { 270_000 };
+                    let expected = if team == PartyId::RED {
+                        90_000
+                    } else {
+                        270_000
+                    };
                     assert_eq!(
                         unit.pose.heading_mdeg, expected,
                         "{scenario:?} game{index} {team:?}"
@@ -666,11 +675,19 @@ mod tests {
                 assert_eq!(arena.seed, index as u64 / 2 + 1);
                 assert_eq!(arena.units.len(), 12);
                 assert_eq!(
-                    arena.units.iter().filter(|u| u.team == Team::Red).count(),
+                    arena
+                        .units
+                        .iter()
+                        .filter(|u| u.team == PartyId::RED)
+                        .count(),
                     6
                 );
                 assert_eq!(
-                    arena.units.iter().filter(|u| u.team == Team::Blue).count(),
+                    arena
+                        .units
+                        .iter()
+                        .filter(|u| u.team == PartyId::BLUE)
+                        .count(),
                     6
                 );
             }

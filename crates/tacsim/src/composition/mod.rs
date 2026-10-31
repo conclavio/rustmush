@@ -630,6 +630,10 @@ pub fn atlas_module_builder(cfg: mush_atlas::AtlasConfig) -> mush_atlas::AtlasMo
         Ok(wv) => shelf.extend(wv),
         Err(error) => tracing::error!(%error, "atlas: the winter_valley packs did not load"),
     }
+    match crate::definitions::content::mars_canyon_packs() {
+        Ok(mc) => shelf.extend(mc),
+        Err(error) => tracing::error!(%error, "atlas: the mars_canyon packs did not load"),
+    }
     match crate::definitions::content::station_packs() {
         Ok(stations) => shelf.extend(stations),
         Err(error) => tracing::error!(%error, "atlas: the station packs did not load"),

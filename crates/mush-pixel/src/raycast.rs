@@ -272,24 +272,27 @@ pub struct Camera {
     pub heading_mdeg: u32,
 }
 
-/// What a sprite is drawn as: **its team's colour** (doc 22 D-22-3) — the red
-/// team red and the blue team blue whoever is looking, so a pilot on red is
-/// never told that red means enemy; friend or foe is the markers' job.
+/// What a sprite is drawn as: **the viewer's relation to it** (doc 32 cut
+/// CF.0, Q-CF-12, superseding doc 22 D-22-3's team colour whoever is
+/// looking) — own and friend in the friend palette, hostile in the hostile
+/// one, neutral and unclassified grey. Parties stay told apart inside one
+/// relation colour by the party letter drawn beside the health gauge.
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub enum SpriteKind {
-    /// A contact classified on the red team.
-    Red,
-    /// A contact classified on the blue team.
-    Blue,
-    /// An unclassified contact: a neutral grey.
+    /// The viewer's own unit, or a contact whose party is a friend of the
+    /// viewer's (the frame's `relation` `own` or `friend`): blue.
+    Friend,
+    /// A contact whose party is hostile to the viewer's: red.
+    Hostile,
+    /// A neutral contact, or one not yet classified: a neutral grey.
     Unknown,
-    /// A wreck: burnt brown, no team.
+    /// A wreck: burnt brown, no relation.
     Wreck,
 }
 
 /// A unit on the ground: drawn from its look's sprite sheet where it has a
 /// [`SpritePose`] (doc 22 cut U.3), else as a tank silhouette facing the eye,
-/// in its team's colour either way.
+/// in its relation's colour either way.
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub struct Sprite {
     /// East, centimetres.
@@ -428,7 +431,7 @@ impl Paint {
 pub(crate) const SPRITE_FOG: usize = FOG_STEPS / 2;
 
 /// The colour a sprite of `kind` paints `material` at fog `step` (of the
-/// ground's [`FOG_STEPS`]): the team slots by its team, a wreck's body burnt,
+/// ground's [`FOG_STEPS`]): the team slots by its relation, a wreck's body burnt,
 /// black the outline's.
 pub(crate) fn sprite_colour(
     shades: &Shades,
@@ -446,8 +449,8 @@ pub(crate) fn sprite_colour(
         (Material::Steel, _) | (Material::TeamLight, SpriteKind::Wreck) => Some(Paint::Steel),
         (Material::Pale, _) => Some(Paint::Pale),
         (Material::Team, SpriteKind::Wreck) => return shades.shade(Base::Wreck, step),
-        (_, SpriteKind::Red) => team(Paint::RedDark, Paint::Red, Paint::RedLight),
-        (_, SpriteKind::Blue) => team(Paint::BlueDark, Paint::Blue, Paint::BlueLight),
+        (_, SpriteKind::Hostile) => team(Paint::RedDark, Paint::Red, Paint::RedLight),
+        (_, SpriteKind::Friend) => team(Paint::BlueDark, Paint::Blue, Paint::BlueLight),
         (_, SpriteKind::Unknown) => team(Paint::GreyDark, Paint::Grey, Paint::GreyLight),
     };
     match paint {
@@ -1509,8 +1512,8 @@ mod tests {
             heading_mdeg: 0,
         };
         let sprites = [
-            Sprite::at_bearing(&cam, 10.0, 30.0, SpriteKind::Red),
-            Sprite::at_bearing(&cam, 350.0, 50.0, SpriteKind::Blue),
+            Sprite::at_bearing(&cam, 10.0, 30.0, SpriteKind::Hostile),
+            Sprite::at_bearing(&cam, 350.0, 50.0, SpriteKind::Friend),
         ];
         let mut frame = Frame::new(320, 220);
         render(&mut frame, &map, &cam, &sprites);
@@ -1555,10 +1558,10 @@ mod tests {
             y_cm: 4_500,
             heading_mdeg: 0,
         };
-        let behind = [Sprite::at_bearing(&cam, 0.0, 120.0, SpriteKind::Red)];
+        let behind = [Sprite::at_bearing(&cam, 0.0, 120.0, SpriteKind::Hostile)];
         let mut f = Frame::new(320, 220);
         render(&mut f, &map, &cam, &behind);
-        let unfogged = sprite_colour(&shades, SpriteKind::Red, Material::Team, 0);
+        let unfogged = sprite_colour(&shades, SpriteKind::Hostile, Material::Team, 0);
         let count = |f: &Frame, px: Rgb| {
             (0..f.width())
                 .flat_map(|x| (0..f.height()).map(move |y| (x, y)))
@@ -1569,7 +1572,7 @@ mod tests {
             count(&f, unfogged) >= 8,
             "the bracket in its unfogged colour"
         );
-        let fogged = sprite_colour(&shades, SpriteKind::Red, Material::Team, fog_step(11.5));
+        let fogged = sprite_colour(&shades, SpriteKind::Hostile, Material::Team, fog_step(11.5));
         assert_eq!(count(&f, fogged), 0, "no silhouette through 8 m woods");
         // A 3 m wall instead: the tank (3.5 m) shows its top over it.
         for x in 0..32 {
@@ -1614,10 +1617,10 @@ mod tests {
             y_cm: 10_000,
             heading_mdeg: 0,
         };
-        let far = Sprite::at_bearing(&cam, 0.0, 550.0, SpriteKind::Blue);
+        let far = Sprite::at_bearing(&cam, 0.0, 550.0, SpriteKind::Friend);
         let mut f = Frame::new(640, 220);
         render(&mut f, &map, &cam, &[far]);
-        let unfogged = sprite_colour(&Shades::new(), SpriteKind::Blue, Material::Team, 0);
+        let unfogged = sprite_colour(&Shades::new(), SpriteKind::Friend, Material::Team, 0);
         let marked = (0..f.width())
             .flat_map(|x| (0..f.height()).map(move |y| (x, y)))
             .filter(|&(x, y)| f.get(x, y) == unfogged)
@@ -1677,15 +1680,15 @@ mod tests {
                 .count()
         };
         let step = fog_step(3.0);
-        let right = draw(SpriteKind::Red, Facing::Right);
-        let red = sprite_colour(&shades, SpriteKind::Red, Material::Team, step);
+        let right = draw(SpriteKind::Hostile, Facing::Right);
+        let red = sprite_colour(&shades, SpriteKind::Hostile, Material::Team, step);
         assert!(count(&right, red) > 20, "red-team body");
-        let blue = draw(SpriteKind::Blue, Facing::Right);
+        let blue = draw(SpriteKind::Friend, Facing::Right);
         assert_eq!(count(&blue, red), 0, "a blue tank has no red in it");
         assert!(
             count(
                 &blue,
-                sprite_colour(&shades, SpriteKind::Blue, Material::Team, step)
+                sprite_colour(&shades, SpriteKind::Friend, Material::Team, step)
             ) > 20
         );
         assert!(
@@ -1693,7 +1696,7 @@ mod tests {
             "a shadow"
         );
         // The left face is the right one mirrored about the anchor column.
-        let left = draw(SpriteKind::Red, Facing::Left);
+        let left = draw(SpriteKind::Hostile, Facing::Left);
         let columns = |f: &Frame| -> Vec<usize> {
             (0..f.width())
                 .map(|x| (0..f.height()).filter(|&y| f.get(x, y) == red).count())
@@ -1722,7 +1725,7 @@ mod tests {
             let baked = {
                 let tank = Sprite {
                     pose: Some(shipped),
-                    ..Sprite::at_bearing(&cam, 0.0, 30.0, SpriteKind::Red)
+                    ..Sprite::at_bearing(&cam, 0.0, 30.0, SpriteKind::Hostile)
                 };
                 let mut f = Frame::new(320, 128);
                 render(&mut f, &map, &cam, &[tank]);
@@ -1730,7 +1733,7 @@ mod tests {
             };
             assert_ne!(baked.hash(), right.hash(), "the chain, not the sheet");
             let team = [Material::TeamDark, Material::Team, Material::TeamLight]
-                .map(|m| count(&baked, sprite_colour(&shades, SpriteKind::Red, m, step)));
+                .map(|m| count(&baked, sprite_colour(&shades, SpriteKind::Hostile, m, step)));
             assert!(team.iter().sum::<usize>() > 20, "red-team body: {team:?}");
         }
     }

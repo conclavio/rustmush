@@ -2274,7 +2274,7 @@ mod tests {
 
     use super::*;
     use crate::arena::perception::FrameNotice;
-    use crate::arena::state::Team;
+    use crate::arena::state::PartyId;
     use crate::arena::test_support::{arena_at_epoch, pose, tank};
     use smol_str::SmolStr;
 
@@ -2338,7 +2338,7 @@ mod tests {
                 issuer: A,
                 issuer_unit: BLUE,
                 squad: crate::deliberation::SquadId {
-                    team: Team::Red,
+                    team: PartyId::RED,
                     index: 1,
                 },
                 directive: None,
@@ -2566,7 +2566,7 @@ mod tests {
         use crate::deliberation::order::{Constraints, Objective, Order, StandingOrder};
         use crate::deliberation::squad::{SquadId, SquadRoster};
         let squad = SquadId {
-            team: Team::Red,
+            team: PartyId::RED,
             index: 1,
         };
         let told = |objective| Order {
@@ -2591,7 +2591,7 @@ mod tests {
         };
         for (first, second, left) in [(hold(), release(), None), (release(), hold(), Some("hold"))]
         {
-            let mut arena = arena_at_epoch(vec![tank(RED, Team::Red, pose(1_500, 1_500))], 1);
+            let mut arena = arena_at_epoch(vec![tank(RED, PartyId::RED, pose(1_500, 1_500))], 1);
             arena.set_controller(
                 RED,
                 crate::arena::state::Controller::Mind,
@@ -2637,7 +2637,7 @@ mod tests {
         use crate::deliberation::squad::SquadId;
         let hold = IntentKind::Order(Box::new(Order {
             squad: SquadId {
-                team: Team::Red,
+                team: PartyId::RED,
                 index: 1,
             },
             objective: Objective::Hold,
@@ -2790,7 +2790,7 @@ mod tests {
         );
 
         // Through the arena: `DRIVE` then `HEADING 90` in one pulse.
-        let mut arena = arena_at_epoch(vec![tank(RED, Team::Red, pose(1_500, 1_500))], 1);
+        let mut arena = arena_at_epoch(vec![tank(RED, PartyId::RED, pose(1_500, 1_500))], 1);
         if let Some(state) = arena.unit_mut(RED) {
             state.power = crate::arena::state::Power::Online;
         }
@@ -2812,7 +2812,7 @@ mod tests {
             (hold(), IntentKind::Heading { mdeg: 270_000 }, 270_000, 0),
             (heading(), off(), 90_000, 300),
         ] {
-            let mut arena = arena_at_epoch(vec![tank(RED, Team::Red, pose(1_500, 1_500))], 1);
+            let mut arena = arena_at_epoch(vec![tank(RED, PartyId::RED, pose(1_500, 1_500))], 1);
             if let Some(state) = arena.unit_mut(RED) {
                 state.power = crate::arena::state::Power::Online;
                 state.desired_speed_cms = 300;
@@ -2924,8 +2924,8 @@ mod tests {
     fn frames() -> Vec<(ObjId, Frame)> {
         let mut arena = arena_at_epoch(
             vec![
-                tank(RED, Team::Red, pose(1_500, 1_500)),
-                tank(BLUE, Team::Blue, pose(6_500, 6_500)),
+                tank(RED, PartyId::RED, pose(1_500, 1_500)),
+                tank(BLUE, PartyId::BLUE, pose(6_500, 6_500)),
             ],
             1,
         );
@@ -3230,7 +3230,7 @@ mod tests {
     /// `Watch { on: false }` clears `watched` and leaves the second alone.
     #[test]
     fn i4_a_watch_clears_the_pictures_second() {
-        let mut arena = arena_at_epoch(vec![tank(RED, Team::Red, pose(1_500, 1_500))], 1);
+        let mut arena = arena_at_epoch(vec![tank(RED, PartyId::RED, pose(1_500, 1_500))], 1);
         arena.last_observer_s = Some(4);
         apply_watch(&mut arena, true);
         assert!(arena.watched);
@@ -3249,7 +3249,7 @@ mod tests {
     /// before `Ended`.
     #[tokio::test]
     async fn i4_the_held_picture_is_replaced_by_the_newer_and_sent_at_the_end() {
-        let arena = arena_at_epoch(vec![tank(RED, Team::Red, pose(1_500, 1_500))], 1);
+        let arena = arena_at_epoch(vec![tank(RED, PartyId::RED, pose(1_500, 1_500))], 1);
         let (egress, mut world) = mpsc::channel(1);
         let (_inbox_tx, inbox) = mpsc::channel(4);
         let (_stop_tx, stop) = watch::channel(false);
@@ -3466,7 +3466,7 @@ mod tests {
     /// A snapshot of a one-tank arena, re-stamped to `at_ms` so two can be
     /// told apart (only the head is read by the queue).
     fn snapshot_at(at_ms: i64) -> Arc<Snapshot> {
-        let arena = arena_at_epoch(vec![tank(RED, Team::Red, pose(1_500, 1_500))], 1);
+        let arena = arena_at_epoch(vec![tank(RED, PartyId::RED, pose(1_500, 1_500))], 1);
         let mut snapshot = Snapshot::encode(&arena).expect("an arena between pulses encodes");
         snapshot.at_ms = at_ms;
         Arc::new(snapshot)
@@ -3479,7 +3479,7 @@ mod tests {
     /// out.
     #[tokio::test]
     async fn af2_a_newer_snapshot_replaces_the_waiting_one_and_takes_no_chunk_room() {
-        let arena = arena_at_epoch(vec![tank(RED, Team::Red, pose(1_500, 1_500))], 1);
+        let arena = arena_at_epoch(vec![tank(RED, PartyId::RED, pose(1_500, 1_500))], 1);
         let (mut task, mut world) = af2_task(arena, 3, 5_000);
         // The world's one slot is taken, so nothing below leaves.
         task.egress
@@ -3523,7 +3523,7 @@ mod tests {
     /// and never the snapshot.
     #[test]
     fn af2_the_chunk_overflow_drops_the_oldest_chunk_and_never_the_snapshot() {
-        let arena = arena_at_epoch(vec![tank(RED, Team::Red, pose(1_500, 1_500))], 1);
+        let arena = arena_at_epoch(vec![tank(RED, PartyId::RED, pose(1_500, 1_500))], 1);
         let (mut task, _world) = af2_task(arena, 2, 5_000);
         // Nothing is drained in this test, so the queue is exactly what was put
         // in it.
@@ -3542,7 +3542,7 @@ mod tests {
     /// tries again (and succeeds once the arena is between pulses).
     #[test]
     fn af2_an_encode_error_is_logged_once_a_period() {
-        let mut arena = arena_at_epoch(vec![tank(RED, Team::Red, pose(1_500, 1_500))], 1);
+        let mut arena = arena_at_epoch(vec![tank(RED, PartyId::RED, pose(1_500, 1_500))], 1);
         // Per-pulse scratch left in place: the encode refuses it as "taken
         // inside a pulse".
         arena.spent_hits.insert(7);
@@ -3571,7 +3571,7 @@ mod tests {
 
     /// A one-unit picture, for the held-picture test.
     fn task_picture() -> Observer {
-        arena_at_epoch(vec![tank(RED, Team::Red, pose(1_500, 1_500))], 1).observer()
+        arena_at_epoch(vec![tank(RED, PartyId::RED, pose(1_500, 1_500))], 1).observer()
     }
 
     #[test]
@@ -3699,11 +3699,11 @@ mod tests {
         (mpsc::Sender<ArenaMsg>, watch::Sender<bool>),
     ) {
         use crate::arena::state::Controller;
-        let mut red = tank(RED, Team::Red, pose(1_500, 1_500));
+        let mut red = tank(RED, PartyId::RED, pose(1_500, 1_500));
         red.controller = Controller::Mind;
         red.reseal(&crate::match_::SealTerms::fixture())
             .expect("the fixture terms seal");
-        let mut arena = arena_at_epoch(vec![red, tank(BLUE, Team::Blue, pose(6_500, 6_500))], 1);
+        let mut arena = arena_at_epoch(vec![red, tank(BLUE, PartyId::BLUE, pose(6_500, 6_500))], 1);
         arena.mind_runner = runner;
         let (egress, world) = mpsc::channel(256);
         let (inbox_tx, inbox) = mpsc::channel(4);

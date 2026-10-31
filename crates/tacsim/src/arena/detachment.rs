@@ -286,7 +286,7 @@ mod tests {
     use crate::arena::state::{Classification, ContactId, SeenPose, ShadowContact};
     use crate::arena::test_support::{arena_at_epoch, pose, tank};
     use crate::arena::{
-        Channel, Intent, IntentKind, MachineState, Snapshot, Team, apply_intent, state_hash,
+        Channel, Intent, IntentKind, MachineState, PartyId, Snapshot, apply_intent, state_hash,
     };
 
     const LEADER: ObjId = ObjId(1);
@@ -296,9 +296,9 @@ mod tests {
     fn field() -> Arena {
         let mut arena = arena_at_epoch(
             vec![
-                tank(LEADER, Team::Red, pose(1500, 1500)),
-                tank(MEMBER, Team::Red, pose(2500, 1500)),
-                tank(ENEMY, Team::Blue, pose(6500, 6500)),
+                tank(LEADER, PartyId::RED, pose(1500, 1500)),
+                tank(MEMBER, PartyId::RED, pose(2500, 1500)),
+                tank(ENEMY, PartyId::BLUE, pose(6500, 6500)),
             ],
             1,
         );
@@ -328,7 +328,7 @@ mod tests {
             issuer_unit: LEADER,
             // Deliberately no legacy squad roster: this id is metadata alone.
             squad: SquadId {
-                team: Team::Red,
+                team: PartyId::RED,
                 index: 1,
             },
             directive: Some(DetachmentObjective {
@@ -573,7 +573,9 @@ mod tests {
             ContactId(70),
             ShadowContact::sighted(
                 ENEMY,
-                Classification::Classified { team: Team::Blue },
+                Classification::Classified {
+                    party: PartyId::BLUE,
+                },
                 0,
                 seen,
             ),
@@ -611,7 +613,9 @@ mod tests {
             ContactId(30),
             ShadowContact::sighted(
                 ENEMY,
-                Classification::Classified { team: Team::Blue },
+                Classification::Classified {
+                    party: PartyId::BLUE,
+                },
                 0,
                 seen,
             ),

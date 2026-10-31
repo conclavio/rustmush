@@ -482,9 +482,10 @@ impl Throttle {
 // ---- the lock cycle (doc 21 cut G.12b) ---------------------------------------
 
 /// **The lock cycle's order** (doc 21 §7.3): the frame's contacts by
-/// designator, hostiles first (classified to a team and not a friend), then
-/// the unidentified (`class` `unknown`), then the rest (classified friends),
-/// nearest first within each, the designator breaking a tie.
+/// designator, by the viewer's `relation` (doc 32 cut CF.0): hostiles first,
+/// then the unidentified (`unknown`, or a row without the word), then
+/// neutrals, then own and friends, nearest first within each, the designator
+/// breaking a tie.
 #[must_use]
 pub fn lock_order(cockpit: &Value) -> Vec<String> {
     let mut rows: Vec<(u8, i64, String)> = cockpit
@@ -494,15 +495,12 @@ pub fn lock_order(cockpit: &Value) -> Vec<String> {
         .flatten()
         .filter_map(|c| {
             let name = c.get("designator").and_then(Value::as_str)?.to_string();
-            let unknown = c
-                .get("class")
-                .and_then(Value::as_str)
-                .is_none_or(|k| k == "unknown");
-            let friendly = c.get("friendly").and_then(Value::as_bool) == Some(true);
-            let rank = match (unknown, friendly) {
-                (false, false) => 0,
-                (true, _) => 1,
-                (false, true) => 2,
+            // Doc 32 cut CF.0 (Q-CF-12): ranked by the viewer's relation.
+            let rank = match c.get("relation").and_then(Value::as_str) {
+                Some("hostile") => 0,
+                Some("neutral") => 2,
+                Some("own" | "friend") => 3,
+                _ => 1,
             };
             let range = c.get("range_m").and_then(Value::as_i64).unwrap_or(i64::MAX);
             Some((rank, range, name))

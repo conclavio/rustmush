@@ -75,7 +75,7 @@ use tacsim::arena::rng::{DrawLabel, draw};
 use tacsim::arena::snapshot::{SNAPSHOT_FORMAT, Snapshot, SnapshotError};
 use tacsim::arena::state::{
     Arena, ArenaDefinition, ArenaError, ArenaTerrain, Channel, CustodyOut, CustodyUnit, EndReason,
-    EntryZone, Pilot, Power, StopReason, Team, TerrainCell, TrackedRules,
+    EntryZone, PartyId, Pilot, Power, StopReason, TerrainCell, TrackedRules,
 };
 use tacsim::arena::step::{Frame, StepOutput};
 use tacsim::config::{ArenaConfig, MatchConfig, SensorsConfig};
@@ -236,14 +236,14 @@ fn definition() -> ArenaDefinition {
         terrain: ArenaTerrain::new(SIDE, SIDE, CELL_CM, cells).expect("the test window"),
         entry_zones: vec![
             EntryZone {
-                team: Team::Red,
+                team: PartyId::RED,
                 x0: 0,
                 y0: 0,
                 x1: 3,
                 y1: 63,
             },
             EntryZone {
-                team: Team::Blue,
+                team: PartyId::BLUE,
                 x0: 60,
                 y0: 0,
                 x1: 63,
@@ -261,7 +261,7 @@ fn definition() -> ArenaDefinition {
 
 /// A stock tank: 1,000 cm/s forward, 40% in reverse, 200/400 cm/s², 30 degrees a
 /// second.
-fn tank(id: ObjId, team: Team, pose: Pose) -> CustodyUnit {
+fn tank(id: ObjId, team: PartyId, pose: Pose) -> CustodyUnit {
     CustodyUnit {
         id,
         team,
@@ -308,6 +308,7 @@ fn arena_of(units: Vec<CustodyUnit>, match_cfg: &MatchConfig) -> Arena {
             resolution: tacsim::match_::stock_resolution(),
             seed: 2_350,
             mode: tacsim::arena::MatchMode::Skirmish,
+            host: tacsim::arena::FieldHost::all_hostile(),
         },
         &ArenaConfig::default(),
         match_cfg,
@@ -796,8 +797,8 @@ fn script() -> Vec<Beat> {
 fn scripted_arena() -> Arena {
     arena_of(
         vec![
-            tank(MOVER, Team::Red, centre(5, 5)),
-            tank(PARKED, Team::Blue, centre(5, 12)),
+            tank(MOVER, PartyId::RED, centre(5, 5)),
+            tank(PARKED, PartyId::BLUE, centre(5, 12)),
         ],
         &MatchConfig::default(),
     )
@@ -2244,7 +2245,7 @@ fn a_unit_at_its_ceiling_covers_the_same_ground_however_the_time_is_cut() {
     let expected = start.y_cm + 5_000;
 
     let mut one = arena_of(
-        vec![tank(MOVER, Team::Red, centre(30, 5))],
+        vec![tank(MOVER, PartyId::RED, centre(30, 5))],
         &MatchConfig::default(),
     );
     running(&mut one);
@@ -2255,7 +2256,7 @@ fn a_unit_at_its_ceiling_covers_the_same_ground_however_the_time_is_cut() {
     assert_eq!(one.unit(MOVER).map(|unit| unit.pose.x_cm), Some(start.x_cm));
 
     let mut five = arena_of(
-        vec![tank(MOVER, Team::Red, centre(30, 5))],
+        vec![tank(MOVER, PartyId::RED, centre(30, 5))],
         &MatchConfig::default(),
     );
     running(&mut five);
@@ -2283,7 +2284,7 @@ fn a_unit_at_its_ceiling_covers_the_same_ground_however_the_time_is_cut() {
 #[test]
 fn the_duration_bound_ends_the_match_and_a_further_step_does_nothing() {
     let mut arena = arena_of(
-        vec![tank(MOVER, Team::Red, centre(30, 5))],
+        vec![tank(MOVER, PartyId::RED, centre(30, 5))],
         &MatchConfig {
             max_duration_ms: 12_000,
             ..MatchConfig::default()
@@ -2353,7 +2354,7 @@ fn the_window_edge_stops_a_unit_with_one_notice() {
     // to drive north stands throughout, so the unit spends the rest of the run
     // held against the edge — and that is **one** stop, not one per substep.
     let mut arena = arena_of(
-        vec![tank(MOVER, Team::Red, centre(30, 62))],
+        vec![tank(MOVER, PartyId::RED, centre(30, 62))],
         &MatchConfig::default(),
     );
     arena.clock.pin_tempo_for_tests(Tempo::Quiet);
@@ -2460,7 +2461,7 @@ fn a_stop_tells_the_pilot_once_and_names_what_stopped_it() {
     //
     // (1) The window's edge: north out of the top row.
     let mut arena = arena_of(
-        vec![tank(MOVER, Team::Red, centre(30, 62))],
+        vec![tank(MOVER, PartyId::RED, centre(30, 62))],
         &MatchConfig::default(),
     );
     let told = heard(&drive(&mut arena, 0, 10), ObjId(1_000));
@@ -2480,7 +2481,7 @@ fn a_stop_tells_the_pilot_once_and_names_what_stopped_it() {
 
     // (2) Impassable ground: east into the band at column 20.
     let mut arena = arena_of(
-        vec![tank(MOVER, Team::Red, centre(BAND_X - 3, 30))],
+        vec![tank(MOVER, PartyId::RED, centre(BAND_X - 3, 30))],
         &MatchConfig::default(),
     );
     let told = heard(&drive(&mut arena, 90_000, 10), ObjId(1_000));
@@ -2498,8 +2499,8 @@ fn a_stop_tells_the_pilot_once_and_names_what_stopped_it() {
     // the cell may hold a unit this platform has not detected (doc 16 §3.6).
     let mut arena = arena_of(
         vec![
-            tank(MOVER, Team::Red, centre(10, 30)),
-            tank(PARKED, Team::Blue, centre(13, 30)),
+            tank(MOVER, PartyId::RED, centre(10, 30)),
+            tank(PARKED, PartyId::BLUE, centre(13, 30)),
         ],
         &MatchConfig::default(),
     );
@@ -2547,8 +2548,8 @@ type Reading = (i64, i32, bool, Option<(u16, u16)>, Vec<String>);
 fn another_unit_holds_a_tank_for_two_seconds_and_then_stops_it_with_one_line() {
     let mut arena = arena_of(
         vec![
-            tank(MOVER, Team::Red, centre(10, 30)),
-            tank(PARKED, Team::Blue, centre(12, 30)),
+            tank(MOVER, PartyId::RED, centre(10, 30)),
+            tank(PARKED, PartyId::BLUE, centre(12, 30)),
         ],
         &MatchConfig::default(),
     );
@@ -2694,7 +2695,7 @@ fn a_tank_still_pushing_against_an_obstacle_still_reads_held() {
     // from what held it, or the order coming off (16b cut M.3's rule,
     // `tacsim::arena::motion::integrate`).
     let mut arena = arena_of(
-        vec![tank(MOVER, Team::Red, centre(BAND_X - 1, 30))],
+        vec![tank(MOVER, PartyId::RED, centre(BAND_X - 1, 30))],
         &MatchConfig::default(),
     );
     arena.clock.pin_tempo_for_tests(Tempo::Quiet);
@@ -2802,7 +2803,7 @@ fn bank_run(
     before: u32,
     after: u32,
 ) -> BankRun {
-    let mut units = vec![tank(MOVER, Team::Red, centre(BAND_X - 1, 30))];
+    let mut units = vec![tank(MOVER, PartyId::RED, centre(BAND_X - 1, 30))];
     units.extend(others);
     let mut arena = arena_of(units, &MatchConfig::default());
     arena.clock.pin_tempo_for_tests(Tempo::Quiet);
@@ -2950,7 +2951,7 @@ fn m3_a_tank_turning_against_a_bank_is_one_stop_one_line_and_one_notice() {
 fn m3_a_bank_then_a_parked_tank_in_the_same_cell_is_two_stops() {
     let run = bank_run(
         1_000,
-        vec![tank(PARKED, Team::Blue, centre(BAND_X - 1, 31))],
+        vec![tank(PARKED, PartyId::BLUE, centre(BAND_X - 1, 31))],
         IntentKind::Heading { mdeg: 0 },
         2,
         8,
@@ -3051,7 +3052,7 @@ fn short_sight() -> tacsim::arena::perception::SensorProfile {
 
 /// A tank that sees, and a weapon row so `tempo.alert_range_cm` is derived rather
 /// than zero (16b §9).
-fn watcher(id: ObjId, team: Team, pose: Pose) -> CustodyUnit {
+fn watcher(id: ObjId, team: PartyId, pose: Pose) -> CustodyUnit {
     CustodyUnit {
         sensor: Some(short_sight()),
         weapons: vec![tacsim::arena::state::WeaponSummary {
@@ -3124,8 +3125,8 @@ fn one_scripted_approach_at_three_cadences_is_one_detect_classify_lose_sequence(
     for cadence in [5_000_i64, 1_000, 500] {
         let mut arena = arena_of(
             vec![
-                watcher(MOVER, Team::Red, centre(5, 5)),
-                watcher(PARKED, Team::Blue, centre(5, 17)),
+                watcher(MOVER, PartyId::RED, centre(5, 5)),
+                watcher(PARKED, PartyId::BLUE, centre(5, 17)),
             ],
             &MatchConfig::default(),
         );
@@ -3275,6 +3276,7 @@ fn canopy_arena_of(units: Vec<CustodyUnit>) -> Arena {
             resolution: tacsim::match_::stock_resolution(),
             seed: 2_350,
             mode: tacsim::arena::MatchMode::Skirmish,
+            host: tacsim::arena::FieldHost::all_hostile(),
         },
         &ArenaConfig::default(),
         &MatchConfig::default(),
@@ -3325,8 +3327,8 @@ fn one_scripted_break_of_sight_at_three_cadences_is_one_lose_and_re_acquire_sequ
     let mut runs: Vec<(i64, Replay)> = Vec::new();
     for cadence in [5_000_i64, 1_000, 500] {
         let mut arena = canopy_arena_of(vec![
-            watcher(MOVER, Team::Red, centre(5, 5)),
-            watcher(PARKED, Team::Blue, centre(5, 17)),
+            watcher(MOVER, PartyId::RED, centre(5, 5)),
+            watcher(PARKED, PartyId::BLUE, centre(5, 17)),
         ]);
         let run = replay(&mut arena, cadence, 80_000, &break_and_return(), &quiet);
         assert_eq!(
@@ -3416,12 +3418,16 @@ fn one_scripted_break_of_sight_at_three_cadences_is_one_lose_and_re_acquire_sequ
 fn a_concede_and_an_unattended_match_end_with_their_own_reason() {
     for (stop, reason) in [
         (
-            StopReason::Concede { by: Team::Red },
-            EndReason::Conceded { winner: Team::Blue },
+            StopReason::Concede { by: PartyId::RED },
+            EndReason::Conceded {
+                winner: Some(PartyId::BLUE),
+            },
         ),
         (
-            StopReason::Concede { by: Team::Blue },
-            EndReason::Conceded { winner: Team::Red },
+            StopReason::Concede { by: PartyId::BLUE },
+            EndReason::Conceded {
+                winner: Some(PartyId::RED),
+            },
         ),
         (StopReason::Unattended, EndReason::Unattended),
         (StopReason::Abort, EndReason::Abort),
@@ -3478,7 +3484,7 @@ fn a_concede_and_an_unattended_match_end_with_their_own_reason() {
 fn one_scripted_stop_at_three_cadences_is_one_end_one_event_list_and_one_hash_sequence() {
     let quiet = |_: i64| Tempo::Quiet;
     for stop in [
-        StopReason::Concede { by: Team::Red },
+        StopReason::Concede { by: PartyId::RED },
         StopReason::Unattended,
     ] {
         let mut runs: Vec<(i64, Replay)> = Vec::new();
@@ -3500,7 +3506,9 @@ fn one_scripted_stop_at_three_cadences_is_one_end_one_event_list_and_one_hash_se
             assert_eq!(
                 arena.ended.map(|end| end.reason),
                 Some(match stop {
-                    StopReason::Concede { by } => EndReason::Conceded { winner: by.other() },
+                    StopReason::Concede { by } => EndReason::Conceded {
+                        winner: Some(by.ooc_other()),
+                    },
                     _ => EndReason::Unattended,
                 }),
                 "{stop:?} at {cadence} ms did not end the match"
@@ -3558,8 +3566,8 @@ fn m2_a_duration_bound_mid_pulse_is_one_timeout_at_one_millisecond_at_three_cade
     for cadence in [5_000_i64, 1_000, 500] {
         let mut arena = arena_of(
             vec![
-                tank(MOVER, Team::Red, centre(5, 5)),
-                tank(PARKED, Team::Blue, centre(5, 40)),
+                tank(MOVER, PartyId::RED, centre(5, 5)),
+                tank(PARKED, PartyId::BLUE, centre(5, 40)),
             ],
             &MatchConfig {
                 max_duration_ms: 22_600,
@@ -3679,10 +3687,10 @@ fn the_hash_folds_a_screens_facing_and_a_supports_charge() {
     use tacsim::arena::perception::{FrameOrder, MindObjective};
     use tacsim::arena::state::{ContactId, Controller};
     let under = |objective: MindObjective| {
-        let mut mover = tank(MOVER, Team::Red, centre(10, 10));
+        let mut mover = tank(MOVER, PartyId::RED, centre(10, 10));
         mover.controller = Controller::Mind;
         let mut arena = arena_of(
-            vec![mover, tank(PARKED, Team::Blue, centre(30, 30))],
+            vec![mover, tank(PARKED, PartyId::BLUE, centre(30, 30))],
             &MatchConfig::default(),
         );
         let Some(row) = arena.minds.get_mut(&MOVER) else {
@@ -3755,7 +3763,7 @@ fn o1_hold_definition() -> ArenaDefinition {
 /// column 5 of the spot's row, and `blue` — each unit piloted, with a
 /// five-second startup so a `STARTUP` at 0 is online by the 5,000 ms beat.
 fn o1_hold_arena(blue: CustodyUnit) -> Arena {
-    let mut red = tank(O1_RED, Team::Red, centre(5, O1_SPOT.1));
+    let mut red = tank(O1_RED, PartyId::RED, centre(5, O1_SPOT.1));
     red.pose.heading_mdeg = 90_000;
     let units = vec![red, blue];
     let pilots = units
@@ -3776,6 +3784,7 @@ fn o1_hold_arena(blue: CustodyUnit) -> Arena {
             resolution: tacsim::match_::stock_resolution(),
             seed: 2_350,
             mode: tacsim::arena::MatchMode::Hold,
+            host: tacsim::arena::FieldHost::all_hostile(),
         },
         &ArenaConfig::default(),
         &MatchConfig {
@@ -3792,7 +3801,7 @@ fn o1_hold_arena(blue: CustodyUnit) -> Arena {
 struct HoldRun {
     events: Vec<Line>,
     hashes: Vec<u64>,
-    clocks: Vec<(i64, Option<(Team, i64)>)>,
+    clocks: Vec<(i64, Option<(PartyId, i64)>)>,
     ended: Option<tacsim::arena::state::MatchEnd>,
     pulses: u32,
 }
@@ -3803,7 +3812,7 @@ struct HoldRun {
 fn o1_run(arena: &mut Arena, cadence_ms: i64, until_ms: i64, script: &[Beat]) -> HoldRun {
     let mut bytes: Vec<u8> = Vec::new();
     let mut hashes: Vec<u64> = Vec::new();
-    let mut clocks: Vec<(i64, Option<(Team, i64)>)> = Vec::new();
+    let mut clocks: Vec<(i64, Option<(PartyId, i64)>)> = Vec::new();
     let mut next = 0_usize;
     let mut pulses = 0_u32;
     let mut wall = 0_i64;
@@ -3903,7 +3912,7 @@ fn o1_red_orders() -> Vec<Beat> {
 fn o1_a_hold_is_won_at_one_millisecond_at_three_cadences() {
     let mut runs: Vec<(i64, HoldRun)> = Vec::new();
     for cadence in [5_000_i64, 1_000, 500] {
-        let mut arena = o1_hold_arena(tank(O1_BLUE, Team::Blue, centre(50, 30)));
+        let mut arena = o1_hold_arena(tank(O1_BLUE, PartyId::BLUE, centre(50, 30)));
         let run = o1_run(&mut arena, cadence, 60_000, &o1_red_orders());
         // Where the mover stopped: inside the square.
         let cell = arena
@@ -3925,7 +3934,7 @@ fn o1_a_hold_is_won_at_one_millisecond_at_three_cadences() {
         .iter()
         .find_map(|(_, held)| *held)
         .map(|(team, since)| {
-            assert_eq!(team, Team::Red);
+            assert_eq!(team, PartyId::RED);
             since
         })
         .expect("red held the spot at a 5,000 ms boundary");
@@ -3934,7 +3943,9 @@ fn o1_a_hold_is_won_at_one_millisecond_at_three_cadences() {
     assert_eq!(
         first.ended,
         Some(tacsim::arena::state::MatchEnd {
-            reason: EndReason::Hold { winner: Team::Red },
+            reason: EndReason::Hold {
+                winner: PartyId::RED
+            },
             t_ms: won_at
         })
     );
@@ -3986,7 +3997,7 @@ fn o1_a_contested_hold_resets_and_the_match_runs_on_at_three_cadences() {
     let mut runs: Vec<(i64, HoldRun)> = Vec::new();
     for cadence in [5_000_i64, 1_000, 500] {
         // Blue north of the spot, facing south down its column.
-        let mut blue = tank(O1_BLUE, Team::Blue, centre(O1_SPOT.0, 40));
+        let mut blue = tank(O1_BLUE, PartyId::BLUE, centre(O1_SPOT.0, 40));
         blue.pose.heading_mdeg = 180_000;
         let mut arena = o1_hold_arena(blue);
         let run = o1_run(&mut arena, cadence, 90_000, &blue_orders());
@@ -4002,7 +4013,7 @@ fn o1_a_contested_hold_resets_and_the_match_runs_on_at_three_cadences() {
         .iter()
         .filter_map(|(_, held)| *held)
         .map(|(team, since)| {
-            assert_eq!(team, Team::Red, "only red is ever alone on the spot");
+            assert_eq!(team, PartyId::RED, "only red is ever alone on the spot");
             since
         })
         .collect();
@@ -4032,7 +4043,9 @@ fn o1_a_contested_hold_resets_and_the_match_runs_on_at_three_cadences() {
     );
     assert_eq!(
         first.ended.map(|end| end.reason),
-        Some(EndReason::Hold { winner: Team::Red })
+        Some(EndReason::Hold {
+            winner: PartyId::RED
+        })
     );
 }
 
@@ -4129,10 +4142,10 @@ fn ae1_definition() -> ArenaDefinition {
 /// The three units, seated, on [`ae1_definition`]: a walker at (5, 10), a tank
 /// at (5, 20) and a car at (5, 40), all facing east.
 fn ae1_arena() -> Arena {
-    let mut walker = tank(AE1_WALKER, Team::Red, centre(5, 10));
+    let mut walker = tank(AE1_WALKER, PartyId::RED, centre(5, 10));
     walker.unit = tactical_unit_on(AE1_WALKER, "legged");
-    let hull = tank(AE1_TANK, Team::Red, centre(5, 20));
-    let mut car = tank(AE1_CAR, Team::Red, centre(5, 40));
+    let hull = tank(AE1_TANK, PartyId::RED, centre(5, 20));
+    let mut car = tank(AE1_CAR, PartyId::RED, centre(5, 40));
     car.unit = tactical_unit_on(AE1_CAR, "wheeled");
     let units = vec![walker, hull, car];
     let pilots = units
@@ -4153,6 +4166,7 @@ fn ae1_arena() -> Arena {
             resolution: tacsim::match_::stock_resolution(),
             seed: 2_350,
             mode: tacsim::arena::MatchMode::Skirmish,
+            host: tacsim::arena::FieldHost::all_hostile(),
         },
         &ArenaConfig::default(),
         &MatchConfig::default(),
@@ -4336,7 +4350,7 @@ fn ae3_sight(cells: u16) -> tacsim::arena::perception::SensorProfile {
 /// **A drone** (16b cut AE.3): [`tank`] with a five-cell sight on the mesh,
 /// no weapon, and a rules blob declaring `"class": "drone"` — the one fact
 /// `Arena::new` reads the class off.
-fn ae3_drone(id: ObjId, team: Team, at: Pose) -> CustodyUnit {
+fn ae3_drone(id: ObjId, team: PartyId, at: Pose) -> CustodyUnit {
     CustodyUnit {
         sensor: Some(ae3_sight(5)),
         unit: tactical_unit_ruled(
@@ -4357,16 +4371,16 @@ fn ae3_drone(id: ObjId, team: Team, at: Pose) -> CustodyUnit {
 /// south. The tanks see two cells, so everything they hold of the other side
 /// is what their drone shared.
 fn ae3_arena() -> Arena {
-    let mut blue_drone = ae3_drone(AE3_BLUE_DRONE, Team::Blue, centre(7, 30));
+    let mut blue_drone = ae3_drone(AE3_BLUE_DRONE, PartyId::BLUE, centre(7, 30));
     blue_drone.pose.heading_mdeg = 180_000;
-    let mut blue_tank = tank(AE3_BLUE_TANK, Team::Blue, centre(3, 35));
+    let mut blue_tank = tank(AE3_BLUE_TANK, PartyId::BLUE, centre(3, 35));
     blue_tank.pose.heading_mdeg = 180_000;
     blue_tank.sensor = Some(ae3_sight(2));
-    let mut red_tank = tank(AE3_RED_TANK, Team::Red, centre(3, 0));
+    let mut red_tank = tank(AE3_RED_TANK, PartyId::RED, centre(3, 0));
     red_tank.sensor = Some(ae3_sight(2));
     arena_of(
         vec![
-            ae3_drone(AE3_RED_DRONE, Team::Red, centre(5, 5)),
+            ae3_drone(AE3_RED_DRONE, PartyId::RED, centre(5, 5)),
             red_tank,
             blue_drone,
             blue_tank,
@@ -4475,7 +4489,7 @@ fn ae3_one_scripted_match_with_a_drone_a_side_at_three_cadences_is_one_event_lis
             arena.ended.map(|end| (end.reason, end.t_ms)),
             Some((
                 EndReason::Elimination {
-                    winner: Some(Team::Blue)
+                    winner: Some(PartyId::BLUE)
                 },
                 40_250
             )),
@@ -4590,11 +4604,13 @@ fn ae3_a_drone_on_the_spot_contests_nothing_at_three_cadences() {
     use tacsim::definitions::UnitClass;
 
     // The reference: O.1's first match, blue's tank far off the spot.
-    let mut reference = o1_hold_arena(tank(O1_BLUE, Team::Blue, centre(50, 30)));
+    let mut reference = o1_hold_arena(tank(O1_BLUE, PartyId::BLUE, centre(50, 30)));
     let reference = o1_run(&mut reference, 5_000, 60_000, &o1_red_orders());
     assert_eq!(
         reference.ended.map(|end| end.reason),
-        Some(EndReason::Hold { winner: Team::Red })
+        Some(EndReason::Hold {
+            winner: PartyId::RED
+        })
     );
 
     let mut runs: Vec<(i64, HoldRun)> = Vec::new();
@@ -4602,7 +4618,7 @@ fn ae3_a_drone_on_the_spot_contests_nothing_at_three_cadences() {
         // Two cells south of the spot, off red's row, inside the square.
         let mut arena = o1_hold_arena(ae3_drone(
             O1_BLUE,
-            Team::Blue,
+            PartyId::BLUE,
             centre(O1_SPOT.0, O1_SPOT.1 + 2),
         ));
         assert_eq!(
@@ -5453,12 +5469,12 @@ fn af1_mind_squad_arena_sealing(profiles: &[&str]) -> Arena {
         CustodyOut {
             definition: definition(),
             units: vec![
-                chosen(machine(watcher(MOVER, Team::Red, centre(5, 5)))),
-                machine(watcher(SQUAD_RED_B, Team::Red, centre(7, 5))),
-                machine(facing_south(watcher(PARKED, Team::Blue, centre(5, 15)))),
+                chosen(machine(watcher(MOVER, PartyId::RED, centre(5, 5)))),
+                machine(watcher(SQUAD_RED_B, PartyId::RED, centre(7, 5))),
+                machine(facing_south(watcher(PARKED, PartyId::BLUE, centre(5, 15)))),
                 machine(facing_south(watcher(
                     SQUAD_BLUE_B,
-                    Team::Blue,
+                    PartyId::BLUE,
                     centre(7, 15),
                 ))),
             ],
@@ -5466,6 +5482,7 @@ fn af1_mind_squad_arena_sealing(profiles: &[&str]) -> Arena {
             resolution: tacsim::match_::stock_resolution(),
             seed: 2_350,
             mode: tacsim::arena::MatchMode::Skirmish,
+            host: tacsim::arena::FieldHost::all_hostile(),
         },
         &ArenaConfig::default(),
         &MatchConfig::default(),
@@ -5488,7 +5505,7 @@ fn af1_mind_squad_arena_sealing(profiles: &[&str]) -> Arena {
 fn af1_squad_script() -> Vec<Beat> {
     let order = tacsim::deliberation::Order {
         squad: tacsim::deliberation::SquadId {
-            team: Team::Red,
+            team: PartyId::RED,
             index: 1,
         },
         objective: tacsim::deliberation::order::Objective::Advance { to: (6, 12) },
@@ -5501,7 +5518,7 @@ fn af1_squad_script() -> Vec<Beat> {
         // 17b cut L.1: red-1's lance-leader.
         by: tacsim::deliberation::CharacterRef::Persona {
             squad: tacsim::deliberation::SquadId {
-                team: Team::Red,
+                team: PartyId::RED,
                 index: 1,
             },
         },
@@ -5865,9 +5882,14 @@ fn af1_catalog_shape_ignores_identity_but_walks_every_definition_field() {
 /// bool` (the seat's master gate); nothing else moved. Total: 713 paths.
 /// DT.1b, snapshot format 18: the walk includes an admitted detachment command,
 /// its authority/sequence state and opaque order identity. Measured: 726 paths.
-const AF1_SHAPE_DIGEST: &str = "63e1d5eb15ca18e6444c88eeffd81895cef00ca556900d07b1950875325bcc79";
+/// Doc 32 cut CF.0, snapshot format 19: the parties' relation books
+/// (`state.relations.books`, each book's marks, fire-derived hostiles and
+/// standing friends), the host's `state.end`, and the unit designator's new
+/// `unit {party, letter}` shape in place of `slot {team, slot}`. Measured:
+/// 739 paths.
+const AF1_SHAPE_DIGEST: &str = "f26e177004cad8740a40c4e1792d11035ecede02bc19c0c023f038f9c85e98ce";
 /// And how many lines that is.
-const AF1_SHAPE_LINES: usize = 726;
+const AF1_SHAPE_LINES: usize = 739;
 
 /// **The snapshot's shape is pinned** (16b cut AF.1).
 ///
@@ -5990,16 +6012,16 @@ fn af1_the_snapshot_shape_is_pinned() {
         .map(|squad| (squad.id, squad.commander))
         .expect("blue's squad");
     let held = [
-        (MOVER, SQUAD_RED_B, Team::Red),
-        (blue_squad.1, MOVER, Team::Red),
-        (PARKED, MOVER, Team::Red),
+        (MOVER, SQUAD_RED_B, PartyId::RED),
+        (blue_squad.1, MOVER, PartyId::RED),
+        (PARKED, MOVER, PartyId::RED),
     ];
     for (viewer, target, team) in held {
         let plot = squadded.unit(target).map(SeenPose::of).expect("a tank");
         squadded.contacts.insert(
             viewer,
             draw_contact_id(2_350, viewer, target),
-            ShadowContact::sighted(target, Classification::Classified { team }, 0, plot),
+            ShadowContact::sighted(target, Classification::Classified { party: team }, 0, plot),
         );
     }
     // The squad script's order, as the world lands one — its own helm epoch,
@@ -6189,7 +6211,7 @@ fn af1_the_snapshot_shape_is_pinned() {
         tacsim::arena::snapshot::digest_text(&sha2::Sha256::digest(joined.as_bytes()).into());
     assert_eq!(
         tacsim::arena::snapshot::SNAPSHOT_FORMAT,
-        18,
+        19,
         "a format bump re-blesses the pin below in the same change"
     );
     assert_eq!(
@@ -6354,7 +6376,8 @@ fn m1a1_a_snapshot_carries_the_motors_and_refuses_a_format_two_document() {
     // cut M5.2 to 10 (the sealed set, the active profile, STOP E's charge); a
     // format-2 document is still refused by name.
     // Doc 21 cut G.12a: 17, with `UnitState.weapons_hold` and `Arming::WeaponsFree`.
-    assert_eq!(SNAPSHOT_FORMAT, 18);
+    // Doc 32 cut CF.0: 19, with the parties' relation books and end condition.
+    assert_eq!(SNAPSHOT_FORMAT, 19);
     assert_eq!(Snapshot::head(&two), Err(refused.clone()));
     assert_eq!(
         Snapshot::decode(&two, (*arena.definition).clone()).map(|_| ()),
@@ -6439,7 +6462,8 @@ fn m1a4_a_snapshot_carries_a_motor_tick_and_a_pilots_motor_row() {
     // to 7, 17b cut M3.2 to 8, 17b cut M4.6 to 9 and 17b cut M5.2 to 10; a
     // format-3 document is still refused by name.
     // Doc 21 cut G.12a: 17, with `UnitState.weapons_hold` and `Arming::WeaponsFree`.
-    assert_eq!(SNAPSHOT_FORMAT, 18);
+    // Doc 32 cut CF.0: 19, with the parties' relation books and end condition.
+    assert_eq!(SNAPSHOT_FORMAT, 19);
     assert_eq!(Snapshot::head(&three), Err(refused.clone()));
     assert_eq!(
         Snapshot::decode(&three, (*arena.definition).clone()).map(|_| ()),
@@ -6663,7 +6687,8 @@ fn m3_a_snapshot_carries_the_minds_with_their_pending_answers() {
     // M7 also refuses format 15 without accepted-order attribution, M6 format
     // 13 and certificate-bearing format 14 before reading carried state.
     // Doc 21 cut G.12a: 17, with `UnitState.weapons_hold` and `Arming::WeaponsFree`.
-    assert_eq!(SNAPSHOT_FORMAT, 18);
+    // Doc 32 cut CF.0: 19, with the parties' relation books and end condition.
+    assert_eq!(SNAPSHOT_FORMAT, 19);
     for old in [15_u32, 14, 13, 12, 11, 10, 9, 8, 7, 4] {
         let mut stale = snapshot.document.clone();
         stale["format"] = serde_json::json!(old);
@@ -6774,7 +6799,8 @@ fn l1_a_snapshot_carries_the_orders_author_and_refuses_a_format_five_document() 
     // 17b cut M3.2 moved the format to 8, 17b cut M4.6 to 9 and 17b cut M5.2
     // to 10.
     // Doc 21 cut G.12a: 17, with `UnitState.weapons_hold` and `Arming::WeaponsFree`.
-    assert_eq!(SNAPSHOT_FORMAT, 18);
+    // Doc 32 cut CF.0: 19, with the parties' relation books and end condition.
+    assert_eq!(SNAPSHOT_FORMAT, 19);
     assert_eq!(Snapshot::head(&five), Err(refused.clone()));
     assert_eq!(
         Snapshot::decode(&five, (*arena.definition).clone()).map(|_| ()),
@@ -7033,8 +7059,8 @@ fn m3_tape(arena: &mut Arena, bytes: &mut Vec<u8>) -> Vec<Line> {
 /// `Arena::new` is `1 + units`, which `state_hash` folds.
 #[test]
 fn m3_the_tape_opens_with_one_mind_sealed_per_unit_after_match_started() {
-    let parked = tank(PARKED, Team::Blue, centre(5, 12));
-    let mover = tank(MOVER, Team::Red, centre(5, 5));
+    let parked = tank(PARKED, PartyId::BLUE, centre(5, 12));
+    let mover = tank(MOVER, PartyId::RED, centre(5, 5));
     // Doc 17h cut M8a: the line's licence state is a parameter; a fixture's doctrine seal
     // reads `doctrine`, the word `Arena::new` derives from the origin.
     let doctrine = tacsim::minds::licence_state::SealLicenceState::Doctrine;
@@ -7111,7 +7137,7 @@ fn m3_a_destroyed_sortie_closes_at_its_destruction_and_not_again_at_the_end() {
     assert_eq!(
         out.ended.map(|end| end.reason),
         Some(EndReason::Elimination {
-            winner: Some(Team::Red)
+            winner: Some(PartyId::RED)
         })
     );
     assert!(out.substeps > 0, "settled inside a substep");
@@ -7137,7 +7163,7 @@ fn m3_the_pulse_backstops_close_every_open_sortie_before_the_end() {
     assert_eq!(
         out.ended.map(|end| end.reason),
         Some(EndReason::Elimination {
-            winner: Some(Team::Red)
+            winner: Some(PartyId::RED)
         })
     );
     let log = m3_tape(&mut arena, &mut bytes);
@@ -7146,8 +7172,8 @@ fn m3_the_pulse_backstops_close_every_open_sortie_before_the_end() {
     // The duration backstop.
     let mut arena = arena_of(
         vec![
-            tank(MOVER, Team::Red, centre(5, 5)),
-            tank(PARKED, Team::Blue, centre(5, 12)),
+            tank(MOVER, PartyId::RED, centre(5, 5)),
+            tank(PARKED, PartyId::BLUE, centre(5, 12)),
         ],
         &MatchConfig {
             max_duration_ms: 0,
@@ -7166,8 +7192,8 @@ fn m3_the_pulse_backstops_close_every_open_sortie_before_the_end() {
 /// An arena over [`definition`] with its own ledger bounds.
 fn m3_arena_with_ledger(ledger: tacsim::config::LedgerConfig) -> Arena {
     let units = vec![
-        tank(MOVER, Team::Red, centre(5, 5)),
-        tank(PARKED, Team::Blue, centre(5, 12)),
+        tank(MOVER, PartyId::RED, centre(5, 5)),
+        tank(PARKED, PartyId::BLUE, centre(5, 12)),
     ];
     let pilots = units
         .iter()
@@ -7187,6 +7213,7 @@ fn m3_arena_with_ledger(ledger: tacsim::config::LedgerConfig) -> Arena {
             resolution: tacsim::match_::stock_resolution(),
             seed: 2_350,
             mode: tacsim::arena::MatchMode::Skirmish,
+            host: tacsim::arena::FieldHost::all_hostile(),
         },
         &ArenaConfig {
             ledger,

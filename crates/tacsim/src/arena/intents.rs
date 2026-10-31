@@ -1743,7 +1743,7 @@ impl Arena {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use crate::arena::state::{DueEvent, Power, Team};
+    use crate::arena::state::{DueEvent, PartyId, Power};
     use crate::arena::test_support::{arena_at_epoch, pose, tank};
     use std::collections::VecDeque;
 
@@ -1753,8 +1753,8 @@ mod tests {
     fn two_tanks(epoch: u64) -> Arena {
         arena_at_epoch(
             vec![
-                tank(RED, Team::Red, pose(1_500, 1_500)),
-                tank(BLUE, Team::Blue, pose(6_500, 6_500)),
+                tank(RED, PartyId::RED, pose(1_500, 1_500)),
+                tank(BLUE, PartyId::BLUE, pose(6_500, 6_500)),
             ],
             epoch,
         )
@@ -2841,7 +2841,7 @@ mod tests {
         }
         let hint = ContactId(0x2350_0000_0000_0001);
         let squad = crate::deliberation::squad::SquadId {
-            team: Team::Red,
+            team: PartyId::RED,
             index: 1,
         };
         let told = crate::deliberation::order::Order {
@@ -3114,7 +3114,7 @@ mod tests {
 
     fn z2_squad(index: u16) -> crate::deliberation::squad::SquadId {
         crate::deliberation::squad::SquadId {
-            team: Team::Red,
+            team: PartyId::RED,
             index,
         }
     }
@@ -3152,9 +3152,9 @@ mod tests {
     fn z2_arena() -> Arena {
         let mut arena = arena_at_epoch(
             vec![
-                tank(RED, Team::Red, pose(1_500, 1_500)),
-                tank(WING, Team::Red, pose(2_500, 1_500)),
-                tank(BLUE, Team::Blue, pose(6_500, 6_500)),
+                tank(RED, PartyId::RED, pose(1_500, 1_500)),
+                tank(WING, PartyId::RED, pose(2_500, 1_500)),
+                tank(BLUE, PartyId::BLUE, pose(6_500, 6_500)),
             ],
             1,
         );
@@ -3362,10 +3362,10 @@ mod tests {
         // `z2_arena`'s three tanks and a fourth, red and piloted.
         let mut arena = arena_at_epoch(
             vec![
-                tank(RED, Team::Red, pose(1_500, 1_500)),
-                tank(WING, Team::Red, pose(2_500, 1_500)),
-                tank(PILOT, Team::Red, pose(3_500, 1_500)),
-                tank(BLUE, Team::Blue, pose(6_500, 6_500)),
+                tank(RED, PartyId::RED, pose(1_500, 1_500)),
+                tank(WING, PartyId::RED, pose(2_500, 1_500)),
+                tank(PILOT, PartyId::RED, pose(3_500, 1_500)),
+                tank(BLUE, PartyId::BLUE, pose(6_500, 6_500)),
             ],
             1,
         );
@@ -3381,12 +3381,12 @@ mod tests {
             units: vec![RED, WING],
         }];
         let hold = |arena: &mut Arena, viewer: ObjId, id: ContactId, target: ObjId| {
-            let team = arena.unit(target).map_or(Team::Blue, |unit| unit.team);
+            let team = arena.unit(target).map_or(PartyId::BLUE, |unit| unit.team);
             let seen = SeenPose::of(arena.unit(target).unwrap_or_else(|| panic!("{target}")));
             arena.contacts.insert(
                 viewer,
                 id,
-                ShadowContact::sighted(target, Classification::Classified { team }, 0, seen),
+                ShadowContact::sighted(target, Classification::Classified { party: team }, 0, seen),
             );
         };
         hold(&mut arena, PILOT, PILOT_SAYS_BA, BLUE);
@@ -3648,7 +3648,7 @@ mod tests {
         use crate::arena::perception::DriveOutcome;
 
         let mut arena = two_tanks(1);
-        arena.unit_mut(BLUE).expect("second hull").team = Team::Red;
+        arena.unit_mut(BLUE).expect("second hull").team = PartyId::RED;
         arena.motors.ensure(BLUE).goal = Some((6, 3));
         land_goal(
             &mut arena,
@@ -4132,7 +4132,7 @@ mod tests {
     #[test]
     fn m4_3_a_possess_clears_the_dormant_order() {
         let squad = crate::deliberation::SquadId {
-            team: Team::Red,
+            team: PartyId::RED,
             index: 1,
         };
         let mut arena = two_tanks(1);

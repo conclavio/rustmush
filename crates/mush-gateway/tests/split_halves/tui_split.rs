@@ -530,8 +530,13 @@ async fn the_split_gateway_paints_the_cockpit_on_screen_zero() {
     // frame, so the whole status pane has been read by then.
     ada.expect_after(opened, "Map").await;
     let screen = squeezed(&ada.seen[opened..]);
+    // Doc 32 cut CF.0 (Q-CF-11): red's letter, then a drawn unit letter.
     assert!(
-        screen.contains("CallsignRA"),
+        screen
+            .split("CallsignR")
+            .nth(1)
+            .and_then(|rest| rest.chars().next())
+            .is_some_and(|c| tacsim::arena::PARTY_LETTERS.contains(&(c as u8))),
         "her own tank's callsign crossed the boundary:\n{screen}"
     );
     assert!(
@@ -549,7 +554,7 @@ async fn the_split_gateway_paints_the_cockpit_on_screen_zero() {
     // ---- `@notui`: a working line client again ------------------------------
     ada.send_line("").await; // the box, empty: the focused map pane has no row
     ada.send_line("@notui").await;
-    ada.say("STATUS", "Callsign RA").await;
+    ada.say("STATUS", "Callsign R").await;
 
     drop((god, ada, bo));
 }

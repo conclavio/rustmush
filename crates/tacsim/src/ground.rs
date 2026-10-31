@@ -25,7 +25,7 @@ use serde::{Deserialize, Serialize};
 
 use crate::arena::path::{PathScratch, path_with};
 use crate::arena::slope::steepness_pct;
-use crate::arena::state::{ArenaTerrain, CostRow, KeySpot as ArenaKeySpot, Team, TerrainCell};
+use crate::arena::state::{ArenaTerrain, CostRow, KeySpot as ArenaKeySpot, PartyId, TerrainCell};
 use crate::definitions::arena::{
     ArenaBuildError, ArenaDef, ArenaModeDef, BIOMES, EntryZoneDef, KeySpot, MAX_ARENA_TILES,
     MAX_WAYPOINT_EDGES, MAX_WAYPOINT_NODES, TankDef, WaypointGraph, WaypointNode,
@@ -570,9 +570,10 @@ impl GroundDraft {
         if self.body.trim().is_empty() {
             return Err(err("body must not be empty".to_owned()));
         }
-        if self.cols == 0 || self.rows == 0 || self.cols > 512 || self.rows > 512 {
+        let max = crate::definitions::arena::MAX_ARENA_SIDE;
+        if self.cols == 0 || self.rows == 0 || self.cols > max || self.rows > max {
             return Err(err(format!(
-                "draft dimensions must be in 1..=512; got {}×{}",
+                "draft dimensions must be in 1..={max}; got {}×{}",
                 self.cols, self.rows
             )));
         }
@@ -672,8 +673,8 @@ fn default_tanks_for_zones(zones: &[EntryZoneDef], rows: u16) -> Result<Vec<Tank
     let mut blue_x = 249_u16;
     for z in zones {
         match z.team {
-            Team::Red => red_x = (z.x0 + z.x1) / 2,
-            Team::Blue => blue_x = (z.x0 + z.x1) / 2,
+            PartyId::RED => red_x = (z.x0 + z.x1) / 2,
+            _ => blue_x = (z.x0 + z.x1) / 2,
         }
     }
     let offsets: [(i16, i16); 6] = [(0, 0), (0, -2), (0, 2), (0, -4), (0, 4), (-2, -3)];
@@ -689,7 +690,7 @@ fn default_tanks_for_zones(zones: &[EntryZoneDef], rows: u16) -> Result<Vec<Tank
         out.push(TankDef {
             id,
             name: format!("Red Tank {slot}"),
-            team: Team::Red,
+            team: PartyId::RED,
             x,
             y,
             heading_mdeg: 90_000,
@@ -707,7 +708,7 @@ fn default_tanks_for_zones(zones: &[EntryZoneDef], rows: u16) -> Result<Vec<Tank
         out.push(TankDef {
             id,
             name: format!("Blue Tank {slot}"),
-            team: Team::Blue,
+            team: PartyId::BLUE,
             x,
             y,
             heading_mdeg: 270_000,
@@ -2485,6 +2486,9 @@ fn shipped_draft(short_id: &str) -> Option<Result<GroundDraft, GroundError>> {
         "winter_valley" => Some(GroundDraft::from_json(include_str!(
             "../content/ground/winter_valley.draft.json"
         ))),
+        "mars_canyon" => Some(GroundDraft::from_json(include_str!(
+            "../content/ground/mars_canyon.draft.json"
+        ))),
         _ => None,
     }
 }
@@ -2941,7 +2945,7 @@ pub fn proving_ground_draft() -> Result<GroundDraft, GroundError> {
     let line_tank = cid("tacsim.unit.line_tank")?;
     let tank = |id: &str,
                 name: &str,
-                team: Team,
+                team: PartyId,
                 x: u16,
                 y: u16,
                 heading_mdeg: u32|
@@ -2971,14 +2975,14 @@ pub fn proving_ground_draft() -> Result<GroundDraft, GroundError> {
         elev: encode_elev(&elev),
         entry_zones: vec![
             EntryZoneDef {
-                team: Team::Red,
+                team: PartyId::RED,
                 x0: 0,
                 y0: 0,
                 x1: 15,
                 y1: 255,
             },
             EntryZoneDef {
-                team: Team::Blue,
+                team: PartyId::BLUE,
                 x0: 240,
                 y0: 0,
                 x1: 255,
@@ -3075,18 +3079,18 @@ pub fn proving_ground_draft() -> Result<GroundDraft, GroundError> {
             hold_ms: 120_000,
         }],
         tanks: vec![
-            tank("red_1", "Red Tank 1", Team::Red, 6, 97, 90_000)?,
-            tank("red_2", "Red Tank 2", Team::Red, 6, 95, 90_000)?,
-            tank("red_3", "Red Tank 3", Team::Red, 6, 99, 90_000)?,
-            tank("red_4", "Red Tank 4", Team::Red, 6, 93, 90_000)?,
-            tank("blue_1", "Blue Tank 1", Team::Blue, 249, 97, 270_000)?,
-            tank("blue_2", "Blue Tank 2", Team::Blue, 249, 95, 270_000)?,
-            tank("blue_3", "Blue Tank 3", Team::Blue, 249, 99, 270_000)?,
-            tank("blue_4", "Blue Tank 4", Team::Blue, 249, 93, 270_000)?,
-            tank("red_5", "Red Tank 5", Team::Red, 6, 101, 90_000)?,
-            tank("red_6", "Red Tank 6", Team::Red, 4, 94, 90_000)?,
-            tank("blue_5", "Blue Tank 5", Team::Blue, 249, 101, 270_000)?,
-            tank("blue_6", "Blue Tank 6", Team::Blue, 251, 94, 270_000)?,
+            tank("red_1", "Red Tank 1", PartyId::RED, 6, 97, 90_000)?,
+            tank("red_2", "Red Tank 2", PartyId::RED, 6, 95, 90_000)?,
+            tank("red_3", "Red Tank 3", PartyId::RED, 6, 99, 90_000)?,
+            tank("red_4", "Red Tank 4", PartyId::RED, 6, 93, 90_000)?,
+            tank("blue_1", "Blue Tank 1", PartyId::BLUE, 249, 97, 270_000)?,
+            tank("blue_2", "Blue Tank 2", PartyId::BLUE, 249, 95, 270_000)?,
+            tank("blue_3", "Blue Tank 3", PartyId::BLUE, 249, 99, 270_000)?,
+            tank("blue_4", "Blue Tank 4", PartyId::BLUE, 249, 93, 270_000)?,
+            tank("red_5", "Red Tank 5", PartyId::RED, 6, 101, 90_000)?,
+            tank("red_6", "Red Tank 6", PartyId::RED, 4, 94, 90_000)?,
+            tank("blue_5", "Blue Tank 5", PartyId::BLUE, 249, 101, 270_000)?,
+            tank("blue_6", "Blue Tank 6", PartyId::BLUE, 251, 94, 270_000)?,
         ],
         atlas_version: 3,
         arena_version: 5,
@@ -3335,6 +3339,12 @@ fn generate_biome_preset(
         }
     }
 
+    let preset_origin_m = match default_biome {
+        "mars" => 40_000_i64,
+        "lunar" => 50_000_i64,
+        "ice" => 60_000_i64,
+        _ => ORIGIN_M,
+    };
     let base = proving_ground_draft()?;
     let mut draft = GroundDraft {
         schema: DRAFT_SCHEMA.to_owned(),
@@ -3342,7 +3352,7 @@ fn generate_biome_preset(
         label: label.to_owned(),
         biome: default_biome.to_owned(),
         body: body.to_owned(),
-        origin_m: [ORIGIN_M, ORIGIN_M],
+        origin_m: [preset_origin_m, preset_origin_m],
         cell_cm: CELL_CM,
         cols: SIDE,
         rows: SIDE,
@@ -3613,8 +3623,8 @@ pub fn render_png(
     // Entry zone outlines
     for z in &draft.entry_zones {
         let color = match z.team {
-            Team::Red => [225, 72, 64],
-            Team::Blue => [68, 142, 235],
+            PartyId::RED => [225, 72, 64],
+            _ => [68, 142, 235],
         };
         let x0 = usize::from(z.x0) * scale;
         let x1 = ((usize::from(z.x1) + 1) * scale)
@@ -3813,14 +3823,14 @@ mod tests {
                 elev: encode_elev(&elev),
                 entry_zones: vec![
                     EntryZoneDef {
-                        team: Team::Red,
+                        team: PartyId::RED,
                         x0: 0,
                         y0: 0,
                         x1: 7,
                         y1: 63,
                     },
                     EntryZoneDef {
-                        team: Team::Blue,
+                        team: PartyId::BLUE,
                         x0: 56,
                         y0: 0,
                         x1: 63,
@@ -4310,15 +4320,34 @@ mod tests {
         check_eq!(reassembled_wv, wv);
 
         // 3. Procedural biome presets (`mars_canyon`, `lunar_crater`, `ice_shelf`)
-        //    meet §5 check and author only their §6 per-biome class vocabularies.
-        for (preset, expected_biome, expected_body) in [
-            ("mars_canyon", "mars", "mars"),
-            ("lunar_crater", "lunar", "luna"),
-            ("ice_shelf", "ice", "europa"),
+        //    meet §5 check, carry disjoint `origin_m`, and author only their §6 per-biome class vocabularies.
+        let mc = draft_from_world(&world, "mars_canyon")?;
+        check_eq!(mc.id, "mars_canyon");
+        check_eq!(mc.biome, "mars");
+        check_eq!(mc.body, "mars");
+        check_eq!(mc.origin_m, [40_000, 40_000]);
+        check_eq!(mc, generate("mars_canyon", 2350, None)?);
+        let built_mc = build(&mc)?;
+        check_eq!(built_mc.draft, mc);
+        check_eq!(
+            built_mc.atlas_json.replace("\r\n", "\n"),
+            content::MARS_CANYON_ATLAS_JSON.replace("\r\n", "\n")
+        );
+        check_eq!(
+            built_mc.arena_json.replace("\r\n", "\n"),
+            content::MARS_CANYON_JSON.replace("\r\n", "\n")
+        );
+        check_eq!(content::mars_canyon_packs()?.len(), 2);
+
+        for (preset, expected_biome, expected_body, expected_origin) in [
+            ("mars_canyon", "mars", "mars", 40_000_i64),
+            ("lunar_crater", "lunar", "luna", 50_000_i64),
+            ("ice_shelf", "ice", "europa", 60_000_i64),
         ] {
             let d = generate(preset, 42, None)?;
             check_eq!(d.biome, expected_biome);
             check_eq!(d.body, expected_body);
+            check_eq!(d.origin_m, [expected_origin, expected_origin]);
             check_eq!(d.provenance.source, GroundSource::Generator);
             check_eq!(d.provenance.seed, Some(42));
             let rep = check(&d)?;

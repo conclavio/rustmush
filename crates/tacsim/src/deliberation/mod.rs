@@ -257,13 +257,13 @@ pub fn unavailable_reply(payload: &str) -> String {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use crate::arena::state::Team;
+    use crate::arena::state::PartyId;
 
     #[test]
     fn a_job_and_a_reply_round_trip_their_wire_forms() {
         let brief = SquadBrief {
             squad: SquadId {
-                team: Team::Red,
+                team: PartyId::RED,
                 index: 1,
             },
             match_id: 7,
@@ -271,7 +271,7 @@ mod tests {
             // 17b cut L.1: the squad's lance-leader, never in the prompt.
             leader: CharacterRef::Persona {
                 squad: SquadId {
-                    team: Team::Red,
+                    team: PartyId::RED,
                     index: 1,
                 },
             },
@@ -362,7 +362,7 @@ mod tests {
             .build();
         let brief = SquadBrief {
             squad: SquadId {
-                team: Team::Blue,
+                team: PartyId::BLUE,
                 index: 1,
             },
             match_id: 3,
@@ -370,7 +370,7 @@ mod tests {
             // 17b cut L.1.
             leader: CharacterRef::Persona {
                 squad: SquadId {
-                    team: Team::Blue,
+                    team: PartyId::BLUE,
                     index: 1,
                 },
             },

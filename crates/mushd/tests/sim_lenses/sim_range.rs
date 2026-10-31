@@ -463,8 +463,9 @@ async fn sim_report(term: &mut Term) -> String {
 }
 
 /// **The hit rate `You flew …` ends with** (16b cut O.3): the per cent in `(N%)`.
-fn hit_rate(report: &str) -> Option<u64> {
-    let line = report.lines().find(|line| line.contains("You flew RA: "))?;
+fn hit_rate(report: &str, callsign: &str) -> Option<u64> {
+    let flew = format!("You flew {callsign}: ");
+    let line = report.lines().find(|line| line.contains(&flew))?;
     let (_, tail) = line.rsplit_once('(')?;
     tail.split_once("%)")?.0.trim().parse().ok()
 }
@@ -537,12 +538,24 @@ async fn one_pilot_on_the_range_hits_its_target_and_reads_her_own_rate() {
     // ---- the shooting --------------------------------------------------------
     power_up(&mut ada).await;
     let contact = wait_for_contact(&mut ada).await;
-    assert_eq!(contact, "BA", "the target answers to its pod's callsign");
+    // Doc 32 cut CF.0 (Q-CF-11): the target's unit letter is drawn at
+    // check-out, so "its callsign" is the one the match's record kept for it.
+    let drawn = support::drawn_callsigns(&server.store, 1).await;
+    let target_callsign = drawn[&target].clone();
+    let own_callsign = support::party_callsign(&server.store, 1, 'R').await;
+    assert!(support::is_callsign_of(&contact, 'B'), "{contact}");
+    assert_eq!(
+        contact, target_callsign,
+        "the target answers to its tank's drawn callsign"
+    );
     // The lock is the arena's at its next pulse: a `FIRE` sent before it lands
     // is refused `No lock`, so the lock is waited for on the lock's own line.
     let locking = ada.mark();
-    say(&mut ada, "LOCK BA", "Locking").await;
-    ada.expect_after(locking, "Locked on BA").await;
+    say(&mut ada, &format!("LOCK {target_callsign}"), "Locking").await;
+    ada.expect_after(locking, &format!("Locked on {target_callsign}"))
+        .await;
+    let hit_on = format!("Hit on {target_callsign}");
+    let miss_on = format!("Miss on {target_callsign}");
     let mut hit = false;
     for _ in 0..MAX_SHOTS {
         // The cannon ready first, bounded by one cycle and the flight.
@@ -557,7 +570,7 @@ async fn one_pilot_on_the_range_hits_its_target_and_reads_her_own_rate() {
         ada.send_line("FIRE").await;
         // The outcome is told at the impact, a pulse or two after the shot.
         let outcome = ada
-            .expect_one_of_after(shot, &["Hit on BA", "Miss on BA", "refused"])
+            .expect_one_of_after(shot, &[hit_on.as_str(), miss_on.as_str(), "refused"])
             .await;
         if outcome == 0 {
             hit = true;
@@ -574,8 +587,8 @@ async fn one_pilot_on_the_range_hits_its_target_and_reads_her_own_rate() {
     poll_whole(&mut ada, "SIM STATUS", "aborted").await;
 
     let report = sim_report(&mut ada).await;
-    let rate =
-        hit_rate(&report).unwrap_or_else(|| panic!("`You flew RA:` carries no rate:\n{report}"));
+    let rate = hit_rate(&report, &own_callsign)
+        .unwrap_or_else(|| panic!("`You flew {own_callsign}:` carries no rate:\n{report}"));
     assert!(
         (1..=100).contains(&rate),
         "a hit rate of {rate}%:\n{report}"
@@ -590,7 +603,10 @@ async fn one_pilot_on_the_range_hits_its_target_and_reads_her_own_rate() {
     let history = ask_whole(&mut ada, "SIM HISTORY").await;
     let flat = history.split_whitespace().collect::<Vec<&str>>().join(" ");
     assert!(flat.contains("#1 aborted [range] "), "{history}");
-    assert!(flat.contains("(you flew RA)"), "{history}");
+    assert!(
+        flat.contains(&format!("(you flew {own_callsign})")),
+        "{history}"
+    );
 
     // The tape: Ada's rounds landed, and the target never fired one.
     let mut events = Vec::new();

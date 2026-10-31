@@ -97,7 +97,7 @@ use tacsim::arena::intents::{Control, ControlState};
 use tacsim::arena::rng::draw_contact_id;
 use tacsim::arena::state::{
     Arena, ArenaDefinition, ArenaTerrain, Channel, Classification, Controller, CustodyUnit,
-    EntryZone, Power, ShadowContact, Team, TerrainCell, TrackedRules, Waypoint, Waypoints,
+    EntryZone, PartyId, Power, ShadowContact, TerrainCell, TrackedRules, Waypoint, Waypoints,
     WeaponSummary,
 };
 use tacsim::arena::weapons::WeaponBand;
@@ -192,7 +192,7 @@ fn t1_a_cold_stock_mind_starts_itself_up_and_then_walks_the_waypoint_graph() {
     let mut arena = arena_of(
         vec![tank(
             RED,
-            Team::Red,
+            PartyId::RED,
             centre(6, 8),
             Vec::new(),
             Controller::Mind,
@@ -300,7 +300,7 @@ fn t1_a_classified_hostile_out_of_reach_is_closed_on_to_the_stand_off_cell() {
             with_sight(
                 tank(
                     RED,
-                    Team::Red,
+                    PartyId::RED,
                     centre(6, 8),
                     vec![carbine()],
                     Controller::Mind,
@@ -309,7 +309,7 @@ fn t1_a_classified_hostile_out_of_reach_is_closed_on_to_the_stand_off_cell() {
             ),
             tank(
                 BLUE,
-                Team::Blue,
+                PartyId::BLUE,
                 centre(13, 8),
                 Vec::new(),
                 Controller::Pilot,
@@ -397,7 +397,7 @@ fn t1_in_band_with_a_line_it_locks_and_fires_and_both_lines_are_in_the_black_box
             seeing(
                 tank(
                     RED,
-                    Team::Red,
+                    PartyId::RED,
                     centre(6, 8),
                     vec![cannon()],
                     Controller::Mind,
@@ -406,7 +406,7 @@ fn t1_in_band_with_a_line_it_locks_and_fires_and_both_lines_are_in_the_black_box
             ),
             presenting(tank(
                 BLUE,
-                Team::Blue,
+                PartyId::BLUE,
                 centre(9, 8),
                 Vec::new(),
                 Controller::Pilot,
@@ -494,7 +494,7 @@ fn t1_under_the_health_threshold_it_breaks_off_toward_its_own_entry_zone() {
             seeing(
                 tank(
                     RED,
-                    Team::Red,
+                    PartyId::RED,
                     centre(6, 8),
                     vec![cannon()],
                     Controller::Mind,
@@ -503,7 +503,7 @@ fn t1_under_the_health_threshold_it_breaks_off_toward_its_own_entry_zone() {
             ),
             tank(
                 BLUE,
-                Team::Blue,
+                PartyId::BLUE,
                 centre(9, 8),
                 Vec::new(),
                 Controller::Pilot,
@@ -629,7 +629,7 @@ fn t1_a_wreck_thinks_nothing_and_an_inert_hull_reads_disabled() {
     let mut arena = arena_of(
         vec![tank(
             RED,
-            Team::Red,
+            PartyId::RED,
             centre(6, 8),
             vec![cannon()],
             Controller::Mind,
@@ -693,7 +693,7 @@ fn t1_a_wreck_thinks_nothing_and_an_inert_hull_reads_disabled() {
     let mut arena = arena_of(
         vec![tank(
             RED,
-            Team::Red,
+            PartyId::RED,
             centre(6, 8),
             Vec::new(),
             Controller::Mind,
@@ -783,7 +783,7 @@ fn t1_a_contact_that_expires_drops_the_mind_back_to_patrol_and_it_searches_the_l
             seeing(
                 tank(
                     RED,
-                    Team::Red,
+                    PartyId::RED,
                     centre(6, 8),
                     vec![cannon()],
                     Controller::Mind,
@@ -792,7 +792,7 @@ fn t1_a_contact_that_expires_drops_the_mind_back_to_patrol_and_it_searches_the_l
             ),
             tank(
                 BLUE,
-                Team::Blue,
+                PartyId::BLUE,
                 centre(9, 8),
                 Vec::new(),
                 Controller::Pilot,
@@ -907,14 +907,14 @@ fn t1_a_goal_behind_a_sealed_wall_is_told_no_route_and_falls_back_in_memory_to_t
         vec![
             tank(
                 RED,
-                Team::Red,
+                PartyId::RED,
                 centre(4, 8),
                 vec![cannon()],
                 Controller::Mind,
             ),
             tank(
                 BLUE,
-                Team::Blue,
+                PartyId::BLUE,
                 centre(10, 8),
                 Vec::new(),
                 Controller::Pilot,
@@ -929,7 +929,7 @@ fn t1_a_goal_behind_a_sealed_wall_is_told_no_route_and_falls_back_in_memory_to_t
     let mut bytes: Vec<u8> = Vec::new();
     run_settled(&mut arena, 1_500, &mut bytes);
     let now = arena.now_ms;
-    plant_contact(&mut arena, RED, BLUE, Team::Blue, now);
+    plant_contact(&mut arena, RED, BLUE, PartyId::BLUE, now);
     let counters = run_settled(&mut arena, 6_000, &mut bytes);
 
     assert!(
@@ -1075,21 +1075,27 @@ fn t1_a_sealed_goal_escalates_without_cycling_and_keeps_its_avoided_cells() {
         vec![
             tank(
                 RED,
-                Team::Red,
+                PartyId::RED,
                 centre(4, 8),
                 vec![cannon()],
                 Controller::Mind,
             ),
             tank(
                 BLUE,
-                Team::Blue,
+                PartyId::BLUE,
                 centre(10, 8),
                 Vec::new(),
                 Controller::Pilot,
             ),
             // Parked on the way to the only node the fallback can reach: the
             // stop the machine has to remember while the escalation runs.
-            tank(RED2, Team::Red, centre(3, 8), Vec::new(), Controller::Pilot),
+            tank(
+                RED2,
+                PartyId::RED,
+                centre(3, 8),
+                Vec::new(),
+                Controller::Pilot,
+            ),
         ],
         &paint,
         &cfg,
@@ -1115,7 +1121,7 @@ fn t1_a_sealed_goal_escalates_without_cycling_and_keeps_its_avoided_cells() {
     let mut counters = tacsim::arena::MotorCounters::default();
     while arena.now_ms < until {
         let now = arena.now_ms;
-        plant_contact(&mut arena, RED, BLUE, Team::Blue, now);
+        plant_contact(&mut arena, RED, BLUE, PartyId::BLUE, now);
         let out = arena.step_settled(wall_ms, &[], &[]);
         absorb(&out, &mut bytes);
         counters.absorb(&out.motor);
@@ -1190,7 +1196,7 @@ fn j_field() -> Arena {
             as_fill(seeing(
                 tank(
                     RED,
-                    Team::Red,
+                    PartyId::RED,
                     centre(6, 8),
                     vec![cannon()],
                     Controller::Mind,
@@ -1198,13 +1204,19 @@ fn j_field() -> Arena {
                 10,
             )),
             as_fill(seeing(
-                tank(RED2, Team::Red, centre(6, 10), Vec::new(), Controller::Mind),
+                tank(
+                    RED2,
+                    PartyId::RED,
+                    centre(6, 10),
+                    Vec::new(),
+                    Controller::Mind,
+                ),
                 10,
             )),
             as_fill(presenting(seeing(
                 tank(
                     BLUE,
-                    Team::Blue,
+                    PartyId::BLUE,
                     centre(9, 8),
                     Vec::new(),
                     Controller::Pilot,
@@ -1342,12 +1354,12 @@ fn m1a1_the_moved_motor_folds_the_same_bytes() {
     assert_eq!(run.hashes.len(), 120, "the substeps of 30 s at 250 ms");
     assert_eq!(
         run.hashes.first().copied(),
-        Some(0x5bfa_d769_dcf7_b74a),
+        Some(0x3bf7_27cf_a12f_29e0),
         "the first substep's hash moved"
     );
     assert_eq!(
         run.hashes.last().copied(),
-        Some(0xc332_5aaa_c00a_2bc3),
+        Some(0x6c4b_ec03_5970_7532),
         "the last substep's hash moved"
     );
 }
@@ -1409,56 +1421,56 @@ fn m1a1_the_moved_motor_folds_the_same_bytes() {
 /// origin says); the state is the line's parameter, never the seal's (M8a's A1), so
 /// no seal digest and no `hash` moved, and every other byte is equal.
 const M1B0_J_LINES: &[&str] = &[
-    r#"{"seq":1,"t_ms":0,"kind":"match_started","hash":16335211967559030010}"#,
-    r#"{"seq":2,"t_ms":0,"kind":"mind_sealed","unit":4,"sortie":4,"mind":"Standard Doctrine","source":"c0737fdc45994c22","card_digest":"f2491a868a5707936f2abf1db211ed6bba20971b2c364e31433bafb33fc07f90","class":"I","governed":true,"licence":"doctrine","licence_state":"doctrine","hash":16335211967559030010}"#,
-    r#"{"seq":3,"t_ms":0,"kind":"mind_sealed","unit":6,"sortie":6,"mind":"Standard Doctrine","source":"c0737fdc45994c22","card_digest":"f2491a868a5707936f2abf1db211ed6bba20971b2c364e31433bafb33fc07f90","class":"I","governed":true,"licence":"doctrine","licence_state":"doctrine","hash":16335211967559030010}"#,
-    r#"{"seq":4,"t_ms":0,"kind":"mind_sealed","unit":9,"sortie":9,"mind":"Standard Doctrine","source":"c0737fdc45994c22","card_digest":"f2491a868a5707936f2abf1db211ed6bba20971b2c364e31433bafb33fc07f90","class":"I","governed":true,"licence":"doctrine","licence_state":"doctrine","hash":16335211967559030010}"#,
-    r#"{"seq":5,"t_ms":4,"kind":"detected","viewer":6,"contact":7330038967278110817,"target":4,"hash":6627846651307865930}"#,
-    r#"{"seq":6,"t_ms":4,"kind":"detected","viewer":6,"contact":10007312734772483259,"target":9,"hash":6627846651307865930}"#,
-    r#"{"seq":7,"t_ms":189,"kind":"detected","viewer":9,"contact":15474813515948476951,"target":4,"hash":6627846651307865930}"#,
-    r#"{"seq":8,"t_ms":189,"kind":"detected","viewer":9,"contact":14127509583146488135,"target":6,"hash":6627846651307865930}"#,
-    r#"{"seq":9,"t_ms":254,"kind":"startup","unit":6,"hash":17159725012871634070}"#,
-    r#"{"seq":10,"t_ms":482,"kind":"detected","viewer":4,"contact":527481421542167805,"target":6,"hash":1314558722536160381}"#,
-    r#"{"seq":11,"t_ms":482,"kind":"detected","viewer":4,"contact":5852833454602713067,"target":9,"hash":1314558722536160381}"#,
-    r#"{"seq":12,"t_ms":732,"kind":"startup","unit":4,"hash":13905658797045366883}"#,
-    r#"{"seq":13,"t_ms":754,"kind":"power_online","unit":6,"hash":16569286847319178486}"#,
-    r#"{"seq":14,"t_ms":1232,"kind":"power_online","unit":4,"hash":7947483045991019938}"#,
-    r#"{"seq":15,"t_ms":3004,"kind":"classified","viewer":6,"contact":7330038967278110817,"target":4,"team":"red","draws":[["classify:6:4:4",3994458990081984151]],"hash":11235720511849235367}"#,
-    r#"{"seq":16,"t_ms":3004,"kind":"classified","viewer":6,"contact":10007312734772483259,"target":9,"team":"blue","draws":[["classify:6:9:4",16446071241866099752]],"hash":11235720511849235367}"#,
-    r#"{"seq":17,"t_ms":3189,"kind":"classified","viewer":9,"contact":15474813515948476951,"target":4,"team":"red","draws":[["classify:9:4:4",3682179631169270960]],"hash":11235720511849235367}"#,
-    r#"{"seq":18,"t_ms":3189,"kind":"classified","viewer":9,"contact":14127509583146488135,"target":6,"team":"red","draws":[["classify:9:6:4",28171549963284800]],"hash":11235720511849235367}"#,
-    r#"{"seq":19,"t_ms":3482,"kind":"classified","viewer":4,"contact":527481421542167805,"target":6,"team":"red","draws":[["classify:4:6:4",18412658312983768788]],"hash":11910062721590915602}"#,
-    r#"{"seq":20,"t_ms":3482,"kind":"classified","viewer":4,"contact":5852833454602713067,"target":9,"team":"blue","draws":[["classify:4:9:4",2838647583109313249]],"hash":11910062721590915602}"#,
-    r#"{"seq":21,"t_ms":3732,"kind":"locked","unit":4,"contact":5852833454602713067,"target":9,"hash":11159347586005678568}"#,
-    r#"{"seq":22,"t_ms":3732,"kind":"fired","unit":4,"weapon":"cannon","shot_seq":1,"target":9,"range_cm":4116,"rounds":1,"by":"mind","slot":1,"hash":11159347586005678568}"#,
-    r#"{"seq":23,"t_ms":3760,"kind":"impact","shot_seq":1,"unit":4,"target":9,"hash":753959123714688762}"#,
-    r#"{"seq":24,"t_ms":3760,"kind":"hit","shot_seq":1,"unit":4,"target":9,"section":"hull","facet":"front","armor_section":"hull","rounds":1,"damage":120,"armor_left":0,"internals_left":0,"cause":"shot:1","draws":[["hit:1",12072725193963834385],["facet:1",2237253966278422799]],"hash":753959123714688762}"#,
-    r#"{"seq":25,"t_ms":3760,"kind":"section_destroyed","unit":9,"section":"hull","by":4,"hash":753959123714688762}"#,
-    r#"{"seq":26,"t_ms":5000,"kind":"position_summary","units":[[4,4630,8434,0,224848],[6,5000,9000,0,225000],[9,9500,8500,0,0]],"hash":8783380680291626883}"#,
-    r#"{"seq":27,"t_ms":6750,"kind":"blocked","unit":6,"x":4,"y":8,"cause":"occupied","hash":16874999991781941397}"#,
-    r#"{"seq":28,"t_ms":7732,"kind":"fired","unit":4,"weapon":"cannon","shot_seq":2,"target":9,"range_cm":4849,"rounds":1,"by":"cond","slot":1,"hash":17246521352160163613}"#,
-    r#"{"seq":29,"t_ms":7765,"kind":"impact","shot_seq":2,"unit":4,"target":9,"hash":2049637124550458788}"#,
-    r#"{"seq":30,"t_ms":7765,"kind":"hit","shot_seq":2,"unit":4,"target":9,"section":"hull","facet":"front","armor_section":"hull","rounds":1,"damage":120,"armor_left":0,"internals_left":0,"cause":"shot:2","draws":[["hit:2",11307540289106727687],["facet:2",4135577070013810089]],"hash":2049637124550458788}"#,
-    r#"{"seq":31,"t_ms":10000,"kind":"position_summary","units":[[4,4653,8350,0,88000],[6,2956,8673,0,249288],[9,9500,8500,0,0]],"hash":15708231686322040437}"#,
-    r#"{"seq":32,"t_ms":11732,"kind":"fired","unit":4,"weapon":"cannon","shot_seq":3,"target":9,"range_cm":4849,"rounds":1,"by":"cond","slot":1,"hash":3725896271540075267}"#,
-    r#"{"seq":33,"t_ms":11765,"kind":"impact","shot_seq":3,"unit":4,"target":9,"hash":4921052731541013604}"#,
-    r#"{"seq":34,"t_ms":11765,"kind":"hit","shot_seq":3,"unit":4,"target":9,"section":"hull","facet":"front","armor_section":"hull","rounds":1,"damage":120,"armor_left":0,"internals_left":0,"cause":"shot:3","draws":[["hit:3",17241375169118599602],["facet:3",10008162893314153691]],"hash":4921052731541013604}"#,
-    r#"{"seq":35,"t_ms":15000,"kind":"position_summary","units":[[4,4653,8350,0,88000],[6,5627,7497,0,89847],[9,9500,8500,0,0]],"hash":7224458701843879032}"#,
-    r#"{"seq":36,"t_ms":15732,"kind":"fired","unit":4,"weapon":"cannon","shot_seq":4,"target":9,"range_cm":4849,"rounds":1,"by":"cond","slot":1,"hash":6754345798059412782}"#,
-    r#"{"seq":37,"t_ms":15765,"kind":"impact","shot_seq":4,"unit":4,"target":9,"hash":16856882231459508691}"#,
-    r#"{"seq":38,"t_ms":15765,"kind":"hit","shot_seq":4,"unit":4,"target":9,"section":"hull","facet":"front","armor_section":"hull","rounds":1,"damage":120,"armor_left":0,"internals_left":0,"cause":"shot:4","draws":[["hit:4",9783297951381390390],["facet:4",8754771002850247076]],"hash":16856882231459508691}"#,
-    r#"{"seq":39,"t_ms":19732,"kind":"fired","unit":4,"weapon":"cannon","shot_seq":5,"target":9,"range_cm":4849,"rounds":1,"by":"cond","slot":1,"hash":14742135075188887120}"#,
-    r#"{"seq":40,"t_ms":19765,"kind":"impact","shot_seq":5,"unit":4,"target":9,"hash":17488047684852362858}"#,
-    r#"{"seq":41,"t_ms":19765,"kind":"hit","shot_seq":5,"unit":4,"target":9,"section":"hull","facet":"front","armor_section":"hull","rounds":1,"damage":120,"armor_left":0,"internals_left":0,"cause":"shot:5","draws":[["hit:5",3759784274594068254],["facet:5",4443187530762531632]],"hash":17488047684852362858}"#,
-    r#"{"seq":42,"t_ms":20000,"kind":"position_summary","units":[[4,4653,8350,0,88000],[6,10627,7500,0,90000],[9,9500,8500,0,0]],"hash":17488047684852362858}"#,
-    r#"{"seq":43,"t_ms":23732,"kind":"fired","unit":4,"weapon":"cannon","shot_seq":6,"target":9,"range_cm":4849,"rounds":1,"by":"cond","slot":1,"hash":14862676084720666807}"#,
-    r#"{"seq":44,"t_ms":23765,"kind":"impact","shot_seq":6,"unit":4,"target":9,"hash":14998245929017916901}"#,
-    r#"{"seq":45,"t_ms":23765,"kind":"hit","shot_seq":6,"unit":4,"target":9,"section":"hull","facet":"front","armor_section":"hull","rounds":1,"damage":120,"armor_left":0,"internals_left":0,"cause":"shot:6","draws":[["hit:6",12808839036685962400],["facet:6",15270049831497957593]],"hash":14998245929017916901}"#,
-    r#"{"seq":46,"t_ms":25000,"kind":"position_summary","units":[[4,4653,8350,0,88000],[6,12843,7339,0,295055],[9,9500,8500,0,0]],"hash":1514022349857649310}"#,
-    r#"{"seq":47,"t_ms":27732,"kind":"fired","unit":4,"weapon":"cannon","shot_seq":7,"target":9,"range_cm":4849,"rounds":1,"by":"cond","slot":1,"hash":299028427649552102}"#,
-    r#"{"seq":48,"t_ms":27765,"kind":"impact","shot_seq":7,"unit":4,"target":9,"hash":8850548431864179397}"#,
-    r#"{"seq":49,"t_ms":27765,"kind":"hit","shot_seq":7,"unit":4,"target":9,"section":"hull","facet":"front","armor_section":"hull","rounds":1,"damage":120,"armor_left":0,"internals_left":0,"cause":"shot:7","draws":[["hit:7",9819418404979189944],["facet:7",11750702725261985454]],"hash":8850548431864179397}"#,
-    r#"{"seq":50,"t_ms":30000,"kind":"position_summary","units":[[4,4653,8350,0,88000],[6,7868,7500,0,270000],[9,9500,8500,0,0]],"hash":14065404275644312515}"#,
+    r#"{"seq":1,"t_ms":0,"kind":"match_started","hash":11257595751212050478}"#,
+    r#"{"seq":2,"t_ms":0,"kind":"mind_sealed","unit":4,"sortie":4,"mind":"Standard Doctrine","source":"a37766b55993879f","card_digest":"f2491a868a5707936f2abf1db211ed6bba20971b2c364e31433bafb33fc07f90","class":"I","governed":true,"licence":"doctrine","licence_state":"doctrine","hash":11257595751212050478}"#,
+    r#"{"seq":3,"t_ms":0,"kind":"mind_sealed","unit":6,"sortie":6,"mind":"Standard Doctrine","source":"a37766b55993879f","card_digest":"f2491a868a5707936f2abf1db211ed6bba20971b2c364e31433bafb33fc07f90","class":"I","governed":true,"licence":"doctrine","licence_state":"doctrine","hash":11257595751212050478}"#,
+    r#"{"seq":4,"t_ms":0,"kind":"mind_sealed","unit":9,"sortie":9,"mind":"Standard Doctrine","source":"a37766b55993879f","card_digest":"f2491a868a5707936f2abf1db211ed6bba20971b2c364e31433bafb33fc07f90","class":"I","governed":true,"licence":"doctrine","licence_state":"doctrine","hash":11257595751212050478}"#,
+    r#"{"seq":5,"t_ms":4,"kind":"detected","viewer":6,"contact":7330038967278110817,"target":4,"hash":4320966140201216480}"#,
+    r#"{"seq":6,"t_ms":4,"kind":"detected","viewer":6,"contact":10007312734772483259,"target":9,"hash":4320966140201216480}"#,
+    r#"{"seq":7,"t_ms":189,"kind":"detected","viewer":9,"contact":15474813515948476951,"target":4,"hash":4320966140201216480}"#,
+    r#"{"seq":8,"t_ms":189,"kind":"detected","viewer":9,"contact":14127509583146488135,"target":6,"hash":4320966140201216480}"#,
+    r#"{"seq":9,"t_ms":254,"kind":"startup","unit":6,"hash":10310641990375370482}"#,
+    r#"{"seq":10,"t_ms":482,"kind":"detected","viewer":4,"contact":527481421542167805,"target":6,"hash":4738192000249027591}"#,
+    r#"{"seq":11,"t_ms":482,"kind":"detected","viewer":4,"contact":5852833454602713067,"target":9,"hash":4738192000249027591}"#,
+    r#"{"seq":12,"t_ms":732,"kind":"startup","unit":4,"hash":11039719146391254392}"#,
+    r#"{"seq":13,"t_ms":754,"kind":"power_online","unit":6,"hash":899187824066664750}"#,
+    r#"{"seq":14,"t_ms":1232,"kind":"power_online","unit":4,"hash":4467495891270989402}"#,
+    r#"{"seq":15,"t_ms":3004,"kind":"classified","viewer":6,"contact":7330038967278110817,"target":4,"team":"red","draws":[["classify:6:4:4",3994458990081984151]],"hash":14730498557474155056}"#,
+    r#"{"seq":16,"t_ms":3004,"kind":"classified","viewer":6,"contact":10007312734772483259,"target":9,"team":"blue","draws":[["classify:6:9:4",16446071241866099752]],"hash":14730498557474155056}"#,
+    r#"{"seq":17,"t_ms":3189,"kind":"classified","viewer":9,"contact":15474813515948476951,"target":4,"team":"red","draws":[["classify:9:4:4",3682179631169270960]],"hash":14730498557474155056}"#,
+    r#"{"seq":18,"t_ms":3189,"kind":"classified","viewer":9,"contact":14127509583146488135,"target":6,"team":"red","draws":[["classify:9:6:4",28171549963284800]],"hash":14730498557474155056}"#,
+    r#"{"seq":19,"t_ms":3482,"kind":"classified","viewer":4,"contact":527481421542167805,"target":6,"team":"red","draws":[["classify:4:6:4",18412658312983768788]],"hash":4704330823561246438}"#,
+    r#"{"seq":20,"t_ms":3482,"kind":"classified","viewer":4,"contact":5852833454602713067,"target":9,"team":"blue","draws":[["classify:4:9:4",2838647583109313249]],"hash":4704330823561246438}"#,
+    r#"{"seq":21,"t_ms":3732,"kind":"locked","unit":4,"contact":5852833454602713067,"target":9,"hash":17731863793660837440}"#,
+    r#"{"seq":22,"t_ms":3732,"kind":"fired","unit":4,"weapon":"cannon","shot_seq":1,"target":9,"range_cm":4116,"rounds":1,"by":"mind","slot":1,"hash":17731863793660837440}"#,
+    r#"{"seq":23,"t_ms":3760,"kind":"impact","shot_seq":1,"unit":4,"target":9,"hash":9353578760124800889}"#,
+    r#"{"seq":24,"t_ms":3760,"kind":"hit","shot_seq":1,"unit":4,"target":9,"section":"hull","facet":"front","armor_section":"hull","rounds":1,"damage":120,"armor_left":0,"internals_left":0,"cause":"shot:1","draws":[["hit:1",12072725193963834385],["facet:1",2237253966278422799]],"hash":9353578760124800889}"#,
+    r#"{"seq":25,"t_ms":3760,"kind":"section_destroyed","unit":9,"section":"hull","by":4,"hash":9353578760124800889}"#,
+    r#"{"seq":26,"t_ms":5000,"kind":"position_summary","units":[[4,4630,8434,0,224848],[6,5000,9000,0,225000],[9,9500,8500,0,0]],"hash":7431141731892397549}"#,
+    r#"{"seq":27,"t_ms":6750,"kind":"blocked","unit":6,"x":4,"y":8,"cause":"occupied","hash":1923650037976447778}"#,
+    r#"{"seq":28,"t_ms":7732,"kind":"fired","unit":4,"weapon":"cannon","shot_seq":2,"target":9,"range_cm":4849,"rounds":1,"by":"cond","slot":1,"hash":10669006334829211892}"#,
+    r#"{"seq":29,"t_ms":7765,"kind":"impact","shot_seq":2,"unit":4,"target":9,"hash":4331188404480506351}"#,
+    r#"{"seq":30,"t_ms":7765,"kind":"hit","shot_seq":2,"unit":4,"target":9,"section":"hull","facet":"front","armor_section":"hull","rounds":1,"damage":120,"armor_left":0,"internals_left":0,"cause":"shot:2","draws":[["hit:2",11307540289106727687],["facet:2",4135577070013810089]],"hash":4331188404480506351}"#,
+    r#"{"seq":31,"t_ms":10000,"kind":"position_summary","units":[[4,4653,8350,0,88000],[6,2956,8673,0,249288],[9,9500,8500,0,0]],"hash":4440511691061040514}"#,
+    r#"{"seq":32,"t_ms":11732,"kind":"fired","unit":4,"weapon":"cannon","shot_seq":3,"target":9,"range_cm":4849,"rounds":1,"by":"cond","slot":1,"hash":9446210504843075352}"#,
+    r#"{"seq":33,"t_ms":11765,"kind":"impact","shot_seq":3,"unit":4,"target":9,"hash":10892715979629091117}"#,
+    r#"{"seq":34,"t_ms":11765,"kind":"hit","shot_seq":3,"unit":4,"target":9,"section":"hull","facet":"front","armor_section":"hull","rounds":1,"damage":120,"armor_left":0,"internals_left":0,"cause":"shot:3","draws":[["hit:3",17241375169118599602],["facet:3",10008162893314153691]],"hash":10892715979629091117}"#,
+    r#"{"seq":35,"t_ms":15000,"kind":"position_summary","units":[[4,4653,8350,0,88000],[6,5627,7497,0,89847],[9,9500,8500,0,0]],"hash":10670596309768236140}"#,
+    r#"{"seq":36,"t_ms":15732,"kind":"fired","unit":4,"weapon":"cannon","shot_seq":4,"target":9,"range_cm":4849,"rounds":1,"by":"cond","slot":1,"hash":18341746857865167097}"#,
+    r#"{"seq":37,"t_ms":15765,"kind":"impact","shot_seq":4,"unit":4,"target":9,"hash":13904233572431241738}"#,
+    r#"{"seq":38,"t_ms":15765,"kind":"hit","shot_seq":4,"unit":4,"target":9,"section":"hull","facet":"front","armor_section":"hull","rounds":1,"damage":120,"armor_left":0,"internals_left":0,"cause":"shot:4","draws":[["hit:4",9783297951381390390],["facet:4",8754771002850247076]],"hash":13904233572431241738}"#,
+    r#"{"seq":39,"t_ms":19732,"kind":"fired","unit":4,"weapon":"cannon","shot_seq":5,"target":9,"range_cm":4849,"rounds":1,"by":"cond","slot":1,"hash":2259966646726985663}"#,
+    r#"{"seq":40,"t_ms":19765,"kind":"impact","shot_seq":5,"unit":4,"target":9,"hash":2536443026093795576}"#,
+    r#"{"seq":41,"t_ms":19765,"kind":"hit","shot_seq":5,"unit":4,"target":9,"section":"hull","facet":"front","armor_section":"hull","rounds":1,"damage":120,"armor_left":0,"internals_left":0,"cause":"shot:5","draws":[["hit:5",3759784274594068254],["facet:5",4443187530762531632]],"hash":2536443026093795576}"#,
+    r#"{"seq":42,"t_ms":20000,"kind":"position_summary","units":[[4,4653,8350,0,88000],[6,10627,7500,0,90000],[9,9500,8500,0,0]],"hash":2536443026093795576}"#,
+    r#"{"seq":43,"t_ms":23732,"kind":"fired","unit":4,"weapon":"cannon","shot_seq":6,"target":9,"range_cm":4849,"rounds":1,"by":"cond","slot":1,"hash":7461957972237963104}"#,
+    r#"{"seq":44,"t_ms":23765,"kind":"impact","shot_seq":6,"unit":4,"target":9,"hash":18407161926277788185}"#,
+    r#"{"seq":45,"t_ms":23765,"kind":"hit","shot_seq":6,"unit":4,"target":9,"section":"hull","facet":"front","armor_section":"hull","rounds":1,"damage":120,"armor_left":0,"internals_left":0,"cause":"shot:6","draws":[["hit:6",12808839036685962400],["facet:6",15270049831497957593]],"hash":18407161926277788185}"#,
+    r#"{"seq":46,"t_ms":25000,"kind":"position_summary","units":[[4,4653,8350,0,88000],[6,12843,7339,0,295055],[9,9500,8500,0,0]],"hash":10052745220483269057}"#,
+    r#"{"seq":47,"t_ms":27732,"kind":"fired","unit":4,"weapon":"cannon","shot_seq":7,"target":9,"range_cm":4849,"rounds":1,"by":"cond","slot":1,"hash":289694173843115822}"#,
+    r#"{"seq":48,"t_ms":27765,"kind":"impact","shot_seq":7,"unit":4,"target":9,"hash":7964488794774647740}"#,
+    r#"{"seq":49,"t_ms":27765,"kind":"hit","shot_seq":7,"unit":4,"target":9,"section":"hull","facet":"front","armor_section":"hull","rounds":1,"damage":120,"armor_left":0,"internals_left":0,"cause":"shot:7","draws":[["hit:7",9819418404979189944],["facet:7",11750702725261985454]],"hash":7964488794774647740}"#,
+    r#"{"seq":50,"t_ms":30000,"kind":"position_summary","units":[[4,4653,8350,0,88000],[6,7868,7500,0,270000],[9,9500,8500,0,0]],"hash":7803590278479115570}"#,
 ];
 
 /// **17b cut M1b.0: the production line-hash pin, the reflex shots.** The (j)
@@ -1604,7 +1616,7 @@ fn t1_a_released_seat_hands_the_tank_to_its_mind_in_withdraw() {
     let mut arena = arena_of(
         vec![tank(
             RED,
-            Team::Red,
+            PartyId::RED,
             centre(9, 8),
             vec![cannon()],
             Controller::Pilot,
@@ -1766,7 +1778,7 @@ fn t1_a_dry_hull_withdraws_to_its_entry_zone() {
     let mut arena = arena_of(
         vec![tank(
             RED,
-            Team::Red,
+            PartyId::RED,
             centre(6, 8),
             vec![cannon()],
             Controller::Mind,
@@ -1846,7 +1858,7 @@ fn t1_a_cornered_withdrawal_stands_and_fights_without_leaving_the_state() {
             with_sight(
                 tank(
                     RED,
-                    Team::Red,
+                    PartyId::RED,
                     centre(6, 8),
                     vec![cannon()],
                     Controller::Mind,
@@ -1855,7 +1867,7 @@ fn t1_a_cornered_withdrawal_stands_and_fights_without_leaving_the_state() {
             ),
             presenting(tank(
                 BLUE,
-                Team::Blue,
+                PartyId::BLUE,
                 centre(7, 8),
                 Vec::new(),
                 Controller::Pilot,
@@ -1930,7 +1942,7 @@ fn t1_a_withdrawn_tank_rallies_once_and_then_fights_to_the_end() {
     let mut arena = arena_of(
         vec![tank(
             RED,
-            Team::Red,
+            PartyId::RED,
             centre(9, 8),
             vec![cannon()],
             Controller::Mind,
@@ -1987,7 +1999,7 @@ fn t1_a_tank_with_nothing_to_fire_withdraws_and_never_rallies() {
     let mut arena = arena_of(
         vec![tank(
             RED,
-            Team::Red,
+            PartyId::RED,
             centre(9, 8),
             vec![cannon()],
             Controller::Mind,
@@ -2032,7 +2044,7 @@ fn withdrawing_beside_a_hostile(rounds: u32) -> (i64, usize) {
             with_sight(
                 tank(
                     RED,
-                    Team::Red,
+                    PartyId::RED,
                     centre(9, 8),
                     vec![cannon()],
                     Controller::Mind,
@@ -2041,7 +2053,7 @@ fn withdrawing_beside_a_hostile(rounds: u32) -> (i64, usize) {
             ),
             presenting(tank(
                 BLUE,
-                Team::Blue,
+                PartyId::BLUE,
                 centre(10, 8),
                 Vec::new(),
                 Controller::Pilot,
@@ -2059,7 +2071,7 @@ fn withdrawing_beside_a_hostile(rounds: u32) -> (i64, usize) {
     let mut bytes: Vec<u8> = Vec::new();
     run_settled(&mut arena, 4_000, &mut bytes);
     let now = arena.now_ms;
-    plant_contact(&mut arena, RED, BLUE, Team::Blue, now);
+    plant_contact(&mut arena, RED, BLUE, PartyId::BLUE, now);
     // **16b cut E.1**: the milder recipe, because this fixture's whole subject is
     // what an ARMED withdrawal does when a hostile is on top of it — and at 166
     // per mille the answer would be "keeps driving", for the health and not for
@@ -2230,7 +2242,7 @@ fn heat_field() -> Arena {
             seeing(
                 tank(
                     RED,
-                    Team::Red,
+                    PartyId::RED,
                     centre(6, 8),
                     vec![cannon()],
                     Controller::Mind,
@@ -2239,7 +2251,7 @@ fn heat_field() -> Arena {
             ),
             presenting(tank(
                 BLUE,
-                Team::Blue,
+                PartyId::BLUE,
                 centre(9, 8),
                 Vec::new(),
                 Controller::Pilot,
@@ -2347,7 +2359,7 @@ fn t1_q7_spent_pair(red_rounds: u32, blue_rounds: u32) -> Arena {
             seeing(
                 tank(
                     RED,
-                    Team::Red,
+                    PartyId::RED,
                     centre(6, 8),
                     vec![harmless],
                     Controller::Mind,
@@ -2356,7 +2368,7 @@ fn t1_q7_spent_pair(red_rounds: u32, blue_rounds: u32) -> Arena {
             ),
             presenting(tank(
                 BLUE,
-                Team::Blue,
+                PartyId::BLUE,
                 centre(9, 8),
                 vec![cannon()],
                 Controller::Pilot,
@@ -2635,7 +2647,7 @@ fn t1_q7_withdraw_and_rally() -> Arena {
             with_sight(
                 tank(
                     RED,
-                    Team::Red,
+                    PartyId::RED,
                     centre(8, 8),
                     vec![cannon()],
                     Controller::Mind,
@@ -2644,7 +2656,7 @@ fn t1_q7_withdraw_and_rally() -> Arena {
             ),
             presenting(tank(
                 BLUE,
-                Team::Blue,
+                PartyId::BLUE,
                 centre(9, 8),
                 Vec::new(),
                 Controller::Pilot,
@@ -2659,7 +2671,7 @@ fn t1_q7_withdraw_and_rally() -> Arena {
     hurt_but_fighting(&mut arena, RED);
     // The contact is planted classified at nought: a script whose subject is
     // the stand starts with the classification rather than waits for it.
-    plant_contact(&mut arena, RED, BLUE, Team::Blue, 0);
+    plant_contact(&mut arena, RED, BLUE, PartyId::BLUE, 0);
     arena
 }
 
@@ -2738,7 +2750,7 @@ fn cold_pilot_tank() -> Arena {
     arena_of(
         vec![tank(
             RED,
-            Team::Red,
+            PartyId::RED,
             centre(9, 8),
             vec![cannon()],
             Controller::Pilot,
@@ -3051,7 +3063,7 @@ fn t1_e1_duel_with(
             with_sight(
                 tank(
                     RED,
-                    Team::Red,
+                    PartyId::RED,
                     centre(red.0, red.1),
                     weapons,
                     Controller::Mind,
@@ -3060,7 +3072,7 @@ fn t1_e1_duel_with(
             ),
             presenting(tank(
                 BLUE,
-                Team::Blue,
+                PartyId::BLUE,
                 centre(blue.0, blue.1),
                 Vec::new(),
                 Controller::Pilot,
@@ -3138,7 +3150,7 @@ fn t1_with_range_and_no_line_it_closes_on_the_plot() {
     let mut bytes: Vec<u8> = Vec::new();
     run_settled(&mut arena, 2_000, &mut bytes);
     let now = arena.now_ms;
-    plant_contact(&mut arena, RED, BLUE, Team::Blue, now);
+    plant_contact(&mut arena, RED, BLUE, PartyId::BLUE, now);
     let start = arena.unit(RED).map_or(0, |unit| unit.pose.x_cm);
     run_settled(&mut arena, 4_000, &mut bytes);
 
@@ -3177,7 +3189,7 @@ fn t1_with_range_and_no_line_it_closes_on_the_plot() {
         state.pose = centre(here.0, here.1.saturating_sub(3));
     }
     let now = arena.now_ms;
-    plant_contact(&mut arena, RED, BLUE, Team::Blue, now);
+    plant_contact(&mut arena, RED, BLUE, PartyId::BLUE, now);
     let until = arena.now_ms + 2_500;
     run_settled(&mut arena, until, &mut bytes);
     assert_eq!(
@@ -3253,7 +3265,7 @@ fn t1_it_engages_at_the_band_releases_past_the_reach_and_holds_between_them() {
         state.pose = centre(here.0 + 9, 8);
     }
     let moved_at = arena.now_ms;
-    plant_contact(&mut arena, RED, BLUE, Team::Blue, moved_at);
+    plant_contact(&mut arena, RED, BLUE, PartyId::BLUE, moved_at);
     let before = count(&events(&mut arena, &mut bytes), "fired");
     let until = arena.now_ms + 6_000;
     run_settled(&mut arena, until, &mut bytes);
@@ -3283,7 +3295,7 @@ fn t1_it_engages_at_the_band_releases_past_the_reach_and_holds_between_them() {
         state.pose = centre(15, 0);
     }
     let moved_at = arena.now_ms;
-    plant_contact(&mut arena, RED, BLUE, Team::Blue, moved_at);
+    plant_contact(&mut arena, RED, BLUE, PartyId::BLUE, moved_at);
     let opened = plot_range(&arena, RED, BLUE);
     assert!(
         opened > RELEASE_CM + 3_125,
@@ -3511,7 +3523,7 @@ fn t1_a_withdrawal_beside(
         state.pose = centre(blue.0, blue.1);
     }
     let now = arena.now_ms;
-    plant_contact(&mut arena, RED, BLUE, Team::Blue, now);
+    plant_contact(&mut arena, RED, BLUE, PartyId::BLUE, now);
     if fighting {
         hurt_but_fighting(&mut arena, RED);
     } else {
@@ -3680,7 +3692,7 @@ fn t1_t32_the_alert_range_is_the_window_and_the_engaged_trigger_is_the_band() {
             with_sight(
                 tank(
                     RED,
-                    Team::Red,
+                    PartyId::RED,
                     centre(2, 8),
                     vec![cannon()],
                     Controller::Mind,
@@ -3689,7 +3701,7 @@ fn t1_t32_the_alert_range_is_the_window_and_the_engaged_trigger_is_the_band() {
             ),
             tank(
                 BLUE,
-                Team::Blue,
+                PartyId::BLUE,
                 centre(14, 8),
                 Vec::new(),
                 Controller::Pilot,
@@ -3712,7 +3724,7 @@ fn t1_t32_the_alert_range_is_the_window_and_the_engaged_trigger_is_the_band() {
     let named = arena_of(
         vec![tank(
             RED,
-            Team::Red,
+            PartyId::RED,
             centre(2, 8),
             vec![cannon()],
             Controller::Mind,
@@ -3726,7 +3738,7 @@ fn t1_t32_the_alert_range_is_the_window_and_the_engaged_trigger_is_the_band() {
     // The `Engaged` trigger: 12,000 cm is past `REACH_CM` and far inside the
     // cannon's own 250,000 cm, so the machine can hold it and cannot fight it.
     // Nothing is stepped first, so the two poses are the ones the fixture wrote.
-    plant_contact(&mut arena, RED, BLUE, Team::Blue, 0);
+    plant_contact(&mut arena, RED, BLUE, PartyId::BLUE, 0);
     assert_eq!(plot_range(&arena, RED, BLUE), 12_000);
     assert!(
         !arena.hostile_in_weapons_range(),
@@ -3736,7 +3748,7 @@ fn t1_t32_the_alert_range_is_the_window_and_the_engaged_trigger_is_the_band() {
     if let Some(state) = arena.unit_mut(BLUE) {
         state.pose = centre(7, 8);
     }
-    plant_contact(&mut arena, RED, BLUE, Team::Blue, 0);
+    plant_contact(&mut arena, RED, BLUE, PartyId::BLUE, 0);
     assert_eq!(plot_range(&arena, RED, BLUE), 5_000);
     assert!(arena.hostile_in_weapons_range());
 }
@@ -4101,7 +4113,7 @@ const BLUE2: ObjId = ObjId(11);
 fn bystander(cell: (u16, u16)) -> CustodyUnit {
     tank(
         BLUE2,
-        Team::Blue,
+        PartyId::BLUE,
         centre(cell.0, cell.1),
         Vec::new(),
         Controller::Pilot,
@@ -4233,7 +4245,7 @@ fn t1_a_target_that_dies_out_of_sight_is_held_until_the_contact_expires() {
             with_sight(
                 tank(
                     RED,
-                    Team::Red,
+                    PartyId::RED,
                     centre(6, 8),
                     vec![cannon()],
                     Controller::Mind,
@@ -4242,7 +4254,7 @@ fn t1_a_target_that_dies_out_of_sight_is_held_until_the_contact_expires() {
             ),
             killable(tank(
                 BLUE,
-                Team::Blue,
+                PartyId::BLUE,
                 centre(12, 8),
                 Vec::new(),
                 Controller::Pilot,
@@ -4256,7 +4268,7 @@ fn t1_a_target_that_dies_out_of_sight_is_held_until_the_contact_expires() {
     let mut bytes: Vec<u8> = Vec::new();
     run_settled(&mut arena, 2_000, &mut bytes);
     let now = arena.now_ms;
-    plant_contact(&mut arena, RED, BLUE, Team::Blue, now);
+    plant_contact(&mut arena, RED, BLUE, PartyId::BLUE, now);
     run_settled(&mut arena, now + 1_000, &mut bytes);
     assert_eq!(machine_state_of(&arena, RED), Some(MachineState::Approach));
     assert_eq!(target_of(&arena, RED), Some(BLUE));
@@ -4264,7 +4276,7 @@ fn t1_a_target_that_dies_out_of_sight_is_held_until_the_contact_expires() {
     // Killed by nobody this mind could have watched: the rig's own destroy,
     // with no shooter, so no `Kill` line and no `known_dead`.
     let at = arena.now_ms;
-    plant_contact(&mut arena, RED, BLUE, Team::Blue, at);
+    plant_contact(&mut arena, RED, BLUE, PartyId::BLUE, at);
     let mut journal: Vec<tacsim::arena::perception::Notice> = Vec::new();
     arena.destroy_unit(BLUE, at, None, &mut journal);
     run_settled(&mut arena, at + 1_000, &mut bytes);
@@ -4307,7 +4319,7 @@ fn t1_a_target_that_leaves_the_match_is_dropped_at_once() {
             with_sight(
                 tank(
                     RED,
-                    Team::Red,
+                    PartyId::RED,
                     centre(6, 8),
                     vec![cannon()],
                     Controller::Mind,
@@ -4316,7 +4328,7 @@ fn t1_a_target_that_leaves_the_match_is_dropped_at_once() {
             ),
             tank(
                 BLUE,
-                Team::Blue,
+                PartyId::BLUE,
                 centre(12, 8),
                 Vec::new(),
                 Controller::Pilot,
@@ -4329,12 +4341,12 @@ fn t1_a_target_that_leaves_the_match_is_dropped_at_once() {
     let mut bytes: Vec<u8> = Vec::new();
     run_settled(&mut arena, 2_000, &mut bytes);
     let now = arena.now_ms;
-    plant_contact(&mut arena, RED, BLUE, Team::Blue, now);
+    plant_contact(&mut arena, RED, BLUE, PartyId::BLUE, now);
     run_settled(&mut arena, now + 1_000, &mut bytes);
     assert_eq!(target_of(&arena, RED), Some(BLUE));
 
     let at = arena.now_ms;
-    plant_contact(&mut arena, RED, BLUE, Team::Blue, at);
+    plant_contact(&mut arena, RED, BLUE, PartyId::BLUE, at);
     arena.units.retain(|unit| unit.id != BLUE);
     run_settled(&mut arena, at + 1_000, &mut bytes);
     assert_eq!(stock_memory_of(&arena, RED).target, None);
@@ -4369,7 +4381,7 @@ fn t1_a_reading_that_shows_the_body_gone_drops_the_target_and_a_turret_does_not(
                 with_sight(
                     tank(
                         RED,
-                        Team::Red,
+                        PartyId::RED,
                         centre(6, 8),
                         vec![cannon()],
                         Controller::Mind,
@@ -4378,7 +4390,7 @@ fn t1_a_reading_that_shows_the_body_gone_drops_the_target_and_a_turret_does_not(
                 ),
                 two_sectioned(tank(
                     BLUE,
-                    Team::Blue,
+                    PartyId::BLUE,
                     centre(12, 8),
                     Vec::new(),
                     Controller::Pilot,
@@ -4401,12 +4413,12 @@ fn t1_a_reading_that_shows_the_body_gone_drops_the_target_and_a_turret_does_not(
         let mut bytes: Vec<u8> = Vec::new();
         run_settled(&mut arena, 2_000, &mut bytes);
         let now = arena.now_ms;
-        plant_contact(&mut arena, RED, BLUE, Team::Blue, now);
+        plant_contact(&mut arena, RED, BLUE, PartyId::BLUE, now);
         run_settled(&mut arena, now + 1_000, &mut bytes);
         assert_eq!(target_of(&arena, RED), Some(BLUE));
 
         let at = arena.now_ms;
-        plant_contact(&mut arena, RED, BLUE, Team::Blue, at);
+        plant_contact(&mut arena, RED, BLUE, PartyId::BLUE, at);
         plant_reading(&mut arena, RED, BLUE, destroyed, at);
         let held = hold_on(&arena, RED, BLUE).expect("the hold");
         assert!(!held.known_dead, "this half is about the reading alone");
@@ -4434,14 +4446,14 @@ fn e2_b45_the_two_tempo_triggers_read_the_hold_and_not_the_wreck() {
         vec![
             tank(
                 RED,
-                Team::Red,
+                PartyId::RED,
                 centre(6, 8),
                 vec![cannon()],
                 Controller::Pilot,
             ),
             tank(
                 BLUE,
-                Team::Blue,
+                PartyId::BLUE,
                 centre(7, 8),
                 Vec::new(),
                 Controller::Pilot,
@@ -4451,7 +4463,7 @@ fn e2_b45_the_two_tempo_triggers_read_the_hold_and_not_the_wreck() {
         &arena_cfg(reflex_cfg()),
         &[RED, BLUE],
     );
-    plant_contact(&mut arena, RED, BLUE, Team::Blue, 0);
+    plant_contact(&mut arena, RED, BLUE, PartyId::BLUE, 0);
     assert!(arena.hostile_in_weapons_range());
     assert!(arena.contact_within_alert_range());
 
@@ -4495,14 +4507,14 @@ fn t1_a_kill_starts_the_rally_clock_and_a_death_out_of_sight_does_not() {
         vec![
             tank(
                 RED,
-                Team::Red,
+                PartyId::RED,
                 centre(1, 8),
                 vec![cannon()],
                 Controller::Mind,
             ),
             killable(tank(
                 BLUE,
-                Team::Blue,
+                PartyId::BLUE,
                 centre(12, 8),
                 Vec::new(),
                 Controller::Pilot,
@@ -4519,7 +4531,7 @@ fn t1_a_kill_starts_the_rally_clock_and_a_death_out_of_sight_does_not() {
     let mut bytes: Vec<u8> = Vec::new();
     run_settled(&mut arena, 2_000, &mut bytes);
     let now = arena.now_ms;
-    plant_contact(&mut arena, RED, BLUE, Team::Blue, now);
+    plant_contact(&mut arena, RED, BLUE, PartyId::BLUE, now);
     run_settled(&mut arena, now + 1_000, &mut bytes);
     assert_eq!(machine_state_of(&arena, RED), Some(MachineState::Withdraw));
     assert_eq!(quiet(&arena), None, "it holds a live hostile");
@@ -4527,7 +4539,7 @@ fn t1_a_kill_starts_the_rally_clock_and_a_death_out_of_sight_does_not() {
     // Killed by somebody else, out of this mind's sight: the board is not
     // quiet yet, because nothing has told it.
     let at = arena.now_ms;
-    plant_contact(&mut arena, RED, BLUE, Team::Blue, at);
+    plant_contact(&mut arena, RED, BLUE, PartyId::BLUE, at);
     let mut journal: Vec<tacsim::arena::perception::Notice> = Vec::new();
     arena.destroy_unit(BLUE, at, None, &mut journal);
     run_settled(&mut arena, at + 1_000, &mut bytes);
@@ -4585,7 +4597,7 @@ fn t1_the_shooter_knows_its_own_kill_and_a_teammate_waits_for_the_track() {
             with_sight(
                 tank(
                     RED,
-                    Team::Red,
+                    PartyId::RED,
                     centre(8, 8),
                     vec![cannon()],
                     Controller::Mind,
@@ -4595,7 +4607,7 @@ fn t1_the_shooter_knows_its_own_kill_and_a_teammate_waits_for_the_track() {
             with_sight(
                 tank(
                     RED2,
-                    Team::Red,
+                    PartyId::RED,
                     centre(2, 8),
                     vec![pistol()],
                     Controller::Mind,
@@ -4604,7 +4616,7 @@ fn t1_the_shooter_knows_its_own_kill_and_a_teammate_waits_for_the_track() {
             ),
             killable(tank(
                 BLUE,
-                Team::Blue,
+                PartyId::BLUE,
                 centre(9, 8),
                 Vec::new(),
                 Controller::Pilot,
@@ -4735,7 +4747,7 @@ fn t1_a_share_carries_the_track_and_never_the_kill() {
             with_mesh(
                 tank(
                     RED,
-                    Team::Red,
+                    PartyId::RED,
                     centre(6, 8),
                     vec![cannon()],
                     Controller::Pilot,
@@ -4746,7 +4758,7 @@ fn t1_a_share_carries_the_track_and_never_the_kill() {
             with_mesh(
                 tank(
                     RED2,
-                    Team::Red,
+                    PartyId::RED,
                     centre(4, 8),
                     vec![pistol()],
                     Controller::Mind,
@@ -4756,7 +4768,7 @@ fn t1_a_share_carries_the_track_and_never_the_kill() {
             ),
             killable(tank(
                 BLUE,
-                Team::Blue,
+                PartyId::BLUE,
                 centre(12, 8),
                 Vec::new(),
                 Controller::Pilot,
@@ -4783,7 +4795,7 @@ fn t1_a_share_carries_the_track_and_never_the_kill() {
     // production path the test above drives end to end; what this one is about
     // is what the mesh does with it afterwards.
     let at = arena.now_ms;
-    plant_contact(&mut arena, RED, BLUE, Team::Blue, at);
+    plant_contact(&mut arena, RED, BLUE, PartyId::BLUE, at);
     let mut journal: Vec<tacsim::arena::perception::Notice> = Vec::new();
     arena.destroy_unit(BLUE, at, None, &mut journal);
     learn_the_kill(&mut arena, RED, BLUE);
@@ -4873,7 +4885,7 @@ fn a_kill_under_a_withdraw_order() -> Arena {
             with_mesh(
                 tank(
                     RED,
-                    Team::Red,
+                    PartyId::RED,
                     centre(8, 8),
                     vec![cannon()],
                     Controller::Mind,
@@ -4884,7 +4896,7 @@ fn a_kill_under_a_withdraw_order() -> Arena {
             with_mesh(
                 tank(
                     RED2,
-                    Team::Red,
+                    PartyId::RED,
                     centre(2, 8),
                     vec![pistol()],
                     Controller::Mind,
@@ -4894,7 +4906,7 @@ fn a_kill_under_a_withdraw_order() -> Arena {
             ),
             killable(tank(
                 BLUE,
-                Team::Blue,
+                PartyId::BLUE,
                 centre(9, 8),
                 Vec::new(),
                 Controller::Pilot,
@@ -5110,7 +5122,7 @@ fn an_unreachable_order_and_a_hot_gun() -> Arena {
             with_sight(
                 tank(
                     RED,
-                    Team::Red,
+                    PartyId::RED,
                     centre(6, 8),
                     vec![cannon()],
                     Controller::Mind,
@@ -5119,7 +5131,7 @@ fn an_unreachable_order_and_a_hot_gun() -> Arena {
             ),
             presenting(tank(
                 BLUE,
-                Team::Blue,
+                PartyId::BLUE,
                 centre(9, 8),
                 Vec::new(),
                 Controller::Pilot,
@@ -5316,14 +5328,14 @@ fn road(len: u16, node: (u16, u16)) -> ArenaDefinition {
         terrain: ArenaTerrain::new(len, 8, CELL_CM, cells).expect("the road window"),
         entry_zones: vec![
             EntryZone {
-                team: Team::Red,
+                team: PartyId::RED,
                 x0: 0,
                 y0: 0,
                 x1: 1,
                 y1: 7,
             },
             EntryZone {
-                team: Team::Blue,
+                team: PartyId::BLUE,
                 x0: len - 2,
                 y0: 0,
                 x1: len - 1,
@@ -5354,14 +5366,14 @@ fn road_home(len: u16, zone_x: u16, node: (u16, u16)) -> ArenaDefinition {
     ArenaDefinition {
         entry_zones: vec![
             EntryZone {
-                team: Team::Red,
+                team: PartyId::RED,
                 x0: zone_x,
                 y0: 0,
                 x1: zone_x + 1,
                 y1: 7,
             },
             EntryZone {
-                team: Team::Blue,
+                team: PartyId::BLUE,
                 x0: len - 2,
                 y0: 0,
                 x1: len - 1,
@@ -5405,7 +5417,7 @@ fn t1_a_withdrawn_minds_rally_clock_is_not_restarted_by_an_overshoot() {
         },
         ..tank(
             RED,
-            Team::Red,
+            PartyId::RED,
             centre(40, 4),
             vec![cannon()],
             Controller::Mind,
@@ -5574,7 +5586,7 @@ fn e4_definition(paint: &[(u16, u16, TerrainCell)], zones: Vec<EntryZone>) -> Ar
 /// Red's own zone, the two west columns — every fixture's, unchanged.
 fn red_zone() -> EntryZone {
     EntryZone {
-        team: Team::Red,
+        team: PartyId::RED,
         x0: 0,
         y0: 0,
         x1: 1,
@@ -5585,7 +5597,7 @@ fn red_zone() -> EntryZone {
 /// A blue zone of this shape, which is what a hunt answers out of.
 fn blue_zone(x0: u16, x1: u16, y0: u16, y1: u16) -> EntryZone {
     EntryZone {
-        team: Team::Blue,
+        team: PartyId::BLUE,
         x0,
         y0,
         x1,
@@ -5663,7 +5675,7 @@ fn t1_e4_units(red: (u16, u16), blue: (u16, u16), weapons: Vec<WeaponSummary>) -
         seeing(
             tank(
                 RED,
-                Team::Red,
+                PartyId::RED,
                 centre(red.0, red.1),
                 weapons,
                 Controller::Mind,
@@ -5672,7 +5684,7 @@ fn t1_e4_units(red: (u16, u16), blue: (u16, u16), weapons: Vec<WeaponSummary>) -
         ),
         tank(
             BLUE,
-            Team::Blue,
+            PartyId::BLUE,
             centre(blue.0, blue.1),
             Vec::new(),
             Controller::Pilot,
@@ -6035,7 +6047,7 @@ fn t1_a_hostile_found_while_searching_pre_empts_it() {
         state.pose = centre(4, 12);
     }
     let now = arena.now_ms;
-    plant_contact(&mut arena, RED, BLUE, Team::Blue, now);
+    plant_contact(&mut arena, RED, BLUE, PartyId::BLUE, now);
     run_substeps(&mut arena, now + 1_250, &mut bytes);
     assert!(
         matches!(
@@ -6167,7 +6179,7 @@ fn t1_a_last_plot_behind_a_wall_costs_one_failed_search_and_is_not_re_asserted()
     let mut bytes: Vec<u8> = Vec::new();
     run_settled(&mut arena, 2_000, &mut bytes);
     let now = arena.now_ms;
-    plant_contact(&mut arena, RED, BLUE, Team::Blue, now);
+    plant_contact(&mut arena, RED, BLUE, PartyId::BLUE, now);
     let until = arena.now_ms + 1_000;
     let closing = run_settled(&mut arena, until, &mut bytes);
     assert_eq!(
@@ -6437,12 +6449,12 @@ fn t1_a_hostile_held_stops_the_clock_and_a_dead_one_does_not() {
         t1_e4_on(e4_arena_of(
             vec![
                 seeing(
-                    tank(RED, Team::Red, centre(6, 3), weapons, Controller::Mind),
+                    tank(RED, PartyId::RED, centre(6, 3), weapons, Controller::Mind),
                     SIDE,
                 ),
                 tank(
                     BLUE,
-                    Team::Blue,
+                    PartyId::BLUE,
                     centre(blue.0, blue.1),
                     Vec::new(),
                     Controller::Pilot,
@@ -6487,7 +6499,7 @@ fn t1_a_hostile_held_stops_the_clock_and_a_dead_one_does_not() {
     assert!(
         arena.contacts.of(RED).any(|(_, held)| matches!(
             held.class,
-            Classification::Classified { team } if team == Team::Blue
+            Classification::Classified { party: team } if team == PartyId::BLUE
         )),
         "and it really is holding the tank: the fixture says nothing otherwise"
     );
@@ -6502,7 +6514,7 @@ fn t1_a_hostile_held_stops_the_clock_and_a_dead_one_does_not() {
     // runs and the mind crosses — with the tank still in its sight, so it is
     // the mark and not a lost contact that let it go.
     let (mut arena, stock) = scoped(&e4_cfg(0, 6_000), (9, 3), vec![cannon()]);
-    plant_contact(&mut arena, RED, BLUE, Team::Blue, 0);
+    plant_contact(&mut arena, RED, BLUE, PartyId::BLUE, 0);
     learn_the_kill(&mut arena, RED, BLUE);
     let mut bytes: Vec<u8> = Vec::new();
     let (_, here, cell, _) = t1_run_until_hunt(&mut arena, &stock, 20_000, &mut bytes)
@@ -7038,7 +7050,7 @@ fn t1_a_fight_gives_the_hunt_up() {
         state.pose = centre(here.0 + 3, here.1);
     }
     let now = arena.now_ms;
-    plant_contact(&mut arena, RED, BLUE, Team::Blue, now);
+    plant_contact(&mut arena, RED, BLUE, PartyId::BLUE, now);
     let think = t1_next_landing(&mut arena, &stock, &mut bytes);
     let memory = kept_memory(&think);
     assert!(
@@ -7252,7 +7264,7 @@ fn t1_e4_spent_pair(red_rounds: u32, blue_rounds: u32, blue: Controller) -> Aren
             presenting(seeing(
                 tank(
                     RED,
-                    Team::Red,
+                    PartyId::RED,
                     centre(6, 8),
                     vec![harmless.clone()],
                     Controller::Mind,
@@ -7260,7 +7272,7 @@ fn t1_e4_spent_pair(red_rounds: u32, blue_rounds: u32, blue: Controller) -> Aren
                 10,
             )),
             presenting(seeing(
-                tank(BLUE, Team::Blue, centre(9, 8), vec![harmless], blue),
+                tank(BLUE, PartyId::BLUE, centre(9, 8), vec![harmless], blue),
                 10,
             )),
         ],
@@ -7556,7 +7568,7 @@ fn t1_aa1_posed(
         state.pose = centre(blue.0, blue.1);
     }
     let now = arena.now_ms;
-    plant_contact(&mut arena, RED, BLUE, Team::Blue, now);
+    plant_contact(&mut arena, RED, BLUE, PartyId::BLUE, now);
     let _ = t1_next_landing(&mut arena, &stock, &mut bytes);
     assert!(
         arena.now_ms - now <= 1_250,
@@ -7821,7 +7833,7 @@ fn t1_the_ceiling_past_release_holds_for_an_immobile_mind() {
         state.pose = centre(8, 8);
     }
     let now = arena.now_ms;
-    plant_contact(&mut arena, RED, BLUE, Team::Blue, now);
+    plant_contact(&mut arena, RED, BLUE, PartyId::BLUE, now);
     let range = plot_range(&arena, RED, BLUE);
     assert!(
         range > COAXIAL_ENGAGE_CM && range <= COAXIAL_RELEASE_CM,
@@ -7952,7 +7964,7 @@ fn t1_a_close_band_order_caps_the_immobile_edge_too() {
         state.pose = centre(8, 8);
     }
     let now = arena.now_ms;
-    plant_contact(&mut arena, RED, BLUE, Team::Blue, now);
+    plant_contact(&mut arena, RED, BLUE, PartyId::BLUE, now);
     let range = plot_range(&arena, RED, BLUE);
     assert!(
         range > close_engage && range <= close_release,
@@ -8176,7 +8188,7 @@ fn t1_an_immobile_withdrawn_mind_rallies_once_like_one_that_is_home() {
         state.pose = centre(12, 8);
     }
     let now = arena.now_ms;
-    plant_contact(&mut arena, RED, BLUE, Team::Blue, now);
+    plant_contact(&mut arena, RED, BLUE, PartyId::BLUE, now);
     let before = count(&events(&mut arena, &mut bytes), "fired");
     let _ = t1_next_landing(&mut arena, &stock, &mut bytes);
     assert!(
@@ -8371,7 +8383,7 @@ fn t1_a_weapon_ready_between_the_view_and_the_landing_is_cited_at_the_landing() 
             seeing(
                 tank(
                     RED,
-                    Team::Red,
+                    PartyId::RED,
                     centre(6, 8),
                     vec![t1_aa1_harmless(cannon()), t1_aa1_harmless(coaxial())],
                     Controller::Mind,
@@ -8380,7 +8392,7 @@ fn t1_a_weapon_ready_between_the_view_and_the_landing_is_cited_at_the_landing() 
             ),
             presenting(tank(
                 BLUE,
-                Team::Blue,
+                PartyId::BLUE,
                 centre(9, 8),
                 Vec::new(),
                 Controller::Pilot,
@@ -8434,7 +8446,7 @@ fn t1_a_weapon_ready_between_the_view_and_the_landing_is_cited_at_the_landing() 
     // component order) comes ready after the landing, the coaxial between
     // the view and the landing, each with the `WeaponReady` the resolver
     // would have scheduled for it.
-    plant_contact(&mut arena, RED, BLUE, Team::Blue, at);
+    plant_contact(&mut arena, RED, BLUE, PartyId::BLUE, at);
     if let Some(unit) = arena.unit_mut(RED) {
         unit.ready_at_ms.insert(SmolStr::new("cannon"), ready_after);
         unit.ready_at_ms
@@ -8609,7 +8621,7 @@ fn t1_live_orders_by_issuer_groups_per_issuer_and_the_machines_under_their_comma
         .map(|(id, x)| {
             tank(
                 *id,
-                Team::Red,
+                PartyId::RED,
                 centre(x, 1),
                 vec![cannon()],
                 Controller::Mind,
@@ -8618,14 +8630,14 @@ fn t1_live_orders_by_issuer_groups_per_issuer_and_the_machines_under_their_comma
         .collect();
     units.push(tank(
         Y1_PILOT,
-        Team::Red,
+        PartyId::RED,
         centre(1, 4),
         Vec::new(),
         Controller::Pilot,
     ));
     units.push(tank(
         BLUE,
-        Team::Blue,
+        PartyId::BLUE,
         centre(14, 14),
         Vec::new(),
         Controller::Pilot,
@@ -8874,7 +8886,7 @@ fn z2_screen_field() -> Arena {
             with_sight(
                 tank(
                     RED,
-                    Team::Red,
+                    PartyId::RED,
                     centre(8, 8),
                     vec![cannon()],
                     Controller::Mind,
@@ -8887,14 +8899,14 @@ fn z2_screen_field() -> Arena {
             // so the one the screen never turns for is one it COULD have shot.
             presenting(tank(
                 BLUE,
-                Team::Blue,
+                PartyId::BLUE,
                 centre(8, 14),
                 Vec::new(),
                 Controller::Pilot,
             )),
             presenting(tank(
                 BLUE2,
-                Team::Blue,
+                PartyId::BLUE,
                 centre(3, 8),
                 Vec::new(),
                 Controller::Pilot,
@@ -8904,8 +8916,8 @@ fn z2_screen_field() -> Arena {
         &arena_cfg(reflex_cfg()),
         &[],
     );
-    plant_contact(&mut arena, RED, BLUE, Team::Blue, 0);
-    plant_contact(&mut arena, RED, BLUE2, Team::Blue, 0);
+    plant_contact(&mut arena, RED, BLUE, PartyId::BLUE, 0);
+    plant_contact(&mut arena, RED, BLUE2, PartyId::BLUE, 0);
     arena
 }
 
@@ -8942,7 +8954,7 @@ fn z2_screen(cadence_ms: i64) -> (Replay, Z2Cells, i64) {
                     state.pose = centre(cell.0, cell.1);
                 }
                 let at_ms = arena.now_ms;
-                plant_contact(arena, RED, BLUE, Team::Blue, at_ms);
+                plant_contact(arena, RED, BLUE, PartyId::BLUE, at_ms);
             }
             cells.push(z2_cell(arena, RED));
         },
@@ -9089,14 +9101,14 @@ fn z2_station_field_on(paint: &[(u16, u16, TerrainCell)]) -> Arena {
         terrain: ArenaTerrain::new(WIDE, SIDE, CELL_CM, cells).expect("the wide window"),
         entry_zones: vec![
             EntryZone {
-                team: Team::Red,
+                team: PartyId::RED,
                 x0: 0,
                 y0: 0,
                 x1: 1,
                 y1: SIDE - 1,
             },
             EntryZone {
-                team: Team::Blue,
+                team: PartyId::BLUE,
                 x0: WIDE - 2,
                 y0: 0,
                 x1: WIDE - 1,
@@ -9112,7 +9124,7 @@ fn z2_station_field_on(paint: &[(u16, u16, TerrainCell)]) -> Arena {
         vec![
             tank(
                 Z2_CHARGE,
-                Team::Red,
+                PartyId::RED,
                 centre(8, 8),
                 Vec::new(),
                 Controller::Pilot,
@@ -9120,7 +9132,7 @@ fn z2_station_field_on(paint: &[(u16, u16, TerrainCell)]) -> Arena {
             with_sight(
                 tank(
                     Z2_SUPPORTER,
-                    Team::Red,
+                    PartyId::RED,
                     centre(10, 8),
                     vec![cannon()],
                     Controller::Mind,
@@ -9129,7 +9141,7 @@ fn z2_station_field_on(paint: &[(u16, u16, TerrainCell)]) -> Arena {
             ),
             presenting(tank(
                 BLUE,
-                Team::Blue,
+                PartyId::BLUE,
                 centre(47, 15),
                 Vec::new(),
                 Controller::Pilot,
@@ -9138,7 +9150,7 @@ fn z2_station_field_on(paint: &[(u16, u16, TerrainCell)]) -> Arena {
         &arena_cfg(reflex_cfg()),
         &[],
     );
-    plant_contact(&mut arena, Z2_SUPPORTER, Z2_CHARGE, Team::Red, 0);
+    plant_contact(&mut arena, Z2_SUPPORTER, Z2_CHARGE, PartyId::RED, 0);
     arena
 }
 
@@ -9212,7 +9224,7 @@ fn z2_station(cadence_ms: i64) -> (Replay, Z2Station, Z2Samples, Z2Order, Vec<Ke
                             state.pose = centre(x, y + 4);
                         }
                         let at_ms = arena.now_ms;
-                        plant_contact(arena, Z2_SUPPORTER, BLUE, Team::Blue, at_ms);
+                        plant_contact(arena, Z2_SUPPORTER, BLUE, PartyId::BLUE, at_ms);
                     }
                 }
                 _ => {}
@@ -9463,7 +9475,7 @@ fn z2_immobile_support(cadence_ms: i64) -> (Replay, Z2Samples, bool) {
                         state.pose = centre(10, 12);
                     }
                     let at_ms = arena.now_ms;
-                    plant_contact(arena, Z2_SUPPORTER, BLUE, Team::Blue, at_ms);
+                    plant_contact(arena, Z2_SUPPORTER, BLUE, PartyId::BLUE, at_ms);
                 }
                 _ => {}
             }
@@ -9734,14 +9746,14 @@ fn z2_release_field() -> Arena {
         vec![
             tank(
                 RED,
-                Team::Red,
+                PartyId::RED,
                 centre(8, 8),
                 vec![cannon()],
                 Controller::Mind,
             ),
             tank(
                 BLUE,
-                Team::Blue,
+                PartyId::BLUE,
                 centre(15, 15),
                 Vec::new(),
                 Controller::Pilot,
@@ -9763,7 +9775,7 @@ fn z2_release(cadence_ms: i64) -> (Replay, Option<MachineState>) {
     let arena = z2_release_field();
     let squad = z2_squad(&arena, RED);
     let other = tacsim::deliberation::SquadId {
-        team: Team::Red,
+        team: PartyId::RED,
         index: squad.index + 1,
     };
     let withdraw = tacsim::arena::intents::IntentKind::Order(Box::new(z2_order(
@@ -9873,21 +9885,21 @@ fn z2_charge_field() -> Arena {
         vec![
             tank(
                 Z2_CHARGE,
-                Team::Red,
+                PartyId::RED,
                 centre(8, 8),
                 Vec::new(),
                 Controller::Pilot,
             ),
             tank(
                 Z2_SUPPORTER,
-                Team::Red,
+                PartyId::RED,
                 centre(6, 8),
                 vec![cannon()],
                 Controller::Mind,
             ),
             tank(
                 BLUE,
-                Team::Blue,
+                PartyId::BLUE,
                 centre(15, 15),
                 Vec::new(),
                 Controller::Pilot,
@@ -9921,7 +9933,7 @@ enum Z2Loss {
 /// mind row still holds the order at the end.
 fn z2_charge_lost(cadence_ms: i64, loss: Z2Loss) -> (Replay, Vec<Kept>, bool) {
     let mut arena = z2_charge_field();
-    plant_contact(&mut arena, Z2_SUPPORTER, Z2_CHARGE, Team::Red, 0);
+    plant_contact(&mut arena, Z2_SUPPORTER, Z2_CHARGE, PartyId::RED, 0);
     let stock = Stock::on(&arena);
     arena.mind_runner = stock.clone();
     let squad = z2_squad(&arena, Z2_SUPPORTER);
@@ -10153,7 +10165,13 @@ fn m4_6c_the_issuer_goes_with_the_order_at_a_release_an_expiry_a_possess_and_a_c
 
     // The owner's STOP E: a `Support` whose charge leaves the match.
     let planted_ms = arena.now_ms;
-    plant_contact(&mut arena, Z2_SUPPORTER, Z2_CHARGE, Team::Red, planted_ms);
+    plant_contact(
+        &mut arena,
+        Z2_SUPPORTER,
+        Z2_CHARGE,
+        PartyId::RED,
+        planted_ms,
+    );
     land(&mut arena, Objective::Support { of: Z2_CHARGE }, 600_000);
     let support = held(&arena).expect("the support order");
     assert!(
@@ -10326,7 +10344,7 @@ fn t1_a_support_whose_charge_reads_dead_stops_obeying_and_an_unseen_wreck_ends_n
 /// the reflex controller until then), as `match_::start` checks out every
 /// unseated hull: the real five sections, the power role alone, no weapon, no
 /// sensor, zero speed.
-fn o3_target(id: ObjId, team: Team, pose: Pose) -> CustodyUnit {
+fn o3_target(id: ObjId, team: PartyId, pose: Pose) -> CustodyUnit {
     let catalog = tacsim::definitions::Catalog::build_fielded(&[], tacsim::NS)
         .expect("the fielded content binds");
     let key = mush_core::CanonicalId::new(tacsim::definitions::content::TARGET_MK1)
@@ -10419,7 +10437,7 @@ fn o3_destroy_section(arena: &mut Arena, unit: ObjId, section: &str) {
 /// think written.
 #[test]
 fn t1_an_inert_target_starts_up_and_searches_nothing() {
-    let target = || o3_target(BLUE, Team::Blue, centre(9, 8));
+    let target = || o3_target(BLUE, PartyId::BLUE, centre(9, 8));
     // Alone: nothing to see, nothing to shoot, a graph to walk.
     let mut arena = arena_of(vec![target()], &[], &arena_cfg(reflex_cfg()), &[]);
     assert_eq!(arena.unit(BLUE).map(|unit| unit.power), Some(Power::Off));
@@ -10456,7 +10474,7 @@ fn t1_an_inert_target_starts_up_and_searches_nothing() {
             with_sight(
                 tank(
                     RED,
-                    Team::Red,
+                    PartyId::RED,
                     centre(5, 8),
                     vec![cannon()],
                     Controller::Mind,
@@ -10541,8 +10559,14 @@ fn t1_an_inert_target_is_the_same_at_three_cadences() {
     for cadence in [5_000_i64, 1_000, 500] {
         let mut arena = arena_of(
             vec![
-                tank(RED, Team::Red, centre(3, 8), Vec::new(), Controller::Mind),
-                o3_target(BLUE, Team::Blue, centre(12, 3)),
+                tank(
+                    RED,
+                    PartyId::RED,
+                    centre(3, 8),
+                    Vec::new(),
+                    Controller::Mind,
+                ),
+                o3_target(BLUE, PartyId::BLUE, centre(12, 3)),
             ],
             &[],
             &arena_cfg(reflex_cfg()),
@@ -10597,7 +10621,7 @@ fn t1_an_inert_target_is_the_same_at_three_cadences() {
 /// all, which is what the tests below are about. **17b cut M4.4**: flown by a
 /// `Controller::Mind` (and, until 17b cut M4.6b deleted the Hold-match STOP's
 /// residue, by the reflex there — so the builder lost its `controller`).
-fn ae3_drone(id: ObjId, team: Team, cell: (u16, u16), sight: u16, share: u16) -> CustodyUnit {
+fn ae3_drone(id: ObjId, team: PartyId, cell: (u16, u16), sight: u16, share: u16) -> CustodyUnit {
     let mut unit = with_mesh(
         tank(
             id,
@@ -10678,10 +10702,10 @@ fn t1_a_drone_patrols_hunts_withdraws_and_shares_what_it_sees() {
     // (1) Alone: the patrol, then the hunt, then the arrival.
     let mut arena = e4_arena_of(
         vec![
-            ae3_drone(RED, Team::Red, (6, 3), E4_SIGHT_CELLS, 0),
+            ae3_drone(RED, PartyId::RED, (6, 3), E4_SIGHT_CELLS, 0),
             tank(
                 BLUE,
-                Team::Blue,
+                PartyId::BLUE,
                 centre(15, 15),
                 Vec::new(),
                 Controller::Pilot,
@@ -10743,11 +10767,11 @@ fn t1_a_drone_patrols_hunts_withdraws_and_shares_what_it_sees() {
     // (2) On the mesh: the drone sees what its tank cannot, and says so.
     let mut arena = e4_arena_of(
         vec![
-            ae3_drone(RED, Team::Red, (8, 8), E4_SIGHT_CELLS, 10),
+            ae3_drone(RED, PartyId::RED, (8, 8), E4_SIGHT_CELLS, 10),
             with_mesh(
                 tank(
                     RED2,
-                    Team::Red,
+                    PartyId::RED,
                     centre(3, 8),
                     vec![cannon()],
                     Controller::Pilot,
@@ -10757,7 +10781,7 @@ fn t1_a_drone_patrols_hunts_withdraws_and_shares_what_it_sees() {
             ),
             tank(
                 BLUE,
-                Team::Blue,
+                PartyId::BLUE,
                 centre(13, 11),
                 Vec::new(),
                 Controller::Pilot,
@@ -10967,14 +10991,14 @@ mod m5r {
                 terrain: ArenaTerrain::uniform(32, 32, CELL_CM, ground()).expect("wide ground"),
                 entry_zones: vec![
                     EntryZone {
-                        team: Team::Red,
+                        team: PartyId::RED,
                         x0: 0,
                         y0: 0,
                         x1: 1,
                         y1: 31,
                     },
                     EntryZone {
-                        team: Team::Blue,
+                        team: PartyId::BLUE,
                         x0: 30,
                         y0: 0,
                         x1: 31,
@@ -10987,7 +11011,7 @@ mod m5r {
                 definition,
                 vec![tank(
                     RED,
-                    Team::Red,
+                    PartyId::RED,
                     centre(2, 3),
                     Vec::new(),
                     Controller::Mind,
@@ -11095,12 +11119,18 @@ mod m5r {
                 vec![
                     tank(
                         RED,
-                        Team::Red,
+                        PartyId::RED,
                         centre(2, 3),
                         vec![cannon()],
                         Controller::Mind,
                     ),
-                    tank(RED2, Team::Red, centre(2, 12), Vec::new(), Controller::Mind),
+                    tank(
+                        RED2,
+                        PartyId::RED,
+                        centre(2, 12),
+                        Vec::new(),
+                        Controller::Mind,
+                    ),
                 ],
                 &[],
                 &arena_cfg(reflex_cfg()),
@@ -11160,7 +11190,7 @@ mod m5r {
         let mut arena = arena_of(
             vec![tank(
                 RED,
-                Team::Red,
+                PartyId::RED,
                 centre(6, 8),
                 Vec::new(),
                 Controller::Mind,
@@ -11239,6 +11269,7 @@ mod m5r {
                 resolution: tacsim::match_::stock_resolution(),
                 seed: SEED,
                 mode: tacsim::arena::MatchMode::Hold,
+                host: tacsim::arena::FieldHost::all_hostile(),
             },
             cfg,
             &match_cfg(),
@@ -11273,28 +11304,28 @@ mod m5r {
             vec![
                 tank(
                     RED,
-                    Team::Red,
+                    PartyId::RED,
                     centre(1, 4),
                     vec![cannon()],
                     Controller::Mind,
                 ),
                 tank(
                     RED2,
-                    Team::Red,
+                    PartyId::RED,
                     centre(1, 12),
                     vec![cannon()],
                     Controller::Mind,
                 ),
                 tank(
                     O1_RED3,
-                    Team::Red,
+                    PartyId::RED,
                     centre(1, 8),
                     vec![cannon()],
                     Controller::Mind,
                 ),
                 tank(
                     BLUE,
-                    Team::Blue,
+                    PartyId::BLUE,
                     centre(15, 0),
                     vec![cannon()],
                     Controller::Pilot,
@@ -11416,7 +11447,7 @@ mod m5r {
                 with_sight(
                     tank(
                         RED,
-                        Team::Red,
+                        PartyId::RED,
                         centre(4, 8),
                         vec![cannon()],
                         Controller::Mind,
@@ -11425,7 +11456,7 @@ mod m5r {
                 ),
                 presenting(tank(
                     BLUE,
-                    Team::Blue,
+                    PartyId::BLUE,
                     centre(13, 8),
                     vec![cannon()],
                     Controller::Pilot,
@@ -11445,7 +11476,7 @@ mod m5r {
                     "the fixture must remain live until its observation bound"
                 );
                 let now = arena.now_ms;
-                plant_contact(arena, RED, BLUE, Team::Blue, now);
+                plant_contact(arena, RED, BLUE, PartyId::BLUE, now);
                 let out = arena.step_settled(wall, &[], &[]);
                 absorb(&out, &mut bytes);
                 cells.push(
@@ -11503,14 +11534,14 @@ mod m5r {
             vec![
                 tank(
                     RED,
-                    Team::Red,
+                    PartyId::RED,
                     centre(1, 8),
                     vec![cannon()],
                     Controller::Mind,
                 ),
                 tank(
                     BLUE,
-                    Team::Blue,
+                    PartyId::BLUE,
                     centre(15, 0),
                     vec![cannon()],
                     Controller::Pilot,
@@ -11626,7 +11657,7 @@ mod m5r {
                 definition,
                 vec![tank(
                     RED,
-                    Team::Red,
+                    PartyId::RED,
                     centre(2, 3),
                     vec![cannon()],
                     Controller::Mind,
@@ -11719,7 +11750,7 @@ mod m5r {
                 with_sight(
                     tank(
                         RED,
-                        Team::Red,
+                        PartyId::RED,
                         centre(4, 8),
                         vec![cannon()],
                         Controller::Mind,
@@ -11728,7 +11759,7 @@ mod m5r {
                 ),
                 presenting(tank(
                     BLUE,
-                    Team::Blue,
+                    PartyId::BLUE,
                     centre(12, 8),
                     vec![cannon()],
                     Controller::Pilot,
@@ -11750,7 +11781,7 @@ mod m5r {
                     "the fixture must remain live until its observation bound"
                 );
                 let now = arena.now_ms;
-                plant_contact(arena, RED, BLUE, Team::Blue, now);
+                plant_contact(arena, RED, BLUE, PartyId::BLUE, now);
                 let out = arena.step_settled(wall, &[], &[]);
                 absorb(&out, &mut bytes);
                 shots += out.motor.shots;
@@ -11815,14 +11846,14 @@ mod m5r {
             vec![
                 tank(
                     RED,
-                    Team::Red,
+                    PartyId::RED,
                     centre(1, 8),
                     vec![cannon()],
                     Controller::Mind,
                 ),
                 tank(
                     BLUE,
-                    Team::Blue,
+                    PartyId::BLUE,
                     centre(15, 0),
                     vec![cannon()],
                     Controller::Pilot,
@@ -11956,21 +11987,21 @@ mod m5r {
             vec![
                 tank(
                     RED,
-                    Team::Red,
+                    PartyId::RED,
                     centre(1, 4),
                     vec![cannon()],
                     Controller::Mind,
                 ),
                 tank(
                     RED2,
-                    Team::Red,
+                    PartyId::RED,
                     centre(1, 12),
                     vec![cannon()],
                     Controller::Mind,
                 ),
                 tank(
                     BLUE,
-                    Team::Blue,
+                    PartyId::BLUE,
                     centre(15, 0),
                     vec![cannon()],
                     Controller::Pilot,
@@ -11995,7 +12026,7 @@ mod m5r {
             o1_ground(&paint, (10, 8), 1, 3_600_000),
             vec![tank(
                 RED,
-                Team::Red,
+                PartyId::RED,
                 centre(2, 3),
                 vec![cannon()],
                 Controller::Mind,
@@ -12104,10 +12135,10 @@ mod m5r {
         let mut arena = o1_arena(
             o1_ground(&[], (10, 8), 3, 3_600_000),
             vec![
-                ae3_drone(RED, Team::Red, (1, 4), 3, 0),
+                ae3_drone(RED, PartyId::RED, (1, 4), 3, 0),
                 tank(
                     BLUE,
-                    Team::Blue,
+                    PartyId::BLUE,
                     centre(15, 0),
                     vec![cannon()],
                     Controller::Pilot,

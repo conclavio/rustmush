@@ -492,11 +492,11 @@ impl StandingOrder {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use crate::arena::state::Team;
+    use crate::arena::state::PartyId;
 
     fn squad() -> SquadId {
         SquadId {
-            team: Team::Red,
+            team: PartyId::RED,
             index: 1,
         }
     }
@@ -545,7 +545,7 @@ mod tests {
         assert_eq!(CharacterRef::persona_name(squad()), "red lance leader 1");
         assert_eq!(
             CharacterRef::persona_name(SquadId {
-                team: Team::Blue,
+                team: PartyId::BLUE,
                 index: 3
             }),
             "blue lance leader 3"

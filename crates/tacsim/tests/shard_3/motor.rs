@@ -25,7 +25,7 @@ use tacsim::arena::CostRow;
 use tacsim::arena::motion::BlockedCause;
 use tacsim::arena::motor::MotorCounters;
 use tacsim::arena::motor::{MotorRow, Refusal};
-use tacsim::arena::state::{Arena, HoldState, Power, SeenPose, Team};
+use tacsim::arena::state::{Arena, HoldState, PartyId, Power, SeenPose};
 
 /// The final state hash of [`duel`] stepped at 1,000 ms for 60 s, read at
 /// `32a1cc23` — before `arena/motor.rs` existed — off this very run.
@@ -62,11 +62,15 @@ use tacsim::arena::state::{Arena, HoldState, Power, SeenPose, Team};
 /// under the compatibility re-bless described at `M1B0_DUEL_LINES`.
 // M6's complete captured card/profile/ROM state changes the hash encoding.
 // The full ledger below separately pins every event and non-identity payload.
-const DUEL_HASH_AT_HEAD: u64 = 0xd763_0ae7_1acf_63f7;
-// DT.1b's actual Linux observation under API6/stock3. The sealed source and
+// Doc 32 cut CF.0 (the one re-bless): item 13 folds the parties' books and end
+// condition, which the identity-only control does not strip: was
+// `0xd763_0ae7_1acf_63f7`.
+const DUEL_HASH_AT_HEAD: u64 = 0xd15b_cccc_3546_150f;
+// Doc 32 cut CF.0: API 7, with the parties' books folded (item 13); was DT.1b's
+// `4745814000650159526`. DT.1b's actual Linux observation under API6/stock3. The sealed source and
 // stock provenance identities changed; the independent API4 control below
 // still pins every other state byte to the preceding legacy hash.
-const DUEL_HASH_API6_OBSERVED: u64 = 4745814000650159526;
+const DUEL_HASH_API6_OBSERVED: u64 = 2912376477516997213;
 
 /// Two machines a side at their authored musters on the proving ground —
 /// **17b cut M4.3**: every one a mind sealed as the production fill is
@@ -78,8 +82,11 @@ fn duel(world: &mush_testkit::TestWorld) -> Arena {
     shipped_arena(
         world,
         &[
-            &[Muster::fill(Team::Red, 1), Muster::fill(Team::Red, 2)],
-            &[Muster::fill(Team::Blue, 1), Muster::fill(Team::Blue, 2)],
+            &[Muster::fill(PartyId::RED, 1), Muster::fill(PartyId::RED, 2)],
+            &[
+                Muster::fill(PartyId::BLUE, 1),
+                Muster::fill(PartyId::BLUE, 2),
+            ],
         ],
     )
 }
@@ -116,8 +123,11 @@ fn m1a1_the_shipped_duel_hashes_as_before() {
     let (mut arena, identity) = support::shipped_arena_with_api4_hash_control(
         &world,
         &[
-            &[Muster::fill(Team::Red, 1), Muster::fill(Team::Red, 2)],
-            &[Muster::fill(Team::Blue, 1), Muster::fill(Team::Blue, 2)],
+            &[Muster::fill(PartyId::RED, 1), Muster::fill(PartyId::RED, 2)],
+            &[
+                Muster::fill(PartyId::BLUE, 1),
+                Muster::fill(PartyId::BLUE, 2),
+            ],
         ],
     );
     let mut searched = 0_u32;
@@ -212,40 +222,40 @@ fn m1a1_the_shipped_duel_hashes_as_before() {
 /// origin says); the state is the line's parameter, never the seal's (M8a's A1), so
 /// no seal digest and no `hash` moved, and every other byte is equal.
 const M1B0_DUEL_LINES: &[&str] = &[
-    r#"{"seq":1,"t_ms":0,"kind":"match_started","hash":12124636823489579027}"#,
-    r#"{"seq":2,"t_ms":0,"kind":"mind_sealed","unit":3,"sortie":3,"mind":"Standard Doctrine","source":"c0737fdc45994c22","card_digest":"f2491a868a5707936f2abf1db211ed6bba20971b2c364e31433bafb33fc07f90","class":"I","governed":true,"licence":"doctrine","licence_state":"doctrine","hash":12124636823489579027}"#,
-    r#"{"seq":3,"t_ms":0,"kind":"mind_sealed","unit":4,"sortie":4,"mind":"Standard Doctrine","source":"c0737fdc45994c22","card_digest":"f2491a868a5707936f2abf1db211ed6bba20971b2c364e31433bafb33fc07f90","class":"I","governed":true,"licence":"doctrine","licence_state":"doctrine","hash":12124636823489579027}"#,
-    r#"{"seq":4,"t_ms":0,"kind":"mind_sealed","unit":7,"sortie":7,"mind":"Standard Doctrine","source":"c0737fdc45994c22","card_digest":"f2491a868a5707936f2abf1db211ed6bba20971b2c364e31433bafb33fc07f90","class":"I","governed":true,"licence":"doctrine","licence_state":"doctrine","hash":12124636823489579027}"#,
-    r#"{"seq":5,"t_ms":0,"kind":"mind_sealed","unit":8,"sortie":8,"mind":"Standard Doctrine","source":"c0737fdc45994c22","card_digest":"f2491a868a5707936f2abf1db211ed6bba20971b2c364e31433bafb33fc07f90","class":"I","governed":true,"licence":"doctrine","licence_state":"doctrine","hash":12124636823489579027}"#,
-    r#"{"seq":6,"t_ms":258,"kind":"detected","viewer":8,"contact":8314046734819043908,"target":7,"hash":5408610605774397913}"#,
-    r#"{"seq":7,"t_ms":421,"kind":"detected","viewer":3,"contact":5844251635052541762,"target":4,"hash":5408610605774397913}"#,
-    r#"{"seq":8,"t_ms":482,"kind":"detected","viewer":4,"contact":5992554990774319474,"target":3,"hash":5408610605774397913}"#,
-    r#"{"seq":9,"t_ms":508,"kind":"startup","unit":8,"hash":16775748973660345261}"#,
-    r#"{"seq":10,"t_ms":671,"kind":"startup","unit":3,"hash":16775748973660345261}"#,
-    r#"{"seq":11,"t_ms":732,"kind":"startup","unit":4,"hash":16775748973660345261}"#,
-    r#"{"seq":12,"t_ms":594,"kind":"detected","viewer":7,"contact":3822974778006219272,"target":8,"hash":12844910081051607553}"#,
-    r#"{"seq":13,"t_ms":844,"kind":"startup","unit":7,"hash":7577964430766272793}"#,
-    r#"{"seq":14,"t_ms":1000,"kind":"tempo","from":"quiet","to":"alert","hash":12408990259748856446}"#,
-    r#"{"seq":15,"t_ms":3258,"kind":"classified","viewer":8,"contact":8314046734819043908,"target":7,"team":"blue","draws":[["classify:8:7:4",3884165266672269218]],"hash":518175099725774458}"#,
-    r#"{"seq":16,"t_ms":3421,"kind":"classified","viewer":3,"contact":5844251635052541762,"target":4,"team":"red","draws":[["classify:3:4:4",16846213216163885984]],"hash":518175099725774458}"#,
-    r#"{"seq":17,"t_ms":3482,"kind":"classified","viewer":4,"contact":5992554990774319474,"target":3,"team":"red","draws":[["classify:4:3:4",2094150884743799771]],"hash":518175099725774458}"#,
-    r#"{"seq":18,"t_ms":3594,"kind":"classified","viewer":7,"contact":3822974778006219272,"target":8,"team":"blue","draws":[["classify:7:8:4",989486057018502202]],"hash":6805347145886329584}"#,
-    r#"{"seq":19,"t_ms":5000,"kind":"position_summary","units":[[3,6500,97500,100,90000],[4,6500,95500,100,90000],[7,249500,97500,-100,270000],[8,249500,95500,-100,270000]],"hash":17298900196856186414}"#,
-    r#"{"seq":20,"t_ms":10000,"kind":"position_summary","units":[[3,6500,97500,100,90000],[4,6500,95500,100,90000],[7,249500,97500,-100,270000],[8,249500,95500,-100,270000]],"hash":2301061022736592292}"#,
-    r#"{"seq":21,"t_ms":10508,"kind":"power_online","unit":8,"hash":11818152469292057610}"#,
-    r#"{"seq":22,"t_ms":10671,"kind":"power_online","unit":3,"hash":11818152469292057610}"#,
-    r#"{"seq":23,"t_ms":10732,"kind":"power_online","unit":4,"hash":11818152469292057610}"#,
-    r#"{"seq":24,"t_ms":10844,"kind":"power_online","unit":7,"hash":12344787797686262746}"#,
-    r#"{"seq":25,"t_ms":15000,"kind":"position_summary","units":[[3,7068,97500,100,90000],[4,6911,95885,100,43754],[7,249339,97647,-100,330000],[8,249088,95885,-100,316287]],"hash":1953401771144206323}"#,
-    r#"{"seq":26,"t_ms":20000,"kind":"position_summary","units":[[3,7740,99285,100,322500],[4,9358,96498,100,89214],[7,249484,99938,-100,1632],[8,246641,96498,-200,270899]],"hash":10786555388146621876}"#,
-    r#"{"seq":27,"t_ms":25000,"kind":"position_summary","units":[[3,6551,103217,100,358159],[4,14421,96500,100,90000],[7,249500,103859,-200,0],[8,241579,96500,-200,270000]],"hash":2357401188059640209}"#,
-    r#"{"seq":28,"t_ms":30000,"kind":"position_summary","units":[[3,5181,104876,100,260070],[4,21522,96500,200,90000],[7,251150,104776,-100,120000],[8,234360,96500,-200,270000]],"hash":6638408794100657443}"#,
-    r#"{"seq":29,"t_ms":35000,"kind":"position_summary","units":[[3,5467,101252,100,126057],[4,28493,96500,200,90000],[7,249987,100953,-100,227108],[8,227758,96500,-200,270000]],"hash":8249405607970972627}"#,
-    r#"{"seq":30,"t_ms":40000,"kind":"position_summary","units":[[3,7887,98377,100,112170],[4,31801,96500,200,90000],[7,248434,98572,-100,221080],[8,225080,96500,-200,270000]],"hash":6086838400385245968}"#,
-    r#"{"seq":31,"t_ms":45000,"kind":"position_summary","units":[[3,12238,98497,100,89366],[4,35823,96500,200,90000],[7,245546,97500,-200,270000],[8,221603,96500,-300,270000]],"hash":17104228020635896743}"#,
-    r#"{"seq":32,"t_ms":50000,"kind":"position_summary","units":[[3,18787,97828,200,114667],[4,42331,96500,200,90000],[7,239763,97500,-200,270000],[8,215625,96500,-300,270000]],"hash":7994764191867112604}"#,
-    r#"{"seq":33,"t_ms":55000,"kind":"position_summary","units":[[3,26125,97497,200,89684],[4,49781,96638,200,75000],[7,232307,97500,-200,270000],[8,208140,96500,-300,270000]],"hash":10011651504796134194}"#,
-    r#"{"seq":34,"t_ms":60000,"kind":"position_summary","units":[[3,30797,97500,200,90000],[4,54548,97521,200,91283],[7,226714,97500,-200,270000],[8,202598,96500,-300,270000]],"hash":7334104258906948269}"#,
+    r#"{"seq":1,"t_ms":0,"kind":"match_started","hash":8480736938844901576}"#,
+    r#"{"seq":2,"t_ms":0,"kind":"mind_sealed","unit":3,"sortie":3,"mind":"Standard Doctrine","source":"a37766b55993879f","card_digest":"f2491a868a5707936f2abf1db211ed6bba20971b2c364e31433bafb33fc07f90","class":"I","governed":true,"licence":"doctrine","licence_state":"doctrine","hash":8480736938844901576}"#,
+    r#"{"seq":3,"t_ms":0,"kind":"mind_sealed","unit":4,"sortie":4,"mind":"Standard Doctrine","source":"a37766b55993879f","card_digest":"f2491a868a5707936f2abf1db211ed6bba20971b2c364e31433bafb33fc07f90","class":"I","governed":true,"licence":"doctrine","licence_state":"doctrine","hash":8480736938844901576}"#,
+    r#"{"seq":4,"t_ms":0,"kind":"mind_sealed","unit":7,"sortie":7,"mind":"Standard Doctrine","source":"a37766b55993879f","card_digest":"f2491a868a5707936f2abf1db211ed6bba20971b2c364e31433bafb33fc07f90","class":"I","governed":true,"licence":"doctrine","licence_state":"doctrine","hash":8480736938844901576}"#,
+    r#"{"seq":5,"t_ms":0,"kind":"mind_sealed","unit":8,"sortie":8,"mind":"Standard Doctrine","source":"a37766b55993879f","card_digest":"f2491a868a5707936f2abf1db211ed6bba20971b2c364e31433bafb33fc07f90","class":"I","governed":true,"licence":"doctrine","licence_state":"doctrine","hash":8480736938844901576}"#,
+    r#"{"seq":6,"t_ms":258,"kind":"detected","viewer":8,"contact":8314046734819043908,"target":7,"hash":6143970903999325162}"#,
+    r#"{"seq":7,"t_ms":421,"kind":"detected","viewer":3,"contact":5844251635052541762,"target":4,"hash":6143970903999325162}"#,
+    r#"{"seq":8,"t_ms":482,"kind":"detected","viewer":4,"contact":5992554990774319474,"target":3,"hash":6143970903999325162}"#,
+    r#"{"seq":9,"t_ms":508,"kind":"startup","unit":8,"hash":15398136771418812861}"#,
+    r#"{"seq":10,"t_ms":671,"kind":"startup","unit":3,"hash":15398136771418812861}"#,
+    r#"{"seq":11,"t_ms":732,"kind":"startup","unit":4,"hash":15398136771418812861}"#,
+    r#"{"seq":12,"t_ms":594,"kind":"detected","viewer":7,"contact":3822974778006219272,"target":8,"hash":1959103385545100858}"#,
+    r#"{"seq":13,"t_ms":844,"kind":"startup","unit":7,"hash":12279853886207922909}"#,
+    r#"{"seq":14,"t_ms":1000,"kind":"tempo","from":"quiet","to":"alert","hash":16976389030483784078}"#,
+    r#"{"seq":15,"t_ms":3258,"kind":"classified","viewer":8,"contact":8314046734819043908,"target":7,"team":"blue","draws":[["classify:8:7:4",3884165266672269218]],"hash":2394235791628508748}"#,
+    r#"{"seq":16,"t_ms":3421,"kind":"classified","viewer":3,"contact":5844251635052541762,"target":4,"team":"red","draws":[["classify:3:4:4",16846213216163885984]],"hash":2394235791628508748}"#,
+    r#"{"seq":17,"t_ms":3482,"kind":"classified","viewer":4,"contact":5992554990774319474,"target":3,"team":"red","draws":[["classify:4:3:4",2094150884743799771]],"hash":2394235791628508748}"#,
+    r#"{"seq":18,"t_ms":3594,"kind":"classified","viewer":7,"contact":3822974778006219272,"target":8,"team":"blue","draws":[["classify:7:8:4",989486057018502202]],"hash":11880174610204719161}"#,
+    r#"{"seq":19,"t_ms":5000,"kind":"position_summary","units":[[3,6500,97500,100,90000],[4,6500,95500,100,90000],[7,249500,97500,-100,270000],[8,249500,95500,-100,270000]],"hash":6760158094792909415}"#,
+    r#"{"seq":20,"t_ms":10000,"kind":"position_summary","units":[[3,6500,97500,100,90000],[4,6500,95500,100,90000],[7,249500,97500,-100,270000],[8,249500,95500,-100,270000]],"hash":14629206245403804853}"#,
+    r#"{"seq":21,"t_ms":10508,"kind":"power_online","unit":8,"hash":16577271341592857052}"#,
+    r#"{"seq":22,"t_ms":10671,"kind":"power_online","unit":3,"hash":16577271341592857052}"#,
+    r#"{"seq":23,"t_ms":10732,"kind":"power_online","unit":4,"hash":16577271341592857052}"#,
+    r#"{"seq":24,"t_ms":10844,"kind":"power_online","unit":7,"hash":12186555467420651932}"#,
+    r#"{"seq":25,"t_ms":15000,"kind":"position_summary","units":[[3,7068,97500,100,90000],[4,6911,95885,100,43754],[7,249339,97647,-100,330000],[8,249088,95885,-100,316287]],"hash":15179263445570607777}"#,
+    r#"{"seq":26,"t_ms":20000,"kind":"position_summary","units":[[3,7740,99285,100,322500],[4,9358,96498,100,89214],[7,249484,99938,-100,1632],[8,246641,96498,-200,270899]],"hash":10377287959015683581}"#,
+    r#"{"seq":27,"t_ms":25000,"kind":"position_summary","units":[[3,6551,103217,100,358159],[4,14421,96500,100,90000],[7,249500,103859,-200,0],[8,241579,96500,-200,270000]],"hash":18403388134102154607}"#,
+    r#"{"seq":28,"t_ms":30000,"kind":"position_summary","units":[[3,5181,104876,100,260070],[4,21522,96500,200,90000],[7,251150,104776,-100,120000],[8,234360,96500,-200,270000]],"hash":5642027794246196082}"#,
+    r#"{"seq":29,"t_ms":35000,"kind":"position_summary","units":[[3,5467,101252,100,126057],[4,28493,96500,200,90000],[7,249987,100953,-100,227108],[8,227758,96500,-200,270000]],"hash":9212798363286019671}"#,
+    r#"{"seq":30,"t_ms":40000,"kind":"position_summary","units":[[3,7887,98377,100,112170],[4,31801,96500,200,90000],[7,248434,98572,-100,221080],[8,225080,96500,-200,270000]],"hash":563680028393716651}"#,
+    r#"{"seq":31,"t_ms":45000,"kind":"position_summary","units":[[3,12238,98497,100,89366],[4,35823,96500,200,90000],[7,245546,97500,-200,270000],[8,221603,96500,-300,270000]],"hash":9714739231496568701}"#,
+    r#"{"seq":32,"t_ms":50000,"kind":"position_summary","units":[[3,18787,97828,200,114667],[4,42331,96500,200,90000],[7,239763,97500,-200,270000],[8,215625,96500,-300,270000]],"hash":3442891309029935282}"#,
+    r#"{"seq":33,"t_ms":55000,"kind":"position_summary","units":[[3,26125,97497,200,89684],[4,49781,96638,200,75000],[7,232307,97500,-200,270000],[8,208140,96500,-300,270000]],"hash":7219049955831019510}"#,
+    r#"{"seq":34,"t_ms":60000,"kind":"position_summary","units":[[3,30797,97500,200,90000],[4,54548,97521,200,91283],[7,226714,97500,-200,270000],[8,202598,96500,-300,270000]],"hash":10950301118916580489}"#,
 ];
 
 /// **17b cut M1b.0: the production line-hash pin, the reflex half.** The
@@ -290,12 +300,12 @@ fn m1a1_stand_off_cell_reads_the_plot_and_not_the_target() {
     let mut arena = shipped_arena(
         &world,
         &[
-            &[Muster::mind(Team::Red, 1)],
-            &[Muster::piloted(Team::Blue, 1)],
+            &[Muster::mind(PartyId::RED, 1)],
+            &[Muster::piloted(PartyId::BLUE, 1)],
         ],
     );
-    let red = tank(&world, Team::Red, 1);
-    let blue = tank(&world, Team::Blue, 1);
+    let red = tank(&world, PartyId::RED, 1);
+    let blue = tank(&world, PartyId::BLUE, 1);
     let seen = arena.unit(blue).map(SeenPose::of).expect("blue");
     let id = tacsim::arena::rng::draw_contact_id(support::SEED, red, blue);
     arena.contacts.insert(
@@ -303,7 +313,9 @@ fn m1a1_stand_off_cell_reads_the_plot_and_not_the_target() {
         id,
         tacsim::arena::state::ShadowContact::sighted(
             blue,
-            tacsim::arena::state::Classification::Classified { team: Team::Blue },
+            tacsim::arena::state::Classification::Classified {
+                party: PartyId::BLUE,
+            },
             0,
             seen,
         ),
@@ -357,7 +369,7 @@ fn picks(arena: &Arena, unit: ObjId) -> Picks {
 #[test]
 fn m1a1_the_nav_pickers_read_the_ground_and_the_own_pose_only() {
     let world = booted_world();
-    let red = tank(&world, Team::Red, 1);
+    let red = tank(&world, PartyId::RED, 1);
     let field = || {
         let mut arena = duel(&world);
         let here = cell_of(&arena, red).expect("red is on the window");
@@ -442,12 +454,12 @@ fn m1a1_the_open_line_walks_read_terrain_and_the_avoid_list_and_never_the_index(
     let mut arena = shipped_arena(
         &world,
         &[
-            &[Muster::mind(Team::Red, 1)],
-            &[Muster::piloted(Team::Blue, 1)],
+            &[Muster::mind(PartyId::RED, 1)],
+            &[Muster::piloted(PartyId::BLUE, 1)],
         ],
     );
-    let red = tank(&world, Team::Red, 1);
-    let blue = tank(&world, Team::Blue, 1);
+    let red = tank(&world, PartyId::RED, 1);
+    let blue = tank(&world, PartyId::BLUE, 1);
     // Under way on a straight run of its route, pointed at the next cell: the
     // route's first three cells one step apart in one direction, that step's
     // compass heading within ten degrees of the hull's, the hull in the cell one
@@ -571,8 +583,8 @@ fn m1a1_the_open_line_walks_read_terrain_and_the_avoid_list_and_never_the_index(
 #[test]
 fn m1a1_hold_routeless_holds_a_routeless_row_whatever_the_controller() {
     let world = booted_world();
-    let mut arena = shipped_arena(&world, &[&[Muster::piloted(Team::Red, 1)]]);
-    let red = tank(&world, Team::Red, 1);
+    let mut arena = shipped_arena(&world, &[&[Muster::piloted(PartyId::RED, 1)]]);
+    let red = tank(&world, PartyId::RED, 1);
     let terrain = arena.definition.terrain.clone();
     let row = arena.unit(red).map(|unit| unit.cost_row).expect("red");
     assert_eq!(row, CostRow::Tracked);
@@ -629,8 +641,8 @@ fn m1a1_hold_routeless_holds_a_routeless_row_whatever_the_controller() {
 #[test]
 fn m1a1_age_avoid_ages_a_pilot_rows_stops_and_drops_its_refusal() {
     let world = booted_world();
-    let mut arena = shipped_arena(&world, &[&[Muster::piloted(Team::Red, 1)]]);
-    let red = tank(&world, Team::Red, 1);
+    let mut arena = shipped_arena(&world, &[&[Muster::piloted(PartyId::RED, 1)]]);
+    let red = tank(&world, PartyId::RED, 1);
     assert_eq!(
         arena
             .unit(red)
@@ -714,8 +726,8 @@ fn drive_run(
 ) -> DriveRun {
     use tacsim::arena::intents::Intent;
     use tacsim::arena::perception::FrameNotice;
-    let mut arena = shipped_arena(world, &[&[Muster::piloted(Team::Red, 1)]]);
-    let red = tank(world, Team::Red, 1);
+    let mut arena = shipped_arena(world, &[&[Muster::piloted(PartyId::RED, 1)]]);
+    let red = tank(world, PartyId::RED, 1);
     let _ = arena.seat_pilot(
         M1A4_PILOT,
         red,
@@ -888,8 +900,8 @@ fn m1a4_a_piloted_drive_drives_to_the_cell_at_three_cadences() {
     use tacsim::arena::motor::ARRIVE_CELLS;
 
     let world = booted_world();
-    let probe = shipped_arena(&world, &[&[Muster::piloted(Team::Red, 1)]]);
-    let red = tank(&world, Team::Red, 1);
+    let probe = shipped_arena(&world, &[&[Muster::piloted(PartyId::RED, 1)]]);
+    let red = tank(&world, PartyId::RED, 1);
     let from = cell_of(&probe, red).expect("red is on the window");
     let terrain = &probe.definition.terrain;
     let row = probe.unit(red).map(|unit| unit.cost_row).expect("red");
@@ -1026,26 +1038,29 @@ fn m1a4_the_fan_keeps_two_same_side_goals_apart_in_a_far_zone() {
         let mut arena = shipped_arena(
             &world,
             &[
-                &[Muster::piloted(Team::Red, 1), Muster::piloted(Team::Red, 2)],
-                &[Muster::mind(Team::Blue, 1)],
+                &[
+                    Muster::piloted(PartyId::RED, 1),
+                    Muster::piloted(PartyId::RED, 2),
+                ],
+                &[Muster::mind(PartyId::BLUE, 1)],
             ],
         );
-        for unit in [tank(&world, Team::Red, 1), tank(&world, Team::Red, 2)] {
+        for unit in [tank(&world, PartyId::RED, 1), tank(&world, PartyId::RED, 2)] {
             if let Some(state) = arena.unit_mut(unit) {
                 state.power = Power::Online;
             }
         }
         arena
     };
-    let (one, two) = (tank(&world, Team::Red, 1), tank(&world, Team::Red, 2));
-    let blue = tank(&world, Team::Blue, 1);
+    let (one, two) = (tank(&world, PartyId::RED, 1), tank(&world, PartyId::RED, 2));
+    let blue = tank(&world, PartyId::BLUE, 1);
     let probe = field();
     let row = probe.unit(one).map(|unit| unit.cost_row).expect("red");
     let zone = probe
         .definition
         .entry_zones
         .iter()
-        .find(|zone| zone.team == Team::Blue)
+        .find(|zone| zone.team == PartyId::BLUE)
         .copied()
         .expect("blue's entry zone");
     let (x0, x1) = (zone.x0.min(zone.x1), zone.x0.max(zone.x1));
@@ -1119,7 +1134,7 @@ fn m1a4_the_fan_keeps_two_same_side_goals_apart_in_a_far_zone() {
             .definition
             .entry_zones
             .iter()
-            .any(|zone| zone.team != Team::Red
+            .any(|zone| zone.team != PartyId::RED
                 && (zone.x0.min(zone.x1)..=zone.x0.max(zone.x1)).contains(&open.0)
                 && (zone.y0.min(zone.y1)..=zone.y0.max(zone.y1)).contains(&open.1)),
         "the premise: {open:?} is in no far zone"
@@ -1137,8 +1152,8 @@ fn m1a4_a_pilots_motor_row_ages_its_stops_on_the_tick() {
     use tacsim::arena::state::{Channel, DueKind};
 
     let world = booted_world();
-    let mut arena = shipped_arena(&world, &[&[Muster::piloted(Team::Red, 1)]]);
-    let red = tank(&world, Team::Red, 1);
+    let mut arena = shipped_arena(&world, &[&[Muster::piloted(PartyId::RED, 1)]]);
+    let red = tank(&world, PartyId::RED, 1);
     if let Some(state) = arena.unit_mut(red) {
         state.power = Power::Online;
     }
@@ -1210,8 +1225,8 @@ fn m1a4_a_goal_is_driven_at_its_landing_millisecond() {
     use tacsim::arena::state::{Channel, DueKind};
 
     let world = booted_world();
-    let mut arena = shipped_arena(&world, &[&[Muster::piloted(Team::Red, 1)]]);
-    let red = tank(&world, Team::Red, 1);
+    let mut arena = shipped_arena(&world, &[&[Muster::piloted(PartyId::RED, 1)]]);
+    let red = tank(&world, PartyId::RED, 1);
     if let Some(state) = arena.unit_mut(red) {
         state.power = Power::Online;
     }
@@ -1266,8 +1281,8 @@ fn m1a4_an_engine_killed_under_a_drive_lets_go_and_says_so() {
     use tacsim::arena::state::{Channel, DueKind};
 
     let world = booted_world();
-    let mut arena = shipped_arena(&world, &[&[Muster::piloted(Team::Red, 1)]]);
-    let red = tank(&world, Team::Red, 1);
+    let mut arena = shipped_arena(&world, &[&[Muster::piloted(PartyId::RED, 1)]]);
+    let red = tank(&world, PartyId::RED, 1);
     let _ = arena.seat_pilot(M1A4_PILOT, red, arena.epochs.current(red, Channel::Helm));
     if let Some(state) = arena.unit_mut(red) {
         state.power = Power::Online;
@@ -1428,7 +1443,7 @@ fn m44a_a_hull_held_against_a_band_keeps_or_re_plans_its_route_and_never_gives_u
     let mut arena = rig::arena_of(
         vec![rig::tank(
             rig::RED,
-            Team::Red,
+            PartyId::RED,
             rig::centre(6, 8),
             Vec::new(),
             Controller::Mind,
@@ -1517,7 +1532,7 @@ fn m44a_a_hull_held_against_a_band_keeps_or_re_plans_its_route_and_never_gives_u
 }
 
 /// A hull of the path-budget field: id, side, start cell and goal cell.
-type M44Hull = (ObjId, Team, (u16, u16), (u16, u16));
+type M44Hull = (ObjId, PartyId, (u16, u16), (u16, u16));
 
 /// **The path budget is a bound the arena applies per window of arena time**
 /// — 16b cut N.1's (i) (`tests/reflex.rs`'
@@ -1546,10 +1561,10 @@ fn m44a_the_path_budget_is_a_bound_the_arena_applies_per_window_of_arena_time() 
     // Each in its own column, driving nine cells south: nobody arrives inside
     // the six seconds and nobody is in anybody's way.
     let hulls: [M44Hull; 4] = [
-        (ObjId(4), Team::Red, (6, 6), (6, 15)),
-        (ObjId(5), Team::Red, (7, 6), (7, 15)),
-        (ObjId(6), Team::Blue, (8, 6), (8, 15)),
-        (ObjId(7), Team::Blue, (9, 6), (9, 15)),
+        (ObjId(4), PartyId::RED, (6, 6), (6, 15)),
+        (ObjId(5), PartyId::RED, (7, 6), (7, 15)),
+        (ObjId(6), PartyId::BLUE, (8, 6), (8, 15)),
+        (ObjId(7), PartyId::BLUE, (9, 6), (9, 15)),
     ];
     let mut arena = rig::arena_of(
         hulls
@@ -1635,14 +1650,14 @@ fn m44a_a_hull_stopped_by_a_parked_one_learns_the_cell_and_goes_round_it() {
         vec![
             rig::tank(
                 rig::RED,
-                Team::Red,
+                PartyId::RED,
                 rig::centre(6, 8),
                 Vec::new(),
                 Controller::Mind,
             ),
             rig::tank(
                 rig::BLUE,
-                Team::Blue,
+                PartyId::BLUE,
                 rig::centre(5, 8),
                 Vec::new(),
                 Controller::Pilot,
@@ -1700,14 +1715,14 @@ fn m44a_a_stop_and_a_shove_are_both_re_planned_within_one_decide_tick() {
         vec![
             rig::tank(
                 rig::RED,
-                Team::Red,
+                PartyId::RED,
                 rig::centre(6, 8),
                 Vec::new(),
                 Controller::Mind,
             ),
             rig::tank(
                 rig::BLUE,
-                Team::Blue,
+                PartyId::BLUE,
                 rig::centre(5, 8),
                 Vec::new(),
                 Controller::Pilot,
@@ -1813,14 +1828,14 @@ fn m44a_wreck_detour() -> Arena {
         vec![
             rig::tank(
                 rig::RED,
-                Team::Red,
+                PartyId::RED,
                 rig::centre(6, 8),
                 Vec::new(),
                 Controller::Mind,
             ),
             rig::tank(
                 rig::RED2,
-                Team::Red,
+                PartyId::RED,
                 rig::centre(4, 8),
                 Vec::new(),
                 Controller::Pilot,
@@ -1887,14 +1902,14 @@ fn m44a_the_avoided_cells_survive_a_goal_that_moves_every_think() {
         vec![
             rig::tank(
                 rig::RED,
-                Team::Red,
+                PartyId::RED,
                 rig::centre(6, 8),
                 Vec::new(),
                 Controller::Mind,
             ),
             rig::tank(
                 rig::RED2,
-                Team::Red,
+                PartyId::RED,
                 rig::centre(7, 8),
                 Vec::new(),
                 Controller::Pilot,
@@ -1959,14 +1974,14 @@ fn m44a_a_remembered_stop_ages_out_and_the_cell_is_planned_through_again() {
         vec![
             rig::tank(
                 rig::RED,
-                Team::Red,
+                PartyId::RED,
                 rig::centre(6, 8),
                 Vec::new(),
                 Controller::Mind,
             ),
             rig::tank(
                 rig::BLUE,
-                Team::Blue,
+                PartyId::BLUE,
                 rig::centre(5, 8),
                 Vec::new(),
                 Controller::Pilot,
@@ -2058,7 +2073,7 @@ fn m44a_a_hull_held_against_a_wreck_past_the_ttl_still_avoids_its_cell() {
             vec![
                 rig::tank(
                     rig::RED,
-                    Team::Red,
+                    PartyId::RED,
                     rig::centre(6, 8),
                     Vec::new(),
                     Controller::Mind,
@@ -2068,7 +2083,7 @@ fn m44a_a_hull_held_against_a_wreck_past_the_ttl_still_avoids_its_cell() {
                 // stepped, a side with no hull left ends the match).
                 rig::tank(
                     rig::RED2,
-                    Team::Red,
+                    PartyId::RED,
                     rig::centre(wreck_cell.0, wreck_cell.1),
                     Vec::new(),
                     Controller::Pilot,
@@ -2182,7 +2197,7 @@ fn m44a_the_follower_holds_rather_than_drive_at_a_bluff() {
         rig::definition_with(&bluff_wall, Waypoints::new(Vec::new(), &[])),
         vec![rig::tank(
             rig::RED,
-            Team::Red,
+            PartyId::RED,
             rig::centre(6, 8),
             Vec::new(),
             Controller::Mind,
@@ -2616,7 +2631,7 @@ fn m44b_column_of(
             // rear furthest east, and the id falls as the place rises.
             rig::tank(
                 m44b_in_column(n),
-                Team::Red,
+                PartyId::RED,
                 rig::centre(10 + n, 8),
                 Vec::new(),
                 Controller::Mind,
@@ -2963,14 +2978,14 @@ fn m44b_a_wreck_in_the_ford_is_held_against_for_two_seconds_and_then_learned() {
         vec![
             rig::tank(
                 rig::RED,
-                Team::Red,
+                PartyId::RED,
                 rig::centre(6, 8),
                 Vec::new(),
                 Controller::Mind,
             ),
             rig::tank(
                 rig::RED2,
-                Team::Red,
+                PartyId::RED,
                 rig::centre(4, 8),
                 Vec::new(),
                 Controller::Pilot,
@@ -3124,14 +3139,14 @@ fn m44b_road(len: u16, node: (u16, u16)) -> tacsim::arena::state::ArenaDefinitio
         terrain: ArenaTerrain::new(len, 8, rig::CELL_CM, cells).expect("the road window"),
         entry_zones: vec![
             EntryZone {
-                team: Team::Red,
+                team: PartyId::RED,
                 x0: 0,
                 y0: 0,
                 x1: 1,
                 y1: 7,
             },
             EntryZone {
-                team: Team::Blue,
+                team: PartyId::BLUE,
                 x0: len - 2,
                 y0: 0,
                 x1: len - 1,
@@ -3183,7 +3198,7 @@ fn m44b_a_machine_brakes_into_its_goal_and_does_not_overshoot_it() {
         },
         ..rig::tank(
             rig::RED,
-            Team::Red,
+            PartyId::RED,
             rig::centre(44, 4),
             Vec::new(),
             Controller::Mind,
@@ -3276,14 +3291,14 @@ fn m44b_convoy_and_wreck() -> Arena {
             // The follower sorts below the leader, so it integrates first.
             rig::tank(
                 rig::RED,
-                Team::Red,
+                PartyId::RED,
                 rig::centre(7, 8),
                 Vec::new(),
                 Controller::Mind,
             ),
             rig::tank(
                 rig::RED2,
-                Team::Red,
+                PartyId::RED,
                 rig::centre(6, 8),
                 Vec::new(),
                 Controller::Mind,
@@ -3487,14 +3502,14 @@ fn m44b_a_routeless_machine_is_ordered_to_stop_within_one_substep_of_a_stop() {
         vec![
             rig::tank(
                 rig::RED,
-                Team::Red,
+                PartyId::RED,
                 rig::pose(7_000, 8_500),
                 Vec::new(),
                 Controller::Mind,
             ),
             rig::tank(
                 rig::BLUE,
-                Team::Blue,
+                PartyId::BLUE,
                 rig::centre(5, 8),
                 Vec::new(),
                 Controller::Pilot,
@@ -3620,7 +3635,7 @@ fn m44b_e4_t42_a_routeless_machine_holds_at_a_cell_it_was_stopped_at() {
     let mut arena = rig::arena_of(
         vec![rig::tank(
             rig::RED,
-            Team::Red,
+            PartyId::RED,
             rig::centre(6, 8),
             Vec::new(),
             Controller::Mind,
@@ -3766,7 +3781,7 @@ fn m44b_drive_to(
 /// at speed), inside which no neighbour cell ever falls. Unarmed, a mind's.
 fn m44c_slow_tank(
     id: ObjId,
-    team: Team,
+    team: PartyId,
     pose: mush_sim::data::Pose,
 ) -> tacsim::arena::state::CustodyUnit {
     use tacsim::arena::state::{Controller, CustodyUnit, TrackedRules};
@@ -3823,14 +3838,14 @@ fn m44c_window(
         terrain: ArenaTerrain::new(width, height, rig::CELL_CM, cells).expect("the AI.1 window"),
         entry_zones: vec![
             EntryZone {
-                team: Team::Red,
+                team: PartyId::RED,
                 x0: 0,
                 y0: 0,
                 x1: 1,
                 y1: height - 1,
             },
             EntryZone {
-                team: Team::Blue,
+                team: PartyId::BLUE,
                 x0: width - 2,
                 y0: 0,
                 x1: width - 1,
@@ -4023,7 +4038,7 @@ fn m44c_ai1_a_follower_inside_its_circle_keeps_its_route_and_arrives() {
     let goal = (4_u16, 16_u16);
     let mut arena = rig::arena_on(
         m44c_window(32, 32, &[], &[goal]),
-        vec![m44c_slow_tank(rig::RED, Team::Red, rig::centre(20, 16))],
+        vec![m44c_slow_tank(rig::RED, PartyId::RED, rig::centre(20, 16))],
         &m44c_cfg(),
         &[],
     );
@@ -4070,7 +4085,7 @@ fn m44c_ai1_a_bend_at_speed_and_a_push_beside_the_route_never_turn_back() {
         (0..=20).map(|y| (8_u16, y, rig::wall())).collect();
     let mut arena = rig::arena_on(
         m44c_window(32, 32, &wall_cells, &[goal]),
-        vec![m44c_slow_tank(rig::RED, Team::Red, rig::centre(4, 4))],
+        vec![m44c_slow_tank(rig::RED, PartyId::RED, rig::centre(4, 4))],
         &m44c_cfg(),
         &[],
     );
@@ -4102,7 +4117,7 @@ fn m44c_ai1_a_bend_at_speed_and_a_push_beside_the_route_never_turn_back() {
     let goal = (28_u16, 16_u16);
     let mut arena = rig::arena_on(
         m44c_window(32, 32, &[], &[goal]),
-        vec![m44c_slow_tank(rig::RED, Team::Red, rig::centre(4, 16))],
+        vec![m44c_slow_tank(rig::RED, PartyId::RED, rig::centre(4, 16))],
         &m44c_cfg(),
         &[],
     );
@@ -4168,7 +4183,7 @@ fn m44c_corner(at_speed_north: bool) -> Arena {
     };
     let mut arena = rig::arena_on(
         m44c_window(32, 32, &[(15, 8, rig::wall())], &[goal]),
-        vec![m44c_slow_tank(rig::RED, Team::Red, pose)],
+        vec![m44c_slow_tank(rig::RED, PartyId::RED, pose)],
         &m44c_cfg(),
         &[],
     );
@@ -4278,7 +4293,7 @@ fn m44c_ai1_a_corner_closed_on_both_shoulders_holds_an_unlimited_unit_and_ages_a
         m44c_window(16, 16, &[(6, 5, rig::wall()), (5, 6, rig::wall())], &[goal]),
         vec![rig::tank(
             rig::RED,
-            Team::Red,
+            PartyId::RED,
             rig::centre(5, 5),
             Vec::new(),
             Controller::Mind,
@@ -4316,21 +4331,21 @@ fn m44c_ai1_a_corner_closed_on_both_shoulders_holds_an_unlimited_unit_and_ages_a
         vec![
             rig::tank(
                 rig::RED,
-                Team::Red,
+                PartyId::RED,
                 rig::pose(5_800, 5_200),
                 Vec::new(),
                 Controller::Mind,
             ),
             rig::tank(
                 rig::RED2,
-                Team::Red,
+                PartyId::RED,
                 rig::centre(6, 5),
                 Vec::new(),
                 Controller::Pilot,
             ),
             rig::tank(
                 rig::BLUE,
-                Team::Red,
+                PartyId::RED,
                 rig::centre(5, 6),
                 Vec::new(),
                 Controller::Pilot,
@@ -4416,7 +4431,7 @@ fn m44c_ai1_a_shove_inside_the_circle_keeps_the_route_and_beyond_it_re_plans() {
         let goal = (28_u16, 8_u16);
         let mut arena = rig::arena_on(
             m44c_window(32, 32, &[], &[goal]),
-            vec![m44c_slow_tank(rig::RED, Team::Red, rig::centre(3, 8))],
+            vec![m44c_slow_tank(rig::RED, PartyId::RED, rig::centre(3, 8))],
             &m44c_cfg(),
             &[],
         );
@@ -4495,13 +4510,13 @@ fn m44c_field() -> Arena {
     let mut arena = rig::arena_on(
         m44c_window(64, 64, &paint, &nodes),
         vec![
-            m44c_slow_tank(M44C_ORBIT, Team::Red, rig::centre(44, 56)),
-            m44c_slow_tank(M44C_CORNER, Team::Red, rig::pose(52_000, 8_500)),
-            m44c_slow_tank(M44C_PINCH, Team::Red, rig::centre(10, 0)),
-            m44c_slow_tank(M44C_BESIDE, Team::Red, rig::pose(10_500, 30_990)),
+            m44c_slow_tank(M44C_ORBIT, PartyId::RED, rig::centre(44, 56)),
+            m44c_slow_tank(M44C_CORNER, PartyId::RED, rig::pose(52_000, 8_500)),
+            m44c_slow_tank(M44C_PINCH, PartyId::RED, rig::centre(10, 0)),
+            m44c_slow_tank(M44C_BESIDE, PartyId::RED, rig::pose(10_500, 30_990)),
             rig::tank(
                 M44C_SEATED,
-                Team::Blue,
+                PartyId::BLUE,
                 rig::centre(26, 59),
                 Vec::new(),
                 Controller::Pilot,
@@ -4806,8 +4821,8 @@ fn m44c_come_back() -> Arena {
     let mut arena = rig::arena_on(
         m44c_window(48, 48, &paint, &nodes),
         vec![
-            m44c_slow_tank(M44C_PINCH, Team::Red, rig::centre(10, 0)),
-            m44c_slow_tank(M44C_CORNER, Team::Red, rig::centre(30, 10)),
+            m44c_slow_tank(M44C_PINCH, PartyId::RED, rig::centre(10, 0)),
+            m44c_slow_tank(M44C_CORNER, PartyId::RED, rig::centre(30, 10)),
         ],
         &m44c_cfg(),
         &[],
@@ -4990,7 +5005,7 @@ fn m45a_unit(
     let cells = tacsim::definitions::to_tactical_unit(spec, binding, id).expect("the unit");
     tacsim::arena::state::CustodyUnit {
         id,
-        team: Team::Red,
+        team: PartyId::RED,
         pose: rig::centre(cell.0, cell.1),
         mobility: tacsim::match_::tracked_rules(&cells),
         sensor_height_cm: tacsim::match_::sensor_height_cm(catalog, &cells),
@@ -5058,14 +5073,14 @@ fn m45a_relief(
         terrain: ArenaTerrain::new(width, height, rig::CELL_CM, cells).expect("the relief window"),
         entry_zones: vec![
             EntryZone {
-                team: Team::Red,
+                team: PartyId::RED,
                 x0: 0,
                 y0: 0,
                 x1: 1,
                 y1: height - 1,
             },
             EntryZone {
-                team: Team::Blue,
+                team: PartyId::BLUE,
                 x0: width - 2,
                 y0: 0,
                 x1: width - 1,
@@ -5157,6 +5172,7 @@ fn m45a_routeless(
             resolution: tacsim::match_::resolution_for(catalog),
             seed: support::SEED,
             mode: tacsim::arena::MatchMode::Skirmish,
+            host: tacsim::arena::FieldHost::all_hostile(),
         },
         &cfg,
         &tacsim::config::MatchConfig::default(),

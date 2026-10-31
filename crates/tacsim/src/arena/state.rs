@@ -646,56 +646,9 @@ impl mush_atlas::CellGrid for ArenaTerrain {
 // Teams, sides, entry zones and the definition
 // ---------------------------------------------------------------------------
 
-/// A side of a match (doc 16 §1: red against blue).
-#[derive(Clone, Copy, Debug, PartialEq, Eq, PartialOrd, Ord, Hash, Serialize, Deserialize)]
-#[serde(rename_all = "snake_case")]
-pub enum Team {
-    /// The red side.
-    Red,
-    /// The blue side.
-    Blue,
-}
-
-impl Team {
-    /// Both sides, in code order.
-    pub const ALL: [Team; 2] = [Team::Red, Team::Blue];
-
-    /// The wire word.
-    #[must_use]
-    pub const fn as_str(&self) -> &'static str {
-        match self {
-            Team::Red => "red",
-            Team::Blue => "blue",
-        }
-    }
-
-    /// The other side.
-    #[must_use]
-    pub const fn other(&self) -> Team {
-        match self {
-            Team::Red => Team::Blue,
-            Team::Blue => Team::Red,
-        }
-    }
-
-    /// **The letter a side's callsigns carry** (16b cut Q.1; doc 16 §3.6): `R`
-    /// for red, `B` for blue, so a classified contact reads `RA`, `BC`.
-    ///
-    /// A `const fn` over the closed enum and **never the first character of a
-    /// display name**: the letter is part of the one name every viewer calls a
-    /// unit by, so it has to be a fact about the team and not about whatever a
-    /// pack happened to call it. A third side is a compile error here and a
-    /// failing test in [`Designator`]'s own module, which is where the rule that
-    /// the letters are distinct and none of them is
-    /// [`PROVISIONAL_PREFIX`] is written down.
-    #[must_use]
-    pub const fn letter(&self) -> char {
-        match self {
-            Team::Red => 'R',
-            Team::Blue => 'B',
-        }
-    }
-}
+/// **A party of a field** (doc 32 cut CF.0, Q-CF-3): replaced the closed
+/// two-sided `PartyId` of doc 16 §1. See [`crate::arena::party`].
+pub use crate::arena::party::PartyId;
 
 /// A left or right side of a unit — the argument of doc 16 §3.3's
 /// `no_turn_toward(left)` consequence.
@@ -724,7 +677,7 @@ impl Side {
 #[derive(Clone, Copy, Debug, PartialEq, Eq, Serialize, Deserialize)]
 pub struct EntryZone {
     /// The side that deploys here.
-    pub team: Team,
+    pub team: PartyId,
     /// The west column.
     pub x0: u16,
     /// The south row.
@@ -930,7 +883,7 @@ pub struct HoldState {
     pub hold_ms: u32,
     /// **The side alone on the spot, and since when** (arena milliseconds, a
     /// substep boundary), or `None` while the square is empty or contested.
-    pub held_by: Option<(Team, i64)>,
+    pub held_by: Option<(PartyId, i64)>,
 }
 
 /// Public objective geometry. Ownership and capture clocks never enter a view.
@@ -1196,8 +1149,9 @@ impl ArenaDefinition {
         sha.update((self.entry_zones.len() as u64).to_le_bytes());
         for zone in &self.entry_zones {
             sha.update([match zone.team {
-                Team::Red => 0_u8,
-                Team::Blue => 1_u8,
+                PartyId::RED => 0_u8,
+                PartyId::BLUE => 1_u8,
+                other => other.code(),
             }]);
             sha.update(zone.x0.to_le_bytes());
             sha.update(zone.y0.to_le_bytes());
@@ -1894,7 +1848,7 @@ pub struct CustodyUnit {
     /// The world object the unit is.
     pub id: ObjId,
     /// Its side.
-    pub team: Team,
+    pub team: PartyId,
     /// Its pose at check-out, which must be on the window.
     pub pose: Pose,
     /// Its decoded `tracked` rules.
@@ -1924,11 +1878,9 @@ pub struct CustodyUnit {
     /// `0` for a unit no lobby placed — a staff `@arena/start`, a fixture, the
     /// harness's field of three hundred.
     ///
-    /// It is what [`Designator::Slot`] renders, so a pilot's `BA` is the pod
-    /// `SIM STATUS` prints as `1` on blue. A `0` is not a designator: [`Arena::new`]
-    /// gives every such unit the lowest free slot of its team in unit-id order, so
-    /// a harness unit and a staff-fielded tank have stable callsigns with no lobby
-    /// at all.
+    /// Since doc 32 cut CF.0 (Q-CF-11) it is the lobby's own business and no
+    /// part of the callsign: a unit's letter is drawn at check-out
+    /// ([`Designator::Unit`]), so a designator says nothing about a slot.
     pub slot: u8,
     /// **The seal it is checked out under** (17b cut M3.3; doc 17 §13, D-UM-45,
     /// D-UM-46) — beside `sensor`, `weapons` and `gunnery`, for every unit,
@@ -1952,7 +1904,7 @@ impl CustodyUnit {
     /// record's grouping and the arena's are one function of one data and
     /// cannot drift apart on who is a machine.
     #[must_use]
-    pub fn squad_input(units: &[CustodyUnit]) -> Vec<(ObjId, Team, bool)> {
+    pub fn squad_input(units: &[CustodyUnit]) -> Vec<(ObjId, PartyId, bool)> {
         units
             .iter()
             .map(|unit| (unit.id, unit.team, unit.controller.is_machine()))
@@ -2008,6 +1960,11 @@ pub struct CustodyOut {
     /// refuses a mode [`CustodyOut::definition`] does not declare
     /// ([`ArenaError::ModeUnsupported`]).
     pub mode: MatchMode,
+    /// **What the host says of the parties and the end** (doc 32 cut CF.0): the
+    /// opening relation books and the [`crate::arena::party::EndCondition`]. The
+    /// parties themselves are the units' own ([`CustodyUnit::team`]); the OOC
+    /// host hands [`crate::arena::party::FieldHost::all_hostile`].
+    pub host: crate::arena::party::FieldHost,
 }
 
 // ---------------------------------------------------------------------------
@@ -2029,10 +1986,12 @@ pub struct UnitState {
     /// The world object the unit is. The units vector is sorted on it.
     pub id: ObjId,
     /// Its side.
-    pub team: Team,
+    pub team: PartyId,
     /// **The name every viewer that has told it apart calls it by** (16b cut
-    /// Q.1): always a [`Designator::Slot`], resolved once at check-out from
-    /// [`CustodyUnit::slot`] and fixed for the match.
+    /// Q.1; doc 32 Q-CF-11): its party's letter and a unit letter drawn once at
+    /// check-out from the seed, the party and the unit id
+    /// ([`Designator::Unit`], or [`Designator::Wide`] past a party's
+    /// twenty-third), and fixed for the field.
     ///
     /// It is **not** folded into [`crate::arena::hash::state_hash`] on its own: it
     /// is a pure function of the custody message, it never moves, and two replays
@@ -2443,7 +2402,7 @@ impl std::fmt::Display for ContactId {
 
 /// **The letter a provisional designator opens with** (16b cut Q.1).
 ///
-/// Pinned distinct from every [`Team::letter`] by a unit test below, so `X2` can
+/// Pinned distinct from every [`PartyId::letter`] by a unit test below, so `X2` can
 /// never be read as a slot on some later side.
 pub const PROVISIONAL_PREFIX: char = 'X';
 
@@ -2459,10 +2418,10 @@ pub const PROVISIONAL_PREFIX: char = 'X';
 ///   order that platform's own sensors first found things. It is viewer-scoped
 ///   and says nothing about the target at all, which is exactly what a platform
 ///   holding an unclassified return knows.
-/// * [`Designator::Slot`] — the team's letter and the unit's centre slot in
-///   bijective base 26 (`RA`, `BC`, `BAA` past twenty-six a side). It is the
-///   **same for every viewer**, which is the point: once a tank has been told
-///   apart, two pilots on one side are talking about `BA` and mean one machine.
+/// * [`Designator::Unit`] — the party's letter and a unit letter drawn per unit
+///   per field (doc 32 Q-CF-11; `RK`, `GD`). It is the **same for every
+///   viewer**, which is the point: once a tank has been told apart, two pilots
+///   are talking about `RK` and mean one machine — and it leaks no slot.
 ///
 /// **Which one a contact renders as is read off the live contact and never off a
 /// flag.** A contact is not durable — [`ShadowContacts::expire`] removes the row
@@ -2472,7 +2431,7 @@ pub const PROVISIONAL_PREFIX: char = 'X';
 ///
 /// **Its serde derive is the snapshot's** (16b cut AF.1): a unit's callsign, a
 /// held loss's name and a release row's contact list are carried as
-/// `{"provisional": 3}` or `{"slot": {"team": "red", "slot": 1}}`. Every wire
+/// `{"provisional": 3}` or `{"unit": {"party": "red", "letter": "K"}}`. Every wire
 /// form a pilot, a frame or a ledger reads still carries the string
 /// [`std::fmt::Display`] produces, and never this one.
 #[derive(Clone, Copy, Debug, PartialEq, Eq, PartialOrd, Ord, Serialize, Deserialize)]
@@ -2480,47 +2439,55 @@ pub const PROVISIONAL_PREFIX: char = 'X';
 pub enum Designator {
     /// A viewer-scoped number, from `1` (`X1`).
     Provisional(u16),
-    /// A team letter and a 1-based centre slot (`RA`).
-    Slot {
-        /// The side.
-        team: Team,
-        /// The slot, from `1`.
-        slot: u16,
+    /// **A party letter and a unit letter** (`RK`; doc 32 Q-CF-11): the party
+    /// first, the unit's own letter second — drawn at random per unit per field
+    /// from [`crate::arena::party::LETTERS`] and stable for the field, so a
+    /// designator says nothing about a slot.
+    Unit {
+        /// The party.
+        party: PartyId,
+        /// The unit's letter within its party.
+        letter: char,
     },
+    /// **A unit past its party's twenty-third** (doc 32 cut CF.0): the party
+    /// letter and a drawn *pair* of letters (`RKQ`), index `0..529` into the
+    /// alphabet squared. No field inside doc 32's budget (Q-CF-21, Q-CF-45: 24
+    /// units a field) ever names one; the kernel's scale harnesses, which field
+    /// three hundred hulls on two parties, do. The owner's ruling (Q-CF-11)
+    /// says two letters; this is the overflow it did not rule, flagged in the
+    /// cut's PR rather than refused.
+    Wide {
+        /// The party.
+        party: PartyId,
+        /// The pair, `first * 23 + second` over [`crate::arena::party::LETTERS`].
+        index: u16,
+    },
+}
+
+impl Designator {
+    /// The party a unit designator names, or `None` for a provisional one.
+    #[must_use]
+    pub const fn party(&self) -> Option<PartyId> {
+        match self {
+            Designator::Provisional(_) => None,
+            Designator::Unit { party, .. } | Designator::Wide { party, .. } => Some(*party),
+        }
+    }
 }
 
 impl std::fmt::Display for Designator {
     fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
         match self {
             Designator::Provisional(n) => write!(f, "{PROVISIONAL_PREFIX}{n}"),
-            Designator::Slot { team, slot } => {
-                write!(f, "{}{}", team.letter(), bijective_base26(*slot))
+            Designator::Unit { party, letter } => write!(f, "{}{letter}", party.letter()),
+            Designator::Wide { party, index } => {
+                let letters = crate::arena::party::LETTERS;
+                let at = |n: usize| letters.get(n).copied().map_or('?', char::from);
+                let index = usize::from(*index);
+                write!(f, "{}{}{}", party.letter(), at(index / 23), at(index % 23))
             }
         }
     }
-}
-
-/// **A 1-based slot in bijective base 26** (16b cut Q.1): `1` is `A`, `26` is
-/// `Z`, `27` is `AA`.
-///
-/// Bijective and not ordinary base 26, because there is no zero slot: the sequence
-/// has to run `Z`, `AA` rather than `Z`, `BA`, and every slot has exactly one
-/// spelling. A slot of `0` — which [`Arena::new`] never produces, since it resolves
-/// every unit onto a slot from `1` — renders as the empty string rather than
-/// panicking, so a malformed designator is a name nothing resolves and not a
-/// crash.
-fn bijective_base26(slot: u16) -> String {
-    let mut left = u32::from(slot);
-    let mut letters: Vec<char> = Vec::new();
-    while left > 0 {
-        // `(left - 1) % 26` is under 26, so the narrowing is exact and the
-        // fallback is unreachable.
-        let index = u8::try_from((left.saturating_sub(1)) % 26).unwrap_or(0);
-        letters.push(char::from(b'A'.saturating_add(index)));
-        left = left.saturating_sub(1) / 26;
-    }
-    letters.reverse();
-    letters.into_iter().collect()
 }
 
 /// **One unit's pose, as a check-out refuses it** (16b cut AF.1, extracted from
@@ -2583,55 +2550,38 @@ pub(crate) fn check_poses(terrain: &ArenaTerrain, units: &[UnitState]) -> Result
     check_occupancy(terrain, units)
 }
 
-/// **Give every unit its public callsign** (16b cut Q.1), over the sorted unit
-/// vector [`Arena::new`] has just built.
-///
-/// Two passes per side, and the order is the whole of why a replay agrees:
-///
-/// 1. **Explicit slots first.** A unit the lobby fielded from pod `n` takes slot
-///    `n`, whatever else is on the side. Two units of one side in one slot is
-///    [`ArenaError::DuplicateSlot`] — they would answer to one name.
-/// 2. **Then the rest, in unit-id order**, each taking the lowest slot of its
-///    side that pass 1 did not claim and pass 2 has not. That is what gives a
-///    staff `@arena/start`, an AI-filled pod with no centre row and the harness's
-///    field of three hundred stable callsigns with no lobby at all.
-///
-/// The vector arrives sorted by id, so pass 2's "in unit-id order" needs no sort
-/// of its own.
+/// **Give every unit its public callsign** (16b cut Q.1; doc 32 Q-CF-11),
+/// over the sorted unit vector [`Arena::new`] has just built: the unit's party
+/// letter, then a letter drawn by [`crate::arena::party::draw_unit_letters`]
+/// from the match seed, the party and the unit id, in unit-id order. Random to
+/// a viewer, stable for the field, and never a slot: a lobby's centre slot
+/// stays the lobby's own business ([`CustodyUnit::slot`]).
 ///
 /// # Errors
 ///
-/// [`ArenaError::DuplicateSlot`], naming the side and the slot.
-fn resolve_callsigns(states: &mut [UnitState]) -> Result<(), ArenaError> {
-    for team in Team::ALL {
-        let mut taken: Vec<u16> = Vec::new();
-        for state in states.iter().filter(|state| state.team == team) {
-            let Designator::Slot { slot, .. } = state.callsign else {
-                continue;
-            };
-            if slot == 0 {
-                continue;
-            }
-            if taken.contains(&slot) {
-                return Err(ArenaError::DuplicateSlot {
-                    team: team.as_str(),
-                    slot: u8::try_from(slot).unwrap_or(u8::MAX),
-                });
-            }
-            taken.push(slot);
+/// [`ArenaError::PartyFull`], naming the party that fields more units than
+/// there are letters.
+fn resolve_callsigns(seed: u64, states: &mut [UnitState]) -> Result<(), ArenaError> {
+    let keys: Vec<(PartyId, u32)> = states
+        .iter()
+        .map(|state| (state.team, state.id.0))
+        .collect();
+    let letters = crate::arena::party::draw_unit_letters(seed, &keys).map_err(|party| {
+        ArenaError::PartyFull {
+            party: party.as_str(),
         }
-        let mut next: u16 = 1;
-        for state in states.iter_mut().filter(|state| state.team == team) {
-            if state.callsign != (Designator::Slot { team, slot: 0 }) {
-                continue;
-            }
-            while taken.contains(&next) {
-                next = next.saturating_add(1);
-            }
-            state.callsign = Designator::Slot { team, slot: next };
-            taken.push(next);
-            next = next.saturating_add(1);
-        }
+    })?;
+    for (state, name) in states.iter_mut().zip(letters) {
+        state.callsign = match name {
+            crate::arena::party::UnitName::Letter(letter) => Designator::Unit {
+                party: state.team,
+                letter: char::from(letter),
+            },
+            crate::arena::party::UnitName::Pair(index) => Designator::Wide {
+                party: state.team,
+                index,
+            },
+        };
     }
     Ok(())
 }
@@ -2645,8 +2595,8 @@ pub enum Classification {
     Unknown,
     /// Told apart: the viewer knows whose it is.
     Classified {
-        /// The side the viewer has resolved.
-        team: Team,
+        /// The party the viewer has resolved (doc 32 Q-CF-10).
+        party: PartyId,
     },
 }
 
@@ -2660,23 +2610,23 @@ impl Classification {
         }
     }
 
-    /// The side this viewer has resolved, if it has.
+    /// The party this viewer has resolved, if it has.
     #[must_use]
-    pub const fn team(&self) -> Option<Team> {
+    pub const fn party(&self) -> Option<PartyId> {
         match self {
             Classification::Unknown => None,
-            Classification::Classified { team } => Some(*team),
+            Classification::Classified { party } => Some(*party),
         }
     }
 
-    /// The byte [`crate::arena::hash::state_hash`] folds in: `0` unknown, `1`
-    /// classified red, `2` classified blue.
+    /// The byte [`crate::arena::hash::state_hash`] folds in: `0` unknown, else
+    /// the classified party's letter (doc 32 cut CF.0; `1` red and `2` blue
+    /// before it).
     #[must_use]
     pub const fn code(&self) -> u8 {
         match self {
             Classification::Unknown => 0,
-            Classification::Classified { team: Team::Red } => 1,
-            Classification::Classified { team: Team::Blue } => 2,
+            Classification::Classified { party } => party.code(),
         }
     }
 }
@@ -2951,8 +2901,8 @@ impl ShadowContact {
     /// anybody else), and this platform's **own** sensors saw it inside the time
     /// to live.
     #[must_use]
-    pub fn shareable(&self, cutoff_ms: i64) -> Option<(Team, OwnSighting)> {
-        let team = self.class.team()?;
+    pub fn shareable(&self, cutoff_ms: i64) -> Option<(PartyId, OwnSighting)> {
+        let team = self.class.party()?;
         let own = self.own_seen.filter(|own| own.at_ms >= cutoff_ms)?;
         Some((team, own))
     }
@@ -3474,7 +3424,7 @@ pub enum DueKind {
     /// [`DueHeap::retain`]: see `settle_hold_presence`.
     HoldSettles {
         /// The side that was alone on the spot.
-        team: Team,
+        team: PartyId,
         /// The substep boundary it was first seen alone at.
         since_ms: i64,
     },
@@ -3684,7 +3634,7 @@ pub enum StopReason {
     /// [`EndReason::Conceded`], whose `winner` is the other one.
     Concede {
         /// The side that gave up.
-        by: Team,
+        by: PartyId,
     },
     /// **Every pilot has left the match** (16b cut D.3, `B-33`).
     ///
@@ -3704,7 +3654,7 @@ pub enum EndReason {
     /// A side was eliminated; `None` is a draw (both sides gone at once).
     Elimination {
         /// The surviving side, or `None` for a draw.
-        winner: Option<Team>,
+        winner: Option<PartyId>,
     },
     /// **Nobody left on either side can fire a round** (16b cut Q.7), and the
     /// last one in flight has landed: a **draw**, naming no winner.
@@ -3729,7 +3679,7 @@ pub enum EndReason {
     /// outcome words stay six.
     Hold {
         /// The side that held.
-        winner: Team,
+        winner: PartyId,
     },
     /// **A side conceded** (16b cut D.3, `B-33`): `SIM CONCEDE`, by that side's
     /// lead, and the other side wins.
@@ -3738,8 +3688,9 @@ pub enum EndReason {
     /// committed and the tanks stand as evidence exactly as after an elimination
     /// ([`crate::match_::MatchState::Ended`], and the winner's own outcome word).
     Conceded {
-        /// The side that did **not** concede.
-        winner: Team,
+        /// The party that did **not** concede: the other one of a two-party
+        /// match, `None` when more than one party is left (doc 32 cut CF.0).
+        winner: Option<PartyId>,
     },
     /// **Every pilot had left it** (16b cut D.3, `B-33`): `[tacsim.match]`'s
     /// `unattended_ms` elapsed with every slot `left`.
@@ -3864,17 +3815,15 @@ pub enum ArenaError {
     /// No units were handed over.
     #[error("no units were handed over: an arena with no units has no match to run")]
     NoUnits,
-    /// **16b cut Q.1** — two units of one side were fielded from one centre slot,
-    /// so they would answer to one callsign.
+    /// **Doc 32 Q-CF-11** — a party fields more units than
+    /// [`crate::arena::party::LETTERS`] has letters, so one would have no name.
     #[error(
-        "two units on the {team} side were handed over in slot {slot}: a slot is one unit, and a \
-         callsign is one unit's name"
+        "the {party} party fields more than 552 units: a unit is named by one of 23 letters or \
+         529 pairs, and a callsign is one unit's name"
     )]
-    DuplicateSlot {
-        /// The side.
-        team: &'static str,
-        /// The repeated slot.
-        slot: u8,
+    PartyFull {
+        /// The party.
+        party: &'static str,
     },
     /// **16b cut M.4** (16c `B-57`, `T-15`) — the fastest unit would cross more
     /// than one cell in the shortest substep the clock will cut.
@@ -4528,6 +4477,14 @@ pub struct Arena {
     /// makes the presence test cost a `Skirmish` match one `Option` test per
     /// substep and nothing more.
     pub hold: Option<HoldState>,
+    /// **Every party's relation books** (doc 32 cut CF.0; Q-CF-5 to Q-CF-7):
+    /// the host's opening marks and friendships, the leaders' marks since
+    /// ([`Arena::mark_party`]) and the hostility fire produced. Folded into the
+    /// state hash (item 15) and carried by the snapshot.
+    pub relations: crate::arena::party::Relations,
+    /// **How this field ends** (doc 32 cut CF.0), the host's. Folded into the
+    /// state hash (item 15) and carried by the snapshot.
+    pub end: crate::arena::party::EndCondition,
 }
 
 impl Arena {
@@ -4586,6 +4543,7 @@ impl Arena {
             resolution,
             seed,
             mode,
+            host,
         } = custody;
         if units.is_empty() {
             return Err(ArenaError::NoUnits);
@@ -4780,10 +4738,7 @@ impl Arena {
                 // unresolved — `resolve_callsigns` below turns a `0` into the
                 // lowest free slot of the team once every unit is in hand and the
                 // vector is in unit-id order.
-                callsign: Designator::Slot {
-                    team: unit.team,
-                    slot: u16::from(unit.slot),
-                },
+                callsign: Designator::Provisional(0),
                 desired_heading_mdeg: unit.pose.heading_mdeg,
                 pose: unit.pose,
                 speed_cms: 0,
@@ -4917,7 +4872,7 @@ impl Arena {
                 class: state.class.as_str(),
             });
         }
-        let mut fielded: BTreeMap<(Team, UnitClass), u32> = BTreeMap::new();
+        let mut fielded: BTreeMap<(PartyId, UnitClass), u32> = BTreeMap::new();
         for state in &states {
             let count = fielded.entry((state.team, state.class)).or_insert(0);
             *count = count.saturating_add(1);
@@ -4939,7 +4894,12 @@ impl Arena {
         // **16b cut Q.1**: every unit's public callsign, resolved once, here —
         // after the sort, so the fallback order is unit-id order and a replay of
         // one check-out resolves the same names.
-        resolve_callsigns(&mut states)?;
+        resolve_callsigns(seed, &mut states)?;
+        // **Doc 32 cut CF.0**: every party on the field, and the books the host
+        // opens them with.
+        let parties: BTreeSet<PartyId> = states.iter().map(|state| state.team).collect();
+        let relations = host.open(&parties);
+        let end = host.end;
         let mut epochs = EpochTable::new();
         for pilot in &pilots {
             if states
@@ -5152,6 +5112,8 @@ impl Arena {
             // substep's end is the first reading.
             mode,
             hold,
+            relations,
+            end,
         };
         let ids = arena.units.iter().map(|unit| unit.id).collect::<Vec<_>>();
         for unit in ids {
@@ -5541,7 +5503,7 @@ impl Arena {
             let reach = viewer.fight_inner_cm(cell_cm);
             reach != 0
                 && self.contacts.of(viewer.id).any(|(_, held)| {
-                    held.class.team().is_some_and(|team| team != viewer.team)
+                    self.relations.hostile(viewer.team, held.class)
                         && self.unit(held.target).is_some()
                         && !self.contact_reads_dead(held)
                         // 16b cut U.1 (16c `T-24`): the squared test, no root.
@@ -5624,9 +5586,9 @@ mod tests {
     fn t107b_unit_row_reads_the_row_and_falls_back_to_the_search() {
         use crate::arena::index::Candidate;
         let arena = arena_of(vec![
-            tank(ObjId(4), Team::Red, pose(500, 500)),
-            tank(ObjId(9), Team::Blue, pose(2_500, 500)),
-            tank(ObjId(11), Team::Blue, pose(7_500, 7_500)),
+            tank(ObjId(4), PartyId::RED, pose(500, 500)),
+            tank(ObjId(9), PartyId::BLUE, pose(2_500, 500)),
+            tank(ObjId(11), PartyId::BLUE, pose(7_500, 7_500)),
         ]);
         let candidate = |id: ObjId, row: u32| Candidate {
             id,
@@ -5801,7 +5763,7 @@ mod tests {
     /// [`Arena::health_permille`] (the reflex's `reflex_health_permille`).
     #[test]
     fn an_unmodelled_hull_reads_as_whole_and_a_wreck_reads_as_gone() {
-        let mut arena = arena_of(vec![tank(ObjId(4), Team::Red, pose(1_500, 1_500))]);
+        let mut arena = arena_of(vec![tank(ObjId(4), PartyId::RED, pose(1_500, 1_500))]);
         // Cut A's fixture carries one armour cell and one internals cell, both full.
         assert_eq!(arena.health_permille(ObjId(4)), 1_000);
         assert_eq!(arena.health_permille(ObjId(9)), 0, "no such unit");
@@ -5817,13 +5779,13 @@ mod tests {
     /// failing test here with the fix beside it.
     #[test]
     fn every_team_letter_is_distinct_and_none_of_them_is_the_provisional_prefix() {
-        let letters: Vec<char> = Team::ALL.iter().map(|team| team.letter()).collect();
+        let letters: Vec<char> = PartyId::OOC.iter().map(|team| team.letter()).collect();
         for (at, letter) in letters.iter().enumerate() {
             assert_ne!(
                 *letter,
                 PROVISIONAL_PREFIX,
                 "{:?} spells its callsigns with the provisional prefix",
-                Team::ALL.get(at)
+                PartyId::OOC.get(at)
             );
             assert!(
                 letters.iter().skip(at + 1).all(|other| other != letter),
@@ -5832,49 +5794,38 @@ mod tests {
         }
     }
 
-    /// The spelling of a designator, at each of the three shapes that matter: the
-    /// provisional number, a slot inside the alphabet, and the first slot past it.
+    /// The spelling of a designator (doc 32 Q-CF-11): the provisional number,
+    /// and the two letters — party, then unit — whatever the party.
     #[test]
-    fn a_designator_spells_a_number_a_letter_and_the_roll_past_z() {
+    fn a_designator_spells_a_number_or_two_letters() {
         assert_eq!(Designator::Provisional(1).to_string(), "X1");
         assert_eq!(Designator::Provisional(12).to_string(), "X12");
-        for (slot, spelling) in [
-            (1_u16, "RA"),
-            (2, "RB"),
-            (12, "RL"),
-            (26, "RZ"),
-            (27, "RAA"),
-            (28, "RAB"),
-            (52, "RAZ"),
-            (53, "RBA"),
-        ] {
-            assert_eq!(
-                Designator::Slot {
-                    team: Team::Red,
-                    slot,
-                }
-                .to_string(),
-                spelling
-            );
-        }
         assert_eq!(
-            Designator::Slot {
-                team: Team::Blue,
-                slot: 3,
+            Designator::Unit {
+                party: PartyId::BLUE,
+                letter: 'C'
             }
             .to_string(),
             "BC"
         );
-        // A slot of zero is a name nothing resolves, not a panic: `Arena::new`
-        // never produces one.
+        let third = PartyId::nth(6).expect("the seventh letter");
         assert_eq!(
-            Designator::Slot {
-                team: Team::Blue,
-                slot: 0,
+            Designator::Unit {
+                party: third,
+                letter: 'K'
             }
             .to_string(),
-            "B"
+            "GK"
         );
+        assert_eq!(
+            Designator::Unit {
+                party: third,
+                letter: 'K'
+            }
+            .party(),
+            Some(third)
+        );
+        assert_eq!(Designator::Provisional(3).party(), None);
     }
 
     /// **16b cut Q.1**: a number is the viewer's own, issued in first-seen order,
@@ -5994,8 +5945,8 @@ mod tests {
     #[test]
     fn opening_a_match_sorts_units_schedules_the_summary_and_journals_the_start() {
         let arena = arena_of(vec![
-            tank(ObjId(9), Team::Blue, pose(2_500, 2_500)),
-            tank(ObjId(4), Team::Red, pose(1_500, 1_500)),
+            tank(ObjId(9), PartyId::BLUE, pose(2_500, 2_500)),
+            tank(ObjId(4), PartyId::RED, pose(1_500, 1_500)),
         ]);
         assert_eq!(
             arena.units.iter().map(|state| state.id).collect::<Vec<_>>(),
@@ -6056,7 +6007,7 @@ mod tests {
     fn opening_a_match_refuses_a_pose_off_the_window_a_duplicate_and_a_stray_pilot() {
         let off = Arena::new(
             custody(
-                vec![tank(ObjId(4), Team::Red, pose(99_000, 1_500))],
+                vec![tank(ObjId(4), PartyId::RED, pose(99_000, 1_500))],
                 Vec::new(),
             ),
             &ArenaConfig::default(),
@@ -6071,8 +6022,8 @@ mod tests {
         let twice = Arena::new(
             custody(
                 vec![
-                    tank(ObjId(4), Team::Red, pose(1_500, 1_500)),
-                    tank(ObjId(4), Team::Blue, pose(2_500, 2_500)),
+                    tank(ObjId(4), PartyId::RED, pose(1_500, 1_500)),
+                    tank(ObjId(4), PartyId::BLUE, pose(2_500, 2_500)),
                 ],
                 Vec::new(),
             ),
@@ -6087,7 +6038,7 @@ mod tests {
 
         let stray = Arena::new(
             custody(
-                vec![tank(ObjId(4), Team::Red, pose(1_500, 1_500))],
+                vec![tank(ObjId(4), PartyId::RED, pose(1_500, 1_500))],
                 vec![Pilot {
                     unit: ObjId(5),
                     pilot: ObjId(100),
@@ -6122,8 +6073,8 @@ mod tests {
         let shared = Arena::new(
             custody(
                 vec![
-                    tank(ObjId(9), Team::Blue, pose(2_500, 2_500)),
-                    tank(ObjId(4), Team::Red, pose(2_100, 2_900)),
+                    tank(ObjId(9), PartyId::BLUE, pose(2_500, 2_500)),
+                    tank(ObjId(4), PartyId::RED, pose(2_100, 2_900)),
                 ],
                 Vec::new(),
             ),
@@ -6148,8 +6099,8 @@ mod tests {
         let apart = Arena::new(
             custody(
                 vec![
-                    tank(ObjId(4), Team::Red, pose(2_999, 2_500)),
-                    tank(ObjId(9), Team::Blue, pose(3_000, 2_500)),
+                    tank(ObjId(4), PartyId::RED, pose(2_999, 2_500)),
+                    tank(ObjId(9), PartyId::BLUE, pose(3_000, 2_500)),
                 ],
                 Vec::new(),
             ),
@@ -6165,8 +6116,8 @@ mod tests {
         let arena = Arena::new(
             custody(
                 vec![
-                    tank(ObjId(4), Team::Red, pose(1_500, 1_500)),
-                    tank(ObjId(5), Team::Blue, pose(2_500, 2_500)),
+                    tank(ObjId(4), PartyId::RED, pose(1_500, 1_500)),
+                    tank(ObjId(5), PartyId::BLUE, pose(2_500, 2_500)),
                 ],
                 vec![
                     Pilot {
@@ -6199,12 +6150,12 @@ mod tests {
     #[test]
     fn unit_lookup_is_by_id_and_stop_keeps_the_first_reason() {
         let mut arena = arena_of(vec![
-            tank(ObjId(4), Team::Red, pose(1_500, 1_500)),
-            tank(ObjId(9), Team::Blue, pose(2_500, 2_500)),
+            tank(ObjId(4), PartyId::RED, pose(1_500, 1_500)),
+            tank(ObjId(9), PartyId::BLUE, pose(2_500, 2_500)),
         ]);
         assert_eq!(
             arena.unit(ObjId(9)).map(|state| state.team),
-            Some(Team::Blue)
+            Some(PartyId::BLUE)
         );
         assert!(arena.unit(ObjId(5)).is_none());
         if let Some(state) = arena.unit_mut(ObjId(4)) {
@@ -6222,7 +6173,7 @@ mod tests {
             id: SmolStr::new("tacsim.arena.proving_ground"),
             terrain: ArenaTerrain::uniform(4, 4, 1_000, ground()).expect("a 4x4 window"),
             entry_zones: vec![EntryZone {
-                team: Team::Red,
+                team: PartyId::RED,
                 x0: 0,
                 y0: 0,
                 x1: 1,
@@ -6267,7 +6218,7 @@ mod tests {
 
         let mut moved_zone = base.clone();
         moved_zone.entry_zones = vec![EntryZone {
-            team: Team::Blue,
+            team: PartyId::BLUE,
             x0: 0,
             y0: 0,
             x1: 1,
@@ -6397,7 +6348,9 @@ mod tests {
                 last_seen_ms: 4_000,
                 ..ShadowContact::sighted(
                     ObjId(10),
-                    Classification::Classified { team: Team::Blue },
+                    Classification::Classified {
+                        party: PartyId::BLUE,
+                    },
                     1_000,
                     plot(0, 0),
                 )
@@ -6433,7 +6386,7 @@ mod tests {
         }
         assert!(Channel::parse("helms").is_none());
         assert!(Channel::parse("HELM").is_none());
-        assert_eq!(Team::Red.other(), Team::Blue);
+        assert_eq!(PartyId::RED.ooc_other(), PartyId::BLUE);
         assert_eq!(Side::Left.as_str(), "left");
         assert_eq!(Power::Online.code(), 2);
         assert_eq!(ContactId(0x1234).to_string(), "0000000000001234");
@@ -6455,8 +6408,8 @@ mod tests {
     #[test]
     fn the_fastest_unit_ignores_wrecks_and_disabled_motion() {
         let mut arena = arena_of(vec![
-            tank(ObjId(4), Team::Red, pose(1_500, 1_500)),
-            tank(ObjId(9), Team::Blue, pose(2_500, 2_500)),
+            tank(ObjId(4), PartyId::RED, pose(1_500, 1_500)),
+            tank(ObjId(9), PartyId::BLUE, pose(2_500, 2_500)),
         ]);
         assert_eq!(arena.max_speed_cms(), 1_000);
         if let Some(state) = arena.unit_mut(ObjId(4)) {
@@ -6475,8 +6428,8 @@ mod tests {
     #[test]
     fn the_position_summary_is_every_unit_in_id_order() {
         let arena = arena_of(vec![
-            tank(ObjId(9), Team::Blue, pose(2_500, 2_600)),
-            tank(ObjId(4), Team::Red, pose(1_500, 1_600)),
+            tank(ObjId(9), PartyId::BLUE, pose(2_500, 2_600)),
+            tank(ObjId(4), PartyId::RED, pose(1_500, 1_600)),
         ]);
         assert_eq!(
             arena.position_summary(),
@@ -6543,7 +6496,7 @@ mod tests {
 
         let mut arena = arena_of(vec![crate::arena::test_support::line_tank(
             ObjId(9),
-            Team::Blue,
+            PartyId::BLUE,
             pose(1_500, 1_500),
         )]);
         let honest = arena.unit(ObjId(9)).map(|unit| unit.condition);
@@ -6663,7 +6616,7 @@ mod tests {
     }
 
     /// A stock fixture tank at `speed_cms`.
-    fn fast(id: ObjId, team: Team, at: Pose, speed_cms: u32) -> CustodyUnit {
+    fn fast(id: ObjId, team: PartyId, at: Pose, speed_cms: u32) -> CustodyUnit {
         let mut unit = tank(id, team, at);
         unit.mobility.max_speed_cms = speed_cms;
         unit
@@ -6677,7 +6630,7 @@ mod tests {
     /// ground (every cost 100) nothing moves.
     #[test]
     fn m4_a_cell_cheaper_than_a_hundred_raises_the_ceiling_and_shortens_the_substep() {
-        let red = || fast(ObjId(4), Team::Red, pose(1_500, 1_500), 5_000);
+        let red = || fast(ObjId(4), PartyId::RED, pose(1_500, 1_500), 5_000);
         let flat = open_on(vec![red()], &[]).expect("the flat window opens");
         assert_eq!(flat.min_cost[0], 100);
         assert_eq!(
@@ -6725,7 +6678,7 @@ mod tests {
         use crate::arena::test_support::{priced_terrain, tactical_unit_on};
         use mush_atlas::TerrainClass;
         let open = |speed_cms: u32, locomotion: Option<&str>| {
-            let mut unit = fast(ObjId(4), Team::Red, pose(1_500, 1_500), speed_cms);
+            let mut unit = fast(ObjId(4), PartyId::RED, pose(1_500, 1_500), speed_cms);
             if let Some(locomotion) = locomotion {
                 unit.unit = tactical_unit_on(ObjId(4), locomotion);
                 unit.reseal(&crate::match_::SealTerms::fixture())
@@ -6781,7 +6734,7 @@ mod tests {
         use crate::definitions::unit::{LEGGED, WHEELED};
         use mush_atlas::TerrainClass;
         let open = |locomotion: Option<&str>, class: TerrainClass| {
-            let mut unit = tank(ObjId(4), Team::Red, pose(1_500, 1_500));
+            let mut unit = tank(ObjId(4), PartyId::RED, pose(1_500, 1_500));
             if let Some(locomotion) = locomotion {
                 unit.unit = tactical_unit_on(ObjId(4), locomotion);
                 unit.reseal(&crate::match_::SealTerms::fixture())
@@ -6829,7 +6782,7 @@ mod tests {
     #[test]
     fn m4_a_unit_the_substep_floor_cannot_bound_is_refused_by_name() {
         let refused = open_on(
-            vec![fast(ObjId(4), Team::Red, pose(1_500, 1_500), 20_000)],
+            vec![fast(ObjId(4), PartyId::RED, pose(1_500, 1_500), 20_000)],
             &[],
         );
         let Err(error) = refused else {
@@ -6849,7 +6802,7 @@ mod tests {
         );
         assert!(
             open_on(
-                vec![fast(ObjId(4), Team::Red, pose(1_500, 1_500), 19_980)],
+                vec![fast(ObjId(4), PartyId::RED, pose(1_500, 1_500), 19_980)],
                 &[],
             )
             .is_ok(),
@@ -6861,7 +6814,7 @@ mod tests {
         };
         assert!(matches!(
             open_on(
-                vec![fast(ObjId(4), Team::Red, pose(1_500, 1_500), 16_000)],
+                vec![fast(ObjId(4), PartyId::RED, pose(1_500, 1_500), 16_000)],
                 &[((6, 6), cheap)],
             ),
             Err(ArenaError::SubstepBound {
@@ -6882,7 +6835,7 @@ mod tests {
             ..ground()
         };
         let refused = open_on(
-            vec![tank(ObjId(4), Team::Red, pose(1_500, 1_500))],
+            vec![tank(ObjId(4), PartyId::RED, pose(1_500, 1_500))],
             &[((1, 1), water)],
         );
         let Err(error) = refused else {
@@ -6902,7 +6855,7 @@ mod tests {
         // The neighbouring cell is fine.
         assert!(
             open_on(
-                vec![tank(ObjId(4), Team::Red, pose(2_500, 1_500))],
+                vec![tank(ObjId(4), PartyId::RED, pose(2_500, 1_500))],
                 &[((1, 1), water)],
             )
             .is_ok()
@@ -7009,7 +6962,7 @@ mod tests {
             definition: stock.clone(),
             mode,
             ..custody(
-                vec![tank(ObjId(4), Team::Red, pose(1_500, 1_500))],
+                vec![tank(ObjId(4), PartyId::RED, pose(1_500, 1_500))],
                 Vec::new(),
             )
         };
@@ -7043,7 +6996,7 @@ mod tests {
         assert_eq!(opened.mode, MatchMode::Skirmish);
         assert_eq!(opened.hold, None);
         // A hold on a ground that declares one opens with its state resolved.
-        let held = hold_arena(vec![tank(ObjId(4), Team::Red, pose(1_500, 1_500))]);
+        let held = hold_arena(vec![tank(ObjId(4), PartyId::RED, pose(1_500, 1_500))]);
         assert_eq!(held.mode, MatchMode::Hold);
         assert_eq!(
             held.hold,
@@ -7090,9 +7043,9 @@ mod tests {
         // The spot is (4, 4); cell centres are `n × 1000 + 500`.
         let at = |x: i64, y: i64| pose(x * 1_000 + 500, y * 1_000 + 500);
         let mut arena = hold_arena(vec![
-            tank(ObjId(4), Team::Red, at(0, 0)),
-            tank(ObjId(5), Team::Red, at(1, 0)),
-            tank(ObjId(9), Team::Blue, at(7, 7)),
+            tank(ObjId(4), PartyId::RED, at(0, 0)),
+            tank(ObjId(5), PartyId::RED, at(1, 0)),
+            tank(ObjId(9), PartyId::BLUE, at(7, 7)),
         ]);
         assert_eq!(arena.hold_presence(), None, "nobody on the spot");
         let put = |arena: &mut Arena, id: u32, x: i64, y: i64| {
@@ -7101,9 +7054,9 @@ mod tests {
             }
         };
         put(&mut arena, 4, 4, 5);
-        assert_eq!(arena.hold_presence(), Some(Team::Red), "one side");
+        assert_eq!(arena.hold_presence(), Some(PartyId::RED), "one side");
         put(&mut arena, 5, 3, 3);
-        assert_eq!(arena.hold_presence(), Some(Team::Red), "two of one side");
+        assert_eq!(arena.hold_presence(), Some(PartyId::RED), "two of one side");
         put(&mut arena, 9, 5, 5);
         assert_eq!(arena.hold_presence(), None, "both sides: contested");
         // A wreck holds nothing.
@@ -7112,7 +7065,7 @@ mod tests {
         }
         assert_eq!(
             arena.hold_presence(),
-            Some(Team::Red),
+            Some(PartyId::RED),
             "the blue wreck counts for nothing"
         );
         // Nor does a disabled hulk.
@@ -7122,7 +7075,7 @@ mod tests {
         }
         assert_eq!(
             arena.hold_presence(),
-            Some(Team::Red),
+            Some(PartyId::RED),
             "a disabled unit counts for nothing"
         );
         // Red's two gone the same ways: nobody.
@@ -7138,8 +7091,8 @@ mod tests {
         // x 8,500 cm has no cell, where a clamped cell (7, 4) or a naive one
         // (8, 4) would both stand inside it.
         let mut off = hold_arena(vec![
-            tank(ObjId(4), Team::Red, at(0, 0)),
-            tank(ObjId(9), Team::Blue, at(7, 7)),
+            tank(ObjId(4), PartyId::RED, at(0, 0)),
+            tank(ObjId(9), PartyId::BLUE, at(7, 7)),
         ]);
         off.hold = off.hold.map(|hold| HoldState {
             spot: (7, 4),
@@ -7148,7 +7101,7 @@ mod tests {
         put(&mut off, 4, 7, 4);
         assert_eq!(
             off.hold_presence(),
-            Some(Team::Red),
+            Some(PartyId::RED),
             "the edge cell itself is on the square"
         );
         if let Some(unit) = off.unit_mut(ObjId(4)) {
@@ -7163,8 +7116,8 @@ mod tests {
         );
         // A skirmish has no square to stand on.
         let mut skirmish = arena_of(vec![
-            tank(ObjId(4), Team::Red, at(4, 4)),
-            tank(ObjId(9), Team::Blue, at(7, 7)),
+            tank(ObjId(4), PartyId::RED, at(4, 4)),
+            tank(ObjId(9), PartyId::BLUE, at(7, 7)),
         ]);
         assert_eq!(skirmish.hold_presence(), None);
         skirmish.settle_hold_presence();
@@ -7184,10 +7137,10 @@ mod tests {
     fn o1_settling_presence_opens_keeps_drops_and_reopens_the_clock() {
         let at = |x: i64, y: i64| pose(x * 1_000 + 500, y * 1_000 + 500);
         let mut arena = hold_arena(vec![
-            tank(ObjId(4), Team::Red, at(4, 4)),
-            tank(ObjId(9), Team::Blue, at(7, 7)),
+            tank(ObjId(4), PartyId::RED, at(4, 4)),
+            tank(ObjId(9), PartyId::BLUE, at(7, 7)),
         ]);
-        let holds = |arena: &Arena| -> Vec<(i64, Team, i64)> {
+        let holds = |arena: &Arena| -> Vec<(i64, PartyId, i64)> {
             arena
                 .due
                 .iter()
@@ -7201,15 +7154,15 @@ mod tests {
         arena.settle_hold_presence();
         assert_eq!(
             arena.hold.and_then(|hold| hold.held_by),
-            Some((Team::Red, 250))
+            Some((PartyId::RED, 250))
         );
-        assert_eq!(holds(&arena), vec![(10_250, Team::Red, 250)]);
+        assert_eq!(holds(&arena), vec![(10_250, PartyId::RED, 250)]);
         // Still alone at the next boundary: unchanged, and no second event.
         arena.now_ms = 500;
         arena.settle_hold_presence();
         assert_eq!(
             arena.hold.and_then(|hold| hold.held_by),
-            Some((Team::Red, 250))
+            Some((PartyId::RED, 250))
         );
         assert_eq!(holds(&arena).len(), 1);
         // Contested: dropped; the event is left to fire into nothing.
@@ -7228,11 +7181,11 @@ mod tests {
         arena.settle_hold_presence();
         assert_eq!(
             arena.hold.and_then(|hold| hold.held_by),
-            Some((Team::Blue, 1_000))
+            Some((PartyId::BLUE, 1_000))
         );
         assert_eq!(
             holds(&arena),
-            vec![(10_250, Team::Red, 250), (11_000, Team::Blue, 1_000)]
+            vec![(10_250, PartyId::RED, 250), (11_000, PartyId::BLUE, 1_000)]
         );
         // Empty: dropped again.
         if let Some(unit) = arena.unit_mut(ObjId(9)) {
@@ -7250,8 +7203,8 @@ mod tests {
     fn o1_destroy_unit_keeps_a_scheduled_hold() {
         let at = |x: i64, y: i64| pose(x * 1_000 + 500, y * 1_000 + 500);
         let mut arena = hold_arena(vec![
-            tank(ObjId(4), Team::Red, at(4, 4)),
-            tank(ObjId(9), Team::Blue, at(7, 7)),
+            tank(ObjId(4), PartyId::RED, at(4, 4)),
+            tank(ObjId(9), PartyId::BLUE, at(7, 7)),
         ]);
         arena.now_ms = 250;
         arena.settle_hold_presence();
@@ -7260,7 +7213,7 @@ mod tests {
         assert!(
             arena.due.iter().any(|event| event.kind
                 == DueKind::HoldSettles {
-                    team: Team::Red,
+                    team: PartyId::RED,
                     since_ms: 250
                 }),
             "the hold's event survives its holder's wreck"
@@ -7306,9 +7259,9 @@ mod tests {
         assert_eq!(default_caps, vec![(UnitClass::Drone, 1)]);
         let two_red = || {
             vec![
-                drone(ObjId(4), Team::Red, pose(500, 500)),
-                drone(ObjId(5), Team::Red, pose(1_500, 500)),
-                tank(ObjId(9), Team::Blue, pose(7_500, 7_500)),
+                drone(ObjId(4), PartyId::RED, pose(500, 500)),
+                drone(ObjId(5), PartyId::RED, pose(1_500, 500)),
+                tank(ObjId(9), PartyId::BLUE, pose(7_500, 7_500)),
             ]
         };
         let Err(error) = capped(two_red(), &default_caps) else {
@@ -7330,8 +7283,8 @@ mod tests {
         // One a side: per side, not per map.
         let one_each = capped(
             vec![
-                drone(ObjId(4), Team::Red, pose(500, 500)),
-                drone(ObjId(9), Team::Blue, pose(7_500, 7_500)),
+                drone(ObjId(4), PartyId::RED, pose(500, 500)),
+                drone(ObjId(9), PartyId::BLUE, pose(7_500, 7_500)),
             ],
             &default_caps,
         )
@@ -7348,8 +7301,8 @@ mod tests {
         assert_eq!(
             capped(
                 vec![
-                    drone(ObjId(4), Team::Red, pose(500, 500)),
-                    tank(ObjId(9), Team::Blue, pose(7_500, 7_500)),
+                    drone(ObjId(4), PartyId::RED, pose(500, 500)),
+                    tank(ObjId(9), PartyId::BLUE, pose(7_500, 7_500)),
                 ],
                 &[(UnitClass::Drone, 0)],
             )
@@ -7360,9 +7313,9 @@ mod tests {
         // The blob-less fixture is armour and never a drone.
         let tanks = capped(
             vec![
-                tank(ObjId(4), Team::Red, pose(500, 500)),
-                tank(ObjId(5), Team::Red, pose(1_500, 500)),
-                tank(ObjId(9), Team::Blue, pose(7_500, 7_500)),
+                tank(ObjId(4), PartyId::RED, pose(500, 500)),
+                tank(ObjId(5), PartyId::RED, pose(1_500, 500)),
+                tank(ObjId(9), PartyId::BLUE, pose(7_500, 7_500)),
             ],
             &[(UnitClass::Drone, 0)],
         )
@@ -7377,9 +7330,9 @@ mod tests {
         assert_eq!(
             capped(
                 vec![
-                    tank(ObjId(4), Team::Red, pose(500, 500)),
-                    tank(ObjId(5), Team::Red, pose(1_500, 500)),
-                    tank(ObjId(9), Team::Blue, pose(7_500, 7_500)),
+                    tank(ObjId(4), PartyId::RED, pose(500, 500)),
+                    tank(ObjId(5), PartyId::RED, pose(1_500, 500)),
+                    tank(ObjId(9), PartyId::BLUE, pose(7_500, 7_500)),
                 ],
                 &[(UnitClass::Armour, 1)],
             )
@@ -7403,8 +7356,8 @@ mod tests {
             .collect();
         let Err(error) = capped(
             vec![
-                hauler(ObjId(4), Team::Red, pose(500, 500)),
-                tank(ObjId(9), Team::Blue, pose(7_500, 7_500)),
+                hauler(ObjId(4), PartyId::RED, pose(500, 500)),
+                tank(ObjId(9), PartyId::BLUE, pose(7_500, 7_500)),
             ],
             &default_caps,
         ) else {
@@ -7436,8 +7389,8 @@ mod tests {
             .collect();
         let Err(error) = capped(
             vec![
-                vehicle(ObjId(4), Team::Red, pose(500, 500)),
-                tank(ObjId(9), Team::Blue, pose(7_500, 7_500)),
+                vehicle(ObjId(4), PartyId::RED, pose(500, 500)),
+                tank(ObjId(9), PartyId::BLUE, pose(7_500, 7_500)),
             ],
             &default_caps,
         ) else {
@@ -7484,9 +7437,9 @@ mod tests {
         use crate::arena::test_support::drone;
         let at = |x: i64, y: i64| pose(x * 1_000 + 500, y * 1_000 + 500);
         let mut arena = hold_arena(vec![
-            drone(ObjId(4), Team::Red, at(4, 4)),
-            tank(ObjId(5), Team::Red, at(0, 0)),
-            tank(ObjId(9), Team::Blue, at(7, 7)),
+            drone(ObjId(4), PartyId::RED, at(4, 4)),
+            tank(ObjId(5), PartyId::RED, at(0, 0)),
+            tank(ObjId(9), PartyId::BLUE, at(7, 7)),
         ]);
         assert_eq!(
             arena.unit(ObjId(4)).map(|unit| unit.class),
@@ -7501,7 +7454,7 @@ mod tests {
         put(&mut arena, 5, 3, 4);
         assert_eq!(
             arena.hold_presence(),
-            Some(Team::Red),
+            Some(PartyId::RED),
             "beside its own tank, the side holds through the tank"
         );
         // The drone standing on the square does not contest a blue tank alone.
@@ -7509,7 +7462,7 @@ mod tests {
         put(&mut arena, 9, 5, 5);
         assert_eq!(
             arena.hold_presence(),
-            Some(Team::Blue),
+            Some(PartyId::BLUE),
             "a drone contests nothing"
         );
         arena.settle_hold_presence();
@@ -7519,7 +7472,7 @@ mod tests {
                 .as_ref()
                 .and_then(|hold| hold.held_by)
                 .map(|(team, _)| team),
-            Some(Team::Blue)
+            Some(PartyId::BLUE)
         );
     }
 

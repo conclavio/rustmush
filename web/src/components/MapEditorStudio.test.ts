@@ -15,19 +15,23 @@ describe("MapEditorStudio (WG.4 ground.draft.v1)", () => {
     vi.spyOn(HTMLCanvasElement.prototype, "getContext").mockImplementation(
       () =>
         ({
-          clearRect: vi.fn(),
-          fillRect: vi.fn(),
-          strokeRect: vi.fn(),
-          beginPath: vi.fn(),
-          closePath: vi.fn(),
-          moveTo: vi.fn(),
-          lineTo: vi.fn(),
-          stroke: vi.fn(),
-          arc: vi.fn(),
-          fill: vi.fn(),
-          fillText: vi.fn(),
-          putImageData: vi.fn(),
-          setLineDash: vi.fn(),
+          clearRect: () => {},
+          fillRect: () => {},
+          strokeRect: () => {},
+          beginPath: () => {},
+          closePath: () => {},
+          moveTo: () => {},
+          lineTo: () => {},
+          stroke: () => {},
+          arc: () => {},
+          fill: () => {},
+          fillText: () => {},
+          putImageData: () => {},
+          setLineDash: () => {},
+          save: () => {},
+          restore: () => {},
+          translate: () => {},
+          scale: () => {},
           createImageData: (w: number, h: number) => ({
             data: new Uint8ClampedArray(w * h * 4),
             width: w,
@@ -110,5 +114,48 @@ describe("MapEditorStudio (WG.4 ground.draft.v1)", () => {
     await fireEvent.click(routeBtn);
     await tick();
     expect(screen.getByText(/Routed \d+ nodes/i)).toBeTruthy();
+  });
+
+  it("supports Procedural Generator presets, 512x512 grid + zoom controls, Hold Objective editor, and Tank Roster editor", async () => {
+    const { app, requestGroundDraft } = mockApp();
+    render(MapEditorStudio, { app });
+    await tick();
+
+    // 1. Server Arena selector passes arena name to requestGroundDraft
+    const arenaSelect = screen.getByLabelText("Server arena draft") as HTMLSelectElement;
+    await fireEvent.change(arenaSelect, { target: { value: "mars_canyon" } });
+    const loadBtn = screen.getByRole("button", { name: /Load Server/i });
+    await fireEvent.click(loadBtn);
+    expect(requestGroundDraft).toHaveBeenCalledWith("mars_canyon");
+
+    // 2. Procedural Generator panel generates preset maps
+    expect(screen.getByTestId("procedural-generator-panel")).toBeTruthy();
+    const presetSelect = screen.getByLabelText("Generator preset") as HTMLSelectElement;
+    await fireEvent.change(presetSelect, { target: { value: "mars_canyon" } });
+    const genBtn = screen.getByRole("button", { name: /Generate Preset/i });
+    await fireEvent.click(genBtn);
+    await tick();
+    expect(screen.getByText(/Generated preset "mars_canyon"/i)).toBeTruthy();
+
+    // 3. Zoom controls & 512x512 grid option
+    const zoomInBtn = screen.getByLabelText("Zoom in");
+    await fireEvent.click(zoomInBtn);
+    await tick();
+    const zoomResetBtn = screen.getByLabelText("Reset zoom");
+    expect(zoomResetBtn.textContent).toContain("2x");
+
+    const gridSelect = screen.getByLabelText("Grid size") as HTMLSelectElement;
+    await fireEvent.change(gridSelect, { target: { value: "512" } });
+    await tick();
+    expect(screen.getByText(/2D Canvas \(512×512, 16Q\)/i)).toBeTruthy();
+
+    // 4. Hold Objective & Tank Roster panels
+    expect(screen.getByTestId("hold-objective-panel")).toBeTruthy();
+    expect(screen.getByTestId("tank-roster-panel")).toBeTruthy();
+
+    const musterBtn = screen.getByRole("button", { name: /Auto-Muster Tanks/i });
+    await fireEvent.click(musterBtn);
+    await tick();
+    expect(screen.getByText(/Mustered 12 tanks/i)).toBeTruthy();
   });
 });

@@ -2586,22 +2586,17 @@ pub(super) fn cell_pair(v: Option<&Value>) -> Option<(usize, usize)> {
 }
 
 /// The glyph a contact is drawn with, by the ONE rule the server already
-/// follows (`tacsim::match_::cockpit::ContactRow::glyph`): unknown before side,
-/// then friendly or hostile. The cockpit frame carries `class` and `friendly`,
-/// so a compositor derives it rather than carrying a second table that could
-/// disagree with the server's.
+/// follows (`tacsim::arena::view::ContactRow::glyph`): by the viewer's
+/// relation to it (doc 32 cut CF.0, Q-CF-12) — `own` and `friend` `+`,
+/// `hostile` `x`, `neutral` and `unknown` one slot, `?`. The cockpit frame
+/// carries `relation` (frame 9), so a compositor derives it rather than
+/// carrying a second table that could disagree with the server's; a row
+/// without the word reads as unknown.
 fn contact_glyph(contact: &Value) -> char {
-    let class = contact.get("class").and_then(Value::as_str).unwrap_or("");
-    if class == "unknown" {
-        '?'
-    } else if contact
-        .get("friendly")
-        .and_then(Value::as_bool)
-        .unwrap_or(false)
-    {
-        '+'
-    } else {
-        'x'
+    match contact.get("relation").and_then(Value::as_str) {
+        Some("own" | "friend") => '+',
+        Some("hostile") => 'x',
+        _ => '?',
     }
 }
 
@@ -2677,8 +2672,8 @@ fn designator_of(contact: &Value) -> String {
 ///    null or outside the window is not drawn (a contact is still in the
 ///    contacts pane), and a spot with no letter, a longer one or no cell is
 ///    skipped.
-/// 4. A contact's glyph is `contact_glyph`'s: `?` unknown, `+` friendly, `x`
-///    hostile.
+/// 4. A contact's glyph is `contact_glyph`'s, by relation: `?` unknown or
+///    neutral, `+` own or friend, `x` hostile.
 /// 5. The rows print NORTH-UP: `y` from `h - 1` down to `0`.
 ///
 /// The rows this returns are, in order: the heading line, exactly `h` grid rows,
@@ -6847,9 +6842,17 @@ mod tests {
     /// worth making here (16b cut Q.1's `no_sixteen_digit_word`, on this
     /// surface).
     fn contact(designator: &str, class: &str, friendly: bool, cell: Value) -> Value {
+        // Doc 32 cut CF.0 (frame 9): the relation and party the server sends
+        // alongside `class` and `friendly`.
+        let (relation, party) = match (class, friendly) {
+            ("unknown", _) => ("unknown", Value::Null),
+            (_, true) => ("friend", Value::from(designator.get(..1).unwrap_or("?"))),
+            (_, false) => ("hostile", Value::from(designator.get(..1).unwrap_or("?"))),
+        };
         serde_json::json!({
             "id": "2222222222222222",
             "designator": designator, "class": class, "friendly": friendly, "cell": cell,
+            "relation": relation, "party": party,
             "bearing_deg": 90, "band": "close", "range_m": 50, "age_s": 0, "condition": null
         })
     }
@@ -7048,6 +7051,7 @@ mod tests {
             serde_json::json!([
                 { "id": "1111111111111111",
                   "designator": "BA", "class": "blue", "friendly": false, "cell": [7, 7],
+                  "relation": "hostile", "party": "B",
                   "bearing_deg": 45, "band": "effective", "range_m": 450, "age_s": 1,
                   "condition": { "table": 0, "bands": "gyr", "age_ms": 2000 } },
                 contact("X2", "unknown", false, Value::Null)
@@ -7835,6 +7839,7 @@ mod tests {
         let contact = |designator: &str, aspect: Option<&str>, odds: Option<Value>| {
             let mut row = serde_json::json!({
                 "designator": designator, "class": "blue", "bearing_deg": 45,
+                "relation": "hostile", "party": "B",
                 "band": "far", "range_m": 450, "age_s": 1, "condition": null,
             });
             if let Some(aspect) = aspect {
@@ -7890,6 +7895,7 @@ mod tests {
         let data = serde_json::json!({
             "contacts": [{
                 "designator": "X3", "class": "unknown", "bearing_deg": 315,
+                "relation": "unknown", "party": null,
                 "band": "beyond", "range_m": 200, "age_s": 3, "condition": null,
                 "aspect": "front", "fatal": null,
             }],

@@ -1263,7 +1263,7 @@ fn nearest_on_window(terrain: &ArenaTerrain, pose: &Pose) -> (u16, u16) {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use crate::arena::state::{Arena, ArenaTerrain, MotionLimits, Team, TerrainCell};
+    use crate::arena::state::{Arena, ArenaTerrain, MotionLimits, PartyId, TerrainCell};
     use crate::arena::test_support::{arena_of, ground, pose, tank};
     use mush_core::ObjId;
 
@@ -1444,7 +1444,7 @@ mod tests {
 
     #[test]
     fn a_turn_takes_the_shortest_arc_at_the_ordered_rate() {
-        let mut arena = running(vec![tank(A, Team::Red, pose(3_500, 3_500))]);
+        let mut arena = running(vec![tank(A, PartyId::RED, pose(3_500, 3_500))]);
         // 30 degrees a second: a 250 ms substep turns 7.5 degrees.
         if let Some(unit) = arena.unit_mut(A) {
             unit.desired_heading_mdeg = 90_000;
@@ -1471,7 +1471,7 @@ mod tests {
 
     #[test]
     fn a_destroyed_track_turns_the_long_way_round() {
-        let mut arena = running(vec![tank(A, Team::Red, pose(3_500, 3_500))]);
+        let mut arena = running(vec![tank(A, PartyId::RED, pose(3_500, 3_500))]);
         if let Some(unit) = arena.unit_mut(A) {
             unit.limits.no_turn_left = true;
             // The short arc to 350 degrees is anticlockwise — to the left, which
@@ -1515,7 +1515,7 @@ mod tests {
     #[test]
     fn both_tracks_gone_is_no_turn_at_all_and_no_carry() {
         for desired in [90_000, 270_000, 180_000] {
-            let mut arena = running(vec![tank(A, Team::Red, pose(3_500, 3_500))]);
+            let mut arena = running(vec![tank(A, PartyId::RED, pose(3_500, 3_500))]);
             if let Some(unit) = arena.unit_mut(A) {
                 unit.limits.close_turn(Side::Left);
                 unit.limits.close_turn(Side::Right);
@@ -1550,7 +1550,7 @@ mod tests {
     #[test]
     fn a_turn_carry_dies_when_the_turn_reverses() {
         for (banked_side, kept) in [(1_u8, false), (2_u8, true)] {
-            let mut arena = running(vec![tank(A, Team::Red, pose(3_500, 3_500))]);
+            let mut arena = running(vec![tank(A, PartyId::RED, pose(3_500, 3_500))]);
             if let Some(unit) = arena.unit_mut(A) {
                 // Ordered to starboard: the short arc is clockwise, side 2.
                 unit.desired_heading_mdeg = 90_000;
@@ -1576,7 +1576,7 @@ mod tests {
     #[test]
     fn a_speed_carry_dies_when_accelerating_turns_to_braking() {
         for (banked_rate, kept) in [(1_u8, false), (2_u8, true)] {
-            let mut arena = running(vec![tank(A, Team::Red, pose(3_500, 3_500))]);
+            let mut arena = running(vec![tank(A, PartyId::RED, pose(3_500, 3_500))]);
             if let Some(unit) = arena.unit_mut(A) {
                 unit.speed_cms = 500;
                 unit.desired_speed_cms = 0;
@@ -1597,7 +1597,7 @@ mod tests {
 
     #[test]
     fn speed_accelerates_at_the_ordered_rate_and_brakes_faster() {
-        let mut arena = running(vec![tank(A, Team::Red, pose(3_500, 3_500))]);
+        let mut arena = running(vec![tank(A, PartyId::RED, pose(3_500, 3_500))]);
         // The stock tank: 1,000 cm/s, 200 cm/s^2 accelerating, 400 braking.
         if let Some(unit) = arena.unit_mut(A) {
             unit.desired_speed_cms = 1_000;
@@ -1633,7 +1633,7 @@ mod tests {
                 cell.move_cost = 250;
             }
         }
-        let mut arena = running(vec![tank(A, Team::Red, pose(4_500, 3_500))]);
+        let mut arena = running(vec![tank(A, PartyId::RED, pose(4_500, 3_500))]);
         std::sync::Arc::make_mut(&mut arena.definition).terrain =
             ArenaTerrain::new(8, 8, 1_000, cells).expect("the woods window");
         if let Some(unit) = arena.unit_mut(A) {
@@ -1683,7 +1683,7 @@ mod tests {
                 }
             }
         }
-        let mut arena = running(vec![tank(A, Team::Red, pose(3_500, 3_500))]);
+        let mut arena = running(vec![tank(A, PartyId::RED, pose(3_500, 3_500))]);
         std::sync::Arc::make_mut(&mut arena.definition).terrain =
             ArenaTerrain::new(8, 8, 1_000, cells).expect("the woods window");
         if let Some(unit) = arena.unit_mut(A) {
@@ -1718,7 +1718,7 @@ mod tests {
                 ..MotionLimits::default()
             },
         ] {
-            let mut arena = running(vec![tank(A, Team::Red, pose(3_500, 3_500))]);
+            let mut arena = running(vec![tank(A, PartyId::RED, pose(3_500, 3_500))]);
             if let Some(unit) = arena.unit_mut(A) {
                 unit.speed_cms = 900;
                 unit.desired_speed_cms = 900;
@@ -1737,7 +1737,7 @@ mod tests {
         }
         // Power off: the same, and `Starting` is not online.
         for power in [Power::Off, Power::Starting] {
-            let mut arena = running(vec![tank(A, Team::Red, pose(3_500, 3_500))]);
+            let mut arena = running(vec![tank(A, PartyId::RED, pose(3_500, 3_500))]);
             if let Some(unit) = arena.unit_mut(A) {
                 unit.power = power;
                 unit.speed_cms = 900;
@@ -1751,7 +1751,7 @@ mod tests {
 
     #[test]
     fn the_position_advances_along_the_heading() {
-        let mut arena = running(vec![tank(A, Team::Red, pose(3_500, 3_500))]);
+        let mut arena = running(vec![tank(A, PartyId::RED, pose(3_500, 3_500))]);
         if let Some(unit) = arena.unit_mut(A) {
             unit.speed_cms = 1_000;
             unit.desired_speed_cms = 1_000;
@@ -1803,7 +1803,7 @@ mod tests {
                 cell.move_cost = 0;
             }
         }
-        let mut arena = running(vec![tank(A, Team::Red, pose(3_500, 3_500))]);
+        let mut arena = running(vec![tank(A, PartyId::RED, pose(3_500, 3_500))]);
         std::sync::Arc::make_mut(&mut arena.definition).terrain =
             ArenaTerrain::new(8, 8, 1_000, cells).expect("the band window");
         if let Some(unit) = arena.unit_mut(A) {
@@ -1832,8 +1832,8 @@ mod tests {
     /// Two tanks nose to tail, one cell apart, under the shipped hold.
     fn nose_to_tail() -> Arena {
         let mut arena = running(vec![
-            tank(A, Team::Red, pose(3_900, 3_500)),
-            tank(B, Team::Blue, pose(4_500, 3_500)),
+            tank(A, PartyId::RED, pose(3_900, 3_500)),
+            tank(B, PartyId::BLUE, pose(4_500, 3_500)),
         ]);
         for unit in &mut arena.units {
             unit.pose.heading_mdeg = 90_000;
@@ -1907,7 +1907,7 @@ mod tests {
 
     #[test]
     fn the_window_edge_stops_the_unit() {
-        let mut arena = running(vec![tank(A, Team::Red, pose(3_500, 7_500))]);
+        let mut arena = running(vec![tank(A, PartyId::RED, pose(3_500, 7_500))]);
         if let Some(unit) = arena.unit_mut(A) {
             unit.speed_cms = 1_000;
             unit.desired_speed_cms = 1_000;
@@ -1933,7 +1933,7 @@ mod tests {
                 ..ground()
             };
         }
-        let mut arena = running(vec![tank(A, Team::Red, pose(3_500, 3_900))]);
+        let mut arena = running(vec![tank(A, PartyId::RED, pose(3_500, 3_900))]);
         std::sync::Arc::make_mut(&mut arena.definition).terrain =
             ArenaTerrain::new(8, 8, 1_000, cells).expect("the hill window");
         if let Some(unit) = arena.unit_mut(A) {
@@ -1951,7 +1951,7 @@ mod tests {
         // A configuration no shipped substep can produce: 5,000 cm of travel in
         // one substep over 1,000 cm cells. The cells in between were never
         // tested, so the move is refused.
-        let mut arena = running(vec![tank(A, Team::Red, pose(500, 3_500))]);
+        let mut arena = running(vec![tank(A, PartyId::RED, pose(500, 3_500))]);
         if let Some(unit) = arena.unit_mut(A) {
             unit.pose.heading_mdeg = 90_000;
             unit.desired_heading_mdeg = 90_000;
@@ -1985,10 +1985,10 @@ mod tests {
         }
         let terrain = ArenaTerrain::new(8, 8, 1_000, cells).expect("the walk window");
         let mut arena = running(vec![
-            tank(A, Team::Red, pose(1_500, 1_500)),
-            tank(B, Team::Blue, pose(2_500, 2_500)),
+            tank(A, PartyId::RED, pose(1_500, 1_500)),
+            tank(B, PartyId::BLUE, pose(2_500, 2_500)),
             // Parked: it is never stepped, so it is a hole in the map with a hull.
-            tank(C, Team::Blue, pose(3_500, 2_500)),
+            tank(C, PartyId::BLUE, pose(3_500, 2_500)),
         ]);
         std::sync::Arc::make_mut(&mut arena.definition).terrain = terrain.clone();
         for unit in &mut arena.units {
@@ -2071,7 +2071,7 @@ mod tests {
         // nothing at all — `3 × 250 / 1000` is zero, and so is `3 × 50 / 1000`.
         let mut crawled: Vec<(i64, i64)> = Vec::new();
         for (pulse_ms, substep_max_ms) in PARTITIONS {
-            let mut arena = running(vec![tank(A, Team::Red, pose(3_500, 3_500))]);
+            let mut arena = running(vec![tank(A, PartyId::RED, pose(3_500, 3_500))]);
             if let Some(unit) = arena.unit_mut(A) {
                 unit.pose.heading_mdeg = 90_000;
                 unit.desired_heading_mdeg = 90_000;
@@ -2097,7 +2097,7 @@ mod tests {
         // boundaries of open ground.
         let mut ran: Vec<(i64, i64)> = Vec::new();
         for (pulse_ms, substep_max_ms) in PARTITIONS {
-            let mut arena = running(vec![tank(A, Team::Red, pose(500, 3_500))]);
+            let mut arena = running(vec![tank(A, PartyId::RED, pose(500, 3_500))]);
             if let Some(unit) = arena.unit_mut(A) {
                 unit.pose.heading_mdeg = 90_000;
                 unit.desired_heading_mdeg = 90_000;
@@ -2124,7 +2124,7 @@ mod tests {
         // and not the order it is heading for.
         let mut turned: Vec<u32> = Vec::new();
         for (pulse_ms, substep_max_ms) in PARTITIONS {
-            let mut arena = running(vec![tank(A, Team::Red, pose(3_500, 3_500))]);
+            let mut arena = running(vec![tank(A, PartyId::RED, pose(3_500, 3_500))]);
             if let Some(unit) = arena.unit_mut(A) {
                 unit.mobility.turn_rate_mdeg_s = 33_333;
                 unit.desired_heading_mdeg = 180_000;
@@ -2144,7 +2144,7 @@ mod tests {
         // never reached and the rate itself is what is compared.
         let mut ramped: Vec<i32> = Vec::new();
         for (pulse_ms, substep_max_ms) in PARTITIONS {
-            let mut arena = running(vec![tank(A, Team::Red, pose(3_500, 3_500))]);
+            let mut arena = running(vec![tank(A, PartyId::RED, pose(3_500, 3_500))]);
             if let Some(unit) = arena.unit_mut(A) {
                 unit.mobility.accel_cms2 = 333;
                 unit.desired_speed_cms = 1_000;
@@ -2188,7 +2188,7 @@ mod tests {
                     cell.move_cost = 0;
                 }
             }
-            let mut arena = running(vec![tank(A, Team::Red, pose(3_500, 3_500))]);
+            let mut arena = running(vec![tank(A, PartyId::RED, pose(3_500, 3_500))]);
             std::sync::Arc::make_mut(&mut arena.definition).terrain =
                 ArenaTerrain::new(8, 8, 1_000, cells).expect("the band window");
             if let Some(unit) = arena.unit_mut(A) {
@@ -2278,8 +2278,8 @@ mod tests {
         };
         // A parked tank north of A's cell, for the second obstacle.
         let mut arena = m3_band(vec![
-            tank(A, Team::Red, pose(3_500, 3_500)),
-            tank(B, Team::Blue, pose(3_500, 4_500)),
+            tank(A, PartyId::RED, pose(3_500, 3_500)),
+            tank(B, PartyId::BLUE, pose(3_500, 4_500)),
         ]);
         m3_order(&mut arena, 90_000, 1_000);
         let stop = m3_until(&mut arena, |out| out.blocked_by.is_some());
@@ -2337,7 +2337,7 @@ mod tests {
 
         // Entering another cell: stopped at the band, then driven south until it
         // crosses into row 2.
-        let mut arena = m3_band(vec![tank(A, Team::Red, pose(3_500, 3_500))]);
+        let mut arena = m3_band(vec![tank(A, PartyId::RED, pose(3_500, 3_500))]);
         m3_order(&mut arena, 90_000, 1_000);
         m3_until(&mut arena, |out| out.blocked_by.is_some());
         assert_eq!(m3_held(&arena), Some(band));
@@ -2365,7 +2365,7 @@ mod tests {
 
         // The window's edge: north out of the top row, then a slide east along
         // the edge (held), then a reverse south off it (cleared).
-        let mut arena = m3_band(vec![tank(A, Team::Red, pose(1_500, 7_500))]);
+        let mut arena = m3_band(vec![tank(A, PartyId::RED, pose(1_500, 7_500))]);
         m3_order(&mut arena, 0, 1_000);
         let edge = m3_until(&mut arena, |out| out.blocked_by.is_some());
         assert!(edge.held_edge);
@@ -2394,7 +2394,7 @@ mod tests {
                 }
             }
         }
-        let mut arena = running(vec![tank(A, Team::Red, pose(at.0, at.1))]);
+        let mut arena = running(vec![tank(A, PartyId::RED, pose(at.0, at.1))]);
         std::sync::Arc::make_mut(&mut arena.definition).terrain =
             ArenaTerrain::new(8, 8, 1_000, cells).expect("the window");
         m3_order(&mut arena, heading_mdeg, 1_000);
@@ -2539,7 +2539,7 @@ mod tests {
         // 300 of in the minute below.
         let corridor = |speed: i32| -> Arena {
             let cells = vec![ground(); 320 * 4];
-            let mut arena = running(vec![tank(A, Team::Red, pose(999, 1_500))]);
+            let mut arena = running(vec![tank(A, PartyId::RED, pose(999, 1_500))]);
             std::sync::Arc::make_mut(&mut arena.definition).terrain =
                 ArenaTerrain::new(320, 4, 1_000, cells).expect("the corridor window");
             if let Some(unit) = arena.unit_mut(A) {
@@ -2631,15 +2631,15 @@ mod tests {
             (
                 BlockedCause::Impassable,
                 ArenaTerrain::new(8, 8, 1_000, banded(0)).expect("the band window"),
-                vec![tank(A, Team::Red, pose(3_800, 3_500))],
+                vec![tank(A, PartyId::RED, pose(3_800, 3_500))],
                 OCCUPIED_STOP_MS,
             ),
             (
                 BlockedCause::Occupied,
                 ArenaTerrain::new(8, 8, 1_000, banded(100)).expect("the open window"),
                 vec![
-                    tank(A, Team::Red, pose(3_800, 3_500)),
-                    tank(B, Team::Blue, pose(4_500, 3_500)),
+                    tank(A, PartyId::RED, pose(3_800, 3_500)),
+                    tank(B, PartyId::BLUE, pose(4_500, 3_500)),
                 ],
                 // 16b cut E.3: see this test's head.
                 0,
@@ -2647,13 +2647,13 @@ mod tests {
             (
                 BlockedCause::TooSteep,
                 ArenaTerrain::new(8, 8, 1_000, cliff).expect("the cliff window"),
-                vec![tank(A, Team::Red, pose(3_800, 3_500))],
+                vec![tank(A, PartyId::RED, pose(3_800, 3_500))],
                 OCCUPIED_STOP_MS,
             ),
             (
                 BlockedCause::Edge,
                 ArenaTerrain::new(8, 8, 1_000, banded(100)).expect("the open window"),
-                vec![tank(A, Team::Red, pose(7_800, 3_500))],
+                vec![tank(A, PartyId::RED, pose(7_800, 3_500))],
                 OCCUPIED_STOP_MS,
             ),
         ] {
@@ -2701,7 +2701,7 @@ mod tests {
             MotionLimits::default(),
         ] {
             let cold = limits == MotionLimits::default();
-            let mut arena = running(vec![tank(A, Team::Red, pose(3_500, 3_500))]);
+            let mut arena = running(vec![tank(A, PartyId::RED, pose(3_500, 3_500))]);
             if let Some(unit) = arena.unit_mut(A) {
                 unit.carry = crate::arena::state::MotionCarry {
                     turn: 700,
@@ -2733,7 +2733,7 @@ mod tests {
         // closes and a ramp that reaches its target both end at zero, so the next
         // order starts from a known place rather than from whatever the last one
         // left over.
-        let mut arena = running(vec![tank(A, Team::Red, pose(3_500, 3_500))]);
+        let mut arena = running(vec![tank(A, PartyId::RED, pose(3_500, 3_500))]);
         if let Some(unit) = arena.unit_mut(A) {
             unit.mobility.turn_rate_mdeg_s = 33_333;
             unit.desired_heading_mdeg = 30_000;
@@ -2891,8 +2891,8 @@ mod tests {
     #[test]
     fn a_hold_zeroes_the_travel_carries_and_keeps_the_speed_and_its_carry() {
         let mut arena = running(vec![
-            tank(A, Team::Red, pose(3_800, 3_500)),
-            tank(B, Team::Blue, pose(4_500, 3_500)),
+            tank(A, PartyId::RED, pose(3_800, 3_500)),
+            tank(B, PartyId::BLUE, pose(4_500, 3_500)),
         ]);
         if let Some(unit) = arena.unit_mut(A) {
             unit.pose.heading_mdeg = 90_000;
@@ -3011,9 +3011,9 @@ mod tests {
     #[test]
     fn a_refusal_of_a_different_cell_restarts_the_clock() {
         let mut arena = running(vec![
-            tank(A, Team::Red, pose(3_900, 3_900)),
-            tank(B, Team::Blue, pose(4_500, 3_500)),
-            tank(C, Team::Blue, pose(3_500, 4_500)),
+            tank(A, PartyId::RED, pose(3_900, 3_900)),
+            tank(B, PartyId::BLUE, pose(4_500, 3_500)),
+            tank(C, PartyId::BLUE, pose(3_500, 4_500)),
         ]);
         if let Some(unit) = arena.unit_mut(A) {
             unit.speed_cms = 1_000;
@@ -3125,7 +3125,7 @@ mod tests {
                 (7, 3),
             ),
         ] {
-            let mut arena = running(vec![tank(A, Team::Red, at)]);
+            let mut arena = running(vec![tank(A, PartyId::RED, at)]);
             std::sync::Arc::make_mut(&mut arena.definition).terrain = terrain;
             if let Some(unit) = arena.unit_mut(A) {
                 unit.pose.heading_mdeg = 90_000;

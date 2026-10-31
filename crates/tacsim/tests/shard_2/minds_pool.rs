@@ -47,7 +47,7 @@ use tacsim::arena::hash::state_hash;
 use tacsim::arena::ledger::LedgerEvent;
 use tacsim::arena::mind::{MindRunner, ThinkFault, ThinkJob, ThinkResult, run_batch_inline};
 use tacsim::arena::snapshot::SnapshotError;
-use tacsim::arena::state::{Arena, CustodyOut, Team};
+use tacsim::arena::state::{Arena, CustodyOut, PartyId};
 use tacsim::arena::step::StepOutput;
 use tacsim::arena::{EndReason, Snapshot};
 use tacsim::arena_task::{ArenaOut, MatchId, spawn_arena};
@@ -60,14 +60,17 @@ use tokio::sync::mpsc;
 /// thinks on the pool's threads beside the native one, and an unarmed hull's
 /// helm-only thinks ride the same batches.
 fn red() -> [Muster; 2] {
-    [Muster::mind(Team::Red, 1), Muster::scripted(Team::Red, 2)]
+    [
+        Muster::mind(PartyId::RED, 1),
+        Muster::scripted(PartyId::RED, 2),
+    ]
 }
 
 /// See [`red`].
 fn blue() -> [Muster; 2] {
     [
-        Muster::mind(Team::Blue, 1),
-        Muster::mind_unarmed(Team::Blue, 2),
+        Muster::mind(PartyId::BLUE, 1),
+        Muster::mind_unarmed(PartyId::BLUE, 2),
     ]
 }
 
@@ -567,7 +570,7 @@ async fn m4_real_tasks_over_the_twin_s_thirty_hash_as_the_library() {
     for k in 0..15_u64 {
         let seed = SEED + k;
         let field = |world: &mush_testkit::TestWorld| {
-            shipped_custody_seeded(world, &[&t1(Team::Red), &t1(Team::Blue)], seed)
+            shipped_custody_seeded(world, &[&t1(PartyId::RED), &t1(PartyId::BLUE)], seed)
         };
         let library = run(
             open(field(&world), &match_cfg),
@@ -705,8 +708,8 @@ fn m4_a_fault_s_lines_carry_the_think_s_own_substep_hash_at_three_cadences() {
         shipped_custody_seeded(
             world,
             &[
-                &[Muster::mind(Team::Red, 1)],
-                &[Muster::piloted(Team::Blue, 1)],
+                &[Muster::mind(PartyId::RED, 1)],
+                &[Muster::piloted(PartyId::BLUE, 1)],
             ],
             SEED,
         )

@@ -99,9 +99,11 @@ const NEEDLES: [&str; 6] = [
 ];
 
 /// The pre-auth network half, whose budgets may only fall.
-const RATCHET_CRATES: [&str; 11] = [
+const RATCHET_CRATES: [&str; 12] = [
     "mush-ansi",
     "mush-config",
+    // Doc 33 cut GG.3: the shared drain holds the listeners and the kill switch.
+    "mush-drain",
     "mush-gateway",
     "mush-ipc",
     "mush-net-discord",

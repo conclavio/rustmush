@@ -862,8 +862,10 @@ fn a_window_away_from_the_corner_subtracts_its_own_origin() {
     frame["cell"] = serde_json::json!([60, 40]);
     frame["contacts"] = serde_json::json!([
         { "designator": "BA", "class": "blue", "friendly": false, "cell": [55, 38],
+          "relation": "hostile", "party": "B",
           "bearing_deg": 45, "band": "close", "range_m": 100, "age_s": 1, "condition": null },
         { "designator": "X9", "class": "unknown", "friendly": false, "cell": [6, 4],
+          "relation": "unknown", "party": null,
           "bearing_deg": 0, "band": "far", "range_m": 900, "age_s": 9, "condition": null }
     ]);
     let rows = render_cockpit_map_rows(&frame, &ctx);

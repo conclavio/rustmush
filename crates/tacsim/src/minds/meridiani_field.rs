@@ -11,7 +11,7 @@ use crate::arena::{
     profile_rules::BoundProgram,
     profile_runtime::ProfileToken,
     runtime_card::{CardCatalog, CardDefinition, ProfileDefinition, ProfileKey, RuntimeCard},
-    state::{Channel, Classification, ContactId, Controller, Power, Team},
+    state::{Channel, Classification, ContactId, Controller, PartyId, Power},
     test_support::{arena_painted, ground, line_tank, pose},
 };
 use crate::config::ArenaConfig;
@@ -603,7 +603,7 @@ fn field_actual_native_no_route_waits_then_reissues_exact_goal() -> TestResult {
         (4, 7),
     ]
     .map(|(x, y)| (x, y, wall));
-    let mut hull = line_tank(fixture::UNIT, Team::Red, pose(3500, 3500));
+    let mut hull = line_tank(fixture::UNIT, PartyId::RED, pose(3500, 3500));
     hull.controller = Controller::Mind;
     hull.reseal(&crate::match_::SealTerms::fixture())?;
     let mut arena = arena_painted(vec![hull], &paint);
@@ -691,7 +691,7 @@ fn field_actual_native_no_route_waits_then_reissues_exact_goal() -> TestResult {
 
 #[test]
 fn actual_native_arrival_holds_without_new_combat_authority() -> TestResult {
-    let mut hull = line_tank(fixture::UNIT, Team::Red, pose(3500, 3500));
+    let mut hull = line_tank(fixture::UNIT, PartyId::RED, pose(3500, 3500));
     hull.controller = Controller::Mind;
     hull.reseal(&crate::match_::SealTerms::fixture())?;
     let mut arena = arena_painted(vec![hull], &[]);

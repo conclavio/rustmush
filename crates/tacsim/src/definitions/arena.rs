@@ -34,7 +34,7 @@ use serde::{Deserialize, Serialize};
 
 use crate::arena::state::{
     ArenaDefinition, ArenaMode, ArenaTerrain, EntryZone, HoldRule, KeySpot as ArenaKeySpot,
-    PROVISIONAL_PREFIX, Team, TerrainCell, Waypoint as ArenaWaypoint, Waypoints,
+    PROVISIONAL_PREFIX, PartyId, TerrainCell, Waypoint as ArenaWaypoint, Waypoints,
 };
 use crate::definitions::DefinitionError;
 use crate::definitions::unit::TRACKED;
@@ -43,6 +43,14 @@ use crate::definitions::unit::TRACKED;
 /// window at C.1's 128 by 128 quadrants; sixteen tile a 512 by 512 ground at
 /// the same 128 by 128 quadrant side (doc 30 §7, §11 WG.6).
 pub const MAX_ARENA_TILES: usize = 16;
+
+/// **The window side a region gets when nothing says otherwise**, cells (doc 32
+/// Q-CF-51): 256 at 10 m, 2.56 km (D-16-16). Since doc 32 cut CF.0 the side is a
+/// per-region value — the region's own [`ArenaDef`] `cols` and `rows`, which its
+/// tiles already say, up to [`MAX_ARENA_SIDE`] — and this is only the shipped
+/// default the engine's stand-in window and the tests are built at. Nothing in
+/// the kernel names a side: it reads the window's own width and height.
+pub const DEFAULT_WINDOW_SIDE: u16 = 256;
 
 /// The widest or tallest an arena's ground may be, cells (doc 30 §7, §11 WG.6;
 /// `D-30-7`): four 128-cell quadrants a side (`4 × 128 = 512`, matching
@@ -138,7 +146,7 @@ impl ArenaModeDef {
 #[serde(deny_unknown_fields)]
 pub struct EntryZoneDef {
     /// The side that deploys here.
-    pub team: Team,
+    pub team: PartyId,
     /// The west column.
     pub x0: u16,
     /// The south row.
@@ -194,7 +202,7 @@ pub struct TankDef {
     /// The object's name in the world.
     pub name: String,
     /// Its side.
-    pub team: Team,
+    pub team: PartyId,
     /// Its opening column.
     pub x: u16,
     /// Its opening row.
@@ -326,17 +334,17 @@ impl ArenaDef {
             seen.push(tile);
         }
         self.tile_keys(entry)?;
-        if self.entry_zones.len() != Team::ALL.len() {
+        if self.entry_zones.len() != PartyId::OOC.len() {
             return Err(DefinitionError::value(
                 entry,
                 format!(
                     "an arena declares one entry zone per side ({}); {} is not",
-                    Team::ALL.len(),
+                    PartyId::OOC.len(),
                     self.entry_zones.len()
                 ),
             ));
         }
-        for team in Team::ALL {
+        for team in PartyId::OOC {
             if !self.entry_zones.iter().any(|zone| zone.team == team) {
                 return Err(DefinitionError::value(
                     entry,
@@ -711,7 +719,7 @@ fn check_spot_name(
 /// **Whether a word has the shape of a designator** (16b cut V.1), either case:
 /// a team's letter followed only by ASCII letters (`RA`, `bAA`) — a slot in
 /// bijective base 26 — or [`PROVISIONAL_PREFIX`] followed only by ASCII digits
-/// (`X1`). The team letters are read off [`Team::ALL`], so a third side is
+/// (`X1`). The team letters are read off [`PartyId::OOC`], so a third side is
 /// covered without touching this.
 fn is_designator_shaped(word: &str) -> bool {
     let mut chars = word.chars();
@@ -722,7 +730,7 @@ fn is_designator_shaped(word: &str) -> bool {
     if rest.is_empty() {
         return false;
     }
-    if Team::ALL.iter().any(|team| team.letter() == first) {
+    if PartyId::OOC.iter().any(|team| team.letter() == first) {
         return rest.chars().all(|c| c.is_ascii_alphabetic());
     }
     first == PROVISIONAL_PREFIX && rest.chars().all(|c| c.is_ascii_digit())

@@ -487,19 +487,33 @@ fn base64_decode(text: &str) -> Option<Vec<u8>> {
     Some(out)
 }
 
-/// How a contact is drawn (doc 22 D-22-3): a wreck, or its team's colour —
-/// the frame's `class` is the team a classified contact is on (`red`,
-/// `blue`) — or unknown. Never by whether it is a friend.
+/// How a contact is drawn (doc 32 cut CF.0, Q-CF-12): a wreck, or by the
+/// viewer's relation to it — the row's `relation`, `own` and `friend` in the
+/// friend colour, `hostile` in the hostile one, `neutral`, `unknown` (or a
+/// row with no word) grey. Never by its party: the party is the letter
+/// beside its health gauge ([`contact_party`]).
 #[must_use]
 pub fn contact_kind(c: &Value) -> SpriteKind {
     if c.get("reads_dead").and_then(Value::as_bool) == Some(true) {
         return SpriteKind::Wreck;
     }
-    match c.get("class").and_then(Value::as_str) {
-        Some("red") => SpriteKind::Red,
-        Some("blue") => SpriteKind::Blue,
+    match c.get("relation").and_then(Value::as_str) {
+        Some("own" | "friend") => SpriteKind::Friend,
+        Some("hostile") => SpriteKind::Hostile,
         _ => SpriteKind::Unknown,
     }
+}
+
+/// **A contact's party letter** (doc 32 cut CF.0, Q-CF-12): the row's
+/// `party`, a one-letter string, or `None` while the contact is unclassified
+/// (`null`) or the row has none. Drawn beside the health gauge so parties
+/// stay distinct inside one relation colour.
+#[must_use]
+pub fn contact_party(c: &Value) -> Option<char> {
+    let s = c.get("party").and_then(Value::as_str)?;
+    let mut chars = s.chars();
+    let letter = chars.next()?;
+    (chars.next().is_none() && letter.is_ascii_alphabetic()).then(|| letter.to_ascii_uppercase())
 }
 
 /// A contact as the sprite the picture draws it as: placed by bearing and
@@ -631,6 +645,8 @@ pub fn hud(
                 x: p.screenx as i64,
                 top: top as i64,
                 health,
+                party: contact_party(c),
+                kind: contact_kind(c),
             })
         })
         .collect();
@@ -961,20 +977,24 @@ mod tests {
         };
         let sprites = contacts_as_sprites(&cockpit, &cam, 0);
         assert_eq!(sprites.len(), 4);
-        // Doc 22 D-22-3: by team, not by friend — RB (the pilot's own red
-        // team) is red and BA blue.
+        // Doc 32 cut CF.0, Q-CF-12: by the viewer's relation, not by party —
+        // RB (the red pilot's own party) is the friend colour and BA (blue,
+        // hostile) the hostile one.
         assert_eq!(
-            sprites.iter().filter(|s| s.kind == SpriteKind::Red).count(),
+            sprites
+                .iter()
+                .filter(|s| s.kind == SpriteKind::Hostile)
+                .count(),
             1,
-            "RB, red"
+            "BA, hostile to the red pilot"
         );
         assert_eq!(
             sprites
                 .iter()
-                .filter(|s| s.kind == SpriteKind::Blue)
+                .filter(|s| s.kind == SpriteKind::Friend)
                 .count(),
             1,
-            "BA, blue"
+            "RB, the pilot's own party"
         );
         assert_eq!(
             sprites
@@ -991,7 +1011,7 @@ mod tests {
     }
 
     /// Doc 21 cut G.13: the flight HUD carries the overhead's inset in the
-    /// top-left corner — the tank at its centre, the contacts in their team
+    /// top-left corner — the tank at its centre, the contacts in their relation
     /// colours around it, the ground under them — at the text cockpit's
     /// 640x256 and the 640x480 target, on the flat yard and on relief, and
     /// the frame stays inside the palette; a look turns the inset (the
@@ -999,7 +1019,7 @@ mod tests {
     /// (its own minimap is bottom-left).
     #[test]
     fn the_hud_carries_the_overhead_inset() {
-        use crate::overlay::{BLUE_TEAM, RED_TEAM, YOU};
+        use crate::overlay::{FRIEND, HOSTILE, YOU};
         let mut feeds = std::collections::HashMap::new();
         feeds.insert(COCKPIT_FEED.to_string(), parsed(COCKPIT));
         feeds.insert(ARENA_MAP_FEED.to_string(), parsed(MAP));
@@ -1023,7 +1043,7 @@ mod tests {
                 YOU,
                 "{w}x{h}: its ray up"
             );
-            assert!(has_in(&frame, rect, BLUE_TEAM) && has_in(&frame, rect, RED_TEAM));
+            assert!(has_in(&frame, rect, FRIEND) && has_in(&frame, rect, HOSTILE));
             assert!(
                 has_in(&frame, rect, overlay::ground_rgb(Ground::Grass)),
                 "{w}x{h}: the ground"
@@ -1377,6 +1397,16 @@ mod tests {
         assert_eq!(at(6, 0), overlay::GONE);
         assert_eq!(at(12, 3), overlay::GONE);
         assert_eq!(at(4, 0), [0, 0, 0], "the gap between pips");
+        // Doc 32 cut CF.0, Q-CF-12: BA's party letter `B` right of the pips
+        // in the hostile colour, its bottom on the gauge's.
+        assert_eq!(mark.party, Some('B'));
+        assert_eq!(mark.kind, SpriteKind::Hostile);
+        let (lx, ly) = overlay::party_letter_at(gx, gy, gh, 2, 640);
+        assert_eq!((lx, ly), (gx + gw + 4, gy + gh - 14));
+        let letter = |dx: i64, dy: i64| drawn.get((lx + dx) as usize, (ly + dy) as usize);
+        assert_eq!(letter(0, 0), overlay::HOSTILE, "the B's top-left");
+        assert_eq!(letter(0, 13), overlay::HOSTILE, "the B's bottom-left");
+        assert_ne!(letter(8, 0), overlay::HOSTILE, "the B's top-right is open");
         assert_eq!(drawn.get(mark.x as usize, (y - 4) as usize), overlay::LOCK);
         assert!(drawn.count_colours(256) <= 256);
 

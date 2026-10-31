@@ -37,7 +37,11 @@ pub const FRAME_SCHEMA: &str = "arena.cockpit";
 /// effective class's already-advertised ceiling. Class I/native stay at two rows.
 /// **DT.1b bumps it to 8** for an explicit, opaque order identity shared with
 /// mind API 6. Legacy orders carry null; standing orders do not use expiry as id.
-pub const FRAME_VERSION: u32 = 8;
+/// **Doc 32 cut CF.0 bumps it to 9** for parties: the frame's `team` word is
+/// gone for the own `party` letter, and every contact row carries the viewer's
+/// `relation` and the contact's `party` letter (Q-CF-12). Taken once, with the
+/// mind API (7) and the snapshot (19).
+pub const FRAME_VERSION: u32 = 9;
 
 /// **The terrain frame's schema id** (16b cut Q.3), carried on
 /// [`crate::arena_bridge::MAP_FEED`].
@@ -301,6 +305,11 @@ pub fn status_frame_held(
                 "age_s": row.age_ms / 1_000,
                 "cell": row.cell.map(|(x, y)| [x, y]),
                 "friendly": row.friendly,
+                // Doc 32 cut CF.0 (Q-CF-12, frame 9): what the clients colour
+                // the body by, and the party letter drawn by its health bar —
+                // `null` until the contact is classified.
+                "relation": row.relation.as_str(),
+                "party": row.designator.party().map(|party| party.letter().to_string()),
                 "moving": held.is_some_and(|held| held.moving),
                 // 16b cut Q.2: what the platform has read off this contact's
                 // hull, or `null`. The table index is inside the object, so a
@@ -629,10 +638,12 @@ pub fn status_frame_held(
     // Keep the public objective and own motor facts together. Inserting this
     // block separately keeps the large frame macro within its recursion bound.
     if let Some(object) = payload.as_object_mut() {
-        // **Doc 22**: the pilot's own side and own unit type — never secrets
-        // from the pilot — so a picture draws bodies in team colour and the
-        // doll from the right look.
-        object.insert("team".into(), frame.team.as_str().into());
+        // **Doc 22**: the pilot's own unit type — never a secret from the
+        // pilot — so the doll is drawn from the right look. **Doc 32 cut CF.0
+        // (frame 9)**: the own party's letter, which the own health bar
+        // carries, in place of the team word; the own body is drawn in the
+        // own relation's colour.
+        object.insert("party".into(), frame.party.letter().to_string().into());
         object.insert("unit_type".into(), frame.unit_type.as_str().into());
         // **Doc 31 D-31-11**: every unit type on the pilot's own side, so a
         // client fetches their models before the first contact; the other

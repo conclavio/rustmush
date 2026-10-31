@@ -151,7 +151,8 @@ pub fn frame_contacts_held(frame: &Frame, ranges: &BTreeMap<ContactId, u64>) -> 
             ),
             age_ms: held.age_ms,
             cell: held.cell,
-            friendly: held.class.team() == Some(frame.team),
+            friendly: held.relation.is_friendly(),
+            relation: held.relation,
             // 17b cut M1a.3 (doc 17 §3): the side word of the face the plot was
             // showing, and the main gun's odds off `frame.odds` — the entry for
             // this row and the weapon a bare `FIRE` would fire, which
@@ -298,10 +299,14 @@ pub fn settle_ranges(
 pub fn own_scope(frame: &Frame) -> &'static str {
     let mut unidentified = false;
     for held in &frame.contacts {
-        match held.class.team() {
-            Some(team) if team == frame.team => {}
-            Some(_) => return "hostile",
-            None => unidentified = true,
+        // Doc 32 cut CF.0: by relation. A neutral is held, not a threat, and
+        // not a friend: it reads as unidentified does.
+        match held.relation {
+            crate::arena::party::Relation::Own | crate::arena::party::Relation::Friend => {}
+            crate::arena::party::Relation::Hostile => return "hostile",
+            crate::arena::party::Relation::Neutral | crate::arena::party::Relation::Unknown => {
+                unidentified = true;
+            }
         }
     }
     if unidentified {
@@ -320,7 +325,7 @@ pub fn own_scope(frame: &Frame) -> &'static str {
 /// pilot wants off a resolved return is whose it is.
 #[must_use]
 pub(crate) fn class_word(class: Classification) -> &'static str {
-    match class.team() {
+    match class.party() {
         Some(team) => team.as_str(),
         None => class.as_str(),
     }
@@ -471,6 +476,9 @@ pub struct ContactRow {
     /// Whether the resolved side is the platform's own — what decides the glyph
     /// `VIEW` draws it with. `false` while the contact is `unknown`.
     pub friendly: bool,
+    /// **The platform's party's relation to it** (doc 32 Q-CF-12): what the
+    /// clients colour it by. `friendly` is own or friend.
+    pub relation: crate::arena::party::Relation,
     /// **The side word of the face the contact was showing** (17b cut M1a.3; doc
     /// 17 §3): `front`, `side` or `rear` —
     /// [`crate::arena::perception::Aspect::side_word`] of the frame's facet.
@@ -518,12 +526,16 @@ impl ContactRow {
     /// unresolved, then [`FRIEND_GLYPH`] or [`HOSTILE_GLYPH`].
     #[must_use]
     pub fn glyph(&self) -> &'static str {
-        if self.class == "unknown" {
-            UNKNOWN_GLYPH
-        } else if self.friendly {
-            FRIEND_GLYPH
-        } else {
-            HOSTILE_GLYPH
+        // Doc 32 cut CF.0 (Q-CF-12): by relation; a neutral reads as an
+        // unknown does, one slot for the two.
+        match self.relation {
+            crate::arena::party::Relation::Own | crate::arena::party::Relation::Friend => {
+                FRIEND_GLYPH
+            }
+            crate::arena::party::Relation::Hostile => HOSTILE_GLYPH,
+            crate::arena::party::Relation::Neutral | crate::arena::party::Relation::Unknown => {
+                UNKNOWN_GLYPH
+            }
         }
     }
 }
@@ -582,6 +594,7 @@ mod tests {
             designator,
             alias,
             class: SmolStr::new_static("blue"),
+            relation: crate::arena::party::Relation::Hostile,
             bearing_deg: 87,
             relative_deg: 32,
             band: SmolStr::new_static("effective"),
@@ -600,9 +613,9 @@ mod tests {
     /// **17b cut M1a.3**: with the aspect and the odds after the age.
     #[test]
     fn a_contact_row_renders_its_designator_in_a_column_of_four() {
-        let slot = Designator::Slot {
-            team: crate::arena::state::Team::Blue,
-            slot: 1,
+        let slot = Designator::Unit {
+            party: crate::arena::state::PartyId::BLUE,
+            letter: 'A',
         };
         assert_eq!(
             row(ContactId(7), slot, Some(2)).render(),
@@ -622,9 +635,9 @@ mod tests {
     /// at the aspect.
     #[test]
     fn m1a3_the_row_ends_in_the_aspect_and_the_main_guns_odds() {
-        let slot = Designator::Slot {
-            team: crate::arena::state::Team::Blue,
-            slot: 1,
+        let slot = Designator::Unit {
+            party: crate::arena::state::PartyId::BLUE,
+            letter: 'A',
         };
         let mut far = row(ContactId(7), slot, None);
         far.band = SmolStr::new_static("far");

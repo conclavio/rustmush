@@ -53,7 +53,7 @@ use tacsim::arena::{
         Aspect, ContactFacing, DriveOutcome, FrameContact, FrameNotice, FrameOdds, Named,
         NoticeKind, Receiver, RefusalDetail,
     },
-    state::{Classification, ContactId, Designator, KeySpot, Power as ArenaPower, Team},
+    state::{Classification, ContactId, Designator, KeySpot, PartyId, Power as ArenaPower},
     step::{Frame, FrameFacet, FrameHeat, FrameSection},
     weapons::{FrameBand, FrameWeapon},
 };
@@ -155,17 +155,17 @@ const X2_ID: ContactId = ContactId(0x2222_2222_2222_2222);
 const RB_ID: ContactId = ContactId(0x3333_3333_3333_3333);
 
 fn ba() -> Designator {
-    Designator::Slot {
-        team: Team::Blue,
-        slot: 1,
+    Designator::Unit {
+        party: PartyId::BLUE,
+        letter: 'A',
     }
 }
 
 /// The own side's second tank: a friend on a red frame.
 fn rb() -> Designator {
-    Designator::Slot {
-        team: Team::Red,
-        slot: 2,
+    Designator::Unit {
+        party: PartyId::RED,
+        letter: 'B',
     }
 }
 
@@ -177,7 +177,10 @@ fn friendly_frame() -> Frame {
         id: RB_ID,
         designator: rb(),
         alias: Some(2),
-        class: Classification::Classified { team: Team::Red },
+        class: Classification::Classified {
+            party: PartyId::RED,
+        },
+        relation: tacsim::arena::Relation::Own,
         bearing_mdeg: 180_000,
         range_cm: 12_000,
         age_ms: 0,
@@ -234,16 +237,16 @@ fn frame() -> Frame {
         unit_type: "tacsim.unit.line_tank".into(),
         side_unit_types: vec!["tacsim.unit.line_tank".into()],
         sensor_height_cm: 150,
-        callsign: Designator::Slot {
-            team: Team::Red,
-            slot: 1,
+        callsign: Designator::Unit {
+            party: PartyId::RED,
+            letter: 'A',
         },
         cell: Some((100, 97)),
         mode: tacsim::arena::state::MatchMode::Skirmish,
         objective: None,
         motor: None,
         own_last_hit_ms: None,
-        team: Team::Red,
+        party: PartyId::RED,
         pose: mush_sim::data::Pose {
             x_cm: 100_000,
             y_cm: 97_500,
@@ -263,7 +266,10 @@ fn frame() -> Frame {
                 id: BA_ID,
                 designator: ba(),
                 alias: Some(1),
-                class: Classification::Classified { team: Team::Blue },
+                class: Classification::Classified {
+                    party: PartyId::BLUE,
+                },
+                relation: tacsim::arena::Relation::Hostile,
                 bearing_mdeg: 87_000,
                 range_cm: 45_000,
                 age_ms: 1_200,
@@ -282,6 +288,7 @@ fn frame() -> Frame {
                 designator: Designator::Provisional(2),
                 alias: None,
                 class: Classification::Unknown,
+                relation: tacsim::arena::Relation::Unknown,
                 bearing_mdeg: 315_000,
                 range_cm: 25_300,
                 age_ms: 3_500,
@@ -550,7 +557,9 @@ fn every_notice() -> Vec<FrameNotice> {
         notices.push(FrameNotice::Contact {
             kind,
             contact,
-            class: Classification::Classified { team: Team::Blue },
+            class: Classification::Classified {
+                party: PartyId::BLUE,
+            },
             was,
         });
     }
@@ -1500,9 +1509,9 @@ fn the_parser_reads_what_the_cockpit_formatters_print() {
         }),
     };
     let block = cockpit::catchup_lines(
-        Designator::Slot {
-            team: Team::Red,
-            slot: 1,
+        Designator::Unit {
+            party: PartyId::RED,
+            letter: 'A',
         },
         &catchup,
     );
@@ -1803,7 +1812,17 @@ async fn live_centre() {
     assert!(!picture.aboard, "the hatch opened");
 
     let own = &picture.own;
-    assert_eq!(own.callsign.as_deref(), Some("RA"));
+    // Doc 32 cut CF.0 (Q-CF-11): red's letter, then a drawn unit letter.
+    let callsign = own.callsign.as_deref().unwrap_or_default();
+    assert!(
+        callsign.len() == 2
+            && callsign.starts_with('R')
+            && callsign
+                .as_bytes()
+                .get(1)
+                .is_some_and(|letter| tacsim::arena::PARTY_LETTERS.contains(letter)),
+        "{callsign}"
+    );
     assert_eq!(own.name.as_deref(), Some("Red Tank 1"));
     assert_eq!(own.power, Power::Online);
     assert!(own.pos_m.is_some(), "a position");
@@ -2622,7 +2641,7 @@ fn m5_1_the_selection_fog_reads_as_the_bot_reads_it() {
         "{row}"
     );
     for reads in [false, true] {
-        let fill = lobby::board_fill_row(Team::Blue, &choice, reads);
+        let fill = lobby::board_fill_row(PartyId::BLUE, &choice, reads);
         assert_eq!(
             classify(&fill),
             Line::Other(fill.trim().to_owned()),
@@ -3151,9 +3170,9 @@ fn m5_3_the_release_words_read_as_the_bot_reads_them() {
         }),
     };
     let block = cockpit::catchup_lines(
-        Designator::Slot {
-            team: Team::Red,
-            slot: 1,
+        Designator::Unit {
+            party: PartyId::RED,
+            letter: 'A',
         },
         &catchup,
     );

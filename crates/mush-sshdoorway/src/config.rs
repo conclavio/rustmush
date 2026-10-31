@@ -85,12 +85,14 @@ impl Default for LimitsCfg {
             exempt_nets: ["127.0.0.0/8", "::1/128"].map(str::to_owned).to_vec(),
             auth_deadline_secs: 30,
             menu_idle_secs: 120,
-            drain_deadline_secs: 86_400,
-            drain_warnings: ["12h", "6h", "2h", "1h", "15m", "1m"]
+            // The shared drain's defaults (doc 33 §4.5): 24 h, the owner's six
+            // warnings, a 30 s grace on a finish.
+            drain_deadline_secs: mush_drain::drain::DEFAULT_DEADLINE.as_secs(),
+            drain_warnings: mush_drain::drain::DEFAULT_WARNINGS
                 .map(str::to_owned)
                 .to_vec(),
             drain_message: DEFAULT_DRAIN_MESSAGE.to_owned(),
-            force_grace_secs: 30,
+            force_grace_secs: mush_drain::drain::DEFAULT_GRACE.as_secs(),
         }
     }
 }
@@ -179,14 +181,9 @@ pub enum ConfigError {
     Invalid(String),
 }
 
-/// A parsed drain warning: how long before the deadline, and its label.
-#[derive(Clone, Debug, PartialEq, Eq)]
-pub struct Warning {
-    /// Time remaining when the warning goes out.
-    pub remaining: Duration,
-    /// The label substituted for `{remaining}` (exactly as configured).
-    pub label: String,
-}
+/// A parsed drain warning: how long before the deadline, and its label
+/// (the shared drain's type, so `[limits]` feeds `mush_drain` directly).
+pub use mush_drain::drain::Warning;
 
 impl Config {
     /// Read and validate a file.
@@ -329,24 +326,8 @@ fn valid_service_name(name: &str) -> bool {
             .all(|b| b.is_ascii_lowercase() || b.is_ascii_digit() || b == b'-')
 }
 
-/// `30s`, `15m`, `12h` (one number, one unit).
-#[must_use]
-pub fn parse_duration(s: &str) -> Option<Duration> {
-    let s = s.trim();
-    let unit = s.chars().last()?;
-    let digits = s.get(..s.len().checked_sub(unit.len_utf8())?)?;
-    if digits.is_empty() || !digits.bytes().all(|b| b.is_ascii_digit()) {
-        return None;
-    }
-    let n: u64 = digits.parse().ok()?;
-    let secs = match unit {
-        's' => n,
-        'm' => n.checked_mul(60)?,
-        'h' => n.checked_mul(3600)?,
-        _ => return None,
-    };
-    Some(Duration::from_secs(secs))
-}
+/// `30s`, `15m`, `12h` (one number, one unit): the shared drain's parser.
+pub use mush_drain::drain::parse_duration;
 
 #[cfg(test)]
 mod tests {

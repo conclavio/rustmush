@@ -46,7 +46,7 @@
 use mush_core::ObjId;
 
 use crate::arena::clock::Tempo;
-use crate::arena::state::{Arena, Controller, Designator, Power, Team};
+use crate::arena::state::{Arena, Controller, Designator, PartyId, Power};
 
 /// **The field as staff see it** (16b cut I.4): the arena clock, the tempo,
 /// how many rounds are in flight and one row per unit in unit-id order.
@@ -76,7 +76,7 @@ pub struct ObserverUnit {
     /// Its callsign (`RA`, `BC`), the same for every viewer.
     pub callsign: Designator,
     /// Its side.
-    pub team: Team,
+    pub team: PartyId,
     /// The window cell it stands in, or `None` off the window.
     pub cell: Option<(u16, u16)>,
     /// Its heading, millidegrees clockwise from north.
@@ -132,7 +132,7 @@ mod tests {
 
     use super::*;
     use crate::arena::motion::{BlockedCause, Held};
-    use crate::arena::state::Team;
+    use crate::arena::state::PartyId;
     use crate::arena::test_support::{arena_of, pose, tank};
 
     const RED: ObjId = ObjId(301);
@@ -175,9 +175,9 @@ mod tests {
     #[test]
     fn i4_the_picture_is_every_unit_in_id_order_as_it_stands() {
         let mut arena = arena_of(vec![
-            tank(THIRD, Team::Blue, pose(6_500, 1_500)),
-            tank(RED, Team::Red, pose(1_500, 2_500)),
-            tank(BLUE, Team::Blue, pose(6_500, 5_500)),
+            tank(THIRD, PartyId::BLUE, pose(6_500, 1_500)),
+            tank(RED, PartyId::RED, pose(1_500, 2_500)),
+            tank(BLUE, PartyId::BLUE, pose(6_500, 5_500)),
         ]);
         if let Some(unit) = arena.unit_mut(BLUE) {
             unit.limits.wreck = true;
@@ -206,7 +206,7 @@ mod tests {
         assert_eq!(ids, vec![RED, BLUE, THIRD], "unit-id order");
 
         let red = picture.units.first().copied().expect("the red row");
-        assert_eq!(red.team, Team::Red);
+        assert_eq!(red.team, PartyId::RED);
         assert_eq!(red.cell, Some((1, 2)));
         assert_eq!(red.heading_mdeg, 90_000);
         assert_eq!(red.speed_cms, 300);
@@ -229,8 +229,8 @@ mod tests {
     /// Two tanks, one a side, far enough apart to leave each other alone.
     fn duel() -> Arena {
         arena_of(vec![
-            tank(RED, Team::Red, pose(1_500, 1_500)),
-            tank(BLUE, Team::Blue, pose(6_500, 6_500)),
+            tank(RED, PartyId::RED, pose(1_500, 1_500)),
+            tank(BLUE, PartyId::BLUE, pose(6_500, 6_500)),
         ])
     }
 

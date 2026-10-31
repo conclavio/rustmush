@@ -830,7 +830,7 @@ mod tests {
 
     use super::*;
     use crate::arena::state::Controller;
-    use crate::arena::state::Team;
+    use crate::arena::state::PartyId;
     use crate::definitions::Catalog;
 
     /// The shipped content, as `match_::start` reads it.
@@ -860,7 +860,7 @@ mod tests {
             catalog,
             cells,
             id,
-            Team::Red,
+            PartyId::RED,
             mush_sim::data::Pose::at(1_500, 1_500, 0, posture),
             0,
             controller,
@@ -1342,7 +1342,7 @@ mod m5_tests {
     use mush_core::ObjId;
 
     use super::*;
-    use crate::arena::state::{Controller, Team};
+    use crate::arena::state::{Controller, PartyId};
     use crate::definitions::Catalog;
 
     /// **The presets a profile refusal lists are `PRESETS`** (17b cut M5.2's
@@ -1372,7 +1372,7 @@ mod m5_tests {
             &catalog,
             cells,
             id,
-            Team::Red,
+            PartyId::RED,
             mush_sim::data::Pose::at(1_500, 1_500, 0, posture),
             0,
             Controller::Mind,
@@ -1391,16 +1391,16 @@ mod m5_tests {
     #[test]
     fn m5rules_default_seal_identities_are_pinned() {
         use crate::definitions::content::{HEAVY_MK1, LINE_TANK, TARGET_MK1};
-        assert_eq!(crate::minds::MIND_ABI, "rhai=1.26.0;api=6;stock=3");
+        assert_eq!(crate::minds::MIND_ABI, "rhai=1.26.0;api=7;stock=3");
         let api4_source = crate::arena::snapshot::digest_from_text(
             "9b330c0f5ccd861078d4928fbc30dda7a132df6c8f1b027d4a5a00ca452cf69b",
         )
         .expect("the retained API 4 Standard source digest");
-        let api6_source = crate::arena::snapshot::digest_from_text(
-            "c0737fdc45994c226b7861bd6f488383408d11764e30b889487b4f7498e76100",
+        let api7_source = crate::arena::snapshot::digest_from_text(
+            "a37766b55993879fecb78e4cb3e1470b27df617d7e7a5b3b8a6971c24b6e5336",
         )
-        .expect("the observed API 6 Standard source digest");
-        assert_eq!(crate::minds::content::standard_digest().0, api6_source);
+        .expect("the observed API 7 Standard source digest");
+        assert_eq!(crate::minds::content::standard_digest().0, api7_source);
         let mut got = Vec::new();
         let mut api4_got = Vec::new();
         for (entry, id) in [(LINE_TANK, 4_u32), (HEAVY_MK1, 5), (TARGET_MK1, 9)] {
@@ -1422,9 +1422,9 @@ mod m5_tests {
                 }
                 assert!(
                     unit.seal.abi == crate::minds::MIND_ABI
-                        && unit.seal.source_sha256 == api6_source
-                        && unit.seal.requested.source_sha256 == api6_source
-                        && unit.seal.rom_identity.source_sha256 == api6_source,
+                        && unit.seal.source_sha256 == api7_source
+                        && unit.seal.requested.source_sha256 == api7_source
+                        && unit.seal.rom_identity.source_sha256 == api7_source,
                     "the actual default seal must carry all reviewed API 6 identities"
                 );
                 // Restore only the declared ABI, source and stock provenance.
@@ -1496,23 +1496,23 @@ mod m5_tests {
         // Windows; cross-host reproduction remains required before acceptance.
         let pinned = [
             "tacsim.unit.line_tank fixture \
-             b8ae6f8d19a8f170a005a64f0a32f40e5539b03bb578081e631b9b104c83acf8",
+             45c36afd74ed43e4ca1d5958a8bef0dfdbbdfa0c22cf7e004c1a44d0e0d55604",
             "tacsim.unit.line_tank production_fixture \
-             b8ae6f8d19a8f170a005a64f0a32f40e5539b03bb578081e631b9b104c83acf8",
+             45c36afd74ed43e4ca1d5958a8bef0dfdbbdfa0c22cf7e004c1a44d0e0d55604",
             "tacsim.unit.line_tank production_principal \
-             1938c7d2cb01cf99f2a42891cc78b1ea4a9a519948c5b8831f61b25eb0dc7ab2",
+             512d099cb70fa5c382204e899f3974723b0e29ca31e8ebc0be275f5d39ee1cc2",
             "tacsim.unit.heavy_mk1 fixture \
-             0a63182e6648d277d1f6544b23ca2dc24e1eeab133e538c38026f13232310118",
+             d0aca2e21311929e218c50fa7ec5d36aeb4abfb22946a337620fc6e0c93aaf7e",
             "tacsim.unit.heavy_mk1 production_fixture \
-             0a63182e6648d277d1f6544b23ca2dc24e1eeab133e538c38026f13232310118",
+             d0aca2e21311929e218c50fa7ec5d36aeb4abfb22946a337620fc6e0c93aaf7e",
             "tacsim.unit.heavy_mk1 production_principal \
-             726d1abb88600bf649e246b3f52b3b21764e9f7fcc503bbd73f1cfb26eca0d9c",
+             023ccfd2487bd2ab9a319e651f17324343c282654d70fdc2e0c98c20c8140fb5",
             "tacsim.unit.target_mk1 fixture \
-             feb53b8206d252e0463a3ec5a6a42d7295861e36a7f7b5792020ce6746be50c3",
+             4bc466d49a6c1892748c2b6ad0e83a4aeb1ca368c9e56eb37ae62ef0d6897095",
             "tacsim.unit.target_mk1 production_fixture \
-             feb53b8206d252e0463a3ec5a6a42d7295861e36a7f7b5792020ce6746be50c3",
+             4bc466d49a6c1892748c2b6ad0e83a4aeb1ca368c9e56eb37ae62ef0d6897095",
             "tacsim.unit.target_mk1 production_principal \
-             5a5d6868cdea293d29d84095087c035177762f50904a54376882bc6a78a66e3c",
+             97ab299a85cbc2dfb62ac87fdb2bbbe1f8946df5e75dc19d8400608941218fd2",
         ];
         assert_eq!(got, pinned, "a default seal's digest moved: a STOP");
     }
@@ -1811,7 +1811,7 @@ mod m4_tests {
     use mush_core::ObjId;
 
     use super::*;
-    use crate::arena::state::{Controller, Team};
+    use crate::arena::state::{Controller, PartyId};
     use crate::arena::test_support::{line_tank, pose, scout, tactical_unit};
 
     /// **17b cut M4.1: the seal's class is `min(rated, core, cap)`** (the M4
@@ -1832,7 +1832,7 @@ mod m4_tests {
         let fixture = SealTerms::fixture();
         assert_eq!(fixture.rated, STOCK_RATED_CLASS);
         assert_eq!(fixture.class_cap, CoreClass::III);
-        let mut red = line_tank(ObjId(4), Team::Red, pose(1_500, 4_500));
+        let mut red = line_tank(ObjId(4), PartyId::RED, pose(1_500, 4_500));
         red.controller = Controller::Mind;
         assert_eq!(
             read_core(&red.unit).map(|core| core.class),
@@ -1871,7 +1871,7 @@ mod m4_tests {
         let bare = crate::arena::state::CustodyUnit {
             unit: tactical_unit(ObjId(9)),
             controller: Controller::Mind,
-            ..scout(ObjId(9), Team::Blue, pose(6_500, 4_500))
+            ..scout(ObjId(9), PartyId::BLUE, pose(6_500, 4_500))
         };
         let seal = seal_for(&bare, &SealTerms::fixture().rated(CoreClass::III)).expect("seals");
         assert_eq!(seal.class, CoreClass::Zero, "no core: the ROM");
@@ -1923,7 +1923,7 @@ mod m4_tests {
             unit: tactical_unit(ObjId(9)),
             controller: Controller::Mind,
             weapons: Vec::new(),
-            ..scout(ObjId(9), Team::Blue, pose(6_500, 4_500))
+            ..scout(ObjId(9), PartyId::BLUE, pose(6_500, 4_500))
         };
         let terms = SealTerms {
             classes: minds.classes,

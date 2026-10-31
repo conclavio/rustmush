@@ -751,7 +751,7 @@ mod memory_tests {
 mod settle_boundary_tests {
     use super::*;
     use crate::arena::{
-        Controller, Team,
+        Controller, PartyId,
         input_tape::{EngineStamp, MIN_MAX_BYTES, TapeEvent, TapeHeader, TapeRecorder, TapeWrite},
         state_hash,
         test_support::{arena_of, pose, tank},
@@ -759,12 +759,12 @@ mod settle_boundary_tests {
     use crate::minds::resimulation::recorded_step_settled;
     fn tape() -> ReferenceLease {
         let actor = ObjId(99);
-        let mut red = tank(ObjId(4), Team::Red, pose(1500, 4500));
+        let mut red = tank(ObjId(4), PartyId::RED, pose(1500, 4500));
         red.controller = Controller::Mind;
         red.reseal(&crate::match_::SealTerms::fixture()).unwrap();
         red.seal.principal =
             Some(crate::deliberation::order::CharacterRef::Character { id: actor });
-        let units = vec![red, tank(ObjId(9), Team::Blue, pose(6500, 4500))];
+        let units = vec![red, tank(ObjId(9), PartyId::BLUE, pose(6500, 4500))];
         let seals = units.iter().map(|u| u.seal.clone()).collect();
         let mut arena = arena_of(units);
         let header = Arc::new(

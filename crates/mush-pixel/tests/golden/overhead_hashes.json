@@ -1,7 +1,7 @@
 {
   "cases": [
     {
-      "hash": "82d187e7e8c9dc65",
+      "hash": "f50d6157c504b86a",
       "look_mdeg": 0,
       "map": "flat",
       "size": [
@@ -10,7 +10,7 @@
       ]
     },
     {
-      "hash": "13db35e4acc1fc8d",
+      "hash": "bc244ccd907e3e54",
       "look_mdeg": 45000,
       "map": "flat",
       "size": [
@@ -19,7 +19,7 @@
       ]
     },
     {
-      "hash": "b24a8a76cea9ad6f",
+      "hash": "6c449234995e98df",
       "look_mdeg": 0,
       "map": "flat",
       "size": [
@@ -28,7 +28,7 @@
       ]
     },
     {
-      "hash": "982f73617a4287af",
+      "hash": "7c7cffddb112b3b7",
       "look_mdeg": 45000,
       "map": "flat",
       "size": [
@@ -37,7 +37,7 @@
       ]
     },
     {
-      "hash": "a7b6031f16935bda",
+      "hash": "8f523b9faebf7dd7",
       "look_mdeg": 0,
       "map": "relief",
       "size": [
@@ -46,7 +46,7 @@
       ]
     },
     {
-      "hash": "41429a14f5bdcd71",
+      "hash": "c7e1af5fe77fcf49",
       "look_mdeg": 45000,
       "map": "relief",
       "size": [
@@ -55,7 +55,7 @@
       ]
     },
     {
-      "hash": "ead1e0745d130746",
+      "hash": "2a693759a13a74bb",
       "look_mdeg": 0,
       "map": "relief",
       "size": [
@@ -64,7 +64,7 @@
       ]
     },
     {
-      "hash": "e109ed50d2629602",
+      "hash": "4b303dcc772f54d4",
       "look_mdeg": 45000,
       "map": "relief",
       "size": [

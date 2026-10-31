@@ -184,7 +184,11 @@ pub use sealed::{InstallError, install_sealed_runners};
 
 /// **The API's version** (doc 17 Â§13): the `api=` part of [`MIND_ABI`]. A
 /// change to any registered name, signature, getter, fee or refusal is a bump.
-pub const API_VERSION: u32 = 6;
+///
+/// **7 since doc 32 cut CF.0** (Q-CF-3, Q-CF-43): `View.team` is gone and
+/// `Contact.relation` reads the hull's party's relation to the row, so a mind
+/// sees relation and never party. Taken once, with the snapshot and the frame.
+pub const API_VERSION: u32 = 7;
 
 /// **The stock content's version** (doc 17 Â§13): the `stock=` part of
 /// [`MIND_ABI`]; version 3 distinguishes replacement detachment orders from
@@ -195,7 +199,7 @@ pub const STOCK_VERSION: u32 = 3;
 /// D-UM-27): `mush_mind::RHAI_ABI`, then [`API_VERSION`] and
 /// [`STOCK_VERSION`] â€” `mind_abi_is_composed_and_the_sandbox_is_one` composes
 /// it and asserts the literal.
-pub const MIND_ABI: &str = "rhai=1.26.0;api=6;stock=3";
+pub const MIND_ABI: &str = "rhai=1.26.0;api=7;stock=3";
 
 /// **The stock class's op ceiling per think** (doc 17 Â§9, D-UM-35's class I
 /// `ops` column): operations plus fees a think may spend. **The Class I row of
@@ -368,7 +372,7 @@ pub(crate) mod fixture {
         NoticeKind, Receiver, RefusalDetail,
     };
     use crate::arena::state::{
-        ArenaDefinition, Classification, ContactId, Designator, Power, Team,
+        ArenaDefinition, Classification, ContactId, Designator, PartyId, Power,
     };
     use crate::arena::step::{FrameFacet, FrameHeat, FrameSection};
     use crate::arena::weapons::{FrameArming, FrameBand, FrameRule, FrameWeapon};
@@ -392,9 +396,9 @@ pub(crate) mod fixture {
 
     /// The hostile's designator, `BB`.
     pub(crate) const fn hostile_designator() -> Designator {
-        Designator::Slot {
-            team: Team::Blue,
-            slot: 2,
+        Designator::Unit {
+            party: PartyId::BLUE,
+            letter: 'B',
         }
     }
 
@@ -409,11 +413,11 @@ pub(crate) mod fixture {
         let hostile = named(HOSTILE, hostile_designator());
         MindView {
             unit: UNIT.0,
-            callsign: Designator::Slot {
-                team: Team::Red,
-                slot: 1,
+            callsign: Designator::Unit {
+                party: PartyId::RED,
+                letter: 'A',
             },
-            team: Team::Red,
+            party: PartyId::RED,
             cell: Some((1, 4)),
             mode: crate::arena::state::MatchMode::Hold,
             objective: Some(crate::arena::state::HoldObjective {
@@ -568,7 +572,9 @@ pub(crate) mod fixture {
                 FrameNotice::Contact {
                     kind: NoticeKind::Classified,
                     contact: hostile,
-                    class: Classification::Classified { team: Team::Blue },
+                    class: Classification::Classified {
+                        party: PartyId::BLUE,
+                    },
                     was: Some(Designator::Provisional(3)),
                 },
                 FrameNotice::Hit {
@@ -626,7 +632,10 @@ pub(crate) mod fixture {
                     id: HOSTILE,
                     designator: hostile_designator(),
                     alias: Some(3),
-                    class: Classification::Classified { team: Team::Blue },
+                    class: Classification::Classified {
+                        party: PartyId::BLUE,
+                    },
+                    relation: crate::arena::party::Relation::Hostile,
                     friendly: false,
                     moving: false,
                     bearing_deg: 90,
@@ -650,12 +659,15 @@ pub(crate) mod fixture {
                 },
                 ViewContact {
                     id: FRIEND,
-                    designator: Designator::Slot {
-                        team: Team::Red,
-                        slot: 2,
+                    designator: Designator::Unit {
+                        party: PartyId::RED,
+                        letter: 'B',
                     },
                     alias: None,
-                    class: Classification::Classified { team: Team::Red },
+                    class: Classification::Classified {
+                        party: PartyId::RED,
+                    },
+                    relation: crate::arena::party::Relation::Friend,
                     friendly: true,
                     moving: false,
                     bearing_deg: 0,
@@ -675,6 +687,7 @@ pub(crate) mod fixture {
                     designator: Designator::Provisional(5),
                     alias: None,
                     class: Classification::Unknown,
+                    relation: crate::arena::party::Relation::Unknown,
                     friendly: false,
                     moving: false,
                     bearing_deg: 135,
@@ -893,7 +906,7 @@ mod tests {
             format!("{RHAI_ABI};api={API_VERSION};stock={STOCK_VERSION}"),
             MIND_ABI
         );
-        assert_eq!(MIND_ABI, "rhai=1.26.0;api=6;stock=3");
+        assert_eq!(MIND_ABI, "rhai=1.26.0;api=7;stock=3");
         assert_eq!(STOCK_OPS_PER_THINK, 1_500);
         assert_eq!(STOCK_LINE_TO_PER_THINK, 2);
         assert_eq!(RAND_MAX_K, 1_000);
@@ -1025,7 +1038,6 @@ mod tests {
         "type Predicate",
         "View.unit",
         "View.callsign",
-        "View.team",
         "View.cell",
         "View.mode",
         "View.objective",
@@ -1063,6 +1075,7 @@ mod tests {
         "Contact.alias",
         "Contact.identified",
         "Contact.friendly",
+        "Contact.relation",
         "Contact.bearing_deg",
         "Contact.relative_deg",
         "Contact.range_m",
@@ -1295,7 +1308,6 @@ mod tests {
     const CALLS: [(&str, &str); 245] = [
         ("View.unit", "v.unit"),
         ("View.callsign", "v.callsign"),
-        ("View.team", "v.team"),
         ("View.cell", "v.cell"),
         ("View.mode", "v.mode"),
         ("View.objective", "v.objective"),
@@ -1334,6 +1346,7 @@ mod tests {
         ("Contact.identified", "v.contacts[0].identified"),
         ("Contact.moving", "v.contacts[0].moving"),
         ("Contact.friendly", "v.contacts[0].friendly"),
+        ("Contact.relation", "v.contacts[0].relation"),
         ("Contact.bearing_deg", "v.contacts[0].bearing_deg"),
         ("Contact.relative_deg", "v.contacts[0].relative_deg"),
         ("Contact.range_m", "v.contacts[0].range_m"),

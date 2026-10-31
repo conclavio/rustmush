@@ -5611,7 +5611,7 @@ mod tests {
         ArenaRegistry, dropped_line, lapse_line, open_match, sources_by_seal, staff_line, thousands,
     };
     use crate::arena::mind::DropCause;
-    use crate::arena::state::{Pilot, Team};
+    use crate::arena::state::{PartyId, Pilot};
     use crate::arena::test_support::{custody, pose, tank};
     use crate::arena_task::MatchId;
     use crate::deliberation::{CharacterRef, SquadId};
@@ -5626,7 +5626,7 @@ mod tests {
     #[test]
     fn l2_the_lapse_line_has_two_shapes() {
         let red_one = SquadId {
-            team: Team::Red,
+            team: PartyId::RED,
             index: 1,
         };
         assert_eq!(
@@ -5642,7 +5642,7 @@ mod tests {
         assert!(!persona.contains("link dropped"));
         assert!(!persona.contains("doctrine"));
         let widest = SquadId {
-            team: Team::Blue,
+            team: PartyId::BLUE,
             index: 6,
         };
         let whose = format!("{}'s", CharacterRef::persona_name(widest));
@@ -5834,7 +5834,12 @@ mod tests {
     /// a lance-leader persona and `BC` (`XA`) sealed with no principal.
     fn dropped_record(ada: ObjId, bo: ObjId) -> crate::match_::MatchRecord {
         use crate::arena::state::Designator;
-        let slot = |team: Team, slot: u16| Designator::Slot { team, slot };
+        let slot = |team: PartyId, slot: u16| Designator::Unit {
+            party: team,
+            letter: char::from(
+                b'A'.saturating_add(u8::try_from(slot).unwrap_or(1).saturating_sub(1)),
+            ),
+        };
         let sealed = |unit: ObjId, principal: Option<CharacterRef>| {
             (
                 unit,
@@ -5855,12 +5860,12 @@ mod tests {
             arena_definition_digest: "ab".to_owned(),
             teams: vec![
                 crate::match_::TeamRoster {
-                    team: Team::Red,
+                    team: PartyId::RED,
                     units: vec![RA, RB],
                     pilots: vec![(ada, RA)],
                 },
                 crate::match_::TeamRoster {
-                    team: Team::Blue,
+                    team: PartyId::BLUE,
                     units: vec![BA, BB, XA],
                     pilots: vec![(bo, BA)],
                 },
@@ -5874,11 +5879,11 @@ mod tests {
             squads: Vec::new(),
             leaders: Vec::new(),
             callsigns: std::collections::BTreeMap::from([
-                (RA, slot(Team::Red, 1)),
-                (RB, slot(Team::Red, 2)),
-                (BA, slot(Team::Blue, 1)),
-                (BB, slot(Team::Blue, 2)),
-                (XA, slot(Team::Blue, 3)),
+                (RA, slot(PartyId::RED, 1)),
+                (RB, slot(PartyId::RED, 2)),
+                (BA, slot(PartyId::BLUE, 1)),
+                (BB, slot(PartyId::BLUE, 2)),
+                (XA, slot(PartyId::BLUE, 3)),
             ]),
             folds: std::collections::BTreeMap::new(),
             unparsed: 0,
@@ -5892,7 +5897,7 @@ mod tests {
                     BB,
                     Some(CharacterRef::Persona {
                         squad: SquadId {
-                            team: Team::Blue,
+                            team: PartyId::BLUE,
                             index: 1,
                         },
                     }),
@@ -6015,9 +6020,9 @@ mod tests {
                 .expect("book")
                 .centre_mut();
             centre.match_id = Some(DROP_MATCH);
-            centre.leads = vec![(Team::Blue, ada_account)];
+            centre.leads = vec![(PartyId::BLUE, ada_account)];
             centre.fill_minds = vec![crate::match_::lobby::FillChoice {
-                team: Team::Blue,
+                team: PartyId::BLUE,
                 by: crate::match_::lobby::FillSetter::Lead(ada_account),
                 choice: serde_json::from_value(
                     serde_json::json!({"mind":"Standard Doctrine","profiles":[]}),
@@ -6031,7 +6036,7 @@ mod tests {
             .module_state_mut::<crate::match_::MatchBook>()
             .expect("book")
             .centre_mut()
-            .leads = vec![(Team::Blue, bo_account)];
+            .leads = vec![(PartyId::BLUE, bo_account)];
         assert!(
             super::mind_traces(tw.world(), ada, XA, None).is_none(),
             "old fill setter lost leadership"
@@ -6224,7 +6229,7 @@ mod tests {
             &mut ctx,
             MATCH,
             custody(
-                vec![tank(UNIT, Team::Red, pose(1_500, 1_500))],
+                vec![tank(UNIT, PartyId::RED, pose(1_500, 1_500))],
                 vec![Pilot {
                     unit: UNIT,
                     pilot,
@@ -6291,12 +6296,12 @@ mod tests {
                     vec![
                         crate::arena::state::CustodyUnit {
                             controller: Controller::Mind,
-                            ..line_tank(ARMED, Team::Red, pose(1_500, 1_500))
+                            ..line_tank(ARMED, PartyId::RED, pose(1_500, 1_500))
                         }
                         .sealed(),
                         crate::arena::state::CustodyUnit {
                             controller: Controller::Mind,
-                            ..tank(UNARMED, Team::Blue, pose(6_500, 6_500))
+                            ..tank(UNARMED, PartyId::BLUE, pose(6_500, 6_500))
                         }
                         .sealed(),
                     ],
@@ -6568,8 +6573,8 @@ mod tests {
         );
 
         let mut arena = crate::arena::test_support::arena_of(vec![
-            tank(ObjId(1), Team::Red, pose(1_500, 1_500)),
-            tank(ObjId(2), Team::Blue, pose(6_500, 6_500)),
+            tank(ObjId(1), PartyId::RED, pose(1_500, 1_500)),
+            tank(ObjId(2), PartyId::BLUE, pose(6_500, 6_500)),
         ]);
         if let Some(unit) = arena.unit_mut(ObjId(1)) {
             unit.seal = scripted.seal_ref();

@@ -252,7 +252,7 @@ fn apply_heat(
 #[cfg(test)]
 mod tests {
     use super::*;
-    use crate::arena::state::Team;
+    use crate::arena::state::PartyId;
     use crate::arena::test_support::{arena_of, laser_tank, pose};
 
     const RED: ObjId = ObjId(4);
@@ -261,7 +261,7 @@ mod tests {
     fn a_unit_with_no_ceiling_has_no_heat_state_at_all() {
         let arena = arena_of(vec![crate::arena::test_support::line_tank(
             RED,
-            Team::Red,
+            PartyId::RED,
             pose(1_500, 1_500),
         )]);
         let state = arena.unit(RED).unwrap_or_else(|| panic!("the tank"));
@@ -275,8 +275,8 @@ mod tests {
         // Three heat a second against 250 ms substeps: the literal
         // `per_s × dt / 1000` is zero every time, and the carry is what makes the
         // second's worth arrive anyway.
-        let mut fine = arena_of(vec![laser_tank(RED, Team::Red, pose(1_500, 1_500))]);
-        let mut coarse = arena_of(vec![laser_tank(RED, Team::Red, pose(1_500, 1_500))]);
+        let mut fine = arena_of(vec![laser_tank(RED, PartyId::RED, pose(1_500, 1_500))]);
+        let mut coarse = arena_of(vec![laser_tank(RED, PartyId::RED, pose(1_500, 1_500))]);
         for arena in [&mut fine, &mut coarse] {
             set_heat(arena, RED, 30);
         }
@@ -302,7 +302,7 @@ mod tests {
 
     #[test]
     fn heat_floors_at_zero_and_the_carry_is_reset_with_it() {
-        let mut arena = arena_of(vec![laser_tank(RED, Team::Red, pose(1_500, 1_500))]);
+        let mut arena = arena_of(vec![laser_tank(RED, PartyId::RED, pose(1_500, 1_500))]);
         let carry = |arena: &Arena| {
             arena
                 .unit(RED)
@@ -329,7 +329,7 @@ mod tests {
     fn m3_a_heat_plan_leaves_the_band_cache_as_it_was() {
         use crate::arena::condition::{Condition, ConditionBand};
 
-        let mut arena = arena_of(vec![laser_tank(RED, Team::Red, pose(1_500, 1_500))]);
+        let mut arena = arena_of(vec![laser_tank(RED, PartyId::RED, pose(1_500, 1_500))]);
         // A cache no intact tank has, so a recompute would be visible.
         let marked = Condition::default().with_band(0, ConditionBand::Destroyed);
         if let Some(state) = arena.unit_mut(RED) {

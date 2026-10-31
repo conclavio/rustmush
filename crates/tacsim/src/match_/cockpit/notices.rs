@@ -401,7 +401,7 @@ pub(super) fn friendly_mark(frame: &Frame, contact: ContactId) -> &'static str {
         .contacts
         .iter()
         .find(|held| held.id == contact)
-        .is_some_and(|held| held.class.team() == Some(frame.team));
+        .is_some_and(|held| held.relation.is_friendly());
     if friendly { FRIENDLY_MARK } else { "" }
 }
 
@@ -1338,7 +1338,7 @@ pub(super) fn reclaim_seat(
     ctx: &mut Ctx<'_>,
     match_id: MatchId,
     pod: ObjId,
-    team: crate::arena::state::Team,
+    team: crate::arena::state::PartyId,
     index: u8,
 ) -> Result<(), CockpitError> {
     let actor = ctx.actor;

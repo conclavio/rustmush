@@ -334,14 +334,22 @@ mod tests {
         for m in crate::model::index() {
             for view in View::ALL {
                 let (n, rgba) =
-                    preview_rgba(&m.id, view, 96, Facing::FrontRight, 0, SpriteKind::Red)
+                    preview_rgba(&m.id, view, 96, Facing::FrontRight, 0, SpriteKind::Hostile)
                         .unwrap_or_else(|| panic!("{} {}", m.id, view.name()));
                 assert_eq!(n, 96);
                 assert!(rgba.chunks(4).any(|px| px[3] == 255), "{}: drawn", m.id);
             }
         }
         assert!(
-            preview_rgba("mc.nobody", View::Fp, 96, Facing::Front, 0, SpriteKind::Red).is_none()
+            preview_rgba(
+                "mc.nobody",
+                View::Fp,
+                96,
+                Facing::Front,
+                0,
+                SpriteKind::Hostile
+            )
+            .is_none()
         );
     }
 }

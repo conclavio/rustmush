@@ -24,7 +24,7 @@ use mush_atlas::trace::{
 use mush_testkit::TestWorld;
 use support::{Muster, booted_world, ledger_events, shipped_arena};
 use tacsim::arena::clock::Tempo;
-use tacsim::arena::state::{Arena, ArenaDefinition, ArenaTerrain, Team};
+use tacsim::arena::state::{Arena, ArenaDefinition, ArenaTerrain, PartyId};
 use tacsim::definitions::Catalog;
 
 /// A fixed-seed integer generator: splitmix64, the atlas M.4 tests' own, so the
@@ -288,7 +288,7 @@ fn fight(mut arena: Arena, until_ms: i64) -> Fight {
 fn j2_a_shipped_fight_is_one_replay_with_and_without_the_index() {
     const BLUE_AT: (u16, u16) = (20, 97);
     let world = booted_world();
-    let terrain = shipped_arena(&world, &[&[Muster::mind(Team::Blue, 1)]])
+    let terrain = shipped_arena(&world, &[&[Muster::mind(PartyId::BLUE, 1)]])
         .definition
         .terrain
         .clone();
@@ -308,8 +308,8 @@ fn j2_a_shipped_fight_is_one_replay_with_and_without_the_index() {
         shipped_arena(
             &world,
             &[
-                &[Muster::mind(Team::Red, 1).at(red_at)],
-                &[Muster::mind(Team::Blue, 1).at(BLUE_AT)],
+                &[Muster::mind(PartyId::RED, 1).at(red_at)],
+                &[Muster::mind(PartyId::BLUE, 1).at(BLUE_AT)],
             ],
         )
     };

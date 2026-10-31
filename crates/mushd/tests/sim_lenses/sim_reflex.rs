@@ -537,7 +537,10 @@ async fn past_the_grace_the_reflex_controller_drives_the_tank_home() {
     drop(ada);
     drop(ada_handle);
     // The board's drop clause (`flown by doctrine` until 17b cut M5.3).
-    support::wait_arena_pilot_out(&mut god, "RA", "Ada", "flown by its mind").await;
+    // Doc 32 cut CF.0 (Q-CF-11): the board names the slot by the callsign
+    // drawn at check-out.
+    let callsign = support::drawn_callsigns(&server.store, 1).await[&red].clone();
+    support::wait_arena_pilot_out(&mut god, &callsign, "Ada", "flown by its mind").await;
     // The controller's movement is recorded in the final ledger. Give it six
     // seconds on its own clock, independent of the session-reaper schedule.
     support::wait_arena_seconds(&mut god, 6).await;
@@ -730,6 +733,12 @@ async fn m3_a_dropped_hull_is_told_to_its_side_lead_alone_and_staff() {
     let fill = dbref_of(&listing, "Red Tank 2");
     take_off_sized(&mut ada, &mut bo, Some(2)).await;
     support::wait_arena_seconds(&mut god, 1).await;
+    // Doc 32 cut CF.0 (Q-CF-11): the fill's callsign is drawn at check-out.
+    let fill_callsign = support::drawn_callsigns(&server.store, 1).await[&fill].clone();
+    assert!(
+        support::is_callsign_of(&fill_callsign, 'R'),
+        "{fill_callsign}"
+    );
 
     let line = tacsim::arena::ledger::LedgerEvent {
         seq: 1,
@@ -759,14 +768,18 @@ async fn m3_a_dropped_hull_is_told_to_its_side_lead_alone_and_staff() {
         .await
         .expect("the world takes the chunk");
 
-    ada.expect_after(ada_mark, "RB's core tripped: over its 1,500-op budget")
-        .await;
+    ada.expect_after(
+        ada_mark,
+        &format!("{fill_callsign}'s core tripped: over its 1,500-op budget"),
+    )
+    .await;
     let told = strip_ansi(&ada.seen[ada_mark..]);
     assert!(
         !told.contains(&format!("#{fill}")) && !told.contains(&fill.to_string()),
         "no object number reaches the lead: {told}"
     );
-    god.expect_after(god_mark, "RB dropped to the ROM").await;
+    god.expect_after(god_mark, &format!("{fill_callsign} dropped to the ROM"))
+        .await;
     // Bo hears nothing of it: a whole answer to a line of his own closes
     // the window, by which time the world had told the other two.
     let heard = ask_whole(&mut bo, "SIM STATUS").await;

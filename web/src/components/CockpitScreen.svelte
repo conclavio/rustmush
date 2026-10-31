@@ -56,8 +56,9 @@
   let { app }: { app: GameApp } = $props();
 
   /** What a marker is painted in. The five kinds are the whole vocabulary:
-   * nothing has classified it, your side, the other side, you — and (16b cut
-   * V.1) a named spot of the ground, in a sand tone none of the four is. */
+   * by the viewer's relation (doc 32 cut CF.0, Q-CF-12; `contactKind`) —
+   * neutral or not yet classified, own or friend, hostile — you, and (16b
+   * cut V.1) a named spot of the ground, in a sand tone none of the four is. */
   const MARKER_COLOURS: Record<Marker["kind"], string> = {
     you: "#f2c94c",
     unknown: "#b9a23a",

@@ -69,7 +69,7 @@ use mush_core::module::{ModError, Registrar, TickCadence};
 use mush_core::{ArgShape, CmdError, CommandSpec, Ctx, SceneId};
 use smol_str::SmolStr;
 
-use crate::arena::state::Team;
+use crate::arena::state::PartyId;
 use crate::arena_bridge::NOTICE_CATEGORY;
 use crate::match_::lobby::{self, SimError};
 
@@ -86,7 +86,7 @@ pub const SIM_VERB: &str = "sim";
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub enum Selector {
     /// `SIM TEAM red|blue`.
-    Team,
+    PartyId,
     /// `SIM LEAVE`.
     Leave,
     /// `SIM START`.
@@ -134,7 +134,7 @@ impl Selector {
     /// `mode`, twelfth; 16b cut O.3 `range`, thirteenth; 17b cut M5.1 `mind`,
     /// fourteenth).
     pub const ALL: [(Selector, &'static str); 14] = [
-        (Selector::Team, "team"),
+        (Selector::PartyId, "team"),
         (Selector::Leave, "leave"),
         (Selector::Start, "start"),
         (Selector::Abort, "abort"),
@@ -223,10 +223,10 @@ pub fn sim_command(ctx: &mut Ctx<'_>) -> Result<(), CmdError> {
         return Err(CmdError::msg(format!("Usage: {USAGE}")));
     };
     match selector {
-        Selector::Team => {
+        Selector::PartyId => {
             let team = match rest.trim().to_ascii_lowercase().as_str() {
-                "red" => Team::Red,
-                "blue" => Team::Blue,
+                "red" => PartyId::RED,
+                "blue" => PartyId::BLUE,
                 _ => {
                     return Err(CmdError::msg(
                         "Which side? `SIM TEAM red` or `SIM TEAM blue`.",

@@ -1823,21 +1823,21 @@ fn arena_ground(
 fn arena_definition(
     grid: Vec<tacsim::arena::state::TerrainCell>,
 ) -> tacsim::arena::state::ArenaDefinition {
-    use tacsim::arena::state::{ArenaDefinition, ArenaTerrain, EntryZone, Team};
+    use tacsim::arena::state::{ArenaDefinition, ArenaTerrain, EntryZone, PartyId};
     let waypoints = harness_waypoints(&grid);
     ArenaDefinition {
         id: smol_str::SmolStr::new("tacsim.arena.harness"),
         terrain: ArenaTerrain::new(SIDE, SIDE, CELL_CM, grid).expect("the arena window"),
         entry_zones: vec![
             EntryZone {
-                team: Team::Red,
+                team: PartyId::RED,
                 x0: 0,
                 y0: 0,
                 x1: 15,
                 y1: SIDE - 1,
             },
             EntryZone {
-                team: Team::Blue,
+                team: PartyId::BLUE,
                 x0: SIDE - 16,
                 y0: 0,
                 x1: SIDE - 1,
@@ -2001,7 +2001,7 @@ fn field_with(
     Vec<tacsim::arena::state::CustodyUnit>,
     Vec<tacsim::arena::state::Pilot>,
 ) {
-    use tacsim::arena::state::{Pilot, Team};
+    use tacsim::arena::state::{PartyId, Pilot};
     let mut rng = ChaCha8Rng::seed_from_u64(knobs.seed ^ 0x000a_4e17);
     let mut pool: Vec<(u16, u16, i16)> = relief.to_vec();
     let middle = i32::from(SIDE) / 2;
@@ -2040,7 +2040,11 @@ fn field_with(
             pool.swap_remove(pick)
         };
         let id = ObjId(100_000 + n);
-        let team = if n % 2 == 0 { Team::Red } else { Team::Blue };
+        let team = if n % 2 == 0 {
+            PartyId::RED
+        } else {
+            PartyId::BLUE
+        };
         let slot = slot_of(n);
         let key = CanonicalId::new(slot.entry).expect("a canonical entry id");
         let spec = catalog.specs.get(&key).expect("the cohort entry's spec");
@@ -2538,7 +2542,7 @@ fn y2_the_orders_counter_counts_orders_and_not_unit_lines() {
     let squads = vec![
         tacsim::deliberation::SquadRoster {
             id: tacsim::deliberation::SquadId {
-                team: tacsim::arena::state::Team::Red,
+                team: tacsim::arena::state::PartyId::RED,
                 index: 1,
             },
             commander: ObjId(20),
@@ -2546,7 +2550,7 @@ fn y2_the_orders_counter_counts_orders_and_not_unit_lines() {
         },
         tacsim::deliberation::SquadRoster {
             id: tacsim::deliberation::SquadId {
-                team: tacsim::arena::state::Team::Red,
+                team: tacsim::arena::state::PartyId::RED,
                 index: 2,
             },
             commander: ObjId(22),
@@ -3011,6 +3015,7 @@ fn open_field(knobs: &Knobs, reach: Reach) -> Field {
             resolution: tacsim::match_::resolution_for(&catalog),
             seed: knobs.seed,
             mode: tacsim::arena::MatchMode::Skirmish,
+            host: tacsim::arena::FieldHost::all_hostile(),
         },
         &arena_cfg,
         &match_cfg,
@@ -6423,6 +6428,7 @@ fn tacsim_harness_llm_cost_run() {
             resolution: tacsim::match_::resolution_for(&catalog),
             seed: knobs.seed,
             mode: tacsim::arena::MatchMode::Skirmish,
+            host: tacsim::arena::FieldHost::all_hostile(),
         },
         &arena_cfg,
         &match_cfg,
@@ -7382,7 +7388,7 @@ impl LanceArm {
             LanceArm::Advance => Objective::Advance { to: CROSSROADS },
             LanceArm::Withdraw => Objective::Withdraw,
             LanceArm::Screen => Objective::Screen {
-                facing_mdeg: if roster.id.team == tacsim::arena::state::Team::Red {
+                facing_mdeg: if roster.id.team == tacsim::arena::state::PartyId::RED {
                     90_000
                 } else {
                     270_000
@@ -7461,15 +7467,15 @@ fn lance_schedule(
     start_ms: i64,
     until_ms: i64,
 ) -> Vec<LanceOrder> {
-    use tacsim::arena::state::Team;
+    use tacsim::arena::state::PartyId;
     use tacsim::deliberation::Objective;
-    let per_side = |team: Team| {
+    let per_side = |team: PartyId| {
         squads
             .iter()
             .filter(|roster| roster.id.team == team)
             .count()
     };
-    let squads_per_side = per_side(Team::Red).max(per_side(Team::Blue)).max(1);
+    let squads_per_side = per_side(PartyId::RED).max(per_side(PartyId::BLUE)).max(1);
     let stagger =
         (LANCE_MINUTE_MS / i64::try_from(squads_per_side).unwrap_or(1)) / WINDOW_MS * WINDOW_MS;
     let mut out: Vec<LanceOrder> = squads
@@ -7549,10 +7555,10 @@ const RED_LEAD: ObjId = ObjId(1_001);
 const BLUE_LEAD: ObjId = ObjId(2_001);
 
 /// The scripted lead character of `team` (17b cut L.1).
-const fn lead_of(team: tacsim::arena::state::Team) -> ObjId {
+const fn lead_of(team: tacsim::arena::state::PartyId) -> ObjId {
     match team {
-        tacsim::arena::state::Team::Red => RED_LEAD,
-        tacsim::arena::state::Team::Blue => BLUE_LEAD,
+        tacsim::arena::state::PartyId::RED => RED_LEAD,
+        _ => BLUE_LEAD,
     }
 }
 
@@ -7901,8 +7907,8 @@ fn z1_the_lance_lane_runs_small() {
         report.lines
     );
     let rosters: Vec<tacsim::deliberation::SquadRoster> = [
-        (tacsim::arena::state::Team::Red, report.commanders[0]),
-        (tacsim::arena::state::Team::Blue, report.commanders[1]),
+        (tacsim::arena::state::PartyId::RED, report.commanders[0]),
+        (tacsim::arena::state::PartyId::BLUE, report.commanders[1]),
     ]
     .into_iter()
     .map(|(team, commander)| tacsim::deliberation::SquadRoster {
@@ -7916,7 +7922,7 @@ fn z1_the_lance_lane_runs_small() {
     let red: Vec<Option<Objective>> = script
         .iter()
         .filter(|order| {
-            order.squad.team == tacsim::arena::state::Team::Red && order.at_ms > report.start_ms
+            order.squad.team == tacsim::arena::state::PartyId::RED && order.at_ms > report.start_ms
         })
         .map(|order| order.objective)
         .collect();
@@ -7957,11 +7963,11 @@ fn z1_the_lance_lane_runs_small() {
 /// busiest minute is still exactly the squads a side.
 #[test]
 fn z1_the_lance_script_is_three_orders_a_minute_from_one_commander() {
-    use tacsim::arena::state::Team;
+    use tacsim::arena::state::PartyId;
     use tacsim::deliberation::{Objective, SquadId, SquadRoster};
     let rosters = |per_side: u16| -> Vec<SquadRoster> {
         let mut out = Vec::new();
-        for (team, first) in [(Team::Red, 100_u32), (Team::Blue, 200)] {
+        for (team, first) in [(PartyId::RED, 100_u32), (PartyId::BLUE, 200)] {
             for index in 1..=per_side {
                 let commander = ObjId(first + u32::from(index) * 4);
                 out.push(SquadRoster {
@@ -7973,8 +7979,8 @@ fn z1_the_lance_script_is_three_orders_a_minute_from_one_commander() {
         }
         out
     };
-    let issuer_of = |team: Team| {
-        if team == Team::Red {
+    let issuer_of = |team: PartyId| {
+        if team == PartyId::RED {
             ObjId(104)
         } else {
             ObjId(204)
@@ -7999,7 +8005,7 @@ fn z1_the_lance_script_is_three_orders_a_minute_from_one_commander() {
     let schedule = lance_schedule(&three, start, start + 120_000);
     let red: Vec<&LanceOrder> = schedule
         .iter()
-        .filter(|order| order.squad.team == Team::Red)
+        .filter(|order| order.squad.team == PartyId::RED)
         .collect();
     let marks: Vec<(i64, u16, Option<Objective>)> = red
         .iter()
@@ -8035,7 +8041,7 @@ fn z1_the_lance_script_is_three_orders_a_minute_from_one_commander() {
     let long = lance_schedule(&three, start, start + 300_000);
     let stepped: Vec<(i64, u16, Option<Objective>)> = long
         .iter()
-        .filter(|order| order.squad.team == Team::Blue && order.objective != Some(engage))
+        .filter(|order| order.squad.team == PartyId::BLUE && order.objective != Some(engage))
         .map(|order| (order.at_ms - start, order.squad.index, order.objective))
         .collect();
     assert_eq!(
@@ -8139,10 +8145,10 @@ fn tape_line(
 /// pinned by the three `#[should_panic]` tests after this one.
 #[test]
 fn m4_5_the_span_joins_each_live_order_to_its_last_ordered_line() {
-    use tacsim::arena::state::{Controller, Team};
+    use tacsim::arena::state::{Controller, PartyId};
     let mut arena = lance_field_arena(8);
     assert_eq!(arena.now_ms, 0, "the field is opened, never stepped");
-    let roster = |team: Team| {
+    let roster = |team: PartyId| {
         arena
             .squads
             .iter()
@@ -8150,7 +8156,7 @@ fn m4_5_the_span_joins_each_live_order_to_its_last_ordered_line() {
             .cloned()
             .expect("one lance a side")
     };
-    let (red, blue) = (roster(Team::Red), roster(Team::Blue));
+    let (red, blue) = (roster(PartyId::RED), roster(PartyId::BLUE));
     assert_eq!((red.units.len(), blue.units.len()), (4, 4));
     assert_eq!(
         (red.id.to_string(), blue.id.to_string()),
@@ -8218,12 +8224,12 @@ fn m4_5_the_span_joins_each_live_order_to_its_last_ordered_line() {
 #[test]
 #[should_panic(expected = "and no `ordered` line on the tape names it")]
 fn m4_5_the_span_s_join_refuses_a_live_order_with_no_line() {
-    use tacsim::arena::state::Team;
+    use tacsim::arena::state::PartyId;
     let mut arena = lance_field_arena(8);
     let red = arena
         .squads
         .iter()
-        .find(|roster| roster.id.team == Team::Red)
+        .find(|roster| roster.id.team == PartyId::RED)
         .cloned()
         .expect("one lance a side");
     arena.minds.get_mut(&red.units[1]).expect("a mind").order =
@@ -8245,12 +8251,12 @@ fn m4_5_the_span_s_join_refuses_a_live_order_with_no_line() {
 #[test]
 #[should_panic(expected = "is not its last `ordered` line's")]
 fn m4_5_the_span_s_join_refuses_a_line_that_is_not_the_order_s() {
-    use tacsim::arena::state::Team;
+    use tacsim::arena::state::PartyId;
     let mut arena = lance_field_arena(8);
     let red = arena
         .squads
         .iter()
-        .find(|roster| roster.id.team == Team::Red)
+        .find(|roster| roster.id.team == PartyId::RED)
         .cloned()
         .expect("one lance a side");
     arena.minds.get_mut(&red.units[1]).expect("a mind").order =
@@ -8271,12 +8277,12 @@ fn m4_5_the_span_s_join_refuses_a_line_that_is_not_the_order_s() {
 #[test]
 #[should_panic(expected = "is not its last `ordered` line's")]
 fn m4_5_the_span_s_join_refuses_a_line_of_another_squad() {
-    use tacsim::arena::state::Team;
+    use tacsim::arena::state::PartyId;
     let mut arena = lance_field_arena(8);
     let red = arena
         .squads
         .iter()
-        .find(|roster| roster.id.team == Team::Red)
+        .find(|roster| roster.id.team == PartyId::RED)
         .cloned()
         .expect("one lance a side");
     arena.minds.get_mut(&red.units[1]).expect("a mind").order =
@@ -8315,12 +8321,12 @@ struct LanceReport {
 /// heading west in the fan-out lane's row alternation, a unit mind at the ROM
 /// ([`rom_terms`]), no pilot and no seat.
 fn lance_unit(catalog: &Catalog, n: u32) -> tacsim::arena::state::CustodyUnit {
-    use tacsim::arena::state::{Controller, Team};
+    use tacsim::arena::state::{Controller, PartyId};
     let id = ObjId(100_000 + n);
     let team = if n.is_multiple_of(2) {
-        Team::Red
+        PartyId::RED
     } else {
-        Team::Blue
+        PartyId::BLUE
     };
     let entry = COHORT
         .get(usize::try_from(n / 2).unwrap_or(0) % COHORT.len())
@@ -8338,7 +8344,7 @@ fn lance_unit(catalog: &Catalog, n: u32) -> tacsim::arena::state::CustodyUnit {
     // either side of it — 95, 99, 93, 101, … — a clear row between each pair.
     let slot = i64::from(n / 2);
     let row = LANCE_ROW + if slot % 2 == 1 { -1 } else { 1 } * 2 * ((slot + 1) / 2);
-    let (column, heading_mdeg) = if team == Team::Red {
+    let (column, heading_mdeg) = if team == PartyId::RED {
         (LANCE_RED_COLUMN, 90_000)
     } else {
         (LANCE_BLUE_COLUMN, 270_000)
@@ -8396,6 +8402,7 @@ fn lance_field_arena(units: u32) -> tacsim::arena::state::Arena {
             resolution: tacsim::match_::resolution_for(catalog),
             seed: DEFAULT_SEED,
             mode: tacsim::arena::MatchMode::Skirmish,
+            host: tacsim::arena::FieldHost::all_hostile(),
         },
         &tacsim::config::ArenaConfig {
             squad_size: 4,
@@ -8426,7 +8433,7 @@ fn lance_field_arena(units: u32) -> tacsim::arena::state::Arena {
 #[allow(clippy::too_many_lines)]
 fn measure_lance(knobs: &Knobs, lance: &LanceKnobs) -> LanceReport {
     use tacsim::arena::clock::Tempo as ArenaTempo;
-    use tacsim::arena::state::{Arena, CustodyOut, Power, Team};
+    use tacsim::arena::state::{Arena, CustodyOut, PartyId, Power};
     use tacsim::config::{ArenaConfig, MatchConfig};
 
     assert!(
@@ -8480,6 +8487,7 @@ fn measure_lance(knobs: &Knobs, lance: &LanceKnobs) -> LanceReport {
             resolution: tacsim::match_::resolution_for(&catalog),
             seed: knobs.seed,
             mode: lance.mode,
+            host: tacsim::arena::FieldHost::all_hostile(),
         },
         &arena_cfg,
         &match_cfg,
@@ -8490,20 +8498,20 @@ fn measure_lance(knobs: &Knobs, lance: &LanceKnobs) -> LanceReport {
     let substep =
         tacsim::arena::clock::substep_ms(&arena_cfg.tempo, arena.cell_cm(), arena.max_speed_cms());
     let squads = arena.squads.clone();
-    let squads_on = |team: Team| {
+    let squads_on = |team: PartyId| {
         squads
             .iter()
             .filter(|roster| roster.id.team == team)
             .count()
     };
-    let squads_per_side = squads_on(Team::Red);
+    let squads_per_side = squads_on(PartyId::RED);
     assert_eq!(
         squads_per_side,
-        squads_on(Team::Blue),
+        squads_on(PartyId::BLUE),
         "the two sides are dealt alike"
     );
     // Each side's commander: its own lowest unit, which is its first squad's.
-    let lowest = |team: Team| {
+    let lowest = |team: PartyId| {
         squads
             .iter()
             .filter(|roster| roster.id.team == team)
@@ -8511,7 +8519,7 @@ fn measure_lance(knobs: &Knobs, lance: &LanceKnobs) -> LanceReport {
             .min()
             .expect("every side has a squad")
     };
-    let commanders = [lowest(Team::Red), lowest(Team::Blue)];
+    let commanders = [lowest(PartyId::RED), lowest(PartyId::BLUE)];
     let mut stepper = Stepper {
         arena,
         substep,
@@ -8609,7 +8617,7 @@ fn measure_lance(knobs: &Knobs, lance: &LanceKnobs) -> LanceReport {
             while let Some(order) = schedule.get(next)
                 && order.at_ms <= arena.now_ms
             {
-                let issuer = if order.squad.team == Team::Red {
+                let issuer = if order.squad.team == PartyId::RED {
                     commanders[0]
                 } else {
                     commanders[1]
@@ -8918,7 +8926,7 @@ fn measure_lance(knobs: &Knobs, lance: &LanceKnobs) -> LanceReport {
         // (`orders_on_tape` files a side's whole opening round as one order, so
         // the order count cannot see it; the lines can).
         for (roster, standing) in squads.iter().zip(&standing_at_start) {
-            let commander = if roster.id.team == Team::Red {
+            let commander = if roster.id.team == PartyId::RED {
                 commanders[0]
             } else {
                 commanders[1]
@@ -9267,7 +9275,7 @@ fn measure_lance(knobs: &Knobs, lance: &LanceKnobs) -> LanceReport {
             let stood_to_order: std::collections::BTreeSet<(bool, i64)> = marks
                 .iter()
                 .filter(|(_, _, is_order, standing)| *is_order && *standing > 0)
-                .map(|(at, squad, _, _)| (squad.team == Team::Red, *at))
+                .map(|(at, squad, _, _)| (squad.team == PartyId::RED, *at))
                 .collect();
             assert_eq!(
                 command.orders,
@@ -10918,6 +10926,7 @@ fn open_minds_field(
             resolution: tacsim::match_::resolution_for(&catalog),
             seed: knobs.seed,
             mode: tacsim::arena::MatchMode::Skirmish,
+            host: tacsim::arena::FieldHost::all_hostile(),
         },
         &arena_cfg,
         &match_cfg,
@@ -12293,7 +12302,7 @@ fn m4_2_the_load_mind_is_calibrated_to_the_class_iii_row() {
     use tacsim::arena::clock::Tempo as ArenaTempo;
     use tacsim::arena::core::{ClassTable, CoreClass};
     use tacsim::arena::mind::{MindRunner, ThinkJob};
-    use tacsim::arena::state::{Arena, Controller, CustodyOut, Power, Team};
+    use tacsim::arena::state::{Arena, Controller, CustodyOut, PartyId, Power};
     use tacsim::config::{ArenaConfig, MatchConfig};
 
     // 1. The bytes and the digest.
@@ -12339,8 +12348,8 @@ fn m4_2_the_load_mind_is_calibrated_to_the_class_iii_row() {
     let binding = catalog.bindings.get(&key).expect("the heavy's binding");
     let mut units = Vec::new();
     for (n, team, column, heading) in [
-        (0_u32, Team::Red, LANCE_RED_COLUMN, 90_000_u32),
-        (1, Team::Blue, LANCE_BLUE_COLUMN, 270_000),
+        (0_u32, PartyId::RED, LANCE_RED_COLUMN, 90_000_u32),
+        (1, PartyId::BLUE, LANCE_BLUE_COLUMN, 270_000),
     ] {
         let id = ObjId(100_000 + n);
         let cells = tacsim::definitions::unit::to_tactical_unit(spec, binding, id)
@@ -12389,6 +12398,7 @@ fn m4_2_the_load_mind_is_calibrated_to_the_class_iii_row() {
             resolution: tacsim::match_::resolution_for(&catalog),
             seed: DEFAULT_SEED,
             mode: tacsim::arena::MatchMode::Skirmish,
+            host: tacsim::arena::FieldHost::all_hostile(),
         },
         &arena_cfg,
         &MatchConfig::default(),

@@ -10,7 +10,7 @@ use super::{
 };
 use crate::{
     arena::{
-        Arena, Channel, Controller, CustodyOut, MatchMode, Team,
+        Arena, Channel, Controller, CustodyOut, MatchMode, PartyId,
         core::CoreClass,
         intents::{Intent, IntentKind, IntentOutcome, IntentSource, MotorGoal, apply_intent},
         mind::{SealEngine, run_batch_inline},
@@ -698,21 +698,21 @@ fn opening(
     let mut roster = vec![
         (
             ESCORT,
-            Team::Red,
+            PartyId::RED,
             policy.escort(),
             (start, 97),
             Controller::Mind,
         ),
         (
             CARRIER,
-            Team::Red,
+            PartyId::RED,
             policy.carrier(),
             (start + 3, 97),
             Controller::Mind,
         ),
         (
             THREAT,
-            Team::Blue,
+            PartyId::BLUE,
             policy.carrier(),
             if close_threat { (119, 99) } else { (230, 220) },
             Controller::Pilot,
@@ -724,7 +724,7 @@ fn opening(
         // flag, health row or end condition is edited during execution.
         roster.push((
             ANCHOR,
-            Team::Blue,
+            PartyId::BLUE,
             policy.carrier(),
             (230, 220),
             Controller::Pilot,
@@ -813,6 +813,7 @@ fn opening(
             resolution,
             seed,
             mode: MatchMode::Skirmish,
+            host: crate::arena::FieldHost::all_hostile(),
         },
         &physics.cfg.arena,
         &physics.cfg.match_,

@@ -137,7 +137,7 @@ mod tests {
     use mush_core::ObjId;
 
     use super::*;
-    use crate::arena::state::Team;
+    use crate::arena::state::PartyId;
     use crate::arena::test_support::{arena_of, pose, tank};
     use crate::minds::{STANDARD_RHAI, standard_digest};
 
@@ -145,8 +145,8 @@ mod tests {
     /// `engine` under the seal digest `[7; 32]`.
     fn field(engine: SealEngine) -> Arena {
         let mut arena = arena_of(vec![
-            tank(ObjId(1), Team::Red, pose(1_500, 1_500)),
-            tank(ObjId(2), Team::Blue, pose(6_500, 6_500)),
+            tank(ObjId(1), PartyId::RED, pose(1_500, 1_500)),
+            tank(ObjId(2), PartyId::BLUE, pose(6_500, 6_500)),
         ]);
         if let Some(unit) = arena.unit_mut(ObjId(1)) {
             unit.seal.engine = engine;

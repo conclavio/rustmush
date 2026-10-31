@@ -49,8 +49,8 @@ use crate::bake::{self, material_from_code};
 #[cfg(feature = "encode")]
 use crate::caps::CellSize;
 use crate::cockpit::{
-    ARENA_MAP_FEED, COCKPIT_FEED, MapStamp, contact_health, contact_kind, map_from_feed, map_stamp,
-    terrain_from_feed,
+    ARENA_MAP_FEED, COCKPIT_FEED, MapStamp, contact_health, contact_kind, contact_party,
+    map_from_feed, map_stamp, terrain_from_feed,
 };
 use crate::frame::{Frame, Rgb};
 use crate::heightfield::Terrain;
@@ -59,7 +59,7 @@ use crate::kitty::{self, Placement};
 use crate::look::{Facing, Material};
 use crate::math::Det as _;
 use crate::overlay::{
-    self, BLUE_TEAM, BORDER, GONE, HEALTH_PIPS, Health, LOCK, PANEL, RED_TEAM, TEXT, ground_rgb,
+    self, BORDER, FRIEND, GONE, HEALTH_PIPS, HOSTILE, Health, LOCK, PANEL, TEXT, ground_rgb,
 };
 use crate::picture::{BUCKET_A_INTERVAL, Feeds, Look, Picture};
 #[cfg(feature = "encode")]
@@ -193,8 +193,8 @@ struct SheetKey {
 #[cfg(feature = "encode")]
 #[derive(Clone, Copy, Debug, PartialEq, Eq, PartialOrd, Ord, Hash)]
 enum PaintKey {
-    Red = 0,
-    Blue = 1,
+    Hostile = 0,
+    Friend = 1,
     Unknown = 2,
     Wreck = 3,
 }
@@ -203,8 +203,8 @@ enum PaintKey {
 impl PaintKey {
     fn from_kind(k: SpriteKind) -> Self {
         match k {
-            SpriteKind::Red => Self::Red,
-            SpriteKind::Blue => Self::Blue,
+            SpriteKind::Hostile => Self::Hostile,
+            SpriteKind::Friend => Self::Friend,
             SpriteKind::Unknown => Self::Unknown,
             SpriteKind::Wreck => Self::Wreck,
         }
@@ -212,8 +212,8 @@ impl PaintKey {
 
     fn to_kind(self) -> SpriteKind {
         match self {
-            Self::Red => SpriteKind::Red,
-            Self::Blue => SpriteKind::Blue,
+            Self::Hostile => SpriteKind::Hostile,
+            Self::Friend => SpriteKind::Friend,
             Self::Unknown => SpriteKind::Unknown,
             Self::Wreck => SpriteKind::Wreck,
         }
@@ -238,8 +238,8 @@ impl SheetKey {
 pub(crate) fn material_rgb(mat: Material, kind: SpriteKind) -> Rgb {
     // Unfogged RGB colours matching raycast::Paint's sprite palette.
     let (td, tm, tl) = match kind {
-        SpriteKind::Red => ([120, 36, 32], [178, 54, 48], [214, 98, 84]),
-        SpriteKind::Blue => ([40, 78, 140], [64, 124, 204], [118, 166, 228]),
+        SpriteKind::Hostile => ([120, 36, 32], [178, 54, 48], [214, 98, 84]),
+        SpriteKind::Friend => ([40, 78, 140], [64, 124, 204], [118, 166, 228]),
         SpriteKind::Unknown => ([92, 92, 88], [132, 132, 126], [174, 174, 166]),
         SpriteKind::Wreck => ([44, 36, 30], [74, 58, 46], [104, 84, 68]),
     };
@@ -1154,6 +1154,9 @@ struct Unit25D {
     placement_id: u32,
     contact_id: Option<String>,
     designator: Option<String>,
+    /// The contact's party letter (doc 32 cut CF.0, Q-CF-12), the badge's
+    /// label where the row has no designator.
+    party: Option<char>,
     health: Option<Health>,
     range_m: i64,
     percent: Option<i64>,
@@ -1573,14 +1576,12 @@ impl Iso25DPicture {
 
         // 1. Player's own unit at the center of the viewport.
         let own_wreck = frame.get("wreck").and_then(Value::as_bool) == Some(true);
+        // The own unit is the viewer's own relation: the friend colour,
+        // whatever its party (doc 32 cut CF.0, Q-CF-12).
         let own_kind = if own_wreck {
             SpriteKind::Wreck
         } else {
-            match frame.get("team").and_then(Value::as_str) {
-                Some("red") => SpriteKind::Red,
-                Some("blue") => SpriteKind::Blue,
-                _ => SpriteKind::Blue,
-            }
+            SpriteKind::Friend
         };
         let own_look = look_index(frame.get("unit_type").and_then(Value::as_str));
         let own_heading = (i64::from(pose.body_heading_mdeg) + i64::from(hull_offset_mdeg))
@@ -1600,6 +1601,7 @@ impl Iso25DPicture {
             placement_id: PLACEMENT_UNIT_BASE,
             contact_id: None,
             designator: None,
+            party: None,
             health: None,
             range_m: 0,
             percent: None,
@@ -1701,6 +1703,7 @@ impl Iso25DPicture {
                 placement_id: pid,
                 contact_id: id.map(str::to_owned),
                 designator: disp_desig,
+                party: contact_party(c),
                 health: contact_health(c),
                 range_m: disp_range_m,
                 percent: if locked { lock_pct } else { None },
@@ -2818,8 +2821,17 @@ impl Iso25DPicture {
             if u.placement_id == PLACEMENT_UNIT_BASE || u.locked {
                 continue;
             }
-            // Non-locked live contact badge: compact callsign + 3-pip health gauge.
-            let label = u.designator.as_deref().unwrap_or("");
+            // Non-locked live contact badge: compact callsign + 3-pip health
+            // gauge. The callsign is the party letter and the unit letter
+            // (doc 32 cut CF.0), so the party sits right beside the pips in
+            // the relation's colour (Q-CF-12); a row with no designator but a
+            // party is labelled with the party letter alone.
+            let party_label = u.party.map(String::from);
+            let label = u
+                .designator
+                .as_deref()
+                .or(party_label.as_deref())
+                .unwrap_or("");
             if label.is_empty() && u.health.is_none() {
                 continue;
             }
@@ -2836,12 +2848,12 @@ impl Iso25DPicture {
             overlay::fill_rect(&mut out, pill_x, pill_y, pill_w, 9, PANEL);
             let mut cx = pill_x + 2;
             if !label.is_empty() {
-                let team_col = match u.kind {
-                    SpriteKind::Red => RED_TEAM,
-                    SpriteKind::Blue => BLUE_TEAM,
+                let relation_col = match u.kind {
+                    SpriteKind::Hostile => HOSTILE,
+                    SpriteKind::Friend => FRIEND,
                     _ => TEXT,
                 };
-                cx += overlay::text(&mut out, cx, pill_y + 1, label, team_col, 1) + 2;
+                cx += overlay::text(&mut out, cx, pill_y + 1, label, relation_col, 1) + 2;
             }
             if let Some(h) = u.health {
                 let lit = h.lit();
@@ -2959,7 +2971,7 @@ mod tests {
     fn own_unit(unit_type: &str, zoom_permille: u16, vp: (usize, usize)) -> (u16, f32) {
         let mut pic = Iso25DPicture::new();
         pic.set_zoom_permille(zoom_permille);
-        let frame = json!({ "seated": true, "team": "blue", "unit_type": unit_type });
+        let frame = json!({ "seated": true, "party": "B", "unit_type": unit_type });
         let pose = read_pose_25d(&frame);
         let units = pic.collect_units(&frame, &pose, 0, vp.0, vp.1, 0);
         let u = units.first().expect("the own unit");
@@ -2968,6 +2980,53 @@ mod tests {
         // Drawn at its native size: the unit's metres in this frame's pixels.
         let px_per_m = f32::from(sized.size) / (chain.span_cm as f32 / 100.0);
         (sized.size, height_cm as f32 / 100.0 * px_per_m)
+    }
+
+    /// Doc 32 cut CF.0, Q-CF-12: the own unit is the friend colour whatever
+    /// its party (here red, which drew red by team before), a contact is
+    /// drawn by its `relation` (`own` and `friend` alike, `neutral` grey) and
+    /// carries its `party` letter for the badge beside its pips, `None`
+    /// while unclassified.
+    #[test]
+    fn units_are_drawn_by_relation_and_carry_their_party() {
+        let mut pic = Iso25DPicture::new();
+        let row = |relation: &str, party: Value, bearing: f64| {
+            json!({
+                "relation": relation,
+                "party": party,
+                "unit_type": "tacsim.unit.line_tank",
+                "bearing_deg": bearing,
+                "range_m": 20.0,
+            })
+        };
+        let frame = json!({
+            "seated": true,
+            "party": "R",
+            "unit_type": "tacsim.unit.line_tank",
+            "x_cm": 50_000,
+            "y_cm": 50_000,
+            "contacts": [
+                row("own", json!("R"), 0.0),
+                row("friend", json!("G"), 90.0),
+                row("hostile", json!("B"), 180.0),
+                row("neutral", json!("N"), 270.0),
+                row("unknown", Value::Null, 45.0),
+            ],
+        });
+        let pose = read_pose_25d(&frame);
+        let units = pic.collect_units(&frame, &pose, 0, 640, 360, 0);
+        let got: Vec<_> = units.iter().map(|u| (u.kind, u.party)).collect();
+        assert_eq!(
+            got,
+            [
+                (SpriteKind::Friend, None),
+                (SpriteKind::Friend, Some('R')),
+                (SpriteKind::Friend, Some('G')),
+                (SpriteKind::Hostile, Some('B')),
+                (SpriteKind::Unknown, Some('N')),
+                (SpriteKind::Unknown, None),
+            ]
+        );
     }
 
     /// **The 2.5D's size check** (doc 22 §6): a drone and a heavy on one row
@@ -3049,7 +3108,7 @@ mod tests {
         pic.set_map(Map::new(128, 128, 1000));
         let frame_json = json!({
             "seated": true,
-            "team": "blue",
+            "party": "B",
             "unit_type": "tacsim.unit.biped_mk1",
             "x_cm": 50_000,
             "y_cm": 50_000,
@@ -3061,6 +3120,8 @@ mod tests {
                 {
                     "id": "RA",
                     "class": "red",
+                    "relation": "hostile",
+                    "party": "R",
                     "unit_type": "tacsim.unit.line_tank",
                     "bearing_deg": 45.0,
                     "range_m": 40.0,
@@ -3114,6 +3175,8 @@ mod tests {
             contacts.push(json!({
                 "id": format!("R{}", i + 1),
                 "class": "red",
+                "relation": "hostile",
+                "party": "R",
                 "unit_type": "tacsim.unit.line_tank",
                 "bearing_deg": -35.0 + (i as f64) * 10.0,
                 "range_m": 40.0,
@@ -3124,7 +3187,7 @@ mod tests {
 
         let frame1 = json!({
             "seated": true,
-            "team": "blue",
+            "party": "B",
             "unit_type": "tacsim.unit.biped_mk1",
             "x_cm": 50_000,
             "y_cm": 50_000,
@@ -3159,7 +3222,7 @@ mod tests {
         // `a=t` uploads and scrolls via `a=p,i=100,p=1` source-rect!
         let frame2 = json!({
             "seated": true,
-            "team": "blue",
+            "party": "B",
             "unit_type": "tacsim.unit.biped_mk1",
             "x_cm": 50_000,
             "y_cm": 50_400,
@@ -3170,6 +3233,8 @@ mod tests {
                 {
                     "id": "R1",
                     "class": "red",
+                    "relation": "hostile",
+                    "party": "R",
                     "unit_type": "tacsim.unit.line_tank",
                     "bearing_deg": 45,
                     "range_m": 38,
@@ -3204,7 +3269,7 @@ mod tests {
         let base_frame = json!({
             "seated": true,
             "t_ms": 1000,
-            "team": "blue",
+            "party": "B",
             "unit_type": "tacsim.unit.biped_mk1",
             "x_cm": 50_000,
             "y_cm": 50_000,
@@ -3220,6 +3285,8 @@ mod tests {
                     "id": "c1",
                     "designator": "RA",
                     "class": "red",
+                    "relation": "hostile",
+                    "party": "R",
                     "health": "damaged",
                     "unit_type": "tacsim.unit.line_tank",
                     "bearing_deg": 30.0,
@@ -3231,6 +3298,8 @@ mod tests {
                     "id": "c2",
                     "designator": "RB",
                     "class": "red",
+                    "relation": "hostile",
+                    "party": "R",
                     "health": "crippled",
                     "unit_type": "tacsim.unit.biped_mk1",
                     "bearing_deg": -25.0,
@@ -3251,7 +3320,7 @@ mod tests {
         let fx_frame = json!({
             "seated": true,
             "t_ms": 2000,
-            "team": "blue",
+            "party": "B",
             "unit_type": "tacsim.unit.biped_mk1",
             "x_cm": 50_000,
             "y_cm": 50_000,
@@ -3288,7 +3357,7 @@ mod tests {
         let frame = json!({
             "seated": true,
             "t_ms": 1000,
-            "team": "blue",
+            "party": "B",
             "unit_type": "tacsim.unit.biped_mk1",
             "x_cm": 15_000,
             "y_cm": 10_000,
@@ -3300,6 +3369,8 @@ mod tests {
                     "id": "c1",
                     "designator": "RA",
                     "class": "red",
+                    "relation": "hostile",
+                    "party": "R",
                     "unit_type": "tacsim.unit.line_tank",
                     "bearing_deg": 0.0,
                     "range_m": 40.0,
@@ -3416,7 +3487,7 @@ mod tests {
         let cockpit = json!({
             "seated": true,
             "t_ms": 1000,
-            "team": "blue",
+            "party": "B",
             "unit_type": "tacsim.unit.biped_mk1",
             "x_cm": 16_000,
             "y_cm": 16_000,
@@ -3428,6 +3499,8 @@ mod tests {
                     "id": "c1",
                     "designator": "RA",
                     "class": "red",
+                    "relation": "hostile",
+                    "party": "R",
                     "health": "intact",
                     "unit_type": "tacsim.unit.line_tank",
                     "bearing_deg": 45.0,
@@ -3561,7 +3634,7 @@ mod tests {
         for ut in unit_types {
             let cockpit = json!({
                 "seated": true,
-                "team": "blue",
+                "party": "B",
                 "unit_type": ut,
                 "x_cm": 8_500,
                 "y_cm": 5_500,
@@ -3572,6 +3645,8 @@ mod tests {
                     {
                         "id": "RA",
                         "class": "red",
+                        "relation": "hostile",
+                        "party": "R",
                         "unit_type": ut,
                         "bearing_deg": 0.0,
                         "range_m": 32.0,

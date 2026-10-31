@@ -150,6 +150,10 @@ mush-net-ssh = { path = "crates/mush-net-ssh" }
 # and the port-22 doorway itself.
 mush-sshdoorway-proto = { path = "crates/mush-sshdoorway-proto" }
 mush-sshdoorway = { path = "crates/mush-sshdoorway" }
+# Doc 33 (D-33-6, cut GG.3): the two-generation drain shared by the doorway and the
+# gateway: the session registry, the kill switch, reuseport listeners, sd_notify, the
+# drain marker and the signal lifecycle.
+mush-drain = { path = "crates/mush-drain" }
 # 2026-10-21 pixel cockpit spike: the raycaster, the PNG encoder and the kitty
 # graphics framing the SSH TUI streams a first-person view with.
 mush-pixel = { path = "crates/mush-pixel" }

@@ -1021,7 +1021,7 @@ fn sight_condition(shooter: &UnitState) -> u32 {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use crate::arena::state::{Power, Team};
+    use crate::arena::state::{PartyId, Power};
     use crate::arena::test_support::{arena_of, cannon, line_tank, pose, scout};
 
     const RED: ObjId = ObjId(4);
@@ -1031,8 +1031,8 @@ mod tests {
     /// silhouettes and facet table.
     fn duel() -> Arena {
         let mut arena = arena_of(vec![
-            line_tank(RED, Team::Red, pose(1_500, 1_500)),
-            line_tank(BLUE, Team::Blue, pose(1_500, 2_500)),
+            line_tank(RED, PartyId::RED, pose(1_500, 1_500)),
+            line_tank(BLUE, PartyId::BLUE, pose(1_500, 2_500)),
         ]);
         for id in [RED, BLUE] {
             if let Some(state) = arena.unit_mut(id) {
@@ -1138,8 +1138,8 @@ mod tests {
     #[test]
     fn a_unit_with_no_authored_silhouette_presents_nothing() {
         let arena = arena_of(vec![
-            scout(RED, Team::Red, pose(1_500, 1_500)),
-            scout(BLUE, Team::Blue, pose(1_500, 2_500)),
+            scout(RED, PartyId::RED, pose(1_500, 1_500)),
+            scout(BLUE, PartyId::BLUE, pose(1_500, 2_500)),
         ]);
         let taken = arena.resolve_shot(RED, BLUE, "cannon", 1_000, Cover::None);
         assert_eq!(taken.presented_width_cm, 0);
@@ -1380,7 +1380,9 @@ mod tests {
             held,
             ShadowContact::sighted(
                 BLUE,
-                Classification::Classified { team: Team::Blue },
+                Classification::Classified {
+                    party: PartyId::BLUE,
+                },
                 0,
                 plot,
             ),

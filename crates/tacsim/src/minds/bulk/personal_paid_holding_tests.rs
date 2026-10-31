@@ -144,7 +144,7 @@ fn sealed_arena(
     f: &PurchaseFixture,
     holding: PersonalFiledHolding,
 ) -> TestResult<(crate::arena::Arena, crate::arena::MindSeal, Arc<str>)> {
-    use crate::arena::{Arena, Controller, CustodyOut, Team, test_support};
+    use crate::arena::{Arena, Controller, CustodyOut, PartyId, test_support};
     use crate::match_::filed_holdings::FiledExecutable;
     use mush_sim::data::Pose;
     let executable = FiledExecutable::resolve(
@@ -159,7 +159,7 @@ fn sealed_arena(
     let unit_id = ObjId(41);
     let mut unit = test_support::tank(
         unit_id,
-        Team::Red,
+        PartyId::RED,
         Pose::at(2_000, 2_000, 0, test_support::rules()),
     );
     unit.unit = test_support::tactical_unit_cored(unit_id, held.rated);
@@ -179,11 +179,15 @@ fn sealed_arena(
     let mut arena = Arena::new(
         CustodyOut {
             definition: test_support::definition(),
-            units: vec![unit, test_support::tank(ObjId(42), Team::Blue, blue_pose)],
+            units: vec![
+                unit,
+                test_support::tank(ObjId(42), PartyId::BLUE, blue_pose),
+            ],
             pilots: vec![],
             resolution: test_support::resolution(),
             seed: 93,
             mode: crate::arena::MatchMode::Skirmish,
+            host: crate::arena::FieldHost::all_hostile(),
         },
         &cfg,
         &crate::config::MatchConfig::default(),

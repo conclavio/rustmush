@@ -105,14 +105,62 @@ export type EditorTool =
   | 'sculpt'
   | 'spot'
   | 'waypoint'
+  | 'tanks'
   | 'zone_red'
   | 'zone_blue'
-  | 'camera_pin';
+  | 'camera_pin'
+  | 'pan';
 
 export type SculptMode = 'raise' | 'lower' | 'flatten' | 'smooth';
 export type BrushShape = 'circle' | 'square';
 export type DriveName = 'tracked' | 'wheeled' | 'legged';
 export type StudioOverlayMode = 'none' | 'passability' | 'viewshed';
+export type GeneratorPresetName = 'proving_ground' | 'mars_canyon' | 'lunar_crater' | 'ice_shelf';
+
+export interface GeneratorPresetMeta {
+  id: GeneratorPresetName;
+  label: string;
+  biome: BiomeName;
+  body: string;
+  defaultSeed: number;
+}
+
+export const GENERATOR_PRESETS: readonly GeneratorPresetMeta[] = [
+  {
+    id: 'proving_ground',
+    label: 'The Proving Ground (Temperate V3)',
+    biome: 'temperate',
+    body: 'luna',
+    defaultSeed: 2350
+  },
+  {
+    id: 'mars_canyon',
+    label: 'Mars Canyon (Mars Wadi & Shelves)',
+    biome: 'mars',
+    body: 'mars',
+    defaultSeed: 2350
+  },
+  {
+    id: 'lunar_crater',
+    label: 'Lunar Crater (Twin Impact Basins)',
+    biome: 'lunar',
+    body: 'luna',
+    defaultSeed: 2350
+  },
+  {
+    id: 'ice_shelf',
+    label: 'Ice Shelf (Europa Leads & Dome)',
+    biome: 'ice',
+    body: 'europa',
+    defaultSeed: 2350
+  }
+] as const;
+
+export const SHIPPED_ARENA_IDS: readonly { id: string; label: string; biome: BiomeName }[] = [
+  { id: 'proving_ground', label: 'The Proving Ground (Temperate)', biome: 'temperate' },
+  { id: 'winter_valley', label: 'Winter Valley (Unity Temperate)', biome: 'temperate' },
+  { id: 'mars_canyon', label: 'Mars Canyon (Mars)', biome: 'mars' }
+] as const;
 
 export interface SculptBrush {
   mode: SculptMode;
@@ -158,13 +206,12 @@ export interface EditorArenaMode {
 
 export interface EditorTankDef {
   id: string;
-  label: string;
-  unit: string;
+  name: string;
   team: 'red' | 'blue';
-  slot: number;
   x: number;
   y: number;
-  heading_deg: number;
+  heading_mdeg: number;
+  unit: string;
 }
 
 export interface EditorProvenance {
@@ -294,6 +341,105 @@ export function markStudioEdited(state: EditorMapState): void {
   }
 }
 
+export function defaultTanksForZones(
+  width: number,
+  height: number,
+  zones: EditorEntryZone[],
+  classes?: Uint8Array
+): EditorTankDef[] {
+  const w = Math.max(16, Math.floor(width));
+  const h = Math.max(16, Math.floor(height));
+  const midY = Math.max(4, Math.min(h - 5, Math.floor(h / 2)));
+  let redZone = zones.find((z) => z.team === 'red');
+  let blueZone = zones.find((z) => z.team === 'blue');
+  if (!redZone) {
+    redZone = { team: 'red', x0: 2, y0: 2, x1: Math.min(w - 1, 15), y1: h - 3 };
+  }
+  if (!blueZone) {
+    blueZone = {
+      team: 'blue',
+      x0: Math.max(0, w - 16),
+      y0: 2,
+      x1: w - 3,
+      y1: h - 3
+    };
+  }
+  const offsets: readonly [number, number][] = [
+    [0, 0],
+    [0, -2],
+    [0, 2],
+    [0, -4],
+    [0, 4],
+    [-2, -3]
+  ];
+  const isPassable = (x: number, y: number): boolean => {
+    if (x < 0 || x >= w || y < 0 || y >= h) return false;
+    if (!classes) return true;
+    const code = classes[y * w + x] ?? 2;
+    return code !== 0 && code !== 4 && code !== 10 && code !== 14 && code !== 15;
+  };
+  const placeTeam = (
+    team: 'red' | 'blue',
+    zone: EditorEntryZone,
+    headingMdeg: number,
+    flipDx: boolean
+  ): EditorTankDef[] => {
+    const x0 = Math.max(0, Math.min(zone.x0, zone.x1));
+    const x1 = Math.min(w - 1, Math.max(zone.x0, zone.x1));
+    const y0 = Math.max(0, Math.min(zone.y0, zone.y1));
+    const y1 = Math.min(h - 1, Math.max(zone.y0, zone.y1));
+    const cx = Math.floor((x0 + x1) / 2);
+    const cy = Math.max(y0, Math.min(y1, midY));
+    const used = new Set<string>();
+    const out: EditorTankDef[] = [];
+    for (let idx = 0; idx < 6; idx++) {
+      const slot = idx + 1;
+      const [rawDx, rawDy] = offsets[idx]!;
+      const dx = flipDx ? -rawDx : rawDx;
+      let tx = Math.max(x0, Math.min(x1, cx + dx));
+      let ty = Math.max(y0, Math.min(y1, cy + rawDy));
+      if (!isPassable(tx, ty) || used.has(`${tx},${ty}`)) {
+        let found = false;
+        for (let r = 1; r <= Math.max(x1 - x0, y1 - y0) + 2 && !found; r++) {
+          for (let oy = -r; oy <= r && !found; oy++) {
+            for (let ox = -r; ox <= r && !found; ox++) {
+              const nx = tx + ox;
+              const ny = ty + oy;
+              if (
+                nx >= x0 &&
+                nx <= x1 &&
+                ny >= y0 &&
+                ny <= y1 &&
+                isPassable(nx, ny) &&
+                !used.has(`${nx},${ny}`)
+              ) {
+                tx = nx;
+                ty = ny;
+                found = true;
+              }
+            }
+          }
+        }
+      }
+      used.add(`${tx},${ty}`);
+      out.push({
+        id: `${team}_${slot}`,
+        name: `${team === 'red' ? 'Red' : 'Blue'} Tank ${slot}`,
+        team,
+        x: tx,
+        y: ty,
+        heading_mdeg: headingMdeg,
+        unit: 'tacsim.unit.line_tank'
+      });
+    }
+    return out;
+  };
+  return [
+    ...placeTeam('red', redZone, 90_000, false),
+    ...placeTeam('blue', blueZone, 270_000, true)
+  ];
+}
+
 export function createEditorMap(
   width = 256,
   height = 256,
@@ -309,11 +455,27 @@ export function createEditorMap(
   const marginY = Math.max(2, Math.floor(h * 0.25));
   const zoneW = Math.max(3, Math.floor(w * 0.08));
   const zoneH = Math.max(4, Math.floor(h * 0.5));
+  const entryZones: EditorEntryZone[] = [
+    {
+      team: 'red',
+      x0: marginX,
+      y0: marginY,
+      x1: Math.min(w - 1, marginX + zoneW),
+      y1: Math.min(h - 1, marginY + zoneH)
+    },
+    {
+      team: 'blue',
+      x0: Math.max(0, w - 1 - marginX - zoneW),
+      y0: marginY,
+      x1: Math.max(0, w - 1 - marginX),
+      y1: Math.min(h - 1, marginY + zoneH)
+    }
+  ];
   return {
     id: 'custom_arena',
     label: 'Custom Arena',
     biome,
-    body: 'luna',
+    body: biome === 'mars' ? 'mars' : biome === 'ice' ? 'europa' : 'luna',
     width: w,
     height: h,
     cellCm: 1000,
@@ -325,25 +487,10 @@ export function createEditorMap(
       { name: 'Signal Hill', x: Math.floor(w * 0.5), y: Math.floor(h * 0.55) },
       { name: 'Crossroads', x: Math.floor(w * 0.65), y: Math.floor(h * 0.45) }
     ],
-    entryZones: [
-      {
-        team: 'red',
-        x0: marginX,
-        y0: marginY,
-        x1: Math.min(w - 1, marginX + zoneW),
-        y1: Math.min(h - 1, marginY + zoneH)
-      },
-      {
-        team: 'blue',
-        x0: Math.max(0, w - 1 - marginX - zoneW),
-        y0: marginY,
-        x1: Math.max(0, w - 1 - marginX),
-        y1: Math.min(h - 1, marginY + zoneH)
-      }
-    ],
+    entryZones,
     waypoints: { nodes: [], edges: [] },
-    modes: [],
-    tanks: [],
+    modes: [{ mode: 'hold', spot: 'Crossroads', radius_cells: 6, hold_ms: 120_000 }],
+    tanks: defaultTanksForZones(w, h, entryZones, classes),
     atlasVersion: 1,
     arenaVersion: 1,
     provenance: {
@@ -886,6 +1033,48 @@ export function encodeElevZigzagDelta(elevCm: Int16Array): {
   };
 }
 
+export const MAP_WINDOW_SIDES = [256, 192, 160, 128, 96, 64] as const;
+const MAX_WINDOWABLE_ROWS_BYTES = 64 * 1024;
+
+export function windowCenteredOn(
+  width: number,
+  height: number,
+  side: number,
+  focusX: number,
+  focusY: number
+): [number, number, number, number] {
+  const w = Math.max(1, Math.min(width, Math.floor(side)));
+  const h = Math.max(1, Math.min(height, Math.floor(side)));
+  const x0 = Math.max(0, Math.min(width - w, Math.floor(focusX) - Math.floor(w / 2)));
+  const y0 = Math.max(0, Math.min(height - h, Math.floor(focusY) - Math.floor(h / 2)));
+  return [x0, y0, w, h];
+}
+
+function normalizeTankDef(
+  raw: Partial<EditorTankDef> & { label?: string; heading_deg?: number },
+  idx: number
+): EditorTankDef {
+  const team: 'red' | 'blue' = raw.team === 'blue' ? 'blue' : 'red';
+  const slot = (idx % 6) + 1;
+  const headingMdeg =
+    typeof raw.heading_mdeg === 'number'
+      ? Math.round(((raw.heading_mdeg % 360000) + 360000) % 360000)
+      : typeof raw.heading_deg === 'number'
+        ? Math.round((((raw.heading_deg % 360) + 360) % 360) * 1000) % 360000
+        : team === 'red'
+          ? 90_000
+          : 270_000;
+  return {
+    id: raw.id || `${team}_${slot}`,
+    name: raw.name || raw.label || `${team === 'red' ? 'Red' : 'Blue'} Tank ${slot}`,
+    team,
+    x: Math.max(0, Math.floor(raw.x ?? 0)),
+    y: Math.max(0, Math.floor(raw.y ?? 0)),
+    heading_mdeg: headingMdeg,
+    unit: raw.unit || 'tacsim.unit.line_tank'
+  };
+}
+
 /**
  * Export the current studio state as a `ground.draft.v1` JSON document (`D-30-2`, `D-30-8`).
  */
@@ -918,8 +1107,21 @@ export function exportGroundDraftJson(state: EditorMapState): GroundDraftJson {
       nodes: state.waypoints.nodes.map((n) => ({ id: n.id, x: n.x, y: n.y })),
       edges: state.waypoints.edges.map((e) => [e[0], e[1]])
     },
-    ...(state.modes.length > 0 ? { modes: state.modes.map((m) => ({ ...m })) } : {}),
-    ...(state.tanks.length > 0 ? { tanks: state.tanks.map((t) => ({ ...t })) } : {}),
+    ...(state.modes.length > 0
+      ? {
+          modes: state.modes.map((m) => ({
+            mode: 'hold' as const,
+            spot: m.spot,
+            radius_cells: m.radius_cells,
+            hold_ms: m.hold_ms
+          }))
+        }
+      : {}),
+    ...(state.tanks.length > 0
+      ? {
+          tanks: state.tanks.map((t, i) => normalizeTankDef(t, i))
+        }
+      : {}),
     atlas_version: state.atlasVersion,
     arena_version: state.arenaVersion,
     provenance: {
@@ -978,8 +1180,13 @@ export function importGroundDraftJson(draft: GroundDraftJson): EditorMapState {
       nodes: (draft.waypoints?.nodes ?? []).map((n) => ({ id: n.id, x: n.x, y: n.y })),
       edges: (draft.waypoints?.edges ?? []).map((e) => [e[0], e[1]])
     },
-    modes: (draft.modes ?? []).map((m) => ({ ...m })),
-    tanks: (draft.tanks ?? []).map((t) => ({ ...t })),
+    modes: (draft.modes ?? []).map((m) => ({
+      mode: 'hold' as const,
+      spot: m.spot,
+      radius_cells: m.radius_cells,
+      hold_ms: m.hold_ms
+    })),
+    tanks: (draft.tanks ?? []).map((t, i) => normalizeTankDef(t, i)),
     atlasVersion: draft.atlas_version ?? 1,
     arenaVersion: draft.arena_version ?? 1,
     provenance: {
@@ -992,24 +1199,55 @@ export function importGroundDraftJson(draft: GroundDraftJson): EditorMapState {
   };
 }
 
-/**
- * Build live `arena.map` and `arena.cockpit` feeds from the current `EditorMapState`
- * and camera pin so `mush-pixel-wasm` renders the exact 1st-person, 2.5D, and overhead
- * views matching the server (`D-30-6`, `D-30-8`).
- */
-export function editorToPictureFeeds(
+const SPOT_LETTERS = [
+  'A',
+  'B',
+  'C',
+  'E',
+  'F',
+  'G',
+  'H',
+  'I',
+  'J',
+  'K',
+  'L',
+  'M',
+  'N',
+  'O',
+  'P',
+  'Q',
+  'R',
+  'S',
+  'U',
+  'V',
+  'Y',
+  'Z'
+] as const;
+
+function buildArenaMapWindow(
   state: EditorMapState,
-  pin: EditorCameraPin
-): { arenaMap: Record<string, unknown>; arenaCockpit: Record<string, unknown> } {
+  x0: number,
+  y0: number,
+  w: number,
+  h: number
+): Record<string, unknown> {
   const rows: [string, number][][] = [];
   const seenCodes: number[] = [];
+  const winElev = new Int16Array(w * h);
+  const stateW = state.width;
+  const classes = state.classes;
+  const elevCm = state.elevCm;
 
-  for (let y = 0; y < state.height; y++) {
+  for (let wy = 0; wy < h; wy++) {
+    const y = y0 + wy;
     const rowRuns: [string, number][] = [];
     let currentGlyph = '';
     let runLen = 0;
-    for (let x = 0; x < state.width; x++) {
-      const code = state.classes[y * state.width + x] ?? 2;
+    for (let wx = 0; wx < w; wx++) {
+      const x = x0 + wx;
+      const srcIdx = y * stateW + x;
+      const code = classes[srcIdx] ?? 2;
+      winElev[wy * w + wx] = elevCm[srcIdx] ?? 0;
       if (!seenCodes.includes(code)) {
         seenCodes.push(code);
       }
@@ -1035,37 +1273,58 @@ export function editorToPictureFeeds(
     return [meta.glyph, meta.word];
   });
 
-  const SPOT_LETTERS = [
-    'A',
-    'B',
-    'C',
-    'E',
-    'F',
-    'G',
-    'H',
-    'I',
-    'J',
-    'K',
-    'L',
-    'M',
-    'N',
-    'O',
-    'P',
-    'Q',
-    'R',
-    'S',
-    'U',
-    'V',
-    'Y',
-    'Z'
-  ] as const;
-
   const spots = state.keySpots.slice(0, SPOT_LETTERS.length).map((s, i) => ({
     letter: SPOT_LETTERS[i]!,
     name: s.name,
     cell: [s.x, s.y]
   }));
 
+  const isWindowed = x0 !== 0 || y0 !== 0 || w !== state.width || h !== state.height;
+  const payload: Record<string, unknown> = {
+    schema: {
+      id: 'arena.map',
+      version: 1,
+      shape: 'terrain',
+      retain: 'latest'
+    },
+    match: -1,
+    surface: `tacsim.arena.${state.id}`,
+    biome: state.biome,
+    cell_cm: state.cellCm,
+    width: w,
+    height: h,
+    origin_cell: [x0, y0],
+    rows,
+    legend,
+    spots,
+    elev: encodeElevZigzagDelta(winElev)
+  };
+  if (isWindowed) {
+    payload.extent = [state.width, state.height];
+  }
+  return payload;
+}
+
+function serializedMapFrameBytes(frame: Record<string, unknown>): number {
+  const widest = { ...frame, match: 0 };
+  // In Rust `WIDEST_MATCH` is `u64::MAX` (`18446744073709551615`, 20 chars vs `0`'s 1 char = +19 bytes).
+  return new TextEncoder().encode(JSON.stringify(widest)).length + 19;
+}
+
+/**
+ * Build live `arena.map` and `arena.cockpit` feeds from the current `EditorMapState`
+ * and camera pin so `mush-pixel-wasm` renders the exact 1st-person, 2.5D, and overhead
+ * views matching the server (`D-30-6`, `D-30-7`, `D-30-8`).
+ *
+ * When the map exceeds `256×256` (e.g. `512×512`) or when steep relief pushes the
+ * unwindowed `arena.map` frame past `MAP_MAX_BYTES`, automatically windows `rows` and
+ * `elev` around `pin` using `MAP_WINDOW_SIDES` with `origin_cell: [x0, y0]` and
+ * `extent: [state.width, state.height]`.
+ */
+export function editorToPictureFeeds(
+  state: EditorMapState,
+  pin: EditorCameraPin
+): { arenaMap: Record<string, unknown>; arenaCockpit: Record<string, unknown> } {
   const pinX = Math.max(0, Math.min(state.width - 1, Math.floor(pin.x)));
   const pinY = Math.max(0, Math.min(state.height - 1, Math.floor(pin.y)));
   const pinElev = state.elevCm[pinY * state.width + pinX] ?? 0;
@@ -1073,26 +1332,37 @@ export function editorToPictureFeeds(
   const xCm = Math.round((pinX + 0.5) * state.cellCm);
   const yCm = Math.round((pinY + 0.5) * state.cellCm);
 
+  let arenaMap: Record<string, unknown> | null = null;
+  if (state.width <= 256 && state.height <= 256) {
+    const full = buildArenaMapWindow(state, 0, 0, state.width, state.height);
+    const fullBytes = serializedMapFrameBytes(full);
+    if (fullBytes <= MAP_MAX_BYTES) {
+      arenaMap = full;
+    } else {
+      const rowsBytes = new TextEncoder().encode(JSON.stringify(full.rows)).length;
+      if (rowsBytes > MAX_WINDOWABLE_ROWS_BYTES) {
+        arenaMap = full;
+      }
+    }
+  }
+  if (!arenaMap) {
+    for (const side of MAP_WINDOW_SIDES) {
+      if (side > state.width && side > state.height) continue;
+      const [x0, y0, w, h] = windowCenteredOn(state.width, state.height, side, pinX, pinY);
+      const candidate = buildArenaMapWindow(state, x0, y0, w, h);
+      if (serializedMapFrameBytes(candidate) <= MAP_MAX_BYTES) {
+        arenaMap = candidate;
+        break;
+      }
+    }
+  }
+  if (!arenaMap) {
+    const [x0, y0, w, h] = windowCenteredOn(state.width, state.height, 64, pinX, pinY);
+    arenaMap = buildArenaMapWindow(state, x0, y0, w, h);
+  }
+
   return {
-    arenaMap: {
-      schema: {
-        id: 'arena.map',
-        version: 1,
-        shape: 'terrain',
-        retain: 'latest'
-      },
-      match: -1,
-      surface: `tacsim.arena.${state.id}`,
-      biome: state.biome,
-      cell_cm: state.cellCm,
-      width: state.width,
-      height: state.height,
-      origin_cell: [0, 0],
-      rows,
-      legend,
-      spots,
-      elev: encodeElevZigzagDelta(state.elevCm)
-    },
+    arenaMap,
     arenaCockpit: {
       schema: {
         id: 'arena.cockpit',
@@ -1239,16 +1509,19 @@ function zoneSeedCells(
   drive: DriveName
 ): [number, number][] {
   const seeds: [number, number][] = [];
+  const w = state.width;
+  const h = state.height;
+  const classes = state.classes;
   const x0 = Math.min(zone.x0, zone.x1);
   const x1 = Math.max(zone.x0, zone.x1);
   const y0 = Math.min(zone.y0, zone.y1);
   const y1 = Math.max(zone.y0, zone.y1);
   const passable = (x: number, y: number) =>
     x >= 0 &&
-    x < state.width &&
+    x < w &&
     y >= 0 &&
-    y < state.height &&
-    moveCostForDrive(drive, state.classes[y * state.width + x] ?? 0) > 0;
+    y < h &&
+    moveCostForDrive(drive, classes[y * w + x] ?? 0) > 0;
 
   for (const t of state.tanks) {
     if (
@@ -1296,6 +1569,9 @@ function floodFromSeeds(
 ): Uint8Array {
   const w = state.width;
   const h = state.height;
+  const classes = state.classes;
+  const elevCm = state.elevCm;
+  const cellCm = state.cellCm;
   const seen = new Uint8Array(w * h);
   const queue: [number, number][] = [];
   for (const [sx, sy] of seeds) {
@@ -1308,7 +1584,7 @@ function floodFromSeeds(
   let head = 0;
   while (head < queue.length) {
     const [x, y] = queue[head++]!;
-    const hereElev = state.elevCm[y * w + x] ?? 0;
+    const hereElev = elevCm[y * w + x] ?? 0;
     for (const [dx, dy] of [
       [1, 0],
       [-1, 0],
@@ -1320,8 +1596,8 @@ function floodFromSeeds(
       if (nx < 0 || nx >= w || ny < 0 || ny >= h) continue;
       const nIdx = ny * w + nx;
       if (seen[nIdx] !== 0) continue;
-      if (moveCostForDrive(drive, state.classes[nIdx] ?? 0) === 0) continue;
-      if (steepnessPct(hereElev, state.elevCm[nIdx] ?? 0, false, state.cellCm) > limit) continue;
+      if (moveCostForDrive(drive, classes[nIdx] ?? 0) === 0) continue;
+      if (steepnessPct(hereElev, elevCm[nIdx] ?? 0, false, cellCm) > limit) continue;
       seen[nIdx] = 1;
       queue.push([nx, ny]);
     }
@@ -1344,9 +1620,10 @@ const DIAGONAL_NUM = 181;
 const DIAGONAL_DEN = 128;
 
 function minCostOnGrid(state: EditorMapState, drive: DriveName): number {
+  const classes = state.classes;
   let min = 100;
-  for (let i = 0; i < state.classes.length; i++) {
-    const c = moveCostForDrive(drive, state.classes[i] ?? 0);
+  for (let i = 0; i < classes.length; i++) {
+    const c = moveCostForDrive(drive, classes[i] ?? 0);
     if (c > 0 && c < min) {
       min = c;
     }
@@ -1366,13 +1643,16 @@ export function findArenaPath(
 ): [number, number][] | null {
   const w = state.width;
   const h = state.height;
+  const classes = state.classes;
+  const elevCm = state.elevCm;
+  const cellCm = state.cellCm;
   const [sx, sy] = start;
   const [gx, gy] = goal;
   if (sx < 0 || sx >= w || sy < 0 || sy >= h || gx < 0 || gx >= w || gy < 0 || gy >= h) {
     return null;
   }
-  if (moveCostForDrive(drive, state.classes[sy * w + sx] ?? 0) === 0) return null;
-  if (moveCostForDrive(drive, state.classes[gy * w + gx] ?? 0) === 0) return null;
+  if (moveCostForDrive(drive, classes[sy * w + sx] ?? 0) === 0) return null;
+  if (moveCostForDrive(drive, classes[gy * w + gx] ?? 0) === 0) return null;
   if (sx === gx && sy === gy) return [];
 
   const scale = minCostOnGrid(state, drive);
@@ -1480,47 +1760,47 @@ export function findArenaPath(
 
     const x = node % w;
     const y = (node - x) / w;
-    const hereElev = state.elevCm[node] ?? 0;
+    const hereElev = elevCm[node] ?? 0;
 
     for (const [dx, dy] of NEIGHBOURS_8) {
       const nx = x + dx;
       const ny = y + dy;
       if (nx < 0 || nx >= w || ny < 0 || ny >= h) continue;
       const nextIdx = ny * w + nx;
-      const baseStep = moveCostForDrive(drive, state.classes[nextIdx] ?? 0);
+      const baseStep = moveCostForDrive(drive, classes[nextIdx] ?? 0);
       if (baseStep === 0) continue;
 
       const isDiag = dx !== 0 && dy !== 0;
-      const thereElev = state.elevCm[nextIdx] ?? 0;
-      const grade = slopePct(hereElev, thereElev, isDiag, state.cellCm);
+      const thereElev = elevCm[nextIdx] ?? 0;
+      const grade = slopePct(hereElev, thereElev, isDiag, cellCm);
 
       if (maxSlopePct !== null) {
-        if (steepnessPct(hereElev, thereElev, isDiag, state.cellCm) > maxSlopePct) {
+        if (steepnessPct(hereElev, thereElev, isDiag, cellCm) > maxSlopePct) {
           continue;
         }
         if (isDiag) {
           const s1Idx = y * w + nx;
           const s2Idx = ny * w + x;
-          const s1Pass = moveCostForDrive(drive, state.classes[s1Idx] ?? 0) > 0;
-          const s2Pass = moveCostForDrive(drive, state.classes[s2Idx] ?? 0) > 0;
-          const s1Elev = state.elevCm[s1Idx] ?? 0;
-          const s2Elev = state.elevCm[s2Idx] ?? 0;
+          const s1Pass = moveCostForDrive(drive, classes[s1Idx] ?? 0) > 0;
+          const s2Pass = moveCostForDrive(drive, classes[s2Idx] ?? 0) > 0;
+          const s1Elev = elevCm[s1Idx] ?? 0;
+          const s2Elev = elevCm[s2Idx] ?? 0;
           const s1Steep =
             s1Pass &&
-            (steepnessPct(hereElev, s1Elev, false, state.cellCm) > maxSlopePct ||
-              steepnessPct(s1Elev, thereElev, false, state.cellCm) > maxSlopePct);
+            (steepnessPct(hereElev, s1Elev, false, cellCm) > maxSlopePct ||
+              steepnessPct(s1Elev, thereElev, false, cellCm) > maxSlopePct);
           const s2Steep =
             s2Pass &&
-            (steepnessPct(hereElev, s2Elev, false, state.cellCm) > maxSlopePct ||
-              steepnessPct(s2Elev, thereElev, false, state.cellCm) > maxSlopePct);
+            (steepnessPct(hereElev, s2Elev, false, cellCm) > maxSlopePct ||
+              steepnessPct(s2Elev, thereElev, false, cellCm) > maxSlopePct);
           if (s1Steep || s2Steep) continue;
           const s1Open = s1Pass && !s1Steep;
           const s2Open = s2Pass && !s2Steep;
           if (!s1Open && !s2Open) continue;
         }
       } else if (isDiag) {
-        const s1Pass = moveCostForDrive(drive, state.classes[y * w + nx] ?? 0) > 0;
-        const s2Pass = moveCostForDrive(drive, state.classes[ny * w + x] ?? 0) > 0;
+        const s1Pass = moveCostForDrive(drive, classes[y * w + nx] ?? 0) > 0;
+        const s2Pass = moveCostForDrive(drive, classes[ny * w + x] ?? 0) > 0;
         if (!s1Pass && !s2Pass) continue;
       }
 
@@ -1543,7 +1823,11 @@ export function findArenaPath(
  * Exact §5 grade and passability check report (`tacsim::ground::check`).
  */
 export function checkEditorMap(state: EditorMapState): GroundCheckReport {
-  const feeds = editorToPictureFeeds(state, { x: 0, y: 0, headingDeg: 0 });
+  const feeds = editorToPictureFeeds(state, {
+    x: Math.floor(state.width / 2),
+    y: Math.floor(state.height / 2),
+    headingDeg: 0
+  });
   const mapFrame = {
     ...feeds.arenaMap,
     match: 0
@@ -1555,11 +1839,14 @@ export function checkEditorMap(state: EditorMapState): GroundCheckReport {
   const trackedLimit = maxSlopePctForDrive('tracked');
   const wheeledLimit = maxSlopePctForDrive('wheeled');
   const leggedLimit = maxSlopePctForDrive('legged');
+  const classes = state.classes;
+  const elevCm = state.elevCm;
+  const cellCm = state.cellCm;
 
   const isLand = (code: number) => code !== 0 && code !== 4 && code !== 15 && code !== 10;
   let landTotal = 0;
-  for (let i = 0; i < state.classes.length; i++) {
-    if (isLand(state.classes[i] ?? 0)) landTotal++;
+  for (let i = 0; i < classes.length; i++) {
+    if (isLand(classes[i] ?? 0)) landTotal++;
   }
 
   let trackedPctMin = 100;
@@ -1591,7 +1878,7 @@ export function checkEditorMap(state: EditorMapState): GroundCheckReport {
       if (landTotal === 0) return 100;
       let reached = 0;
       for (let i = 0; i < totalCells; i++) {
-        if (flood[i] && isLand(state.classes[i] ?? 0)) reached++;
+        if (flood[i] && isLand(classes[i] ?? 0)) reached++;
       }
       return Math.trunc((reached * 100) / landTotal);
     };
@@ -1654,11 +1941,11 @@ export function checkEditorMap(state: EditorMapState): GroundCheckReport {
   for (let y = 0; y < h; y++) {
     for (let x = 0; x < w; x++) {
       const idx = y * w + x;
-      const cHere = state.classes[idx] ?? 0;
+      const cHere = classes[idx] ?? 0;
       if (cHere === 0) voidCount++;
       const hereRoad = cHere === 7 || cHere === 1;
       const herePass = moveCostForDrive('tracked', cHere) > 0;
-      const hereElev = state.elevCm[idx] ?? 0;
+      const hereElev = elevCm[idx] ?? 0;
 
       for (const [nx, ny] of [
         [x + 1, y],
@@ -1666,9 +1953,9 @@ export function checkEditorMap(state: EditorMapState): GroundCheckReport {
       ] as const) {
         if (nx >= w || ny >= h) continue;
         const nIdx = ny * w + nx;
-        const cThere = state.classes[nIdx] ?? 0;
+        const cThere = classes[nIdx] ?? 0;
         const therePass = moveCostForDrive('tracked', cThere) > 0;
-        const steep = steepnessPct(hereElev, state.elevCm[nIdx] ?? 0, false, state.cellCm);
+        const steep = steepnessPct(hereElev, elevCm[nIdx] ?? 0, false, cellCm);
         if (herePass && therePass && steep > maxGradePct) {
           maxGradePct = steep;
         }
@@ -1687,7 +1974,7 @@ export function checkEditorMap(state: EditorMapState): GroundCheckReport {
     const y1 = Math.max(zone.y0, zone.y1);
     const seeds = zoneSeedCells(state, zone, 'tracked');
     for (const [sx, sy] of seeds) {
-      const hereElev = state.elevCm[sy * w + sx] ?? 0;
+      const hereElev = elevCm[sy * w + sx] ?? 0;
       for (const [dx, dy] of [
         [1, 0],
         [-1, 0],
@@ -1698,7 +1985,7 @@ export function checkEditorMap(state: EditorMapState): GroundCheckReport {
         const ny = sy + dy;
         if (nx < x0 || nx > x1 || ny < y0 || ny > y1) continue;
         if (nx < 0 || nx >= w || ny < 0 || ny >= h) continue;
-        const step = Math.abs(hereElev - (state.elevCm[ny * w + nx] ?? 0));
+        const step = Math.abs(hereElev - (elevCm[ny * w + nx] ?? 0));
         if (step > maxEntryZoneStepCm) {
           maxEntryZoneStepCm = step;
         }
@@ -2194,4 +2481,600 @@ export function despeckleEditorMap(state: EditorMapState, minCells = 3): number[
     markStudioEdited(state);
   }
   return changed;
+}
+
+// ---------------------------------------------------------------------------
+// Power Features: Tank Roster Editor, Hold Objective, & Procedural Presets
+// ---------------------------------------------------------------------------
+
+/**
+ * Re-muster all 12 stock tanks (`red_1..red_6`, `blue_1..blue_6`) onto distinct
+ * passable cells inside their team's `entryZones` and level their 1-step muster
+ * neighborhood to `<= 100 cm`.
+ */
+export function autoMusterTanks(state: EditorMapState): EditorTankDef[] {
+  state.tanks = defaultTanksForZones(state.width, state.height, state.entryZones, state.classes);
+  for (const t of state.tanks) {
+    const baseElev = state.elevCm[t.y * state.width + t.x] ?? 0;
+    for (const [dx, dy] of [
+      [1, 0],
+      [-1, 0],
+      [0, 1],
+      [0, -1]
+    ] as const) {
+      const nx = t.x + dx;
+      const ny = t.y + dy;
+      if (nx < 0 || nx >= state.width || ny < 0 || ny >= state.height) continue;
+      const nIdx = ny * state.width + nx;
+      const ne = state.elevCm[nIdx] ?? 0;
+      if (ne - baseElev > MAX_MUSTER_STEP_CM) {
+        state.elevCm[nIdx] = clampElevationCm(baseElev + MAX_MUSTER_STEP_CM);
+      } else if (baseElev - ne > MAX_MUSTER_STEP_CM) {
+        state.elevCm[nIdx] = clampElevationCm(baseElev - MAX_MUSTER_STEP_CM);
+      }
+    }
+  }
+  markStudioEdited(state);
+  return state.tanks;
+}
+
+/**
+ * Move tank slot `tankIndex` to `(x, y)`, clamping to its team's entry zone
+ * (if present) and requiring a passable tracked cell not occupied by another tank.
+ */
+export function moveTankSlot(
+  state: EditorMapState,
+  tankIndex: number,
+  x: number,
+  y: number
+): boolean {
+  if (state.tanks.length === 0) {
+    state.tanks = defaultTanksForZones(state.width, state.height, state.entryZones, state.classes);
+  }
+  const tank = state.tanks[tankIndex];
+  if (!tank) return false;
+
+  const zone = state.entryZones.find((z) => z.team === tank.team);
+  const minX = zone ? Math.max(0, Math.min(zone.x0, zone.x1)) : 0;
+  const maxX = zone ? Math.min(state.width - 1, Math.max(zone.x0, zone.x1)) : state.width - 1;
+  const minY = zone ? Math.max(0, Math.min(zone.y0, zone.y1)) : 0;
+  const maxY = zone ? Math.min(state.height - 1, Math.max(zone.y0, zone.y1)) : state.height - 1;
+
+  const tx = Math.max(minX, Math.min(maxX, Math.floor(x)));
+  const ty = Math.max(minY, Math.min(maxY, Math.floor(y)));
+  if (tx === tank.x && ty === tank.y) return false;
+
+  const code = state.classes[ty * state.width + tx] ?? 0;
+  if (moveCostForDrive('tracked', code) === 0) return false;
+  if (state.tanks.some((other, idx) => idx !== tankIndex && other.x === tx && other.y === ty)) {
+    return false;
+  }
+
+  tank.x = tx;
+  tank.y = ty;
+  markStudioEdited(state);
+  return true;
+}
+
+/**
+ * Set the opening heading (degrees clockwise from north, `0..359`) of `tankIndex`.
+ */
+export function setTankHeadingDeg(
+  state: EditorMapState,
+  tankIndex: number,
+  headingDeg: number
+): boolean {
+  if (state.tanks.length === 0) {
+    state.tanks = defaultTanksForZones(state.width, state.height, state.entryZones, state.classes);
+  }
+  const tank = state.tanks[tankIndex];
+  if (!tank) return false;
+  const nextMdeg = Math.round((((headingDeg % 360) + 360) % 360) * 1000) % 360000;
+  if (tank.heading_mdeg === nextMdeg) return false;
+  tank.heading_mdeg = nextMdeg;
+  markStudioEdited(state);
+  return true;
+}
+
+/**
+ * Return the active `hold` mode configuration from `state.modes`, or `null` if disabled.
+ */
+export function getHoldObjective(state: EditorMapState): EditorArenaMode | null {
+  return state.modes.find((m) => m.mode === 'hold') ?? null;
+}
+
+/**
+ * Enable, update, or disable the `hold` mode objective in `state.modes`.
+ */
+export function setHoldObjective(
+  state: EditorMapState,
+  config: {
+    enabled: boolean;
+    spot?: string;
+    radius_cells?: number;
+    hold_ms?: number;
+  }
+): EditorArenaMode | null {
+  if (!config.enabled) {
+    if (state.modes.length > 0) {
+      state.modes = [];
+      markStudioEdited(state);
+    }
+    return null;
+  }
+  const current = getHoldObjective(state);
+  const fallbackSpot = state.keySpots[1]?.name ?? state.keySpots[0]?.name ?? 'The Crossroads';
+  const spot = config.spot ?? current?.spot ?? fallbackSpot;
+  const radiusCells = Math.max(
+    1,
+    Math.min(32, Math.round(config.radius_cells ?? current?.radius_cells ?? 6))
+  );
+  const holdMs = Math.max(
+    10_000,
+    Math.min(600_000, Math.round(config.hold_ms ?? current?.hold_ms ?? 120_000))
+  );
+  const nextMode: EditorArenaMode = {
+    mode: 'hold',
+    spot,
+    radius_cells: radiusCells,
+    hold_ms: holdMs
+  };
+  state.modes = [nextMode];
+  markStudioEdited(state);
+  return nextMode;
+}
+
+const PG_RIVER: [number, number] = [62, 66];
+const PG_FORD: [number, number] = [92, 102];
+const PG_ROAD_EW: [number, number] = [96, 98];
+const PG_ROAD_NS: [number, number] = [128, 130];
+const PG_BUILDINGS: readonly [number, number, number, number][] = [
+  [150, 170, 36, 52],
+  [96, 116, 186, 202],
+  [200, 216, 140, 156]
+];
+const PG_WOODS_LIGHT: readonly [number, number, number, number][] = [
+  [20, 58, 150, 200],
+  [160, 210, 40, 80]
+];
+const PG_WOODS_HEAVY: readonly [number, number, number, number][] = [
+  [30, 48, 165, 185],
+  [175, 193, 50, 70]
+];
+const PG_RUBBLE: readonly [number, number, number, number][] = [[100, 112, 60, 72]];
+const PG_BARE: readonly [number, number, number, number][] = [
+  [210, 255, 0, 36],
+  [0, 40, 0, 24]
+];
+const PG_BLUFF_TOP: [number, number, number, number] = [141, 147, 105, 118];
+const PG_BLUFF_TOP_CM = 500;
+const PG_BLUFF_RAMP: readonly [[number, number, number, number], number][] = [
+  [[141, 146, 119, 119], 270],
+  [[141, 146, 120, 120], 40]
+];
+const PG_V3_CORRIDOR: [number, number] = [86, 108];
+const PG_V3_BLEND = 14.0;
+const PG_V3_BLUFF_KEEP: [number, number, number, number] = [136, 152, 100, 125];
+const PG_V3_BOWL: [number, number, number] = [88.0, 36.0, 18.0];
+const PG_V3_SIGNAL_HILL: [number, number] = [185.0, 215.0];
+
+function withinBox(x: number, y: number, b: readonly [number, number, number, number]): boolean {
+  return x >= b[0] && x <= b[1] && y >= b[2] && y <= b[3];
+}
+
+function smoothstep01(t: number): number {
+  const c = Math.max(0, Math.min(1, t));
+  return c * c * (3 - 2 * c);
+}
+
+function sqNum(v: number): number {
+  return v * v;
+}
+
+function gauss2d(dx: number, dy: number, sigma: number): number {
+  return Math.exp(-(dx * dx + dy * dy) / (2 * sigma * sigma));
+}
+
+function boxDist(x: number, y: number, b: readonly [number, number, number, number]): number {
+  const dx = Math.max(0, b[0] - x, x - b[1]);
+  const dy = Math.max(0, b[2] - y, y - b[3]);
+  return Math.max(dx, dy);
+}
+
+function pgClassAt256(x: number, y: number): TerrainClassCode {
+  for (const b of PG_BUILDINGS) {
+    if (withinBox(x, y, b)) {
+      const doorX = Math.floor((b[0] + b[1]) / 2);
+      if (y === b[2] && x === doorX) return 11; // door
+      if (x === b[0] || x === b[1] || y === b[2] || y === b[3]) return 10; // wall
+      return 5; // floor
+    }
+  }
+  if (x >= PG_RIVER[0] && x <= PG_RIVER[1]) {
+    return y >= PG_FORD[0] && y <= PG_FORD[1] ? 4 : 15; // water : water_deep
+  }
+  if ((y >= PG_ROAD_EW[0] && y <= PG_ROAD_EW[1]) || (x >= PG_ROAD_NS[0] && x <= PG_ROAD_NS[1])) {
+    return 7; // road
+  }
+  for (const p of PG_WOODS_HEAVY) {
+    if (withinBox(x, y, p)) return 14;
+  }
+  for (const p of PG_WOODS_LIGHT) {
+    if (withinBox(x, y, p)) return 13;
+  }
+  for (const p of PG_RUBBLE) {
+    if (withinBox(x, y, p)) return 6;
+  }
+  for (const p of PG_BARE) {
+    if (withinBox(x, y, p)) return 2;
+  }
+  return 3; // grass
+}
+
+function pgV3Features(fx: number, fy: number): number {
+  const highlands =
+    3500 *
+    smoothstep01((fy - 118) / 45) *
+    (0.65 + 0.35 * Math.sin(fx / 19) * Math.cos(fy / 15));
+  const signal = 8000 * gauss2d(fx - PG_V3_SIGNAL_HILL[0], fy - PG_V3_SIGNAL_HILL[1], 20);
+  const knoll = 4500 * gauss2d(fx - 40, fy - 225, 16);
+  const hills =
+    3000 * gauss2d(fx - 205, fy - 128, 12) +
+    3500 * gauss2d(fx - 28, fy - 58, 14) +
+    4000 * gauss2d(fx - 228, fy - 188, 15);
+  const [bx, by, rim] = PG_V3_BOWL;
+  const r = Math.hypot(fx - bx, fy - by);
+  const bowl =
+    r < rim ? -1200 + 3200 * (r / rim) * (r / rim) : 2000 * Math.exp(-sqNum((r - rim) / 9));
+  const valley = -1200 * Math.exp(-sqNum((fx - 64) / 16));
+  const spine =
+    2000 *
+    Math.exp(-sqNum((fy - 66) / 6)) *
+    smoothstep01((fx - 180) / 12) *
+    smoothstep01((240 - fx) / 12);
+  const shelf =
+    2500 *
+    smoothstep01((fx - 206) / 12) *
+    smoothstep01((254 - fx) / 12) *
+    smoothstep01((fy + 2) / 12) *
+    smoothstep01((36 - fy) / 12);
+  return highlands + signal + knoll + hills + bowl + valley + spine + shelf;
+}
+
+function pgElevV3At256(x: number, y: number): number {
+  if (withinBox(x, y, PG_BLUFF_TOP)) return PG_BLUFF_TOP_CM;
+  for (const [b, rampCm] of PG_BLUFF_RAMP) {
+    if (withinBox(x, y, b)) return rampCm;
+  }
+  const raw =
+    200 * Math.sin(x / 40) + 150 * Math.cos(y / 55) + 100 * Math.sin((x + y) / 70);
+  let base = Math.round(raw / 100) * 100;
+  const cls = pgClassAt256(x, y);
+  if (cls === 4 || cls === 15) base -= 200;
+
+  const corridor = Math.max(0, PG_V3_CORRIDOR[0] - y, y - PG_V3_CORRIDOR[1]);
+  const road = Math.abs(x - (PG_ROAD_NS[0] + 1)) - 1;
+  const keep = Math.min(corridor, Math.max(0, road), boxDist(x, y, PG_V3_BLUFF_KEEP));
+  const w = smoothstep01(keep / PG_V3_BLEND);
+  let feature = pgV3Features(x, y);
+  for (const b of PG_BUILDINGS) {
+    const near = boxDist(x, y, [Math.max(0, b[0] - 2), b[1] + 2, Math.max(0, b[2] - 2), b[3] + 2]);
+    const pad = pgV3Features((b[0] + b[1]) / 2, (b[2] + b[3]) / 2);
+    const t = smoothstep01(near / 6);
+    feature = pad + (feature - pad) * t;
+  }
+  return clampElevationCm(Math.round((base + w * feature) / 10) * 10);
+}
+
+/**
+ * Procedurally generate a complete 256×256 `EditorMapState` for any of the 4 doc 30
+ * generator presets (`proving_ground`, `mars_canyon`, `lunar_crater`, `ice_shelf`),
+ * matching `tacsim::ground::generate` (doc 30 §4, §9, D-30-9).
+ */
+export function generatePresetMap(
+  preset: GeneratorPresetName,
+  seed = 2350
+): EditorMapState {
+  const SIDE = 256;
+  const classes = new Uint8Array(SIDE * SIDE);
+  const elevCm = new Int16Array(SIDE * SIDE);
+
+  const entryZones: EditorEntryZone[] = [
+    { team: 'red', x0: 0, y0: 0, x1: 15, y1: 255 },
+    { team: 'blue', x0: 240, y0: 0, x1: 255, y1: 255 }
+  ];
+  const keySpots: EditorKeySpot[] = [
+    { name: 'The Ford', x: 64, y: 97 },
+    { name: 'The Crossroads', x: 129, y: 97 },
+    { name: 'North Barn', x: 106, y: 194 },
+    { name: 'East Compound', x: 208, y: 148 },
+    { name: 'The Bluff', x: 144, y: 111 }
+  ];
+  const waypoints: EditorWaypointGraph = {
+    nodes: [
+      { id: 'ew_008', x: 8, y: 97 },
+      { id: 'ew_032', x: 32, y: 97 },
+      { id: 'ew_056', x: 56, y: 97 },
+      { id: 'ew_064', x: 64, y: 97 },
+      { id: 'ew_080', x: 80, y: 97 },
+      { id: 'ew_104', x: 104, y: 97 },
+      { id: 'xroads', x: 129, y: 97 },
+      { id: 'ew_152', x: 152, y: 97 },
+      { id: 'ew_176', x: 176, y: 97 },
+      { id: 'ew_200', x: 200, y: 97 },
+      { id: 'ew_224', x: 224, y: 97 },
+      { id: 'ew_248', x: 248, y: 97 },
+      { id: 'ns_008', x: 129, y: 8 },
+      { id: 'ns_032', x: 129, y: 32 },
+      { id: 'ns_056', x: 129, y: 56 },
+      { id: 'ns_080', x: 129, y: 80 },
+      { id: 'ns_120', x: 129, y: 120 },
+      { id: 'ns_144', x: 129, y: 144 },
+      { id: 'ns_168', x: 129, y: 168 },
+      { id: 'ns_192', x: 129, y: 192 },
+      { id: 'ns_216', x: 129, y: 216 },
+      { id: 'ns_248', x: 129, y: 248 },
+      { id: 'barn', x: 106, y: 194 },
+      { id: 'compound', x: 208, y: 148 },
+      { id: 'muster_red', x: 6, y: 105 },
+      { id: 'muster_blue', x: 249, y: 105 }
+    ],
+    edges: [
+      ['ew_008', 'ew_032'],
+      ['ew_032', 'ew_056'],
+      ['ew_056', 'ew_064'],
+      ['ew_064', 'ew_080'],
+      ['ew_080', 'ew_104'],
+      ['ew_104', 'xroads'],
+      ['xroads', 'ew_152'],
+      ['ew_152', 'ew_176'],
+      ['ew_176', 'ew_200'],
+      ['ew_200', 'ew_224'],
+      ['ew_224', 'ew_248'],
+      ['ns_008', 'ns_032'],
+      ['ns_032', 'ns_056'],
+      ['ns_056', 'ns_080'],
+      ['ns_080', 'xroads'],
+      ['xroads', 'ns_120'],
+      ['ns_120', 'ns_144'],
+      ['ns_144', 'ns_168'],
+      ['ns_168', 'ns_192'],
+      ['ns_192', 'ns_216'],
+      ['ns_216', 'ns_248'],
+      ['ns_192', 'barn'],
+      ['ew_200', 'compound'],
+      ['ew_008', 'muster_red'],
+      ['ew_248', 'muster_blue']
+    ]
+  };
+  const modes: EditorArenaMode[] = [
+    { mode: 'hold', spot: 'The Crossroads', radius_cells: 6, hold_ms: 120_000 }
+  ];
+  const tanks: EditorTankDef[] = [
+    { id: 'red_1', name: 'Red Tank 1', team: 'red', x: 6, y: 97, heading_mdeg: 90_000, unit: 'tacsim.unit.line_tank' },
+    { id: 'red_2', name: 'Red Tank 2', team: 'red', x: 6, y: 95, heading_mdeg: 90_000, unit: 'tacsim.unit.line_tank' },
+    { id: 'red_3', name: 'Red Tank 3', team: 'red', x: 6, y: 99, heading_mdeg: 90_000, unit: 'tacsim.unit.line_tank' },
+    { id: 'red_4', name: 'Red Tank 4', team: 'red', x: 6, y: 93, heading_mdeg: 90_000, unit: 'tacsim.unit.line_tank' },
+    { id: 'blue_1', name: 'Blue Tank 1', team: 'blue', x: 249, y: 97, heading_mdeg: 270_000, unit: 'tacsim.unit.line_tank' },
+    { id: 'blue_2', name: 'Blue Tank 2', team: 'blue', x: 249, y: 95, heading_mdeg: 270_000, unit: 'tacsim.unit.line_tank' },
+    { id: 'blue_3', name: 'Blue Tank 3', team: 'blue', x: 249, y: 99, heading_mdeg: 270_000, unit: 'tacsim.unit.line_tank' },
+    { id: 'blue_4', name: 'Blue Tank 4', team: 'blue', x: 249, y: 93, heading_mdeg: 270_000, unit: 'tacsim.unit.line_tank' },
+    { id: 'red_5', name: 'Red Tank 5', team: 'red', x: 6, y: 101, heading_mdeg: 90_000, unit: 'tacsim.unit.line_tank' },
+    { id: 'red_6', name: 'Red Tank 6', team: 'red', x: 4, y: 94, heading_mdeg: 90_000, unit: 'tacsim.unit.line_tank' },
+    { id: 'blue_5', name: 'Blue Tank 5', team: 'blue', x: 249, y: 101, heading_mdeg: 270_000, unit: 'tacsim.unit.line_tank' },
+    { id: 'blue_6', name: 'Blue Tank 6', team: 'blue', x: 251, y: 94, heading_mdeg: 270_000, unit: 'tacsim.unit.line_tank' }
+  ];
+
+  if (preset === 'proving_ground') {
+    for (let y = 0; y < SIDE; y++) {
+      for (let x = 0; x < SIDE; x++) {
+        const idx = y * SIDE + x;
+        classes[idx] = pgClassAt256(x, y);
+        elevCm[idx] = pgElevV3At256(x, y);
+      }
+    }
+    return {
+      id: 'proving_ground',
+      label: 'The Proving Ground',
+      biome: 'temperate',
+      body: 'luna',
+      width: SIDE,
+      height: SIDE,
+      cellCm: 1000,
+      originM: [20_000, 20_000],
+      classes,
+      elevCm,
+      keySpots,
+      entryZones,
+      waypoints,
+      modes,
+      tanks,
+      atlasVersion: 3,
+      arenaVersion: 5,
+      provenance: {
+        source: 'generator',
+        version: 'v3',
+        seed: 2350
+      },
+      note: 'Generated proving_ground (v3, seed 2350)'
+    };
+  }
+
+  const meta = GENERATOR_PRESETS.find((p) => p.id === preset)!;
+  const biome = meta.biome;
+  const cleanSeed = Math.max(0, Math.floor(seed));
+  const phase = (cleanSeed % 10_000) * 0.017_453_292_519_943_295;
+  const shiftX = 6.0 * Math.sin(phase);
+  const shiftY = 6.0 * Math.cos(phase * 1.3);
+  const roadClass: TerrainClassCode = biome === 'lunar' ? 1 : 7;
+
+  for (let y = 0; y < SIDE; y++) {
+    for (let x = 0; x < SIDE; x++) {
+      const idx = y * SIDE + x;
+      let cls: TerrainClassCode;
+      if (withinBox(x, y, PG_BLUFF_TOP)) {
+        cls = biome === 'mars' ? 8 : biome === 'lunar' ? 17 : 16;
+      } else if (PG_BLUFF_RAMP.some(([b]) => withinBox(x, y, b))) {
+        cls = 2;
+      } else {
+        const bldg = PG_BUILDINGS.find((b) => withinBox(x, y, b));
+        if (bldg) {
+          const doorX = Math.floor((bldg[0] + bldg[1]) / 2);
+          if (y === bldg[2] && x === doorX) cls = 11;
+          else if (x === bldg[0] || x === bldg[1] || y === bldg[2] || y === bldg[3]) cls = 10;
+          else cls = 5;
+        } else if (
+          (y >= PG_ROAD_EW[0] && y <= PG_ROAD_EW[1]) ||
+          (x >= PG_ROAD_NS[0] && x <= PG_ROAD_NS[1]) ||
+          (x >= 106 && x <= 128 && y >= 184 && y <= 185) ||
+          (x >= 207 && x <= 209 && y >= 99 && y <= 139)
+        ) {
+          cls = roadClass;
+        } else if (x >= PG_RIVER[0] && x <= PG_RIVER[1]) {
+          if (y >= PG_FORD[0] && y <= PG_FORD[1]) {
+            cls = biome === 'ice' ? 16 : 2;
+          } else {
+            cls = biome === 'ice' ? 15 : 2;
+          }
+        } else {
+          const n =
+            Math.sin((x + shiftX) * 0.09 + phase) * Math.cos((y + shiftY) * 0.08 - phase * 0.5) +
+            0.5 * Math.sin((x - y) * 0.05 + phase);
+          const distRoad = Math.min(Math.abs(x - 129), Math.abs(y - 97));
+          const inEntry = x <= 18 || x >= 237;
+          if (!inEntry && distRoad >= 8 && withinBox(x, y, PG_RUBBLE[0]!)) {
+            cls = 6;
+          } else if (
+            !inEntry &&
+            distRoad >= 10 &&
+            (withinBox(x, y, [24, 52, 156, 192]) || withinBox(x, y, [168, 202, 46, 74]))
+          ) {
+            cls = n > 0.35 ? 6 : 9;
+          } else if (biome === 'mars') {
+            cls = n > 0.45 ? 17 : n < -0.35 ? 2 : 8;
+          } else if (biome === 'lunar') {
+            cls = n > 0.3 ? 2 : 17;
+          } else {
+            cls = n > 0.35 ? 2 : 16;
+          }
+        }
+      }
+      classes[idx] = cls;
+
+      if (withinBox(x, y, PG_BLUFF_TOP)) {
+        elevCm[idx] = PG_BLUFF_TOP_CM;
+        continue;
+      }
+      const rampHit = PG_BLUFF_RAMP.find(([b]) => withinBox(x, y, b));
+      if (rampHit) {
+        elevCm[idx] = rampHit[1];
+        continue;
+      }
+
+      const edgeDist = Math.min(Math.max(0, x - 15), Math.max(0, 240 - x));
+      const edgeW = smoothstep01(edgeDist / 16);
+      const corridor = Math.max(0, PG_V3_CORRIDOR[0] - y, y - PG_V3_CORRIDOR[1]);
+      const roadNs = Math.abs(x - (PG_ROAD_NS[0] + 1)) - 1;
+      const spurBarn = boxDist(x, y, [104, 130, 182, 204]);
+      const spurComp = boxDist(x, y, [198, 218, 96, 158]);
+      const keep = Math.min(
+        corridor,
+        Math.max(0, roadNs),
+        spurBarn,
+        spurComp,
+        boxDist(x, y, PG_V3_BLUFF_KEEP)
+      );
+      const w = smoothstep01(keep / PG_V3_BLEND) * edgeW;
+      const baseWave =
+        edgeW * (160 * Math.sin((x + shiftX) / 42) + 120 * Math.cos((y + shiftY) / 52));
+
+      let feature: number;
+      if (biome === 'mars') {
+        const wadi = -450 * Math.exp(-sqNum((x - 64) / 11));
+        const northShelf = 3200 * smoothstep01((y - 122) / 36);
+        const southShelf = 2200 * smoothstep01((72 - y) / 28);
+        const spurPeak = 6200 * gauss2d(x - (184 + shiftX * 0.5), y - (214 + shiftY * 0.5), 22);
+        const craterR = Math.hypot(x - 88, y - 38);
+        const crater =
+          craterR < 16
+            ? -900 + 2200 * sqNum(craterR / 16)
+            : 1300 * Math.exp(-sqNum((craterR - 16) / 8));
+        feature = wadi + northShelf + southShelf + spurPeak + crater;
+      } else if (biome === 'lunar') {
+        const r1 = Math.hypot(x - (86 + shiftX * 0.4), y - (40 + shiftY * 0.4));
+        const c1 =
+          r1 < 18 ? -1100 + 2900 * sqNum(r1 / 18) : 1800 * Math.exp(-sqNum((r1 - 18) / 8.5));
+        const r2 = Math.hypot(x - (182 - shiftX * 0.4), y - (210 - shiftY * 0.4));
+        const c2 =
+          r2 < 22
+            ? -1200 + 3600 * sqNum(r2 / 22) + 1400 * gauss2d(x - 182, y - 210, 5)
+            : 2400 * Math.exp(-sqNum((r2 - 22) / 9.5));
+        const highlands = 2800 * smoothstep01((y - 135) / 42);
+        feature = c1 + c2 + highlands;
+      } else {
+        const shelf = 2900 * smoothstep01((y - 125) / 40);
+        const lead = -380 * Math.exp(-sqNum((x - 64) / 10));
+        const ridgeA =
+          2400 *
+          Math.exp(-sqNum((y - 58 - 5 * Math.sin(x / 24)) / 9)) *
+          smoothstep01((x - 30) / 14) *
+          smoothstep01((225 - x) / 14);
+        const dome = 5200 * gauss2d(x - (186 + shiftX * 0.4), y - (214 + shiftY * 0.4), 21);
+        feature = shelf + lead + ridgeA + dome;
+      }
+
+      for (const b of PG_BUILDINGS) {
+        const near = boxDist(x, y, [
+          Math.max(0, b[0] - 2),
+          b[1] + 2,
+          Math.max(0, b[2] - 2),
+          b[3] + 2
+        ]);
+        feature *= smoothstep01(near / 6);
+      }
+      elevCm[idx] =
+        x <= 15 || x >= 240 ? 0 : clampElevationCm(Math.round((baseWave + w * feature) / 10) * 10);
+    }
+  }
+
+  const originM: [number, number] =
+    biome === 'mars' ? [40_000, 40_000] : biome === 'lunar' ? [50_000, 50_000] : [60_000, 60_000];
+
+  const state: EditorMapState = {
+    id: preset,
+    label:
+      preset === 'mars_canyon'
+        ? 'Mars Canyon'
+        : preset === 'lunar_crater'
+          ? 'Lunar Crater'
+          : 'Ice Shelf',
+    biome,
+    body: meta.body,
+    width: SIDE,
+    height: SIDE,
+    cellCm: 1000,
+    originM,
+    classes,
+    elevCm,
+    keySpots,
+    entryZones,
+    waypoints,
+    modes,
+    tanks,
+    atlasVersion: 1,
+    arenaVersion: 1,
+    provenance: {
+      source: 'generator',
+      version: 'v1',
+      seed: cleanSeed
+    },
+    note: ''
+  };
+  despeckleEditorMap(state, 3);
+  state.provenance = {
+    source: 'generator',
+    version: 'v1',
+    seed: cleanSeed
+  };
+  return state;
 }

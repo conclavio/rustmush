@@ -4386,7 +4386,7 @@ fn probe_squad_brief() -> tacsim::deliberation::SquadBrief {
     use tacsim::deliberation::{BriefMember, SquadBrief, SquadId};
     SquadBrief {
         squad: SquadId {
-            team: tacsim::arena::state::Team::Red,
+            team: tacsim::arena::state::PartyId::RED,
             index: 1,
         },
         match_id: 7,
@@ -4394,7 +4394,7 @@ fn probe_squad_brief() -> tacsim::deliberation::SquadBrief {
         // 17b cut L.1: the squad's lance-leader, never in the prompt.
         leader: tacsim::deliberation::CharacterRef::Persona {
             squad: SquadId {
-                team: tacsim::arena::state::Team::Red,
+                team: tacsim::arena::state::PartyId::RED,
                 index: 1,
             },
         },

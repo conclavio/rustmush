@@ -1,6 +1,6 @@
 //! **The resolution and the damage, through `Arena::step`** (16b cut W.2, W2 and
 //! W3; doc 16 §3.5 "Resolution", "Acceptance and cost", "Scheduled impact" and
-//! "Damage", §3.3 "A wreck", "Facet attribution" and "Silhouette", §3.8 "Team
+//! "Damage", §3.3 "A wreck", "Facet attribution" and "Silhouette", §3.8 "PartyId
 //! elimination", §3.1 "Custody").
 //!
 //! Twenty-nine tests. Twenty-eight drive the library directly — no host, no store,
@@ -89,7 +89,7 @@ use tacsim::arena::resolution::{BandProfile, Consequence, SectionProfile, UnitPr
 use tacsim::arena::rng::{DrawLabel, draw_contact_id, draw_permille};
 use tacsim::arena::state::{
     Arena, ArenaDefinition, ArenaTerrain, Classification, ContactId, CustodyOut, CustodyUnit,
-    EndReason, EntryZone, OwnSighting, Pilot, Power, SeenPose, ShadowContact, Side, Team,
+    EndReason, EntryZone, OwnSighting, PartyId, Pilot, Power, SeenPose, ShadowContact, Side,
     TerrainCell, TrackedRules, WeaponSummary,
 };
 use tacsim::arena::step::StepOutput;
@@ -381,14 +381,14 @@ fn definition(paint: &[(u16, u16, TerrainCell)]) -> ArenaDefinition {
         terrain: ArenaTerrain::new(SIDE, SIDE, CELL_CM, cells).expect("the test window"),
         entry_zones: vec![
             EntryZone {
-                team: Team::Red,
+                team: PartyId::RED,
                 x0: 0,
                 y0: 0,
                 x1: 1,
                 y1: SIDE - 1,
             },
             EntryZone {
-                team: Team::Blue,
+                team: PartyId::BLUE,
                 x0: SIDE - 2,
                 y0: 0,
                 x1: SIDE - 1,
@@ -480,7 +480,7 @@ fn machine_gun() -> WeaponSummary {
 }
 
 /// One stock tank with `weapons`.
-fn tank(id: ObjId, team: Team, pose: Pose, weapons: Vec<WeaponSummary>) -> CustodyUnit {
+fn tank(id: ObjId, team: PartyId, pose: Pose, weapons: Vec<WeaponSummary>) -> CustodyUnit {
     CustodyUnit {
         id,
         team,
@@ -538,6 +538,7 @@ fn arena_of(
             resolution: tacsim::match_::stock_resolution(),
             seed: SEED,
             mode: tacsim::arena::MatchMode::Skirmish,
+            host: tacsim::arena::FieldHost::all_hostile(),
         },
         &ArenaConfig::default(),
         match_cfg,
@@ -566,13 +567,13 @@ fn duel() -> Arena {
         vec![
             tank(
                 RED,
-                Team::Red,
+                PartyId::RED,
                 centre(RED_CELL.0, RED_CELL.1),
                 vec![cannon()],
             ),
             tank(
                 BLUE,
-                Team::Blue,
+                PartyId::BLUE,
                 centre(BLUE_CELL.0, BLUE_CELL.1),
                 Vec::new(),
             ),
@@ -713,7 +714,9 @@ fn hold(arena: &mut Arena, viewer: ObjId, target: ObjId) -> ContactId {
         id,
         ShadowContact::sighted(
             target,
-            Classification::Classified { team: Team::Blue },
+            Classification::Classified {
+                party: PartyId::BLUE,
+            },
             now,
             plot_of(arena, target),
         ),
@@ -1296,13 +1299,13 @@ fn a_shot_at_a_target_behind_full_cover_costs_a_round_and_a_cycle_and_misses_cov
         vec![
             tank(
                 RED,
-                Team::Red,
+                PartyId::RED,
                 centre(RED_CELL.0, RED_CELL.1),
                 vec![cannon()],
             ),
             tank(
                 BLUE,
-                Team::Blue,
+                PartyId::BLUE,
                 centre(BLUE_CELL.0, BLUE_CELL.1),
                 Vec::new(),
             ),
@@ -1777,13 +1780,13 @@ fn a_turret_shot_off_takes_the_weapons_and_an_immobile_disarmed_tank_is_disabled
         vec![
             tank(
                 RED,
-                Team::Red,
+                PartyId::RED,
                 centre(RED_CELL.0, RED_CELL.1),
                 vec![cannon()],
             ),
             tank(
                 BLUE,
-                Team::Blue,
+                PartyId::BLUE,
                 centre(BLUE_CELL.0, BLUE_CELL.1),
                 vec![machine_gun()],
             ),
@@ -1879,11 +1882,11 @@ fn a_turret_shot_off_takes_the_weapons_and_an_immobile_disarmed_tank_is_disabled
         "and it is said once: {journal:?}"
     );
     // Which is doc 16 §3.8's elimination, because blue was the whole blue side.
-    assert_eq!(arena.eliminated(), Some(Some(Team::Red)));
+    assert_eq!(arena.eliminated(), Some(Some(PartyId::RED)));
 }
 
 // ---------------------------------------------------------------------------
-// (i) Team elimination ends the match
+// (i) PartyId elimination ends the match
 // ---------------------------------------------------------------------------
 
 #[test]
@@ -1897,13 +1900,13 @@ fn team_elimination_ends_the_match_with_the_winner() {
     let mut journal = Vec::new();
     let now = arena.now_ms;
     arena.destroy_unit(BLUE, now, None, &mut journal);
-    assert_eq!(arena.eliminated(), Some(Some(Team::Red)));
+    assert_eq!(arena.eliminated(), Some(Some(PartyId::RED)));
     let out = pulse(&mut arena, wall + 500, &[], &mut bytes);
     let end = out.ended.unwrap_or_else(|| panic!("the match ended"));
     assert_eq!(
         end.reason,
         EndReason::Elimination {
-            winner: Some(Team::Red)
+            winner: Some(PartyId::RED)
         }
     );
     let log = events(&mut arena, &mut bytes);
@@ -1912,7 +1915,7 @@ fn team_elimination_ends_the_match_with_the_winner() {
             event.kind,
             EventKind::MatchEnded {
                 reason: EndReason::Elimination {
-                    winner: Some(Team::Red)
+                    winner: Some(PartyId::RED)
                 }
             }
         )),
@@ -2082,13 +2085,13 @@ fn scripted_arena() -> Arena {
         vec![
             tank(
                 RED,
-                Team::Red,
+                PartyId::RED,
                 centre(RED_CELL.0, RED_CELL.1),
                 vec![cannon()],
             ),
             tank(
                 BLUE,
-                Team::Blue,
+                PartyId::BLUE,
                 centre(BLUE_CELL.0, BLUE_CELL.1),
                 Vec::new(),
             ),
@@ -2124,7 +2127,9 @@ fn scripted_arena() -> Arena {
             }),
             ..ShadowContact::sighted(
                 BLUE,
-                Classification::Classified { team: Team::Blue },
+                Classification::Classified {
+                    party: PartyId::BLUE,
+                },
                 0,
                 plot_of(&arena, BLUE),
             )
@@ -2174,7 +2179,7 @@ fn one_scripted_engagement_at_three_cadences_is_one_hit_sequence() {
     assert_eq!(
         first.ended,
         Some(EndReason::Elimination {
-            winner: Some(Team::Red)
+            winner: Some(PartyId::RED)
         }),
         "the blue side was eliminated"
     );
@@ -2221,13 +2226,13 @@ fn held_and_refused_arena() -> Arena {
         vec![
             tank(
                 RED,
-                Team::Red,
+                PartyId::RED,
                 centre(RED_CELL.0, RED_CELL.1),
                 vec![cannon()],
             ),
             tank(
                 BLUE,
-                Team::Blue,
+                PartyId::BLUE,
                 centre(BLUE_CELL.0, BLUE_CELL.1),
                 Vec::new(),
             ),
@@ -2617,13 +2622,13 @@ fn a_miss_carries_the_ledgers_own_reason_in_plain_words() {
         vec![
             tank(
                 RED,
-                Team::Red,
+                PartyId::RED,
                 centre(RED_CELL.0, RED_CELL.1),
                 vec![cannon()],
             ),
             tank(
                 BLUE,
-                Team::Blue,
+                PartyId::BLUE,
                 centre(BLUE_CELL.0, BLUE_CELL.1),
                 Vec::new(),
             ),
@@ -3194,11 +3199,11 @@ fn each_weapon_carries_its_own_chance_and_the_lock_quotes_the_one_fire_would_tak
         vec![
             tank(
                 RED,
-                Team::Red,
+                PartyId::RED,
                 centre(RED_CELL.0, 1),
                 vec![cannon(), machine_gun()],
             ),
-            tank(BLUE, Team::Blue, centre(RED_CELL.0, 13), Vec::new()),
+            tank(BLUE, PartyId::BLUE, centre(RED_CELL.0, 13), Vec::new()),
         ],
         &[],
         &match_cfg(),
@@ -3302,7 +3307,9 @@ fn two_locks_in_one_pulse_each_name_their_own_contact() {
         second,
         ShadowContact::sighted(
             BLUE,
-            Classification::Classified { team: Team::Blue },
+            Classification::Classified {
+                party: PartyId::BLUE,
+            },
             now,
             plot_of(&arena, BLUE),
         ),
@@ -3356,7 +3363,7 @@ fn the_shooter_is_told_when_the_round_finishes_the_target() {
     assert_eq!(
         run.ended,
         Some(EndReason::Elimination {
-            winner: Some(Team::Red)
+            winner: Some(PartyId::RED)
         }),
         "the script kills the blue tank"
     );
@@ -4177,7 +4184,7 @@ fn meshed_trio() -> Arena {
                 sensor: Some(scan_sight()),
                 ..tank(
                     RED,
-                    Team::Red,
+                    PartyId::RED,
                     centre(RED_CELL.0, RED_CELL.1),
                     vec![cannon()],
                 )
@@ -4185,7 +4192,7 @@ fn meshed_trio() -> Arena {
             .sealed(),
             tank(
                 BLUE,
-                Team::Blue,
+                PartyId::BLUE,
                 centre(BLUE_CELL.0, BLUE_CELL.1),
                 Vec::new(),
             ),
@@ -4195,7 +4202,7 @@ fn meshed_trio() -> Arena {
                 sensor: None,
                 ..tank(
                     MATE,
-                    Team::Red,
+                    PartyId::RED,
                     centre(RED_CELL.0 - 1, RED_CELL.1),
                     Vec::new(),
                 )
@@ -4386,8 +4393,9 @@ fn one_meshed_engagement_at_three_cadences_is_one_set_of_gunners_words_and_readi
 
     // ---- the run really carried the five things this cut moved -------------
 
-    // 1. The section word, on a contact the shooter has told apart.
-    let named = "BA";
+    // 1. The section word, on a contact the shooter has told apart — named by
+    //    the callsign the arena drew for the target at check-out (doc 32 CF.0).
+    let named = callsign(&meshed_trio(), BLUE);
     assert!(
         shooter
             .iter()
@@ -4937,19 +4945,19 @@ fn d2_arena() -> Arena {
         vec![
             tank(
                 RED,
-                Team::Red,
+                PartyId::RED,
                 centre(RED_CELL.0, RED_CELL.1),
                 vec![cannon(), machine_gun()],
             ),
             tank(
                 BLUE,
-                Team::Blue,
+                PartyId::BLUE,
                 centre(BLUE_CELL.0, BLUE_CELL.1),
                 Vec::new(),
             ),
             tank(
                 GREY,
-                Team::Blue,
+                PartyId::BLUE,
                 centre(GREY_CELL.0, GREY_CELL.1),
                 Vec::new(),
             ),
@@ -4988,7 +4996,9 @@ fn d2_arena() -> Arena {
                 }),
                 ..ShadowContact::sighted(
                     target,
-                    Classification::Classified { team: Team::Blue },
+                    Classification::Classified {
+                        party: PartyId::BLUE,
+                    },
                     0,
                     plot,
                 )
@@ -5221,9 +5231,8 @@ fn d2_the_refusals_the_wreck_and_the_spent_section_are_one_list_at_three_cadence
     );
     // The victim's own line names nothing but his own tank.
     assert!(
-        !victim
-            .iter()
-            .any(|line| line.contains("already destroyed") && line.contains("BA")),
+        !victim.iter().any(|line| line.contains("already destroyed")
+            && line.contains(&callsign(&d2_arena(), BLUE))),
         "{victim:?}"
     );
     // And the first round on a FRESH section still says what it always did.
@@ -5270,13 +5279,13 @@ fn unidentified_gunner_arena(spend: bool) -> Arena {
         vec![
             tank(
                 RED,
-                Team::Red,
+                PartyId::RED,
                 centre(RED_CELL.0, RED_CELL.1),
                 vec![cannon()],
             ),
             tank(
                 BLUE,
-                Team::Blue,
+                PartyId::BLUE,
                 centre(BLUE_CELL.0, BLUE_CELL.1),
                 Vec::new(),
             ),
@@ -5617,7 +5626,7 @@ fn m4_both_tracks_shot_off_stop_the_tank_at_three_cadences() {
     assert_eq!(
         first.ended,
         Some(EndReason::Elimination {
-            winner: Some(Team::Red)
+            winner: Some(PartyId::RED)
         }),
         "and the blue side is eliminated"
     );

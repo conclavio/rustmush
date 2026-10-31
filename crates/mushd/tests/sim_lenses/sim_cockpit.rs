@@ -651,13 +651,22 @@ async fn a_pilot_who_types_fire_then_exit_in_one_burst_fires_nothing() {
     say(&mut bo, "STARTUP", "Startup sequence").await;
     wait_for_notice(&mut ada, ada_up, "Power online.").await;
     wait_for_notice(&mut bo, bo_up, "Power online.").await;
-    wait_for_contact(&mut ada, "BA").await;
-    wait_for_contact(&mut bo, "RA").await;
+    // Doc 32 cut CF.0 (Q-CF-11): each tank's unit letter is drawn at
+    // check-out; read both off the match's own record.
+    let drawn = support::drawn_callsigns(&server.store, 1).await;
+    let (red_callsign, blue_callsign) = (drawn[&red].clone(), drawn[&blue].clone());
+    wait_for_contact(&mut ada, &blue_callsign).await;
+    wait_for_contact(&mut bo, &red_callsign).await;
 
     // The lock, and the frame that carries it.
     let locking = ada.mark();
-    say(&mut ada, "LOCK BA", "Locking BA.").await;
-    wait_for_notice(&mut ada, locking, "Locked on BA").await;
+    say(
+        &mut ada,
+        &format!("LOCK {blue_callsign}"),
+        &format!("Locking {blue_callsign}."),
+    )
+    .await;
+    wait_for_notice(&mut ada, locking, &format!("Locked on {blue_callsign}")).await;
 
     // The burst: two lines, no wait between them.
     let mark = ada.mark();
@@ -666,8 +675,13 @@ async fn a_pilot_who_types_fire_then_exit_in_one_burst_fires_nothing() {
     ada.expect_after(mark, "climb out").await;
     // The release bound's marker, typed the moment `climb out` was read.
     let marked = bo.mark();
-    say(&mut bo, "LOCK RA", "Locking RA.").await;
-    wait_for_notice(&mut bo, marked, "Locked on RA").await;
+    say(
+        &mut bo,
+        &format!("LOCK {red_callsign}"),
+        &format!("Locking {red_callsign}."),
+    )
+    .await;
+    wait_for_notice(&mut bo, marked, &format!("Locked on {red_callsign}")).await;
     // Everything Ada was sent up to the pulse that bound drained.
     pump(&mut ada, "STATUS", &[OUTSIDE_COCKPIT]).await;
     let seen = strip_ansi(&ada.seen[mark..]);
@@ -721,7 +735,7 @@ async fn a_pilot_who_types_fire_then_exit_in_one_burst_fires_nothing() {
         .unwrap_or_else(|| panic!("the ledger holds no `locked` line for Bo's unit #{blue}"));
     println!(
         "burst: the ledger records no seat release; the bound is the first pulse after \
-         `climb out` was read, t_ms={released_by} (Bo's `LOCK RA`, typed then)"
+         `climb out` was read, t_ms={released_by} (Bo's `LOCK {red_callsign}`, typed then)"
     );
     let fired = stamps_of(&events, "fired", red);
     for t_ms in fired.iter().filter(|t_ms| **t_ms < released_by) {
@@ -899,7 +913,9 @@ async fn past_the_grace_the_machine_flies_the_tank_until_the_pilot_boards_again(
     drop(ada);
     drop(ada_handle);
     // Past the two-second grace: the machine has the tank, and the board says so.
-    support::wait_arena_pilot_out(&mut god, "RA", "Ada", "flown by its mind").await;
+    // Doc 32 cut CF.0 (Q-CF-11): under the callsign drawn at check-out.
+    let callsign = support::drawn_callsigns(&server.store, 1).await[&red].clone();
+    support::wait_arena_pilot_out(&mut god, &callsign, "Ada", "flown by its mind").await;
 
     // The reconnect is told, in one line — and it is not a revival.
     let (_a2, mut ada) = login(server.addr, "ada", PILOT_PASSWORD, "Ada").await;
@@ -936,11 +952,12 @@ async fn past_the_grace_the_machine_flies_the_tank_until_the_pilot_boards_again(
     // tank went — two different cells, because it drove on at 20 kph through
     // the grace (the snapshot is the `Linkdead`'s, not the `Released`'s) and
     // the machine had it after.
-    ada.expect("Back aboard RA after").await;
+    let back_aboard = format!("Back aboard {callsign} after");
+    ada.expect(&back_aboard).await;
     ada.expect("Power ").await;
     let seen = strip_ansi(&ada.seen);
     let block = seen
-        .get(seen.find("Back aboard RA after").unwrap_or(0)..)
+        .get(seen.find(&back_aboard).unwrap_or(0)..)
         .unwrap_or_default();
     assert!(block.contains("Rounds spent:"), "{block}");
     let position = block
@@ -989,7 +1006,7 @@ async fn past_the_grace_the_machine_flies_the_tank_until_the_pilot_boards_again(
     )
     .await;
     // And the staff board has her seated again.
-    support::wait_arena_pilot_out(&mut god, "RA", "Ada", "seated").await;
+    support::wait_arena_pilot_out(&mut god, &callsign, "Ada", "seated").await;
 }
 
 // ---------------------------------------------------------------------------
@@ -1050,9 +1067,11 @@ async fn the_cockpit_verbs_are_contextual_and_the_window_is_a_map() {
     // this slice may still carry its `legend:` line and its two Sys lines; the
     // world answers in order, so everything from the brief's header on is the
     // brief's, and every assertion runs over that tail alone.
+    // Doc 32 cut CF.0 (Q-CF-11): her tank's drawn callsign, off the record.
+    let own = support::party_callsign(&server.store, 1, 'R').await;
     let seen = ask_whole(&mut ada, "VIEW BRIEF").await;
     let at = seen
-        .find("Window around RA:")
+        .find(&format!("Window around {own}:"))
         .unwrap_or_else(|| panic!("the brief's header: {seen}"));
     let brief = &seen[at..];
     let sentences = support::brief_sentences(brief);

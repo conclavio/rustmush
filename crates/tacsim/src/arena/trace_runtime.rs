@@ -271,17 +271,20 @@ mod tests {
     use super::super::author_trace::{Fault, Outcome, RomDrop};
     use super::super::mind::{ThinkAnswer, ThinkFault};
     use super::super::motor::MotorCounters;
-    use super::super::state::{Channel, ContactId, Power, Team};
+    use super::super::state::{Channel, ContactId, PartyId, Power};
     use super::super::test_support::{arena_of, line_tank, pose};
     use super::*;
 
     const OWN: ObjId = ObjId(4);
     fn arena() -> Arena {
-        let mut own = line_tank(OWN, Team::Red, pose(1500, 4500));
+        let mut own = line_tank(OWN, PartyId::RED, pose(1500, 4500));
         own.controller = Controller::Mind;
         own.reseal(&crate::match_::SealTerms::fixture())
             .expect("fixture seal");
-        arena_of(vec![own, line_tank(ObjId(9), Team::Blue, pose(6500, 4500))])
+        arena_of(vec![
+            own,
+            line_tank(ObjId(9), PartyId::BLUE, pose(6500, 4500)),
+        ])
     }
     fn collect(arena: &mut Arena, t: i64) -> CollectedThink {
         arena.now_ms = t;
@@ -497,7 +500,9 @@ mod tests {
             ContactId(42),
             super::super::state::ShadowContact::sighted(
                 ObjId(9),
-                super::super::state::Classification::Classified { team: Team::Blue },
+                super::super::state::Classification::Classified {
+                    party: PartyId::BLUE,
+                },
                 0,
                 plot,
             ),

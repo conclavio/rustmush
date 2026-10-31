@@ -794,6 +794,13 @@ thread_local! {
 ///     presence byte and the team byte (`0` red, `1` blue) in one call, then the
 ///     `i64` arena millisecond it opened at — `[0]` alone for no hold, and `[0]`
 ///     alone for a hold nobody holds.
+/// 13. **The parties** (doc 32 cut CF.0), after the detachment authority:
+///     every party's relation book by its serde walk
+///     ([`crate::arena::party::Relations`] — the host's opening marks and
+///     friendships, every leader's mark since and the hostility fire produced),
+///     then the end condition's code byte. Both decide what a hull targets and
+///     when the field ends, and the marks move with no ledger line (Q-CF-7:
+///     a mark is private), so cut D.4's rule folds them.
 ///
 /// **Why the Hold clock is in it** (16b cut O.1), under cut D.4's one rule —
 /// *persistent state that decides an end is hashed*. `held_by` moves with **no
@@ -1393,8 +1400,9 @@ pub fn state_hash(arena: &Arena) -> u64 {
                     fold.bytes(&[
                         1_u8,
                         match team {
-                            crate::arena::state::Team::Red => 0_u8,
-                            crate::arena::state::Team::Blue => 1_u8,
+                            crate::arena::state::PartyId::RED => 0_u8,
+                            crate::arena::state::PartyId::BLUE => 1_u8,
+                            other => other.code(),
                         },
                     ]);
                     fold.bytes(&since_ms.to_le_bytes());
@@ -1410,6 +1418,10 @@ pub fn state_hash(arena: &Arena) -> u64 {
         fold.bytes(b"detachment-authority-v1\0");
         fold_value(fold, &arena.detachment_commands);
     }
+    // **Doc 32 cut CF.0** (item 13): every party's relation books and the
+    // host's end condition.
+    fold_value(fold, &arena.relations);
+    fold.bytes(&[arena.end.code()]);
     fold.finish()
 }
 
@@ -1620,15 +1632,15 @@ fn fold_plot(fold: &mut Fold, plot: &crate::arena::state::SeenPose) {
 mod tests {
     use super::*;
     use crate::arena::clock::{Tempo, TempoSignals};
-    use crate::arena::state::{DueKind, Power, Team};
+    use crate::arena::state::{DueKind, PartyId, Power};
     use crate::arena::test_support::{arena_of, pose, tank};
     use crate::config::TempoConfig;
     use mush_core::ObjId;
 
     fn two_tanks() -> Arena {
         arena_of(vec![
-            tank(ObjId(4), Team::Red, pose(1_500, 1_500)),
-            tank(ObjId(9), Team::Blue, pose(6_500, 6_500)),
+            tank(ObjId(4), PartyId::RED, pose(1_500, 1_500)),
+            tank(ObjId(9), PartyId::BLUE, pose(6_500, 6_500)),
         ])
     }
 
@@ -1890,9 +1902,9 @@ mod tests {
         // The callsign is a fact about the check-out, not about the match.
         let mut renamed = two_tanks();
         if let Some(unit) = renamed.unit_mut(ObjId(9)) {
-            unit.callsign = crate::arena::state::Designator::Slot {
-                team: Team::Blue,
-                slot: 9,
+            unit.callsign = crate::arena::state::Designator::Unit {
+                party: PartyId::BLUE,
+                letter: 'I',
             };
         }
         assert_eq!(state_hash(&renamed), base);
@@ -2168,8 +2180,8 @@ mod tests {
 
         let hot = || {
             arena_of(vec![
-                tank(ObjId(4), Team::Red, pose(1_500, 1_500)),
-                laser_tank(ObjId(9), Team::Blue, pose(6_500, 6_500)),
+                tank(ObjId(4), PartyId::RED, pose(1_500, 1_500)),
+                laser_tank(ObjId(9), PartyId::BLUE, pose(6_500, 6_500)),
             ])
         };
         let base = state_hash(&hot());
@@ -2292,8 +2304,8 @@ mod tests {
     fn two_units_swapping_positions_is_not_one_state() {
         // The guard against a hash that folds a multiset rather than a sequence.
         let swapped = arena_of(vec![
-            tank(ObjId(4), Team::Red, pose(6_500, 6_500)),
-            tank(ObjId(9), Team::Blue, pose(1_500, 1_500)),
+            tank(ObjId(4), PartyId::RED, pose(6_500, 6_500)),
+            tank(ObjId(9), PartyId::BLUE, pose(1_500, 1_500)),
         ]);
         assert_ne!(state_hash(&swapped), state_hash(&two_tanks()));
     }
@@ -2330,7 +2342,7 @@ mod tests {
         let red = with(
             MatchMode::Hold,
             Some(HoldState {
-                held_by: Some((Team::Red, 250)),
+                held_by: Some((PartyId::RED, 250)),
                 ..hold
             }),
         );
@@ -2338,7 +2350,7 @@ mod tests {
         let blue = with(
             MatchMode::Hold,
             Some(HoldState {
-                held_by: Some((Team::Blue, 250)),
+                held_by: Some((PartyId::BLUE, 250)),
                 ..hold
             }),
         );
@@ -2346,7 +2358,7 @@ mod tests {
         let later = with(
             MatchMode::Hold,
             Some(HoldState {
-                held_by: Some((Team::Red, 500)),
+                held_by: Some((PartyId::RED, 500)),
                 ..hold
             }),
         );
@@ -2477,7 +2489,7 @@ mod tests {
     fn m1a1_a_motor_row_moves_the_hash_field_by_field_and_an_empty_table_adds_none() {
         use crate::arena::motion::BlockedCause;
         use crate::arena::motor::Refusal;
-        let build = || arena_of(vec![tank(ObjId(4), Team::Red, pose(1_500, 1_500))]);
+        let build = || arena_of(vec![tank(ObjId(4), PartyId::RED, pose(1_500, 1_500))]);
         let bare = build();
         assert_eq!(bare.motors.rows().count(), 0, "an empty table");
         let base = crate::arena::hash::state_hash(&bare);
@@ -2617,9 +2629,13 @@ mod tests {
         // so the complete fixture hash intentionally differs from M5r. This
         // reviewed pin detects even a constant byte added to the default branch;
         // the probes below continue to distinguish every nondefault value.
+        // **Doc 32 cut CF.0's one re-bless**: item 13 folds every party's
+        // relation books and the host's end condition, so the fixture's hash
+        // moved and nothing in sub-item 20 did: `0x99b0_6f95_df11_70eb` became
+        // `0x63ea_08cd_caf1_ab0e`.
         assert_eq!(
-            base, 0x99b0_6f95_df11_70eb,
-            "the M6 canonical-profile two_tanks hash (M5r: 0588c49e80b6962c)"
+            base, 0x63ea_08cd_caf1_ab0e,
+            "the CF.0 two_tanks hash (M6: 99b06f95df1170eb; M5r: 0588c49e80b6962c)"
         );
         let probe = |profile: ActiveProfile| {
             let mut arena = two_tanks();

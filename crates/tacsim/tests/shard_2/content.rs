@@ -24,7 +24,7 @@ use std::path::{Path, PathBuf};
 use mush_atlas::TerrainClass;
 use mush_core::ObjId;
 use mush_testkit::TestWorld;
-use tacsim::arena::state::Team;
+use tacsim::arena::state::PartyId;
 use tacsim::definitions::{Catalog, ResourceTable, content};
 use tacsim::match_::{PODS_PER_SIDE, PROVING_GROUND as PROVING_GROUND_ARENA};
 
@@ -98,7 +98,7 @@ const PACK_FILES: [&str; 9] = [
 /// consequence words (`destroy_core` on the turret, and its note's M.4
 /// sentence shortened to fit the 1,024-byte bound; version 4). Was
 /// `2cdf945e…` at version 3.
-const DIGESTS: [(&str, &str); 12] = [
+const DIGESTS: [(&str, &str); 14] = [
     (
         "tacsim.pack.he_105",
         "c377ca63e4385d29ed4ce63c78fcd1c9e626e1944da4c2aca819c09b6acb67e2",
@@ -149,6 +149,15 @@ const DIGESTS: [(&str, &str); 12] = [
         "tacsim.winter_valley",
         "9fa52657db62ee87412d452755fb7429a1cbed85565346a43d10575c9d530a5f",
     ),
+    // Doc 30 Q-30-7: the first non-temperate biome arena (`mars_canyon`).
+    (
+        "tacsim.pack.mars_canyon",
+        "bcbe050c8c14ae15891dd2449465ff181bb09337fbfd04fd01e18a209d015767",
+    ),
+    (
+        "tacsim.mars_canyon",
+        "993a507ffe1211ddb5e3811f4aaef1529970858f95c460e149280cad13424108",
+    ),
 ];
 
 // ---------------------------------------------------------------------------
@@ -157,24 +166,26 @@ const DIGESTS: [(&str, &str); 12] = [
 
 #[test]
 fn the_shipped_draft_is_this_generators_output() {
-    // Doc 30 §4 & cut WG.1 (half 2, preset -> draft): `ground-pack gen proving_ground`
-    // reproduces the checked-in draft byte for byte.
-    let draft = tacsim::ground::generate("proving_ground", 2350, None)
-        .expect("the proving_ground preset generates");
-    let json = draft.to_json_pretty().expect("the draft serializes");
-    pin_file("ground/proving_ground.draft.json", &json);
+    // Doc 30 §4 & cut WG.1 / Q-30-7 (half 2, preset -> draft): `ground-pack gen <preset>`
+    // reproduces each generator-authored checked-in draft byte for byte.
+    for preset in ["proving_ground", "mars_canyon"] {
+        let draft =
+            tacsim::ground::generate(preset, 2350, None).expect("the shipped preset generates");
+        let json = draft.to_json_pretty().expect("the draft serializes");
+        pin_file(&format!("ground/{preset}.draft.json"), &json);
+    }
 }
 
 #[test]
 fn every_shipped_ground_pack_is_the_writers_output_over_its_draft() {
-    // Doc 30 §4 & cuts WG.1 / WG.5 (half 1, draft -> packs): `ground-pack build` over
+    // Doc 30 §4 & cuts WG.1 / WG.5 / Q-30-7 (half 1, draft -> packs): `ground-pack build` over
     // each checked-in draft reproduces both shipped packs byte for byte.
-    for id in ["proving_ground", "winter_valley"] {
+    for id in ["proving_ground", "winter_valley", "mars_canyon"] {
         let draft_rel = format!("ground/{id}.draft.json");
         let draft_path = content_dir().join(&draft_rel);
-        if writing() && !draft_path.exists() && id == "proving_ground" {
-            let generated = tacsim::ground::generate("proving_ground", 2350, None)
-                .expect("the proving_ground preset generates")
+        if writing() && !draft_path.exists() && matches!(id, "proving_ground" | "mars_canyon") {
+            let generated = tacsim::ground::generate(id, 2350, None)
+                .expect("the preset generates")
                 .to_json_pretty()
                 .expect("the draft serializes");
             pin_file(&draft_rel, &generated);
@@ -267,8 +278,10 @@ fn the_pinned_digests_are_the_shipped_ones() {
     for json in [
         content::WINTER_VALLEY_JSON,
         content::WINTER_VALLEY_ATLAS_JSON,
+        content::MARS_CANYON_JSON,
+        content::MARS_CANYON_ATLAS_JSON,
     ] {
-        let pack = mush_content::load_pack(json).expect("the winter_valley pack verifies");
+        let pack = mush_content::load_pack(json).expect("the shipped arena pack verifies");
         let id = pack.manifest().id().to_string();
         assert_eq!(
             pinned.get(id.as_str()).copied(),
@@ -518,7 +531,7 @@ fn the_band_word_the_shipped_content_can_print() {
 fn e1_the_ranges_the_shipped_machines_fight_at() {
     use mush_core::ObjId;
     use smol_str::SmolStr;
-    use tacsim::arena::state::{Arena, Controller, CustodyOut, Team, WeaponSummary};
+    use tacsim::arena::state::{Arena, Controller, CustodyOut, PartyId, WeaponSummary};
     use tacsim::config::{ArenaConfig, MatchConfig, ReflexConfig, SensorsConfig};
     use tacsim::match_::{ARENA_CELL_CM, STAND_IN, custody_unit, stock_definition};
 
@@ -577,7 +590,7 @@ fn e1_the_ranges_the_shipped_machines_fight_at() {
                 &catalog,
                 cells,
                 id,
-                Team::Red,
+                PartyId::RED,
                 pose,
                 0,
                 Controller::Mind,
@@ -595,6 +608,7 @@ fn e1_the_ranges_the_shipped_machines_fight_at() {
             resolution: tacsim::match_::resolution_for(&catalog),
             seed: 2_350,
             mode: tacsim::arena::MatchMode::Skirmish,
+            host: tacsim::arena::FieldHost::all_hostile(),
         },
         &ArenaConfig::default(),
         &MatchConfig::default(),
@@ -1102,12 +1116,12 @@ fn q8_the_fielded_sources_are_the_shipped_ones_and_then_the_five_in_requires_ord
     // SM.3a: and the terrain vehicle and the Dray-P after it (was `+ 20`).
     assert_eq!(
         fielded.len(),
-        stock.len() + 25,
-        "nine shipped packs and twenty-five extension files: doc 16 section 9's ten, \
+        stock.len() + 26,
+        "nine shipped packs and twenty-six extension files: doc 16 section 9's ten, \
          the range's target, 16b cut AE.2's two weapons and their two rounds, \
          16b cut AE.1's three chassis, 16b cut AE.3's drone, doc 18 cut IC2's Dray and \
-         doc 20 cut SM.3a's terrain vehicle and Dray-P, R7's relay station, R9b's Halcyon cruiser and \
-         doc 30 cut WG.5's winter_valley arena"
+         doc 20 cut SM.3a's terrain vehicle and Dray-P, R7's relay station, R9b's Halcyon cruiser, \
+         doc 30 cut WG.5's winter_valley arena and doc 30 Q-30-7's mars_canyon arena"
     );
     for (shipped, both) in stock.iter().zip(fielded.iter()) {
         assert_eq!(shipped.name, both.name, "the shipped prefix is unmoved");
@@ -1393,7 +1407,7 @@ fn z3_the_arena_fields_six_a_side_in_the_authored_order() {
         .expect("the proving ground is shipped");
     assert_eq!(arena.tanks.len(), 12);
     assert!(arena.tanks.len() <= tacsim::definitions::arena::MAX_ARENA_UNITS);
-    for (team, word) in [(Team::Red, "red"), (Team::Blue, "blue")] {
+    for (team, word) in [(PartyId::RED, "red"), (PartyId::BLUE, "blue")] {
         let side: Vec<&str> = arena
             .tanks
             .iter()
@@ -1485,10 +1499,10 @@ fn world_at_arena_v2() -> TestWorld {
 #[test]
 fn z3_a_renamed_stock_tank_is_adopted_by_the_roster_and_no_thirteenth_is_made() {
     let mut tw = world_at_arena_v2();
-    let red_one = tacsim::match_::tank_for_slot(tw.world(), Team::Red, 1).expect("red 1");
-    let red_two = tacsim::match_::tank_for_slot(tw.world(), Team::Red, 2).expect("red 2");
-    let red_three = tacsim::match_::tank_for_slot(tw.world(), Team::Red, 3).expect("red 3");
-    let before: Vec<(Team, u8, ObjId)> = Team::ALL
+    let red_one = tacsim::match_::tank_for_slot(tw.world(), PartyId::RED, 1).expect("red 1");
+    let red_two = tacsim::match_::tank_for_slot(tw.world(), PartyId::RED, 2).expect("red 2");
+    let red_three = tacsim::match_::tank_for_slot(tw.world(), PartyId::RED, 3).expect("red 3");
+    let before: Vec<(PartyId, u8, ObjId)> = PartyId::OOC
         .into_iter()
         .flat_map(|team| (1..=4_u8).map(move |index| (team, index)))
         .map(|(team, index)| {
@@ -1561,7 +1575,7 @@ fn z3_a_renamed_stock_tank_is_adopted_by_the_roster_and_no_thirteenth_is_made() 
         Some("Old Faithful".to_owned()),
         "the applier adopts; it does not rename"
     );
-    let red_five = tacsim::match_::tank_for_slot(tw.world(), Team::Red, 5).expect("red 5");
+    let red_five = tacsim::match_::tank_for_slot(tw.world(), PartyId::RED, 5).expect("red 5");
     assert_ne!(
         red_five, red_two,
         "a tank the roster names for slot 2 is not taken for slot 5 by its new name"
@@ -1574,7 +1588,7 @@ fn z3_a_renamed_stock_tank_is_adopted_by_the_roster_and_no_thirteenth_is_made() 
         .and_then(|store| store.arena_roster(&arena).cloned())
         .expect("the roster is written");
     assert_eq!(roster.units.len(), 12, "{:?}", roster.units);
-    for team in Team::ALL {
+    for team in PartyId::OOC {
         for index in 1..=PODS_PER_SIDE {
             let slot = format!("{}_{index}", team.as_str());
             let tank = tacsim::match_::tank_for_slot(tw.world(), team, index)
@@ -1597,10 +1611,10 @@ fn z3_a_renamed_stock_tank_is_adopted_by_the_roster_and_no_thirteenth_is_made() 
         "adoption leaves the owner alone"
     );
     for (team, index) in [
-        (Team::Red, 5),
-        (Team::Red, 6),
-        (Team::Blue, 5),
-        (Team::Blue, 6),
+        (PartyId::RED, 5),
+        (PartyId::RED, 6),
+        (PartyId::BLUE, 5),
+        (PartyId::BLUE, 6),
     ] {
         let made = tacsim::match_::tank_for_slot(tw.world(), team, index).expect("made");
         assert_eq!(
@@ -1620,7 +1634,7 @@ fn z3_a_renamed_stock_tank_is_adopted_by_the_roster_and_no_thirteenth_is_made() 
 #[test]
 fn z3_a_deployed_roster_tank_refuses_the_apply_and_writes_nothing() {
     let mut tw = world_at_arena_v2();
-    let blue_two = tacsim::match_::tank_for_slot(tw.world(), Team::Blue, 2).expect("blue 2");
+    let blue_two = tacsim::match_::tank_for_slot(tw.world(), PartyId::BLUE, 2).expect("blue 2");
     mush_sim::deployed::mark(
         tw.world_mut(),
         blue_two,
@@ -1659,7 +1673,7 @@ fn z3_a_deployed_roster_tank_refuses_the_apply_and_writes_nothing() {
     assert_eq!(census(&tw), before, "nothing was made, renamed or moved");
     assert_eq!(units_in(&tw).len(), 8);
     assert_eq!(
-        tacsim::match_::tank_for_slot(tw.world(), Team::Red, 5),
+        tacsim::match_::tank_for_slot(tw.world(), PartyId::RED, 5),
         None
     );
 
@@ -1719,7 +1733,7 @@ fn o1_the_shipped_ground_declares_hold_at_the_crossroads() {
         );
     }
     // 120 cells from the blue muster (column 249) and 123 from the red (6).
-    let muster = |team: Team| {
+    let muster = |team: PartyId| {
         arena
             .tanks
             .iter()
@@ -1727,8 +1741,8 @@ fn o1_the_shipped_ground_declares_hold_at_the_crossroads() {
             .map(|tank| tank.x)
             .expect("slot 1")
     };
-    assert_eq!(muster(Team::Blue) - spot.x, 120);
-    assert_eq!(spot.x - muster(Team::Red), 123);
+    assert_eq!(muster(PartyId::BLUE) - spot.x, 120);
+    assert_eq!(spot.x - muster(PartyId::RED), 123);
     let note = &arena.note;
     assert!(note.contains("VERSION 4 (16b cut O.1)"), "{note}");
     assert!(note.len() <= 1_024, "{} bytes", note.len());
@@ -2189,7 +2203,7 @@ fn ae1_the_rebuilt_fixtures_are_version_one_of_the_ground_and_four_of_the_arena(
 /// `95ee741e70fa804e671e8b34f8fb62ea317b15f6a4bc2bdc5190971180802ecd` (17b
 /// cut M2.5, the helm half).
 const STANDARD_DOCTRINE_SHA256: &str =
-    "c0737fdc45994c226b7861bd6f488383408d11764e30b889487b4f7498e76100";
+    "a37766b55993879fecb78e4cb3e1470b27df617d7e7a5b3b8a6971c24b6e5336";
 
 /// **Standard Doctrine's source is pinned** (17b cut M2.5; doc 17 §11, §13,
 /// §22's italics; 17b §5's feas F9):
@@ -2245,7 +2259,7 @@ fn m2_the_standard_doctrine_source_is_pinned() {
         MindManifest {
             name: "Standard Doctrine".to_owned(),
             role: "combat".to_owned(),
-            api: 6,
+            api: 7,
             stock: 3,
             rated_class: "I".to_owned(),
             ops_ceiling: 1_500,
@@ -2259,7 +2273,7 @@ fn m2_the_standard_doctrine_source_is_pinned() {
     assert!(
         header.starts_with("// Standard Doctrine \u{2014} the combat role's stock mind")
             && header.contains(
-                "name: Standard Doctrine; role: combat; api: 6; stock: 3; rated: class I \
+                "name: Standard Doctrine; role: combat; api: 7; stock: 3; rated: class I \
                  (1,500 ops a think)"
             )
             && header.contains("T1 is the oracle (Gate A)"),
