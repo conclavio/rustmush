@@ -8,4 +8,6 @@
 *.bin binary
 # Doc 31 cut UD.1: a model's file is bytes, and named by its own SHA-256.
 *.mupk binary
+# Doc 33 cut GG.0: a recorded IPC frame (crates/mush-ipc/tests/golden/) is bytes.
+*.frame binary
 .source-commit export-subst
