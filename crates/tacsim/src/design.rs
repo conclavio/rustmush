@@ -49,6 +49,17 @@ pub const DESIGN_UNIT_PREFIX: &str = "tacsim.unit.design.";
 /// The prefix of the pack a design ships in (`tacsim.pack.<slug>`).
 pub const PACK_PREFIX: &str = "tacsim.pack.";
 
+/// **The pulled feed a client asks for the looks of published designs on**
+/// (doc 31 cut UD.3b, D-31-16): `{"types": [<unit type>, …]}` (at most
+/// [`MAX_LOOK_TYPES`]) is answered `{"looks": {<type>: <look>}}` for each
+/// type that is a published design (its newest version's look); any other
+/// type is left out. A look is how a unit is drawn — label, doll, model — and
+/// never what a match holds, so a client may ask for any type it has seen.
+pub const LOOKS_FEED: &str = "unit.looks";
+
+/// The most types one `unit.looks` query names.
+pub const MAX_LOOK_TYPES: usize = 8;
+
 /// The prefix of a design registry row's key.
 pub const DESIGN_PREFIX: &str = "tacsim:design:";
 
@@ -453,6 +464,52 @@ fn design_cmd(ctx: &mut Ctx<'_>) -> Result<(), mush_core::CmdError> {
     Ok(())
 }
 
+/// `unit.looks`'s handler (see [`LOOKS_FEED`]).
+struct LooksQuery;
+
+/// The `unit.looks` keyframe for `params`, over `store`'s designs.
+#[must_use]
+pub fn looks_frame(store: Option<&crate::TacsimStore>, params: &Value) -> Value {
+    let mut looks = serde_json::Map::new();
+    let types = params
+        .get("types")
+        .and_then(Value::as_array)
+        .into_iter()
+        .flatten()
+        .filter_map(Value::as_str)
+        .take(MAX_LOOK_TYPES);
+    if let Some(store) = store {
+        for unit in types {
+            let newest = store
+                .designs()
+                .filter(|d| d.id == unit)
+                .max_by_key(|d| d.version);
+            if let Some(design) = newest {
+                looks.insert(unit.to_string(), design.look.clone());
+            }
+        }
+    }
+    json!({
+        "schema": { "id": LOOKS_FEED, "version": 1 },
+        "looks": looks,
+    })
+}
+
+impl mush_core::QueryHandler for LooksQuery {
+    fn query(
+        &self,
+        w: &mush_core::World,
+        _actor: mush_core::ObjId,
+        params: &Value,
+    ) -> Result<mush_proto::OutputEvent, mush_proto::RichText> {
+        Ok(mush_proto::OutputEvent::Panel {
+            feed: smol_str::SmolStr::new_static(LOOKS_FEED),
+            kind: mush_proto::PanelFrameKind::Keyframe,
+            data: looks_frame(w.module_state::<crate::TacsimStore>(), params),
+        })
+    }
+}
+
 /// Register the `unit_design` invoke handler.
 ///
 /// # Errors
@@ -460,6 +517,11 @@ fn design_cmd(ctx: &mut Ctx<'_>) -> Result<(), mush_core::CmdError> {
 /// The registrar's, for a second registration.
 pub fn register(reg: &mut Registrar<'_>) -> Result<(), ModError> {
     reg.invoke_handler(SERVICE, Arc::new(DesignService))?;
+    // Doc 31 cut UD.3b (D-31-16): the pulled looks feed. Registered as a feed
+    // so it reaches the client manifest and a `PanelSubscribe` routes to its
+    // query; nothing is ever pushed on it.
+    drop(reg.panel_feed(LOOKS_FEED)?);
+    reg.query_handler(LOOKS_FEED, Arc::new(LooksQuery))?;
     // `@design/withdraw` writes a registry row; the list and show only read.
     reg.classify_commands(mush_core::CommandCompatibility::LegacyPostImage);
     reg.command(

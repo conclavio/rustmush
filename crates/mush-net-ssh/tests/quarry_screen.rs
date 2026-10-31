@@ -785,3 +785,32 @@ fn sm9_a_moving_rig_is_placed_along_its_leg() {
         Some(507)
     );
 }
+
+// ---------------------------------------------------------------------------
+// Doc 31 cut UD.3b (D-31-16): published designs' looks, asked for by the TUI
+// (its helpers are this file's; the pictures are the gateway's to draw).
+// ---------------------------------------------------------------------------
+
+/// A cockpit keyframe naming a design asks `unit.looks` for it once; the answer
+/// installs the look for every picture this process draws.
+#[test]
+fn ud3b_a_designs_look_is_asked_for_once_and_installed() {
+    let unit = "tacsim.unit.design.tui_probe";
+    let mut app = app_with(&["arena.cockpit", "unit.looks"]);
+    let frame = json!({ "seated": true, "unit_type": unit, "contacts": [] });
+    let asked = app.apply_event(&keyframe("arena.cockpit", frame.clone()));
+    let looks: Vec<&(String, Value)> = asked.iter().filter(|(f, _)| f == "unit.looks").collect();
+    assert_eq!(looks.len(), 1, "{asked:?}");
+    assert_eq!(looks[0].1, json!({ "types": [unit] }));
+    let again = app.apply_event(&keyframe("arena.cockpit", frame));
+    assert!(again.iter().all(|(f, _)| f != "unit.looks"), "asked once");
+    let look = json!({
+        "units": [unit], "label": "TUI probe", "short": "TP",
+        "model": "mc.st.tank_lvl2", "size_cm": [700, 250],
+    });
+    let _ = app.apply_event(&keyframe("unit.looks", json!({ "looks": { unit: look } })));
+    assert_eq!(
+        mush_pixel::look::for_unit(unit).map(|l| l.label.as_str()),
+        Some("TUI probe")
+    );
+}
