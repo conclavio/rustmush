@@ -118,3 +118,55 @@ preview stay in wasm (doc 31 §4 says why the schema crate was dropped).
   come with the refit families (UD.4), which need the slot-stable mount ids (D-31-14).
 - **Not seen in a live browser against a server**: the engine, the RPC client, the studio (jsdom)
   and the wasm exports are tested; the server check is tested in tacsim; no dev2 session was driven.
+
+## UD.3a (2026-10-30) — the in-instance design registry, D-31-9
+
+Built on `claude/ud3-design-registry`, stacked on UD.2 (PR #197). UD.3 is split: this cut makes a
+published design fieldable; UD.3b carries the tactics catalogue, the catalogue generation on the
+match record and the looks on the feeds.
+
+- **Publish** (`mush-proto`): `UnitDesignRequest::Publish { id, version, rules, look }` (the look
+  bounded as the rules are, 128 KiB) and `UnitDesignResponse::Published { id, version,
+  refusals }`. `tacsim::design::publish`, staff only: an id outside `tacsim.unit.design.` is
+  refused (D-31-9's namespace — a published design never shadows a unit shipped later; Check still
+  takes any `tacsim.unit.<name>` for a repo export); a version already in the registry, or already
+  on the world's pack ledger under the design's pack id, is refused ("a published version never
+  changes"); then the check runs and the row is written.
+- **The rows** (`tacsim:design:{id}@{version}`, the TacSim namespace): `DesignRecord { id,
+  version, pack, look, withdrawn }`, hydrated by `store::load` into `TacsimStore::designs`, written
+  by `store::put_design` alone.
+- **The boot** (`mush-server`): `boot::design_sources` lists the namespace's keys and reads the
+  design rows before `game_modules`; `config_ext::tacsim_config_with_designs` adds each design's
+  pack to the operator packs **only when the whole set still verifies with it**, else skips it with
+  a warning naming it — a registry row never fails a boot (a design whose required pack moved
+  stops loading; it does not stop the world). Withdrawn designs load (a hull may name one). The
+  boot's own pack ledger then records each loaded design as it records any operator pack.
+- **A defect fixed on the way**: `tacsim::verify_sources_with` resolved an operator pack's
+  `requires` only against the other operator packs and the game seeds, never the compiled-in
+  content, so a design — which requires the shipped weapon, sensor and core packs — would have been
+  refused at boot. It now resolves against the shipped, fielded packs too (parsed once); a
+  configured pack under a shipped pack's id and version stays the one resolved. UD.2's
+  `design::check` now runs `verify_sources` itself, so a check can never pass a pack a boot would
+  refuse (its test asserts it).
+- **`@design/list|show|withdraw`** (staff): `@unit/design` in the doc, renamed because `@unit` is
+  the tactics module's verb. Withdrawal sets the flag on every version (or the one named); the
+  lobby's `fieldable_ids` leaves out a design all of whose versions are withdrawn, so `SIM UNIT`
+  neither lists nor accepts it.
+- **The studio**: **Publish** after a clean check; the answer says the design is fieldable after
+  the next restart. Drafts now default into the `tacsim.unit.design.` namespace.
+- **Tests**: `tacsim/tests/shard_3/designs.rs` — published over the invoke path, refused a second
+  time, listed and shown with its `requires`, then a restart over the folded rows with
+  `design_sources`' packs puts the design in the frozen catalogue, its row hydrated; withdrawn, it
+  stays loaded; an id outside the namespace is refused; the registry is staff-only. `mush-server`:
+  a design that will not verify is skipped and a good one kept; the layer off adds none.
+
+**Not done here, and why.**
+
+- **The configured-pack cap** (`MAX_CONFIGURED_PACKS`, 64) counts designs: a world with many
+  designs and many pack files reaches it, and the boot refuses past it. Whether designs get their
+  own cap is a question for when the registry grows; staff-only publishing keeps it small.
+- **The tactics catalogue** (`@unit/create`, IC hulls on a design, Q-31-2): the composition root
+  builds `TacticsModule`'s catalogue from the shipped content in `tacsim::composition`, which the
+  host's packs do not reach; threading them needs six composition signatures across three crates.
+  UD.3b.
+- **Not seen live**: no dev2 restart with a published design was driven.

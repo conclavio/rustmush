@@ -54,6 +54,9 @@ const MODEL_FILES = import.meta.glob<{ models: ModelEntry[] }>("./content/models
 
 /** The prefix a designed unit's id carries. */
 export const UNIT_PREFIX = "tacsim.unit.";
+/** The prefix a published design's id carries (doc 31 D-31-9: its own
+ * namespace, so it never shadows a shipped unit). */
+export const DESIGN_PREFIX = "tacsim.unit.design.";
 
 function clone<T>(v: T): T {
   return JSON.parse(JSON.stringify(v)) as T;
@@ -123,7 +126,7 @@ export function slugOf(name: string): string {
  * copied (or a bare one on the template's model-less size) and pointed at
  * the new id. */
 export function draftFrom(template: UnitTemplate, name: string): Draft {
-  const id = `${UNIT_PREFIX}${slugOf(name) || "design"}`;
+  const id = `${DESIGN_PREFIX}${slugOf(name) || "unnamed"}`;
   const rules = clone(template.def);
   rules.label = name;
   const look: JsonObject = template.look
@@ -145,7 +148,7 @@ function componentsOf(d: Draft): JsonObject[] {
 /** The draft with its id renamed from `name` (rules label and look kept). */
 export function rename(d: Draft, name: string): Draft {
   const n = clone(d);
-  n.id = `${UNIT_PREFIX}${slugOf(name) || "design"}`;
+  n.id = `${DESIGN_PREFIX}${slugOf(name) || "unnamed"}`;
   n.look.units = [n.id];
   return n;
 }
@@ -399,7 +402,11 @@ export interface ExportFile {
  * `crates/mush-pixel/looks/`, as the tree formats JSON (two spaces, a
  * newline at the end). */
 export function exportFiles(d: Draft, pack: Json): ExportFile[] {
-  const slug = d.id.startsWith(UNIT_PREFIX) ? d.id.slice(UNIT_PREFIX.length) : slugOf(d.id);
+  const slug = d.id.startsWith(DESIGN_PREFIX)
+    ? d.id.slice(DESIGN_PREFIX.length)
+    : d.id.startsWith(UNIT_PREFIX)
+      ? d.id.slice(UNIT_PREFIX.length)
+      : slugOf(d.id);
   return [
     { path: `crates/tacsim/content/units/${slug}.json`, text: `${JSON.stringify(pack, null, 2)}\n` },
     { path: `crates/mush-pixel/looks/${slug}.json`, text: `${JSON.stringify(d.look, null, 2)}\n` },

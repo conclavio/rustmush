@@ -19,4 +19,20 @@ version: number,
  * The unit's `def` object, as `crates/tacsim/content/units/*.json`
  * carries it under its entry.
  */
-rules: JsonValue, };
+rules: JsonValue, } | { "op": "publish",
+/**
+ * The unit's definition id, `tacsim.unit.<slug>`.
+ */
+id: string,
+/**
+ * The pack's version, from 1.
+ */
+version: number,
+/**
+ * The unit's `def` object.
+ */
+rules: JsonValue,
+/**
+ * Its look, as `crates/mush-pixel/looks/*.json` carries one.
+ */
+look: JsonValue, };

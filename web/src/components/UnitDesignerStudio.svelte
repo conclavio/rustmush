@@ -59,6 +59,8 @@
   let refusals = $state<string[]>([]);
   let checkedPack = $state<Json | null>(null);
   let checkError = $state("");
+  let publishing = $state(false);
+  let published = $state("");
   let hitSection = $state<string | null>(null);
 
   let facing = $state("front_right");
@@ -161,13 +163,38 @@
     checkError = "";
     const answer = await rpc.request({ op: "check", id: draft.id, version: draft.version, rules: draft.rules });
     checking = false;
-    if (answer.status === "error") {
-      checkError = answer.message;
+    if (answer.status !== "checked") {
+      checkError = answer.status === "error" ? answer.message : "The server answered a check with a publish.";
       checkedPack = null;
       return;
     }
     refusals = answer.refusals;
     checkedPack = answer.pack;
+  }
+
+  /** **Publish** (doc 31 cut UD.3): the server checks again and keeps the
+   * design as a registry row; it is fieldable after the next restart. */
+  async function publish(): Promise<void> {
+    if (!draft || !rpc) return;
+    publishing = true;
+    checkError = "";
+    published = "";
+    const answer = await rpc.request({
+      op: "publish",
+      id: draft.id,
+      version: draft.version,
+      rules: draft.rules,
+      look: draft.look,
+    });
+    publishing = false;
+    if (answer.status === "error") {
+      checkError = answer.message;
+      return;
+    }
+    if (answer.status === "published") {
+      if (answer.refusals.length > 0) refusals = answer.refusals;
+      else published = `Published ${answer.id}@${answer.version}: fieldable after the next restart.`;
+    }
   }
 
   function download(): void {
@@ -213,6 +240,11 @@
       onclick={download}
       disabled={checkedPack === null || refusals.length > 0 || lookCheck.refusals.length > 0}
     >Export</button>
+    <button
+      type="button"
+      onclick={publish}
+      disabled={publishing || checkedPack === null || refusals.length > 0 || lookCheck.refusals.length > 0}
+    >{publishing ? "Publishing…" : "Publish"}</button>
   </div>
 
   {#if draft}
@@ -221,7 +253,7 @@
         <h3>Chassis &amp; model</h3>
         <label class="field">Id
           <input
-            value={draft.id.replace("tacsim.unit.", "")}
+            value={draft.id.replace("tacsim.unit.design.", "")}
             onchange={(e) => edit(rename(draft!, (e.currentTarget as HTMLInputElement).value))}
             aria-label="Unit id"
           />
@@ -360,6 +392,7 @@
         <h3>Checks</h3>
         {#if checkError}<p class="refusal">{checkError}</p>{/if}
         {#if checkedPack !== null && refusals.length === 0}<p class="ok">The server takes the rules.</p>{/if}
+        {#if published}<p class="ok">{published}</p>{/if}
         {#each refusals as r (r)}<p class="refusal">rules: {r}</p>{/each}
         {#each lookCheck.refusals as r (r)}<p class="refusal">look: {r}</p>{/each}
         {#each lookCheck.notes as r (r)}<p class="note">look: {r}</p>{/each}
