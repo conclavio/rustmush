@@ -1,4 +1,4 @@
-//! Listeners (doc 29 §9.2).
+//! Listeners (doc 29 §9.2, doc 33 §4.4).
 //!
 //! Each generation binds every configured address itself, with
 //! `SO_REUSEPORT` (Unix) so two generations share the port while one drains,
@@ -44,6 +44,16 @@ pub fn migrate_req_enabled() -> Option<bool> {
     std::fs::read_to_string("/proc/sys/net/ipv4/tcp_migrate_req")
         .ok()
         .map(|s| s.trim() == "1")
+}
+
+/// The startup warning when the sysctl is off
+/// (`deploy/sshdoorway/99-sshdoorway.conf` installs it box-wide).
+pub fn warn_if_migrate_req_off() {
+    if migrate_req_enabled() == Some(false) {
+        tracing::warn!(
+            "net.ipv4.tcp_migrate_req is 0: connections queued on a draining generation will be reset"
+        );
+    }
 }
 
 #[cfg(test)]

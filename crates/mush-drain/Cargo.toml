@@ -1,0 +1,20 @@
+[package]
+name = "mush-drain"
+version.workspace = true
+edition.workspace = true
+license.workspace = true
+authors.workspace = true
+description = "Doc 33 (D-33-6): the two-generation drain shared by sshdoorway and mush-gateway: the session registry and warning schedule, the kill switch, SO_REUSEPORT listeners, sd_notify, the drain marker and the signal lifecycle"
+
+# Deliberately small (doc 29 §9.5, doc 33 §4.5): tokio, futures, socket2 and
+# tracing. No russh and no game crate: what a session is comes from the daemon
+# through the `Session` trait, so the doorway's russh handle and the gateway's
+# connection handle both fit without this crate knowing either.
+[dependencies]
+tokio.workspace = true
+futures.workspace = true
+socket2.workspace = true
+tracing.workspace = true
+
+[lints]
+workspace = true

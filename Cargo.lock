@@ -2363,6 +2363,16 @@ dependencies = [
 ]
 
 [[package]]
+name = "mush-drain"
+version = "0.1.0"
+dependencies = [
+ "futures",
+ "socket2 0.6.5",
+ "tokio",
+ "tracing",
+]
+
+[[package]]
 name = "mush-economy"
 version = "0.1.0"
 dependencies = [
@@ -2907,12 +2917,12 @@ version = "0.1.0"
 dependencies = [
  "futures",
  "getrandom 0.4.3",
+ "mush-drain",
  "mush-net-ssh",
  "mush-proto",
  "mush-sshdoorway-proto",
  "russh",
  "serde",
- "socket2 0.6.5",
  "thiserror 2.0.20",
  "tokio",
  "toml",

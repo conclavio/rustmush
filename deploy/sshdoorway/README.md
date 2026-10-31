@@ -20,7 +20,8 @@ things from the owner: moving admin `sshd` off the player addresses, and a go-ah
 | `logrotate.conf` | `/etc/sshdoorway/logrotate.conf` |
 | `sshdoorway-logrotate.service`, `.timer` | `/etc/systemd/system/` (rotation every 15 minutes) |
 | `check-logging.sh` | `/opt/rustmush/sshdoorway/check-logging.sh` (the ship-time gate) |
-| `swap.sh` | `/opt/rustmush/sshdoorway/swap.sh` |
+| `swap.sh` | `/opt/rustmush/sshdoorway/swap.sh` (a thin call into the shared script below) |
+| `../drain/swap.sh` | `/opt/rustmush/drain/swap.sh` (the swap mechanism shared with the gateway, doc 33 GG.3) |
 
 ## First install (outline for DW.4)
 
@@ -60,6 +61,10 @@ Run `swap.sh`. It:
 3. lets the old generation keep serving its sessions, warning each player when 12h, 6h,
    2h, 1h, 15m and 1m remain;
 4. closes the old generation once its last session ends, or at 24 h.
+
+`swap.sh` only names the doorway's units, marker directory and checks; the mechanism is
+`deploy/drain/swap.sh`, shared with the gateway (doc 33 §4.5). It looks for the shared
+script at `../drain/swap.sh` (hence `/opt/rustmush/drain/`), or where `$DRAIN_SWAP` says.
 
 `swap.sh` refuses to start a third generation while one is still draining. With
 `swap.sh --force`, the draining generation is finished instead: one 30 s warning, then
