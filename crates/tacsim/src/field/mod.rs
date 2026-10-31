@@ -63,6 +63,7 @@ pub(crate) mod commands;
 pub mod crew;
 pub(crate) mod exit;
 pub(crate) mod ground;
+pub(crate) mod home;
 pub(crate) mod known;
 pub(crate) mod orders;
 pub(crate) mod parties;
@@ -269,6 +270,7 @@ pub fn register(reg: &mut Registrar<'_>) -> Result<(), ModError> {
     reg.state(exit::OwedExits::default());
     reg.state(crew::CrewBook::default());
     reg.state(orders::Offered::default());
+    reg.state(home::Asked::default());
     // `+field` submits the host's authoritative action: the cockpit's command lane, then the
     // module's own default restored for whatever registers after.
     reg.classify_commands(mush_core::CommandCompatibility::Authoritative);

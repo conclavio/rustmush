@@ -225,6 +225,7 @@ fn definition(paint: &[(u16, u16, TerrainCell)]) -> ArenaDefinition {
         key_spots: Vec::new(),
         waypoints: tacsim::arena::state::Waypoints::default(),
         modes: Vec::new(),
+        homes: Vec::new(),
     }
 }
 
@@ -1417,13 +1418,13 @@ const M1B0_SEAT_LINES: &[PinnedLine] = &[
     (0, r#"{"kind":"match_started"}"#, &[], 11419726640622680787),
     (
         0,
-        r#"{"kind":"mind_sealed","unit":4,"sortie":4,"mind":"Standard Doctrine","source":"a37766b55993879f","card_digest":"f2491a868a5707936f2abf1db211ed6bba20971b2c364e31433bafb33fc07f90","class":"I","governed":true,"licence":"doctrine","licence_state":"doctrine"}"#,
+        r#"{"kind":"mind_sealed","unit":4,"sortie":4,"mind":"Standard Doctrine","source":"3837c3456fbf1e3b","card_digest":"f2491a868a5707936f2abf1db211ed6bba20971b2c364e31433bafb33fc07f90","class":"I","governed":true,"licence":"doctrine","licence_state":"doctrine"}"#,
         &[],
         11_419_726_640_622_680_787,
     ),
     (
         0,
-        r#"{"kind":"mind_sealed","unit":9,"sortie":9,"mind":"Standard Doctrine","source":"a37766b55993879f","card_digest":"f2491a868a5707936f2abf1db211ed6bba20971b2c364e31433bafb33fc07f90","class":"I","governed":true,"licence":"doctrine","licence_state":"doctrine"}"#,
+        r#"{"kind":"mind_sealed","unit":9,"sortie":9,"mind":"Standard Doctrine","source":"3837c3456fbf1e3b","card_digest":"f2491a868a5707936f2abf1db211ed6bba20971b2c364e31433bafb33fc07f90","class":"I","governed":true,"licence":"doctrine","licence_state":"doctrine"}"#,
         &[],
         11_419_726_640_622_680_787,
     ),
@@ -3042,6 +3043,7 @@ fn ae2_field(walled: bool) -> ArenaDefinition {
         key_spots: Vec::new(),
         waypoints: tacsim::arena::state::Waypoints::default(),
         modes: Vec::new(),
+        homes: Vec::new(),
     }
 }
 

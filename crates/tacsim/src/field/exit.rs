@@ -66,6 +66,9 @@ pub(crate) enum Then {
         /// `+ship/lift` (else `+ship/undock`).
         lift: bool,
     },
+    /// A raider's hull under its leader's WITHDRAW (doc 32 cut CF.6b): aboard its fixture
+    /// carrier again (`super::raiders::board`).
+    Raider,
 }
 
 /// **An exit asked for** (RAM).
@@ -143,7 +146,7 @@ pub(crate) fn request(
         Then::Lift { .. } => LIFT_ASKED
             .replace("{name}", &crate::port::coop::name_of(ctx.w, unit))
             .replace("{ordinal}", &ordinal.to_string()),
-        Then::Rig { .. } | Then::Sortie { .. } => EXIT_ASKED
+        Then::Rig { .. } | Then::Sortie { .. } | Then::Raider => EXIT_ASKED
             .replace("{unit}", &unit.0.to_string())
             .replace("{ordinal}", &ordinal.to_string()),
     };
@@ -383,7 +386,7 @@ pub(crate) fn tick(ctx: &mut Ctx<'_>) {
         if let Err(error) = ran {
             let what = match asked.then {
                 Then::Lift { .. } => "departure did not file",
-                Then::Rig { .. } | Then::Sortie { .. } => "recover did not start",
+                Then::Rig { .. } | Then::Sortie { .. } | Then::Raider => "recover did not start",
             };
             ctx.out.sys_to_actor(
                 asked.requester,
@@ -422,6 +425,7 @@ fn continue_recover(ctx: &mut Ctx<'_>, unit: ObjId, then: &Then) -> Result<(), S
         Then::Lift { raw, lift } => {
             crate::port::voyage::undock_as(ctx, raw, *lift).map_err(|error| error.to_string())
         }
+        Then::Raider => super::raiders::board(ctx, unit),
     }
 }
 

@@ -119,7 +119,7 @@ pub(crate) fn pad_poses(
 }
 
 /// The cells `ring` cells from `centre` (Chebyshev), row-major; `ring 0` is the centre.
-fn ring_cells(centre: (u16, u16), ring: u16) -> Vec<(u16, u16)> {
+pub(crate) fn ring_cells(centre: (u16, u16), ring: u16) -> Vec<(u16, u16)> {
     let (cx, cy) = (i32::from(centre.0), i32::from(centre.1));
     let r = i32::from(ring);
     let mut out = Vec::new();

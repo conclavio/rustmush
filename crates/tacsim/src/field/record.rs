@@ -134,6 +134,10 @@ pub struct FieldLive {
     pub parties: Vec<FieldParty>,
     /// The units, by unit.
     pub units: Vec<FieldUnit>,
+    /// **Each party's home** (doc 32 cut CF.6b): its own carrier's ramp, the cell a `Withdraw`
+    /// drives to, fixed at admission so a resume fights on the same ground.
+    #[serde(default, skip_serializing_if = "Vec::is_empty")]
+    pub homes: Vec<crate::arena::state::EntryZone>,
 }
 
 impl FieldLive {
@@ -252,6 +256,7 @@ mod tests {
 
     fn live() -> FieldLive {
         FieldLive {
+            homes: Vec::new(),
             format: FIELD_LIVE_FORMAT,
             field: FieldId {
                 site: CanonicalId::new("ahuna_port").expect("canonical"),

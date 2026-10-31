@@ -24,7 +24,7 @@ impl Api4SealHashControl {
         )
         .expect("the retained API4 Standard source digest");
         let api6_source = tacsim::arena::snapshot::digest_from_text(
-            "a37766b55993879fecb78e4cb3e1470b27df617d7e7a5b3b8a6971c24b6e5336",
+            "3837c3456fbf1e3b8e012375a3d4e4cfcc2645d024fe203eef9359de1473a316",
         )
         .expect("the observed API6 Standard source digest");
         assert!(
