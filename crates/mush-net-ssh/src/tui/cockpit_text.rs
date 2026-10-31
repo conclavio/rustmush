@@ -86,6 +86,9 @@ pub struct Panel<'a> {
     pub cockpit: Option<&'a Value>,
     /// The camera's heading, millidegrees (the contacts' arrows).
     pub camera_mdeg: i64,
+    /// Milliseconds elapsed since the held `arena.cockpit` frame arrived
+    /// (for smooth sub-pulse weapon cooldown countdowns).
+    pub elapsed_ms: i64,
     /// Whether the terminal shows UTF-8.
     pub utf8: bool,
 }
@@ -156,7 +159,11 @@ pub fn draw_panel(
     let (armour_lines, weapon_lines, contact_lines, title) = match seated {
         Some(c) => (
             armour_rows(c, panel.utf8, usize::from(armour.height.saturating_sub(1))),
-            weapon_rows(c, panel.utf8),
+            if panel.elapsed_ms == 0 {
+                weapon_rows(c, panel.utf8)
+            } else {
+                weapon_rows_with_elapsed(c, panel.utf8, panel.elapsed_ms)
+            },
             contact_rows(c, panel.camera_mdeg, panel.utf8),
             format!(
                 "CONTACTS ({})",
@@ -540,6 +547,19 @@ pub fn armour_rows(cockpit: &Value, utf8: bool, rows: usize) -> Vec<Line<'static
 /// active standing rules and mind profile when present.
 #[must_use]
 pub fn weapon_rows(cockpit: &Value, utf8: bool) -> Vec<Line<'static>> {
+    weapon_rows_with_elapsed(cockpit, utf8, 0)
+}
+
+/// Like [`weapon_rows`], subtracting `elapsed_ms` (quantized to 100 ms steps
+/// within the 1 s pulse window) from cycling weapons' `ready_in_ms` so the
+/// countdown and 4-cell reload bar advance smoothly between server pulses.
+#[must_use]
+pub fn weapon_rows_with_elapsed(
+    cockpit: &Value,
+    utf8: bool,
+    elapsed_ms: i64,
+) -> Vec<Line<'static>> {
+    let step_ms = (elapsed_ms.clamp(0, 900) / 100) * 100;
     let mut lines = Vec::new();
     match cockpit.get("heat").filter(|h| !h.is_null()) {
         Some(h) => {
@@ -590,7 +610,12 @@ pub fn weapon_rows(cockpit: &Value, utf8: bool) -> Vec<Line<'static>> {
             .collect();
         let (rounds, rounds_max) = (num(w.get("rounds")), num(w.get("rounds_max")));
         let ready = w.get("ready").and_then(Value::as_bool) == Some(true);
-        let ms = num(w.get("ready_in_ms"));
+        let raw_ms = num(w.get("ready_in_ms"));
+        let ms = if raw_ms > 0 {
+            (raw_ms - step_ms).max(100)
+        } else {
+            raw_ms
+        };
         let (state, colour, cooldown_bar) = if rounds_max > 0 && rounds <= 0 {
             ("EMPTY".to_string(), Color::Red, None)
         } else if ready {
@@ -914,6 +939,13 @@ mod tests {
         assert_eq!(rows[0], "HEAT - (no heat model)");
         assert!(rows[1].starts_with("cannon      EMPTY"), "{rows:?}");
         assert_eq!(rows[3], "> Sniper  RULES S1:fire");
+
+        // Sub-pulse elapsed_ms counts down cycling weapons in 100ms steps.
+        let sub = texts(&weapon_rows_with_elapsed(&c, true, 450));
+        assert_eq!(
+            sub[2],
+            "machine_gun 0.5s   380/500   21% \u{2588}\u{2588}\u{2588}\u{2588}"
+        );
     }
 
     /// Nearest first, an arrow for where each lies from the camera (the

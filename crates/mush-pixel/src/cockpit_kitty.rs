@@ -54,7 +54,8 @@ use crate::bake::{self, material_from_code};
 use crate::caps::CellSize;
 use crate::cockpit::{
     ANIMATION_DRAWS, ARENA_MAP_FEED, COCKPIT_FEED, CockpitPicture, INSET_UP, camera,
-    canopy_glass_from, contact_sprite_at_bearing_range, eye_at_cam_cm, hud, sensor_height_cm,
+    canopy_glass_from_with_zoom, contact_sprite_at_bearing_range, eye_at_cam_cm, hud,
+    sensor_height_cm,
 };
 use crate::frame::{Frame, Rgb};
 use crate::fx::{self, CombatFxKind};
@@ -704,7 +705,8 @@ fn render_hud_rgba(
         ^ ((h as u64) << 32)
         ^ ((hud_no_box.heading_mdeg / 1_000) as u64)
         ^ (((hud_no_box.hull_mdeg / 1_000) as u64) << 12)
-        ^ ((hud_no_box.speed_kph as u64) << 24);
+        ^ ((hud_no_box.speed_kph as u64) << 24)
+        ^ (u64::from(hud_no_box.zoom_permille) << 36);
     if let Some(ord) = hud_no_box.ordered_mdeg {
         sig = sig.wrapping_mul(0x0100_0000_01b3) ^ ((ord / 1_000) as u64);
     }
@@ -764,11 +766,19 @@ fn render_fp_lock_rgba(
     box_w: usize,
     box_h: usize,
     label: &str,
+    lead_px: i64,
     s: usize,
 ) -> (usize, usize, Vec<u8>) {
     let s_i = s.max(1) as i64;
     let lw = (label.len() as i64 * 6 * s_i).max(16);
-    let inner_w = (box_w as i64).max(lw + 4 * s_i) as usize;
+    let lead_pad = if lead_px != 0 {
+        (lead_px.abs() + 6) * 2 * s_i
+    } else {
+        0
+    };
+    let inner_w = (box_w as i64)
+        .max(lw + 4 * s_i)
+        .max(box_w as i64 + lead_pad) as usize;
     let inner_h = box_h + (12 * s.max(1));
     let img_w = inner_w + 2 * SHEET_PAD_X;
     let img_h = inner_h + 2 * SHEET_PAD_Y;
@@ -782,6 +792,21 @@ fn render_fp_lock_rgba(
     let bh = box_h as i64;
     overlay::outline_rect(&mut frame, bx, by, bw, bh, overlay::LOCK);
     overlay::outline_rect(&mut frame, bx + 1, by + 1, bw - 2, bh - 2, overlay::LOCK);
+    if lead_px != 0 {
+        let mid_x = bx + bw / 2;
+        let mid_y = by + bh / 2;
+        let pip_x = (mid_x + lead_px * s_i).clamp(3 * s_i, img_w as i64 - 4 * s_i);
+        overlay::line(&mut frame, mid_x, mid_y, pip_x, mid_y, overlay::LOCK);
+        overlay::outline_rect(
+            &mut frame,
+            pip_x - 2 * s_i,
+            mid_y - 2 * s_i,
+            5 * s_i,
+            5 * s_i,
+            overlay::LOCK,
+        );
+        overlay::fill_rect(&mut frame, pip_x, mid_y, s_i, s_i, overlay::YOU);
+    }
 
     let lx = (SHEET_PAD_X as i64 + (inner_w as i64 - lw) / 2).max(0);
     let ly = by + bh + 2 * s_i;
@@ -800,9 +825,16 @@ fn render_canopy_glass_rgba(w: usize, h: usize, glass: &CanopyGlass) -> (u64, Ve
         ^ (((glass.look_mdeg / 1_000) as u64) & 0xFFFF)
         ^ (u64::from(glass.power_on) << 16)
         ^ (u64::from(glass.weapons_free) << 17)
-        ^ (u64::from(glass.damage) << 20);
+        ^ (u64::from(glass.overheated) << 18)
+        ^ (u64::from(glass.damage) << 20)
+        ^ (u64::from(glass.hull_pct) << 24)
+        ^ (u64::from(glass.heat_pct.unwrap_or(255)) << 32)
+        ^ (u64::from(glass.zoom_permille) << 40);
     if let Some(des) = &glass.lock_designator {
         sig = sig.wrapping_mul(0x0100_0000_01b3) ^ fnv1a(des.as_bytes());
+    }
+    for &(rdy, pct) in &glass.weapon_pips {
+        sig = sig.wrapping_mul(0x0100_0000_01b3) ^ u64::from(pct) ^ (u64::from(rdy) << 8);
     }
 
     let mut frame = Frame::new(w, h);
@@ -1010,6 +1042,21 @@ impl CockpitPicture {
         let (jolt_dx, jolt_dy) = fx::combat_jolt_px(&self.active_fx, jolt_scale);
         let src_x =
             u32::try_from((src_x as i32 + jolt_dx).clamp(0, vp.width_px as i32)).unwrap_or(src_x);
+        let zoom_pm = u32::from(look.zoom_permille.clamp(1000, 2000));
+        let vp_w_u32 = u32::try_from(vp.width_px).unwrap_or(640);
+        let vp_h_u32 = u32::try_from(vp.height_px).unwrap_or(360);
+        let world_src_w = if zoom_pm > 1000 {
+            ((vp_w_u32 * 1000) / zoom_pm).max(32)
+        } else {
+            vp_w_u32
+        };
+        let world_src_h = if zoom_pm > 1000 {
+            ((vp_h_u32 * 1000) / zoom_pm).max(32)
+        } else {
+            vp_h_u32
+        };
+        let world_src_x = src_x + vp_w_u32.saturating_sub(world_src_w) / 2;
+        let world_src_y = vp_h_u32.saturating_sub(world_src_h) / 2;
 
         let world_p = Placement {
             image_id: self.kitty.world_image_id,
@@ -1020,10 +1067,10 @@ impl CockpitPicture {
             rows: vp.rows,
             cell_x: 0,
             cell_y: 0,
-            src_x,
-            src_y: 0,
-            src_w: u32::try_from(vp.width_px).unwrap_or(640),
-            src_h: u32::try_from(vp.height_px).unwrap_or(360),
+            src_x: world_src_x,
+            src_y: world_src_y,
+            src_w: world_src_w,
+            src_h: world_src_h,
             z: Z_FP_WORLD,
         };
         if self.kitty.last_world_placement != Some(world_p) {
@@ -1091,9 +1138,19 @@ impl CockpitPicture {
                     continue;
                 };
 
-                let vp_screenx = at.screenx - (src_x as f32);
-                if vp_screenx + at.width * 0.5 < 0.0
-                    || vp_screenx - at.width * 0.5 >= vp.width_px as f32
+                let zf = if look.zoom_permille > 1000 {
+                    f32::from(look.zoom_permille.clamp(1000, 2000)) * 0.001
+                } else {
+                    1.0
+                };
+                let vp_cx = vp.width_px as f32 * 0.5;
+                let vp_cy = vp.height_px as f32 * 0.5;
+                let vp_screenx = vp_cx + ((at.screenx - (src_x as f32)) - vp_cx) * zf;
+                let eff_bottom = vp_cy + (at.bottom - vp_cy) * zf;
+                let eff_width = at.width * zf;
+                let eff_height = at.height * zf;
+                if vp_screenx + eff_width * 0.5 < 0.0
+                    || vp_screenx - eff_width * 0.5 >= vp.width_px as f32
                 {
                     continue;
                 }
@@ -1104,15 +1161,15 @@ impl CockpitPicture {
                     cdes.map(str::to_owned),
                     is_locked,
                     vp_screenx.round() as i32,
-                    (at.bottom - at.height * 0.5).round() as i32,
-                    (at.height * 0.35).round().clamp(8.0, 26.0) as i32,
+                    (eff_bottom - eff_height * 0.5).round() as i32,
+                    (eff_height * 0.35).round().clamp(8.0, 26.0) as i32,
                 ));
                 let (is_wreck, has_low_hp, is_crippled) = fx::contact_damage_state(c);
-                if (is_wreck || has_low_hp || is_crippled) && at.height >= 6.0 {
+                if (is_wreck || has_low_hp || is_crippled) && eff_height >= 6.0 {
                     plume_targets.push((
                         vp_screenx.round() as i32,
-                        (at.bottom - at.height).round() as i32,
-                        at.height.round() as i32,
+                        (eff_bottom - eff_height).round() as i32,
+                        eff_height.round() as i32,
                         is_wreck,
                     ));
                 }
@@ -1143,16 +1200,16 @@ impl CockpitPicture {
                     }
                 }
 
-                let faint = at.height < MARK_FAR_PX || fog_step(at.fog_depth) >= FOG_STEPS * 2 / 3;
+                let faint = eff_height < MARK_FAR_PX || fog_step(at.fog_depth) >= FOG_STEPS * 2 / 3;
                 if vis_rows == 0 || faint {
                     let least = if vis_rows == 0 {
                         MARK_MIN_PX
                     } else {
                         MARK_FAR_PX
                     };
-                    let bw = at.width.max(least);
-                    let bh = at.height.max(least);
-                    let cy = at.bottom - at.height * 0.5;
+                    let bw = eff_width.max(least);
+                    let bh = eff_height.max(least);
+                    let cy = eff_bottom - eff_height * 0.5;
                     faint_brackets.push(FaintBracket {
                         x: vp_screenx - bw * 0.5,
                         y: cy - bh * 0.5,
@@ -1160,7 +1217,7 @@ impl CockpitPicture {
                         h: bh,
                         kind: sprite.kind,
                     });
-                    if vis_rows == 0 || at.height < 2.0 {
+                    if vis_rows == 0 || eff_height < 2.0 {
                         continue;
                     }
                 }
@@ -1173,7 +1230,7 @@ impl CockpitPicture {
                 let Some((chain, height_cm)) = bake::art_chain_for_view(art, view) else {
                     continue;
                 };
-                let px_per_m = at.height / (height_cm.max(1) as f32 / 100.0);
+                let px_per_m = eff_height / (height_cm.max(1) as f32 / 100.0);
                 let Some((size_idx_usize, sized)) = chain.pick(px_per_m) else {
                     continue;
                 };
@@ -1201,12 +1258,13 @@ impl CockpitPicture {
                 };
                 let n = i32::from(sized.size);
                 let sx_i = vp_screenx.round() as i32;
-                let sy_i = at.bottom.round() as i32;
+                let sy_i = eff_bottom.round() as i32;
                 let top_left_x = sx_i - i32::from(f.anchor.0);
                 let top_left_y = sy_i - i32::from(f.anchor.1);
 
                 // Clip bottom at `max_vis_y` when partially hull-down behind a ridge.
-                let clip_bottom = (max_vis_y as i32 + 2).min(top_left_y + n);
+                let eff_max_vis_y = (vp_cy + (max_vis_y as f32 - vp_cy) * zf).round() as i32;
+                let clip_bottom = (eff_max_vis_y + 2).min(top_left_y + n);
                 let vis_h_px = (clip_bottom - top_left_y).clamp(1, n);
 
                 let stride_x = n + SHEET_PAD_X as i32;
@@ -1315,7 +1373,18 @@ impl CockpitPicture {
         }
 
         // 4. Layer 4: Retained Flight HUD Overlay (`IMAGE_ID_FP_HUD = 143`, `z = -3`).
-        let hud_model = hud(&dummy_frame, arena, terrain, eye, cockpit, look, &cam);
+        let mut hud_model = hud(&dummy_frame, arena, terrain, eye, cockpit, look, &cam);
+        if self.contact_tracker.anim_tick() > 0
+            && let Some(lock) = hud_model.lock.as_mut()
+            && let Some((ci, c)) = contacts
+                .iter()
+                .enumerate()
+                .find(|(_, c)| lock_id.is_some() && c.get("id").and_then(Value::as_str) == lock_id)
+        {
+            lock.lead_px = self
+                .contact_tracker
+                .contact_lateral_lead_px(c, ci, cam.heading_mdeg);
+        }
         let (hud_sig, hud_rgba) =
             render_hud_rgba(vp.width_px, vp.height_px, &hud_model, &faint_brackets);
         if !self.kitty.hud_uploaded || self.kitty.last_hud_sig != hud_sig {
@@ -1357,9 +1426,13 @@ impl CockpitPicture {
             if let Some(pct) = lock.percent {
                 label.push_str(&format!(" {pct}%"));
             }
-            let lock_sig = ((q_bw as u64) << 48) ^ ((q_bh as u64) << 32) ^ fnv1a(label.as_bytes());
+            let lock_sig = ((q_bw as u64) << 48)
+                ^ ((q_bh as u64) << 32)
+                ^ ((lock.lead_px as u64 & 0xFFFF) << 16)
+                ^ fnv1a(label.as_bytes());
             if !self.kitty.lock_uploaded || self.kitty.last_lock_sig != lock_sig {
-                let (lw_px, lh_px, lock_rgba) = render_fp_lock_rgba(q_bw, q_bh, &label, s);
+                let (lw_px, lh_px, lock_rgba) =
+                    render_fp_lock_rgba(q_bw, q_bh, &label, lock.lead_px, s);
                 let png = png::encode_rgba(lw_px, lh_px, &lock_rgba);
                 kitty::transmit_bytes(&mut ops, &png, IMAGE_ID_FP_LOCK);
                 self.kitty.lock_uploaded = true;
@@ -1407,7 +1480,7 @@ impl CockpitPicture {
         // 6. Layer 6: Retained RGBA Canopy Glass Overlay (`IMAGE_ID_FP_GLASS = 145`, `z = -1`).
         if glass_on {
             let jolted_look = look_mdeg + i64::from(jolt_dx - jolt_dy) * 1_500;
-            let glass = canopy_glass_from(cockpit, jolted_look);
+            let glass = canopy_glass_from_with_zoom(cockpit, jolted_look, look.zoom_permille);
             let (glass_sig, glass_rgba) =
                 render_canopy_glass_rgba(vp.width_px, vp.height_px, &glass);
             if !self.kitty.glass_uploaded || self.kitty.last_glass_sig != glass_sig {
@@ -1465,12 +1538,24 @@ impl CockpitPicture {
             let mut max_x = 0i32;
             let mut min_y = vp.height_px as i32;
             let mut max_y = 0i32;
+            let threat_arc =
+                fx::resolve_threat_arc_mdeg(cockpit, &self.active_fx, cam.heading_mdeg);
+            let arc_r = (vp.width_px.min(vp.height_px) as i32 / 4).clamp(20, 64);
 
             if !self.active_fx.is_empty() {
-                min_x = min_x.min((gun_x - 36).min(struck_x - 36).max(0));
-                max_x = max_x.max((gun_x + 36).max(struck_x + 36).min(vp.width_px as i32 - 1));
-                min_y = min_y.min((gun_y - 36).min(struck_y - 36).max(0));
-                max_y = max_y.max((gun_y + 36).max(struck_y + 36).min(vp.height_px as i32 - 1));
+                let pad_r = if threat_arc.is_some() { arc_r + 12 } else { 36 };
+                min_x = min_x.min((gun_x - 36).min(struck_x - pad_r).max(0));
+                max_x = max_x.max(
+                    (gun_x + 36)
+                        .max(struck_x + pad_r)
+                        .min(vp.width_px as i32 - 1),
+                );
+                min_y = min_y.min((gun_y - 36).min(struck_y - pad_r).max(0));
+                max_y = max_y.max(
+                    (gun_y + 36)
+                        .max(struck_y + pad_r)
+                        .min(vp.height_px as i32 - 1),
+                );
             }
 
             for fx_item in &self.active_fx {
@@ -1532,6 +1617,9 @@ impl CockpitPicture {
                         (struck_x, struck_y),
                         &mut put,
                     );
+                }
+                if let Some((rel_mdeg, severe)) = threat_arc {
+                    fx::draw_threat_arc(struck_x, struck_y, arc_r, rel_mdeg, severe, &mut put);
                 }
             }
 
