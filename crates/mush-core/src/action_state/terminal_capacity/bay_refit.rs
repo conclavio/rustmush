@@ -1,5 +1,5 @@
 //! Fixed paid bay refit completion capacity (doc 31 cut UD.4b): the sibling of
-//! [`core_refit`](super::core_refit) for a component refit in a facility bay.
+//! [`core_refit`] for a component refit in a facility bay.
 //! A hull is held in the bay from Accept to Install or Cancel; the part fitted
 //! comes from an Inventory lot held for the order, and the part taken out goes
 //! back to the same stores as a new lot. Payment, the physical part and the
