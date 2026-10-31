@@ -2498,7 +2498,7 @@ fn shipped_draft(short_id: &str) -> Option<Result<GroundDraft, GroundError>> {
 ///    `tacsim.pack.<id>`).
 /// 2. Hot-loads `tacsim.pack.<id>` into [`crate::store::TacsimStore`] via
 ///    [`crate::store::TacsimStore::stage_pack`] and records its ledger row via
-///    [`crate::store::put_pack`].
+///    `crate::store::put_pack`.
 /// 3. Places both packs onto the [`mush_atlas::AtlasState`] shelf via
 ///    [`mush_atlas::stage_pack`] and computes their [`mush_content::plan`]
 ///    fingerprints.
