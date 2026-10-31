@@ -74,6 +74,9 @@ pub enum LlmFeature {
     TacsimDeliberate,
     /// A staff smoke/test call.
     StaffTool,
+    /// Doc 34 cut CS.0a (D-34-8): the staff Content Studio's structured LLM
+    /// co-authoring pass (route `content_assist`).
+    ContentAssist,
 }
 
 impl LlmFeature {
@@ -95,6 +98,7 @@ impl LlmFeature {
             LlmFeature::StInterpret => "st_interpret",
             LlmFeature::TacsimDeliberate => "tacsim_deliberate",
             LlmFeature::StaffTool => "staff_tool",
+            LlmFeature::ContentAssist => "content_assist",
         }
     }
 }

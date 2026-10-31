@@ -8,13 +8,14 @@
   // attribute-set path. See $lib/worldgen.ts for the payload contract this
   // renders against and web/README.md for the full writeup.
   import type { GameApp } from "$lib/game.svelte";
+  import ContentStudio from "./ContentStudio.svelte";
   import MapEditorStudio from "./MapEditorStudio.svelte";
   import UnitDesignerStudio from "./UnitDesignerStudio.svelte";
 
   let { app }: { app: GameApp } = $props();
 
   const wg = $derived(app.worldgen);
-  let buildTab = $state<"studio" | "units" | "drafts">("studio");
+  let buildTab = $state<"studio" | "units" | "content" | "drafts">("studio");
 
   let retrying = $state(false);
   let guidance = $state("");
@@ -70,6 +71,16 @@
     <button
       type="button"
       role="tab"
+      aria-selected={buildTab === "content"}
+      class="subnav-tab"
+      class:active={buildTab === "content"}
+      onclick={() => (buildTab = "content")}
+    >
+      Content Studio
+    </button>
+    <button
+      type="button"
+      role="tab"
       aria-selected={buildTab === "drafts"}
       class="subnav-tab"
       class:active={buildTab === "drafts"}
@@ -90,6 +101,11 @@
     <!-- Doc 31 cut UD.2: staff only — the server refuses anyone else's check. -->
     <div class="studio-wrap">
       <UnitDesignerStudio {app} />
+    </div>
+  {:else if buildTab === "content"}
+    <!-- Doc 34 cut CS.0a: staff Content Studio — server-checked packs and tables. -->
+    <div class="studio-wrap">
+      <ContentStudio {app} />
     </div>
   {:else}
 <div class="worldgen">

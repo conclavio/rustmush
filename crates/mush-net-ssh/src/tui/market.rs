@@ -1583,7 +1583,9 @@ impl MarketDesk {
             let closing = self.pending.take().and_then(|p| p.closing);
             match result {
                 InvokeResult::Mind(response) => self.market_reply(response, closing),
-                InvokeResult::LegalAction(_) | InvokeResult::UnitDesign(_) => {
+                InvokeResult::LegalAction(_)
+                | InvokeResult::UnitDesign(_)
+                | InvokeResult::ContentStudio(_) => {
                     self.close_market_form();
                     self.say(UNEXPECTED);
                 }
@@ -1598,7 +1600,9 @@ impl MarketDesk {
             InvokeResult::LegalAction(response) => action_sentence(response),
             // Never from a conforming gateway; the offer stays blocked, since
             // nothing proves the submission did not land.
-            InvokeResult::Mind(_) | InvokeResult::UnitDesign(_) => {
+            InvokeResult::Mind(_)
+            | InvokeResult::UnitDesign(_)
+            | InvokeResult::ContentStudio(_) => {
                 let (sentence, _) =
                     action_sentence(&LegalActionResponse::Unavailable { reference: None });
                 (sentence, true)

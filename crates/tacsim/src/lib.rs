@@ -112,6 +112,7 @@ pub mod commands;
 pub mod composition;
 pub mod config;
 pub mod content;
+pub mod content_studio;
 /// 16b cut C.2 (C1, C3, C4): **the game's typed definitions and the content it
 /// ships** (doc 16 §3.3, §3.5, §3.6, §4, §7).
 ///
@@ -970,6 +971,8 @@ impl GameModule for TacsimRuleset {
         // Doc 31 cut UD.2: the staff unit designer's `unit_design` invoke —
         // a design's rules checked by the loader and catalogue build above.
         design::register(reg)?;
+        // Doc 34 cut CS.0a: the staff content studio's `content_studio` invoke.
+        content_studio::register(reg)?;
         // 16b cut T.2: the arena's world side — the `arena.cockpit` and
         // `arena.map` feeds (16b cut Q.3 named the first for doc 16 and added the
         // second), the

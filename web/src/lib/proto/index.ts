@@ -9,6 +9,8 @@ export type * from "./ClientKind";
 export type * from "./Color";
 export type * from "./ColorDepth";
 export type * from "./CommandLink";
+export type * from "./ContentStudioRequest";
+export type * from "./ContentStudioResponse";
 export type * from "./Envelope";
 export type * from "./ExitRef";
 export type * from "./InputMode";

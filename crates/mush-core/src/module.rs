@@ -1297,9 +1297,10 @@ pub trait InterfaceAbilityProvider: Send + Sync {
 }
 
 /// The `mush_proto::InvokeRequest` services a module may register a handler
-/// for ([`Registrar::invoke_handler`]): `mind`, and since doc 31 cut UD.2
-/// `unit_design`. `legal_action` is gateway-owned and never a module's.
-pub const MODULE_INVOKE_FAMILIES: [&str; 2] = ["mind", "unit_design"];
+/// for ([`Registrar::invoke_handler`]): `mind`, since doc 31 cut UD.2
+/// `unit_design`, and since doc 34 cut CS.0a `content_studio`. `legal_action`
+/// is gateway-owned and never a module's.
+pub const MODULE_INVOKE_FAMILIES: [&str; 3] = ["mind", "unit_design", "content_studio"];
 
 /// A closed typed service invoked with its registering module's normal Ctx.
 /// The engine verifies a live connection before entry; asynchronous owners must

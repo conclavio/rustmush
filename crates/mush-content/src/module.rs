@@ -214,6 +214,24 @@ impl GameModule for ContentModule {
     }
 }
 
+/// Run every pre-mutation check against this world's latches and composed appliers
+/// without writing anything (doc 34 cut CS.0a).
+///
+/// # Errors
+///
+/// [`ApplyError`] for any refusal `apply_pack` would return before mutating the world.
+pub fn check_pack(ctx: &Ctx<'_>, pack: &Pack) -> Result<crate::apply::Plan, ApplyError> {
+    let Some(slot) = ctx.w.module_state::<ContentState>() else {
+        return Err(ApplyError::Held {
+            pack: format!(
+                "{} (no content state slot on this world)",
+                pack.manifest().id()
+            ),
+        });
+    };
+    crate::apply::check_pack(ctx, &slot.latches, &slot.appliers, pack)
+}
+
 /// Apply `pack` against this world's latches with the composed appliers.
 ///
 /// The apply works on a copy of the latches (it needs both the world and latches
