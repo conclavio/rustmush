@@ -155,8 +155,12 @@ fn tick(ctx: &mut Ctx<'_>, _tag: &str, _scene: Option<SceneId>) {
             || matches!(flight.phase, Phase::Field | Phase::Returning)
                 && facts::in_bay(ctx.w, &flight);
         if !already {
+            // An unlaunched departure waits once the operation stops standing, ended or
+            // deactivated: deactivation moves nothing, and the organizer's `+sortie/cancel`
+            // closes it (DT-2's residual edge).
             if flight.phase == Phase::Field
-                || op.ended.is_some() && flight.phase == Phase::Departing
+                || flight.phase == Phase::Departing
+                    && !super::prepare::standing(&mut &*ctx, &h, &op).unwrap_or(false)
                 || !facts::pending_can_move(ctx.w, &op.roster, &flight, contract)
             {
                 continue;

@@ -81,8 +81,15 @@ fn visit(
     let Ok(op) = super::prepare::operation(&mut &*ctx, h, flight.operation) else {
         return Step::Idle;
     };
-    if op.ended.is_some() {
+    // DT-2/DT-3: `+sortie/end` and deactivation leave the flight open. Off a running field the
+    // NPC stops any run and brings its unit home on its own; inside one the field host still
+    // decides once the operation ended (doc 32), and a deactivated field keeps its orders.
+    let in_field = crate::field::field_of_unit(ctx.w, unit).is_some();
+    if op.ended.is_some() && in_field {
         return Step::Idle;
+    }
+    if !in_field && !super::prepare::standing(&mut &*ctx, h, &op).unwrap_or(false) {
+        return wind_down(ctx, fire, unit, actor, &flight);
     }
     let Some(saved) = op.command.as_deref() else {
         return Step::Idle;
@@ -123,18 +130,7 @@ fn visit(
                 f.sequence == sequence && f.flight == flight.key && f.site == flight.site
             });
     // An expired/replaced task may stop its old run, but admits no new work.
-    let record = ctx
-        .w
-        .module_state::<crate::port::PortHandles>()
-        .and_then(|p| {
-            ctx.action_state(
-                &p.families.excursions,
-                &crate::surface::excursion::RigKey(unit),
-            )
-            .ok()
-            .flatten()
-        })
-        .cloned();
+    let record = record_of(ctx, unit);
     let same = record
         .as_ref()
         .and_then(|r| r.field_work.as_deref())
@@ -266,8 +262,8 @@ fn visit(
             return Step::Held;
         }
         return dispatch(ctx, fire, unit, actor, |ctx| {
-            let mut rig =
-                super::surface::rig(ctx).ok_or_else(|| "Physical crew unavailable.".to_owned())?;
+            let mut rig = super::surface::rig_of(ctx, unit)
+                .ok_or_else(|| "Physical crew unavailable.".to_owned())?;
             // Safety stop is legal even when the old task is expired/unsupported.
             if valid && supported && !negative && !failed {
                 rig.field_order = Some(sequence);
@@ -317,8 +313,8 @@ fn visit(
     }
     dispatch(ctx, fire, unit, actor, |ctx| {
         let result = (|| -> Result<bool, String> {
-            let mut rig =
-                super::surface::rig(ctx).ok_or_else(|| "Physical crew unavailable.".to_owned())?;
+            let mut rig = super::surface::rig_of(ctx, unit)
+                .ok_or_else(|| "Physical crew unavailable.".to_owned())?;
             rig.field_order = Some(sequence);
             let stand = act::stand_of(ctx.w, actor, &rig).map_err(|r| r.line())?;
             // Ground building belongs to the existing warm pass, never the NPC walk.
@@ -371,6 +367,68 @@ fn visit(
                 Ok(true)
             }
         }
+    })
+}
+
+fn record_of(ctx: &Ctx<'_>, unit: ObjId) -> Option<crate::surface::excursion::RigRecord> {
+    ctx.w
+        .module_state::<crate::port::PortHandles>()
+        .and_then(|p| {
+            ctx.action_state(
+                &p.families.excursions,
+                &crate::surface::excursion::RigKey(unit),
+            )
+            .ok()
+            .flatten()
+        })
+        .cloned()
+}
+
+/// **The way home once the operation stops standing** (DT-2/DT-3): no task admits new work, so
+/// the safety stop ends a live run and an untasked recover drives the unit back to its bay;
+/// the flight closes there and a loaded hopper's queued unload follows.
+fn wind_down(
+    ctx: &mut Ctx<'_>,
+    fire: &mut Fire,
+    unit: ObjId,
+    actor: ObjId,
+    flight: &super::Flight,
+) -> Step {
+    let record = record_of(ctx, unit);
+    if record
+        .as_ref()
+        .is_some_and(|r| r.act.is_some() || r.queued.is_some())
+    {
+        return Step::Held;
+    }
+    if let Some(run) = record.as_ref().and_then(|r| r.run.as_ref()) {
+        if run.stop {
+            return Step::Held;
+        }
+        return dispatch(ctx, fire, unit, actor, |ctx| {
+            let rig = super::surface::rig_of(ctx, unit)
+                .ok_or_else(|| "Physical crew unavailable.".to_owned())?;
+            act::mine_stop_cmd(ctx, &rig).map_err(|e| e.to_string())
+        });
+    }
+    if flight.phase != Phase::Field || super::facts::in_bay(ctx.w, flight) {
+        return Step::Idle;
+    }
+    dispatch(ctx, fire, unit, actor, |ctx| {
+        let rig = super::surface::rig_of(ctx, unit)
+            .ok_or_else(|| "Physical crew unavailable.".to_owned())?;
+        let stand = act::stand_of(ctx.w, actor, &rig).map_err(|r| r.line())?;
+        let mut peeks = crate::surface::Peeks::default();
+        if matches!(
+            crate::surface::peek_home(ctx.w, &stand.site, stand.ramp_cell, &mut peeks),
+            crate::surface::HomePeek::Cold
+        ) {
+            crate::surface::want_site_ground(ctx.w, &stand.site);
+            crate::surface::want_home(ctx.w, &stand.site, stand.ramp_cell);
+            return Ok(false);
+        }
+        act::act_cmd(ctx, &rig, ActKind::Recover, false, true, None).map_err(|e| e.to_string())?;
+        Ok(true)
     })
 }
 

@@ -185,6 +185,16 @@ pub(super) fn operation(
     }
     Ok(row)
 }
+/// The operation is still in force: not ended, and its accepted activation is
+/// the current one (deactivation closes the active record and deletes the
+/// reservations, but leaves the open flights and this record).
+pub(super) fn standing(
+    read: &mut impl Read,
+    h: &SortieHandles,
+    op: &OperationRecord,
+) -> Result<bool, String> {
+    Ok(op.ended.is_none() && read.get(&h.active, &op.id.reference())?.as_ref() == Some(&op.roster))
+}
 pub(super) fn current(
     read: &mut impl Read,
     h: &SortieHandles,

@@ -434,6 +434,13 @@ pub(crate) fn require_available(
     }
     Ok(())
 }
+/// [`require_available`] for a command's read (DT-4: `+tv/lease return` and the
+/// bay repossession): an unreadable row counts as unavailable.
+pub(crate) fn ctx_available(ctx: &Ctx<'_>, unit: ObjId) -> bool {
+    ctx.w
+        .module_state::<SortieHandles>()
+        .is_none_or(|h| available(&mut &*ctx, h, unit).unwrap_or(false))
+}
 pub(crate) fn offer_available(engine: &Engine, unit: ObjId) -> bool {
     engine
         .world

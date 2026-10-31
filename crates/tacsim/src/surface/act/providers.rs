@@ -684,6 +684,7 @@ impl SurfaceActProvider {
                         ..
                     }
                 ),
+                crate::detachment::sortie::surface::recovery_act(word),
             )?)
         } else {
             None
