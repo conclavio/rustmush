@@ -7,7 +7,7 @@ economic facts needed to activate a mission.
 **Owner correction, 2026-10-29:** current containment in the carrier is the
 personnel eligibility rule, checked at preparation and launch. Embarkation
 intervals, departure manifests and complete movement coverage are not prerequisites.
-Docs 26g–26j are superseded and must not be extended; their code was removed on 2026-10-31 by PR #PRNUM (last on `main` at `61a670ce`).
+Docs 26g–26j are superseded and must not be extended; their code was removed on 2026-10-31 by PR #262 (last on `main` at `61a670ce`).
 
 | Slice | Deliverable | Admission boundary |
 |---|---|---|
@@ -15,7 +15,7 @@ Docs 26g–26j are superseded and must not be extended; their code was removed o
 | DT.2b2a | Prepared structural movement foundation | Core object images and the canonical Sim placement patch commit together; no personnel eligibility yet |
 | DT.2b2b.1 | Immutable personnel crossing capture | Same-commit physical evidence is explicitly uncertified while legacy paths remain; no intervals or eligibility |
 | DT.2b2b.2 | Prepared staff interior authoring | `@spatial/space` commits its real topology and crossing capture together; no synchronous fallback |
-| DT.2b2b.3a–3d | Superseded movement work in docs 26g–26j; do not extend | Code removed 2026-10-31 (PR #PRNUM); no DT dependency |
+| DT.2b2b.3a–3d | Superseded movement work in docs 26g–26j; do not extend | Code removed 2026-10-31 (PR #262); no DT dependency |
 | DT.2b2b.3e+ | Withdrawn movement-coverage, interval and departure-manifest programme | No further coverage work required for NPC eligibility or contracts |
 | DT.2b3 | Hire a real NPC at port under a contract record | Existing character, accepted terms and mission scope; later wages accrue from the contract, not aboard-time evidence |
 | DT.2b4 | Preparation and activation of the six slots | Resolve who is currently in the hull; live authority, consent, licences, exclusive reservations and accepted mission-role grants |

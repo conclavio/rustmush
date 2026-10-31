@@ -12,7 +12,7 @@ review dates below record history; they do not reinstate those requirements.
 
 Docs [26g](26g-locomotion-admission.md), [26h](26h-locomotion-dispatch.md),
 [26i](26i-locomotion-transition.md) and [26j](26j-movement-completion.md) are
-superseded and must not be extended; their code was removed on 2026-10-31 by PR #PRNUM (last on `main` at `61a670ce`).
+superseded and must not be extended; their code was removed on 2026-10-31 by PR #262 (last on `main` at `61a670ce`).
 Superseding these requirements is a delivery-scope decision, not a finding that
 the engineering work is incorrect. Preserve the work for reconsideration after
 the core systems support surface deployment and mining. Any later adoption or

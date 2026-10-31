@@ -1,7 +1,7 @@
 # DT.2b2b.3d — Durable ordinary movement completion
 
 > **Removed 2026-10-31 (owner ruling).** The code this document describes was
-> deleted by PR #PRNUM. The last `main` commit that has it is `61a670ce`; recover a
+> deleted by PR #262. The last `main` commit that has it is `61a670ce`; recover a
 > file with `git show 61a670ce:<path>`. It was superseded by the owner's 2026-10-29
 > correction: [doc 27 FO-16](27-ic-field-operations-design-and-survey.md) requires
 > current containment at preparation and launch, with no embarkation intervals or

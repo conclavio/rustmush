@@ -285,7 +285,7 @@ of the same CI step, `kill9_mid_play_world_survives_redis_gated` and
   up to one cadence". With a 10 s cadence under a 30 s threshold the difference never changes
   the decision, so a checkpoint forced into the shutdown tail is a follow-up.
 - **The K3 prepared-action lane carried no checkpoint** (WC-1; fixed 2026-10-31 by PR
-  #PRNUM). `flush_prepared_action` sends a closed, self-hashed `AuthoritativeBundle` (typed
+  #262). `flush_prepared_action` sends a closed, self-hashed `AuthoritativeBundle` (typed
   `ReplayWrite`s, no module ops), so a crash between an authoritative action commit and the
   next legacy batch was measured from the last checkpoint, and an IC stamp inside that bundle
   could lie up to one cadence ahead of the re-anchored clock. The fix leaves the bundle
