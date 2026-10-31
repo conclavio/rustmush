@@ -117,12 +117,13 @@ pub struct FoldState {
         skip_serializing_if = "crate::core_refit::receipt::RefitReceiptAudit::uninitialized"
     )]
     pub(crate) refit_receipts: crate::core_refit::receipt::RefitReceiptAudit,
-    /// Doc 31 UD.4b: the bay refit's fee histories.
+    /// Doc 31 UD.4b: the bay refit's fee histories, boxed so the fold (held
+    /// by value in the boot frame) stays under the M7 stack bound.
     #[serde(
         default,
-        skip_serializing_if = "crate::bay_refit::receipt::BayReceiptAudit::uninitialized"
+        skip_serializing_if = "crate::bay_refit::receipt::BayReceiptAudit::uninitialized_box"
     )]
-    pub(crate) bay_refit_receipts: crate::bay_refit::receipt::BayReceiptAudit,
+    pub(crate) bay_refit_receipts: Box<crate::bay_refit::receipt::BayReceiptAudit>,
     #[serde(
         default,
         skip_serializing_if = "crate::registry_filing::update::UpdateReceiptAudit::uninitialized"

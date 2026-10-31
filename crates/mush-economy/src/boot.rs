@@ -1659,9 +1659,11 @@ fn reconcile_boot_obligations_and_custody(inputs: RemainingReconciliation<'_>) -
 fn recover_refits_and_seizures(
     state: &mut FoldState,
     holds: &BTreeMap<HoldId, Hold>,
-    (refit, seizure): (bool, bool),
+    (refit, seizure, bay): (bool, bool, bool),
 ) -> Result<(), ModError> {
     crate::core_refit::bridge::recover(state, holds, refit)?;
+    // Doc 31 UD.4b: the bay refit's fee histories, closed the same way.
+    crate::bay_refit::bridge::recover(state, holds, bay)?;
     let cores = crate::managed_title::ManagedTitleIndex::default().with_cores(&state.core_receipts);
     let closed = state.seizure_receipts.finish_replay().is_ok()
         && (seizure || state.seizure_receipts.require_absent().is_ok())
@@ -2062,9 +2064,12 @@ pub(crate) fn load_boot_with_coverage(
     recover_refits_and_seizures(
         &mut state,
         &stored_holds,
-        (require_refit_receipts, require_seizure_receipts),
+        (
+            require_refit_receipts,
+            require_seizure_receipts,
+            require_bay_refit_receipts,
+        ),
     )?;
-    crate::bay_refit::bridge::recover(&mut state, &stored_holds, require_bay_refit_receipts)?;
     let renewal_offers = crate::managed_renewal::bridge::recover(
         &mut state,
         &mut snapshot,

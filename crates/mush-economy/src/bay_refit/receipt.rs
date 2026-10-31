@@ -346,6 +346,11 @@ fn rows<'de, D: serde::Deserializer<'de>>(
     d.deserialize_map(Rows)
 }
 impl BayReceiptAudit {
+    // serde's `skip_serializing_if` hands the field itself, here the box.
+    #[allow(clippy::borrowed_box)]
+    pub(crate) fn uninitialized_box(audit: &Box<Self>) -> bool {
+        audit.uninitialized()
+    }
     pub(crate) fn uninitialized(&self) -> bool {
         !self.complete && !self.invalid && self.histories.is_empty()
     }
