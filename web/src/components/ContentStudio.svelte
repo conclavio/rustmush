@@ -9,6 +9,7 @@
   import type { JsonValue } from "$lib/proto";
   import { ContentStudioRpc } from "$lib/content/rpc";
   import NpcStudio from "./NpcStudio.svelte";
+  import QuestStudio from "./QuestStudio.svelte";
   import {
     type CatalogData,
     DocumentHistory,
@@ -409,6 +410,17 @@
           onStatus={(msg) => (statusMessage = msg)}
           onError={(msg) => (errorMessage = msg)}
         />
+      {:else if subTab === "quests"}
+        <QuestStudio
+          packId={selectedPackId}
+          {latchedVersion}
+          {documentJson}
+          {catalog}
+          {rpc}
+          onChange={applyStructuredEdit}
+          onStatus={(msg) => (statusMessage = msg)}
+          onError={(msg) => (errorMessage = msg)}
+        />
       {/if}
       <div class="pane-head">
         <span>Canonical Pack / Table JSON (<code>{selectedPackId}</code>)</span>
@@ -417,10 +429,12 @@
           class="small-btn"
           onclick={() => (showRawJson = !showRawJson)}
         >
-          {showRawJson || subTab !== "npcs" ? "Hide Raw JSON" : "Show Raw JSON"}
+          {showRawJson || (subTab !== "npcs" && subTab !== "quests")
+            ? "Hide Raw JSON"
+            : "Show Raw JSON"}
         </button>
       </div>
-      {#if showRawJson || subTab !== "npcs"}
+      {#if showRawJson || (subTab !== "npcs" && subTab !== "quests")}
         <textarea
           class="json-textarea"
           spellcheck="false"
