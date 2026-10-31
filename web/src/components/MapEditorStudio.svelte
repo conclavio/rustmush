@@ -13,6 +13,8 @@
   import {
     BIOME_OPTIONS,
     TERRAIN_PALETTE,
+    GENERATOR_PRESETS,
+    SHIPPED_ARENA_IDS,
     DEFAULT_SLIDER_MIN_ELEV_CM,
     DEFAULT_SLIDER_MAX_ELEV_CM,
     DEFAULT_HULL_SIZE_CM,
@@ -32,6 +34,12 @@
     routeEditorMap,
     relaxEditorSlopes,
     despeckleEditorMap,
+    autoMusterTanks,
+    moveTankSlot,
+    setTankHeadingDeg,
+    getHoldObjective,
+    setHoldObjective,
+    generatePresetMap,
     markStudioEdited,
     type BiomeName,
     type BrushShape,
@@ -39,6 +47,7 @@
     type EditorCameraPin,
     type EditorMapState,
     type EditorTool,
+    type GeneratorPresetName,
     type GroundCheckReport,
     type GroundDraftJson,
     type SculptMode,
@@ -54,11 +63,23 @@
   let { app, game }: Props = $props();
   const controller = $derived(app ?? game);
 
-  let gridSize = $state<64 | 128 | 256>(64);
+  let gridSize = $state<64 | 128 | 256 | 512>(64);
   let editorState = $state<EditorMapState>(createEditorMap(64, 64, 'temperate', 3));
   let undoStack = new EditorUndoStack(40);
   let canUndo = $state(false);
   let canRedo = $state(false);
+
+  // Server Draft Selector & Procedural Generator State
+  let serverDraftId = $state('proving_ground');
+  let selectedPreset = $state<GeneratorPresetName>('mars_canyon');
+  let presetSeed = $state(2350);
+
+  // 2D Canvas Zoom & Pan State
+  let canvasZoom = $state(1);
+  let canvasPan = $state<[number, number]>([0.5, 0.5]);
+  let isPanning = $state(false);
+  let panStartClient = $state<[number, number] | null>(null);
+  let panStartNorm = $state<[number, number]>([0.5, 0.5]);
 
   // Active Tool & Brush State
   let activeTool = $state<EditorTool>('paint');
@@ -95,6 +116,8 @@
   let hoverCell = $state<[number, number] | null>(null);
   let selectedWaypointIdx = $state<number | null>(null);
   let draggingWaypointIdx = $state<number | null>(null);
+  let selectedTankIdx = $state<number>(0);
+  let draggingTankIdx = $state<number | null>(null);
   let statusNotice = $state<string | null>(null);
 
   // WASM Engine for Live Preview
@@ -105,7 +128,12 @@
 
   let checkReport = $derived.by<GroundCheckReport>(() => {
     void renderTick;
-    return checkEditorMap(editorState);
+    return untrack(() => checkEditorMap(editorState));
+  });
+
+  let activeHoldMode = $derived.by(() => {
+    void renderTick;
+    return untrack(() => getHoldObjective(editorState));
   });
 
   function syncUndoFlags() {
@@ -138,13 +166,15 @@
     }
   }
 
-  function handleNewMap(size: 64 | 128 | 256, biome: BiomeName) {
+  function handleNewMap(size: 64 | 128 | 256 | 512, biome: BiomeName) {
     pushSnapshot();
     gridSize = size;
     const defaultClass: TerrainClassCode =
       biome === 'mars' ? 8 : biome === 'lunar' ? 17 : biome === 'ice' ? 16 : 3;
     editorState = createEditorMap(size, size, biome, defaultClass);
     highlightedCells = [];
+    canvasZoom = 1;
+    canvasPan = [0.5, 0.5];
     previewPin = {
       x: Math.floor(size * 0.2),
       y: Math.floor(size * 0.5),
@@ -161,8 +191,89 @@
   }
 
   function handleLoadServerDraft() {
-    statusNotice = `Requesting draft "${editorState.id || 'proving_ground'}" from server...`;
-    controller?.requestGroundDraft?.(editorState.id || 'proving_ground');
+    const targetId = serverDraftId || editorState.id || 'proving_ground';
+    statusNotice = `Requesting draft "${targetId}" from server...`;
+    controller?.requestGroundDraft?.(targetId);
+  }
+
+  function handleGeneratePreset() {
+    pushSnapshot();
+    const effectiveSeed = selectedPreset === 'proving_ground' ? 2350 : presetSeed;
+    editorState = generatePresetMap(selectedPreset, effectiveSeed);
+    gridSize = 256;
+    canvasZoom = 1;
+    canvasPan = [0.5, 0.5];
+    highlightedCells = [];
+    const firstSpot = editorState.keySpots[0];
+    previewPin = firstSpot
+      ? { x: firstSpot.x, y: firstSpot.y, headingDeg: 90 }
+      : { x: 128, y: 128, headingDeg: 90 };
+    lastRepairNotice = `Generated preset "${editorState.id}" (seed ${effectiveSeed})`;
+    statusNotice = `Generated 256×256 preset "${editorState.label}" (seed ${effectiveSeed})`;
+    refreshPreview();
+  }
+
+  function handleRandomizeSeed() {
+    presetSeed = Math.floor(1000 + Math.random() * 8999);
+    if (selectedPreset === 'proving_ground') {
+      selectedPreset = 'mars_canyon';
+    }
+    handleGeneratePreset();
+  }
+
+  function handleZoomIn() {
+    canvasZoom = Math.min(8, canvasZoom + 1);
+  }
+
+  function handleZoomOut() {
+    canvasZoom = Math.max(1, canvasZoom - 1);
+    if (canvasZoom === 1) {
+      canvasPan = [0.5, 0.5];
+    }
+  }
+
+  function handleZoomReset() {
+    canvasZoom = 1;
+    canvasPan = [0.5, 0.5];
+  }
+
+  function handleCanvasWheel(e: WheelEvent) {
+    e.preventDefault();
+    if (e.deltaY < 0) {
+      handleZoomIn();
+    } else if (e.deltaY > 0) {
+      handleZoomOut();
+    }
+  }
+
+  function handleAutoMusterTanks() {
+    pushSnapshot();
+    const tanks = autoMusterTanks(editorState);
+    lastRepairNotice = `Mustered ${tanks.length} tanks in Red & Blue entry zones`;
+    refreshPreview();
+  }
+
+  function handleTankHeadingChange(idx: number, deg: number) {
+    pushSnapshot();
+    if (setTankHeadingDeg(editorState, idx, deg)) {
+      refreshPreview();
+    }
+  }
+
+  function handleHoldObjectiveToggle(enabled: boolean) {
+    pushSnapshot();
+    setHoldObjective(editorState, { enabled });
+    refreshPreview();
+  }
+
+  function handleHoldObjectiveUpdate(patch: {
+    spot?: string;
+    radius_cells?: number;
+    hold_ms?: number;
+  }) {
+    pushSnapshot();
+    setHoldObjective(editorState, { enabled: true, ...patch });
+    refreshPreview();
   }
 
   function handleStageToServer(apply = true) {
@@ -187,7 +298,12 @@
         const imported = importGroundDraftJson(frame as unknown as GroundDraftJson);
         pushSnapshot();
         editorState = imported;
-        if (imported.width === 64 || imported.width === 128 || imported.width === 256) {
+        if (
+          imported.width === 64 ||
+          imported.width === 128 ||
+          imported.width === 256 ||
+          imported.width === 512
+        ) {
           gridSize = imported.width;
         }
         highlightedCells = [];
@@ -230,8 +346,10 @@
     if (!gridCanvas) return null;
     const rect = gridCanvas.getBoundingClientRect();
     if (rect.width <= 0 || rect.height <= 0) return null;
-    const u = (e.clientX - rect.left) / rect.width;
-    const v = 1 - (e.clientY - rect.top) / rect.height; // South-up: y=0 at bottom
+    const screenU = (e.clientX - rect.left) / rect.width;
+    const screenV = (e.clientY - rect.top) / rect.height;
+    const u = (screenU + canvasPan[0] * (canvasZoom - 1)) / canvasZoom;
+    const v = 1 - (screenV + canvasPan[1] * (canvasZoom - 1)) / canvasZoom; // South-up: y=0 at bottom
     const x = Math.max(0, Math.min(editorState.width - 1, Math.floor(u * editorState.width)));
     const y = Math.max(0, Math.min(editorState.height - 1, Math.floor(v * editorState.height)));
     return [x, y];
@@ -292,6 +410,26 @@
         markStudioEdited(editorState);
       }
       refreshPreview();
+    } else if (activeTool === 'tanks') {
+      if (isStart) {
+        const hitIdx = editorState.tanks.findIndex(
+          (t) => Math.abs(t.x - x) <= 2 && Math.abs(t.y - y) <= 2
+        );
+        pushSnapshot();
+        if (hitIdx >= 0) {
+          selectedTankIdx = hitIdx;
+          draggingTankIdx = hitIdx;
+        } else {
+          draggingTankIdx = selectedTankIdx;
+          if (moveTankSlot(editorState, selectedTankIdx, x, y)) {
+            refreshPreview();
+          }
+        }
+      } else if (draggingTankIdx !== null) {
+        if (moveTankSlot(editorState, draggingTankIdx, x, y)) {
+          refreshPreview();
+        }
+      }
     } else if (activeTool === 'waypoint') {
       if (isStart) {
         const hitIdx = editorState.waypoints.nodes.findIndex(
@@ -356,6 +494,12 @@
   }
 
   function onCanvasPointerDown(e: MouseEvent) {
+    if (e.button === 1 || (e.button === 0 && (activeTool === 'pan' || e.altKey))) {
+      isPanning = true;
+      panStartClient = [e.clientX, e.clientY];
+      panStartNorm = [canvasPan[0], canvasPan[1]];
+      return;
+    }
     if (e.button !== 0) return;
     const cell = cellFromPointerEvent(e);
     if (!cell) return;
@@ -370,15 +514,38 @@
   }
 
   function onCanvasPointerMove(e: MouseEvent) {
+    if (isPanning && panStartClient && gridCanvas && canvasZoom > 1) {
+      const rect = gridCanvas.getBoundingClientRect();
+      if (rect.width > 0 && rect.height > 0) {
+        const du = (e.clientX - panStartClient[0]) / (rect.width * (canvasZoom - 1));
+        const dv = (e.clientY - panStartClient[1]) / (rect.height * (canvasZoom - 1));
+        canvasPan = [
+          Math.max(0, Math.min(1, panStartNorm[0] - du)),
+          Math.max(0, Math.min(1, panStartNorm[1] - dv))
+        ];
+      }
+      return;
+    }
     const cell = cellFromPointerEvent(e);
     hoverCell = cell;
     if (!isDragging || !cell) return;
-    if (activeTool === 'paint' || activeTool === 'sculpt' || activeTool === 'camera_pin' || activeTool === 'waypoint') {
+    if (
+      activeTool === 'paint' ||
+      activeTool === 'sculpt' ||
+      activeTool === 'camera_pin' ||
+      activeTool === 'waypoint' ||
+      activeTool === 'tanks'
+    ) {
       applyToolAt(cell[0], cell[1], false, e.shiftKey);
     }
   }
 
   function onCanvasPointerUp(e: MouseEvent) {
+    if (isPanning) {
+      isPanning = false;
+      panStartClient = null;
+      return;
+    }
     if (!isDragging) return;
     const cell = cellFromPointerEvent(e) ?? hoverCell;
     if (cell && dragStartCell) {
@@ -414,6 +581,7 @@
     isDragging = false;
     dragStartCell = null;
     draggingWaypointIdx = null;
+    draggingTankIdx = null;
   }
 
   function refreshPreview() {
@@ -433,6 +601,8 @@
 
     const w = editorState.width;
     const h = editorState.height;
+    const classes = editorState.classes;
+    const elevCm = editorState.elevCm;
     const cw = gridCanvas.width;
     const ch = gridCanvas.height;
     const cellW = cw / w;
@@ -440,6 +610,14 @@
 
     ctx.fillStyle = '#0d1016';
     ctx.fillRect(0, 0, cw, ch);
+
+    if (canvasZoom > 1) {
+      ctx.save?.();
+      const tx = -canvasPan[0] * cw * (canvasZoom - 1);
+      const ty = -canvasPan[1] * ch * (canvasZoom - 1);
+      ctx.translate?.(tx, ty);
+      ctx.scale?.(canvasZoom, canvasZoom);
+    }
 
     const swatchByCode = new Map<number, string>();
     for (const s of TERRAIN_PALETTE) {
@@ -461,11 +639,11 @@
       for (let x = 0; x < w; x++) {
         const px = x * cellW;
         const idx = y * w + x;
-        const code = editorState.classes[idx] ?? 2;
+        const code = classes[idx] ?? 2;
         const baseHex = swatchByCode.get(code) ?? '#4a6b3b';
-        const elev = editorState.elevCm[idx] ?? 0;
-        const eastElev = x + 1 < w ? (editorState.elevCm[y * w + (x + 1)] ?? elev) : elev;
-        const northElev = y + 1 < h ? (editorState.elevCm[(y + 1) * w + x] ?? elev) : elev;
+        const elev = elevCm[idx] ?? 0;
+        const eastElev = x + 1 < w ? (elevCm[y * w + (x + 1)] ?? elev) : elev;
+        const northElev = y + 1 < h ? (elevCm[(y + 1) * w + x] ?? elev) : elev;
         const slopeShade = ((eastElev - elev) + (northElev - elev)) / 900;
 
         ctx.fillStyle = baseHex;
@@ -517,9 +695,9 @@
         const py = ch - (y + 1) * cellH;
         for (let x = 0; x < w - 1; x++) {
           const px = x * cellW;
-          const b0 = Math.floor((editorState.elevCm[y * w + x] ?? 0) / 500);
-          const bE = Math.floor((editorState.elevCm[y * w + (x + 1)] ?? 0) / 500);
-          const bN = Math.floor((editorState.elevCm[(y + 1) * w + x] ?? 0) / 500);
+          const b0 = Math.floor((elevCm[y * w + x] ?? 0) / 500);
+          const bE = Math.floor((elevCm[y * w + (x + 1)] ?? 0) / 500);
+          const bN = Math.floor((elevCm[(y + 1) * w + x] ?? 0) / 500);
           if (b0 !== bE) {
             ctx.moveTo(px + cellW, py);
             ctx.lineTo(px + cellW, py + cellH);
@@ -546,9 +724,9 @@
     }
 
     // 4. Grid lines
-    if (showGridLines && cellW >= 4) {
+    if (showGridLines && cellW * canvasZoom >= 4) {
       ctx.strokeStyle = 'rgba(255, 255, 255, 0.06)';
-      ctx.lineWidth = 1;
+      ctx.lineWidth = 1 / canvasZoom;
       ctx.beginPath();
       for (let x = 0; x <= w; x += 8) {
         ctx.moveTo(x * cellW, 0);
@@ -574,9 +752,29 @@
 
       ctx.fillStyle = z.team === 'red' ? 'rgba(220, 60, 60, 0.20)' : 'rgba(60, 140, 240, 0.20)';
       ctx.strokeStyle = z.team === 'red' ? '#ef4444' : '#3b82f6';
-      ctx.lineWidth = 2;
+      ctx.lineWidth = 2 / canvasZoom;
       ctx.fillRect(rx, ry, rw, rh);
       ctx.strokeRect(rx, ry, rw, rh);
+    }
+
+    // 5b. Hold Objective Ring (around target key spot)
+    const holdMode = getHoldObjective(editorState);
+    if (holdMode) {
+      const holdSpot = editorState.keySpots.find((s) => s.name === holdMode.spot);
+      if (holdSpot) {
+        const hx = (holdSpot.x + 0.5) * cellW;
+        const hy = ch - (holdSpot.y + 0.5) * cellH;
+        const hr = Math.max(1, holdMode.radius_cells) * cellW;
+        ctx.fillStyle = 'rgba(250, 204, 21, 0.14)';
+        ctx.strokeStyle = '#facc15';
+        ctx.lineWidth = 2 / canvasZoom;
+        ctx.setLineDash([5 / canvasZoom, 3 / canvasZoom]);
+        ctx.beginPath();
+        ctx.arc(hx, hy, hr, 0, Math.PI * 2);
+        ctx.fill();
+        ctx.stroke();
+        ctx.setLineDash([]);
+      }
     }
 
     // 6. Waypoint Graph (Edges & Nodes)
@@ -586,8 +784,8 @@
         nodeById.set(n.id, n);
       }
       ctx.strokeStyle = 'rgba(56, 189, 248, 0.78)';
-      ctx.lineWidth = 1.5;
-      ctx.setLineDash([4, 3]);
+      ctx.lineWidth = 1.5 / canvasZoom;
+      ctx.setLineDash([4 / canvasZoom, 3 / canvasZoom]);
       ctx.beginPath();
       for (const [aId, bId] of editorState.waypoints.edges) {
         const a = nodeById.get(aId);
@@ -604,9 +802,9 @@
         const ny = ch - (n.y + 0.5) * cellH;
         ctx.fillStyle = idx === selectedWaypointIdx ? '#facc15' : '#38bdf8';
         ctx.strokeStyle = '#0f172a';
-        ctx.lineWidth = 1.5;
+        ctx.lineWidth = 1.5 / canvasZoom;
         ctx.beginPath();
-        ctx.arc(nx, ny, 4.5, 0, Math.PI * 2);
+        ctx.arc(nx, ny, 4.5 / canvasZoom, 0, Math.PI * 2);
         ctx.fill();
         ctx.stroke();
       });
@@ -619,16 +817,49 @@
       const letter = String.fromCharCode(65 + idx);
       ctx.fillStyle = '#facc15';
       ctx.strokeStyle = '#000';
-      ctx.lineWidth = 2;
+      ctx.lineWidth = 2 / canvasZoom;
       ctx.beginPath();
-      ctx.arc(sx, sy, 8, 0, Math.PI * 2);
+      ctx.arc(sx, sy, 8 / canvasZoom, 0, Math.PI * 2);
       ctx.fill();
       ctx.stroke();
       ctx.fillStyle = '#000';
-      ctx.font = 'bold 10px monospace';
+      ctx.font = `bold ${Math.round(10 / canvasZoom)}px monospace`;
       ctx.textAlign = 'center';
       ctx.textBaseline = 'middle';
       ctx.fillText(letter, sx, sy);
+    });
+
+    // 7b. Tank Roster Slots (R1..R6, B1..B6)
+    editorState.tanks.forEach((tank, idx) => {
+      const tx = (tank.x + 0.5) * cellW;
+      const ty = ch - (tank.y + 0.5) * cellH;
+      const isSelected = activeTool === 'tanks' && idx === selectedTankIdx;
+      const hdgRad = ((tank.heading_mdeg / 1000 - 90) * Math.PI) / 180;
+      const r = 6 / canvasZoom;
+      const tickLen = 11 / canvasZoom;
+
+      ctx.strokeStyle = isSelected ? '#facc15' : '#fff';
+      ctx.lineWidth = 1.5 / canvasZoom;
+      ctx.beginPath();
+      ctx.moveTo(tx, ty);
+      ctx.lineTo(tx + Math.cos(hdgRad) * tickLen, ty + Math.sin(hdgRad) * tickLen);
+      ctx.stroke();
+
+      ctx.fillStyle = tank.team === 'red' ? '#dc2626' : '#2563eb';
+      ctx.strokeStyle = isSelected ? '#facc15' : '#0f172a';
+      ctx.lineWidth = (isSelected ? 2.2 : 1.4) / canvasZoom;
+      ctx.beginPath();
+      ctx.arc(tx, ty, r, 0, Math.PI * 2);
+      ctx.fill();
+      ctx.stroke();
+
+      const slotNum = tank.id.split('_')[1] ?? String((idx % 6) + 1);
+      const callsign = `${tank.team === 'red' ? 'R' : 'B'}${slotNum}`;
+      ctx.fillStyle = '#fff';
+      ctx.font = `bold ${Math.max(5, Math.round(7 / canvasZoom))}px monospace`;
+      ctx.textAlign = 'center';
+      ctx.textBaseline = 'middle';
+      ctx.fillText(callsign, tx, ty);
     });
 
     // 8. Camera Pin + FOV Wedge
@@ -636,11 +867,11 @@
     const camY = ch - (previewPin.y + 0.5) * cellH;
     const rad = ((previewPin.headingDeg - 90) * Math.PI) / 180;
     const fovHalf = (30 * Math.PI) / 180;
-    const rayLen = 42;
+    const rayLen = 42 / canvasZoom;
 
     ctx.fillStyle = 'rgba(56, 189, 248, 0.22)';
     ctx.strokeStyle = '#38bdf8';
-    ctx.lineWidth = 1.5;
+    ctx.lineWidth = 1.5 / canvasZoom;
     ctx.beginPath();
     ctx.moveTo(camX, camY);
     ctx.lineTo(camX + Math.cos(rad - fovHalf) * rayLen, camY + Math.sin(rad - fovHalf) * rayLen);
@@ -651,7 +882,7 @@
 
     ctx.fillStyle = '#38bdf8';
     ctx.beginPath();
-    ctx.arc(camX, camY, 5, 0, Math.PI * 2);
+    ctx.arc(camX, camY, 5 / canvasZoom, 0, Math.PI * 2);
     ctx.fill();
 
     // 9. Hover Brush Outline
@@ -659,7 +890,7 @@
       const [hx, hy] = hoverCell;
       const r = activeTool === 'paint' || activeTool === 'sculpt' || activeTool === 'line' ? brushRadius : 0;
       ctx.strokeStyle = 'rgba(255, 255, 255, 0.85)';
-      ctx.lineWidth = 1.5;
+      ctx.lineWidth = 1.5 / canvasZoom;
       if (brushShape === 'circle' && r > 0) {
         ctx.beginPath();
         ctx.arc((hx + 0.5) * cellW, ch - (hy + 0.5) * cellH, (r + 0.5) * cellW, 0, Math.PI * 2);
@@ -671,6 +902,10 @@
         const bh = (r * 2 + 1) * cellH;
         ctx.strokeRect(bx, by, bw, bh);
       }
+    }
+
+    if (canvasZoom > 1) {
+      ctx.restore?.();
     }
   }
 
@@ -700,7 +935,10 @@
     void overlayDrive;
     void viewshedSizeCm;
     void highlightedCells;
-    draw2DGridCanvas();
+    void canvasZoom;
+    void canvasPan;
+    void selectedTankIdx;
+    untrack(() => draw2DGridCanvas());
   });
 
   $effect(() => {
@@ -743,7 +981,8 @@
         if (
           editorState.width === 64 ||
           editorState.width === 128 ||
-          editorState.width === 256
+          editorState.width === 256 ||
+          editorState.width === 512
         ) {
           gridSize = editorState.width;
         }
@@ -810,16 +1049,33 @@
       <label class="ctrl-item">
         <span>Grid</span>
         <select
+          aria-label="Grid size"
           value={gridSize}
           onchange={(e) =>
             handleNewMap(
-              Number((e.currentTarget as HTMLSelectElement).value) as 64 | 128 | 256,
+              Number((e.currentTarget as HTMLSelectElement).value) as 64 | 128 | 256 | 512,
               editorState.biome
             )}
         >
           <option value={64}>64×64 (640m)</option>
           <option value={128}>128×128 (1.28km)</option>
           <option value={256}>256×256 (2.56km)</option>
+          <option value={512}>512×512 (5.12km)</option>
+        </select>
+      </label>
+
+      <label class="ctrl-item">
+        <span>Server Arena</span>
+        <select
+          aria-label="Server arena draft"
+          bind:value={serverDraftId}
+          onchange={() => {
+            editorState.id = serverDraftId;
+          }}
+        >
+          {#each SHIPPED_ARENA_IDS as arena (arena.id)}
+            <option value={arena.id}>{arena.label}</option>
+          {/each}
         </select>
       </label>
 
@@ -909,10 +1165,26 @@
           <button
             type="button"
             class="tool-btn"
+            class:active={activeTool === 'tanks'}
+            onclick={() => (activeTool = 'tanks')}
+          >
+            Tanks
+          </button>
+          <button
+            type="button"
+            class="tool-btn"
             class:active={activeTool === 'camera_pin'}
             onclick={() => (activeTool = 'camera_pin')}
           >
             3D Pin
+          </button>
+          <button
+            type="button"
+            class="tool-btn"
+            class:active={activeTool === 'pan'}
+            onclick={() => (activeTool = 'pan')}
+          >
+            Pan
           </button>
           <button
             type="button"
@@ -929,6 +1201,45 @@
             onclick={() => (activeTool = 'zone_blue')}
           >
             Blue Zone
+          </button>
+        </div>
+      </section>
+
+      <section class="dock-section" data-testid="procedural-generator-panel">
+        <h3>Procedural Generator</h3>
+        <div class="brush-row">
+          <span>Biome Preset</span>
+          <select aria-label="Generator preset" bind:value={selectedPreset}>
+            {#each GENERATOR_PRESETS as preset (preset.id)}
+              <option value={preset.id}>{preset.label}</option>
+            {/each}
+          </select>
+        </div>
+        <div class="seed-row">
+          <label class="seed-label">
+            <span>Seed</span>
+            <input
+              type="number"
+              aria-label="Generator seed"
+              bind:value={presetSeed}
+              disabled={selectedPreset === 'proving_ground'}
+            />
+          </label>
+          <button
+            type="button"
+            class="btn"
+            onclick={handleRandomizeSeed}
+            title="Pick a random seed and generate"
+          >
+            Randomize
+          </button>
+          <button
+            type="button"
+            class="btn btn-primary"
+            onclick={handleGeneratePreset}
+            title="Generate 256×256 preset map"
+          >
+            Generate Preset
           </button>
         </div>
       </section>
@@ -1085,6 +1396,37 @@
 
     <!-- Center: Interactive 2D Grid & Elevation Canvas -->
     <main class="studio-canvas-stage">
+      <div class="canvas-zoom-bar">
+        <span>2D Canvas ({editorState.width}×{editorState.height}, {checkReport.quadrants}Q)</span>
+        <div class="zoom-controls">
+          <button
+            type="button"
+            class="btn"
+            onclick={handleZoomOut}
+            disabled={canvasZoom <= 1}
+            aria-label="Zoom out"
+          >
+            -
+          </button>
+          <button
+            type="button"
+            class="btn"
+            onclick={handleZoomReset}
+            aria-label="Reset zoom"
+          >
+            {canvasZoom}x
+          </button>
+          <button
+            type="button"
+            class="btn"
+            onclick={handleZoomIn}
+            disabled={canvasZoom >= 8}
+            aria-label="Zoom in"
+          >
+            +
+          </button>
+        </div>
+      </div>
       <div class="canvas-frame">
         <canvas
           bind:this={gridCanvas}
@@ -1096,6 +1438,7 @@
           onmousemove={onCanvasPointerMove}
           onmouseup={onCanvasPointerUp}
           onmouseleave={onCanvasPointerUp}
+          onwheel={handleCanvasWheel}
         ></canvas>
       </div>
       <footer class="canvas-hud">
@@ -1108,7 +1451,7 @@
           <span>Class: {swatch?.label ?? 'Ground'}</span>
           <span>Elev: {(elev / 100).toFixed(2)} m</span>
         {:else}
-          <span>Drag on canvas to paint or sculpt; Shift-click waypoints to connect edges.</span>
+          <span>Drag on canvas to paint or sculpt; wheel to zoom ({canvasZoom}x); Alt-drag or Pan tool to pan.</span>
         {/if}
         {#if statusNotice}
           <span class="status-notice">{statusNotice}</span>
@@ -1244,6 +1587,141 @@
               <li>{fail}</li>
             {/each}
           </ul>
+        {/if}
+      </section>
+
+      <section class="dock-section" data-testid="hold-objective-panel">
+        <div class="report-title-row">
+          <h3>Hold Objective</h3>
+          <label class="check-row">
+            <input
+              type="checkbox"
+              aria-label="Enable Hold Objective"
+              checked={activeHoldMode !== null}
+              onchange={(e) =>
+                handleHoldObjectiveToggle((e.currentTarget as HTMLInputElement).checked)}
+            />
+            <span>Enabled</span>
+          </label>
+        </div>
+        {#if activeHoldMode}
+          <div class="brush-row">
+            <span>Target Key Spot</span>
+            <select
+              aria-label="Hold objective spot"
+              value={activeHoldMode.spot}
+              onchange={(e) =>
+                handleHoldObjectiveUpdate({
+                  spot: (e.currentTarget as HTMLSelectElement).value
+                })}
+            >
+              {#each editorState.keySpots as spot (spot.name)}
+                <option value={spot.name}>{spot.name} ({spot.x},{spot.y})</option>
+              {/each}
+            </select>
+          </div>
+          <label class="slider-row">
+            <span>Radius: {activeHoldMode.radius_cells} cells ({activeHoldMode.radius_cells * 10}m)</span>
+            <input
+              type="range"
+              aria-label="Hold objective radius"
+              min="1"
+              max="32"
+              step="1"
+              value={activeHoldMode.radius_cells}
+              oninput={(e) =>
+                handleHoldObjectiveUpdate({
+                  radius_cells: Number((e.currentTarget as HTMLInputElement).value)
+                })}
+            />
+          </label>
+          <label class="slider-row">
+            <span>Hold Duration: {Math.round(activeHoldMode.hold_ms / 1000)}s</span>
+            <input
+              type="range"
+              aria-label="Hold objective duration"
+              min="10"
+              max="600"
+              step="10"
+              value={Math.round(activeHoldMode.hold_ms / 1000)}
+              oninput={(e) =>
+                handleHoldObjectiveUpdate({
+                  hold_ms: Number((e.currentTarget as HTMLInputElement).value) * 1000
+                })}
+            />
+          </label>
+        {/if}
+      </section>
+
+      <section class="dock-section" data-testid="tank-roster-panel">
+        <div class="report-title-row">
+          <h3>Tank Roster ({editorState.tanks.length})</h3>
+          <button
+            type="button"
+            class="btn"
+            onclick={handleAutoMusterTanks}
+            title="Re-muster all 12 tanks onto passable cells inside Red & Blue entry zones"
+          >
+            Auto-Muster Tanks
+          </button>
+        </div>
+        <div class="tank-grid">
+          {#each editorState.tanks as tank, idx (tank.id)}
+            {@const slotNum = tank.id.split('_')[1] ?? String((idx % 6) + 1)}
+            <button
+              type="button"
+              class="tank-chip"
+              class:red={tank.team === 'red'}
+              class:blue={tank.team === 'blue'}
+              class:active={selectedTankIdx === idx}
+              onclick={() => {
+                selectedTankIdx = idx;
+                activeTool = 'tanks';
+              }}
+              title={`${tank.name} at (${tank.x}, ${tank.y})`}
+            >
+              <span>{tank.team === 'red' ? 'R' : 'B'}{slotNum}</span>
+              <small>{tank.x},{tank.y}</small>
+            </button>
+          {/each}
+        </div>
+        {#if editorState.tanks[selectedTankIdx]}
+          {@const selTank = editorState.tanks[selectedTankIdx]!}
+          {@const hdgDeg = Math.round(selTank.heading_mdeg / 1000)}
+          <div class="tank-detail-bar">
+            <span>{selTank.name} ({selTank.x},{selTank.y})</span>
+            <label>
+              <span>Hdg {hdgDeg}°</span>
+              <input
+                type="range"
+                aria-label="Selected tank heading"
+                min="0"
+                max="359"
+                step="5"
+                value={hdgDeg}
+                oninput={(e) =>
+                  handleTankHeadingChange(
+                    selectedTankIdx,
+                    Number((e.currentTarget as HTMLInputElement).value)
+                  )}
+              />
+            </label>
+            <button
+              type="button"
+              class="spot-Jump"
+              onclick={() => {
+                previewPin = {
+                  x: selTank.x,
+                  y: selTank.y,
+                  headingDeg: Math.round(selTank.heading_mdeg / 1000)
+                };
+                refreshPreview();
+              }}
+              title="Jump 3D camera pin to this tank"
+            >
+              Cam
+            </button>
+          </div>
         {/if}
       </section>
 
@@ -1741,5 +2219,81 @@
     padding: 2px 5px;
     font-size: 10px;
     cursor: pointer;
+  }
+
+  .seed-row {
+    display: flex;
+    align-items: center;
+    gap: 6px;
+  }
+
+  .seed-label {
+    color: #94a3b8;
+    font-size: 11px;
+    flex-shrink: 0;
+  }
+
+  .seed-row input {
+    flex: 1;
+    min-width: 0;
+  }
+
+  .canvas-zoom-bar {
+    display: flex;
+    align-items: center;
+    justify-content: space-between;
+    width: 100%;
+    padding: 2px 6px 4px;
+    box-sizing: border-box;
+  }
+
+  .zoom-controls {
+    display: flex;
+    align-items: center;
+    gap: 4px;
+  }
+
+  .tank-grid {
+    display: grid;
+    grid-template-columns: repeat(6, 1fr);
+    gap: 3px;
+  }
+
+  .tank-chip {
+    background: #161f2e;
+    border: 1px solid rgba(148, 163, 184, 0.25);
+    border-radius: 4px;
+    padding: 3px 2px;
+    font-size: 10px;
+    font-weight: 700;
+    cursor: pointer;
+    text-align: center;
+  }
+
+  .tank-chip.red {
+    color: #f87171;
+    border-color: rgba(248, 113, 113, 0.35);
+  }
+
+  .tank-chip.blue {
+    color: #60a5fa;
+    border-color: rgba(96, 165, 250, 0.35);
+  }
+
+  .tank-chip.active {
+    background: rgba(56, 189, 248, 0.2);
+    border-color: #38bdf8;
+    color: #e2e8f0;
+  }
+
+  .tank-detail-bar {
+    display: flex;
+    align-items: center;
+    justify-content: space-between;
+    font-size: 10px;
+    color: #cbd5e1;
+    background: #161f2e;
+    border-radius: 4px;
+    padding: 4px 6px;
   }
 </style>
