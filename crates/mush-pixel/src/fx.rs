@@ -371,7 +371,7 @@ pub fn sync_scorch_marks(
 
 /// Stamp a charred blast crater / scorch mark centred at `(cx, cy)` with
 /// `radius_px` onto a ground canvas using existing HUD dark palette entries
-/// ([`overlay::BORDER`], [`overlay::GONE`], [`overlay::PANEL`]).
+/// (`overlay::BORDER`, `overlay::GONE`, `overlay::PANEL`).
 pub fn stamp_scorch_mark<F>(cx: i32, cy: i32, radius_px: i32, large: bool, put_px: &mut F)
 where
     F: FnMut(i32, i32, Rgb),
