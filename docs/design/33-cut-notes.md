@@ -50,7 +50,10 @@ version-12 codec before anything else moved, then the bump and everything that r
   `DiscordControl`). `golden.rs` fails when the current version's set is not byte for byte what the
   build encodes (so any wire change under a fixed version re-records, and the diff of `golden/` is
   the record) and decodes the previous version's set under the current codec, both directions.
-  `.gitattributes` marks `*.frame` binary.
+  The recorder is the `record_golden_frames` example binary (`cargo run -p mush-ipc --example
+  record_golden_frames`): a tool, not an `#[ignore]`d test, which the gated-proof inventory in
+  `mush-contract-tests` (the K8 kernel-contracts job) reads as a proof no CI job runs — the first
+  CI run of this PR said so. `.gitattributes` marks `*.frame` binary.
 - **The lint** (`crates/mush-contract-tests/tests/ipc_golden_frames.rs`): fails when the newest
   recorded set is older than `IPC_VERSION`, when a set is newer than the protocol, when a set is
   empty in either direction, or when the previous version's set is gone; each case tripped on a
@@ -62,7 +65,7 @@ binaries under nextest, the CI runner, as the last line says).
 - `mush-ipc`: 9 lib tests (the window: its width, a Hello without `min_proto`, the link floor until
   the peer speaks, every variant predates the window, a newer frame withheld through the hook),
   15 `roundtrip` (now pinning 13 / 12 and the `ToServer::Hello` round trip, and a v12-shaped Hello
-  decoding as a `[12, 12]` server), 3 `golden` with the recorder ignored: the v12 set (31 + 43
+  decoding as a `[12, 12]` server), 3 `golden`: the v12 set (31 + 43
   frames) decodes under the 13 codec, and the v13 set (32 + 43) is byte for byte what the build
   encodes. Two recordings of the same build are identical.
 - `mush-server` lib: `admit_gateway_pins_the_window_and_the_marker` (13 and 12 recorded, no Hello
@@ -80,9 +83,8 @@ binaries under nextest, the CI runner, as the last line says).
 - `mush-contract-tests`: `ipc_golden_frames` 8 (the gate and seven fixture cases),
   `feature_matrix_inventory` 3, `panic_budget` 10, `restriction_lints` 11. With `golden/v13/`
   moved aside the gate failed for real — "IPC_VERSION is 13 but the newest recorded golden set is
-  v12: a bump records its contract. Run `cargo test -p mush-ipc --test golden record_golden_frames
-  -- --ignored` at version 13 and commit crates/mush-ipc/tests/golden/v13/" — and passed with the
-  set back.
+  v12: a bump records its contract. Run `cargo run -p mush-ipc --example record_golden_frames` at
+  version 13 and commit crates/mush-ipc/tests/golden/v13/" — and passed with the set back.
 - `cargo clippy --all-targets -- -D warnings` on the four crates (the two boundary loops take the
   house `#[allow(clippy::too_many_arguments)]`, each now eight arguments), `RUSTDOCFLAGS=-D
   warnings cargo doc --no-deps --document-private-items` on `mush-ipc`, `mush-server` and
@@ -91,7 +93,15 @@ binaries under nextest, the CI runner, as the last line says).
   `mush-ipc`, `mush-server::split_boundary` (all 260) and `::world_task`, the `mush-server` lib
   minus its Redis-bound tests, `mush-gateway::split_halves` (all 35) and lib, and the four
   `mush-contract-tests` binaries above — 799 tests across 12 binaries, 799 passed, 8 skipped (the
-  ignored recorder and the usual ignores), one slow (`dt_window_scenes`, pre-existing).
+  recorder, then still an ignored test, and the usual ignores), one slow (`dt_window_scenes`, pre-existing).
+- After PR #211's first CI run: the K8 kernel-contracts and rest-libs cells failed on
+  `ci_gated_test_inventory::every_backend_gated_proof_is_named_by_a_ci_job`, which read the
+  `#[ignore]`d recorder as a proof no job runs (it keys on the attribute, so a reason string would
+  not have helped). The recorder became the `record_golden_frames` example; then: the inventory 7
+  passed under `cargo test` and under nextest, the example re-recorded v13 byte for byte (no change
+  under `golden/`), `mush-ipc` 9 / 3 / 15 (no ignored test left), `ipc_golden_frames` 8 with the
+  hidden-v13 trip repeated for the quoted message, clippy and rustdoc on `mush-ipc` and
+  `mush-contract-tests` clean.
 
 **Not done here, and why.**
 

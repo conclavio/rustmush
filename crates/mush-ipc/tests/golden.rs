@@ -24,171 +24,29 @@
 //! - `crates/mush-contract-tests/tests/ipc_golden_frames.rs` is the bump lint,
 //!   which fails when `IPC_VERSION` is newer than the newest recorded set.
 //!
-//! Recording (the `#[ignore]`d test; it replaces the current version's set):
+//! Recording replaces the current version's set. It is an example binary, not an
+//! `#[ignore]`d test: a tool that writes into the tree proves nothing by
+//! passing, and `mush-contract-tests`'s gated-proof inventory reads an ignored
+//! test as a proof some CI job must run.
 //!
 //! ```text
-//! cargo test -p mush-ipc --test golden record_golden_frames -- --ignored
+//! cargo run -p mush-ipc --example record_golden_frames
 //! ```
 //!
 //! Record BEFORE bumping when the old set is missing, and again after the bump:
 //! the set for a version is only ever written by a build at that version.
 
-use std::collections::BTreeMap;
-use std::fs;
-use std::path::{Path, PathBuf};
-
-use mush_ipc::codec::decode_frame;
-use mush_ipc::{IPC_VERSION, ToGateway, ToServer, encode_frame};
+use mush_ipc::IPC_VERSION;
 
 mod samples;
-use samples::{every_to_gateway, every_to_server};
-
-/// The first version with a recorded set. The window reaches one step back,
-/// so there is nothing to decode before it.
-const FIRST_GOLDEN_VERSION: u32 = 12;
-
-/// The gateway → server direction's directory inside a set.
-const TO_SERVER: &str = "to_server";
-/// The server → gateway direction's directory inside a set.
-const TO_GATEWAY: &str = "to_gateway";
-
-/// The command that re-records the current version's set.
-const RECORD_COMMAND: &str =
-    "cargo test -p mush-ipc --test golden record_golden_frames -- --ignored";
-
-/// `crates/mush-ipc/tests/golden/`.
-fn golden_root() -> PathBuf {
-    Path::new(env!("CARGO_MANIFEST_DIR"))
-        .join("tests")
-        .join("golden")
-}
-
-/// `crates/mush-ipc/tests/golden/v<version>/`.
-fn set_dir(version: u32) -> PathBuf {
-    golden_root().join(format!("v{version}"))
-}
-
-/// The variant a frame's `Debug` rendering names: `Inbound(Cmd { .. })` is
-/// `Inbound`, `Deliver { .. }` is `Deliver`, `Bye` is `Bye`.
-fn variant_name(debug: &str) -> &str {
-    debug
-        .split([' ', '(', '{'])
-        .next()
-        .filter(|name| !name.is_empty())
-        .unwrap_or(debug)
-}
-
-/// Encode one direction's samples, named `<direction>/<Variant>-<nn>.frame`
-/// with `nn` counting the samples of that variant in list order.
-fn encode_direction<T: std::fmt::Debug + serde::Serialize>(
-    direction: &str,
-    samples: &[T],
-    into: &mut BTreeMap<String, Vec<u8>>,
-) {
-    let mut per_variant: BTreeMap<String, usize> = BTreeMap::new();
-    for sample in samples {
-        let variant = variant_name(&format!("{sample:?}")).to_string();
-        let index = per_variant.entry(variant.clone()).or_insert(0);
-        let name = format!("{direction}/{variant}-{index:02}.frame");
-        *index += 1;
-        let bytes = encode_frame(sample).expect("a sample frame encodes");
-        let previous = into.insert(name.clone(), bytes);
-        assert!(previous.is_none(), "duplicate sample name {name}");
-    }
-}
-
-/// Every sample of both directions as this build encodes it.
-fn current_encoding() -> BTreeMap<String, Vec<u8>> {
-    let mut set = BTreeMap::new();
-    encode_direction(TO_SERVER, &every_to_server(), &mut set);
-    encode_direction(TO_GATEWAY, &every_to_gateway(), &mut set);
-    set
-}
-
-/// Read a recorded set as `<direction>/<file>` → bytes. `None` when the set's
-/// directory does not exist.
-fn read_set(version: u32) -> Option<BTreeMap<String, Vec<u8>>> {
-    let dir = set_dir(version);
-    if !dir.is_dir() {
-        return None;
-    }
-    let mut set = BTreeMap::new();
-    for direction in [TO_SERVER, TO_GATEWAY] {
-        let Ok(entries) = fs::read_dir(dir.join(direction)) else {
-            continue;
-        };
-        for entry in entries {
-            let path = entry.expect("a readable golden entry").path();
-            if path.extension().and_then(|ext| ext.to_str()) != Some("frame") {
-                continue;
-            }
-            let file = path
-                .file_name()
-                .and_then(|name| name.to_str())
-                .expect("a utf-8 golden file name")
-                .to_string();
-            let bytes = fs::read(&path).expect("a readable golden frame");
-            set.insert(format!("{direction}/{file}"), bytes);
-        }
-    }
-    Some(set)
-}
-
-/// Write `set` as the recorded set for `version`, replacing what was there.
-fn write_set(version: u32, set: &BTreeMap<String, Vec<u8>>) {
-    let dir = set_dir(version);
-    if dir.exists() {
-        fs::remove_dir_all(&dir).expect("the old set is removable");
-    }
-    for (name, bytes) in set {
-        let path = dir.join(name.replace('/', std::path::MAIN_SEPARATOR_STR));
-        fs::create_dir_all(path.parent().expect("a frame has a directory"))
-            .expect("the set's directories are creatable");
-        fs::write(&path, bytes).expect("a golden frame is writable");
-    }
-}
-
-/// Decode every frame of a set with this build's codec, each as the type its
-/// direction carries, and insist each frame is exactly one whole message.
-fn decode_set(version: u32, set: &BTreeMap<String, Vec<u8>>) -> (usize, usize) {
-    let (mut to_server, mut to_gateway) = (0, 0);
-    for (name, bytes) in set {
-        let consumed = if name.starts_with(TO_SERVER) {
-            to_server += 1;
-            let (_, consumed): (ToServer, usize) = decode_frame(bytes)
-                .unwrap_or_else(|e| panic!("v{version} {name} does not decode as ToServer: {e}"))
-                .unwrap_or_else(|| panic!("v{version} {name} is a truncated frame"));
-            consumed
-        } else {
-            to_gateway += 1;
-            let (_, consumed): (ToGateway, usize) = decode_frame(bytes)
-                .unwrap_or_else(|e| panic!("v{version} {name} does not decode as ToGateway: {e}"))
-                .unwrap_or_else(|| panic!("v{version} {name} is a truncated frame"));
-            consumed
-        };
-        assert_eq!(
-            consumed,
-            bytes.len(),
-            "v{version} {name} holds exactly one frame"
-        );
-    }
-    (to_server, to_gateway)
-}
-
-/// Re-record the current version's set. Ignored: it writes into the tree.
-#[test]
-#[ignore = "writes tests/golden/v<IPC_VERSION>/; run it on purpose after a wire change"]
-fn record_golden_frames() {
-    let set = current_encoding();
-    write_set(IPC_VERSION, &set);
-    let (to_server, to_gateway) = decode_set(IPC_VERSION, &set);
-    eprintln!(
-        "recorded {} ToServer and {} ToGateway frames to {}",
-        to_server,
-        to_gateway,
-        set_dir(IPC_VERSION).display()
-    );
-}
+// The suite reads sets; the recorder example writes them. Each root uses one
+// half of the shared module and sees the other half as dead code.
+#[allow(dead_code)]
+mod golden_set;
+use golden_set::{
+    FIRST_GOLDEN_VERSION, RECORD_COMMAND, current_encoding, decode_set, read_set, set_dir,
+    variant_name,
+};
 
 /// The set for this build's `IPC_VERSION` exists and is exactly what this build
 /// encodes. A difference is a wire change: re-record, and let the diff of

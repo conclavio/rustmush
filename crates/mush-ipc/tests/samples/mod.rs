@@ -1,5 +1,6 @@
-//! The sample frames shared by `roundtrip.rs` (the codec round trip) and
-//! `golden.rs` (the recorded wire contract, doc 33 §4.1): one of every
+//! The sample frames shared by `roundtrip.rs` (the codec round trip),
+//! `golden.rs` (the recorded wire contract, doc 33 §4.1) and the
+//! `record_golden_frames` example (the tool that records it): one of every
 //! [`ToServer`] and [`ToGateway`] variant, including the `serde_json::Value`
 //! arms. A new variant is added HERE, once, and both suites pick it up: the
 //! round trip proves it survives the codec, the golden suite refuses to pass

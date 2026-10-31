@@ -3,8 +3,8 @@
 //! The gateway and the server may run one boundary protocol version apart, and
 //! the proof that they can is a recorded set of frames per version under
 //! `crates/mush-ipc/tests/golden/v<N>/`, written by the build whose
-//! `IPC_VERSION` was N (`cargo test -p mush-ipc --test golden
-//! record_golden_frames -- --ignored`). `mush-ipc`'s own golden suite checks
+//! `IPC_VERSION` was N (`cargo run -p mush-ipc --example
+//! record_golden_frames`). `mush-ipc`'s own golden suite checks
 //! that the current set matches the codec and that the previous set still
 //! decodes — but both of those can only run against a set that EXISTS, and a
 //! bump that forgot to record one would pass them vacuously until the next
@@ -25,8 +25,7 @@ use mush_ipc::IPC_VERSION;
 const FIRST_GOLDEN_VERSION: u32 = 12;
 
 /// The command that records the current version's set.
-const RECORD_COMMAND: &str =
-    "cargo test -p mush-ipc --test golden record_golden_frames -- --ignored";
+const RECORD_COMMAND: &str = "cargo run -p mush-ipc --example record_golden_frames";
 
 /// The workspace root, from this crate's manifest directory.
 fn repo_root() -> PathBuf {

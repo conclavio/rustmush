@@ -13,8 +13,12 @@ A set is written once, by the build whose `IPC_VERSION` is N, and never
 edited by hand:
 
 ```
-cargo test -p mush-ipc --test golden record_golden_frames -- --ignored
+cargo run -p mush-ipc --example record_golden_frames
 ```
+
+The recorder is an example binary, not an `#[ignore]`d test: a tool that
+writes into the tree proves nothing by passing, and the gated-proof inventory
+in `mush-contract-tests` reads an ignored test as a proof some CI job must run.
 
 `tests/golden.rs` checks that the current version's set is byte-for-byte what
 the build encodes (re-record after any deliberate, additive wire change; the

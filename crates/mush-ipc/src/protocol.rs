@@ -41,9 +41,9 @@
 //!   version's set in both directions, so a variant or field that is to go is
 //!   first no longer SENT at N+1 (its gate arm, or the sender, drops it) and
 //!   deleted at N+2. Never narrower than the window.
-//! - **A bump records the contract.** `cargo test -p mush-ipc --test golden
-//!   record_golden_frames -- --ignored` writes `tests/golden/v<N>/`; the lint
-//!   in `mush-contract-tests` fails a bump with no set, and `tests/golden.rs`
+//! - **A bump records the contract.** `cargo run -p mush-ipc --example
+//!   record_golden_frames` writes `tests/golden/v<N>/`; the lint in
+//!   `mush-contract-tests` fails a bump with no set, and `tests/golden.rs`
 //!   decodes the previous version's set under the current codec.
 //!
 //! Still true: a frame is not the first tool. Both halves share the object
