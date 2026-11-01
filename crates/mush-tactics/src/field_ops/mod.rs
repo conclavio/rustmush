@@ -1,10 +1,8 @@
-//! IC Field Operations (`H1-A`–`H1-C`, `H2-A`–`H2-C`, `H3`):
+//! IC Field Operations (`H1-A`, `H2-A`–`H2-C`, `H3`). The `engagement`, `sortie` and
+//! `quarantine` twins were removed on 2026-10-31 (last at `61a670ce`); the live field and
+//! sortie are `tacsim::field` and `tacsim::detachment`:
 //! - [`condition`] (`H1-A`): section-localized component survival, operational states,
 //!   hull-epoch close gating, and versioned IC authority handoff.
-//! - [`engagement`] (`H1-B` & `H1-C`): field combat entry, motion-clock handoff,
-//!   reinforcement, withdrawal, demotion settlement, carrier leave-behind confirmation,
-//!   link-loss posture, crew survival / guaranteed NPC extraction, and observer-bounded
-//!   post-battle records.
 //! - [`recovery`] (`H2-A`): universal tow coupling (`<= 2x` tug mass cap), tonnage
 //!   speed scaling, field inspection, exclusive attachment, coupled movement, and
 //!   carrier bay loading.
@@ -15,27 +13,16 @@
 //! - [`workshop`] (`H3`): component stripping with parent-hull provenance, hull
 //!   scrapping, in-place repair (including pending-custody repair-at-risk), section
 //!   reconstruction, destroyed/stripped component replacement, rearming, and cost quoting.
-//! - [`sortie`] (`FO-6`–`FO-9`, `FO-15`, `FO-16`, `Q-D3`–`Q-D6`, `Q-A4`, `Q-F1`, `Q-F2`,
-//!   `Q-R2`, `Q-R5`, `P-1`): detachment sortie staging, partial-launch persistence,
-//!   carrier personnel embarkation manifests, NPC crew contracts/wages, unit expense
-//!   policies, bounded mission-leader succession, and field-to-roster availability sync.
-//! - [`quarantine`] (`W-clock` consumer, `Q-H11`, `P-4`): post-outage audit quarantine of
-//!   field units whose persisted state disagrees with their site books, stamped from the
-//!   kernel's `WorldClockResumed` event. The clock itself — the durable checkpoint, the
-//!   outage evaluation, the countdown and its broadcasts — is the kernel's
-//!   (`mush_core::clock::WorldTimeline`); the salvage contest windows pause and extend from
-//!   the same events (`salvage`, `Q-F3`).
+//! - [`crew`]: the NPC crew mission scope the live `tacsim::detachment::crew` contracts use.
 //! - [`engineering`] (`H1-A`, `H2-A`, `H3` Field vs. Workshop Boundary): mobile field
 //!   engineering tenders, in-field weapon unjamming, damaged-section stabilization, field
 //!   ammo/charge resupply, and workshop-boundary enforcement.
 
 pub mod condition;
-pub mod engagement;
+pub mod crew;
 pub mod engineering;
-pub mod quarantine;
 pub mod recovery;
 pub mod salvage;
-pub mod sortie;
 pub mod workshop;
 
 pub use condition::{
@@ -45,23 +32,12 @@ pub use condition::{
     UnitAnatomyProfile, assess_tactical_unit, effective_component_condition,
     effective_section_condition, ic_condition_plan, install_point_section, validate_close_outcome,
 };
-pub use engagement::{
-    COMBAT_WALL_CLOCK_RATE, CarrierDepartureOutcome, CrewSurvivalBook, DEFAULT_FALLBACK_SAFE_PORT,
-    DemotionOutcome, DemotionSettlementGate, EngagementError, FieldObservationBook,
-    FieldPromotionTrigger, FieldSiteEngagementBook, IC_SURFACE_CLOCK_RATE, LinkLossPosture,
-    MAX_CREW_RECORDS, MAX_OBSERVATIONS_PER_ACTOR, MAX_SITE_UNITS, MotionClockHandoff,
-    ObservationSource, ObservedCombatFact, ObserverCombatEntry, OccupantSurvivalState,
-    SafePortCandidate, SiteUnitPresence, WithdrawalDestination, resolve_link_loss_posture,
-    select_extraction_port,
-};
+pub use crew::NpcMissionScope;
 pub use engineering::{
     DEFAULT_MAX_TENDER_SERVICE_DISTANCE_CM, DEFAULT_SPARE_PARTS_KG_PER_STRUCTURAL_POINT,
     DEFAULT_UNJAM_SPARE_PARTS_KG, FieldEngineeringActionKind, FieldEngineeringBook,
     FieldEngineeringError, FieldEngineeringLogEntry, FieldTenderState, MAX_FIELD_ENGINEERING_LOGS,
-    MAX_FIELD_TENDERS,
-};
-pub use quarantine::{
-    MAX_QUARANTINED_UNITS, OutageQuarantineBook, QuarantineError, QuarantinedUnitRecord,
+    MAX_FIELD_TENDERS, UnitExpenseCategory, UnitExpensePolicy,
 };
 pub use recovery::{
     AttachTowRequest, BayCapacitySpec, DEFAULT_MAX_ATTACH_DISTANCE_CM, FieldInspectionReport,
@@ -80,13 +56,6 @@ pub use salvage::{
     SalvageEvidenceKind, SalvageEvidenceRecord, SalvageSubject, check_custody_action_allowed,
     evaluate_recovery_entitlement,
 };
-pub use sortie::{
-    ActiveFieldSortie, CarrierPersonnelManifest, CrewMemberKind, EmbarkationOrigin,
-    EmbarkedPersonRecord, IC_DAY_SECONDS, MAX_CREW_POOL_CONTRACTS, MAX_MANIFEST_PERSONNEL,
-    MissionLeaderRoleGrant, NpcCrewContract, NpcMissionScope, PortCrewPool, SortieError,
-    SortieLaunchBlockReason, SortieSlotLaunchState, UnitExpenseCategory, UnitExpensePolicy,
-    is_occupant_fit_for_duty, sync_detachment_availability_from_field,
-};
 pub use workshop::{
     ComponentProvenance, ContrabandReason, FALLBACK_SECTION_SCRAP_KG, MAX_STRIPPED_COMPONENTS,
     MAX_WORKSHOP_ORDERS, ProvenanceLegalityStatus, ReplacementPartSpec,
@@ -102,7 +71,7 @@ mod tests {
 
     use mush_core::{
         DefinitionDescriptor, DefinitionId, DefinitionKind, DefinitionRegistryBuilder, ObjId,
-        OwnerId, WorldEvent,
+        OwnerId,
     };
     use smol_str::SmolStr;
 
@@ -1048,446 +1017,6 @@ mod tests {
         let encoded = serde_json::to_string(&book)?;
         let decoded: RecoveryBook = serde_json::from_str(&encoded)?;
         check_eq!(decoded, book);
-        Ok(())
-    }
-
-    #[test]
-    fn w_clock_events_quarantine_mismatched_units_and_extend_salvage_claim_deadlines() -> TestResult
-    {
-        let mut quarantine = OutageQuarantineBook::new();
-        let mut salvage_book = SalvageClaimBook::new();
-        let mut custody_ledger = FieldCustodyLedger::new();
-        let mut site_book = FieldSiteEngagementBook::new(ObjId(900))?;
-
-        let fixture = build_biped_fixture(ObjId(201))?;
-        let mut fixture_mismatch = build_biped_fixture(ObjId(202))?;
-        let pose_201 = FieldPose {
-            site: ObjId(900),
-            x_cm: 100,
-            y_cm: 100,
-        };
-        let pose_202 = FieldPose {
-            site: ObjId(900),
-            x_cm: 200,
-            y_cm: 100,
-        };
-        site_book.deploy_surface_unit(
-            &mut custody_ledger,
-            &fixture.unit,
-            &fixture.anatomy,
-            SmolStr::new("expedition"),
-            pose_201,
-            None,
-            1_000,
-        )?;
-        site_book.deploy_surface_unit(
-            &mut custody_ledger,
-            &fixture_mismatch.unit,
-            &fixture_mismatch.anatomy,
-            SmolStr::new("expedition"),
-            pose_202,
-            None,
-            1_000,
-        )?;
-
-        // File a pending salvage claim before the outage (`Q-F3`).
-        let authority = RecoveryAuthorityContext {
-            recoverer: ObjId(50),
-            unit_title_holder: ObjId(60),
-            has_owner_authorization: false,
-            has_landholder_authorization: false,
-            ground_tenure_at_attach: GroundTenure::Unclaimed,
-        };
-        let op_id = RecoveryOpId::new(1)?;
-        salvage_book.record_physical_attach(op_id, ObjId(201), ObjId(300), &authority, 50_000)?;
-        salvage_book.record_bay_load(op_id, ObjId(800), 50_010)?;
-        let custody_status = salvage_book.resolve_hull_recovery_custody(op_id, 10_020)?;
-        let (claim_id, initial_deadline) = match custody_status {
-            CustodyTitleStatus::PendingSalvageClaim {
-                claim_id,
-                deadline_real_s,
-                ..
-            } => (claim_id, deadline_real_s),
-            other => return Err(format!("expected pending salvage claim, got {other:?}").into()),
-        };
-
-        // The kernel froze the world at its pre-outage checkpoint (real 10_020, ic 50_000) and
-        // the boot re-emits `WorldClockFrozen`: the contest window pauses there (`Q-F3`).
-        let frozen = WorldEvent::WorldClockFrozen {
-            real_unix: 10_020,
-            ic_unix: 50_000,
-        };
-        check!(salvage_book.apply_world_clock_event(&frozen).is_empty());
-        check_eq!(
-            salvage_book.claim(claim_id).map(|c| c.paused_at_real_s),
-            Some(Some(10_020))
-        );
-        check!(matches!(
-            salvage_book.adjudicate_claim(claim_id, initial_deadline + 1),
-            Err(SalvageError::ClaimPausedForOutage(id)) if id == claim_id
-        ));
-        // A freeze audits nothing: quarantine is decided when the world comes back (`Q-H11`).
-        check!(
-            quarantine
-                .audit_site_units_on_world_clock_resumed(
-                    &frozen,
-                    &site_book,
-                    &custody_ledger,
-                    [&fixture.unit, &fixture_mismatch.unit],
-                )?
-                .is_empty()
-        );
-
-        // Mutate fixture_mismatch's unit revision outside site_book/custody_ledger to simulate an
-        // incompatible post-outage persisted revision (`Q-H11`).
-        let bump_plan = UnitMutationPlan::new(
-            vec![UnitMutationOp::SetCell {
-                addr: CellAddr::Section {
-                    section: SectionId::new("head")?,
-                    cell: CellId::new("internals")?,
-                },
-                value: 7,
-            }],
-            Some(fixture_mismatch.unit.revision()),
-            None,
-        )?;
-        let (bumped_202, _) = apply(&fixture_mismatch.unit, &bump_plan, 50_000)?;
-        fixture_mismatch.unit = bumped_202;
-
-        // The world task resumes the clock 900 s later (a 600 s outage plus the 300 s countdown)
-        // and emits `WorldClockResumed` with the frozen IC second as the resumed one.
-        let resumed = WorldEvent::WorldClockResumed {
-            frozen_real_unix: 10_020,
-            resumed_real_unix: 10_920,
-            unavailable_secs: 900,
-            ic_unix: 50_000,
-        };
-
-        // Audit on resume: ObjId(201) is clean; ObjId(202) has a revision mismatch and is
-        // quarantined, stamped from the event (`Q-H11`, `P-4`).
-        let quarantined = quarantine.audit_site_units_on_world_clock_resumed(
-            &resumed,
-            &site_book,
-            &custody_ledger,
-            [&fixture.unit, &fixture_mismatch.unit],
-        )?;
-        check_eq!(quarantined.len(), 1);
-        let q_rec = quarantined
-            .first()
-            .ok_or("expected ObjId(202) to be quarantined")?;
-        check_eq!(q_rec.unit, ObjId(202));
-        check_eq!(q_rec.site, ObjId(900));
-        check_eq!(q_rec.reason, SmolStr::new("custody_revision_mismatch"));
-        check_eq!(q_rec.preserved_revision, fixture_mismatch.unit.revision());
-        check_eq!(q_rec.quarantined_at_real_s, 10_920);
-        check_eq!(q_rec.quarantined_at_ic_s, 50_000);
-        check_eq!(quarantine.ensure_unit_not_quarantined(ObjId(201)), Ok(()));
-        check!(matches!(
-            quarantine.ensure_unit_not_quarantined(ObjId(202)),
-            Err(QuarantineError::UnitQuarantined {
-                unit: ObjId(202),
-                ..
-            })
-        ));
-        check_eq!(quarantine.quarantined_units().len(), 1);
-
-        // The same event extends the paused contest window by the 900 s the world was away.
-        let adjusted = salvage_book.apply_world_clock_event(&resumed);
-        check_eq!(adjusted.len(), 1);
-        let adj = adjusted.first().ok_or("expected one adjusted claim")?;
-        check_eq!(adj.claim_id, claim_id);
-        check_eq!(adj.previous_deadline_real_s, initial_deadline);
-        check_eq!(adj.adjusted_deadline_real_s, initial_deadline + 900);
-        check_eq!(adj.total_paused_real_s, 900);
-        check_eq!(
-            salvage_book.claim(claim_id).map(|c| c.paused_at_real_s),
-            Some(None)
-        );
-
-        // A claim the freeze event never reached is still extended by the unavailable time: the
-        // resume event pauses it at `frozen_real_unix` first (the economy's rule for a window it
-        // finds open at the freeze).
-        let op_2 = RecoveryOpId::new(2)?;
-        salvage_book.record_physical_attach(op_2, ObjId(202), ObjId(300), &authority, 50_000)?;
-        salvage_book.record_bay_load(op_2, ObjId(800), 50_010)?;
-        let (claim_2, deadline_2) = match salvage_book
-            .resolve_hull_recovery_custody(op_2, 10_920)?
-        {
-            CustodyTitleStatus::PendingSalvageClaim {
-                claim_id,
-                deadline_real_s,
-                ..
-            } => (claim_id, deadline_real_s),
-            other => return Err(format!("expected pending salvage claim, got {other:?}").into()),
-        };
-        let resumed_again = WorldEvent::WorldClockResumed {
-            frozen_real_unix: 11_000,
-            resumed_real_unix: 11_300,
-            unavailable_secs: 300,
-            ic_unix: 50_000,
-        };
-        let adjusted_again = salvage_book.apply_world_clock_event(&resumed_again);
-        check_eq!(adjusted_again.len(), 2);
-        check_eq!(
-            salvage_book.claim(claim_id).map(|c| c.deadline_real_s),
-            Some(initial_deadline + 900 + 300)
-        );
-        check_eq!(
-            salvage_book.claim(claim_2).map(|c| c.deadline_real_s),
-            Some(deadline_2 + 300)
-        );
-
-        // Quarantine holds until staff releases it (`Q-H11`).
-        check!(quarantine.release_quarantined_unit(ObjId(202)).is_some());
-        quarantine.ensure_unit_not_quarantined(ObjId(202))?;
-
-        let encoded = serde_json::to_string(&quarantine)?;
-        let decoded: OutageQuarantineBook = serde_json::from_str(&encoded)?;
-        check_eq!(decoded, quarantine);
-        Ok(())
-    }
-
-    #[test]
-    fn live_coupled_surface_tow_motion_and_mid_tow_combat_interdiction() -> TestResult {
-        let site = ObjId(910);
-        let tug_id = ObjId(301);
-        let cas_id = ObjId(302);
-        let attacker_id = ObjId(303);
-
-        let tug_fixture = build_biped_fixture(tug_id)?;
-        let mut cas_fixture = build_biped_fixture(cas_id)?;
-        let attacker_fixture = build_biped_fixture(attacker_id)?;
-
-        // Immobilize cas_fixture (destroy both legs).
-        let internals = CellId::new("internals")?;
-        let destroyed = ConditionId::new("destroyed")?;
-        let left_leg = SectionId::new("left_leg")?;
-        let right_leg = SectionId::new("right_leg")?;
-        let plan = UnitMutationPlan::new(
-            vec![
-                UnitMutationOp::SetCell {
-                    addr: CellAddr::Section {
-                        section: left_leg.clone(),
-                        cell: internals.clone(),
-                    },
-                    value: 0,
-                },
-                UnitMutationOp::SetSectionCondition {
-                    section: left_leg.clone(),
-                    condition: destroyed.clone(),
-                },
-                UnitMutationOp::SetCell {
-                    addr: CellAddr::Section {
-                        section: right_leg.clone(),
-                        cell: internals.clone(),
-                    },
-                    value: 0,
-                },
-                UnitMutationOp::SetSectionCondition {
-                    section: right_leg.clone(),
-                    condition: destroyed.clone(),
-                },
-            ],
-            Some(cas_fixture.unit.revision()),
-            None,
-        )?;
-        let (immobile_cas, _) = apply(&cas_fixture.unit, &plan, 1_000)?;
-        cas_fixture.unit = immobile_cas;
-        let cas_assessment = assess_tactical_unit(&cas_fixture.unit, &cas_fixture.anatomy);
-        check_eq!(cas_assessment.state, OperationalState::Immobile);
-
-        let mut ledger = FieldCustodyLedger::new();
-        let mut site_book = FieldSiteEngagementBook::new(site)?;
-        let mut recovery_book = RecoveryBook::new();
-        let initial_pose = FieldPose {
-            site,
-            x_cm: 500,
-            y_cm: 500,
-        };
-        site_book.deploy_surface_unit(
-            &mut ledger,
-            &tug_fixture.unit,
-            &tug_fixture.anatomy,
-            SmolStr::new("expedition"),
-            initial_pose,
-            None,
-            1_000,
-        )?;
-        site_book.deploy_surface_unit(
-            &mut ledger,
-            &cas_fixture.unit,
-            &cas_fixture.anatomy,
-            SmolStr::new("expedition"),
-            initial_pose,
-            None,
-            1_000,
-        )?;
-        site_book.deploy_surface_unit(
-            &mut ledger,
-            &attacker_fixture.unit,
-            &attacker_fixture.anatomy,
-            SmolStr::new("raiders"),
-            FieldPose {
-                site,
-                x_cm: 1_200,
-                y_cm: 500,
-            },
-            None,
-            1_000,
-        )?;
-
-        let op_id = site_book.attach_site_tow(
-            &mut recovery_book,
-            AttachTowRequest {
-                tug: tug_id,
-                tug_state: OperationalState::Operational,
-                tug_can_move: true,
-                tug_base_speed_cms: 1_000,
-                tug_mass_kg: 20_000,
-                rig_profile: TowRigProfile::Standard,
-                tug_pose: initial_pose,
-                casualty_assessment: cas_assessment,
-                casualty_mass: UnitMassProfile::new(20_000, 0, 0, 300, 400)?,
-                casualty_pose: initial_pose,
-                max_attach_distance_cm: DEFAULT_MAX_ATTACH_DISTANCE_CM,
-                at_ic: 1_005,
-            },
-        )?;
-
-        // Independent surface motion for either coupled unit is refused (`Q-S7`).
-        let next_pose = FieldPose {
-            site,
-            x_cm: 900,
-            y_cm: 500,
-        };
-        check_eq!(
-            site_book.record_surface_motion(tug_id, next_pose, None),
-            Err(EngagementError::UnitCoupledToActiveTow {
-                unit: tug_id,
-                op_id,
-            })
-        );
-        check_eq!(
-            site_book.record_surface_motion(cas_id, next_pose, None),
-            Err(EngagementError::UnitCoupledToActiveTow {
-                unit: cas_id,
-                op_id,
-            })
-        );
-
-        // Coupled tow motion updates both tug and casualty atomically (`Q-S7`).
-        site_book.step_coupled_tow_motion(
-            &mut ledger,
-            &mut recovery_book,
-            op_id,
-            1,
-            next_pose,
-            5,
-            1_010,
-        )?;
-        check_eq!(
-            site_book.unit_presence(tug_id).ok_or("missing tug")?.pose,
-            next_pose
-        );
-        check_eq!(
-            site_book.unit_presence(cas_id).ok_or("missing cas")?.pose,
-            next_pose
-        );
-
-        // Hostile interdiction mid-tow promotes the site to active combat at the coupled pose (`H1-B`, `H2-A`).
-        let handoffs = site_book.interdict_active_tow(
-            &mut ledger,
-            &recovery_book,
-            op_id,
-            attacker_id,
-            42,
-            1,
-            1_012,
-        )?;
-        check!(site_book.is_engaged());
-        let tug_handoff = handoffs
-            .iter()
-            .find(|h| h.unit == tug_id)
-            .ok_or("missing tug handoff")?;
-        check_eq!(tug_handoff.handoff_pose, next_pose);
-        check_eq!(tug_handoff.active_recovery_op, Some(op_id));
-
-        // Emergency drop detaches the casualty at its current pose so the tug can maneuver at full speed.
-        let drop_pose = site_book.emergency_drop_tow(&mut recovery_book, op_id, 2, 1_013)?;
-        check_eq!(drop_pose, next_pose);
-        check_eq!(recovery_book.active_operation_for_tug(tug_id), None);
-
-        // Settle and demote combat, re-attach tow, promote to combat, and verify auto-detach when tug is immobilized (`H2-A`, `Q-H8`).
-        site_book.set_settlement_gate(DemotionSettlementGate::default());
-        site_book.demote_engagement(&mut ledger, 1_400)?;
-        let cas_assessment2 = assess_tactical_unit(&cas_fixture.unit, &cas_fixture.anatomy);
-        let op2_id = site_book.attach_site_tow(
-            &mut recovery_book,
-            AttachTowRequest {
-                tug: tug_id,
-                tug_state: OperationalState::Operational,
-                tug_can_move: true,
-                tug_base_speed_cms: 1_000,
-                tug_mass_kg: 20_000,
-                rig_profile: TowRigProfile::Standard,
-                tug_pose: next_pose,
-                casualty_assessment: cas_assessment2,
-                casualty_mass: UnitMassProfile::new(20_000, 0, 0, 300, 400)?,
-                casualty_pose: next_pose,
-                max_attach_distance_cm: DEFAULT_MAX_ATTACH_DISTANCE_CM,
-                at_ic: 1_405,
-            },
-        )?;
-        site_book.promote_to_engagement(
-            &mut ledger,
-            43,
-            FieldPromotionTrigger::ExplicitHostileAction {
-                attacker: attacker_id,
-                target: tug_id,
-            },
-            1,
-            1_406,
-        )?;
-        // Destroy tug's legs while towing: apply_field_damage_with_recovery_sync auto-detaches the tow!
-        let tug_leg_plan = UnitMutationPlan::new(
-            vec![
-                UnitMutationOp::SetCell {
-                    addr: CellAddr::Section {
-                        section: left_leg.clone(),
-                        cell: internals.clone(),
-                    },
-                    value: 0,
-                },
-                UnitMutationOp::SetSectionCondition {
-                    section: left_leg,
-                    condition: destroyed.clone(),
-                },
-                UnitMutationOp::SetCell {
-                    addr: CellAddr::Section {
-                        section: right_leg.clone(),
-                        cell: internals,
-                    },
-                    value: 0,
-                },
-                UnitMutationOp::SetSectionCondition {
-                    section: right_leg,
-                    condition: destroyed,
-                },
-            ],
-            Some(tug_fixture.unit.revision()),
-            None,
-        )?;
-        let (_, _, auto_detached) = site_book.apply_field_damage_with_recovery_sync(
-            &mut ledger,
-            &mut recovery_book,
-            &tug_fixture.unit,
-            &tug_leg_plan,
-            &tug_fixture.anatomy,
-            1_407,
-        )?;
-        check_eq!(auto_detached, Some(op2_id));
-        check_eq!(recovery_book.active_operation_for_tug(tug_id), None);
-
         Ok(())
     }
 
