@@ -437,8 +437,8 @@ fn ic1_the_station_packs_load_and_their_digests_are_pinned() {
     );
     assert_eq!(
         station_packs().expect("the station packs verify").len(),
-        27,
-        "the corridor's four, doc 19 cut A.8's six, doc 34 cut CS.0b's five cast packs, and doc 20 cut SM.2's twelve site packs"
+        29,
+        "the corridor's four, doc 19 cut A.8's six, doc 34 cut CS.0b's five cast packs, doc 20 cut SM.2's twelve site packs, and doc 32 cut S.1's two wide site packs"
     );
 }
 

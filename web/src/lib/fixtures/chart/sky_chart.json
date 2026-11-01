@@ -364,7 +364,10 @@
         "  Rheasilvia Commons: 496 h 1 min at this load (0 t aboard the an empty tacsim.unit.dray: burn 55 t, 21 crew-days); empty 496 h 1 min and 55 t; the direct chord 4.718 AU would be 503 h 22 min and 55 t.",
         "    Registry survey: unavailable.",
         "    Tenure: 16 commons.",
-        "  Stickney Yards: 488 h 22 min at this load (0 t aboard the an empty tacsim.unit.dray: burn 54 t, 21 crew-days); empty 488 h 22 min and 54 t; the direct chord 3.699 AU would be 445 h 40 min and 50 t."
+        "  Stickney Yards: 488 h 22 min at this load (0 t aboard the an empty tacsim.unit.dray: burn 54 t, 21 crew-days); empty 488 h 22 min and 54 t; the direct chord 3.699 AU would be 445 h 40 min and 50 t.",
+        "  Urvara Reach: 1 h 0 min at this load (0 t aboard the an empty tacsim.unit.dray: burn 1 t, 1 crew-days); empty 1 h 0 min and 1 t.",
+        "    Registry survey: unavailable.",
+        "    Tenure: 16 open."
       ],
       "window": [
         "The window for Ahuna Flank from Ceres Freeport, the an empty tacsim.unit.dray at 0 t, scanned a day at a time over the next 365 IC days:",
@@ -405,7 +408,11 @@
         "  Kasei Metals bids volatiles: list 200, posts 200 (+4 permille; reach 488 h 22 min now against a median of 480 h 39 min).",
         "  emergency bids (at 1500 permille of the median): none due; reach is 1016 permille of the median.",
         "  fastest: 0000-09-06 (in 248 IC days): 341 h 4 min, burn 39 t (-147 h 18 min and -15 t against now).",
-        "  worst: 0000-01-01 (in 0 IC days): 488 h 22 min, burn 54 t (+under a minute and +0 t against now)."
+        "  worst: 0000-01-01 (in 0 IC days): 488 h 22 min, burn 54 t (+under a minute and +0 t against now).",
+        "The window for Urvara Reach from Ceres Freeport, the an empty tacsim.unit.dray at 0 t, scanned a day at a time over the next 365 IC days:",
+        "  now (0000-01-01): 1 h 0 min, burn 1 t, 1 crew-days.",
+        "  fastest: 0000-01-01 (in 0 IC days): 1 h 0 min, burn 1 t (+under a minute and +0 t against now).",
+        "  worst: 0001-01-01 (in 365 IC days): 1 h 0 min, burn 1 t (+under a minute and +0 t against now)."
       ]
     },
     "model": "kepler",
@@ -602,6 +609,28 @@
         },
         "to": "Stickney Yards",
         "venue": "stickney"
+      },
+      {
+        "body": "ceres",
+        "direct": null,
+        "empty": {
+          "burn_t": 1,
+          "crew_days": 1,
+          "total_s": 3601
+        },
+        "legs": [
+          {
+            "from": "ceres",
+            "to": "ceres"
+          }
+        ],
+        "loaded": {
+          "burn_t": 1,
+          "crew_days": 1,
+          "total_s": 3601
+        },
+        "to": "Urvara Reach",
+        "venue": "urvara"
       }
     ],
     "scale": {
@@ -799,6 +828,29 @@
           "burn_t": 54,
           "offset_days": 0,
           "total_s": 1758173
+        }
+      },
+      {
+        "cheapest": {
+          "burn_t": 1,
+          "offset_days": 0,
+          "total_s": 3601
+        },
+        "fastest": {
+          "burn_t": 1,
+          "offset_days": 0,
+          "total_s": 3601
+        },
+        "now": {
+          "burn_t": 1,
+          "crew_days": 1,
+          "total_s": 3601
+        },
+        "to": "Urvara Reach",
+        "worst": {
+          "burn_t": 1,
+          "offset_days": 365,
+          "total_s": 3601
         }
       }
     ]

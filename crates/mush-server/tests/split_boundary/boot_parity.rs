@@ -983,7 +983,8 @@ async fn sm2_the_production_root_lays_up_every_site() {
         .iter()
         .filter(|line| line.binding == tacsim::port::Binding::Site)
         .collect();
-    assert_eq!(sites.len(), 6, "{sites:#?}");
+    // Doc 32 cut S.1: seven with Urvara Reach.
+    assert_eq!(sites.len(), 7, "{sites:#?}");
     for line in &sites {
         assert_eq!(line.state, tacsim::port::LineState::Ready, "{}", line.text);
     }

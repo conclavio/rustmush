@@ -814,7 +814,9 @@ pub(crate) fn on_pad(rig: &mut Rig, n_rigs: usize) -> (ObjId, HullRow, Vec<ObjId
 /// (a scan or a sounding from the ground reserves the real trip home; the surface tick builds the
 /// home the fire after the site).
 pub(crate) fn warm(rig: &mut Rig) {
-    for _ in 0..8 {
+    // Doc 32 cut S.1: lane v17's seventh site is wanted too, and the tick warms one wanted
+    // site a fire before it builds a home field, so the home can land a fire later.
+    for _ in 0..16 {
         let homed = rig
             .tw
             .world()

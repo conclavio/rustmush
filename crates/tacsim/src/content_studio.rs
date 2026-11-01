@@ -2306,7 +2306,8 @@ mod tests {
             catalog
                 .get("ports")
                 .and_then(Value::as_array)
-                .is_some_and(|a| a.len() == 11)
+                // Doc 32 cut S.1: twelve with Urvara Reach.
+                .is_some_and(|a| a.len() == 12)
         );
         check!(
             catalog

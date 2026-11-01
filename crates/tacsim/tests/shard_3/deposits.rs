@@ -594,9 +594,15 @@ fn ground_of(
     let body = tacsim::surface::body_geology(tw.world(), location.body.as_ref().expect("a body"))
         .expect("the body's table is installed");
     let site = def.site.as_deref().cloned().expect("a site");
-    let spec = tacsim::port::site::geology_spec(&site, &location, &body).expect("a spec");
-    let ground = site_ground_sync(tw.world_mut(), &site_window(def.location.as_str()), &spec)
-        .expect("the site builds");
+    // Doc 32 cut S.1: Urvara Reach is 512 a side.
+    let side: u16 = if entry == "urvara_port" { 512 } else { 256 };
+    let spec = tacsim::port::site::geology_spec_at(&site, &location, &body, side).expect("a spec");
+    let mut window = site_window(def.location.as_str());
+    window.bbox.max = mush_atlas::PointCm {
+        x: i64::from(side) * 1_000,
+        y: i64::from(side) * 1_000,
+    };
+    let ground = site_ground_sync(tw.world_mut(), &window, &spec).expect("the site builds");
     (spec, body, ground, site)
 }
 
@@ -631,9 +637,10 @@ fn sm6_two_boots_with_one_key_open_identical_reserves() {
     let _ = open_all(&mut b);
     let registry = registry(&a.tw);
     let mut counts: BTreeMap<String, usize> = BTreeMap::new();
-    for entry in SITE_PORTS {
+    // Doc 32 cut S.1: and Urvara Reach, the 512 site (its blocks 1,024 pockets each).
+    for entry in SITE_PORTS.iter().chain(&support::sites::WIDE_SITE_PORTS) {
         let plan = plan_of(&mut a.tw, entry);
-        counts.insert(entry.to_owned(), plan.len());
+        counts.insert((*entry).to_owned(), plan.len());
         for row in &plan {
             let one = deposit(&mut a.tw, row.deposit).expect("the deposit is open on world a");
             let two = deposit(&mut b.tw, row.deposit).expect("the deposit is open on world b");
@@ -660,6 +667,8 @@ fn sm6_two_boots_with_one_key_open_identical_reserves() {
         ("kerwan_port", 64),
         ("occator_port", 48),
         ("rheasilvia_port", 48),
+        // Doc 32 cut S.1: the 512 site, its sixteen blocks of 1,024 pockets each.
+        ("urvara_port", 48),
     ]
     .into_iter()
     .map(|(entry, n)| (entry.to_owned(), n))

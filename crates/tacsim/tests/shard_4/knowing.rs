@@ -856,7 +856,9 @@ fn on_pad(rig: &mut Rig, n_rigs: usize) -> (ObjId, HullRow, Vec<ObjId>) {
 /// (a scan or a sounding from the ground reserves the real trip home; the surface tick builds the
 /// home the fire after the site).
 fn warm(rig: &mut Rig) {
-    for _ in 0..8 {
+    // Doc 32 cut S.1: lane v17's seventh site is wanted too, and the tick warms one wanted
+    // site a fire before it builds a home field, so the home can land a fire later.
+    for _ in 0..16 {
         let homed = rig
             .tw
             .world()
@@ -2758,21 +2760,48 @@ fn sm4a_every_sites_ramp_cell_gives_a_footing() {
         if port.site.is_none() {
             continue;
         }
-        let (spec, _, location) = spec_of(&tw, entry.as_str());
-        let ground = site_ground_sync(tw.world_mut(), &site_frame(&location), &spec)
+        let (spec, body, location) = spec_of(&tw, entry.as_str());
+        // Doc 32 cut S.1: Urvara Reach is 512 a side, its ramp off its own pad at (256, 252).
+        let (side, ramp) = if entry.as_str() == "urvara_port" {
+            (512_u16, (256, 252))
+        } else {
+            (256, RAMP_CELL)
+        };
+        let spec = if side == 256 {
+            spec
+        } else {
+            let Some(PackEntry::Location(place)) = pack.entry(&port.location) else {
+                panic!("{entry}'s location");
+            };
+            tacsim::port::site::geology_spec_at(
+                port.site.as_ref().expect("a site"),
+                place,
+                &body,
+                side,
+            )
+            .expect("a 512 spec")
+        };
+        let mut frame = site_frame(&location);
+        frame.bbox.max = mush_atlas::PointCm {
+            x: i64::from(side) * 1_000,
+            y: i64::from(side) * 1_000,
+        };
+        let ground = site_ground_sync(tw.world_mut(), &frame, &spec)
             .unwrap_or_else(|e| panic!("{entry}: {e}"));
         let surface = ground
             .composite
             .surface(&mush_atlas::SurfaceRef::Ground)
             .expect("a ground surface");
+        assert_eq!(surface.cells.width(), side, "{entry}");
         assert!(
-            footing_at(surface, RAMP_CELL).is_ok(),
+            footing_at(surface, ramp).is_ok(),
             "{entry}'s ramp cell: {:?}",
-            footing_at(surface, RAMP_CELL)
+            footing_at(surface, ramp)
         );
         sites += 1;
     }
-    assert_eq!(sites, 6);
+    // Doc 32 cut S.1: the six 256 sites and Urvara Reach.
+    assert_eq!(sites, 7);
 }
 
 // ---------------------------------------------------------------------------
@@ -3215,7 +3244,12 @@ fn sm4a_a_full_chart_refuses_until_a_forget_frees_room() {
         .entries()
         .iter()
         .filter_map(|(entry, def)| match def {
-            PackEntry::Port(port) if port.site.is_some() && entry.as_str() != AHUNA => {
+            // Doc 32 cut S.1: the 256 sites (a 512 row is 1,024 pockets a block).
+            PackEntry::Port(port)
+                if port.site.is_some()
+                    && entry.as_str() != AHUNA
+                    && entry.as_str() != "urvara_port" =>
+            {
                 let (spec, _, _) = spec_of(&rig.tw, entry.as_str());
                 (spec.body.as_str() == "ceres").then(|| entry.clone())
             }

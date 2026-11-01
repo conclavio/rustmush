@@ -2354,7 +2354,9 @@ fn to_cell(rig: &mut Rig, tv: ObjId, (x, y): (i64, i64)) {
 /// builds one site a fire) — and, since doc 20 cut SM.4b, its home field (a scan or a sounding
 /// from the ground reserves the real trip home; the tick builds the home the fire after).
 fn warm_ahuna(rig: &mut Rig) {
-    for _ in 0..8 {
+    // Doc 32 cut S.1: lane v17's seventh site is wanted too, and the tick warms one wanted
+    // site a fire before it builds a home field, so the home can land a fire later.
+    for _ in 0..16 {
         let warm = rig
             .tw
             .world()
@@ -2804,8 +2806,9 @@ fn sm3b_a_site_lays_up_its_spoil_and_no_player_may_take_from_it() {
             blocks.push(vault.id);
         }
     }
-    assert_eq!(spoils.len(), 6, "six sites");
-    assert_eq!(blocks.len(), 6 * 16, "96 block vaults");
+    // Doc 32 cut S.1: and Urvara Reach, the 512 site.
+    assert_eq!(spoils.len(), 7, "seven sites");
+    assert_eq!(blocks.len(), 7 * 16, "112 block vaults");
     let (pilot, _) = prospector(&mut rig, "Pilot", 1, "Salt Moth");
     let stranger = rig.tw.spawn_player("Stranger");
     for who in [pilot, stranger] {
@@ -2833,7 +2836,8 @@ fn sm3b_a_site_lays_up_its_spoil_and_no_player_may_take_from_it() {
     }
     // A reboot lays nothing twice.
     let entries: Vec<String> = report.sites.iter().map(ToString::to_string).collect();
-    assert_eq!(entries.len(), 6);
+    // Doc 32 cut S.1: seven with Urvara Reach.
+    assert_eq!(entries.len(), 7);
     let census = |tw: &TestWorld| {
         let snapshot = economy(tw).snapshot();
         let ours = snapshot
@@ -2852,12 +2856,12 @@ fn sm3b_a_site_lays_up_its_spoil_and_no_player_may_take_from_it() {
         )
     };
     let before = census(&rig.tw);
-    // Doc 20 cut SM.6 (D3): six spoil vaults and sixteen block vaults a site, owned by the
-    // sites.
+    // Doc 20 cut SM.6 (D3): a spoil vault and sixteen block vaults a site, owned by the
+    // sites; doc 32 cut S.1: seven sites with Urvara Reach.
     assert_eq!(
         before.2.len(),
-        6 * 17,
-        "six spoil vaults and 96 block vaults, owned by the sites"
+        7 * 17,
+        "seven spoil vaults and 112 block vaults, owned by the sites"
     );
     let mut rig = reboot(rig);
     assert_eq!(census(&rig.tw), before, "a reboot lays nothing");

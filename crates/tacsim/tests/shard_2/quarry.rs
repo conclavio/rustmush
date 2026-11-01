@@ -823,7 +823,9 @@ fn on_pad(rig: &mut Rig, n_rigs: usize) -> (ObjId, HullRow, Vec<ObjId>) {
 fn warm(rig: &mut Rig, entry: &str) {
     let (spec, location) = spec_of(&rig.tw, entry);
     let frame = site_frame_at(&location, side_of(entry));
-    for _ in 0..8 {
+    // Doc 32 cut S.1: lane v17's seventh site is wanted too, and the tick warms one wanted
+    // site a fire before it builds a home field, so the home can land a fire later.
+    for _ in 0..16 {
         let cached = tacsim::surface::site_ground_cached(rig.tw.world(), &frame, &spec)
             .ok()
             .flatten()
@@ -1242,7 +1244,7 @@ fn ore_pick(all: &[Pick]) -> Pick {
 /// walker's Ceres frame is 56 × 28 at `cell_columns 1`; every frame cell not under a marker is
 /// `WASH`'s glyph of `province_word(key, ceres, (x, y), metals)` (row 0 the south edge, as the
 /// grid shape's every frame — decision D17 as built); the Freeport `F`, Ahuna `A`, Juling `J`
-/// and Kerwan `K` stand at their own provinces, Freeport Commons `C` and Occator Rim `O` share
+/// and Kerwan `K` (and since doc 32 cut S.1 Urvara Reach `U`) stand at their own provinces, Freeport Commons `C` and Occator Rim `O` share
 /// the Freeport's and are listed in `also`; a northern place is in a row `≥ 14`, a southern one
 /// below; `family=volatiles` changes the wash; the legend is the four wash pairs then the
 /// markers; Vesta's frame marks `R`; Mars answers `GROUND_UNSURVEYED`, Pluto `GROUND_NO_BODY`
@@ -1269,6 +1271,8 @@ fn sm9_the_ground_frame_is_the_registry_wash() {
     let j = marker_cell(&rig.tw, "ceres", "juling_shadow");
     let k = marker_cell(&rig.tw, "ceres", "kerwan_floor");
     let o = marker_cell(&rig.tw, "ceres", "occator_rim");
+    // Doc 32 cut S.1: Urvara Reach, the 512 site, marks `U` at its own province.
+    let u = marker_cell(&rig.tw, "ceres", "urvara_reach");
     assert_eq!(
         (c, o),
         (f, f),
@@ -1283,7 +1287,7 @@ fn sm9_the_ground_frame_is_the_registry_wash() {
             ),
         )
     };
-    for (cell, glyph) in [(f, 'F'), (a, 'A'), (j, 'J'), (k, 'K')] {
+    for (cell, glyph) in [(f, 'F'), (a, 'A'), (j, 'J'), (k, 'K'), (u, 'U')] {
         assert_eq!(at(cell), Some(glyph), "{glyph} at {cell:?}");
     }
     assert!(
@@ -1291,7 +1295,7 @@ fn sm9_the_ground_frame_is_the_registry_wash() {
         "the Freeport (19.7 N) is in a northern row: {f:?}"
     );
     assert!(a[1] < 14, "Ahuna (10.5 S) is in a southern row: {a:?}");
-    let markers: Vec<[u32; 2]> = vec![f, a, j, k];
+    let markers: Vec<[u32; 2]> = vec![f, a, j, k, u];
     for y in 0..28_u32 {
         for x in 0..56_u32 {
             if markers.contains(&[x, y]) {
@@ -1323,6 +1327,7 @@ fn sm9_the_ground_frame_is_the_registry_wash() {
             ["J", "Juling Shadow"],
             ["K", "Kerwan Floor"],
             ["O", "Occator Rim"],
+            ["U", "Urvara Reach"],
         ])
     );
     let drawn: Vec<(String, bool)> = frame["ground"]["sites"]
@@ -1343,7 +1348,8 @@ fn sm9_the_ground_frame_is_the_registry_wash() {
             ("C".to_owned(), false),
             ("J".to_owned(), true),
             ("K".to_owned(), true),
-            ("O".to_owned(), false)
+            ("O".to_owned(), false),
+            ("U".to_owned(), true)
         ]
     );
     assert_eq!(frame["ground"]["ports"][0]["glyph"], "F");

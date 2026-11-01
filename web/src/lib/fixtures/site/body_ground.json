@@ -39,6 +39,10 @@
       "  O Occator Rim (25.4 N 239.3 E): passage 1 h 0 min empty, burn 1 t.",
       "    Registry survey: metals lean, volatiles rich, carbon feedstock lean, strategic elements barren.",
       "    Tenure: 12 open; 4 held by Occator Water & Propellant.",
+      "    Your readings: none.",
+      "  U Urvara Reach (45.8 S 249.3 E): passage 1 h 0 min empty, burn 1 t.",
+      "    Registry survey: metals lean, volatiles fair, carbon feedstock lean, strategic elements barren.",
+      "    Tenure: 16 open.",
       "    Your readings: none."
     ],
     "name": "Ceres",
@@ -58,7 +62,7 @@
     "print": [
       "Ceres: the Registry's survey of metals",
       "legend: . barren  - lean  + fair  * rich  F Ceres Freeport  A Ahuna Flank  C Freeport Commons  J Juling Shadow",
-      "  K Kerwan Floor  O Occator Rim",
+      "  K Kerwan Floor  O Occator Rim  U Urvara Reach",
       "-++-++--+++++-+-+-++--+-+-++----+++-+-+-+----+------+--+",
       "+++---+-++-+-----+-+-+-+-+-+-+--+--+++-+-----+---+-++-+-",
       "----------++++-+++++-+-+--+++--++--++--+--+-+-+-+-+-----",
@@ -80,7 +84,7 @@
       "--++------+++---+-++--++-----+-+--+++-+----+--+----++--+",
       "+---+-++--+--++---+---+-+-J-+-+------+--+------+-+++++--",
       "-++-----++-+------------+--+--++-+---+--+-+---+-+-----+-",
-      "-++---++-+---++--++---+++-+--+-+-----+---++---++--++----",
+      "-++---++-+---++--++---+++-+--+-+-----+U--++---++--++----",
       "-+-+++--+-++-+-+-+--+-+-+-++++++-----++-+-+--+++----+---",
       "-----++-+-+--++-----+-+++++----+---++-++--++---+--++-+--",
       "+----+-++--++++++++-+-+---------+----+++--+-++--+---++-+",
@@ -190,6 +194,26 @@
         "survey": "metals lean, volatiles rich, carbon feedstock lean, strategic elements barren",
         "tenure": "12 open; 4 held by Occator Water & Propellant",
         "venue": "occator"
+      },
+      {
+        "best": null,
+        "best_line": "Your readings: none.",
+        "cell": [
+          38,
+          6
+        ],
+        "dark": false,
+        "drawn": true,
+        "entry": "urvara_port",
+        "here": false,
+        "lat_mdeg": -45800,
+        "letter": "U",
+        "lon_mdeg": 249300,
+        "passage": "passage 1 h 0 min empty, burn 1 t",
+        "site": "Urvara Reach",
+        "survey": "metals lean, volatiles fair, carbon feedstock lean, strategic elements barren",
+        "tenure": "16 open",
+        "venue": "urvara"
       }
     ]
   },
@@ -234,6 +258,10 @@
     [
       "O",
       "Occator Rim"
+    ],
+    [
+      "U",
+      "Urvara Reach"
     ]
   ],
   "origin": [
@@ -980,8 +1008,12 @@
         1
       ],
       [
+        "U",
+        1
+      ],
+      [
         "-",
-        3
+        2
       ],
       [
         "+",
