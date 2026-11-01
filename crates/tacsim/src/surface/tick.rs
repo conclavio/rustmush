@@ -3493,6 +3493,7 @@ mod tests {
             cost: 18_000,
             metres: 1_020,
             heading_mdeg: 0,
+            side: crate::surface::ground::SITE_CELLS,
         };
         let record = |tv: u32, started_ic: i64, due_ic: i64, params: ActParams| RigRecord {
             schema: crate::surface::excursion::EXCURSION_SCHEMA,

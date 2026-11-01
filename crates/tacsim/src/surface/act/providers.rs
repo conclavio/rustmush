@@ -379,7 +379,7 @@ impl ActionProvider for SurfaceActProvider {
                 false,
                 ProjectedParameterKind::Integer {
                     minimum: 0,
-                    maximum: 65_535,
+                    maximum: drive_to_maximum(w),
                 },
             )?,
             // Doc 20 cut SM.8 (the brief's 3.7, decision R15; the drive's `to` precedent): how an
@@ -944,6 +944,18 @@ impl SurfaceActProvider {
 /// **A launch's `mind` and `org` parameters** (doc 17h cut M8e E4): the word parsed
 /// ([`crate::surface::dispatch::MindWord::parse`]) and the organisation; `org` without
 /// `mind`, or a word that does not parse, is invalid.
+/// **The drive `to` parameter's maximum** (doc 32 cut S.0, §18): `side² − 1` of the widest lane
+/// site — 65,535 while every site is the shipped 256; each drive's own word is held to its own
+/// site (`order_to_word`).
+fn drive_to_maximum(w: &World) -> i64 {
+    let side = crate::surface::chart::lane_sites(w)
+        .iter()
+        .map(|site| crate::surface::site_record::site_side_or_default(w, &site.entry))
+        .max()
+        .unwrap_or(crate::surface::ground::SITE_CELLS);
+    i64::from(side) * i64::from(side) - 1
+}
+
 fn mind_param(
     parameters: &Map<String, Value>,
 ) -> Result<Option<(crate::surface::dispatch::MindWord, Option<mush_org::OrgId>)>, ActionError> {

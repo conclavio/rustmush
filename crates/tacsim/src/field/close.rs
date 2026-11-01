@@ -178,6 +178,11 @@ pub(crate) fn demote_units(
 ) -> Vec<LeftUnit> {
     let now = ctx.w.world_ic_now().at;
     let domain = super::parties::site_domain(ctx.w, site);
+    // Doc 32 cut S.0: the record's own side, which its demote holds every pose to.
+    let side = site_record(ctx, site).map_or_else(
+        || crate::surface::site_record::site_side_or_default(ctx.w, site),
+        |record| record.side,
+    );
     let epochs: Vec<(ObjId, Option<crate::arena::mind::SortieId>)> = ctx
         .w
         .module_state::<FieldBook>()
@@ -262,7 +267,7 @@ pub(crate) fn demote_units(
             y_cm: at.y_cm,
             heading_mdeg: at.heading_mdeg,
         };
-        if !pose.on_site() {
+        if !pose.on_site(side) {
             continue;
         }
         left.push(LeftUnit {

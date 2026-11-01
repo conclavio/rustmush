@@ -40,31 +40,44 @@ pub const POCKETS_PER_BLOCK: i64 = 16;
 /// Pockets in one block: an address's number runs `1..=256`.
 pub const POCKETS_IN_BLOCK: i64 = POCKETS_PER_BLOCK * POCKETS_PER_BLOCK;
 
-/// Cells along the site's side, as `i64`.
-fn site_cells() -> i64 {
-    i64::from(SITE_CELLS)
+/// Whether a site-local cell lies on a site of `side` cells a side (doc 32 cut S.0: the site's
+/// own side, [`crate::surface::ground::ground_side`] or `crate::surface::chart::site_side`).
+#[must_use]
+pub fn cell_on_site(cell: (i64, i64), side: u16) -> bool {
+    let side = i64::from(side);
+    (0..side).contains(&cell.0) && (0..side).contains(&cell.1)
 }
 
-/// Whether a site-local cell lies on the site.
+/// **The composite's cell for a site cell** (the atlas grid's `(u16, u16)`), `None` off a site
+/// of `side` cells a side. The two grids are one (origin south-west, `y` north), so this only
+/// narrows the type.
 #[must_use]
-pub fn cell_on_site(cell: (i64, i64)) -> bool {
-    (0..site_cells()).contains(&cell.0) && (0..site_cells()).contains(&cell.1)
-}
-
-/// **The composite's cell for a site cell** (the atlas grid's `(u16, u16)`), `None` off the
-/// site. The two grids are one (origin south-west, `y` north), so this only narrows the type.
-#[must_use]
-pub fn composite_cell(cell: (i64, i64)) -> Option<(u16, u16)> {
-    if !cell_on_site(cell) {
+pub fn composite_cell(cell: (i64, i64), side: u16) -> Option<(u16, u16)> {
+    if !cell_on_site(cell, side) {
         return None;
     }
     Some((u16::try_from(cell.0).ok()?, u16::try_from(cell.1).ok()?))
 }
 
+/// **A cell of `surface`'s own grid** for a site cell: [`composite_cell`] at the surface's side.
+#[must_use]
+pub fn surface_cell(
+    surface: &mush_atlas::window::SurfaceComposite,
+    cell: (i64, i64),
+) -> Option<(u16, u16)> {
+    composite_cell(cell, surface.cells.width())
+}
+
+/// Whether a site cell lies inside the address scheme's blocks: [`SITE_CELLS`] a side until
+/// doc 32 cut S.1 scales the scheme with the site.
+fn on_scheme(cell: (i64, i64)) -> bool {
+    cell_on_site(cell, SITE_CELLS)
+}
+
 /// The pocket a site cell lies in, `None` off the site.
 #[must_use]
 pub fn pocket_of_cell(cell: (i64, i64)) -> Option<(i64, i64)> {
-    cell_on_site(cell).then(|| {
+    on_scheme(cell).then(|| {
         (
             cell.0.div_euclid(CELLS_PER_POCKET),
             cell.1.div_euclid(CELLS_PER_POCKET),
@@ -75,7 +88,7 @@ pub fn pocket_of_cell(cell: (i64, i64)) -> Option<(i64, i64)> {
 /// The field a site cell lies in, `None` off the site.
 #[must_use]
 pub fn field_of_cell(cell: (i64, i64)) -> Option<(i64, i64)> {
-    cell_on_site(cell).then(|| {
+    on_scheme(cell).then(|| {
         (
             cell.0.div_euclid(CELLS_PER_FIELD),
             cell.1.div_euclid(CELLS_PER_FIELD),
@@ -454,7 +467,7 @@ mod tests {
             let cell = crate::surface::excursion::site_cell(x, y);
             assert_eq!(
                 grid.cell_of(mush_atlas::PointCm { x, y }),
-                composite_cell(cell),
+                composite_cell(cell, SITE_CELLS),
                 "({x}, {y})"
             );
         }
