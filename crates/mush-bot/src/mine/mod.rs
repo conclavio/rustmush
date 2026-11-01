@@ -47,9 +47,11 @@ use serde::{Deserialize, Serialize};
 pub mod lane;
 pub mod lines;
 pub mod report;
+pub mod space;
 
 pub use lane::{Beat, Edge, Fed, Lane, LaneEvent, LaneResult, Milestone, Send, in_vocabulary};
 pub use report::Report;
+pub use space::{SpaceBeat, SpaceEvidence, SpaceLane, in_space_vocabulary};
 
 /// `--mine`'s refusal for a word it does not know.
 pub const MINE_SITE_USAGE: &str =
