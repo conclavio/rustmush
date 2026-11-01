@@ -26,13 +26,15 @@
 //! (`mush_core::CivilDate`: 365-day years, year 0 at IC 0; lead ruling R3).
 
 use std::collections::BTreeMap;
+use std::sync::OnceLock;
 
 use mush_core::{CanonicalId, CivilDate, DefinitionDigest};
+use serde::{Deserialize, Serialize};
 use serde_json::json;
 
 use crate::config::EphemerisConfig;
 use crate::ephemeris::{AU_KM, Body, Ephemeris, separation_km};
-use crate::kepler::{self, ElementRow};
+use crate::kepler::{self, ElementRow, ROW_FIELDS};
 use crate::pack::{PackEntry, RulesPack};
 
 /// The domain a sky's revision digest is taken under.
@@ -41,6 +43,122 @@ pub const SKY_DIGEST_DOMAIN: &str = "tacsim.sky.v1";
 pub const SKY_TABLE_DIGEST_DOMAIN: &str = "tacsim.sky.table.v1";
 /// The speed of light, metres per second, for the light lag (doc 19 §7).
 pub const LIGHT_M_PER_S: u64 = 299_792_458;
+/// Half-window in IC seconds for central-difference orbital velocity (`2 * 60 = 120 s`).
+pub const VELOCITY_HALF_WINDOW_S: i64 = 60;
+
+const OUTER_BODIES_JSON: &str = include_str!("../content/sky/outer_bodies.json");
+
+/// The kind of an outer-system or orbital-cluster sky entry (doc 35 cut SF.1).
+#[derive(Clone, Copy, Debug, Eq, PartialEq, Deserialize, Serialize)]
+#[serde(rename_all = "snake_case")]
+pub enum OuterBodyKind {
+    /// An outer gas or ice giant (`uranus`, `neptune`).
+    Planet,
+    /// A major moon (`io`, `europa`, `ganymede`, `callisto`, `triton`).
+    Moon,
+    /// A persistent orbital asteroid cluster (`ceres_halo`, `kirkwood_gap_3_1`,
+    /// `pallas_inclined_belt`, `saturn_b_ring_edge`).
+    AsteroidCluster,
+}
+
+/// One entry from `content/sky/outer_bodies.json` (doc 35 cut SF.1, D-35-4, D-35-13).
+#[derive(Clone, Debug, Eq, PartialEq)]
+pub struct OuterBodyDef {
+    /// The entry's canonical id.
+    pub id: CanonicalId,
+    /// Planet, moon, or orbital asteroid cluster.
+    pub kind: OuterBodyKind,
+    /// Circular fallback and epoch summary.
+    pub body: Body,
+    /// Mean volumetric radius (or cluster envelope radius), kilometres.
+    pub radius_km: u32,
+    /// Surface gravity (or microgravity floor for a cluster), milli-g.
+    pub surface_mg: u32,
+    /// Security zone (`"core"` or `"frontier"`) for an asteroid cluster.
+    pub zone: Option<String>,
+    /// Spectral classes present in an asteroid cluster (`c_type`, `s_type`, `m_type`).
+    pub spectral_classes: Vec<String>,
+    /// Canonical ore goods (`ice_ore`, `carbon_ore`, `metal_ore`, `strategic_ore`).
+    pub ore_families: Vec<String>,
+    /// Osculating Keplerian element table over the campaign window.
+    pub elements: Vec<ElementRow>,
+}
+
+#[derive(Deserialize)]
+struct RawOuterPack {
+    bodies: BTreeMap<String, RawOuterBody>,
+}
+
+#[derive(Deserialize)]
+struct RawOuterBody {
+    kind: OuterBodyKind,
+    #[serde(default)]
+    parent: Option<String>,
+    orbit_uau: u64,
+    period_mdays: u64,
+    phase_mdeg: i64,
+    epoch_ic: Option<i64>,
+    radius_km: u32,
+    surface_mg: u32,
+    #[serde(default)]
+    zone: Option<String>,
+    #[serde(default)]
+    spectral_classes: Vec<String>,
+    #[serde(default)]
+    ore_families: Vec<String>,
+    elements: Vec<[f64; ROW_FIELDS]>,
+}
+
+/// The compiled-in outer-system and orbital asteroid cluster catalogue (doc 35 cut SF.1).
+#[must_use]
+pub fn outer_catalog() -> &'static BTreeMap<CanonicalId, OuterBodyDef> {
+    static CATALOG: OnceLock<BTreeMap<CanonicalId, OuterBodyDef>> = OnceLock::new();
+    CATALOG.get_or_init(|| {
+        let Ok(raw) = serde_json::from_str::<RawOuterPack>(OUTER_BODIES_JSON) else {
+            return BTreeMap::new();
+        };
+        let mut out = BTreeMap::new();
+        for (name, entry) in raw.bodies {
+            let Ok(id) = CanonicalId::new(name) else {
+                continue;
+            };
+            let parent = match entry.parent {
+                Some(p) => CanonicalId::new(p).ok(),
+                None => None,
+            };
+            let mut elements = Vec::with_capacity(entry.elements.len());
+            for row in &entry.elements {
+                if let Ok(parsed) = ElementRow::from_authored(row) {
+                    elements.push(parsed);
+                }
+            }
+            if elements.is_empty() {
+                continue;
+            }
+            out.insert(
+                id.clone(),
+                OuterBodyDef {
+                    id,
+                    kind: entry.kind,
+                    body: Body {
+                        orbit_uau: entry.orbit_uau,
+                        period_mdays: entry.period_mdays,
+                        phase_mdeg: entry.phase_mdeg,
+                        epoch_ic: entry.epoch_ic,
+                        parent,
+                    },
+                    radius_km: entry.radius_km,
+                    surface_mg: entry.surface_mg,
+                    zone: entry.zone,
+                    spectral_classes: entry.spectral_classes,
+                    ore_families: entry.ore_families,
+                    elements,
+                },
+            );
+        }
+        out
+    })
+}
 
 /// A heliocentric position, kilometres, in the ecliptic frame.
 #[derive(Clone, Copy, Debug, Eq, PartialEq)]
@@ -127,10 +245,39 @@ impl KeplerSky {
         &self.circular
     }
 
+    /// An outer-system body or orbital asteroid cluster definition (`outer_bodies.json`),
+    /// when not shadowed by the pack's own body table and when any parent body is
+    /// also present in this sky.
+    #[must_use]
+    pub fn outer_def(&self, body: &CanonicalId) -> Option<&OuterBodyDef> {
+        if self.circular.body(body).is_some() {
+            return None;
+        }
+        let def = outer_catalog().get(body)?;
+        if let Some(parent) = &def.body.parent
+            && self.circular.body(parent).is_none()
+            && !outer_catalog().contains_key(parent)
+        {
+            return None;
+        }
+        Some(def)
+    }
+
+    /// A body's circular/epoch definition from the pack or the outer-system catalogue.
+    #[must_use]
+    pub fn body_def(&self, body: &CanonicalId) -> Option<&Body> {
+        self.circular
+            .body(body)
+            .or_else(|| self.outer_def(body).map(|def| &def.body))
+    }
+
     /// A body's element table, or `None` for a circular body.
     #[must_use]
     pub fn table(&self, body: &CanonicalId) -> Option<&[ElementRow]> {
-        self.tables.get(body).map(Vec::as_slice)
+        self.tables
+            .get(body)
+            .map(Vec::as_slice)
+            .or_else(|| self.outer_def(body).map(|def| def.elements.as_slice()))
     }
 
     /// The bodies that move on tables, in id order.
@@ -161,8 +308,8 @@ impl KeplerSky {
     /// rule.
     #[must_use]
     pub fn position_f64(&self, body: &CanonicalId, t: i64) -> Option<[f64; 3]> {
-        let def = self.circular.body(body)?;
-        let own = match self.tables.get(body) {
+        let def = self.body_def(body)?;
+        let own = match self.table(body) {
             Some(rows) => {
                 let at = self.effective_ic(def, t);
                 let jd = kepler::julian_day(at);
@@ -192,6 +339,28 @@ impl KeplerSky {
             }
             _ => Some(own),
         }
+    }
+}
+
+/// A circular body's unrounded `f64` position at IC time `t` in kilometres
+/// (with moon parent composition).
+#[allow(clippy::cast_precision_loss)]
+fn circular_position_f64(sky: &Ephemeris, body: &CanonicalId, t_ic: i64) -> Option<[f64; 3]> {
+    let b = sky.body(body)?;
+    let phase = sky.phase_mdeg_at(body, t_ic)?;
+    let r = b.orbit_uau as f64 * AU_KM as f64 / 1_000_000.0;
+    let theta = (phase as f64 / 1_000.0).to_radians();
+    let own = [r * theta.cos(), r * theta.sin(), 0.0];
+    match &b.parent {
+        Some(parent) if parent != body => {
+            let primary = circular_position_f64(sky, parent, t_ic)?;
+            Some([
+                own[0] + primary[0],
+                own[1] + primary[1],
+                own[2] + primary[2],
+            ])
+        }
+        _ => Some(own),
     }
 }
 
@@ -282,8 +451,11 @@ impl Sky {
     /// the configured epoch; `None` for a body the sky does not know.
     #[must_use]
     pub fn epoch_of(&self, body: &CanonicalId) -> Option<i64> {
-        let sky = self.ephemeris();
-        sky.body(body).map(|b| b.epoch_ic.unwrap_or(sky.epoch()))
+        let epoch = self.config_epoch();
+        match self {
+            Sky::Circular(sky) => sky.body(body).map(|b| b.epoch_ic.unwrap_or(epoch)),
+            Sky::Kepler(sky) => sky.body_def(body).map(|b| b.epoch_ic.unwrap_or(epoch)),
+        }
     }
 
     /// Whether `body` moves on an element table in this sky.
@@ -348,11 +520,68 @@ impl Sky {
         }
     }
 
+    /// **A body's heliocentric orbital velocity at IC time `t_ic`, metres per
+    /// second** (`[vx, vy, vz]` in ecliptic J2000; doc 35 cut SF.1, D-35-4):
+    /// central-difference derivative over `±VELOCITY_HALF_WINDOW_S` (60 s).
+    /// Returns `[0, 0, 0]` when `rate == 0` (the constant sky), and includes the
+    /// parent's orbital velocity for a moon.
+    #[must_use]
+    #[allow(clippy::cast_possible_truncation, clippy::cast_precision_loss)]
+    pub fn velocity_mps(&self, body: &CanonicalId, t_ic: i64) -> Option<[i32; 3]> {
+        let dt = VELOCITY_HALF_WINDOW_S;
+        let (t0, t1) = (t_ic.saturating_sub(dt), t_ic.saturating_add(dt));
+        let (p0, p1) = match self {
+            Sky::Circular(sky) => (
+                circular_position_f64(sky, body, t0)?,
+                circular_position_f64(sky, body, t1)?,
+            ),
+            Sky::Kepler(sky) => (sky.position_f64(body, t0)?, sky.position_f64(body, t1)?),
+        };
+        let span_s = (t1 - t0) as f64;
+        if span_s <= 0.0 {
+            return Some([0, 0, 0]);
+        }
+        let scale = 1_000.0 / span_s;
+        Some([
+            ((p1[0] - p0[0]) * scale).round() as i32,
+            ((p1[1] - p0[1]) * scale).round() as i32,
+            ((p1[2] - p0[2]) * scale).round() as i32,
+        ])
+    }
+
     /// **A body's parent**, for a moon (doc 19 cut A.7); `None` for a body
     /// about the Sun or one the sky does not know.
     #[must_use]
     pub fn parent_of(&self, body: &CanonicalId) -> Option<&CanonicalId> {
-        self.ephemeris().body(body)?.parent.as_ref()
+        match self {
+            Sky::Circular(sky) => sky.body(body)?.parent.as_ref(),
+            Sky::Kepler(sky) => sky.body_def(body)?.parent.as_ref(),
+        }
+    }
+
+    /// An outer-system planet, moon, or orbital asteroid cluster definition
+    /// (`content/sky/outer_bodies.json`; doc 35 cut SF.1).
+    #[must_use]
+    pub fn outer_body(&self, body: &CanonicalId) -> Option<&OuterBodyDef> {
+        match self {
+            Sky::Circular(_) => None,
+            Sky::Kepler(sky) => sky.outer_def(body),
+        }
+    }
+
+    /// All outer-system and orbital-cluster definitions active in this sky.
+    pub fn outer_bodies(&self) -> impl Iterator<Item = (&CanonicalId, &OuterBodyDef)> {
+        let is_kepler = matches!(self, Sky::Kepler(_));
+        outer_catalog().iter().filter(move |(id, _)| {
+            is_kepler && self.outer_body(id).is_some()
+        })
+    }
+
+    /// The four orbital asteroid clusters (`ceres_halo`, `kirkwood_gap_3_1`,
+    /// `pallas_inclined_belt`, `saturn_b_ring_edge`; doc 35 cut SF.1, D-35-13).
+    pub fn asteroid_clusters(&self) -> impl Iterator<Item = (&CanonicalId, &OuterBodyDef)> {
+        self.outer_bodies()
+            .filter(|(_, def)| def.kind == OuterBodyKind::AsteroidCluster)
     }
 
     /// A body's heliocentric distance (km), ecliptic longitude and latitude

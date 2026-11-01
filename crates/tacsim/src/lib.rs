@@ -222,7 +222,10 @@ pub use pack::{
 };
 pub use record::{PackRecord, PinRecord, SeedApplication};
 pub use seed::{PlannedObject, SeedError, SeedOutcome, SeedPlan};
-pub use sky::{KeplerSky, PosKm, Sky, SkyError, epoch_date};
+pub use sky::{
+    KeplerSky, OuterBodyDef, OuterBodyKind, PosKm, Sky, SkyError, VELOCITY_HALF_WINDOW_S,
+    epoch_date, outer_catalog,
+};
 // 16b cut R-b (R4). The sheet ruleset is deliberately NOT re-exported as
 // `TacsimRuleset`: that name is this crate's packs-and-seed layer, and the two
 // are different modules with different namespaces (see [`sheet`]).
