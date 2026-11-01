@@ -1558,9 +1558,10 @@ Not built here, each for a reason:
 
 Built 2026-11-01 on `main` after the bot cut (§16). CF.7's story
 (`tacsim/tests/shard_1/field_story.rs`, `cf7_the_field_story`) now runs the whole of Q-CF-47 at
-256 a side, through the production command paths as every CF gate does. The 512 run waits on
-doc 30's WG.6 and is not part of this cut. What the cut had to decide where the rulings left it
-open, for the owner to object to:
+256 a side, through the production command paths as every CF gate does. The 512 run was not
+part of this cut. It waited on a 512 site to run on (S.0 and S.1, §18 and §19), not on doc 30's
+WG.6, whose window had already landed; it ran in S.2 (§20). What the cut had to decide where the
+rulings left it open, for the owner to object to:
 
 - **G-7, the escort's map (built).** A chart stays per person (doc 20 §5), and nothing writes
   anyone's row. While a field runs on a site, a viewer who sits in one of its units sees, on that
@@ -1894,3 +1895,163 @@ the ground cache (ruling 7); the bot's address token (`mine/lines.rs`'s `is_addr
 three digits, so a four-digit 512 address is not yet a bot pocket); a pocket cursor's 64 rows
 against a 512 block's up to 256 ore pockets of a family; the home field's build over 512 × 512
 cells; a `frontier` zone word.
+
+## 20. 512 sites: S.2 (the field story at 512, and the measurements)
+
+Built 2026-11-01 on `main` after S.1 (§19). This is Q-CF-51's second run, the CF.7 story at 512 a
+side, plus the measurements that ruling 7 left for it. Doc 30's WG.6 had already landed, so the
+field map is drawn through its window.
+
+**One script, two grounds.** `cf7_the_field_story` and `s2_the_field_story_at_512`
+(`tacsim/tests/shard_1/field_story.rs`) are the same story, `field_story`, run over a `Ground`. A
+`Ground` holds the site, its raider and where the story stands everyone. Every other number in
+the story belongs to the site (its pad, its ramp, its record) or to the field. Ahuna Flank's ground
+is §17's cells as they were, so the 256 run proves what it proved before. Urvara Reach's ground:
+
+- **The miner's block.** The pad is at `(256, 256)`, the middle of the site. As at Ahuna, the miner
+  reads a barren pocket (J93 at `(242, 246)`) and then cores the unread pocket one west of it (J92
+  at `(238, 246)`). Both are in the miner's own block, below 256 on both axes.
+- **The far quadrant.** The bystander works G711 at `(282, 294)`. The raider's carrier stands at the
+  pad's cell plus `(40, 20)`, which is `(296, 276)`, with its ramp at `(299, 276)`. The story
+  asserts that both lie past 256 on both axes.
+- **The fight across the line.** It runs along row 268. A staff hand stands the tank at
+  `(250, 268)`, as one stands the walker. From there it fires east, across 256, through the rear
+  plate of the escort at `(262, 268)`. The walker stands between them at `(258, 268)`, and the hired
+  escort at `(258, 262)`.
+- **The withdrawal across the line.** The tank drives home on the kernel's own path, from
+  `(250, 268)` up its ramp at `(299, 276)`. The story asserts the crossing from the cells the tank
+  drives through.
+- **The second field.** The tank is stood at `(250, 268)` again, west of the wreck, and declares
+  `E` on the escort's hull. The 256 run's tank stands east of the wreck and declares `W`.
+
+The content gains a second fixture raider, `tacsim.raider.urvara_reavers` ("Reach raiders"), whose
+carrier sits at that offset. The story seeds, launches and withdraws it with the production
+`@field/raiders` lines, as it does Ahuna's Skulks.
+
+**Every step of Q-CF-47 passes at 512**, in the same order as at 256 (§17's list):
+
+1. The ground, with the bystander from another captain in the far quadrant's block.
+2. The raider, which launches and is a new row of the miner's presence picture.
+3. Promotion: all nine units admitted where they stand on a 512 record.
+4. One picture: the quarry screen holds the raiders, and the escort's map carries the miner's
+   readings.
+5. The bystander fired on, and hostile to the raider's party only.
+6. The engine and control-section hits, with the miners holding fire.
+7. The withdrawal across 256, and the demotion.
+8. The fill plan resumed.
+9. The casualty and the wreck on the record.
+10. The restart.
+11. The departure, which needs the leave-behind confirmation.
+12. The second visit.
+13. The second field, which admits the wreck, the casualty and the tank.
+
+G-8 stays pinned at its gap exactly as at 256: the escort still holds the tank behind the wreck.
+The unarmed barge gap (§15) is met and stood down the same way. Nothing in the story is 512-only.
+
+**One difference shows on the presence picture, and it is the band rule working.** At the raider's
+launch, the miner's picture holds the hulls `E 200-500 m`, seen from rig 2 (the escort hull)
+about 37 cells away, and without a hull class. At Ahuna it held them `within 200 m` with their
+class. The 512 story's raider is seen at its launch, before it declares, inside the near band.
+
+**The measurements** (Q-CF-51), from the Windows development box in a debug build. They are printed
+under `--nocapture` by the gates named in the last column. Timings vary by about a third between
+runs; byte counts are exact.
+
+| | 256 (Ahuna Flank) | 512 (Urvara Reach) | How |
+|---|---|---|---|
+| **A\* corner to corner**, `(0, 0)` → `(side − 1, side − 1)` | 20,635 cells visited of a 65,536 budget (31.5 %); path 294 cells; 22 ms | 83,610 of 262,144 (31.9 %); 589 cells; 108 ms | `s2_the_512_site_is_measured`: `mush_atlas::path` over the keyed ground built at the site's side, the budget w × h (`drive_path_budget_cells`); the least of five timings |
+| … the same trip as `drive_leg` | cost 60,720, 18 waypoints | cost 121,150, **31 waypoints of `MAX_LEG_WAYPOINTS` 32** | the same gate |
+| **A\* ramp → far quadrant** (the Dray-P's ramp to `(7/8 side, 7/8 side)`) | 5,229 visited (8.0 %); 119 cells; 6.5 ms; 15 waypoints | 12,604 (4.8 %); 226 cells; 18 ms; 25 waypoints | the same gate |
+| **Home field build** (the ramp over the whole site) | 97 ms; 320 KiB (a `u32` cost and a `u8` step a cell) | 420 ms; 1,280 KiB | the same gate; the least of five |
+| **Field admission** (nine units) | promotion landed 13 ms after the mark; the task live by 0.7 s | 9 ms; 0.9 s | the story: wall time from the leader's mark to the promotion, then to the task's first live id (polled every 25 ms, a world second every 200 ms) |
+| **Field pulse** (nine units, all armed, four parties, every party Hostile) | median 0.35 ms, p99 0.8, max 1.6; 353 shots in 600 pulses | median 0.34 ms, p99 0.9, max 1.3; 330 shots | `s2_a_field_pulse_is_measured_at_both_sides`: the field's arena on each site's own priced terrain, the story's cells, `step_settled` for 600 Engaged pulses of 100 ms |
+| **Snapshot** | 137,273 B at the opening, 159,038 B after a minute | 137,277 B, 155,852 B | the same gate, `Snapshot::encode` |
+| **`arena.map`** (the escort's, while the field runs) | 239,839 B: the whole 256 ground, unwindowed | 241,606 B: a 256 × 256 window at `(134, 140)` of a 512 × 512 extent, focused on the escort, holding the whole fight; asked for the whole site, 242,161 B for the same window | the story; `MAP_MAX_BYTES` 262,144 |
+| **Cockpit keyframe** (`arena.cockpit`, campaign block included) | escort 10,471 B; miner 12,643 B | 10,328 B; 11,800 B | the story |
+| **`site.map` in the field** (the quarry screen) | whole-site view 14,179 B; drive view 9,457 B | 10,019 B; 8,583 B | the story, the miner's |
+| **Chart row, fully worked** (every field scanned, every pocket sounded once) | 20,787 B | 75,675 B | `s2_the_512_site_is_measured`; S.1's worst case (four of everything at the widest stamps) is 43,679 / 153,286 B under the 196,608 cap |
+| **`site.map`, fully worked** | drive view 7,337 B; whole-site view 12,480 B | 6,978 B; 12,561 B | the same gate, the row's owner's frame |
+| **Ground cache** | an entry ~416 KiB (composite 384 KiB at 6 B a cell, geology 32 KiB); 6.5 MiB at `SITE_CACHE_CAPACITY` 16 | an entry ~1,666 KiB (1,536 + 130); 26 MiB if all sixteen were 512 | the same gate, from the grids' sizes |
+| **Presence bands** from the pad (SIGHT/NEAR/FAR 20/50/100 cells, Chebyshev) | sight 2.6 %, near 15.6 %, far 61.6 %, beyond 1 km 38.4 % of the site | 0.6 %, 3.9 %, 15.4 %, 84.6 % | the same gate, cells counted |
+| **Sounder bands** (`heard_line`: under 50, 50–100, over 100 cells; every listener on the site hears) | over 1 km from the pad: 38.4 % | 84.6 % | the same cells as the presence bands |
+
+**What the numbers say:**
+
+- **The field's cost does not grow with the side.** The pulse and the snapshot are the same at 512
+  as at 256. Both are bound by units and contacts, not by cells, and the snapshot carries the
+  ground only as its definition's digest. The field budget (Q-CF-45) needs no change for 512.
+- **The ground grows with the area, as expected.** The search, the home field, the cache entry and
+  the fully worked row each grow about fourfold.
+  - **The A\* search** visits the same share of its budget at both sides (about a third, corner to
+    corner).
+  - **The home field build** is the one cost on the world task's path. It is built on the surface
+    tick, one site a fire, never on an act's path. At 512 it is 4.3 times the 256 build, about
+    420 ms in a debug build. The release figure was not measured here (on this ratio, about 4.3
+    times SM.4b's release figure at 256).
+  - **The ground cache** at its worst (sixteen 512 sites) is 26 MiB. `SITE_CACHE_CAPACITY` stays 16.
+- **The frames are the same size at both sides.** WG.6's window keeps `arena.map` to a 256 × 256
+  window at 512, so a 512 field's map keyframe is the 256 one's size, at 92 % of its cap. A rougher
+  512 window that ran over would not fail: `map_frame_for_focus` steps down through
+  `MAP_WINDOW_SIDES` (256, 192, 160, …) to the first window that fits. The cockpit frame, sent every
+  pulse, is 10–13 KB at either side, and so is the quarry screen's `site.map`.
+
+**A 512 field plays over SSH within doc 21 §5's budget, on these figures, and this is WG.6's
+acceptance (doc 30's WG.6 row).** Three facts support it:
+
+- **The map is a keyframe**, pulled once when a pilot is seated and again when the window shifts.
+  It is not sent every pulse, and it is the same size at 512 as at 256.
+- **The per-pulse frames do not depend on the side.** The cockpit's JSON is 10–13 KB at both
+  sides. The SSH picture is pixels at the frame's size, and doc 21 §5's 110 KB/s a viewer at
+  640 × 480 and 20 Hz is a function of the frame size, not of the site's side.
+- **WG.6's own gate covers the picture.**
+  `wg6_windowed_512_arena_map_and_eight_tanks_in_a_row_draw_across_all_three_views`, in
+  mush-pixel, draws a 512 window in all three views and holds the steady-state kitty tick under
+  4 KiB.
+
+What was not done: a hand smoke over SSH in a real terminal on the VPS, and an encode of Urvara's own
+window by mush-pixel (tacsim's tests do not depend on mush-pixel). Both belong with the owner's
+next playtest.
+
+**Ruling 7's bands: no change recommended.** Seen from the pad, the far band covers 15 % of a 512
+site, and 85 % of it is `beyond 1 km`. A distant flight is still a row of the picture, with a
+bearing, so nothing is hidden; the picture is only coarser far out. The story's raider is seen at
+launch in the near band, in good time. The sounder bands are the same cells and are heard
+site-wide.
+
+**Default for the owner:** keep SIGHT/NEAR/FAR at 20/50/100 cells and the sounder's 50/100 at 512.
+If long-range warning on a 512 site turns out to matter in play, add a fifth band at 2 km beyond
+the far band rather than stretch the three, since the three are what a fight reads. No band
+constant changed in this cut, because the story never needed one to.
+
+**512-only bugs.**
+
+- **Fixed: a drive's bearing reached only a 256 site's diagonal.** `parse_target_in` held every
+  bearing to `MAX_BEARING_METRES`, 3,620 m, under either scheme. So on Urvara a rig at the
+  south-west corner could not name `ne 5000`, which is a cell in the middle of the site: the
+  command read it as no target at all. The bound is now the scheme's own diagonal,
+  `max_bearing_metres(side)`: 3,620 m at 256, as before, and 7,240 m at 512. A bearing that leaves
+  the site from where the rig stands is still refused by `target_cell`. Gated by
+  `s2_a_bearing_reaches_the_sites_own_diagonal`.
+- **Pinned: a long 512 drive is close to the waypoint cap.** The corner-to-corner leg across Urvara
+  freezes at 31 of `MAX_LEG_WAYPOINTS` 32. A leg twice as long needs about twice the waypoints at
+  the same tolerance, so on a more winding 512 ground a cross-site drive would be refused
+  `Winding` where a 256 one is not. A player can still drive it in two legs.
+  - **Why it is not fixed here.** The cap is the frozen leg's slot in the rig's projection
+    (`TvRec.leg`, under `MAX_TV_REC_BYTES`' 4 KiB; §8 of doc 20) and in the rig record. Raising
+    it moves that budget and the records' checks, so it is not contained. No story reaches it.
+  - **Default for the owner:** scale the cap with the side, 64 at 512, together with the
+    projection's ceiling, in the cut that next touches the drive.
+
+**Still left** (§19's list, untouched because no story or measurement here reaches them):
+
+- the bot's four-digit address token (`mine/lines.rs`'s `is_addr`);
+- a pocket cursor's 64 rows against a 512 block;
+- a `frontier` zone word.
+
+**Defaults taken (provisional):**
+
+- the Urvara raider's name, its leader's name and its carrier's offset `(40, 20)`;
+- the 512 story's cells;
+- the measurement method: debug build, least of five for the ground's timings, 600 pulses for the
+  field's;
+- the bands, `SITE_CACHE_CAPACITY` and `MAX_LEG_WAYPOINTS`, all unchanged.
