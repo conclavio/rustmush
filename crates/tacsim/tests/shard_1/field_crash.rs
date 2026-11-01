@@ -65,7 +65,7 @@ async fn until_dropping(
     lines: &mut Vec<LedgerEvent>,
     op: &str,
     secs: u64,
-    mut done: impl FnMut(&mut Rig) -> bool,
+    mut done: impl FnMut(&mut Rig, &[LedgerEvent]) -> bool,
 ) -> (bool, usize) {
     let deadline = std::time::Instant::now() + std::time::Duration::from_secs(secs);
     let (mut beat, mut dropped) = (0_u32, 0);
@@ -76,7 +76,7 @@ async fn until_dropping(
         if beat.is_multiple_of(8) {
             dropped += second_dropping(rig, op);
         }
-        if done(rig) {
+        if done(rig, lines) {
             return (true, dropped);
         }
     }
@@ -100,21 +100,23 @@ fn in_field(rig: &Rig, unit: ObjId) -> bool {
     mush_sim::deployed::mark_of(rig.tw.world(), unit).is_some_and(|mark| mark.field.is_some())
 }
 
-/// A fires at the hull to the east until it is a wreck.
+/// A fires at the hull to the east until it is a wreck, with the K3 lane down for the host's
+/// `drop` writes throughout (the field may end the moment the wreck lands, before this returns);
+/// answers whether B was wrecked and how many `drop` writes were dropped.
 async fn wreck_east(
     rig: &mut Rig,
     rx: &mut Receiver<ArenaOut>,
     lines: &mut Vec<LedgerEvent>,
-    a: ObjId,
-    b: ObjId,
+    (a, b): (ObjId, ObjId),
     gun: &str,
-) -> bool {
+    drop: &str,
+) -> (bool, usize) {
     let near = |cell: Option<(u16, u16)>| {
         cell.is_some_and(|(x, y)| x.abs_diff(114) <= 2 && y.abs_diff(124) <= 2)
     };
     // B flies from a remote console and never takes `+focus`, so B's own frames are not the
     // witness: the black box's wreck line is.
-    until(rig, rx, lines, 150, |rig, lines| {
+    until_dropping(rig, rx, lines, drop, 150, |rig, lines| {
         if let Some(contact) = frame(rig, a).and_then(|frame| {
             frame
                 .contacts
@@ -175,7 +177,11 @@ async fn cf_review_a_crash_before_the_close_lands_keeps_the_wreck_and_the_cap_sk
         .units
         .len();
     let gun = weapon_of(&rig, hull_a);
-    let wrecked = wreck_east(&mut rig, &mut rx, &mut lines, a, hull_b, &gun).await;
+    // The K3 lane is down for the host's close from here on (the injected fault): the field may
+    // end the moment B's hull is a wreck, inside the fire loop, and its close must not land
+    // wherever that falls.
+    let (wrecked, early) =
+        wreck_east(&mut rig, &mut rx, &mut lines, (a, hull_b), &gun, "close").await;
     assert!(
         wrecked,
         "B's hull is wrecked by A's fire: {} shots, {} hits on B",
@@ -190,13 +196,16 @@ async fn cf_review_a_crash_before_the_close_lands_keeps_the_wreck_and_the_cap_sk
     );
 
     // The field disengages and demotes; its close never lands (the K3 lane is down).
-    let (ended, dropped) = until_dropping(&mut rig, &mut rx, &mut lines, "close", 40, |rig| {
+    let (ended, dropped) = until_dropping(&mut rig, &mut rx, &mut lines, "close", 40, |rig, _| {
         task(rig).is_none()
     })
     .await;
     assert!(ended, "field 1 demotes after its quiet interval");
-    let (_, more) = until_dropping(&mut rig, &mut rx, &mut lines, "close", 1, |_| false).await;
-    assert!(dropped + more > 0, "the host owed the record its close");
+    let (_, more) = until_dropping(&mut rig, &mut rx, &mut lines, "close", 1, |_, _| false).await;
+    assert!(
+        early + dropped + more > 0,
+        "the host owed the record its close"
+    );
     assert!(
         site_record(&mut rig).is_some_and(|record| record.open_field().is_some()),
         "the close never reached the site record"
@@ -296,12 +305,12 @@ async fn cf_review_a_crash_before_the_exit_lands_owes_it_again_and_the_recover_p
     // The exit: checked in at the ramp, its K3 write dropped.
     let asked = run(&mut rig.tw, c, "+tv/1 recover go");
     assert!(asked.contains("makes for the ramp"), "{asked}");
-    let (out, dropped) = until_dropping(&mut rig, &mut rx, &mut lines, "exit", 20, |rig| {
+    let (out, dropped) = until_dropping(&mut rig, &mut rx, &mut lines, "exit", 20, |rig, _| {
         !in_field(rig, prospector)
     })
     .await;
     assert!(out, "the prospector is checked in at the ramp");
-    let (_, more) = until_dropping(&mut rig, &mut rx, &mut lines, "exit", 2, |_| false).await;
+    let (_, more) = until_dropping(&mut rig, &mut rx, &mut lines, "exit", 2, |_, _| false).await;
     assert!(dropped + more > 0, "the host owed the record its exit");
     assert!(
         !site_record(&mut rig).is_some_and(|record| record.exited(prospector)),
