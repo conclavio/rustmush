@@ -741,7 +741,18 @@ pub(crate) fn on_pad_as(
     name: &str,
     n_rigs: usize,
 ) -> (ObjId, HullRow, Vec<ObjId>) {
-    let (pilot, row, tvs) = on_pad_with(rig, who, seed, name, |rig, pilot| {
+    on_pad_as_at(rig, (who, seed, name), ("ahuna", AHUNA), n_rigs)
+}
+
+/// **[`on_pad_as`] on any site** (doc 32 cut S.2): `(venue, entry)` the `+ship/undock` word and
+/// the site's port entry.
+pub(crate) fn on_pad_as_at(
+    rig: &mut Rig,
+    (who, seed, name): (&str, i64, &str),
+    site: (&str, &str),
+    n_rigs: usize,
+) -> (ObjId, HullRow, Vec<ObjId>) {
+    let (pilot, row, tvs) = on_pad_with_at(rig, (who, seed, name), site, |rig, pilot| {
         for _ in 0..n_rigs {
             lease_one(rig, pilot);
         }
@@ -766,6 +777,17 @@ pub(crate) fn on_pad_with(
     name: &str,
     lease: impl FnOnce(&mut Rig, ObjId),
 ) -> (ObjId, HullRow, Vec<ObjId>) {
+    on_pad_with_at(rig, (who, seed, name), ("ahuna", AHUNA), lease)
+}
+
+/// **[`on_pad_with`] on any site** (doc 32 cut S.2): `(venue, entry)` the `+ship/undock` word
+/// and the site's port entry.
+pub(crate) fn on_pad_with_at(
+    rig: &mut Rig,
+    (who, seed, name): (&str, i64, &str),
+    (venue, entry): (&str, &str),
+    lease: impl FnOnce(&mut Rig, ObjId),
+) -> (ObjId, HullRow, Vec<ObjId>) {
     let (pilot, row) = prospector(rig, who, seed, name);
     lease(rig, pilot);
     load(
@@ -779,26 +801,27 @@ pub(crate) fn on_pad_with(
     let hull = ObjId(row.hull);
     // Doc 20 cut SM.6 (D2): a keyed site's pad is closed until its clerk has opened every
     // deposit, so the site is opened first.
-    open_ahuna(rig);
-    let t = file_and_launch(rig, pilot, hull, "+ship/undock ahuna");
+    open_site(rig, entry);
+    let t = file_and_launch(rig, pilot, hull, &format!("+ship/undock {venue}"));
     let _ = to_ic(rig, t.plan.depart_ic + t.plan.total_s);
     assert!(
         matches!(
             tacsim::port::ship::berth_of(rig.tw.world(), hull),
-            tacsim::port::ship::Berth::Docked { map, .. } if map.entry.as_str() == AHUNA
+            tacsim::port::ship::Berth::Docked { map, .. } if map.entry.as_str() == entry
         ),
-        "the hull is settled on Ahuna Flank's pad"
+        "the hull is settled on {entry}'s pad"
     );
     warm(rig);
     let tvs = rigs_of(&rig.tw, pilot);
     (pilot, row, tvs)
 }
 
-/// **Open Ahuna Flank** (doc 20 cut SM.6, D2; `support::sites::open_site`), keeping the landed
-/// bundles' typed post-images for a reboot; the port fires it took. A no-op once it is open.
-fn open_ahuna(rig: &mut Rig) -> u32 {
+/// **Open a site by its port entry** (doc 20 cut SM.6, D2; `support::sites::open_site`), keeping
+/// the landed bundles' typed post-images for a reboot; the port fires it took. A no-op once it is
+/// open.
+fn open_site(rig: &mut Rig, entry: &str) -> u32 {
     let mut kept = Vec::new();
-    let fires = support::sites::open_site_keeping(&mut rig.tw, AHUNA, &mut |ops| kept.push(ops));
+    let fires = support::sites::open_site_keeping(&mut rig.tw, entry, &mut |ops| kept.push(ops));
     for ops in kept {
         keep(rig, ops);
     }
@@ -847,7 +870,20 @@ pub(crate) fn parent(tw: &TestWorld, obj: ObjId) -> SpatialParent {
 
 /// Ahuna Flank's passive domain.
 pub(crate) fn ahuna_domain(tw: &TestWorld) -> mush_sim::DomainId {
-    mush_sim::DomainId(port_map(tw, AHUNA).domain.expect("a domain"))
+    site_domain(tw, AHUNA)
+}
+
+/// A site's passive domain, by its port entry (doc 32 cut S.2).
+pub(crate) fn site_domain(tw: &TestWorld, entry: &str) -> mush_sim::DomainId {
+    mush_sim::DomainId(port_map(tw, entry).domain.expect("a domain"))
+}
+
+/// **A site's Dray-P stern ramp pose** (doc 32 cut S.2): [`RAMP`] off the site's own pad, which
+/// its pad room puts at `(128, 128)` on every 256 site and `(256, 256)` on Urvara Reach.
+pub(crate) fn ramp_at(tw: &TestWorld, entry: &str) -> (i64, i64, u32) {
+    let (x, y) = tacsim::surface::excursion::site_pad_cm(tw.world(), &cid(entry));
+    let pad = tacsim::surface::excursion::PAD_CENTRE_CM;
+    (x + RAMP.0 - pad, y + RAMP.1 - pad, RAMP.2)
 }
 
 /// Whether `tv` stands `Direct` on Ahuna's domain at `(x, y, heading)`.
@@ -1047,9 +1083,21 @@ fn start(rig: &Rig, pilot: ObjId, tv: ObjId, act: &str, ordinal: u32) -> Authori
 
 /// Launch rig 1 and finish it (it stands at the ramp).
 pub(crate) fn launched(rig: &mut Rig, pilot: ObjId, tv: ObjId) {
+    launched_at(rig, AHUNA, pilot, tv);
+}
+
+/// [`launched`] on any site (doc 32 cut S.2): rig 1 stands at the ramp off `entry`'s pad.
+pub(crate) fn launched_at(rig: &mut Rig, entry: &str, pilot: ObjId, tv: ObjId) {
     let _ = act_go(rig, pilot, "+tv/1 launch go");
     let _ = finish(rig, tv, pilot);
-    assert!(on_ground_at(&rig.tw, tv, RAMP));
+    let (x, y, heading) = ramp_at(&rig.tw, entry);
+    assert!(
+        matches!(parent(&rig.tw, tv), SpatialParent::Direct { domain, pose }
+            if domain == site_domain(&rig.tw, entry)
+                && (pose.x_cm, pose.y_cm, pose.heading_mdeg) == (x, y, heading)),
+        "#{} stands at {entry}'s ramp",
+        tv.0
+    );
 }
 
 // ---------------------------------------------------------------------------
@@ -3603,4 +3651,251 @@ fn sm4b_the_drive_planner_is_measured() {
         assert!(keyed_build < home_stop * 10.0, "{keyed_build} ms");
     }
     assert!(keyless_build < home_stop * 10.0, "{keyless_build} ms");
+}
+
+// ---------------------------------------------------------------------------
+// Doc 32 cut S.2: the 512 site's ground, measured beside 256's (Q-CF-51, §20)
+// ---------------------------------------------------------------------------
+
+/// **A site's keyed ground at its own side** (doc 32 cut S.2): the frame and the geology spec
+/// both `side` a side, built (or hit) through the production entry point.
+fn ground_at(tw: &mut TestWorld, entry: &str, side: u16) -> Arc<SiteGround> {
+    let pack = lane();
+    let def = match pack.entry(&cid(entry)) {
+        Some(PackEntry::Port(def)) => def.clone(),
+        other => panic!("{entry} is a port entry: {other:?}"),
+    };
+    let location = match pack.entry(&def.location) {
+        Some(PackEntry::Location(location)) => location.clone(),
+        other => panic!("{} is a location: {other:?}", def.location),
+    };
+    let body = tacsim::surface::body_geology(tw.world(), location.body.as_ref().expect("a body"))
+        .expect("the body's table is installed");
+    let spec = tacsim::port::site::geology_spec_at(
+        def.site.as_ref().expect("a site"),
+        &location,
+        &body,
+        side,
+    )
+    .expect("a spec");
+    let mut frame = site_frame(def.location.as_str());
+    let edge = i64::from(side) * 1_000;
+    frame.bbox.max = mush_atlas::PointCm { x: edge, y: edge };
+    site_ground_sync(tw.world_mut(), &frame, &spec).expect("the site builds")
+}
+
+/// Write `row` into the chart family through a typed transaction (staff's hand; the scan and
+/// the sounding are the real writers).
+fn put_chart(rig: &mut Rig, row: ChartRecord) {
+    let family = handles(&rig.tw).families.charts;
+    let engine = rig.tw.engine_mut();
+    let prepared = {
+        let mut txn = engine
+            .action_transaction(&family)
+            .expect("a chart transaction");
+        let key = ChartKey {
+            principal: row.principal,
+            site: row.site.clone(),
+        };
+        if txn.get(&family, &key).expect("reads").is_some() {
+            txn.replace(&family, &key, row).expect("replaced");
+        } else {
+            txn.insert(&family, &key, row).expect("inserted");
+        }
+        txn.prepare().expect("prepares")
+    };
+    let (ops, install) = prepared.into_parts();
+    engine.install_prepared_action(install).expect("installs");
+    keep(rig, ops);
+}
+
+/// **Doc 32 cut S.2: the 512 site is measured beside the 256 one** (Q-CF-51; the figures are
+/// doc 32 §20's table, printed under `--nocapture`). For Ahuna Flank at 256 and Urvara Reach at
+/// 512, over each site's keyed ground built at its own side:
+/// - **the A\* drive search** from corner to corner, `(0, 0)` to `(side - 1, side - 1)`, and from
+///   the Dray-P's ramp to the far quadrant at seven eighths of the side, each under the site's
+///   whole budget (`drive_path_budget_cells`, w x h): the cells visited, the path's cells, the
+///   least of five timings, and what `drive_leg` makes of the same trip;
+/// - **the home field's build** from the ramp over the whole site (least of five);
+/// - **the ground cache entry's memory**: the composite's cells and the geology's pockets and
+///   fields, against `SITE_CACHE_CAPACITY`, and beside it the home field's two grids;
+/// - **the chart row and the site map of a fully worked site**: one principal's row with every
+///   field scanned and every pocket sounded, written to the chart family, its canonical bytes
+///   and the `site.map` frame its owner gets (the drive view and the whole-site view);
+/// - **the presence bands' reach**: the share of the site each band covers seen from the pad.
+///
+/// Gates: every search finds its path within the site's budget; the chart row is under
+/// `MAX_CHART_RECORD_BYTES`; every frame is under `MAP_MAX_BYTES`. The timings assert only a
+/// generous debug ceiling on a median, as `sm4b_the_drive_planner_is_measured` does without
+/// `TACSIM_ASSERT` (a shared runner's speed is not a threshold).
+#[test]
+#[allow(clippy::too_many_lines)]
+fn s2_the_512_site_is_measured() {
+    use tacsim::surface::chart::{Via, write_scan, write_sound};
+    use tacsim::surface::reading::Footing;
+    let mut rig = stocked();
+    let rates = rates(&rig.tw);
+    let map_max = tacsim::match_::cockpit::MAP_MAX_BYTES;
+    for (entry, venue, side, who, hull) in [
+        (AHUNA, "ahuna", 256_u16, "Pilot", "Salt Moth"),
+        ("urvara_port", "urvara", 512, "Reacher", "Reach Moth"),
+    ] {
+        let (pilot, _, tvs) =
+            on_pad_as_at(&mut rig, (who, i64::from(side), hull), (venue, entry), 1);
+        launched_at(&mut rig, entry, pilot, tvs[0]);
+        let ground = ground_at(&mut rig.tw, entry, side);
+        let surface = ground
+            .composite
+            .surface(&mush_atlas::SurfaceRef::Ground)
+            .expect("a ground surface");
+        assert_eq!(
+            (surface.cells.width(), surface.cells.height()),
+            (side, side)
+        );
+        let edge = side - 1;
+        let ramp = {
+            let (x, y, _) = ramp_at(&rig.tw, entry);
+            tacsim::surface::excursion::site_cell(x, y)
+        };
+        let ramp_u16 = (
+            u16::try_from(ramp.0).expect("on the site"),
+            u16::try_from(ramp.1).expect("on the site"),
+        );
+        let far = side / 8 * 7;
+        let budget = tacsim::surface::drive::drive_path_budget_cells(side, side);
+        for (what, from, to) in [
+            ("corner to corner", (0, 0), (edge, edge)),
+            ("ramp to the far quadrant", ramp_u16, (far, far)),
+        ] {
+            let mut samples = Vec::new();
+            let mut found = None;
+            for _ in 0..5 {
+                let started = std::time::Instant::now();
+                let outcome =
+                    mush_atlas::path(surface, table(), from, to, DRIVE_LOCOMOTION, &[], budget);
+                samples.push(started.elapsed().as_secs_f64() * 1_000.0);
+                found = Some(outcome);
+            }
+            let Some(mush_atlas::PathOutcome::Found(path)) = found else {
+                panic!("{entry} {what}: {found:?}");
+            };
+            let from_cm = (
+                i64::from(from.0) * 1_000 + 500,
+                i64::from(from.1) * 1_000 + 500,
+            );
+            let leg = drive_leg(
+                surface,
+                table(),
+                from_cm,
+                (i64::from(to.0), i64::from(to.1)),
+                &rates,
+            )
+            .map(|leg| (leg.cost, leg.cells.len(), leg.waypoints.len()));
+            println!(
+                "S2 {side} {what}: visited {} of a {budget} budget ({:.1} %), {} cells, A* min \
+                 {:.2} / median {:.2} ms; drive_leg (cost, cells, waypoints) {leg:?}",
+                path.visited,
+                f64::from(path.visited) * 100.0 / f64::from(budget),
+                path.cells.len(),
+                min_ms(&samples),
+                median_ms(&samples)
+            );
+            assert!(path.visited <= budget, "{what} within the site's budget");
+            assert!(median_ms(&samples) < 2_000.0, "{what}: {samples:?}");
+        }
+        // The home field over the whole site.
+        let mut builds = Vec::new();
+        for _ in 0..5 {
+            let started = std::time::Instant::now();
+            let home = HomeField::build(surface, table(), ramp).expect("a home field");
+            builds.push(started.elapsed().as_secs_f64() * 1_000.0);
+            assert_eq!(home.side(), side);
+        }
+        // The cache entry's memory: the composite's cells, the geology's pockets (four u16
+        // slots) and fields (four words, four counts); beside it the home field's two grids (a
+        // u32 cost and a u8 step a cell).
+        let scheme = ground.geology.scheme();
+        let cells = usize::from(side) * usize::from(side);
+        let cell_bytes = std::mem::size_of::<mush_atlas::Cell>();
+        let composite_bytes = cells * cell_bytes;
+        let pockets = usize::try_from(scheme.pockets() * scheme.pockets()).expect("a count");
+        let fields = usize::try_from(scheme.fields() * scheme.fields()).expect("a count");
+        let geology_bytes = pockets * 8 + fields * 8;
+        let home_bytes = cells * (4 + 1);
+        let entry_bytes = composite_bytes + geology_bytes;
+        let capacity = tacsim::surface::ground::SITE_CACHE_CAPACITY;
+        println!(
+            "S2 {side} ground: home field build min {:.2} / median {:.2} ms; cache entry ~{} KiB \
+             (composite {} KiB at {cell_bytes} B a cell, geology {} KiB: {pockets} pockets, \
+             {fields} fields), {} KiB at SITE_CACHE_CAPACITY {capacity}; the home field {} KiB",
+            min_ms(&builds),
+            median_ms(&builds),
+            entry_bytes / 1_024,
+            composite_bytes / 1_024,
+            geology_bytes / 1_024,
+            entry_bytes * capacity / 1_024,
+            home_bytes / 1_024,
+        );
+        assert!(median_ms(&builds) < 2_000.0, "{builds:?}");
+        // A fully worked site: every field scanned, every pocket sounded, by the pilot.
+        let now = rig.tw.world().world_ic_now().at;
+        let body = chart_of(&mut rig.tw, pilot).map_or_else(|| cid("ceres"), |row| row.body);
+        let mut row = ChartRecord::with_side(pilot, cid(entry), body, side);
+        let every_field: Vec<u8> = (0..scheme.field_count())
+            .filter_map(|i| u8::try_from(i).ok())
+            .collect();
+        let every_pocket: Vec<(i64, i64)> = (0..scheme.pockets())
+            .flat_map(|py| (0..scheme.pockets()).map(move |px| (px, py)))
+            .collect();
+        write_scan(
+            &mut row,
+            [ramp.0, ramp.1],
+            &every_field,
+            Footing::Rock,
+            now,
+            Via::Hand,
+        );
+        write_sound(
+            &mut row,
+            [ramp.0, ramp.1],
+            &every_pocket,
+            false,
+            now,
+            Via::Hand,
+        );
+        assert_eq!(row.check(), Ok(()));
+        let row_bytes = serde_json::to_vec(&row).expect("encodes").len();
+        put_chart(&mut rig, row);
+        let drive_view = serde_json::to_vec(&map_frame(&mut rig, pilot, json!({})))
+            .expect("encodes")
+            .len();
+        let site_view = serde_json::to_vec(&map_frame(&mut rig, pilot, json!({ "view": "site" })))
+            .expect("encodes")
+            .len();
+        println!(
+            "S2 {side} fully worked: chart row {row_bytes} B; site.map drive view {drive_view} B, \
+             whole-site view {site_view} B (MAP_MAX_BYTES {map_max})"
+        );
+        assert!(row_bytes < tacsim::surface::chart::MAX_CHART_RECORD_BYTES);
+        assert!(drive_view < map_max && site_view < map_max);
+        // The presence bands from the pad: the share of the site's cells within each band's
+        // Chebyshev reach.
+        let pad = tacsim::surface::excursion::site_pad_cell(rig.tw.world(), &cid(entry));
+        let side_i = i64::from(side);
+        let within = |reach: u64| -> f64 {
+            let r = i64::try_from(reach).expect("a reach");
+            let span = |c: i64| (c - r).max(0)..=(c + r).min(side_i - 1);
+            let n = span(pad.0).count() * span(pad.1).count();
+            f64::from(u32::try_from(n).expect("a count")) * 100.0
+                / f64::from(u32::try_from(side_i * side_i).expect("a count"))
+        };
+        println!(
+            "S2 {side} presence from the pad {pad:?}: sight {:.1} %, near {:.1} %, far {:.1} %, \
+             distant {:.1} % of the site",
+            within(tacsim::surface::presence::SIGHT_CELLS),
+            within(tacsim::surface::presence::NEAR_CELLS),
+            within(tacsim::surface::presence::FAR_CELLS),
+            100.0 - within(tacsim::surface::presence::FAR_CELLS),
+        );
+    }
 }

@@ -22,8 +22,8 @@ use tacsim::surface::site_record::{LeftCondition, PromotedBy, SiteKey, SiteRecor
 use tokio::sync::mpsc::Receiver;
 
 use crate::driving::{
-    AHUNA, Rig, ahuna_domain, cid, command, drain, handles, land, launched, on_pad, on_pad_as,
-    reboot, run, staff_hand, stocked_tuned, to_cell, typed, warm,
+    AHUNA, Rig, cid, command, drain, handles, land, launched, on_pad, on_pad_as, reboot, run,
+    site_domain, staff_hand, stocked_tuned, to_cell, typed, warm,
 };
 
 /// A fast field: the simulator's lab tempo, a snapshot every half second, a short quiet
@@ -46,14 +46,30 @@ const ARMED: [&str; 3] = [
 
 /// Ahuna Flank's record, as the family holds it.
 pub(crate) fn site_record(rig: &mut Rig) -> Option<SiteRecord> {
+    site_record_at(rig, AHUNA)
+}
+
+/// A site's record by its port entry (doc 32 cut S.2).
+pub(crate) fn site_record_at(rig: &mut Rig, entry: &str) -> Option<SiteRecord> {
     let h = handles(&rig.tw);
-    typed(&mut rig.tw, &h.families.sites, &SiteKey(cid(AHUNA)))
+    typed(&mut rig.tw, &h.families.sites, &SiteKey(cid(entry)))
 }
 
 /// **The fixture's armed hull**: a Thing with the first armed unit spec the lane binds, placed
 /// on Ahuna Flank's ground at `cell` facing `heading`.
 pub(crate) fn armed(rig: &mut Rig, name: &str, cell: (i64, i64), heading: u32) -> ObjId {
-    let domain = ahuna_domain(&rig.tw);
+    armed_on(rig, AHUNA, name, cell, heading)
+}
+
+/// [`armed`] on any site's ground, by its port entry (doc 32 cut S.2).
+pub(crate) fn armed_on(
+    rig: &mut Rig,
+    entry: &str,
+    name: &str,
+    cell: (i64, i64),
+    heading: u32,
+) -> ObjId {
+    let domain = site_domain(&rig.tw, entry);
     staff_hand(rig, |ctx| {
         let spec = {
             let store = ctx
