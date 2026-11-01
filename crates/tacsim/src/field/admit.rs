@@ -443,11 +443,9 @@ fn admit(ctx: &mut Ctx<'_>, site: &CanonicalId, record: &SiteRecord) -> Result<(
         }
     }
     super::record::write_live(ctx, &live);
-    let line = format!(
-        "Field {} is open on {}: the ground there is tactical until it settles.",
-        field.ordinal,
-        site_name(ctx, site)
-    );
+    let line = super::FIELD_OPENED
+        .replace("{n}", &field.ordinal.to_string())
+        .replace("{site}", &site_name(ctx, site));
     super::tell_site(ctx, site, &line);
     tracing::info!(
         site = %site,

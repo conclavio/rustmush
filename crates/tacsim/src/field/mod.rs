@@ -81,6 +81,8 @@ use mush_core::{ArgShape, CanonicalId, CommandSpec, Ctx, ObjId, TickCadence, Wor
 use crate::arena_task::MatchId;
 pub use commands::mark_from_order;
 pub use crew::{CrewCondition, CrewLocation, CrewRecord, crew_location, crew_of};
+/// CF.5's exit acknowledgement, read by a pilot client (doc 32 G-4).
+pub use exit::EXIT_ASKED;
 pub use provider::{FIELD_ACTION, FIELD_OUTCOME};
 pub use record::{FieldLive, FieldParty, FieldUnit, OwedExit, PartyKey, PendingFire};
 
@@ -90,6 +92,21 @@ pub const FIELD_TICK: &str = "tacsim.field";
 pub const FIELD_TICK_PERIOD: Duration = Duration::from_secs(1);
 /// The verb.
 pub const FIELD_VERB: &str = "+field";
+/// **A field opens**, told to everyone on the site (`{n}` the ordinal, `{site}` its name). A
+/// player client reads it (the bot's captain, doc 32 G-4), so it is a constant.
+pub const FIELD_OPENED: &str =
+    "Field {n} is open on {site}: the ground there is tactical until it settles.";
+/// **A field demotes**, told to everyone on the site.
+pub const FIELD_SETTLED: &str =
+    "Field {n} on {site} has settled: the ground there is the surface's again.";
+/// `+field`'s line for each field the actor has a party in (`{parties}` the count).
+pub const FIELD_STATUS: &str =
+    "Field {n} is open on {site}. Your party is {party}; {parties} parties are on the ground.";
+/// `+field` with no field holding a party of the actor's.
+pub const NO_FIELD: &str = "No field holds a party of yours.";
+/// A mark made inside a field (`{party}` the letter, `{word}` `Hostile`, `Friendly` or
+/// `unmarked`).
+pub const PARTY_MARKED: &str = "Your party now marks party {party} {word}.";
 /// **How long a fire order waits for its shooter's sensors**, arena milliseconds (doc 32
 /// Q-CF-14): past it the shot never left the barrel.
 pub const FIRE_WINDOW_MS: i64 = 10_000;

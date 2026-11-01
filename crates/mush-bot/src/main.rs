@@ -25,7 +25,7 @@ Usage: mush-bot --config <file> [--goal <text>] [--role <text>]\n\
                 [--login <account+character>] [--model-tape <file.json>]\n\
                 [--test-controls] [--isolate-memory <new-directory>]\n\
                 [--arena <red|blue> [--matches <n>]]\n\
-                [--mine <site> | --mine-detachment <site>]\n\
+                [--mine <site> | --mine-detachment <site>] [--mine-field <site> [--escorted-by <character>]] [--field-escort <site> [--escort-for <character>]]\n\
        mush-bot --config <file> --replay <capture.json> --report <new.json> [--model <profile>]\n\
        mush-bot --config <file> --studio <concept.json> --output <new-directory> [--tui | --headless]\n\
        mush-bot --config <file> --studio-session <session.json> --output <new-directory> [--tui]\n\
@@ -401,6 +401,22 @@ fn launch() -> Result<u8> {
                 )
             }
             "--paused" => options.paused = true,
+            // Doc 32 G-4: the captain the field escort pages the raider it finds.
+            "--escort-for" | "--escorted-by" => {
+                let name = args
+                    .next()
+                    .ok_or("--escort-for and --escorted-by take a character name")?;
+                if !(1..=32).contains(&name.len())
+                    || !name.bytes().all(|b| b.is_ascii_alphanumeric())
+                {
+                    return Err("--escort-for and --escorted-by take a character name".into());
+                }
+                if arg == "--escort-for" {
+                    options.escort_for = Some(name);
+                } else {
+                    options.escorted_by = Some(name);
+                }
+            }
             // Cut AJ.2: fly the simulator.
             "--arena" => {
                 let word = args.next().ok_or("--arena takes red or blue")?;
@@ -408,11 +424,14 @@ fn launch() -> Result<u8> {
                     Some(mush_bot::arena::Side::parse(&word).ok_or("--arena takes red or blue")?);
             }
             // Doc 20 cut SM.12c-bot: play the mining loop at a site.
-            "--mine" | "--mine-detachment" => {
+            // Doc 32 G-4: `--mine-field`, the expedition into an IC field.
+            "--mine" | "--mine-detachment" | "--mine-field" | "--field-escort" => {
                 if options.mine.is_some() {
                     return Err("choose --mine or --mine-detachment once".into());
                 }
                 options.mine_detachment = arg == "--mine-detachment";
+                options.mine_field = arg == "--mine-field";
+                options.field_escort = arg == "--field-escort";
                 let word = args.next().ok_or(mush_bot::mine::MINE_SITE_USAGE)?;
                 options.mine = Some(mush_bot::mine::Site::parse(&word)?);
             }

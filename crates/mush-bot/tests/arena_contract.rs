@@ -3555,3 +3555,89 @@ fn m6_frame(names: &[&str], active: u8) -> tacsim::arena::step::FrameMind {
         off: false,
     }
 }
+
+/// **The field escort's reads** (doc 32 G-4): a frame's contacts re-lettered into a field's
+/// party, through the cockpit's own `CONTACTS` row, `LOCK` and `Hit` formatters, and read by
+/// the escort lane's parsers (`mine::lines::{field_contact, lock_is_friendly}`,
+/// `mine::lane::escort::is_hit_scored`) and the cockpit's exit and ramp sentences by its
+/// needles. A changed sentence breaks this test, not a field.
+#[test]
+fn the_field_escort_reads_what_the_field_cockpit_prints() {
+    use mush_bot::mine::lane::escort::{AT_RAMP, EXIT_ASKED, is_hit_scored};
+    use mush_bot::mine::lines::{field_contact, lock_is_friendly};
+    let party = PartyId::from_letter('K').expect("a field party");
+    let mut frame = frame();
+    for (n, contact) in frame.contacts.iter_mut().enumerate() {
+        contact.designator = Designator::Unit {
+            party,
+            letter: char::from(b'A' + u8::try_from(n).unwrap_or(0)),
+        };
+        contact.class = Classification::Classified { party };
+    }
+    let rows = cockpit::frame_contacts(&frame);
+    assert!(!rows.is_empty());
+    for row in &rows {
+        let printed = row.render();
+        let (designator, read) = field_contact(&printed).unwrap_or_else(|| panic!("{printed}"));
+        assert_eq!(designator, row.designator.to_string(), "{printed}");
+        assert_eq!(read, Some('K'), "{printed}");
+    }
+    // A lock on a friend reads friendly, and on anyone else not (the escort sets friends aside).
+    let mut friend = friendly_frame();
+    for contact in &mut friend.contacts {
+        contact.designator = match contact.designator {
+            Designator::Unit { letter, .. } => Designator::Unit { party, letter },
+            other => other,
+        };
+        contact.class = Classification::Classified { party };
+    }
+    let friendly = cockpit::lock_line(&friend).expect("a lock line");
+    assert!(lock_is_friendly(&friendly), "{friendly}");
+    let other = cockpit::lock_line(&frame).expect("a lock line");
+    assert!(!lock_is_friendly(&other), "{other}");
+    let hit = cockpit::notice_line(
+        &frame,
+        &FrameNotice::Hit {
+            contact: Some(named(frame.contacts[0].id, frame.contacts[0].designator)),
+            section: Some("hull".into()),
+            spent: false,
+        },
+        &rows,
+    );
+    assert!(is_hit_scored(&hit), "{hit}");
+    let exit = tacsim::field::EXIT_ASKED
+        .replace("{unit}", "546")
+        .replace("{ordinal}", "1");
+    assert!(exit.contains(EXIT_ASKED), "{exit}");
+    let ramp = tacsim::port::tv::WHERE_RAMP
+        .replace("{ramp}", "stern ramp")
+        .replace("{site}", "Ahuna Flank");
+    assert!(ramp.starts_with(AT_RAMP), "{ramp}");
+    // `VIEW BRIEF`'s header past 120 columns wraps; the own cell reads off the joined window.
+    let header = cockpit::brief_header(
+        "CL",
+        135_000,
+        &serde_json::json!({
+            "origin_cell": [112, 114],
+            "you": [19, 10],
+            "extent": [256, 256],
+            "width": 39,
+            "height": 20,
+            "cell_cm": 1000,
+        }),
+    );
+    let mut reader = Reader::new();
+    let lines = reader.say(&header);
+    let joined: Vec<String> = lines
+        .iter()
+        .map(|line| match line {
+            Line::Other(text) => text.clone(),
+            other => format!("{other:?}"),
+        })
+        .collect();
+    assert_eq!(
+        mush_bot::mine::lane::escort::own_cell(&joined.join(" ")),
+        Some((131, 124)),
+        "{header}"
+    );
+}

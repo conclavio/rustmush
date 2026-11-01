@@ -36,6 +36,10 @@
 //! `heard`) and never acted on.
 #[path = "detachment.rs"]
 pub mod detachment;
+#[path = "escort.rs"]
+pub mod escort;
+#[path = "field.rs"]
+pub mod field;
 
 use std::collections::{BTreeSet, VecDeque};
 
@@ -331,6 +335,12 @@ enum Board {
 #[derive(Clone, Debug, PartialEq, Eq)]
 enum Kind {
     Detachment(detachment::Task),
+    /// A step of the captain's IC field (doc 32 G-4).
+    Field(field::Task),
+    /// A step of the escort pilot's IC field (doc 32 G-4).
+    Escort(escort::Task),
+    /// The outbox read that fixes the floor an ENGAGE's reply is read above.
+    FieldFloor,
     /// A walk, done on the room's name.
     Walk {
         word: &'static str,
@@ -476,6 +486,10 @@ pub struct Lane {
     buying: Option<(u64, u64)>,
     stale_quotes: u32,
     expedition: Option<detachment::Expedition>,
+    /// The captain's IC field (doc 32 G-4), `--mine-field` only.
+    field: Option<field::Field>,
+    /// The escort pilot (doc 32 G-4), `--field-escort` only.
+    escort: Option<escort::Escort>,
 }
 
 impl Lane {
@@ -531,6 +545,8 @@ impl Lane {
             buying: None,
             stale_quotes: 0,
             expedition: None,
+            field: None,
+            escort: None,
         };
         lane.walk(Beat::KitUp, "c", ROOM_ARRIVALS, 0);
         lane
@@ -540,6 +556,28 @@ impl Lane {
     pub fn with_detachment(mut self) -> Self {
         self.expedition = Some(detachment::Expedition::default());
         self.report.detachment = Some(detachment::Evidence::default());
+        self
+    }
+
+    /// **Fly the escort in an IC field** (doc 32 G-4): the armed rig leased at Ceres in place of
+    /// the prospector, its cab boarded on the site, launched to the ramp, and the field's
+    /// fight and withdrawal when the site promotes ([`escort`]).
+    pub fn with_escort(mut self, captain: Option<String>) -> Self {
+        self.escort = Some(escort::Escort::flying_for(captain));
+        self.report.escort = Some(escort::Evidence::default());
+        self
+    }
+
+    /// **Play the expedition into an IC field** (doc 32 G-4): the hired escort under a combat
+    /// contract, the captain riding rig 1's cab and working its block on open ground, and the
+    /// field's steps ([`field`]) when the site promotes.
+    pub fn with_field(mut self, escort: Option<String>) -> Self {
+        self.expedition = Some(detachment::Expedition::combat());
+        self.report.detachment = Some(detachment::Evidence::default());
+        self.field = Some(field::Field::with_escort(escort));
+        self.report.field = Some(field::Evidence::default());
+        // A stake is the carrier's act; a captain in a rig's cab works open ground.
+        self.report.mined_open_ground = true;
         self
     }
 
@@ -632,6 +670,8 @@ impl Lane {
             text: raw.to_owned(),
             ms: now_ms,
         });
+        self.field_line(raw);
+        self.escort_line(raw);
     }
 
     // -- the lines out --------------------------------------------------------
@@ -825,6 +865,20 @@ impl Lane {
         }
         match &step.kind {
             Kind::Detachment(task) => detachment::verdict(task, opened, &text, quiet, now_ms),
+            Kind::Field(task) => self.field_verdict(task, opened, &text, &raw, quiet, now_ms),
+            Kind::FieldFloor => done_if(quiet),
+            Kind::Escort(task) => self.escort_verdict(task, opened, &text, &raw, quiet, now_ms),
+            // The bay gate's refusal of a unit still out: the lift goes again with `leave=`.
+            Kind::LiftHome
+                if self.field.is_some()
+                    && (has(&text, "lifts only with every") || has(&text, lines::LEAVE_HINT)) =>
+            {
+                if quiet {
+                    Verdict::Skip(text.clone())
+                } else {
+                    Verdict::Wait
+                }
+            }
             Kind::Walk { room, .. } => done_if(has(&text, room)),
             Kind::Enrol => {
                 if has(&text, NOT_OPEN) {
@@ -991,6 +1045,16 @@ impl Lane {
             Kind::MineGo => done_if(has(&text, DRILLING)),
             Kind::Cycles => done_if(lines::last_cycle(&text).is_some_and(|read| read.ended)),
             Kind::Recover => done_if(has(&text, RECOVER_PREVIEWED)),
+            // Doc 32 G-4: a field can stop rig 1 before its first cycle; an empty hopper comes
+            // home with no unload to follow.
+            Kind::RecoverGo
+                if self.field.is_some()
+                    && has(&text, lines::RIG_BACK)
+                    && !has(&text, BACK_IN_BAY)
+                    && quiet =>
+            {
+                Verdict::Skip(text.clone())
+            }
             Kind::RecoverGo => done_if(has(&text, BACK_IN_BAY)),
             Kind::Unload => {
                 if any(&[UNLOADED_EMPTY, UNLOADED_NONE]) {
@@ -1002,6 +1066,12 @@ impl Lane {
                 } else {
                     done_if(has(&text, UNLOADED))
                 }
+            }
+            // Doc 32 G-4: the plan meets the bay gate first; the lift is where `leave=` goes.
+            Kind::PlanHome
+                if self.field.is_some() && has(&text, "lifts only with every") && quiet =>
+            {
+                Verdict::Skip(text.clone())
             }
             Kind::PlanHome => match lines::plan_figures(&raw) {
                 Some(plan) if has(&text, PLAN_HEAD) && plan.tank_t < plan.burn_t => Verdict::Fail(
@@ -1084,6 +1154,26 @@ impl Lane {
                 }
             }
             (Kind::LiftOut, _) if self.expedition.is_some() => self.expedition_arrival(false),
+            (Kind::Field(task), _) => {
+                if let Err(error) = self.field_next(task.phase, &raw, &text, now_ms) {
+                    self.fail(now_ms, format!("field {:?}: {error}", task.phase));
+                }
+            }
+            (Kind::FieldFloor, _) => self.field_floor_read(&text),
+            (Kind::Escort(task), _) => {
+                if let Err(error) = self.escort_next(task.phase, &raw, &text, now_ms) {
+                    self.fail(now_ms, format!("escort {:?}: {error}", task.phase));
+                }
+            }
+            (Kind::LeaseGo, _) if self.is_escort() => self.escort_loans(&deciding),
+            (Kind::MapSite, _) if self.is_escort() => {
+                self.report.witness = lines::grid_rows(&raw);
+                self.escort_aboard();
+            }
+            (Kind::Leave, _) if self.is_escort() => self.escort_home(now_ms),
+            (Kind::LiftHome, Verdict::Skip(refused)) if self.field.is_some() => {
+                self.field_leave(now_ms, &refused);
+            }
             (Kind::LiftHome, _) if self.expedition.is_some() => self.expedition_arrival(true),
             (Kind::LeaseGo, _) if self.expedition.is_some() => self.expedition_start(),
             (Kind::Board, _) if self.expedition.is_some() => self.expedition_board(),
@@ -1099,7 +1189,10 @@ impl Lane {
             }
             (Kind::LicenceGo, _) => self.send(Beat::KitUp, Kind::LicenceCheck, "+licence", 0),
             (Kind::LicenceCheck, _) => self.walk(Beat::KitUp, "out", ROOM_ARRIVALS, 0),
-            (Kind::LeasePreview, _) => self.send(Beat::KitUp, Kind::LeaseGo, "+tv/lease go", 0),
+            (Kind::LeasePreview, _) => {
+                let line = self.lease_line(true);
+                self.send(Beat::KitUp, Kind::LeaseGo, line, 0);
+            }
             (Kind::LeaseGo, _) => self.send(Beat::KitUp, Kind::Rigs, "+tv", 0),
             (Kind::Rigs, _) => self.send(Beat::KitUp, Kind::Chart, "+chart", 0),
             (Kind::Chart, _) => {
@@ -1208,6 +1301,10 @@ impl Lane {
             ),
             (Kind::Cycles, _) => self.after_run(now_ms, &text),
             (Kind::Recover, _) => self.send(Beat::Home, Kind::RecoverGo, "+tv/1 recover go", 0),
+            (Kind::RecoverGo, Verdict::Skip(_)) if self.field.is_some() => {
+                self.milestone(Milestone::Recovered, now_ms);
+                self.expedition_returned();
+            }
             (Kind::RecoverGo, _) => {
                 self.milestone(Milestone::Recovered, now_ms);
                 self.follow_on(now_ms, Beat::Home, Kind::Unload, ACT_MS, decided_at);
@@ -1215,7 +1312,12 @@ impl Lane {
             (Kind::Unload, _) => {
                 self.milestone(Milestone::Unloaded, now_ms);
                 self.report.receipts.unloaded = Some(deciding.clone());
-                self.send(Beat::Home, Kind::PlanHome, "+ship/plan ceres", 0);
+                if self.field.is_some() {
+                    // Doc 32 G-4: the roster's close-out walks the captain back first.
+                    self.expedition_returned();
+                } else {
+                    self.send(Beat::Home, Kind::PlanHome, "+ship/plan ceres", 0);
+                }
             }
             (Kind::PlanHome, _) => self.send(Beat::Home, Kind::LiftHome, "+ship/lift ceres", 0),
             (Kind::LiftHome, _) => {
@@ -1252,7 +1354,10 @@ impl Lane {
             }
             (Beat::KitUp, "out") => self.walk(Beat::KitUp, "concourse", ROOM_CONCOURSE, 0),
             (Beat::KitUp, "concourse") => self.walk(Beat::KitUp, "exchange", ROOM_EXCHANGE, 0),
-            (Beat::KitUp, "exchange") => self.send(Beat::KitUp, Kind::LeasePreview, "+tv/lease", 0),
+            (Beat::KitUp, "exchange") => {
+                let line = self.lease_line(false);
+                self.send(Beat::KitUp, Kind::LeasePreview, line, 0);
+            }
             (Beat::Bunkers, "chandlery") => self.send(
                 Beat::Bunkers,
                 Kind::List(Board::Chandlery),
@@ -1657,6 +1762,11 @@ impl Lane {
             self.used.insert(addr);
         }
         self.runs = self.runs.saturating_add(1);
+        // Doc 32 G-4: the run after the field is the fill plan's last; the captain goes home.
+        if self.field_over() {
+            self.field_home(now_ms);
+            return;
+        }
         if self.runs == 1 {
             self.milestone(Milestone::FirstRunDone, now_ms);
             let after = self
@@ -1687,6 +1797,10 @@ impl Lane {
 
     /// The `Home` beat: nothing mined is a failure; else the recover.
     fn go_home(&mut self, now_ms: u64) {
+        if self.field.is_some() {
+            self.field_home(now_ms);
+            return;
+        }
         if self.report.mined_t == 0 {
             self.fail(now_ms, format!("nothing mined in {MAX_RUNS} runs"));
             return;

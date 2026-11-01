@@ -697,6 +697,173 @@ pub fn sale_receipt(window: &str) -> Option<SaleRead> {
     })
 }
 
+// ---------------------------------------------------------------------------
+// The IC field (doc 32 G-4): what a captain riding a rig's cab reads
+// ---------------------------------------------------------------------------
+
+/// `tacsim::field::FIELD_OPENED`'s tail after the site's name (`field/mod.rs`), told to
+/// everyone on the site when it promotes.
+pub const FIELD_OPENED_TAIL: &str = ": the ground there is tactical until it settles.";
+/// `tacsim::field::FIELD_SETTLED`'s tail after the site's name: the field demoted.
+pub const FIELD_SETTLED_TAIL: &str = " has settled: the ground there is the surface's again.";
+/// `tacsim::field::NO_FIELD`: `+field` with no party of the actor's in a field.
+pub const NO_FIELD: &str = "No field holds a party of yours.";
+/// `tacsim::field::FIELD_STATUS`'s middle, before the party's letter.
+pub const YOUR_PARTY: &str = "Your party is ";
+/// `tacsim::field::PARTY_MARKED`'s head, the mark's acknowledgement.
+pub const PARTY_MARKED: &str = "Your party now marks party ";
+/// `tacsim::surface::site_record::FIELD_OPEN`'s tail: surface work refused while a field runs.
+pub const SURFACE_WAITS: &str = "Surface work there waits until it settles.";
+/// `tacsim::detachment::sortie::ORDER_PREFILL`'s middle, before the fence.
+pub const ORDER_PREFILL: &str = "Order prefill: ";
+/// `tacsim::port::tv::RECOVERED`'s head for rig 1: home with nothing to unload.
+pub const RIG_BACK: &str = "Rig 1 is back in the ";
+/// `tacsim::port::voyage::LEAVE_HINT`'s head, after a live departure's refusal.
+pub const LEAVE_HINT: &str = "To lift without them, add leave=";
+/// The party letters a field draws (`tacsim::arena::party::LETTERS`).
+pub const PARTY_LETTERS: &str = "ABCDEFGHJKLMNPQRSTUVWYZ";
+
+/// **The field that opened on `site`** in `window` (normalised): its ordinal, from
+/// `Field {n} is open on {site}: …`.
+pub fn field_opened(window: &str, site: &str) -> Option<u32> {
+    ordinal_before(window, &format!(" is open on {site}{FIELD_OPENED_TAIL}"))
+}
+
+/// **The field on `site` that settled** in `window`: its ordinal.
+pub fn field_settled(window: &str, site: &str) -> Option<u32> {
+    ordinal_before(window, &format!(" on {site}{FIELD_SETTLED_TAIL}"))
+}
+
+/// The `Field {n}` immediately before `tail`.
+fn ordinal_before(window: &str, tail: &str) -> Option<u32> {
+    let (head, _) = window.split_once(&normalise(tail))?;
+    let (_, n) = head.rsplit_once("Field ")?;
+    n.trim_end().parse().ok()
+}
+
+/// **The actor's own party letter**, from `+field`'s `Your party is {letter};`.
+pub fn own_party(window: &str) -> Option<char> {
+    let (_, rest) = window.split_once(YOUR_PARTY)?;
+    let letter = rest.chars().next()?;
+    (rest[letter.len_utf8()..].starts_with(';') && PARTY_LETTERS.contains(letter)).then_some(letter)
+}
+
+/// **The party a `CONTACTS` row's class word names** (`tacsim::arena::party::PartyId::as_str`):
+/// `red` and `blue` for `R` and `B`, else the lower-case letter; `unknown` (not yet
+/// classified) and anything else is `None`.
+pub fn party_of_word(word: &str) -> Option<char> {
+    match word {
+        "red" => Some('R'),
+        "blue" => Some('B'),
+        _ => {
+            let mut chars = word.chars();
+            let letter = chars.next()?.to_ascii_uppercase();
+            (chars.next().is_none() && word.chars().all(|c| c.is_ascii_lowercase()))
+                .then_some(letter)
+                .filter(|letter| PARTY_LETTERS.contains(*letter))
+        }
+    }
+}
+
+/// **A field designator**: a party letter and one or two unit letters (`BD`, `BKQ`), or a
+/// provisional `X` and a number (`X1`).
+pub fn is_field_designator(word: &str) -> bool {
+    if let Some(number) = word.strip_prefix('X') {
+        return (1..=6).contains(&number.len()) && number.bytes().all(|b| b.is_ascii_digit());
+    }
+    (2..=3).contains(&word.len()) && word.chars().all(|c| PARTY_LETTERS.contains(c))
+}
+
+/// **One `CONTACTS` row in a field** (`tacsim::arena::view::ContactRow::render`):
+/// `BD  blue  bearing 090° (rel 000°)  beyond  100 m  0 s  rear` — the designator and the
+/// party its class word names, `None` while it reads `unknown`.
+pub fn field_contact(line: &str) -> Option<(String, Option<char>)> {
+    let mut words = line.split_whitespace();
+    let designator = words.next().filter(|w| is_field_designator(w))?;
+    let class = words.next()?;
+    if words.next() != Some("bearing") {
+        return None;
+    }
+    Some((designator.to_owned(), party_of_word(class)))
+}
+
+/// **The replies `+sortie/orders` lists for slot `slot`**
+/// (`tacsim::detachment::sortie::ORDER_SENT`): each order's sequence and its reply word
+/// (`WILCO`, `NEGATIVE`), or `None` while no reply is confirmed.
+pub fn order_replies(window: &str, slot: u8) -> Vec<(u64, Option<String>)> {
+    let head = format!("Sent slot {slot} order ");
+    window
+        .split(head.as_str())
+        .skip(1)
+        .filter_map(|rest| {
+            let (sequence, rest) = rest.split_once(": ")?;
+            let sequence = sequence.parse().ok()?;
+            let word = rest
+                .split_once(" received.")
+                .map(|(word, _)| word)
+                .filter(|word| word.bytes().all(|b| b.is_ascii_uppercase()))
+                .map(str::to_owned);
+            Some((sequence, word))
+        })
+        .collect()
+}
+
+/// **The escort's report to its captain** (doc 32 G-4), the bots' own words sent by `page`:
+/// `Raider: party {party}, contact {designator}.` Line text gives no relation, and a captain in a
+/// field of several parties cannot tell the raider's from its escort's; the escort, which looks
+/// at each armed contact, says which it is fighting.
+pub const RAIDER_REPORT: &str = "Raider: party {party}, contact {designator}.";
+
+/// The page that carries it, as the line client prints it (mush-ansi's `Page` narrative):
+/// `{sender} pages: …`.
+pub const PAGED: &str = " pages: ";
+
+/// **The raider a page in `line` reports**: its party letter and designator.
+pub fn raider_report(line: &str) -> Option<(char, String)> {
+    let (_, message) = line.split_once(PAGED)?;
+    let rest = message.trim().strip_prefix("Raider: party ")?;
+    let (party, rest) = rest.split_once(", contact ")?;
+    let designator = rest.strip_suffix('.')?;
+    let mut letters = party.chars();
+    let party = letters.next().filter(|p| PARTY_LETTERS.contains(*p))?;
+    (letters.next().is_none() && is_field_designator(designator) && designator.starts_with(party))
+        .then(|| (party, designator.to_owned()))
+}
+
+/// **The captain's word to its escort** (doc 32 G-4), by `page`: `Captain: party {party}.` The
+/// escort sets that party aside, with its own and every party its `LOCK` reads `(FRIENDLY)`, and
+/// the one left is the raider.
+pub const CAPTAIN_REPORT: &str = "Captain: party {party}.";
+
+/// **The captain's party a page in `line` reports.**
+pub fn captain_report(line: &str) -> Option<char> {
+    let (_, message) = line.split_once(PAGED)?;
+    let party = message
+        .trim()
+        .strip_prefix("Captain: party ")?
+        .strip_suffix('.')?;
+    let mut letters = party.chars();
+    let letter = letters.next().filter(|p| PARTY_LETTERS.contains(*p))?;
+    letters.next().is_none().then_some(letter)
+}
+
+/// **Whether a `LOCK`'s answer marks its contact a friend** (`tacsim`'s lock line, `Locked on BA
+/// (FRIENDLY), 62% to hit.`): own party or a standing friend, never to be fired on.
+pub fn lock_is_friendly(window: &str) -> bool {
+    window.split("Locked on ").skip(1).any(|rest| {
+        rest.split([',', '.'])
+            .next()
+            .is_some_and(|head| head.contains("(FRIENDLY)"))
+    })
+}
+
+/// **The order fence** `ORDER DT:a:b:c` from `+sortie/orders`' prefill line.
+pub fn order_fence(window: &str) -> Option<String> {
+    let (_, rest) = window.split_once(ORDER_PREFILL)?;
+    let (fence, _) = rest.split_once(" ALL HOLD")?;
+    fence.starts_with("ORDER DT:").then(|| fence.to_owned())
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -1223,5 +1390,155 @@ mod tests {
             assert!(!heard_line_is_bare(&format!("{sentence} F12 rich.")));
         }
         assert_eq!(heard_sentence("Rig 1 sounded 64 pockets"), None);
+    }
+
+    /// **The captain's field sentences** (doc 32 G-4), each built from tacsim's own constant:
+    /// a changed sentence breaks this test, not a field.
+    #[test]
+    fn field_lines_read_the_games_own_sentences() {
+        use tacsim::arena::party::{LETTERS, PartyId};
+        let site = "Ahuna Flank";
+        let opened = tacsim::field::FIELD_OPENED
+            .replace("{n}", "3")
+            .replace("{site}", site);
+        assert_eq!(field_opened(&normalise(&opened), site), Some(3), "{opened}");
+        assert_eq!(field_opened(&normalise(&opened), "Kerwan Floor"), None);
+        let settled = tacsim::field::FIELD_SETTLED
+            .replace("{n}", "3")
+            .replace("{site}", site);
+        assert_eq!(
+            field_settled(&normalise(&settled), site),
+            Some(3),
+            "{settled}"
+        );
+        assert_eq!(field_settled(&normalise(&opened), site), None);
+        // Wrapped at 120 columns, the window still reads.
+        let wrapped = joined(&wrap(&format!("[tacsim] {opened}"), 40));
+        assert_eq!(field_opened(&wrapped, site), Some(3));
+
+        let status = tacsim::field::FIELD_STATUS
+            .replace("{n}", "1")
+            .replace("{site}", site)
+            .replace("{party}", "A")
+            .replace("{parties}", "2");
+        assert_eq!(own_party(&normalise(&status)), Some('A'), "{status}");
+        assert_eq!(NO_FIELD, tacsim::field::NO_FIELD);
+        let marked = tacsim::field::PARTY_MARKED
+            .replace("{party}", "B")
+            .replace("{word}", "Hostile");
+        assert!(marked.starts_with(PARTY_MARKED), "{marked}");
+        let waits = tacsim::surface::site_record::FIELD_OPEN
+            .replace("{ordinal}", "1")
+            .replace("{site}", site);
+        assert!(has(&normalise(&waits), SURFACE_WAITS), "{waits}");
+
+        // Every party letter's class word reads back to its letter.
+        assert_eq!(PARTY_LETTERS.as_bytes(), LETTERS.as_slice());
+        for letter in LETTERS {
+            let party = PartyId::from_letter(char::from(letter)).expect("a party");
+            assert_eq!(
+                party_of_word(party.as_str()),
+                Some(party.letter()),
+                "{letter}"
+            );
+            let designator = format!("{}K", party.letter());
+            assert!(is_field_designator(&designator), "{designator}");
+        }
+        assert_eq!(party_of_word("unknown"), None);
+        // The rows a rig's cab printed in the CF.6 transport gate (G-4's probe).
+        assert_eq!(
+            field_contact("BD  blue  bearing 090° (rel 000°)  beyond  100 m  0 s  rear"),
+            Some(("BD".to_owned(), Some('B')))
+        );
+        assert_eq!(
+            field_contact("AK  a  bearing 083° (rel 353°)  beyond  200 m  0 s  side"),
+            Some(("AK".to_owned(), Some('A')))
+        );
+        assert_eq!(
+            field_contact("X2  unknown  bearing 090° (rel 000°)  beyond  100 m  0 s  rear"),
+            Some(("X2".to_owned(), None))
+        );
+        assert_eq!(field_contact("Callsign AG."), None);
+
+        let prefill = tacsim::detachment::sortie::ORDER_PREFILL
+            .replace("{term}", "1")
+            .replace("{roster}", "8589934593")
+            .replace("{revision}", "1");
+        assert_eq!(
+            order_fence(&normalise(&prefill)).as_deref(),
+            Some("ORDER DT:8589934593:1:1"),
+            "{prefill}"
+        );
+        let sent = |sequence: &str, status: &str| {
+            tacsim::detachment::sortie::ORDER_SENT
+                .replace("{slot}", "1")
+                .replace("{sequence}", sequence)
+                .replace("{status}", status)
+        };
+        let window = normalise(&format!(
+            "{} {} {}",
+            sent("1", "WILCO received"),
+            sent("2", "NEGATIVE received"),
+            sent("3", "submitted; no reply confirmed")
+        ));
+        assert_eq!(
+            order_replies(&window, 1),
+            vec![
+                (1, Some("WILCO".to_owned())),
+                (2, Some("NEGATIVE".to_owned())),
+                (3, None)
+            ]
+        );
+        assert!(order_replies(&window, 2).is_empty());
+
+        let hint = tacsim::port::voyage::LEAVE_HINT.replace("{list}", "1,#345");
+        assert!(has(&normalise(&hint), LEAVE_HINT), "{hint}");
+        // The bay gate's refusal of a rig left out, which the lift reads for `leave=`.
+        let out = tacsim::port::voyage::TV_OUT
+            .replace("{n}", "1")
+            .replace("{site}", site)
+            .replace("{name}", "Fieldcap Lode");
+        assert!(has(&normalise(&out), "lifts only with every"), "{out}");
+        assert!(out.contains("Rig 1 is out on "), "{out}");
+
+        // Rig 1's run after the field ends on the run's own last line (doc 32 §15); its other
+        // tells are the solo pilot's, pinned above.
+        use crate::mine::lane::field::RUN_DONE_HEAD;
+        let cycle = format!(
+            "{}{}",
+            tv::CYCLE_DONE
+                .replace("{n}", "1")
+                .replace("{k}", "4")
+                .replace("{cycles}", "4")
+                .replace("{t}", "3")
+                .replace("{ore}", "metal ore")
+                .replace("{hopper}", "12 of 12 t"),
+            tv::RUN_DONE.replace("{addr}", "F224")
+        );
+        assert!(cycle.contains(CYCLE_HEAD), "{cycle}");
+        // The escort's report, as a page prints it (mush-ansi's `Page` narrative).
+        let report = RAIDER_REPORT
+            .replace("{party}", "B")
+            .replace("{designator}", "BK");
+        assert_eq!(
+            raider_report(&format!("Fieldesc{PAGED}{report}")),
+            Some(('B', "BK".to_owned()))
+        );
+        assert_eq!(raider_report(&report), None, "only a page carries it");
+        let word = CAPTAIN_REPORT.replace("{party}", "A");
+        assert_eq!(captain_report(&format!("Fieldcap{PAGED}{word}")), Some('A'));
+        assert_eq!(captain_report(&word), None, "only a page carries it");
+        assert_eq!(captain_report("Fieldcap pages: Captain: party AB."), None);
+        assert_eq!(
+            raider_report("Fieldesc pages: Raider: party B, contact AK."),
+            None,
+            "the designator is the party's"
+        );
+        let back = tv::RECOVERED
+            .replace("{n}", "1")
+            .replace("{name}", "Fieldcap Lode");
+        assert!(back.starts_with(RIG_BACK), "{back}");
+        assert!(!has(&normalise(&back), BACK_IN_BAY), "{back}");
+        assert!(cycle.contains(RUN_DONE_HEAD), "{cycle}");
     }
 }

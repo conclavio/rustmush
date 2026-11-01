@@ -28,3 +28,12 @@ pub(crate) use runtime::{
 pub(crate) use runtime::{availability_key, ctx_available, offer_available, require_available};
 pub use surface::SurfaceCrew;
 pub use work::{FieldStep, FieldWork};
+
+/// **`+sortie/orders`' head line** (`{term}` the command term; `{roster}`, `{revision}` the
+/// fence's other two numbers): the prefill a leader copies to issue an order. A player client
+/// reads it (the bot's captain, doc 32 G-4), so it is a constant.
+pub const ORDER_PREFILL: &str =
+    "Field command term {term}. Order prefill: ORDER DT:{roster}:{revision}:{term} ALL HOLD";
+/// **One sent order in `+sortie/orders`** (`{status}` `submitted; no reply confirmed`, or the
+/// reply's word upper-cased and `received`: `WILCO received`, `NEGATIVE received`).
+pub const ORDER_SENT: &str = "Sent slot {slot} order {sequence}: {status}. Execution unconfirmed.";

@@ -210,12 +210,26 @@ async fn account(
 /// `spawn_persist_with_decision_workers`, the store-backed accounts, the
 /// bridge, and the listener on `127.0.0.1:0` with [`arena::BANNER`].
 pub async fn boot(miners: &[Miner]) -> arena::Rig {
+    boot_with(miners, |_| {}, |_| Vec::new()).await.0
+}
+
+/// [`boot`] with the config `tune` changed first and `prepare` run on the booted engine before
+/// the world task spawns, returning what it says (doc 32 G-4: the field's quiet interval, and
+/// the fixture raider seeded, launched onto its site and worn, by staff lines through
+/// [`staff_line`]: a staff world write is post-image, and a live world holds one behind every
+/// authoritative action in flight, so a rig whose bot is always mid-act cannot wait for one).
+pub async fn boot_with(
+    miners: &[Miner],
+    tune: impl FnOnce(&mut Config),
+    prepare: impl FnOnce(&mut mush_core::Engine) -> Vec<String>,
+) -> (arena::Rig, Vec<String>) {
     let dir = scratch_dir();
     let key_dir = dir.join("geology-keys");
     let data_dir = dir.join("data");
     std::fs::create_dir_all(&data_dir).expect("the data directory");
     write_fixed_key(&key_dir, KEY_1);
-    let cfg = config(&data_dir, &key_dir);
+    let mut cfg = config(&data_dir, &key_dir);
+    tune(&mut cfg);
     let mut spool =
         QuarantineSpool::open(data_dir.join("quarantine")).expect("the quarantine spool");
     let (opened, mut booted) = mushd::boot::boot_all_in_one(&cfg, &mut spool)
@@ -258,6 +272,7 @@ pub async fn boot(miners: &[Miner]) -> arena::Rig {
             miner.character
         );
     }
+    let answers = prepare(&mut booted.engine);
 
     let sessions = Arc::new(SessionManager::with_config(SessionConfig {
         linkdead_grace: Duration::from_secs(120),
@@ -298,7 +313,7 @@ pub async fn boot(miners: &[Miner]) -> arena::Rig {
     )
     .await
     .expect("ssh listener");
-    arena::Rig::serving(listener, handles, dir, store)
+    (arena::Rig::serving(listener, handles, dir, store), answers)
 }
 
 /// **The rate and geology lines of a readiness report read `[ready]`**: the
@@ -489,4 +504,84 @@ pub async fn drive_lane_since(
         }
     }
     (started.elapsed().as_secs(), sent)
+}
+
+/// **One staff line typed as God on a booted engine** before its world task spawns (doc 32
+/// G-4's fixture setup): what it answered, every event's debug form joined.
+pub fn staff_line(engine: &mut mush_core::Engine, line: &str) -> String {
+    let mut out = mush_core::Outbox::new();
+    let mut fx = mush_core::Effects::new();
+    engine.step(
+        mush_core::Inbound::Cmd {
+            conn: 0,
+            actor: GOD,
+            line: line.to_owned(),
+        },
+        &mut out,
+        &mut fx,
+    );
+    out.take()
+        .iter()
+        .map(|(_, event)| format!("{event:?}"))
+        .collect::<Vec<_>>()
+        .join("\n")
+}
+
+/// **Wear a fixture raider's hulls** (doc 32 G-4, as CF.6b's own gate strips one): every hull
+/// of every raider on the engine has its armour at its floor and its internals whole, by staff's
+/// `@unit/damage`. A worn line tank is past its doctrine's withdraw edge: it goes home and
+/// fights from a stand there, so the escort it fights is not shot to pieces before it has
+/// classified anything. What each damage line answered.
+pub fn wear_raiders(engine: &mut mush_core::Engine) -> Vec<String> {
+    let hulls: Vec<mush_core::ObjId> = engine
+        .world
+        .module_state::<mush_tactics::module::UnitStore>()
+        .map(|store| {
+            store
+                .units
+                .keys()
+                .copied()
+                .filter(|unit| tacsim::field::raiders::leader_of(&engine.world, *unit).is_some())
+                .filter(|unit| tacsim::field::raiders::carrier_of(&engine.world, *unit).is_some())
+                .collect()
+        })
+        .unwrap_or_default();
+    hulls
+        .into_iter()
+        .map(|hull| {
+            let unit = mush_tactics::module::unit_of(&engine.world, hull)
+                .expect("the raider's unit")
+                .clone();
+            let ops: Vec<mush_tactics::UnitMutationOp> = unit
+                .cells()
+                .filter_map(|(addr, cell)| {
+                    let name = match addr {
+                        mush_tactics::CellAddr::Facet { cell, .. }
+                        | mush_tactics::CellAddr::Section { cell, .. } => cell.as_str(),
+                        _ => return None,
+                    };
+                    (name == tacsim::definitions::unit::ARMOR_CELL).then(|| {
+                        mush_tactics::UnitMutationOp::SetCell {
+                            addr: addr.clone(),
+                            value: cell.min,
+                        }
+                    })
+                })
+                .collect();
+            let plan = mush_tactics::UnitMutationPlan::new(
+                ops,
+                None,
+                Some("bot-story:g4-worn-raider".into()),
+            )
+            .expect("a plan");
+            staff_line(
+                engine,
+                &format!(
+                    "@unit/damage #{}={}",
+                    hull.0,
+                    serde_json::to_string(&plan).expect("the plan's JSON")
+                ),
+            )
+        })
+        .collect()
 }

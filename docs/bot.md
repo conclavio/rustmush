@@ -1586,6 +1586,66 @@ ends the run with its current step and terminal evidence.
 cargo run -p mush-bot -- --config mush-bot.local.toml --mine-detachment ahuna --headless --report expedition.json
 ```
 
+### The captain in an IC field
+
+`--headless --mine-field ahuna` runs the expedition under a combat contract (doc 32 §15). It
+hires Rook Adeyemi for the second rig, as the roster's slot 1, role `escort`. The captain boards
+the first rig's cab as slot 2 and, after the DT launch, works that rig's block on the solo
+pilot's own beats on open ground, because a stake needs a captain aboard the carrier.
+
+When a field opens on the site, the captain:
+- drops what it was doing and reads its party's letter with `+field`;
+- reads `CONTACTS` from the cab until a contact of another party classifies, and marks that
+  party Hostile;
+- orders its escort `ENGAGE` on that contact, then `WITHDRAW`, reading each reply in
+  `+sortie/orders`;
+- holds until `+field` says no field holds its party.
+
+Then it brings rig 1 home with the rig's own recover and closes the roster. It resumes the
+fill plan by launching rig 1 again on its own, once the field is closed, to work a pocket of
+the captain's own reading. It lifts, and when the bay gate refuses the lift for a unit still
+out (here rig 1), it lifts again once with `leave=` naming that unit. Home, it reads `+tv`
+for what it left, then sells.
+
+It types no `FIRE` and no staff verb. The report's `mine.field` records:
+- the field's ordinal, both party letters and the designator;
+- the mark's acknowledgement and the two replies;
+- the holds, the settle and the resume;
+- any `leave=`.
+
+```powershell
+cargo run -p mush-bot -- --config mush-bot.local.toml --mine-field ahuna --headless --report field.json
+```
+
+With an escort pilot on the site, add `--escorted-by <character>`. The captain pages that pilot
+its own party (`Captain: party A.`) and waits for the escort's word on the raider
+(`Raider: party D, contact DQ.`): a field of several parties gives line text no other way to
+tell them apart.
+
+### The escort pilot in an IC field
+
+`--headless --field-escort ahuna --escort-for <captain>` leases Occator's armed rig at Ceres
+(`+tv/lease escort go`, then its operational loan) in place of the prospector, after the
+mining pilot's own enrol, refit and licence. It sails to the site, boards the rig's cab from
+the bay, launches it, and drives 30 m off the ramp's cell. When a field opens, it:
+- reads its own cell from `VIEW BRIEF`, and so its ramp three cells west;
+- sets aside its own party, its captain's (by page) and every party its `LOCK` reads
+  `(FRIENDLY)`, and takes the one left for the raider;
+- pages its captain the raider, marks it Hostile, and fires its gun until a round lands;
+- drives back to the ramp and takes the field's exit there (`+tv/1 recover go`);
+- waits out the field, leaves the cab and sails home.
+
+Docked home is its success. It types no staff verb and no `FIRE … WHEN` rule. The report's
+`mine.escort` records:
+- the lease and the launch;
+- the ramp cell and the parties it set aside;
+- the raider, its page and its mark;
+- its shots and hits, the exit and the bay.
+
+```powershell
+cargo run -p mush-bot -- --config mush-bot.local.toml --field-escort ahuna --escort-for Fieldcap --headless --report escort.json
+```
+
 ## Character, personality and voice
 
 The [character and cast studio](bot-studio.md) develops JSON sheets from a concept:
