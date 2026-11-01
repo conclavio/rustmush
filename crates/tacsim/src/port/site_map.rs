@@ -1562,14 +1562,14 @@ fn best_of(sounded: &[Sounded], scanned: &[Scanned]) -> BestReading {
         return BestReading::Pocket(text);
     }
     // (upper word, exact, family rank, field order) — the richest, exact first.
-    let mut field: Option<(Word, bool, usize, u16, String)> = None;
+    let mut field: Option<(Word, bool, usize, Option<u8>, String)> = None;
     let mut read_any = !sounded.is_empty();
     for s in scanned {
         if s.footing == Footing::Ice {
             continue;
         }
         read_any = true;
-        let index = field_order(address::field_index(s.field.0, s.field.1));
+        let index = address::field_index(s.field.0, s.field.1);
         for (rank, family) in OreFamily::ALL.into_iter().enumerate() {
             let Some(text) = field_family_text(s, family) else {
                 continue;
@@ -1584,8 +1584,13 @@ fn best_of(sounded: &[Sounded], scanned: &[Scanned]) -> BestReading {
                     upper,
                     exact,
                     std::cmp::Reverse(rank),
-                    std::cmp::Reverse(index),
-                ) > (*w, *e, std::cmp::Reverse(*r), std::cmp::Reverse(*i))
+                    std::cmp::Reverse(field_order(index)),
+                ) > (
+                    *w,
+                    *e,
+                    std::cmp::Reverse(*r),
+                    std::cmp::Reverse(field_order(*i)),
+                )
             });
             if better {
                 field = Some((upper, exact, rank, index, text));
@@ -1599,8 +1604,9 @@ fn best_of(sounded: &[Sounded], scanned: &[Scanned]) -> BestReading {
     }
 }
 
-/// **A field's place in the tie-break** (doc 32 cut S.0): its index, a field with none after
-/// every indexed one — never `u8::MAX`, which is field 255 once a site holds 256 fields.
+/// **A field's place in the tie-break** (doc 32 cut S.0; ruling 6): the index is an `Option`,
+/// and a reading with none sorts after every indexed field — never the `u8::MAX` sentinel,
+/// which is field 255 once a site holds 256 fields.
 fn field_order(index: Option<u8>) -> u16 {
     index.map_or(u16::MAX, u16::from)
 }

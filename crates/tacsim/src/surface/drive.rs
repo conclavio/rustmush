@@ -57,13 +57,14 @@ use crate::surface::excursion::{LegWaypoint, MAX_LEG_WAYPOINTS, cells_apart, sit
 use crate::surface::ground::{SITE_CELL_CM, SITE_CELLS};
 
 /// **The A* budget of a shipped site** (doc 20 §8: "a budget of 65,536 cells, a whole site"):
-/// `SITE_CELLS²`, [`drive_path_budget_cells`] at the shipped side.
+/// `SITE_CELLS²`, [`drive_path_budget_cells`] of a shipped site.
 pub const DRIVE_PATH_BUDGET_CELLS: u32 = (SITE_CELLS as u32) * (SITE_CELLS as u32);
 
-/// **The A* budget of a site `side` cells a side** (doc 32 cut S.0, §18): a whole site, `side²`.
+/// **The A* budget of a site `width × height` cells** (doc 32 cut S.0, §18; ruling 6): a whole
+/// site, `w × h`.
 #[must_use]
-pub const fn drive_path_budget_cells(side: u16) -> u32 {
-    (side as u32) * (side as u32)
+pub const fn drive_path_budget_cells(width: u16, height: u16) -> u32 {
+    (width as u32) * (height as u32)
 }
 /// The TV's locomotion row in the atlas table (its unit's tracked mode).
 pub const DRIVE_LOCOMOTION: &str = "tracked";
@@ -518,7 +519,7 @@ fn points_of(
 }
 
 /// **ONE atlas `path`** (§0 ruling 2) from the start pose's cell to `to` over `surface`, tracked,
-/// no tags, at a whole site's budget ([`drive_path_budget_cells`] of the surface's side); then
+/// no tags, at a whole site's budget ([`drive_path_budget_cells`] of the surface's grid); then
 /// [`freeze`]. `Unreachable` and `OverBudget` both
 /// refuse [`LegRefused::NoPath`] (the brief's finding F8: through a site composite at a whole
 /// site's budget an unreachable target exhausts the reachable cells first).
@@ -550,7 +551,7 @@ pub fn drive_leg(
         to_cell,
         DRIVE_LOCOMOTION,
         &[],
-        drive_path_budget_cells(surface.cells.width()),
+        drive_path_budget_cells(surface.cells.width(), surface.cells.height()),
     ) {
         PathOutcome::Found(found) => found,
         PathOutcome::Unreachable { .. } | PathOutcome::OverBudget { .. } => {

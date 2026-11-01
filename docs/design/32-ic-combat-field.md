@@ -1707,6 +1707,22 @@ site's side a per-site value, **S.1** scales the scheme that rides on it, **S.2*
 story at 512 and measures it. S.0 changes nothing a 256 site does or stores; every shipped
 region is 2,560 m, so every shipped site is still 256.
 
+**The rulings** (the owner, 2026-11-01, accepting the plan's seven defaults):
+
+1. A composite cap separate from the tile cap.
+2. The side is the region's extent. Ahuna Flank and the other shipped sites stay 256; a new 512
+   Ceres site comes in S.1; the ground stays generated.
+3. Addresses are a 4 × 4 grid of blocks lettered A–P, each side/4 a side, so they run to C1024
+   at 512. The per-block shifts stay `[i8; 16]`, and the geology digest takes a new version.
+4. The pad comes from the site's pad room, and the raider fixture's cells become offsets from
+   the pad.
+5. The site view stays 32 cells across, each view cell side/32 site cells.
+6. The drive budget is w × h, `to`'s maximum is side² − 1, the `ADVANCE` bound is the site's
+   side, and the `u8::MAX` sentinel becomes an `Option`.
+7. The presence and sounder bands and the ground cache stay as they are, measured at 512 in S.2.
+
+S.0 builds 1, 2 (without the new site) and 6. S.1 builds 3, 4, 5 and the 512 site.
+
 **The composite cap.** `mush_atlas::window::composite` builds each surface with
 `Cells::filled_composite` over `WindowFrame::grid`'s `Grid::over_composite`, both capped by
 its own `MAX_COMPOSITE_SIDE` = 512, and decodes a
@@ -1732,7 +1748,7 @@ from the atlas frames at the shipped default, so its capture refuses it exactly 
   build it from the offer's fixed `sides`, which is present only when a site is not 256.
 - **The drive.** `ActParams::Drive` carries the `side` it was planned over, also omitted at 256.
   Its `to` and its `to` word (`y × side + x`) are held to it. `target_cell` and the A* budget
-  (`drive_path_budget_cells`, `side²`) take the surface's side. The start's `to` parameter
+  (`drive_path_budget_cells`, w × h) take the surface's grid. The start's `to` parameter
   reaches `side² − 1` of the widest lane site, which is 65,535 today.
 - **The field orders.** `FieldPayload::validate` takes the side. At issue it is the side of the
   site the members' flights stand on. A stored order is held to the widest site.
@@ -1740,26 +1756,30 @@ from the atlas frames at the shipped default, so its capture refuses it exactly 
   `side` is the composite's. The staff `@tacsim/site` cell words and maximum use the site's
   side. A raider's carrier is held to its own site when it is seeded, and the fixture file to
   the widest site.
-- **The readings tie-break** no longer uses `u8::MAX` as "no field", which would be field 255
-  once a site holds 256 fields.
+- **The readings tie-break** keeps the field index as an `Option<u8>`, and a reading with none
+  sorts after every field. It no longer uses `u8::MAX`, which would be field 255 once a site
+  holds 256 fields.
 
-**Still at 256 (cut S.1's, not yet ruled).** These are left at 256, and each is wrong on a
-wider site until S.1 scales it:
+**Still at 256: what S.1 builds, against the rulings.** Each is wrong on a wider site until
+S.1 lands:
 
-- the address scheme: blocks, letters, fields and pockets, `SITE_BLOCKS`, `BLOCK_LETTERS`,
-  `field_index`;
-- the chart: its rows' stands, its caps;
-- the reading and run stands an excursion record keeps (scan, sounding, run);
-- the geology table and its digest (64 × 64 pockets: a 512 site's geology covers its
-  south-west quarter);
-- the pad (`PAD_CENTRE_CM`, `PAD_CELL`), which S.1 takes from the site's pad room;
-- the site view's span (8 cells of 32), which S.1 sets to side/32;
-- the campaign layer's block letters;
-- the raider fixture's offsets;
-- presence band tuning.
+- **Ruling 3, the address scheme.** Blocks become side/4 (`CELLS_PER_BLOCK`, `SITE_BLOCKS`
+  scale, `BLOCK_LETTERS` stays A–P). Fields, pockets and `field_index` follow (16 × 16 fields
+  at 512, so `field_index` reaches 255), up to C1024. Built on it: the chart's row stands and
+  caps, the scan, sounding and run stands an excursion record keeps (`stand_on_site`,
+  `address::on_scheme`), the campaign layer's block letters, and the picture's `block_side`.
+- **Ruling 3, the geology table.** Pockets cover the whole site; the per-block shifts stay
+  `[i8; 16]`; the geology digest takes a new version. Today a 512 site's geology covers only its
+  south-west quarter.
+- **Ruling 4, the pad.** It comes from the site's pad room (`PAD_CENTRE_CM`, `PAD_CELL` retire),
+  and `field/raiders.json`'s carrier and ramp cells become offsets from the pad. S.0 checks
+  them against the site's side when a raider is seeded.
+- **Ruling 5, the site view.** It stays 32 cells across, each view cell side/32 site cells:
+  `SITE_VIEW_SPAN` and `SITE_VIEW_CELL_CM` follow the side.
+- **Ruling 2, the 512 Ceres site.** A new frontier region of 5,120 m and its port entry.
 
-S.1 also owes the 512 frontier site on Ceres (Ahuna Flank stays 256). S.2 owes the story at
-512 and its measurements.
+Ruling 7 builds nothing: S.2 measures the bands and the ground cache at 512, alongside the
+story itself.
 
 **Defaults taken (provisional):** a stored record with no `side` reads 256, since there are no
 migrations before launch. A stored drive's arrival cell, and a stored order's `ADVANCE`, are
