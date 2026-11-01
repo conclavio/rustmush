@@ -530,7 +530,7 @@ where
 }
 
 /// A pilot on a gateway account of their own, standing at the Registry desk.
-fn pilot(rig: &mut Rig, who: &str, seed: i64) -> ObjId {
+pub(crate) fn pilot(rig: &mut Rig, who: &str, seed: i64) -> ObjId {
     let pilot = rig.tw.spawn_player(who);
     if let Ok(mut map) = rig.oracle.0.lock() {
         map.insert(
@@ -1033,11 +1033,21 @@ fn start(rig: &Rig, pilot: ObjId, tv: ObjId, act: &str, ordinal: u32) -> Authori
     }
 }
 
-/// Launch rig 1 and finish it (it stands at the ramp).
+/// Launch rig 1 and finish it (it stands at the ramp: on the ramp's pose, or, when another unit
+/// already stands on the ramp's cell, exactly one cell from it — doc 32 §17).
 pub(crate) fn launched(rig: &mut Rig, pilot: ObjId, tv: ObjId) {
     let _ = act_go(rig, pilot, "+tv/1 launch go");
     let _ = finish(rig, tv, pilot);
-    assert!(on_ground_at(&rig.tw, tv, RAMP));
+    let beside = (-1..=1).any(|dx: i64| {
+        (-1..=1).any(|dy: i64| {
+            on_ground_at(
+                &rig.tw,
+                tv,
+                (RAMP.0 + dx * 1_000, RAMP.1 + dy * 1_000, RAMP.2),
+            )
+        })
+    });
+    assert!(beside, "rig #{} stands at the ramp", tv.0);
 }
 
 // ---------------------------------------------------------------------------

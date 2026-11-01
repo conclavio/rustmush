@@ -1097,9 +1097,11 @@ ignored test to be run by a CI job, and an ignored test failing at its stop coul
   brings home.
 - **G-6, the hits.** "One escort mission-killed by an engine hit and one raider by a
   control-section hit" needs fixture-tuned sections; no player command aims at a section.
+  *(Passed by the story's finish with seeded sections, §17.)*
 - **G-7, the escort's map.** Q-CF-48's "the escort sees the worked block on its map" is the chart
   of the person in its seat (CF.4). A hired NPC holds no chart, so an NPC escort's map shows no
-  worked block.
+  worked block. *(Built, §17: a field party's members see its principals' readings on the
+  field map, for display only.)*
 
 **Who owns them** (the owner, 2026-10-31): G-1, G-2 with its rebless, and G-3 are cut **CF.6b**,
 its own cut. G-4 is a later **bot cut**. G-5 stays CF.6's deferral. G-6 and G-7 are left for the
@@ -1466,7 +1468,8 @@ had to decide where the rulings left it open, for the owner to object to:
     `+tv/1/permissions go` asks the loan and `+tv/1/permissions` reads it back. The escort's
     Dray-P carries the armed rig alone. The prospector's own needles hold: the escort's preview is
     `LEASE_PREVIEW`, which ends `+tv/lease go signs it.` even for the escort (signing it takes
-    `+tv/lease escort go`, the game's sentence names the wrong command; a finding below).
+    `+tv/lease escort go`, the game's sentence names the wrong command; a finding below). *(§17:
+    the sentence now names `+tv/lease escort go`, and the needle reads the lane's own lease line.)*
   - **Aboard and down.** The escort walks to the bay and boards the cab (`+tv/1 board`). The
     printed `+focus` itself gives control of a lessee's own cab, so no `@station/handoff` follows
     (the handoff then fails, `That did not go through.`). It launches (`+tv/1 launch go`) and
@@ -1537,12 +1540,151 @@ Not built here, each for a reason:
 - **A staff post-image command typed while a bot works an IC site may answer late or never.** In
   one run God's `@field/raiders/launch` had not answered a minute later. At teardown its legacy
   batch was still queued behind the store writer, which had logged nothing until then.
+  *(Not a bug, §17: the harness's `pump` returns at the first newline, so the probe never waited;
+  measured properly, the three staff lines answer in under 100 ms while the bots work the site.)*
 - **Two hulls on one pad launch their rigs onto one cell.** A second rig launched down the ramp
   lands on the first's cell. The surface allows it, and the field then refuses to open at all
   ("occupancy is one unit per cell"). This harness never sees it now, because the escort drives
   off the ramp. A player who does not drive off it stalls every field on that site.
+  *(Fixed, §17: a launch onto a taken ramp cell stands the rig one cell from it.)*
 - **The escort's lease preview names the wrong command.** `+tv/lease escort` prints `LEASE_PREVIEW`,
   whose tail is `+tv/lease go signs it.`, and that command leases a prospector.
+  *(Fixed, §17: the tail names `+tv/lease escort go`.)*
 - **Line text gives no relation.** A field of several parties gives a line-mode player no way to
   tell a friend's party from a raider's. The captain here relies on its escort's page, and the
   escort on its captain's page and a `LOCK`'s `(FRIENDLY)`.
+
+## 17. CF.7 finished (the whole field story at 256 a side)
+
+Built 2026-11-01 on `main` after the bot cut (§16). CF.7's story
+(`tacsim/tests/shard_1/field_story.rs`, `cf7_the_field_story`) now runs the whole of Q-CF-47 at
+256 a side, through the production command paths as every CF gate does. The 512 run waits on
+doc 30's WG.6 and is not part of this cut. What the cut had to decide where the rulings left it
+open, for the owner to object to:
+
+- **G-7, the escort's map (built).** A chart stays per person (doc 20 §5), and nothing writes
+  anyone's row. While a field runs on a site, a viewer who sits in one of its units sees, on that
+  site's map, the readings of every principal of that unit's party, beside their own. The
+  principals are Q-CF-28's: the party's leader, the pilots who sat in its units, and its rigs'
+  operators (`field::known::chart_mates`, `party_principals`). This is display only: it is the
+  campaign layer of `site.map` and of the cockpit frame's `campaign` block, and the viewer's own
+  reading of a pocket or a field wins. When the field closes, the party's readings leave the map.
+  A Friend party (Q-CF-5) is not included. On a DT roster the escort and the miner are one party,
+  so a player escort who never sounded sees the roster's worked blocks. In the story the escort
+  hull is the miner's leased rig, so the miner is its operator and the escort pilot sees the
+  miner's sounded pocket. The bystander, another captain, does not.
+- **G-6, the hits (passed with seeded sections).** No command aims at a section, so a staff hand
+  seeds both hulls before the field opens. The rounds that land are the real damage pipeline's.
+  - **The escort's engine.** Its hull's rear plate is at its floor and its engine one point above
+    destroyed, so a round struck through the rear plate (the engine's `struck_through`) breaks
+    it. The escort faces away from the raider.
+  - **The raider's control section.** The raider's second hull is rebuilt as a biped
+    (`@unit/remove`, `@unit/create`, CF-5b's idiom), the one shipped design with a control
+    section (`head`). Its head's plates are at their floor with one point of internals. Every
+    other section's internals are at their floor without the `destroyed` condition, so a round
+    that finds them breaks nothing (damage's transition rule, `fresh`). Its legs are recorded
+    `destroyed`, so it stands where it was put, and its magazines are empty. Whichever round
+    first draws the head is the control-section hit.
+  - **The raider's fire.** The tank's main gun is empty, so it fires its coaxial alone. That
+    keeps a hull round from reaching the escort's 200 internals before an engine round does.
+  - **What stays random.** The arena's facet draw still picks the burst that lands: 5 in 100 for
+    the head and 30 in 100 for the engine from the rear. The seeding fixes the outcome, not the
+    timing, and the story fires until the section falls. It took one burst for the engine and
+    about thirty for the head in the runs here.
+- **Two hulls on one pad (fixed).** Before, a launch put its rig on the pad's one ramp cell
+  whether or not another unit stood there, and admission then refused the whole field.
+  `field::carrier::launch_pose` now keeps the ramp pose while its cell is free. When it is taken,
+  the rig goes to the first cell one cell from the ramp, row-major, that no other unit stands in
+  and the rig can stand on. The pose moves by exactly one cell, so every "beside the ramp" test
+  still reads it as at the ramp: a launch's finish, a DT flight's `at_ramp`, the recover, CF.5's
+  exit. Both writers use it: the surface launch, including a scan or a sounding from the bay, and
+  a DT flight's departure. If no neighbour is free, the ramp pose stands as before. Gated by
+  `cf7_two_hulls_on_one_pad_launch_beside_each_other_and_the_field_opens`, and by the story's own
+  rig 2.
+- **The escort's lease preview (fixed).** `LEASE_PREVIEW`'s tail is now `{go} signs it.`, where
+  `{go}` is `tv::lease_go`: `+tv/lease go`, or `+tv/lease escort go` for a design leased by its
+  word. The prospector's sentence is unchanged. The bot's needle is now
+  `lines::lease_previewed(<the lane's own lease line>)`, and its contract pin builds both tails.
+- **The late staff command (not a bug).** Investigated on conclav.dev with per-iteration
+  world-loop tracing, against a copy of the G-4 harness with nothing seeded at boot.
+  - **The world answers.** Typed through `Client::answer`, all three God lines answered while the
+    bots enrolled and while they worked Ahuna Flank: `@field/raiders`, then `/launch`, then the
+    list, in 9–10 ms, 68–91 ms and 0–1 ms.
+  - **The harness measured it wrong.** The original probe used `Client::pump(timeout)`, which
+    returns at the first newline (the line's own echo) rather than waiting out its timeout. So
+    "a minute later" was about 50 ms.
+  - **The "queued behind the store writer" line** was `flush_dirty`'s
+    `store writer gone; batch dropped (teardown)`: God's line reached the world after the writer
+    had already exited at teardown.
+  - **Statically**, staged K3 work cannot shut out legacy dirty work
+    (`Engine::stage_authoritative_action` refuses while the world is dirty). A typed line meeting
+    a pending commit is deferred and, past 250 ms, refused `CommitTimedOut` in words the player
+    sees, never silently.
+  - **Two latent world-task items** were noted but not observed and not the cause, each for its
+    own look: lines queued behind a held lifecycle slot wait silently, and `Wake::DecisionResult`
+    is not gated on a pending commit.
+
+  §16's finding is retracted. Seeding the raider at boot in the G-4 harness stays, and live
+  seeding works too.
+
+**The story's steps, in Q-CF-47's order**:
+
+1. **The ground.** At Ahuna Flank the miner leases a prospector and the escort line tank. A staff
+   `@econ/pay` moves 7,000cr from the bystander's captain first, since a new captain's stake
+   covers one or the other. The miner launches both: rig 2 lands one cell from rig 1 on the ramp.
+   The prospector is scanned, sounded and set to core an unread pocket (`+tv/1 mine go`). A
+   player escort flies the line tank. A hired NPC flies a fixture hull on doctrine. A bystander
+   rig from another captain mines the next block.
+2. **The raider.** It launches from its fixture carrier (`@field/raiders/launch`). Each of its
+   hulls is a new row of the miner's presence picture before it declares.
+3. **Promotion.** It declares on the bystander (`+field/mark NW=hostile`). The site promotes with
+   everyone admitted at their poses: both carriers, all four rigs and hulls, the barge and both
+   raiders. The raider's leader clears its standing marks on everyone but the bystander.
+4. **One picture.** The miner's quarry screen holds the raiders. The escort's cockpit carries
+   every reading of the miner's that the bystander's does not (G-7).
+5. **The bystander.** A raider fires on it, and its own frame holds the raider's party hostile and
+   no other party.
+6. **The fight and the hits.** The leader turns on the escort and the escort's pilot marks the
+   raider Hostile. The raider's coaxial breaks the escort's engine through its rear plate, and
+   the escort's frame reads `immobile`, not `wreck`. The leader then holds the escort Friendly.
+   The escort's coaxial works on the walker until its head goes: the control section, and a
+   wreck. The miners never fire.
+7. **Withdrawal and demotion.** `@field/raiders/withdraw` takes the tank home up its ramp, and
+   the open promotion names its exit. The field demotes once the escort's pilot stands down
+   (below).
+8. **The fill plan.** The miner's `+tv/1 mine go` runs again.
+9. **The site record.** The escort is a `casualty` and the walker a `wreck`, each where it fell.
+10. **Restart.** Both are still there after the reboot.
+11. **Departure.** `+ship/lift ceres` is refused for the units out. With `leave=` naming them it
+    files, and the voyage records the casualty left behind.
+12. **The second visit.** Another captain sails in, and by then the miner's carrier has lifted.
+    Both units are where they fell.
+13. **The second field.** The raider launches again and declares on the escort's hull. Field 2
+    admits the wreck, the casualty and the tank. The wreck-as-cover clause is pinned (G-8).
+
+**Stand-ins and pinned gaps**:
+
+- **The escort's delivered orders (stand-in).** tacsim's world harness lands no DT activation,
+  for the same reason it cannot land CF.6c's operational loan. One escort hull is therefore flown
+  by a player's own cockpit commands, and the other by a hired NPC on doctrine. The delivered
+  orders an escort fights under are proven by CF.6's transport gate and CF-5b's open-ground
+  ENGAGE, in the split-boundary harness.
+- **G-8, a wreck as cover (pinned at its gap).** "A second field uses the wreck as cover" asks
+  that a wreck hide what stands behind it. The kernel's fire and sensor traces read the terrain
+  alone. A wreck occupies its cell as an obstacle to movement (doc 16 §3.4) but blocks no line,
+  and only the site record's objects are laid as walls (CF.4). The story stands the wreck on the
+  row between the escort and the raider, and asserts the escort's sensors still hold the raider
+  behind it, so the assert flips when a wreck gives cover. Laying a wreck's cell as cover while
+  its unit stands in it needs a kernel rule (a unit standing in a cell that blocks lines), and
+  that rule reaches the line-of-sight index and the hashes. It is too large for this cut.
+- **The unarmed barge holds a field engaged (§15's known gap, met here).** An armed unit holding
+  a live Hostile contact within its reach keeps the tempo engaged
+  (`Arena::hostile_in_weapons_range`). The escort, fired on, holds the raider's party Hostile, so
+  the barge beside it keeps the field open after the tank has gone home. In the story the
+  escort's pilot stands down with a Friendly mark on the raider's party, which outweighs the fire
+  it took (CF.0). A player has to do the same today. Ending the raider's barge once its hulls
+  are home is the gap's own cut.
+
+**Defaults taken (provisional):** the G-7 rule's reach (party principals, not Friends); the
+launch spread's order (ring 1 row-major, the ramp pose kept when free); the lease preview's
+`{go}`. The story's 7,000cr transfer is a fixture.

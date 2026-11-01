@@ -144,8 +144,20 @@ pub const WRITE_OFF_BAR_IC_DAYS: i64 = 28;
 pub const WRITE_OFF_RULE: &str = "written off";
 /// Short of funds: `{total}`, `{fee}`, `{deposit}`, `{available}`.
 pub const LEASE_FUNDS: &str = "The lease needs {total} available: {fee} for the term and {deposit} held as a deposit; you have {available}.";
-/// The take's preview: `{mark}`, `{name}`, `{n}`, `{fee}`, `{days}`, `{deposit}`.
-pub const LEASE_PREVIEW: &str = "Occator leases you {mark} into the {name}'s bay as rig {n}: {fee} now for {days} IC days, and {deposit} held on your account as a deposit. +tv/lease go signs it.";
+/// The take's preview: `{mark}`, `{name}`, `{n}`, `{fee}`, `{days}`, `{deposit}`, and `{go}` the
+/// command that signs it ([`lease_go`]: `+tv/lease go`, or `+tv/lease escort go` for a design
+/// leased by its word, doc 32 §17).
+pub const LEASE_PREVIEW: &str = "Occator leases you {mark} into the {name}'s bay as rig {n}: {fee} now for {days} IC days, and {deposit} held on your account as a deposit. {go} signs it.";
+
+/// **The command that signs a lease preview** (doc 32 §17): `+tv/lease go` for the lane's own
+/// design, `+tv/lease <word> go` for a design leased by its word (doc 32 cut CF.6c).
+#[must_use]
+pub fn lease_go(design: Option<&str>) -> String {
+    match design {
+        Some(word) => format!("+tv/lease {} go", word.to_ascii_lowercase()),
+        None => "+tv/lease go".to_owned(),
+    }
+}
 /// The take: `{mark}`, `{name}`, `{n}`, `{fee}`, `{days}`, `{deposit}`.
 pub const LEASED: &str = "Occator Water & Propellant leases you {mark} into the {name}'s bay as rig {n}: {fee} paid for {days} IC days, {deposit} held as a deposit.";
 /// A return with two rigs leased and no slot named.
@@ -3742,7 +3754,7 @@ fn take(
             let line = settle_line(ctx, step, now);
             say(ctx, line);
         }
-        let line = take_line(ctx, LEASE_PREVIEW, &plan);
+        let line = take_line(ctx, LEASE_PREVIEW, &plan).replace("{go}", &lease_go(design));
         say(ctx, line);
         return Ok(());
     }

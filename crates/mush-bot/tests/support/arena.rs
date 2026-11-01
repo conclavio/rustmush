@@ -541,7 +541,10 @@ impl Client {
         self.seen.get(from..).unwrap_or("").to_owned()
     }
 
-    /// Wait up to `timeout` for anything more, and keep it.
+    /// Wait up to `timeout` for anything more, and keep it. It returns at the **first** new line
+    /// (usually the echo of the line just sent), not after `timeout`: a probe that wants a
+    /// command's answer uses `answer`, `say` or `expect` (doc 32 §17, the late staff command that
+    /// was this method's misreading).
     pub async fn pump(&mut self, timeout: Duration) {
         let from = self.seen.len();
         let _ = self.until(from, &["\n"], timeout).await;

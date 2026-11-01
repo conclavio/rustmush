@@ -229,7 +229,31 @@ pub(crate) fn campaign_layer(
         .map(|(pocket, glyph)| (pocket_cell(pocket), glyph))
         .collect();
     let row = reads.chart(actor, inputs.entry).ok().flatten();
-    let (sounded, scanned) = viewer_readings(inputs.site, row.as_ref());
+    let (mut sounded, mut scanned) = viewer_readings(inputs.site, row.as_ref());
+    // Doc 32 §17 (G-7): inside a field, the readings of every principal of the viewer's party
+    // join the viewer's own on the map, for display only; the viewer's own reading of a pocket or
+    // a field wins, and a mate's never writes the viewer's chart.
+    let mates = crate::field::known::chart_mates(w, inputs.entry, actor, |unit| {
+        reads
+            .rig(unit)
+            .ok()
+            .flatten()
+            .and_then(|record| record.excursion.map(|out| out.operator))
+    });
+    for mate in mates {
+        let row = reads.chart(mate, inputs.entry).ok().flatten();
+        let (theirs, fields) = viewer_readings(inputs.site, row.as_ref());
+        for reading in theirs {
+            if !sounded.iter().any(|own| own.pocket == reading.pocket) {
+                sounded.push(reading);
+            }
+        }
+        for reading in fields {
+            if !scanned.iter().any(|own| own.field == reading.field) {
+                scanned.push(reading);
+            }
+        }
+    }
     let pad = hull_on_pad(w, inputs.entry).then_some(PAD_CELL);
     let seen = seen_from_heard(
         inputs.flights,

@@ -976,6 +976,7 @@ fn leased_line(template: &str, mark: &str, name: &str, n: u8) -> String {
         .replace("{fee}", FEE)
         .replace("{days}", "168")
         .replace("{deposit}", DEPOSIT)
+        .replace("{go}", "+tv/lease go")
 }
 
 /// A rig's hopper vault.

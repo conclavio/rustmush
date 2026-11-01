@@ -48,14 +48,13 @@ use serde::{Deserialize, Serialize};
 use super::lines::{
     self, AGREED, ALL_BARREN, ARRIVED, ASHORE, BACK_IN_BAY, BOARDED, CLAIM_CAP, CLAIM_FUNDS,
     CLAIMED, CLEARANCE, COLD, DRILLING, DRIVE_HERE, GOODS_LEAVING, GOODS_WAIT, LAUNCHED,
-    LEARN_NOTHING, LEASE_NO_LICENCE, LEASE_PREVIEWED, LEASE_SHORT, LEASE_SIGNED, LEGEND_HEAD,
-    LICENCE_IN_FORCE, LICENCE_NONE, LICENCE_PREVIEWED, LOCKED, Listing, NO_HOLD_ROOM, NO_ORE,
-    NO_ROOM, NOT_OPEN, PLAN_HEAD, PlanFigures, Pocket, RECOVER_PREVIEWED, REFITTED, RIG_ONE,
-    ROOM_ARRIVALS, ROOM_CHANDLERY, ROOM_CONCOURSE, ROOM_EXCHANGE, ROOM_GALLERY, ROOM_LOBBY,
-    ROOM_REGISTRY, SCAN_PREVIEWED, SCANNED, SELL_PREVIEW, SITE_CLOSED, SOUND_STARTED, SOUNDED,
-    STAKE_COMMONS, STAKE_COOLING, STAKE_FILED, STAKE_IN_BAY, STAKE_LAPSING, STAKE_NO_EVIDENCE,
-    STAKE_RECORDED, STAKE_YOURS, UNLOADED, UNLOADED_EMPTY, UNLOADED_NONE, WORKED_OUT, WOULD_MINE,
-    has, normalise,
+    LEARN_NOTHING, LEASE_NO_LICENCE, LEASE_SHORT, LEASE_SIGNED, LEGEND_HEAD, LICENCE_IN_FORCE,
+    LICENCE_NONE, LICENCE_PREVIEWED, LOCKED, Listing, NO_HOLD_ROOM, NO_ORE, NO_ROOM, NOT_OPEN,
+    PLAN_HEAD, PlanFigures, Pocket, RECOVER_PREVIEWED, REFITTED, RIG_ONE, ROOM_ARRIVALS,
+    ROOM_CHANDLERY, ROOM_CONCOURSE, ROOM_EXCHANGE, ROOM_GALLERY, ROOM_LOBBY, ROOM_REGISTRY,
+    SCAN_PREVIEWED, SCANNED, SELL_PREVIEW, SITE_CLOSED, SOUND_STARTED, SOUNDED, STAKE_COMMONS,
+    STAKE_COOLING, STAKE_FILED, STAKE_IN_BAY, STAKE_LAPSING, STAKE_NO_EVIDENCE, STAKE_RECORDED,
+    STAKE_YOURS, UNLOADED, UNLOADED_EMPTY, UNLOADED_NONE, WORKED_OUT, WOULD_MINE, has, normalise,
 };
 use super::report::{BeatSpan, HeardAt, MilestoneAt, Report, SoundingSpan};
 use super::{Family, Settings, Site};
@@ -909,7 +908,7 @@ impl Lane {
                 if has(&text, LEASE_SHORT) {
                     Verdict::Fail(short_lease())
                 } else {
-                    done_if(has(&text, LEASE_PREVIEWED))
+                    done_if(has(&text, &lines::lease_previewed(self.lease_line(true))))
                 }
             }
             Kind::LeaseGo => {
@@ -2186,7 +2185,9 @@ mod tests {
                 "+licence" => lines(&[licence::LICENCE_IN_FORCE
                     .replace("{issuer}", "Freeport Registry")
                     .replace("{account}", "3")]),
-                "+tv/lease" => lines(&[n1(tv::LEASE_PREVIEW).replace("{name}", HULL)]),
+                "+tv/lease" => lines(&[n1(tv::LEASE_PREVIEW)
+                    .replace("{name}", HULL)
+                    .replace("{go}", &tv::lease_go(None))]),
                 "+tv/lease go" => lines(&[n1(tv::LEASED).replace("{name}", HULL)]),
                 "+tv" => lines(&[n1(tv::RIG_LINE).replace("{where}", "in the bay")]),
                 "+chart" => lines(&[
