@@ -231,14 +231,18 @@ port network (`+helm/autopilot`) from open space.
 When an interdiction, a waypoint picket, or a contested asteroid cluster pulls a
 hull into a local space bubble (`+helm/enter`), simulation runs on 1:1
 wall-clock time (`+tac/step`). Ships manoeuvre with thrust vectors (`+helm/burn`),
-attitude trim (`+helm/roll`), reaction-mass budgets, emissions posture, thermal
-bloom, unguided railgun slugs (`+tac/rail`), high-G guided torpedoes (`+tac/torp`),
+attitude trim (`+helm/roll`), reaction-mass budgets, emissions posture (`+tac/emcon`),
+light-lagged thermal/radar sensor scans (`+tac/scan`), active ECM decoy canisters
+(`+tac/decoy`), unguided railgun slugs (`+tac/rail`), high-G guided torpedoes (`+tac/torp`),
 point-defense bursts (`+tac/pdc`), and distance-attenuated lasers (`+tac/laser`,
-`+tac/beam`); a Dray-P matched within 5 m/s of an orbital rock (`+helm/match`)
-can ping deposits (`+mine/ping`), stake or contest Freeport claims (`+mine/licence`,
-`+mine/stake`, `+mine/contest`), launch up to four sealed-mind collector drones
-(`+mine/drones`), or cut ore directly into its ore bay (`+mine/laser`) while
-watching its infrared signature across the cluster.
+`+tac/beam`); multicrew bridges bind individual station seats (`+helm/station`),
+flush open-cycle radiator coolant (`+helm/coolant`), repair subsystem critical hits
+(`+helm/repair`), and cut main thrust to ballistic drift while keeping point-defense
+armed if all crew go linkdead (`+helm/linkdead`). A Dray-P matched within 5 m/s of
+an orbital rock (`+helm/match`) can ping deposits (`+mine/ping`), stake or contest
+Freeport claims (`+mine/licence`, `+mine/stake`, `+mine/contest`), launch up to four
+sealed-mind collector drones (`+mine/drones`), or cut ore directly into its ore bay
+(`+mine/laser`) while watching its infrared signature across the cluster.
 
 On the bridge, the picture pane (`Alt+v` in the terminal client, or the web view
 tab) switches automatically between the three-dimensional holo-tank plot, the

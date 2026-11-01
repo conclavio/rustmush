@@ -34,6 +34,9 @@ use super::docking::{
 use super::flight::SpaceFlightRecord;
 use super::mining::{AsteroidClusterField, OreHoldState};
 use super::picket::{HAULER_SHIP_ID, HaulerManifest, KirkwoodPicketEncounter, PicketPhase};
+use super::stations::{
+    BridgeSeat, ShipCrewRoster, compute_ir_signature_kw, project_light_lag_contact,
+};
 use super::weapons::{LaserMode, LaserMount};
 
 /// The helm primary verb.
@@ -51,7 +54,7 @@ pub const SPACE_COCKPIT_FEED: &str = "space.cockpit";
 pub const SPACE_DOCKING_FEED: &str = "space.docking";
 
 /// Switches for `+helm`.
-pub const HELM_SWITCHES: [&str; 10] = [
+pub const HELM_SWITCHES: [&str; 14] = [
     "enter",
     "burn",
     "roll",
@@ -62,10 +65,16 @@ pub const HELM_SWITCHES: [&str; 10] = [
     "autopilot",
     "dock",
     "tow",
+    "station",
+    "coolant",
+    "repair",
+    "linkdead",
 ];
 
 /// Switches for `+tac`.
-pub const TAC_SWITCHES: [&str; 6] = ["pdc", "laser", "torp", "rail", "beam", "step"];
+pub const TAC_SWITCHES: [&str; 9] = [
+    "pdc", "laser", "torp", "rail", "beam", "step", "emcon", "decoy", "scan",
+];
 
 /// Switches for `+mine`.
 pub const MINE_SWITCHES: [&str; 6] = ["ping", "licence", "stake", "contest", "laser", "drones"];
@@ -82,7 +91,11 @@ pub const HELM_HELP: &str = "\
 +helm/expedition <body_id>               burn to an outer-system body (saturn, uranus, neptune, triton) and project the bridge canopy.\n\
 +helm/autopilot <port_body>              solve a from-point two-burn flip-and-burn passage back onto the port network.\n\
 +helm/dock <port|derelict> <target_id>   enter or step an out-of-time-loop 6-DOF docking session (or +helm/dock trim|pulse|coast|abort).\n\
-+helm/tow                                rig a salvage tow line (doc 27a 2x tonnage cap, 48 h contest) to a clamped derelict.";
++helm/tow                                rig a salvage tow line (doc 27a 2x tonnage cap, 48 h contest) to a clamped derelict.\n\
++helm/station [<ship_id>] <seat>         bind a multicrew bridge seat (command, helm, tactical, ew, engineering, flight_ops).\n\
++helm/coolant                            emergency open-cycle coolant blowdown (250 kg propellant -> -450 permille hull heat).\n\
++helm/repair <radiator|drive|pdc|sensor> damage-control repair of a subsystem critical hit.\n\
++helm/linkdead <on|off>                  toggle linkdead ballistic-drift safety posture (D-35-7) for your bridge seat.";
 
 /// `+tac` help text.
 pub const TAC_HELP: &str = "\
@@ -92,7 +105,10 @@ pub const TAC_HELP: &str = "\
 +tac/torp <target_id> [<salvo>]          launch a high-G guided torpedo salvo inheriting launcher velocity.\n\
 +tac/rail <target_id>                    fire an unguided high-velocity tungsten railgun slug along the target lead vector.\n\
 +tac/beam <target_id>                    fire offensive lasers with inverse-square diffraction falloff.\n\
-+tac/step [<wall_ms>]                    advance the engaged 1:1 wall-time space bubble (default 1000 ms).";
++tac/step [<wall_ms>]                    advance the engaged 1:1 wall-time space bubble (default 1000 ms).\n\
++tac/emcon <ghost|passive|std|combat>    set emissions control posture (D-35-9, D-35-10).\n\
++tac/decoy                               deploy an active thermal/radar ECM decoy canister against incoming torpedoes.\n\
++tac/scan [<target_id>]                  project light-lagged IR/radar contacts (distance, light-lag ms, kW bloom, SNR dB).";
 
 /// `+mine` help text.
 pub const MINE_HELP: &str = "\
@@ -139,6 +155,8 @@ pub struct SpaceBook {
     pub ship_context: BTreeMap<String, ActiveSpaceContext>,
     /// Explicit actor -> `ship_id` binding for actors operating a space hull.
     pub actor_ships: BTreeMap<ObjId, String>,
+    /// Multicrew bridge seat rosters & linkdead state keyed by `ship_id` (`SF.15`, `D-35-7`, `D-35-9`).
+    pub crew_rosters: BTreeMap<String, ShipCrewRoster>,
     /// Bound [`mush_tactics::TacticalUnit`] snapshots keyed by `ship_id` (`SF.10`, `D-35-1`).
     pub units: BTreeMap<String, mush_tactics::TacticalUnit>,
     /// Latest [`crate::field_ops::FieldUnitAssessment`] keyed by `ship_id` (`SF.10`).
@@ -160,6 +178,7 @@ impl Default for SpaceBook {
             tows: BTreeMap::new(),
             ship_context: BTreeMap::new(),
             actor_ships: BTreeMap::new(),
+            crew_rosters: BTreeMap::new(),
             units: BTreeMap::new(),
             unit_assessments: BTreeMap::new(),
             salvage_book: crate::field_ops::SalvageClaimBook::new(),
@@ -267,6 +286,59 @@ impl SpaceBook {
             return format!("hull.{}", helm.hull.0);
         }
         format!("ship.{}", actor.0)
+    }
+
+    /// Bind `actor` to `seat` on `ship_id` (`SF.15`, `D-35-9`).
+    pub fn bind_actor_station(&mut self, actor: ObjId, ship_id: &str, seat: BridgeSeat) {
+        self.actor_ships.insert(actor, ship_id.to_owned());
+        let roster = self.crew_rosters.entry(ship_id.to_owned()).or_default();
+        roster.assign_seat(actor, seat);
+        let roster_clone = roster.clone();
+        if let Some((bubble, resolved_id)) = self.bubble_for_ship_mut(ship_id)
+            && let Some(ship) = bubble.ships.get_mut(&resolved_id)
+        {
+            roster_clone.sync_ship_linkdead_state(ship);
+        }
+    }
+
+    /// Update `actor`'s linkdead state on `ship_id` (`SF.15`, `D-35-7`), cutting main thrust
+    /// to ballistic drift while keeping `pdc_auto` armed if all crew are linkdead.
+    pub fn set_actor_linkdead(&mut self, actor: ObjId, ship_id: &str, is_linkdead: bool) -> bool {
+        self.actor_ships
+            .entry(actor)
+            .or_insert_with(|| ship_id.to_owned());
+        let roster = self.crew_rosters.entry(ship_id.to_owned()).or_default();
+        let all_ld = roster.set_linkdead(actor, is_linkdead);
+        let roster_clone = roster.clone();
+        if let Some((bubble, resolved_id)) = self.bubble_for_ship_mut(ship_id)
+            && let Some(ship) = bubble.ships.get_mut(&resolved_id)
+        {
+            roster_clone.sync_ship_linkdead_state(ship);
+        }
+        all_ld
+    }
+
+    /// Verify that `actor`'s assigned [`BridgeSeat`] on `ship_id` permits `(verb, switch)` (`D-35-9`).
+    pub fn check_seat_permission(
+        &self,
+        actor: ObjId,
+        ship_id: &str,
+        verb: &str,
+        switch: Option<&str>,
+    ) -> Result<BridgeSeat, CmdError> {
+        let seat = self
+            .crew_rosters
+            .get(ship_id)
+            .map_or(BridgeSeat::Command, |r| r.seat_for(actor));
+        if seat.permits(verb, switch) {
+            Ok(seat)
+        } else {
+            let sw = switch.unwrap_or("");
+            Err(CmdError::msg(format!(
+                "Bridge station '{}' is not authorized for {verb}/{sw} (requires appropriate station or 'command' seat).",
+                seat.id_str()
+            )))
+        }
     }
 
     /// Look up the [`LocalSpaceBubble`] containing `ship_id` (whether standalone, a cluster, or a picket).
@@ -465,38 +537,56 @@ fn build_docking_keyframe(w: &World, actor: ObjId) -> Value {
 }
 
 fn push_actor_space_feeds(ctx: &mut Ctx<'_>, actor: ObjId) {
+    let mut recipients = vec![actor];
+    if let Some(book) = ctx.w.module_state::<SpaceBook>() {
+        let ship_id = book.ship_id_for_actor(ctx.w, actor);
+        if let Some(roster) = book.crew_rosters.get(&ship_id) {
+            for &crew_actor in roster.seats.keys() {
+                if crew_actor != actor && !roster.linkdead.contains(&crew_actor) {
+                    recipients.push(crew_actor);
+                }
+            }
+        }
+    }
     let holo = build_holotank_keyframe(ctx.w, actor);
-    ctx.out.push(
-        mush_core::Audience::Actor(actor),
-        OutputEvent::Panel {
-            feed: SmolStr::new_static(SPACE_HOLOTANK_FEED),
-            kind: PanelFrameKind::Keyframe,
-            data: holo,
-        },
-    );
     let cockpit = build_cockpit_keyframe(ctx.w, actor);
-    ctx.out.push(
-        mush_core::Audience::Actor(actor),
-        OutputEvent::Panel {
-            feed: SmolStr::new_static(SPACE_COCKPIT_FEED),
-            kind: PanelFrameKind::Keyframe,
-            data: cockpit,
-        },
-    );
     let has_docking = ctx.w.module_state::<SpaceBook>().is_some_and(|b| {
         let ship_id = b.ship_id_for_actor(ctx.w, actor);
         b.dockings.contains_key(&ship_id)
     });
-    if has_docking {
-        let dock = build_docking_keyframe(ctx.w, actor);
+    let dock_opt = if has_docking {
+        Some(build_docking_keyframe(ctx.w, actor))
+    } else {
+        None
+    };
+
+    for recipient in recipients {
         ctx.out.push(
-            mush_core::Audience::Actor(actor),
+            mush_core::Audience::Actor(recipient),
             OutputEvent::Panel {
-                feed: SmolStr::new_static(SPACE_DOCKING_FEED),
+                feed: SmolStr::new_static(SPACE_HOLOTANK_FEED),
                 kind: PanelFrameKind::Keyframe,
-                data: dock,
+                data: holo.clone(),
             },
         );
+        ctx.out.push(
+            mush_core::Audience::Actor(recipient),
+            OutputEvent::Panel {
+                feed: SmolStr::new_static(SPACE_COCKPIT_FEED),
+                kind: PanelFrameKind::Keyframe,
+                data: cockpit.clone(),
+            },
+        );
+        if let Some(ref dock) = dock_opt {
+            ctx.out.push(
+                mush_core::Audience::Actor(recipient),
+                OutputEvent::Panel {
+                    feed: SmolStr::new_static(SPACE_DOCKING_FEED),
+                    kind: PanelFrameKind::Keyframe,
+                    data: dock.clone(),
+                },
+            );
+        }
     }
 }
 
@@ -622,6 +712,10 @@ fn helm_cmd(ctx: &mut Ctx<'_>) -> Result<(), CmdError> {
         .module_state::<SpaceBook>()
         .map(|b| b.ship_id_for_actor(ctx.w, actor))
         .unwrap_or_else(|| format!("ship.{}", actor.0));
+
+    if let Some(book) = ctx.w.module_state::<SpaceBook>() {
+        book.check_seat_permission(actor, &ship_id, HELM_VERB, switch)?;
+    }
 
     match switch {
         None => {
@@ -1024,6 +1118,96 @@ fn helm_cmd(ctx: &mut Ctx<'_>) -> Result<(), CmdError> {
             push_actor_space_feeds(ctx, actor);
             Ok(())
         }
+        Some("station") => {
+            let parts: Vec<&str> = raw.split_whitespace().collect();
+            let (target_ship, seat_raw) = match parts.as_slice() {
+                [seat_str] => (ship_id.clone(), *seat_str),
+                [sid, seat_str, ..] => ((*sid).to_owned(), *seat_str),
+                [] => {
+                    return Err(CmdError::msg(
+                        "Usage: +helm/station [<ship_id>] <command|helm|tactical|ew|engineering|flight_ops>",
+                    ));
+                }
+            };
+            let seat = BridgeSeat::parse(seat_raw).ok_or_else(|| {
+                CmdError::msg(
+                    "Invalid bridge station (expected command, helm, tactical, ew, engineering, or flight_ops).",
+                )
+            })?;
+            let book = ctx
+                .w
+                .module_state_mut::<SpaceBook>()
+                .ok_or_else(|| CmdError::msg(NOT_ENABLED))?;
+            book.bind_actor_station(actor, &target_ship, seat);
+            ctx.out.info(
+                actor,
+                format!(
+                    "Seated at bridge station '{}' on spacecraft '{target_ship}'.",
+                    seat.id_str()
+                ),
+            );
+            push_actor_space_feeds(ctx, actor);
+            Ok(())
+        }
+        Some("coolant") => {
+            let book = ctx
+                .w
+                .module_state_mut::<SpaceBook>()
+                .ok_or_else(|| CmdError::msg(NOT_ENABLED))?;
+            let (bubble, resolved_id) = book
+                .bubble_for_ship_mut(&ship_id)
+                .ok_or_else(|| CmdError::msg("No active space bubble."))?;
+            let evt = bubble
+                .blowdown_coolant(&resolved_id)
+                .map_err(CmdError::msg)?;
+            ctx.out.info(
+                actor,
+                format!("Emergency open-cycle coolant blowdown executed: {evt:?}"),
+            );
+            push_actor_space_feeds(ctx, actor);
+            Ok(())
+        }
+        Some("repair") => {
+            let crit = BridgeSeat::parse_crit(&raw)
+                .ok_or_else(|| CmdError::msg("Usage: +helm/repair <radiator|drive|pdc|sensor>"))?;
+            let book = ctx
+                .w
+                .module_state_mut::<SpaceBook>()
+                .ok_or_else(|| CmdError::msg(NOT_ENABLED))?;
+            let (bubble, resolved_id) = book
+                .bubble_for_ship_mut(&ship_id)
+                .ok_or_else(|| CmdError::msg("No active space bubble."))?;
+            let evt = bubble
+                .repair_subsystem_crit(&resolved_id, crit)
+                .map_err(CmdError::msg)?;
+            ctx.out.info(
+                actor,
+                format!("Damage control team repaired subsystem critical hit: {evt:?}"),
+            );
+            push_actor_space_feeds(ctx, actor);
+            Ok(())
+        }
+        Some("linkdead") => {
+            let is_ld = match raw.as_str() {
+                "on" | "true" | "1" => true,
+                "off" | "false" | "0" => false,
+                _ => return Err(CmdError::msg("Usage: +helm/linkdead <on|off>")),
+            };
+            let book = ctx
+                .w
+                .module_state_mut::<SpaceBook>()
+                .ok_or_else(|| CmdError::msg(NOT_ENABLED))?;
+            let all_ld = book.set_actor_linkdead(actor, &ship_id, is_ld);
+            ctx.out.info(
+                actor,
+                format!(
+                    "Crew linkdead flag for actor #{} on '{ship_id}' set to {is_ld} (all_crew_linkdead={all_ld}; D-35-7 ballistic safety).",
+                    actor.0
+                ),
+            );
+            push_actor_space_feeds(ctx, actor);
+            Ok(())
+        }
         Some(other) => Err(CmdError::msg(format!("Unknown +helm switch '{other}'."))),
     }
 }
@@ -1215,6 +1399,10 @@ fn tac_cmd(ctx: &mut Ctx<'_>) -> Result<(), CmdError> {
         .module_state::<SpaceBook>()
         .map(|b| b.ship_id_for_actor(ctx.w, actor))
         .unwrap_or_else(|| format!("ship.{}", actor.0));
+
+    if let Some(book) = ctx.w.module_state::<SpaceBook>() {
+        book.check_seat_permission(actor, &ship_id, TAC_VERB, switch)?;
+    }
 
     match switch {
         None => {
@@ -1408,6 +1596,90 @@ fn tac_cmd(ctx: &mut Ctx<'_>) -> Result<(), CmdError> {
             push_actor_space_feeds(ctx, actor);
             Ok(())
         }
+        Some("emcon") => {
+            let posture = BridgeSeat::parse_emcon(&raw)
+                .ok_or_else(|| CmdError::msg("Usage: +tac/emcon <ghost|passive|std|combat>"))?;
+            let book = ctx
+                .w
+                .module_state_mut::<SpaceBook>()
+                .ok_or_else(|| CmdError::msg(NOT_ENABLED))?;
+            let (bubble, resolved_id) = book
+                .bubble_for_ship_mut(&ship_id)
+                .ok_or_else(|| CmdError::msg("No active space bubble."))?;
+            bubble.set_emcon(&resolved_id, posture);
+            let ir_kw = bubble
+                .ships
+                .get(&resolved_id)
+                .map_or(0, compute_ir_signature_kw);
+            ctx.out.info(
+                actor,
+                format!(
+                    "EMCON posture set to {} ({posture:?}, ir_signature={ir_kw} kW).",
+                    posture.code_str()
+                ),
+            );
+            push_actor_space_feeds(ctx, actor);
+            Ok(())
+        }
+        Some("decoy") => {
+            let book = ctx
+                .w
+                .module_state_mut::<SpaceBook>()
+                .ok_or_else(|| CmdError::msg(NOT_ENABLED))?;
+            let (bubble, resolved_id) = book
+                .bubble_for_ship_mut(&ship_id)
+                .ok_or_else(|| CmdError::msg("No active space bubble."))?;
+            let rem = bubble.launch_decoy(&resolved_id).map_err(CmdError::msg)?;
+            ctx.out.info(
+                actor,
+                format!(
+                    "Launched active thermal/radar ECM decoy canister (15 s bloom window; {rem} canisters remaining)."
+                ),
+            );
+            push_actor_space_feeds(ctx, actor);
+            Ok(())
+        }
+        Some("scan") => {
+            let book = ctx
+                .w
+                .module_state::<SpaceBook>()
+                .ok_or_else(|| CmdError::msg(NOT_ENABLED))?;
+            let (bubble, resolved_id) = book
+                .bubble_for_ship(&ship_id)
+                .ok_or_else(|| CmdError::msg("No active space bubble."))?;
+            let observer = bubble
+                .ships
+                .get(resolved_id)
+                .ok_or_else(|| CmdError::msg("Ship not found in bubble."))?;
+            let mut lines = Vec::new();
+            for (tid, target) in &bubble.ships {
+                if tid == resolved_id {
+                    continue;
+                }
+                if !raw.is_empty() && tid != &raw {
+                    continue;
+                }
+                let contact = project_light_lag_contact(observer, target);
+                lines.push(format!(
+                    "{} ({}): dist={} m, light_lag={} ms, ir={} kW, snr={} dB, detected={}",
+                    contact.target_id,
+                    contact.callsign,
+                    contact.true_distance_m,
+                    contact.light_lag_ms,
+                    contact.ir_signature_kw,
+                    contact.snr_db,
+                    contact.detected
+                ));
+            }
+            if lines.is_empty() {
+                ctx.out.info(actor, "EW Scan: no contacts in bubble.");
+            } else {
+                ctx.out
+                    .info(actor, format!("EW Light-Lag Scan:\n{}", lines.join("\n")));
+            }
+            push_actor_space_feeds(ctx, actor);
+            Ok(())
+        }
         Some(other) => Err(CmdError::msg(format!("Unknown +tac switch '{other}'."))),
     }
 }
@@ -1428,6 +1700,10 @@ fn mine_cmd(ctx: &mut Ctx<'_>) -> Result<(), CmdError> {
         .module_state::<SpaceBook>()
         .map(|b| b.ship_id_for_actor(ctx.w, actor))
         .unwrap_or_else(|| format!("ship.{}", actor.0));
+
+    if let Some(book) = ctx.w.module_state::<SpaceBook>() {
+        book.check_seat_permission(actor, &ship_id, MINE_VERB, switch)?;
+    }
 
     let book = ctx
         .w
