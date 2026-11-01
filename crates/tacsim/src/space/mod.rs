@@ -9,6 +9,7 @@
 //! while keeping zero file overlap with `arena/*`, `field/*`, `surface/*`, and
 //! `detachment/*` (`D-35-1`, `D-35-2`).
 
+pub mod autopilot_bot;
 pub mod bubble;
 pub mod commands;
 pub mod custody;
@@ -18,6 +19,10 @@ pub mod mining;
 pub mod picket;
 pub mod weapons;
 
+pub use autopilot_bot::{
+    CockpitSnapshot, DockingSnapshot, HolotankContact, HolotankSnapshot, HolotankTorpedo,
+    SpaceMissionGoal, SpacePilotDoctrine, compute_6dof_rcs_control,
+};
 pub use bubble::{
     BubbleId, BubbleStepReport, DERELICT_WINDOW_S, EmconPosture, FacetBand, HullStatus,
     LocalSpaceBubble, MAX_SUBSTEP_MS, ShipSectionId, ShipSectionState, SpaceCombatEvent,
@@ -1459,6 +1464,133 @@ mod tests {
         check_eq!(
             settled,
             CustodyTitleStatus::ResolvedTitle { owner: salvager }
+        );
+
+        Ok(())
+    }
+
+    #[test]
+    fn sf11_autonomous_space_pilot_doctrine_completes_stories_1_and_2_from_panel_feeds()
+    -> TestResult {
+        use crate::composition as comp;
+        let cfg = crate::TacsimConfig {
+            enabled: true,
+            ..crate::TacsimConfig::default()
+        };
+        let onboarding = mush_core::OnboardingConfig::default();
+        let game = crate::GameEconomyConfig::default();
+        let (mut mods, inventory) = comp::domain_modules_with_economy(
+            mush_economy::EconomyConfig::default(),
+            mush_atlas::AtlasConfig::default(),
+            &game,
+        );
+        mods.push(comp::npc_module(comp::npc_agent_adapter()));
+        mods.extend(comp::sheet_modules(&onboarding, &game));
+        mods.push(comp::tacsim_module_wired(cfg, true, inventory));
+        let mut tw = mush_testkit::TestWorld::with_modules(mods);
+        let pilot = mush_core::GOD;
+
+        // 1. Story 1: Autonomous `SpacePilotDoctrine` executes Kirkwood 3:1 Customs Picket
+        //    and Belt Raider Ambush purely from `space.holotank` and `space.cockpit` keyframes.
+        let mut bot = SpacePilotDoctrine::new(SpaceMissionGoal::KirkwoodPicketTransit);
+        while !bot.is_goal_complete() {
+            let cmds = bot.decide_next_commands();
+            check!(!cmds.is_empty(), "expected non-empty bot command batch");
+            for cmd in cmds {
+                let events = tw.run(pilot, &cmd);
+                bot.observe_events(&events);
+            }
+        }
+        check!(bot.keyframes_ingested >= 6);
+        let holo1 = bot
+            .latest_holotank
+            .as_ref()
+            .ok_or("missing holotank snapshot after Story 1")?;
+        check!(holo1.has_inspecting_picket());
+        let cockpit1 = bot
+            .latest_cockpit
+            .as_ref()
+            .ok_or("missing cockpit snapshot after Story 1")?;
+        check_eq!(cockpit1.pdc_mode, "AUTO");
+        check_eq!(cockpit1.attitude_deg.2, 90);
+
+        // 2. Story 2 (Part A): Switch autonomous pilot to `ClusterProspectAndSalvage`
+        //    in `pallas_inclined_belt` targeting M-type rock `rock.m_309`.
+        bot.set_goal(SpaceMissionGoal::ClusterProspectAndSalvage {
+            cluster_id: "pallas_inclined_belt".to_owned(),
+            target_rock_id: "rock.m_309".to_owned(),
+        });
+        while !bot.is_goal_complete() {
+            let cmds = bot.decide_next_commands();
+            check!(!cmds.is_empty(), "expected non-empty cluster command batch");
+            for cmd in cmds {
+                let events = tw.run(pilot, &cmd);
+                bot.observe_events(&events);
+            }
+        }
+
+        // Verify the bot disabled `claim_jumper` into a derelict, clamped in 6-DOF (`space.docking`),
+        // and registered the 48-hour salvage tow claim in `SpaceBook.salvage_book`!
+        let dock_snap = bot
+            .latest_docking
+            .as_ref()
+            .ok_or("missing docking snapshot after 6-DOF hard-dock")?;
+        check_eq!(dock_snap.status, "CLAMPED");
+        check_eq!(dock_snap.target_kind, "disabled_derelict");
+
+        // Also verify `compute_6dof_rcs_control` steers a misaligned approach snapshot toward alignment
+        let misaligned = DockingSnapshot {
+            dx_mm: 220,
+            dy_mm: -180,
+            dz_mm: 900,
+            pitch_mdeg: 1_200,
+            yaw_mdeg: -1_100,
+            roll_mdeg: 1_500,
+            vx_mmps: 0,
+            vy_mmps: 0,
+            vz_mmps: 50,
+            dampeners: false,
+            status: "APPROACHING".to_owned(),
+            ..DockingSnapshot::default()
+        };
+        let rcs = compute_6dof_rcs_control(&misaligned);
+        check_eq!(rcs.trans_x, -1);
+        check_eq!(rcs.trans_y, 1);
+        check_eq!(rcs.pitch_trim, -1);
+        check_eq!(rcs.yaw_trim, 1);
+        check_eq!(rcs.roll_trim, -1);
+        check_eq!(rcs.closure_pulse, 1);
+        check!(rcs.toggle_dampeners);
+
+        // 3. Story 2 (Part B): Switch autonomous pilot to `OuterSystemExpedition`
+        //    to decouple, fit drop tanks, fly out to Neptune & Triton, and recouple autopilot!
+        bot.set_goal(SpaceMissionGoal::OuterSystemExpedition {
+            from_body: "ceres".to_owned(),
+            to_body: "mars".to_owned(),
+            expedition_body: "neptune".to_owned(),
+        });
+        while !bot.is_goal_complete() {
+            let cmds = bot.decide_next_commands();
+            check!(
+                !cmds.is_empty(),
+                "expected non-empty expedition command batch"
+            );
+            for cmd in cmds {
+                let events = tw.run(pilot, &cmd);
+                bot.observe_events(&events);
+            }
+        }
+        let cockpit2 = bot
+            .latest_cockpit
+            .as_ref()
+            .ok_or("missing canopy snapshot after Neptune expedition")?;
+        check!(
+            cockpit2.visible_bodies.iter().any(|b| b == "neptune"),
+            "expected Neptune visible on space.cockpit canopy"
+        );
+        check!(
+            cockpit2.visible_bodies.iter().any(|b| b == "triton"),
+            "expected Triton visible on space.cockpit canopy"
         );
 
         Ok(())
