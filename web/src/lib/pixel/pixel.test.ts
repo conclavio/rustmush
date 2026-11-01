@@ -15,12 +15,18 @@ import {
   FEED_MAP,
   FEED_REPLAY,
   FEED_REPLAY_CURSOR,
+  FEED_SPACE_COCKPIT,
+  FEED_SPACE_DOCKING,
+  FEED_SPACE_HOLOTANK,
   KIND_CHART,
   KIND_COCKPIT,
+  KIND_DOCKING,
   KIND_DOLL,
+  KIND_HOLOTANK,
   KIND_ISO25D,
   KIND_OVERHEAD,
   KIND_REPLAY,
+  KIND_SPACE_COCKPIT,
   PIXEL_ABI,
   PixelModule,
 } from "./wasm";
@@ -168,6 +174,80 @@ describe("the picture module", () => {
     const isoHash = m.hash();
     expect(isoHash).toMatch(/^[0-9a-f]{16}$/);
     expect(isoHash).not.toBe(dollHash);
+
+    // Space views (HolotankPicture, SpaceCockpitPicture, DockingPicture — doc 35 cut SF.7)
+    expect(
+      m.feed(
+        FEED_SPACE_HOLOTANK,
+        JSON.stringify({
+          title: "KIRKWOOD PICKET",
+          range_km: 500,
+          contacts: [{ id: "raider", label: "KESTREL", x_km: 120, y_km: -60, z_km: 45, relation: "hostile" }],
+        }),
+      ),
+    ).toBe(true);
+    expect(m.render(640, 480, { offsetMdeg: 0 }, KIND_HOLOTANK)).toBe(true);
+    const holotankHash = m.hash();
+    expect(holotankHash).toMatch(/^[0-9a-f]{16}$/);
+
+    expect(
+      m.feed(
+        FEED_SPACE_COCKPIT,
+        JSON.stringify({
+          callsign: "UNS-HALCYON",
+          yaw_deg: 45,
+          pitch_deg: 5,
+          roll_deg: 0,
+          speed_mps: 4820,
+          delta_v_mps: 18500,
+          heat_permille: 240,
+          hull_pct: 94,
+          pdc_mode: "AUTO",
+          emcon: "STD",
+          bodies: [
+            {
+              id: "neptune",
+              label: "NEPTUNE",
+              bearing_deg: 42,
+              pitch_deg: 6,
+              distance_km: 85000,
+              radius_km: 24622,
+              spin_deg: 30,
+              ring_tilt_deg: 22,
+            },
+          ],
+          contacts: [],
+        }),
+      ),
+    ).toBe(true);
+    expect(m.render(640, 480, { offsetMdeg: 0 }, KIND_SPACE_COCKPIT)).toBe(true);
+    const spaceCockpitHash = m.hash();
+    expect(spaceCockpitHash).not.toBe(holotankHash);
+
+    expect(
+      m.feed(
+        FEED_SPACE_DOCKING,
+        JSON.stringify({
+          target_label: "DERELICT-KESTREL",
+          target_kind: "disabled_derelict",
+          mandatory: true,
+          paused_from_world_tick: true,
+          dx_mm: 60,
+          dy_mm: -40,
+          dz_mm: 3200,
+          pitch_mdeg: 300,
+          yaw_mdeg: -400,
+          roll_mdeg: 500,
+          vx_mmps: 0,
+          vy_mmps: 0,
+          vz_mmps: 420,
+          dampeners: true,
+          status: "ALIGNED-READY",
+        }),
+      ),
+    ).toBe(true);
+    expect(m.render(640, 480, { offsetMdeg: 0 }, KIND_DOCKING)).toBe(true);
+    expect(m.hash()).not.toBe(spaceCockpitHash);
   });
 
   it("draws nothing without a cockpit, and forgets one that is unseated", async () => {

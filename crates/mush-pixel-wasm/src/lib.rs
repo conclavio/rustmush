@@ -79,11 +79,14 @@ use std::collections::HashMap;
 use mush_pixel::Frame;
 use mush_pixel::chart::{ChartPicture, SKY_CHART_FEED};
 use mush_pixel::cockpit::{ARENA_MAP_FEED, COCKPIT_FEED, CockpitPicture};
+use mush_pixel::docking::{DockingPicture, SPACE_DOCKING_FEED};
 use mush_pixel::doll::DollPicture;
+use mush_pixel::holotank::{HolotankPicture, SPACE_HOLOTANK_FEED};
 use mush_pixel::iso25d::Iso25DPicture;
 use mush_pixel::overhead::OverheadPicture;
 use mush_pixel::picture::{Look, Picture};
 use mush_pixel::replay::{REPLAY_CURSOR_FEED, REPLAY_FEED, ReplayPicture};
+use mush_pixel::space_cockpit::{SPACE_COCKPIT_FEED, SpaceCockpitPicture};
 use serde_json::Value;
 
 /// The ABI's version: the caller refuses a module that answers another
@@ -106,6 +109,15 @@ pub const FEED_REPLAY: u32 = 4;
 /// `mp_feed`'s number for `replay.cursor`.
 pub const FEED_REPLAY_CURSOR: u32 = 5;
 
+/// `mp_feed`'s number for `space.holotank` (doc 35 cut SF.7).
+pub const FEED_SPACE_HOLOTANK: u32 = 6;
+
+/// `mp_feed`'s number for `space.cockpit` (doc 35 cut SF.7).
+pub const FEED_SPACE_COCKPIT: u32 = 7;
+
+/// `mp_feed`'s number for `space.docking` (doc 35 cut SF.7).
+pub const FEED_SPACE_DOCKING: u32 = 8;
+
 /// `mp_kind`'s number for the first-person cockpit ([`CockpitPicture`]).
 pub const KIND_COCKPIT: u32 = 1;
 
@@ -124,6 +136,15 @@ pub const KIND_REPLAY: u32 = 5;
 /// `mp_kind`'s number for the cockpit's 2.5D tactical camera ([`Iso25DPicture`]).
 pub const KIND_ISO25D: u32 = 6;
 
+/// `mp_kind`'s number for the 3D Space Holo-Tank ([`HolotankPicture`], doc 35 cut SF.7).
+pub const KIND_HOLOTANK: u32 = 7;
+
+/// `mp_kind`'s number for the First-Person Space Bridge Canopy ([`SpaceCockpitPicture`], doc 35 cut SF.7).
+pub const KIND_SPACE_COCKPIT: u32 = 8;
+
+/// `mp_kind`'s number for the 6-DOF Bow Docking Camera ([`DockingPicture`], doc 35 cut SF.7).
+pub const KIND_DOCKING: u32 = 9;
+
 /// The largest frame side drawn, pixels.
 pub const MAX_SIDE: u32 = 2048;
 
@@ -141,6 +162,9 @@ struct State {
     chart: ChartPicture,
     doll: DollPicture,
     replay: ReplayPicture,
+    holotank: HolotankPicture,
+    space_cockpit: SpaceCockpitPicture,
+    docking: DockingPicture,
     frame: Frame,
     rgba: Vec<u8>,
     output: Vec<u8>,
@@ -160,6 +184,9 @@ impl State {
             chart: ChartPicture::new(),
             doll: DollPicture::new(),
             replay: ReplayPicture::new(),
+            holotank: HolotankPicture::new(),
+            space_cockpit: SpaceCockpitPicture::new(),
+            docking: DockingPicture::new(),
             frame: Frame::new(1, 1),
             rgba: Vec::new(),
             output: Vec::new(),
@@ -182,6 +209,9 @@ fn feed_name(feed: u32) -> Option<&'static str> {
         FEED_CHART => Some(SKY_CHART_FEED),
         FEED_REPLAY => Some(REPLAY_FEED),
         FEED_REPLAY_CURSOR => Some(REPLAY_CURSOR_FEED),
+        FEED_SPACE_HOLOTANK => Some(SPACE_HOLOTANK_FEED),
+        FEED_SPACE_COCKPIT => Some(SPACE_COCKPIT_FEED),
+        FEED_SPACE_DOCKING => Some(SPACE_DOCKING_FEED),
         _ => None,
     }
 }
@@ -189,7 +219,15 @@ fn feed_name(feed: u32) -> Option<&'static str> {
 fn valid_kind(kind: u32) -> bool {
     matches!(
         kind,
-        KIND_COCKPIT | KIND_OVERHEAD | KIND_CHART | KIND_DOLL | KIND_REPLAY | KIND_ISO25D
+        KIND_COCKPIT
+            | KIND_OVERHEAD
+            | KIND_CHART
+            | KIND_DOLL
+            | KIND_REPLAY
+            | KIND_ISO25D
+            | KIND_HOLOTANK
+            | KIND_SPACE_COCKPIT
+            | KIND_DOCKING
     )
 }
 
@@ -272,6 +310,9 @@ pub fn render(w: u32, h: u32, look: Look) -> bool {
             chart,
             doll,
             replay,
+            holotank,
+            space_cockpit,
+            docking,
             frame,
             rgba,
             ..
@@ -283,6 +324,9 @@ pub fn render(w: u32, h: u32, look: Look) -> bool {
             KIND_CHART => chart.draw(frame, feeds, &look),
             KIND_DOLL => doll.draw(frame, feeds, &look),
             KIND_REPLAY => replay.draw(frame, feeds, &look),
+            KIND_HOLOTANK => holotank.draw(frame, feeds, &look),
+            KIND_SPACE_COCKPIT => space_cockpit.draw(frame, feeds, &look),
+            KIND_DOCKING => docking.draw(frame, feeds, &look),
             _ => false,
         };
         if !drawn {
@@ -321,6 +365,9 @@ pub fn reset() {
         s.chart = ChartPicture::new();
         s.doll = DollPicture::new();
         s.replay = ReplayPicture::new();
+        s.holotank = HolotankPicture::new();
+        s.space_cockpit = SpaceCockpitPicture::new();
+        s.docking = DockingPicture::new();
     });
 }
 
@@ -758,7 +805,7 @@ mod tests {
         assert!(feed(FEED_COCKPIT, b""));
         assert!(!render(320, 220, Look::default()), "no cockpit");
         assert!(!feed(FEED_COCKPIT, b"{not json"));
-        assert!(!feed(9, b"{}"));
+        assert!(!feed(99, b"{}"));
         assert!(feed(FEED_COCKPIT, fixture("cockpit").as_bytes()));
         assert!(!render(0, 220, Look::default()));
         assert!(!render(MAX_SIDE + 1, 220, Look::default()));
@@ -876,5 +923,106 @@ mod tests {
         assert_eq!(side, 64);
         assert_eq!(with(|s| s.rgba.len()), 64 * 64 * 4);
         assert_eq!(preview(br#"{"model":"mc.nobody"}"#), 0);
+    }
+
+    /// Doc 35 cut SF.7: the three space views (`HolotankPicture`,
+    /// `SpaceCockpitPicture`, `DockingPicture`) draw through the WASM ABI and
+    /// match native `mush-pixel` hash for hash.
+    #[test]
+    fn the_module_draws_the_space_views_holotank_cockpit_and_docking() {
+        let holotank_json = serde_json::json!({
+            "title": "KIRKWOOD PICKET",
+            "range_km": 500.0,
+            "contacts": [
+                { "id": "hauler", "label": "DRAY-P", "x_km": 0.0, "y_km": 0.0, "z_km": 0.0, "relation": "you" },
+                { "id": "raider", "label": "KESTREL", "x_km": 120.0, "y_km": -60.0, "z_km": 45.0, "relation": "hostile" }
+            ]
+        });
+        assert!(set_kind(KIND_HOLOTANK));
+        assert!(feed(
+            FEED_SPACE_HOLOTANK,
+            holotank_json.to_string().as_bytes()
+        ));
+        assert!(render(640, 480, Look::default()));
+        let mut native_ht = Frame::new(640, 480);
+        let ht_feeds: HashMap<String, Value> =
+            [(SPACE_HOLOTANK_FEED.to_string(), holotank_json.clone())]
+                .into_iter()
+                .collect();
+        assert!(HolotankPicture::new().draw(&mut native_ht, &ht_feeds, &Look::default()));
+        assert_eq!(hash(), native_ht.hash());
+
+        let cockpit_json = serde_json::json!({
+            "callsign": "UNS-HALCYON",
+            "yaw_deg": 45.0,
+            "pitch_deg": 5.0,
+            "roll_deg": 0.0,
+            "speed_mps": 4820,
+            "delta_v_mps": 18500,
+            "heat_permille": 240,
+            "hull_pct": 94,
+            "pdc_mode": "AUTO",
+            "emcon": "STD",
+            "bodies": [
+                {
+                    "id": "neptune",
+                    "label": "NEPTUNE",
+                    "bearing_deg": 42.0,
+                    "pitch_deg": 6.0,
+                    "distance_km": 85000.0,
+                    "radius_km": 24622.0,
+                    "spin_deg": 30.0,
+                    "ring_tilt_deg": 22.0
+                }
+            ],
+            "contacts": []
+        });
+        assert!(set_kind(KIND_SPACE_COCKPIT));
+        assert!(feed(
+            FEED_SPACE_COCKPIT,
+            cockpit_json.to_string().as_bytes()
+        ));
+        assert!(render(640, 480, Look::default()));
+        let mut native_sc = Frame::new(640, 480);
+        let sc_feeds: HashMap<String, Value> = [
+            (SPACE_HOLOTANK_FEED.to_string(), holotank_json),
+            (SPACE_COCKPIT_FEED.to_string(), cockpit_json),
+        ]
+        .into_iter()
+        .collect();
+        assert!(SpaceCockpitPicture::new().draw(&mut native_sc, &sc_feeds, &Look::default()));
+        assert_eq!(hash(), native_sc.hash());
+
+        let docking_json = serde_json::json!({
+            "target_label": "DERELICT-KESTREL",
+            "target_kind": "disabled_derelict",
+            "mandatory": true,
+            "paused_from_world_tick": true,
+            "dx_mm": 60,
+            "dy_mm": -40,
+            "dz_mm": 3200,
+            "pitch_mdeg": 300,
+            "yaw_mdeg": -400,
+            "roll_mdeg": 500,
+            "vx_mmps": 0,
+            "vy_mmps": 0,
+            "vz_mmps": 420,
+            "dampeners": true,
+            "status": "ALIGNED-READY"
+        });
+        assert!(set_kind(KIND_DOCKING));
+        assert!(feed(
+            FEED_SPACE_DOCKING,
+            docking_json.to_string().as_bytes()
+        ));
+        assert!(render(640, 480, Look::default()));
+        let mut native_dk = Frame::new(640, 480);
+        let dk_feeds: HashMap<String, Value> = [(SPACE_DOCKING_FEED.to_string(), docking_json)]
+            .into_iter()
+            .collect();
+        assert!(DockingPicture::new().draw(&mut native_dk, &dk_feeds, &Look::default()));
+        assert_eq!(hash(), native_dk.hash());
+
+        assert!(set_kind(KIND_COCKPIT));
     }
 }

@@ -67,11 +67,14 @@ use std::time::{Duration, Instant};
 use mush_pixel::caps::{CellSize, DeviceAttributes, Encoder, EncoderChoice, Graphics};
 use mush_pixel::chart::ChartPicture;
 use mush_pixel::cockpit::CockpitPicture;
+use mush_pixel::docking::DockingPicture;
 use mush_pixel::doll::DollPicture;
+use mush_pixel::holotank::HolotankPicture;
 use mush_pixel::iso25d::Iso25DPicture;
 use mush_pixel::overhead::OverheadPicture;
 use mush_pixel::picture::{BUCKET_A_INTERVAL, Feeds, Look, Picture};
 use mush_pixel::replay::ReplayPicture;
+use mush_pixel::space_cockpit::SpaceCockpitPicture;
 use mush_pixel::{Frame, kitty, png, sixel};
 use serde_json::Value;
 
@@ -204,6 +207,12 @@ pub enum PictureKind {
     /// The armour doll as a page (bucket B, doc 21 cut G.6a): the pilot's
     /// own tank, its look's doll large beside a legend of every section.
     Doll,
+    /// The 3D Space Holo-Tank (`space.holotank` / `sky.chart`; doc 35 cut SF.7).
+    Holotank,
+    /// The First-Person Space Bridge Canopy (`space.cockpit`; doc 35 cut SF.7).
+    SpaceCockpit,
+    /// The Out-of-Time-Loop 6-DOF Bow Docking Camera (`space.docking`; doc 35 cut SF.7).
+    Docking,
 }
 
 /// **The cockpit's camera** (doc 21 §7.4, cut G.12b): which of its three
@@ -390,6 +399,12 @@ pub struct PixelView {
     chart_pic: ChartPicture,
     /// The armour doll picture and retained Kitty compositor.
     doll_pic: DollPicture,
+    /// The 3D Space Holo-Tank picture and retained Kitty compositor (doc 35 cut SF.7).
+    holotank_pic: HolotankPicture,
+    /// The First-Person Space Bridge Canopy picture and retained Kitty compositor (doc 35 cut SF.7).
+    space_cockpit_pic: SpaceCockpitPicture,
+    /// The 6-DOF Bow Docking Camera picture and retained Kitty compositor (doc 35 cut SF.7).
+    docking_pic: DockingPicture,
     /// Dynamic pixel dimensions of the last rendered retained Kitty viewport (up to 1280×720).
     last_25d_size: Option<(usize, usize)>,
     /// The other orders the flight keys made (`FIRE …`, `LOCK …`), oldest
@@ -516,6 +531,9 @@ impl PixelView {
             replay_pic: ReplayPicture::new(),
             chart_pic: ChartPicture::new(),
             doll_pic: DollPicture::new(),
+            holotank_pic: HolotankPicture::new(),
+            space_cockpit_pic: SpaceCockpitPicture::new(),
+            docking_pic: DockingPicture::new(),
             last_25d_size: None,
             orders: Vec::new(),
             detachment: None,
@@ -716,11 +734,14 @@ impl PixelView {
         self.replay_pic.invalidate_image(image_id);
         self.chart_pic.invalidate_image(image_id);
         self.doll_pic.invalidate_image(image_id);
+        self.holotank_pic.invalidate_image(image_id);
+        self.space_cockpit_pic.invalidate_image(image_id);
+        self.docking_pic.invalidate_image(image_id);
         self.last_sent = None;
     }
 
     /// Emit Kitty delete commands for all retained images and placements owned
-    /// by the first-person, overhead, 2.5D, replay, chart, and doll compositors.
+    /// by the first-person, overhead, 2.5D, replay, chart, doll, and space compositors.
     pub fn cleanup_25d_bytes(&mut self) -> Vec<u8> {
         let mut out = self.cockpit_fp.cleanup_kitty_bytes();
         out.extend(self.overhead.cleanup_kitty_bytes());
@@ -728,6 +749,9 @@ impl PixelView {
         out.extend(self.replay_pic.cleanup_kitty_bytes());
         out.extend(self.chart_pic.cleanup_kitty_bytes());
         out.extend(self.doll_pic.cleanup_kitty_bytes());
+        out.extend(self.holotank_pic.cleanup_kitty_bytes());
+        out.extend(self.space_cockpit_pic.cleanup_kitty_bytes());
+        out.extend(self.docking_pic.cleanup_kitty_bytes());
         out
     }
 
@@ -844,6 +868,9 @@ impl PixelView {
                 PictureKind::Chart => Box::new(ChartPicture::new()),
                 PictureKind::Replay => Box::new(ReplayPicture::new()),
                 PictureKind::Doll => Box::new(DollPicture::new()),
+                PictureKind::Holotank => Box::new(HolotankPicture::new()),
+                PictureKind::SpaceCockpit => Box::new(SpaceCockpitPicture::new()),
+                PictureKind::Docking => Box::new(DockingPicture::new()),
             };
             self.last_sent = None;
         }
@@ -1050,6 +1077,18 @@ impl PixelView {
         if !cleanup_dl.is_empty() {
             self.term_bytes.extend_from_slice(&cleanup_dl);
         }
+        let cleanup_ht = self.holotank_pic.cleanup_kitty_bytes();
+        if !cleanup_ht.is_empty() {
+            self.term_bytes.extend_from_slice(&cleanup_ht);
+        }
+        let cleanup_sc = self.space_cockpit_pic.cleanup_kitty_bytes();
+        if !cleanup_sc.is_empty() {
+            self.term_bytes.extend_from_slice(&cleanup_sc);
+        }
+        let cleanup_dk = self.docking_pic.cleanup_kitty_bytes();
+        if !cleanup_dk.is_empty() {
+            self.term_bytes.extend_from_slice(&cleanup_dk);
+        }
         self.last_25d_size = None;
         self.letters_held = false;
         self.last_sent = None;
@@ -1204,6 +1243,50 @@ impl PixelView {
             match key {
                 Key::Char('r') => self.chart_asked = None,
                 Key::Esc | Key::Char('q') => self.close(),
+                _ => {}
+            }
+            return KeyUse::Used;
+        }
+        // The 3D Holo-Tank's keys (doc 35 cut SF.7): `,`/`.` or `a`/`d` rotate azimuth, Esc/`q` close.
+        if self.kind == PictureKind::Holotank {
+            match key {
+                Key::Char(',' | 'a') => {
+                    self.look_mdeg = (self.look_mdeg - 15_000).rem_euclid(360_000);
+                    self.last_sent = None;
+                }
+                Key::Char('.' | 'd') => {
+                    self.look_mdeg = (self.look_mdeg + 15_000).rem_euclid(360_000);
+                    self.last_sent = None;
+                }
+                Key::Char('r') => self.chart_asked = None,
+                Key::Esc | Key::Char('q') => self.close(),
+                _ => {}
+            }
+            return KeyUse::Used;
+        }
+        // The Out-of-Time-Loop 6-DOF Docking Camera's keys (doc 35 cut SF.7, D-35-16):
+        // WASD translation, Arrow Keys pitch/yaw, Q/E roll, R/F closure pulse, X dampeners,
+        // while preserving digits '0'..'9' for global screen switching (no bare Shift dependency).
+        if self.kind == PictureKind::Docking {
+            match key {
+                Key::Char('w' | 'W') => self.orders.push("DOCK TRANS UP".to_string()),
+                Key::Char('s' | 'S') => self.orders.push("DOCK TRANS DOWN".to_string()),
+                Key::Char('a' | 'A') => self.orders.push("DOCK TRANS LEFT".to_string()),
+                Key::Char('d' | 'D') => self.orders.push("DOCK TRANS RIGHT".to_string()),
+                Key::Up => self.orders.push("DOCK PITCH UP".to_string()),
+                Key::Down => self.orders.push("DOCK PITCH DOWN".to_string()),
+                Key::Left => self.orders.push("DOCK YAW LEFT".to_string()),
+                Key::Right => self.orders.push("DOCK YAW RIGHT".to_string()),
+                Key::Char('q' | 'Q') => self.orders.push("DOCK ROLL CCW".to_string()),
+                Key::Char('e' | 'E') => self.orders.push("DOCK ROLL CW".to_string()),
+                Key::Char('r' | 'R') => self.orders.push("DOCK CLOSURE FORWARD".to_string()),
+                Key::Char('f' | 'F') => self.orders.push("DOCK CLOSURE REVERSE".to_string()),
+                Key::Char('x' | 'X') => self.orders.push("DOCK DAMPENERS TOGGLE".to_string()),
+                Key::Char('0'..='9' | '"' | ':' | ';' | '\\' | '/' | '?' | 'p')
+                | Key::Enter
+                | Key::Esc
+                | Key::Ctrl(_)
+                | Key::Alt(_) => return KeyUse::Passed,
                 _ => {}
             }
             return KeyUse::Used;
@@ -1396,6 +1479,9 @@ impl PixelView {
                 self.replay_pic.invalidate_placements();
                 self.chart_pic.invalidate_placements();
                 self.doll_pic.invalidate_placements();
+                self.holotank_pic.invalidate_placements();
+                self.space_cockpit_pic.invalidate_placements();
+                self.docking_pic.invalidate_placements();
             }
             Key::Char('+' | '=') => {
                 let base = if self.camera == CockpitCamera::FirstPerson {
@@ -1543,6 +1629,15 @@ impl PixelView {
                 PictureKind::Doll => self
                     .doll_pic
                     .draw_kitty(feeds, &look, area, self.cell, step_down),
+                PictureKind::Holotank => self
+                    .holotank_pic
+                    .draw_kitty(feeds, &look, area, self.cell, step_down),
+                PictureKind::SpaceCockpit => self
+                    .space_cockpit_pic
+                    .draw_kitty(feeds, &look, area, self.cell, step_down),
+                PictureKind::Docking => self
+                    .docking_pic
+                    .draw_kitty(feeds, &look, area, self.cell, step_down),
                 PictureKind::Cockpit => match self.camera {
                     CockpitCamera::FirstPerson => self
                         .cockpit_fp
@@ -1621,6 +1716,15 @@ impl PixelView {
         } else if self.kind == PictureKind::Doll {
             self.last_25d_size = None;
             self.doll_pic.draw(&mut self.frame, feeds, &look)
+        } else if self.kind == PictureKind::Holotank {
+            self.last_25d_size = None;
+            self.holotank_pic.draw(&mut self.frame, feeds, &look)
+        } else if self.kind == PictureKind::SpaceCockpit {
+            self.last_25d_size = None;
+            self.space_cockpit_pic.draw(&mut self.frame, feeds, &look)
+        } else if self.kind == PictureKind::Docking {
+            self.last_25d_size = None;
+            self.docking_pic.draw(&mut self.frame, feeds, &look)
         } else {
             self.last_25d_size = None;
             self.picture.draw(&mut self.frame, feeds, &look)
@@ -3273,5 +3377,112 @@ mod tests {
         next_pulse["t_ms"] = 63_000.into();
         v.observe(&next_pulse, t0 + Duration::from_millis(1_000));
         assert_eq!(v.frame_elapsed_ms(t0 + Duration::from_millis(1_000)), 0);
+    }
+
+    #[test]
+    fn sf7_space_views_paint_and_docking_keys_avoid_bare_shift_and_digits() {
+        let t0 = Instant::now();
+        let mut v = PixelView::new();
+        v.probe_sent(t0);
+        v.graphics_reply(true);
+
+        let mut space_feeds = std::collections::HashMap::new();
+        space_feeds.insert(
+            mush_pixel::holotank::SPACE_HOLOTANK_FEED.to_string(),
+            serde_json::json!({
+                "title": "KIRKWOOD PICKET",
+                "range_km": 500.0,
+                "contacts": [
+                    { "id": "raider", "label": "KESTREL", "x_km": 120.0, "y_km": -60.0, "z_km": 45.0, "relation": "hostile" }
+                ]
+            }),
+        );
+        space_feeds.insert(
+            mush_pixel::space_cockpit::SPACE_COCKPIT_FEED.to_string(),
+            serde_json::json!({
+                "callsign": "UNS-HALCYON",
+                "yaw_deg": 45.0,
+                "pitch_deg": 5.0,
+                "roll_deg": 0.0,
+                "speed_mps": 4820,
+                "delta_v_mps": 18500,
+                "heat_permille": 240,
+                "hull_pct": 94,
+                "pdc_mode": "AUTO",
+                "emcon": "STD",
+                "bodies": [
+                    {
+                        "id": "neptune",
+                        "label": "NEPTUNE",
+                        "bearing_deg": 42.0,
+                        "pitch_deg": 6.0,
+                        "distance_km": 85000.0,
+                        "radius_km": 24622.0,
+                        "spin_deg": 30.0,
+                        "ring_tilt_deg": 22.0
+                    }
+                ],
+                "contacts": []
+            }),
+        );
+        space_feeds.insert(
+            mush_pixel::docking::SPACE_DOCKING_FEED.to_string(),
+            serde_json::json!({
+                "target_label": "DERELICT-KESTREL",
+                "target_kind": "disabled_derelict",
+                "mandatory": true,
+                "paused_from_world_tick": true,
+                "dx_mm": 60,
+                "dy_mm": -40,
+                "dz_mm": 3200,
+                "pitch_mdeg": 300,
+                "yaw_mdeg": -400,
+                "roll_mdeg": 500,
+                "vx_mmps": 0,
+                "vy_mmps": 0,
+                "vz_mmps": 420,
+                "dampeners": true,
+                "status": "ALIGNED-READY"
+            }),
+        );
+
+        // 1. Holo-Tank view paints in Kitty and rotates azimuth on `,` / `.`
+        assert!(v.toggle_for(PictureKind::Holotank, t0));
+        assert!(!v.paint(&space_feeds, 120, 40, t0).is_empty());
+        assert_eq!(v.key(Key::Char('.'), t0), KeyUse::Used);
+        assert!(!v.paint(&space_feeds, 120, 40, t0).is_empty());
+        v.close();
+
+        // 2. Space Bridge Canopy paints Neptune & Triton in Kitty
+        assert!(v.toggle_for(PictureKind::SpaceCockpit, t0));
+        assert!(!v.paint(&space_feeds, 120, 40, t0).is_empty());
+        v.close();
+
+        // 3. 6-DOF Docking view paints and dispatches WASD, Arrows, Q/E, R/F, X while passing digits '0'..'9' (`D-35-16`)
+        assert!(v.toggle_for(PictureKind::Docking, t0));
+        assert!(!v.paint(&space_feeds, 120, 40, t0).is_empty());
+        assert_eq!(v.key(Key::Char('w'), t0), KeyUse::Used);
+        assert_eq!(v.key(Key::Char('a'), t0), KeyUse::Used);
+        assert_eq!(v.key(Key::Up, t0), KeyUse::Used);
+        assert_eq!(v.key(Key::Right, t0), KeyUse::Used);
+        assert_eq!(v.key(Key::Char('q'), t0), KeyUse::Used);
+        assert_eq!(v.key(Key::Char('r'), t0), KeyUse::Used);
+        assert_eq!(v.key(Key::Char('x'), t0), KeyUse::Used);
+        assert_eq!(
+            v.take_orders(),
+            [
+                "DOCK TRANS UP",
+                "DOCK TRANS LEFT",
+                "DOCK PITCH UP",
+                "DOCK YAW RIGHT",
+                "DOCK ROLL CCW",
+                "DOCK CLOSURE FORWARD",
+                "DOCK DAMPENERS TOGGLE"
+            ]
+        );
+        // Digits remain global screen switches (`KeyUse::Passed`, `D-35-16`)
+        for digit in '0'..='9' {
+            assert_eq!(v.key(Key::Char(digit), t0), KeyUse::Passed);
+        }
     }
 }
