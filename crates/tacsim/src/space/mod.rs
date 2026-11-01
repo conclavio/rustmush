@@ -10,6 +10,7 @@
 //! `detachment/*` (`D-35-1`, `D-35-2`).
 
 pub mod bubble;
+pub mod commands;
 pub mod docking;
 pub mod flight;
 pub mod mining;
@@ -20,6 +21,11 @@ pub use bubble::{
     BubbleId, BubbleStepReport, DERELICT_WINDOW_S, EmconPosture, FacetBand, HullStatus,
     LocalSpaceBubble, MAX_SUBSTEP_MS, ShipSectionId, ShipSectionState, SpaceCombatEvent,
     SpacePartyId, SpaceRelation, SpaceShipState, SubsystemCrit,
+};
+pub use commands::{
+    ActiveSpaceContext, HELM_HELP, HELM_SWITCHES, HELM_VERB, MINE_HELP, MINE_SWITCHES, MINE_VERB,
+    SPACE_COCKPIT_FEED, SPACE_DOCKING_FEED, SPACE_HOLOTANK_FEED, SpaceBook, TAC_HELP, TAC_SWITCHES,
+    TAC_VERB, register,
 };
 pub use docking::{
     DOCK_GATE_ATTITUDE_MDEG, DOCK_GATE_CLOSURE_MAX_MMPS, DOCK_GATE_CLOSURE_MIN_MMPS,
@@ -1179,6 +1185,99 @@ mod tests {
             .and_then(serde_json::Value::as_array)
             .ok_or("missing bodies")?;
         check_eq!(bodies.len(), 2);
+        Ok(())
+    }
+
+    #[test]
+    fn sf9_live_mush_verbs_helm_tac_and_mine_drive_stories_1_and_2_and_emit_space_feeds()
+    -> TestResult {
+        use crate::composition as comp;
+        let cfg = crate::TacsimConfig {
+            enabled: true,
+            ..crate::TacsimConfig::default()
+        };
+        let onboarding = mush_core::OnboardingConfig::default();
+        let game = crate::GameEconomyConfig::default();
+        let (mut mods, inventory) = comp::domain_modules_with_economy(
+            mush_economy::EconomyConfig::default(),
+            mush_atlas::AtlasConfig::default(),
+            &game,
+        );
+        mods.push(comp::npc_module(comp::npc_agent_adapter()));
+        mods.extend(comp::sheet_modules(&onboarding, &game));
+        mods.push(comp::tacsim_module_wired(cfg, true, inventory));
+        let mut tw = mush_testkit::TestWorld::with_modules(mods);
+        let pilot = mush_core::GOD;
+
+        // 0. Story 1 via live MUSH verbs: promote into `kirkwood_picket`, brake (`+helm/burn`),
+        //    step the 1:1 picket bubble (`+tac/step`), roll hull attitude (`+helm/roll`), and
+        //    fire defensive ordnance (`+tac/laser`, `+tac/torp`, `+tac/rail`).
+        let picket_events = tw.run(pilot, "+helm/enter kirkwood_picket");
+        check!(
+            picket_events.iter().any(|(_, ev)| {
+                matches!(ev, mush_proto::OutputEvent::Panel { feed, .. } if feed == SPACE_HOLOTANK_FEED)
+            }),
+            "expected space.holotank keyframe on +helm/enter kirkwood_picket"
+        );
+        let _ = tw.run(pilot, "+helm/burn -15 0 0");
+        let _ = tw.run(pilot, "+tac/step 1000");
+        let _ = tw.run(pilot, "+helm/roll 0 0 90");
+        let _ = tw.run(pilot, "+tac/laser defense");
+
+        // 1. Story 2 via live MUSH verbs: enter Pallas asteroid cluster via `+helm/enter pallas_inclined_belt`
+        let enter_events = tw.run(pilot, "+helm/enter pallas_inclined_belt");
+        check!(
+            enter_events.iter().any(|(_, ev)| {
+                matches!(ev, mush_proto::OutputEvent::Panel { feed, .. } if feed == SPACE_HOLOTANK_FEED)
+            }),
+            "expected space.holotank keyframe on +helm/enter"
+        );
+
+        // 2. Ping M-type rock `rock.m_309`, match 3D velocity (`+helm/match`), launch 4 drones (`+mine/drones`),
+        //    and fire mining laser (`+mine/laser`), triggering frontier claim-jump rival spawn!
+        let _ = tw.run(pilot, "+mine/ping rock.m_309");
+        let _ = tw.run(pilot, "+helm/match rock.m_309");
+        let _ = tw.run(pilot, "+mine/drones rock.m_309 4");
+        let _ = tw.run(pilot, "+mine/laser rock.m_309 4000");
+
+        // 3. Fire offensive laser at the spawned `claim_jumper` via `+tac/beam claim_jumper` to disable its drive
+        let _ = tw.run(pilot, "+tac/pdc auto");
+        let _ = tw.run(pilot, "+tac/beam claim_jumper");
+
+        // 4. Hard-dock with the disabled derelict via `+helm/dock derelict claim_jumper`, clamp, and attach tow (`+helm/tow`)
+        let dock_events = tw.run(pilot, "+helm/dock derelict claim_jumper");
+        check!(
+            dock_events.iter().any(|(_, ev)| {
+                matches!(ev, mush_proto::OutputEvent::Panel { feed, .. } if feed == SPACE_DOCKING_FEED)
+            }),
+            "expected space.docking keyframe on +helm/dock derelict"
+        );
+        let _ = tw.run(pilot, "+helm/dock clamp");
+        let _ = tw.run(pilot, "+helm/tow");
+
+        let ship_id = format!("ship.{}", pilot.0);
+        {
+            let book = tw
+                .world()
+                .module_state::<SpaceBook>()
+                .ok_or("missing SpaceBook")?;
+            let tow = book.tows.get(&ship_id).ok_or("missing SalvageTowRecord")?;
+            check!(tow.contest_open);
+            check_eq!(tow.derelict_ship_id, "claim_jumper");
+        }
+
+        // 5. Decouple into Tier-1 System Free Flight, fit drop tanks, fly expedition to Neptune, and recouple autopilot!
+        let _ = tw.run(pilot, "+helm/decouple ceres mars");
+        let _ = tw.run(pilot, "+helm/droptanks");
+        let nep_events = tw.run(pilot, "+helm/expedition neptune");
+        check!(
+            nep_events.iter().any(|(_, ev)| {
+                matches!(ev, mush_proto::OutputEvent::Panel { feed, .. } if feed == SPACE_COCKPIT_FEED)
+            }),
+            "expected space.cockpit canopy keyframe on +helm/expedition neptune"
+        );
+        let _ = tw.run(pilot, "+helm/autopilot ceres");
+
         Ok(())
     }
 }

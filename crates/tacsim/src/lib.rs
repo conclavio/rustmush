@@ -1019,6 +1019,8 @@ impl GameModule for TacsimRuleset {
         // Doc 32 cut CF.2: the IC field host — `+field`, its tick and its clock observer.
         field::register(reg)?;
         detachment::live::register(reg)?;
+        // Doc 35 cut SF.9: spaceflight, 1:1 bubble combat, zero-G asteroid mining & 6-DOF docking (`+helm`, `+tac`, `+mine`).
+        space::register(reg)?;
         // 16b cut AH.1 (16c N18): the first-time hints — `@tutorial` and the
         // lobby's `Moved` observer, under the `LegacyPostImage` classification
         // the cockpit hands back. Unconditional like its neighbours: the verb

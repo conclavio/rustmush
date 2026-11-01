@@ -222,25 +222,30 @@ Beyond the inner ports, the ephemeris tracks the outer worlds and their moons �
 Saturn, Uranus, Neptune, Triton, and the Galilean satellites Io, Europa,
 Ganymede and Callisto — alongside four orbital asteroid clusters: the Ceres
 Halo, the 3:1 Kirkwood Gap, the Pallas Inclined Belt, and the outer edge of
-Saturn's B-Ring. Long-haul hulls fitted with external drop tanks can decouple
-from a filed transit leg into continuous three-dimensional free flight, execute
-directed delta-v burns, or re-solve a two-burn flip-and-burn passage back onto
-the port network from open space.
+Saturn's B-Ring. Long-haul hulls fitted with external drop tanks (`+helm/droptanks`)
+can decouple from a filed transit leg (`+helm/decouple`) into continuous
+three-dimensional free flight, execute directed delta-v burns (`+helm/burn`,
+`+helm/expedition`), or re-solve a two-burn flip-and-burn passage back onto the
+port network (`+helm/autopilot`) from open space.
 
 When an interdiction, a waypoint picket, or a contested asteroid cluster pulls a
-hull into a local space bubble, simulation runs on 1:1 wall-clock time. Ships
-manoeuvre with thrust vectors, reaction-mass budgets, emissions posture, thermal
-bloom, unguided railgun slugs, high-G guided torpedoes, point-defense bursts,
-and distance-attenuated lasers; a Dray-P matched within 5 m/s of an orbital
-rock can launch up to four sealed-mind collector drones or cut ore directly into
-its ore bay while watching its infrared signature across the cluster.
+hull into a local space bubble (`+helm/enter`), simulation runs on 1:1
+wall-clock time (`+tac/step`). Ships manoeuvre with thrust vectors (`+helm/burn`),
+attitude trim (`+helm/roll`), reaction-mass budgets, emissions posture, thermal
+bloom, unguided railgun slugs (`+tac/rail`), high-G guided torpedoes (`+tac/torp`),
+point-defense bursts (`+tac/pdc`), and distance-attenuated lasers (`+tac/laser`,
+`+tac/beam`); a Dray-P matched within 5 m/s of an orbital rock (`+helm/match`)
+can ping deposits (`+mine/ping`), stake or contest Freeport claims (`+mine/licence`,
+`+mine/stake`, `+mine/contest`), launch up to four sealed-mind collector drones
+(`+mine/drones`), or cut ore directly into its ore bay (`+mine/laser`) while
+watching its infrared signature across the cluster.
 
 On the bridge, the picture pane (`Alt+v` in the terminal client, or the web view
 tab) switches automatically between the three-dimensional holo-tank plot, the
-first-person bridge canopy, and the 6-DOF bow docking camera. Port approaches
-offer an optional manual docking run that awards a clean-trim bonus inside
-±0.25 m lateral, ±1.5 deg attitude, and under 0.80 m/s closing speed; clamping
-onto an uncooperative derelict hull within 500 m requires manual alignment
-before a salvage tow line can be rigged.
+first-person bridge canopy, and the 6-DOF bow docking camera (`+helm/dock`). Port
+approaches offer an optional manual docking run that awards a clean-trim bonus
+inside ±0.25 m lateral, ±1.5 deg attitude, and under 0.80 m/s closing speed;
+clamping onto an uncooperative derelict hull within 500 m requires manual
+alignment before a salvage tow line (`+helm/tow`) can be rigged.
 
 See also: `help orders`, `help ports`, `help trade`, `help coop`, `help mining`.
