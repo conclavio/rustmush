@@ -1546,7 +1546,7 @@ Not built here, each for a reason:
   lands on the first's cell. The surface allows it, and the field then refuses to open at all
   ("occupancy is one unit per cell"). This harness never sees it now, because the escort drives
   off the ramp. A player who does not drive off it stalls every field on that site.
-  *(Fixed, §17: a launch onto a taken ramp cell stands the rig one cell from it.)*
+  *(Fixed, §17: admission parts two units on one cell.)*
 - **The escort's lease preview names the wrong command.** `+tv/lease escort` prints `LEASE_PREVIEW`,
   whose tail is `+tv/lease go signs it.`, and that command leases a prospector.
   *(Fixed, §17: the tail names `+tv/lease escort go`.)*
@@ -1591,16 +1591,27 @@ open, for the owner to object to:
     the head and 30 in 100 for the engine from the rear. The seeding fixes the outcome, not the
     timing, and the story fires until the section falls. It took one burst for the engine and
     about thirty for the head in the runs here.
-- **Two hulls on one pad (fixed).** Before, a launch put its rig on the pad's one ramp cell
-  whether or not another unit stood there, and admission then refused the whole field.
-  `field::carrier::launch_pose` now keeps the ramp pose while its cell is free. When it is taken,
-  the rig goes to the first cell one cell from the ramp, row-major, that no other unit stands in
-  and the rig can stand on. The pose moves by exactly one cell, so every "beside the ramp" test
-  still reads it as at the ramp: a launch's finish, a DT flight's `at_ramp`, the recover, CF.5's
-  exit. Both writers use it: the surface launch, including a scan or a sounding from the bay, and
-  a DT flight's departure. If no neighbour is free, the ramp pose stands as before. Gated by
-  `cf7_two_hulls_on_one_pad_launch_beside_each_other_and_the_field_opens`, and by the story's own
-  rig 2.
+- **Two hulls on one pad (fixed at admission).** Every hull on a pad launches its rigs onto the
+  pad's one ramp cell, and the surface lets two rigs share it. Admission then refused the whole
+  field, because the kernel stands one unit in a cell. Admission now parts them first
+  (`field::carrier::unstack`):
+  - In unit order, the first unit keeps its cell.
+  - Each later unit on a cell already held is stood on the nearest free cell it can stand on,
+    nearest ring first, row-major, within `UNSTACK_CELLS` (4). Its pose moves by whole cells, so
+    its heading and its place within the cell are kept.
+  - The move is a surface placement made before the check-out, like the settled rigs' (Q-CF-31),
+    so the unit is admitted there and comes home from there.
+  - A surface with no shared cell is untouched.
+
+  *Why at admission and not at the launch.* The first fix moved the launch itself one cell off a
+  taken ramp cell. That changed what `+tv` prints for such a rig ("about 10 m from the stern
+  ramp", not "at the stern ramp"), and the G-4 escort pilot waits for the latter. On CI's slower
+  runners the escort sometimes launched while Rook's rig still stood on the ramp, and the
+  two-bot story hung. Confirmed on conclav.dev with the spread forced: the escort's `+tv/1`
+  answered "about 10 m from the stern ramp". Parting at admission keeps every surface sentence
+  and every "at the ramp" test as it was.
+
+  Gated by `cf7_two_rigs_on_one_ramp_cell_are_parted_at_admission_and_the_field_opens`.
 - **The escort's lease preview (fixed).** `LEASE_PREVIEW`'s tail is now `{go} signs it.`, where
   `{go}` is `tv::lease_go`: `+tv/lease go`, or `+tv/lease escort go` for a design leased by its
   word. The prospector's sentence is unchanged. The bot's needle is now
@@ -1631,7 +1642,7 @@ open, for the owner to object to:
 
 1. **The ground.** At Ahuna Flank the miner leases a prospector and the escort line tank. A staff
    `@econ/pay` moves 7,000cr from the bystander's captain first, since a new captain's stake
-   covers one or the other. The miner launches both: rig 2 lands one cell from rig 1 on the ramp.
+   covers one or the other. The miner launches both, and they share the ramp's cell for a moment.
    The prospector is scanned, sounded and set to core an unread pocket (`+tv/1 mine go`). A
    player escort flies the line tank. A hired NPC flies a fixture hull on doctrine. A bystander
    rig from another captain mines the next block.
@@ -1686,5 +1697,5 @@ open, for the owner to object to:
   are home is the gap's own cut.
 
 **Defaults taken (provisional):** the G-7 rule's reach (party principals, not Friends); the
-launch spread's order (ring 1 row-major, the ramp pose kept when free); the lease preview's
+unstacking order (unit order; nearest ring, row-major, within 4 cells); the lease preview's
 `{go}`. The story's 7,000cr transfer is a fixture.

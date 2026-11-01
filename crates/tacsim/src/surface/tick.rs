@@ -1422,12 +1422,11 @@ fn world_step(ctx: &mut Ctx<'_>, record: &RigRecord) {
     let launches = act.kind == ActKind::Launch || act.params.launches();
     match act.kind {
         ActKind::Launch | ActKind::Scan | ActKind::Sound => {
-            // Doc 32 §17: beside the ramp when another unit already stands on its cell.
-            if launches && where_is(ctx.w, tv) == (Where::Bay { hull: act.hull }) {
-                let pose = crate::field::carrier::launch_pose(ctx, &entry, domain, &ramp, tv);
-                if let Err(error) = mush_sim::place(ctx, tv, domain, pose) {
-                    tracing::warn!(tv = tv.0, %error, "tacsim: a launch's placement was refused; the finish records it");
-                }
+            if launches
+                && where_is(ctx.w, tv) == (Where::Bay { hull: act.hull })
+                && let Err(error) = mush_sim::place(ctx, tv, domain, ramp)
+            {
+                tracing::warn!(tv = tv.0, %error, "tacsim: a launch's placement was refused; the finish records it");
             }
         }
         // Doc 20 cut SM.4b (§3.7 of the brief): the drive's one placement, at its due instant —

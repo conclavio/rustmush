@@ -1033,21 +1033,11 @@ fn start(rig: &Rig, pilot: ObjId, tv: ObjId, act: &str, ordinal: u32) -> Authori
     }
 }
 
-/// Launch rig 1 and finish it (it stands at the ramp: on the ramp's pose, or, when another unit
-/// already stands on the ramp's cell, exactly one cell from it — doc 32 §17).
+/// Launch rig 1 and finish it (it stands at the ramp).
 pub(crate) fn launched(rig: &mut Rig, pilot: ObjId, tv: ObjId) {
     let _ = act_go(rig, pilot, "+tv/1 launch go");
     let _ = finish(rig, tv, pilot);
-    let beside = (-1..=1).any(|dx: i64| {
-        (-1..=1).any(|dy: i64| {
-            on_ground_at(
-                &rig.tw,
-                tv,
-                (RAMP.0 + dx * 1_000, RAMP.1 + dy * 1_000, RAMP.2),
-            )
-        })
-    });
-    assert!(beside, "rig #{} stands at the ramp", tv.0);
+    assert!(on_ground_at(&rig.tw, tv, RAMP));
 }
 
 // ---------------------------------------------------------------------------

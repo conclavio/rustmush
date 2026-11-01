@@ -338,11 +338,9 @@ fn admit(ctx: &mut Ctx<'_>, site: &CanonicalId, record: &SiteRecord) -> Result<(
     let (carriers, others): (Vec<ObjId>, Vec<ObjId>) = units
         .iter()
         .partition(|unit| super::carrier::is_carrier(ctx.w, **unit));
-    let mut taken: std::collections::BTreeSet<(u16, u16)> = others
-        .iter()
-        .filter_map(|unit| mush_sim::pose_of(ctx.w, *unit))
-        .filter_map(|(_, pose)| definition.terrain.cell_of(&pose))
-        .collect();
+    // Doc 32 §17: two units on one cell (rigs launched down one ramp) are parted first.
+    let mut taken: std::collections::BTreeSet<(u16, u16)> = std::collections::BTreeSet::new();
+    super::carrier::unstack(ctx, &definition.terrain, &others, &mut taken)?;
     let pads = super::carrier::pad_poses(ctx.w, &definition.terrain, &carriers, &mut taken)?;
     let custody = custody(
         ctx, &field, &open.by, &entrants, &lettered, &rows, &pads, definition,
