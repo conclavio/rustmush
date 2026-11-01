@@ -11,6 +11,7 @@
 
 pub mod bubble;
 pub mod docking;
+pub mod flight;
 pub mod mining;
 pub mod picket;
 pub mod weapons;
@@ -26,6 +27,10 @@ pub use docking::{
     DockingPose6Dof, DockingSession, DockingSessionState, DockingTargetKind,
     MAX_DOCKING_INIT_RANGE_M, MAX_DOCKING_INIT_REL_SPEED_MPS, SALVAGE_CONTEST_WINDOW_IC_SECS,
     SalvageTowRecord,
+};
+pub use flight::{
+    DecoupledLegTicket, FlightError, FlightGuidanceMode, FromPointPassagePlan,
+    RecoupledJourneyTicket, SpaceFlightRecord,
 };
 pub use mining::{
     ASTEROID_CONTEST_WINDOW_IC_SECS, AsteroidClaimState, AsteroidClusterField, AsteroidOrePool,
@@ -793,6 +798,211 @@ mod tests {
                 max_towable_tonnage_t: 800,
             })
         ));
+        Ok(())
+    }
+
+    fn test_kepler_sky() -> Result<crate::sky::Sky, Box<dyn Error>> {
+        use std::collections::BTreeMap;
+
+        use mush_core::CanonicalId;
+
+        use crate::config::EphemerisConfig;
+        use crate::ephemeris::{Body, Ephemeris};
+        use crate::kepler::ElementRow;
+        use crate::sky::{KeplerSky, Sky};
+
+        let epoch = 74_152_540_800_i64;
+        let ceres = CanonicalId::new("ceres")?;
+        let mars = CanonicalId::new("mars")?;
+        let jupiter = CanonicalId::new("jupiter")?;
+        let saturn = CanonicalId::new("saturn")?;
+
+        let circular = Ephemeris::new(&EphemerisConfig {
+            epoch: 0,
+            rate: 1_000,
+        })
+        .with_body(
+            ceres.clone(),
+            Body {
+                orbit_uau: 2_866_568,
+                period_mdays: 1_681_861,
+                phase_mdeg: 281_654,
+                epoch_ic: Some(epoch),
+                parent: None,
+            },
+        )
+        .with_body(
+            mars,
+            Body {
+                orbit_uau: 1_445_443,
+                period_mdays: 687_034,
+                phase_mdeg: 276_240,
+                epoch_ic: Some(epoch),
+                parent: None,
+            },
+        )
+        .with_body(
+            jupiter,
+            Body {
+                orbit_uau: 5_204_400,
+                period_mdays: 4_332_589,
+                phase_mdeg: 112_000,
+                epoch_ic: Some(epoch),
+                parent: None,
+            },
+        )
+        .with_body(
+            saturn,
+            Body {
+                orbit_uau: 9_582_600,
+                period_mdays: 10_759_220,
+                phase_mdeg: 45_000,
+                epoch_ic: Some(epoch),
+                parent: None,
+            },
+        );
+
+        let ceres_row = ElementRow::from_authored(&[
+            74_152_540_800.0,
+            2.767_755_414,
+            0.075_862_114,
+            10.550_296,
+            75.280_015,
+            84.918_514,
+            114.238_750,
+            0.214_048_659,
+        ])?;
+        let mut tables = BTreeMap::new();
+        tables.insert(ceres, vec![ceres_row]);
+        Ok(Sky::Kepler(KeplerSky::new(circular, tables)))
+    }
+
+    #[test]
+    fn sf6_mid_leg_decouple_live_propellant_debit_reserve_guard_and_autopilot_recouple()
+    -> TestResult {
+        use mush_core::CanonicalId;
+
+        let sky = test_kepler_sky()?;
+        let epoch = 74_152_540_800_i64;
+        let ceres = CanonicalId::new("ceres")?;
+        let mars = CanonicalId::new("mars")?;
+
+        // 1. Ship decouples halfway through a 40,000 s Ceres -> Mars passage (`+helm/decouple`)
+        let mut flight = SpaceFlightRecord::decouple_from_leg(
+            &sky,
+            "ship.dray_7",
+            "UNS-WANDERER",
+            "dray",
+            SpacePartyId(1),
+            &ceres,
+            &mars,
+            epoch,
+            epoch + 40_000,
+            epoch + 20_000,
+            32_000,
+            20_000,
+        )?;
+        let ticket = flight
+            .decoupled_ticket
+            .as_ref()
+            .ok_or("missing decoupled ticket")?;
+        check!(ticket.ticket_voided);
+        check_eq!(ticket.refunded_propellant_kg, 16_000);
+        check_eq!(flight.propellant_kg, 36_000);
+        check_eq!(flight.delta_v_mps, 18_000);
+
+        // Interpolated position at midpoint is strictly between Ceres and Mars
+        let p_ceres = sky.position_km(&ceres, epoch).ok_or("missing ceres")?;
+        let p_mars = sky
+            .position_km(&mars, epoch + 40_000)
+            .ok_or("missing mars")?;
+        let ship_km = flight.pos_km();
+        check_ne!(ship_km, p_ceres);
+        check_ne!(ship_km, p_mars);
+
+        // 2. Commanding a burn that dips below `return_reserve_dv_mps` (6,000 m/s) raises
+        // `FlightError::TankReserveWarning` unless `force = true` (`D-35-6`).
+        let unforced = flight.command_burn_dv([1_000, 0, 0], 20, 700, false);
+        check!(matches!(
+            unforced,
+            Err(FlightError::TankReserveWarning { .. })
+        ));
+
+        // A smaller 2,000 m/s burn (`20 m/s^2 * 100 s`) leaves 16,000 m/s >= 6,000 m/s reserve
+        flight.command_burn_dv([1_000, 0, 0], 20, 100, false)?;
+        let prop_before = flight.propellant_kg;
+        flight.step_ic_seconds(&sky, 100);
+        check_eq!(flight.delta_v_mps, 16_000);
+        check_eq!(flight.propellant_kg, prop_before - 4_000);
+
+        // 3. Re-coupling to autopilot (`+helm/autopilot ceres`) is refused if engaged in combat,
+        // and succeeds once unengaged (`D-35-5`).
+        check_eq!(
+            flight.recouple_autopilot(&sky, &ceres, true),
+            Err(FlightError::EngagedInCombat)
+        );
+        let recoupled = flight.recouple_autopilot(&sky, &ceres, false)?;
+        check_eq!(recoupled.dest_body, ceres);
+        check!(recoupled.distance_km > 0);
+        check!(recoupled.arrive_ic > recoupled.depart_ic);
+        Ok(())
+    }
+
+    #[test]
+    fn sf6_outer_system_neptune_triton_expedition_light_lag_and_canopy_projection() -> TestResult {
+        use mush_core::CanonicalId;
+
+        let sky = test_kepler_sky()?;
+        let epoch = 74_152_540_800_i64;
+        let ceres = CanonicalId::new("ceres")?;
+        let neptune = CanonicalId::new("neptune")?;
+        let triton = CanonicalId::new("triton")?;
+
+        let mut expedition = SpaceFlightRecord::undock_from_body(
+            &sky,
+            "ship.halcyon",
+            "UNS-HALCYON",
+            "halcyon",
+            SpacePartyId(1),
+            &ceres,
+            epoch,
+        )?;
+
+        // Without long-range drop tanks, an outer-system expedition to Neptune (30 AU)
+        // triggers the `TankReserveWarning` / `InsufficientDeltaV` guard!
+        check!(
+            expedition
+                .fly_expedition_to_body(&sky, &neptune, 85_000, false)
+                .is_err()
+        );
+
+        // Fit long-range expedition drop tanks (Story 2 step 4) and burn out to Neptune & Triton!
+        expedition.fit_long_range_drop_tanks();
+        check!(expedition.drop_tanks_fitted);
+        let plan = expedition.fly_expedition_to_body(&sky, &neptune, 85_000, false)?;
+        check!(plan.distance_km > 3_500_000_000);
+
+        // At 85,000 km standoff from Neptune, distance to Neptune is 85,000 km,
+        // while light lag back to inner-system Ceres is > 10,000 seconds (> 2.7 hours)!
+        let dist_neptune = expedition
+            .distance_to_body_km(&sky, &neptune)
+            .ok_or("missing neptune")?;
+        check_eq!(dist_neptune, 85_000);
+        let lag_to_ceres_s = expedition
+            .light_lag_to_body_s(&sky, &ceres)
+            .ok_or("missing ceres lag")?;
+        check!(
+            lag_to_ceres_s > 10_000,
+            "expected multi-hour light lag from Neptune to Ceres, got {lag_to_ceres_s} s"
+        );
+
+        // Project `space.cockpit` feed at Neptune & Triton and verify both outer bodies appear
+        let canopy = expedition.canopy_feed(&sky, &[neptune, triton]);
+        let bodies = canopy
+            .get("bodies")
+            .and_then(serde_json::Value::as_array)
+            .ok_or("missing bodies array")?;
+        check_eq!(bodies.len(), 2);
         Ok(())
     }
 }
