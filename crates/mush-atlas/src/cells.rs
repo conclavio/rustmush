@@ -19,6 +19,15 @@ pub const MAX_TILE_SIDE: u16 = 256;
 /// The absolute cell cap of one tile — the config's `tile_max_cells` may lower it.
 pub const MAX_TILE_CELLS: u32 = (MAX_TILE_SIDE as u32) * (MAX_TILE_SIDE as u32);
 
+/// The most cells along one side of a composite (`window::composite`): a window
+/// stitched from tiles may be wider than any one tile. Equal to tacsim's
+/// `definitions::arena::MAX_ARENA_SIDE` (doc 30 WG.6), which pins the two together; an IC
+/// site's side is capped by it too (doc 32 §18, cut S.0).
+pub const MAX_COMPOSITE_SIDE: u16 = 512;
+
+/// The absolute cell cap of one composite surface.
+pub const MAX_COMPOSITE_CELLS: u32 = (MAX_COMPOSITE_SIDE as u32) * (MAX_COMPOSITE_SIDE as u32);
+
 /// The most bytes one tile's encoded cells may take in its document.
 pub const MAX_TILE_DOC_BYTES: usize = 512 * 1024;
 
@@ -39,14 +48,15 @@ pub struct Cell {
 #[derive(Clone, Debug, Eq, PartialEq, thiserror::Error)]
 pub enum CellsError {
     /// Zero or over-cap dimensions.
-    #[error(
-        "a tile is 1 to {MAX_TILE_SIDE} cells a side and at most {max} cells; {width}×{height} is not"
-    )]
+    #[error("a tile is 1 to {side} cells a side and at most {max} cells; {width}×{height} is not")]
     Size {
         /// Width.
         width: u16,
         /// Height.
         height: u16,
+        /// The side cap in force: [`MAX_TILE_SIDE`] for a tile, [`MAX_COMPOSITE_SIDE`]
+        /// for a composite.
+        side: u16,
         /// The cap in force.
         max: u32,
     },
@@ -75,7 +85,28 @@ impl Cells {
         cell: Cell,
         max_cells: u32,
     ) -> Result<Cells, CellsError> {
-        let count = check_size(width, height, max_cells)?;
+        let count = check_size(width, height, max_cells, MAX_TILE_SIDE, MAX_TILE_CELLS)?;
+        Ok(Cells {
+            width,
+            height,
+            cells: vec![cell; count],
+        })
+    }
+
+    /// A composite surface's grid filled with one cell: up to [`MAX_COMPOSITE_SIDE`]
+    /// a side, where a tile stops at [`MAX_TILE_SIDE`].
+    ///
+    /// # Errors
+    ///
+    /// [`CellsError::Size`].
+    pub fn filled_composite(width: u16, height: u16, cell: Cell) -> Result<Cells, CellsError> {
+        let count = check_size(
+            width,
+            height,
+            MAX_COMPOSITE_CELLS,
+            MAX_COMPOSITE_SIDE,
+            MAX_COMPOSITE_CELLS,
+        )?;
         Ok(Cells {
             width,
             height,
@@ -220,11 +251,35 @@ impl Cells {
     ///
     /// [`CellsError`].
     pub fn decode(text: &str, max_cells: u32) -> Result<Cells, CellsError> {
+        Self::decode_capped(text, max_cells, MAX_TILE_SIDE, MAX_TILE_CELLS)
+    }
+
+    /// Decode a composite surface's document form: [`Cells::decode`] with the
+    /// composite's caps ([`MAX_COMPOSITE_SIDE`]) in place of a tile's.
+    ///
+    /// # Errors
+    ///
+    /// [`CellsError`].
+    pub fn decode_composite(text: &str) -> Result<Cells, CellsError> {
+        Self::decode_capped(
+            text,
+            MAX_COMPOSITE_CELLS,
+            MAX_COMPOSITE_SIDE,
+            MAX_COMPOSITE_CELLS,
+        )
+    }
+
+    fn decode_capped(
+        text: &str,
+        max_cells: u32,
+        side_cap: u16,
+        cells_cap: u32,
+    ) -> Result<Cells, CellsError> {
         let bytes = base64_decode(text).ok_or_else(|| CellsError::Encoding("not base64".into()))?;
         let mut cursor = bytes.as_slice();
         let width = take_u16(&mut cursor)?;
         let height = take_u16(&mut cursor)?;
-        let count = check_size(width, height, max_cells)?;
+        let count = check_size(width, height, max_cells, side_cap, cells_cap)?;
         let mut cells: Vec<Cell> = Vec::with_capacity(count);
         while !cursor.is_empty() {
             let n = usize::from(take_u16(&mut cursor)?);
@@ -261,19 +316,27 @@ impl Cells {
     }
 }
 
-fn check_size(width: u16, height: u16, max_cells: u32) -> Result<usize, CellsError> {
+fn check_size(
+    width: u16,
+    height: u16,
+    max_cells: u32,
+    side_cap: u16,
+    cells_cap: u32,
+) -> Result<usize, CellsError> {
     let count = u32::from(width) * u32::from(height);
-    let cap = max_cells.min(MAX_TILE_CELLS);
-    if width == 0 || height == 0 || width > MAX_TILE_SIDE || height > MAX_TILE_SIDE || count > cap {
+    let cap = max_cells.min(cells_cap);
+    if width == 0 || height == 0 || width > side_cap || height > side_cap || count > cap {
         return Err(CellsError::Size {
             width,
             height,
+            side: side_cap,
             max: cap,
         });
     }
     usize::try_from(count).map_err(|_| CellsError::Size {
         width,
         height,
+        side: side_cap,
         max: cap,
     })
 }
@@ -325,13 +388,32 @@ impl<'de> Deserialize<'de> for Cells {
     fn deserialize<D: serde::Deserializer<'de>>(deserializer: D) -> Result<Self, D::Error> {
         let wire = CellsWire::deserialize(deserializer)?;
         let cells = Cells::decode(&wire.data, MAX_TILE_CELLS).map_err(serde::de::Error::custom)?;
-        if cells.width != wire.width || cells.height != wire.height {
-            return Err(serde::de::Error::custom(
-                "tile cells: the declared size disagrees with the encoded size",
-            ));
-        }
-        Ok(cells)
+        wire_agrees(&wire, cells)
     }
+}
+
+/// Deserialize a composite surface's [`Cells`] (`window::SurfaceComposite`): the wire
+/// form a tile has, decoded with the composite's caps so a 512-a-side window crosses
+/// the async seam; a tile's own `Deserialize` keeps the tile's.
+///
+/// # Errors
+///
+/// The deserializer's, or the decode's.
+pub fn deserialize_composite<'de, D: serde::Deserializer<'de>>(
+    deserializer: D,
+) -> Result<Cells, D::Error> {
+    let wire = CellsWire::deserialize(deserializer)?;
+    let cells = Cells::decode_composite(&wire.data).map_err(serde::de::Error::custom)?;
+    wire_agrees(&wire, cells)
+}
+
+fn wire_agrees<E: serde::de::Error>(wire: &CellsWire, cells: Cells) -> Result<Cells, E> {
+    if cells.width != wire.width || cells.height != wire.height {
+        return Err(E::custom(
+            "tile cells: the declared size disagrees with the encoded size",
+        ));
+    }
+    Ok(cells)
 }
 
 const BASE64: &[u8; 64] = b"ABCDEFGHIJKLMNOPQRSTUVWXYZabcdefghijklmnopqrstuvwxyz0123456789+/";
@@ -454,6 +536,38 @@ mod tests {
         let json = serde_json::to_string(&cells).expect("json");
         let via: Cells = serde_json::from_str(&json).expect("wire");
         assert_eq!(via, cells);
+    }
+
+    #[test]
+    fn a_composite_grid_reaches_512_a_side_and_no_further() {
+        let tacsim_arena_cap: u16 = 512;
+        assert_eq!(MAX_COMPOSITE_SIDE, tacsim_arena_cap);
+        let big = Cells::filled_composite(512, 512, Cell::default()).expect("512²");
+        assert_eq!(big.len(), 512 * 512);
+        assert!(matches!(
+            Cells::filled_composite(513, 512, Cell::default()),
+            Err(CellsError::Size { side: 512, .. })
+        ));
+        // A tile stays at 256, by either door.
+        assert!(Cells::filled(512, 512, Cell::default(), MAX_COMPOSITE_CELLS).is_err());
+        let text = big.encode();
+        assert!(Cells::decode(&text, MAX_COMPOSITE_CELLS).is_err());
+        assert_eq!(Cells::decode_composite(&text).expect("decodes"), big);
+        // The composite wire form round-trips through serde.
+        #[derive(serde::Deserialize)]
+        struct Wrap {
+            #[serde(deserialize_with = "deserialize_composite")]
+            cells: Cells,
+        }
+        let json = format!(
+            "{{\"cells\":{}}}",
+            serde_json::to_string(&big).expect("json")
+        );
+        let via: Wrap = serde_json::from_str(&json).expect("wire");
+        assert_eq!(via.cells, big);
+        assert!(
+            serde_json::from_str::<Cells>(&serde_json::to_string(&big).expect("json")).is_err()
+        );
     }
 
     #[test]

@@ -57,6 +57,9 @@ pub const DEFAULT_WINDOW_SIDE: u16 = 256;
 /// [`MAX_ARENA_TILES`] and [`crate::ground::QUAD`]).
 pub const MAX_ARENA_SIDE: u16 = 512;
 
+// Doc 32 cut S.0 (§18): the atlas composites a window as wide as an arena, and no wider.
+const _: () = assert!(MAX_ARENA_SIDE == mush_atlas::MAX_COMPOSITE_SIDE);
+
 /// The most named key spots one arena may carry (doc 16 §3.2: *three or four*).
 ///
 /// **16b cut V.1 made it the alphabet's length.** Every spot is drawn on the

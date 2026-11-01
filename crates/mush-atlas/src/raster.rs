@@ -38,12 +38,28 @@ impl Grid {
     /// `max_cells` cells or more than [`MAX_TILE_SIDE`] a side.
     #[must_use]
     pub fn over(bbox: RectCm, resolution_cm: u16, max_cells: u32) -> Option<Grid> {
+        Grid::over_capped(bbox, resolution_cm, max_cells, MAX_TILE_SIDE)
+    }
+
+    /// **A composite's grid** over `bbox` at `resolution_cm` (`window::WindowFrame::grid`): up to
+    /// [`crate::cells::MAX_COMPOSITE_SIDE`] a side, where [`Grid::over`] stops at a tile's.
+    #[must_use]
+    pub fn over_composite(bbox: RectCm, resolution_cm: u16) -> Option<Grid> {
+        Grid::over_capped(
+            bbox,
+            resolution_cm,
+            crate::cells::MAX_COMPOSITE_CELLS,
+            crate::cells::MAX_COMPOSITE_SIDE,
+        )
+    }
+
+    fn over_capped(bbox: RectCm, resolution_cm: u16, max_cells: u32, side: u16) -> Option<Grid> {
         let res = i64::from(resolution_cm.max(1));
         let width = ceil_div(bbox.width(), res);
         let height = ceil_div(bbox.height(), res);
         let width = u16::try_from(width).ok()?;
         let height = u16::try_from(height).ok()?;
-        if width == 0 || height == 0 || width > MAX_TILE_SIDE || height > MAX_TILE_SIDE {
+        if width == 0 || height == 0 || width > side || height > side {
             return None;
         }
         if u32::from(width) * u32::from(height) > max_cells {

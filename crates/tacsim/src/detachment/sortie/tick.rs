@@ -166,16 +166,8 @@ fn tick(ctx: &mut Ctx<'_>, _tag: &str, _scene: Option<SceneId>) {
                 continue;
             }
             let moved = match flight.phase {
-                // Doc 32 §17: beside the ramp when another unit already stands on its cell.
                 Phase::Departing => {
-                    let pose = crate::field::carrier::launch_pose(
-                        ctx,
-                        &flight.site,
-                        flight.domain,
-                        &flight.ramp,
-                        flight.key.unit,
-                    );
-                    mush_sim::place(ctx, flight.key.unit, flight.domain, pose)
+                    mush_sim::place(ctx, flight.key.unit, flight.domain, flight.ramp.clone())
                 }
                 Phase::Returning => mush_sim::place_interior(
                     ctx,

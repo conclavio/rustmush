@@ -80,7 +80,9 @@ impl WindowFrame {
     /// The grid every surface of this window shares.
     #[must_use]
     pub fn grid(&self) -> Option<Grid> {
-        Grid::over(self.bbox, self.cell_cm, u32::MAX)
+        // Doc 32 cut S.0: a composite's own cap (512 a side); `@window` frames are already held
+        // to `window_max_cells` when they are fitted.
+        Grid::over_composite(self.bbox, self.cell_cm)
     }
 
     /// The simulation's record of this frame.
@@ -310,7 +312,9 @@ pub struct SurfaceComposite {
     pub surface: SurfaceRef,
     /// The grid.
     pub grid: Grid,
-    /// The cells: class, elevation, cover, room index.
+    /// The cells: class, elevation, cover, room index; up to
+    /// [`crate::cells::MAX_COMPOSITE_SIDE`] a side.
+    #[serde(deserialize_with = "crate::cells::deserialize_composite")]
     pub cells: Cells,
     /// The room table `cell.room - 1` indexes.
     pub rooms: Vec<ObjId>,
@@ -535,13 +539,8 @@ pub fn composite(input: &CompositeInput) -> Result<Composite, String> {
     let mut surfaces = Vec::with_capacity(input.frame.surfaces.len());
     for surface in &input.frame.surfaces {
         let views = tile_views(&input.tiles, surface);
-        let mut cells = Cells::filled(
-            grid.width,
-            grid.height,
-            Cell::default(),
-            crate::cells::MAX_TILE_CELLS,
-        )
-        .map_err(|e| e.to_string())?;
+        let mut cells = Cells::filled_composite(grid.width, grid.height, Cell::default())
+            .map_err(|e| e.to_string())?;
         for y in 0..grid.height {
             for x in 0..grid.width {
                 // Off every tile: the ground has its background (P4); a floor

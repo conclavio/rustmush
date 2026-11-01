@@ -50,7 +50,10 @@ pub mod window_cmd;
 
 pub use apply::{KINDS, put_connection, put_site, register_appliers, retire_record, stage_pack};
 pub use background::{Ground, background};
-pub use cells::{Cell, Cells, CellsError, MAX_TILE_CELLS, MAX_TILE_DOC_BYTES, MAX_TILE_SIDE};
+pub use cells::{
+    Cell, Cells, CellsError, MAX_COMPOSITE_CELLS, MAX_COMPOSITE_SIDE, MAX_TILE_CELLS,
+    MAX_TILE_DOC_BYTES, MAX_TILE_SIDE,
+};
 pub use frame::{MAP_FEED, MapFeed, delta_for, empty_frame, frame_for, surface_label};
 pub use geom::{GeomError, Point2, Point3, PointCm, Polygon2, Rect2, RectCm, Shape};
 pub use hydrate::{
