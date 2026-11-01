@@ -3697,6 +3697,7 @@ fn sm11_a_previous_lessees_plan_is_never_shown() {
     let previous = pilot_on(&mut rig, "Previous", 9);
     let now = ic_now(&rig.tw);
     let theirs = |state: FillState| FillPlan {
+        side: 256,
         no: 1,
         author: previous,
         hull: ObjId(row.hull),

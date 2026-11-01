@@ -63,7 +63,7 @@ use support::ground::{UNSIGNED, sign};
 /// Rim's paper (was `c7239b0a…` at v11).
 /// Doc 20 cut SM.12a: v14, the Exchange's and Occator's mills (was `34d47907…` at v13, relay R9b).
 /// Doc 20 cut SM.12b: v15, Occator's yard (was `c507f74c…` at v14).
-const LANE_DIGEST: &str = "805579d06d0876d56228b93fba4d4b83418c07038c7c901688e5abffde0b7e25";
+const LANE_DIGEST: &str = "b27a3c20471701e1b95c3f1840ab3401180c5d614840773d9269056667a0e452";
 
 /// The date the lane's bodies stand at (the script's chord minimum, R4).
 const LANE_DATE: &str = "2351-05-13";
@@ -83,8 +83,9 @@ const MOON_ROUTES: [(&str, &str, &str); 6] = [
     ("voltaire_stickney", "voltaire_anchorage", "stickney_yards"),
 ];
 /// Doc 20 cut SM.2: the twelve site routes — the five Ceres hops (authored `base_s`, a
-/// same-body leg the sky does not time, §3.3) and the Rheasilvia passage, each both ways.
-const SITE_ROUTES: [&str; 12] = [
+/// same-body leg the sky does not time, §3.3) and the Rheasilvia passage, each both ways; doc 32
+/// cut S.1: and Urvara Reach's hop, both ways.
+const SITE_ROUTES: [&str; 14] = [
     "ceres_commons",
     "commons_ceres",
     "ceres_kerwan",
@@ -97,6 +98,8 @@ const SITE_ROUTES: [&str; 12] = [
     "occator_ceres",
     "ceres_rheasilvia",
     "rheasilvia_ceres",
+    "ceres_urvara",
+    "urvara_ceres",
 ];
 /// Every route of lane v8: the shipped pair and the six.
 const ALL_ROUTES: [&str; 8] = [
@@ -236,8 +239,8 @@ fn ic2_the_lane_pack_is_pinned() {
     assert_eq!(manifest.version(), LANE_VERSION);
     assert_eq!(
         manifest.version(),
-        16,
-        "lane v16 since doc 32 cut CF.6c (v15 at SM.12b, v14 at SM.12a, v13 at relay R9b, v12 at doc 20 cut SM.10) (v11 \
+        17,
+        "lane v17 since doc 32 cut S.1 (v16 at CF.6c, v15 at SM.12b, v14 at SM.12a, v13 at relay R9b, v12 at doc 20 cut SM.10) (v11 \
          at SM.5, v10 at SM.3a, v9 at SM.2, v8 at A.8, v7 at A.7, v6 at A.4b, v5 at A.4, v4 at A.1)"
     );
     assert_eq!(manifest.kind(), tacsim::PackKind::CampaignSeed);
@@ -277,6 +280,7 @@ fn ic2_the_lane_pack_is_pinned() {
             ("ceres_port", "port"),
             ("ceres_rheasilvia", "route"),
             ("ceres_stickney", "route"),
+            ("ceres_urvara", "route"),
             ("commons_ceres", "route"),
             ("commons_port", "port"),
             ("deimos", "body"),
@@ -316,6 +320,9 @@ fn ic2_the_lane_pack_is_pinned() {
             ("stickney_yards", "location"),
             ("titan", "body"),
             ("titan_port", "port"),
+            ("urvara_ceres", "route"),
+            ("urvara_port", "port"),
+            ("urvara_reach", "location"),
             ("venus", "body"),
             ("vesta", "body"),
             ("voltaire_anchorage", "location"),
@@ -324,7 +331,7 @@ fn ic2_the_lane_pack_is_pinned() {
         .iter()
         .map(|(id, kind)| ((*id).to_owned(), (*kind).to_owned()))
         .collect::<Vec<_>>(),
-        "the sixty entries: v3's twelve, doc 19 cut A.1's eight more bodies, cut A.7's four moons, cut A.8's three places, six routes and three ports, and doc 20 cut SM.2's six sites, twelve routes and six site ports"
+        "the sixty-four entries: v3's twelve, doc 19 cut A.1's eight more bodies, cut A.7's four moons, cut A.8's three places, six routes and three ports, doc 20 cut SM.2's six sites, twelve routes and six site ports, and doc 32 cut S.1's 512 site, its two routes and its port"
     );
     let epochs: Vec<Option<i64>> = bodies(&pack).iter().map(|(_, def)| def.epoch_ic).collect();
     assert_eq!(epochs.len(), 16);
@@ -395,6 +402,8 @@ fn ic2_the_lane_pack_is_pinned() {
                 "port".into(),
                 Some("phobos".into())
             ),
+            // Doc 32 cut S.1: the 512 site.
+            site("urvara_reach", "Urvara Reach", "ceres"),
             (
                 "voltaire_anchorage".into(),
                 "Voltaire Anchorage".into(),
@@ -1002,8 +1011,8 @@ fn ic2_the_lane_boots_and_corridor_show_reads_the_constant_sky() {
         .expect("the lane is latched");
     assert_eq!(applied.version(), LANE_VERSION);
     let placed = applied.placed();
-    // Six ports and depots, and (doc 20 cut SM.2) the six sites.
-    assert_eq!(placed.len(), 12, "{placed:?}");
+    // Six ports and depots, and (doc 20 cut SM.2) the six sites; doc 32 cut S.1: and the 512 site.
+    assert_eq!(placed.len(), 13, "{placed:?}");
     for (symbol, room) in &placed {
         let kind = tw.world().get(*room).map(|o| o.kind);
         assert_eq!(kind, Some(ObjKind::Room), "{symbol}");

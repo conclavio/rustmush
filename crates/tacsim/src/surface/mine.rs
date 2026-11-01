@@ -535,6 +535,9 @@ pub struct MinePlan {
     pub(crate) hopper_cap_kg: u64,
     /// The hull's rigs the hold's room counted: each one's run ordinal and outstanding tonnes.
     pub(crate) outstanding: Vec<(ObjId, Option<(u32, u64)>)>,
+    /// **The site's side** (doc 32 cut S.1): the scheme `number`, `letter` and `addr` are named
+    /// under.
+    pub(crate) side: u16,
 }
 
 impl MinePlan {
@@ -826,6 +829,7 @@ mod tests {
             excursion: None,
             last: None,
             run: run.map(|(ordinal, _, number, letter)| Run {
+                side: 256,
                 ordinal,
                 operator: ObjId(42),
                 hull: ObjId(500),

@@ -25,8 +25,8 @@ use tacsim::surface::site_record::{LeftCondition, SiteKey, SiteRecord};
 use tokio::sync::mpsc::Receiver;
 
 use crate::driving::{
-    AHUNA, Rig, ahuna_domain, cid, command, drain, handles, land, launched, on_pad, run,
-    staff_hand, stocked_tuned, to_cell, typed, warm,
+    AHUNA, Rig, act_go, ahuna_domain, cid, command, drain, finish, handles, land, launched, on_pad,
+    on_pad_at, run, staff_hand, stocked_tuned, to_cell, to_cell_on, typed, warm,
 };
 
 /// The raider the content ships.
@@ -588,4 +588,119 @@ async fn cf6b_the_raider_launches_fires_past_a_carrier_on_its_pad_and_withdraws_
             hull.0
         );
     }
+}
+
+/// **Doc 32 cut S.1 — a field promotes on the 512 site** (§19; S.2's precursor): on Urvara Reach a
+/// prospector's Dray-P settles on the pad, its rig launches and stands out in the north-east
+/// quadrant (past cell 256 on both axes); the content's raider, rebased on Urvara (its carrier's
+/// cells are offsets from the pad, so it stands at the pad's cell plus `(28, −2)` and its ramp
+/// at plus `(31, −2)`), is seeded and launched; its leader's mark promotes a field, and the field
+/// admits everyone on the ground at their poses — the rig where it stood, the raider's carrier and
+/// its hulls where they launched, the Dray-P aboard its pad — each party's home its own carrier's
+/// ramp (the Dray-P's `(256, 252)`, off the pad its pad room puts at `(256, 256)`), on a 512 site
+/// record.
+#[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+#[allow(clippy::too_many_lines)]
+async fn s1_a_field_promotes_on_the_512_site() {
+    const URVARA: &str = "urvara_port";
+    let mut rig = stocked_tuned(tune);
+    let (a, row, tvs) = on_pad_at(&mut rig, "Pilot", 1, "Salt Moth", "urvara", URVARA);
+    let tv = tvs[0];
+    let _ = act_go(&mut rig, a, "+tv/1 launch go");
+    let _ = finish(&mut rig, tv, a);
+    to_cell_on(&mut rig, URVARA, tv, (300, 257));
+    // The content's raider, rebased on Urvara Reach.
+    let mut def = tacsim::field::raiders::raiders()
+        .expect("the fixture raiders")
+        .into_iter()
+        .find(|def| def.id.as_str() == SKULKS)
+        .expect("the content's raider");
+    def.id = cid("tacsim.raider.urvara_s1");
+    def.site = cid(URVARA);
+    let seeded = staff_hand(&mut rig, |ctx| tacsim::field::raiders::seed(ctx, &def));
+    assert!(
+        seeded.as_deref().is_ok_and(|s| s.contains("seeded")),
+        "{seeded:?}"
+    );
+    let launched = staff_hand(&mut rig, |ctx| tacsim::field::raiders::launch(ctx, &def));
+    assert!(launched.is_ok(), "{launched:?}");
+    let raiders = raider_hulls(&rig);
+    assert_eq!(raiders.len(), 2, "two hulls launched");
+    let carrier =
+        tacsim::field::raiders::carrier_of(rig.tw.world(), raiders[0]).expect("a carrier");
+    assert_eq!(
+        tacsim::field::raiders::ramp_cell(rig.tw.world(), carrier),
+        Some([287, 254]),
+        "the ramp at the pad's cell (256, 256) plus (31, -2)"
+    );
+    let (_, carrier_pose) = mush_sim::pose_of(rig.tw.world(), carrier).expect("on the ground");
+    assert_eq!(
+        (
+            carrier_pose.x_cm.div_euclid(1_000),
+            carrier_pose.y_cm.div_euclid(1_000)
+        ),
+        (284, 254),
+        "the carrier at the pad's cell plus (28, -2)"
+    );
+    let leader = tacsim::field::raiders::leader_of(rig.tw.world(), raiders[0]).expect("a leader");
+    let poses_before: Vec<(ObjId, (i64, i64))> = [tv, carrier]
+        .into_iter()
+        .chain(raiders.iter().copied())
+        .filter_map(|unit| {
+            mush_sim::pose_of(rig.tw.world(), unit).map(|(_, pose)| (unit, (pose.x_cm, pose.y_cm)))
+        })
+        .collect();
+    let mut rx = egress(&mut rig);
+    let mut lines: Vec<LedgerEvent> = Vec::new();
+    for _ in 0..3 {
+        second(&mut rig);
+    }
+    // The leader marks the flight to the east (the prospector's rig) Hostile: a field promotes.
+    let (out, queued) = command(&mut rig, leader, "+field/mark E=hostile");
+    assert_eq!(queued.len(), 1, "one promotion: {out}");
+    land(&mut rig, &queued[0]).expect("the promotion lands");
+    assert!(
+        until(&mut rig, &mut rx, &mut lines, 20, |rig, _| task(rig)
+            .is_some())
+        .await,
+        "the field's task opens on the 512 site"
+    );
+    let live = tacsim::field::live_on(rig.tw.world(), &cid(URVARA)).expect("the live record");
+    for unit in [tv, ObjId(row.hull), carrier]
+        .into_iter()
+        .chain(raiders.iter().copied())
+    {
+        assert!(live.party_of(unit).is_some(), "#{} is admitted", unit.0);
+    }
+    assert_ne!(live.party_of(tv), live.party_of(carrier), "two parties");
+    // Everyone at their poses: the admission moved nobody on the ground.
+    for (unit, at) in &poses_before {
+        let (_, pose) = mush_sim::pose_of(rig.tw.world(), *unit).expect("still on the ground");
+        assert_eq!(
+            (pose.x_cm, pose.y_cm),
+            *at,
+            "#{} admitted where it stood",
+            unit.0
+        );
+    }
+    // Each party's home is its own carrier's ramp: the Dray-P's off the pad its pad room puts at
+    // (256, 256), the raider's off its rebased carrier.
+    let home_of = |unit: ObjId| {
+        let party = live.party_of(unit).expect("admitted");
+        live.homes
+            .iter()
+            .find(|home| home.team == party)
+            .map(|home| (home.x0, home.y0))
+    };
+    assert_eq!(home_of(tv), Some((256, 252)), "{:?}", live.homes);
+    assert_eq!(home_of(carrier), Some((287, 254)), "{:?}", live.homes);
+    let h = handles(&rig.tw);
+    let record = typed(
+        &mut rig.tw,
+        &h.families.sites,
+        &tacsim::surface::site_record::SiteKey(cid(URVARA)),
+    )
+    .expect("Urvara Reach's record");
+    assert_eq!(record.side, 512, "a 512 site record");
+    assert!(record.promoted.is_some(), "the field is open");
 }

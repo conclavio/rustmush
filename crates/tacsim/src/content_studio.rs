@@ -33,7 +33,7 @@ use crate::definitions::content::{
     DRILL_CORE_MK1_JSON, ECCM_MK1_JSON, ECM_MK1_JSON, HE_105_JSON, LANE_JSON, LANE_PACK,
     LASER_CHARGE_JSON, LASER_MK1_JSON, MG_COAX_JSON, MISSILE_LR_JSON, MISSILE_ROUND_JSON,
     RESOLUTION_JSON, RESOURCES_JSON, SCANNER_MK1_JSON, SITE_SOURCES, STATION_SOURCES,
-    THERMAL_MK1_JSON, VISUAL_MK1_JSON, fielded_sources,
+    THERMAL_MK1_JSON, VISUAL_MK1_JSON, WIDE_SITE_SOURCES, fielded_sources,
 };
 use crate::definitions::goods::{GOODS_JSON, GoodsTable, goods_digest, goods_table};
 use crate::definitions::resources::ResourceTable;
@@ -529,7 +529,11 @@ pub fn build_catalog_from_world(w: &mush_core::World) -> Value {
 
     // 2. Stations & Sites (rooms + authored details + live details)
     let mut stations = Vec::new();
-    for (pack_id, bytes) in STATION_SOURCES.iter().chain(SITE_SOURCES.iter()) {
+    for (pack_id, bytes) in STATION_SOURCES
+        .iter()
+        .chain(SITE_SOURCES.iter())
+        .chain(WIDE_SITE_SOURCES.iter())
+    {
         if !pack_id.starts_with("neighborhood.") {
             continue;
         }

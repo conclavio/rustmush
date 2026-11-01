@@ -586,6 +586,7 @@ fn sm11_the_prune_drops_a_landed_or_overtaken_filing() {
             list: "D".to_owned(),
             family: None,
             compiled: crate::surface::plan::Compiled {
+                scheme: crate::surface::address::Scheme::SHIPPED,
                 list: vec!["D".to_owned()],
                 family: OreFamily::Metals,
                 steps: vec![crate::surface::plan::PlanStep::Block { letter: 'D' }],

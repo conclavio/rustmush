@@ -542,6 +542,16 @@ fn plan(ctx: &Ctx<'_>, offer: &SurveyOffer) -> Result<SurveyRecord, String> {
     Ok(row)
 }
 
+/// **The pockets in an offer's block** (doc 32 cut S.1): its site's scheme's, 256 on every
+/// shipped site. A record's coverage holds 256 (`crate::surface::survey::SurveyRecord`), so
+/// commissions are authored on shipped sites only, and a sounding on any other credits none.
+fn block_pocket_count(w: &World, offer: &SurveyOffer) -> i64 {
+    CanonicalId::new(offer.site).map_or(
+        crate::surface::address::Scheme::SHIPPED.pockets_in_block(),
+        |site| crate::surface::chart::site_scheme(w, &site).pockets_in_block(),
+    )
+}
+
 fn say(ctx: &mut Ctx<'_>, line: impl Into<String>) {
     ctx.out.sys_to_actor(ctx.actor, "tacsim", line);
 }
@@ -557,6 +567,7 @@ fn show(ctx: &mut Ctx<'_>, id: Option<&str>) -> Result<(), CmdError> {
     );
     for offer in offers().iter().filter(|o| id.is_none_or(|id| o.id == id)) {
         let row = rows.iter().find(|r| r.offer.key_text() == offer.id);
+        let pockets = block_pocket_count(ctx.w, offer);
         let state = match row {
             None => "open".to_owned(),
             Some(row) if contract_replaceable(ctx.w, row) => "open".to_owned(),
@@ -592,7 +603,7 @@ fn show(ctx: &mut Ctx<'_>, id: Option<&str>) -> Result<(), CmdError> {
                         "waiting for funding"
                     };
                     format!(
-                        "yours: {}/256 pockets; {funding}; due {}",
+                        "yours: {}/{pockets} pockets; {funding}; due {}",
                         row.covered(),
                         crate::port::licence::ic_stamp(row.deadline_ic)
                     )
@@ -638,11 +649,12 @@ fn accept(ctx: &mut Ctx<'_>, id: &str, go: bool) -> Result<(), CmdError> {
     }
     let row = plan(ctx, offer).map_err(CmdError::msg)?;
     if !go {
+        let pockets = block_pocket_count(ctx.w, offer);
         let reward = crate::port::coop::money_minor(ctx, row.reward_minor);
         say(
             ctx,
             format!(
-                "Occator offers {reward} for fresh detailed soundings of all 256 pockets in {} block {}, within 7 IC days. +survey/accept {id} go files it; funding follows once the filing lands.",
+                "Occator offers {reward} for fresh detailed soundings of all {pockets} pockets in {} block {}, within 7 IC days. +survey/accept {id} go files it; funding follows once the filing lands.",
                 offer.site_name,
                 char::from(b'A' + offer.block)
             ),

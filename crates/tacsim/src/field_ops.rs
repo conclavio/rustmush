@@ -50,7 +50,7 @@ use crate::arena::perception::Notice;
 use crate::definitions::unit::{
     AMMO_CELL, CONDITION_CELL, ComponentRole, Consequence, INTERNALS_CELL, UnitSpec,
 };
-use crate::surface::address::{block_letter, pocket_of_cell};
+use crate::surface::address::Scheme;
 use crate::surface::black_box::BlackBoxLine;
 use crate::surface::claims::BlockTenure;
 use crate::surface::drive::DriveRates;
@@ -440,13 +440,14 @@ pub fn base_speed_cms_for_spec(spec: &UnitSpec) -> u32 {
 }
 
 /// Convert a frontier site [`FieldPose`] (`x_cm`, `y_cm`) into its `10 m` surface cell
-/// and resolve the `4×4` frontier block letter (`'A'..='P'`) (`FO-4`, `Q-S1`, `Q-S3`).
+/// and resolve the `4×4` frontier block letter (`'A'..='P'`) (`FO-4`, `Q-S1`, `Q-S3`) under the
+/// site's `scheme` (doc 32 cut S.1).
 #[must_use]
-pub fn block_letter_at_site_pose(pose: FieldPose) -> Option<char> {
+pub fn block_letter_at_site_pose(pose: FieldPose, scheme: Scheme) -> Option<char> {
     let cell_x = pose.x_cm.div_euclid(1_000);
     let cell_y = pose.y_cm.div_euclid(1_000);
-    let pocket = pocket_of_cell((cell_x, cell_y))?;
-    block_letter(pocket.0, pocket.1)
+    let pocket = scheme.pocket_of_cell((cell_x, cell_y))?;
+    scheme.block_letter(pocket.0, pocket.1)
 }
 
 /// Resolve the [`GroundTenure`] at a casualty's [`FieldPose`] from the frontier site's
@@ -458,11 +459,12 @@ pub fn block_letter_at_site_pose(pose: FieldPose) -> Option<char> {
 #[must_use]
 pub fn ground_tenure_at_site_pose(
     pose: FieldPose,
+    scheme: Scheme,
     block_tenures: &BTreeMap<char, BlockTenure>,
     now_ic: i64,
     org_landholder_fallback: Option<ObjId>,
 ) -> GroundTenure {
-    let Some(letter) = block_letter_at_site_pose(pose) else {
+    let Some(letter) = block_letter_at_site_pose(pose, scheme) else {
         return GroundTenure::Unclaimed;
     };
     let Some(tenure) = block_tenures.get(&letter) else {

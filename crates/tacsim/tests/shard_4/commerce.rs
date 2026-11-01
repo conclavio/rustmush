@@ -3071,8 +3071,9 @@ fn a8_a_world_on_lane_v7_takes_v8_by_the_shelf() {
     assert!(
         plan.contains(&format!(
             // Doc 20 cut SM.2: the shipped lane is v9, so the step also creates the six
-            // sites' places, ports and routes and updates the eight bodies and the Freeport.
-            "Plan for {LANE_PACK}@{LANE_VERSION}: 36 create, 10 update, 0 retire, 14 unchanged"
+            // sites' places, ports and routes and updates the eight bodies and the Freeport;
+            // doc 32 cut S.1 (lane v17): and the 512 site's place, port and two routes.
+            "Plan for {LANE_PACK}@{LANE_VERSION}: 40 create, 10 update, 0 retire, 14 unchanged"
         )),
         "{plan}"
     );
@@ -3083,7 +3084,7 @@ fn a8_a_world_on_lane_v7_takes_v8_by_the_shelf() {
     );
     assert!(
         apply.contains(&format!(
-            "Applied {LANE_PACK}@{LANE_VERSION}: 36 created, 10 updated, 0 retired, 14 unchanged."
+            "Applied {LANE_PACK}@{LANE_VERSION}: 40 created, 10 updated, 0 retired, 14 unchanged."
         )),
         "{plan}\n{apply}"
     );

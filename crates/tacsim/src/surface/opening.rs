@@ -33,10 +33,16 @@ use mush_industry::OreDepositId;
 
 use crate::port::def::{BLOCK_LETTERS, SiteDef};
 use crate::port::map::SiteRow;
-use crate::surface::address::{POCKETS_PER_BLOCK, pocket_number};
+use crate::surface::address::Scheme;
 use crate::surface::cursor::{CursorRow, MAX_CURSOR_ROWS};
 use crate::surface::geology::{OreFamily, Word, by_family};
 use crate::surface::ground::{SITE_BLOCKS, SiteGeology};
+
+/// The shipped scheme's [`block_pockets_in`] (the unit tests read it).
+#[cfg(test)]
+fn block_pockets(letter: char) -> Option<impl Iterator<Item = (i64, i64)>> {
+    block_pockets_in(Scheme::SHIPPED, letter)
+}
 
 /// `OreDeposit.external` for every surface deposit: the provider that works it.
 pub const SURFACE_PROVIDER: &str = "tacsim.surface";
@@ -72,20 +78,19 @@ pub fn receipt(entry: &CanonicalId, letter: char, family: OreFamily) -> String {
     format!("{entry}/{}/{}", letter.to_ascii_lowercase(), family.id())
 }
 
-/// **A block's 256 site-local pockets** (§3.1): letter index `i` is block `(bx, by) = (i % 4,
-/// 3 − i / 4)` from the south-west, as `SiteDef::shifts` reads it, so its pockets are `bx·16
-/// ..bx·16+16 × by·16..by·16+16`. `None` for a letter outside `A`..`P`.
+/// **A block's site-local pockets** (§3.1): letter index `i` is block `(bx, by) = (i % 4,
+/// 3 − i / 4)` from the south-west, as `SiteDef::shifts` reads it, so its pockets are `bx·b
+/// ..bx·b+b × by·b..by·b+b`, `b` the pockets along a block's side under the site's `scheme` (16 at
+/// 256: 256 pockets; 32 at 512: 1,024 — doc 32 cut S.1). `None` for a letter outside `A`..`P`.
 #[must_use]
-pub fn block_pockets(letter: char) -> Option<impl Iterator<Item = (i64, i64)>> {
+pub fn block_pockets_in(scheme: Scheme, letter: char) -> Option<impl Iterator<Item = (i64, i64)>> {
     let at = BLOCK_LETTERS.iter().position(|l| *l == letter)?;
     let at = i64::try_from(at).ok()?;
     let bx = at % SITE_BLOCKS;
     let by = SITE_BLOCKS - 1 - at / SITE_BLOCKS;
-    let (x0, y0) = (bx * POCKETS_PER_BLOCK, by * POCKETS_PER_BLOCK);
-    Some(
-        (0..POCKETS_PER_BLOCK)
-            .flat_map(move |dy| (0..POCKETS_PER_BLOCK).map(move |dx| (x0 + dx, y0 + dy))),
-    )
+    let b = scheme.block_pockets();
+    let (x0, y0) = (bx * b, by * b);
+    Some((0..b).flat_map(move |dy| (0..b).map(move |dx| (x0 + dx, y0 + dy))))
 }
 
 /// **One (block, family) of a site's opening** (derived truth; no serde, reviewer F6).
@@ -148,7 +153,7 @@ pub fn opening_plan(
         for family in OreFamily::ALL {
             let mut gross = 0_u64;
             let mut cursor: Vec<CursorRow> = Vec::new();
-            let pockets = block_pockets(letter)
+            let pockets = block_pockets_in(geology.scheme(), letter)
                 .ok_or_else(|| format!("{entry}: block {letter} is off the site"))?;
             for (px, py) in pockets {
                 let pocket = geology.pocket(px, py).ok_or_else(|| {
@@ -163,7 +168,9 @@ pub fn opening_plan(
                     .ok_or_else(|| format!("{entry}: block {letter}'s reserve overflows"))?;
                 let drawn = tonnes.saturating_mul(permille) / 1_000;
                 if drawn >= 1 {
-                    let number = pocket_number(px, py)
+                    let number = geology
+                        .scheme()
+                        .pocket_number(px, py)
                         .ok_or_else(|| format!("{entry}: pocket ({px}, {py}) has no number"))?;
                     cursor.push(CursorRow {
                         pocket: number,

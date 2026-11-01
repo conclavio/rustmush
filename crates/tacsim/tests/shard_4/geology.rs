@@ -530,6 +530,7 @@ fn site_spec() -> SiteGeologySpec {
     shifts[0] = 1;
     shifts[15] = -1;
     SiteGeologySpec {
+        side: 256,
         body: cid("ceres"),
         origin: (8_000, -1_600),
         shifts,
@@ -1827,4 +1828,79 @@ fn g1_describe(mac: &GeologyMac, body: &BodyGeology, field: (i64, i64)) -> Strin
         reads(Footing::Rock),
         reads(Footing::Ice)
     )
+}
+
+/// **Doc 32 cut S.1 (ruling 3): a 512 site's table covers the whole site.** With every shift 0, a
+/// 512 table at the pinned origin holds 256 fields and 16,384 pockets, its far corner readable;
+/// its south-west quarter is the 256 table at the same origin, pocket for pocket and field for
+/// field (one body function); the per-block shifts still number sixteen, each over a block of
+/// 4 × 4 fields; and it digests under v2, so no 512 table shares a digest with a 256 one — while
+/// the 256 table's own digest is the v1 pin `sm1_a_fixed_key_pins_a_whole_site` holds.
+#[test]
+fn s1_a_512_site_table_covers_the_whole_site() {
+    let k = mac(KEY_1);
+    let body = ceres();
+    let flat = SiteGeologySpec {
+        shifts: [0; 16],
+        ..site_spec()
+    };
+    let wide_spec = SiteGeologySpec {
+        side: 512,
+        ..flat.clone()
+    };
+    let shipped = site_geology(&k, 1, &body, &flat).expect("a 256 table");
+    let wide = site_geology(&k, 1, &body, &wide_spec).expect("a 512 table");
+    assert_eq!(wide.scheme().side(), 512);
+    assert!(
+        wide.pocket(127, 127).is_some(),
+        "the far corner is on the table"
+    );
+    assert!(wide.pocket(128, 0).is_none());
+    assert!(wide.field(15, 15).is_some());
+    assert!(
+        shipped.pocket(64, 0).is_none(),
+        "a 256 table stops at 64 pockets"
+    );
+    for py in 0..64 {
+        for px in 0..64 {
+            assert_eq!(wide.pocket(px, py), shipped.pocket(px, py), "({px}, {py})");
+        }
+    }
+    for fy in 0..8 {
+        for fx in 0..8 {
+            assert_eq!(wide.field(fx, fy), shipped.field(fx, fy), "({fx}, {fy})");
+        }
+    }
+    assert_ne!(wide.digest(), shipped.digest(), "v2 for 512");
+    // A shift on block P (index 3 from the south-west) moves only P's sixteen fields.
+    let mut shifts = [0_i8; 16];
+    shifts[3] = -2;
+    let shifted = site_geology(
+        &k,
+        1,
+        &body,
+        &SiteGeologySpec {
+            shifts,
+            ..wide_spec.clone()
+        },
+    )
+    .expect("a shifted table");
+    let mut moved = 0;
+    for fy in 0..16 {
+        for fx in 0..16 {
+            let in_p = fx >= 12 && fy < 4;
+            if shifted.field(fx, fy) != wide.field(fx, fy) {
+                assert!(in_p, "only block P moves: ({fx}, {fy})");
+                moved += 1;
+            }
+        }
+    }
+    assert!(moved > 0, "a −2 shift moves block P");
+    // The same table built twice is one digest.
+    assert_eq!(
+        site_geology(&k, 1, &body, &wide_spec)
+            .expect("again")
+            .digest(),
+        wide.digest()
+    );
 }

@@ -542,10 +542,11 @@ fn mine(
     }
     let context = chart::site_context(ctx.w, site)
         .map_err(|_| mush_core::CmdError::msg("Own readings unavailable."))?;
+    let scheme = context.scheme();
     let mut cache = BTreeMap::new();
     let mut candidates = Vec::new();
-    for y in 0..64 {
-        for x in 0..64 {
+    for y in 0..scheme.pockets() {
+        for x in 0..scheme.pockets() {
             if let Some(classes) =
                 crate::surface::plan::read_classes(&context, row.as_ref(), (x, y), &mut cache)
             {
@@ -570,7 +571,7 @@ fn mine(
     }
     candidates.sort_by_key(|c| (c.0, c.1, c.2));
     for (_, x, y, f) in candidates.into_iter().take(8) {
-        if crate::surface::address::pocket_of_cell(cell) == Some((x, y)) {
+        if scheme.pocket_of_cell(cell) == Some((x, y)) {
             return act::mine_cmd(
                 ctx,
                 rig,
@@ -583,7 +584,7 @@ fn mine(
                 true,
             );
         }
-        let Some(address) = crate::surface::address::pocket_address(x, y) else {
+        let Some(address) = scheme.pocket_address(x, y) else {
             continue;
         };
         if act::drive_cmd(ctx, rig, &address, true).is_ok() {

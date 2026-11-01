@@ -1,0 +1,91 @@
+{
+  "manifest": {
+    "id": "region.urvara_reach",
+    "version": 1,
+    "kind": "region",
+    "digest": "46f387dce9cf411cfefb152ffeafa1057ce81f9cc931d559f33f761fe2a0771d",
+    "requires": []
+  },
+  "brief": {
+    "prose": "Urvara Reach is a wide frontier claim on the terraced floor of Urvara, the great southern basin of Ceres: low benches of dark rock stepping down to an ice-cut plain, the basin's central ridge on the northern horizon, and a Registry pad set in the middle of a survey twice the width of any other on the lane."
+  },
+  "entries": {
+    "region.urvara_reach": {
+      "kind": "region",
+      "def": {
+        "name": "Urvara Reach",
+        "kind": "surface",
+        "body": "ceres",
+        "extent": [
+          [
+            0,
+            0
+          ],
+          [
+            5120,
+            5120
+          ]
+        ],
+        "datum_m": 0,
+        "background": {
+          "surface": "regolith",
+          "mix": [
+            [
+              "ice",
+              18
+            ],
+            [
+              "rock",
+              30
+            ]
+          ],
+          "relief_cm": 120,
+          "relief_period_cm": 1000,
+          "seed": 2607
+        },
+        "ground_resolution_cm": 1000,
+        "theme": {
+          "name": "TacSim 2350",
+          "banned": [
+            "warp",
+            "hyperspace",
+            "FTL",
+            "teleport",
+            "alien",
+            "android",
+            "gravity plating",
+            "you see"
+          ],
+          "desc_length": "medium",
+          "pov_rules": "Present tense, no second person, no \"you see\"; no named NPCs in a room desc."
+        }
+      }
+    },
+    "locality.urvara_reach": {
+      "kind": "locality",
+      "def": {
+        "region": "region.urvara_reach",
+        "name": "Urvara Reach",
+        "kind": "extraction",
+        "footprint": [
+          [
+            0,
+            0
+          ],
+          [
+            5120,
+            0
+          ],
+          [
+            5120,
+            5120
+          ],
+          [
+            0,
+            5120
+          ]
+        ]
+      }
+    }
+  }
+}

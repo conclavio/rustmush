@@ -776,7 +776,7 @@ async fn the_starter_area_boots_once_and_is_durable() {
 async fn ic1_a_kept_world_takes_the_stations_when_the_game_is_switched_on() {
     use tacsim::definitions::content::{
         CERES_PACK, CERES_ROOMS, LANE_PACK, LANE_ROUTE_OUT, LANE_VERSION, SITE_SOURCES,
-        STATION_SOURCES, STICKNEY_PACK, STICKNEY_ROOMS,
+        STATION_SOURCES, STICKNEY_PACK, STICKNEY_ROOMS, WIDE_SITE_SOURCES,
     };
 
     let mut cfg = stock_config("ic1");
@@ -914,18 +914,20 @@ async fn ic1_a_kept_world_takes_the_stations_when_the_game_is_switched_on() {
         "{LANE_PACK}: {after:?}"
     );
     // Doc 20 cut SM.2: the twelve site packs, each at 1.
-    for (pack, _) in SITE_SOURCES {
-        assert_eq!(after.get(pack).map(|l| l.0), Some(1), "{pack}: {after:?}");
+    // Doc 32 cut S.1: and the two wide site packs after them.
+    for (pack, _) in SITE_SOURCES.iter().chain(WIDE_SITE_SOURCES.iter()) {
+        assert_eq!(after.get(*pack).map(|l| l.0), Some(1), "{pack}: {after:?}");
     }
     // Doc 20 cut SM.12a: the relay seed ships at 3 (v2 re-signed for lane v14).
     // Doc 20 cut SM.12b: relay v4 requires lane v15.
-    // Qureshi's trust service: relay v6 requires Ceres v4.
-    assert_eq!(after.get("tacsim.relay.luna_ceres").map(|l| l.0), Some(7));
+    // Qureshi's trust service: relay v6 requires Ceres v4. Doc 32 cut S.1: relay v8 requires
+    // lane v17.
+    assert_eq!(after.get("tacsim.relay.luna_ceres").map(|l| l.0), Some(8));
     assert!(after.contains_key(tacsim::port::passenger::content::PACK));
     assert_eq!(
         after.len(),
-        48,
-        "five, ten station packs, five station cast packs, twelve site packs, the lane, seven R10 relay/geography packs, two passenger packs, the crew pack and starter quests"
+        50,
+        "five, ten station packs, five station cast packs, twelve site packs, two wide site packs, the lane, seven R10 relay/geography packs, two passenger packs, the crew pack and starter quests"
     );
     lane_resolves(&on.engine);
     let atlas = on
@@ -996,6 +998,7 @@ async fn sm2_the_production_root_lays_up_every_site() {
         "juling_port",
         "occator_port",
         "rheasilvia_port",
+        "urvara_port",
     ] {
         let entry = CanonicalId::new(entry).expect("an id");
         let tacsim::port::PortMapState::Present(map) = tacsim_store.port_map(&lane, &entry) else {

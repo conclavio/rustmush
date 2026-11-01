@@ -410,6 +410,22 @@ pub const SITE_SOURCES: [(&str, &str); 12] = [
     (RHEASILVIA_REGION_PACK, RHEASILVIA_REGION_JSON),
     (RHEASILVIA_PACK, RHEASILVIA_JSON),
 ];
+/// Urvara Reach's region pack (Ceres; doc 32 cut S.1): a 5,120 m region, so a 512 site.
+pub const URVARA_REGION_PACK: &str = "region.urvara_reach";
+/// Urvara Reach: the first 512 site's pad (doc 32 cut S.1, §19).
+pub const URVARA_PACK: &str = "neighborhood.urvara_reach";
+/// `crates/tacsim/content/atlas/region.urvara_reach.json`.
+pub const URVARA_REGION_JSON: &str = include_str!("../../content/atlas/region.urvara_reach.json");
+/// `crates/tacsim/content/atlas/neighborhood.urvara_reach.json`.
+pub const URVARA_JSON: &str = include_str!("../../content/atlas/neighborhood.urvara_reach.json");
+/// **The wide site packs** (doc 32 cut S.1, ruling 2): sites whose region is wider than the
+/// shipped 2,560 m — Urvara Reach, 5,120 m, so 512 cells a side. Kept apart from
+/// [`SITE_SOURCES`] so the twelve 2,560 m packs and every pin over them stay as they were; they
+/// ride [`station_packs`] right after them.
+pub const WIDE_SITE_SOURCES: [(&str, &str); 2] = [
+    (URVARA_REGION_PACK, URVARA_REGION_JSON),
+    (URVARA_PACK, URVARA_JSON),
+];
 /// The rooms each site pack makes: the pad (doc 20 §3.1).
 pub const SITE_ROOMS: usize = 1;
 /// The rooms Ceres Freeport's pack makes (18a §1.3).
@@ -899,7 +915,9 @@ pub const LANE_PACK: &str = "tacsim.lane.ceres_phobos";
 /// Rim (`site.yard`: a Dray-P hull settled on the pad, two rigs of Occator's pool in its
 /// bay, its dispatcher working blocks F and G for ice ore, re-armed an IC hour after a
 /// plan ends); **v16 since doc 32 cut CF.6c**: Occator's escort design (`vehicles.designs`: two
-/// escort line tanks, `+tv/lease escort`, under the escort clearance). The port readiness report
+/// escort line tanks, `+tv/lease escort`, under the escort clearance); **v17 since doc 32 cut S.1**:
+/// Urvara Reach, the first 512 site (a 5,120 m region, [`WIDE_SITE_SOURCES`]): its location on
+/// Ceres, its open-tenure site port, its two routes and Ceres's `urvara` routes key. The port readiness report
 /// (`crate::port::readiness`) reads the latched version against it, and every test
 /// that names the lane's version reads it here.
 ///
@@ -912,7 +930,8 @@ pub const LANE_PACK: &str = "tacsim.lane.ceres_phobos";
 /// R10), lane v14 ↔ relay v3, lane v15 ↔ relay v4 (doc 20 cut SM.12b). Relay v5
 /// follows Ceres v3's Oduya guidance update; relay v6 follows Ceres v4's Qureshi trust
 /// service. Both still require lane v15, and their entries
-/// remain unchanged. Lane v16 ↔ relay v7 (doc 32 cut CF.6c), entries unchanged. The relay code reads any version from 2 as the full star
+/// remain unchanged. Lane v16 ↔ relay v7 (doc 32 cut CF.6c), lane v17 ↔ relay v8 (doc 32 cut
+/// S.1), entries unchanged. The relay code reads any version from 2 as the full star
 /// (`relay_world`'s `full_star`, `relay_content`'s upgrade preflight), so a kept world
 /// whose relay latch stays at an older version — `@atlas/pack plan` reads "Nothing to
 /// do." when no entry differs — keeps its star. The pins that move with it are the
@@ -923,7 +942,7 @@ pub const LANE_PACK: &str = "tacsim.lane.ceres_phobos";
 /// `lane_v13` rebuilds the
 /// published v13 by stripping every row added since: the next lane cut strips its own
 /// rows there too and extends the test to its versions.
-pub const LANE_VERSION: u32 = 16;
+pub const LANE_VERSION: u32 = 17;
 /// `crates/tacsim/content/lane/ceres_phobos.json`.
 pub const LANE_JSON: &str = include_str!("../../content/lane/ceres_phobos.json");
 /// The lane as one source, in apply order.
@@ -1221,7 +1240,8 @@ pub fn station_with_cast_value(
 /// The station packs, loaded and digest-verified, in apply order
 /// ([`STATION_SOURCES`], the five [`CAST_SOURCES`] of doc 34 cut CS.0b, then since doc 20
 /// cut SM.2 the twelve [`SITE_SOURCES`]: a site port's apply needs its pad room, so the
-/// site packs ride wherever the lane is applied). They are the 2350 game's content: the
+/// site packs ride wherever the lane is applied; since doc 32 cut S.1 the
+/// [`WIDE_SITE_SOURCES`] after them). They are the 2350 game's content: the
 /// production boot list appends them after [`boot_packs`] when `[tacsim].enabled`
 /// (doc 18 §4.7), and the atlas shelves them always. [`boot_packs`] itself stays the
 /// proving ground's two, because the arena fixtures `pop()` the arena off its end.
@@ -1236,6 +1256,7 @@ pub fn station_packs() -> Result<Vec<mush_content::Pack>, String> {
         .iter()
         .chain(CAST_SOURCES.iter())
         .chain(SITE_SOURCES.iter())
+        .chain(WIDE_SITE_SOURCES.iter())
         .map(|(name, json)| {
             mush_content::load_pack(json).map_err(|error| format!("{name}: {error}"))
         })

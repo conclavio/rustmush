@@ -121,7 +121,7 @@ use crate::port::site_map::SurfaceReads;
 use crate::port::tv::{self, TvLease, TvLeaseStatus};
 use crate::port_tick::port_error;
 use crate::store::TacsimStore;
-use crate::surface::address::{self, cell_on_site, pockets_in_reach};
+use crate::surface::address;
 use crate::surface::chart::{
     self, ChartKey, ChartRecord, SitePeek, body_admits, heard_line_due, repeat_refused, scan_adds,
     sound_adds, write_scan, write_sound,
@@ -132,7 +132,7 @@ use crate::surface::excursion::{
     Act, ActKind, ActParams, ActResult, CapRefused, Charge, DUMP_S, Excursion, ExcursionCounts,
     ExcursionId, LAUNCH_S, MAX_DUMP_GOODS, Outcome, RECOVER_S, ReadSpan, RefusedCode, RigKey,
     RigRecord, cap_refusal, cells_apart, charge_at, charge_for_act, leg_affordable, needs_battery,
-    ramp_pose, reserve_check, reserved_total, settle_free, settle_spent_out_of_bay, site_cell,
+    reserve_check, reserved_total, settle_free, settle_spent_out_of_bay, site_cell,
 };
 use crate::surface::excursion::{DarkCause, LicenceEnd, LockRow, MAX_LOCK_ROWS, Mined, Run};
 use crate::surface::excursion::{Queued, UNLOAD_S, UnloadHow};
@@ -561,7 +561,9 @@ pub(crate) fn site_berth<'w>(w: &'w World, view: &HullView<'w>) -> Result<SiteBe
         tracing::warn!(hull = hull.0, "tacsim: a rig's hull has no readable bay");
         return Err(Refusal::Dark { name });
     };
-    let ramp = ramp_pose(bay).map_err(|error| {
+    // Doc 32 cut S.1 (ruling 4): the ramp off the site's own pad room.
+    let pad = crate::surface::excursion::site_pad_cm(w, &map.entry);
+    let ramp = crate::surface::excursion::ramp_pose_at(bay, pad).map_err(|error| {
         tracing::warn!(hull = hull.0, %error, "tacsim: a bay's ramp does not read as a site pose");
         Refusal::Dark { name: name.clone() }
     })?;

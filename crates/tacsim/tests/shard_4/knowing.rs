@@ -1317,6 +1317,7 @@ fn sm4a_an_implied_launch_scans_from_the_ramp() {
     assert_eq!(
         act.params,
         ActParams::Scan {
+            side: 256,
             from_bay: true,
             body: cid("ceres"),
             cell: [RAMP_CELL.0, RAMP_CELL.1],

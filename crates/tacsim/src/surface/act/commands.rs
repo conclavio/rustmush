@@ -143,7 +143,7 @@ pub(crate) fn run_refusal(w: &World, rig: &RigAt, record: &RigRecord) -> Option<
     let run = record.run.as_ref()?;
     Some(Refusal::MineRunning {
         n: rig.slot,
-        addr: address::pocket_address(run.pocket[0], run.pocket[1]).unwrap_or_default(),
+        addr: run.address(),
         k: run.k,
         cycles: run.cycles,
         when: tv::due_words(w, run.due_ic),
@@ -1293,9 +1293,11 @@ pub(crate) fn drive_cmd(
 ) -> Result<(), CmdError> {
     let n = rig.slot.to_string();
     let split: Vec<&str> = words.split_whitespace().collect();
-    let Some(target) = drive::parse_target(&split) else {
+    // Doc 32 cut S.1: the cheap usage gate under either side; the target itself is read under
+    // the stand's site's scheme once the stand is known.
+    if !drive::parses_as_target(&split) {
         return Err(CmdError::msg(tv::DRIVE_USAGE.replace("{n}", &n)));
-    };
+    }
     // Doc 20 cut SM.11 (D8): a live plan holds its rig.
     plan_holds(ctx, rig)?;
     let actor = ctx.actor;
@@ -1311,6 +1313,9 @@ pub(crate) fn drive_cmd(
     let dark = || CmdError::msg(tv::TV_DARK.replace("{name}", &name));
     // 1. The stand: from the bay the implied launch's whole gate, else on the site's ground.
     let stand = stand_of(ctx.w, actor, rig).map_err(|refusal| CmdError::msg(refusal.line()))?;
+    let Some(target) = drive::parse_target_in(&split, stand.scheme) else {
+        return Err(CmdError::msg(tv::DRIVE_USAGE.replace("{n}", &n)));
+    };
     // 2. The battery and the rates: a drive spends.
     let Some(battery) = rig_battery(ctx.w, &handles, rig) else {
         return Err(dark());
@@ -1351,7 +1356,7 @@ pub(crate) fn drive_cmd(
         &battery,
         rig.slot,
     )?;
-    let target_text = drive::target_words(&target);
+    let target_text = drive::target_words_in(&target, stand.scheme);
     let ramp = stand.ramp_label.clone();
     if !go {
         let launch = if stand.from_bay {
@@ -1510,8 +1515,10 @@ pub(super) fn reading_preview(
             ..
         } => {
             let stand = (cell[0], cell[1]);
-            let field =
-                address::field_of_cell(stand).and_then(|(fx, fy)| address::field_name(fx, fy))?;
+            let scheme = plan.params.scheme();
+            let field = scheme
+                .field_of_cell(stand)
+                .and_then(|(fx, fy)| scheme.field_name(fx, fy))?;
             let radius = i64::from(scanner.scan_radius_cells);
             let better = match chart::peek_site(w, &plan.site, peeks) {
                 SitePeek::Warm(ground) => chart::ground_surface(&ground)
@@ -1551,9 +1558,10 @@ pub(super) fn reading_preview(
             ..
         } => {
             let stand = (cell[0], cell[1]);
-            let (px, py) = address::pocket_of_cell(stand)?;
-            let addr = address::pocket_address(px, py)?;
-            let count = pockets_in_reach(stand, i64::from(*radius)).len();
+            let scheme = plan.params.scheme();
+            let (px, py) = scheme.pocket_of_cell(stand)?;
+            let addr = scheme.pocket_address(px, py)?;
+            let count = scheme.pockets_in_reach(stand, i64::from(*radius)).len();
             let heard = if *quiet {
                 tv::HEARD_BY_NOBODY.to_owned()
             } else {
@@ -2004,10 +2012,11 @@ pub(crate) fn mine_plan(
     }
     let dark = || Refusal::Dark { name: name.clone() };
     // 2. The pocket.
-    let (px, py) = address::pocket_of_cell(stand.cell).ok_or_else(dark)?;
-    let addr = address::pocket_address(px, py).ok_or_else(dark)?;
-    let letter = address::block_letter(px, py).ok_or_else(dark)?;
-    let number = address::pocket_number(px, py).ok_or_else(dark)?;
+    let scheme = stand.scheme;
+    let (px, py) = scheme.pocket_of_cell(stand.cell).ok_or_else(dark)?;
+    let addr = scheme.pocket_address(px, py).ok_or_else(dark)?;
+    let letter = scheme.block_letter(px, py).ok_or_else(dark)?;
+    let number = scheme.pocket_number(px, py).ok_or_else(dark)?;
     // 3. The site's ground: resolved, peeked, the way home, the footing.
     let site = chart::site_context(w, &stand.site).map_err(|_| Refusal::InstrumentsDark)?;
     let ground = match chart::peek_site(w, &stand.site, peeks) {
@@ -2135,7 +2144,8 @@ pub(crate) fn mine_plan(
         choice
             .family
             .or_else(|| {
-                address::field_of_pocket((px, py))
+                scheme
+                    .field_of_pocket((px, py))
                     .and_then(|field| richest_read(&site, row.as_ref(), field))
             })
             .unwrap_or(OreFamily::Metals)
@@ -2351,6 +2361,7 @@ pub(crate) fn mine_plan(
     }
     let secs = cycle_secs(drill, footing).ok_or_else(dark)?;
     Ok(MinePlan {
+        side: scheme.side(),
         site: stand.site.clone(),
         body: site.spec.body.clone(),
         stand: [stand.cell.0, stand.cell.1],
@@ -2631,10 +2642,7 @@ pub(crate) fn mine_stop_cmd(ctx: &mut Ctx<'_>, rig: &RigAt) -> Result<(), CmdErr
     };
     let line = tv::MINE_STOPPING
         .replace("{n}", &n)
-        .replace(
-            "{addr}",
-            &address::pocket_address(run.pocket[0], run.pocket[1]).unwrap_or_default(),
-        )
+        .replace("{addr}", &run.address())
         .replace("{when}", &tv::due_words(ctx.w, run.due_ic));
     ctx.submit_authoritative(
         action,
@@ -2811,6 +2819,7 @@ pub(crate) fn plan_ask(
         crate::port::site_map::pit_exhausted(reads, &berth.entry, &ground, pocket, family)
     };
     let compiled = crate::surface::plan::compile(&crate::surface::plan::CompileInput {
+        scheme: site.scheme(),
         row: row.as_ref(),
         list,
         family,
@@ -3001,7 +3010,10 @@ pub(crate) fn plan_cmd(
             lines.push(
                 tv::PLAN_PREVIEW_STEP
                     .replace("{k}", &k.saturating_add(1).to_string())
-                    .replace("{words}", &crate::surface::plan::step_words(step, true))
+                    .replace(
+                        "{words}",
+                        &crate::surface::plan::step_words_in(step, true, compiled.scheme),
+                    )
                     .replace("{hours}", &hours)
                     .replace("{far}", &far),
             );
@@ -3312,7 +3324,9 @@ pub(crate) fn plan_show_cmd(ctx: &mut Ctx<'_>, rig: &RigAt) -> Result<(), CmdErr
     for (k, step) in plan.steps.iter().enumerate() {
         let skipped = match step {
             PlanStep::Mine { pocket } => passed.contains(&(pocket[0], pocket[1], false)),
-            PlanStep::Sound { field } => address::field_of_index(*field)
+            PlanStep::Sound { field } => plan
+                .scheme()
+                .field_of_index(*field)
                 .is_some_and(|(fx, fy)| passed.contains(&(fx, fy, true))),
             PlanStep::Block { .. } => false,
         };
@@ -3331,7 +3345,10 @@ pub(crate) fn plan_show_cmd(ctx: &mut Ctx<'_>, rig: &RigAt) -> Result<(), CmdErr
         lines.push(
             tv::PLAN_SHOW_STEP
                 .replace("{k}", &k.saturating_add(1).to_string())
-                .replace("{words}", &crate::surface::plan::step_words(step, false))
+                .replace(
+                    "{words}",
+                    &crate::surface::plan::step_words_in(step, false, plan.scheme()),
+                )
                 .replace("{mark}", mark),
         );
     }

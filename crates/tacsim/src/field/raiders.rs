@@ -82,12 +82,26 @@ pub struct RaiderCarrier {
     pub unit: CanonicalId,
     /// Its name.
     pub name: String,
-    /// Its site cell.
+    /// **Its cell, as an offset from the site's pad** (doc 32 cut S.1, ruling 4): cells east
+    /// and north of the pad's cell (`crate::surface::excursion::site_pad_cell`).
     pub cell: [i64; 2],
     /// Its heading, millidegrees.
     pub heading_mdeg: u32,
-    /// **Its ramp's site cell**: where its hulls launch and where they come home.
+    /// **Its ramp's cell, as an offset from the site's pad**: where its hulls launch and where
+    /// they come home.
     pub ramp: [i64; 2],
+}
+
+impl RaiderCarrier {
+    /// **The carrier's and its ramp's site cells** on a site whose pad is at `pad` (doc 32 cut
+    /// S.1): each offset added to the pad's cell; `None` when one leaves `i64`.
+    #[must_use]
+    pub fn cells_at(&self, pad: (i64, i64)) -> Option<([i64; 2], [i64; 2])> {
+        let at = |offset: [i64; 2]| -> Option<[i64; 2]> {
+            Some([pad.0.checked_add(offset[0])?, pad.1.checked_add(offset[1])?])
+        };
+        Some((at(self.cell)?, at(self.ramp)?))
+    }
 }
 
 /// One authored raider.
@@ -118,9 +132,10 @@ struct RaidersFile {
     raiders: Vec<RaiderDef>,
 }
 
-/// **The authored raiders**, checked: schema 2, unique ids, one to 22 hulls each beside the
-/// carrier (a party's two-letter designators), the carrier and its ramp on the site grid, and
-/// the ramp beside the carrier, never under it.
+/// **The authored raiders**, checked: schema 3 (doc 32 cut S.1: the carrier's cells are offsets
+/// from the pad), unique ids, one to 22 hulls each beside the carrier (a party's two-letter
+/// designators), the carrier and its ramp within the widest site's side of the pad, and the ramp
+/// beside the carrier, never under it.
 ///
 /// # Errors
 ///
@@ -128,10 +143,11 @@ struct RaidersFile {
 pub fn raiders() -> Result<Vec<RaiderDef>, String> {
     let file: RaidersFile =
         serde_json::from_str(RAIDERS_JSON).map_err(|error| format!("raiders: {error}"))?;
-    if file.schema != 2 {
-        return Err("raiders: schema 2 only".to_owned());
+    if file.schema != 3 {
+        return Err("raiders: schema 3 only".to_owned());
     }
-    // Doc 32 cut S.0: the widest site here; `seed` holds each to its own site's side.
+    // Doc 32 cut S.1: an offset within the widest site's side of the pad here; `seed` holds each
+    // cell to its own site's side.
     let side = i64::from(crate::surface::ground::MAX_SITE_CELLS);
     for (n, def) in file.raiders.iter().enumerate() {
         if file.raiders[..n].iter().any(|other| other.id == def.id) {
@@ -151,7 +167,7 @@ pub fn raiders() -> Result<Vec<RaiderDef>, String> {
             .cell
             .iter()
             .chain(&carrier.ramp)
-            .any(|v| !(0..side).contains(v))
+            .any(|v| !(-side + 1..side).contains(v))
             || carrier.heading_mdeg >= 360_000
             || !(1..=RAMP_REACH_CELLS).contains(&apart)
         {
@@ -349,17 +365,19 @@ pub fn seed(ctx: &mut Ctx<'_>, def: &RaiderDef) -> Result<String, String> {
     let side = i64::from(crate::surface::site_record::site_side_or_default(
         ctx.w, &def.site,
     ));
-    if def
-        .carrier
-        .cell
-        .iter()
-        .chain(&def.carrier.ramp)
-        .any(|v| !(0..side).contains(v))
-    {
-        return Err(format!(
+    // Doc 32 cut S.1 (ruling 4): the carrier's cells from the site's own pad.
+    let off = || {
+        format!(
             "{}'s carrier and its ramp stand off {}.",
             def.label, def.site
-        ));
+        )
+    };
+    let (cell, ramp) = def
+        .carrier
+        .cells_at(crate::surface::excursion::site_pad_cell(ctx.w, &def.site))
+        .ok_or_else(off)?;
+    if cell.iter().chain(&ramp).any(|v| !(0..side).contains(v)) {
+        return Err(off());
     }
     let spec_of = |ctx: &Ctx<'_>, design: &CanonicalId| {
         ctx.w
@@ -388,10 +406,10 @@ pub fn seed(ctx: &mut Ctx<'_>, def: &RaiderDef) -> Result<String, String> {
         serde_json::json!({
             "raider": def.id.as_str(),
             "leader": leader.0,
-            "ramp": def.carrier.ramp,
+            "ramp": ramp,
         }),
     )?;
-    let pose = crate::surface::excursion::cell_pose(def.carrier.cell, def.carrier.heading_mdeg)?;
+    let pose = crate::surface::excursion::cell_pose(cell, def.carrier.heading_mdeg)?;
     mush_sim::place(ctx, carrier, domain, pose)
         .map_err(|error| format!("{} was not placed ({error}).", def.carrier.name))?;
     for (unit, spec) in def.units.iter().zip(specs) {

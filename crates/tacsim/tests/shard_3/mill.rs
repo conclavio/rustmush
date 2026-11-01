@@ -1122,7 +1122,7 @@ fn enrol(rig: &mut Rig, who: &str, seed: i64) -> Result<String, (String, String)
 /// digest; and `strip_mill` removes exactly those two rows and the yard, idempotently.
 #[test]
 fn sm12a_strip_mill_rebuilds_the_published_v13() {
-    assert_eq!(LANE_VERSION, 16, "lane v16 since doc 32 cut CF.6c");
+    assert_eq!(LANE_VERSION, 17, "lane v17 since doc 32 cut S.1");
     let shipped = load_pack(LANE_JSON).expect("the lane verifies");
     assert_eq!(shipped.manifest().version(), LANE_VERSION);
     let mut mills = Vec::new();

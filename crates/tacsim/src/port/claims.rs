@@ -915,27 +915,31 @@ fn licence(w: &World, actor: ObjId, now: i64) -> Result<(), String> {
 /// (`C-NW sounded`), then the pockets they cored (`C117 cored`), at most four, then
 /// `, and {n} more`. The actor's own row only.
 fn readings_clause(row: &crate::surface::chart::ChartRecord, letter: char) -> String {
-    use crate::surface::address;
+    // Doc 32 cut S.1: the row's own site's scheme (four fields a block at 256, sixteen at 512).
+    let scheme = row.scheme();
+    let pockets = usize::try_from(scheme.pockets_in_block()).unwrap_or(0);
     let mut parts: Vec<String> = Vec::new();
     let cells = row.blocks.get(letter.to_string().as_str());
-    if let Some((bx, by)) = address::block_of_letter(letter) {
-        // The four fields, north-west first (the address's own reading order).
-        for (dx, dy) in [(0, 1), (1, 1), (0, 0), (1, 0)] {
-            let (fx, fy) = (bx * 2 + dx, by * 2 + dy);
-            let Some(name) = address::field_name(fx, fy) else {
+    if let Some(mut fields) = scheme.fields_of_block(letter) {
+        // The block's fields, north-west first (the address's own reading order).
+        fields.sort_by_key(|(fx, fy)| (std::cmp::Reverse(*fy), *fx));
+        for (fx, fy) in fields {
+            let Some(name) = scheme.field_name(fx, fy) else {
                 continue;
             };
             let sounded = cells.is_some_and(|block| {
-                (0..crate::surface::chart::BLOCK_POCKETS).any(|index| {
+                (0..pockets).any(|index| {
                     block.cell(index).is_some_and(|byte| {
                         crate::surface::chart::cell_tier(byte) == crate::surface::chart::TIER_R2
-                    }) && address::pocket_of_block_index(letter, index)
-                        .and_then(address::field_of_pocket)
+                    }) && scheme
+                        .pocket_of_block_index(letter, index)
+                        .and_then(|pocket| scheme.field_of_pocket(pocket))
                         == Some((fx, fy))
                 })
             });
-            let scanned =
-                address::field_index(fx, fy).is_some_and(|index| row.fields.contains_key(&index));
+            let scanned = scheme
+                .field_index(fx, fy)
+                .is_some_and(|index| row.fields.contains_key(&index));
             if sounded {
                 parts.push(format!("{name} sounded"));
             } else if scanned {
@@ -944,7 +948,7 @@ fn readings_clause(row: &crate::surface::chart::ChartRecord, letter: char) -> St
         }
     }
     if let Some(block) = cells {
-        for index in 0..crate::surface::chart::BLOCK_POCKETS {
+        for index in 0..pockets {
             if block
                 .cell(index)
                 .is_some_and(|byte| byte & crate::surface::chart::PIT_SEEN != 0)
@@ -1010,7 +1014,6 @@ fn plan_stake(
     now: i64,
     registry: &RegistryInfo,
 ) -> Result<ClaimPlan, String> {
-    use crate::surface::address;
     // 1. The rig.
     let rig = crate::port::tv::select_in(w, actor, slot, WHICH_RIG_STAKE)?;
     // 2. Its stand.
@@ -1020,8 +1023,10 @@ fn plan_stake(
     }
     let site_name = stand.site_name.clone();
     // 3. The block and the site.
-    let letter = address::pocket_of_cell(stand.cell)
-        .and_then(|(px, py)| address::block_letter(px, py))
+    let letter = stand
+        .scheme
+        .pocket_of_cell(stand.cell)
+        .and_then(|(px, py)| stand.scheme.block_letter(px, py))
         .ok_or_else(|| {
             dark_because(
                 &site_name,

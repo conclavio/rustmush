@@ -60,20 +60,15 @@ pub const MAX_HEARD_SCAN_ROWS: usize = 512;
 /// **A claim order's life**, IC seconds (D5): an order older than this offers nothing.
 pub const CLAIM_ORDER_TTL_IC_SECS: i64 = 3_600;
 
-/// The block's four fields' indexes on the site (`fy · 8 + fx`).
-fn block_field_indexes(letter: char) -> Vec<u8> {
-    let Some((bx, by)) = crate::surface::address::block_of_letter(letter) else {
-        return Vec::new();
-    };
-    let mut out = Vec::with_capacity(4);
-    for dy in 0..2 {
-        for dx in 0..2 {
-            if let Some(index) = crate::surface::address::field_index(bx * 2 + dx, by * 2 + dy) {
-                out.push(index);
-            }
-        }
-    }
-    out
+/// The block's fields' indexes on the site (`fy · fields + fx`), south-west first: four at 256,
+/// sixteen at 512 under the site's `scheme` (doc 32 cut S.1).
+fn block_field_indexes(scheme: crate::surface::address::Scheme, letter: char) -> Vec<u8> {
+    scheme
+        .fields_of_block(letter)
+        .unwrap_or_default()
+        .into_iter()
+        .filter_map(|(fx, fy)| scheme.field_index(fx, fy))
+        .collect()
 }
 
 /// Whether a provenance entry is hand-made by one of the four reading instruments.
@@ -117,7 +112,7 @@ pub fn evidence_at(row: &ChartRecord, letter: char, since: Option<i64>) -> Optio
             best = Some(at);
         }
     };
-    let rings = block_field_indexes(letter)
+    let rings = block_field_indexes(row.scheme(), letter)
         .into_iter()
         .filter_map(|index| row.fields.get(&index))
         .map(|field| {
@@ -274,6 +269,7 @@ mod tests {
 
     fn row(principal: u32) -> ChartRecord {
         ChartRecord {
+            side: 256,
             schema: crate::surface::chart::CHART_SCHEMA,
             principal: ObjId(principal),
             site: mush_core::CanonicalId::new("ahuna_port").unwrap_or_else(|_| panic!("id")),

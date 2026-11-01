@@ -1009,15 +1009,16 @@ fn sm2_the_lane_carries_six_sites() {
     // entry). Doc 20 cut SM.10: v12 (the claim fees, the Pallas Syndicate org, Occator Rim's
     // paper; no new entry). Doc 20 cut SM.12a: v14 (the two mill rows; no new entry). Doc 20
     // cut SM.12b: v15 (Occator Rim's yard; no new entry). Doc 32 cut CF.6c: v16 (Occator's
-    // escort design; no new entry).
+    // escort design; no new entry). Doc 32 cut S.1: v17 (Urvara Reach, the 512 site: its place,
+    // its port and its two routes, four entries; `s1_the_lane_carries_the_512_site`).
     assert_eq!(
-        LANE_VERSION, 16,
-        "lane v9 since doc 20 cut SM.2, v10 since SM.3a, v11 since SM.5, v12 since SM.10, v13 since relay R9b, v14 since doc 20 cut SM.12a, v15 since doc 20 cut SM.12b, v16 since doc 32 cut CF.6c"
+        LANE_VERSION, 17,
+        "lane v9 since doc 20 cut SM.2, v10 since SM.3a, v11 since SM.5, v12 since SM.10, v13 since relay R9b, v14 since doc 20 cut SM.12a, v15 since doc 20 cut SM.12b, v16 since doc 32 cut CF.6c, v17 since doc 32 cut S.1"
     );
     assert_eq!(
         parse_pack(LANE_JSON).expect("parses").entries().len(),
-        60,
-        "sixty entries (the `sol` region is the atlas's)"
+        64,
+        "sixty-four entries (the `sol` region is the atlas's)"
     );
     assert_eq!(SITE_ROLE, "extraction", "lead override 1");
     for site in &SITES {
@@ -2947,7 +2948,7 @@ fn sm2_a_world_on_lane_v8_takes_v9_by_the_shelf() {
     let (plan, apply) = plan_and_apply(&mut rig.tw);
     assert!(
         plan.contains(&format!(
-            "Plan for {LANE_PACK}@{LANE_VERSION}: 24 create, 11 update, 0 retire, 25 unchanged"
+            "Plan for {LANE_PACK}@{LANE_VERSION}: 28 create, 11 update, 0 retire, 25 unchanged"
         )),
         "{plan}"
     );
@@ -2958,7 +2959,7 @@ fn sm2_a_world_on_lane_v8_takes_v9_by_the_shelf() {
     );
     assert!(
         apply.contains(&format!(
-            "Applied {LANE_PACK}@{LANE_VERSION}: 24 created, 11 updated, 0 retired, 25 unchanged."
+            "Applied {LANE_PACK}@{LANE_VERSION}: 28 created, 11 updated, 0 retired, 25 unchanged."
         )),
         "{plan}\n{apply}"
     );
@@ -3002,7 +3003,7 @@ fn sm2_the_apply_installs_the_lane_tables() {
     let (plan, apply) = plan_and_apply(&mut rig.tw);
     assert!(
         apply.contains(&format!(
-            "Applied {LANE_PACK}@{LANE_VERSION}: 24 created, 11 updated, 0 retired, 25 unchanged."
+            "Applied {LANE_PACK}@{LANE_VERSION}: 28 created, 11 updated, 0 retired, 25 unchanged."
         )),
         "{plan}\n{apply}"
     );
@@ -3056,4 +3057,115 @@ fn sm5_a_body_table_edit_installs_at_apply() {
         "installed at the apply, before any reboot"
     );
     no_refused_writes(&rig.tw);
+}
+
+/// **Doc 32 cut S.1 (ruling 4): every site's pad comes from its own pad room, and every shipped
+/// site's pad is where it always was.** On the composed world, each lane site's pad
+/// (`site_pad_cm`, the centre of its port's gallery room) is `PAD_CENTRE_CM` on both axes — the
+/// constant every 256 site read before — and so its pad cell is `(128, 128)`; Urvara Reach, the
+/// 512 site, has its pad at the middle of its 5,120 m, cell `(256, 256)`. The fixture raider's carrier stands at the same cells on
+/// Ahuna Flank as when they were absolute.
+#[test]
+fn s1_every_site_pad_comes_from_its_pad_room() {
+    use tacsim::surface::excursion::{PAD_CENTRE_CM, site_pad_cell, site_pad_cm};
+    let rig = stocked();
+    let w = rig.tw.world();
+    let mut seen = Vec::new();
+    for entry in support::sites::SITE_PORTS {
+        assert_eq!(
+            site_pad_cm(w, &cid(entry)),
+            (PAD_CENTRE_CM, PAD_CENTRE_CM),
+            "{entry}: the pad is where it was"
+        );
+        assert_eq!(site_pad_cell(w, &cid(entry)), (128, 128), "{entry}");
+        seen.push(entry);
+    }
+    assert_eq!(seen.len(), 6, "every shipped 256 site");
+    assert_eq!(site_pad_cm(w, &cid("urvara_port")), (256_000, 256_000));
+    assert_eq!(site_pad_cell(w, &cid("urvara_port")), (256, 256));
+    // Not a site: the shipped constant.
+    assert_eq!(
+        site_pad_cm(w, &cid("ceres_port")),
+        (PAD_CENTRE_CM, PAD_CENTRE_CM)
+    );
+    // The raider fixture's offsets land where its absolute cells stood.
+    let raiders = tacsim::field::raiders::raiders().expect("the fixture raiders");
+    let skulks = raiders
+        .iter()
+        .find(|def| def.site.as_str() == "ahuna_port")
+        .expect("Ahuna's raider");
+    assert_eq!(
+        skulks
+            .carrier
+            .cells_at(site_pad_cell(w, &cid("ahuna_port"))),
+        Some(([156, 126], [159, 126]))
+    );
+}
+
+/// **Doc 32 cut S.1: the wide site packs load clean** — Urvara Reach's region is a 5,120 m
+/// regolith square of its own seed, its neighborhood one pad room carrying `port.dock` over its
+/// centre and two to four craters inside it at least 300 m from the pad; both digests re-derived;
+/// and the twelve 2,560 m packs are untouched by it (`sm2_the_site_packs_load_clean_and_are_pinned`
+/// still pins them).
+#[test]
+fn s1_the_wide_site_packs_load_clean() {
+    use tacsim::definitions::content::WIDE_SITE_SOURCES;
+    let mut seeds = Vec::new();
+    for (_, json) in SITE_SOURCES {
+        let doc: Value = serde_json::from_str(json).expect("a pack");
+        for entry in doc["entries"].as_object().expect("entries").values() {
+            if entry["kind"] == "region" {
+                seeds.push(entry["def"]["background"]["seed"].clone());
+            }
+        }
+    }
+    for (name, json) in WIDE_SITE_SOURCES {
+        let pack = parse_pack(json).expect(name);
+        assert_eq!(
+            pack.computed_digest().expect("digests").to_hex(),
+            pack.manifest().digest().to_hex(),
+            "{name}: the digest field must be re-derived, never hand-edited"
+        );
+        let doc: Value = serde_json::from_str(json).expect(name);
+        let entries = doc["entries"].as_object().expect("entries");
+        if name.starts_with("region.") {
+            let region = &entries[name]["def"];
+            assert_eq!(region["body"], "ceres");
+            assert_eq!(region["extent"], serde_json::json!([[0, 0], [5120, 5120]]));
+            assert_eq!(region["ground_resolution_cm"], 1000);
+            assert_eq!(region["background"]["surface"], "regolith");
+            assert!(
+                !seeds.contains(&region["background"]["seed"]),
+                "its own background seed"
+            );
+            continue;
+        }
+        let rooms: Vec<&Value> = entries.values().filter(|e| e["kind"] == "room").collect();
+        assert_eq!(rooms.len(), 1, "{name}: one pad");
+        assert_eq!(rooms[0]["def"]["markers"], serde_json::json!(["port.dock"]));
+        assert_eq!(
+            rooms[0]["def"]["footprint"]["rect"],
+            serde_json::json!([[2540, 2540], [2580, 2580]]),
+            "the pad covers the centre"
+        );
+        let craters: Vec<&Value> = entries
+            .values()
+            .filter(|e| e["kind"] == "feature" && e["def"]["feature_kind"] == "crater")
+            .collect();
+        assert!((2..=4).contains(&craters.len()));
+        for crater in craters {
+            let polygon: Vec<(f64, f64)> = crater["def"]["polygon"]
+                .as_array()
+                .expect("a polygon")
+                .iter()
+                .map(|p| (p[0].as_f64().expect("x"), p[1].as_f64().expect("y")))
+                .collect();
+            assert!(
+                polygon
+                    .iter()
+                    .all(|(x, y)| (0.0..=5_120.0).contains(x) && (0.0..=5_120.0).contains(y))
+            );
+            assert!(distance_to_polygon((2_560.0, 2_560.0), &polygon) >= 300.0);
+        }
+    }
 }

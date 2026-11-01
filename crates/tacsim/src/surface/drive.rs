@@ -51,7 +51,7 @@ use mush_atlas::physics::{
 use mush_atlas::window::SurfaceComposite;
 
 use crate::surface::address::{
-    self, CELLS_PER_BLOCK, CELLS_PER_FIELD, CELLS_PER_POCKET, Octant, cell_on_site,
+    self, CELLS_PER_FIELD, CELLS_PER_POCKET, Octant, Scheme, cell_on_site,
 };
 use crate::surface::excursion::{LegWaypoint, MAX_LEG_WAYPOINTS, cells_apart, site_cell};
 use crate::surface::ground::{SITE_CELL_CM, SITE_CELLS};
@@ -200,8 +200,26 @@ fn strict_decimal(text: &str) -> Option<i64> {
 /// address), `C-NW` (a field), `C` (a block letter), `140,96` (a site cell, also `140, 96`), or
 /// a bearing — `ne 300`, `northeast 300`, `ne 300m`, `ne 300 m`. Case-insensitive; `None` for
 /// anything else, an address off the grammar, or a bearing outside `1..=`[`MAX_BEARING_METRES`].
+/// The shipped scheme's [`parse_target_in`].
 #[must_use]
 pub fn parse_target(words: &[&str]) -> Option<Target> {
+    parse_target_in(words, Scheme::SHIPPED)
+}
+
+/// **Whether `words` parse as a target on a site of some side** (doc 32 cut S.1): the drive
+/// command's cheap usage gate, before the stand names the site whose scheme
+/// [`parse_target_in`] then reads it under.
+#[must_use]
+pub fn parses_as_target(words: &[&str]) -> bool {
+    [Scheme::SHIPPED, Scheme::WIDEST]
+        .into_iter()
+        .any(|scheme| parse_target_in(words, scheme).is_some())
+}
+
+/// **[`parse_target`] under a site's `scheme`** (doc 32 cut S.1): its addresses, field names and
+/// blocks are that site's (`C117` names another pocket at 512 than at 256).
+#[must_use]
+pub fn parse_target_in(words: &[&str], scheme: Scheme) -> Option<Target> {
     match words {
         [one] => {
             if let Some((x, y)) = one.split_once(',') {
@@ -210,10 +228,10 @@ pub fn parse_target(words: &[&str]) -> Option<Target> {
                     y: strict_decimal(y.trim())?,
                 });
             }
-            if let Some((px, py)) = address::parse_pocket_address(one) {
+            if let Some((px, py)) = scheme.parse_pocket_address(one) {
                 return Some(Target::Pocket { px, py });
             }
-            if let Some((fx, fy)) = address::parse_field_name(one) {
+            if let Some((fx, fy)) = scheme.parse_field_name(one) {
                 return Some(Target::Field { fx, fy });
             }
             let mut chars = one.chars();
@@ -225,7 +243,7 @@ pub fn parse_target(words: &[&str]) -> Option<Target> {
             }
         }
         [first, second] if first.ends_with(',') || second.starts_with(',') => {
-            parse_target(&[format!("{first}{second}").as_str()])
+            parse_target_in(&[format!("{first}{second}").as_str()], scheme)
         }
         [direction, rest @ ..] => {
             let octant = octant_of_word(direction)?;
@@ -265,9 +283,10 @@ fn octant_step(octant: Octant) -> (i64, i64) {
 /// address cell, a field's or a block's middle, the cell itself, or — for a bearing — an
 /// orthogonal octant's `⌊(m + 5) / 10⌋` cells on its axis, a diagonal's `⌊(m × 100 + 707) /
 /// 1414⌋` cells on each (10 m × √2 a diagonal cell). `None` when the cell is off a site of
-/// `side` cells a side (doc 32 cut S.0: the site's own).
+/// `side` cells a side (doc 32 cut S.0: the site's own; cut S.1: its blocks `side / 4` cells).
 #[must_use]
 pub fn target_cell(target: &Target, from: (i64, i64), side: u16) -> Option<(i64, i64)> {
+    let block = Scheme::of_site(side).block_cells();
     let middle = |x: i64, y: i64, cells: i64, offset: i64| -> Option<(i64, i64)> {
         Some((
             x.checked_mul(cells)?.checked_add(offset)?,
@@ -277,7 +296,7 @@ pub fn target_cell(target: &Target, from: (i64, i64), side: u16) -> Option<(i64,
     let cell = match *target {
         Target::Pocket { px, py } => middle(px, py, CELLS_PER_POCKET, CELLS_PER_POCKET / 2)?,
         Target::Field { fx, fy } => middle(fx, fy, CELLS_PER_FIELD, CELLS_PER_FIELD / 2)?,
-        Target::Block { bx, by } => middle(bx, by, CELLS_PER_BLOCK, CELLS_PER_BLOCK / 2)?,
+        Target::Block { bx, by } => middle(bx, by, block, block / 2)?,
         Target::Cell { x, y } => (x, y),
         Target::Bearing { octant, metres } => {
             let (dx, dy) = octant_step(octant);
@@ -297,14 +316,22 @@ pub fn target_cell(target: &Target, from: (i64, i64), side: u16) -> Option<(i64,
 }
 
 /// **A target in words** (the preview, the log and `doing_words`): `C117`, `field C-NW`,
-/// `block C`, `cell 140,96`, `300 m NE`. At most 32 bytes.
+/// `block C`, `cell 140,96`, `300 m NE`. At most 32 bytes. The shipped scheme's
+/// [`target_words_in`].
 #[must_use]
 pub fn target_words(target: &Target) -> String {
+    target_words_in(target, Scheme::SHIPPED)
+}
+
+/// **[`target_words`] under a site's `scheme`** (doc 32 cut S.1).
+#[must_use]
+pub fn target_words_in(target: &Target, scheme: Scheme) -> String {
     match *target {
-        Target::Pocket { px, py } => {
-            address::pocket_address(px, py).unwrap_or_else(|| "a pocket".to_owned())
-        }
-        Target::Field { fx, fy } => address::field_name(fx, fy)
+        Target::Pocket { px, py } => scheme
+            .pocket_address(px, py)
+            .unwrap_or_else(|| "a pocket".to_owned()),
+        Target::Field { fx, fy } => scheme
+            .field_name(fx, fy)
             .map_or_else(|| "a field".to_owned(), |name| format!("field {name}")),
         Target::Block { bx, by } => address::letter_of_block(bx, by)
             .map_or_else(|| "a block".to_owned(), |letter| format!("block {letter}")),

@@ -36,8 +36,8 @@ use mush_core::{CanonicalId, ObjId, World};
 use serde_json::{Map, Value, json};
 
 use super::{
-    ClaimMark, OreFamily, PAD_CELL, Scanned, Sounded, SurfaceReads, Word, bearing_words,
-    claim_edges, claimed_blocks, pit_layer, pocket_cell, rank, reading_glyph, viewer_readings,
+    ClaimMark, OreFamily, Scanned, Sounded, SurfaceReads, Word, bearing_words, claim_edges_in,
+    claimed_blocks, pit_layer, pocket_cell, rank, reading_glyph, viewer_readings,
 };
 use crate::surface::address;
 use crate::surface::chart::{self, SitePeek};
@@ -211,7 +211,9 @@ pub(crate) fn campaign_layer(
     actor: ObjId,
     inputs: &LayerInputs<'_>,
 ) -> CampaignLayer {
-    let block_side = address::CELLS_PER_BLOCK;
+    // Doc 32 cut S.1 (ruling 3): blocks of `side / 4` cells under the site's own scheme.
+    let scheme = inputs.site.scheme();
+    let block_side = scheme.block_cells();
     let mut letters = Vec::new();
     for by in 0..crate::surface::ground::SITE_BLOCKS {
         for bx in 0..crate::surface::ground::SITE_BLOCKS {
@@ -222,7 +224,7 @@ pub(crate) fn campaign_layer(
     }
     let claimed = claimed_blocks(w, reads, inputs.entry, actor, inputs.now);
     let claimed_letters: Vec<char> = claimed.iter().map(|mark| mark.letter).collect();
-    let claim_cells = claim_edges(&claimed_letters)
+    let claim_cells = claim_edges_in(scheme, &claimed_letters)
         .into_iter()
         .map(|(cell, _)| cell)
         .collect();
@@ -256,12 +258,14 @@ pub(crate) fn campaign_layer(
             }
         }
     }
-    let pad = hull_on_pad(w, inputs.entry).then_some(PAD_CELL);
+    // Doc 32 cut S.1 (ruling 4): the site's own pad.
+    let pad_cell = crate::surface::excursion::site_pad_cell(w, inputs.entry);
+    let pad = hull_on_pad(w, inputs.entry).then_some(pad_cell);
     let seen = seen_from_heard(
         inputs.flights,
         inputs.own,
         inputs.observers,
-        PAD_CELL,
+        pad_cell,
         inputs.heard,
     );
     let record = reads.site_record(inputs.entry).ok().flatten();
@@ -422,7 +426,8 @@ pub(crate) fn campaign_value(layer: &CampaignLayer, site_name: &str, from: (i64,
     json!({
         "site": site_name,
         "side": layer.side,
-        "block_side": address::CELLS_PER_BLOCK,
+        // Doc 32 cut S.1: the site's own blocks, `side / 4` (64 on every shipped site).
+        "block_side": address::Scheme::of_site(layer.side).block_cells(),
         "field": layer.field.as_ref().map(|field| field.ordinal),
         "marks": marks
             .iter()

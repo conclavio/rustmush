@@ -2195,10 +2195,11 @@ fn plan_note_line(
     let words = crate::surface::act::PlanWords::of(w, plan);
     match note {
         PlanNoteKind::Passed { at, field, why } => {
+            let scheme = plan.scheme();
             let addr = if *field {
-                address::field_name(at[0], at[1]).unwrap_or_default()
+                scheme.field_name(at[0], at[1]).unwrap_or_default()
             } else {
-                address::pocket_address(at[0], at[1]).unwrap_or_default()
+                scheme.pocket_address(at[0], at[1]).unwrap_or_default()
             };
             (
                 tv::PLAN_PASSED
@@ -2431,7 +2432,8 @@ fn tell(
     // Doc 20 cut SM.7 (§6; the brief's 3.10, decision R12): a cycle that moved ore is one
     // `tacsim.surface.mined` fact — only once the projection's write landed (SM.4a's D24 order),
     // so a retold cycle never doubles.
-    if written && let Some(fact) = mined_fact(record.tv, last) {
+    let scheme = crate::surface::chart::site_scheme(ctx.w, &last.site);
+    if written && let Some(fact) = mined_fact(record.tv, last, scheme) {
         push_mined(ctx, &last.site, fact);
     }
     // The SM.7 lead's pre-commit round, item 3: a run the registry's dark read ended is paged
@@ -2447,8 +2449,8 @@ fn tell(
         tracing::error!(
             site = %last.site,
             tv = record.tv.0,
-            pocket = %address::pocket_address(pocket[0], pocket[1]).unwrap_or_default(),
-            block = %address::block_letter(pocket[0], pocket[1]).unwrap_or('?'),
+            pocket = %scheme.pocket_address(pocket[0], pocket[1]).unwrap_or_default(),
+            block = %scheme.block_letter(pocket[0], pocket[1]).unwrap_or('?'),
             cause = why.words(),
             "tacsim: a mining run ended because its block's registry could not be read ({}); \
              the operator was told the registry is dark; staff repair the read before the \
@@ -2499,8 +2501,13 @@ pub(crate) fn level_of(last: &Outcome) -> crate::port_tick::NoticeLevel {
 }
 
 /// **The fact a told cycle publishes** (doc 20 cut SM.7; decision R12): a `Done` cycle that moved
-/// at least a tonne; `None` for everything else (a barren core never reaches the ring).
-fn mined_fact(tv: ObjId, last: &Outcome) -> Option<crate::surface::mined::MinedFact> {
+/// at least a tonne; `None` for everything else (a barren core never reaches the ring). The
+/// pocket named under the site's `scheme` (doc 32 cut S.1).
+fn mined_fact(
+    tv: ObjId,
+    last: &Outcome,
+    scheme: address::Scheme,
+) -> Option<crate::surface::mined::MinedFact> {
     let mined = last.mined.as_ref()?;
     if last.result != ActResult::Done || mined.tonnes == 0 {
         return None;
@@ -2509,7 +2516,7 @@ fn mined_fact(tv: ObjId, last: &Outcome) -> Option<crate::surface::mined::MinedF
         at_ic: last.at_ic,
         tv,
         operator: last.operator,
-        pocket: address::pocket_address(mined.pocket[0], mined.pocket[1])?,
+        pocket: scheme.pocket_address(mined.pocket[0], mined.pocket[1])?,
         good: mined.good.clone(),
         tonnes: mined.tonnes,
         ordinal: last.ordinal,
@@ -2556,7 +2563,9 @@ fn mine_line(
     let n = last.slot.to_string();
     let ore = tv::ore_words(mined.good.as_str());
     let pocket = (mined.pocket[0], mined.pocket[1]);
-    let addr = address::pocket_address(pocket.0, pocket.1).unwrap_or_default();
+    let addr = crate::surface::chart::site_scheme(w, &last.site)
+        .pocket_address(pocket.0, pocket.1)
+        .unwrap_or_default();
     let hopper = match tv::hopper_load_of(ctx, tv) {
         Ok((kg, cap)) => tv::hopper_text(kg, cap),
         Err(error) => {
@@ -2764,12 +2773,14 @@ fn reading_block(
             ..
         } => {
             let stand = (cell[0], cell[1]);
-            let pockets = address::pockets_in_reach(stand, i64::from(*radius));
+            let scheme = row.scheme();
+            let pockets = scheme.pockets_in_reach(stand, i64::from(*radius));
             if !pockets.iter().any(|pocket| row.pocket_sounded(*pocket)) {
                 return gone();
             }
-            let addr = address::pocket_of_cell(stand)
-                .and_then(|(px, py)| address::pocket_address(px, py))
+            let addr = scheme
+                .pocket_of_cell(stand)
+                .and_then(|(px, py)| scheme.pocket_address(px, py))
                 .unwrap_or_default();
             let quietly = if *quiet { " quietly" } else { "" };
             let lines = crate::surface::chart::sound_lines(&site, &row, &pockets);
@@ -2803,10 +2814,8 @@ fn heard_lines(ctx: &mut Ctx<'_>, last: &Outcome, sounder: [i64; 2], on_site: &O
     let w: &World = ctx.w;
     let site = &last.site;
     let mut listeners: BTreeMap<ObjId, (i64, i64)> = BTreeMap::new();
-    let pad = {
-        let centre = crate::surface::excursion::PAD_CENTRE_CM;
-        site_cell(centre, centre)
-    };
+    // Doc 32 cut S.1 (ruling 4): the site's own pad.
+    let pad = crate::surface::excursion::site_pad_cell(w, site);
     // Rig operators on the site: the position of their lowest-slot rig standing on its ground.
     let domain = site_domain(w, site);
     let mut rigs: Vec<(ObjId, u8, ObjId)> = on_site
@@ -2907,9 +2916,10 @@ pub(crate) fn heard_line(sounder: [i64; 2], listener: (i64, i64)) -> String {
 /// unsounded pocket or a site whose ground cannot be read now each print the address alone.
 fn arrival_line(ctx: &Ctx<'_>, handles: &PortHandles, last: &Outcome, cell: [i64; 2]) -> String {
     use crate::port::tv;
-    let pocket = address::pocket_of_cell((cell[0], cell[1]));
+    let scheme = crate::surface::chart::site_scheme(ctx.w, &last.site);
+    let pocket = scheme.pocket_of_cell((cell[0], cell[1]));
     let addr = pocket
-        .and_then(|(px, py)| address::pocket_address(px, py))
+        .and_then(|(px, py)| scheme.pocket_address(px, py))
         .unwrap_or_else(|| format!("{},{}", cell[0], cell[1]));
     let key = ChartKey {
         principal: last.operator,
@@ -3601,6 +3611,7 @@ mod tests {
                 due_ic,
                 reserved_cu: 1_000,
                 params: ActParams::Scan {
+                    side: 256,
                     from_bay: false,
                     body: mush_core::CanonicalId::new("ceres").expect("an id"),
                     cell: stand,
@@ -3614,6 +3625,7 @@ mod tests {
             excursion: None,
             last: None,
             run: Some(Run {
+                side: 256,
                 ordinal: 3,
                 operator: ObjId(7),
                 hull: ObjId(8),
@@ -3965,6 +3977,7 @@ mod tests {
         record.ordinal = 5;
         record.plans = 1;
         record.plan = Some(FillPlan {
+            side: 256,
             no: 1,
             author: ObjId(7),
             hull: ObjId(8),

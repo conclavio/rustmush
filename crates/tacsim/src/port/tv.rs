@@ -2859,8 +2859,7 @@ fn rig_state(
         .and_then(|found| found.as_ref())
         .and_then(|record| record.run.as_ref())
     {
-        let addr = crate::surface::address::pocket_address(run.pocket[0], run.pocket[1])
-            .unwrap_or_default();
+        let addr = run.address();
         let ore = ore_words(run.good.as_str());
         let when = due_words(w, run.due_ic);
         acts.push(if run.blind {
@@ -2967,7 +2966,6 @@ fn ground_line(
     wants: &mut Vec<CanonicalId>,
 ) -> Option<String> {
     use crate::surface::act::{Where, where_is};
-    use crate::surface::address;
     use crate::surface::chart::{self, SitePeek};
     let w: &World = ctx.w;
     let Where::Ground {
@@ -2980,9 +2978,11 @@ fn ground_line(
         return None;
     }
     let cell = crate::surface::excursion::site_cell(x_cm, y_cm);
-    let pocket = address::pocket_of_cell(cell)?;
-    let field = address::field_of_cell(cell)?;
-    let letter = address::block_letter(pocket.0, pocket.1)?;
+    // Doc 32 cut S.1: the site's own scheme.
+    let scheme = chart::site_scheme(w, &berth.entry);
+    let pocket = scheme.pocket_of_cell(cell)?;
+    let field = scheme.field_of_cell(cell)?;
+    let letter = scheme.block_letter(pocket.0, pocket.1)?;
     let site_def = berth.def.site.as_ref()?;
     let pack = w
         .module_state::<TacsimStore>()
@@ -2999,7 +2999,7 @@ fn ground_line(
         pack,
         w.world_ic_now().at,
     );
-    let field_word = address::field_name(field.0, field.1)?;
+    let field_word = scheme.field_name(field.0, field.1)?;
     let fill = |template: &str| {
         template
             .replace("{block}", &letter.to_string())
@@ -3044,7 +3044,9 @@ fn ground_line(
         chart::pocket_text(&site, row, pocket)
     } else if row.is_some_and(|row| {
         row.rule == crate::surface::READING_RULE_VERSION
-            && address::field_index(field.0, field.1).is_some_and(|i| row.fields.contains_key(&i))
+            && scheme
+                .field_index(field.0, field.1)
+                .is_some_and(|i| row.fields.contains_key(&i))
     }) {
         chart::field_text(&site, row, field)
     } else {
@@ -4635,8 +4637,7 @@ pub(crate) fn rig_flight(ctx: &Ctx<'_>, tv: ObjId) -> Result<RigFlight, String> 
                 params: act.params.clone(),
             },
             (None, Some(run), _, _) => RigFlight::Drilling {
-                pocket: crate::surface::address::pocket_address(run.pocket[0], run.pocket[1])
-                    .unwrap_or_default(),
+                pocket: run.address(),
                 due_ic: run.due_ic,
             },
             (None, None, Some(no), _) => RigFlight::Planning {
@@ -5624,6 +5625,7 @@ mod tests {
         record.ordinal = 5;
         record.plans = 1;
         record.plan = Some(FillPlan {
+            side: 256,
             no: 1,
             author: ObjId(42),
             hull: ObjId(500),

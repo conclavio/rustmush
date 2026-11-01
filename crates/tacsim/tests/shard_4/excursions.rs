@@ -4192,6 +4192,7 @@ fn sm7_a_drilling_rig_holds_the_return_and_the_repossession() {
     let mut drilling = RigRecord::fresh(tv_o, &battery());
     drilling.ordinal = 1;
     drilling.run = Some(Run {
+        side: 256,
         ordinal: 1,
         operator: other,
         hull: hull_o,

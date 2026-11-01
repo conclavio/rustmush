@@ -7,7 +7,10 @@ use serde_json::Value;
 
 /// Remove exactly what doc 32 cut CF.6c added to the lane — Occator's pool's further designs
 /// (`ceres_port.vehicles.designs`) — the v15 shape (idempotent; the manifest is the caller's).
+/// Doc 32 cut S.1: lane v17's 512 site first (`super::sites::strip_wide_sites`), so every strip
+/// chain rebuilds its older lane.
 pub fn strip_designs(doc: &mut Value) {
+    super::sites::strip_wide_sites(doc);
     if let Some(vehicles) = doc["entries"]
         .as_object_mut()
         .and_then(|entries| entries.get_mut("ceres_port"))
