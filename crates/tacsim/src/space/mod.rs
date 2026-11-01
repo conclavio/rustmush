@@ -1005,4 +1005,180 @@ mod tests {
         check_eq!(bodies.len(), 2);
         Ok(())
     }
+
+    #[test]
+    fn story_2_pallas_claim_jump_derelict_salvage_and_neptune_expedition_end_to_end() -> TestResult
+    {
+        use mush_core::CanonicalId;
+
+        // Step 1: Crew flies a Dray-P into `pallas_inclined_belt`, pings M-type rock `rock.m_301`,
+        // matches 3D velocity (`|dv| <= 5 m/s` within 2 km), deploys 4 collector drones (`ExcursionId`),
+        // and extracts `strategic_ore` + `metal_ore` with the ship mining laser into `stow.ore`.
+        let mut field =
+            AsteroidClusterField::new_canonical_cluster("pallas_inclined_belt", 200_000);
+        let dray_p = SpaceShipState::new_dray(
+            "player_dray_p",
+            "UNS-PROSPECTOR",
+            SpacePartyId(1),
+            [0, 0, 0],
+            [0, 0, 0],
+        );
+        field.insert_ship_with_hold(dray_p, OreHoldState::new_dray_p());
+
+        let (spec, pools) = field.ping_rock("player_dray_p", "rock.m_309")?;
+        check_eq!(spec, AsteroidSpectralClass::MType);
+        check_eq!(pools.len(), 2);
+        let (dist_m, rel_mps) = field.match_velocity_with_rock("player_dray_p", "rock.m_309")?;
+        check!(dist_m <= MAX_MINING_RANGE_M);
+        check!(rel_mps <= MAX_MINING_REL_VEL_MPS);
+
+        let (excursion, drones) =
+            field.launch_collector_drones("player_dray_p", "rock.m_309", 4)?;
+        check_eq!(excursion, ExcursionId(1));
+        check_eq!(drones.len(), 4);
+        let drone_rep = field.complete_drone_sortie_cycle("player_dray_p")?;
+        check_eq!(drone_rep.good, OreGoodId::StrategicOre);
+        check_eq!(drone_rep.extracted_kg, 10_000);
+
+        let laser_rep = field.extract_with_mining_laser("player_dray_p", "rock.m_309", 4_000)?;
+        check_eq!(laser_rep.good, OreGoodId::StrategicOre);
+        check_eq!(laser_rep.extracted_kg, 4_000);
+        check!(
+            laser_rep.ir_bloom_permille >= 600,
+            "mining laser should spike thermal/IR bloom across the cluster"
+        );
+        check!(
+            laser_rep.claim_jump_flagged,
+            "mining Syndicate-papered rock without Registry stake logs claim-jump event"
+        );
+
+        // Step 2: Thermal bloom attracts a rival claim-jumper; after a laser/railgun duel on 1:1
+        // wall time, the attacker's drive is disabled and its hull remains as an open-epoch derelict.
+        let mut jumper = SpaceShipState::new_corvette(
+            "claim_jumper",
+            "SYNDICATE-CUTTER",
+            SpacePartyId(2),
+            [35_000, 0, 0],
+            [0, 0, 0],
+        );
+        // Set jumper drive internals low so a laser volley disables its rear drive into a derelict
+        jumper.attitude_deg = (0, 0, 0);
+        if let Some(drive) = jumper.sections.get_mut(&ShipSectionId::Drive) {
+            drive.facets.insert(FacetBand::Rear, 0);
+            drive.internals = 10;
+        }
+        field.bubble.insert_ship(jumper);
+        field
+            .bubble
+            .set_party_relation(SpacePartyId(1), SpacePartyId(2), SpaceRelation::Hostile);
+
+        // Player refits/arms a defensive laser on the Dray-P (or escort) to disable the claim-jumper's drive
+        if let Some(ship) = field.bubble.ships.get_mut("player_dray_p") {
+            ship.pos_m = [34_750, 0, 0];
+            ship.vel_mmps = [0, 0, 0];
+            ship.lasers
+                .push(LaserMount::standard_turret("mining_combat_laser"));
+        }
+        let laser_events = field
+            .bubble
+            .fire_offensive_lasers("player_dray_p", "claim_jumper");
+        check!(!laser_events.is_empty());
+        let jumper_after = field
+            .bubble
+            .ships
+            .get("claim_jumper")
+            .ok_or("missing claim_jumper")?;
+        check!(matches!(
+            jumper_after.status,
+            HullStatus::DisabledDerelict {
+                epoch_open: true,
+                ..
+            }
+        ));
+
+        // Step 3: Within 500 m (250 m standoff), pilot triggers mandatory out-of-time-loop 6-DOF
+        // hard-docking (`docking.rs`), aligns within gates at < 0.80 m/s, clamps, and attaches
+        // a salvage tow line under `doc 27a` (2x tonnage limit, 48 h contest window).
+        let mut dock_session = DockingSession::start_derelict_docking(
+            &field.bubble,
+            "dock.story2",
+            "player_dray_p",
+            "claim_jumper",
+            400,
+            550,
+            DockingPose6Dof {
+                dx_mm: 90,
+                dy_mm: -70,
+                dz_mm: 800,
+                pitch_mdeg: 300,
+                yaw_mdeg: -250,
+                roll_mdeg: 400,
+                vx_mmps: 0,
+                vy_mmps: 0,
+                vz_mmps: 450,
+                vpitch_mdeg_s: 0,
+                vyaw_mdeg_s: 0,
+                vroll_mdeg_s: 0,
+            },
+        )?;
+        check!(dock_session.paused_from_world_tick);
+        check!(dock_session.target.is_mandatory());
+        for _ in 0..160 {
+            let st = dock_session.step_frame_60fps(DockingControlInput::default());
+            if matches!(st, DockingSessionState::Completed(_)) {
+                break;
+            }
+        }
+        check!(matches!(
+            dock_session.state,
+            DockingSessionState::Completed(DockingOutcome::Clamped { .. })
+        ));
+        let now_ic_u64 = field.bubble.ic_timestamp_s.max(0) as u64;
+        let tow = dock_session.attach_salvage_tow(now_ic_u64)?;
+        check!(tow.contest_open);
+        check_eq!(
+            tow.contest_expires_ic_secs,
+            now_ic_u64 + SALVAGE_CONTEST_WINDOW_IC_SECS
+        );
+
+        // Step 4: With the payout, captain fits long-range drop tanks, decouples into Tier-1
+        // System Free Flight (`+helm/decouple`), burns out past Saturn and Uranus to Neptune & Triton,
+        // and projects the First-Person Space Bridge Canopy (`space.cockpit`).
+        let sky = test_kepler_sky()?;
+        let epoch = 74_152_540_800_i64;
+        let ceres = CanonicalId::new("ceres")?;
+        let mars = CanonicalId::new("mars")?;
+        let saturn = CanonicalId::new("saturn")?;
+        let uranus = CanonicalId::new("uranus")?;
+        let neptune = CanonicalId::new("neptune")?;
+        let triton = CanonicalId::new("triton")?;
+
+        let mut free_flight = SpaceFlightRecord::decouple_from_leg(
+            &sky,
+            "player_dray_p",
+            "UNS-PROSPECTOR",
+            "dray_p",
+            SpacePartyId(1),
+            &ceres,
+            &mars,
+            epoch,
+            epoch + 30_000,
+            epoch + 10_000,
+            24_000,
+            24_000,
+        )?;
+        free_flight.fit_long_range_drop_tanks();
+        let _saturn_flyby = free_flight.fly_expedition_to_body(&sky, &saturn, 120_000, true)?;
+        let _uranus_flyby = free_flight.fly_expedition_to_body(&sky, &uranus, 110_000, true)?;
+        let neptune_flyby = free_flight.fly_expedition_to_body(&sky, &neptune, 90_000, true)?;
+        check!(neptune_flyby.distance_km > 1_000_000_000);
+
+        let canopy_feed = free_flight.canopy_feed(&sky, &[neptune, triton]);
+        let bodies = canopy_feed
+            .get("bodies")
+            .and_then(serde_json::Value::as_array)
+            .ok_or("missing bodies")?;
+        check_eq!(bodies.len(), 2);
+        Ok(())
+    }
 }
