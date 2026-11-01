@@ -134,6 +134,12 @@ family = "housing.tenancy"
 note = "Residence guest list (+guest): updates the bounded tenancy record (tenancy:<id>) on the housing module's compatibility post-image lane; no prepared mechanic."
 
 [[handler]]
+name = "+helm"
+category = "legacy-post-image"
+family = "tacsim.space"
+note = "doc 35 cut SF.9 (sections 5-8, D-35-1..D-35-16): the spaceflight, attitude, velocity-match, mid-leg decouple, outer-system expedition, and 6-DOF docking verb. Updates the module-owned SpaceBook state slot (LocalSpaceBubble, AsteroidClusterField, KirkwoodPicketEncounter, SpaceFlightRecord, DockingSession, SalvageTowRecord) and pushes space.holotank, space.cockpit, and space.docking panel keyframes; no second money or quantity ledger."
+
+[[handler]]
 name = "+home"
 category = "legacy-post-image"
 family = "housing.tenancy"
@@ -194,6 +200,12 @@ note = "E7 residue pass 2 (P1, 10b 15.1 item 3): the category moves legacy-post-
 name = "+minds"
 category = "authoritative"
 note = "17g C2c: the player market's holder and buyer commands. Bare, /next and a code read current listings at a market counter through the market's bounded command read (no seller, author, account or digest); /holdings reads the actor's own licences and waiting purchases through Roll's own-only command read and the per-holder paid index. /buy, /buy/pay, /buy/complete and /buy/refund each submit exactly one existing entitlement legal action (quote, fund, grant, refund) through Ctx::submit_authoritative with parameters read from the actor's own index rows; the server's projection resolves the actor's own offer, funding is the E4 consent, and every provider rechecks. Registered unconditionally and refusing out loud without a composed market. 17g C2d: /renew (status or request), /renew/pay and /renew/decline call the existing renewal service's player steps (the service still grants or refunds); /resell and /charter (always the pending-charter protocol) submit one Offer each; /resell/accept and /charter/accept list the offers naming the actor from the per-buyer offer indexes and submit only the offer whose frozen price the actor confirms with price=, choosing a resale's Accept or Fund from the provider's own claim test. 17g C2g opened the trades over the per-buyer offer indexes. 17g C2h opened /renew: TacSim checks its own refusals (no licence, no drafted offer, not open, busy) and hands the actor's own step to the renewal service's front continuation, which the service delegates to TacSim at composition for the dispatching player only; the service reads, steps and replies under its own identity, and no TacSim line promises a submission."
+
+[[handler]]
+name = "+mine"
+category = "legacy-post-image"
+family = "tacsim.space"
+note = "doc 35 cut SF.9 (section 7, D-35-13): the zero-G orbital asteroid cluster mining verb (+mine/ping, +mine/licence, +mine/stake, +mine/contest, +mine/laser, +mine/drones). Updates the module-owned SpaceBook AsteroidClusterField state and pushes space.holotank and space.cockpit panel keyframes; no second money or quantity ledger."
 
 [[handler]]
 name = "+move"
@@ -345,6 +357,12 @@ name = "+survey"
 category = "authoritative"
 family = "tacsim.survey"
 note = "Read-only board and previews; acceptance offers an economy contract with the pilot's consent and queues an authorized typed survey acceptance. Occator funds only after that acceptance is durable. Sounding progress and completion commit with the chart through the surface action transaction; scoped survey facts settle payment or the contract's agreed cancellation refund. Funded cancellation records an authoritative withdrawal; unfunded cancellation uses the economy contract API. No legacy handler writes authoritative survey state."
+
+[[handler]]
+name = "+tac"
+category = "legacy-post-image"
+family = "tacsim.space"
+note = "doc 35 cut SF.9 (section 6, D-35-8, Q-35-4): the 1:1 wall-time space bubble tactical verb (+tac/pdc, +tac/laser, +tac/torp, +tac/rail, +tac/beam, +tac/step). Updates the module-owned SpaceBook LocalSpaceBubble / KirkwoodPicketEncounter state and pushes space.holotank and space.cockpit panel keyframes; no second money or quantity ledger."
 
 [[handler]]
 name = "+territory"
