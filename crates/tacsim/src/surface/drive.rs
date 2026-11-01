@@ -68,8 +68,17 @@ pub const fn drive_path_budget_cells(width: u16, height: u16) -> u32 {
 }
 /// The TV's locomotion row in the atlas table (its unit's tracked mode).
 pub const DRIVE_LOCOMOTION: &str = "tracked";
-/// The farthest a bearing target may name, metres (the site's diagonal, 2,560 m × √2).
-pub const MAX_BEARING_METRES: u32 = 3_620;
+/// The farthest a bearing target may name on a shipped site, metres (its diagonal, 2,560 m ×
+/// √2): [`max_bearing_metres`] of a shipped site.
+pub const MAX_BEARING_METRES: u32 = max_bearing_metres(SITE_CELLS);
+
+/// **The farthest a bearing target may name on a site `side` cells a side**, metres (doc 32 cut
+/// S.2, §20): its diagonal, `side × 10 m × √2` rounded down — 3,620 m at 256, 7,240 m at 512. A
+/// bearing that leaves the site from where the rig stands is still refused by [`target_cell`].
+#[must_use]
+pub const fn max_bearing_metres(side: u16) -> u32 {
+    (side as u32) * (SITE_CELL_CM as u32 / 100) * 14_142 / 10_000
+}
 /// **The display tolerances a leg is frozen at**, in 10 m cells, tried in order (R1): the first
 /// whose kept points number at most [`MAX_LEG_WAYPOINTS`] wins. 8 cells is one site-view cell
 /// (80 m), so the site view never shows the difference.
@@ -163,7 +172,7 @@ pub enum Target {
     Bearing {
         /// The octant.
         octant: Octant,
-        /// Metres, `1..=`[`MAX_BEARING_METRES`].
+        /// Metres, `1..=`[`max_bearing_metres`] of the site's side.
         metres: u32,
     },
 }
@@ -199,7 +208,8 @@ fn strict_decimal(text: &str) -> Option<i64> {
 /// **Parse a drive's target** (pure; the words already split, `go` removed): `C117` (a pocket
 /// address), `C-NW` (a field), `C` (a block letter), `140,96` (a site cell, also `140, 96`), or
 /// a bearing — `ne 300`, `northeast 300`, `ne 300m`, `ne 300 m`. Case-insensitive; `None` for
-/// anything else, an address off the grammar, or a bearing outside `1..=`[`MAX_BEARING_METRES`].
+/// anything else, an address off the grammar, or a bearing outside `1..=`[`MAX_BEARING_METRES`]
+/// (the shipped site's diagonal).
 /// The shipped scheme's [`parse_target_in`].
 #[must_use]
 pub fn parse_target(words: &[&str]) -> Option<Target> {
@@ -217,7 +227,8 @@ pub fn parses_as_target(words: &[&str]) -> bool {
 }
 
 /// **[`parse_target`] under a site's `scheme`** (doc 32 cut S.1): its addresses, field names and
-/// blocks are that site's (`C117` names another pocket at 512 than at 256).
+/// blocks are that site's (`C117` names another pocket at 512 than at 256), and since cut S.2 its
+/// bearings reach the site's own diagonal ([`max_bearing_metres`]).
 #[must_use]
 pub fn parse_target_in(words: &[&str], scheme: Scheme) -> Option<Target> {
     match words {
@@ -256,7 +267,7 @@ pub fn parse_target_in(words: &[&str], scheme: Scheme) -> Option<Target> {
                 _ => return None,
             };
             let metres = u32::try_from(metres).ok()?;
-            if metres == 0 || metres > MAX_BEARING_METRES {
+            if metres == 0 || metres > max_bearing_metres(scheme.side()) {
                 return None;
             }
             Some(Target::Bearing { octant, metres })
@@ -1291,6 +1302,32 @@ mod tests {
             out.push(at(k * 10, if k % 2 == 0 { 0 } else { 20 }));
         }
         out
+    }
+
+    /// **Doc 32 cut S.2: a bearing reaches the site's own diagonal.** 3,620 m at 256 as before,
+    /// 7,240 m at 512; from Urvara Reach's south-west corner `ne 5000` names a cell inside the
+    /// site, which the shipped bound refused as no target at all; past the diagonal is still no
+    /// target, and a bearing off the site from the stand is still no cell.
+    #[test]
+    fn s2_a_bearing_reaches_the_sites_own_diagonal() {
+        assert_eq!(MAX_BEARING_METRES, 3_620);
+        assert_eq!(max_bearing_metres(512), 7_240);
+        let far = ["ne", "5000"];
+        assert_eq!(parse_target_in(&far, Scheme::SHIPPED), None);
+        let target = parse_target_in(&far, Scheme::WIDEST).expect("a 512 bearing");
+        assert_eq!(
+            target,
+            Target::Bearing {
+                octant: Octant::NE,
+                metres: 5_000
+            }
+        );
+        assert_eq!(target_cell(&target, (10, 10), 512), Some((364, 364)));
+        assert_eq!(target_cell(&target, (256, 256), 512), None);
+        assert!(parses_as_target(&far));
+        assert_eq!(parse_target_in(&["ne", "7241"], Scheme::WIDEST), None);
+        assert!(parse_target_in(&["ne", "3620"], Scheme::SHIPPED).is_some());
+        assert_eq!(parse_target_in(&["ne", "3621"], Scheme::SHIPPED), None);
     }
 
     /// **More than 32 waypoints is refused, never cut** (R1): a zigzag needing 32 points even at
