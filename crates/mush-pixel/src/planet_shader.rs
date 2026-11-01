@@ -11,12 +11,7 @@ use crate::frame::Rgb;
 use crate::math::Det as _;
 
 /// 4x4 Bayer ordered dither thresholds in `0..16`.
-const BAYER_4X4: [[u8; 4]; 4] = [
-    [0, 8, 2, 10],
-    [12, 4, 14, 6],
-    [3, 11, 1, 9],
-    [15, 7, 13, 5],
-];
+const BAYER_4X4: [[u8; 4]; 4] = [[0, 8, 2, 10], [12, 4, 14, 6], [3, 11, 1, 9], [15, 7, 13, 5]];
 
 /// Visual archetype for a solar-system body.
 #[derive(Clone, Copy, Debug, Eq, PartialEq)]
@@ -195,12 +190,7 @@ const RING_LIT: [Rgb; 4] = [
     [232, 212, 164],
 ];
 
-const ICE_RING_LIT: [Rgb; 4] = [
-    [24, 52, 84],
-    [48, 96, 144],
-    [84, 148, 204],
-    [140, 204, 244],
-];
+const ICE_RING_LIT: [Rgb; 4] = [[24, 52, 84], [48, 96, 144], [84, 148, 204], [140, 204, 244]];
 
 fn bayer_threshold(x: i64, y: i64) -> f64 {
     let row = BAYER_4X4
@@ -444,7 +434,8 @@ fn shade_sphere_pixel(
             sample_ramp(&SATURN_RAMP, level, px, py)
         }
         PlanetStyle::Jupiter => {
-            let band = 0.16 * (lat * 20.0).det_cos() + 0.07 * (lat * 40.0 + lon.det_sin()).det_sin();
+            let band =
+                0.16 * (lat * 20.0).det_cos() + 0.07 * (lat * 40.0 + lon.det_sin()).det_sin();
             let dlon = (lon - 0.4).det_sin() * 1.6;
             let dlat = (lat - 0.36) * 4.2;
             if dlon * dlon + dlat * dlat < 1.0 && ndotl > 0.15 {
@@ -479,7 +470,12 @@ fn shade_sphere_pixel(
                 return sample_ramp(&TITAN_RAMP, 0.95, px, py);
             }
             let haze = 0.05 * (lat * 8.0).det_cos();
-            sample_ramp(&TITAN_RAMP, (light * (0.72 + haze)).clamp(0.0, 0.82), px, py)
+            sample_ramp(
+                &TITAN_RAMP,
+                (light * (0.72 + haze)).clamp(0.0, 0.82),
+                px,
+                py,
+            )
         }
         PlanetStyle::Triton => {
             // Cantaloupe terrain + dark nitrogen geyser streaks in southern hemisphere
@@ -488,17 +484,32 @@ fn shade_sphere_pixel(
             } else {
                 0.08 * (lon * 3.0).det_cos()
             };
-            sample_ramp(&TRITON_RAMP, (light * (0.80 + geyser)).clamp(0.0, 1.0), px, py)
+            sample_ramp(
+                &TRITON_RAMP,
+                (light * (0.80 + geyser)).clamp(0.0, 1.0),
+                px,
+                py,
+            )
         }
         PlanetStyle::Io => {
             let caldera = (lon * 4.0).det_sin() * (lat * 4.0).det_cos();
-            sample_ramp(&IO_RAMP, (light * (0.80 + 0.18 * caldera)).clamp(0.0, 1.0), px, py)
+            sample_ramp(
+                &IO_RAMP,
+                (light * (0.80 + 0.18 * caldera)).clamp(0.0, 1.0),
+                px,
+                py,
+            )
         }
         PlanetStyle::Europa => {
             // Lineae cracks across the ice shell
             let crack = ((lon * 7.0 + lat * 9.0).det_sin()).abs();
             let mod_albedo = if crack < 0.12 { -0.18 } else { 0.06 };
-            sample_ramp(&EUROPA_RAMP, (light * (0.84 + mod_albedo)).clamp(0.0, 1.0), px, py)
+            sample_ramp(
+                &EUROPA_RAMP,
+                (light * (0.84 + mod_albedo)).clamp(0.0, 1.0),
+                px,
+                py,
+            )
         }
         PlanetStyle::Rocky | PlanetStyle::Sun => {
             // Cratered regolith + Ceres Occator bright faculae spot
@@ -550,6 +561,9 @@ mod tests {
         assert_ne!(frame.get(290, 120), [0, 0, 0], "Saturn B/A ring drawn");
         // Total unique colours across both rendered giants stays well below 256
         let colours = frame.count_colours(256);
-        assert!(colours <= 32, "expected <= 32 palette colours, got {colours}");
+        assert!(
+            colours <= 32,
+            "expected <= 32 palette colours, got {colours}"
+        );
     }
 }

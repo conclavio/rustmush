@@ -190,19 +190,11 @@ pub fn project_canopy(
     let (sin_r, cos_r) = (-cam_roll_deg.to_radians()).det_sin_cos();
     let rx = dx * cos_r - dy * sin_r;
     let ry = dx * sin_r + dy * cos_r;
-    Some((
-        w / 2 + rx.round() as i64,
-        h / 2 + ry.round() as i64,
-    ))
+    Some((w / 2 + rx.round() as i64, h / 2 + ry.round() as i64))
 }
 
 /// Render the full First-Person Space Bridge Canopy into `frame`.
-pub fn draw_space_cockpit(
-    frame: &mut Frame,
-    cockpit: &Value,
-    feeds: &dyn Feeds,
-    look: &Look,
-) {
+pub fn draw_space_cockpit(frame: &mut Frame, cockpit: &Value, feeds: &dyn Feeds, look: &Look) {
     let (w, h) = (frame.width() as i64, frame.height() as i64);
     let sc = scale_for(frame);
     let s = sc as i64;
@@ -211,7 +203,9 @@ pub fn draw_space_cockpit(
     let cam_yaw = (num(cockpit.get("yaw_deg")).unwrap_or(0.0)
         + (look.offset_mdeg as f64) / 1_000.0)
         .rem_euclid(360.0);
-    let cam_pitch = num(cockpit.get("pitch_deg")).unwrap_or(0.0).clamp(-89.0, 89.0);
+    let cam_pitch = num(cockpit.get("pitch_deg"))
+        .unwrap_or(0.0)
+        .clamp(-89.0, 89.0);
     let cam_roll = num(cockpit.get("roll_deg")).unwrap_or(0.0);
     let zoom = if look.zoom_permille == 0 {
         1.0
@@ -291,8 +285,7 @@ pub fn draw_space_cockpit(
     // 3. Space contacts (ships, asteroids, torpedoes, railgun lead pips)
     if let Some(contacts) = cockpit.get("contacts").and_then(Value::as_array) {
         for c in contacts {
-            let (Some(bearing), Some(pitch)) =
-                (num(c.get("bearing_deg")), num(c.get("pitch_deg")))
+            let (Some(bearing), Some(pitch)) = (num(c.get("bearing_deg")), num(c.get("pitch_deg")))
             else {
                 continue;
             };
@@ -369,26 +362,15 @@ pub fn draw_space_cockpit(
                 );
             }
             if let Some(tti) = c.get("tti_s").and_then(Value::as_i64) {
-                let _ = text(
-                    frame,
-                    cx + 7 * s,
-                    cy + 5 * s,
-                    &format!("T-{tti}S"),
-                    BAD,
-                    sc,
-                );
+                let _ = text(frame, cx + 7 * s, cy + 5 * s, &format!("T-{tti}S"), BAD, sc);
             }
 
             // 3D Railgun Lead Pip for the locked target
             if locked
                 && let (Some(lb), Some(lp)) =
                     (num(c.get("lead_bearing_deg")), num(c.get("lead_pitch_deg")))
-                && let Some((lx, ly)) = project_canopy(
-                    (w, h),
-                    (lb, lp),
-                    (cam_yaw, cam_pitch, cam_roll),
-                    fov_deg,
-                )
+                && let Some((lx, ly)) =
+                    project_canopy((w, h), (lb, lp), (cam_yaw, cam_pitch, cam_roll), fov_deg)
             {
                 line(frame, cx, cy, lx, ly, LOCK);
                 outline_rect(frame, lx - 4 * s, ly - 4 * s, 9 * s, 9 * s, LOCK);
@@ -502,14 +484,7 @@ fn draw_canopy_frame_and_cowling(
     for k in 0..(3 * s) {
         line(frame, k, 12 * s, w / 5 + k, 0, STRUT_EDGE);
         line(frame, w - 1 - k, 12 * s, w - 1 - w / 5 - k, 0, STRUT_EDGE);
-        line(
-            frame,
-            k,
-            h - 24 * s,
-            w / 6 + k,
-            h - 1,
-            STRUT_EDGE,
-        );
+        line(frame, k, h - 24 * s, w / 6 + k, h - 1, STRUT_EDGE);
         line(
             frame,
             w - 1 - k,
@@ -531,9 +506,7 @@ fn draw_canopy_frame_and_cowling(
         .get("speed_mps")
         .and_then(Value::as_i64)
         .unwrap_or(0);
-    let header = format!(
-        "{callsign}  HDG:{cam_yaw:03.0} PIT:{cam_pitch:+03.0}  V:{speed_mps}M/S"
-    );
+    let header = format!("{callsign}  HDG:{cam_yaw:03.0} PIT:{cam_pitch:+03.0}  V:{speed_mps}M/S");
     let _ = text(frame, 6 * s, 2 * s, &header, TEXT, sc);
 
     // Bottom cowling instrument strip
