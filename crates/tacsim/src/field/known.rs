@@ -184,34 +184,79 @@ impl Learned {
 /// **The principals of a field's party**: its leader, the pilots who sat in its units at
 /// admission, and the operators of its rigs.
 fn principals(ctx: &Ctx<'_>, live: &super::FieldLive, party: PartyId) -> BTreeSet<ObjId> {
+    let handles = ctx
+        .w
+        .module_state::<crate::port::families::PortHandles>()
+        .cloned();
+    party_principals(live, party, |unit| {
+        let handles = handles.as_ref()?;
+        ctx.action_state(
+            &handles.families.excursions,
+            &crate::surface::excursion::RigKey(unit),
+        )
+        .ok()
+        .flatten()
+        .and_then(|record| record.excursion.as_ref().map(|out| out.operator))
+    })
+}
+
+/// **[`principals`] over any reader of a rig's operator** (doc 32 §17, G-7): the leader of
+/// `party`, the pilots who sat in its units at admission, and `operator_of` each of its units.
+pub(crate) fn party_principals(
+    live: &super::FieldLive,
+    party: PartyId,
+    operator_of: impl Fn(ObjId) -> Option<ObjId>,
+) -> BTreeSet<ObjId> {
     let mut out: BTreeSet<ObjId> = live
         .parties
         .iter()
         .filter(|row| row.party == party)
         .filter_map(|row| row.leader)
         .collect();
-    let handles = ctx
-        .w
-        .module_state::<crate::port::families::PortHandles>()
-        .cloned();
     for unit in live.units.iter().filter(|row| row.party == party) {
         if let Some((pilot, _)) = &unit.pilot {
             out.insert(*pilot);
         }
-        if let Some(handles) = &handles
-            && let Some(out_on) = ctx
-                .action_state(
-                    &handles.families.excursions,
-                    &crate::surface::excursion::RigKey(unit.unit),
-                )
-                .ok()
-                .flatten()
-                .and_then(|record| record.excursion.as_ref())
-        {
-            out.insert(out_on.operator);
+        if let Some(operator) = operator_of(unit.unit) {
+            out.insert(operator);
         }
     }
     out
+}
+
+/// **Whose charts `viewer` sees on the field map of `site`** (doc 32 §17, G-7; Q-CF-48,
+/// Q-CF-49): while a field runs there and `viewer` sits in one of its units, every principal of
+/// that unit's party ([`party_principals`]) other than `viewer`, for display only. Empty when no
+/// field runs there or `viewer` sits in none of its units. A chart stays per person (doc 20 §5):
+/// nothing is written to anyone's row, and the party's readings leave the map with the field.
+pub(crate) fn chart_mates(
+    w: &mush_core::World,
+    site: &CanonicalId,
+    viewer: ObjId,
+    operator_of: impl Fn(ObjId) -> Option<ObjId>,
+) -> BTreeSet<ObjId> {
+    let Some(hosted) = w
+        .module_state::<FieldBook>()
+        .and_then(|book| book.hosted(site))
+    else {
+        return BTreeSet::new();
+    };
+    let live = &hosted.live;
+    let Some(party) = live
+        .units
+        .iter()
+        .find(|row| {
+            row.pilot
+                .as_ref()
+                .is_some_and(|(pilot, _)| *pilot == viewer)
+        })
+        .map(|row| row.party)
+    else {
+        return BTreeSet::new();
+    };
+    let mut mates = party_principals(live, party, operator_of);
+    mates.remove(&viewer);
+    mates
 }
 
 /// **What each principal of the field on `site` learns as it closes** (Q-CF-28): per party, the

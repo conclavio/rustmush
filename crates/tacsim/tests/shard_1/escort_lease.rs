@@ -57,6 +57,11 @@ fn lease_escort(rig: &mut Rig, pilot: ObjId) {
             && preview.contains("15000.00cr"),
         "the escort's terms: {preview}"
     );
+    // Doc 32 §17: the preview names the command that signs it, never the prospector's.
+    assert!(
+        preview.contains("+tv/lease escort go signs it.") && !preview.contains("+tv/lease go"),
+        "the escort's preview names its own signature: {preview}"
+    );
     let nothing = run(&mut rig.tw, pilot, "+tv/lease tank");
     assert!(
         nothing.contains("Occator leases no tank") && nothing.contains("+tv/lease escort"),

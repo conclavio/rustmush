@@ -79,8 +79,16 @@ pub const LICENCE_PREVIEWED: &str = "+licence/buy go buys it.";
 pub const LICENCE_IN_FORCE: &str = "in force until";
 /// `licence::LICENCE_NONE` (`licence.rs:109`).
 pub const LICENCE_NONE: &str = "You hold no prospecting licence";
-/// `tacsim::port::tv::LEASE_PREVIEW`'s tail (`tv.rs:116`).
-pub const LEASE_PREVIEWED: &str = "+tv/lease go signs it.";
+/// `tacsim::port::tv::LEASE_PREVIEW`'s tail after its `{go}` (doc 32 §17): the preview names the
+/// command that signs it, `+tv/lease go` or `+tv/lease escort go` ([`lease_previewed`]).
+pub const LEASE_PREVIEWED: &str = " signs it.";
+
+/// **The lease preview's tail for the signing command `go`** (`tv::lease_go`): `+tv/lease go
+/// signs it.` for the prospector, `+tv/lease escort go signs it.` for the escort.
+#[must_use]
+pub fn lease_previewed(go: &str) -> String {
+    format!("{go}{LEASE_PREVIEWED}")
+}
 /// `tv::LEASED`'s head (`tv.rs:118`).
 pub const LEASE_SIGNED: &str = "Occator Water & Propellant leases you ";
 /// `tv::LEASE_LICENCE` (`tv.rs:145`).
@@ -1160,7 +1168,16 @@ mod tests {
         assert!(licence::LICENCE_NONE.contains(LICENCE_NONE));
         assert!(licence::LICENCE_PREVIEW.contains(LICENCE_PREVIEWED));
         assert!(tv::LEASED.contains(LEASE_SIGNED));
-        assert!(tv::LEASE_PREVIEW.contains(LEASE_PREVIEWED));
+        for design in [None, Some("escort")] {
+            let go = tv::lease_go(design);
+            assert!(
+                tv::LEASE_PREVIEW
+                    .replace("{go}", &go)
+                    .contains(&lease_previewed(&go))
+            );
+        }
+        assert_eq!(tv::lease_go(None), "+tv/lease go");
+        assert_eq!(tv::lease_go(Some("escort")), "+tv/lease escort go");
         assert!(tv::LEASE_LICENCE.contains(LEASE_NO_LICENCE));
         assert!(tv::LEASE_FUNDS.contains(LEASE_SHORT));
         assert!(tv::RIG_LINE.replace("{n}", "1").contains(RIG_ONE));

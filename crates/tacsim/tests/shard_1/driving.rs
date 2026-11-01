@@ -530,7 +530,7 @@ where
 }
 
 /// A pilot on a gateway account of their own, standing at the Registry desk.
-fn pilot(rig: &mut Rig, who: &str, seed: i64) -> ObjId {
+pub(crate) fn pilot(rig: &mut Rig, who: &str, seed: i64) -> ObjId {
     let pilot = rig.tw.spawn_player(who);
     if let Ok(mut map) = rig.oracle.0.lock() {
         map.insert(

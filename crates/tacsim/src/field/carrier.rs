@@ -118,6 +118,70 @@ pub(crate) fn pad_poses(
     Ok(poses)
 }
 
+/// **How far from its cell a unit sharing it may be stood at admission**, cells (Chebyshev).
+pub const UNSTACK_CELLS: u16 = 4;
+
+/// **Two units on one cell, parted at admission** (doc 32 §17, the fix for G-4's "two hulls on
+/// one pad launch their rigs onto one cell"). The kernel stands one unit in a cell, and the
+/// surface does not: every hull on one pad launches its rigs onto the pad's one ramp cell, so a
+/// second rig launched before the first drove off shared its cell, and admission refused the
+/// whole field. Now, in unit order, the first unit keeps its cell; each later unit on a cell
+/// already held is stood on the nearest cell (nearest ring first, row-major, within
+/// [`UNSTACK_CELLS`]) that no other unit holds and it can stand on, at its own pose moved by
+/// whole cells, so its heading and its place within the cell are kept. The move is a surface
+/// placement, made before the check-out, like the settled rigs' (Q-CF-31), so the field admits
+/// it there and it comes home from there. A surface with no two units on one cell is untouched,
+/// so a launch, a drive and every "beside the ramp" test read exactly as before. `taken` gains
+/// every unit's cell.
+///
+/// # Errors
+///
+/// A unit with no unit record, or no free cell near its own.
+pub(crate) fn unstack(
+    ctx: &mut Ctx<'_>,
+    terrain: &crate::arena::state::ArenaTerrain,
+    units: &[ObjId],
+    taken: &mut std::collections::BTreeSet<(u16, u16)>,
+) -> Result<(), String> {
+    let side = i64::from(terrain.cell_cm());
+    for unit in units {
+        let Some((on, pose)) = mush_sim::pose_of(ctx.w, *unit) else {
+            continue;
+        };
+        let Some(cell) = terrain.cell_of(&pose) else {
+            continue;
+        };
+        if taken.insert(cell) {
+            continue;
+        }
+        let cells = mush_tactics::module::unit_of(ctx.w, *unit)
+            .ok_or_else(|| format!("#{} has no tactical unit record", unit.0))?;
+        let row = crate::arena::state::CostRow::read(cells);
+        let free = (1..=UNSTACK_CELLS)
+            .flat_map(|ring| ring_cells(cell, ring))
+            .find(|at| !taken.contains(at) && terrain.passable_for(row, at.0, at.1))
+            .ok_or_else(|| {
+                format!(
+                    "#{} shares cell {cell:?} and no free cell is within {UNSTACK_CELLS}",
+                    unit.0
+                )
+            })?;
+        taken.insert(free);
+        let mut at = pose.clone();
+        at.x_cm += (i64::from(free.0) - i64::from(cell.0)) * side;
+        at.y_cm += (i64::from(free.1) - i64::from(cell.1)) * side;
+        mush_sim::place(ctx, *unit, on, at)
+            .map_err(|error| format!("#{} could not be parted ({error})", unit.0))?;
+        tracing::info!(
+            unit = unit.0,
+            from = ?cell,
+            to = ?free,
+            "tacsim: a unit sharing a cell is parted at admission"
+        );
+    }
+    Ok(())
+}
+
 /// The cells `ring` cells from `centre` (Chebyshev), row-major; `ring 0` is the centre.
 pub(crate) fn ring_cells(centre: (u16, u16), ring: u16) -> Vec<(u16, u16)> {
     let (cx, cy) = (i32::from(centre.0), i32::from(centre.1));
