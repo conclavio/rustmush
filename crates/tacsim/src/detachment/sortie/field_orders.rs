@@ -235,12 +235,12 @@ pub struct FieldPayload {
     pub hold_fire: bool,
 }
 impl FieldPayload {
-    pub fn validate(&self, roster: &DetachmentRoster) -> Result<(), String> {
+    /// `side`: the field site's cells along one side (doc 32 cut S.0, §18), which an `ADVANCE`
+    /// stays inside — the site's own at issue, the widest site's
+    /// ([`crate::surface::ground::MAX_SITE_CELLS`]) for a stored order.
+    pub fn validate(&self, roster: &DetachmentRoster, side: u16) -> Result<(), String> {
         match self.objective {
-            FieldObjective::Advance { to }
-                if to.0 >= crate::surface::ground::SITE_CELLS
-                    || to.1 >= crate::surface::ground::SITE_CELLS =>
-            {
+            FieldObjective::Advance { to } if to.0 >= side || to.1 >= side => {
                 Err("Destination lies outside this field site.".into())
             }
             FieldObjective::Screen { bearing_mdeg } if bearing_mdeg >= 360_000 => {
@@ -334,7 +334,7 @@ impl FieldOrders {
                 .chain(book.delivered(m.slot).map(|d| &d.order))
             {
                 if let Directive::Objective(payload) = &order.directive {
-                    payload.validate(roster)?;
+                    payload.validate(roster, crate::surface::ground::MAX_SITE_CELLS)?;
                 }
             }
         }
@@ -478,4 +478,40 @@ pub(super) fn needs_poll(world: &mush_core::World, op: &super::model::OperationR
                     })
         })
     })
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    /// **An `ADVANCE` follows the site's side** (doc 32 cut S.0, §18): `(300, 300)` is on a 512
+    /// site and off a 256 one; a stored order is held only to the widest site.
+    #[test]
+    fn s0_advance_follows_the_site_side() {
+        let roster = DetachmentRoster::new(
+            mush_tactics::detachment::DetachmentId(7),
+            1,
+            vec![mush_tactics::detachment::Member {
+                slot: Slot::new(1).expect("a slot"),
+                unit: ObjId(101),
+                controller: mush_tactics::detachment::Controller::Automated,
+            }],
+            None,
+            mush_tactics::detachment::LeadershipPolicy::default(),
+        )
+        .expect("a roster");
+        let advance = |to| FieldPayload {
+            objective: FieldObjective::Advance { to },
+            hold_fire: false,
+        };
+        assert_eq!(advance((300, 300)).validate(&roster, 512), Ok(()));
+        assert!(advance((300, 300)).validate(&roster, 256).is_err());
+        assert_eq!(advance((255, 255)).validate(&roster, 256), Ok(()));
+        assert!(advance((256, 0)).validate(&roster, 256).is_err());
+        assert!(
+            advance((512, 0))
+                .validate(&roster, crate::surface::ground::MAX_SITE_CELLS)
+                .is_err()
+        );
+    }
 }

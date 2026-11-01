@@ -3409,6 +3409,7 @@ fn sm4b_the_drive_planner_is_measured() {
             let to = tacsim::surface::drive::target_cell(
                 &tacsim::surface::drive::Target::Cell { x: 255, y: 255 },
                 (0, 0),
+                surface.cells.width(),
             )
             .expect("on the site");
             let leg = drive_leg(surface, table(), (500, 500), to, &rates).expect("a leg");

@@ -1699,3 +1699,68 @@ open, for the owner to object to:
 **Defaults taken (provisional):** the G-7 rule's reach (party principals, not Friends); the
 unstacking order (unit order; nearest ring, row-major, within 4 cells); the lease preview's
 `{go}`. The story's 7,000cr transfer is a fixture.
+
+## 18. 512 sites: S.0 as built (the plumbing)
+
+The owner's three-cut plan for Q-CF-51 (the field story again at 512 a side): **S.0** makes a
+site's side a per-site value, **S.1** scales the scheme that rides on it, **S.2** runs the CF.7
+story at 512 and measures it. S.0 changes nothing a 256 site does or stores; every shipped
+region is 2,560 m, so every shipped site is still 256.
+
+**The composite cap.** `mush_atlas::window::composite` builds each surface with
+`Cells::filled_composite` over `WindowFrame::grid`'s `Grid::over_composite`, both capped by
+its own `MAX_COMPOSITE_SIDE` = 512, and decodes a
+composite's cells with `cells::deserialize_composite`, so a 512 window crosses the async seam.
+A tile keeps `MAX_TILE_SIDE` = 256 by both doors (`Cells::filled`, `Cells`' own `Deserialize`).
+A compile-time assert pins `MAX_COMPOSITE_SIDE` to tacsim's `MAX_ARENA_SIDE`. `@window`'s
+`window_max_cells` (65,536) is untouched. `MAX_COMPOSITE_BYTES` (8 MiB) holds a 512 site's
+one ground surface: its worst case, every cell different, is about 2.8 MiB encoded.
+
+**The side from the region.** `surface::ground::site_side_of_region` reads the region's extent
+in 10 m cells. It refuses an extent that is not square, not whole cells, or over 512
+(`MAX_SITE_CELLS`). `chart::site_frame` frames `side × side` from that. `site_composite` holds
+the composite to it, with CF.7's refusal sentence, its side now the region's. A region missing
+from the atlas frames at the shipped default, so its capture refuses it exactly as before.
+`ground_side(composite)` and `chart::site_side(w, entry)` are how the rest reads a site's side.
+`SITE_CELLS` is now only the shipped default.
+
+**Threaded through:**
+
+- **The site record** carries `side`. It is omitted at 256, so a 256 record's bytes are
+  unchanged. Every pose and remembered cell is held to it. Writers with the world build the
+  record at the site's side (`fresh_record`). The two provider prepares, which read no world,
+  build it from the offer's fixed `sides`, which is present only when a site is not 256.
+- **The drive.** `ActParams::Drive` carries the `side` it was planned over, also omitted at 256.
+  Its `to` and its `to` word (`y × side + x`) are held to it. `target_cell` and the A* budget
+  (`drive_path_budget_cells`, `side²`) take the surface's side. The start's `to` parameter
+  reaches `side² − 1` of the widest lane site, which is 65,535 today.
+- **The field orders.** `FieldPayload::validate` takes the side. At issue it is the side of the
+  site the members' flights stand on. A stored order is held to the widest site.
+- **The rest.** The site map's drive window clamps to the surface's side, and the picture's
+  `side` is the composite's. The staff `@tacsim/site` cell words and maximum use the site's
+  side. A raider's carrier is held to its own site when it is seeded, and the fixture file to
+  the widest site.
+- **The readings tie-break** no longer uses `u8::MAX` as "no field", which would be field 255
+  once a site holds 256 fields.
+
+**Still at 256 (cut S.1's, not yet ruled).** These are left at 256, and each is wrong on a
+wider site until S.1 scales it:
+
+- the address scheme: blocks, letters, fields and pockets, `SITE_BLOCKS`, `BLOCK_LETTERS`,
+  `field_index`;
+- the chart: its rows' stands, its caps;
+- the reading and run stands an excursion record keeps (scan, sounding, run);
+- the geology table and its digest (64 × 64 pockets: a 512 site's geology covers its
+  south-west quarter);
+- the pad (`PAD_CENTRE_CM`, `PAD_CELL`), which S.1 takes from the site's pad room;
+- the site view's span (8 cells of 32), which S.1 sets to side/32;
+- the campaign layer's block letters;
+- the raider fixture's offsets;
+- presence band tuning.
+
+S.1 also owes the 512 frontier site on Ceres (Ahuna Flank stays 256). S.2 owes the story at
+512 and its measurements.
+
+**Defaults taken (provisional):** a stored record with no `side` reads 256, since there are no
+migrations before launch. A stored drive's arrival cell, and a stored order's `ADVANCE`, are
+held to the widest site rather than to their own, because neither record names its site's side.

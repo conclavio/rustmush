@@ -281,6 +281,11 @@ pub enum ActParams {
         metres: u32,
         /// The heading at the end, millidegrees clockwise from north, `< 360,000`.
         heading_mdeg: u32,
+        /// **The site's side the leg was planned over** (doc 32 cut S.0, §18), which `to` is
+        /// held to, `1..=`[`crate::surface::ground::MAX_SITE_CELLS`]; omitted at the shipped
+        /// side, so a 256 site's drive is byte-identical to SM.4b's.
+        #[serde(default = "shipped_side", skip_serializing_if = "is_shipped_side")]
+        side: u16,
     },
     /// **An unload** (doc 20 §7.1, cut SM.8): the hopper's goods into the hull's hold, frozen at
     /// the start; the finish moves exactly these by an inventory-owned marked transfer
@@ -390,7 +395,7 @@ impl ActParams {
     /// reach `1..=48`. **Doc 20 cut SM.4b**: a leg's `2..=`[`MAX_LEG_WAYPOINTS`] waypoints with
     /// non-decreasing `at_s`, the last equal to `secs`; `to` on the site; the target at most
     /// [`MAX_DRIVE_TARGET_BYTES`]; the heading under 360,000.
-    fn check(&self) -> Result<(), String> {
+    pub(crate) fn check(&self) -> Result<(), String> {
         match self {
             ActParams::None {} | ActParams::Dump { .. } => Ok(()),
             // Doc 20 cut SM.8: at most `MAX_DUMP_GOODS` positive rows, empty only when queued.
@@ -412,8 +417,15 @@ impl ActParams {
                 waypoints,
                 secs,
                 heading_mdeg,
+                side,
                 ..
             } => {
+                if !(1..=crate::surface::ground::MAX_SITE_CELLS).contains(side) {
+                    return Err(format!(
+                        "a leg's site is 1 to {} cells a side",
+                        crate::surface::ground::MAX_SITE_CELLS
+                    ));
+                }
                 if waypoints.len() < 2 || waypoints.len() > MAX_LEG_WAYPOINTS {
                     return Err(format!("a leg carries 2 to {MAX_LEG_WAYPOINTS} waypoints"));
                 }
@@ -429,7 +441,7 @@ impl ActParams {
                 if waypoints.last().map(|last| last.at_s) != Some(*secs) {
                     return Err("a leg ends at its own seconds".to_owned());
                 }
-                if !stand_on_site(*to) {
+                if !crate::surface::address::cell_on_site((to[0], to[1]), *side) {
                     return Err("a leg ends on its site".to_owned());
                 }
                 if target.len() > MAX_DRIVE_TARGET_BYTES {
@@ -463,9 +475,21 @@ impl ActParams {
     }
 }
 
-/// A stand cell on the site, `0..256` on both axes.
+/// A reading's or a run's stand cell on the site, `0..256` on both axes: the address scheme's
+/// shipped side until doc 32 cut S.1 scales it (a drive's `to` is held to its own `side`).
 fn stand_on_site([x, y]: [i64; 2]) -> bool {
-    crate::surface::address::cell_on_site((x, y))
+    crate::surface::address::cell_on_site((x, y), crate::surface::ground::SITE_CELLS)
+}
+
+/// [`ActParams::Drive`]'s `side` when the wire names none: the shipped side.
+fn shipped_side() -> u16 {
+    crate::surface::ground::SITE_CELLS
+}
+
+/// Whether a drive's `side` is the shipped side (and so is not written).
+#[allow(clippy::trivially_copy_pass_by_ref)] // serde's `skip_serializing_if` passes a reference
+fn is_shipped_side(side: &u16) -> bool {
+    *side == crate::surface::ground::SITE_CELLS
 }
 
 /// A sounding's reach, `1..=MAX_READ_RADIUS_CELLS`.
@@ -1428,10 +1452,14 @@ impl RigRecord {
                 }
             }
             // Doc 20 cut SM.4b: only a finished drive arrived, on the site.
+            // Doc 32 cut S.0: on the widest site; the drive's own `to` held it to its own side.
             if let Some(cell) = last.arrived
                 && (last.kind != ActKind::Drive
                     || last.result != ActResult::Done
-                    || !stand_on_site(cell))
+                    || !crate::surface::address::cell_on_site(
+                        (cell[0], cell[1]),
+                        crate::surface::ground::MAX_SITE_CELLS,
+                    ))
             {
                 return Err("only a finished drive arrives, on its site".to_owned());
             }
@@ -2836,6 +2864,7 @@ mod tests {
             cost: 19_200,
             metres: 1_040,
             heading_mdeg: 45_000,
+            side: crate::surface::ground::SITE_CELLS,
         }
     }
 

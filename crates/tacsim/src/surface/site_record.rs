@@ -45,7 +45,7 @@ use serde_json::{Map, Value, json};
 
 use crate::arena::mind::SortieId;
 use crate::port_tick::port_error;
-use crate::surface::ground::{SITE_CELL_CM, SITE_CELLS};
+use crate::surface::ground::{MAX_SITE_CELLS, SITE_CELL_CM, SITE_CELLS};
 
 /// The family's id (doc 32 Q-CF-24: `tacsim.field.<site>`).
 pub const SITE_RECORD_FAMILY: &str = "tacsim.field";
@@ -134,9 +134,9 @@ impl SitePose {
         crate::surface::excursion::site_cell(self.x_cm, self.y_cm)
     }
 
-    /// On the site's grid with a heading below a full turn.
-    pub(crate) fn on_site(&self) -> bool {
-        let edge = i64::from(SITE_CELLS) * i64::from(SITE_CELL_CM);
+    /// On a site's grid of `side` cells a side, with a heading below a full turn.
+    pub(crate) fn on_site(&self, side: u16) -> bool {
+        let edge = i64::from(side) * i64::from(SITE_CELL_CM);
         (0..edge).contains(&self.x_cm)
             && (0..edge).contains(&self.y_cm)
             && self.heading_mdeg < 360_000
@@ -391,9 +391,9 @@ impl KnownItem {
         (self.1, self.2)
     }
 
-    /// Whether its cell is on the site's grid.
-    fn cell_on_site(&self) -> bool {
-        let side = i64::from(SITE_CELLS);
+    /// Whether its cell is on a site's grid of `side` cells a side.
+    fn cell_on_site(&self, side: u16) -> bool {
+        let side = i64::from(side);
         (0..side).contains(&self.1) && (0..side).contains(&self.2)
     }
 }
@@ -441,6 +441,22 @@ pub struct SiteRecord {
     /// learned from is byte-identical to CF.1's.
     #[serde(default, skip_serializing_if = "Vec::is_empty")]
     pub known: Vec<KnownSalvage>,
+    /// **The site's cells along one side** (doc 32 cut S.0, §18): its region's extent, which
+    /// every pose and remembered cell is held to, `1..=`[`MAX_SITE_CELLS`]; omitted at the
+    /// shipped default ([`SITE_CELLS`]), so a 256 site's record is byte-identical to CF.4's.
+    #[serde(default = "default_side", skip_serializing_if = "is_default_side")]
+    pub side: u16,
+}
+
+/// [`SiteRecord::side`]'s default: the shipped side.
+fn default_side() -> u16 {
+    SITE_CELLS
+}
+
+/// Whether [`SiteRecord::side`] is the shipped side (and so is not written).
+#[allow(clippy::trivially_copy_pass_by_ref)] // serde's `skip_serializing_if` passes a reference
+fn is_default_side(side: &u16) -> bool {
+    *side == SITE_CELLS
 }
 
 /// **Why a write to the record refuses.**
@@ -485,9 +501,17 @@ impl SiteRefused {
 }
 
 impl SiteRecord {
-    /// **An empty record for `site`**: no field yet, nothing on the ground.
+    /// **An empty record for `site`** at the shipped side ([`SITE_CELLS`]): no field yet,
+    /// nothing on the ground. A writer with the site in reach builds with
+    /// [`SiteRecord::with_side`].
     #[must_use]
     pub fn new(site: CanonicalId) -> SiteRecord {
+        SiteRecord::with_side(site, SITE_CELLS)
+    }
+
+    /// **An empty record for `site`, `side` cells a side** (doc 32 cut S.0, §18).
+    #[must_use]
+    pub fn with_side(site: CanonicalId, side: u16) -> SiteRecord {
         SiteRecord {
             schema: SITE_RECORD_SCHEMA,
             site,
@@ -498,6 +522,7 @@ impl SiteRecord {
             objects: Vec::new(),
             next_object: 0,
             known: Vec::new(),
+            side,
         }
     }
 
@@ -560,7 +585,7 @@ impl SiteRecord {
             .map(|item| (true, item))
             .chain(earlier.iter().map(|item| (false, item)))
         {
-            if !item.cell_on_site()
+            if !item.cell_on_site(self.side)
                 || (!fresh && swept(item.cell()))
                 || items.iter().any(|kept| kept.cell() == item.cell())
             {
@@ -649,7 +674,7 @@ impl SiteRecord {
         let field = self.open_field().ok_or(SiteRefused::NotPromoted)?;
         let mut index: BTreeMap<ObjId, LeftUnit> = BTreeMap::new();
         for unit in units {
-            if !unit.pose.on_site() {
+            if !unit.pose.on_site(self.side) {
                 return Err(SiteRefused::OffSite);
             }
             index.insert(unit.unit, unit);
@@ -694,7 +719,7 @@ impl SiteRecord {
     ///
     /// [`SiteRefused::OffSite`]; [`SiteRefused::UnitsFull`] for a new entry past the bound.
     pub fn leave_unit(&mut self, unit: LeftUnit) -> Result<(), SiteRefused> {
-        if !unit.pose.on_site() {
+        if !unit.pose.on_site(self.side) {
             return Err(SiteRefused::OffSite);
         }
         match self
@@ -747,7 +772,7 @@ impl SiteRecord {
         kind: GroundKind,
         at_ic: i64,
     ) -> Result<u32, SiteRefused> {
-        if !pose.on_site() {
+        if !pose.on_site(self.side) {
             return Err(SiteRefused::OffSite);
         }
         if !kind_ok(&kind) || !(1..=MAX_FOOTPRINT_CELLS).contains(&footprint) {
@@ -855,6 +880,12 @@ impl SiteRecord {
                 self.schema
             ));
         }
+        if !(1..=MAX_SITE_CELLS).contains(&self.side) {
+            return Err(format!(
+                "a site is 1 to {MAX_SITE_CELLS} cells a side, not {}",
+                self.side
+            ));
+        }
         if let Some(open) = &self.promoted
             && (open.ordinal != self.ordinal || open.ordinal == 0)
         {
@@ -866,7 +897,7 @@ impl SiteRecord {
                     [a, b] => a.tv >= b.tv,
                     _ => false,
                 })
-                || open.settled.iter().any(|rig| !rig.pose.on_site()))
+                || open.settled.iter().any(|rig| !rig.pose.on_site(self.side)))
         {
             return Err(
                 "a promotion settles at most the field cap of rigs, in order, on the site's ground"
@@ -911,8 +942,11 @@ impl SiteRecord {
         {
             return Err("an object's number is one the record issued".to_owned());
         }
-        if self.units.iter().any(|unit| !unit.pose.on_site())
-            || self.objects.iter().any(|object| !object.pose.on_site())
+        if self.units.iter().any(|unit| !unit.pose.on_site(self.side))
+            || self
+                .objects
+                .iter()
+                .any(|object| !object.pose.on_site(self.side))
         {
             return Err("every pose on a site record is on the site's ground".to_owned());
         }
@@ -929,7 +963,7 @@ impl SiteRecord {
             || self.known.iter().any(|row| {
                 row.items.is_empty()
                     || row.items.len() > MAX_KNOWN_ITEMS
-                    || row.items.iter().any(|item| !item.cell_on_site())
+                    || row.items.iter().any(|item| !item.cell_on_site(self.side))
             })
         {
             return Err(format!(
@@ -1244,14 +1278,18 @@ impl ActionProvider for SiteRecordProvider {
         {
             return Ok(None);
         }
-        let sites: Vec<String> = crate::surface::chart::lane_sites(w)
-            .iter()
-            .map(|site| site.entry.to_string())
-            .collect();
+        let lane = crate::surface::chart::lane_sites(w);
+        let sites: Vec<String> = lane.iter().map(|site| site.entry.to_string()).collect();
         if sites.is_empty() {
             return Ok(None);
         }
-        let cell = i64::from(SITE_CELLS) - 1;
+        // Doc 32 cut S.0: the widest lane site's last cell; the record holds each to its own.
+        let cell = lane
+            .iter()
+            .map(|site| site_side_or_default(w, &site.entry))
+            .max()
+            .map_or(i64::from(SITE_CELLS), i64::from)
+            - 1;
         let integer =
             |minimum: i64, maximum: i64| ProjectedParameterKind::Integer { minimum, maximum };
         let parameters = vec![
@@ -1299,10 +1337,12 @@ impl ActionProvider for SiteRecordProvider {
                 integer(1, i64::from(MAX_FOOTPRINT_CELLS)),
             )?,
         ];
+        let mut fixed = json!({ "now": w.world_ic_now().at });
+        fix_sides(w, &mut fixed);
         crate::surface::act::offer_draft(
             action,
             engine,
-            json!({ "now": w.world_ic_now().at }),
+            fixed,
             parameters,
             (
                 "tacsim-site-record",
@@ -1340,7 +1380,7 @@ impl ActionProvider for SiteRecordProvider {
             return Err(integrity("a site record disagrees with its own key"));
         }
         let existed = found.is_some();
-        let mut record = found.unwrap_or_else(|| SiteRecord::new(key.0.clone()));
+        let mut record = found.unwrap_or_else(|| fixed_record(parameters, &key.0));
         let said = apply(&mut record, op, parameters, (invocation.actor(), now))?;
         record
             .check()
@@ -1413,10 +1453,51 @@ fn hash_object(word: Option<&str>) -> Option<u32> {
         .and_then(crate::port::families::strict_decimal_u32)
 }
 
-/// `<x>,<y>`, each on the site's grid.
-fn cell_word(word: Option<&str>) -> Option<(i64, i64)> {
+/// **A site's side, for a writer with the world in reach** (doc 32 cut S.0, §18): the region's
+/// extent ([`crate::surface::chart::site_side`]), else the shipped default — a site whose region
+/// does not form never composites a field to write from.
+pub(crate) fn site_side_or_default(w: &World, site: &CanonicalId) -> u16 {
+    crate::surface::chart::site_side(w, site).unwrap_or(SITE_CELLS)
+}
+
+/// **An empty record for `site`, at its own side** ([`site_side_or_default`]).
+pub(crate) fn fresh_record(w: &World, site: &CanonicalId) -> SiteRecord {
+    SiteRecord::with_side(site.clone(), site_side_or_default(w, site))
+}
+
+/// **The offer's `sides`** (doc 32 cut S.0, §18): each lane site whose side is not the shipped
+/// default, by entry, so a prepare (which reads no world) builds a fresh record at its site's
+/// side ([`fixed_side`]). Inserted into `fixed` only when one differs, so an offer over the
+/// shipped 256 sites is byte-identical to CF.7's.
+pub(crate) fn fix_sides(w: &World, fixed: &mut Value) {
+    let sides: Map<String, Value> = crate::surface::chart::lane_sites(w)
+        .into_iter()
+        .filter_map(|site| {
+            let side = site_side_or_default(w, &site.entry);
+            (side != SITE_CELLS).then(|| (site.entry.to_string(), json!(side)))
+        })
+        .collect();
+    if let (false, Some(fixed)) = (sides.is_empty(), fixed.as_object_mut()) {
+        fixed.insert("sides".to_owned(), Value::Object(sides));
+    }
+}
+
+/// **A fresh record at the side the offer fixed** ([`fix_sides`]), the shipped side when it
+/// names none for `site`.
+pub(crate) fn fixed_record(parameters: &Map<String, Value>, site: &CanonicalId) -> SiteRecord {
+    let side = parameters
+        .get("sides")
+        .and_then(|sides| sides.get(site.as_str()))
+        .and_then(Value::as_u64)
+        .and_then(|side| u16::try_from(side).ok())
+        .unwrap_or(SITE_CELLS);
+    SiteRecord::with_side(site.clone(), side)
+}
+
+/// `<x>,<y>`, each on a site's grid of `side` cells a side.
+fn cell_word(word: Option<&str>, side: u16) -> Option<(i64, i64)> {
     let (x, y) = word?.split_once(',')?;
-    let side = i64::from(SITE_CELLS);
+    let side = i64::from(side);
     let x: i64 = x.trim().parse().ok().filter(|x| (0..side).contains(x))?;
     let y: i64 = y.trim().parse().ok().filter(|y| (0..side).contains(y))?;
     Some((x, y))
@@ -1523,6 +1604,7 @@ pub(crate) fn command(ctx: &mut mush_core::Ctx<'_>) -> Result<(), mush_core::Cmd
     {
         return Err(CmdError::msg(format!("{site} is not a site on the lane.")));
     }
+    let side = site_side_or_default(ctx.w, &site);
     let handles = ctx
         .w
         .module_state::<crate::port::families::PortHandles>()
@@ -1549,7 +1631,7 @@ pub(crate) fn command(ctx: &mut mush_core::Ctx<'_>) -> Result<(), mush_core::Cmd
                 .next()
                 .and_then(LeftCondition::from_word)
                 .ok_or_else(usage)?;
-            let (x, y) = cell_word(words.next()).ok_or_else(usage)?;
+            let (x, y) = cell_word(words.next(), side).ok_or_else(usage)?;
             if mush_tactics::module::unit_of(ctx.w, ObjId(unit)).is_none() {
                 return Err(CmdError::msg(format!(
                     "#{unit} has no tactical unit record."
@@ -1573,7 +1655,7 @@ pub(crate) fn command(ctx: &mut mush_core::Ctx<'_>) -> Result<(), mush_core::Cmd
                     .next()
                     .and_then(|word| CanonicalId::new(word).ok())
                     .ok_or_else(usage)?;
-                let (x, y) = cell_word(words.next()).ok_or_else(usage)?;
+                let (x, y) = cell_word(words.next(), side).ok_or_else(usage)?;
                 fields.extend([
                     ("kind", json!("cargo")),
                     ("qty", json!(qty)),
@@ -1583,7 +1665,7 @@ pub(crate) fn command(ctx: &mut mush_core::Ctx<'_>) -> Result<(), mush_core::Cmd
                 ]);
             }
             Some("remains") => {
-                let (x, y) = cell_word(words.next()).ok_or_else(usage)?;
+                let (x, y) = cell_word(words.next(), side).ok_or_else(usage)?;
                 let kg: u64 = match words.next() {
                     None => 0,
                     Some(word) => word.parse().map_err(|_| usage())?,

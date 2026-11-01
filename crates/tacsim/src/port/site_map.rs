@@ -1561,15 +1561,15 @@ fn best_of(sounded: &[Sounded], scanned: &[Scanned]) -> BestReading {
     if let Some((_, _, _, _, text)) = pocket {
         return BestReading::Pocket(text);
     }
-    // (upper word, exact, family rank, field index) — the richest, exact first.
-    let mut field: Option<(Word, bool, usize, u8, String)> = None;
+    // (upper word, exact, family rank, field order) — the richest, exact first.
+    let mut field: Option<(Word, bool, usize, u16, String)> = None;
     let mut read_any = !sounded.is_empty();
     for s in scanned {
         if s.footing == Footing::Ice {
             continue;
         }
         read_any = true;
-        let index = address::field_index(s.field.0, s.field.1).unwrap_or(u8::MAX);
+        let index = field_order(address::field_index(s.field.0, s.field.1));
         for (rank, family) in OreFamily::ALL.into_iter().enumerate() {
             let Some(text) = field_family_text(s, family) else {
                 continue;
@@ -1597,6 +1597,12 @@ fn best_of(sounded: &[Sounded], scanned: &[Scanned]) -> BestReading {
         None if read_any => BestReading::Barren,
         None => BestReading::None,
     }
+}
+
+/// **A field's place in the tie-break** (doc 32 cut S.0): its index, a field with none after
+/// every indexed one — never `u8::MAX`, which is field 255 once a site holds 256 fields.
+fn field_order(index: Option<u8>) -> u16 {
+    index.map_or(u16::MAX, u16::from)
 }
 
 /// **A readings row's words** (doc 20 cut SM.4b's join, factored by cut SM.9 so the frame's
@@ -1742,7 +1748,8 @@ pub(crate) fn site_map_frame(
         Place::Ground(cell) => Some(cell),
         Place::Bay | Place::Away => None,
     });
-    let site_side = i64::from(crate::surface::ground::SITE_CELLS);
+    // Doc 32 cut S.0: the site's own side; the site view's span stays 8 until cut S.1.
+    let site_side = i64::from(surface.cells.width());
     let (span, side, cell_cm, columns) = match view {
         MapView::Drive { .. } => (
             1_i64,
@@ -1887,7 +1894,7 @@ pub(crate) fn site_map_frame(
         .map(|(x, y)| (i64::from(*x), i64::from(*y)))
         .collect();
     let class_at = |x: i64, y: i64| {
-        address::composite_cell((x, y))
+        address::surface_cell(surface, (x, y))
             .and_then(|(cx, cy)| surface.cells.get(cx, cy))
             .map(|cell| cell.class)
     };
@@ -2974,6 +2981,16 @@ pub(crate) fn map_cmd(
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    /// **Field 255 is not "no field"** (doc 32 cut S.0): the readings tie-break's order keeps
+    /// the last field of a 256-field site apart from a reading with no field index, which sorts
+    /// after every indexed one.
+    #[test]
+    fn s0_field_255_is_distinguishable_from_none() {
+        assert_ne!(field_order(Some(255)), field_order(None));
+        assert!(field_order(Some(0)) < field_order(Some(255)));
+        assert!(field_order(Some(255)) < field_order(None));
+    }
 
     /// **The glyph layers stack in order** (lead ruling 6): a reading over a pit over a block
     /// letter over the terrain; the rank of the reading glyphs; the family words; the legend

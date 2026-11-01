@@ -357,10 +357,13 @@ impl ActionProvider for FieldProvider {
             crate::surface::act::parameter("rigs", false, text)?,
             crate::surface::act::parameter("unit", false, integer(1, i64::from(u32::MAX)))?,
         ];
+        let mut fixed =
+            json!({ "now": w.world_ic_now().at, "closing": closing, "exiting": exiting });
+        crate::surface::site_record::fix_sides(w, &mut fixed);
         crate::surface::act::offer_draft(
             action,
             engine,
-            json!({ "now": w.world_ic_now().at, "closing": closing, "exiting": exiting }),
+            fixed,
             parameters,
             (
                 "tacsim-field",
@@ -397,7 +400,8 @@ impl ActionProvider for FieldProvider {
             return Err(integrity("a site record disagrees with its own key"));
         }
         let existed = found.is_some();
-        let mut record = found.unwrap_or_else(|| SiteRecord::new(key.0.clone()));
+        let mut record =
+            found.unwrap_or_else(|| crate::surface::site_record::fixed_record(parameters, &key.0));
         let said = match op {
             "open" => self.open(txn, &mut record, parameters, (invocation.actor(), now))?,
             "exit" => {
@@ -526,6 +530,7 @@ mod tests {
                 cost: 2_000,
                 metres: 200,
                 heading_mdeg: 90_000,
+                side: crate::surface::ground::SITE_CELLS,
             },
             by: None,
             seal: None,
