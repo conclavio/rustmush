@@ -21,6 +21,7 @@ use crate::overlay::{
 };
 use crate::picture::{BUCKET_A_INTERVAL, Feeds, Look, Picture};
 use crate::planet_shader::{CelestialBodyDraw, PlanetStyle, draw_celestial_body};
+use crate::ship_shader::{ShipModelStyle, ShipSpriteDraw, draw_ship_sprite};
 
 /// The first-person space bridge cockpit feed.
 pub const SPACE_COCKPIT_FEED: &str = "space.cockpit";
@@ -317,29 +318,50 @@ pub fn draw_space_cockpit(frame: &mut Frame, cockpit: &Value, feeds: &dyn Feeds,
                 GOOD
             };
 
+            let id_str = c.get("id").and_then(Value::as_str).unwrap_or("");
+            let label_str = c.get("label").and_then(Value::as_str).unwrap_or("");
+            let ship_style = ShipModelStyle::from_contact(kind, relation, id_str, label_str);
+            let aspect_yaw = num(c.get("aspect_yaw_deg"))
+                .or_else(|| num(c.get("yaw_deg")).map(|y| y - bearing))
+                .unwrap_or(180.0 - (bearing - cam_yaw));
+
             if kind == "asteroid" || kind == "rock" {
                 let r_px = c
                     .get("radius_px")
                     .and_then(Value::as_i64)
-                    .unwrap_or(6 * s)
-                    .clamp(3 * s, 32 * s);
-                draw_celestial_body(
+                    .unwrap_or(10 * s)
+                    .clamp(4 * s, 32 * s);
+                draw_ship_sprite(
                     frame,
-                    &CelestialBodyDraw {
+                    &ShipSpriteDraw {
                         center_px: (cx, cy),
-                        radius_px: r_px,
-                        style: PlanetStyle::Rocky,
-                        sun_dir: (0.7, -0.3, 0.65),
-                        spin_deg: (cx + cy) as f64,
-                        ring_tilt_deg: 0.0,
+                        half_size_px: r_px,
+                        yaw_deg: aspect_yaw,
+                        style: ShipModelStyle::Asteroid,
+                        burning: false,
                     },
                 );
             } else {
+                let half_px = c
+                    .get("radius_px")
+                    .and_then(Value::as_i64)
+                    .unwrap_or(if locked { 14 * s } else { 10 * s })
+                    .clamp(5 * s, 32 * s);
                 // Actinic fusion drive plume if contact is burning
                 if burning {
                     fill_rect(frame, cx - 3 * s, cy - s, 6 * s, 2 * s, PLUME_HALO);
                     fill_rect(frame, cx - s, cy - s, 3 * s, 2 * s, PLUME_CORE);
                 }
+                draw_ship_sprite(
+                    frame,
+                    &ShipSpriteDraw {
+                        center_px: (cx, cy),
+                        half_size_px: half_px,
+                        yaw_deg: aspect_yaw,
+                        style: ship_style,
+                        burning,
+                    },
+                );
                 let box_h = if locked { 8 * s } else { 5 * s };
                 outline_rect(
                     frame,
