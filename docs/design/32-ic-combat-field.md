@@ -1988,8 +1988,7 @@ runs; byte counts are exact.
   - **The home field build** is the one cost on the world task's path. It is built on the surface
     tick, one site a fire, never on an act's path. At 512 it is 30.5 ms in release (7.0 ms at
     256), past the 20 ms ceiling SM.4b's gate holds a 256 build to. It is paid once a site and a
-    ramp, not per act. **Default for the owner:** accept it as a one-off tick of about 30 ms, and
-    revisit only if a 512 site's home field is ever rebuilt often.
+    ramp, not per act.
   - **The corner-to-corner plan** is 14.5 ms in release at 512, past SM.4b's 10 ms ceiling at 256.
     It is paid by a drive's start, once a drive. The ramp-to-far-quadrant plan, a working trip,
     is 2.1 ms.
@@ -2023,10 +2022,23 @@ bearing, so nothing is hidden; the picture is only coarser far out. The story's 
 launch in the near band, in good time. The sounder bands are the same cells and are heard
 site-wide.
 
-**Default for the owner:** keep SIGHT/NEAR/FAR at 20/50/100 cells and the sounder's 50/100 at 512.
-If long-range warning on a 512 site turns out to matter in play, add a fifth band at 2 km beyond
-the far band rather than stretch the three, since the three are what a fight reads. No band
-constant changed in this cut, because the story never needed one to.
+If long-range warning on a 512 site turns out to matter in play, the way to add it is a fifth band
+at 2 km beyond the far band rather than stretching the three, since the three are what a fight
+reads. No band constant changed in this cut, because the story never needed one to.
+
+**The owner's rulings on S.2's three defaults (2026-11-01, "accept all three"):**
+
+1. **OWNER RULING (2026-11-01): the 512 timings are accepted, and the ceilings are per side.** The
+   home field build of about 30 ms and the corner-to-corner plan of about 14.5 ms (release, at
+   512) stand. The ceilings scale with the site's area: cut AP's 10 ms plan and 20 ms build at
+   256 (100 ms and 250 ms in debug) become 40 ms and 80 ms at 512 (400 ms and 1,000 ms in debug).
+   `s2_the_512_site_is_measured` holds both sides to them on the least of five (`s2_ceilings_ms`):
+   always in release, in debug under `TACSIM_ASSERT=1`. `sm4b_the_drive_planner_is_measured`
+   keeps 256's.
+2. **OWNER RULING (2026-11-01): the presence bands stay at 20/50/100 cells** at 512, and the
+   sounder's at 50/100.
+3. **OWNER RULING (2026-11-01): a leg carries 64 waypoints on a 512 site.** 256 sites stay at
+   32. Built in S.2; see below.
 
 **512-only bugs.**
 
@@ -2037,15 +2049,31 @@ constant changed in this cut, because the story never needed one to.
   `max_bearing_metres(side)`: 3,620 m at 256, as before, and 7,240 m at 512. A bearing that leaves
   the site from where the rig stands is still refused by `target_cell`. Gated by
   `s2_a_bearing_reaches_the_sites_own_diagonal`.
-- **Pinned: a long 512 drive is close to the waypoint cap.** The corner-to-corner leg across Urvara
-  freezes at 31 of `MAX_LEG_WAYPOINTS` 32. A leg twice as long needs about twice the waypoints at
-  the same tolerance, so on a more winding 512 ground a cross-site drive would be refused
-  `Winding` where a 256 one is not. A player can still drive it in two legs.
-  - **Why it is not fixed here.** The cap is the frozen leg's slot in the rig's projection
-    (`TvRec.leg`, under `MAX_TV_REC_BYTES`' 4 KiB; §8 of doc 20) and in the rig record. Raising
-    it moves that budget and the records' checks, so it is not contained. No story reaches it.
-  - **Default for the owner:** scale the cap with the side, 64 at 512, together with the
-    projection's ceiling, in the cut that next touches the drive.
+- **Built (ruling 3): a long 512 drive was close to the waypoint cap.** The corner-to-corner leg
+  across Urvara froze at 31 of `MAX_LEG_WAYPOINTS` 32. A leg twice as long needs about twice the
+  waypoints at the same tolerance, so on more winding 512 ground a cross-site drive would have been
+  refused `Winding` where a 256 one is not.
+  - **The cap per side.** `excursion::max_leg_waypoints(side)` is 32 up to 256 and
+    `MAX_WIDE_LEG_WAYPOINTS` 64 above. `drive_leg` and the recover's `recover_leg` freeze under
+    their surface's own cap (`freeze_within`, `freeze_always_within`; `freeze` and
+    `freeze_always` are the shipped cap's).
+  - **The records.** A drive's `ActParams` holds its leg to its own `side`'s cap. A projection
+    names no site, so it is held to the widest, 64, as S.0 held a stored arrival to the widest
+    site. `TOO_WINDING` names the site's own cap (`Refusal::Winding.cap`).
+  - **The 4 KiB budget.** The projection's ceiling is now `tv_rec_budget(waypoints)`:
+    `MAX_TV_REC_BYTES` 4,096 with a leg of 32 or fewer, as before, plus `MAX_WAYPOINT_BYTES` (76,
+    one waypoint at `i64::MIN` on both axes and `u32::MAX` seconds, with its comma) for each
+    waypoint past 32, so 6,528 with 64. A long wide leg leaves the rest of the record exactly the
+    room a full shipped leg leaves it. Every record with a shipped leg, and every 4 KiB pin
+    (`sm4b_a_full_leg_and_a_full_log_fit`, the 4,097-byte edge, shard 4's `knowing` pins), is
+    unchanged. `TvRec::fit` drops log lines against the same budget. The rig record's family keeps
+    its default cap, which a leg 2.4 KB longer does not approach.
+  - **Gates.** `s2_a_rough_512_corner_to_corner_drive_is_accepted` (`drive.rs`): a 512 site walled
+    into 24 serpentine lanes, whose corner-to-corner leg the shipped cap refuses and the 512 cap
+    accepts, with more than 32 and at most 64 waypoints. `s2_a_64_waypoint_leg_fits_its_record_at_512`
+    (`excursion.rs`): the widest 64-waypoint leg and a full log fit after `fit`, 65 is refused, and
+    a drive's 64 checks at 512 and not at 256. `s2_the_widest_waypoint_is_its_budget` pins the 76
+    bytes. sm3b's projection pin moves from "33 refused" to 33 accepted and 65 refused.
 
 **Still left** (§19's list, untouched because no story or measurement here reaches them):
 
@@ -2059,4 +2087,6 @@ constant changed in this cut, because the story never needed one to.
 - the 512 story's cells;
 - the measurement method: debug build, least of five for the ground's timings, 600 pulses for the
   field's;
-- the bands, `SITE_CACHE_CAPACITY` and `MAX_LEG_WAYPOINTS`, all unchanged.
+- the bands and `SITE_CACHE_CAPACITY` unchanged (the bands by the owner's ruling);
+- the per-side ceilings scaled by area, and the projection's budget grown by a widest waypoint
+  per waypoint past 32 (the owner ruled the cap and the ceilings, not their arithmetic).
