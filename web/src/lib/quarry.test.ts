@@ -59,7 +59,8 @@ describe("body.ground", () => {
     expect(frame.ground?.family_word).toBe("metals");
     expect(frame.ground?.families).toEqual(["metals", "volatiles", "carbon", "strategic"]);
     expect(frame.ground?.ports.map((p) => p.glyph)).toEqual(["F"]);
-    expect(frame.ground?.sites.map((s) => s.letter)).toEqual(["A", "C", "J", "K", "O"]);
+    // Doc 32 cut S.1: and Urvara Reach, drawn at its own province.
+    expect(frame.ground?.sites.map((s) => s.letter)).toEqual(["A", "C", "J", "K", "O", "U"]);
     expect(frame.ground?.also).toEqual(["C Freeport Commons", "O Occator Rim"]);
     expect(frame.ground?.sites.every((s) => s.best === null)).toBe(true);
     // The screen shows the list's own sentence for the readings, never one of its own.

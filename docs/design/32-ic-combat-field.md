@@ -1872,6 +1872,16 @@ sounds, mines one cycle and recovers, all through the commands); and
 on Urvara by its offsets, its leader's mark promotes a field that admits the rig, the raider and
 its carrier where they stood and the Dray-P on the pad at `(256, 256)`, on a 512 site record).
 
+**The CF.7 story and draw order.** Lane v17's seventh site lays up about twenty objects at
+boot, so every object made after it takes another id; the arena seeds its draws from unit ids, so
+who locks and fires first moves. Ahuna Flank's field opened identically (every pose, party, pilot
+and station), but the raider's condition slot, not its mind, fired first and its coaxial killed
+the prospector-hull bystander in one ledger chunk, before step 5 looked. The story now tolerates
+it (§17's G-6 story, `cf7_the_field_story`): the bystander's hull is CF.6c's armoured escort
+design with its sensors and its magazines seeded empty, so it outlives the raider's fire however
+it comes and still never fires; step 5 accepts any raider's shot; and naming a party in a
+demoted field fails with its reason rather than a bare panic.
+
 **Defaults taken (provisional):** the 512 field name `K-NW-NW` (quadrant of quadrant); the chart
 cap 196,608; the pocket cursor's numbers held to the widest block (`MAX_POCKET_NUMBER` 1,024)
 while its rows stay 64; Urvara Reach's name, coordinates, seed, craters and open tenure; a survey commission
