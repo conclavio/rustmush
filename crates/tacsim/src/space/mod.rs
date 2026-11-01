@@ -10,6 +10,7 @@
 //! `detachment/*` (`D-35-1`, `D-35-2`).
 
 pub mod bubble;
+pub mod mining;
 pub mod picket;
 pub mod weapons;
 
@@ -17,6 +18,13 @@ pub use bubble::{
     BubbleId, BubbleStepReport, DERELICT_WINDOW_S, EmconPosture, FacetBand, HullStatus,
     LocalSpaceBubble, MAX_SUBSTEP_MS, ShipSectionId, ShipSectionState, SpaceCombatEvent,
     SpacePartyId, SpaceRelation, SpaceShipState, SubsystemCrit,
+};
+pub use mining::{
+    ASTEROID_CONTEST_WINDOW_IC_SECS, AsteroidClaimState, AsteroidClusterField, AsteroidOrePool,
+    AsteroidPocket, AsteroidSpectralClass, ClusterJurisdiction, CollectorDrone, DroneDoctrinePhase,
+    ExcursionId, ExtractionReport, MAX_DRONES_PER_DRAY_P, MAX_MINING_RANGE_M,
+    MAX_MINING_REL_VEL_MPS, OreGoodId, OreHoldState, OreMiningError, PROSPECTING_LICENCE_FEE_CR,
+    ProspectingLicence,
 };
 pub use picket::{
     CUSTOMS_SHIP_ID, HAULER_SHIP_ID, HEAVE_TO_MAX_REL_MPS, HaulerManifest, KirkwoodPicketEncounter,
@@ -365,6 +373,148 @@ mod tests {
             cockpit.get("callsign").and_then(serde_json::Value::as_str),
             Some("DRAY-P AURORA")
         );
+        Ok(())
+    }
+
+    #[test]
+    fn sf4_asteroid_mining_stow_ore_velocity_match_and_4_drone_cap() -> TestResult {
+        let mut field = AsteroidClusterField::new_canonical_cluster("pallas_inclined_belt", 10_000);
+
+        // 1. Plain Dray bulk hauler (`accepts_stow_ore = false`) is refused raw ore extraction!
+        let plain_dray = SpaceShipState::new_dray(
+            "plain_dray",
+            "PLAIN DRAY",
+            SpacePartyId(1),
+            [1_000, -400, 150],
+            [2_000, -1_000, 500],
+        );
+        field.insert_ship_with_hold(plain_dray, OreHoldState::new_plain_dray_bulk_only());
+        check_eq!(
+            field.extract_with_mining_laser("plain_dray", "rock.c_101", 1_000),
+            Err(OreMiningError::HullLacksStowOre)
+        );
+
+        // 2. Dray-P prospector enters far from M-309 with high relative velocity (`30 m/s`)
+        let dray_p = SpaceShipState::new_dray(
+            "dray_p",
+            "DRAY-P PROSPECTOR",
+            SpacePartyId(1),
+            [0, 0, 0],
+            [30_000, 0, 0],
+        );
+        field.insert_ship_with_hold(dray_p, OreHoldState::new_dray_p());
+
+        // Ping M-309 (free, no licence needed)
+        let (spec, pools) = field.ping_rock("dray_p", "rock.m_309")?;
+        check_eq!(spec, AsteroidSpectralClass::MType);
+        check_eq!(pools.len(), 2);
+        check_eq!(pools[0].0.as_str(), "strategic_ore");
+        check_eq!(pools[1].0.as_str(), "metal_ore");
+
+        // Attempting to mine before approaching within 2,000 m fails with `OutOfRange`
+        check!(matches!(
+            field.extract_with_mining_laser("dray_p", "rock.m_309", 5_000),
+            Err(OreMiningError::OutOfRange { .. })
+        ));
+
+        // Move within 1,000 m of M-309 but keep 30 m/s mismatch -> fails with `VelocityMismatch`
+        if let Some(ship) = field.bubble.ships.get_mut("dray_p") {
+            ship.pos_m = [4_000, 3_200, 1_400];
+        }
+        check!(matches!(
+            field.extract_with_mining_laser("dray_p", "rock.m_309", 5_000),
+            Err(OreMiningError::VelocityMismatch { .. })
+        ));
+
+        // 3. Execute `+helm/match rock.m_309` (`|dv| <= 5 m/s` within `2,000 m`)
+        let (dist_m, rel_mps) = field.match_velocity_with_rock("dray_p", "rock.m_309")?;
+        check!(dist_m <= MAX_MINING_RANGE_M);
+        check!(rel_mps <= MAX_MINING_REL_VEL_MPS);
+
+        // 4. Launching 5 drones exceeds the 4-drone `Dray-P` bay cap (`doc 20 §17`)
+        check_eq!(
+            field.launch_collector_drones("dray_p", "rock.m_309", 5),
+            Err(OreMiningError::DroneBayCapExceeded {
+                requested: 5,
+                max_drones: 4,
+            })
+        );
+
+        // Launching 4 collector drones under a sealed `ExcursionId` succeeds and loads `strategic_ore`
+        let (exc_id, drones) = field.launch_collector_drones("dray_p", "rock.m_309", 4)?;
+        check_eq!(exc_id, ExcursionId(1));
+        check_eq!(drones.len(), 4);
+        let drone_rep = field.complete_drone_sortie_cycle("dray_p")?;
+        check_eq!(drone_rep.good, OreGoodId::StrategicOre);
+        check_eq!(drone_rep.extracted_kg, 10_000);
+        // Mining M-309 in Pallas without Freeport paper flags a Pallas Syndicate claim-jump!
+        check!(drone_rep.claim_jump_flagged);
+
+        // 5. Overheating the ship mining laser on C-101 (`CType` ice/carbon) triggers outgassing kick
+        let _ = field.match_velocity_with_rock("dray_p", "rock.c_101")?;
+        if let Some(ship) = field.bubble.ships.get_mut("dray_p") {
+            ship.heat_permille = 700;
+        }
+        let laser_rep = field.extract_with_mining_laser("dray_p", "rock.c_101", 4_000)?;
+        check_eq!(laser_rep.good, OreGoodId::IceOre);
+        check_ne!(
+            laser_rep.outgassing_dv_kick_mps,
+            [0, 0, 0],
+            "overheated laser on C-type ice rock must trigger volatile outgassing delta-v kick"
+        );
+        Ok(())
+    }
+
+    #[test]
+    fn sf4_freeport_registry_licence_claim_contest_and_core_commons_gate() -> TestResult {
+        let mut core_field = AsteroidClusterField::new_canonical_cluster("ceres_halo", 100_000);
+
+        let miner_a =
+            SpaceShipState::new_dray("miner_a", "MINER A", SpacePartyId(1), [0, 0, 0], [0, 0, 0]);
+        let miner_b =
+            SpaceShipState::new_dray("miner_b", "MINER B", SpacePartyId(2), [0, 0, 0], [0, 0, 0]);
+        core_field.insert_ship_with_hold(miner_a, OreHoldState::new_dray_p());
+        core_field.insert_ship_with_hold(miner_b, OreHoldState::new_dray_p());
+
+        let _ = core_field.match_velocity_with_rock("miner_a", "rock.s_204")?;
+        let _ = core_field.match_velocity_with_rock("miner_b", "rock.s_204")?;
+
+        // In `ceres_halo` (`CoreCommons`), mining without a Freeport Registry licence is refused
+        check_eq!(
+            core_field.extract_with_mining_laser("miner_a", "rock.s_204", 2_000),
+            Err(OreMiningError::UnlicensedInCoreZone)
+        );
+
+        // `miner_b` pings the rock first at `t = 100_000` (hand-made discovery evidence)
+        let _ = core_field.ping_rock("miner_b", "rock.s_204")?;
+        core_field.bubble.ic_timestamp_s += 600;
+
+        // `miner_a` buys a 2,500 cr / 168 IC day prospecting licence, pings at `t = 100_600`, and stakes
+        let lic_a = core_field.issue_prospecting_licence("miner_a");
+        check_eq!(lic_a.fee_paid_cr, PROSPECTING_LICENCE_FEE_CR);
+        let _ = core_field.ping_rock("miner_a", "rock.s_204")?;
+        core_field.stake_claim("miner_a", "rock.s_204")?;
+
+        // `miner_b` cannot mine `miner_a`'s staked rock in `CoreCommons`
+        let _ = core_field.issue_prospecting_licence("miner_b");
+        check_eq!(
+            core_field.extract_with_mining_laser("miner_b", "rock.s_204", 1_000),
+            Err(OreMiningError::ClaimHeldByOther {
+                holder_id: "miner_a".to_owned(),
+            })
+        );
+
+        // Within the 48-hour contest window, `miner_b` (who has earlier hand-made ping evidence at 100_000)
+        // successfully files a Freeport Registry contest!
+        core_field.contest_claim("miner_b", "rock.s_204")?;
+        let rock = core_field.rocks.get("rock.s_204").ok_or("missing rock")?;
+        check!(matches!(
+            &rock.claim,
+            AsteroidClaimState::FreeportStaked {
+                contested_by: Some(challenger),
+                ..
+            } if challenger == "miner_b"
+        ));
         Ok(())
     }
 }
