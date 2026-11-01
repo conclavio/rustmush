@@ -432,3 +432,151 @@ fn a1_lane_legs_at_the_epoch_are_printed() {
         }
     }
 }
+
+/// The outer-system golden table written by `fetch_elements.py --write-outer`.
+const OUTER_BODIES_JSON: &str = include_str!("../../content/sky/outer_bodies.json");
+
+#[derive(Deserialize)]
+struct OuterGolden {
+    golden: BTreeMap<String, Vec<(i64, f64, f64, f64)>>,
+}
+
+/// **Doc 35 cut SF.1 (D-35-4, D-35-13): outer planets, Galilean & Neptunian
+/// moons, and the four orbital asteroid clusters track Horizons and their
+/// primaries**, without altering the base lane's revision digest.
+#[test]
+fn sf1_outer_bodies_and_asteroid_clusters_track_horizons() {
+    let sky = sky();
+    let outer_golden: OuterGolden =
+        serde_json::from_str(OUTER_BODIES_JSON).expect("outer_bodies.json parses");
+    let tolerances: BTreeMap<&str, u64> = [
+        ("uranus", 2),
+        ("neptune", 2),
+        ("io", 2),
+        ("europa", 4),
+        ("ganymede", 5),
+        ("callisto", 8),
+    ]
+    .into_iter()
+    .collect();
+
+    for (name, rows) in &outer_golden.golden {
+        let body = cid(name);
+        assert!(sky.is_keplerian(&body), "{name} moves on a Keplerian table");
+        let allowed = *tolerances.get(name.as_str()).expect("tolerance");
+        assert!(rows.len() >= 240, "{name}: {} golden rows", rows.len());
+        let mut worst = 0.0_f64;
+        for &(ic, x, y, z) in rows {
+            let at = sky.position_km(&body, ic).expect("position_km");
+            let p = as_f64(at);
+            let error = ((p[0] - x).powi(2) + (p[1] - y).powi(2) + (p[2] - z).powi(2)).sqrt();
+            let r = (x * x + y * y + z * z).sqrt();
+            worst = worst.max(error / r * 100_000.0);
+        }
+        #[allow(clippy::cast_precision_loss)]
+        let allowed_f = allowed as f64;
+        assert!(
+            worst <= allowed_f,
+            "{name}: worst {worst:.2} hundredths of a permille, allowed {allowed}"
+        );
+    }
+
+    // Moon separation bands from their parents across the epoch ± 1 year.
+    let year = 365 * 86_400;
+    let moon_bands: [(&str, &str, u64, u64); 6] = [
+        ("io", "jupiter", 418_000, 426_000),
+        ("europa", "jupiter", 660_000, 682_000),
+        ("ganymede", "jupiter", 1_065_000, 1_076_000),
+        ("callisto", "jupiter", 1_865_000, 1_905_000),
+        ("triton", "neptune", 352_000, 358_000),
+        ("saturn_b_ring_edge", "saturn", 116_000, 119_000),
+    ];
+    for t in [EPOCH_IC - year, EPOCH_IC, EPOCH_IC + year] {
+        for (moon, parent, low, high) in moon_bands {
+            assert_eq!(
+                sky.parent_of(&cid(moon)).map(CanonicalId::as_str),
+                Some(parent),
+                "{moon} orbits {parent}"
+            );
+            let km = sky
+                .distance_km(&cid(moon), t, &cid(parent), t)
+                .expect("a separation");
+            assert!(
+                (low..=high).contains(&km),
+                "{moon} is {km} km from {parent} at {t}, outside {low}..={high}"
+            );
+        }
+    }
+
+    // Four orbital asteroid clusters carry canonical Doc 20 ore families and zones.
+    let clusters: BTreeMap<String, _> = sky
+        .asteroid_clusters()
+        .map(|(id, def)| (id.to_string(), def))
+        .collect();
+    assert_eq!(
+        clusters.keys().map(String::as_str).collect::<Vec<_>>(),
+        [
+            "ceres_halo",
+            "kirkwood_gap_3_1",
+            "pallas_inclined_belt",
+            "saturn_b_ring_edge"
+        ]
+    );
+    assert_eq!(clusters["ceres_halo"].zone.as_deref(), Some("core"));
+    assert_eq!(
+        clusters["pallas_inclined_belt"].zone.as_deref(),
+        Some("frontier")
+    );
+    assert!(
+        clusters["pallas_inclined_belt"]
+            .ore_families
+            .iter()
+            .any(|f| f == "strategic_ore")
+    );
+}
+
+/// **Doc 35 cut SF.1 (D-35-4): `Sky::velocity_mps` returns physical heliocentric
+/// orbital velocities in m/s at `rate == 1000` and `[0, 0, 0]` at `rate == 0`.**
+#[test]
+fn sf1_sky_velocity_mps_matches_orbital_kinematics() {
+    let moving = sky();
+    let held = Sky::from_pack(
+        &lane(),
+        &EphemerisConfig {
+            epoch: EPOCH_IC,
+            rate: 0,
+        },
+    );
+
+    let speed_mps = |v: [i32; 3]| -> f64 {
+        let [vx, vy, vz] = v;
+        (f64::from(vx).powi(2) + f64::from(vy).powi(2) + f64::from(vz).powi(2)).sqrt()
+    };
+
+    let speed_bands: [(&str, f64, f64); 9] = [
+        ("earth", 29_000.0, 30_600.0),
+        ("mars", 21_900.0, 26_600.0),
+        ("ceres", 16_500.0, 19_500.0),
+        ("pallas", 14_000.0, 22_000.0),
+        ("jupiter", 12_400.0, 13_800.0),
+        ("saturn", 9_100.0, 10_300.0),
+        ("uranus", 6_400.0, 7_200.0),
+        ("neptune", 5_300.0, 5_600.0),
+        ("triton", 1_000.0, 10_500.0),
+    ];
+
+    for (name, min_mps, max_mps) in speed_bands {
+        let id = cid(name);
+        assert_eq!(
+            held.velocity_mps(&id, EPOCH_IC),
+            Some([0, 0, 0]),
+            "{name} has zero velocity in the constant sky"
+        );
+        let v = moving.velocity_mps(&id, EPOCH_IC).expect("velocity_mps");
+        let s = speed_mps(v);
+        assert!(
+            (min_mps..=max_mps).contains(&s),
+            "{name}: speed {s:.1} m/s ({v:?}) outside {min_mps}..={max_mps}"
+        );
+    }
+}
