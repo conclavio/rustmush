@@ -118,65 +118,68 @@ pub(crate) fn pad_poses(
     Ok(poses)
 }
 
-/// **Where a unit launched down a carrier's ramp stands** (doc 32 §17, the fix for G-4's
-/// "two hulls on one pad launch their rigs onto one cell"): the ramp's own pose while no other
-/// unit stands in the ramp's cell, else the first cell one cell from it (row-major) that no
-/// other unit on the site's ground stands in and that `unit` can stand on, at the ramp's pose
-/// moved by exactly one cell on each axis that differs — so the pose is never more than one cell
-/// from the ramp, and every "beside the ramp" test (a launch's finish, a DT flight's
-/// `at_ramp`, the recover, CF.5's exit) reads it as at the ramp. A field holds one unit a cell,
-/// and every hull on one pad shares its ramp, so without this a second rig launched onto a ramp
-/// cell already taken stalled every field on the site. With no free neighbour (or a ground that
-/// does not build) the ramp pose stands, as before.
-#[must_use]
-pub(crate) fn launch_pose(
-    ctx: &Ctx<'_>,
-    site: &mush_core::CanonicalId,
-    domain: mush_sim::DomainId,
-    ramp: &mush_sim::data::Pose,
-    unit: ObjId,
-) -> mush_sim::data::Pose {
-    use crate::surface::excursion::site_cell;
-    let w: &World = ctx.w;
-    let taken: std::collections::BTreeSet<(i64, i64)> = super::parties::on_ground(w, domain)
-        .into_iter()
-        .filter(|other| *other != unit)
-        .filter_map(|other| mush_sim::pose_of(w, other))
-        .filter(|(on, _)| *on == domain)
-        .map(|(_, pose)| site_cell(pose.x_cm, pose.y_cm))
-        .collect();
-    let at = site_cell(ramp.x_cm, ramp.y_cm);
-    if !taken.contains(&at) {
-        return ramp.clone();
+/// **How far from its cell a unit sharing it may be stood at admission**, cells (Chebyshev).
+pub const UNSTACK_CELLS: u16 = 4;
+
+/// **Two units on one cell, parted at admission** (doc 32 §17, the fix for G-4's "two hulls on
+/// one pad launch their rigs onto one cell"). The kernel stands one unit in a cell, and the
+/// surface does not: every hull on one pad launches its rigs onto the pad's one ramp cell, so a
+/// second rig launched before the first drove off shared its cell, and admission refused the
+/// whole field. Now, in unit order, the first unit keeps its cell; each later unit on a cell
+/// already held is stood on the nearest cell (nearest ring first, row-major, within
+/// [`UNSTACK_CELLS`]) that no other unit holds and it can stand on, at its own pose moved by
+/// whole cells, so its heading and its place within the cell are kept. The move is a surface
+/// placement, made before the check-out, like the settled rigs' (Q-CF-31), so the field admits
+/// it there and it comes home from there. A surface with no two units on one cell is untouched,
+/// so a launch, a drive and every "beside the ramp" test read exactly as before. `taken` gains
+/// every unit's cell.
+///
+/// # Errors
+///
+/// A unit with no unit record, or no free cell near its own.
+pub(crate) fn unstack(
+    ctx: &mut Ctx<'_>,
+    terrain: &crate::arena::state::ArenaTerrain,
+    units: &[ObjId],
+    taken: &mut std::collections::BTreeSet<(u16, u16)>,
+) -> Result<(), String> {
+    let side = i64::from(terrain.cell_cm());
+    for unit in units {
+        let Some((on, pose)) = mush_sim::pose_of(ctx.w, *unit) else {
+            continue;
+        };
+        let Some(cell) = terrain.cell_of(&pose) else {
+            continue;
+        };
+        if taken.insert(cell) {
+            continue;
+        }
+        let cells = mush_tactics::module::unit_of(ctx.w, *unit)
+            .ok_or_else(|| format!("#{} has no tactical unit record", unit.0))?;
+        let row = crate::arena::state::CostRow::read(cells);
+        let free = (1..=UNSTACK_CELLS)
+            .flat_map(|ring| ring_cells(cell, ring))
+            .find(|at| !taken.contains(at) && terrain.passable_for(row, at.0, at.1))
+            .ok_or_else(|| {
+                format!(
+                    "#{} shares cell {cell:?} and no free cell is within {UNSTACK_CELLS}",
+                    unit.0
+                )
+            })?;
+        taken.insert(free);
+        let mut at = pose.clone();
+        at.x_cm += (i64::from(free.0) - i64::from(cell.0)) * side;
+        at.y_cm += (i64::from(free.1) - i64::from(cell.1)) * side;
+        mush_sim::place(ctx, *unit, on, at)
+            .map_err(|error| format!("#{} could not be parted ({error})", unit.0))?;
+        tracing::info!(
+            unit = unit.0,
+            from = ?cell,
+            to = ?free,
+            "tacsim: a unit sharing a cell is parted at admission"
+        );
     }
-    let Some(row) = mush_tactics::module::unit_of(w, unit).map(crate::arena::state::CostRow::read)
-    else {
-        return ramp.clone();
-    };
-    let record = super::close::site_record(ctx, site)
-        .unwrap_or_else(|| crate::surface::site_record::SiteRecord::new(site.clone()));
-    let Ok(ground) = super::ground::definition(w, site, &record, Vec::new()) else {
-        return ramp.clone();
-    };
-    let (Ok(cx), Ok(cy)) = (u16::try_from(at.0), u16::try_from(at.1)) else {
-        return ramp.clone();
-    };
-    let side = i64::from(crate::surface::ground::SITE_CELL_CM);
-    ring_cells((cx, cy), 1)
-        .into_iter()
-        .find(|cell| {
-            !taken.contains(&(i64::from(cell.0), i64::from(cell.1)))
-                && ground.terrain.passable_for(row, cell.0, cell.1)
-        })
-        .map_or_else(
-            || ramp.clone(),
-            |cell| {
-                let mut pose = ramp.clone();
-                pose.x_cm += (i64::from(cell.0) - at.0) * side;
-                pose.y_cm += (i64::from(cell.1) - at.1) * side;
-                pose
-            },
-        )
+    Ok(())
 }
 
 /// The cells `ring` cells from `centre` (Chebyshev), row-major; `ring 0` is the centre.

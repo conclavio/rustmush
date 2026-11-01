@@ -1130,14 +1130,16 @@ pub(super) fn put_order(ctx: &mut Ctx<'_>, tv: ObjId, order: ActOrder) {
     }
 }
 
-/// **A drive's end cell as one word** (the review's correctness/F5): `y × 256 + x` for the
-/// `to` of an [`ActParams::Drive`], `0..=65,535` — the start's `to` parameter, which the prepare
-/// holds to the order the offer fixed. `None` for any other params or a cell off the site.
-pub(super) fn order_to_word(params: &ActParams) -> Option<u32> {
-    let ActParams::Drive { to, .. } = params else {
+/// **A drive's end cell as one word** (the review's correctness/F5): `y × side + x` for the
+/// `to` of an [`ActParams::Drive`], `0..=side² − 1` (doc 32 cut S.0: the drive's own `side`;
+/// `y × 256 + x`, `0..=65,535`, on a shipped site) — the start's `to` parameter, which the
+/// prepare holds to the order the offer fixed. `None` for any other params or a cell off the
+/// site.
+pub(crate) fn order_to_word(params: &ActParams) -> Option<u32> {
+    let ActParams::Drive { to, side, .. } = params else {
         return None;
     };
-    let side = i64::from(crate::surface::ground::SITE_CELLS);
+    let side = i64::from(*side);
     let ([x, y], range) = (*to, 0..side);
     if !range.contains(&x) || !range.contains(&y) {
         return None;
@@ -3453,4 +3455,56 @@ pub(crate) fn plan_clear_cmd(ctx: &mut Ctx<'_>, rig: &RigAt) -> Result<(), CmdEr
         line.replace("{n}", &n).replace("{no}", &no.to_string()),
     );
     Ok(())
+}
+
+#[cfg(test)]
+mod s0_tests {
+    use super::*;
+    use crate::surface::excursion::LegWaypoint;
+
+    /// A drive to `to` planned over a site `side` cells a side.
+    fn drive(to: [i64; 2], side: u16) -> ActParams {
+        let at = |x: i64, y: i64, at_s: u32| LegWaypoint {
+            x_cm: x * 1_000 + 500,
+            y_cm: y * 1_000 + 500,
+            at_s,
+        };
+        ActParams::Drive {
+            from_bay: false,
+            target: format!("{},{}", to[0], to[1]),
+            to,
+            waypoints: vec![at(10, 10, 0), at(to[0], to[1], 600)],
+            secs: 600,
+            cost: 18_000,
+            metres: 4_000,
+            heading_mdeg: 45_000,
+            side,
+        }
+    }
+
+    /// **The drive `to` bound follows the side** (doc 32 cut S.0, §18): `(300, 300)` is a word of
+    /// a 512 site's (`300 × 512 + 300`) and a cell its record keeps; a 256 site refuses the
+    /// target, the word and the record; a 256 drive is byte-identical to SM.4b's (no `side`).
+    #[test]
+    fn s0_the_drive_to_bound_follows_the_side() {
+        use crate::surface::drive::{Target, target_cell};
+        let far = Target::Cell { x: 300, y: 300 };
+        assert_eq!(target_cell(&far, (0, 0), 512), Some((300, 300)));
+        assert_eq!(target_cell(&far, (0, 0), 256), None);
+        assert_eq!(
+            order_to_word(&drive([300, 300], 512)),
+            Some(300 * 512 + 300)
+        );
+        assert_eq!(order_to_word(&drive([300, 300], 256)), None);
+        assert_eq!(order_to_word(&drive([255, 255], 256)), Some(65_535));
+        assert_eq!(drive([300, 300], 512).check(), Ok(()));
+        assert!(drive([300, 300], 256).check().is_err());
+        assert!(drive([10, 10], 513).check().is_err());
+        let shipped = serde_json::to_value(drive([20, 20], 256)).expect("encodes");
+        assert!(shipped.get("side").is_none(), "{shipped}");
+        let wide = serde_json::to_value(drive([300, 300], 512)).expect("encodes");
+        assert_eq!(wide.get("side"), Some(&serde_json::json!(512)));
+        let back: ActParams = serde_json::from_value(shipped).expect("decodes");
+        assert_eq!(back, drive([20, 20], 256));
+    }
 }

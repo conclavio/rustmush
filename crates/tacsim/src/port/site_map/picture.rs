@@ -166,6 +166,8 @@ pub(crate) struct CampaignLayer {
     pub salvage: Vec<Salvage>,
     /// The field open on the site.
     pub field: Option<FieldId>,
+    /// **The site's cells along one side** (doc 32 cut S.0, §18): its ground composite's.
+    pub side: u16,
 }
 
 /// **What [`campaign_layer`] reads besides the world.**
@@ -278,6 +280,7 @@ pub(crate) fn campaign_layer(
         seen,
         salvage,
         field: record.as_ref().and_then(SiteRecord::open_field),
+        side: crate::surface::ground::ground_side(&inputs.ground.composite),
     }
 }
 
@@ -418,7 +421,7 @@ pub(crate) fn campaign_value(layer: &CampaignLayer, site_name: &str, from: (i64,
         .collect();
     json!({
         "site": site_name,
-        "side": crate::surface::ground::SITE_CELLS,
+        "side": layer.side,
         "block_side": address::CELLS_PER_BLOCK,
         "field": layer.field.as_ref().map(|field| field.ordinal),
         "marks": marks

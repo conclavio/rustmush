@@ -1546,7 +1546,7 @@ Not built here, each for a reason:
   lands on the first's cell. The surface allows it, and the field then refuses to open at all
   ("occupancy is one unit per cell"). This harness never sees it now, because the escort drives
   off the ramp. A player who does not drive off it stalls every field on that site.
-  *(Fixed, §17: a launch onto a taken ramp cell stands the rig one cell from it.)*
+  *(Fixed, §17: admission parts two units on one cell.)*
 - **The escort's lease preview names the wrong command.** `+tv/lease escort` prints `LEASE_PREVIEW`,
   whose tail is `+tv/lease go signs it.`, and that command leases a prospector.
   *(Fixed, §17: the tail names `+tv/lease escort go`.)*
@@ -1591,16 +1591,27 @@ open, for the owner to object to:
     the head and 30 in 100 for the engine from the rear. The seeding fixes the outcome, not the
     timing, and the story fires until the section falls. It took one burst for the engine and
     about thirty for the head in the runs here.
-- **Two hulls on one pad (fixed).** Before, a launch put its rig on the pad's one ramp cell
-  whether or not another unit stood there, and admission then refused the whole field.
-  `field::carrier::launch_pose` now keeps the ramp pose while its cell is free. When it is taken,
-  the rig goes to the first cell one cell from the ramp, row-major, that no other unit stands in
-  and the rig can stand on. The pose moves by exactly one cell, so every "beside the ramp" test
-  still reads it as at the ramp: a launch's finish, a DT flight's `at_ramp`, the recover, CF.5's
-  exit. Both writers use it: the surface launch, including a scan or a sounding from the bay, and
-  a DT flight's departure. If no neighbour is free, the ramp pose stands as before. Gated by
-  `cf7_two_hulls_on_one_pad_launch_beside_each_other_and_the_field_opens`, and by the story's own
-  rig 2.
+- **Two hulls on one pad (fixed at admission).** Every hull on a pad launches its rigs onto the
+  pad's one ramp cell, and the surface lets two rigs share it. Admission then refused the whole
+  field, because the kernel stands one unit in a cell. Admission now parts them first
+  (`field::carrier::unstack`):
+  - In unit order, the first unit keeps its cell.
+  - Each later unit on a cell already held is stood on the nearest free cell it can stand on,
+    nearest ring first, row-major, within `UNSTACK_CELLS` (4). Its pose moves by whole cells, so
+    its heading and its place within the cell are kept.
+  - The move is a surface placement made before the check-out, like the settled rigs' (Q-CF-31),
+    so the unit is admitted there and comes home from there.
+  - A surface with no shared cell is untouched.
+
+  *Why at admission and not at the launch.* The first fix moved the launch itself one cell off a
+  taken ramp cell. That changed what `+tv` prints for such a rig ("about 10 m from the stern
+  ramp", not "at the stern ramp"), and the G-4 escort pilot waits for the latter. On CI's slower
+  runners the escort sometimes launched while Rook's rig still stood on the ramp, and the
+  two-bot story hung. Confirmed on conclav.dev with the spread forced: the escort's `+tv/1`
+  answered "about 10 m from the stern ramp". Parting at admission keeps every surface sentence
+  and every "at the ramp" test as it was.
+
+  Gated by `cf7_two_rigs_on_one_ramp_cell_are_parted_at_admission_and_the_field_opens`.
 - **The escort's lease preview (fixed).** `LEASE_PREVIEW`'s tail is now `{go} signs it.`, where
   `{go}` is `tv::lease_go`: `+tv/lease go`, or `+tv/lease escort go` for a design leased by its
   word. The prospector's sentence is unchanged. The bot's needle is now
@@ -1631,7 +1642,7 @@ open, for the owner to object to:
 
 1. **The ground.** At Ahuna Flank the miner leases a prospector and the escort line tank. A staff
    `@econ/pay` moves 7,000cr from the bystander's captain first, since a new captain's stake
-   covers one or the other. The miner launches both: rig 2 lands one cell from rig 1 on the ramp.
+   covers one or the other. The miner launches both, and they share the ramp's cell for a moment.
    The prospector is scanned, sounded and set to core an unread pocket (`+tv/1 mine go`). A
    player escort flies the line tank. A hired NPC flies a fixture hull on doctrine. A bystander
    rig from another captain mines the next block.
@@ -1686,5 +1697,90 @@ open, for the owner to object to:
   are home is the gap's own cut.
 
 **Defaults taken (provisional):** the G-7 rule's reach (party principals, not Friends); the
-launch spread's order (ring 1 row-major, the ramp pose kept when free); the lease preview's
+unstacking order (unit order; nearest ring, row-major, within 4 cells); the lease preview's
 `{go}`. The story's 7,000cr transfer is a fixture.
+
+## 18. 512 sites: S.0 as built (the plumbing)
+
+The owner's three-cut plan for Q-CF-51 (the field story again at 512 a side): **S.0** makes a
+site's side a per-site value, **S.1** scales the scheme that rides on it, **S.2** runs the CF.7
+story at 512 and measures it. S.0 changes nothing a 256 site does or stores; every shipped
+region is 2,560 m, so every shipped site is still 256.
+
+**The rulings** (the owner, 2026-11-01, accepting the plan's seven defaults):
+
+1. A composite cap separate from the tile cap.
+2. The side is the region's extent. Ahuna Flank and the other shipped sites stay 256; a new 512
+   Ceres site comes in S.1; the ground stays generated.
+3. Addresses are a 4 × 4 grid of blocks lettered A–P, each side/4 a side, so they run to C1024
+   at 512. The per-block shifts stay `[i8; 16]`, and the geology digest takes a new version.
+4. The pad comes from the site's pad room, and the raider fixture's cells become offsets from
+   the pad.
+5. The site view stays 32 cells across, each view cell side/32 site cells.
+6. The drive budget is w × h, `to`'s maximum is side² − 1, the `ADVANCE` bound is the site's
+   side, and the `u8::MAX` sentinel becomes an `Option`.
+7. The presence and sounder bands and the ground cache stay as they are, measured at 512 in S.2.
+
+S.0 builds 1, 2 (without the new site) and 6. S.1 builds 3, 4, 5 and the 512 site.
+
+**The composite cap.** `mush_atlas::window::composite` builds each surface with
+`Cells::filled_composite` over `WindowFrame::grid`'s `Grid::over_composite`, both capped by
+its own `MAX_COMPOSITE_SIDE` = 512, and decodes a
+composite's cells with `cells::deserialize_composite`, so a 512 window crosses the async seam.
+A tile keeps `MAX_TILE_SIDE` = 256 by both doors (`Cells::filled`, `Cells`' own `Deserialize`).
+A compile-time assert pins `MAX_COMPOSITE_SIDE` to tacsim's `MAX_ARENA_SIDE`. `@window`'s
+`window_max_cells` (65,536) is untouched. `MAX_COMPOSITE_BYTES` (8 MiB) holds a 512 site's
+one ground surface: its worst case, every cell different, is about 2.8 MiB encoded.
+
+**The side from the region.** `surface::ground::site_side_of_region` reads the region's extent
+in 10 m cells. It refuses an extent that is not square, not whole cells, or over 512
+(`MAX_SITE_CELLS`). `chart::site_frame` frames `side × side` from that. `site_composite` holds
+the composite to it, with CF.7's refusal sentence, its side now the region's. A region missing
+from the atlas frames at the shipped default, so its capture refuses it exactly as before.
+`ground_side(composite)` and `chart::site_side(w, entry)` are how the rest reads a site's side.
+`SITE_CELLS` is now only the shipped default.
+
+**Threaded through:**
+
+- **The site record** carries `side`. It is omitted at 256, so a 256 record's bytes are
+  unchanged. Every pose and remembered cell is held to it. Writers with the world build the
+  record at the site's side (`fresh_record`). The two provider prepares, which read no world,
+  build it from the offer's fixed `sides`, which is present only when a site is not 256.
+- **The drive.** `ActParams::Drive` carries the `side` it was planned over, also omitted at 256.
+  Its `to` and its `to` word (`y × side + x`) are held to it. `target_cell` and the A* budget
+  (`drive_path_budget_cells`, w × h) take the surface's grid. The start's `to` parameter
+  reaches `side² − 1` of the widest lane site, which is 65,535 today.
+- **The field orders.** `FieldPayload::validate` takes the side. At issue it is the side of the
+  site the members' flights stand on. A stored order is held to the widest site.
+- **The rest.** The site map's drive window clamps to the surface's side, and the picture's
+  `side` is the composite's. The staff `@tacsim/site` cell words and maximum use the site's
+  side. A raider's carrier is held to its own site when it is seeded, and the fixture file to
+  the widest site.
+- **The readings tie-break** keeps the field index as an `Option<u8>`, and a reading with none
+  sorts after every field. It no longer uses `u8::MAX`, which would be field 255 once a site
+  holds 256 fields.
+
+**Still at 256: what S.1 builds, against the rulings.** Each is wrong on a wider site until
+S.1 lands:
+
+- **Ruling 3, the address scheme.** Blocks become side/4 (`CELLS_PER_BLOCK`, `SITE_BLOCKS`
+  scale, `BLOCK_LETTERS` stays A–P). Fields, pockets and `field_index` follow (16 × 16 fields
+  at 512, so `field_index` reaches 255), up to C1024. Built on it: the chart's row stands and
+  caps, the scan, sounding and run stands an excursion record keeps (`stand_on_site`,
+  `address::on_scheme`), the campaign layer's block letters, and the picture's `block_side`.
+- **Ruling 3, the geology table.** Pockets cover the whole site; the per-block shifts stay
+  `[i8; 16]`; the geology digest takes a new version. Today a 512 site's geology covers only its
+  south-west quarter.
+- **Ruling 4, the pad.** It comes from the site's pad room (`PAD_CENTRE_CM`, `PAD_CELL` retire),
+  and `field/raiders.json`'s carrier and ramp cells become offsets from the pad. S.0 checks
+  them against the site's side when a raider is seeded.
+- **Ruling 5, the site view.** It stays 32 cells across, each view cell side/32 site cells:
+  `SITE_VIEW_SPAN` and `SITE_VIEW_CELL_CM` follow the side.
+- **Ruling 2, the 512 Ceres site.** A new frontier region of 5,120 m and its port entry.
+
+Ruling 7 builds nothing: S.2 measures the bands and the ground cache at 512, alongside the
+story itself.
+
+**Defaults taken (provisional):** a stored record with no `side` reads 256, since there are no
+migrations before launch. A stored drive's arrival cell, and a stored order's `ADVANCE`, are
+held to the widest site rather than to their own, because neither record names its site's side.

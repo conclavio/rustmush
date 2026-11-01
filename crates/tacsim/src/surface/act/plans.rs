@@ -255,6 +255,7 @@ pub(crate) fn recover_plan(
             cost: leg.cost,
             metres: leg.metres,
             heading_mdeg: leg.heading_mdeg,
+            side: field.side(),
         },
         from_bay: false,
     })
@@ -509,15 +510,22 @@ pub(crate) fn stand_of(w: &World, actor: ObjId, rig: &RigAt) -> Result<Stand, Re
     match where_is(w, rig.tv) {
         Where::Ground {
             domain, x_cm, y_cm, ..
-        } if domain == berth.domain && cell_on_site(site_cell(x_cm, y_cm)) => Ok(Stand {
-            site: berth.entry.clone(),
-            cell: site_cell(x_cm, y_cm),
-            from_bay: false,
-            start_cm: (x_cm, y_cm),
-            ramp_cell: site_cell(berth.ramp.x_cm, berth.ramp.y_cm),
-            ramp_label: berth.ramp_label.clone(),
-            site_name: berth.name.clone(),
-        }),
+        } if domain == berth.domain
+            && cell_on_site(
+                site_cell(x_cm, y_cm),
+                crate::surface::site_record::site_side_or_default(w, &berth.entry),
+            ) =>
+        {
+            Ok(Stand {
+                site: berth.entry.clone(),
+                cell: site_cell(x_cm, y_cm),
+                from_bay: false,
+                start_cm: (x_cm, y_cm),
+                ramp_cell: site_cell(berth.ramp.x_cm, berth.ramp.y_cm),
+                ramp_label: berth.ramp_label.clone(),
+                site_name: berth.name.clone(),
+            })
+        }
         Where::Bay { .. } | Where::Ground { .. } | Where::Elsewhere => {
             Err(Refusal::Elsewhere { n: rig.slot, name })
         }
@@ -626,8 +634,10 @@ pub(crate) fn drive_plan(
         HomePeek::Dark => return Err(Refusal::InstrumentsDark),
     };
     let surface = chart::ground_surface(&ground).ok_or(Refusal::InstrumentsDark)?;
-    let to = drive::target_cell(target, stand.cell).ok_or_else(|| Refusal::OffSite {
-        site: stand.site_name.clone(),
+    let to = drive::target_cell(target, stand.cell, surface.cells.width()).ok_or_else(|| {
+        Refusal::OffSite {
+            site: stand.site_name.clone(),
+        }
     })?;
     let words = drive::target_words(target);
     let table = mush_atlas::physics::LocomotionTable::shipped();
@@ -664,6 +674,7 @@ pub(crate) fn drive_plan(
             cost: leg.cost,
             metres: leg.metres,
             heading_mdeg: leg.heading_mdeg,
+            side: surface.cells.width(),
         },
         from_bay: stand.from_bay,
     };

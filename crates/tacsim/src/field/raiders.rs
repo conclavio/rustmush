@@ -131,7 +131,8 @@ pub fn raiders() -> Result<Vec<RaiderDef>, String> {
     if file.schema != 2 {
         return Err("raiders: schema 2 only".to_owned());
     }
-    let side = i64::from(crate::surface::ground::SITE_CELLS);
+    // Doc 32 cut S.0: the widest site here; `seed` holds each to its own site's side.
+    let side = i64::from(crate::surface::ground::MAX_SITE_CELLS);
     for (n, def) in file.raiders.iter().enumerate() {
         if file.raiders[..n].iter().any(|other| other.id == def.id) {
             return Err(format!("raiders: {} is authored twice", def.id));
@@ -345,6 +346,21 @@ pub fn seed(ctx: &mut Ctx<'_>, def: &RaiderDef) -> Result<String, String> {
     }
     let domain = super::parties::site_domain(ctx.w, &def.site)
         .ok_or_else(|| format!("{} is not a lane site.", def.site))?;
+    let side = i64::from(crate::surface::site_record::site_side_or_default(
+        ctx.w, &def.site,
+    ));
+    if def
+        .carrier
+        .cell
+        .iter()
+        .chain(&def.carrier.ramp)
+        .any(|v| !(0..side).contains(v))
+    {
+        return Err(format!(
+            "{}'s carrier and its ramp stand off {}.",
+            def.label, def.site
+        ));
+    }
     let spec_of = |ctx: &Ctx<'_>, design: &CanonicalId| {
         ctx.w
             .module_state::<crate::TacsimStore>()
@@ -437,7 +453,7 @@ pub fn launch(ctx: &mut Ctx<'_>, def: &RaiderDef) -> Result<String, String> {
         .filter(|carrier| mush_sim::pose_of(ctx.w, *carrier).is_some_and(|(on, _)| on == domain))
         .ok_or_else(|| format!("{} has no carrier on the ground to launch from.", def.label))?;
     let record = super::close::site_record(ctx, &def.site)
-        .unwrap_or_else(|| crate::surface::site_record::SiteRecord::new(def.site.clone()));
+        .unwrap_or_else(|| crate::surface::site_record::fresh_record(ctx.w, &def.site));
     if record.promoted.is_some() {
         return Err(format!(
             "{} is in a field; a raider launches only onto open ground.",

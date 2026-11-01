@@ -56,13 +56,20 @@ use super::geology::{
 use super::{GeologyState, body_geology, live};
 use crate::arena::digest_text;
 
-/// A site's cells along one side (§3.1: 256 × 256 at 10 m, D-16-5's arena window).
+/// **The shipped default** of a site's cells along one side (§3.1: 256 × 256 at 10 m, D-16-5's
+/// arena window): every region shipped today is 2,560 m a side.
 ///
 /// **Doc 32 cut CF.2** (Q-CF-51): the shipped default of CF.0's per-region window side
-/// ([`crate::definitions::arena::DEFAULT_WINDOW_SIDE`]), not a side of its own. The site's
-/// address scheme and ground cache are sized from it; the field a site promotes into reads the
-/// side off the composite's own grid (`crate::field`), never this constant.
+/// ([`crate::definitions::arena::DEFAULT_WINDOW_SIDE`]), not a side of its own. **Doc 32 cut
+/// S.0** (§18): a site's own side is its region's extent ([`site_side_of_region`]), read where a
+/// site is in reach ([`ground_side`], `crate::surface::chart::site_side`); this constant remains
+/// only where cut S.1 has not yet scaled the scheme — the address blocks and pockets, the chart,
+/// the geology table, the pad — and as the side of a record built without a site in reach.
 pub const SITE_CELLS: u16 = crate::definitions::arena::DEFAULT_WINDOW_SIDE;
+/// **The most cells along a site's side** (doc 32 cut S.0, §18): the arena's own cap
+/// ([`crate::definitions::arena::MAX_ARENA_SIDE`]), which is the atlas composite's
+/// ([`mush_atlas::MAX_COMPOSITE_SIDE`]).
+pub const MAX_SITE_CELLS: u16 = crate::definitions::arena::MAX_ARENA_SIDE;
 /// A site cell's edge, centimetres.
 pub const SITE_CELL_CM: u16 = 1_000;
 /// Pockets along one side of a site: 64 × 64 pockets of 4 × 4 cells.
@@ -416,7 +423,8 @@ pub fn capture_site(w: &World, frame: &WindowFrame) -> Result<CompositeInput, St
 ///
 /// # Errors
 ///
-/// The atlas's refusal, "a site's ground is 256 by 256 cells of 10 m" for any other window, a
+/// The atlas's refusal, "a site's ground is 256 by 256 cells of 10 m" for any other window (the
+/// side the region's: doc 32 cut S.0), a
 /// region that is not a surface of the spec's body (doc 20 cut SM.2, the brief's lead override
 /// 4: SM.1's residual SM1-A7), or the geology's refusal.
 pub fn build_site_ground(
@@ -434,16 +442,61 @@ pub fn build_site_ground(
     })
 }
 
-/// **A site's terrain composite, shape-checked** — the one rule [`build_site_ground`] and
-/// [`site_terrain`] share (doc 20 cut SM.4b factored it out; one rule, never a copy): the
-/// captured region a surface of `body` (cut SM.2's lead override 4), then `composite()`, then a
-/// ground surface of 256 × 256 cells of 10 m.
+/// **A site's side from its region** (doc 32 cut S.0, §18): the region's extent in cells of
+/// [`SITE_CELL_CM`] — square, a whole number of cells, `1..=`[`MAX_SITE_CELLS`].
 ///
 /// # Errors
 ///
-/// The region on another body or not a surface, the atlas's refusal, or another shape.
+/// "a site's region is square, whole 10 m cells, at most 512 a side; …" for any other extent.
+pub fn site_side_of_region(region: &mush_atlas::RegionRec) -> Result<u16, String> {
+    let refused = |what: &str| {
+        format!(
+            "a site's region is square, whole 10 m cells, at most {MAX_SITE_CELLS} a side; {} {what}",
+            region.key
+        )
+    };
+    let extent = region
+        .extent
+        .to_cm()
+        .map_err(|_| refused("has no extent"))?;
+    let (w, h) = (
+        extent.max.x.saturating_sub(extent.min.x),
+        extent.max.y.saturating_sub(extent.min.y),
+    );
+    let cell = i64::from(SITE_CELL_CM);
+    if w != h {
+        return Err(refused("is not square"));
+    }
+    if w <= 0 || w % cell != 0 {
+        return Err(refused("is not whole cells"));
+    }
+    u16::try_from(w / cell)
+        .ok()
+        .filter(|side| (1..=MAX_SITE_CELLS).contains(side))
+        .ok_or_else(|| refused("is too wide"))
+}
+
+/// **A site composite's side** (doc 32 cut S.0, §18): its ground surface's cells along one side,
+/// which `site_composite` holds to the region's square extent; [`SITE_CELLS`] for a composite
+/// without a ground surface (none that `site_composite` passes).
+#[must_use]
+pub fn ground_side(built: &Composite) -> u16 {
+    built
+        .surface(&mush_atlas::SurfaceRef::Ground)
+        .map_or(SITE_CELLS, |ground| ground.cells.width())
+}
+
+/// **A site's terrain composite, shape-checked** — the one rule [`build_site_ground`] and
+/// [`site_terrain`] share (doc 20 cut SM.4b factored it out; one rule, never a copy): the
+/// captured region a surface of `body` (cut SM.2's lead override 4), then `composite()`, then a
+/// ground surface of side × side cells of 10 m, the side the region's extent
+/// ([`site_side_of_region`]; doc 32 cut S.0: 256 for every shipped region).
+///
+/// # Errors
+///
+/// The region on another body or not a surface, its extent refused, the atlas's refusal, or
+/// another shape.
 fn site_composite(input: &CompositeInput, body: &CanonicalId) -> Result<Composite, String> {
-    const WRONG_SHAPE: &str = "a site's ground is 256 by 256 cells of 10 m";
     // Doc 20 cut SM.2 (lead override 4): the captured region stands on the spec's body, or
     // the site's ground would read one body's terrain over another's geology.
     match &input.region.kind {
@@ -463,15 +516,17 @@ fn site_composite(input: &CompositeInput, body: &CanonicalId) -> Result<Composit
             ));
         }
     }
+    let side = site_side_of_region(&input.region)?;
+    let wrong_shape = || format!("a site's ground is {side} by {side} cells of 10 m");
     let built = composite(input)?;
     let ground = built
         .surface(&mush_atlas::SurfaceRef::Ground)
-        .ok_or_else(|| WRONG_SHAPE.to_owned())?;
+        .ok_or_else(wrong_shape)?;
     if built.frame.cell_cm != SITE_CELL_CM
-        || ground.cells.width() != SITE_CELLS
-        || ground.cells.height() != SITE_CELLS
+        || ground.cells.width() != side
+        || ground.cells.height() != side
     {
-        return Err(WRONG_SHAPE.to_owned());
+        return Err(wrong_shape());
     }
     Ok(built)
 }
@@ -505,8 +560,8 @@ pub fn site_terrain_and_biome(
         .into_iter()
         .find(|site| &site.entry == entry)
         .ok_or_else(|| format!("{entry} is not a lane site"))?;
-    let frame = crate::surface::chart::site_frame(&site.location)
-        .ok_or_else(|| format!("{entry}'s window does not form"))?;
+    let frame = crate::surface::chart::site_frame(w, &site.location)
+        .map_err(|error| format!("{entry}'s window does not form: {error}"))?;
     let input = capture_site(w, &frame)?;
     let biome = input.region.biome_str().to_owned();
     site_composite(&input, &site.body).map(|composite| (composite, biome))
@@ -807,4 +862,107 @@ pub fn site_ground_sync(
     Ok(state
         .sites
         .insert_captured(key, ground, input, spec.clone()))
+}
+
+#[cfg(test)]
+mod s0_tests {
+    use super::*;
+    use mush_atlas::geom::{Point2, Rect2};
+    use mush_atlas::record::{BackgroundRecipe, RegionKind};
+    use mush_atlas::{RegionRec, TerrainClass};
+
+    fn cid(s: &str) -> CanonicalId {
+        CanonicalId::new(s).expect("an id")
+    }
+
+    /// A Ceres surface region `w × h` metres, Ahuna Flank's recipe in miniature.
+    fn region(w: f64, h: f64) -> RegionRec {
+        RegionRec {
+            key: RecordKey::new(cid("s0"), cid("site")),
+            name: "S.0 test site".to_owned(),
+            kind: RegionKind::Surface {
+                body: "ceres".to_owned(),
+            },
+            frame: None,
+            parent: None,
+            extent: Rect2(Point2(0.0, 0.0), Point2(w, h)),
+            datum_cm: 0,
+            background: BackgroundRecipe {
+                surface: TerrainClass::Regolith,
+                mix: vec![(TerrainClass::Ice, 20), (TerrainClass::Rock, 15)],
+                relief_cm: 150,
+                relief_period_cm: 1_000,
+                water_cm: None,
+                seed: 2026,
+            },
+            ground: Vec::new(),
+            ground_resolution_cm: 1_000,
+            theme: None,
+            biome: None,
+            revision: 1,
+        }
+    }
+
+    /// The site window over `region` at `cells` a side, as `chart::site_frame` frames it.
+    fn input(region: RegionRec, cells: i64) -> CompositeInput {
+        let edge = cells * i64::from(SITE_CELL_CM);
+        CompositeInput {
+            frame: WindowFrame {
+                region: region.key.clone(),
+                surfaces: vec![mush_atlas::SurfaceRef::Ground],
+                bbox: mush_atlas::RectCm {
+                    min: mush_atlas::PointCm { x: 0, y: 0 },
+                    max: mush_atlas::PointCm { x: edge, y: edge },
+                },
+                cell_cm: SITE_CELL_CM,
+            },
+            region,
+            tiles: Vec::new(),
+            features: Vec::new(),
+            rooms: Vec::new(),
+        }
+    }
+
+    /// **A 512 site composites** (doc 32 cut S.0, §18): a 5,120 m region is 512 × 512 cells of
+    /// 10 m through `site_composite`, inside the composite's byte cap, and its side reads 512.
+    #[test]
+    fn s0_a_5120_m_region_composites_to_512() {
+        let built = site_composite(&input(region(5_120.0, 5_120.0), 512), &cid("ceres"))
+            .expect("a 512 site composites");
+        let ground = built
+            .surface(&mush_atlas::SurfaceRef::Ground)
+            .expect("a ground surface");
+        assert_eq!((ground.cells.width(), ground.cells.height()), (512, 512));
+        assert_eq!(ground_side(&built), 512);
+        // The composite crosses the async seam at 512 (the composite's own deserializer).
+        let json = serde_json::to_string(&built).expect("encodes");
+        let back: Composite = serde_json::from_str(&json).expect("decodes");
+        assert_eq!(back, built);
+        // The shipped 2,560 m region is still 256.
+        let shipped = site_composite(&input(region(2_560.0, 2_560.0), 256), &cid("ceres"))
+            .expect("a 256 site composites");
+        assert_eq!(ground_side(&shipped), 256);
+    }
+
+    /// **The cap is enforced** (doc 32 cut S.0): a 5,130 m region (513 cells), a non-square one
+    /// and one of part cells are refused; a window that is not the region's side keeps CF.7's
+    /// refusal sentence.
+    #[test]
+    fn s0_an_extent_past_512_or_not_square_is_refused() {
+        assert_eq!(site_side_of_region(&region(2_560.0, 2_560.0)), Ok(256));
+        assert_eq!(site_side_of_region(&region(5_120.0, 5_120.0)), Ok(512));
+        let refused = |w, h| site_side_of_region(&region(w, h)).expect_err("refused");
+        assert!(refused(5_130.0, 5_130.0).contains("too wide"));
+        assert!(refused(5_120.0, 2_560.0).contains("not square"));
+        assert!(refused(2_565.0, 2_565.0).contains("whole cells"));
+        assert!(
+            site_composite(&input(region(5_130.0, 5_130.0), 513), &cid("ceres"))
+                .expect_err("513 refused")
+                .contains("at most 512")
+        );
+        assert_eq!(
+            site_composite(&input(region(2_560.0, 2_560.0), 512), &cid("ceres")),
+            Err("a site's ground is 256 by 256 cells of 10 m".to_owned())
+        );
+    }
 }
