@@ -26,6 +26,7 @@ use crate::overlay::{
     outline_rect, scale_for, text,
 };
 use crate::picture::{BUCKET_A_INTERVAL, Feeds, Look, Picture};
+use crate::ship_shader::draw_docking_hull_wireframe;
 
 /// The 6-DOF bow docking camera feed.
 pub const SPACE_DOCKING_FEED: &str = "space.docking";
@@ -340,6 +341,11 @@ pub fn draw_docking_camera(frame: &mut Frame, docking: &Value, look: &Look) {
 
     // 1. Deterministic background starfield & Bayer-dithered target bulkhead silhouette
     draw_target_hull_backdrop(frame, &pose, fov_deg);
+    let target_kind = docking
+        .get("target_kind")
+        .and_then(Value::as_str)
+        .unwrap_or("ship");
+    draw_docking_hull_wireframe(frame, target_kind, &pose, fov_deg, BULKHEAD_LIT);
 
     // 2. True 6-DOF perspective wireframe docking collar & 3D approach chevrons
     draw_wireframe_collar(frame, &pose, fov_deg, s);

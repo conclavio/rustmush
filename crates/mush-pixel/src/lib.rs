@@ -97,6 +97,7 @@ pub mod png;
 pub mod raycast;
 pub mod replay;
 pub mod scene;
+pub mod ship_shader;
 #[cfg(feature = "encode")]
 pub mod sixel;
 pub mod space_cockpit;
