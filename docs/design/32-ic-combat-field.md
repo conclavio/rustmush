@@ -1784,3 +1784,103 @@ story itself.
 **Defaults taken (provisional):** a stored record with no `side` reads 256, since there are no
 migrations before launch. A stored drive's arrival cell, and a stored order's `ADVANCE`, are
 held to the widest site rather than to their own, because neither record names its site's side.
+
+## 19. 512 sites: S.1 as built (the scheme, the pad, the view, the site)
+
+S.1 builds rulings 3, 4 and 5 and the 512 site of ruling 2, on S.0's plumbing (§18). Every 256
+site keeps every address, sentence, digest and record byte it had; the 512 site is new content
+beside the twelve shipped site packs.
+
+**Ruling 3, the address scheme.** `surface::address::Scheme` is a site's side, a multiple of 256
+up to 512 (`Scheme::of_side`; `site_side_of_region` now refuses any other extent, "not a whole
+number of 2,560 m sides"). Its blocks are always the 4 × 4 lettered `A`–`P`, each `side / 4`
+cells; pockets stay 4 cells and fields 32. At 512 a block is 128 cells, 32 × 32 pockets numbered
+`1..=1024` (`C1024`), 4 × 4 fields; the site 128 pockets and 16 fields a side, field indexes
+`0..=255` (still a `u8`). A field's name is its block letter and its quadrant, and on a block of
+4 × 4 fields its quadrant of that quadrant: `K-NW` at 256, `K-NW-NW` at 512 (the field under
+Urvara's ramp). The functions outside `Scheme` are `Scheme::SHIPPED`'s, so every 256 caller and
+test reads as before. Every production reader takes its site's scheme: a lane site's from the
+world (`chart::site_scheme`), a chart row's from the row, a composite's from its width, a stand's
+from `act::Stand::scheme`. Built on it: the chart's rows and blocks, the scan, sounding and run
+stands, the fill plans (compile, interpreter, words), the claims' readings clause and evidence,
+the tell lines, the site map's readings and pits, the campaign letters and claim edges, the
+picture's `block_side`, `@geology`'s site form, the drive's target parse (now after the stand, so
+`C117` is read under the stand's own site), the opening's block pockets and the yard's survey.
+The survey commissions are authored on 256 sites only (a record's coverage is one 256-pocket
+block), so a 512 sounding credits none; their pocket count is the site's.
+
+**Ruling 3, the geology table.** `site_geology` builds `side / 32` fields and `side / 4` pockets
+a side under `SiteGeologySpec.side` (`geology_spec_at`); the shifts stay `[i8; 16]`, one per
+block of `side / 128` × `side / 128` fields. A 256 table digests under `site_geology.v1` exactly
+as before; any other side digests under `site_geology.v2` with the side folded in (the pins are
+untouched; nothing was bumped). `site_revision` folds the side in only off 256, so every shipped
+site's ground key is unchanged. A 512 table at a 256 table's origin is the 256 table in its
+south-west quarter, pocket for pocket.
+
+**Ruling 3, the chart.** A `ChartRecord` carries `side`, omitted at 256 (a 256 row is
+byte-identical); its check holds its stands, field indexes and block lengths to its own scheme;
+a new row takes the side its act was planned over. **Measured**
+(`s1_a_worst_case_512_chart_row_encodes_under_its_cap`: every field scanned and every pocket
+sounded four times at the widest stamps, canonical JSON): **153,286 bytes at 512**, 43,679 at
+256. `MAX_CHART_RECORD_BYTES` rises from 65,536 to 196,608 (192 KiB), under the families' 256 KiB
+maximum, so the cap stays honest with a quarter of headroom over the measured worst case.
+
+**The records that name a side.** Like S.0's drive, each record a world-less prepare or finish
+reads carries `side`, omitted at 256: a scan's and a sounding's `ActParams`, a `Run`, a
+`FillPlan` (and the offer's `MineFixed` and `FillFixed`), a chart row, a survey row of the yard
+offer. A finished reading's `ReadSpan` names none and is held to the widest site, as S.0 held a
+stored drive's arrival.
+
+**Ruling 4, the pad.** `excursion::site_pad_cm(w, site)` is the centre of the site's pad room —
+its port's `gallery`, the authored `room.pad` — on the room's atlas geometry, and
+`site_pad_cell` its cell; `ramp_pose_at(bay, pad)` puts the ramp off it. `PAD_CENTRE_CM` and
+site_map's `PAD_CELL` retire from every reader (the berth's ramp, the landing facts, the carrier's
+pad poses, the heard lines' listener, the site map's reference and ground rows, the picture's
+`H` and heard origin) and remain only as the fallback for a site whose pad room is not on the
+world. Every shipped site's room gives `(128 000, 128 000)` exactly
+(`s1_every_site_pad_comes_from_its_pad_room`). `content/field/raiders.json` is schema 3: the
+carrier's and its ramp's cells are offsets from the pad, `(28, −2)` and `(31, −2)`, which land
+on Ahuna Flank at the `(156, 126)` and `(159, 126)` they were.
+
+**Ruling 5, the site view.** It stays `SITE_VIEW_CELLS` = 32 across; each view cell is
+`site_view_span(side)` = `side / 32` site cells (8 at 256, 16 at 512) and `site_view_cell_cm`
+of them. The drive view's footer reads `of {side}x{side}` (`of 256x256` on every shipped site)
+and the site view's `the whole site, {span × 10} m a cell`. mush-bot's pins (`SITE_VIEW_CELLS`
+32, `GRID_COLUMNS` 64) hold unchanged.
+
+**Ruling 2, the 512 site: Urvara Reach.** A frontier claim on the terraced floor of Urvara, the
+great southern basin of Ceres (−45.8°, 249.3°): `region.urvara_reach`, 5,120 m, its own
+background (seed 2607, ice and rock in a regolith mix), and `neighborhood.urvara_reach`, its pad
+room `FR-31` over the centre (2,540–2,580 m, so the pad cell is `(256, 256)` and a Dray-P's ramp
+`(256, 252)`) and three craters. Both ride `WIDE_SITE_SOURCES`, apart from the twelve
+`SITE_SOURCES`, so no 256 pack or pin moves. The lane goes to **v17** (a location, its open-tenure
+site port `urvara_port`, the routes `ceres_urvara` and `urvara_ceres`, and Ceres's `urvara` routes
+key: reachable as Ahuna Flank is, by `+ship/undock urvara`, on no default route), and the relay
+seed to **v8**, re-signed to require it, entries unchanged. Its zone is `core`, since `frontier`
+does not parse yet (§9.5 of doc 20). Its existence moves no 256 site's digest; it does move the
+lane's and the relay's digests, the pack counts (48 → 50), and the lane's entry lists, which the
+pins now name.
+
+**Gates as built.** `s1_addresses_round_trip_at_both_sides` (every pocket and field at 512,
+`C1024`, `A1`/`P1024`, the shipped scheme equal to the free functions);
+`s1_a_512_site_table_covers_the_whole_site`; `s1_a_worst_case_512_chart_row_encodes_under_its_cap`;
+`s1_every_site_pad_comes_from_its_pad_room` and `s1_the_wide_site_packs_load_clean`;
+`s1_a_rig_works_the_512_site` (`shard_2/quarry.rs`: a Dray-P flies to Urvara, its rig launches,
+scans `K-NW-NW`, drives by a 512 address from block K into block G past cell 256 on both axes,
+sounds, mines one cycle and recovers, all through the commands); and
+`s1_a_field_promotes_on_the_512_site` (`shard_1/field_raiders.rs`: the content's raider rebased
+on Urvara by its offsets, its leader's mark promotes a field that admits the rig, the raider and
+its carrier where they stood and the Dray-P on the pad at `(256, 256)`, on a 512 site record).
+
+**Defaults taken (provisional):** the 512 field name `K-NW-NW` (quadrant of quadrant); the chart
+cap 196,608; the pocket cursor's numbers held to the widest block (`MAX_POCKET_NUMBER` 1,024)
+while its rows stay 64; Urvara Reach's name, coordinates, seed, craters and open tenure; a survey commission
+crediting nothing off a 256 site; `@geology` and `+tv/drive` accept an address of either scheme
+before reading it under the site's own (an address valid only at 512 now reaches the site's own
+refusal at a 256 site rather than the usage line).
+
+**Left for S.2:** the CF.7 story at 512 and its measurements; the presence and sounder bands and
+the ground cache (ruling 7); the bot's address token (`mine/lines.rs`'s `is_addr` reads one to
+three digits, so a four-digit 512 address is not yet a bot pocket); a pocket cursor's 64 rows
+against a 512 block's up to 256 ore pockets of a family; the home field's build over 512 × 512
+cells; a `frontier` zone word.
