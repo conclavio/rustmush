@@ -191,8 +191,6 @@ pub mod sheet;
 /// Doc 18 cut IC2: **the sky seam** — the one query every distance asks
 /// (doc 18 §4.8, D-18-43, D-18-48).
 pub mod sky;
-/// Doc 35 cut SF.3: **Tier-2 local space bubbles, 1:1 wall-time weapon triad,
-/// and the Kirkwood Customs Picket** (`docs/design/35-ship-free-flight-combat-and-mining.md`).
 pub mod space;
 pub mod store;
 /// **Doc 20 cut SM.1** — surface mining's ground: the keyed geology function, the reading

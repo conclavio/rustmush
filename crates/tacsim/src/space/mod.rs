@@ -1,12 +1,13 @@
 //! **Space bubbles, 1:1 wall-time weapon triad, and the Kirkwood Customs Picket**
 //! (Doc 35 cut `SF.3`; `docs/design/35-ship-free-flight-combat-and-mining.md` §5–§6, §9).
 //!
-//! This module implements Tier-2 local-space domains ([`bubble::LocalSpaceBubble`]),
-//! the 1:1 wall-time weapon triad ([`weapons`]), and the multi-party Kirkwood
-//! Customs Picket encounter ([`picket::KirkwoodPicketEncounter`]), reusing `dray.json`'s
-//! canonical sections (`hull`, `hold`, `drive`) and facet bands (`front`, `left`,
-//! `right`, `rear`, `top`) while keeping zero file overlap with `arena/*`, `field/*`,
-//! `surface/*`, and `detachment/*` (`D-35-1`, `D-35-2`).
+//! This module implements Tier-2 local-space domains ([`LocalSpaceBubble`]),
+//! the 1:1 wall-time weapon triad ([`TorpedoTube`], [`LaserMount`], [`RailgunMount`],
+//! [`PdcMount`]), and the multi-party Kirkwood Customs Picket encounter
+//! ([`KirkwoodPicketEncounter`]), reusing `dray.json`'s canonical sections
+//! (`hull`, `hold`, `drive`) and facet bands (`front`, `left`, `right`, `rear`, `top`)
+//! while keeping zero file overlap with `arena/*`, `field/*`, `surface/*`, and
+//! `detachment/*` (`D-35-1`, `D-35-2`).
 
 pub mod bubble;
 pub mod picket;
