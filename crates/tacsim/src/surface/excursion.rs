@@ -96,10 +96,38 @@ pub const MAX_DUMP_GOODS: usize = 8;
 pub const MAX_TV_LOG_LINES: usize = 16;
 /// The most bytes one log line keeps (cut on a char boundary).
 pub const MAX_TV_LOG_BYTES: usize = 160;
-/// The projection's ceiling, canonical JSON bytes (§8: "at most 4 KiB").
+/// The projection's ceiling, canonical JSON bytes (§8: "at most 4 KiB"), with a leg of at most
+/// [`MAX_LEG_WAYPOINTS`]; a longer leg's record has [`tv_rec_budget`] more.
 pub const MAX_TV_REC_BYTES: usize = 4_096;
-/// The most waypoints a frozen leg carries (§8; SM.4's slot).
+/// The most waypoints a frozen leg carries on a shipped site (§8; SM.4's slot).
 pub const MAX_LEG_WAYPOINTS: usize = 32;
+/// **The most waypoints a frozen leg carries on a wide site** (doc 32 cut S.2, §20; the owner's
+/// ruling of 2026-11-01): 64 on a site wider than 256 a side, so a drive across a 512 site keeps
+/// the waypoints a drive across a 256 one has. The widest any stored leg may carry.
+pub const MAX_WIDE_LEG_WAYPOINTS: usize = 64;
+/// **The bytes one waypoint can add to the projection**: a [`LegWaypoint`] at `i64::MIN` on both
+/// axes and `u32::MAX` seconds, and its comma (`s2_the_widest_waypoint_is_its_budget`).
+pub const MAX_WAYPOINT_BYTES: usize = 76;
+
+/// **The most waypoints a frozen leg carries on a site `side` cells a side** (doc 32 cut S.2):
+/// [`MAX_LEG_WAYPOINTS`] up to 256, [`MAX_WIDE_LEG_WAYPOINTS`] above.
+#[must_use]
+pub const fn max_leg_waypoints(side: u16) -> usize {
+    if side > crate::surface::ground::SITE_CELLS {
+        MAX_WIDE_LEG_WAYPOINTS
+    } else {
+        MAX_LEG_WAYPOINTS
+    }
+}
+
+/// **The projection's ceiling with a leg of `waypoints`** (doc 32 cut S.2): [`MAX_TV_REC_BYTES`],
+/// and [`MAX_WAYPOINT_BYTES`] more for each waypoint past [`MAX_LEG_WAYPOINTS`], so a long wide
+/// leg leaves the rest of the record the room a full shipped leg leaves it, and every record with
+/// a shipped leg keeps the 4 KiB it had.
+#[must_use]
+pub const fn tv_rec_budget(waypoints: usize) -> usize {
+    MAX_TV_REC_BYTES + waypoints.saturating_sub(MAX_LEG_WAYPOINTS) * MAX_WAYPOINT_BYTES
+}
 /// **The shipped sites' pad centre**, centimetres on both axes: `SITE_CELLS / 2 ×
 /// SITE_CELL_CM` (the site packs put `room.pad` at 1,260–1,300 m in a 2,560 m region whose
 /// origin is the south-west corner). **Doc 32 cut S.1** (ruling 4): a site's own pad is its pad
@@ -316,8 +344,8 @@ pub enum ActParams {
         target: String,
         /// The end cell, site-local `[x, y]` (a recover's: the beside-ramp cell its leg ends on).
         to: [i64; 2],
-        /// The frozen display leg, `2..=`[`MAX_LEG_WAYPOINTS`], `at_s` from the leg's start,
-        /// non-decreasing.
+        /// The frozen display leg, `2..=`[`max_leg_waypoints`] of its site's side, `at_s` from
+        /// the leg's start, non-decreasing.
         waypoints: Vec<LegWaypoint>,
         /// The leg's own IC seconds (the last waypoint's `at_s`).
         secs: u32,
@@ -438,7 +466,7 @@ impl ActParams {
 
     /// **An act's own bounds** (doc 20 cut SM.4a): the stand on the site; a scan's `1..=9`
     /// distinct field indexes and at most 8 hidden ones, distinct and disjoint; a sounding's
-    /// reach `1..=48`. **Doc 20 cut SM.4b**: a leg's `2..=`[`MAX_LEG_WAYPOINTS`] waypoints with
+    /// reach `1..=48`. **Doc 20 cut SM.4b**: a leg's `2..=`[`max_leg_waypoints`] waypoints with
     /// non-decreasing `at_s`, the last equal to `secs`; `to` on the site; the target at most
     /// [`MAX_DRIVE_TARGET_BYTES`]; the heading under 360,000.
     pub(crate) fn check(&self) -> Result<(), String> {
@@ -472,8 +500,10 @@ impl ActParams {
                         crate::surface::ground::MAX_SITE_CELLS
                     ));
                 }
-                if waypoints.len() < 2 || waypoints.len() > MAX_LEG_WAYPOINTS {
-                    return Err(format!("a leg carries 2 to {MAX_LEG_WAYPOINTS} waypoints"));
+                // Doc 32 cut S.2: 64 on a wide site.
+                let cap = max_leg_waypoints(*side);
+                if waypoints.len() < 2 || waypoints.len() > cap {
+                    return Err(format!("a leg carries 2 to {cap} waypoints"));
                 }
                 if waypoints
                     .windows(2)
@@ -2286,22 +2316,32 @@ impl TvRec {
         self.log.push(TvLogLine { at_ic, text: flat });
     }
 
-    /// **Fit the projection under [`MAX_TV_REC_BYTES`]** (doc 20 cut SM.4b; the brief's decision
-    /// P7): while its canonical JSON is past the ceiling, drop the oldest log line. The leg is
-    /// never cut (doc 20 §8's 4 KiB stands; a 32-waypoint leg and a full sixteen-line log do not
-    /// fit together). A record that will not serialise is left as it is (its `check` refuses).
+    /// **Fit the projection under its ceiling** (doc 20 cut SM.4b; the brief's decision P7;
+    /// [`TvRec::budget`]): while its canonical JSON is past the ceiling, drop the oldest log line.
+    /// The leg is never cut (doc 20 §8's 4 KiB stands; a 32-waypoint leg and a full sixteen-line
+    /// log do not fit together, nor a 64-waypoint one in its larger budget). A record that will
+    /// not serialise is left as it is (its `check` refuses).
     pub fn fit(&mut self) {
+        let budget = self.budget();
         while !self.log.is_empty()
-            && serde_json::to_vec(self).is_ok_and(|bytes| bytes.len() > MAX_TV_REC_BYTES)
+            && serde_json::to_vec(self).is_ok_and(|bytes| bytes.len() > budget)
         {
             self.log.remove(0);
         }
     }
 
+    /// **The projection's ceiling** (doc 32 cut S.2): [`tv_rec_budget`] of its leg's
+    /// waypoints, [`MAX_TV_REC_BYTES`] with none or a shipped leg.
+    #[must_use]
+    pub fn budget(&self) -> usize {
+        tv_rec_budget(self.leg.as_ref().map_or(0, |leg| leg.waypoints.len()))
+    }
+
     /// **The projection's bounds**: the schema; at most [`MAX_TV_LOG_LINES`] log lines, each
-    /// at most [`MAX_TV_LOG_BYTES`] and on one row; a leg of at most [`MAX_LEG_WAYPOINTS`];
+    /// at most [`MAX_TV_LOG_BYTES`] and on one row; a leg of at most [`MAX_WIDE_LEG_WAYPOINTS`]
+    /// (a projection names no site's side, so it is held to the widest; doc 32 cut S.2);
     /// a run of at most [`MAX_RUN_CYCLES`] cycles whose address is at most
-    /// [`MAX_RUN_ADDR_BYTES`]; the canonical JSON at most [`MAX_TV_REC_BYTES`].
+    /// [`MAX_RUN_ADDR_BYTES`]; the canonical JSON at most [`TvRec::budget`].
     /// (`told <= applied` is **not** required: a refused finish is told without a placement.)
     ///
     /// # Errors
@@ -2330,10 +2370,10 @@ impl TvRec {
             }
         }
         if let Some(leg) = &self.leg
-            && leg.waypoints.len() > MAX_LEG_WAYPOINTS
+            && leg.waypoints.len() > MAX_WIDE_LEG_WAYPOINTS
         {
             return Err(format!(
-                "a frozen leg has at most {MAX_LEG_WAYPOINTS} waypoints"
+                "a frozen leg has at most {MAX_WIDE_LEG_WAYPOINTS} waypoints"
             ));
         }
         // Doc 20 cut SM.7: a run's view names a cycle of at most eight.
@@ -2374,10 +2414,9 @@ impl TvRec {
             ));
         }
         let bytes = serde_json::to_vec(self).map_err(|error| error.to_string())?;
-        if bytes.len() > MAX_TV_REC_BYTES {
-            return Err(format!(
-                "a rig projection is at most {MAX_TV_REC_BYTES} bytes"
-            ));
+        let budget = self.budget();
+        if bytes.len() > budget {
+            return Err(format!("a rig projection is at most {budget} bytes"));
         }
         Ok(())
     }
@@ -3165,6 +3204,93 @@ mod tests {
         assert!(size(&one_more) > MAX_TV_REC_BYTES);
     }
 
+    /// **Doc 32 cut S.2: the widest waypoint is its budget, and a wide site's leg has 64.**
+    /// One waypoint at `i64::MIN` on both axes and `u32::MAX` seconds, with its comma, is
+    /// [`MAX_WAYPOINT_BYTES`]; the cap is 32 up to 256 a side and 64 above; the projection's
+    /// ceiling is 4,096 bytes with a shipped leg or none and grows by that much a waypoint past 32.
+    #[test]
+    fn s2_the_widest_waypoint_is_its_budget() {
+        let widest = LegWaypoint {
+            x_cm: i64::MIN,
+            y_cm: i64::MIN,
+            at_s: u32::MAX,
+        };
+        let bytes = serde_json::to_vec(&widest).map(|b| b.len()).unwrap_or(0);
+        assert_eq!(bytes + 1, MAX_WAYPOINT_BYTES);
+        assert_eq!((max_leg_waypoints(256), max_leg_waypoints(512)), (32, 64));
+        assert_eq!(tv_rec_budget(0), MAX_TV_REC_BYTES);
+        assert_eq!(tv_rec_budget(32), MAX_TV_REC_BYTES);
+        assert_eq!(tv_rec_budget(64), 4_096 + 32 * 76);
+    }
+
+    /// **Doc 32 cut S.2: a 64-waypoint leg fits the projection, and its act checks at 512 only.**
+    /// A wide leg at the widest coordinates and a full sixteen-line log run past the record's
+    /// budget; `fit` drops the oldest lines, keeps the leg whole, and the record checks. A 65th
+    /// waypoint is refused. The drive's own parameters carry 64 on a 512 site and are refused at
+    /// 256, where 32 is the cap.
+    #[test]
+    fn s2_a_64_waypoint_leg_fits_its_record_at_512() {
+        let wide_leg = |n: i64| FrozenLeg {
+            started_ic: i64::MIN,
+            waypoints: (0..n)
+                .map(|k| LegWaypoint {
+                    x_cm: i64::MIN + k,
+                    y_cm: i64::MIN + k,
+                    at_s: u32::MAX,
+                })
+                .collect(),
+        };
+        let mut rec = TvRec::new(ObjId(900), 1);
+        rec.leg = Some(wide_leg(64));
+        for n in 0..16_i64 {
+            rec.push_log(i64::MIN + n, &"x".repeat(MAX_TV_LOG_BYTES));
+        }
+        let size = |rec: &TvRec| serde_json::to_vec(rec).map(|b| b.len()).unwrap_or(0);
+        assert_eq!(rec.budget(), tv_rec_budget(64));
+        assert!(size(&rec) > rec.budget());
+        let leg = rec.leg.clone();
+        rec.fit();
+        assert_eq!(rec.check(), Ok(()));
+        assert_eq!(rec.leg, leg, "the leg is whole");
+        assert!(!rec.log.is_empty(), "the newest lines are kept");
+        // With no log the widest 64-waypoint leg leaves room to spare under its budget.
+        rec.log.clear();
+        assert!(size(&rec) < rec.budget(), "{}", size(&rec));
+        let mut over = TvRec::new(ObjId(900), 1);
+        over.leg = Some(wide_leg(65));
+        assert!(over.check().is_err(), "65 waypoints");
+        // The drive's own parameters, by its site's side.
+        let long = |side: u16| {
+            let mut params = drive_params(false);
+            if let ActParams::Drive {
+                waypoints,
+                secs,
+                side: at,
+                ..
+            } = &mut params
+            {
+                *waypoints = (0..64_u32)
+                    .map(|n| LegWaypoint {
+                        x_cm: 128_000,
+                        y_cm: 124_500,
+                        at_s: n,
+                    })
+                    .collect();
+                *secs = 63;
+                *at = side;
+            }
+            let mut record = sample();
+            record.act = Some(Act {
+                kind: ActKind::Drive,
+                params,
+                ..act(3, ActParams::None {})
+            });
+            record
+        };
+        assert_eq!(long(512).check(), Ok(()));
+        assert!(long(256).check().is_err(), "32 at 256");
+    }
+
     /// **A scan's and a sounding's frozen reach is bounded** (doc 20 cut SM.4a): a stand off
     /// the site, no fields or ten, a repeated or invalid index, a field both seen and hidden,
     /// a reach of 0 or 49, a quiet sounding heard, a kind with another kind's parameters and a
@@ -3389,18 +3515,24 @@ mod tests {
             text: "x".repeat(MAX_TV_LOG_BYTES + 1),
         });
         assert!(over.check().is_err(), "an over-long line");
-        let mut leg = TvRec::new(ObjId(900), 1);
-        leg.leg = Some(FrozenLeg {
-            started_ic: 0,
-            waypoints: (0..33)
-                .map(|n| LegWaypoint {
-                    x_cm: n,
-                    y_cm: n,
-                    at_s: u32::try_from(n).unwrap_or(0),
-                })
-                .collect(),
-        });
-        assert!(leg.check().is_err(), "33 waypoints");
+        // Doc 32 cut S.2: a projection names no site's side, so its leg is held to the widest
+        // site's 64 (the act's own check holds a 256 site's to 32).
+        let leg_of = |n: i64| {
+            let mut leg = TvRec::new(ObjId(900), 1);
+            leg.leg = Some(FrozenLeg {
+                started_ic: 0,
+                waypoints: (0..n)
+                    .map(|n| LegWaypoint {
+                        x_cm: n,
+                        y_cm: n,
+                        at_s: u32::try_from(n).unwrap_or(0),
+                    })
+                    .collect(),
+            });
+            leg
+        };
+        assert_eq!(leg_of(33).check(), Ok(()), "33 waypoints, a wide site's");
+        assert!(leg_of(65).check().is_err(), "65 waypoints");
         // A record of exactly 4,097 canonical bytes: sixteen full lines and a full leg,
         // then the lines shortened one byte at a time to the edge.
         let mut big = TvRec::new(ObjId(900), 1);

@@ -3684,6 +3684,21 @@ fn ground_at(tw: &mut TestWorld, entry: &str, side: u16) -> Arc<SiteGround> {
     site_ground_sync(tw.world_mut(), &frame, &spec).expect("the site builds")
 }
 
+/// **The per-side timing ceilings, milliseconds**: the corner-to-corner plan's and the home
+/// field build's (doc 32 §20; the owner's ruling of 2026-11-01, accepting S.2's release figures
+/// of about 14.5 ms and 30 ms at 512). Cut AP's ceilings at 256 — 10 ms and 20 ms in release,
+/// the lead's 100 ms and 250 ms in debug — scaled by the site's area, so 40 ms and 80 ms at 512
+/// in release, 400 ms and 1,000 ms in debug.
+fn s2_ceilings_ms(side: u16) -> (f64, f64) {
+    let area = f64::from(side) * f64::from(side) / 65_536.0;
+    let (plan, build) = if cfg!(debug_assertions) {
+        (100.0, 250.0)
+    } else {
+        (10.0, 20.0)
+    };
+    (plan * area, build * area)
+}
+
 /// Write `row` into the chart family through a typed transaction (staff's hand; the scan and
 /// the sounding are the real writers).
 fn put_chart(rig: &mut Rig, row: ChartRecord) {
@@ -3725,13 +3740,17 @@ fn put_chart(rig: &mut Rig, row: ChartRecord) {
 /// - **the presence bands' reach**: the share of the site each band covers seen from the pad.
 ///
 /// Gates: every search finds its path within the site's budget; the chart row is under
-/// `MAX_CHART_RECORD_BYTES`; every frame is under `MAP_MAX_BYTES`. The timings assert only a
-/// generous debug ceiling on a median, as `sm4b_the_drive_planner_is_measured` does without
-/// `TACSIM_ASSERT` (a shared runner's speed is not a threshold).
+/// `MAX_CHART_RECORD_BYTES`; every frame is under `MAP_MAX_BYTES`. **The timings are held to the
+/// per-side ceilings** ([`s2_ceilings_ms`]; the owner's ruling of 2026-11-01), on the least of
+/// five: always in a release build, in a debug build under `TACSIM_ASSERT=1` only, and otherwise
+/// a generous debug ceiling on a median, as `sm4b_the_drive_planner_is_measured` keeps (a shared
+/// runner's speed is not a threshold).
 #[test]
 #[allow(clippy::too_many_lines)]
 fn s2_the_512_site_is_measured() {
     use tacsim::surface::chart::{Via, write_scan, write_sound};
+    let asserted =
+        !cfg!(debug_assertions) || std::env::var("TACSIM_ASSERT").is_ok_and(|v| v.trim() == "1");
     use tacsim::surface::reading::Footing;
     let mut rig = stocked();
     let rates = rates(&rig.tw);
@@ -3802,6 +3821,14 @@ fn s2_the_512_site_is_measured() {
             );
             assert!(path.visited <= budget, "{what} within the site's budget");
             assert!(median_ms(&samples) < 2_000.0, "{what}: {samples:?}");
+            let (plan_ceiling, _) = s2_ceilings_ms(side);
+            if asserted && what == "corner to corner" {
+                assert!(
+                    min_ms(&samples) <= plan_ceiling,
+                    "{side} corner-to-corner plan {} ms > {plan_ceiling} ms",
+                    min_ms(&samples)
+                );
+            }
         }
         // The home field over the whole site.
         let mut builds = Vec::new();
@@ -3837,6 +3864,14 @@ fn s2_the_512_site_is_measured() {
             home_bytes / 1_024,
         );
         assert!(median_ms(&builds) < 2_000.0, "{builds:?}");
+        let (_, build_ceiling) = s2_ceilings_ms(side);
+        if asserted {
+            assert!(
+                min_ms(&builds) <= build_ceiling,
+                "{side} home field build {} ms > {build_ceiling} ms",
+                min_ms(&builds)
+            );
+        }
         // A fully worked site: every field scanned, every pocket sounded, by the pilot.
         let now = rig.tw.world().world_ic_now().at;
         let body = chart_of(&mut rig.tw, pilot).map_or_else(|| cid("ceres"), |row| row.body);

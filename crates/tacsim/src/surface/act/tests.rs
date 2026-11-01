@@ -111,7 +111,8 @@ fn sm3b_every_refusal_word_has_a_message() {
         Refusal::Winding {
             n: 1,
             target: "field C-NW".to_owned(),
-            needed: 33
+            needed: 33,
+            cap: 32,
         }
         .line(),
         "The way to field C-NW winds too much to drive in one leg (32 waypoints at most). \
