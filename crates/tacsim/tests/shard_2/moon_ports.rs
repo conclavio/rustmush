@@ -340,7 +340,9 @@ fn a8_the_lane_carries_five_ports_and_six_direct_routes() {
                     (v("luna"), vec![v("ceres_aitken")]),
                     (v("occator"), vec![v("ceres_occator")]),
                     (v("rheasilvia"), vec![v("ceres_rheasilvia")]),
-                    (v("stickney"), vec![v(LANE_ROUTE_OUT)])
+                    (v("stickney"), vec![v(LANE_ROUTE_OUT)]),
+                    // Doc 32 cut S.1: and the 512 site.
+                    (v("urvara"), vec![v("ceres_urvara")])
                 ]
             ),
             (
@@ -390,8 +392,8 @@ fn a8_the_lane_carries_five_ports_and_six_direct_routes() {
             .expect("the lane parses")
             .entries()
             .len(),
-        60,
-        "the sixty entries (thirty-six at cut A.8; doc 20 cut SM.2's twenty-four)"
+        64,
+        "the sixty-four entries (thirty-six at cut A.8; doc 20 cut SM.2's twenty-four; doc 32 cut S.1's four)"
     );
     // The Titan bunkers (L8): reaction mass for sixty-odd fills, provisions at the
     // Company's price.

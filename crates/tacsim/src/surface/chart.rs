@@ -48,15 +48,12 @@ use crate::definitions::tools::ScannerDef;
 use crate::pack::{LocationDef, PackEntry, RulesPack};
 use crate::port_tick::port_error;
 use crate::store::TacsimStore;
-use crate::surface::address::{
-    self, Octant, field_index, field_name, field_of_index, field_of_pocket, pocket_address,
-    pocket_in_block,
-};
+use crate::surface::address::{self, Octant, Scheme};
 use crate::surface::geology::{
     BodyGeology, FieldGround, GeologyError, OreFamily, POCKETS_PER_FIELD_SIDE, PocketRow, Word,
     by_family, field_ground,
 };
-use crate::surface::ground::{SITE_BLOCKS, SiteGeologySpec, SiteGround};
+use crate::surface::ground::{SITE_CELLS, SiteGeologySpec, SiteGround};
 use crate::surface::reading::{FieldReading, Footing, READING_RULE_VERSION, read_r1, read_r2};
 
 /// The typed family (lead ruling 3).
@@ -71,9 +68,11 @@ pub const MAX_CHART_FIELD_ROWS_PER_BODY: usize = 1_024;
 pub const MAX_CHART_POCKET_BLOCKS_PER_BODY: usize = 64;
 /// The most site entries one body names in the start's offer (the body cap's census).
 pub const MAX_CHART_SITES_PER_BODY: usize = 32;
-/// The family's record cap, canonical JSON bytes: the worst-case row (64 fields and 16 full
-/// blocks, four provenance entries each) encodes far under it (a unit test).
-pub const MAX_CHART_RECORD_BYTES: usize = 65_536;
+/// The family's record cap, canonical JSON bytes: the worst-case row encodes under it (a unit
+/// test). **Doc 32 cut S.1** (§19): 192 KiB, sized for the widest site — 256 fields and 16 full
+/// blocks of 1,024 pockets, four provenance entries each, measured at 153,286 bytes, where a
+/// 256 site's worst case is 43,679 (the cap was 65,536) — under the families' 256 KiB maximum.
+pub const MAX_CHART_RECORD_BYTES: usize = 196_608;
 /// **A pocket cell's byte layout** (the pre-commit round's item 3; §5): bits 0..=1 are its tier
 /// ([`TIER_MASK`]: `0` unsounded, [`TIER_R2`] sounded), bit 2 is [`PIT_SEEN`] (written by a
 /// core, doc 20 cut SM.7: [`write_core`]), bits 3..=7 are reserved and zero. Every reader masks
@@ -87,12 +86,20 @@ pub const TIER_R2: u8 = 2;
 pub const PIT_SEEN: u8 = 0b0000_0100;
 /// One heard line a sounder an IC hour (§11 Caps; Q-20-9).
 pub const HEARD_EVERY_IC: i64 = 3_600;
-/// Field rows one site holds: its 64 fields.
+/// Field rows a shipped (256) site holds: its 64 fields (doc 32 cut S.1: a site's own is
+/// [`Scheme::field_count`], 256 at 512).
 pub const MAX_CHART_FIELD_ROWS_PER_SITE: usize = 64;
-/// Pocket blocks one site holds: its 16 blocks.
+/// Pocket blocks one site holds: its 16 blocks, at every side.
 pub const MAX_CHART_BLOCKS_PER_SITE: usize = 16;
-/// Pocket cells in one block, and so bytes in one [`PocketBlock::cells`].
+/// Pocket cells in one block of a shipped (256) site, and so bytes in one
+/// [`PocketBlock::cells`] (doc 32 cut S.1: a site's own is [`Scheme::pockets_in_block`], 1,024
+/// at 512).
 pub const BLOCK_POCKETS: usize = 256;
+
+/// **Pocket cells in one block of `scheme`'s site** (doc 32 cut S.1).
+fn block_pockets(scheme: Scheme) -> usize {
+    usize::try_from(scheme.pockets_in_block()).unwrap_or(0)
+}
 
 /// A pocket cell's tier: its byte's low two bits ([`TIER_MASK`]).
 #[must_use]
@@ -206,10 +213,11 @@ pub struct FieldRow {
     pub first_hand_at: Option<i64>,
 }
 
-/// **One block's sounded pockets** (§5): 256 one-byte cells, `index = pocket number − 1` (row-
-/// major from the block's north-west, `crate::surface::address::pocket_in_block`), as 512
-/// lowercase base-16 characters; a cell's low two bits are its tier ([`TIER_MASK`], the layout
-/// at [`TIER_MASK`]'s note).
+/// **One block's sounded pockets** (§5): 256 one-byte cells (1,024 on a 512 site, doc 32 cut
+/// S.1), `index = pocket number − 1` (row-major from the block's north-west,
+/// `crate::surface::address::Scheme::pocket_in_block`), as 512 (2,048) lowercase base-16
+/// characters; a cell's low two bits are its tier ([`TIER_MASK`], the layout at [`TIER_MASK`]'s
+/// note).
 #[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize)]
 #[serde(deny_unknown_fields)]
 pub struct PocketBlock {
@@ -230,10 +238,10 @@ pub struct PocketBlock {
 }
 
 impl PocketBlock {
-    /// A block with no pocket sounded.
-    fn empty(at: i64) -> PocketBlock {
+    /// A block of `count` pockets with none sounded.
+    fn empty(at: i64, count: usize) -> PocketBlock {
         PocketBlock {
-            cells: "0".repeat(BLOCK_POCKETS * 2),
+            cells: "0".repeat(count * 2),
             first_local_at: at,
             last_at: at,
             provenance: Vec::new(),
@@ -241,10 +249,14 @@ impl PocketBlock {
         }
     }
 
-    /// The cells as bytes; `None` when the string is not 512 lowercase base-16 characters.
+    /// The cells as bytes; `None` when the string is not lowercase base-16 characters for a
+    /// block of some site's scheme (512 at 256, 2,048 at 512; doc 32 cut S.1).
     #[must_use]
     pub fn bytes(&self) -> Option<Vec<u8>> {
-        if self.cells.len() != BLOCK_POCKETS * 2
+        let count = self.cells.len() / 2;
+        if ![Scheme::SHIPPED, Scheme::WIDEST]
+            .into_iter()
+            .any(|scheme| block_pockets(scheme) * 2 == self.cells.len())
             || !self
                 .cells
                 .bytes()
@@ -253,7 +265,7 @@ impl PocketBlock {
             return None;
         }
         let raw = self.cells.as_bytes();
-        let mut out = Vec::with_capacity(BLOCK_POCKETS);
+        let mut out = Vec::with_capacity(count);
         for pair in raw.chunks(2) {
             let text = std::str::from_utf8(pair).ok()?;
             out.push(u8::from_str_radix(text, 16).ok()?);
@@ -298,7 +310,8 @@ pub struct ChartRecord {
     /// The [`READING_RULE_VERSION`] the rows render under (a row under another version renders
     /// nothing, never a re-read).
     pub rule: u16,
-    /// Field index (`fy · 8 + fx`) → row, at most 64.
+    /// Field index (`fy · fields + fx`, [`Scheme::field_index`]) → row, at most the site's
+    /// fields (64 at 256).
     #[serde(default, skip_serializing_if = "BTreeMap::is_empty")]
     pub fields: BTreeMap<u8, FieldRow>,
     /// Block letter `"A"`..`"P"` → its sounded pockets, at most 16.
@@ -313,6 +326,25 @@ pub struct ChartRecord {
     /// The cell the last sounding, loud or quiet, was made from (D4).
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub sound_stand: Option<[i64; 2]>,
+    /// **The site's cells along one side** (doc 32 cut S.1, §19): the scheme every index, letter
+    /// and stand of the row is read under; omitted at the shipped default ([`SITE_CELLS`]), so a
+    /// 256 site's row is byte-identical to SM.4a's.
+    #[serde(
+        default = "chart_default_side",
+        skip_serializing_if = "chart_is_default_side"
+    )]
+    pub side: u16,
+}
+
+/// [`ChartRecord::side`]'s default: the shipped side.
+fn chart_default_side() -> u16 {
+    SITE_CELLS
+}
+
+/// Whether [`ChartRecord::side`] is the shipped side (and so is not written).
+#[allow(clippy::trivially_copy_pass_by_ref)] // serde's `skip_serializing_if` passes a reference
+fn chart_is_default_side(side: &u16) -> bool {
+    *side == SITE_CELLS
 }
 
 /// One row's provenance: `1..=4`, each stamp within `[first, last]`, `first ≤ last`; doc 20 cut
@@ -344,10 +376,23 @@ fn check_stamps(
 }
 
 impl ChartRecord {
-    /// An empty row for `principal` on `site` (on `body`), under the current rule.
+    /// An empty row for `principal` on a shipped-side `site` (on `body`), under the current rule.
     #[must_use]
     pub fn new(principal: ObjId, site: CanonicalId, body: CanonicalId) -> ChartRecord {
+        ChartRecord::with_side(principal, site, body, SITE_CELLS)
+    }
+
+    /// **An empty row on a site `side` cells a side** (doc 32 cut S.1): the writers build with
+    /// the site's own side (`site_side`).
+    #[must_use]
+    pub fn with_side(
+        principal: ObjId,
+        site: CanonicalId,
+        body: CanonicalId,
+        side: u16,
+    ) -> ChartRecord {
         ChartRecord {
+            side,
             schema: CHART_SCHEMA,
             principal,
             site,
@@ -370,6 +415,12 @@ impl ChartRecord {
         }
     }
 
+    /// The row's address scheme (doc 32 cut S.1).
+    #[must_use]
+    pub fn scheme(&self) -> Scheme {
+        Scheme::of_site(self.side)
+    }
+
     /// Whether the row covers anything (a field scanned or a block sounded).
     #[must_use]
     pub fn has_coverage(&self) -> bool {
@@ -385,20 +436,23 @@ impl ChartRecord {
     /// Whether `pocket` (site-local) is sounded.
     #[must_use]
     pub fn pocket_sounded(&self, pocket: (i64, i64)) -> bool {
-        pocket_in_block(pocket.0, pocket.1).is_some_and(|(letter, index)| {
-            self.blocks
-                .get(letter.to_string().as_str())
-                .and_then(|block| block.cell(index))
-                .map(cell_tier)
-                == Some(TIER_R2)
-        })
+        self.scheme()
+            .pocket_in_block(pocket.0, pocket.1)
+            .is_some_and(|(letter, index)| {
+                self.blocks
+                    .get(letter.to_string().as_str())
+                    .and_then(|block| block.cell(index))
+                    .map(cell_tier)
+                    == Some(TIER_R2)
+            })
     }
 
     /// **The row's own invariants** (the family's validator calls it): the schema; `rule ≥ 1`;
     /// **a row with no field row and no block is valid only when it carries `heard_ic`**
-    /// (`+tv/forget`'s budget-keeper, D7) **and then no stand**; each stand on the site; at
-    /// most 64 field rows each a valid index and 16 blocks each a letter `A`–`P`; every block's
-    /// cells 512 lowercase base-16 characters, each byte's tier `0` or [`TIER_R2`], its
+    /// (`+tv/forget`'s budget-keeper, D7) **and then no stand**; a side some scheme letters
+    /// (doc 32 cut S.1); each stand on the site; at most the site's fields (64 at 256) each a
+    /// valid index and 16 blocks each a letter `A`–`P`; every block's cells the site's pockets
+    /// a block (512 lowercase base-16 characters at 256), each byte's tier `0` or [`TIER_R2`], its
     /// [`PIT_SEEN`] bit only beside a sounded tier and no reserved bit set (the pre-commit
     /// round's item 3), at least one sounded; every row's stamps and `1..=4` provenance.
     ///
@@ -423,19 +477,20 @@ impl ChartRecord {
                 return Err("a chart row with no readings names no stand".to_owned());
             }
         }
+        let Some(scheme) = Scheme::of_side(self.side) else {
+            return Err(format!("a chart row's site is not {} a side", self.side));
+        };
         for stand in [self.scan_stand, self.sound_stand].into_iter().flatten() {
-            // Doc 32 cut S.0: the chart's scheme stays at the shipped side until cut S.1.
-            if !address::cell_on_site((stand[0], stand[1]), crate::surface::ground::SITE_CELLS) {
+            if !scheme.cell_on_site((stand[0], stand[1])) {
                 return Err("a chart row's stands are on its site".to_owned());
             }
         }
-        if self.fields.len() > MAX_CHART_FIELD_ROWS_PER_SITE {
-            return Err(format!(
-                "a chart row holds at most {MAX_CHART_FIELD_ROWS_PER_SITE} fields"
-            ));
+        let most_fields = usize::try_from(scheme.field_count()).unwrap_or(0);
+        if self.fields.len() > most_fields {
+            return Err(format!("a chart row holds at most {most_fields} fields"));
         }
         for (index, row) in &self.fields {
-            if field_of_index(*index).is_none() {
+            if scheme.field_of_index(*index).is_none() {
                 return Err(format!("field {index} is not a field of a site"));
             }
             check_stamps(
@@ -461,9 +516,13 @@ impl ChartRecord {
             if !one {
                 return Err(format!("block {letter} is not a block letter A to P"));
             }
-            let Some(bytes) = block.bytes() else {
+            let Some(bytes) = block
+                .bytes()
+                .filter(|bytes| bytes.len() == block_pockets(scheme))
+            else {
                 return Err(format!(
-                    "block {letter}'s cells are 512 lowercase base-16 characters"
+                    "block {letter}'s cells are {} lowercase base-16 characters",
+                    block_pockets(scheme) * 2
                 ));
             };
             let well_formed = |b: u8| {
@@ -515,7 +574,7 @@ pub(crate) fn row_reads_pocket(row: Option<&ChartRecord>, pocket: (i64, i64)) ->
 #[must_use]
 pub(crate) fn row_reads_field(row: Option<&ChartRecord>, (fx, fy): (i64, i64)) -> Option<Footing> {
     let row = current(row)?;
-    let index = field_index(fx, fy)?;
+    let index = row.scheme().field_index(fx, fy)?;
     row.fields.get(&index).map(|known| known.footing)
 }
 
@@ -768,9 +827,11 @@ pub fn write_sound(
     } else {
         Instrument::Sound
     };
+    let scheme = row.scheme();
+    let count = block_pockets(scheme);
     let mut by_block: BTreeMap<String, Vec<usize>> = BTreeMap::new();
     for pocket in pockets {
-        if let Some((letter, index)) = pocket_in_block(pocket.0, pocket.1) {
+        if let Some((letter, index)) = scheme.pocket_in_block(pocket.0, pocket.1) {
             by_block.entry(letter.to_string()).or_default().push(index);
         }
     }
@@ -778,8 +839,11 @@ pub fn write_sound(
         let block = row
             .blocks
             .entry(letter)
-            .or_insert_with(|| PocketBlock::empty(at));
-        let mut bytes = block.bytes().unwrap_or_else(|| vec![0; BLOCK_POCKETS]);
+            .or_insert_with(|| PocketBlock::empty(at, count));
+        let mut bytes = block
+            .bytes()
+            .filter(|bytes| bytes.len() == count)
+            .unwrap_or_else(|| vec![0; count]);
         for index in indexes {
             if let Some(cell) = bytes.get_mut(index) {
                 *cell = (*cell & !TIER_MASK) | TIER_R2;
@@ -807,14 +871,19 @@ pub fn write_sound(
 /// never feeds the same-cell repeat rule. A pocket off the site writes nothing.
 pub fn write_core(row: &mut ChartRecord, pocket: (i64, i64), at: i64, via: Via) {
     renew(row);
-    let Some((letter, index)) = pocket_in_block(pocket.0, pocket.1) else {
+    let scheme = row.scheme();
+    let count = block_pockets(scheme);
+    let Some((letter, index)) = scheme.pocket_in_block(pocket.0, pocket.1) else {
         return;
     };
     let block = row
         .blocks
         .entry(letter.to_string())
-        .or_insert_with(|| PocketBlock::empty(at));
-    let mut bytes = block.bytes().unwrap_or_else(|| vec![0; BLOCK_POCKETS]);
+        .or_insert_with(|| PocketBlock::empty(at, count));
+    let mut bytes = block
+        .bytes()
+        .filter(|bytes| bytes.len() == count)
+        .unwrap_or_else(|| vec![0; count]);
     if let Some(cell) = bytes.get_mut(index) {
         *cell = (*cell & !TIER_MASK) | TIER_R2 | PIT_SEEN;
     }
@@ -854,7 +923,7 @@ pub fn forget_row(row: ChartRecord, now: i64) -> Option<ChartRecord> {
 // ---- the site, for the render and the plans ---------------------------------------------------
 
 /// **One lane site's ground, resolved** (doc 20 cut SM.4a): its port entry and definition, the
-/// keyed geology it renders from, and the 256 × 256 window its composite is captured over.
+/// keyed geology it renders from, and the side × side window its composite is captured over.
 #[derive(Clone, Debug)]
 pub(crate) struct SiteContext {
     /// The site's port entry.
@@ -865,10 +934,18 @@ pub(crate) struct SiteContext {
     pub body: Arc<BodyGeology>,
     /// Its geology spec (`crate::port::site::geology_spec`).
     pub spec: SiteGeologySpec,
-    /// Its window: `region.<location>` at 256 × 256 cells of 10 m.
+    /// Its window: `region.<location>` at side × side cells of 10 m (256 for every shipped site).
     pub frame: WindowFrame,
     /// The live key.
     pub mac: GeologyMac,
+}
+
+impl SiteContext {
+    /// The site's address scheme (doc 32 cut S.1): its spec's side, which is its window's.
+    #[must_use]
+    pub fn scheme(&self) -> Scheme {
+        self.spec.scheme()
+    }
 }
 
 /// **Why a site's ground cannot be read** (D16, D25): each reads `INSTRUMENTS_DARK` to an act.
@@ -947,6 +1024,14 @@ pub(crate) fn site_side(w: &World, entry: &CanonicalId) -> Option<u16> {
     site_frame(w, &site.location)
         .ok()
         .map(|frame| frame_side(&frame))
+}
+
+/// **A lane site's address scheme** (doc 32 cut S.1, ruling 3): its [`site_side`]'s, the
+/// shipped scheme when the entry is not a lane site (whose every name then reads at 256, as
+/// before S.1).
+#[must_use]
+pub(crate) fn site_scheme(w: &World, entry: &CanonicalId) -> Scheme {
+    Scheme::of_site(site_side(w, entry).unwrap_or(SITE_CELLS))
 }
 
 /// A site window's side in cells.
@@ -1047,8 +1132,9 @@ pub(crate) fn site_context(w: &World, entry: &CanonicalId) -> Result<SiteContext
     let location = location_of(pack, &def.location).ok_or(SiteDark::NotSite)?;
     let body_id = location.body.as_ref().ok_or(SiteDark::NotSite)?;
     let body = crate::surface::body_geology(w, body_id).ok_or(SiteDark::NoTable)?;
-    let spec = crate::port::site::geology_spec(site, location, &body).map_err(SiteDark::Spec)?;
     let frame = site_frame(w, &def.location).map_err(|_| SiteDark::NotSite)?;
+    let spec = crate::port::site::geology_spec_at(site, location, &body, frame_side(&frame))
+        .map_err(SiteDark::Spec)?;
     Ok(SiteContext {
         entry: entry.clone(),
         name: crate::port::coop::port_name(def),
@@ -1070,19 +1156,13 @@ pub(crate) fn field_ground_at(
     ctx: &SiteContext,
     (fx, fy): (i64, i64),
 ) -> Result<FieldGround, GeologyError> {
-    if field_index(fx, fy).is_none() {
+    let Some(block) = ctx.scheme().block_index_of_field((fx, fy)) else {
         return Err(GeologyError::OffLattice);
-    }
+    };
     let origin = (
         ctx.spec.origin.0.div_euclid(POCKETS_PER_FIELD_SIDE),
         ctx.spec.origin.1.div_euclid(POCKETS_PER_FIELD_SIDE),
     );
-    let block = usize::try_from(
-        fy.div_euclid(2)
-            .saturating_mul(SITE_BLOCKS)
-            .saturating_add(fx.div_euclid(2)),
-    )
-    .unwrap_or(0);
     let shift = ctx.spec.shifts.get(block).copied().unwrap_or(0);
     field_ground(
         &ctx.mac,
@@ -1101,7 +1181,10 @@ pub(crate) fn pocket_at(
     ctx: &SiteContext,
     (px, py): (i64, i64),
 ) -> Result<PocketRow, GeologyError> {
-    let field = field_of_pocket((px, py)).ok_or(GeologyError::OffLattice)?;
+    let field = ctx
+        .scheme()
+        .field_of_pocket((px, py))
+        .ok_or(GeologyError::OffLattice)?;
     field_ground_at(ctx, field)?
         .pocket(
             px.rem_euclid(POCKETS_PER_FIELD_SIDE),
@@ -1168,7 +1251,7 @@ pub(crate) fn field_text(
     let Some(footing) = row_reads_field(row, (fx, fy)) else {
         return no();
     };
-    let Some(name) = field_name(fx, fy) else {
+    let Some(name) = ctx.scheme().field_name(fx, fy) else {
         return no();
     };
     match field_ground_at(ctx, (fx, fy)) {
@@ -1197,7 +1280,7 @@ pub(crate) fn pocket_text(
     if !row_reads_pocket(row, (px, py)) {
         return no();
     }
-    let Some(addr) = pocket_address(px, py) else {
+    let Some(addr) = ctx.scheme().pocket_address(px, py) else {
         return no();
     };
     match pocket_at(ctx, (px, py)) {
@@ -1254,11 +1337,19 @@ pub fn pocket_reading(
 /// footing. Each field's ground is read once.
 #[must_use]
 pub(crate) fn scan_rows(ctx: &SiteContext, row: &ChartRecord, fields: &[u8]) -> Vec<String> {
-    let mut ordered: Vec<(i64, i64)> = fields.iter().filter_map(|i| field_of_index(*i)).collect();
+    let scheme = ctx.scheme();
+    let mut ordered: Vec<(i64, i64)> = fields
+        .iter()
+        .filter_map(|i| scheme.field_of_index(*i))
+        .collect();
     ordered.sort_by_key(|(fx, fy)| (std::cmp::Reverse(*fy), *fx));
     ordered
         .into_iter()
-        .filter(|(fx, fy)| field_index(*fx, *fy).is_some_and(|i| row.fields.contains_key(&i)))
+        .filter(|(fx, fy)| {
+            scheme
+                .field_index(*fx, *fy)
+                .is_some_and(|i| row.fields.contains_key(&i))
+        })
         .map(|field| format!("  {}", field_text(ctx, Some(row), field)))
         .collect()
 }
@@ -1273,15 +1364,17 @@ pub(crate) fn sound_lines(
     row: &ChartRecord,
     pockets: &[(i64, i64)],
 ) -> Vec<String> {
+    let scheme = ctx.scheme();
     let mut grounds: BTreeMap<(i64, i64), Option<FieldGround>> = BTreeMap::new();
     let mut per_family: BTreeMap<u8, (OreFamily, Vec<String>)> = BTreeMap::new();
     for pocket in pockets {
         if !row.pocket_sounded(*pocket) {
             continue;
         }
-        let (Some(field), Some(addr)) =
-            (field_of_pocket(*pocket), pocket_address(pocket.0, pocket.1))
-        else {
+        let (Some(field), Some(addr)) = (
+            scheme.field_of_pocket(*pocket),
+            scheme.pocket_address(pocket.0, pocket.1),
+        ) else {
             continue;
         };
         let ground = grounds
@@ -1340,15 +1433,17 @@ pub fn seen_fields(
     stand: (i64, i64),
     scanner: &ScannerDef,
 ) -> (Vec<u8>, Vec<u8>) {
-    let own = address::field_of_cell(stand);
+    // Doc 32 cut S.1: the surface's side is the site's.
+    let scheme = Scheme::of_site(surface.cells.width());
+    let own = scheme.field_of_cell(stand);
     let mast = i32::try_from(scanner.mast_cm).unwrap_or(i32::MAX);
     let mut seen = Vec::new();
     let mut hidden = Vec::new();
     let Some(eye) = address::surface_cell(surface, stand) else {
         return (seen, hidden);
     };
-    for field in address::fields_in_reach(stand, i64::from(scanner.scan_radius_cells)) {
-        let Some(index) = field_index(field.0, field.1) else {
+    for field in scheme.fields_in_reach(stand, i64::from(scanner.scan_radius_cells)) {
+        let Some(index) = scheme.field_index(field.0, field.1) else {
             continue;
         };
         if Some(field) == own {
@@ -1692,6 +1787,7 @@ impl ActionProvider for ChartForgetProvider {
 #[cfg(test)]
 mod tests {
     use super::*;
+    use crate::surface::address::{field_index, pocket_in_block};
 
     fn cid(text: &str) -> CanonicalId {
         CanonicalId::new(text).unwrap_or_else(|_| panic!("{text} is canonical"))
@@ -1859,7 +1955,9 @@ mod tests {
         for n in 0..3 {
             let mut other = ChartRecord::new(ObjId(42), cid(&format!("site_{n}")), cid("ceres"));
             for letter in &letters {
-                other.blocks.insert(letter.clone(), PocketBlock::empty(1));
+                other
+                    .blocks
+                    .insert(letter.clone(), PocketBlock::empty(1, BLOCK_POCKETS));
             }
             rows.push(other);
         }
@@ -1868,7 +1966,8 @@ mod tests {
         extra.push("A".to_owned());
         assert!(body_admits(&rows, &site, &[], &extra), "a set, not a list");
         let mut more = ChartRecord::new(ObjId(42), cid("site_z"), cid("ceres"));
-        more.blocks.insert("A".to_owned(), PocketBlock::empty(1));
+        more.blocks
+            .insert("A".to_owned(), PocketBlock::empty(1, BLOCK_POCKETS));
         rows.push(more);
         assert!(!body_admits(&rows, &site, &[], &letters));
     }
@@ -1896,6 +1995,62 @@ mod tests {
             bytes.len()
         );
         assert_eq!(r.sounded_pockets(), 4_096);
+    }
+
+    /// **Doc 32 cut S.1: a worst-case 512 row encodes under the cap** — 256 fields and 16 full
+    /// blocks of 1,024 pockets, four provenance entries each at the widest stamps, the stands at
+    /// the far corner; its canonical bytes are §19's measured figure, beside a 256 site's.
+    #[test]
+    fn s1_a_worst_case_512_chart_row_encodes_under_its_cap() {
+        let worst = |side: u16| {
+            let scheme = Scheme::of_side(side).unwrap_or_else(|| panic!("a scheme"));
+            let mut r =
+                ChartRecord::with_side(ObjId(u32::MAX), cid("rheasilvia_port"), cid("vesta"), side);
+            let fields: Vec<u8> = (0..scheme.field_count())
+                .filter_map(|i| u8::try_from(i).ok())
+                .collect();
+            let every: Vec<(i64, i64)> = (0..scheme.pockets())
+                .flat_map(|py| (0..scheme.pockets()).map(move |px| (px, py)))
+                .collect();
+            let corner = i64::from(side) - 1;
+            for n in 0..4 {
+                let at = i64::MAX - n;
+                write_scan(
+                    &mut r,
+                    [corner, corner],
+                    &fields,
+                    Footing::Rock,
+                    at,
+                    Via::Hand,
+                );
+                write_sound(&mut r, [corner, corner], &every, false, at, Via::Hand);
+            }
+            r.heard_ic = Some(i64::MIN);
+            assert_eq!(r.check(), Ok(()), "{side}");
+            assert_eq!(r.fields.len(), fields.len());
+            assert_eq!(r.sounded_pockets(), every.len());
+            serde_json::to_vec(&r)
+                .unwrap_or_else(|e| panic!("{e}"))
+                .len()
+        };
+        let (shipped, wide) = (worst(256), worst(512));
+        println!("worst-case chart row: {shipped} bytes at 256, {wide} at 512");
+        assert!(wide < MAX_CHART_RECORD_BYTES, "{wide} bytes");
+        assert!(shipped < 65_536, "the 256 row fits the old cap: {shipped}");
+        // A 512 row read back at 256 is refused: its side is part of the row.
+        let mut r = ChartRecord::with_side(ObjId(1), cid("urvara_port"), cid("ceres"), 512);
+        write_scan(&mut r, [511, 511], &[255], Footing::Rock, 1, Via::Hand);
+        assert_eq!(r.check(), Ok(()));
+        let text = serde_json::to_string(&r).unwrap_or_else(|e| panic!("{e}"));
+        assert!(text.contains("\"side\":512"), "{text}");
+        r.side = 256;
+        assert!(
+            r.check().is_err(),
+            "field 255 and stand 511 are off a 256 site"
+        );
+        let shipped_row = ChartRecord::new(ObjId(1), cid("ahuna_port"), cid("ceres"));
+        let text = serde_json::to_string(&shipped_row).unwrap_or_else(|e| panic!("{e}"));
+        assert!(!text.contains("side"), "a 256 row is unchanged: {text}");
     }
 
     /// **A chart row checks its bounds**: the schema, the rule, a coverage-free row without a
@@ -2722,7 +2877,7 @@ mod tests {
     /// any hand one.
     #[test]
     fn sm12b_a_seed_reads_its_fields_and_counts_for_nothing() {
-        let fields: Vec<(i64, i64)> = crate::surface::plan::block_fields('F');
+        let fields: Vec<(i64, i64)> = crate::surface::plan::block_fields(Scheme::SHIPPED, 'F');
         let indexes: Vec<u8> = fields
             .iter()
             .filter_map(|(fx, fy)| field_index(*fx, *fy))

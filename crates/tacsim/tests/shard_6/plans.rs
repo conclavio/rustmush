@@ -790,7 +790,9 @@ fn on_pad(rig: &mut Rig, n_rigs: usize) -> (ObjId, HullRow, Vec<ObjId>) {
 /// Fire until Ahuna's ground is cached and its home field built.
 fn warm(rig: &mut Rig) {
     let (spec, location) = spec_of(&rig.tw);
-    for _ in 0..8 {
+    // Doc 32 cut S.1: lane v17's seventh site is wanted too, and the tick warms one wanted
+    // site a fire before it builds a home field, so the home can land a fire later.
+    for _ in 0..16 {
         let cached =
             tacsim::surface::site_ground_cached(rig.tw.world(), &site_frame(&location), &spec)
                 .ok()
@@ -3697,6 +3699,7 @@ fn sm11_a_previous_lessees_plan_is_never_shown() {
     let previous = pilot_on(&mut rig, "Previous", 9);
     let now = ic_now(&rig.tw);
     let theirs = |state: FillState| FillPlan {
+        side: 256,
         no: 1,
         author: previous,
         hull: ObjId(row.hull),

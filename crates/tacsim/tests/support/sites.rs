@@ -56,9 +56,36 @@ pub const SURFACE_BODIES: [&str; 8] = [
     "ceres", "vesta", "pallas", "luna", "mars", "titan", "phobos", "deimos",
 ];
 
+/// **Doc 32 cut S.1: the wide site port entries** (Urvara Reach, 512 a side).
+pub const WIDE_SITE_PORTS: [&str; 1] = ["urvara_port"];
+/// **Doc 32 cut S.1: the 512 site's rows** — Urvara Reach's place, its two routes and its port.
+pub const WIDE_SITE_ROWS: [&str; 4] = [
+    "urvara_reach",
+    "ceres_urvara",
+    "urvara_ceres",
+    "urvara_port",
+];
+
+/// Remove what doc 32 cut S.1 added to the lane (lane v17): Urvara Reach's rows and Ceres's
+/// `urvara` routes key — the lane v16 shape but its manifest.
+pub fn strip_wide_sites(doc: &mut Value) {
+    let entries = doc["entries"].as_object_mut().expect("the lane's entries");
+    for id in WIDE_SITE_ROWS {
+        entries.remove(id);
+    }
+    if let Some(routes) = entries
+        .get_mut("ceres_port")
+        .and_then(|ceres| ceres["def"]["routes"].as_object_mut())
+    {
+        routes.remove("urvara");
+    }
+}
+
 /// Remove everything cut SM.2 added to the lane — the v8 shape (the manifest is the caller's) —
-/// and, since lane v10, cut SM.3a's blocks (`super::vehicles::strip_vehicles`, first).
+/// and, since lane v10, cut SM.3a's blocks (`super::vehicles::strip_vehicles`, first); since
+/// lane v17, doc 32 cut S.1's 512 site ([`strip_wide_sites`]).
 pub fn strip_sites(doc: &mut Value) {
+    strip_wide_sites(doc);
     super::vehicles::strip_vehicles(doc);
     let entries = doc["entries"].as_object_mut().expect("the lane's entries");
     for id in SITE_PORTS
@@ -125,8 +152,10 @@ fn site_clerks(tw: &TestWorld) -> std::collections::BTreeSet<ObjId> {
     };
     let lane =
         mush_core::CanonicalId::new(tacsim::definitions::content::LANE_PACK).expect("the lane id");
+    // Doc 32 cut S.1: and the wide sites' clerks.
     SITE_PORTS
         .iter()
+        .chain(WIDE_SITE_PORTS.iter())
         .filter_map(|entry| {
             let entry = mush_core::CanonicalId::new(*entry).ok()?;
             match store.port_map(&lane, &entry) {

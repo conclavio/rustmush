@@ -100,10 +100,48 @@ pub const MAX_TV_LOG_BYTES: usize = 160;
 pub const MAX_TV_REC_BYTES: usize = 4_096;
 /// The most waypoints a frozen leg carries (§8; SM.4's slot).
 pub const MAX_LEG_WAYPOINTS: usize = 32;
-/// The pad's centre on a site's grid, centimetres on both axes: `SITE_CELLS / 2 ×
+/// **The shipped sites' pad centre**, centimetres on both axes: `SITE_CELLS / 2 ×
 /// SITE_CELL_CM` (the site packs put `room.pad` at 1,260–1,300 m in a 2,560 m region whose
-/// origin is the south-west corner).
+/// origin is the south-west corner). **Doc 32 cut S.1** (ruling 4): a site's own pad is its pad
+/// room's ([`site_pad_cm`]); this is what every shipped site's room gives (a test over every
+/// shipped site), and the fallback for a site whose pad room is not on the world.
 pub const PAD_CENTRE_CM: i64 = 128_000;
+
+/// **A site's pad centre, centimetres on its grid** (doc 32 cut S.1, ruling 4): the centre of its
+/// pad room's footprint — the port entry's `gallery`, the authored `room.pad` — on the room's
+/// atlas geometry (`RoomGeo`), halves rounded down. [`PAD_CENTRE_CM`] on both axes when the entry
+/// is not a lane site or its pad room's geometry is not on the world (a port is never applied
+/// without it, `crate::port::apply`).
+#[must_use]
+pub fn site_pad_cm(w: &mush_core::World, site: &CanonicalId) -> (i64, i64) {
+    pad_room_centre(w, site).unwrap_or((PAD_CENTRE_CM, PAD_CENTRE_CM))
+}
+
+/// **A site's pad cell** (doc 32 cut S.1): [`site_pad_cm`]'s cell (`(128, 128)` on every shipped
+/// site).
+#[must_use]
+pub fn site_pad_cell(w: &mush_core::World, site: &CanonicalId) -> (i64, i64) {
+    let (x, y) = site_pad_cm(w, site);
+    site_cell(x, y)
+}
+
+/// [`site_pad_cm`]'s read of the pad room, `None` when any link is missing.
+fn pad_room_centre(w: &mush_core::World, site: &CanonicalId) -> Option<(i64, i64)> {
+    let store = w.module_state::<crate::store::TacsimStore>()?;
+    let (_, ports) = crate::port::readiness::report_ports(store, w);
+    let def = ports
+        .into_iter()
+        .find(|(entry, def)| entry == site && def.site.is_some())
+        .map(|(_, def)| def)?;
+    let key = crate::port::def::room_key(&def.area, &def.gallery).ok()?;
+    let atlas = w.module_state::<mush_atlas::AtlasState>()?;
+    let geo = atlas.records.roomgeo.values().find(|geo| geo.key == key)?;
+    let bbox = geo.footprint.shape().ok()?.bbox();
+    Some((
+        bbox.min.x.checked_add(bbox.max.x)?.div_euclid(2),
+        bbox.min.y.checked_add(bbox.max.y)?.div_euclid(2),
+    ))
+}
 /// IC seconds in an IC hour (the battery's recharge is per IC hour).
 pub const IC_HOUR: i64 = 3_600;
 
@@ -244,6 +282,10 @@ pub enum ActParams {
         fields: Vec<u8>,
         /// The fields in reach the mast does not see, at most 8, disjoint from `fields`.
         hidden: Vec<u8>,
+        /// **The site's side** (doc 32 cut S.1, §19): the scheme its stand and field indexes are read under;
+        /// omitted at the shipped side, so a 256 site's scan is byte-identical to SM.4a's.
+        #[serde(default = "shipped_side", skip_serializing_if = "is_shipped_side")]
+        side: u16,
     },
     /// **A sounding** (doc 20 cut SM.4a): its stand and reach, frozen at the start.
     Sound {
@@ -257,6 +299,10 @@ pub enum ActParams {
         radius: u32,
         /// Quiet: heard by nobody.
         quiet: bool,
+        /// **The site's side** (doc 32 cut S.1, §19): the scheme its stand and pockets are read under;
+        /// omitted at the shipped side, so a 256 site's sounding is byte-identical to SM.4a's.
+        #[serde(default = "shipped_side", skip_serializing_if = "is_shipped_side")]
+        side: u16,
     },
     /// **A drive's frozen leg** (doc 20 cut SM.4b; §8; lead rulings 1 and 5): the one leg variant
     /// — a drive's, and a recover's from farther than beside the ramp. The start's prepare writes
@@ -458,38 +504,65 @@ impl ActParams {
                 cell,
                 fields,
                 hidden,
+                side,
                 ..
             } => {
-                if !stand_on_site(*cell) {
+                let scheme = scheme_of(*side)?;
+                if !scheme.cell_on_site((cell[0], cell[1])) {
                     return Err("a scan stands on its site".to_owned());
                 }
-                check_fields(fields, hidden)
+                check_fields(fields, hidden, scheme)
             }
-            ActParams::Sound { cell, radius, .. } => {
-                if !stand_on_site(*cell) {
+            ActParams::Sound {
+                cell, radius, side, ..
+            } => {
+                if !scheme_of(*side)?.cell_on_site((cell[0], cell[1])) {
                     return Err("a sounding stands on its site".to_owned());
                 }
                 check_radius(*radius)
             }
         }
     }
+
+    /// **The site's scheme a reading act was planned over** (doc 32 cut S.1): a scan's or a
+    /// sounding's own `side`, the shipped scheme for every other act.
+    #[must_use]
+    pub fn scheme(&self) -> crate::surface::address::Scheme {
+        match self {
+            ActParams::Scan { side, .. } | ActParams::Sound { side, .. } => {
+                crate::surface::address::Scheme::of_site(*side)
+            }
+            ActParams::None {}
+            | ActParams::Dump { .. }
+            | ActParams::Drive { .. }
+            | ActParams::Unload { .. } => crate::surface::address::Scheme::SHIPPED,
+        }
+    }
 }
 
-/// A reading's or a run's stand cell on the site, `0..256` on both axes: the address scheme's
-/// shipped side until doc 32 cut S.1 scales it (a drive's `to` is held to its own `side`).
+/// A finished reading's stand cell on the site. **Doc 32 cut S.1** (§19): held to the widest
+/// site, since a [`ReadSpan`] names no side of its own (its act's params held it to the site's),
+/// as cut S.0 holds a stored drive's arrival.
 fn stand_on_site([x, y]: [i64; 2]) -> bool {
-    crate::surface::address::cell_on_site((x, y), crate::surface::ground::SITE_CELLS)
+    crate::surface::address::Scheme::WIDEST.cell_on_site((x, y))
 }
 
-/// [`ActParams::Drive`]'s `side` when the wire names none: the shipped side.
-fn shipped_side() -> u16 {
+/// [`ActParams::Drive`]'s `side` when the wire names none: the shipped side (doc 32 cut S.1: a
+/// reading act's and a run's too).
+pub(crate) fn shipped_side() -> u16 {
     crate::surface::ground::SITE_CELLS
 }
 
-/// Whether a drive's `side` is the shipped side (and so is not written).
+/// Whether a record's `side` is the shipped side (and so is not written).
 #[allow(clippy::trivially_copy_pass_by_ref)] // serde's `skip_serializing_if` passes a reference
-fn is_shipped_side(side: &u16) -> bool {
+pub(crate) fn is_shipped_side(side: &u16) -> bool {
     *side == crate::surface::ground::SITE_CELLS
+}
+
+/// **A record's `side` as its scheme** (doc 32 cut S.1), refused when no site is that side.
+fn scheme_of(side: u16) -> Result<crate::surface::address::Scheme, String> {
+    crate::surface::address::Scheme::of_side(side)
+        .ok_or_else(|| format!("a site is not {side} cells a side"))
 }
 
 /// A sounding's reach, `1..=MAX_READ_RADIUS_CELLS`.
@@ -502,10 +575,14 @@ fn check_radius(radius: u32) -> Result<(), String> {
     Ok(())
 }
 
-/// A scan's seen and hidden fields: `1..=9` distinct valid seen, at most 8 distinct valid
-/// hidden, the two disjoint.
-fn check_fields(fields: &[u8], hidden: &[u8]) -> Result<(), String> {
-    let valid = |index: &u8| crate::surface::address::field_of_index(*index).is_some();
+/// A scan's seen and hidden fields: `1..=9` distinct valid seen (fields of `scheme`'s site), at
+/// most 8 distinct valid hidden, the two disjoint.
+fn check_fields(
+    fields: &[u8],
+    hidden: &[u8],
+    scheme: crate::surface::address::Scheme,
+) -> Result<(), String> {
+    let valid = |index: &u8| scheme.field_of_index(*index).is_some();
     let distinct = |list: &[u8]| {
         let set: std::collections::BTreeSet<u8> = list.iter().copied().collect();
         set.len() == list.len()
@@ -568,7 +645,8 @@ impl ReadSpan {
                 if !stand_on_site(*cell) {
                     return Err("a scan stands on its site".to_owned());
                 }
-                check_fields(fields, hidden)
+                // Doc 32 cut S.1: a field of the widest site, as `stand_on_site` holds the stand.
+                check_fields(fields, hidden, crate::surface::address::Scheme::WIDEST)
             }
             ReadSpan::Sound {
                 cell,
@@ -972,9 +1050,19 @@ pub struct Run {
     /// `None`.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub by: Option<ActBy>,
+    /// **The site's side** (doc 32 cut S.1, §19): the scheme the run's pocket is named under;
+    /// omitted at the shipped side, so a 256 site's run is byte-identical to SM.7's.
+    #[serde(default = "shipped_side", skip_serializing_if = "is_shipped_side")]
+    pub side: u16,
 }
 
 impl Run {
+    /// The run's site's address scheme (doc 32 cut S.1).
+    #[must_use]
+    pub fn scheme(&self) -> crate::surface::address::Scheme {
+        crate::surface::address::Scheme::of_site(self.side)
+    }
+
     /// **The tonnes still reserved** (doc 20 §3.5 "every outstanding, uncompleted cycle"; the
     /// brief's decision R8): `Σ reserve_t[k − 1 ..]` — the cycle in flight included, its tonnes
     /// not yet in the hopper.
@@ -986,6 +1074,13 @@ impl Run {
             .skip(from)
             .map(|t| u64::from(*t))
             .sum()
+    }
+
+    /// **The run's pocket address** (doc 32 cut S.1): its block letter and number, which its
+    /// start named under its site's own scheme (`C117`; `C1024` on a 512 site).
+    #[must_use]
+    pub fn address(&self) -> String {
+        format!("{}{}", self.letter, self.number)
     }
 
     /// The run's bounds (`RigRecord::check` calls it).
@@ -1012,15 +1107,18 @@ impl Run {
         if self.blind && self.cycles != 1 {
             return Err("a blind run is one cycle".to_owned());
         }
-        if !stand_on_site(self.stand) {
+        // Doc 32 cut S.1: the stand, the pocket and its name under the run's own site's scheme.
+        let scheme = address::Scheme::of_side(self.side)
+            .ok_or_else(|| format!("a run's site is not {} a side", self.side))?;
+        if !scheme.cell_on_site((self.stand[0], self.stand[1])) {
             return Err("a run stands on its site".to_owned());
         }
-        let pocket = address::pocket_of_cell((self.stand[0], self.stand[1]));
+        let pocket = scheme.pocket_of_cell((self.stand[0], self.stand[1]));
         if pocket != Some((self.pocket[0], self.pocket[1])) {
             return Err("a run's pocket is the one under its stand".to_owned());
         }
-        if address::pocket_number(self.pocket[0], self.pocket[1]) != Some(self.number)
-            || address::block_letter(self.pocket[0], self.pocket[1]) != Some(self.letter)
+        if scheme.pocket_number(self.pocket[0], self.pocket[1]) != Some(self.number)
+            || scheme.block_letter(self.pocket[0], self.pocket[1]) != Some(self.letter)
         {
             return Err("a run names its pocket's number and block".to_owned());
         }
@@ -1804,23 +1902,35 @@ pub fn cap_refusal_at(counts: &ExcursionCounts, site_cap: u32) -> Option<CapRefu
     }
 }
 
+/// **The ramp as a site pose on a shipped site** (the brief's decision 3): [`ramp_pose_at`] at
+/// [`PAD_CENTRE_CM`]. The Dray-P's stern ramp reads `(128_000, 124_500, 180_000)`.
+///
+/// # Errors
+///
+/// As [`ramp_pose_at`]'s.
+pub fn ramp_pose(bay: &BayDef) -> Result<mush_sim::data::Pose, String> {
+    ramp_pose_at(bay, (PAD_CENTRE_CM, PAD_CENTRE_CM))
+}
+
 /// **The ramp as a site pose** (the brief's decision 3): a hull settled on a pad is `Direct`
 /// at its domain's passive origin (`mush_sim`'s arrival), so its site position is by
-/// convention the pad centre ([`PAD_CENTRE_CM`], both axes) facing north, and the ramp is the
-/// bay's egress offset from it — `x = centre + egress.x_cm`, `y = centre + egress.y_cm`, the
-/// heading the egress's, `z` 0, the passive posture every tacsim pose uses. The Dray-P's
-/// stern ramp reads `(128_000, 124_500, 180_000)`. (mush-sim's `egress_parent` is not used:
-/// it folds an egress pose into a posture at the origin.)
+/// convention the pad centre (`pad`: since doc 32 cut S.1 the site's own, [`site_pad_cm`])
+/// facing north, and the ramp is the bay's egress offset from it — `x = centre + egress.x_cm`,
+/// `y = centre + egress.y_cm`, the heading the egress's, `z` 0, the passive posture every tacsim
+/// pose uses. (mush-sim's `egress_parent` is not used: it folds an egress pose into a posture at
+/// the origin.)
 ///
 /// # Errors
 ///
 /// The posture's own refusal, or an offset that leaves `i64`.
-pub fn ramp_pose(bay: &BayDef) -> Result<mush_sim::data::Pose, String> {
+pub fn ramp_pose_at(bay: &BayDef, pad: (i64, i64)) -> Result<mush_sim::data::Pose, String> {
     let egress = &bay.egress;
-    let x = PAD_CENTRE_CM
+    let x = pad
+        .0
         .checked_add(egress.x_cm)
         .ok_or_else(|| "the ramp's x leaves the site".to_owned())?;
-    let y = PAD_CENTRE_CM
+    let y = pad
+        .1
         .checked_add(egress.y_cm)
         .ok_or_else(|| "the ramp's y leaves the site".to_owned())?;
     let posture = mush_sim::data::passive_rules_value(serde_json::json!({}))
@@ -1993,7 +2103,7 @@ pub struct RunView {
     pub blind: bool,
 }
 
-/// The longest pocket address a run's view carries (`C117` is four bytes).
+/// The longest pocket address a run's view carries (`C117` is four bytes, `C1024` five).
 pub const MAX_RUN_ADDR_BYTES: usize = 8;
 
 impl RunView {
@@ -2005,8 +2115,8 @@ impl RunView {
             k: run.k,
             cycles: run.cycles,
             due_ic: run.due_ic,
-            addr: crate::surface::address::pocket_address(run.pocket[0], run.pocket[1])
-                .unwrap_or_default(),
+            // Doc 32 cut S.1: the run's own name, which its start took under its site's scheme.
+            addr: run.address(),
             good: Some(run.good.clone()),
             stop: run.stop,
             blind: run.blind,
@@ -2818,6 +2928,7 @@ mod tests {
 
     fn scan_params() -> ActParams {
         ActParams::Scan {
+            side: 256,
             from_bay: true,
             body: cid("ceres"),
             cell: [128, 124],
@@ -2829,6 +2940,7 @@ mod tests {
 
     fn sound_params() -> ActParams {
         ActParams::Sound {
+            side: 256,
             from_bay: false,
             body: cid("ceres"),
             cell: [128, 124],
@@ -3215,6 +3327,7 @@ mod tests {
         // A scan from the ground reads `charge_at` now.
         if let Some(act) = record.act.as_mut() {
             act.params = ActParams::Scan {
+                side: 256,
                 from_bay: false,
                 body: cid("ceres"),
                 cell: [128, 124],
@@ -3336,6 +3449,7 @@ mod tests {
         let (px, py) = crate::surface::address::pocket_of_cell((stand[0], stand[1]))
             .unwrap_or_else(|| panic!("a pocket"));
         Run {
+            side: 256,
             ordinal,
             operator: ObjId(42),
             hull: ObjId(500),
@@ -3850,6 +3964,7 @@ mod tests {
     fn fill_plan() -> FillPlan {
         use crate::surface::plan::{PLAN_BOUND_IC_SECS, PlanStep, PlanTally};
         FillPlan {
+            side: 256,
             no: 1,
             author: ObjId(42),
             hull: ObjId(500),

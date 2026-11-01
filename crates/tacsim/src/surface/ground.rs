@@ -55,6 +55,7 @@ use super::geology::{
 };
 use super::{GeologyState, body_geology, live};
 use crate::arena::digest_text;
+use crate::surface::address::Scheme;
 
 /// **The shipped default** of a site's cells along one side (§3.1: 256 × 256 at 10 m, D-16-5's
 /// arena window): every region shipped today is 2,560 m a side.
@@ -72,17 +73,22 @@ pub const SITE_CELLS: u16 = crate::definitions::arena::DEFAULT_WINDOW_SIDE;
 pub const MAX_SITE_CELLS: u16 = crate::definitions::arena::MAX_ARENA_SIDE;
 /// A site cell's edge, centimetres.
 pub const SITE_CELL_CM: u16 = 1_000;
-/// Pockets along one side of a site: 64 × 64 pockets of 4 × 4 cells.
-pub const SITE_POCKETS: i64 = 64;
-/// Fields along one side of a site: 8 × 8 fields; 4 × 4 blocks of 2 × 2 fields.
-pub const SITE_FIELDS: i64 = 8;
-/// Blocks along one side of a site.
-pub const SITE_BLOCKS: i64 = 4;
+/// Pockets along one side of the shipped site: 64 × 64 pockets of 4 × 4 cells (doc 32 cut S.1:
+/// a site's own is [`Scheme::pockets`]).
+pub const SITE_POCKETS: i64 = Scheme::SHIPPED.pockets();
+/// Fields along one side of the shipped site: 8 × 8 fields; 4 × 4 blocks of 2 × 2 fields (doc 32
+/// cut S.1: a site's own is [`Scheme::fields`]).
+pub const SITE_FIELDS: i64 = Scheme::SHIPPED.fields();
+/// Blocks along one side of a site, at every side (doc 32 cut S.1, ruling 3).
+pub const SITE_BLOCKS: i64 = crate::surface::address::BLOCKS;
 /// The site ground cache's capacity.
 pub const SITE_CACHE_CAPACITY: usize = 16;
 
-/// The digest domain of a site geology table.
+/// The digest domain of a shipped-side (256) site geology table.
 const SITE_GEOLOGY_DOMAIN: &[u8] = b"tacsim.surface.site_geology.v1\0";
+/// **The digest domain of a site geology table of any other side** (doc 32 cut S.1, ruling 3):
+/// the side joins the digest, and a 256 table keeps [`SITE_GEOLOGY_DOMAIN`] byte for byte.
+const SITE_GEOLOGY_DOMAIN_V2: &[u8] = b"tacsim.surface.site_geology.v2\0";
 /// The digest domain of a site's revision.
 const SITE_REVISION_DOMAIN: &[u8] = b"tacsim.surface.site_revision.v1\0";
 
@@ -95,8 +101,20 @@ pub struct SiteGeologySpec {
     /// (a field corner), so the site's blocks hold whole fields.
     pub origin: (i64, i64),
     /// One authored class shift per block, -3..=3, indexed `by * 4 + bx` from the south-west
-    /// (bx, by = field x / 2, field y / 2 inside the site). SM.2 maps the letters A–P onto it.
+    /// (bx, by = the field's block, [`Scheme::block_of_field`]). SM.2 maps the letters A–P onto
+    /// it.
     pub shifts: [i8; 16],
+    /// **The site's cells along one side** (doc 32 cut S.1, ruling 3): its region's extent, a
+    /// side [`Scheme::of_side`] accepts; the table covers `side / 4` pockets a side.
+    pub side: u16,
+}
+
+impl SiteGeologySpec {
+    /// The spec's address scheme.
+    #[must_use]
+    pub fn scheme(&self) -> Scheme {
+        Scheme::of_site(self.side)
+    }
 }
 
 /// One field's words and counts, packed in a site table.
@@ -107,17 +125,18 @@ struct FieldCode {
 }
 
 /// The site's geology: every pocket's four (class, tonnes) as two bytes each (tonnes in bits
-/// 0..=7, class code in bits 8..=9), the 64 fields' words and counts, built once per key
-/// version.
+/// 0..=7, class code in bits 8..=9), the fields' words and counts, built once per key version.
 #[derive(Clone, Debug, PartialEq, Eq)]
 pub struct SiteGeology {
     body: CanonicalId,
     origin: (i64, i64),
     key_version: u32,
     shifts: [i8; 16],
-    /// 64, index `fy * 8 + fx`.
+    /// The site's scheme (doc 32 cut S.1).
+    scheme: Scheme,
+    /// 64 at 256 (256 at 512), index `fy * fields + fx`.
     fields: Vec<FieldCode>,
-    /// 4,096, index `py * 64 + px`.
+    /// 4,096 at 256 (16,384 at 512), index `py * pockets + px`.
     pockets: Vec<[u16; 4]>,
 }
 
@@ -159,10 +178,18 @@ impl SiteGeology {
         self.key_version
     }
 
-    /// The pocket at site-local `(px, py)`, 0..64 each.
+    /// The site's address scheme (doc 32 cut S.1).
+    #[must_use]
+    pub fn scheme(&self) -> Scheme {
+        self.scheme
+    }
+
+    /// The pocket at site-local `(px, py)`, `0..pockets` each (64 at 256).
     #[must_use]
     pub fn pocket(&self, px: i64, py: i64) -> Option<PocketRow> {
-        let code = *self.pockets.get(local_index(px, py, SITE_POCKETS)?)?;
+        let code = *self
+            .pockets
+            .get(local_index(px, py, self.scheme.pockets())?)?;
         let decoded = code.map(decode);
         Some(PocketRow {
             classes: decoded.map(|(class, _)| class),
@@ -170,10 +197,13 @@ impl SiteGeology {
         })
     }
 
-    /// The field at site-local `(fx, fy)`, 0..8 each: its words and ore-pocket counts.
+    /// The field at site-local `(fx, fy)`, `0..fields` each (8 at 256): its words and ore-pocket
+    /// counts.
     #[must_use]
     pub fn field(&self, fx: i64, fy: i64) -> Option<([Word; 4], [u8; 4])> {
-        let field = self.fields.get(local_index(fx, fy, SITE_FIELDS)?)?;
+        let field = self
+            .fields
+            .get(local_index(fx, fy, self.scheme.fields())?)?;
         Some((field.words, field.counts))
     }
 
@@ -196,10 +226,18 @@ impl SiteGeology {
     /// SHA-256 over `b"tacsim.surface.site_geology.v1\0" || body || 0x00 || origin x, y (i64
     /// LE) || key_version (u32 LE) || 16 shift bytes || each field's 4 word codes and 4 counts
     /// || each pocket's 4 codes (u16 LE)`, in index order — as 64 lowercase base-16 characters.
+    /// **Doc 32 cut S.1** (ruling 3): a site of any side but 256 digests under
+    /// `b"tacsim.surface.site_geology.v2\0" || side (u16 LE)` in place of the v1 domain, the rest
+    /// as v1, so a 256 table's digest is unchanged.
     #[must_use]
     pub fn digest(&self) -> String {
         let mut hasher = Sha256::new();
-        hasher.update(SITE_GEOLOGY_DOMAIN);
+        if self.scheme == Scheme::SHIPPED {
+            hasher.update(SITE_GEOLOGY_DOMAIN);
+        } else {
+            hasher.update(SITE_GEOLOGY_DOMAIN_V2);
+            hasher.update(self.scheme.side().to_le_bytes());
+        }
         hasher.update(self.body.as_str().as_bytes());
         hasher.update([0_u8]);
         hasher.update(self.origin.0.to_le_bytes());
@@ -245,6 +283,7 @@ impl SiteGeology {
             origin: (0, 0),
             key_version: 1,
             shifts: [0; 16],
+            scheme: Scheme::SHIPPED,
             fields: vec![
                 FieldCode {
                     words: [Word::Barren; 4],
@@ -257,7 +296,8 @@ impl SiteGeology {
     }
 }
 
-/// Build one site's geology table: its 64 fields under their blocks' shifts, and their pockets.
+/// Build one site's geology table: its fields under their blocks' shifts, and their pockets —
+/// 64 fields at 256, 256 at 512 (doc 32 cut S.1), the shifts still one per block `A`–`P`.
 ///
 /// # Errors
 ///
@@ -287,11 +327,12 @@ pub fn site_geology(
     {
         return Err(GeologyError::Shift(*shift));
     }
+    let scheme = spec.scheme();
     let lattice = body.lattice();
     let top = spec
         .origin
         .1
-        .checked_add(SITE_POCKETS)
+        .checked_add(scheme.pockets())
         .ok_or(GeologyError::OffLattice)?;
     if spec.origin.1 < lattice.south() || top > lattice.north() {
         return Err(GeologyError::OffLattice);
@@ -300,12 +341,12 @@ pub fn site_geology(
         spec.origin.0.div_euclid(POCKETS_PER_FIELD_SIDE),
         spec.origin.1.div_euclid(POCKETS_PER_FIELD_SIDE),
     );
-    let pocket_count = usize::try_from(SITE_POCKETS * SITE_POCKETS).unwrap_or(0);
-    let mut fields = Vec::with_capacity(64);
+    let pocket_count = usize::try_from(scheme.pockets() * scheme.pockets()).unwrap_or(0);
+    let mut fields = Vec::with_capacity(usize::try_from(scheme.field_count()).unwrap_or(0));
     let mut pockets = vec![[0_u16; 4]; pocket_count];
-    for fy in 0..SITE_FIELDS {
-        for fx in 0..SITE_FIELDS {
-            let block = local_index(fx / 2, fy / 2, SITE_BLOCKS).unwrap_or(0);
+    for fy in 0..scheme.fields() {
+        for fx in 0..scheme.fields() {
+            let block = scheme.block_index_of_field((fx, fy)).unwrap_or(0);
             let shift = spec.shifts.get(block).copied().unwrap_or(0);
             let ground = field_ground(
                 mac,
@@ -328,7 +369,7 @@ pub fn site_geology(
                     let px = fx * POCKETS_PER_FIELD_SIDE + lx;
                     let py = fy * POCKETS_PER_FIELD_SIDE + ly;
                     let Some(slot) =
-                        local_index(px, py, SITE_POCKETS).and_then(|i| pockets.get_mut(i))
+                        local_index(px, py, scheme.pockets()).and_then(|i| pockets.get_mut(i))
                     else {
                         continue;
                     };
@@ -347,6 +388,7 @@ pub fn site_geology(
         origin: spec.origin,
         key_version,
         shifts: spec.shifts,
+        scheme,
         fields,
         pockets,
     })
@@ -399,6 +441,10 @@ pub fn site_revision(input: &CompositeInput, spec: &SiteGeologySpec) -> Result<u
     for shift in spec.shifts {
         hasher.update(shift.to_le_bytes());
     }
+    // Doc 32 cut S.1: the side joins only off the shipped side, so a 256 site's key is unchanged.
+    if spec.side != SITE_CELLS {
+        hasher.update(spec.side.to_le_bytes());
+    }
     let digest: [u8; 32] = hasher.finalize().into();
     let mut head = [0_u8; 8];
     for (slot, byte) in head.iter_mut().zip(digest) {
@@ -435,6 +481,14 @@ pub fn build_site_ground(
     key_version: u32,
 ) -> Result<SiteGround, String> {
     let built = site_composite(input, &spec.body)?;
+    // Doc 32 cut S.1: the geology covers the same ground the composite does.
+    if ground_side(&built) != spec.side {
+        return Err(format!(
+            "the site's geology is {} a side, but its ground is {}",
+            spec.side,
+            ground_side(&built)
+        ));
+    }
     let geology = site_geology(mac, key_version, body, spec).map_err(|error| error.to_string())?;
     Ok(SiteGround {
         composite: Arc::new(built),
@@ -443,7 +497,9 @@ pub fn build_site_ground(
 }
 
 /// **A site's side from its region** (doc 32 cut S.0, §18): the region's extent in cells of
-/// [`SITE_CELL_CM`] — square, a whole number of cells, `1..=`[`MAX_SITE_CELLS`].
+/// [`SITE_CELL_CM`] — square, a whole number of cells, `1..=`[`MAX_SITE_CELLS`]; **doc 32 cut
+/// S.1** (ruling 3): and a multiple of [`crate::surface::address::SCHEME_STEP`] (2,560 m), so its
+/// blocks letter `A`–`P` over whole quadrants of fields ([`Scheme::of_side`]).
 ///
 /// # Errors
 ///
@@ -470,10 +526,14 @@ pub fn site_side_of_region(region: &mush_atlas::RegionRec) -> Result<u16, String
     if w <= 0 || w % cell != 0 {
         return Err(refused("is not whole cells"));
     }
-    u16::try_from(w / cell)
+    let side = u16::try_from(w / cell)
         .ok()
         .filter(|side| (1..=MAX_SITE_CELLS).contains(side))
-        .ok_or_else(|| refused("is too wide"))
+        .ok_or_else(|| refused("is too wide"))?;
+    if Scheme::of_side(side).is_none() {
+        return Err(refused("is not a whole number of 2,560 m sides"));
+    }
+    Ok(side)
 }
 
 /// **A site composite's side** (doc 32 cut S.0, §18): its ground surface's cells along one side,

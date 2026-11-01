@@ -814,7 +814,9 @@ pub(crate) fn on_pad(rig: &mut Rig, n_rigs: usize) -> (ObjId, HullRow, Vec<ObjId
 /// (a scan or a sounding from the ground reserves the real trip home; the surface tick builds the
 /// home the fire after the site).
 pub(crate) fn warm(rig: &mut Rig) {
-    for _ in 0..8 {
+    // Doc 32 cut S.1: lane v17's seventh site is wanted too, and the tick warms one wanted
+    // site a fire before it builds a home field, so the home can land a fire later.
+    for _ in 0..16 {
         let homed = rig
             .tw
             .world()
@@ -936,6 +938,16 @@ fn count(text: &str, line: &str) -> usize {
 fn staff_place(rig: &mut Rig, tv: ObjId, x: i64, y: i64) {
     let domain = ahuna_domain(&rig.tw);
     let staff = support::place_cm_keeping(&mut rig.tw, domain, tv, (x, y));
+    fold_module_ops_into(&mut rig.store, rig.tw.take_module_ops());
+    fold_module_ops_into(&mut rig.store, staff);
+}
+
+/// **Staff move `tv` to the centre of site cell `(x, y)` on `entry`'s ground** (doc 32 cut S.1:
+/// [`to_cell`] for any site).
+pub(crate) fn to_cell_on(rig: &mut Rig, entry: &str, tv: ObjId, (x, y): (i64, i64)) {
+    let domain = mush_sim::DomainId(port_map(&rig.tw, entry).domain.expect("a domain"));
+    let staff =
+        support::place_cm_keeping(&mut rig.tw, domain, tv, (x * 1_000 + 500, y * 1_000 + 500));
     fold_module_ops_into(&mut rig.store, rig.tw.take_module_ops());
     fold_module_ops_into(&mut rig.store, staff);
 }
@@ -1307,7 +1319,7 @@ fn glyph_at(rows: &[String], (x, y): (usize, usize)) -> Option<char> {
 }
 
 /// **A Dray-P on a site's pad** (`on_pad_as` for any site): the site opened, the hop, the warm.
-fn on_pad_at(
+pub(crate) fn on_pad_at(
     rig: &mut Rig,
     who: &str,
     seed: i64,
@@ -1362,6 +1374,9 @@ fn lane_sites() -> Vec<(CanonicalId, String)> {
     lane()
         .entries()
         .iter()
+        // Doc 32 cut S.1: the 256 sites these censuses pin from the 256 ramp; the 512 site's own
+        // census is doc 32 cut S.2's measurement.
+        .filter(|(id, _)| id.as_str() != "urvara_port")
         .filter_map(|(id, entry)| match entry {
             PackEntry::Port(def) => def
                 .site

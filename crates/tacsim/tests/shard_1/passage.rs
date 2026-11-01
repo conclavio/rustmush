@@ -147,7 +147,8 @@ fn plan_passage_reproduces_the_slice_figures() {
     // Doc 20 cut SM.2: twenty with the twelve site routes. A same-body hop's `base_s`
     // is authored, not a chord (§3.3): its seconds are the laden step, which at an empty
     // hold is `base_s` itself.
-    assert_eq!(routes.len(), 20, "the lane's routes: {routes:?}");
+    // Doc 32 cut S.1: twenty-two with Urvara Reach's two.
+    assert_eq!(routes.len(), 22, "the lane's routes: {routes:?}");
     for route in routes.iter().map(String::as_str) {
         for (a, b, base) in body_pairs(&pack, route) {
             if a == b {

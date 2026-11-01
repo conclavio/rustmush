@@ -22,7 +22,7 @@
 //!   ruled 2026-10-31): a live `+ship/lift` naming every unit out removes it from the field
 //!   outright (`crate::field::exit`); [`departure_refusal`] is a queued departure's gate.
 
-use mush_core::{Ctx, ObjId, World};
+use mush_core::{CanonicalId, Ctx, ObjId, World};
 
 use super::FieldBook;
 
@@ -84,13 +84,15 @@ pub const PAD_SPREAD_CELLS: u16 = 8;
 /// [`PAD_SPREAD_CELLS`] of the pad.
 pub(crate) fn pad_poses(
     w: &World,
+    site: &CanonicalId,
     terrain: &crate::arena::state::ArenaTerrain,
     carriers: &[ObjId],
     taken: &mut std::collections::BTreeSet<(u16, u16)>,
 ) -> Result<std::collections::BTreeMap<ObjId, mush_sim::data::Pose>, String> {
-    let pad = crate::surface::excursion::PAD_CENTRE_CM;
+    // Doc 32 cut S.1 (ruling 4): the site's own pad room.
+    let pad = crate::surface::excursion::site_pad_cm(w, site);
     let (px, py) = terrain
-        .cell_at(pad, pad)
+        .cell_at(pad.0, pad.1)
         .ok_or_else(|| "the pad is off the field's ground".to_owned())?;
     let side = i64::from(terrain.cell_cm());
     let mut poses = std::collections::BTreeMap::new();

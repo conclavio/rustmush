@@ -1049,7 +1049,9 @@ fn post_buyout_mining_requires_a_current_active_title() {
 /// the real trip home; the surface tick builds the home the fire after the site).
 fn warm(rig: &mut Rig, entry: &str) {
     let (spec, location) = spec_of(&rig.tw, entry);
-    for _ in 0..8 {
+    // Doc 32 cut S.1: lane v17's seventh site is wanted too, and the tick warms one wanted
+    // site a fire before it builds a home field, so the home can land a fire later.
+    for _ in 0..16 {
         let cached =
             tacsim::surface::site_ground_cached(rig.tw.world(), &site_frame(&location), &spec)
                 .ok()

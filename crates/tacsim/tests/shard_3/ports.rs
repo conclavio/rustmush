@@ -744,7 +744,8 @@ fn ic3_a_second_boot_posts_nothing() {
     // The documents a reboot reads back are the ones the first boot wrote, and
     // the second boot writes none.
     // Five ports and (doc 20 cut SM.2) six sites.
-    assert_eq!(docs.len(), 11, "{:?}", docs.keys().collect::<Vec<_>>());
+    // Doc 32 cut S.1: twelve with Urvara Reach's.
+    assert_eq!(docs.len(), 12, "{:?}", docs.keys().collect::<Vec<_>>());
     for map in maps(&tw) {
         let written = docs.get(map.key().as_str()).expect("a document");
         assert_eq!(&serde_json::to_value(&map).expect("encodes"), written);
@@ -774,7 +775,7 @@ fn ic3_an_update_reuses_every_map_row_and_refuses_drift() {
     let (plan, apply) = plan_and_apply(&mut tw);
     assert!(
         plan.contains(&format!(
-            "Plan for {LANE_PACK}@{}: 0 create, 2 update, 0 retire, 58 unchanged",
+            "Plan for {LANE_PACK}@{}: 0 create, 2 update, 0 retire, 62 unchanged",
             LANE_VERSION + 1
         )),
         "{plan}"
@@ -788,7 +789,7 @@ fn ic3_an_update_reuses_every_map_row_and_refuses_drift() {
     }
     assert!(
         apply.contains(&format!(
-            "Applied {LANE_PACK}@{}: 0 created, 2 updated, 0 retired, 58 unchanged.",
+            "Applied {LANE_PACK}@{}: 0 created, 2 updated, 0 retired, 62 unchanged.",
             LANE_VERSION + 1
         )),
         "{apply}\n{plan}"
@@ -938,7 +939,7 @@ fn ic3_an_update_creates_a_new_org_and_keeps_every_recorded_row() {
     let (plan, apply) = plan_and_apply(&mut tw);
     assert!(
         apply.contains(&format!(
-            "Applied {LANE_PACK}@{}: 0 created, 2 updated, 0 retired, 58 unchanged.",
+            "Applied {LANE_PACK}@{}: 0 created, 2 updated, 0 retired, 62 unchanged.",
             LANE_VERSION + 1
         )),
         "{apply}\n{plan}"
@@ -1066,7 +1067,7 @@ fn ic3_a_map_that_stopped_part_way_is_completed() {
     let (plan, apply) = plan_and_apply(&mut tw);
     assert!(
         apply.contains(&format!(
-            "Applied {LANE_PACK}@{}: 0 created, 2 updated, 0 retired, 58 unchanged.",
+            "Applied {LANE_PACK}@{}: 0 created, 2 updated, 0 retired, 62 unchanged.",
             LANE_VERSION + 1
         )),
         "{apply}\n{plan}"
@@ -1604,7 +1605,7 @@ fn ic3_a_world_on_lane_v1_takes_v2_by_the_shelf() {
             plan.contains(&format!(
                 // Doc 20 cut SM.2 (lane v9): the six sites' twenty-four entries are created,
                 // and the eight bodies and the Freeport's place updated, beside v8's thirteen.
-                "Plan for {LANE_PACK}@{LANE_VERSION}: 35 create, 11 update, 0 retire, 14 unchanged"
+                "Plan for {LANE_PACK}@{LANE_VERSION}: 39 create, 11 update, 0 retire, 14 unchanged"
             )),
             "{plan}"
         );
@@ -1632,7 +1633,7 @@ fn ic3_a_world_on_lane_v1_takes_v2_by_the_shelf() {
         let (_, apply) = plan_and_apply(&mut next);
         assert!(
             apply.contains(&format!(
-                "Applied {LANE_PACK}@{LANE_VERSION}: 35 created, 11 updated, 0 retired, 14 unchanged."
+                "Applied {LANE_PACK}@{LANE_VERSION}: 39 created, 11 updated, 0 retired, 14 unchanged."
             )),
             "{apply}"
         );
@@ -1643,9 +1644,9 @@ fn ic3_a_world_on_lane_v1_takes_v2_by_the_shelf() {
             .and_then(|c| c.latches.applied(&lane_id()))
             .map(mush_content::Applied::placed)
             .expect("v2 placed");
-        // Doc 20 cut SM.2: the six site places are added; the six old place rooms keep
-        // their ids.
-        assert_eq!(placed_v2.len(), placed_v1.len() + 6);
+        // Doc 20 cut SM.2: the six site places are added (doc 32 cut S.1: and Urvara Reach's);
+        // the old place rooms keep their ids.
+        assert_eq!(placed_v2.len(), placed_v1.len() + 7);
         for (place, room) in &placed_v1 {
             assert_eq!(
                 placed_v2.get(place),

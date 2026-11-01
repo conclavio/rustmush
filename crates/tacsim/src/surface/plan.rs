@@ -338,9 +338,22 @@ pub struct FillPlan {
     /// Newest last, at most [`MAX_PLAN_NOTES`] (the oldest dropped).
     #[serde(default, skip_serializing_if = "Vec::is_empty")]
     pub notes: Vec<PlanNote>,
+    /// **The site's side** (doc 32 cut S.1, §19): the scheme its steps are named under; omitted
+    /// at the shipped side, so a 256 site's plan is byte-identical to SM.11's.
+    #[serde(
+        default = "crate::surface::excursion::shipped_side",
+        skip_serializing_if = "crate::surface::excursion::is_shipped_side"
+    )]
+    pub side: u16,
 }
 
 impl FillPlan {
+    /// The plan's site's address scheme (doc 32 cut S.1).
+    #[must_use]
+    pub fn scheme(&self) -> address::Scheme {
+        address::Scheme::of_site(self.side)
+    }
+
     /// **Live** — working or parking.
     #[must_use]
     pub fn live(&self) -> bool {
@@ -382,12 +395,13 @@ impl FillPlan {
         if self.steps.is_empty() || self.steps.len() > MAX_PLAN_STEPS {
             return Err(format!("a plan compiles to 1 to {MAX_PLAN_STEPS} steps"));
         }
+        let Some(scheme) = address::Scheme::of_side(self.side) else {
+            return Err(format!("a plan's site is not {} a side", self.side));
+        };
         for step in &self.steps {
             let ok = match step {
-                PlanStep::Sound { field } => address::field_of_index(*field).is_some(),
-                PlanStep::Mine { pocket } => {
-                    address::pocket_address(pocket[0], pocket[1]).is_some()
-                }
+                PlanStep::Sound { field } => scheme.field_of_index(*field).is_some(),
+                PlanStep::Mine { pocket } => scheme.pocket_address(pocket[0], pocket[1]).is_some(),
                 PlanStep::Block { letter } => address::block_of_letter(*letter).is_some(),
             };
             if !ok {
@@ -402,9 +416,13 @@ impl FillPlan {
             self.steps.get(usize::from(self.cursor)),
             Some(PlanStep::Block { .. })
         );
+        let most = passed_bound(scheme);
         if distinct.len() != self.passed.len()
-            || self.passed.len() > MAX_PLAN_PASSED
-            || self.passed.iter().any(|n| *n == 0 || *n > 256)
+            || self.passed.len() > most
+            || self
+                .passed
+                .iter()
+                .any(|n| *n == 0 || usize::from(*n) > most)
             || (!self.passed.is_empty() && !on_block)
         {
             return Err(
@@ -441,24 +459,40 @@ impl FillPlan {
     pub fn step_words(&self, k: usize, long: bool) -> String {
         self.steps
             .get(k)
-            .map_or_else(String::new, |step| step_words(step, long))
+            .map_or_else(String::new, |step| step_words_in(step, long, self.scheme()))
     }
+}
+
+/// **The most pockets a block step passes over** (doc 32 cut S.1): a block's pockets, 256 at
+/// the shipped side ([`MAX_PLAN_PASSED`]) and 1,024 at 512.
+fn passed_bound(scheme: address::Scheme) -> usize {
+    usize::try_from(scheme.pockets_in_block()).unwrap_or(MAX_PLAN_PASSED)
 }
 
 /// **A step in words** (§10): `sound C-NW`, `mine C117`, and a block step `mine block D, fair or
 /// better` — or, `long` (the preview), `mine every pocket of block D that reads fair or better`.
+/// The shipped scheme's [`step_words_in`].
 #[must_use]
 pub fn step_words(step: &PlanStep, long: bool) -> String {
+    step_words_in(step, long, address::Scheme::SHIPPED)
+}
+
+/// **[`step_words`] named under the plan's site's `scheme`** (doc 32 cut S.1).
+#[must_use]
+pub fn step_words_in(step: &PlanStep, long: bool, scheme: address::Scheme) -> String {
     match step {
         PlanStep::Sound { field } => {
-            let name = address::field_of_index(*field)
-                .and_then(|(fx, fy)| address::field_name(fx, fy))
+            let name = scheme
+                .field_of_index(*field)
+                .and_then(|(fx, fy)| scheme.field_name(fx, fy))
                 .unwrap_or_default();
             format!("sound {name}")
         }
         PlanStep::Mine { pocket } => format!(
             "mine {}",
-            address::pocket_address(pocket[0], pocket[1]).unwrap_or_default()
+            scheme
+                .pocket_address(pocket[0], pocket[1])
+                .unwrap_or_default()
         ),
         PlanStep::Block { letter } if long => {
             format!("mine every pocket of block {letter} that reads fair or better")
@@ -487,7 +521,7 @@ pub fn plan_view(plan: &FillPlan) -> crate::surface::excursion::PlanView {
             .iter()
             .skip(from)
             .take(crate::surface::excursion::MAX_PLAN_VIEW_NEXT)
-            .map(|step| step_words(step, false))
+            .map(|step| step_words_in(step, false, plan.scheme()))
             .collect(),
         FillState::Parking { .. } | FillState::Ended { .. } => Vec::new(),
     };
@@ -522,6 +556,8 @@ pub fn plan_view_for(
 /// author's OWN: `classes` answers a pocket's R2 only where the author's row has sounded it, and
 /// `field_readings` a field's R1 only where the row has scanned it.
 pub(crate) struct CompileInput<'a> {
+    /// **The site's address scheme** (doc 32 cut S.1): the list's addresses parse under it.
+    pub scheme: address::Scheme,
     /// The author's chart row of the site.
     pub row: Option<&'a ChartRecord>,
     /// The addresses as typed (commas and spaces allowed).
@@ -577,6 +613,8 @@ pub(crate) struct Compiled {
     /// `(block step index, k)`: the block's pockets the author reads fair or better that a full
     /// charge cannot work and bring home (`PLAN_PREVIEW_FAR`).
     pub far: Vec<(u16, u16)>,
+    /// The site's scheme the list compiled under (doc 32 cut S.1).
+    pub scheme: address::Scheme,
 }
 
 /// **Why a list does not compile** (§3.3's order).
@@ -666,19 +704,10 @@ pub(crate) fn field_pockets((fx, fy): (i64, i64)) -> Vec<(i64, i64)> {
     out
 }
 
-/// A block's four fields, south-west first (doc 20 cut SM.12b: the site clerk's house survey reads
-/// them too).
-pub(crate) fn block_fields(letter: char) -> Vec<(i64, i64)> {
-    let Some((bx, by)) = address::block_of_letter(letter) else {
-        return Vec::new();
-    };
-    let mut out = Vec::with_capacity(4);
-    for dy in 0..2 {
-        for dx in 0..2 {
-            out.push((bx * 2 + dx, by * 2 + dy));
-        }
-    }
-    out
+/// A block's fields, south-west first, row by row — four at 256, sixteen at 512 (doc 32 cut S.1)
+/// — (doc 20 cut SM.12b: the site clerk's house survey reads them too).
+pub(crate) fn block_fields(scheme: address::Scheme, letter: char) -> Vec<(i64, i64)> {
+    scheme.fields_of_block(letter).unwrap_or_default()
 }
 
 /// A field's middle cell (`drive::target_cell` of `Target::Field`).
@@ -745,6 +774,7 @@ fn field_ranks(readings: [FieldReading; 4]) -> [Option<(u8, u8)>; 4] {
 /// The [`PlanRefusal`].
 #[allow(clippy::too_many_lines)] // one ordered list of refusals, then the steps
 pub(crate) fn compile(input: &CompileInput<'_>) -> Result<Compiled, PlanRefusal> {
+    let scheme = input.scheme;
     // 1. Parse.
     let mut addrs: Vec<(String, Addr)> = Vec::new();
     for token in input
@@ -758,14 +788,14 @@ pub(crate) fn compile(input: &CompileInput<'_>) -> Result<Compiled, PlanRefusal>
             (Some(letter), None) if address::block_of_letter(letter).is_some() => {
                 Addr::Block(letter)
             }
-            _ => match address::parse_pocket_address(&upper) {
+            _ => match scheme.parse_pocket_address(&upper) {
                 Some(pocket) => Addr::Pocket(pocket),
                 None => return Err(PlanRefusal::Usage),
             },
         };
         let canonical = match parsed {
             Addr::Block(letter) => letter.to_string(),
-            Addr::Pocket((px, py)) => address::pocket_address(px, py).ok_or(PlanRefusal::Usage)?,
+            Addr::Pocket((px, py)) => scheme.pocket_address(px, py).ok_or(PlanRefusal::Usage)?,
         };
         addrs.push((canonical, parsed));
     }
@@ -785,9 +815,9 @@ pub(crate) fn compile(input: &CompileInput<'_>) -> Result<Compiled, PlanRefusal>
     let mut seen: BTreeSet<String> = BTreeSet::new();
     for (canonical, addr) in &addrs {
         let inside = match addr {
-            Addr::Pocket((px, py)) => {
-                address::block_letter(*px, *py).is_some_and(|letter| blocks.contains(&letter))
-            }
+            Addr::Pocket((px, py)) => scheme
+                .block_letter(*px, *py)
+                .is_some_and(|letter| blocks.contains(&letter)),
             Addr::Block(_) => false,
         };
         if !seen.insert(canonical.clone()) || inside {
@@ -815,12 +845,13 @@ pub(crate) fn compile(input: &CompileInput<'_>) -> Result<Compiled, PlanRefusal>
         let known = match addr {
             Addr::Pocket(pocket) => {
                 (input.classes)(*pocket).is_some()
-                    || address::field_of_pocket(*pocket)
+                    || scheme
+                        .field_of_pocket(*pocket)
                         .is_some_and(|field| (input.field_readings)(field).is_some())
             }
             Addr::Block(letter) => {
                 sounded_in(*letter)
-                    || block_fields(*letter)
+                    || block_fields(scheme, *letter)
                         .into_iter()
                         .any(|field| (input.field_readings)(field).is_some())
             }
@@ -840,13 +871,14 @@ pub(crate) fn compile(input: &CompileInput<'_>) -> Result<Compiled, PlanRefusal>
                 Some(Addr::Pocket(pocket)) => (input.classes)(pocket)
                     .and_then(|classes| richest(&[class_ranks(classes)]))
                     .or_else(|| {
-                        address::field_of_pocket(pocket)
+                        scheme
+                            .field_of_pocket(pocket)
                             .and_then(|field| (input.field_readings)(field))
                             .and_then(|readings| richest(&[field_ranks(readings)]))
                     }),
                 Some(Addr::Block(letter)) => {
                     let mut ranks: Vec<[Option<(u8, u8)>; 4]> = Vec::new();
-                    for field in block_fields(letter) {
+                    for field in block_fields(scheme, letter) {
                         if let Some(readings) = (input.field_readings)(field) {
                             ranks.push(field_ranks(readings));
                         }
@@ -880,7 +912,7 @@ pub(crate) fn compile(input: &CompileInput<'_>) -> Result<Compiled, PlanRefusal>
     for (canonical, addr) in &addrs {
         let letter = match addr {
             Addr::Block(letter) => Some(*letter),
-            Addr::Pocket((px, py)) => address::block_letter(*px, *py),
+            Addr::Pocket((px, py)) => scheme.block_letter(*px, *py),
         };
         let Some(letter) = letter else {
             continue;
@@ -915,8 +947,8 @@ pub(crate) fn compile(input: &CompileInput<'_>) -> Result<Compiled, PlanRefusal>
         match addr {
             Addr::Pocket(pocket) => {
                 if (input.classes)(*pocket).is_none()
-                    && let Some(field) = address::field_of_pocket(*pocket)
-                    && let Some(index) = address::field_index(field.0, field.1)
+                    && let Some(field) = scheme.field_of_pocket(*pocket)
+                    && let Some(index) = scheme.field_index(field.0, field.1)
                     && !sounded_field(&steps, index)
                 {
                     steps.push(PlanStep::Sound { field: index });
@@ -929,11 +961,13 @@ pub(crate) fn compile(input: &CompileInput<'_>) -> Result<Compiled, PlanRefusal>
                 from = pocket_cell(*pocket);
             }
             Addr::Block(letter) => {
-                let mut fields: Vec<((i64, i64), u8)> = block_fields(*letter)
+                let mut fields: Vec<((i64, i64), u8)> = block_fields(scheme, *letter)
                     .into_iter()
                     .filter(|field| chart::sound_adds(input.row, &field_pockets(*field)))
                     .filter_map(|field| {
-                        address::field_index(field.0, field.1).map(|index| (field, index))
+                        scheme
+                            .field_index(field.0, field.1)
+                            .map(|index| (field, index))
                     })
                     .filter(|(_, index)| !sounded_field(&steps, *index))
                     .collect();
@@ -966,9 +1000,10 @@ pub(crate) fn compile(input: &CompileInput<'_>) -> Result<Compiled, PlanRefusal>
         let left = steps.iter().any(|step| match step {
             PlanStep::Sound { .. } => true,
             PlanStep::Mine { pocket } => !(input.pit_out)((pocket[0], pocket[1]), family),
-            PlanStep::Block { letter } => (0..usize::try_from(address::POCKETS_IN_BLOCK)
-                .unwrap_or(256))
-                .filter_map(|index| address::pocket_of_block_index(*letter, index))
+            PlanStep::Block { letter } => scheme
+                .pockets_of_block(*letter)
+                .unwrap_or_default()
+                .into_iter()
                 .any(|pocket| {
                     (input.classes)(pocket)
                         .is_some_and(|classes| by_family(classes, family) >= Word::Fair)
@@ -996,7 +1031,7 @@ pub(crate) fn compile(input: &CompileInput<'_>) -> Result<Compiled, PlanRefusal>
         };
         match step {
             PlanStep::Sound { field } => {
-                let middle = address::field_of_index(*field).map(field_middle);
+                let middle = scheme.field_of_index(*field).map(field_middle);
                 if !middle.is_some_and(|stand| affords(stand, input.scanner.sound_cu)) {
                     return Err(too_far());
                 }
@@ -1008,7 +1043,7 @@ pub(crate) fn compile(input: &CompileInput<'_>) -> Result<Compiled, PlanRefusal>
             }
             PlanStep::Block { letter } => {
                 let mut k: u16 = 0;
-                for field in block_fields(*letter) {
+                for field in block_fields(scheme, *letter) {
                     for pocket in field_pockets(field) {
                         let fair = (input.classes)(pocket)
                             .is_some_and(|classes| by_family(classes, family) >= Word::Fair);
@@ -1045,7 +1080,8 @@ pub(crate) fn compile(input: &CompileInput<'_>) -> Result<Compiled, PlanRefusal>
                         let least = u64::from(class.tonnes_range().0);
                         let per = u64::from(class_yield(input.drill, class)).max(1);
                         let cycles = least.div_ceil(per);
-                        let rock = address::field_of_pocket(pocket)
+                        let rock = scheme
+                            .field_of_pocket(pocket)
                             .and_then(|field| chart::row_reads_field(input.row, field))
                             == Some(Footing::Rock);
                         let footing = if rock {
@@ -1082,6 +1118,7 @@ pub(crate) fn compile(input: &CompileInput<'_>) -> Result<Compiled, PlanRefusal>
         est_secs,
         step_secs,
         far,
+        scheme,
     })
 }
 
@@ -1503,7 +1540,7 @@ pub(crate) fn read_classes(
     if !chart::row_reads_pocket(row, pocket) {
         return None;
     }
-    let field = address::field_of_pocket(pocket)?;
+    let field = site.scheme().field_of_pocket(pocket)?;
     let ground = cache
         .entry(field)
         .or_insert_with(|| chart::field_ground_at(site, field).ok())
@@ -1924,8 +1961,9 @@ fn decide_walk(
         reads.pool(endpoint, good)
     };
     let read_rig = |tv: ObjId| reads.rig(tv);
+    let scheme = plan.scheme();
     let mut passes: usize = 0;
-    let bound = MAX_PLAN_STEPS.saturating_add(MAX_PLAN_PASSED);
+    let bound = MAX_PLAN_STEPS.saturating_add(passed_bound(scheme));
     loop {
         passes = passes.saturating_add(1);
         if passes > bound {
@@ -1963,7 +2001,7 @@ fn decide_walk(
                 });
             }
             Some(PlanStep::Sound { field: index }) => {
-                let Some(field_xy) = address::field_of_index(*index) else {
+                let Some(field_xy) = scheme.field_of_index(*index) else {
                     advance(&mut update);
                     continue;
                 };
@@ -2012,11 +2050,11 @@ fn decide_walk(
             }
             Some(PlanStep::Block { letter }) => {
                 let mut best: Option<BlockPick> = None;
-                for index in 0..usize::try_from(address::POCKETS_IN_BLOCK).unwrap_or(256) {
-                    let Some(pocket) = address::pocket_of_block_index(*letter, index) else {
+                for index in 0..passed_bound(scheme) {
+                    let Some(pocket) = scheme.pocket_of_block_index(*letter, index) else {
                         continue;
                     };
-                    let Some(number) = address::pocket_number(pocket.0, pocket.1) else {
+                    let Some(number) = scheme.pocket_number(pocket.0, pocket.1) else {
                         continue;
                     };
                     if update.passed.contains(&number) {
@@ -2067,7 +2105,7 @@ fn decide_walk(
                     why,
                 });
                 if block {
-                    if let Some(number) = address::pocket_number(pocket.0, pocket.1)
+                    if let Some(number) = scheme.pocket_number(pocket.0, pocket.1)
                         && !update.passed.contains(&number)
                     {
                         update.passed.push(number);
@@ -2318,7 +2356,7 @@ fn decide_walk(
             )
             .map(PlanActInner::Act),
             Chosen::Mine { pocket, .. } => {
-                let letter = address::block_letter(pocket.0, pocket.1).unwrap_or('A');
+                let letter = scheme.block_letter(pocket.0, pocket.1).unwrap_or('A');
                 let site_def = berth.def.site.as_ref();
                 let now = w.world_ic_now();
                 let tenure = match site_def {
@@ -2460,6 +2498,7 @@ mod tests {
             .and_then(|(fx, fy)| address::field_index(fx, fy))
             .unwrap_or_else(|| panic!("D-SW parses"));
         FillPlan {
+            side: 256,
             no: 1,
             author: ObjId(7),
             hull: ObjId(8),
@@ -2712,6 +2751,7 @@ mod tests {
             let pit_out =
                 |pocket: (i64, i64), family: OreFamily| self.worked.contains(&(pocket, family));
             compile(&CompileInput {
+                scheme: crate::surface::address::Scheme::SHIPPED,
                 row,
                 list,
                 family,
@@ -2827,7 +2867,7 @@ mod tests {
     #[test]
     fn sm11_compile_expands_a_block_nearest_first() {
         // Block K is bx 2, by 1 (fields (4..6, 2..4)).
-        let fields = block_fields('K');
+        let fields = block_fields(address::Scheme::SHIPPED, 'K');
         let mut fixture = Fixture::new(row(&fields, &field_pockets(fields[3])));
         for field in &fields {
             fixture
@@ -3158,7 +3198,7 @@ mod tests {
             vec![3 * cycle * u64::from(drill.rock_factor)]
         );
         // A block: only its soundings.
-        let fields = block_fields('K');
+        let fields = block_fields(address::Scheme::SHIPPED, 'K');
         let mut block = Fixture::new(row(&fields, &[]));
         for field in &fields {
             block

@@ -77,6 +77,12 @@ pub(super) struct FillFixed {
     pub(super) list: Vec<String>,
     pub(super) family: OreFamily,
     pub(super) steps: Vec<PlanStep>,
+    /// Doc 32 cut S.1: the site's side the list compiled under (omitted at 256).
+    #[serde(
+        default = "crate::surface::excursion::shipped_side",
+        skip_serializing_if = "crate::surface::excursion::is_shipped_side"
+    )]
+    pub(super) side: u16,
 }
 
 /// **An unload's server facts, as the start's offer fixes them** (doc 20 cut SM.8; the brief's
@@ -163,6 +169,12 @@ pub(super) struct MineFixed {
     pub(super) lapses_ic: Option<i64>,
     pub(super) drawn: u32,
     pub(super) outstanding: Vec<(ObjId, Option<(u32, u64)>)>,
+    /// Doc 32 cut S.1: the site's side the pocket is named under (omitted at 256).
+    #[serde(
+        default = "crate::surface::excursion::shipped_side",
+        skip_serializing_if = "crate::surface::excursion::is_shipped_side"
+    )]
+    pub(super) side: u16,
 }
 
 impl MineFixed {
@@ -190,6 +202,7 @@ impl MineFixed {
             lapses_ic: plan.lapses_ic,
             drawn: plan.drawn,
             outstanding: plan.outstanding.clone(),
+            side: plan.side,
         }
     }
 }
@@ -767,8 +780,19 @@ pub(super) fn facts_of(w: &World, tv: ObjId, hull: ObjId) -> Facts {
             domain, x_cm, y_cm, ..
         } => {
             let site = site_of_domain(w, domain);
+            // Doc 32 cut S.1: the ramp off the site's own pad.
+            let pad = site.as_ref().map_or(
+                (
+                    crate::surface::excursion::PAD_CENTRE_CM,
+                    crate::surface::excursion::PAD_CENTRE_CM,
+                ),
+                |site| crate::surface::excursion::site_pad_cm(w, site),
+            );
             let cells = hull_view(w, hull)
-                .and_then(|view| view.bay().and_then(|(bay, _)| ramp_pose(bay).ok()))
+                .and_then(|view| {
+                    view.bay()
+                        .and_then(|(bay, _)| crate::surface::excursion::ramp_pose_at(bay, pad).ok())
+                })
                 .map(|ramp| cells_apart(site_cell(x_cm, y_cm), site_cell(ramp.x_cm, ramp.y_cm)));
             let cell = site.as_ref().map(|_| {
                 let (x, y) = site_cell(x_cm, y_cm);

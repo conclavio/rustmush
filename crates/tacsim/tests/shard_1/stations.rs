@@ -50,8 +50,8 @@ use tacsim::definitions::content::{
     CAST_LIGEIA_PACK, CAST_SOURCES, CAST_STICKNEY_PACK, CAST_VOLTAIRE_PACK, CERES_PACK,
     CERES_REGION_PACK, CERES_ROOMS, LANE_PACK, LANE_VERSION, LIGEIA_PACK, LIGEIA_REGION_PACK,
     LIGEIA_ROOMS, SITE_SOURCES, STATION_SOURCES, STICKNEY_PACK, STICKNEY_REGION_PACK,
-    STICKNEY_ROOMS, VOLTAIRE_PACK, VOLTAIRE_REGION_PACK, VOLTAIRE_ROOMS, boot_packs, station_packs,
-    station_with_cast_value,
+    STICKNEY_ROOMS, VOLTAIRE_PACK, VOLTAIRE_REGION_PACK, VOLTAIRE_ROOMS, WIDE_SITE_SOURCES,
+    boot_packs, station_packs, station_with_cast_value,
 };
 use tacsim::ic_return::{self, PORTS};
 
@@ -437,8 +437,8 @@ fn ic1_the_station_packs_load_and_their_digests_are_pinned() {
     );
     assert_eq!(
         station_packs().expect("the station packs verify").len(),
-        27,
-        "the corridor's four, doc 19 cut A.8's six, doc 34 cut CS.0b's five cast packs, and doc 20 cut SM.2's twelve site packs"
+        29,
+        "the corridor's four, doc 19 cut A.8's six, doc 34 cut CS.0b's five cast packs, doc 20 cut SM.2's twelve site packs, and doc 32 cut S.1's two wide site packs"
     );
 }
 
@@ -485,6 +485,12 @@ fn ic1_the_boot_list_and_the_shelf_carry_the_stations_in_order() {
     want.extend(CAST_SOURCES.iter().map(|(name, _)| (*name).to_string()));
     // Doc 20 cut SM.2: the twelve site packs ride `station_packs()` after the stations.
     want.extend(SITE_SOURCES.iter().map(|(name, _)| (*name).to_string()));
+    // Doc 32 cut S.1: the two wide site packs right after them.
+    want.extend(
+        WIDE_SITE_SOURCES
+            .iter()
+            .map(|(name, _)| (*name).to_string()),
+    );
     // Doc 18 cut IC2: the lane after the stations (the game's thirteen boot packs
     // since doc 19 cut A.8, twenty-five since doc 20 cut SM.2).
     want.push(LANE_PACK.to_string());
@@ -512,13 +518,15 @@ fn ic1_the_boot_list_and_the_shelf_carry_the_stations_in_order() {
     assert_eq!(ids(&full), want);
     assert_eq!(
         full.len(),
-        48,
+        50,
         "three starter, two proving ground, ten stations, five station cast packs (doc 34 cut \
-         CS.0b), the twelve site packs (doc 20 cut SM.2), the lane, seven R10 relay/geography \
+         CS.0b), the twelve site packs (doc 20 cut SM.2), two wide site packs (doc 32 cut S.1), \
+         the lane, seven R10 relay/geography \
          packs, two passenger packs, the crew pack and the optional quests"
     );
     let site_regions: Vec<&str> = SITE_SOURCES
         .iter()
+        .chain(WIDE_SITE_SOURCES.iter())
         .step_by(2)
         .map(|(name, _)| *name)
         .collect();
@@ -561,7 +569,8 @@ fn ic1_the_boot_list_and_the_shelf_carry_the_stations_in_order() {
                     // Doc 20 cut SM.12a: relay v3 requires lane v14 (v2 required v13).
                     // Doc 20 cut SM.12b: relay v4 requires lane v15.
                     // Doc 32 cut CF.6c: relay v7 requires lane v16.
-                    (LANE_PACK.into(), 16)
+                    // Doc 32 cut S.1: relay v8 requires lane v17.
+                    (LANE_PACK.into(), 17)
                 ]
             ),
             "region.kirkwood_depot" | "region.mercury_relay" => assert!(requires.is_empty()),
@@ -628,7 +637,11 @@ fn ic1_the_boot_list_and_the_shelf_carry_the_stations_in_order() {
     // The stations are game content: no game content, no stations.
     let starter_only = ids(&boot_pack_list(true, false).expect("the boot list loads"));
     assert_eq!(starter_only.len(), 3);
-    for (name, _) in STATION_SOURCES.iter().chain(SITE_SOURCES.iter()) {
+    for (name, _) in STATION_SOURCES
+        .iter()
+        .chain(SITE_SOURCES.iter())
+        .chain(WIDE_SITE_SOURCES.iter())
+    {
         assert!(!starter_only.iter().any(|p| p == name));
     }
     assert!(!starter_only.iter().any(|p| p == LANE_PACK), "nor the lane");
@@ -656,7 +669,7 @@ fn ic1_the_boot_list_and_the_shelf_carry_the_stations_in_order() {
             "{name}:\n{out}"
         );
     }
-    for (name, _) in SITE_SOURCES {
+    for (name, _) in SITE_SOURCES.iter().chain(WIDE_SITE_SOURCES.iter()) {
         assert!(out.contains(&format!(" {name}@1 (")), "{name}:\n{out}");
     }
     assert!(out.contains(" tacsim.passengers.stickney@2 ("), "{out}");
@@ -1246,7 +1259,12 @@ fn ic1_a_fresh_world_boots_the_stations() {
         .map(|o| o.id)
         .collect();
     let mut want_docks = BTreeSet::from([c01, p01, l01, d01, t01]);
-    for (name, _) in SITE_SOURCES.iter().skip(1).step_by(2) {
+    for (name, _) in SITE_SOURCES
+        .iter()
+        .chain(WIDE_SITE_SOURCES.iter())
+        .skip(1)
+        .step_by(2)
+    {
         want_docks.insert(obj(&tw, name, "room.pad"));
     }
     assert_eq!(docks, want_docks);
@@ -1407,18 +1425,18 @@ fn ic1_a_kept_world_takes_the_stations_at_its_next_boot() {
         Some(LANE_VERSION),
         "{LANE_PACK}"
     );
-    for (name, _) in SITE_SOURCES {
-        assert_eq!(after.get(name).map(|l| l.0), Some(1), "{name}");
+    for (name, _) in SITE_SOURCES.iter().chain(WIDE_SITE_SOURCES.iter()) {
+        assert_eq!(after.get(*name).map(|l| l.0), Some(1), "{name}");
     }
     assert_eq!(
         after.len(),
-        48,
-        "five, ten stations, five station cast packs, the twelve site packs (doc 20 cut SM.2), the lane, seven R10 relay/geography packs, two passenger packs, the crew pack and the optional quests"
+        50,
+        "five, ten stations, five station cast packs, the twelve site packs (doc 20 cut SM.2), two wide site packs (doc 32 cut S.1), the lane, seven R10 relay/geography packs, two passenger packs, the crew pack and the optional quests"
     );
     // Doc 20 cut SM.12a: the relay seed ships at 3 (v2 re-signed for lane v14).
     // Doc 20 cut SM.12b: relay v4 requires lane v15.
     // Qureshi's trust service: relay v6 requires Ceres v4.
-    assert_eq!(after.get("tacsim.relay.luna_ceres").map(|l| l.0), Some(7));
+    assert_eq!(after.get("tacsim.relay.luna_ceres").map(|l| l.0), Some(8));
     assert_eq!(
         after.get("tacsim.passengers.stickney").map(|l| l.0),
         Some(2)
@@ -2188,7 +2206,7 @@ fn ic12_a_world_latched_at_the_old_station_versions_takes_the_new_through_plan_a
     // Doc 20 cut SM.12a: the shipped relay seed is v3 (v2 re-signed for lane v14).
     // Doc 20 cut SM.12b: relay v4 requires lane v15.
     // Qureshi's trust service: relay v6 requires Ceres v4.
-    assert_eq!(version(&tw, "tacsim.relay.luna_ceres"), Some(7));
+    assert_eq!(version(&tw, "tacsim.relay.luna_ceres"), Some(8));
     let registry = tw
         .world()
         .module_state::<mush_sim::relay::RelayStore>()

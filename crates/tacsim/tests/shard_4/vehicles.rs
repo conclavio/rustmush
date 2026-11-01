@@ -2408,8 +2408,9 @@ fn sm3a_a_world_on_lane_v9_takes_v10_by_the_shelf() {
     let (plan, apply) = plan_and_apply(&mut rig.tw);
     assert!(
         plan.contains(&format!(
-            "Plan for {LANE_PACK}@{LANE_VERSION}: 0 create, 3 update, 0 retire, {} unchanged",
-            entries - 3
+            // Doc 32 cut S.1 (lane v17): and the 512 site's place, port and two routes.
+            "Plan for {LANE_PACK}@{LANE_VERSION}: 4 create, 3 update, 0 retire, {} unchanged",
+            entries - 7
         )),
         "{plan}"
     );
@@ -2429,8 +2430,8 @@ fn sm3a_a_world_on_lane_v9_takes_v10_by_the_shelf() {
     }
     assert!(
         apply.contains(&format!(
-            "Applied {LANE_PACK}@{LANE_VERSION}: 0 created, 3 updated, 0 retired, {} unchanged.",
-            entries - 3
+            "Applied {LANE_PACK}@{LANE_VERSION}: 4 created, 3 updated, 0 retired, {} unchanged.",
+            entries - 7
         )),
         "{plan}\n{apply}"
     );
@@ -2472,9 +2473,9 @@ fn sm3a_a_world_on_lane_v9_takes_v10_by_the_shelf() {
     let (plan, apply) = plan_and_apply(&mut rig.tw);
     assert!(
         apply.contains(&format!(
-            "Applied {LANE_PACK}@{}: 0 created, 3 updated, 0 retired, {} unchanged.",
+            "Applied {LANE_PACK}@{}: 4 created, 3 updated, 0 retired, {} unchanged.",
             LANE_VERSION + 1,
-            entries - 3
+            entries - 7
         )),
         "{plan}\n{apply}"
     );

@@ -100,6 +100,7 @@ use crate::port::tv::TvLease;
 use crate::port::vehicle::{RigPlace, RigPlan, RigRows};
 use crate::port_tick::{Fire, PortTickState, Step, port_error};
 use crate::store::{TacsimStore, put_port_map};
+use crate::surface::address::Scheme;
 use crate::surface::chart::{ChartKey, ChartRecord};
 use crate::surface::claims::{BlockKey, BlockTenure};
 use crate::surface::geology::{OreFamily, Word};
@@ -1127,23 +1128,26 @@ fn survey_rows(w: &World, clerk: ObjId) -> Map<String, Value> {
     let Ok(context) = crate::surface::chart::site_context(w, &map.entry) else {
         return rows;
     };
+    let scheme = context.scheme();
     for letter in held_letters(&site, &yard.org) {
-        let fields: Vec<u8> = crate::surface::plan::block_fields(letter)
+        let fields: Vec<u8> = crate::surface::plan::block_fields(scheme, letter)
             .into_iter()
-            .filter_map(|(fx, fy)| crate::surface::address::field_index(fx, fy))
+            .filter_map(|(fx, fy)| scheme.field_index(fx, fy))
             .collect();
-        rows.insert(
-            format!("{}/{letter}", map.entry),
-            json!({
-                "site": map.entry.as_str(),
-                "letter": letter.to_string(),
-                "clerk": clerk.0,
-                "dispatcher": dispatcher,
-                "house": house,
-                "body": context.spec.body.as_str(),
-                "fields": fields,
-            }),
-        );
+        let mut row = json!({
+            "site": map.entry.as_str(),
+            "letter": letter.to_string(),
+            "clerk": clerk.0,
+            "dispatcher": dispatcher,
+            "house": house,
+            "body": context.spec.body.as_str(),
+            "fields": fields,
+        });
+        // Doc 32 cut S.1: the site's side, only off the shipped side (a 256 row is unchanged).
+        if let (true, Some(row)) = (scheme != Scheme::SHIPPED, row.as_object_mut()) {
+            row.insert("side".to_owned(), json!(scheme.side()));
+        }
+        rows.insert(format!("{}/{letter}", map.entry), row);
     }
     rows
 }
@@ -1398,9 +1402,16 @@ impl DispatchProvider {
             .map_err(|_| port_error(ActionErrorCode::Integrity, "the charts are unavailable"))?
             .cloned();
         let existed = prior.is_some();
-        let mut chart = prior.unwrap_or_else(|| ChartRecord::new(dispatcher, site.clone(), body));
+        let side = row
+            .get("side")
+            .and_then(Value::as_u64)
+            .and_then(|side| u16::try_from(side).ok())
+            .unwrap_or(crate::surface::ground::SITE_CELLS);
+        let mut chart =
+            prior.unwrap_or_else(|| ChartRecord::with_side(dispatcher, site.clone(), body, side));
+        let scheme = chart.scheme();
         let surveyed = fields.iter().all(|index| {
-            crate::surface::address::field_of_index(*index).is_some_and(|field| {
+            scheme.field_of_index(*index).is_some_and(|field| {
                 crate::surface::chart::row_reads_field(Some(&chart), field).is_some()
             })
         });
@@ -1639,8 +1650,10 @@ pub(crate) fn owed(
     }
     let dispatcher = yard.dispatcher().ok_or(())?;
     let row = reads.chart(dispatcher, &yard.entry).map_err(|_| ())?;
+    // Doc 32 cut S.1: a row reads under its own site's scheme (no row reads no field anyway).
+    let scheme = row.as_ref().map_or(Scheme::SHIPPED, ChartRecord::scheme);
     for letter in letters {
-        let read = crate::surface::plan::block_fields(letter)
+        let read = crate::surface::plan::block_fields(scheme, letter)
             .into_iter()
             .all(|field| crate::surface::chart::row_reads_field(row.as_ref(), field).is_some());
         if !read {
@@ -1902,19 +1915,22 @@ pub(crate) fn file_due(
 /// worked out — **exactly `decide`'s Block-step predicate** (`crate::surface::plan`) less its
 /// passed pockets. `classes` is the house's own chart row's reading (a pocket it never sounded
 /// reads `None`), so the house re-arms only on ore it has read.
+/// Doc 32 cut S.1: the blocks' pockets under the site's `scheme`.
 #[must_use]
 pub(crate) fn fair_left(
+    scheme: Scheme,
     classes: impl Fn((i64, i64)) -> Option<Word>,
     pit_out: impl Fn((i64, i64)) -> bool,
     blocks: &[char],
 ) -> bool {
-    let pockets = usize::try_from(crate::surface::address::POCKETS_IN_BLOCK).unwrap_or(256);
     blocks.iter().any(|letter| {
-        (0..pockets).any(|index| {
-            crate::surface::address::pocket_of_block_index(*letter, index).is_some_and(|pocket| {
+        scheme
+            .pockets_of_block(*letter)
+            .unwrap_or_default()
+            .into_iter()
+            .any(|pocket| {
                 classes(pocket).is_some_and(|class| class >= Word::Fair) && !pit_out(pocket)
             })
-        })
     })
 }
 
@@ -2400,7 +2416,7 @@ fn fair_left_now(
     let pit_out = |pocket: (i64, i64)| {
         crate::port::site_map::pit_exhausted(reads, entry, &ground, pocket, family)
     };
-    FairRead::Read(fair_left(classes, pit_out, blocks))
+    FairRead::Read(fair_left(site.scheme(), classes, pit_out, blocks))
 }
 
 // ---- readiness: the Dispatch line ----------------------------------------------------------
@@ -3047,6 +3063,7 @@ mod tests {
 
     fn plan(state: FillState, cycles: u16) -> FillPlan {
         FillPlan {
+            side: 256,
             no: 1,
             author: ObjId(99),
             hull: ObjId(50),
@@ -3184,19 +3201,45 @@ mod tests {
             |at: (i64, i64), word: Word| move |pocket: (i64, i64)| (pocket == at).then_some(word);
         // Fair but worked out: false.
         assert!(!fair_left(
+            Scheme::SHIPPED,
             one(in_f, Word::Fair),
             |p| p == in_f,
             &['F', 'G']
         ));
         // Fair and open: true; rich too.
-        assert!(fair_left(one(in_f, Word::Fair), |_| false, &['F', 'G']));
-        assert!(fair_left(one(in_f, Word::Rich), |_| false, &['F']));
+        assert!(fair_left(
+            Scheme::SHIPPED,
+            one(in_f, Word::Fair),
+            |_| false,
+            &['F', 'G']
+        ));
+        assert!(fair_left(
+            Scheme::SHIPPED,
+            one(in_f, Word::Rich),
+            |_| false,
+            &['F']
+        ));
         // Lean only: false.
-        assert!(!fair_left(one(in_f, Word::Lean), |_| false, &['F', 'G']));
+        assert!(!fair_left(
+            Scheme::SHIPPED,
+            one(in_f, Word::Lean),
+            |_| false,
+            &['F', 'G']
+        ));
         // A pocket outside the blocks is ignored.
-        assert!(!fair_left(one(in_a, Word::Rich), |_| false, &['F', 'G']));
+        assert!(!fair_left(
+            Scheme::SHIPPED,
+            one(in_a, Word::Rich),
+            |_| false,
+            &['F', 'G']
+        ));
         // Nothing read: false.
-        assert!(!fair_left(|_| None, |_| false, &['F', 'G']));
+        assert!(!fair_left(
+            Scheme::SHIPPED,
+            |_| None,
+            |_| false,
+            &['F', 'G']
+        ));
     }
 
     /// **Doc 20 cut SM.12b (O-18)**: every Dispatch line text, whole, with its state.

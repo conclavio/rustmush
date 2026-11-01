@@ -28,12 +28,17 @@ pub const POCKETS_FAMILY: &str = "tacsim.pockets";
 /// The record's schema.
 pub const POCKET_CURSOR_SCHEMA: u16 = 1;
 /// Rows in one cursor: at most the block's 64 ore pockets of one family (§3.2: a field
-/// holds at most 16 ore pockets of a family, a block four fields; §11).
+/// holds at most 16 ore pockets of a family, a block four fields; §11). **Doc 32 cut S.1**: a
+/// 512 site's block holds sixteen fields, so up to 256 ore pockets of a family, and a cursor of
+/// it fills at 64 drawn or locked pockets; S.2 measures whether the 512 story reaches it (a
+/// cursor names no site, so it is never sized to one).
 pub const MAX_CURSOR_ROWS: usize = 64;
 /// A rich pocket's top tonnage (§3.2): no pocket gives more.
 pub const MAX_POCKET_TONNES: u32 = 24;
-/// The pocket numbers of a block: `1..=256`.
-pub const MAX_POCKET_NUMBER: u16 = 256;
+/// **The pocket numbers of a block**: `1..=1024` — the widest site's (doc 32 cut S.1: a 512 site's
+/// block holds 1,024 pockets; a 256 site's numbers stop at 256 by its own scheme). A cursor names
+/// no site, so it is held to the widest, as cut S.0 holds a stored drive's arrival.
+pub const MAX_POCKET_NUMBER: u16 = 1_024;
 
 /// **One deposit's cursor** (doc 20 §3.4): which of the block's pockets have given what.
 /// Derived truth, never projected (the module doc).
@@ -73,7 +78,7 @@ pub struct PocketLock {
 
 impl PocketCursor {
     /// The record's own invariants: the schema; at most [`MAX_CURSOR_ROWS`] rows, pocket
-    /// numbers strictly increasing in `1..=256`; every `drawn_t` at most
+    /// numbers strictly increasing in `1..=`[`MAX_POCKET_NUMBER`]; every `drawn_t` at most
     /// [`MAX_POCKET_TONNES`]; every row drawn or locked.
     ///
     /// # Errors
@@ -187,7 +192,9 @@ mod tests {
         bad.schema = 2;
         assert!(bad.check().is_err(), "the schema");
         assert!(cursor(vec![row(0, 1)]).check().is_err(), "pocket 0");
-        assert!(cursor(vec![row(257, 1)]).check().is_err(), "pocket 257");
+        assert!(cursor(vec![row(1_025, 1)]).check().is_err(), "pocket 1025");
+        // Doc 32 cut S.1: a 512 block's pockets number to 1,024.
+        assert!(cursor(vec![row(1_024, 1)]).check().is_ok(), "pocket 1024");
         assert!(
             cursor(vec![row(5, 1), row(5, 1)]).check().is_err(),
             "repeated"

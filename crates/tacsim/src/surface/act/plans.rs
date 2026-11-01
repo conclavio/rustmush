@@ -473,6 +473,8 @@ pub(crate) struct Stand {
     pub ramp_label: String,
     /// The site's name.
     pub site_name: String,
+    /// **The site's address scheme** (doc 32 cut S.1): its side's.
+    pub scheme: address::Scheme,
 }
 
 /// **Where a scan or a sounding stands, in the plan's order** (doc 20 cut SM.4a; the brief's
@@ -493,7 +495,9 @@ pub(crate) fn stand_of(w: &World, actor: ObjId, rig: &RigAt) -> Result<Stand, Re
         let launch = launch_plan(w, actor, rig)?;
         let berth = site_berth(w, &view)?;
         let ramp_cell = site_cell(berth.ramp.x_cm, berth.ramp.y_cm);
+        let scheme = chart::site_scheme(w, &launch.site);
         return Ok(Stand {
+            scheme,
             site: launch.site,
             cell: ramp_cell,
             from_bay: true,
@@ -507,25 +511,20 @@ pub(crate) fn stand_of(w: &World, actor: ObjId, rig: &RigAt) -> Result<Stand, Re
     if !rig.operator_present(w, actor) {
         return Err(Refusal::NotAboard { name });
     }
+    let scheme = chart::site_scheme(w, &berth.entry);
     match where_is(w, rig.tv) {
         Where::Ground {
             domain, x_cm, y_cm, ..
-        } if domain == berth.domain
-            && cell_on_site(
-                site_cell(x_cm, y_cm),
-                crate::surface::site_record::site_side_or_default(w, &berth.entry),
-            ) =>
-        {
-            Ok(Stand {
-                site: berth.entry.clone(),
-                cell: site_cell(x_cm, y_cm),
-                from_bay: false,
-                start_cm: (x_cm, y_cm),
-                ramp_cell: site_cell(berth.ramp.x_cm, berth.ramp.y_cm),
-                ramp_label: berth.ramp_label.clone(),
-                site_name: berth.name.clone(),
-            })
-        }
+        } if domain == berth.domain && scheme.cell_on_site(site_cell(x_cm, y_cm)) => Ok(Stand {
+            scheme,
+            site: berth.entry.clone(),
+            cell: site_cell(x_cm, y_cm),
+            from_bay: false,
+            start_cm: (x_cm, y_cm),
+            ramp_cell: site_cell(berth.ramp.x_cm, berth.ramp.y_cm),
+            ramp_label: berth.ramp_label.clone(),
+            site_name: berth.name.clone(),
+        }),
         Where::Bay { .. } | Where::Ground { .. } | Where::Elsewhere => {
             Err(Refusal::Elsewhere { n: rig.slot, name })
         }
@@ -639,7 +638,7 @@ pub(crate) fn drive_plan(
             site: stand.site_name.clone(),
         }
     })?;
-    let words = drive::target_words(target);
+    let words = drive::target_words_in(target, stand.scheme);
     let table = mush_atlas::physics::LocomotionTable::shipped();
     let leg =
         drive::drive_leg(surface, table, stand.start_cm, to, rates).map_err(|why| match why {
@@ -738,6 +737,7 @@ pub(crate) fn scan_plan(
             footing,
             fields,
             hidden,
+            side: stand.scheme.side(),
         },
         from_bay: stand.from_bay,
     })
@@ -782,6 +782,7 @@ pub(crate) fn sound_plan(
             cell: [stand.cell.0, stand.cell.1],
             radius,
             quiet,
+            side: stand.scheme.side(),
         },
         from_bay: stand.from_bay,
     })
@@ -821,6 +822,8 @@ pub(super) enum Reach {
     Sound {
         stand: [i64; 2],
         pockets: Vec<(i64, i64)>,
+        /// The site's scheme (doc 32 cut S.1), which names the pockets' blocks.
+        scheme: address::Scheme,
     },
 }
 
@@ -840,7 +843,10 @@ impl Reach {
             }),
             ActParams::Sound { cell, radius, .. } => Some(Reach::Sound {
                 stand: *cell,
-                pockets: pockets_in_reach((cell[0], cell[1]), i64::from(*radius)),
+                pockets: params
+                    .scheme()
+                    .pockets_in_reach((cell[0], cell[1]), i64::from(*radius)),
+                scheme: params.scheme(),
             }),
             ActParams::None {}
             | ActParams::Dump { .. }
@@ -857,7 +863,7 @@ impl Reach {
                 fields,
                 footing,
             } => repeat_refused(row, false, *stand, scan_adds(row, fields, *footing)),
-            Reach::Sound { stand, pockets } => {
+            Reach::Sound { stand, pockets, .. } => {
                 repeat_refused(row, true, *stand, sound_adds(row, pockets))
             }
         }
@@ -867,10 +873,12 @@ impl Reach {
     pub(super) fn units(&self) -> (Vec<u8>, Vec<String>) {
         match self {
             Reach::Scan { fields, .. } => (fields.clone(), Vec::new()),
-            Reach::Sound { pockets, .. } => {
+            Reach::Sound {
+                pockets, scheme, ..
+            } => {
                 let blocks: std::collections::BTreeSet<String> = pockets
                     .iter()
-                    .filter_map(|(px, py)| address::block_letter(*px, *py))
+                    .filter_map(|(px, py)| scheme.block_letter(*px, *py))
                     .map(|letter| letter.to_string())
                     .collect();
                 (Vec::new(), blocks.into_iter().collect())

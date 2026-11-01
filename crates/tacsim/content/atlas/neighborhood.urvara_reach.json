@@ -1,0 +1,293 @@
+{
+  "manifest": {
+    "id": "neighborhood.urvara_reach",
+    "version": 1,
+    "kind": "neighborhood",
+    "digest": "8d6b450a9d55b68151e1906534155e7c8a7183781068f277104862dc8efa8e90",
+    "requires": [
+      {
+        "id": "region.urvara_reach",
+        "version": 1
+      }
+    ]
+  },
+  "brief": {
+    "prose": "Urvara Reach is a wide frontier claim on the terraced floor of Urvara, the great southern basin of Ceres: low benches of dark rock stepping down to an ice-cut plain, the basin's central ridge on the northern horizon, and a Registry pad set in the middle of a survey twice the width of any other on the lane."
+  },
+  "entries": {
+    "neighborhood": {
+      "kind": "neighborhood",
+      "def": {
+        "region": "region.urvara_reach",
+        "locality": "locality.urvara_reach",
+        "name": "Urvara Reach",
+        "setting": "surface",
+        "representation": "authored",
+        "footprint": [
+          [
+            0,
+            0
+          ],
+          [
+            5120,
+            0
+          ],
+          [
+            5120,
+            5120
+          ],
+          [
+            0,
+            5120
+          ]
+        ],
+        "room_budget": {
+          "target": 1,
+          "maximum": 1
+        },
+        "hydration": {
+          "enabled": false,
+          "max_player_sites": 0
+        },
+        "resolution_cm": 1000,
+        "theme": {
+          "name": "TacSim 2350: the sites",
+          "style_guide": "Present tense, no second person, no named NPCs in a room desc. A site is a Registry pad on open ground: a cleared landing square, tie-down rings, a painted pad number, and the body's own ground around it. Nothing is built here but the pad; the horizon is close and the light is hard. Desc length medium (60-120 words); details are one or two sentences, dry, with a fact in them.",
+          "vocabulary": [
+            "pad",
+            "tie-down",
+            "regolith",
+            "ice",
+            "crater",
+            "rim",
+            "Registry",
+            "survey stake",
+            "block",
+            "commons",
+            "claim",
+            "Ceres",
+            "Vesta",
+            "Freeport",
+            "horizon",
+            "Urvara"
+          ],
+          "banned": [
+            "warp",
+            "hyperspace",
+            "FTL",
+            "teleport",
+            "alien",
+            "android",
+            "gravity plating",
+            "shields",
+            "stardate",
+            "hangar bay",
+            "you see"
+          ],
+          "desc_length": "medium",
+          "pov_rules": "Present tense, no second person, no \"you see\"; no named NPCs in a room desc."
+        }
+      }
+    },
+    "room.pad": {
+      "kind": "room",
+      "def": {
+        "name": "Urvara Reach Pad",
+        "short_desc": "A cleared landing square on a rock bench of Urvara's floor, the basin's central ridge low on the northern horizon.",
+        "desc": "The pad is levelled into a bench of dark rock and edged with tie-down rings, the Registry number FR-31 painted in its middle. The benches step down to the south toward a pale plain where ice lies close under the regolith. To the north the ridge at the middle of Urvara stands up out of the floor, a long grey line against black sky. The survey stakes run out of sight in every direction: this claim is twice as wide as a standard Registry site.",
+        "surface": "ground",
+        "footprint": {
+          "rect": [
+            [
+              2540,
+              2540
+            ],
+            [
+              2580,
+              2580
+            ]
+          ]
+        },
+        "kind": "outdoor",
+        "markers": [
+          "port.dock"
+        ],
+        "details": {
+          "survey stakes": "Orange-capped stakes at every block corner, sixteen blocks of 1,280 m, the Registry's first double-span survey on Ceres.",
+          "benches": "Steps of dark rock a few metres high, the floor of the basin broken as it settled. The ice-cut plain below them is softer going."
+        }
+      }
+    },
+    "feature.crater_1": {
+      "kind": "feature",
+      "def": {
+        "feature_kind": "crater",
+        "surface": "ground",
+        "polygon": [
+          [
+            1250,
+            3900
+          ],
+          [
+            1221,
+            3988
+          ],
+          [
+            1146,
+            4043
+          ],
+          [
+            1054,
+            4043
+          ],
+          [
+            979,
+            3988
+          ],
+          [
+            950,
+            3900
+          ],
+          [
+            979,
+            3812
+          ],
+          [
+            1054,
+            3757
+          ],
+          [
+            1146,
+            3757
+          ],
+          [
+            1221,
+            3812
+          ]
+        ],
+        "z_range": [
+          0,
+          15
+        ],
+        "blocks": {
+          "movement": false,
+          "sight": true
+        }
+      }
+    },
+    "feature.crater_2": {
+      "kind": "feature",
+      "def": {
+        "feature_kind": "crater",
+        "surface": "ground",
+        "polygon": [
+          [
+            4110,
+            1300
+          ],
+          [
+            4089,
+            1365
+          ],
+          [
+            4034,
+            1405
+          ],
+          [
+            3966,
+            1405
+          ],
+          [
+            3911,
+            1365
+          ],
+          [
+            3890,
+            1300
+          ],
+          [
+            3911,
+            1235
+          ],
+          [
+            3966,
+            1195
+          ],
+          [
+            4034,
+            1195
+          ],
+          [
+            4089,
+            1235
+          ]
+        ],
+        "z_range": [
+          0,
+          15
+        ],
+        "blocks": {
+          "movement": false,
+          "sight": true
+        }
+      }
+    },
+    "feature.crater_3": {
+      "kind": "feature",
+      "def": {
+        "feature_kind": "crater",
+        "surface": "ground",
+        "polygon": [
+          [
+            3590,
+            4200
+          ],
+          [
+            3573,
+            4253
+          ],
+          [
+            3528,
+            4286
+          ],
+          [
+            3472,
+            4286
+          ],
+          [
+            3427,
+            4253
+          ],
+          [
+            3410,
+            4200
+          ],
+          [
+            3427,
+            4147
+          ],
+          [
+            3472,
+            4114
+          ],
+          [
+            3528,
+            4114
+          ],
+          [
+            3573,
+            4147
+          ]
+        ],
+        "z_range": [
+          0,
+          15
+        ],
+        "blocks": {
+          "movement": false,
+          "sight": true
+        }
+      }
+    }
+  }
+}

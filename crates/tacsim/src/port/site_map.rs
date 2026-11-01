@@ -49,7 +49,7 @@ use smol_str::SmolStr;
 use crate::port::chart_panel::run_length;
 use crate::port::families::PortHandles;
 use crate::port_tick::PoolReadError;
-use crate::surface::address::{self, Octant};
+use crate::surface::address::{self, Octant, Scheme};
 use crate::surface::chart::{self, ChartKey, ChartRecord, SitePeek};
 use crate::surface::cursor::PocketCursor;
 use crate::surface::excursion::{
@@ -68,12 +68,31 @@ pub const SITE_MAP_FEED: &str = "site.map";
 pub const SCHEMA_VERSION: u32 = 1;
 /// The drive view's side, 10 m cells (`cell_columns 2`: 56 printed columns).
 pub const DRIVE_VIEW_CELLS: usize = 28;
-/// The site view's side, 80 m cells (8 × 8 site cells).
+/// The site view's side, 80 m cells (8 × 8 site cells) on a shipped site — **at every side**
+/// (doc 32 cut S.1, ruling 5: 32 cells across keeps the TUI under its 120-column floor).
 pub const SITE_VIEW_CELLS: usize = 32;
-/// A site-view cell's edge, centimetres.
+/// A site-view cell's edge on a shipped site, centimetres ([`site_view_cell_cm`] at 256).
 pub const SITE_VIEW_CELL_CM: u32 = 8_000;
-/// Site cells along a site-view cell's side.
+/// Site cells along a site-view cell's side on a shipped site ([`site_view_span`] at 256).
+#[cfg(test)]
 const SITE_VIEW_SPAN: i64 = 8;
+
+/// **Site cells along a site-view cell's side on a site `side` cells across** (doc 32 cut S.1,
+/// ruling 5): `side / 32` — 8 at 256, 16 at 512.
+#[must_use]
+pub fn site_view_span(side: u16) -> i64 {
+    let cells = i64::try_from(SITE_VIEW_CELLS).unwrap_or(1).max(1);
+    (i64::from(side) / cells).max(1)
+}
+
+/// **A site-view cell's edge, centimetres** (doc 32 cut S.1): [`site_view_span`] cells of 10 m —
+/// 8,000 at 256, 16,000 at 512.
+#[must_use]
+pub fn site_view_cell_cm(side: u16) -> u32 {
+    u32::try_from(site_view_span(side))
+        .unwrap_or(0)
+        .saturating_mul(u32::from(crate::surface::ground::SITE_CELL_CM))
+}
 /// The most rows of the readings list.
 pub const MAX_READING_ROWS: usize = 12;
 /// The widest line `+tv/map` prints (the 120-column floor: the last two columns stay free).
@@ -86,8 +105,6 @@ pub const MAP_TITLE_DRIVE: &str = "Rig {n} on {site}: {family} shown";
 pub const MAP_TITLE_SITE: &str = "{site}: {family} shown";
 /// No reading of the family in view: `{family}`.
 pub const MAP_NO_READINGS: &str = "You have no readings of {family} in view.";
-/// The pad's centre cell (the hull's `H`).
-const PAD_CELL: (i64, i64) = (128, 128);
 /// **The pushed status feed** (doc 20 cut SM.9; §13's SM.9 row, item 3.4, decision D13): one
 /// keyframe to a rig's operator each time its `tacsim:tv:<tv>` projection changes — a start's
 /// first fire, a due step, a tell — so the quarry screens pull `site.map` again. Shape `status`
@@ -999,6 +1016,7 @@ fn pit_layer(
     entry: &CanonicalId,
     ground: &crate::surface::SiteGround,
 ) -> BTreeMap<(i64, i64), char> {
+    let scheme = ground.geology.scheme();
     let mut pits: BTreeMap<(i64, i64), char> = BTreeMap::new();
     for letter in crate::port::def::BLOCK_LETTERS {
         for family in OreFamily::ALL {
@@ -1013,7 +1031,7 @@ fn pit_layer(
                 let Some(index) = usize::from(row.pocket).checked_sub(1) else {
                     continue;
                 };
-                let Some(pocket) = address::pocket_of_block_index(letter, index) else {
+                let Some(pocket) = scheme.pocket_of_block_index(letter, index) else {
                     continue;
                 };
                 let exhausted = row_exhausted(ground, pocket, family, row.drawn_t);
@@ -1063,8 +1081,9 @@ pub(crate) fn pit_at(
     ground: &crate::surface::SiteGround,
     pocket: (i64, i64),
 ) -> Option<char> {
-    let letter = address::block_letter(pocket.0, pocket.1)?;
-    let number = address::pocket_number(pocket.0, pocket.1)?;
+    let scheme = ground.geology.scheme();
+    let letter = scheme.block_letter(pocket.0, pocket.1)?;
+    let number = scheme.pocket_number(pocket.0, pocket.1)?;
     let mut pit: Option<char> = None;
     for family in OreFamily::ALL {
         let receipt = crate::surface::opening::receipt(entry, letter, family);
@@ -1084,9 +1103,9 @@ pub(crate) fn pit_at(
 /// **A claimed block's edge `#`** (doc 20 cut SM.10; the brief's 3.8 item 22): every perimeter
 /// site cell of each block of `letters`, less the block's letter corner (its north-west cell,
 /// where the letter stands), as `'#'`. Pure: the caller maps the cells into the frame and keeps
-/// the letters on top.
-fn claim_edges(letters: &[char]) -> Vec<((i64, i64), char)> {
-    let side = address::CELLS_PER_BLOCK;
+/// the letters on top. A block is `side / 4` cells under the site's `scheme` (doc 32 cut S.1).
+fn claim_edges_in(scheme: Scheme, letters: &[char]) -> Vec<((i64, i64), char)> {
+    let side = scheme.block_cells();
     let mut out = Vec::new();
     for letter in letters {
         let Some((bx, by)) = address::block_of_letter(*letter) else {
@@ -1396,6 +1415,7 @@ pub(crate) fn viewer_readings(
             .or_insert_with(|| chart::field_ground_at(site, field).ok())
             .clone()
     };
+    let scheme = row.scheme();
     let mut sounded = Vec::new();
     for (letter, block) in &row.blocks {
         let Some(letter) = letter.chars().next() else {
@@ -1405,13 +1425,13 @@ pub(crate) fn viewer_readings(
             continue;
         };
         for index in 0..bytes.len() {
-            let Some(pocket) = address::pocket_of_block_index(letter, index) else {
+            let Some(pocket) = scheme.pocket_of_block_index(letter, index) else {
                 continue;
             };
             if !chart::row_reads_pocket(Some(row), pocket) {
                 continue;
             }
-            let Some(field) = address::field_of_pocket(pocket) else {
+            let Some(field) = scheme.field_of_pocket(pocket) else {
                 continue;
             };
             let Some(cell) = ground_of(field).and_then(|ground| {
@@ -1434,7 +1454,7 @@ pub(crate) fn viewer_readings(
     }
     let mut scanned = Vec::new();
     for index in row.fields.keys() {
-        let Some(field) = address::field_of_index(*index) else {
+        let Some(field) = scheme.field_of_index(*index) else {
             continue;
         };
         let Some(footing) = chart::row_reads_field(Some(row), field) else {
@@ -1472,8 +1492,13 @@ fn field_cell((fx, fy): (i64, i64)) -> (i64, i64) {
     )
 }
 
-/// A field's reading restricted to one family, when it reads ore of it (never from ice).
-pub(crate) fn field_family_text(scanned: &Scanned, family: OreFamily) -> Option<String> {
+/// A field's reading restricted to one family, when it reads ore of it (never from ice); its name
+/// under the site's `scheme` (doc 32 cut S.1).
+pub(crate) fn field_family_text(
+    scanned: &Scanned,
+    family: OreFamily,
+    scheme: Scheme,
+) -> Option<String> {
     if scanned.footing == Footing::Ice {
         return None;
     }
@@ -1481,7 +1506,7 @@ pub(crate) fn field_family_text(scanned: &Scanned, family: OreFamily) -> Option<
     if *reading == FieldReading::Exact(Word::Barren) {
         return None;
     }
-    let name = address::field_name(scanned.field.0, scanned.field.1)?;
+    let name = scheme.field_name(scanned.field.0, scanned.field.1)?;
     Some(match reading.pockets() {
         Some((lo, hi)) => format!(
             "{name} {} {} ({lo}–{hi} pockets)",
@@ -1519,18 +1544,19 @@ pub(crate) enum BestReading {
 #[must_use]
 pub(crate) fn best_reading(site: &chart::SiteContext, row: Option<&ChartRecord>) -> BestReading {
     let (sounded, scanned) = viewer_readings(site, row);
-    best_of(&sounded, &scanned)
+    best_of_in(site.scheme(), &sounded, &scanned)
 }
 
-/// [`best_reading`]'s order over rendered readings (pure; unit-tested on hand-built rows).
-fn best_of(sounded: &[Sounded], scanned: &[Scanned]) -> BestReading {
+/// [`best_reading`]'s order over rendered readings (pure; unit-tested on hand-built rows), named
+/// under the site's `scheme` (doc 32 cut S.1).
+fn best_of_in(scheme: Scheme, sounded: &[Sounded], scanned: &[Scanned]) -> BestReading {
     // (word, family rank (lower first), letter, number) — the richest wins.
     let mut pocket: Option<(Word, usize, char, u16, String)> = None;
     for s in sounded {
         let (Some(letter), Some(number), Some(addr)) = (
-            address::block_letter(s.pocket.0, s.pocket.1),
-            address::pocket_number(s.pocket.0, s.pocket.1),
-            address::pocket_address(s.pocket.0, s.pocket.1),
+            scheme.block_letter(s.pocket.0, s.pocket.1),
+            scheme.pocket_number(s.pocket.0, s.pocket.1),
+            scheme.pocket_address(s.pocket.0, s.pocket.1),
         ) else {
             continue;
         };
@@ -1569,9 +1595,9 @@ fn best_of(sounded: &[Sounded], scanned: &[Scanned]) -> BestReading {
             continue;
         }
         read_any = true;
-        let index = address::field_index(s.field.0, s.field.1);
+        let index = scheme.field_index(s.field.0, s.field.1);
         for (rank, family) in OreFamily::ALL.into_iter().enumerate() {
-            let Some(text) = field_family_text(s, family) else {
+            let Some(text) = field_family_text(s, family, scheme) else {
                 continue;
             };
             let (upper, exact) = match s.readings.get(rank) {
@@ -1754,8 +1780,11 @@ pub(crate) fn site_map_frame(
         Place::Ground(cell) => Some(cell),
         Place::Bay | Place::Away => None,
     });
-    // Doc 32 cut S.0: the site's own side; the site view's span stays 8 until cut S.1.
+    // Doc 32 cut S.0: the site's own side; cut S.1 (ruling 5): the site view stays 32 cells
+    // across, each `side / 32` site cells, and its names and pad are the site's own.
     let site_side = i64::from(surface.cells.width());
+    let scheme = Scheme::of_site(surface.cells.width());
+    let pad_cell = crate::surface::excursion::site_pad_cell(w, &entry);
     let (span, side, cell_cm, columns) = match view {
         MapView::Drive { .. } => (
             1_i64,
@@ -1763,7 +1792,12 @@ pub(crate) fn site_map_frame(
             u32::from(crate::surface::ground::SITE_CELL_CM),
             2,
         ),
-        MapView::Site => (SITE_VIEW_SPAN, SITE_VIEW_CELLS, SITE_VIEW_CELL_CM, 1),
+        MapView::Site => (
+            site_view_span(surface.cells.width()),
+            SITE_VIEW_CELLS,
+            site_view_cell_cm(surface.cells.width()),
+            1,
+        ),
     };
     let side_i = i64::try_from(side).unwrap_or(0);
     let (x0, y0) = match view {
@@ -1877,7 +1911,7 @@ pub(crate) fn site_map_frame(
                 + scanned
                     .iter()
                     .filter(in_view_field)
-                    .filter(|s| field_family_text(s, candidate).is_some())
+                    .filter(|s| field_family_text(s, candidate, scheme).is_some())
                     .count();
             if count > best.0 {
                 best = (count, candidate);
@@ -2071,7 +2105,7 @@ pub(crate) fn site_map_frame(
     // ---- the vector block ----
     let reference = match view {
         MapView::Drive { .. } => addressed_cell.unwrap_or(ramp_cell),
-        MapView::Site => PAD_CELL,
+        MapView::Site => pad_cell,
     };
     let mut readings: Vec<(u64, String, Value)> = Vec::new();
     for s in sounded.iter().filter(in_view_pocket) {
@@ -2079,7 +2113,7 @@ pub(crate) fn site_map_frame(
         if class == Word::Barren {
             continue;
         }
-        let Some(addr) = address::pocket_address(s.pocket.0, s.pocket.1) else {
+        let Some(addr) = scheme.pocket_address(s.pocket.0, s.pocket.1) else {
             continue;
         };
         let text = format!("{addr} {} {}", class.name(), family.label());
@@ -2098,12 +2132,12 @@ pub(crate) fn site_map_frame(
         ));
     }
     for s in scanned.iter().filter(in_view_field) {
-        let Some(text) = field_family_text(s, family) else {
+        let Some(text) = field_family_text(s, family, scheme) else {
             continue;
         };
         let cell = field_cell(s.field);
         let (m, dir) = bearing_words(reference, cell);
-        let target = address::field_name(s.field.0, s.field.1).unwrap_or_default();
+        let target = scheme.field_name(s.field.0, s.field.1).unwrap_or_default();
         let line = reading_line(&text, m, &dir);
         readings.push((
             m,
@@ -2172,7 +2206,7 @@ pub(crate) fn site_map_frame(
             None => format!("{open} {MAP_FIELD_UNSEATED}"),
         }
     });
-    let ground_seen: Vec<(u64, String, Value)> = ground_rows(&layer.salvage, &observers);
+    let ground_seen: Vec<(u64, String, Value)> = ground_rows(&layer.salvage, &observers, pad_cell);
     let ground_line = (!ground_seen.is_empty()).then(|| {
         format!(
             "On the ground: {}.",
@@ -2263,13 +2297,17 @@ pub(crate) fn site_map_frame(
                 (Some(rig), None) => format!("rig {} in the bay", rig.rig.slot),
                 (None, _) => String::new(),
             };
+            // Doc 32 cut S.1 (ruling 5): the site's own side, `256x256` on every shipped site.
             format!(
-                "x {x0}..{}  y {y0}..{}  of 256x256  {at}  (10 m a cell, north up)",
+                "x {x0}..{}  y {y0}..{}  of {site_side}x{site_side}  {at}  (10 m a cell, north up)",
                 x0 + side_i - 1,
                 y0 + side_i - 1
             )
         }
-        MapView::Site => "the whole site, 80 m a cell, north up".to_owned(),
+        MapView::Site => format!(
+            "the whole site, {} m a cell, north up",
+            span.saturating_mul(10)
+        ),
     };
     let legend = json!([
         ["@", "you"],
@@ -2599,13 +2637,14 @@ pub(crate) fn rig_panel(
 fn ground_rows(
     salvage: &[picture::Salvage],
     observers: &[(u8, (i64, i64))],
+    pad: (i64, i64),
 ) -> Vec<(u64, String, Value)> {
     let from = |cell: (i64, i64)| {
         observers
             .iter()
             .map(|(_, at)| (cells_apart(*at, cell), *at))
             .min()
-            .map_or(PAD_CELL, |(_, at)| at)
+            .map_or(pad, |(_, at)| at)
     };
     salvage
         .iter()
@@ -2795,9 +2834,10 @@ pub(crate) fn pit_exhausted(
     pocket: (i64, i64),
     family: OreFamily,
 ) -> bool {
+    let scheme = ground.geology.scheme();
     let (Some(letter), Some(number)) = (
-        address::block_letter(pocket.0, pocket.1),
-        address::pocket_number(pocket.0, pocket.1),
+        scheme.block_letter(pocket.0, pocket.1),
+        scheme.pocket_number(pocket.0, pocket.1),
     ) else {
         return false;
     };
@@ -2987,6 +3027,16 @@ pub(crate) fn map_cmd(
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    /// The shipped scheme's `claim_edges_in`.
+    fn claim_edges(letters: &[char]) -> Vec<((i64, i64), char)> {
+        claim_edges_in(Scheme::SHIPPED, letters)
+    }
+
+    /// The shipped scheme's `best_of_in`.
+    fn best_of(sounded: &[Sounded], scanned: &[Scanned]) -> BestReading {
+        best_of_in(Scheme::SHIPPED, sounded, scanned)
+    }
 
     /// **Field 255 is not "no field"** (doc 32 cut S.0): the readings tie-break's order keeps
     /// the last field of a 256-field site apart from a reading with no field index, which sorts

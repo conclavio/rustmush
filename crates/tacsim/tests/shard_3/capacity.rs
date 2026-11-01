@@ -485,7 +485,8 @@ fn ic8_the_posted_prices_make_the_both_limits_load_optimal() {
         .filter(|def| def.site.is_some())
         .map(|def| def.venue.clone())
         .collect();
-    assert_eq!(site_venues.len(), 6, "the six sites");
+    // Doc 32 cut S.1: and Urvara Reach, the 512 site.
+    assert_eq!(site_venues.len(), 7, "the seven sites");
     ports.retain(|_, def| def.site.is_none());
     let site_venues = &site_venues;
     let pairs: Vec<(&str, &str)> = ports

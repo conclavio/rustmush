@@ -269,16 +269,24 @@ fn contact_at(
 
 /// The live record's party letter of `unit`.
 fn letter_of(rig: &Rig, unit: ObjId) -> char {
-    tacsim::field::live_on(rig.tw.world(), &cid(AHUNA))
-        .and_then(|live| live.party_of(unit))
-        .map(|party| party.letter())
-        .unwrap_or_else(|| {
+    let Some(live) = tacsim::field::live_on(rig.tw.world(), &cid(AHUNA)) else {
+        panic!(
+            "no field is open on Ahuna Flank to name #{}'s party (the field task {:?}): the \
+             field demoted, so a hostile it held is dead or gone",
+            unit.0,
+            task(rig)
+        );
+    };
+    live.party_of(unit).map_or_else(
+        || {
             panic!(
-                "#{} is in the field; the field task {:?}",
+                "#{} is not admitted to the open field (the field task {:?})",
                 unit.0,
                 task(rig)
             )
-        })
+        },
+        |party| party.letter(),
+    )
 }
 
 /// `who` types `line`, and anything it submits lands.
@@ -385,6 +393,19 @@ async fn cf7_the_field_story() {
         assert_eq!(queued.len(), 1, "a mine run starts: {out}");
         land(&mut rig, &queued[0]).expect("the run's start lands");
     }
+    // Doc 32 §19 (cut S.1; §17's G-6): the bystander must outlive the raider's fire through
+    // steps 5 and 6 however it comes — one burst from the raider's mind or a run of bursts from
+    // its condition slot, which draw order alone decides. A prospector's chassis holds about
+    // 150 points against ten coaxial bursts' 165, so once its mine run has started its hull is
+    // rebuilt as the escort's armoured design with sensors (CF.6c's `tv_escort`), its magazines
+    // seeded empty so the bystander still never fires ("the miners hold").
+    rebuild(&mut rig, bystander, "tacsim.unit.tv_escort", "turret");
+    seed_cells(
+        &mut rig,
+        bystander,
+        "test:cf7-bystander-unarmed",
+        |addr, min, _| magazine(addr).map(|_| min),
+    );
     let mut rx = egress(&mut rig);
     let mut lines = Vec::new();
     for _ in 0..3 {
@@ -547,7 +568,9 @@ async fn cf7_the_field_story() {
         "the escort's map carries the miner's worked block; missing {missing:?}"
     );
 
-    // (5) The bystander is fired on by a raider and becomes hostile to that party only.
+    // (5) The bystander is fired on by a raider and becomes hostile to that party only. Which
+    // raider hull fires, by its mind or a condition slot, one burst or ten, is draw order's: any
+    // raider's shot at the bystander will do, and the bystander's armoured hull outlives it.
     assert!(
         until(&mut rig, &mut rx, &mut lines, 60, |_, lines| raiders
             .iter()

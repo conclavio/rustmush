@@ -1592,6 +1592,7 @@ impl SurfaceActProvider {
             due_ic,
             reserved_cu: plan.cost_cu,
             by: stamp.by,
+            side: fixed.side,
         });
         // Doc 20 cut SM.8 (lead ruling 1): a run's start supersedes a queued unload too (a run is
         // never started from the bay, so none is expected).
@@ -1993,6 +1994,7 @@ impl SurfaceActProvider {
                     list: compiled.list,
                     family: compiled.family,
                     steps: compiled.steps,
+                    side: compiled.scheme.side(),
                 }),
                 ..FixedPlan::default()
             },
@@ -2078,6 +2080,7 @@ impl SurfaceActProvider {
             seq: 1,
             tally: PlanTally::default(),
             notes: Vec::new(),
+            side: fill.side,
         });
         write_record(txn, &self.excursions, record, existed)?;
         self.control_outcome(invocation, "plan_file", actor, tv, ordinal, now)
@@ -2433,8 +2436,11 @@ pub(super) fn write_reading(
     };
     let existing = read_chart(txn, charts, act.operator, &act.site)?;
     let existed = existing.is_some();
-    let mut row =
-        existing.unwrap_or_else(|| ChartRecord::new(act.operator, act.site.clone(), body));
+    // Doc 32 cut S.1: a new row takes the site's side the act was planned over.
+    let scheme = act.params.scheme();
+    let mut row = existing.unwrap_or_else(|| {
+        ChartRecord::with_side(act.operator, act.site.clone(), body, scheme.side())
+    });
     let at = act.due_ic;
     let span = match &act.params {
         ActParams::Scan {
@@ -2458,7 +2464,7 @@ pub(super) fn write_reading(
             quiet,
             ..
         } => {
-            let pockets = pockets_in_reach((cell[0], cell[1]), i64::from(*radius));
+            let pockets = scheme.pockets_in_reach((cell[0], cell[1]), i64::from(*radius));
             write_sound(&mut row, *cell, &pockets, *quiet, at, via_of(act.by));
             // The heard budget (D7): one heard line a sounder an IC hour on this site; a quiet
             // sounding is never heard and never touches it.
@@ -3868,7 +3874,7 @@ impl SurfaceDoneProvider {
             let existing = read_chart(txn, &self.charts, run.operator, &run.site)?;
             let existed = existing.is_some();
             let mut row = existing.unwrap_or_else(|| {
-                ChartRecord::new(run.operator, run.site.clone(), run.body.clone())
+                ChartRecord::with_side(run.operator, run.site.clone(), run.body.clone(), run.side)
             });
             chart::write_core(
                 &mut row,

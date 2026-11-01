@@ -17,6 +17,7 @@ use std::sync::Arc;
 use mush_core::module::{ModError, Registrar};
 use mush_core::{ArgShape, CanonicalId, CmdError, CommandSpec, Ctx, World};
 
+use super::address::Scheme;
 use super::geology::{FieldGround, OreFamily, PocketRow, ProvinceGround, Word, by_family};
 use super::reading::READING_RULE_VERSION;
 use super::{body_geology, geology, live};
@@ -115,9 +116,19 @@ fn parse(raw: &str) -> Option<(Form, Level)> {
     if site_words.is_empty() {
         return None;
     }
-    let address = match super::address::parse_pocket_address(last) {
+    // Doc 32 cut S.1: an address of a site of either side here; `site_lines` reads it again under
+    // the named site's own scheme.
+    let schemes = [Scheme::SHIPPED, Scheme::WIDEST];
+    let address = match schemes
+        .iter()
+        .find_map(|scheme| scheme.parse_pocket_address(last))
+    {
         Some(pocket) => SiteAddress::Pocket(pocket),
-        None => SiteAddress::Field(super::address::parse_field_name(last)?),
+        None => SiteAddress::Field(
+            schemes
+                .iter()
+                .find_map(|scheme| scheme.parse_field_name(last))?,
+        ),
     };
     if matches!(address, SiteAddress::Field(_)) && level == Level::Pocket {
         return None;
@@ -337,9 +348,16 @@ fn site_lines(
     let ctx = super::chart::site_context(w, &site.entry)
         .map_err(|dark| CmdError::msg(format!("Geology is disabled: {}.", dark.reason())))?;
     let unreadable = || CmdError::msg(format!("{text} does not read on {}.", site.name));
+    // Doc 32 cut S.1: the address under the site's own scheme.
+    let scheme = ctx.scheme();
+    let address = match address {
+        SiteAddress::Pocket(_) => scheme.parse_pocket_address(text).map(SiteAddress::Pocket),
+        SiteAddress::Field(_) => scheme.parse_field_name(text).map(SiteAddress::Field),
+    }
+    .ok_or_else(unreadable)?;
     let (field, pocket) = match address {
         SiteAddress::Pocket(pocket) => (
-            super::address::field_of_pocket(pocket).ok_or_else(unreadable)?,
+            scheme.field_of_pocket(pocket).ok_or_else(unreadable)?,
             Some(pocket),
         ),
         SiteAddress::Field(field) => (field, None),
@@ -349,16 +367,11 @@ fn site_lines(
         Some(pocket) => Some(super::chart::pocket_at(&ctx, pocket).map_err(|_| unreadable())?),
         None => None,
     };
-    let block_index = usize::try_from(
-        field
-            .1
-            .div_euclid(2)
-            .saturating_mul(super::ground::SITE_BLOCKS)
-            .saturating_add(field.0.div_euclid(2)),
-    )
-    .unwrap_or(0);
+    let block_index = scheme.block_index_of_field(field).unwrap_or(0);
     let shift = ctx.spec.shifts.get(block_index).copied().unwrap_or(0);
-    let letter = super::address::letter_of_block(field.0.div_euclid(2), field.1.div_euclid(2))
+    let letter = scheme
+        .block_of_field(field)
+        .and_then(|(bx, by)| super::address::letter_of_block(bx, by))
         .unwrap_or('?');
     let lattice = pocket.map_or((0, 0), |(px, py)| {
         let raw = (

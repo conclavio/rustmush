@@ -1,9 +1,9 @@
 {
   "manifest": {
     "id": "tacsim.lane.ceres_phobos",
-    "version": 16,
+    "version": 17,
     "kind": "campaign_seed",
-    "digest": "805579d06d0876d56228b93fba4d4b83418c07038c7c901688e5abffde0b7e25",
+    "digest": "b27a3c20471701e1b95c3f1840ab3401180c5d614840773d9269056667a0e452",
     "requires": []
   },
   "entries": {
@@ -2226,6 +2226,16 @@
         "lon_mdeg": 301000
       }
     },
+    "urvara_reach": {
+      "kind": "location",
+      "def": {
+        "label": "Urvara Reach",
+        "role": "extraction",
+        "body": "ceres",
+        "lat_mdeg": -45800,
+        "lon_mdeg": 249300
+      }
+    },
     "ceres_stickney": {
       "kind": "route",
       "def": {
@@ -2534,6 +2544,36 @@
         "propellant": 0
       }
     },
+    "ceres_urvara": {
+      "kind": "route",
+      "def": {
+        "from": "ceres_freeport",
+        "to": "urvara_reach",
+        "legs": [
+          {
+            "to": "urvara_reach",
+            "base_s": 3600
+          }
+        ],
+        "drive_class": "coast_hauler",
+        "propellant": 0
+      }
+    },
+    "urvara_ceres": {
+      "kind": "route",
+      "def": {
+        "from": "urvara_reach",
+        "to": "ceres_freeport",
+        "legs": [
+          {
+            "to": "ceres_freeport",
+            "base_s": 3600
+          }
+        ],
+        "drive_class": "coast_hauler",
+        "propellant": 0
+      }
+    },
     "ceres_port": {
       "kind": "port",
       "def": {
@@ -2613,7 +2653,8 @@
         ],
         "routes": { "ahuna": [ "ceres_ahuna" ], "commons": [ "ceres_commons" ], "juling": [ "ceres_juling" ],
                     "kerwan": [ "ceres_kerwan" ], "luna": [ "ceres_aitken" ], "occator": [ "ceres_occator" ],
-                    "rheasilvia": [ "ceres_rheasilvia" ], "stickney": [ "ceres_stickney" ] },
+                    "rheasilvia": [ "ceres_rheasilvia" ], "stickney": [ "ceres_stickney" ],
+                    "urvara": [ "ceres_urvara" ] },
         "premium": { "k_permille": 300, "cap_permille": 500 },
         "emergency": { "org": "freeport_exchange", "ratio_permille": 1500, "goods": ["provisions", "volatiles", "propellant"], "intake": 100 },
         "vehicles": { "id": "occator.rig_lease", "org": "occator", "unit": "tacsim.unit.tv_prospector",
@@ -2921,6 +2962,18 @@
         "routes": { "ceres": [ "rheasilvia_ceres" ] },
         "site": { "name": "Rheasilvia Commons", "issuer": "freeport_registry", "zone": "core",
                   "tenure": { "default": "commons" } }
+      }
+    },
+    "urvara_port": {
+      "kind": "port",
+      "def": {
+        "location": "urvara_reach",
+        "venue": "urvara",
+        "area": "neighborhood.urvara_reach",
+        "gallery": "neighborhood.urvara_reach.room.pad",
+        "routes": { "ceres": [ "urvara_ceres" ] },
+        "site": { "name": "Urvara Reach", "issuer": "freeport_registry", "zone": "core",
+                  "tenure": { "default": "open" } }
       }
     }
   }

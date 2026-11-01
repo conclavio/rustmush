@@ -50,7 +50,7 @@ use crate::port::def::{BLOCK_LETTERS, SiteDef, Tenure};
 use crate::port::map::{PortMap, SiteRow};
 use crate::store::put_port_map;
 use crate::surface::geology::{BodyGeology, OreFamily, PROVINCE_COLUMNS, PROVINCE_ROWS};
-use crate::surface::ground::{SITE_POCKETS, SiteGeologySpec};
+use crate::surface::ground::{SITE_CELLS, SiteGeologySpec};
 use crate::surface::opening::SiteOpening;
 
 /// **The system principal that owns a site's vaults** (doc 20 §3.4; the SM.2 brief's decision
@@ -118,21 +118,42 @@ fn centre_pocket(location: &LocationDef, body: &BodyGeology) -> Result<(i64, i64
     Ok((x, y))
 }
 
-/// **A site's geology spec on its body's lattice** (SM.1 decision 9; the SM.2 brief's
-/// item 6): the centre pocket (`centre_pocket`), the origin `((x − 32).div_euclid(8) ×
-/// 8, (y − 32).div_euclid(8) × 8)` — a field corner, so the 64-pocket square holds whole
-/// fields — with x normalised into `0..columns`, and the shifts from
-/// [`SiteDef::shifts`]. The body is the location's own (lead override 4: every caller
-/// derives the spec from the site's lane entry, never by hand).
+/// **A shipped-side site's geology spec on its body's lattice** (SM.1 decision 9; the SM.2
+/// brief's item 6): [`geology_spec_at`] at the shipped 256 cells a side.
 ///
 /// # Errors
 ///
-/// A place without coordinates, or a figure that leaves its type.
+/// As [`geology_spec_at`]'s.
 pub fn geology_spec(
     site: &SiteDef,
     location: &LocationDef,
     body: &BodyGeology,
 ) -> Result<SiteGeologySpec, String> {
+    geology_spec_at(site, location, body, SITE_CELLS)
+}
+
+/// **A site's geology spec on its body's lattice, `side` cells a side** (SM.1 decision 9; the
+/// SM.2 brief's item 6; doc 32 cut S.1): the centre pocket (`centre_pocket`), the origin `((x −
+/// p/2).div_euclid(8) × 8, (y − p/2).div_euclid(8) × 8)`, `p` the site's pockets a side (64 at
+/// 256, 128 at 512) — a field corner, so the square holds whole fields — with x normalised into
+/// `0..columns`, and the shifts from [`SiteDef::shifts`]. The body is the location's own (lead
+/// override 4: every caller derives the spec from the site's lane entry, never by hand).
+///
+/// # Errors
+///
+/// A place without coordinates, a side no scheme letters, or a figure that leaves its type.
+pub fn geology_spec_at(
+    site: &SiteDef,
+    location: &LocationDef,
+    body: &BodyGeology,
+    side: u16,
+) -> Result<SiteGeologySpec, String> {
+    let scheme = crate::surface::address::Scheme::of_side(side).ok_or_else(|| {
+        format!(
+            "{} is {side} cells a side, which no scheme letters",
+            location.label
+        )
+    })?;
     if location.body.as_ref() != Some(&body.body) {
         return Err(format!(
             "{} does not stand on {}",
@@ -140,7 +161,7 @@ pub fn geology_spec(
         ));
     }
     let (x, y) = centre_pocket(location, body)?;
-    let half = SITE_POCKETS / 2;
+    let half = scheme.pockets() / 2;
     let corner = |v: i64| -> Option<i64> {
         v.checked_sub(half)?
             .div_euclid(crate::surface::geology::POCKETS_PER_FIELD_SIDE)
@@ -155,6 +176,7 @@ pub fn geology_spec(
         body: body.body.clone(),
         origin: (ox, oy),
         shifts: site.shifts(),
+        side,
     })
 }
 

@@ -747,7 +747,9 @@ fn clerk(tw: &TestWorld) -> ObjId {
 /// Fire until `entry`'s ground is cached and its home field built.
 fn warm(rig: &mut Rig, entry: &str) {
     let (spec, location) = spec_of(&rig.tw, entry);
-    for _ in 0..8 {
+    // Doc 32 cut S.1: lane v17's seventh site is wanted too, and the tick warms one wanted
+    // site a fire before it builds a home field, so the home can land a fire later.
+    for _ in 0..16 {
         let cached =
             tacsim::surface::site_ground_cached(rig.tw.world(), &site_frame(&location), &spec)
                 .ok()
@@ -2759,6 +2761,7 @@ fn sm12b_the_dispatcher_rearms_only_on_its_rule() {
     until_surveyed(&mut rig);
     let now = ic_now(&rig.tw);
     let worked_out = |slot: u8, cycles: u16| FillPlan {
+        side: 256,
         no: 1,
         author: d,
         hull,
@@ -3851,7 +3854,7 @@ fn lane_variant(version: u32, edit: impl FnOnce(&mut Value)) -> String {
 /// it is SM.12a's published v14, digest for digest; `strip_yard` is idempotent.
 #[test]
 fn sm12b_strip_yard_rebuilds_the_published_v14() {
-    assert_eq!(LANE_VERSION, 16, "lane v16 since doc 32 cut CF.6c");
+    assert_eq!(LANE_VERSION, 17, "lane v17 since doc 32 cut S.1");
     let pack = load_pack(&lane_variant(14, |doc| {
         support::drones::strip_designs(doc);
         support::drones::strip_yard(doc);

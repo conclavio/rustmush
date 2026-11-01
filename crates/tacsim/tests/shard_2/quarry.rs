@@ -42,7 +42,7 @@ use tacsim::port::ground_chart::{
 use tacsim::port::site_map::{MAP_LOG_LINES, MAP_NO_READINGS, TV_STATUS_FEED};
 use tacsim::port::tv::{MAP_FAMILY_UNKNOWN, QUEUED_LINE};
 use tacsim::port::{HullRow, PortHandles, PortMap, PortMapState, Ticket, TicketId, room_key};
-use tacsim::surface::address::pocket_address;
+use tacsim::surface::address::{Scheme, pocket_address};
 use tacsim::surface::geology::{OreFamily, Word, province_word};
 use tacsim::surface::ground::{SiteGeologySpec, SiteGround, site_ground_sync};
 use tacsim::surface::reading::Footing;
@@ -61,6 +61,24 @@ const RAMP_CELL: (i64, i64) = (128, 124);
 const PAD_CELL: (i64, i64) = (128, 128);
 /// Ahuna Flank's port entry.
 const AHUNA: &str = "ahuna_port";
+/// **Urvara Reach's port entry** (doc 32 cut S.1): the 512 site.
+const URVARA: &str = "urvara_port";
+/// Urvara Reach's ramp cell: its pad's cell `(256, 256)` less the Dray-P's 3.5 m stern egress.
+const URVARA_RAMP: (i64, i64) = (256, 252);
+
+/// **A site's side** (doc 32 cut S.1): Urvara Reach's region is 5,120 m, every other 2,560 m.
+fn side_of(entry: &str) -> u16 {
+    if entry == URVARA { 512 } else { 256 }
+}
+
+/// A site's Dray-P ramp cell.
+fn ramp_of(entry: &str) -> (i64, i64) {
+    if entry == URVARA {
+        URVARA_RAMP
+    } else {
+        RAMP_CELL
+    }
+}
 fn cid(word: &str) -> CanonicalId {
     CanonicalId::new(word).expect("a canonical id")
 }
@@ -804,12 +822,14 @@ fn on_pad(rig: &mut Rig, n_rigs: usize) -> (ObjId, HullRow, Vec<ObjId>) {
 /// the real trip home; the surface tick builds the home the fire after the site).
 fn warm(rig: &mut Rig, entry: &str) {
     let (spec, location) = spec_of(&rig.tw, entry);
-    for _ in 0..8 {
-        let cached =
-            tacsim::surface::site_ground_cached(rig.tw.world(), &site_frame(&location), &spec)
-                .ok()
-                .flatten()
-                .is_some();
+    let frame = site_frame_at(&location, side_of(entry));
+    // Doc 32 cut S.1: lane v17's seventh site is wanted too, and the tick warms one wanted
+    // site a fire before it builds a home field, so the home can land a fire later.
+    for _ in 0..16 {
+        let cached = tacsim::surface::site_ground_cached(rig.tw.world(), &frame, &spec)
+            .ok()
+            .flatten()
+            .is_some();
         let homed = rig
             .tw
             .world()
@@ -818,7 +838,7 @@ fn warm(rig: &mut Rig, entry: &str) {
                 state
                     .homes()
                     .iter()
-                    .any(|(site, ramp, _)| site.as_str() == entry && *ramp == RAMP_CELL)
+                    .any(|(site, ramp, _)| site.as_str() == entry && *ramp == ramp_of(entry))
             });
         if cached && homed {
             return;
@@ -833,18 +853,16 @@ fn warm(rig: &mut Rig, entry: &str) {
 // The ground, read the way a test may: the lane, the keyed geology, the cache
 // ---------------------------------------------------------------------------
 
-/// A lane site's frame (`sites.rs`'s `site_frame`).
-fn site_frame(location: &str) -> mush_atlas::window::WindowFrame {
+/// A lane site's frame at `side` cells a side (`sites.rs`'s `site_frame`; doc 32 cut S.1).
+fn site_frame_at(location: &str, side: u16) -> mush_atlas::window::WindowFrame {
+    let edge = i64::from(side) * 1_000;
     let region = format!("region.{location}");
     mush_atlas::window::WindowFrame {
         region: mush_atlas::RecordKey::new(cid(&region), cid(&region)),
         surfaces: vec![mush_atlas::SurfaceRef::Ground],
         bbox: mush_atlas::RectCm {
             min: mush_atlas::PointCm { x: 0, y: 0 },
-            max: mush_atlas::PointCm {
-                x: 256_000,
-                y: 256_000,
-            },
+            max: mush_atlas::PointCm { x: edge, y: edge },
         },
         cell_cm: 1_000,
     }
@@ -863,16 +881,25 @@ fn spec_of(tw: &TestWorld, entry: &str) -> (SiteGeologySpec, String) {
     };
     let body = tacsim::surface::body_geology(tw.world(), location.body.as_ref().expect("a body"))
         .expect("the body's table is installed");
-    let spec =
-        tacsim::port::site::geology_spec(def.site.as_ref().expect("a site"), &location, &body)
-            .expect("a spec");
+    let spec = tacsim::port::site::geology_spec_at(
+        def.site.as_ref().expect("a site"),
+        &location,
+        &body,
+        side_of(entry),
+    )
+    .expect("a spec");
     (spec, def.location.to_string())
 }
 
 /// A site's keyed ground, as a test reads it (a cache hit once warm).
 fn ground_of(tw: &mut TestWorld, entry: &str) -> Arc<SiteGround> {
     let (spec, location) = spec_of(tw, entry);
-    site_ground_sync(tw.world_mut(), &site_frame(&location), &spec).expect("the site builds")
+    site_ground_sync(
+        tw.world_mut(),
+        &site_frame_at(&location, side_of(entry)),
+        &spec,
+    )
+    .expect("the site builds")
 }
 
 /// **One pocket of a site, from the keyed truth** (the brief's 3.12): its address, the pocket,
@@ -902,9 +929,11 @@ fn picks(tw: &mut TestWorld, entry: &str) -> Vec<Pick> {
         .composite
         .surface(&mush_atlas::SurfaceRef::Ground)
         .expect("a ground surface");
+    // Doc 32 cut S.1: the site's own scheme (64 pockets a side at 256, 128 at 512).
+    let scheme = ground.geology.scheme();
     let mut out = Vec::new();
-    for py in 0..64_i64 {
-        for px in 0..64_i64 {
+    for py in 0..scheme.pockets() {
+        for px in 0..scheme.pockets() {
             let Some(row) = ground.geology.pocket(px, py) else {
                 continue;
             };
@@ -913,7 +942,12 @@ fn picks(tw: &mut TestWorld, entry: &str) -> Vec<Pick> {
                 continue;
             };
             out.push(Pick {
-                addr: pocket_address(px, py).expect("an address"),
+                addr: if scheme == Scheme::SHIPPED {
+                    pocket_address(px, py)
+                } else {
+                    scheme.pocket_address(px, py)
+                }
+                .expect("an address"),
                 pocket: (px, py),
                 stand,
                 classes: row.classes,
@@ -1210,7 +1244,7 @@ fn ore_pick(all: &[Pick]) -> Pick {
 /// walker's Ceres frame is 56 × 28 at `cell_columns 1`; every frame cell not under a marker is
 /// `WASH`'s glyph of `province_word(key, ceres, (x, y), metals)` (row 0 the south edge, as the
 /// grid shape's every frame — decision D17 as built); the Freeport `F`, Ahuna `A`, Juling `J`
-/// and Kerwan `K` stand at their own provinces, Freeport Commons `C` and Occator Rim `O` share
+/// and Kerwan `K` (and since doc 32 cut S.1 Urvara Reach `U`) stand at their own provinces, Freeport Commons `C` and Occator Rim `O` share
 /// the Freeport's and are listed in `also`; a northern place is in a row `≥ 14`, a southern one
 /// below; `family=volatiles` changes the wash; the legend is the four wash pairs then the
 /// markers; Vesta's frame marks `R`; Mars answers `GROUND_UNSURVEYED`, Pluto `GROUND_NO_BODY`
@@ -1237,6 +1271,8 @@ fn sm9_the_ground_frame_is_the_registry_wash() {
     let j = marker_cell(&rig.tw, "ceres", "juling_shadow");
     let k = marker_cell(&rig.tw, "ceres", "kerwan_floor");
     let o = marker_cell(&rig.tw, "ceres", "occator_rim");
+    // Doc 32 cut S.1: Urvara Reach, the 512 site, marks `U` at its own province.
+    let u = marker_cell(&rig.tw, "ceres", "urvara_reach");
     assert_eq!(
         (c, o),
         (f, f),
@@ -1251,7 +1287,7 @@ fn sm9_the_ground_frame_is_the_registry_wash() {
             ),
         )
     };
-    for (cell, glyph) in [(f, 'F'), (a, 'A'), (j, 'J'), (k, 'K')] {
+    for (cell, glyph) in [(f, 'F'), (a, 'A'), (j, 'J'), (k, 'K'), (u, 'U')] {
         assert_eq!(at(cell), Some(glyph), "{glyph} at {cell:?}");
     }
     assert!(
@@ -1259,7 +1295,7 @@ fn sm9_the_ground_frame_is_the_registry_wash() {
         "the Freeport (19.7 N) is in a northern row: {f:?}"
     );
     assert!(a[1] < 14, "Ahuna (10.5 S) is in a southern row: {a:?}");
-    let markers: Vec<[u32; 2]> = vec![f, a, j, k];
+    let markers: Vec<[u32; 2]> = vec![f, a, j, k, u];
     for y in 0..28_u32 {
         for x in 0..56_u32 {
             if markers.contains(&[x, y]) {
@@ -1291,6 +1327,7 @@ fn sm9_the_ground_frame_is_the_registry_wash() {
             ["J", "Juling Shadow"],
             ["K", "Kerwan Floor"],
             ["O", "Occator Rim"],
+            ["U", "Urvara Reach"],
         ])
     );
     let drawn: Vec<(String, bool)> = frame["ground"]["sites"]
@@ -1311,7 +1348,8 @@ fn sm9_the_ground_frame_is_the_registry_wash() {
             ("C".to_owned(), false),
             ("J".to_owned(), true),
             ("K".to_owned(), true),
-            ("O".to_owned(), false)
+            ("O".to_owned(), false),
+            ("U".to_owned(), true)
         ]
     );
     assert_eq!(frame["ground"]["ports"][0]["glyph"], "F");
@@ -2442,5 +2480,148 @@ fn sm9_a_rig_with_an_unload_queued_reads_queued_never_idle() {
     let row = &frame["site"]["rigs"][0];
     assert_eq!(row["queued"], Value::Null);
     assert_eq!(row["act"]["kind"], "unload", "{row}");
+    no_refused_writes(&rig.tw);
+}
+
+// ---------------------------------------------------------------------------
+// Doc 32 cut S.1: a rig works the 512 site
+// ---------------------------------------------------------------------------
+
+/// A rig's site cell now, `None` off the ground.
+fn cell_now(tw: &TestWorld, tv: ObjId) -> Option<(i64, i64)> {
+    let (_, pose) = mush_sim::pose_of(tw.world(), tv)?;
+    Some((pose.x_cm.div_euclid(1_000), pose.y_cm.div_euclid(1_000)))
+}
+
+/// **Doc 32 cut S.1 — a rig works the 512 site through the production commands** (§19): a Dray-P
+/// flies the Freeport's `urvara` route onto Urvara Reach's pad, its rig launches to the ramp the
+/// site's own pad room puts at `(256, 252)`, scans (the stand's field is named under the 512
+/// scheme, `K-NW-NW`, and the chart row it writes is a 512 row), drives across block K's edge
+/// into block G — the north-east quadrant, past cell 256 on both axes — by a pocket address of
+/// the 512 scheme, sounds there quietly (the sounding names that pocket, its number past 256
+/// where the pocket lies deep in its block), mines one cycle of it (the run names the pocket under
+/// the 512 scheme and the cycle moves ore), and recovers to the bay.
+#[test]
+#[allow(clippy::too_many_lines)]
+fn s1_a_rig_works_the_512_site() {
+    let mut rig = stocked();
+    let (a, _, tvs) = on_pad_at(&mut rig, ("Pilot", 1, "Salt Moth"), ("urvara", URVARA), 1);
+    let tv = tvs[0];
+    let wide = Scheme::WIDEST;
+    // Launch: the ramp off Urvara Reach's own pad.
+    let _ = act_go(&mut rig, a, "+tv/1 launch go");
+    let _ = finish(&mut rig, tv, a);
+    assert_eq!(
+        cell_now(&rig.tw, tv),
+        Some(URVARA_RAMP),
+        "the ramp off the pad room"
+    );
+    // Scan: the stand's field under the 512 scheme, and a 512 chart row.
+    let _ = act_go(&mut rig, a, "+tv/1 scan go");
+    let heard = finish(&mut rig, tv, a);
+    assert_eq!(
+        wide.field_of_cell(URVARA_RAMP)
+            .and_then(|(fx, fy)| wide.field_name(fx, fy))
+            .as_deref(),
+        Some("K-NW-NW")
+    );
+    assert!(
+        heard.contains("K-NW-NW"),
+        "the scan names the 512 field: {heard}"
+    );
+    let h = handles(&rig.tw);
+    let row = typed(
+        &mut rig.tw,
+        &h.families.charts,
+        &tacsim::surface::chart::ChartKey {
+            principal: a,
+            site: cid(URVARA),
+        },
+    )
+    .expect("the pilot's chart row of Urvara Reach");
+    assert_eq!(row.side, 512, "a 512 row");
+    assert_eq!(row.check(), Ok(()));
+    // The ore pocket nearest the ramp in the north-east quadrant (past cell 256 on both axes).
+    let all = picks(&mut rig.tw, URVARA);
+    assert_eq!(
+        all.iter().map(|p| p.pocket.0).max(),
+        Some(127),
+        "picks cover the whole 512 site"
+    );
+    let ore = all
+        .iter()
+        .filter(|p| p.pocket.0 >= 64 && p.pocket.1 >= 64 && p.families() > 0)
+        .min_by_key(|p| {
+            (
+                tacsim::surface::excursion::cells_apart(p.stand, URVARA_RAMP),
+                p.pocket,
+            )
+        })
+        .cloned()
+        .expect("ore in the north-east quadrant");
+    println!(
+        "URVARA ORE: {} pocket {:?} stand {:?} classes {:?} tonnes {:?} footing {:?}",
+        ore.addr, ore.pocket, ore.stand, ore.classes, ore.tonnes, ore.footing
+    );
+    assert!(
+        ore.stand.0 > 256 && ore.stand.1 > 256,
+        "past 256 on both axes"
+    );
+    assert_eq!(wide.block_letter(ore.pocket.0, ore.pocket.1), Some('G'));
+    assert_eq!(wide.block_letter(64, 63), Some('K'), "the ramp's block");
+    assert_eq!(wide.parse_pocket_address(&ore.addr), Some(ore.pocket));
+    // Drive there by its 512 address, across K's northern edge into G.
+    let _ = act_go(&mut rig, a, &format!("+tv/1 drive {} go", ore.addr));
+    let _ = finish(&mut rig, tv, a);
+    assert_eq!(
+        cell_now(&rig.tw, tv),
+        Some(ore.stand),
+        "arrived at {}",
+        ore.addr
+    );
+    // Sound it quietly from its own stand: the sounding reads that pocket.
+    let _ = act_go(&mut rig, a, "+tv/1 sound quiet go");
+    let heard = finish(&mut rig, tv, a);
+    assert!(
+        heard.contains(&ore.addr),
+        "the sounding names {}: {heard}",
+        ore.addr
+    );
+    let row = typed(
+        &mut rig.tw,
+        &h.families.charts,
+        &tacsim::surface::chart::ChartKey {
+            principal: a,
+            site: cid(URVARA),
+        },
+    )
+    .expect("the row");
+    assert!(row.pocket_sounded(ore.pocket), "the pocket is read");
+    assert_eq!(row.check(), Ok(()));
+    // Mine one cycle of it.
+    let _ = act_go(&mut rig, a, "+tv/1 mine 1 go");
+    let run = record_of(&mut rig.tw, tv)
+        .and_then(|record| record.run)
+        .expect("a run");
+    assert_eq!(run.side, 512);
+    assert_eq!(run.pocket, [ore.pocket.0, ore.pocket.1]);
+    assert_eq!(run.address(), ore.addr, "the run names the 512 pocket");
+    let (events, queued) = advance_to(&mut rig, run.due_ic);
+    let _ = said(&rig.tw, &events, a);
+    assert_eq!(finishes(&rig.tw, &queued).len(), 1, "the cycle's finish");
+    land_all(&mut rig, &queued);
+    let (_, queued) = fire(&mut rig);
+    land_all(&mut rig, &queued);
+    let last = record_of(&mut rig.tw, tv)
+        .and_then(|record| record.last)
+        .expect("the cycle's outcome");
+    let mined = last.mined.expect("a mining outcome");
+    assert_eq!(mined.pocket, [ore.pocket.0, ore.pocket.1]);
+    assert!(mined.tonnes > 0, "the cycle moved ore: {mined:?}");
+    // Recover to the bay.
+    let _ = act_go(&mut rig, a, "+tv/1 recover go");
+    let _ = finish(&mut rig, tv, a);
+    let record = record_of(&mut rig.tw, tv).expect("the record");
+    assert!(record.excursion.is_none(), "recovered: {record:?}");
     no_refused_writes(&rig.tw);
 }

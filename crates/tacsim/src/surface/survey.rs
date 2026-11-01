@@ -19,7 +19,7 @@ use serde::{Deserialize, Serialize};
 use serde_json::{Value, json};
 
 use super::act::{offer_draft_with_revisions, parameter, self_query};
-use super::address::{pocket_in_block, pockets_in_reach};
+use super::address::Scheme;
 use super::excursion::{Act, ActParams};
 use crate::port_tick::port_error;
 
@@ -877,8 +877,14 @@ pub(crate) fn log_reading(
         }
         let before = row.coverage;
         let letter = char::from(b'A'.saturating_add(row.block));
-        for (px, py) in pockets_in_reach((cell[0], cell[1]), i64::from(*radius)) {
-            let Some((block, index)) = pocket_in_block(px, py) else {
+        // Doc 32 cut S.1: a record's coverage is one block of 256 pockets, so only a shipped-side
+        // site's sounding credits a commission (every authored commission is on one).
+        let scheme = act.params.scheme();
+        if scheme != Scheme::SHIPPED {
+            continue;
+        }
+        for (px, py) in scheme.pockets_in_reach((cell[0], cell[1]), i64::from(*radius)) {
+            let Some((block, index)) = scheme.pocket_in_block(px, py) else {
                 continue;
             };
             if block == letter {
