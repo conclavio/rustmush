@@ -15,6 +15,7 @@ pub mod commands;
 pub mod custody;
 pub mod docking;
 pub mod flight;
+pub mod hulls;
 pub mod mining;
 pub mod picket;
 pub mod stations;
@@ -50,6 +51,10 @@ pub use docking::{
 pub use flight::{
     DecoupledLegTicket, FlightError, FlightGuidanceMode, FromPointPassagePlan,
     RecoupledJourneyTicket, SpaceFlightRecord,
+};
+pub use hulls::{
+    SpaceHullCatalog, SpaceHullCatalogSchema, SpaceHullSpec, SpaceRefitError, SpaceRefitPackage,
+    SpaceRefitReceipt,
 };
 pub use mining::{
     ASTEROID_CONTEST_WINDOW_IC_SECS, AsteroidClaimState, AsteroidClusterField, AsteroidOrePool,

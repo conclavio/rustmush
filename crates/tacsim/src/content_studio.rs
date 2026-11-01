@@ -825,6 +825,36 @@ pub fn build_catalog_from_world(w: &mush_core::World) -> Value {
     let outer_bodies = vec![
         "saturn", "uranus", "neptune", "triton", "io", "europa", "ganymede", "callisto",
     ];
+    let hull_cat = crate::space::SpaceHullCatalog::embedded();
+    let space_hulls: Vec<Value> = hull_cat
+        .hulls
+        .iter()
+        .map(|h| {
+            json!({
+                "id": h.id,
+                "short_id": h.short_id,
+                "label": h.label,
+                "refit_family": h.refit_family,
+                "pixel_model": h.pixel_model,
+                "dry_mass_t": h.dry_mass_t,
+                "delta_v_mps": h.delta_v_mps,
+            })
+        })
+        .collect();
+    let space_refit_packages: Vec<Value> = hull_cat
+        .refit_packages
+        .iter()
+        .map(|p| {
+            json!({
+                "id": p.id,
+                "label": p.label,
+                "refit_family": p.refit_family,
+                "target_hull_id": p.target_hull_id,
+                "cost_cr": p.cost_cr,
+                "work_hours": p.work_hours,
+            })
+        })
+        .collect();
 
     json!({
         "ports": ports,
@@ -836,6 +866,8 @@ pub fn build_catalog_from_world(w: &mush_core::World) -> Value {
         "command_refs": command_refs,
         "space_clusters": space_clusters,
         "outer_bodies": outer_bodies,
+        "space_hulls": space_hulls,
+        "space_refit_packages": space_refit_packages,
         "packs": pack_summaries,
     })
 }

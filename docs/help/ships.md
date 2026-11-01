@@ -237,8 +237,9 @@ light-lagged thermal/radar sensor scans (`+tac/scan`), active ECM decoy canister
 point-defense bursts (`+tac/pdc`), and distance-attenuated lasers (`+tac/laser`,
 `+tac/beam`); multicrew bridges bind individual station seats (`+helm/station`),
 flush open-cycle radiator coolant (`+helm/coolant`), repair subsystem critical hits
-(`+helm/repair`), and cut main thrust to ballistic drift while keeping point-defense
-armed if all crew go linkdead (`+helm/linkdead`). A Dray-P matched within 5 m/s of
+(`+helm/repair`), apply slot-stable hull refit packages (`+helm/refit`), and cut main
+thrust to ballistic drift while keeping point-defense armed if all crew go linkdead
+(`+helm/linkdead`). A Dray-P matched within 5 m/s of
 an orbital rock (`+helm/match`) can ping deposits (`+mine/ping`), stake or contest
 Freeport claims (`+mine/licence`, `+mine/stake`, `+mine/contest`), launch up to four
 sealed-mind collector drones (`+mine/drones`), or cut ore directly into its ore bay
