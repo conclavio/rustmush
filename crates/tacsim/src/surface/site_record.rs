@@ -1467,7 +1467,7 @@ pub(crate) fn fresh_record(w: &World, site: &CanonicalId) -> SiteRecord {
 
 /// **The offer's `sides`** (doc 32 cut S.0, §18): each lane site whose side is not the shipped
 /// default, by entry, so a prepare (which reads no world) builds a fresh record at its site's
-/// side ([`fixed_side`]). Inserted into `fixed` only when one differs, so an offer over the
+/// side ([`fixed_record`]). Inserted into `fixed` only when one differs, so an offer over the
 /// shipped 256 sites is byte-identical to CF.7's.
 pub(crate) fn fix_sides(w: &World, fixed: &mut Value) {
     let sides: Map<String, Value> = crate::surface::chart::lane_sites(w)
