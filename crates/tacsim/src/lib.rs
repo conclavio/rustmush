@@ -191,6 +191,7 @@ pub mod sheet;
 /// Doc 18 cut IC2: **the sky seam** — the one query every distance asks
 /// (doc 18 §4.8, D-18-43, D-18-48).
 pub mod sky;
+pub mod space;
 pub mod store;
 /// **Doc 20 cut SM.1** — surface mining's ground: the keyed geology function, the reading
 /// rule, the geology key's boot and pin, the site ground cache and `@geology`.
