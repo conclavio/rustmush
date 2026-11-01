@@ -41,7 +41,13 @@ import { ARENA_MAP_FEED, COCKPIT_FEED, decodeArenaMap, isNoticeSentence } from "
 import { SKY_CHART_FEED } from "./chart";
 import { ChartStore } from "./stores/chart.svelte";
 import { PictureStore } from "./stores/picture.svelte";
-import { pictureCommand, type PictureKind } from "./picture";
+import {
+  pictureCommand,
+  SPACE_COCKPIT_FEED,
+  SPACE_DOCKING_FEED,
+  SPACE_HOLOTANK_FEED,
+  type PictureKind,
+} from "./picture";
 import { BODY_GROUND_FEED, SITE_MAP_FEED, TV_STATUS_FEED, groundParams, rigPrefill, siteParams } from "./quarry";
 import { QuarryStore } from "./stores/quarry.svelte";
 import { HOLDINGS_FEED, MARKET_FEED, OFFLINE, PENDING, marketActionError } from "./market";
@@ -1125,6 +1131,18 @@ export class GameApp {
       // The sky chart (doc 19 cut A.3b): every frame is a whole keyframe.
       if (d.kind === "keyframe") {
         this.chart.applyKeyframe(d.data);
+      }
+    } else if (d.feed === SPACE_HOLOTANK_FEED) {
+      if (d.kind === "keyframe") {
+        this.picture.observeSpaceHolotank(d.data);
+      }
+    } else if (d.feed === SPACE_COCKPIT_FEED) {
+      if (d.kind === "keyframe") {
+        this.picture.observeSpaceCockpit(d.data);
+      }
+    } else if (d.feed === SPACE_DOCKING_FEED) {
+      if (d.kind === "keyframe") {
+        this.picture.observeSpaceDocking(d.data);
       }
     } else if (d.feed === SITE_MAP_FEED) {
       // The quarry's site map (doc 20 cut SM.9): pulled, every frame a whole keyframe. Doc 20 cut

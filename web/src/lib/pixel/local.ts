@@ -2,17 +2,24 @@
 // G.3b; doc 28 P2): the wasm module fed this connection's own `arena.cockpit`
 // and `arena.map` keyframes and drawn into the picture's canvas, so the
 // gateway draws nothing for a web viewer.
-import type { PictureKind } from "../picture";
+import type { PictureKind, SpaceCameraMode } from "../picture";
 import wasmUrl from "./mush_pixel.wasm?url";
 import {
+  FEED_CHART,
   FEED_COCKPIT,
   FEED_MAP,
   FEED_REPLAY,
   FEED_REPLAY_CURSOR,
+  FEED_SPACE_COCKPIT,
+  FEED_SPACE_DOCKING,
+  FEED_SPACE_HOLOTANK,
   KIND_COCKPIT,
+  KIND_DOCKING,
+  KIND_HOLOTANK,
   KIND_ISO25D,
   KIND_OVERHEAD,
   KIND_REPLAY,
+  KIND_SPACE_COCKPIT,
   type ModelUrl,
   type PixelModule,
   loadPixelModule,
@@ -68,11 +75,71 @@ export class LocalPicture {
   readonly #m: PixelModule;
   #cockpit: unknown = undefined;
   #map: unknown = undefined;
-  #kind: PictureKind | null = null;
+  #holotank: unknown = undefined;
+  #spaceCockpit: unknown = undefined;
+  #docking: unknown = undefined;
+  #chart: unknown = undefined;
+  #kind: PictureKind | SpaceCameraMode | null = null;
   #shown: string | null = null;
 
   constructor(module: PixelModule) {
     this.#m = module;
+  }
+
+  /** Draw a space camera (`holotank`, `space_cockpit`, or `docking`) (`SF.18`). */
+  drawSpace(
+    spaceMode: SpaceCameraMode,
+    holotank: unknown,
+    spaceCockpit: unknown,
+    docking: unknown,
+    chart: unknown,
+    lookMdeg = 0,
+    zoomPermille = 1000,
+    width = FRAME_W,
+    height = FRAME_H,
+  ): boolean {
+    if (spaceMode !== this.#kind) {
+      const wasmKind =
+        spaceMode === "holotank"
+          ? KIND_HOLOTANK
+          : spaceMode === "docking"
+            ? KIND_DOCKING
+            : KIND_SPACE_COCKPIT;
+      this.#m.setKind(wasmKind);
+      this.#kind = spaceMode;
+    }
+    if (holotank !== this.#holotank) {
+      this.#m.feed(FEED_SPACE_HOLOTANK, holotank == null ? null : JSON.stringify(holotank));
+      this.#holotank = holotank;
+    }
+    if (spaceCockpit !== this.#spaceCockpit) {
+      this.#m.feed(
+        FEED_SPACE_COCKPIT,
+        spaceCockpit == null ? null : JSON.stringify(spaceCockpit),
+      );
+      this.#spaceCockpit = spaceCockpit;
+    }
+    if (docking !== this.#docking) {
+      this.#m.feed(FEED_SPACE_DOCKING, docking == null ? null : JSON.stringify(docking));
+      this.#docking = docking;
+    }
+    if (chart !== this.#chart) {
+      this.#m.feed(FEED_CHART, chart == null ? null : JSON.stringify(chart));
+      this.#chart = chart;
+    }
+    if (
+      !this.#m.render(width, height, {
+        offsetMdeg: lookMdeg,
+        zoomPermille,
+      })
+    ) {
+      this.#shown = null;
+      return false;
+    }
+    const hash = this.#m.hash();
+    if (hash === this.#shown) return false;
+    this.#shown = hash;
+    return true;
   }
 
   /** Draw `kind` for `lookMdeg` over the held keyframes: whether a new frame is

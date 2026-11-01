@@ -60,15 +60,18 @@
     helmLine,
     nextLock,
     nextPictureKind,
+    nextSpaceCamera,
     pickCanvasContact,
     pictureKey,
     predictedOffsetCm,
+    spacePictureKey,
     speedLine,
     speedOutstanding,
     stepZoomPermille,
     steppedSpeed,
     swingLook,
     wrap360Mdeg,
+    wrapMdeg,
   } from "$lib/picture";
   import {
     FRAME_H,
@@ -212,9 +215,14 @@
   const drawnHere = $derived(painted !== null && painted === canvas);
   /** Which camera is chosen (`cockpit`, `overhead`, or `iso25d`). */
   const viewKind = $derived(app.picture.kind);
+  /** Active space camera mode (`holotank`, `space_cockpit`, or `docking`, `SF.18`). */
+  const spaceMode = $derived(app.picture.spaceMode);
+  const hasSpaceFeeds = $derived(app.picture.hasSpaceFeeds || app.picture.spaceMode !== null);
   /** Effective zoom in permille (`1000..=2000` in first-person, `500..=2000` in overhead/2.5D). */
   const effectiveZoomPermille = $derived(
-    viewKind === "cockpit" ? Math.max(ZOOM_DEFAULT_PERMILLE, zoomPermille) : zoomPermille,
+    viewKind === "cockpit" && spaceMode === null
+      ? Math.max(ZOOM_DEFAULT_PERMILLE, zoomPermille)
+      : zoomPermille,
   );
   /** Whether the picture is up: wanted, visible, and not failed. */
   const active = $derived(wanted && visible && localFailed === null);
@@ -457,21 +465,33 @@
           : { dxCm: 0, dyCm: 0 };
         const targetW = hdMode ? FRAME_W_HD : FRAME_W;
         const targetH = hdMode ? FRAME_H_HD : FRAME_H;
-        if (
-          l.draw(
-            app.picture.cockpitData,
-            app.picture.mapData,
-            app.picture.lookMdeg,
-            app.picture.kind,
-            hullOffsetMdeg,
-            orderedMdeg,
-            dxCm,
-            dyCm,
-            effectiveZoomPermille,
-            targetW,
-            targetH,
-          )
-        ) {
+        const drawn =
+          app.picture.spaceMode !== null
+            ? l.drawSpace(
+                app.picture.spaceMode,
+                app.picture.spaceHolotankData,
+                app.picture.spaceCockpitData,
+                app.picture.spaceDockingData,
+                (app as { chart?: { frame?: unknown } }).chart?.frame ?? null,
+                app.picture.lookMdeg,
+                effectiveZoomPermille,
+                targetW,
+                targetH,
+              )
+            : l.draw(
+                app.picture.cockpitData,
+                app.picture.mapData,
+                app.picture.lookMdeg,
+                app.picture.kind,
+                hullOffsetMdeg,
+                orderedMdeg,
+                dxCm,
+                dyCm,
+                effectiveZoomPermille,
+                targetW,
+                targetH,
+              );
+        if (drawn) {
           if (c.width !== targetW || c.height !== targetH) {
             c.width = targetW;
             c.height = targetH;
@@ -754,6 +774,12 @@
     if (ev.defaultPrevented || ev.isComposing) return;
     if (typeof document !== "undefined" && document.querySelector('[role="dialog"]') !== null) return;
     if (ev.ctrlKey || ev.altKey || ev.metaKey) return;
+    if (app.picture.spaceMode !== null) {
+      const skey = spacePictureKey(ev.key, app.picture.spaceMode);
+      if (skey === null || isTextField(ev.target)) return;
+      onKeyDown(ev);
+      return;
+    }
     const key = pictureKey(ev.key);
     if (key === null) return;
     if (key.kind !== "order" && isTextField(ev.target)) return;
@@ -769,6 +795,41 @@
     if (ev.defaultPrevented) return;
     // A chord is the browser's (Ctrl-W, Ctrl-T, Alt-F …), never the picture's.
     if (ev.ctrlKey || ev.altKey || ev.metaKey) return;
+    if (app.picture.spaceMode !== null) {
+      const skey = spacePictureKey(ev.key, app.picture.spaceMode);
+      if (skey === null) return;
+      if (!active) return;
+      ev.preventDefault();
+      switch (skey.kind) {
+        case "spaceView":
+          if (!ev.repeat) {
+            app.picture.spaceMode = nextSpaceCamera(app.picture.spaceMode);
+            local?.forget();
+          }
+          break;
+        case "holotankOrbit":
+          lookTo(wrapMdeg(app.picture.lookMdeg + skey.deltaMdeg));
+          local?.forget();
+          break;
+        case "dockOrder":
+        case "spaceHelm":
+          if (!ev.repeat) app.helm(skey.cmd);
+          break;
+        case "look":
+          if (!ev.repeat) lookTurn = lookTurn === skey.dir ? 0 : skey.dir;
+          break;
+        case "centre":
+          lookTurn = 0;
+          lookTo(0);
+          local?.forget();
+          break;
+        case "zoom":
+          zoomPermille = stepZoomPermille(zoomPermille, skey.dir, "iso25d");
+          local?.forget();
+          break;
+      }
+      return;
+    }
     const key = pictureKey(ev.key);
     if (key === null) return;
     if (key.kind === "order") {
@@ -1083,15 +1144,95 @@
           >
         {/if}
       </span>
+      {#if hasSpaceFeeds}
+        <span class="camera-pills space-camera-pills" role="group" aria-label="space camera view">
+          <button
+            type="button"
+            class="toggle cam-btn"
+            class:active={spaceMode === "holotank"}
+            aria-pressed={spaceMode === "holotank"}
+            title="3D Space Holo-Tank (v)"
+            onclick={() => {
+              app.picture.spaceMode = "holotank";
+              local?.forget();
+            }}>Holo-Tank</button
+          >
+          <button
+            type="button"
+            class="toggle cam-btn"
+            class:active={spaceMode === "space_cockpit"}
+            aria-pressed={spaceMode === "space_cockpit"}
+            title="Space Bridge Canopy (v)"
+            onclick={() => {
+              app.picture.spaceMode = "space_cockpit";
+              local?.forget();
+            }}>Space Canopy</button
+          >
+          <button
+            type="button"
+            class="toggle cam-btn"
+            class:active={spaceMode === "docking"}
+            aria-pressed={spaceMode === "docking"}
+            title="6-DOF Docking Camera (v)"
+            onclick={() => {
+              app.picture.spaceMode = "docking";
+              local?.forget();
+            }}>6-DOF Dock</button
+          >
+        </span>
+      {/if}
       <span class="dim legend"
-        >a d turn · w s speed · q e look · c centre · x stop · v view · f free/hold · g volley · t lock ·
-        F1–F6 order</span
+        >{#if spaceMode === "docking"}WASD translate · Arrows pitch/yaw · Q E roll · R F closure · X dampeners · V view{:else if spaceMode === "holotank"}A D / , . orbit · C centre · + − zoom · V view{:else if spaceMode === "space_cockpit"}W S burn · A D / Arrows attitude · Q E look · F PDC · G decoy · T scan · X cut · V view{:else}a d turn · w s speed · q e look · c centre · x stop · v view · f free/hold · g volley · t lock ·
+        F1–F6 order{/if}</span
       >
     {/if}
     <button type="button" class="toggle" onclick={toggle}>
       {wanted ? "Hide the picture" : "Show the picture"}
     </button>
   </header>
+  {#if wanted && spaceMode === "docking"}
+    <div class="dock-toolbar" role="group" aria-label="6-DOF docking controls">
+      <button type="button" class="toggle zoom-btn" onclick={() => app.helm("DOCK TRANS UP")}
+        >Trans Up (W)</button
+      >
+      <button type="button" class="toggle zoom-btn" onclick={() => app.helm("DOCK TRANS DOWN")}
+        >Trans Down (S)</button
+      >
+      <button type="button" class="toggle zoom-btn" onclick={() => app.helm("DOCK TRANS LEFT")}
+        >Trans Left (A)</button
+      >
+      <button type="button" class="toggle zoom-btn" onclick={() => app.helm("DOCK TRANS RIGHT")}
+        >Trans Right (D)</button
+      >
+      <button type="button" class="toggle zoom-btn" onclick={() => app.helm("DOCK PITCH UP")}
+        >Pitch Up (↑)</button
+      >
+      <button type="button" class="toggle zoom-btn" onclick={() => app.helm("DOCK PITCH DOWN")}
+        >Pitch Down (↓)</button
+      >
+      <button type="button" class="toggle zoom-btn" onclick={() => app.helm("DOCK YAW LEFT")}
+        >Yaw Left (←)</button
+      >
+      <button type="button" class="toggle zoom-btn" onclick={() => app.helm("DOCK YAW RIGHT")}
+        >Yaw Right (→)</button
+      >
+      <button type="button" class="toggle zoom-btn" onclick={() => app.helm("DOCK ROLL CCW")}
+        >Roll CCW (Q)</button
+      >
+      <button type="button" class="toggle zoom-btn" onclick={() => app.helm("DOCK ROLL CW")}
+        >Roll CW (E)</button
+      >
+      <button type="button" class="toggle zoom-btn" onclick={() => app.helm("DOCK CLOSURE FORWARD")}
+        >Closure + (R)</button
+      >
+      <button type="button" class="toggle zoom-btn" onclick={() => app.helm("DOCK CLOSURE REVERSE")}
+        >Closure − (F)</button
+      >
+      <button type="button" class="toggle zoom-btn" onclick={() => app.helm("DOCK DAMPENERS TOGGLE")}
+        >Dampeners (X)</button
+      >
+    </div>
+  {/if}
   {#if wanted}
     <!-- An application region: it takes keys while focused. -->
     <!-- svelte-ignore a11y_no_noninteractive_tabindex, a11y_no_noninteractive_element_interactions -->
@@ -1518,6 +1659,14 @@
     border-color: var(--accent, #6aa0ff);
     color: var(--fg);
     background: var(--bg-input);
+  }
+
+  .dock-toolbar {
+    display: flex;
+    flex-wrap: wrap;
+    gap: 0.25rem;
+    margin-top: 0.3rem;
+    font-family: var(--font-mono);
   }
 
   .frame {

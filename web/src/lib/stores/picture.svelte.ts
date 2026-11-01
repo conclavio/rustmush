@@ -2,7 +2,7 @@
 // the gateway for it, at what look, and the last frame it sent — one PNG,
 // kept as the Blob it arrived as and drawn by `PictureView.svelte`.
 
-import type { PictureKind } from "../picture";
+import type { PictureKind, SpaceCameraMode } from "../picture";
 
 /** The picture's state for this connection. */
 export class PictureStore {
@@ -15,6 +15,8 @@ export class PictureStore {
    * picture is the server's whatever this browser could draw. Kept here, not
    * in the view, so the screen switched away and back keeps it (doc 21 §7.3). */
   kind = $state<PictureKind>("cockpit");
+  /** Active space camera mode (`holotank`, `space_cockpit`, or `docking`, `SF.18`) when in space. */
+  spaceMode = $state<SpaceCameraMode | null>(null);
   /** The camera last sent to the gateway, so a change of camera alone is
    * sent even when `kind` was set before the ask. */
   sentKind: PictureKind = "cockpit";
@@ -30,6 +32,19 @@ export class PictureStore {
    * identity. */
   cockpitData = $state.raw<unknown>(null);
   mapData = $state.raw<unknown>(null);
+  /** Space panel keyframes (`space.holotank`, `space.cockpit`, `space.docking`, `SF.18`). */
+  spaceHolotankData = $state.raw<unknown>(null);
+  spaceCockpitData = $state.raw<unknown>(null);
+  spaceDockingData = $state.raw<unknown>(null);
+
+  /** Whether any 3D spaceflight panel keyframe is currently held (`SF.18`). */
+  get hasSpaceFeeds(): boolean {
+    return (
+      this.spaceHolotankData !== null ||
+      this.spaceCockpitData !== null ||
+      this.spaceDockingData !== null
+    );
+  }
 
   /** A cockpit keyframe: kept, or dropped when it says the seat went. */
   observeCockpit(data: unknown): void {
@@ -40,6 +55,30 @@ export class PictureStore {
   /** An `arena.map` keyframe: kept. */
   observeMap(data: unknown): void {
     this.mapData = data;
+  }
+
+  /** A `space.holotank` keyframe (`SF.18`). */
+  observeSpaceHolotank(data: unknown): void {
+    this.spaceHolotankData = data;
+    if (this.spaceMode === null && data !== null) {
+      this.spaceMode = "holotank";
+    }
+  }
+
+  /** A `space.cockpit` keyframe (`SF.18`). */
+  observeSpaceCockpit(data: unknown): void {
+    this.spaceCockpitData = data;
+    if (this.spaceMode === null && data !== null) {
+      this.spaceMode = "space_cockpit";
+    }
+  }
+
+  /** A `space.docking` keyframe (`SF.18`). */
+  observeSpaceDocking(data: unknown): void {
+    this.spaceDockingData = data;
+    if (data !== null) {
+      this.spaceMode = "docking";
+    }
   }
 
   /** A binary message from the gateway: the next frame. Ignored while off (a
