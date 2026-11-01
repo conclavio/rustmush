@@ -572,9 +572,9 @@ impl Sky {
     /// All outer-system and orbital-cluster definitions active in this sky.
     pub fn outer_bodies(&self) -> impl Iterator<Item = (&CanonicalId, &OuterBodyDef)> {
         let is_kepler = matches!(self, Sky::Kepler(_));
-        outer_catalog().iter().filter(move |(id, _)| {
-            is_kepler && self.outer_body(id).is_some()
-        })
+        outer_catalog()
+            .iter()
+            .filter(move |(id, _)| is_kepler && self.outer_body(id).is_some())
     }
 
     /// The four orbital asteroid clusters (`ceres_halo`, `kirkwood_gap_3_1`,
