@@ -803,7 +803,27 @@ pub fn build_catalog_from_world(w: &mush_core::World) -> Value {
     let interfaces = vec!["hire", "passenger", "quest", "help", "coop"];
     let command_refs = vec![
         "+crew", "+passage", "+ship", "+quest", "+market", "+coop", "+survey", "+tv", "+chart",
-        "+credit", "+sortie", "look",
+        "+credit", "+sortie", "+helm", "+tac", "+mine", "look",
+    ];
+    let space_clusters: Vec<Value> = [
+        "ceres_halo",
+        "kirkwood_gap_3_1",
+        "pallas_inclined_belt",
+        "saturn_b_ring_edge",
+    ]
+    .iter()
+    .map(|cid| {
+        let field = crate::space::AsteroidClusterField::new_canonical_cluster(cid, 0);
+        json!({
+            "id": field.cluster_id,
+            "title": field.bubble.title,
+            "jurisdiction": format!("{:?}", field.jurisdiction),
+            "rock_count": field.rocks.len(),
+        })
+    })
+    .collect();
+    let outer_bodies = vec![
+        "saturn", "uranus", "neptune", "triton", "io", "europa", "ganymede", "callisto",
     ];
 
     json!({
@@ -814,6 +834,8 @@ pub fn build_catalog_from_world(w: &mush_core::World) -> Value {
         "goods": goods,
         "interfaces": interfaces,
         "command_refs": command_refs,
+        "space_clusters": space_clusters,
+        "outer_bodies": outer_bodies,
         "packs": pack_summaries,
     })
 }
@@ -2639,6 +2661,38 @@ mod tests {
             })
             .map(|a| a.count_per_load);
         check_eq!(count_per_load, Some(24));
+
+        Ok(())
+    }
+
+    #[test]
+    fn sf12_content_studio_catalog_advertises_space_clusters_outer_bodies_and_space_verbs()
+    -> Result<(), Box<dyn std::error::Error>> {
+        let (w, _reg) = mush_testkit::boot_world();
+        let catalog = build_catalog_from_world(&w);
+
+        let clusters = catalog
+            .get("space_clusters")
+            .and_then(Value::as_array)
+            .ok_or("missing space_clusters array")?;
+        check_eq!(clusters.len(), 4);
+
+        let outer = catalog
+            .get("outer_bodies")
+            .and_then(Value::as_array)
+            .ok_or("missing outer_bodies array")?;
+        check_eq!(outer.len(), 8);
+
+        let cmd_refs = catalog
+            .get("command_refs")
+            .and_then(Value::as_array)
+            .ok_or("missing command_refs array")?;
+        for verb in ["+helm", "+tac", "+mine"] {
+            check!(
+                cmd_refs.iter().any(|v| v.as_str() == Some(verb)),
+                "expected {verb} in content_studio command_refs"
+            );
+        }
 
         Ok(())
     }
