@@ -37,8 +37,10 @@ pub enum PlanetStyle {
     Io,
     /// Cracked icy lithosphere moon (Europa).
     Europa,
-    /// Cratered grey-albedo dwarf planet or rocky moon (Ceres, Vesta, Luna, etc.).
+    /// Cratered grey-albedo dwarf planet or asteroid (Ceres, Vesta, Pallas).
     Rocky,
+    /// Cratered lunar maria and highlands (Luna, Ganymede, Callisto, Mercury).
+    Luna,
     /// Brilliant solar disc.
     Sun,
 }
@@ -58,6 +60,7 @@ impl PlanetStyle {
             "triton" => PlanetStyle::Triton,
             "io" => PlanetStyle::Io,
             "europa" => PlanetStyle::Europa,
+            "luna" | "moon" | "ganymede" | "callisto" | "mercury" => PlanetStyle::Luna,
             "sun" | "sol" => PlanetStyle::Sun,
             _ => PlanetStyle::Rocky,
         }
@@ -191,6 +194,64 @@ const RING_LIT: [Rgb; 4] = [
 ];
 
 const ICE_RING_LIT: [Rgb; 4] = [[24, 52, 84], [48, 96, 144], [84, 148, 204], [140, 204, 244]];
+
+// Baked 128x64 8-bit indexed-colour equirectangular planetary maps (`scripts/planet-bake/bake.py`).
+const BAKED_W: usize = 128;
+const BAKED_H: usize = 64;
+const BAKED_ROW_STRIDE: usize = 1 + BAKED_W;
+const BAKED_SCANLINE_LEN: usize = BAKED_H * BAKED_ROW_STRIDE;
+
+const FEAT_JUPITER_SPOT: u8 = 240;
+const FEAT_MARS_ICE: u8 = 241;
+const FEAT_CERES_FACULA: u8 = 242;
+const FEAT_EARTH_CLOUD: u8 = 243;
+
+const BAKED_NEPTUNE_PNG: &[u8] = include_bytes!("../planets/neptune.png");
+const BAKED_URANUS_PNG: &[u8] = include_bytes!("../planets/uranus.png");
+const BAKED_SATURN_PNG: &[u8] = include_bytes!("../planets/saturn.png");
+const BAKED_JUPITER_PNG: &[u8] = include_bytes!("../planets/jupiter.png");
+const BAKED_MARS_PNG: &[u8] = include_bytes!("../planets/mars.png");
+const BAKED_EARTH_PNG: &[u8] = include_bytes!("../planets/earth.png");
+const BAKED_TITAN_PNG: &[u8] = include_bytes!("../planets/titan.png");
+const BAKED_TRITON_PNG: &[u8] = include_bytes!("../planets/triton.png");
+const BAKED_IO_PNG: &[u8] = include_bytes!("../planets/io.png");
+const BAKED_EUROPA_PNG: &[u8] = include_bytes!("../planets/europa.png");
+const BAKED_CERES_PNG: &[u8] = include_bytes!("../planets/ceres.png");
+const BAKED_LUNA_PNG: &[u8] = include_bytes!("../planets/luna.png");
+
+/// Extract the contiguous `64 * 129`-byte stored DEFLATE scanline payload from
+/// a baked `128x64` indexed-colour PNG without heap allocation or `flate2`.
+fn stored_idat_scanlines(png: &[u8]) -> Option<&[u8]> {
+    let mut at = 8usize;
+    while let Some(head) = png.get(at..at + 8) {
+        let b0 = u32::from(head.first().copied().unwrap_or(0));
+        let b1 = u32::from(head.get(1).copied().unwrap_or(0));
+        let b2 = u32::from(head.get(2).copied().unwrap_or(0));
+        let b3 = u32::from(head.get(3).copied().unwrap_or(0));
+        let len = ((b0 << 24) | (b1 << 16) | (b2 << 8) | b3) as usize;
+        let kind = head.get(4..8).unwrap_or(&[]);
+        let data = png.get(at + 8..(at + 8).saturating_add(len))?;
+        if kind == b"IDAT" {
+            // 2-byte zlib header + 5-byte RFC 1951 stored-block header (`BTYPE=00`)
+            return data.get(7..7 + BAKED_SCANLINE_LEN);
+        }
+        at = at.saturating_add(12).saturating_add(len);
+    }
+    None
+}
+
+/// Sample a baked `128x64` equirectangular PNG at spherical coordinates
+/// `(lon_rad, ny)` where `ny` is in `-1.0..=1.0` (`-1.0` = north pole).
+fn sample_baked_equirect(png: &[u8], lon_rad: f64, ny: f64) -> Option<u8> {
+    let scanlines = stored_idat_scanlines(png)?;
+    let clamped_y = ny.clamp(-1.0, 1.0);
+    let lat_rad = clamped_y.det_atan2((1.0 - clamped_y * clamped_y).max(0.0).sqrt());
+    let u = (lon_rad / core::f64::consts::TAU).rem_euclid(1.0);
+    let v = (lat_rad / core::f64::consts::PI + 0.5).clamp(0.0, 0.999_999);
+    let col = ((u * (BAKED_W as f64)) as usize).min(BAKED_W - 1);
+    let row = ((v * (BAKED_H as f64)) as usize).min(BAKED_H - 1);
+    scanlines.get(row * BAKED_ROW_STRIDE + 1 + col).copied()
+}
 
 fn bayer_threshold(x: i64, y: i64) -> f64 {
     let row = BAYER_4X4
@@ -397,71 +458,70 @@ fn shade_sphere_pixel(
         }
     }
 
-    // Spherical longitude & latitude for procedural bands, storms, and craters
+    // Spherical longitude & latitude for baked equirectangular surface lookup
     let lon = nz.det_atan2(nx) + spin_rad;
     let lat = ny; // -1.0 (north pole) .. +1.0 (south pole)
     let limb_glow = (1.0 - nz).max(0.0);
 
+    let baked_png = match style {
+        PlanetStyle::Neptune => BAKED_NEPTUNE_PNG,
+        PlanetStyle::Uranus => BAKED_URANUS_PNG,
+        PlanetStyle::Saturn => BAKED_SATURN_PNG,
+        PlanetStyle::Jupiter => BAKED_JUPITER_PNG,
+        PlanetStyle::Mars => BAKED_MARS_PNG,
+        PlanetStyle::Earth => BAKED_EARTH_PNG,
+        PlanetStyle::Titan => BAKED_TITAN_PNG,
+        PlanetStyle::Triton => BAKED_TRITON_PNG,
+        PlanetStyle::Io => BAKED_IO_PNG,
+        PlanetStyle::Europa => BAKED_EUROPA_PNG,
+        PlanetStyle::Luna => BAKED_LUNA_PNG,
+        PlanetStyle::Rocky | PlanetStyle::Sun => BAKED_CERES_PNG,
+    };
+    let raw_idx = sample_baked_equirect(baked_png, lon, lat).unwrap_or(140);
+    let albedo = if raw_idx <= 239 {
+        f64::from(raw_idx) / 239.0
+    } else {
+        1.0
+    };
+    let tex_mod = 0.54 + 0.52 * albedo;
+
     match style {
         PlanetStyle::Neptune => {
-            // Deep methane zonal bands + Great Dark Spot + high-altitude white cirrus streaks
-            let band = 0.08 * (lat * 14.0).det_cos() + 0.05 * (lat * 28.0 + lon * 0.5).det_sin();
-            let dlon = (lon.det_sin()) * 1.4;
-            let dlat = (lat - 0.32) * 3.8;
-            let dark_spot_dist = dlon * dlon + dlat * dlat;
-            let mut level = light * (0.78 + band);
-            if dark_spot_dist < 1.0 {
-                // Great Dark Spot oval
-                level *= 0.52 + 0.25 * dark_spot_dist;
-            } else if (1.0..1.45).contains(&dark_spot_dist) && (lat - 0.26).abs() < 0.09 {
-                // Bright companion methane cirrus cloud ("Scooter" / high cirrus)
-                level = (level + 0.32 * ndotl).min(1.0);
-            }
-            // Rayleigh/methane limb brightening on the sunlit edge
+            let mut level = (light * tex_mod).clamp(0.0, 1.0);
             if limb_glow > 0.55 && ndotl > 0.15 {
                 level = (level + 0.22 * (limb_glow - 0.55)).min(1.0);
             }
             sample_ramp(&NEPTUNE_RAMP, level, px, py)
         }
         PlanetStyle::Uranus => {
-            let band = 0.04 * (nx * 10.0).det_cos();
-            let level = (light * (0.82 + band) + 0.12 * limb_glow * ndotl).clamp(0.0, 1.0);
+            let level = (light * (0.68 + 0.34 * albedo) + 0.12 * limb_glow * ndotl).clamp(0.0, 1.0);
             sample_ramp(&URANUS_RAMP, level, px, py)
         }
         PlanetStyle::Saturn => {
-            let band = 0.12 * (lat * 18.0).det_cos() + 0.05 * (lat * 36.0).det_sin();
-            let level = (light * (0.80 + band)).clamp(0.0, 1.0);
+            let level = (light * tex_mod).clamp(0.0, 1.0);
             sample_ramp(&SATURN_RAMP, level, px, py)
         }
         PlanetStyle::Jupiter => {
-            let band =
-                0.16 * (lat * 20.0).det_cos() + 0.07 * (lat * 40.0 + lon.det_sin()).det_sin();
-            let dlon = (lon - 0.4).det_sin() * 1.6;
-            let dlat = (lat - 0.36) * 4.2;
-            if dlon * dlon + dlat * dlat < 1.0 && ndotl > 0.15 {
+            if raw_idx == FEAT_JUPITER_SPOT && ndotl > 0.12 {
                 return JUPITER_SPOT;
             }
-            let level = (light * (0.78 + band)).clamp(0.0, 1.0);
+            let level = (light * tex_mod).clamp(0.0, 1.0);
             sample_ramp(&JUPITER_RAMP, level, px, py)
         }
         PlanetStyle::Mars => {
-            // Polar ice cap at |lat| > 0.84
-            if lat.abs() > 0.84 && ndotl > 0.1 {
+            if (raw_idx == FEAT_MARS_ICE || lat.abs() > 0.86) && ndotl > 0.10 {
                 return [240, 244, 248];
             }
-            // Valles Marineris equatorial canyon & Syrtis Major dark basin
-            let basin = (lon * 2.0).det_sin() * (lat * 3.0).det_cos();
-            let canyon = if (lat - 0.08).abs() < 0.05 && lon.det_cos() > 0.3 {
-                -0.18
-            } else {
-                0.0
-            };
-            let level = (light * (0.76 + 0.14 * basin + canyon)).clamp(0.0, 1.0);
+            let level = (light * tex_mod).clamp(0.0, 1.0);
             sample_ramp(&MARS_RAMP, level, px, py)
         }
         PlanetStyle::Earth => {
-            let cloud = (lon * 3.0 + lat * 5.0).det_sin() * (lat * 7.0).det_cos();
-            let level = (light * (0.75 + 0.20 * cloud) + 0.15 * limb_glow * ndotl).clamp(0.0, 1.0);
+            let boost = if raw_idx == FEAT_EARTH_CLOUD {
+                0.22 * ndotl
+            } else {
+                0.0
+            };
+            let level = (light * tex_mod + boost + 0.14 * limb_glow * ndotl).clamp(0.0, 1.0);
             sample_ramp(&EARTH_RAMP, level, px, py)
         }
         PlanetStyle::Titan => {
@@ -469,57 +529,36 @@ fn shade_sphere_pixel(
             if limb_glow > 0.68 && ndotl > 0.1 {
                 return sample_ramp(&TITAN_RAMP, 0.95, px, py);
             }
-            let haze = 0.05 * (lat * 8.0).det_cos();
             sample_ramp(
                 &TITAN_RAMP,
-                (light * (0.72 + haze)).clamp(0.0, 0.82),
+                (light * (0.58 + 0.26 * albedo)).clamp(0.0, 0.82),
                 px,
                 py,
             )
         }
         PlanetStyle::Triton => {
-            // Cantaloupe terrain + dark nitrogen geyser streaks in southern hemisphere
-            let geyser = if lat > 0.2 && ((lon * 6.0 + lat * 4.0).det_sin() > 0.65) {
-                -0.22
-            } else {
-                0.08 * (lon * 3.0).det_cos()
-            };
-            sample_ramp(
-                &TRITON_RAMP,
-                (light * (0.80 + geyser)).clamp(0.0, 1.0),
-                px,
-                py,
-            )
+            let level = (light * tex_mod).clamp(0.0, 1.0);
+            sample_ramp(&TRITON_RAMP, level, px, py)
         }
         PlanetStyle::Io => {
-            let caldera = (lon * 4.0).det_sin() * (lat * 4.0).det_cos();
-            sample_ramp(
-                &IO_RAMP,
-                (light * (0.80 + 0.18 * caldera)).clamp(0.0, 1.0),
-                px,
-                py,
-            )
+            let level = (light * tex_mod).clamp(0.0, 1.0);
+            sample_ramp(&IO_RAMP, level, px, py)
         }
         PlanetStyle::Europa => {
-            // Lineae cracks across the ice shell
-            let crack = ((lon * 7.0 + lat * 9.0).det_sin()).abs();
-            let mod_albedo = if crack < 0.12 { -0.18 } else { 0.06 };
-            sample_ramp(
-                &EUROPA_RAMP,
-                (light * (0.84 + mod_albedo)).clamp(0.0, 1.0),
-                px,
-                py,
-            )
+            let level = (light * (0.60 + 0.44 * albedo)).clamp(0.0, 1.0);
+            sample_ramp(&EUROPA_RAMP, level, px, py)
+        }
+        PlanetStyle::Luna => {
+            let level = (light * tex_mod).clamp(0.0, 1.0);
+            sample_ramp(&ROCKY_RAMP, level, px, py)
         }
         PlanetStyle::Rocky | PlanetStyle::Sun => {
-            // Cratered regolith + Ceres Occator bright faculae spot
-            let crater = (lon * 5.0).det_sin() * (lat * 6.0).det_cos();
-            let facula = if (lat + 0.18).abs() < 0.07 && (lon - 0.5).det_cos() > 0.82 {
-                0.35
+            let facula = if raw_idx == FEAT_CERES_FACULA {
+                0.28 * ndotl
             } else {
                 0.0
             };
-            let level = (light * (0.74 + 0.16 * crater + facula)).clamp(0.0, 1.0);
+            let level = (light * tex_mod + facula).clamp(0.0, 1.0);
             sample_ramp(&ROCKY_RAMP, level, px, py)
         }
     }
@@ -565,5 +604,94 @@ mod tests {
             colours <= 32,
             "expected <= 32 palette colours, got {colours}"
         );
+    }
+
+    #[test]
+    fn baked_planet_maps_match_index_provenance_and_rotate_surface_geography() {
+        let catalog: [(&str, &[u8], PlanetStyle); 12] = [
+            ("neptune", BAKED_NEPTUNE_PNG, PlanetStyle::Neptune),
+            ("uranus", BAKED_URANUS_PNG, PlanetStyle::Uranus),
+            ("saturn", BAKED_SATURN_PNG, PlanetStyle::Saturn),
+            ("jupiter", BAKED_JUPITER_PNG, PlanetStyle::Jupiter),
+            ("mars", BAKED_MARS_PNG, PlanetStyle::Mars),
+            ("earth", BAKED_EARTH_PNG, PlanetStyle::Earth),
+            ("titan", BAKED_TITAN_PNG, PlanetStyle::Titan),
+            ("triton", BAKED_TRITON_PNG, PlanetStyle::Triton),
+            ("io", BAKED_IO_PNG, PlanetStyle::Io),
+            ("europa", BAKED_EUROPA_PNG, PlanetStyle::Europa),
+            ("ceres", BAKED_CERES_PNG, PlanetStyle::Rocky),
+            ("luna", BAKED_LUNA_PNG, PlanetStyle::Luna),
+        ];
+
+        let index_json: serde_json::Value =
+            serde_json::from_str(include_str!("../planets/index.json")).unwrap_or_default();
+        let entries = index_json
+            .get("planets")
+            .and_then(serde_json::Value::as_array)
+            .cloned()
+            .unwrap_or_default();
+        assert_eq!(entries.len(), 12);
+
+        for (id, png_bytes, style) in catalog {
+            let scanlines = stored_idat_scanlines(png_bytes);
+            assert!(
+                scanlines.is_some(),
+                "baked {id}.png must carry a contiguous stored IDAT block"
+            );
+            assert_eq!(scanlines.map(<[u8]>::len), Some(BAKED_SCANLINE_LEN));
+
+            #[cfg(feature = "encode")]
+            {
+                use sha2::{Digest as _, Sha256};
+                let (w, h, rgba) = crate::png::decode_rgba(png_bytes).unwrap_or((0, 0, Vec::new()));
+                assert_eq!((w, h), (BAKED_W, BAKED_H), "{id}.png dimensions");
+                assert_eq!(rgba.len(), BAKED_W * BAKED_H * 4);
+
+                let digest: String = Sha256::digest(png_bytes)
+                    .iter()
+                    .map(|b| format!("{b:02x}"))
+                    .collect();
+                let recorded = entries
+                    .iter()
+                    .find(|e| e.get("id").and_then(serde_json::Value::as_str) == Some(id))
+                    .and_then(|e| e.get("sha256"))
+                    .and_then(serde_json::Value::as_str);
+                assert_eq!(recorded, Some(digest.as_str()), "{id}.png sha256 mismatch");
+            }
+
+            let mut f0 = Frame::new(160, 160);
+            let mut f90 = Frame::new(160, 160);
+            draw_celestial_body(
+                &mut f0,
+                &CelestialBodyDraw {
+                    center_px: (80, 80),
+                    radius_px: 48,
+                    style,
+                    sun_dir: (0.65, -0.25, 0.72),
+                    spin_deg: 0.0,
+                    ring_tilt_deg: 20.0,
+                },
+            );
+            draw_celestial_body(
+                &mut f90,
+                &CelestialBodyDraw {
+                    center_px: (80, 80),
+                    radius_px: 48,
+                    style,
+                    sun_dir: (0.65, -0.25, 0.72),
+                    spin_deg: 90.0,
+                    ring_tilt_deg: 20.0,
+                },
+            );
+            assert_ne!(
+                f0.hash(),
+                f90.hash(),
+                "{id} surface geography must rotate with spin_deg"
+            );
+            assert!(
+                f0.count_colours(256) <= 16,
+                "{id} must remain within small fixed palette ramp"
+            );
+        }
     }
 }
