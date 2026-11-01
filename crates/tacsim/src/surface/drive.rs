@@ -56,8 +56,16 @@ use crate::surface::address::{
 use crate::surface::excursion::{LegWaypoint, MAX_LEG_WAYPOINTS, cells_apart, site_cell};
 use crate::surface::ground::{SITE_CELL_CM, SITE_CELLS};
 
-/// **The A* budget** (doc 20 §8: "a budget of 65,536 cells, a whole site"): `SITE_CELLS²`.
+/// **The A* budget of a shipped site** (doc 20 §8: "a budget of 65,536 cells, a whole site"):
+/// `SITE_CELLS²`, [`drive_path_budget_cells`] of a shipped site.
 pub const DRIVE_PATH_BUDGET_CELLS: u32 = (SITE_CELLS as u32) * (SITE_CELLS as u32);
+
+/// **The A* budget of a site `width × height` cells** (doc 32 cut S.0, §18; ruling 6): a whole
+/// site, `w × h`.
+#[must_use]
+pub const fn drive_path_budget_cells(width: u16, height: u16) -> u32 {
+    (width as u32) * (height as u32)
+}
 /// The TV's locomotion row in the atlas table (its unit's tracked mode).
 pub const DRIVE_LOCOMOTION: &str = "tracked";
 /// The farthest a bearing target may name, metres (the site's diagonal, 2,560 m × √2).
@@ -256,13 +264,14 @@ fn octant_step(octant: Octant) -> (i64, i64) {
 /// **The site cell a target names**, from the stand `from` (only a bearing reads it): a pocket's
 /// address cell, a field's or a block's middle, the cell itself, or — for a bearing — an
 /// orthogonal octant's `⌊(m + 5) / 10⌋` cells on its axis, a diagonal's `⌊(m × 100 + 707) /
-/// 1414⌋` cells on each (10 m × √2 a diagonal cell). `None` when the cell is off the site.
+/// 1414⌋` cells on each (10 m × √2 a diagonal cell). `None` when the cell is off a site of
+/// `side` cells a side (doc 32 cut S.0: the site's own).
 #[must_use]
-pub fn target_cell(target: &Target, from: (i64, i64)) -> Option<(i64, i64)> {
-    let middle = |x: i64, y: i64, side: i64, offset: i64| -> Option<(i64, i64)> {
+pub fn target_cell(target: &Target, from: (i64, i64), side: u16) -> Option<(i64, i64)> {
+    let middle = |x: i64, y: i64, cells: i64, offset: i64| -> Option<(i64, i64)> {
         Some((
-            x.checked_mul(side)?.checked_add(offset)?,
-            y.checked_mul(side)?.checked_add(offset)?,
+            x.checked_mul(cells)?.checked_add(offset)?,
+            y.checked_mul(cells)?.checked_add(offset)?,
         ))
     };
     let cell = match *target {
@@ -284,7 +293,7 @@ pub fn target_cell(target: &Target, from: (i64, i64)) -> Option<(i64, i64)> {
             )
         }
     };
-    cell_on_site(cell).then_some(cell)
+    cell_on_site(cell, side).then_some(cell)
 }
 
 /// **A target in words** (the preview, the log and `doing_words`): `C117`, `field C-NW`,
@@ -510,7 +519,8 @@ fn points_of(
 }
 
 /// **ONE atlas `path`** (§0 ruling 2) from the start pose's cell to `to` over `surface`, tracked,
-/// no tags, at [`DRIVE_PATH_BUDGET_CELLS`]; then [`freeze`]. `Unreachable` and `OverBudget` both
+/// no tags, at a whole site's budget ([`drive_path_budget_cells`] of the surface's grid); then
+/// [`freeze`]. `Unreachable` and `OverBudget` both
 /// refuse [`LegRefused::NoPath`] (the brief's finding F8: through a site composite at a whole
 /// site's budget an unreachable target exhausts the reachable cells first).
 ///
@@ -528,9 +538,10 @@ pub fn drive_leg(
     if from == to {
         return Err(LegRefused::Here);
     }
-    let (Some(from_cell), Some(to_cell)) =
-        (address::composite_cell(from), address::composite_cell(to))
-    else {
+    let (Some(from_cell), Some(to_cell)) = (
+        address::surface_cell(surface, from),
+        address::surface_cell(surface, to),
+    ) else {
         return Err(LegRefused::NoPath);
     };
     let found = match path(
@@ -540,7 +551,7 @@ pub fn drive_leg(
         to_cell,
         DRIVE_LOCOMOTION,
         &[],
-        DRIVE_PATH_BUDGET_CELLS,
+        drive_path_budget_cells(surface.cells.width(), surface.cells.height()),
     ) {
         PathOutcome::Found(found) => found,
         PathOutcome::Unreachable { .. } | PathOutcome::OverBudget { .. } => {
@@ -715,6 +726,12 @@ pub struct HomeField {
 }
 
 impl HomeField {
+    /// **The site's side** (doc 32 cut S.0): the composite's width it was built over.
+    #[must_use]
+    pub fn side(&self) -> u16 {
+        self.width
+    }
+
     /// The index of a cell, `None` off the grid.
     fn index(&self, (x, y): (i64, i64)) -> Option<usize> {
         let (x, y) = (u16::try_from(x).ok()?, u16::try_from(y).ok()?);
@@ -1056,25 +1073,25 @@ mod tests {
         );
         assert_eq!(parse("c117"), parse("C117"));
         assert_eq!(
-            target_cell(&parse("C117").expect("a target"), (0, 0)),
+            target_cell(&parse("C117").expect("a target"), (0, 0), SITE_CELLS),
             Some((c117.0 * 4 + 2, c117.1 * 4 + 2))
         );
         assert_eq!(parse("C-NW"), Some(Target::Field { fx: 4, fy: 7 }));
         assert_eq!(parse("c-nw"), parse("C-NW"));
         assert_eq!(
-            target_cell(&Target::Field { fx: 4, fy: 7 }, (0, 0)),
+            target_cell(&Target::Field { fx: 4, fy: 7 }, (0, 0), SITE_CELLS),
             Some((144, 240))
         );
         assert_eq!(parse("C"), Some(Target::Block { bx: 2, by: 3 }));
         assert_eq!(parse("c"), parse("C"));
         assert_eq!(
-            target_cell(&Target::Block { bx: 2, by: 3 }, (0, 0)),
+            target_cell(&Target::Block { bx: 2, by: 3 }, (0, 0), SITE_CELLS),
             Some((160, 224))
         );
         assert_eq!(parse("140,96"), Some(Target::Cell { x: 140, y: 96 }));
         assert_eq!(parse("140, 96"), parse("140,96"));
         assert_eq!(
-            target_cell(&Target::Cell { x: 140, y: 96 }, (0, 0)),
+            target_cell(&Target::Cell { x: 140, y: 96 }, (0, 0), SITE_CELLS),
             Some((140, 96))
         );
         for text in ["ne 300", "NE 300", "northeast 300", "ne 300m", "ne 300 M"] {
@@ -1089,7 +1106,8 @@ mod tests {
         }
         // A diagonal: ⌊(300 × 100 + 707) / 1414⌋ = 21 cells each way; an axis ⌊(m + 5) / 10⌋.
         let from = (100, 100);
-        let bearing = |octant, metres| target_cell(&Target::Bearing { octant, metres }, from);
+        let bearing =
+            |octant, metres| target_cell(&Target::Bearing { octant, metres }, from, SITE_CELLS);
         assert_eq!(bearing(Octant::NE, 300), Some((121, 121)));
         assert_eq!(bearing(Octant::SW, 300), Some((79, 79)));
         assert_eq!(bearing(Octant::NW, 300), Some((79, 121)));
@@ -1100,7 +1118,10 @@ mod tests {
         assert_eq!(bearing(Octant::S, 300), Some((100, 70)));
         assert_eq!(bearing(Octant::W, 300), Some((70, 100)));
         assert_eq!(bearing(Octant::N, 3_000), None, "off the site");
-        assert_eq!(target_cell(&Target::Cell { x: 256, y: 0 }, from), None);
+        assert_eq!(
+            target_cell(&Target::Cell { x: 256, y: 0 }, from, SITE_CELLS),
+            None
+        );
         for bad in [
             "",
             "C0",
@@ -1124,7 +1145,7 @@ mod tests {
             "C117 go",
         ] {
             let parsed = parse(bad);
-            let landed = parsed.and_then(|t| target_cell(&t, from));
+            let landed = parsed.and_then(|t| target_cell(&t, from, SITE_CELLS));
             assert!(
                 parsed.is_none() || landed.is_none(),
                 "{bad:?} parsed as {parsed:?}"

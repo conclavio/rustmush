@@ -195,6 +195,24 @@ pub(super) fn standing(
 ) -> Result<bool, String> {
     Ok(op.ended.is_none() && read.get(&h.active, &op.id.reference())?.as_ref() == Some(&op.roster))
 }
+/// **The field site's side** (doc 32 cut S.0, §18): the widest site a member's current flight
+/// stands on ([`crate::surface::site_record::site_side_or_default`]), the shipped side when no
+/// member's flight reads.
+fn field_side(
+    world: &World,
+    read: &mut impl Read,
+    h: &SortieHandles,
+    roster: &mush_tactics::detachment::roster::DetachmentRoster,
+) -> u16 {
+    roster
+        .members()
+        .iter()
+        .filter_map(|member| current(read, h, member.unit).ok())
+        .map(|(_, flight)| crate::surface::site_record::site_side_or_default(world, &flight.site))
+        .max()
+        .unwrap_or(crate::surface::ground::SITE_CELLS)
+}
+
 pub(super) fn current(
     read: &mut impl Read,
     h: &SortieHandles,
@@ -1031,7 +1049,7 @@ fn message(
             expires_at_ms,
         } => {
             if let Directive::Objective(payload) = directive {
-                payload.validate(&roster)?;
+                payload.validate(&roster, field_side(world, read, h, &roster))?;
             }
             let issued = book
                 .issue(

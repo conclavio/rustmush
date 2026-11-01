@@ -49,8 +49,8 @@ use crate::pack::{LocationDef, PackEntry, RulesPack};
 use crate::port_tick::port_error;
 use crate::store::TacsimStore;
 use crate::surface::address::{
-    self, Octant, composite_cell, field_index, field_name, field_of_index, field_of_pocket,
-    pocket_address, pocket_in_block,
+    self, Octant, field_index, field_name, field_of_index, field_of_pocket, pocket_address,
+    pocket_in_block,
 };
 use crate::surface::geology::{
     BodyGeology, FieldGround, GeologyError, OreFamily, POCKETS_PER_FIELD_SIDE, PocketRow, Word,
@@ -424,7 +424,8 @@ impl ChartRecord {
             }
         }
         for stand in [self.scan_stand, self.sound_stand].into_iter().flatten() {
-            if !address::cell_on_site((stand[0], stand[1])) {
+            // Doc 32 cut S.0: the chart's scheme stays at the shipped side until cut S.1.
+            if !address::cell_on_site((stand[0], stand[1]), crate::surface::ground::SITE_CELLS) {
                 return Err("a chart row's stands are on its site".to_owned());
             }
         }
@@ -897,22 +898,61 @@ impl SiteDark {
 }
 
 /// **A site's window**: `region.<location>` (the region pack's id is the record's pack and entry
-/// both), its ground surface, 256 × 256 cells of 10 m from `(0, 0)` (SM.2's `site_frame`, made
-/// production).
-#[must_use]
-pub(crate) fn site_frame(location: &CanonicalId) -> Option<WindowFrame> {
-    let region = CanonicalId::new(format!("region.{location}")).ok()?;
-    let side = i64::from(crate::surface::ground::SITE_CELLS)
-        .checked_mul(i64::from(crate::surface::ground::SITE_CELL_CM))?;
-    Some(WindowFrame {
-        region: mush_atlas::RecordKey::new(region.clone(), region),
+/// both), its ground surface, side × side cells of 10 m from `(0, 0)` (SM.2's `site_frame`, made
+/// production). **Doc 32 cut S.0** (§18): the side is the region's extent
+/// ([`crate::surface::ground::site_side_of_region`]), 256 for every shipped region.
+///
+/// With no atlas composed or no such region the window is the shipped default's
+/// ([`crate::surface::ground::SITE_CELLS`]), so the capture refuses it exactly as before S.0
+/// ("no region …").
+///
+/// # Errors
+///
+/// A location that makes no region id, or the region's extent refused.
+pub(crate) fn site_frame(w: &World, location: &CanonicalId) -> Result<WindowFrame, String> {
+    let region = CanonicalId::new(format!("region.{location}")).map_err(|e| e.to_string())?;
+    let key = mush_atlas::RecordKey::new(region.clone(), region);
+    let record = w
+        .module_state::<mush_atlas::AtlasState>()
+        .and_then(|atlas| atlas.records.regions.get(&key));
+    let cells = match record {
+        Some(record) => crate::surface::ground::site_side_of_region(record)?,
+        None => crate::surface::ground::SITE_CELLS,
+    };
+    Ok(site_frame_of_side(key, cells))
+}
+
+/// [`site_frame`]'s window over `region` at `cells` a side.
+fn site_frame_of_side(region: mush_atlas::RecordKey, cells: u16) -> WindowFrame {
+    let side = i64::from(cells) * i64::from(crate::surface::ground::SITE_CELL_CM);
+    WindowFrame {
+        region,
         surfaces: vec![SurfaceRef::Ground],
         bbox: mush_atlas::RectCm {
             min: mush_atlas::PointCm { x: 0, y: 0 },
             max: mush_atlas::PointCm { x: side, y: side },
         },
         cell_cm: crate::surface::ground::SITE_CELL_CM,
-    })
+    }
+}
+
+/// **A lane site's side** (doc 32 cut S.0, §18): its region's extent in cells
+/// ([`site_frame`]'s), `None` when the entry is not a lane site or its region's extent is
+/// refused.
+#[must_use]
+pub(crate) fn site_side(w: &World, entry: &CanonicalId) -> Option<u16> {
+    let site = lane_sites(w)
+        .into_iter()
+        .find(|site| &site.entry == entry)?;
+    site_frame(w, &site.location)
+        .ok()
+        .map(|frame| frame_side(&frame))
+}
+
+/// A site window's side in cells.
+fn frame_side(frame: &WindowFrame) -> u16 {
+    let edge = frame.bbox.max.x.saturating_sub(frame.bbox.min.x);
+    u16::try_from(edge / i64::from(frame.cell_cm.max(1))).unwrap_or(0)
 }
 
 /// The location entry `id` in `pack`.
@@ -1008,7 +1048,7 @@ pub(crate) fn site_context(w: &World, entry: &CanonicalId) -> Result<SiteContext
     let body_id = location.body.as_ref().ok_or(SiteDark::NotSite)?;
     let body = crate::surface::body_geology(w, body_id).ok_or(SiteDark::NoTable)?;
     let spec = crate::port::site::geology_spec(site, location, &body).map_err(SiteDark::Spec)?;
-    let frame = site_frame(&def.location).ok_or(SiteDark::NotSite)?;
+    let frame = site_frame(w, &def.location).map_err(|_| SiteDark::NotSite)?;
     Ok(SiteContext {
         entry: entry.clone(),
         name: crate::port::coop::port_name(def),
@@ -1283,7 +1323,7 @@ pub(crate) fn sound_lines(
 ///
 /// The terrain class when it gives no footing.
 pub fn footing_at(surface: &SurfaceComposite, cell: (i64, i64)) -> Result<Footing, TerrainClass> {
-    let class = composite_cell(cell)
+    let class = address::surface_cell(surface, cell)
         .and_then(|(x, y)| surface.cell_at(x, y))
         .map_or(TerrainClass::Void, |(class, _)| class);
     Footing::of(class).ok_or(class)
@@ -1304,7 +1344,7 @@ pub fn seen_fields(
     let mast = i32::try_from(scanner.mast_cm).unwrap_or(i32::MAX);
     let mut seen = Vec::new();
     let mut hidden = Vec::new();
-    let Some(eye) = composite_cell(stand) else {
+    let Some(eye) = address::surface_cell(surface, stand) else {
         return (seen, hidden);
     };
     for field in address::fields_in_reach(stand, i64::from(scanner.scan_radius_cells)) {
@@ -1325,7 +1365,7 @@ pub fn seen_fields(
                 .saturating_mul(address::CELLS_PER_FIELD)
                 .saturating_add(16),
         );
-        let visible = composite_cell(centre).is_some_and(|target| {
+        let visible = address::surface_cell(surface, centre).is_some_and(|target| {
             line_of_sight(
                 surface,
                 Eye {

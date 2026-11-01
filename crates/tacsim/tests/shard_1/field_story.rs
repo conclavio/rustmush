@@ -272,7 +272,13 @@ fn letter_of(rig: &Rig, unit: ObjId) -> char {
     tacsim::field::live_on(rig.tw.world(), &cid(AHUNA))
         .and_then(|live| live.party_of(unit))
         .map(|party| party.letter())
-        .unwrap_or_else(|| panic!("#{} is in the field", unit.0))
+        .unwrap_or_else(|| {
+            panic!(
+                "#{} is in the field; the field task {:?}",
+                unit.0,
+                task(rig)
+            )
+        })
 }
 
 /// `who` types `line`, and anything it submits lands.
@@ -324,19 +330,16 @@ async fn cf7_the_field_story() {
     assert_eq!(miner_tvs.len(), 2, "a prospector and an escort in the bay");
     let (worker, leased) = (miner_tvs[0], miner_tvs[1]);
     launched(&mut rig, miner, worker);
-    // Doc 32 §17: a second rig down the ramp while the first still stands on its cell is stood
-    // beside it, never on it.
+    // A second rig down the ramp while the first still stands on its cell: the surface lets the
+    // two share it, and the field parts them at admission (doc 32 §17). Rig 2 is stood out on
+    // the ground below before any field, so the story's own admission parts nobody.
     let _ = act_go(&mut rig, miner, "+tv/2 launch go");
     let _ = finish(&mut rig, leased, miner);
     let ramp = tacsim::surface::excursion::site_cell(RAMP.0, RAMP.1);
-    let (on_ramp, beside) = (
-        cell_of(&rig, worker).expect("rig 1"),
-        cell_of(&rig, leased).expect("rig 2"),
-    );
-    assert_eq!(on_ramp, ramp, "rig 1 stands on the ramp's cell");
-    assert!(
-        beside != ramp && beside.0.abs_diff(ramp.0).max(beside.1.abs_diff(ramp.1)) == 1,
-        "rig 2 stands one cell from the ramp, not on rig 1: {beside:?} by {ramp:?}"
+    assert_eq!(
+        (cell_of(&rig, worker), cell_of(&rig, leased)),
+        (Some(ramp), Some(ramp)),
+        "both rigs stand on the ramp's cell"
     );
     // The miner's own readings: a scan and a sounding of the ground the rig works (this pocket
     // reads barren), then the rig moves one pocket west to core an unread one.
@@ -863,31 +866,23 @@ async fn cf7_the_field_story() {
     );
 }
 
-/// **Doc 32 §17: two hulls on one pad launch their rigs onto two cells, and the field opens.**
-/// Before the fix a rig launched down a shared ramp landed on the cell another hull's rig already
-/// stood on, and admission refused the field ("occupancy is one unit per cell").
+/// **Doc 32 §17: two hulls on one pad launch their rigs onto one cell, and the field opens.**
+/// Every hull on a pad launches down the pad's one ramp cell, and the surface lets two rigs
+/// share it. Before the fix admission then refused the whole field ("occupancy is one unit per
+/// cell"); now it parts them, the first in unit order keeping the ramp's cell and the other
+/// stood on the nearest free cell, and admits both.
 #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
-async fn cf7_two_hulls_on_one_pad_launch_beside_each_other_and_the_field_opens() {
+async fn cf7_two_rigs_on_one_ramp_cell_are_parted_at_admission_and_the_field_opens() {
     let mut rig = stocked_tuned(crate::field_host::tune);
     let (a, _, a_tvs) = on_pad(&mut rig, 1);
     let (b, _, b_tvs) = on_pad_as(&mut rig, "Other", 2, "Tally Moth", 1);
     launched(&mut rig, a, a_tvs[0]);
-    let _ = act_go(&mut rig, b, "+tv/1 launch go");
-    let _ = finish(&mut rig, b_tvs[0], b);
+    launched(&mut rig, b, b_tvs[0]);
     let ramp = tacsim::surface::excursion::site_cell(RAMP.0, RAMP.1);
-    let (first, second_cell) = (
-        cell_of(&rig, a_tvs[0]).expect("A's rig"),
-        cell_of(&rig, b_tvs[0]).expect("B's rig"),
-    );
-    assert_eq!(first, ramp);
-    assert_ne!(first, second_cell, "two rigs, two cells");
     assert_eq!(
-        second_cell
-            .0
-            .abs_diff(ramp.0)
-            .max(second_cell.1.abs_diff(ramp.1)),
-        1,
-        "B's rig stands beside the ramp"
+        (cell_of(&rig, a_tvs[0]), cell_of(&rig, b_tvs[0])),
+        (Some(ramp), Some(ramp)),
+        "both rigs share the ramp's cell"
     );
     let hull = armed(&mut rig, "Grey Hound", (140, 124), 270_000);
     let gunner = pilot(&mut rig, "Gunner", 4);
@@ -913,4 +908,17 @@ async fn cf7_two_hulls_on_one_pad_launch_beside_each_other_and_the_field_opens()
             unit.0
         );
     }
+    let (first, second_cell) = (
+        cell_of(&rig, a_tvs[0].min(b_tvs[0])).expect("the first rig"),
+        cell_of(&rig, a_tvs[0].max(b_tvs[0])).expect("the second rig"),
+    );
+    assert_eq!(first, ramp, "the first in unit order keeps the ramp's cell");
+    assert_eq!(
+        second_cell
+            .0
+            .abs_diff(ramp.0)
+            .max(second_cell.1.abs_diff(ramp.1)),
+        1,
+        "the other is stood one cell from it"
+    );
 }
