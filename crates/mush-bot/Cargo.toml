@@ -50,6 +50,9 @@ mush-llm.workspace = true
 tacsim.workspace = true
 mush-sim.workspace = true
 mush-server.workspace = true
+# Doc 32 G-4: the field story wears the fixture raider's hulls with `@unit/damage` (server
+# fixture setup only).
+mush-tactics.workspace = true
 
 [lints]
 workspace = true

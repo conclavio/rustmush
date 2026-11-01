@@ -294,13 +294,10 @@ pub(super) fn report(ctx: &mut Ctx<'_>, op: &OperationRecord) -> Result<(), Stri
         mush_tactics::detachment::DetachmentRoster::restore(saved).map_err(|e| e.to_string())?;
     line(
         ctx,
-        format!(
-            "Field command term {}. Order prefill: ORDER DT:{}:{}:{} ALL HOLD",
-            roster.term(),
-            roster.id().0,
-            roster.revision(),
-            roster.term()
-        ),
+        super::ORDER_PREFILL
+            .replace("{term}", &roster.term().to_string())
+            .replace("{roster}", &roster.id().0.to_string())
+            .replace("{revision}", &roster.revision().to_string()),
     );
     let Some(orders) = &op.orders else {
         line(ctx, "No field messages recorded.".into());
@@ -354,7 +351,10 @@ pub(super) fn report(ctx: &mut Ctx<'_>, op: &OperationRecord) -> Result<(), Stri
                     .strip_prefix(&prefix)
                     .and_then(|s| s.split_once(':'))
                     .unwrap_or(("?", "?"));
-                format!("Sent slot {slot} order {sequence}: {status}. Execution unconfirmed.")
+                super::ORDER_SENT
+                    .replace("{slot}", slot)
+                    .replace("{sequence}", sequence)
+                    .replace("{status}", &status)
             })
             .collect::<Vec<_>>()
     } else {

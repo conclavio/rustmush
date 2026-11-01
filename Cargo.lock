@@ -2161,6 +2161,7 @@ dependencies = [
  "mush-session",
  "mush-sim",
  "mush-store",
+ "mush-tactics",
  "mushd",
  "ratatui",
  "reqwest",

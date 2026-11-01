@@ -101,6 +101,14 @@ pub struct Options {
     pub mine: Option<crate::mine::Site>,
     /// Include hired crew and a physical detachment in the mining expedition.
     pub mine_detachment: bool,
+    /// `--mine-field <site>`: the expedition into an IC field (doc 32 G-4).
+    pub mine_field: bool,
+    /// `--field-escort <site>`: the escort pilot in an IC field (doc 32 G-4).
+    pub field_escort: bool,
+    /// `--escort-for <character>`: the captain the escort pages the raider it finds.
+    pub escort_for: Option<String>,
+    /// `--escorted-by <character>`: the escort the field captain pages its own party.
+    pub escorted_by: Option<String>,
 }
 
 pub enum Control {
@@ -1964,6 +1972,12 @@ impl App {
         );
         if self.options.mine_detachment {
             lane = lane.with_detachment();
+        }
+        if self.options.mine_field {
+            lane = lane.with_field(self.options.escorted_by.clone());
+        }
+        if self.options.field_escort {
+            lane = lane.with_escort(self.options.escort_for.clone());
         }
         let events = lane.events();
         self.mine = Some(lane);

@@ -156,11 +156,9 @@ pub(crate) fn on_ended(ctx: &mut Ctx<'_>, task: MatchId, end: MatchEnd, units: &
     if let Some(record) = site_record(ctx, &site) {
         super::admit::owe_close(ctx, &site, &record, Some(left), learned);
     }
-    let line = format!(
-        "Field {} on {} has settled: the ground there is the surface's again.",
-        ordinal.unwrap_or(0),
-        super::admit::site_name(ctx, &site)
-    );
+    let line = super::FIELD_SETTLED
+        .replace("{n}", &ordinal.unwrap_or(0).to_string())
+        .replace("{site}", &super::admit::site_name(ctx, &site));
     super::tell_site(ctx, &site, &line);
     tracing::info!(
         site = %site,

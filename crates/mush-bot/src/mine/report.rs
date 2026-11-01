@@ -59,6 +59,12 @@ pub struct Report {
     /// Detachment terminal evidence, present only for --mine-detachment.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub detachment: Option<super::lane::detachment::Evidence>,
+    /// The captain's IC field (doc 32 G-4), present only for --mine-field.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub field: Option<super::lane::field::Evidence>,
+    /// The escort pilot's IC field (doc 32 G-4), present only for --field-escort.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub escort: Option<super::lane::escort::Evidence>,
 }
 
 /// One beat: when its first line went and its last answer was read.

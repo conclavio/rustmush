@@ -1088,7 +1088,8 @@ ignored test to be run by a CI job, and an ignored test failing at its stop coul
   holds fire. It does not drive an NPC to a ramp and take CF.5's exit, and the raider has no ramp,
   so a raider leaves a field only by dying.
 - **G-4, the bot.** `mush-bot` has no IC-field support: it never marks or fires on the surface and
-  never reads an IC cockpit frame. Q-CF-47's second run has no pilot to fly it.
+  never reads an IC cockpit frame. Q-CF-47's second run has no pilot to fly it. *(The captain's
+  both halves are built, §16.)*
 - **G-5, the armed rig lease** (CF.6's deferral). The escort flies fixture hulls with hired NPCs
   seated. The delivered orders it fights under are proven by CF.6's transport gate in the
   split-boundary harness, not by this story. **Built as cut CF.6c (§14):** `+tv/lease escort`
@@ -1374,3 +1375,174 @@ admitted to later fields (Q-CF-26); the unarmed barge holding a field open is a 
 **Expensive to reverse:** the tombstone's key (`tacsim:field:closing:`) and its document, and the
 live record's two new fields (`fire`, `owed_exits`, both omitted when empty, so a live record
 written before this cut still decodes).
+
+## 16. G-4 as built (the bot in an IC field)
+
+Built 2026-10-31 and 2026-11-01 on `main` after CF.6c (§14) and the review's fixes (§15). The
+owner's ruling of 2026-10-31 has the bot fly both roles: the mining captain, and an escort pilot in
+an armed hull a player can lease, taken through CF.6c's player lease path and never a seat the
+harness made. The bot stays independent of the game: it reads only its own line session, and the
+game crates are dev-dependencies for its contract pins and its server under test. What the cut
+had to decide where the rulings left it open, for the owner to object to:
+
+- **What the line cockpit answers from an IC field seat.** It answers everything a player types.
+  The cockpit's one context test (`cockpit::flying`) is a focus on a unit that carries a deployed
+  mark, and `DeployedMark::field` is one. A probe on CF.6's transport gate typed `CONTACTS`,
+  `STATUS`, `WEAPONSTATUS`, `VIEW BRIEF` and `+field` from a rig's cab boarded the player's way
+  (`+tv/<n> board` in the bay, `+focus`, `@station/handoff`), and every one answered. Inside a
+  field, `order` goes to the roster's `field_order` only when the typist holds the operation's
+  reservation. A seat the harness made with no roster behind it cannot order anyone.
+- **How a captain tells the raider.** It reads `CONTACTS` from the cab. A rig's sensors hold
+  every other unit as `X1 unknown` until they have dwelt on it, about twenty seconds in the probe.
+  Then the row classifies and its class word names the party: `BD  blue …`, `AK  a …`. That is
+  `PartyId::as_str`, so R and B print `red` and `blue`. No relation word is printed. The captain
+  takes the first classified party that is not its own (`+field`'s `Your party is A`) for the
+  raider. That reading is sound only because the expedition is **one party**: both rigs fly on
+  the roster. A third, solo rig would be a party of its own (`PartyKey::Unit`) led by the same
+  captain, and line text cannot tell it from the raider. With an escort pilot on the ground there are
+  several other parties (the escort's rig and its Dray-P are each a party of one), and the captain
+  waits instead for its escort's word (below): a page `Raider: party B, contact BK.`, whose party it
+  then takes.
+- **The expedition's shape.** `--mine-field ahuna` is the hired-crew expedition (`--mine-detachment`)
+  under a combat contract. Rook Adeyemi is hired at the Slack Line and flies rig 2 as slot 1, role
+  `escort`. The captain rides rig 1's cab as slot 2, so the solo lane's rig-1 beats run unchanged:
+  scan, sounding, drive to the best pocket of its own reading, run. A roster rig flown from its
+  cab can scan, sound and mine, but `+claim/stake` is refused there (`You work the rigs from aboard
+  the …`), so the captain works **open ground**, and an open block may be mined (only a claimed
+  one refuses).
+- **The field's beats** (`mine/field.rs`). The site's open notice (`field::FIELD_OPENED`, told to
+  everyone on the site) drops the step in hand, then:
+  1. `+field` for the party letter.
+  2. `CONTACTS` until a row classifies.
+  3. `+field/mark <party>=hostile`.
+  4. `ORDER DT:… 1 ENGAGE <designator>`. The reply is read in `+sortie/orders` above the highest
+     order seen before it went. A NEGATIVE sends the captain back to `CONTACTS` for another
+     contact, at most five times.
+  5. One `CONTACTS` read five seconds on: the escort here is unarmed (CF.6c), and a longer hold
+     let the raider shoot it to a wreck before its WITHDRAW, which a wreck answers NEGATIVE.
+  6. `ORDER DT:… 1 WITHDRAW` and its reply. A NEGATIVE (an escort that cannot take the order) is
+     recorded, and the captain holds on, as a player with a lost escort would.
+  7. `+field` until it answers `No field holds a party of yours.` or the settled notice arrives.
+- **Rig 1 home after the field.** The roster's recover takes only a unit already beside the ramp
+  (`Return unavailable. Bring the unit physically to the carrier's ramp.`). The captain's rig is
+  out at its pocket and no line names the ramp's cell, so the captain types the rig's own
+  `+tv/1 recover go`. It drives the rig home with the captain in its cab, and it closes the
+  captain's flight: the operation reads the slot `last confirmed returned`. Then come the
+  expedition's own steps: both slots returned, `+tv/1 leave`, the unseat, the walk to the
+  airlock, `+sortie/end` and `+sortie/deactivate`.
+- **The fill plan resumes on rig 1, launched again on its own** (the coordinator's ruling of
+  2026-10-31, which named a third rig; a Prospector's bay holds two, `The … bay is full.`). With
+  the roster closed and the field over, its own party confuses nothing: `+tv/1 launch go`, then a
+  drive to the best pocket of the captain's own reading (rig 1's first, at most three), then one
+  run.
+- **`leave=`.** The lane types a plain `+ship/lift`. A refusal for a unit still out (`TV_OUT`,
+  `UNIT_OUT`, CF.5's `LEAVE_HINT`) is read, and the lift is typed again once with
+  `leave=<what the refusal named>`, as a player meets the bay gate. Here the refusal names rig 1,
+  so it lifts with `leave=1`. Home, `+tv` reads rig 1 out of the bay with its run's ore (`not in
+  the … bay; … hopper 12 of 12 t`), and the story's staff read (`@spatial`) still finds it on the
+  site's ground. Then the sale of the ore rig 1 cut before the field.
+- **The vocabulary.** `field::in_vocabulary` is the expedition's vocabulary plus `+field`,
+  `CONTACTS`, `+tv/1 board`, `+tv/1 leave`, `+field/mark <party letter>=hostile` (no other mark),
+  `ORDER DT:<n>:<n>:<n> 1 ENGAGE <designator>`, `ORDER DT:… 1 WITHDRAW`,
+  `+sortie/activate <id>=combat` and `+ship/lift ceres leave=<slots and #units>`. No `@` staff
+  verb, `FIRE` or `+field/fire` is admitted.
+- **The sentences, pinned.** Every field sentence the captain reads is now a tacsim `pub const`,
+  and `mine/lines.rs`'s test builds each from it:
+  - `field::{FIELD_OPENED, FIELD_SETTLED, FIELD_STATUS, NO_FIELD, PARTY_MARKED}`
+  - `detachment::sortie::{ORDER_PREFILL, ORDER_SENT}`
+  - the existing `surface::site_record::FIELD_OPEN` and `port::voyage::LEAVE_HINT`
+  - every party letter's `PartyId::as_str` read back to its letter
+  - the probe's own `CONTACTS` rows
+
+  Nothing the game prints changed.
+- **The escort pilot** (`--field-escort ahuna --escort-for <captain>`, `mine/escort.rs`). The
+  brief named the arena pilot (`arena/pilot.rs`); the field escort is built on the mining lane's
+  step machine instead. A field escort is a player at Ceres first: enrol, refit, licence, a lease,
+  bunkers, a hop, which are the mining lane's beats. What it shares with the arena pilot is the
+  line cockpit, and it reads that with the arena reader's own parsers (`WEAPONSTATUS` rows) and the
+  mining lane's field ones. The arena pilot's lobby, its red/blue sides and its tactician are a
+  match's, and none of them fits a field.
+  - **The lease**, CF.6c's player path: `+tv/lease escort` previews, `+tv/lease escort go` signs,
+    `+tv/1/permissions go` asks the loan and `+tv/1/permissions` reads it back. The escort's
+    Dray-P carries the armed rig alone. The prospector's own needles hold: the escort's preview is
+    `LEASE_PREVIEW`, which ends `+tv/lease go signs it.` even for the escort (signing it takes
+    `+tv/lease escort go`, the game's sentence names the wrong command; a finding below).
+  - **Aboard and down.** The escort walks to the bay and boards the cab (`+tv/1 board`). The
+    printed `+focus` itself gives control of a lessee's own cab, so no `@station/handoff` follows
+    (the handoff then fails, `That did not go through.`). It launches (`+tv/1 launch go`) and
+    reads `+tv/1`'s `on the ground at the stern ramp`.
+  - **Off the ramp's cell.** Every hull on a pad launches its rigs onto the pad's one ramp cell,
+    and a field holds one unit a cell: with Rook's rig and the escort's both there, admission
+    failed (`units #570 and #549 were both handed over in cell (128, 124)`) and the field never
+    opened. The escort therefore drives 30 m east (`+tv/1 drive e 30 go`, three cells), as CF.6c's
+    own story drives out beside the rig. A launch that does not spread is a finding below.
+  - **Its ramp cell.** No sentence names it, but the field keeps each carrier's ramp at its
+    surface placement (`field::home`, `exit::rig_ramp`), so the escort's ramp is the cell it
+    launched onto. At the field's open notice it reads its own cell (`VIEW BRIEF`'s
+    `you at (x, y)`, read off the joined window because the header passes 120 columns and wraps)
+    and takes the ramp three cells west.
+  - **The raider.** Line text names a contact's party, never its relation or what it is: a
+    `SCAN` prints a section only when it holds a band for it, and a fresh look printed the header
+    alone. The escort sees the captain's party and its own Dray-P's besides the raider's. It sets
+    parties aside: its own (`+field`'s `Your party is C`), its captain's (the captain pages it,
+    `page <escort>=Captain: party A.`, `lines::CAPTAIN_REPORT`, once its own `+field` has named it),
+    and every party whose contact its `LOCK` reads `(FRIENDLY)` (`Locked on BF (FRIENDLY), …`: its
+    own Dray-P, a Friend by the standing rule of one commander, Q-CF-5). It tells nothing until
+    the captain's page has come, since before it the captain's contacts are no different from the
+    raider's. The one party left is the raider. It pages its captain
+    (`page <captain>=Raider: party D, contact DQ.`, `lines::RAIDER_REPORT`) and marks the party
+    Hostile.
+  - **The fight.** `WEAPONSTATUS` names the main gun (the weapon with the fewest rounds, never the
+    coaxial machine gun), `LOCK <designator>`, then `FIRE <gun>` every three seconds until a round
+    lands (`Hit on BK: …`, never the victim's `Hit on the …`), at most twelve. HOLD at launch
+    (Q-CF-41) binds only `FIRE … WHEN` rules, so a hand `FIRE` is the pilot's, and the vocabulary
+    admits no `WHEN` rule.
+  - **The withdrawal.** `DRIVE x,y` for the ramp's own cell (the motor stops short of a cell
+    another hull's rig stands on; a drive for the cell beside it stopped two cells off once), `VIEW
+    BRIEF` until it stands within one cell, then CF.5's exit,
+    `+tv/1 recover go` (`#… makes for the ramp: it leaves field 1 …`), and `+tv/1` until the rig
+    is `in the bay`. It waits out the field (`+field`), leaves the cab (`+tv/1 leave`,
+    `+tv/bay out`), sails home and docks. It has nothing to sell, so docking home is its success.
+- **The harness** (`tests/mining_cohort.rs`,
+  `a_captain_and_its_escort_fight_the_raider_in_an_ic_field`, in the `bot-stories` cell). It runs
+  two actual executables, the captain and the escort pilot, over public SSH on the production root
+  (`mushd::boot::boot_all_in_one`), `disengage_s` 30, the rate lifted to 168, with no model. Each
+  bot has its own config file: the arena rig's shared `bot/arena.toml` was overwritten by the
+  second before the first child read it, and both logged in as the escort. Its setup is the
+  fixture opponent's, never a bot's. It stands in only the fixture raider:
+  - **Seeded and launched at boot**, on the booted engine before the world task spawns.
+    `@field/raiders` is a staff post-image write. A live world holds one behind every
+    authoritative action in flight, and in two runs the seed or the launch never answered while
+    the bot worked (left for its own look, below).
+  - **Worn**, as CF.6b's own gate wears one: each raider hull's armour at its floor, its internals
+    whole, by staff's `@unit/damage`, also at boot. Two full-strength line tanks fire from the
+    moment the field opens, and in three runs they had shot the escort's turret off
+    (`This unit carries no weapon.`) before it had classified anything. A worn hull is past its
+    doctrine's withdraw edge and fights from a stand at its own ramp.  - **Its leader's declaring mark** is typed as that NPC straight into the world task
+    (`Rig::act_as`, `WorldHandle::inbound`), as tacsim's field stories type it, because no player
+    path reaches an NPC's own act. It is tried on each octant until the bot hears the field open.
+  - **Its withdrawal** is staff's `@field/raiders/withdraw`, once the captain has withdrawn its
+    escort.
+
+Not built here, each for a reason:
+- **An armed Rook.** The captain could lease the escort design for him (one armed lease a
+  lessee). But the escort pilot tells the raider by its turret, and an armed Rook would wear one
+  too, so Rook flies the plain lease. The captain's story therefore proves its orders and their
+  replies, and the escort pilot proves the shots.
+- **The presence picture's raider** (G-1's clause). The captain reads the raider from its cab
+  inside the field and never marks it on open ground.
+- **A shot at a section** (G-6) and **the escort's map** (G-7) keep their owners.
+
+**Found while building**, each for its own look:
+- **A staff post-image command typed while a bot works an IC site may answer late or never.** In
+  one run God's `@field/raiders/launch` had not answered a minute later. At teardown its legacy
+  batch was still queued behind the store writer, which had logged nothing until then.
+- **Two hulls on one pad launch their rigs onto one cell.** A second rig launched down the ramp
+  lands on the first's cell. The surface allows it, and the field then refuses to open at all
+  ("occupancy is one unit per cell"). This harness never sees it now, because the escort drives
+  off the ramp. A player who does not drive off it stalls every field on that site.
+- **The escort's lease preview names the wrong command.** `+tv/lease escort` prints `LEASE_PREVIEW`,
+  whose tail is `+tv/lease go signs it.`, and that command leases a prospector.
+- **Line text gives no relation.** A field of several parties gives a line-mode player no way to
+  tell a friend's party from a raider's. The captain here relies on its escort's page, and the
+  escort on its captain's page and a `LOCK`'s `(FRIENDLY)`.

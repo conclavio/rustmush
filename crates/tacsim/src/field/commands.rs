@@ -174,20 +174,19 @@ fn status(ctx: &mut Ctx<'_>) -> Result<(), CmdError> {
                             .find(|row| row.pilot.as_ref().is_some_and(|(p, _)| *p == actor))
                             .map(|row| row.party)
                     })?;
-                    Some(format!(
-                        "Field {} is open on {}. Your party is {}; {} parties are on the ground.",
-                        hosted.live.field.ordinal,
-                        crate::surface::act::site_name(ctx.w, site),
-                        party.letter(),
-                        hosted.live.parties.len()
-                    ))
+                    Some(
+                        super::FIELD_STATUS
+                            .replace("{n}", &hosted.live.field.ordinal.to_string())
+                            .replace("{site}", &crate::surface::act::site_name(ctx.w, site))
+                            .replace("{party}", &party.letter().to_string())
+                            .replace("{parties}", &hosted.live.parties.len().to_string()),
+                    )
                 })
                 .collect()
         })
         .unwrap_or_default();
     if lines.is_empty() {
-        ctx.out
-            .info(ctx.actor, "No field holds a party of yours.".to_owned());
+        ctx.out.info(ctx.actor, super::NO_FIELD.to_owned());
     }
     for line in lines {
         ctx.out.sys_to_actor(ctx.actor, "tacsim.field", line);
@@ -297,7 +296,9 @@ fn mark_in_field(
     ctx.out.sys_to_actor(
         actor,
         "tacsim.field",
-        format!("Your party now marks party {} {word}.", of.letter()),
+        super::PARTY_MARKED
+            .replace("{party}", &of.letter().to_string())
+            .replace("{word}", word),
     );
     Ok(())
 }

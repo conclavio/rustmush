@@ -108,6 +108,21 @@ impl Drop for Rig {
 }
 
 impl Rig {
+    /// **Type `line` as `actor`** straight into the world task, with no session: the stand-in
+    /// for an NPC's own act that no player path reaches over SSH (doc 32 G-4: the fixture
+    /// raider's leader declaring, as tacsim's field stories have it). Its answer goes to no
+    /// connection. Never a bot's line.
+    pub async fn act_as(&self, actor: mush_core::ObjId, line: &str) -> bool {
+        self._handles
+            .handle
+            .inbound(mush_core::Inbound::Cmd {
+                conn: u64::MAX - 7,
+                actor,
+                line: line.to_owned(),
+            })
+            .await
+    }
+
     /// The bot's own SSH settings for this server: `username` at the pinned host
     /// key, no password, no key.
     pub fn ssh(&self, username: &str) -> Ssh {

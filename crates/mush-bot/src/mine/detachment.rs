@@ -31,6 +31,34 @@ pub(super) struct Expedition {
     consent: String,
     operation: String,
     alias: String,
+    /// **Doc 32 G-4**: the escort under a combat contract (Rook Adeyemi in rig 2, slot 1), the
+    /// captain in rig 1's cab (slot 2) working the block, and the field's steps.
+    combat: bool,
+}
+impl Expedition {
+    /// The field's expedition (`--mine-field`).
+    pub(super) fn combat() -> Self {
+        Self {
+            combat: true,
+            ..Self::default()
+        }
+    }
+    /// The hired person, by the crew bar's offer line: the escort or the miner.
+    fn crew_name(&self) -> &'static str {
+        if self.combat {
+            "Rook Adeyemi"
+        } else {
+            "Ilya Mendes"
+        }
+    }
+    /// The NPC's rig index and the captain's (`units`): rig 2 and rig 1 under combat, so the
+    /// captain's rig is the solo lane's rig 1; rig 1 and rig 2 otherwise.
+    fn npc_rig(&self) -> usize {
+        usize::from(self.combat)
+    }
+    fn captain_rig(&self) -> usize {
+        1 - self.npc_rig()
+    }
 }
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub(super) enum Phase {
@@ -162,6 +190,18 @@ impl Lane {
         };
         self.dt(phase, "+ship", &marker, true, 0);
     }
+    /// **Doc 32 G-4**: the captain's rig is in the bay by its own recover, which closes its
+    /// flight; both slots read returned, then the expedition's own walk back, close and lift.
+    pub(super) fn expedition_returned(&mut self) {
+        let op = self.dt_state().operation.clone();
+        self.dt(
+            Phase::BothReturned,
+            &format!("+sortie/operation {op}"),
+            "last confirmed returned",
+            true,
+            0,
+        );
+    }
     pub(super) fn expedition_launch(&mut self) {
         let op = self.dt_state().operation.clone();
         self.dt(
@@ -266,7 +306,12 @@ impl Lane {
             }
             HomeArrival => {
                 self.milestone(Milestone::DockedHome, now);
-                self.send(Beat::Home, Kind::Leave, "+ship/leave", 0);
+                if self.dt_state().combat {
+                    // Doc 32 G-4: what the departure left behind, from the captain's own rigs.
+                    self.field_left_read();
+                } else {
+                    self.send(Beat::Home, Kind::Leave, "+ship/leave", 0);
+                }
             }
             Lease => self.dt(Loans1, "+tv/1/permissions go", "", false, 0),
             Loans1 => self.dt(ReadLoans1, "+tv/1/permissions", "Rig 1 loan", true, 0),
@@ -329,10 +374,11 @@ impl Lane {
                 0,
             ),
             Offers => {
+                let name = self.dt_state().crew_name();
                 let start = raw
                     .iter()
-                    .position(|l| l.starts_with("Ilya Mendes (#"))
-                    .ok_or("Ilya Mendes is not available for hire in this port")?;
+                    .position(|l| l.starts_with(&format!("{name} (#")))
+                    .ok_or_else(|| format!("{name} is not available for hire in this port"))?;
                 let hire = printed(&raw[start..], "Accept: ")?;
                 let npc = number_after(&hire, "+sortie/hire #")?;
                 let state = self.dt_state();
@@ -374,7 +420,8 @@ impl Lane {
                 self.report.detachment.as_mut().ok_or("evidence")?.carrier = carrier;
                 let (npc, unit, loan) = {
                     let d = self.dt_state();
-                    (d.npc, d.units[0], d.loan)
+                    let loan = if d.combat { d.loan2 } else { d.loan };
+                    (d.npc, d.units[d.npc_rig()], loan)
                 };
                 // This is an ordinary delegated permission, never a staff bypass.
                 self.dt(
@@ -385,7 +432,10 @@ impl Lane {
                     0,
                 );
             }
-            BoardCaptain => self.dt(Focus, "+tv/2 board", "Choose +focus", false, 0),
+            BoardCaptain => {
+                let board = format!("+tv/{} board", self.dt_state().captain_rig() + 1);
+                self.dt(Focus, &board, "Choose +focus", false, 0);
+            }
             Focus => {
                 let command = printed(raw, "You are at rig ").and_then(|_| {
                     text.split_once("Choose ")
@@ -396,7 +446,10 @@ impl Lane {
                 self.dt(Handoff, &command, "", false, 0);
             }
             Handoff => {
-                let unit = self.dt_state().units[1];
+                let unit = {
+                    let d = self.dt_state();
+                    d.units[d.captain_rig()]
+                };
                 self.dt(
                     Draft,
                     &format!("@station/handoff #{unit}/pilot"),
@@ -407,9 +460,10 @@ impl Lane {
             }
             Draft => {
                 let d = self.dt_state();
+                let role = if d.combat { "escort" } else { "miner" };
                 let plan = json!({"carrier":d.carrier,"slots":[
-                    {"slot":1,"unit":d.units[0],"controller":{"kind":"npc","character":d.npc},"role":"miner","mind":null},
-                    {"slot":2,"unit":d.units[1],"controller":{"kind":"player","character":d.actor},"role":"scout","mind":null}],
+                    {"slot":1,"unit":d.units[d.npc_rig()],"controller":{"kind":"npc","character":d.npc},"role":role,"mind":null},
+                    {"slot":2,"unit":d.units[d.captain_rig()],"controller":{"kind":"player","character":d.actor},"role":"scout","mind":null}],
                     "npc_commander":null,"financial_terms":null});
                 self.dt(Plans, &format!("+sortie/draft {plan}"), "", false, 0);
             }
@@ -435,10 +489,13 @@ impl Lane {
                 self.dt(Activate, &format!("+sortie/ready {fence}"), "", false, 0);
             }
             Activate => {
-                let draft = self.dt_state().draft.clone();
+                let (draft, duty) = {
+                    let d = self.dt_state();
+                    (d.draft.clone(), if d.combat { "combat" } else { "mining" })
+                };
                 self.dt(
                     Active,
-                    &format!("+sortie/activate {draft}:1=mining"),
+                    &format!("+sortie/activate {draft}:1={duty}"),
                     "",
                     false,
                     0,
@@ -544,6 +601,14 @@ impl Lane {
                     .and_then(|(_, s)| s.split_once(" ALL HOLD"))
                     .map(|(s, _)| s.to_owned())
                     .ok_or("order prefill missing")?;
+                if self.dt_state().combat {
+                    // Doc 32 G-4: the escort holds by the captain's rig while rig 1 works its
+                    // block on the solo lane's beats, the field watch armed.
+                    let operation = self.dt_state().operation.clone();
+                    self.field_armed(fence, operation);
+                    self.send(Beat::OnPad, Kind::ScanPreview, "+tv/1 scan", 0);
+                    return Ok(());
+                }
                 self.family = Some(super::super::Family::Metals);
                 self.report.family = Some("metals".into());
                 self.dt(Order, &format!("{fence} 1 MINE metals"), "", false, 0);
@@ -597,13 +662,8 @@ impl Lane {
                 self.report.detachment.as_mut().ok_or("evidence")?.returned = true;
                 self.milestone(Milestone::Recovered, now);
                 self.milestone(Milestone::Unloaded, now);
-                self.dt(
-                    LeaveCaptain,
-                    "+tv/2 leave",
-                    "give back your rig billet",
-                    true,
-                    0,
-                );
+                let leave = format!("+tv/{} leave", self.dt_state().captain_rig() + 1);
+                self.dt(LeaveCaptain, &leave, "give back your rig billet", true, 0);
             }
             LeaveCaptain => {
                 let npc = self.dt_state().npc;
@@ -657,7 +717,12 @@ impl Lane {
             }
             Closed => {
                 self.report.detachment.as_mut().ok_or("evidence")?.closed = true;
-                self.send(Beat::Home, Kind::PlanHome, "+ship/plan ceres", 0);
+                if self.dt_state().combat {
+                    // Doc 32 G-4: the fill plan resumes on rig 1, launched on its own, before the captain sails.
+                    self.field_relaunch();
+                } else {
+                    self.send(Beat::Home, Kind::PlanHome, "+ship/plan ceres", 0);
+                }
             }
         }
         Ok(())
@@ -686,6 +751,8 @@ pub fn in_vocabulary(line: &str) -> bool {
         "+tv/bay out",
         "+tv/2 board",
         "+tv/2 leave",
+        "+tv/1 board",
+        "+tv/1 leave",
         "+tv/1/permissions go",
         "+tv/1/permissions",
         "+tv/2/permissions go",
@@ -770,7 +837,7 @@ pub fn in_vocabulary(line: &str) -> bool {
                 .map_or((rest, None), |(i, s)| (i, Some(s)));
             return selector(id)
                 && match verb {
-                    "activate" => suffix == Some("mining"),
+                    "activate" => matches!(suffix, Some("mining" | "combat")),
                     "seat" => suffix == Some("1"),
                     "launch" => suffix == Some("all"),
                     "recover" => suffix == Some("2"),

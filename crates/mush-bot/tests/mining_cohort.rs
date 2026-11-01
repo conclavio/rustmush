@@ -831,3 +831,380 @@ async fn a_bot_hires_launches_mines_recovers_and_sells_with_a_detachment() {
     .await
     .expect("the detachment expedition finishes within 22 minutes");
 }
+
+/// The shipped fixture raider at Ahuna Flank (`content/field/raiders.json`, doc 32 cut CF.6b).
+const SKULKS: &str = "tacsim.raider.ahuna_skulks";
+
+/// The last lines the bot's session decoded, for a failure's message: each transcript record's
+/// text, the last 60.
+fn transcript_tail(flight: &arena::Flight) -> String {
+    let log = std::fs::read_to_string(&flight.transcript).unwrap_or_default();
+    let lines: Vec<String> = log
+        .lines()
+        .filter_map(|line| serde_json::from_str::<serde_json::Value>(line).ok())
+        .filter_map(|record| record["data"].as_str().map(str::to_owned))
+        .collect();
+    lines[lines.len().saturating_sub(60)..].concat()
+}
+
+/// The bot's transcript once it holds `needle`, polled every half second up to `limit`.
+async fn transcript_holds(flight: &arena::Flight, needle: &str, limit: Duration) -> bool {
+    let started = std::time::Instant::now();
+    while started.elapsed() < limit {
+        let log = std::fs::read_to_string(&flight.transcript).unwrap_or_default();
+        if log.contains(needle) {
+            return true;
+        }
+        tokio::time::sleep(Duration::from_millis(500)).await;
+    }
+    false
+}
+
+/// The bot's transcript once it holds every one of `needles`, polled every half second.
+async fn all_hold(flights: &[(&arena::Flight, &str)], limit: Duration) -> bool {
+    let started = std::time::Instant::now();
+    while started.elapsed() < limit {
+        if flights.iter().all(|(flight, needle)| {
+            std::fs::read_to_string(&flight.transcript).is_ok_and(|log| log.contains(needle))
+        }) {
+            return true;
+        }
+        tokio::time::sleep(Duration::from_millis(500)).await;
+    }
+    false
+}
+
+/// **The captain and its escort in an IC field** (doc 32 G-4, Q-CF-47's bot run): two actual
+/// `mush-bot` executables over public SSH on the production root, at Ahuna Flank.
+///
+/// - **The captain** (`--mine-field ahuna`) hires Rook Adeyemi under a combat contract for rig
+///   2 and rides rig 1's cab, working its block on open ground.
+/// - **The escort** (`--field-escort ahuna --escort-for Fieldcap`) leases Occator's armed rig
+///   through CF.6c's player path (`+tv/lease escort go`, the loan), sails its own Dray-P,
+///   boards the cab, launches to the ramp and waits there.
+///
+/// **Harness setup** (the fixture opponent's, never a bot's; doc 32 §16):
+/// - the raider (CF.6b) is seeded and launched from its carrier at boot, so it waits on the site.
+///   A staff world write is held behind every authoritative action a live world has in flight,
+///   and these bots always have one;
+/// - once the captain's run has cut its first cycle and the escort stands at its ramp, the
+///   raider's NPC leader declares (`+field/mark <octant>=hostile`), typed as that NPC straight
+///   into the world task (`Rig::act_as`), as tacsim's field stories type it, because no player
+///   path reaches an NPC's own act;
+/// - once the captain has withdrawn Rook and the escort is making for its ramp, staff withdraw
+///   the raider up its own ramp.
+///
+/// **The escort** reads its ramp cell (`VIEW BRIEF`) and its party (`+field`), sets aside its
+/// own party, its captain's (paged it, `Captain: party A.`) and every party its `LOCK` reads
+/// `(FRIENDLY)` (its own Dray-P), takes the one left for the raider, pages the captain
+/// `Raider: party D, contact DQ.`, marks that party, and fires its gun until a round lands, then drives to the ramp, takes CF.5's
+/// exit (`+tv/1 recover go`), waits out the field and sails home.
+///
+/// **The captain** takes the raider from the escort's page (a field of several parties gives
+/// line text no other way to tell them apart), marks it Hostile, orders Rook ENGAGE on it and
+/// reads the WILCO, holds, orders WITHDRAW and reads the reply, and holds until the field
+/// settles. Then it drives rig 1 home and closes the roster. It resumes the fill plan on rig 1,
+/// launched again on its own (the field is closed, so its own party confuses nothing): one run at
+/// a pocket of its own reading. Its plain lift meets the bay gate's refusal for rig 1, and it
+/// lifts again with `leave=1`. Home, `+tv` has rig 1 out of the bay with its ore, and staff's
+/// `@spatial` still finds it on the site's ground. Then it sells.
+///
+/// No model: the run is deterministic.
+#[tokio::test(flavor = "multi_thread", worker_threads = 4)]
+#[allow(clippy::too_many_lines)] // one story, two lanes, in order
+async fn a_captain_and_its_escort_fight_the_raider_in_an_ic_field() {
+    tokio::time::timeout(Duration::from_secs(35 * 60), async {
+        let captain = Miner {
+            account: "fieldcap",
+            character: "Fieldcap",
+            site: Site::Ahuna,
+        };
+        let escort = Miner {
+            account: "fieldesc",
+            character: "Fieldesc",
+            site: Site::Ahuna,
+        };
+        // The raider waits on the site, seeded and launched from its carrier at boot, its hulls
+        // worn as CF.6b's own gate wears one.
+        let (rig, staff) = mine::boot_with(
+            &[captain, escort],
+            |cfg| cfg.tacsim.field.disengage_s = 30,
+            |engine| {
+                let mut said = vec![
+                    mine::staff_line(engine, &format!("@field/raiders {SKULKS}")),
+                    mine::staff_line(engine, &format!("@field/raiders/launch {SKULKS}")),
+                ];
+                said.extend(mine::wear_raiders(engine));
+                said
+            },
+        )
+        .await;
+        assert_eq!(staff.len(), 4, "two raider hulls worn: {staff:?}");
+        println!("field rig: {}\nfield staff: {staff:?}", rig.dir.display());
+        assert!(staff[1].contains("hulls on the ground"), "{staff:?}");
+        let leader = staff[0]
+            .split_once("led by ")
+            .and_then(|(_, rest)| rest.split_once("(#"))
+            .and_then(|(_, rest)| rest.split_once(')'))
+            .and_then(|(n, _)| n.parse::<u32>().ok())
+            .map(mush_core::ObjId)
+            .unwrap_or_else(|| panic!("the raider's leader: {staff:?}"));
+        // One config file a bot: the arena rig's one `bot/arena.toml` would be overwritten by the
+        // second before the first child read it.
+        let at = |name: &str| rig.dir.join(name).join("bot.toml");
+        let config = arena::bot_config_agent_at(
+            &rig,
+            &at("captain"),
+            "fieldcap+Fieldcap",
+            1800,
+            250,
+            250,
+            "",
+        );
+        let flight = arena::launch(
+            &rig,
+            &config,
+            "field",
+            &["--mine-field", "ahuna", "--escorted-by", "Fieldesc"],
+        );
+        let escort_config = arena::bot_config_agent_at(
+            &rig,
+            &at("escort"),
+            "fieldesc+Fieldesc",
+            1800,
+            250,
+            250,
+            "",
+        );
+        let escort_flight = arena::launch(
+            &rig,
+            &escort_config,
+            "escort",
+            &["--field-escort", "ahuna", "--escort-for", "Fieldcap"],
+        );
+        let mut god =
+            arena::Client::login(&rig, arena::GOD_ACCOUNT, arena::GOD_PASSWORD, "God").await;
+        assert!(
+            all_hold(
+                &[
+                    (&flight, "+coop/refit prospector"),
+                    (&escort_flight, "+coop/refit prospector")
+                ],
+                Duration::from_secs(600)
+            )
+            .await,
+            "both bots enrol; the captain's ends:\n{}\nthe escort's ends:\n{}",
+            transcript_tail(&flight),
+            transcript_tail(&escort_flight)
+        );
+        if let Some(rate) = mine::rate_lift(mine::LIFTED_RATE) {
+            mine::lift_rate(&mut god, rate).await;
+        }
+        // The raider declares once the captain's run has cut its first cycle (so the hold has
+        // ore to sell however soon the field stops it) and the escort has driven off its ramp.
+        assert!(
+            all_hold(
+                &[
+                    (&flight, "Rig 1, cycle 1 of"),
+                    (&escort_flight, "Rig 1 arrives at ")
+                ],
+                Duration::from_secs(1200)
+            )
+            .await,
+            "the captain's run and the escort's launch; the captain's ends:\n{}\nthe escort's \
+             ends:\n{}",
+            transcript_tail(&flight),
+            transcript_tail(&escort_flight)
+        );
+        let _ = god.drain();
+        // The leader declares on the first bearing that names a flight on the ground.
+        let mut opened = false;
+        for octant in ["W", "NW", "SW", "N", "S", "NE", "SE", "E"] {
+            assert!(
+                rig.act_as(leader, &format!("+field/mark {octant}=hostile"))
+                    .await
+            );
+            if transcript_holds(&flight, "is open on Ahuna Flank", Duration::from_secs(8)).await {
+                opened = true;
+                break;
+            }
+        }
+        assert!(
+            opened,
+            "the raider's mark opened no field; the captain's transcript ends:\n{}\nthe escort's \
+             ends:\n{}",
+            transcript_tail(&flight),
+            transcript_tail(&escort_flight)
+        );
+        // The raider leaves once the captain has withdrawn Rook and the escort its own hull.
+        assert!(
+            all_hold(
+                &[
+                    (&flight, " 1 WITHDRAW"),
+                    (&escort_flight, "+tv/1 recover go")
+                ],
+                Duration::from_secs(900)
+            )
+            .await,
+            "both withdraw; the captain's ends:\n{}\nthe escort's ends:\n{}",
+            transcript_tail(&flight),
+            transcript_tail(&escort_flight)
+        );
+        god.send(&format!("@field/raiders/withdraw {SKULKS}")).await;
+        god.pump(Duration::from_secs(3)).await;
+
+        let landed = arena::land(flight, Duration::from_secs(25 * 60)).await;
+        let landed_escort = arena::land(escort_flight, Duration::from_secs(10 * 60)).await;
+
+        // -- The escort -------------------------------------------------------------------
+        let report = &landed_escort.report["mine"];
+        assert_eq!(
+            report["success"], true,
+            "{}\n{}\n{}",
+            landed_escort.report_text, landed_escort.stdout, landed_escort.stderr
+        );
+        let escort = &report["escort"];
+        assert!(
+            escort["leased"]
+                .as_str()
+                .is_some_and(|line| line.contains("OWP-ES-")),
+            "the armed rig, leased the player's way: {report}"
+        );
+        for fact in ["launched", "at_ramp", "in_bay", "settled"] {
+            assert_eq!(escort[fact], true, "{fact}: {report}");
+        }
+        assert!(
+            escort["hits"].as_u64().is_some_and(|n| n > 0),
+            "lands fire: {report}"
+        );
+        assert!(
+            escort["exit_asked"]
+                .as_str()
+                .is_some_and(|line| line.contains("makes for the ramp")),
+            "withdraws at its ramp: {report}"
+        );
+        assert_eq!(
+            escort["captain_party"], landed.report["mine"]["field"]["own_party"],
+            "the escort took its captain's word: {report}"
+        );
+        assert!(
+            escort["paged"]
+                .as_str()
+                .is_some_and(|line| line.starts_with("Raider: party ")),
+            "{report}"
+        );
+        let escort_sends: Vec<_> = landed_escort
+            .records
+            .iter()
+            .filter(|r| r["kind"] == "mine-send")
+            .filter_map(|r| r["data"]["line"].as_str())
+            .collect();
+        assert!(
+            escort_sends
+                .iter()
+                .all(|l| mush_bot::mine::lane::escort::in_vocabulary(l)),
+            "{escort_sends:?}"
+        );
+        for verb in [
+            "+tv/lease escort go",
+            "+tv/1 launch go",
+            "LOCK ",
+            "FIRE ",
+            "DRIVE ",
+            "+tv/1 recover go",
+        ] {
+            assert!(
+                escort_sends.iter().any(|l| l.starts_with(verb)),
+                "{verb}: {escort_sends:?}"
+            );
+        }
+
+        // -- The captain ------------------------------------------------------------------
+        let report = &landed.report["mine"];
+        assert_eq!(
+            report["success"], true,
+            "{}\n{}\n{}",
+            landed.report_text, landed.stdout, landed.stderr
+        );
+        let field = &report["field"];
+        for fact in ["engage_wilco", "settled", "resumed"] {
+            assert_eq!(field[fact], true, "{fact}: {report}");
+        }
+        assert!(
+            field["marked"]
+                .as_str()
+                .is_some_and(|ack| ack.contains("Hostile")),
+            "{report}"
+        );
+        assert_eq!(
+            field["raider_party"], escort["raider_party"],
+            "the captain takes the escort's raider: {report}"
+        );
+        assert_ne!(field["own_party"], field["raider_party"], "{report}");
+        // The fill plan resumed on rig 1, launched again on its own; the departure met the bay
+        // gate's refusal and left it, and it is still on the site once the captain is home.
+        assert!(
+            field["refill_run"]
+                .as_str()
+                .is_some_and(|line| line.contains("Rig 1, cycle")),
+            "{report}"
+        );
+        assert!(
+            field["lift_refused"]
+                .as_str()
+                .is_some_and(|line| line.contains("Rig 1 is out on Ahuna Flank")),
+            "{report}"
+        );
+        assert_eq!(field["left_behind"], "1", "{report}");
+        assert!(
+            field["left_home"].as_str().is_some_and(|line| {
+                line.starts_with("Rig 1: ") && line.contains("not in the Fieldcap Lode's bay")
+            }),
+            "{report}"
+        );
+        assert_eq!(report["detachment"]["closed"], true, "{report}");
+        // Staff's read of the world: rig 1 still stands on the site's ground after the lift.
+        let rig1 = report["detachment"]["units"][0]
+            .as_u64()
+            .unwrap_or_else(|| panic!("rig 1's unit: {report}"));
+        god.send(&format!("@spatial #{rig1}")).await;
+        let placed = god
+            .expect("effective domain", Duration::from_secs(30))
+            .await;
+        assert!(!placed.contains("unplaced"), "{placed}");
+        let sends: Vec<_> = landed
+            .records
+            .iter()
+            .filter(|r| r["kind"] == "mine-send")
+            .filter_map(|r| r["data"]["line"].as_str())
+            .collect();
+        assert!(
+            sends
+                .iter()
+                .all(|l| mush_bot::mine::lane::field::in_vocabulary(l)),
+            "{sends:?}"
+        );
+        for verb in [
+            "+field/mark ",
+            " 1 ENGAGE ",
+            " 1 WITHDRAW",
+            "+sortie/activate ",
+            "+tv/1 launch go",
+            "+ship/lift ceres leave=1",
+        ] {
+            assert!(sends.iter().any(|l| l.contains(verb)), "{verb}: {sends:?}");
+        }
+        println!(
+            "field captain: mark {}, raider {}, sold {} t; escort: {} shots, {} hits, exit {}",
+            field["marked"],
+            field["raider"],
+            report["sold_t"],
+            escort["shots"],
+            escort["hits"],
+            escort["exit_asked"]
+        );
+        god.close().await;
+    })
+    .await
+    .expect("the captain and its escort finish within 35 minutes");
+}
