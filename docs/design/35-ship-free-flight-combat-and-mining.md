@@ -213,7 +213,7 @@ All three views render into `mush-pixel`'s planar 256-colour indexed framebuffer
 
 ---
 
-## 10. Implementation Cut Plan (`SF.0` – `SF.12` — Built)
+## 10. Implementation Cut Plan (`SF.0` – `SF.13` — Built)
 
 Staged so visuals and backend cuts proceed cleanly with **zero edits** to `arena/*`, `field/*`, `surface/*`, or `detachment/*`:
 
@@ -232,3 +232,4 @@ Staged so visuals and backend cuts proceed cleanly with **zero edits** to `arena
 | **SF.10** | **TacticalUnit Custody, Black-Box Forensics & SalvageClaimBook Bridge**: Bidirectional `TacticalUnit` <-> `SpaceShipState` damage round-trip (`UnitMutationPlan`), black-box forensics recording, and 48-hour `SalvageClaimBook` registration | `crates/tacsim/src/space/custody.rs` | Space combat damage persists onto `TacticalUnit` cells and `SalvageClaimBook` settles 48h salvage claims. |
 | **SF.11** | **Autonomous Panel-Driven Space Pilot Doctrine (`SpacePilotDoctrine`)**: Closed-loop bot pilot that ingests `space.holotank`, `space.cockpit`, and `space.docking` JSON keyframes and 60 fps 6-DOF RCS controls | `crates/tacsim/src/space/autopilot_bot.rs` | Autonomous pilot completes Stories 1 and 2 from panel feeds. |
 | **SF.12** | **Content Studio Space Catalog & Standalone `mush-bot` Space Lane (`SpaceLane`)**: Expose `space_clusters`, `outer_bodies`, and `+helm`/`+tac`/`+mine` in `content_studio.rs`; add standalone SSH line-mode `SpaceLane` in `mush-bot` | `crates/tacsim/src/content_studio.rs`, `crates/mush-bot/src/mine/space.rs` | `content_studio` catalog and `mush-bot` line-mode contract test green in CI. |
+| **SF.13** | **Baked Equirectangular Solar-System Planet Maps (`planet-bake`)**: Extract and downsample 2:1 equirectangular planetary textures from `Solar System Planet Creator.unitypackage` into 12 `128×64` 8-bit indexed-colour `.png` maps (`crates/mush-pixel/planets/`) with `index.json` provenance and wire into `planet_shader.rs` | `scripts/planet-bake/bake.py`, `crates/mush-pixel/planets/`, `crates/mush-pixel/src/planet_shader.rs` | All 12 baked planet PNGs match `index.json` SHA-256 digests, sample in $O(1)$ across native and WASM builds, and stay within the 256-colour palette budget. |
