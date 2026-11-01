@@ -340,6 +340,11 @@ fn expected_panels() -> Vec<&'static str> {
     // the end of `arena_bridge::register`, after the proving feed.
     panels.push("mind.market");
     panels.push("mind.holdings");
+    // Doc 35 cut SF.9: the three spaceflight panel feeds (holotank, cockpit,
+    // docking), registered by `space::register` after `arena_bridge::register`.
+    panels.push("space.holotank");
+    panels.push("space.cockpit");
+    panels.push("space.docking");
     panels.push("who");
     panels.push("legal.actions");
     panels

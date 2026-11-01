@@ -86,6 +86,71 @@ MOONS = {
     "titan": dict(command="'606'", center="'500@699'", parent="saturn", until=(2250, 1, 1)),
 }
 
+# Doc 35 cut SF.1 (D-35-4, D-35-13): outer solar system bodies, Galilean &
+# Neptunian moons, and the four orbital asteroid field clusters.
+OUTER_BODIES = {
+    "uranus": dict(command="'7'", radius_km=25_362, surface_mg=887),
+    "neptune": dict(command="'8'", radius_km=24_622, surface_mg=1_115),
+}
+
+OUTER_MOONS = {
+    "io": dict(command="'501'", center="'500@599'", parent="jupiter",
+               radius_km=1_822, surface_mg=180),
+    "europa": dict(command="'502'", center="'500@599'", parent="jupiter",
+                   radius_km=1_561, surface_mg=131),
+    "ganymede": dict(command="'503'", center="'500@599'", parent="jupiter",
+                     radius_km=2_631, surface_mg=143),
+    "callisto": dict(command="'504'", center="'500@599'", parent="jupiter",
+                     radius_km=2_410, surface_mg=124),
+    # Horizons' Triton ephemeris ends at 2199-12-30; like Titan, its table holds
+    # the last decade Horizons knows (2189–2198) and the solver propagates the
+    # last row past the cutoff.
+    "triton": dict(command="'801'", center="'500@899'", parent="neptune",
+                   until=(2199, 12, 1), radius_km=1_353, surface_mg=78),
+}
+
+ASTEROID_CLUSTERS = {
+    "ceres_halo": dict(
+        base="ceres",
+        trail_deg=0.3,
+        zone="core",
+        radius_km=500,
+        spectral_classes=["c_type", "s_type"],
+        ore_families=["ice_ore", "carbon_ore", "metal_ore"],
+    ),
+    "kirkwood_gap_3_1": dict(
+        base="ceres",
+        trail_deg=2.4,
+        zone="frontier",
+        radius_km=800,
+        spectral_classes=["s_type", "m_type"],
+        ore_families=["metal_ore", "strategic_ore"],
+    ),
+    "pallas_inclined_belt": dict(
+        base="pallas",
+        trail_deg=0.6,
+        zone="frontier",
+        radius_km=600,
+        spectral_classes=["m_type", "s_type"],
+        ore_families=["strategic_ore", "metal_ore"],
+    ),
+    "saturn_b_ring_edge": dict(
+        parent="saturn",
+        a_au=0.000_786_000,
+        e=0.000_300_000,
+        i_deg=0.300_000,
+        node_deg=169.530_000,
+        peri_deg=42.000_000,
+        mean_anomaly_deg=180.000_000,
+        mean_motion_deg_day=742.268_041_237,
+        period_days=0.485,
+        zone="frontier",
+        radius_km=400,
+        spectral_classes=["c_type"],
+        ore_families=["ice_ore", "carbon_ore"],
+    ),
+}
+
 SUN_CENTER = "'500@10'"
 
 # Kirkwood Depot (doc 18 Q-18-36; doc 19 D-19-6): Ceres's own rows, trailing by
@@ -296,6 +361,39 @@ def position(rows, jd):
     return tuple((1.0 - u) * a + u * b for a, b in zip(p0, p1))
 
 
+def blended_elements_position(rows, jd):
+    """A moon table's position at `jd` with elements blended in element space,
+    matching `tacsim::kepler::blended_elements_position`."""
+    if jd <= rows[0]["jd"]:
+        return kepler_xyz(rows[0], jd - rows[0]["jd"])
+    if jd >= rows[-1]["jd"]:
+        return kepler_xyz(rows[-1], jd - rows[-1]["jd"])
+    lo = max(k for k in range(len(rows) - 1) if rows[k]["jd"] <= jd)
+    r0, r1 = rows[lo], rows[lo + 1]
+    u = (jd - r0["jd"]) / (r1["jd"] - r0["jd"])
+    def lerp(a, b):
+        return a + (b - a) * u
+    def lerp_angle(a, b):
+        diff = (b - a) % 360.0
+        if diff > 180.0:
+            diff -= 360.0
+        return (a + diff * u) % 360.0
+    def adv(r):
+        return (r["mean_anomaly_deg"] + r["mean_motion_deg_day"] * (jd - r["jd"])) % 360.0
+    peri = lerp_angle(r0["peri_deg"], r1["peri_deg"])
+    lon = lerp_angle((r0["peri_deg"] + adv(r0)) % 360.0, (r1["peri_deg"] + adv(r1)) % 360.0)
+    blended = dict(
+        a_au=lerp(r0["a_au"], r1["a_au"]),
+        e=lerp(r0["e"], r1["e"]),
+        i_deg=lerp(r0["i_deg"], r1["i_deg"]),
+        node_deg=lerp_angle(r0["node_deg"], r1["node_deg"]),
+        peri_deg=peri,
+        mean_anomaly_deg=(lon - peri) % 360.0,
+        mean_motion_deg_day=lerp(r0["mean_motion_deg_day"], r1["mean_motion_deg_day"]),
+    )
+    return kepler_xyz(blended, 0.0)
+
+
 def polar(xyz):
     x, y, z = xyz
     r = math.sqrt(x * x + y * y + z * z)
@@ -329,12 +427,181 @@ def pack_rows(rows):
 # Main
 # ---------------------------------------------------------------------------
 
+def write_outer_pack(args, epoch, first, last, dates, ic):
+    """Fetch outer solar system bodies, Galilean/Triton moons, and four orbital
+    asteroid clusters (doc 35 cut SF.1) and write `args.outer_path`."""
+    outer = dict(
+        note="Doc 35 cut SF.1 outer solar system bodies, Galilean & Neptunian moons, and "
+             "orbital asteroid clusters (JPL Horizons ecliptic J2000 osculating elements "
+             "over %s..%s, epoch %s)" % (date_str(first), date_str(last), date_str(epoch)),
+        epoch=date_str(epoch),
+        epoch_ic=ic,
+        bodies={},
+        golden={},
+        measure={},
+    )
+    parent_rows = {}
+    for parent_name in ("jupiter", "saturn", "ceres", "pallas"):
+        cmd = BODIES[parent_name]
+        print("fetching base %s ..." % parent_name, file=sys.stderr)
+        praw = cached("elements-%s-%d-%d-%s" % (parent_name, args.first, args.last, date_str(epoch)),
+                      lambda cmd=cmd: elements_at(cmd, dates))
+        parent_rows[parent_name] = (praw, [quantize(r) for r in praw])
+
+    for name, spec in OUTER_BODIES.items():
+        command = spec["command"]
+        print("fetching outer planet %s ..." % name, file=sys.stderr)
+        raw = cached("elements-%s-%d-%d-%s" % (name, args.first, args.last, date_str(epoch)),
+                     lambda command=command: elements_at(command, dates))
+        vecs = cached("vectors-%s-%d-%d-%s" % (name, args.first, args.last, GOLDEN_STEP),
+                      lambda command=command: vectors(command, first, last, GOLDEN_STEP))
+        rows = [quantize(r) for r in raw]
+        parent_rows[name] = (raw, rows)
+        at_epoch = position(rows, julian_day(epoch))
+        r, lam, beta = polar(at_epoch)
+        at_row = [row for row in raw if row["date"] == epoch][0]
+        outer["bodies"][name] = dict(
+            kind="planet",
+            orbit_uau=int(round(r / AU_KM * 1_000_000)),
+            period_mdays=int(round(at_row["pr"] * 1_000)),
+            phase_mdeg=int(round(lam * 1_000)) % 360_000,
+            epoch_ic=ic,
+            radius_km=spec["radius_km"],
+            surface_mg=spec["surface_mg"],
+            elements=pack_rows(rows),
+        )
+        outer["measure"][name] = measure(rows, vecs)
+        outer["golden"][name] = [
+            [epoch_ic(g["date"]), round(g["x"], 1), round(g["y"], 1), round(g["z"], 1)]
+            for g in vecs if not (g["date"][1] == 2 and g["date"][2] == 29)
+        ]
+
+    for name, spec in OUTER_MOONS.items():
+        parent = spec["parent"]
+        print("fetching outer moon %s about %s ..." % (name, parent), file=sys.stderr)
+        until = spec.get("until")
+        if until:
+            mdates = [d for d in row_dates(until[0] - 10, until[0] - 1, epoch) if d < until]
+            raw = cached("elements-%s-%d-%d-%s" % (name, until[0] - 10, until[0] - 1, date_str(epoch)),
+                         lambda spec=spec, mdates=mdates: elements_at(spec["command"], mdates, spec["center"]))
+            vecs = []
+        else:
+            raw = cached("elements-%s-%d-%d-%s" % (name, args.first, args.last, date_str(epoch)),
+                         lambda spec=spec: elements_at(spec["command"], dates, spec["center"]))
+            vecs = cached("vectors-%s-%d-%d-%s" % (name, args.first, args.last, GOLDEN_STEP),
+                          lambda spec=spec: vectors(spec["command"], first, last, GOLDEN_STEP))
+        rows = [quantize(r) for r in raw]
+        at_epoch = blended_elements_position(rows, julian_day(epoch))
+        r, lam, beta = polar(at_epoch)
+        at_row = ([row for row in raw if row["date"] == epoch] or [raw[-1]])[0]
+        outer["bodies"][name] = dict(
+            kind="moon",
+            parent=parent,
+            orbit_uau=max(1, int(round(r / AU_KM * 1_000_000))),
+            period_mdays=max(1, int(round(at_row["pr"] * 1_000))),
+            phase_mdeg=int(round(lam * 1_000)) % 360_000,
+            epoch_ic=ic,
+            radius_km=spec["radius_km"],
+            surface_mg=spec["surface_mg"],
+            elements=pack_rows(rows),
+        )
+        if not until:
+            prow = parent_rows[parent][1]
+            worst = (0.0, None)
+            sq = 0.0
+            for g in vecs:
+                p = position(prow, g["jd"])
+                m = blended_elements_position(rows, g["jd"])
+                pred = (p[0] + m[0], p[1] + m[1], p[2] + m[2])
+                err = math.dist(pred, (g["x"], g["y"], g["z"]))
+                rel = err / math.hypot(g["x"], g["y"], g["z"])
+                sq += rel * rel
+                if rel > worst[0]:
+                    worst = (rel, date_str(g["date"]))
+            outer["measure"][name] = dict(
+                max_permille=round(worst[0] * 1000, 4),
+                worst_date=worst[1],
+                rms_permille=round(math.sqrt(sq / len(vecs)) * 1000, 4),
+                about=parent,
+            )
+            outer["golden"][name] = [
+                [epoch_ic(g["date"]), round(g["x"], 1), round(g["y"], 1), round(g["z"], 1)]
+                for g in vecs if not (g["date"][1] == 2 and g["date"][2] == 29)
+            ]
+        else:
+            outer["measure"][name] = dict(about=parent, note="extrapolated past %04d-%02d-%02d" % until)
+
+    for cname, cspec in ASTEROID_CLUSTERS.items():
+        if "base" in cspec:
+            base_raw, base_rows = parent_rows[cspec["base"]]
+            trail = cspec["trail_deg"]
+            rows = [
+                dict(r, mean_anomaly_deg=round((r["mean_anomaly_deg"] - trail) % 360.0,
+                                               DECIMALS["mean_anomaly_deg"]))
+                for r in base_rows
+            ]
+            at_row = [row for row in base_raw if row["date"] == epoch][0]
+            r, lam, _ = polar(position(rows, julian_day(epoch)))
+            outer["bodies"][cname] = dict(
+                kind="asteroid_cluster",
+                orbit_uau=int(round(r / AU_KM * 1_000_000)),
+                period_mdays=int(round(at_row["pr"] * 1_000)),
+                phase_mdeg=int(round(lam * 1_000)) % 360_000,
+                epoch_ic=ic,
+                radius_km=cspec["radius_km"],
+                surface_mg=1,
+                zone=cspec["zone"],
+                spectral_classes=cspec["spectral_classes"],
+                ore_families=cspec["ore_families"],
+                elements=pack_rows(rows),
+            )
+        else:
+            row = dict(
+                epoch_ic=ic,
+                jd=julian_day(epoch),
+                a_au=cspec["a_au"],
+                e=cspec["e"],
+                i_deg=cspec["i_deg"],
+                node_deg=cspec["node_deg"],
+                peri_deg=cspec["peri_deg"],
+                mean_anomaly_deg=cspec["mean_anomaly_deg"],
+                mean_motion_deg_day=cspec["mean_motion_deg_day"],
+            )
+            r, lam, _ = polar(kepler_xyz(row, 0.0))
+            outer["bodies"][cname] = dict(
+                kind="asteroid_cluster",
+                parent=cspec["parent"],
+                orbit_uau=max(1, int(round(r / AU_KM * 1_000_000))),
+                period_mdays=max(1, int(round(cspec["period_days"] * 1_000))),
+                phase_mdeg=int(round(lam * 1_000)) % 360_000,
+                epoch_ic=ic,
+                radius_km=cspec["radius_km"],
+                surface_mg=1,
+                zone=cspec["zone"],
+                spectral_classes=cspec["spectral_classes"],
+                ore_families=cspec["ore_families"],
+                elements=pack_rows([row]),
+            )
+
+    text = json.dumps(outer, separators=(",", ":"))
+    text = re.sub(
+        r"-?\d+(?:\.\d+)?[eE][+-]?\d+",
+        lambda m: format(decimal.Decimal(repr(float(m.group(0)))), "f"),
+        text,
+    )
+    with open(args.outer_path, "w", encoding="utf-8") as handle:
+        handle.write(text + "\n")
+    print(json.dumps(dict(outer_written=args.outer_path, measure=outer["measure"]), indent=2))
+
+
 def main():
     parser = argparse.ArgumentParser(description=__doc__.split("\n")[0])
     parser.add_argument("--epoch", default="2351-05-13")
     parser.add_argument("--from", dest="first", type=int, default=2340)
     parser.add_argument("--to", dest="last", type=int, default=2400)
     parser.add_argument("--write-golden", dest="golden_path", default=None)
+    parser.add_argument("--write-outer", dest="outer_path", default=None,
+                        help="write the outer solar system & asteroid cluster table (doc 35 SF.1)")
     parser.add_argument("--bodies", default=",".join(BODIES))
     parser.add_argument("--moons", default=",".join(MOONS),
                         help="the moons to fetch about their parents (doc 19 cut A.7)")
@@ -345,6 +612,9 @@ def main():
     first, last = (args.first, 1, 1), (args.last, 1, 1)
     dates = row_dates(args.first, args.last, epoch)
     ic = epoch_ic(epoch)
+    if args.outer_path:
+        write_outer_pack(args, epoch, first, last, dates, ic)
+        return
     names = [n for n in args.bodies.split(",") if n]
     moons = [n for n in args.moons.split(",") if n]
 

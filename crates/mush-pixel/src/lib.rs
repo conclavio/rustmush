@@ -76,10 +76,12 @@ pub mod cockpit;
 #[cfg(feature = "encode")]
 pub mod cockpit_kitty;
 pub mod design;
+pub mod docking;
 pub mod doll;
 pub mod frame;
 pub mod fx;
 pub mod heightfield;
+pub mod holotank;
 pub mod iso25d;
 #[cfg(feature = "encode")]
 pub mod kitty;
@@ -89,6 +91,7 @@ pub mod model;
 pub mod overhead;
 pub mod overlay;
 pub mod picture;
+pub mod planet_shader;
 #[cfg(feature = "encode")]
 pub mod png;
 pub mod raycast;
@@ -96,5 +99,6 @@ pub mod replay;
 pub mod scene;
 #[cfg(feature = "encode")]
 pub mod sixel;
+pub mod space_cockpit;
 
 pub use frame::Frame;

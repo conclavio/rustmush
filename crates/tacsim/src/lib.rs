@@ -191,6 +191,7 @@ pub mod sheet;
 /// Doc 18 cut IC2: **the sky seam** — the one query every distance asks
 /// (doc 18 §4.8, D-18-43, D-18-48).
 pub mod sky;
+pub mod space;
 pub mod store;
 /// **Doc 20 cut SM.1** — surface mining's ground: the keyed geology function, the reading
 /// rule, the geology key's boot and pin, the site ground cache and `@geology`.
@@ -222,7 +223,10 @@ pub use pack::{
 };
 pub use record::{PackRecord, PinRecord, SeedApplication};
 pub use seed::{PlannedObject, SeedError, SeedOutcome, SeedPlan};
-pub use sky::{KeplerSky, PosKm, Sky, SkyError, epoch_date};
+pub use sky::{
+    KeplerSky, OuterBodyDef, OuterBodyKind, PosKm, Sky, SkyError, VELOCITY_HALF_WINDOW_S,
+    epoch_date, outer_catalog,
+};
 // 16b cut R-b (R4). The sheet ruleset is deliberately NOT re-exported as
 // `TacsimRuleset`: that name is this crate's packs-and-seed layer, and the two
 // are different modules with different namespaces (see [`sheet`]).
@@ -1015,6 +1019,8 @@ impl GameModule for TacsimRuleset {
         // Doc 32 cut CF.2: the IC field host — `+field`, its tick and its clock observer.
         field::register(reg)?;
         detachment::live::register(reg)?;
+        // Doc 35 cut SF.9: spaceflight, 1:1 bubble combat, zero-G asteroid mining & 6-DOF docking (`+helm`, `+tac`, `+mine`).
+        space::register(reg)?;
         // 16b cut AH.1 (16c N18): the first-time hints — `@tutorial` and the
         // lobby's `Moved` observer, under the `LegacyPostImage` classification
         // the cockpit hands back. Unconditional like its neighbours: the verb

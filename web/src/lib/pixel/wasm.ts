@@ -25,6 +25,12 @@ export const FEED_CHART = 3;
 export const FEED_REPLAY = 4;
 /** `mp_feed`'s number for `replay.cursor`. */
 export const FEED_REPLAY_CURSOR = 5;
+/** `mp_feed`'s number for `space.holotank` (doc 35 cut SF.7). */
+export const FEED_SPACE_HOLOTANK = 6;
+/** `mp_feed`'s number for `space.cockpit` (doc 35 cut SF.7). */
+export const FEED_SPACE_COCKPIT = 7;
+/** `mp_feed`'s number for `space.docking` (doc 35 cut SF.7). */
+export const FEED_SPACE_DOCKING = 8;
 
 /** `mp_kind`'s number for the first-person cockpit (`CockpitPicture`). */
 export const KIND_COCKPIT = 1;
@@ -38,6 +44,12 @@ export const KIND_DOLL = 4;
 export const KIND_REPLAY = 5;
 /** `mp_kind`'s number for the cockpit's 2.5D tactical camera (`Iso25DPicture`). */
 export const KIND_ISO25D = 6;
+/** `mp_kind`'s number for the 3D Space Holo-Tank (`HolotankPicture`, doc 35 cut SF.7). */
+export const KIND_HOLOTANK = 7;
+/** `mp_kind`'s number for the First-Person Space Bridge Canopy (`SpaceCockpitPicture`, doc 35 cut SF.7). */
+export const KIND_SPACE_COCKPIT = 8;
+/** `mp_kind`'s number for the 6-DOF Bow Docking Camera (`DockingPicture`, doc 35 cut SF.7). */
+export const KIND_DOCKING = 9;
 
 /** What the picture is drawn for: the look's offset from the hull, and the
  * hull's own offset from the frame's heading and an ordered heading when the

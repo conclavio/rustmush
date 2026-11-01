@@ -944,9 +944,12 @@ impl TuiApp {
     fn pixel_home(&self) -> bool {
         match self.pixel.kind() {
             PictureKind::Chart => self.active == CHART_SCREEN,
+            PictureKind::Holotank => self.active == CHART_SCREEN || self.active == COCKPIT_SCREEN,
             PictureKind::Doll => self.active == super::screen::DAMAGE_SCREEN,
             PictureKind::Replay => self.picture_layout(),
-            PictureKind::Cockpit => self.active == COCKPIT_SCREEN,
+            PictureKind::Cockpit | PictureKind::SpaceCockpit | PictureKind::Docking => {
+                self.active == COCKPIT_SCREEN
+            }
         }
     }
 
