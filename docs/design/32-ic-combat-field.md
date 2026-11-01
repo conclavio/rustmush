@@ -1953,18 +1953,19 @@ launch, the miner's picture holds the hulls `E 200-500 m`, seen from rig 2 (the 
 about 37 cells away, and without a hull class. At Ahuna it held them `within 200 m` with their
 class. The 512 story's raider is seen at its launch, before it declares, inside the near band.
 
-**The measurements** (Q-CF-51), from the Windows development box in a debug build. They are printed
-under `--nocapture` by the gates named in the last column. Timings vary by about a third between
+**The measurements** (Q-CF-51), from the Windows development box in a debug build, with the
+release figures from conclav.dev (32 cores, `--release`) in brackets. They are printed under
+`--nocapture` by the gates named in the last column. Debug timings vary by about a third between
 runs; byte counts are exact.
 
 | | 256 (Ahuna Flank) | 512 (Urvara Reach) | How |
 |---|---|---|---|
-| **A\* corner to corner**, `(0, 0)` → `(side − 1, side − 1)` | 20,635 cells visited of a 65,536 budget (31.5 %); path 294 cells; 22 ms | 83,610 of 262,144 (31.9 %); 589 cells; 108 ms | `s2_the_512_site_is_measured`: `mush_atlas::path` over the keyed ground built at the site's side, the budget w × h (`drive_path_budget_cells`); the least of five timings |
+| **A\* corner to corner**, `(0, 0)` → `(side − 1, side − 1)` | 20,635 cells visited of a 65,536 budget (31.5 %); path 294 cells; 22 ms [3.2 ms] | 83,610 of 262,144 (31.9 %); 589 cells; 108 ms [14.5 ms] | `s2_the_512_site_is_measured`: `mush_atlas::path` over the keyed ground built at the site's side, the budget w × h (`drive_path_budget_cells`); the least of five timings |
 | … the same trip as `drive_leg` | cost 60,720, 18 waypoints | cost 121,150, **31 waypoints of `MAX_LEG_WAYPOINTS` 32** | the same gate |
-| **A\* ramp → far quadrant** (the Dray-P's ramp to `(7/8 side, 7/8 side)`) | 5,229 visited (8.0 %); 119 cells; 6.5 ms; 15 waypoints | 12,604 (4.8 %); 226 cells; 18 ms; 25 waypoints | the same gate |
-| **Home field build** (the ramp over the whole site) | 97 ms; 320 KiB (a `u32` cost and a `u8` step a cell) | 420 ms; 1,280 KiB | the same gate; the least of five |
+| **A\* ramp → far quadrant** (the Dray-P's ramp to `(7/8 side, 7/8 side)`) | 5,229 visited (8.0 %); 119 cells; 6.5 ms [0.8 ms]; 15 waypoints | 12,604 (4.8 %); 226 cells; 18 ms [2.1 ms]; 25 waypoints | the same gate |
+| **Home field build** (the ramp over the whole site) | 97 ms [7.0 ms]; 320 KiB (a `u32` cost and a `u8` step a cell) | 420 ms [30.5 ms]; 1,280 KiB | the same gate; the least of five |
 | **Field admission** (nine units) | promotion landed 13 ms after the mark; the task live by 0.7 s | 9 ms; 0.9 s | the story: wall time from the leader's mark to the promotion, then to the task's first live id (polled every 25 ms, a world second every 200 ms) |
-| **Field pulse** (nine units, all armed, four parties, every party Hostile) | median 0.35 ms, p99 0.8, max 1.6; 353 shots in 600 pulses | median 0.34 ms, p99 0.9, max 1.3; 330 shots | `s2_a_field_pulse_is_measured_at_both_sides`: the field's arena on each site's own priced terrain, the story's cells, `step_settled` for 600 Engaged pulses of 100 ms |
+| **Field pulse** (nine units, all armed, four parties, every party Hostile) | median 0.35 ms, p99 0.8, max 1.6 [0.03 / 0.13 / 0.2]; 353 shots in 600 pulses | median 0.34 ms, p99 0.9, max 1.3 [0.03 / 0.07 / 0.7]; 330 shots | `s2_a_field_pulse_is_measured_at_both_sides`: the field's arena on each site's own priced terrain, the story's cells, `step_settled` for 600 Engaged pulses of 100 ms |
 | **Snapshot** | 137,273 B at the opening, 159,038 B after a minute | 137,277 B, 155,852 B | the same gate, `Snapshot::encode` |
 | **`arena.map`** (the escort's, while the field runs) | 239,839 B: the whole 256 ground, unwindowed | 241,606 B: a 256 × 256 window at `(134, 140)` of a 512 × 512 extent, focused on the escort, holding the whole fight; asked for the whole site, 242,161 B for the same window | the story; `MAP_MAX_BYTES` 262,144 |
 | **Cockpit keyframe** (`arena.cockpit`, campaign block included) | escort 10,471 B; miner 12,643 B | 10,328 B; 11,800 B | the story |
@@ -1985,9 +1986,13 @@ runs; byte counts are exact.
   - **The A\* search** visits the same share of its budget at both sides (about a third, corner to
     corner).
   - **The home field build** is the one cost on the world task's path. It is built on the surface
-    tick, one site a fire, never on an act's path. At 512 it is 4.3 times the 256 build, about
-    420 ms in a debug build. The release figure was not measured here (on this ratio, about 4.3
-    times SM.4b's release figure at 256).
+    tick, one site a fire, never on an act's path. At 512 it is 30.5 ms in release (7.0 ms at
+    256), past the 20 ms ceiling SM.4b's gate holds a 256 build to. It is paid once a site and a
+    ramp, not per act. **Default for the owner:** accept it as a one-off tick of about 30 ms, and
+    revisit only if a 512 site's home field is ever rebuilt often.
+  - **The corner-to-corner plan** is 14.5 ms in release at 512, past SM.4b's 10 ms ceiling at 256.
+    It is paid by a drive's start, once a drive. The ramp-to-far-quadrant plan, a working trip,
+    is 2.1 ms.
   - **The ground cache** at its worst (sixteen 512 sites) is 26 MiB. `SITE_CACHE_CAPACITY` stays 16.
 - **The frames are the same size at both sides.** WG.6's window keeps `arena.map` to a 256 × 256
   window at 512, so a 512 field's map keyframe is the 256 one's size, at 92 % of its cap. A rougher
