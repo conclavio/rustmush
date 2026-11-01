@@ -118,8 +118,9 @@ pub enum ActiveSpaceContext {
 }
 
 /// Module-owned runtime state for active space bubbles, asteroid clusters, customs pickets,
-/// Tier-1 system free flight records, and 6-DOF docking sessions (`SF.9`).
-#[derive(Clone, Debug, Default)]
+/// Tier-1 system free flight records, 6-DOF docking sessions, bound `TacticalUnit` hull
+/// snapshots, and `doc 27a` black-box & salvage claims (`SF.9`, `SF.10`).
+#[derive(Clone, Debug)]
 pub struct SpaceBook {
     /// Standalone 1:1 wall-time combat/encounter bubbles keyed by `bubble_id`.
     pub bubbles: BTreeMap<String, LocalSpaceBubble>,
@@ -138,9 +139,123 @@ pub struct SpaceBook {
     pub ship_context: BTreeMap<String, ActiveSpaceContext>,
     /// Explicit actor -> `ship_id` binding for actors operating a space hull.
     pub actor_ships: BTreeMap<ObjId, String>,
+    /// Bound [`mush_tactics::TacticalUnit`] snapshots keyed by `ship_id` (`SF.10`, `D-35-1`).
+    pub units: BTreeMap<String, mush_tactics::TacticalUnit>,
+    /// Latest [`crate::field_ops::FieldUnitAssessment`] keyed by `ship_id` (`SF.10`).
+    pub unit_assessments: BTreeMap<String, crate::field_ops::FieldUnitAssessment>,
+    /// Authoritative `doc 27a` black-box forensic & 48-hour salvage claim ledger (`SF.10`).
+    pub salvage_book: crate::field_ops::SalvageClaimBook,
+    /// Monotonic counter for [`crate::field_ops::RecoveryOpId`] registrations (`SF.10`).
+    pub next_recovery_op_id: u64,
+}
+
+impl Default for SpaceBook {
+    fn default() -> Self {
+        Self {
+            bubbles: BTreeMap::new(),
+            clusters: BTreeMap::new(),
+            pickets: BTreeMap::new(),
+            flights: BTreeMap::new(),
+            dockings: BTreeMap::new(),
+            tows: BTreeMap::new(),
+            ship_context: BTreeMap::new(),
+            actor_ships: BTreeMap::new(),
+            units: BTreeMap::new(),
+            unit_assessments: BTreeMap::new(),
+            salvage_book: crate::field_ops::SalvageClaimBook::new(),
+            next_recovery_op_id: 1,
+        }
+    }
 }
 
 impl SpaceBook {
+    /// Deterministic non-zero [`ObjId`] for a `ship_id` inside [`Self::units`] and [`Self::salvage_book`].
+    #[must_use]
+    pub fn obj_id_for_ship(&self, ship_id: &str) -> ObjId {
+        if let Some(unit) = self.units.get(ship_id) {
+            return unit.object();
+        }
+        if let Some(num) = ship_id
+            .strip_prefix("hull.")
+            .or_else(|| ship_id.strip_prefix("ship."))
+            .and_then(|s| s.parse::<u32>().ok())
+            && num > 0
+        {
+            return ObjId(num);
+        }
+        let mut h = 5_000_u64;
+        for b in ship_id.bytes() {
+            h = h.wrapping_mul(131).wrapping_add(u64::from(b));
+        }
+        ObjId(((h % 900_000) + 10_000) as u32)
+    }
+
+    /// Ensure `ship_id` has a bound [`mush_tactics::TacticalUnit`] in [`Self::units`].
+    pub fn ensure_ship_tactical_unit(&mut self, ship_id: &str, unit_entry_id: &str) {
+        if self.units.contains_key(ship_id) {
+            return;
+        }
+        let obj = self.obj_id_for_ship(ship_id);
+        let entry = if unit_entry_id == "tacsim.unit.dray_p" || unit_entry_id == "dray_p" {
+            "tacsim.unit.dray_p"
+        } else {
+            "tacsim.unit.dray"
+        };
+        if let Ok((unit, spec)) = super::custody::instantiate_stock_space_unit(obj, entry) {
+            if let Ok(assess) = crate::field_ops::assess_tacsim_unit(&unit, Some(&spec)) {
+                self.unit_assessments.insert(ship_id.to_owned(), assess);
+            }
+            self.units.insert(ship_id.to_owned(), unit);
+        }
+    }
+
+    /// Synchronize all ships in the bubble containing `ship_id` into [`Self::units`],
+    /// [`Self::unit_assessments`], and [`Self::salvage_book`] (`SF.10`, `D-35-1`, `D-35-12`).
+    pub fn sync_bubble_damage_and_forensics(
+        &mut self,
+        ship_id: &str,
+        attacker_ship_id: Option<&str>,
+        events: &[super::bubble::SpaceCombatEvent],
+        at_ic: i64,
+    ) {
+        let Some((bubble, _)) = self.bubble_for_ship(ship_id) else {
+            return;
+        };
+        let ships_snapshot: Vec<(String, SpaceShipState)> = bubble
+            .ships
+            .iter()
+            .map(|(k, v)| (k.clone(), v.clone()))
+            .collect();
+        let attacker_obj = attacker_ship_id.map(|id| self.obj_id_for_ship(id));
+
+        for (sid, ship_state) in ships_snapshot {
+            self.ensure_ship_tactical_unit(&sid, &ship_state.hull_class);
+            if let Some(before) = self.units.get(&sid).cloned()
+                && let Ok((post_unit, assessment, _plan)) =
+                    super::custody::build_space_damage_mutation_plan(
+                        &before,
+                        &ship_state,
+                        None,
+                        at_ic,
+                    )
+            {
+                let target_obj = post_unit.object();
+                let state = assessment.state;
+                self.units.insert(sid.clone(), post_unit);
+                self.unit_assessments.insert(sid.clone(), assessment);
+                let _ = super::custody::record_space_combat_to_black_box(
+                    &mut self.salvage_book,
+                    target_obj,
+                    &sid,
+                    attacker_obj,
+                    events,
+                    state,
+                    at_ic,
+                );
+            }
+        }
+    }
+
     /// Resolve the ship ID operated by `actor`, checking [`Self::actor_ships`] first, then
     /// the actor's live charter or owned hull (`helm_of`), and falling back to `ship.<actor.0>`.
     #[must_use]
@@ -540,7 +655,8 @@ fn helm_cmd(ctx: &mut Ctx<'_>) -> Result<(), CmdError> {
                 );
                 book.pickets.insert(ship_id.clone(), enc);
                 book.ship_context
-                    .insert(ship_id.clone(), ActiveSpaceContext::Picket(ship_id));
+                    .insert(ship_id.clone(), ActiveSpaceContext::Picket(ship_id.clone()));
+                book.sync_bubble_damage_and_forensics(&ship_id, None, &[], now_ic);
                 "Interdiction triggered at Kirkwood 3:1 Picket: CarrierJourney paused (Promoted); Republic Customs Corvette hails you to heave-to (<= 10 m/s).".to_owned()
             } else if matches!(
                 raw.as_str(),
@@ -562,7 +678,8 @@ fn helm_cmd(ctx: &mut Ctx<'_>) -> Result<(), CmdError> {
                     .push(LaserMount::standard_turret("turret_laser_1"));
                 field.insert_ship_with_hold(dray_p, OreHoldState::new_dray_p());
                 book.ship_context
-                    .insert(ship_id, ActiveSpaceContext::Cluster(raw.clone()));
+                    .insert(ship_id.clone(), ActiveSpaceContext::Cluster(raw.clone()));
+                book.sync_bubble_damage_and_forensics(&ship_id, None, &[], now_ic);
                 format!(
                     "Entered orbital asteroid cluster '{raw}' on 1:1 wall-clock time; Dray-P stow.ore bay online."
                 )
@@ -585,7 +702,8 @@ fn helm_cmd(ctx: &mut Ctx<'_>) -> Result<(), CmdError> {
                 let entry = book.bubbles.entry(raw.clone()).or_insert(bubble);
                 entry.insert_ship(dray);
                 book.ship_context
-                    .insert(ship_id, ActiveSpaceContext::Bubble(raw.clone()));
+                    .insert(ship_id.clone(), ActiveSpaceContext::Bubble(raw.clone()));
+                book.sync_bubble_damage_and_forensics(&ship_id, None, &[], now_ic);
                 format!("Entered local space bubble '{raw}' on 1:1 wall-clock time.")
             };
 
@@ -855,7 +973,8 @@ fn helm_cmd(ctx: &mut Ctx<'_>) -> Result<(), CmdError> {
         }
         Some("dock") => helm_dock_subcmd(ctx, actor, &ship_id, &raw),
         Some("tow") => {
-            let now_ic = ctx.w.world_ic_now().at.max(0) as u64;
+            let now_ic_i64 = ctx.w.world_ic_now().at.max(0);
+            let now_ic = now_ic_i64 as u64;
             let book = ctx
                 .w
                 .module_state_mut::<SpaceBook>()
@@ -869,6 +988,33 @@ fn helm_cmd(ctx: &mut Ctx<'_>) -> Result<(), CmdError> {
             let tow = session
                 .attach_salvage_tow(now_ic)
                 .map_err(|e| CmdError::msg(format!("Salvage tow refused: {e}")))?;
+
+            let op_raw = book.next_recovery_op_id.max(1);
+            book.next_recovery_op_id = op_raw.saturating_add(1);
+            let derelict_obj = book.obj_id_for_ship(&tow.derelict_ship_id);
+            let tug_obj = book.obj_id_for_ship(&ship_id);
+            let recoverer_obj = ObjId(actor.0.max(1));
+            let prior_owner_obj = if tow.contest_open {
+                ObjId(actor.0.max(1).saturating_add(100))
+            } else {
+                recoverer_obj
+            };
+            let port_base_obj = ObjId(900);
+            if let Ok(op_id) = crate::field_ops::RecoveryOpId::new(op_raw) {
+                let _ = super::custody::register_derelict_salvage_in_book(
+                    &mut book.salvage_book,
+                    op_id,
+                    &tow,
+                    derelict_obj,
+                    tug_obj,
+                    recoverer_obj,
+                    prior_owner_obj,
+                    port_base_obj,
+                    now_ic_i64.max(1),
+                    now_ic_i64.max(1),
+                );
+            }
+
             let msg = format!(
                 "Salvage tow line attached to derelict '{}' ({} t <= {} t 2x cap); 48 h Freeport contest window open until IC {} s.",
                 tow.derelict_ship_id, tow.derelict_tonnage_t, tow_cap, tow.contest_expires_ic_secs
@@ -1195,6 +1341,7 @@ fn tac_cmd(ctx: &mut Ctx<'_>) -> Result<(), CmdError> {
             if raw.is_empty() {
                 return Err(CmdError::msg("Usage: +tac/beam <target_id>"));
             }
+            let now_ic = ctx.w.world_ic_now().at.max(1);
             let book = ctx
                 .w
                 .module_state_mut::<SpaceBook>()
@@ -1203,6 +1350,7 @@ fn tac_cmd(ctx: &mut Ctx<'_>) -> Result<(), CmdError> {
                 .bubble_for_ship_mut(&ship_id)
                 .ok_or_else(|| CmdError::msg("No active space bubble."))?;
             let events = bubble.fire_offensive_lasers(&resolved_id, &raw);
+            book.sync_bubble_damage_and_forensics(&ship_id, Some(&resolved_id), &events, now_ic);
             ctx.out.info(
                 actor,
                 format!(
@@ -1220,6 +1368,7 @@ fn tac_cmd(ctx: &mut Ctx<'_>) -> Result<(), CmdError> {
                 raw.parse()
                     .map_err(|_| CmdError::msg("Usage: +tac/step [<wall_ms>]"))?
             };
+            let now_ic = ctx.w.world_ic_now().at.max(1);
             let book = ctx
                 .w
                 .module_state_mut::<SpaceBook>()
@@ -1231,12 +1380,14 @@ fn tac_cmd(ctx: &mut Ctx<'_>) -> Result<(), CmdError> {
                     let _ = enc.trigger_raider_ambush();
                 }
                 let rep = enc.step_wall_ms(wall_ms);
+                let events = rep.events.clone();
                 let msg = format!(
                     "Stepped Kirkwood Picket bubble +{} ms: phase={:?}, events={}.",
                     rep.wall_advanced_ms,
                     enc.phase,
                     rep.events.len()
                 );
+                book.sync_bubble_damage_and_forensics(&ship_id, None, &events, now_ic);
                 ctx.out.info(actor, msg);
                 push_actor_space_feeds(ctx, actor);
                 return Ok(());
@@ -1245,12 +1396,14 @@ fn tac_cmd(ctx: &mut Ctx<'_>) -> Result<(), CmdError> {
                 .bubble_for_ship_mut(&ship_id)
                 .ok_or_else(|| CmdError::msg("No active space bubble."))?;
             let rep = bubble.step_wall_ms(wall_ms);
+            let events = rep.events.clone();
             let msg = format!(
                 "Stepped 1:1 space bubble +{} ms (substeps={}, events={}).",
                 rep.wall_advanced_ms,
                 rep.substeps_executed,
                 rep.events.len()
             );
+            book.sync_bubble_damage_and_forensics(&ship_id, None, &events, now_ic);
             ctx.out.info(actor, msg);
             push_actor_space_feeds(ctx, actor);
             Ok(())

@@ -11,6 +11,7 @@
 
 pub mod bubble;
 pub mod commands;
+pub mod custody;
 pub mod docking;
 pub mod flight;
 pub mod mining;
@@ -26,6 +27,12 @@ pub use commands::{
     ActiveSpaceContext, HELM_HELP, HELM_SWITCHES, HELM_VERB, MINE_HELP, MINE_SWITCHES, MINE_VERB,
     SPACE_COCKPIT_FEED, SPACE_DOCKING_FEED, SPACE_HOLOTANK_FEED, SpaceBook, TAC_HELP, TAC_SWITCHES,
     TAC_VERB, register,
+};
+pub use custody::{
+    ALL_FACET_BANDS, ALL_SHIP_SECTIONS, build_space_damage_mutation_plan,
+    format_tactical_unit_damage_line, instantiate_stock_space_unit,
+    record_space_combat_to_black_box, register_derelict_salvage_in_book,
+    space_ship_from_tactical_unit,
 };
 pub use docking::{
     DOCK_GATE_ATTITUDE_MDEG, DOCK_GATE_CLOSURE_MAX_MMPS, DOCK_GATE_CLOSURE_MIN_MMPS,
@@ -1264,6 +1271,16 @@ mod tests {
             let tow = book.tows.get(&ship_id).ok_or("missing SalvageTowRecord")?;
             check!(tow.contest_open);
             check_eq!(tow.derelict_ship_id, "claim_jumper");
+            let jumper_assess = book
+                .unit_assessments
+                .get("claim_jumper")
+                .ok_or("missing claim_jumper FieldUnitAssessment")?;
+            check!(jumper_assess.is_towable);
+            let claim_id = crate::field_ops::SalvageClaimId::new(1)?;
+            check!(
+                book.salvage_book.claim(claim_id).is_some(),
+                "expected 48h SalvageClaim registered in SpaceBook.salvage_book by +helm/tow"
+            );
         }
 
         // 5. Decouple into Tier-1 System Free Flight, fit drop tanks, fly expedition to Neptune, and recouple autopilot!
@@ -1277,6 +1294,172 @@ mod tests {
             "expected space.cockpit canopy keyframe on +helm/expedition neptune"
         );
         let _ = tw.run(pilot, "+helm/autopilot ceres");
+
+        Ok(())
+    }
+
+    #[test]
+    fn sf10_tactical_unit_custody_roundtrip_black_box_forensics_and_salvage_claim_book()
+    -> TestResult {
+        use crate::field_ops::{
+            CONTEST_WINDOW_AVAILABLE_REAL_SECS, ContestGround, CustodyTitleStatus,
+            OperationalState, RecoveryOpId, SalvageClaimBook,
+        };
+        use mush_core::ObjId;
+
+        // 1. Instantiate a stock `tacsim.unit.dray` TacticalUnit (`ObjId(801)`) and convert it
+        //    into a `SpaceShipState` via `space_ship_from_tactical_unit` (`D-35-1`).
+        let (dray_before, dray_spec) =
+            instantiate_stock_space_unit(ObjId(801), "tacsim.unit.dray")?;
+        let mut ship = space_ship_from_tactical_unit(
+            &dray_before,
+            "derelict_dray",
+            "UNS-DRAY-801",
+            SpacePartyId(2),
+            [0, 0, 0],
+            [0, 0, 0],
+        )?;
+        check_eq!(ship.hull_integrity_pct(), 100);
+        check_eq!(format_tactical_unit_damage_line(&dray_before), None);
+
+        // 2. Apply space combat damage: scrape `Front` armor (50 dmg) and blow out `Rear` armor
+        //    + `Drive` internals (350 dmg -> 60 absorbed by `hull.rear`, 250 dealt to `drive`
+        //    internals -> `drive.internals == 0`, transitioning hull to `DisabledDerelict`).
+        let _ = ship.apply_damage(FacetBand::Front, 50);
+        let (struck_sec, absorbed, dealt) = ship.apply_damage(FacetBand::Rear, 350);
+        check_eq!(struck_sec, ShipSectionId::Drive);
+        check_eq!(absorbed, 60);
+        check_eq!(dealt, 250);
+        check!(matches!(
+            ship.status,
+            HullStatus::DisabledDerelict {
+                epoch_open: true,
+                ..
+            }
+        ));
+
+        // 3. Build and apply the IC-custody-legal `UnitMutationPlan` onto `dray_before`
+        //    via `build_space_damage_mutation_plan`.
+        let (dray_after, assessment, plan_opt) =
+            build_space_damage_mutation_plan(&dray_before, &ship, Some(&dray_spec), 2_000)?;
+        check!(plan_opt.is_some());
+        check_eq!(assessment.state, OperationalState::Immobile);
+        check!(!assessment.can_move);
+        check!(assessment.is_towable);
+        check_eq!(
+            format_tactical_unit_damage_line(&dray_after).as_deref(),
+            Some("Damage: drive destroyed.")
+        );
+
+        // Round-trip `dray_after` back into `SpaceShipState` and verify `DisabledDerelict`
+        // and damaged `Front` facet (`120 - 50 = 70`) persist identically.
+        let roundtripped = space_ship_from_tactical_unit(
+            &dray_after,
+            "derelict_dray",
+            "UNS-DRAY-801",
+            SpacePartyId(2),
+            [0, 0, 0],
+            [0, 0, 0],
+        )?;
+        check!(matches!(
+            roundtripped.status,
+            HullStatus::DisabledDerelict {
+                epoch_open: true,
+                ..
+            }
+        ));
+        check_eq!(
+            roundtripped
+                .sections
+                .get(&ShipSectionId::Hull)
+                .and_then(|s| s.facets.get(&FacetBand::Front))
+                .copied(),
+            Some(70)
+        );
+
+        // 4. Record space combat events into `SalvageClaimBook`'s tamper-evident black box
+        //    and register the 48-hour salvage tow claim (`doc 27a`).
+        let mut salvage_book = SalvageClaimBook::new();
+        let events = vec![
+            SpaceCombatEvent::LaserHit {
+                shooter_id: "tug_ship".to_owned(),
+                target_id: "derelict_dray".to_owned(),
+                distance_m: 350,
+                facet: FacetBand::Rear,
+                section: ShipSectionId::Drive,
+                armor_damage: 60,
+                internal_damage: 250,
+                shooter_heat_permille: 240,
+            },
+            SpaceCombatEvent::ShipDisabledDerelict {
+                ship_id: "derelict_dray".to_owned(),
+                epoch_open: true,
+                life_support_remaining_s: DERELICT_WINDOW_S,
+            },
+        ];
+        let recorded = record_space_combat_to_black_box(
+            &mut salvage_book,
+            dray_after.object(),
+            "derelict_dray",
+            Some(ObjId(802)),
+            &events,
+            assessment.state,
+            2_000,
+        )?;
+        check_eq!(recorded, 2);
+
+        let tow = SalvageTowRecord {
+            towing_ship_id: "tug_ship".to_owned(),
+            derelict_ship_id: "derelict_dray".to_owned(),
+            derelict_tonnage_t: 400,
+            prior_owner_party: Some(SpacePartyId(2)),
+            contest_open: true,
+            contest_expires_ic_secs: 2_000 + SALVAGE_CONTEST_WINDOW_IC_SECS,
+        };
+        let op_id = RecoveryOpId::new(1)?;
+        let salvager = ObjId(10);
+        let prior_owner = ObjId(20);
+        let port_base = ObjId(900);
+        let custody_status = register_derelict_salvage_in_book(
+            &mut salvage_book,
+            op_id,
+            &tow,
+            dray_after.object(),
+            ObjId(802),
+            salvager,
+            prior_owner,
+            port_base,
+            2_010,
+            50_000,
+        )?;
+
+        let claim_id = match custody_status {
+            CustodyTitleStatus::PendingSalvageClaim { claim_id, .. } => claim_id,
+            other => return Err(format!("expected PendingSalvageClaim, got {other:?}").into()),
+        };
+
+        // Extract black-box forensics in port custody and verify the recorded combat hits + tow
+        let forensics = salvage_book.extract_black_box_forensics(op_id, salvager, true, 2_020)?;
+        check_eq!(forensics.hull, dray_after.object());
+        check_eq!(forensics.closed_in_base, port_base);
+        check!(!forensics.reveals_unlawful_recovery);
+        check_eq!(forensics.entries.len(), 4);
+
+        // Bare prior title alone does not vacate a lawful open-space salvage recovery (`doc 27a` `Q-R1`),
+        // and after 48 available real hours (`CONTEST_WINDOW_AVAILABLE_REAL_SECS`), title settles to `salvager`!
+        let bare = salvage_book.submit_contest(
+            claim_id,
+            prior_owner,
+            ContestGround::BarePriorTitle,
+            55_000,
+        )?;
+        check_eq!(bare.valid_to_vacate, None);
+        let (settled, _) =
+            salvage_book.adjudicate_claim(claim_id, 50_000 + CONTEST_WINDOW_AVAILABLE_REAL_SECS)?;
+        check_eq!(
+            settled,
+            CustodyTitleStatus::ResolvedTitle { owner: salvager }
+        );
 
         Ok(())
     }
