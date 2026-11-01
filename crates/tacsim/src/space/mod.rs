@@ -10,6 +10,7 @@
 //! `detachment/*` (`D-35-1`, `D-35-2`).
 
 pub mod bubble;
+pub mod docking;
 pub mod mining;
 pub mod picket;
 pub mod weapons;
@@ -18,6 +19,13 @@ pub use bubble::{
     BubbleId, BubbleStepReport, DERELICT_WINDOW_S, EmconPosture, FacetBand, HullStatus,
     LocalSpaceBubble, MAX_SUBSTEP_MS, ShipSectionId, ShipSectionState, SpaceCombatEvent,
     SpacePartyId, SpaceRelation, SpaceShipState, SubsystemCrit,
+};
+pub use docking::{
+    DOCK_GATE_ATTITUDE_MDEG, DOCK_GATE_CLOSURE_MAX_MMPS, DOCK_GATE_CLOSURE_MIN_MMPS,
+    DOCK_GATE_LATERAL_MM, DOCK_GATE_ROLL_MDEG, DockingControlInput, DockingError, DockingOutcome,
+    DockingPose6Dof, DockingSession, DockingSessionState, DockingTargetKind,
+    MAX_DOCKING_INIT_RANGE_M, MAX_DOCKING_INIT_REL_SPEED_MPS, SALVAGE_CONTEST_WINDOW_IC_SECS,
+    SalvageTowRecord,
 };
 pub use mining::{
     ASTEROID_CONTEST_WINDOW_IC_SECS, AsteroidClaimState, AsteroidClusterField, AsteroidOrePool,
@@ -514,6 +522,276 @@ mod tests {
                 contested_by: Some(challenger),
                 ..
             } if challenger == "miner_b"
+        ));
+        Ok(())
+    }
+
+    #[test]
+    fn manual_6dof_docking_at_port_clamps_within_gates_and_high_speed_scrapes_front_facet()
+    -> TestResult {
+        // 1. Opt-in port berth approach starting misaligned (`dx = +400 mm`, `dy = -320 mm`,
+        // `pitch = -2500 mdeg`, `roll = +3600 mdeg`, `dz = 2400 mm`) while paused from world tick.
+        let mut session = DockingSession::start_port_approach(
+            "dock.port_1",
+            "dray_1",
+            SpacePartyId(1),
+            400,
+            "ceres_port",
+            "CERES-BERTH-04",
+            DockingPose6Dof {
+                dx_mm: 400,
+                dy_mm: -320,
+                dz_mm: 2_400,
+                pitch_mdeg: -2_500,
+                yaw_mdeg: 1_200,
+                roll_mdeg: 3_600,
+                vx_mmps: 0,
+                vy_mmps: 0,
+                vz_mmps: 0,
+                vpitch_mdeg_s: 0,
+                vyaw_mdeg_s: 0,
+                vroll_mdeg_s: 0,
+            },
+        );
+        check!(session.paused_from_world_tick);
+        check!(!session.target.is_mandatory());
+        check!(!session.pose.ready_to_clamp());
+
+        // Trim lateral, pitch, and roll into the green gate using WASD + Arrows + Q/E
+        for _ in 0..24 {
+            let _ = session.step_frame_60fps(DockingControlInput {
+                trans_x: -1,
+                trans_y: 1,
+                pitch_trim: 1,
+                roll_trim: -1,
+                ..DockingControlInput::default()
+            });
+        }
+        for _ in 0..45 {
+            let _ = session.step_frame_60fps(DockingControlInput::default());
+        }
+        check!(
+            session.pose.pose_aligned(),
+            "pose should now be inside ±250 mm, ±2 deg, ±3 deg gates: {:?}",
+            session.pose
+        );
+
+        // Pulse `R` (`closure_pulse = +1`) to establish a ~400 mm/s closure rate (`0.40 m/s`)
+        for _ in 0..20 {
+            let _ = session.step_frame_60fps(DockingControlInput {
+                closure_pulse: 1,
+                ..DockingControlInput::default()
+            });
+        }
+        check!(session.pose.ready_to_clamp());
+
+        let feed = session.docking_feed();
+        check_eq!(
+            feed.get("status").and_then(serde_json::Value::as_str),
+            Some("ALIGNED-READY")
+        );
+
+        // Coast to collar contact (`dz_mm <= 0`) at 60 fps
+        for _ in 0..450 {
+            let st = session.step_frame_60fps(DockingControlInput::default());
+            if matches!(st, DockingSessionState::Completed(_)) {
+                break;
+            }
+        }
+        check!(!session.paused_from_world_tick);
+        check!(matches!(
+            session.state,
+            DockingSessionState::Completed(DockingOutcome::Clamped {
+                saved_delta_v_mps,
+                saved_approach_ic_secs: 900,
+                ..
+            }) if saved_delta_v_mps > 0
+        ));
+
+        // 2. High-speed impact (`vz = 1,250 mm/s > 800 mm/s`) causes CollarScrapeBounce and damages Front facet
+        let mut bubble = LocalSpaceBubble::new("bubble.dock", "ceres_halo", "DOCK TEST", 5_000);
+        let dray =
+            SpaceShipState::new_dray("dray_1", "DRAY", SpacePartyId(1), [0, 0, 0], [0, 0, 0]);
+        let initial_front = *dray
+            .sections
+            .get(&ShipSectionId::Hull)
+            .ok_or("missing hull")?
+            .facets
+            .get(&FacetBand::Front)
+            .ok_or("missing front")?;
+        bubble.insert_ship(dray);
+
+        let mut fast_session = DockingSession::start_port_approach(
+            "dock.port_fast",
+            "dray_1",
+            SpacePartyId(1),
+            400,
+            "ceres_port",
+            "CERES-BERTH-04",
+            DockingPose6Dof {
+                dx_mm: 0,
+                dy_mm: 0,
+                dz_mm: 20,
+                pitch_mdeg: 0,
+                yaw_mdeg: 0,
+                roll_mdeg: 0,
+                vx_mmps: 0,
+                vy_mmps: 0,
+                vz_mmps: 1_260,
+                vpitch_mdeg_s: 0,
+                vyaw_mdeg_s: 0,
+                vroll_mdeg_s: 0,
+            },
+        );
+        let st = fast_session.step_frame_60fps(DockingControlInput::default());
+        check!(matches!(
+            st,
+            DockingSessionState::Completed(DockingOutcome::CollarScrapeBounce {
+                collar_damaged: true,
+                ..
+            })
+        ));
+        let _ = fast_session.apply_outcome_to_bubble(&mut bubble);
+        let after_front = *bubble
+            .ships
+            .get("dray_1")
+            .ok_or("missing ship")?
+            .sections
+            .get(&ShipSectionId::Hull)
+            .ok_or("missing hull")?
+            .facets
+            .get(&FacetBand::Front)
+            .ok_or("missing front")?;
+        check!(
+            after_front < initial_front,
+            "collar scrape should ablate Front facet armor ({after_front} < {initial_front})"
+        );
+        Ok(())
+    }
+
+    #[test]
+    fn mandatory_derelict_docking_enforces_range_clamps_tumbling_hull_and_attaches_2x_salvage_tow()
+    -> TestResult {
+        let mut bubble = LocalSpaceBubble::new(
+            "bubble.salvage",
+            "pallas_inclined_belt",
+            "PALLAS SALVAGE",
+            80_000,
+        );
+        let hauler = SpaceShipState::new_dray(
+            "salvager",
+            "SALVAGER",
+            SpacePartyId(1),
+            [0, 0, 0],
+            [0, 0, 0],
+        );
+        let mut derelict = SpaceShipState::new_corvette(
+            "raider_wreck",
+            "KESTREL WRECK",
+            SpacePartyId(2),
+            [1_200, 0, 0],
+            [0, 0, 0],
+        );
+        derelict.status = HullStatus::DisabledDerelict {
+            epoch_open: true,
+            life_support_remaining_s: DERELICT_WINDOW_S,
+            salvage_contest_window_s: DERELICT_WINDOW_S,
+        };
+        bubble.insert_ship(hauler);
+        bubble.insert_ship(derelict);
+
+        // At 1,200 m (> 500 m limit), initiating derelict docking is refused
+        let too_far = DockingSession::start_derelict_docking(
+            &bubble,
+            "dock.derelict_far",
+            "salvager",
+            "raider_wreck",
+            400,
+            600,
+            DockingPose6Dof {
+                dx_mm: 0,
+                dy_mm: 0,
+                dz_mm: 1_000,
+                pitch_mdeg: 0,
+                yaw_mdeg: 0,
+                roll_mdeg: 0,
+                vx_mmps: 0,
+                vy_mmps: 0,
+                vz_mmps: 420,
+                vpitch_mdeg_s: 0,
+                vyaw_mdeg_s: 0,
+                vroll_mdeg_s: 0,
+            },
+        );
+        check!(matches!(too_far, Err(DockingError::OutOfRange { .. })));
+
+        // Move salvager within 250 m (`<= 500 m`) and start mandatory 6-DOF derelict docking
+        if let Some(ship) = bubble.ships.get_mut("salvager") {
+            ship.pos_m = [950, 0, 0];
+        }
+        let mut session = DockingSession::start_derelict_docking(
+            &bubble,
+            "dock.derelict_1",
+            "salvager",
+            "raider_wreck",
+            400,
+            600,
+            DockingPose6Dof {
+                dx_mm: 40,
+                dy_mm: -30,
+                dz_mm: 900,
+                pitch_mdeg: 0,
+                yaw_mdeg: 0,
+                roll_mdeg: 0,
+                vx_mmps: 0,
+                vy_mmps: 0,
+                vz_mmps: 450,
+                vpitch_mdeg_s: 0,
+                vyaw_mdeg_s: 0,
+                vroll_mdeg_s: 0,
+            },
+        )?;
+        check!(session.target.is_mandatory());
+
+        for _ in 0..200 {
+            let st = session.step_frame_60fps(DockingControlInput::default());
+            if matches!(st, DockingSessionState::Completed(_)) {
+                break;
+            }
+        }
+        check!(matches!(
+            session.state,
+            DockingSessionState::Completed(DockingOutcome::Clamped { .. })
+        ));
+
+        // Attach salvage tow: 600 t derelict <= 2 * 400 t (800 t cap) succeeds and opens 48 h contest!
+        let tow = session.attach_salvage_tow(80_100)?;
+        check_eq!(tow.prior_owner_party, Some(SpacePartyId(2)));
+        check!(tow.contest_open);
+        check_eq!(
+            tow.contest_expires_ic_secs,
+            80_100 + SALVAGE_CONTEST_WINDOW_IC_SECS
+        );
+
+        // Verify `doc 27a` 2x tonnage tow cap: a 900 t hull exceeds 2 * 400 t = 800 t
+        session.target = DockingTargetKind::DisabledDerelict {
+            derelict_ship_id: "heavy_wreck".to_owned(),
+            derelict_tonnage_t: 900,
+            prior_owner_party: Some(SpacePartyId(2)),
+        };
+        session.state = DockingSessionState::Completed(DockingOutcome::Clamped {
+            target: session.target.clone(),
+            latch_closure_mmps: 450,
+            saved_delta_v_mps: 0,
+            saved_approach_ic_secs: 0,
+        });
+        check!(matches!(
+            session.attach_salvage_tow(80_100),
+            Err(DockingError::TowTonnageExceeded {
+                towing_ship_tonnage_t: 400,
+                derelict_tonnage_t: 900,
+                max_towable_tonnage_t: 800,
+            })
         ));
         Ok(())
     }

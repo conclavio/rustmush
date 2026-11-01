@@ -76,6 +76,7 @@ pub mod cockpit;
 #[cfg(feature = "encode")]
 pub mod cockpit_kitty;
 pub mod design;
+pub mod docking;
 pub mod doll;
 pub mod frame;
 pub mod fx;
