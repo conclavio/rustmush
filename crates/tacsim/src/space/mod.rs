@@ -70,9 +70,10 @@ pub use picket::{
 pub use tick::{
     ActiveInterdictionBubble, CARRIER_PARTY, COMBAT_STEP_WALL_MS, CRUISE_STEP_WALL_MS,
     CompletedInterdictionBubble, FreeFlightGuidanceMode, HullPropellantLedger,
-    INTERDICTION_STANDOFF_M, INTERDICTOR_PARTY, ORDNANCE_STEP_WALL_MS, SOLAR_MU_KM3_S2, SPACE_TICK,
-    SPACE_TICK_PERIOD, SpaceBubbleBook, SpaceDerelictRecord, SpaceFreeFlightRecord,
-    apply_bubble_command, clear_interdiction_bubble,
+    INTERDICTION_STANDOFF_M, INTERDICTOR_PARTY, ORDNANCE_STEP_WALL_MS, SOLAR_MU_KM3_S2,
+    SPACE_STATE_FORMAT, SPACE_STATE_KEY, SPACE_TICK, SPACE_TICK_PERIOD, SpaceBubbleBook,
+    SpaceDerelictRecord, SpaceFreeFlightRecord, SpacePersistedState, apply_bubble_command,
+    boot_read, clear_interdiction_bubble, persist_space_state,
 };
 pub use weapons::{
     DEFAULT_TORPEDO_MAX_FLIGHT_MS, InFlightSlug, InFlightTorpedo, LaserMode, LaserMount, PdcMount,
@@ -763,5 +764,119 @@ mod tests {
             "expected CollarScrapeBounce, got {:?}",
             bounce_report.outcome
         );
+    }
+
+    #[test]
+    fn space_persisted_state_round_trips_json_with_bubble_relations_standing_orders_and_salvage_book()
+     {
+        let mut book = SpaceBubbleBook::default();
+        let hull = mush_core::ObjId(4201);
+        let interdictor = mush_core::ObjId(9901);
+        let domain = mush_sim::DomainId(7);
+
+        let mut bubble = LocalSpaceBubble::new(
+            "bubble.4201.1",
+            "space.domain.7",
+            "Kirkwood Gap Picket",
+            74_152_600_000,
+        );
+        bubble.insert_ship(SpaceShipState::new_dray(
+            "ship.4201",
+            "Salt Moth",
+            SpacePartyId(1),
+            [0, 0, 0],
+            [0, 0, 0],
+        ));
+        bubble.insert_ship(SpaceShipState::new_corvette(
+            "ship.9901",
+            "Belt Raider",
+            SpacePartyId(3),
+            [18_000, 0, 0],
+            [-250_000, 0, 0],
+        ));
+        bubble.set_party_relation(SpacePartyId(1), SpacePartyId(3), SpaceRelation::Hostile);
+
+        let mut tape = BubbleInputTape::new(&bubble);
+        let _ = tape.record_and_apply(
+            &mut bubble,
+            BubbleInputCommand::StepWall {
+                dt_wall_ms: 1_000,
+                ic_now_s: 74_152_600_024,
+            },
+        );
+        let snap = bubble.snapshot();
+        book.by_hull.insert(
+            hull,
+            ActiveInterdictionBubble {
+                hull,
+                interdictor_hull: interdictor,
+                domain,
+                carrier_ship_id: "ship.4201".to_owned(),
+                interdictor_ship_id: "ship.9901".to_owned(),
+                leg_cursor: 1,
+                opened_ic_s: 74_152_600_000,
+                steps: 1,
+                cleared: false,
+                bubble,
+                tape,
+                snapshots: vec![snap],
+                picket: Some(KirkwoodPicketState::new(
+                    mush_core::ObjId(9801),
+                    "ship.9801".to_owned(),
+                    interdictor,
+                    "ship.9901".to_owned(),
+                )),
+            },
+        );
+
+        let _ = book
+            .record_standing_order(
+                hull,
+                mush_sim::tick::OrderChannel::Thrust,
+                mush_sim::tick::OrderValue::Scalar { value: 500 },
+                mush_core::ObjId(101),
+                domain,
+                1,
+                10,
+            )
+            .expect("standing order");
+
+        let mut salvage = crate::field_ops::SalvageClaimBook::new();
+        let op_id = crate::field_ops::RecoveryOpId::new(1).expect("op_id");
+        let title_status = register_derelict_salvage_in_book(
+            &mut salvage,
+            op_id,
+            interdictor,
+            hull,
+            hull,
+            interdictor,
+            mush_core::ObjId(500),
+            74_152_600_024,
+            1_000,
+        )
+        .expect("salvage claim");
+        book.derelicts.insert(
+            interdictor,
+            SpaceDerelictRecord {
+                hull: interdictor,
+                domain,
+                disabled_at_ic_s: 74_152_600_024,
+                epoch_open: true,
+                life_support_remaining_s: DERELICT_WINDOW_S,
+                salvage_contest_window_s: DERELICT_WINDOW_S,
+                assessment: None,
+                salvage_title_status: Some(title_status),
+            },
+        );
+
+        let state = SpacePersistedState {
+            format: SPACE_STATE_FORMAT,
+            book,
+            salvage,
+        };
+        let encoded = serde_json::to_value(&state).expect("encode SpacePersistedState");
+        let decoded: SpacePersistedState =
+            serde_json::from_value(encoded).expect("decode SpacePersistedState");
+        assert_eq!(decoded, state);
     }
 }

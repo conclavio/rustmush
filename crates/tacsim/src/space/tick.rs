@@ -33,11 +33,13 @@ use std::sync::Arc;
 use std::time::Duration;
 
 use mush_core::module::{ModError, Registrar, TickCadence};
-use mush_core::{ClockStamp, Ctx, ObjId, SceneId, World};
+use mush_core::{ClockStamp, Ctx, ModuleWrite, ObjId, SceneId, World};
 use mush_sim::{
     ActivationBook, CarrierJourney, DomainId, JourneyBook, JourneyState, PromotionTrigger,
     SpatialState, promote_carrier_journey, resume_carrier_journey, stand_down_domain,
 };
+use serde::{Deserialize, Serialize};
+use smol_str::SmolStr;
 
 use super::bubble::{
     BubbleId, BubbleInputCommand, BubbleInputTape, BubbleSnapshot, DERELICT_WINDOW_S, HullStatus,
@@ -78,7 +80,7 @@ pub const INTERDICTOR_PARTY: SpacePartyId = SpacePartyId(2);
 pub const INTERDICTION_STANDOFF_M: i64 = 18_000;
 
 /// Active interdiction bubble bound to a promoted [`CarrierJourney`].
-#[derive(Clone, Debug)]
+#[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize)]
 pub struct ActiveInterdictionBubble {
     /// Carrier hull root object id.
     pub hull: ObjId,
@@ -175,7 +177,7 @@ impl ActiveInterdictionBubble {
 }
 
 /// Summary record retained in [`SpaceBubbleBook::completed`] when an interdiction bubble closes.
-#[derive(Clone, Debug)]
+#[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize)]
 pub struct CompletedInterdictionBubble {
     /// Carrier hull root object id.
     pub hull: ObjId,
@@ -201,7 +203,7 @@ pub struct CompletedInterdictionBubble {
 
 /// Open-epoch derelict hull record persisted when a ship's drive or hull is disabled
 /// in a space bubble (`SF.R2`, `D-35-12`).
-#[derive(Clone, Debug)]
+#[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize)]
 pub struct SpaceDerelictRecord {
     /// Disabled hull object id.
     pub hull: ObjId,
@@ -222,7 +224,7 @@ pub struct SpaceDerelictRecord {
 }
 
 /// Guidance attitude mode for a ship in Tier-1 free flight (`SF.R4`, `35a` §5 #5).
-#[derive(Copy, Clone, Debug, Default, PartialEq, Eq)]
+#[derive(Copy, Clone, Debug, Default, PartialEq, Eq, Serialize, Deserialize)]
 pub enum FreeFlightGuidanceMode {
     /// Manual attitude (`+helm/heading`).
     #[default]
@@ -286,7 +288,7 @@ pub const SOLAR_MU_KM3_S2: f64 = 132_712_440_018.0;
 
 /// Tier-1 interplanetary free-flight state for a carrier hull that has decoupled from its
 /// corridor route (`+helm/decouple`, `SF.R4`, `D-35-5`, `D-35-6`).
-#[derive(Clone, Debug, PartialEq, Eq)]
+#[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize)]
 pub struct SpaceFreeFlightRecord {
     /// Carrier hull root [`ObjId`].
     pub hull: ObjId,
@@ -406,7 +408,7 @@ impl SpaceFreeFlightRecord {
 }
 
 /// Live reaction-mass ledger for a hull in free flight or an interdiction bubble (`SF.R4`, `D-35-6`).
-#[derive(Clone, Debug, Default, PartialEq, Eq)]
+#[derive(Clone, Debug, Default, PartialEq, Eq, Serialize, Deserialize)]
 pub struct HullPropellantLedger {
     /// Sub-tonne kilograms burned across maneuvers (`0..999`); every 1,000 kg crosses into a
     /// whole-tonne `tacsim_port_burn` debit against `stow.propellant`.
@@ -475,51 +477,72 @@ impl HullPropellantLedger {
 
 /// World-state registry of active and completed space interdiction bubbles,
 /// open-epoch derelicts, validated `mush-sim` standing orders, Tier-1 free-flight records,
-/// and live propellant ledgers (`SF.R1`–`SF.R4`).
-#[derive(Clone, Debug, Default)]
+/// live propellant ledgers, orbital cluster mining sessions, and 6-DOF docking sessions (`SF.R1`–`SF.R8`).
+#[derive(Clone, Debug, Default, PartialEq, Eq, Serialize, Deserialize)]
 pub struct SpaceBubbleBook {
     /// Active interdiction bubbles keyed by carrier hull root [`ObjId`].
+    #[serde(default, with = "super::bubble::vec_tuple_map")]
     pub by_hull: BTreeMap<ObjId, ActiveInterdictionBubble>,
     /// Completed interdiction bubbles keyed by carrier hull root [`ObjId`].
+    #[serde(default, with = "super::bubble::vec_tuple_map")]
     pub completed: BTreeMap<ObjId, CompletedInterdictionBubble>,
     /// Open-epoch derelict hulls keyed by hull [`ObjId`] (`D-35-12`).
+    #[serde(default, with = "super::bubble::vec_tuple_map")]
     pub derelicts: BTreeMap<ObjId, SpaceDerelictRecord>,
     /// Validated `mush-sim` continuous standing orders (`Heading`, `Thrust`, `Speed`, `Posture`)
     /// keyed by `(hull, channel)` (`SF.R3`, `D-35-9`).
+    #[serde(default, with = "super::bubble::vec_tuple_map")]
     pub standing_orders: BTreeMap<mush_sim::tick::StandingOrderKey, mush_sim::tick::StandingOrder>,
     /// Tier-1 interplanetary free-flight records keyed by carrier hull root [`ObjId`] (`SF.R4`, `D-35-5`, `D-35-6`).
+    #[serde(default, with = "super::bubble::vec_tuple_map")]
     pub free_flights: BTreeMap<ObjId, SpaceFreeFlightRecord>,
     /// Live reaction-mass ledgers keyed by carrier hull root [`ObjId`] (`SF.R4`, `D-35-6`).
+    #[serde(default, with = "super::bubble::vec_tuple_map")]
     pub propellant_ledgers: BTreeMap<ObjId, HullPropellantLedger>,
     /// Server-authenticated in-flight reaction-mass burns queued for `tacsim_port_burn` (`SF.R4`, `D-35-6`).
+    #[serde(default)]
     pub pending_space_burns: Vec<crate::port::burn::PendingSpaceBurn>,
     /// Monotonic sequence allocator for [`Self::pending_space_burns`].
+    #[serde(default)]
     pub next_space_burn_seq: u32,
     /// Laid-up orbital cluster sites (`ceres_halo`, `kirkwood_gap_3_1`, `pallas_inclined_belt`, `saturn_b_ring_edge`) (`SF.R5`, `D-35-13`).
+    #[serde(default, with = "super::bubble::vec_tuple_map")]
     pub cluster_sites: BTreeMap<super::mining::OrbitalClusterId, super::mining::ClusterSiteState>,
     /// Active orbital cluster mining sessions keyed by carrier hull [`ObjId`] (`SF.R5`, `D-35-13`).
+    #[serde(default, with = "super::bubble::vec_tuple_map")]
     pub cluster_sessions: BTreeMap<ObjId, super::mining::ActiveClusterMiningSession>,
     /// Pending licensed player claim stake/contest orders in orbital clusters (`SF.R5`, `D-35-13`).
+    #[serde(default, with = "super::bubble::vec_tuple_map")]
     pub cluster_tenure_orders: BTreeMap<ObjId, super::mining::ClusterTenureOrder>,
     /// Server-authenticated space mining ore draws queued for `tacsim_site_work` (`SF.R5`, `D-35-13`).
+    #[serde(default)]
     pub pending_space_mine_draws: Vec<super::mining::PendingSpaceMineDraw>,
     /// Completed space mining ore draws (`SF.R5`, `D-35-13`).
+    #[serde(default)]
     pub completed_space_mine_draws: Vec<super::mining::PendingSpaceMineDraw>,
     /// Monotonic sequence allocator for [`Self::pending_space_mine_draws`].
+    #[serde(default)]
     pub next_space_mine_draw_seq: u64,
     /// Waypoint domains explicitly configured as 3-party Kirkwood Customs Pickets (`SF.R6`, `D-35-11`).
+    #[serde(default)]
     pub kirkwood_picket_domains: std::collections::BTreeSet<DomainId>,
     /// Active 6-DOF docking sessions keyed by carrier hull [`ObjId`] (`SF.R7`, `Q-35-5`, `D-35-14`).
+    #[serde(default, with = "super::bubble::vec_tuple_map")]
     pub docking_sessions: BTreeMap<ObjId, super::docking::DockingSession>,
     /// Hard-docked derelict hulls keyed by tug carrier hull [`ObjId`] (`SF.R7`, `D-35-12`).
+    #[serde(default, with = "super::bubble::vec_tuple_map")]
     pub clamped_derelicts: BTreeMap<ObjId, ObjId>,
     /// Active salvage tow-line records keyed by tug carrier hull [`ObjId`] (`SF.R7`, `D-35-12`).
+    #[serde(default, with = "super::bubble::vec_tuple_map")]
     pub active_tows: BTreeMap<ObjId, super::docking::SalvageTowRecord>,
     /// Monotonic sequence allocator for [`Self::docking_sessions`].
+    #[serde(default)]
     pub next_docking_session_seq: u64,
     /// Monotonic revision counter for `mush-sim` standing orders (`SF.R3`).
+    #[serde(default)]
     pub next_order_revision: u64,
     /// Monotonic allocator for space salvage [`RecoveryOpId`]s.
+    #[serde(default)]
     pub next_recovery_op_id: u64,
 }
 
@@ -734,6 +757,92 @@ pub fn clear_interdiction_bubble(w: &mut World, hull: ObjId) -> bool {
     true
 }
 
+/// Store document key under which [`SpacePersistedState`] is persisted in the `"tacsim"` namespace (`SF.R8`, `D-35-12`).
+pub const SPACE_STATE_KEY: &str = "tacsim:space:state";
+
+/// Schema format version for [`SpacePersistedState`].
+pub const SPACE_STATE_FORMAT: u16 = 1;
+
+/// Durable store snapshot of [`SpaceBubbleBook`] and [`SalvageClaimBook`] (`SF.R8`, `D-35-12`).
+#[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize)]
+pub struct SpacePersistedState {
+    /// Schema format version ([`SPACE_STATE_FORMAT`]).
+    pub format: u16,
+    /// Persisted [`SpaceBubbleBook`] state.
+    pub book: SpaceBubbleBook,
+    /// Persisted [`SalvageClaimBook`] state (48-hour salvage claims, recovery records, black-box tapes).
+    pub salvage: SalvageClaimBook,
+}
+
+/// Persist the current [`SpaceBubbleBook`] and [`SalvageClaimBook`] into [`TacsimStore`] and
+/// emit a [`ModuleWrite::JsonSet`] document under [`SPACE_STATE_KEY`] (`SF.R8`, `D-35-12`).
+pub fn persist_space_state(ctx: &mut Ctx<'_>) {
+    let Some(book) = ctx.w.module_state::<SpaceBubbleBook>().cloned() else {
+        return;
+    };
+    let salvage = ctx
+        .w
+        .module_state::<SalvageClaimBook>()
+        .cloned()
+        .unwrap_or_else(SalvageClaimBook::new);
+    let snapshot = SpacePersistedState {
+        format: SPACE_STATE_FORMAT,
+        book,
+        salvage,
+    };
+    match serde_json::to_value(&snapshot) {
+        Ok(value) => crate::store::push_op(
+            ctx.out,
+            ModuleWrite::JsonSet {
+                key: SmolStr::new_static(SPACE_STATE_KEY),
+                value,
+            },
+        ),
+        Err(error) => {
+            tracing::error!(%error, "tacsim: space state did not encode");
+            return;
+        }
+    }
+    if let Some(store) = ctx.w.module_state_mut::<TacsimStore>() {
+        store.space_state = Some(snapshot);
+    }
+}
+
+/// Hydrate [`SpaceBubbleBook`], [`SalvageClaimBook`], and [`TacsimStore::space_state`] from the
+/// `"tacsim"` boot key-value documents during `TacsimRuleset::on_world_loaded` (`SF.R8`, `D-35-12`).
+pub fn boot_read(ctx: &mut Ctx<'_>, kv: &[(SmolStr, serde_json::Value)]) {
+    for (key, value) in kv {
+        if key.as_str() != SPACE_STATE_KEY {
+            continue;
+        }
+        match serde_json::from_value::<SpacePersistedState>(value.clone()) {
+            Ok(state) if state.format == SPACE_STATE_FORMAT => {
+                if let Some(book) = ctx.w.module_state_mut::<SpaceBubbleBook>() {
+                    *book = state.book.clone();
+                }
+                if let Some(salvage) = ctx.w.module_state_mut::<SalvageClaimBook>() {
+                    *salvage = state.salvage.clone();
+                }
+                if let Some(store) = ctx.w.module_state_mut::<TacsimStore>() {
+                    store.space_state = Some(state);
+                }
+            }
+            Ok(state) => {
+                tracing::warn!(
+                    format = state.format,
+                    "tacsim: tacsim:space:state has unsupported format; skipped"
+                );
+            }
+            Err(error) => {
+                tracing::warn!(
+                    %error,
+                    "tacsim: tacsim:space:state did not decode; skipped"
+                );
+            }
+        }
+    }
+}
+
 /// Register [`SpaceBubbleBook`], [`SalvageClaimBook`], and the [`SPACE_TICK`] consumer on `reg`.
 ///
 /// # Errors
@@ -760,12 +869,34 @@ pub fn space_tick(ctx: &mut Ctx<'_>, _tag: &str, _scene: Option<SceneId>) {
         return;
     }
     let now = ctx.w.world_ic_now();
+    step_derelict_records(ctx);
     clear_resolved_bubbles(ctx, &now);
     settle_disabled_carrier_bubbles(ctx, &now);
     step_active_bubbles(ctx, &now);
     step_free_flight_records(ctx, &now);
     super::mining::step_clusters_on_tick(ctx, now.clone());
     promote_due_interdictions(ctx, &now);
+    persist_space_state(ctx);
+}
+
+fn step_derelict_records(ctx: &mut Ctx<'_>) {
+    if ctx.w.world_timeline().is_frozen() {
+        return;
+    }
+    let Some(book) = ctx.w.module_state_mut::<SpaceBubbleBook>() else {
+        return;
+    };
+    let step_s = u32::try_from(SPACE_TICK_PERIOD.as_secs())
+        .unwrap_or(1)
+        .max(1);
+    for derelict in book.derelicts.values_mut() {
+        if derelict.epoch_open {
+            derelict.life_support_remaining_s =
+                derelict.life_support_remaining_s.saturating_sub(step_s);
+            derelict.salvage_contest_window_s =
+                derelict.salvage_contest_window_s.saturating_sub(step_s);
+        }
+    }
 }
 
 fn real_now_secs(w: &World, now: &ClockStamp) -> i64 {

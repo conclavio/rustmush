@@ -5341,3 +5341,303 @@ fn sfr7_docking_session_pauses_ship_replays_valid_tape_into_berth_docked_rejects
     );
     no_refused_writes(&rig.tw);
 }
+
+/// **Doc 35 cut SF.R8 (`D-35-12`)**:
+/// - Active interdiction bubbles (`ActiveInterdictionBubble`, `KirkwoodPicketState`,
+///   `BubbleInputTape`, `BubbleSnapshot`, `standing_orders`), free-flight records
+///   (`SpaceFreeFlightRecord`, `HullPropellantLedger`), open-epoch derelicts
+///   (`SpaceDerelictRecord` + `SalvageClaimBook`), and paused 6-DOF client docking
+///   sessions (`DockingSession`) are persisted in `TacsimStore` under `tacsim:space:state`.
+/// - Story 1 (mid-bubble triad encounter) and Story 2 (mid-free-flight + open-epoch
+///   derelict + paused docking session) survive a full engine restart (`reboot_with`)
+///   with bit-identical `SpaceBubbleBook` and `SalvageClaimBook` state.
+/// - Open-epoch derelict life-support (`life_support_remaining_s`) and salvage contest
+///   (`salvage_contest_window_s`) clocks decrement on the world tick (`35a` §1 `D-35-12`).
+#[test]
+fn sfr8_space_state_persists_in_tacsim_store_and_survives_full_engine_restart_mid_bubble_free_flight_derelict_and_docking()
+ {
+    let roster = Roster {
+        seed_lane: Some(lane_with_interdicted_kirkwood()),
+        ..Roster::default()
+    };
+    let mut rig = stocked_with(roster);
+    let (pilot, row) = chartered(&mut rig, "Pilot", 1);
+    let hull = ObjId(row.hull);
+    let vault_id = hold_vault(&rig.tw, &row);
+
+    let desk = station_room(&rig.tw, "ceres_port", "room.c05_registry");
+    teleport(&mut rig.tw, pilot, desk);
+    let refit_out = run(&mut rig.tw, pilot, "+coop/refit prospector");
+    assert!(refit_out.contains("Dray-P"), "{refit_out}");
+
+    seed_pool(&mut rig, vault_id, "propellant", 53, LotId(931));
+    seed_pool(&mut rig, vault_id, "provisions", 19, LotId(932));
+    set_rate(&mut rig.tw, 3_600);
+    board(&mut rig, pilot);
+
+    // 1. Story 1: cast off on the interdicted corridor, promote into the Kirkwood Customs
+    //    Picket triad bubble, brake to heave-to, submit to inspection, trigger the Raider
+    //    ambush, and set standing orders:
+    let pending = undock_and_burn(&mut rig, pilot, hull);
+    let depart_ic = pending.plan.depart_ic;
+    let leg1_secs = i64::from(pending.plan.legs[0].secs);
+
+    let _ = fire_quietly(&mut rig);
+    let _ = to_ic(&mut rig, depart_ic + leg1_secs);
+
+    let _ = run(&mut rig.tw, pilot, "+helm/thrust 600 -1000 0 0");
+    let next_real = rig.tw.world().now() + 1;
+    rig.tw.set_now(next_real);
+    let _ = rig.tw.fire_due(next_real * 1_000);
+    let _ = run(&mut rig.tw, pilot, "+helm/thrust 0");
+    let submit_out = run(&mut rig.tw, pilot, "+helm/submit");
+    assert!(
+        submit_out.contains("customs clearance granted"),
+        "expected customs inspection completion: {submit_out}"
+    );
+    let next_real2 = rig.tw.world().now() + 1;
+    rig.tw.set_now(next_real2);
+    let _ = rig.tw.fire_due(next_real2 * 1_000);
+    let _ = run(&mut rig.tw, pilot, "+tac/pdc auto");
+    let _ = run(&mut rig.tw, pilot, "+helm/thrust 600 0 1000 0");
+
+    let (book_before_1, salvage_before_1, raider_hull, raider_ship_id) = {
+        let book = rig
+            .tw
+            .world()
+            .module_state::<tacsim::space::SpaceBubbleBook>()
+            .expect("SpaceBubbleBook")
+            .clone();
+        let salvage = rig
+            .tw
+            .world()
+            .module_state::<tacsim::field_ops::SalvageClaimBook>()
+            .expect("SalvageClaimBook")
+            .clone();
+        let active = book
+            .active_for_hull(hull)
+            .expect("active bubble before restart 1");
+        let picket = active.picket.as_ref().expect("KirkwoodPicketState");
+        assert!(picket.raider_ambush_launched);
+        assert_eq!(active.bubble.ships.len(), 3);
+        let rhull = picket.raider_hull;
+        let rship_id = picket.raider_ship_id.clone();
+        (book, salvage, rhull, rship_id)
+    };
+
+    // 2. Full engine restart #1 mid-bubble (Story 1):
+    rig = reboot_with(rig, roster);
+
+    {
+        let book_after_1 = rig
+            .tw
+            .world()
+            .module_state::<tacsim::space::SpaceBubbleBook>()
+            .expect("SpaceBubbleBook after restart 1")
+            .clone();
+        let salvage_after_1 = rig
+            .tw
+            .world()
+            .module_state::<tacsim::field_ops::SalvageClaimBook>()
+            .expect("SalvageClaimBook after restart 1")
+            .clone();
+        assert_eq!(
+            book_after_1, book_before_1,
+            "Story 1 mid-bubble SpaceBubbleBook must be bit-identical across full engine restart"
+        );
+        assert_eq!(
+            salvage_after_1, salvage_before_1,
+            "Story 1 mid-bubble SalvageClaimBook must be bit-identical across full engine restart"
+        );
+        let store = rig
+            .tw
+            .world()
+            .module_state::<tacsim::TacsimStore>()
+            .expect("TacsimStore");
+        let persisted = store
+            .space_state()
+            .expect("persisted space_state in TacsimStore");
+        assert_eq!(persisted.format, tacsim::space::SPACE_STATE_FORMAT);
+        assert_eq!(persisted.book, book_before_1);
+    }
+
+    // 3. Resume the Story 1 fight after restart #1: disable the Raider into an open-epoch
+    //    `SpaceDerelictRecord` + 48 real-hour `SalvageClaimBook` claim, and verify the
+    //    derelict clocks decrement on subsequent ticks (`35a` §1 row `D-35-12`):
+    {
+        let bubble_book = rig
+            .tw
+            .world_mut()
+            .module_state_mut::<tacsim::space::SpaceBubbleBook>()
+            .expect("SpaceBubbleBook");
+        let active = bubble_book
+            .active_for_hull_mut(hull)
+            .expect("active bubble");
+        active.bubble.torpedoes.clear();
+        active.bubble.railgun_slugs.clear();
+        let carrier_pos = active.bubble.ships[&active.carrier_ship_id].pos_m;
+        if let Some(raider) = active.bubble.ships.get_mut(&raider_ship_id) {
+            raider.pos_m = [carrier_pos[0] + 3_000, carrier_pos[1], carrier_pos[2]];
+            raider.attitude_deg = (0, 0, 0);
+            if let Some(rear) = raider
+                .sections
+                .get_mut(&tacsim::space::ShipSectionId::Hull)
+                .and_then(|s| s.facets.get_mut(&tacsim::space::FacetBand::Rear))
+            {
+                *rear = 0;
+            }
+            if let Some(drive) = raider
+                .sections
+                .get_mut(&tacsim::space::ShipSectionId::Drive)
+            {
+                drive.internals = 10;
+            }
+        }
+        if let Some(carrier) = active.bubble.ships.get_mut(&active.carrier_ship_id) {
+            carrier.attitude_deg = (180, 0, 0);
+            carrier.heat_permille = 0;
+            for l in &mut carrier.lasers {
+                l.cooldown_remaining_ms = 0;
+            }
+        }
+    }
+    let kill_beam = run(&mut rig.tw, pilot, &format!("+tac/beam {raider_ship_id}"));
+    assert!(
+        kill_beam.contains("Laser battery fired on"),
+        "expected laser hit on Raider after restart: {kill_beam}"
+    );
+    for _ in 0..3 {
+        let next_r = rig.tw.world().now() + 1;
+        rig.tw.set_now(next_r);
+        let _ = rig.tw.fire_due(next_r * 1_000);
+    }
+
+    {
+        let book = rig
+            .tw
+            .world()
+            .module_state::<tacsim::space::SpaceBubbleBook>()
+            .expect("SpaceBubbleBook");
+        let derelict = book
+            .derelicts
+            .get(&raider_hull)
+            .expect("disabled Raider must be recorded as an open-epoch SpaceDerelictRecord");
+        assert!(derelict.epoch_open);
+        assert!(
+            derelict.life_support_remaining_s < tacsim::space::DERELICT_WINDOW_S
+                && derelict.salvage_contest_window_s < tacsim::space::DERELICT_WINDOW_S,
+            "open-epoch derelict life-support ({}) and salvage contest ({}) clocks must decrement on the world tick",
+            derelict.life_support_remaining_s,
+            derelict.salvage_contest_window_s
+        );
+        let Some(tacsim::field_ops::CustodyTitleStatus::PendingSalvageClaim { claim_id, .. }) =
+            &derelict.salvage_title_status
+        else {
+            panic!(
+                "expected PendingSalvageClaim on disabled Raider derelict, got {:?}",
+                derelict.salvage_title_status
+            );
+        };
+        let salvage = rig
+            .tw
+            .world()
+            .module_state::<tacsim::field_ops::SalvageClaimBook>()
+            .expect("SalvageClaimBook");
+        assert!(
+            salvage.claim(*claim_id).is_some(),
+            "SalvageClaimBook must hold the 48h claim for the disabled Raider"
+        );
+    }
+
+    // 4. Story 2: decouple into 3D heliocentric free flight (`SpaceFreeFlightRecord`),
+    //    execute a timed burn debiting `HullPropellantLedger`, and initiate a paused
+    //    6-DOF docking session (`+helm/dock stickney`):
+    let decouple_out = run(&mut rig.tw, pilot, "+helm/decouple");
+    assert!(
+        decouple_out.contains("Decoupled from corridor leg"),
+        "expected decouple into free flight: {decouple_out}"
+    );
+    let burn_out = run(&mut rig.tw, pilot, "+helm/burn 1,0,0 60 force");
+    assert!(
+        burn_out.contains("Timed burn engaged"),
+        "expected timed burn: {burn_out}"
+    );
+    let next_r = rig.tw.world().now() + 1;
+    rig.tw.set_now(next_r);
+    let _ = rig.tw.fire_due(next_r * 1_000);
+
+    let dock_start = run(&mut rig.tw, pilot, "+helm/dock stickney");
+    assert!(
+        dock_start.contains("[DOCKING] Initiated 60 fps 6-DOF docking session"),
+        "expected docking session start: {dock_start}"
+    );
+
+    let (book_before_2, salvage_before_2, session_id, challenge) = {
+        let book = rig
+            .tw
+            .world()
+            .module_state::<tacsim::space::SpaceBubbleBook>()
+            .expect("SpaceBubbleBook before restart 2")
+            .clone();
+        let salvage = rig
+            .tw
+            .world()
+            .module_state::<tacsim::field_ops::SalvageClaimBook>()
+            .expect("SalvageClaimBook before restart 2")
+            .clone();
+        assert!(book.free_flight_for_hull(hull).is_some());
+        assert!(book.propellant_ledger(hull).is_some());
+        assert!(book.derelicts.contains_key(&raider_hull));
+        assert!(book.is_hull_paused_for_docking(hull));
+        let session = book.docking_sessions.get(&hull).expect("docking session");
+        let sid = session.challenge.session_id.clone();
+        let chal = session.challenge.clone();
+        (book, salvage, sid, chal)
+    };
+
+    // 5. Full engine restart #2 mid-free-flight + open-epoch derelict + paused docking session:
+    rig = reboot_with(rig, roster);
+
+    {
+        let book_after_2 = rig
+            .tw
+            .world()
+            .module_state::<tacsim::space::SpaceBubbleBook>()
+            .expect("SpaceBubbleBook after restart 2")
+            .clone();
+        let salvage_after_2 = rig
+            .tw
+            .world()
+            .module_state::<tacsim::field_ops::SalvageClaimBook>()
+            .expect("SalvageClaimBook after restart 2")
+            .clone();
+        assert_eq!(
+            book_after_2, book_before_2,
+            "Story 2 mid-free-flight + derelict + paused docking SpaceBubbleBook must be bit-identical across full engine restart"
+        );
+        assert_eq!(
+            salvage_after_2, salvage_before_2,
+            "Story 2 SalvageClaimBook must be bit-identical across full engine restart"
+        );
+    }
+
+    // 6. Replay the valid 60 Hz client `DockingInputTape` after restart #2 and verify
+    //    the ship clamps into `Berth::Docked` at Stickney Yards:
+    let valid_tape = tacsim::space::solve_docking_tape(&challenge);
+    let clamp_out = run(
+        &mut rig.tw,
+        pilot,
+        &format!("+helm/dock tape {session_id} {}", valid_tape.encode_rle()),
+    );
+    assert!(
+        clamp_out.contains("Hard dock and magnetic collar seal confirmed at Stickney Yards")
+            && clamp_out.contains("Berth::Docked"),
+        "expected hard dock at Stickney Yards after restart: {clamp_out}"
+    );
+    let status_out = run(&mut rig.tw, pilot, "+ship");
+    assert!(
+        status_out.contains("Stickney Yards"),
+        "+ship must report ship berthed at Stickney Yards after restart: {status_out}"
+    );
+    no_refused_writes(&rig.tw);
+}

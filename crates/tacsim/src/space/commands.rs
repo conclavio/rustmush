@@ -715,8 +715,8 @@ pub fn helm_cmd(ctx: &mut Ctx<'_>) -> Result<(), CmdError> {
         return Err(CmdError::msg("Choose one +helm switch."));
     }
     let switch = ctx.switches.iter().next();
-    match switch {
-        None | Some("status") => helm_status(ctx),
+    let res = match switch {
+        None | Some("status") => return helm_status(ctx),
         Some("station") => helm_station(ctx),
         Some("heading") => helm_heading(ctx),
         Some("thrust") => helm_thrust(ctx),
@@ -734,7 +734,11 @@ pub fn helm_cmd(ctx: &mut Ctx<'_>) -> Result<(), CmdError> {
         Some("dock") => helm_dock(ctx),
         Some("tow") => helm_tow(ctx),
         Some(other) => Err(CmdError::msg(format!("Unknown +helm switch: /{other}."))),
+    };
+    if res.is_ok() {
+        super::tick::persist_space_state(ctx);
     }
+    res
 }
 
 fn helm_status(ctx: &mut Ctx<'_>) -> Result<(), CmdError> {
@@ -2046,16 +2050,20 @@ pub fn tac_cmd(ctx: &mut Ctx<'_>) -> Result<(), CmdError> {
         return Err(CmdError::msg("Choose one +tac switch."));
     }
     let switch = ctx.switches.iter().next();
-    match switch {
-        None | Some("status") => tac_status(ctx),
-        Some("scan") => tac_scan(ctx),
+    let res = match switch {
+        None | Some("status") => return tac_status(ctx),
+        Some("scan") => return tac_scan(ctx),
         Some("lock") => tac_lock(ctx),
         Some("beam") => tac_beam(ctx),
         Some("torp") => tac_torp(ctx),
         Some("railgun") => tac_railgun(ctx),
         Some("pdc") => tac_pdc(ctx),
         Some(other) => Err(CmdError::msg(format!("Unknown +tac switch: /{other}."))),
+    };
+    if res.is_ok() {
+        super::tick::persist_space_state(ctx);
     }
+    res
 }
 
 fn tac_status(ctx: &mut Ctx<'_>) -> Result<(), CmdError> {
@@ -3553,15 +3561,19 @@ pub fn mine_cmd(ctx: &mut Ctx<'_>) -> Result<(), CmdError> {
         return Err(CmdError::msg("Choose one +mine switch."));
     }
     let switch = ctx.switches.iter().next();
-    match switch {
-        None | Some("status") => mine_status(ctx),
+    let res = match switch {
+        None | Some("status") => return mine_status(ctx),
         Some("ping") => mine_ping(ctx),
         Some("stake") => mine_stake(ctx),
         Some("contest") => mine_contest(ctx),
         Some("laser") => mine_laser(ctx),
         Some("drones") => mine_drones(ctx),
         Some(other) => Err(CmdError::msg(format!("Unknown +mine switch: /{other}."))),
+    };
+    if res.is_ok() {
+        super::tick::persist_space_state(ctx);
     }
+    res
 }
 
 fn mine_status(ctx: &mut Ctx<'_>) -> Result<(), CmdError> {
