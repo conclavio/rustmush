@@ -7,7 +7,7 @@
 > destruction: accepted Q-H7/Q-H9 keep a recoverable unit's epoch open. The as-built epoch ledger
 > below is preserved; this note does not claim that code has changed.
 
-**Draft 0.7, 2026-10-27 — S.0 to S.3 as built (§14).** Draft 0.3 was written read-only at `563259b7` (`main`, with 17g cuts C0–C2 merged);
+**Draft 0.7, 2026-10-27 — S.0–S.4a as built, S.4b open (§14).** Draft 0.3 was written read-only at `563259b7` (`main`, with 17g cuts C0–C2 merged);
 Draft 0.1 was reviewed the same day against doc 17, doc 20, 17f, doc 18 and the IC-sortie code,
 Draft 0.2 carried the review's corrections (§15), and Draft 0.3 carries the owner's rulings of the
 same day (§16): Q-23-1 to Q-23-5 accepted as proposed, Q-23-6 ruled (the lapse hold runs to the
@@ -338,22 +338,26 @@ cut off `main`), ledger here in §14. Sizes are the lead's estimates.
   `ReturnedToBase` at `+tv/recover` and at staff `Home`, `RecoveredToBase` when a second carrier or
   staff bring a `Parked` rig in, the `abandoned` flag at staff `Close`; a `NeverLeft` excursion
   writes nothing; the pool count recorded (D-23-8); the open and close keyed to the excursion's own
-  cursor. `Destroyed` is reserved: the surface has no destruction path (`TvState` is `Bay`, `Out`,
-  `Held`, `Parked`; `Stranded` is a plan end with the rig `Parked`). Tests: one excursion opens and
+  cursor. `Destroyed` was reserved here, with no destruction path; GC.3 gave it one (doc 36, "GC.3 as
+  built"): a rig whose hull goes down irrecoverable leaves remains and its epoch closes `Destroyed`
+  (`FieldProvider::close_destroyed`). `TvState` is `Bay`, `Out`, `Held`, `Parked`; `Stranded` is a
+  plan end with the rig `Parked`. Tests: one excursion opens and
   closes with a restart between; a `Parked` rig leaves it open through the idle return; a re-run tick
   mints nothing; the seal line names the Dray-P and its open sortie (D-23-2); the SM.12c cost
   lane re-run with the two writes per excursion inside its budget. *As built: §14.*
 - **S.2 — The ship's epoch on the port voyage (medium).** The same on `tacsim.port`: the seal and
   `MindSealed` when the launch arm's `depart` moves the hull, nothing for a lapsed burn, the close
   `ReturnedToBase` at `docked` at a hangar port — a settle on a site's pad writes nothing (D-23-3)
-  — `Destroyed` reserved (no wreck path today), the Dray's own black box,
+  — `Destroyed` is not written here: a carrier wreck (GC.3's table) writes nothing to `tacsim.ship_epoch`
+  yet, so the ship's epoch stays open past the wreck (owed) — the Dray's own black box,
   the principal per D-23-5 for a filed, queued or `lift` departure. The IC-return stamp is untouched.
   Tests: Stickney to Ceres opens and closes; a passage across a server restart keeps the epoch; a
   lapsed launch writes nothing. *As built: §14 (the record is the typed `tacsim.ship_epoch`, not a
   `Voyage` field).*
 - **S.3 — Abandonment and recovery (small).** The `abandoned` flag's lifetime and the owner's one
   notice; `RecoveredToBase` when a second carrier recovers another's rig and the black box names
-  the recoverer; a carrier destroyed with rigs out (reserved until a destruction path exists).
+  the recoverer; a carrier destroyed with rigs out (GC.3 strands the crew and wrecks the bay rigs, doc 36; the carrier's
+  own ship epoch is not closed by it yet).
   *As built: §14 (the second carrier's close lands at the placement, not at the order).*
 - **S.4 — The first IC mind: the claim, the pool and the resume rule, with the drone phase
   (medium; lands inside D-UM-47's cut, not before).** The `StartPermit`/`CloseEvent` producer on
@@ -367,8 +371,8 @@ cut off `main`), ledger here in §14. Sizes are the lead's estimates.
     tells only the operator; a pending transfer refuses; M8c's seal mark is written in the finish's
     bundle; an ungoverned rig seals an unfiled draft with its admissions. No claim Open/Close and no
     pool seat: a four-owner IC claim cannot sit on a surface excursion as the tree stands. An IC
-    base accepts only a fixed-domain anchor (`mush-sim ic_exclusion.rs:317`), a ship's bay moves,
-    and an active claim freezes the hull (`mush-tactics ic_custody.rs:252`).
+    base accepts only a fixed-domain anchor (`mush-sim ic_exclusion.rs:322`, `:341`), a ship's bay moves,
+    and an active claim freezes the hull (`mush-tactics ic_custody.rs` `holds` `:164`, `movement_preimage` `:167`).
   - **S.4b** is the claim Open/Close (the production `HostTransition`), the pool seat, the `abi`
     drop on resume and the long-leg snapshots. It lands with the thinking mind and the drone phase
     (D-UM-47), after M8, together with a custody design for moving anchors.
@@ -549,7 +553,8 @@ open and flagged; a re-run finish, at the same instant or across a reboot, mints
   operator, never an implied act's `by` (D-23-5). `admitted.count` is the open surface epochs on the
   site including this one (the builder's reading of D-23-8; the cap's `counts.site` counts
   excursions, which differ by the abandoned and the mid-launch — accepted). `PoweredDownInBase` is
-  unused on the surface and `Destroyed` reserved, as §9 said.
+  unused on the surface; `Destroyed` was reserved when this was built and is written since GC.3, for a
+  rig's irrecoverable hull only (not for a carrier wreck).
 - **The cap.** `[tacsim.surface].black_box_max_lines`, default 4096 (provisional under the owner's
   economy-defaults rule, 1..=1,048,576). `mush_core::Ledger` has no retention primitive, so a full
   box refuses the append with a page (on every refusal, not once) and the act still completes; an
@@ -630,7 +635,7 @@ as its hangar (D-23-2; §10 item 2).
   left as hangar and site, the pilot as principal, `seal: sealed` ("no core: the ROM", the Dray's
   `TacticalUnit` through `seal_rom_for`, V6, re-checked against the unit's definition digest in the
   prepare) and `admitted { class, "port", 1 }`; the close is `ReturnedToBase { base: <the port's
-  host room> }` at the journey's arrival instant. `Destroyed` stays reserved. An open whose `from`
+  host room> }` at the journey's arrival instant. `Destroyed` is not written on the voyage (a carrier wreck closes nothing in `tacsim.ship_epoch` yet). An open whose `from`
   is a site (a staff-placed or pre-cut hull lifting from a pad) pages once and opens with that site
   as the port shape, recorded as it is.
 - **The vehicle names its carrier (V7).** S.1's `open_epoch` fills the bay shape's `sortie` from
@@ -793,8 +798,8 @@ S.4 was split by the owner (doc 17h Q-M8-1, then option C). S.4a is built.
 - The cored-rig excursion harness was built, with fitted rigs and commerce together.
 
 No claim Open/Close, pool seat or `abi` drop: an IC base needs a fixed-domain anchor
-(`mush-sim ic_exclusion.rs:317`), and an active claim freezes the hull
-(`mush-tactics ic_custody.rs:252`). Those move to **S.4b**, with the drone phase and a custody
+(`mush-sim ic_exclusion.rs:322`, `:341`), and an active claim freezes the hull
+(`mush-tactics ic_custody.rs` `holds` `:164`, `movement_preimage` `:167`). Those move to **S.4b**, with the drone phase and a custody
 design for moving anchors.
 
 S.5's dispatch-only stories are folded into doc 17h's M8g. The leak battery is on main (#106,
