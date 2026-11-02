@@ -2313,10 +2313,11 @@ left something open, this is what the cut decided, for the owner to object to.
 
   GC.1b's own arrivals are not retried while their field runs, by its ruling; that is flagged as
   a follow-up, not changed here. Awaiting the think batch before the joins, in the kernel task,
-  would remove the refusal at its root. It was tried and set aside: it lets GC.1b's
+  would remove the refusal at its root. It was tried and set aside: it let GC.1b's
   `f6_a_carrier_lifts_out_of_a_running_field_only_on_the_confirmation` take its prospector's
-  carrier in as an arrival, and that join is lost and sent again every pulse. The test passes on
-  main only because the first join is refused.
+  carrier in as an arrival, and that join was lost and sent again every pulse. The test passed on
+  main only because the first join was refused; the departing carrier is no arrival since the F-6
+  as-built note at the end of this document (2026-11-03).
 - *Not covered:* a restart between a raider's join and the next snapshot. The resume re-joins
   every `arrived` row through GC.1b's path, which stands a raider at the pad rather than its ramp.
 
@@ -3221,3 +3222,30 @@ Every cut of §7 has landed. What each as-built section left open, gathered in o
   `pickup`, `+salvage` and `scrap` vocabulary (GC.5, GC.6).
 - **Space's own cut** (Q-36-46, Q-36-47, Q-36-48): `+helm/tow` onto this claim, its window, its
   stages and the bay check; `ShipSectionId` onto `CarrierPart`; `SpacePartyId` to `PartyId`.
+
+### F-6 under load, as built (2026-11-03)
+
+`f6_a_carrier_lifts_out_of_a_running_field_only_on_the_confirmation` was the one red cell left on
+`main` at `f1ea7715` after PR #324, failing on the 2-core hosted runner at its 20 s wait for the
+filing and on conclav.dev (eight copies pinned to two cores beside four busy loops) at "the open
+promotion names the carrier's exit". It was not a write ordering: the filing already waits for the
+record to name the exit (`exit::tick`'s `landed`). It was GC.1b's arrivals. Once the kernel let the
+carrier go and the host checked it in, the carrier stood on the pad, not deployed and off the live
+record, which is exactly what `carrier::arrivals` reads as a hull that set down mid-field, so the
+same tick's `join_arrivals` sent it back in. On an idle machine the kernel refuses that join (a
+think is in flight, GC.11's finding) and `join_refused` keeps it out for good; under load the join
+lands, the departure's continuation finds the carrier in the field again and asks out again, and
+the carrier is withdrawn and re-joined every tick until the field disengages, when the
+continuation files against a demoted record. The probe run showed fifteen such rounds and
+`reason=Disengaged` in each failing copy.
+
+- *Fix.* A carrier that left this field by F-6 is no arrival: `carrier::arrivals` takes the site
+  record and skips a hull the open promotion names as exited, and `exit::leaving` (asked out, out
+  and awaiting its recover, or owed its `exit` write) covers the batches before that write lands.
+  It stands on the pad outside the field until its departure lifts it, and the host never takes it
+  in again while that field runs.
+- *Before/after on conclav.dev, same load:* `main` 4/8 red (two at the filing wait, two at the
+  exit assertion); the fix 16/16 green.
+- *GC.11's deferred root fix* (awaiting the think batch before the joins in the kernel task) is
+  no longer what carries this test: no join is attempted for the departing carrier at all. It
+  stays owed to GC.1b's refused arrival (the host-side entry above), on its own merits.
