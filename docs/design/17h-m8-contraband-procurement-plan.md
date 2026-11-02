@@ -805,6 +805,16 @@ records `core: None`. The rule is `governed == Some(false)`.
 - the paid licence's use bar;
 - K5's renewal inside the window.
 
+*Checked against the tree at `f1ea7715` (2026-11-02): none of the four has a test of its own.*
+*Not found:* the move bar in a market harness; the purchase refused across the window; K5's renewal
+inside the window. *Not found for the paid licence* (`personal_paid_holdings.rs:256` reads the bar, no
+test drives it); the owner licence's use bar is pinned by
+`m8d_a_revoked_principal_files_nothing_and_uses_nothing_until_the_window_ends`
+(`mush-roll/src/commerce/filing_tests.rs:1011`), and the bar's window and holder keying by
+`m8d_a_revoked_principals_window_edges` and
+`m8d_a_revoked_principal_is_barred_in_the_rolls_own_transaction`
+(`registry_inspection/principal.rs:207`, `:240`). M8g's stories (below) did not take them up.
+
 ### M8b-2 — heirloom and grey dies (PR #99, merged 2026-10-29 as `76bf5724`)
 
 The cut is `ac1d43a6` with fix round 1.

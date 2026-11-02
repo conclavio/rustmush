@@ -3221,3 +3221,20 @@ Every cut of §7 has landed. What each as-built section left open, gathered in o
   `pickup`, `+salvage` and `scrap` vocabulary (GC.5, GC.6).
 - **Space's own cut** (Q-36-46, Q-36-47, Q-36-48): `+helm/tow` onto this claim, its window, its
   stages and the bay check; `ShipSectionId` onto `CarrierPart`; `SpacePartyId` to `PartyId`.
+- **Missed by this list, found by the close-out audit ([doc 37](37-ic-phase-closeout-2026-11-02.md) §5.2):**
+  - The §7 "stories grow" rule is unmet: no story runs whole at both 256 and 512 (a on Ahuna Flank only, b on Urvara only, c at a port only).
+  - Story (c) against its gate (`bay_gc8.rs:227`): the engine is rebuilt in place, with no removed engine becoming a lot with parent provenance; the hull is a staff fixture, not story (a)'s casualty; "fields again" is asserted as `Operational`, not by fielding.
+  - Story (b): the contest runs on the title holder's sensor record, not its black box, though GC.6 says black-box lines are never read as evidence.
+  - No verb files a defective-procedure or superior-right contest; an org-titled hull with no lessee cannot be claimed; `claim_window_s` is not settable from config.
+  - Q-36-35/36 are narrower than ruled: the bay works only docked at a port with a workshop (`bay_work/mod.rs:32`, `:223`); field repair and rearm from carried munitions are not delivered.
+  - Stories (b) and (c) over SSH (Q-36-3) have no bot vocabulary for `+bay`, `+salvage`, `+field/void`, `+sortie/condition`; story (a) over SSH is still owed.
+  - GC.11's "captain story runs once with a director raid" has the knob (`FIELD_RAID=director`, `mining_cohort.rs:924`) but no recorded run.
+  - GC.5: a write-off runs no term settle.
+  - GC.4: every tug is `TowRigProfile::Standard`; a unit must already be on a site's index to be towed; the friendly-load half (Q-36-52) is tested as a pure rule only.
+  - GC.2: a jammed or damaged non-firing part changes nothing in the match yet.
+  - GC.8a: no part market or price. GC.8b: goods drawn then refused within one fire are lost.
+  - GC.10: the fire tally and void offers are RAM; an NPC leader cannot void.
+  - GC.12: the gate.yml `field_scale` sweep has never been run; a cap above 100 needs its own measurement.
+  - GC.13: beds are authored but not a limit.
+  - GC.3/4: the close's black-box line is covered only by review.
+  - Expensive to reverse (owner decision, doc 37 §6): the workshops live in existing rooms (GC.7/GC.8a); moving them now means re-homing berthed hulls.
