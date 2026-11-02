@@ -926,8 +926,8 @@ async fn ic1_a_kept_world_takes_the_stations_when_the_game_is_switched_on() {
     // Doc 20 cut SM.12a: the relay seed ships at 3 (v2 re-signed for lane v14).
     // Doc 20 cut SM.12b: relay v4 requires lane v15.
     // Qureshi's trust service: relay v6 requires Ceres v4. Doc 32 cut S.1: relay v8 requires
-    // lane v17.
-    assert_eq!(after.get("tacsim.relay.luna_ceres").map(|l| l.0), Some(8));
+    // lane v17; doc 36 cut GC.7: relay v9 requires lane v18.
+    assert_eq!(after.get("tacsim.relay.luna_ceres").map(|l| l.0), Some(9));
     assert!(after.contains_key(tacsim::port::passenger::content::PACK));
     assert_eq!(
         after.len(),

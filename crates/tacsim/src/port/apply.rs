@@ -180,6 +180,10 @@ pub(crate) fn room_references(def: &PortDef) -> Vec<&str> {
     if let Some(programme) = &def.programme {
         refs.push(programme.office.as_str());
     }
+    // Doc 36 cut GC.7: the workshop room.
+    if let Some(workshop) = &def.workshop {
+        refs.push(workshop.room.as_str());
+    }
     refs
 }
 
@@ -379,6 +383,8 @@ impl PortApplier {
         // how many hulls and rigs this pass would title (added to parts f's and h's, so the
         // frozen-economy sentences are unchanged).
         let (yard_hulls, yard_rigs) = crate::port::yard::preflight(w, source, id, def, map)?;
+        // Doc 36 cut GC.7 (part j): a facility already on the workshop room is this entry's.
+        crate::port::workshop::preflight(w, id, def, map)?;
         let hulls_to_title = hulls_to_title.saturating_add(yard_hulls);
         let rigs_to_title = rigs_to_title.saturating_add(yard_rigs);
         // The mint cap (D-18-14): the largest tranche still to be created. The
@@ -932,6 +938,10 @@ impl PortApplier {
         // after the institutions, because each vendor's vault and account are its
         // org's. Normal-lane writes only; the stock arm mints and lists.
         crate::port::vendor::put(ctx, id, &def, &mut map)?;
+
+        // (j) Doc 36 cut GC.7: the workshop room becomes its operator's `bay_refit` facility,
+        // after the institutions, whose org owns it.
+        crate::port::workshop::put(ctx, id, &def, &map)?;
 
         // (f) The hulls (cut IC4; L8): after the institutions, because the
         // title goes to the programme org part c made in this same pass.

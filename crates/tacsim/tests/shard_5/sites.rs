@@ -1010,10 +1010,11 @@ fn sm2_the_lane_carries_six_sites() {
     // paper; no new entry). Doc 20 cut SM.12a: v14 (the two mill rows; no new entry). Doc 20
     // cut SM.12b: v15 (Occator Rim's yard; no new entry). Doc 32 cut CF.6c: v16 (Occator's
     // escort design; no new entry). Doc 32 cut S.1: v17 (Urvara Reach, the 512 site: its place,
-    // its port and its two routes, four entries; `s1_the_lane_carries_the_512_site`).
+    // its port and its two routes, four entries; `s1_the_lane_carries_the_512_site`). Doc 36 cut
+    // GC.7: v18 (the munitions rows and the two workshops; no new entry).
     assert_eq!(
-        LANE_VERSION, 17,
-        "lane v9 since doc 20 cut SM.2, v10 since SM.3a, v11 since SM.5, v12 since SM.10, v13 since relay R9b, v14 since doc 20 cut SM.12a, v15 since doc 20 cut SM.12b, v16 since doc 32 cut CF.6c, v17 since doc 32 cut S.1"
+        LANE_VERSION, 18,
+        "lane v9 since doc 20 cut SM.2, v10 since SM.3a, v11 since SM.5, v12 since SM.10, v13 since relay R9b, v14 since doc 20 cut SM.12a, v15 since doc 20 cut SM.12b, v16 since doc 32 cut CF.6c, v17 since doc 32 cut S.1, v18 since doc 36 cut GC.7"
     );
     assert_eq!(
         parse_pack(LANE_JSON).expect("parses").entries().len(),
@@ -2905,7 +2906,8 @@ fn sm2_chart_lists_the_sites_with_their_survey_words() {
 /// whatever the lane version — and no site port map; rebooted into the shipped roster it plans
 /// and applies twenty-four creates and ten updates (the eight bodies, the Freeport's place and
 /// Ceres's port) over twenty-six unchanged entries, and every site is laid up with Ceres's and
-/// Vesta's tables installed.
+/// Vesta's tables installed. (At lane v18, doc 36 cut GC.7, Stickney's port updates too: its
+/// workshop and munitions rows are past v8, so twelve updates over twenty-four unchanged.)
 #[test]
 fn sm2_a_world_on_lane_v8_takes_v9_by_the_shelf() {
     let v8 = lane_variant(8, strip_sites);
@@ -2948,7 +2950,7 @@ fn sm2_a_world_on_lane_v8_takes_v9_by_the_shelf() {
     let (plan, apply) = plan_and_apply(&mut rig.tw);
     assert!(
         plan.contains(&format!(
-            "Plan for {LANE_PACK}@{LANE_VERSION}: 28 create, 11 update, 0 retire, 25 unchanged"
+            "Plan for {LANE_PACK}@{LANE_VERSION}: 28 create, 12 update, 0 retire, 24 unchanged"
         )),
         "{plan}"
     );
@@ -2959,7 +2961,7 @@ fn sm2_a_world_on_lane_v8_takes_v9_by_the_shelf() {
     );
     assert!(
         apply.contains(&format!(
-            "Applied {LANE_PACK}@{LANE_VERSION}: 28 created, 11 updated, 0 retired, 25 unchanged."
+            "Applied {LANE_PACK}@{LANE_VERSION}: 28 created, 12 updated, 0 retired, 24 unchanged."
         )),
         "{plan}\n{apply}"
     );
@@ -3003,7 +3005,7 @@ fn sm2_the_apply_installs_the_lane_tables() {
     let (plan, apply) = plan_and_apply(&mut rig.tw);
     assert!(
         apply.contains(&format!(
-            "Applied {LANE_PACK}@{LANE_VERSION}: 28 created, 11 updated, 0 retired, 25 unchanged."
+            "Applied {LANE_PACK}@{LANE_VERSION}: 28 created, 12 updated, 0 retired, 24 unchanged."
         )),
         "{plan}\n{apply}"
     );
