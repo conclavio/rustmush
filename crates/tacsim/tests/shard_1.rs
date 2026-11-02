@@ -43,6 +43,8 @@ mod field_carrier;
 mod field_crash;
 #[path = "shard_1/field_director.rs"]
 mod field_director;
+#[path = "shard_1/field_gc10.rs"]
+mod field_gc10;
 #[path = "shard_1/field_gc2.rs"]
 mod field_gc2;
 #[path = "shard_1/field_gc3.rs"]

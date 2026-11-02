@@ -70,6 +70,7 @@ pub(crate) mod parties;
 pub mod provider;
 pub mod raiders;
 pub mod record;
+pub mod standing;
 
 use std::collections::{BTreeMap, BTreeSet};
 use std::sync::Arc;
@@ -83,6 +84,7 @@ pub use commands::mark_from_order;
 pub use crew::{CrewCondition, CrewLocation, CrewRecord, crew_location, crew_of};
 /// CF.5's exit acknowledgement, read by a pilot client (doc 32 G-4).
 pub use exit::EXIT_ASKED;
+pub use parties::friends_on_ground;
 pub use provider::{FIELD_ACTION, FIELD_OUTCOME};
 pub use record::{FieldLive, FieldParty, FieldUnit, OwedExit, PartyKey, PendingFire};
 
@@ -90,6 +92,8 @@ pub use record::{FieldLive, FieldParty, FieldUnit, OwedExit, PartyKey, PendingFi
 pub const FIELD_TICK: &str = "tacsim.field";
 /// Its period.
 pub const FIELD_TICK_PERIOD: Duration = Duration::from_secs(1);
+/// **The void offers' sweep** (doc 36 cut GC.10), on the same period.
+pub const STANDING_TICK: &str = "tacsim.field.standing";
 /// The verb.
 pub const FIELD_VERB: &str = "+field";
 /// **A field opens**, told to everyone on the site (`{n}` the ordinal, `{site}` its name). A
@@ -287,6 +291,8 @@ pub fn register(reg: &mut Registrar<'_>) -> Result<(), ModError> {
     reg.state(crew::CrewBook::default());
     reg.state(orders::Offered::default());
     reg.state(home::Asked::default());
+    reg.state(standing::FireTally::default());
+    reg.state(standing::VoidOffers::default());
     // `+field` submits the host's authoritative action: the cockpit's command lane, then the
     // module's own default restored for whatever registers after.
     reg.classify_commands(mush_core::CommandCompatibility::Authoritative);
@@ -307,6 +313,12 @@ pub fn register(reg: &mut Registrar<'_>) -> Result<(), ModError> {
         FIELD_TICK,
         TickCadence::Coarse(FIELD_TICK_PERIOD),
         Arc::new(admit::tick),
+    )?;
+    // Doc 36 cut GC.10 (Q-36-11): the leaders' void offers close on their next command.
+    reg.tick(
+        STANDING_TICK,
+        TickCadence::Coarse(FIELD_TICK_PERIOD),
+        Arc::new(standing::tick),
     )?;
     reg.subscribe(
         mush_core::module::WorldEventKind::WorldClockResumed,

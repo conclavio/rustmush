@@ -38,6 +38,36 @@ struct Grant {
     effects: Vec<StandingEffect>,
     reason: String,
     at: i64,
+    /// **Who may void it** (doc 36 cut GC.10, Q-36-11): the leader of the party whose fire
+    /// caused it, when it was friendly fire. The offer is recorded with the change it cancels.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    voidable_by: Option<ObjId>,
+}
+
+/// **A void** (doc 36 cut GC.10, Q-36-11): the grant of the same cause no longer counts. Written
+/// once, beside its grant (`standing:void:<cause>`); the grant itself is never rewritten.
+#[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(deny_unknown_fields)]
+struct Void {
+    schema: u16,
+    cause: String,
+    by: ObjId,
+    reason: String,
+    at: i64,
+}
+
+/// **One standing receipt as it stands** (doc 36 cut GC.10): its subject, its effects, who may
+/// void it, and whether it is void.
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub struct StandingReceipt {
+    /// Whose standing it moved.
+    pub subject: ObjId,
+    /// By how much, per faction.
+    pub effects: Vec<StandingEffect>,
+    /// Who may void it, when anyone may.
+    pub voidable_by: Option<ObjId>,
+    /// Who voided it, when it is void.
+    pub voided_by: Option<ObjId>,
 }
 
 /// A private report, not a public fact or standing consequence. The first cut
@@ -73,6 +103,7 @@ pub(crate) struct StandingStore {
     grants: BTreeMap<String, Grant>,
     incidents: BTreeMap<String, AttackIncident>,
     publications: BTreeMap<String, Publication>,
+    voids: BTreeMap<String, Void>,
     scores: BTreeMap<(FactionId, ObjId), i64>,
 }
 
@@ -174,6 +205,7 @@ fn prepare_grant(w: &World, grant: &Grant) -> Result<bool, String> {
         return if old.subject == grant.subject
             && old.effects == grant.effects
             && old.reason == grant.reason
+            && old.voidable_by == grant.voidable_by
         {
             Ok(false)
         } else {
@@ -223,6 +255,27 @@ pub fn record_standing(
     effects: &[StandingEffect],
     reason: &str,
 ) -> Result<bool, String> {
+    record_voidable_standing(ctx, cause, subject, effects, reason, None)
+}
+
+/// **[`record_standing`], with the one who may void it** (doc 36 cut GC.10, Q-36-11): a field's
+/// friendly fire names its party's leader, who may cancel it with [`void_standing`]. The window
+/// to void is the producer's to keep; this records only who may.
+///
+/// # Errors
+///
+/// As [`record_standing`]; also a `voidable_by` that is no live character.
+pub fn record_voidable_standing(
+    ctx: &mut Ctx<'_>,
+    cause: &str,
+    subject: ObjId,
+    effects: &[StandingEffect],
+    reason: &str,
+    voidable_by: Option<ObjId>,
+) -> Result<bool, String> {
+    if voidable_by.is_some_and(|by| !live_actor(ctx.w, by)) {
+        return Err("Standing void holder is not a live character.".into());
+    }
     if !valid_cause(cause)
         || !valid_reason(reason)
         || effects.is_empty()
@@ -242,6 +295,7 @@ pub fn record_standing(
         effects,
         reason: reason.into(),
         at: ctx.w.now(),
+        voidable_by,
     };
     if !prepare_grant(ctx.w, &grant)? {
         return Ok(false);
@@ -255,6 +309,146 @@ pub fn record_standing(
     persist(ctx, op);
     ctx.out.pin_deferred();
     Ok(true)
+}
+
+fn uninstall_grant(store: &mut StandingStore, grant: &Grant) {
+    for effect in &grant.effects {
+        let total = store
+            .scores
+            .entry((effect.faction, grant.subject))
+            .or_default();
+        *total -= i64::from(effect.delta);
+    }
+}
+
+/// **Void the grant of `cause`** (doc 36 cut GC.10, Q-36-11): `by`, the one the grant names as
+/// able to void it, cancels it. The grant stays as written; a void record of the same cause is
+/// written beside it, and the score no longer counts it. An identical retry answers false. The
+/// window to void is the producer's to keep.
+///
+/// # Errors
+///
+/// No such grant, a grant `by` may not void, or a full store.
+pub fn void_standing(
+    ctx: &mut Ctx<'_>,
+    cause: &str,
+    by: ObjId,
+    reason: &str,
+) -> Result<bool, String> {
+    if !valid_cause(cause) || !valid_reason(reason) {
+        return Err("Invalid standing void bounds.".into());
+    }
+    let store = ctx
+        .w
+        .module_state::<StandingStore>()
+        .ok_or("Standing unavailable.")?;
+    let grant = store
+        .grants
+        .get(cause)
+        .cloned()
+        .ok_or("No such standing change.")?;
+    if grant.voidable_by != Some(by) {
+        return Err("That standing change is not yours to void.".into());
+    }
+    if store.voids.contains_key(cause) {
+        return Ok(false);
+    }
+    if store.voids.len() >= MAX_RECORDS {
+        return Err("Standing receipt store is full.".into());
+    }
+    let void = Void {
+        schema: SCHEMA,
+        cause: cause.into(),
+        by,
+        reason: reason.into(),
+        at: ctx.w.now().max(grant.at),
+    };
+    let op = prepared("void", cause, &void)?;
+    let store = ctx
+        .w
+        .module_state_mut::<StandingStore>()
+        .ok_or("Standing unavailable.")?;
+    uninstall_grant(store, &grant);
+    store.voids.insert(cause.into(), void);
+    persist(ctx, op);
+    ctx.out.pin_deferred();
+    Ok(true)
+}
+
+/// **The receipt of `cause`, as it stands** (doc 36 cut GC.10): what a field wrote with it.
+#[must_use]
+pub fn standing_receipt(w: &World, cause: &str) -> Option<StandingReceipt> {
+    let store = w.module_state::<StandingStore>()?;
+    let grant = store.grants.get(cause)?;
+    Some(StandingReceipt {
+        subject: grant.subject,
+        effects: grant.effects.clone(),
+        voidable_by: grant.voidable_by,
+        voided_by: store.voids.get(cause).map(|void| void.by),
+    })
+}
+
+/// **Every receipt's cause that starts with `prefix`**, in cause order (doc 36 cut GC.10: one
+/// field's receipts share a prefix).
+#[must_use]
+pub fn standing_causes(w: &World, prefix: &str) -> Vec<String> {
+    w.module_state::<StandingStore>()
+        .map(|store| {
+            store
+                .grants
+                .range(prefix.to_owned()..)
+                .take_while(|(cause, _)| cause.starts_with(prefix))
+                .map(|(cause, _)| cause.clone())
+                .collect()
+        })
+        .unwrap_or_default()
+}
+
+/// **The factions `who` openly stands in** (doc 36 cut GC.10, Q-36-10), in faction order: each
+/// it is a member of where fellow members may know it (public or members-know), each public one
+/// it is a principal of, and each whose backing organization it is an active member of on the
+/// same terms. Officer-only and covert memberships are left out, so nothing a field derives from
+/// them tells anyone what they hide.
+#[must_use]
+pub fn open_factions(w: &World, who: ObjId) -> Vec<FactionId> {
+    let Some(state) = w.module_state::<FactionState>() else {
+        return Vec::new();
+    };
+    let mut out: BTreeSet<FactionId> = state
+        .memberships_of(who)
+        .filter(|m| {
+            matches!(
+                m.visibility,
+                crate::Visibility::Public | crate::Visibility::MembersKnow
+            )
+        })
+        .map(|m| m.faction)
+        .collect();
+    let orgs: BTreeSet<mush_org::OrgId> = w
+        .module_state::<mush_org::OrgStore>()
+        .map(|store| {
+            let orgs = store.state();
+            orgs.member_orgs(who)
+                .filter(|org| {
+                    orgs.membership(*org, who).is_some_and(|m| {
+                        m.status == mush_org::MembershipStatus::Active
+                            && matches!(
+                                m.visibility,
+                                mush_org::Visibility::Public | mush_org::Visibility::MembersKnow
+                            )
+                    })
+                })
+                .collect()
+        })
+        .unwrap_or_default();
+    for faction in state.factions.values() {
+        if (!faction.hidden && faction.principals.contains(&who))
+            || faction.org.is_some_and(|org| orgs.contains(&org))
+        {
+            out.insert(faction.id);
+        }
+    }
+    out.into_iter().collect()
 }
 
 fn score(w: &World, faction: FactionId, subject: ObjId) -> Option<i16> {
@@ -461,6 +655,7 @@ pub fn publish_attack_incident(ctx: &mut Ctx<'_>, cause: &str) -> Result<bool, S
         }],
         reason: incident.reason.clone(),
         at: ctx.w.now(),
+        voidable_by: None,
     });
     let grant_op = if let Some(grant) = &grant {
         if !prepare_grant(ctx.w, grant)? {
@@ -550,7 +745,14 @@ pub(crate) fn history(w: &World, faction: FactionId, subject: ObjId) -> Vec<Stri
     grants
         .into_iter()
         .take(HISTORY)
-        .map(|(g, delta)| format!("  {delta:+}: {} [{}]", g.reason, g.cause))
+        .map(|(g, delta)| {
+            let void = if store.voids.contains_key(&g.cause) {
+                " (voided)"
+            } else {
+                ""
+            };
+            format!("  {delta:+}: {} [{}]{void}", g.reason, g.cause)
+        })
         .collect()
 }
 
@@ -689,6 +891,7 @@ pub(crate) fn load(
     rows: Vec<(SmolStr, serde_json::Value)>,
 ) -> Result<(), ModError> {
     let mut store = StandingStore::default();
+    let mut voids: Vec<Void> = Vec::new();
     for (key_text, value) in rows {
         if serde_json::to_vec(&value)
             .map_err(|e| ModError::msg(e.to_string()))?
@@ -719,6 +922,18 @@ pub(crate) fn load(
             if row.cause != cause || store.incidents.insert(cause.into(), row).is_some() {
                 return Err(ModError::msg("faction: incident key conflict"));
             }
+        } else if let Some(cause) = key_text.strip_prefix("standing:void:") {
+            let row: Void =
+                serde_json::from_value(value).map_err(|e| parse_error(e.to_string()))?;
+            if row.schema != SCHEMA
+                || row.cause != cause
+                || !valid_cause(cause)
+                || !valid_reason(&row.reason)
+                || row.at < 0
+            {
+                return Err(ModError::msg("faction: invalid standing void"));
+            }
+            voids.push(row);
         } else if let Some(cause) = key_text.strip_prefix("standing:publication:") {
             let row: Publication =
                 serde_json::from_value(value).map_err(|e| parse_error(e.to_string()))?;
@@ -738,9 +953,27 @@ pub(crate) fn load(
         if store.grants.len() > MAX_RECORDS
             || store.incidents.len() > MAX_RECORDS
             || store.publications.len() > MAX_RECORDS
+            || voids.len() > MAX_RECORDS
         {
             return Err(ModError::msg("faction: standing receipts exceed bounds"));
         }
+    }
+    // Doc 36 cut GC.10: a void stands only beside the grant it cancels, by the one that grant
+    // names, never before it.
+    for void in voids {
+        let grant = store
+            .grants
+            .get(&void.cause)
+            .cloned()
+            .ok_or_else(|| ModError::msg("faction: standing void without its grant"))?;
+        if grant.voidable_by != Some(void.by)
+            || void.at < grant.at
+            || store.voids.contains_key(&void.cause)
+        {
+            return Err(ModError::msg("faction: standing void/grant mismatch"));
+        }
+        uninstall_grant(&mut store, &grant);
+        store.voids.insert(void.cause.clone(), void);
     }
     // Never silently orphan-purge a receipt: doing so would permit old causes
     // to apply again. Deleted subjects/factions keep their historical identity.

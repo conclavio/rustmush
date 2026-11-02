@@ -2614,8 +2614,9 @@ stands its casualty on the same cell.
 
 **The load** (Q-36-17, Q-36-21, Q-36-52's friendly half).
 - *Where*: from within a cell of a carrier's ramp, into a carrier of the casualty's own party or
-  a Friend's. That means the casualty's own leased bay, or a carrier that the field's own Friend
-  rule (`field::parties::entrants`, read only) puts behind the same owner. Loading anyone else's
+  a Friend's. That means the casualty's own leased bay, or a carrier the field's own Friend rule
+  (`field::parties::friends`, read only) makes a Friend: one owner behind both, or, with GC.10
+  merged, an organization they openly share. Loading anyone else's
   casualty belongs to GC.5 and is refused with a line.
 - *The physical step*: the tick puts the casualty in the bay only on an unpromoted site, with the
   tug beside the ramp and room in the bay, and only then submits the finish. The finish records
@@ -2668,3 +2669,148 @@ stands its casualty on the same cell.
 - Every tug a standard rig.
 - A hopper's ore not counted in a casualty's laden mass (cargo 0), until the hopper reads come
   to the tow.
+
+## GC.10 as built (relations: Friends by organization, standing at demotion)
+
+Built 2026-11-02 on `main` at `030f1bf7` (GC.3 and GC.11 merged), beside GC.4 and GC.5. It covers
+Q-36-10 and Q-36-11 (F-1, F-2). No kernel file changed and no practice hash moved: the OOC arena
+has no organizations and runs no field host, so its friendships and its books are as before. Where
+the rulings left something open, this is what the cut decided, for the owner to object to.
+
+**Friends by organization** (Q-36-10; `field/parties.rs`).
+- *The rule.* Two parties are Friends when one owner stands behind both (Q-CF-5, unchanged) or
+  when their leaders or owners share an organization. An organization here is any of:
+  - an active `mush_org` membership;
+  - a `mush-faction` membership;
+  - a faction's principalship.
+- *Only what fellow members may know.* A membership counts only when its visibility is public or
+  members-know (`mush_faction::open_factions`, `parties::affiliations`). An officer-only or covert
+  membership makes nobody a friend, because a friend's colour in a field would tell the other
+  party what the membership hides. A principal counts only for a faction that is not hidden.
+- *A raider's organization* (GC.11) is a faction with no backing organization whose principal is
+  the raider's leader. So a player who openly stands in the Skulk Syndicate is a friend of the
+  Skulks' party.
+- *The order is the kernel's, unchanged.* A friend ranks below a leader's mark and below
+  hostility fire produced (`Relations::relation`). A fixture raider's standing Hostile mark on
+  every other party (CF.6) therefore still decides the raider's own view of a member of its
+  organization; the member holds the raider a friend until it is fired on. There are no declared
+  stances between organizations.
+- *Where it is read.* Each entrant carries its leader's and owner's affiliations, read when it is
+  built (at admission, and at GC.1b's join). So `friends()` keeps its signature, and `admit.rs`
+  and `carrier.rs` are untouched. `parties::friends_of` applies the same rule to a live record's
+  parties at demotion. `field::friends_on_ground` is a read for staff and the gates.
+
+**Standing at demotion** (Q-36-11; the new `field/standing.rs`, one call in `field/close.rs`).
+- *What counts as observed fire.* Each round that reaches a unit of another party: the kernel's
+  own reading, since `note_fire` runs on the round's arrival, hit or miss. The host counts the
+  `impact` lines of the field's black box per shooter party and victim party as the chunks pass
+  (`standing::note_chunk`, one line in `arena_bridge.rs`'s ledger branch). The last chunks precede
+  the task's `Ended`, so the count is whole at demotion. Fire within a party counts nothing, and a
+  mark alone never moves standing.
+- *What it moves.* At demotion, before the host forgets the parties (`standing::at_demotion`),
+  each pair that counted writes one grant per principal of the shooter party:
+  - the principals are its leader and, for a roster, its organizer (`parties::principals`);
+  - the effects are one per faction the victim party's principals openly stand in (at most
+    eight);
+  - the amount is `STANDING_PER_ROUND` (-1) a round, bounded at `STANDING_FIELD_CAP` (-10) a pair
+    a field.
+
+  Each principal is told the change. Raider fire costs the raider's leader standing with its
+  victims' factions, and fire at raiders costs the shooter standing with the raider's
+  organization.
+- *The cause* is `field:<site tag>:<ordinal>:<shooter><victim>:<subject>`. The site is folded to a
+  stable FNV-1a tag, because a cause is lowercase and bounded. A replayed demotion writes nothing
+  twice.
+- *A void end* (a panic, a stall, a ledger overflow) commits nothing the arena derived, so it
+  writes no standing.
+
+**The leader's void** (the owner's amendment of Q-36-11).
+- *Which changes.* Fire on a party that was a standing friend of the shooter's party at demotion
+  (by owner or organization): friendly fire. Fire on anyone else cannot be voided. This reads the
+  ruling's "for friendly fire" as the limit on "any standing change". The wider reading, any
+  change the party's fire caused, is a one-line change.
+- *Recorded together.* The grant names the shooter party's leader as the one who may void it
+  (`mush_faction::record_voidable_standing`). This is a new optional `voidable_by` on the grant,
+  omitted when empty, so older receipts decode. The void is a record of the same cause beside
+  it, `standing:void:<cause>` (`mush_faction::void_standing`), and the grant is never rewritten.
+  - The score stops counting a voided grant.
+  - `+standing <faction>` shows it marked `(voided)`.
+  - Both records replay at boot, and boot refuses a void without its grant or by anyone else.
+- *The offer.* The leader is told at demotion. `+field/void` (a new switch of `+field`) voids every
+  change the offer holds. The window closes at the leader's next command or after
+  `VOID_WINDOW_IC_S` (600, ten IC minutes), whichever is first. A later demotion widens an open
+  offer and restarts its window.
+- *"The next command".* The engine has no command hook, so the window reads the session's input
+  stamp.
+  - A new tick, `tacsim.field.standing` (once a second), closes an offer once its leader has
+    entered anything since it opened.
+  - `+field/void` takes its offer in the same dispatch that stamps its own input, so the void is
+    never the command that closes it.
+  - Two inputs inside one second can let a void through after another command. A command in the
+    very second of the demotion is not seen.
+  - An NPC leader has no session, so only the IC window closes its offer. Nothing voids on an
+    NPC's behalf.
+
+**RAM, not records.** The round count and the offers are host RAM (`FireTally`, `VoidOffers`). A
+restart mid-field loses the rounds counted before it. A restart inside a void window closes the
+window, so the change stands. Only the grants and voids are durable.
+
+**Finding, not changed: the shooter's other parties.** `Relations::note_fire` tells the victim and
+every party that holds the victim a friend, except the shooter's own party. Its doc says the
+shooter's friends are not moved, but a party that is a friend of both is. Before this cut that
+needed one owner behind both parties; with organizations it is common.
+- *In the gate,* A's carrier on its pad is a friend of B by the Syndicate. So A's fire on B makes
+  A's own carrier hold A's hull hostile, and the field never quiets on `disengage_s` alone. The
+  gate demotes on GC.2's idle bound instead.
+- *The fix is the kernel's:* skip parties that hold the shooter a friend. It touches the books the
+  hash folds, so it belongs with a rebless, and is left for the owner to schedule.
+
+**Files beyond the cut's line.**
+- `field/standing.rs` (new).
+- `field/mod.rs`: two state slots, the tick and the re-export.
+- `field/commands.rs`: the `void` switch.
+- `arena_bridge.rs`: one line.
+- The `+field` note in `mush-contract-tests/legacy-handlers.toml`.
+
+GC.4's and GC.5's files are not touched.
+
+**The gates** (`tests/shard_1/field_gc10.rs`, the composed `driving` world on Ahuna Flank).
+- **`gc10_two_rosters_in_one_organization_are_friends`.** Seven parties stand on the ground: A's
+  and B's armed hulls, the three carriers, and the launched Skulks. A party of one is the
+  degenerate roster (F-5).
+  1. No friendship crosses owners until A and B join one faction and C joins the Skulk Syndicate.
+  2. Then A's and B's hulls are Friends, and so are C's party and the Skulks'. No other pair
+     across those four is, and the letters don't move.
+  3. The kernel's order is checked over those friendships: the raider's mark outranks C's
+     friendship, and fire outranks A's.
+- **`gc10_a_leader_voids_friendly_fire_standing`.** CF.2's ground, with the Skulks' carrier seeded
+  on the site and C's prospector beside it. A and B both join the Skulk Syndicate.
+  1. A's fire order opens the field, and the round reaches B's hull.
+  2. Both leaders mark the other Friendly, and the field demotes on its idle bound.
+  3. One grant is written: A's standing with the Syndicate falls by the bounded amount, and the
+     grant names A as its voider. B's standing does not move.
+  4. B's `+field/void` finds nothing.
+  5. A's void restores the score, and the void is recorded beside the grant.
+  6. A second void finds nothing, and the history marks the change `(voided)`.
+- *In-source:*
+  - `parties::tests::one_organization_makes_friends_across_owners_and_a_third_party_stays_apart`;
+  - `standing::tests`: the bound, the cause's shape, and the window's two ways to close;
+  - in `mush-faction`, `a_voidable_grant_is_voided_only_by_its_named_leader_and_replays`.
+
+**Defaults taken (provisional).**
+- One point a round, ten a pair a field.
+- Ten IC minutes to void, closed early by any input.
+- The void limited to fire on a standing friend.
+- Only public and members-know memberships make friends or name a victim's faction.
+- Friendships at demotion read from memberships as they stand then.
+- The lines' wording.
+
+**Verified** on Windows:
+- The two gates, three runs each.
+- The `parties`, `standing` and `arena::party` lib tests.
+- shard_1's `field_raiders`, `field_director`, `field_host` and `field_gc3` modules, since
+  friendships now also tie a raider's carrier and hulls through its organization.
+- All of `mush-faction` and `mush-contract-tests`.
+- Clippy and rustdoc `-D warnings`.
+
+The broad suites run on Linux CI on the PR.

@@ -125,7 +125,7 @@ note = "Player faction directory (+factions): lists factions visible to the acti
 [[handler]]
 name = "+field"
 category = "authoritative"
-note = "REFRESHED by doc 32 cut CF.5: tacsim_field gains op exit, submitted only by the tacsim.field tick (the host's owed exits fixed into the offer from RAM). Earlier: doc 32 cut CF.2 (Q-CF-7, Q-CF-14, Q-CF-15): the IC field host's verb. A bare +field is a pure read of the actor's own party in a running field. /mark <bearing> [band]=hostile and /fire <bearing> [band] on the open surface each stage exactly one Ctx::submit_authoritative of the tacsim-owned tacsim_field with op open (keyed tacsim.field/<actor>/<site>/open/<ordinal>/<now_ic>), whose prepare promotes the site's tacsim.field record (PromotedBy Mark or Fire) and settles the site's in-flight surface acts in their tacsim.excursion records in one bundle; admission, check-out and the task are the tacsim.field tick's. /mark <letter>=hostile|friendly|clear inside a field offers one ArenaMsg::Mark to the field's arena task (kernel state, no document). The host's close (op close) is submitted by the tick as the character who opened the field, its unit index fixed into the offer from the host's RAM."
+note = "REFRESHED by doc 36 cut GC.10 (Q-36-11): /void, after a field, voids the friendly-fire standing changes the field's demotion offered the actor as its party's leader: one mush_faction::void_standing per offered cause, each a bounded whole-document standing:void:<cause> receipt beside its immutable grant (the /extract precedent: written from the Authoritative bracket, nothing submitted); the offer itself is host RAM, closed by the tacsim.field.standing tick at the leader's next input or after ten IC minutes. New switch of the existing verb, so PINNED_BASELINE does not move. Earlier: doc 32 cut CF.5: tacsim_field gains op exit, submitted only by the tacsim.field tick (the host's owed exits fixed into the offer from RAM). Earlier: doc 32 cut CF.2 (Q-CF-7, Q-CF-14, Q-CF-15): the IC field host's verb. A bare +field is a pure read of the actor's own party in a running field. /mark <bearing> [band]=hostile and /fire <bearing> [band] on the open surface each stage exactly one Ctx::submit_authoritative of the tacsim-owned tacsim_field with op open (keyed tacsim.field/<actor>/<site>/open/<ordinal>/<now_ic>), whose prepare promotes the site's tacsim.field record (PromotedBy Mark or Fire) and settles the site's in-flight surface acts in their tacsim.excursion records in one bundle; admission, check-out and the task are the tacsim.field tick's. /mark <letter>=hostile|friendly|clear inside a field offers one ArenaMsg::Mark to the field's arena task (kernel state, no document). The host's close (op close) is submitted by the tick as the character who opened the field, its unit index fixed into the offer from the host's RAM."
 
 [[handler]]
 name = "+focus"
@@ -138,6 +138,11 @@ name = "+guest"
 category = "legacy-post-image"
 family = "housing.tenancy"
 note = "Residence guest list (+guest): updates the bounded tenancy record (tenancy:<id>) on the housing module's compatibility post-image lane; no prepared mechanic."
+
+[[handler]]
+name = "+helm"
+category = "authoritative"
+note = "doc 35 cut SF.R3 (section 5, D-35-9): ship bridge stations and continuous helm orders. Every switch requires the actor to be physically aboard a carrier hull (hull_aboard_for_actor) and holds a bridge station on mush-sim's SpatialState (or is the ship's captain when the command station is uncrewed; unrostered passengers/stowaways are refused). /station assigns or vacates bridge stations (command, helm, tactical, ew, engineering, flight_ops) on the hull through mush_sim::declare_station, mush_sim::commands::assign_station and mush_sim::vacate_station under the declared tacsim -> sim delegation, publishing ChannelGrants onto World::command_subjects_of. /heading, /thrust and /emcon validate and record mush_sim::tick::StandingOrder records on OrderChannel::{Heading,Thrust,Posture} and apply deterministic BubbleInputCommands onto the hull's active LocalSpaceBubble input tape. Shares the ship/cockpit Authoritative command bracket; PINNED_BASELINE does not move."
 
 [[handler]]
 name = "+home"
@@ -351,6 +356,11 @@ name = "+survey"
 category = "authoritative"
 family = "tacsim.survey"
 note = "Read-only board and previews; acceptance offers an economy contract with the pilot's consent and queues an authorized typed survey acceptance. Occator funds only after that acceptance is durable. Sounding progress and completion commit with the chart through the surface action transaction; scoped survey facts settle payment or the contract's agreed cancellation refund. Funded cancellation records an authoritative withdrawal; unfunded cancellation uses the economy contract API. No legacy handler writes authoritative survey state."
+
+[[handler]]
+name = "+tac"
+category = "authoritative"
+note = "doc 35 cut SF.R3 (section 6, D-35-9, D-35-10): ship tactical sensors, target locks, weapons and point defence. Every switch requires the actor to be physically aboard a carrier hull (hull_aboard_for_actor) and hold a mush-sim bridge station granting the sensors (/status, /scan, /lock) or fire (/beam, /torp, /railgun, /pdc) channel. Contact visibility and targeting are gated through mush_propagation::resolve_detection over Medium::Vacuum with inverse-square range scaling, thermal/IR bloom and observer sensor aperture, and mush_propagation::light_lag_ms; undetected contacts are omitted from /scan and panel keyframes (space.holotank, space.cockpit), and targeting an undetected contact refuses with 'No such contact.'. Mutating switches apply deterministic BubbleInputCommands onto the hull's active LocalSpaceBubble input tape and append combat impacts to both hulls' black-box flight recorders in SalvageClaimBook. Shares the ship/cockpit Authoritative command bracket; PINNED_BASELINE does not move."
 
 [[handler]]
 name = "+territory"

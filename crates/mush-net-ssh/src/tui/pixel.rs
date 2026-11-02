@@ -862,20 +862,59 @@ impl PixelView {
     /// close it.
     pub fn toggle_for(&mut self, kind: PictureKind, now: Instant) -> bool {
         if !self.active && kind != self.kind {
-            self.kind = kind;
-            self.picture = match kind {
-                PictureKind::Cockpit => Box::new(CockpitPicture::new()),
-                PictureKind::Chart => Box::new(ChartPicture::new()),
-                PictureKind::Replay => Box::new(ReplayPicture::new()),
-                PictureKind::Doll => Box::new(DollPicture::new()),
-                PictureKind::Holotank => Box::new(HolotankPicture::new()),
-                PictureKind::SpaceCockpit => Box::new(SpaceCockpitPicture::new()),
-                PictureKind::Docking => Box::new(DockingPicture::new()),
-            };
-            self.last_sent = None;
+            self.set_kind_internal(kind);
         }
         self.chart_asked = None;
         self.toggle(now)
+    }
+
+    /// Switch the picture kind (`Chart`, `Holotank`, `SpaceCockpit`, `Docking`, etc.)
+    /// and clean up any previously displayed Kitty graphics for the old kind (`D-35-16`).
+    fn set_kind_internal(&mut self, kind: PictureKind) {
+        let cleanup_ch = self.chart_pic.cleanup_kitty_bytes();
+        if !cleanup_ch.is_empty() {
+            self.term_bytes.extend_from_slice(&cleanup_ch);
+        }
+        let cleanup_ht = self.holotank_pic.cleanup_kitty_bytes();
+        if !cleanup_ht.is_empty() {
+            self.term_bytes.extend_from_slice(&cleanup_ht);
+        }
+        let cleanup_sc = self.space_cockpit_pic.cleanup_kitty_bytes();
+        if !cleanup_sc.is_empty() {
+            self.term_bytes.extend_from_slice(&cleanup_sc);
+        }
+        let cleanup_dk = self.docking_pic.cleanup_kitty_bytes();
+        if !cleanup_dk.is_empty() {
+            self.term_bytes.extend_from_slice(&cleanup_dk);
+        }
+        self.kind = kind;
+        self.picture = match kind {
+            PictureKind::Cockpit => Box::new(CockpitPicture::new()),
+            PictureKind::Chart => Box::new(ChartPicture::new()),
+            PictureKind::Replay => Box::new(ReplayPicture::new()),
+            PictureKind::Doll => Box::new(DollPicture::new()),
+            PictureKind::Holotank => Box::new(HolotankPicture::new()),
+            PictureKind::SpaceCockpit => Box::new(SpaceCockpitPicture::new()),
+            PictureKind::Docking => Box::new(DockingPicture::new()),
+        };
+        self.last_sent = None;
+        self.chart_asked = None;
+    }
+
+    /// Cycle the view mode (`v` toggle) across the orbital/space views (`Chart` $\to$
+    /// `Holotank` $\to$ `SpaceCockpit` $\to$ `Docking` $\to$ `Chart`) without consuming
+    /// any of the 13 digit screen slots (`SF.R3`, `D-35-16`).
+    pub fn cycle_space_view(&mut self) {
+        let next = match self.kind {
+            PictureKind::Chart => PictureKind::Holotank,
+            PictureKind::Holotank => PictureKind::SpaceCockpit,
+            PictureKind::SpaceCockpit => PictureKind::Docking,
+            PictureKind::Docking => PictureKind::Chart,
+            other => other,
+        };
+        if next != self.kind {
+            self.set_kind_internal(next);
+        }
     }
 
     /// Close the view if it is open on `kind` (G.8: the replay closed under
@@ -1238,16 +1277,19 @@ impl PixelView {
             }
             return KeyUse::Used;
         }
-        // The chart's keys (G.5b): `r` fetches it again, Esc and `q` close.
+        // The chart's keys (G.5b, SF.R3, D-35-16): `r` fetches it again, `v` cycles
+        // orbital/space views (Chart -> Holotank -> SpaceCockpit -> Docking), Esc and `q` close.
         if self.kind == PictureKind::Chart {
             match key {
                 Key::Char('r') => self.chart_asked = None,
+                Key::Char('v') => self.cycle_space_view(),
                 Key::Esc | Key::Char('q') => self.close(),
                 _ => {}
             }
             return KeyUse::Used;
         }
-        // The 3D Holo-Tank's keys (doc 35 cut SF.7): `,`/`.` or `a`/`d` rotate azimuth, Esc/`q` close.
+        // The 3D Holo-Tank's keys (doc 35 cut SF.7, SF.R3, D-35-16): `,`/`.` or `a`/`d` rotate azimuth,
+        // `v` cycles space views, `z`/`x`/`c` or F1-F3 fire weapon groups, Esc/`q` close.
         if self.kind == PictureKind::Holotank {
             match key {
                 Key::Char(',' | 'a') => {
@@ -1258,15 +1300,39 @@ impl PixelView {
                     self.look_mdeg = (self.look_mdeg + 15_000).rem_euclid(360_000);
                     self.last_sent = None;
                 }
-                Key::Char('r') => self.chart_asked = None,
+                Key::Char('z') | Key::F(1) => self.orders.push("+tac/beam".to_string()),
+                Key::Char('x') | Key::F(2) => self.orders.push("+tac/torp".to_string()),
+                Key::Char('c') | Key::F(3) => self.orders.push("+tac/railgun".to_string()),
+                Key::Char('r') => self.orders.push("+tac/scan".to_string()),
+                Key::Char('v') => self.cycle_space_view(),
                 Key::Esc | Key::Char('q') => self.close(),
+                _ => {}
+            }
+            return KeyUse::Used;
+        }
+        // The First-Person Space Canopy Cockpit's keys (SF.R3, D-35-16):
+        // `v` cycles space views, `z`/`x`/`c` or F1-F3 fire weapon groups (+tac/beam, +tac/torp,
+        // +tac/railgun), `r` runs a sensor scan, while digits '0'..'9' pass through for global
+        // screen switching.
+        if self.kind == PictureKind::SpaceCockpit {
+            match key {
+                Key::Char('z') | Key::F(1) => self.orders.push("+tac/beam".to_string()),
+                Key::Char('x') | Key::F(2) => self.orders.push("+tac/torp".to_string()),
+                Key::Char('c') | Key::F(3) => self.orders.push("+tac/railgun".to_string()),
+                Key::Char('r') => self.orders.push("+tac/scan".to_string()),
+                Key::Char('v') => self.cycle_space_view(),
+                Key::Esc | Key::Char('q') => self.close(),
+                Key::Char('0'..='9' | '"' | ':' | ';' | '\\' | '/' | '?' | 'p')
+                | Key::Enter
+                | Key::Ctrl(_)
+                | Key::Alt(_) => return KeyUse::Passed,
                 _ => {}
             }
             return KeyUse::Used;
         }
         // The Out-of-Time-Loop 6-DOF Docking Camera's keys (doc 35 cut SF.7, D-35-16):
         // WASD translation, Arrow Keys pitch/yaw, Q/E roll, R/F closure pulse, X dampeners,
-        // while preserving digits '0'..'9' for global screen switching (no bare Shift dependency).
+        // `v` view mode toggle, while preserving digits '0'..'9' for global screen switching.
         if self.kind == PictureKind::Docking {
             match key {
                 Key::Char('w' | 'W') => self.orders.push("DOCK TRANS UP".to_string()),
@@ -1282,6 +1348,7 @@ impl PixelView {
                 Key::Char('r' | 'R') => self.orders.push("DOCK CLOSURE FORWARD".to_string()),
                 Key::Char('f' | 'F') => self.orders.push("DOCK CLOSURE REVERSE".to_string()),
                 Key::Char('x' | 'X') => self.orders.push("DOCK DAMPENERS TOGGLE".to_string()),
+                Key::Char('v') => self.cycle_space_view(),
                 Key::Char('0'..='9' | '"' | ':' | ';' | '\\' | '/' | '?' | 'p')
                 | Key::Enter
                 | Key::Esc
@@ -3453,9 +3520,23 @@ mod tests {
         assert!(!v.paint(&space_feeds, 120, 40, t0).is_empty());
         v.close();
 
-        // 2. Space Bridge Canopy paints Neptune & Triton in Kitty
+        // 2. Space Bridge Canopy paints Neptune & Triton in Kitty and dispatches z/x/c (F1-F3)
+        // weapon groups (`D-35-16`)
         assert!(v.toggle_for(PictureKind::SpaceCockpit, t0));
         assert!(!v.paint(&space_feeds, 120, 40, t0).is_empty());
+        assert_eq!(v.key(Key::Char('z'), t0), KeyUse::Used);
+        assert_eq!(v.key(Key::Char('x'), t0), KeyUse::Used);
+        assert_eq!(v.key(Key::Char('c'), t0), KeyUse::Used);
+        assert_eq!(v.take_orders(), ["+tac/beam", "+tac/torp", "+tac/railgun"]);
+        // `v` cycles SpaceCockpit -> Docking -> Chart -> Holotank -> SpaceCockpit (`D-35-16`)
+        assert_eq!(v.key(Key::Char('v'), t0), KeyUse::Used);
+        assert_eq!(v.kind(), PictureKind::Docking);
+        assert_eq!(v.key(Key::Char('v'), t0), KeyUse::Used);
+        assert_eq!(v.kind(), PictureKind::Chart);
+        assert_eq!(v.key(Key::Char('v'), t0), KeyUse::Used);
+        assert_eq!(v.kind(), PictureKind::Holotank);
+        assert_eq!(v.key(Key::Char('v'), t0), KeyUse::Used);
+        assert_eq!(v.kind(), PictureKind::SpaceCockpit);
         v.close();
 
         // 3. 6-DOF Docking view paints and dispatches WASD, Arrows, Q/E, R/F, X while passing digits '0'..'9' (`D-35-16`)

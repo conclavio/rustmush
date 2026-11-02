@@ -710,8 +710,8 @@ fn carriers_at(w: &World, site: &CanonicalId, pose: &FieldPose) -> Vec<(ObjId, F
 }
 
 /// **Whether `carrier` is the casualty's own party's or a Friend's** (Q-36-52): the casualty's
-/// own leased bay, or one owner standing behind both (the field's own Friend rule,
-/// `crate::field::parties`).
+/// own leased bay, or the field's own Friend rule (`crate::field::parties::friends`: one owner
+/// behind both, or, since doc 36 cut GC.10, an organization they openly share).
 fn friendly(ctx: &Ctx<'_>, site: &CanonicalId, casualty: ObjId, carrier: ObjId) -> bool {
     if ctx
         .w
@@ -721,11 +721,25 @@ fn friendly(ctx: &Ctx<'_>, site: &CanonicalId, casualty: ObjId, carrier: ObjId) 
     {
         return true;
     }
+    // Doc 36 cut GC.10 (Q-36-10): the field's own Friend rule — one owner behind both, or an
+    // organization their leaders or owners openly share.
     let entrants = crate::field::parties::entrants(ctx, site, &[casualty, carrier]);
-    match entrants.as_slice() {
-        [a, b] => a.key == b.key || (a.owner.is_some() && a.owner == b.owner),
-        _ => false,
+    let [a, b] = entrants.as_slice() else {
+        return false;
+    };
+    if a.key == b.key {
+        return true;
     }
+    let Ok((parties, _)) = crate::field::parties::letter(&entrants) else {
+        return false;
+    };
+    let letter = |key| parties.iter().find(|p| p.key == key).map(|p| p.party);
+    let (Some(x), Some(y)) = (letter(a.key), letter(b.key)) else {
+        return false;
+    };
+    crate::field::parties::friends(&entrants, &parties)
+        .into_iter()
+        .any(|pair| pair == (x, y) || pair == (y, x))
 }
 
 /// **A load's facts** for `tug`'s tow into `carrier`.
