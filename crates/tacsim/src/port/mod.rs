@@ -260,10 +260,11 @@ pub use orders::{
 pub use passage::{
     CarriedRig, DAY_SECS, DEFAULT_THROTTLE_PERMILLE, DriveLaw, FlipProfile, G0_MPS2, HomeReserve,
     HullDrive, INTERCEPT_PASSES, KEEP_OUT_AU, LANDING_TWR_PERMILLE, MAX_THROTTLE_PERMILLE,
-    MIN_THROTTLE_PERMILLE, PlanError, RoutePolicy, SITE_MIN_BURN_T, ascent_mps, carried_kg,
-    choose_route, crew_days, detour_km, flip_accel_mps2, flip_profile, home_reserve,
-    intercept_passes, landing_twr_permille, least_landing_throttle, leg_distance_km, leg_seconds,
-    passage_burn, payload_kg, plan_passage, route_landing_floor,
+    MIN_THROTTLE_PERMILLE, PlanError, ReturnReserve, RoutePolicy, SITE_MIN_BURN_T, ascent_mps,
+    burn_kg_for_dv, carried_kg, choose_route, crew_days, detour_km, flip_accel_mps2, flip_profile,
+    free_flight_velocity_dv_mps, home_reserve, intercept_passes, landing_twr_permille,
+    least_landing_throttle, leg_distance_km, leg_seconds, passage_burn, payload_kg, plan_passage,
+    plan_passage_from, remaining_dv_mps_for_propellant, return_reserve_from, route_landing_floor,
 };
 pub use price::{
     DAY_S, EMERGENCY_CHECK_SECS, EmergencyReading, MAX_SCAN_DAYS, MAX_SCAN_SAMPLES, Reach,

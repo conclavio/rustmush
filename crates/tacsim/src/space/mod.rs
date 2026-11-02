@@ -39,9 +39,10 @@ pub use custody::{
 };
 pub use tick::{
     ActiveInterdictionBubble, CARRIER_PARTY, COMBAT_STEP_WALL_MS, CRUISE_STEP_WALL_MS,
-    CompletedInterdictionBubble, INTERDICTION_STANDOFF_M, INTERDICTOR_PARTY, ORDNANCE_STEP_WALL_MS,
-    SPACE_TICK, SPACE_TICK_PERIOD, SpaceBubbleBook, SpaceDerelictRecord, apply_bubble_command,
-    clear_interdiction_bubble,
+    CompletedInterdictionBubble, FreeFlightGuidanceMode, HullPropellantLedger,
+    INTERDICTION_STANDOFF_M, INTERDICTOR_PARTY, ORDNANCE_STEP_WALL_MS, SOLAR_MU_KM3_S2, SPACE_TICK,
+    SPACE_TICK_PERIOD, SpaceBubbleBook, SpaceDerelictRecord, SpaceFreeFlightRecord,
+    apply_bubble_command, clear_interdiction_bubble,
 };
 pub use weapons::{
     DEFAULT_TORPEDO_MAX_FLIGHT_MS, InFlightSlug, InFlightTorpedo, LaserMode, LaserMount, PdcMount,

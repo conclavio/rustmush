@@ -4069,3 +4069,179 @@ fn sfr3_authoritative_helm_and_tac_enforce_aboard_seats_write_standing_orders_an
         "SetLockedTarget and FireOffensiveLasers appended to BubbleInputTape"
     );
 }
+
+/// **Doc 35 cut SF.R4 (`D-35-6`, `35a` §5 #4–#5, §8.3)**:
+/// 1. A non-GOD chartered pilot launches *Salt Moth* (`+ship/undock stickney`) and decouples
+///    mid-transit (`+helm/decouple`) into 3D heliocentric free flight, pausing the `CarrierJourney`.
+/// 2. Executing a timed burn (`+helm/burn 3,0,0 400`) debits reaction mass from the hull's live
+///    `stow.propellant` pool (both in `HullPropellantLedger` and via `tacsim_port_burn` on the
+///    hull's vault in `EconomyStore`), and stepping the world clock past the burn duration cuts
+///    thrust off cleanly so timed burns never latch (`35a` §5 #4) while solar gravity integrates
+///    on the Tier-1 trajectory (`35a` §5 #5).
+/// 3. Attempting a burn that would drop live propellant below the computed `RETURN_RESERVE` to
+///    the nearest open port refuses with a `RETURN_RESERVE warning` unless `force` is passed.
+/// 4. Calling `+helm/autopilot stickney` plans a passage from the ship's live `(pos_km, vel_mps)`
+///    using `port::passage::plan_passage_from`, debits the planned `burn_t` and `crew_days` from
+///    the hull's vault via `tacsim_port_burn`, recouples the hull onto a `Cruising` `CarrierJourney`,
+///    and docks at Stickney Yards when the planned transit completes.
+#[test]
+#[allow(clippy::too_many_lines)]
+fn sfr4_free_flight_decouples_debits_live_propellant_warns_return_reserve_and_recouples_autopilot()
+{
+    let mut rig = stocked_with(Roster::default());
+    let (pilot_actor, row) = chartered(&mut rig, "Pilot", 1);
+    let hull = ObjId(row.hull);
+    let vault_id = hold_vault(&rig.tw, &row);
+
+    // Load 60 t propellant and 60 crew-days provisions (light hull without cargo) so the ship has
+    // ample propellant margin to decouple, execute timed burns, test RETURN_RESERVE, and recouple.
+    seed_pool(&mut rig, vault_id, "propellant", 60, LotId(903));
+    seed_pool(&mut rig, vault_id, "provisions", 60, LotId(904));
+    set_rate(&mut rig.tw, 3_600);
+    board(&mut rig, pilot_actor);
+
+    // Launch *Salt Moth* toward Stickney Yards, then credit back the unflown leg propellant (25 t)
+    // so the tank holds ~54 t when decoupling 6 hours into the leg.
+    let pending = undock_and_burn(&mut rig, pilot_actor, hull);
+    let depart_ic = pending.plan.depart_ic;
+    let _ = fire_quietly(&mut rig);
+    seed_pool(&mut rig, vault_id, "propellant", 25, LotId(905));
+
+    // Advance 6 IC hours into the first leg.
+    let _ = to_ic(&mut rig, depart_ic + 21_600);
+
+    let tank_before_decouple = pool(&mut rig.tw, vault_id, "propellant");
+    assert!(
+        tank_before_decouple >= 40,
+        "hull vault holds live propellant before decouple: {tank_before_decouple} t"
+    );
+
+    // 1. Decouple from the corridor leg into 3D heliocentric free flight (`+helm/decouple`).
+    let dec_out = run(&mut rig.tw, pilot_actor, "+helm/decouple");
+    assert!(
+        dec_out.contains("Decoupled from corridor leg")
+            && dec_out.contains("3D heliocentric free flight"),
+        "decouple output: {dec_out}"
+    );
+    {
+        let jbook = rig
+            .tw
+            .world()
+            .module_state::<mush_sim::JourneyBook>()
+            .expect("JourneyBook");
+        let journey = jbook.get(hull).expect("journey exists");
+        assert!(
+            matches!(journey.state(), mush_sim::JourneyState::Promoted { .. }),
+            "CarrierJourney is paused in Promoted state while decoupled: {:?}",
+            journey.state()
+        );
+    }
+
+    // Set guidance to `match_velocity` and verify target-relative flip logic (`35a` §5 #5).
+    let guid_out = run(&mut rig.tw, pilot_actor, "+helm/guidance match_velocity");
+    assert!(
+        guid_out.contains("MATCH_VEL"),
+        "guidance output: {guid_out}"
+    );
+
+    // 2. Execute a timed burn: `+helm/burn 3,0,0 400` (`3 m/s²` for `400 s` = `1,200 m/s` Δv, ~3,000+ kg).
+    let burn_out = run(&mut rig.tw, pilot_actor, "+helm/burn 3,0,0 400");
+    assert!(
+        burn_out.contains("Timed burn engaged: (3, 0, 0) m/s² for 400s (Δv=1200 m/s"),
+        "burn output: {burn_out}"
+    );
+    let burn_submits = drain(&mut rig.tw);
+    assert_eq!(
+        burn_submits.len(),
+        1,
+        "crossing whole tonnes submits tacsim_port_burn"
+    );
+    for s in &burn_submits {
+        land(&mut rig, s).expect("in-flight space burn lands on hull vault");
+    }
+
+    let tank_after_burn = pool(&mut rig.tw, vault_id, "propellant");
+    assert!(
+        tank_after_burn < tank_before_decouple,
+        "live stow.propellant vault debited by timed burn: before={tank_before_decouple} t, after={tank_after_burn} t"
+    );
+
+    // Step the world clock forward by 600 IC seconds (past the 400 s burn duration) and verify:
+    // - timed burn cuts off (`thrust_mmps2 == [0, 0, 0]`, `burn_remaining_ic_s == None`, `35a` §5 #4)
+    // - position and velocity advanced under burn + solar gravity (`35a` §5 #5).
+    let now_before_step = rig.tw.world().world_ic_now().at;
+    let _ = to_ic(&mut rig, now_before_step + 600);
+    {
+        let book = rig
+            .tw
+            .world()
+            .module_state::<tacsim::space::SpaceBubbleBook>()
+            .expect("SpaceBubbleBook");
+        let ff = book.free_flight_for_hull(hull).expect("free flight record");
+        assert_eq!(
+            ff.burn_remaining_ic_s, None,
+            "timed burn cut off after 400 s"
+        );
+        assert_eq!(
+            ff.thrust_mmps2,
+            [0, 0, 0],
+            "timed burn thrust did not latch after cutoff"
+        );
+    }
+
+    // 3. Attempting an excessive burn that dips below `RETURN_RESERVE` without `force` refuses
+    //    with the computed `RETURN_RESERVE warning` (`D-35-6`).
+    let status_out = run(&mut rig.tw, pilot_actor, "+helm/status");
+    assert!(
+        status_out.contains("RETURN_RESERVE="),
+        "helm/status reports computed RETURN_RESERVE: {status_out}"
+    );
+    // A 100 m/s² burn for 12,000 s (1,200,000 m/s Δv) requires ~48,000 kg, dipping below RETURN_RESERVE;
+    // try a burn that fits within `live_kg` (~53,940 kg) but leaves less than `RETURN_RESERVE`:
+    let warn_out = run(&mut rig.tw, pilot_actor, "+helm/burn 50,0,0 16000");
+    assert!(
+        warn_out.contains("RETURN_RESERVE warning"),
+        "burn into reserve without force is refused with RETURN_RESERVE warning: {warn_out}"
+    );
+
+    // 4. Recouple onto a planned corridor passage via `+helm/autopilot stickney` (`D-35-6`).
+    //    Ensure the hull has sufficient propellant in its vault for the full passage from its new (pos, vel).
+    seed_pool(&mut rig, vault_id, "propellant", 40, LotId(909));
+    let auto_out = run(&mut rig.tw, pilot_actor, "+helm/autopilot stickney");
+    assert!(
+        auto_out.contains("Autopilot engaged for Stickney Yards (`stickney_yards`)"),
+        "autopilot output: {auto_out}"
+    );
+    for s in drain(&mut rig.tw) {
+        land(&mut rig, &s).expect("autopilot passage burn lands on hull vault");
+    }
+
+    // Verify `free_flights` was cleared and `CarrierJourney` is back in `JourneyState::Cruising`.
+    let arrival_at = {
+        let book = rig
+            .tw
+            .world()
+            .module_state::<tacsim::space::SpaceBubbleBook>()
+            .expect("SpaceBubbleBook");
+        assert!(
+            book.free_flight_for_hull(hull).is_none(),
+            "hull removed from free_flights on autopilot recouple"
+        );
+        let jbook = rig
+            .tw
+            .world()
+            .module_state::<mush_sim::JourneyBook>()
+            .expect("JourneyBook");
+        let journey = jbook.get(hull).expect("recoupled journey");
+        assert_eq!(*journey.state(), mush_sim::JourneyState::Cruising);
+        journey.arrival_at().expect("arrival timestamp")
+    };
+
+    // Advance to the recoupled journey's arrival timestamp and verify the ship docks at Stickney Yards.
+    let _ = to_ic(&mut rig, arrival_at);
+    let ship_after = run(&mut rig.tw, pilot_actor, "+ship");
+    assert!(
+        ship_after.contains("Stickney Yards"),
+        "ship arrived and docked at Stickney Yards after autopilot recouple: {ship_after}"
+    );
+}

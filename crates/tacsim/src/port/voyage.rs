@@ -604,7 +604,7 @@ pub(crate) fn tonnes_over(kg: u64, ceiling_kg: u64) -> String {
 
 /// The lane pack's place id of world object `obj` (a reverse lookup over the
 /// latched lane's placed map).
-fn place_id_of(w: &World, obj: ObjId) -> Option<CanonicalId> {
+pub(crate) fn place_id_of(w: &World, obj: ObjId) -> Option<CanonicalId> {
     let store = w.module_state::<TacsimStore>()?;
     let lane = CanonicalId::new(LANE_PACK).ok()?;
     let version = store.applied_in(w, &lane)?;

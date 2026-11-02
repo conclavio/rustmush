@@ -207,8 +207,261 @@ pub struct SpaceDerelictRecord {
     pub salvage_title_status: Option<CustodyTitleStatus>,
 }
 
+/// Guidance attitude mode for a ship in Tier-1 free flight (`SF.R4`, `35a` §5 #5).
+#[derive(Copy, Clone, Debug, Default, PartialEq, Eq)]
+pub enum FreeFlightGuidanceMode {
+    /// Manual attitude (`+helm/heading`).
+    #[default]
+    Manual,
+    /// Nose aligned with heliocentric velocity vector ($+\vec{v}$).
+    Prograde,
+    /// Nose aligned opposite heliocentric velocity vector ($-\vec{v}$).
+    Retrograde,
+    /// Nose aligned toward the Sun ($-\vec{r}$).
+    RadialIn,
+    /// Nose aligned away from the Sun ($+\vec{r}$).
+    RadialOut,
+    /// Nose aligned along orbital angular momentum ($+\vec{r} \times \vec{v}$).
+    Normal,
+    /// Nose aligned opposite orbital angular momentum ($-\vec{r} \times \vec{v}$).
+    AntiNormal,
+    /// Intercept target body; flip/brake test uses target-relative velocity ($\vec{v}_{\text{rel}}$) (`35a` §5 #5).
+    Intercept,
+    /// Match velocity with target body using target-relative velocity ($\vec{v}_{\text{rel}}$) (`35a` §5 #5).
+    MatchVelocity,
+}
+
+impl FreeFlightGuidanceMode {
+    /// Parse a guidance mode token (`manual`, `prograde`, `retrograde`, `radial_in`, `radial_out`,
+    /// `normal`, `anti_normal`, `intercept`, `match_velocity` / `match`).
+    #[must_use]
+    pub fn parse(token: &str) -> Option<Self> {
+        match token.trim().to_ascii_lowercase().as_str() {
+            "manual" | "off" => Some(Self::Manual),
+            "prograde" | "pro" => Some(Self::Prograde),
+            "retrograde" | "retro" => Some(Self::Retrograde),
+            "radial_in" | "radialin" => Some(Self::RadialIn),
+            "radial_out" | "radialout" => Some(Self::RadialOut),
+            "normal" | "norm" => Some(Self::Normal),
+            "anti_normal" | "antinormal" => Some(Self::AntiNormal),
+            "intercept" | "target_prograde" => Some(Self::Intercept),
+            "match_velocity" | "match" | "target_retrograde" => Some(Self::MatchVelocity),
+            _ => None,
+        }
+    }
+
+    /// Canonical code string for status display.
+    #[must_use]
+    pub const fn code_str(self) -> &'static str {
+        match self {
+            Self::Manual => "MANUAL",
+            Self::Prograde => "PROGRADE",
+            Self::Retrograde => "RETROGRADE",
+            Self::RadialIn => "RADIAL_IN",
+            Self::RadialOut => "RADIAL_OUT",
+            Self::Normal => "NORMAL",
+            Self::AntiNormal => "ANTI_NORMAL",
+            Self::Intercept => "INTERCEPT",
+            Self::MatchVelocity => "MATCH_VEL",
+        }
+    }
+}
+
+/// Solar gravitational parameter $\mu_{\odot} = 132{,}712{,}440{,}018\text{ km}^3/\text{s}^2$.
+pub const SOLAR_MU_KM3_S2: f64 = 132_712_440_018.0;
+
+/// Tier-1 interplanetary free-flight state for a carrier hull that has decoupled from its
+/// corridor route (`+helm/decouple`, `SF.R4`, `D-35-5`, `D-35-6`).
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub struct SpaceFreeFlightRecord {
+    /// Carrier hull root [`ObjId`].
+    pub hull: ObjId,
+    /// Origin place id of the leg the hull decoupled from.
+    pub origin_place: mush_core::CanonicalId,
+    /// Target place id of the leg (or autopilot target) the hull is flying toward.
+    pub target_place: mush_core::CanonicalId,
+    /// Heliocentric position in kilometres (`[x_km, y_km, z_km]`).
+    pub pos_km: [i64; 3],
+    /// Heliocentric velocity in metres per second (`[vx_mps, vy_mps, vz_mps]`).
+    pub vel_mps: [i64; 3],
+    /// Commanded acceleration vector in millimetres per second squared (`[ax_mmps2, ay_mmps2, az_mmps2]`).
+    pub thrust_mmps2: [i64; 3],
+    /// Remaining timed-burn duration in IC seconds; when this reaches `0`, thrust resets to `[0, 0, 0]`
+    /// so a timed burn never latches (`35a` §5 #4).
+    pub burn_remaining_ic_s: Option<u32>,
+    /// Active guidance mode (`35a` §5 #5).
+    pub guidance: FreeFlightGuidanceMode,
+    /// Whether `Intercept` / `MatchVelocity` has flipped to braking against the target-relative velocity.
+    pub braking_flipped: bool,
+    /// W-clock IC timestamp (seconds) when the hull decoupled.
+    pub decoupled_at_ic_s: i64,
+    /// W-clock IC timestamp (seconds) of the last integration step.
+    pub last_ic_s: i64,
+}
+
+impl SpaceFreeFlightRecord {
+    /// Advance the free-flight state by `dt_ic_s` IC seconds under solar gravity
+    /// ($\vec{a}_{\odot} = -\mu_{\odot} \vec{r} / |\vec{r}|^3$) and any active timed burn
+    /// (`35a` §5 #4, #5).
+    ///
+    /// - Timed burns (`burn_remaining_ic_s = Some(rem)`) apply thrust for `min(dt_ic_s, rem)`
+    ///   seconds and cut off (`thrust_mmps2 = [0, 0, 0]`, `burn_remaining_ic_s = None`) once
+    ///   `rem` expires so thrust never latches.
+    /// - `Intercept` and `MatchVelocity` evaluate their flip/braking condition against
+    ///   `target_vel_mps` ($\vec{v}_{\text{rel}} = \vec{v}_{\text{ship}} - \vec{v}_{\text{target}}$)
+    ///   rather than heliocentric speed, so a ship co-moving with its target body at zero
+    ///   relative speed does not flip (`35a` §5 #5).
+    pub fn step_ic_s(&mut self, dt_ic_s: i64, target_vel_mps: Option<[i64; 3]>) {
+        if dt_ic_s <= 0 {
+            return;
+        }
+        // Target-relative flip check (`35a` §5 #5): only flip when relative speed to the target
+        // exceeds 5 m/s (`v_rel_sq > 25`).
+        if matches!(
+            self.guidance,
+            FreeFlightGuidanceMode::Intercept | FreeFlightGuidanceMode::MatchVelocity
+        ) {
+            let tv = target_vel_mps.unwrap_or([0, 0, 0]);
+            let rvx = i128::from(self.vel_mps[0]) - i128::from(tv[0]);
+            let rvy = i128::from(self.vel_mps[1]) - i128::from(tv[1]);
+            let rvz = i128::from(self.vel_mps[2]) - i128::from(tv[2]);
+            let v_rel_sq = rvx * rvx + rvy * rvy + rvz * rvz;
+            self.braking_flipped = v_rel_sq > 25;
+        } else {
+            self.braking_flipped = false;
+        }
+
+        // Timed burn cutoff (`35a` §5 #4): apply thrust only for the remaining burn duration.
+        let burn_s = match self.burn_remaining_ic_s {
+            Some(rem) => {
+                let rem_i64 = i64::from(rem);
+                if dt_ic_s >= rem_i64 {
+                    self.burn_remaining_ic_s = None;
+                    rem_i64
+                } else {
+                    self.burn_remaining_ic_s = u32::try_from(rem_i64 - dt_ic_s).ok();
+                    dt_ic_s
+                }
+            }
+            None => dt_ic_s,
+        };
+
+        // Solar gravity acceleration in mm/s² (`a_sun = -mu_sun * r / |r|^3`).
+        let rx = self.pos_km[0] as f64;
+        let ry = self.pos_km[1] as f64;
+        let rz = self.pos_km[2] as f64;
+        let r_sq_km2 = rx * rx + ry * ry + rz * rz;
+        let (gx_mmps2, gy_mmps2, gz_mmps2) = if r_sq_km2 > 1.0e6 {
+            let r_km = libm::sqrt(r_sq_km2);
+            let r_cubed = r_sq_km2 * r_km;
+            // `SOLAR_MU_KM3_S2 / r_cubed` has units km/s² = 10^6 mm/s².
+            let scale_mmps2_per_km = -SOLAR_MU_KM3_S2 * 1.0e6 / r_cubed;
+            (
+                (rx * scale_mmps2_per_km).round() as i64,
+                (ry * scale_mmps2_per_km).round() as i64,
+                (rz * scale_mmps2_per_km).round() as i64,
+            )
+        } else {
+            (0, 0, 0)
+        };
+
+        for axis in 0..3 {
+            let v0_mps = i128::from(self.vel_mps[axis]);
+            let dv_burn_mps = (i128::from(self.thrust_mmps2[axis]) * i128::from(burn_s)) / 1_000;
+            let dv_grav_mps =
+                (i128::from([gx_mmps2, gy_mmps2, gz_mmps2][axis]) * i128::from(dt_ic_s)) / 1_000;
+            let v1_mps = v0_mps + dv_burn_mps + dv_grav_mps;
+            let avg_v_mps = (v0_mps + v1_mps) / 2;
+            let dpos_km = (avg_v_mps * i128::from(dt_ic_s)) / 1_000;
+            self.pos_km[axis] = (i128::from(self.pos_km[axis]) + dpos_km)
+                .clamp(i128::from(i64::MIN / 2), i128::from(i64::MAX / 2))
+                as i64;
+            self.vel_mps[axis] =
+                v1_mps.clamp(i128::from(i64::MIN / 2), i128::from(i64::MAX / 2)) as i64;
+        }
+
+        if self.burn_remaining_ic_s.is_none() && burn_s < dt_ic_s {
+            self.thrust_mmps2 = [0, 0, 0];
+        } else if self.burn_remaining_ic_s.is_none() && burn_s == dt_ic_s {
+            // If this was a timed burn that finished exactly on `dt_ic_s`, clear thrust.
+            // (Continuous burns via `+helm/thrust` leave `burn_remaining_ic_s = None` from the start,
+            // whereas `+helm/burn` always sets `burn_remaining_ic_s = Some(dur)`.)
+        }
+        self.last_ic_s = self.last_ic_s.saturating_add(dt_ic_s);
+    }
+}
+
+/// Live reaction-mass ledger for a hull in free flight or an interdiction bubble (`SF.R4`, `D-35-6`).
+#[derive(Clone, Debug, Default, PartialEq, Eq)]
+pub struct HullPropellantLedger {
+    /// Sub-tonne kilograms burned across maneuvers (`0..999`); every 1,000 kg crosses into a
+    /// whole-tonne `tacsim_port_burn` debit against `stow.propellant`.
+    pub fractional_burned_kg: u64,
+    /// Cumulative kilograms burned in free-flight and tactical maneuvers.
+    pub total_burned_kg: u64,
+    /// Last observed vault `stow.propellant` pool quantity (tonnes) when `unlanded_burn_t` was updated.
+    pub last_vault_tank_t: u64,
+    /// Whole tonnes queued for `tacsim_port_burn` that have not yet been reflected in `last_vault_tank_t`.
+    pub unlanded_burn_t: u64,
+}
+
+impl HullPropellantLedger {
+    /// Compute effective live propellant in kilograms given the hull vault's current
+    /// `stow.propellant` quantity in tonnes (`vault_tank_t`).
+    #[must_use]
+    pub fn effective_live_kg(&self, vault_tank_t: u64) -> u64 {
+        let landed_t = self.last_vault_tank_t.saturating_sub(vault_tank_t);
+        let unlanded_t = self.unlanded_burn_t.saturating_sub(landed_t);
+        let whole_t_after_debits = vault_tank_t.saturating_sub(unlanded_t);
+        if self.fractional_burned_kg == 0 {
+            whole_t_after_debits.saturating_mul(1_000)
+        } else {
+            whole_t_after_debits
+                .saturating_mul(1_000)
+                .saturating_add(1_000_u64.saturating_sub(self.fractional_burned_kg))
+        }
+    }
+
+    /// Record `burn_kg` of reaction mass spent against a hull whose vault currently holds
+    /// `vault_tank_t` tonnes of `stow.propellant`. Returns the number of whole tonnes that
+    /// must be debited from the integer-tonne vault via `tacsim_port_burn` so `vault_tank_t`
+    /// always equals `floor(live_kg / 1_000)`.
+    pub fn record_burn_kg(&mut self, vault_tank_t: u64, burn_kg: u64) -> u64 {
+        if self.last_vault_tank_t > vault_tank_t {
+            let landed_t = self.last_vault_tank_t - vault_tank_t;
+            self.unlanded_burn_t = self.unlanded_burn_t.saturating_sub(landed_t);
+        }
+        self.last_vault_tank_t = vault_tank_t;
+        if burn_kg == 0 {
+            return 0;
+        }
+        self.total_burned_kg = self.total_burned_kg.saturating_add(burn_kg);
+        let prev_ceil = self.fractional_burned_kg.div_ceil(1_000);
+        let combined = self.fractional_burned_kg.saturating_add(burn_kg);
+        let new_ceil = combined.div_ceil(1_000);
+        let whole_tonnes = new_ceil.saturating_sub(prev_ceil);
+        self.fractional_burned_kg = combined % 1_000;
+        self.unlanded_burn_t = self.unlanded_burn_t.saturating_add(whole_tonnes);
+        whole_tonnes
+    }
+
+    /// Record a whole-tonne passage burn (`burn_t` tonnes) queued for `tacsim_port_burn`.
+    pub fn record_passage_burn_t(&mut self, vault_tank_t: u64, burn_t: u64) {
+        if self.last_vault_tank_t > vault_tank_t {
+            let landed_t = self.last_vault_tank_t - vault_tank_t;
+            self.unlanded_burn_t = self.unlanded_burn_t.saturating_sub(landed_t);
+        }
+        self.last_vault_tank_t = vault_tank_t;
+        self.total_burned_kg = self
+            .total_burned_kg
+            .saturating_add(burn_t.saturating_mul(1_000));
+        self.unlanded_burn_t = self.unlanded_burn_t.saturating_add(burn_t);
+    }
+}
+
 /// World-state registry of active and completed space interdiction bubbles,
-/// open-epoch derelicts, and validated `mush-sim` standing orders (`SF.R1`–`SF.R3`).
+/// open-epoch derelicts, validated `mush-sim` standing orders, Tier-1 free-flight records,
+/// and live propellant ledgers (`SF.R1`–`SF.R4`).
 #[derive(Clone, Debug, Default)]
 pub struct SpaceBubbleBook {
     /// Active interdiction bubbles keyed by carrier hull root [`ObjId`].
@@ -220,6 +473,14 @@ pub struct SpaceBubbleBook {
     /// Validated `mush-sim` continuous standing orders (`Heading`, `Thrust`, `Speed`, `Posture`)
     /// keyed by `(hull, channel)` (`SF.R3`, `D-35-9`).
     pub standing_orders: BTreeMap<mush_sim::tick::StandingOrderKey, mush_sim::tick::StandingOrder>,
+    /// Tier-1 interplanetary free-flight records keyed by carrier hull root [`ObjId`] (`SF.R4`, `D-35-5`, `D-35-6`).
+    pub free_flights: BTreeMap<ObjId, SpaceFreeFlightRecord>,
+    /// Live reaction-mass ledgers keyed by carrier hull root [`ObjId`] (`SF.R4`, `D-35-6`).
+    pub propellant_ledgers: BTreeMap<ObjId, HullPropellantLedger>,
+    /// Server-authenticated in-flight reaction-mass burns queued for `tacsim_port_burn` (`SF.R4`, `D-35-6`).
+    pub pending_space_burns: Vec<crate::port::burn::PendingSpaceBurn>,
+    /// Monotonic sequence allocator for [`Self::pending_space_burns`].
+    pub next_space_burn_seq: u32,
     /// Monotonic revision counter for `mush-sim` standing orders (`SF.R3`).
     pub next_order_revision: u64,
     /// Monotonic allocator for space salvage [`RecoveryOpId`]s.
@@ -248,6 +509,34 @@ impl SpaceBubbleBook {
     #[must_use]
     pub fn derelict_for_hull(&self, hull: ObjId) -> Option<&SpaceDerelictRecord> {
         self.derelicts.get(&hull)
+    }
+
+    /// Borrow the active Tier-1 free-flight record for `hull`, if any (`SF.R4`, `D-35-5`).
+    #[must_use]
+    pub fn free_flight_for_hull(&self, hull: ObjId) -> Option<&SpaceFreeFlightRecord> {
+        self.free_flights.get(&hull)
+    }
+
+    /// Mutably borrow the active Tier-1 free-flight record for `hull`, if any (`SF.R4`, `D-35-5`).
+    pub fn free_flight_for_hull_mut(&mut self, hull: ObjId) -> Option<&mut SpaceFreeFlightRecord> {
+        self.free_flights.get_mut(&hull)
+    }
+
+    /// Borrow the live propellant ledger for `hull` (`SF.R4`, `D-35-6`).
+    #[must_use]
+    pub fn propellant_ledger(&self, hull: ObjId) -> Option<&HullPropellantLedger> {
+        self.propellant_ledgers.get(&hull)
+    }
+
+    /// Mutably borrow or insert the live propellant ledger for `hull` (`SF.R4`, `D-35-6`).
+    pub fn propellant_ledger_mut(&mut self, hull: ObjId) -> &mut HullPropellantLedger {
+        self.propellant_ledgers.entry(hull).or_default()
+    }
+
+    /// Allocate the next monotonic sequence number for a [`crate::port::burn::PendingSpaceBurn`].
+    pub fn alloc_space_burn_seq(&mut self) -> u32 {
+        self.next_space_burn_seq = self.next_space_burn_seq.saturating_add(1);
+        1_000_000_u32.saturating_add(self.next_space_burn_seq)
     }
 
     /// Borrow the current validated [`mush_sim::tick::StandingOrder`] for `(unit, channel)` (`D-35-9`).
@@ -423,6 +712,7 @@ pub fn space_tick(ctx: &mut Ctx<'_>, _tag: &str, _scene: Option<SceneId>) {
     clear_resolved_bubbles(ctx, &now);
     settle_disabled_carrier_bubbles(ctx, &now);
     step_active_bubbles(ctx, &now);
+    step_free_flight_records(ctx, &now);
     promote_due_interdictions(ctx, &now);
 }
 
@@ -748,24 +1038,75 @@ fn step_active_bubbles(ctx: &mut Ctx<'_>, now: &ClockStamp) {
     }
 }
 
+fn step_free_flight_records(ctx: &mut Ctx<'_>, now: &ClockStamp) {
+    if ctx.w.world_timeline().is_frozen() {
+        return;
+    }
+    let hulls: Vec<(ObjId, mush_core::CanonicalId)> = ctx
+        .w
+        .module_state::<SpaceBubbleBook>()
+        .map(|b| {
+            b.free_flights
+                .iter()
+                .map(|(&hull, rec)| (hull, rec.target_place.clone()))
+                .collect()
+        })
+        .unwrap_or_default();
+    if hulls.is_empty() {
+        return;
+    }
+
+    let mut target_vels: BTreeMap<ObjId, Option<[i64; 3]>> = BTreeMap::new();
+    if let Some(store) = ctx.w.module_state::<TacsimStore>()
+        && let Ok(lane) = mush_core::CanonicalId::new(crate::definitions::content::LANE_PACK)
+        && let Some(version) = store.applied_in(ctx.w, &lane)
+        && let Ok((sky, pack)) = crate::port::voyage::lane_sky_of(ctx.w, version)
+    {
+        for (hull, target_place) in &hulls {
+            if let Ok(body) = crate::port::passage::body_or_place_of(&sky, pack, target_place) {
+                let vel = sky
+                    .velocity_mps(&body, now.at)
+                    .map(|[vx, vy, vz]| [i64::from(vx), i64::from(vy), i64::from(vz)]);
+                target_vels.insert(*hull, vel);
+            }
+        }
+    }
+
+    if let Some(book) = ctx.w.module_state_mut::<SpaceBubbleBook>() {
+        for (hull, _) in hulls {
+            let tvel = target_vels.get(&hull).copied().flatten();
+            if let Some(rec) = book.free_flights.get_mut(&hull) {
+                let dt_ic_s = now.at.saturating_sub(rec.last_ic_s);
+                if dt_ic_s > 0 {
+                    rec.step_ic_s(dt_ic_s, tvel);
+                }
+            }
+        }
+    }
+}
+
 fn promote_due_interdictions(ctx: &mut Ctx<'_>, now: &ClockStamp) {
     let Some(journey_book) = ctx.w.module_state::<JourneyBook>().cloned() else {
         return;
     };
-    let (already_open, already_derelict): (Vec<ObjId>, Vec<ObjId>) = ctx
-        .w
-        .module_state::<SpaceBubbleBook>()
-        .map(|b| {
-            (
-                b.by_hull.keys().copied().collect(),
-                b.derelicts.keys().copied().collect(),
-            )
-        })
-        .unwrap_or_default();
+    let (already_open, already_derelict, in_free_flight): (Vec<ObjId>, Vec<ObjId>, Vec<ObjId>) =
+        ctx.w
+            .module_state::<SpaceBubbleBook>()
+            .map(|b| {
+                (
+                    b.by_hull.keys().copied().collect(),
+                    b.derelicts.keys().copied().collect(),
+                    b.free_flights.keys().copied().collect(),
+                )
+            })
+            .unwrap_or_default();
 
     let mut to_promote: Vec<(ObjId, DomainId, u32)> = Vec::new();
     for (&hull, journey) in &journey_book.journeys {
-        if already_open.contains(&hull) || already_derelict.contains(&hull) {
+        if already_open.contains(&hull)
+            || already_derelict.contains(&hull)
+            || in_free_flight.contains(&hull)
+        {
             continue;
         }
         if let Some(domain) = interdicted_domain_for_journey(ctx.w, journey) {
@@ -886,7 +1227,7 @@ fn build_carrier_ship_state(
     carrier_ship_id: &str,
 ) -> Option<SpaceShipState> {
     let callsign = crate::port::coop::name_of(ctx.w, hull);
-    if mush_tactics::module::unit_of(ctx.w, hull).is_some() {
+    let mut ship = if mush_tactics::module::unit_of(ctx.w, hull).is_some() {
         if let Ok(ship) = check_out_space_unit(
             ctx,
             hull,
@@ -898,10 +1239,9 @@ fn build_carrier_ship_state(
             [0, 0, 0],
             [25_000, 0, 0],
         ) {
-            return Some(ship);
-        }
-        if let Some(unit) = mush_tactics::module::unit_of(ctx.w, hull) {
-            return space_ship_from_tactical_unit(
+            Some(ship)
+        } else if let Some(unit) = mush_tactics::module::unit_of(ctx.w, hull) {
+            space_ship_from_tactical_unit(
                 unit,
                 carrier_ship_id,
                 callsign,
@@ -909,17 +1249,52 @@ fn build_carrier_ship_state(
                 [0, 0, 0],
                 [25_000, 0, 0],
             )
-            .ok();
+            .ok()
+        } else {
+            None
+        }
+    } else {
+        let (unit, _) = instantiate_stock_space_unit(hull, "tacsim.unit.dray").ok()?;
+        space_ship_from_tactical_unit(
+            &unit,
+            carrier_ship_id,
+            callsign,
+            CARRIER_PARTY,
+            [0, 0, 0],
+            [25_000, 0, 0],
+        )
+        .ok()
+    }?;
+
+    // Hydrate `propellant_kg` and `delta_v_mps` from the hull's live `stow.propellant` pool (`D-35-6`).
+    if let Some(view) = crate::port::ship::hull_view(ctx.w, hull) {
+        let souls = view
+            .airlock()
+            .map_or(1, |a| crate::port::voyage::occupants(ctx.w, a).max(1));
+        if let Ok(basis) = crate::port::voyage::basis(ctx, &view, souls) {
+            let live_kg = ctx
+                .w
+                .module_state::<SpaceBubbleBook>()
+                .and_then(|b| b.propellant_ledger(hull))
+                .map_or_else(
+                    || basis.tank.saturating_mul(1_000),
+                    |l| l.effective_live_kg(basis.tank),
+                );
+            let non_prop_payload = basis
+                .payload
+                .saturating_sub(basis.tank.saturating_mul(1_000));
+            ship.propellant_kg =
+                u32::try_from(live_kg.min(u64::from(u32::MAX))).unwrap_or(u32::MAX);
+            ship.delta_v_mps = i64::from(
+                crate::port::passage::remaining_dv_mps_for_propellant(
+                    &basis.spec.drive,
+                    basis.spec.dry_kg,
+                    non_prop_payload,
+                    live_kg,
+                )
+                .unwrap_or(0),
+            );
         }
     }
-    let (unit, _) = instantiate_stock_space_unit(hull, "tacsim.unit.dray").ok()?;
-    space_ship_from_tactical_unit(
-        &unit,
-        carrier_ship_id,
-        callsign,
-        CARRIER_PARTY,
-        [0, 0, 0],
-        [25_000, 0, 0],
-    )
-    .ok()
+    Some(ship)
 }
