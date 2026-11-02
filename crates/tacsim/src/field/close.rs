@@ -17,6 +17,10 @@
 //! cut: its hull's loss is a wreck, by the carrier's loss table ([`crate::carrier_damage`]), and
 //! a wrecked carrier's bay rigs become wrecks where it stands.
 //!
+//! **Standing** (doc 36 cut GC.10; Q-36-11): at demotion the fire each party observed moves the
+//! standing of the shooter's principals with its victims' factions, and friendly fire's change
+//! is offered to the shooter party's leader to void (`super::standing`). A void end writes none.
+//!
 //! **A void** (a panic, a stall, a ledger overflow, a refused resume) demotes from **the last
 //! snapshot the world holds**: its units' cells and poses are the return. With no snapshot every
 //! unit checks in as it went out, which is what the snapshot would have said.
@@ -104,6 +108,9 @@ pub(crate) fn on_ended(ctx: &mut Ctx<'_>, task: MatchId, end: MatchEnd, units: &
         .map(|hosted| hosted.live.units.iter().map(|row| row.unit).collect())
         .unwrap_or_default();
     let demoted = demote_units(ctx, &site, &unit_ids, &returns);
+    // Doc 36 cut GC.10 (Q-36-11): the standing the field's fire moved, and the leaders' void of
+    // friendly fire, read while the host still holds the parties.
+    super::standing::at_demotion(ctx, &site, void);
     // Doc 32 cut CF.4 (Q-CF-28): what each party saw, read while the host still holds the field.
     let learned = super::known::learned_at_close(ctx, task, &site, &returns, &demoted);
     super::known::forget(ctx, &site);
