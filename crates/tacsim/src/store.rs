@@ -351,6 +351,10 @@ pub struct TacsimStore {
     /// Persisted on the enrolment pattern: one whole-document post-image per lease
     /// through [`put_tv_lease`]; an unreadable one bars only its own lease.
     pub(crate) tv_leases: BTreeMap<u64, crate::port::tv::TvLeaseState>,
+    /// **Doc 36 cut GC.8** — `tacsim:baywork:{hull}`: each hull's bay record
+    /// ([`crate::port::bay_work::BayHull`]): its berth and its open or last repair order.
+    /// Persisted through [`put_bay_hull`]; an unreadable one holds its hull.
+    pub(crate) bay_hulls: BTreeMap<ObjId, crate::port::bay_work::BayHullState>,
     /// **Doc 20 cut SM.3b** (§8; lead ruling 1) — `tacsim:tv:{tv}`: each rig's
     /// normal-lane projection ([`crate::surface::excursion::TvRec`]), keyed by the
     /// terrain vehicle's id. Written only by the `tacsim.surface` tick through
@@ -593,6 +597,43 @@ impl TacsimStore {
     /// Every readable enrolment, in account order.
     pub fn enrolments(&self) -> impl Iterator<Item = &crate::port::coop::Enrolment> {
         self.enrolments.values()
+    }
+
+    /// **One hull's bay record** (doc 36 cut GC.8), as the store holds it; `None` when no
+    /// key claims the hull.
+    #[must_use]
+    pub fn bay_hull(&self, hull: ObjId) -> Option<&crate::port::bay_work::BayHullState> {
+        self.bay_hulls.get(&hull)
+    }
+
+    /// **Every hull with an open repair order** (doc 36 cut GC.8), in hull order.
+    #[must_use]
+    pub fn bay_open_hulls(&self) -> Vec<ObjId> {
+        self.bay_hulls
+            .iter()
+            .filter_map(|(hull, state)| match state {
+                crate::port::bay_work::BayHullState::Present(row) if row.open().is_some() => {
+                    Some(*hull)
+                }
+                _ => None,
+            })
+            .collect()
+    }
+
+    /// **The hulls berthed in `workshop`** (doc 36 cut GC.8), in hull order.
+    #[must_use]
+    pub fn bay_berthed_in(&self, workshop: ObjId) -> Vec<ObjId> {
+        self.bay_hulls
+            .iter()
+            .filter_map(|(hull, state)| match state {
+                crate::port::bay_work::BayHullState::Present(row)
+                    if row.berth.as_ref().is_some_and(|b| b.workshop == workshop) =>
+                {
+                    Some(*hull)
+                }
+                _ => None,
+            })
+            .collect()
     }
 
     /// **One rig lease's record** (doc 20 cut SM.3a), as the store holds it;
@@ -1935,6 +1976,30 @@ pub(crate) fn put_licence(ctx: &mut Ctx<'_>, record: &crate::port::licence::Lice
 /// structurally unreachable; if it ever happened, it logs and writes a minimal
 /// `{schema, lease}` body so **the key still exists** — which loads as unreadable
 /// and bars only that lease until staff repair it.
+/// **Install a hull's bay record and queue its document** (doc 36 cut GC.8): the RAM row,
+/// then one whole-document `JsonSet` ([`put_tv_lease`]'s shape).
+pub(crate) fn put_bay_hull(ctx: &mut Ctx<'_>, record: &crate::port::bay_work::BayHull) {
+    let key = crate::port::bay_work::bay_key(record.hull);
+    if let Some(store) = ctx.w.module_state_mut::<TacsimStore>() {
+        store.bay_hulls.insert(
+            record.hull,
+            crate::port::bay_work::BayHullState::Present(record.clone()),
+        );
+    }
+    let value = match serde_json::to_value(record) {
+        Ok(value) => value,
+        Err(error) => {
+            tracing::error!(
+                hull = record.hull.0, %error,
+                "tacsim: a bay record did not serialize; a minimal document is written so the \
+                 key stays claimed. Repair the document by hand."
+            );
+            serde_json::json!({ "schema": record.schema, "hull": record.hull.0 })
+        }
+    };
+    push_op(ctx.out, ModuleWrite::JsonSet { key, value });
+}
+
 pub(crate) fn put_tv_lease(ctx: &mut Ctx<'_>, record: &crate::port::tv::TvLease) {
     let key = crate::port::tv::tv_lease_key(record.lease);
     if let Some(store) = ctx.w.module_state_mut::<TacsimStore>() {
@@ -2416,6 +2481,14 @@ pub fn load(kv: &[(SmolStr, serde_json::Value)], cfg: TacsimConfig) -> TacsimSto
             // staff repair the document.
             store.licence_keys.insert(SmolStr::new(key));
             load_licence(&mut store, key, value);
+        } else if key.starts_with(crate::port::bay_work::BAY_PREFIX) {
+            // Doc 36 cut GC.8. The claim is the KEY's (the R8 rule): a bay record that will
+            // not read holds its hull (no berth, stow or order) until staff repair it.
+            let Some(hull) = crate::port::bay_work::bay_key_owner(key) else {
+                tracing::warn!(%key, "tacsim: a bay record has an unreadable key; skipped");
+                continue;
+            };
+            load_bay_hull(&mut store, key, hull, value);
         } else if let Some(rest) = key.strip_prefix(crate::port::tv::TV_LEASE_PREFIX) {
             // Doc 20 cut SM.3a. The claim is the KEY's (the R8 rule): a rig lease record
             // that will not read stays claimed as unreadable, which bars only its own
@@ -2722,6 +2795,33 @@ fn load_licence(store: &mut TacsimStore, key: &str, value: &serde_json::Value) {
 /// and held to the identity rule (`record.lease` is its key's). Any failure keeps the
 /// key claimed as unreadable, with whatever of its pilot, hull and TV the raw body
 /// still names (so the right pilot's `+tv` reads dark and the right hull is held).
+fn load_bay_hull(store: &mut TacsimStore, key: &str, hull: ObjId, value: &serde_json::Value) {
+    use crate::port::bay_work::{BayHull, BayHullState};
+    let record = serde_json::from_value::<BayHull>(value.clone())
+        .map_err(|error| error.to_string())
+        .and_then(|record| record.check().map(|()| record))
+        .and_then(|record| {
+            if record.hull == hull {
+                Ok(record)
+            } else {
+                Err("the record disagrees with its own key".to_owned())
+            }
+        });
+    match record {
+        Ok(record) => {
+            store.bay_hulls.insert(hull, BayHullState::Present(record));
+        }
+        Err(error) => {
+            tracing::error!(
+                %key, %error,
+                "tacsim: a bay record is unreadable; its hull is held until staff repair the \
+                 document"
+            );
+            store.bay_hulls.insert(hull, BayHullState::Unreadable);
+        }
+    }
+}
+
 fn load_tv_lease(store: &mut TacsimStore, key: &str, lease: u64, value: &serde_json::Value) {
     let record = serde_json::from_value::<crate::port::tv::TvLease>(value.clone())
         .map_err(|error| error.to_string())

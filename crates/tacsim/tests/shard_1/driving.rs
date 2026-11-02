@@ -312,13 +312,13 @@ pub(crate) fn run(tw: &mut TestWorld, who: ObjId, line: &str) -> String {
     said(tw, &events, who)
 }
 
-fn store(tw: &TestWorld) -> &TacsimStore {
+pub(crate) fn store(tw: &TestWorld) -> &TacsimStore {
     tw.world()
         .module_state::<TacsimStore>()
         .expect("tacsim state")
 }
 
-fn port_map(tw: &TestWorld, entry: &str) -> PortMap {
+pub(crate) fn port_map(tw: &TestWorld, entry: &str) -> PortMap {
     match store(tw).port_map(&cid(LANE_PACK), &cid(entry)) {
         PortMapState::Present(map) => map.clone(),
         other => panic!("{entry}'s map: {other:?}"),
@@ -329,7 +329,7 @@ fn lane() -> RulesPack {
     load_pack(LANE_JSON).expect("the lane verifies")
 }
 
-fn station_room(tw: &TestWorld, entry: &str, local: &str) -> ObjId {
+pub(crate) fn station_room(tw: &TestWorld, entry: &str, local: &str) -> ObjId {
     let def = match lane().entry(&cid(entry)) {
         Some(PackEntry::Port(def)) => def.clone(),
         other => panic!("{entry} is a port entry: {other:?}"),
@@ -338,7 +338,7 @@ fn station_room(tw: &TestWorld, entry: &str, local: &str) -> ObjId {
     tacsim::port::apply::room_by_key(tw.world(), &key).expect("the room is on this world")
 }
 
-fn teleport(tw: &mut TestWorld, who: ObjId, room: ObjId) {
+pub(crate) fn teleport(tw: &mut TestWorld, who: ObjId, room: ObjId) {
     let said = run(tw, GOD, &format!("@teleport #{}=#{}", who.0, room.0));
     assert_eq!(
         tw.world().get(who).and_then(|o| o.location),
@@ -509,14 +509,14 @@ pub(crate) fn land_all(rig: &mut Rig, queued: &[AuthoritativeSubmit]) {
     }
 }
 
-fn land_quietly(rig: &mut Rig, queued: &[AuthoritativeSubmit]) {
+pub(crate) fn land_quietly(rig: &mut Rig, queued: &[AuthoritativeSubmit]) {
     for submit in queued {
         let _ = land(rig, submit);
     }
 }
 
 /// One fire (6 s on), its submissions drained (not landed).
-fn fire(rig: &mut Rig) -> (Vec<(Audience, OutputEvent)>, Vec<AuthoritativeSubmit>) {
+pub(crate) fn fire(rig: &mut Rig) -> (Vec<(Audience, OutputEvent)>, Vec<AuthoritativeSubmit>) {
     let t = rig.tw.world().now().saturating_add(6);
     rig.tw.set_now(t);
     let events = rig.tw.fire_due(t.saturating_mul(1_000));
@@ -655,7 +655,7 @@ fn seed_pool(rig: &mut Rig, vault: VaultId, good: &str, qty: u64, lot: LotId) {
 }
 
 /// `tank` t and `locker` crew-days into the hold.
-fn load(rig: &mut Rig, row: &HullRow, tank: u64, locker: u64, lot: u64) {
+pub(crate) fn load(rig: &mut Rig, row: &HullRow, tank: u64, locker: u64, lot: u64) {
     let stowage = ObjId(row.rooms[&cid("stowage")]);
     let vault = rig
         .tw
@@ -682,7 +682,7 @@ fn world_rate(tw: &TestWorld) -> u32 {
     tw.world().world_timeline().current().rate
 }
 
-fn set_rate(tw: &mut TestWorld, rate: u32) {
+pub(crate) fn set_rate(tw: &mut TestWorld, rate: u32) {
     if world_rate(tw) != rate {
         let out = run(tw, GOD, &format!("@tacsim/time rate={rate}"));
         assert_eq!(world_rate(tw), rate, "{out}");
@@ -767,7 +767,7 @@ fn lease_one(rig: &mut Rig, pilot: ObjId) {
 }
 
 /// The live lease records of `pilot`, by slot: their rigs.
-fn rigs_of(tw: &TestWorld, pilot: ObjId) -> Vec<ObjId> {
+pub(crate) fn rigs_of(tw: &TestWorld, pilot: ObjId) -> Vec<ObjId> {
     let mut records: Vec<(u8, ObjId)> = store(tw)
         .tv_leases_of(pilot)
         .filter(|record| record.live())
