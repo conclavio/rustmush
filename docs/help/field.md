@@ -155,6 +155,11 @@ detachment order (`help detachments`). `+sortie/orders` prints the prefill.
   `HOLD HOLD FIRE` stands the unit where it is and holds its fire, and
   `SCREEN 90 HOLD FIRE` screens without shooting. A hired pilot's doctrine stops
   firing from the moment the order lands.
+- **SCREEN and SUPPORT** bind only inside a field. `SCREEN <bearing>` holds a
+  screen facing that bearing, and `SUPPORT <slot>` keeps beside the roster's unit
+  in that slot. Both are combat formations, so on open ground, where nobody is
+  fighting, a hired pilot answers either one `NEGATIVE`. Support for a unit that
+  is not in the same field and party is `NEGATIVE` inside a field too.
 - **WITHDRAW** breaks off and drives the unit home to its carrier's ramp, then
   takes it out of the field (see *Getting out*). With `HOLD FIRE` it fires on
   nothing on the way. Without it, it fires only when cornered.

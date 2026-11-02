@@ -1028,6 +1028,17 @@ pub(crate) fn open_field_except<E>(
         .and_then(|record| record.open_field()))
 }
 
+/// **A unit leaving the site under its own power** (doc 36 cut GC.0; Q-36-17): the site's record
+/// with `unit` taken off its index ([`SiteRecord::take_unit`]), when it listed it, for the
+/// leaving commit to write beside its own rows (a rig's recover, a DT recover). A recovered unit
+/// still listed would mislead a second visitor. `None` when there is nothing to write.
+#[must_use]
+pub(crate) fn left_under_own_power(record: Option<&SiteRecord>, unit: ObjId) -> Option<SiteRecord> {
+    let mut record = record?.clone();
+    record.take_unit(unit).ok()?;
+    Some(record)
+}
+
 /// **The player's line for a promoted site** ([`FIELD_OPEN`]).
 #[must_use]
 pub fn promoted_refusal(field: &FieldId, site_name: &str) -> String {
@@ -1829,6 +1840,26 @@ mod tests {
         assert_eq!(r.take_unit(ObjId(77)), Err(SiteRefused::Absent));
         assert_eq!(SiteKey::parse("ahuna_port"), Some(r.key()));
         assert_eq!(SiteKey::parse("Ahuna Port"), None);
+    }
+
+    /// **Doc 36 cut GC.0 (Q-36-17): a unit leaving under its own power leaves the index**: the
+    /// record comes back without it for the leaving commit to write, and nothing comes back for
+    /// a unit the index never listed (or no record at all).
+    #[test]
+    fn gc0_a_unit_leaving_under_its_own_power_leaves_the_index() {
+        let mut r = record();
+        r.leave_unit(left(5, 100, 100, LeftCondition::Casualty))
+            .unwrap_or_else(|e| panic!("{e:?}"));
+        r.leave_unit(left(6, 120, 100, LeftCondition::Wreck))
+            .unwrap_or_else(|e| panic!("{e:?}"));
+        let after = left_under_own_power(Some(&r), ObjId(5)).expect("it was listed");
+        assert_eq!(
+            after.units.iter().map(|u| u.unit).collect::<Vec<_>>(),
+            vec![ObjId(6)],
+            "the recovered unit is gone, the other stays"
+        );
+        assert_eq!(left_under_own_power(Some(&after), ObjId(5)), None);
+        assert_eq!(left_under_own_power(None, ObjId(5)), None);
     }
 
     /// **Promotion opens the next field; demotion closes it and keeps the ground** (doc 32 Q-CF-14,

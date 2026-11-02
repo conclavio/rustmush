@@ -34,6 +34,12 @@
 //! (`crate::arena::state::ArenaDefinition::homes`) — and the host asks the kernel to let each
 //! one go at the ramp every pass until it can (`super::home`); once out it is aboard again. The
 //! order is marked on the hull ([`RAIDER_ATTR`]'s `withdraw`), so a restart keeps asking.
+//!
+//! **Its carrier lifts** (doc 36 cut GC.0; Q-36-6, the host half): once every hull it launched
+//! into a field is aboard again or is a casualty or a wreck, the host takes the carrier out of the
+//! field by doc 32 F-6's departure and off the site's ground (`lift_check`, `lift`), so the
+//! unarmed carrier no longer keeps the field engaged and nobody has to mark the raider Friendly to
+//! end it. `@field/raiders/launch` lands a lifted carrier again at its authored cell.
 
 use mush_core::{
     ArgShape, Attr, CanonicalId, CmdError, CommandSpec, Ctx, Flags, GOD, ObjId, ObjKind, World,
@@ -468,8 +474,7 @@ pub fn launch(ctx: &mut Ctx<'_>, def: &RaiderDef) -> Result<String, String> {
         .iter()
         .copied()
         .find(|hull| ramp_cell(ctx.w, *hull).is_some())
-        .filter(|carrier| mush_sim::pose_of(ctx.w, *carrier).is_some_and(|(on, _)| on == domain))
-        .ok_or_else(|| format!("{} has no carrier on the ground to launch from.", def.label))?;
+        .ok_or_else(|| format!("{} has no carrier to launch from.", def.label))?;
     let record = super::close::site_record(ctx, &def.site)
         .unwrap_or_else(|| crate::surface::site_record::fresh_record(ctx.w, &def.site));
     if record.promoted.is_some() {
@@ -477,6 +482,20 @@ pub fn launch(ctx: &mut Ctx<'_>, def: &RaiderDef) -> Result<String, String> {
             "{} is in a field; a raider launches only onto open ground.",
             crate::surface::act::site_name(ctx.w, &def.site)
         ));
+    }
+    // Doc 36 cut GC.0: a carrier that lifted ([`lift`]) lands again at its authored cell first.
+    match mush_sim::pose_of(ctx.w, carrier) {
+        Some((on, _)) if on == domain => {}
+        Some(_) => return Err(format!("{}'s carrier stands on other ground.", def.label)),
+        None => {
+            let (cell, _) = def
+                .carrier
+                .cells_at(crate::surface::excursion::site_pad_cell(ctx.w, &def.site))
+                .ok_or_else(|| format!("{}'s carrier stands off {}.", def.label, def.site))?;
+            let pose = crate::surface::excursion::cell_pose(cell, def.carrier.heading_mdeg)?;
+            mush_sim::place(ctx, carrier, domain, pose)
+                .map_err(|error| format!("{} did not land ({error}).", def.carrier.name))?;
+        }
     }
     let aboard: Vec<ObjId> = hulls
         .iter()
@@ -615,14 +634,128 @@ pub(crate) fn order_home(ctx: &mut Ctx<'_>, hull: ObjId) -> bool {
 }
 
 /// **A raider's hull is out of its field at the ramp** (`super::exit`'s continuation): aboard
-/// its carrier again, its WITHDRAW spent.
+/// its carrier again, its WITHDRAW spent; then its carrier lifts if that was the last one out
+/// ([`lift_check`]).
 ///
 /// # Errors
 ///
 /// The hull could not be taken off the ground.
-pub(crate) fn board(ctx: &mut Ctx<'_>, hull: ObjId) -> Result<(), String> {
+pub(crate) fn board(ctx: &mut Ctx<'_>, hull: ObjId, site: &CanonicalId) -> Result<(), String> {
     set_mark(ctx, hull, "withdraw", None)?;
-    mush_sim::unplace(ctx, hull, "tacsim: aboard its raider carrier")
+    mush_sim::unplace(ctx, hull, "tacsim: aboard its raider carrier")?;
+    lift_check(ctx, site);
+    Ok(())
+}
+
+/// The line the site hears when a raider's carrier lifts (doc 36 cut GC.0).
+pub const RAIDER_LIFTED: &str =
+    "The {name} lifts from {site} with its hulls aboard, leaving what it lost where it fell.";
+
+/// **A raider's carrier lifts once its fight is over** (doc 36 cut GC.0; Q-36-6, the host half):
+/// once every hull it launched into the field on `site` is aboard again or is a casualty or a
+/// wreck, the host asks the field to let the carrier go with no ramp (doc 32 F-6's departure,
+/// `super::exit` with [`super::exit::Then::RaiderLift`]), as its leader. Out, it leaves the
+/// site's ground ([`lift`]), and its party has nobody standing in the field to keep it engaged.
+///
+/// "A casualty or a wreck" is what demotion would write for the hull now
+/// (`super::close::condition_now`), read off the last snapshot the host holds, so a hull still
+/// fighting holds its carrier on the ground. A carrier that launched no hull into this field (none
+/// admitted, none named on the open promotion's exits) has nothing to wait for and stays. A
+/// carrier that is itself a wreck does not lift. The host runs this after each hull boards and at
+/// each of the field's snapshots; a field holding no raider's carrier decodes nothing.
+pub(crate) fn lift_check(ctx: &mut Ctx<'_>, site: &CanonicalId) {
+    let Some(live) = ctx
+        .w
+        .module_state::<super::FieldBook>()
+        .and_then(|book| book.hosted(site))
+        .map(|hosted| hosted.live.clone())
+    else {
+        return;
+    };
+    let carriers: Vec<ObjId> = live
+        .units
+        .iter()
+        .map(|row| row.unit)
+        .filter(|unit| ramp_cell(ctx.w, *unit).is_some())
+        .filter(|unit| {
+            !ctx.w
+                .module_state::<super::exit::ExitBook>()
+                .is_some_and(|book| book.0.contains_key(unit))
+        })
+        .collect();
+    if carriers.is_empty() {
+        return;
+    }
+    let record = super::close::site_record(ctx, site);
+    let mut returns: Option<Option<Vec<crate::arena::damage::UnitReturn>>> = None;
+    for carrier in carriers {
+        let Some(raider) = raider_of(ctx.w, carrier) else {
+            continue;
+        };
+        let launched: Vec<ObjId> = hulls_of(ctx.w, &raider)
+            .into_iter()
+            .filter(|hull| carrier_of(ctx.w, *hull) == Some(carrier))
+            .collect();
+        let in_field: Vec<ObjId> = launched
+            .iter()
+            .copied()
+            .filter(|hull| live.units.iter().any(|row| row.unit == *hull))
+            .collect();
+        let exited = launched
+            .iter()
+            .any(|hull| record.as_ref().is_some_and(|record| record.exited(*hull)));
+        if in_field.is_empty() && !exited {
+            continue;
+        }
+        let returns = returns.get_or_insert_with(|| {
+            let document = ctx
+                .w
+                .module_state::<super::FieldBook>()
+                .and_then(|book| book.snapshot(site).cloned());
+            super::close::snapshot_returns(ctx, site, document.as_ref(), live.homes.clone())
+        });
+        let condition = |unit: ObjId| {
+            returns
+                .as_ref()
+                .and_then(|returns| returns.iter().find(|back| back.unit == unit))
+                .and_then(|back| super::close::condition_now(ctx, back))
+        };
+        let down = in_field.iter().all(|hull| condition(*hull).is_some());
+        let wrecked = matches!(
+            condition(carrier),
+            Some(crate::surface::site_record::LeftCondition::Wreck)
+        );
+        if !down || wrecked {
+            continue;
+        }
+        let Some(leader) = leader_of(ctx.w, carrier) else {
+            continue;
+        };
+        let saved = ctx.actor;
+        ctx.actor = leader;
+        // A refusal (the field busy) is asked again at the next snapshot.
+        let asked = super::exit::request(ctx, carrier, None, super::exit::Then::RaiderLift);
+        ctx.actor = saved;
+        if asked.is_ok() {
+            tracing::info!(site = %site, carrier = carrier.0, "tacsim: a raider's carrier lifts out of an IC field");
+        }
+    }
+}
+
+/// **A raider's carrier is out of its field** (`super::exit`'s continuation for
+/// [`super::exit::Then::RaiderLift`]): it leaves the site's ground with its hulls aboard. A later
+/// `@field/raiders/launch` lands it again at its authored cell.
+///
+/// # Errors
+///
+/// The carrier could not be taken off the ground.
+pub(crate) fn lift(ctx: &mut Ctx<'_>, carrier: ObjId, site: &CanonicalId) -> Result<(), String> {
+    mush_sim::unplace(ctx, carrier, "tacsim: a raider's carrier lifts")?;
+    let line = RAIDER_LIFTED
+        .replace("{name}", &crate::port::coop::name_of(ctx.w, carrier))
+        .replace("{site}", &crate::surface::act::site_name(ctx.w, site));
+    super::tell_site(ctx, site, &line);
+    Ok(())
 }
 
 #[cfg(test)]

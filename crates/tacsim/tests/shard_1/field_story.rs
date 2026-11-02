@@ -7,10 +7,11 @@
 //! declares; the promotion with everyone at their poses; the raiders on the miner's quarry screen
 //! and the worked block on the escort's map (G-7); the bystander fired on, hostile to that party
 //! only; the escort's fight while the miners hold; an escort mission-killed by an engine hit and a
-//! raider by a control-section hit (G-6); the raiders home up their ramp and the demotion; the
-//! fill plan resumed; the casualty and the wreck on the site record; a restart; the carrier's
-//! departure on the leave-behind confirmation; a second visit finding both where they fell; and a
-//! second field on the same ground, where the wreck's cover is pinned at its gap (G-8).
+//! raider by a control-section hit (G-6); the raiders home up their ramp, the barge's lift and the
+//! demotion with no Friendly mark (doc 36 cut GC.0); the fill plan resumed; the casualty and the
+//! wreck on the site record; a restart; the carrier's departure on the leave-behind confirmation;
+//! a second visit finding both where they fell; and a second field on the same ground, the barge
+//! landed again, where the wreck's cover is pinned at its gap (G-8).
 //!
 //! What the story stands in for, each named in doc 32 §17:
 //! - **the escort's delivered orders**: tacsim's world harness lands no DT activation (CF.6c's
@@ -395,13 +396,18 @@ fn typed(rig: &mut Rig, who: ObjId, line: &str) -> String {
 }
 
 /// **The field story** (doc 32 Q-CF-47), the whole of it at 256 a side on Ahuna Flank.
+///
+/// **Doc 36 cut GC.0's gate** (Q-36-6, the host half): this is CF.7's story at 256 a side
+/// (`cf7_the_field_story` until GC.0), with the escort pilot's Friendly stand-down removed. The
+/// raider loses, its surviving hull boards, its barge lifts, and the field demotes on its own.
 #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
-async fn cf7_the_field_story() {
+async fn gc0_the_raiders_barge_lifts_and_the_field_demotes_without_a_friendly_mark() {
     field_story(&AHUNA_FLANK).await;
 }
 
 /// **Doc 32 cut S.2: the field story at 512 a side** on Urvara Reach (Q-CF-51), the same script
-/// as [`cf7_the_field_story`] over the far quadrant's ground.
+/// as [`gc0_the_raiders_barge_lifts_and_the_field_demotes_without_a_friendly_mark`] over the far
+/// quadrant's ground.
 #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
 async fn s2_the_field_story_at_512() {
     field_story(&URVARA_REACH).await;
@@ -931,21 +937,33 @@ async fn field_story(at: &Ground) {
         site_record_at(&mut rig, at.entry).is_some_and(|record| record.exited(tank)),
         "the open promotion names the tank's exit"
     );
-    // The raider's unarmed barge still stands on the ground, Hostile to the escort that was fired
-    // on, and an armed unit holding a live Hostile within its reach keeps a field engaged (§15's
-    // known gap, doc 32 §17): the escort's pilot stands down with a Friendly mark.
-    let stood_down = typed(
-        &mut rig,
-        escort,
-        &format!("+field/mark {}=friendly", raider_party.letter()),
+    // Doc 36 cut GC.0 (Q-36-6, the host half): with the tank aboard and the walker a wreck, the
+    // raider's unarmed barge lifts out of the field and off the site by F-6's departure. Nobody
+    // marks the raider Friendly: the escort still holds its party Hostile, and with nothing of it
+    // left standing the field demotes on its own quiet interval.
+    let lifted = until(&mut rig, &mut rx, &mut lines, 60, |rig, _| {
+        mush_sim::pose_of(rig.tw.world(), barge).is_none()
+    })
+    .await;
+    assert!(lifted, "the barge lifts once its hulls are aboard or down");
+    assert!(
+        site_record_at(&mut rig, at.entry).is_some_and(|record| record.exited(barge)),
+        "the open promotion names the barge's exit"
     );
-    assert!(stood_down.contains("Friendly"), "{stood_down}");
     let demoted = until(&mut rig, &mut rx, &mut lines, 150, |rig, _| {
         task(rig).is_none()
             && site_record_at(rig, at.entry).is_some_and(|record| record.open_field().is_none())
     })
     .await;
-    assert!(demoted, "the field demotes once nobody is engaged");
+    assert!(
+        demoted,
+        "the field demotes with no Friendly mark once nobody is engaged"
+    );
+    assert!(
+        site_record_at(&mut rig, at.entry)
+            .is_some_and(|record| record.units.iter().all(|left| left.unit != barge)),
+        "the barge is gone, not left on the site record"
+    );
 
     // (8) The miners resume their fill plan.
     let resumed = typed(&mut rig, miner, "+tv/1 mine go");

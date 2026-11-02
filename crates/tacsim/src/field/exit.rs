@@ -24,7 +24,9 @@
 //! confirmation names every unit the carrier has out (`crate::port::voyage::undock_cmd`) asks the
 //! kernel to remove the carrier outright, the host checks it in with the souls aboard it, and the
 //! departure is submitted again as its pilot once the record names the exit. The units it left
-//! stay in the field.
+//! stay in the field. **A raider's fixture carrier** (doc 36 cut GC.0) lifts the same way, asked
+//! by the host as its leader once its hulls are aboard or down (`super::raiders::lift_check`); its
+//! continuation takes it off the site's ground.
 //!
 //! **Across a restart** the check-in, the live record and the exit are each durable, and the owed
 //! exit is durable from the check-in's own batch (the live record's `owed_exits`, doc 32 §15): a
@@ -72,6 +74,10 @@ pub(crate) enum Then {
     /// A raider's hull under its leader's WITHDRAW (doc 32 cut CF.6b): aboard its fixture
     /// carrier again (`super::raiders::board`).
     Raider,
+    /// A raider's fixture carrier whose hulls are all aboard or down (doc 36 cut GC.0; doc 32
+    /// F-6's departure, run by the host for the NPC carrier): off the site's ground
+    /// (`super::raiders::lift`).
+    RaiderLift,
 }
 
 /// **An exit asked for** (RAM).
@@ -146,7 +152,7 @@ pub(crate) fn request(
         .map_err(|_| CmdError::msg("The field is busy; try the recover again."))?;
     let requester = ctx.actor;
     let line = match &then {
-        Then::Lift { .. } => LIFT_ASKED
+        Then::Lift { .. } | Then::RaiderLift => LIFT_ASKED
             .replace("{name}", &crate::port::coop::name_of(ctx.w, unit))
             .replace("{ordinal}", &ordinal.to_string()),
         Then::Rig { .. } | Then::Sortie { .. } | Then::Raider => EXIT_ASKED
@@ -269,7 +275,7 @@ pub(crate) fn on_withdrawn(
         asked.out = true;
     }
     let line = match asked.as_ref().map(|asked| &asked.then) {
-        Some(Then::Lift { .. }) => LIFT_OUT
+        Some(Then::Lift { .. } | Then::RaiderLift) => LIFT_OUT
             .replace("{name}", &crate::port::coop::name_of(ctx.w, unit))
             .replace("{ordinal}", &ordinal.to_string()),
         _ => EXIT_OUT
@@ -403,11 +409,12 @@ pub(crate) fn tick(ctx: &mut Ctx<'_>) {
         }
         let saved = ctx.actor;
         ctx.actor = asked.requester;
-        let ran = continue_recover(ctx, unit, &asked.then);
+        let ran = continue_recover(ctx, unit, &asked.then, &asked.site);
         ctx.actor = saved;
         if let Err(error) = ran {
             let what = match asked.then {
                 Then::Lift { .. } => "departure did not file",
+                Then::RaiderLift => "lift did not finish",
                 Then::Rig { .. } | Then::Sortie { .. } | Then::Raider => "recover did not start",
             };
             ctx.out.sys_to_actor(
@@ -420,7 +427,12 @@ pub(crate) fn tick(ctx: &mut Ctx<'_>) {
 }
 
 /// The recover the player asked for, as the player (`ctx.actor`).
-fn continue_recover(ctx: &mut Ctx<'_>, unit: ObjId, then: &Then) -> Result<(), String> {
+fn continue_recover(
+    ctx: &mut Ctx<'_>,
+    unit: ObjId,
+    then: &Then,
+    site: &CanonicalId,
+) -> Result<(), String> {
     match then {
         Then::Rig { slot, quiet } => {
             let rig = crate::port::tv::select_rig(
@@ -447,7 +459,8 @@ fn continue_recover(ctx: &mut Ctx<'_>, unit: ObjId, then: &Then) -> Result<(), S
         Then::Lift { raw, lift } => {
             crate::port::voyage::undock_as(ctx, raw, *lift).map_err(|error| error.to_string())
         }
-        Then::Raider => super::raiders::board(ctx, unit),
+        Then::Raider => super::raiders::board(ctx, unit, site),
+        Then::RaiderLift => super::raiders::lift(ctx, unit, site),
     }
 }
 
