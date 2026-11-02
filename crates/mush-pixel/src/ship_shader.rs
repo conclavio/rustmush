@@ -38,6 +38,8 @@ const BAKED_TORPEDO_PNG: &[u8] = include_bytes!("../ships/torpedo.png");
 const BAKED_ASTEROID_PNG: &[u8] = include_bytes!("../ships/asteroid.png");
 const BAKED_DERELICT_PNG: &[u8] = include_bytes!("../ships/derelict.png");
 const BAKED_SHIPYARD_PNG: &[u8] = include_bytes!("../ships/shipyard.png");
+const BAKED_HALCYON_PNG: &[u8] = include_bytes!("../ships/halcyon.png");
+const BAKED_REFINERY_PNG: &[u8] = include_bytes!("../ships/refinery.png");
 const SHIP_INDEX_JSON: &str = include_str!("../ships/index.json");
 
 const OUTLINE_RGB: Rgb = [14, 18, 26];
@@ -107,6 +109,24 @@ const DERELICT_RAMP: [Rgb; 6] = [
     [204, 212, 224],
 ];
 
+const HALCYON_RAMP: [Rgb; 6] = [
+    [22, 34, 48],
+    [48, 76, 108],
+    [88, 132, 178],
+    [136, 184, 226],
+    [186, 220, 246],
+    [234, 248, 255],
+];
+
+const REFINERY_RAMP: [Rgb; 6] = [
+    [32, 26, 18],
+    [68, 56, 38],
+    [114, 94, 62],
+    [162, 136, 92],
+    [206, 178, 128],
+    [242, 222, 182],
+];
+
 /// Canonical baked 3D spaceship or space-object archetype.
 #[derive(Clone, Copy, Debug, Eq, PartialEq)]
 pub enum ShipModelStyle {
@@ -126,6 +146,10 @@ pub enum ShipModelStyle {
     Derelict,
     /// Orbital frigate shipyard / docking berth (`shipyard.png`).
     Shipyard,
+    /// Halcyon-class deep-space explorer / carrier (`halcyon.png`, `SF.20`).
+    Halcyon,
+    /// Orbital resource refinery / processing outpost (`refinery.png`, `SF.20`).
+    Refinery,
 }
 
 impl ShipModelStyle {
@@ -150,6 +174,14 @@ impl ShipModelStyle {
         {
             return ShipModelStyle::Derelict;
         }
+        if kind == "refinery"
+            || lower_id.contains("refinery")
+            || lower_id.contains("outpost")
+            || lower_label.contains("refinery")
+            || lower_label.contains("outpost")
+        {
+            return ShipModelStyle::Refinery;
+        }
         if kind == "station"
             || kind == "port_berth"
             || kind == "shipyard"
@@ -157,6 +189,15 @@ impl ShipModelStyle {
             || lower_id.contains("port")
         {
             return ShipModelStyle::Shipyard;
+        }
+        if kind == "halcyon"
+            || kind == "carrier"
+            || lower_id.contains("halcyon")
+            || lower_id.contains("carrier")
+            || lower_label.contains("halcyon")
+            || lower_label.contains("carrier")
+        {
+            return ShipModelStyle::Halcyon;
         }
         if lower_id.contains("dray")
             || lower_id.contains("hauler")
@@ -188,6 +229,8 @@ impl ShipModelStyle {
             ShipModelStyle::Asteroid => BAKED_ASTEROID_PNG,
             ShipModelStyle::Derelict => BAKED_DERELICT_PNG,
             ShipModelStyle::Shipyard => BAKED_SHIPYARD_PNG,
+            ShipModelStyle::Halcyon => BAKED_HALCYON_PNG,
+            ShipModelStyle::Refinery => BAKED_REFINERY_PNG,
         }
     }
 
@@ -200,6 +243,8 @@ impl ShipModelStyle {
             ShipModelStyle::Torpedo => &TORPEDO_RAMP,
             ShipModelStyle::Asteroid => &ASTEROID_RAMP,
             ShipModelStyle::Derelict => &DERELICT_RAMP,
+            ShipModelStyle::Halcyon => &HALCYON_RAMP,
+            ShipModelStyle::Refinery => &REFINERY_RAMP,
         }
     }
 }
@@ -316,6 +361,8 @@ struct DockingWireframeCatalog {
     corvette: Vec<EdgeMm>,
     derelict: Vec<EdgeMm>,
     shipyard: Vec<EdgeMm>,
+    halcyon: Vec<EdgeMm>,
+    refinery: Vec<EdgeMm>,
 }
 
 fn docking_wireframes() -> &'static DockingWireframeCatalog {
@@ -361,6 +408,8 @@ fn docking_wireframes() -> &'static DockingWireframeCatalog {
             corvette: parse_for("corvette"),
             derelict: parse_for("derelict"),
             shipyard: parse_for("shipyard"),
+            halcyon: parse_for("halcyon"),
+            refinery: parse_for("refinery"),
         }
     })
 }
@@ -377,6 +426,8 @@ pub fn draw_docking_hull_wireframe(
     let cat = docking_wireframes();
     let edges = match target_kind {
         "disabled_derelict" | "derelict" | "wreck" => &cat.derelict,
+        "refinery" | "outpost" => &cat.refinery,
+        "halcyon" | "carrier" => &cat.halcyon,
         "port_berth" | "station" | "shipyard" => &cat.shipyard,
         "freighter" | "hauler" | "dray" => &cat.freighter,
         _ => &cat.corvette,
@@ -398,7 +449,7 @@ mod tests {
 
     #[test]
     fn baked_ship_sheets_match_index_provenance_and_render_all_8_facings_within_palette() {
-        let catalog: [(&str, &[u8], ShipModelStyle); 8] = [
+        let catalog: [(&str, &[u8], ShipModelStyle); 10] = [
             ("freighter", BAKED_FREIGHTER_PNG, ShipModelStyle::Freighter),
             ("corvette", BAKED_CORVETTE_PNG, ShipModelStyle::Corvette),
             ("raider", BAKED_RAIDER_PNG, ShipModelStyle::Raider),
@@ -407,6 +458,8 @@ mod tests {
             ("asteroid", BAKED_ASTEROID_PNG, ShipModelStyle::Asteroid),
             ("derelict", BAKED_DERELICT_PNG, ShipModelStyle::Derelict),
             ("shipyard", BAKED_SHIPYARD_PNG, ShipModelStyle::Shipyard),
+            ("halcyon", BAKED_HALCYON_PNG, ShipModelStyle::Halcyon),
+            ("refinery", BAKED_REFINERY_PNG, ShipModelStyle::Refinery),
         ];
 
         let index_json: Value = serde_json::from_str(SHIP_INDEX_JSON).unwrap_or_default();
@@ -415,7 +468,7 @@ mod tests {
             .and_then(Value::as_array)
             .cloned()
             .unwrap_or_default();
-        assert_eq!(entries.len(), 8);
+        assert_eq!(entries.len(), 10);
 
         for (id, png_bytes, style) in catalog {
             let scanlines = stored_sheet_scanlines(png_bytes);
