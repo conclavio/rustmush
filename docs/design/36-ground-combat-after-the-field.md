@@ -1027,7 +1027,7 @@ Q-36-39, Q-36-40, Q-36-53 (the acts).
   **GC.8b**: rearming from munitions lots (an inventory draw needs an authoritative action of
   its own), stripped-part provenance and hot parts, scrap (a workshop hull, with the seam for
   remains), the doll, the built `bay_refit` reading the grant, and the salvor's custody once
-  GC.5/GC.6 record it.
+  GC.5/GC.6 record it. GC.8b built all but the salvor's custody ("GC.8b as built", below).
 
 **GC.9 — The lease's damage charge.** Q-36-34.
 - At return, the damage is assessed, and the tariff's restoration cost is taken from the deposit,
@@ -1985,6 +1985,156 @@ among them); `mush-industry`'s `bay_refit` rig; `mush-tactics`' workshop tests; 
 (`shard_2`); all of `mush-contract-tests` (the allowlist with the new stanza, census, panic
 budget, restriction lints); clippy and rustdoc `-D warnings` on `tacsim` and `mush-tactics`. The
 broad suites run on Linux CI on the draft PR.
+
+## GC.8b as built (the hold, provenance, strip and scrap, the doll, the grant)
+
+Built 2026-11-02 on `main` at `36658e7b`, the second half of GC.8 (§7's Split paragraph), over
+GC.8a's `crates/tacsim/src/port/bay_work/`. New files: `act.rs` (the authoritative act) and
+`strip.rs` (strip, scrap, the vacated-claim seam, the remains seam). Every number is
+provisional under the owner's economy rule of 2026-10-24. What the cut decided where the rulings
+left it open, for the owner to object to:
+
+**One authoritative action for every inventory move** (`tacsim_bay_work`, `act.rs`). Inventory
+pools and lots move only inside an authoritative bundle, whose prepare has no world, so the cut
+copies the mill's provider pattern and its "two writes" rule.
+- **Three ops.** A *draw* debits an order's goods from the carrier's hold, all or nothing, and
+  consumes a fitted part's lot. A *mint* lays a stripped or scrapped hull's lots into the hold.
+  A *hot* flag marks a stripped part hot.
+- **Two typed families.** `tacsim.bay_work` is one `BayLedger` per hull: the last landed act's
+  ordinal and a 16-act audit tail. It is the replay guard, since a prepare refuses any ordinal
+  but the ledger's next. `tacsim.bay_parts` is one `PartProvenance` per stripped part's lot.
+- **How an act is owed.** The command or the port tick writes the bay record's `owed` act
+  beside the unit change (the record gained `acts`, `owed` and `scrapped_ic`, the order `goods`
+  and `draw_act`). The `tacsim.port` fire's bay arm (`settle`) submits it as the actor who owes
+  it until the ledger shows it landed. The offer's rows come from the record at projection,
+  never from the submitter.
+- **A refused act** is tried 3 times (`MAX_ACT_TRIES`), then given up. A draw then cancels its
+  order and releases the fee, with nothing drawn. A lost mint or flag is logged for staff.
+- **Registered** beside the mill: the families unconditionally, the provider only when the
+  inventory cell is filled. The inventory already delegates its families to `tacsim`.
+
+**Rearming from munitions lots (Q-36-36) and `industrial_parts` (Q-36-31).**
+- **Where the goods come from.** Both come from the carrier's hold through the same draw. That
+  is the carrier whose bay the hull stands in, or the carrier it was berthed from, docked at the
+  facility's port (`source_hold`). GC.7 ruled parts "drawn from lots, not priced in the quote",
+  which this reads as the owner's own matter. A replaced part is still the workshop's, inside
+  its labour, as GC.8a built it.
+- **When.** The order checks the hold carries everything when it is taken, and records the
+  hold and the goods. At the due time the order owes its draw: the hold must still be the one
+  that serves the hull there, or the order is cancelled. The work is written once the draw has
+  landed. A draw is all or nothing, so every rearm loads its full rounds.
+- **The quote** names the goods: "From the carrier's hold, all of it: …".
+- **Not covered:** goods drawn but the work then refused, because the hull moved or changed
+  between the draw and the next fire. The goods are spent and the fee is released. The window
+  is one fire, and the checks run again just before the draw.
+
+**Provenance and hot parts (Q-36-37, Q-F6).**
+- **`+bay/strip <hull>=<part>`.** In a workshop, by title or a `maintain_refit` grant, a part
+  comes off through `WorkshopBook::strip_component` (bay authorization, the title resolved). Its
+  slot then reads `Missing`. The part becomes a one-unit lot of `tacsim.part.<id>` in the hold:
+  the refit bay's own catalogue, graded 9 intact or 3 worn.
+- **What its provenance carries:** the parent hull and its design, the slot, the part's
+  definition and condition, the claim reference, the legality, who stripped it and when, and,
+  once fitted, the hull it went into.
+- **The claim reference** is `None` for a title or grant holder's strip. A salvor's claim fills
+  it once GC.5/GC.6 record custody (`salvor_custody` is still the seam).
+- **`+bay/fit <hull>=<slot> <lot>`** is an order that replaces a part from a lot in the hold.
+  The lot must be traced (carry provenance), clean, unfitted, of the slot's definition and in
+  the hold. A **hot part is refused** at the order and again in the draw's prepare. The lot is
+  consumed (`consume_product`) when the work is done, and the part goes in at the condition its
+  provenance records.
+- **How a part becomes hot.** `strip::vacate_claim` flags it when its claim is vacated. This is
+  the seam GC.5/GC.6's contest calls. Until then only a staff fixture does, and nothing in play
+  makes a part hot yet. A bay strip is always lawful.
+
+**Scrap (Q-36-39).**
+- **`+bay/scrap <hull>`** is the title holder's alone, on a berthed workshop hull, through
+  `WorkshopBook::scrap_hull`.
+- **What it yields:** structural mass becomes `structural_alloys`, a tonne per 1,000 kg
+  (`SCRAP_KG_PER_T`), as one lot at grade 50. Each salvageable part becomes a lot with its
+  provenance (`scrapped: true`). Everything goes to the hold.
+- **What is left:** the hull stays in the workshop as an irrecoverable shell, the record
+  `scrapped_ic`. Its berth is freed and it is no longer held. Its object and title stay; removing
+  the shell is a staff step for now.
+- **Remains:** GC.3 had not merged when this was built, so remains are a seam
+  (`strip::scrap_remains`), which refuses. Wiring it means scrapping the remains where they lie,
+  by the title holder or a winning claimant, into alloys only, since nothing is stripped from
+  remains.
+
+**The doll** (UD.4c's damage view) leads `+bay <hull>`: the hull's state, then each section's
+condition and points and, under it, each part it holds with its condition and magazine.
+
+**The built `bay_refit` reads the grant, in one place (Q-36-33).**
+- **The predicate.** `mush_economy::unit_authority::bay_hull_title_stands` answers both audited
+  hull-title checks, Industry's `bay_refit/authority::current` and Economy's
+  `bay_refit/authority::current`: the hull titled to the requester, or to an organization on
+  which the requester holds `unit.maintain_refit` (`may_maintain_refit`).
+- **What it reads.** It goes through `mush_org::unit_authority::reader::authorize_in_world`, the
+  unit-authority resolver's title and organization path read from the world. The payer is
+  still the requester's own account.
+- **The Tactics participant** (`component_replacement::current_refit_unit`) checks no title. It
+  proves the unit idle and registered, so there was nothing there to change.
+- **(limit)** The per-unit grant registry (`UnitGrant`) is owner-held and not readable from a
+  `&World`. The built bay therefore honours title and org grants (`@org/grant … unit.maintain_refit`,
+  GC.8a's harness grant), but not a per-unit grant. `+bay`'s `right_of` still reads both
+  through Org's owner read. Closing that gap means an owner read inside the three prepares,
+  which is a kernel protocol change.
+
+**The order's typed family (`tacsim.bay_work`).** Every inventory move now rides it. The order
+record itself stays on the legacy post-image lane, and the allowlist stanza says why: the hold
+hook (`BayHold`) and the launch gate read it synchronously from the World, and the fee rides
+the legacy contract ops. Moving it means a World mirror of a typed record for those readers.
+That is its own cut.
+
+**Not done here.**
+- The salvor's live custody (GC.5/GC.6).
+- Remains scrapping (GC.3).
+- A per-unit grant in the built bay (the limit above).
+- Disposing of a scrapped shell.
+
+**The gates** (`tests/shard_1/bay_gc8.rs`):
+- **Story (c) with its rearm** (`gc8_the_refit_run_at_stickney_and_an_armour_patch_in_the_bay`).
+  At Ceres the captain buys a full magazine of `ammo_he_105` and the coaxial's boxes of
+  `ammo_ball_762` at the Co-op chandlery into the Dray's hold. Staff stock 200 t of
+  `industrial_parts`, since GC.7's gate covers buying. The escort comes in with both magazines
+  empty. The workshop quote shows the doll and the hold's goods. `rebuild,unjam,rearm` draws
+  exactly the munitions and the parts' tonnes at completion, and both magazines are full. After
+  `stow` the escort is unheld and `Operational`: it fields again.
+- **`gc8b_a_stripped_part_carries_its_provenance_and_a_hot_part_is_refused`.** At Ceres' C14:
+  1. The lessee may not strip.
+  2. A grant holder strips the machine gun. Its lot sits in the Dray's hold with the full
+     provenance, and the slot reads `Missing`.
+  3. The cannon comes off too.
+  4. The machine gun's claim is vacated, so it is hot and `+bay/fit` refuses it.
+  5. The cannon is fitted back from its lot. The lot is consumed and the provenance names the
+     escort.
+- **`gc8b_scrap_breaks_a_workshop_hull_into_alloys_and_parts`.** A spare pool escort is titled
+  to the captain and berthed.
+  1. The lessee's scrap of the leased escort is refused.
+  2. The title holder's scrap lays an alloys lot and the parts' lots, with `scrapped`
+     provenance, into the hold.
+  3. The shell is `Irrecoverable` and its berth is free.
+  4. A second scrap is refused, and the remains seam refuses.
+- **`act::tests::gc8b_a_lot_id_is_derived_and_distinct_per_row`.**
+
+**Also changed:**
+- `mush-inventory` gains `InventoryFamilies::mint_origins`. It mints several origin lots at one
+  endpoint and stages the lot census once, because one bundle writes a record only once and
+  a scrap mints several lots.
+- `hardware::bay` exposes its part catalogue (`part_commodity`, `part_grade`) to strip and
+  scrap.
+- The `+bay` allowlist stanza is rewritten for the new action and families.
+
+**Verified** on Windows:
+- the four shard_1 bay gates;
+- tacsim's lib tests filtered to `bay_work`, `gc8` and `ud4b`;
+- `mush-industry`'s `bay_refit` tests;
+- `mush-economy`'s `bay_refit` and `unit_authority` tests;
+- `mush-org`'s `unit_authority` tests;
+- all of `mush-contract-tests`;
+- clippy and rustdoc with `-D warnings` on the five changed crates.
+
+The broad suites run on Linux CI.
 
 ## As built (GC.9)
 

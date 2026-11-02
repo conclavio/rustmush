@@ -605,6 +605,38 @@ pub(crate) fn prospector(rig: &mut Rig, who: &str, seed: i64, name: &str) -> (Ob
     (pilot, row)
 }
 
+/// The hold vault of a hull row.
+pub(crate) fn hold_vault_of(tw: &TestWorld, row: &HullRow) -> VaultId {
+    let stowage = ObjId(row.rooms[&cid("stowage")]);
+    tw.world()
+        .module_state::<mush_economy::EconomyStore>()
+        .expect("economy")
+        .snapshot()
+        .vault_by_backing(&mush_economy::CustodyRef::SpatialInterior(stowage))
+        .expect("the hold vault")
+        .id
+}
+
+/// Seed `qty` of `good` into `row`'s hold through `lot` (staff's path).
+pub(crate) fn seed_hold(rig: &mut Rig, row: &HullRow, good: &str, qty: u64, lot: u64) {
+    let vault = hold_vault_of(&rig.tw, row);
+    seed_pool(rig, vault, good, qty, LotId(lot));
+}
+
+/// One pool's balance in `vault`.
+pub(crate) fn hold_pool(tw: &mut TestWorld, vault: VaultId, good: &str) -> u64 {
+    let families = tw
+        .world()
+        .module_state::<InventoryHandles>()
+        .expect("inventory handles")
+        .0
+        .clone();
+    let key = mush_inventory::pool_key(EndpointRef(vault), &cid(good)).expect("a pool key");
+    typed(tw, &families.pools, &key).map_or(0, |scalar| {
+        u64::try_from(scalar.current()).expect("a non-negative pool")
+    })
+}
+
 /// Seed `qty` of `good` into `vault`'s pool through `lot` (the inventory's own path).
 pub(crate) fn seed_pool(rig: &mut Rig, vault: VaultId, good: &str, qty: u64, lot: LotId) {
     let endpoint = EndpointRef(vault);

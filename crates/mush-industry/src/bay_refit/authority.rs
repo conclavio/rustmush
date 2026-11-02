@@ -162,11 +162,21 @@ pub(crate) fn current(
     {
         return Err(Error::Unavailable);
     }
+    // Doc 36 cut GC.8b (Q-36-33): the hull's title holder, or a `unit.maintain_refit` grant
+    // holder on its title — Economy's one predicate, which its own check asks too.
+    let hull_title = world
+        .module_state::<EconomyStore>()
+        .ok_or(Error::Unavailable)?
+        .snapshot()
+        .asset(hull)
+        .filter(|t| {
+            t.object == hull
+                && mush_economy::unit_authority::bay_hull_title_stands(world, t, requester)
+        })
+        .cloned()
+        .ok_or(Error::Unavailable)?;
     let mut titles = BTreeMap::new();
-    titles.insert(
-        hull,
-        title(world, hull, PrincipalId::Object(requester), None)?,
-    );
+    titles.insert(hull, hull_title);
     titles.insert(
         facility,
         title(

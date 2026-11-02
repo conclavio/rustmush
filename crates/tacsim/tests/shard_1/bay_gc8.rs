@@ -15,18 +15,87 @@
 //! 4. The rig is armour-patched in the carrier's bay at twice the workshop's time.
 //! 5. `+bay/stow` puts the escort back in its slot, unheld, and the fee is Stickney Yards'.
 //!
-//! Rearming from munitions lots is GC.8b's, so this run's magazines are not touched.
+//! GC.8b adds the rearm to the run: the escort's magazines come home empty, the captain buys
+//! 105 mm HE and 7.62 mm ball at the Co-op chandlery before sailing, and the workshop order
+//! draws them — and the work's `industrial_parts` — from the Dray's hold at completion. Then
+//! two gates of their own: a stripped part's provenance and a refused hot part, and scrap.
 
 use mush_core::{GOD, ObjId};
+use mush_economy::VaultId;
+use mush_inventory::record::EndpointRef;
 use mush_tactics::field_ops::ComponentCondition;
 use mush_tactics::{CellAddr, UnitMutationOp, UnitMutationPlan};
 use tacsim::port::HullRow;
 use tacsim::port::bay_work::{BayHullState, FacilityClass, OrderStatus};
 
 use crate::driving::{
-    Rig, at_counter, board, file_and_launch, fire, land_quietly, load, port_map, prospector,
-    rigs_of, run, staff_hand, station_room, stocked, store, to_ic,
+    Rig, at_counter, board, cid, drain, file_and_launch, fire, hold_pool, hold_vault_of, land_all,
+    land_quietly, load, port_map, prospector, rigs_of, run, seed_hold, staff_hand, station_room,
+    stocked, store, to_ic, typed,
 };
+
+/// **Buy `qty` of `good` from `vendor` at Ceres** through the market's own quote, accept and
+/// draw, into the buyer's chartered hold (GC.7's path).
+fn buy(rig: &mut Rig, pilot: ObjId, vendor: &str, good: &str, qty: u64) {
+    fn market(rig: &Rig) -> &mush_market::MarketStore {
+        rig.tw
+            .world()
+            .module_state::<mush_market::MarketStore>()
+            .expect("the market")
+    }
+    let vault = port_map(&rig.tw, "ceres_port").vendors[&cid(vendor)].vault;
+    let listing = market(rig)
+        .lot_listing_of(EndpointRef(VaultId(vault)), &cid(good))
+        .unwrap_or_else(|| panic!("{vendor} lists {good}"));
+    let quoted = run(
+        &mut rig.tw,
+        pilot,
+        &format!("+market/quote {listing}={qty}"),
+    );
+    assert!(quoted.contains("Quote #"), "{quoted}");
+    let quote = market(rig)
+        .quotes_of_buyer(&mush_org::PrincipalId::Object(pilot))
+        .map(|q| q.id)
+        .max()
+        .expect("a quote");
+    let accepted = run(&mut rig.tw, pilot, &format!("+market/accept {quote}"));
+    let draw = drain(&mut rig.tw);
+    assert!(!draw.is_empty(), "{accepted}");
+    land_all(rig, &draw);
+    for _ in 0..30 {
+        if market(rig)
+            .quote(quote)
+            .is_some_and(|q| q.drawn_at.is_some())
+        {
+            return;
+        }
+        let (_, queued) = fire(rig);
+        land_quietly(rig, &queued);
+    }
+    panic!("the {good} was not drawn into the hold");
+}
+
+/// A part's magazine, `(current, max)`.
+fn magazine(u: &mush_tactics::TacticalUnit, part: &mush_tactics::ComponentId) -> (i64, i64) {
+    let cell = u
+        .cell(&CellAddr::Component {
+            component: part.clone(),
+            cell: mush_tactics::CellId::new("ammo").expect("the ammo cell"),
+        })
+        .expect("a magazine");
+    (cell.current, cell.max)
+}
+
+/// The magazine of `part` emptied.
+fn empty_magazine(part: &mush_tactics::ComponentId) -> UnitMutationOp {
+    UnitMutationOp::SetCell {
+        addr: CellAddr::Component {
+            component: part.clone(),
+            cell: mush_tactics::CellId::new("ammo").expect("the ammo cell"),
+        },
+        value: 0,
+    }
+}
 
 const STICKNEY: &str = "stickney_port";
 
@@ -160,6 +229,22 @@ async fn gc8_the_refit_run_at_stickney_and_an_armour_patch_in_the_bay() {
     let (pilot, row, escort, prospect) = leased(&mut rig);
     let hull = ObjId(row.hull);
     let bay = bay_room(&row);
+    let vault = hold_vault_of(&rig.tw, &row);
+
+    // ---- GC.8b: a load of munitions bought at the Co-op chandlery, into the Dray's hold ----
+    let u = unit(&rig, escort);
+    let (cannon, gun) = (component_id(&u, "cannon"), component_id(&u, "machine_gun"));
+    let he_rounds = u64::try_from(magazine(&u, &cannon).1).expect("a magazine");
+    let ball_boxes = u64::try_from(magazine(&u, &gun).1)
+        .expect("a magazine")
+        .div_ceil(100);
+    buy(&mut rig, pilot, "coop", "ammo_he_105", he_rounds);
+    buy(&mut rig, pilot, "coop", "ammo_ball_762", ball_boxes);
+    assert_eq!(hold_pool(&mut rig.tw, vault, "ammo_he_105"), he_rounds);
+    assert_eq!(hold_pool(&mut rig.tw, vault, "ammo_ball_762"), ball_boxes);
+    // The work's industrial parts ride in the hold too (the yard sells them at Stickney; GC.7's
+    // gate covers the buying, so staff stock them here).
+    seed_hold(&mut rig, &row, "industrial_parts", 40, 9_700);
 
     // ---- To Stickney Yards ----
     load(&mut rig, &row, 60, 40, 9_500);
@@ -175,10 +260,10 @@ async fn gc8_the_refit_run_at_stickney_and_an_armour_patch_in_the_bay() {
         "docked at Stickney Yards"
     );
 
-    // ---- The casualty: the engine destroyed, the cannon jammed; the rig's armour down ----
+    // ---- The casualty: the engine destroyed, the cannon jammed, both magazines spent; the
+    // rig's armour down ----
     let u = unit(&rig, escort);
     let engine = section_id(&u, "engine");
-    let cannon = component_id(&u, "cannon");
     let mut ops = wreck_section(&u, &engine);
     ops.push(UnitMutationOp::SetComponentCondition {
         component: cannon.clone(),
@@ -186,6 +271,8 @@ async fn gc8_the_refit_run_at_stickney_and_an_armour_patch_in_the_bay() {
             .to_condition_id()
             .expect("jammed"),
     });
+    ops.push(empty_magazine(&cannon));
+    ops.push(empty_magazine(&gun));
     damage(&mut rig, escort, ops);
     let p = unit(&rig, prospect);
     let chassis = section_id(&p, "chassis");
@@ -238,15 +325,40 @@ async fn gc8_the_refit_run_at_stickney_and_an_armour_patch_in_the_bay() {
         quote.contains(&format!("rebuild {}", engine.as_str())),
         "{quote}"
     );
+    assert!(
+        quote.contains(&format!("{he_rounds} ammo_he_105"))
+            && quote.contains("From the carrier's hold"),
+        "the quote names what the hold supplies: {quote}"
+    );
+    assert!(
+        quote.contains("jammed"),
+        "the doll shows the cannon: {quote}"
+    );
     let taken = run(
         &mut rig.tw,
         pilot,
-        &format!("+bay/order #{}=rebuild,unjam", escort.0),
+        &format!("+bay/order #{}=rebuild,unjam,rearm", escort.0),
     );
     assert!(taken.contains("Order 1 taken in the workshop"), "{taken}");
     let order = order_of(&rig, escort);
     assert_eq!(order.status, OrderStatus::Open);
     assert_eq!(order.class, FacilityClass::Workshop);
+    assert_eq!(
+        order.munitions_vault,
+        Some(vault.0),
+        "drawn from the Dray's hold"
+    );
+    let drawn = |good: &str| {
+        order
+            .goods
+            .iter()
+            .find(|g| g.good.as_str() == good)
+            .map_or(0, |g| g.units)
+    };
+    assert_eq!(drawn("ammo_he_105"), he_rounds);
+    assert_eq!(drawn("ammo_ball_762"), ball_boxes);
+    let parts_t = drawn("industrial_parts");
+    assert!(parts_t > 0, "a rebuilt engine consumes parts: {order:?}");
     // Stickney's multiplier is 1x: an 8-hour shell plus its points, a 2-hour unjam.
     assert!(order.due_ic - order.started_ic >= 10 * 3_600, "{order:?}");
     let stow_held = run(&mut rig.tw, pilot, &format!("+bay/stow #{}", escort.0));
@@ -282,6 +394,18 @@ async fn gc8_the_refit_run_at_stickney_and_an_armour_patch_in_the_bay() {
         ComponentCondition::Intact,
         "the cannon cleared"
     );
+    // GC.8b: the magazines full, drawn from the hold, all of it.
+    for part in [&cannon, &gun] {
+        let (current, max) = magazine(&after, part);
+        assert_eq!(current, max, "{part} rearmed");
+    }
+    assert_eq!(hold_pool(&mut rig.tw, vault, "ammo_he_105"), 0);
+    assert_eq!(hold_pool(&mut rig.tw, vault, "ammo_ball_762"), 0);
+    assert_eq!(
+        hold_pool(&mut rig.tw, vault, "industrial_parts"),
+        40 - parts_t,
+        "the engine's parts"
+    );
 
     // (4) The rig's armour in the carrier's bay, at twice the time.
     put(&mut rig, pilot, bay, true);
@@ -295,8 +419,15 @@ async fn gc8_the_refit_run_at_stickney_and_an_armour_patch_in_the_bay() {
     assert_eq!(order.class, FacilityClass::CarrierBay);
     let workshop_secs: i64 = order.jobs.iter().map(|j| j.secs).sum();
     assert_eq!(order.due_ic - order.started_ic, 2 * workshop_secs);
+    // The draw of its parts lands on the due fire, the work on the next.
+    let _ = to_ic(&mut rig, order.due_ic + 60);
     let _ = to_ic(&mut rig, order.due_ic + 600);
     assert_eq!(order_of(&rig, prospect).status, OrderStatus::Done);
+    assert_eq!(
+        hold_pool(&mut rig.tw, vault, "industrial_parts"),
+        40 - parts_t - 1,
+        "fifty points of armour take a tonne of parts from the hold"
+    );
 
     // (5) Stowed back in its slot, unheld; the fee is the operator's.
     put(&mut rig, pilot, workshop, false);
@@ -304,6 +435,13 @@ async fn gc8_the_refit_run_at_stickney_and_an_armour_patch_in_the_bay() {
     assert!(stowed.contains("stowed back"), "{stowed}");
     assert!(in_bay(&rig, escort, bay), "back in the bay");
     assert!(!tacsim::port::bay_work::held(rig.tw.world(), escort));
+    // It fields again: unheld, whole and armed.
+    let fit = tacsim::field_ops::assess_tacsim_unit(&unit(&rig, escort), None).expect("assessed");
+    assert_eq!(
+        fit.state,
+        mush_tactics::field_ops::OperationalState::Operational,
+        "{fit:?}"
+    );
     let contract = mush_economy::ContractId(done.contract);
     for _ in 0..4 {
         let (_, queued) = fire(&mut rig);
@@ -400,4 +538,273 @@ async fn gc8_who_may_have_a_hull_worked_on() {
     let _ = cancelled;
     assert_eq!(order_of(&rig, escort).status, OrderStatus::Cancelled);
     assert!(!tacsim::port::bay_work::held(rig.tw.world(), escort));
+}
+
+/// **A mechanic with Occator's `unit.maintain_refit`**, enrolled, funded, standing in `room`.
+fn mechanic(rig: &mut Rig, room: ObjId) -> ObjId {
+    let mechanic = crate::driving::pilot(rig, "Mechanic", 3);
+    let enrolled = run(&mut rig.tw, mechanic, "+coop/enrol Grey Heron");
+    assert!(enrolled.contains("now the Grey Heron"), "{enrolled}");
+    let occator = port_map(&rig.tw, "ceres_port").orgs[&cid("occator")].org;
+    let _ = run(
+        &mut rig.tw,
+        GOD,
+        &format!("@org/grant #{}=#{occator} unit.maintain_refit", mechanic.0),
+    );
+    mint(rig, mechanic);
+    put(rig, mechanic, room, false);
+    mechanic
+}
+
+/// A command, its submissions landed, then fires until `hull`'s record owes nothing.
+fn settled(rig: &mut Rig, who: ObjId, line: &str, hull: ObjId) -> String {
+    let out = run(&mut rig.tw, who, line);
+    let queued = drain(&mut rig.tw);
+    land_all(rig, &queued);
+    for _ in 0..6 {
+        if matches!(store(&rig.tw).bay_hull(hull), Some(BayHullState::Present(r)) if r.owed.is_none())
+        {
+            return out;
+        }
+        let (_, queued) = fire(rig);
+        land_quietly(rig, &queued);
+    }
+    panic!("{line}: the bay's act did not settle\n{out}");
+}
+
+fn bay_handles(rig: &Rig) -> tacsim::port::bay_work::act::BayActHandles {
+    rig.tw
+        .world()
+        .module_state::<tacsim::port::bay_work::act::BayActHandles>()
+        .cloned()
+        .expect("the bay's handles")
+}
+
+fn provenance(
+    rig: &mut Rig,
+    lot: mush_inventory::LotId,
+) -> tacsim::port::bay_work::act::PartProvenance {
+    let handles = bay_handles(rig);
+    typed(&mut rig.tw, &handles.parts, &lot).expect("the part's provenance")
+}
+
+fn lot_record(rig: &mut Rig, lot: mush_inventory::LotId) -> Option<mush_inventory::Lot> {
+    let inventory = bay_handles(rig).inventory.expect("the inventory");
+    typed(&mut rig.tw, &inventory.lots, &lot)
+}
+
+/// **GC.8b's provenance gate** (Q-36-37, Q-F6) at Ceres' workshop (C14, Occator's). The lessee
+/// berths the escort; a holder of Occator's `unit.maintain_refit` strips its machine gun and
+/// its cannon. Each becomes a one-unit lot of its part in the Dray's hold carrying its parent
+/// hull, its slot (now `Missing`), its condition and its claim reference. The machine gun's
+/// claim is vacated (the staff fixture standing in for GC.5/GC.6's contest), so it is hot and
+/// the bay refuses to fit it; the clean cannon is fitted back from its lot, which the work
+/// consumes.
+#[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+async fn gc8b_a_stripped_part_carries_its_provenance_and_a_hot_part_is_refused() {
+    let mut rig = stocked();
+    let (pilot, row, escort, _) = leased(&mut rig);
+    let vault = hold_vault_of(&rig.tw, &row);
+    let workshop = station_room(&rig.tw, "ceres_port", "room.c14_dockmaster");
+    put(&mut rig, pilot, workshop, false);
+    let berthed = run(&mut rig.tw, pilot, &format!("+bay/berth #{}", escort.0));
+    assert!(berthed.contains("berthed in the workshop"), "{berthed}");
+    // The lessee may not strip.
+    let refused = run(
+        &mut rig.tw,
+        pilot,
+        &format!("+bay/strip #{}=machine_gun", escort.0),
+    );
+    assert!(refused.contains("does not reach"), "{refused}");
+    let mechanic = mechanic(&mut rig, workshop);
+    let u = unit(&rig, escort);
+    let (cannon, gun) = (component_id(&u, "cannon"), component_id(&u, "machine_gun"));
+
+    // (1) The machine gun comes off into the hold, with its provenance.
+    let out = settled(
+        &mut rig,
+        mechanic,
+        &format!("+bay/strip #{}=machine_gun", escort.0),
+        escort,
+    );
+    assert!(out.contains("goes to the carrier's hold"), "{out}");
+    let gun_lot = tacsim::port::bay_work::act::lot_id(escort, 1, 0).expect("the lot");
+    let lot = lot_record(&mut rig, gun_lot).expect("the part's lot");
+    assert_eq!(lot.endpoint(), EndpointRef(vault), "in the Dray's hold");
+    assert_eq!(lot.commodity().as_str(), "tacsim.part.machine_gun");
+    assert_eq!(lot.quantity(), 1);
+    let part = provenance(&mut rig, gun_lot);
+    assert_eq!(part.parent_hull, escort);
+    assert_eq!(part.slot, gun);
+    assert_eq!(part.condition, ComponentCondition::Intact);
+    assert_eq!(
+        part.claim, None,
+        "no salvage claim: the grant holder stripped it"
+    );
+    assert!(!part.is_hot());
+    assert_eq!(part.stripped_by, mechanic);
+    let assessment =
+        tacsim::field_ops::assess_tacsim_unit(&unit(&rig, escort), None).expect("assessed");
+    assert_eq!(
+        assessment.component_conditions[&gun],
+        ComponentCondition::Missing,
+        "the slot reads missing"
+    );
+
+    // (2) The cannon too.
+    let _ = settled(
+        &mut rig,
+        mechanic,
+        &format!("+bay/strip #{}=cannon", escort.0),
+        escort,
+    );
+    let cannon_lot = tacsim::port::bay_work::act::lot_id(escort, 2, 0).expect("the lot");
+    assert_eq!(provenance(&mut rig, cannon_lot).slot, cannon);
+
+    // (3) The machine gun's claim is vacated: it is hot, and the bay will not fit it.
+    staff_hand(&mut rig, |ctx| {
+        tacsim::port::bay_work::strip::vacate_claim(ctx, mechanic, escort, gun_lot, 7, pilot)
+            .expect("the claim is vacated");
+    });
+    for _ in 0..6 {
+        let (_, queued) = fire(&mut rig);
+        land_quietly(&mut rig, &queued);
+    }
+    let part = provenance(&mut rig, gun_lot);
+    assert!(part.is_hot(), "{part:?}");
+    let refused = run(
+        &mut rig.tw,
+        mechanic,
+        &format!("+bay/fit #{}=machine_gun {gun_lot}", escort.0),
+    );
+    assert!(refused.contains("That part is hot"), "{refused}");
+    assert!(
+        lot_record(&mut rig, gun_lot).is_some(),
+        "the hot part stays in the hold"
+    );
+
+    // (4) The clean cannon is fitted back from its lot; the work consumes the lot.
+    let taken = run(
+        &mut rig.tw,
+        mechanic,
+        &format!("+bay/fit #{}=cannon {cannon_lot}", escort.0),
+    );
+    assert!(taken.contains("taken in the workshop"), "{taken}");
+    let order = order_of(&rig, escort);
+    let _ = to_ic(&mut rig, order.due_ic + 60);
+    let _ = to_ic(&mut rig, order.due_ic + 600);
+    assert_eq!(order_of(&rig, escort).status, OrderStatus::Done);
+    let assessment =
+        tacsim::field_ops::assess_tacsim_unit(&unit(&rig, escort), None).expect("assessed");
+    assert_eq!(
+        assessment.component_conditions[&cannon],
+        ComponentCondition::Intact
+    );
+    assert_eq!(
+        assessment.component_conditions[&gun],
+        ComponentCondition::Missing
+    );
+    assert!(
+        lot_record(&mut rig, cannon_lot).is_none(),
+        "the lot is consumed"
+    );
+    assert_eq!(provenance(&mut rig, cannon_lot).fitted_into, Some(escort));
+}
+
+/// **GC.8b's scrap gate** (Q-36-39) at Ceres' workshop. A spare escort of Occator's pool is
+/// titled to the captain and stowed in the Dray's bay; berthed, the title holder scraps it: its
+/// structural mass becomes `structural_alloys` and each salvageable part a lot with its
+/// provenance, all in the Dray's hold; the hull is an irrecoverable shell and its berth free.
+/// The lessee may not scrap a leased hull, and remains wait for GC.3.
+#[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+async fn gc8b_scrap_breaks_a_workshop_hull_into_alloys_and_parts() {
+    let mut rig = stocked();
+    let (pilot, row, escort, _) = leased(&mut rig);
+    let vault = hold_vault_of(&rig.tw, &row);
+    let bay = bay_room(&row);
+    let workshop = station_room(&rig.tw, "ceres_port", "room.c14_dockmaster");
+    // The leased escort is berthed, freeing its slot for a titled spare.
+    put(&mut rig, pilot, workshop, false);
+    let berthed = run(&mut rig.tw, pilot, &format!("+bay/berth #{}", escort.0));
+    assert!(berthed.contains("berthed in the workshop"), "{berthed}");
+    let refused = run(&mut rig.tw, pilot, &format!("+bay/scrap #{}", escort.0));
+    assert!(
+        refused.contains("Only the hull's title holder"),
+        "{refused}"
+    );
+    let schema = unit(&rig, escort).schema().clone();
+    let spare = rig
+        .tw
+        .world()
+        .module_state::<mush_tactics::UnitStore>()
+        .expect("the units")
+        .units
+        .iter()
+        .find(|(id, u)| **id != escort && u.schema() == &schema)
+        .map(|(id, _)| *id)
+        .expect("a spare escort in Occator's pool");
+    let moved = run(
+        &mut rig.tw,
+        GOD,
+        &format!("@asset/transfer #{}=#{}", spare.0, pilot.0),
+    );
+    assert_eq!(
+        rig.tw
+            .world()
+            .module_state::<mush_economy::EconomyStore>()
+            .and_then(|e| e.snapshot().asset(spare).map(|a| a.title_owner.clone())),
+        Some(mush_org::PrincipalId::Object(pilot)),
+        "{moved}"
+    );
+    put(&mut rig, spare, bay, true);
+    let berthed = run(&mut rig.tw, pilot, &format!("+bay/berth #{}", spare.0));
+    assert!(berthed.contains("berthed in the workshop"), "{berthed}");
+    let before = tacsim::field_ops::assess_tacsim_unit(&unit(&rig, spare), None).expect("assessed");
+    let salvageable = before
+        .component_conditions
+        .values()
+        .filter(|c| c.is_salvageable())
+        .count();
+
+    let out = settled(&mut rig, pilot, &format!("+bay/scrap #{}", spare.0), spare);
+    assert!(out.contains("is broken up"), "{out}");
+    let alloys = lot_record(
+        &mut rig,
+        tacsim::port::bay_work::act::lot_id(spare, 1, 0).expect("the lot"),
+    )
+    .expect("the alloys' lot");
+    assert_eq!(alloys.commodity().as_str(), "structural_alloys");
+    assert!(alloys.quantity() > 0, "{alloys:?}");
+    assert_eq!(alloys.endpoint(), EndpointRef(vault));
+    let mut parts = 0;
+    for row in 1..=salvageable {
+        let lot = tacsim::port::bay_work::act::lot_id(spare, 1, row).expect("the lot");
+        let Some(found) = lot_record(&mut rig, lot) else {
+            continue;
+        };
+        assert!(found.commodity().as_str().starts_with("tacsim.part."));
+        let part = provenance(&mut rig, lot);
+        assert_eq!(part.parent_hull, spare);
+        assert!(part.scrapped);
+        parts += 1;
+    }
+    assert!(parts > 0, "salvageable parts become lots: {out}");
+    let after = tacsim::field_ops::assess_tacsim_unit(&unit(&rig, spare), None).expect("assessed");
+    assert_eq!(
+        after.state,
+        mush_tactics::field_ops::OperationalState::Irrecoverable
+    );
+    match store(&rig.tw).bay_hull(spare) {
+        Some(BayHullState::Present(r)) => {
+            assert!(r.scrapped_ic.is_some() && r.berth.is_none(), "{r:?}");
+        }
+        other => panic!("the bay record: {other:?}"),
+    }
+    let again = run(&mut rig.tw, pilot, &format!("+bay/scrap #{}", spare.0));
+    assert!(again.contains("has been scrapped"), "{again}");
+    // Remains are scrapped where they lie once GC.3 records them.
+    let seam = staff_hand(&mut rig, |ctx| {
+        tacsim::port::bay_work::strip::scrap_remains(ctx, spare)
+    });
+    assert!(seam.is_err());
 }

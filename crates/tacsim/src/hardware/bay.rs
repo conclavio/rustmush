@@ -63,6 +63,17 @@ impl BayPartCatalog for ShippedParts {
     }
 }
 
+/// **The part a component stocks as** (doc 36 cut GC.8b): the catalogue's own answer, so a
+/// part the bay strips or scraps is the same commodity a refit takes out.
+pub(crate) fn part_commodity(component: &DefinitionRef) -> Option<CanonicalId> {
+    ShippedParts.commodity(component)
+}
+
+/// The grade a part goes to stores at: intact, or worn (damaged or jammed).
+pub(crate) const fn part_grade(intact: bool) -> u8 {
+    if intact { INTACT_GRADE } else { WORN_GRADE }
+}
+
 /// The bay refit for `site`, refitting within `fielded`.
 pub(crate) fn config(
     site: &RefitBay,

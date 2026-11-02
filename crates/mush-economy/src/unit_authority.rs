@@ -114,6 +114,41 @@ impl mush_org::unit_authority::runtime::UnitAuthorityWorldFacts for EconomyUnitA
     }
 }
 
+/// **The bay's one grant read** (doc 36 cut GC.8b, Q-36-33): whether `actor` may have `hull`
+/// maintained or refitted — its title holder, or a holder of `unit.maintain_refit` by the
+/// organization path on the org that holds its title. The built refit bay's audited title
+/// checks (Industry's and Economy's) both ask this one predicate, so a grant reaches the bay
+/// the same way at every transition.
+#[must_use]
+pub fn may_maintain_refit(world: &World, actor: ObjId, hull: ObjId) -> bool {
+    mush_org::unit_authority::reader::authorize_in_world(
+        world,
+        &EconomyUnitAuthorityFacts::new(world),
+        actor,
+        hull,
+        mush_org::unit_authority::UnitCapability::MaintainRefit,
+    )
+}
+
+/// **A hull's title as the bay reads it** (doc 36 cut GC.8b): standing (unfrozen, unstolen,
+/// active, unencumbered) and held by `requester` or, under a `unit.maintain_refit` grant, by
+/// the organization scope the grant runs on ([`may_maintain_refit`]).
+#[must_use]
+pub fn bay_hull_title_stands(
+    world: &World,
+    asset: &crate::EconomicAsset,
+    requester: ObjId,
+) -> bool {
+    let held = asset.title_owner == PrincipalId::Object(requester) && asset.scope.is_none();
+    let granted = matches!(asset.title_owner, PrincipalId::Organization(_))
+        && may_maintain_refit(world, requester, asset.object);
+    (held || granted)
+        && !asset.frozen
+        && asset.stolen.is_none()
+        && asset.lifecycle == AssetLifecycle::Active
+        && asset.encumbrances.is_empty()
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
