@@ -358,6 +358,14 @@ pub(crate) fn demote_units(
     Demoted { left, remains }
 }
 
+/// **Whether `unit`'s own record reads `Irrecoverable`** (doc 36 cut GC.3; Q-36-18): a hull that
+/// left remains. It is off the ground but in no bay, so nothing may take it for a hull aboard.
+pub(crate) fn is_irrecoverable(w: &mush_core::World, unit: ObjId) -> bool {
+    mush_tactics::module::unit_of(w, unit)
+        .and_then(|cells| crate::field_ops::assess_tacsim_unit(cells, None).ok())
+        .is_some_and(|assessment| assessment.state == OperationalState::Irrecoverable)
+}
+
 /// **A wrecked carrier's bay** (doc 36 cut GC.3; Q-36-8): when `carrier`'s checked-in record
 /// says its hull fell, every rig in its bay becomes a wreck where the carrier stands — the
 /// arena's wreck mark written onto its own record ([`crate::carrier_damage::wreck_plan`]). The

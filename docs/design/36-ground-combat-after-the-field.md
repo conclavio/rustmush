@@ -2404,14 +2404,14 @@ merged). It covers Q-36-8, Q-36-18 and Q-36-47. No kernel file changed and no ha
 rule here is the host's, read off a checked-in unit record. What the cut decided where the
 rulings left it open, for the owner to object to:
 
-**A finding first: combat never makes a hull `Irrecoverable` today.** `OperationalState::
-Irrecoverable` needs a section in the `irrecoverable` condition or every section destroyed. The
-kernel writes neither. A hull's loss writes `wreck` on its hull section (`Arena::wreck_ops`), and
-a wreck is never a target, so the hull is never reduced past it. Close-destroyed is built for
-the state as the condition library defines it, and its gate stands the state in by staff hand.
-Whether a field should ever reach it (say, a hull reduced past a wreck, or every section down)
-is a kernel rule and an owner question; it would move the practice hashes, which this cut may
-not.
+**How a hull becomes `Irrecoverable` in a field.** `OperationalState::Irrecoverable` needs a
+section in the `irrecoverable` condition, or every section destroyed. The kernel never writes the
+first. It reaches the second through the IC check-in: a section whose internals stand at their
+floor reads `destroyed` there, even under the arena's `wreck` mark, unless it is the unit's core
+section. So a hull that goes down with every section at zero is irrecoverable, and since this cut
+it leaves remains. One that goes down with any section standing is a wreck, as before. (This
+section first said combat never reaches the state; the CF.7 story's CI run showed otherwise, and
+the story is changed below.)
 
 **Close-destroyed** (Q-36-18; `field/close.rs`, `field/provider.rs`, `surface/site_record.rs`,
 `field/admit.rs`, `field/boot.rs`, `field/known.rs`).
@@ -2436,6 +2436,12 @@ not.
   logged. The flight's family is the detachment's, with its index, heads and phase, and closing
   it `Destroyed` belongs in that family's own act. A raider's hull has no epoch, so it leaves
   remains and nothing else.
+- *A raider's remains stay remains* (`field/raiders.rs`, `land_and_launch`). A raider's hull
+  counted as aboard its barge when it was carried by it and not on the ground, and an
+  irrecoverable hull is now off the ground too. So `@field/raiders/launch`, and GC.11's director
+  landing through the same function, would have stood the destroyed hull up again beside the
+  ramp. The launch now skips a hull whose own record reads `Irrecoverable`
+  (`close::is_irrecoverable`). The CF.7 story's second field caught it.
 - *Not changed:* a carrier is never remains in this cut. Its hull's loss is the table's wreck.
 - *GC.8b's scrap seam is not wired* (`port::bay_work::strip::scrap_remains` still refuses, and
   GC.8b's gate still asserts that). The remains record now exists, but scrapping remains where
@@ -2484,8 +2490,8 @@ not.
 **The gates** (`tests/shard_1/field_gc3.rs`, through the production command paths on Ahuna
 Flank).
 - `gc3_an_irrecoverable_hull_leaves_remains_and_closes_destroyed`: GC.2's ground (A's armed hull,
-  C's prospector four cells east). A staff mark makes the prospector's boom `irrecoverable` (the
-  finding above). A marks it Hostile, the site promotes with it in the field, nobody fires, and
+  C's prospector four cells east). A staff mark makes the prospector's boom `irrecoverable`, so
+  the gate does not have to fight every section down. A marks it Hostile, the site promotes with it in the field, nobody fires, and
   the field demotes. The prospector is off the index and off the ground; one remains of it with
   its dry mass lies at its cell; its rig record's epoch is closed and its surface work cleared;
   A's party knows the remains at that cell. *The black box line:* the gate asserts the
@@ -2508,6 +2514,20 @@ Flank).
   the wreck's line. In-source: `carrier_damage`'s table and tug-floor tests.
 - *Changed:* `field_carrier::every_carrier_is_past_twice_any_tugs_tonnage` keeps its tonnage
   sweep and now asserts the new gate's line, with a rig as the tug.
+- *Changed: the CF.7 story* (`field_story.rs`, at 256 as
+  `gc0_the_raiders_barge_lifts_and_the_field_demotes_without_a_friendly_mark` and at 512 as
+  `s2_the_field_story_at_512`). Its raider walker is a fixture with every section at its
+  internals' floor, so the head's loss takes the last section and the walker is irrecoverable.
+  The old code indexed it as an open-epoch wreck, which is the contradiction Q-36-18 rules away.
+  Steps 9 to 13 now find the walker's remains where it fell (off the index and off the ground,
+  through the restart and the second visit). In the second field, the casualty and the tank are
+  admitted and the walker is not. G-8 still holds, because the field lays the site record's
+  objects as walls, so the remains hide the raider as the wreck did.
+- *Changed, from main: `mill::sm12a_only_the_clerk_the_foundry_and_the_mill_create_matter`*
+  (`shard_3`). GC.8b's bay draw (`port/bay_work/act.rs`) debits an order's goods from the hold.
+  That is a third place matter leaves the world, which the pin did not list, and `main` was red
+  on it. The pin now lists it, with its reason. Left for GC.8b's owner: its scrap mints lots
+  through `.mint_origins(`, which the pin's `.mint_origin(` pattern does not match.
 
 **Defaults taken (provisional).**
 - The remains' one-cell footprint, and their mass as the hull's dry mass.

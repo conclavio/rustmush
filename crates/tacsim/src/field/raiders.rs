@@ -568,6 +568,9 @@ pub(crate) fn land_and_launch(
         .copied()
         .filter(|hull| carrier_of(ctx.w, *hull) == Some(carrier))
         .filter(|hull| mush_sim::pose_of(ctx.w, *hull).is_none())
+        // Doc 36 cut GC.3 (Q-36-18): an irrecoverable hull is off the ground as remains, not
+        // aboard.
+        .filter(|hull| !super::close::is_irrecoverable(ctx.w, *hull))
         .take(cap)
         .collect();
     if aboard.is_empty() {
