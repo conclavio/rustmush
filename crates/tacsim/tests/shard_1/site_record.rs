@@ -54,7 +54,7 @@ pub(crate) fn staff(rig: &mut Rig, who: ObjId, line: &str) {
 #[allow(clippy::too_many_lines)]
 fn cf1_the_ground_survives_a_restart_and_a_promoted_site_refuses() {
     assert_eq!(tacsim::surface::MAX_EXCURSIONS_PER_SITE, FIELD_MAX_UNITS);
-    assert_eq!(FIELD_MAX_UNITS, 24, "the per-site cap is the field cap");
+    assert_eq!(FIELD_MAX_UNITS, 100, "the per-site cap is the field cap");
     let mut rig = stocked();
     let (a, _, a_tvs) = on_pad(&mut rig, 2);
     let (b, _, b_tvs) = on_pad_as(&mut rig, "Other", 2, "Tally Moth", 1);

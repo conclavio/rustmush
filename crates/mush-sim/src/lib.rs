@@ -90,7 +90,7 @@ pub use deployed::{DeployedMark, DeployedUnits, UnitDeployed, refuse_if_deployed
 pub use domain::{
     ActivationBook, DomainActivation, DomainActivationWire, DomainSummary, DomainSummaryWire,
     DomainWorkflowError, MAX_ACTIVE_DOMAINS, PromotionTrigger, QUIET_BOUNDARY, activation_key,
-    summary_key,
+    stand_down_domain, summary_key,
 };
 pub use focus::{
     AccountOracle, ActiveFocus, FocusState, MAX_BILLETS_LISTED, ProxyAct, ProxyDrive, ReachProof,
@@ -104,7 +104,8 @@ pub use journey::{
     CarrierHooks, CarrierHooksState, CarrierJourney, CarrierJourneyError, CarrierJourneyWire,
     JourneyBook, JourneyId, JourneyState, MAX_CARRIER_JOURNEYS, MAX_CARRIER_SUBTREE,
     MAX_JOURNEY_ANOMALY_BYTES, MAX_JOURNEYS_VISITED_PER_FIRE, MAX_JOURNEYS_WORKED_PER_FIRE,
-    carrier_journey_key, same_place, under_way_root_of,
+    carrier_journey_key, promote_carrier_journey, resume_carrier_journey, same_place,
+    under_way_root_of,
 };
 pub use route::{
     CadenceId, DistanceLaw, DriveProfile, DriveProfileWire, LegDef, LegDefWire, MAX_HAZARD_BAND,

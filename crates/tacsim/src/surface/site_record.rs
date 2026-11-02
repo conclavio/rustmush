@@ -53,8 +53,11 @@ pub const SITE_RECORD_FAMILY: &str = "tacsim.field";
 pub const SITE_RECORD_SCHEMA: u16 = 1;
 /// **The field cap** (doc 32 Q-CF-21, Q-CF-45; provisionally `[tacsim.field].max_units`): the most
 /// units one field admits, and so — enforced at the surface — the most rigs one site holds out.
-/// A code constant until CF.2 adds `[tacsim.field]` with its `disengage_s`.
-pub const FIELD_MAX_UNITS: u32 = 24;
+/// The bound on `[tacsim.field].max_units`, and its default. **Doc 36 cut GC.12** (Q-36-9): raised
+/// from 24 to 100, the largest size measured whose `Engaged` pulse stays within
+/// `[tacsim.harness].engaged_p99_ms` (40 ms) in release; doc 36's "As built (GC.12)" has the
+/// figures.
+pub const FIELD_MAX_UNITS: u32 = 100;
 /// **The most non-unit objects one site keeps** (doc 32 Q-CF-27, provisionally 64).
 pub const MAX_GROUND_OBJECTS: usize = 64;
 /// **The most units one site's record indexes** (a record-size bound, not a rule of doc 32:
@@ -2067,6 +2070,43 @@ mod tests {
             ),
             "Field 2 is being fought on Ahuna Flank. Surface work there waits until it settles."
         );
+    }
+
+    /// **The cap's share of the record fits** (doc 36 cut GC.12): a promotion holding the field
+    /// cap of settled rigs and of exits, every id and pose at its widest, beside a full salvage
+    /// memory, still checks and stays under the record's ceiling.
+    #[test]
+    fn gc12_a_field_at_the_cap_fits_the_record() {
+        let mut site = record();
+        for principal in 1..=u32::try_from(MAX_KNOWN_PRINCIPALS).unwrap_or(u32::MAX) {
+            let many: Vec<KnownItem> = (0..i64::try_from(MAX_KNOWN_ITEMS).unwrap_or(0))
+                .map(|x| KnownItem(KnownWhat::Remains, x, 5))
+                .collect();
+            site.learn(ObjId(principal), &many, |_| false, i64::from(principal));
+        }
+        assert!(
+            site.promote(i64::MAX, PromotedBy::Staff { staff: ObjId(1) })
+                .is_ok()
+        );
+        let edge = i64::from(site.side) * i64::from(SITE_CELL_CM) - 1;
+        let ids = (0..FIELD_MAX_UNITS).map(|n| ObjId(u32::MAX - FIELD_MAX_UNITS + n));
+        if let Some(open) = site.promoted.as_mut() {
+            open.settled = ids
+                .clone()
+                .map(|tv| SettledRig {
+                    tv,
+                    pose: SitePose {
+                        x_cm: edge,
+                        y_cm: edge,
+                        heading_mdeg: 359_999,
+                    },
+                })
+                .collect();
+            open.exits = ids.collect();
+        }
+        assert_eq!(site.check(), Ok(()));
+        let text = serde_json::to_string(&site).unwrap_or_default();
+        assert!(text.len() <= MAX_SITE_RECORD_BYTES, "{} bytes", text.len());
     }
 
     /// **What a principal remembers** (doc 32 cut CF.4; Q-CF-28): new things first, one per

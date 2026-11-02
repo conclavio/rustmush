@@ -235,11 +235,11 @@ pub fn bubble_holotank_scene(frame: &Frame, holo: &Value, look: &Look) -> Option
 
     let (w, h) = (frame.width() as i64, frame.height() as i64);
     let s: i64 = if w.min(h) >= 360 { 2 } else { 1 };
-    let strip = 11 * s;
+    let strip = (11 * s).min(h / 4);
 
     let mut scene = Scene::new(Viewport {
         world: (-r_max, -r_max, r_max, r_max),
-        frame: (0, strip, w, h - 2 * strip),
+        frame: (0, strip, w.max(1), (h - 2 * strip).max(1)),
         transform: Transform::Linear,
     });
     scene.push(Item::Panel {
@@ -482,11 +482,11 @@ pub fn sky_holotank_scene(frame: &Frame, sky: &Value, look: &Look) -> Option<Sce
     let tilt_deg = DEFAULT_TILT_DEG;
     let (w, h) = (frame.width() as i64, frame.height() as i64);
     let s: i64 = if w.min(h) >= 360 { 2 } else { 1 };
-    let strip = 11 * s;
+    let strip = (11 * s).min(h / 4);
 
     let mut scene = Scene::new(Viewport {
         world: (-r_max, -r_max, r_max, r_max),
-        frame: (0, strip, w, h - 2 * strip),
+        frame: (0, strip, w.max(1), (h - 2 * strip).max(1)),
         transform: Transform::LogRadial { r0, r_max },
     });
     scene.push(Item::Panel {

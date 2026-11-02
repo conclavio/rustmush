@@ -333,7 +333,7 @@ describe("the keyframes the picture is drawn from here (doc 21 cut G.3b)", () =>
     expect(spacePictureKey("0", "docking")).toBeNull();
     expect(spacePictureKey("9", "docking")).toBeNull();
 
-    // Holo-Tank orbit & Space Canopy helm keys.
+    // Holo-Tank orbit & Space Canopy camera-only keys (no legacy +helm/+tac verbs).
     expect(spacePictureKey("a", "holotank")).toEqual({
       kind: "holotankOrbit",
       deltaMdeg: -15_000,
@@ -342,14 +342,15 @@ describe("the keyframes the picture is drawn from here (doc 21 cut G.3b)", () =>
       kind: "holotankOrbit",
       deltaMdeg: 15_000,
     });
-    expect(spacePictureKey("w", "space_cockpit")).toEqual({
-      kind: "spaceHelm",
-      cmd: "+helm/burn 10 0 0",
+    expect(spacePictureKey("q", "space_cockpit")).toEqual({
+      kind: "look",
+      dir: -1,
     });
-    expect(spacePictureKey("g", "space_cockpit")).toEqual({
-      kind: "spaceHelm",
-      cmd: "+tac/decoy",
+    expect(spacePictureKey("c", "space_cockpit")).toEqual({
+      kind: "centre",
     });
+    expect(spacePictureKey("w", "space_cockpit")).toBeNull();
+    expect(spacePictureKey("g", "space_cockpit")).toBeNull();
 
     // PictureStore space feed observers auto-select spaceMode.
     const store = new PictureStore();

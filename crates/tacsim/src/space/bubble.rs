@@ -17,8 +17,8 @@ use serde::{Deserialize, Serialize};
 use serde_json::{Value, json};
 
 use crate::space::weapons::{
-    InFlightSlug, InFlightTorpedo, LaserMode, LaserMount, PdcMount, RailgunMount, TorpedoTube,
-    compute_railgun_lead, isqrt_i128,
+    DEFAULT_TORPEDO_MAX_FLIGHT_MS, InFlightSlug, InFlightTorpedo, LaserMode, LaserMount, PdcMount,
+    RailgunMount, TorpedoTube, compute_railgun_lead, isqrt_i128,
 };
 
 /// Maximum substep duration in wall milliseconds (`D-16-2`).
@@ -169,6 +169,9 @@ pub struct SpaceShipState {
     pub party: SpacePartyId,
     /// 3D local position in metres (`[x, y, z]`).
     pub pos_m: [i64; 3],
+    /// Sub-metre position remainder in micrometres (`-999_999..=999_999`, `35a` §5.2).
+    #[serde(default)]
+    pub pos_rem_um: [i64; 3],
     /// 3D local velocity in $\text{mm/s}$ (`[vx, vy, vz]`).
     pub vel_mmps: [i64; 3],
     /// Commanded 3D thrust acceleration in $\text{m/s}^2$ (`[ax, ay, az]`).
@@ -266,6 +269,7 @@ impl SpaceShipState {
             hull_class: "tacsim.unit.dray".to_owned(),
             party,
             pos_m,
+            pos_rem_um: [0, 0, 0],
             vel_mmps,
             thrust_mps2: [0, 0, 0],
             max_accel_mps2: 25,
@@ -484,7 +488,7 @@ impl SpaceShipState {
     }
 }
 
-/// Discrete combat & telemetry events emitted during a [`LocalSpaceBubble::step_wall_ms`] call.
+/// Discrete combat & telemetry events emitted during a [`LocalSpaceBubble::step_wall_ms_at`] call.
 #[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize)]
 pub enum SpaceCombatEvent {
     TorpedoLaunched {
@@ -572,7 +576,7 @@ pub enum SpaceCombatEvent {
     },
 }
 
-/// Summary returned by [`LocalSpaceBubble::step_wall_ms`].
+/// Summary returned by [`LocalSpaceBubble::step_wall_ms_at`].
 #[derive(Clone, Debug, Default, PartialEq, Eq, Serialize, Deserialize)]
 pub struct BubbleStepReport {
     pub wall_advanced_ms: u32,
@@ -760,10 +764,13 @@ impl LocalSpaceBubble {
             ship.thrust_mps2 = [0, 0, 0];
             return Ok(());
         }
+        let clamped = [
+            thrust_mps2[0].clamp(-1_000_000, 1_000_000),
+            thrust_mps2[1].clamp(-1_000_000, 1_000_000),
+            thrust_mps2[2].clamp(-1_000_000, 1_000_000),
+        ];
         let requested_mag = isqrt_i128(
-            (thrust_mps2[0] as i128).pow(2)
-                + (thrust_mps2[1] as i128).pow(2)
-                + (thrust_mps2[2] as i128).pow(2),
+            (clamped[0] as i128).pow(2) + (clamped[1] as i128).pow(2) + (clamped[2] as i128).pow(2),
         ) as i64;
         if requested_mag > 0
             && !force_into_reserve
@@ -781,13 +788,15 @@ impl LocalSpaceBubble {
             ship.max_accel_mps2
         };
         if requested_mag > max_a && requested_mag > 0 {
+            let max_i128 = i128::from(max_a);
+            let mag_i128 = i128::from(requested_mag);
             ship.thrust_mps2 = [
-                (thrust_mps2[0] * max_a) / requested_mag,
-                (thrust_mps2[1] * max_a) / requested_mag,
-                (thrust_mps2[2] * max_a) / requested_mag,
+                ((i128::from(clamped[0]) * max_i128) / mag_i128) as i64,
+                ((i128::from(clamped[1]) * max_i128) / mag_i128) as i64,
+                ((i128::from(clamped[2]) * max_i128) / mag_i128) as i64,
             ];
         } else {
-            ship.thrust_mps2 = thrust_mps2;
+            ship.thrust_mps2 = clamped;
         }
         Ok(())
     }
@@ -849,11 +858,16 @@ impl LocalSpaceBubble {
                 shooter_id: shooter_id.to_owned(),
                 target_id: target_id.to_owned(),
                 pos_m: shooter_pos,
+                pos_rem_um: [0, 0, 0],
                 vel_mmps: shooter_vel,
                 accel_mps2: accel,
                 remaining_dv_mmps: max_dv_mmps,
                 warhead_damage: dmg,
+                integrity: 100,
                 tti_s: est_tti_s,
+                flight_elapsed_ms: 0,
+                max_flight_ms: DEFAULT_TORPEDO_MAX_FLIGHT_MS,
+                dv_exhausted_emitted: false,
             });
             events.push(SpaceCombatEvent::TorpedoLaunched {
                 torpedo_id: tid,
@@ -1016,6 +1030,7 @@ impl LocalSpaceBubble {
             shooter_id: shooter_id.to_owned(),
             target_id: target_id.to_owned(),
             pos_m: shooter_pos,
+            pos_rem_um: [0, 0, 0],
             vel_mmps,
             aimed_lead_pos_m: lead_pos_m,
             remaining_flight_ms: tof_ms,
@@ -1032,11 +1047,15 @@ impl LocalSpaceBubble {
         events
     }
 
-    /// Advance the bubble on **1:1 wall time** by `dt_wall_ms` (`D-35-3`, `Q-CF-32`, `D-16-2`).
+    /// Advance the bubble on **1:1 wall time** by `dt_wall_ms` while stamping
+    /// the caller-provided W-clock `ic_now_s` (`D-35-3`, `Q-CF-32`, `D-16-2`, `35a` §5.3).
     ///
-    /// Substeps in chunks of at most [`MAX_SUBSTEP_MS`] ($250\text{ ms}$).
-    pub fn step_wall_ms(&mut self, dt_wall_ms: u32) -> BubbleStepReport {
+    /// Substeps in chunks of at most [`MAX_SUBSTEP_MS`] ($250\text{ ms}$) and enforces
+    /// a monotonic guard on `self.ic_timestamp_s` so a rewound caller timestamp can
+    /// never move the bubble's IC stamp backward.
+    pub fn step_wall_ms_at(&mut self, dt_wall_ms: u32, ic_now_s: i64) -> BubbleStepReport {
         if self.outage_frozen || dt_wall_ms == 0 {
+            self.ic_timestamp_s = self.ic_timestamp_s.max(ic_now_s);
             return BubbleStepReport {
                 wall_advanced_ms: 0,
                 substeps_executed: 0,
@@ -1045,6 +1064,7 @@ impl LocalSpaceBubble {
             };
         }
 
+        let prev_wall_s = self.wall_elapsed_ms / 1_000;
         let mut remaining_ms = dt_wall_ms;
         let mut substeps = 0u32;
         let mut events = Vec::new();
@@ -1054,11 +1074,28 @@ impl LocalSpaceBubble {
             remaining_ms -= step_ms;
             substeps += 1;
             self.wall_elapsed_ms = self.wall_elapsed_ms.saturating_add(u64::from(step_ms));
-            if self.wall_elapsed_ms.is_multiple_of(1_000) {
-                self.ic_timestamp_s = self.ic_timestamp_s.saturating_add(1);
-            }
             self.step_substep(step_ms, &mut events);
         }
+
+        let new_wall_s = self.wall_elapsed_ms / 1_000;
+        let elapsed_whole_s =
+            (new_wall_s.saturating_sub(prev_wall_s)).min(u64::from(u32::MAX)) as u32;
+        if elapsed_whole_s > 0 {
+            for ship in self.ships.values_mut() {
+                if let HullStatus::DisabledDerelict {
+                    ref mut life_support_remaining_s,
+                    ref mut salvage_contest_window_s,
+                    ..
+                } = ship.status
+                {
+                    *life_support_remaining_s =
+                        life_support_remaining_s.saturating_sub(elapsed_whole_s);
+                    *salvage_contest_window_s =
+                        salvage_contest_window_s.saturating_sub(elapsed_whole_s);
+                }
+            }
+        }
+        self.ic_timestamp_s = self.ic_timestamp_s.max(ic_now_s);
 
         BubbleStepReport {
             wall_advanced_ms: dt_wall_ms,
@@ -1098,11 +1135,13 @@ impl LocalSpaceBubble {
                 }
             }
 
-            // Integrate position: dx_m = (vel_mmps * step_ms) / 1_000_000
-            for axis in 0..3 {
-                let dpos = (ship.vel_mmps[axis] as i128 * i128::from(step_ms)) / 1_000_000;
-                ship.pos_m[axis] = ship.pos_m[axis].saturating_add(dpos as i64);
-            }
+            // Integrate position with sub-metre micrometre remainder (`35a` §5.2):
+            advance_pos_with_rem(
+                &mut ship.pos_m,
+                &mut ship.pos_rem_um,
+                ship.vel_mmps,
+                step_ms,
+            );
 
             // Weapon cooldowns and radiator cooling
             for t in &mut ship.torpedo_tubes {
@@ -1113,6 +1152,9 @@ impl LocalSpaceBubble {
             }
             for r in &mut ship.railguns {
                 r.cooldown_remaining_ms = r.cooldown_remaining_ms.saturating_sub(step_ms);
+            }
+            for p in &mut ship.pdcs {
+                p.cooldown_remaining_ms = p.cooldown_remaining_ms.saturating_sub(step_ms);
             }
 
             let base_cooling = if ship.crits.contains(&SubsystemCrit::RadiatorDamaged) {
@@ -1130,10 +1172,14 @@ impl LocalSpaceBubble {
             ship.active_decoy_ms = ship.active_decoy_ms.saturating_sub(step_ms);
         }
 
-        // 2. Step guided torpedoes (`D-35-8`): proportional navigation + defensive laser / PDC screen
+        // 2. Step guided torpedoes (`D-35-8`): proportional navigation + ballistic coast + defensive screen
         let old_torpedoes = std::mem::take(&mut self.torpedoes);
         let mut surviving_torpedoes = Vec::with_capacity(old_torpedoes.len());
         for mut torp in old_torpedoes {
+            torp.flight_elapsed_ms = torp.flight_elapsed_ms.saturating_add(step_ms);
+            if torp.max_flight_ms > 0 && torp.flight_elapsed_ms > torp.max_flight_ms {
+                continue;
+            }
             let Some(target) = self.ships.get(&torp.target_id) else {
                 continue;
             };
@@ -1146,34 +1192,56 @@ impl LocalSpaceBubble {
             let dz = (target_pos[2] - torp.pos_m[2]) as i128;
             let dist_m = isqrt_i128(dx * dx + dy * dy + dz * dz).max(1);
 
-            // Proportional guidance burn toward intercept point if delta-v remains
+            // Proportional navigation burn toward predicted intercept point while delta-v remains (`35a` §5.9)
             let step_dv_mmps = torp.accel_mps2 * step_i64;
             if torp.remaining_dv_mmps > 0 {
                 let burn_mmps = step_dv_mmps.min(torp.remaining_dv_mmps);
                 torp.remaining_dv_mmps -= burn_mmps;
 
-                // Steer toward relative closing vector
-                let ux = (dx * 1_000) / dist_m;
-                let uy = (dy * 1_000) / dist_m;
-                let uz = (dz * 1_000) / dist_m;
+                let rvx_mps = ((target_vel[0] - torp.vel_mmps[0]) / 1_000) as i128;
+                let rvy_mps = ((target_vel[1] - torp.vel_mmps[1]) / 1_000) as i128;
+                let rvz_mps = ((target_vel[2] - torp.vel_mmps[2]) / 1_000) as i128;
+                let closing_speed_mps =
+                    isqrt_i128(rvx_mps * rvx_mps + rvy_mps * rvy_mps + rvz_mps * rvz_mps)
+                        .max((torp.accel_mps2 as i128) * 2)
+                        .max(100);
+                let t_go_s = (dist_m / closing_speed_mps).clamp(0, 10);
+
+                let aim_x = dx + rvx_mps * t_go_s;
+                let aim_y = dy + rvy_mps * t_go_s;
+                let aim_z = dz + rvz_mps * t_go_s;
+                let aim_dist = isqrt_i128(aim_x * aim_x + aim_y * aim_y + aim_z * aim_z).max(1);
+
+                let ux = (aim_x * 1_000) / aim_dist;
+                let uy = (aim_y * 1_000) / aim_dist;
+                let uz = (aim_z * 1_000) / aim_dist;
                 torp.vel_mmps[0] =
                     torp.vel_mmps[0].saturating_add(((ux * i128::from(burn_mmps)) / 1_000) as i64);
                 torp.vel_mmps[1] =
                     torp.vel_mmps[1].saturating_add(((uy * i128::from(burn_mmps)) / 1_000) as i64);
                 torp.vel_mmps[2] =
                     torp.vel_mmps[2].saturating_add(((uz * i128::from(burn_mmps)) / 1_000) as i64);
-            } else {
+
+                if torp.remaining_dv_mmps == 0 && !torp.dv_exhausted_emitted {
+                    torp.dv_exhausted_emitted = true;
+                    events.push(SpaceCombatEvent::TorpedoExhaustedDeltaV {
+                        torpedo_id: torp.id,
+                    });
+                }
+            } else if !torp.dv_exhausted_emitted {
+                torp.dv_exhausted_emitted = true;
                 events.push(SpaceCombatEvent::TorpedoExhaustedDeltaV {
                     torpedo_id: torp.id,
                 });
-                continue;
             }
 
-            // Advance torpedo position
-            for axis in 0..3 {
-                let dpos = (torp.vel_mmps[axis] as i128 * i128::from(step_ms)) / 1_000_000;
-                torp.pos_m[axis] = torp.pos_m[axis].saturating_add(dpos as i64);
-            }
+            // Advance torpedo position (continues coasting ballistically even when remaining_dv_mmps == 0)
+            advance_pos_with_rem(
+                &mut torp.pos_m,
+                &mut torp.pos_rem_um,
+                torp.vel_mmps,
+                step_ms,
+            );
 
             // Recompute distance after step
             let ndx = (target_pos[0] - torp.pos_m[0]) as i128;
@@ -1243,8 +1311,10 @@ impl LocalSpaceBubble {
                     break;
                 }
 
-                // 2b. Active ECM / thermal-radar decoy spoofing (`+tac/decoy`, `SF.15`)
-                if def_ship.active_decoy_ms > 0 && def_dist_m <= 35_000 {
+                // 2b. Active ECM / thermal-radar decoy spoofing (`+tac/decoy`, `SF.15`, `35a` §5.8):
+                // Only spoofs torpedoes locked onto the ship that deployed the decoy.
+                if def_id == torp.target_id && def_ship.active_decoy_ms > 0 && def_dist_m <= 35_000
+                {
                     def_ship.active_decoy_ms = 0;
                     events.push(SpaceCombatEvent::TorpedoSpoofedByDecoy {
                         torpedo_id: torp.id,
@@ -1255,21 +1325,29 @@ impl LocalSpaceBubble {
                     break;
                 }
 
-                // 2c. Automatic PDC screen (`+tac/pdc auto`)
+                // 2c. Automatic PDC screen (`+tac/pdc auto`, `35a` §5.8):
+                // Rate-limited by `pdc.cooldown_remaining_ms` and accumulates deterministic
+                // `damage_per_burst` against `torp.integrity` (`100` at launch).
                 if def_ship.pdc_auto {
                     for pdc in &mut def_ship.pdcs {
                         if pdc.operational
+                            && pdc.cooldown_remaining_ms == 0
                             && pdc.ammo_remaining >= u32::from(pdc.burst_rounds)
                             && def_dist_m <= pdc.envelope_m
                         {
                             pdc.ammo_remaining -= u32::from(pdc.burst_rounds);
-                            events.push(SpaceCombatEvent::TorpedoInterceptedByPdc {
-                                torpedo_id: torp.id,
-                                defender_id: def_id.clone(),
-                                pdc_id: pdc.id.clone(),
-                            });
-                            intercepted = true;
-                            break;
+                            pdc.cooldown_remaining_ms = pdc.cooldown_ms;
+                            torp.integrity =
+                                torp.integrity.saturating_sub(pdc.damage_per_burst.max(1));
+                            if torp.integrity == 0 {
+                                events.push(SpaceCombatEvent::TorpedoInterceptedByPdc {
+                                    torpedo_id: torp.id,
+                                    defender_id: def_id.clone(),
+                                    pdc_id: pdc.id.clone(),
+                                });
+                                intercepted = true;
+                                break;
+                            }
                         }
                     }
                 }
@@ -1320,17 +1398,21 @@ impl LocalSpaceBubble {
         let mut surviving_slugs = Vec::with_capacity(self.railgun_slugs.len());
         for mut slug in self.railgun_slugs.drain(..) {
             let dt = step_ms.min(slug.remaining_flight_ms);
-            for axis in 0..3 {
-                let dpos = (slug.vel_mmps[axis] as i128 * i128::from(dt)) / 1_000_000;
-                slug.pos_m[axis] = slug.pos_m[axis].saturating_add(dpos as i64);
-            }
+            advance_pos_with_rem(&mut slug.pos_m, &mut slug.pos_rem_um, slug.vel_mmps, dt);
             slug.remaining_flight_ms -= dt;
 
             if slug.remaining_flight_ms == 0 {
                 if let Some(target_mut) = self.ships.get_mut(&slug.target_id) {
-                    let jx = (target_mut.pos_m[0] - slug.aimed_lead_pos_m[0]) as i128;
-                    let jy = (target_mut.pos_m[1] - slug.aimed_lead_pos_m[1]) as i128;
-                    let jz = (target_mut.pos_m[2] - slug.aimed_lead_pos_m[2]) as i128;
+                    let overstep_ms = i128::from(step_ms.saturating_sub(dt));
+                    let target_impact_x = i128::from(target_mut.pos_m[0])
+                        - (i128::from(target_mut.vel_mmps[0]) * overstep_ms) / 1_000_000;
+                    let target_impact_y = i128::from(target_mut.pos_m[1])
+                        - (i128::from(target_mut.vel_mmps[1]) * overstep_ms) / 1_000_000;
+                    let target_impact_z = i128::from(target_mut.pos_m[2])
+                        - (i128::from(target_mut.vel_mmps[2]) * overstep_ms) / 1_000_000;
+                    let jx = target_impact_x - i128::from(slug.aimed_lead_pos_m[0]);
+                    let jy = target_impact_y - i128::from(slug.aimed_lead_pos_m[1]);
+                    let jz = target_impact_z - i128::from(slug.aimed_lead_pos_m[2]);
                     let displacement_m = isqrt_i128(jx * jx + jy * jy + jz * jz) as i64;
 
                     if displacement_m > slug.hit_radius_m {
@@ -1393,6 +1475,9 @@ impl LocalSpaceBubble {
             for p in ship.pos_m {
                 mix(&p.to_le_bytes());
             }
+            for r in ship.pos_rem_um {
+                mix(&r.to_le_bytes());
+            }
             for v in ship.vel_mmps {
                 mix(&v.to_le_bytes());
             }
@@ -1404,12 +1489,22 @@ impl LocalSpaceBubble {
         }
         for torp in &self.torpedoes {
             mix(&torp.id.to_le_bytes());
+            mix(&torp.integrity.to_le_bytes());
             for p in torp.pos_m {
                 mix(&p.to_le_bytes());
+            }
+            for r in torp.pos_rem_um {
+                mix(&r.to_le_bytes());
             }
         }
         for slug in &self.railgun_slugs {
             mix(&slug.id.to_le_bytes());
+            for p in slug.pos_m {
+                mix(&p.to_le_bytes());
+            }
+            for r in slug.pos_rem_um {
+                mix(&r.to_le_bytes());
+            }
             mix(&slug.remaining_flight_ms.to_le_bytes());
         }
         h
@@ -1545,6 +1640,230 @@ impl LocalSpaceBubble {
             "emcon": obs.emcon.code_str(),
             "contacts": contacts,
         })
+    }
+
+    /// Capture a serializable mid-battle snapshot of this bubble (`D-35-1`, `35a` §8.2).
+    #[must_use]
+    pub fn snapshot(&self) -> BubbleSnapshot {
+        BubbleSnapshot {
+            bubble: self.clone(),
+            state_hash: self.state_hash(),
+        }
+    }
+
+    /// Restore a [`LocalSpaceBubble`] from a [`BubbleSnapshot`].
+    #[must_use]
+    pub fn from_snapshot(snapshot: BubbleSnapshot) -> Self {
+        snapshot.bubble
+    }
+
+    /// Apply a single [`BubbleInputCommand`] deterministically (`D-35-1`, `35a` §8.2).
+    pub fn apply_input(&mut self, cmd: &BubbleInputCommand) -> Vec<SpaceCombatEvent> {
+        match cmd {
+            BubbleInputCommand::CommandBurn {
+                ship_id,
+                thrust_mps2,
+                force_into_reserve,
+            } => match self.command_burn(ship_id, *thrust_mps2, *force_into_reserve) {
+                Ok(()) => Vec::new(),
+                Err(ev) => vec![ev],
+            },
+            BubbleInputCommand::SetAttitude {
+                ship_id,
+                attitude_deg,
+            } => {
+                if let Some(ship) = self.ships.get_mut(ship_id) {
+                    ship.attitude_deg = *attitude_deg;
+                }
+                Vec::new()
+            }
+            BubbleInputCommand::SetPdcAuto { ship_id, enabled } => {
+                let _ = self.set_pdc_auto(ship_id, *enabled);
+                Vec::new()
+            }
+            BubbleInputCommand::SetLaserMode {
+                ship_id,
+                laser_id,
+                mode,
+            } => {
+                let _ = self.set_laser_mode(ship_id, laser_id, *mode);
+                Vec::new()
+            }
+            BubbleInputCommand::SetEmcon { ship_id, posture } => {
+                let _ = self.set_emcon(ship_id, *posture);
+                Vec::new()
+            }
+            BubbleInputCommand::LaunchDecoy { ship_id } => {
+                let _ = self.launch_decoy(ship_id);
+                Vec::new()
+            }
+            BubbleInputCommand::BlowdownCoolant { ship_id } => {
+                self.blowdown_coolant(ship_id).into_iter().collect()
+            }
+            BubbleInputCommand::RepairCrit { ship_id, crit } => self
+                .repair_subsystem_crit(ship_id, *crit)
+                .into_iter()
+                .collect(),
+            BubbleInputCommand::FireTorpedoSalvo {
+                shooter_id,
+                target_id,
+                count,
+            } => self.fire_torpedo_salvo(shooter_id, target_id, *count),
+            BubbleInputCommand::FireOffensiveLasers {
+                shooter_id,
+                target_id,
+            } => self.fire_offensive_lasers(shooter_id, target_id),
+            BubbleInputCommand::FireRailgun {
+                shooter_id,
+                target_id,
+            } => self.fire_railgun(shooter_id, target_id),
+            BubbleInputCommand::StepWall {
+                dt_wall_ms,
+                ic_now_s,
+            } => self.step_wall_ms_at(*dt_wall_ms, *ic_now_s).events,
+        }
+    }
+}
+
+/// Serializable snapshot of a [`LocalSpaceBubble`] (`D-35-1`, `35a` §8.2).
+#[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize)]
+pub struct BubbleSnapshot {
+    pub bubble: LocalSpaceBubble,
+    pub state_hash: u64,
+}
+
+/// Deterministic input command recorded on a [`BubbleInputTape`] (`D-35-1`, `35a` §8.2).
+#[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize)]
+pub enum BubbleInputCommand {
+    CommandBurn {
+        ship_id: String,
+        thrust_mps2: [i64; 3],
+        force_into_reserve: bool,
+    },
+    SetAttitude {
+        ship_id: String,
+        attitude_deg: (i32, i32, i32),
+    },
+    SetPdcAuto {
+        ship_id: String,
+        enabled: bool,
+    },
+    SetLaserMode {
+        ship_id: String,
+        laser_id: String,
+        mode: LaserMode,
+    },
+    SetEmcon {
+        ship_id: String,
+        posture: EmconPosture,
+    },
+    LaunchDecoy {
+        ship_id: String,
+    },
+    BlowdownCoolant {
+        ship_id: String,
+    },
+    RepairCrit {
+        ship_id: String,
+        crit: SubsystemCrit,
+    },
+    FireTorpedoSalvo {
+        shooter_id: String,
+        target_id: String,
+        count: u8,
+    },
+    FireOffensiveLasers {
+        shooter_id: String,
+        target_id: String,
+    },
+    FireRailgun {
+        shooter_id: String,
+        target_id: String,
+    },
+    StepWall {
+        dt_wall_ms: u32,
+        ic_now_s: i64,
+    },
+}
+
+/// Timestamped entry on a [`BubbleInputTape`].
+#[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize)]
+pub struct BubbleInputEntry {
+    pub wall_elapsed_ms: u64,
+    pub command: BubbleInputCommand,
+}
+
+/// Deterministic input tape for a [`LocalSpaceBubble`] (`D-35-1`, `35a` §8.2).
+///
+/// Replaying a [`BubbleInputTape`] from its `initial_snapshot` (or from a
+/// mid-battle [`BubbleSnapshot`] plus the remaining tail of entries) reproduces
+/// the exact [`LocalSpaceBubble::state_hash`] and [`SpaceCombatEvent`] stream.
+#[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize)]
+pub struct BubbleInputTape {
+    pub initial_snapshot: BubbleSnapshot,
+    pub entries: Vec<BubbleInputEntry>,
+}
+
+impl BubbleInputTape {
+    /// Start recording a new input tape from `bubble`'s current state.
+    #[must_use]
+    pub fn new(bubble: &LocalSpaceBubble) -> Self {
+        Self {
+            initial_snapshot: bubble.snapshot(),
+            entries: Vec::new(),
+        }
+    }
+
+    /// Record `command` on the tape and apply it to `bubble`.
+    pub fn record_and_apply(
+        &mut self,
+        bubble: &mut LocalSpaceBubble,
+        command: BubbleInputCommand,
+    ) -> Vec<SpaceCombatEvent> {
+        self.entries.push(BubbleInputEntry {
+            wall_elapsed_ms: bubble.wall_elapsed_ms,
+            command: command.clone(),
+        });
+        bubble.apply_input(&command)
+    }
+
+    /// Replay the entire tape from `initial_snapshot`, returning the resulting
+    /// [`LocalSpaceBubble`] and all emitted [`SpaceCombatEvent`]s.
+    #[must_use]
+    pub fn replay(&self) -> (LocalSpaceBubble, Vec<SpaceCombatEvent>) {
+        self.replay_from_snapshot(self.initial_snapshot.clone(), 0)
+    }
+
+    /// Replay entries starting at `start_entry_idx` on top of `snapshot`.
+    #[must_use]
+    pub fn replay_from_snapshot(
+        &self,
+        snapshot: BubbleSnapshot,
+        start_entry_idx: usize,
+    ) -> (LocalSpaceBubble, Vec<SpaceCombatEvent>) {
+        let mut bubble = LocalSpaceBubble::from_snapshot(snapshot);
+        let mut events = Vec::new();
+        for entry in self.entries.iter().skip(start_entry_idx) {
+            events.extend(bubble.apply_input(&entry.command));
+        }
+        (bubble, events)
+    }
+}
+
+fn advance_pos_with_rem(
+    pos_m: &mut [i64; 3],
+    pos_rem_um: &mut [i64; 3],
+    vel_mmps: [i64; 3],
+    dt_ms: u32,
+) {
+    let dt = i128::from(dt_ms);
+    for axis in 0..3 {
+        // 1 mm/s * 1 ms = 1 micrometre (1e-6 m).
+        let total_um = i128::from(pos_rem_um[axis]) + i128::from(vel_mmps[axis]) * dt;
+        let dm = (total_um / 1_000_000) as i64;
+        let rem = (total_um % 1_000_000) as i64;
+        pos_m[axis] = pos_m[axis].saturating_add(dm);
+        pos_rem_um[axis] = rem;
     }
 }
 
