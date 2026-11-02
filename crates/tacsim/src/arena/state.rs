@@ -1796,6 +1796,19 @@ pub struct WeaponSummary {
     pub count_per_load: u32,
 }
 
+/// **Whether the part `id` on `unit` can work** (doc 36 cut GC.2, Q-36-38): its
+/// record's condition word reads intact or damaged. A weapon the unit does not
+/// hold as a part (a hand-made rig's) works.
+fn part_works(unit: &mush_tactics::TacticalUnit, id: &str) -> bool {
+    mush_tactics::ComponentId::new(id)
+        .ok()
+        .and_then(|id| unit.component(&id).map(|part| part.condition.clone()))
+        .is_none_or(|condition| {
+            mush_tactics::field_ops::ComponentCondition::classify_condition_id(&condition)
+                .is_operational()
+        })
+}
+
 /// **Who is flying a unit** (16b cut N.1; doc 16 §6, §3.8 "Disconnects"; doc 07
 /// §1.1's fallback controller).
 ///
@@ -4745,10 +4758,15 @@ impl Arena {
                 )
                 .map_err(admission_error)?;
             profiles.insert(unit.id, runtime);
+            // Doc 36 cut GC.2 (Q-36-38): and a gun whose part the record calls
+            // jammed, destroyed or missing does not come into the match either —
+            // a jam a field left is still a jam in the next one, until the bay
+            // clears it.
             let weapons: Vec<WeaponSummary> = unit
                 .weapons
                 .into_iter()
                 .filter(|weapon| entry.carries(&weapon.mount_section))
+                .filter(|weapon| part_works(&unit.unit, &weapon.id))
                 .collect();
             let weapons_left = weapons.len();
             // **16b cut Q.2**: the first value of the band cache, off the record
@@ -5550,6 +5568,15 @@ impl Arena {
     ///
     /// **17b cut M4.6a**: here, out of the reflex controller's module — it
     /// reads the contacts and the units, no reflex state.
+    ///
+    /// **Doc 36 cut GC.2** (Q-36-6, the tempo half): a target that was never
+    /// armed and is not firing keeps nobody engaged — a hull that came into the
+    /// field with no gun ([`UnitState::armed_at_checkout`]) and has fired no
+    /// shot. Its presence alone lets the quiet interval run, so an unarmed barge
+    /// held Hostile no longer holds a field open. What the hull carries is the
+    /// class it presents (the presence picture names it), so the tempo reads no
+    /// truth a pilot could not see; a hull that was armed and has lost or spent
+    /// its guns still counts, as it always did.
     #[must_use]
     pub fn hostile_in_weapons_range(&self) -> bool {
         let cell_cm = self.definition.terrain.cell_cm();
@@ -5558,7 +5585,9 @@ impl Arena {
             reach != 0
                 && self.contacts.of(viewer.id).any(|(_, held)| {
                     self.relations.hostile(viewer.team, held.class)
-                        && self.unit(held.target).is_some()
+                        && self
+                            .unit(held.target)
+                            .is_some_and(|target| target.armed_at_checkout() || target.shots_fired > 0)
                         && !self.contact_reads_dead(held)
                         // 16b cut U.1 (16c `T-24`): the squared test, no root.
                         && held.seen_at.within_cm(&viewer.pose, reach)

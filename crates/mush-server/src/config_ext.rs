@@ -504,6 +504,7 @@ pub fn tacsim_config(cfg: &TacsimCfg) -> Result<tacsim::TacsimConfig, String> {
         // by `validate` below.
         field: tacsim::config::FieldConfig {
             disengage_s: cfg.field.disengage_s,
+            idle_demote_s: cfg.field.idle_demote_s,
             max_units: cfg.field.max_units,
             extract_s: cfg.field.extract_s,
             rescue_bound_s: cfg.field.rescue_bound_s,

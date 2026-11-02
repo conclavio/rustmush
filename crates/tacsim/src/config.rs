@@ -1953,6 +1953,10 @@ pub struct TacsimConfig {
 /// seconds, so a field is never demoted between two volleys, and an hour.
 pub const FIELD_DISENGAGE_S: std::ops::RangeInclusive<u32> = 10..=3_600;
 
+/// **The shortest and longest idle bound a server may set** (doc 36 cut GC.2, Q-36-5): the
+/// demotion interval's own range.
+pub const FIELD_IDLE_DEMOTE_S: std::ops::RangeInclusive<u32> = 10..=3_600;
+
 /// **The shortest and longest extraction delay** (doc 32 cut CF.5): an IC minute, an IC week.
 pub const FIELD_EXTRACT_S: std::ops::RangeInclusive<u32> = 60..=604_800;
 
@@ -1966,6 +1970,10 @@ pub struct FieldConfig {
     /// Seconds of arena time a field runs with no hostile pair firing, within weapons range or
     /// with a round in flight before it demotes (120).
     pub disengage_s: u32,
+    /// **Doc 36 cut GC.2** (Q-36-5): seconds of arena time a field runs with no shot fired before
+    /// it demotes **whatever its contacts**, so a declared but idle raider cannot hold bays shut
+    /// (600, provisional; a field runs at the wall's pace, so ten wall-clock minutes).
+    pub idle_demote_s: u32,
     /// The field cap (24): the most units one field admits, and so the most flights one site's
     /// surface takes (Q-CF-21). Never above the record's own bound
     /// ([`crate::surface::site_record::FIELD_MAX_UNITS`]).
@@ -1983,6 +1991,7 @@ impl Default for FieldConfig {
     fn default() -> Self {
         Self {
             disengage_s: 120,
+            idle_demote_s: 600,
             max_units: crate::surface::site_record::FIELD_MAX_UNITS,
             extract_s: 21_600,
             rescue_bound_s: 7_200,
@@ -2004,6 +2013,14 @@ impl FieldConfig {
                 FIELD_DISENGAGE_S.start(),
                 FIELD_DISENGAGE_S.end(),
                 self.disengage_s
+            ));
+        }
+        if !FIELD_IDLE_DEMOTE_S.contains(&self.idle_demote_s) {
+            return Err(format!(
+                "[tacsim.field].idle_demote_s must be {} to {} (it is {})",
+                FIELD_IDLE_DEMOTE_S.start(),
+                FIELD_IDLE_DEMOTE_S.end(),
+                self.idle_demote_s
             ));
         }
         let cap = crate::surface::site_record::FIELD_MAX_UNITS;
@@ -2034,6 +2051,12 @@ impl FieldConfig {
     #[must_use]
     pub const fn disengage_ms(&self) -> u32 {
         self.disengage_s.saturating_mul(1_000)
+    }
+
+    /// The idle bound in arena milliseconds (doc 36 cut GC.2).
+    #[must_use]
+    pub const fn idle_demote_ms(&self) -> u32 {
+        self.idle_demote_s.saturating_mul(1_000)
     }
 }
 

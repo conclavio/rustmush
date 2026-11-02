@@ -4880,6 +4880,7 @@ mod tests {
                 track("left_track", Side::Left),
                 track("right_track", Side::Right),
             ],
+            ..Default::default()
         }
     }
 

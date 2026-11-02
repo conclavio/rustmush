@@ -394,6 +394,7 @@ fn admit(ctx: &mut Ctx<'_>, site: &CanonicalId, record: &SiteRecord) -> Result<(
         custody,
         crate::arena_task::FieldTerms {
             disengage_ms: cfg.disengage_ms(),
+            idle_demote_ms: cfg.idle_demote_ms(),
         },
     );
     if let Err(error) = opened {

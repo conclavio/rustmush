@@ -204,8 +204,10 @@ fn resume(ctx: &mut Ctx<'_>, site: &CanonicalId, held: &Held) -> Result<(), Stri
             book.fire.insert(site.clone(), fire);
         }
     }
+    let config = super::config(ctx.w);
     let terms = crate::arena_task::FieldTerms {
-        disengage_ms: super::config(ctx.w).disengage_ms(),
+        disengage_ms: config.disengage_ms(),
+        idle_demote_ms: config.idle_demote_ms(),
     };
     if let Err(error) = crate::arena_bridge::resume_field_task(ctx, task, arena, terms) {
         if let Some(book) = ctx.w.module_state_mut::<FieldBook>() {

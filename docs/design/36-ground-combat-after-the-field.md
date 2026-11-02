@@ -1280,3 +1280,120 @@ plumbing re-post at 16 fires, and the mill batch after an apply that also adds t
 rows at 24 fires. The cost-lane census now credits a fire's `economy:meta` op to the economy
 sweep exactly when the sweep's stamp moved in that fire. Any other write the restock adds
 still fails the check. No version moved beyond goods v4, lane v18 and relay v9.
+
+## 9. GC.2 as built (the kernel batch)
+
+Built 2026-11-01 on `main` at `9877284f`, beside GC.0 and GC.7, as the programme's one kernel
+rebless (§7's first rule, Q-36-56). Four changes, one cut. What the cut had to decide where the
+rulings left it open, for the owner to object to:
+
+- **The tempo (Q-36-6, the tempo half).** `Arena::hostile_in_weapons_range`
+  (`arena/state.rs`) counts a held Hostile contact only when its hull **came into the field
+  armed** (`UnitState::armed_at_checkout`, a weapon row at check-out) **or has fired a shot**.
+  "Never armed" is read at check-out, not now: a hull that was armed and has lost or spent its
+  guns still keeps a field engaged, as it did. The test reads truth the presence picture already
+  names (the hull's class), so the tempo leaks nothing a pilot could not see.
+- **The idle bound (Q-36-5).** `[tacsim.field].idle_demote_s`, 600 by default, banded 10 to
+  3,600 like `disengage_s` (`config.rs`, `mush-config`, `config_ext.rs`). The arena clock keeps
+  the last shot's millisecond (`Clock::last_shot_ms`, `arena/clock.rs`), carried in a snapshot's
+  `ClockState` (serde default, absent before the first shot), so a resumed field's bound counts
+  from the shot it really saw. `Task::disengaged` (`arena_task.rs`) demotes on either interval,
+  under the same "no round in flight" rule; `FieldTerms` carries both (`field/admit.rs`,
+  `field/boot.rs`). Arena time is the measure, which a field runs at the wall's pace.
+- **Wreck cover (Q-36-7, G-8).** A new module, `arena/wreck_cover.rs`. A wreck's cell reads as
+  `TerrainClass::Wall` — the class CF.4 lays a site record's objects as — in both traces while
+  the wreck stands in it. The fire trace (`Arena::trace_eye_to`, `arena/damage.rs`: the shot, the
+  impact's re-trace and the cockpit's cover advice) walks the terrain through an overlay grid;
+  the sensor trace (`Arena::sight`, `arena/perception.rs`) keeps the terrain's horizon index and
+  then asks whether a wreck stands on the line's interior. Neither end of a line is ever its own
+  cover, so a shot at a wreck reads the ground under it. A field with no wreck pays nothing. The
+  trace stayed in `arena/`, not `mush-atlas`: the atlas has no notion of a unit.
+- **Component outcomes (Q-36-38, combat's half).** A round that reaches a section's internals
+  and leaves the section standing takes one more draw, `component:<shot_seq>` (the seventh draw
+  label, pinned in `arena/rng.rs` and `mush-contract-tests`' `arena_library`). Below the unit's
+  `jam_permille` it jams a part of the section, below `jam_permille + damage_permille` it damages
+  one, else nothing; the same value, divided by a thousand, picks the part in component-id order
+  among those the outcome can change (intact or damaged for a jam, intact for a damage). The op
+  rides the hit's one plan, and the draw is the hit line's third. The chances are content:
+  `UnitSpec::component_hits` (`definitions/unit.rs`), absent in every shipped unit, so no
+  `DefinitionRef` moves, and `COMPONENT_HITS` — **50 and 100 per mille, provisional** — when a
+  unit names none. They reach the kernel on `UnitProfile::component_hits`
+  (`arena/resolution.rs`, `match_/arena_def.rs`); a hand-built profile has none, so no fixture
+  jams. A round that stops in the armour touches no part.
+- **What a jam does.** A jammed gun leaves the weapon table as a shot-off turret's guns do (its
+  rounds kept for the check-in, its slots cleared; `Arena::drop_weapons`, factored out of
+  `remove_weapons`). A jammed or damaged part of any other kind changes nothing in the match yet.
+  At check-out a gun whose part the record reads jammed, destroyed or missing does not come into
+  the match (`part_works`, `arena/state.rs`), so a jam a field left stays a jam until the bay
+  clears it. A damaged gun still fires.
+- **The check-in keeps it.** Nothing new was needed: the IC condition plan
+  (`field_ops::apply_ic_combat_return`) already carried an explicit component condition, and
+  `effective_component_condition` keeps a stored `jammed`. A hull whose only gun jammed reads
+  `Unarmed`, which the demotion lists as a casualty on the site record.
+- **`Missing` (Q-36-38).** `ComponentCondition::Missing` (`mush-tactics`'
+  `field_ops/condition.rs`), after `Destroyed` in the order; `"missing"`, `"stripped"` and
+  `"removed"` classify to it. It neither works nor salvages, it survives whatever its section
+  suffers, and the assessment lists it apart (`FieldUnitAssessment::missing_components`). The
+  workshop's own `"stripped"` word is unchanged; field engineering refuses a missing part as it
+  refuses a destroyed one.
+
+**Not done, and why.** The unit-mind API's `line_to` (`stock_mind::line_to`, the `line_to(v, id)`
+kernel) still reads the terrain alone: a mind's view holds no wreck positions, and giving it
+them is a mind API change with its own seal digests, which this cut's rebless did not take. A
+mind may therefore believe it has a line through a wreck, fire, and find the wreck at the impact.
+That is a follow-up for whoever next bumps the mind API.
+
+**The gates.**
+- `gc2_an_unarmed_barge_does_not_hold_a_field_engaged` and `gc2_an_idle_declared_field_demotes`
+  (`tests/shard_1/field_gc2.rs`): through the production command paths on Ahuna Flank, a pilot's
+  `+field/mark E=hostile` on a prospector (never armed) and on a second armed hull; no shot is
+  fired, and each field demotes on its own interval with the Hostile still in reach.
+- `gc2_a_wreck_hides_what_stands_behind_it` (`arena/wreck_cover.rs`): the sensor and fire lines
+  blocked at the wreck's cell from both ends, open with the same hull alive, open to the wreck
+  itself. The CF.7 story's G-8 assert flips with it (`tests/shard_1/field_story.rs` step 13: the
+  escort's sensors never hold the raider behind the wreck).
+- `gc2_a_survivable_hit_can_jam_a_weapon_and_the_check_in_keeps_it` (`arena/damage.rs`): a
+  turret hit that leaves the turret at 100 jams the cannon; the record reads `jammed`, the gun is
+  off the table with its rounds kept, the hit line carries three draws, the IC check-in keeps the
+  jam (`Jammed`, degraded, not an operational weapon), and the next arena the hull enters brings
+  no gun.
+- Beside them: `gc2_an_unarmed_target_keeps_nobody_engaged` and
+  `gc2_only_a_round_through_to_the_internals_can_touch_a_part` (the kernel halves), and
+  `gc2_a_stripped_part_is_missing_and_not_destroyed` (`mush-tactics`). The CF.7 story's step 7
+  lost its Friendly stand-down: the field demotes with only the unarmed barge Hostile.
+
+**The rebless, taken once.**
+What moved, each re-pinned with its reason beside it:
+- **The stock pool's record** (`tests/shard_2/twin.rs`, `M4_5_POOLED_RECORD`, 21 lines): its
+  hulls are content-backed, so the shipped chances jam and damage parts and wrecks give cover.
+  Match ends move by up to 43 s, thinks 10,281 → 10,603, shots and wrecks a few per cent; every
+  winner, the 14–1 split and `first_divergence_ms` stand, and nothing is `unlawful`. Two
+  divergence counters leave nought: `line` 0 → 28 and `no_line` 0 → 31. That is the follow-up
+  above, measured: the kernel's fire line finds a wreck that the mind's `line_to` cannot see.
+- **Gate A's coverage pairs** (`COVERAGE`): `pooled` 10,008 / 273 → 10,295 / 308, `mixed`
+  13,220 / 502 → 13,230 / 502, `lance` 6,001 / 164 → 7,157 / 130, and
+  `POOLED_MATCHES_WITH_STAND_IN` 11 → 12. T1 ≡ T2 still holds on every lane, with no divergence.
+- **The draw-label set**: seven kinds, `component` last (`arena/rng.rs`'s own pin and
+  `mush-contract-tests`' `the_draw_label_set_is_pinned`). Adding it shifts no existing draw
+  (`adding_a_label_shifts_no_existing_draw` is unchanged and green).
+
+What did **not** move, and was checked: the four cross-platform practice rows
+(`tests/shard_2/minds_rhai.rs`), the shipped duel's hash and its 34 lines
+(`tests/shard_3/motor.rs`), the (j) field's substep hashes and its 50 lines
+(`tests/shard_2/reflex.rs`), the production encoding pins (`tests/shard_2/minds.rs`),
+`STANDARD_SHA256` and the default seal digests. Those fights are hand-built fixtures with no
+chances, or end before a wreck stands in a line. No snapshot format bump: the clock's new field
+and the profile's new row decode from older snapshots by serde default.
+
+Five tests changed their fixtures, not their claims. Four tempo tests (`reflex.rs`'s `t1_in_band…`,
+`t1_t32…` and `e2_b45…`, and `weapons.rs`' `the_engaged_tempo_is_entered_on_a_shot_and_held`)
+asserted `Engaged` against a target with no gun. That target now counts only once it has fired, so
+each sets it to have fired. `extensions.rs`' `x4_a_shut_down_or_wrecked_pod_jams_nothing` moves its
+wrecked pod one cell off the watch line, because a wreck there now hides the mark for a reason
+that test is not about.
+
+**Verified** on Windows: tacsim's lib (2,087), all six integration shards (shard_1's 401 with the
+CF.7 story, shards 2 and 3's 800, shards 4 to 6's 786), `mush-tactics` and `mush-contract-tests`
+(census, panic budget, restriction lints) green; clippy and rustdoc `-D warnings` clean on the
+touched crates. As a probe, the two field gates fail with the tempo and idle rules switched off.
+The broad suites ran once more on Linux CI on the draft PR.

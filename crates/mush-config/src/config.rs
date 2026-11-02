@@ -103,6 +103,7 @@
 //! | `[tacsim.procurement].budget_minor_per_ic_month` | `200000` | **Doc 17h cut M8f** (Q-M8-6, provisional): a House procurement policy's monthly budget, minor credits per IC calendar month, when its deployment row names none; `1` to `100000000` |
 //! | `[tacsim.procurement].cap_permille` | `400` | **Doc 17h cut M8f** (D-UM-54's diversity cap, provisional): the most of an organisation's titled hulls one charter's licences may cover, per mille, when its row names none; `1` to `1000` |
 //! | `[tacsim.field].disengage_s` | `120` | **Doc 32 cut CF.2** (Q-CF-20, provisional): seconds of arena time an IC field runs with no hostile pair firing, in weapons range or with a round in flight before it demotes; `10` to `3600` |
+//! | `[tacsim.field].idle_demote_s` | `600` | **Doc 36 cut GC.2** (Q-36-5, provisional): seconds of arena time an IC field runs with no shot fired before it demotes, whatever its contacts — so a declared but idle raider cannot hold bays shut; `10` to `3600` |
 //! | `[tacsim.field].max_units` | `24` | **Doc 32 cut CF.2** (Q-CF-21, Q-CF-45, provisional): the field cap, enforced at the surface as the per-site flight cap; `2` to `24` |
 //! | `[tacsim.field].extract_s` | `21600` | **Doc 32 cut CF.5** (Q-CF-39, provisional): IC seconds from a stranded character's `+sortie/extract` to their arrival at the safe port; `60` to `604800` |
 //! | `[tacsim.field].rescue_bound_s` | `7200` | **Doc 32 cut CF.5** (Q-CF-39, provisional): the published bound — IC seconds past the due instant an extraction waits while a Friend's recovery flight is on the site; `0` to `86400` |
@@ -867,6 +868,9 @@ pub struct TacsimCfg {
 pub struct TacsimFieldCfg {
     /// Seconds of arena time with no hostile pair engaged before a field demotes (120).
     pub disengage_s: u32,
+    /// Doc 36 cut GC.2 (Q-36-5): seconds of arena time with no shot fired before a field
+    /// demotes whatever its contacts (600).
+    pub idle_demote_s: u32,
     /// The most units one field holds, and so the most flights one site takes (24).
     pub max_units: u32,
     /// Doc 32 cut CF.5 (Q-CF-39): IC seconds from a stranded character's extraction request to
@@ -881,6 +885,7 @@ impl Default for TacsimFieldCfg {
     fn default() -> Self {
         Self {
             disengage_s: 120,
+            idle_demote_s: 600,
             max_units: 24,
             extract_s: 21_600,
             rescue_bound_s: 7_200,

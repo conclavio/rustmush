@@ -282,6 +282,11 @@ pub struct FieldTerms {
     /// trigger has been seen for this long and no round is in flight, the task
     /// stops its own arena with [`StopReason::Disengaged`].
     pub disengage_ms: u32,
+    /// **Doc 36 cut GC.2** (Q-36-5): `[tacsim.field].idle_demote_s`, in arena milliseconds:
+    /// once no shot has been fired for this long and no round is in flight, the task stops its
+    /// own arena with [`StopReason::Disengaged`] **whatever its contacts** — so a declared but
+    /// idle raider cannot hold a site's bays shut by standing Hostile in range.
+    pub idle_demote_ms: u32,
 }
 
 /// **Arena to world** (doc 16 §3.1's last three messages, plus the end).
@@ -1815,6 +1820,10 @@ impl Task {
     /// in flight, and no `Engaged` trigger for `disengage_ms` of arena time —
     /// counted from the later of the last trigger and the task's first moment.
     /// Never for a match.
+    ///
+    /// **Doc 36 cut GC.2** (Q-36-5): or no **shot** for `idle_demote_ms`, counted
+    /// the same way, whatever else keeps the tempo engaged — the bound on a
+    /// declared field nobody fights.
     fn disengaged(&self) -> bool {
         let Some(terms) = self.terms else {
             return false;
@@ -1822,12 +1831,12 @@ impl Task {
         if self.arena.ended.is_some() || self.arena.stopping() || self.arena.round_in_flight() {
             return false;
         }
-        let since = self
-            .arena
-            .clock
-            .last_engaged_signal_ms()
-            .map_or(self.quiet_from_ms, |last| last.max(self.quiet_from_ms));
-        self.arena.now_ms.saturating_sub(since) >= i64::from(terms.disengage_ms)
+        let quiet_for = |last: Option<i64>| {
+            let since = last.map_or(self.quiet_from_ms, |last| last.max(self.quiet_from_ms));
+            self.arena.now_ms.saturating_sub(since)
+        };
+        quiet_for(self.arena.clock.last_engaged_signal_ms()) >= i64::from(terms.disengage_ms)
+            || quiet_for(self.arena.clock.last_shot_ms()) >= i64::from(terms.idle_demote_ms)
     }
 
     /// **One pulse**: the unwind boundary, the watchdog, and the publication of
