@@ -17,7 +17,7 @@
 //!
 //! The condition reads the control sections (`crate::field_ops`'s anatomy: `head`, `cockpit`,
 //! `bridge`): one destroyed incapacitates, one damaged injures, else fit. A pilot at a remote
-//! console is fit. No treatment, ejection or capture (Q-CF-38).
+//! console is fit. No ejection or capture (Q-CF-38).
 //!
 //! **Extraction** (Q-CF-39, P-5): a stranded or incapacitated character asks for it
 //! (`+sortie/extract`); there is no timeout that extracts an unwilling pilot guarding the wreck.
@@ -29,6 +29,17 @@
 //! recovery flight — an open DT flight on the site of an activation on `recovery` duty under the
 //! same organizer as the stranded character's own party — stands on the site, at most
 //! `[tacsim.field].rescue_bound_s` past the due instant (the published bound).
+//!
+//! **Treatment** (doc 36 cut GC.13; Q-36-45): an injured or incapacitated character standing in
+//! a room of an IC port (`crate::ic_return::port_of_room`) is under treatment there, and is fit
+//! again after `[tacsim.field].treat_injured_s` or `treat_incapacitated_s` of IC time — scaled
+//! by `treat_medical_permille` at a port with a medical room (`crate::port::medical`). No skill
+//! check and no cost. The host's tick drives it as it drives extraction: the record carries the
+//! due instant ([`Treatment`]), and a frozen world runs no tick, so a freeze pauses it. **The
+//! rule for leaving:** a character the tick finds outside every port room — aboard a hull, out
+//! on a site, in Limbo or the OOC area — loses the treatment and keeps their condition; the clock
+//! starts over, in full, at the next port they stand in. A treatment begun at one port and found
+//! at another starts over too. `+sortie/condition` is the crew status line, with the time left.
 
 use std::collections::BTreeMap;
 
@@ -49,6 +60,15 @@ pub const CONTROL_SECTIONS: [&str; 3] = ["head", "cockpit", "bridge"];
 
 /// `+sortie/extract` with nothing to extract from.
 pub const NOT_STRANDED: &str = "You are not stranded: extraction is for a character left in a hull that cannot bring them home.";
+/// Treatment begun (doc 36 cut GC.13): `{port}`, `{room}`, `{h}`.
+pub const TREATMENT_BEGUN: &str = "You are under treatment at {port}{room}: fit again in about {h} IC h, if you stay at the port.";
+/// Treatment done (doc 36 cut GC.13).
+pub const FIT_AGAIN: &str = "Your treatment is done: you are fit again.";
+/// Treatment broken off by leaving the port (doc 36 cut GC.13).
+pub const TREATMENT_LEFT: &str =
+    "You have left the port before your treatment was done; it starts over at the next port.";
+/// [`TREATMENT_BEGUN`]'s `{room}` at a port with a medical room.
+pub const MEDICAL_ROOM: &str = "'s medical room";
 /// An extraction already on its way: `{port}`, `{h}`.
 pub const ALREADY_COMING: &str =
     "Your extraction to {port} is already on its way, about {h} IC h out.";
@@ -120,6 +140,20 @@ pub struct Extraction {
     pub due_ic: i64,
 }
 
+/// **A treatment under way** (doc 36 cut GC.13; Q-36-45).
+#[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(deny_unknown_fields)]
+pub struct Treatment {
+    /// The port's venue id.
+    pub port: SmolStr,
+    /// The IC instant it began.
+    pub started_ic: i64,
+    /// The IC instant the character is fit again.
+    pub due_ic: i64,
+    /// Whether the port had a medical room when it began.
+    pub medical: bool,
+}
+
 /// **One character's crew record** (`tacsim:crew:<character>`).
 #[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize)]
 #[serde(deny_unknown_fields)]
@@ -140,6 +174,9 @@ pub struct CrewRecord {
     /// An extraction asked for and not yet landed.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub extraction: Option<Extraction>,
+    /// A treatment under way at a port (doc 36 cut GC.13).
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub treatment: Option<Treatment>,
 }
 
 impl CrewRecord {
@@ -386,6 +423,7 @@ pub(crate) fn check_in(ctx: &mut Ctx<'_>, site: &CanonicalId, unit: ObjId, pilot
             at_ic: now,
             organizer,
             extraction: if stranded { extraction } else { None },
+            treatment: None,
         },
     );
     if stranded {
@@ -450,6 +488,7 @@ pub(crate) fn on_frames(ctx: &mut Ctx<'_>, frames: &[(ObjId, crate::arena::step:
                 at_ic: now,
                 organizer,
                 extraction: None,
+                treatment: None,
             },
         );
         ctx.out.sys_to_actor(
@@ -597,6 +636,162 @@ pub(crate) fn tick(ctx: &mut Ctx<'_>) {
         }
         land(ctx, record, &coming, site.as_ref(), unit);
     }
+    treat(ctx, now);
+}
+
+/// **IC seconds of treatment** for `condition` (doc 36 cut GC.13): the configured time, scaled
+/// at a port with a medical room; nothing for a fit character.
+#[must_use]
+pub fn treatment_s(
+    cfg: &crate::config::FieldConfig,
+    condition: CrewCondition,
+    medical: bool,
+) -> i64 {
+    let full = match condition {
+        CrewCondition::Fit => return 0,
+        CrewCondition::Injured => i64::from(cfg.treat_injured_s),
+        CrewCondition::Incapacitated => i64::from(cfg.treat_incapacitated_s),
+    };
+    if medical {
+        full.saturating_mul(i64::from(cfg.treat_medical_permille)) / 1_000
+    } else {
+        full
+    }
+}
+
+/// The IC port `who` stands in, if any.
+fn port_here(w: &World, who: ObjId) -> Option<&'static crate::ic_return::IcPort> {
+    let room = w.get(who)?.location?;
+    crate::ic_return::port_of_room(w, room)
+}
+
+/// **The host's tick, for treatment** (this module's head): every injured or incapacitated
+/// character at a port is under treatment there, fit again once it is due; one who left loses it.
+fn treat(ctx: &mut Ctx<'_>, now: i64) {
+    let cfg = super::config(ctx.w);
+    let hurt: Vec<CrewRecord> = ctx
+        .w
+        .module_state::<CrewBook>()
+        .map(|book| {
+            book.0
+                .values()
+                .filter(|record| record.condition != CrewCondition::Fit)
+                .cloned()
+                .collect()
+        })
+        .unwrap_or_default();
+    for record in hurt {
+        let who = record.character;
+        match (port_here(ctx.w, who), &record.treatment) {
+            (None, None) => {}
+            (None, Some(_)) => {
+                put(
+                    ctx,
+                    CrewRecord {
+                        treatment: None,
+                        ..record
+                    },
+                );
+                ctx.out
+                    .sys_to_actor(who, "tacsim.field", TREATMENT_LEFT.to_owned());
+            }
+            (Some(port), Some(under)) if under.port.as_str() == port.id => {
+                if now < under.due_ic {
+                    continue;
+                }
+                put(
+                    ctx,
+                    CrewRecord {
+                        condition: CrewCondition::Fit,
+                        treatment: None,
+                        at_ic: now,
+                        ..record
+                    },
+                );
+                ctx.out
+                    .sys_to_actor(who, "tacsim.field", FIT_AGAIN.to_owned());
+                tracing::info!(
+                    who = who.0,
+                    port = port.id,
+                    "tacsim: a character is fit again"
+                );
+            }
+            (Some(port), _) => {
+                let medical = crate::port::medical::has_medical_room(ctx.w, port);
+                let span = treatment_s(&cfg, record.condition, medical);
+                let line = TREATMENT_BEGUN
+                    .replace("{port}", port.name)
+                    .replace("{room}", if medical { MEDICAL_ROOM } else { "" })
+                    .replace("{h}", &hours(span).to_string());
+                put(
+                    ctx,
+                    CrewRecord {
+                        treatment: Some(Treatment {
+                            port: SmolStr::new(port.id),
+                            started_ic: now,
+                            due_ic: now.saturating_add(span),
+                            medical,
+                        }),
+                        ..record
+                    },
+                );
+                ctx.out.sys_to_actor(who, "tacsim.field", line);
+            }
+        }
+    }
+}
+
+/// The name of the port `id`, else the id.
+fn port_name(id: &str) -> &str {
+    crate::ic_return::PORTS
+        .iter()
+        .find(|known| known.id == id)
+        .map_or(id, |known| known.name)
+}
+
+/// **The crew status line** (doc 36 cut GC.13; `+sortie/condition`): where and how `who` is, and
+/// what is under way — an extraction or a treatment, with the IC time left.
+#[must_use]
+pub fn status_line(ctx: &Ctx<'_>, who: ObjId) -> String {
+    let Some(record) = crew_of(ctx.w, who) else {
+        return "Crew: fit; the field has nothing on you.".to_owned();
+    };
+    let now = ctx.w.world_ic_now().at;
+    let condition = match record.condition {
+        CrewCondition::Fit => "fit",
+        CrewCondition::Injured => "injured",
+        CrewCondition::Incapacitated => "incapacitated",
+    };
+    let at = match crew_location(ctx.w, who).unwrap_or_else(|| record.location.clone()) {
+        CrewLocation::Unit { unit } => format!("aboard #{}", unit.0),
+        CrewLocation::Carrier { hull } => format!("aboard the carrier #{}", hull.0),
+        CrewLocation::Stranded { site, unit } => format!(
+            "stranded on {} in #{}",
+            super::admit::site_name(ctx, &site),
+            unit.0
+        ),
+        CrewLocation::Port { port } => format!("at {}", port_name(port.as_str())),
+    };
+    let mut line = format!("Crew: {condition}, {at}");
+    if let Some(coming) = &record.extraction {
+        line.push_str(&format!(
+            "; extraction to {} in about {} IC h",
+            port_name(coming.port.as_str()),
+            hours(coming.due_ic - now)
+        ));
+    }
+    if let Some(under) = &record.treatment {
+        line.push_str(&format!(
+            "; under treatment at {}{}, fit again in about {} IC h",
+            port_name(under.port.as_str()),
+            if under.medical { MEDICAL_ROOM } else { "" },
+            hours(under.due_ic - now)
+        ));
+    } else if record.condition != CrewCondition::Fit {
+        line.push_str("; treatment begins at the next port you stand in");
+    }
+    line.push('.');
+    line
 }
 
 /// **Land one extraction**: the seat vacated, the character at the port's arrival room.
@@ -745,6 +940,22 @@ mod tests {
     }
 
     #[test]
+    fn a_medical_room_treats_faster() {
+        let cfg = crate::config::FieldConfig::default();
+        assert_eq!(treatment_s(&cfg, CrewCondition::Fit, true), 0);
+        assert_eq!(treatment_s(&cfg, CrewCondition::Injured, false), 86_400);
+        assert_eq!(treatment_s(&cfg, CrewCondition::Injured, true), 43_200);
+        assert_eq!(
+            treatment_s(&cfg, CrewCondition::Incapacitated, false),
+            259_200
+        );
+        assert_eq!(
+            treatment_s(&cfg, CrewCondition::Incapacitated, true),
+            129_600
+        );
+    }
+
+    #[test]
     fn only_a_stranded_or_incapacitated_character_may_ask() {
         let mut record = CrewRecord {
             format: CREW_FORMAT,
@@ -754,6 +965,7 @@ mod tests {
             at_ic: 0,
             organizer: None,
             extraction: None,
+            treatment: None,
         };
         assert_eq!(record.extractable(), None);
         record.condition = CrewCondition::Incapacitated;
