@@ -469,3 +469,88 @@ impl DeferQueue {
             .count()
     }
 }
+
+/// The line a typed line hears once it has waited [`COMMAND_DEFER_MS`] behind a held lifecycle
+/// slot (doc 36 cut GC.0; Q-36-50). It is not refused: it runs once the slot clears.
+pub(super) const BEHIND_SLOT_WAITING: &str = "The world is finishing a connection's business first; your line is waiting and runs as soon as it can.";
+
+/// **One message behind the held lifecycle slot**: what waits, since when, and whether a typed
+/// line has heard [`BEHIND_SLOT_WAITING`].
+pub(super) struct Behind {
+    since: DeferInstant,
+    msg: WorldMsg,
+    told: bool,
+}
+
+/// **The messages behind a held lifecycle slot** (doc 36 cut GC.0; Q-36-50; doc 32 §17's first
+/// latent world-task item).
+///
+/// While a lifecycle message waits in the loop's slot behind a pending commit, `rx` used to stop
+/// at once, so a line typed after it sat in the channel and its player heard nothing until the
+/// commit resolved. The loop now keeps taking `rx` into this queue, every kind of message in
+/// arrival order, up to [`COMMAND_DEFER_CAP`] entries (then it stops, and the bounded channel
+/// supplies the backpressure, as before). Nothing here is served or refused while the slot is
+/// held: the slot runs first, then this queue front to back, one entry a turn and before anything
+/// new is taken, each exactly as a fresh message. A typed line that has waited
+/// [`COMMAND_DEFER_MS`] hears [`BEHIND_SLOT_WAITING`] once and keeps its place.
+///
+/// Pure: no clock of its own (every call takes `now`), no I/O, no world.
+#[derive(Default)]
+pub(super) struct BehindSlot {
+    entries: VecDeque<Behind>,
+}
+
+impl BehindSlot {
+    /// Queue `msg`, arrived at `now`.
+    pub(super) fn push(&mut self, msg: WorldMsg, now: DeferInstant) {
+        self.entries.push_back(Behind {
+            since: now,
+            msg,
+            told: false,
+        });
+    }
+
+    /// Whether the queue holds [`COMMAND_DEFER_CAP`] entries: `rx` is no longer taken.
+    pub(super) fn is_full(&self) -> bool {
+        self.entries.len() >= COMMAND_DEFER_CAP
+    }
+
+    pub(super) fn is_empty(&self) -> bool {
+        self.entries.is_empty()
+    }
+
+    pub(super) fn pop_front(&mut self) -> Option<WorldMsg> {
+        self.entries.pop_front().map(|held| held.msg)
+    }
+
+    /// When the next typed line is owed its notice: the earliest `since + COMMAND_DEFER_MS`
+    /// among the lines not yet told, or `None`.
+    pub(super) fn next_notice(&self) -> Option<DeferInstant> {
+        self.entries
+            .iter()
+            .filter(|held| !held.told && is_typed_line(&held.msg))
+            .map(|held| held.since.checked_add(COMMAND_DEFER).unwrap_or(held.since))
+            .min()
+    }
+
+    /// Every typed line owed its notice at `now`, front to back, each marked told: its
+    /// connection and actor.
+    pub(super) fn due(&mut self, now: DeferInstant) -> Vec<(mush_core::ConnId, ObjId)> {
+        let mut due = Vec::new();
+        for held in &mut self.entries {
+            if !held.told
+                && now.saturating_duration_since(held.since) >= COMMAND_DEFER
+                && let WorldMsg::Inbound(Inbound::Cmd { conn, actor, .. }) = &held.msg
+            {
+                held.told = true;
+                due.push((*conn, *actor));
+            }
+        }
+        due
+    }
+
+    /// Everything, front to back, leaving the queue empty (shutdown and the loop's exit).
+    pub(super) fn drain_all(&mut self) -> Vec<WorldMsg> {
+        self.entries.drain(..).map(|held| held.msg).collect()
+    }
+}

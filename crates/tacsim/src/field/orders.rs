@@ -387,4 +387,106 @@ mod tests {
         assert_eq!(row_of_words("CB"), None);
         assert_eq!(row_of_words("NE-sideways"), None);
     }
+
+    /// A roster of four NPC-flown hulls, units 101 to 104 in slots 1 to 4, and a field that
+    /// holds 101 and 102 in party A and 103 in party B (104 is not in it).
+    fn roster_and_field() -> (DetachmentRoster, super::super::record::FieldLive) {
+        use mush_tactics::detachment::{Controller, DetachmentId, LeadershipPolicy, Member, Slot};
+        let members = (1..=4)
+            .map(|n: u16| Member {
+                slot: Slot::new(n).expect("a slot"),
+                unit: ObjId(100 + u32::from(n)),
+                controller: Controller::Npc {
+                    character: ObjId(10 + u32::from(n)),
+                },
+            })
+            .collect();
+        let roster = DetachmentRoster::new(
+            DetachmentId(7),
+            1,
+            members,
+            Some(ObjId(11)),
+            LeadershipPolicy::default(),
+        )
+        .expect("a roster");
+        let (a, b) = (
+            crate::arena::PartyId::nth(0).expect("A"),
+            crate::arena::PartyId::nth(1).expect("B"),
+        );
+        let row = |unit: u32, party| super::super::record::FieldUnit {
+            unit: ObjId(unit),
+            party,
+            pilot: None,
+            epoch: None,
+            aboard: Vec::new(),
+        };
+        let live = super::super::record::FieldLive {
+            format: super::super::record::FIELD_LIVE_FORMAT,
+            field: crate::surface::site_record::FieldId {
+                site: CanonicalId::new("ahuna_port").expect("a site"),
+                ordinal: 1,
+            },
+            opened_ic: 0,
+            segment: 1,
+            at_ms: 0,
+            parties: Vec::new(),
+            units: vec![row(101, a), row(102, a), row(103, b)],
+            homes: Vec::new(),
+            fire: None,
+            owed_exits: Vec::new(),
+        };
+        (roster, live)
+    }
+
+    fn payload(objective: FieldObjective) -> FieldPayload {
+        FieldPayload {
+            objective,
+            hold_fire: false,
+        }
+    }
+
+    /// **Doc 36 cut GC.0 (Q-36-42): SCREEN inside a field** reaches the kernel as a screen
+    /// facing the ordered bearing.
+    #[test]
+    fn gc0_a_screen_in_a_field_holds_its_bearing() {
+        let (roster, live) = roster_and_field();
+        assert_eq!(
+            objective(
+                &payload(FieldObjective::Screen {
+                    bearing_mdeg: 90_000
+                }),
+                &roster,
+                &live,
+                ObjId(101)
+            ),
+            Ok(Objective::Screen {
+                facing_mdeg: 90_000
+            })
+        );
+    }
+
+    /// **Doc 36 cut GC.0 (Q-36-42): SUPPORT inside a field** binds to the slot's unit when it is
+    /// another unit of the recipient's own party in the same field, and is NEGATIVE otherwise.
+    #[test]
+    fn gc0_a_support_in_a_field_binds_to_its_partys_unit_only() {
+        let (roster, live) = roster_and_field();
+        let support = |slot: u16, unit: u32| {
+            objective(
+                &payload(FieldObjective::Support {
+                    slot: mush_tactics::detachment::Slot::new(slot).expect("a slot"),
+                }),
+                &roster,
+                &live,
+                ObjId(unit),
+            )
+        };
+        assert_eq!(
+            support(2, 101),
+            Ok(Objective::Support { of: ObjId(102) }),
+            "the escort's charge in its own party"
+        );
+        assert_eq!(support(1, 101), Err(()), "never itself");
+        assert_eq!(support(3, 101), Err(()), "never another party's unit");
+        assert_eq!(support(4, 101), Err(()), "never a unit outside the field");
+    }
 }

@@ -374,6 +374,20 @@ fn keep(rig: &mut Rig, ops: Vec<mush_core::ModuleOp>) {
 /// Drive one queued submission the way the world task does, keeping its typed post-images
 /// for a reboot; the error carries the prepare's own message.
 pub(crate) fn land(rig: &mut Rig, submit: &AuthoritativeSubmit) -> Result<(), String> {
+    land_with(rig, submit, false)
+}
+
+/// **Land one queued submission on the world task's composed path** (doc 36 cut GC.0; Q-36-49):
+/// the frozen registry's owner reads, participants and account hooks reach the prepare, as
+/// production's action coordinator passes them. [`land`]'s plain prepare hands the provider none,
+/// so the Org unit grant (`unitgrant_issue`, a DT activation's and an operational loan's) refuses
+/// there on its owner preimage read; this lands it. Object writes the install applied to the
+/// World stay there; the module writes are kept for a reboot as [`land`] keeps them.
+pub(crate) fn land_composed(rig: &mut Rig, submit: &AuthoritativeSubmit) -> Result<(), String> {
+    land_with(rig, submit, true)
+}
+
+fn land_with(rig: &mut Rig, submit: &AuthoritativeSubmit, composed: bool) -> Result<(), String> {
     let token = next_token();
     let tw = &mut rig.tw;
     let (action, resolved) = {
@@ -420,6 +434,37 @@ pub(crate) fn land(rig: &mut Rig, submit: &AuthoritativeSubmit) -> Result<(), St
         let (action, resolved, _guards) = resolved.into_authoritative_parts();
         (action, resolved)
     };
+    if composed {
+        let (prepared, _) = tw
+            .engine_mut()
+            .prepare_registered_composed_resolved_authoritative_action(
+                &action,
+                &resolved,
+                CommitToken::from_bytes(token),
+            )
+            .map_err(|error| format!("{error:?}"))?;
+        let (writes, install) = prepared.into_parts();
+        tw.engine_mut()
+            .install_composed_action(install)
+            .map_err(|error| format!("{error:?}"))?;
+        let earlier = rig.tw.take_module_ops();
+        fold_module_ops_into(&mut rig.store, earlier);
+        let writes: Vec<_> = writes
+            .into_iter()
+            .filter(|write| {
+                !matches!(
+                    write,
+                    mush_core::authoritative::ReplayWrite::ObjectSet { .. }
+                        | mush_core::authoritative::ReplayWrite::ObjectDelete { .. }
+                        | mush_core::authoritative::ReplayWrite::ObjectAllocatorSet { .. }
+                )
+            })
+            .collect();
+        let (ops, ledger) = support::composed::split(&writes);
+        keep(rig, ops);
+        fold_module_ops_into(&mut rig.store, ledger);
+        return Ok(());
+    }
     let (prepared, _) = tw
         .engine_mut()
         .prepare_registered_resolved_authoritative_action(
