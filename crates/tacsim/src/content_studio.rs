@@ -300,6 +300,13 @@ fn shipped_docs() -> Vec<DocSpec> {
             family: "component",
             bytes: BATTERY_MK1_JSON,
         },
+        // Space Hulls & Slot-Stable Refit Packages (`SF.16`, `SF.19`)
+        DocSpec {
+            id: "space/hulls.json",
+            repo_path: "space/hulls.json",
+            family: "space",
+            bytes: crate::space::SPACE_HULLS_JSON,
+        },
         // Corridor & Relays
         DocSpec {
             id: LANE_PACK,
@@ -662,6 +669,7 @@ pub fn build_catalog_from_world(w: &mush_core::World) -> Value {
                     .and_then(Value::as_array)
                     .map(Vec::len)
             })
+            .or_else(|| doc_val.get("hulls").and_then(Value::as_array).map(Vec::len))
             .unwrap_or(1);
         let latch = CanonicalId::new(spec.id)
             .ok()
@@ -825,7 +833,11 @@ pub fn build_catalog_from_world(w: &mush_core::World) -> Value {
     let outer_bodies = vec![
         "saturn", "uranus", "neptune", "triton", "io", "europa", "ganymede", "callisto",
     ];
-    let hull_cat = crate::space::SpaceHullCatalog::embedded();
+    let hull_cat = tacsim_store
+        .and_then(|s| s.studio_tables.get("space/hulls.json"))
+        .and_then(|v| serde_json::to_string(v).ok())
+        .and_then(|raw| crate::space::SpaceHullCatalog::from_json(&raw).ok())
+        .unwrap_or_else(crate::space::SpaceHullCatalog::embedded);
     let space_hulls: Vec<Value> = hull_cat
         .hulls
         .iter()
@@ -996,6 +1008,32 @@ fn validate_and_sign(
         }
         if id == "resources.json" || repo_path == "resources.json" {
             ResourceTable::load("resources.json", &encoded).map_err(|e| vec![e.to_string()])?;
+            return Ok(CheckedDocument {
+                pack: None,
+                signed_doc: content,
+                digest: None,
+                cascade: Vec::new(),
+            });
+        }
+        if id == "space/hulls.json" || repo_path == "space/hulls.json" {
+            let cat = crate::space::SpaceHullCatalog::from_json(&encoded).map_err(|e| vec![e])?;
+            let mut refusals = Vec::new();
+            for pkg in &cat.refit_packages {
+                match cat.find_hull(&pkg.target_hull_id) {
+                    Some(target) if target.refit_family == pkg.refit_family => {}
+                    Some(target) => refusals.push(format!(
+                        "refit package `{}` family `{}` does not match target hull `{}` family `{}`",
+                        pkg.id, pkg.refit_family, target.id, target.refit_family
+                    )),
+                    None => refusals.push(format!(
+                        "refit package `{}` references unknown target_hull_id `{}`",
+                        pkg.id, pkg.target_hull_id
+                    )),
+                }
+            }
+            if !refusals.is_empty() {
+                return Err(refusals);
+            }
             return Ok(CheckedDocument {
                 pack: None,
                 signed_doc: content,
@@ -2382,6 +2420,7 @@ mod tests {
             "tacsim.cast.ceres_freeport",
             "tacsim.crew.ceres",
             "market/goods.json",
+            "space/hulls.json",
             "tacsim.pack.cannon_105",
         ] {
             let read_res = read_document(&ctx, doc_id);

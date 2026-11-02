@@ -54,8 +54,8 @@ pub use flight::{
     RecoupledJourneyTicket, SpaceFlightRecord,
 };
 pub use hulls::{
-    SpaceHullCatalog, SpaceHullCatalogSchema, SpaceHullSpec, SpaceRefitError, SpaceRefitPackage,
-    SpaceRefitReceipt,
+    SPACE_HULLS_JSON, SpaceHullCatalog, SpaceHullCatalogSchema, SpaceHullSpec, SpaceRefitError,
+    SpaceRefitPackage, SpaceRefitReceipt,
 };
 pub use mining::{
     ASTEROID_CONTEST_WINDOW_IC_SECS, AsteroidClaimState, AsteroidClusterField, AsteroidOrePool,

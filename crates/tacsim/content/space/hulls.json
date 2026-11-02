@@ -109,7 +109,7 @@
       "short_id": "halcyon",
       "label": "Halcyon-class Deep-Space Carrier",
       "refit_family": "carrier_hull",
-      "pixel_model": "shipyard",
+      "pixel_model": "halcyon",
       "dry_mass_t": 1200,
       "max_accel_mps2": 32,
       "propellant_kg": 260000,

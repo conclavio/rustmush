@@ -1,8 +1,9 @@
 # The cockpit
 
 The seventeen verbs you fly a tank with, in the order a pilot uses them. They work
-while you are at the station of a tank a running match has deployed, and nowhere
-else — `help simulator` is how you get there. The cockpit is the simulator's: a
+while you are at the station of a tank a running match has deployed, or of a unit
+in an IC combat field on a mining site (`help field`), and nowhere else —
+`help simulator` is how you get to the first. The cockpit is the simulator's: a
 Co-op Dray has no cockpit verbs (its pilot plans and undocks with `+ship`; see
 "help ships").
 
@@ -921,6 +922,6 @@ from it once every file has arrived and checked out.
 `@sounds` says which it is and how your terminal hears them. It lasts until you
 disconnect.
 
-See also: `help simulator`, `help tui`, `help chargen` (gunnery is the rating
+See also: `help simulator`, `help field`, `help tui`, `help chargen` (gunnery is the rating
 the shot reads), `help macros` (a word of your own for a line you type
 often).

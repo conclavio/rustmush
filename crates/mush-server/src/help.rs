@@ -99,6 +99,8 @@ mod tests {
             "movement",
             "communication",
             "rules-of-conduct",
+            // Doc 32: the IC combat field's player page.
+            "field",
         ] {
             let t = reg
                 .help_topic(topic)

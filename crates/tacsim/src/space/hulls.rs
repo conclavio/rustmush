@@ -20,7 +20,8 @@ use crate::space::bubble::{
 };
 use crate::space::weapons::{LaserMount, PdcMount, RailgunMount, TorpedoTube};
 
-const HULLS_JSON: &str = include_str!("../../content/space/hulls.json");
+/// Raw JSON text of `crates/tacsim/content/space/hulls.json`.
+pub const SPACE_HULLS_JSON: &str = include_str!("../../content/space/hulls.json");
 
 /// Schema header for `content/space/hulls.json`.
 #[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize)]
@@ -234,10 +235,19 @@ pub enum SpaceRefitError {
 }
 
 impl SpaceHullCatalog {
+    /// Parse a [`SpaceHullCatalog`] from JSON text.
+    ///
+    /// # Errors
+    ///
+    /// Returns a human-readable error message when `raw` is not valid `SpaceHullCatalog` JSON.
+    pub fn from_json(raw: &str) -> Result<Self, String> {
+        serde_json::from_str(raw).map_err(|e| format!("space/hulls.json: {e}"))
+    }
+
     /// Load the compiled-in [`SpaceHullCatalog`] from `crates/tacsim/content/space/hulls.json`.
     #[must_use]
     pub fn embedded() -> Self {
-        serde_json::from_str(HULLS_JSON).unwrap_or(Self {
+        serde_json::from_str(SPACE_HULLS_JSON).unwrap_or(Self {
             schema: SpaceHullCatalogSchema {
                 id: "tacsim.space.hulls".to_owned(),
                 version: 1,
@@ -369,6 +379,10 @@ mod tests {
         assert!(raider_spec.is_some());
         let halcyon_spec = cat.find_hull("halcyon");
         assert!(halcyon_spec.is_some());
+        assert_eq!(
+            halcyon_spec.map(|h| h.pixel_model.as_str()),
+            Some("halcyon")
+        );
 
         let Some(dray_spec) = dray_spec else {
             return;
