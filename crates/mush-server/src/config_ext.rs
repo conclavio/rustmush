@@ -813,6 +813,8 @@ fn recovery_config(
         inspect_s: cfg.inspect_s,
         attach_s: cfg.attach_s,
         load_s: cfg.load_s,
+        // Doc 36 cut GC.6: not in the config file yet; the 48-real-hour window.
+        claim_window_s: tacsim::TacsimRecoveryConfig::default().claim_window_s,
     })
 }
 

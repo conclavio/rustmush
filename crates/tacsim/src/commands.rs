@@ -357,6 +357,26 @@ pub(crate) fn register(reg: &mut Registrar<'_>) -> Result<(), ModError> {
         },
         Arc::new(crate::port::claims::claim_cmd),
     )?;
+    // ---- Doc 36 cut GC.6 (Q-36-24 to Q-36-28): `+salvage`, salvage claims, Authoritative ----
+    //
+    // `+salvage` is a pure read and a bare switch previews; `go` (and `/inspect`) is at most
+    // the economy's own API (`/claim`: one salvage-claim contract) and exactly ONE submission
+    // of GC.4's `tacsim_surface_tow` (its `claim` op) as the actor: `+claim`'s and `+tv`'s
+    // rule, so the verb takes the `Authoritative` class in the same bracket.
+    reg.command(
+        CommandSpec {
+            name: crate::surface::claim::SALVAGE_VERB.into(),
+            shape: ArgShape::Raw,
+            switches: ["claim", "contest", "report", "inspect"]
+                .iter()
+                .copied()
+                .map(SmolStr::new)
+                .collect(),
+            help: crate::surface::claim::SALVAGE_HELP.into(),
+            ..CommandSpec::default()
+        },
+        Arc::new(crate::surface::claim::salvage_cmd),
+    )?;
     reg.classify_commands(mush_core::CommandCompatibility::LegacyPostImage);
     // Survey acceptance creates an economy offer and queues one authoritative
     // record. Occator funds only a landed record; successful soundings earn it.

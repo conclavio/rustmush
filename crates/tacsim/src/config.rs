@@ -147,6 +147,11 @@ pub struct TacsimRecoveryConfig {
     /// **Doc 36 cut GC.4 (Q-36-13)**: a casualty's load into a bay, IC seconds (provisional,
     /// 900).
     pub load_s: u32,
+    /// **Doc 36 cut GC.6 (Q-36-24)**: a salvage claim's contest window, **real** seconds
+    /// (172,800: 48 real hours, doc 27 Q-S15). A test knob compresses it; it is clamped to
+    /// `1..=mush_economy::MAX_SALVAGE_CLAIM_WINDOW_SECS`, and the server's config file does not
+    /// set it yet.
+    pub claim_window_s: i64,
 }
 
 impl Default for TacsimRecoveryConfig {
@@ -164,6 +169,7 @@ impl Default for TacsimRecoveryConfig {
             inspect_s: 300,
             attach_s: 600,
             load_s: 900,
+            claim_window_s: mush_economy::SALVAGE_CLAIM_WINDOW_SECS,
         }
     }
 }

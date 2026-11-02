@@ -715,7 +715,7 @@ async fn gc8b_a_stripped_part_carries_its_provenance_and_a_hot_part_is_refused()
 /// titled to the captain and stowed in the Dray's bay; berthed, the title holder scraps it: its
 /// structural mass becomes `structural_alloys` and each salvageable part a lot with its
 /// provenance, all in the Dray's hold; the hull is an irrecoverable shell and its berth free.
-/// The lessee may not scrap a leased hull, and remains wait for GC.3.
+/// The lessee may not scrap a leased hull; remains are scrapped on the site (GC.6).
 #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
 async fn gc8b_scrap_breaks_a_workshop_hull_into_alloys_and_parts() {
     let mut rig = stocked();
@@ -802,9 +802,5 @@ async fn gc8b_scrap_breaks_a_workshop_hull_into_alloys_and_parts() {
     }
     let again = run(&mut rig.tw, pilot, &format!("+bay/scrap #{}", spare.0));
     assert!(again.contains("has been scrapped"), "{again}");
-    // Remains are scrapped where they lie once GC.3 records them.
-    let seam = staff_hand(&mut rig, |ctx| {
-        tacsim::port::bay_work::strip::scrap_remains(ctx, spare)
-    });
-    assert!(seam.is_err());
+    // Remains are scrapped where they lie on the site (doc 36 cut GC.6, `field_gc6.rs`).
 }

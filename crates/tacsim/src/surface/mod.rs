@@ -148,6 +148,7 @@ pub mod act;
 pub mod address;
 pub mod black_box;
 pub mod chart;
+pub mod claim;
 pub mod claims;
 pub mod commands;
 pub mod cursor;

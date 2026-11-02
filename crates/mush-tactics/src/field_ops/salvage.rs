@@ -492,6 +492,168 @@ pub struct SalvageClaim {
     pub state: SalvageClaimState,
 }
 
+impl SalvageClaim {
+    /// **Submit a contest against this claim** within its contest window (`Q-S13`, `Q-S15`,
+    /// `Q-R1`): the rules [`SalvageClaimBook::submit_contest`] applies, on a claim a host keeps
+    /// in its own durable record (doc 36 cut GC.6: the ground keeps each claim on its site's
+    /// record and its window on the economy's contract).
+    ///
+    /// - [`ContestGround::BarePriorTitle`] is **always rejected** (`valid_to_vacate = None`)
+    ///   per explicit owner ruling `Q-R1`.
+    /// - [`ContestGround::UnlawfulRecovery`] is validated against the claim's
+    ///   `entitlement_at_attach` and the supplied [`SalvageEvidenceRecord`] (`Q-S4`, `Q-S13`).
+    /// - [`ContestGround::DefectiveProcedure`] is valid if `defect_code` is non-empty.
+    /// - [`ContestGround::SuperiorSpecificRight`] is valid if `obligor == claimant`.
+    ///
+    /// # Errors
+    /// Returns [`SalvageError`] if the claim is already settled, paused for an outage, past
+    /// `deadline_real_s`, full, or if evidence does not match the recovery.
+    pub fn contest(
+        &mut self,
+        challenger: ObjId,
+        ground: ContestGround,
+        filed_at_real_s: i64,
+    ) -> Result<&SalvageContest, SalvageError> {
+        let claim_id = self.id;
+        if challenger.0 == 0 {
+            return Err(SalvageError::InvalidObjectId("challenger"));
+        }
+        if !self.state.is_pending() {
+            return Err(SalvageError::ClaimAlreadySettled(claim_id));
+        }
+        if self.paused_at_real_s.is_some() {
+            return Err(SalvageError::ClaimPausedForOutage(claim_id));
+        }
+        if filed_at_real_s > self.deadline_real_s {
+            return Err(SalvageError::ContestWindowExpired {
+                claim_id,
+                filed_at_real_s,
+                deadline_real_s: self.deadline_real_s,
+            });
+        }
+        if self.contests.len() >= MAX_CLAIM_ENTRIES {
+            return Err(SalvageError::MaxClaimEntriesReached {
+                claim_id,
+                max: MAX_CLAIM_ENTRIES,
+            });
+        }
+
+        let casualty_id = match &self.subject {
+            SalvageSubject::Hull { unit } => *unit,
+            SalvageSubject::StrippedComponent { parent_hull, .. } => *parent_hull,
+        };
+
+        let valid_to_vacate = match &ground {
+            ContestGround::BarePriorTitle => {
+                // Q-R1: Bare prior unit title alone NEVER defeats a lawful salvage claim.
+                None
+            }
+            ContestGround::UnlawfulRecovery { evidence } => {
+                evidence.validate_for(self.operation_id, casualty_id)?;
+                if evidence.holder != challenger {
+                    return Err(SalvageError::EvidenceHolderMismatch {
+                        holder: evidence.holder,
+                        actor: challenger,
+                    });
+                }
+                if !self.entitlement_at_attach.is_lawful() {
+                    Some(ContestSuccessReason::ProvenUnlawfulRecovery)
+                } else {
+                    None
+                }
+            }
+            ContestGround::DefectiveProcedure { defect_code } => {
+                if !defect_code.trim().is_empty() {
+                    Some(ContestSuccessReason::DefectiveProcedure)
+                } else {
+                    None
+                }
+            }
+            ContestGround::SuperiorSpecificRight {
+                contract_id,
+                obligor,
+            } => {
+                if !contract_id.trim().is_empty() && *obligor == self.claimant {
+                    Some(ContestSuccessReason::SuperiorSpecificRight)
+                } else {
+                    None
+                }
+            }
+        };
+
+        self.contests.push(SalvageContest {
+            challenger,
+            ground,
+            filed_at_real_s,
+            valid_to_vacate,
+        });
+        self.state = SalvageClaimState::Contested;
+        self.contests
+            .last()
+            .ok_or(SalvageError::UnknownClaim(claim_id))
+    }
+
+    /// **Adjudicate and settle this claim** (`Q-S2`, `Q-S13`–`Q-S15`, `Q-R1`): the rules
+    /// [`SalvageClaimBook::adjudicate_claim`] applies, on a claim a host keeps itself.
+    ///
+    /// - If any submitted contest has `valid_to_vacate == Some(reason)`, the claim is vacated
+    ///   at once (even before `deadline_real_s`), restoring title/custody right to the winning
+    ///   challenger (`SalvageClaimState::Vacated`) without reimbursing at-risk repairs
+    ///   (`Q-S14`).
+    /// - Otherwise (uncontested, or only invalid contests such as
+    ///   [`ContestGround::BarePriorTitle`]), once `now_real_s >= deadline_real_s` (and not
+    ///   paused for an outage), the claim settles as [`SalvageClaimState::AwardedToClaimant`]
+    ///   (`Q-S2`, `Q-S15`, `Q-R1`).
+    ///
+    /// # Errors
+    /// Returns [`SalvageError`] if the claim is already settled, paused for an outage, or has
+    /// no valid contest and `now_real_s < deadline_real_s`.
+    pub fn adjudicate(&mut self, now_real_s: i64) -> Result<CustodyTitleStatus, SalvageError> {
+        let claim_id = self.id;
+        if !self.state.is_pending() {
+            return Err(SalvageError::ClaimAlreadySettled(claim_id));
+        }
+        if self.paused_at_real_s.is_some() {
+            return Err(SalvageError::ClaimPausedForOutage(claim_id));
+        }
+
+        if let Some(winning_contest) = self.contests.iter().find(|c| c.valid_to_vacate.is_some()) {
+            let reason = winning_contest
+                .valid_to_vacate
+                .clone()
+                .unwrap_or(ContestSuccessReason::ProvenUnlawfulRecovery);
+            let restored_to = winning_contest.challenger;
+            self.state = SalvageClaimState::Vacated {
+                restored_to,
+                reason,
+                settled_at_real_s: now_real_s,
+            };
+            return Ok(CustodyTitleStatus::ResolvedTitle { owner: restored_to });
+        }
+
+        if now_real_s < self.deadline_real_s {
+            return Err(SalvageError::ContestWindowStillOpen {
+                claim_id,
+                now_real_s,
+                deadline_real_s: self.deadline_real_s,
+            });
+        }
+
+        let new_owner = self.claimant;
+        self.state = SalvageClaimState::AwardedToClaimant {
+            new_owner,
+            settled_at_real_s: now_real_s,
+        };
+        Ok(CustodyTitleStatus::ResolvedTitle { owner: new_owner })
+    }
+
+    /// Whether a contest filed so far would vacate this claim.
+    #[must_use]
+    pub fn has_vacating_contest(&self) -> bool {
+        self.contests.iter().any(|c| c.valid_to_vacate.is_some())
+    }
+}
+
 /// Custody and title status of a recovered hull or component (`Q-S1`, `Q-S2`, `Q-S14`, `Q-F5`).
 #[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize)]
 #[serde(tag = "custody", rename_all = "snake_case", deny_unknown_fields)]
@@ -689,6 +851,10 @@ impl SalvageClaimBook {
     }
 
     /// Append a [`BlackBoxFlightEntry`] to `hull`'s onboard flight/combat recorder (`P-3`, `Q-H6`, `Q-H9`).
+    ///
+    /// **Retired for the ground** (doc 36 cut GC.6, Q-36-28): this tape is RAM-only and does not
+    /// survive a restart. The ground's evidence reads tacsim's durable surface black box (one
+    /// `mush_core::Ledger` log per hull) instead; nothing on the ground appends here.
     ///
     /// # Errors
     /// Returns [`SalvageError`] if `hull.0 == 0` or `hull`'s tape has reached [`MAX_BLACK_BOX_ENTRIES_PER_HULL`].
@@ -1304,88 +1470,10 @@ impl SalvageClaimBook {
         ground: ContestGround,
         filed_at_real_s: i64,
     ) -> Result<&SalvageContest, SalvageError> {
-        if challenger.0 == 0 {
-            return Err(SalvageError::InvalidObjectId("challenger"));
-        }
-        let claim = self
-            .claims
+        self.claims
             .get_mut(&claim_id)
-            .ok_or(SalvageError::UnknownClaim(claim_id))?;
-
-        if !claim.state.is_pending() {
-            return Err(SalvageError::ClaimAlreadySettled(claim_id));
-        }
-        if claim.paused_at_real_s.is_some() {
-            return Err(SalvageError::ClaimPausedForOutage(claim_id));
-        }
-        if filed_at_real_s > claim.deadline_real_s {
-            return Err(SalvageError::ContestWindowExpired {
-                claim_id,
-                filed_at_real_s,
-                deadline_real_s: claim.deadline_real_s,
-            });
-        }
-        if claim.contests.len() >= MAX_CLAIM_ENTRIES {
-            return Err(SalvageError::MaxClaimEntriesReached {
-                claim_id,
-                max: MAX_CLAIM_ENTRIES,
-            });
-        }
-
-        let casualty_id = match &claim.subject {
-            SalvageSubject::Hull { unit } => *unit,
-            SalvageSubject::StrippedComponent { parent_hull, .. } => *parent_hull,
-        };
-
-        let valid_to_vacate = match &ground {
-            ContestGround::BarePriorTitle => {
-                // Q-R1: Bare prior unit title alone NEVER defeats a lawful salvage claim.
-                None
-            }
-            ContestGround::UnlawfulRecovery { evidence } => {
-                evidence.validate_for(claim.operation_id, casualty_id)?;
-                if evidence.holder != challenger {
-                    return Err(SalvageError::EvidenceHolderMismatch {
-                        holder: evidence.holder,
-                        actor: challenger,
-                    });
-                }
-                if !claim.entitlement_at_attach.is_lawful() {
-                    Some(ContestSuccessReason::ProvenUnlawfulRecovery)
-                } else {
-                    None
-                }
-            }
-            ContestGround::DefectiveProcedure { defect_code } => {
-                if !defect_code.trim().is_empty() {
-                    Some(ContestSuccessReason::DefectiveProcedure)
-                } else {
-                    None
-                }
-            }
-            ContestGround::SuperiorSpecificRight {
-                contract_id,
-                obligor,
-            } => {
-                if !contract_id.trim().is_empty() && *obligor == claim.claimant {
-                    Some(ContestSuccessReason::SuperiorSpecificRight)
-                } else {
-                    None
-                }
-            }
-        };
-
-        claim.contests.push(SalvageContest {
-            challenger,
-            ground,
-            filed_at_real_s,
-            valid_to_vacate,
-        });
-        claim.state = SalvageClaimState::Contested;
-        claim
-            .contests
-            .last()
-            .ok_or(SalvageError::UnknownClaim(claim_id))
+            .ok_or(SalvageError::UnknownClaim(claim_id))?
+            .contest(challenger, ground, filed_at_real_s)
     }
 
     /// Adjudicate and settle a [`SalvageClaim`] (`Q-S2`, `Q-S13`–`Q-S15`, `Q-R1`).
@@ -1411,48 +1499,8 @@ impl SalvageClaimBook {
             .claims
             .get_mut(&claim_id)
             .ok_or(SalvageError::UnknownClaim(claim_id))?;
-
-        if !claim.state.is_pending() {
-            return Err(SalvageError::ClaimAlreadySettled(claim_id));
-        }
-        if claim.paused_at_real_s.is_some() {
-            return Err(SalvageError::ClaimPausedForOutage(claim_id));
-        }
-
-        if let Some(winning_contest) = claim.contests.iter().find(|c| c.valid_to_vacate.is_some()) {
-            let reason = winning_contest
-                .valid_to_vacate
-                .clone()
-                .unwrap_or(ContestSuccessReason::ProvenUnlawfulRecovery);
-            let restored_to = winning_contest.challenger;
-            claim.state = SalvageClaimState::Vacated {
-                restored_to,
-                reason,
-                settled_at_real_s: now_real_s,
-            };
-            return Ok((
-                CustodyTitleStatus::ResolvedTitle { owner: restored_to },
-                claim,
-            ));
-        }
-
-        if now_real_s < claim.deadline_real_s {
-            return Err(SalvageError::ContestWindowStillOpen {
-                claim_id,
-                now_real_s,
-                deadline_real_s: claim.deadline_real_s,
-            });
-        }
-
-        let new_owner = claim.claimant;
-        claim.state = SalvageClaimState::AwardedToClaimant {
-            new_owner,
-            settled_at_real_s: now_real_s,
-        };
-        Ok((
-            CustodyTitleStatus::ResolvedTitle { owner: new_owner },
-            claim,
-        ))
+        let status = claim.adjudicate(now_real_s)?;
+        Ok((status, claim))
     }
 }
 

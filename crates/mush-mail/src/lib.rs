@@ -58,6 +58,7 @@ pub use data::{
 };
 pub use date::{format_date, format_datetime};
 pub use query::ListQuery;
+pub use transit::post_notice;
 
 /// The `@mail` game module. Hand to
 /// [`Engine::with_modules`](mush_core::engine::Engine::with_modules).

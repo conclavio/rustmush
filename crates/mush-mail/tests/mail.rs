@@ -1046,3 +1046,75 @@ fn mail_list_query_reports_folders_and_entries() {
     };
     assert!(t.to_plain_text().contains("No folder named nope"));
 }
+
+// ----------------------------------------------------------------------
+// Doc 36 cut GC.6: a registry's notice
+// ----------------------------------------------------------------------
+
+/// **Q-36-25**: an official notice lands unread in each recipient's inbox at once, under the
+/// sender's name, with no Sent copy and nothing pending on the transport; it survives a reboot.
+#[test]
+fn gc6_a_registry_notice_is_delivered_at_once_without_a_sent_copy() {
+    let (mut engine, alice, bob) = setup();
+    let clerk = engine
+        .world
+        .create(ObjKind::Thing, "Registry clerk", GOD, Some(LIMBO))
+        .unwrap();
+    let mut out = Outbox::new();
+    let id = {
+        let mut ctx = mush_core::Ctx {
+            w: &mut engine.world,
+            actor: clerk,
+            switches: mush_core::SwitchSet::default(),
+            args: mush_core::ParsedArgs::default(),
+            out: &mut out,
+            reg: &engine.registry,
+            module: Some(SmolStr::new("mail")),
+            typed_state: mush_core::ModuleActionState::unavailable(),
+        };
+        mush_mail::post_notice(
+            &mut ctx,
+            clerk,
+            &[alice, bob],
+            "Salvage claim: the Reacher",
+            "A claim is filed.",
+        )
+        .expect("posted")
+    };
+    assert!(out.events().iter().any(|(aud, e)| {
+        matches!(aud, mush_core::Audience::Actor(a) if *a == bob)
+            && matches!(e, OutputEvent::MailNotice { id: got, unread: 1, .. } if *got == id)
+    }));
+    let st = mail(&engine);
+    for who in [alice, bob] {
+        let entry = st.entry(who, id).expect("an inbox entry");
+        assert_eq!(
+            (entry.folder.as_str(), entry.status),
+            (INBOX, MailStatus::Unread)
+        );
+    }
+    assert!(st.entry(clerk, id).is_none(), "no Sent copy");
+    assert_eq!(st.message(id).expect("stored").delivery, None);
+    assert!(
+        mush_mail::transit::intents(&engine.world).is_some_and(|i| i.is_empty()),
+        "nothing travels"
+    );
+    let ops: Vec<ModuleOp> = out
+        .take_deferred()
+        .into_iter()
+        .filter_map(|deferred| match deferred {
+            mush_core::Deferred::Persist(op) => Some(op),
+            _ => None,
+        })
+        .collect();
+    let mut kv = BTreeMap::new();
+    apply_ops(&mut kv, ops);
+    assert!(
+        kv.keys()
+            .any(|k| k.as_str() == mush_mail::data::msg_key(id).as_str())
+    );
+    assert!(
+        kv.keys()
+            .any(|k| k.as_str() == mush_mail::data::box_key(bob, id).as_str())
+    );
+}

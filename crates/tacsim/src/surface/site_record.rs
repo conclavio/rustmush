@@ -481,6 +481,13 @@ pub struct SiteRecord {
     /// byte-identical to GC.4's.
     #[serde(default, skip_serializing_if = "Vec::is_empty")]
     pub custody: Vec<crate::surface::salvage::SalvageCustody>,
+    /// **The ground's evidence log** (doc 36 cut GC.6; Q-36-30): unlawful pickups, recoveries
+    /// and scrappings, and vacated claims, oldest first, at most
+    /// [`crate::surface::claim::MAX_UNLAWFUL`]. Evidence for a later crime system, never an
+    /// enforcement. Omitted while empty, so a record with nothing unlawful on it is
+    /// byte-identical to GC.5's.
+    #[serde(default, skip_serializing_if = "Vec::is_empty")]
+    pub unlawful: Vec<crate::surface::claim::UnlawfulAct>,
 }
 
 /// [`SiteRecord::side`]'s default: the shipped side.
@@ -560,6 +567,7 @@ impl SiteRecord {
             side,
             tows: crate::surface::tow::Tows::default(),
             custody: Vec::new(),
+            unlawful: Vec::new(),
         }
     }
 
@@ -591,6 +599,7 @@ impl SiteRecord {
             && self.next_object == 0
             && self.known.is_empty()
             && self.custody.is_empty()
+            && self.unlawful.is_empty()
     }
 
     /// **What `principal` remembers here** (doc 32 cut CF.4), most recently learned first.
@@ -1053,6 +1062,24 @@ impl SiteRecord {
                 crate::surface::salvage::MAX_CUSTODY
             ));
         }
+        if self.unlawful.len() > crate::surface::claim::MAX_UNLAWFUL {
+            return Err(format!(
+                "a site record's evidence log keeps at most {} entries",
+                crate::surface::claim::MAX_UNLAWFUL
+            ));
+        }
+        if self.custody.iter().any(|row| {
+            row.evidence.len() > crate::surface::claim::MAX_EVIDENCE
+                || row.told.len() > crate::surface::claim::MAX_WITNESSES
+                || row
+                    .pin
+                    .as_ref()
+                    .is_some_and(|pin| pin.witnesses.len() > crate::surface::claim::MAX_WITNESSES)
+        }) {
+            return Err(
+                "a custody record's evidence, notices and witnesses are bounded".to_owned(),
+            );
+        }
         Ok(())
     }
 }
@@ -1511,7 +1538,7 @@ impl ActionProvider for SiteRecordProvider {
 
 /// The one usage line of `@tacsim/site`.
 pub const SITE_USAGE: &str = "Usage: @tacsim/site <site> | <site> leave #<unit> casualty|wreck <x>,<y> \
-     | <site> drop crate <qty> <good> <x>,<y> | <site> drop remains <x>,<y> [<kg>] \
+     | <site> drop crate <qty> <good> <x>,<y> | <site> drop remains <x>,<y> [<kg>] [#<unit>] \
      | <site> take #<unit> | <site> remove <n> | <site> promote | <site> demote";
 
 /// **The fixture's idempotency key**: one write a staff member, a site, an op, an IC instant and
@@ -1771,6 +1798,10 @@ pub(crate) fn command(ctx: &mut mush_core::Ctx<'_>) -> Result<(), mush_core::Cmd
                     ("x", json!(x)),
                     ("y", json!(y)),
                 ]);
+                // Doc 36 cut GC.6: the hull the remains are of, so a gate can scrap titled ones.
+                if let Some(word) = words.next() {
+                    fields.push(("unit", json!(hash_object(Some(word)).ok_or_else(usage)?)));
+                }
             }
             _ => return Err(usage()),
         },

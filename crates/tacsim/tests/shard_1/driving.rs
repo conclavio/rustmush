@@ -277,6 +277,32 @@ fn reboot_with(rig: Rig, reconnect: &[ObjId], keyed: bool) -> Rig {
     }
 }
 
+/// **Write one typed record by hand** (doc 36 cut GC.6: a landholder's block tenure, which only
+/// industry's composed claim act writes in play): through a bootstrapping transaction, kept for
+/// the next reboot.
+pub(crate) fn seed_typed<K, V>(
+    rig: &mut Rig,
+    handle: &mush_core::StateFamilyHandle<K, V>,
+    key: &K,
+    value: V,
+) where
+    K: Send + Sync + 'static,
+    V: Clone + Send + Sync + 'static,
+{
+    let prepared = {
+        let engine = rig.tw.engine_mut();
+        let mut txn = engine.action_transaction(handle).expect("a transaction");
+        txn.insert(handle, key, value).expect("the record writes");
+        txn.prepare().expect("prepares")
+    };
+    let (ops, install) = prepared.into_parts();
+    rig.tw
+        .engine_mut()
+        .install_prepared_action(install)
+        .expect("installs");
+    keep(rig, ops);
+}
+
 /// Fold every write and reboot with the stored `tacsim:` document `key` edited.
 fn reboot_editing(
     mut rig: Rig,

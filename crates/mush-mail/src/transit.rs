@@ -479,3 +479,78 @@ pub(crate) fn settle(ctx: &mut Ctx<'_>, _tag: &str, _scene: Option<mush_core::Sc
         });
     }
 }
+
+/// **Post an official notice** (doc 36 cut GC.6, Q-36-25): a registry's letter to `to`, under
+/// `from`'s name, delivered into each recipient's inbox at once. It never travels the IC
+/// transport, takes no Sent copy and no sender quota: it is the authority's own record of
+/// notice, written in the caller's batch. A recipient whose mailbox is full is skipped (the
+/// caller's own line still tells them). Answers the message id.
+///
+/// # Errors
+///
+/// The content's bounds, or the mail state not composed.
+pub fn post_notice(
+    ctx: &mut Ctx<'_>,
+    from: ObjId,
+    to: &[ObjId],
+    subject: &str,
+    body: &str,
+) -> Result<u64, String> {
+    data::validate_message_content(to, subject, body)?;
+    let now = ctx.w.now();
+    let Some(state) = ctx.state_mut::<MailState>() else {
+        return Err("the mail state is not composed".to_owned());
+    };
+    let id = state
+        .alloc_id()
+        .ok_or_else(|| "the mail id space is exhausted".to_owned())?;
+    let quota = state.quota();
+    let msg = MailMsg {
+        id,
+        from,
+        to: to.to_vec(),
+        subject: subject.into(),
+        body: body.into(),
+        reply_to: None,
+        sent_at: now,
+        delivery: None,
+    };
+    state.insert_msg(msg.clone());
+    let mut entries: Vec<MailboxEntry> = Vec::new();
+    for owner in to {
+        if state.entry_count(*owner) >= quota {
+            continue;
+        }
+        let entry = MailboxEntry {
+            owner: *owner,
+            msg: id,
+            folder: INBOX.into(),
+            status: MailStatus::Unread,
+            read_at: None,
+        };
+        state.box_mut(*owner).entries.insert(id, entry.clone());
+        entries.push(entry);
+    }
+    let next = state.next_id();
+    let unread: Vec<(ObjId, u32)> = entries
+        .iter()
+        .map(|entry| (entry.owner, state.unread_counts(entry.owner).0))
+        .collect();
+    ctx.persist(data::msg_op(&msg));
+    for entry in &entries {
+        ctx.persist(data::entry_op(entry));
+    }
+    ctx.persist(data::next_id_op(next));
+    for (owner, unread) in unread {
+        ctx.out.to_actor(
+            owner,
+            OutputEvent::MailNotice {
+                from: mush_core::obj_ref(ctx.w, from),
+                subject: msg.subject.clone(),
+                id,
+                unread,
+            },
+        );
+    }
+    Ok(id)
+}
