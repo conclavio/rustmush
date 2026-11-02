@@ -790,6 +790,17 @@ pub fn persist_space_state(ctx: &mut Ctx<'_>) {
         book,
         salvage,
     };
+    let unchanged = match ctx
+        .w
+        .module_state::<TacsimStore>()
+        .and_then(TacsimStore::space_state)
+    {
+        Some(prev) => *prev == snapshot,
+        None => snapshot.book == SpaceBubbleBook::default(),
+    };
+    if unchanged {
+        return;
+    }
     match serde_json::to_value(&snapshot) {
         Ok(value) => crate::store::push_op(
             ctx.out,
