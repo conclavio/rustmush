@@ -346,6 +346,62 @@ pub(crate) fn register_with_coverage(
     if let Some(inspection) = inspection {
         register_inspection(reg, inspection, &action_refs, &outcome_refs)?;
     }
+    register_providers(
+        reg,
+        port_families,
+        (probe, probe_outcome),
+        (&action_refs, &outcome_refs),
+        (inventory, burn),
+        unit_authority,
+    )
+}
+
+/// **Every provider, the port's handles and its ticks** — the second half of
+/// [`register_with_coverage`], after the definitions are registered, in a frame of its own: the
+/// one function held the M7 memory-size limit's whole budget (clippy's
+/// `large_stack_frames`), and each cut that registers a provider adds to it. The outcomes are
+/// read back off `outcome_refs` by id.
+#[inline(never)]
+#[allow(clippy::too_many_lines)] // one ordered registration, each provider in its own frame
+fn register_providers(
+    reg: &mut Registrar<'_>,
+    port_families: PortFamilies,
+    (probe, probe_outcome): (
+        Option<StateFamilyHandle<ProbeKey, ProbeMark>>,
+        Option<DefinitionRef>,
+    ),
+    (action_refs, outcome_refs): (
+        &BTreeMap<String, DefinitionRef>,
+        &BTreeMap<String, DefinitionRef>,
+    ),
+    (inventory, burn): (
+        Option<&InventoryHandleCell>,
+        Option<crate::port::burn::BurnTable>,
+    ),
+    unit_authority: bool,
+) -> Result<(), ModError> {
+    let need = |id: &str| {
+        outcome_refs
+            .get(id)
+            .cloned()
+            .ok_or_else(|| ModError::msg(format!("the outcome {id} did not register")))
+    };
+    let stock_outcome = need(crate::port::stock::STOCK_OUTCOME)?;
+    let mill_outcome = need(crate::port::mill::MILL_OUTCOME)?;
+    let burn_outcome = need(crate::port::burn::BURN_OUTCOME)?;
+    let surface_act_outcome = need(crate::surface::act::SURFACE_ACT_OUTCOME)?;
+    let surface_done_outcome = need(crate::surface::act::SURFACE_DONE_OUTCOME)?;
+    let recovery_outcome = need(crate::surface::recovery::RECOVERY_OUTCOME)?;
+    let chart_forget_outcome = need(crate::surface::chart::CHART_FORGET_OUTCOME)?;
+    let site_work_outcome = need(crate::port::site::SITE_WORK_OUTCOME)?;
+    let dispatch_outcome = need(crate::port::yard::DISPATCH_OUTCOME)?;
+    let relay_outcome = need(crate::relay_foundry::OUTCOME)?;
+    let survey_outcome = need(crate::surface::survey::SURVEY_OUTCOME)?;
+    let survey_cancel_outcome = need(crate::surface::survey::SURVEY_CANCEL_OUTCOME)?;
+    let epoch_outcome = need(crate::port::epoch::EPOCH_OUTCOME)?;
+    let site_record_outcome = need(crate::surface::site_record::SITE_RECORD_OUTCOME)?;
+    let field_outcome = need(crate::field::FIELD_OUTCOME)?;
+    let passenger_outcome = need(crate::port::passenger::store::OUTCOME)?;
     let probe_action = action_refs.get(PROBE_ACTION).cloned();
     if let (Some(action), Some(outcome), Some(marks)) =
         (probe_action.clone(), probe_outcome, probe.clone())
@@ -369,7 +425,7 @@ pub(crate) fn register_with_coverage(
         survey_cancel,
     } = register_agreement_providers(
         reg,
-        &action_refs,
+        action_refs,
         (passenger_outcome, survey_outcome, survey_cancel_outcome),
         &port_families,
     )?;
@@ -389,7 +445,7 @@ pub(crate) fn register_with_coverage(
     // table built (the stock precedent); the definitions register regardless.
     let burn_registered = register_burn(
         reg,
-        &action_refs,
+        action_refs,
         burn_outcome,
         &port_families,
         (inventory_families.as_ref(), burn),
@@ -416,13 +472,13 @@ pub(crate) fn register_with_coverage(
     // Doc 23 cut S.2: and for the ship's epoch, on every roster.
     let black_box = register_black_box(
         reg,
-        &action_refs,
+        action_refs,
         inventory_families.is_some(),
         surface_tools.is_some(),
     )?;
     let (surface_act, surface_done) = register_surface_acts(
         reg,
-        &action_refs,
+        action_refs,
         (surface_act_outcome, surface_done_outcome),
         &port_families,
         inventory_families.as_ref(),
@@ -431,7 +487,7 @@ pub(crate) fn register_with_coverage(
     // Staff recovery is a separate capability from the player's surface acts.
     let surface_recovery = register_surface_recovery(
         reg,
-        &action_refs,
+        action_refs,
         recovery_outcome,
         &port_families,
         (inventory_families.as_ref(), black_box.recovery),
@@ -440,7 +496,7 @@ pub(crate) fn register_with_coverage(
     // inventory; the black box's participant appends the line.
     let epoch_action = register_epoch(
         reg,
-        &action_refs,
+        action_refs,
         epoch_outcome,
         &port_families,
         black_box.epoch,
@@ -503,14 +559,14 @@ pub(crate) fn register_with_coverage(
     // families; the stock provider's rule); the definitions register regardless.
     let site_work = register_site_work(
         reg,
-        &action_refs,
+        action_refs,
         site_work_outcome,
         &port_families,
         inventory_families.as_ref(),
     )?;
     let relay_fabricate = register_relay(
         reg,
-        &action_refs,
+        action_refs,
         relay_outcome,
         &port_families,
         inventory_families.as_ref(),
@@ -520,7 +576,7 @@ pub(crate) fn register_with_coverage(
     // families; the stock provider's rule); the definitions register regardless.
     let mill_action = register_mill(
         reg,
-        &action_refs,
+        action_refs,
         mill_outcome,
         &port_families,
         inventory_families.as_ref(),
@@ -530,38 +586,38 @@ pub(crate) fn register_with_coverage(
     // delegated families; the stock provider's rule); the definitions register regardless.
     let dispatch_action = register_dispatch(
         reg,
-        &action_refs,
+        action_refs,
         dispatch_outcome,
         &port_families,
         inventory_families.as_ref(),
     )?;
     let quest =
-        crate::quest::registration::provider(reg, &action_refs, &outcome_refs, &port_families)?;
+        crate::quest::registration::provider(reg, action_refs, outcome_refs, &port_families)?;
     crate::detachment::register_preparation(
         reg,
-        &action_refs,
-        &outcome_refs,
+        action_refs,
+        outcome_refs,
         unit_authority,
         &port_families,
         black_box.detachment,
     )?;
     // Doc 17h cut M8f: the procurement ledger, its record action and the `tacsim.procurement`
     // tick, unconditionally (no policy, no visit).
-    crate::procurement::register(reg, &action_refs, &outcome_refs)?;
+    crate::procurement::register(reg, action_refs, outcome_refs)?;
     // Doc 36 cut GC.8b: the bay's ledger and part families, unconditionally, and its
     // `tacsim_bay_work` provider when the inventory cell is filled (the mill's rule).
     crate::port::bay_work::act::register(
         reg,
-        &action_refs,
-        &outcome_refs,
+        action_refs,
+        outcome_refs,
         inventory_families.as_ref(),
     )?;
     // Doc 36 cut GC.4: the tow's provider, its black box handle closing a loaded casualty's
     // epoch, and its RAM slots.
     crate::surface::tow::register(
         reg,
-        &action_refs,
-        &outcome_refs,
+        action_refs,
+        outcome_refs,
         &port_families,
         (inventory_families.as_ref(), black_box.tow),
     )?;
