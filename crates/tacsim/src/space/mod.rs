@@ -18,6 +18,7 @@ pub mod flight;
 pub mod hulls;
 pub mod mining;
 pub mod picket;
+pub mod pulse;
 pub mod stations;
 pub mod weapons;
 
@@ -67,6 +68,7 @@ pub use picket::{
     CUSTOMS_SHIP_ID, HAULER_SHIP_ID, HEAVE_TO_MAX_REL_MPS, HaulerManifest, KirkwoodPicketEncounter,
     PARTY_CUSTOMS, PARTY_HAULER, PARTY_RAIDER, PicketOutcome, PicketPhase, RAIDER_SHIP_ID,
 };
+pub use pulse::{InterdictionLegWatch, SpacePulseEvent, SpacePulseReport, pulse_space_book};
 pub use stations::{
     BridgeSeat, LightLagContact, SPEED_OF_LIGHT_MPS, ShipCrewRoster, compute_ir_signature_kw,
     project_light_lag_contact,

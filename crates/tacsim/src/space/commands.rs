@@ -35,6 +35,7 @@ use super::flight::SpaceFlightRecord;
 use super::hulls::SpaceHullCatalog;
 use super::mining::{AsteroidClusterField, OreHoldState};
 use super::picket::{HAULER_SHIP_ID, HaulerManifest, KirkwoodPicketEncounter, PicketPhase};
+use super::pulse::{InterdictionLegWatch, pulse_space_book};
 use super::stations::{
     BridgeSeat, ShipCrewRoster, compute_ir_signature_kw, project_light_lag_contact,
 };
@@ -55,7 +56,7 @@ pub const SPACE_COCKPIT_FEED: &str = "space.cockpit";
 pub const SPACE_DOCKING_FEED: &str = "space.docking";
 
 /// Switches for `+helm`.
-pub const HELM_SWITCHES: [&str; 15] = [
+pub const HELM_SWITCHES: [&str; 17] = [
     "enter",
     "burn",
     "roll",
@@ -71,6 +72,8 @@ pub const HELM_SWITCHES: [&str; 15] = [
     "repair",
     "linkdead",
     "refit",
+    "watch",
+    "pulse",
 ];
 
 /// Switches for `+tac`.
@@ -98,7 +101,9 @@ pub const HELM_HELP: &str = "\
 +helm/coolant                            emergency open-cycle coolant blowdown (250 kg propellant -> -450 permille hull heat).\n\
 +helm/repair <radiator|drive|pdc|sensor> damage-control repair of a subsystem critical hit.\n\
 +helm/linkdead <on|off>                  toggle linkdead ballistic-drift safety posture (D-35-7) for your bridge seat.\n\
-+helm/refit [<package_id_or_hull_id>]    inspect the Space Hull & Refit Bay catalog or apply a slot-stable refit package.";
++helm/refit [<package_id_or_hull_id>]    inspect the Space Hull & Refit Bay catalog or apply a slot-stable refit package.\n\
++helm/watch <from> <to> [<site>]         arm automatic CarrierJourney interdiction promotion on a transit leg.\n\
++helm/pulse [<dt_ic_s> [<dt_wall_ms>]]   step the two-tier space clock (IC free flight + 1:1 wall-time bubbles & leg interdictions).";
 
 /// `+tac` help text.
 pub const TAC_HELP: &str = "\
@@ -160,6 +165,8 @@ pub struct SpaceBook {
     pub actor_ships: BTreeMap<ObjId, String>,
     /// Multicrew bridge seat rosters & linkdead state keyed by `ship_id` (`SF.15`, `D-35-7`, `D-35-9`).
     pub crew_rosters: BTreeMap<String, ShipCrewRoster>,
+    /// Watched `CarrierJourney` legs armed for automatic interdiction promotion (`SF.17`, `D-35-5`).
+    pub leg_watches: BTreeMap<String, InterdictionLegWatch>,
     /// Bound [`mush_tactics::TacticalUnit`] snapshots keyed by `ship_id` (`SF.10`, `D-35-1`).
     pub units: BTreeMap<String, mush_tactics::TacticalUnit>,
     /// Latest [`crate::field_ops::FieldUnitAssessment`] keyed by `ship_id` (`SF.10`).
@@ -182,6 +189,7 @@ impl Default for SpaceBook {
             ship_context: BTreeMap::new(),
             actor_ships: BTreeMap::new(),
             crew_rosters: BTreeMap::new(),
+            leg_watches: BTreeMap::new(),
             units: BTreeMap::new(),
             unit_assessments: BTreeMap::new(),
             salvage_book: crate::field_ops::SalvageClaimBook::new(),
@@ -1293,6 +1301,65 @@ fn helm_cmd(ctx: &mut Ctx<'_>) -> Result<(), CmdError> {
                     receipt.work_hours,
                     receipt.new_delta_v_mps,
                     receipt.new_propellant_kg
+                ),
+            );
+            push_actor_space_feeds(ctx, actor);
+            Ok(())
+        }
+        Some("watch") => {
+            let parts: Vec<&str> = raw.split_whitespace().collect();
+            let from_body = parts.first().copied().unwrap_or("pallas");
+            let to_body = parts.get(1).copied().unwrap_or("ceres");
+            let site = parts.get(2).copied().unwrap_or("kirkwood_picket");
+            let now_ic = ctx.w.world_ic_now().at.max(1);
+            let watch = InterdictionLegWatch::new(
+                &ship_id,
+                actor,
+                from_body,
+                to_body,
+                now_ic,
+                now_ic + 1_200,
+                site,
+            );
+            let interdict_at = watch.interdiction_at_ic;
+            let book = ctx
+                .w
+                .module_state_mut::<SpaceBook>()
+                .ok_or_else(|| CmdError::msg(NOT_ENABLED))?;
+            book.actor_ships.insert(actor, ship_id.clone());
+            book.leg_watches.insert(ship_id.clone(), watch);
+            ctx.out.info(
+                actor,
+                format!(
+                    "Armed CarrierJourney interdiction watch on '{from_body} -> {to_body}' for '{ship_id}' (site='{site}', interdiction_at_ic={interdict_at})."
+                ),
+            );
+            Ok(())
+        }
+        Some("pulse") => {
+            let parts: Vec<&str> = raw.split_whitespace().collect();
+            let dt_ic_s: u64 = parts.first().and_then(|s| s.parse().ok()).unwrap_or(600);
+            let dt_wall_ms: u32 = parts.get(1).and_then(|s| s.parse().ok()).unwrap_or(1_000);
+            let now_ic = ctx
+                .w
+                .world_ic_now()
+                .at
+                .max(1)
+                .saturating_add(dt_ic_s as i64);
+            let sky_opt = current_sky(ctx.w);
+            let book = ctx
+                .w
+                .module_state_mut::<SpaceBook>()
+                .ok_or_else(|| CmdError::msg(NOT_ENABLED))?;
+            let rep = pulse_space_book(book, sky_opt.as_ref(), now_ic, dt_ic_s, dt_wall_ms);
+            ctx.out.info(
+                actor,
+                format!(
+                    "Pulsed two-tier space clock (now_ic={}, +{} IC s, +{} wall ms): {} event(s).",
+                    rep.now_ic,
+                    rep.dt_ic_s,
+                    rep.dt_wall_ms,
+                    rep.events.len()
                 ),
             );
             push_actor_space_feeds(ctx, actor);
