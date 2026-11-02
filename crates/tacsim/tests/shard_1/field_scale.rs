@@ -4,8 +4,8 @@
 //! `sweep` dispatch with `--run-ignored only -E 'test(/^field_scale::/)'` (`--cargo-profile
 //! release` for the figures the cap is set from). It fields an IC field's arena on Ahuna Flank's
 //! own priced ground (as doc 32 cut S.2's `field_story::story_arena` does) at each size of
-//! `GC12_SIZES` (default `9,24,48,100`: S.2's nine as the control, today's cap, then Q-36-9's two
-//! sizes), every unit a stock mind from a mixed cohort, in **six parties under the IC host's
+//! `GC12_SIZES` (default `9,24,48,64,80,100`: S.2's nine as the control, today's cap, Q-36-9's two
+//! sizes and two between them), every unit a stock mind from a mixed cohort, in **six parties under the IC host's
 //! terms** — friendships and asymmetric opening marks, so the relation books are not two sides
 //! and grow with the fire — and steps each for `GC12_ARENA_S` (default 120) arena seconds two
 //! ways:
@@ -299,6 +299,8 @@ fn run_lane(rig: &mut Rig, n: usize, lattice: bool, arena_s: i64) -> f64 {
     let mut tempo_counts = [0_usize; 3];
     let mut shots = 0_usize;
     let mut peak_contacts = 0_usize;
+    // The worst wake's work: traces, cell probes, share operations, path queries and path cells.
+    let mut work = [0_u64; 5];
     let mut wall = 0_i64;
     let end_ms = arena_s * 1_000;
     while wall < end_ms {
@@ -317,6 +319,19 @@ fn run_lane(rig: &mut Rig, n: usize, lattice: bool, arena_s: i64) -> f64 {
             engaged.push(ms);
         }
         shots += shots_in(&out);
+        for (peak, now) in work.iter_mut().zip([
+            u64::from(out.perception.traces),
+            out.perception.cell_probes,
+            u64::from(out.perception.share_ops),
+            u64::from(out.motor.path_queries),
+            out.motor.path_cells,
+        ]) {
+            *peak = (*peak).max(now);
+        }
+        // The world's acknowledgement, as the field task gives it once the chunks are written
+        // (`arena_task`'s `mark_flushed`): without it the egress backs up past
+        // `ledger.max_unflushed_chunks` and the field is voided.
+        arena.ledger.mark_flushed(arena.ledger.last_closed_seq());
         if all.len() % 50 == 0 {
             let held: usize = arena
                 .units
@@ -325,7 +340,8 @@ fn run_lane(rig: &mut Rig, n: usize, lattice: bool, arena_s: i64) -> f64 {
                 .sum();
             peak_contacts = peak_contacts.max(held);
         }
-        if out.ended.is_some() {
+        if let Some(end) = &out.ended {
+            println!("GC12 n={n}: the field ended at {wall} ms: {end:?}");
             break;
         }
         wall = if lattice {
@@ -351,7 +367,9 @@ fn run_lane(rig: &mut Rig, n: usize, lattice: bool, arena_s: i64) -> f64 {
          {shots} shots, {standing} of {} standing; pulse ms median/p95/p99/max all {} | engaged \
          {}; 500 ms window ms p99 {:.3} max {:.3}; snapshot {opening} B opening, {closing} B end; \
          relations: {contacts} contacts held at the end (peak {peak_contacts}), books {books} B, \
-         hostile_in_weapons_range {tempo_us:.1} us, full contact sweep {sweep_us:.1} us",
+         hostile_in_weapons_range {tempo_us:.1} us, full contact sweep {sweep_us:.1} us; \
+         ledger {} B of {} B; worst wake: {} traces, {} cell probes, {} share ops, {} path \
+         queries, {} path cells",
         if lattice { "lattice" } else { "fixed100" },
         all.len(),
         tempo_counts[0],
@@ -362,18 +380,25 @@ fn run_lane(rig: &mut Rig, n: usize, lattice: bool, arena_s: i64) -> f64 {
         spread(&engaged),
         rank(&sorted_windows, 99),
         sorted_windows.last().copied().unwrap_or(0.0),
+        arena.ledger.bytes_total(),
+        arena.ledger.max_bytes(),
+        work[0],
+        work[1],
+        work[2],
+        work[3],
+        work[4],
     );
     assert!(shots > 0, "n={n}: the field is fought");
     engaged_p99
 }
 
-/// **Doc 36 cut GC.12: the field's pulse at 9, 24, 48 and 100 units, six parties** (Q-36-9).
+/// **Doc 36 cut GC.12: the field's pulse at 9 to 100 units, six parties** (Q-36-9).
 /// See the module's notes for the knobs and the line it prints.
 #[test]
 #[ignore = "GC.12 scale harness: by hand or gate.yml's sweep dispatch with --run-ignored only"]
 fn gc12_the_field_pulse_is_measured_at_scale() {
     let sizes: Vec<usize> = std::env::var("GC12_SIZES")
-        .unwrap_or_else(|_| "9,24,48,100".into())
+        .unwrap_or_else(|_| "9,24,48,64,80,100".into())
         .split(',')
         .filter_map(|s| s.trim().parse().ok())
         .collect();
