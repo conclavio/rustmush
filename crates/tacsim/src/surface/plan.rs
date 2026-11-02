@@ -1290,6 +1290,8 @@ pub(crate) fn fate_of(refusal: &Refusal) -> Fate {
         Refusal::NotSite { .. } | Refusal::UnderWay { .. } | Refusal::Cleared { .. } => {
             Fate::Wait(PlanWait::Dark)
         }
+        // Doc 36 cut GC.8a: a rig under a repair order waits for the work.
+        Refusal::Held { .. } => Fate::Wait(PlanWait::Dark),
         Refusal::Out { .. }
         | Refusal::Open { .. }
         | Refusal::InBay { .. }
@@ -3337,7 +3339,7 @@ mod tests {
     #[test]
     fn sm11_every_refusal_has_a_fate() {
         use crate::surface::act::{refusal_samples, refusal_words};
-        let fates: [(&str, Fate); 64] = [
+        let fates: [(&str, Fate); 65] = [
             ("tv_dark", Fate::Wait(PlanWait::Dark)),
             ("tv_unwired", Fate::Wait(PlanWait::Dark)),
             ("not_aboard", Fate::Wait(PlanWait::Ashore)),
@@ -3345,6 +3347,7 @@ mod tests {
             ("under_way", Fate::Wait(PlanWait::Dark)),
             ("cleared", Fate::Wait(PlanWait::Dark)),
             ("out", Fate::Unreachable),
+            ("bay_held", Fate::Wait(PlanWait::Dark)),
             ("open", Fate::Unreachable),
             ("forfeit", Fate::Park(PlanEnd::Lease { forfeit: true })),
             ("ended", Fate::Park(PlanEnd::Lease { forfeit: false })),

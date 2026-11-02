@@ -146,6 +146,15 @@ pub const ARMOR_CELL: &str = "armor";
 /// The cell every section carries under its armour.
 pub const INTERNALS_CELL: &str = "internals";
 
+/// **The chances a survivable hit jams or damages a part** for a unit that authors none (doc 36
+/// cut GC.2, Q-36-38): one in twenty jams a part of the struck section, one in ten damages one.
+/// Provisional (the owner's defaults rule of 2026-10-24), tuned with playtests.
+pub const COMPONENT_HITS: crate::arena::resolution::ComponentHits =
+    crate::arena::resolution::ComponentHits {
+        jam_permille: 50,
+        damage_permille: 100,
+    };
+
 /// **[`ARMOR_CELL`] as a [`CellId`], built once for the process** (16c
 /// T-110a).
 ///
@@ -925,6 +934,11 @@ pub struct UnitSpec {
     /// entries are bound into the unit definition; absence preserves old bytes.
     #[serde(default, skip_serializing_if = "BTreeMap::is_empty")]
     pub ground_stowage: BTreeMap<CanonicalId, crate::definitions::StowageDef>,
+    /// **What a survivable hit may do to a part** (doc 36 cut GC.2, Q-36-38), per mille, or
+    /// `None` for [`COMPONENT_HITS`]. Read by the arena's profile at check-out only; absent it
+    /// serialises nothing, so no `DefinitionRef` moves.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub component_hits: Option<crate::arena::resolution::ComponentHits>,
     /// Why these numbers.
     #[serde(default, skip_serializing_if = "String::is_empty")]
     pub note: String,
@@ -1020,6 +1034,17 @@ impl UnitSpec {
     pub fn check(&self, entry: &str) -> Result<(), DefinitionError> {
         crate::definitions::check_label(entry, &self.label)?;
         crate::definitions::check_note(entry, &self.note)?;
+        if let Some(hits) = self.component_hits
+            && u32::from(hits.jam_permille) + u32::from(hits.damage_permille) > 1_000
+        {
+            return Err(DefinitionError::value(
+                entry,
+                format!(
+                    "component_hits' chances are at most 1000 per mille together; {} and {} are not",
+                    hits.jam_permille, hits.damage_permille
+                ),
+            ));
+        }
         if self.sections.is_empty() {
             return Err(DefinitionError::value(
                 entry,

@@ -374,6 +374,7 @@ pub fn presenting_profile() -> tacsim::arena::resolution::UnitProfile {
             consequences: Vec::new(),
             struck_through: None,
         }],
+        ..Default::default()
     }
 }
 

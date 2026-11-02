@@ -894,6 +894,12 @@ fn the_engaged_tempo_is_entered_on_a_shot_and_held() {
     );
     assert_eq!(out.tempo, Tempo::Engaged);
     let fired_at = arena.now_ms;
+    // (The third trigger, below.) Doc 36 cut GC.2 (Q-36-6): a never-armed hull that has not fired keeps nobody
+    // `Engaged`, and the target here carries no gun — so it has fired, which is
+    // what makes it a fight in reach.
+    if let Some(state) = arena.unit_mut(BLUE) {
+        state.shots_fired = 1;
+    }
     // It holds for `tempo.engaged_hold_ms` of arena time, and is left at exactly it.
     let hold = i64::from(ArenaConfig::default().tempo.engaged_hold_ms);
     while arena.now_ms < fired_at + hold - 500 {

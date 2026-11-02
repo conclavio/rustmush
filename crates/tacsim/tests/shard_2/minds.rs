@@ -2035,6 +2035,7 @@ fn front_profile(lethal: bool) -> UnitProfile {
             },
             struck_through: None,
         }],
+        ..Default::default()
     }
 }
 

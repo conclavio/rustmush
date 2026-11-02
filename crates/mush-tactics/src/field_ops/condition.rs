@@ -52,6 +52,10 @@ pub enum ComponentCondition {
     Jammed,
     /// Ruined component (either directly destroyed or hosted in a destroyed section).
     Destroyed,
+    /// **Not there at all** (doc 36 cut GC.2, Q-36-38): a part stripped or removed from its
+    /// slot. Distinct from [`ComponentCondition::Destroyed`], which is a ruined part still in
+    /// the slot: a missing part has nothing to salvage and nothing to repair, only a slot to fill.
+    Missing,
 }
 
 impl ComponentCondition {
@@ -63,6 +67,7 @@ impl ComponentCondition {
             Self::Damaged => "damaged",
             Self::Jammed => "jammed",
             Self::Destroyed => "destroyed",
+            Self::Missing => "missing",
         }
     }
 
@@ -82,6 +87,7 @@ impl ComponentCondition {
             "damaged" => Some(Self::Damaged),
             "jammed" => Some(Self::Jammed),
             "destroyed" => Some(Self::Destroyed),
+            "missing" => Some(Self::Missing),
             _ => None,
         }
     }
@@ -93,8 +99,9 @@ impl ComponentCondition {
             "intact" | "ready" | "ok" | "nominal" => Self::Intact,
             "damaged" | "degraded" | "worn" => Self::Damaged,
             "jammed" | "offline" | "disabled" | "fault" => Self::Jammed,
-            "destroyed" | "wreck" | "ruined" | "irrecoverable" | "dead" | "stripped"
-            | "removed" => Self::Destroyed,
+            "destroyed" | "wreck" | "ruined" | "irrecoverable" | "dead" => Self::Destroyed,
+            // Doc 36 cut GC.2 (Q-36-38): a stripped or removed part is gone, not ruined.
+            "missing" | "stripped" | "removed" => Self::Missing,
             _ => Self::Intact,
         }
     }
@@ -105,10 +112,11 @@ impl ComponentCondition {
         matches!(self, Self::Intact | Self::Damaged)
     }
 
-    /// Whether the component survives as a salvageable/repairable part (`FO-2`).
+    /// Whether the component survives as a salvageable/repairable part (`FO-2`). A
+    /// [`ComponentCondition::Missing`] part is not there to salvage.
     #[must_use]
     pub const fn is_salvageable(self) -> bool {
-        !matches!(self, Self::Destroyed)
+        !matches!(self, Self::Destroyed | Self::Missing)
     }
 }
 
@@ -412,6 +420,9 @@ pub struct FieldUnitAssessment {
     pub degraded_components: Vec<ComponentId>,
     /// Components that are `Destroyed`.
     pub destroyed_components: Vec<ComponentId>,
+    /// **Components that are `Missing`** (doc 36 cut GC.2, Q-36-38): stripped or removed.
+    #[serde(default, skip_serializing_if = "Vec::is_empty")]
+    pub missing_components: Vec<ComponentId>,
     /// Weapon components that remain operational and able to fire.
     pub operational_weapons: Vec<ComponentId>,
 }
@@ -482,8 +493,12 @@ pub fn effective_component_condition(
 ) -> Option<ComponentCondition> {
     let comp = unit.component(component_id)?;
     let stored = ComponentCondition::classify_condition_id(&comp.condition);
-    if stored == ComponentCondition::Destroyed {
-        return Some(ComponentCondition::Destroyed);
+    // A missing part stays missing whatever its section suffers: there is nothing in the slot.
+    if matches!(
+        stored,
+        ComponentCondition::Destroyed | ComponentCondition::Missing
+    ) {
+        return Some(stored);
     }
     if let Some(host_section) = install_point_section(&comp.install)
         && let Some(sec_cond) = section_conditions.get(host_section)
@@ -525,6 +540,7 @@ pub fn assess_tactical_unit(
     let mut intact_components = Vec::new();
     let mut degraded_components = Vec::new();
     let mut destroyed_components = Vec::new();
+    let mut missing_components = Vec::new();
 
     for (comp_id, _) in unit.components() {
         if let Some(cond) =
@@ -536,6 +552,7 @@ pub fn assess_tactical_unit(
                     degraded_components.push(comp_id.clone());
                 }
                 ComponentCondition::Destroyed => destroyed_components.push(comp_id.clone()),
+                ComponentCondition::Missing => missing_components.push(comp_id.clone()),
             }
             component_conditions.insert(comp_id.clone(), cond);
         }
@@ -670,6 +687,7 @@ pub fn assess_tactical_unit(
         intact_components,
         degraded_components,
         destroyed_components,
+        missing_components,
         operational_weapons,
     }
 }
@@ -1459,3 +1477,34 @@ impl fmt::Display for ConditionError {
 }
 
 impl std::error::Error for ConditionError {}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    /// **Doc 36 cut GC.2 (Q-36-38)**: a stripped or removed part is `Missing`, distinct from a
+    /// ruined one, and neither works nor salvages.
+    #[test]
+    fn gc2_a_stripped_part_is_missing_and_not_destroyed() {
+        let id = |word: &str| ConditionId::new(word).expect("a condition id");
+        for word in ["stripped", "removed", "missing"] {
+            assert_eq!(
+                ComponentCondition::classify_condition_id(&id(word)),
+                ComponentCondition::Missing,
+                "{word}"
+            );
+        }
+        assert_eq!(
+            ComponentCondition::classify_condition_id(&id("ruined")),
+            ComponentCondition::Destroyed
+        );
+        assert_eq!(
+            ComponentCondition::from_condition_id(&id("missing")),
+            Some(ComponentCondition::Missing)
+        );
+        assert_eq!(ComponentCondition::Missing.as_str(), "missing");
+        assert!(!ComponentCondition::Missing.is_operational());
+        assert!(!ComponentCondition::Missing.is_salvageable());
+        assert!(ComponentCondition::Jammed.is_salvageable());
+    }
+}

@@ -42,7 +42,8 @@ fn sm3b_every_refusal_word_has_a_message() {
     // no longer told as not fitting the hold). Doc 20 cut SM.11: 56 → 63 (the fill plan's
     // seven prepare refusals); 63 → 64 at the lead's pre-commit round (item 1:
     // `unload_markers`, the queued unload's start while the hopper's unload log is full).
-    assert_eq!(REFUSAL_CODES.len(), 64);
+    // Doc 36 cut GC.8a: 64 → 65 (`bay_held`, a rig under a repair order).
+    assert_eq!(REFUSAL_CODES.len(), 65);
     assert_eq!(
         Refusal::PlanLive { n: 1, no: 2 }.code(),
         "that rig is working a plan"
