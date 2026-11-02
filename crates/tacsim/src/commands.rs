@@ -440,6 +440,41 @@ pub(crate) fn register(reg: &mut Registrar<'_>) -> Result<(), ModError> {
         },
         Arc::new(crate::port::ship::ship_cmd),
     )?;
+    // ---- Doc 35 cut SF.R3 (§5, §6, D-35-9, D-35-10): `+helm` and `+tac`, Authoritative ----
+    //
+    // Gated on physical aboard presence (`hull_aboard_for_actor`) and `mush-sim` bridge
+    // station assignments (`SpatialState.assignments` / `World::command_subjects_of`).
+    // Writes validated `StandingOrder`s (`Heading`, `Thrust`, `Posture`) and records
+    // deterministic `BubbleInputCommand`s onto the active `LocalSpaceBubble` input tape,
+    // gating sensor/weapon targeting through `mush-propagation`'s `resolve_detection`.
+    reg.command(
+        CommandSpec {
+            name: crate::space::HELM_VERB.into(),
+            shape: ArgShape::Raw,
+            switches: crate::space::HELM_SWITCHES
+                .iter()
+                .copied()
+                .map(SmolStr::new)
+                .collect(),
+            help: crate::space::HELM_HELP.into(),
+            ..CommandSpec::default()
+        },
+        Arc::new(crate::space::helm_cmd),
+    )?;
+    reg.command(
+        CommandSpec {
+            name: crate::space::TAC_VERB.into(),
+            shape: ArgShape::Raw,
+            switches: crate::space::TAC_SWITCHES
+                .iter()
+                .copied()
+                .map(SmolStr::new)
+                .collect(),
+            help: crate::space::TAC_HELP.into(),
+            ..CommandSpec::default()
+        },
+        Arc::new(crate::space::tac_cmd),
+    )?;
     reg.classify_commands(mush_core::CommandCompatibility::LegacyPostImage);
     // ---- Doc 30 §8, §13 Q-30-5 (cut WG.7): `@ground`, live ground draft staging ----
     //
