@@ -1979,7 +1979,7 @@ pub struct FieldConfig {
     /// it demotes **whatever its contacts**, so a declared but idle raider cannot hold bays shut
     /// (600, provisional; a field runs at the wall's pace, so ten wall-clock minutes).
     pub idle_demote_s: u32,
-    /// The field cap (24): the most units one field admits, and so the most flights one site's
+    /// The field cap (100, doc 36 GC.12): the most units one field admits, and so the most flights one site's
     /// surface takes (Q-CF-21). Never above the record's own bound
     /// ([`crate::surface::site_record::FIELD_MAX_UNITS`]).
     pub max_units: u32,

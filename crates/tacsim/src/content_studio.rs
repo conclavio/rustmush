@@ -300,13 +300,6 @@ fn shipped_docs() -> Vec<DocSpec> {
             family: "component",
             bytes: BATTERY_MK1_JSON,
         },
-        // Space Hulls & Slot-Stable Refit Packages (`SF.16`, `SF.19`)
-        DocSpec {
-            id: "space/hulls.json",
-            repo_path: "space/hulls.json",
-            family: "space",
-            bytes: crate::space::SPACE_HULLS_JSON,
-        },
         // Corridor & Relays
         DocSpec {
             id: LANE_PACK,
@@ -669,7 +662,6 @@ pub fn build_catalog_from_world(w: &mush_core::World) -> Value {
                     .and_then(Value::as_array)
                     .map(Vec::len)
             })
-            .or_else(|| doc_val.get("hulls").and_then(Value::as_array).map(Vec::len))
             .unwrap_or(1);
         let latch = CanonicalId::new(spec.id)
             .ok()
@@ -811,62 +803,35 @@ pub fn build_catalog_from_world(w: &mush_core::World) -> Value {
     let interfaces = vec!["hire", "passenger", "quest", "help", "coop"];
     let command_refs = vec![
         "+crew", "+passage", "+ship", "+quest", "+market", "+coop", "+survey", "+tv", "+chart",
-        "+credit", "+sortie", "+helm", "+tac", "+mine", "look",
+        "+credit", "+sortie", "look",
     ];
     let space_clusters: Vec<Value> = [
-        "ceres_halo",
-        "kirkwood_gap_3_1",
-        "pallas_inclined_belt",
-        "saturn_b_ring_edge",
+        ("ceres_halo", "Ceres Halo Cluster", "Regulated"),
+        ("kirkwood_gap_3_1", "Kirkwood 3:1 Gap Cluster", "Frontier"),
+        (
+            "pallas_inclined_belt",
+            "Pallas Inclined Belt Cluster",
+            "Frontier",
+        ),
+        (
+            "saturn_b_ring_edge",
+            "Saturn B-Ring Edge Cluster",
+            "Frontier",
+        ),
     ]
     .iter()
-    .map(|cid| {
-        let field = crate::space::AsteroidClusterField::new_canonical_cluster(cid, 0);
+    .map(|(cid, title, jurisdiction)| {
         json!({
-            "id": field.cluster_id,
-            "title": field.bubble.title,
-            "jurisdiction": format!("{:?}", field.jurisdiction),
-            "rock_count": field.rocks.len(),
+            "id": cid,
+            "title": title,
+            "jurisdiction": jurisdiction,
+            "rock_count": 3,
         })
     })
     .collect();
     let outer_bodies = vec![
         "saturn", "uranus", "neptune", "triton", "io", "europa", "ganymede", "callisto",
     ];
-    let hull_cat = tacsim_store
-        .and_then(|s| s.studio_tables.get("space/hulls.json"))
-        .and_then(|v| serde_json::to_string(v).ok())
-        .and_then(|raw| crate::space::SpaceHullCatalog::from_json(&raw).ok())
-        .unwrap_or_else(crate::space::SpaceHullCatalog::embedded);
-    let space_hulls: Vec<Value> = hull_cat
-        .hulls
-        .iter()
-        .map(|h| {
-            json!({
-                "id": h.id,
-                "short_id": h.short_id,
-                "label": h.label,
-                "refit_family": h.refit_family,
-                "pixel_model": h.pixel_model,
-                "dry_mass_t": h.dry_mass_t,
-                "delta_v_mps": h.delta_v_mps,
-            })
-        })
-        .collect();
-    let space_refit_packages: Vec<Value> = hull_cat
-        .refit_packages
-        .iter()
-        .map(|p| {
-            json!({
-                "id": p.id,
-                "label": p.label,
-                "refit_family": p.refit_family,
-                "target_hull_id": p.target_hull_id,
-                "cost_cr": p.cost_cr,
-                "work_hours": p.work_hours,
-            })
-        })
-        .collect();
 
     json!({
         "ports": ports,
@@ -878,8 +843,6 @@ pub fn build_catalog_from_world(w: &mush_core::World) -> Value {
         "command_refs": command_refs,
         "space_clusters": space_clusters,
         "outer_bodies": outer_bodies,
-        "space_hulls": space_hulls,
-        "space_refit_packages": space_refit_packages,
         "packs": pack_summaries,
     })
 }
@@ -1008,32 +971,6 @@ fn validate_and_sign(
         }
         if id == "resources.json" || repo_path == "resources.json" {
             ResourceTable::load("resources.json", &encoded).map_err(|e| vec![e.to_string()])?;
-            return Ok(CheckedDocument {
-                pack: None,
-                signed_doc: content,
-                digest: None,
-                cascade: Vec::new(),
-            });
-        }
-        if id == "space/hulls.json" || repo_path == "space/hulls.json" {
-            let cat = crate::space::SpaceHullCatalog::from_json(&encoded).map_err(|e| vec![e])?;
-            let mut refusals = Vec::new();
-            for pkg in &cat.refit_packages {
-                match cat.find_hull(&pkg.target_hull_id) {
-                    Some(target) if target.refit_family == pkg.refit_family => {}
-                    Some(target) => refusals.push(format!(
-                        "refit package `{}` family `{}` does not match target hull `{}` family `{}`",
-                        pkg.id, pkg.refit_family, target.id, target.refit_family
-                    )),
-                    None => refusals.push(format!(
-                        "refit package `{}` references unknown target_hull_id `{}`",
-                        pkg.id, pkg.target_hull_id
-                    )),
-                }
-            }
-            if !refusals.is_empty() {
-                return Err(refusals);
-            }
             return Ok(CheckedDocument {
                 pack: None,
                 signed_doc: content,
@@ -2421,7 +2358,6 @@ mod tests {
             "tacsim.cast.ceres_freeport",
             "tacsim.crew.ceres",
             "market/goods.json",
-            "space/hulls.json",
             "tacsim.pack.cannon_105",
         ] {
             let read_res = read_document(&ctx, doc_id);
@@ -2738,7 +2674,7 @@ mod tests {
     }
 
     #[test]
-    fn sf12_content_studio_catalog_advertises_space_clusters_outer_bodies_and_space_verbs()
+    fn content_studio_catalog_advertises_space_clusters_and_outer_bodies()
     -> Result<(), Box<dyn std::error::Error>> {
         let (w, _reg) = mush_testkit::boot_world();
         let catalog = build_catalog_from_world(&w);
@@ -2754,17 +2690,6 @@ mod tests {
             .and_then(Value::as_array)
             .ok_or("missing outer_bodies array")?;
         check_eq!(outer.len(), 8);
-
-        let cmd_refs = catalog
-            .get("command_refs")
-            .and_then(Value::as_array)
-            .ok_or("missing command_refs array")?;
-        for verb in ["+helm", "+tac", "+mine"] {
-            check!(
-                cmd_refs.iter().any(|v| v.as_str() == Some(verb)),
-                "expected {verb} in content_studio command_refs"
-            );
-        }
 
         Ok(())
     }

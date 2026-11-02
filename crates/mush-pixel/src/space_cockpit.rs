@@ -249,7 +249,7 @@ pub fn draw_space_cockpit(frame: &mut Frame, cockpit: &Value, feeds: &dyn Feeds,
                 let ang_deg = (r_km / dist_km).det_atan2(1.0).to_degrees() * 2.0;
                 ((ang_deg / fov_deg) * (w as f64)).round() as i64
             }
-            .clamp(2, h * 3 / 4);
+            .clamp(2, (h * 3 / 4).max(2));
 
             let sun_dir = (
                 num(body.get("sun_x")).unwrap_or(0.70),
@@ -320,7 +320,9 @@ pub fn draw_space_cockpit(frame: &mut Frame, cockpit: &Value, feeds: &dyn Feeds,
 
             let id_str = c.get("id").and_then(Value::as_str).unwrap_or("");
             let label_str = c.get("label").and_then(Value::as_str).unwrap_or("");
-            let ship_style = ShipModelStyle::from_contact(kind, relation, id_str, label_str);
+            let model_or_kind = c.get("pixel_model").and_then(Value::as_str).unwrap_or(kind);
+            let ship_style =
+                ShipModelStyle::from_contact(model_or_kind, relation, id_str, label_str);
             let aspect_yaw = num(c.get("aspect_yaw_deg"))
                 .or_else(|| num(c.get("yaw_deg")).map(|y| y - bearing))
                 .unwrap_or(180.0 - (bearing - cam_yaw));

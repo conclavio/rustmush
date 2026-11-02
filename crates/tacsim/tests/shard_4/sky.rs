@@ -533,10 +533,25 @@ fn sf1_outer_bodies_and_asteroid_clusters_track_horizons() {
             .iter()
             .any(|f| f == "strategic_ore")
     );
+    // 35a §6 row 1: kirkwood_gap_3_1 sits at the 3:1 Jupiter resonance (2.50 AU, ~1443.8 d),
+    // not on Ceres's 2.77 AU orbit.
+    let kw = clusters["kirkwood_gap_3_1"];
+    assert_eq!(kw.elements[0].a_nau, 2_500_000_000);
+    assert_eq!(kw.body.period_mdays, 1_443_805);
+    let (kw_r_km, _, _) = sky
+        .heliocentric(&cid("kirkwood_gap_3_1"), EPOCH_IC)
+        .expect("kirkwood_gap_3_1 position");
+    let kw_au = kw_r_km / AU_KM as f64;
+    assert!(
+        (2.38..=2.62).contains(&kw_au),
+        "kirkwood_gap_3_1 heliocentric radius {kw_au:.4} AU must sit at 2.50 AU resonance"
+    );
 }
 
-/// **Doc 35 cut SF.1 (D-35-4): `Sky::velocity_mps` returns physical heliocentric
-/// orbital velocities in m/s at `rate == 1000` and `[0, 0, 0]` at `rate == 0`.**
+/// **Doc 35 cut SF.1 (D-35-4, 35a §6 row 1): `Sky::velocity_mps` returns physical
+/// heliocentric orbital velocities in m/s at `rate == 1000`, `[0, 0, 0]` at
+/// `rate == 0`, matches central-difference position displacement, and pins
+/// Galilean planetocentric speeds about Jupiter.**
 #[test]
 fn sf1_sky_velocity_mps_matches_orbital_kinematics() {
     let moving = sky();
@@ -553,10 +568,11 @@ fn sf1_sky_velocity_mps_matches_orbital_kinematics() {
         (f64::from(vx).powi(2) + f64::from(vy).powi(2) + f64::from(vz).powi(2)).sqrt()
     };
 
-    let speed_bands: [(&str, f64, f64); 9] = [
+    let speed_bands: [(&str, f64, f64); 10] = [
         ("earth", 29_000.0, 30_600.0),
         ("mars", 21_900.0, 26_600.0),
         ("ceres", 16_500.0, 19_500.0),
+        ("kirkwood_gap_3_1", 17_800.0, 20_200.0),
         ("pallas", 14_000.0, 22_000.0),
         ("jupiter", 12_400.0, 13_800.0),
         ("saturn", 9_100.0, 10_300.0),
@@ -577,6 +593,47 @@ fn sf1_sky_velocity_mps_matches_orbital_kinematics() {
         assert!(
             (min_mps..=max_mps).contains(&s),
             "{name}: speed {s:.1} m/s ({v:?}) outside {min_mps}..={max_mps}"
+        );
+
+        // Derivative-vs-position pin: velocity_mps * 120 s matches p(t+60) - p(t-60) within ±20 m/s
+        // (1 km rounding on each endpoint over 120 s is at most 1000 / 120 ≈ 8.4 m/s per axis).
+        let p0 = moving.position_km(&id, EPOCH_IC - 60).expect("p0");
+        let p1 = moving.position_km(&id, EPOCH_IC + 60).expect("p1");
+        let fd = [
+            ((p1.x - p0.x) * 1_000) / 120,
+            ((p1.y - p0.y) * 1_000) / 120,
+            ((p1.z - p0.z) * 1_000) / 120,
+        ];
+        for axis in 0..3 {
+            let diff = (i64::from(v[axis]) - fd[axis]).abs();
+            assert!(
+                diff <= 20,
+                "{name} axis {axis}: velocity_mps={} vs finite-diff={} (diff={diff})",
+                v[axis],
+                fd[axis]
+            );
+        }
+    }
+
+    // Galilean moons' planetocentric speeds relative to Jupiter (v_moon - v_jupiter).
+    let v_jup = moving
+        .velocity_mps(&cid("jupiter"), EPOCH_IC)
+        .expect("jupiter velocity");
+    let galilean_rel_bands: [(&str, f64, f64); 4] = [
+        ("io", 16_800.0, 17_900.0),
+        ("europa", 13_400.0, 14_100.0),
+        ("ganymede", 10_600.0, 11_200.0),
+        ("callisto", 8_000.0, 8_500.0),
+    ];
+    for (moon, min_rel, max_rel) in galilean_rel_bands {
+        let v_m = moving
+            .velocity_mps(&cid(moon), EPOCH_IC)
+            .expect("moon velocity");
+        let rel = [v_m[0] - v_jup[0], v_m[1] - v_jup[1], v_m[2] - v_jup[2]];
+        let s_rel = speed_mps(rel);
+        assert!(
+            (min_rel..=max_rel).contains(&s_rel),
+            "{moon} planetocentric speed {s_rel:.1} m/s ({rel:?}) outside {min_rel}..={max_rel}"
         );
     }
 }

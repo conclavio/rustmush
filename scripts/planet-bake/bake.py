@@ -30,6 +30,7 @@ import hashlib
 import io
 import json
 import math
+import os
 import struct
 import tarfile
 import tempfile
@@ -204,14 +205,13 @@ def paeth(a, b, c):
     return c
 
 
-def downsample_png_to_rgb_grid(png_bytes, out_w=BAKED_W, out_h=BAKED_H):
+def downsample_png_to_rgb_grid(png_bytes, out_w=BAKED_W, out_h=BAKED_H, use_tk=True):
     """Decode an 8-bit PNG and downsample to an `out_w x out_h` grid of `(r, g, b)` tuples.
 
-    - Fast path 1: If all sampled rows use PNG filter 0 (None) or 1 (Sub), only the `out_h`
-      target rows are unfiltered in pure Python (no inter-row dependencies).
-    - Fast path 2: For multi-megapixel images using vertical filters (2, 3, 4), uses Tcl/Tk's
-      built-in C `PhotoImage` decoder when available, falling back to full pure-Python row
-      reconstruction on headless environments.
+    Both the pure-Python PNG filter 0..4 decoder and the optional Tcl/Tk `PhotoImage`
+    fast path sample the exact same stride coordinates `x = ux * sx`, `y = vy * sy`
+    (`sx = max(1, w // out_w)`, `sy = max(1, h // out_h)`), producing bit-identical
+    `(r, g, b)` grids across all platforms and headless environments.
     """
     w, h, bd, ct, ilace, idat = parse_png_chunks(png_bytes)
     if bd != 8 or ilace != 0:
@@ -224,8 +224,10 @@ def downsample_png_to_rgb_grid(png_bytes, out_w=BAKED_W, out_h=BAKED_H):
     stride = w * bpp
     row_span = stride + 1
 
-    sample_ys = [min(h - 1, int((vy + 0.5) * h / out_h)) for vy in range(out_h)]
-    sample_xs = [min(w - 1, int((ux + 0.5) * w / out_w)) for ux in range(out_w)]
+    sx = max(1, w // out_w)
+    sy = max(1, h // out_h)
+    sample_ys = [min(h - 1, vy * sy) for vy in range(out_h)]
+    sample_xs = [min(w - 1, ux * sx) for ux in range(out_w)]
 
     all_filters = {raw[y * row_span] for y in range(h)}
     if all_filters.issubset({0, 1}):
@@ -253,8 +255,7 @@ def downsample_png_to_rgb_grid(png_bytes, out_w=BAKED_W, out_h=BAKED_H):
             grid.append(row_rgb)
         return w, h, grid
 
-    # If image is large and uses vertical filters (2, 3, 4), try C-accelerated tkinter PhotoImage first
-    if w * h >= 2048 * 1024:
+    if use_tk and w * h >= 2048 * 1024:
         try:
             import tkinter as tk
 
@@ -264,8 +265,6 @@ def downsample_png_to_rgb_grid(png_bytes, out_w=BAKED_W, out_h=BAKED_H):
                 root.withdraw()
                 downsample_png_to_rgb_grid._tk_root = root
             img = tk.PhotoImage(data=png_bytes)
-            sx = max(1, w // out_w)
-            sy = max(1, h // out_h)
             sub = img.subsample(sx, sy)
             grid = []
             sw, sh = sub.width(), sub.height()
@@ -285,7 +284,7 @@ def downsample_png_to_rgb_grid(png_bytes, out_w=BAKED_W, out_h=BAKED_H):
         except Exception:
             pass
 
-    # Pure-Python full filter 0..4 reconstruction fallback
+    # Pure-Python full filter 0..4 reconstruction fallback (bit-identical to subsample(sx, sy))
     prev = bytearray(stride)
     curr = bytearray(stride)
     target_set = set(sample_ys)
@@ -540,6 +539,13 @@ def bake_all(pkg_path, out_dir):
         "asset_pack": ASSET_PACK_NAME,
         "package_version": f"sha256:{pkg_sha}",
         "baked_dimensions": [BAKED_W, BAKED_H],
+        "bake_params": {
+            "sample_mode": "stride_top_left",
+            "albedo_indices": [0, 239],
+            "feature_indices": [240, 255],
+            "luma_percentiles": [0.02, 0.98],
+            "idat_encoding": "zlib_stored_single_block",
+        },
         "planets": manifest_entries,
     }
     index_path = out_dir / "index.json"
@@ -610,8 +616,8 @@ def main():
     parser = argparse.ArgumentParser(description=__doc__)
     parser.add_argument(
         "--unitypackage-dir",
-        default="C:/Users/faeni/3d_assets",
-        help="Root directory holding external Unity asset packages",
+        default=os.environ.get("RUSTMUSH_3D_ASSETS", ""),
+        help="Root directory holding external Unity asset packages (or set RUSTMUSH_3D_ASSETS)",
     )
     parser.add_argument(
         "--package",

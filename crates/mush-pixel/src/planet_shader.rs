@@ -327,9 +327,9 @@ pub fn draw_celestial_body(frame: &mut Frame, spec: &CelestialBodyDraw) {
 
             // Check ring intersection in front of or behind the sphere.
             let ring_hit = if has_rings && sin_tilt.abs() > 0.04 {
-                let rz = -ny / sin_tilt;
+                let ry_plane = -ny / sin_tilt;
                 let rx = nx;
-                let ry_plane = ny * cos_tilt / sin_tilt;
+                let rz = ry_plane * cos_tilt;
                 let ring_r = (rx * rx + ry_plane * ry_plane).sqrt();
                 ring_sample(spec.style, ring_r, (rx, ry_plane), (lx, ly), (px, py)).map(|c| (rz, c))
             } else {
@@ -446,12 +446,15 @@ fn shade_sphere_pixel(
     let mut light = 0.08 + 0.92 * ndotl;
 
     // Ring shadow cast onto Saturn's cloud tops
-    if has_rings && style == PlanetStyle::Saturn && ly.abs() > 0.05 {
-        let t_ring = -ny / (ly * sin_tilt + 0.001);
+    let ring_denom = ly * cos_tilt + lz * sin_tilt;
+    if has_rings && style == PlanetStyle::Saturn && ring_denom.abs() > 0.05 {
+        let t_ring = -(ny * cos_tilt + nz * sin_tilt) / ring_denom;
         if t_ring > 0.0 {
-            let rx = nx + lx * t_ring * 0.35;
-            let rz = nz + lz * t_ring * 0.35;
-            let r_ring = (rx * rx + (rz * cos_tilt) * (rz * cos_tilt)).sqrt();
+            let rx = nx + lx * t_ring;
+            let ry_hit = ny + ly * t_ring;
+            let rz_hit = nz + lz * t_ring;
+            let ry_plane = -ry_hit * sin_tilt + rz_hit * cos_tilt;
+            let r_ring = (rx * rx + ry_plane * ry_plane).sqrt();
             if (1.52..=2.25).contains(&r_ring) && !(1.95..=2.03).contains(&r_ring) {
                 light *= 0.48;
             }

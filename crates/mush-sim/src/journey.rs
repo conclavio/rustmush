@@ -404,6 +404,51 @@ impl CarrierJourney {
         self
     }
 
+    /// **Doc 35 cut SF.R1 (`D-35-3`, `D-35-5`)** — promote a cruising journey into
+    /// a live tactical bubble on `domain` at `now`, anchoring the pause timestamp
+    /// to `now` so the post-interdiction leg timer freezes while the bubble runs.
+    #[must_use]
+    pub fn with_promoted(
+        mut self,
+        domain: crate::data::DomainId,
+        now: &ClockStamp,
+    ) -> CarrierJourney {
+        self.state = JourneyState::Promoted { domain };
+        if matches!(now.clock, ClockRef::WorldIc { .. }) {
+            self.departed.clock = now.clock.clone();
+            self.advanced_at = now.clone();
+        }
+        self
+    }
+
+    /// **Doc 35 cut SF.R1 (`D-35-3`, `D-35-5`)** — advance the pause anchor of a
+    /// `Promoted` journey to `now`, shifting `departed.at` forward by the IC
+    /// interval spent paused inside the bubble so the remaining leg duration is
+    /// preserved.
+    #[must_use]
+    pub fn with_paused_at(mut self, now: &ClockStamp) -> CarrierJourney {
+        if matches!(now.clock, ClockRef::WorldIc { .. }) {
+            let paused_ic = now.at.saturating_sub(self.advanced_at.at);
+            self.departed = ClockStamp {
+                clock: now.clock.clone(),
+                at: self.departed.at.saturating_add(paused_ic),
+            };
+            self.advanced_at = now.clone();
+        }
+        self
+    }
+
+    /// **Doc 35 cut SF.R1 (`D-35-5`)** — resume a `Promoted` journey back to
+    /// `JourneyState::Cruising` at `now`, shifting `departed.at` by any remaining
+    /// paused IC interval so the carrier continues its leg with no lost or skipped
+    /// travel time.
+    #[must_use]
+    pub fn with_resumed(self, now: &ClockStamp) -> CarrierJourney {
+        let mut resumed = self.with_paused_at(now);
+        resumed.state = JourneyState::Cruising;
+        resumed
+    }
+
     /// Durable id.
     #[must_use]
     pub fn id(&self) -> JourneyId {
@@ -1242,6 +1287,21 @@ fn step(ctx: &mut Ctx<'_>, root: ObjId, now: &ClockStamp, source: Source) -> Ste
         return Step::Skipped;
     }
 
+    // Doc 35 cut SF.R1 (D-35-3, D-35-5): while promoted into a live tactical
+    // bubble, the carrier's leg timer is paused. Shifting `departed.at` and
+    // `advanced_at` together by the paused IC interval keeps every remaining
+    // leg's duration intact when the bubble clears and resumes `Cruising`.
+    if matches!(journey.state, JourneyState::Promoted { .. }) {
+        let paused = journey.clone().with_paused_at(now);
+        if paused.departed != journey.departed || paused.advanced_at != journey.advanced_at {
+            persist_journey(ctx.out, &paused);
+            if let Some(book) = ctx.w.module_state_mut::<JourneyBook>() {
+                book.journeys.insert(root, paused);
+            }
+        }
+        return Step::Skipped;
+    }
+
     // A world rate-generation change must never pause a journey (D-E7-9): it
     // re-anchors, preserving the IC duration still to run, and keeps going.
     if journey.departed.clock != now.clock {
@@ -1383,6 +1443,54 @@ fn raise_interception(
              the domain stays as it was. Recommended: @domain/promote the domain by hand"
         ),
     }
+}
+
+/// **Doc 35 cut SF.R1 (`D-35-3`, `D-35-5`)** — promote a `Cruising` carrier journey
+/// into `JourneyState::Promoted { domain }` at `now`, pausing its leg timer while
+/// the tactical bubble is active.
+pub fn promote_carrier_journey(
+    ctx: &mut Ctx<'_>,
+    root: ObjId,
+    domain: crate::data::DomainId,
+    now: &ClockStamp,
+) -> bool {
+    let updated = ctx.w.module_state_mut::<JourneyBook>().and_then(|book| {
+        let journey = book.journeys.get(&root)?;
+        if !matches!(journey.state(), JourneyState::Cruising) {
+            return None;
+        }
+        let promoted = journey.clone().with_promoted(domain, now);
+        book.journeys.insert(root, promoted.clone());
+        Some(promoted)
+    });
+    if let Some(promoted) = updated {
+        persist_journey(ctx.out, &promoted);
+        true
+    } else {
+        false
+    }
+}
+
+/// **Doc 35 cut SF.R1 (`D-35-5`)** — resume a `Promoted` carrier journey back to
+/// `JourneyState::Cruising` at `now`, shifting `departed.at` forward by the IC
+/// interval spent paused in the tactical bubble so its remaining leg duration is
+/// preserved. Returns the domain it was promoted in.
+pub fn resume_carrier_journey(
+    ctx: &mut Ctx<'_>,
+    root: ObjId,
+    now: &ClockStamp,
+) -> Option<crate::data::DomainId> {
+    let (domain, updated) = ctx.w.module_state_mut::<JourneyBook>().and_then(|book| {
+        let journey = book.journeys.get(&root)?;
+        let JourneyState::Promoted { domain } = *journey.state() else {
+            return None;
+        };
+        let resumed = journey.clone().with_resumed(now);
+        book.journeys.insert(root, resumed.clone());
+        Some((domain, resumed))
+    })?;
+    persist_journey(ctx.out, &updated);
+    Some(domain)
 }
 
 /// Latch a stopped journey's root into the recovery room (E7 cut 6 fold, D1),

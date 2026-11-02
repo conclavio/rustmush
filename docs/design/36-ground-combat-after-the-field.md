@@ -1698,6 +1698,149 @@ the five in-source join tests, and the CF.7/GC.0 field story at 256
 gated-test census, tacsim shard and arena library guards are green; clippy and rustdoc `-D warnings`
 are clean on tacsim. The broad suites run on Linux CI on the draft PR.
 
+## As built (GC.12)
+
+**The cap, measured** (Q-36-9). `FIELD_MAX_UNITS` is now **100**, raised from 24. This section
+records two measurements: the first on main before GC.2, and the second on main after GC.2
+merged. The constant is set from the second.
+
+**The harness.** `field_scale::gc12_the_field_pulse_is_measured_at_scale` in
+`crates/tacsim/tests/shard_1/field_scale.rs`, one `#[ignore]` test, so the ordinary shards never
+run it. Both measurements below were run by hand, as `cargo test --release -p tacsim --test
+shard_1 field_scale:: -- --ignored --nocapture --test-threads=1`. gate.yml's `sweep` dispatch
+should also run it, with `packages` set to `tacsim`, `redis` off, and `extra` set to
+`--run-ignored only --cargo-profile release --no-capture -E 'test(/^field_scale::/)'`. Nobody
+has run it that way yet.
+- *The field:* the field's arena on Ahuna Flank's priced ground, built as S.2's `story_arena`
+  builds it (`field_story.rs`). It holds `n` units, every one a stock mind under the production
+  seal terms. The cohort is mixed: line tank ×3, laser, biped, thermal, ECM and ECCM, in that
+  order within each party.
+- *The parties:* six parties, `A` to `F`, in blocks on a ring 18 cells out from the pad. They
+  open under the IC host's terms (`EndCondition::Host`, every class, weapons hold). `A–B` and
+  `C–D` are friends by roster. The marks are not symmetric: `B` holds `D` neutral while `D`
+  holds `A` hostile, `E` minds only `F`, and `F` is a raider marking everyone. Fire then adds
+  its own hostility.
+- *The two loops:* each size runs twice, for 120 arena seconds, with a fresh world each time.
+  - **lattice:** steps at `StepOutput::next_due_ms`, the field task's loop. This is the verdict
+    lane.
+  - **fixed100:** steps in 100 ms pulses, S.2's loop, so its figures compare with S.2's.
+- *Acknowledging the ledger:* the harness acknowledges each pulse's chunks, as the field task
+  does (`Ledger::mark_flushed`). Without that, a 100-unit field backs up past
+  `ledger.max_unflushed_chunks` and voids itself at 22.25 s with `LedgerOverflow`. S.2's
+  9-unit rig never acknowledges, and stays under the bound for its minute.
+- *What it prints:* one `GC12` line per size and lane:
+  - pulse median, p95, p99 and max, over all wakes and over `Engaged` wakes;
+  - the worst 500 ms window;
+  - the snapshot at the opening and at the end;
+  - contacts held, and the parties' books encoded;
+  - the timed cost of `Arena::hostile_in_weapons_range`, and of a sweep of every held contact
+    through `Relations::hostile`;
+  - the ledger's bytes;
+  - the worst wake's traces, cell probes, share operations and path work;
+  - mind faults, and the closing state hash.
+- *Knobs:* `GC12_SIZES` (default `9,24,48,64,80,100`) and `GC12_ARENA_S` (120).
+  `GC12_ASSERT=1` turns the budget into an assertion. The default is report-only (D-H-8).
+
+**The budget.** `[tacsim.harness].engaged_p99_ms`, 40 ms a pulse in `Engaged` tempo, set on the
+production VPS (16c `T-109`). This is the only pulse-time budget in the config: `[tacsim.field]`
+holds the cap but no time, and Q-CF-45 budgets units, not milliseconds. `tempo.stall_ms` (2,000)
+is the watchdog, not a budget. For reference, the OOC harness's stricter lens is 20 ms a wake
+and 32 ms per 500 ms window.
+
+**The first measurement on main.** Tree: main `9dd000a4` plus the harness (`eaa089e9`).
+Machine: conclav.dev, AMD EPYC 9J45, 32 vCPU, 62 GB, Ubuntu 26.04, idle, the test on one
+thread. Timings are milliseconds, from the lattice lane, `Engaged` wakes, release build. From 24
+units up, the field was engaged by 3.25 s and stayed engaged: 467 of the 480 wakes. At nine units,
+347 of them were.
+
+| Units | Shots in 120 s | Standing at the end | Pulse median / p95 / p99 / max | Worst 500 ms window | Snapshot, opening → end | Contacts at peak | Worst wake: traces / cell probes / share ops |
+|---|---|---|---|---|---|---|---|
+| 9 | 335 | 5 | 0.045 / 0.101 / 0.150 / 0.225 | 0.28 | 137 KB → 171 KB | 46 | 42 / 144 / 2 |
+| 24 | 1,287 | 9 | 0.210 / 0.520 / 0.609 / 0.697 | 1.20 | 350 KB → 410 KB | 544 | 260 / 504 / 30 |
+| 48 | 1,912 | 20 | 0.479 / 1.009 / 1.396 / 2.126 | 2.87 | 684 KB → 881 KB | 2,192 | 780 / 1,509 / 112 |
+| 64 | 2,981 | 29 | 0.801 / 1.840 / 2.286 / 3.847 | 4.78 | 900 KB → 1.25 MB | 3,915 | 1,333 / 2,941 / 189 |
+| 80 | 3,745 | 36 | 1.337 / 3.025 / 3.542 / 7.687 | 9.04 | 1.13 MB → 1.61 MB | 6,227 | 1,863 / 3,814 / 267 |
+| 100 | 3,365 | 49 | 1.249 / 4.777 / 6.375 / 12.762 | 14.63 | 1.40 MB → 1.94 MB | 9,704 | 2,896 / 6,063 / 419 |
+
+- **Debug, same machine, lattice `Engaged` p99 / max:**
+  - 9 units: 2.07 / 3.69
+  - 24 units: 6.07 / 7.36
+  - 48 units: 12.41 / 24.23
+  - 100 units: 58.59 / 143.08, past the budget. A debug build is not production.
+- **S.2's comparison, the fixed100 lane at nine units:**
+  - debug: median 0.267 ms, p99 1.14;
+  - release: median 0.018 ms, p99 0.084.
+  - S.2 printed 0.35 and 0.8 in debug on the Windows box, and 0.03 and 0.13 in release on
+    conclav.dev, over a minute of its own story's cells.
+- **The fixed100 lane at 100 units (release):** median 0.613, p99 2.774, max 7.607.
+- **Determinism:** the closing state hash of each size and lane is the same in release and in
+  debug, and across two release runs.
+
+**What the numbers say.**
+- **100 units is within budget on main, with room to spare.** The p99 of 6.4 ms is a sixth of
+  40 ms. The worst single wake, 12.8 ms, and the worst window, 14.6 ms, are inside even the OOC
+  harness's 20 ms and 32 ms lens.
+- **The cost grows with contacts, roughly as the square of the units.** From 48 to 100 units
+  (×2.1), the p99 grows ×4.6, peak contacts ×4.4, and worst-wake traces ×3.7. Perception is
+  where the time goes.
+- **Traces near their OOC bound at 100 units.** The worst wake's traces, 2,896, are the
+  measure nearest its OOC harness bound, 4,000 (`max_traces_per_pulse`), which fits about
+  120 units. Cell probes (6,063 of 32,000) and share operations (419 of 768) have more room.
+  Those bounds are the OOC harness's assertions, not throttles, and nothing in the field
+  enforces them.
+- **The relation table, Q-36-9's worry, is not the cost:**
+  - The parties' books stay at 515–542 bytes at every size. They grow with parties and marks,
+    not with units.
+  - `hostile_in_weapons_range` costs 0.1–3 µs. It is an `any()`, so a field that is engaged
+    answers at its first hostile pair.
+  - A full sweep of every held contact through the books is 3 µs at 100 units in release.
+  - What grows with parties × contacts is the contact store itself (9,704 rows at its peak),
+    and that cost is perception's.
+- **Snapshots grow linearly**, at about 14 KB a unit at the opening. A 100-unit field ends its
+  two minutes at 1.94 MB, a quarter of the OOC harness's 7 MiB lane bound and far under
+  `snapshot_max_bytes` (480 MiB).
+- **The ledger at 100 units:** 7.4 MB in two minutes of non-stop fighting, against the 64 MiB
+  `ledger.max_bytes`. A field engaged for 18 minutes at that rate would reach the bound and stop
+  with `Timeout`. Doc 32 Q-CF-45 never sized the ledger for this many units. It is flagged here,
+  not changed.
+- **Caveat:** the machine is conclav.dev, not conclav.io, the host the 40 ms was set on. The
+  sixfold margin is the reason a conclav.dev figure is trusted here.
+
+**The re-measure after GC.2.** GC.2 (PR #296, merged as `c2653243`) changes the tempo rule in
+the hot loop, so the harness ran again. Tree: main after GC.2 plus the harness (`34416410`, the
+branch's merge of main). Same machine, conditions and lanes as above. The opening is the same
+world as on main; GC.2 changes how the fight goes (more shots, more units standing), so the rows
+differ from the table above.
+
+| Units | Shots in 120 s | Standing at the end | Pulse median / p95 / p99 / max | Worst 500 ms window | Snapshot, opening → end | Contacts at peak | Worst wake: traces / cell probes / share ops |
+|---|---|---|---|---|---|---|---|
+| 9 | 344 | 5 | 0.047 / 0.094 / 0.115 / 0.204 | 0.28 | 138 KB → 159 KB | 46 | 42 / 144 / 2 |
+| 24 | 1,633 | 12 | 0.239 / 0.489 / 0.634 / 0.678 | 1.25 | 352 KB → 460 KB | 544 | 260 / 504 / 30 |
+| 48 | 2,263 | 26 | 0.519 / 1.092 / 1.916 / 2.252 | 3.99 | 687 KB → 906 KB | 2,192 | 780 / 1,509 / 112 |
+| 64 | 3,262 | 38 | 0.931 / 1.828 / 2.261 / 3.808 | 4.78 | 904 KB → 1.31 MB | 3,915 | 1,333 / 2,941 / 189 |
+| 80 | 4,028 | 42 | 1.496 / 2.991 / 3.554 / 7.516 | 8.87 | 1.13 MB → 1.65 MB | 6,227 | 1,863 / 3,814 / 267 |
+| 100 | 3,818 | 63 | 1.612 / 4.870 / 5.986 / 12.385 | 14.32 | 1.41 MB → 1.96 MB | 9,704 | 2,896 / 6,063 / 419 |
+
+- **Debug, lattice `Engaged` p99 / max:** 9 units 1.78 / 2.33; 24 units 6.38 / 7.33; 48 units
+  12.74 / 25.29; 100 units 60.17 / 146.80, past the budget, as on main.
+- **The fixed100 lane at 100 units (release):** median 0.591, p99 2.820, max 7.456.
+- **The ledger at 100 units:** 7.8 MB in two minutes, as on main.
+- **Determinism:** each size's closing hash is the same in release and in debug.
+
+**The cap: 100.** The largest size measured is 100 units. Its `Engaged` p99 is 6.0 ms against
+the 40 ms budget (`[tacsim.harness].engaged_p99_ms`), and its worst wake is 12.4 ms. So
+`FIELD_MAX_UNITS` (`site_record.rs`) is 100. With it move the default of `[tacsim.field].max_units`,
+which may still be set anywhere from 2 to 100; `MAX_EXCURSIONS_PER_SITE`, which is the cap;
+and the mush-config default. Nothing past 100 was measured, so nothing past it is claimed. Past
+about 120 units, the worst wake's traces would cross the OOC harness's 4,000 bound, and a cap
+above 100 needs its own run. Two other things were checked at the cap:
+- A site record whose open field holds 100 settled rigs and 100 exits, beside a full salvage
+  memory, stays under the 64 KiB record ceiling (`gc12_a_field_at_the_cap_fits_the_record`).
+- An `open`'s rig list at 100 ids is about 1.1 KB, under the 4 KiB bound on an offer's text.
+
+The ledger still fills in about 18 engaged minutes at 100 units, as noted above; that is a
+follow-up for the ledger's sizing, not a bound on the cap.
+
 ## GC.8a as built (the bay's repair order, berth and stow)
 
 Built 2026-11-01 on `claude/gc2-kernel-batch` (GC.2, PR #296, which GC.8 needs for `Missing` and
@@ -1843,6 +1986,105 @@ among them); `mush-industry`'s `bay_refit` rig; `mush-tactics`' workshop tests; 
 budget, restriction lints); clippy and rustdoc `-D warnings` on `tacsim` and `mush-tactics`. The
 broad suites run on Linux CI on the draft PR.
 
+## As built (GC.9)
+
+GC.9 landed on 2026-11-01 as the lease's damage charge (Q-36-34). It touches no kernel hash and
+no content pin: the tariff, the workshop multipliers and the deposits are GC.7's and CF.6c's
+content, read as they are. Every number below is provisional under the owner's economy rule of
+2026-10-24.
+
+**The charge, at the return** (`crates/tacsim/src/port/tv.rs`, `plan_return` step 12 and
+`give_back` step b).
+- *When:* an `Active` record returned from its bay. A write-off (CF.6c) already keeps the whole
+  deposit, and a deposit that is forfeit, or that this return's own term settle forfeits, has
+  nothing left to pay from. Neither is charged.
+- *The assessment:* `restoration_charge` reads the rig's unit, assesses it over its spec's anatomy
+  with the existing assessment (`assess_tactical_unit`, the condition vocabulary), and quotes it
+  with the GC.7 tariff (`WorkshopBook::quote_full_restoration`). The multiplier is the lessor
+  port's workshop multiplier: Occator's own counter at Ceres, room C14 at 1.2x. An entry with no
+  workshop prices at 1x. The quote is labour only, as the tariff is: the tonnes of
+  `industrial_parts` and the rounds themselves are not charged.
+- *Past repair:* the tariff quotes no restoration of an `Irrecoverable` hull, so a rig past repair
+  in its bay is charged the whole deposit.
+- *The cap:* the charge is the quote, capped at the deposit. The rest of the deposit is released.
+
+**By section.** The lessee hears the charge broken down by section, in the preview and in the
+return: `chassis 60.00cr, hopper 24.00cr, 84.00cr in all; 84.00cr is taken from your 5000.00cr
+deposit and 4916.00cr is released.` Each line is a section's points (repaired, or rebuilt with
+the rebuild's base cost) plus the components installed in it (repaired, replaced or rearmed). A
+component installed at unit level reads under `fittings`. Each item is priced exactly as the
+quote prices it, and the lines must sum to the quote's total, or the return refuses with
+`LEASE_FAILED` and logs. Above the deposit the line ends `that is more than your 50.00cr
+deposit, so Occator keeps all of it.` An undamaged return reads exactly as it did before
+(`RETURN_PREVIEW`, `RETURNED`).
+
+**The money: the same hold and settlement.** The deposit is still the engine-owned
+`tacsim.tv.deposit` reservation, settled only through `mush_economy`'s engine-reservation seam.
+Before this cut that seam could release a hold or capture it whole. GC.9 adds
+`capture_engine_reservation_part` beside `settle_engine_reservation`. It is the same
+`EngineReservationAuth`, carrying an explicit amount (`0 < amount <= hold.amount`) in place of
+the hold's own. The economy's `HoldOp::Capture` already releases the uncaptured remainder in the
+same effect (invariant 26), so a charge is one post:
+- one `Capture { hold, amount }`;
+- the two lines that move `amount` from the pilot's account to Occator's;
+- key `tacsim.tv.charge/{lease}`, public like the forfeit.
+
+A retry reads the hold. `Consumed` answers "charged" with no second post, which is
+`settle_deposit`'s idempotence. No new hold, account or money path was added.
+
+**The restoration, at the next take.** Occator restores the rig at the take, as the first write
+of `+tv/lease go`. The return's alternative was rejected because a take-time restore is the one
+place every path home passes through: a return, a charter's repossession, a staff move, and
+later GC.5's hand-back of a written-off rig. The restore is the arena reset's own
+put-back-to-spec (`match_::reset::reset_one`, now `pub(crate)`): cells to their initial values,
+conditions to `intact`, capabilities restored, and a refit first if the record's schema is not
+the loaded one. It writes nothing for an undamaged rig, so no census or story that leases a
+fresh rig moves. If the restore refuses, the lease refuses with nothing written. The rig's
+battery charge lives in its excursion record, not in its unit cells, so it is left as it was.
+
+**The figures** at Ceres (1.2x on the GC.7 tariff):
+
+| Work | Charge |
+|---|---|
+| a structural point | 1.20 cr |
+| repair a component | 240 cr |
+| replace a component | 480 cr |
+| rebuild a section | 960 cr plus its points |
+| load a round | 0.30 cr |
+
+Basis: the GC.7 tariff at the workshop's authored multiplier, so the lessee pays what Occator's
+own workshop would quote a customer. The prospector's whole restoration short of
+`Irrecoverable` is 4,380 cr: three sections rebuilt (2,880 cr), 450 points (540 cr) and two
+components replaced (960 cr). That sits inside its 5,000 cr deposit, so on shipped content only
+a rig past repair takes the whole prospector deposit. The cap story uses a lane variant with a
+50 cr deposit.
+
+**Gates** (`crates/tacsim/tests/shard_4/vehicles.rs`):
+- `gc9_a_damaged_lease_rig_returned_pays_its_restoration_from_the_deposit`: a prospector returned
+  50 points down on its chassis and 20 on its hopper. The preview and the return name
+  `chassis 60.00cr, hopper 24.00cr`. The deposit hold is `Consumed` for 84.00cr. The pilot's
+  posted balance falls by 84.00cr and their held balance by the deposit, and Occator gains
+  84.00cr. When the rig is leased again its internals are whole, and its next return gets the
+  whole deposit back.
+- `gc9_a_lease_rig_whose_damage_costs_more_than_its_deposit_pays_the_deposit`: on the 50 cr
+  variant, the same damage takes the whole deposit and no more.
+- `gc9_an_undamaged_lease_rig_returned_gets_its_whole_deposit_back`: no charge, the old texts,
+  and the hold `Released`.
+
+CF.6c's gate returns a damaged escort. Its return now reads the charge, and still names the
+15000.00cr deposit it asserts.
+
+**Not built here:**
+- *Q-36-22's write-off of a rig left out for 28 IC days, and Q-36-29's hand-back of a loaded
+  written-off rig to Occator:* both are GC.5's, which also touches `port/tv.rs`.
+- *A charter repossession (`repossess`):* it still releases the deposit within the term without
+  a damage charge. The cut's ruling names the return, and the repossession is Occator's own act.
+  The take-time restore still gives the next lessee a whole rig. Whether a repossession should
+  also charge is an open question for the economy owner.
+
+**Defaults taken (provisional):** the lessor port's workshop multiplier as the charge's
+multiplier; rearm labour included in the charge; no charge for parts tonnage; the whole deposit
+for a rig past repair.
 ## GC.11 as built (the raid director)
 
 Built on `main` at `396d473c`, after GC.0, GC.1 and GC.1b merged. It covers Q-36-41 and Q-36-55.

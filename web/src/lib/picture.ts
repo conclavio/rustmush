@@ -521,8 +521,6 @@ export type SpacePictureKey =
   | { kind: "holotankOrbit"; deltaMdeg: number }
   /** Send an out-of-time-loop 6-DOF docking order (`D-35-16`). */
   | { kind: "dockOrder"; cmd: string }
-  /** Send a space bridge helm/tactical order (`+helm/...`, `+tac/...`). */
-  | { kind: "spaceHelm"; cmd: string }
   /** Swing the canopy look (`-1` left, `1` right). */
   | { kind: "look"; dir: -1 | 1 }
   /** Centre the look (`0` mdeg). */
@@ -606,29 +604,8 @@ export function spacePictureKey(key: string, mode: SpaceCameraMode): SpacePictur
         return null;
     }
   }
-  // `space_cockpit`
+  // `space_cockpit`: camera-local look and centre controls only (no legacy +helm/+tac verbs).
   switch (key) {
-    case "ArrowLeft":
-    case "a":
-    case "A":
-      return { kind: "spaceHelm", cmd: "+helm/roll -15 0 0" };
-    case "ArrowRight":
-    case "d":
-    case "D":
-      return { kind: "spaceHelm", cmd: "+helm/roll 15 0 0" };
-    case "ArrowUp":
-      return { kind: "spaceHelm", cmd: "+helm/roll 0 15 0" };
-    case "ArrowDown":
-      return { kind: "spaceHelm", cmd: "+helm/roll 0 -15 0" };
-    case "w":
-    case "W":
-      return { kind: "spaceHelm", cmd: "+helm/burn 10 0 0" };
-    case "s":
-    case "S":
-      return { kind: "spaceHelm", cmd: "+helm/burn -10 0 0" };
-    case "x":
-    case "X":
-      return { kind: "spaceHelm", cmd: "+helm/burn 0 0 0" };
     case ",":
     case "q":
     case "Q":
@@ -640,15 +617,6 @@ export function spacePictureKey(key: string, mode: SpaceCameraMode): SpacePictur
     case "c":
     case "C":
       return { kind: "centre" };
-    case "f":
-    case "F":
-      return { kind: "spaceHelm", cmd: "+tac/pdc auto" };
-    case "g":
-    case "G":
-      return { kind: "spaceHelm", cmd: "+tac/decoy" };
-    case "t":
-    case "T":
-      return { kind: "spaceHelm", cmd: "+tac/scan" };
     default:
       return null;
   }

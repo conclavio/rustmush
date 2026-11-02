@@ -1185,6 +1185,14 @@ jobs:
   # cargo test --release -p tacsim --test cost_lane sm12c_the_surface_tick_is_measured -- --exact --nocapture
   # cargo test --release -p tacsim --test cost_lane sm12c_cost_lane_cohort_over_an_ic_month -- --ignored --exact --test-threads=1 --nocapture
 
+  # Doc 36 GC.12 (Q-36-9): the IC field's pulse measured at 9..100 units over six parties,
+  # gc12_the_field_pulse_is_measured_at_scale (crates/tacsim/tests/shard_1/field_scale.rs;
+  # #[ignore]d, release, run on conclav.dev). Its figures
+  # set FIELD_MAX_UNITS and live in doc 36's "As built (GC.12)". No job runs it: it is run by
+  # hand, or through gate.yml's sweep dispatch (doc 36 has the inputs). Naming it here is what
+  # the gated-test inventory asks of an ignored test. By hand:
+  # cargo test --release -p tacsim --test shard_1 gc12_the_field_pulse_is_measured_at_scale -- --ignored --exact --test-threads=1 --nocapture
+
   # 16b cut H (§5, H3): the TacSim scale harness — doc 16 §1's A2 acceptance.
   # It composes the production composition root in a memory-store test world,
   # generates a relief from TACSIM_SEED, applies it through the atlas's pack

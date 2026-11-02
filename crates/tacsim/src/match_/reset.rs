@@ -240,8 +240,13 @@ pub fn reset_stock_tanks(
 }
 
 /// Put one tank's record back to its spec. Answers
-/// `(was it refitted, was a plan written)`.
-fn reset_one(ctx: &mut Ctx<'_>, object: ObjId, schema: &SmolStr) -> Result<(bool, bool), String> {
+/// `(was it refitted, was a plan written)`. Doc 36 cut GC.9 also restores a leased rig with it
+/// before its next lease (`port::tv`'s take).
+pub(crate) fn reset_one(
+    ctx: &mut Ctx<'_>,
+    object: ObjId,
+    schema: &SmolStr,
+) -> Result<(bool, bool), String> {
     let Some(held) = mush_tactics::module::unit_of(ctx.w, object).cloned() else {
         // A roster object that is not a tactical unit at all: content the applier
         // never finished, or a staffer's `@unit/remove`. Not this pass's business.
