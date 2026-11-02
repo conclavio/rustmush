@@ -2821,7 +2821,13 @@ impl TuiApp {
                 // Doc 21 cut G.12b: the cockpit is screen 0's own rendering, no
                 // longer `^G`'s; elsewhere the key does nothing.
                 let kind = if self.active == CHART_SCREEN {
-                    PictureKind::Chart
+                    match self.pixel.kind() {
+                        PictureKind::Chart
+                        | PictureKind::Holotank
+                        | PictureKind::SpaceCockpit
+                        | PictureKind::Docking => self.pixel.kind(),
+                        _ => PictureKind::Chart,
+                    }
                 } else if self.active == super::screen::DAMAGE_SCREEN {
                     // Doc 21 cut G.6a: the armour doll as a page.
                     PictureKind::Doll
@@ -3419,6 +3425,25 @@ impl TuiApp {
             // Doc 21 cut G.12b: screen 0's `p` while it could draw the picture
             // — the text cockpit, and back; `Self::pixel_sync` does the rest.
             LocalAction::CockpitPicture => self.cockpit_text = !self.cockpit_text,
+            LocalAction::SpaceViewToggle => {
+                if self.pixel.is_active() {
+                    self.pixel.cycle_space_view();
+                } else {
+                    let initial = match self.pixel.kind() {
+                        PictureKind::Chart => PictureKind::Holotank,
+                        PictureKind::Holotank => PictureKind::SpaceCockpit,
+                        PictureKind::SpaceCockpit => PictureKind::Docking,
+                        PictureKind::Docking => PictureKind::Chart,
+                        _ => PictureKind::Holotank,
+                    };
+                    let opened = self.pixel.toggle_for(initial, Instant::now());
+                    if opened && self.mode == Mode::Input {
+                        self.leave_input(true);
+                    }
+                }
+                r.submit.extend(self.pixel.take_orders());
+                self.pixel_chart_ask(&mut r.queries);
+            }
             LocalAction::QuarryLayer => {
                 let mut view = self.panels.quarry().clone();
                 let source = match view.mode {
