@@ -161,7 +161,8 @@ use crate::arena::ledger::LedgerChunk;
 use crate::arena::observer::Observer;
 use crate::arena::snapshot::Snapshot;
 use crate::arena::state::{
-    Arena, ArenaError, Channel, CustodyOut, Designator, EndReason, MatchEnd, StopReason,
+    Arena, ArenaError, Channel, CustodyOut, CustodyUnit, Designator, EndReason, MatchEnd, Pilot,
+    StopReason,
 };
 use crate::arena::step::{Frame, StepOutput};
 use crate::config::{ArenaConfig, MatchConfig, MindsConfig, SensorsConfig};
@@ -270,6 +271,25 @@ pub enum ArenaMsg {
         /// The ramp's site position, centimetres; `None` is a carrier lifting
         /// off its pad (doc 32 F-6), which takes no ramp.
         ramp: Option<(i64, i64)>,
+    },
+    /// **Take a unit into the running field** (doc 36 cut GC.1b; Q-36-4): a carrier that
+    /// settled on the site's pad after admission, checked out by the host. Buffered in arrival
+    /// order (one per unit) and admitted by `Arena::join` at the next pulse's head, before the
+    /// step, so it lands at a pulse boundary like a mark; the answer is an
+    /// [`ArenaOut::Joined`], queued behind the ledger so it is never lost. Only the IC field
+    /// host sends it, and a task with no [`FieldTerms`] refuses it: no OOC match ever joins.
+    /// Held to the intent reserve at [`ArenaHandle::offer`].
+    Join {
+        /// The unit's check-out row, at its pad pose.
+        unit: Box<CustodyUnit>,
+        /// Who sits in it, when anyone does.
+        pilot: Option<Pilot>,
+        /// The host's standing friendships and marks, for its party's book when the field has
+        /// none yet, and its seat rules.
+        host: crate::arena::FieldHost,
+        /// How far from its pose, in cells (Chebyshev), it may be stood when another unit holds
+        /// that cell (`crate::field::carrier::PAD_SPREAD_CELLS`).
+        spread: u16,
     },
 }
 
@@ -483,6 +503,17 @@ pub enum ArenaOut {
         /// Its check-in row, or the refusal.
         outcome: Result<Box<UnitReturn>, crate::arena::withdraw::WithdrawRefusal>,
     },
+    /// **The answer to an [`ArenaMsg::Join`]** (doc 36 cut GC.1b): the name the unit joined
+    /// under, or why the arena refused it (the arena is then unchanged). Only an IC field's task
+    /// sends it.
+    Joined {
+        /// Which task.
+        match_id: MatchId,
+        /// The unit.
+        unit: ObjId,
+        /// Its name in the field, or the refusal's sentence.
+        outcome: Result<crate::arena::state::Designator, String>,
+    },
 }
 
 impl ArenaOut {
@@ -499,7 +530,8 @@ impl ArenaOut {
             | ArenaOut::Deliberate { match_id, .. }
             | ArenaOut::Snapshot { match_id, .. }
             | ArenaOut::Ended { match_id, .. }
-            | ArenaOut::Withdrawn { match_id, .. } => Some(*match_id),
+            | ArenaOut::Withdrawn { match_id, .. }
+            | ArenaOut::Joined { match_id, .. } => Some(*match_id),
         }
     }
 }
@@ -576,6 +608,7 @@ impl ArenaHandle {
                 | ArenaMsg::MindCard { .. }
                 | ArenaMsg::Mark { .. }
                 | ArenaMsg::Withdraw { .. }
+                | ArenaMsg::Join { .. }
         ) && self.inbox.capacity() <= self.reserve
         {
             return Err(msg);
@@ -1074,6 +1107,11 @@ enum Outbound {
         unit: ObjId,
         outcome: Result<Box<UnitReturn>, crate::arena::withdraw::WithdrawRefusal>,
     },
+    /// Sent as [`ArenaOut::Joined`] (doc 36 cut GC.1b).
+    Joined {
+        unit: ObjId,
+        outcome: Result<crate::arena::state::Designator, String>,
+    },
 }
 
 impl Outbound {
@@ -1094,6 +1132,11 @@ impl Outbound {
                 snapshot: Arc::clone(snapshot),
             },
             Outbound::Withdrawn { unit, outcome } => ArenaOut::Withdrawn {
+                match_id,
+                unit: *unit,
+                outcome: outcome.clone(),
+            },
+            Outbound::Joined { unit, outcome } => ArenaOut::Joined {
                 match_id,
                 unit: *unit,
                 outcome: outcome.clone(),
@@ -1415,6 +1458,17 @@ struct PrePulse {
     /// **Doc 32 cut CF.5**: the units the host asked out at the ramp,
     /// latest-wins per unit, so bounded by the field.
     withdrawals: BTreeMap<ObjId, Option<(i64, i64)>>,
+    /// **Doc 36 cut GC.1b**: the units the host takes in, one per unit (the first offer wins:
+    /// a host checks a hull out once), so bounded by the field.
+    joins: BTreeMap<
+        ObjId,
+        (
+            Box<CustodyUnit>,
+            Option<Pilot>,
+            crate::arena::FieldHost,
+            u16,
+        ),
+    >,
 }
 
 impl PrePulse {
@@ -1759,6 +1813,10 @@ async fn arena_loop(mut task: Task) {
                     Some(ArenaMsg::Withdraw { unit, ramp }) => {
                         waiting.withdrawals.insert(unit, ramp);
                     }
+                    // Doc 36 cut GC.1b: and so does a join.
+                    Some(ArenaMsg::Join { unit, pilot, host, spread }) => {
+                        waiting.joins.entry(unit.id).or_insert((unit, pilot, host, spread));
+                    }
                     // Every sender is gone: the world has forgotten this match
                     // and nothing can ever drive it again. End silently, for the
                     // same reason the stop signal does.
@@ -1795,6 +1853,12 @@ async fn arena_loop(mut task: Task) {
                 for (unit, ramp) in std::mem::take(&mut waiting.withdrawals) {
                     let outcome = task.arena.withdraw(unit, ramp).map(Box::new);
                     task.queue_withdrawn(unit, outcome);
+                }
+                // Doc 36 cut GC.1b: the units taken in at their pads, before the step, each
+                // answered behind the ledger.
+                for (unit, (custody, pilot, host, spread)) in std::mem::take(&mut waiting.joins) {
+                    let outcome = task.join(*custody, pilot, &host, spread);
+                    task.queue_joined(unit, outcome);
                 }
                 match task.pulse(wall, &controls, &intents).await {
                     // 16b cut U.1: from the base, never from now.
@@ -2357,7 +2421,10 @@ impl Task {
                 .and_then(|at| self.backlog.remove(at))
                 .and_then(|entry| match entry {
                     Outbound::Chunk(chunk) => Some(chunk.seq),
-                    Outbound::Snapshot(_) | Outbound::Tape(_) | Outbound::Withdrawn { .. } => None,
+                    Outbound::Snapshot(_)
+                    | Outbound::Tape(_)
+                    | Outbound::Withdrawn { .. }
+                    | Outbound::Joined { .. } => None,
                 });
             tracing::error!(
                 match_id = %self.match_id,
@@ -2385,6 +2452,41 @@ impl Task {
     /// pulse before it left, then offered, so the world reads the unit's exit
     /// in order and never loses it to a full egress. Bounded by the field: the
     /// host asks once per unit.
+    fn queue_joined(
+        &mut self,
+        unit: ObjId,
+        outcome: Result<crate::arena::state::Designator, String>,
+    ) {
+        self.backlog.push_back(Outbound::Joined { unit, outcome });
+        self.drain_backlog();
+    }
+
+    /// **A join, decided** (doc 36 cut GC.1b): refused outright by a task with no
+    /// [`FieldTerms`] or with a tape — an OOC match never joins, so no practice hash and no
+    /// recorded input ever sees one — and otherwise `Arena::join`. A hull standing on IC ground
+    /// is running, as [`spawn_field`] puts every admitted unit.
+    fn join(
+        &mut self,
+        unit: CustodyUnit,
+        pilot: Option<Pilot>,
+        host: &crate::arena::FieldHost,
+        spread: u16,
+    ) -> Result<crate::arena::state::Designator, String> {
+        if self.terms.is_none() || self.tape.is_some() {
+            return Err("only an IC field takes a unit in once it runs".to_owned());
+        }
+        let id = unit.id;
+        let name = self
+            .arena
+            .join(unit, pilot, host, spread)
+            .map_err(|error| error.to_string())?;
+        if let Some(state) = self.arena.unit_mut(id) {
+            state.power = crate::arena::state::Power::Online;
+        }
+        Ok(name)
+    }
+
+    /// **A withdrawal's answer**, queued like a join's.
     fn queue_withdrawn(
         &mut self,
         unit: ObjId,
@@ -3687,8 +3789,9 @@ mod tests {
             .map(|entry| match entry {
                 Outbound::Chunk(chunk) => format!("c{}", chunk.seq),
                 Outbound::Snapshot(snapshot) => format!("s{}", snapshot.at_ms),
-                Outbound::Tape(_) => "tape".to_owned(),
                 Outbound::Withdrawn { unit, .. } => format!("w{}", unit.0),
+                Outbound::Joined { unit, .. } => format!("j{}", unit.0),
+                Outbound::Tape(_) => "tape".to_owned(),
             })
             .collect()
     }
@@ -3746,6 +3849,52 @@ mod tests {
             }
         }
         assert_eq!(seen, vec!["c2", "c3", "c4", "s10000"]);
+    }
+
+    /// **Doc 36 cut GC.1b**: a task with no field terms refuses a join before its arena sees it,
+    /// so no OOC match — and no practice hash — ever holds a joined unit; a field's task hands it
+    /// to the arena, and the hull comes in running, as `spawn_field` puts every admitted unit.
+    #[test]
+    fn gc1b_only_a_field_task_takes_a_join() {
+        let mut arena = arena_at_epoch(vec![tank(RED, PartyId::RED, pose(1_500, 1_500))], 1);
+        // A field's arena: its host ends it.
+        arena.end = crate::arena::party::EndCondition::Host;
+        let (mut task, _world) = af2_task(arena, 2, 5_000);
+        let hash = crate::arena::hash::state_hash(&task.arena);
+        let host = crate::arena::FieldHost {
+            every_class: true,
+            weapons_hold: true,
+            ..crate::arena::FieldHost::default()
+        };
+        let arrival = ObjId(77);
+        let refused = task.join(
+            tank(arrival, PartyId::RED, pose(4_500, 4_500)),
+            None,
+            &host,
+            8,
+        );
+        assert!(refused.is_err(), "a match never joins");
+        assert_eq!(
+            crate::arena::hash::state_hash(&task.arena),
+            hash,
+            "untouched"
+        );
+        assert!(task.arena.unit(arrival).is_none());
+        task.terms = Some(FieldTerms {
+            disengage_ms: 60_000,
+            idle_demote_ms: 600_000,
+        });
+        task.join(
+            tank(arrival, PartyId::RED, pose(4_500, 4_500)),
+            None,
+            &host,
+            8,
+        )
+        .expect("a field's task takes it in");
+        assert_eq!(
+            task.arena.unit(arrival).map(|unit| unit.power),
+            Some(crate::arena::state::Power::Online)
+        );
     }
 
     /// **16b cut AF.2**: the chunk overflow still drops the oldest **chunk**,

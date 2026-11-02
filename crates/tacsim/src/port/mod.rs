@@ -161,6 +161,8 @@ pub mod interface;
 pub mod licence;
 pub mod map;
 pub mod market;
+/// Doc 36 cut GC.13: a port's medical room, opened as a `medical` facility crew treatment reads.
+pub mod medical;
 /// Doc 20 cut SM.12a: the Exchange's and Occator's mills — the batch, its ledger
 /// and the restock of the house's drawn ask (doc 20 §7.3 "The mill").
 pub mod mill;

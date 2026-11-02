@@ -1435,6 +1435,44 @@ impl ArenaRegistry {
         self.units.insert(unit, match_id);
     }
 
+    /// **A unit a field task is taking in mid-field** (doc 36 cut GC.1b), bound to it as the
+    /// check-out binds every admitted unit, with its controller and whether it comes in armed,
+    /// as [`MatchMirror::controllers`] and [`MatchMirror::armed`] hold them.
+    pub fn bind_joining(
+        &mut self,
+        unit: ObjId,
+        task: MatchId,
+        controller: Controller,
+        armed: bool,
+    ) {
+        self.units.insert(unit, task);
+        if let Some(mirror) = self.matches.get_mut(&task) {
+            mirror.controllers.insert(unit, controller);
+            if armed {
+                mirror.armed.insert(unit);
+            }
+        }
+    }
+
+    /// **A join the arena refused** (doc 36 cut GC.1b): what [`ArenaRegistry::bind_joining`]
+    /// bound, let go.
+    pub fn unbind_joining(&mut self, unit: ObjId, task: MatchId) {
+        if self.units.get(&unit) == Some(&task) {
+            self.units.remove(&unit);
+        }
+        if let Some(mirror) = self.matches.get_mut(&task) {
+            mirror.controllers.remove(&unit);
+            mirror.armed.remove(&unit);
+        }
+    }
+
+    /// **The ground a running task is fought over, shared** (doc 36 cut GC.1b), for a reader
+    /// that must also hold the world.
+    #[must_use]
+    pub fn ground_of(&self, task: MatchId) -> Option<Arc<crate::arena::state::ArenaDefinition>> {
+        self.arenas.get(&task).cloned()
+    }
+
     /// Which match holds that unit.
     #[must_use]
     pub fn match_of_unit(&self, unit: ObjId) -> Option<MatchId> {
@@ -2990,6 +3028,12 @@ pub fn drain_egress(ctx: &mut Ctx<'_>) {
                 unit,
                 outcome,
             } => crate::field::exit::on_withdrawn(ctx, match_id, unit, outcome),
+            // Doc 36 cut GC.1b: a carrier that settled mid-field taken in at its pad.
+            ArenaOut::Joined {
+                match_id,
+                unit,
+                outcome,
+            } => crate::field::carrier::on_joined(ctx, match_id, unit, outcome),
         }
     }
     // **16b cut N.2** (doc 16 §6 "Provider failure"): the one in-world sentence, said

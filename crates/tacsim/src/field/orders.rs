@@ -419,6 +419,7 @@ mod tests {
             pilot: None,
             epoch: None,
             aboard: Vec::new(),
+            arrived: false,
         };
         let live = super::super::record::FieldLive {
             format: super::super::record::FIELD_LIVE_FORMAT,

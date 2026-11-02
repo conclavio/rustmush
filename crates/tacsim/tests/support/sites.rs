@@ -72,7 +72,7 @@ pub const MUNITIONS_GOODS: [&str; 4] =
 
 /// Remove what doc 36 cut GC.7 added to the lane (lane v18): Ceres's and Stickney's `workshop`
 /// blocks and every vendor's munitions stock and asks — the lane v17 shape but its manifest
-/// (idempotent).
+/// (idempotent). Cut GC.13's `medical` blocks (lane v19) go with them.
 pub fn strip_workshops(doc: &mut Value) {
     let Some(entries) = doc["entries"].as_object_mut() else {
         return;
@@ -85,6 +85,7 @@ pub fn strip_workshops(doc: &mut Value) {
             continue;
         };
         def.remove("workshop");
+        def.remove("medical");
         for vendor in def
             .get_mut("vendors")
             .and_then(Value::as_array_mut)

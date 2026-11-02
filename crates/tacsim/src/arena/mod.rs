@@ -313,6 +313,7 @@ pub mod horizon;
 pub mod index;
 pub mod input_tape;
 pub mod intents;
+pub mod join;
 pub mod ledger;
 pub(crate) mod memory_bound;
 pub mod mind;

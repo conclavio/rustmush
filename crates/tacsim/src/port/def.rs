@@ -23,6 +23,7 @@
 //! | `venue` | the routes key; the market venue (IC7/IC8) |
 //! | `faction` (per org) | nothing until the faction cut (carried and validated, L16) |
 //! | `workshop` | the `PortApplier`'s part j (doc 36 cut GC.7): the room's `bay_refit` facility; the workshop quote (`crate::port::workshop`) |
+//! | `medical` | the `PortApplier`'s part k (doc 36 cut GC.13): the room's `medical` facility; crew treatment's faster time (`crate::field::crew`) |
 //!
 //! Every number is an integer and every bound is checked twice: by
 //! [`PortDef::check`] (the entry alone) and by [`check_ports`] (the rules that
@@ -192,6 +193,34 @@ pub struct PortDef {
     /// as `vehicles` and `licence` are.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub workshop: Option<Box<WorkshopDef>>,
+    /// **Doc 36 cut GC.13 (Q-36-45)** — the port's medical room: a room of the port's area
+    /// that the applier opens as a facility of its operator org holding the `medical`
+    /// capability. A character treated at a port that has one is fit again sooner
+    /// (`[tacsim.field].treat_medical_permille`). Absent at a port without one and at every
+    /// site. Boxed, as `workshop` is.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub medical: Option<Box<MedicalDef>>,
+}
+
+/// The capability word a port's medical room holds (doc 36 cut GC.13), which crew treatment
+/// reads off the industry store's facilities.
+pub const MEDICAL_CAPABILITY: &str = "medical";
+
+/// **A port's medical room** (doc 36 cut GC.13; Q-36-45): a room authored with the
+/// [`MEDICAL_CAPABILITY`], opened as a facility the way GC.7's workshop is. The bed count is
+/// provisional and not yet a limit: GC.13 treats every character at the port at once.
+#[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(deny_unknown_fields)]
+pub struct MedicalDef {
+    /// `"<area>.<entry>"`: the room, which becomes the facility object itself.
+    pub room: String,
+    /// One of this entry's orgs: the facility's owner and the room's operator.
+    pub operator: CanonicalId,
+    /// The facility's capabilities; must hold [`MEDICAL_CAPABILITY`], at most
+    /// `crate::pack::MAX_FACILITY_CAPABILITIES`.
+    pub capabilities: BTreeSet<CanonicalId>,
+    /// Beds, `1..=`[`MAX_WORKSHOP_BERTHS`]: the facility's slots.
+    pub beds: u32,
 }
 
 /// The most berths one workshop may author: the industry facility's own slot cap
@@ -1222,13 +1251,14 @@ impl PortDef {
                 || self.vehicles.is_some()
                 || self.licence.is_some()
                 || self.workshop.is_some()
+                || self.medical.is_some()
             {
                 // Doc 20 cut SM.3a: nor a rig pool (rigs are leased at a station);
                 // cut SM.5: nor a licence (the Registry issues it at its station).
                 return Err(
                     "site: a site authors no orgs, rooms, programme, vendors, premium or \
-                     emergency, and no vehicles, licence or workshop block; its pad is its \
-                     gallery"
+                     emergency, and no vehicles, licence, workshop or medical block; its pad is \
+                     its gallery"
                         .to_owned(),
                 );
             }
@@ -1435,6 +1465,48 @@ impl PortDef {
         // Doc 36 cut GC.7: the workshop.
         if let Some(workshop) = &self.workshop {
             self.check_workshop(workshop)?;
+        }
+        // Doc 36 cut GC.13: the medical room.
+        if let Some(medical) = &self.medical {
+            self.check_medical(medical)?;
+        }
+        Ok(())
+    }
+
+    /// **The medical room's bounds** (doc 36 cut GC.13): the room in the port's area and not
+    /// the workshop's, the operator one of the entry's orgs, the medical capability held, and
+    /// the beds and capabilities within the facility's caps. Each sentence starts `medical: `.
+    fn check_medical(&self, medical: &MedicalDef) -> Result<(), String> {
+        room_key(&self.area, &medical.room).map_err(|detail| format!("medical: {detail}"))?;
+        if self
+            .workshop
+            .as_ref()
+            .is_some_and(|workshop| workshop.room == medical.room)
+        {
+            return Err("medical: the room is already the workshop's".to_owned());
+        }
+        if !self.orgs.iter().any(|org| org.id == medical.operator) {
+            return Err(format!(
+                "medical: operator {} is not one of this port's orgs",
+                medical.operator
+            ));
+        }
+        if !medical
+            .capabilities
+            .iter()
+            .any(|word| word.as_str() == MEDICAL_CAPABILITY)
+            || medical.capabilities.len() > crate::pack::MAX_FACILITY_CAPABILITIES
+        {
+            return Err(format!(
+                "medical: capabilities hold {MEDICAL_CAPABILITY} and at most {}",
+                crate::pack::MAX_FACILITY_CAPABILITIES
+            ));
+        }
+        if !(1..=MAX_WORKSHOP_BERTHS).contains(&medical.beds) {
+            return Err(format!(
+                "medical: beds must be 1..={MAX_WORKSHOP_BERTHS}, not {}",
+                medical.beds
+            ));
         }
         Ok(())
     }
@@ -2547,6 +2619,7 @@ mod tests {
             vehicles: None,
             licence: None,
             workshop: None,
+            medical: None,
         }
     }
 
@@ -2777,6 +2850,7 @@ mod tests {
             vehicles: None,
             licence: None,
             workshop: None,
+            medical: None,
         }
     }
 
@@ -3104,7 +3178,7 @@ mod tests {
         assert_eq!(
             refused(&site),
             "site: a site authors no orgs, rooms, programme, vendors, premium or emergency, and \
-             no vehicles, licence or workshop block; its pad is its gallery"
+             no vehicles, licence, workshop or medical block; its pad is its gallery"
         );
         assert!(
             serde_json::from_value::<LicenceDef>(serde_json::json!({

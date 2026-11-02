@@ -111,8 +111,10 @@ pub(crate) fn tick(ctx: &mut Ctx<'_>, _tag: &str, _scene: Option<mush_core::Scen
         if !open.by.hosted() {
             continue;
         }
-        // Doc 36 cut GC.1 (Q-36-4): a carrier settled mid-field is owed its admission.
+        // Doc 36 cut GC.1 (Q-36-4): a carrier settled mid-field is owed its admission, and
+        // GC.1b takes it in.
         super::carrier::note_arrivals(ctx, &site);
+        super::carrier::join_arrivals(ctx, &site);
         let busy = ctx.w.module_state::<FieldBook>().is_none_or(|book| {
             book.hosted(&site).is_some() || book.pending(&site) || book.closing.contains(&site)
         });
@@ -547,13 +549,12 @@ fn custody(
     pads: &BTreeMap<ObjId, mush_sim::data::Pose>,
     definition: crate::arena::state::ArenaDefinition,
 ) -> Result<CustodyOut, String> {
-    let store = ctx
+    let catalog = ctx
         .w
         .module_state::<crate::store::TacsimStore>()
-        .ok_or_else(|| "the layer is not loaded".to_owned())?;
-    let catalog = store.definitions().clone();
-    let cfg = store.config();
-    let now = ctx.w.world_ic_now().at;
+        .ok_or_else(|| "the layer is not loaded".to_owned())?
+        .definitions()
+        .clone();
     let mut units: Vec<CustodyUnit> = Vec::new();
     let mut pilots: Vec<Pilot> = Vec::new();
     let mut slots: BTreeMap<crate::arena::PartyId, u8> = BTreeMap::new();
@@ -563,9 +564,6 @@ fn custody(
             .find(|row| row.unit == entrant.unit)
             .map(|row| row.party)
             .ok_or_else(|| format!("#{} has no party", entrant.unit.0))?;
-        let cells = mush_tactics::module::unit_of(ctx.w, entrant.unit)
-            .cloned()
-            .ok_or_else(|| format!("#{} has no tactical unit record", entrant.unit.0))?;
         let pose = match pads.get(&entrant.unit) {
             Some(pad) => pad.clone(),
             None => {
@@ -579,63 +577,9 @@ fn custody(
             *next = next.saturating_add(1);
             *next
         };
-        // A hired NPC in the seat flies the doctrine under its delivered orders (doc 32 cut CF.6,
-        // Q-CF-42): its hull is the mind's, and its seat stays bound below so its own frame —
-        // what the NPC sees — reaches the host's executor (`super::orders`).
-        let controller = match &entrant.pilot {
-            Some((pilot, _)) if !super::orders::is_npc(ctx.w, *pilot) => Controller::Pilot,
-            _ => Controller::Mind,
-        };
-        let weapons = crate::match_::weapon_summaries(&catalog, &cells);
-        let rule_weapons: Vec<crate::arena::rules::RuleWeapon> = weapons
-            .iter()
-            .map(|weapon| crate::arena::rules::RuleWeapon {
-                id: weapon.id.clone(),
-                rounds_max: weapon.count_per_load,
-            })
-            .collect();
-        let sortie = entrant
-            .epoch
-            .unwrap_or_else(|| crate::arena::mind::SortieId::ic(entrant.unit, now));
-        let principal = entrant
-            .leader
-            .map(|id| crate::deliberation::CharacterRef::Character { id });
-        let seal = crate::match_::seal::seal_rom_for(
-            entrant.unit,
-            &cells,
-            &rule_weapons,
-            sortie,
-            &crate::match_::seal::IcSealConfig {
-                minds: &cfg.minds,
-                reflex: &cfg.arena.reflex,
-                principal,
-                impounded: crate::match_::seal::core_impounded(ctx.w, &cells),
-            },
-        )
-        .map_err(|error| format!("#{} could not be sealed ({error})", entrant.unit.0))?;
-        units.push(CustodyUnit {
-            id: entrant.unit,
-            team: party,
-            pose,
-            mobility: crate::match_::tracked_rules(&cells),
-            sensor_height_cm: crate::match_::sensor_height_cm(&catalog, &cells),
-            sensor: crate::match_::sensor_profile(&catalog, &cells),
-            weapons,
-            profile: crate::match_::unit_profile(&catalog, &cells),
-            gunnery: crate::arena::resolution::STOCK_GUNNERY,
-            controller,
-            slot,
-            seal,
-            unit: cells,
-        });
-        if let Some((pilot, station)) = &entrant.pilot {
-            pilots.push(Pilot {
-                unit: entrant.unit,
-                pilot: *pilot,
-                station: station.clone(),
-                epoch: 1,
-            });
-        }
+        let (unit, pilot) = custody_unit(ctx, entrant, party, pose, slot)?;
+        units.push(unit);
+        pilots.extend(pilot);
     }
     let party_of = |unit: ObjId| {
         rows.iter()
@@ -677,6 +621,84 @@ fn custody(
             weapons_hold: true,
         },
     })
+}
+
+/// **One entrant's check-out row** (doc 32 cut CF.2, factored out of the admission's check-out by
+/// doc 36 cut GC.1b, so an arrival joining a running field is built by the same path): its unit
+/// at `pose` under `party`, sealed on the ROM over its epoch, and its seated pilot.
+pub(super) fn custody_unit(
+    ctx: &Ctx<'_>,
+    entrant: &Entrant,
+    party: crate::arena::PartyId,
+    pose: mush_sim::data::Pose,
+    slot: u8,
+) -> Result<(CustodyUnit, Option<Pilot>), String> {
+    let store = ctx
+        .w
+        .module_state::<crate::store::TacsimStore>()
+        .ok_or_else(|| "the layer is not loaded".to_owned())?;
+    let catalog = store.definitions();
+    let cfg = store.config();
+    let now = ctx.w.world_ic_now().at;
+    let cells = mush_tactics::module::unit_of(ctx.w, entrant.unit)
+        .cloned()
+        .ok_or_else(|| format!("#{} has no tactical unit record", entrant.unit.0))?;
+    // A hired NPC in the seat flies the doctrine under its delivered orders (doc 32 cut CF.6,
+    // Q-CF-42): its hull is the mind's, and its seat stays bound below so its own frame — what
+    // the NPC sees — reaches the host's executor (`super::orders`).
+    let controller = match &entrant.pilot {
+        Some((pilot, _)) if !super::orders::is_npc(ctx.w, *pilot) => Controller::Pilot,
+        _ => Controller::Mind,
+    };
+    let weapons = crate::match_::weapon_summaries(catalog, &cells);
+    let rule_weapons: Vec<crate::arena::rules::RuleWeapon> = weapons
+        .iter()
+        .map(|weapon| crate::arena::rules::RuleWeapon {
+            id: weapon.id.clone(),
+            rounds_max: weapon.count_per_load,
+        })
+        .collect();
+    let sortie = entrant
+        .epoch
+        .unwrap_or_else(|| crate::arena::mind::SortieId::ic(entrant.unit, now));
+    let principal = entrant
+        .leader
+        .map(|id| crate::deliberation::CharacterRef::Character { id });
+    let seal = crate::match_::seal::seal_rom_for(
+        entrant.unit,
+        &cells,
+        &rule_weapons,
+        sortie,
+        &crate::match_::seal::IcSealConfig {
+            minds: &cfg.minds,
+            reflex: &cfg.arena.reflex,
+            principal,
+            impounded: crate::match_::seal::core_impounded(ctx.w, &cells),
+        },
+    )
+    .map_err(|error| format!("#{} could not be sealed ({error})", entrant.unit.0))?;
+    let unit = CustodyUnit {
+        id: entrant.unit,
+        team: party,
+        pose,
+        mobility: crate::match_::tracked_rules(&cells),
+        sensor_height_cm: crate::match_::sensor_height_cm(catalog, &cells),
+        sensor: crate::match_::sensor_profile(catalog, &cells),
+        weapons,
+        profile: crate::match_::unit_profile(catalog, &cells),
+        gunnery: crate::arena::resolution::STOCK_GUNNERY,
+        controller,
+        slot,
+        seal,
+        unit: cells,
+    };
+    let pilot = entrant.pilot.as_ref().map(|(pilot, station)| Pilot {
+        unit: entrant.unit,
+        pilot: *pilot,
+        station: station.clone(),
+        epoch: 1,
+    });
+    Ok((unit, pilot))
 }
 
 #[cfg(test)]
