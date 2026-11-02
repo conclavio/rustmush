@@ -52,7 +52,7 @@ use super::weapons::LaserMode;
 pub const HELM_VERB: &str = "+helm";
 
 /// All switches supported by `+helm`.
-pub const HELM_SWITCHES: [&str; 13] = [
+pub const HELM_SWITCHES: [&str; 15] = [
     "status",
     "station",
     "heading",
@@ -66,11 +66,13 @@ pub const HELM_SWITCHES: [&str; 13] = [
     "cluster",
     "approach",
     "match",
+    "submit",
+    "run",
 ];
 
 /// Help text for `+helm`.
 pub const HELM_HELP: &str = "\
-+helm  --  Ship helm, bridge stations, and standing orders (doc 35 §5, §7, D-35-6, D-35-9, D-35-13).
++helm  --  Ship helm, bridge stations, and standing orders (doc 35 §5, §7, D-35-6, D-35-9, D-35-11, D-35-13).
 +helm[/status]                        Show bridge stations, standing orders, and flight state.
 +helm/station <seat>[=<crew>]         Assign an aboard crew member (or yourself) to a bridge station
                                       (command|helm|tactical|ew|engineering|flight_ops), or `off`.
@@ -87,7 +89,9 @@ pub const HELM_HELP: &str = "\
 +helm/autopilot <port>                Plan and recouple onto a corridor passage from live (pos, vel).
 +helm/cluster <cluster_id>            Enter an orbital mining cluster (`ceres_halo`, `kirkwood_gap_3_1`, `pallas_inclined_belt`, `saturn_b_ring_edge`).
 +helm/approach <rock>                 Execute a braking approach toward rock `A`, `B`, or `C` inside the cluster.
-+helm/match <rock>                    Lock RCS velocity match (`|Δv| < 5 m/s` within `2,000 m`) with rock `A`, `B`, or `C`.";
++helm/match <rock>                    Lock RCS velocity match (`|Δv| < 5 m/s` within `2,000 m`) with rock `A`, `B`, or `C`.
++helm/submit                          Heave-to and submit cargo manifest to a customs picket inspection (`D-35-11`).
++helm/run                             Refuse customs inspection and run the picket (`D-35-11`).";
 
 /// The asteroid field mining command verb (`+mine`, `SF.R5`, `D-35-13`).
 pub const MINE_VERB: &str = "+mine";
@@ -663,6 +667,8 @@ pub fn helm_cmd(ctx: &mut Ctx<'_>) -> Result<(), CmdError> {
         Some("cluster") => helm_cluster(ctx),
         Some("approach") => helm_approach(ctx),
         Some("match") => helm_match(ctx),
+        Some("submit") => helm_submit(ctx),
+        Some("run") => helm_run(ctx),
         Some(other) => Err(CmdError::msg(format!("Unknown +helm switch: /{other}."))),
     }
 }
@@ -2126,10 +2132,13 @@ fn verify_hostile_fire_allowed(
     ) else {
         return Err(CmdError::msg(NO_SUCH_CONTACT));
     };
-    if active.bubble.party_relation(attacker.party, target.party) == SpaceRelation::Friendly {
-        return Err(CmdError::msg("Cannot fire on a friendly contact."));
+    match active.bubble.party_relation(attacker.party, target.party) {
+        SpaceRelation::Hostile => Ok(()),
+        SpaceRelation::Friendly => Err(CmdError::msg("Cannot fire on a friendly contact.")),
+        SpaceRelation::Neutral | SpaceRelation::Inspecting => {
+            Err(CmdError::msg("Cannot fire on a non-hostile contact."))
+        }
     }
-    Ok(())
 }
 
 fn tac_lock(ctx: &mut Ctx<'_>) -> Result<(), CmdError> {
@@ -2593,6 +2602,173 @@ fn helm_match(ctx: &mut Ctx<'_>) -> Result<(), CmdError> {
             order.revision()
         ),
     );
+    push_space_panels(ctx, hull);
+    Ok(())
+}
+
+fn helm_submit(ctx: &mut Ctx<'_>) -> Result<(), CmdError> {
+    let (hull, _) = require_aboard_and_seat(ctx, Some("movement"))?;
+    let now_ic = ctx.w.world_ic_now().at;
+
+    let (corvette_ship_id, carrier_ship_id, rel_speed_mmps, status) = {
+        let book = ctx
+            .w
+            .module_state::<SpaceBubbleBook>()
+            .ok_or_else(|| CmdError::msg("No active space bubble."))?;
+        let active = book
+            .active_for_hull(hull)
+            .ok_or_else(|| CmdError::msg("No active space bubble for this ship."))?;
+        let picket = active
+            .picket
+            .as_ref()
+            .ok_or_else(|| CmdError::msg("No customs picket is hailing this ship."))?;
+        let carrier = active
+            .bubble
+            .ships
+            .get(&active.carrier_ship_id)
+            .ok_or_else(|| CmdError::msg("Carrier ship state missing from bubble."))?;
+        let corvette = active
+            .bubble
+            .ships
+            .get(&picket.corvette_ship_id)
+            .ok_or_else(|| CmdError::msg("Customs Corvette is no longer in the bubble."))?;
+        let rel_speed = super::picket::relative_speed_3d_mmps(carrier.vel_mmps, corvette.vel_mmps);
+        (
+            picket.corvette_ship_id.clone(),
+            active.carrier_ship_id.clone(),
+            rel_speed,
+            picket.inspection_status,
+        )
+    };
+
+    if matches!(
+        status,
+        super::picket::PicketInspectionStatus::Cleared
+            | super::picket::PicketInspectionStatus::ClearedAfterFine
+    ) {
+        return Err(CmdError::msg(
+            "Republic Customs picket has already cleared this ship.",
+        ));
+    }
+    if status == super::picket::PicketInspectionStatus::RanThePicket {
+        return Err(CmdError::msg(
+            "You already ran the Republic Customs picket; inspection is no longer available.",
+        ));
+    }
+    if rel_speed_mmps >= super::picket::HEAVE_TO_REL_VEL_MMPS {
+        return Err(CmdError::msg(format!(
+            "Must heave-to under {:.1} m/s relative speed (`+helm/thrust`) before submitting to customs inspection (current relative speed {:.1} m/s).",
+            (super::picket::HEAVE_TO_REL_VEL_MMPS as f64) / 1_000.0,
+            (rel_speed_mmps as f64) / 1_000.0
+        )));
+    }
+
+    let manifest = super::picket::inspect_hull_manifest(ctx, hull, Some(ctx.actor), now_ic);
+
+    if manifest.unlicensed_strategic_ore_kg > 0 {
+        let (contract_id, fine_minor, front_id) =
+            super::picket::assess_customs_fine_and_advance_front(
+                ctx,
+                ctx.actor,
+                hull,
+                manifest.unlicensed_strategic_ore_kg,
+            )
+            .map_err(CmdError::msg)?;
+        let front_raw = front_id.map(|f| f.0);
+
+        if let Some(book) = ctx.w.module_state_mut::<SpaceBubbleBook>()
+            && let Some(active) = book.by_hull.get_mut(&hull)
+        {
+            active.bubble.set_party_relation(
+                super::picket::CUSTOMS_CORVETTE_PARTY,
+                super::tick::CARRIER_PARTY,
+                SpaceRelation::Friendly,
+            );
+            if let Some(picket) = active.picket.as_mut() {
+                picket.inspection_status = super::picket::PicketInspectionStatus::ClearedAfterFine;
+                picket.inspection_outcome = Some(super::picket::PicketInspectionOutcome::Fined {
+                    contract_id: contract_id.0,
+                    fine_minor,
+                    unlicensed_strategic_ore_kg: manifest.unlicensed_strategic_ore_kg,
+                    front_id: front_raw,
+                });
+            }
+        }
+
+        let fine_str = crate::port::coop::money_minor(ctx, fine_minor);
+        let line = format!(
+            "[PICKET] Republic Customs Corvette `{corvette_ship_id}` inspected `{carrier_ship_id}` manifest: {} kg unlicensed `strategic_ore` detected; assessed {fine_str} contraband fine (Ledger contract #{}, campaign front `{}` #{}) and granted customs clearance.",
+            manifest.unlicensed_strategic_ore_kg,
+            contract_id.0,
+            mush_faction::CUSTOMS_ASSERTION_TITLE,
+            front_raw.unwrap_or(0)
+        );
+        crate::port::voyage::narrate_hull(ctx, hull, &line);
+        ctx.out.sys_to_actor(ctx.actor, "tacsim.space", line);
+    } else {
+        if let Some(book) = ctx.w.module_state_mut::<SpaceBubbleBook>()
+            && let Some(active) = book.by_hull.get_mut(&hull)
+        {
+            active.bubble.set_party_relation(
+                super::picket::CUSTOMS_CORVETTE_PARTY,
+                super::tick::CARRIER_PARTY,
+                SpaceRelation::Friendly,
+            );
+            if let Some(picket) = active.picket.as_mut() {
+                picket.inspection_status = super::picket::PicketInspectionStatus::Cleared;
+                picket.inspection_outcome = Some(super::picket::PicketInspectionOutcome::Cleared {
+                    strategic_ore_kg: manifest.strategic_ore_kg,
+                });
+            }
+        }
+
+        let line = format!(
+            "[PICKET] Republic Customs Corvette `{corvette_ship_id}` inspected `{carrier_ship_id}` manifest ({} kg `strategic_ore`, licensed/compliant): customs clearance granted.",
+            manifest.strategic_ore_kg
+        );
+        crate::port::voyage::narrate_hull(ctx, hull, &line);
+        ctx.out.sys_to_actor(ctx.actor, "tacsim.space", line);
+    }
+
+    push_space_panels(ctx, hull);
+    Ok(())
+}
+
+fn helm_run(ctx: &mut Ctx<'_>) -> Result<(), CmdError> {
+    let (hull, _) = require_aboard_and_seat(ctx, Some("movement"))?;
+    let has_picket = ctx
+        .w
+        .module_state::<SpaceBubbleBook>()
+        .and_then(|b| b.active_for_hull(hull))
+        .is_some_and(|a| a.picket.is_some());
+    if !has_picket {
+        return Err(CmdError::msg("No customs picket is hailing this ship."));
+    }
+
+    let front_id = super::picket::record_ran_the_picket_incident(ctx, ctx.actor, hull).map(|f| f.0);
+
+    if let Some(book) = ctx.w.module_state_mut::<SpaceBubbleBook>()
+        && let Some(active) = book.by_hull.get_mut(&hull)
+    {
+        active.bubble.set_party_relation(
+            super::picket::CUSTOMS_CORVETTE_PARTY,
+            super::tick::CARRIER_PARTY,
+            SpaceRelation::Hostile,
+        );
+        if let Some(picket) = active.picket.as_mut() {
+            picket.inspection_status = super::picket::PicketInspectionStatus::RanThePicket;
+            picket.inspection_outcome =
+                Some(super::picket::PicketInspectionOutcome::RanThePicket { front_id });
+        }
+    }
+
+    let line = format!(
+        "[PICKET] You refuse inspection and run the Republic Customs picket! Corvette transitions to Hostile; campaign front `{}` #{} advanced.",
+        mush_faction::CUSTOMS_ASSERTION_TITLE,
+        front_id.unwrap_or(0)
+    );
+    crate::port::voyage::narrate_hull(ctx, hull, &line);
+    ctx.out.sys_to_actor(ctx.actor, "tacsim.space", line);
     push_space_panels(ctx, hull);
     Ok(())
 }

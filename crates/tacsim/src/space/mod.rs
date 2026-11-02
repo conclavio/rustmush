@@ -14,6 +14,7 @@ pub mod bubble;
 pub mod commands;
 pub mod custody;
 pub mod mining;
+pub mod picket;
 pub mod tick;
 pub mod weapons;
 
@@ -46,6 +47,16 @@ pub use mining::{
     LaserExtractionCycle, MAX_MINING_MATCH_RANGE_M, MAX_VELOCITY_MATCH_SPEED_MMPS,
     OrbitalClusterId, PendingSpaceMineDraw, SpectralClass, build_updated_pocket_cursor,
     check_velocity_match_gate, ore_specific_volume_l_per_t,
+};
+pub use picket::{
+    BELT_RAIDER_PARTY, BELT_RAIDER_RHAI, CUSTOMS_CORVETTE_PARTY, CUSTOMS_FINE_CONTRACT_NAME,
+    CUSTOMS_FINE_MAJOR_PER_TONNE, CUSTOMS_FINE_MIN_MAJOR, HEAVE_TO_REL_VEL_MMPS,
+    KIRKWOOD_PICKET_RHAI, KirkwoodPicketState, LiveCustomsManifest, PICKET_RUN_BOUNDARY_M,
+    PicketInspectionOutcome, PicketInspectionStatus, RAIDER_AMBUSH_RANGE_M,
+    assess_customs_fine_and_advance_front, build_kirkwood_picket_ships, customs_fine_spec,
+    distance_3d_m, emit_light_lagged_picket_hail, inspect_hull_manifest,
+    record_ran_the_picket_incident, relative_speed_3d_mmps, run_space_rhai_think,
+    should_open_kirkwood_picket, step_kirkwood_picket,
 };
 pub use tick::{
     ActiveInterdictionBubble, CARRIER_PARTY, COMBAT_STEP_WALL_MS, CRUISE_STEP_WALL_MS,

@@ -4555,3 +4555,500 @@ fn sfr5_chartered_dray_p_buys_licence_matches_velocity_in_pallas_mines_into_stow
     );
     no_refused_writes(&rig.tw);
 }
+
+/// **Doc 35 cut SF.R6 (`D-35-1`, `D-35-8`, `D-35-10`, `D-35-11`, `D-35-12`, §9 Story 1, `35a` §8.3)**:
+/// End-to-end **Story 1 ("The Kirkwood Customs Picket")**:
+/// 1. Non-GOD `Pilot` charters the *Salt Moth*, refits it to a `Dray-P` (`+coop/refit prospector`),
+///    buys the Freeport Registry prospecting licence (`+licence/buy go`), and extracts `4 t`
+///    (`4,000 kg`) of `strategic_ore` from Block B in `pallas_inclined_belt` without holding a
+///    registered claim on Block B (Pallas Syndicate holds Block B's tenure).
+/// 2. Launching on the interdicted `ceres_stickney` route and crossing the Kirkwood waypoint
+///    boundary promotes the `CarrierJourney` (`JourneyState::Promoted`), opens a 3-party
+///    `LocalSpaceBubble` (`CARRIER_PARTY` `'A'`, `CUSTOMS_CORVETTE_PARTY` `'B'`,
+///    `BELT_RAIDER_PARTY` `'C'`), and emits the light-lagged radio hail (`mush_propagation::light_delay_secs`)
+///    + structured `"tacsim:notice"` panel event.
+/// 3. Firing on the non-hostile Republic Customs Corvette (`SpaceRelation::Inspecting` /
+///    `Relation::Neutral`) is refused (`"Cannot fire on a non-hostile contact."`), and
+///    `+helm/submit` before heaving-to ($|\Delta \mathbf{v}| < 10\text{ m/s}$) is refused.
+/// 4. Pilot decelerates via `+helm/thrust -15 0 0 1` to match velocity with the Corvette;
+///    the Corvette's `RhaiRunner` (`KIRKWOOD_PICKET_RHAI`) executes without faults and transitions
+///    to `"inspecting"` (`PICKET_CARRIER_HOVE_TO_READY`), while the lurking Belt Raider remains
+///    in `Ghost` at 120 km without prematurely uncloaking before `+helm/submit`.
+/// 5. Pilot submits via `+helm/submit`: live `stow.ore` + Registry check detects `4,000 kg` (`4 t`)
+///    of unlicensed `strategic_ore`, activates a real `mush-economy` Public E4 contract fine
+///    (`"Republic Customs Contraband Fine"` = `2000.00cr`, `200,000` minor credits) that settles
+///    into `freeport_registry`'s account on the economy sweep, and opens/advances the
+///    `"Customs Assertion"` campaign front in `mush-faction` (`SimState`).
+/// 6. Lurking Belt Raider lights its torch (`EmconPosture::ActiveCombat`) and its `RhaiRunner`
+///    (`BELT_RAIDER_RHAI`) launches a 2-torpedo salvo and fires a 120 km world-frame railgun shot
+///    (`RAIDER_TORCH_AND_SALVO`), while the Corvette's `RhaiRunner` (`KIRKWOOD_PICKET_RHAI`)
+///    transitions to `"screen_defend"` (`PICKET_SCREEN_ENGAGE_RAIDER`); pilot enables `+tac/pdc auto`,
+///    jinks laterally (`+helm/thrust 0 15 0 2`) during time-of-flight so the 120 km railgun slug
+///    misses (`RailgunDodgedByJink`), disables the Belt Raider into an open-epoch derelict
+///    (`DisabledDerelict`, 48h salvage window in `SalvageClaimBook`), and resumes the voyage to
+///    dock at Stickney Yards.
+#[test]
+#[allow(clippy::too_many_lines)]
+fn sfr6_kirkwood_customs_picket_story_1_end_to_end_rhai_doctrine_triad_combat_and_ledger_fine() {
+    let mut rig = stocked_with(Roster {
+        seed_lane: Some(lane_with_interdicted_kirkwood()),
+        ..Roster::default()
+    });
+    let (pilot, row) = chartered(&mut rig, "Pilot", 1);
+    let hull = ObjId(row.hull);
+    let vault_id = hold_vault(&rig.tw, &row);
+
+    // 1. Refit *Salt Moth* to `Dray-P`, provision propellant (`53 t`) and provisions (`19 t`),
+    //    buy the Freeport Registry licence, and mine `4 t` (`4,000 kg`) of unlicensed `strategic_ore`
+    //    from Block B in `pallas_inclined_belt` into `stow.ore`.
+    let desk = station_room(&rig.tw, "ceres_port", "room.c05_registry");
+    teleport(&mut rig.tw, pilot, desk);
+    let refit_out = run(&mut rig.tw, pilot, "+coop/refit prospector");
+    assert!(refit_out.contains("Dray-P"), "{refit_out}");
+
+    seed_pool(&mut rig, vault_id, "propellant", 53, LotId(913));
+    seed_pool(&mut rig, vault_id, "provisions", 19, LotId(914));
+    set_rate(&mut rig.tw, 3_600);
+    board(&mut rig, pilot);
+
+    let lic_out = run(&mut rig.tw, pilot, "+licence/buy go");
+    assert!(
+        lic_out.contains("Freeport Registry") && lic_out.contains("2500.00cr"),
+        "{lic_out}"
+    );
+    // Settle the licence purchase contract before checking pre-fine Registry balance.
+    sweep(&mut rig.tw, 6);
+
+    let _ = run(&mut rig.tw, pilot, "+helm/cluster pallas_inclined_belt");
+    let open_submits = drain_space_and_industry(&mut rig.tw);
+    land_all(&mut rig, &open_submits);
+    let t = rig.tw.world().now().saturating_add(6);
+    rig.tw.set_now(t);
+    let _ = rig.tw.fire_due(t.saturating_mul(1_000));
+    let seed_submits = drain_space_and_industry(&mut rig.tw);
+    land_quietly(&mut rig, &seed_submits);
+
+    let _ = run(&mut rig.tw, pilot, "+helm/approach B");
+    let t = rig.tw.world().now().saturating_add(6);
+    rig.tw.set_now(t);
+    let _ = rig.tw.fire_due(t.saturating_mul(1_000));
+    let app_submits = drain_space_and_industry(&mut rig.tw);
+    land_quietly(&mut rig, &app_submits);
+
+    let match_b = run(&mut rig.tw, pilot, "+helm/match B");
+    assert!(
+        match_b.contains("RCS velocity match locked on Block B"),
+        "{match_b}"
+    );
+    let laser_b = run(&mut rig.tw, pilot, "+mine/laser B strategic_elements");
+    assert!(
+        laser_b.contains("extracting 4 t `strategic_ore`"),
+        "{laser_b}"
+    );
+    let t = rig.tw.world().now().saturating_add(6);
+    rig.tw.set_now(t);
+    let _ = rig.tw.fire_due(t.saturating_mul(1_000));
+    let work_submits = drain_space_and_industry(&mut rig.tw);
+    land_all(&mut rig, &work_submits);
+    assert_eq!(
+        pool(&mut rig.tw, vault_id, "strategic_ore"),
+        4,
+        "4 t (4,000 kg) of unlicensed strategic_ore in stow.ore hold vault"
+    );
+
+    let registry_account = mush_economy::AccountId(
+        port_map(&rig.tw, "ceres_port").orgs[&cid("freeport_registry")]
+            .account
+            .expect("registry account id"),
+    );
+
+    // 2. Undock and burn on `ceres_stickney`; cross the interdicted Kirkwood waypoint boundary.
+    let pending = undock_and_burn(&mut rig, pilot, hull);
+    let depart_ic = pending.plan.depart_ic;
+    let leg1_secs = i64::from(pending.plan.legs[0].secs);
+    let leg2_secs = i64::from(pending.plan.legs[1].secs);
+    let total_secs = pending.plan.total_s;
+
+    let _ = fire_quietly(&mut rig);
+    let boundary_events = to_ic(&mut rig, depart_ic + leg1_secs);
+    let boundary_heard = said(&rig.tw, &boundary_events, pilot);
+    assert!(
+        boundary_heard.contains("Republic Customs Corvette: \"Heave-to under 10 m/s")
+            && boundary_heard.contains("light-lag")
+            && boundary_heard.contains("+helm/submit"),
+        "light-lagged radio hail emitted on promotion: {boundary_heard}"
+    );
+    let had_picket_panel = boundary_events.iter().any(|(_, ev)| {
+        matches!(
+            ev,
+            OutputEvent::Panel { feed, data, .. }
+                if feed == "tacsim:notice" && data.get("kind").and_then(|v| v.as_str()) == Some("picket_hail")
+        )
+    });
+    assert!(
+        had_picket_panel,
+        "expected structured tacsim:notice picket_hail panel event"
+    );
+
+    let (corvette_ship_id, raider_ship_id) = {
+        let bubble_book = rig
+            .tw
+            .world()
+            .module_state::<tacsim::space::SpaceBubbleBook>()
+            .expect("SpaceBubbleBook");
+        let active = bubble_book
+            .active_for_hull(hull)
+            .expect("active Kirkwood bubble");
+        assert_eq!(
+            active.bubble.ships.len(),
+            3,
+            "3-party bubble: carrier, Republic Customs Corvette, Belt Raider"
+        );
+        let picket = active.picket.as_ref().expect("KirkwoodPicketState present");
+        assert_eq!(
+            picket.inspection_status,
+            tacsim::space::PicketInspectionStatus::AwaitingHeaveTo
+        );
+        assert!(!picket.raider_ambush_launched);
+        assert_eq!(
+            active.bubble.party_relation(
+                tacsim::space::CARRIER_PARTY,
+                tacsim::space::CUSTOMS_CORVETTE_PARTY,
+            ),
+            tacsim::space::SpaceRelation::Inspecting
+        );
+        assert_eq!(
+            active.bubble.party_relation(
+                tacsim::space::CARRIER_PARTY,
+                tacsim::space::BELT_RAIDER_PARTY,
+            ),
+            tacsim::space::SpaceRelation::Hostile
+        );
+        assert_eq!(
+            active.bubble.party_relation(
+                tacsim::space::CUSTOMS_CORVETTE_PARTY,
+                tacsim::space::BELT_RAIDER_PARTY,
+            ),
+            tacsim::space::SpaceRelation::Hostile
+        );
+        (
+            picket.corvette_ship_id.clone(),
+            picket.raider_ship_id.clone(),
+        )
+    };
+
+    // Verify `+tac/scan` detects the Republic Customs Corvette at 6 km (`ActiveCombat`) and hides
+    // the lurking Belt Raider at 120 km (`Ghost`).
+    let scan_out = run(&mut rig.tw, pilot, "+tac/scan");
+    assert!(
+        scan_out.contains(&corvette_ship_id) && !scan_out.contains(&raider_ship_id),
+        "scan detects Corvette at 6 km and hides Ghost Raider at 120 km: {scan_out}"
+    );
+
+    // 3. Verify firing on the non-hostile Republic Customs Corvette is refused (`35a` §3 #7),
+    //    and `+helm/submit` before heaving-to (`rel_speed = 15 m/s >= 10 m/s`) is refused.
+    let beam_refused = run(&mut rig.tw, pilot, &format!("+tac/beam {corvette_ship_id}"));
+    assert!(
+        beam_refused.contains("Cannot fire on a non-hostile contact."),
+        "firing on non-hostile Corvette refused: {beam_refused}"
+    );
+    let submit_fast = run(&mut rig.tw, pilot, "+helm/submit");
+    assert!(
+        submit_fast.contains("Must heave-to under 10.0 m/s relative speed"),
+        "submit before heaving-to refused: {submit_fast}"
+    );
+
+    // 4. Fire 1 wall second while still closing at 15 m/s so `KIRKWOOD_PICKET_RHAI` emits
+    //    `PICKET_HAIL_HEAVE_TO`, then decelerate via `+helm/thrust 600 -1000 0 0` (-15 m/s²)
+    //    and fire 1 wall second so `KIRKWOOD_PICKET_RHAI` transitions to `PICKET_CARRIER_HOVE_TO_READY`.
+    let next_real0 = rig.tw.world().now() + 1;
+    rig.tw.set_now(next_real0);
+    let _ = rig.tw.fire_due(next_real0 * 1_000);
+    {
+        let bubble_book = rig
+            .tw
+            .world()
+            .module_state::<tacsim::space::SpaceBubbleBook>()
+            .expect("SpaceBubbleBook");
+        let active = bubble_book.active_for_hull(hull).expect("active bubble");
+        let picket = active.picket.as_ref().expect("picket state");
+        assert_eq!(picket.corvette_think_seq, 1);
+        assert_eq!(
+            picket.corvette_last_trace,
+            vec!["PICKET_HAIL_HEAVE_TO".to_owned()]
+        );
+    }
+
+    let brake_out = run(&mut rig.tw, pilot, "+helm/thrust 600 -1000 0 0");
+    assert!(
+        brake_out.contains("Helm thrust set: 600‰ burn=(-1000, 0, 0)"),
+        "{brake_out}"
+    );
+    let next_real = rig.tw.world().now() + 1;
+    rig.tw.set_now(next_real);
+    let _ = rig.tw.fire_due(next_real * 1_000);
+    let _ = run(&mut rig.tw, pilot, "+helm/thrust 0");
+
+    {
+        let bubble_book = rig
+            .tw
+            .world()
+            .module_state::<tacsim::space::SpaceBubbleBook>()
+            .expect("SpaceBubbleBook");
+        let active = bubble_book.active_for_hull(hull).expect("active bubble");
+        let picket = active.picket.as_ref().expect("picket state");
+        assert_eq!(
+            picket.inspection_status,
+            tacsim::space::PicketInspectionStatus::HoveToReadyForInspection,
+            "Corvette RhaiRunner transitioned picket to HoveToReadyForInspection"
+        );
+        assert!(picket.corvette_think_seq >= 1);
+        assert_eq!(
+            picket.corvette_last_trace,
+            vec!["PICKET_CARRIER_HOVE_TO_READY".to_owned()]
+        );
+        assert!(
+            !picket.raider_ambush_launched,
+            "Belt Raider must NOT prematurely uncloak before +helm/submit"
+        );
+    }
+
+    // 5. Submit to customs inspection (`+helm/submit`): verify live `stow.ore` + Registry check
+    //    detects `4,000 kg` of unlicensed `strategic_ore`, assesses the 2,000 cr Public E4 contract
+    //    fine into `freeport_registry`, and advances the `"Customs Assertion"` campaign front!
+    let reg_balance_before = economy(&rig.tw)
+        .snapshot()
+        .account(registry_account)
+        .expect("registry account")
+        .available()
+        .expect("amount")
+        .minor();
+    let submit_out = run(&mut rig.tw, pilot, "+helm/submit");
+    assert!(
+        submit_out.contains("assessed 2000.00cr contraband fine")
+            && submit_out.contains("4000 kg unlicensed `strategic_ore` detected")
+            && submit_out.contains("Customs Assertion"),
+        "submit output: {submit_out}"
+    );
+
+    // Sweep the economy clock (60s period) so the Public E4 fine contract settles into `freeport_registry`'s account.
+    sweep(&mut rig.tw, 60);
+    let reg_balance_after = economy(&rig.tw)
+        .snapshot()
+        .account(registry_account)
+        .expect("registry account")
+        .available()
+        .expect("amount")
+        .minor();
+    assert_eq!(
+        reg_balance_after.saturating_sub(reg_balance_before),
+        200_000,
+        "2,000.00 cr (200,000 minor credits) customs fine settled into freeport_registry's account"
+    );
+
+    // Verify `"Customs Assertion"` campaign front opened and advanced in `mush-faction` (`SimState`).
+    let sim_state = rig
+        .tw
+        .world()
+        .module_state::<mush_faction::SimState>()
+        .expect("mush-faction SimState");
+    let customs_front = sim_state
+        .fronts
+        .values()
+        .find(|f| f.title == mush_faction::CUSTOMS_ASSERTION_TITLE)
+        .expect("Customs Assertion front opened in mush-faction");
+    assert!(!customs_front.resolved);
+    let customs_clock = sim_state
+        .clocks
+        .values()
+        .find(|c| c.front == customs_front.id)
+        .expect("Customs Assertion front clock");
+    assert!(
+        customs_clock.filled >= 1 && customs_clock.segments == 6,
+        "Customs Assertion front clock advanced on contraband fine: {:?}",
+        customs_clock
+    );
+
+    // 6. On the next 1-second tick after inspection, the lurking Belt Raider lights its torch
+    //    (`ActiveCombat`), `BELT_RAIDER_RHAI` launches its 2-torpedo salvo and 120 km railgun shot
+    //    (`RAIDER_TORCH_AND_SALVO`), and `KIRKWOOD_PICKET_RHAI` transitions to `"screen_defend"`
+    //    (`PICKET_SCREEN_ENGAGE_RAIDER`)!
+    {
+        let bubble_book = rig
+            .tw
+            .world()
+            .module_state::<tacsim::space::SpaceBubbleBook>()
+            .expect("SpaceBubbleBook");
+        let active = bubble_book.active_for_hull(hull).expect("active bubble");
+        let picket = active.picket.as_ref().expect("picket state");
+        assert!(picket.raider_ambush_launched);
+        assert!(picket.raider_think_seq >= 1);
+        assert_eq!(
+            active.bubble.ships[&raider_ship_id].emcon,
+            tacsim::space::EmconPosture::ActiveCombat
+        );
+        assert_eq!(
+            picket.corvette_last_trace,
+            vec!["PICKET_SCREEN_ENGAGE_RAIDER".to_owned()]
+        );
+    }
+
+    // Pilot enables `+tac/pdc auto` and jinks laterally (`+helm/thrust 600 0 1000 0`) during the
+    // railgun slug's time-of-flight so the 120 km world-frame railgun shot misses (`RailgunDodgedByJink`).
+    let pdc_out = run(&mut rig.tw, pilot, "+tac/pdc auto");
+    assert!(pdc_out.contains("PDC auto-intercept enabled."), "{pdc_out}");
+    let jink_out = run(&mut rig.tw, pilot, "+helm/thrust 600 0 1000 0");
+    assert!(
+        jink_out.contains("Helm thrust set: 600‰ burn=(0, 1000, 0)"),
+        "{jink_out}"
+    );
+
+    for i in 0..24 {
+        let next_real = rig.tw.world().now() + 1;
+        rig.tw.set_now(next_real);
+        let _ = rig.tw.fire_due(next_real * 1_000);
+        if i == 2 {
+            let _ = run(&mut rig.tw, pilot, "+helm/thrust 0");
+        }
+    }
+
+    // Verify the 120 km railgun slug missed *Salt Moth* due to the lateral jink, and now close
+    // range and disable the Belt Raider into an open-epoch derelict (`DisabledDerelict`).
+    {
+        let bubble_book = rig
+            .tw
+            .world_mut()
+            .module_state_mut::<tacsim::space::SpaceBubbleBook>()
+            .expect("SpaceBubbleBook");
+        let active = bubble_book
+            .active_for_hull_mut(hull)
+            .expect("active bubble");
+        let (_, replayed_events) = active.tape.replay();
+        assert!(
+            replayed_events.iter().any(|e| matches!(
+                e,
+                tacsim::space::SpaceCombatEvent::RailgunDodgedByJink { .. }
+            )),
+            "120 km railgun slug completed its flight window and missed after lateral jink (RailgunDodgedByJink)"
+        );
+        // Position the Raider within offensive laser range (4 km) of *Salt Moth* for the final gunnery pass.
+        let carrier_pos = active.bubble.ships[&active.carrier_ship_id].pos_m;
+        if let Some(raider) = active.bubble.ships.get_mut(&raider_ship_id) {
+            raider.pos_m = [carrier_pos[0] + 3_000, carrier_pos[1], carrier_pos[2]];
+            if let Some(rear) = raider
+                .sections
+                .get_mut(&tacsim::space::ShipSectionId::Hull)
+                .and_then(|s| s.facets.get_mut(&tacsim::space::FacetBand::Front))
+            {
+                *rear = 0;
+            }
+            if let Some(drive) = raider
+                .sections
+                .get_mut(&tacsim::space::ShipSectionId::Drive)
+            {
+                drive.internals = 10;
+            }
+        }
+        if let Some(carrier) = active.bubble.ships.get_mut(&active.carrier_ship_id) {
+            carrier.attitude_deg = (180, 0, 0);
+            carrier.heat_permille = 0;
+            for l in &mut carrier.lasers {
+                l.cooldown_remaining_ms = 0;
+            }
+        }
+    }
+    // Attack from behind the Raider (`Front`/`Rear` facet -> `Drive` struck-through):
+    {
+        let bubble_book = rig
+            .tw
+            .world_mut()
+            .module_state_mut::<tacsim::space::SpaceBubbleBook>()
+            .expect("SpaceBubbleBook");
+        let active = bubble_book
+            .active_for_hull_mut(hull)
+            .expect("active bubble");
+        active.bubble.torpedoes.clear();
+        active.bubble.railgun_slugs.clear();
+        if let Some(raider) = active.bubble.ships.get_mut(&raider_ship_id) {
+            raider.attitude_deg = (0, 0, 0);
+            if let Some(rear) = raider
+                .sections
+                .get_mut(&tacsim::space::ShipSectionId::Hull)
+                .and_then(|s| s.facets.get_mut(&tacsim::space::FacetBand::Rear))
+            {
+                *rear = 0;
+            }
+        }
+    }
+
+    let kill_beam = run(&mut rig.tw, pilot, &format!("+tac/beam {raider_ship_id}"));
+    assert!(
+        kill_beam.contains("Laser battery fired on"),
+        "pilot disabled Belt Raider with +tac/beam: {kill_beam}"
+    );
+
+    // Fire one more tick so `clear_resolved_bubbles` sees all hostiles disabled,
+    // registers the Belt Raider derelict in `SalvageClaimBook` (48h salvage window), closes the
+    // Kirkwood bubble, and resumes *Salt Moth*'s `CarrierJourney` to Stickney Yards!
+    let next_real = rig.tw.world().now() + 1;
+    rig.tw.set_now(next_real);
+    let resume_events = rig.tw.fire_due(next_real * 1_000);
+    let resume_heard = said(&rig.tw, &resume_events, pilot);
+    assert!(
+        resume_heard.contains(
+            "[SPACE] Interdiction contact cleared; local bubble closed and transit burn resumed."
+        ),
+        "bubble closed and transit burn resumed on hostile disablement: {resume_heard}"
+    );
+
+    {
+        let bubble_book = rig
+            .tw
+            .world()
+            .module_state::<tacsim::space::SpaceBubbleBook>()
+            .expect("SpaceBubbleBook");
+        assert!(
+            !bubble_book.derelicts.is_empty(),
+            "disabled Belt Raider persisted as an open-epoch derelict with 48h salvage window in SpaceBubbleBook::derelicts"
+        );
+        let derelict = bubble_book
+            .derelicts
+            .values()
+            .next_back()
+            .expect("disabled Belt Raider derelict");
+        assert!(derelict.epoch_open);
+        let Some(tacsim::field_ops::CustodyTitleStatus::PendingSalvageClaim { claim_id, .. }) =
+            &derelict.salvage_title_status
+        else {
+            panic!(
+                "expected PendingSalvageClaim on disabled Belt Raider derelict, got {:?}",
+                derelict.salvage_title_status
+            );
+        };
+        let salvage_book = rig
+            .tw
+            .world()
+            .module_state::<tacsim::field_ops::SalvageClaimBook>()
+            .expect("SalvageClaimBook");
+        let claim = salvage_book
+            .claim(*claim_id)
+            .expect("Belt Raider salvage claim in SalvageClaimBook");
+        assert_eq!(
+            claim.deadline_real_s - claim.filed_at_real_s,
+            tacsim::field_ops::CONTEST_WINDOW_AVAILABLE_REAL_SECS
+        );
+    }
+
+    // Complete leg 2 to Stickney Yards and verify docking!
+    let j_resumed = journey(&rig.tw, hull).expect("resumed journey");
+    assert_eq!(*j_resumed.state(), mush_sim::JourneyState::Cruising);
+    let expected_arrival = j_resumed.departed().at + total_secs;
+    let _ = leg2_secs;
+    let arrival_events = to_ic(&mut rig, expected_arrival);
+    let arrival_heard = said(&rig.tw, &arrival_events, pilot);
+    assert!(
+        arrival_heard.contains("Salt Moth docks at Stickney Yards."),
+        "docked at Stickney Yards after surviving Kirkwood Customs Picket & Raider ambush: {arrival_heard}"
+    );
+    no_refused_writes(&rig.tw);
+}

@@ -104,6 +104,8 @@ pub struct ActiveInterdictionBubble {
     pub tape: BubbleInputTape,
     /// Periodic snapshots captured at bubble creation and after each tick step (`§6.3`).
     pub snapshots: Vec<BubbleSnapshot>,
+    /// Multi-party Kirkwood Customs Picket state when this bubble is a Kirkwood picket encounter (`SF.R6`, `D-35-11`).
+    pub picket: Option<super::picket::KirkwoodPicketState>,
 }
 
 impl ActiveInterdictionBubble {
@@ -141,6 +143,16 @@ impl ActiveInterdictionBubble {
         }
         if !self.bubble.torpedoes.is_empty() || !self.bubble.railgun_slugs.is_empty() {
             return false;
+        }
+        if let Some(picket) = &self.picket {
+            let corvette_operational = self
+                .bubble
+                .ships
+                .get(&picket.corvette_ship_id)
+                .is_some_and(|s| s.status == HullStatus::Operational);
+            if corvette_operational && !picket.is_customs_cleared() {
+                return false;
+            }
         }
         !self.bubble.ships.values().any(|ship| {
             ship.status == HullStatus::Operational
@@ -183,6 +195,8 @@ pub struct CompletedInterdictionBubble {
     pub tape: BubbleInputTape,
     /// Snapshots captured across the bubble's lifetime.
     pub snapshots: Vec<BubbleSnapshot>,
+    /// Final Kirkwood Customs Picket state when the bubble closed (`SF.R6`, `D-35-11`).
+    pub picket: Option<super::picket::KirkwoodPicketState>,
 }
 
 /// Open-epoch derelict hull record persisted when a ship's drive or hull is disabled
@@ -493,6 +507,8 @@ pub struct SpaceBubbleBook {
     pub completed_space_mine_draws: Vec<super::mining::PendingSpaceMineDraw>,
     /// Monotonic sequence allocator for [`Self::pending_space_mine_draws`].
     pub next_space_mine_draw_seq: u64,
+    /// Waypoint domains explicitly configured as 3-party Kirkwood Customs Pickets (`SF.R6`, `D-35-11`).
+    pub kirkwood_picket_domains: std::collections::BTreeSet<DomainId>,
     /// Monotonic revision counter for `mush-sim` standing orders (`SF.R3`).
     pub next_order_revision: u64,
     /// Monotonic allocator for space salvage [`RecoveryOpId`]s.
@@ -786,13 +802,17 @@ fn clear_resolved_bubbles(ctx: &mut Ctx<'_>, now: &ClockStamp) {
                 continue;
             };
             let carrier_ship = active.bubble.ships.get(&active.carrier_ship_id).cloned();
-            let interdictor_ship = active
-                .bubble
-                .ships
-                .get(&active.interdictor_ship_id)
-                .cloned();
+            let mut disabled_contacts: Vec<(ObjId, SpaceShipState)> = Vec::new();
+            if let Some(iship) = active.bubble.ships.get(&active.interdictor_ship_id) {
+                disabled_contacts.push((active.interdictor_hull, iship.clone()));
+            }
+            if let Some(picket) = &active.picket
+                && picket.raider_hull != active.interdictor_hull
+                && let Some(rship) = active.bubble.ships.get(&picket.raider_ship_id)
+            {
+                disabled_contacts.push((picket.raider_hull, rship.clone()));
+            }
             let domain = active.domain;
-            let interdictor_hull = active.interdictor_hull;
             let completed = CompletedInterdictionBubble {
                 hull,
                 domain,
@@ -803,56 +823,52 @@ fn clear_resolved_bubbles(ctx: &mut Ctx<'_>, now: &ClockStamp) {
                 steps: active.steps,
                 tape: active.tape,
                 snapshots: active.snapshots,
+                picket: active.picket,
             };
             book.completed.insert(hull, completed);
-            to_finalize.push((
-                hull,
-                interdictor_hull,
-                domain,
-                carrier_ship,
-                interdictor_ship,
-            ));
+            to_finalize.push((hull, domain, carrier_ship, disabled_contacts));
         }
     }
 
     let filed_real_s = real_now_secs(ctx.w, now);
-    for (hull, interdictor_hull, domain, carrier_ship, interdictor_ship) in to_finalize {
+    for (hull, domain, carrier_ship, disabled_contacts) in to_finalize {
         if let Some(ship) = &carrier_ship {
             let _ = check_in_space_unit(ctx, hull, ship, now.at);
         }
 
-        if let Some(iship) = &interdictor_ship
-            && let HullStatus::DisabledDerelict {
+        for (contact_hull, iship) in disabled_contacts {
+            if let HullStatus::DisabledDerelict {
                 epoch_open,
                 life_support_remaining_s,
                 salvage_contest_window_s,
             } = iship.status
-        {
-            let prior_owner = ObjId(interdictor_hull.0.saturating_add(1_000));
-            let base_obj = ObjId(domain.0.try_into().unwrap_or(1u32).max(1));
-            let title_status = open_salvage_claim_for_derelict(
-                ctx.w,
-                interdictor_hull,
-                hull,
-                prior_owner,
-                base_obj,
-                now.at,
-                filed_real_s,
-            );
-            if let Some(book) = ctx.w.module_state_mut::<SpaceBubbleBook>() {
-                book.derelicts.insert(
-                    interdictor_hull,
-                    SpaceDerelictRecord {
-                        hull: interdictor_hull,
-                        domain,
-                        disabled_at_ic_s: now.at,
-                        epoch_open,
-                        life_support_remaining_s,
-                        salvage_contest_window_s,
-                        assessment: None,
-                        salvage_title_status: title_status,
-                    },
+            {
+                let prior_owner = ObjId(contact_hull.0.saturating_add(1_000));
+                let base_obj = ObjId(domain.0.try_into().unwrap_or(1u32).max(1));
+                let title_status = open_salvage_claim_for_derelict(
+                    ctx.w,
+                    contact_hull,
+                    hull,
+                    prior_owner,
+                    base_obj,
+                    now.at,
+                    filed_real_s,
                 );
+                if let Some(book) = ctx.w.module_state_mut::<SpaceBubbleBook>() {
+                    book.derelicts.insert(
+                        contact_hull,
+                        SpaceDerelictRecord {
+                            hull: contact_hull,
+                            domain,
+                            disabled_at_ic_s: now.at,
+                            epoch_open,
+                            life_support_remaining_s,
+                            salvage_contest_window_s,
+                            assessment: None,
+                            salvage_title_status: title_status,
+                        },
+                    );
+                }
             }
         }
 
@@ -905,6 +921,7 @@ fn settle_disabled_carrier_bubbles(ctx: &mut Ctx<'_>, now: &ClockStamp) {
                 steps: active.steps,
                 tape: active.tape,
                 snapshots: active.snapshots,
+                picket: active.picket,
             };
             book.completed.insert(hull, completed);
             settled.push((hull, interdictor_hull, domain, carrier_ship));
@@ -962,6 +979,7 @@ fn settle_disabled_carrier_bubbles(ctx: &mut Ctx<'_>, now: &ClockStamp) {
 fn step_active_bubbles(ctx: &mut Ctx<'_>, now: &ClockStamp) {
     let frozen = ctx.w.world_timeline().is_frozen();
     let mut combat_reports = Vec::new();
+    let mut ran_picket_hulls = Vec::new();
 
     let Some(book) = ctx.w.module_state_mut::<SpaceBubbleBook>() else {
         return;
@@ -976,13 +994,27 @@ fn step_active_bubbles(ctx: &mut Ctx<'_>, now: &ClockStamp) {
             continue;
         }
         let dt_wall_ms = active.adaptive_step_wall_ms();
-        let events = active.tape.record_and_apply(
+        let mut events = active.tape.record_and_apply(
             &mut active.bubble,
             BubbleInputCommand::StepWall {
                 dt_wall_ms,
                 ic_now_s: now.at,
             },
         );
+        if let Some(picket) = active.picket.as_mut() {
+            let picket_events = super::picket::step_kirkwood_picket(
+                &mut active.bubble,
+                &mut active.tape,
+                picket,
+                &active.carrier_ship_id,
+            );
+            events.extend(picket_events);
+            if picket.inspection_status == super::picket::PicketInspectionStatus::RanThePicket
+                && picket.inspection_outcome.is_none()
+            {
+                ran_picket_hulls.push(hull);
+            }
+        }
         active.snapshots.push(active.bubble.snapshot());
         active.steps = active.steps.saturating_add(1);
         if !events.is_empty() {
@@ -1013,6 +1045,17 @@ fn step_active_bubbles(ctx: &mut Ctx<'_>, now: &ClockStamp) {
                 carrier_state,
                 interdictor_state,
             ));
+        }
+    }
+
+    for hull in ran_picket_hulls {
+        let front_id = super::picket::record_ran_the_picket_incident(ctx, hull, hull).map(|f| f.0);
+        if let Some(book) = ctx.w.module_state_mut::<SpaceBubbleBook>()
+            && let Some(active) = book.by_hull.get_mut(&hull)
+            && let Some(picket) = active.picket.as_mut()
+        {
+            picket.inspection_outcome =
+                Some(super::picket::PicketInspectionOutcome::RanThePicket { front_id });
         }
     }
 
@@ -1138,11 +1181,19 @@ fn promote_due_interdictions(ctx: &mut Ctx<'_>, now: &ClockStamp) {
         let Some(active) = build_interdiction_bubble(ctx, hull, domain, cursor, now.at) else {
             continue;
         };
+        let is_kirkwood_picket = active.picket.is_some();
         if let Some(book) = ctx.w.module_state_mut::<SpaceBubbleBook>() {
             book.by_hull.insert(hull, active);
         }
         let line = "[SPACE] Interdiction contact detected at waypoint boundary; local space bubble opened on 1:1 wall clock.";
         crate::port::voyage::narrate_hull(ctx, hull, line);
+        if is_kirkwood_picket {
+            let _ = super::picket::emit_light_lagged_picket_hail(
+                ctx,
+                hull,
+                super::picket::CORVETTE_STANDOFF_M,
+            );
+        }
     }
 }
 
@@ -1184,34 +1235,57 @@ fn build_interdiction_bubble(
     ic_now_s: i64,
 ) -> Option<ActiveInterdictionBubble> {
     let carrier_ship_id = format!("hull.{}", hull.0);
-    let interdictor_ship_id = format!("picket.{}.{}", domain.0, leg_cursor);
     let site_id = format!("domain.{}", domain.0);
 
     let carrier_ship = build_carrier_ship_state(ctx, hull, &site_id, leg_cursor, &carrier_ship_id)?;
-    let interdictor_hull = ObjId(
-        900_000_u32
-            .saturating_add(u32::try_from(domain.0).unwrap_or(0))
-            .max(1),
-    );
-    let (interdictor_unit, _) =
-        instantiate_stock_space_unit(interdictor_hull, "tacsim.unit.dray").ok()?;
-    let mut interdictor_ship = space_ship_from_tactical_unit(
-        &interdictor_unit,
-        &interdictor_ship_id,
-        "Interdictor Picket",
-        INTERDICTOR_PARTY,
-        [INTERDICTION_STANDOFF_M, 0, 0],
-        [-20_000, 0, 0],
-    )
-    .ok()?;
-    interdictor_ship.attitude_deg = (180, 0, 0);
+    let open_kirkwood = super::picket::should_open_kirkwood_picket(ctx.w, hull, domain);
 
     let bubble_id = format!("bubble.interdiction.{}.{}", hull.0, leg_cursor);
-    let mut bubble =
-        LocalSpaceBubble::new(bubble_id, site_id, "Waypoint Interdiction Bubble", ic_now_s);
-    bubble.set_party_relation(CARRIER_PARTY, INTERDICTOR_PARTY, SpaceRelation::Hostile);
+    let mut bubble = LocalSpaceBubble::new(
+        bubble_id,
+        site_id,
+        if open_kirkwood {
+            "Kirkwood Customs Picket Bubble"
+        } else {
+            "Waypoint Interdiction Bubble"
+        },
+        ic_now_s,
+    );
     bubble.insert_ship(carrier_ship);
-    bubble.insert_ship(interdictor_ship);
+
+    let (interdictor_hull, interdictor_ship_id, picket) = if open_kirkwood {
+        let picket_state = super::picket::build_kirkwood_picket_ships(
+            &mut bubble,
+            domain,
+            leg_cursor,
+            &carrier_ship_id,
+        )?;
+        let raider_hull = picket_state.raider_hull;
+        let raider_ship_id = picket_state.raider_ship_id.clone();
+        (raider_hull, raider_ship_id, Some(picket_state))
+    } else {
+        let interdictor_ship_id = format!("picket.{}.{}", domain.0, leg_cursor);
+        let interdictor_hull = ObjId(
+            900_000_u32
+                .saturating_add(u32::try_from(domain.0).unwrap_or(0))
+                .max(1),
+        );
+        let (interdictor_unit, _) =
+            instantiate_stock_space_unit(interdictor_hull, "tacsim.unit.dray").ok()?;
+        let mut interdictor_ship = space_ship_from_tactical_unit(
+            &interdictor_unit,
+            &interdictor_ship_id,
+            "Interdictor Picket",
+            INTERDICTOR_PARTY,
+            [INTERDICTION_STANDOFF_M, 0, 0],
+            [-20_000, 0, 0],
+        )
+        .ok()?;
+        interdictor_ship.attitude_deg = (180, 0, 0);
+        bubble.set_party_relation(CARRIER_PARTY, INTERDICTOR_PARTY, SpaceRelation::Hostile);
+        bubble.insert_ship(interdictor_ship);
+        (interdictor_hull, interdictor_ship_id, None)
+    };
 
     let initial_snapshot = bubble.snapshot();
     let tape = BubbleInputTape::new(&bubble);
@@ -1229,6 +1303,7 @@ fn build_interdiction_bubble(
         bubble,
         tape,
         snapshots: vec![initial_snapshot],
+        picket,
     })
 }
 
