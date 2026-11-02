@@ -16,7 +16,10 @@
 //!   ramp, recorded on the open promotion so its recover into the bay is the one surface act the
 //!   promoted site takes (`SiteRecord::exited`).
 //! - **`close`** (Q-CF-20, Q-CF-35): the demotion. The record's unit index becomes every unit the
-//!   field leaves on the ground at its field pose; the flag clears; the instant is kept.
+//!   field leaves on the ground at its field pose; the flag clears; the instant is kept. **Doc 36
+//!   cut GC.3** (Q-36-18, Q-CF-25 c): each irrecoverable hull the host names drops a remains
+//!   object with its mass, and a rig's open epoch closes `Destroyed` in the same bundle, its
+//!   `sortie_closed` line riding the black box's participant.
 //!
 //! **Who may write.** `open` is offered to anybody and refused at the prepare on the record's own
 //! state; the verbs (`+field/mark`, `+field/fire`) decide who leads. `close` closes only what the
@@ -38,7 +41,7 @@ use crate::surface::excursion::{
     ActKind, ActResult, Outcome, RefusedCode, RigKey, RigRecord, settle_spent_out_of_bay,
 };
 use crate::surface::site_record::{
-    LeftUnit, PromotedBy, SettledRig, SiteKey, SitePose, SiteRecord,
+    LeftRemains, LeftUnit, PromotedBy, SettledRig, SiteKey, SitePose, SiteRecord,
 };
 
 /// The action.
@@ -56,6 +59,10 @@ pub(crate) struct FieldProvider {
     pub outcome: DefinitionRef,
     pub sites: StateFamilyHandle<SiteKey, SiteRecord>,
     pub excursions: StateFamilyHandle<RigKey, RigRecord>,
+    /// Doc 36 cut GC.3: the black box's participant, for a close-destroyed epoch's line.
+    pub black_box: Option<
+        mush_core::participant::ParticipantHandle<crate::surface::black_box::BlackBoxParticipant>,
+    >,
 }
 
 fn invalid(message: &'static str) -> ActionError {
@@ -256,6 +263,60 @@ impl FieldProvider {
         }
         Ok(format!("field {} opened", field.ordinal))
     }
+
+    /// **Close-destroyed** (doc 36 cut GC.3; Q-36-18, Q-CF-25 c): `remains` lies on the ground,
+    /// and the rig's epoch it names, when the rig's own record holds it open, closes `Destroyed`
+    /// at `now`, its line appended in this bundle. An epoch held elsewhere (a DT flight's, which
+    /// its own family keeps) is left open, and logged.
+    fn close_destroyed(
+        &self,
+        txn: &mut ActionTxn<'_>,
+        context: &mut mush_core::PrepareCtx<'_>,
+        record: &mut SiteRecord,
+        (remains, now): (&LeftRemains, i64),
+    ) -> Result<(), ActionError> {
+        record
+            .leave_remains(remains)
+            .map_err(|why| rejected(why.sentence()))?;
+        let Some(epoch) = remains.epoch else {
+            return Ok(());
+        };
+        let key = RigKey(remains.unit);
+        let found = txn
+            .get(&self.excursions, &key)
+            .map_err(|_| integrity("the rig records are unavailable"))?
+            .cloned();
+        let Some(mut rig) =
+            found.filter(|rig| rig.sortie.as_ref().is_some_and(|open| open.id == epoch))
+        else {
+            tracing::warn!(
+                unit = remains.unit.0,
+                "tacsim: an irrecoverable hull's epoch is not its rig record's; it stays open"
+            );
+            return Ok(());
+        };
+        let Some(open) = rig.sortie.take() else {
+            return Ok(());
+        };
+        // The hull is gone from the ground: nothing of its surface work stands.
+        rig.excursion = None;
+        rig.act = None;
+        rig.run = None;
+        rig.queued = None;
+        rig.plan = None;
+        rig.check()
+            .map_err(|_| integrity("a destroyed rig's record is out of bounds"))?;
+        txn.replace(&self.excursions, &key, rig)
+            .map_err(|_| integrity("a destroyed rig's record did not stage"))?;
+        let line = crate::surface::black_box::BlackBoxLine::sortie_closed(
+            remains.unit,
+            &open,
+            now,
+            mush_roll::commerce::ic_claims::IcCloseKind::Destroyed,
+        );
+        crate::surface::black_box::append(context, self.black_box.as_ref(), remains.unit, line)?;
+        Ok(())
+    }
 }
 
 impl ActionProvider for FieldProvider {
@@ -307,7 +368,7 @@ impl ActionProvider for FieldProvider {
                     .map(|(site, close)| {
                         (
                             site.to_string(),
-                            json!({ "ordinal": close.ordinal, "units": close.units, "known": close.known }),
+                            json!({ "ordinal": close.ordinal, "units": close.units, "known": close.known, "remains": close.remains }),
                         )
                     })
                     .collect()
@@ -374,10 +435,13 @@ impl ActionProvider for FieldProvider {
         .map(Some)
     }
 
-    fn prepare_authoritative(
+    /// Doc 36 cut GC.3: the close takes its preparation context, through which a close-destroyed
+    /// epoch's line is appended in this act's own bundle.
+    fn prepare_authoritative_with_context(
         &self,
         invocation: &ActionInvocation,
         txn: &mut ActionTxn<'_>,
+        context: &mut mush_core::PrepareCtx<'_>,
     ) -> Result<AuthoritativeActionOutput, ActionError> {
         self.validate_invocation(invocation)?;
         let parameters = parameters(invocation)?;
@@ -451,6 +515,17 @@ impl ActionProvider for FieldProvider {
                     .transpose()
                     .map_err(|_| invalid("a field's close lists what its parties learned"))?
                     .unwrap_or_default();
+                // Doc 36 cut GC.3 (Q-36-18): the remains, before what was learned of them.
+                let remains: Vec<LeftRemains> = owed
+                    .get("remains")
+                    .cloned()
+                    .map(serde_json::from_value)
+                    .transpose()
+                    .map_err(|_| invalid("a field's close lists the remains it leaves"))?
+                    .unwrap_or_default();
+                for left in &remains {
+                    self.close_destroyed(txn, context, &mut record, (left, now))?;
+                }
                 for row in &known {
                     record.learn(row.principal, &row.items, |cell| row.swept(cell), now);
                 }

@@ -198,8 +198,9 @@ async fn cf3_a_carrier_takes_a_hit_in_a_field_and_the_damage_shows_in_port() {
     assert!(!lift.contains("is in the field"), "{lift}");
 }
 
-/// **A carrier is never towed** (FO-13): every shipped carrier is past twice the tonnage of
-/// every shipped mobile design, and the named gate refuses it first.
+/// **A carrier is not towed yet** (FO-13; doc 36 cut GC.3, Q-36-8): every shipped carrier is
+/// past twice the tonnage of every shipped mobile design, and the named gate wants a tug of at
+/// least half the carrier's.
 #[test]
 fn every_carrier_is_past_twice_any_tugs_tonnage() {
     let mut rig = stocked_tuned(|_| {});
@@ -235,10 +236,21 @@ fn every_carrier_is_past_twice_any_tugs_tonnage() {
         }
     }
     assert!(checked > 0, "the lane binds a carrier and a tug");
-    let (_, row) = prospector(&mut rig, "Pilot", 1, "Salt Moth");
-    let refused = tacsim::field::carrier::refuse_tow(rig.tw.world(), ObjId(row.hull))
-        .expect("a carrier is never towed");
-    assert!(refused.contains("never towed"), "{refused}");
+    // Doc 36 cut GC.3 (Q-36-8 as ruled): a carrier wants a tug of at least half its tonnage, and
+    // the gate names the tonnage; a rig is far short of it.
+    let (_, row, tvs) = on_pad(&mut rig, 1);
+    let carrier = ObjId(row.hull);
+    let refused = tacsim::field::carrier::refuse_tow(rig.tw.world(), carrier, tvs[0])
+        .expect("a rig cannot tow a carrier");
+    assert!(
+        refused.contains("carrier of 240 t") && refused.contains("at least 120 t"),
+        "{refused}"
+    );
+    assert_eq!(
+        tacsim::field::carrier::refuse_tow(rig.tw.world(), tvs[0], carrier),
+        None,
+        "the gate reads only a carrier"
+    );
 }
 
 /// **Doc 32 F-6, the carrier's departure from a running field** (ruled 2026-10-31; built in cut

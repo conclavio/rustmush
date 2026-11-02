@@ -301,7 +301,7 @@ fn void(ctx: &mut Ctx<'_>, site: &CanonicalId, held: &Held) {
         .unwrap_or_default();
     let returns = super::close::snapshot_returns(ctx, site, held.docs.snapshot.as_ref(), homes)
         .unwrap_or_default();
-    let left = super::close::demote_units(ctx, site, &units, &returns);
+    let demoted = super::close::demote_units(ctx, site, &units, &returns);
     // Doc 32 cut CF.5 (Q-CF-38): the crew of every unit the live record seated.
     if let Some(live) = &held.docs.live {
         for row in &live.units {
@@ -321,6 +321,6 @@ fn void(ctx: &mut Ctx<'_>, site: &CanonicalId, held: &Held) {
             .as_ref()
             .is_some_and(|open| open.by.hosted())
     {
-        super::admit::owe_close(ctx, site, &record, Some(left), Vec::new());
+        super::admit::owe_close(ctx, site, &record, Some(demoted), Vec::new());
     }
 }

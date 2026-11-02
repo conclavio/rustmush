@@ -753,7 +753,16 @@ pub(crate) fn lift_check(ctx: &mut Ctx<'_>, site: &CanonicalId) {
             condition(carrier),
             Some(crate::surface::site_record::LeftCondition::Wreck)
         );
-        if !down || wrecked {
+        // Doc 36 cut GC.3 (Q-36-8): a barge whose drive is destroyed stays on the ground.
+        let grounded = returns
+            .as_ref()
+            .and_then(|returns| returns.iter().find(|back| back.unit == carrier))
+            .and_then(|back| {
+                crate::carrier_damage::spec_of(ctx.w, &back.cells)
+                    .map(|spec| crate::carrier_damage::CarrierDamage::read(spec, &back.cells))
+            })
+            .is_some_and(|damage| damage.has(crate::carrier_damage::CarrierLoss::RefusesLift));
+        if !down || wrecked || grounded {
             continue;
         }
         let Some(leader) = leader_of(ctx.w, carrier) else {

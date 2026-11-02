@@ -966,7 +966,7 @@ pub(crate) fn on_ground_at(tw: &TestWorld, tv: ObjId, at: (i64, i64, u32)) -> bo
 }
 
 /// A rig's typed record.
-fn record_of(tw: &mut TestWorld, tv: ObjId) -> Option<RigRecord> {
+pub(crate) fn record_of(tw: &mut TestWorld, tv: ObjId) -> Option<RigRecord> {
     let h = handles(tw);
     typed(tw, &h.families.excursions, &RigKey(tv))
 }

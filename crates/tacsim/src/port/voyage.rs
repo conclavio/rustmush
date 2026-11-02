@@ -2626,6 +2626,9 @@ pub(crate) enum DepartRefusalKind {
     /// **Doc 32 cut CF.3 (Q-H10)**: the hull is held by a running field
     /// ([`crate::field::carrier::DEPART_IN_FIELD`]).
     InField,
+    /// **Doc 36 cut GC.3 (Q-36-8)**: a destroyed drive or a wrecked hull refuses lift
+    /// ([`crate::carrier_damage::lift_refusal`]).
+    Damaged,
 }
 
 /// A typed refusal: its kind and the line `+ship/undock` answers with.
@@ -3274,6 +3277,11 @@ pub(crate) fn prepare_departure(
     let here = port_name(def);
     if let Some(line) = crate::port::passenger::departure_refusal(ctx, hull) {
         return Err(refusal(K::PlanDark, line.to_owned()));
+    }
+    // Doc 36 cut GC.3 (Q-36-8): the carrier's loss table — a destroyed drive refuses lift, a
+    // wrecked hull never lifts again.
+    if let Some(line) = crate::carrier_damage::lift_refusal(w, hull) {
+        return Err(refusal(K::Damaged, line));
     }
     let dests = destinations(w, def);
     // Doc 18 cut IC14 row 25: a queued depart resolves its stored venue word exactly;

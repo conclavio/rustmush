@@ -8,8 +8,14 @@
 //! never the OOC diff, never the check-out snapshot (Q-CF-35). Then it stands at its field pose
 //! on the surface (Q-CF-31), and the record's unit index becomes every unit the field leaves on
 //! the ground, at the pose it fell: an immobile, unarmed or disabled hull a **casualty**, a
-//! wreck or a total loss a **wreck** (Q-CF-25; the irrecoverable hull's remains object waits for
-//! the epoch close-destroyed rule, 27a H3).
+//! wreck a **wreck** (Q-CF-25).
+//!
+//! **Close-destroyed** (doc 36 cut GC.3; Q-36-18, Q-CF-25 c): an `Irrecoverable` hull is no
+//! index entry. It leaves the surface, and the close owes the record a **remains** object with
+//! its mass where it fell ([`crate::surface::site_record::LeftRemains`]); the close's act ends its
+//! epoch `Destroyed` in the same bundle (`super::provider`). A carrier is never remains in this
+//! cut: its hull's loss is a wreck, by the carrier's loss table ([`crate::carrier_damage`]), and
+//! a wrecked carrier's bay rigs become wrecks where it stands.
 //!
 //! **A void** (a panic, a stall, a ledger overflow, a refused resume) demotes from **the last
 //! snapshot the world holds**: its units' cells and poses are the return. With no snapshot every
@@ -22,7 +28,17 @@ use crate::arena::damage::UnitReturn;
 use crate::arena::state::{EndReason, MatchEnd};
 use crate::arena_task::MatchId;
 use crate::field_ops::OperationalState;
-use crate::surface::site_record::{LeftCondition, LeftUnit, SitePose, SiteRecord};
+use crate::surface::site_record::{LeftCondition, LeftRemains, LeftUnit, SitePose, SiteRecord};
+
+/// **What a demotion leaves on the site** ([`demote_units`]): the record's new unit index and
+/// the remains of every irrecoverable hull (doc 36 cut GC.3).
+#[derive(Clone, Debug, Default, PartialEq, Eq)]
+pub(crate) struct Demoted {
+    /// The casualties and wrecks, the record's new unit index.
+    pub left: Vec<LeftUnit>,
+    /// The remains the close drops, each closing its hull's epoch destroyed.
+    pub remains: Vec<LeftRemains>,
+}
 
 /// **The units the last snapshot holds**, as returns (the void rule), when it decodes on the
 /// field's own ground (its `homes` from its live record, doc 32 cut CF.6b).
@@ -87,9 +103,9 @@ pub(crate) fn on_ended(ctx: &mut Ctx<'_>, task: MatchId, end: MatchEnd, units: &
         .and_then(|book| book.hosted(&site))
         .map(|hosted| hosted.live.units.iter().map(|row| row.unit).collect())
         .unwrap_or_default();
-    let left = demote_units(ctx, &site, &unit_ids, &returns);
+    let demoted = demote_units(ctx, &site, &unit_ids, &returns);
     // Doc 32 cut CF.4 (Q-CF-28): what each party saw, read while the host still holds the field.
-    let learned = super::known::learned_at_close(ctx, task, &site, &returns, &left);
+    let learned = super::known::learned_at_close(ctx, task, &site, &returns, &demoted);
     super::known::forget(ctx, &site);
     // Doc 32 cut CF.5 (Q-CF-38): every pilot's crew state, from the checked-in hulls, and every
     // soul a carrier's row listed aboard (CF.3).
@@ -154,7 +170,7 @@ pub(crate) fn on_ended(ctx: &mut Ctx<'_>, task: MatchId, end: MatchEnd, units: &
         .map(|hosted| hosted.live.field.ordinal);
     super::record::delete(ctx, &site);
     if let Some(record) = site_record(ctx, &site) {
-        super::admit::owe_close(ctx, &site, &record, Some(left), learned);
+        super::admit::owe_close(ctx, &site, &record, Some(demoted), learned);
     }
     let line = super::FIELD_SETTLED
         .replace("{n}", &ordinal.unwrap_or(0).to_string())
@@ -201,13 +217,14 @@ pub(crate) fn condition_now(ctx: &Ctx<'_>, back: &UnitReturn) -> Option<LeftCond
 }
 
 /// **Check `units` in from a field and stand them on the surface** (this module's head),
-/// answering the site record's new unit index. A unit with no return goes home as it went out.
+/// answering the site record's new unit index and the remains it owes. A unit with no return
+/// goes home as it went out.
 pub(crate) fn demote_units(
     ctx: &mut Ctx<'_>,
     site: &CanonicalId,
     units: &[ObjId],
     returns: &[UnitReturn],
-) -> Vec<LeftUnit> {
+) -> Demoted {
     let now = ctx.w.world_ic_now().at;
     let domain = super::parties::site_domain(ctx.w, site);
     // Doc 32 cut S.0: the record's own side, which its demote holds every pose to.
@@ -229,6 +246,7 @@ pub(crate) fn demote_units(
         })
         .unwrap_or_default();
     let mut left = Vec::new();
+    let mut remains = Vec::new();
     for unit in units {
         let back = returns.iter().find(|ret| ret.unit == *unit);
         let before = mush_tactics::module::unit_of(ctx.w, *unit).cloned();
@@ -262,6 +280,41 @@ pub(crate) fn demote_units(
         // CF.3: a carrier never moved; its surface placement stands, and the record keeps the
         // pad pose it was fought at.
         let carrier = super::carrier::is_carrier(ctx.w, *unit);
+        // Doc 36 cut GC.3 (Q-36-8): a carrier whose hull fell wrecks the rigs in its bay.
+        if carrier {
+            wreck_bay_rigs(ctx, *unit);
+        }
+        // Doc 36 cut GC.3 (Q-36-18): an irrecoverable hull leaves remains where it fell, and the
+        // surface no longer holds it.
+        if state == Some(OperationalState::Irrecoverable) && !carrier {
+            let at = back
+                .map(|back| back.pose.clone())
+                .or_else(|| mush_sim::pose_of(ctx.w, *unit).map(|(_, at)| at));
+            if mush_sim::pose_of(ctx.w, *unit).is_some()
+                && let Err(error) =
+                    mush_sim::unplace(ctx, *unit, "tacsim: an irrecoverable hull leaves remains")
+            {
+                tracing::warn!(unit = unit.0, %error, "tacsim: an irrecoverable hull could not be taken off the surface");
+            }
+            let pose = at.map(|at| SitePose {
+                x_cm: at.x_cm,
+                y_cm: at.y_cm,
+                heading_mdeg: at.heading_mdeg,
+            });
+            if let Some(pose) = pose.filter(|pose| pose.on_site(side)) {
+                remains.push(LeftRemains {
+                    unit: *unit,
+                    pose,
+                    mass_kg: crate::carrier_damage::mass_kg(ctx.w, *unit).unwrap_or(0),
+                    epoch: epochs
+                        .iter()
+                        .find(|(id, _)| id == unit)
+                        .and_then(|(_, epoch)| *epoch),
+                    left_ic: now,
+                });
+            }
+            continue;
+        }
         let pose = back.map(|back| back.pose.clone()).filter(|_| !carrier);
         if let (Some(pose), Some(domain)) = (pose.clone(), domain)
             && mush_sim::pose_of(ctx.w, *unit).is_none_or(|(_, at)| {
@@ -302,5 +355,42 @@ pub(crate) fn demote_units(
             left_ic: now,
         });
     }
-    left
+    Demoted { left, remains }
+}
+
+/// **A wrecked carrier's bay** (doc 36 cut GC.3; Q-36-8): when `carrier`'s checked-in record
+/// says its hull fell, every rig in its bay becomes a wreck where the carrier stands — the
+/// arena's wreck mark written onto its own record ([`crate::carrier_damage::wreck_plan`]). The
+/// rigs stay in the bay: the bay is in the wreck.
+fn wreck_bay_rigs(ctx: &mut Ctx<'_>, carrier: ObjId) {
+    if !crate::carrier_damage::damage_of(ctx.w, carrier)
+        .is_some_and(|damage| damage.has(crate::carrier_damage::CarrierLoss::BayRigsWrecked))
+    {
+        return;
+    }
+    let rigs: Vec<ObjId> = crate::port::ship::hull_view(ctx.w, carrier)
+        .map(|view| {
+            crate::port::vehicle::rigs_in_bay(ctx.w, &view)
+                .into_iter()
+                .map(|rig| rig.tv)
+                .collect()
+        })
+        .unwrap_or_default();
+    for rig in rigs {
+        let Some(plan) = mush_tactics::module::unit_of(ctx.w, rig).and_then(|cells| {
+            crate::carrier_damage::wreck_plan(crate::carrier_damage::spec_of(ctx.w, cells), cells)
+        }) else {
+            continue;
+        };
+        match mush_tactics::module::apply_plan(ctx, rig, &plan) {
+            Ok(_) => tracing::info!(
+                carrier = carrier.0,
+                rig = rig.0,
+                "tacsim: a wrecked carrier's bay rig is a wreck"
+            ),
+            Err(error) => {
+                tracing::warn!(carrier = carrier.0, rig = rig.0, %error, "tacsim: a wrecked carrier's bay rig could not be wrecked");
+            }
+        }
+    }
 }

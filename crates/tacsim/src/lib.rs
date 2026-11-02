@@ -108,6 +108,7 @@ pub mod arena_bridge;
 /// arena meets a runtime, and it sits *beside* [`arena`] rather than inside it so
 /// that directory's no-I/O gate can stay strict.
 pub mod arena_task;
+pub mod carrier_damage;
 pub mod commands;
 pub mod composition;
 pub mod config;

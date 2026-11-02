@@ -1842,3 +1842,112 @@ among them); `mush-industry`'s `bay_refit` rig; `mush-tactics`' workshop tests; 
 (`shard_2`); all of `mush-contract-tests` (the allowlist with the new stanza, census, panic
 budget, restriction lints); clippy and rustdoc `-D warnings` on `tacsim` and `mush-tactics`. The
 broad suites run on Linux CI on the draft PR.
+
+## GC.3 as built (remains, and the carrier's loss)
+
+Built 2026-11-02 on `main` at `396d473c` (GC.0, GC.1, GC.1b, GC.2, GC.7, GC.8a and GC.13
+merged). It covers Q-36-8, Q-36-18 and Q-36-47. No kernel file changed and no hash moved: every
+rule here is the host's, read off a checked-in unit record. What the cut decided where the
+rulings left it open, for the owner to object to:
+
+**A finding first: combat never makes a hull `Irrecoverable` today.** `OperationalState::
+Irrecoverable` needs a section in the `irrecoverable` condition or every section destroyed. The
+kernel writes neither. A hull's loss writes `wreck` on its hull section (`Arena::wreck_ops`), and
+a wreck is never a target, so the hull is never reduced past it. Close-destroyed is built for
+the state as the condition library defines it, and its gate stands the state in by staff hand.
+Whether a field should ever reach it (say, a hull reduced past a wreck, or every section down)
+is a kernel rule and an owner question; it would move the practice hashes, which this cut may
+not.
+
+**Close-destroyed** (Q-36-18; `field/close.rs`, `field/provider.rs`, `surface/site_record.rs`,
+`field/admit.rs`, `field/boot.rs`, `field/known.rs`).
+- *At demotion* (`close::demote_units`, now answering a `Demoted { left, remains }`): an
+  irrecoverable hull is checked in through the IC condition plan as before, then taken off the
+  surface (`mush_sim::unplace`) and owed as a `LeftRemains` (its hull, its pose where it fell, its
+  dry mass, its open epoch) instead of an index entry. The void at boot takes the same path.
+- *The record* (`SiteRecord::leave_remains`): a one-cell `GroundKind::Remains { of, mass_kg,
+  merged: 1 }` through `drop_object` and its cap rule (Q-CF-27), and the hull off the unit index.
+  One cell, because a unit stands in one cell in the kernel and the remains read as one wall cell
+  in the next field (CF.4's objects).
+- *The epoch* (`FieldProvider::close_destroyed`): in the close act's own bundle, a rig whose own
+  record holds that epoch open has it taken and closed `Destroyed`, its `sortie_closed` line
+  appended through the black box's participant (now composed for `tacsim_field`, so the field
+  provider prepares with its context). The rig record's surface work clears with it (excursion,
+  act, run, queue, plan): the hull is gone from the ground.
+- *Durable owed close:* `OwedClose` and its durable closing record carry the remains
+  (`remains`, serde-default and omitted when empty), so a close written before the cut decodes.
+- *What each party learns* (Q-CF-28): the remains are learned as remains, by the hull's own party
+  and by anyone who sees the cell, as casualties and wrecks are.
+- *Not done:* an epoch held by a DT flight (`detachment::sortie::Flight::epoch`) is left open and
+  logged. The flight's family is the detachment's, with its index, heads and phase, and closing
+  it `Destroyed` belongs in that family's own act. A raider's hull has no epoch, so it leaves
+  remains and nothing else.
+- *Not changed:* a carrier is never remains in this cut. Its hull's loss is the table's wreck.
+
+**One consequence table** (Q-36-8, Q-36-47; the new `tacsim::carrier_damage`).
+- *Keyed by role, not by name* (`CarrierPart`): the hull is the section whose loss is
+  `destroy_unit`; the drive is the one whose loss is `disable_motion`. The Dray's `drive` and the
+  Halcyon's `power` are both the drive. A part is down when its section's condition is
+  destroyed, a wreck or irrecoverable, or its internals are at their floor. Space maps its
+  `ShipSectionId` onto `CarrierPart` in its own tree, as Q-36-47's follow-up; nothing here reads
+  space.
+- *The table* (`TABLE`): a destroyed drive refuses lift; a destroyed hull refuses lift, wrecks
+  the carrier, strands its crew and wrecks its bay rigs.
+- *A carrier wreck's tug* (`tug_floor_kg`, `TUG_SHARE_PERMILLE` 500): at least half its tonnage,
+  rounded up. `field::carrier::refuse_tow` now takes the tug and names both tonnages ("The Salt
+  Moth is a carrier of 240 t: only a tug of at least 120 t can tow it…"). It still has no
+  production caller; GC.4's tow verb is its first.
+
+**Where the table is read.**
+- *The departure gate* (`port/voyage.rs`, `prepare_departure`): a new refusal kind,
+  `DepartRefusalKind::Damaged`, checked after the passenger gate, so a live `+ship/lift`, a live
+  `+ship/undock` and a queued departure all meet it. A queued order waits on it, with the line,
+  like the field's own refusal (`port/executor.rs`). The lines: "The {name}'s drive is
+  destroyed: it cannot lift until the drive is rebuilt." and "The {name} is a wreck: it will
+  never lift again. Anyone aboard is stranded and can ask +sortie/extract for a way out."
+- *The raider's barge* (`field/raiders.rs`, one check in `lift_check`): a barge whose drive is
+  down stays on the ground, as a wrecked one already did. This is the cut's one line outside its
+  named files, beside GC.11's lane.
+- *The crew* (`field/crew.rs`): a soul aboard a carrier whose hull fell is `Stranded` on the
+  site in the wreck, whether the carrier's row listed them aboard or they sat at a remote
+  console in it, and may ask for extraction (Q-CF-39). Before the cut they read as aboard the
+  carrier.
+- *The bay* (`close::wreck_bay_rigs`): at the wrecked carrier's check-in, every rig in its bay
+  takes the arena's own wreck mark on its own record (the `wreck` condition on its hull, or on
+  the section whose loss destroys it, and the power, mobility and gun capabilities revoked;
+  `carrier_damage::wreck_plan`). The rigs stay where they are, in the bay: the bay is in the
+  wreck, and recovering the carrier recovers them. They are not indexed apart.
+
+**The gates** (`tests/shard_1/field_gc3.rs`, through the production command paths on Ahuna
+Flank).
+- `gc3_an_irrecoverable_hull_leaves_remains_and_closes_destroyed`: GC.2's ground (A's armed hull,
+  C's prospector four cells east). A staff mark makes the prospector's boom `irrecoverable` (the
+  finding above). A marks it Hostile, the site promotes with it in the field, nobody fires, and
+  the field demotes. The prospector is off the index and off the ground; one remains of it with
+  its dry mass lies at its cell; its rig record's epoch is closed and its surface work cleared;
+  A's party knows the remains at that cell. *The black box line:* the gate asserts the
+  `destroyed` close only where the epoch's open line was written. The `driving` rig prepares its
+  acts off the composed path, so it writes no black box line at all (the launch's open line was
+  not written either, and the epoch says `unrecorded`), and the gate then asserts the box empty.
+  The close's append goes through the same participant and the same `black_box::append` as the
+  staff recovery's close (`surface/recovery.rs`), composed for `tacsim_field` in `port_tick.rs`;
+  no rig in the tree both composes owner participants and runs a field, so that line is
+  covered by review, not by a test.
+- `gc3_a_carrier_with_its_drive_destroyed_cannot_lift`: a whole Dray-P on the pad loses nothing
+  by the table. With its drive destroyed by staff hand, as a field leaves it, the table reads the
+  drive down and the hull up, `+ship/lift ceres` answers the drive's line, nothing is submitted
+  and no passage is pending.
+- Beside them: `gc3_a_carrier_whose_hull_falls_strands_its_crew_and_wrecks_its_bay` (shard_1),
+  the hull's loss fought. CF.3's ground with a second rig left in the bay; the carrier's armour is
+  stripped and its hull left one point of structure; B's fire order promotes the site and B fires
+  until the kernel journals the carrier destroyed. At demotion it is a wreck on the index, A
+  aboard is stranded, the bay rig is a wreck and the rig that was out is not, and a lift answers
+  the wreck's line. In-source: `carrier_damage`'s table and tug-floor tests.
+- *Changed:* `field_carrier::every_carrier_is_past_twice_any_tugs_tonnage` keeps its tonnage
+  sweep and now asserts the new gate's line, with a rig as the tug.
+
+**Defaults taken (provisional).**
+- The remains' one-cell footprint, and their mass as the hull's dry mass.
+- A carrier is never remains; its loss is a wreck.
+- A wrecked carrier's bay rigs stay in the bay, wrecked, not dropped to the ground.
+- The table's two refusal lines.
