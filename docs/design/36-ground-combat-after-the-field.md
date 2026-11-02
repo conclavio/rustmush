@@ -1292,7 +1292,8 @@ still fails the check. No version moved beyond goods v4, lane v18 and relay v9.
 ## 9. GC.1 as built (licensed minds left out; arrival's host side)
 
 Built on GC.0's branch (`claude/gc0-housekeeping-barge-exit`, PR #295), beside GC.2 and GC.7,
-and rebased onto `main` once #295 and GC.7's #294 merged. It covers Q-36-44 and the host half of Q-36-4. No kernel file changed, and no hash moved.
+and rebased onto `main` once #295 and GC.7's #294 merged. It covers Q-36-44 and the host half
+of Q-36-4. No kernel file changed, and no hash moved.
 
 **The split** (owner ruling, 2026-11-01, "Yes, GC.1b"). Q-36-4's ruling stands: an arriving
 carrier joins the field at the next pulse, at its pad, as a unit of its own party. Building it
