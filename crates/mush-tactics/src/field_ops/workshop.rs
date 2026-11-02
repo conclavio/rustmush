@@ -1281,7 +1281,13 @@ impl WorkshopBook {
         )
         .unwrap_or(ComponentCondition::Destroyed);
 
-        if eff_comp != ComponentCondition::Destroyed && installed.condition.as_str() != "stripped" {
+        // Doc 36 GC.8: a `Missing` slot (GC.2; stripped or removed) takes a part as a
+        // destroyed one does.
+        if !matches!(
+            eff_comp,
+            ComponentCondition::Destroyed | ComponentCondition::Missing
+        ) && installed.condition.as_str() != "stripped"
+        {
             return Err(WorkshopError::SlotAlreadyHasIntactOrRepairableComponent {
                 hull: unit.object(),
                 component: component_id.clone(),
@@ -1558,7 +1564,12 @@ impl WorkshopBook {
             let is_stripped = unit
                 .component(comp_id)
                 .is_some_and(|c| c.condition.as_str() == "stripped");
-            if is_stripped || *cond == ComponentCondition::Destroyed {
+            if is_stripped
+                || matches!(
+                    cond,
+                    ComponentCondition::Destroyed | ComponentCondition::Missing
+                )
+            {
                 components_to_replace.push(comp_id.clone());
                 total_resource_cost =
                     total_resource_cost.saturating_add(tariff.labor_cost_replace_component);

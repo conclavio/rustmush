@@ -1020,6 +1020,14 @@ Q-36-39, Q-36-40, Q-36-53 (the acts).
   second unit is armor-patched in its carrier's bay at double time.
 - **Depends on:** GC.2 (for `Missing` and jammed parts) and GC.7 (for munitions and the tariff).
   It does not need GC.4: a damaged rig that drove home is enough to start.
+- **Split (2026-11-01, as GC.8 was built).** GC.8 is two PRs. **GC.8a**: berth and stow, the
+  rights (Q-36-33) for the new action, the repair order with its facility classes, its escrowed
+  fee and its IC-clock work, the hold, and `+bay`'s quote, order, cancel, berth and stow
+  ("GC.8a as built", below).
+  **GC.8b**: rearming from munitions lots (an inventory draw needs an authoritative action of
+  its own), stripped-part provenance and hot parts, scrap (a workshop hull, with the seam for
+  remains), the doll, the built `bay_refit` reading the grant, and the salvor's custody once
+  GC.5/GC.6 record it.
 
 **GC.9 — The lease's damage charge.** Q-36-34.
 - At return, the damage is assessed, and the tariff's restoration cost is taken from the deposit,
@@ -1801,3 +1809,147 @@ units up, the field was engaged by 3.25 s and stayed engaged: 467 of the 480 wak
 **The re-measure after GC.2.** Owed: GC.2 (PR #296) changes the tempo rule in the hot loop.
 When it merges, this branch rebases, the harness runs again on the same machine, and the
 constant is set from that run.
+## GC.8a as built (the bay's repair order, berth and stow)
+
+Built 2026-11-01 on `claude/gc2-kernel-batch` (GC.2, PR #296, which GC.8 needs for `Missing` and
+jammed parts), as the first half of GC.8 (the split is in §7's GC.8 line). The code is
+`crates/tacsim/src/port/bay_work/` (`jobs.rs`, `record.rs`, `command.rs`, `mod.rs`). Every number
+is provisional under the owner's economy rule of 2026-10-24. What the cut decided where the
+rulings left it open, for the owner to object to:
+
+**The repair order (Q-36-40)** is a tacsim action beside `bay_refit`, not a kernel
+terminal-capacity protocol. It writes cells and conditions only, through `mush_tactics`' one plan
+path (`module::apply_plan`), so it needs no new participant, family or kernel hash.
+- **Jobs** (`jobs::quote`) come from the hull's assessment. A standing section that is down
+  points is `armor`. A destroyed or wrecked section is `rebuild`. A damaged part is `mend`, a
+  jammed one `unjam`, and a destroyed or missing one (GC.2's `Missing`) `replace`. A weapon short
+  of rounds is `rearm`, with the munitions good and units it needs (GC.7's link), or a beam
+  `recharge`.
+- **Prices** come from GC.7's tariff at the operator's multiplier.
+- **The work** runs each job through the workshop engine (`WorkshopBook`) on a throwaway book,
+  shells first and rounds last, so the engine's own refusals hold. The post-image becomes a plan
+  by `field_ops::ic_condition_plan`.
+- **A replaced part** is fitted intact and like for like (the slot's own definition). A replaced
+  weapon comes with an empty magazine. The workshop supplies the part inside the replacement
+  labour (400 cr), because no part market exists. A part price is a GC.8b or economy question.
+- **One change in `mush-tactics`:** `replace_component_in_slot` and `quote_full_restoration`
+  now take a `Missing` slot as they take a destroyed or stripped one.
+
+**Facility classes (Q-36-35, §4a).** `armor`, `mend`, `unjam` and `rearm` need a carrier bay or
+better. `rebuild` and `replace` need a workshop. A carrier bay takes `CARRIER_TIME_FACTOR` (2)
+times the workshop's time, at the same cost. `+bay` lists the work a better facility would do
+as "needs a workshop".
+
+**Who is paid.** A workshop's operator (GC.7's rooms: Occator at C14, Stickney Yards at P11).
+A carrier bay pays the operator of the workshop at the port it is docked at, as the parts
+supplier.
+
+**A carrier bay works only while docked** at a port with a workshop. Out in the field, doc
+27a §10's field engineering stays as it is (Q-36-35). A docked-only carrier bay is this cut's
+reading, and a cheap one to widen later.
+
+**The fee** is an ordinary economy contract, the licence's shape.
+- **On the order:** the requester offers it and accepts it, which escrows the fee
+  (`Expiry::Refund` after 30 real days).
+- **On completion:** the operator accepts it through the port party-cap source, which now names
+  each workshop's operator (`port/market.rs`), and the economy's sweep pays it.
+- **On cancel, or a refused completion:** the contract is cancelled and the escrow released.
+
+**Time and the hold (Q-36-32).**
+- **When the work finishes.** The order's due time is the IC instant at acceptance plus the
+  quoted time. The `tacsim.port` fire finishes due orders (`bay_work::tick`), and skips
+  everything while the world clock is frozen. The IC clock stands still under a freeze anyway.
+- **How the hull is held.** While an order is open, or while the hull is berthed:
+  - a `MoveAttempt`/`CarryAttempt` hook (`BayHold`) refuses ordinary moves;
+  - `berth` and `stow` refuse;
+  - a rig's launch is refused (`Refusal::Held`, wire word `bay_held`, the 65th refusal code; a
+    plan step waits on it);
+  - at completion the work is refused, and the fee released, if the hull left its facility or
+    its unit revision moved.
+
+**The record.** `tacsim:baywork:{hull}` (`BayHull`) is one bounded document per hull, holding
+the berth row and the open or last order. It is loaded at boot by the store, and an unreadable
+one holds its hull.
+
+**Rights (Q-36-33).** `permits(right, act)` is the ruling's table:
+- title: everything;
+- a `unit.maintain_refit` grant: everything but scrap;
+- a lessee: repair, rearm, berth;
+- a salvor with custody: repair, berth.
+
+`right_of` reads, strongest first:
+1. the hull's title (Economy);
+2. the grant, through Org's `unit_authority` owner read (`Authorize { MaintainRefit }`), which
+   also answers for an org member holding `unit.maintain_refit` directly;
+3. a live `+tv` lease;
+4. a salvor's custody. `salvor_custody` is a seam that answers `None`: no durable ground
+   salvage-custody record exists until GC.5/GC.6 build one.
+
+**Berth and stow (Q-36-53).**
+- **`berth`**, from the workshop room: the hull leaves a bay slot of its carrier docked at that
+  port (`mush_sim::unplace`, then a world move into the room), so its location is the room, the
+  slot is free, and the carrier may sail. The record keeps the carrier, bay room and slot. The
+  workshop's berths (2 at Ceres, 4 at Stickney) bound the hulls berthed at once.
+- **`stow`** puts it back into the same slot (`place_interior`), the carrier docked at that port
+  again.
+- **(expensive to reverse)** As GC.7 warned, berthed hulls now live in GC.7's existing rooms.
+  Moving a workshop to a dedicated room later means re-homing them.
+
+**`+bay`** (UD.4c's surface, without the doll):
+- `+bay[/quote] <hull>`: the class, the jobs with price and time, what needs a workshop, the
+  asker's right, the berth and the order;
+- `/order <hull>=<work>` (`all`, a kind, or a section or part, comma-separated);
+- `/cancel`, `/berth`, `/stow`.
+
+The verb rides the legacy post-image lane. Its allowlist stanza names `tacsim.bay_work` as the
+future typed family, on the `+tv/lease` precedent. A record that holds a hull is the kind of
+state rule 1 does not exempt, so the order's typed family is owed with GC.8b.
+
+**Not done here (GC.8b), and why.**
+- **Rearming from munitions lots.** Inventory pools move only inside an authoritative action. A
+  rearm that names a good is quoted but refused at the order until GC.8b adds a draw (an
+  inventory move from the carrier's hold, the mill's provider pattern). Beam charge recharges
+  now.
+- **Provenance (Q-36-37), hot parts, strip and scrap (Q-36-39).** The engine's
+  `strip_component`, `ContrabandHotPart` and `scrap_hull` exist. GC.8b wires them to lots: the
+  removed part as a lot with its parent hull, its `Missing` slot and its claim reference.
+- **The doll.**
+- **The built `bay_refit` reading the grant.** Its title check sits in Industry, Economy and the
+  Tactics participant, each kernel-audited, so it is GC.8b's, done in one place.
+- **The salvor's live custody** (GC.5/GC.6).
+- **`industrial_parts` consumption.** It is quoted (`parts_t`) but not drawn, for the same
+  inventory reason as munitions.
+
+**The gates** (`tests/shard_1/bay_gc8.rs`, the composed `driving` world):
+- **`gc8_the_refit_run_at_stickney_and_an_armour_patch_in_the_bay`** (story c without its rearm).
+  A Dray-P sails to Stickney Yards with Occator's escort and a prospector rig leased into its
+  bay. The escort's engine section is destroyed and its cannon jammed by a staff fixture (GC.2's
+  outcomes, standing in).
+  1. In the carrier's bay the quote offers the unjam, names the rebuilt engine as workshop work
+     and refuses it there.
+  2. `+bay/berth` to P11 moves the hull into the room and frees the slot. A staff `@teleport`
+     is refused by the hold.
+  3. `+bay/order …=rebuild,unjam` escrows the fee. `stow` is refused while the order is open.
+  4. Three real days of a W-clock freeze leave the order open. Resumed, it finishes at its due
+     time: the engine section is intact and the cannon intact.
+  5. The rig's chassis armour is patched in the carrier's bay in exactly twice the workshop's
+     time.
+  6. `+bay/stow` puts the escort back in its slot, unheld, and the fee contract activates.
+- **`gc8_who_may_have_a_hull_worked_on`** at Ceres' workshop.
+  - A stranger in the bay holds no right and is refused.
+  - The lessee reads "lessee (repair and rearm)", and the table refuses a lessee refit.
+  - A character `@org/grant`ed Occator's `unit.maintain_refit` reads the grant right through
+    Org and takes an order.
+  - A second order on the held hull is refused, and the lessee's cancel releases it.
+- **`port::bay_work::tests::gc8_q36_33_who_may_do_what`**: the whole table, including "a salvor
+  never strips or scraps".
+
+Also changed to admit the new refusal: `surface/act`'s refusal table (65 codes), the plan's fate
+table (`bay_held` waits like a dark hull), and their pins.
+
+**Verified** on Windows: the two shard_1 gates and the table test; tacsim's lib tests filtered
+to `refusal`, `fate`, `gc8`, `ud4b`, `bay` and `workshop` (the built bay's `hardware::flow::bay`
+among them); `mush-industry`'s `bay_refit` rig; `mush-tactics`' workshop tests; GC.7's gate
+(`shard_2`); all of `mush-contract-tests` (the allowlist with the new stanza, census, panic
+budget, restriction lints); clippy and rustdoc `-D warnings` on `tacsim` and `mush-tactics`. The
+broad suites run on Linux CI on the draft PR.

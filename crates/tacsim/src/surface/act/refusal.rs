@@ -43,6 +43,11 @@ pub enum Refusal {
         /// The slot.
         n: u8,
     },
+    /// Doc 36 cut GC.8a: the rig is held in its bay for a repair order (`LAUNCH_HELD`).
+    Held {
+        /// The slot.
+        n: u8,
+    },
     /// `LAUNCH_OPEN`.
     Open {
         /// The slot.
@@ -442,9 +447,13 @@ pub enum Refusal {
     },
 }
 
+/// **Doc 36 cut GC.8a**: a rig held in its bay for a repair order does not launch: `{n}`.
+pub const LAUNCH_HELD: &str =
+    "Rig {n} is held in the bay for work; it launches when the work is done or cancelled.";
+
 /// The offer-wire words and the start's messages, in one table (the prepare's
 /// `port_error` needs a `&'static str`).
-pub(super) const REFUSAL_CODES: [(&str, &str); 64] = [
+pub(super) const REFUSAL_CODES: [(&str, &str); 65] = [
     ("tv_dark", "that rig cannot be read"),
     ("tv_unwired", "rigs cannot be worked on this server"),
     ("not_aboard", "the operator is not aboard the hull"),
@@ -452,6 +461,7 @@ pub(super) const REFUSAL_CODES: [(&str, &str); 64] = [
     ("under_way", "the hull is under way"),
     ("cleared", "the hull is cleared to leave"),
     ("out", "that rig is already out of the bay"),
+    ("bay_held", "that rig is held in its bay for work"),
     ("open", "that rig has an excursion open"),
     ("forfeit", "that rig's deposit is forfeit"),
     ("ended", "that rig's lease has ended"),
@@ -573,6 +583,7 @@ impl Refusal {
             Refusal::UnderWay { .. } => "under_way",
             Refusal::Cleared { .. } => "cleared",
             Refusal::Out { .. } => "out",
+            Refusal::Held { .. } => "bay_held",
             Refusal::Open { .. } => "open",
             Refusal::Forfeit { .. } => "forfeit",
             Refusal::Ended { .. } => "ended",
@@ -652,6 +663,7 @@ impl Refusal {
                 .replace("{name}", name)
                 .replace("{port}", port),
             Refusal::Out { n } => tv::LAUNCH_OUT.replace("{n}", &n.to_string()),
+            Refusal::Held { n } => LAUNCH_HELD.replace("{n}", &n.to_string()),
             Refusal::Open { n } => tv::LAUNCH_OPEN.replace("{n}", &n.to_string()),
             Refusal::Forfeit { n, counter, port } => tv::LAUNCH_FORFEIT
                 .replace("{n}", &n.to_string())
@@ -856,6 +868,7 @@ pub(crate) fn refusal_samples() -> Vec<Refusal> {
             port: String::new(),
         },
         Refusal::Out { n: 1 },
+        Refusal::Held { n: 1 },
         Refusal::Open { n: 1 },
         Refusal::Forfeit {
             n: 1,
