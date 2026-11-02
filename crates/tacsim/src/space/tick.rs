@@ -268,6 +268,7 @@ impl SpaceBubbleBook {
     ///
     /// Returns [`mush_sim::tick::TickRecordError`] if the order value or stamp fails
     /// `mush-sim`'s [`mush_sim::tick::StandingOrder::new`] invariant checks.
+    #[allow(clippy::too_many_arguments)]
     pub fn record_standing_order(
         &mut self,
         unit: ObjId,

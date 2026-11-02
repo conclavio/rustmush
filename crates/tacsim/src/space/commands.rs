@@ -201,9 +201,9 @@ impl BridgeRole {
 
 /// Resolve the carrier hull [`ObjId`] that `actor` is physically aboard (`D-35-9`, `35a` §3 #1).
 ///
-/// Checks both port-registered hulls ([`crate::port::ship::hull_of_room`] +
-/// [`crate::port::voyage::aboard`]) and any carrier hull in [`SpatialState`] /
-/// [`SpaceBubbleBook`] via [`crate::detachment::planning::projection::physically_aboard`].
+/// Checks both port-registered hulls (`crate::port::ship::hull_of_room` +
+/// `crate::port::voyage::aboard`) and any carrier hull in [`SpatialState`] /
+/// [`SpaceBubbleBook`] via `crate::detachment::planning::projection::physically_aboard`.
 #[must_use]
 pub fn hull_aboard_for_actor(w: &World, actor: ObjId) -> Option<ObjId> {
     let room = w.get(actor)?.location?;
