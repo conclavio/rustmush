@@ -507,6 +507,9 @@ pub fn tacsim_config(cfg: &TacsimCfg) -> Result<tacsim::TacsimConfig, String> {
             max_units: cfg.field.max_units,
             extract_s: cfg.field.extract_s,
             rescue_bound_s: cfg.field.rescue_bound_s,
+            treat_injured_s: cfg.field.treat_injured_s,
+            treat_incapacitated_s: cfg.field.treat_incapacitated_s,
+            treat_medical_permille: cfg.field.treat_medical_permille,
         },
     };
     // **16b cut Q.7**: the arena's own values, checked here and nowhere else.

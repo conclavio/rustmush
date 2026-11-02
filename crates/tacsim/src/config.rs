@@ -1959,6 +1959,9 @@ pub const FIELD_EXTRACT_S: std::ops::RangeInclusive<u32> = 60..=604_800;
 /// **The longest rescue bound** (doc 32 cut CF.5): an IC day.
 pub const FIELD_RESCUE_BOUND_S: u32 = 86_400;
 
+/// **The shortest and longest treatment time** (doc 36 cut GC.13): an IC minute, an IC month.
+pub const FIELD_TREAT_S: std::ops::RangeInclusive<u32> = 60..=2_592_000;
+
 /// **`[tacsim.field]`** (doc 32 cut CF.2; Q-CF-20, Q-CF-21, Q-CF-45): provisional (the owner's
 /// economy-defaults rule).
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
@@ -1977,6 +1980,15 @@ pub struct FieldConfig {
     /// **Doc 32 cut CF.5** (Q-CF-39): the published bound — IC seconds past the due instant an
     /// extraction waits while a Friend's recovery flight is on the site (7,200).
     pub rescue_bound_s: u32,
+    /// **Doc 36 cut GC.13** (Q-36-45): IC seconds an injured character spends at a port before
+    /// they are fit again (86,400: one IC day).
+    pub treat_injured_s: u32,
+    /// **Doc 36 cut GC.13** (Q-36-45): IC seconds an incapacitated character spends at a port
+    /// before they are fit again (259,200: three IC days).
+    pub treat_incapacitated_s: u32,
+    /// **Doc 36 cut GC.13** (Q-36-45): the treatment time at a port with a medical room, per
+    /// mille of the two above (500: half).
+    pub treat_medical_permille: u32,
 }
 
 impl Default for FieldConfig {
@@ -1986,6 +1998,9 @@ impl Default for FieldConfig {
             max_units: crate::surface::site_record::FIELD_MAX_UNITS,
             extract_s: 21_600,
             rescue_bound_s: 7_200,
+            treat_injured_s: 86_400,
+            treat_incapacitated_s: 259_200,
+            treat_medical_permille: 500,
         }
     }
 }
@@ -2025,6 +2040,24 @@ impl FieldConfig {
             return Err(format!(
                 "[tacsim.field].rescue_bound_s must be 0 to {FIELD_RESCUE_BOUND_S} (it is {})",
                 self.rescue_bound_s
+            ));
+        }
+        for (key, value) in [
+            ("treat_injured_s", self.treat_injured_s),
+            ("treat_incapacitated_s", self.treat_incapacitated_s),
+        ] {
+            if !FIELD_TREAT_S.contains(&value) {
+                return Err(format!(
+                    "[tacsim.field].{key} must be {} to {} (it is {value})",
+                    FIELD_TREAT_S.start(),
+                    FIELD_TREAT_S.end(),
+                ));
+            }
+        }
+        if !(1..=1_000).contains(&self.treat_medical_permille) {
+            return Err(format!(
+                "[tacsim.field].treat_medical_permille must be 1 to 1000 (it is {})",
+                self.treat_medical_permille
             ));
         }
         Ok(())
