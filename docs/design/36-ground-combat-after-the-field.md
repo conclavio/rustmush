@@ -1,12 +1,14 @@
 # 36. Ground combat after the field — recovery, repair and the field's open edges
 
-Draft 0.3, 2026-11-02, docs only. Surveyed against `origin/main` at `d5ba6b2c`. Draft 0.1, the
+Draft 0.4, 2026-11-02, docs only. Surveyed against `origin/main` at `d5ba6b2c`. Draft 0.1, the
 same day, was the survey: it asked the owner questions, each with a proposed default and an
 alternative, in the form docs 27 §7 and 32 §4 used. **Draft 0.2 records the owner's rulings of
 2026-11-02 on every question:** Q-36-8, Q-36-11, Q-36-14, Q-36-29 and Q-36-35 amended, every
 other default accepted as written. §4a lists what the amendments change elsewhere. **Draft
 0.3, the same day,** replaces §7's provisional order with the cut list GC.0–GC.13, planned from
-the rulings.
+the rulings. **Draft 0.4, the same day,** adds §4b: six questions a pre-implementation review
+found open (Q-36-52..57). Q-36-52 is the owner's ruling; the rest are defaults taken under the
+2026-10-24 rule, and the cut lines in §7 carry them.
 
 ## 1. Why this document exists
 
@@ -703,6 +705,82 @@ data or the kernel's hashes.
   demotion. The default's bounded amount is provisional, and so is the window to void: until
   the leader's next command after demotion, or a provisional 10 IC minutes.
 
+## 4b. Found open before implementation (Draft 0.4)
+
+A review of Draft 0.3 against `main` at `66725b6a` on 2026-11-02 found six things the cuts
+would have had to decide on their own. Each is in the form of §4. Q-36-52 is the owner's ruling;
+Q-36-53 to Q-36-57 are defaults taken under the owner's rule of 2026-10-24 (reasonable defaults,
+tuned later, the expensive-to-reverse ones flagged), and the owner may amend any of them.
+
+**Q-36-52 — A crew member still aboard a casualty that a non-friend attaches to.**
+- **Decision (owner ruling, 2026-11-02):** the non-friend may attach, tow and load regardless.
+  Until capture is built (Q-CF-38 rules it out of this phase), the moment the casualty's load
+  into a non-friend's carrier completes, every character still aboard is treated as abandoned:
+  the NPC extraction of Q-CF-39 starts for them on the spot, as if they had requested it, and
+  after the configured IC delay they are at the nearest known safe port (FO-12, P-5). The hull
+  stays with the carrier. A Friend's recovery-flight deferral (CF.5) does not apply to this
+  extraction. While the tow is in progress the crew stay aboard the hull and may request
+  extraction themselves, as today.
+- **The friendly half (a default):** a completed load into a carrier of the crew's own party or
+  of a Friend sets their location "aboard the carrier" (Q-CF-38) and cancels any pending
+  extraction.
+- **Alternative:** attach refused while anyone is aboard and not yet extracted.
+- **Why:** refusing the attach would let a stranded pilot hold a hull on the ground for as long
+  as they liked, which is the bay lock of Q-CF-17 in another form. Abandonment and extraction
+  is the survival route that already exists, and it leaves nothing for capture to undo later.
+
+**Q-36-53 — From the carrier's bay to the workshop.**
+- **Decision (Draft 0.4 default):** a workshop is a port room authored with the bay capability
+  (`bay_refit`, doc 31 UD.4b) and a provisional berth count. A hull moves from a docked
+  carrier's bay slot into the workshop by a `berth` act and back by `stow` (names provisional,
+  under UD.4c's `+bay`): the hull's location becomes the room, its bay slot frees, and the
+  carrier may leave without it. The bay's authority check stays as built (the hull and the
+  requester in the facility). Stickney Yard and the Ceres ports each get one workshop room in
+  content.
+- **Alternative:** the workshop reads a hull in a docked carrier's bay in place.
+- **Why:** the built bay demands one location (`bay_refit/authority.rs:143`), and a hull under
+  repair is physically out of its carrier. Today no port has an authored workshop room and
+  nothing moves a hull out of a bay slot, so story (c) cannot start without this.
+
+**Q-36-54 — The bay's envelope (Q-36-15).**
+- **Decision (Draft 0.4 default):** the envelope is the hull's stowage volume, on the existing
+  `si.volume_l` measure of the bay's compartment (doc 06 D3 measure maps, doc 18 §4.3). Each
+  unit definition gets a `stowage_volume_l`, authored where known and otherwise derived from dry
+  mass at a provisional class density. "Fits both" (Q-36-15) means the bay's `si.mass_kg` and
+  `si.volume_l` limits, through the existing compartment owners (Q-S8). No size class.
+- **Alternative:** a size class (light, medium, heavy) on hulls and bays.
+- **Why:** the measures already exist on the bay side, a volume is a number doc 31's designer
+  can derive from a design, and it touches no kernel hash. The expensive-to-reverse mark on
+  Q-36-15 is answered by reusing a measure rather than adding one.
+
+**Q-36-55 — The raid director's withdrawal, and the raiders' faction.**
+- **Decision (Draft 0.4 default):** two parts.
+  - **Withdrawal.** A raider group orders its hulls home up the ramp when it has lost a
+    provisional half of the hulls it launched, when a provisional 20 wall-clock minutes have
+    passed in a promoted field, or when no armed non-friend has been in its reach for the idle
+    interval of Q-36-5. The barge then lifts by Q-36-6. `@field/raiders/withdraw` stays as the
+    staff override.
+  - **Faction.** Each raider entry in `raiders.json` names an organization, registered in
+    `mush-faction` as the group's principal, so F-2 (Q-36-11) writes standing for raider fire
+    and for fire at raiders. Two raider organizations in content, one per entry, provisional.
+- **Alternative:** raiders are factionless and F-2 skips them; withdrawal only when the
+  director's threat budget is spent.
+- **Why:** today a raider's leader is a bare NPC name, so Q-36-11 has nothing to write against,
+  and Q-36-6's lift needs someone to order the hulls aboard first.
+
+**Q-36-56 — GC.2's rebless.**
+- **Decision (Draft 0.4 default):** one cut, one rebless. Draft 0.3's sentence allowing a split
+  into GC.2a and GC.2b is withdrawn.
+- **Alternative:** two cuts and two reblesses.
+- **Why:** the rule at the head of §7 exists so the practice hashes flip once in the programme.
+  A larger PR is cheaper than a second rebless.
+
+**Q-36-57 — Housekeeping in §7.**
+- **Decision:** GC.1 cites Q-36-44 (the licensed-mind hull) and GC.13 cites Q-36-45 (treatment);
+  Draft 0.3 had them swapped. GC.1 depends on GC.0 for the harness hook its gate flies through,
+  not by files. Five cuts start at once, not four: GC.12 and GC.13 are single-file cuts outside
+  the field and surface files.
+
 ## 5. Out of scope for this survey
 
 - **The 10 km ground** (doc 16 D-16-5); its own programme.
@@ -774,7 +852,7 @@ Q-36-50, Q-36-51.
   doc 32's story with the stand-down mark removed.
 - **Depends on:** nothing. Starts first.
 
-**GC.1 — Arrival, and licensed minds left out.** Q-36-4, Q-36-45.
+**GC.1 — Arrival, and licensed minds left out.** Q-36-4, Q-36-44.
 - **An arriving carrier joins a running field** at the next pulse, at its pad, as a unit of its
   own party, without launches. Files: `port/voyage.rs` or `port/executor.rs` (the arrival),
   `field/carrier.rs`, `field/admit.rs`.
@@ -782,7 +860,8 @@ Q-36-50, Q-36-51.
   admitted. Files: `field/admit.rs`.
 - **Gate:** `gc1_a_carrier_arriving_mid_field_is_admitted_at_its_pad_and_cannot_launch`, plus
   one test for the licensed-mind case.
-- **Depends on:** GC.0, because both touch the voyage's field hooks.
+- **Depends on:** GC.0, for the harness hook (Q-36-49) its gate flies through. No files
+  overlap (Q-36-57).
 
 **GC.2 — The kernel batch (the one rebless).** Q-36-5, Q-36-6 (the tempo half), Q-36-7,
 Q-36-38 (combat's half).
@@ -801,8 +880,8 @@ Q-36-38 (combat's half).
   `gc2_a_wreck_hides_what_stands_behind_it`,
   `gc2_a_survivable_hit_can_jam_a_weapon_and_the_check_in_keeps_it`, and
   `gc2_an_idle_declared_field_demotes`.
-- **Depends on:** nothing. Starts beside GC.0. It is the largest cut; split it into GC.2a (tempo
-  and cover) and GC.2b (components) if the rebless allows two.
+- **Depends on:** nothing. Starts beside GC.0. It is the largest cut, and it stays one cut with
+  one rebless (Q-36-56).
 
 **GC.3 — Remains, and the carrier's loss.** Q-36-8, Q-36-18, Q-36-47.
 - **Close-destroyed:** an irrecoverable hull's epoch closes `Destroyed` at demotion, and a
@@ -822,38 +901,46 @@ Q-36-38 (combat's half).
 
 ### Lane 2: H2 recovery
 
-**GC.4 — The tow (story a).** Q-36-12, Q-36-13, Q-36-14, Q-36-15, Q-36-20, Q-36-21.
+**GC.4 — The tow (story a).** Q-36-12, Q-36-13, Q-36-14, Q-36-15, Q-36-20, Q-36-21,
+Q-36-52 (the friendly half), Q-36-54.
 - **`tow`, attach and release** as surface acts on the IC tick, open to every duty. Any mobile
   unit within the 2× tonnage cap may do them, at `coupled_drive_rates_for_tow`. The acts are
   timed by `[tacsim.recovery].inspect_s`, `attach_s` and `load_s`, and each is interruptible.
   The live acts use the library's `RecoveryBook` rules.
 - **A tow in a promoted field** is admitted coupled, and a coupled tug drives at the tow rate on
   wall time.
-- **Loading into one's own carrier's bay**, checked against the bay's new mass and envelope limits
-  as well as `maximum_items`. `BayCapacitySpec` is retired.
+- **Loading into one's own carrier's bay**, checked against the bay's `si.mass_kg` and
+  `si.volume_l` limits as well as `maximum_items`; each unit definition gains a
+  `stowage_volume_l` (Q-36-54). `BayCapacitySpec` is retired. A completed load into a carrier of
+  the crew's own party or of a Friend sets the crew aboard the carrier and cancels a pending
+  extraction (Q-36-52).
 - Licence and compute seats stay with the casualty until its epoch closes.
 - Files: `surface/` (a new `tow.rs`), `detachment/sortie/surface.rs` (the duty refusal goes),
-  `definitions/logistics.rs` (the bay limits), `port/voyage.rs` (the bay gate counts mass),
-  `field/admit.rs` (coupled admission), `field/carrier.rs`, and the content bays.
+  `definitions/logistics.rs` (the bay limits and `stowage_volume_l`), `port/voyage.rs` (the bay
+  gate counts mass), `field/admit.rs` (coupled admission), `field/carrier.rs`, `field/crew.rs`
+  (the friendly load), the content bays and the unit definitions.
 - **Story (a), main path:** the escort's wingman drags the disabled escort to the ramp during the
   field and loads it before the carrier lifts. A restart while attached keeps the attachment; a
   restart while loading keeps the load. The bot's escort pilot learns the tow lines.
 - **Depends on:** GC.0 (the site index), GC.1 (both touch `field/admit.rs`) and GC.3 (both touch
   `field/carrier.rs` and the voyage's bay gate).
 
-**GC.5 — Salvage on a later visit.** Q-36-16, Q-36-19, Q-36-22, Q-36-23, Q-36-29.
+**GC.5 — Salvage on a later visit.** Q-36-16, Q-36-19, Q-36-22, Q-36-23, Q-36-29, Q-36-52
+(the non-friend half).
 - **A scan reveals salvage** (casualties, wrecks, remains and cargo in reach) into the scanner's
   own `known` record.
 - **Loading into a foreign bay:** the epoch closes `RecoveredToBase{carrier}` with `recovered_by`,
-  and the carrier's operator gets custody and a pending claim, which GC.6 files.
+  and the carrier's operator gets custody and a pending claim, which GC.6 files. Any character
+  still aboard is treated as abandoned when the load completes: the Q-CF-39 extraction starts
+  for them on the spot, with no recovery-flight deferral (Q-36-52).
 - **Cargo pickup** by inventory relocation, on open ground for anyone and on owned ground by
   FO-4.
 - **Lease rigs.**
   - A disabled lease rig recovered to a bay can be returned.
   - One still out after 28 IC days is written off and becomes Occator's alone.
   - A written-off rig can be towed, but loading it hands it back to Occator, with no claim.
-- Files: the scan in `surface/`, `surface/tow.rs`, `port/tv.rs`, and `mush-inventory`'s relocate
-  path.
+- Files: the scan in `surface/`, `surface/tow.rs`, `port/tv.rs`, `field/crew.rs` (the abandoned
+  crew), and `mush-inventory`'s relocate path.
 - **Story (a), second variant:** a casualty left behind is found by a scan on a later visit and
   brought home by the returning party.
 - **Depends on:** GC.4.
@@ -882,19 +969,23 @@ Q-36-38 (combat's half).
 
 ### Lane 3: H3 restoration
 
-**GC.7 — Munitions and the tariff (content and economy).** Q-36-31, Q-36-36.
+**GC.7 — Munitions and the tariff (content and economy).** Q-36-31, Q-36-36, Q-36-53 (the
+rooms).
 - **A munitions good** per ammunition family, with mass and price, sold at the Ceres ports and
   Stickney Yard. A carrier can carry munitions as cargo.
 - **The workshop tariff** becomes content: per point, per section, per component, per round, in
   IC time. Operators may set a multiplier, not a free fee. `industrial_parts` are consumed per
   structural point.
-- Files: `content/goods.json`, the ammunition packs, the vendor content, a tariff content file, and
-  `mush-tactics/src/field_ops/workshop.rs`'s `WorkshopFacilityTariff` read from content.
+- **Workshop rooms** at Stickney Yard and the Ceres ports, authored with the `bay_refit`
+  capability and a provisional berth count (Q-36-53).
+- Files: `content/goods.json`, the ammunition packs, the vendor content, a tariff content file,
+  the port room content, and `mush-tactics/src/field_ops/workshop.rs`'s `WorkshopFacilityTariff`
+  read from content.
 - **Gate:** `gc7_munitions_are_bought_and_carried_and_the_tariff_quotes_a_known_repair`.
 - **Depends on:** nothing. Starts beside GC.0 and GC.2.
 
 **GC.8 — The repair actions and `+bay` (story c).** Q-36-32, Q-36-33, Q-36-35, Q-36-37,
-Q-36-39, Q-36-40.
+Q-36-39, Q-36-40, Q-36-53 (the acts).
 - **A new authoritative action** for changes that touch only cells and conditions (repair a
   section, repair a component, unjam, rearm from munitions lots), beside `bay_refit` for part
   changes. Work units run on the IC clock and pause under a W-clock freeze, and the hull is held.
@@ -909,10 +1000,14 @@ Q-36-39, Q-36-40.
   claim reference. Hot parts are refused.
 - **Scrap:** structural mass becomes `structural_alloys`, and salvageable parts become lots.
   Remains can be scrapped where they lie by their title holder or a winning claimant.
-- **UD.4c's `+bay`** player surface over all of it: the doll, the quote, the order.
+- **`berth` and `stow`** (names provisional): a hull moves from a docked carrier's bay slot into
+  the workshop room and back; its location becomes the room, its slot frees, and the carrier may
+  leave without it (Q-36-53).
+- **UD.4c's `+bay`** player surface over all of it: the doll, the quote, the order, berth and
+  stow.
 - Files: `mush-industry/src/bay_refit/` (the authority), a new repair action beside it,
   `mush-tactics/src/field_ops/workshop.rs` (made live), `hardware/bay.rs`, the `+bay` commands,
-  and `mush-inventory` lots.
+  the berth and stow acts in `port/`, and `mush-inventory` lots.
 - **Story (c):** the casualty from story (a), inspected at Stickney Yard. It gets a new engine, a
   jammed weapon unjammed and its magazines rearmed from bought munitions, then fields again. A
   second unit is armor-patched in its carrier's bay at double time.
@@ -942,13 +1037,19 @@ Q-36-39, Q-36-40.
   `gc10_a_leader_voids_friendly_fire_standing`.
 - **Depends on:** GC.3, because both touch `field/close.rs`.
 
-**GC.11 — The raid director.** Q-36-41.
+**GC.11 — The raid director.** Q-36-41, Q-36-55.
 - **A raid director on the surface tick** seeds, launches and marks authored raiders by a per-site
   schedule and threat budget, triggered by presence and ore value, with a cooldown. Raiders
   arrive by GC.1's arrival and leave by GC.0's lift. A raider group whose carrier is wrecked does
   not respawn.
-- Files: `field/raiders.rs`, a new `surface/raid.rs` (name provisional), and
-  `content/field/raiders.json`.
+- **Withdrawal** (Q-36-55): the group orders its hulls up the ramp after losing half of what it
+  launched, after 20 wall-clock minutes in a promoted field, or after the idle interval with no
+  armed non-friend in reach; all three numbers provisional.
+- **Raider organizations** (Q-36-55): each entry in `raiders.json` names one, registered in
+  `mush-faction`, so GC.10's standing writes have a principal on the raider side.
+- Files: `field/raiders.rs`, a new `surface/raid.rs` (name provisional),
+  `content/field/raiders.json`, and the raider organizations in `mush-faction`'s registry
+  content.
 - **Gate:** `gc11_a_scheduled_raid_arrives_declares_and_leaves_with_its_losses`. The bot's
   captain story runs once with a director raid instead of a staff one.
 - **Depends on:** GC.0 and GC.1.
@@ -961,7 +1062,7 @@ Q-36-39, Q-36-40.
 - **Depends on:** nothing. It can run any time, and is better after GC.2 because the tempo rule
   changes the hot loop.
 
-**GC.13 — Crew treatment.** Q-36-44.
+**GC.13 — Crew treatment.** Q-36-45.
 - An injured or incapacitated character recovers to fit at a port after a provisional IC time,
   faster at a port with a medical room.
 - Files: `field/crew.rs`, and port content.
@@ -977,6 +1078,6 @@ Q-36-39, Q-36-40.
 | GC.7 munitions, tariff | GC.8 repair, `+bay` (story c), after GC.2 | GC.9 lease charge | |
 | GC.12 the cap; GC.13 treatment | | | |
 
-At most four writers run at once: one per row, with the files kept apart as each cut's line
-names them. The three stories close the programme. Then a short review, in the form of the
-2026-10-31 one, before the next survey.
+At most five writers run at once: one per row, GC.12 and GC.13 beside them as single-file cuts
+(Q-36-57), with the files kept apart as each cut's line names them. The three stories close the
+programme. Then a short review, in the form of the 2026-10-31 one, before the next survey.
