@@ -41,14 +41,30 @@ pub fn has(window: &str, needle: &str) -> bool {
 /// and the test rig's `TRANSIENTS` retry on.
 pub const TRANSIENT_TAILS: [&str; 2] = ["please retry in a moment.", "please try again shortly."];
 
+/// The engine's back-pressure refusals of an authoritative line it never
+/// staged (mush-core's `engine.rs`, `drain_authoritative_submit`): the actor
+/// already has a submission queued, or the queue is full. Exact lines, not a
+/// tail: plenty of game sentences end "try again in a moment." and are not a
+/// refusal of the typed line. A tick acting for the player defers rather than
+/// draw these (doc 18 cut IC8's `authoritative_pending`), so one reaching the
+/// lane answers its own line — the command's filed sentence may stand above
+/// it, but nothing was queued (CI run 41503257303: a `+tv/1 recover go` the
+/// tick's own submission had pushed back, never typed again).
+pub const ENGINE_BUSY: [&str; 2] = [
+    "Your earlier action is still committing; try again in a moment.",
+    "Too many actions are committing right now; try again in a moment.",
+];
+
 /// **A line the world refused as transient**: it ends with one of
-/// [`TRANSIENT_TAILS`] and does not begin with `[` (a channel line or a
-/// notice is another party's text, never the world's refusal of this
-/// session's line — the arena reader's rule). The line was never run, so the
-/// lane types it again.
+/// [`TRANSIENT_TAILS`], or is one of [`ENGINE_BUSY`], and does not begin with
+/// `[` (a channel line or a notice is another party's text, never the world's
+/// refusal of this session's line — the arena reader's rule). The line was
+/// never run, so the lane types it again.
 pub fn is_transient(line: &str) -> bool {
     let body = line.trim();
-    !body.starts_with('[') && TRANSIENT_TAILS.iter().any(|tail| body.ends_with(tail))
+    !body.starts_with('[')
+        && (TRANSIENT_TAILS.iter().any(|tail| body.ends_with(tail))
+            || ENGINE_BUSY.iter().any(|busy| body.ends_with(busy)))
 }
 
 // ---------------------------------------------------------------------------
@@ -1044,9 +1060,19 @@ mod tests {
             "The world was busy too long for that line; please retry in a moment.",
             "The world is still starting; please try again shortly.",
             "> The world was busy too long for that line; please retry in a moment.",
+            // The engine's back-pressure (`drain_authoritative_submit`).
+            "Your earlier action is still committing; try again in a moment.",
+            "Too many actions are committing right now; try again in a moment.",
         ] {
             assert!(is_transient(refusal), "{refusal}");
         }
+        // A game sentence with the same tail is not the engine's refusal.
+        assert!(!is_transient(
+            "It slips past before you can act — try again in a moment."
+        ));
+        assert!(!is_transient(
+            "The exchange is busy right now; try again in a moment. Nothing was sold."
+        ));
         let pending = claims::CLAIM_PENDING
             .replace("{block}", "F")
             .replace("{site}", "Ahuna Flank");

@@ -2040,6 +2040,10 @@ mod tests {
         run_t: u64,
         arrive_after_ms: u64,
         busy: BTreeSet<&'static str>,
+        /// Lines the engine pushes back once behind a submission the world made as the
+        /// player (`Queued.` and `Done.` are that one's; the filed sentence and the refusal
+        /// are the line's, which never ran).
+        pushed: BTreeSet<&'static str>,
     }
 
     impl Script {
@@ -2056,6 +2060,7 @@ mod tests {
                 run_t: 12,
                 arrive_after_ms: 0,
                 busy: ["+licence/buy go", "+tv/1 launch go"].into_iter().collect(),
+                pushed: BTreeSet::new(),
             }
         }
     }
@@ -2165,6 +2170,18 @@ mod tests {
                 return lines(&[
                     "The world was busy too long for that line; please retry in a moment."
                         .to_owned(),
+                ]);
+            }
+            // The engine's back-pressure (CI run 41503257303): the world's own submission as
+            // the player was queued first, so the line's is refused under its filed sentence.
+            if self.script.pushed.contains(line) && self.busied.insert(line.to_owned()) {
+                return lines(&[
+                    "Queued.".to_owned(),
+                    n1(tv::RECOVER_DRIVE_FILED)
+                        .replace("{ramp}", "stern ramp")
+                        .replace("{when}", "in 3 s"),
+                    "Your earlier action is still committing; try again in a moment.".to_owned(),
+                    "Done.".to_owned(),
                 ]);
             }
             match line {
@@ -2539,6 +2556,32 @@ mod tests {
     /// their filed line and their tell in one `feed` (the drive, the stake,
     /// the recover and its unload), so a follow-on whose window started late
     /// would time out.
+    /// **The engine's back-pressure is the line's own refusal** (CI run 41503257303): a
+    /// `+tv/1 recover go` answered `Queued.`, its filed sentence, `Your earlier action is still
+    /// committing; try again in a moment.` and `Done.` was never queued — the receipt and the
+    /// commit are the world's own submission as the player. The lane types it again a moment
+    /// later instead of waiting out its 300 s for a bay it never asked for.
+    #[test]
+    fn a_line_the_engine_pushed_back_is_typed_again() {
+        let mut script = Script::story();
+        script.pushed.insert("+tv/1 recover go");
+        let (lane, sent) = play(script);
+        assert_eq!(
+            lane.result().map(|r| r.status.as_str()),
+            Some("done"),
+            "{:?}\n{:#?}",
+            lane.result(),
+            lines_of(&sent)
+        );
+        let times: Vec<u64> = sent
+            .iter()
+            .filter(|send| send.line == "+tv/1 recover go")
+            .map(|send| send.lane_ms)
+            .collect();
+        assert_eq!(times.len(), 2, "{:#?}", lines_of(&sent));
+        assert!(times[1] >= times[0] + TRANSIENT_RETRY_MS, "{times:?}");
+    }
+
     #[test]
     fn mine_lane_types_only_its_vocabulary() {
         let (mut lane, sent) = play(Script::story());
