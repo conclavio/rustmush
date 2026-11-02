@@ -2085,3 +2085,164 @@ CF.6c's gate returns a damaged escort. Its return now reads the charge, and stil
 **Defaults taken (provisional):** the lessor port's workshop multiplier as the charge's
 multiplier; rearm labour included in the charge; no charge for parts tonnage; the whole deposit
 for a rig past repair.
+## GC.11 as built (the raid director)
+
+Built on `main` at `396d473c`, after GC.0, GC.1 and GC.1b merged. It covers Q-36-41 and Q-36-55.
+No practice hash moved: the one kernel change is a message an OOC task ignores. Where the rulings
+left something open, this is what the cut decided, for the owner to object to.
+
+**The director** (`surface/raid.rs`, one call at the end of the surface tick in `surface/tick.rs`).
+- *When it runs.* Once a second on the surface tick, only under the new
+  `[tacsim.field].raid_director` (default **off**: raiders stay staff-run, and every existing
+  story is untouched). It visits each raider in `raiders.json` that carries a `director` block.
+- *The schedule, per raider and so per site* (`raiders.json` schema 4, `RaidSchedule`, all
+  provisional):
+  - `presence_flights` (3): flights out on the site's ground. A raider's own units, carriers on
+    their pads, and casualties or wrecks on the site record don't count.
+  - `ore_kg` (1,000): ore aboard the rigs on the site's ground. This is the "ore value", read by
+    mass because a price would make the trigger depend on the market.
+  - `cooldown_ic_s` (43,200, twelve IC hours): from one landing to the next.
+  - `threat` (2): the most hulls one raid puts down, each hull costing one.
+- *What a raid does.*
+  1. It seeds the raider if it has never stood (`raiders::seed`).
+  2. It lands the carrier at its authored cell and puts at most `threat` hulls beside the ramp
+     (`raiders::land_and_launch`, factored out of `@field/raiders/launch`). The site hears "The
+     {name} sets down on {site} and lowers its ramp."
+  3. On open ground, the leader declares at the next fire: a Hostile mark on the nearest flight
+     through the ordinary door (`field::mark_from_order`), which promotes the site. Admission takes
+     the raid in with everyone else.
+  4. On a site where a field already runs, the raid **arrives by the kernel's join**: see below.
+- *What is durable.* The raid's state rides the carrier's own raider attribute (owned by `GOD`):
+  - `raid` while one is under way, with its landing's IC second and the field it entered (its
+    ordinal and the arena millisecond it entered at);
+  - `last_raid_ic`, for the cooldown;
+  - `spent`, once the carrier is a wreck on the site record.
+
+  Only the idle trigger's "last seen in reach" is RAM (`RaidBook`). After a restart it counts
+  again from the resumed field's first check.
+- *Staff raids are untouched.* The director sends, withdraws and ends only raids it landed (the
+  `raid` key). A raider staff launched (a hull of it on the ground) is never sent; one staff
+  only seeded, every hull aboard, is sent like any other. `@field/raiders/withdraw` stays the
+  staff override.
+- *No respawn.* A raider whose carrier is a wreck is marked spent and never sent again. Seeding is
+  refused anyway while any of its hulls stands, and a wreck stands. A raider that has lost every
+  hull, with its carrier whole, has nobody aboard to send, so it sends nothing.
+
+**Arriving mid-field** (GC.1b's join; `field/raiders.rs`, `arena/join.rs`, `arena_task.rs`,
+`arena_bridge.rs`).
+- *How it joins.* The carrier and the hulls just put down are each checked out under the field's
+  mark, given an `arrived` row in the raider's party, and sent as `ArenaMsg::Join` at the pose
+  they stand at (`raiders::join_raid`, through GC.1b's `carrier::joining`). The party holds its
+  leader's standing Hostile mark on every other party, as at an admission.
+- *Its home.* A party that joins has no home on the field's ground, and the doctrine's withdrawal
+  drives to a home (`ArenaDefinition::homes`). Without one the group could never go up its ramp.
+  - A new message, **`ArenaMsg::Home { zone }`**, lays the carrier's ramp as the party's home.
+    `Arena::add_home` applies it at the next pulse's head, before the joins. A party that already
+    has a home keeps it.
+  - The live record's `homes` gains the same zone, so a snapshot decodes on the same ground.
+  - A task with no field terms, or with a tape, ignores the message. So no OOC match sees one, and
+    no practice hash can move.
+- *Its answer.* The bridge sends a raider's `Joined` to `raiders::on_joined`, not to GC.1b's
+  carrier handler, so a tank is never told it "set down on the pad". A refused hull is checked
+  back in, leaves the live record, and goes back aboard.
+- *A refused join is retried.* The kernel refuses a join while a mind's think is in flight on any
+  unit ("a think awaits its answer … the batch was not delivered before the encode"). The gate met
+  this in about half its runs. A director raid refused before it ever entered the field lands and
+  joins again at the next fire. GC.1b's own arrivals are not retried while their field runs, by
+  its ruling; that is flagged as a follow-up, not changed here.
+- *Not covered:* a restart between a raider's join and the next snapshot. The resume re-joins
+  every `arrived` row through GC.1b's path, which stands a raider at the pad rather than its ramp.
+
+**Withdrawal** (Q-36-55; `field/raiders.rs`'s `lift_check`, the paced snapshot check GC.0 built).
+- *One decode.* The check decodes the last snapshot once, and keeps the arena as well as the
+  returns. GC.0 read the returns through `close::snapshot_returns`, which `field/close.rs` (GC.3's
+  file) still has unchanged. The check runs on GC.0's pace (`LIFT_CHECK_MS`, 10 s of arena time).
+- *The three triggers.* For a director raid with hulls still standing in the field, the group
+  orders those hulls home up the ramp (`raiders::order_withdraw`, the staff verb's path) when any
+  of these holds:
+  - **Losses:** its casualties and wrecks reach `[tacsim.field].raid_lost_permille` (500, half)
+    of the hulls it launched into the field. That count is the hulls in the field plus those out
+    at the ramp.
+  - **Time in the field:** `[tacsim.field].raid_field_s` (1,200, twenty minutes; arena time,
+    which a field runs at the wall's pace) since it entered.
+  - **Idle:** none of its hulls has held an armed hostile party in reach for `idle_demote_s`
+    (Q-36-5's interval). The read is a new `Arena::party_holds_armed_hostile_in_reach(party)`:
+    `hostile_in_weapons_range`'s rule restricted to one party. It is a read, never a step, and
+    nothing is hashed.
+- *The way out.* Each hull boards at the ramp, and the carrier lifts by GC.0's lift once the last
+  hull is aboard or down. "What it lost stays where it fell" is unchanged.
+- *A wrecked carrier* neither lifts nor withdraws its group. Its hulls fight on to the field's
+  end, which is the "does not respawn" ruling read strictly.
+- *The end of a raid.* A raid is over once its carrier has lifted. If its field demoted first (by
+  the field's own quiet or idle bound), the director takes the standing hulls aboard on open
+  ground and the carrier lifts there. A landing that finds nobody to declare on ends the same way.
+
+**The raiders' organizations** (Q-36-55; `mush-faction`, `raiders.json`).
+- Each raider names one, in a new required `organization` field: "Skulk Syndicate" and "Reach
+  Reavers". The names must be unique and at most 40 characters.
+- At the seed, `mush_faction::register_content_faction(ctx, name, leader)` makes the faction once
+  (idempotent by name, with no backing org; staff may bind one with `@faction/org`) and adds the
+  leader to its principals.
+- A world with no faction registry seeds the raider all the same. GC.10's standing writes find
+  the leader as the raider side's principal.
+
+**Config.** `[tacsim.field].raid_director` (false), `raid_lost_permille` (500, 1 to 1,000) and
+`raid_field_s` (1,200, 60 to 7,200) are in `tacsim::config`, `mush-config` (with the key table)
+and `config_ext.rs`.
+
+**Files beyond the cut's line.**
+- `arena/join.rs`, `arena/state.rs`, `arena_task.rs`: `add_home`, the reach read and the `Home`
+  message.
+- `arena_bridge.rs`: one branch.
+- `surface/tick.rs`: the call and the `RaidBook` slot.
+- The config files.
+- `field/close.rs` and `field/carrier.rs` are **not touched**. GC.1b's `carrier::joining`,
+  `ring_cells` and `is_carrier` are only called.
+
+**The gates** (`tests/shard_1/field_director.rs`, the composed `driving` world).
+- **`gc11_a_scheduled_raid_arrives_declares_and_leaves_with_its_losses`.** No staff hand: the
+  site has a prospector's carrier on its pad, its two rigs out (rig 1 holding 3 t of ore), and an
+  armed hull a hired NPC sits in, its magazines rationed to six rounds.
+  1. The director seeds and lands the raider. The landing is stamped for the cooldown, and the
+     Skulk Syndicate is in the registry with the leader as its one principal.
+  2. One raider hull is worn thin. The leader's mark promotes the site, and the raid is its
+     leader's fixture party.
+  3. The guard takes the worn hull. That is half, so the other turns for home and boards, and
+     the carrier lifts.
+  4. The field settles with the lost hull on the site record and the other aboard.
+  5. Ten more seconds later, the raid is over and the cooldown keeps the carrier away, though the
+     site still tempts it.
+- **`gc11_a_raid_due_while_a_field_runs_arrives_by_the_join_and_goes_home`.**
+  1. The prospector's mark opens a field on the guard first (its magazines empty, so it can't
+     wreck the carrier).
+  2. Ore comes aboard, and the raid arrives by the join: three `arrived` rows in one party, and
+     the ramp on the live record's homes.
+  3. With `raid_field_s` at 60, it turns for home after a minute in the field. Every hull that
+     didn't fall leaves at its ramp, and the carrier lifts.
+- In-source, `raiders::tests::the_authored_raiders_parse_and_check` covers schema 4.
+
+**The bot's captain story** (`mush-bot/tests/mining_cohort.rs`) takes `FIELD_RAID=director`.
+- The harness then seeds and wears the raider as the staff run does, and launches, declares and
+  withdraws nothing; the director is on. The story waits for the field the director's raid
+  opens.
+- `FIELD_IDLE_S` sets `idle_demote_s` for the run.
+- The default run, which CI's bot-stories shard runs, is unchanged.
+
+**Defaults taken (provisional).**
+- Every number above.
+- Presence counted in flights, ore read by mass.
+- The landing line's wording.
+- The director off by default.
+- Withdrawal applying only to director raids.
+- The cooldown counted from the landing.
+- A refused mid-field join retried every fire.
+
+**Verified** on Windows:
+- The two gates, run several times each (stable once the guard's rounds were rationed).
+- tacsim's lib tests for `raiders`, `arena::join`, `gc1b` and config; shard_1's `field_raiders`
+  and `field_carrier`; GC.0's field story at 256; shard_3's duel hashes.
+- `mush-faction` and `mush-config`.
+- All of `mush-contract-tests`.
+- Clippy and rustdoc `-D warnings`.
+
+The broad suites run on Linux CI on the PR.

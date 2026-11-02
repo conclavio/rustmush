@@ -1952,6 +1952,8 @@ pub struct TacsimConfig {
 /// **The shortest and longest demotion interval a server may set** (doc 32 cut CF.2): ten
 /// seconds, so a field is never demoted between two volleys, and an hour.
 pub const FIELD_DISENGAGE_S: std::ops::RangeInclusive<u32> = 10..=3_600;
+/// **Doc 36 cut GC.11**: the band `[tacsim.field].raid_field_s` must sit in, seconds.
+pub const FIELD_RAID_S: std::ops::RangeInclusive<u32> = 60..=7_200;
 
 /// **The shortest and longest idle bound a server may set** (doc 36 cut GC.2, Q-36-5): the
 /// demotion interval's own range.
@@ -1997,6 +1999,15 @@ pub struct FieldConfig {
     /// **Doc 36 cut GC.13** (Q-36-45): the treatment time at a port with a medical room, per
     /// mille of the two above (500: half).
     pub treat_medical_permille: u32,
+    /// **Doc 36 cut GC.11** (Q-36-41): whether the raid director runs on the surface tick
+    /// (`false`: raiders are staff-run only, as before the cut).
+    pub raid_director: bool,
+    /// **Doc 36 cut GC.11** (Q-36-55): the share of the hulls a director raid launched, per
+    /// mille, whose loss turns it for home (500, provisional: half).
+    pub raid_lost_permille: u32,
+    /// **Doc 36 cut GC.11** (Q-36-55): seconds of arena time a director raid spends in a promoted
+    /// field before it turns for home (1,200, provisional: twenty wall-clock minutes).
+    pub raid_field_s: u32,
 }
 
 impl Default for FieldConfig {
@@ -2010,6 +2021,9 @@ impl Default for FieldConfig {
             treat_injured_s: 86_400,
             treat_incapacitated_s: 259_200,
             treat_medical_permille: 500,
+            raid_director: false,
+            raid_lost_permille: 500,
+            raid_field_s: 1_200,
         }
     }
 }
@@ -2075,6 +2089,20 @@ impl FieldConfig {
             return Err(format!(
                 "[tacsim.field].treat_medical_permille must be 1 to 1000 (it is {})",
                 self.treat_medical_permille
+            ));
+        }
+        if !(1..=1_000).contains(&self.raid_lost_permille) {
+            return Err(format!(
+                "[tacsim.field].raid_lost_permille must be 1 to 1000 (it is {})",
+                self.raid_lost_permille
+            ));
+        }
+        if !FIELD_RAID_S.contains(&self.raid_field_s) {
+            return Err(format!(
+                "[tacsim.field].raid_field_s must be {} to {} (it is {})",
+                FIELD_RAID_S.start(),
+                FIELD_RAID_S.end(),
+                self.raid_field_s
             ));
         }
         Ok(())

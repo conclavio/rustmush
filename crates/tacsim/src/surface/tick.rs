@@ -371,6 +371,8 @@ pub(crate) fn register(reg: &mut Registrar<'_>) -> Result<(), ModError> {
     reg.state(crate::surface::act::ActOrders::default());
     // Doc 20 cut SM.11: the plan's test counters (RAM; read by test hooks only).
     reg.state(crate::surface::plan::PlanCounters::default());
+    // Doc 36 cut GC.11: the raid director's RAM.
+    reg.state(crate::surface::raid::RaidBook::default());
     reg.tick(
         SURFACE_TICK,
         TickCadence::Coarse(SURFACE_TICK_PERIOD),
@@ -452,6 +454,8 @@ fn surface_tick(ctx: &mut Ctx<'_>, _tag: &str, _scene: Option<SceneId>) {
     let mut state = std::mem::take(slot);
     state.fires = state.fires.saturating_add(1);
     let mut stats = walk(ctx, &mut state);
+    // Doc 36 cut GC.11 (Q-36-41): the raid director, after the rigs' work.
+    crate::surface::raid::tick(ctx);
     stats.warmed = warmed;
     stats.warm_us = warm_us;
     stats.elapsed_us = micros_since(started);

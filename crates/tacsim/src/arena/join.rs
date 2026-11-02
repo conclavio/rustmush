@@ -64,6 +64,31 @@ fn refused(unit: ObjId, reason: &str) -> ArenaError {
 }
 
 impl Arena {
+    /// **Give a party arriving mid-field its home** (doc 36 cut GC.11; Q-36-55): a raider group
+    /// that joins a running field (its carrier and hulls landed after admission) goes home up its
+    /// own carrier's ramp like a party admitted at the opening, so the ramp's zone is laid on the
+    /// field's ground ([`crate::arena::state::ArenaDefinition::homes`]) at the next pulse's head,
+    /// before the joins. A party that has a home keeps it, and a zone off the ground is refused.
+    /// Answers whether the ground gained it. Only an IC field's arena takes one, as with a join.
+    pub fn add_home(&mut self, zone: crate::arena::state::EntryZone) -> bool {
+        let terrain = &self.definition.terrain;
+        if self.end != EndCondition::Host
+            || self
+                .definition
+                .homes
+                .iter()
+                .any(|home| home.team == zone.team)
+            || terrain.get(zone.x0, zone.y0).is_none()
+            || terrain.get(zone.x1, zone.y1).is_none()
+        {
+            return false;
+        }
+        std::sync::Arc::make_mut(&mut self.definition)
+            .homes
+            .push(zone);
+        true
+    }
+
     /// **Admit `unit` into the running field** (this module's head), seated by `pilot` when one
     /// sits in it, its party's book opened from `host` when the field has none. Answers the name
     /// it joined under.

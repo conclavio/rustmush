@@ -122,10 +122,35 @@ pub struct RaiderDef {
     pub leader: String,
     /// The site's port entry it is seeded on.
     pub site: CanonicalId,
+    /// **The organization it flies for** (doc 36 cut GC.11; Q-36-55): registered in
+    /// `mush-faction` at the seed with the leader as its principal, so standing written for its
+    /// fire and for fire at it names somebody.
+    pub organization: String,
     /// The carrier its hulls launch from.
     pub carrier: RaiderCarrier,
     /// Its hulls.
     pub units: Vec<RaiderUnit>,
+    /// **The raid director's schedule for it** (doc 36 cut GC.11; Q-36-41), when the director
+    /// runs it; `None` keeps it staff-run only.
+    #[serde(default)]
+    pub director: Option<RaidSchedule>,
+}
+
+/// **When the raid director sends a raider, and with how much** (doc 36 cut GC.11; Q-36-41):
+/// one per raider, so one per site. Every number is provisional.
+#[derive(Clone, Copy, Debug, PartialEq, Eq, Deserialize)]
+#[serde(deny_unknown_fields)]
+pub struct RaidSchedule {
+    /// **Presence**: the fewest flights out on the site's ground (anyone's units but the raider's,
+    /// carriers on their pads not counted) before it raids.
+    pub presence_flights: u16,
+    /// **Ore value**: the fewest kilograms of ore aboard the rigs on the site's ground before it
+    /// raids.
+    pub ore_kg: u64,
+    /// **The cooldown**: IC seconds from one raid's landing to the next one's at the earliest.
+    pub cooldown_ic_s: i64,
+    /// **The threat budget**: the most hulls one raid puts on the ground (each hull costs one).
+    pub threat: u16,
 }
 
 /// The file.
@@ -138,8 +163,9 @@ struct RaidersFile {
     raiders: Vec<RaiderDef>,
 }
 
-/// **The authored raiders**, checked: schema 3 (doc 32 cut S.1: the carrier's cells are offsets
-/// from the pad), unique ids, one to 22 hulls each beside the carrier (a party's two-letter
+/// **The authored raiders**, checked: schema 4 (doc 32 cut S.1: the carrier's cells are offsets
+/// from the pad; doc 36 cut GC.11: an organization each, and the director's schedule), unique ids
+/// and organizations, one to 22 hulls each beside the carrier (a party's two-letter
 /// designators), the carrier and its ramp within the widest site's side of the pad, and the ramp
 /// beside the carrier, never under it.
 ///
@@ -149,8 +175,8 @@ struct RaidersFile {
 pub fn raiders() -> Result<Vec<RaiderDef>, String> {
     let file: RaidersFile =
         serde_json::from_str(RAIDERS_JSON).map_err(|error| format!("raiders: {error}"))?;
-    if file.schema != 3 {
-        return Err("raiders: schema 3 only".to_owned());
+    if file.schema != 4 {
+        return Err("raiders: schema 4 only".to_owned());
     }
     // Doc 32 cut S.1: an offset within the widest site's side of the pad here; `seed` holds each
     // cell to its own site's side.
@@ -162,8 +188,32 @@ pub fn raiders() -> Result<Vec<RaiderDef>, String> {
         if def.units.is_empty() || def.units.len() > 22 {
             return Err(format!("raiders: {} fields one to 22 hulls", def.id));
         }
-        if def.leader.trim().is_empty() || def.label.trim().is_empty() {
-            return Err(format!("raiders: {} names its leader and itself", def.id));
+        if def.leader.trim().is_empty()
+            || def.label.trim().is_empty()
+            || def.organization.trim().is_empty()
+            || def.organization.len() > 40
+        {
+            return Err(format!(
+                "raiders: {} names its leader, itself and its organization",
+                def.id
+            ));
+        }
+        if file.raiders[..n]
+            .iter()
+            .any(|other| other.organization == def.organization)
+        {
+            return Err(format!(
+                "raiders: {}'s organization is another raider's",
+                def.id
+            ));
+        }
+        if let Some(schedule) = def.director
+            && (schedule.threat == 0 || schedule.cooldown_ic_s < 0)
+        {
+            return Err(format!(
+                "raiders: {}'s director sends at least one hull and waits no negative time",
+                def.id
+            ));
         }
         let carrier = &def.carrier;
         let apart = (carrier.cell[0] - carrier.ramp[0])
@@ -206,7 +256,7 @@ pub fn leader_of(w: &World, unit: ObjId) -> Option<ObjId> {
 }
 
 /// The hull's raider attribute, when staff wrote it.
-fn mark_of(w: &World, unit: ObjId) -> Option<serde_json::Value> {
+pub(crate) fn mark_of(w: &World, unit: ObjId) -> Option<serde_json::Value> {
     w.attr(unit, RAIDER_ATTR)
         .filter(|attr| attr.owner == GOD)?
         .as_json()
@@ -214,7 +264,7 @@ fn mark_of(w: &World, unit: ObjId) -> Option<serde_json::Value> {
 }
 
 /// The raider a hull is seeded for, by id, whatever its leader's state.
-fn raider_of(w: &World, unit: ObjId) -> Option<String> {
+pub(crate) fn raider_of(w: &World, unit: ObjId) -> Option<String> {
     mark_of(w, unit)?.get("raider")?.as_str().map(str::to_owned)
 }
 
@@ -256,7 +306,7 @@ pub fn withdrawing(w: &World, unit: ObjId) -> bool {
 }
 
 /// Every hull seeded for `raider`, the carrier included, in unit order.
-fn hulls_of(w: &World, raider: &str) -> Vec<ObjId> {
+pub(crate) fn hulls_of(w: &World, raider: &str) -> Vec<ObjId> {
     w.module_state::<mush_tactics::module::UnitStore>()
         .map(|store| {
             store
@@ -270,7 +320,7 @@ fn hulls_of(w: &World, raider: &str) -> Vec<ObjId> {
 }
 
 /// Rewrite one key of a hull's raider attribute (`None` removes it).
-fn set_mark(
+pub(crate) fn set_mark(
     ctx: &mut Ctx<'_>,
     unit: ObjId,
     key: &str,
@@ -405,6 +455,13 @@ pub fn seed(ctx: &mut Ctx<'_>, def: &RaiderDef) -> Result<String, String> {
         .w
         .create(ObjKind::Npc, &def.leader, GOD, None)
         .map_err(|error| format!("The raider's leader was not made ({error})."))?;
+    // Doc 36 cut GC.11 (Q-36-55): the leader is its organization's principal. A world with no
+    // faction registry seeds the raider all the same.
+    if ctx.w.module_state::<mush_faction::FactionState>().is_some() {
+        mush_faction::register_content_faction(ctx, &def.organization, leader).map_err(
+            |error| format!("{}'s organization was not registered ({error}).", def.label),
+        )?;
+    }
     let carrier = make(
         ctx,
         &def.carrier.name,
@@ -467,6 +524,37 @@ fn make(
 /// Why nothing launched: no carrier on the site's ground, the site in a field, nobody aboard,
 /// no free ground beside the ramp.
 pub fn launch(ctx: &mut Ctx<'_>, def: &RaiderDef) -> Result<String, String> {
+    let record = super::close::site_record(ctx, &def.site)
+        .unwrap_or_else(|| crate::surface::site_record::fresh_record(ctx.w, &def.site));
+    if record.promoted.is_some() {
+        return Err(format!(
+            "{} is in a field; a raider launches only onto open ground.",
+            crate::surface::act::site_name(ctx.w, &def.site)
+        ));
+    }
+    let (_, launched) = land_and_launch(ctx, def, usize::MAX, &record)?;
+    Ok(format!(
+        "{} launch from the {}: {} hulls on the ground beside its ramp.",
+        def.label,
+        def.carrier.name,
+        launched.len()
+    ))
+}
+
+/// **Land `def`'s carrier and put at most `cap` of its hulls aboard on the ground** ([`launch`];
+/// doc 36 cut GC.11, the raid director's landing): a carrier that lifted ([`lift`]) lands again at
+/// its authored cell first, then the hulls aboard stand beside its ramp, in unit order. `record`
+/// is the site's record the ground is read from. Answers the carrier and the hulls put down.
+///
+/// # Errors
+///
+/// No carrier, the carrier on other ground, nobody aboard, no free ground beside the ramp.
+pub(crate) fn land_and_launch(
+    ctx: &mut Ctx<'_>,
+    def: &RaiderDef,
+    cap: usize,
+    record: &crate::surface::site_record::SiteRecord,
+) -> Result<(ObjId, Vec<ObjId>), String> {
     let domain = super::parties::site_domain(ctx.w, &def.site)
         .ok_or_else(|| format!("{} is not a lane site.", def.site))?;
     let hulls = hulls_of(ctx.w, def.id.as_str());
@@ -475,13 +563,15 @@ pub fn launch(ctx: &mut Ctx<'_>, def: &RaiderDef) -> Result<String, String> {
         .copied()
         .find(|hull| ramp_cell(ctx.w, *hull).is_some())
         .ok_or_else(|| format!("{} has no carrier to launch from.", def.label))?;
-    let record = super::close::site_record(ctx, &def.site)
-        .unwrap_or_else(|| crate::surface::site_record::fresh_record(ctx.w, &def.site));
-    if record.promoted.is_some() {
-        return Err(format!(
-            "{} is in a field; a raider launches only onto open ground.",
-            crate::surface::act::site_name(ctx.w, &def.site)
-        ));
+    let aboard: Vec<ObjId> = hulls
+        .iter()
+        .copied()
+        .filter(|hull| carrier_of(ctx.w, *hull) == Some(carrier))
+        .filter(|hull| mush_sim::pose_of(ctx.w, *hull).is_none())
+        .take(cap)
+        .collect();
+    if aboard.is_empty() {
+        return Err(format!("{} has nobody aboard to launch.", def.label));
     }
     // Doc 36 cut GC.0: a carrier that lifted ([`lift`]) lands again at its authored cell first.
     match mush_sim::pose_of(ctx.w, carrier) {
@@ -497,16 +587,7 @@ pub fn launch(ctx: &mut Ctx<'_>, def: &RaiderDef) -> Result<String, String> {
                 .map_err(|error| format!("{} did not land ({error}).", def.carrier.name))?;
         }
     }
-    let aboard: Vec<ObjId> = hulls
-        .iter()
-        .copied()
-        .filter(|hull| carrier_of(ctx.w, *hull) == Some(carrier))
-        .filter(|hull| mush_sim::pose_of(ctx.w, *hull).is_none())
-        .collect();
-    if aboard.is_empty() {
-        return Err(format!("{} has nobody aboard to launch.", def.label));
-    }
-    let ground = super::ground::definition(ctx.w, &def.site, &record, Vec::new())?;
+    let ground = super::ground::definition(ctx.w, &def.site, record, Vec::new())?;
     let terrain = &ground.terrain;
     let mut taken: std::collections::BTreeSet<(u16, u16)> =
         super::parties::on_ground(ctx.w, domain)
@@ -539,12 +620,7 @@ pub fn launch(ctx: &mut Ctx<'_>, def: &RaiderDef) -> Result<String, String> {
         mush_sim::place(ctx, *hull, domain, pose)
             .map_err(|error| format!("#{} was not placed ({error}).", hull.0))?;
     }
-    Ok(format!(
-        "{} launch from the {}: {} hulls on the ground beside its ramp.",
-        def.label,
-        def.carrier.name,
-        aboard.len()
-    ))
+    Ok((carrier, aboard))
 }
 
 /// **The leader's WITHDRAW to every hull of `def` in a field** (this module's head): marked on
@@ -562,17 +638,28 @@ pub fn withdraw(ctx: &mut Ctx<'_>, def: &RaiderDef) -> Result<String, String> {
     if in_field.is_empty() {
         return Err(format!("No hull of {} is in a field.", def.label));
     }
-    for hull in &in_field {
-        set_mark(ctx, *hull, "withdraw", Some(serde_json::Value::Bool(true)))?;
-        // The host's pass offers it again until the kernel holds it (`super::home`).
-        let _ = order_home(ctx, *hull);
-    }
+    order_withdraw(ctx, &in_field)?;
     Ok(format!(
         "{} withdraw: {} hulls make for the {}'s ramp.",
         def.label,
         in_field.len(),
         def.carrier.name
     ))
+}
+
+/// **The leader's WITHDRAW to `hulls`** ([`withdraw`]; doc 36 cut GC.11, the director's
+/// withdrawal): each marked, so a restart keeps asking, then handed to the kernel.
+///
+/// # Errors
+///
+/// A hull's mark could not be written.
+pub(crate) fn order_withdraw(ctx: &mut Ctx<'_>, hulls: &[ObjId]) -> Result<(), String> {
+    for hull in hulls {
+        set_mark(ctx, *hull, "withdraw", Some(serde_json::Value::Bool(true)))?;
+        // The host's pass offers it again until the kernel holds it (`super::home`).
+        let _ = order_home(ctx, *hull);
+    }
+    Ok(())
 }
 
 /// **The kernel's `Withdraw` for a raider's hull**, as a roster's order reaches it (the DT.1b
@@ -715,7 +802,10 @@ pub(crate) fn lift_check(ctx: &mut Ctx<'_>, site: &CanonicalId) {
         return;
     }
     let record = super::close::site_record(ctx, site);
-    let mut returns: Option<Option<Vec<crate::arena::damage::UnitReturn>>> = None;
+    // The last snapshot, decoded once for every carrier: its returns, and the arena itself for
+    // the director's idle trigger (doc 36 cut GC.11).
+    let mut decoded: Option<Option<(crate::arena::Arena, Vec<crate::arena::damage::UnitReturn>)>> =
+        None;
     for carrier in carriers {
         let Some(raider) = raider_of(ctx.w, carrier) else {
             continue;
@@ -731,29 +821,55 @@ pub(crate) fn lift_check(ctx: &mut Ctx<'_>, site: &CanonicalId) {
             .collect();
         let exited = launched
             .iter()
-            .any(|hull| record.as_ref().is_some_and(|record| record.exited(*hull)));
-        if in_field.is_empty() && !exited {
+            .filter(|hull| record.as_ref().is_some_and(|record| record.exited(**hull)))
+            .count();
+        if in_field.is_empty() && exited == 0 {
             continue;
         }
-        let returns = returns.get_or_insert_with(|| {
-            let document = ctx
-                .w
-                .module_state::<super::FieldBook>()
-                .and_then(|book| book.snapshot(site).cloned());
-            super::close::snapshot_returns(ctx, site, document.as_ref(), live.homes.clone())
-        });
+        let decoded = decoded.get_or_insert_with(|| decode(ctx, site, live.homes.clone()));
         let condition = |unit: ObjId| {
-            returns
+            decoded
                 .as_ref()
-                .and_then(|returns| returns.iter().find(|back| back.unit == unit))
+                .and_then(|(_, returns)| returns.iter().find(|back| back.unit == unit))
                 .and_then(|back| super::close::condition_now(ctx, back))
         };
-        let down = in_field.iter().all(|hull| condition(*hull).is_some());
+        let lost: Vec<ObjId> = in_field
+            .iter()
+            .copied()
+            .filter(|hull| condition(*hull).is_some())
+            .collect();
+        let down = lost.len() == in_field.len();
         let wrecked = matches!(
             condition(carrier),
             Some(crate::surface::site_record::LeftCondition::Wreck)
         );
-        if !down || wrecked {
+        if wrecked {
+            continue;
+        }
+        if !down {
+            // Doc 36 cut GC.11 (Q-36-55): a director raid turns for home on its triggers.
+            let in_reach = decoded.as_ref().is_some_and(|(arena, _)| {
+                live.party_of(carrier)
+                    .is_some_and(|party| arena.party_holds_armed_hostile_in_reach(party))
+            });
+            let reading = crate::surface::raid::RaidReading {
+                ordinal: live.field.ordinal,
+                at_ms: live.at_ms,
+                launched: in_field.len().saturating_add(exited),
+                lost: lost.len(),
+                in_reach,
+            };
+            if let Some(why) = crate::surface::raid::withdrawal_due(ctx, carrier, &reading) {
+                let going: Vec<ObjId> = in_field
+                    .iter()
+                    .copied()
+                    .filter(|hull| !lost.contains(hull) && !withdrawing(ctx.w, *hull))
+                    .collect();
+                if !going.is_empty() {
+                    tracing::info!(site = %site, carrier = carrier.0, reason = why, hulls = going.len(), "tacsim: a director raid turns for home");
+                    let _ = order_withdraw(ctx, &going);
+                }
+            }
             continue;
         }
         let Some(leader) = leader_of(ctx.w, carrier) else {
@@ -770,6 +886,29 @@ pub(crate) fn lift_check(ctx: &mut Ctx<'_>, site: &CanonicalId) {
     }
 }
 
+/// **The last snapshot of `site`'s field, decoded** on its own ground (its `homes` from the live
+/// record), with its units' returns, when it decodes: `close::snapshot_returns`' read, keeping
+/// the arena.
+fn decode(
+    ctx: &Ctx<'_>,
+    site: &CanonicalId,
+    homes: Vec<crate::arena::state::EntryZone>,
+) -> Option<(crate::arena::Arena, Vec<crate::arena::damage::UnitReturn>)> {
+    let document = ctx
+        .w
+        .module_state::<super::FieldBook>()
+        .and_then(|book| book.snapshot(site).cloned())?;
+    let record = super::close::site_record(ctx, site)?;
+    let ground = super::ground::definition(ctx.w, site, &record, homes).ok()?;
+    let limit = ctx.w.module_state::<crate::store::TacsimStore>().map_or(
+        crate::arena::snapshot_capacity::SNAPSHOT_MAX_BYTES,
+        |store| store.config().arena.snapshot_max_bytes,
+    );
+    let arena = crate::arena::Snapshot::decode_with_limit(&document, ground, limit).ok()?;
+    let returns = arena.returned_units();
+    Some((arena, returns))
+}
+
 /// **A raider's carrier is out of its field** (`super::exit`'s continuation for
 /// [`super::exit::Then::RaiderLift`]): it leaves the site's ground with its hulls aboard. A later
 /// `@field/raiders/launch` lands it again at its authored cell.
@@ -784,6 +923,175 @@ pub(crate) fn lift(ctx: &mut Ctx<'_>, carrier: ObjId, site: &CanonicalId) -> Res
         .replace("{site}", &crate::surface::act::site_name(ctx.w, site));
     super::tell_site(ctx, site, &line);
     Ok(())
+}
+
+/// **A director raid arrives in a running field** (doc 36 cut GC.11; Q-36-41, the kernel's join
+/// of GC.1b): its carrier and the hulls just put down beside its ramp are each checked out under
+/// the field's mark, given a row on the live record in the raider's party (lettered next when
+/// the field has none), and sent to the kernel as a join at the pose they stand at. The party's
+/// home is its carrier's ramp, laid on the field's ground first
+/// ([`crate::arena_task::ArenaMsg::Home`]), so the group can go home up it. The party holds its
+/// leader's standing Hostile mark on every other party, as at an admission
+/// (`super::carrier::joining`). A hull the field will not take now goes back aboard.
+///
+/// # Errors
+///
+/// No field runs on the site, or the field would not take the carrier.
+pub(crate) fn join_raid(
+    ctx: &mut Ctx<'_>,
+    site: &CanonicalId,
+    carrier: ObjId,
+    hulls: &[ObjId],
+) -> Result<(), String> {
+    let (task, mut live) = ctx
+        .w
+        .module_state::<super::FieldBook>()
+        .and_then(|book| book.hosted(site))
+        .map(|hosted| (hosted.task, hosted.live.clone()))
+        .ok_or_else(|| "no field runs there".to_owned())?;
+    let tasks = ctx
+        .w
+        .module_state::<crate::arena_bridge::ArenaRegistry>()
+        .map(|registry| registry.tasks().clone())
+        .ok_or_else(|| "the field's task is gone".to_owned())?;
+    let mark = mush_sim::deployed::DeployedMark::field(site.as_str(), live.field.ordinal);
+    let mut joined = 0_usize;
+    for unit in std::iter::once(carrier).chain(hulls.iter().copied()) {
+        match join_one(ctx, site, carrier, unit, &mut live, &tasks, task, &mark) {
+            Ok(()) => joined += 1,
+            Err(why) => {
+                tracing::warn!(site = %site, hull = unit.0, reason = %why, "tacsim: a raider could not be taken into the field; it goes back aboard");
+                if unit != carrier {
+                    let _ = mush_sim::unplace(ctx, unit, "tacsim: aboard its raider carrier");
+                    continue;
+                }
+                // Nothing it carried can stand outside the field either.
+                for hull in hulls {
+                    let _ = mush_sim::unplace(ctx, *hull, "tacsim: aboard its raider carrier");
+                }
+                let _ = mush_sim::unplace(ctx, carrier, "tacsim: a raider's carrier lifts");
+                return Err(why);
+            }
+        }
+    }
+    if let Some(hosted) = ctx
+        .w
+        .module_state_mut::<super::FieldBook>()
+        .and_then(|book| book.live.get_mut(site))
+    {
+        hosted.live = live.clone();
+    }
+    super::record::write_live(ctx, &live);
+    tracing::info!(site = %site, carrier = carrier.0, joined, task = task.0, "tacsim: a raid is arriving in the field");
+    Ok(())
+}
+
+/// One raider's join ([`join_raid`]): its home laid when its party has none, its check-out, its
+/// Join, and its row on `live`.
+#[allow(clippy::too_many_arguments)] // one join's whole context, as `join_raid` holds it
+fn join_one(
+    ctx: &mut Ctx<'_>,
+    site: &CanonicalId,
+    carrier: ObjId,
+    unit: ObjId,
+    live: &mut super::FieldLive,
+    tasks: &crate::arena_bridge::ArenaTasks,
+    task: crate::arena_task::MatchId,
+    mark: &mush_sim::deployed::DeployedMark,
+) -> Result<(), String> {
+    let (_, pose) = mush_sim::pose_of(ctx.w, unit)
+        .ok_or_else(|| format!("#{} is not on the ground", unit.0))?;
+    let mut joining = super::carrier::joining(ctx, site, live, unit, pose)?;
+    let party = joining.live.party_of(unit).ok_or("the hull has no party")?;
+    // The party's home: its carrier's ramp, laid once.
+    if !joining.live.homes.iter().any(|home| home.team == party)
+        && let Some([x, y]) = ramp_cell(ctx.w, carrier)
+        && let (Ok(x), Ok(y)) = (u16::try_from(x), u16::try_from(y))
+    {
+        let zone = crate::arena::state::EntryZone {
+            team: party,
+            x0: x,
+            y0: y,
+            x1: x,
+            y1: y,
+        };
+        tasks
+            .offer(task, crate::arena_task::ArenaMsg::Home { zone })
+            .map_err(|_| "the field is busy".to_owned())?;
+        joining.live.homes.push(zone);
+    }
+    mush_tactics::custody::check_out(ctx, unit, mark.clone())
+        .map_err(|error| format!("#{} could not be taken into the field ({error})", unit.0))?;
+    let controller = joining.unit.controller;
+    let armed = !joining.unit.weapons.is_empty();
+    let message = crate::arena_task::ArenaMsg::Join {
+        unit: Box::new(joining.unit),
+        pilot: joining.pilot,
+        host: joining.host,
+        spread: LAUNCH_SPREAD_CELLS,
+    };
+    if tasks.offer(task, message).is_err() {
+        let _ = mush_tactics::custody::check_in(ctx, unit, None);
+        return Err("the field is busy".to_owned());
+    }
+    *live = joining.live;
+    if let Some(registry) = ctx
+        .w
+        .module_state_mut::<crate::arena_bridge::ArenaRegistry>()
+    {
+        registry.bind_joining(unit, task, controller, armed);
+    }
+    Ok(())
+}
+
+/// **Whether `unit` is a raider's hull or carrier** (the bridge's branch for a join's answer).
+#[must_use]
+pub fn is_raider(w: &World, unit: ObjId) -> bool {
+    mark_of(w, unit).is_some()
+}
+
+/// **The kernel's answer to a raider's join** (doc 36 cut GC.11; the bridge's branch): taken in,
+/// it is logged (the site heard the landing); refused, it is checked back in as it went out, its
+/// row leaves the live record, and it goes back aboard (a carrier lifts).
+pub(crate) fn on_joined(
+    ctx: &mut Ctx<'_>,
+    task: crate::arena_task::MatchId,
+    unit: ObjId,
+    outcome: Result<crate::arena::state::Designator, String>,
+) {
+    let Some((site, live)) = ctx.w.module_state::<super::FieldBook>().and_then(|book| {
+        let site = book.site_of_task(task)?.clone();
+        let live = book.hosted(&site)?.live.clone();
+        Some((site, live))
+    }) else {
+        return;
+    };
+    match outcome {
+        Ok(name) => {
+            tracing::info!(site = %site, hull = unit.0, name = ?name, "tacsim: a raider joined the field");
+        }
+        Err(why) => {
+            tracing::warn!(site = %site, hull = unit.0, reason = %why, "tacsim: the field refused a raider; it goes back aboard");
+            let _ = mush_tactics::custody::check_in(ctx, unit, None);
+            let mut live = live;
+            live.units.retain(|row| row.unit != unit);
+            if let Some(hosted) = ctx
+                .w
+                .module_state_mut::<super::FieldBook>()
+                .and_then(|book| book.live.get_mut(&site))
+            {
+                hosted.live = live.clone();
+            }
+            super::record::write_live(ctx, &live);
+            if let Some(registry) = ctx
+                .w
+                .module_state_mut::<crate::arena_bridge::ArenaRegistry>()
+            {
+                registry.unbind_joining(unit, task);
+            }
+            let _ = mush_sim::unplace(ctx, unit, "tacsim: aboard its raider carrier");
+        }
+    }
 }
 
 #[cfg(test)]

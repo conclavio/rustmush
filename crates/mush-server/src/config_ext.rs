@@ -511,6 +511,9 @@ pub fn tacsim_config(cfg: &TacsimCfg) -> Result<tacsim::TacsimConfig, String> {
             treat_injured_s: cfg.field.treat_injured_s,
             treat_incapacitated_s: cfg.field.treat_incapacitated_s,
             treat_medical_permille: cfg.field.treat_medical_permille,
+            raid_director: cfg.field.raid_director,
+            raid_lost_permille: cfg.field.raid_lost_permille,
+            raid_field_s: cfg.field.raid_field_s,
         },
     };
     // **16b cut Q.7**: the arena's own values, checked here and nowhere else.
