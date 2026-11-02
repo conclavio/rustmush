@@ -202,6 +202,12 @@ pub struct SpaceShipState {
     pub lasers: Vec<LaserMount>,
     pub railguns: Vec<RailgunMount>,
     pub pdcs: Vec<PdcMount>,
+    /// Remaining ECM / thermal-radar decoy canisters (`SF.15`, `D-35-8`).
+    #[serde(default)]
+    pub decoys_remaining: u8,
+    /// Remaining active duration of a deployed decoy cloud in wall milliseconds (`SF.15`).
+    #[serde(default)]
+    pub active_decoy_ms: u32,
 }
 
 impl SpaceShipState {
@@ -281,6 +287,8 @@ impl SpaceShipState {
             lasers: vec![LaserMount::standard_turret("laser_dorsal")],
             railguns: Vec::new(),
             pdcs: vec![PdcMount::standard_rotary("pdc_ dorsal", 2_000)],
+            decoys_remaining: 4,
+            active_decoy_ms: 0,
         }
     }
 
@@ -308,6 +316,7 @@ impl SpaceShipState {
             PdcMount::standard_rotary("pdc_port", 3_000),
             PdcMount::standard_rotary("pdc_stbd", 3_000),
         ];
+        ship.decoys_remaining = 6;
         ship
     }
 
@@ -547,6 +556,20 @@ pub enum SpaceCombatEvent {
         remaining_dv_mps: i64,
         return_reserve_dv_mps: i64,
     },
+    TorpedoSpoofedByDecoy {
+        torpedo_id: u64,
+        defender_id: String,
+        decoys_remaining: u8,
+    },
+    CoolantBlowdown {
+        ship_id: String,
+        propellant_spent_kg: u32,
+        new_heat_permille: u16,
+    },
+    SubsystemRepaired {
+        ship_id: String,
+        crit: SubsystemCrit,
+    },
 }
 
 /// Summary returned by [`LocalSpaceBubble::step_wall_ms`].
@@ -648,6 +671,76 @@ impl LocalSpaceBubble {
             return true;
         }
         false
+    }
+
+    /// Set the [`EmconPosture`] (`Ghost`, `Passive`, `Standard`, `ActiveCombat`) on `ship_id` (`SF.15`, `D-35-9`, `D-35-10`).
+    pub fn set_emcon(&mut self, ship_id: &str, posture: EmconPosture) -> bool {
+        if let Some(ship) = self.ships.get_mut(ship_id) {
+            ship.emcon = posture;
+            true
+        } else {
+            false
+        }
+    }
+
+    /// Deploy an active thermal/radar ECM decoy canister (`+tac/decoy`, `SF.15`, `D-35-8`).
+    ///
+    /// Returns `Ok(decoys_remaining)` when a canister is launched (active for 15 wall seconds).
+    pub fn launch_decoy(&mut self, ship_id: &str) -> Result<u8, &'static str> {
+        let Some(ship) = self.ships.get_mut(ship_id) else {
+            return Err("ship not found in bubble");
+        };
+        if ship.status != HullStatus::Operational {
+            return Err("hull disabled");
+        }
+        if ship.decoys_remaining == 0 {
+            return Err("no decoy canisters remaining");
+        }
+        ship.decoys_remaining -= 1;
+        ship.active_decoy_ms = 15_000;
+        Ok(ship.decoys_remaining)
+    }
+
+    /// Emergency open-cycle coolant blowdown (`+helm/coolant`, `SF.15`, `D-35-1`):
+    /// expends `250 kg` of reaction mass/coolant to immediately dump `450 permille` of hull heat.
+    pub fn blowdown_coolant(&mut self, ship_id: &str) -> Result<SpaceCombatEvent, &'static str> {
+        let Some(ship) = self.ships.get_mut(ship_id) else {
+            return Err("ship not found in bubble");
+        };
+        if ship.propellant_kg < 250 {
+            return Err("insufficient coolant/propellant reserve (requires 250 kg)");
+        }
+        ship.propellant_kg -= 250;
+        ship.heat_permille = ship.heat_permille.saturating_sub(450);
+        Ok(SpaceCombatEvent::CoolantBlowdown {
+            ship_id: ship.id.clone(),
+            propellant_spent_kg: 250,
+            new_heat_permille: ship.heat_permille,
+        })
+    }
+
+    /// Damage-control repair of a subsystem critical hit (`+helm/repair`, `SF.15`, `D-35-1`).
+    pub fn repair_subsystem_crit(
+        &mut self,
+        ship_id: &str,
+        crit: SubsystemCrit,
+    ) -> Result<SpaceCombatEvent, &'static str> {
+        let Some(ship) = self.ships.get_mut(ship_id) else {
+            return Err("ship not found in bubble");
+        };
+        let Some(pos) = ship.crits.iter().position(|c| *c == crit) else {
+            return Err("subsystem is not damaged");
+        };
+        ship.crits.remove(pos);
+        if crit == SubsystemCrit::PdcOffline {
+            for pdc in &mut ship.pdcs {
+                pdc.operational = true;
+            }
+        }
+        Ok(SpaceCombatEvent::SubsystemRepaired {
+            ship_id: ship.id.clone(),
+            crit,
+        })
     }
 
     /// Command a 3D burn vector `[ax, ay, az]` in $\text{m/s}^2$ on `ship_id` (`D-35-6`).
@@ -1022,13 +1115,19 @@ impl LocalSpaceBubble {
                 r.cooldown_remaining_ms = r.cooldown_remaining_ms.saturating_sub(step_ms);
             }
 
-            let eff_cooling = if ship.crits.contains(&SubsystemCrit::RadiatorDamaged) {
+            let base_cooling = if ship.crits.contains(&SubsystemCrit::RadiatorDamaged) {
                 ship.cooling_rate_permille_s / 2
             } else {
                 ship.cooling_rate_permille_s
             };
+            let eff_cooling = match ship.emcon {
+                EmconPosture::Ghost => (base_cooling / 4).max(1),
+                EmconPosture::Passive => ((base_cooling * 3) / 4).max(1),
+                EmconPosture::Standard | EmconPosture::ActiveCombat => base_cooling,
+            };
             let cooled = ((u32::from(eff_cooling) * step_ms) / 1_000) as u16;
             ship.heat_permille = ship.heat_permille.saturating_sub(cooled);
+            ship.active_decoy_ms = ship.active_decoy_ms.saturating_sub(step_ms);
         }
 
         // 2. Step guided torpedoes (`D-35-8`): proportional navigation + defensive laser / PDC screen
@@ -1144,7 +1243,19 @@ impl LocalSpaceBubble {
                     break;
                 }
 
-                // 2b. Automatic PDC screen (`+tac/pdc auto`)
+                // 2b. Active ECM / thermal-radar decoy spoofing (`+tac/decoy`, `SF.15`)
+                if def_ship.active_decoy_ms > 0 && def_dist_m <= 35_000 {
+                    def_ship.active_decoy_ms = 0;
+                    events.push(SpaceCombatEvent::TorpedoSpoofedByDecoy {
+                        torpedo_id: torp.id,
+                        defender_id: def_id.clone(),
+                        decoys_remaining: def_ship.decoys_remaining,
+                    });
+                    intercepted = true;
+                    break;
+                }
+
+                // 2c. Automatic PDC screen (`+tac/pdc auto`)
                 if def_ship.pdc_auto {
                     for pdc in &mut def_ship.pdcs {
                         if pdc.operational

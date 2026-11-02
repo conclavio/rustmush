@@ -17,6 +17,7 @@ pub mod docking;
 pub mod flight;
 pub mod mining;
 pub mod picket;
+pub mod stations;
 pub mod weapons;
 
 pub use autopilot_bot::{
@@ -60,6 +61,10 @@ pub use mining::{
 pub use picket::{
     CUSTOMS_SHIP_ID, HAULER_SHIP_ID, HEAVE_TO_MAX_REL_MPS, HaulerManifest, KirkwoodPicketEncounter,
     PARTY_CUSTOMS, PARTY_HAULER, PARTY_RAIDER, PicketOutcome, PicketPhase, RAIDER_SHIP_ID,
+};
+pub use stations::{
+    BridgeSeat, LightLagContact, SPEED_OF_LIGHT_MPS, ShipCrewRoster, compute_ir_signature_kw,
+    project_light_lag_contact,
 };
 pub use weapons::{
     InFlightSlug, InFlightTorpedo, LaserMode, LaserMount, PdcMount, RailgunMount, TorpedoTube,
