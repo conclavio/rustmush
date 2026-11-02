@@ -51,6 +51,8 @@ mod field_gc2;
 mod field_gc3;
 #[path = "shard_1/field_gc4.rs"]
 mod field_gc4;
+#[path = "shard_1/field_gc5.rs"]
+mod field_gc5;
 #[path = "shard_1/field_host.rs"]
 mod field_host;
 #[path = "shard_1/field_raiders.rs"]

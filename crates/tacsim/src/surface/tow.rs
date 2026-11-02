@@ -16,8 +16,13 @@
 //! - **`+tv/<n> load [go]`**: from within a cell of a carrier's ramp, a timed act of
 //!   `[tacsim.recovery].load_s`, checked against the bay's room: its item cap and its
 //!   `si.mass_kg` and `si.volume_l` limits ([`BayRoom`], read fresh off the bay's contents; Q-S8,
-//!   Q-36-15, Q-36-54). This cut loads into a carrier of the casualty's own party or a Friend's
-//!   (its own bay, a party-mate's, a Friend's); a foreign bay and its claim are GC.5's.
+//!   Q-36-15, Q-36-54). Into a carrier of the casualty's own party or a Friend's (its own bay, a
+//!   party-mate's, a Friend's) it is a recovery; into anyone else's (doc 36 cut GC.5, Q-36-16) it
+//!   puts the casualty in the carrier's operator's custody with a claim owed
+//!   ([`crate::surface::salvage`]), and a written-off lease rig goes back to Occator's shed with
+//!   no claim (Q-36-29).
+//! - **`+tv/<n> pickup [n] [go]`** (doc 36 cut GC.5, Q-36-19): a crate within a cell into the
+//!   rig's hopper, at once ([`crate::surface::salvage`]).
 //!
 //! **The coupled drive.** A tug in tow drives with the `drive` act it always had, at
 //! [`crate::field_ops::coupled_drive_rates_for_tow`] (`crate::surface::act::rig_rates` reads the
@@ -52,7 +57,9 @@
 //! recoverer, and takes it off the site's unit index (Q-36-17). Its licence and compute seats
 //! stay with it until then (Q-36-21): nothing in the tow touches them. A completed load into a
 //! carrier of the crew's own party or a Friend's sets every character still aboard the casualty
-//! aboard the carrier, and cancels a pending extraction (Q-36-52's friendly half).
+//! aboard the carrier, and cancels a pending extraction (Q-36-52's friendly half). A completed
+//! load into anyone else's carrier abandons them: the extraction starts for each on the spot,
+//! with no recovery-flight deferral (Q-36-52, doc 36 cut GC.5; `crate::field::crew`).
 
 use std::collections::BTreeMap;
 
@@ -90,10 +97,9 @@ pub const MAX_TOW_ACTS: usize = 64;
 pub const TOW_REACH_CM: u64 = 1_500;
 
 /// The tow's verbs, for `+tv`'s parse.
-pub const TOW_WORDS: [&str; 3] = ["load", "release", "tow"];
+pub const TOW_WORDS: [&str; 4] = ["load", "pickup", "release", "tow"];
 /// `+tv/<n> tow` with no rig of the actor's at hand.
-pub const TOW_USAGE: &str =
-    "Usage: +tv/<n> tow [#unit] [go], +tv/<n> release [go] or +tv/<n> load [go].";
+pub const TOW_USAGE: &str = "Usage: +tv/<n> tow [#unit] [go], +tv/<n> release [go], +tv/<n> load [go] or +tv/<n> pickup [n] [go].";
 /// The tow's preview (the inspection): `{n}`, `{name}`, `{t}`, `{state}`, `{speed}`, `{min}`.
 pub const TOW_PREVIEW: &str = "Rig {n} looks the {name} over: {t} t, {state}. In tow it moves at {speed} m/s. Inspecting and making fast take about {min} IC minutes. +tv/{n} tow go";
 /// The tow filed: `{n}`, `{name}`, `{min}`.
@@ -115,6 +121,18 @@ pub const LOAD_FILED: &str =
     "Rig {n} hauls the {name} up the {carrier}'s ramp; it is aboard in about {min} IC minutes.";
 /// The load done: `{name}`, `{carrier}`.
 pub const LOADED: &str = "The {name} is aboard the {carrier}, in its bay.";
+/// **Doc 36 cut GC.5**: the load's preview into a carrier not of the casualty's party or a
+/// Friend's (Q-36-16): `{n}`, `{name}`, `{carrier}`, `{min}`.
+pub const LOAD_PREVIEW_FOREIGN: &str = "Rig {n} can load the {name} into the {carrier}'s bay; it takes about {min} IC minutes. The {name} is not of the {carrier}'s party or a Friend's: aboard, it is in the {carrier}'s custody with a salvage claim owed, never its title, and anyone still inside it is abandoned to extraction. +tv/{n} load go";
+/// **Doc 36 cut GC.5**: the load's preview of a written-off lease rig (Q-36-29): `{n}`,
+/// `{name}`, `{carrier}`, `{min}`.
+pub const LOAD_PREVIEW_HAND_BACK: &str = "Rig {n} can load the {name} into the {carrier}'s bay; it takes about {min} IC minutes. The {name} is an Occator write-off: loaded, it goes back to Occator, with no claim. +tv/{n} load go";
+/// **Doc 36 cut GC.5**: the load done into a salvor's custody: `{name}`, `{carrier}`.
+pub const LOADED_CUSTODY: &str =
+    "The {name} is aboard the {carrier}, in its bay, held in custody pending a salvage claim.";
+/// **Doc 36 cut GC.5**: a written-off lease rig handed back: `{name}`.
+pub const HANDED_BACK: &str =
+    "The {name} is an Occator write-off: it is handed back to Occator, with no claim.";
 /// The crew aboard a loaded casualty (Q-36-52's friendly half): `{name}`, `{carrier}`.
 pub const CREW_ABOARD: &str =
     "The {name} is hauled into the {carrier}'s bay with you in it: you are aboard the {carrier}.";
@@ -135,8 +153,6 @@ pub const NOT_AT_RAMP: &str =
     "Rig {n} is not within a cell of a carrier's ramp on this site: drive the tow there first.";
 /// The bay has no room: `{carrier}`, `{name}`, `{why}`.
 pub const BAY_NO_ROOM: &str = "The {carrier}'s bay has no room for the {name}: {why}.";
-/// Not a friendly carrier: `{name}`, `{carrier}`.
-pub const NOT_FRIENDLY: &str = "The {name} is not of the {carrier}'s party or a Friend's: loading another party's casualty waits for salvage claims.";
 /// The rig is not on the ground: `{n}`.
 pub const NOT_ON_GROUND: &str = "Rig {n} is not on a site's ground.";
 /// Its own state forbids towing: `{n}`.
@@ -392,6 +408,14 @@ pub struct LoadFacts {
     pub tug_pose: FieldPose,
     /// Whether the carrier is the casualty's own party's or a Friend's.
     pub friendly: bool,
+    /// **Doc 36 cut GC.5**: who would hold the casualty in custody (the carrier's operator), when
+    /// anyone can be named; the load's operator otherwise.
+    pub custodian: Option<ObjId>,
+    /// **Doc 36 cut GC.5**: the casualty is a written-off lease rig, Occator's alone (Q-36-29).
+    pub written_off: bool,
+    /// **Doc 36 cut GC.5**: a written-off casualty stands in Occator's shed (the finish's fact,
+    /// as `in_bay` is for any other).
+    pub handed_back: bool,
     /// The casualty's unit record now (the library pins its revision across the tow).
     pub casualty_unit: TacticalUnit,
     /// The bay's slot id.
@@ -430,6 +454,11 @@ pub enum TowOrder {
         /// The facts.
         facts: Box<LoadFacts>,
     },
+    /// **Doc 36 cut GC.5**: `+tv/<n> pickup … go`.
+    Pickup {
+        /// The facts.
+        facts: Box<crate::surface::salvage::PickupFacts>,
+    },
     /// The tick's finish of a load.
     Loaded {
         /// The act's ordinal.
@@ -451,6 +480,7 @@ impl TowOrder {
             Self::Release { .. } => "release",
             Self::Load { .. } => "load",
             Self::Loaded { .. } => "loaded",
+            Self::Pickup { .. } => "pickup",
         }
     }
 }
@@ -490,6 +520,15 @@ fn record_of(ctx: &Ctx<'_>, site: &CanonicalId) -> Option<SiteRecord> {
 
 /// **Where `unit` stands on a site's ground**: the site, the domain and its pose.
 fn on_ground(w: &World, unit: ObjId) -> Option<(CanonicalId, mush_sim::DomainId, FieldPose)> {
+    ground_of_unit(w, unit)
+}
+
+/// **Where `unit` stands on a site's ground** (the salvage's reader): the site and its pose.
+pub(crate) fn ground_pose(w: &World, unit: ObjId) -> Option<(CanonicalId, FieldPose)> {
+    ground_of_unit(w, unit).map(|(site, _, pose)| (site, pose))
+}
+
+fn ground_of_unit(w: &World, unit: ObjId) -> Option<(CanonicalId, mush_sim::DomainId, FieldPose)> {
     let Where::Ground {
         domain, x_cm, y_cm, ..
     } = act::where_is(w, unit)
@@ -742,6 +781,15 @@ fn friendly(ctx: &Ctx<'_>, site: &CanonicalId, casualty: ObjId, carrier: ObjId) 
         .any(|pair| pair == (x, y) || pair == (y, x))
 }
 
+/// **Who holds what a carrier takes into custody** (doc 36 cut GC.5; Q-36-16): its party's owner
+/// as the field reads it, else its leader, else whoever holds its helm.
+fn custodian_of(ctx: &Ctx<'_>, site: &CanonicalId, carrier: ObjId) -> Option<ObjId> {
+    crate::field::parties::entrants(ctx, site, &[carrier])
+        .first()
+        .and_then(|entrant| entrant.owner.or(entrant.leader))
+        .or_else(|| crate::port::coop::helm_holder(ctx.w, carrier))
+}
+
 /// **A load's facts** for `tug`'s tow into `carrier`.
 fn load_facts(
     ctx: &Ctx<'_>,
@@ -757,6 +805,9 @@ fn load_facts(
     Some(LoadFacts {
         secs: recovery_config(w).load_s,
         friendly: friendly(ctx, &site, casualty, carrier),
+        custodian: custodian_of(ctx, &site, carrier),
+        written_off: crate::port::tv::written_off(w, casualty),
+        handed_back: crate::port::tv::in_shed(w, casualty),
         site,
         carrier,
         casualty,
@@ -928,6 +979,9 @@ pub(crate) struct TowProvider {
     pub outcome: DefinitionRef,
     pub sites: StateFamilyHandle<SiteKey, SiteRecord>,
     pub excursions: StateFamilyHandle<RigKey, RigRecord>,
+    /// **Doc 36 cut GC.5**: the inventory families a pickup moves a crate's goods through; `None`
+    /// when the inventory cell is not filled, and then a pickup refuses.
+    pub inventory: Option<mush_inventory::InventoryFamilies>,
     pub black_box: Option<
         mush_core::participant::ParticipantHandle<crate::surface::black_box::BlackBoxParticipant>,
     >,
@@ -953,9 +1007,14 @@ pub(crate) fn register(
     actions: &BTreeMap<String, DefinitionRef>,
     outcomes: &BTreeMap<String, DefinitionRef>,
     families: &crate::port::families::PortFamilies,
-    black_box: Option<
-        mush_core::participant::ParticipantHandle<crate::surface::black_box::BlackBoxParticipant>,
-    >,
+    (inventory, black_box): (
+        Option<&mush_inventory::InventoryFamilies>,
+        Option<
+            mush_core::participant::ParticipantHandle<
+                crate::surface::black_box::BlackBoxParticipant,
+            >,
+        >,
+    ),
 ) -> Result<(), ModError> {
     reg.state(TowOrders::default());
     reg.state(TowIndex::default());
@@ -971,6 +1030,7 @@ pub(crate) fn register(
             outcome: outcome.clone(),
             sites: families.sites.clone(),
             excursions: families.excursions.clone(),
+            inventory: inventory.cloned(),
             black_box,
         },
     )?;
@@ -979,6 +1039,9 @@ pub(crate) fn register(
     });
     Ok(())
 }
+
+/// The action's `op` words.
+const OPS: [&str; 6] = ["attach", "attached", "release", "load", "loaded", "pickup"];
 
 fn parameters(
     invocation: &ActionInvocation,
@@ -997,7 +1060,7 @@ fn parameters(
     let op = p
         .get("op")
         .and_then(Value::as_str)
-        .filter(|op| ["attach", "attached", "release", "load", "loaded"].contains(op))
+        .filter(|op| OPS.contains(op))
         .ok_or_else(invalid)?;
     Ok((p, tv, op))
 }
@@ -1052,9 +1115,7 @@ impl ActionProvider for TowProvider {
                     "op",
                     true,
                     ProjectedParameterKind::Choice {
-                        choices: ["attach", "attached", "release", "load", "loaded"]
-                            .map(str::to_owned)
-                            .to_vec(),
+                        choices: OPS.map(str::to_owned).to_vec(),
                     },
                 )?,
             ],
@@ -1094,6 +1155,7 @@ impl ActionProvider for TowProvider {
         let site = match &order {
             TowOrder::Attach { facts } => facts.site.clone(),
             TowOrder::Load { facts } => facts.site.clone(),
+            TowOrder::Pickup { facts } => facts.site.clone(),
             TowOrder::Attached { site, .. }
             | TowOrder::Release { site }
             | TowOrder::Loaded { site, .. } => site.clone(),
@@ -1208,9 +1270,6 @@ impl ActionProvider for TowProvider {
                 if record.tows.act_of(tv).is_some() {
                     return Err(refused("tow_busy"));
                 }
-                if !facts.friendly {
-                    return Err(refused("tow_not_friendly"));
-                }
                 // Within a cell of the ramp, as the command and the tick count it.
                 if facts.tug_pose.site != facts.ramp.site
                     || cells_apart(
@@ -1249,15 +1308,31 @@ impl ActionProvider for TowProvider {
                 };
                 record.tows.take_act(tv);
                 let op = record.tows.towing(tv).cloned();
-                match (op, facts.filter(|f| f.carrier == carrier && f.in_bay)) {
+                match (
+                    op,
+                    facts.filter(|f| f.carrier == carrier && (f.in_bay || f.handed_back)),
+                ) {
                     (Some(op), Some(facts)) if op.casualty() == facts.casualty => {
-                        self.complete_load(txn, &mut record, (tv, &op, &facts), now, &mut closing)?;
-                        "loaded".to_owned()
+                        self.complete_load(
+                            txn,
+                            &mut record,
+                            (tv, actor, &op, &facts),
+                            now,
+                            &mut closing,
+                        )?;
+                        if facts.written_off {
+                            "handed_back".to_owned()
+                        } else if facts.friendly {
+                            "loaded".to_owned()
+                        } else {
+                            "custody".to_owned()
+                        }
                     }
                     _ if promoted => "interrupted".to_owned(),
                     _ => "refused:it never reached the bay".to_owned(),
                 }
             }
+            TowOrder::Pickup { facts } => self.pick_up(txn, &mut record, tv, &facts, promoted)?,
         };
         record
             .check()
@@ -1291,7 +1366,7 @@ impl TowProvider {
         &self,
         txn: &mut ActionTxn<'_>,
         record: &mut SiteRecord,
-        (tv, op, facts): (ObjId, &RecoveryOperation, &LoadFacts),
+        (tv, operator, op, facts): (ObjId, ObjId, &RecoveryOperation, &LoadFacts),
         now: i64,
         closing: &mut Option<(ObjId, crate::surface::black_box::BlackBoxLine)>,
     ) -> Result<(), mush_core::ActionError> {
@@ -1335,7 +1410,26 @@ impl TowProvider {
                 record.tows.end(facts.casualty, at);
             }
         }
-        let _ = record.take_unit(facts.casualty);
+        let left = record.take_unit(facts.casualty).ok();
+        // Doc 36 cut GC.5 (Q-36-16, Q-36-29): a load into a carrier that is not the casualty's own
+        // party's or a Friend's puts it in that carrier's operator's custody with a claim owed;
+        // a written-off lease rig is Occator's alone and is handed back with none.
+        if facts.written_off || facts.friendly {
+            record.custody.retain(|row| row.hull != facts.casualty);
+        } else {
+            crate::surface::salvage::hold(
+                record,
+                crate::surface::salvage::SalvageCustody {
+                    hull: facts.casualty,
+                    holder: facts.custodian.unwrap_or(operator),
+                    carrier: facts.carrier,
+                    recovered_by: tv,
+                    recovered_ic: at,
+                    left_ic: left.map(|row| row.left_ic),
+                    claim: crate::surface::salvage::ClaimSeam::Owed,
+                },
+            );
+        }
         // The casualty's own rig record: its epoch closed into the carrier, its surface work
         // cleared, its charge counted from the bay.
         if let Some(mut rig) = act::read_record(txn, &self.excursions, facts.casualty)? {
@@ -1369,10 +1463,77 @@ impl TowProvider {
     }
 }
 
+impl TowProvider {
+    /// **A crate picked up** (doc 36 cut GC.5; Q-36-19, FO-4): off the site's record, and its
+    /// manifest from the site's spoil into the rig's hopper by the inventory's own transfer, in
+    /// this bundle. No goods are made: a transfer the spoil cannot cover refuses the whole act.
+    fn pick_up(
+        &self,
+        txn: &mut ActionTxn<'_>,
+        record: &mut SiteRecord,
+        tv: ObjId,
+        facts: &crate::surface::salvage::PickupFacts,
+        promoted: bool,
+    ) -> Result<String, mush_core::ActionError> {
+        if promoted {
+            return Err(refused(crate::surface::site_record::FIELD_OPEN_CODE));
+        }
+        if record.tows.act_of(tv).is_some() || record.tows.towing(tv).is_some() {
+            return Err(refused("tow_busy"));
+        }
+        if act::read_record(txn, &self.excursions, tv)?
+            .as_ref()
+            .is_some_and(|r| r.act.is_some() || r.run.is_some())
+        {
+            return Err(refused("tow_rig_busy"));
+        }
+        let inventory = self
+            .inventory
+            .as_ref()
+            .ok_or_else(|| refused("pickup_unwired"))?;
+        let object = record
+            .take_object(facts.object)
+            .map_err(|_| refused("pickup_gone"))?;
+        let crate::surface::site_record::GroundKind::Cargo { manifest, .. } = &object.kind else {
+            return Err(refused("pickup_gone"));
+        };
+        if *manifest != facts.manifest {
+            return Err(refused("pickup_changed"));
+        }
+        let moves: Vec<(CanonicalId, u64)> = manifest
+            .iter()
+            .filter(|(_, qty)| **qty > 0)
+            .map(|(good, qty)| (good.clone(), *qty))
+            .collect();
+        inventory
+            .transfer_many(
+                txn,
+                mush_inventory::EndpointRef(mush_economy::VaultId(facts.spoil)),
+                mush_inventory::EndpointRef(mush_economy::VaultId(facts.hopper)),
+                &moves,
+            )
+            .map_err(|error| {
+                tracing::warn!(tv = tv.0, object = facts.object, %error, "tacsim: a crate's goods would not move from the spoil; the pickup refuses");
+                refused("pickup_empty")
+            })?;
+        Ok(if facts.lawful {
+            "picked:lawful".to_owned()
+        } else {
+            "picked:unlawful".to_owned()
+        })
+    }
+}
+
 // ---- submission ---------------------------------------------------------------------------
 
 /// Write `order` for `tug` as `actor`'s, and submit it as `actor`.
-fn submit(ctx: &mut Ctx<'_>, actor: ObjId, tug: ObjId, order: TowOrder, tag: u32) -> bool {
+pub(crate) fn submit(
+    ctx: &mut Ctx<'_>,
+    actor: ObjId,
+    tug: ObjId,
+    order: TowOrder,
+    tag: u32,
+) -> bool {
     let Some(action) = ctx
         .w
         .module_state::<TowHandles>()
@@ -1419,6 +1580,11 @@ fn ground_of(w: &World, rig: &act::RigAt) -> Result<(CanonicalId, TugFacts), Cmd
         return Err(CmdError::msg(TUG_NOT_MOBILE.replace("{n}", &n)));
     }
     Ok((site, facts))
+}
+
+/// The site's record, or a fresh one (the salvage's reader).
+pub(crate) fn record_or_new(ctx: &Ctx<'_>, site: &CanonicalId) -> SiteRecord {
+    record_or_busy(ctx, site)
 }
 
 /// A record that will not read refuses as busy.
@@ -1601,13 +1767,6 @@ pub(crate) fn load_cmd(ctx: &mut Ctx<'_>, rig: &act::RigAt, go: bool) -> Result<
     let carrier_name = name(ctx.w, carrier);
     let facts = load_facts(ctx, rig.tv, casualty, carrier, ramp)
         .ok_or_else(|| CmdError::msg(NOT_AT_RAMP.replace("{n}", &n)))?;
-    if !facts.friendly {
-        return Err(CmdError::msg(
-            NOT_FRIENDLY
-                .replace("{name}", &label)
-                .replace("{carrier}", &carrier_name),
-        ));
-    }
     if let Err(error) = facts
         .room
         .check_can_load(op.casualty_mass().total_mass_kg(), facts.volume_l)
@@ -1628,8 +1787,14 @@ pub(crate) fn load_cmd(ctx: &mut Ctx<'_>, rig: &act::RigAt, go: bool) -> Result<
             .replace("{min}", &min)
     };
     if !go {
-        ctx.out
-            .sys_to_actor(ctx.actor, "tacsim.tow", fill(LOAD_PREVIEW));
+        let preview = if facts.written_off {
+            LOAD_PREVIEW_HAND_BACK
+        } else if facts.friendly {
+            LOAD_PREVIEW
+        } else {
+            LOAD_PREVIEW_FOREIGN
+        };
+        ctx.out.sys_to_actor(ctx.actor, "tacsim.tow", fill(preview));
         return Ok(());
     }
     let actor = ctx.actor;
@@ -1778,7 +1943,9 @@ pub(crate) fn tick(ctx: &mut Ctx<'_>) {
 
 /// **The load's physical step**: the casualty into `carrier`'s bay, when its tug stands within
 /// a cell of the ramp and the bay has room for it, and the crew aboard it with it (Q-36-52's
-/// friendly half). Idempotent: a casualty in the bay already is left there.
+/// friendly half) or abandoned to extraction (Q-36-52, a non-friend's bay; doc 36 cut GC.5). A
+/// written-off lease rig goes back to Occator's shed instead (Q-36-29). Idempotent: a casualty in
+/// the bay (or the shed) already is left there.
 fn place_in_bay(
     ctx: &mut Ctx<'_>,
     site: &CanonicalId,
@@ -1786,7 +1953,9 @@ fn place_in_bay(
     casualty: ObjId,
     carrier: ObjId,
 ) {
-    if act::where_is(ctx.w, casualty) == (Where::Bay { hull: carrier }) {
+    if act::where_is(ctx.w, casualty) == (Where::Bay { hull: carrier })
+        || crate::port::tv::in_shed(ctx.w, casualty)
+    {
         return;
     }
     let Some((entry, _, ramp, room, slot)) = crate::surface::tick::hull_view_berth(ctx.w, carrier)
@@ -1818,15 +1987,34 @@ fn place_in_bay(
     {
         return;
     }
-    if !friendly(ctx, site, casualty, carrier) {
-        return;
-    }
-    if let Err(error) = mush_sim::place_interior(ctx, casualty, room, Some(slot)) {
+    let friend = friendly(ctx, site, casualty, carrier);
+    // Doc 36 cut GC.5 (Q-36-29): a written-off lease rig goes back to Occator's shed, not into
+    // the bay, with no claim.
+    let written_off = crate::port::tv::written_off(ctx.w, casualty);
+    if written_off {
+        if !crate::port::tv::hand_back(ctx, casualty) {
+            return;
+        }
+    } else if let Err(error) = mush_sim::place_interior(ctx, casualty, room, Some(slot)) {
         tracing::warn!(casualty = casualty.0, carrier = carrier.0, %error, "tacsim: a tow's load could not be placed in the bay; its finish records it");
         return;
     }
-    crate::field::crew::aboard_loaded(ctx, casualty, carrier);
-    let line = LOADED
+    // Q-36-52: the crew of a friendly load are aboard the carrier; anyone else's are abandoned,
+    // and their extraction starts now. A written-off rig is nobody's but Occator's, so whoever is
+    // still inside it is abandoned too.
+    if friend && !written_off {
+        crate::field::crew::aboard_loaded(ctx, casualty, carrier);
+    } else {
+        crate::field::crew::abandoned_loaded(ctx, site, casualty, carrier);
+    }
+    let template = if written_off {
+        HANDED_BACK
+    } else if friend {
+        LOADED
+    } else {
+        LOADED_CUSTODY
+    };
+    let line = template
         .replace("{name}", &name(ctx.w, casualty))
         .replace("{carrier}", &name(ctx.w, carrier));
     crate::field::tell_site(ctx, site, &line);

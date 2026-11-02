@@ -456,6 +456,8 @@ fn surface_tick(ctx: &mut Ctx<'_>, _tag: &str, _scene: Option<SceneId>) {
     // Doc 36 cut GC.4: the tows first — the RAM mirror the walk's drives read, and every tow act
     // due.
     crate::surface::tow::tick(ctx);
+    // Doc 36 cut GC.5 (Q-36-22): a lease rig left out too long is written off.
+    crate::port::tv::write_off_left_out(ctx);
     let mut stats = walk(ctx, &mut state);
     // Doc 36 cut GC.11 (Q-36-41): the raid director, after the rigs' work.
     crate::surface::raid::tick(ctx);
@@ -2004,6 +2006,23 @@ fn idle_step(
         return Step::Worked;
     }
     let tv = record.tv;
+    // Doc 36 cut GC.5 (Q-36-22): a rig that cannot drive under its own power — a casualty or a
+    // wreck — has no way home; it lies where it is until it is towed, or written off.
+    if mush_tactics::module::unit_of(ctx.w, tv)
+        .and_then(|cells| crate::field_ops::assess_tacsim_unit(cells, None).ok())
+        .is_some_and(|assessment| {
+            !assessment.can_move
+                || matches!(
+                    assessment.state,
+                    crate::field_ops::OperationalState::Immobile
+                        | crate::field_ops::OperationalState::Disabled
+                        | crate::field_ops::OperationalState::Wreck
+                        | crate::field_ops::OperationalState::Irrecoverable
+                )
+        })
+    {
+        return Step::Worked;
+    }
     let now = ctx.w.world_ic_now().at;
     let retry = now.saturating_add(crate::surface::plan::IDLE_PARK_IC_SECS);
     // Doc 20 cut SM.12b: the one lessee reader (`yard::rig_lease`), so a yard rig left idle on
@@ -2688,6 +2707,28 @@ fn heard_from(written: bool, last: &Outcome) -> Option<[i64; 2]> {
     }
 }
 
+/// **What a scan from `stand` finds on `site`'s ground** (doc 36 cut GC.5), in words: `None` when
+/// nothing lies in reach or the record does not read.
+fn salvage_words(
+    ctx: &Ctx<'_>,
+    handles: &PortHandles,
+    site: &mush_core::CanonicalId,
+    stand: (i64, i64),
+    scanner: ObjId,
+) -> Option<String> {
+    let key = crate::surface::site_record::SiteKey(site.clone());
+    let record = ctx
+        .action_state(&handles.families.sites, &key)
+        .ok()
+        .flatten()?;
+    crate::surface::salvage::found_words(&crate::surface::salvage::scan_finds(
+        record,
+        stand,
+        crate::surface::salvage::SALVAGE_SCAN_CELLS,
+        scanner,
+    ))
+}
+
 /// **A finished scan's or sounding's block** (doc 20 cut SM.4a; the brief's 3.8, D17, D26):
 /// `SCANNED` (or `SCANNED_ICE`) with one row per field of the span, or `SOUNDED` (or
 /// `SOUNDED_BARREN`) with one line per family with ore — rendered from the operator's chart row
@@ -2773,6 +2814,16 @@ fn reading_block(
                     .replace("{hidden}", &hidden_words),
             ];
             block.extend(rows);
+            // Doc 36 cut GC.5 (Q-36-23): what the scan found lying on the ground in reach.
+            if let ReadSpan::Scan { cell: [x, y], .. } = span
+                && let Some(words) = salvage_words(ctx, handles, &last.site, (*x, *y), record.tv)
+            {
+                block.push(
+                    crate::surface::salvage::SCAN_FOUND
+                        .replace("{n}", &n)
+                        .replace("{what}", &words),
+                );
+            }
             block.join("\n")
         }
         ReadSpan::Sound {

@@ -2814,3 +2814,153 @@ GC.4's and GC.5's files are not touched.
 - Clippy and rustdoc `-D warnings`.
 
 The broad suites run on Linux CI on the PR.
+
+## GC.5 as built (salvage on a later visit)
+
+Built 2026-11-02, stacked on GC.4's branch (`claude/gc4-tow`, PR #312). It covers Q-36-16,
+Q-36-19, Q-36-22, Q-36-23, Q-36-29 and Q-36-52's non-friend half. No kernel file changed and no
+practice hash moved: every rule here is the host's. What the cut decided where the rulings left it
+open, for the owner to object to:
+
+**The scan reveals salvage** (Q-36-23; the new `surface/salvage.rs`, the scan's finish in
+`surface/act/providers.rs`).
+- *What and where:* a scan that lands `Done` writes into its operator's own `known` row
+  (`SiteRecord::learn`, Q-CF-28) every casualty and wreck on the site's index and every remains
+  and crate on its ground within `SALVAGE_SCAN_CELLS` (20, the presence picture's visual range)
+  of its stand. The scanner itself is never in it. A remembered thing in reach that the scan does
+  not find again is forgotten, as at a field's close.
+- *No line of sight.* The scan is the sensor sweep a rig already makes for the ground's chart, not
+  an eye, so no trace is run. It touches nothing in the kernel.
+- *Written in the scan's own bundle,* and only when the row changed, so a scan with nothing in
+  reach writes the site record no more than it did before. The finish provider now holds the site
+  records' handle.
+- *Told:* the scan's block gains one line, `Rig 2's scan also marks what lies on the ground in
+  reach: a casualty, a crate.`, only when something lies in reach.
+
+**Loading into a foreign bay** (Q-36-16, Q-S2, Q-S14; `surface/tow.rs`).
+- *GC.4's refusal goes.* `+tv/<n> load` into a carrier that is not the casualty's own party's or a
+  Friend's is allowed. Its preview says what it means: the casualty is in the carrier's custody
+  with a salvage claim owed, never its title, and anyone still inside is abandoned to extraction.
+- *The close* is GC.4's: the epoch closes `RecoveredToBase { carrier }` with `recovered_by` the tug,
+  and the casualty leaves the index in the same bundle.
+- *Custody* (`SalvageCustody`, on the site's record as `SiteRecord::custody`, omitted while empty
+  so an unsalvaged site's record is byte-identical to GC.4's) holds:
+  - the hull;
+  - the holder, who is the carrier's operator: its party's owner as the field reads it, else its
+    leader, else its helm holder, else the tug's operator;
+  - the carrier and the tug;
+  - the instant of the load, and the instant the hull was left on the ground (Q-36-22's clock,
+    carried over from the index);
+  - the claim seam.
+
+  It lives on the site record because the claim is filed at the site's port registry (GC.6). One
+  record a hull, at most 32 a site.
+- *The claim seam for GC.6:* `ClaimSeam::Owed` at the load. GC.6 files the E4b2 contract and
+  writes `ClaimSeam::Filed { contract }`. Nothing here files, notifies or adjudicates.
+- *GC.8b's salvor seam is filled:* `port::bay_work::salvor_custody` now reads the record (it takes
+  a `Ctx`), so the holder's `Right::Salvor` reaches repair and berth as GC.8b's table permits. A
+  lease rig written off since is nobody's custody (Q-36-29).
+- *Custody is not title:* the casualty's lease, title and seats are untouched.
+
+**The abandoned crew** (Q-36-52, the owner's ruling; `field/crew.rs`).
+- *At the load's physical step,* every character whose crew record holds them in the casualty
+  (inside it, or stranded in it) is stranded on the site in that hull. Their extraction starts at
+  once to the safe port they know, as if they had asked (`crew::abandoned_loaded`). One already on
+  its way keeps its port and due instant.
+- *No deferral:* `Extraction` gains `abandoned` (omitted when false, so an asked-for extraction's
+  record is unchanged), and the tick skips the recovery-flight deferral for it.
+- *The hull stays with the carrier.* The abandoned character is told: "…you are abandoned, and an
+  extraction to {port} is on its way, about {h} IC hours."
+- *Only crew records count,* as in GC.4's friendly half: a character the field engine never checked
+  in is not found.
+
+**Cargo pickup** (Q-36-19, FO-4; `surface/salvage.rs`, a sixth op on `tacsim_surface_tow`).
+- *The verb:* `+tv/<n> pickup [n] [go]` takes a crate lying within a cell of the rig, at once. It
+  is refused while the rig tows or has an act in flight, and on a promoted site.
+- *The goods move and are never made.* A crate's goods lie in the site's spoil vault, where a dump
+  puts ore. The pickup takes the crate off the site record and moves its manifest from the spoil
+  into the rig's hopper with the inventory's own `transfer_many`, in one bundle. A crate whose
+  goods the spoil does not hold is refused before anything is written (`Rig 2 finds the crate
+  empty…`).
+- **This deviates from "inventory relocation":** `InventoryFamilies::relocate` moves a lot, and a
+  crate's manifest is pooled goods, so the pooled transfer is the relocation that fits. No new
+  inventory path was added.
+- *Into a bay:* not built. Only the hopper takes a crate.
+- *Owned ground (FO-4):* anyone can, physically. The pickup is lawful on open ground, for the
+  block's landholder, and for whoever holds the crate's own hull (its helm or its lease). Anyone
+  else's pickup lands with the outcome `picked:unlawful`, the evidence GC.6 reads, and no line
+  says so.
+- *The staff fixture* (`@tacsim/site … drop crate`) still writes only the manifest, so the gate
+  seeds the spoil itself.
+
+**Lease rigs** (Q-36-22, Q-36-29; `port/tv.rs`).
+- *Returned from a bay.* A disabled lease rig loaded into its own carrier's bay (GC.4) is in the
+  bay, so `+tv/lease return` takes it with GC.9's damage charge. Nothing new was needed.
+- *Written off after 28 IC days* (`WRITE_OFF_LEFT_IC_DAYS`, provisional; `write_off_left_out` on
+  the surface tick). This applies to a live lease whose rig is not in its hull's bay and has lain
+  on a lane site's index, or in someone else's custody, for 28 IC days from when it was left. It is
+  written off on CF.6c's terms:
+  - the lease ends;
+  - an Active deposit is captured whole to Occator;
+  - the record goes `Returned` and `written_off`;
+  - the lessee is told.
+
+  A write-off the economy cannot finish is tried again on the next tick, with nothing of it
+  written. The term settle is not run, so unpaid terms past the deposit are not charged.
+- *The idle return no longer brings a casualty home* (`surface/tick.rs`, `idle_step`). SM.11's idle
+  return recovered a rig left a day idle on the ground without asking whether it could drive, so a
+  disabled rig went home on its own and was never left out at all. The gate found this. A rig that
+  cannot move, or that reads immobile, disabled, a wreck or irrecoverable, now stays where it lies,
+  to be towed or written off. A rig that can drive comes home as before.
+- *Occator's alone* (Q-36-29). Anyone may tow a written-off rig (Q-36-14). Its load preview says it
+  goes back to Occator with no claim, and the load's physical step puts it in Occator's shed, not
+  the bay (`tv::hand_back`). It gets no custody record, its epoch closes, and the next take
+  restores it to spec (GC.9). Anyone still inside it is abandoned, as on a foreign load. A rig
+  written off while it is already in someone's bay goes back to the shed at once.
+
+**The gates** (`tests/shard_1/field_gc5.rs`, through the production command paths on Ahuna
+Flank).
+- `gc5_a_casualty_left_behind_is_found_by_a_scan_and_brought_home`: story (a)'s second variant.
+  1. The earlier visit's leavings are a staff fixture: the escort made powerless and put on the
+     index, a crate dropped beside it, and its two tonnes of ore seeded on the spoil. The captain
+     knows of neither.
+  2. The wingman's scan from the ramp marks both into the captain's row, and says so.
+  3. It picks the crate up: two tonnes go into the hopper, none are left on the spoil, and the
+     crate is off the ground.
+  4. It tows the escort and drives the tow to the ramp, with the casualty following.
+  5. It loads the escort into the captain's own bay. The escort is home: off the index, its epoch
+     closed, in nobody's custody.
+- `gc5_a_non_friend_load_takes_custody_and_abandons_the_crew`:
+  1. The captain flies the escort from inside it. A stranger's mark opens a field, which settles
+     with the escort a casualty and the captain stranded in it.
+  2. The stranger's rig tows the escort into the stranger's carrier.
+  3. The escort is in that bay, in the stranger's custody with a claim owed. The salvor's right is
+     the stranger's and not the captain's. Its epoch is closed, and its lease still stands.
+  4. The captain's extraction started at the load, abandoned. After the delay the captain is at a
+     safe port.
+- `gc5_a_lease_rig_out_28_days_is_written_off_and_handed_back_when_loaded`:
+  1. A day short of 28 IC days, nothing happens.
+  2. Past them, the tick writes the rig off: the record is `Returned` and written off, and the
+     deposit hold is consumed.
+  3. A stranger tows it, and the load preview names the hand-back.
+  4. The load puts it in Occator's shed with no custody, off the index, its epoch and excursion
+     closed.
+- *In-source:* `salvage::gc5_a_scan_finds_the_salvage_in_reach_into_the_scanners_record`,
+  `salvage::gc5_custody_is_one_record_a_hull` and
+  `crew::gc5_a_non_friend_load_abandons_the_crew_to_extraction`.
+
+**Not built here:**
+- Filing, notice, tenure, evidence and adjudication of the claim (GC.6).
+- A crate into a carrier's hold.
+- A crate dropped by play (a destroyed hopper, an explicit dump into a container).
+- A written-off rig's crew aboard the carrier.
+- The bot's vocabulary for `pickup`.
+
+**Defaults taken (provisional):**
+- The scan's 20-cell salvage reach, with no line of sight.
+- The custodian's order: owner, leader, helm, the tug's operator.
+- Custody kept on the site record, 32 a site.
+- A crate's goods held in the site's spoil.
+- 28 IC days counted from when the rig was left on the ground, with no term settle at the
+  write-off.
+- A written-off rig handed back straight to the shed.

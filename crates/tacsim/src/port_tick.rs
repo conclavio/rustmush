@@ -619,7 +619,7 @@ fn register_providers(
         action_refs,
         outcome_refs,
         &port_families,
-        black_box.tow,
+        (inventory_families.as_ref(), black_box.tow),
     )?;
     // Doc 17h cut M8h: the `tacsim.house_attestation` tick and its RAM slot, unconditionally
     // (no agent, no visit).
@@ -883,6 +883,7 @@ fn register_surface_acts(
             surveys: families.surveys.clone(),
             quest_survey_evidence: families.quest_survey_evidence.clone(),
             pockets: families.pockets.clone(),
+            sites: families.sites.clone(),
             inventory: inventory.clone(),
             tools: Arc::clone(tools),
             black_box,

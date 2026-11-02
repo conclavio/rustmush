@@ -1766,15 +1766,23 @@ enum Act {
         /// Committed.
         go: bool,
     },
+    /// **Doc 36 cut GC.5**: `+tv[/<n>] pickup [object] [go]`.
+    Pickup {
+        /// The crate's number on the site, when one is named.
+        object: Option<u32>,
+        /// Committed.
+        go: bool,
+    },
 }
 
 /// The act words a `+tv` switch or first word may name (the lease's, the acts', and since doc
 /// 20 cut SM.4a `scan` with its alias `survey`, `sound`, `forget` and `quiet`; since SM.4b
 /// `drive` and `map`; since SM.7 `mine` with its alias `drill`; since SM.8 `unload`; since SM.11
-/// `plan`; since doc 36 cut GC.4 `tow`, `release` and `load`, as first words).
-const ACT_WORDS: [&str; 18] = [
+/// `plan`; since doc 36 cut GC.4 `tow`, `release` and `load`, and since GC.5 `pickup`, as first
+/// words).
+const ACT_WORDS: [&str; 19] = [
     "lease", "launch", "recover", "dump", "scan", "survey", "sound", "forget", "quiet", "drive",
-    "map", "mine", "drill", "unload", "plan", "tow", "release", "load",
+    "map", "mine", "drill", "unload", "plan", "tow", "release", "load", "pickup",
 ];
 
 /// **`/show`** (doc 20 cut SM.11; the brief's D11): a switch accepted only beside `plan`, so the
@@ -2010,6 +2018,27 @@ fn parse_parts(has: &dyn Fn(&str) -> bool, raw: &str) -> Result<(Option<u8>, Act
                     _ => Act::Load { go },
                 },
             ));
+        }
+        // Doc 36 cut GC.5: `pickup [n] [go]`.
+        "pickup" => {
+            let usage = || CmdError::msg(crate::surface::salvage::PICKUP_USAGE);
+            let mut object: Option<u32> = None;
+            let mut go = false;
+            while let Some(word) = next.take() {
+                if go {
+                    return Err(usage());
+                }
+                if word == "go" {
+                    go = true;
+                } else if object.is_none() {
+                    object =
+                        Some(crate::port::families::strict_decimal_u32(&word).ok_or_else(usage)?);
+                } else {
+                    return Err(usage());
+                }
+                next = words.next();
+            }
+            return Ok((slot, Act::Pickup { object, go }));
         }
         // Doc 20 cut SM.8 (the brief's 3.5): `unload [<t>] [go]` — at most one whole tonnage
         // (`1..=99`, decimal digits only), then `go`; anything else is `UNLOAD_USAGE`.
@@ -2351,6 +2380,13 @@ pub(crate) fn tv_cmd(ctx: &mut Ctx<'_>) -> Result<(), CmdError> {
             let rig = select_word(ctx, slot, "load").map_err(CmdError::msg)?;
             crate::surface::site_record::field_gate(ctx, rig.hull)?;
             crate::surface::tow::load_cmd(ctx, &rig, go)
+        }
+        // Doc 36 cut GC.5: a crate into the hopper, on the open ground only.
+        Act::Pickup { object, go } => {
+            let rig = select_word(ctx, slot, "pickup").map_err(CmdError::msg)?;
+            crate::surface::site_record::field_gate(ctx, rig.hull)?;
+            crate::surface::tow::act_gate(ctx, &rig, false)?;
+            crate::surface::salvage::pickup_cmd(ctx, &rig, object, go)
         }
     }
 }
@@ -4569,6 +4605,171 @@ pub fn written_off(w: &World, tv: ObjId) -> bool {
             .max_by_key(|record| record.lease)
             .is_some_and(|record| record.written_off)
     })
+}
+
+// ---- doc 36 cut GC.5: the rig left out, and the hand-back ---------------------------------
+
+/// **How long a disabled lease rig may lie out of its bay before Occator writes it off**
+/// (doc 36 cut GC.5; Q-36-22), IC days from when it was left on the ground. Provisional.
+pub const WRITE_OFF_LEFT_IC_DAYS: i64 = 28;
+
+/// **Doc 36 cut GC.5**: the lessee told of a rig written off for lying out: `{mark}`, `{days}`.
+pub const WRITTEN_OFF_LEFT: &str = "Occator writes {mark} off: it has been out of your bay for {days} IC days. The deposit is Occator's and the lease is ended; the rig is Occator's alone.";
+
+/// Whether `tv` stands in Occator's shed.
+#[must_use]
+pub fn in_shed(w: &World, tv: ObjId) -> bool {
+    let Some(shed) = programme_port(w)
+        .as_ref()
+        .and_then(|port| lessor_of(w, port))
+        .and_then(|lessor| lessor.shed)
+    else {
+        return false;
+    };
+    w.module_state::<SpatialState>().is_some_and(
+        |st| matches!(st.parent_of(tv), SpatialParent::Interior { space, .. } if space == shed),
+    )
+}
+
+/// **Hand a written-off rig back to Occator** (doc 36 cut GC.5; Q-36-29): it goes into the shed,
+/// where the next take restores it to spec (GC.9). Answers whether it went.
+pub(crate) fn hand_back(ctx: &mut Ctx<'_>, tv: ObjId) -> bool {
+    let Some(shed) = programme_port(ctx.w)
+        .as_ref()
+        .and_then(|port| lessor_of(ctx.w, port))
+        .and_then(|lessor| lessor.shed)
+    else {
+        tracing::error!(
+            tv = tv.0,
+            "tacsim: a written-off rig has no shed to go back to"
+        );
+        return false;
+    };
+    match mush_sim::place_interior(ctx, tv, shed, None) {
+        Ok(_) => true,
+        Err(error) => {
+            tracing::error!(tv = tv.0, %error, "tacsim: a written-off rig could not go back to the shed");
+            false
+        }
+    }
+}
+
+/// **When `tv` was left out of its bay**, as the ground knows it (Q-36-22's clock): its entry on
+/// a lane site's index, else the custody record of the bay it was loaded into.
+fn left_out_since(ctx: &Ctx<'_>, tv: ObjId) -> Option<i64> {
+    let handles = ctx.w.module_state::<crate::port::families::PortHandles>()?;
+    crate::surface::chart::lane_sites(ctx.w)
+        .into_iter()
+        .find_map(|site| {
+            let key = crate::surface::site_record::SiteKey(site.entry);
+            let record = ctx
+                .action_state(&handles.families.sites, &key)
+                .ok()
+                .flatten()?;
+            record
+                .units
+                .iter()
+                .find(|left| left.unit == tv)
+                .map(|left| left.left_ic)
+                .or_else(|| {
+                    record
+                        .custody
+                        .iter()
+                        .find(|row| row.hull == tv)
+                        .and_then(|row| row.left_ic)
+                })
+        })
+}
+
+/// **Write off every lease rig left out too long** (doc 36 cut GC.5; Q-36-22), on the surface
+/// tick: a live lease whose rig is not in its hull's bay, and has lain on the ground (or in
+/// someone else's custody) for [`WRITE_OFF_LEFT_IC_DAYS`], is written off on CF.6c's terms — the
+/// lease ends, an Active deposit is captured whole to Occator, the record is `Returned` and
+/// `written_off`, and the lessee is told. The rig is Occator's alone from then (Q-36-29). One
+/// found in a bay already goes back to the shed now. A write-off the economy cannot finish is
+/// logged and tried again on the next tick, with nothing of it written.
+pub(crate) fn write_off_left_out(ctx: &mut Ctx<'_>) {
+    let now = ctx.w.world_ic_now().at;
+    let bar = WRITE_OFF_LEFT_IC_DAYS.saturating_mul(DAY);
+    let live: Vec<TvLease> = ctx
+        .w
+        .module_state::<TacsimStore>()
+        .map(|store| {
+            store
+                .tv_leases
+                .values()
+                .filter_map(|state| match state {
+                    TvLeaseState::Present(record) if record.live() && !record.is_house() => {
+                        Some(record.clone())
+                    }
+                    _ => None,
+                })
+                .collect()
+        })
+        .unwrap_or_default();
+    if live.is_empty() {
+        return;
+    }
+    for record in live {
+        let at_home =
+            hull_view(ctx.w, record.hull).is_some_and(|view| in_bay_of(ctx.w, &view, record.tv));
+        if at_home {
+            continue;
+        }
+        let Some(left) = left_out_since(ctx, record.tv) else {
+            continue;
+        };
+        if now < left.saturating_add(bar) {
+            continue;
+        }
+        let Some(lessor) = programme_port(ctx.w)
+            .as_ref()
+            .and_then(|port| lessor_of(ctx.w, port))
+        else {
+            continue;
+        };
+        let key = LeaseKey {
+            lessor: lessor.principal.clone(),
+            premises: record.tv,
+        };
+        match mush_economy::end_lease(ctx, ContractId(record.lease), &key) {
+            Ok(LeaseEnd::Ended | LeaseEnd::AlreadyEnded) => {}
+            Ok(LeaseEnd::Retrying) => continue,
+            Err(error) => {
+                tracing::error!(lease = record.lease, %error, "tacsim: a rig left out could not have its lease ended; the write-off is tried again");
+                continue;
+            }
+        }
+        if record.status == TvLeaseStatus::Active {
+            let capture = lessor.account.map(|account| (&lessor.principal, account));
+            if let Err(error) = settle_deposit(ctx, &record, capture) {
+                tracing::error!(lease = record.lease, %error, "tacsim: a rig left out could not have its deposit captured; the write-off is tried again");
+                continue;
+            }
+        }
+        put_tv_lease(
+            ctx,
+            &TvLease {
+                status: TvLeaseStatus::Returned,
+                ended_at_ic: Some(now),
+                written_off: true,
+                ..record.clone()
+            },
+        );
+        if !matches!(
+            crate::surface::act::where_is(ctx.w, record.tv),
+            crate::surface::act::Where::Ground { .. }
+        ) {
+            let _ = hand_back(ctx, record.tv);
+        }
+        ctx.out.sys_to_actor(
+            record.pilot,
+            "tacsim.tv",
+            WRITTEN_OFF_LEFT
+                .replace("{mark}", &record.mark)
+                .replace("{days}", &WRITE_OFF_LEFT_IC_DAYS.to_string()),
+        );
+    }
 }
 
 /// Whether the settle forfeits `record`.
