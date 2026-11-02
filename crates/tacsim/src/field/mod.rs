@@ -144,6 +144,9 @@ pub struct FieldBook {
     /// **Carriers settled on a running field's site and not in it** (doc 36 cut GC.1; Q-36-4),
     /// by site: each owed its admission at its pad, which the kernel's join (GC.1b) makes.
     pub(crate) arrivals: BTreeMap<CanonicalId, BTreeSet<ObjId>>,
+    /// **Arrivals the kernel refused to join** (doc 36 cut GC.1b), by site: not asked again while
+    /// that field runs.
+    pub(crate) join_refused: BTreeMap<CanonicalId, BTreeSet<ObjId>>,
 }
 
 impl FieldBook {

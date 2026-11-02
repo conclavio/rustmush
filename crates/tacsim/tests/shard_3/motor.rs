@@ -157,6 +157,78 @@ fn m1a1_the_shipped_duel_hashes_as_before() {
     );
 }
 
+/// **Doc 36 cut GC.1b: no OOC match ever joins, so no practice hash moves.** The shipped duel of
+/// [`m1a1_the_shipped_duel_hashes_as_before`], offered a join at every arena second of its minute
+/// — under the IC field's own host, every class and weapons hold — refuses each one, is unchanged
+/// by each refusal, and ends on GC.2's reblessed pins: [`DUEL_HASH_API6_OBSERVED`] and, through
+/// the API 4 identity control, [`DUEL_HASH_AT_HEAD`].
+#[test]
+fn gc1b_an_ooc_match_offered_a_join_keeps_its_practice_hashes() {
+    let world = booted_world();
+    let (mut arena, identity) = support::shipped_arena_with_api4_hash_control(
+        &world,
+        &[
+            &[Muster::fill(PartyId::RED, 1), Muster::fill(PartyId::RED, 2)],
+            &[
+                Muster::fill(PartyId::BLUE, 1),
+                Muster::fill(PartyId::BLUE, 2),
+            ],
+        ],
+    );
+    let host = tacsim::arena::FieldHost {
+        end: tacsim::arena::party::EndCondition::Host,
+        every_class: true,
+        weapons_hold: true,
+        ..tacsim::arena::FieldHost::default()
+    };
+    let arrival = ObjId(9_001);
+    let mut offered = 0_u32;
+    // `run_until`'s loop, with the offer between two pulses, where the task decides a join.
+    let mut wall = arena.now_ms;
+    while arena.now_ms < 60_000 {
+        let out = arena.step_settled(wall, &[], &[]);
+        if out.ended.is_some() {
+            break;
+        }
+        let before = tacsim::arena::hash::state_hash(&arena);
+        let at = arena
+            .units
+            .first()
+            .map(|unit| unit.pose.clone())
+            .expect("a unit");
+        let joiner = support::rig::tank(
+            arrival,
+            PartyId::RED,
+            at,
+            Vec::new(),
+            tacsim::arena::state::Controller::Mind,
+        );
+        assert!(
+            arena.join(joiner, None, &host, 8).is_err(),
+            "an OOC match never joins"
+        );
+        assert_eq!(
+            tacsim::arena::hash::state_hash(&arena),
+            before,
+            "a refusal moves nothing"
+        );
+        offered = offered.saturating_add(1);
+        wall += 1_000;
+    }
+    assert!(offered >= 59, "a join was offered every second: {offered}");
+    assert!(arena.unit(arrival).is_none());
+    assert_eq!(
+        tacsim::arena::hash::state_hash(&arena),
+        DUEL_HASH_API6_OBSERVED,
+        "the shipped duel's practice hash moved"
+    );
+    assert_eq!(
+        identity.hash_of_settled(&arena),
+        DUEL_HASH_AT_HEAD,
+        "the legacy duel hash moved"
+    );
+}
+
 /// **The shipped duel's ledger, every line whole with its hash, recorded at
 /// `e23694b0`** (17b cut M1b.0; the M1b plan's §1(a) and (c)) — before the cut
 /// touched the due loop, off [`duel`] stepped at 1,000 ms for 60 s, each line

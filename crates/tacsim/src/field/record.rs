@@ -136,6 +136,11 @@ pub struct FieldUnit {
     /// it, and sets each soul's record from it at the carrier's check-in.
     #[serde(default, skip_serializing_if = "Vec::is_empty")]
     pub aboard: Vec<ObjId>,
+    /// **It joined the running field** (doc 36 cut GC.1b; Q-36-4): a carrier that settled on the
+    /// pad after admission. Its arrival is a row in every party's presence picture
+    /// (`crate::surface::presence::publish`), where a carrier admitted at promotion is the pad.
+    #[serde(default, skip_serializing_if = "std::ops::Not::not")]
+    pub arrived: bool,
 }
 
 /// **A running field's live record** (`tacsim:field:live:<site>`).
@@ -393,6 +398,7 @@ mod tests {
                     pilot: Some((ObjId(3), SmolStr::new("cockpit"))),
                     epoch: None,
                     aboard: Vec::new(),
+                    arrived: false,
                 },
                 FieldUnit {
                     unit: ObjId(9),
@@ -400,6 +406,7 @@ mod tests {
                     pilot: None,
                     epoch: None,
                     aboard: vec![ObjId(3)],
+                    arrived: false,
                 },
             ],
         }

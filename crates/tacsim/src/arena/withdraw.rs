@@ -131,6 +131,9 @@ impl Arena {
         self.pending_cards.remove(&unit);
         self.awaiting.remove(&unit);
         self.jam_fold.remove(&unit);
+        // Doc 36 cut GC.1b: the chassis words are kept in the unit table's row order, so a row
+        // gone shifts every later one; laid down again, as a join lays them.
+        self.chassis = crate::arena::state::ChassisWords::table(&self.units);
         let terrain = std::sync::Arc::clone(&self.definition);
         self.index.rebuild(&terrain.terrain, &self.units);
     }
