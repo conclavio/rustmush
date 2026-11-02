@@ -17,7 +17,7 @@
 //!      `LaserHit`, `RailgunHit`) and open-epoch disablement (`ShipDisabledDerelict`) as
 //!      [`BlackBoxFlightEntry::CombatDamageRecorded`] entries inside [`SalvageClaimBook`].
 //! 3. **48-Hour Registry Salvage Claims (`doc 27a`, `D-35-12`, `D-35-14`)**:
-//!    - [`register_derelict_salvage_in_book`] records a clamped derelict [`SalvageTowRecord`]
+//!    - [`register_derelict_salvage_in_book`] records a clamped derelict recovery
 //!      in [`SalvageClaimBook`] (`record_physical_attach`, `record_bay_load`, and
 //!      `resolve_hull_recovery_custody`), opening the 48-hour (`172,800 s`) Registry contest
 //!      window when recovered by a non-owner or resolving title immediately on self-recovery.
@@ -42,7 +42,6 @@ use crate::space::bubble::{
     DERELICT_WINDOW_S, FacetBand, HullStatus, ShipSectionId, ShipSectionState, SpaceCombatEvent,
     SpacePartyId, SpaceShipState,
 };
-use crate::space::docking::SalvageTowRecord;
 
 /// All canonical [`FacetBand`]s on a spacecraft hull (`dray.json`, `D-35-1`).
 pub const ALL_FACET_BANDS: [FacetBand; 5] = [
@@ -350,7 +349,7 @@ pub fn record_space_combat_to_black_box(
     Ok(recorded)
 }
 
-/// Register a clamped derelict [`SalvageTowRecord`] inside `doc 27a`'s authoritative
+/// Register a clamped derelict recovery inside `doc 27a`'s authoritative
 /// [`SalvageClaimBook`], recording the physical tow attachment (`TowAttached`), carrier/port
 /// berth recovery (`EpochClosedInBay`), and resolving custody into either an immediate
 /// self-recovery title or a 48-hour (`172,800 s`) [`CustodyTitleStatus::PendingSalvageClaim`]
@@ -363,7 +362,6 @@ pub fn record_space_combat_to_black_box(
 pub fn register_derelict_salvage_in_book(
     salvage_book: &mut SalvageClaimBook,
     operation_id: RecoveryOpId,
-    _tow: &SalvageTowRecord,
     derelict_obj: ObjId,
     tug_obj: ObjId,
     recoverer_obj: ObjId,

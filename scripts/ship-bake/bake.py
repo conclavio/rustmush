@@ -31,6 +31,7 @@ import hashlib
 import io
 import json
 import math
+import os
 import re
 import struct
 import tarfile
@@ -167,7 +168,10 @@ def parse_ascii_fbx(fbx_text):
 
 
 def normalize_mesh(verts):
-    """Center mesh at origin and normalize maximum half-extent to `1.0`."""
+    """Center mesh at origin and normalize maximum half-extent to `1.0`.
+
+    Returns `(normalized_verts, scale_factor)`.
+    """
     xs = [v[0] for v in verts]
     ys = [v[1] for v in verts]
     zs = [v[2] for v in verts]
@@ -181,7 +185,7 @@ def normalize_mesh(verts):
         1e-6,
     )
     scale = 2.0 / span
-    return [((x - cx) * scale, (y - cy) * scale, (z - cz) * scale) for (x, y, z) in verts]
+    return [((x - cx) * scale, (y - cy) * scale, (z - cz) * scale) for (x, y, z) in verts], round(scale, 6)
 
 
 def face_normal(v0, v1, v2):
@@ -477,7 +481,29 @@ def list_package_fbx(pkg_path):
     return rows
 
 
+def format_compact_index_json(index_doc):
+    """Serialize `index.json` with single-line `docking_wireframe_mm` arrays to avoid WASM bloat."""
+    doc_copy = dict(index_doc)
+    ships_copy = []
+    wireframe_tokens = {}
+    for idx, entry in enumerate(index_doc["ships"]):
+        token = f"__WIREFRAME_TOKEN_{idx}__"
+        wireframe_tokens[f'"{token}"'] = json.dumps(entry["docking_wireframe_mm"], separators=(",", ":"))
+        e_copy = dict(entry)
+        e_copy["docking_wireframe_mm"] = token
+        ships_copy.append(e_copy)
+    doc_copy["ships"] = ships_copy
+    text = json.dumps(doc_copy, indent=2)
+    for k, v in wireframe_tokens.items():
+        text = text.replace(k, v)
+    return text + "\n"
+
+
 def bake_all(unitypackage_dir, out_dir):
+    if not unitypackage_dir:
+        raise ValueError(
+            "Missing --unitypackage-dir (or set RUSTMUSH_3D_ASSETS environment variable)"
+        )
     unitypackage_dir = Path(unitypackage_dir)
     out_dir = Path(out_dir)
     out_dir.mkdir(parents=True, exist_ok=True)
@@ -497,7 +523,7 @@ def bake_all(unitypackage_dir, out_dir):
             pkg_text_cache[cache_key] = extract_fbx_from_package(pkg_path, fbx_path)
 
         raw_verts, faces = parse_ascii_fbx(pkg_text_cache[cache_key])
-        norm_verts = normalize_mesh(raw_verts)
+        norm_verts, scale_factor = normalize_mesh(raw_verts)
 
         cells = [
             render_facing_cell(norm_verts, faces, f_idx * 45.0, pitch_deg)
@@ -518,6 +544,8 @@ def bake_all(unitypackage_dir, out_dir):
                 "height": SHEET_H,
                 "cell_size": CELL_SIZE,
                 "facings": FACINGS,
+                "pitch_deg": pitch_deg,
+                "scale_factor": scale_factor,
                 "bytes": len(png_bytes),
                 "sha256": file_sha,
                 "asset_pack": pack_label,
@@ -539,9 +567,20 @@ def bake_all(unitypackage_dir, out_dir):
         "sheet_dimensions": [SHEET_W, SHEET_H],
         "cell_size": CELL_SIZE,
         "facings": FACINGS,
+        "bake_params": {
+            "sheet_dimensions": [SHEET_W, SHEET_H],
+            "cell_size": CELL_SIZE,
+            "facings": FACINGS,
+            "key_light_dir": [0.52, 0.58, -0.62],
+            "scale_px_ratio": 0.43,
+            "wireframe_max_edges": 64,
+            "wireframe_scale_mm": 3800.0,
+            "wireframe_z_offset_mm": 2600.0,
+            "zlib_level": 0,
+        },
         "ships": manifest_entries,
     }
-    (out_dir / "index.json").write_text(json.dumps(index_doc, indent=2) + "\n", encoding="utf-8")
+    (out_dir / "index.json").write_text(format_compact_index_json(index_doc), encoding="utf-8")
     return index_doc
 
 
@@ -586,10 +625,13 @@ def run_self_test():
         out_dir = tmp_path / "ships_out"
         doc = bake_all(tmp_path, out_dir)
         assert doc["schema"] == "mush.ship_bake.v1"
+        assert "bake_params" in doc
         assert len(doc["ships"]) == len(SHIP_SPECS)
         for entry in doc["ships"]:
             f_path = out_dir / entry["file"]
             assert f_path.is_file()
+            assert "pitch_deg" in entry
+            assert "scale_factor" in entry
             assert len(entry["docking_wireframe_mm"]) > 0
     print("self-test: OK")
 
@@ -598,8 +640,8 @@ def main():
     parser = argparse.ArgumentParser(description=__doc__)
     parser.add_argument(
         "--unitypackage-dir",
-        default="C:/Users/faeni/3d_assets",
-        help="Root directory holding external Unity asset packages",
+        default=os.environ.get("RUSTMUSH_3D_ASSETS", ""),
+        help="Root directory holding external Unity asset packages (or set RUSTMUSH_3D_ASSETS)",
     )
     parser.add_argument(
         "--out-dir",

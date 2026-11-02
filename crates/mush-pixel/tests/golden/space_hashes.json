@@ -1,0 +1,68 @@
+{
+  "cases": [
+    {
+      "hash": "48548d2869d672e7",
+      "scene": "cockpit_neptune_triton",
+      "size": [
+        640,
+        276
+      ]
+    },
+    {
+      "hash": "b5e6a86c7d2fe46a",
+      "scene": "cockpit_saturn_uranus_rings",
+      "size": [
+        640,
+        276
+      ]
+    },
+    {
+      "hash": "eef18d3f29d7139b",
+      "scene": "holotank_kirkwood_bubble",
+      "size": [
+        640,
+        276
+      ]
+    },
+    {
+      "hash": "8121ffd688bae63f",
+      "scene": "docking_refinery_approach",
+      "size": [
+        640,
+        276
+      ]
+    },
+    {
+      "hash": "5309246ba4eb86c8",
+      "scene": "cockpit_neptune_triton",
+      "size": [
+        640,
+        480
+      ]
+    },
+    {
+      "hash": "1146a4a687e74217",
+      "scene": "cockpit_saturn_uranus_rings",
+      "size": [
+        640,
+        480
+      ]
+    },
+    {
+      "hash": "e136e5dc16f8a2cd",
+      "scene": "holotank_kirkwood_bubble",
+      "size": [
+        640,
+        480
+      ]
+    },
+    {
+      "hash": "c08386aa1b73a33a",
+      "scene": "docking_refinery_approach",
+      "size": [
+        640,
+        480
+      ]
+    }
+  ]
+}

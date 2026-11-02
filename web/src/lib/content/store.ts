@@ -2,7 +2,7 @@
 // the staff Content Studio (doc 34 cut CS.0a, D-34-1, D-34-2, D-34-5, D-34-6).
 import type { JsonValue } from "../proto";
 
-export type StudioSubTab = "npcs" | "quests" | "components" | "corridor" | "space";
+export type StudioSubTab = "npcs" | "quests" | "components" | "corridor";
 
 export interface PortCatalogEntry {
   id: string;
@@ -83,25 +83,6 @@ export interface SpaceClusterCatalogEntry {
   rock_count: number;
 }
 
-export interface SpaceHullCatalogEntry {
-  id: string;
-  short_id: string;
-  label: string;
-  refit_family: string;
-  pixel_model: string;
-  dry_mass_t: number;
-  delta_v_mps: number;
-}
-
-export interface SpaceRefitPackageCatalogEntry {
-  id: string;
-  label: string;
-  refit_family: string;
-  target_hull_id: string;
-  cost_cr: number;
-  work_hours: number;
-}
-
 export interface CatalogData {
   ports: PortCatalogEntry[];
   stations: StationCatalogEntry[];
@@ -112,8 +93,6 @@ export interface CatalogData {
   command_refs: string[];
   space_clusters: SpaceClusterCatalogEntry[];
   outer_bodies: string[];
-  space_hulls: SpaceHullCatalogEntry[];
-  space_refit_packages: SpaceRefitPackageCatalogEntry[];
   packs: PackSummary[];
 }
 
@@ -128,8 +107,6 @@ export function emptyCatalog(): CatalogData {
     command_refs: ["+crew", "+passage", "+ship", "+quest", "+market", "+coop"],
     space_clusters: [],
     outer_bodies: [],
-    space_hulls: [],
-    space_refit_packages: [],
     packs: [],
   };
 }
@@ -151,12 +128,6 @@ export function parseCatalog(raw: JsonValue): CatalogData {
       ? (obj.space_clusters as SpaceClusterCatalogEntry[])
       : [],
     outer_bodies: Array.isArray(obj.outer_bodies) ? (obj.outer_bodies as string[]) : [],
-    space_hulls: Array.isArray(obj.space_hulls)
-      ? (obj.space_hulls as SpaceHullCatalogEntry[])
-      : [],
-    space_refit_packages: Array.isArray(obj.space_refit_packages)
-      ? (obj.space_refit_packages as SpaceRefitPackageCatalogEntry[])
-      : [],
     packs: Array.isArray(obj.packs) ? (obj.packs as PackSummary[]) : [],
   };
 }

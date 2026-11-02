@@ -50,6 +50,12 @@ export class PictureStore {
   observeCockpit(data: unknown): void {
     const seated = (data as { seated?: unknown } | null)?.seated;
     this.cockpitData = seated === false ? null : data;
+    if (this.cockpitData !== null) {
+      this.spaceHolotankData = null;
+      this.spaceCockpitData = null;
+      this.spaceDockingData = null;
+      this.spaceMode = null;
+    }
   }
 
   /** An `arena.map` keyframe: kept. */
@@ -57,27 +63,68 @@ export class PictureStore {
     this.mapData = data;
   }
 
+  private reconcileSpaceMode(): void {
+    if (!this.hasSpaceFeeds) {
+      this.spaceMode = null;
+      return;
+    }
+    if (this.spaceMode === "docking" && this.spaceDockingData === null) {
+      this.spaceMode =
+        this.spaceCockpitData !== null
+          ? "space_cockpit"
+          : this.spaceHolotankData !== null
+            ? "holotank"
+            : null;
+    } else if (this.spaceMode === "space_cockpit" && this.spaceCockpitData === null) {
+      this.spaceMode =
+        this.spaceHolotankData !== null
+          ? "holotank"
+          : this.spaceDockingData !== null
+            ? "docking"
+            : null;
+    } else if (this.spaceMode === "holotank" && this.spaceHolotankData === null) {
+      this.spaceMode =
+        this.spaceCockpitData !== null
+          ? "space_cockpit"
+          : this.spaceDockingData !== null
+            ? "docking"
+            : null;
+    }
+  }
+
   /** A `space.holotank` keyframe (`SF.18`). */
   observeSpaceHolotank(data: unknown): void {
-    this.spaceHolotankData = data;
-    if (this.spaceMode === null && data !== null) {
+    const active = (data as { active?: unknown; seated?: unknown } | null);
+    const cleared = data === null || active?.active === false || active?.seated === false;
+    this.spaceHolotankData = cleared ? null : data;
+    if (this.spaceMode === null && this.spaceHolotankData !== null) {
       this.spaceMode = "holotank";
+    } else {
+      this.reconcileSpaceMode();
     }
   }
 
   /** A `space.cockpit` keyframe (`SF.18`). */
   observeSpaceCockpit(data: unknown): void {
-    this.spaceCockpitData = data;
-    if (this.spaceMode === null && data !== null) {
+    const active = (data as { active?: unknown; seated?: unknown } | null);
+    const cleared = data === null || active?.active === false || active?.seated === false;
+    this.spaceCockpitData = cleared ? null : data;
+    if (this.spaceMode === null && this.spaceCockpitData !== null) {
       this.spaceMode = "space_cockpit";
+    } else {
+      this.reconcileSpaceMode();
     }
   }
 
   /** A `space.docking` keyframe (`SF.18`). */
   observeSpaceDocking(data: unknown): void {
-    this.spaceDockingData = data;
-    if (data !== null) {
+    const active = (data as { active?: unknown; seated?: unknown } | null);
+    const cleared = data === null || active?.active === false || active?.seated === false;
+    this.spaceDockingData = cleared ? null : data;
+    if (this.spaceDockingData !== null) {
       this.spaceMode = "docking";
+    } else {
+      this.reconcileSpaceMode();
     }
   }
 
@@ -93,5 +140,9 @@ export class PictureStore {
   clear(): void {
     this.frame = null;
     this.received = 0;
+    this.spaceHolotankData = null;
+    this.spaceCockpitData = null;
+    this.spaceDockingData = null;
+    this.spaceMode = null;
   }
 }

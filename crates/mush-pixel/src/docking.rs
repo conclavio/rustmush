@@ -342,8 +342,9 @@ pub fn draw_docking_camera(frame: &mut Frame, docking: &Value, look: &Look) {
     // 1. Deterministic background starfield & Bayer-dithered target bulkhead silhouette
     draw_target_hull_backdrop(frame, &pose, fov_deg);
     let target_kind = docking
-        .get("target_kind")
+        .get("pixel_model")
         .and_then(Value::as_str)
+        .or_else(|| docking.get("target_kind").and_then(Value::as_str))
         .unwrap_or("ship");
     draw_docking_hull_wireframe(frame, target_kind, &pose, fov_deg, BULKHEAD_LIT);
 
@@ -379,10 +380,11 @@ fn draw_target_hull_backdrop(frame: &mut Frame, pose: &DockingCameraPose, fov_de
     };
     let edge =
         project_collar_point((w, h), pose, (4_200.0, 0.0, 0.0), fov_deg).unwrap_or((cx + 80, cy));
+    let max_hull_r = w.max(1);
     let hull_r = (edge.0 - cx)
         .abs()
         .hypot_i64((edge.1 - cy).abs())
-        .clamp(24, w);
+        .clamp(24.min(max_hull_r), max_hull_r);
     let inner_r = (hull_r * 24) / 100;
 
     let x0 = (cx - hull_r).max(0);
