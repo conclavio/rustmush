@@ -213,6 +213,9 @@ pub struct Clock {
     tempo_since_ms: i64,
     last_alert_signal_ms: Option<i64>,
     last_engaged_signal_ms: Option<i64>,
+    /// **The arena millisecond a shot was last fired** (doc 36 cut GC.2, Q-36-5), `None`
+    /// before the first: the IC host's idle bound reads it.
+    last_shot_ms: Option<i64>,
     last_wall_ms: Option<i64>,
     lagged: bool,
     /// Set only by [`Clock::pin_tempo_for_tests`]; while it is set,
@@ -244,6 +247,10 @@ pub struct ClockState {
     tempo_since_ms: i64,
     last_alert_signal_ms: Option<i64>,
     last_engaged_signal_ms: Option<i64>,
+    /// **Doc 36 cut GC.2** (Q-36-5): the last shot, so a resumed field's idle bound counts
+    /// from the shot it really saw. Absent before the first shot.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    last_shot_ms: Option<i64>,
 }
 
 /// Complete synthetic replay timebase. Live restart still uses ClockState and
@@ -275,6 +282,7 @@ impl Clock {
             tempo_since_ms,
             last_alert_signal_ms,
             last_engaged_signal_ms,
+            last_shot_ms,
             last_wall_ms,
             lagged,
             pinned,
@@ -288,6 +296,7 @@ impl Clock {
                 tempo_since_ms,
                 last_alert_signal_ms,
                 last_engaged_signal_ms,
+                last_shot_ms,
             },
             last_wall_ms,
             lagged,
@@ -315,6 +324,7 @@ impl Clock {
             tempo_since_ms: state.tempo_since_ms,
             last_alert_signal_ms: state.last_alert_signal_ms,
             last_engaged_signal_ms: state.last_engaged_signal_ms,
+            last_shot_ms: state.last_shot_ms,
             last_wall_ms,
             lagged,
             pinned,
@@ -340,6 +350,7 @@ impl Clock {
             tempo_since_ms: self.tempo_since_ms,
             last_alert_signal_ms: self.last_alert_signal_ms,
             last_engaged_signal_ms: self.last_engaged_signal_ms,
+            last_shot_ms: self.last_shot_ms,
         }
     }
 
@@ -368,12 +379,14 @@ impl Clock {
             tempo_since_ms,
             last_alert_signal_ms,
             last_engaged_signal_ms,
+            last_shot_ms,
         } = state;
         Clock {
             tempo,
             tempo_since_ms,
             last_alert_signal_ms,
             last_engaged_signal_ms,
+            last_shot_ms,
             last_wall_ms: None,
             lagged: false,
             pinned: None,
@@ -417,6 +430,14 @@ impl Clock {
     #[must_use]
     pub const fn last_engaged_signal_ms(&self) -> Option<i64> {
         self.last_engaged_signal_ms
+    }
+
+    /// **The arena millisecond a shot was last fired**, `None` before the first — the IC
+    /// host's idle bound reads it (doc 36 cut GC.2, Q-36-5: a field with no shot for
+    /// `[tacsim.field].idle_demote_s` demotes, whatever its contacts).
+    #[must_use]
+    pub const fn last_shot_ms(&self) -> Option<i64> {
+        self.last_shot_ms
     }
 
     /// Whether the last [`Clock::advance`] clamped.
@@ -521,6 +542,9 @@ impl Clock {
     ) -> Option<(Tempo, Tempo)> {
         if signals.engaged() {
             self.last_engaged_signal_ms = Some(now_ms);
+        }
+        if signals.shot_fired {
+            self.last_shot_ms = Some(now_ms);
         }
         if signals.alert() {
             self.last_alert_signal_ms = Some(now_ms);
@@ -1113,6 +1137,7 @@ mod replay_tests {
             tempo_since_ms: 12_000,
             last_alert_signal_ms: Some(15_000),
             last_engaged_signal_ms: Some(9_000),
+            last_shot_ms: Some(8_500),
             last_wall_ms: Some(21_003),
             lagged: true,
             pinned: Some(Tempo::Quiet),

@@ -416,6 +416,12 @@ fn t1_in_band_with_a_line_it_locks_and_fires_and_both_lines_are_in_the_black_box
         &arena_cfg(reflex_cfg()),
         &[BLUE],
     );
+    // Doc 36 cut GC.2 (Q-36-6): a never-armed hull that has not fired keeps nobody
+    // `Engaged`, and the target here carries no gun — so it has fired, which is
+    // what makes it a fight in reach.
+    if let Some(state) = arena.unit_mut(BLUE) {
+        state.shots_fired = 1;
+    }
     let mut bytes: Vec<u8> = Vec::new();
     // The premise: the platform's fighting reach is its scope, and the two tanks
     // are inside seven tenths of it.
@@ -3719,6 +3725,12 @@ fn t1_t32_the_alert_range_is_the_window_and_the_engaged_trigger_is_the_band() {
         &arena_cfg(reflex_cfg()),
         &[BLUE],
     );
+    // Doc 36 cut GC.2 (Q-36-6): a never-armed hull that has not fired keeps nobody
+    // `Engaged`, and the target here carries no gun — so it has fired, which is
+    // what makes it a fight in reach.
+    if let Some(state) = arena.unit_mut(BLUE) {
+        state.shots_fired = 1;
+    }
     assert_eq!(arena.alert_range_cm, 22_000, "the window's own diagonal");
 
     // A configured key is used exactly as written, derived or not.
@@ -3964,6 +3976,7 @@ fn body_profile() -> tacsim::arena::resolution::UnitProfile {
             consequences: vec![tacsim::arena::resolution::Consequence::DestroyUnit],
             struck_through: None,
         }],
+        ..Default::default()
     }
 }
 
@@ -4075,6 +4088,7 @@ fn hull_is_the_body() -> tacsim::arena::resolution::UnitProfile {
                 }],
             ),
         ],
+        ..Default::default()
     }
 }
 
@@ -4471,6 +4485,12 @@ fn e2_b45_the_two_tempo_triggers_read_the_hold_and_not_the_wreck() {
         &arena_cfg(reflex_cfg()),
         &[RED, BLUE],
     );
+    // Doc 36 cut GC.2 (Q-36-6): a never-armed hull that has not fired keeps nobody
+    // `Engaged`, and the target here carries no gun — so it has fired, which is
+    // what makes it a fight in reach.
+    if let Some(state) = arena.unit_mut(BLUE) {
+        state.shots_fired = 1;
+    }
     plant_contact(&mut arena, RED, BLUE, PartyId::BLUE, 0);
     assert!(arena.hostile_in_weapons_range());
     assert!(arena.contact_within_alert_range());

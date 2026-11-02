@@ -166,10 +166,19 @@ fn the_arena_library_has_no_path_to_the_store_the_runtime_or_the_world() {
 #[test]
 fn the_draw_label_set_is_pinned() {
     // The kinds, in code order (doc 16 §3.5's four plus §3.6's contact id,
-    // and since 17b cut M2.2 doc 17 §7's unit-mind draw, D-UM-29).
+    // and since 17b cut M2.2 doc 17 §7's unit-mind draw, D-UM-29; since doc 36
+    // cut GC.2, Q-36-38, the component outcome of a survivable hit).
     assert_eq!(
         LABEL_KINDS,
-        ["hit", "facet", "burst", "classify", "contact", "mind"],
+        [
+            "hit",
+            "facet",
+            "burst",
+            "classify",
+            "contact",
+            "mind",
+            "component"
+        ],
         "the draw-label set changed. Doc 16 §3.5 admits these labels and no others; a new reason \
          to draw is a reviewed diff here and in doc 16."
     );
@@ -177,7 +186,7 @@ fn the_draw_label_set_is_pinned() {
 
     // One encoded example per kind, with the exact separators and the exact
     // rendering of an object id (its decimal number, never `#42`).
-    let examples: [(DrawLabel, &str); 6] = [
+    let examples: [(DrawLabel, &str); 7] = [
         (DrawLabel::Hit { shot_seq: 7 }, "hit:7"),
         (DrawLabel::Facet { shot_seq: 7 }, "facet:7"),
         (DrawLabel::Burst { shot_seq: 7 }, "burst:7"),
@@ -204,6 +213,7 @@ fn the_draw_label_set_is_pinned() {
             },
             "mind:4:2:7",
         ),
+        (DrawLabel::Component { shot_seq: 7 }, "component:7"),
     ];
     for (label, expected) in examples {
         assert_eq!(
@@ -220,7 +230,7 @@ fn the_draw_label_set_is_pinned() {
     // And every pinned kind has an example above, so a new variant cannot be
     // added to the enum without being exercised here.
     let encoded: Vec<&'static str> = LABEL_KINDS.to_vec();
-    assert_eq!(encoded.len(), 6);
+    assert_eq!(encoded.len(), 7);
 }
 
 // ---------------------------------------------------------------------------

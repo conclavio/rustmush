@@ -631,7 +631,14 @@ pub fn unit_profile(catalog: &Catalog, unit: &mush_tactics::TacticalUnit) -> Uni
             }),
         })
         .collect();
-    UnitProfile { bands, sections }
+    UnitProfile {
+        bands,
+        sections,
+        // Doc 36 cut GC.2 (Q-36-38): the content's chances, or the provisional default.
+        component_hits: spec
+            .component_hits
+            .unwrap_or(crate::definitions::unit::COMPONENT_HITS),
+    }
 }
 
 /// The arena's own copy of one authored consequence. A closed vocabulary on both

@@ -1178,6 +1178,11 @@ impl Arena {
     /// [`PerceptionCounters::cell_probes`] and the blocks to
     /// [`PerceptionCounters::horizon_probes`]. The index caches terrain and
     /// nothing observed, so doc 16 §3.2's *no cross-observer cache* still holds.
+    ///
+    /// **Doc 36 cut GC.2** (Q-36-7, G-8): and a wreck standing on the line's
+    /// interior blocks it, as the wall class its cell takes
+    /// ([`crate::arena::wreck_cover`]). The terrain is asked first; only a line
+    /// the terrain left open asks the wrecks, and a field with none asks nothing.
     pub fn sight(&self, from: Eye, to: Eye, counters: &mut PerceptionCounters) -> Sight {
         let seen = self.definition.terrain.sight(from, to);
         counters.traces = counters.traces.saturating_add(1);
@@ -1187,7 +1192,16 @@ impl Arena {
         counters.horizon_probes = counters
             .horizon_probes
             .saturating_add(u64::from(seen.horizon_probes));
-        seen.sight
+        if matches!(seen.sight, Sight::BlockedBy(_)) {
+            return seen.sight;
+        }
+        match self.wreck_on_line(from.cell, to.cell) {
+            Some(at) => Sight::BlockedBy(mush_atlas::trace::Blocker::Terrain {
+                at,
+                class: crate::arena::wreck_cover::WRECK_CLASS,
+            }),
+            None => seen.sight,
+        }
     }
 
     /// Steps 1 to 3 of doc 16 §3.6, over one snapshot of the units and the index.

@@ -313,6 +313,7 @@ pub mod horizon;
 pub mod index;
 pub mod input_tape;
 pub mod intents;
+pub mod join;
 pub mod ledger;
 pub(crate) mod memory_bound;
 pub mod mind;
@@ -344,6 +345,7 @@ pub(crate) mod trace_runtime;
 pub mod view;
 pub mod weapons;
 pub mod withdraw;
+pub mod wreck_cover;
 
 pub use card::{
     AspectWord, CardChange, CardError, Opening, OrbitSense, PRESETS, Prefer, Stance, StockCard,
@@ -1116,6 +1118,7 @@ pub(crate) mod test_support {
                     struck_through: Some((SmolStr::new("hull"), SmolStr::new("rear"))),
                 },
             ],
+            ..Default::default()
         }
     }
 

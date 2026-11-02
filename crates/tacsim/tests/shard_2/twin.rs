@@ -1165,28 +1165,37 @@ fn hold_to_the_record(lines: &[&String], what: &str) {
 /// 3): the road's corridor is version 2's ground, but the pool's flanks drive
 /// and see over the new hills, so match ends and shot counts move a few per
 /// cent while every winner, the 14–1 split and `first_divergence_ms` stand.
+/// **Doc 36 cut GC.2 re-records it, the programme's one kernel rebless** (doc
+/// 36 §10): the pool's units are content-backed, so a survivable hit may now
+/// jam or damage a part (the shipped chances), and a wreck is cover in the
+/// fire and sensor traces. Match ends move by up to 43 s, thinks 10,281 →
+/// 10,603, shots and wrecks a few per cent; every winner, the 14–1 split and
+/// `first_divergence_ms` stand, and nothing is `unlawful`. Two divergence
+/// counters leave nought: `line` 0 → 28 and `no_line` 0 → 31 — the kernel's
+/// fire line now finds a wreck the mind's `line_to` (terrain alone, doc 36
+/// §10's follow-up) cannot see.
 const M4_5_POOLED_RECORD: [&str; 21] = [
-    "twin_match: seed=2350 end=elimination_red t_ms=170250",
-    "twin_match: seed=2351 end=elimination_red t_ms=192500",
+    "twin_match: seed=2350 end=elimination_red t_ms=176250",
+    "twin_match: seed=2351 end=elimination_red t_ms=235250",
     "twin_match: seed=2352 end=elimination_red t_ms=170000",
-    "twin_match: seed=2353 end=elimination_red t_ms=181000",
-    "twin_match: seed=2354 end=elimination_red t_ms=205750",
-    "twin_match: seed=2355 end=elimination_red t_ms=175500",
-    "twin_match: seed=2356 end=elimination_red t_ms=175750",
-    "twin_match: seed=2357 end=elimination_red t_ms=175750",
+    "twin_match: seed=2353 end=elimination_red t_ms=179000",
+    "twin_match: seed=2354 end=elimination_red t_ms=211750",
+    "twin_match: seed=2355 end=elimination_red t_ms=197250",
+    "twin_match: seed=2356 end=elimination_red t_ms=190750",
+    "twin_match: seed=2357 end=elimination_red t_ms=186000",
     "twin_match: seed=2358 end=elimination_red t_ms=181000",
-    "twin_match: seed=2359 end=elimination_red t_ms=175000",
+    "twin_match: seed=2359 end=elimination_red t_ms=194500",
     "twin_match: seed=2360 end=elimination_blue t_ms=208750",
     "twin_match: seed=2361 end=elimination_red t_ms=193000",
-    "twin_match: seed=2362 end=elimination_red t_ms=169000",
+    "twin_match: seed=2362 end=elimination_red t_ms=175000",
     "twin_match: seed=2363 end=elimination_red t_ms=176000",
     "twin_match: seed=2364 end=elimination_red t_ms=174750",
     "twin_pooled: n=15 red_wins=14 blue_wins=1 draws=0",
-    "twin_divergences: tiebreak=79 line=0 reads_dead=0 landing=10281 no_line=0 fan=11 order_end=0 deg_round=0 fallback=0 cond_fire=2395 cond_stale=12 unwarranted=0 unlawful=0 floor_held=0 slot_parallel=396 first_divergence_ms=101377",
-    "twin_divergence_basis: thinks=10281 ordered_thinks=0 (order_end and deg_round read only under an order; the pool orders nothing)",
-    "twin_gate_b: side=red shots=1549 shots_per_min=34.119 time_to_first_shot_ms=114627 first_shots=15 states_at_end=[startup=0,patrol=4,approach=0,engage=20,withdraw=0,disabled=6] wrecked=6 cond_shots=1492 parallel=249",
-    "twin_gate_b: side=blue shots=940 shots_per_min=20.705 time_to_first_shot_ms=114508 first_shots=15 states_at_end=[startup=0,patrol=0,approach=0,engage=10,withdraw=0,disabled=20] wrecked=20 cond_shots=903 parallel=147",
-    "twin_gate_b_pool: path_queries=608 corner_refusals=0",
+    "twin_divergences: tiebreak=93 line=28 reads_dead=0 landing=10603 no_line=31 fan=11 order_end=0 deg_round=0 fallback=0 cond_fire=2512 cond_stale=13 unwarranted=0 unlawful=0 floor_held=0 slot_parallel=408 first_divergence_ms=101377",
+    "twin_divergence_basis: thinks=10603 ordered_thinks=0 (order_end and deg_round read only under an order; the pool orders nothing)",
+    "twin_gate_b: side=red shots=1639 shots_per_min=34.514 time_to_first_shot_ms=114627 first_shots=15 states_at_end=[startup=0,patrol=7,approach=0,engage=19,withdraw=0,disabled=4] wrecked=4 cond_shots=1577 parallel=258",
+    "twin_gate_b: side=blue shots=976 shots_per_min=20.553 time_to_first_shot_ms=114508 first_shots=15 states_at_end=[startup=0,patrol=1,approach=0,engage=10,withdraw=0,disabled=19] wrecked=19 cond_shots=935 parallel=150",
+    "twin_gate_b_pool: path_queries=627 corner_refusals=0",
 ];
 
 /// **The stock pool, pinned to its record** (17b cut M4.5; until then the
@@ -1758,15 +1767,23 @@ impl Coverage {
 /// 10,008 / 273 and [`POOLED_MATCHES_WITH_STAND_IN`] 12 → 11, `mixed`
 /// 12,492 / 310 → 13,220 / 502 — with no divergence on any lane. `lance`
 /// fights on its own authored field and is unmoved.
+///
+/// **Doc 36 cut GC.2's re-bless of all three** (the programme's one kernel
+/// rebless, doc 36 §10): content-backed hulls now jam and damage parts on
+/// survivable hits, and wrecks are cover, so the fights move — `pooled`
+/// 10,008 / 273 → 10,295 / 308, `mixed` 13,220 / 502 → 13,230 / 502, `lance`
+/// 6,001 / 164 → 7,157 / 130, and [`POOLED_MATCHES_WITH_STAND_IN`] 11 → 12 —
+/// with no divergence on any lane.
 const COVERAGE: [(&str, (usize, usize)); 3] = [
-    ("pooled", (10_008, 273)),
-    ("mixed", (13_220, 502)),
-    ("lance", (6_001, 164)),
+    ("pooled", (10_295, 308)),
+    ("mixed", (13_230, 502)),
+    ("lance", (7_157, 130)),
 ];
 
 /// **The pooled lane's matches with a stand-in think** (17b cut M3.6; the
 /// reason at [`COVERAGE`]): the matches whose record line may move.
-const POOLED_MATCHES_WITH_STAND_IN: usize = 11;
+/// Doc 36 cut GC.2: 11 → 12, with the re-bless of [`COVERAGE`].
+const POOLED_MATCHES_WITH_STAND_IN: usize = 12;
 
 /// **Gate A on unarmed hulls, under fire — and since 17b cut M2.6 on the
 /// armed hulls beside them** (17b cuts M2.5 and M2.6; doc 17 §17 "Gate A",

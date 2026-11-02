@@ -336,6 +336,60 @@ impl ReplaySession {
     pub fn advance_substep(&mut self) -> Result<ReplayProgress, TapeError> {
         self.advance(1)
     }
+    /// **One slice of the pulse in flight**: `false` while it runs on, `true`
+    /// once it finished and was compared against `recorded`. Its own frame
+    /// (`#[inline(never)]`) so the arena it moves is never a temporary of
+    /// [`Self::advance`]'s loop: doc 36 cut GC.2's 16 bytes on the arena's
+    /// clock carried that frame past the M7 stack bound.
+    #[inline(never)]
+    fn slice_pulse(
+        &mut self,
+        mut pulse: crate::arena::step::OwnedPulse,
+        recorded: &TapeEvent,
+    ) -> Result<bool, TapeError> {
+        let slice = pulse.advance();
+        self.state.at_ms = slice.at_ms;
+        if !slice.done {
+            self.state.pulse = Some(pulse);
+            return Ok(false);
+        }
+        let (arena, output) = match pulse.finish() {
+            Ok(done) => done,
+            Err(pulse) => {
+                self.state.pulse = Some(pulse);
+                return Err(incomplete("pulse completion unavailable"));
+            }
+        };
+        self.state.arena = Some(arena);
+        self.compare_pulse(recorded, &output)?;
+        Ok(true)
+    }
+
+    /// **Open the recorded pulse** over the ready arena, its cards staged —
+    /// out of [`Self::advance`]'s frame for the reason [`Self::slice_pulse`]
+    /// gives.
+    #[inline(never)]
+    fn open_pulse(
+        &mut self,
+        wall: i64,
+        controls: &[crate::arena::intents::Control],
+        intents: &[crate::arena::intents::Intent],
+        cards: &[crate::arena::input_tape::TapeCard],
+    ) -> Result<(), TapeError> {
+        let mut arena = self
+            .state
+            .arena
+            .take()
+            .ok_or_else(|| incomplete("ready replay arena unavailable"))?;
+        for card in cards {
+            arena.stage_card(card.unit, card.change.clone());
+        }
+        self.state.pulse = Some(crate::arena::step::OwnedPulse::new(
+            arena, wall, controls, intents,
+        ));
+        Ok(())
+    }
+
     /// Bounded scheduler slices, not recorded pulses. Each slice applies at most
     /// one captured native substep or one non-time phase. A custom larger native
     /// substep delays fairness by its own validated bound; it is never split.
@@ -353,22 +407,10 @@ impl ReplaySession {
                 .get(self.state.event)
                 .cloned()
                 .ok_or_else(|| incomplete("replay event cursor is outside the tape"))?;
-            if let Some(mut pulse) = self.state.pulse.take() {
-                let slice = pulse.advance();
-                self.state.at_ms = slice.at_ms;
-                if !slice.done {
-                    self.state.pulse = Some(pulse);
+            if let Some(pulse) = self.state.pulse.take() {
+                if !self.slice_pulse(pulse, &recorded)? {
                     continue;
                 }
-                let (arena, output) = match pulse.finish() {
-                    Ok(done) => done,
-                    Err(pulse) => {
-                        self.state.pulse = Some(pulse);
-                        return Err(incomplete("pulse completion unavailable"));
-                    }
-                };
-                self.state.arena = Some(arena);
-                self.compare_pulse(&recorded, &output)?;
             } else {
                 self.state.last_thinks.clear();
                 if let TapeEvent::Pulse {
@@ -379,17 +421,7 @@ impl ReplaySession {
                     ..
                 } = &recorded
                 {
-                    let mut arena = self
-                        .state
-                        .arena
-                        .take()
-                        .ok_or_else(|| incomplete("ready replay arena unavailable"))?;
-                    for card in cards {
-                        arena.stage_card(card.unit, card.change.clone());
-                    }
-                    self.state.pulse = Some(crate::arena::step::OwnedPulse::new(
-                        arena, *wall, controls, intents,
-                    ));
+                    self.open_pulse(*wall, controls, intents, cards)?;
                     continue;
                 }
                 match &recorded {

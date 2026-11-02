@@ -246,6 +246,37 @@ pub struct UnitProfile {
     pub bands: Vec<BandProfile>,
     /// The sections, in authored order.
     pub sections: Vec<SectionProfile>,
+    /// **What a survivable hit may do to a part** (doc 36 cut GC.2, Q-36-38): the
+    /// content's chances, per mille. None for a profile built by hand, which is
+    /// every fixture's, so a hit on one jams nothing.
+    #[serde(default, skip_serializing_if = "ComponentHits::is_none")]
+    pub component_hits: ComponentHits,
+}
+
+/// **The chances a survivable hit jams or damages one part of the section it
+/// struck** (doc 36 cut GC.2, Q-36-38), per mille, taken once a round that
+/// reached the section's internals without destroying it: one draw
+/// (`component:<shot_seq>`) below `jam_permille` jams a part, below
+/// `jam_permille + damage_permille` damages one, and otherwise nothing.
+/// Provisional, authored per unit in the content
+/// ([`crate::definitions::unit::UnitSpec::component_hits`]), with
+/// [`crate::definitions::unit::COMPONENT_HITS`] for a unit that names none.
+#[derive(Clone, Copy, Debug, Default, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(deny_unknown_fields)]
+pub struct ComponentHits {
+    /// The chance a part jams, per mille.
+    pub jam_permille: u16,
+    /// The chance a part is damaged, per mille.
+    pub damage_permille: u16,
+}
+
+impl ComponentHits {
+    /// Whether a hit can do nothing to a part — a `serde` predicate, so a
+    /// profile with no chances serialises as one written before the cut.
+    #[must_use]
+    pub const fn is_none(&self) -> bool {
+        self.jam_permille == 0 && self.damage_permille == 0
+    }
 }
 
 impl UnitProfile {
