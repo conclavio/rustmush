@@ -125,6 +125,7 @@ pub fn in_space_vocabulary(line: &str) -> bool {
             | "+helm/linkdead"
             | "+helm/coolant"
             | "+helm/repair"
+            | "+helm/refit"
             | "+tac"
             | "+tac/pdc"
             | "+tac/laser"
