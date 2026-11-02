@@ -21,11 +21,13 @@ import {
   LOOK_MDEG_PER_S,
   nextLock,
   nextPictureKind,
+  nextSpaceCamera,
   orderPrefill,
   pickCanvasContact,
   pictureCommand,
   pictureKey,
   predictedOffsetCm,
+  spacePictureKey,
   speedLine,
   speedOutstanding,
   speedStep,
@@ -285,5 +287,77 @@ describe("the keyframes the picture is drawn from here (doc 21 cut G.3b)", () =>
     expect(canvasClickHeadingDeg("iso25d", 0.8, 0.5)).toBe(90);
     expect(canvasClickHeadingDeg("iso25d", 0.5, 0.5)).toBeNull();
     expect(canvasClickHeadingDeg("cockpit", 0.8, 0.5)).toBeNull();
+  });
+
+  it("cycles space cameras and maps non-colliding 6-DOF docking and space bridge keys (SF.18, D-35-16)", () => {
+    expect(nextSpaceCamera("holotank")).toBe("space_cockpit");
+    expect(nextSpaceCamera("space_cockpit")).toBe("docking");
+    expect(nextSpaceCamera("docking")).toBe("holotank");
+
+    // 6-DOF docking keys match `crates/mush-net-ssh/src/tui/pixel.rs` and leave digits 0..9 free.
+    expect(spacePictureKey("w", "docking")).toEqual({ kind: "dockOrder", cmd: "DOCK TRANS UP" });
+    expect(spacePictureKey("s", "docking")).toEqual({ kind: "dockOrder", cmd: "DOCK TRANS DOWN" });
+    expect(spacePictureKey("a", "docking")).toEqual({ kind: "dockOrder", cmd: "DOCK TRANS LEFT" });
+    expect(spacePictureKey("d", "docking")).toEqual({ kind: "dockOrder", cmd: "DOCK TRANS RIGHT" });
+    expect(spacePictureKey("ArrowUp", "docking")).toEqual({
+      kind: "dockOrder",
+      cmd: "DOCK PITCH UP",
+    });
+    expect(spacePictureKey("ArrowDown", "docking")).toEqual({
+      kind: "dockOrder",
+      cmd: "DOCK PITCH DOWN",
+    });
+    expect(spacePictureKey("ArrowLeft", "docking")).toEqual({
+      kind: "dockOrder",
+      cmd: "DOCK YAW LEFT",
+    });
+    expect(spacePictureKey("ArrowRight", "docking")).toEqual({
+      kind: "dockOrder",
+      cmd: "DOCK YAW RIGHT",
+    });
+    expect(spacePictureKey("q", "docking")).toEqual({ kind: "dockOrder", cmd: "DOCK ROLL CCW" });
+    expect(spacePictureKey("e", "docking")).toEqual({ kind: "dockOrder", cmd: "DOCK ROLL CW" });
+    expect(spacePictureKey("r", "docking")).toEqual({
+      kind: "dockOrder",
+      cmd: "DOCK CLOSURE FORWARD",
+    });
+    expect(spacePictureKey("f", "docking")).toEqual({
+      kind: "dockOrder",
+      cmd: "DOCK CLOSURE REVERSE",
+    });
+    expect(spacePictureKey("x", "docking")).toEqual({
+      kind: "dockOrder",
+      cmd: "DOCK DAMPENERS TOGGLE",
+    });
+    expect(spacePictureKey("v", "docking")).toEqual({ kind: "spaceView" });
+    expect(spacePictureKey("0", "docking")).toBeNull();
+    expect(spacePictureKey("9", "docking")).toBeNull();
+
+    // Holo-Tank orbit & Space Canopy helm keys.
+    expect(spacePictureKey("a", "holotank")).toEqual({
+      kind: "holotankOrbit",
+      deltaMdeg: -15_000,
+    });
+    expect(spacePictureKey("d", "holotank")).toEqual({
+      kind: "holotankOrbit",
+      deltaMdeg: 15_000,
+    });
+    expect(spacePictureKey("w", "space_cockpit")).toEqual({
+      kind: "spaceHelm",
+      cmd: "+helm/burn 10 0 0",
+    });
+    expect(spacePictureKey("g", "space_cockpit")).toEqual({
+      kind: "spaceHelm",
+      cmd: "+tac/decoy",
+    });
+
+    // PictureStore space feed observers auto-select spaceMode.
+    const store = new PictureStore();
+    expect(store.hasSpaceFeeds).toBe(false);
+    store.observeSpaceHolotank({ ship_id: "ship.1" });
+    expect(store.hasSpaceFeeds).toBe(true);
+    expect(store.spaceMode).toBe("holotank");
+    store.observeSpaceDocking({ session_id: "dock.ship.1" });
+    expect(store.spaceMode).toBe("docking");
   });
 });

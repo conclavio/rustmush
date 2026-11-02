@@ -490,3 +490,166 @@ export function canvasClickHeadingDeg(
   const deg = Math.round((Math.atan2(east, north) * 180) / Math.PI);
   return ((deg % 360) + 360) % 360;
 }
+
+// -- Space Bridge & Out-of-Time-Loop 6-DOF Docking (`doc 35` cuts SF.7, SF.8, SF.18) --
+
+/** Panel feed IDs for 3D spaceflight (`crates/tacsim/src/space/commands.rs`). */
+export const SPACE_HOLOTANK_FEED = "space.holotank";
+export const SPACE_COCKPIT_FEED = "space.cockpit";
+export const SPACE_DOCKING_FEED = "space.docking";
+
+/** Space camera mode rendered by `mush-pixel-wasm` (`KIND_HOLOTANK`, `KIND_SPACE_COCKPIT`, `KIND_DOCKING`). */
+export type SpaceCameraMode = "holotank" | "space_cockpit" | "docking";
+
+/** Cycle to the next space camera (`holotank` → `space_cockpit` → `docking` → `holotank`). */
+export function nextSpaceCamera(mode: SpaceCameraMode): SpaceCameraMode {
+  switch (mode) {
+    case "holotank":
+      return "space_cockpit";
+    case "space_cockpit":
+      return "docking";
+    case "docking":
+      return "holotank";
+  }
+}
+
+/** What one key does while a space camera (`holotank`, `space_cockpit`, or `docking`) is active (`SF.18`). */
+export type SpacePictureKey =
+  /** Cycle the active space view (`holotank` → `space_cockpit` → `docking`). */
+  | { kind: "spaceView" }
+  /** Rotate the 3D Holo-Tank azimuth by `deltaMdeg` (`±15_000` mdeg). */
+  | { kind: "holotankOrbit"; deltaMdeg: number }
+  /** Send an out-of-time-loop 6-DOF docking order (`D-35-16`). */
+  | { kind: "dockOrder"; cmd: string }
+  /** Send a space bridge helm/tactical order (`+helm/...`, `+tac/...`). */
+  | { kind: "spaceHelm"; cmd: string }
+  /** Swing the canopy look (`-1` left, `1` right). */
+  | { kind: "look"; dir: -1 | 1 }
+  /** Centre the look (`0` mdeg). */
+  | { kind: "centre" }
+  /** Step camera zoom (`-1` out, `1` in). */
+  | { kind: "zoom"; dir: -1 | 1 };
+
+/**
+ * Map a keyboard key to its space camera action (`doc 35` cut `SF.18`, `D-35-16`),
+ * matching `crates/mush-net-ssh/src/tui/pixel.rs`.
+ *
+ * Digits `0`–`9` return `null` so global screen switching (`D-35-16`) is preserved.
+ */
+export function spacePictureKey(key: string, mode: SpaceCameraMode): SpacePictureKey | null {
+  if (key === "v" || key === "V") {
+    return { kind: "spaceView" };
+  }
+  if (key === "+" || key === "=") {
+    return { kind: "zoom", dir: 1 };
+  }
+  if (key === "-" || key === "_") {
+    return { kind: "zoom", dir: -1 };
+  }
+  if (mode === "docking") {
+    switch (key) {
+      case "w":
+      case "W":
+        return { kind: "dockOrder", cmd: "DOCK TRANS UP" };
+      case "s":
+      case "S":
+        return { kind: "dockOrder", cmd: "DOCK TRANS DOWN" };
+      case "a":
+      case "A":
+        return { kind: "dockOrder", cmd: "DOCK TRANS LEFT" };
+      case "d":
+      case "D":
+        return { kind: "dockOrder", cmd: "DOCK TRANS RIGHT" };
+      case "ArrowUp":
+        return { kind: "dockOrder", cmd: "DOCK PITCH UP" };
+      case "ArrowDown":
+        return { kind: "dockOrder", cmd: "DOCK PITCH DOWN" };
+      case "ArrowLeft":
+        return { kind: "dockOrder", cmd: "DOCK YAW LEFT" };
+      case "ArrowRight":
+        return { kind: "dockOrder", cmd: "DOCK YAW RIGHT" };
+      case "q":
+      case "Q":
+        return { kind: "dockOrder", cmd: "DOCK ROLL CCW" };
+      case "e":
+      case "E":
+        return { kind: "dockOrder", cmd: "DOCK ROLL CW" };
+      case "r":
+      case "R":
+        return { kind: "dockOrder", cmd: "DOCK CLOSURE FORWARD" };
+      case "f":
+      case "F":
+        return { kind: "dockOrder", cmd: "DOCK CLOSURE REVERSE" };
+      case "x":
+      case "X":
+        return { kind: "dockOrder", cmd: "DOCK DAMPENERS TOGGLE" };
+      default:
+        return null;
+    }
+  }
+  if (mode === "holotank") {
+    switch (key) {
+      case ",":
+      case "a":
+      case "A":
+      case "ArrowLeft":
+        return { kind: "holotankOrbit", deltaMdeg: -15_000 };
+      case ".":
+      case "d":
+      case "D":
+      case "ArrowRight":
+        return { kind: "holotankOrbit", deltaMdeg: 15_000 };
+      case "c":
+      case "C":
+        return { kind: "centre" };
+      default:
+        return null;
+    }
+  }
+  // `space_cockpit`
+  switch (key) {
+    case "ArrowLeft":
+    case "a":
+    case "A":
+      return { kind: "spaceHelm", cmd: "+helm/roll -15 0 0" };
+    case "ArrowRight":
+    case "d":
+    case "D":
+      return { kind: "spaceHelm", cmd: "+helm/roll 15 0 0" };
+    case "ArrowUp":
+      return { kind: "spaceHelm", cmd: "+helm/roll 0 15 0" };
+    case "ArrowDown":
+      return { kind: "spaceHelm", cmd: "+helm/roll 0 -15 0" };
+    case "w":
+    case "W":
+      return { kind: "spaceHelm", cmd: "+helm/burn 10 0 0" };
+    case "s":
+    case "S":
+      return { kind: "spaceHelm", cmd: "+helm/burn -10 0 0" };
+    case "x":
+    case "X":
+      return { kind: "spaceHelm", cmd: "+helm/burn 0 0 0" };
+    case ",":
+    case "q":
+    case "Q":
+      return { kind: "look", dir: -1 };
+    case ".":
+    case "e":
+    case "E":
+      return { kind: "look", dir: 1 };
+    case "c":
+    case "C":
+      return { kind: "centre" };
+    case "f":
+    case "F":
+      return { kind: "spaceHelm", cmd: "+tac/pdc auto" };
+    case "g":
+    case "G":
+      return { kind: "spaceHelm", cmd: "+tac/decoy" };
+    case "t":
+    case "T":
+      return { kind: "spaceHelm", cmd: "+tac/scan" };
+    default:
+      return null;
+  }
+}

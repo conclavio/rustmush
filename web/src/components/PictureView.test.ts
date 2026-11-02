@@ -35,7 +35,14 @@ import {
   type PictureKind,
 } from "$lib/picture";
 import { LOCAL_FRAME_MS } from "$lib/pixel/local";
-import { KIND_COCKPIT, KIND_ISO25D, KIND_OVERHEAD } from "$lib/pixel/wasm";
+import {
+  KIND_COCKPIT,
+  KIND_DOCKING,
+  KIND_HOLOTANK,
+  KIND_ISO25D,
+  KIND_OVERHEAD,
+  KIND_SPACE_COCKPIT,
+} from "$lib/pixel/wasm";
 import { PictureStore } from "$lib/stores/picture.svelte";
 
 /** The engine's module, faked: every render succeeds and hashes by camera kind
@@ -53,7 +60,18 @@ const fake = vi.hoisted(() => {
       },
       feed: () => true,
       render: () => true,
-      hash: () => (kind === 2 ? "overhead frame" : kind === 6 ? "iso25d frame" : "cockpit frame"),
+      hash: () =>
+        kind === 2
+          ? "overhead frame"
+          : kind === 6
+            ? "iso25d frame"
+            : kind === 7
+              ? "holotank frame"
+              : kind === 8
+                ? "space cockpit frame"
+                : kind === 9
+                  ? "docking frame"
+                  : "cockpit frame",
       image: () => ({ width: 1, height: 1, data: new Uint8ClampedArray(4) }),
       pixels: () => new Uint8Array(0),
       reset: () => {},
@@ -698,6 +716,53 @@ describe("PictureView mounted, drawn here: a fresh canvas is painted", () => {
     expect(screen.getByLabelText("cockpit glass overlay")).toBeTruthy();
     expect(localStorage.getItem("rustmush.cockpit_glass")).toBe("on");
     localStorage.removeItem("rustmush.cockpit_glass");
+    unmount();
+  });
+
+  it("renders space camera views (Holo-Tank, Space Canopy, 6-DOF Dock) and dispatches 6-DOF docking orders (SF.18)", async () => {
+    const setKind = vi.spyOn(fake.module, "setKind");
+    const { picture, helm, frame, unmount } = mount(fixtureFrame());
+    await settle();
+    picture.observeSpaceHolotank({ ship_id: "ship.1", contacts: [] });
+    await tick();
+    await frameTime();
+
+    expect(picture.spaceMode).toBe("holotank");
+    expect(setKind).toHaveBeenLastCalledWith(KIND_HOLOTANK);
+
+    // Cycle space views with `v`: holotank -> space_cockpit -> docking.
+    await fireEvent.keyDown(frame, { key: "v" });
+    await tick();
+    await frameTime();
+    expect(picture.spaceMode).toBe("space_cockpit");
+    expect(setKind).toHaveBeenLastCalledWith(KIND_SPACE_COCKPIT);
+
+    await fireEvent.keyDown(frame, { key: "v" });
+    await tick();
+    await frameTime();
+    expect(picture.spaceMode).toBe("docking");
+    expect(setKind).toHaveBeenLastCalledWith(KIND_DOCKING);
+
+    // Non-colliding 6-DOF docking keyboard orders and toolbar buttons (`D-35-16`).
+    await fireEvent.keyDown(frame, { key: "w" });
+    await fireEvent.keyDown(frame, { key: "ArrowUp" });
+    await fireEvent.keyDown(frame, { key: "q" });
+    await fireEvent.keyDown(frame, { key: "r" });
+    await fireEvent.keyDown(frame, { key: "x" });
+    expect(helm.mock.calls).toEqual([
+      ["DOCK TRANS UP"],
+      ["DOCK PITCH UP"],
+      ["DOCK ROLL CCW"],
+      ["DOCK CLOSURE FORWARD"],
+      ["DOCK DAMPENERS TOGGLE"],
+    ]);
+
+    const dampBtn = screen.getByRole("button", { name: "Dampeners (X)" });
+    await fireEvent.click(dampBtn);
+    expect(helm).toHaveBeenLastCalledWith("DOCK DAMPENERS TOGGLE");
+
+    await fireEvent.click(screen.getByRole("button", { name: "Holo-Tank" }));
+    expect(picture.spaceMode).toBe("holotank");
     unmount();
   });
 });
