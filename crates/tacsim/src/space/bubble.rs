@@ -1768,10 +1768,7 @@ impl LocalSpaceBubble {
                 let _ = self.set_emcon(ship_id, *posture);
                 Vec::new()
             }
-            BubbleInputCommand::SetLockedTarget {
-                ship_id,
-                target_id,
-            } => {
+            BubbleInputCommand::SetLockedTarget { ship_id, target_id } => {
                 let _ = self.set_locked_target(ship_id, target_id.clone());
                 Vec::new()
             }

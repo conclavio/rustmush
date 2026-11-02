@@ -35,9 +35,7 @@ use mush_propagation::{
     DetectionOutcome, Geometry, Interference, Medium, PropagationContext, resolve_detection,
 };
 use mush_proto::{OutputEvent, PanelFrameKind};
-use mush_sim::tick::{
-    MAX_ORDER_SCALAR, MIN_ORDER_SCALAR, OrderChannel, OrderValue, StandingOrder,
-};
+use mush_sim::tick::{MAX_ORDER_SCALAR, MIN_ORDER_SCALAR, OrderChannel, OrderValue, StandingOrder};
 use mush_sim::{DomainId, JourneyBook, SpatialState, StationId};
 
 use super::bubble::{
@@ -260,14 +258,6 @@ pub fn seat_role_for_actor(w: &World, hull: ObjId, actor: ObjId) -> Option<Bridg
             }
         }
     }
-    for grant in w.command_subjects_of(actor) {
-        if grant.subject == hull
-            && let Some(role) = BridgeRole::parse(grant.station.as_str())
-                .or_else(|| BridgeRole::parse(grant.relation.as_str()))
-        {
-            return Some(role);
-        }
-    }
     if is_hull_captain(w, hull, actor) {
         let command_taken_by_other = w
             .module_state::<SpatialState>()
@@ -289,23 +279,15 @@ fn require_aboard_and_seat(
 ) -> Result<(ObjId, BridgeRole), CmdError> {
     let hull =
         hull_aboard_for_actor(ctx.w, ctx.actor).ok_or_else(|| CmdError::msg(NOT_ABOARD_SHIP))?;
-    let role =
-        seat_role_for_actor(ctx.w, hull, ctx.actor).ok_or_else(|| CmdError::msg(NO_BRIDGE_STATION))?;
-    if let Some(channel) = required_channel {
-        let has_via_grant = ctx
-            .w
-            .command_subjects_of(ctx.actor)
-            .iter()
-            .any(|g| {
-                g.subject == hull
-                    && ChannelId::new(channel).is_some_and(|cid| g.channels.contains(&cid))
-            });
-        if !has_via_grant && !role.grants_channel(channel) {
-            return Err(CmdError::msg(format!(
-                "Your bridge station ({}) does not control the {channel} channel.",
-                role.station_token()
-            )));
-        }
+    let role = seat_role_for_actor(ctx.w, hull, ctx.actor)
+        .ok_or_else(|| CmdError::msg(NO_BRIDGE_STATION))?;
+    if let Some(channel) = required_channel
+        && !role.grants_channel(channel)
+    {
+        return Err(CmdError::msg(format!(
+            "Your bridge station ({}) does not control the {channel} channel.",
+            role.station_token()
+        )));
     }
     Ok((hull, role))
 }
@@ -655,7 +637,11 @@ fn helm_status(ctx: &mut Ctx<'_>) -> Result<(), CmdError> {
     {
         let mut seat_parts = Vec::new();
         for (sid, seat) in &assignments.seats {
-            seat_parts.push(format!("{}: {}", sid.as_str(), display_name(ctx.w, seat.actor)));
+            seat_parts.push(format!(
+                "{}: {}",
+                sid.as_str(),
+                display_name(ctx.w, seat.actor)
+            ));
         }
         lines.push(format!("  Bridge roster: {}.", seat_parts.join(", ")));
     }
@@ -707,6 +693,81 @@ fn helm_status(ctx: &mut Ctx<'_>) -> Result<(), CmdError> {
     }
     push_space_panels(ctx, hull);
     Ok(())
+}
+
+fn resolve_crew_aboard_hull(
+    w: &World,
+    actor: ObjId,
+    hull: ObjId,
+    token: &str,
+) -> Result<ObjId, CmdError> {
+    let trimmed = token.trim().trim_start_matches('*').trim();
+    if let Some(id_str) = trimmed.strip_prefix('#')
+        && let Ok(raw_id) = id_str.parse::<u32>()
+    {
+        let candidate = ObjId(raw_id);
+        if hull_aboard_for_actor(w, candidate) == Some(hull) {
+            return Ok(candidate);
+        }
+        return Err(CmdError::msg(
+            "That person is not physically aboard this ship.",
+        ));
+    }
+
+    let mut rooms = BTreeSet::new();
+    if let Some(loc) = w.get(actor).and_then(|o| o.location) {
+        rooms.insert(loc);
+    }
+    rooms.insert(hull);
+    if let Some(view) = crate::port::ship::hull_view(w, hull)
+        && let Some(airlock) = view.airlock()
+    {
+        rooms.insert(airlock);
+    }
+    if let Some(sim) = w.module_state::<SpatialState>() {
+        for (room_id, space) in &sim.spaces {
+            if matches!(space.anchor, mush_sim::SpaceAnchor::MovingObject { host } if host == hull)
+            {
+                rooms.insert(*room_id);
+            }
+        }
+    }
+
+    let mut candidates = BTreeSet::new();
+    for room in rooms {
+        if let Some(obj) = w.get(room) {
+            for &item in &obj.contents {
+                candidates.insert(item);
+                if let Some(sub) = w.get(item) {
+                    for &nested in &sub.contents {
+                        candidates.insert(nested);
+                    }
+                }
+            }
+        }
+    }
+
+    let lower = trimmed.to_ascii_lowercase();
+    for candidate in &candidates {
+        if hull_aboard_for_actor(w, *candidate) == Some(hull)
+            && w.get(*candidate)
+                .is_some_and(|o| o.name.eq_ignore_ascii_case(trimmed))
+        {
+            return Ok(*candidate);
+        }
+    }
+    for candidate in &candidates {
+        if hull_aboard_for_actor(w, *candidate) == Some(hull)
+            && w.get(*candidate)
+                .is_some_and(|o| o.name.to_ascii_lowercase().starts_with(&lower))
+        {
+            return Ok(*candidate);
+        }
+    }
+
+    Err(CmdError::msg(
+        "That person is not physically aboard this ship.",
+    ))
 }
 
 fn helm_station(ctx: &mut Ctx<'_>) -> Result<(), CmdError> {
@@ -770,13 +831,8 @@ fn helm_station(ctx: &mut Ctx<'_>) -> Result<(), CmdError> {
 
     let assignee = match target_token {
         None | Some("me") | Some("self") => ctx.actor,
-        Some(who) => mush_core::match_object(ctx.w, ctx.actor, who)?,
+        Some(who) => resolve_crew_aboard_hull(ctx.w, ctx.actor, hull, who)?,
     };
-    if hull_aboard_for_actor(ctx.w, assignee) != Some(hull) {
-        return Err(CmdError::msg(
-            "That person is not physically aboard this ship.",
-        ));
-    }
 
     let station_id = StationId::new(role.station_token())
         .ok_or_else(|| CmdError::msg("Invalid station identifier."))?;
@@ -832,7 +888,9 @@ fn helm_heading(ctx: &mut Ctx<'_>) -> Result<(), CmdError> {
     let (hull, _) = require_aboard_and_seat(ctx, Some("movement"))?;
     let raw = ctx.args.raw().trim();
     if raw.is_empty() {
-        return Err(CmdError::msg("Usage: +helm/heading <yaw_deg>[,<pitch_deg>]"));
+        return Err(CmdError::msg(
+            "Usage: +helm/heading <yaw_deg>[,<pitch_deg>]",
+        ));
     }
     let parts: Vec<&str> = raw
         .split([',', ' '])
@@ -999,9 +1057,8 @@ fn helm_thrust(ctx: &mut Ctx<'_>) -> Result<(), CmdError> {
 fn helm_emcon(ctx: &mut Ctx<'_>) -> Result<(), CmdError> {
     let (hull, _) = require_aboard_and_seat(ctx, Some("sensors"))?;
     let raw = ctx.args.raw().trim();
-    let (level, posture) = parse_emcon_token(raw).ok_or_else(|| {
-        CmdError::msg("Usage: +helm/emcon <ghost|passive|standard|combat>")
-    })?;
+    let (level, posture) = parse_emcon_token(raw)
+        .ok_or_else(|| CmdError::msg("Usage: +helm/emcon <ghost|passive|standard|combat>"))?;
 
     let (domain, generation, tick) = domain_stamp_for_hull(ctx.w, hull);
     let order = record_hull_standing_order(
@@ -1078,7 +1135,9 @@ fn helm_guidance(ctx: &mut Ctx<'_>) -> Result<(), CmdError> {
         .parse()
         .map_err(|_| CmdError::msg("Usage: +helm/guidance <attitude_deg 0..359>"))?;
     if !(0..360).contains(&yaw_deg) {
-        return Err(CmdError::msg("Guidance attitude must be in 0..359 degrees."));
+        return Err(CmdError::msg(
+            "Guidance attitude must be in 0..359 degrees.",
+        ));
     }
 
     if let Some((ship_id, _, pitch_deg)) = active_carrier_attitude(ctx.w, hull) {
@@ -1527,9 +1586,7 @@ fn tac_pdc(ctx: &mut Ctx<'_>) -> Result<(), CmdError> {
             );
         }
         _ => {
-            return Err(CmdError::msg(
-                "Usage: +tac/pdc <auto|manual|point|offense>",
-            ));
+            return Err(CmdError::msg("Usage: +tac/pdc <auto|manual|point|offense>"));
         }
     }
     push_space_panels(ctx, hull);

@@ -3809,7 +3809,8 @@ fn gc7_munitions_are_bought_and_carried_and_the_tariff_quotes_a_known_repair() {
 ///    the gunner locks and fires `+tac/beam`.
 #[test]
 #[allow(clippy::too_many_lines)]
-fn sfr3_authoritative_helm_and_tac_enforce_aboard_seats_write_standing_orders_and_gate_propagation_detection() {
+fn sfr3_authoritative_helm_and_tac_enforce_aboard_seats_write_standing_orders_and_gate_propagation_detection()
+ {
     let mut rig = stocked_with(Roster {
         seed_lane: Some(lane_with_interdicted_kirkwood()),
         ..Roster::default()
@@ -3880,12 +3881,8 @@ fn sfr3_authoritative_helm_and_tac_enforce_aboard_seats_write_standing_orders_an
         grants.iter().any(|g| {
             g.subject == hull
                 && g.station.as_str() == "tactical"
-                && g.channels
-                    .iter()
-                    .any(|c| c.as_str() == "sensors")
-                && g.channels
-                    .iter()
-                    .any(|c| c.as_str() == "fire")
+                && g.channels.iter().any(|c| c.as_str() == "sensors")
+                && g.channels.iter().any(|c| c.as_str() == "fire")
         }),
         "mush-sim published ChannelGrant for gunner on tactical station: {grants:?}"
     );
@@ -3975,11 +3972,7 @@ fn sfr3_authoritative_helm_and_tac_enforce_aboard_seats_write_standing_orders_an
             .expect("SpaceBubbleBook");
         let active = book.active_for_hull_mut(hull).expect("active bubble");
         let id = active.interdictor_ship_id.clone();
-        let interdictor = active
-            .bubble
-            .ships
-            .get_mut(&id)
-            .expect("interdictor ship");
+        let interdictor = active.bubble.ships.get_mut(&id).expect("interdictor ship");
         interdictor.pos_m = [30_000, 0, 0];
         interdictor.emcon = tacsim::space::EmconPosture::Ghost;
         interdictor.thrust_mps2 = [0, 0, 0];
@@ -4076,4 +4069,3 @@ fn sfr3_authoritative_helm_and_tac_enforce_aboard_seats_write_standing_orders_an
         "SetLockedTarget and FireOffensiveLasers appended to BubbleInputTape"
     );
 }
-

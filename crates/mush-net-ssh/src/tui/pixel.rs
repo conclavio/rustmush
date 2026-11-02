@@ -3527,10 +3527,7 @@ mod tests {
         assert_eq!(v.key(Key::Char('z'), t0), KeyUse::Used);
         assert_eq!(v.key(Key::Char('x'), t0), KeyUse::Used);
         assert_eq!(v.key(Key::Char('c'), t0), KeyUse::Used);
-        assert_eq!(
-            v.take_orders(),
-            ["+tac/beam", "+tac/torp", "+tac/railgun"]
-        );
+        assert_eq!(v.take_orders(), ["+tac/beam", "+tac/torp", "+tac/railgun"]);
         // `v` cycles SpaceCockpit -> Docking -> Chart -> Holotank -> SpaceCockpit (`D-35-16`)
         assert_eq!(v.key(Key::Char('v'), t0), KeyUse::Used);
         assert_eq!(v.kind(), PictureKind::Docking);
