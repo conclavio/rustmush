@@ -47,6 +47,8 @@ mod field_director;
 mod field_gc2;
 #[path = "shard_1/field_gc3.rs"]
 mod field_gc3;
+#[path = "shard_1/field_gc4.rs"]
+mod field_gc4;
 #[path = "shard_1/field_host.rs"]
 mod field_host;
 #[path = "shard_1/field_raiders.rs"]

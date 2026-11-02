@@ -355,6 +355,9 @@ pub(crate) fn demote_units(
             left_ic: now,
         });
     }
+    // Doc 36 cut GC.4 (Q-36-20): every casualty the field carried as a tug's load stands at its
+    // tug's cell, indexed as it was.
+    crate::surface::tow::set_down(ctx, site, units, &mut left, side);
     Demoted { left, remains }
 }
 

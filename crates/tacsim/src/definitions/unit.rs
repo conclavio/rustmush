@@ -70,6 +70,10 @@ macro_rules! tactics_id {
 }
 
 /// The `schema` definition the unit's opaque rules blob is bound to.
+/// The largest stowage volume a unit may author, litres (doc 36 cut GC.4): a million cubic
+/// metres, past any hull a bay could take.
+pub const MAX_STOWAGE_VOLUME_L: u64 = 1_000_000_000;
+
 pub const UNIT_RULES_SCHEMA: &str = "tacsim.unit.rules";
 
 /// The `schema` definition a tracked mode's opaque rules blob is bound to.
@@ -934,6 +938,12 @@ pub struct UnitSpec {
     /// entries are bound into the unit definition; absence preserves old bytes.
     #[serde(default, skip_serializing_if = "BTreeMap::is_empty")]
     pub ground_stowage: BTreeMap<CanonicalId, crate::definitions::StowageDef>,
+    /// **The hull's stowage volume, litres** (doc 36 cut GC.4, Q-36-54): what it takes of a bay's
+    /// `si.volume_l` when it is stowed or loaded there. Authored where known; absent, it is
+    /// derived from the dry mass ([`crate::field_ops::stowage_volume_l_for_spec`]). Read by the
+    /// host's bay rules only, never by `bind()`, so declaring it moves no `DefinitionRef`.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub stowage_volume_l: Option<u64>,
     /// **What a survivable hit may do to a part** (doc 36 cut GC.2, Q-36-38), per mille, or
     /// `None` for [`COMPONENT_HITS`]. Read by the arena's profile at check-out only; absent it
     /// serialises nothing, so no `DefinitionRef` moves.
@@ -1310,6 +1320,18 @@ impl UnitSpec {
         self.check_mobility(entry)?;
         self.check_logistics(entry)?;
         self.check_ground_stowage(entry)?;
+        if self
+            .stowage_volume_l
+            .is_some_and(|litres| litres == 0 || litres > MAX_STOWAGE_VOLUME_L)
+        {
+            return Err(DefinitionError::value(
+                entry,
+                format!(
+                    "stowage_volume_l is 1 to {MAX_STOWAGE_VOLUME_L} litres; {} is not",
+                    self.stowage_volume_l.unwrap_or_default()
+                ),
+            ));
+        }
         if self.sensor_height_cm == 0 || self.sensor_height_cm > MAX_SENSOR_HEIGHT_CM {
             return Err(DefinitionError::value(
                 entry,

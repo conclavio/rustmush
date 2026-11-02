@@ -332,8 +332,12 @@ fn admit(ctx: &mut Ctx<'_>, site: &CanonicalId, record: &SiteRecord) -> Result<(
     // field left are admitted but never counted (Q-CF-26, Q-CF-45; doc 32 §15, the review's
     // CF-3a). A carrier counts: no ruling exempts it.
     // Doc 36 cut GC.1 (Q-36-44): a hull held out of the field is a wall, never an entrant.
+    // Doc 36 cut GC.4 (Q-36-20): a tow is admitted coupled — the casualty rides as its tug's
+    // load, never a kernel unit, and the tug enters at the tow rate.
+    let carried = crate::surface::tow::carried(record);
     let (held, units): (Vec<ObjId>, Vec<ObjId>) = parties::on_ground(ctx.w, domain)
         .into_iter()
+        .filter(|unit| !carried.contains_key(unit))
         .partition(|unit| held_out(ctx.w, *unit));
     let walled;
     let record = if held.is_empty() {
@@ -377,9 +381,14 @@ fn admit(ctx: &mut Ctx<'_>, site: &CanonicalId, record: &SiteRecord) -> Result<(
     let mut taken: std::collections::BTreeSet<(u16, u16)> = std::collections::BTreeSet::new();
     super::carrier::unstack(ctx, &definition.terrain, &others, &mut taken)?;
     let pads = super::carrier::pad_poses(ctx.w, site, &definition.terrain, &carriers, &mut taken)?;
-    let custody = custody(
+    let mut custody = custody(
         ctx, &field, &open.by, &entrants, &lettered, &rows, &pads, definition,
     )?;
+    for (tug, speed) in carried.values() {
+        if let Some(unit) = custody.units.iter_mut().find(|unit| unit.id == *tug) {
+            unit.mobility.max_speed_cms = unit.mobility.max_speed_cms.min((*speed).max(1));
+        }
+    }
     // (4) The check-out, all or nothing.
     let mark = mush_sim::deployed::DeployedMark::field(site.as_str(), field.ordinal);
     let mut out: Vec<ObjId> = Vec::new();

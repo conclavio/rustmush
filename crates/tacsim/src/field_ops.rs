@@ -13,7 +13,7 @@ use mush_org::PrincipalId;
 use mush_roll::commerce::ic_claims::IcCloseKind;
 pub use mush_tactics::field_ops::{
     AdjustedSalvageClaimDeadline, AtRiskRepairEntry, AttachTowRequest, AuthoritativeRecoveryRecord,
-    AuthorityHandoffRequest, BayCapacitySpec, BlackBoxFlightEntry, BlackBoxForensicReport,
+    AuthorityHandoffRequest, BayRoom, BlackBoxFlightEntry, BlackBoxForensicReport,
     CONTEST_WINDOW_AVAILABLE_REAL_SECS, ComponentCondition, ComponentProvenance, ConditionError,
     ContestGround, ContestSuccessReason, ContrabandReason, CustodyAction, CustodyTitleStatus,
     DEFAULT_MAX_ATTACH_DISTANCE_CM, DEFAULT_MAX_TENDER_SERVICE_DISTANCE_CM,
@@ -382,6 +382,22 @@ pub fn dry_mass_kg_for_spec(spec: &UnitSpec) -> u64 {
         }
     }
     points.saturating_mul(STRUCTURAL_POINT_MASS_KG).max(1)
+}
+
+/// **The provisional class density a hull's stowage volume is derived at**, kilograms per cubic
+/// metre (doc 36 cut GC.4; Q-36-54): a hull with no authored `stowage_volume_l` takes
+/// `dry mass ÷ 250 kg/m³`. Provisional, under the owner's rule of 2026-10-24.
+pub const STOWAGE_DENSITY_KG_M3: u64 = 250;
+
+/// **A hull's stowage volume, litres** (doc 36 cut GC.4; Q-36-54): its authored
+/// `stowage_volume_l`, else its dry mass at [`STOWAGE_DENSITY_KG_M3`], rounded up.
+#[must_use]
+pub fn stowage_volume_l_for_spec(spec: &UnitSpec) -> u64 {
+    spec.stowage_volume_l.unwrap_or_else(|| {
+        dry_mass_kg_for_spec(spec)
+            .saturating_mul(1_000)
+            .div_ceil(STOWAGE_DENSITY_KG_M3)
+    })
 }
 
 /// Extract the bow width (`width_cm`) and maximum horizontal silhouette height (`height_cm`)
@@ -1060,46 +1076,38 @@ mod tests {
         };
         book.advance_tow(op_id, 1, bay_pose, 5, 1_005)?;
 
-        let small_vehicle_bay = BayCapacitySpec {
-            max_units: 2,
-            current_units: 0,
-            max_mass_kg: 100_000,
-            current_mass_kg: 0,
-            max_volume_l: 20_000,
-            current_volume_l: 0,
-            max_width_cm: 500,
-            max_height_cm: 500,
+        // Q-36-54: the envelope is the stowage volume, read against the bay's free `si.volume_l`.
+        let small_vehicle_bay = BayRoom {
+            items_free: 2,
+            mass_free_kg: 100_000,
+            volume_free_l: 20_000,
         };
-        let dim_err = book.load_into_bay(LoadIntoBayRequest {
+        let biped_volume_l = stowage_volume_l_for_spec(&biped_spec);
+        let vol_err = book.load_into_bay(LoadIntoBayRequest {
             id: op_id,
             expected_revision: 2,
             carrier: ObjId(900),
             slot: SmolStr::new("vehicle_bay_small"),
             carrier_pose: bay_pose,
             max_load_distance_cm: DEFAULT_MAX_ATTACH_DISTANCE_CM,
-            bay_capacity: &small_vehicle_bay,
+            bay_room: small_vehicle_bay,
+            casualty_stowage_volume_l: 20_001,
             casualty_unit: &disabled_biped,
             at_ic: 1_008,
         });
         check!(matches!(
-            dim_err,
-            Err(RecoveryError::BayDimensionExceeded {
-                unit_width_cm: 520,
-                unit_height_cm: 1_100,
-                max_width_cm: 500,
-                max_height_cm: 500,
+            vol_err,
+            Err(RecoveryError::BayVolumeExceeded {
+                volume_l: 20_001,
+                free_l: 20_000,
             })
         ));
+        check!(biped_volume_l > 0);
 
-        let carrier_bay = BayCapacitySpec {
-            max_units: 2,
-            current_units: 0,
-            max_mass_kg: 100_000,
-            current_mass_kg: 0,
-            max_volume_l: 20_000,
-            current_volume_l: 0,
-            max_width_cm: 800,
-            max_height_cm: 1_500,
+        let carrier_bay = BayRoom {
+            items_free: 2,
+            mass_free_kg: 100_000,
+            volume_free_l: 400_000,
         };
         let loaded = book.load_into_bay(LoadIntoBayRequest {
             id: op_id,
@@ -1108,7 +1116,8 @@ mod tests {
             slot: SmolStr::new("mech_bay_alpha"),
             carrier_pose: bay_pose,
             max_load_distance_cm: DEFAULT_MAX_ATTACH_DISTANCE_CM,
-            bay_capacity: &carrier_bay,
+            bay_room: carrier_bay,
+            casualty_stowage_volume_l: 1_000,
             casualty_unit: &disabled_biped,
             at_ic: 1_010,
         })?;
@@ -1167,15 +1176,10 @@ mod tests {
             x_cm: 1_500,
             y_cm: 0,
         };
-        let carrier_bay = BayCapacitySpec {
-            max_units: 2,
-            current_units: 0,
-            max_mass_kg: 100_000,
-            current_mass_kg: 0,
-            max_volume_l: 20_000,
-            current_volume_l: 0,
-            max_width_cm: 800,
-            max_height_cm: 1_500,
+        let carrier_bay = BayRoom {
+            items_free: 2,
+            mass_free_kg: 100_000,
+            volume_free_l: 400_000,
         };
 
         // 1. Lawful landholder recovery on owned ground: rejects `BarePriorTitle` (`Q-R1`) and
@@ -1227,7 +1231,8 @@ mod tests {
             slot: SmolStr::new("mech_bay_1"),
             carrier_pose: bay_pose,
             max_load_distance_cm: DEFAULT_MAX_ATTACH_DISTANCE_CM,
-            bay_capacity: &carrier_bay,
+            bay_room: carrier_bay,
+            casualty_stowage_volume_l: 1_000,
             casualty_unit: &disabled_biped,
             at_ic: 1_010,
         })?;
@@ -1297,7 +1302,8 @@ mod tests {
             slot: SmolStr::new("pirate_bay"),
             carrier_pose: pose,
             max_load_distance_cm: DEFAULT_MAX_ATTACH_DISTANCE_CM,
-            bay_capacity: &carrier_bay,
+            bay_room: carrier_bay,
+            casualty_stowage_volume_l: 1_000,
             casualty_unit: &disabled_biped,
             at_ic: 2_010,
         })?;

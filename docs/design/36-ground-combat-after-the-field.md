@@ -2514,3 +2514,137 @@ Flank).
 - A carrier is never remains; its loss is a wreck.
 - A wrecked carrier's bay rigs stay in the bay, wrecked, not dropped to the ground.
 - The table's two refusal lines.
+
+## GC.4 as built (the tow, story a)
+
+Built 2026-11-02, stacked on GC.3's branch (`claude/gc3-remains`, PR #308). It covers Q-36-12,
+Q-36-13, Q-36-14, Q-36-15, Q-36-20, Q-36-21, Q-36-52's friendly half and Q-36-54. No kernel file
+changed and no practice hash moved: the coupled tug enters a field at a slower admitted speed,
+which is the host's admission, not a kernel rule. What the cut decided where the rulings left it
+open, for the owner to object to:
+
+**The acts** (Q-36-12, Q-36-13, Q-36-14; the new `surface/tow.rs`, one action
+`tacsim_surface_tow`).
+- *Three verbs on `+tv`*, first words only: `+tv/<n> tow [#unit|name] [go]`, `+tv/<n> release
+  [go]`, `+tv/<n> load [go]`. Every duty may use them: `detachment/sortie/surface.rs` no longer
+  refuses any duty (Q-36-14), so a recovery flight drives, tows and loads like any other.
+- *Inspect and attach are one act.* `tow`'s preview is the inspection (the casualty's tonnage,
+  state and the tow rate), and `go` files one timed act of `inspect_s + attach_s`. Separate
+  inspect and attach acts would have doubled the verbs for no player choice in between. Release
+  is instant. Load is timed by `load_s`. The defaults are 300, 600 and 900 IC seconds in
+  `[tacsim.recovery]`, provisional. They are read whatever that block's `enabled` says, since
+  they time the ground's acts and not the loaner provider.
+- *Reach*: a casualty or a wreck on the site's index within a cell, diagonals included
+  (`TOW_REACH_CM` 1,500). A unit must be indexed to be towed, so a hull disabled outside any field
+  (only a staff hand does that) is not towable until a field has indexed it.
+- *The library's rules decide*: the attach is `RecoveryBook::attach` (2× tonnage, one tow a tug
+  and one tug a casualty, the first attachment winning), probed at the start and applied at the
+  landing. GC.3's carrier floor (`field::carrier::refuse_tow`) gets its first production caller
+  here. Every tug is `TowRigProfile::Standard`: no design is a recovery rig yet.
+- *Interruption*: an attach or a load due on a promoted site lands as interrupted, and a release
+  interrupts either.
+- *A tug in tow* may drive, release or load, and nothing else: the `+tv` command refuses with a
+  line, and the start's own prepare refuses again from the site's record in its transaction. A
+  casualty in tow starts nothing.
+
+**Where it is kept.** On the site's record (`SiteRecord::tows`, omitted until something is ever
+towed there, so an untowed site's record is byte-identical to GC.3's). The record holds the
+library's `RecoveryBook` (active tows only: a released or loaded tow is retired by the new
+`RecoveryBook::retire`) and each tug's timed act in flight. The command submits the start as the
+operator, and the surface tick submits the finish as that operator once the act is due. The
+facts a prepare checks ride a server-written RAM order (the drive's `ActOrders` precedent),
+timings included, since a prepare reads no configuration. They are re-checked against the record
+in the prepare's own transaction. The record is durable, so a restart while attached keeps the
+attachment and a restart while loading keeps the load: the tick finds the act due again.
+
+**The coupled drive** (Q-36-12). `surface::act::rig_rates` reads the coupling (a RAM mirror the
+tow tick refreshes from every lane site's record), so every leg, reserve and trip home of a tug
+in tow is planned at `coupled_drive_rates_for_tow`. The tick that stands a tug at its leg's end
+stands its casualty on the same cell.
+
+**A tow in a promoted field** (Q-36-20; `field/admit.rs`, `field/close.rs`).
+- *Admitted coupled*: the tug enters at the tow rate (its admitted `max_speed_cms`), on wall
+  time. The casualty rides as its load: it is not a kernel unit, so in the field it is neither
+  seen nor struck. **This deviates from "a hit on either does not break the coupling."** The
+  kernel has no unit that follows another, and adding one would move the practice hashes, which
+  this cut may not. A hit on the tug still never breaks the coupling.
+- *At demotion* the casualty stands at its tug's cell, indexed there as before, still in tow
+  (`tow::set_down`). A tug the field left a casualty or a wreck ends the tow there
+  (`SiteRecord::demote`), and remains end any tow they are part of (`leave_remains`).
+- *Not built*: releasing inside a promoted field. Every surface act on a promoted site waits
+  (Q-CF-30), so a coupled tug drives at the tow rate until the field settles. A coupled tug's
+  recover at the ramp (CF.5's exit) is refused too: load the tow or release it first.
+
+**The bay** (Q-36-15, Q-36-54).
+- *Limits*: `BaySlotDef` gains `limits`, doc 06 D3's measure map. The Dray-P's bay takes 20 t and
+  70 m3 of hulls and the Halcyon's 40 t and 140 m3, beside their two-rig caps (provisional). A bay
+  declaring none is items-only.
+- *Volumes*: `UnitSpec` gains `stowage_volume_l`. It is authored on the prospector (24 m3) and
+  the escort (32 m3), and otherwise derived from the dry mass at a provisional 250 kg/m3
+  (`field_ops::stowage_volume_l_for_spec`); the authored values equal the derived ones. Neither
+  field is read by `bind()`, so no `DefinitionRef` moves. The four unit packs touched are
+  re-signed, and `shard_2/content.rs` carries the new prospector and Dray-P pins.
+- *`BayCapacitySpec` is retired.* The library's load now takes a `BayRoom` (items, mass and
+  volume free), which the host reads fresh off the bay's occupants at every load, never a stored
+  count. The width and height check went with it: the stowage volume is the envelope (Q-36-54, no
+  size class).
+- *The voyage's bay gate counts mass* (`port/voyage.rs`, new `DepartRefusalKind::BayOver`): a
+  bay whose hulls weigh or take more than its limits refuses lift. A laden hopper already refused
+  lift (`HOPPER_LOADED`), so in practice the gate counts dry masses.
+
+**The load** (Q-36-17, Q-36-21, Q-36-52's friendly half).
+- *Where*: from within a cell of a carrier's ramp, into a carrier of the casualty's own party or
+  a Friend's. That means the casualty's own leased bay, or a carrier that the field's own Friend
+  rule (`field::parties::entrants`, read only) puts behind the same owner. Loading anyone else's
+  casualty belongs to GC.5 and is refused with a line.
+- *The physical step*: the tick puts the casualty in the bay only on an unpromoted site, with the
+  tug beside the ramp and room in the bay, and only then submits the finish. The finish records
+  the load whatever has happened since.
+- *The close*: the casualty's epoch closes `RecoveredToBase { carrier }` naming the tug as
+  recoverer, and its surface work is cleared. It leaves the site's unit index in the same bundle.
+- *Licence and compute seats* (Q-36-21): nothing in the tow touches them, so they stay with the
+  casualty until the load closes its epoch.
+- *The crew* (`field::crew::aboard_loaded`): every character aboard or stranded in the casualty
+  is aboard the carrier, and any extraction they asked for is cancelled.
+- *Not done*: an epoch held by a DT flight is left open, as GC.3 left it.
+
+**The gates.**
+- *`tests/shard_1/field_gc4.rs`,
+  `gc4_the_wingman_drags_the_casualty_to_the_ramp_and_loads_it_before_the_lift`*: story (a)'s
+  main path on Ahuna Flank through the production command paths, with the arena's egress pumped
+  by hand.
+  1. The captain's two rigs are out, and the escort's power is destroyed by staff hand (GC.3's
+     fixture precedent). A stranger's mark opens a field, which settles with the escort indexed
+     as a casualty.
+  2. The wingman inspects and attaches on the IC tick. A tug busy with a tow act, or holding a
+     tow, refuses a scan.
+  3. A restart keeps the attachment.
+  4. A second field admits the tow coupled: the tug is in it at the tow rate (read off the
+     field's snapshot) and the casualty is not. The wingman drives to the ramp during that field.
+  5. At demotion the casualty stands, indexed, at the tug's cell beside the ramp.
+  6. The load is filed, a restart keeps it, and it lands. The escort is in the Dray-P's bay, off
+     the index, its epoch closed, and still disabled.
+  7. The wingman recovers, and the carrier lifts with both.
+
+  The rig prepares its acts off the composed path, so the close's black box line is covered by
+  review (GC.3's finding).
+- *`gc4_the_bay_counts_mass_and_volume_as_well_as_rigs`*: the Dray-P's bay room by count, mass
+  and volume.
+- *In-source tests*: the library's `BayRoom` mass refusal and the volume refusal in
+  `tacsim::field_ops`, and `crew::gc4_a_friendly_load_sets_the_crew_aboard_and_cancels_the_extraction`.
+  The friendly half is tested as the pure rule, because getting a second character into a
+  casualty's cab in the driving harness needs a boarding flow the gate does not have.
+- *The bot* (`mush-bot`): the escort's vocabulary admits `+tv/1 tow [go]`, `+tv/1 load [go]` and
+  `+tv/1 release go`. `lines::tow_line` classifies every tow line, pinned against tacsim's own
+  constants. **Not run: story (a) over SSH.** The G-4 cast (one captain and one escort, each on
+  its own Dray-P) has no wingman and no casualty that reliably falls. The bot run needs a cast of
+  its own, run on conclav.dev with parallel variants; that is a follow-up.
+
+**Defaults taken (provisional).**
+- The three stage timings, and inspect and attach as one act.
+- The one-cell reach.
+- The two bays' limits, and the 250 kg/m3 stowage density.
+- The casualty carried as its tug's load inside a field.
+- Every tug a standard rig.
+- A hopper's ore not counted in a casualty's laden mass (cargo 0), until the hopper reads come
+  to the tow.

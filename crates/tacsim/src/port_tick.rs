@@ -318,6 +318,8 @@ pub(crate) fn register_with_coverage(
     actions.push(crate::port::bay_work::act::action_descriptor(
         &outcome_refs,
     )?);
+    // Doc 36 cut GC.4: the tow.
+    actions.push(crate::surface::tow::action_descriptor(&outcome_refs)?);
     if let Some(ic) = ic {
         actions.extend(ic.actions()?);
     }
@@ -554,6 +556,15 @@ pub(crate) fn register_with_coverage(
         &outcome_refs,
         inventory_families.as_ref(),
     )?;
+    // Doc 36 cut GC.4: the tow's provider, its black box handle closing a loaded casualty's
+    // epoch, and its RAM slots.
+    let tow = crate::surface::tow::register(
+        reg,
+        &action_refs,
+        &outcome_refs,
+        &port_families,
+        black_box.tow,
+    )?;
     // Doc 17h cut M8h: the `tacsim.house_attestation` tick and its RAM slot, unconditionally
     // (no agent, no visit).
     crate::house_attestation::register(reg)?;
@@ -576,6 +587,7 @@ pub(crate) fn register_with_coverage(
         dispatch: dispatch_action.clone(),
         site_record,
         field,
+        tow,
     });
     reg.state(PortTickState::new(
         probe_action,
@@ -611,6 +623,8 @@ fn register_outcomes(
     outcomes.push(crate::procurement::outcome_descriptor()?);
     // Doc 36 cut GC.8b: the bay's inventory acts.
     outcomes.push(crate::port::bay_work::act::outcome_descriptor()?);
+    // Doc 36 cut GC.4: the tow.
+    outcomes.push(crate::surface::tow::outcome_descriptor()?);
     if let Some(ic) = ic {
         outcomes.push(ic.outcome()?);
     }
@@ -840,6 +854,8 @@ struct BlackBoxHandles {
     epoch: Option<BlackBoxHandle>,
     /// Doc 36 cut GC.3: `tacsim_field`'s, for the close-destroyed line.
     field: Option<BlackBoxHandle>,
+    /// Doc 36 cut GC.4: `tacsim_surface_tow`'s, for a loaded casualty's close line.
+    tow: Option<BlackBoxHandle>,
 }
 
 /// **The black box's owner participant** (doc 23 cut S.1; §7; the lead's L2): its definition
@@ -876,12 +892,14 @@ fn register_black_box(
     let epoch = actions.get(crate::port::epoch::EPOCH_ACTION).cloned();
     let detachment = actions.get(crate::detachment::sortie::ACTION).cloned();
     let field = actions.get(crate::field::FIELD_ACTION).cloned();
+    let tow = actions.get(crate::surface::tow::TOW_ACTION).cloned();
     let allowed: BTreeSet<DefinitionRef> = done
         .iter()
         .chain(recovery.iter())
         .chain(epoch.iter())
         .chain(detachment.iter())
         .chain(field.iter())
+        .chain(tow.iter())
         .cloned()
         .collect();
     if allowed.is_empty() {
@@ -891,6 +909,7 @@ fn register_black_box(
             recovery: None,
             epoch: None,
             field: None,
+            tow: None,
         });
     }
     reg.owner_participant(definition, allowed, BlackBoxParticipant)?;
@@ -905,6 +924,7 @@ fn register_black_box(
         recovery: request(recovery)?,
         epoch: request(epoch)?,
         field: request(field)?,
+        tow: request(tow)?,
     })
 }
 

@@ -3,7 +3,7 @@
     "id": "tacsim.pack.tv_prospector",
     "version": 1,
     "kind": "rules_definition",
-    "digest": "c55b9b5e30fa4ac21050f5b48bb6bfa9fa8ac2b2d2e7fca3dbfdbeca455f6c1f",
+    "digest": "26744d62f2c42b4cd1a2c4a9d6af0cedd290ae6095c5cc5c10c77ad8c2c1bc49",
     "requires": [
       {
         "id": "tacsim.pack.visual_mk1",
@@ -92,6 +92,7 @@
           { "band": "top", "width_cm": 600, "height_cm": 300 }
         ],
         "sensor_height_cm": 250,
+        "stowage_volume_l": 24000,
         "logistics": {
           "dry_mass_t": 6,
           "stowage": {

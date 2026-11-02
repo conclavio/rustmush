@@ -56,6 +56,9 @@
 //! | `[tacsim.recovery].max_operational_assets` | `0` | the eligibility threshold, over **accessible** assets |
 //! | `[tacsim.recovery].insurance` | `"approved_operations"` | the insurance policy word; `none` is the other |
 //! | `[tacsim.recovery].upkeep_per_period` | `0` | the lease's rent obligation, per campaign cadence period |
+//! | `[tacsim.recovery].inspect_s` | `300` | doc 36 cut GC.4: a tow's inspection, IC seconds (provisional) |
+//! | `[tacsim.recovery].attach_s` | `600` | doc 36 cut GC.4: a tow's attachment, IC seconds (provisional) |
+//! | `[tacsim.recovery].load_s` | `900` | doc 36 cut GC.4: a casualty's load into a bay, IC seconds (provisional) |
 //! | `[tacsim.economy].housing` | `true` | 16b cut R-b: whether the housing title issuer (`system:tacsim.housing`) is registered so `@property/create` can mint tenancies |
 //! | `[tacsim.economy].market` | `false` | whether the market composes with its title issuer (`system:tacsim.market`) |
 //! | `[tacsim.economy].instrument` | `"tacsim.credit"` | the settlement currency the sheet registers create-only at boot (doc 11 §2); must be a canonical instrument id |
@@ -1190,6 +1193,14 @@ pub struct TacsimRecoveryCfg {
     pub insurance: String,
     /// The lease's upkeep, per campaign cadence period, in minor units.
     pub upkeep_per_period: i64,
+    /// **Doc 36 cut GC.4 (Q-36-13)**: a tow's inspection, IC seconds; provisional. The tow
+    /// stages are read whatever `enabled` says: they time the ground's recovery acts, not the
+    /// loaner provider.
+    pub inspect_s: u32,
+    /// **Doc 36 cut GC.4 (Q-36-13)**: a tow's attachment, IC seconds; provisional.
+    pub attach_s: u32,
+    /// **Doc 36 cut GC.4 (Q-36-13)**: a casualty's load into a bay, IC seconds; provisional.
+    pub load_s: u32,
 }
 
 impl Default for TacsimRecoveryCfg {
@@ -1205,6 +1216,9 @@ impl Default for TacsimRecoveryCfg {
             max_operational_assets: 0,
             insurance: "approved_operations".to_string(),
             upkeep_per_period: 0,
+            inspect_s: 300,
+            attach_s: 600,
+            load_s: 900,
         }
     }
 }

@@ -40,8 +40,8 @@ pub use engineering::{
     MAX_FIELD_TENDERS, UnitExpenseCategory, UnitExpensePolicy,
 };
 pub use recovery::{
-    AttachTowRequest, BayCapacitySpec, DEFAULT_MAX_ATTACH_DISTANCE_CM, FieldInspectionReport,
-    FieldPose, LoadIntoBayRequest, LoadedCasualtyOutcome, MAX_RECOVERY_OPERATIONS,
+    AttachTowRequest, BayRoom, DEFAULT_MAX_ATTACH_DISTANCE_CM, FieldInspectionReport, FieldPose,
+    LoadIntoBayRequest, LoadedCasualtyOutcome, MAX_RECOVERY_OPERATIONS,
     MAX_TOW_MASS_RATIO_PERMILLE, RecoveryBook, RecoveryError, RecoveryOpId, RecoveryOperation,
     RecoveryStage, TowEvaluation, TowRigProfile, TugInspectionContext, UnitMassProfile,
     inspect_field_unit, scaled_tow_speed_cms, tow_mass_ratio_permille, tow_speed_factor_permille,
@@ -962,15 +962,10 @@ mod tests {
             .is_err()
         );
 
-        let small_bay = BayCapacitySpec {
-            max_units: 2,
-            current_units: 0,
-            max_mass_kg: 36_000,
-            current_mass_kg: 0,
-            max_volume_l: 5_000,
-            current_volume_l: 0,
-            max_width_cm: 400,
-            max_height_cm: 500,
+        let small_bay = BayRoom {
+            items_free: 2,
+            mass_free_kg: 36_000,
+            volume_free_l: 5_000,
         };
         check_eq!(
             book.load_into_bay(LoadIntoBayRequest {
@@ -980,18 +975,19 @@ mod tests {
                 slot: SmolStr::new("recovery_bay_1"),
                 carrier_pose,
                 max_load_distance_cm: DEFAULT_MAX_ATTACH_DISTANCE_CM,
-                bay_capacity: &small_bay,
+                bay_room: small_bay,
+                casualty_stowage_volume_l: 4_000,
                 casualty_unit: &casualty_unit,
                 at_ic: 1_020,
             }),
             Err(RecoveryError::BayMassExceeded {
-                required_mass_kg: 38_000,
-                max_mass_kg: 36_000,
+                mass_kg: 38_000,
+                free_kg: 36_000,
             })
         );
 
-        let large_bay = BayCapacitySpec {
-            max_mass_kg: 50_000,
+        let large_bay = BayRoom {
+            mass_free_kg: 50_000,
             ..small_bay
         };
         let loaded = book.load_into_bay(LoadIntoBayRequest {
@@ -1001,7 +997,8 @@ mod tests {
             slot: SmolStr::new("recovery_bay_1"),
             carrier_pose,
             max_load_distance_cm: DEFAULT_MAX_ATTACH_DISTANCE_CM,
-            bay_capacity: &large_bay,
+            bay_room: large_bay,
+            casualty_stowage_volume_l: 4_000,
             casualty_unit: &casualty_unit,
             at_ic: 1_020,
         })?;

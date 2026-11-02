@@ -418,6 +418,13 @@ pub struct BaySlotDef {
     pub id: CanonicalId,
     /// The rig cap, `1..=MAX_BAY_ITEMS`.
     pub maximum_items: u32,
+    /// **The compartment's measure limits** (doc 36 cut GC.4; Q-36-15, Q-36-54): doc 06 D3's
+    /// measure map, `si.mass_kg` and `si.volume_l`, every value positive. A rig is stowed or a
+    /// casualty loaded only if the bay's contents, with it, stay within every limit as well as
+    /// `maximum_items`. Empty (a definition written before the cut) is the item cap alone, and
+    /// serialises nothing, so no earlier definition's digest moves.
+    #[serde(default, skip_serializing_if = "BTreeMap::is_empty")]
+    pub limits: BTreeMap<CanonicalId, u64>,
 }
 
 /// **A bay's egress** (doc 20 §4.1 "at the ramp pose"): a hull-local offset —
@@ -761,6 +768,14 @@ impl InteriorDef {
                 return refuse(format!(
                     "the bay `{}` holds 1 to {MAX_BAY_ITEMS} rigs; {} is not",
                     bay.room, bay.slot.maximum_items
+                ));
+            }
+            if bay.slot.limits.len() > MAX_COMPARTMENT_KEYS
+                || bay.slot.limits.values().any(|limit| *limit == 0)
+            {
+                return refuse(format!(
+                    "the bay `{}` limits at most {MAX_COMPARTMENT_KEYS} measures, each positive",
+                    bay.room
                 ));
             }
             if bay.slot.id == self.berths_slot.id {

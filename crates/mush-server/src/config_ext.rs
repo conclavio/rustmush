@@ -810,6 +810,9 @@ fn recovery_config(
         max_operational_assets: cfg.max_operational_assets,
         insurance,
         upkeep_per_period: cfg.upkeep_per_period,
+        inspect_s: cfg.inspect_s,
+        attach_s: cfg.attach_s,
+        load_s: cfg.load_s,
     })
 }
 

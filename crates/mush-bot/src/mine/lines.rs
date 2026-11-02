@@ -56,6 +56,64 @@ pub fn is_transient(line: &str) -> bool {
 // ---------------------------------------------------------------------------
 
 /// The berth gallery (`neighborhood.ceres_freeport.json`, room c01).
+/// **The tow's lines** (doc 36 cut GC.4; `tacsim::surface::tow`): a rig's inspection of a
+/// casualty in reach, as `+tv/<n> tow` previews it (`Rig 1 looks the … over: …`).
+pub const TOW_LOOKED: &str = " looks the ";
+/// Nothing in reach to tow (`tacsim::surface::tow::NOTHING_IN_REACH`'s head).
+pub const TOW_NOTHING: &str = "could tow lies within a cell of it";
+/// The tow attached, told by the tick (`tacsim::surface::tow::TOW_ATTACHED`'s middle).
+pub const TOW_ATTACHED: &str = " in tow, at ";
+/// The tow refused at its landing (`tacsim::surface::tow::TOW_REFUSED`'s middle).
+pub const TOW_REFUSED: &str = " could not take the ";
+/// An attach or a load interrupted (`tacsim::surface::tow::TOW_INTERRUPTED`'s middle).
+pub const TOW_INTERRUPTED: &str = "'s work on the ";
+/// The load done, told on the site (`tacsim::surface::tow::LOADED`'s middle).
+pub const TOW_LOADED: &str = " is aboard the ";
+/// The tug is not beside a ramp (`tacsim::surface::tow::NOT_AT_RAMP`'s tail).
+pub const TOW_NOT_AT_RAMP: &str = "drive the tow there first.";
+
+/// **What a tow line says** (doc 36 cut GC.4), off one normalised line.
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub enum TowLine {
+    /// The inspection: a casualty in reach.
+    Looked,
+    /// Nothing in reach.
+    Nothing,
+    /// In tow.
+    Attached,
+    /// Refused at its landing, or interrupted.
+    Refused,
+    /// Aboard a carrier.
+    Loaded,
+    /// The tug is not beside a ramp.
+    NotAtRamp,
+}
+
+/// **Classify a tow line** (doc 36 cut GC.4).
+#[must_use]
+pub fn tow_line(line: &str) -> Option<TowLine> {
+    let line = line.trim();
+    if line.starts_with("Rig ") && line.contains(TOW_LOOKED) && line.contains(" over: ") {
+        return Some(TowLine::Looked);
+    }
+    if line.contains(TOW_NOTHING) {
+        return Some(TowLine::Nothing);
+    }
+    if line.starts_with("Rig ") && line.contains(" has the ") && line.contains(TOW_ATTACHED) {
+        return Some(TowLine::Attached);
+    }
+    if line.starts_with("Rig ") && (line.contains(TOW_REFUSED) || line.contains(TOW_INTERRUPTED)) {
+        return Some(TowLine::Refused);
+    }
+    if line.starts_with("The ") && line.contains(TOW_LOADED) && line.ends_with(", in its bay.") {
+        return Some(TowLine::Loaded);
+    }
+    if line.ends_with(TOW_NOT_AT_RAMP) {
+        return Some(TowLine::NotAtRamp);
+    }
+    None
+}
+
 pub const ROOM_GALLERY: &str = "Visiting Berth Gallery";
 /// The pressure lobby (c02).
 pub const ROOM_LOBBY: &str = "Pressure Lobby";
@@ -1557,5 +1615,36 @@ mod tests {
         assert!(back.starts_with(RIG_BACK), "{back}");
         assert!(!has(&normalise(&back), BACK_IN_BAY), "{back}");
         assert!(cycle.contains(RUN_DONE_HEAD), "{cycle}");
+    }
+
+    /// **The tow's lines read as tacsim prints them** (doc 36 cut GC.4).
+    #[test]
+    fn the_tow_lines_classify_as_tacsim_prints_them() {
+        use tacsim::surface::tow;
+        let fill = |line: &str| {
+            line.replace("{n}", "1")
+                .replace("{name}", "Rook")
+                .replace("{t}", "8")
+                .replace("{state}", "disabled")
+                .replace("{speed}", "1.6")
+                .replace("{min}", "15")
+                .replace("{why}", "another tug has it already")
+                .replace("{carrier}", "Salt Moth")
+        };
+        assert_eq!(tow_line(&fill(tow::TOW_PREVIEW)), Some(TowLine::Looked));
+        assert_eq!(
+            tow_line(&fill(tow::NOTHING_IN_REACH)),
+            Some(TowLine::Nothing)
+        );
+        assert_eq!(tow_line(&fill(tow::TOW_ATTACHED)), Some(TowLine::Attached));
+        assert_eq!(tow_line(&fill(tow::TOW_REFUSED)), Some(TowLine::Refused));
+        assert_eq!(
+            tow_line(&fill(tow::TOW_INTERRUPTED)),
+            Some(TowLine::Refused)
+        );
+        assert_eq!(tow_line(&fill(tow::LOADED)), Some(TowLine::Loaded));
+        assert_eq!(tow_line(&fill(tow::NOT_AT_RAMP)), Some(TowLine::NotAtRamp));
+        assert_eq!(tow_line(&fill(tow::TOW_FILED)), None, "filed is no landing");
+        assert_eq!(tow_line("Rig 1 arrives at (12, 4)."), None);
     }
 }
