@@ -114,6 +114,22 @@ SHIP_SPECS = [
         22.0,
         [(20, 28, 36), (46, 62, 78), (84, 108, 132), (132, 160, 186), (180, 206, 228), (228, 242, 252)],
     ),
+    (
+        "halcyon",
+        "MSGDI/3D ModelsVehiclesSpace/Spaceship Carriers Fighters II.unitypackage",
+        "Assets/Carrier+FighterFleetII/FBX/AttackCarrier/AttackCarrier.fbx",
+        "MSGDI - Spaceship Carriers Fighters II",
+        20.0,
+        [(22, 34, 48), (48, 76, 108), (88, 132, 178), (136, 184, 226), (186, 220, 246), (234, 248, 255)],
+    ),
+    (
+        "refinery",
+        "MSGDI/3D ModelsVehiclesSpace/Spaceship Mining Operation.unitypackage",
+        "Assets/MiningOperation/FBX/ResourceRefinery/ResourceRefinery.fbx",
+        "MSGDI - Spaceship Mining Operation",
+        22.0,
+        [(32, 26, 18), (68, 56, 38), (114, 94, 62), (162, 136, 92), (206, 178, 128), (242, 222, 182)],
+    ),
 ]
 
 

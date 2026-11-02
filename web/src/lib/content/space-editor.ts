@@ -64,11 +64,13 @@ export const PIXEL_SHIP_MODELS = [
   "freighter",
   "corvette",
   "raider",
+  "halcyon",
   "drone",
   "torpedo",
   "asteroid",
   "derelict",
   "shipyard",
+  "refinery",
 ] as const;
 
 function asInt(val: unknown, fallback: number): number {

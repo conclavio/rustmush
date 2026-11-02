@@ -379,6 +379,10 @@ mod tests {
         assert!(raider_spec.is_some());
         let halcyon_spec = cat.find_hull("halcyon");
         assert!(halcyon_spec.is_some());
+        assert_eq!(
+            halcyon_spec.map(|h| h.pixel_model.as_str()),
+            Some("halcyon")
+        );
 
         let Some(dray_spec) = dray_spec else {
             return;
