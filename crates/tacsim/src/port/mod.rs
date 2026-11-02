@@ -129,6 +129,9 @@
 //!   the one public word of a block's tenure (`claims::block_tenure_now`).
 
 pub mod apply;
+/// Doc 36 cut GC.8a: the bay's repair order, its facility classes and rights, berth and stow,
+/// and `+bay`.
+pub mod bay_work;
 pub mod board;
 pub mod burn;
 pub mod buyout;
@@ -185,9 +188,6 @@ pub mod vehicle;
 pub mod vendor;
 pub mod voyage;
 pub mod when;
-/// Doc 36 cut GC.8a: the bay's repair order, its facility classes and rights, berth and stow,
-/// and `+bay`.
-pub mod bay_work;
 /// Doc 36 cut GC.7: a port's workshop room, opened as a `bay_refit` facility, and its quote.
 pub mod workshop;
 /// Doc 20 cut SM.12b: a house's yard at a site — its lay-up, its dispatcher, its seeds and its
