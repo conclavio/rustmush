@@ -52,7 +52,7 @@ use super::weapons::LaserMode;
 pub const HELM_VERB: &str = "+helm";
 
 /// All switches supported by `+helm`.
-pub const HELM_SWITCHES: [&str; 10] = [
+pub const HELM_SWITCHES: [&str; 13] = [
     "status",
     "station",
     "heading",
@@ -63,11 +63,14 @@ pub const HELM_SWITCHES: [&str; 10] = [
     "decouple",
     "burn",
     "autopilot",
+    "cluster",
+    "approach",
+    "match",
 ];
 
 /// Help text for `+helm`.
 pub const HELM_HELP: &str = "\
-+helm  --  Ship helm, bridge stations, and standing orders (doc 35 §5, D-35-6, D-35-9).
++helm  --  Ship helm, bridge stations, and standing orders (doc 35 §5, §7, D-35-6, D-35-9, D-35-13).
 +helm[/status]                        Show bridge stations, standing orders, and flight state.
 +helm/station <seat>[=<crew>]         Assign an aboard crew member (or yourself) to a bridge station
                                       (command|helm|tactical|ew|engineering|flight_ops), or `off`.
@@ -81,7 +84,27 @@ pub const HELM_HELP: &str = "\
 +helm/decouple                        Decouple from corridor transit into 3D heliocentric free flight.
 +helm/burn <ax>,<ay>,<az> [<s_ic>] [force]
                                       Execute a timed reaction-mass burn (m/s²) against stow.propellant.
-+helm/autopilot <port>                Plan and recouple onto a corridor passage from live (pos, vel).";
++helm/autopilot <port>                Plan and recouple onto a corridor passage from live (pos, vel).
++helm/cluster <cluster_id>            Enter an orbital mining cluster (`ceres_halo`, `kirkwood_gap_3_1`, `pallas_inclined_belt`, `saturn_b_ring_edge`).
++helm/approach <rock>                 Execute a braking approach toward rock `A`, `B`, or `C` inside the cluster.
++helm/match <rock>                    Lock RCS velocity match (`|Δv| < 5 m/s` within `2,000 m`) with rock `A`, `B`, or `C`.";
+
+/// The asteroid field mining command verb (`+mine`, `SF.R5`, `D-35-13`).
+pub const MINE_VERB: &str = "+mine";
+
+/// All switches supported by `+mine`.
+pub const MINE_SWITCHES: [&str; 6] = ["status", "ping", "stake", "contest", "laser", "drones"];
+
+/// Help text for `+mine`.
+pub const MINE_HELP: &str = "\
++mine  --  Asteroid field prospecting, claim tenure, and ore extraction (doc 35 §7, Q-35-3, D-35-13).
++mine[/status]                        Show active orbital cluster, matched rock, extraction cycles, and stow.ore hold.
++mine/ping [<rock>]                   Ping asteroid pockets (`A`, `B`, `C`) for spectral class, reserves, and tenure.
++mine/stake <rock> [<family>]         Stake a 168-day Freeport Registry claim on an open pinged asteroid block.
++mine/contest <rock>                  Contest a player claim within the 30-day Registry contest window.
++mine/laser <rock> [<family>]         Start a timed 60s mining-laser extraction cycle into the hull's stow.ore hold.
++mine/drones <rock> [<1..4>] [<family>]
+                                      Launch up to 4 collector-drone sorties (`ExcursionId`) into stow.ore.";
 
 /// The tactical command verb (`+tac`).
 pub const TAC_VERB: &str = "+tac";
@@ -637,6 +660,9 @@ pub fn helm_cmd(ctx: &mut Ctx<'_>) -> Result<(), CmdError> {
         Some("decouple") => helm_decouple(ctx),
         Some("burn") => helm_burn(ctx),
         Some("autopilot") => helm_autopilot(ctx),
+        Some("cluster") => helm_cluster(ctx),
+        Some("approach") => helm_approach(ctx),
+        Some("match") => helm_match(ctx),
         Some(other) => Err(CmdError::msg(format!("Unknown +helm switch: /{other}."))),
     }
 }
@@ -2309,6 +2335,1046 @@ fn set_all_laser_modes(w: &mut World, hull: ObjId, ship_id: &str, mode: LaserMod
             },
         );
     }
+}
+
+// ---------------------------------------------------------------------------
+// Asteroid field mining (`SF.R5`, `doc 35` §7, `Q-35-3`, `D-35-13`)
+// ---------------------------------------------------------------------------
+
+/// Debit live reaction mass (`kg` and whole-tonne [`crate::port::burn::PendingSpaceBurn`]s) for a
+/// cluster approach or velocity-match manoeuvre (`SF.R4`, `SF.R5`).
+pub(crate) fn debit_hull_propellant_for_dv(
+    ctx: &mut Ctx<'_>,
+    hull: ObjId,
+    dv_mps: u64,
+    force_reserve: bool,
+) -> Result<u64, CmdError> {
+    if dv_mps == 0 {
+        return Ok(0);
+    }
+    let (basis, live_kg) = live_hull_basis_and_propellant_kg(ctx, hull)?;
+    let non_prop_payload = basis
+        .payload
+        .saturating_sub(basis.tank.saturating_mul(1_000));
+    let effective_payload = non_prop_payload.saturating_add(live_kg);
+    let dv_u32 = u32::try_from(dv_mps).unwrap_or(u32::MAX);
+    let burn_kg = crate::port::passage::burn_kg_for_dv(
+        &basis.spec.drive,
+        basis.spec.dry_kg,
+        effective_payload,
+        dv_u32,
+    )
+    .map_err(|e| CmdError::msg(e.to_string()))?;
+    if burn_kg > live_kg {
+        return Err(CmdError::msg(format!(
+            "Insufficient propellant: manoeuvre requires {burn_kg} kg ({dv_mps} m/s Δv), tank holds {live_kg} kg."
+        )));
+    }
+    if !force_reserve
+        && let Some(ff) = ctx
+            .w
+            .module_state::<SpaceBubbleBook>()
+            .and_then(|b| b.free_flight_for_hull(hull).cloned())
+        && let Some((reserve, nearest_port)) = compute_hull_return_reserve(
+            ctx.w,
+            &basis,
+            live_kg,
+            ff.pos_km,
+            ff.vel_mps,
+            ctx.w.world_ic_now().at,
+        )
+    {
+        let remaining_after = live_kg.saturating_sub(burn_kg);
+        if remaining_after < reserve.reserve_kg {
+            return Err(CmdError::msg(format!(
+                "RETURN_RESERVE warning: manoeuvre requires {burn_kg} kg, leaving {remaining_after} kg below the {} kg return reserve to {nearest_port}.",
+                reserve.reserve_kg
+            )));
+        }
+    }
+    let whole_tonnes = {
+        let book = ctx
+            .w
+            .module_state_mut::<SpaceBubbleBook>()
+            .ok_or_else(|| CmdError::msg("Space bubble state is not registered."))?;
+        book.propellant_ledger_mut(hull)
+            .record_burn_kg(basis.tank, burn_kg)
+    };
+    let _ = submit_space_burn_if_needed(ctx, hull, basis.vault.0, whole_tonnes, 0)?;
+    Ok(burn_kg)
+}
+
+fn helm_cluster(ctx: &mut Ctx<'_>) -> Result<(), CmdError> {
+    let (hull, _) = require_aboard_and_seat(ctx, Some("movement"))?;
+    let raw = ctx.args.raw().trim().to_owned();
+    let cluster = super::mining::OrbitalClusterId::parse(&raw).ok_or_else(|| {
+        CmdError::msg(
+            "Usage: +helm/cluster <ceres_halo|kirkwood_gap_3_1|pallas_inclined_belt|saturn_b_ring_edge>",
+        )
+    })?;
+
+    let _ = super::mining::ensure_cluster_laid_up(ctx, cluster).map_err(CmdError::msg)?;
+    let now_ic = ctx.w.world_ic_now().at;
+
+    if let Some(book) = ctx.w.module_state_mut::<SpaceBubbleBook>() {
+        let existing_drones = book
+            .cluster_sessions
+            .get(&hull)
+            .map(|s| s.drone_things.clone())
+            .unwrap_or_default();
+        book.cluster_sessions.insert(
+            hull,
+            super::mining::ActiveClusterMiningSession {
+                hull,
+                cluster,
+                // Enter at 2,800 m standoff and 12.0 m/s relative drift (`35a` §4 SF.13: outside
+                // the 2,000 m / 5.0 m/s velocity-match gates until `+helm/approach` brakes).
+                ship_pos_m: [3_800, 0, 0],
+                ship_vel_mmps: [12_000, 0, 0],
+                approaching_rock: None,
+                matched_rock: None,
+                pings: std::collections::BTreeMap::new(),
+                active_laser: None,
+                active_drones: Vec::new(),
+                drone_things: existing_drones,
+                frontier_bloom_heat: 0,
+                claim_jump_flagged: false,
+                last_ic_s: now_ic,
+            },
+        );
+    }
+
+    let (domain, generation, tick) = domain_stamp_for_hull(ctx.w, hull);
+    let _ = record_hull_standing_order(
+        ctx.w,
+        hull,
+        OrderChannel::Heading,
+        heading_order_vector(0, 0),
+        ctx.actor,
+        domain,
+        generation,
+        tick,
+    )?;
+
+    ctx.out.sys_to_actor(
+        ctx.actor,
+        "tacsim.space",
+        format!(
+            "Entered orbital cluster {} (`{}`): standoff pos=(3800, 0, 0) m, drift vel=(12.0, 0.0, 0.0) m/s. Run `+mine/ping` to survey pockets and `+helm/approach <A|B|C>` to close range.",
+            cluster.display_name(),
+            cluster.as_str()
+        ),
+    );
+    push_space_panels(ctx, hull);
+    Ok(())
+}
+
+fn helm_approach(ctx: &mut Ctx<'_>) -> Result<(), CmdError> {
+    let (hull, _) = require_aboard_and_seat(ctx, Some("movement"))?;
+    let raw = ctx.args.raw().trim();
+    if raw.is_empty() {
+        return Err(CmdError::msg("Usage: +helm/approach <A|B|C>"));
+    }
+    let cluster = ctx
+        .w
+        .module_state::<SpaceBubbleBook>()
+        .and_then(|b| b.cluster_sessions.get(&hull))
+        .map(|s| s.cluster)
+        .ok_or_else(|| {
+            CmdError::msg("Ship is not in an orbital cluster; use `+helm/cluster <id>` first.")
+        })?;
+    let spec = cluster.rock(raw).ok_or_else(|| {
+        CmdError::msg(format!(
+            "Unknown asteroid pocket `{raw}` in {} (choose A, B, or C).",
+            cluster.display_name()
+        ))
+    })?;
+
+    if let Some(book) = ctx.w.module_state_mut::<SpaceBubbleBook>()
+        && let Some(session) = book.cluster_sessions.get_mut(&hull)
+    {
+        session.approaching_rock = Some(spec.letter);
+        session.matched_rock = None;
+    }
+
+    let (domain, generation, tick) = domain_stamp_for_hull(ctx.w, hull);
+    let order = record_hull_standing_order(
+        ctx.w,
+        hull,
+        OrderChannel::Thrust,
+        OrderValue::Scalar { value: 350 },
+        ctx.actor,
+        domain,
+        generation,
+        tick,
+    )?;
+
+    ctx.out.sys_to_actor(
+        ctx.actor,
+        "tacsim.space",
+        format!(
+            "Braking approach ordered toward Block {} (`{}` {}) in {} (standing order `{}` rev {}).",
+            spec.letter,
+            spec.alias,
+            spec.spectral.code(),
+            cluster.display_name(),
+            order.channel().token(),
+            order.revision()
+        ),
+    );
+    push_space_panels(ctx, hull);
+    Ok(())
+}
+
+fn helm_match(ctx: &mut Ctx<'_>) -> Result<(), CmdError> {
+    let (hull, _) = require_aboard_and_seat(ctx, Some("movement"))?;
+    let raw = ctx.args.raw().trim();
+    if raw.is_empty() {
+        return Err(CmdError::msg("Usage: +helm/match <A|B|C>"));
+    }
+    let (cluster, ship_pos_m, ship_vel_mmps) = ctx
+        .w
+        .module_state::<SpaceBubbleBook>()
+        .and_then(|b| b.cluster_sessions.get(&hull))
+        .map(|s| (s.cluster, s.ship_pos_m, s.ship_vel_mmps))
+        .ok_or_else(|| {
+            CmdError::msg("Ship is not in an orbital cluster; use `+helm/cluster <id>` first.")
+        })?;
+    let spec = cluster.rock(raw).ok_or_else(|| {
+        CmdError::msg(format!(
+            "Unknown asteroid pocket `{raw}` in {} (choose A, B, or C).",
+            cluster.display_name()
+        ))
+    })?;
+
+    // Strict 3D Euclidean range (`<= 2,000 m`) and 3D relative speed (`< 5,000 mm/s = 5.0 m/s`)
+    // check — never teleports from arbitrary distance (`35a` §5 #11)!
+    let (dist_m, rel_speed_mmps) = super::mining::check_velocity_match_gate(
+        ship_pos_m,
+        ship_vel_mmps,
+        spec.pos_m,
+        spec.vel_mmps,
+    )
+    .map_err(CmdError::msg)?;
+
+    let dv_mps = ((rel_speed_mmps as u64).div_ceil(1_000)).max(1);
+    let burned_kg = debit_hull_propellant_for_dv(ctx, hull, dv_mps, true)?;
+
+    if let Some(book) = ctx.w.module_state_mut::<SpaceBubbleBook>()
+        && let Some(session) = book.cluster_sessions.get_mut(&hull)
+    {
+        session.ship_vel_mmps = spec.vel_mmps;
+        session.approaching_rock = None;
+        session.matched_rock = Some(spec.letter);
+    }
+
+    let (domain, generation, tick) = domain_stamp_for_hull(ctx.w, hull);
+    let order = record_hull_standing_order(
+        ctx.w,
+        hull,
+        OrderChannel::Thrust,
+        OrderValue::Scalar { value: 0 },
+        ctx.actor,
+        domain,
+        generation,
+        tick,
+    )?;
+
+    ctx.out.sys_to_actor(
+        ctx.actor,
+        "tacsim.space",
+        format!(
+            "RCS velocity match locked on Block {} (`{}` {}) at range {dist_m} m (nulled {:.2} m/s drift, burned {burned_kg} kg reaction mass; standing order `{}` rev {}).",
+            spec.letter,
+            spec.alias,
+            spec.spectral.code(),
+            (rel_speed_mmps as f64) / 1_000.0,
+            order.channel().token(),
+            order.revision()
+        ),
+    );
+    push_space_panels(ctx, hull);
+    Ok(())
+}
+
+/// Top-level command handler for `+mine` (`SF.R5`, `doc 35` §7, `Q-35-3`, `D-35-13`).
+///
+/// # Errors
+///
+/// Returns [`CmdError`] if `[tacsim].enabled` is false, the caller is not aboard a ship,
+/// the caller lacks a bridge station or Freeport Registry prospecting licence, or the hull
+/// is not velocity-matched to the target asteroid pocket.
+pub fn mine_cmd(ctx: &mut Ctx<'_>) -> Result<(), CmdError> {
+    crate::commands::require_enabled(ctx)?;
+    if ctx.switches.iter().count() > 1 {
+        return Err(CmdError::msg("Choose one +mine switch."));
+    }
+    let switch = ctx.switches.iter().next();
+    match switch {
+        None | Some("status") => mine_status(ctx),
+        Some("ping") => mine_ping(ctx),
+        Some("stake") => mine_stake(ctx),
+        Some("contest") => mine_contest(ctx),
+        Some("laser") => mine_laser(ctx),
+        Some("drones") => mine_drones(ctx),
+        Some(other) => Err(CmdError::msg(format!("Unknown +mine switch: /{other}."))),
+    }
+}
+
+fn mine_status(ctx: &mut Ctx<'_>) -> Result<(), CmdError> {
+    let (hull, _) = require_aboard_and_seat(ctx, None)?;
+    let used_t = super::mining::hull_hold_used_tonnes(ctx, hull);
+    let Some(session) = ctx
+        .w
+        .module_state::<SpaceBubbleBook>()
+        .and_then(|b| b.cluster_sessions.get(&hull).cloned())
+    else {
+        ctx.out.sys_to_actor(
+            ctx.actor,
+            "tacsim.space",
+            format!(
+                "Mining status aboard {}: not in an orbital cluster (`stow.ore` hold: {used_t}/{} t).",
+                display_name(ctx.w, hull),
+                super::mining::DRAY_P_HOLD_CAPACITY_T
+            ),
+        );
+        return Ok(());
+    };
+
+    let matched = session
+        .matched_rock
+        .map_or_else(|| "none".to_owned(), |c| format!("Block {c}"));
+    let laser_desc = session.active_laser.as_ref().map_or_else(
+        || "idle".to_owned(),
+        |l| {
+            format!(
+                "Block {} ({}, {} t due @ {})",
+                l.rock_letter,
+                l.family.id(),
+                l.yield_t,
+                l.due_ic
+            )
+        },
+    );
+    ctx.out.sys_to_actor(
+        ctx.actor,
+        "tacsim.space",
+        format!(
+            "Mining status aboard {} in {} (`{}`): pos=({}, {}, {}) m, vel=({}, {}, {}) mm/s, matched={matched}, laser={laser_desc}, active drones={}/{}, frontier bloom heat={}, `stow.ore` hold={used_t}/{} t ({} kg capacity).",
+            display_name(ctx.w, hull),
+            session.cluster.display_name(),
+            session.cluster.as_str(),
+            session.ship_pos_m[0],
+            session.ship_pos_m[1],
+            session.ship_pos_m[2],
+            session.ship_vel_mmps[0],
+            session.ship_vel_mmps[1],
+            session.ship_vel_mmps[2],
+            session.active_drones.len(),
+            crate::surface::excursion::MAX_EXCURSIONS_PER_OPERATOR,
+            session.frontier_bloom_heat,
+            super::mining::DRAY_P_HOLD_CAPACITY_T,
+            super::mining::DRAY_P_HOLD_CAPACITY_KG,
+        ),
+    );
+    Ok(())
+}
+
+fn mine_ping(ctx: &mut Ctx<'_>) -> Result<(), CmdError> {
+    let (hull, role) = require_aboard_and_seat(ctx, None)?;
+    if !role.grants_channel("sensors") && !role.grants_channel("flight_ops") {
+        return Err(CmdError::msg(format!(
+            "Your bridge station ({}) does not control the sensors or flight_ops channel.",
+            role.station_token()
+        )));
+    }
+    let raw = ctx.args.raw().trim().to_owned();
+    let now_ic = ctx.w.world_ic_now().at;
+
+    let (session, site) = ctx
+        .w
+        .module_state::<SpaceBubbleBook>()
+        .and_then(|b| {
+            let s = b.cluster_sessions.get(&hull)?.clone();
+            let site = b.cluster_sites.get(&s.cluster)?.clone();
+            Some((s, site))
+        })
+        .ok_or_else(|| {
+            CmdError::msg("Ship is not in an orbital cluster; use `+helm/cluster <id>` first.")
+        })?;
+
+    let specs: Vec<&'static super::mining::ClusterRockSpec> = if raw.is_empty() {
+        session.cluster.rocks().iter().collect()
+    } else {
+        let one = session.cluster.rock(&raw).ok_or_else(|| {
+            CmdError::msg(format!(
+                "Unknown asteroid pocket `{raw}` in {} (choose A, B, or C).",
+                session.cluster.display_name()
+            ))
+        })?;
+        vec![one]
+    };
+
+    if let Some(book) = ctx.w.module_state_mut::<SpaceBubbleBook>()
+        && let Some(sess_mut) = book.cluster_sessions.get_mut(&hull)
+    {
+        for spec in &specs {
+            sess_mut
+                .pings
+                .entry((ctx.actor, spec.letter))
+                .or_insert(now_ic);
+        }
+    }
+
+    let mut lines = vec![format!(
+        "Prospecting ping in {} ({:?} zone):",
+        session.cluster.display_name(),
+        session.cluster.zone()
+    )];
+    for spec in specs {
+        let dx = i128::from(session.ship_pos_m[0]) - i128::from(spec.pos_m[0]);
+        let dy = i128::from(session.ship_pos_m[1]) - i128::from(spec.pos_m[1]);
+        let dz = i128::from(session.ship_pos_m[2]) - i128::from(spec.pos_m[2]);
+        let dist_m = libm::sqrt((dx * dx + dy * dy + dz * dz) as f64).round() as i64;
+        let dvx = i128::from(session.ship_vel_mmps[0]) - i128::from(spec.vel_mmps[0]);
+        let dvy = i128::from(session.ship_vel_mmps[1]) - i128::from(spec.vel_mmps[1]);
+        let dvz = i128::from(session.ship_vel_mmps[2]) - i128::from(spec.vel_mmps[2]);
+        let rel_mps = libm::sqrt((dvx * dvx + dvy * dvy + dvz * dvz) as f64) / 1_000.0;
+
+        let mut family_parts = Vec::new();
+        if let Some(&rock_vault) = site.vaults.get(&spec.letter) {
+            for &fam in spec.spectral.families() {
+                let pool_t = super::mining::rock_pool_tonnes(ctx, rock_vault, fam);
+                let sv = super::mining::ore_specific_volume_l_per_t(fam);
+                family_parts.push(format!(
+                    "{}={} t ({} L/t)",
+                    crate::surface::opening::ore_good(fam),
+                    pool_t,
+                    sv
+                ));
+            }
+        }
+        let tenure_desc =
+            super::mining::cluster_rock_tenure_word(ctx, session.cluster, spec, ctx.actor, now_ic);
+        lines.push(format!(
+            "  Block {} (`{}` {}): range {dist_m} m, rel speed {rel_mps:.2} m/s, reserves [{}], tenure: {tenure_desc}.",
+            spec.letter,
+            spec.alias,
+            spec.spectral.code(),
+            family_parts.join(", ")
+        ));
+    }
+
+    for line in lines {
+        ctx.out.sys_to_actor(ctx.actor, "tacsim.space", line);
+    }
+    Ok(())
+}
+
+fn require_prospecting_licence(w: &mush_core::World, actor: ObjId) -> Result<(), CmdError> {
+    let now_ic = w.world_ic_now().at;
+    crate::port::licence::licence_gate(w, actor, now_ic).map_err(|standing| {
+        CmdError::msg(
+            crate::port::licence::standing_line(w, actor, &standing)
+                .unwrap_or_else(|| crate::port::tv::MINE_NO_LICENCE.to_owned()),
+        )
+    })
+}
+
+fn mine_stake(ctx: &mut Ctx<'_>) -> Result<(), CmdError> {
+    let (hull, _) = require_aboard_and_seat(ctx, None)?;
+    // Enforce the Freeport Registry prospecting licence (2,500 cr / 168 IC days, `D-35-13`).
+    require_prospecting_licence(ctx.w, ctx.actor)?;
+    if ctx.authoritative_pending(ctx.actor) {
+        return Err(CmdError::msg(
+            "The Registry already has a tenure filing in flight for you.",
+        ));
+    }
+
+    let raw = ctx.args.raw().trim();
+    let parts: Vec<&str> = raw.split_whitespace().collect();
+    let rock_token = parts
+        .first()
+        .copied()
+        .ok_or_else(|| CmdError::msg("Usage: +mine/stake <A|B|C> [<family>]"))?;
+    let declared = match parts.get(1) {
+        Some(tok) => Some(super::mining::parse_ore_family(tok).ok_or_else(|| {
+            CmdError::msg(
+                "Unknown ore family (choose metals, volatiles, carbon_feedstock, or strategic_elements).",
+            )
+        })?),
+        None => None,
+    };
+
+    let session = ctx
+        .w
+        .module_state::<SpaceBubbleBook>()
+        .and_then(|b| b.cluster_sessions.get(&hull).cloned())
+        .ok_or_else(|| {
+            CmdError::msg("Ship is not in an orbital cluster; use `+helm/cluster <id>` first.")
+        })?;
+    let spec = session.cluster.rock(rock_token).ok_or_else(|| {
+        CmdError::msg(format!(
+            "Unknown asteroid pocket `{rock_token}` in {} (choose A, B, or C).",
+            session.cluster.display_name()
+        ))
+    })?;
+
+    if spec.tenure == crate::port::def::Tenure::Commons {
+        return Err(CmdError::msg(
+            crate::port::claims::STAKE_COMMONS
+                .replace("{block}", &spec.letter.to_string())
+                .replace("{site}", session.cluster.display_name()),
+        ));
+    }
+
+    let now_ic = ctx.w.world_ic_now().at;
+    let cluster_cid = session
+        .cluster
+        .canonical_id()
+        .ok_or_else(|| CmdError::msg("Invalid cluster canonical id."))?;
+
+    if let Some(handles) = ctx.w.module_state::<crate::port::families::PortHandles>() {
+        let key = crate::surface::claims::BlockKey {
+            site: cluster_cid.clone(),
+            letter: spec.letter,
+        };
+        if let Ok(Some(record)) = ctx.action_state(&handles.families.claims, &key)
+            && let Some(claim) = record.claim.as_ref()
+            && claim.live(now_ic)
+        {
+            return Err(CmdError::msg(format!(
+                "Block {} at {} is already held by {}; use `+mine/contest {}` within the 30-day contest window if eligible.",
+                spec.letter,
+                session.cluster.display_name(),
+                crate::port::claims::holder_name(ctx.w, &claim.holder),
+                spec.letter
+            )));
+        }
+    }
+
+    let discovered_ic = session
+        .pings
+        .get(&(ctx.actor, spec.letter))
+        .copied()
+        .or_else(|| (session.matched_rock == Some(spec.letter)).then_some(now_ic))
+        .ok_or_else(|| {
+            CmdError::msg(format!(
+                "Ping Block {} (`+mine/ping {}`) before staking a Freeport Registry claim.",
+                spec.letter, spec.letter
+            ))
+        })?;
+
+    let receipt = format!(
+        "tacsim.space.claim.stake.{cluster_cid}.{}.{}.{}",
+        spec.letter.to_ascii_lowercase(),
+        ctx.actor.0,
+        now_ic.max(1)
+    );
+    let idem_key = mush_core::IdempotencyKeyText::parse_canonical(receipt.clone())
+        .map_err(|_| CmdError::msg("Failed to form claim stake idempotency key."))?;
+    let action = mush_industry::action_ref(ctx.reg, mush_industry::IndustryVerb::ClaimTenure)
+        .ok_or_else(|| CmdError::msg("The Registry claim action is not wired."))?;
+
+    if let Some(book) = ctx.w.module_state_mut::<SpaceBubbleBook>() {
+        book.cluster_tenure_orders.insert(
+            ctx.actor,
+            super::mining::ClusterTenureOrder {
+                actor: ctx.actor,
+                cluster: session.cluster,
+                letter: spec.letter,
+                is_contest: false,
+                declared,
+                discovered_ic,
+                made_ic: now_ic,
+                receipt: receipt.clone(),
+            },
+        );
+    }
+
+    ctx.submit_authoritative(
+        action,
+        mush_core::PerceivedRef::SelfActor,
+        Vec::new(),
+        serde_json::json!({ "receipt": receipt }),
+        idem_key,
+    );
+
+    ctx.out.sys_to_actor(
+        ctx.actor,
+        "tacsim.space",
+        format!(
+            "Filed Freeport Registry claim stake on Block {} at {} (168-day term, 30-day contest window).",
+            spec.letter,
+            session.cluster.display_name()
+        ),
+    );
+    Ok(())
+}
+
+fn mine_contest(ctx: &mut Ctx<'_>) -> Result<(), CmdError> {
+    let (hull, _) = require_aboard_and_seat(ctx, None)?;
+    require_prospecting_licence(ctx.w, ctx.actor)?;
+    if ctx.authoritative_pending(ctx.actor) {
+        return Err(CmdError::msg(
+            "The Registry already has a tenure filing in flight for you.",
+        ));
+    }
+
+    let raw = ctx.args.raw().trim();
+    if raw.is_empty() {
+        return Err(CmdError::msg("Usage: +mine/contest <A|B|C>"));
+    }
+    let session = ctx
+        .w
+        .module_state::<SpaceBubbleBook>()
+        .and_then(|b| b.cluster_sessions.get(&hull).cloned())
+        .ok_or_else(|| {
+            CmdError::msg("Ship is not in an orbital cluster; use `+helm/cluster <id>` first.")
+        })?;
+    let spec = session.cluster.rock(raw).ok_or_else(|| {
+        CmdError::msg(format!(
+            "Unknown asteroid pocket `{raw}` in {} (choose A, B, or C).",
+            session.cluster.display_name()
+        ))
+    })?;
+
+    let now_ic = ctx.w.world_ic_now().at;
+    let cluster_cid = session
+        .cluster
+        .canonical_id()
+        .ok_or_else(|| CmdError::msg("Invalid cluster canonical id."))?;
+    let handles = ctx
+        .w
+        .module_state::<crate::port::families::PortHandles>()
+        .ok_or_else(|| CmdError::msg("Port handles are not registered."))?;
+    let key = crate::surface::claims::BlockKey {
+        site: cluster_cid.clone(),
+        letter: spec.letter,
+    };
+    let record = ctx
+        .action_state(&handles.families.claims, &key)
+        .ok()
+        .flatten()
+        .ok_or_else(|| {
+            CmdError::msg(format!(
+                "Block {} at {} has no claim to contest.",
+                spec.letter,
+                session.cluster.display_name()
+            ))
+        })?;
+    let claim = record.claim.as_ref().ok_or_else(|| {
+        CmdError::msg(format!(
+            "Block {} at {} has no active claim to contest.",
+            spec.letter,
+            session.cluster.display_name()
+        ))
+    })?;
+    if !claim.live(now_ic) {
+        return Err(CmdError::msg(format!(
+            "The claim on Block {} has already lapsed; use `+mine/stake {}`.",
+            spec.letter, spec.letter
+        )));
+    }
+    if !claim.player_held() {
+        return Err(CmdError::msg(format!(
+            "Block {} is held by {}; organization concessions are not subject to Registry priority contest.",
+            spec.letter,
+            crate::port::claims::holder_name(ctx.w, &claim.holder)
+        )));
+    }
+    if claim.holder == mush_org::PrincipalId::Object(ctx.actor) {
+        return Err(CmdError::msg("You already hold that claim."));
+    }
+    // Enforce the 30-IC-day (`CONTEST_WINDOW_IC_SECS = 30 * 86_400`) contest window (`35a` §4 SF.12).
+    if !crate::surface::tenure::contest_open(claim.registered_ic, now_ic) {
+        return Err(CmdError::msg(format!(
+            "The 30-day Registry contest window on Block {} at {} has closed.",
+            spec.letter,
+            session.cluster.display_name()
+        )));
+    }
+
+    let discovered_ic = session
+        .pings
+        .get(&(ctx.actor, spec.letter))
+        .copied()
+        .unwrap_or(now_ic);
+    let receipt = format!(
+        "tacsim.space.claim.contest.{cluster_cid}.{}.{}.{}",
+        spec.letter.to_ascii_lowercase(),
+        ctx.actor.0,
+        now_ic.max(1)
+    );
+    let idem_key = mush_core::IdempotencyKeyText::parse_canonical(receipt.clone())
+        .map_err(|_| CmdError::msg("Failed to form claim contest idempotency key."))?;
+    let action = mush_industry::action_ref(ctx.reg, mush_industry::IndustryVerb::ClaimTenure)
+        .ok_or_else(|| CmdError::msg("The Registry claim action is not wired."))?;
+
+    let declared = claim.declared;
+    if let Some(book) = ctx.w.module_state_mut::<SpaceBubbleBook>() {
+        book.cluster_tenure_orders.insert(
+            ctx.actor,
+            super::mining::ClusterTenureOrder {
+                actor: ctx.actor,
+                cluster: session.cluster,
+                letter: spec.letter,
+                is_contest: true,
+                declared,
+                discovered_ic,
+                made_ic: now_ic,
+                receipt: receipt.clone(),
+            },
+        );
+    }
+
+    ctx.submit_authoritative(
+        action,
+        mush_core::PerceivedRef::SelfActor,
+        Vec::new(),
+        serde_json::json!({ "receipt": receipt }),
+        idem_key,
+    );
+
+    ctx.out.sys_to_actor(
+        ctx.actor,
+        "tacsim.space",
+        format!(
+            "Filed Freeport Registry contest on Block {} at {} within the 30-day contest window.",
+            spec.letter,
+            session.cluster.display_name()
+        ),
+    );
+    Ok(())
+}
+
+fn mine_laser(ctx: &mut Ctx<'_>) -> Result<(), CmdError> {
+    let (hull, role) = require_aboard_and_seat(ctx, None)?;
+    if !role.grants_channel("flight_ops") && !role.grants_channel("fire") {
+        return Err(CmdError::msg(format!(
+            "Your bridge station ({}) does not control the flight_ops or fire channel.",
+            role.station_token()
+        )));
+    }
+    // Enforce the Freeport Registry prospecting licence (`D-35-13`).
+    require_prospecting_licence(ctx.w, ctx.actor)?;
+
+    let raw = ctx.args.raw().trim();
+    let parts: Vec<&str> = raw.split_whitespace().collect();
+    let rock_token = parts
+        .first()
+        .copied()
+        .ok_or_else(|| CmdError::msg("Usage: +mine/laser <A|B|C> [<family>]"))?;
+
+    let (session, site) = ctx
+        .w
+        .module_state::<SpaceBubbleBook>()
+        .and_then(|b| {
+            let s = b.cluster_sessions.get(&hull)?.clone();
+            let site = b.cluster_sites.get(&s.cluster)?.clone();
+            Some((s, site))
+        })
+        .ok_or_else(|| {
+            CmdError::msg("Ship is not in an orbital cluster; use `+helm/cluster <id>` first.")
+        })?;
+    let spec = session.cluster.rock(rock_token).ok_or_else(|| {
+        CmdError::msg(format!(
+            "Unknown asteroid pocket `{rock_token}` in {} (choose A, B, or C).",
+            session.cluster.display_name()
+        ))
+    })?;
+
+    if session.matched_rock != Some(spec.letter) {
+        return Err(CmdError::msg(format!(
+            "Must lock RCS velocity match (`+helm/match {}`) before firing the mining laser.",
+            spec.letter
+        )));
+    }
+    let _ = super::mining::check_velocity_match_gate(
+        session.ship_pos_m,
+        session.ship_vel_mmps,
+        spec.pos_m,
+        spec.vel_mmps,
+    )
+    .map_err(CmdError::msg)?;
+
+    if session.active_laser.is_some() {
+        return Err(CmdError::msg(
+            "Mining laser is already running an extraction cycle on this ship.",
+        ));
+    }
+
+    let family = match parts.get(1) {
+        Some(tok) => {
+            let fam = super::mining::parse_ore_family(tok).ok_or_else(|| {
+                CmdError::msg(
+                    "Unknown ore family (choose metals, volatiles, carbon_feedstock, or strategic_elements).",
+                )
+            })?;
+            if !spec.spectral.families().contains(&fam) {
+                return Err(CmdError::msg(format!(
+                    "Block {} ({}) does not bear `{}`.",
+                    spec.letter,
+                    spec.spectral.code(),
+                    fam.id()
+                )));
+            }
+            fam
+        }
+        None => spec.spectral.primary_family(),
+    };
+
+    let used_t = super::mining::hull_hold_used_tonnes(ctx, hull);
+    if used_t >= super::mining::DRAY_P_HOLD_CAPACITY_T {
+        return Err(CmdError::msg(format!(
+            "`stow.ore` hold is at capacity ({used_t}/{} t).",
+            super::mining::DRAY_P_HOLD_CAPACITY_T
+        )));
+    }
+    let rock_vault = *site
+        .vaults
+        .get(&spec.letter)
+        .ok_or_else(|| CmdError::msg("Rock deposit vault is not laid up."))?;
+    let avail_t = super::mining::rock_pool_tonnes(ctx, rock_vault, family);
+    if avail_t == 0 {
+        return Err(CmdError::msg(format!(
+            "Block {} `{}` deposit is exhausted (0 t remaining).",
+            spec.letter,
+            crate::surface::opening::ore_good(family)
+        )));
+    }
+
+    let now_ic = ctx.w.world_ic_now().at;
+    let due_ic = now_ic.saturating_add(super::mining::LASER_CYCLE_IC_SECS);
+    let yield_t = super::mining::LASER_CYCLE_YIELD_T
+        .min(super::mining::DRAY_P_HOLD_CAPACITY_T.saturating_sub(used_t))
+        .min(avail_t);
+
+    // Check if this is unleased/claim-jumped frontier extraction (`doc 35` §7.4): generate
+    // thermal bloom (`+18` heat) and flag claim-jump, without scripting any rival spawn inside
+    // `+mine/laser` (`35a` §3 #9).
+    let is_frontier_unleased = session.cluster.zone() == super::mining::ClusterZone::Frontier
+        && super::mining::cluster_rock_tenure_word(ctx, session.cluster, spec, ctx.actor, now_ic)
+            != format!(
+                "your claim (until {}, contest window {}d)",
+                crate::port::licence::ic_stamp(now_ic + crate::surface::tenure::CLAIM_TERM_IC_SECS),
+                crate::surface::tenure::CONTEST_WINDOW_IC_SECS / 86_400
+            );
+
+    let mut bloom_note = String::new();
+    if let Some(book) = ctx.w.module_state_mut::<SpaceBubbleBook>()
+        && let Some(sess_mut) = book.cluster_sessions.get_mut(&hull)
+    {
+        sess_mut.active_laser = Some(super::mining::LaserExtractionCycle {
+            rock_letter: spec.letter,
+            family,
+            started_ic: now_ic,
+            due_ic,
+            yield_t,
+            operator: ctx.actor,
+        });
+        if is_frontier_unleased {
+            sess_mut.frontier_bloom_heat = sess_mut
+                .frontier_bloom_heat
+                .saturating_add(super::mining::FRONTIER_LASER_BLOOM_HEAT);
+            sess_mut.claim_jump_flagged = true;
+            bloom_note = format!(
+                " [FRONTIER BLOOM +{} heat (total {}); unleased extraction flagged]",
+                super::mining::FRONTIER_LASER_BLOOM_HEAT,
+                sess_mut.frontier_bloom_heat
+            );
+        }
+    }
+
+    ctx.out.sys_to_actor(
+        ctx.actor,
+        "tacsim.space",
+        format!(
+            "Mining laser engaged on Block {} ({}) for {}s: extracting {yield_t} t `{}` ({} L/t) into `stow.ore`{bloom_note}.",
+            spec.letter,
+            spec.spectral.code(),
+            super::mining::LASER_CYCLE_IC_SECS,
+            crate::surface::opening::ore_good(family),
+            super::mining::ore_specific_volume_l_per_t(family),
+        ),
+    );
+    Ok(())
+}
+
+fn mine_drones(ctx: &mut Ctx<'_>) -> Result<(), CmdError> {
+    let (hull, role) = require_aboard_and_seat(ctx, None)?;
+    if !role.grants_channel("flight_ops") {
+        return Err(CmdError::msg(format!(
+            "Your bridge station ({}) does not control the flight_ops channel.",
+            role.station_token()
+        )));
+    }
+    // Enforce the Freeport Registry prospecting licence (`D-35-13`).
+    require_prospecting_licence(ctx.w, ctx.actor)?;
+
+    // Verify the hull is a `Dray-P` (`dray_p`) prospector variant (`D-35-13`).
+    let is_prospector =
+        crate::port::ship::hull_view(ctx.w, hull).is_some_and(|v| v.is_prospector());
+    if !is_prospector {
+        return Err(CmdError::msg(
+            "Collector drones require a `Dray-P` prospector hull (`+coop/refit prospector`).",
+        ));
+    }
+
+    let raw = ctx.args.raw().trim().to_owned();
+    let parts: Vec<&str> = raw.split_whitespace().collect();
+    let rock_token = parts
+        .first()
+        .copied()
+        .ok_or_else(|| CmdError::msg("Usage: +mine/drones <A|B|C> [<count 1..4>] [<family>]"))?;
+
+    let mut count: usize = 4;
+    let mut family_token: Option<&str> = None;
+    let max_drones = crate::surface::excursion::MAX_EXCURSIONS_PER_OPERATOR as usize;
+    for &arg in parts.iter().skip(1) {
+        if let Ok(n) = arg.parse::<usize>() {
+            if !(1..=max_drones).contains(&n) {
+                return Err(CmdError::msg(
+                    "Collector drone count must be between 1 and 4 (`MAX_EXCURSIONS_PER_OPERATOR`).",
+                ));
+            }
+            count = n;
+        } else {
+            family_token = Some(arg);
+        }
+    }
+
+    let (session, site) = ctx
+        .w
+        .module_state::<SpaceBubbleBook>()
+        .and_then(|b| {
+            let s = b.cluster_sessions.get(&hull)?.clone();
+            let site = b.cluster_sites.get(&s.cluster)?.clone();
+            Some((s, site))
+        })
+        .ok_or_else(|| {
+            CmdError::msg("Ship is not in an orbital cluster; use `+helm/cluster <id>` first.")
+        })?;
+    let spec = session.cluster.rock(rock_token).ok_or_else(|| {
+        CmdError::msg(format!(
+            "Unknown asteroid pocket `{rock_token}` in {} (choose A, B, or C).",
+            session.cluster.display_name()
+        ))
+    })?;
+
+    if session.matched_rock != Some(spec.letter) {
+        return Err(CmdError::msg(format!(
+            "Must lock RCS velocity match (`+helm/match {}`) before launching collector drones.",
+            spec.letter
+        )));
+    }
+    let _ = super::mining::check_velocity_match_gate(
+        session.ship_pos_m,
+        session.ship_vel_mmps,
+        spec.pos_m,
+        spec.vel_mmps,
+    )
+    .map_err(CmdError::msg)?;
+
+    let active_count = session.active_drones.len();
+    if active_count + count > max_drones {
+        return Err(CmdError::msg(format!(
+            "Drone bay cap exceeded: {active_count} collector drone(s) already in flight (max {} under `MAX_EXCURSIONS_PER_OPERATOR`).",
+            crate::surface::excursion::MAX_EXCURSIONS_PER_OPERATOR
+        )));
+    }
+
+    let family = match family_token {
+        Some(tok) => {
+            let fam = super::mining::parse_ore_family(tok).ok_or_else(|| {
+                CmdError::msg(
+                    "Unknown ore family (choose metals, volatiles, carbon_feedstock, or strategic_elements).",
+                )
+            })?;
+            if !spec.spectral.families().contains(&fam) {
+                return Err(CmdError::msg(format!(
+                    "Block {} ({}) does not bear `{}`.",
+                    spec.letter,
+                    spec.spectral.code(),
+                    fam.id()
+                )));
+            }
+            fam
+        }
+        None => spec.spectral.primary_family(),
+    };
+
+    let used_t = super::mining::hull_hold_used_tonnes(ctx, hull);
+    if used_t >= super::mining::DRAY_P_HOLD_CAPACITY_T {
+        return Err(CmdError::msg(format!(
+            "`stow.ore` hold is at capacity ({used_t}/{} t).",
+            super::mining::DRAY_P_HOLD_CAPACITY_T
+        )));
+    }
+    let rock_vault = *site
+        .vaults
+        .get(&spec.letter)
+        .ok_or_else(|| CmdError::msg("Rock deposit vault is not laid up."))?;
+    let avail_t = super::mining::rock_pool_tonnes(ctx, rock_vault, family);
+    if avail_t == 0 {
+        return Err(CmdError::msg(format!(
+            "Block {} `{}` deposit is exhausted (0 t remaining).",
+            spec.letter,
+            crate::surface::opening::ore_good(family)
+        )));
+    }
+
+    let now_ic = ctx.w.world_ic_now().at;
+    let due_ic = now_ic.saturating_add(super::mining::DRONE_SORTIE_IC_SECS);
+    let mut launched_ids = Vec::new();
+    for idx in 0..count {
+        let slot = u8::try_from(active_count + idx + 1).unwrap_or(1);
+        let drone_obj =
+            super::mining::ensure_drone_thing(ctx, hull, slot).map_err(CmdError::msg)?;
+        let excursion_id = crate::surface::excursion::ExcursionId {
+            tv: drone_obj,
+            launch_ic: now_ic,
+        };
+        launched_ids.push((slot, excursion_id));
+    }
+
+    if let Some(book) = ctx.w.module_state_mut::<SpaceBubbleBook>()
+        && let Some(sess_mut) = book.cluster_sessions.get_mut(&hull)
+    {
+        for &(slot, excursion_id) in &launched_ids {
+            sess_mut
+                .active_drones
+                .push(super::mining::DroneSortieState {
+                    slot,
+                    excursion_id,
+                    rock_letter: spec.letter,
+                    family,
+                    due_ic,
+                    yield_t: super::mining::DRONE_SORTIE_YIELD_T,
+                    operator: ctx.actor,
+                });
+        }
+    }
+
+    let exc_summary: Vec<String> = launched_ids
+        .iter()
+        .map(|(slot, exc)| format!("slot {slot} (#{exc})"))
+        .collect();
+    ctx.out.sys_to_actor(
+        ctx.actor,
+        "tacsim.space",
+        format!(
+            "Launched {} collector drone(s) onto Block {} ({}) for {}s ({} t `{}` each into `stow.ore`): {}.",
+            launched_ids.len(),
+            spec.letter,
+            spec.spectral.code(),
+            super::mining::DRONE_SORTIE_IC_SECS,
+            super::mining::DRONE_SORTIE_YIELD_T,
+            crate::surface::opening::ore_good(family),
+            exc_summary.join(", ")
+        ),
+    );
+    Ok(())
 }
 
 #[allow(dead_code)]

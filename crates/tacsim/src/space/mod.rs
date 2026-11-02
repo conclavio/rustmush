@@ -13,6 +13,7 @@ use serde::{Deserialize, Serialize};
 pub mod bubble;
 pub mod commands;
 pub mod custody;
+pub mod mining;
 pub mod tick;
 pub mod weapons;
 
@@ -23,11 +24,12 @@ pub use bubble::{
     SpaceShipState, SubsystemCrit,
 };
 pub use commands::{
-    BridgeRole, HELM_HELP, HELM_SWITCHES, HELM_VERB, HOLOTANK_FEED, NO_BRIDGE_STATION,
-    NO_SUCH_CONTACT, NOT_ABOARD_SHIP, SPACE_COCKPIT_FEED, SpaceContactObservation, TAC_HELP,
-    TAC_SWITCHES, TAC_VERB, emcon_level_for_posture, emcon_posture_for_level,
-    evaluate_space_contact_detection, heading_order_vector, helm_cmd, hull_aboard_for_actor,
-    is_hull_captain, observe_bubble_contacts, parse_emcon_token, seat_role_for_actor, tac_cmd,
+    BridgeRole, HELM_HELP, HELM_SWITCHES, HELM_VERB, HOLOTANK_FEED, MINE_HELP, MINE_SWITCHES,
+    MINE_VERB, NO_BRIDGE_STATION, NO_SUCH_CONTACT, NOT_ABOARD_SHIP, SPACE_COCKPIT_FEED,
+    SpaceContactObservation, TAC_HELP, TAC_SWITCHES, TAC_VERB, emcon_level_for_posture,
+    emcon_posture_for_level, evaluate_space_contact_detection, heading_order_vector, helm_cmd,
+    hull_aboard_for_actor, is_hull_captain, mine_cmd, observe_bubble_contacts, parse_emcon_token,
+    seat_role_for_actor, tac_cmd,
 };
 pub use custody::{
     ALL_FACET_BANDS, ALL_SHIP_SECTIONS, apply_unit_spec_to_space_ship,
@@ -36,6 +38,14 @@ pub use custody::{
     record_space_combat_to_black_box, register_derelict_salvage_in_book,
     resolve_tactical_section_id, space_ship_from_tactical_unit,
     space_ship_from_tactical_unit_with_spec, unit_spec_for_id,
+};
+pub use mining::{
+    ActiveClusterMiningSession, ClusterRockSpec, ClusterSiteState, ClusterTenureOrder, ClusterZone,
+    DRAY_P_HOLD_CAPACITY_KG, DRAY_P_HOLD_CAPACITY_T, DRONE_SORTIE_IC_SECS, DRONE_SORTIE_YIELD_T,
+    DroneSortieState, FRONTIER_LASER_BLOOM_HEAT, LASER_CYCLE_IC_SECS, LASER_CYCLE_YIELD_T,
+    LaserExtractionCycle, MAX_MINING_MATCH_RANGE_M, MAX_VELOCITY_MATCH_SPEED_MMPS,
+    OrbitalClusterId, PendingSpaceMineDraw, SpectralClass, build_updated_pocket_cursor,
+    check_velocity_match_gate, ore_specific_volume_l_per_t,
 };
 pub use tick::{
     ActiveInterdictionBubble, CARRIER_PARTY, COMBAT_STEP_WALL_MS, CRUISE_STEP_WALL_MS,
