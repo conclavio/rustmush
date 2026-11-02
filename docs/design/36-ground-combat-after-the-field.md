@@ -1376,9 +1376,19 @@ What moved, each re-pinned with its reason beside it:
 - **The draw-label set**: seven kinds, `component` last (`arena/rng.rs`'s own pin and
   `mush-contract-tests`' `the_draw_label_set_is_pinned`). Adding it shifts no existing draw
   (`adding_a_label_shifts_no_existing_draw` is unchanged and green).
+- **The cross-platform practice rows** (`tests/shard_2/minds_rhai.rs`,
+  `M2_CROSS_PLATFORM_PINS`, D-UM-28): the twin corpus is content-backed too. Rows 0 and 1 fight
+  differently, their stopping times moving 170,250 → 176,250 and 192,500 → 235,250 with every
+  hash. Row 2 stops at the same 170,000 with the same state hash and substep digest, and only
+  its ledger digest moved (its hit lines carry the third draw). Row 3, the float probe, is
+  unmoved, with its 3,600 thinks and the 369098751 bitmask. The test is `#[ignore]`d and run by
+  name only in CI's `tacsim-minds` cell, so the first local pass missed it and the PR's first CI
+  run caught it (run 41387953901). Windows and Linux print the same four rows byte for byte, so
+  this is a pin left behind, not a divergence between hosts. The two other by-name lanes beside
+  it, the whole-match hashes between the runners and the thirty real pool tasks, were unmoved
+  and green.
 
-What did **not** move, and was checked: the four cross-platform practice rows
-(`tests/shard_2/minds_rhai.rs`), the shipped duel's hash and its 34 lines
+What did **not** move, and was checked: the shipped duel's hash and its 34 lines
 (`tests/shard_3/motor.rs`), the (j) field's substep hashes and its 50 lines
 (`tests/shard_2/reflex.rs`), the production encoding pins (`tests/shard_2/minds.rs`),
 `STANDARD_SHA256` and the default seal digests. Those fights are hand-built fixtures with no
