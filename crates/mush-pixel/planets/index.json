@@ -6,6 +6,22 @@
     128,
     64
   ],
+  "bake_params": {
+    "sample_mode": "stride_top_left",
+    "albedo_indices": [
+      0,
+      239
+    ],
+    "feature_indices": [
+      240,
+      255
+    ],
+    "luma_percentiles": [
+      0.02,
+      0.98
+    ],
+    "idat_encoding": "zlib_stored_single_block"
+  },
   "planets": [
     {
       "id": "neptune",
@@ -13,7 +29,7 @@
       "width": 128,
       "height": 64,
       "bytes": 9104,
-      "sha256": "722b914773cd618ca4314ba9c12a480d49e9c2fbc5ec3107b8699460cc8c3a90",
+      "sha256": "7a0865b6407e8fb5116318add3d2b7cd67d01fac9124ec1e12d1d74ba56a0e12",
       "source_texture": "Assets/Solar System Planets/Texturemap/Solar System/Neptune_Tex.png",
       "source_clouds": null,
       "source_dimensions": [
@@ -27,7 +43,7 @@
       "width": 128,
       "height": 64,
       "bytes": 9104,
-      "sha256": "946bb53e412ed82c853456f125abe7d6919ec0432d5f66e472275084892c2dc4",
+      "sha256": "b45b32ba8e61601cb06579b6165cd49d8705d05f6072afd40fc52cb40ad57650",
       "source_texture": "Assets/Solar System Planets/Texturemap/Solar System/Uranus_Tex.png",
       "source_clouds": null,
       "source_dimensions": [
@@ -41,7 +57,7 @@
       "width": 128,
       "height": 64,
       "bytes": 9104,
-      "sha256": "e0c48ce8e9450e6e1439ca83694f2fedc233632a6246c558353eb01ee864702f",
+      "sha256": "abed3c5dc46cf784a416955b7c3e6ae126dd35961dedd672ebf7f3bbf79bdfbb",
       "source_texture": "Assets/Solar System Planets/Texturemap/Solar System/Saturn_Tex.png",
       "source_clouds": null,
       "source_dimensions": [
@@ -55,7 +71,7 @@
       "width": 128,
       "height": 64,
       "bytes": 9104,
-      "sha256": "10cfb18f6997debf5a109b5c82947214db44a0e80c2e1f2d82242abf64ac67dc",
+      "sha256": "2f00a1ecc1a28f25d372a91310c62add63d5f74cf453e3dedb5639ba43a28623",
       "source_texture": "Assets/Solar System Planets/Texturemap/Solar System/Jupiter_Tex.png",
       "source_clouds": null,
       "source_dimensions": [
@@ -83,7 +99,7 @@
       "width": 128,
       "height": 64,
       "bytes": 9104,
-      "sha256": "c7572d01a033223ee4903a8e26c6b20d8d5f6794db28b361c877d10532cf5719",
+      "sha256": "a912f8ea1a0b1e8b464a22334e762a270a4f6e99eba42a142b756497f78c7b88",
       "source_texture": "Assets/Solar System Planets/Texturemap/Solar System/Earth_Tex.png",
       "source_clouds": "Assets/Solar System Planets/Texturemap/Solar System/cloud_Tex.png",
       "source_dimensions": [
@@ -97,7 +113,7 @@
       "width": 128,
       "height": 64,
       "bytes": 9104,
-      "sha256": "9270137bdd8e8091495d28d9ab7bd2512142402cd840e74437dcfe4b61d8299d",
+      "sha256": "38a4ac3f14feea7271f89823fff14a32065c2e1105a02c7793628301776032ec",
       "source_texture": "Assets/Solar System Planets/Texturemap/Solar System/venus_Tex.png",
       "source_clouds": null,
       "source_dimensions": [
@@ -111,7 +127,7 @@
       "width": 128,
       "height": 64,
       "bytes": 9104,
-      "sha256": "cd2ec8269b846d258dc4e2c00b689a431e586f5c8bd2984fcbcc5820152ef12e",
+      "sha256": "7e110b10e18df57ee65058ed04b025b14f8047d551851f7bdcb864f53223a30a",
       "source_texture": "Assets/Solar System Planets/Texturemap/Dwarf Planets/Eris_Tex.png",
       "source_clouds": null,
       "source_dimensions": [
@@ -125,7 +141,7 @@
       "width": 128,
       "height": 64,
       "bytes": 9104,
-      "sha256": "64b39af2ac29816bab15b4830899136d028462a985fc6c63694c0c2056ad2117",
+      "sha256": "df3a7f8651f1e91f73e1bfe21204cd4a6fdee10a2d8df05a9ce103d7ba7ee256",
       "source_texture": "Assets/Solar System Planets/Texturemap/Dwarf Planets/Makemake_Tex.png",
       "source_clouds": null,
       "source_dimensions": [
@@ -139,7 +155,7 @@
       "width": 128,
       "height": 64,
       "bytes": 9104,
-      "sha256": "188c549a3b4383a080f78739a410878006e1695e05cb78437ece849637f9b325",
+      "sha256": "6de4c316d733dee190e1a5819e39d5c415630b9afc4458bc9a2bdf9fd830c1cb",
       "source_texture": "Assets/Solar System Planets/Texturemap/Dwarf Planets/Haumea_Tex.png",
       "source_clouds": null,
       "source_dimensions": [
@@ -153,7 +169,7 @@
       "width": 128,
       "height": 64,
       "bytes": 9104,
-      "sha256": "88a2ae30c0c7ae16e6fab9c206cb76628cb461ce4dcb5ae4b9cbeaf3bd7ff2cd",
+      "sha256": "bb26e7e4e3fe26251f96fa03d4b6fc0af5843e2d9e01cde6020816205532a25a",
       "source_texture": "Assets/Solar System Planets/Texturemap/Dwarf Planets/Ceres_Tex.png",
       "source_clouds": null,
       "source_dimensions": [

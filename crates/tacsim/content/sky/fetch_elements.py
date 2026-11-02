@@ -119,8 +119,14 @@ ASTEROID_CLUSTERS = {
         ore_families=["ice_ore", "carbon_ore", "metal_ore"],
     ),
     "kirkwood_gap_3_1": dict(
-        base="ceres",
-        trail_deg=2.4,
+        a_au=2.500_000_000,
+        e=0.045_000_000,
+        i_deg=6.200_000,
+        node_deg=80.250_000,
+        peri_deg=73.500_000,
+        mean_anomaly_deg=215.000_000,
+        mean_motion_deg_day=0.249_341_218,
+        period_days=1_443.805,
         zone="frontier",
         radius_km=800,
         spectral_classes=["s_type", "m_type"],
@@ -568,9 +574,8 @@ def write_outer_pack(args, epoch, first, last, dates, ic):
                 mean_motion_deg_day=cspec["mean_motion_deg_day"],
             )
             r, lam, _ = polar(kepler_xyz(row, 0.0))
-            outer["bodies"][cname] = dict(
+            body_entry = dict(
                 kind="asteroid_cluster",
-                parent=cspec["parent"],
                 orbit_uau=max(1, int(round(r / AU_KM * 1_000_000))),
                 period_mdays=max(1, int(round(cspec["period_days"] * 1_000))),
                 phase_mdeg=int(round(lam * 1_000)) % 360_000,
@@ -582,6 +587,9 @@ def write_outer_pack(args, epoch, first, last, dates, ic):
                 ore_families=cspec["ore_families"],
                 elements=pack_rows([row]),
             )
+            if "parent" in cspec:
+                body_entry["parent"] = cspec["parent"]
+            outer["bodies"][cname] = body_entry
 
     text = json.dumps(outer, separators=(",", ":"))
     text = re.sub(

@@ -171,10 +171,24 @@ pub struct PdcMount {
     pub ammo_remaining: u32,
     /// Whether this mount is operational (false if knocked out by a subsystem crit).
     pub operational: bool,
+    /// Minimum recharge / slew cooldown between intercept bursts in wall milliseconds (`35a` §5.8).
+    #[serde(default = "default_pdc_cooldown_ms")]
+    pub cooldown_ms: u32,
+    /// Remaining burst cooldown in wall milliseconds.
+    #[serde(default)]
+    pub cooldown_remaining_ms: u32,
+}
+
+fn default_pdc_cooldown_ms() -> u32 {
+    500
+}
+
+fn default_torpedo_max_flight_ms() -> u32 {
+    45_000
 }
 
 impl PdcMount {
-    /// Standard $15\text{ km}$ rotary PDC mount with 2,000 rounds.
+    /// Standard $15\text{ km}$ rotary PDC mount with 2,000 rounds and a $500\text{ ms}$ burst cycle.
     #[must_use]
     pub fn standard_rotary(id: impl Into<String>, ammo: u32) -> Self {
         Self {
@@ -183,6 +197,8 @@ impl PdcMount {
             burst_rounds: 50,
             ammo_remaining: ammo,
             operational: true,
+            cooldown_ms: 500,
+            cooldown_remaining_ms: 0,
         }
     }
 }
@@ -195,6 +211,9 @@ pub struct InFlightTorpedo {
     pub target_id: String,
     /// Current 3D local position in metres (`[x, y, z]`).
     pub pos_m: [i64; 3],
+    /// Sub-metre position remainder in micrometres (`-999_999..=999_999`, `35a` §5.2).
+    #[serde(default)]
+    pub pos_rem_um: [i64; 3],
     /// Current 3D local velocity in $\text{mm/s}$ (`[vx, vy, vz]`).
     pub vel_mmps: [i64; 3],
     /// Guidance acceleration capability in $\text{m/s}^2$.
@@ -205,6 +224,15 @@ pub struct InFlightTorpedo {
     pub warhead_damage: u32,
     /// Estimated time-to-impact in whole wall seconds (`TTI`).
     pub tti_s: i64,
+    /// Elapsed flight time in wall milliseconds (`35a` §5.9).
+    #[serde(default)]
+    pub flight_elapsed_ms: u32,
+    /// Maximum flight duration before self-destruct / battery expiry (`45_000 ms`, doc 35 §6.2).
+    #[serde(default = "default_torpedo_max_flight_ms")]
+    pub max_flight_ms: u32,
+    /// Whether `TorpedoExhaustedDeltaV` has already been emitted once for this torpedo (`35a` §5.9).
+    #[serde(default)]
+    pub dv_exhausted_emitted: bool,
 }
 
 /// A live unguided railgun tungsten slug in flight (`D-35-8`).
@@ -222,9 +250,12 @@ pub struct InFlightSlug {
     pub target_id: String,
     /// Current 3D local position in metres.
     pub pos_m: [i64; 3],
+    /// Sub-metre position remainder in micrometres (`-999_999..=999_999`, `35a` §5.2).
+    #[serde(default)]
+    pub pos_rem_um: [i64; 3],
     /// Constant 3D ballistic velocity in $\text{mm/s}$ ($\mathbf{v}_{\text{ship}} + \mathbf{v}_{\text{muz}}$).
     pub vel_mmps: [i64; 3],
-    /// Predicted target 3D position at impact time when the shot was fired.
+    /// Predicted target 3D world-frame position at impact time when the shot was fired.
     pub aimed_lead_pos_m: [i64; 3],
     /// Remaining flight time in wall milliseconds until closest approach.
     pub remaining_flight_ms: u32,
@@ -234,10 +265,16 @@ pub struct InFlightSlug {
     pub slug_damage: u32,
 }
 
-/// Compute the 3D railgun lead point $\mathbf{r}_{\text{lead}}$ in metres and
-/// time-of-flight in wall milliseconds for a target at `target_pos_m` with
-/// velocity `target_vel_mmps` fired from `shooter_pos_m` with `shooter_vel_mmps`
-/// and muzzle speed `muzzle_vel_mps`.
+/// Compute the 3D world-frame railgun lead point $\mathbf{r}_{\text{lead}}$ in
+/// metres and time-of-flight in wall milliseconds for a target at `target_pos_m`
+/// with velocity `target_vel_mmps` fired from `shooter_pos_m` with
+/// `shooter_vel_mmps` and muzzle speed `muzzle_vel_mps` (`35a` §5.1).
+///
+/// In the shooter's rest frame, the target's relative displacement after `tof_ms`
+/// is $\Delta \mathbf{r}_{\text{rel}} = (\mathbf{r}_t - \mathbf{r}_s) + (\mathbf{v}_t - \mathbf{v}_s) t$,
+/// which the slug covers at muzzle speed $v_{\text{muz}}$. In the **world frame**,
+/// the intercept point is $\mathbf{r}_{\text{lead}} = \mathbf{r}_t + \mathbf{v}_t t$,
+/// and the slug's world-frame velocity is $(\mathbf{r}_{\text{lead}} - \mathbf{r}_s) / t = \mathbf{v}_s + \mathbf{v}_{\text{muz}}$.
 #[must_use]
 pub fn compute_railgun_lead(
     shooter_pos_m: [i64; 3],
@@ -255,11 +292,11 @@ pub fn compute_railgun_lead(
     let rvy_mmps = (target_vel_mmps[1] - shooter_vel_mmps[1]) as i128;
     let rvz_mmps = (target_vel_mmps[2] - shooter_vel_mmps[2]) as i128;
 
-    // Two-pass intercept time-of-flight in milliseconds:
+    // Iterative intercept time-of-flight in milliseconds in the shooter's rest frame:
     let muz_mmps = (muzzle_vel_mps.max(1_000) as i128) * 1_000;
     let mut tof_ms = ((dist_m * 1_000_000) / muz_mmps).clamp(100, 60_000);
 
-    for _ in 0..2 {
+    for _ in 0..3 {
         let lx = dx + (rvx_mmps * tof_ms) / 1_000_000;
         let ly = dy + (rvy_mmps * tof_ms) / 1_000_000;
         let lz = dz + (rvz_mmps * tof_ms) / 1_000_000;
@@ -267,10 +304,11 @@ pub fn compute_railgun_lead(
         tof_ms = ((lead_dist_m * 1_000_000) / muz_mmps).clamp(100, 60_000);
     }
 
+    // World-frame position of the target after `tof_ms` if it holds course:
     let lead_pos_m = [
-        shooter_pos_m[0].saturating_add((dx + (rvx_mmps * tof_ms) / 1_000_000) as i64),
-        shooter_pos_m[1].saturating_add((dy + (rvy_mmps * tof_ms) / 1_000_000) as i64),
-        shooter_pos_m[2].saturating_add((dz + (rvz_mmps * tof_ms) / 1_000_000) as i64),
+        target_pos_m[0].saturating_add(((target_vel_mmps[0] as i128 * tof_ms) / 1_000_000) as i64),
+        target_pos_m[1].saturating_add(((target_vel_mmps[1] as i128 * tof_ms) / 1_000_000) as i64),
+        target_pos_m[2].saturating_add(((target_vel_mmps[2] as i128 * tof_ms) / 1_000_000) as i64),
     ];
     (lead_pos_m, tof_ms as u32)
 }

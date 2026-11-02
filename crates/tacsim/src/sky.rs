@@ -82,6 +82,8 @@ pub struct OuterBodyDef {
     pub ore_families: Vec<String>,
     /// Osculating Keplerian element table over the campaign window.
     pub elements: Vec<ElementRow>,
+    /// Canonical table digest under [`SKY_TABLE_DIGEST_DOMAIN`] for [`Sky::revision`].
+    pub element_digest: Result<DefinitionDigest, String>,
 }
 
 #[derive(Deserialize)]
@@ -90,6 +92,7 @@ struct RawOuterPack {
 }
 
 #[derive(Deserialize)]
+#[serde(deny_unknown_fields)]
 struct RawOuterBody {
     kind: OuterBodyKind,
     #[serde(default)]
@@ -109,54 +112,102 @@ struct RawOuterBody {
     elements: Vec<[f64; ROW_FIELDS]>,
 }
 
+fn digest_element_table(rows: &[ElementRow]) -> Result<DefinitionDigest, String> {
+    let value = json!(
+        rows.iter()
+            .map(|row| {
+                json!([
+                    row.epoch_ic,
+                    row.a_nau,
+                    row.e_nano,
+                    row.i_udeg,
+                    row.node_udeg,
+                    row.peri_udeg,
+                    row.ma_udeg,
+                    row.n_ndeg_day
+                ])
+            })
+            .collect::<Vec<_>>()
+    );
+    DefinitionDigest::for_canonical_value(SKY_TABLE_DIGEST_DOMAIN, &value)
+        .map_err(|error| error.to_string())
+}
+
+/// Parse and validate an outer-system and orbital asteroid cluster JSON document
+/// through [`crate::pack::BodyDef`] (doc 35 cut SF.1, D-35-4, D-35-13, 35a §5 item 20).
+///
+/// # Errors
+///
+/// Returns an error if the JSON is malformed, any identifier is invalid, or any
+/// entry fails [`crate::pack::BodyDef`]'s orbital range or element-table consistency
+/// rules.
+#[allow(clippy::cast_precision_loss)]
+pub fn parse_outer_catalog(json: &str) -> Result<BTreeMap<CanonicalId, OuterBodyDef>, String> {
+    let raw: RawOuterPack =
+        serde_json::from_str(json).map_err(|e| format!("outer_bodies.json decode error: {e}"))?;
+    let mut out = BTreeMap::new();
+    for (name, entry) in raw.bodies {
+        let id = CanonicalId::new(&name).map_err(|e| format!("{name}: {e}"))?;
+        let parent = match entry.parent {
+            Some(p) => Some(CanonicalId::new(&p).map_err(|e| format!("{name}.parent: {e}"))?),
+            None => None,
+        };
+        if entry.radius_km == 0 {
+            return Err(format!("{name}: radius_km must be positive"));
+        }
+        if !(1..=crate::pack::MAX_SURFACE_FIGURE).contains(&entry.surface_mg) {
+            return Err(format!(
+                "{name}: surface_mg {} out of range 1..={}",
+                entry.surface_mg,
+                crate::pack::MAX_SURFACE_FIGURE
+            ));
+        }
+        let validated = crate::pack::BodyDef::from_authored(
+            entry.orbit_uau as f64 / 1_000_000.0,
+            entry.period_mdays as f64 / 1_000.0,
+            entry.phase_mdeg as f64 / 1_000.0,
+            entry.epoch_ic,
+        )
+        .and_then(|def| def.with_elements(&entry.elements))
+        .map(|def| def.with_parent(parent.clone()))
+        .map_err(|e| format!("{name}: {e}"))?;
+
+        if validated.elements.is_empty() {
+            return Err(format!("{name}: element table must not be empty"));
+        }
+        let element_digest = digest_element_table(&validated.elements);
+        out.insert(
+            id.clone(),
+            OuterBodyDef {
+                id,
+                kind: entry.kind,
+                body: Body {
+                    orbit_uau: validated.orbit_uau,
+                    period_mdays: validated.period_mdays,
+                    phase_mdeg: validated.phase_mdeg,
+                    epoch_ic: validated.epoch_ic,
+                    parent,
+                },
+                radius_km: entry.radius_km,
+                surface_mg: entry.surface_mg,
+                zone: entry.zone,
+                spectral_classes: entry.spectral_classes,
+                ore_families: entry.ore_families,
+                elements: validated.elements,
+                element_digest,
+            },
+        );
+    }
+    Ok(out)
+}
+
 /// The compiled-in outer-system and orbital asteroid cluster catalogue (doc 35 cut SF.1).
 #[must_use]
 pub fn outer_catalog() -> &'static BTreeMap<CanonicalId, OuterBodyDef> {
     static CATALOG: OnceLock<BTreeMap<CanonicalId, OuterBodyDef>> = OnceLock::new();
     CATALOG.get_or_init(|| {
-        let Ok(raw) = serde_json::from_str::<RawOuterPack>(OUTER_BODIES_JSON) else {
-            return BTreeMap::new();
-        };
-        let mut out = BTreeMap::new();
-        for (name, entry) in raw.bodies {
-            let Ok(id) = CanonicalId::new(name) else {
-                continue;
-            };
-            let parent = match entry.parent {
-                Some(p) => CanonicalId::new(p).ok(),
-                None => None,
-            };
-            let mut elements = Vec::with_capacity(entry.elements.len());
-            for row in &entry.elements {
-                if let Ok(parsed) = ElementRow::from_authored(row) {
-                    elements.push(parsed);
-                }
-            }
-            if elements.is_empty() {
-                continue;
-            }
-            out.insert(
-                id.clone(),
-                OuterBodyDef {
-                    id,
-                    kind: entry.kind,
-                    body: Body {
-                        orbit_uau: entry.orbit_uau,
-                        period_mdays: entry.period_mdays,
-                        phase_mdeg: entry.phase_mdeg,
-                        epoch_ic: entry.epoch_ic,
-                        parent,
-                    },
-                    radius_km: entry.radius_km,
-                    surface_mg: entry.surface_mg,
-                    zone: entry.zone,
-                    spectral_classes: entry.spectral_classes,
-                    ore_families: entry.ore_families,
-                    elements,
-                },
-            );
-        }
-        out
+        parse_outer_catalog(OUTER_BODIES_JSON)
+            .expect("compiled-in outer_bodies.json must pass BodyDef validation")
     })
 }
 
@@ -210,27 +261,7 @@ impl KeplerSky {
     pub fn new(circular: Ephemeris, tables: BTreeMap<CanonicalId, Vec<ElementRow>>) -> KeplerSky {
         let table_digests = tables
             .iter()
-            .map(|(id, rows)| {
-                let value = json!(
-                    rows.iter()
-                        .map(|row| {
-                            json!([
-                                row.epoch_ic,
-                                row.a_nau,
-                                row.e_nano,
-                                row.i_udeg,
-                                row.node_udeg,
-                                row.peri_udeg,
-                                row.ma_udeg,
-                                row.n_ndeg_day
-                            ])
-                        })
-                        .collect::<Vec<_>>()
-                );
-                let digest = DefinitionDigest::for_canonical_value(SKY_TABLE_DIGEST_DOMAIN, &value)
-                    .map_err(|error| error.to_string());
-                (id.clone(), digest)
-            })
+            .map(|(id, rows)| (id.clone(), digest_element_table(rows)))
             .collect();
         KeplerSky {
             circular,
@@ -343,13 +374,26 @@ impl KeplerSky {
 }
 
 /// A circular body's unrounded `f64` position at IC time `t` in kilometres
-/// (with moon parent composition).
+/// (with moon parent composition), computed from continuous `f64` orbital phase
+/// so [`Sky::velocity_mps`] is never quantised by millidegree rounding (35a §5 item 6).
 #[allow(clippy::cast_precision_loss)]
 fn circular_position_f64(sky: &Ephemeris, body: &CanonicalId, t_ic: i64) -> Option<[f64; 3]> {
     let b = sky.body(body)?;
-    let phase = sky.phase_mdeg_at(body, t_ic)?;
+    if b.period_mdays == 0 {
+        return None;
+    }
+    let base_deg = b.phase_mdeg as f64 / 1_000.0;
+    let phase_deg = if sky.rate_permille() == 0 {
+        base_deg.rem_euclid(360.0)
+    } else {
+        let epoch = b.epoch_ic.unwrap_or_else(|| sky.epoch());
+        let elapsed_s = (t_ic as f64) - (epoch as f64);
+        let rate = f64::from(sky.rate_permille()) / 1_000.0;
+        let period_s = (b.period_mdays as f64 / 1_000.0) * 86_400.0;
+        (base_deg + (elapsed_s * rate * 360.0) / period_s).rem_euclid(360.0)
+    };
     let r = b.orbit_uau as f64 * AU_KM as f64 / 1_000_000.0;
-    let theta = (phase as f64 / 1_000.0).to_radians();
+    let theta = phase_deg.to_radians();
     let own = [r * theta.cos(), r * theta.sin(), 0.0];
     match &b.parent {
         Some(parent) if parent != body => {
@@ -535,6 +579,10 @@ impl Sky {
                 circular_position_f64(sky, body, t0)?,
                 circular_position_f64(sky, body, t1)?,
             ),
+            Sky::Kepler(sky) if sky.table(body).is_none() => (
+                circular_position_f64(sky.circular(), body, t0)?,
+                circular_position_f64(sky.circular(), body, t1)?,
+            ),
             Sky::Kepler(sky) => (sky.position_f64(body, t0)?, sky.position_f64(body, t1)?),
         };
         let span_s = (t1 - t0) as f64;
@@ -660,6 +708,23 @@ impl Sky {
                 if let Some(serde_json::Value::Object(entry)) = bodies.get_mut(id.as_str()) {
                     entry.insert("elements".to_owned(), json!(digest.to_hex()));
                 }
+            }
+            for (id, outer) in self.outer_bodies() {
+                let digest = outer
+                    .element_digest
+                    .as_ref()
+                    .map_err(|error| SkyError::Encoding(error.clone()))?;
+                bodies.insert(
+                    id.to_string(),
+                    json!({
+                        "orbit_uau": outer.body.orbit_uau,
+                        "period_mdays": outer.body.period_mdays,
+                        "phase_mdeg": outer.body.phase_mdeg,
+                        "epoch_ic": outer.body.epoch_ic,
+                        "parent": outer.body.parent.as_ref().map(ToString::to_string),
+                        "elements": digest.to_hex(),
+                    }),
+                );
             }
         }
         let value = json!({
@@ -927,5 +992,33 @@ mod tests {
             light > 60,
             "minutes of light between Ceres and Mars: {light}"
         );
+    }
+
+    #[test]
+    fn circular_sky_velocity_mps_is_continuous_and_outer_catalog_validates_through_body_def() {
+        let e = 74_152_540_800;
+        let circ = sky(1_000, Some(e));
+        let v_mars = circ.velocity_mps(&cid("mars"), e).expect("mars velocity");
+        let speed_mars = (f64::from(v_mars[0]).powi(2)
+            + f64::from(v_mars[1]).powi(2)
+            + f64::from(v_mars[2]).powi(2))
+        .sqrt();
+        // Mars circular speed: 2 * pi * (1.524 * AU_KM * 1000) / (686.98 * 86400) ≈ 24,130 m/s.
+        assert!(
+            (23_900.0..=24_350.0).contains(&speed_mars),
+            "circular mars speed {speed_mars:.1} m/s ({v_mars:?}) must not be quantised"
+        );
+
+        let cat = outer_catalog();
+        assert_eq!(cat.len(), 11);
+        let kw = cat.get(&cid("kirkwood_gap_3_1")).expect("kirkwood_gap_3_1");
+        assert_eq!(
+            kw.elements[0].a_nau, 2_500_000_000,
+            "3:1 resonance at 2.50 AU"
+        );
+
+        // Malformed or contradictory outer_bodies JSON is rejected by BodyDef validation.
+        let bad_json = r#"{"bodies":{"bad":{"kind":"planet","orbit_uau":1000000,"period_mdays":365250,"phase_mdeg":0,"epoch_ic":74152540800,"radius_km":1000,"surface_mg":100,"elements":[[74152540800,5.0,0.0,0.0,0.0,0.0,0.0,0.9856]]}}}"#;
+        assert!(parse_outer_catalog(bad_json).is_err());
     }
 }
