@@ -734,6 +734,16 @@ impl LocalSpaceBubble {
         }
     }
 
+    /// Set or clear the fire-control target lock (`locked_target_id`) on `ship_id` (`SF.R3`, `D-35-9`).
+    pub fn set_locked_target(&mut self, ship_id: &str, target_id: Option<String>) -> bool {
+        if let Some(ship) = self.ships.get_mut(ship_id) {
+            ship.locked_target_id = target_id;
+            true
+        } else {
+            false
+        }
+    }
+
     /// Deploy an active thermal/radar ECM decoy canister (`+tac/decoy`, `SF.15`, `D-35-8`).
     ///
     /// Returns `Ok(decoys_remaining)` when a canister is launched (active for 15 wall seconds).
@@ -862,7 +872,10 @@ impl LocalSpaceBubble {
         else {
             return events;
         };
-        if shooter.status != HullStatus::Operational {
+        if shooter.status != HullStatus::Operational
+            || shooter_id == target_id
+            || self.party_relation(shooter.party, target.party) == SpaceRelation::Friendly
+        {
             return events;
         }
         let shooter_pos = shooter.pos_m;
@@ -940,7 +953,10 @@ impl LocalSpaceBubble {
         else {
             return events;
         };
-        if shooter.status != HullStatus::Operational {
+        if shooter.status != HullStatus::Operational
+            || shooter_id == target_id
+            || self.party_relation(shooter.party, target.party) == SpaceRelation::Friendly
+        {
             return events;
         }
         let shooter_pos = shooter.pos_m;
@@ -1019,7 +1035,10 @@ impl LocalSpaceBubble {
         else {
             return events;
         };
-        if shooter.status != HullStatus::Operational {
+        if shooter.status != HullStatus::Operational
+            || shooter_id == target_id
+            || self.party_relation(shooter.party, target.party) == SpaceRelation::Friendly
+        {
             return events;
         }
         let shooter_pos = shooter.pos_m;
@@ -1571,6 +1590,13 @@ impl LocalSpaceBubble {
 
         let mut contacts = Vec::with_capacity(self.ships.len());
         for ship in self.ships.values() {
+            if ship.id != observer_ship_id
+                && !obs.is_some_and(|o| {
+                    super::commands::is_bubble_ship_detected(o, ship, self.ic_timestamp_s)
+                })
+            {
+                continue;
+            }
             let rel = self.party_relation(obs_party, ship.party).as_feed_str();
             contacts.push(json!({
                 "id": ship.id,
@@ -1640,7 +1666,9 @@ impl LocalSpaceBubble {
 
         let mut contacts = Vec::new();
         for ship in self.ships.values() {
-            if ship.id == observer_ship_id {
+            if ship.id == observer_ship_id
+                || !super::commands::is_bubble_ship_detected(obs, ship, self.ic_timestamp_s)
+            {
                 continue;
             }
             let rel_pos = [
@@ -1740,6 +1768,13 @@ impl LocalSpaceBubble {
                 let _ = self.set_emcon(ship_id, *posture);
                 Vec::new()
             }
+            BubbleInputCommand::SetLockedTarget {
+                ship_id,
+                target_id,
+            } => {
+                let _ = self.set_locked_target(ship_id, target_id.clone());
+                Vec::new()
+            }
             BubbleInputCommand::LaunchDecoy { ship_id } => {
                 let _ = self.launch_decoy(ship_id);
                 Vec::new()
@@ -1803,6 +1838,10 @@ pub enum BubbleInputCommand {
     SetEmcon {
         ship_id: String,
         posture: EmconPosture,
+    },
+    SetLockedTarget {
+        ship_id: String,
+        target_id: Option<String>,
     },
     LaunchDecoy {
         ship_id: String,

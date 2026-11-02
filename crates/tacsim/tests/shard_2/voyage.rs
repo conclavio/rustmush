@@ -3789,3 +3789,291 @@ fn gc7_munitions_are_bought_and_carried_and_the_tariff_quotes_a_known_repair() {
         "the multiplier never moves time"
     );
 }
+
+/// **Doc 35 cut SF.R3 acceptance (`D-35-9`, `D-35-10`, `35a` §3)** — authoritative `+helm`
+/// and `+tac` verbs enforce physical aboard presence, `mush-sim` bridge stations/channels,
+/// `mush-sim` `StandingOrder` writes (`Heading`, `Thrust`, `Posture`), and `mush-propagation`
+/// light-lag / IR detection gating:
+/// 1. Off-ship callers are refused (`"You are not aboard a ship."`).
+/// 2. Unrostered stowaways physically aboard the ship are refused (`"You hold no bridge station on this ship."`).
+/// 3. The captain assigns an aboard gunner to the `tactical` station via `+helm/station`,
+///    publishing a `mush-sim` `ChannelGrant` (`sensors`, `fire`) onto `World::command_subjects_of(gunner)`;
+///    the gunner is refused `movement`-channel helm orders (`+helm/heading`) while permitted `+tac`.
+/// 4. The captain's `+helm/heading`, `+helm/thrust`, and `+helm/emcon` write validated
+///    `mush_sim::tick::StandingOrder`s (`Heading`, `Thrust`, `Posture`) and append deterministic
+///    `BubbleInputCommand`s onto the active `LocalSpaceBubble` input tape.
+/// 5. An interdictor running dark (`EmconPosture::Silent`, `0` thrust, `0` heat at `12 km`) is
+///    `DetectionOutcome::Missed` under `mush_propagation::resolve_detection`, omitted from
+///    `+tac/scan`, and refused by `+tac/lock` / `+tac/beam` (`"No such contact."`); once it
+///    lights its drive (`thrust_permille = 500`), `+tac/scan` detects it with light-lag and
+///    the gunner locks and fires `+tac/beam`.
+#[test]
+#[allow(clippy::too_many_lines)]
+fn sfr3_authoritative_helm_and_tac_enforce_aboard_seats_write_standing_orders_and_gate_propagation_detection() {
+    let mut rig = stocked_with(Roster {
+        seed_lane: Some(lane_with_interdicted_kirkwood()),
+        ..Roster::default()
+    });
+    let (pilot_actor, row) = chartered(&mut rig, "Pilot", 1);
+    let hull = ObjId(row.hull);
+    let shoreside = pilot(&mut rig, "Shoreside", 701);
+    let stowaway = pilot(&mut rig, "Stowaway", 702);
+    let gunner = pilot(&mut rig, "Gunner", 703);
+
+    load(&mut rig, &row, 55, 60);
+    set_rate(&mut rig.tw, 3_600);
+    board(&mut rig, pilot_actor);
+
+    // Place `stowaway` and `gunner` physically inside the ship's airlock room before launch.
+    let airlock = rig
+        .tw
+        .world()
+        .get(pilot_actor)
+        .and_then(|o| o.location)
+        .expect("pilot is in the ship's airlock room");
+    teleport(&mut rig.tw, stowaway, airlock);
+    teleport(&mut rig.tw, gunner, airlock);
+
+    // 1. Off-ship caller (`shoreside`) is refused on both `+helm` and `+tac`.
+    assert_eq!(
+        run(&mut rig.tw, shoreside, "+helm/heading 90,0").trim(),
+        "You are not aboard a ship."
+    );
+    assert_eq!(
+        run(&mut rig.tw, shoreside, "+tac/scan").trim(),
+        "You are not aboard a ship."
+    );
+    assert_eq!(
+        run(&mut rig.tw, shoreside, "+helm/station command").trim(),
+        "You are not aboard a ship."
+    );
+
+    // 2. Unrostered stowaway physically aboard the ship is refused on `+helm` and `+tac`.
+    assert_eq!(
+        run(&mut rig.tw, stowaway, "+helm/heading 90,0").trim(),
+        "You hold no bridge station on this ship."
+    );
+    assert_eq!(
+        run(&mut rig.tw, stowaway, "+tac/scan").trim(),
+        "You hold no bridge station on this ship."
+    );
+    assert_eq!(
+        run(&mut rig.tw, stowaway, "+helm/station command").trim(),
+        "Only the ship's captain or command station may assign bridge stations."
+    );
+
+    // Launch and promote at the interdicted Kirkwood boundary.
+    let pending = undock_and_burn(&mut rig, pilot_actor, hull);
+    let depart_ic = pending.plan.depart_ic;
+    let leg1_secs = i64::from(pending.plan.legs[0].secs);
+    let _ = fire_quietly(&mut rig);
+    let _ = to_ic(&mut rig, depart_ic + leg1_secs);
+
+    // 3. Captain (`pilot_actor`) assigns `gunner` to the `tactical` bridge station via `+helm/station`.
+    let assign_out = run(&mut rig.tw, pilot_actor, "+helm/station tactical=Gunner");
+    assert!(
+        assign_out.contains("Gunner now holds `tactical`"),
+        "station assignment output: {assign_out}"
+    );
+    let grants = rig.tw.world().command_subjects_of(gunner);
+    assert!(
+        grants.iter().any(|g| {
+            g.subject == hull
+                && g.station.as_str() == "tactical"
+                && g.channels
+                    .iter()
+                    .any(|c| c.as_str() == "sensors")
+                && g.channels
+                    .iter()
+                    .any(|c| c.as_str() == "fire")
+        }),
+        "mush-sim published ChannelGrant for gunner on tactical station: {grants:?}"
+    );
+
+    // `gunner` (holding `tactical`) is refused `movement` orders (`+helm/heading`, `+helm/thrust`).
+    assert_eq!(
+        run(&mut rig.tw, gunner, "+helm/heading 90,0").trim(),
+        "Your bridge station (tactical) does not control the movement channel."
+    );
+    assert_eq!(
+        run(&mut rig.tw, gunner, "+helm/thrust 500").trim(),
+        "Your bridge station (tactical) does not control the movement channel."
+    );
+
+    // 4. `pilot_actor` issues `+helm/heading`, `+helm/thrust`, and `+helm/emcon` orders.
+    let h_out = run(&mut rig.tw, pilot_actor, "+helm/heading 90,0");
+    assert!(
+        h_out.contains("standing order `heading` rev 1"),
+        "heading output: {h_out}"
+    );
+    let t_out = run(&mut rig.tw, pilot_actor, "+helm/thrust 600");
+    assert!(
+        t_out.contains("standing order `thrust` rev 2"),
+        "thrust output: {t_out}"
+    );
+    let e_out = run(&mut rig.tw, pilot_actor, "+helm/emcon passive");
+    assert!(
+        e_out.contains("standing order `posture` rev 3"),
+        "emcon output: {e_out}"
+    );
+
+    {
+        let book = rig
+            .tw
+            .world()
+            .module_state::<tacsim::space::SpaceBubbleBook>()
+            .expect("SpaceBubbleBook");
+        let h_order = book
+            .standing_order(hull, mush_sim::tick::OrderChannel::Heading)
+            .expect("Heading standing order");
+        assert_eq!(
+            *h_order.value(),
+            mush_sim::tick::OrderValue::Vector {
+                x: 0,
+                y: 1_000,
+                z: 0
+            }
+        );
+        let t_order = book
+            .standing_order(hull, mush_sim::tick::OrderChannel::Thrust)
+            .expect("Thrust standing order");
+        assert_eq!(
+            *t_order.value(),
+            mush_sim::tick::OrderValue::Scalar { value: 600 }
+        );
+        let p_order = book
+            .standing_order(hull, mush_sim::tick::OrderChannel::Posture)
+            .expect("Posture standing order");
+        assert_eq!(
+            *p_order.value(),
+            mush_sim::tick::OrderValue::Emcon { level: 1 }
+        );
+
+        let active = book.active_for_hull(hull).expect("active bubble");
+        assert_eq!(
+            active.tape.entries.len(),
+            3,
+            "3 helm commands recorded on tape"
+        );
+        let carrier = active
+            .bubble
+            .ships
+            .get(&active.carrier_ship_id)
+            .expect("carrier ship");
+        assert_eq!(carrier.attitude_deg.0, 90);
+        assert!(carrier.is_burning());
+        assert_eq!(carrier.emcon, tacsim::space::EmconPosture::Passive);
+    }
+
+    // 5. `mush-propagation` detection gating (`D-35-10`):
+    // Put the interdictor at 30 km (`[30_000, 0, 0]`) in `EmconPosture::Ghost` with 0 thrust & 0 heat.
+    let interdictor_id = {
+        let book = rig
+            .tw
+            .world_mut()
+            .module_state_mut::<tacsim::space::SpaceBubbleBook>()
+            .expect("SpaceBubbleBook");
+        let active = book.active_for_hull_mut(hull).expect("active bubble");
+        let id = active.interdictor_ship_id.clone();
+        let interdictor = active
+            .bubble
+            .ships
+            .get_mut(&id)
+            .expect("interdictor ship");
+        interdictor.pos_m = [30_000, 0, 0];
+        interdictor.emcon = tacsim::space::EmconPosture::Ghost;
+        interdictor.thrust_mps2 = [0, 0, 0];
+        interdictor.heat_permille = 0;
+        id
+    };
+
+    // Cold/silent contact at 30 km is Missed by `mush-propagation`: hidden from `/scan` and refused by `/lock` & `/beam`.
+    let scan_cold = run(&mut rig.tw, gunner, "+tac/scan");
+    assert!(
+        scan_cold.starts_with("Sensor pass: 0 contacts detected."),
+        "scan_cold: {scan_cold}"
+    );
+    assert!(
+        !scan_cold.contains("30000"),
+        "undetected contact must never leak true_distance_m: {scan_cold}"
+    );
+    assert_eq!(
+        run(&mut rig.tw, gunner, &format!("+tac/lock {interdictor_id}")).trim(),
+        "No such contact."
+    );
+    assert_eq!(
+        run(&mut rig.tw, gunner, &format!("+tac/beam {interdictor_id}")).trim(),
+        "No such contact."
+    );
+
+    // Also verify `holotank_feed` and `cockpit_feed` omit the undetected contact (`35a` §1).
+    {
+        let book = rig
+            .tw
+            .world()
+            .module_state::<tacsim::space::SpaceBubbleBook>()
+            .expect("SpaceBubbleBook");
+        let active = book.active_for_hull(hull).expect("active bubble");
+        let holotank = active.bubble.holotank_feed(&active.carrier_ship_id);
+        let contacts = holotank["contacts"].as_array().expect("contacts array");
+        assert_eq!(
+            contacts.len(),
+            1,
+            "only own ship ('you': true) appears in holotank feed when target is undetected: {contacts:?}"
+        );
+        let cockpit = active.bubble.cockpit_feed(&active.carrier_ship_id);
+        let cockpit_contacts = cockpit["contacts"].as_array().expect("cockpit contacts");
+        assert!(
+            cockpit_contacts.is_empty(),
+            "cockpit feed must not include undetected contact: {cockpit_contacts:?}"
+        );
+    }
+
+    // Now the interdictor lights its torch (`thrust_mps2 = [5, 0, 0]`) and moves into laser range (`12,000 m`):
+    // IR bloom rises above the inverse-square floor, so `mush_propagation::resolve_detection` returns `Detected`.
+    {
+        let book = rig
+            .tw
+            .world_mut()
+            .module_state_mut::<tacsim::space::SpaceBubbleBook>()
+            .expect("SpaceBubbleBook");
+        let active = book.active_for_hull_mut(hull).expect("active bubble");
+        let interdictor = active
+            .bubble
+            .ships
+            .get_mut(&interdictor_id)
+            .expect("interdictor ship");
+        interdictor.pos_m = [12_000, 0, 0];
+        interdictor.thrust_mps2 = [5, 0, 0];
+    }
+
+    let scan_hot = run(&mut rig.tw, gunner, "+tac/scan");
+    assert!(
+        scan_hot.contains("1 contact(s) detected") && scan_hot.contains(&interdictor_id),
+        "detected contact shown in scan: {scan_hot}"
+    );
+
+    let lock_out = run(&mut rig.tw, gunner, &format!("+tac/lock {interdictor_id}"));
+    assert!(
+        lock_out.contains(&format!("Target lock acquired on `{interdictor_id}`.")),
+        "lock output: {lock_out}"
+    );
+    let beam_out = run(&mut rig.tw, gunner, "+tac/beam");
+    assert!(
+        beam_out.contains(&format!("Laser battery fired on `{interdictor_id}`")),
+        "beam output: {beam_out}"
+    );
+
+    let book = rig
+        .tw
+        .world()
+        .module_state::<tacsim::space::SpaceBubbleBook>()
+        .expect("SpaceBubbleBook");
+    let active = book.active_for_hull(hull).expect("active bubble");
+    assert_eq!(
+        active.tape.entries.len(),
+        5,
+        "SetLockedTarget and FireOffensiveLasers appended to BubbleInputTape"
+    );
+}
+

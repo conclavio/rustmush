@@ -207,8 +207,8 @@ pub struct SpaceDerelictRecord {
     pub salvage_title_status: Option<CustodyTitleStatus>,
 }
 
-/// World-state registry of active and completed space interdiction bubbles and
-/// open-epoch derelicts (`SF.R1`, `SF.R2`).
+/// World-state registry of active and completed space interdiction bubbles,
+/// open-epoch derelicts, and validated `mush-sim` standing orders (`SF.R1`–`SF.R3`).
 #[derive(Clone, Debug, Default)]
 pub struct SpaceBubbleBook {
     /// Active interdiction bubbles keyed by carrier hull root [`ObjId`].
@@ -217,6 +217,11 @@ pub struct SpaceBubbleBook {
     pub completed: BTreeMap<ObjId, CompletedInterdictionBubble>,
     /// Open-epoch derelict hulls keyed by hull [`ObjId`] (`D-35-12`).
     pub derelicts: BTreeMap<ObjId, SpaceDerelictRecord>,
+    /// Validated `mush-sim` continuous standing orders (`Heading`, `Thrust`, `Speed`, `Posture`)
+    /// keyed by `(hull, channel)` (`SF.R3`, `D-35-9`).
+    pub standing_orders: BTreeMap<mush_sim::tick::StandingOrderKey, mush_sim::tick::StandingOrder>,
+    /// Monotonic revision counter for `mush-sim` standing orders (`SF.R3`).
+    pub next_order_revision: u64,
     /// Monotonic allocator for space salvage [`RecoveryOpId`]s.
     pub next_recovery_op_id: u64,
 }
@@ -243,6 +248,51 @@ impl SpaceBubbleBook {
     #[must_use]
     pub fn derelict_for_hull(&self, hull: ObjId) -> Option<&SpaceDerelictRecord> {
         self.derelicts.get(&hull)
+    }
+
+    /// Borrow the current validated [`mush_sim::tick::StandingOrder`] for `(unit, channel)` (`D-35-9`).
+    #[must_use]
+    pub fn standing_order(
+        &self,
+        unit: ObjId,
+        channel: mush_sim::tick::OrderChannel,
+    ) -> Option<&mush_sim::tick::StandingOrder> {
+        self.standing_orders
+            .get(&mush_sim::tick::StandingOrderKey { unit, channel })
+    }
+
+    /// Allocate the next monotonic standing-order revision and record a validated
+    /// [`mush_sim::tick::StandingOrder`] on `(unit, channel)` (`SF.R3`, `D-35-9`).
+    ///
+    /// # Errors
+    ///
+    /// Returns [`mush_sim::tick::TickRecordError`] if the order value or stamp fails
+    /// `mush-sim`'s [`mush_sim::tick::StandingOrder::new`] invariant checks.
+    pub fn record_standing_order(
+        &mut self,
+        unit: ObjId,
+        channel: mush_sim::tick::OrderChannel,
+        value: mush_sim::tick::OrderValue,
+        by: ObjId,
+        domain: DomainId,
+        generation: u64,
+        tick: i64,
+    ) -> Result<mush_sim::tick::StandingOrder, mush_sim::tick::TickRecordError> {
+        let next_rev = self.next_order_revision.saturating_add(1);
+        let stamp = ClockStamp {
+            clock: mush_core::ClockRef::DomainTick {
+                owner: mush_core::OwnerId::new("sim")
+                    .map_err(|_| mush_sim::tick::TickRecordError::NotDomainTick)?,
+                id: mush_core::CanonicalId::new(format!("domain_{}", domain.0))
+                    .map_err(|_| mush_sim::tick::TickRecordError::NotDomainTick)?,
+                generation,
+            },
+            at: tick,
+        };
+        let order = mush_sim::tick::StandingOrder::new(unit, channel, value, stamp, by, next_rev)?;
+        self.next_order_revision = next_rev;
+        self.standing_orders.insert(order.key(), order.clone());
+        Ok(order)
     }
 
     fn alloc_recovery_op_id(&mut self) -> Option<RecoveryOpId> {

@@ -329,6 +329,9 @@ pub enum LocalAction {
     /// offer's parameter form, whose Enter submits it typed
     /// (`LegalActionRequest::SubmitSelf`); `A` keeps the `+act` prefill.
     ActionForm,
+    /// **The chart screen's `v`** (doc 35 cut SF.R3, `D-35-16`): open or cycle
+    /// the orbital/space pixel view (`Chart` $\to$ `Holotank` $\to$ `SpaceCockpit` $\to$ `Docking`).
+    SpaceViewToggle,
 }
 
 /// What a bound key does (D-I-18).
@@ -1058,6 +1061,11 @@ pub fn builtin_screens() -> Vec<Screen> {
                     key: 'm',
                     label: "flat map",
                     action: KeyAction::Run("+chart/map"),
+                },
+                KeyBinding {
+                    key: 'v',
+                    label: "view",
+                    action: KeyAction::Local(LocalAction::SpaceViewToggle),
                 },
             ],
             degrade: vec![PaneId("tables")],
