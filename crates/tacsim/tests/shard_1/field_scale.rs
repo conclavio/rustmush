@@ -421,9 +421,12 @@ fn gc12_the_field_pulse_is_measured_at_scale() {
             "release"
         }
     );
-    let mut rig = stocked();
     for n in sizes {
+        // A fresh world for each size, so a size's unit ids, and so its field, are a function of
+        // the size alone and not of the sizes run before it.
+        let mut rig = stocked();
         let p99 = run_lane(&mut rig, n, true, arena_s);
+        let mut rig = stocked();
         run_lane(&mut rig, n, false, arena_s);
         println!(
             "GC12 verdict n={n}: engaged p99 {p99:.3} ms against {budget} ms: {}",
