@@ -1396,4 +1396,5 @@ that test is not about.
 CF.7 story, shards 2 and 3's 800, shards 4 to 6's 786), `mush-tactics` and `mush-contract-tests`
 (census, panic budget, restriction lints) green; clippy and rustdoc `-D warnings` clean on the
 touched crates. As a probe, the two field gates fail with the tempo and idle rules switched off.
-The broad suites ran once more on Linux CI on the draft PR.
+The broad suites run once more on Linux CI on the draft PR (#296) and the gate sweep on
+conclav.dev.
