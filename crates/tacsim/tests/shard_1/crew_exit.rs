@@ -9,6 +9,7 @@ use std::time::Duration;
 
 use mush_core::{GOD, ObjId, ObjKind};
 use tacsim::TacsimConfig;
+use tacsim::arena::party::Relation;
 use tacsim::arena_task::ArenaOut;
 use tacsim::field::{CrewLocation, crew_of};
 use tacsim::port::voyage::{LEAVE_HINT, TV_OUT, VoyageState};
@@ -325,8 +326,13 @@ async fn cf5_a_rig_recovers_out_of_a_running_field_and_a_stranded_pilot_is_extra
         second(&mut rig);
     }
 
-    // The field opens: A's fire order at B's hull.
-    let (out, queued) = command(&mut rig, a, "+field/fire E");
+    // The field opens: A's Hostile mark on B's hull. Not a fire order: the order's shot wrecks
+    // B's fragile hull in the field's first pulses, and a contact that reads dead holds nothing
+    // engaged, so the quiet interval (15 s of arena time) ran from that shot and demoted the
+    // field mid-(1) on a loaded runner. An armed Hostile pair in weapons range keeps the field
+    // engaged however slow the runner is, and nobody fires until (2), whose wreck starts the
+    // quiet interval.
+    let (out, queued) = command(&mut rig, a, "+field/mark E=hostile");
     assert_eq!(queued.len(), 1, "one promotion: {out}");
     land(&mut rig, &queued[0]).expect("the promotion lands");
     assert!(
@@ -336,18 +342,21 @@ async fn cf5_a_rig_recovers_out_of_a_running_field_and_a_stranded_pilot_is_extra
     for unit in [hull_a, hull_b, prospector] {
         assert!(in_field(&rig, unit), "#{} is in the field", unit.0);
     }
-    // A holds B's party Hostile: an armed Hostile pair in weapons range keeps the field engaged,
-    // so (1) runs inside the field however slow the runner is. A fire order marks nobody, and
-    // without the mark the quiet interval (15 s) ran from the opening and could demote the field
-    // before (1) finished. The quiet interval runs from (2)'s wreck, which reads dead.
-    let b_party = tacsim::field::live_on(rig.tw.world(), &cid(AHUNA))
-        .and_then(|live| live.party_of(hull_b).map(|party| party.letter()))
-        .expect("B's party in the open field");
-    let (said, queued) = command(&mut rig, a, &format!("+field/mark {b_party}=hostile"));
-    assert!(said.contains("now marks party"), "{said}");
-    for submit in &queued {
-        land(&mut rig, submit).expect("the mark lands");
-    }
+    let holds_b = |rig: &mut Rig| {
+        frame(rig, a).is_some_and(|frame| {
+            frame.contacts.iter().any(|contact| {
+                contact.relation == Relation::Hostile
+                    && contact.reads_dead != Some(true)
+                    && contact
+                        .cell
+                        .is_some_and(|(x, y)| x.abs_diff(114) <= 1 && y.abs_diff(124) <= 1)
+            })
+        })
+    };
+    assert!(
+        until(&mut rig, &mut rx, 30, holds_b).await,
+        "A holds B's live hull Hostile, which keeps the field engaged"
+    );
 
     // (1) Recovery as exit: the prospector on the ramp leaves the running field.
     let preview = run(&mut rig.tw, c, "+tv/1 recover");
@@ -404,6 +413,7 @@ async fn cf5_a_rig_recovers_out_of_a_running_field_and_a_stranded_pilot_is_extra
         heard()
     );
     assert!(task(&rig).is_some(), "the field carries on without it");
+    assert!(holds_b(&mut rig), "B's hull still stands Hostile and alive");
     for unit in [hull_a, hull_b] {
         assert!(in_field(&rig, unit), "#{} is still in the field", unit.0);
     }
