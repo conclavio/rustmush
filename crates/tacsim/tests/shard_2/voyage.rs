@@ -3279,6 +3279,325 @@ fn sfr1_interdicted_leg_promotes_pauses_leg_timer_steps_wall_bubble_and_resumes_
     }
 }
 
+/// **Doc 35 cut SF.R2** (`D-35-1`, `D-35-12`, `35a` §8.3):
+/// 1. When a chartered hull (*Salt Moth*) promotes into a `LocalSpaceBubble`, `space_tick`
+///    checks out its live `TacticalUnit` via `mush_tactics::custody::check_out` (`DeployedMark::field`)
+///    and populates `SpaceShipState` from the canonical `dray.json` `UnitSpec` (`dry_mass_t = 240`,
+///    `rated_accel_mg = 50`, `propellant_cap_kg = 80_000`, `hull = 600`, `hold = 400`, `drive = 250`).
+/// 2. Combat damage taken inside the bubble writes back to the real hull's `TacticalUnit` cells,
+///    section conditions, and component conditions on `mush_tactics::custody::check_in` when the
+///    bubble closes, and non-GOD `+ship` prints `Damage: hull 480/600, drive 190/250.`.
+/// 3. Disabling a hull's drive (`internals = 0`, `HullStatus::DisabledDerelict`) in the bubble
+///    checks the unit in as `Immobile` (`FieldEpochDisposition::RemainOpen`) without deleting the
+///    hull, records `BlackBoxFlightEntry::CombatDamageRecorded` in `SalvageClaimBook`, and opens a
+///    48 real-hour (`172_800 s`) `CustodyTitleStatus::PendingSalvageClaim` window.
+#[test]
+#[allow(clippy::too_many_lines)]
+fn sfr2_space_bubble_custody_checks_out_unit_persists_damage_on_checkin_and_opens_48h_salvage_window()
+ {
+    let mut rig = stocked_with(Roster {
+        seed_lane: Some(lane_with_interdicted_kirkwood()),
+        ..Roster::default()
+    });
+    let (pilot, row) = chartered(&mut rig, "Pilot", 1);
+    let hull = ObjId(row.hull);
+    load(&mut rig, &row, 53, 19);
+    set_rate(&mut rig.tw, 3_600);
+    board(&mut rig, pilot);
+
+    let pending = undock_and_burn(&mut rig, pilot, hull);
+    let depart_ic = pending.plan.depart_ic;
+    let leg1_secs = i64::from(pending.plan.legs[0].secs);
+
+    let _ = fire_quietly(&mut rig);
+    let _ = to_ic(&mut rig, depart_ic + leg1_secs);
+
+    // 1. Verify `mush_tactics::custody::check_out` placed the field custody marker on `hull`
+    // and populated `SpaceShipState` from canonical `dray.json` `UnitSpec`.
+    let deployed_mark = mush_sim::deployed::mark_of(rig.tw.world(), hull)
+        .expect("hull marked deployed during bubble");
+    assert!(
+        deployed_mark.field.is_some(),
+        "expected DeployedMark::field, got {deployed_mark:?}"
+    );
+    assert!(
+        mush_tactics::custody::marker_of(rig.tw.world(), hull).is_some(),
+        "UnitStore::deployed holds check-out marker for hull"
+    );
+
+    let interdictor_hull = {
+        let bubble_book = rig
+            .tw
+            .world()
+            .module_state::<tacsim::space::SpaceBubbleBook>()
+            .expect("SpaceBubbleBook");
+        let active = bubble_book.active_for_hull(hull).expect("active bubble");
+        let ship = active
+            .bubble
+            .ships
+            .get(&active.carrier_ship_id)
+            .expect("carrier ship");
+        assert_eq!(ship.hull_class, "tacsim.unit.dray");
+        assert_eq!(ship.dry_mass_t, 240);
+        assert_eq!(ship.payload_ceiling_kg, 181_000);
+        assert_eq!(ship.propellant_cap_kg, 80_000);
+        assert_eq!(ship.rated_accel_mg, 50);
+        assert_eq!(ship.exhaust_kms, 6_000);
+        assert_eq!(
+            ship.sections[&tacsim::space::ShipSectionId::Hull].internals,
+            600
+        );
+        assert_eq!(
+            ship.sections[&tacsim::space::ShipSectionId::Hold].internals,
+            400
+        );
+        assert_eq!(
+            ship.sections[&tacsim::space::ShipSectionId::Drive].internals,
+            250
+        );
+        active.interdictor_hull
+    };
+
+    // 2. Inside the bubble, exchange fire so the carrier takes `hull` (480/600) and `drive` (190/250)
+    // damage + a `DriveDegraded` crit, and the hostile interdictor has its drive destroyed (`0/250`).
+    {
+        let bubble_book = rig
+            .tw
+            .world_mut()
+            .module_state_mut::<tacsim::space::SpaceBubbleBook>()
+            .expect("SpaceBubbleBook");
+        let active = bubble_book
+            .active_for_hull_mut(hull)
+            .expect("active bubble");
+        let carrier_id = active.carrier_ship_id.clone();
+        let interdictor_id = active.interdictor_ship_id.clone();
+
+        // Bring interdictor within close laser range so recorded laser fire hits and logs to black box.
+        if let Some(iship) = active.bubble.ships.get_mut(&interdictor_id) {
+            iship.pos_m = [1_500, 0, 0];
+        }
+        let _ = active.tape.record_and_apply(
+            &mut active.bubble,
+            tacsim::space::BubbleInputCommand::FireOffensiveLasers {
+                shooter_id: interdictor_id.clone(),
+                target_id: carrier_id.clone(),
+            },
+        );
+        let _ = active.tape.record_and_apply(
+            &mut active.bubble,
+            tacsim::space::BubbleInputCommand::FireOffensiveLasers {
+                shooter_id: carrier_id.clone(),
+                target_id: interdictor_id.clone(),
+            },
+        );
+
+        // Set exact post-duel carrier damage (`hull 480/600, drive 190/250`) and disable interdictor drive (`0/250`).
+        if let Some(cship) = active.bubble.ships.get_mut(&carrier_id) {
+            if let Some(hull_sec) = cship.sections.get_mut(&tacsim::space::ShipSectionId::Hull) {
+                hull_sec.facets.insert(tacsim::space::FacetBand::Front, 40);
+                hull_sec.internals = 480;
+            }
+            if let Some(drive_sec) = cship.sections.get_mut(&tacsim::space::ShipSectionId::Drive) {
+                drive_sec.internals = 190;
+            }
+            cship
+                .crits
+                .push(tacsim::space::SubsystemCrit::DriveDegraded);
+        }
+        if let Some(iship) = active.bubble.ships.get_mut(&interdictor_id) {
+            if let Some(drive_sec) = iship.sections.get_mut(&tacsim::space::ShipSectionId::Drive) {
+                drive_sec.internals = 0;
+            }
+            iship.status = tacsim::space::HullStatus::DisabledDerelict {
+                epoch_open: true,
+                life_support_remaining_s: tacsim::space::DERELICT_WINDOW_S,
+                salvage_contest_window_s: tacsim::space::DERELICT_WINDOW_S,
+            };
+            iship.thrust_mps2 = [0, 0, 0];
+        }
+    }
+
+    // Fire one tick to close the resolved bubble (`clear_resolved_bubbles` -> `check_in_space_unit`).
+    let next_real = rig.tw.world().now() + 1;
+    rig.tw.set_now(next_real);
+    let _ = rig.tw.fire_due(next_real * 1_000);
+
+    // Verify `mush_tactics::custody::check_in` cleared the deployed marker and wrote damage to `UnitStore`.
+    assert!(
+        mush_sim::deployed::mark_of(rig.tw.world(), hull).is_none(),
+        "deployed mark cleared on check-in"
+    );
+    assert!(
+        mush_tactics::custody::marker_of(rig.tw.world(), hull).is_none(),
+        "UnitStore::deployed cleared on check-in"
+    );
+
+    let unit_after = mush_tactics::module::unit_of(rig.tw.world(), hull)
+        .expect("live TacticalUnit for Salt Moth after check-in");
+    let power_comp = unit_after
+        .component(&mush_tactics::ComponentId::new("power").expect("power id"))
+        .expect("power component");
+    assert_eq!(power_comp.condition.as_str(), "damaged");
+
+    let ship_out = run(&mut rig.tw, pilot, "+ship");
+    assert!(
+        ship_out.contains("Damage: drive 190/250, hull 480/600."),
+        "expected +ship to report persisted combat damage from UnitStore, got: {ship_out}"
+    );
+
+    // Verify the disabled interdictor derelict opened a 48 real-hour (`172,800 s`) salvage claim.
+    let bubble_book = rig
+        .tw
+        .world()
+        .module_state::<tacsim::space::SpaceBubbleBook>()
+        .expect("SpaceBubbleBook");
+    let derelict = bubble_book
+        .derelict_for_hull(interdictor_hull)
+        .expect("disabled interdictor recorded as open-epoch derelict");
+    assert!(derelict.epoch_open);
+    assert_eq!(
+        derelict.salvage_contest_window_s,
+        tacsim::space::DERELICT_WINDOW_S
+    );
+    let Some(tacsim::field_ops::CustodyTitleStatus::PendingSalvageClaim {
+        claim_id,
+        custodian,
+        ..
+    }) = &derelict.salvage_title_status
+    else {
+        panic!(
+            "expected PendingSalvageClaim on disabled derelict, got {:?}",
+            derelict.salvage_title_status
+        );
+    };
+    assert_eq!(*custodian, hull);
+
+    let salvage_book = rig
+        .tw
+        .world()
+        .module_state::<tacsim::field_ops::SalvageClaimBook>()
+        .expect("SalvageClaimBook");
+    let claim = salvage_book
+        .claim(*claim_id)
+        .expect("SalvageClaim in SalvageClaimBook");
+    assert_eq!(
+        claim.deadline_real_s - claim.filed_at_real_s,
+        tacsim::field_ops::CONTEST_WINDOW_AVAILABLE_REAL_SECS,
+        "salvage contest window must be 48 real hours (172,800 real seconds)"
+    );
+
+    // 3. Also verify that disabling a chartered carrier hull's own drive inside a bubble
+    // checks the hull in as `Immobile` (`FieldEpochDisposition::RemainOpen`) without deleting
+    // the hull, logs to its black box, and opens a 48 real-hour salvage window.
+    let mut rig = stocked_with(Roster {
+        seed_lane: Some(lane_with_interdicted_kirkwood()),
+        ..Roster::default()
+    });
+    let (pilot2, row2) = chartered(&mut rig, "PilotTwo", 2);
+    let hull2 = ObjId(row2.hull);
+    load(&mut rig, &row2, 53, 19);
+    set_rate(&mut rig.tw, 3_600);
+    board(&mut rig, pilot2);
+    let pending2 = undock_and_burn(&mut rig, pilot2, hull2);
+    let depart2_ic = pending2.plan.depart_ic;
+    let leg2_1_secs = i64::from(pending2.plan.legs[0].secs);
+    let _ = fire_quietly(&mut rig);
+    let _ = to_ic(&mut rig, depart2_ic + leg2_1_secs);
+
+    // Disable `hull2`'s drive inside its active bubble (`drive` internals -> 0) and step one tick.
+    let (carrier2_id, interdictor2_id) = {
+        let bubble_book = rig
+            .tw
+            .world_mut()
+            .module_state_mut::<tacsim::space::SpaceBubbleBook>()
+            .expect("SpaceBubbleBook");
+        let active2 = bubble_book
+            .active_for_hull_mut(hull2)
+            .expect("active bubble for hull2");
+        let carrier2_id = active2.carrier_ship_id.clone();
+        let interdictor2_id = active2.interdictor_ship_id.clone();
+        if let Some(iship) = active2.bubble.ships.get_mut(&interdictor2_id) {
+            iship.pos_m = [-800, 0, 0];
+        }
+        if let Some(cship) = active2.bubble.ships.get_mut(&carrier2_id) {
+            if let Some(hull_sec) = cship.sections.get_mut(&tacsim::space::ShipSectionId::Hull) {
+                hull_sec.facets.insert(tacsim::space::FacetBand::Rear, 0);
+            }
+            if let Some(drive_sec) = cship.sections.get_mut(&tacsim::space::ShipSectionId::Drive) {
+                drive_sec.internals = 5;
+            }
+        }
+        (carrier2_id, interdictor2_id)
+    };
+    // Fire laser into rear arc (`[-800, 0, 0]` behind `cship`) so `apply_bubble_command`
+    // strikes through to `drive`, disables `hull2`, and logs `CombatDamageRecorded` to `SalvageClaimBook`.
+    let combat_events = tacsim::space::apply_bubble_command(
+        rig.tw.world_mut(),
+        hull2,
+        tacsim::space::BubbleInputCommand::FireOffensiveLasers {
+            shooter_id: interdictor2_id,
+            target_id: carrier2_id,
+        },
+    );
+    assert!(
+        combat_events.iter().any(|ev| matches!(
+            ev,
+            tacsim::space::SpaceCombatEvent::ShipDisabledDerelict { .. }
+        )),
+        "expected ShipDisabledDerelict from rear laser strike, got: {combat_events:?}"
+    );
+
+    // Next tick: `settle_disabled_carrier_bubbles` checks `hull2` back in and opens its 48h salvage window.
+    let next_real = rig.tw.world().now() + 1;
+    rig.tw.set_now(next_real);
+    let settle_events = rig.tw.fire_due(next_real * 1_000);
+    let settle_heard = said(&rig.tw, &settle_events, pilot2);
+    assert!(
+        settle_heard.contains(
+            "[SPACE] Drive offline; hull adrift as an open-epoch derelict with a 48-hour Registry salvage window."
+        ),
+        "expected derelict narration for hull2, got: {settle_heard}"
+    );
+
+    // Hull2 was NOT deleted; its `TacticalUnit` is checked back in with `drive destroyed` and open epoch.
+    assert!(rig.tw.world().get(hull2).is_some());
+    assert!(mush_sim::deployed::mark_of(rig.tw.world(), hull2).is_none());
+    let ship2_out = run(&mut rig.tw, pilot2, "+ship");
+    assert!(
+        ship2_out.contains("drive destroyed"),
+        "expected +ship for disabled carrier to show `drive destroyed`, got: {ship2_out}"
+    );
+
+    let bubble_book = rig
+        .tw
+        .world()
+        .module_state::<tacsim::space::SpaceBubbleBook>()
+        .expect("SpaceBubbleBook");
+    let derelict2 = bubble_book
+        .derelict_for_hull(hull2)
+        .expect("hull2 derelict record");
+    assert!(derelict2.epoch_open);
+    let assessment2 = derelict2.assessment.as_ref().expect("hull2 assessment");
+    assert_eq!(
+        assessment2.state,
+        tacsim::field_ops::OperationalState::Immobile
+    );
+    assert_eq!(
+        assessment2.epoch_disposition,
+        tacsim::field_ops::FieldEpochDisposition::RemainOpen
+    );
+
+    let salvage_book = rig
+        .tw
+        .world()
+        .module_state::<tacsim::field_ops::SalvageClaimBook>()
+        .expect("SalvageClaimBook");
+    assert!(
+        !salvage_book.black_box_tape_for_hull(hull2).is_empty(),
+        "black box for hull2 must contain combat damage entries"
+    );
+}
+
 // ---------------------------------------------------------------------------
 // Doc 36 cut GC.7: munitions and the tariff
 // ---------------------------------------------------------------------------
