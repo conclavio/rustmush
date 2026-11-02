@@ -1081,3 +1081,101 @@ Q-36-39, Q-36-40, Q-36-53 (the acts).
 At most five writers run at once: one per row, GC.12 and GC.13 beside them as single-file cuts
 (Q-36-57), with the files kept apart as each cut's line names them. The three stories close the
 programme. Then a short review, in the form of the 2026-10-31 one, before the next survey.
+
+## 8. GC.0 as built (housekeeping and the barge's exit)
+
+Built on a branch off `main` at `9877284f`, beside GC.1 and GC.2. It covers Q-36-6 (the host
+half), Q-36-17, Q-36-42, Q-36-49, Q-36-50 and Q-36-51. No kernel hash moved. Where the rulings
+left something open, this is what the cut decided, for the owner to object to:
+
+- **The raider's carrier lifts** (Q-36-6, the host half; `field/raiders.rs`, `field/exit.rs`).
+  Once every hull the barge launched into the field is aboard again or is a casualty or a wreck,
+  the host asks the field to let the barge go with no ramp. That is doc 32 F-6's departure,
+  through `field::exit` with a new continuation, `Then::RaiderLift`, asked as the raider's
+  leader. Out, the barge leaves the site's ground (`raiders::lift`), and the site hears "The
+  Skulk Barge lifts from Ahuna Flank with its hulls aboard, leaving what it lost where it fell."
+  - *What "a casualty or a wreck" means.* It is what demotion would write for the hull now. The
+    demotion's rule is factored out of `close::demote_units` (`close::condition_now`) and read
+    off the last snapshot the host holds. A hull still fighting therefore holds its barge on the
+    ground. An immobile or unarmed hull counts as a casualty, as it does on the site record.
+  - *When it is checked* (`raiders::lift_check`): after each hull boards, and at each of the
+    field's snapshots (every `[tacsim.arena].snapshot_ms`, 5 s by default). A field holding no
+    raider's carrier decodes nothing. A field holding one decodes its snapshot at that cadence
+    while the carrier stands.
+  - *Not lifted:* a carrier that launched no hull into this field (none admitted, none named on
+    the open promotion's exits), and a carrier that is itself a wreck. What a damaged drive does
+    to lift is still F-3's (Q-36-8, GC.3).
+  - *Coming back.* `@field/raiders/launch` lands a lifted barge at its authored cell again before
+    it launches, so a raider's second visit needs no reseed. Seeding stays refused while any hull
+    of the raider exists, aboard or not.
+  - *Files beyond the cut's line:* `field/home.rs` and `field/mod.rs` gained one line each (the
+    new continuation's arm, and the snapshot hook), and `field/close.rs` shares its condition
+    rule.
+- **The tempo half stays GC.2's.** The gate demotes without it. Once the barge is gone, the
+  raider's party has only the walker's wreck in the field, and a wreck's contact reads dead
+  (`Arena::hostile_in_weapons_range`). So nothing keeps the field engaged, and it settles on its
+  quiet interval with the escort still holding the raider Hostile.
+- **The site index stays current** (Q-36-17). A unit that leaves the site under its own power is
+  taken off the record's unit index (`SiteRecord::take_unit`, through
+  `site_record::left_under_own_power`) in the commit that starts its recover. That is the rig
+  recover's start in `surface/act/providers.rs` (the surface act provider already holds the site
+  records family) and the DT recover in `detachment/sortie/prepare.rs`, which writes the record
+  beside its flight rows. A tow or a load is H2's (GC.4), not this cut's.
+- **SCREEN and SUPPORT in a field** (Q-36-42). On open ground both stay NEGATIVE, as they were.
+  `help field` now says they bind only once a field opens, and that support for a unit outside
+  the same field and party is NEGATIVE there too. The gates are in-source in `field/orders.rs`:
+  SCREEN reaches the kernel as a screen facing its bearing, and SUPPORT binds only to another
+  unit of the recipient's own party in the same field. *Not built:* a shard_1 story that flies
+  them as delivered orders. No tacsim test yet runs a DT roster to its field, and the hook below
+  is what such a story needs. GC.1's gate is the first to fly through it.
+- **The harness hook** (Q-36-49). The Org unit grant failed in tacsim's world harness because its
+  `land()` prepared on the plain path, which hands a provider no owner reads. Org's
+  `unitgrant_issue` reads its owner preimage, so it refused ("unit-grant request refused"). The
+  composition was never the problem. `driving::land_composed` (in `tacsim/tests/shard_1/`)
+  lands a submission on the world task's composed path
+  (`prepare_registered_composed_resolved_authoritative_action`, then `install_composed_action`),
+  as shard_4's excursion lander does, and keeps the module writes for a reboot. Object writes,
+  such as a DT launch's, stay in the World. A harness story can now land the grants a DT
+  activation needs. mush-server's `dt_preparation_plans` (`pair_field_fixture`) gives the command
+  sequence to mirror. Its scheduled `control_handoff_apply` needs the composed scheduled lander,
+  as shard_4's `m8_world` has it.
+- **The two world-task items** (Q-36-50; `mush-server/src/world_task.rs`).
+  - *The decision arm.* A provider's answer (`Wake::DecisionResult`) is taken only while no
+    commit is pending (`decision_result_armed`), as the command-submission and arena-egress arms
+    already were. Until the receipt lands, it waits in its bounded channel.
+  - *Behind the lifecycle slot.* While a lifecycle message waits in the slot behind a pending
+    commit, `rx` is still taken, into a bounded queue behind it (`BehindSlot`, at most
+    `COMMAND_DEFER_CAP` entries; past that `rx` stops, as before). The slot runs first, then that
+    queue front to back, each entry handled as a fresh message, then `rx`. A typed line that has
+    waited 250 ms behind the slot hears, once: "The world is finishing a connection's business
+    first; your line is waiting and runs as soon as it can." It is not refused. A shutdown or the
+    loop's end refuses what is queued there, as it refuses the defer queue.
+  - *Regressions:* `gc0_a_decision_result_waits_behind_a_pending_commit` tests the arm's rule as
+    a unit, since no rig holds a commit while a provider answers.
+    `gc0_a_line_behind_a_held_lifecycle_slot_hears_it_waits_then_runs` holds a receipt, parks a
+    `ConnDown` in the slot and types a line behind it: the notice arrives, then the line runs
+    after the receipt.
+- **Doc 27a** (Q-36-51). It gains a status note at its head. Every row and section describing
+  code that `e3933521` deleted (§3, §6, §7's quarantine and §8) is marked superseded, with a
+  pointer to the commit, to `61a670ce` where the code can be recovered, and to this document.
+
+**The gate** (`tacsim/tests/shard_1/field_story.rs`,
+`gc0_the_raiders_barge_lifts_and_the_field_demotes_without_a_friendly_mark`) is doc 32's field
+story at 256 a side, formerly `cf7_the_field_story`, with the escort pilot's Friendly stand-down
+removed. The walker falls to the escort's coaxial, and the tank withdraws up the ramp and boards.
+Then the barge lifts, the open promotion names its exit, and the field demotes with the raider
+still marked Hostile. The barge is not on the site record. The story's second field lands the
+barge again. `s2_the_field_story_at_512` runs the same script on Urvara Reach. The other gates:
+
+- the hook: `escort_lease::gc0_the_harness_lands_the_org_unit_grant` (the loan is refused on the
+  plain prepare and lands on the composed one);
+- the site index: `site_record::gc0_a_unit_leaving_under_its_own_power_leaves_the_index`;
+- SCREEN and SUPPORT: `field::orders::gc0_a_screen_in_a_field_holds_its_bearing` and
+  `gc0_a_support_in_a_field_binds_to_its_partys_unit_only`.
+
+**Defaults taken (provisional):**
+
+- the snapshot cadence as the lift's check;
+- the barge landing again at its authored cell on the next launch;
+- the waiting notice's wording, and its 250 ms (the defer queue's bound);
+- the behind-slot queue's cap (the defer queue's 64).

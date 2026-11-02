@@ -25,8 +25,8 @@ use mush_core::ObjId;
 use tacsim::arena::ledger::{EventKind, LedgerEvent};
 
 use crate::driving::{
-    RAMP, Rig, act_go, at_counter, command, file_and_launch, finish, land, launched, on_ground_at,
-    on_pad_as, on_pad_with, run, staff_hand, stocked_tuned, to_cell, to_ic, warm,
+    RAMP, Rig, act_go, at_counter, command, file_and_launch, finish, land, land_composed, launched,
+    on_ground_at, on_pad_as, on_pad_with, run, staff_hand, stocked_tuned, to_cell, to_ic, warm,
 };
 use crate::field_host::{
     armed, egress, fragile, frame, seat, second, site_record, task, tune, until, weapon_of,
@@ -501,4 +501,40 @@ async fn cf6c_a_leased_escort_wrecked_in_a_field_is_written_off() {
     assert!(tacsim::port::tv::written_off(rig.tw.world(), hull));
     let barred = run(&mut rig.tw, escort, "+tv/lease escort");
     assert!(barred.contains("was written off"), "{barred}");
+}
+
+/// **Doc 36 cut GC.0's harness hook** (Q-36-49): the Org unit grant lands in tacsim's world
+/// harness. The operational loan `+tv/1/permissions go` submits is refused on the plain prepare,
+/// which hands the provider no owner reads, and lands on the composed one
+/// (`driving::land_composed`), so a harness story can carry a DT activation's grants.
+#[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+async fn gc0_the_harness_lands_the_org_unit_grant() {
+    let mut rig = stocked_tuned(tune);
+    // The loan is typed and landed at the counter, where it is offered, as `lease_escort` types
+    // it. The Org's own submissions, which `driving::drain` leaves out, are taken as they queue.
+    let _ = on_pad_with(&mut rig, "Pilot", 1, "Salt Moth", |rig, pilot| {
+        at_counter(rig, pilot);
+        let signed = run(&mut rig.tw, pilot, "+tv/lease escort go");
+        assert!(signed.contains("leases you OWP-ES-01"), "{signed}");
+        let loan = run(&mut rig.tw, pilot, "+tv/1/permissions go");
+        let mut queued = Vec::new();
+        while let Some(submit) = rig.tw.engine_mut().take_authoritative_submit() {
+            queued.push(*submit);
+        }
+        let grants: Vec<_> = queued
+            .iter()
+            .filter(|submit| submit.action.key().id.as_str() == "unitgrant_issue")
+            .collect();
+        assert!(!grants.is_empty(), "the loan is submitted: {loan}");
+        let plain = land(rig, grants[0]);
+        assert!(
+            plain
+                .as_ref()
+                .is_err_and(|error| error.contains("unit-grant request refused")),
+            "the plain prepare refuses the grant: {plain:?}"
+        );
+        for grant in grants {
+            land_composed(rig, grant).expect("the composed prepare lands the grant");
+        }
+    });
 }
