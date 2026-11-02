@@ -14,7 +14,8 @@
 //! - **Custody** (Q-36-16, Q-S2, Q-S14). A casualty loaded into a bay that is not its own party's
 //!   or a Friend's is in the custody of that carrier's operator ([`SalvageCustody`], on the
 //!   site's record, where the claim is filed), with a claim owed ([`ClaimSeam::Owed`]). Custody is
-//!   never title. GC.6 files the claim and moves the seam to [`ClaimSeam::Filed`].
+//!   never title. GC.6 files the claim and moves the seam to [`ClaimSeam::Filed`]
+//!   ([`crate::surface::claim`]).
 //! - **A written-off lease rig is Occator's alone** (Q-36-22, Q-36-29). Anyone may tow it, but a
 //!   load hands it back to Occator's shed with no custody and no claim
 //!   (`crate::port::tv::hand_back`), and a custody record over a rig written off later is void
@@ -99,6 +100,25 @@ pub struct SalvageCustody {
     pub left_ic: Option<i64>,
     /// The claim.
     pub claim: ClaimSeam,
+    /// **Doc 36 cut GC.6**: the tow operation the load closed, which a claim's evidence binds
+    /// to. Omitted when unknown (a record written before GC.6).
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub operation: Option<mush_tactics::field_ops::RecoveryOpId>,
+    /// **Doc 36 cut GC.6** (Q-S3, Q-36-26): the tenure, title and witnesses pinned when the
+    /// attach began, carried from the site's tows at the load.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub pin: Option<crate::surface::claim::TenurePin>,
+    /// **Doc 36 cut GC.6** (Q-36-24, Q-36-27): the claim as filed, kept by the library's own
+    /// rules beside the seam's contract.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub file: Option<Box<mush_tactics::field_ops::SalvageClaim>>,
+    /// **Doc 36 cut GC.6** (Q-36-25): who was told at filing.
+    #[serde(default, skip_serializing_if = "Vec::is_empty")]
+    pub told: Vec<ObjId>,
+    /// **Doc 36 cut GC.6** (Q-36-28): evidence delivered as a report, or read from the black box
+    /// with bay access, at most [`crate::surface::claim::MAX_EVIDENCE`].
+    #[serde(default, skip_serializing_if = "Vec::is_empty")]
+    pub evidence: Vec<mush_tactics::field_ops::SalvageEvidenceRecord>,
 }
 
 /// **Put `custody` on `record`**, replacing any earlier one for the same hull; past
@@ -493,6 +513,11 @@ mod tests {
             recovered_ic: at,
             left_ic: Some(1),
             claim: ClaimSeam::Owed,
+            operation: None,
+            pin: None,
+            file: None,
+            told: Vec::new(),
+            evidence: Vec::new(),
         };
         hold(&mut record, custody(9, 5));
         hold(&mut record, custody(7, 6));

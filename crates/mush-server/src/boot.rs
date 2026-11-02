@@ -810,6 +810,20 @@ async fn build_engine_inner(
     {
         tracing::warn!("boot: no geology installer took the geology key");
     }
+    // Doc 36 cut GC.6 (Q-36-25): a salvage claim's notice goes by IC mail — the registry's
+    // letter, delivered at once through `mush-mail` (a world without tacsim has no slot).
+    let _ = tacsim::surface::claim::install_claim_mail(
+        &mut engine.world,
+        std::sync::Arc::new(
+            |ctx: &mut mush_core::Ctx<'_>,
+             from: mush_core::ObjId,
+             to: &[mush_core::ObjId],
+             subject: &str,
+             body: &str| {
+                mush_mail::post_notice(ctx, from, to, subject, body).map(|_| ())
+            },
+        ),
+    );
     modules::boot_modules(&mut engine, &**store).await?;
     if let Some(freeze) = engine.world.world_timeline().freeze() {
         let mut out = mush_core::Outbox::new();

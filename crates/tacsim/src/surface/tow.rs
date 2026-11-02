@@ -97,9 +97,9 @@ pub const MAX_TOW_ACTS: usize = 64;
 pub const TOW_REACH_CM: u64 = 1_500;
 
 /// The tow's verbs, for `+tv`'s parse.
-pub const TOW_WORDS: [&str; 4] = ["load", "pickup", "release", "tow"];
+pub const TOW_WORDS: [&str; 5] = ["load", "pickup", "release", "scrap", "tow"];
 /// `+tv/<n> tow` with no rig of the actor's at hand.
-pub const TOW_USAGE: &str = "Usage: +tv/<n> tow [#unit] [go], +tv/<n> release [go], +tv/<n> load [go] or +tv/<n> pickup [n] [go].";
+pub const TOW_USAGE: &str = "Usage: +tv/<n> tow [#unit] [go], +tv/<n> release [go], +tv/<n> load [go], +tv/<n> pickup [n] [go] or +tv/<n> scrap [n] [go].";
 /// The tow's preview (the inspection): `{n}`, `{name}`, `{t}`, `{state}`, `{speed}`, `{min}`.
 pub const TOW_PREVIEW: &str = "Rig {n} looks the {name} over: {t} t, {state}. In tow it moves at {speed} m/s. Inspecting and making fast take about {min} IC minutes. +tv/{n} tow go";
 /// The tow filed: `{n}`, `{name}`, `{min}`.
@@ -209,13 +209,17 @@ pub struct Tows {
     /// The last act ordinal issued (0: none).
     #[serde(default)]
     pub issued: u32,
+    /// **Doc 36 cut GC.6** (Q-S3, Q-36-26): the tenure each attach pinned, one a casualty, in
+    /// order, at most [`MAX_TOW_ACTS`] ([`crate::surface::claim::TenurePin`]).
+    #[serde(default, skip_serializing_if = "Vec::is_empty")]
+    pub pins: Vec<crate::surface::claim::TenurePin>,
 }
 
 impl Tows {
     /// Whether nothing was ever towed here, so the record omits it.
     #[must_use]
     pub fn is_fresh(&self) -> bool {
-        self.issued == 0 && self.acts.is_empty() && self.book.is_empty()
+        self.issued == 0 && self.acts.is_empty() && self.book.is_empty() && self.pins.is_empty()
     }
 
     /// The record's own invariants.
@@ -240,6 +244,16 @@ impl Tows {
             .any(|a| a.ordinal == 0 || a.ordinal > self.issued || a.due_ic < a.started_ic)
         {
             return Err("a tow act is one the record issued, due after it started".to_owned());
+        }
+        if self.pins.len() > MAX_TOW_ACTS
+            || self.pins.windows(2).any(|pair| match pair {
+                [a, b] => a.casualty >= b.casualty,
+                _ => false,
+            })
+        {
+            return Err(format!(
+                "a site's tenure pins are at most {MAX_TOW_ACTS}, one a casualty, in order"
+            ));
         }
         Ok(())
     }
@@ -386,6 +400,9 @@ pub struct AttachFacts {
     /// The act's length, IC seconds (`[tacsim.recovery].inspect_s + attach_s`), fixed by the
     /// server: the prepare reads no configuration.
     pub secs: u32,
+    /// **Doc 36 cut GC.6** (Q-S3): the tenure, title and witnesses the attach's start pins.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub pin: Option<crate::surface::claim::TenurePin>,
 }
 
 /// **A load's facts**: the carrier's bay, the casualty's measures and where everything stands.
@@ -468,6 +485,17 @@ pub enum TowOrder {
         /// The facts now, `None` when a unit is gone.
         facts: Option<Box<LoadFacts>>,
     },
+    /// **Doc 36 cut GC.6**: a salvage claim's act (`+salvage`, and the tick's settlement), keyed
+    /// by the hull.
+    Claim {
+        /// The order.
+        order: Box<crate::surface::claim::ClaimOrder>,
+    },
+    /// **Doc 36 cut GC.6**: `+tv/<n> scrap … go`, remains broken up where they lie.
+    Scrap {
+        /// The facts.
+        facts: Box<crate::surface::claim::ScrapFacts>,
+    },
 }
 
 impl TowOrder {
@@ -481,6 +509,8 @@ impl TowOrder {
             Self::Load { .. } => "load",
             Self::Loaded { .. } => "loaded",
             Self::Pickup { .. } => "pickup",
+            Self::Claim { .. } => "claim",
+            Self::Scrap { .. } => "scrap",
         }
     }
 }
@@ -592,6 +622,7 @@ fn attach_facts(w: &World, tug: ObjId, casualty: ObjId) -> Option<AttachFacts> {
         mass,
         pose,
         carrier_refusal: crate::field::carrier::refuse_tow(w, casualty, tug),
+        pin: None,
     })
 }
 
@@ -1019,6 +1050,7 @@ pub(crate) fn register(
     reg.state(TowOrders::default());
     reg.state(TowIndex::default());
     reg.state(TowWatch::default());
+    reg.state(crate::surface::claim::ClaimMail::default());
     let (Some(action), Some(outcome)) = (actions.get(TOW_ACTION), outcomes.get(TOW_OUTCOME)) else {
         reg.state(TowHandles::default());
         return Ok(());
@@ -1041,7 +1073,9 @@ pub(crate) fn register(
 }
 
 /// The action's `op` words.
-const OPS: [&str; 6] = ["attach", "attached", "release", "load", "loaded", "pickup"];
+const OPS: [&str; 8] = [
+    "attach", "attached", "release", "load", "loaded", "pickup", "claim", "scrap",
+];
 
 fn parameters(
     invocation: &ActionInvocation,
@@ -1122,7 +1156,7 @@ impl ActionProvider for TowProvider {
             (
                 "tacsim-surface-tow",
                 "Tow",
-                "Take a casualty in tow, let it go, or load it into a carrier's bay.",
+                "Take a casualty in tow, let it go, load it into a carrier's bay, or file and settle a salvage claim.",
             ),
         )
         .map(Some)
@@ -1156,6 +1190,8 @@ impl ActionProvider for TowProvider {
             TowOrder::Attach { facts } => facts.site.clone(),
             TowOrder::Load { facts } => facts.site.clone(),
             TowOrder::Pickup { facts } => facts.site.clone(),
+            TowOrder::Scrap { facts } => facts.site.clone(),
+            TowOrder::Claim { order } => order.site().clone(),
             TowOrder::Attached { site, .. }
             | TowOrder::Release { site }
             | TowOrder::Loaded { site, .. } => site.clone(),
@@ -1203,6 +1239,14 @@ impl ActionProvider for TowProvider {
                         (now, now.saturating_add(secs)),
                     )
                     .map_err(refused)?;
+                // Doc 36 cut GC.6 (Q-S3, Q-36-26): the tenure is pinned when the attach starts.
+                if let Some(pin) = facts
+                    .pin
+                    .clone()
+                    .filter(|pin| pin.casualty == facts.casualty)
+                {
+                    crate::surface::claim::pin(&mut record.tows.pins, pin);
+                }
                 "filed".to_owned()
             }
             TowOrder::Attached { ordinal, facts, .. } => {
@@ -1234,6 +1278,21 @@ impl ActionProvider for TowProvider {
                 }
             }
             TowOrder::Release { .. } => {
+                // Doc 36 cut GC.6 (Q-36-26): a release starts the tenure again.
+                let released = record
+                    .tows
+                    .towing(tv)
+                    .map(RecoveryOperation::casualty)
+                    .or_else(|| {
+                        record.tows.act_of(tv).and_then(|a| match a.stage {
+                            TowStage::Attach { casualty } => Some(casualty),
+                            TowStage::Load { .. } => None,
+                        })
+                    });
+                record
+                    .tows
+                    .pins
+                    .retain(|pin| !(Some(pin.casualty) == released && pin.tug == tv));
                 let had_act = record.tows.take_act(tv).is_some();
                 let tow = record.tows.towing(tv).map(|op| (op.id(), op.revision()));
                 match tow {
@@ -1332,7 +1391,21 @@ impl ActionProvider for TowProvider {
                     _ => "refused:it never reached the bay".to_owned(),
                 }
             }
-            TowOrder::Pickup { facts } => self.pick_up(txn, &mut record, tv, &facts, promoted)?,
+            TowOrder::Pickup { facts } => {
+                self.pick_up(txn, &mut record, (tv, actor), &facts, (promoted, now))?
+            }
+            TowOrder::Claim { order } => {
+                if promoted {
+                    return Err(refused(crate::surface::site_record::FIELD_OPEN_CODE));
+                }
+                if order.hull() != tv {
+                    return Err(invalid());
+                }
+                crate::surface::claim::prepare(&mut record, actor, &order, now).map_err(refused)?
+            }
+            TowOrder::Scrap { facts } => {
+                self.scrap(txn, &mut record, (tv, actor), &facts, (promoted, now))?
+            }
         };
         record
             .check()
@@ -1411,22 +1484,55 @@ impl TowProvider {
             }
         }
         let left = record.take_unit(facts.casualty).ok();
+        // Doc 36 cut GC.6 (Q-S3, Q-36-26): the tenure this tug pinned rides into the custody.
+        let pin = record
+            .tows
+            .pins
+            .iter()
+            .position(|pin| pin.casualty == facts.casualty)
+            .map(|at| record.tows.pins.remove(at))
+            .filter(|pin| pin.tug == tv);
         // Doc 36 cut GC.5 (Q-36-16, Q-36-29): a load into a carrier that is not the casualty's own
         // party's or a Friend's puts it in that carrier's operator's custody with a claim owed;
         // a written-off lease rig is Occator's alone and is handed back with none.
         if facts.written_off || facts.friendly {
             record.custody.retain(|row| row.hull != facts.casualty);
         } else {
+            let holder = facts.custodian.unwrap_or(operator);
+            // Doc 36 cut GC.6 (Q-36-30): a recovery off owned ground with neither the title
+            // holder's nor the landholder's authority is written to the evidence log.
+            if let Some(landholder) = pin
+                .as_ref()
+                .and_then(crate::surface::claim::TenurePin::landholder)
+                && landholder != holder
+                && pin.as_ref().and_then(|pin| pin.answering) != Some(holder)
+            {
+                crate::surface::claim::log_unlawful(
+                    record,
+                    crate::surface::claim::UnlawfulAct {
+                        kind: crate::surface::claim::UnlawfulKind::Recovery,
+                        actor: holder,
+                        subject: facts.casualty.0,
+                        landholder: Some(landholder),
+                        at_ic: at,
+                    },
+                );
+            }
             crate::surface::salvage::hold(
                 record,
                 crate::surface::salvage::SalvageCustody {
                     hull: facts.casualty,
-                    holder: facts.custodian.unwrap_or(operator),
+                    holder,
                     carrier: facts.carrier,
                     recovered_by: tv,
                     recovered_ic: at,
                     left_ic: left.map(|row| row.left_ic),
                     claim: crate::surface::salvage::ClaimSeam::Owed,
+                    operation: Some(op.id()),
+                    pin,
+                    file: None,
+                    told: Vec::new(),
+                    evidence: Vec::new(),
                 },
             );
         }
@@ -1471,9 +1577,9 @@ impl TowProvider {
         &self,
         txn: &mut ActionTxn<'_>,
         record: &mut SiteRecord,
-        tv: ObjId,
+        (tv, actor): (ObjId, ObjId),
         facts: &crate::surface::salvage::PickupFacts,
-        promoted: bool,
+        (promoted, now): (bool, i64),
     ) -> Result<String, mush_core::ActionError> {
         if promoted {
             return Err(refused(crate::surface::site_record::FIELD_OPEN_CODE));
@@ -1516,11 +1622,101 @@ impl TowProvider {
                 tracing::warn!(tv = tv.0, object = facts.object, %error, "tacsim: a crate's goods would not move from the spoil; the pickup refuses");
                 refused("pickup_empty")
             })?;
-        Ok(if facts.lawful {
-            "picked:lawful".to_owned()
-        } else {
-            "picked:unlawful".to_owned()
-        })
+        if facts.lawful {
+            return Ok("picked:lawful".to_owned());
+        }
+        // Doc 36 cut GC.6 (Q-36-30): evidence for a later crime system, never an enforcement.
+        crate::surface::claim::log_unlawful(
+            record,
+            crate::surface::claim::UnlawfulAct {
+                kind: crate::surface::claim::UnlawfulKind::Pickup,
+                actor,
+                subject: facts.object,
+                landholder: None,
+                at_ic: now,
+            },
+        );
+        Ok("picked:unlawful".to_owned())
+    }
+
+    /// **Remains broken up where they lie** (doc 36 cut GC.6, GC.3's follow-up; Q-36-39): off the
+    /// site's record, and their structural mass minted as one `structural_alloys` lot into the
+    /// carrier's hold, in this bundle. Remains that changed since the command read them refuse.
+    fn scrap(
+        &self,
+        txn: &mut ActionTxn<'_>,
+        record: &mut SiteRecord,
+        (tv, actor): (ObjId, ObjId),
+        facts: &crate::surface::claim::ScrapFacts,
+        (promoted, now): (bool, i64),
+    ) -> Result<String, mush_core::ActionError> {
+        if promoted {
+            return Err(refused(crate::surface::site_record::FIELD_OPEN_CODE));
+        }
+        if record.tows.act_of(tv).is_some() || record.tows.towing(tv).is_some() {
+            return Err(refused("tow_busy"));
+        }
+        if act::read_record(txn, &self.excursions, tv)?
+            .as_ref()
+            .is_some_and(|r| r.act.is_some() || r.run.is_some())
+        {
+            return Err(refused("tow_rig_busy"));
+        }
+        let inventory = self
+            .inventory
+            .as_ref()
+            .ok_or_else(|| refused("scrap_unwired"))?;
+        let object = record
+            .take_object(facts.object)
+            .map_err(|_| refused("scrap_gone"))?;
+        let crate::surface::site_record::GroundKind::Remains { of, mass_kg, .. } = &object.kind
+        else {
+            return Err(refused("scrap_gone"));
+        };
+        if *of != facts.of || *mass_kg != facts.mass_kg {
+            return Err(refused("scrap_changed"));
+        }
+        let alloys_t = mass_kg / crate::port::bay_work::strip::SCRAP_KG_PER_T;
+        if alloys_t == 0 || alloys_t != facts.alloys_t {
+            return Err(refused("scrap_changed"));
+        }
+        let good = CanonicalId::new(crate::port::bay_work::strip::SCRAP_GOOD)
+            .map_err(|_| integrity("the alloys' good is malformed"))?;
+        let grade = mush_inventory::Grade::new(crate::port::bay_work::strip::SCRAP_GRADE)
+            .map_err(|_| integrity("the alloys' grade is out of bounds"))?;
+        inventory
+            .mint_origin(
+                txn,
+                mush_inventory::EndpointRef(mush_economy::VaultId(facts.hold)),
+                &good,
+                alloys_t,
+                grade,
+                mush_economy::ExternalRef {
+                    provider: "tacsim".into(),
+                    kind: "remains_scrap".into(),
+                    id: format!("{}/{}", facts.site, facts.object).into(),
+                    revision: None,
+                },
+                mush_inventory::LotId(facts.lot),
+            )
+            .map_err(|error| {
+                tracing::warn!(tv = tv.0, object = facts.object, %error, "tacsim: remains' alloys would not mint; the scrap refuses");
+                refused("scrap_unminted")
+            })?;
+        if facts.lawful {
+            return Ok("scrapped:lawful".to_owned());
+        }
+        crate::surface::claim::log_unlawful(
+            record,
+            crate::surface::claim::UnlawfulAct {
+                kind: crate::surface::claim::UnlawfulKind::Scrap,
+                actor,
+                subject: facts.object,
+                landholder: facts.landholder,
+                at_ic: now,
+            },
+        );
+        Ok("scrapped:unlawful".to_owned())
     }
 }
 
@@ -1641,8 +1837,16 @@ pub(crate) fn tow_cmd(
             .map(|(_, unit)| *unit)
             .ok_or_else(|| CmdError::msg(NOTHING_IN_REACH.replace("{n}", &n)))?,
     };
-    let facts = attach_facts(ctx.w, rig.tv, casualty)
+    let mut facts = attach_facts(ctx.w, rig.tv, casualty)
         .ok_or_else(|| CmdError::msg(NOTHING_IN_REACH.replace("{n}", &n)))?;
+    // Doc 36 cut GC.6 (Q-S3): the tenure, title and witnesses this attach's start pins.
+    facts.pin = Some(crate::surface::claim::pin_for(
+        ctx,
+        &record,
+        &site,
+        (rig.tv, casualty),
+        site_cell(facts.pose.x_cm, facts.pose.y_cm),
+    ));
     let label = name(ctx.w, casualty);
     if let Some(line) = &facts.carrier_refusal {
         return Err(CmdError::msg(line.clone()));
@@ -1939,6 +2143,9 @@ pub(crate) fn tick(ctx: &mut Ctx<'_>) {
             watch.0.insert(act.tug, (act.operator, act));
         }
     }
+    // Doc 36 cut GC.6 (Q-36-27): the salvage claims whose window has run, or which a contest
+    // vacates.
+    crate::surface::claim::tick(ctx);
 }
 
 /// **The load's physical step**: the casualty into `carrier`'s bay, when its tug stands within

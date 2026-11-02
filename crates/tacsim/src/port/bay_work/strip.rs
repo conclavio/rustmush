@@ -13,8 +13,10 @@
 //! - **Hot parts** (Q-F6): [`vacate_claim`] flags a stripped part hot when the claim it came off
 //!   under is vacated — the seam GC.5/GC.6's contest calls, a staff fixture until then. The bay
 //!   refuses to fit a hot part (`+bay/fit`).
-//! - **Remains** (Q-36-39): scrapped where they lie by their title holder or a winning claimant.
-//!   [`scrap_remains`] is the seam; it refuses until GC.3's remains record lands.
+//! - **Remains** (Q-36-39): scrapped where they lie by their title holder or a winning claimant —
+//!   built by doc 36 cut GC.6 as `+tv/<n> scrap` on the site ([`crate::surface::claim`]), which
+//!   mints the alloys at [`SCRAP_KG_PER_T`] in the same bundle that takes the remains off the
+//!   site's record.
 
 use mush_core::{CanonicalId, Ctx, ObjId};
 use mush_inventory::LotId;
@@ -273,8 +275,9 @@ pub fn scrap(ctx: &mut Ctx<'_>, hull: ObjId) -> Result<Scrapped, String> {
 
 /// **A stripped part's claim is vacated** (Q-S13, Q-F6): the provenance of `lot`, a part that
 /// came off `hull`, is flagged hot, `rightful_owner` the one who may clear it. The seam
-/// GC.5/GC.6's salvage contest calls when a claim is vacated; until then only a staff fixture
-/// does. `by` submits the flag (a character, never GOD); the act refuses a lot that did not
+/// GC.5/GC.6's salvage contest calls when a claim is vacated. A salvor's custody reaches no
+/// strip in GC.8b's rights table, so no part comes off under a claim yet and GC.6's vacate has
+/// nothing to flag: only a staff fixture calls it. `by` submits the flag (a character, never GOD); the act refuses a lot that did not
 /// come off `hull`.
 ///
 /// # Errors
@@ -311,16 +314,4 @@ pub fn vacate_claim(
     put_bay_hull(ctx, &record);
     super::settle(ctx, hull);
     Ok(())
-}
-
-/// **Scrap remains where they lie** (Q-36-39): the seam for GC.3's remains. Remains of an
-/// irrecoverable hull are scrapped in place by their title holder or a claimant who has won
-/// the contest, into structural alloys only — nothing can be stripped from remains. No remains
-/// record exists on this tree yet, so the seam refuses.
-///
-/// # Errors
-///
-/// Always, until GC.3 lands its remains record.
-pub fn scrap_remains(_ctx: &mut Ctx<'_>, _remains: ObjId) -> Result<Scrapped, String> {
-    Err("Remains are scrapped where they lie once the field records them (GC.3).".to_owned())
 }

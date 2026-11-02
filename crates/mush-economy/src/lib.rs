@@ -278,6 +278,13 @@ pub use contract_live::{
     pause_real_time_deadlines, refuse_contract, refuse_contract_offer, resume_real_time_deadlines,
     stands_in_contract,
 };
+// Doc 36 cut GC.6 (Q-36-24, Q-36-27): the salvage claim, an E4b2 contract with a `RealUtc`
+// contest window, and the registry's award of an uncontested claim's title.
+pub use contract_live::{
+    MAX_SALVAGE_CLAIM_WINDOW_SECS, SALVAGE_CLAIM_WINDOW_SECS, SalvageClaimSpec,
+    award_salvage_title, close_salvage_claim, file_salvage_claim, live_salvage_claim,
+    salvage_claim_hull, salvage_claim_window,
+};
 
 // E4c — facts, events, evidence.
 pub use attest::{MAX_CANON_CONTRACTS_VISITED, MAX_OBSERVER_SETTLEMENTS_PER_EVENT};

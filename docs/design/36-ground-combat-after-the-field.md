@@ -969,6 +969,7 @@ Q-36-52 (the friendly half), Q-36-54.
 - **Story (b):** three parties on Urvara Reach. The window is compressed by a test knob and paused
   across a W-clock outage.
 - **Depends on:** GC.5.
+- **Built:** see "GC.6 as built", below, which also lists what the programme still owes.
 - **Afterwards, in the space track's tree:** `+helm/tow` moves onto this claim, its window, its
   stages and the bay check, and `SpacePartyId` becomes `PartyId` (Q-36-46, Q-36-48). This is the
   space track's cut, not this programme's, and it is listed here so the two tracks agree on the
@@ -2451,7 +2452,8 @@ the story is changed below.)
   for where the alloys go, a rig's hopper or a carrier's hold, and the claimant's right, which
   waits on GC.5/GC.6's custody record. `GroundKind::Remains { of, mass_kg }` carries what that
   act reads: the hull, for the title check, and the mass, for the yield at `SCRAP_KG_PER_T`.
-  Wiring it is a follow-up, beside GC.6.
+  Wiring it is a follow-up, beside GC.6. (Built by GC.6 as `+tv/<n> scrap`: see "GC.6 as
+  built".)
 
 **One consequence table** (Q-36-8, Q-36-47; the new `tacsim::carrier_damage`).
 - *Keyed by role, not by name* (`CarrierPart`): the hull is the section whose loss is
@@ -2856,7 +2858,8 @@ open, for the owner to object to:
   It lives on the site record because the claim is filed at the site's port registry (GC.6). One
   record a hull, at most 32 a site.
 - *The claim seam for GC.6:* `ClaimSeam::Owed` at the load. GC.6 files the E4b2 contract and
-  writes `ClaimSeam::Filed { contract }`. Nothing here files, notifies or adjudicates.
+  writes `ClaimSeam::Filed { contract }`. Nothing here files, notifies or adjudicates. (GC.6 built
+  it: see "GC.6 as built".)
 - *GC.8b's salvor seam is filled:* `port::bay_work::salvor_custody` now reads the record (it takes
   a `Ctx`), so the holder's `Right::Salvor` reaches repair and berth as GC.8b's table permits. A
   lease rig written off since is nobody's custody (Q-36-29).
@@ -2964,3 +2967,241 @@ Flank).
 - 28 IC days counted from when the rig was left on the ground, with no term settle at the
   write-off.
 - A written-off rig handed back straight to the shed.
+
+## GC.6 as built (the claim, story b)
+
+Built 2026-11-02 on `main` at `57f157eb`, the last cut of the programme (every other cut merged).
+It covers Q-36-24 to Q-36-28 and Q-36-30, and GC.3's follow-up: remains scrapped where they lie.
+No kernel file changed and no practice hash moved: every rule here is the host's or the
+economy's, and the OOC arena has no custody, claims or remains to scrap. What the cut decided
+where the rulings left it open, for the owner to object to:
+
+**The contract** (Q-36-24; `mush-economy`, `contract_live.rs`'s new salvage section).
+- *The kind.* `mush_economy::file_salvage_claim` files one `Active` contract whose only party is
+  the claimant, accepted at filing. It escrows and delivers nothing. Its conditions are a staff
+  attestation nobody gives (so the sweep never settles it on its own) and `TitleHeld` of the hull
+  by the claimant, which names the subject inside the consent hash. Its deadline is `RealUtc`,
+  `[tacsim.recovery].claim_window_s` from filing: 172,800 s, the ruling's 48 real hours, a test
+  knob clamped to `1..=` a week (`MAX_SALVAGE_CLAIM_WINDOW_SECS`) and not in the server's config
+  file yet. `salvage_claim_hull` recognises the shape, and `live_salvage_claim` lets a second
+  filing reuse the first, so a refused landing never leaves two windows on one hull.
+- *Outages* pause it through `contract_live`'s own `pause_real_time_deadlines` and
+  `resume_real_time_deadlines`, like every real-time window: the W-clock's two events, nothing of
+  tacsim's. At the effective deadline the economy's sweep expires it (an empty unwind).
+- *Who may see it:* the claimant and an `Audience` of the title holder and, on owned ground, the
+  landholder. Never `Public` (doc 27 Q-S4: no broadcasts).
+- *The registry.* It is filed at the site's port registry, which for every frontier site, so
+  every lane site today, is the Freeport Registry (`port::claims::registry_info`). A site with a
+  registry of its own is not modelled.
+- *Refused at filing* for an Occator write-off (Q-36-29, the lease rule), and for a hull with no
+  live title record or no one to answer for its title (below).
+
+**Filing and notice** (Q-36-25; the new `surface/claim.rs`, verb `+salvage`).
+- `+salvage/claim <hull> [go]` by the custodian GC.5 recorded. The preview names the registry,
+  the window and who is told; `go` files the contract, then submits the claim's act.
+- *The record:* the custody row's seam goes from `ClaimSeam::Owed` to `ClaimSeam::Filed {
+  contract }`, and the library's own `SalvageClaim` is kept beside it (`SalvageCustody::file`),
+  with who was told (`told`).
+- *Notice by IC mail* to the title holder and, on owned ground, the landholder, under the site
+  clerk's name. It goes through tacsim's `ClaimMail` slot, which `mush-server`'s boot fills with
+  `mush_mail::post_notice`: a new official letter, delivered into each inbox at once, with no
+  Sent copy and nothing on the IC transport (a registry's record of notice, not a letter that
+  travels). A world without mail (tacsim's own harness) sends the online line alone. The notice
+  is sent by the command, so a filing whose act is refused after it has still been noticed; the
+  contract it names exists and lapses on its own.
+- *Who answers for a title:* the character who holds it, or, for an organization's title, the
+  hull's live lessee (provisional). A hull titled to an organization with no lessee cannot be
+  claimed yet.
+
+**Tenure** (Q-36-26, doc 27 Q-S3; `Tows::pins`, `claim::TenurePin`).
+- *Pinned at the attach's start.* The tow's start (GC.4's `attach` op) writes a pin on the
+  site's record: the ground's tenure at the casualty's cell (the live Registry claim on its
+  block, when a character holds it), the casualty's title and who answers for it, and its
+  witnesses. The command reads them; the prepare writes them.
+- *Kept* across the same tug's detach and reattach (an earlier pin by the same tug on the same
+  casualty is never replaced), a tow a field interrupted (the field's end of a tow leaves the
+  pin), and a restart with the attachment intact (the record is durable). *Started again* by a
+  `release`, or by another tug's attach.
+- *Carried* into the custody row at a non-friend's load, with the tow's operation id the
+  evidence binds to. A friendly load or a hand-back drops it.
+- An organization's seed on a block reads as open ground (a tenure names a character; doc 20's
+  seeds are the Registry's own).
+
+**Evidence** (Q-36-28).
+- *A party's own sensor and `known` records.* The pin's witnesses: the principal behind every
+  other unit on the site within sight of the casualty (`presence::SIGHT_CELLS`, 20 cells) when
+  the attach began — its party's owner, else its leader, else its pilot — and every principal
+  whose own `known` row placed a casualty or a wreck at that cell. The tug, the casualty and the
+  recoverer's own units are never witnesses. At most 16.
+- *The durable surface black box, read with bay access* (P-3). `+salvage/inspect <hull>` from
+  aboard the carrier that holds it: the reader is told how many lines the box's open tail holds,
+  and holds a `RecoveredBlackBox` record. Anyone not aboard is refused.
+- *Delivered reports.* `+salvage/report <hull>=<who> [go]` hands the holder's evidence to
+  another character: a copy held by the recipient, and a line by IC mail.
+- *GC.5's `picked:unlawful` outcomes*, and an unlawful recovery or scrapping, go to the site's
+  evidence log (below).
+- *The RAM tape is retired for the ground.* `SalvageClaimBook`'s tape says so in its doc;
+  nothing on the ground appends to it, and the library's claim is kept on the site's record.
+- A custody row keeps at most 16 delivered or read records.
+- *Limit:* the black box's own lines are not read as evidence of an unlawful recovery. In the
+  driving harness the rig writes no box lines at all (GC.3's finding), and an inspection reads
+  the box only to bind its reader to the operation. Whether the recovery was lawful is the pin's
+  tenure, never the box's content.
+
+**Contest and adjudication** (Q-36-27, doc 27 Q-S13, Q-R1; `SalvageClaim::contest` and
+`SalvageClaim::adjudicate`).
+- *The library made live and durable.* `SalvageClaimBook::submit_contest` and
+  `adjudicate_claim`'s rules moved onto `SalvageClaim` itself, the book now delegating, so a host
+  can keep each claim in its own durable record. The rules are unchanged.
+- `+salvage/contest <hull> [go]` files the challenger's best ground: proven unlawful recovery on
+  evidence they hold, else bare prior title (offered only to who answers for the title, and
+  marked in the preview as never defeating a lawful claim). The window is the contract's; a
+  contest while it is paused, or after it closed, is refused.
+- *The tick* (`claim::tick`, on the surface tick beside the tow's) settles a claim:
+  - a contest that would vacate settles it at once: the contract is closed
+    (`mush_economy::close_salvage_claim`, an empty unwind), then the custody row goes. The title
+    never moved. The hull stays physically in the custodian's bay (below);
+  - otherwise, once the economy says the window has run (the contract expired, or past its
+    effective end and not paused), the claim is awarded;
+  - a contract cancelled outside the claim (staff) sends the seam back to `Owed`.
+
+  The economy is written first, the site's record second, and a refused record write is retried
+  next tick (the award is idempotent). The parties are told.
+
+**The title moves through the economy's journal** (Q-36-27).
+`mush_economy::award_salvage_title` posts one `TransferTitle` of the hull to the claimant, under
+`salvage.award/<contract>`, by the lane's registry: the system principal `tacsim.registry`
+(`port::hull::REGISTRY_ISSUER`, already a registered title issuer on every world), under an
+authority that admits that one op and nothing else (`SalvageAwardAuth`). It refuses a contract
+that is not that claim, a window that has not run its course, and (invariant 12) an encumbered
+title. GC.8b's rights table (`bay_work::right_of`) then reads the claimant's `Title`.
+
+**Crime** (Q-36-30). The site's record gains an evidence log (`SiteRecord::unlawful`, at most 64,
+oldest dropped, omitted while empty): GC.5's unlawful pickup, a recovery off owned ground with
+neither the title holder's nor the landholder's authority, an unlawful scrapping, and a vacated
+claim. No line says so and no verb enforces it. An unlawful recovery nobody contests is still
+awarded: the claim fails only at contest.
+
+**Remains scrapped where they lie** (GC.3's follow-up, Q-36-39). `+tv/<n> scrap [n] [go]`, its own
+op (`scrap`) on `tacsim_surface_tow`:
+- *What:* remains within a cell of the rig. The act takes the remains object off the site's
+  record and mints `floor(mass_kg / SCRAP_KG_PER_T)` tonnes of `structural_alloys` as one lot at
+  grade 50 (`mint_origin`), in the same bundle. The lot's id is a hash of the site and the
+  object.
+- *Where the alloys go (provisional):* the hold of the rig's own carrier, which must stand on the
+  same site. A rig's hopper was the alternative; the hold is where GC.8b's scrap already lays its
+  lots.
+- *Who:* the hull's title holder, which a winning claimant is once the award has landed. Untitled
+  remains (a merged pile, or a hull with no title) are open to anyone; on owned ground anyone but
+  the landholder is written to the evidence log.
+- GC.8b's `strip::scrap_remains` seam is removed, and its gate's refusal assertion with it.
+  `mill::sm12a_only_the_clerk_the_foundry_and_the_mill_create_matter` lists the new
+  `.mint_origin(` with its reason: matter already in the world, taken off the site in the same
+  bundle.
+- The staff fixture `@tacsim/site <site> drop remains <x>,<y> [<kg>] [#<unit>]` gains the hull,
+  so a gate can make titled remains.
+
+**Where it is written.** No new action and no new family: the site's record gains the pins, the
+custody row's fields and the evidence log, each omitted while empty (a record written before the
+cut decodes, and an untouched one is byte-identical). GC.4's `tacsim_surface_tow` takes two more
+ops: `claim` (file, contest, report, inspect and settle, keyed by the hull) and `scrap`. Claim
+acts wait while a field is open on the site, as every surface act does.
+
+**The seam with space** (Q-36-46, Q-36-48; not built here, the space track's own cut).
+`+helm/tow` can file through the same `file_salvage_claim`, with the same window and the same
+`award_salvage_title`; a space custody record needs its own home (a space site has no
+`SiteRecord`), and the pin's tenure reads `GroundTenure::Unclaimed` in space. `SpacePartyId`
+becomes `PartyId` in the same cut.
+
+**The gates.**
+- `tests/shard_1/field_gc6.rs`, `gc6_story_b_the_contested_salvage_on_urvara_reach`: story (b),
+  three parties on Urvara Reach, through the production command paths.
+  1. T's two rigs, titled to T by staff, lie disabled: `near` beside the pad in sight of T's
+     carrier, on L's block (a seeded Registry claim); `far` on open ground out of anyone's sight.
+  2. O's rig tows `near`. The pin names L's tenure, T as the title holder and T's carrier as a
+     witness, and survives a restart with the attachment intact. O loads it into O's carrier: the
+     pin rides into custody, and the unlawful recovery is on the evidence log. O does the same with
+     `far`, which has no landholder and no witness.
+  3. Only the custodian files. The preview names the Freeport Registry, both people told and the
+     ten-minute window. Filing makes an `Active` salvage-claim contract with the compressed
+     `RealUtc` window, `Filed` on the record, T and L told; a second filing is refused. `far`'s
+     claim tells T alone.
+  4. T may not read the black box from outside O's carrier; O, aboard, does.
+  5. T contests on its own sensor record, then hands it to L, who now holds evidence. T's preview
+     on `far` offers bare title only, and T does not file it.
+  6. The vacating contest settles at once: the contract is cancelled, custody goes, the title
+     stays T's, and the vacated claim is on the evidence log.
+  7. A W-clock outage pauses `far`'s window: frozen past its first deadline nothing settles and a
+     contest is refused as paused; resumed, the window is extended by the time lost, still runs
+     30 s before its new end, and settles after it.
+  8. The award: the title is O's in the economy's journal, the contract lapses, and GC.8b's rights
+     table reads O's `Salvor` right before and `Title` after.
+  9. Remains: O may not break up remains of T's hull; O breaks up remains of `far` (now O's), and
+     a 6 t `structural_alloys` lot lies in O's carrier's hold.
+- *In-source:* `claim::tests` (the pin kept by the same tug and started again by another; a
+  report, a vacating contest, bare title never vacating, an award only at the window's end, and
+  the evidence log); `mush-economy`'s
+  `gc6_a_salvage_claim_is_its_shape_and_the_w_clock_pauses_its_window`; `mush-mail`'s
+  `gc6_a_registry_notice_is_delivered_at_once_without_a_sent_copy`.
+- *Changed:* `bay_gc8.rs`'s scrap gate drops the removed seam's assertion.
+
+**Defaults taken (provisional).**
+- The 48-real-hour window, a week at most, and the test knob outside the config file.
+- An organization's title answered for by the hull's lessee; an organization's block seed read as
+  open ground.
+- Witnesses within the presence picture's 20 cells, at most 16, and a `known` row as a witness.
+- The notice as a registry letter delivered at once, sent by the command.
+- The alloys into the rig's own carrier's hold; untitled remains open to anyone.
+- A vacated hull left in the custodian's bay.
+- The lines' wording.
+
+**Not built here.**
+- *Returning a vacated hull.* The claim is void and the title never moved, but the hull stays in
+  the custodian's bay: nothing moves it back to its title holder. Doc 27 Q-S13 restores "title
+  and custody right"; the physical return (a hand-over at a port, or a bay order) is owed.
+- *Hot parts on a vacated claim.* A salvor's custody reaches no strip in GC.8b's rights table, so
+  no part comes off under a claim and `strip::vacate_claim` has nothing to flag.
+- *Repairs at the custodian's risk* (Q-S14's `documented_repairs_at_risk`): GC.8b lets a salvor
+  repair, but the repair is not written to the claim.
+- *Authority grants for a recovery* (`has_owner_authorization`, `has_landholder_authorization`):
+  no grant names one, so only the title holder or the landholder themselves recover lawfully off
+  owned ground.
+- *A defective-procedure or superior-right contest:* the library's rules hold them, no verb files
+  one.
+- *The bot's vocabulary* for `+salvage` and `+tv/<n> scrap`, and story (b) over SSH.
+
+## What the programme still owes (after GC.6)
+
+Every cut of §7 has landed. What each as-built section left open, gathered in one place:
+
+- **Kernel, with the next rebless:**
+  - `Relations::note_fire` moves the shooter's other parties when a party is a friend of both
+    (GC.10's finding).
+  - A casualty carried in tow is not a kernel unit, so a hit on it in a field is not modelled
+    (GC.4's deviation from Q-36-20).
+- **The unit-mind API:** `line_to` reads the terrain alone and cannot see wrecks, so a mind may
+  fire through one (GC.2).
+- **The field host:**
+  - The ledger fills in about 18 engaged minutes at 100 units (GC.12).
+  - GC.1b's refused arrival is not retried while its field runs (GC.11's flag).
+  - A restart between a raider's join and the next snapshot stands the raider at the pad (GC.11).
+  - An epoch held by a DT flight is left open at a close-destroyed or a load (GC.3, GC.4).
+  - Releasing a tow inside a promoted field (GC.4).
+  - A shard_1 story flying SCREEN and SUPPORT as delivered orders (GC.0).
+- **Recovery and salvage:**
+  - Returning a vacated hull to its title holder (GC.6).
+  - Hot parts on a vacated claim, and a salvor's strip (GC.6, GC.8b).
+  - Repairs at the custodian's risk written to the claim (GC.6).
+  - Recovery authority grants (GC.6).
+  - A crate into a carrier's hold; a crate dropped by play; a written-off rig's crew aboard the
+    carrier (GC.5).
+  - The hopper's ore counted in a casualty's laden mass (GC.4).
+- **The bay:**
+  - A per-unit grant in the built bay, which needs an owner read in three prepares (GC.8b).
+  - Disposing of a scrapped shell (GC.8b).
+  - The bay order's typed family, and a World mirror for its readers (GC.8b).
+  - Whether a charter repossession charges for damage (GC.9, for the economy owner).
+- **The bot and SSH:** story (a) over SSH with a wingman cast on conclav.dev (GC.4); the bot's
+  `pickup`, `+salvage` and `scrap` vocabulary (GC.5, GC.6).
+- **Space's own cut** (Q-36-46, Q-36-47, Q-36-48): `+helm/tow` onto this claim, its window, its
+  stages and the bay check; `ShipSectionId` onto `CarrierPart`; `SpacePartyId` to `PartyId`.

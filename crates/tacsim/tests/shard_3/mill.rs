@@ -2501,13 +2501,18 @@ fn sm12a_only_the_mill_restocks() {
 /// foundry stock); `.debit(` only in the bay's draw (once), the burn (twice) and the mill (once).
 /// SM.12b's delivery is a `transfer`, so it needs no re-bless here. Doc 36 cut GC.8b's draw
 /// (`port/bay_work/act.rs`) consumes an order's goods from the carrier's hold: matter leaves the
-/// world as munitions and parts are spent on a hull.
+/// world as munitions and parts are spent on a hull. Doc 36 cut GC.6's remains scrap
+/// (`surface/tow.rs`) mints a wreck's structural mass as alloys where it lies: matter already in
+/// the world, taken off the site's record in the same bundle, never made from nothing.
 #[test]
 fn sm12a_only_the_clerk_the_foundry_and_the_mill_create_matter() {
     let files = production_files("tacsim/src");
     assert_eq!(
         occurrences(&files, ".mint_origin("),
-        vec![("tacsim/src/port/stock.rs".to_owned(), 1)]
+        vec![
+            ("tacsim/src/port/stock.rs".to_owned(), 1),
+            ("tacsim/src/surface/tow.rs".to_owned(), 1),
+        ]
     );
     let credits = occurrences(&files, ".credit(");
     let (foundry, others): (Vec<_>, Vec<_>) = credits

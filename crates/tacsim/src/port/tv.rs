@@ -1773,16 +1773,23 @@ enum Act {
         /// Committed.
         go: bool,
     },
+    /// **Doc 36 cut GC.6**: `+tv[/<n>] scrap [object] [go]`, remains broken up where they lie.
+    Scrap {
+        /// The remains' number on the site, when one is named.
+        object: Option<u32>,
+        /// Committed.
+        go: bool,
+    },
 }
 
 /// The act words a `+tv` switch or first word may name (the lease's, the acts', and since doc
 /// 20 cut SM.4a `scan` with its alias `survey`, `sound`, `forget` and `quiet`; since SM.4b
 /// `drive` and `map`; since SM.7 `mine` with its alias `drill`; since SM.8 `unload`; since SM.11
-/// `plan`; since doc 36 cut GC.4 `tow`, `release` and `load`, and since GC.5 `pickup`, as first
-/// words).
-const ACT_WORDS: [&str; 19] = [
+/// `plan`; since doc 36 cut GC.4 `tow`, `release` and `load`, since GC.5 `pickup`, and since
+/// GC.6 `scrap`, as first words).
+const ACT_WORDS: [&str; 20] = [
     "lease", "launch", "recover", "dump", "scan", "survey", "sound", "forget", "quiet", "drive",
-    "map", "mine", "drill", "unload", "plan", "tow", "release", "load", "pickup",
+    "map", "mine", "drill", "unload", "plan", "tow", "release", "load", "pickup", "scrap",
 ];
 
 /// **`/show`** (doc 20 cut SM.11; the brief's D11): a switch accepted only beside `plan`, so the
@@ -2019,9 +2026,16 @@ fn parse_parts(has: &dyn Fn(&str) -> bool, raw: &str) -> Result<(Option<u8>, Act
                 },
             ));
         }
-        // Doc 36 cut GC.5: `pickup [n] [go]`.
-        "pickup" => {
-            let usage = || CmdError::msg(crate::surface::salvage::PICKUP_USAGE);
+        // Doc 36 cut GC.5: `pickup [n] [go]`; doc 36 cut GC.6: `scrap [n] [go]`, the same shape.
+        "pickup" | "scrap" => {
+            let scrap = act == "scrap";
+            let usage = || {
+                CmdError::msg(if scrap {
+                    crate::surface::claim::SCRAP_USAGE
+                } else {
+                    crate::surface::salvage::PICKUP_USAGE
+                })
+            };
             let mut object: Option<u32> = None;
             let mut go = false;
             while let Some(word) = next.take() {
@@ -2038,7 +2052,14 @@ fn parse_parts(has: &dyn Fn(&str) -> bool, raw: &str) -> Result<(Option<u8>, Act
                 }
                 next = words.next();
             }
-            return Ok((slot, Act::Pickup { object, go }));
+            return Ok((
+                slot,
+                if scrap {
+                    Act::Scrap { object, go }
+                } else {
+                    Act::Pickup { object, go }
+                },
+            ));
         }
         // Doc 20 cut SM.8 (the brief's 3.5): `unload [<t>] [go]` — at most one whole tonnage
         // (`1..=99`, decimal digits only), then `go`; anything else is `UNLOAD_USAGE`.
@@ -2387,6 +2408,13 @@ pub(crate) fn tv_cmd(ctx: &mut Ctx<'_>) -> Result<(), CmdError> {
             crate::surface::site_record::field_gate(ctx, rig.hull)?;
             crate::surface::tow::act_gate(ctx, &rig, false)?;
             crate::surface::salvage::pickup_cmd(ctx, &rig, object, go)
+        }
+        // Doc 36 cut GC.6: remains broken up where they lie, on the open ground only.
+        Act::Scrap { object, go } => {
+            let rig = select_word(ctx, slot, "scrap").map_err(CmdError::msg)?;
+            crate::surface::site_record::field_gate(ctx, rig.hull)?;
+            crate::surface::tow::act_gate(ctx, &rig, false)?;
+            crate::surface::claim::scrap_cmd(ctx, &rig, object, go)
         }
     }
 }

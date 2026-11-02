@@ -5861,6 +5861,436 @@ pub(crate) fn on_world_clock_resumed(ctx: &mut Ctx<'_>, ev: &mush_core::WorldEve
     }
 }
 
+// ---- the salvage claim (doc 36 cut GC.6; Q-36-24, Q-36-27) -------------------------
+
+/// The most real seconds a salvage claim's contest window may run (a week). The
+/// ruling's window is 48 real hours ([`SALVAGE_CLAIM_WINDOW_SECS`]); a host's test knob
+/// compresses it, and nothing may stretch it past this.
+pub const MAX_SALVAGE_CLAIM_WINDOW_SECS: i64 = 7 * 24 * 3_600;
+
+/// A salvage claim's contest window, real seconds (doc 27 Q-S15, doc 36 Q-36-24: 48 real
+/// hours).
+pub const SALVAGE_CLAIM_WINDOW_SECS: i64 = 48 * 3_600;
+
+/// The idempotency kind a salvage award posts under (`salvage.award/<contract>`).
+const SALVAGE_AWARD_KIND: &str = "salvage.award";
+
+/// Everything [`file_salvage_claim`] needs (doc 36 cut GC.6, Q-36-24). Deliberately **not**
+/// an [`EconomicContract`]: the id, the consent hash, the acceptance and the state are the
+/// economy's to fill in.
+#[derive(Clone, Debug)]
+pub struct SalvageClaimSpec {
+    /// A short human label for `@contract/show`.
+    pub name: SmolStr,
+    /// The claimant: the custodian who recovered the hull. The contract's issuer and its one
+    /// party.
+    pub claimant: ObjId,
+    /// The hull claimed. It must carry a live title record.
+    pub hull: ObjId,
+    /// Who is told and may view it besides the claimant: the title holder and, on owned
+    /// ground, the landholder (Q-36-25). At most [`MAX_AUDIENCE`].
+    pub audience: Vec<PrincipalId>,
+    /// The contest window, real seconds (`1..=`[`MAX_SALVAGE_CLAIM_WINDOW_SECS`]).
+    pub window_secs: i64,
+    /// An account the claimant holds, which fixes the contract's one instrument (nothing is
+    /// escrowed; `check_offerable` still proves it resolves).
+    pub remainder_to: AccountId,
+}
+
+/// **Whether `c` is a salvage claim**, and on which hull (doc 36 cut GC.6): issued by one
+/// character who is its only party, escrowing and delivering nothing, with exactly the two
+/// conditions [`file_salvage_claim`] writes — a staff attestation nobody gives (so the
+/// sweep never settles it on its own) and the claimant holding the hull's title — and a
+/// `RealUtc` deadline: the contest window, which the world clock's outages pause.
+#[must_use]
+pub fn salvage_claim_hull(c: &EconomicContract) -> Option<ObjId> {
+    let PrincipalId::Object(claimant) = &c.issuer else {
+        return None;
+    };
+    let consent = &c.consent;
+    let [party] = consent.parties.as_slice() else {
+        return None;
+    };
+    if consent.managed.is_some()
+        || principal_key(party) != principal_key(&c.issuer)
+        || !consent.terms.consideration.is_empty()
+        || !consent.terms.deliverables.is_empty()
+        || !consent.terms.outcomes.is_empty()
+        || consent
+            .deadline
+            .is_none_or(|d| d.clock != EconomicClock::RealUtc)
+    {
+        return None;
+    }
+    match consent.conditions.as_slice() {
+        [
+            TypedCondition::Attestation {
+                by: AttestorSet::Staff,
+            },
+            TypedCondition::TitleHeld {
+                object,
+                by: PrincipalId::Object(by),
+            },
+        ] if by == claimant => Some(*object),
+        _ => None,
+    }
+}
+
+/// The salvage claim `id`, when it is one `claimant` filed on `hull`.
+fn salvage_claim_of(
+    ctx: &Ctx<'_>,
+    id: ContractId,
+    claimant: ObjId,
+    hull: ObjId,
+) -> Option<EconomicContract> {
+    live_contract(ctx, id).filter(|c| {
+        c.issuer == PrincipalId::Object(claimant) && salvage_claim_hull(c) == Some(hull)
+    })
+}
+
+/// **The live salvage claim `claimant` holds on `hull`**, if any: the one a second filing
+/// reuses, so a refused landing never leaves two windows on one hull.
+#[must_use]
+pub fn live_salvage_claim(w: &World, claimant: ObjId, hull: ObjId) -> Option<ContractId> {
+    w.module_state::<EconomyStore>()?
+        .snapshot()
+        .contracts()
+        .find(|c| {
+            !c.state.is_terminal()
+                && c.issuer == PrincipalId::Object(claimant)
+                && salvage_claim_hull(c) == Some(hull)
+        })
+        .map(|c| c.id)
+}
+
+/// **File a salvage claim** on behalf of the module that holds the hull's custody (doc 36
+/// cut GC.6; Q-36-24, Q-36-25).
+///
+/// A claim is the claimant's own act, recorded at the site's port registry: one `Active`
+/// contract whose only party is the claimant (accepted at filing), with a `RealUtc`
+/// deadline `window_secs` from now — the contest window. The world clock's outages pause it
+/// through [`pause_real_time_deadlines`] and extend it through
+/// [`resume_real_time_deadlines`], like every real-time window. It escrows nothing and moves
+/// nothing: at the deadline the sweep expires it, and the host adjudicates (an uncontested
+/// claim's title moves by [`award_salvage_title`]; a vacated one is closed by
+/// [`close_salvage_claim`]). The audience — the title holder and the landholder — may view
+/// it; it is never `Public` (doc 27 Q-S4: no broadcasts).
+///
+/// A live claim the claimant already holds on the hull is answered instead of a second one.
+///
+/// # Errors
+///
+/// [`ContractError::Infeasible`] for a frozen economy, a window out of bounds, or a hull with
+/// no live title record ([`ContractError::NoSuchAsset`]); every structural refusal; and
+/// [`ContractError::TooLarge`] for the allocator. Nothing is written on any error path.
+pub fn file_salvage_claim(
+    ctx: &mut Ctx<'_>,
+    spec: SalvageClaimSpec,
+) -> Result<ContractId, ContractError> {
+    if ctx
+        .w
+        .module_state::<EconomyStore>()
+        .is_none_or(EconomyStore::is_frozen)
+    {
+        return Err(ContractError::Infeasible("the economy is frozen"));
+    }
+    if spec.window_secs <= 0 || spec.window_secs > MAX_SALVAGE_CLAIM_WINDOW_SECS {
+        return Err(ContractError::Infeasible(
+            "the contest window is out of bounds",
+        ));
+    }
+    if spec.name.is_empty() || spec.name.len() > MAX_CONTRACT_NAME_BYTES {
+        return Err(ContractError::TooLarge("the name is empty or too long"));
+    }
+    if spec.audience.len() > MAX_AUDIENCE {
+        return Err(ContractError::TooLarge("the audience is too large"));
+    }
+    if let Some(id) = live_salvage_claim(ctx.w, spec.claimant, spec.hull) {
+        return Ok(id);
+    }
+    let titled = ctx
+        .w
+        .module_state::<EconomyStore>()
+        .and_then(|store| store.snapshot().asset(spec.hull))
+        .is_some_and(|asset| {
+            matches!(
+                asset.lifecycle,
+                crate::record::AssetLifecycle::Active | crate::record::AssetLifecycle::Abandoned
+            )
+        });
+    if !titled {
+        return Err(ContractError::NoSuchAsset(spec.hull));
+    }
+    let claimant = PrincipalId::Object(spec.claimant);
+    let now = ctx.w.now();
+    let mut audience: Vec<PrincipalId> = Vec::new();
+    for member in spec.audience {
+        if principal_key(&member) != principal_key(&claimant)
+            && !audience
+                .iter()
+                .any(|m| principal_key(m) == principal_key(&member))
+        {
+            audience.push(member);
+        }
+    }
+    let consent = ConsentSurface {
+        fact_consent: None,
+        managed: None,
+        parties: vec![claimant.clone()],
+        terms: ContractTerms {
+            consideration: Vec::new(),
+            deliverables: Vec::new(),
+            split: Vec::new(),
+            remainder_to: spec.remainder_to,
+            on_expiry: Expiry::Refund,
+            outcomes: Vec::new(),
+        },
+        conditions: vec![
+            TypedCondition::Attestation {
+                by: AttestorSet::Staff,
+            },
+            TypedCondition::TitleHeld {
+                object: spec.hull,
+                by: claimant.clone(),
+            },
+        ],
+        deadline: Some(EconomicDeadline {
+            clock: EconomicClock::RealUtc,
+            at: now.saturating_add(spec.window_secs),
+        }),
+        visibility: if audience.is_empty() {
+            EconomicVisibility::Parties
+        } else {
+            EconomicVisibility::Audience {
+                members: audience,
+                announce_issuer: true,
+            }
+        },
+        scope: None,
+        adjudicator: None,
+        evidence: Vec::new(),
+    };
+    let mut c = EconomicContract {
+        id: ContractId(0),
+        issuer: claimant.clone(),
+        name: spec.name,
+        consent_hash: [0u8; 32],
+        consent,
+        acceptances: Vec::new(),
+        satisfied: vec![None, None],
+        escrow: Vec::new(),
+        state: ContractState::Active,
+        settle_attempts: 0,
+        created_at: now,
+        amendments: 0,
+        generation_started_at: now,
+        disputed_at: None,
+        canon_published: None,
+        roster_locked: true,
+        deposits: Vec::new(),
+        agreements: Vec::new(),
+        pending: None,
+        roles: ContractRoles {
+            author: Some(claimant.clone()),
+            ..ContractRoles::default()
+        },
+        revision: 1,
+        real_deadline_extension_secs: 0,
+        paused_real_remaining_secs: None,
+    };
+    {
+        let store = ctx
+            .w
+            .module_state::<EconomyStore>()
+            .ok_or(ContractError::Infeasible("no economy"))?;
+        let outcomes = store.canon_outcome_kinds();
+        crate::contract::check_structure(&c, &outcomes)?;
+        check_offerable(&c, store.snapshot())?;
+    }
+    let id = {
+        let store = ctx
+            .w
+            .module_state_mut::<EconomyStore>()
+            .ok_or(ContractError::Infeasible("no economy"))?;
+        store.alloc_contract().ok_or(ContractError::TooLarge(
+            "the contract-id allocator is exhausted",
+        ))?
+    };
+    c.id = id;
+    c.consent_hash = consent_hash(&c.issuer, &c.consent);
+    c.acceptances.push(Acceptance {
+        party: claimant,
+        at: now,
+        consent_hash: c.consent_hash,
+    });
+    api::put_contract(ctx, c).map_err(ContractError::Refused)?;
+    let meta = ctx
+        .w
+        .module_state::<EconomyStore>()
+        .map(EconomyStore::meta_doc);
+    if let Some(meta) = meta {
+        api::persist_meta(ctx.out, meta);
+    }
+    Ok(id)
+}
+
+/// The effective end of salvage claim `id`'s contest window, real seconds, and whether a
+/// world-clock outage holds it paused now. `None` when `id` is not a salvage claim.
+#[must_use]
+pub fn salvage_claim_window(w: &World, id: ContractId) -> Option<(i64, bool)> {
+    let store = w.module_state::<EconomyStore>()?;
+    let c = store.snapshot().contract(id)?;
+    salvage_claim_hull(c)?;
+    let end = c.effective_real_window_end()?;
+    Some((end, c.paused_real_remaining_secs.is_some_and(|rem| rem > 0)))
+}
+
+/// **Close a salvage claim** whose host vacated it (doc 36 cut GC.6, Q-36-27): the ordinary
+/// cancellation, through the ordinary machinery — the claim escrows nothing, so the unwind's
+/// plan is empty and the state write is the whole of it. Answers whether the claim is
+/// terminal afterwards; a claim already terminal writes nothing.
+///
+/// # Errors
+///
+/// [`ContractError::Infeasible`] when `id` is not a salvage claim `claimant` filed on
+/// `hull`, or the economy is frozen.
+pub fn close_salvage_claim(
+    ctx: &mut Ctx<'_>,
+    id: ContractId,
+    claimant: ObjId,
+    hull: ObjId,
+) -> Result<bool, ContractError> {
+    if ctx
+        .w
+        .module_state::<EconomyStore>()
+        .is_none_or(EconomyStore::is_frozen)
+    {
+        return Err(ContractError::Infeasible("the economy is frozen"));
+    }
+    let c = salvage_claim_of(ctx, id, claimant, hull)
+        .ok_or(ContractError::Infeasible("no such salvage claim"))?;
+    if c.state.is_terminal() {
+        return Ok(true);
+    }
+    unwind(ctx, id, ContractState::Cancelled);
+    Ok(live_contract(ctx, id).is_some_and(|c| c.state.is_terminal()))
+}
+
+/// **The one authority a salvage award posts under** (doc 36 cut GC.6): exactly one
+/// `TransferTitle` of the claim's hull to its claimant, by the registered issuer. No money,
+/// no other asset, no other destination.
+struct SalvageAwardAuth {
+    issuer: PrincipalId,
+    hull: ObjId,
+    to: PrincipalId,
+}
+
+impl crate::engine::AuthEval for SalvageAwardAuth {
+    /// No money authority whatsoever: an award moves a title, never value.
+    fn authorize(
+        &self,
+        _actor: &PrincipalId,
+        _account: &crate::record::Account,
+        _delta: Amount,
+    ) -> bool {
+        false
+    }
+    fn authorize_asset(
+        &self,
+        actor: &PrincipalId,
+        asset: Option<&crate::record::EconomicAsset>,
+        op: &crate::plan::AssetOp,
+    ) -> bool {
+        asset.is_some_and(|a| a.object == self.hull)
+            && *actor == self.issuer
+            && matches!(op, crate::plan::AssetOp::TransferTitle { object, to, to_scope: None }
+                if *object == self.hull && *to == self.to)
+    }
+    fn authorize_title_receipt(
+        &self,
+        actor: &PrincipalId,
+        to: &PrincipalId,
+        to_scope: Option<OrgScopeId>,
+    ) -> bool {
+        *actor == self.issuer && *to == self.to && to_scope.is_none()
+    }
+}
+
+/// **Award an uncontested salvage claim's title** (doc 36 cut GC.6; Q-36-27, doc 27 Q-S2,
+/// Q-S15, Q-R1): the hull's title moves to the claimant through the economy's journal, as
+/// one `TransferTitle` posted by `issuer` — a title issuer registered in composition
+/// ([`crate::EconomyModule::with_title_issuers`]), the site's port registry — under an
+/// authority that admits that one op and nothing else.
+///
+/// The claim must be one `claimant` filed on `hull`, and its contest window must have run
+/// its course: the contract `Expired` (the sweep lapsed it at its effective deadline, which
+/// the world clock's outages extend) or still live past that deadline and not paused. The
+/// host has adjudicated it uncontested (or contested on no ground that vacates). Idempotent
+/// under `salvage.award/<contract>`: a second call answers `AlreadyPosted`.
+///
+/// An encumbered title refuses (invariant 12), as any transfer does.
+///
+/// # Errors
+///
+/// [`EconomyError::Unauthorized`] for an unregistered issuer or a contract that is not
+/// that salvage claim; [`EconomyError::RetryShortly`] while the window is still open (or
+/// paused, or the claim was cancelled: never awarded); every posting error, among them
+/// [`EconomyError::NoSuchAsset`] for a hull with no title.
+pub fn award_salvage_title(
+    ctx: &mut Ctx<'_>,
+    id: ContractId,
+    claimant: ObjId,
+    hull: ObjId,
+    issuer: mush_org::SystemPrincipalId,
+) -> Result<PostOutcome, EconomyError> {
+    let registered = ctx
+        .w
+        .module_state::<EconomyStore>()
+        .is_some_and(|s| s.is_title_issuer(&issuer));
+    if !registered {
+        return Err(EconomyError::Unauthorized);
+    }
+    let c = salvage_claim_of(ctx, id, claimant, hull).ok_or(EconomyError::Unauthorized)?;
+    let now = ctx.w.now();
+    let run = match c.state {
+        ContractState::Expired => true,
+        ContractState::Cancelled | ContractState::Settled { .. } | ContractState::Disputed => false,
+        _ => {
+            c.paused_real_remaining_secs.is_none_or(|rem| rem <= 0)
+                && c.effective_real_window_end().is_some_and(|end| now >= end)
+        }
+    };
+    if !run {
+        return Err(EconomyError::RetryShortly);
+    }
+    let to = PrincipalId::Object(claimant);
+    let actor = PrincipalId::System(issuer);
+    let mut plan = EconomyPlan::new(
+        crate::record::IdempotencyKey::new(
+            SmolStr::new_static(SALVAGE_AWARD_KIND),
+            SmolStr::new(id.0.to_string()),
+        ),
+        actor.clone(),
+        crate::record::EconomicCause::Internal {
+            kind: SmolStr::new_static(SALVAGE_AWARD_KIND),
+            id: id.0,
+        },
+        Vec::new(),
+    );
+    plan.asset_ops = vec![crate::plan::AssetOp::TransferTitle {
+        object: hull,
+        to: to.clone(),
+        to_scope: None,
+    }];
+    plan.description = format!("salvage claim #{id} awards #{} to #{}", hull.0, claimant.0);
+    let auth = SalvageAwardAuth {
+        issuer: actor,
+        hull,
+        to,
+    };
+    api::post_with(ctx, &plan, PostAuth::Injected(&auth))
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -5868,6 +6298,141 @@ mod tests {
     use crate::module::{EconomyModule, EconomyStore};
     use crate::record::EconomicVisibility;
     use mush_core::{Effects, Engine, GOD, LIMBO, ObjKind, Outbox, Registry, World, WorldEvent};
+
+    /// **Doc 36 cut GC.6**: a salvage claim is recognised by its exact shape — one character
+    /// issuer who is its only party, nothing escrowed or delivered, the staff attestation and the
+    /// claimant's title over the hull, and a `RealUtc` deadline — and a world-clock outage pauses
+    /// and extends its window like any real-time contract.
+    #[test]
+    fn gc6_a_salvage_claim_is_its_shape_and_the_w_clock_pauses_its_window() {
+        let mut world = World::new_minimal();
+        let claimant = world
+            .create(ObjKind::Player, "Claimant", GOD, Some(LIMBO))
+            .unwrap();
+        let mut engine = Engine::with_modules(
+            world,
+            Registry::new(),
+            vec![Box::new(EconomyModule::default())],
+        )
+        .unwrap();
+        let issuer = PrincipalId::Object(claimant);
+        let hull = ObjId(4_242);
+        let consent = ConsentSurface {
+            fact_consent: None,
+            managed: None,
+            parties: vec![issuer.clone()],
+            terms: ContractTerms {
+                consideration: Vec::new(),
+                deliverables: Vec::new(),
+                split: Vec::new(),
+                remainder_to: crate::ids::AccountId(1),
+                on_expiry: Expiry::Refund,
+                outcomes: Vec::new(),
+            },
+            conditions: vec![
+                TypedCondition::Attestation {
+                    by: AttestorSet::Staff,
+                },
+                TypedCondition::TitleHeld {
+                    object: hull,
+                    by: issuer.clone(),
+                },
+            ],
+            deadline: Some(EconomicDeadline {
+                clock: EconomicClock::RealUtc,
+                at: 1_600,
+            }),
+            visibility: EconomicVisibility::default(),
+            scope: None,
+            adjudicator: None,
+            evidence: Vec::new(),
+        };
+        let hash = consent_hash(&issuer, &consent);
+        let contract = EconomicContract {
+            id: ContractId(7),
+            issuer: issuer.clone(),
+            name: SmolStr::new("Salvage claim: the Reacher"),
+            consent,
+            consent_hash: hash,
+            acceptances: Vec::new(),
+            satisfied: vec![None, None],
+            escrow: Vec::new(),
+            state: ContractState::Active,
+            settle_attempts: 0,
+            created_at: 1_000,
+            amendments: 0,
+            generation_started_at: 1_000,
+            disputed_at: None,
+            canon_published: None,
+            roster_locked: true,
+            deposits: Vec::new(),
+            agreements: Vec::new(),
+            pending: None,
+            roles: ContractRoles::default(),
+            revision: 1,
+            real_deadline_extension_secs: 0,
+            paused_real_remaining_secs: None,
+        };
+        assert_eq!(salvage_claim_hull(&contract), Some(hull));
+        let mut two_parties = contract.clone();
+        two_parties.consent.parties.push(PrincipalId::Object(GOD));
+        assert_eq!(salvage_claim_hull(&two_parties), None, "one party only");
+        let mut someone_elses = contract.clone();
+        someone_elses.consent.conditions[1] = TypedCondition::TitleHeld {
+            object: hull,
+            by: PrincipalId::Object(GOD),
+        };
+        assert_eq!(
+            salvage_claim_hull(&someone_elses),
+            None,
+            "the claimant's title"
+        );
+        let mut ic_window = contract.clone();
+        ic_window.consent.deadline = Some(EconomicDeadline {
+            clock: EconomicClock::WorldIc,
+            at: 1_600,
+        });
+        assert_eq!(salvage_claim_hull(&ic_window), None, "a real-time window");
+        engine
+            .world
+            .module_state_mut::<EconomyStore>()
+            .unwrap()
+            .snapshot
+            .put_contract(contract);
+        assert_eq!(
+            salvage_claim_window(&engine.world, ContractId(7)),
+            Some((1_600, false))
+        );
+        let (mut out, mut fx) = (Outbox::new(), Effects::new());
+        engine.emit_world_event(
+            &WorldEvent::WorldClockFrozen {
+                real_unix: 1_200,
+                ic_unix: 5_000,
+            },
+            &mut out,
+            &mut fx,
+        );
+        assert_eq!(
+            salvage_claim_window(&engine.world, ContractId(7)),
+            Some((1_600, true)),
+            "paused"
+        );
+        engine.emit_world_event(
+            &WorldEvent::WorldClockResumed {
+                frozen_real_unix: 1_200,
+                resumed_real_unix: 1_500,
+                unavailable_secs: 300,
+                ic_unix: 5_000,
+            },
+            &mut out,
+            &mut fx,
+        );
+        assert_eq!(
+            salvage_claim_window(&engine.world, ContractId(7)),
+            Some((1_900, false)),
+            "extended by the time lost"
+        );
+    }
 
     #[test]
     fn w_clock_freeze_and_resume_events_pause_extend_and_announce_real_utc_contract_deadline() {
