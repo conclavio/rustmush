@@ -49,8 +49,8 @@
 //! "last seen in reach" is RAM ([`RaidBook`]): a restart counts it again from the resume.
 //!
 //! **Staff raids are untouched.** The director sends and withdraws only raids it landed (the
-//! `raid` key). A raider staff seeded and launched stands as staff left it, and a carrier staff
-//! left on the ground is never sent.
+//! `raid` key). A raider staff launched stands as staff left it and is never sent. One staff only
+//! seeded (its carrier on the ground, every hull aboard) is sent like any other.
 
 use std::collections::BTreeMap;
 
@@ -129,8 +129,13 @@ fn visit(ctx: &mut Ctx<'_>, def: &RaiderDef, schedule: RaidSchedule) -> Result<(
         if let Some(raid) = mark_key(ctx, carrier, "raid") {
             return under_way(ctx, def, schedule, carrier, &raid, record.as_ref());
         }
-        // A carrier staff left on the ground is staff's.
-        if mush_sim::pose_of(ctx.w, carrier).is_some() {
+        // A raider staff launched is staff's: some hull of its carrier stands on the ground. A
+        // carrier on the ground with every hull aboard (seeded, never launched) may be sent.
+        if raiders::hulls_of(ctx.w, def.id.as_str())
+            .into_iter()
+            .filter(|hull| raiders::carrier_of(ctx.w, *hull) == Some(carrier))
+            .any(|hull| mush_sim::pose_of(ctx.w, hull).is_some())
+        {
             return Ok(());
         }
         let last = mark_key(ctx, carrier, "last_raid_ic").and_then(|at| at.as_i64());

@@ -2121,8 +2121,9 @@ left something open, this is what the cut decided, for the owner to object to.
   Only the idle trigger's "last seen in reach" is RAM (`RaidBook`). After a restart it counts
   again from the resumed field's first check.
 - *Staff raids are untouched.* The director sends, withdraws and ends only raids it landed (the
-  `raid` key). A carrier staff left on the ground is never sent. `@field/raiders/withdraw` stays
-  the staff override.
+  `raid` key). A raider staff launched (a hull of it on the ground) is never sent; one staff
+  only seeded, every hull aboard, is sent like any other. `@field/raiders/withdraw` stays the
+  staff override.
 - *No respawn.* A raider whose carrier is a wreck is marked spent and never sent again. Seeding is
   refused anyway while any of its hulls stands, and a wreck stands. A raider that has lost every
   hull, with its carrier whole, has nobody aboard to send, so it sends nothing.
@@ -2221,8 +2222,9 @@ and `config_ext.rs`.
 - In-source, `raiders::tests::the_authored_raiders_parse_and_check` covers schema 4.
 
 **The bot's captain story** (`mush-bot/tests/mining_cohort.rs`) takes `FIELD_RAID=director`.
-- The harness then seeds, launches, declares and withdraws nothing, and turns the director on.
-  The story waits for the field the director's raid opens.
+- The harness then seeds and wears the raider as the staff run does, and launches, declares and
+  withdraws nothing; the director is on. The story waits for the field the director's raid
+  opens.
 - `FIELD_IDLE_S` sets `idle_demote_s` for the run.
 - The default run, which CI's bot-stories shard runs, is unchanged.
 

@@ -909,8 +909,9 @@ async fn all_hold(flights: &[(&arena::Flight, &str)], limit: Duration) -> bool {
 /// lifts again with `leave=1`. Home, `+tv` has rig 1 out of the bay with its ore, and staff's
 /// `@spatial` still finds it on the site's ground. Then it sells.
 ///
-/// **A director raid instead** (doc 36 cut GC.11): with `FIELD_RAID=director` the harness seeds,
-/// launches, declares and withdraws nothing. `[tacsim.field].raid_director` is on, and the raid
+/// **A director raid instead** (doc 36 cut GC.11): with `FIELD_RAID=director` the harness seeds
+/// and wears the raider as above and launches, declares and withdraws nothing.
+/// `[tacsim.field].raid_director` is on, and the raid
 /// director sends the content's raider once the site holds three flights and a rig holds ore (the
 /// captain's first cycle, with its two rigs and the escort's out): it lands, its leader declares,
 /// and it turns for home on its own triggers (Q-36-55). The bots run as before. `FIELD_IDLE_S`
@@ -949,8 +950,15 @@ async fn a_captain_and_its_escort_fight_the_raider_in_an_ic_field() {
                 }
             },
             |engine| {
+                // Under the director the raider is seeded and worn as in the staff run, and never
+                // launched: the director lands, launches, declares and withdraws it.
                 if director {
-                    return Vec::new();
+                    let mut said = vec![mine::staff_line(
+                        engine,
+                        &format!("@field/raiders {SKULKS}"),
+                    )];
+                    said.extend(mine::wear_raiders(engine));
+                    return said;
                 }
                 let mut said = vec![
                     mine::staff_line(engine, &format!("@field/raiders {SKULKS}")),
