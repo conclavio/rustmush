@@ -26,11 +26,44 @@ describe("Content Studio store & export helpers (CS.0a)", () => {
       goods: [],
       interfaces: ["hire", "quest"],
       command_refs: ["+crew", "+quest"],
+      space_clusters: [
+        {
+          id: "pallas_inclined_belt",
+          title: "Pallas Inclined Belt",
+          jurisdiction: "FrontierUnpoliced",
+          rock_count: 6,
+        },
+      ],
+      outer_bodies: ["saturn", "neptune"],
+      space_hulls: [
+        {
+          id: "tacsim.unit.dray",
+          short_id: "dray",
+          label: "Dray-class Bulk Freighter",
+          refit_family: "dray_hull",
+          pixel_model: "freighter",
+          dry_mass_t: 400,
+          delta_v_mps: 36000,
+        },
+      ],
+      space_refit_packages: [
+        {
+          id: "refit.dray.prospector",
+          label: "Dray-P Asteroid Mining & Drone Bay Package",
+          refit_family: "dray_hull",
+          target_hull_id: "tacsim.unit.dray_p",
+          cost_cr: 18500,
+          work_hours: 12,
+        },
+      ],
       packs: [],
     });
     expect(catalog.ports).toHaveLength(1);
     expect(catalog.ports[0]?.id).toBe("ceres_port");
     expect(catalog.interfaces).toEqual(["hire", "quest"]);
+    expect(catalog.space_clusters).toHaveLength(1);
+    expect(catalog.space_hulls[0]?.short_id).toBe("dray");
+    expect(catalog.space_refit_packages[0]?.id).toBe("refit.dray.prospector");
   });
 
   it("maintains bounded undo/redo history for studio documents", () => {
