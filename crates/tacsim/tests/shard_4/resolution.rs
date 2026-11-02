@@ -336,6 +336,7 @@ fn line_tank_profile() -> UnitProfile {
                 struck_through: Some((SmolStr::new("hull"), SmolStr::new("rear"))),
             },
         ],
+        ..Default::default()
     }
 }
 

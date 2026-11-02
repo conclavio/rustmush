@@ -186,7 +186,8 @@ async fn content_studio_ipc_roundtrip_over_split_gateway_link() {
     // Doc 32 cut S.1: twelve with Urvara Reach.
     assert_eq!(ports.len(), 12, "expected 12 real corridor ports");
     assert_eq!(npcs.len(), 57, "expected 57 total seeded NPCs");
-    assert_eq!(goods.len(), 12, "expected 12 goods from goods.json");
+    // Doc 36 cut GC.7: sixteen with the four munitions goods.
+    assert_eq!(goods.len(), 16, "expected 16 goods from goods.json");
 
     // 2. Read tacsim.crew.ceres over the split IPC boundary
     let read_resp = invoke_over_ipc(

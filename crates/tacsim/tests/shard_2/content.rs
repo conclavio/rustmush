@@ -2767,7 +2767,7 @@ const DRAY_DIGEST: &str = "b40cfff4943616ec798534fee10a7a995433477ef248a5875a87b
 /// **The goods table's pin** (doc 18 cut IC2; doc 18 §4.3): the canonical digest
 /// of `content/market/goods.json` under `tacsim.goods.v1`. Printed under
 /// `TACSIM_WRITE_CONTENT=1` and copied here by hand.
-const GOODS_DIGEST: &str = "d8e79a2cfdd8468eb1555673babea71cb27847604b6251f991581720b68f088e";
+const GOODS_DIGEST: &str = "812c949753358b36eb7cfae88e48884b1975a12dc5a172e4993924e32d5b86b1";
 
 /// A canonical id, for the tests below.
 fn cid(word: &str) -> mush_core::CanonicalId {
@@ -3305,8 +3305,8 @@ fn ic2_the_goods_table_is_pinned() {
     );
     let table = goods_table().expect("the shipped goods table loads");
     // Doc 19 cut A.8: v2 (the two moon goods); doc 20 cut SM.3a: v3 (the four
-    // run-of-mine ores under `stow.ore`).
-    assert_eq!(table.version, 3);
+    // run-of-mine ores under `stow.ore`); doc 36 cut GC.7: v4 (the four munitions goods).
+    assert_eq!(table.version, 4);
     let measures: Vec<(&str, &str, &str)> = table
         .measures
         .iter()
@@ -3499,10 +3499,82 @@ fn ic2_the_goods_table_is_pinned() {
                 None,
                 600
             ),
+            (
+                "ammo_ap_30",
+                "30 mm AP rounds",
+                Some("munitions"),
+                GoodClass::Trade,
+                "round",
+                1,
+                1,
+                "stow.bulk",
+                None,
+                12
+            ),
+            (
+                "ammo_ball_762",
+                "7.62 mm ball, boxed",
+                Some("munitions"),
+                GoodClass::Trade,
+                "box",
+                3,
+                3,
+                "stow.bulk",
+                None,
+                25
+            ),
+            (
+                "ammo_he_105",
+                "105 mm HE rounds",
+                Some("munitions"),
+                GoodClass::Trade,
+                "round",
+                21,
+                30,
+                "stow.bulk",
+                None,
+                150
+            ),
+            (
+                "ammo_missile",
+                "anti-armour missiles, canistered",
+                Some("munitions"),
+                GoodClass::Trade,
+                "round",
+                50,
+                100,
+                "stow.bulk",
+                None,
+                1_500
+            ),
         ],
-        "doc 18 section 4.3's six rows, doc 19 cut A.8's two and doc 20 cut SM.3a's \
-         four, in its order"
+        "doc 18 section 4.3's six rows, doc 19 cut A.8's two, doc 20 cut SM.3a's \
+         four and doc 36 cut GC.7's four, in its order"
     );
+    // Doc 36 cut GC.7 (Q-36-36): every shipped ammunition but beam charge is exactly one
+    // munitions good, and every munitions good names a shipped ammunition.
+    let catalog = Catalog::build_fielded(&[], tacsim::NS).expect("the fielded content binds");
+    for ammunition in catalog.ammunition.keys() {
+        let goods: Vec<&str> = table
+            .goods
+            .iter()
+            .filter(|g| {
+                g.munitions
+                    .as_ref()
+                    .is_some_and(|m| m.ammunition == *ammunition)
+            })
+            .map(|g| g.id.as_str())
+            .collect();
+        let want = usize::from(ammunition.as_str() != "tacsim.ammunition.laser_charge");
+        assert_eq!(goods.len(), want, "{ammunition}: {goods:?}");
+    }
+    for munitions in table.goods.iter().filter_map(|g| g.munitions.as_ref()) {
+        assert!(
+            catalog.ammunition.contains_key(&munitions.ammunition),
+            "{}",
+            munitions.ammunition
+        );
+    }
     for good in &table.goods {
         assert_eq!(good.ledger_unit, good.quote_unit, "{}", good.id);
         assert_eq!(good.mass_kg_per_unit(), good.per_unit(&cid("si.mass_kg")));

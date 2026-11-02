@@ -168,6 +168,38 @@ pub(crate) fn on_ended(ctx: &mut Ctx<'_>, task: MatchId, end: MatchEnd, units: &
     );
 }
 
+/// **What a unit leaves on the site record** (Q-CF-25): an immobile, unarmed or disabled hull a
+/// casualty, a wreck or a total loss a wreck, else nothing — from its IC assessment, or the
+/// kernel's own flags when none formed.
+fn left_condition(
+    state: Option<OperationalState>,
+    back: Option<&UnitReturn>,
+) -> Option<LeftCondition> {
+    match state {
+        Some(OperationalState::Wreck | OperationalState::Irrecoverable) => {
+            Some(LeftCondition::Wreck)
+        }
+        Some(
+            OperationalState::Immobile | OperationalState::Unarmed | OperationalState::Disabled,
+        ) => Some(LeftCondition::Casualty),
+        _ if back.is_some_and(|back| back.wreck) => Some(LeftCondition::Wreck),
+        _ if back.is_some_and(|back| back.disabled) => Some(LeftCondition::Casualty),
+        _ => None,
+    }
+}
+
+/// **What `back` would leave on the site record if the field demoted now** (doc 36 cut GC.0):
+/// [`demote_units`]'s rule over a return, applied to nothing.
+pub(crate) fn condition_now(ctx: &Ctx<'_>, back: &UnitReturn) -> Option<LeftCondition> {
+    let now = ctx.w.world_ic_now().at;
+    let state = mush_tactics::module::unit_of(ctx.w, back.unit).and_then(|before| {
+        crate::field_ops::apply_ic_combat_return(before, back, None, now)
+            .ok()
+            .map(|(_, assessment, _)| assessment.state)
+    });
+    left_condition(state, Some(back))
+}
+
 /// **Check `units` in from a field and stand them on the surface** (this module's head),
 /// answering the site record's new unit index. A unit with no return goes home as it went out.
 pub(crate) fn demote_units(
@@ -239,18 +271,7 @@ pub(crate) fn demote_units(
         {
             tracing::warn!(unit = unit.0, %error, "tacsim: a field unit could not be stood at its field pose");
         }
-        let condition = match state {
-            Some(OperationalState::Wreck | OperationalState::Irrecoverable) => {
-                Some(LeftCondition::Wreck)
-            }
-            Some(
-                OperationalState::Immobile | OperationalState::Unarmed | OperationalState::Disabled,
-            ) => Some(LeftCondition::Casualty),
-            _ if back.is_some_and(|back| back.wreck) => Some(LeftCondition::Wreck),
-            _ if back.is_some_and(|back| back.disabled) => Some(LeftCondition::Casualty),
-            _ => None,
-        };
-        let Some(condition) = condition else {
+        let Some(condition) = left_condition(state, back) else {
             continue;
         };
         let at = match back.filter(|_| carrier) {

@@ -312,13 +312,13 @@ pub(crate) fn run(tw: &mut TestWorld, who: ObjId, line: &str) -> String {
     said(tw, &events, who)
 }
 
-fn store(tw: &TestWorld) -> &TacsimStore {
+pub(crate) fn store(tw: &TestWorld) -> &TacsimStore {
     tw.world()
         .module_state::<TacsimStore>()
         .expect("tacsim state")
 }
 
-fn port_map(tw: &TestWorld, entry: &str) -> PortMap {
+pub(crate) fn port_map(tw: &TestWorld, entry: &str) -> PortMap {
     match store(tw).port_map(&cid(LANE_PACK), &cid(entry)) {
         PortMapState::Present(map) => map.clone(),
         other => panic!("{entry}'s map: {other:?}"),
@@ -329,7 +329,7 @@ fn lane() -> RulesPack {
     load_pack(LANE_JSON).expect("the lane verifies")
 }
 
-fn station_room(tw: &TestWorld, entry: &str, local: &str) -> ObjId {
+pub(crate) fn station_room(tw: &TestWorld, entry: &str, local: &str) -> ObjId {
     let def = match lane().entry(&cid(entry)) {
         Some(PackEntry::Port(def)) => def.clone(),
         other => panic!("{entry} is a port entry: {other:?}"),
@@ -338,7 +338,7 @@ fn station_room(tw: &TestWorld, entry: &str, local: &str) -> ObjId {
     tacsim::port::apply::room_by_key(tw.world(), &key).expect("the room is on this world")
 }
 
-fn teleport(tw: &mut TestWorld, who: ObjId, room: ObjId) {
+pub(crate) fn teleport(tw: &mut TestWorld, who: ObjId, room: ObjId) {
     let said = run(tw, GOD, &format!("@teleport #{}=#{}", who.0, room.0));
     assert_eq!(
         tw.world().get(who).and_then(|o| o.location),
@@ -374,6 +374,20 @@ fn keep(rig: &mut Rig, ops: Vec<mush_core::ModuleOp>) {
 /// Drive one queued submission the way the world task does, keeping its typed post-images
 /// for a reboot; the error carries the prepare's own message.
 pub(crate) fn land(rig: &mut Rig, submit: &AuthoritativeSubmit) -> Result<(), String> {
+    land_with(rig, submit, false)
+}
+
+/// **Land one queued submission on the world task's composed path** (doc 36 cut GC.0; Q-36-49):
+/// the frozen registry's owner reads, participants and account hooks reach the prepare, as
+/// production's action coordinator passes them. [`land`]'s plain prepare hands the provider none,
+/// so the Org unit grant (`unitgrant_issue`, a DT activation's and an operational loan's) refuses
+/// there on its owner preimage read; this lands it. Object writes the install applied to the
+/// World stay there; the module writes are kept for a reboot as [`land`] keeps them.
+pub(crate) fn land_composed(rig: &mut Rig, submit: &AuthoritativeSubmit) -> Result<(), String> {
+    land_with(rig, submit, true)
+}
+
+fn land_with(rig: &mut Rig, submit: &AuthoritativeSubmit, composed: bool) -> Result<(), String> {
     let token = next_token();
     let tw = &mut rig.tw;
     let (action, resolved) = {
@@ -420,6 +434,37 @@ pub(crate) fn land(rig: &mut Rig, submit: &AuthoritativeSubmit) -> Result<(), St
         let (action, resolved, _guards) = resolved.into_authoritative_parts();
         (action, resolved)
     };
+    if composed {
+        let (prepared, _) = tw
+            .engine_mut()
+            .prepare_registered_composed_resolved_authoritative_action(
+                &action,
+                &resolved,
+                CommitToken::from_bytes(token),
+            )
+            .map_err(|error| format!("{error:?}"))?;
+        let (writes, install) = prepared.into_parts();
+        tw.engine_mut()
+            .install_composed_action(install)
+            .map_err(|error| format!("{error:?}"))?;
+        let earlier = rig.tw.take_module_ops();
+        fold_module_ops_into(&mut rig.store, earlier);
+        let writes: Vec<_> = writes
+            .into_iter()
+            .filter(|write| {
+                !matches!(
+                    write,
+                    mush_core::authoritative::ReplayWrite::ObjectSet { .. }
+                        | mush_core::authoritative::ReplayWrite::ObjectDelete { .. }
+                        | mush_core::authoritative::ReplayWrite::ObjectAllocatorSet { .. }
+                )
+            })
+            .collect();
+        let (ops, ledger) = support::composed::split(&writes);
+        keep(rig, ops);
+        fold_module_ops_into(&mut rig.store, ledger);
+        return Ok(());
+    }
     let (prepared, _) = tw
         .engine_mut()
         .prepare_registered_resolved_authoritative_action(
@@ -464,14 +509,14 @@ pub(crate) fn land_all(rig: &mut Rig, queued: &[AuthoritativeSubmit]) {
     }
 }
 
-fn land_quietly(rig: &mut Rig, queued: &[AuthoritativeSubmit]) {
+pub(crate) fn land_quietly(rig: &mut Rig, queued: &[AuthoritativeSubmit]) {
     for submit in queued {
         let _ = land(rig, submit);
     }
 }
 
 /// One fire (6 s on), its submissions drained (not landed).
-fn fire(rig: &mut Rig) -> (Vec<(Audience, OutputEvent)>, Vec<AuthoritativeSubmit>) {
+pub(crate) fn fire(rig: &mut Rig) -> (Vec<(Audience, OutputEvent)>, Vec<AuthoritativeSubmit>) {
     let t = rig.tw.world().now().saturating_add(6);
     rig.tw.set_now(t);
     let events = rig.tw.fire_due(t.saturating_mul(1_000));
@@ -610,7 +655,7 @@ fn seed_pool(rig: &mut Rig, vault: VaultId, good: &str, qty: u64, lot: LotId) {
 }
 
 /// `tank` t and `locker` crew-days into the hold.
-fn load(rig: &mut Rig, row: &HullRow, tank: u64, locker: u64, lot: u64) {
+pub(crate) fn load(rig: &mut Rig, row: &HullRow, tank: u64, locker: u64, lot: u64) {
     let stowage = ObjId(row.rooms[&cid("stowage")]);
     let vault = rig
         .tw
@@ -637,7 +682,7 @@ fn world_rate(tw: &TestWorld) -> u32 {
     tw.world().world_timeline().current().rate
 }
 
-fn set_rate(tw: &mut TestWorld, rate: u32) {
+pub(crate) fn set_rate(tw: &mut TestWorld, rate: u32) {
     if world_rate(tw) != rate {
         let out = run(tw, GOD, &format!("@tacsim/time rate={rate}"));
         assert_eq!(world_rate(tw), rate, "{out}");
@@ -722,7 +767,7 @@ fn lease_one(rig: &mut Rig, pilot: ObjId) {
 }
 
 /// The live lease records of `pilot`, by slot: their rigs.
-fn rigs_of(tw: &TestWorld, pilot: ObjId) -> Vec<ObjId> {
+pub(crate) fn rigs_of(tw: &TestWorld, pilot: ObjId) -> Vec<ObjId> {
     let mut records: Vec<(u8, ObjId)> = store(tw)
         .tv_leases_of(pilot)
         .filter(|record| record.live())
@@ -814,6 +859,33 @@ pub(crate) fn on_pad_with_at(
     warm(rig);
     let tvs = rigs_of(&rig.tw, pilot);
     (pilot, row, tvs)
+}
+
+/// **A Dray-P under way to Ahuna Flank's pad** (doc 36 cut GC.1): [`on_pad_as`] stopped at the
+/// launch, so a test can open a field before it settles; the pilot, the hull's row, its one
+/// leased rig and the ticket, whose plan's `depart_ic + total_s` is the landing.
+pub(crate) fn en_route(
+    rig: &mut Rig,
+    who: &str,
+    seed: i64,
+    name: &str,
+) -> (ObjId, HullRow, ObjId, Ticket) {
+    let (pilot, row) = prospector(rig, who, seed, name);
+    lease_one(rig, pilot);
+    load(
+        rig,
+        &row,
+        20,
+        20,
+        9_100 + u64::try_from(seed).unwrap_or(0) * 10,
+    );
+    board(rig, pilot);
+    let hull = ObjId(row.hull);
+    open_site(rig, AHUNA);
+    let t = file_and_launch(rig, pilot, hull, "+ship/undock ahuna");
+    let tvs = rigs_of(&rig.tw, pilot);
+    assert_eq!(tvs.len(), 1);
+    (pilot, row, tvs[0], t)
 }
 
 /// **Open a site by its port entry** (doc 20 cut SM.6, D2; `support::sites::open_site`), keeping

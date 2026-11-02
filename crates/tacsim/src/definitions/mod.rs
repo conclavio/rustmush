@@ -55,6 +55,7 @@ pub mod sensor;
 pub mod tools;
 pub mod unit;
 pub mod weapon;
+pub mod workshop;
 
 use std::collections::BTreeMap;
 

@@ -1934,6 +1934,8 @@ fn port_tick(ctx: &mut Ctx<'_>, _tag: &str, _scene: Option<SceneId>) {
     }
     crate::port::survey::tick(ctx);
     crate::port::passenger::tick(ctx);
+    // Doc 36 cut GC.8a: the bay's due repair orders.
+    crate::port::bay_work::tick(ctx);
     crate::quest::tick(ctx);
     let Some(slot) = ctx.w.module_state_mut::<PortTickState>() else {
         return;

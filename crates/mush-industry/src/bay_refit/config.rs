@@ -14,6 +14,7 @@ use mush_economy::bay_refit::{
 };
 use mush_inventory::{EndpointRef, Grade, bay_part::BayPartBinding};
 use mush_tactics::component_refit::{RefitChoice, RefitPolicy};
+use mush_tactics::field_ops::WorkshopFacilityTariff;
 use mush_tactics::unit::replacement::{
     ComponentState, RefitJournal, refit_component, registered_spec,
 };
@@ -37,13 +38,14 @@ pub trait BayPartCatalog: Send + Sync + 'static {
 
 /// **The composed bay refit**: the fee terms, the bays and their stores, the
 /// refit family it may move hulls within, the ruleset's derivable cells and
-/// part catalogue, the work each refit takes, and the Economy owner it pays
-/// through.
+/// part catalogue, the work each refit takes, the workshop tariff its fee is
+/// quoted from (doc 36 Q-36-31), and the Economy owner it pays through.
 #[derive(Clone)]
 pub struct BayRefitConfig {
     pub(crate) payment: BayPaymentPolicy,
     pub(crate) policy: BayRefitPolicy,
     pub(crate) work_units: u64,
+    pub(crate) tariff: WorkshopFacilityTariff,
     pub(crate) stores: BTreeMap<ObjId, EndpointRef>,
     pub(crate) roots: BTreeSet<DefinitionRef>,
     pub(crate) derived: Vec<CellId>,
@@ -64,12 +66,13 @@ impl BayRefitConfig {
     ///
     /// [`Error::Policy`] for a payment policy the kernel refuses, stores that
     /// are not exactly the policy's bays, fewer than two roots or more than
-    /// 64, work outside `1..=`[`super::MAX_WORK_UNITS`], or an Economy owner
-    /// other than `economy/initial_filing`.
+    /// 64, work outside `1..=`[`super::MAX_WORK_UNITS`], a tariff that fails
+    /// its own bounds, or an Economy owner other than `economy/initial_filing`.
     #[allow(clippy::too_many_arguments)]
     pub fn new(
         payment: BayPaymentPolicy,
         work_units: u64,
+        tariff: WorkshopFacilityTariff,
         stores: BTreeMap<ObjId, EndpointRef>,
         roots: BTreeSet<DefinitionRef>,
         derived: Vec<CellId>,
@@ -85,6 +88,7 @@ impl BayRefitConfig {
         if stores.keys().copied().collect::<Vec<_>>() != facilities
             || !(2..=mush_tactics::component_refit::MAX_REFIT_ROOTS).contains(&roots.len())
             || !(1..=super::MAX_WORK_UNITS).contains(&work_units)
+            || tariff.validate().is_err()
             || economy_owner.key().owner.as_str() != "economy"
             || economy_owner.key().kind.as_str() != "owner_participant"
             || economy_owner.key().id.as_str() != "initial_filing"
@@ -95,6 +99,7 @@ impl BayRefitConfig {
             payment,
             policy,
             work_units,
+            tariff,
             stores,
             roots,
             derived,
@@ -118,6 +123,10 @@ impl BayRefitConfig {
     }
     pub fn payment(&self) -> &BayPaymentPolicy {
         &self.payment
+    }
+    /// The workshop tariff an offer's fee is quoted from.
+    pub fn tariff(&self) -> &WorkshopFacilityTariff {
+        &self.tariff
     }
     pub fn roots(&self) -> &BTreeSet<DefinitionRef> {
         &self.roots

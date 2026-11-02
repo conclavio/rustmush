@@ -353,7 +353,17 @@ impl PartyCapSource for PortPartyCaps {
                 .as_ref()
                 .and_then(|l| map.orgs.get(&l.org))
                 .map(|row| OrgId(row.org));
-            programme == Some(*org) || issuer == Some(*org) || vendor_orgs(map).contains(org)
+            // Doc 36 cut GC.8: a workshop's operator accepts a repair order's fee contract
+            // when the work is done, the licence's way.
+            let workshop = def
+                .workshop
+                .as_ref()
+                .and_then(|w| map.orgs.get(&w.operator))
+                .map(|row| OrgId(row.org));
+            programme == Some(*org)
+                || issuer == Some(*org)
+                || workshop == Some(*org)
+                || vendor_orgs(map).contains(org)
         })
     }
 }

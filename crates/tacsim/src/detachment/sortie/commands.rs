@@ -23,6 +23,7 @@ pub(crate) const SWITCHES: &[&str] = &[
     "orders",
     "command-grants",
     "extract",
+    "condition",
 ];
 pub(crate) fn handles(ctx: &Ctx<'_>) -> bool {
     SWITCHES.iter().any(|s| ctx.switches.has(s))
@@ -131,6 +132,17 @@ pub(crate) fn command(ctx: &mut Ctx<'_>) -> Result<(), CmdError> {
             return Err(CmdError::msg("Use +sortie/extract with nothing after it."));
         }
         return crate::field::crew::extract_cmd(ctx);
+    }
+    // Doc 36 cut GC.13: the crew status line, with a treatment's time left.
+    if ctx.switches.has("condition") {
+        if !raw.is_empty() {
+            return Err(CmdError::msg(
+                "Use +sortie/condition with nothing after it.",
+            ));
+        }
+        let line = crate::field::crew::status_line(ctx, ctx.actor);
+        ctx.out.sys_to_actor(ctx.actor, "tacsim.field", line);
+        return Ok(());
     }
     let (selector, selection) = raw
         .split_once('=')

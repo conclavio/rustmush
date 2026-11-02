@@ -393,6 +393,7 @@ fn every_band_profile() -> UnitProfile {
             consequences: Vec::new(),
             struck_through: None,
         }],
+        ..Default::default()
     }
 }
 
@@ -3561,27 +3562,40 @@ const M2_FLOAT_PROBE_BITMASK: i64 = (1 << 25) - 1 + (1 << 26) + (1 << 28);
 // 13) and the Standard source moved with the API 7 header, so every ledger
 // line's hash moved with it. Every row's end millisecond is unchanged (170 250,
 // 192 500, 170 000, 900 000): the fights are the same fights.
+/// **Doc 36 cut GC.2's kernel re-bless** (doc 36 §10, the programme's one): the
+/// corpus's hulls are content-backed, so a survivable hit may jam or damage a
+/// part (the shipped chances, the `component:<seq>` draw) and a wreck is cover
+/// in the fire and sensor traces. Rows 0 and 1 fight differently: their
+/// stopping times move (170,250 → 176,250 and 192,500 → 235,250) and every hash
+/// with them. Row 2 stops at the same 170,000 with the same state hash and
+/// substep digest; only its ledger digest moved (its hit lines carry the third
+/// draw). Row 3, the float probe, is unmoved, as are its 3,600 thinks and the
+/// 369098751 bitmask. Windows and Linux agree on all four, byte for byte (CI
+/// run 41387953901 printed Linux's row 0 as here). Were, by row:
+/// `4_924_910_240_422_684_525` / `0f0ad87d…` / `0d2ba00b…`,
+/// `8_909_812_314_400_105_102` / `212d8fe2…` / `c2dc08a7…`, and row 2's ledger
+/// digest `b51e9f23…`.
 const M2_CROSS_PLATFORM_PINS: [(u64, i64, u64, &str, &str); 4] = [
     (
         2350,
-        170250,
-        4924910240422684525,
-        "0f0ad87d8b94b9644d68a6bda2bc2e217478a71f767c72d9f2d11af8f804f28f",
-        "0d2ba00b15df591ff3fd5acdb6e86e596fadba1f8787c28ed8a06560918bbace",
+        176250,
+        12465543414996090189,
+        "20f549f1a534e378fecac90545c2b8b551b0401d13de52c3fe3c158b19695451",
+        "6349d78ad1b2fd07f9db1c057a8509eb231ba834079295fa4f3bab08cbfa2da1",
     ),
     (
         2351,
-        192500,
-        8909812314400105102,
-        "212d8fe23430f8a32665839c16fd9d1e0ec8b4cd5643f32bf3aa2822d8091439",
-        "c2dc08a722d5e68b468fbdd54672bf7701426c53859a5a9070cb3c2fbbc63411",
+        235250,
+        6776313200826027730,
+        "a019a9706423db9d95b17dbe61cd2bc6b44a182a7ac54dd9ca30233c42ae707f",
+        "1c1fd95e1c4bf66bc161969a857c500ddcda90a6bd3f8c60d5de4a1ae7b287fb",
     ),
     (
         2352,
         170000,
         4593528509461668393,
         "469d2a995fd8e2cb0e6c3e3975720657a137f602220cff94be798d32c2becfd1",
-        "b51e9f23b017fe5fdbc5468a2462f198440b7ed05a7a2f340f5540ab8df1f77b",
+        "6ff3a5a8c05bd73c0de4f4172fd5e34e3e9228e726cf2a4791268f0b3ad05475",
     ),
     (
         2350,

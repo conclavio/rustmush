@@ -111,6 +111,10 @@ pub(crate) fn tick(ctx: &mut Ctx<'_>, _tag: &str, _scene: Option<mush_core::Scen
         if !open.by.hosted() {
             continue;
         }
+        // Doc 36 cut GC.1 (Q-36-4): a carrier settled mid-field is owed its admission, and
+        // GC.1b takes it in.
+        super::carrier::note_arrivals(ctx, &site);
+        super::carrier::join_arrivals(ctx, &site);
         let busy = ctx.w.module_state::<FieldBook>().is_none_or(|book| {
             book.hosted(&site).is_some() || book.pending(&site) || book.closing.contains(&site)
         });
@@ -319,7 +323,30 @@ fn admit(ctx: &mut Ctx<'_>, site: &CanonicalId, record: &SiteRecord) -> Result<(
     // (3) Everyone on the ground, and the cap (Q-CF-21): the casualties and wrecks an earlier
     // field left are admitted but never counted (Q-CF-26, Q-CF-45; doc 32 §15, the review's
     // CF-3a). A carrier counts: no ruling exempts it.
-    let units = parties::on_ground(ctx.w, domain);
+    // Doc 36 cut GC.1 (Q-36-44): a hull held out of the field is a wall, never an entrant.
+    let (held, units): (Vec<ObjId>, Vec<ObjId>) = parties::on_ground(ctx.w, domain)
+        .into_iter()
+        .partition(|unit| held_out(ctx.w, *unit));
+    let walled;
+    let record = if held.is_empty() {
+        record
+    } else {
+        let poses: Vec<(ObjId, crate::surface::site_record::SitePose)> = held
+            .iter()
+            .filter_map(|hull| {
+                mush_sim::pose_of(ctx.w, *hull).map(|(_, at)| {
+                    let pose = crate::surface::site_record::SitePose {
+                        x_cm: at.x_cm,
+                        y_cm: at.y_cm,
+                        heading_mdeg: at.heading_mdeg,
+                    };
+                    (*hull, pose)
+                })
+            })
+            .collect();
+        walled = with_held_walls(record, &poses);
+        &walled
+    };
     let cap = super::config(ctx.w).max_units;
     let counted = parties::counted(&units, record);
     if u32::try_from(counted).unwrap_or(u32::MAX) > cap {
@@ -394,6 +421,7 @@ fn admit(ctx: &mut Ctx<'_>, site: &CanonicalId, record: &SiteRecord) -> Result<(
         custody,
         crate::arena_task::FieldTerms {
             disengage_ms: cfg.disengage_ms(),
+            idle_demote_ms: cfg.idle_demote_ms(),
         },
     );
     if let Err(error) = opened {
@@ -445,6 +473,12 @@ fn admit(ctx: &mut Ctx<'_>, site: &CanonicalId, record: &SiteRecord) -> Result<(
         .replace("{n}", &field.ordinal.to_string())
         .replace("{site}", &site_name(ctx, site));
     super::tell_site(ctx, site, &line);
+    for hull in &held {
+        let line = HELD_OUT
+            .replace("{name}", &crate::port::coop::name_of(ctx.w, *hull))
+            .replace("{n}", &field.ordinal.to_string());
+        super::tell_site(ctx, site, &line);
+    }
     tracing::info!(
         site = %site,
         ordinal = field.ordinal,
@@ -453,6 +487,52 @@ fn admit(ctx: &mut Ctx<'_>, site: &CanonicalId, record: &SiteRecord) -> Result<(
         "tacsim: an IC field opened"
     );
     Ok(())
+}
+
+/// **A hull left out of a field** (doc 36 cut GC.1; Q-36-44), told to everyone on the site:
+/// `{name}`, `{n}` the ordinal.
+pub const HELD_OUT: &str = "The {name} stands out of field {n}: its licensed mind cannot be      taken into a field yet, so it stands as ground nobody crosses.";
+
+/// **Whether `unit` is left out of a field** (doc 36 cut GC.1; Q-36-44): a hull held by dedicated
+/// IC custody, which is a licensed mind's hold until doc 23 S.4b. `custody::check_out` refuses
+/// it, and admission is all or nothing (Q-CF-21), so one such hull used to close every field on
+/// its site. It is left on the ground instead, its claim untouched.
+pub(super) fn held_out(w: &mush_core::World, unit: ObjId) -> bool {
+    w.module_state::<mush_tactics::module::UnitStore>()
+        .is_some_and(|store| store.is_ic_custodied(unit))
+}
+
+/// **`record` with each `held` hull laid on it as a one-cell object** (doc 36 cut GC.1;
+/// Q-36-44), for the field's ground only: its cell reads as a wall ([`super::ground`]), so the
+/// hull is an inert obstacle nobody drives through or sees past. The record itself is never
+/// written: the hull is no ground object, and its custody and claim stay as they were.
+fn with_held_walls(
+    record: &SiteRecord,
+    held: &[(ObjId, crate::surface::site_record::SitePose)],
+) -> SiteRecord {
+    use crate::surface::site_record::{GroundKind, GroundObject};
+    let mut walled = record.clone();
+    let mut id = record
+        .objects
+        .iter()
+        .map(|object| object.id)
+        .max()
+        .unwrap_or(0);
+    for (hull, pose) in held {
+        id = id.saturating_add(1);
+        walled.objects.push(GroundObject {
+            id,
+            pose: *pose,
+            footprint: 1,
+            kind: GroundKind::Remains {
+                of: Some(*hull),
+                mass_kg: 0,
+                merged: 1,
+            },
+            left_ic: 0,
+        });
+    }
+    walled
 }
 
 /// **The check-out message** (Q-CF-3, Q-CF-41): each unit at its placement (a carrier at its
@@ -469,13 +549,12 @@ fn custody(
     pads: &BTreeMap<ObjId, mush_sim::data::Pose>,
     definition: crate::arena::state::ArenaDefinition,
 ) -> Result<CustodyOut, String> {
-    let store = ctx
+    let catalog = ctx
         .w
         .module_state::<crate::store::TacsimStore>()
-        .ok_or_else(|| "the layer is not loaded".to_owned())?;
-    let catalog = store.definitions().clone();
-    let cfg = store.config();
-    let now = ctx.w.world_ic_now().at;
+        .ok_or_else(|| "the layer is not loaded".to_owned())?
+        .definitions()
+        .clone();
     let mut units: Vec<CustodyUnit> = Vec::new();
     let mut pilots: Vec<Pilot> = Vec::new();
     let mut slots: BTreeMap<crate::arena::PartyId, u8> = BTreeMap::new();
@@ -485,9 +564,6 @@ fn custody(
             .find(|row| row.unit == entrant.unit)
             .map(|row| row.party)
             .ok_or_else(|| format!("#{} has no party", entrant.unit.0))?;
-        let cells = mush_tactics::module::unit_of(ctx.w, entrant.unit)
-            .cloned()
-            .ok_or_else(|| format!("#{} has no tactical unit record", entrant.unit.0))?;
         let pose = match pads.get(&entrant.unit) {
             Some(pad) => pad.clone(),
             None => {
@@ -501,63 +577,9 @@ fn custody(
             *next = next.saturating_add(1);
             *next
         };
-        // A hired NPC in the seat flies the doctrine under its delivered orders (doc 32 cut CF.6,
-        // Q-CF-42): its hull is the mind's, and its seat stays bound below so its own frame —
-        // what the NPC sees — reaches the host's executor (`super::orders`).
-        let controller = match &entrant.pilot {
-            Some((pilot, _)) if !super::orders::is_npc(ctx.w, *pilot) => Controller::Pilot,
-            _ => Controller::Mind,
-        };
-        let weapons = crate::match_::weapon_summaries(&catalog, &cells);
-        let rule_weapons: Vec<crate::arena::rules::RuleWeapon> = weapons
-            .iter()
-            .map(|weapon| crate::arena::rules::RuleWeapon {
-                id: weapon.id.clone(),
-                rounds_max: weapon.count_per_load,
-            })
-            .collect();
-        let sortie = entrant
-            .epoch
-            .unwrap_or_else(|| crate::arena::mind::SortieId::ic(entrant.unit, now));
-        let principal = entrant
-            .leader
-            .map(|id| crate::deliberation::CharacterRef::Character { id });
-        let seal = crate::match_::seal::seal_rom_for(
-            entrant.unit,
-            &cells,
-            &rule_weapons,
-            sortie,
-            &crate::match_::seal::IcSealConfig {
-                minds: &cfg.minds,
-                reflex: &cfg.arena.reflex,
-                principal,
-                impounded: crate::match_::seal::core_impounded(ctx.w, &cells),
-            },
-        )
-        .map_err(|error| format!("#{} could not be sealed ({error})", entrant.unit.0))?;
-        units.push(CustodyUnit {
-            id: entrant.unit,
-            team: party,
-            pose,
-            mobility: crate::match_::tracked_rules(&cells),
-            sensor_height_cm: crate::match_::sensor_height_cm(&catalog, &cells),
-            sensor: crate::match_::sensor_profile(&catalog, &cells),
-            weapons,
-            profile: crate::match_::unit_profile(&catalog, &cells),
-            gunnery: crate::arena::resolution::STOCK_GUNNERY,
-            controller,
-            slot,
-            seal,
-            unit: cells,
-        });
-        if let Some((pilot, station)) = &entrant.pilot {
-            pilots.push(Pilot {
-                unit: entrant.unit,
-                pilot: *pilot,
-                station: station.clone(),
-                epoch: 1,
-            });
-        }
+        let (unit, pilot) = custody_unit(ctx, entrant, party, pose, slot)?;
+        units.push(unit);
+        pilots.extend(pilot);
     }
     let party_of = |unit: ObjId| {
         rows.iter()
@@ -599,4 +621,112 @@ fn custody(
             weapons_hold: true,
         },
     })
+}
+
+/// **One entrant's check-out row** (doc 32 cut CF.2, factored out of the admission's check-out by
+/// doc 36 cut GC.1b, so an arrival joining a running field is built by the same path): its unit
+/// at `pose` under `party`, sealed on the ROM over its epoch, and its seated pilot.
+pub(super) fn custody_unit(
+    ctx: &Ctx<'_>,
+    entrant: &Entrant,
+    party: crate::arena::PartyId,
+    pose: mush_sim::data::Pose,
+    slot: u8,
+) -> Result<(CustodyUnit, Option<Pilot>), String> {
+    let store = ctx
+        .w
+        .module_state::<crate::store::TacsimStore>()
+        .ok_or_else(|| "the layer is not loaded".to_owned())?;
+    let catalog = store.definitions();
+    let cfg = store.config();
+    let now = ctx.w.world_ic_now().at;
+    let cells = mush_tactics::module::unit_of(ctx.w, entrant.unit)
+        .cloned()
+        .ok_or_else(|| format!("#{} has no tactical unit record", entrant.unit.0))?;
+    // A hired NPC in the seat flies the doctrine under its delivered orders (doc 32 cut CF.6,
+    // Q-CF-42): its hull is the mind's, and its seat stays bound below so its own frame — what
+    // the NPC sees — reaches the host's executor (`super::orders`).
+    let controller = match &entrant.pilot {
+        Some((pilot, _)) if !super::orders::is_npc(ctx.w, *pilot) => Controller::Pilot,
+        _ => Controller::Mind,
+    };
+    let weapons = crate::match_::weapon_summaries(catalog, &cells);
+    let rule_weapons: Vec<crate::arena::rules::RuleWeapon> = weapons
+        .iter()
+        .map(|weapon| crate::arena::rules::RuleWeapon {
+            id: weapon.id.clone(),
+            rounds_max: weapon.count_per_load,
+        })
+        .collect();
+    let sortie = entrant
+        .epoch
+        .unwrap_or_else(|| crate::arena::mind::SortieId::ic(entrant.unit, now));
+    let principal = entrant
+        .leader
+        .map(|id| crate::deliberation::CharacterRef::Character { id });
+    let seal = crate::match_::seal::seal_rom_for(
+        entrant.unit,
+        &cells,
+        &rule_weapons,
+        sortie,
+        &crate::match_::seal::IcSealConfig {
+            minds: &cfg.minds,
+            reflex: &cfg.arena.reflex,
+            principal,
+            impounded: crate::match_::seal::core_impounded(ctx.w, &cells),
+        },
+    )
+    .map_err(|error| format!("#{} could not be sealed ({error})", entrant.unit.0))?;
+    let unit = CustodyUnit {
+        id: entrant.unit,
+        team: party,
+        pose,
+        mobility: crate::match_::tracked_rules(&cells),
+        sensor_height_cm: crate::match_::sensor_height_cm(catalog, &cells),
+        sensor: crate::match_::sensor_profile(catalog, &cells),
+        weapons,
+        profile: crate::match_::unit_profile(catalog, &cells),
+        gunnery: crate::arena::resolution::STOCK_GUNNERY,
+        controller,
+        slot,
+        seal,
+        unit: cells,
+    };
+    let pilot = entrant.pilot.as_ref().map(|(pilot, station)| Pilot {
+        unit: entrant.unit,
+        pilot: *pilot,
+        station: station.clone(),
+        epoch: 1,
+    });
+    Ok((unit, pilot))
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use crate::surface::site_record::{GroundKind, SitePose};
+
+    /// **Doc 36 cut GC.1's licensed-mind gate** (Q-36-44): a held hull stands in the field's
+    /// ground as a one-cell wall at its own cell, beside the record's own objects, and the record
+    /// the host keeps is untouched, so the hull's claim and custody are never written.
+    #[test]
+    fn gc1_a_licensed_mind_hull_is_left_out_of_the_field_as_a_wall() {
+        let site = CanonicalId::new("ahuna_flank").expect("canonical");
+        let record = SiteRecord::new(site);
+        let hull = ObjId(41);
+        let at = SitePose::at_cell(120, 128);
+        let walled = with_held_walls(&record, &[(hull, at)]);
+        assert!(record.objects.is_empty(), "the kept record gains nothing");
+        assert_eq!(walled.objects.len(), 1);
+        let wall = &walled.objects[0];
+        assert_eq!(wall.pose.cell(), (120, 128));
+        assert_eq!(wall.footprint, 1, "one cell: the hull's own");
+        assert!(matches!(wall.kind, GroundKind::Remains { of: Some(of), .. } if of == hull));
+        // A second held hull takes the next number, after the record's own objects.
+        let again = with_held_walls(&walled, &[(ObjId(42), SitePose::at_cell(10, 10))]);
+        assert_eq!(
+            again.objects.iter().map(|o| o.id).collect::<Vec<_>>(),
+            vec![1, 2]
+        );
+    }
 }

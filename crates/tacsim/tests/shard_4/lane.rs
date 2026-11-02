@@ -63,7 +63,7 @@ use support::ground::{UNSIGNED, sign};
 /// Rim's paper (was `c7239b0a…` at v11).
 /// Doc 20 cut SM.12a: v14, the Exchange's and Occator's mills (was `34d47907…` at v13, relay R9b).
 /// Doc 20 cut SM.12b: v15, Occator's yard (was `c507f74c…` at v14).
-const LANE_DIGEST: &str = "b27a3c20471701e1b95c3f1840ab3401180c5d614840773d9269056667a0e452";
+const LANE_DIGEST: &str = "9756baab9c26c7246aceb98fa176de33007f963a63523e16cf2bb2ed89ea29a6";
 
 /// The date the lane's bodies stand at (the script's chord minimum, R4).
 const LANE_DATE: &str = "2351-05-13";
@@ -239,8 +239,8 @@ fn ic2_the_lane_pack_is_pinned() {
     assert_eq!(manifest.version(), LANE_VERSION);
     assert_eq!(
         manifest.version(),
-        17,
-        "lane v17 since doc 32 cut S.1 (v16 at CF.6c, v15 at SM.12b, v14 at SM.12a, v13 at relay R9b, v12 at doc 20 cut SM.10) (v11 \
+        19,
+        "lane v19 since doc 36 cut GC.13 (v18 at GC.7, v17 at S.1, v16 at CF.6c, v15 at SM.12b, v14 at SM.12a, v13 at relay R9b, v12 at doc 20 cut SM.10) (v11 \
          at SM.5, v10 at SM.3a, v9 at SM.2, v8 at A.8, v7 at A.7, v6 at A.4b, v5 at A.4, v4 at A.1)"
     );
     assert_eq!(manifest.kind(), tacsim::PackKind::CampaignSeed);
@@ -1411,9 +1411,10 @@ fn sm3a_a_vehicles_block_out_of_bounds_is_refused() {
             }),
         ),
         (
-            // Doc 20 cut SM.5: the sentence names the licence block too.
+            // Doc 20 cut SM.5: the sentence names the licence block too; doc 36 cut GC.7: and
+            // the workshop block; doc 36 cut GC.13: and the medical block.
             "site: a site authors no orgs, rooms, programme, vendors, premium or emergency, and no \
-             vehicles or licence block; its pad is its gallery",
+             vehicles, licence, workshop or medical block; its pad is its gallery",
             Box::new(move |doc| {
                 let block = vehicles(doc);
                 doc["entries"]["ahuna_port"]["def"]["vehicles"] = block;

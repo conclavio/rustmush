@@ -356,7 +356,28 @@ struct Struck {
     /// gated on the transition (`plan_hit`'s `fresh`); this carries the same fact
     /// out so the line is too.
     fresh: bool,
+    /// **The round reached the section's internals** (doc 36 cut GC.2): it took
+    /// something off them, which is what may jam or damage a part.
+    penetrated: bool,
 }
+
+/// **What a survivable hit did to one part** (doc 36 cut GC.2, Q-36-38): the
+/// `component:<shot_seq>` draw's value, and the part and its new condition when
+/// the draw fell inside the content's chances and the section held a part it
+/// could change.
+#[derive(Clone, Debug, PartialEq, Eq)]
+struct PartStruck {
+    /// The draw's whole value, before either modulus.
+    value: u64,
+    /// The part and the condition word it takes.
+    part: Option<(mush_tactics::ComponentId, &'static str)>,
+}
+
+/// The condition word a jammed part takes (doc 27a `FO-1`'s vocabulary).
+pub const JAMMED: &str = "jammed";
+
+/// The condition word a damaged part takes.
+pub const DAMAGED: &str = "damaged";
 
 impl Arena {
     /// **Apply one scheduled impact** (16b cut W.2's half of doc 16 §3.5), inside
@@ -601,6 +622,11 @@ impl Arena {
     /// from `from` to `cell`, at the target's own eye height, over the arena's
     /// cells. Every fire trace — the shot's at acceptance, the impact's from the
     /// launch eye, the cockpit's advice to a plot — is this one line walk.
+    ///
+    /// **Doc 36 cut GC.2** (Q-36-7, G-8): over the terrain with every wreck's
+    /// cell read as a wall ([`crate::arena::wreck_cover::WithWrecks`]), the two
+    /// ends left as the terrain has them; with no wreck on the field, over the
+    /// terrain itself.
     fn trace_eye_to(
         &self,
         from: mush_atlas::trace::Eye,
@@ -612,7 +638,15 @@ impl Arena {
             cell,
             height_cm: i32::try_from(at.sensor_height_cm).unwrap_or(i32::MAX),
         };
-        Some(trace_cells(&self.definition.terrain, from, to))
+        let wrecks = self.wreck_cells([from.cell, cell]);
+        if wrecks.is_empty() {
+            return Some(trace_cells(&self.definition.terrain, from, to));
+        }
+        let grid = crate::arena::wreck_cover::WithWrecks {
+            terrain: &self.definition.terrain,
+            wrecks: &wrecks,
+        };
+        Some(trace_cells(&grid, from, to))
     }
 
     /// One unit's eye, for a fire trace — and, recorded at acceptance, the eye a
@@ -679,7 +713,30 @@ impl Arena {
             ));
             return;
         };
-        let (struck, ops) = struck;
+        let (struck, mut ops) = struck;
+        // **Doc 36 cut GC.2** (Q-36-38): a round that reached the section's
+        // internals and left it standing may jam or damage one part in it — one
+        // draw, journalled beside the hit's own, its op in this one plan.
+        let part = if struck.penetrated && !struck.fresh {
+            self.part_struck(shot.target, &struck.section, shot.seq)
+        } else {
+            None
+        };
+        let mut drawn = drawn;
+        if let Some(part) = &part {
+            drawn.push((
+                DrawLabel::Component { shot_seq: shot.seq }.encode(),
+                part.value,
+            ));
+            if let Some((component, word)) = &part.part
+                && let Ok(condition) = ConditionId::new(word)
+            {
+                ops.push(UnitMutationOp::SetComponentCondition {
+                    component: component.clone(),
+                    condition,
+                });
+            }
+        }
         let cause = SmolStr::new(format!("shot:{}", shot.seq));
         let Ok(plan) = UnitMutationPlan::new(ops, None, Some(cause.clone())) else {
             journal.push((
@@ -722,6 +779,15 @@ impl Arena {
             // gunner's `SCAN` reads moves with the round that changed it.
             let touched = Arena::plan_touches_bands(&plan);
             self.set_unit(shot.target, post, touched);
+            // Doc 36 cut GC.2: a jammed gun leaves the weapon table as a shot-off
+            // turret's does, its rounds kept for the check-in.
+            if let Some(PartStruck {
+                part: Some((component, JAMMED)),
+                ..
+            }) = &part
+            {
+                self.drop_weapons(shot.target, |weapon| weapon.id == component.as_str());
+            }
             // **16b cut Q.6**: and the shooter's count is inside the guard with
             // it. The result record's `hits` (doc 16 §4) is what a pilot reads
             // his own gunnery off, and a round that reached a section already at
@@ -941,9 +1007,60 @@ impl Arena {
                 internals_left: u32::try_from(internals_left.max(0)).unwrap_or(0),
                 consequences,
                 fresh,
+                penetrated: internals_left != internals.current,
             },
             ops,
         ))
+    }
+
+    /// **The part a survivable hit on `section` jams or damages, if any** (doc
+    /// 36 cut GC.2, Q-36-38): `None` for a unit whose profile carries no
+    /// chances (no draw is taken); otherwise the `component:<shot_seq>` draw,
+    /// read twice — its value modulo a thousand against the content's chances
+    /// (below `jam_permille` a jam, below the sum a damage, else nothing), and
+    /// its value divided by a thousand to pick the part, in component-id order,
+    /// among those in the section a jam or a damage can change: an intact or
+    /// damaged part for a jam, an intact one for a damage. A part already
+    /// jammed, destroyed or missing is left as it is.
+    fn part_struck(&self, target: ObjId, section: &str, shot_seq: u64) -> Option<PartStruck> {
+        use mush_tactics::field_ops::ComponentCondition;
+        let state = self.unit(target)?;
+        let hits = state.profile.component_hits;
+        if hits.is_none() {
+            return None;
+        }
+        let value = draw(self.seed, &DrawLabel::Component { shot_seq });
+        let roll = value % 1_000;
+        let jam = u64::from(hits.jam_permille);
+        let word = if roll < jam {
+            JAMMED
+        } else if roll < jam.saturating_add(u64::from(hits.damage_permille)) {
+            DAMAGED
+        } else {
+            return Some(PartStruck { value, part: None });
+        };
+        let candidates: Vec<&mush_tactics::ComponentId> = state
+            .unit
+            .components()
+            .filter(|(_, part)| {
+                mush_tactics::field_ops::install_point_section(&part.install)
+                    .is_some_and(|host| host.as_str() == section)
+            })
+            .filter(
+                |(_, part)| match ComponentCondition::classify_condition_id(&part.condition) {
+                    ComponentCondition::Intact => true,
+                    ComponentCondition::Damaged => word == JAMMED,
+                    _ => false,
+                },
+            )
+            .map(|(id, _)| id)
+            .collect();
+        let count = u64::try_from(candidates.len()).ok().filter(|n| *n > 0);
+        let part = count.and_then(|count| {
+            let at = usize::try_from((value / 1_000) % count).ok()?;
+            candidates.get(at).map(|id| ((*id).clone(), word))
+        });
+        Some(PartStruck { value, part })
     }
 
     /// **The ops that make a wreck** (doc 16 §3.3 "A wreck"): `hull` condition
@@ -1176,36 +1293,7 @@ impl Arena {
                 }
             }
             Consequence::RemoveWeapons { section } => {
-                if let Some(state) = self.unit_mut(target) {
-                    let going: Vec<SmolStr> = state
-                        .weapons
-                        .iter()
-                        .filter(|weapon| weapon.mount_section == *section)
-                        .map(|weapon| weapon.id.clone())
-                        .collect();
-                    state
-                        .weapons
-                        .retain(|weapon| weapon.mount_section != *section);
-                    for id in &going {
-                        state.ready_at_ms.remove(id);
-                    }
-                    // **16b cut F.1**: the rounds STAY. `ammo` is not the weapon
-                    // table — it is the arena's record of how many rounds that
-                    // barrel has left, and [`Arena::returned_units`] is what
-                    // carries it home to the unit's own `ammo` cell. Dropping the
-                    // row made a turret shot off at round twelve check in with a
-                    // full magazine, which is a lie about the match in the one
-                    // document that outlives it. The weapon cannot fire either
-                    // way: `weapons` is what `FIRE` resolves against.
-                    //
-                    // **17b cut M1b.1** (doc 17 §5): and the slots armed on
-                    // those guns go with them, with their held-shot rows — a
-                    // slot on a gun the hull no longer carries is a decision
-                    // about nothing. The other guns' slots keep their numbers.
-                    let freed = self.conditions.clear_weapons(target, &going);
-                    self.disable_profile_slots(target, freed.iter().copied());
-                    self.forget_held_said(target, &freed);
-                }
+                self.drop_weapons(target, |weapon| weapon.mount_section == *section);
             }
             // **17b cut M3.4** (doc 17 §9, D-UM-34): the impact's plan has
             // already lowered the cell or revoked the capability, so the
@@ -1219,6 +1307,48 @@ impl Arena {
             // in flight lands as thought (D-UM-9).
             Consequence::DegradeCore | Consequence::DestroyCore => self.truncate_slots(target),
         }
+    }
+
+    /// **Take the weapons `going` picks off `target`'s weapon table** — a
+    /// `remove_weapons(section)` consequence's guns, or (doc 36 cut GC.2) the
+    /// one gun a survivable hit jammed.
+    ///
+    /// **16b cut F.1**: the rounds STAY. `ammo` is not the weapon table — it is
+    /// the arena's record of how many rounds that barrel has left, and
+    /// [`Arena::returned_units`] is what carries it home to the unit's own
+    /// `ammo` cell. Dropping the row made a turret shot off at round twelve
+    /// check in with a full magazine, which is a lie about the match in the one
+    /// document that outlives it. The weapon cannot fire either way: `weapons`
+    /// is what `FIRE` resolves against.
+    ///
+    /// **17b cut M1b.1** (doc 17 §5): and the slots armed on those guns go with
+    /// them, with their held-shot rows — a slot on a gun the hull no longer
+    /// carries is a decision about nothing. The other guns' slots keep their
+    /// numbers.
+    fn drop_weapons(
+        &mut self,
+        target: ObjId,
+        going: impl Fn(&crate::arena::state::WeaponSummary) -> bool,
+    ) {
+        let Some(state) = self.unit_mut(target) else {
+            return;
+        };
+        let gone: Vec<SmolStr> = state
+            .weapons
+            .iter()
+            .filter(|weapon| going(weapon))
+            .map(|weapon| weapon.id.clone())
+            .collect();
+        if gone.is_empty() {
+            return;
+        }
+        state.weapons.retain(|weapon| !going(weapon));
+        for id in &gone {
+            state.ready_at_ms.remove(id);
+        }
+        let freed = self.conditions.clear_weapons(target, &gone);
+        self.disable_profile_slots(target, freed.iter().copied());
+        self.forget_held_said(target, &freed);
     }
 
     /// The motion half of `disable_motion`, shared by the consequence and by the
@@ -1948,6 +2078,189 @@ mod tests {
             .map(|(_, _, draws)| draws.iter().map(|(label, _)| label.clone()).collect())
             .unwrap_or_else(|| panic!("the hit is journalled: {journal:?}"));
         assert_eq!(labels, vec!["burst:5".to_owned(), "facet:5".to_owned()]);
+    }
+
+    /// A shot from red at blue's front, `damage` a round, keyed on `seq`.
+    fn front_shot(seq: u64, damage: u32) -> crate::arena::weapons::Shot {
+        crate::arena::weapons::Shot {
+            seq,
+            shooter: RED,
+            weapon: SmolStr::new("cannon"),
+            contact: crate::arena::state::ContactId(1),
+            target: BLUE,
+            rounds: 1,
+            fired_at_ms: 0,
+            impact_at_ms: 0,
+            range_cm: 1_000,
+            aim_x_cm: 1_500,
+            aim_y_cm: 2_500,
+            aim_cell: Some((1, 2)),
+            from_x_cm: 1_500,
+            from_y_cm: 1_500,
+            from_cell: Some((1, 1)),
+            from_height_cm: 150,
+            damage,
+            resolution: Resolution::blind("front", 3_000, Cover::None),
+        }
+    }
+
+    /// **Doc 36 cut GC.2's gate** (Q-36-38, combat's half): a round that reaches
+    /// the turret's internals and leaves the turret standing jams the cannon in
+    /// it, by the content's chance and the `component:<seq>` draw. The gun
+    /// leaves the weapon table (its rounds kept), the part's record reads
+    /// `jammed`, the hit line carries the third draw — and the IC check-in
+    /// (`field_ops::apply_ic_combat_return`, the field's demotion) keeps the jam
+    /// on the unit's record, so the next match the hull enters it brings no gun.
+    #[test]
+    fn gc2_a_survivable_hit_can_jam_a_weapon_and_the_check_in_keeps_it() {
+        let mut arena = duel();
+        let before = arena
+            .unit(BLUE)
+            .map(|state| state.unit.clone())
+            .unwrap_or_else(|| panic!("blue"));
+        // A content chance of a jam on every survivable hit, so the draw only
+        // picks the part.
+        if let Some(state) = arena.unit_mut(BLUE) {
+            state.profile.component_hits = crate::arena::resolution::ComponentHits {
+                jam_permille: 1_000,
+                damage_permille: 0,
+            };
+        }
+        let cannon = mush_tactics::ComponentId::new("cannon").expect("a component");
+        // The first shot whose facet draw finds the turret and whose part draw
+        // picks the cannon among the turret's parts.
+        let seq = (1..200_u64)
+            .find(|seq| {
+                arena
+                    .choose_section(BLUE, "front", *seq)
+                    .is_some_and(|(section, _)| section == "turret")
+                    && arena
+                        .part_struck(BLUE, "turret", *seq)
+                        .and_then(|part| part.part)
+                        .is_some_and(|(id, word)| id == cannon && word == JAMMED)
+            })
+            .unwrap_or_else(|| panic!("some shot jams the cannon"));
+        // 350 of front armour and 150 of internals: 400 leaves the turret at 100.
+        let mut journal: Vec<Notice> = Vec::new();
+        arena.apply_hit(
+            &front_shot(seq, 400),
+            &Resolution {
+                p_permille: 1_000,
+                ..Resolution::blind("front", 3_000, Cover::None)
+            },
+            1,
+            10,
+            arena.shot_draw(seq, 1),
+            &mut journal,
+        );
+        assert_eq!(cell(&arena, BLUE, &internals("turret")), Some(100));
+        let state = arena.unit(BLUE).unwrap_or_else(|| panic!("blue"));
+        assert_eq!(
+            state
+                .unit
+                .component(&cannon)
+                .map(|part| part.condition.as_str()),
+            Some(JAMMED),
+            "the cannon's record reads jammed"
+        );
+        assert!(
+            state.weapons.iter().all(|weapon| weapon.id != "cannon"),
+            "a jammed gun is off the weapon table"
+        );
+        assert!(
+            state.ammo.contains_key("cannon"),
+            "its rounds stay for the check-in"
+        );
+        assert!(
+            state.armed_at_checkout(),
+            "it came in armed, and still counts"
+        );
+        let labels: Vec<String> = journal
+            .iter()
+            .find(|(_, kind, _)| matches!(kind, EventKind::Hit { .. }))
+            .map(|(_, _, draws)| draws.iter().map(|(label, _)| label.clone()).collect())
+            .unwrap_or_else(|| panic!("the hit is journalled: {journal:?}"));
+        assert_eq!(
+            labels,
+            vec![
+                format!("hit:{seq}"),
+                format!("facet:{seq}"),
+                format!("component:{seq}")
+            ]
+        );
+        assert!(
+            !journal
+                .iter()
+                .any(|(_, kind, _)| matches!(kind, EventKind::SectionDestroyed { .. })),
+            "the turret stands"
+        );
+
+        // The check-in: the field's own condition handoff, against the record
+        // the unit went out with.
+        let returned = arena
+            .returned_units()
+            .into_iter()
+            .find(|unit| unit.unit == BLUE)
+            .unwrap_or_else(|| panic!("blue's return"));
+        let (home, assessment, plan) =
+            crate::field_ops::apply_ic_combat_return(&before, &returned, None, 0)
+                .unwrap_or_else(|error| panic!("the check-in: {error}"));
+        assert!(plan.is_some(), "the field changed the record");
+        assert_eq!(
+            home.component(&cannon).map(|part| part.condition.as_str()),
+            Some(JAMMED),
+            "the jam survives the check-in"
+        );
+        assert_eq!(
+            assessment.component_conditions.get(&cannon),
+            Some(&mush_tactics::field_ops::ComponentCondition::Jammed)
+        );
+        assert!(
+            assessment.degraded_components.contains(&cannon)
+                && !assessment.operational_weapons.contains(&cannon),
+            "a jammed part is salvageable and does not fire: {assessment:?}"
+        );
+
+        // And the next match: the hull brings no gun.
+        let again = arena_of(vec![
+            line_tank(RED, PartyId::RED, pose(1_500, 1_500)),
+            crate::arena::state::CustodyUnit {
+                unit: home,
+                ..line_tank(BLUE, PartyId::BLUE, pose(1_500, 2_500))
+            },
+        ]);
+        assert!(
+            again
+                .unit(BLUE)
+                .is_some_and(|state| state.weapons.is_empty()),
+            "a jammed cannon does not come into the next match"
+        );
+    }
+
+    /// **Doc 36 cut GC.2** (Q-36-38): a hit that stops in the armour touches no
+    /// part and draws nothing; a profile with no chances (every fixture's) draws
+    /// nothing either.
+    #[test]
+    fn gc2_only_a_round_through_to_the_internals_can_touch_a_part() {
+        let mut arena = duel();
+        assert!(
+            arena.part_struck(BLUE, "turret", 1).is_none(),
+            "no chances, no draw"
+        );
+        if let Some(state) = arena.unit_mut(BLUE) {
+            state.profile.component_hits = crate::arena::resolution::ComponentHits {
+                jam_permille: 1_000,
+                damage_permille: 0,
+            };
+        }
+        let (struck, _) = arena
+            .plan_hit(BLUE, "turret", "front", 300)
+            .unwrap_or_else(|| panic!("a turret hit plans"));
+        assert!(!struck.penetrated, "300 stops in 350 of armour");
+        let (struck, _) = arena
+            .plan_hit(BLUE, "turret", "front", 500)
+            .unwrap_or_else(|| panic!("a turret hit plans"));
+        assert!(struck.penetrated && struck.fresh, "500 destroys the turret");
     }
 
     #[test]
