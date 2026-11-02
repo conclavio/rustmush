@@ -25,6 +25,8 @@ mod support;
 #[path = "support/vertex.rs"]
 mod vertex;
 
+#[path = "shard_1/bay_gc8.rs"]
+mod bay_gc8;
 #[path = "shard_1/coop.rs"]
 mod coop;
 #[path = "shard_1/crew_exit.rs"]

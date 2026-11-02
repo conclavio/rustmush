@@ -1,0 +1,924 @@
+//! **The bay's repair actions, berth and stow** (doc 36 cut GC.8a; Q-36-32, Q-36-33, Q-36-35,
+//! Q-36-40, Q-36-53's acts).
+//!
+//! - **Berth and stow** (Q-36-53): a hull leaves a docked carrier's bay slot for the port's
+//!   workshop room (its location becomes the room, its slot frees, the carrier may sail without
+//!   it) and goes back the same way. The workshop room is GC.7's `bay_refit` facility, so a
+//!   berthed hull is at the facility the built refit bay reads (`bay_refit/authority.rs`).
+//! - **The repair order** (Q-36-40): a new authoritative action beside `bay_refit`, for work
+//!   that touches cells and conditions only — armour, a rebuilt section, a mended, unjammed or
+//!   replaced part (like for like), a recharged beam magazine. It is quoted from GC.7's tariff
+//!   at the operator's multiplier ([`crate::port::bay_work::jobs::quote`]), the fee escrowed on acceptance in a
+//!   contract the facility's operator accepts when the work is done, and the work runs on the
+//!   IC clock, which stops under a W-clock freeze (Q-36-32). The hull is held meanwhile: no
+//!   berth, stow, move, carry or launch, and at completion the work is refused (the fee
+//!   released) if the hull moved or its unit changed.
+//! - **Facility classes** (Q-36-35, §4a): a carrier's bay does minor work at twice the time and
+//!   the same cost; a workshop does everything. Each quoted job names the class it needs.
+//! - **Who may** (Q-36-33): [`crate::port::bay_work::permits`]. The title holder and a holder of a current
+//!   `unit.maintain_refit` grant may repair, rearm and refit; a lessee repairs and rearms; a
+//!   salvor with custody repairs at their own risk. None but the title holder scraps.
+//!
+//! Not here (GC.8b): rearming from munitions lots, stripped-part provenance and hot parts, scrap,
+//! the doll, and the built refit bay reading the grant. A carrier bay works only while its
+//! carrier is docked at a port with a workshop, whose operator is paid and supplies the parts.
+
+pub mod command;
+pub mod jobs;
+pub mod record;
+
+pub use jobs::{BayJob, BayQuote, CARRIER_TIME_FACTOR, FacilityClass, QuotedJob};
+pub use record::{
+    BAY_PREFIX, BAY_SCHEMA, BayHull, BayHullState, BayOrder, BerthRow, MAX_ORDER_JOBS, OrderStatus,
+    Right, bay_key, bay_key_owner,
+};
+
+use std::collections::BTreeMap;
+
+use mush_core::{CanonicalId, Ctx, EventHook, HookReadContext, ObjId, World};
+use mush_economy::{
+    AcceptOutcome, AccountId, Amount, ConsiderationSpec, ContractId, ContractRoles, ContractSpec,
+    EconomicClock, EconomicDeadline, EconomicVisibility, EconomyStore, EvidenceKind, Expiry,
+    OutcomeTerms, PayoutShare, Share, TypedCondition,
+};
+use mush_org::unit_authority::{
+    UnitCapability,
+    reader::{UnitAuthorityRequest, UnitAuthorityResponse},
+};
+use mush_org::{OrgId, PrincipalId};
+use mush_proto::RichText;
+use mush_sim::{SpatialParent, SpatialState};
+use mush_tactics::TacticalUnit;
+use mush_tactics::field_ops::CustodyTitleStatus;
+use smol_str::SmolStr;
+
+use crate::detachment::planning::PlanningHandles;
+use crate::port::def::PortDef;
+use crate::port::map::PortMap;
+use crate::store::{TacsimStore, put_bay_hull};
+
+/// **What a right may do** (Q-36-33).
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub enum Act {
+    /// Armour, rebuild, mend, unjam, replace like for like.
+    Repair,
+    /// Load rounds.
+    Rearm,
+    /// A part change to another design (`bay_refit`).
+    Refit,
+    /// Take a part off.
+    Strip,
+    /// Break the hull up.
+    Scrap,
+    /// Move the hull between a carrier's bay and a workshop.
+    Berth,
+}
+
+/// **Q-36-33's table.** Title: everything. A `maintain_refit` grant: everything but scrap,
+/// which ends the title. A lessee: repair and rearm (and berth, to get there), never refit,
+/// strip or scrap. A salvor with custody: repair at their own risk (Q-S14), never strip or
+/// scrap (Q-F5).
+#[must_use]
+pub const fn permits(right: Right, act: Act) -> bool {
+    match right {
+        Right::Title => true,
+        Right::Grant => !matches!(act, Act::Scrap),
+        Right::Lessee => matches!(act, Act::Repair | Act::Rearm | Act::Berth),
+        Right::Salvor => matches!(act, Act::Repair | Act::Berth),
+    }
+}
+
+/// The fee contract's name.
+pub const FEE_NAME: &str = "tacsim.bay.repair";
+/// How long a fee contract stands before it refunds itself, real seconds (thirty days): far
+/// past any order's IC time at any rate the game runs, so it only ever ends by the work or a
+/// cancel. Provisional.
+pub const FEE_WINDOW_SECS: i64 = 30 * 86_400;
+
+/// Every refusal the acts share.
+pub const NO_HULL: &str = "There is no such hull here.";
+/// The hull has an unreadable bay record.
+pub const HELD_DARK: &str = "That hull's bay record cannot be read; staff repair it first.";
+/// An order is open.
+pub const HELD_OPEN: &str = "That hull is held for work in progress; +bay/cancel it first.";
+/// No right.
+pub const NO_RIGHT: &str = "You hold no right to have that hull worked on.";
+
+// ---- where the work is done -------------------------------------------------------------
+
+/// **A facility a hull stands in** (Q-36-35): its class, the room, and the port whose
+/// workshop's operator is paid and supplies the parts.
+#[derive(Clone, Debug)]
+pub struct Facility {
+    /// The class.
+    pub class: FacilityClass,
+    /// The room the work is done in: the workshop room, or the carrier's bay room.
+    pub room: ObjId,
+    /// The carrier, for a carrier bay.
+    pub carrier: Option<ObjId>,
+    /// The port entry.
+    pub port: CanonicalId,
+    /// The operator org.
+    pub operator: OrgId,
+    /// Its scoped credit account.
+    pub operator_account: AccountId,
+    /// The operator's multiplier, per mille.
+    pub multiplier_permille: u32,
+}
+
+/// Every port with a workshop, its room on this world and its map.
+fn workshops(w: &World) -> Vec<(CanonicalId, &PortDef, &PortMap, ObjId)> {
+    crate::port::market::ports(w)
+        .into_iter()
+        .filter_map(|(id, def, map)| {
+            let map = map?;
+            let room = crate::port::workshop::room(w, &id, def).ok()??;
+            Some((id, def, map, room))
+        })
+        .collect()
+}
+
+fn operator_of(def: &PortDef, map: &PortMap) -> Option<(OrgId, AccountId, u32)> {
+    let workshop = def.workshop.as_ref()?;
+    let row = map.orgs.get(&workshop.operator)?;
+    Some((
+        OrgId(row.org),
+        AccountId(row.account?),
+        workshop.multiplier_permille,
+    ))
+}
+
+/// **The carrier whose vehicle bay is `room`**, and that bay's room: every programme hull the
+/// port maps record, asked for its bay rooms.
+fn carrier_of_bay(w: &World, room: ObjId) -> Option<ObjId> {
+    let store = w.module_state::<TacsimStore>()?;
+    store.port_maps().find_map(|map| {
+        map.hulls.iter().find_map(|row| {
+            let hull = ObjId(row.hull);
+            let view = crate::port::ship::hull_view(w, hull)?;
+            crate::port::vehicle::bay_rooms(w, &view)
+                .contains(&room)
+                .then_some(hull)
+        })
+    })
+}
+
+/// The bay room and slot a hull stands in, when it stands in a space's interior.
+fn interior_of(w: &World, hull: ObjId) -> Option<(ObjId, Option<mush_sim::SlotId>)> {
+    match w.module_state::<SpatialState>()?.parent_of(hull) {
+        SpatialParent::Interior { space, slot } => Some((space, slot)),
+        _ => None,
+    }
+}
+
+/// **Where `hull` would be worked on now** (Q-35, Q-53): a workshop room it is berthed in, or
+/// the bay of a carrier docked at a port with a workshop.
+///
+/// # Errors
+///
+/// The sentence for a hull in neither.
+pub fn facility_of(w: &World, hull: ObjId) -> Result<Facility, String> {
+    let here = w.get(hull).and_then(|o| o.location);
+    for (port, def, map, room) in workshops(w) {
+        if here == Some(room) {
+            let (operator, operator_account, multiplier_permille) =
+                operator_of(def, map).ok_or("That workshop has no operator to take the order.")?;
+            return Ok(Facility {
+                class: FacilityClass::Workshop,
+                room,
+                carrier: None,
+                port,
+                operator,
+                operator_account,
+                multiplier_permille,
+            });
+        }
+    }
+    let (bay, _) = interior_of(w, hull).ok_or("That hull is in no bay and no workshop.")?;
+    let carrier = carrier_of_bay(w, bay).ok_or("That hull is in no carrier's bay.")?;
+    let crate::port::ship::Berth::Docked { map, def } = crate::port::ship::berth_of(w, carrier)
+    else {
+        return Err(
+            "A carrier's bay works on its hulls only while she is docked at a port with a \
+             workshop to supply it."
+                .to_owned(),
+        );
+    };
+    let (operator, operator_account, multiplier_permille) = operator_of(def, map).ok_or(
+        "A carrier's bay works on its hulls only while she is docked at a port with a workshop \
+         to supply it.",
+    )?;
+    Ok(Facility {
+        class: FacilityClass::CarrierBay,
+        room: bay,
+        carrier: Some(carrier),
+        port: map.entry.clone(),
+        operator,
+        operator_account,
+        multiplier_permille,
+    })
+}
+
+// ---- who may ----------------------------------------------------------------------------
+
+/// **A salvor's custody of `hull`** (Q-36-33, Q-S14). The seam GC.5/GC.6 fill: no durable record
+/// of ground salvage custody exists yet, so nobody holds it and the salvor's row of
+/// [`permits`] is tested on the table alone until then.
+#[must_use]
+pub fn salvor_custody(_w: &World, _actor: ObjId, _hull: ObjId) -> Option<CustodyTitleStatus> {
+    None
+}
+
+/// Whether `actor` holds the hull's title outright.
+fn holds_title(w: &World, actor: ObjId, hull: ObjId) -> bool {
+    w.module_state::<EconomyStore>()
+        .and_then(|e| e.snapshot().asset(hull).cloned())
+        .is_some_and(|a| a.title_owner == PrincipalId::Object(actor) && !a.frozen)
+}
+
+/// Whether Org's unit authority allows `ctx.actor` `capability` on `hull` now: the grant
+/// registry read through its owner (no World mirror exists).
+fn unit_grant(ctx: &Ctx<'_>, hull: ObjId, capability: UnitCapability) -> bool {
+    let Some(reader) = ctx
+        .w
+        .module_state::<PlanningHandles>()
+        .and_then(|h| h.unit_authority_reader.as_ref())
+    else {
+        return false;
+    };
+    matches!(
+        ctx.read_owner(
+            reader,
+            UnitAuthorityRequest::Authorize {
+                unit: hull,
+                capability,
+                delegate: false,
+                mission: None,
+            }
+        ),
+        Ok(UnitAuthorityResponse::Authority { allowed: true })
+    )
+}
+
+/// Whether `actor` is the live lessee of the rig `hull`.
+fn leases(w: &World, actor: ObjId, hull: ObjId) -> bool {
+    w.module_state::<TacsimStore>().is_some_and(|s| {
+        s.tv_leases_on(hull)
+            .any(|l| l.pilot == actor && l.status == crate::port::tv::TvLeaseStatus::Active)
+    })
+}
+
+/// **The right `ctx.actor` holds over `hull`** (Q-36-33), strongest first: title, a
+/// `maintain_refit` grant, a live lease, a salvor's custody.
+#[must_use]
+pub fn right_of(ctx: &Ctx<'_>, hull: ObjId) -> Option<Right> {
+    let actor = ctx.actor;
+    if holds_title(ctx.w, actor, hull) {
+        return Some(Right::Title);
+    }
+    if unit_grant(ctx, hull, UnitCapability::MaintainRefit) {
+        return Some(Right::Grant);
+    }
+    if leases(ctx.w, actor, hull) {
+        return Some(Right::Lessee);
+    }
+    salvor_custody(ctx.w, actor, hull).map(|_| Right::Salvor)
+}
+
+/// The right that lets `right` do every job in `jobs` (repair and rearm separately).
+fn allowed(right: Right, jobs: &[QuotedJob]) -> Result<(), String> {
+    for job in jobs {
+        let act = if job.job.is_repair() {
+            Act::Repair
+        } else {
+            Act::Rearm
+        };
+        if !permits(right, act) {
+            return Err(format!(
+                "Your right over that hull does not reach `{}`.",
+                job.job.describe()
+            ));
+        }
+    }
+    Ok(())
+}
+
+// ---- the record -------------------------------------------------------------------------
+
+/// The hull's record, a fresh one when none, or the refusal for an unreadable one.
+fn record_of(w: &World, hull: ObjId) -> Result<BayHull, &'static str> {
+    match w
+        .module_state::<TacsimStore>()
+        .and_then(|s| s.bay_hull(hull))
+    {
+        None => Ok(BayHull::new(hull)),
+        Some(BayHullState::Present(row)) => Ok(row.clone()),
+        Some(BayHullState::Unreadable) => Err(HELD_DARK),
+    }
+}
+
+/// **Whether `hull` is held** (Q-36-32): an open order, a berth (it leaves only by stow), or
+/// an unreadable record.
+#[must_use]
+pub fn held(w: &World, hull: ObjId) -> bool {
+    match w
+        .module_state::<TacsimStore>()
+        .and_then(|s| s.bay_hull(hull))
+    {
+        None => false,
+        Some(BayHullState::Present(row)) => row.open().is_some() || row.berth.is_some(),
+        Some(BayHullState::Unreadable) => true,
+    }
+}
+
+/// **Whether `hull` has an open repair order** (the launch gate reads this).
+#[must_use]
+pub fn under_work(w: &World, hull: ObjId) -> bool {
+    match w
+        .module_state::<TacsimStore>()
+        .and_then(|s| s.bay_hull(hull))
+    {
+        None => false,
+        Some(BayHullState::Present(row)) => row.open().is_some(),
+        Some(BayHullState::Unreadable) => true,
+    }
+}
+
+/// **A held hull stays put** (Q-36-32): neither carried nor moved by ordinary world moves while
+/// it is berthed or worked on; berth and stow are its only doors.
+pub(crate) struct BayHold;
+
+impl EventHook for BayHold {
+    fn carry_attempt(
+        &self,
+        ctx: &HookReadContext<'_>,
+        _actor: ObjId,
+        object: ObjId,
+        _destination: ObjId,
+    ) -> Result<(), RichText> {
+        if held(ctx.world(), object) {
+            return Err(RichText::plain("That hull is held in the bay."));
+        }
+        Ok(())
+    }
+
+    fn move_attempt(
+        &self,
+        ctx: &HookReadContext<'_>,
+        actor: ObjId,
+        _exit: Option<ObjId>,
+        _dest: ObjId,
+    ) -> Result<(), RichText> {
+        if held(ctx.world(), actor) {
+            return Err(RichText::plain("That hull is held in the bay."));
+        }
+        Ok(())
+    }
+}
+
+// ---- the quote --------------------------------------------------------------------------
+
+/// The unit, its spec and its anatomy.
+fn unit_parts(
+    w: &World,
+    hull: ObjId,
+) -> Result<
+    (
+        TacticalUnit,
+        crate::definitions::UnitSpec,
+        mush_tactics::field_ops::UnitAnatomyProfile,
+    ),
+    String,
+> {
+    let unit = mush_tactics::module::unit_of(w, hull)
+        .cloned()
+        .ok_or("That is not a hull the bay can work on.")?;
+    let store = w
+        .module_state::<TacsimStore>()
+        .ok_or("TacSim is not loaded.")?;
+    let wanted = unit.schema().key().id.as_str();
+    let spec = store
+        .definitions()
+        .specs
+        .iter()
+        .find(|(id, _)| id.as_str() == wanted)
+        .map(|(_, spec)| spec.clone())
+        .ok_or("That hull's design is not in the catalog.")?;
+    let anatomy = crate::field_ops::anatomy_for_unit_spec(&spec).map_err(|e| e.to_string())?;
+    Ok((unit, spec, anatomy))
+}
+
+/// **A quote for `hull` where it stands now** (D-31-13): the tariff at the operator's
+/// multiplier, split by what this facility may do.
+///
+/// # Errors
+///
+/// The sentence: no facility, no unit, no tariff, past repair.
+pub fn quote_here(w: &World, hull: ObjId) -> Result<(Facility, BayQuote), String> {
+    let facility = facility_of(w, hull)?;
+    let (unit, spec, anatomy) = unit_parts(w, hull)?;
+    let tariff = crate::definitions::workshop::workshop_tariff()
+        .map_err(|e| e.to_string())?
+        .with_multiplier_permille(facility.multiplier_permille)
+        .map_err(|e| e.to_string())?;
+    let store = w
+        .module_state::<TacsimStore>()
+        .ok_or("TacSim is not loaded.")?;
+    let goods = store.goods().ok_or("The goods table is not loaded.")?;
+    let quote = jobs::quote(
+        &unit,
+        &spec,
+        &anatomy,
+        store.definitions(),
+        goods,
+        &tariff,
+        facility.class,
+    )?;
+    Ok((facility, quote))
+}
+
+// ---- the order --------------------------------------------------------------------------
+
+fn fee_spec(
+    payer: AccountId,
+    operator: OrgId,
+    operator_account: AccountId,
+    requester: ObjId,
+    fee: Amount,
+    now: i64,
+) -> ContractSpec {
+    let deadline = EconomicDeadline {
+        clock: EconomicClock::RealUtc,
+        at: now.saturating_add(FEE_WINDOW_SECS),
+    };
+    let me = PrincipalId::Object(requester);
+    ContractSpec {
+        name: SmolStr::new_static(FEE_NAME),
+        scope: None,
+        parties: vec![PrincipalId::Organization(operator)],
+        considerations: vec![ConsiderationSpec {
+            account: payer,
+            amount: fee,
+        }],
+        outcomes: vec![OutcomeTerms {
+            name: SmolStr::new_static("worked"),
+            when: vec![0],
+            payouts: vec![PayoutShare {
+                to: operator_account,
+                share: Share::Exact(fee),
+            }],
+            expense_treatment: mush_economy::ExpenseTreatment::None,
+            asset_consequences: Vec::new(),
+        }],
+        remainder_to: payer,
+        conditions: vec![TypedCondition::Before { deadline }],
+        adjudicator: None,
+        evidence: vec![EvidenceKind::Before],
+        deadline: Some(deadline),
+        on_expiry: Expiry::Refund,
+        visibility: EconomicVisibility::Public,
+        roles: ContractRoles {
+            author: Some(me.clone()),
+            payer: Some(me),
+            representative: None,
+            facilitator: None,
+        },
+        deterministic: true,
+        deliverables: Vec::new(),
+    }
+}
+
+/// What a taken order reports.
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub struct Taken {
+    /// The order.
+    pub order: BayOrder,
+}
+
+/// **Take an order** (Q-36-40): `selector` picks jobs from the quote where the hull stands
+/// (`all`, a kind word, a section or part id, comma-separated). The requester stands in the
+/// facility room, holds a right that reaches every job, has no other order on the hull, and
+/// pays the fee into escrow; the hull is then held until the work is done at the order's IC
+/// due time.
+///
+/// # Errors
+///
+/// The refusal, as a sentence. Nothing is written on any refusal before the escrow; a refused
+/// escrow cancels its own contract.
+pub fn take_order(ctx: &mut Ctx<'_>, hull: ObjId, selector: &str) -> Result<Taken, String> {
+    let mut record = record_of(ctx.w, hull).map_err(str::to_owned)?;
+    if record.open().is_some() {
+        return Err(HELD_OPEN.to_owned());
+    }
+    let (facility, quote) = quote_here(ctx.w, hull)?;
+    if ctx.w.get(ctx.actor).and_then(|o| o.location) != Some(facility.room) {
+        return Err(format!(
+            "Orders for that hull are taken in the {} it stands in.",
+            facility.class.word()
+        ));
+    }
+    let right = right_of(ctx, hull).ok_or(NO_RIGHT)?;
+    let picked = quote.select(selector).ok_or_else(|| {
+        if quote.elsewhere.iter().any(|j| {
+            selector.eq_ignore_ascii_case(j.job.kind_word())
+                || selector.eq_ignore_ascii_case(j.job.target())
+        }) {
+            "That work needs a workshop; berth the hull at the port's workshop.".to_owned()
+        } else {
+            "Nothing in the quote matches that; +bay/quote lists the work.".to_owned()
+        }
+    })?;
+    if picked.len() > MAX_ORDER_JOBS {
+        return Err("Too many jobs for one order; order them in parts.".to_owned());
+    }
+    allowed(right, &picked)?;
+    if picked
+        .iter()
+        .any(|j| matches!(j.job, BayJob::Rearm { good: Some(_), .. }))
+    {
+        return Err(
+            "Loading rounds from munitions goods is not open yet (GC.8b); beam charge recharges."
+                .to_owned(),
+        );
+    }
+    let fee_minor = i64::try_from(BayQuote::cost_minor(&picked)).map_err(|_| "Fee too large.")?;
+    let unit_revision = mush_tactics::module::unit_of(ctx.w, hull)
+        .map(TacticalUnit::revision)
+        .ok_or(NO_HULL)?;
+    let payer = crate::port::credit::own_account(ctx.w, ctx.actor)
+        .map(|a| a.id)
+        .ok_or("You hold no credit account to pay from.")?;
+    let now = ctx.w.now();
+    let spec = fee_spec(
+        payer,
+        facility.operator,
+        facility.operator_account,
+        ctx.actor,
+        Amount::from_minor(fee_minor),
+        now,
+    );
+    let contract = mush_economy::offer_contract(ctx, spec).map_err(|e| {
+        tracing::error!(%e, hull = hull.0, "tacsim: +bay/order: the fee contract was not offered");
+        "The workshop could not write the order; nothing changed.".to_owned()
+    })?;
+    match mush_economy::accept_contract(ctx, contract) {
+        Ok(AcceptOutcome::Accepted { .. }) => {}
+        other => {
+            tracing::warn!(contract = contract.0, outcome = ?other, "tacsim: +bay/order: the escrow was not placed");
+            let _ = mush_economy::cancel_contract(ctx, contract);
+            ctx.out.pin_deferred();
+            return Err(format!(
+                "You cannot cover the fee of {}.",
+                crate::port::coop::money_minor(ctx, fee_minor)
+            ));
+        }
+    }
+    let started = ctx.w.world_ic_now().at;
+    let secs = BayQuote::secs(&picked, facility.class);
+    record.orders = record.orders.saturating_add(1);
+    let order = BayOrder {
+        seq: record.orders,
+        requester: ctx.actor,
+        right,
+        facility: facility.room,
+        class: facility.class,
+        jobs: picked,
+        fee_minor,
+        contract: contract.0,
+        munitions_vault: None,
+        unit_revision,
+        started_ic: started,
+        due_ic: started.saturating_add(secs),
+        status: OrderStatus::Open,
+        closed_ic: None,
+        note: None,
+    };
+    record.order = Some(order.clone());
+    if let Err(error) = record.check() {
+        tracing::error!(%error, hull = hull.0, "tacsim: +bay/order wrote a record that fails its own check");
+    }
+    put_bay_hull(ctx, &record);
+    Ok(Taken { order })
+}
+
+/// Close the open order as cancelled with `note`, releasing the escrow.
+fn close_cancelled(ctx: &mut Ctx<'_>, mut record: BayHull, note: &str) {
+    let Some(order) = record.order.as_mut() else {
+        return;
+    };
+    if !matches!(
+        mush_economy::cancel_contract(ctx, ContractId(order.contract)),
+        Ok(true)
+    ) {
+        tracing::error!(
+            contract = order.contract,
+            "tacsim: a bay order's fee contract did not cancel; its refund retries in the \
+             economy sweep"
+        );
+    }
+    order.status = OrderStatus::Cancelled;
+    order.closed_ic = Some(ctx.w.world_ic_now().at);
+    order.note = Some(note.to_owned());
+    let requester = order.requester;
+    put_bay_hull(ctx, &record);
+    ctx.out.sys_to_actor(
+        requester,
+        "tacsim",
+        format!("The bay order on #{} is cancelled: {note}", record.hull.0),
+    );
+}
+
+/// **`+bay/cancel`**: the requester (or anyone with a right) cancels the open order; the fee
+/// is released and nothing is written to the hull.
+///
+/// # Errors
+///
+/// No open order, or no right.
+pub fn cancel_order(ctx: &mut Ctx<'_>, hull: ObjId) -> Result<(), String> {
+    let record = record_of(ctx.w, hull).map_err(str::to_owned)?;
+    let order = record.open().ok_or("That hull has no open order.")?;
+    if order.requester != ctx.actor && right_of(ctx, hull).is_none() {
+        return Err(NO_RIGHT.to_owned());
+    }
+    close_cancelled(ctx, record, "cancelled by order");
+    Ok(())
+}
+
+/// **Finish one due order** (the port tick): the hull still at the facility and its unit
+/// unchanged, the operator accepts the fee contract (the escrow pays on the economy's sweep),
+/// then the work is written through `mush_tactics`' one plan path.
+fn finish(ctx: &mut Ctx<'_>, hull: ObjId) {
+    let Ok(record) = record_of(ctx.w, hull) else {
+        return;
+    };
+    let Some(order) = record.open().cloned() else {
+        return;
+    };
+    if ctx.w.world_ic_now().at < order.due_ic {
+        return;
+    }
+    let here = match order.class {
+        FacilityClass::Workshop => ctx.w.get(hull).and_then(|o| o.location),
+        FacilityClass::CarrierBay => interior_of(ctx.w, hull).map(|(room, _)| room),
+    };
+    let Some(before) = mush_tactics::module::unit_of(ctx.w, hull).cloned() else {
+        close_cancelled(ctx, record, "the hull is gone");
+        return;
+    };
+    if here != Some(order.facility) {
+        close_cancelled(ctx, record, "the hull left the bay");
+        return;
+    }
+    if before.revision() != order.unit_revision {
+        close_cancelled(ctx, record, "the hull changed while it waited");
+        return;
+    }
+    let Ok((_, _, anatomy)) = unit_parts(ctx.w, hull) else {
+        close_cancelled(ctx, record, "the hull's design cannot be read");
+        return;
+    };
+    let custody = CustodyTitleStatus::ResolvedTitle {
+        owner: order.requester,
+    };
+    let at = ctx.w.now();
+    let plan = jobs::work(
+        &before,
+        &anatomy,
+        &order.jobs,
+        &BTreeMap::new(),
+        order.requester,
+        &custody,
+        at,
+    )
+    .and_then(|after| {
+        mush_tactics::field_ops::ic_condition_plan(
+            &before,
+            &after,
+            None,
+            Some(SmolStr::new_static("tacsim.bay.repair")),
+        )
+        .map_err(|e| e.to_string())
+    });
+    let plan = match plan {
+        Ok(plan) => plan,
+        Err(error) => {
+            close_cancelled(
+                ctx,
+                record,
+                &format!("the work could not be done ({error})"),
+            );
+            return;
+        }
+    };
+    let operator = facility_operator(ctx.w, &order);
+    let paid = operator.is_some_and(|operator| {
+        matches!(
+            mush_economy::accept_contract_as(
+                ctx,
+                ContractId(order.contract),
+                &PrincipalId::Organization(operator)
+            ),
+            Ok(AcceptOutcome::Accepted {
+                activated: true,
+                ..
+            })
+        )
+    });
+    if !paid {
+        close_cancelled(ctx, record, "the facility could not take the fee");
+        return;
+    }
+    if let Some(plan) = plan
+        && let Err(error) = mush_tactics::module::apply_plan(ctx, hull, &plan)
+    {
+        tracing::error!(
+            hull = hull.0, contract = order.contract, %error,
+            "tacsim: a paid bay order's work was refused by the unit; staff refund the fee and \
+             repair by hand"
+        );
+    }
+    let mut record = record;
+    if let Some(row) = record.order.as_mut() {
+        row.status = OrderStatus::Done;
+        row.closed_ic = Some(ctx.w.world_ic_now().at);
+    }
+    put_bay_hull(ctx, &record);
+    let words: Vec<String> = order.jobs.iter().map(|j| j.job.describe()).collect();
+    ctx.out.sys_to_actor(
+        order.requester,
+        "tacsim",
+        format!(
+            "The {} has finished on #{}: {}.",
+            order.class.word(),
+            hull.0,
+            words.join(", ")
+        ),
+    );
+}
+
+/// The operator org of the port an order's facility belongs to.
+fn facility_operator(w: &World, order: &BayOrder) -> Option<OrgId> {
+    match order.class {
+        FacilityClass::Workshop => workshops(w)
+            .into_iter()
+            .find(|(_, _, _, room)| *room == order.facility)
+            .and_then(|(_, def, map, _)| operator_of(def, map))
+            .map(|(org, _, _)| org),
+        FacilityClass::CarrierBay => {
+            let carrier = carrier_of_bay(w, order.facility)?;
+            match crate::port::ship::berth_of(w, carrier) {
+                crate::port::ship::Berth::Docked { map, def } => {
+                    operator_of(def, map).map(|(org, _, _)| org)
+                }
+                _ => None,
+            }
+        }
+    }
+}
+
+/// **The bay's arm of the `tacsim.port` fire**: every open order whose IC due time has come is
+/// finished. The IC clock stands still under a W-clock freeze, so a frozen world finishes
+/// nothing (Q-36-32).
+pub(crate) fn tick(ctx: &mut Ctx<'_>) {
+    if ctx.w.world_timeline().freeze().is_some() {
+        return;
+    }
+    let open = ctx
+        .w
+        .module_state::<TacsimStore>()
+        .map(TacsimStore::bay_open_hulls)
+        .unwrap_or_default();
+    for hull in open {
+        finish(ctx, hull);
+    }
+}
+
+// ---- berth and stow ---------------------------------------------------------------------
+
+/// **`berth`** (Q-36-53): the hull leaves its docked carrier's bay for the workshop room the
+/// actor stands in, at that carrier's port; its slot frees and the carrier may sail without it.
+///
+/// # Errors
+///
+/// The refusal, as a sentence; nothing is written on any.
+pub fn berth(ctx: &mut Ctx<'_>, hull: ObjId) -> Result<ObjId, String> {
+    let mut record = record_of(ctx.w, hull).map_err(str::to_owned)?;
+    if record.open().is_some() {
+        return Err(HELD_OPEN.to_owned());
+    }
+    if record.berth.is_some() {
+        return Err("That hull is already berthed.".to_owned());
+    }
+    let here = ctx
+        .w
+        .get(ctx.actor)
+        .and_then(|o| o.location)
+        .ok_or(NO_HULL)?;
+    let (_, def, map, room) = workshops(ctx.w)
+        .into_iter()
+        .find(|(_, _, _, room)| *room == here)
+        .ok_or("Hulls are berthed from a port's workshop.")?;
+    let (bay_room, slot) = interior_of(ctx.w, hull).ok_or(NO_HULL)?;
+    let carrier = carrier_of_bay(ctx.w, bay_room).ok_or(NO_HULL)?;
+    match crate::port::ship::berth_of(ctx.w, carrier) {
+        crate::port::ship::Berth::Docked { map: at, .. } if at.entry == map.entry => {}
+        _ => return Err("Her carrier is not docked at this port.".to_owned()),
+    }
+    let right = right_of(ctx, hull).ok_or(NO_RIGHT)?;
+    if !permits(right, Act::Berth) {
+        return Err(NO_RIGHT.to_owned());
+    }
+    let berths = def.workshop.as_ref().map_or(0, |w| w.berths);
+    let used = ctx
+        .w
+        .module_state::<TacsimStore>()
+        .map_or(0, |s| s.bay_berthed_in(room).len());
+    if u32::try_from(used).unwrap_or(u32::MAX) >= berths {
+        return Err("Every berth in the workshop is taken.".to_owned());
+    }
+    mush_sim::unplace(ctx, hull, "tacsim.bay.berth")?;
+    ctx.w.move_to(hull, room).map_err(|e| e.to_string())?;
+    record.berth = Some(BerthRow {
+        workshop: room,
+        carrier,
+        bay_room,
+        slot,
+        by: ctx.actor,
+        at_ic: ctx.w.world_ic_now().at,
+    });
+    put_bay_hull(ctx, &record);
+    Ok(room)
+}
+
+/// **`stow`** (Q-36-53): a berthed hull goes back to the bay slot it came from, its carrier
+/// still docked at this port.
+///
+/// # Errors
+///
+/// The refusal, as a sentence; nothing is written on any.
+pub fn stow(ctx: &mut Ctx<'_>, hull: ObjId) -> Result<ObjId, String> {
+    let mut record = record_of(ctx.w, hull).map_err(str::to_owned)?;
+    if record.open().is_some() {
+        return Err(HELD_OPEN.to_owned());
+    }
+    let row = record.berth.clone().ok_or("That hull is not berthed.")?;
+    if ctx.w.get(ctx.actor).and_then(|o| o.location) != Some(row.workshop) {
+        return Err("Hulls are stowed from the workshop they stand in.".to_owned());
+    }
+    let right = right_of(ctx, hull).ok_or(NO_RIGHT)?;
+    if !permits(right, Act::Berth) {
+        return Err(NO_RIGHT.to_owned());
+    }
+    let docked_here = match crate::port::ship::berth_of(ctx.w, row.carrier) {
+        crate::port::ship::Berth::Docked { map, def } => {
+            crate::port::workshop::room(ctx.w, &map.entry, def)
+                .ok()
+                .flatten()
+                == Some(row.workshop)
+        }
+        _ => false,
+    };
+    if !docked_here {
+        return Err("Her carrier is not docked at this port.".to_owned());
+    }
+    mush_sim::place_interior(ctx, hull, row.bay_room, row.slot.clone())
+        .map_err(|e| format!("Her bay will not take her: {e}"))?;
+    record.berth = None;
+    put_bay_hull(ctx, &record);
+    Ok(row.carrier)
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn gc8_q36_33_who_may_do_what() {
+        for act in [
+            Act::Repair,
+            Act::Rearm,
+            Act::Refit,
+            Act::Strip,
+            Act::Scrap,
+            Act::Berth,
+        ] {
+            assert!(permits(Right::Title, act), "the title holder may {act:?}");
+        }
+        // A grant holder: repair, rearm and refit; never scrap.
+        assert!(permits(Right::Grant, Act::Repair));
+        assert!(permits(Right::Grant, Act::Rearm));
+        assert!(permits(Right::Grant, Act::Refit));
+        assert!(!permits(Right::Grant, Act::Scrap));
+        // A lessee: repair and rearm, no refit, strip or scrap.
+        assert!(permits(Right::Lessee, Act::Repair));
+        assert!(permits(Right::Lessee, Act::Rearm));
+        assert!(!permits(Right::Lessee, Act::Refit));
+        assert!(!permits(Right::Lessee, Act::Strip));
+        assert!(!permits(Right::Lessee, Act::Scrap));
+        // A salvor with custody: repair at their own risk, never strip or scrap.
+        assert!(permits(Right::Salvor, Act::Repair));
+        assert!(!permits(Right::Salvor, Act::Strip));
+        assert!(!permits(Right::Salvor, Act::Scrap));
+        assert!(!permits(Right::Salvor, Act::Refit));
+    }
+}

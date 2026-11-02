@@ -409,6 +409,15 @@ pub fn register(reg: &mut Registrar<'_>) -> Result<(), ModError> {
         Arc::new(ic_command),
     )?;
     reg.hook(HookPoint::MoveAttempt, Arc::new(IcDoorHook));
+    // Doc 36 cut GC.8a (Q-36-32): a hull berthed or under a repair order stays put.
+    reg.hook(
+        HookPoint::MoveAttempt,
+        Arc::new(crate::port::bay_work::BayHold),
+    );
+    reg.hook(
+        HookPoint::CarryAttempt,
+        Arc::new(crate::port::bay_work::BayHold),
+    );
     reg.subscribe_moved("ic_return_stamp", 1, Arc::new(IcReturnStamp))?;
     Ok(())
 }

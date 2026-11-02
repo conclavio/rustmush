@@ -297,6 +297,24 @@ pub(crate) fn register(reg: &mut Registrar<'_>) -> Result<(), ModError> {
         Arc::new(crate::port::tv::tv_cmd),
     )?;
     reg.classify_commands(mush_core::CommandCompatibility::LegacyPostImage);
+    // Doc 36 cut GC.8a: `+bay` — the quote is a read; `/order` and `/cancel` are economy API
+    // writes (the fee escrow) and one `tacsim:baywork:` document; `/berth` and `/stow` are one
+    // mush-sim placement each beside that document. No authoritative submission, so the
+    // legacy post-image lane (its allowlist stanza names the future family).
+    reg.command(
+        CommandSpec {
+            name: crate::port::bay_work::command::BAY_VERB.into(),
+            shape: ArgShape::Raw,
+            switches: crate::port::bay_work::command::BAY_SWITCHES
+                .iter()
+                .copied()
+                .map(SmolStr::new)
+                .collect(),
+            help: crate::port::bay_work::command::BAY_HELP.into(),
+            ..CommandSpec::default()
+        },
+        Arc::new(crate::port::bay_work::command::bay_cmd),
+    )?;
     // ---- Doc 17h cut M8a (§2.5; doc 23 §7, §10): `+hull/box`, a ReadOnly group of its own ----
     //
     // The `@corridor` bracket's pattern: the class is declared before the `reg.command` and the
