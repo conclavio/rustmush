@@ -12,6 +12,17 @@
         { "unit": "tacsim.unit.line_tank", "name": "Skulk One", "heading_mdeg": 90000 },
         { "unit": "tacsim.unit.line_tank", "name": "Skulk Two", "heading_mdeg": 90000 }
       ]
+    },
+    {
+      "id": "tacsim.raider.urvara_reavers",
+      "label": "Reach raiders",
+      "leader": "Oda Marrin",
+      "site": "urvara_port",
+      "carrier": { "unit": "tacsim.unit.dray", "name": "Reach Barge", "cell": [40, 20], "heading_mdeg": 270000, "ramp": [43, 20] },
+      "units": [
+        { "unit": "tacsim.unit.line_tank", "name": "Reach One", "heading_mdeg": 270000 },
+        { "unit": "tacsim.unit.line_tank", "name": "Reach Two", "heading_mdeg": 270000 }
+      ]
     }
   ]
 }

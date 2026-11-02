@@ -53,7 +53,9 @@ use mush_atlas::window::SurfaceComposite;
 use crate::surface::address::{
     self, CELLS_PER_FIELD, CELLS_PER_POCKET, Octant, Scheme, cell_on_site,
 };
-use crate::surface::excursion::{LegWaypoint, MAX_LEG_WAYPOINTS, cells_apart, site_cell};
+use crate::surface::excursion::{
+    LegWaypoint, MAX_LEG_WAYPOINTS, cells_apart, max_leg_waypoints, site_cell,
+};
 use crate::surface::ground::{SITE_CELL_CM, SITE_CELLS};
 
 /// **The A* budget of a shipped site** (doc 20 §8: "a budget of 65,536 cells, a whole site"):
@@ -68,8 +70,17 @@ pub const fn drive_path_budget_cells(width: u16, height: u16) -> u32 {
 }
 /// The TV's locomotion row in the atlas table (its unit's tracked mode).
 pub const DRIVE_LOCOMOTION: &str = "tracked";
-/// The farthest a bearing target may name, metres (the site's diagonal, 2,560 m × √2).
-pub const MAX_BEARING_METRES: u32 = 3_620;
+/// The farthest a bearing target may name on a shipped site, metres (its diagonal, 2,560 m ×
+/// √2): [`max_bearing_metres`] of a shipped site.
+pub const MAX_BEARING_METRES: u32 = max_bearing_metres(SITE_CELLS);
+
+/// **The farthest a bearing target may name on a site `side` cells a side**, metres (doc 32 cut
+/// S.2, §20): its diagonal, `side × 10 m × √2` rounded down — 3,620 m at 256, 7,240 m at 512. A
+/// bearing that leaves the site from where the rig stands is still refused by [`target_cell`].
+#[must_use]
+pub const fn max_bearing_metres(side: u16) -> u32 {
+    (side as u32) * (SITE_CELL_CM as u32 / 100) * 14_142 / 10_000
+}
 /// **The display tolerances a leg is frozen at**, in 10 m cells, tried in order (R1): the first
 /// whose kept points number at most [`MAX_LEG_WAYPOINTS`] wins. 8 cells is one site-view cell
 /// (80 m), so the site view never shows the difference.
@@ -163,7 +174,7 @@ pub enum Target {
     Bearing {
         /// The octant.
         octant: Octant,
-        /// Metres, `1..=`[`MAX_BEARING_METRES`].
+        /// Metres, `1..=`[`max_bearing_metres`] of the site's side.
         metres: u32,
     },
 }
@@ -199,7 +210,8 @@ fn strict_decimal(text: &str) -> Option<i64> {
 /// **Parse a drive's target** (pure; the words already split, `go` removed): `C117` (a pocket
 /// address), `C-NW` (a field), `C` (a block letter), `140,96` (a site cell, also `140, 96`), or
 /// a bearing — `ne 300`, `northeast 300`, `ne 300m`, `ne 300 m`. Case-insensitive; `None` for
-/// anything else, an address off the grammar, or a bearing outside `1..=`[`MAX_BEARING_METRES`].
+/// anything else, an address off the grammar, or a bearing outside `1..=`[`MAX_BEARING_METRES`]
+/// (the shipped site's diagonal).
 /// The shipped scheme's [`parse_target_in`].
 #[must_use]
 pub fn parse_target(words: &[&str]) -> Option<Target> {
@@ -217,7 +229,8 @@ pub fn parses_as_target(words: &[&str]) -> bool {
 }
 
 /// **[`parse_target`] under a site's `scheme`** (doc 32 cut S.1): its addresses, field names and
-/// blocks are that site's (`C117` names another pocket at 512 than at 256).
+/// blocks are that site's (`C117` names another pocket at 512 than at 256), and since cut S.2 its
+/// bearings reach the site's own diagonal ([`max_bearing_metres`]).
 #[must_use]
 pub fn parse_target_in(words: &[&str], scheme: Scheme) -> Option<Target> {
     match words {
@@ -256,7 +269,7 @@ pub fn parse_target_in(words: &[&str], scheme: Scheme) -> Option<Target> {
                 _ => return None,
             };
             let metres = u32::try_from(metres).ok()?;
-            if metres == 0 || metres > MAX_BEARING_METRES {
+            if metres == 0 || metres > max_bearing_metres(scheme.side()) {
                 return None;
             }
             Some(Target::Bearing { octant, metres })
@@ -372,11 +385,13 @@ pub enum LegRefused {
     Here,
     /// No way over the ground within the budget (the atlas's `Unreachable` or `OverBudget`).
     NoPath,
-    /// More than [`MAX_LEG_WAYPOINTS`] points even at the widest tolerance; `needed` is the count
+    /// More than the site's cap of points even at the widest tolerance; `needed` is the count
     /// there.
     Winding {
         /// The kept points at 8 cells.
         needed: usize,
+        /// The site's cap ([`max_leg_waypoints`]; doc 32 cut S.2: 64 on a wide site).
+        cap: usize,
     },
     /// A figure left its type.
     Overflow,
@@ -587,8 +602,10 @@ pub fn drive_leg(
     };
     let (points, cum) =
         points_of(surface, table, start_cm, &found.cells).ok_or(LegRefused::NoPath)?;
-    let (kept, tolerance) =
-        freeze(&points, &LEG_TOLERANCE_CELLS).map_err(|needed| LegRefused::Winding { needed })?;
+    // Doc 32 cut S.2: the site's own cap, 64 waypoints on a wide site.
+    let cap = max_leg_waypoints(surface.cells.width());
+    let (kept, tolerance) = freeze_within(&points, &LEG_TOLERANCE_CELLS, cap)
+        .map_err(|needed| LegRefused::Winding { needed, cap })?;
     leg_of(found.cells, &points, &cum, &kept, tolerance, rates)
 }
 
@@ -692,10 +709,24 @@ fn simplify(points: &[(i64, i64)], tolerance_cells: u32) -> Vec<usize> {
 ///
 /// The count kept at the widest tolerance when none fits (`Winding`'s `needed`).
 pub fn freeze(points: &[(i64, i64)], tolerances: &[u32]) -> Result<(Vec<usize>, u32), usize> {
+    freeze_within(points, tolerances, MAX_LEG_WAYPOINTS)
+}
+
+/// **[`freeze`] under a site's own cap** (doc 32 cut S.2; [`max_leg_waypoints`]): the first
+/// tolerance whose kept points number at most `cap` wins.
+///
+/// # Errors
+///
+/// The count kept at the widest tolerance when none fits.
+pub fn freeze_within(
+    points: &[(i64, i64)],
+    tolerances: &[u32],
+    cap: usize,
+) -> Result<(Vec<usize>, u32), usize> {
     let mut widest = (0..points.len()).collect::<Vec<usize>>();
     for &tolerance in tolerances {
         let kept = simplify(points, tolerance);
-        if kept.len() <= MAX_LEG_WAYPOINTS {
+        if kept.len() <= cap {
             return Ok((kept, tolerance));
         }
         widest = kept;
@@ -708,7 +739,17 @@ pub fn freeze(points: &[(i64, i64)], tolerances: &[u32]) -> Result<(Vec<usize>, 
 /// the first and the last kept.
 #[must_use]
 pub fn freeze_always(points: &[(i64, i64)], tolerances: &[u32]) -> (Vec<usize>, u32) {
-    if let Ok(found) = freeze(points, tolerances) {
+    freeze_always_within(points, tolerances, MAX_LEG_WAYPOINTS)
+}
+
+/// **[`freeze_always`] under a site's own cap** (doc 32 cut S.2; [`max_leg_waypoints`]).
+#[must_use]
+pub fn freeze_always_within(
+    points: &[(i64, i64)],
+    tolerances: &[u32],
+    cap: usize,
+) -> (Vec<usize>, u32) {
+    if let Ok(found) = freeze_within(points, tolerances, cap) {
         return found;
     }
     let widest = tolerances.last().copied().unwrap_or(0);
@@ -722,7 +763,7 @@ pub fn freeze_always(points: &[(i64, i64)], tolerances: &[u32]) -> (Vec<usize>, 
         {
             picked.push(last);
         }
-        if picked.len() <= MAX_LEG_WAYPOINTS || k >= kept.len() {
+        if picked.len() <= cap || k >= kept.len() {
             return (picked, widest);
         }
         k = k.saturating_add(1);
@@ -977,7 +1018,11 @@ pub fn recover_leg(field: &HomeField, start_cm: (i64, i64), rates: &DriveRates) 
         cum.push(total.checked_sub(here)?);
         points.push(if i == 0 { start_cm } else { centre_cm(*cell) });
     }
-    let (kept, tolerance) = freeze_always(&points, &LEG_TOLERANCE_CELLS);
+    let (kept, tolerance) = freeze_always_within(
+        &points,
+        &LEG_TOLERANCE_CELLS,
+        max_leg_waypoints(field.side()),
+    );
     leg_of(cells, &points, &cum, &kept, tolerance, rates).ok()
 }
 
@@ -1291,6 +1336,81 @@ mod tests {
             out.push(at(k * 10, if k % 2 == 0 { 0 } else { 20 }));
         }
         out
+    }
+
+    /// **Doc 32 cut S.2: a bearing reaches the site's own diagonal.** 3,620 m at 256 as before,
+    /// 7,240 m at 512; from Urvara Reach's south-west corner `ne 5000` names a cell inside the
+    /// site, which the shipped bound refused as no target at all; past the diagonal is still no
+    /// target, and a bearing off the site from the stand is still no cell.
+    #[test]
+    fn s2_a_bearing_reaches_the_sites_own_diagonal() {
+        assert_eq!(MAX_BEARING_METRES, 3_620);
+        assert_eq!(max_bearing_metres(512), 7_240);
+        let far = ["ne", "5000"];
+        assert_eq!(parse_target_in(&far, Scheme::SHIPPED), None);
+        let target = parse_target_in(&far, Scheme::WIDEST).expect("a 512 bearing");
+        assert_eq!(
+            target,
+            Target::Bearing {
+                octant: Octant::NE,
+                metres: 5_000
+            }
+        );
+        assert_eq!(target_cell(&target, (10, 10), 512), Some((364, 364)));
+        assert_eq!(target_cell(&target, (256, 256), 512), None);
+        assert!(parses_as_target(&far));
+        assert_eq!(parse_target_in(&["ne", "7241"], Scheme::WIDEST), None);
+        assert!(parse_target_in(&["ne", "3620"], Scheme::SHIPPED).is_some());
+        assert_eq!(parse_target_in(&["ne", "3621"], Scheme::SHIPPED), None);
+    }
+
+    /// **Doc 32 cut S.2 (the owner's ruling of 2026-11-01): a corner-to-corner drive over rough
+    /// 512 ground is accepted.** A synthetic 512 x 512 site walled into 24 lanes, each wall open
+    /// at alternate ends, so the way from `(0, 0)` to `(511, 511)` snakes back and forth: frozen
+    /// under the shipped cap it is refused as too winding, and `drive_leg` on the 512 site keeps
+    /// more than 32 and at most 64 waypoints, ending on the target.
+    #[test]
+    fn s2_a_rough_512_corner_to_corner_drive_is_accepted() {
+        let mut surface = SurfaceComposite {
+            surface: SurfaceRef::Ground,
+            grid: Grid {
+                origin: PointCm { x: 0, y: 0 },
+                resolution_cm: 1_000,
+                width: 512,
+                height: 512,
+            },
+            cells: Cells::filled_composite(512, 512, cell(TerrainClass::Regolith, 0))
+                .expect("a 512 grid"),
+            rooms: Vec::new(),
+            features: Vec::new(),
+        };
+        for wall in 1..24_u16 {
+            let x = wall * 21;
+            let gap = if wall % 2 == 1 { 509 } else { 2 };
+            for y in 0..512_u16 {
+                if y.abs_diff(gap) > 1 {
+                    surface.cells.set(x, y, cell(TerrainClass::Wall, 0));
+                }
+            }
+        }
+        let leg = drive_leg(&surface, table(), at(0, 0), (511, 511), &RATES)
+            .expect("the rough 512 drive is accepted");
+        let n = leg.waypoints.len();
+        assert!(
+            n > MAX_LEG_WAYPOINTS && n <= crate::surface::excursion::MAX_WIDE_LEG_WAYPOINTS,
+            "{n} waypoints"
+        );
+        assert_eq!(leg.cells.last(), Some(&(511, 511)));
+        let points: Vec<(i64, i64)> = leg
+            .cells
+            .iter()
+            .enumerate()
+            .map(|(i, c)| if i == 0 { at(0, 0) } else { centre_cm(*c) })
+            .collect();
+        assert!(
+            freeze(&points, &LEG_TOLERANCE_CELLS).is_err(),
+            "the shipped cap refuses the same way"
+        );
     }
 
     /// **More than 32 waypoints is refused, never cut** (R1): a zigzag needing 32 points even at

@@ -173,7 +173,8 @@ pub enum Refusal {
         /// The target in words.
         target: String,
     },
-    /// `TOO_WINDING` (doc 20 cut SM.4b; R1): more than 32 waypoints even at 80 m.
+    /// `TOO_WINDING` (doc 20 cut SM.4b; R1): more than the site's cap of waypoints even at
+    /// 80 m (32; 64 on a wide site, doc 32 cut S.2).
     Winding {
         /// The slot.
         n: u8,
@@ -181,6 +182,8 @@ pub enum Refusal {
         target: String,
         /// The waypoints the widest freeze kept.
         needed: usize,
+        /// The site's cap.
+        cap: usize,
     },
     /// `NO_WAY_HOME` (doc 20 cut SM.4b; R2): the end stand has no way back to the ramp.
     NoWayHome {
@@ -707,9 +710,9 @@ impl Refusal {
             Refusal::NoPath { n, target } => tv::NO_PATH
                 .replace("{n}", &n.to_string())
                 .replace("{target}", target),
-            Refusal::Winding { target, .. } => tv::TOO_WINDING
+            Refusal::Winding { target, cap, .. } => tv::TOO_WINDING
                 .replace("{target}", target)
-                .replace("{cap}", &crate::surface::MAX_LEG_WAYPOINTS.to_string()),
+                .replace("{cap}", &cap.to_string()),
             Refusal::NoWayHome { n, target, ramp } => tv::NO_WAY_HOME
                 .replace("{n}", &n.to_string())
                 .replace("{target}", target)
@@ -923,6 +926,7 @@ pub(crate) fn refusal_samples() -> Vec<Refusal> {
             n: 1,
             target: String::new(),
             needed: 33,
+            cap: 32,
         },
         Refusal::NoWayHome {
             n: 1,

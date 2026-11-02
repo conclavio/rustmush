@@ -647,10 +647,11 @@ pub(crate) fn drive_plan(
                 n: rig.slot,
                 target: words.clone(),
             },
-            LegRefused::Winding { needed } => Refusal::Winding {
+            LegRefused::Winding { needed, cap } => Refusal::Winding {
                 n: rig.slot,
                 target: words.clone(),
                 needed,
+                cap,
             },
         })?;
     let home_cu = drive::home_cu_to(&field, to, rates).ok_or_else(|| Refusal::NoWayHome {
