@@ -301,6 +301,8 @@ fn run_lane(rig: &mut Rig, n: usize, lattice: bool, arena_s: i64) -> f64 {
     let mut peak_contacts = 0_usize;
     // The worst wake's work: traces, cell probes, share operations, path queries and path cells.
     let mut work = [0_u64; 5];
+    // Mind faults and overflows over the run.
+    let mut faults = [0_u64; 2];
     let mut wall = 0_i64;
     let end_ms = arena_s * 1_000;
     while wall < end_ms {
@@ -328,6 +330,8 @@ fn run_lane(rig: &mut Rig, n: usize, lattice: bool, arena_s: i64) -> f64 {
         ]) {
             *peak = (*peak).max(now);
         }
+        faults[0] += u64::from(out.motor.mind_faults);
+        faults[1] += u64::from(out.motor.mind_overflows);
         // The world's acknowledgement, as the field task gives it once the chunks are written
         // (`arena_task`'s `mark_flushed`): without it the egress backs up past
         // `ledger.max_unflushed_chunks` and the field is voided.
@@ -369,7 +373,7 @@ fn run_lane(rig: &mut Rig, n: usize, lattice: bool, arena_s: i64) -> f64 {
          relations: {contacts} contacts held at the end (peak {peak_contacts}), books {books} B, \
          hostile_in_weapons_range {tempo_us:.1} us, full contact sweep {sweep_us:.1} us; \
          ledger {} B of {} B; worst wake: {} traces, {} cell probes, {} share ops, {} path \
-         queries, {} path cells",
+         queries, {} path cells; mind faults {} (overflows {}); state hash {:016x}",
         if lattice { "lattice" } else { "fixed100" },
         all.len(),
         tempo_counts[0],
@@ -387,6 +391,9 @@ fn run_lane(rig: &mut Rig, n: usize, lattice: bool, arena_s: i64) -> f64 {
         work[2],
         work[3],
         work[4],
+        faults[0],
+        faults[1],
+        tacsim::arena::hash::state_hash(&arena),
     );
     assert!(shots > 0, "n={n}: the field is fought");
     engaged_p99
