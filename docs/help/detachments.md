@@ -307,7 +307,7 @@ ORDER DT:12:1:3 2 RELEASE
 ```
 
 Replace the example identity and term with the printed prefill. ADVANCE takes a
-field cell within the 256 by 256 site. SUPPORT takes an accepted slot. ENGAGE may
+field cell within the site (256 or 512 cells a side). SUPPORT takes an accepted slot. ENGAGE may
 include a contact prefix from your own observation; a hint grants its recipient
 no contact knowledge or targeting permission. Orders stand until replaced,
 released or completed; an optional expiry suffix limits them in IC seconds.
@@ -344,8 +344,10 @@ own scan and sounding, try up to eight nearby known ore pockets, mine one cycle,
 recover and unload. A failed action or no reachable known ore produces NEGATIVE. Send a fresh
 order for another trip after the next DT launch. HOLD and RELEASE stop a mining
 run after its current cycle; admitted movement still settles at its actual end.
-Unsupported combat and support objectives receive NEGATIVE until those field
-hosts exist. Players continue to control their own units.
+On open ground, `ENGAGE` at a flight on the presence picture is the leader's
+Hostile mark and opens a combat field; other combat and support objectives there
+receive NEGATIVE. Inside a field the field host carries them out (`help field`).
+Players continue to control their own units.
 
 Executable orders belong to the exact deployed flight and site. A delayed message
 cannot become a command for a later launch. WILCO, attempted work and completion
@@ -353,3 +355,7 @@ remain separate: only actual source action admission records an attempt, and onl
 matching movement or inventory receipts record completion. The commander sees only
 replies whose return messages arrived; the report keeps execution unconfirmed
 rather than exposing the recipient's private work history as instant telemetry.
+
+When a shot is fired or a hostile is marked on a site, every unit on it is
+admitted to a combat field, and the roster fights as one party. `help field`
+covers marks, combat orders, withdrawal up the ramp, crew state and extraction.
