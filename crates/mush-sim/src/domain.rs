@@ -532,6 +532,44 @@ pub(crate) fn raise(
     Ok(Raised { outcome, dequeued })
 }
 
+/// **Doc 35 cut SF.R1 (`D-35-5`)** — stand down a live promoted domain at `to`,
+/// writing its [`DomainSummary`] first, removing its [`DomainActivation`], and
+/// draining any queued requests.
+///
+/// # Errors
+///
+/// [`DomainWorkflowError`] if the summary cannot be constructed or the domain is
+/// not currently live-promoted.
+pub fn stand_down_domain(
+    ctx: &mut mush_core::Ctx<'_>,
+    id: DomainId,
+    to: mush_core::ClockStamp,
+) -> Result<DomainSummary, DomainWorkflowError> {
+    let request = ctx
+        .w
+        .module_state::<ActivationBook>()
+        .and_then(|book| book.activations.get(&id))
+        .filter(|a| !a.is_queued())
+        .cloned()
+        .ok_or(DomainWorkflowError::WindowBackwards)?;
+    let units = units_in(ctx, id);
+    let from = mush_core::ClockStamp {
+        clock: to.clock.clone(),
+        at: request.at().at.min(to.at),
+    };
+    let summary = DomainSummary::new(id, from, to, 0, units)?;
+    if !persist_summary(ctx.out, &summary) {
+        return Err(DomainWorkflowError::NotWorldIc);
+    }
+    persist_activation_del(ctx.out, id);
+    if let Some(book) = ctx.w.module_state_mut::<ActivationBook>() {
+        book.summaries.insert(id, summary.clone());
+        book.activations.remove(&id);
+    }
+    let _ = flush_dequeued(ctx);
+    Ok(summary)
+}
+
 /// Re-evaluate the queue: while a slot is free, promote the lowest-id queued
 /// request. Returns the domains that came off the queue, so the caller persists
 /// exactly those. Bounded by [`MAX_ACTIVE_DOMAINS`] iterations — a queue can

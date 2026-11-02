@@ -12,6 +12,7 @@ use serde::{Deserialize, Serialize};
 
 pub mod bubble;
 pub mod custody;
+pub mod tick;
 pub mod weapons;
 
 pub use bubble::{
@@ -25,6 +26,11 @@ pub use custody::{
     format_tactical_unit_damage_line, instantiate_stock_space_unit,
     record_space_combat_to_black_box, register_derelict_salvage_in_book,
     space_ship_from_tactical_unit,
+};
+pub use tick::{
+    ActiveInterdictionBubble, CARRIER_PARTY, COMBAT_STEP_WALL_MS, CRUISE_STEP_WALL_MS,
+    CompletedInterdictionBubble, INTERDICTION_STANDOFF_M, INTERDICTOR_PARTY, ORDNANCE_STEP_WALL_MS,
+    SPACE_TICK, SPACE_TICK_PERIOD, SpaceBubbleBook, clear_interdiction_bubble,
 };
 pub use weapons::{
     DEFAULT_TORPEDO_MAX_FLIGHT_MS, InFlightSlug, InFlightTorpedo, LaserMode, LaserMount, PdcMount,

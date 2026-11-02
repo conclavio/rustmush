@@ -2799,11 +2799,16 @@ fn write_journey_promotion(ctx: &mut mush_core::Ctx<'_>, plan: &PulseMaintenance
     if changes.is_empty() {
         return;
     }
+    let now = ctx.w.world_ic_now();
     let mut written = Vec::new();
     if let Some(book) = ctx.w.module_state_mut::<JourneyBook>() {
         for (root, state) in changes {
             if let Some(journey) = book.journeys.remove(&root) {
-                let updated = journey.with_state(state);
+                let updated = match state {
+                    JourneyState::Promoted { domain } => journey.with_promoted(domain, &now),
+                    JourneyState::Cruising => journey.with_resumed(&now),
+                    other => journey.with_state(other),
+                };
                 written.push(updated.clone());
                 book.journeys.insert(root, updated);
             }

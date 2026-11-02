@@ -1018,6 +1018,8 @@ impl GameModule for TacsimRuleset {
         match_::cockpit::register(reg)?;
         // Doc 32 cut CF.2: the IC field host — `+field`, its tick and its clock observer.
         field::register(reg)?;
+        // Doc 35 cut SF.R1: the space interdiction bubble tick (`tacsim.space`).
+        space::tick::register(reg)?;
         detachment::live::register(reg)?;
         // 16b cut AH.1 (16c N18): the first-time hints — `@tutorial` and the
         // lobby's `Moved` observer, under the `LegacyPostImage` classification
