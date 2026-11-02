@@ -1360,3 +1360,115 @@ field on `FieldBook` in `field/mod.rs`).
 
 - the held-out hull's one-cell footprint, and the site's line for it;
 - the owed arrivals as RAM only, rebuilt by the tick after a restart.
+
+## As built (GC.12)
+
+**The cap, measured** (Q-36-9). `FIELD_MAX_UNITS` is still 24. This section records the first
+measurement, taken on main. The cap moves after GC.2 merges and the harness has measured its tree
+(below).
+
+**The harness.** `field_scale::gc12_the_field_pulse_is_measured_at_scale` in
+`crates/tacsim/tests/shard_1/field_scale.rs`, one `#[ignore]` test, so the ordinary shards never
+run it. Both measurements below were run by hand, as `cargo test --release -p tacsim --test
+shard_1 field_scale:: -- --ignored --nocapture --test-threads=1`. gate.yml's `sweep` dispatch
+should also run it, with `packages` set to `tacsim`, `redis` off, and `extra` set to
+`--run-ignored only --cargo-profile release --no-capture -E 'test(/^field_scale::/)'`. Nobody
+has run it that way yet.
+- *The field:* the field's arena on Ahuna Flank's priced ground, built as S.2's `story_arena`
+  builds it (`field_story.rs`). It holds `n` units, every one a stock mind under the production
+  seal terms. The cohort is mixed: line tank ×3, laser, biped, thermal, ECM and ECCM, in that
+  order within each party.
+- *The parties:* six parties, `A` to `F`, in blocks on a ring 18 cells out from the pad. They
+  open under the IC host's terms (`EndCondition::Host`, every class, weapons hold). `A–B` and
+  `C–D` are friends by roster. The marks are not symmetric: `B` holds `D` neutral while `D`
+  holds `A` hostile, `E` minds only `F`, and `F` is a raider marking everyone. Fire then adds
+  its own hostility.
+- *The two loops:* each size runs twice, for 120 arena seconds, with a fresh world each time.
+  - **lattice:** steps at `StepOutput::next_due_ms`, the field task's loop. This is the verdict
+    lane.
+  - **fixed100:** steps in 100 ms pulses, S.2's loop, so its figures compare with S.2's.
+- *Acknowledging the ledger:* the harness acknowledges each pulse's chunks, as the field task
+  does (`Ledger::mark_flushed`). Without that, a 100-unit field backs up past
+  `ledger.max_unflushed_chunks` and voids itself at 22.25 s with `LedgerOverflow`. S.2's
+  9-unit rig never acknowledges, and stays under the bound for its minute.
+- *What it prints:* one `GC12` line per size and lane:
+  - pulse median, p95, p99 and max, over all wakes and over `Engaged` wakes;
+  - the worst 500 ms window;
+  - the snapshot at the opening and at the end;
+  - contacts held, and the parties' books encoded;
+  - the timed cost of `Arena::hostile_in_weapons_range`, and of a sweep of every held contact
+    through `Relations::hostile`;
+  - the ledger's bytes;
+  - the worst wake's traces, cell probes, share operations and path work;
+  - mind faults, and the closing state hash.
+- *Knobs:* `GC12_SIZES` (default `9,24,48,64,80,100`) and `GC12_ARENA_S` (120).
+  `GC12_ASSERT=1` turns the budget into an assertion. The default is report-only (D-H-8).
+
+**The budget.** `[tacsim.harness].engaged_p99_ms`, 40 ms a pulse in `Engaged` tempo, set on the
+production VPS (16c `T-109`). This is the only pulse-time budget in the config: `[tacsim.field]`
+holds the cap but no time, and Q-CF-45 budgets units, not milliseconds. `tempo.stall_ms` (2,000)
+is the watchdog, not a budget. For reference, the OOC harness's stricter lens is 20 ms a wake
+and 32 ms per 500 ms window.
+
+**The first measurement on main.** Tree: main `9dd000a4` plus the harness (`eaa089e9`).
+Machine: conclav.dev, AMD EPYC 9J45, 32 vCPU, 62 GB, Ubuntu 26.04, idle, the test on one
+thread. Timings are milliseconds, from the lattice lane, `Engaged` wakes, release build. From 24
+units up, the field was engaged by 3.25 s and stayed engaged: 467 of the 480 wakes. At nine units,
+347 of them were.
+
+| Units | Shots in 120 s | Standing at the end | Pulse median / p95 / p99 / max | Worst 500 ms window | Snapshot, opening → end | Contacts at peak | Worst wake: traces / cell probes / share ops |
+|---|---|---|---|---|---|---|---|
+| 9 | 335 | 5 | 0.045 / 0.101 / 0.150 / 0.225 | 0.28 | 137 KB → 171 KB | 46 | 42 / 144 / 2 |
+| 24 | 1,287 | 9 | 0.210 / 0.520 / 0.609 / 0.697 | 1.20 | 350 KB → 410 KB | 544 | 260 / 504 / 30 |
+| 48 | 1,912 | 20 | 0.479 / 1.009 / 1.396 / 2.126 | 2.87 | 684 KB → 881 KB | 2,192 | 780 / 1,509 / 112 |
+| 64 | 2,981 | 29 | 0.801 / 1.840 / 2.286 / 3.847 | 4.78 | 900 KB → 1.25 MB | 3,915 | 1,333 / 2,941 / 189 |
+| 80 | 3,745 | 36 | 1.337 / 3.025 / 3.542 / 7.687 | 9.04 | 1.13 MB → 1.61 MB | 6,227 | 1,863 / 3,814 / 267 |
+| 100 | 3,365 | 49 | 1.249 / 4.777 / 6.375 / 12.762 | 14.63 | 1.40 MB → 1.94 MB | 9,704 | 2,896 / 6,063 / 419 |
+
+- **Debug, same machine, lattice `Engaged` p99 / max:**
+  - 9 units: 2.07 / 3.69
+  - 24 units: 6.07 / 7.36
+  - 48 units: 12.41 / 24.23
+  - 100 units: 58.59 / 143.08, past the budget. A debug build is not production.
+- **S.2's comparison, the fixed100 lane at nine units:**
+  - debug: median 0.267 ms, p99 1.14;
+  - release: median 0.018 ms, p99 0.084.
+  - S.2 printed 0.35 and 0.8 in debug on the Windows box, and 0.03 and 0.13 in release on
+    conclav.dev, over a minute of its own story's cells.
+- **The fixed100 lane at 100 units (release):** median 0.613, p99 2.774, max 7.607.
+- **Determinism:** the closing state hash of each size and lane is the same in release and in
+  debug, and across two release runs.
+
+**What the numbers say.**
+- **100 units is within budget on main, with room to spare.** The p99 of 6.4 ms is a sixth of
+  40 ms. The worst single wake, 12.8 ms, and the worst window, 14.6 ms, are inside even the OOC
+  harness's 20 ms and 32 ms lens.
+- **The cost grows with contacts, roughly as the square of the units.** From 48 to 100 units
+  (×2.1), the p99 grows ×4.6, peak contacts ×4.4, and worst-wake traces ×3.7. Perception is
+  where the time goes.
+- **Traces near their OOC bound at 100 units.** The worst wake's traces, 2,896, are the
+  measure nearest its OOC harness bound, 4,000 (`max_traces_per_pulse`), which fits about
+  120 units. Cell probes (6,063 of 32,000) and share operations (419 of 768) have more room.
+  Those bounds are the OOC harness's assertions, not throttles, and nothing in the field
+  enforces them.
+- **The relation table, Q-36-9's worry, is not the cost:**
+  - The parties' books stay at 515–542 bytes at every size. They grow with parties and marks,
+    not with units.
+  - `hostile_in_weapons_range` costs 0.1–3 µs. It is an `any()`, so a field that is engaged
+    answers at its first hostile pair.
+  - A full sweep of every held contact through the books is 3 µs at 100 units in release.
+  - What grows with parties × contacts is the contact store itself (9,704 rows at its peak),
+    and that cost is perception's.
+- **Snapshots grow linearly**, at about 14 KB a unit at the opening. A 100-unit field ends its
+  two minutes at 1.94 MB, a quarter of the OOC harness's 7 MiB lane bound and far under
+  `snapshot_max_bytes` (480 MiB).
+- **The ledger at 100 units:** 7.4 MB in two minutes of non-stop fighting, against the 64 MiB
+  `ledger.max_bytes`. A field engaged for 18 minutes at that rate would reach the bound and stop
+  with `Timeout`. Doc 32 Q-CF-45 never sized the ledger for this many units. It is flagged here,
+  not changed.
+- **Caveat:** the machine is conclav.dev, not conclav.io, the host the 40 ms was set on. The
+  sixfold margin is the reason a conclav.dev figure is trusted here.
+
+**The re-measure after GC.2.** Owed: GC.2 (PR #296) changes the tempo rule in the hot loop.
+When it merges, this branch rebases, the harness runs again on the same machine, and the
+constant is set from that run.
