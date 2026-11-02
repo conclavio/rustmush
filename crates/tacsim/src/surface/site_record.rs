@@ -194,6 +194,25 @@ pub struct LeftUnit {
     pub left_ic: i64,
 }
 
+/// **The remains an irrecoverable hull leaves** (doc 36 cut GC.3; Q-36-18, Q-CF-25 c): what the
+/// demotion owes the record for a hull whose epoch closes destroyed — the remains object
+/// ([`SiteRecord::leave_remains`]) and the epoch the close ends. Never a unit index entry.
+#[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(deny_unknown_fields)]
+pub struct LeftRemains {
+    /// The hull it was.
+    pub unit: ObjId,
+    /// Where it fell.
+    pub pose: SitePose,
+    /// The hull's dry mass, kilograms.
+    pub mass_kg: u64,
+    /// The epoch the hull was in, which closes destroyed; `None` for a hull that had none.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub epoch: Option<SortieId>,
+    /// The IC instant it was left.
+    pub left_ic: i64,
+}
+
 /// **What a ground object is** (doc 32 Q-CF-25 c, d).
 #[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize)]
 #[serde(rename_all = "snake_case", deny_unknown_fields)]
@@ -796,6 +815,28 @@ impl SiteRecord {
             kind,
             left_ic: at_ic,
         });
+        Ok(id)
+    }
+
+    /// **Leave `remains` on the ground** (doc 36 cut GC.3; Q-36-18): a one-cell [`GroundKind::Remains`]
+    /// of the hull with its mass, through [`SiteRecord::drop_object`] and its cap rule, and the
+    /// hull off the unit index if it was on it. Returns the object's number.
+    ///
+    /// # Errors
+    ///
+    /// [`SiteRecord::drop_object`]'s, and then nothing changed.
+    pub fn leave_remains(&mut self, remains: &LeftRemains) -> Result<u32, SiteRefused> {
+        let id = self.drop_object(
+            remains.pose,
+            1,
+            GroundKind::Remains {
+                of: Some(remains.unit),
+                mass_kg: remains.mass_kg,
+                merged: 1,
+            },
+            remains.left_ic,
+        )?;
+        let _ = self.take_unit(remains.unit);
         Ok(id)
     }
 

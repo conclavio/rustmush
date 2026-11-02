@@ -31,7 +31,7 @@ use crate::arena::state::ArenaTerrain;
 use crate::arena_task::MatchId;
 use crate::surface::excursion::cells_apart;
 use crate::surface::presence::SIGHT_CELLS;
-use crate::surface::site_record::{GroundObject, KnownItem, KnownWhat, LeftUnit, SiteRecord};
+use crate::surface::site_record::{GroundObject, KnownItem, KnownWhat, SiteRecord};
 
 /// **An object's height for the eye**, centimetres: a crate or a heap of remains stands this far
 /// off its cell.
@@ -261,14 +261,15 @@ pub(crate) fn chart_mates(
 
 /// **What each principal of the field on `site` learns as it closes** (Q-CF-28): per party, the
 /// objects its seated units held over the field ([`note`]) and what every one of its units sees
-/// from its last pose — objects, and the casualties and wrecks in `left` (its own included: a
-/// party knows where its own fell). Read before the host forgets the field.
+/// from its last pose — objects, and the casualties, wrecks and remains the demotion leaves
+/// (its own included: a party knows where its own fell; doc 36 cut GC.3 adds the remains). Read
+/// before the host forgets the field.
 pub(crate) fn learned_at_close(
     ctx: &Ctx<'_>,
     task: MatchId,
     site: &CanonicalId,
     returns: &[UnitReturn],
-    left: &[LeftUnit],
+    demoted: &super::close::Demoted,
 ) -> Vec<Learned> {
     let Some(live) = ctx
         .w
@@ -319,19 +320,25 @@ pub(crate) fn learned_at_close(
                 }
             }
         }
-        for unit in left {
-            let cell = unit.pose.cell();
-            let own = live.party_of(unit.unit) == Some(party);
+        let fallen = demoted
+            .left
+            .iter()
+            .map(|unit| (unit.unit, unit.pose, KnownWhat::of_unit(unit.condition)))
+            .chain(
+                demoted
+                    .remains
+                    .iter()
+                    .map(|remains| (remains.unit, remains.pose, KnownWhat::Remains)),
+            );
+        for (unit, pose, what) in fallen {
+            let cell = pose.cell();
+            let own = live.party_of(unit) == Some(party);
             let seen_now = terrain.is_some_and(|terrain| {
                 eyes.iter()
                     .any(|eye| sees(terrain, (*eye, CLOSE_EYE_CM), cell))
             });
             if own || seen_now {
-                push(KnownItem(
-                    KnownWhat::of_unit(unit.condition),
-                    cell.0,
-                    cell.1,
-                ));
+                push(KnownItem(what, cell.0, cell.1));
             }
         }
         for principal in principals(ctx, &live, party) {

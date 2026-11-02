@@ -41,6 +41,10 @@ pub(crate) struct OwedClose {
     pub units: Vec<crate::surface::site_record::LeftUnit>,
     /// **What each principal learned on the ground** (doc 32 cut CF.4; Q-CF-28).
     pub known: Vec<super::known::Learned>,
+    /// **The remains it drops** (doc 36 cut GC.3; Q-36-18): one per irrecoverable hull, each
+    /// closing its hull's epoch destroyed. Absent from a close written before the cut.
+    #[serde(default, skip_serializing_if = "Vec::is_empty")]
+    pub remains: Vec<crate::surface::site_record::LeftRemains>,
 }
 
 /// The owed closes, by site (module state beside [`FieldBook`]).
@@ -188,7 +192,7 @@ pub(crate) fn owe_close(
     ctx: &mut Ctx<'_>,
     site: &CanonicalId,
     record: &SiteRecord,
-    left: Option<Vec<crate::surface::site_record::LeftUnit>>,
+    left: Option<super::close::Demoted>,
     known: Vec<super::known::Learned>,
 ) {
     let Some(open) = record.promoted.as_ref() else {
@@ -197,7 +201,10 @@ pub(crate) fn owe_close(
     let Some(actor) = promoter(&open.by) else {
         return;
     };
-    let units = left.unwrap_or_else(|| record.units.clone());
+    let (units, remains) = left.map_or_else(
+        || (record.units.clone(), Vec::new()),
+        |demoted| (demoted.left, demoted.remains),
+    );
     if let Some(book) = ctx.w.module_state_mut::<FieldBook>() {
         book.closing.insert(site.clone());
     }
@@ -206,6 +213,7 @@ pub(crate) fn owe_close(
         ordinal: open.ordinal,
         units,
         known,
+        remains,
     };
     // Doc 32 §15 (the review's CF-1): durable in this batch, beside the check-ins, before the
     // K3 write that cannot share its turn.

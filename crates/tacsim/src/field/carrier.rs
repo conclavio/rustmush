@@ -5,8 +5,8 @@
 //! the Halcyon carry unit specs with sections and facet bands — through the same custody
 //! check-out, and its damage comes home through the same IC check-in into the hull's own unit
 //! record, which `+ship` reads in port (Q-CF-19). It is shootable from the first pulse; what a
-//! hit does to lift, sailing, the bay and the hold is doc 32 F-3, so in this cut a hit is section
-//! damage only.
+//! hit does to lift, sailing, the bay and the crew is doc 32 F-3, read from doc 36 cut GC.3's
+//! table ([`crate::carrier_damage`]).
 //!
 //! - **Its party** is the roster it launched (§3 Q-CF-4's note): the activation of any open DT
 //!   flight on this site whose carrier it is, else a party of one led by whoever commands it
@@ -16,8 +16,12 @@
 //!   for the field's life, listed on the carrier's row of the live record; doc 32 cut CF.5's crew
 //!   state reads those rows (`crate::field::crew::crew_location`) and sets each soul's record
 //!   from them at the carrier's check-in.
-//! - **It is never towed** (FO-13): the twice-own-tonnage rule already puts a carrier beyond any
-//!   tug, and [`refuse_tow`] says so by name before the tonnage is read.
+//! - **It is towed only by a tug of at least half its tonnage** (FO-13; doc 36 cut GC.3, Q-36-8
+//!   as ruled): [`refuse_tow`] names the carrier and the tonnage it needs. No shipped design is
+//!   that heavy, so in practice a carrier is not towed yet.
+//! - **What its damage costs it** (doc 32 F-3; doc 36 cut GC.3) is the one consequence table in
+//!   [`crate::carrier_damage`]: a destroyed drive refuses lift; a destroyed hull wrecks it,
+//!   strands its crew and wrecks the rigs in its bay.
 //! - **It departs mid-field only live, on the leave-behind confirmation** (Q-H10; doc 32 F-6,
 //!   ruled 2026-10-31): a live `+ship/lift` naming every unit out removes it from the field
 //!   outright (`crate::field::exit`); [`departure_refusal`] is a queued departure's gate.
@@ -32,9 +36,9 @@ pub const DEPART_IN_FIELD: &str = "The {name} is in the field on {site}: lifting
      {units} on the ground. A queued departure never takes a carrier out of a field; lift live \
      with leave= naming every unit you have out (doc 32 F-6).";
 
-/// **A tow naming a carrier** (FO-13): `{name}`.
-pub const TOW_CARRIER: &str =
-    "The {name} is a carrier: past twice any tug's own tonnage, it is never towed.";
+/// **A tow naming a carrier** (FO-13; doc 36 cut GC.3, Q-36-8): `{name}`, `{t}`, `{floor}`,
+/// `{tug}`, `{tug_t}`.
+pub const TOW_CARRIER: &str = "The {name} is a carrier of {t} t: only a tug of at least {floor} t      can tow it, and the {tug} is {tug_t} t.";
 
 /// Whether `unit` is a programme hull — a carrier (Dray, Dray-P, Halcyon).
 #[must_use]
@@ -566,9 +570,30 @@ pub(crate) fn on_joined(
     }
 }
 
-/// **The tow gate** (FO-13): `Some(line)` when `target` is a carrier.
+/// **The tow gate for a carrier** (FO-13; doc 36 cut GC.3, Q-36-8 as ruled): `Some(line)` when
+/// `target` is a carrier and `tug` is lighter than half its tonnage
+/// ([`crate::carrier_damage::tug_floor_kg`]), or either mass does not read. No shipped design is
+/// that heavy, so in practice every carrier is refused.
 #[must_use]
-pub fn refuse_tow(w: &World, target: ObjId) -> Option<String> {
-    is_carrier(w, target)
-        .then(|| TOW_CARRIER.replace("{name}", &crate::port::coop::name_of(w, target)))
+pub fn refuse_tow(w: &World, target: ObjId, tug: ObjId) -> Option<String> {
+    if !is_carrier(w, target) {
+        return None;
+    }
+    let carrier_kg = crate::carrier_damage::mass_kg(w, target);
+    let tug_kg = crate::carrier_damage::mass_kg(w, tug);
+    let floor_kg = carrier_kg.map(crate::carrier_damage::tug_floor_kg);
+    if let (Some(floor_kg), Some(tug_kg)) = (floor_kg, tug_kg)
+        && tug_kg >= floor_kg
+    {
+        return None;
+    }
+    let tonnes = |kg: Option<u64>| kg.map_or_else(|| "?".to_owned(), |kg| (kg / 1_000).to_string());
+    Some(
+        TOW_CARRIER
+            .replace("{name}", &crate::port::coop::name_of(w, target))
+            .replace("{t}", &tonnes(carrier_kg))
+            .replace("{floor}", &tonnes(floor_kg))
+            .replace("{tug}", &crate::port::coop::name_of(w, tug))
+            .replace("{tug_t}", &tonnes(tug_kg)),
+    )
 }

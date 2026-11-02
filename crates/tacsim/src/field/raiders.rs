@@ -568,6 +568,9 @@ pub(crate) fn land_and_launch(
         .copied()
         .filter(|hull| carrier_of(ctx.w, *hull) == Some(carrier))
         .filter(|hull| mush_sim::pose_of(ctx.w, *hull).is_none())
+        // Doc 36 cut GC.3 (Q-36-18): an irrecoverable hull is off the ground as remains, not
+        // aboard.
+        .filter(|hull| !super::close::is_irrecoverable(ctx.w, *hull))
         .take(cap)
         .collect();
     if aboard.is_empty() {
@@ -870,6 +873,18 @@ pub(crate) fn lift_check(ctx: &mut Ctx<'_>, site: &CanonicalId) {
                     let _ = order_withdraw(ctx, &going);
                 }
             }
+            continue;
+        }
+        // Doc 36 cut GC.3 (Q-36-8): a barge whose drive is destroyed stays on the ground.
+        let grounded = decoded
+            .as_ref()
+            .and_then(|(_, returns)| returns.iter().find(|back| back.unit == carrier))
+            .and_then(|back| {
+                crate::carrier_damage::spec_of(ctx.w, &back.cells)
+                    .map(|spec| crate::carrier_damage::CarrierDamage::read(spec, &back.cells))
+            })
+            .is_some_and(|damage| damage.has(crate::carrier_damage::CarrierLoss::RefusesLift));
+        if grounded {
             continue;
         }
         let Some(leader) = leader_of(ctx.w, carrier) else {

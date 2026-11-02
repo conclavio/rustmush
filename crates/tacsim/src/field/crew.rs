@@ -10,7 +10,8 @@
 //! - **at every field check-in** (`check_in`): a demotion, a void and an exit at the ramp
 //!   each derive it for the unit's pilot — physically inside the hull, the hull's own state
 //!   decides (a hull that cannot return under its own power, or a wreck, strands its pilot on
-//!   the site); at a remote console aboard a carrier, the carrier; and
+//!   the site); at a remote console aboard a carrier, the carrier — unless the carrier's hull
+//!   fell, which strands everyone aboard it (doc 36 cut GC.3, `crate::carrier_damage`); and
 //! - **immediately on a control-section kill** (`on_frames`): a pilot inside a hull whose
 //!   head, cockpit or bridge is destroyed is incapacitated the pulse the frame says so, and is
 //!   told then.
@@ -339,6 +340,21 @@ fn carrier_of(w: &World, who: ObjId) -> Option<ObjId> {
     crate::port::ship::hull_of_room(w, room).map(|(view, _)| view.hull())
 }
 
+/// **Where a soul aboard `hull` stands** after a field on `site`: aboard the carrier, or, when
+/// its hull fell, stranded on the site in the wreck (doc 36 cut GC.3; Q-36-8's table).
+fn aboard(w: &World, site: &CanonicalId, hull: ObjId) -> CrewLocation {
+    let wrecked = crate::carrier_damage::damage_of(w, hull)
+        .is_some_and(|damage| damage.has(crate::carrier_damage::CarrierLoss::CrewStranded));
+    if wrecked {
+        CrewLocation::Stranded {
+            site: site.clone(),
+            unit: hull,
+        }
+    } else {
+        CrewLocation::Carrier { hull }
+    }
+}
+
 /// The organizer of the party `unit` was in, while its field runs.
 fn organizer_of(w: &World, site: &CanonicalId, unit: ObjId) -> Option<ObjId> {
     let hosted = w.module_state::<super::FieldBook>()?.hosted(site)?;
@@ -377,10 +393,7 @@ pub(crate) fn check_in(ctx: &mut Ctx<'_>, site: &CanonicalId, unit: ObjId, pilot
         if !inside(ctx.w, pilot, unit) {
             return;
         }
-        (
-            CrewLocation::Carrier { hull: unit },
-            unit_condition(ctx.w, unit),
-        )
+        (aboard(ctx.w, site, unit), unit_condition(ctx.w, unit))
     } else if inside(ctx.w, pilot, unit) {
         let Some(cells) = mush_tactics::module::unit_of(ctx.w, unit) else {
             return;
@@ -407,7 +420,7 @@ pub(crate) fn check_in(ctx: &mut Ctx<'_>, site: &CanonicalId, unit: ObjId, pilot
         };
         (location, condition)
     } else if let Some(hull) = carrier_of(ctx.w, pilot) {
-        (CrewLocation::Carrier { hull }, CrewCondition::Fit)
+        (aboard(ctx.w, site, hull), CrewCondition::Fit)
     } else {
         return;
     };

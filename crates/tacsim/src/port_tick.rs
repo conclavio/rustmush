@@ -489,6 +489,7 @@ pub(crate) fn register_with_coverage(
                     outcome: field_outcome.clone(),
                     sites: port_families.sites.clone(),
                     excursions: port_families.excursions.clone(),
+                    black_box: black_box.field,
                 },
             )?;
             Some(action)
@@ -837,6 +838,8 @@ struct BlackBoxHandles {
     recovery: Option<BlackBoxHandle>,
     /// Doc 23 cut S.2: `tacsim_voyage_epoch`'s.
     epoch: Option<BlackBoxHandle>,
+    /// Doc 36 cut GC.3: `tacsim_field`'s, for the close-destroyed line.
+    field: Option<BlackBoxHandle>,
 }
 
 /// **The black box's owner participant** (doc 23 cut S.1; §7; the lead's L2): its definition
@@ -872,11 +875,13 @@ fn register_black_box(
         .cloned();
     let epoch = actions.get(crate::port::epoch::EPOCH_ACTION).cloned();
     let detachment = actions.get(crate::detachment::sortie::ACTION).cloned();
+    let field = actions.get(crate::field::FIELD_ACTION).cloned();
     let allowed: BTreeSet<DefinitionRef> = done
         .iter()
         .chain(recovery.iter())
         .chain(epoch.iter())
         .chain(detachment.iter())
+        .chain(field.iter())
         .cloned()
         .collect();
     if allowed.is_empty() {
@@ -885,6 +890,7 @@ fn register_black_box(
             done: None,
             recovery: None,
             epoch: None,
+            field: None,
         });
     }
     reg.owner_participant(definition, allowed, BlackBoxParticipant)?;
@@ -898,6 +904,7 @@ fn register_black_box(
         done: request(done)?,
         recovery: request(recovery)?,
         epoch: request(epoch)?,
+        field: request(field)?,
     })
 }
 

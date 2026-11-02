@@ -2498,8 +2498,10 @@ fn sm12a_only_the_mill_restocks() {
 /// `crates/tacsim/src`'s production text, comment lines ignored, `.mint_origin(` occurs once, in
 /// the stock clerk's mint; `.credit(` once in the mill and otherwise only in the relay foundry
 /// (present, not counted: that clause is co-owned with the relay track, relay R9a's finite
-/// foundry stock); `.debit(` only in the burn (twice) and the mill (once). SM.12b's delivery is
-/// a `transfer`, so it needs no re-bless here.
+/// foundry stock); `.debit(` only in the bay's draw (once), the burn (twice) and the mill (once).
+/// SM.12b's delivery is a `transfer`, so it needs no re-bless here. Doc 36 cut GC.8b's draw
+/// (`port/bay_work/act.rs`) consumes an order's goods from the carrier's hold: matter leaves the
+/// world as munitions and parts are spent on a hull.
 #[test]
 fn sm12a_only_the_clerk_the_foundry_and_the_mill_create_matter() {
     let files = production_files("tacsim/src");
@@ -2519,6 +2521,7 @@ fn sm12a_only_the_clerk_the_foundry_and_the_mill_create_matter() {
     assert_eq!(
         occurrences(&files, ".debit("),
         vec![
+            ("tacsim/src/port/bay_work/act.rs".to_owned(), 1),
             ("tacsim/src/port/burn.rs".to_owned(), 2),
             ("tacsim/src/port/mill.rs".to_owned(), 1),
         ]
