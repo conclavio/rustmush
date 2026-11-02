@@ -337,7 +337,13 @@ async fn cf_review_a_crash_before_the_exit_lands_owes_it_again_and_the_recover_p
 }
 
 /// **A hull of the design `id`** on Ahuna Flank's ground at `cell` facing `heading`.
-fn hull_of(rig: &mut Rig, id: &str, name: &str, cell: (i64, i64), heading: u32) -> ObjId {
+pub(crate) fn hull_of(
+    rig: &mut Rig,
+    id: &str,
+    name: &str,
+    cell: (i64, i64),
+    heading: u32,
+) -> ObjId {
     let domain = ahuna_domain(&rig.tw);
     staff_hand(rig, |ctx| {
         let spec = ctx
@@ -363,7 +369,7 @@ fn hull_of(rig: &mut Rig, id: &str, name: &str, cell: (i64, i64), heading: u32) 
 
 /// **Every control section of `unit` destroyed** (a fixture: its pilot is incapacitated in the
 /// field's first frames, Q-CF-38).
-fn control_destroyed(rig: &mut Rig, unit: ObjId) {
+pub(crate) fn control_destroyed(rig: &mut Rig, unit: ObjId) {
     staff_hand(rig, |ctx| {
         let cells = mush_tactics::module::unit_of(ctx.w, unit)
             .expect("the unit")

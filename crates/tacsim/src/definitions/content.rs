@@ -921,7 +921,10 @@ pub const LANE_PACK: &str = "tacsim.lane.ceres_phobos";
 /// doc 36 cut GC.7**: the four munitions goods stocked and asked by the Co-op's chandlery at Ceres
 /// and by Stickney Yards, and both ports' `workshop` blocks (Ceres's at the Dockmaster's Office,
 /// Occator's, two berths at 1.2x the tariff; Stickney's at the Service Counter, the Yard's, four
-/// berths at 1x), each opened as a `bay_refit` facility. The port readiness report
+/// berths at 1x), each opened as a `bay_refit` facility; **v19 since doc 36 cut GC.13**: both
+/// ports' `medical` blocks (Ceres's at the arrivals hall, the Co-op's, two beds; Stickney's at
+/// the customs hall, the Yard's, four beds), each opened as a `medical` facility that crew
+/// treatment reads. The port readiness report
 /// (`crate::port::readiness`) reads the latched version against it, and every test
 /// that names the lane's version reads it here.
 ///
@@ -935,7 +938,7 @@ pub const LANE_PACK: &str = "tacsim.lane.ceres_phobos";
 /// follows Ceres v3's Oduya guidance update; relay v6 follows Ceres v4's Qureshi trust
 /// service. Both still require lane v15, and their entries
 /// remain unchanged. Lane v16 ↔ relay v7 (doc 32 cut CF.6c), lane v17 ↔ relay v8 (doc 32 cut
-/// S.1), lane v18 ↔ relay v9 (doc 36 cut GC.7), entries unchanged. The relay code reads any version from 2 as the full star
+/// S.1), lane v18 ↔ relay v9 (doc 36 cut GC.7), lane v19 ↔ relay v10 (doc 36 cut GC.13), entries unchanged. The relay code reads any version from 2 as the full star
 /// (`relay_world`'s `full_star`, `relay_content`'s upgrade preflight), so a kept world
 /// whose relay latch stays at an older version — `@atlas/pack plan` reads "Nothing to
 /// do." when no entry differs — keeps its star. The pins that move with it are the
@@ -946,7 +949,7 @@ pub const LANE_PACK: &str = "tacsim.lane.ceres_phobos";
 /// `lane_v13` rebuilds the
 /// published v13 by stripping every row added since: the next lane cut strips its own
 /// rows there too and extends the test to its versions.
-pub const LANE_VERSION: u32 = 18;
+pub const LANE_VERSION: u32 = 19;
 /// `crates/tacsim/content/lane/ceres_phobos.json`.
 pub const LANE_JSON: &str = include_str!("../../content/lane/ceres_phobos.json");
 /// The lane as one source, in apply order.

@@ -665,6 +665,20 @@ the composed value. Test-only; production never writes the slot from tacsim.
 """
 
 [[site]]
+path = "crates/tacsim/tests/shard_1/crew_treatment.rs"
+accessor = "World::module_state_mut"
+slot = "IndustryStore"
+owner = "industry"
+reason = """
+Doc 36 cut GC.13's medical-room case: the lane opens a `medical` facility at both
+of its ports, so the only port a test rig can extract to always has one. The test
+closes every medical room in RAM (each facility rewritten without the capability)
+to show that a port without one treats slower. Test-only; production never writes
+the slot from tacsim (the PortApplier opens the facility through
+`mush_industry::store::install_authored_facility`).
+"""
+
+[[site]]
 path = "crates/tacsim/tests/shard_1/sale.rs"
 accessor = "World::module_state_mut"
 slot = "AccountOracle"

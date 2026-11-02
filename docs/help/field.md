@@ -239,8 +239,7 @@ The game keeps a record of every character a field touched: **where** they are a
   under its own power, or a wreck), or at a port.
 - **How.** Fit, **injured** (a control section damaged around you) or
   **incapacitated** (a control section destroyed around you). A pilot at a remote
-  console aboard the carrier is always fit. There is no ejection, capture or
-  treatment.
+  console aboard the carrier is always fit. There is no ejection or capture.
 
 A control-section kill incapacitates you at once: "Your head is gone and you with
 it, for now: you are incapacitated." A stranded pilot is told so when the field
@@ -260,8 +259,20 @@ your own party), your extraction waits for it. It waits up to
 `[tacsim.field].rescue_bound_s` past the due time (two IC hours by default), then
 lands you anyway.
 
+**Treatment.** An injured or incapacitated character who stands in a port is
+under treatment there and is fit again after a stay of IC time: one IC day when
+injured (`[tacsim.field].treat_injured_s`), three when incapacitated
+(`treat_incapacitated_s`), and half that at a port with a medical room (Ceres's
+arrivals hall and Stickney's customs hall have one). There is no check and no
+charge. You are told when treatment begins and when you are fit again. If you
+leave the port first (back aboard a hull, out to a site, or out to Limbo or the
+OOC area), you keep your condition and the clock starts over at the next port you
+stand in. While world time is frozen the clock does not run.
+
   +sortie/extract          stranded or incapacitated: ask a recovery service to
                            lift you to a safe port
+  +sortie/condition        how you are and where, and the time left on an
+                           extraction or a treatment
 
 ## Leaving units behind
 
