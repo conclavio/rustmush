@@ -1488,3 +1488,131 @@ CF.7 story, shards 2 and 3's 800, shards 4 to 6's 786), `mush-tactics` and `mush
 touched crates. As a probe, the two field gates fail with the tempo and idle rules switched off.
 The broad suites run once more on Linux CI on the draft PR (#296) and the gate sweep on
 conclav.dev.
+
+## 11. GC.1b as built (the kernel join)
+
+Built 2026-11-01 on GC.2's branch (`claude/gc2-kernel-batch` at `17bd256a`, PR #296), because
+GC.2 is the batch that reblessed the practice hashes, and stacked on it. It finishes Q-36-4: a
+carrier that settles on a running field's pad is admitted at its pad, as a unit of its own party,
+at the next pulse. No practice hash moved.
+
+**The kernel's join** (`arena/join.rs`, `arena/state.rs`, `arena_task.rs`).
+- *One path for a unit.* The per-unit build of `Arena::new_with_minds` moved, unchanged, into
+  `Arena::admit_unit`: the pose and opening cell, the cost row and class, the consequences the
+  record already carries, the seal verified against the frozen mind limits, the cards and
+  profiles admitted, the sensors, the guns, the band cache. The check-out calls it once per unit;
+  `Arena::join` calls it once. Four small pieces of the check-out came out with it for the same
+  reason (`raise_seat`, `check_substep`, `alert_range_cm`, `jam_radius_cm`).
+- *The message.* `ArenaMsg::Join { unit, pilot, host, spread }`. Like a withdrawal, it is buffered
+  (one per unit, the first offer wins) and decided at the next pulse's head, before the step, so
+  the unit lands at a pulse boundary. The answer, `ArenaOut::Joined`, carries the name it joined
+  under or the refusal, and is queued behind the ledger so it is never lost. The message carries
+  more than `{ unit, pilot }`: `host` is the field's standing friendships and marks (Q-CF-5,
+  Q-CF-44) for a party the field has not seen yet, and `spread` is how far it may be stood from
+  its pad.
+- *What a join does.* The unit is inserted in unit-id order. Its party's book is opened if the
+  field has none, with only those friendships and marks that name it, so every book already open
+  is kept as it stands. It takes a letter its party has not given, drawn by the check-out's keyed
+  mix of seed, party and id (Q-CF-11), so no other unit's name moves. The chassis table, the
+  spatial index, the alert range and the jamming radius are laid down again. The substep bound is
+  checked again. Its first sensor pass, and for a mind's hull its first think, fall at its next
+  slot of their stagger grids. One `mind_sealed` line journals it at the join's millisecond, as
+  every unit's does at check-out. The task puts it online, as `spawn_field` puts every admitted
+  unit.
+- *Where it stands.* At its pad pose, or, if another unit holds that cell, at the centre of the
+  nearest free cell it may stand on within `spread` (`PAD_SPREAD_CELLS`, 8). The search goes
+  nearest ring first, row-major within a ring: `pad_poses`' own rule, read against the arena's
+  live occupancy, which only the arena knows while it runs. The ring walk moved into the kernel
+  (`arena::join::ring_cells`), and `field::carrier` re-exports it.
+- *All or nothing.* The join is built on a copy of the arena and swapped in whole. A refusal (a
+  check-out's refusals, a unit already here, no free cell, a scripted seal, a host that is not
+  the IC field's) leaves the arena exactly as it was.
+- *What never joins.* A squad: squads are dealt at check-out for the OOC lobby. A scripted mind:
+  an IC field carries none until doc 23 S.4b, and the task holds no source. An OOC match: the
+  arena refuses unless its own end is `EndCondition::Host`, which only the IC host supplies, so an
+  OOC arena refuses whatever host it is handed. The task refuses first, with no `FieldTerms` or
+  with a tape, so no Join reaches an OOC arena's step or its input tape.
+- *A fix on the way.* `Arena::remove_unit` (CF.5's withdraw) left the chassis table as it was,
+  though it is kept in row order. After a withdrawal, every later row's frame words came from the
+  unit before it. It now lays the table down again, as a join does. Frames only: the table is
+  never hashed.
+
+**The host's side** (`field/carrier.rs`, `field/admit.rs`, `field/boot.rs`, `field/record.rs`,
+`arena_bridge.rs`).
+- *The check-out GC.1 moved here.* Each tick, after GC.1 notes the owed arrivals, the host takes
+  each one in (`carrier::join_arrivals`). It builds the hull's entrant as admission does: a
+  carrier's party is the roster it launched, else its commander's party of one. The party keeps
+  its letter if the field already has it, else takes the next one. The hull is checked out under
+  the field's custody mark, its row (`FieldUnit::arrived`) and any new party go on the live
+  record, which is written, and the Join is offered at its pad pose. The check-out row comes from
+  `admit::custody_unit`, factored out of admission's check-out, so an arrival is sealed and
+  described exactly as an admitted unit is. A busy inbox checks the hull straight back in, and the
+  next tick tries again.
+- *The answer* (`carrier::on_joined`). If the hull is taken in, the site is told
+  `ARRIVED_IN_FIELD` ("The {name} has set down on the pad and is in field {n}; nothing launches
+  from it while the field runs."). If it is refused, the hull is checked back in as it went out,
+  its row and its own party of one leave the live record, and it is not asked again while this
+  field runs (`FieldBook::join_refused`). It stays owed, so `owed_arrivals` still names it.
+- *The registry.* At the offer, the hull is bound to the task with its controller and whether it
+  comes in armed (`ArenaRegistry::bind_joining`), as the check-out binds every admitted unit. A
+  refusal unbinds it.
+- *Every party's presence picture.* A carrier admitted at promotion stays the pad on the map. One
+  whose live row says it arrived is a flight in the presence book
+  (`carrier::arrived_mid_field`, read by `surface::presence::publish`). So every party reads its
+  arrival as a row, by bearing and band, with its class inside sight (Q-CF-15).
+- *No launch.* Unchanged: the existing Q-CF-17 refusal (`FIELD_LAUNCH`) holds the arrived
+  carrier's bay shut while the site is promoted.
+- *Close and void.* Nothing new. The joined hull is a live row, so demotion checks it in with the
+  field's own rows, and its carrier crew is checked in from the row's `aboard` like any other.
+
+**The determinism record and its replay.** A field records no input tape (an IC field has none,
+Q-CF-43), and an OOC match never joins, so no `TapeEvent` was needed and the tape format did not
+move. A field's durable record is its live record plus its last snapshot, and a restart resumes
+from the two (Q-CF-33). A join changes both:
+- The live record gains the hull's row in the same batch as the check-out, before the message is
+  sent.
+- Every snapshot after the join holds the unit, its letter and its party's book (they are arena
+  state, carried and hashed as any unit's).
+
+The gap is a restart between the join and the next snapshot. The live record names the hull and
+its custody mark holds it, but the snapshot predates it. The resume (`boot::resume`) closes the
+gap: every `arrived` row the decoded arena does not hold is joined again, at its pad, through the
+same `carrier::joining` builder and `Arena::join`, before the task reopens. A hull that can no
+longer join is checked back in and leaves the record, as a refused join does. A resumed field
+rewinds to its snapshot in any case, so the re-join lands at the snapshot's millisecond, and the
+field runs on from there. `FieldUnit::arrived` is serde-default and omitted when false, so every
+live record written before this cut decodes, and re-encodes byte for byte.
+
+**The gates.**
+- `field_carrier::gc1_a_carrier_arriving_mid_field_is_admitted_at_its_pad_and_cannot_launch`
+  (shard_1, GC.1's deferred gate, replacing GC.1's interim test). A second Dray-P settles on
+  Ahuna Flank's pad while CF.3's field runs. It is checked out under the field's mark with an
+  `arrived` row in a party nobody held at the opening. Nothing is owed after that. The armed
+  hull's sensors, which held one contact on the pad before, hold two. The presence book has the
+  arrival as a flight, the field runs on, and the arrival's rig launch is refused. When the field
+  demotes, its black box carries the arrival's `mind_sealed` line at a non-zero millisecond, and
+  the demotion has checked it in with the field's own rows.
+- `motor::gc1b_an_ooc_match_offered_a_join_keeps_its_practice_hashes` (shard_3). This is the
+  no-OOC-hash pin. The shipped duel is offered a join between every pair of pulses of its minute,
+  under an IC-shaped host. It refuses each one, each refusal leaves the state hash as it was, and
+  the duel ends on GC.2's reblessed `DUEL_HASH_API6_OBSERVED` and, through the API 4 control, on
+  `DUEL_HASH_AT_HEAD`.
+- Beside them, in-source: `arena::join`'s four (a joiner in a party of its own with its books;
+  one in a held cell stood beside it, or refused whole with no spread; one in a party already on
+  the field taking an ungiven letter, and a duplicate refused; an OOC arena refusing and
+  unchanged) and `arena_task::gc1b_only_a_field_task_takes_a_join`.
+
+**Defaults taken (provisional).**
+- The arrival's line to the site.
+- A refused arrival is not retried while its field runs. It stands outside, owed, until the field
+  demotes.
+- A party's letter for a newcomer is the next in the alphabet, not re-sorted by key. The opening
+  rule (Q-CF-11, letters by key order) cannot be kept without renaming the parties already on the
+  field.
+
+**Verified** on Windows: the gate, the no-OOC-hash pin beside `m1a1_the_shipped_duel_hashes_as_before`,
+the five in-source join tests, and the CF.7/GC.0 field story at 256
+(`gc0_the_raiders_barge_lifts_and_the_field_demotes_without_a_friendly_mark`) and at 512
+(`s2_the_field_story_at_512`) are green; `mush-contract-tests`' panic budget, restriction lints,
+gated-test census, tacsim shard and arena library guards are green; clippy and rustdoc `-D warnings`
+are clean on tacsim. The broad suites run on Linux CI on the draft PR.
