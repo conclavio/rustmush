@@ -2377,6 +2377,12 @@ pub(crate) struct SurfaceDoneProvider {
     pub quest_survey_evidence: StateFamilyHandle<ObjId, crate::quest::evidence::SurveyEvidenceBook>,
     /// Doc 20 cut SM.7: the pocket cursors (`tacsim.pockets`) a run locks and draws.
     pub pockets: StateFamilyHandle<mush_industry::OreDepositId, PocketCursor>,
+    /// **Doc 36 cut GC.5** (Q-36-23): the site records (`tacsim.field`) a scan's `Done` writes the
+    /// salvage it finds into, in the operator's own `known` row.
+    pub sites: StateFamilyHandle<
+        crate::surface::site_record::SiteKey,
+        crate::surface::site_record::SiteRecord,
+    >,
     pub inventory: InventoryFamilies,
     pub tools: Arc<BTreeMap<CanonicalId, ToolDef>>,
     /// **Doc 23 cut S.1** (L2, L4): the black box participant's handle for this action — the
@@ -3275,6 +3281,36 @@ impl ActionProvider for SurfaceDoneProvider {
                         settle(&record.charge, false)?
                     };
                     span = Some(write_reading(txn, &self.charts, &act)?);
+                    // Doc 36 cut GC.5 (Q-36-23): a scan also marks the salvage in its reach into
+                    // the operator's own `known` row, written only when it changed.
+                    if act.kind == ActKind::Scan
+                        && let Some([x, y]) = stand
+                    {
+                        let key = crate::surface::site_record::SiteKey(act.site.clone());
+                        let integrity = || {
+                            port_error(
+                                ActionErrorCode::Integrity,
+                                "the site records are unavailable",
+                            )
+                        };
+                        if let Some(mut ground) = txn
+                            .get(&self.sites, &key)
+                            .map_err(|_| integrity())?
+                            .cloned()
+                            .filter(|ground| ground.key() == key)
+                        {
+                            let (_, changed) = crate::surface::salvage::learn_from_scan(
+                                &mut ground,
+                                act.operator,
+                                ((x, y), tv),
+                                act.due_ic,
+                            );
+                            if changed && ground.check().is_ok() {
+                                txn.replace(&self.sites, &key, ground)
+                                    .map_err(|_| integrity())?;
+                            }
+                        }
+                    }
                     let survey_offer: crate::surface::survey::ReadingOffer = parameters
                         .get("surveys")
                         .cloned()

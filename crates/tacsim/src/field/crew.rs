@@ -31,6 +31,12 @@
 //! same organizer as the stranded character's own party — stands on the site, at most
 //! `[tacsim.field].rescue_bound_s` past the due instant (the published bound).
 //!
+//! **Abandonment** (doc 36 cut GC.5; Q-36-52, the owner's ruling): a casualty loaded into a
+//! carrier that is not its crew's own party's or a Friend's leaves everyone still aboard it
+//! abandoned, until capture is built. Their extraction starts the moment the load completes, as
+//! if each had asked for it (`abandoned_loaded`), and it is never deferred for a recovery
+//! flight ([`Extraction::abandoned`]). The hull stays with the carrier.
+//!
 //! **Treatment** (doc 36 cut GC.13; Q-36-45): an injured or incapacitated character standing in
 //! a room of an IC port (`crate::ic_return::port_of_room`) is under treatment there, and is fit
 //! again after `[tacsim.field].treat_injured_s` or `treat_incapacitated_s` of IC time — scaled
@@ -139,6 +145,10 @@ pub struct Extraction {
     pub requested_ic: i64,
     /// The IC instant it lands.
     pub due_ic: i64,
+    /// **Doc 36 cut GC.5** (Q-36-52): started by a non-friend's load, so no Friend's recovery
+    /// flight defers it. Omitted when false, so an asked-for extraction reads as before.
+    #[serde(default, skip_serializing_if = "std::ops::Not::not")]
+    pub abandoned: bool,
 }
 
 /// **A treatment under way** (doc 36 cut GC.13; Q-36-45).
@@ -510,6 +520,103 @@ pub(crate) fn loaded_aboard(
     Some(next)
 }
 
+/// **The crew abandoned in a loaded casualty**: `{name}`, `{carrier}`, `{port}`, `{h}`.
+pub const ABANDONED: &str = "The {name} is hauled into the {carrier}'s bay, a carrier not of your party or a Friend's, with you still in it: you are abandoned, and an extraction to {port} is on its way, about {h} IC hours.";
+
+/// **A casualty loaded into a non-friend's bay** (doc 36 cut GC.5; Q-36-52, the owner's ruling):
+/// every character whose record holds them in `casualty` — aboard it, or stranded in it — is
+/// abandoned. Each is stranded on `site` in the hull and their extraction starts now, as if they
+/// had asked for it, to the safe port they know, never deferred for a recovery flight; one already
+/// on its way keeps its port and due instant and loses its deferral. The caller
+/// (`crate::surface::tow`) has checked that the carrier is not of their party or a Friend's.
+pub(crate) fn abandoned_loaded(
+    ctx: &mut Ctx<'_>,
+    site: &CanonicalId,
+    casualty: ObjId,
+    carrier: ObjId,
+) {
+    let now = ctx.w.world_ic_now().at;
+    let delay = i64::from(super::config(ctx.w).extract_s);
+    let held: Vec<CrewRecord> = ctx
+        .w
+        .module_state::<CrewBook>()
+        .map(|book| {
+            book.0
+                .values()
+                .filter(|record| match &record.location {
+                    CrewLocation::Unit { unit } | CrewLocation::Stranded { unit, .. } => {
+                        *unit == casualty
+                    }
+                    CrewLocation::Carrier { .. } | CrewLocation::Port { .. } => false,
+                })
+                .cloned()
+                .collect()
+        })
+        .unwrap_or_default();
+    for record in held {
+        let who = record.character;
+        let Some(port) = destination(ctx.w, who) else {
+            tracing::warn!(
+                who = who.0,
+                "tacsim: an abandoned character knows no safe port"
+            );
+            continue;
+        };
+        let next = abandon(&record, site, (port.id, delay), now);
+        let due = next.extraction.as_ref().map_or(now, |coming| coming.due_ic);
+        let name = crate::ic_return::PORTS
+            .iter()
+            .find(|known| Some(known.id) == next.extraction.as_ref().map(|c| c.port.as_str()))
+            .map_or(port.name, |known| known.name);
+        put(ctx, next);
+        ctx.out.sys_to_actor(
+            who,
+            "tacsim.field",
+            ABANDONED
+                .replace("{name}", &crate::port::coop::name_of(ctx.w, casualty))
+                .replace("{carrier}", &crate::port::coop::name_of(ctx.w, carrier))
+                .replace("{port}", name)
+                .replace("{h}", &hours(due - now).to_string()),
+        );
+    }
+}
+
+/// **[`abandoned_loaded`]'s rule for one record**: stranded on `site` in the hull it was in, with
+/// an extraction to `port` due `delay` from `now`, abandoned (an extraction already coming keeps
+/// its port and due instant).
+#[must_use]
+pub(crate) fn abandon(
+    record: &CrewRecord,
+    site: &CanonicalId,
+    (port, delay): (&str, i64),
+    now: i64,
+) -> CrewRecord {
+    let unit = match &record.location {
+        CrewLocation::Unit { unit } | CrewLocation::Stranded { unit, .. } => *unit,
+        CrewLocation::Carrier { hull } => *hull,
+        CrewLocation::Port { .. } => ObjId(0),
+    };
+    let mut next = record.clone();
+    next.location = CrewLocation::Stranded {
+        site: site.clone(),
+        unit,
+    };
+    next.extraction = Some(match &record.extraction {
+        Some(coming) => Extraction {
+            abandoned: true,
+            ..coming.clone()
+        },
+        None => Extraction {
+            port: SmolStr::new(port),
+            requested_ic: now,
+            due_ic: now.saturating_add(delay),
+            abandoned: true,
+        },
+    });
+    next.at_ic = now;
+    next
+}
+
 /// **A field's frames** (the host's branch, before the fire door): a pilot inside a hull whose
 /// control section the frame shows destroyed is incapacitated now, and told once.
 pub(crate) fn on_frames(ctx: &mut Ctx<'_>, frames: &[(ObjId, crate::arena::step::Frame)]) {
@@ -615,6 +722,7 @@ pub(crate) fn extract_cmd(ctx: &mut Ctx<'_>) -> Result<(), CmdError> {
         port: SmolStr::new(port.id),
         requested_ic: now,
         due_ic: now.saturating_add(delay),
+        abandoned: false,
     });
     put(ctx, next);
     ctx.out.sys_to_actor(
@@ -692,6 +800,7 @@ pub(crate) fn tick(ctx: &mut Ctx<'_>) {
             CrewLocation::Carrier { .. } | CrewLocation::Port { .. } => (None, None),
         };
         if let Some(site) = &site
+            && !coming.abandoned
             && now < coming.due_ic.saturating_add(bound)
             && rescue_on_site(ctx, site, record.organizer)
         {
@@ -1067,6 +1176,7 @@ mod tests {
                 port: SmolStr::new("stickney"),
                 requested_ic: 150,
                 due_ic: 21_750,
+                abandoned: false,
             }),
             treatment: None,
         };
@@ -1093,5 +1203,60 @@ mod tests {
             ..stranded
         };
         assert!(loaded_aboard(&home, ObjId(40), ObjId(90), 500).is_none());
+    }
+
+    /// **Doc 36 cut GC.5** (Q-36-52, the owner's ruling): a character inside a casualty loaded
+    /// into a non-friend's bay is stranded in it with an abandoned extraction due after the
+    /// delay; one already coming keeps its port and due instant and only loses its deferral; the
+    /// flag round-trips and is omitted when false.
+    #[test]
+    fn gc5_a_non_friend_load_abandons_the_crew_to_extraction() {
+        let site = CanonicalId::new("ahuna").expect("a site");
+        let inside = CrewRecord {
+            format: CREW_FORMAT,
+            character: ObjId(7),
+            location: CrewLocation::Unit { unit: ObjId(40) },
+            condition: CrewCondition::Incapacitated,
+            at_ic: 100,
+            organizer: Some(ObjId(3)),
+            extraction: None,
+            treatment: None,
+        };
+        let left = abandon(&inside, &site, ("stickney", 3_600), 500);
+        assert_eq!(
+            left.location,
+            CrewLocation::Stranded {
+                site: site.clone(),
+                unit: ObjId(40)
+            }
+        );
+        let coming = left.extraction.clone().expect("the extraction starts");
+        assert!(coming.abandoned, "no recovery flight defers it");
+        assert_eq!((coming.requested_ic, coming.due_ic), (500, 4_100));
+        assert_eq!(coming.port.as_str(), "stickney");
+        let asked = CrewRecord {
+            extraction: Some(Extraction {
+                port: SmolStr::new("ceres"),
+                requested_ic: 200,
+                due_ic: 900,
+                abandoned: false,
+            }),
+            ..inside
+        };
+        let kept = abandon(&asked, &site, ("stickney", 3_600), 500)
+            .extraction
+            .expect("still coming");
+        assert_eq!(
+            (kept.port.as_str(), kept.due_ic, kept.abandoned),
+            ("ceres", 900, true)
+        );
+        let wire = serde_json::to_value(&asked).expect("encodes");
+        assert!(
+            wire["extraction"].get("abandoned").is_none(),
+            "omitted when false"
+        );
+        let back: CrewRecord =
+            serde_json::from_value(serde_json::to_value(&left).expect("encodes")).expect("decodes");
+        assert_eq!(back, left);
     }
 }

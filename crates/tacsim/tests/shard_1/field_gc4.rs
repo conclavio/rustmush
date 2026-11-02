@@ -27,7 +27,7 @@ use crate::field_host::{armed, egress, seat, second, site_record, task, tune, un
 
 /// **Destroy `unit`'s power component** (the staff fixture standing in for the round that
 /// disabled it): no power is no control, a casualty.
-fn powerless(rig: &mut crate::driving::Rig, unit: ObjId) {
+pub(crate) fn powerless(rig: &mut crate::driving::Rig, unit: ObjId) {
     staff_hand(rig, |ctx| {
         let plan = mush_tactics::UnitMutationPlan::new(
             vec![mush_tactics::UnitMutationOp::SetComponentCondition {
@@ -43,18 +43,18 @@ fn powerless(rig: &mut crate::driving::Rig, unit: ObjId) {
 }
 
 /// Whether the field has demoted: no task, and the record's promotion closed.
-fn demoted(rig: &mut crate::driving::Rig) -> bool {
+pub(crate) fn demoted(rig: &mut crate::driving::Rig) -> bool {
     task(rig).is_none() && site_record(rig).is_some_and(|record| record.open_field().is_none())
 }
 
 /// `unit`'s site cell, when it stands on the ground.
-fn cell_of(rig: &crate::driving::Rig, unit: ObjId) -> Option<(i64, i64)> {
+pub(crate) fn cell_of(rig: &crate::driving::Rig, unit: ObjId) -> Option<(i64, i64)> {
     mush_sim::pose_of(rig.tw.world(), unit)
         .map(|(_, at)| (at.x_cm.div_euclid(1_000), at.y_cm.div_euclid(1_000)))
 }
 
 /// Seconds until `done` holds, at most `limit`.
-fn seconds_until(
+pub(crate) fn seconds_until(
     rig: &mut crate::driving::Rig,
     limit: u32,
     mut done: impl FnMut(&mut crate::driving::Rig) -> bool,
@@ -75,7 +75,7 @@ fn seconds_until(
 }
 
 /// The tug's tow, as the site's record holds it.
-fn towing(rig: &mut crate::driving::Rig, tug: ObjId) -> Option<ObjId> {
+pub(crate) fn towing(rig: &mut crate::driving::Rig, tug: ObjId) -> Option<ObjId> {
     site_record(rig).and_then(|record| record.tows.towing(tug).map(|op| op.casualty()))
 }
 

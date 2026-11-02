@@ -242,12 +242,16 @@ pub fn facility_of(w: &World, hull: ObjId) -> Result<Facility, String> {
 
 // ---- who may ----------------------------------------------------------------------------
 
-/// **A salvor's custody of `hull`** (Q-36-33, Q-S14). The seam GC.5/GC.6 fill: no durable record
-/// of ground salvage custody exists yet, so nobody holds it and the salvor's row of
-/// [`permits`] is tested on the table alone until then.
+/// **A salvor's custody of `hull`** (Q-36-33, Q-S14): the custody record a load into `actor`'s
+/// carrier wrote (doc 36 cut GC.5, `crate::surface::salvage`), when `actor` holds it. A lease rig
+/// written off since is Occator's alone, and nobody holds it (Q-36-29).
 #[must_use]
-pub fn salvor_custody(_w: &World, _actor: ObjId, _hull: ObjId) -> Option<CustodyTitleStatus> {
-    None
+pub fn salvor_custody(
+    ctx: &Ctx<'_>,
+    actor: ObjId,
+    hull: ObjId,
+) -> Option<crate::surface::salvage::SalvageCustody> {
+    crate::surface::salvage::custody_of(ctx, hull).filter(|custody| custody.holder == actor)
 }
 
 /// Whether `actor` holds the hull's title outright.
@@ -303,7 +307,7 @@ pub fn right_of(ctx: &Ctx<'_>, hull: ObjId) -> Option<Right> {
     if leases(ctx.w, actor, hull) {
         return Some(Right::Lessee);
     }
-    salvor_custody(ctx.w, actor, hull).map(|_| Right::Salvor)
+    salvor_custody(ctx, actor, hull).map(|_| Right::Salvor)
 }
 
 /// The right that lets `right` do every job in `jobs` (repair and rearm separately).

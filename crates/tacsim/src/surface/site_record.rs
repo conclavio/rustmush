@@ -474,6 +474,13 @@ pub struct SiteRecord {
     /// GC.3's.
     #[serde(default, skip_serializing_if = "crate::surface::tow::Tows::is_fresh")]
     pub tows: crate::surface::tow::Tows,
+    /// **The hulls recovered from this ground into a salvor's custody** (doc 36 cut GC.5;
+    /// Q-36-16, Q-S14), strictly increasing by hull, at most
+    /// [`crate::surface::salvage::MAX_CUSTODY`]. Kept here because the claim is filed at the
+    /// site's port registry (GC.6). Omitted while empty, so a record nobody salvaged from is
+    /// byte-identical to GC.4's.
+    #[serde(default, skip_serializing_if = "Vec::is_empty")]
+    pub custody: Vec<crate::surface::salvage::SalvageCustody>,
 }
 
 /// [`SiteRecord::side`]'s default: the shipped side.
@@ -552,6 +559,7 @@ impl SiteRecord {
             known: Vec::new(),
             side,
             tows: crate::surface::tow::Tows::default(),
+            custody: Vec::new(),
         }
     }
 
@@ -582,6 +590,7 @@ impl SiteRecord {
             && self.objects.is_empty()
             && self.next_object == 0
             && self.known.is_empty()
+            && self.custody.is_empty()
     }
 
     /// **What `principal` remembers here** (doc 32 cut CF.4), most recently learned first.
@@ -1033,6 +1042,17 @@ impl SiteRecord {
             ));
         }
         self.tows.check()?;
+        if self.custody.len() > crate::surface::salvage::MAX_CUSTODY
+            || self.custody.windows(2).any(|pair| match pair {
+                [a, b] => a.hull >= b.hull,
+                _ => false,
+            })
+        {
+            return Err(format!(
+                "a site record keeps at most {} custody records, one a hull, in order",
+                crate::surface::salvage::MAX_CUSTODY
+            ));
+        }
         Ok(())
     }
 }

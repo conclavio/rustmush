@@ -167,6 +167,7 @@ pub mod presence;
 pub mod raid;
 pub mod reading;
 pub mod recovery;
+pub mod salvage;
 pub mod site_record;
 pub mod survey;
 pub mod survey_facts;
