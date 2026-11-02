@@ -141,6 +141,9 @@ pub struct FieldBook {
     boot_docs: BTreeMap<CanonicalId, boot::BootDocs>,
     /// Task keys handed out, counting down from the top of the key space.
     issued: u64,
+    /// **Carriers settled on a running field's site and not in it** (doc 36 cut GC.1; Q-36-4),
+    /// by site: each owed its admission at its pad, which the kernel's join (GC.1b) makes.
+    pub(crate) arrivals: BTreeMap<CanonicalId, BTreeSet<ObjId>>,
 }
 
 impl FieldBook {

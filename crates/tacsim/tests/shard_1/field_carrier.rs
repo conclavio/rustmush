@@ -11,7 +11,8 @@ use mush_core::ObjId;
 use tacsim::field::CrewLocation;
 
 use crate::driving::{
-    cid, command, land, launched, on_pad, prospector, run, staff_hand, stocked_tuned, to_cell, warm,
+    cid, command, en_route, land, launched, on_pad, prospector, run, staff_hand, stocked_tuned,
+    to_cell, to_ic, warm,
 };
 use crate::field_host::{
     armed, egress, frame, seat, second, site_record, task, tune, until, weapon_of,
@@ -326,4 +327,65 @@ async fn f6_a_carrier_lifts_out_of_a_running_field_only_on_the_confirmation() {
     assert!(live.units.iter().all(|row| row.unit != carrier));
     assert!(live.units.iter().any(|row| row.unit == rig_a));
     assert!(tacsim::field::field_of_unit(rig.tw.world(), rig_a).is_some());
+}
+
+/// **Doc 36 cut GC.1's host half of F-6 arrival** (Q-36-4, Q-CF-16, Q-CF-17). A second Dray-P is
+/// under way to Ahuna Flank when CF.3's field opens there, and settles on the pad mid-field. The
+/// host notes it as owed its admission at its pad (the kernel's join that admits it is GC.1b,
+/// whose gate is `gc1_a_carrier_arriving_mid_field_is_admitted_at_its_pad_and_cannot_launch`),
+/// it is not in the field, and its rig's launch is refused while the field runs.
+#[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+async fn gc1_a_carrier_arriving_mid_field_is_owed_its_admission_and_cannot_launch() {
+    let mut rig = stocked_tuned(tune);
+    let (a, _, a_tvs) = on_pad(&mut rig, 1);
+    launched(&mut rig, a, a_tvs[0]);
+    to_cell(&mut rig, a_tvs[0], (120, 120));
+    let (b, _) = prospector(&mut rig, "Other", 2, "Tally Moth");
+    let hull_b = armed(&mut rig, "Grey Hound", (120, 128), 90_000);
+    seat(&mut rig, hull_b, b);
+    let (late, late_row, _, ticket) = en_route(&mut rig, "Late", 3, "Late Moth");
+    let late_hull = ObjId(late_row.hull);
+    warm(&mut rig);
+    let mut rx = egress(&mut rig);
+    let mut lines = Vec::new();
+    for _ in 0..3 {
+        let _ = second(&mut rig);
+    }
+    let (out, queued) = command(&mut rig, b, "+field/fire S");
+    assert_eq!(queued.len(), 1, "one promotion: {out}");
+    land(&mut rig, &queued[0]).expect("the promotion lands");
+    assert!(
+        until(&mut rig, &mut rx, &mut lines, 10, |rig, _| task(rig)
+            .is_some())
+        .await,
+        "the field opens"
+    );
+    let site = cid(crate::driving::AHUNA);
+    assert!(tacsim::field::carrier::owed_arrivals(rig.tw.world(), &site).is_empty());
+
+    // The late hull settles on the pad while the field runs.
+    let _ = to_ic(&mut rig, ticket.plan.depart_ic + ticket.plan.total_s);
+    assert!(
+        matches!(
+            tacsim::port::ship::berth_of(rig.tw.world(), late_hull),
+            tacsim::port::ship::Berth::Docked { map, .. } if map.entry.as_str() == crate::driving::AHUNA
+        ),
+        "the late hull is settled on the pad"
+    );
+    assert!(
+        until(&mut rig, &mut rx, &mut lines, 10, |rig, _| {
+            tacsim::field::carrier::owed_arrivals(rig.tw.world(), &site) == vec![late_hull]
+        })
+        .await,
+        "the host owes the arrival its admission"
+    );
+    assert!(task(&rig).is_some(), "the field runs on");
+    assert!(
+        tacsim::field::field_of_unit(rig.tw.world(), late_hull).is_none(),
+        "not in the field until the kernel's join (GC.1b)"
+    );
+
+    // No launch goes down from it while the field runs (Q-CF-17).
+    let refused = run(&mut rig.tw, late, "+tv/1 launch go");
+    assert!(refused.contains("is being fought on"), "{refused}");
 }
