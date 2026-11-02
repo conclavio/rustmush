@@ -5662,6 +5662,30 @@ impl Arena {
         })
     }
 
+    /// **A unit of `party` holds an armed party it is hostile to inside its own reach** (doc 36
+    /// cut GC.11; Q-36-55, the idle trigger of a raider group's withdrawal):
+    /// [`Arena::hostile_in_weapons_range`]'s reading, restricted to `party`'s own units. A read,
+    /// never a step: no state moves and nothing is hashed.
+    #[must_use]
+    pub fn party_holds_armed_hostile_in_reach(&self, party: PartyId) -> bool {
+        let cell_cm = self.definition.terrain.cell_cm();
+        self.units
+            .iter()
+            .filter(|viewer| viewer.team == party && !viewer.limits.wreck)
+            .any(|viewer| {
+                let reach = viewer.fight_inner_cm(cell_cm);
+                reach != 0
+                    && self.contacts.of(viewer.id).any(|(_, held)| {
+                        self.relations.hostile(viewer.team, held.class)
+                            && self.unit(held.target).is_some_and(|target| {
+                                target.armed_at_checkout() || target.shots_fired > 0
+                            })
+                            && !self.contact_reads_dead(held)
+                            && held.seen_at.within_cm(&viewer.pose, reach)
+                    })
+            })
+    }
+
     /// **Armour plus internals, per mille of what the unit was authored with**
     /// (reconciliation (c) of the cut brief), read off the M32 cells on
     /// `UnitState::unit`.

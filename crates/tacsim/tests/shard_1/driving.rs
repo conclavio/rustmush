@@ -606,7 +606,7 @@ pub(crate) fn prospector(rig: &mut Rig, who: &str, seed: i64, name: &str) -> (Ob
 }
 
 /// Seed `qty` of `good` into `vault`'s pool through `lot` (the inventory's own path).
-fn seed_pool(rig: &mut Rig, vault: VaultId, good: &str, qty: u64, lot: LotId) {
+pub(crate) fn seed_pool(rig: &mut Rig, vault: VaultId, good: &str, qty: u64, lot: LotId) {
     let endpoint = EndpointRef(vault);
     let good = cid(good);
     let families = rig

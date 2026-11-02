@@ -41,6 +41,8 @@ mod escort_lease;
 mod field_carrier;
 #[path = "shard_1/field_crash.rs"]
 mod field_crash;
+#[path = "shard_1/field_director.rs"]
+mod field_director;
 #[path = "shard_1/field_gc2.rs"]
 mod field_gc2;
 #[path = "shard_1/field_host.rs"]

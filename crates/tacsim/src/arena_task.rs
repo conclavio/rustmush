@@ -291,6 +291,14 @@ pub enum ArenaMsg {
         /// that cell (`crate::field::carrier::PAD_SPREAD_CELLS`).
         spread: u16,
     },
+    /// **Give a party arriving mid-field its home** (doc 36 cut GC.11; Q-36-55): its carrier's
+    /// ramp, laid on the field's ground by `Arena::add_home` at the next pulse's head, before the
+    /// joins, so a raider group that joined can go home up its ramp. Latest-wins per party; only
+    /// the IC field host sends it, and a task with no [`FieldTerms`] or with a tape ignores it.
+    Home {
+        /// The ramp's zone, one cell.
+        zone: crate::arena::state::EntryZone,
+    },
 }
 
 /// **The IC field host's terms** (doc 32 cut CF.2; Q-CF-20): what the task
@@ -609,6 +617,7 @@ impl ArenaHandle {
                 | ArenaMsg::Mark { .. }
                 | ArenaMsg::Withdraw { .. }
                 | ArenaMsg::Join { .. }
+                | ArenaMsg::Home { .. }
         ) && self.inbox.capacity() <= self.reserve
         {
             return Err(msg);
@@ -1469,6 +1478,9 @@ struct PrePulse {
             u16,
         ),
     >,
+    /// **Doc 36 cut GC.11**: the homes the host lays for parties arriving mid-field, latest-wins
+    /// per party, so bounded by the parties.
+    homes: BTreeMap<crate::arena::PartyId, crate::arena::state::EntryZone>,
 }
 
 impl PrePulse {
@@ -1817,6 +1829,10 @@ async fn arena_loop(mut task: Task) {
                     Some(ArenaMsg::Join { unit, pilot, host, spread }) => {
                         waiting.joins.entry(unit.id).or_insert((unit, pilot, host, spread));
                     }
+                    // Doc 36 cut GC.11: and so does a home for a party arriving mid-field.
+                    Some(ArenaMsg::Home { zone }) => {
+                        waiting.homes.insert(zone.team, zone);
+                    }
                     // Every sender is gone: the world has forgotten this match
                     // and nothing can ever drive it again. End silently, for the
                     // same reason the stop signal does.
@@ -1856,6 +1872,10 @@ async fn arena_loop(mut task: Task) {
                 }
                 // Doc 36 cut GC.1b: the units taken in at their pads, before the step, each
                 // answered behind the ledger.
+                // Doc 36 cut GC.11: the homes of parties arriving mid-field, before their joins.
+                for zone in std::mem::take(&mut waiting.homes).into_values() {
+                    task.home(zone);
+                }
                 for (unit, (custody, pilot, host, spread)) in std::mem::take(&mut waiting.joins) {
                     let outcome = task.join(*custody, pilot, &host, spread);
                     task.queue_joined(unit, outcome);
@@ -2484,6 +2504,17 @@ impl Task {
             state.power = crate::arena::state::Power::Online;
         }
         Ok(name)
+    }
+
+    /// **A home for a party arriving mid-field** (doc 36 cut GC.11): ignored, as a join is
+    /// refused, by a task with no [`FieldTerms`] or with a tape.
+    fn home(&mut self, zone: crate::arena::state::EntryZone) {
+        if self.terms.is_none() || self.tape.is_some() {
+            return;
+        }
+        if !self.arena.add_home(zone) {
+            tracing::debug!(match_id = %self.match_id, party = %zone.team.as_str(), "arena task: a home was not laid");
+        }
     }
 
     /// **A withdrawal's answer**, queued like a join's.

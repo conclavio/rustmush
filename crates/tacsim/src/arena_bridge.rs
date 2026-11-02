@@ -3033,7 +3033,14 @@ pub fn drain_egress(ctx: &mut Ctx<'_>) {
                 match_id,
                 unit,
                 outcome,
-            } => crate::field::carrier::on_joined(ctx, match_id, unit, outcome),
+            } => {
+                // Doc 36 cut GC.11: a raider arriving with a director raid has its own answer.
+                if crate::field::raiders::is_raider(ctx.w, unit) {
+                    crate::field::raiders::on_joined(ctx, match_id, unit, outcome);
+                } else {
+                    crate::field::carrier::on_joined(ctx, match_id, unit, outcome);
+                }
+            }
         }
     }
     // **16b cut N.2** (doc 16 §6 "Provider failure"): the one in-world sentence, said
