@@ -17,8 +17,8 @@ use serde::{Deserialize, Serialize};
 use serde_json::{Value, json};
 
 use crate::space::weapons::{
-    InFlightSlug, InFlightTorpedo, LaserMode, LaserMount, PdcMount, RailgunMount, TorpedoTube,
-    compute_railgun_lead, isqrt_i128,
+    DEFAULT_TORPEDO_MAX_FLIGHT_MS, InFlightSlug, InFlightTorpedo, LaserMode, LaserMount, PdcMount,
+    RailgunMount, TorpedoTube, compute_railgun_lead, isqrt_i128,
 };
 
 /// Maximum substep duration in wall milliseconds (`D-16-2`).
@@ -863,9 +863,10 @@ impl LocalSpaceBubble {
                 accel_mps2: accel,
                 remaining_dv_mmps: max_dv_mmps,
                 warhead_damage: dmg,
+                integrity: 100,
                 tti_s: est_tti_s,
                 flight_elapsed_ms: 0,
-                max_flight_ms: 45_000,
+                max_flight_ms: DEFAULT_TORPEDO_MAX_FLIGHT_MS,
                 dv_exhausted_emitted: false,
             });
             events.push(SpaceCombatEvent::TorpedoLaunched {
@@ -1046,20 +1047,15 @@ impl LocalSpaceBubble {
         events
     }
 
-    /// Advance the bubble on **1:1 wall time** by `dt_wall_ms` (`D-35-3`, `Q-CF-32`, `D-16-2`).
-    ///
-    /// Substeps in chunks of at most [`MAX_SUBSTEP_MS`] ($250\text{ ms}$).
-    pub fn step_wall_ms(&mut self, dt_wall_ms: u32) -> BubbleStepReport {
-        let delta_whole_s = ((self.wall_elapsed_ms.saturating_add(u64::from(dt_wall_ms))) / 1_000)
-            .saturating_sub(self.wall_elapsed_ms / 1_000) as i64;
-        let next_ic_s = self.ic_timestamp_s.saturating_add(delta_whole_s);
-        self.step_wall_ms_at(dt_wall_ms, next_ic_s)
-    }
-
     /// Advance the bubble on **1:1 wall time** by `dt_wall_ms` while stamping
-    /// the caller-provided W-clock `ic_now_s` (`Q-CF-32`, `35a` §5.3).
+    /// the caller-provided W-clock `ic_now_s` (`D-35-3`, `Q-CF-32`, `D-16-2`, `35a` §5.3).
+    ///
+    /// Substeps in chunks of at most [`MAX_SUBSTEP_MS`] ($250\text{ ms}$) and enforces
+    /// a monotonic guard on `self.ic_timestamp_s` so a rewound caller timestamp can
+    /// never move the bubble's IC stamp backward.
     pub fn step_wall_ms_at(&mut self, dt_wall_ms: u32, ic_now_s: i64) -> BubbleStepReport {
         if self.outage_frozen || dt_wall_ms == 0 {
+            self.ic_timestamp_s = self.ic_timestamp_s.max(ic_now_s);
             return BubbleStepReport {
                 wall_advanced_ms: 0,
                 substeps_executed: 0,
@@ -1099,7 +1095,7 @@ impl LocalSpaceBubble {
                 }
             }
         }
-        self.ic_timestamp_s = ic_now_s;
+        self.ic_timestamp_s = self.ic_timestamp_s.max(ic_now_s);
 
         BubbleStepReport {
             wall_advanced_ms: dt_wall_ms,
@@ -1330,7 +1326,8 @@ impl LocalSpaceBubble {
                 }
 
                 // 2c. Automatic PDC screen (`+tac/pdc auto`, `35a` §5.8):
-                // Rate-limited by `pdc.cooldown_remaining_ms` so salvos can saturate single mounts.
+                // Rate-limited by `pdc.cooldown_remaining_ms` and accumulates deterministic
+                // `damage_per_burst` against `torp.integrity` (`100` at launch).
                 if def_ship.pdc_auto {
                     for pdc in &mut def_ship.pdcs {
                         if pdc.operational
@@ -1340,13 +1337,17 @@ impl LocalSpaceBubble {
                         {
                             pdc.ammo_remaining -= u32::from(pdc.burst_rounds);
                             pdc.cooldown_remaining_ms = pdc.cooldown_ms;
-                            events.push(SpaceCombatEvent::TorpedoInterceptedByPdc {
-                                torpedo_id: torp.id,
-                                defender_id: def_id.clone(),
-                                pdc_id: pdc.id.clone(),
-                            });
-                            intercepted = true;
-                            break;
+                            torp.integrity =
+                                torp.integrity.saturating_sub(pdc.damage_per_burst.max(1));
+                            if torp.integrity == 0 {
+                                events.push(SpaceCombatEvent::TorpedoInterceptedByPdc {
+                                    torpedo_id: torp.id,
+                                    defender_id: def_id.clone(),
+                                    pdc_id: pdc.id.clone(),
+                                });
+                                intercepted = true;
+                                break;
+                            }
                         }
                     }
                 }
@@ -1488,6 +1489,7 @@ impl LocalSpaceBubble {
         }
         for torp in &self.torpedoes {
             mix(&torp.id.to_le_bytes());
+            mix(&torp.integrity.to_le_bytes());
             for p in torp.pos_m {
                 mix(&p.to_le_bytes());
             }

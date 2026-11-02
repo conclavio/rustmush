@@ -4,8 +4,8 @@
 //! All combat inside a [`super::bubble::LocalSpaceBubble`] runs on **1:1 wall time**:
 //! - **Torpedoes (`TorpedoTube`)**: Inherit launcher velocity $\mathbf{v}_{\text{ship}}$ at launch,
 //!   accelerate at $15\text{–}30\text{ g}$ ($150\text{–}300\text{ m/s}^2$) under proportional
-//!   navigation guidance with finite $\Delta v$ ($8\text{–}15\text{ km/s}$), $100\text{–}2{,}500\text{ km}$
-//!   effective range ($12\text{–}45\text{ s}$ wall-time flight), bounded by tube count and
+//!   navigation guidance with finite $\Delta v$ ($8\text{–}15\text{ km/s}$), $10\text{–}500\text{ km}$
+//!   effective range ($12\text{–}90\text{ s}$ wall-time flight), bounded by tube count and
 //!   magazine stowage (`W15`). Countered by automatic **PDCs** (`+tac/pdc auto`), **Defensive
 //!   Lasers**, **ECM/decoys**, or high-G burns that exhaust torpedo $\Delta v$.
 //! - **Energy Weapons (`LaserMount`)**: Instant hit at speed of light ($c$), $20\text{–}500\text{ km}$
@@ -177,18 +177,35 @@ pub struct PdcMount {
     /// Remaining burst cooldown in wall milliseconds.
     #[serde(default)]
     pub cooldown_remaining_ms: u32,
+    /// Deterministic structural damage inflicted on an incoming torpedo per burst (`35a` §5.8).
+    #[serde(default = "default_pdc_damage_per_burst")]
+    pub damage_per_burst: u16,
 }
 
 fn default_pdc_cooldown_ms() -> u32 {
     500
 }
 
+fn default_pdc_damage_per_burst() -> u16 {
+    50
+}
+
+fn default_torpedo_integrity() -> u16 {
+    100
+}
+
+/// Default torpedo flight duration cap in wall milliseconds (`90_000 ms` = $90\text{ s}$,
+/// covering the full $10\text{–}500\text{ km}$ range band at $250\text{ m/s}^2$ boost +
+/// $12\text{ km/s}$ ballistic coast; doc 35 §6.2).
+pub const DEFAULT_TORPEDO_MAX_FLIGHT_MS: u32 = 90_000;
+
 fn default_torpedo_max_flight_ms() -> u32 {
-    45_000
+    DEFAULT_TORPEDO_MAX_FLIGHT_MS
 }
 
 impl PdcMount {
-    /// Standard $15\text{ km}$ rotary PDC mount with 2,000 rounds and a $500\text{ ms}$ burst cycle.
+    /// Standard $15\text{ km}$ rotary PDC mount with 2,000 rounds, a $500\text{ ms}$ burst cycle,
+    /// and $50$ torpedo-integrity damage per burst (two bursts destroy a standard $100$-integrity torpedo).
     #[must_use]
     pub fn standard_rotary(id: impl Into<String>, ammo: u32) -> Self {
         Self {
@@ -199,6 +216,7 @@ impl PdcMount {
             operational: true,
             cooldown_ms: 500,
             cooldown_remaining_ms: 0,
+            damage_per_burst: 50,
         }
     }
 }
@@ -222,12 +240,15 @@ pub struct InFlightTorpedo {
     pub remaining_dv_mmps: i64,
     /// Warhead damage on impact.
     pub warhead_damage: u32,
+    /// Remaining airframe/guidance integrity (`100` at launch; destroyed at `0` by accumulated PDC bursts or defensive lasers).
+    #[serde(default = "default_torpedo_integrity")]
+    pub integrity: u16,
     /// Estimated time-to-impact in whole wall seconds (`TTI`).
     pub tti_s: i64,
     /// Elapsed flight time in wall milliseconds (`35a` §5.9).
     #[serde(default)]
     pub flight_elapsed_ms: u32,
-    /// Maximum flight duration before self-destruct / battery expiry (`45_000 ms`, doc 35 §6.2).
+    /// Maximum flight duration before self-destruct / battery expiry (`90_000 ms`, doc 35 §6.2).
     #[serde(default = "default_torpedo_max_flight_ms")]
     pub max_flight_ms: u32,
     /// Whether `TorpedoExhaustedDeltaV` has already been emitted once for this torpedo (`35a` §5.9).

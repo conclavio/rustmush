@@ -27,8 +27,8 @@ pub use custody::{
     space_ship_from_tactical_unit,
 };
 pub use weapons::{
-    InFlightSlug, InFlightTorpedo, LaserMode, LaserMount, PdcMount, RailgunMount, TorpedoTube,
-    compute_railgun_lead,
+    DEFAULT_TORPEDO_MAX_FLIGHT_MS, InFlightSlug, InFlightTorpedo, LaserMode, LaserMount, PdcMount,
+    RailgunMount, TorpedoTube, compute_railgun_lead,
 };
 
 /// Maximum standoff range (metres) to initiate a 6-DOF docking approach (`<= 500 m`).
@@ -173,7 +173,7 @@ mod tests {
 
         // Branch A: target holds velocity -> slug hits!
         let mut steady_bubble = bubble.clone();
-        let steady_report = steady_bubble.step_wall_ms(8_000);
+        let steady_report = steady_bubble.step_wall_ms_at(8_000, 1_192);
         assert!(
             steady_report.events.iter().any(|e| matches!(
                 e,
@@ -190,7 +190,7 @@ mod tests {
                 .command_burn("ship.target", [0, 25, 0], true)
                 .is_ok()
         );
-        let jink_report = jink_bubble.step_wall_ms(8_000);
+        let jink_report = jink_bubble.step_wall_ms_at(8_000, 1_192);
         assert!(
             jink_report.events.iter().any(|e| matches!(
                 e,
@@ -217,8 +217,8 @@ mod tests {
         bubble.insert_ship(dray);
 
         // Step 10 seconds in 250 ms increments: `490 mm/s * 10 s = 4.9 m` (`pos_m[0] == 4`, `pos_rem_um[0] == 900_000`).
-        for _ in 0..40 {
-            bubble.step_wall_ms(250);
+        for step in 1..=40 {
+            bubble.step_wall_ms_at(250, 2_000 + step * 6);
         }
         let ship = bubble.ships.get("ship.dray").expect("dray present");
         assert_eq!(ship.pos_m[0], 4);
@@ -258,10 +258,14 @@ mod tests {
                 .len(),
             1
         );
+        assert_eq!(
+            bubble.torpedoes[0].max_flight_ms,
+            DEFAULT_TORPEDO_MAX_FLIGHT_MS
+        );
         bubble.torpedoes[0].remaining_dv_mmps = 400_000;
         bubble.torpedoes[0].vel_mmps = [1_200_000, 330_000, 0];
 
-        let report = bubble.step_wall_ms(12_000);
+        let report = bubble.step_wall_ms_at(12_000, 3_288);
         let exhausted_count = report
             .events
             .iter()
@@ -280,10 +284,49 @@ mod tests {
             "torpedo must coast ballistically after fuel exhaustion and still impact on-course target: {:?}",
             report.events
         );
+
+        // Long-range band check (doc 35 §6.2: 10–500 km under the 90 s flight cap):
+        // At 450 km (450,000 m), a standard torpedo (250 m/s^2, 12 km/s delta-v) boosts
+        // for 48 s (288 km) and coasts at 12 km/s for ~13.5 s (162 km), impacting around 61.5 s.
+        let mut long_bubble =
+            LocalSpaceBubble::new("bubble.long_torp", "site.test", "Long-Range Torpedo", 5_000);
+        long_bubble.set_party_relation(SpacePartyId(1), SpacePartyId(2), SpaceRelation::Hostile);
+        long_bubble.insert_ship(SpaceShipState::new_corvette(
+            "ship.attacker",
+            "Attacker",
+            SpacePartyId(1),
+            [0, 0, 0],
+            [0, 0, 0],
+        ));
+        let mut far_target = SpaceShipState::new_dray(
+            "ship.far_target",
+            "Far Target",
+            SpacePartyId(2),
+            [450_000, 0, 0],
+            [0, 0, 0],
+        );
+        far_target.pdcs.clear();
+        far_target.lasers.clear();
+        long_bubble.insert_ship(far_target);
+        assert_eq!(
+            long_bubble
+                .fire_torpedo_salvo("ship.attacker", "ship.far_target", 1)
+                .len(),
+            1
+        );
+        let long_report = long_bubble.step_wall_ms_at(70_000, 6_680);
+        assert!(
+            long_report.events.iter().any(|e| matches!(
+                e,
+                SpaceCombatEvent::TorpedoHit { target_id, .. } if target_id == "ship.far_target"
+            )),
+            "450 km torpedo must boost and coast to impact within the 90 s flight cap: {:?}",
+            long_report.events
+        );
     }
 
     #[test]
-    fn pdc_burst_cooldown_allows_salvo_saturation_and_decoy_checks_target_lock() {
+    fn pdc_burst_cooldown_accumulates_hits_allows_salvo_saturation_and_decoy_checks_target_lock() {
         let mut bubble =
             LocalSpaceBubble::new("bubble.pdc_decoy", "site.test", "PDC & Decoy", 4_000);
         bubble.set_party_relation(SpacePartyId(1), SpacePartyId(2), SpaceRelation::Hostile);
@@ -293,17 +336,19 @@ mod tests {
             "Attacker",
             SpacePartyId(1),
             [0, 0, 0],
-            [1_500_000, 0, 0], // closing at 1.5 km/s so both torpedoes impact within 1 substep
+            [1_500_000, 0, 0], // closing at 1.5 km/s
         );
         let mut defender = SpaceShipState::new_dray(
             "ship.defender",
             "Defender",
             SpacePartyId(2),
-            [1_200, 0, 0],
+            [2_500, 0, 0],
             [0, 0, 0],
         );
-        // Single PDC mount (`cooldown_ms = 500`), lasers off -> a 2-torpedo salvo arriving
-        // in the same 250 ms substep must saturate the single PDC (`35a` §5.8).
+        // Single PDC mount (`cooldown_ms = 500`, `damage_per_burst = 50`), lasers off:
+        // Two bursts (at 250 ms and 750 ms) accumulate 100 damage to destroy the first
+        // torpedo (`integrity: 100 -> 50 -> 0`), while the second torpedo in the salvo
+        // penetrates before the single PDC can cycle two more bursts (`35a` §5.8).
         defender.pdcs = vec![PdcMount::standard_rotary("pdc.1", 2_000)];
         defender.lasers.clear();
 
@@ -313,7 +358,7 @@ mod tests {
             "ship.escort",
             "Escort",
             SpacePartyId(2),
-            [1_100, 50, 0],
+            [2_400, 50, 0],
             [0, 0, 0],
         );
         escort.pdcs.clear();
@@ -331,7 +376,21 @@ mod tests {
             2
         );
 
-        let report = bubble.step_wall_ms(2_000);
+        // First 250 ms substep: PDC fires burst 1 (`50` damage) at torpedo 1 (`integrity: 100 -> 50`),
+        // so neither torpedo is destroyed on the first burst (`deterministic hit accumulation`).
+        let first_step = bubble.step_wall_ms_at(250, 4_006);
+        assert!(
+            !first_step
+                .events
+                .iter()
+                .any(|e| matches!(e, SpaceCombatEvent::TorpedoInterceptedByPdc { .. })),
+            "single 50-damage PDC burst must not one-shot a 100-integrity torpedo"
+        );
+        assert_eq!(bubble.torpedoes.len(), 2);
+        assert_eq!(bubble.torpedoes[0].integrity, 50);
+        assert_eq!(bubble.torpedoes[1].integrity, 100);
+
+        let report = bubble.step_wall_ms_at(2_000, 4_054);
         let pdc_intercepts = report
             .events
             .iter()
@@ -354,7 +413,7 @@ mod tests {
         );
         assert_eq!(
             pdc_intercepts, 1,
-            "single PDC on 500 ms cooldown can only intercept 1 torpedo from a simultaneous 2-torpedo arrival"
+            "single PDC on 500 ms cooldown accumulates 2 bursts (100 damage) to intercept 1 torpedo"
         );
         assert_eq!(
             torpedo_hits, 1,
@@ -363,7 +422,7 @@ mod tests {
     }
 
     #[test]
-    fn step_wall_ms_tracks_fractional_seconds_and_command_burn_clamps_i64_max() {
+    fn step_wall_ms_at_tracks_fractional_seconds_enforces_monotonic_ic_stamp_and_clamps_i64_max() {
         let mut bubble =
             LocalSpaceBubble::new("bubble.clock", "site.test", "Clock & Overflow", 10_000);
         let mut ship = SpaceShipState::new_dray(
@@ -395,11 +454,11 @@ mod tests {
         };
         bubble.insert_ship(ship);
 
-        bubble.step_wall_ms(300);
-        bubble.step_wall_ms(400);
-        bubble.step_wall_ms(300);
+        bubble.step_wall_ms_at(300, 10_007);
+        bubble.step_wall_ms_at(400, 10_017);
+        bubble.step_wall_ms_at(300, 10_024);
         assert_eq!(bubble.wall_elapsed_ms, 1_000);
-        assert_eq!(bubble.ic_timestamp_s, 10_001);
+        assert_eq!(bubble.ic_timestamp_s, 10_024);
         match bubble.ships["ship.derelict"].status {
             HullStatus::DisabledDerelict {
                 life_support_remaining_s,
@@ -412,8 +471,16 @@ mod tests {
             ref other => panic!("expected DisabledDerelict, got {other:?}"),
         }
 
-        // Also verify `step_wall_ms_at` stamps the caller's authoritative W-clock (`35a` §5.3).
+        // Verify `step_wall_ms_at` stamps the caller's authoritative W-clock (`35a` §5.3)
+        // and enforces a monotonic guard when handed an earlier IC timestamp.
         bubble.step_wall_ms_at(500, 74_152_600_000);
+        assert_eq!(bubble.ic_timestamp_s, 74_152_600_000);
+        bubble.step_wall_ms_at(250, 74_152_500_000);
+        assert_eq!(
+            bubble.ic_timestamp_s, 74_152_600_000,
+            "monotonic guard must prevent a rewound IC instant from moving ic_timestamp_s backward"
+        );
+        bubble.step_wall_ms_at(0, 74_152_400_000);
         assert_eq!(bubble.ic_timestamp_s, 74_152_600_000);
     }
 

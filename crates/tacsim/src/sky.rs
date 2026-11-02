@@ -201,14 +201,21 @@ pub fn parse_outer_catalog(json: &str) -> Result<BTreeMap<CanonicalId, OuterBody
     Ok(out)
 }
 
+/// Parse and validate the compiled-in `content/sky/outer_bodies.json` catalogue
+/// through [`crate::pack::BodyDef`] (doc 35 cut SF.1, D-35-4, D-35-13, 35a §5 item 20).
+///
+/// # Errors
+///
+/// Returns an error if the compiled-in JSON fails [`parse_outer_catalog`].
+pub fn try_outer_catalog() -> Result<BTreeMap<CanonicalId, OuterBodyDef>, String> {
+    parse_outer_catalog(OUTER_BODIES_JSON)
+}
+
 /// The compiled-in outer-system and orbital asteroid cluster catalogue (doc 35 cut SF.1).
 #[must_use]
 pub fn outer_catalog() -> &'static BTreeMap<CanonicalId, OuterBodyDef> {
     static CATALOG: OnceLock<BTreeMap<CanonicalId, OuterBodyDef>> = OnceLock::new();
-    CATALOG.get_or_init(|| {
-        parse_outer_catalog(OUTER_BODIES_JSON)
-            .expect("compiled-in outer_bodies.json must pass BodyDef validation")
-    })
+    CATALOG.get_or_init(|| try_outer_catalog().unwrap_or_default())
 }
 
 /// A heliocentric position, kilometres, in the ecliptic frame.
@@ -1003,13 +1010,27 @@ mod tests {
             + f64::from(v_mars[1]).powi(2)
             + f64::from(v_mars[2]).powi(2))
         .sqrt();
-        // Mars circular speed: 2 * pi * (1.524 * AU_KM * 1000) / (686.98 * 86400) ≈ 24,130 m/s.
+        // Fixture mars circular speed: 2 * pi * (1.445443 * AU_KM * 1000) / (687.034 * 86400) ≈ 22,888.6 m/s.
+        let expected_speed = 2.0 * std::f64::consts::PI * (1.445_443 * AU_KM as f64 * 1_000.0)
+            / (687.034 * 86_400.0);
         assert!(
-            (23_900.0..=24_350.0).contains(&speed_mars),
-            "circular mars speed {speed_mars:.1} m/s ({v_mars:?}) must not be quantised"
+            (speed_mars - expected_speed).abs() < 2.0,
+            "circular mars speed {speed_mars:.1} m/s ({v_mars:?}) must match continuous analytical {expected_speed:.1} m/s"
+        );
+        // Sub-millidegree time shifts would quantise to identical integer km under phase_mdeg_at,
+        // whereas continuous f64 phase rotates smoothly over an hour.
+        let v_mars_later = circ
+            .velocity_mps(&cid("mars"), e + 3_600)
+            .expect("mars velocity 1h later");
+        assert_ne!(
+            v_mars, v_mars_later,
+            "circular velocity vector must rotate smoothly over 1h without mdeg quantisation"
         );
 
+        let validated = try_outer_catalog()
+            .expect("compiled-in outer_bodies.json must pass BodyDef validation");
         let cat = outer_catalog();
+        assert_eq!(cat, &validated);
         assert_eq!(cat.len(), 11);
         let kw = cat.get(&cid("kirkwood_gap_3_1")).expect("kirkwood_gap_3_1");
         assert_eq!(

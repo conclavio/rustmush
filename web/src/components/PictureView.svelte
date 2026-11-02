@@ -812,7 +812,6 @@
           local?.forget();
           break;
         case "dockOrder":
-        case "spaceHelm":
           if (!ev.repeat) app.helm(skey.cmd);
           break;
         case "look":
@@ -1182,7 +1181,7 @@
         </span>
       {/if}
       <span class="dim legend"
-        >{#if spaceMode === "docking"}WASD translate · Arrows pitch/yaw · Q E roll · R F closure · X dampeners · V view{:else if spaceMode === "holotank"}A D / , . orbit · C centre · + − zoom · V view{:else if spaceMode === "space_cockpit"}W S burn · A D / Arrows attitude · Q E look · F PDC · G decoy · T scan · X cut · V view{:else}a d turn · w s speed · q e look · c centre · x stop · v view · f free/hold · g volley · t lock ·
+        >{#if spaceMode === "docking"}WASD translate · Arrows pitch/yaw · Q E roll · R F closure · X dampeners · V view{:else if spaceMode === "holotank"}A D / , . orbit · C centre · + − zoom · V view{:else if spaceMode === "space_cockpit"}Q E / , . look · C centre · + − zoom · V view{:else}a d turn · w s speed · q e look · c centre · x stop · v view · f free/hold · g volley · t lock ·
         F1–F6 order{/if}</span
       >
     {/if}
