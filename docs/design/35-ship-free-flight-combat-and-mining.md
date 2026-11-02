@@ -1,6 +1,6 @@
 # 35. Ship free flight, Expanse-style naval combat, asteroid field mining, and the bridge/docking views
 
-**Draft 0.3 — 2026-11-01.** Surveyed against `origin/main` at `830f2265`; reviewed at `497f2a78` in [doc 35a](35a-space-flight-review.md). Draft 0.1 captured the initial design and rulings; Draft 0.2 folded in the cross-review against landed code ([doc 18](18-trade-run-vertical-slice.md), [doc 19](19-astronomy-engine.md), [doc 20](20-surface-mining.md), [doc 21](21-graphics-engine.md), [doc 23](23-ic-sorties.md), [doc 27](27-ic-field-operations-design-and-survey.md), [doc 32](32-ic-combat-field.md)) and recorded the owner's binding rulings on `Q-35-1` through `Q-35-6`. **Draft 0.3** folds the eight design corrections from [doc 35a](35a-space-flight-review.md) §7, records the per-cut disposition of `SF.0`–`SF.20` (§10.1), and replaces the island vertical-slice cuts with the seam-first implementation plan `SF.R0`–`SF.R8` (§10.2).
+**Draft 0.3 — 2026-11-01.** Surveyed against `origin/main` at `830f2265`; reviewed at `497f2a78` in [doc 35a](35a-space-flight-review.md). `SF.R0`–`SF.R8` landed 2026-11-02 and were reviewed at `f1ea7715` in [doc 35b](35b-seam-first-train-review.md): right direction, seams real, four player-reachable holes and a re-plan `SF.R9`–`SF.R16` (35b §3, §8). Draft 0.1 captured the initial design and rulings; Draft 0.2 folded in the cross-review against landed code ([doc 18](18-trade-run-vertical-slice.md), [doc 19](19-astronomy-engine.md), [doc 20](20-surface-mining.md), [doc 21](21-graphics-engine.md), [doc 23](23-ic-sorties.md), [doc 27](27-ic-field-operations-design-and-survey.md), [doc 32](32-ic-combat-field.md)) and recorded the owner's binding rulings on `Q-35-1` through `Q-35-6`. **Draft 0.3** folds the eight design corrections from [doc 35a](35a-space-flight-review.md) §7, records the per-cut disposition of `SF.0`–`SF.20` (§10.1), and replaces the island vertical-slice cuts with the seam-first implementation plan `SF.R0`–`SF.R8` (§10.2).
 
 ---
 
@@ -235,6 +235,8 @@ All three views render into `mush-pixel`'s packed RGB `Frame` keeping a closed c
 | **SF.8 / SF.9 / SF.11 / SF.12 / SF.15 / SF.16 / SF.19** (`commands.rs`, `stations.rs`, `hulls.rs`, `autopilot_bot.rs`) | Unauthenticated RAM-only `SpaceBook` verbs registered as `legacy-post-image`, duplicate seat/hull tables, scripted bot. | **Removed in `SF.R0`; re-cut seam-first across `SF.R1`–`SF.R8`.** |
 
 ### 10.2 Seam-First Implementation Plan (`SF.R0` – `SF.R8`, `35a` §8)
+
+> **Reviewed in [doc 35b](35b-seam-first-train-review.md) (2026-11-02, at `f1ea7715`).** The "(Built)" markers below record what the landing commits claimed, not what the review accepted; 35b §6 is the disposition per cut, 35b §3 the holes that must close first, and 35b §8 the plan `SF.R9`–`SF.R16` that follows this table.
 
 Every cut after `SF.R0` targets **one real engine seam** and proves its acceptance through a `tests/shard_*` integration test driving registered `authoritative` handlers with a non-GOD actor:
 
