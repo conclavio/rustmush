@@ -1,17 +1,20 @@
 //! **Kernel Custody, `TacticalUnit` Damage Persistence & `doc 27a` Salvage Registry Bridge**
-//! (Doc 35 cut `SF.10`; `docs/design/35-ship-free-flight-combat-and-mining.md` `D-35-1`,
+//! (Doc 35 cut `SF.R2`; `docs/design/35-ship-free-flight-combat-and-mining.md` `D-35-1`,
 //! `D-35-12`, `D-35-13`, `D-35-14`).
 //!
 //! Bridges the Tier-1/Tier-2/Tier-3 space flight, combat, and 6-DOF docking simulation
 //! directly into `mush-tactics` and `tacsim::field_ops`:
-//! 1. **Bidirectional `TacticalUnit` $\leftrightarrow$ `SpaceShipState` custody (`D-35-1`)**:
-//!    - [`space_ship_from_tactical_unit`] reads a bound [`TacticalUnit`]'s live `hull`,
-//!      `hold`, and `drive` section `internals` (`CellAddr::Section`) and `front`, `left`,
-//!      `right`, `rear`, and `top` facet `armor` (`CellAddr::Facet`) into a [`SpaceShipState`].
-//!    - [`build_space_damage_mutation_plan`] translates post-combat and post-docking
-//!      [`SpaceShipState`] section/facet cells back into an IC-custody-legal
-//!      [`UnitMutationPlan`] and [`FieldUnitAssessment`] (`Operational`, `Immobile`,
-//!      `Disabled`, `Wreck`) via [`crate::field_ops::apply_ic_condition_handoff`].
+//! 1. **Canonical `UnitSpec` + `TacticalUnit` $\leftrightarrow$ `SpaceShipState` custody (`D-35-1`)**:
+//!    - [`check_out_space_unit`] checks out a live hull [`TacticalUnit`] via
+//!      [`mush_tactics::custody::check_out`] (`DeployedMark::field`) and populates
+//!      [`SpaceShipState`] from the unit's live section `internals`, facet `armor`,
+//!      `heat` cell, component conditions, and canonical [`UnitSpec`] logistics
+//!      (`dray.json`, `dray_p.json`, `halcyon.json`).
+//!    - [`check_in_space_unit`] translates post-combat and post-docking [`SpaceShipState`]
+//!      section/facet/component/heat state into an IC-custody-legal [`UnitMutationPlan`]
+//!      and [`FieldUnitAssessment`] (`Operational`, `Immobile`, `Disabled`, `Wreck`) via
+//!      [`build_space_damage_mutation_plan`] and commits it back to `UnitStore` through
+//!      [`mush_tactics::custody::check_in`].
 //! 2. **Tamper-Evident Black-Box Forensics (`FO-4`, `Q-H6`, `Q-S4`)**:
 //!    - [`record_space_combat_to_black_box`] records [`SpaceCombatEvent`] hits (`TorpedoHit`,
 //!      `LaserHit`, `RailgunHit`) and open-epoch disablement (`ShipDisabledDerelict`) as
@@ -19,28 +22,33 @@
 //! 3. **48-Hour Registry Salvage Claims (`doc 27a`, `D-35-12`, `D-35-14`)**:
 //!    - [`register_derelict_salvage_in_book`] records a clamped derelict recovery
 //!      in [`SalvageClaimBook`] (`record_physical_attach`, `record_bay_load`, and
-//!      `resolve_hull_recovery_custody`), opening the 48-hour (`172,800 s`) Registry contest
-//!      window when recovered by a non-owner or resolving title immediately on self-recovery.
+//!      `resolve_hull_recovery_custody`), opening the 48 real-hour (`172,800 s`) Registry
+//!      contest window when recovered by a non-owner or resolving title immediately on
+//!      self-recovery.
 
 use std::collections::BTreeMap;
+use std::sync::OnceLock;
 
-use mush_core::{CanonicalId, ObjId};
+use mush_core::{CanonicalId, Ctx, ObjId};
+use mush_sim::deployed::DeployedMark;
 use mush_tactics::{
-    CellAddr, CellId, ConditionId, FacetId, SectionId, TacticalUnit, UnitError, UnitMutationOp,
-    UnitMutationPlan, apply,
+    CellAddr, CellId, ComponentId, ConditionId, FacetId, SectionId, TacticalUnit, UnitError,
+    UnitMutationOp, UnitMutationPlan, apply,
 };
+use smol_str::SmolStr;
 
 use crate::definitions::Catalog;
-use crate::definitions::unit::{ARMOR_CELL, INTERNALS_CELL, UnitSpec};
+use crate::definitions::logistics::DriveLaw;
+use crate::definitions::unit::{ARMOR_CELL, HEAT_CELL, INTERNALS_CELL, UnitSpec};
 use crate::field_ops::{
-    BlackBoxFlightEntry, CustodyTitleStatus, FieldOpsError, FieldUnitAssessment, GroundTenure,
-    OperationalState, RecoveryAuthorityContext, RecoveryOpId, SalvageClaimBook,
-    apply_ic_condition_handoff,
+    BlackBoxFlightEntry, ComponentCondition, CustodyTitleStatus, FieldOpsError,
+    FieldUnitAssessment, GroundTenure, OperationalState, RecoveryAuthorityContext, RecoveryOpId,
+    SalvageClaimBook, apply_ic_condition_handoff,
 };
 use crate::port::ship::SHIP_DAMAGE;
 use crate::space::bubble::{
     DERELICT_WINDOW_S, FacetBand, HullStatus, ShipSectionId, ShipSectionState, SpaceCombatEvent,
-    SpacePartyId, SpaceShipState,
+    SpacePartyId, SpaceShipState, SubsystemCrit,
 };
 
 /// All canonical [`FacetBand`]s on a spacecraft hull (`dray.json`, `D-35-1`).
@@ -59,8 +67,81 @@ pub const ALL_SHIP_SECTIONS: [ShipSectionId; 3] = [
     ShipSectionId::Drive,
 ];
 
+fn fielded_space_catalog() -> Option<&'static Catalog> {
+    static CATALOG: OnceLock<Option<Catalog>> = OnceLock::new();
+    CATALOG
+        .get_or_init(|| Catalog::build_fielded(&[], "tacsim").ok())
+        .as_ref()
+}
+
+/// Look up the authored [`UnitSpec`] for `unit_entry_id` (normalizing fitted core chassis
+/// ids via [`crate::definitions::core_replacement::surface_chassis`]).
+#[must_use]
+pub fn unit_spec_for_id(unit_entry_id: &str) -> Option<&'static UnitSpec> {
+    let base_id = crate::definitions::core_replacement::surface_chassis(unit_entry_id);
+    let key = CanonicalId::new(base_id).ok()?;
+    fielded_space_catalog()?.specs.get(&key)
+}
+
+/// Resolve the [`SectionId`] on `unit` corresponding to `sec_id` (`D-35-1`).
+///
+/// Maps [`ShipSectionId::Drive`] to `"drive"` on `dray.json` / `dray_p.json` and falls
+/// back to `"power"` on `halcyon.json` (whose propulsion/motion-disabling section is `"power"`).
+#[must_use]
+pub fn resolve_tactical_section_id(
+    unit: &TacticalUnit,
+    sec_id: ShipSectionId,
+) -> Option<SectionId> {
+    let primary = SectionId::new(sec_id.id_str()).ok()?;
+    if unit.section(&primary).is_some() {
+        return Some(primary);
+    }
+    if sec_id == ShipSectionId::Drive {
+        let power_sec = SectionId::new("power").ok()?;
+        if unit.section(&power_sec).is_some() {
+            return Some(power_sec);
+        }
+    }
+    None
+}
+
+/// Apply canonical [`UnitSpec`] logistics, drive parameters, propellant capacity, and
+/// silhouette hit radius to `ship` (`D-35-1`, `35a` §1 row 2 & §6 row `SF.16/19`).
+pub fn apply_unit_spec_to_space_ship(ship: &mut SpaceShipState, spec: &UnitSpec) {
+    if let Some(logistics) = &spec.logistics {
+        ship.dry_mass_t = logistics.dry_mass_t;
+        ship.payload_ceiling_kg = logistics.payload_ceiling_kg;
+        if let Ok(prop_key) = CanonicalId::new("propellant")
+            && let Ok(mass_key) = CanonicalId::new("si.mass_kg")
+            && let Some(prop_stow) = logistics.stowage.get(&prop_key)
+            && let Some(&mass_kg) = prop_stow.limits.get(&mass_key)
+        {
+            let cap_kg = u32::try_from(mass_kg).unwrap_or(u32::MAX);
+            ship.propellant_cap_kg = cap_kg;
+            ship.propellant_kg = cap_kg;
+        }
+        if let Some(drive) = &logistics.drive {
+            match drive.law {
+                DriveLaw::Flip {
+                    accel_mg,
+                    exhaust_kms,
+                } => {
+                    ship.rated_accel_mg = accel_mg;
+                    ship.exhaust_kms = exhaust_kms;
+                }
+                DriveLaw::Coast { .. } => {}
+            }
+        }
+    }
+    if let Some(max_width_cm) = spec.silhouettes.iter().map(|s| s.width_cm).max() {
+        let radius_m = i64::from(max_width_cm / 100).max(10);
+        ship.hit_radius_m = radius_m;
+    }
+}
+
 /// Instantiate a stock spacecraft [`TacticalUnit`] and its authored [`UnitSpec`] from
-/// the compiled-in fielded catalog (e.g. `"tacsim.unit.dray"` or `"tacsim.unit.dray_p"`).
+/// the compiled-in fielded catalog (e.g. `"tacsim.unit.dray"`, `"tacsim.unit.dray_p"`,
+/// or `"tacsim.unit.halcyon"`).
 ///
 /// # Errors
 /// Returns [`FieldOpsError`] if the catalog or unit entry cannot be bound.
@@ -68,10 +149,9 @@ pub fn instantiate_stock_space_unit(
     obj: ObjId,
     unit_entry_id: &str,
 ) -> Result<(TacticalUnit, UnitSpec), FieldOpsError> {
-    let catalog = Catalog::build_fielded(&[], "tacsim")
-        .map_err(|_| FieldOpsError::Unit(UnitError::EmptyId))?;
-    let key =
-        CanonicalId::new(unit_entry_id).map_err(|_| FieldOpsError::Unit(UnitError::EmptyId))?;
+    let catalog = fielded_space_catalog().ok_or(FieldOpsError::Unit(UnitError::EmptyId))?;
+    let base_id = crate::definitions::core_replacement::surface_chassis(unit_entry_id);
+    let key = CanonicalId::new(base_id).map_err(|_| FieldOpsError::Unit(UnitError::EmptyId))?;
     let spec = catalog
         .specs
         .get(&key)
@@ -86,7 +166,8 @@ pub fn instantiate_stock_space_unit(
 }
 
 /// Construct a [`SpaceShipState`] directly from a bound [`TacticalUnit`]'s live section
-/// `internals` and facet `armor` cells (`D-35-1`).
+/// `internals`, facet `armor`, `heat` cell, component conditions, and canonical [`UnitSpec`]
+/// (`D-35-1`).
 ///
 /// # Errors
 /// Returns [`FieldOpsError::Unit`] if canonical section, facet, or cell identifiers fail
@@ -99,15 +180,42 @@ pub fn space_ship_from_tactical_unit(
     pos_m: [i64; 3],
     vel_mmps: [i64; 3],
 ) -> Result<SpaceShipState, FieldOpsError> {
+    let spec = unit_spec_for_id(unit.schema().key().id.as_str());
+    space_ship_from_tactical_unit_with_spec(unit, spec, ship_id, callsign, party, pos_m, vel_mmps)
+}
+
+/// Construct a [`SpaceShipState`] from `unit` and an explicit optional [`UnitSpec`] (`D-35-1`).
+///
+/// # Errors
+/// Returns [`FieldOpsError::Unit`] if canonical section, facet, or cell identifiers fail
+/// validation.
+pub fn space_ship_from_tactical_unit_with_spec(
+    unit: &TacticalUnit,
+    spec: Option<&UnitSpec>,
+    ship_id: impl Into<String>,
+    callsign: impl Into<String>,
+    party: SpacePartyId,
+    pos_m: [i64; 3],
+    vel_mmps: [i64; 3],
+) -> Result<SpaceShipState, FieldOpsError> {
     let mut ship = SpaceShipState::new_dray(ship_id, callsign, party, pos_m, vel_mmps);
-    ship.hull_class = unit.schema().key().id.as_str().to_owned();
+    let base_id =
+        crate::definitions::core_replacement::surface_chassis(unit.schema().key().id.as_str());
+    ship.hull_class = base_id.to_owned();
+
+    let resolved_spec = spec.or_else(|| unit_spec_for_id(base_id));
+    if let Some(s) = resolved_spec {
+        apply_unit_spec_to_space_ship(&mut ship, s);
+    }
 
     let internals_cell = CellId::new(INTERNALS_CELL).map_err(FieldOpsError::Unit)?;
     let armor_cell = CellId::new(ARMOR_CELL).map_err(FieldOpsError::Unit)?;
 
     let mut sections = BTreeMap::new();
     for sec_id in ALL_SHIP_SECTIONS {
-        let tac_sec_id = SectionId::new(sec_id.id_str()).map_err(FieldOpsError::Unit)?;
+        let Some(tac_sec_id) = resolve_tactical_section_id(unit, sec_id) else {
+            continue;
+        };
         let internals_addr = CellAddr::Section {
             section: tac_sec_id.clone(),
             cell: internals_cell.clone(),
@@ -117,8 +225,6 @@ pub fn space_ship_from_tactical_unit(
                 u32::try_from(cell.current.max(0)).unwrap_or(0),
                 u32::try_from(cell.max.max(0)).unwrap_or(0),
             )
-        } else if let Some(fallback) = ship.sections.get(&sec_id) {
-            (fallback.internals, fallback.max_internals)
         } else {
             (0, 0)
         };
@@ -148,7 +254,34 @@ pub fn space_ship_from_tactical_unit(
         );
     }
 
-    ship.sections = sections;
+    if !sections.is_empty() {
+        ship.sections = sections;
+    }
+
+    // Read optional hull `heat` cell (`D-35-1`).
+    if let Ok(hull_sec) = SectionId::new(ShipSectionId::Hull.id_str())
+        && let Ok(heat_cell) = CellId::new(HEAT_CELL)
+        && let Some(cell) = unit.cell(&CellAddr::Section {
+            section: hull_sec,
+            cell: heat_cell,
+        })
+    {
+        ship.heat_permille = u16::try_from(cell.current.clamp(0, 1_000)).unwrap_or(0);
+    }
+
+    // Reflect degraded `power` component condition as a drive/radiator subsystem crit.
+    if let Ok(power_id) = ComponentId::new("power")
+        && let Some(comp) = unit.component(&power_id)
+    {
+        let cond = ComponentCondition::classify_condition_id(&comp.condition);
+        if matches!(
+            cond,
+            ComponentCondition::Damaged | ComponentCondition::Jammed
+        ) && !ship.crits.contains(&SubsystemCrit::DriveDegraded)
+        {
+            ship.crits.push(SubsystemCrit::DriveDegraded);
+        }
+    }
 
     let drive_zero = ship
         .sections
@@ -170,9 +303,10 @@ pub fn space_ship_from_tactical_unit(
 }
 
 /// Build and apply an IC-custody-legal [`UnitMutationPlan`] that persists a
-/// [`SpaceShipState`]'s combat or docking damage onto `before`, returning the updated
-/// [`TacticalUnit`], its [`FieldUnitAssessment`] (`Operational`, `Immobile`, `Disabled`,
-/// `Wreck`), and the [`UnitMutationPlan`] (`D-35-1`, `D-35-12`).
+/// [`SpaceShipState`]'s combat or docking damage (section `internals`, facet `armor`,
+/// `heat` cell, section conditions, and component conditions) onto `before`, returning
+/// the updated [`TacticalUnit`], its [`FieldUnitAssessment`] (`Operational`, `Immobile`,
+/// `Disabled`, `Wreck`), and the [`UnitMutationPlan`] (`D-35-1`, `D-35-12`).
 ///
 /// # Errors
 /// Returns [`FieldOpsError`] if cell/condition mutation or IC condition handoff fails.
@@ -182,16 +316,30 @@ pub fn build_space_damage_mutation_plan(
     spec: Option<&UnitSpec>,
     at_ic: i64,
 ) -> Result<(TacticalUnit, FieldUnitAssessment, Option<UnitMutationPlan>), FieldOpsError> {
+    let resolved_spec = spec.or_else(|| unit_spec_for_id(before.schema().key().id.as_str()));
     let internals_cell = CellId::new(INTERNALS_CELL).map_err(FieldOpsError::Unit)?;
     let armor_cell = CellId::new(ARMOR_CELL).map_err(FieldOpsError::Unit)?;
     let destroyed_cond = ConditionId::new("destroyed").map_err(FieldOpsError::Unit)?;
+    let wreck_cond = ConditionId::new("wreck").map_err(FieldOpsError::Unit)?;
     let damaged_cond = ConditionId::new("damaged").map_err(FieldOpsError::Unit)?;
     let intact_cond = ConditionId::new("intact").map_err(FieldOpsError::Unit)?;
+
+    let all_ship_sections_zero = !ship.sections.is_empty()
+        && ship.sections.values().all(|s| s.internals == 0)
+        && matches!(
+            ship.status,
+            HullStatus::DisabledDerelict {
+                epoch_open: true,
+                ..
+            }
+        );
 
     let mut ops = Vec::new();
 
     for (sec_id, sec_state) in &ship.sections {
-        let tac_sec_id = SectionId::new(sec_id.id_str()).map_err(FieldOpsError::Unit)?;
+        let Some(tac_sec_id) = resolve_tactical_section_id(before, *sec_id) else {
+            continue;
+        };
 
         // 1. Section internals cell
         let internals_addr = CellAddr::Section {
@@ -208,10 +356,14 @@ pub fn build_space_damage_mutation_plan(
             }
         }
 
-        // 2. Section condition (`intact`, `damaged`, `destroyed`)
+        // 2. Section condition (`intact`, `damaged`, `destroyed`, or `wreck` on open-epoch hull zero)
         if let Some(before_sec) = before.section(&tac_sec_id) {
             let target_cond = if sec_state.internals == 0 {
-                &destroyed_cond
+                if *sec_id == ShipSectionId::Hull && all_ship_sections_zero {
+                    &wreck_cond
+                } else {
+                    &destroyed_cond
+                }
             } else if sec_state.internals < sec_state.max_internals {
                 &damaged_cond
             } else {
@@ -245,6 +397,39 @@ pub fn build_space_damage_mutation_plan(
         }
     }
 
+    // 4. Optional hull `heat` cell (`D-35-1`).
+    if let Ok(hull_sec) = SectionId::new(ShipSectionId::Hull.id_str())
+        && let Ok(heat_cell) = CellId::new(HEAT_CELL)
+    {
+        let heat_addr = CellAddr::Section {
+            section: hull_sec,
+            cell: heat_cell,
+        };
+        if let Some(before_heat) = before.cell(&heat_addr) {
+            let target_heat = i64::from(ship.heat_permille).clamp(before_heat.min, before_heat.max);
+            if before_heat.current != target_heat {
+                ops.push(UnitMutationOp::SetCell {
+                    addr: heat_addr,
+                    value: target_heat,
+                });
+            }
+        }
+    }
+
+    // 5. Subsystem crit -> surviving `power` component condition (`D-35-1`).
+    let has_power_crit = ship.crits.contains(&SubsystemCrit::DriveDegraded)
+        || ship.crits.contains(&SubsystemCrit::RadiatorDamaged);
+    if has_power_crit
+        && let Ok(power_id) = ComponentId::new("power")
+        && let Some(before_comp) = before.component(&power_id)
+        && before_comp.condition == intact_cond
+    {
+        ops.push(UnitMutationOp::SetComponentCondition {
+            component: power_id,
+            condition: damaged_cond,
+        });
+    }
+
     let after_cells = if ops.is_empty() {
         before.clone()
     } else {
@@ -255,7 +440,73 @@ pub fn build_space_damage_mutation_plan(
             .0
     };
 
-    apply_ic_condition_handoff(before, &after_cells, spec, at_ic)
+    apply_ic_condition_handoff(before, &after_cells, resolved_spec, at_ic)
+}
+
+/// Check out a live hull [`TacticalUnit`] into a space bubble via
+/// [`mush_tactics::custody::check_out`] (`DeployedMark::field`) and construct its
+/// canonical [`SpaceShipState`] (`SF.R2`, `D-35-1`).
+///
+/// # Errors
+/// Returns an error string if the hull has no bound [`TacticalUnit`], is already
+/// deployed under another mark, or fails `SpaceShipState` construction.
+#[allow(clippy::too_many_arguments)]
+pub fn check_out_space_unit(
+    ctx: &mut Ctx<'_>,
+    hull: ObjId,
+    site_key: &str,
+    ordinal: u32,
+    ship_id: impl Into<String>,
+    callsign: impl Into<String>,
+    party: SpacePartyId,
+    pos_m: [i64; 3],
+    vel_mmps: [i64; 3],
+) -> Result<SpaceShipState, String> {
+    let mark = DeployedMark::field(site_key, ordinal.max(1));
+    let marker = mush_tactics::custody::check_out(ctx, hull, mark)
+        .map_err(|e| format!("space check_out failed for #{}: {e}", hull.0))?;
+    space_ship_from_tactical_unit(&marker.snapshot, ship_id, callsign, party, pos_m, vel_mmps)
+        .map_err(|e| format!("space ship construction failed for #{}: {e}", hull.0))
+}
+
+/// Check in a hull [`TacticalUnit`] from a space bubble via
+/// [`mush_tactics::custody::check_in`], persisting all section `internals`, facet `armor`,
+/// `heat`, section-condition, and component-condition mutations onto `UnitStore`
+/// (`SF.R2`, `D-35-1`, `D-35-12`, `Q-CF-35`).
+///
+/// # Errors
+/// Returns an error string if the hull has no bound [`TacticalUnit`] or if the
+/// IC mutation plan cannot be constructed or applied.
+pub fn check_in_space_unit(
+    ctx: &mut Ctx<'_>,
+    hull: ObjId,
+    ship: &SpaceShipState,
+    now_ic_s: i64,
+) -> Result<FieldUnitAssessment, String> {
+    let before = mush_tactics::module::unit_of(ctx.w, hull)
+        .cloned()
+        .ok_or_else(|| format!("hull #{} has no bound TacticalUnit", hull.0))?;
+    let (_, assessment, plan_opt) = build_space_damage_mutation_plan(&before, ship, None, now_ic_s)
+        .map_err(|e| format!("space check_in plan failed for #{}: {e}", hull.0))?;
+
+    // Per `Q-CF-35` (`field/close.rs:247`): IC check-in never passes `None` (which would
+    // restore the OOC pre-checkout snapshot); when no cells changed, pass an empty IC plan.
+    let empty_plan = UnitMutationPlan::new(
+        Vec::new(),
+        Some(before.revision()),
+        Some(SmolStr::new_static("space:checkin")),
+    )
+    .map_err(|e| format!("empty space check_in plan failed for #{}: {e}", hull.0))?;
+    let plan_ref = plan_opt.as_ref().unwrap_or(&empty_plan);
+
+    if mush_tactics::custody::marker_of(ctx.w, hull).is_some() {
+        mush_tactics::custody::check_in(ctx, hull, Some(plan_ref))
+            .map_err(|e| format!("space check_in failed for #{}: {e}", hull.0))?;
+    } else {
+        mush_sim::deployed::clear(ctx.w, hull);
+    }
+
+    Ok(assessment)
 }
 
 /// Format `+ship`'s canonical `Damage: {sections}.` line directly from a [`TacticalUnit`]

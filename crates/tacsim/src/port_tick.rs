@@ -315,6 +315,9 @@ pub(crate) fn register_with_coverage(
     )?);
     actions.push(crate::detachment::sortie::action_descriptor(&outcome_refs)?);
     actions.push(crate::procurement::action_descriptor(&outcome_refs)?);
+    actions.push(crate::port::bay_work::act::action_descriptor(
+        &outcome_refs,
+    )?);
     if let Some(ic) = ic {
         actions.extend(ic.actions()?);
     }
@@ -543,6 +546,14 @@ pub(crate) fn register_with_coverage(
     // Doc 17h cut M8f: the procurement ledger, its record action and the `tacsim.procurement`
     // tick, unconditionally (no policy, no visit).
     crate::procurement::register(reg, &action_refs, &outcome_refs)?;
+    // Doc 36 cut GC.8b: the bay's ledger and part families, unconditionally, and its
+    // `tacsim_bay_work` provider when the inventory cell is filled (the mill's rule).
+    crate::port::bay_work::act::register(
+        reg,
+        &action_refs,
+        &outcome_refs,
+        inventory_families.as_ref(),
+    )?;
     // Doc 17h cut M8h: the `tacsim.house_attestation` tick and its RAM slot, unconditionally
     // (no agent, no visit).
     crate::house_attestation::register(reg)?;
@@ -598,6 +609,8 @@ fn register_outcomes(
     outcomes.push(crate::detachment::activation::outcome_descriptor()?);
     outcomes.push(crate::detachment::sortie::outcome_descriptor()?);
     outcomes.push(crate::procurement::outcome_descriptor()?);
+    // Doc 36 cut GC.8b: the bay's inventory acts.
+    outcomes.push(crate::port::bay_work::act::outcome_descriptor()?);
     if let Some(ic) = ic {
         outcomes.push(ic.outcome()?);
     }

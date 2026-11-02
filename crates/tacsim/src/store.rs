@@ -620,6 +620,20 @@ impl TacsimStore {
             .collect()
     }
 
+    /// **Every hull whose record owes an inventory act** (doc 36 cut GC.8b), in hull order.
+    #[must_use]
+    pub fn bay_owing_hulls(&self) -> Vec<ObjId> {
+        self.bay_hulls
+            .iter()
+            .filter_map(|(hull, state)| match state {
+                crate::port::bay_work::BayHullState::Present(row) if row.owed.is_some() => {
+                    Some(*hull)
+                }
+                _ => None,
+            })
+            .collect()
+    }
+
     /// **The hulls berthed in `workshop`** (doc 36 cut GC.8), in hull order.
     #[must_use]
     pub fn bay_berthed_in(&self, workshop: ObjId) -> Vec<ObjId> {

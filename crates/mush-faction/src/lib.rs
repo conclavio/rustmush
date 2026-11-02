@@ -1054,6 +1054,59 @@ pub fn register_programme_principal(
     Ok(())
 }
 
+/// **Register a content-authored organization and its NPC principal** (doc 36 cut GC.11,
+/// Q-36-55: a raider group's organization, so standing written for its fire and for fire at it
+/// has a principal to name). Idempotent by name: the faction is made once, with no backing
+/// organization (staff may bind one later through `@faction/org`), and `npc` joins its principals
+/// once. Answers the faction's id.
+///
+/// # Errors
+///
+/// The faction module is not loaded, `npc` is no NPC, the name is out of bounds, or the registry
+/// is full.
+pub fn register_content_faction(
+    ctx: &mut Ctx<'_>,
+    name: &str,
+    npc: ObjId,
+) -> Result<FactionId, String> {
+    if ctx
+        .w
+        .get(npc)
+        .is_none_or(|o| o.kind != mush_core::ObjKind::Npc)
+    {
+        return Err("Principal must be an NPC".into());
+    }
+    if name.trim().is_empty() || name.len() > MAX_NAME_LEN || name.chars().any(char::is_control) {
+        return Err("Faction name exceeds its bounds".into());
+    }
+    let s = ctx
+        .w
+        .module_state_mut::<FactionState>()
+        .ok_or("Factions unavailable")?;
+    let id = match s.faction_by_name(name).map(|f| f.id) {
+        Some(id) => id,
+        None => {
+            if s.factions.len() >= 4096 {
+                return Err("Faction registry is full".into());
+            }
+            let id = FactionId(s.next_faction_id);
+            s.next_faction_id = s
+                .next_faction_id
+                .checked_add(1)
+                .ok_or("Faction ids exhausted")?;
+            s.factions.insert(id, Faction::new(id, name.trim()));
+            data::persist_meta(ctx.out, s.next_faction_id, s.next_region_id);
+            id
+        }
+    };
+    let f = s.factions.get_mut(&id).ok_or("Faction unavailable")?;
+    if !f.principals.contains(&npc) {
+        f.principals.push(npc);
+        data::persist_faction(ctx.out, f);
+    }
+    Ok(f.id)
+}
+
 /// **The Red Dies** (doc 17h cut M8d D7, Q-M8-5): the front's title, owner-named in doc 17h §3.
 pub const RED_DIES_TITLE: &str = "The Red Dies";
 /// The canon kind the Red Dies clock advances on: `minds.unwarranted`, committed once per

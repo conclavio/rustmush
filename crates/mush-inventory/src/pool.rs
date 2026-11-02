@@ -1885,6 +1885,59 @@ impl InventoryFamilies {
         Ok(created)
     }
 
+    /// **Mint several origin lots at one endpoint in one bundle** (doc 36 cut GC.8b: a
+    /// scrapped hull's alloys and parts): each row as [`mint_origin`](Self::mint_origin) under
+    /// one `source`, the endpoint's lot census staged once for all of them, because one
+    /// `ActionTxn` writes a record once. The same conservation rule holds: the caller's bundle
+    /// answers for every quantity.
+    ///
+    /// # Errors
+    /// [`InventoryError`] as [`mint_origin`](Self::mint_origin), and
+    /// [`InventoryError::AlreadyExists`] for a lot id named twice. **Nothing is written on an
+    /// error.**
+    pub fn mint_origins(
+        &self,
+        txn: &mut ActionTxn<'_>,
+        endpoint: EndpointRef,
+        rows: &[(CanonicalId, u64, Grade, LotId)],
+        source: &mush_economy::ExternalRef,
+    ) -> Result<Vec<Lot>, InventoryError> {
+        let mut created: Vec<Lot> = Vec::with_capacity(rows.len());
+        for (commodity, amount, grade, child) in rows {
+            if created.iter().any(|lot| lot.id() == *child) {
+                return Err(InventoryError::AlreadyExists);
+            }
+            self.require_new_lot(txn, *child)?;
+            if txn.get(&self.lots, child)?.is_some() {
+                return Err(InventoryError::AlreadyExists);
+            }
+            created.push(Lot::new(
+                *child,
+                endpoint,
+                commodity.clone(),
+                *amount,
+                *grade,
+                Lineage::Origin {
+                    source: source.clone(),
+                },
+                0,
+            )?);
+        }
+        if created.is_empty() {
+            return Ok(created);
+        }
+        let count = i64::try_from(created.len()).map_err(|_| {
+            InventoryError::Record(InventoryRecordError::EndpointLots {
+                max: crate::record::MAX_LOTS_PER_ENDPOINT,
+            })
+        })?;
+        self.move_lots(txn, endpoint, count)?;
+        for lot in &created {
+            txn.insert(&self.lots, &lot.id(), lot.clone())?;
+        }
+        Ok(created)
+    }
+
     /// One exact generation of the endpoint's root for one commodity.
     ///
     /// **Verifies what it loaded** (E7c2 fold C10): `tranche_key` truncates a

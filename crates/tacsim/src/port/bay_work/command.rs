@@ -1,15 +1,21 @@
-//! **`+bay`** (doc 31 UD.4c's player surface, as doc 36 cut GC.8a builds it): the quote, the
-//! order, its cancel, berth and stow. The doll is GC.8b's.
+//! **`+bay`** (doc 31 UD.4c's player surface, as doc 36 cuts GC.8a and GC.8b build it): the
+//! doll, the quote, the order, its cancel, berth and stow, fitting a part from the hold,
+//! stripping a part and scrapping a hull.
 //!
-//! - `+bay <hull>` (or `/quote`): where the hull stands, the work there and its price, the work
-//!   that needs a workshop, and its open or last order.
+//! - `+bay <hull>` (or `/quote`): the doll (each section's condition and points, each part's
+//!   condition and rounds), where the hull stands, the work there and its price with the goods
+//!   it draws from the carrier's hold, the work that needs a workshop, and its open or last
+//!   order.
 //! - `+bay/order <hull>=<work>`: `all`, a kind (`armor`, `rebuild`, `mend`, `unjam`,
 //!   `replace`, `rearm`) or a section or part, comma-separated.
+//! - `+bay/fit <hull>=<slot> <lot>`: replace a part from a lot in the carrier's hold.
+//! - `+bay/strip <hull>=<part>`, `+bay/scrap <hull>`.
 //! - `+bay/cancel <hull>`, `+bay/berth <hull>`, `+bay/stow <hull>`.
 //!
 //! A hull is named by `#<id>` or by its name in the room the actor stands in.
 
 use mush_core::{CmdError, Ctx, ObjId};
+use mush_tactics::CellAddr;
 
 use super::{BayHullState, BayQuote, FacilityClass, OrderStatus, quote_here};
 use crate::port::coop::{money_minor, say};
@@ -18,10 +24,14 @@ use crate::store::TacsimStore;
 /// The verb.
 pub const BAY_VERB: &str = "+bay";
 /// Its switches.
-pub const BAY_SWITCHES: [&str; 5] = ["quote", "order", "cancel", "berth", "stow"];
+pub const BAY_SWITCHES: [&str; 8] = [
+    "quote", "order", "cancel", "berth", "stow", "fit", "strip", "scrap",
+];
 /// The grammar.
 pub const BAY_USAGE: &str = "Usage: +bay[/quote] <hull>, +bay/order <hull>=<work>, \
-                             +bay/cancel <hull>, +bay/berth <hull>, +bay/stow <hull>";
+                             +bay/fit <hull>=<slot> <lot>, +bay/strip <hull>=<part>, \
+                             +bay/scrap <hull>, +bay/cancel <hull>, +bay/berth <hull>, \
+                             +bay/stow <hull>";
 /// The help text.
 pub const BAY_HELP: &str = "+bay <hull> quotes the work on a hull where it stands: a carrier's \
     vehicle bay does armour, mending, unjamming and recharging at twice the time; a port \
@@ -29,7 +39,11 @@ pub const BAY_HELP: &str = "+bay <hull> quotes the work on a hull where it stand
     the fee into escrow and holds the hull until the work is done on the IC clock \
     (all, armor, rebuild, mend, unjam, replace, rearm, or a section or part). +bay/cancel \
     releases the fee. At a port's workshop, +bay/berth <hull> takes a hull out of your docked \
-    carrier's bay and +bay/stow <hull> puts it back.";
+    carrier's bay and +bay/stow <hull> puts it back. Munitions and industrial parts come from \
+    the carrier's hold when the work is done. In a workshop, +bay/fit <hull>=<slot> <lot> fits \
+    a traced part from the hold (a hot part is refused), +bay/strip <hull>=<part> takes a part \
+    off into the hold, and the title holder's +bay/scrap <hull> breaks the hull up into \
+    structural alloys and parts.";
 
 /// `#<id>`, or a thing of that name in the actor's room.
 fn hull_named(ctx: &Ctx<'_>, word: &str) -> Result<ObjId, String> {
@@ -54,6 +68,61 @@ fn hull_named(ctx: &Ctx<'_>, word: &str) -> Result<ObjId, String> {
         .ok_or_else(|| super::NO_HULL.to_owned())
 }
 
+/// **The doll** (UD.4c's damage view): each section's condition and points, and under it each
+/// part it holds, with its condition and, for a part with a magazine, its rounds.
+fn doll(w: &mush_core::World, hull: ObjId) -> Vec<String> {
+    let Ok((unit, _, anatomy)) = super::unit_parts(w, hull) else {
+        return Vec::new();
+    };
+    let assessment = mush_tactics::field_ops::assess_tactical_unit(&unit, &anatomy);
+    let state = format!("{:?}", assessment.state).to_lowercase();
+    let mut lines = vec![format!("  Condition: {state}.")];
+    for (section, condition) in &assessment.section_conditions {
+        let (current, max) = unit
+            .cells()
+            .filter(|(addr, _)| {
+                matches!(addr, CellAddr::Section { section: s, .. } | CellAddr::Facet { section: s, .. } if s == section)
+            })
+            .fold((0i64, 0i64), |(c, m), (_, cell)| {
+                (
+                    c.saturating_add(cell.current.saturating_sub(cell.min)),
+                    m.saturating_add(cell.max.saturating_sub(cell.min)),
+                )
+            });
+        lines.push(format!(
+            "    {:<28} {:<10} {current:>5}/{max}",
+            section.as_str(),
+            condition.as_str()
+        ));
+        for (component, state) in unit.components() {
+            if mush_tactics::field_ops::install_point_section(&state.install) != Some(section) {
+                continue;
+            }
+            let condition = assessment
+                .component_conditions
+                .get(component)
+                .map_or("unknown", |c| c.as_str());
+            let rounds = anatomy
+                .weapon_ammo_cell
+                .as_ref()
+                .filter(|_| anatomy.weapon_components.contains(component))
+                .and_then(|cell| {
+                    unit.cell(&CellAddr::Component {
+                        component: component.clone(),
+                        cell: cell.clone(),
+                    })
+                })
+                .map(|cell| format!(" {}/{} rounds", cell.current, cell.max))
+                .unwrap_or_default();
+            lines.push(format!(
+                "      {:<26} {condition}{rounds}",
+                component.as_str()
+            ));
+        }
+    }
+    lines
+}
+
 fn hours(secs: i64) -> String {
     let minutes = secs.div_euclid(60);
     format!("{}h{:02}", minutes.div_euclid(60), minutes.rem_euclid(60))
@@ -76,6 +145,7 @@ fn show(ctx: &mut Ctx<'_>, hull: ObjId) -> Result<(), String> {
                 hull.0,
                 facility.class.word()
             ));
+            lines.extend(doll(ctx.w, hull));
             if quote.jobs.is_empty() && quote.elsewhere.is_empty() {
                 lines.push("  Nothing needs doing.".to_owned());
             }
@@ -98,6 +168,17 @@ fn show(ctx: &mut Ctx<'_>, hull: ObjId) -> Result<(), String> {
                     ),
                     hours(BayQuote::secs(&quote.jobs, facility.class))
                 ));
+                let goods = super::order_goods(&quote.jobs);
+                if !goods.is_empty() {
+                    let words: Vec<String> = goods
+                        .iter()
+                        .map(|g| format!("{} {}", g.units, g.good))
+                        .collect();
+                    lines.push(format!(
+                        "  From the carrier's hold, all of it: {}.",
+                        words.join(", ")
+                    ));
+                }
             }
             for job in &quote.elsewhere {
                 lines.push(format!(
@@ -107,7 +188,10 @@ fn show(ctx: &mut Ctx<'_>, hull: ObjId) -> Result<(), String> {
                 ));
             }
         }
-        Err(why) => lines.push(format!("{name} (#{}): {why}", hull.0)),
+        Err(why) => {
+            lines.push(format!("{name} (#{}): {why}", hull.0));
+            lines.extend(doll(ctx.w, hull));
+        }
     }
     lines.push(match super::right_of(ctx, hull) {
         Some(super::Right::Title) => "  Your right: title (everything).".to_owned(),
@@ -127,6 +211,12 @@ fn show(ctx: &mut Ctx<'_>, hull: ObjId) -> Result<(), String> {
     {
         if row.berth.is_some() {
             lines.push("  Berthed in this workshop; +bay/stow returns her to her carrier.".into());
+        }
+        if row.scrapped_ic.is_some() {
+            lines.push("  Scrapped: an irrecoverable shell.".into());
+        }
+        if row.owed.is_some() {
+            lines.push("  The bay's stores are still settling her last work.".into());
         }
         if let Some(order) = &row.order {
             let state = match order.status {
@@ -184,7 +274,54 @@ pub(crate) fn bay_cmd(ctx: &mut Ctx<'_>) -> Result<(), CmdError> {
             );
             return Ok(());
         }
+        if ctx.switches.has("fit") || ctx.switches.has("strip") {
+            let (hull, rest) = raw.split_once('=').ok_or(BAY_USAGE)?;
+            let hull = hull_named(ctx, hull)?;
+            if ctx.switches.has("strip") {
+                let lot = super::strip::strip(ctx, hull, rest)?;
+                say(
+                    ctx,
+                    format!(
+                        "{} comes off #{} and goes to the carrier's hold as {lot}.",
+                        rest.trim(),
+                        hull.0
+                    ),
+                );
+                return Ok(());
+            }
+            let (slot, lot) = rest.trim().split_once(' ').ok_or(BAY_USAGE)?;
+            let lot = mush_inventory::LotId::parse(lot).ok_or("That is not a lot.")?;
+            let order = super::fit_order(ctx, hull, slot, lot)?.order;
+            let words: Vec<String> = order.jobs.iter().map(|j| j.job.describe()).collect();
+            let fee = money_minor(ctx, order.fee_minor);
+            say(
+                ctx,
+                format!(
+                    "Order {} taken in the {}: {}. {fee} is held until the work is done, in {} \
+                     IC time.",
+                    order.seq,
+                    order.class.word(),
+                    words.join(", "),
+                    hours(order.due_ic.saturating_sub(order.started_ic))
+                ),
+            );
+            return Ok(());
+        }
         let hull = hull_named(ctx, &raw)?;
+        if ctx.switches.has("scrap") {
+            let scrapped = super::strip::scrap(ctx, hull)?;
+            say(
+                ctx,
+                format!(
+                    "#{} is broken up: {} t of structural alloys and {} part(s) go to the \
+                     carrier's hold.",
+                    hull.0,
+                    scrapped.alloys_t,
+                    scrapped.parts.len()
+                ),
+            );
+            return Ok(());
+        }
         if ctx.switches.has("cancel") {
             super::cancel_order(ctx, hull)?;
             return Ok(());

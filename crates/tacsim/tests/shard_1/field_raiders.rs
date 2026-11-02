@@ -42,13 +42,13 @@ fn tune(cfg: &mut TacsimConfig) {
 }
 
 /// Ahuna Flank's record.
-fn site_record(rig: &mut Rig) -> Option<SiteRecord> {
+pub(crate) fn site_record(rig: &mut Rig) -> Option<SiteRecord> {
     let h = handles(&rig.tw);
     typed(&mut rig.tw, &h.families.sites, &SiteKey(cid(AHUNA)))
 }
 
 /// **An armed hull** (the line tank) on Ahuna Flank's ground at `cell`.
-fn armed(rig: &mut Rig, name: &str, cell: (i64, i64), heading: u32) -> ObjId {
+pub(crate) fn armed(rig: &mut Rig, name: &str, cell: (i64, i64), heading: u32) -> ObjId {
     let domain = ahuna_domain(&rig.tw);
     staff_hand(rig, |ctx| {
         let spec = ctx
@@ -96,7 +96,7 @@ pub(crate) fn seat_npc(rig: &mut Rig, unit: ObjId, npc: ObjId) {
 }
 
 /// **Make `unit` fragile**: armour at its floor, internals one above, so a few hits wreck it.
-fn fragile(rig: &mut Rig, unit: ObjId) {
+pub(crate) fn fragile(rig: &mut Rig, unit: ObjId) {
     worn(rig, unit, true);
 }
 
@@ -145,7 +145,7 @@ fn worn(rig: &mut Rig, unit: ObjId, internals: bool) {
 }
 
 /// The registry's egress, claimed once per process.
-fn egress(rig: &mut Rig) -> Receiver<ArenaOut> {
+pub(crate) fn egress(rig: &mut Rig) -> Receiver<ArenaOut> {
     rig.tw
         .world()
         .module_state::<tacsim::arena_bridge::ArenaRegistry>()
@@ -155,7 +155,7 @@ fn egress(rig: &mut Rig) -> Receiver<ArenaOut> {
 }
 
 /// The world loop's `Wake::ArenaEgress` arm, by hand, keeping every ledger line.
-fn pump(rig: &mut Rig, rx: &mut Receiver<ArenaOut>, lines: &mut Vec<LedgerEvent>) {
+pub(crate) fn pump(rig: &mut Rig, rx: &mut Receiver<ArenaOut>, lines: &mut Vec<LedgerEvent>) {
     let Some(tasks) = rig
         .tw
         .world()
@@ -192,7 +192,7 @@ fn pump(rig: &mut Rig, rx: &mut Receiver<ArenaOut>, lines: &mut Vec<LedgerEvent>
 }
 
 /// One world second: the ticks due, and every submission they queued, landed.
-fn second(rig: &mut Rig) {
+pub(crate) fn second(rig: &mut Rig) {
     let t = rig.tw.world().now().saturating_add(1);
     rig.tw.set_now(t);
     let _ = rig.tw.fire_due(t.saturating_mul(1_000));
@@ -202,7 +202,7 @@ fn second(rig: &mut Rig) {
 }
 
 /// Pump and tick until `done` holds or `secs` of wall time pass.
-async fn until(
+pub(crate) async fn until(
     rig: &mut Rig,
     rx: &mut Receiver<ArenaOut>,
     lines: &mut Vec<LedgerEvent>,
@@ -226,7 +226,7 @@ async fn until(
 }
 
 /// The site's field task, when one runs.
-fn task(rig: &Rig) -> Option<tacsim::arena_task::MatchId> {
+pub(crate) fn task(rig: &Rig) -> Option<tacsim::arena_task::MatchId> {
     rig.tw
         .world()
         .module_state::<tacsim::arena_bridge::ArenaRegistry>()

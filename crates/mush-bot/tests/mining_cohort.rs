@@ -909,10 +909,19 @@ async fn all_hold(flights: &[(&arena::Flight, &str)], limit: Duration) -> bool {
 /// lifts again with `leave=1`. Home, `+tv` has rig 1 out of the bay with its ore, and staff's
 /// `@spatial` still finds it on the site's ground. Then it sells.
 ///
+/// **A director raid instead** (doc 36 cut GC.11): with `FIELD_RAID=director` the harness seeds
+/// and wears the raider as above and launches, declares and withdraws nothing.
+/// `[tacsim.field].raid_director` is on, and the raid
+/// director sends the content's raider once the site holds three flights and a rig holds ore (the
+/// captain's first cycle, with its two rigs and the escort's out): it lands, its leader declares,
+/// and it turns for home on its own triggers (Q-36-55). The bots run as before. `FIELD_IDLE_S`
+/// sets `[tacsim.field].idle_demote_s` for the run.
+///
 /// No model: the run is deterministic.
 #[tokio::test(flavor = "multi_thread", worker_threads = 4)]
 #[allow(clippy::too_many_lines)] // one story, two lanes, in order
 async fn a_captain_and_its_escort_fight_the_raider_in_an_ic_field() {
+    let director = std::env::var("FIELD_RAID").is_ok_and(|raid| raid == "director");
     tokio::time::timeout(Duration::from_secs(35 * 60), async {
         let captain = Miner {
             account: "fieldcap",
@@ -926,10 +935,31 @@ async fn a_captain_and_its_escort_fight_the_raider_in_an_ic_field() {
         };
         // The raider waits on the site, seeded and launched from its carrier at boot, its hulls
         // worn as CF.6b's own gate wears one.
+        // Doc 36 cut GC.11: under `FIELD_RAID=director` nobody seeds it; the director does.
         let (rig, staff) = mine::boot_with(
             &[captain, escort],
-            |cfg| cfg.tacsim.field.disengage_s = 30,
+            |cfg| {
+                cfg.tacsim.field.disengage_s = 30;
+                cfg.tacsim.field.raid_director = director;
+                // `FIELD_IDLE_S` shortens the idle bound (and so a director raid's idle trigger).
+                if let Some(idle) = std::env::var("FIELD_IDLE_S")
+                    .ok()
+                    .and_then(|idle| idle.parse().ok())
+                {
+                    cfg.tacsim.field.idle_demote_s = idle;
+                }
+            },
             |engine| {
+                // Under the director the raider is seeded and worn as in the staff run, and never
+                // launched: the director lands, launches, declares and withdraws it.
+                if director {
+                    let mut said = vec![mine::staff_line(
+                        engine,
+                        &format!("@field/raiders {SKULKS}"),
+                    )];
+                    said.extend(mine::wear_raiders(engine));
+                    return said;
+                }
                 let mut said = vec![
                     mine::staff_line(engine, &format!("@field/raiders {SKULKS}")),
                     mine::staff_line(engine, &format!("@field/raiders/launch {SKULKS}")),
@@ -939,16 +969,21 @@ async fn a_captain_and_its_escort_fight_the_raider_in_an_ic_field() {
             },
         )
         .await;
-        assert_eq!(staff.len(), 4, "two raider hulls worn: {staff:?}");
-        println!("field rig: {}\nfield staff: {staff:?}", rig.dir.display());
-        assert!(staff[1].contains("hulls on the ground"), "{staff:?}");
-        let leader = staff[0]
-            .split_once("led by ")
-            .and_then(|(_, rest)| rest.split_once("(#"))
-            .and_then(|(_, rest)| rest.split_once(')'))
-            .and_then(|(n, _)| n.parse::<u32>().ok())
-            .map(mush_core::ObjId)
-            .unwrap_or_else(|| panic!("the raider's leader: {staff:?}"));
+        println!(
+            "field rig: {}\nfield staff: {staff:?}; director raid: {director}",
+            rig.dir.display()
+        );
+        let leader = (!director).then(|| {
+            assert_eq!(staff.len(), 4, "two raider hulls worn: {staff:?}");
+            assert!(staff[1].contains("hulls on the ground"), "{staff:?}");
+            staff[0]
+                .split_once("led by ")
+                .and_then(|(_, rest)| rest.split_once("(#"))
+                .and_then(|(_, rest)| rest.split_once(')'))
+                .and_then(|(n, _)| n.parse::<u32>().ok())
+                .map(mush_core::ObjId)
+                .unwrap_or_else(|| panic!("the raider's leader: {staff:?}"))
+        });
         // One config file a bot: the arena rig's one `bot/arena.toml` would be overwritten by the
         // second before the first child read it.
         let at = |name: &str| rig.dir.join(name).join("bot.toml");
@@ -1017,17 +1052,24 @@ async fn a_captain_and_its_escort_fight_the_raider_in_an_ic_field() {
             transcript_tail(&escort_flight)
         );
         let _ = god.drain();
-        // The leader declares on the first bearing that names a flight on the ground.
         let mut opened = false;
-        for octant in ["W", "NW", "SW", "N", "S", "NE", "SE", "E"] {
-            assert!(
-                rig.act_as(leader, &format!("+field/mark {octant}=hostile"))
-                    .await
-            );
-            if transcript_holds(&flight, "is open on Ahuna Flank", Duration::from_secs(8)).await {
-                opened = true;
-                break;
+        if let Some(leader) = leader {
+            // The leader declares on the first bearing that names a flight on the ground.
+            for octant in ["W", "NW", "SW", "N", "S", "NE", "SE", "E"] {
+                assert!(
+                    rig.act_as(leader, &format!("+field/mark {octant}=hostile"))
+                        .await
+                );
+                if transcript_holds(&flight, "is open on Ahuna Flank", Duration::from_secs(8)).await
+                {
+                    opened = true;
+                    break;
+                }
             }
+        } else {
+            // The director's raid lands and its leader declares on its own.
+            opened =
+                transcript_holds(&flight, "is open on Ahuna Flank", Duration::from_secs(900)).await;
         }
         assert!(
             opened,
@@ -1050,8 +1092,11 @@ async fn a_captain_and_its_escort_fight_the_raider_in_an_ic_field() {
             transcript_tail(&flight),
             transcript_tail(&escort_flight)
         );
-        god.send(&format!("@field/raiders/withdraw {SKULKS}")).await;
-        god.pump(Duration::from_secs(3)).await;
+        // A director raid turns for home on its own triggers (Q-36-55).
+        if !director {
+            god.send(&format!("@field/raiders/withdraw {SKULKS}")).await;
+            god.pump(Duration::from_secs(3)).await;
+        }
 
         let landed = arena::land(flight, Duration::from_secs(25 * 60)).await;
         let landed_escort = arena::land(escort_flight, Duration::from_secs(10 * 60)).await;

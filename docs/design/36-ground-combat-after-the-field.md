@@ -1027,7 +1027,7 @@ Q-36-39, Q-36-40, Q-36-53 (the acts).
   **GC.8b**: rearming from munitions lots (an inventory draw needs an authoritative action of
   its own), stripped-part provenance and hot parts, scrap (a workshop hull, with the seam for
   remains), the doll, the built `bay_refit` reading the grant, and the salvor's custody once
-  GC.5/GC.6 record it.
+  GC.5/GC.6 record it. GC.8b built all but the salvor's custody ("GC.8b as built", below).
 
 **GC.9 — The lease's damage charge.** Q-36-34.
 - At return, the damage is assessed, and the tariff's restoration cost is taken from the deposit,
@@ -1986,6 +1986,156 @@ among them); `mush-industry`'s `bay_refit` rig; `mush-tactics`' workshop tests; 
 budget, restriction lints); clippy and rustdoc `-D warnings` on `tacsim` and `mush-tactics`. The
 broad suites run on Linux CI on the draft PR.
 
+## GC.8b as built (the hold, provenance, strip and scrap, the doll, the grant)
+
+Built 2026-11-02 on `main` at `36658e7b`, the second half of GC.8 (§7's Split paragraph), over
+GC.8a's `crates/tacsim/src/port/bay_work/`. New files: `act.rs` (the authoritative act) and
+`strip.rs` (strip, scrap, the vacated-claim seam, the remains seam). Every number is
+provisional under the owner's economy rule of 2026-10-24. What the cut decided where the rulings
+left it open, for the owner to object to:
+
+**One authoritative action for every inventory move** (`tacsim_bay_work`, `act.rs`). Inventory
+pools and lots move only inside an authoritative bundle, whose prepare has no world, so the cut
+copies the mill's provider pattern and its "two writes" rule.
+- **Three ops.** A *draw* debits an order's goods from the carrier's hold, all or nothing, and
+  consumes a fitted part's lot. A *mint* lays a stripped or scrapped hull's lots into the hold.
+  A *hot* flag marks a stripped part hot.
+- **Two typed families.** `tacsim.bay_work` is one `BayLedger` per hull: the last landed act's
+  ordinal and a 16-act audit tail. It is the replay guard, since a prepare refuses any ordinal
+  but the ledger's next. `tacsim.bay_parts` is one `PartProvenance` per stripped part's lot.
+- **How an act is owed.** The command or the port tick writes the bay record's `owed` act
+  beside the unit change (the record gained `acts`, `owed` and `scrapped_ic`, the order `goods`
+  and `draw_act`). The `tacsim.port` fire's bay arm (`settle`) submits it as the actor who owes
+  it until the ledger shows it landed. The offer's rows come from the record at projection,
+  never from the submitter.
+- **A refused act** is tried 3 times (`MAX_ACT_TRIES`), then given up. A draw then cancels its
+  order and releases the fee, with nothing drawn. A lost mint or flag is logged for staff.
+- **Registered** beside the mill: the families unconditionally, the provider only when the
+  inventory cell is filled. The inventory already delegates its families to `tacsim`.
+
+**Rearming from munitions lots (Q-36-36) and `industrial_parts` (Q-36-31).**
+- **Where the goods come from.** Both come from the carrier's hold through the same draw. That
+  is the carrier whose bay the hull stands in, or the carrier it was berthed from, docked at the
+  facility's port (`source_hold`). GC.7 ruled parts "drawn from lots, not priced in the quote",
+  which this reads as the owner's own matter. A replaced part is still the workshop's, inside
+  its labour, as GC.8a built it.
+- **When.** The order checks the hold carries everything when it is taken, and records the
+  hold and the goods. At the due time the order owes its draw: the hold must still be the one
+  that serves the hull there, or the order is cancelled. The work is written once the draw has
+  landed. A draw is all or nothing, so every rearm loads its full rounds.
+- **The quote** names the goods: "From the carrier's hold, all of it: …".
+- **Not covered:** goods drawn but the work then refused, because the hull moved or changed
+  between the draw and the next fire. The goods are spent and the fee is released. The window
+  is one fire, and the checks run again just before the draw.
+
+**Provenance and hot parts (Q-36-37, Q-F6).**
+- **`+bay/strip <hull>=<part>`.** In a workshop, by title or a `maintain_refit` grant, a part
+  comes off through `WorkshopBook::strip_component` (bay authorization, the title resolved). Its
+  slot then reads `Missing`. The part becomes a one-unit lot of `tacsim.part.<id>` in the hold:
+  the refit bay's own catalogue, graded 9 intact or 3 worn.
+- **What its provenance carries:** the parent hull and its design, the slot, the part's
+  definition and condition, the claim reference, the legality, who stripped it and when, and,
+  once fitted, the hull it went into.
+- **The claim reference** is `None` for a title or grant holder's strip. A salvor's claim fills
+  it once GC.5/GC.6 record custody (`salvor_custody` is still the seam).
+- **`+bay/fit <hull>=<slot> <lot>`** is an order that replaces a part from a lot in the hold.
+  The lot must be traced (carry provenance), clean, unfitted, of the slot's definition and in
+  the hold. A **hot part is refused** at the order and again in the draw's prepare. The lot is
+  consumed (`consume_product`) when the work is done, and the part goes in at the condition its
+  provenance records.
+- **How a part becomes hot.** `strip::vacate_claim` flags it when its claim is vacated. This is
+  the seam GC.5/GC.6's contest calls. Until then only a staff fixture does, and nothing in play
+  makes a part hot yet. A bay strip is always lawful.
+
+**Scrap (Q-36-39).**
+- **`+bay/scrap <hull>`** is the title holder's alone, on a berthed workshop hull, through
+  `WorkshopBook::scrap_hull`.
+- **What it yields:** structural mass becomes `structural_alloys`, a tonne per 1,000 kg
+  (`SCRAP_KG_PER_T`), as one lot at grade 50. Each salvageable part becomes a lot with its
+  provenance (`scrapped: true`). Everything goes to the hold.
+- **What is left:** the hull stays in the workshop as an irrecoverable shell, the record
+  `scrapped_ic`. Its berth is freed and it is no longer held. Its object and title stay; removing
+  the shell is a staff step for now.
+- **Remains:** GC.3 had not merged when this was built, so remains are a seam
+  (`strip::scrap_remains`), which refuses. Wiring it means scrapping the remains where they lie,
+  by the title holder or a winning claimant, into alloys only, since nothing is stripped from
+  remains.
+
+**The doll** (UD.4c's damage view) leads `+bay <hull>`: the hull's state, then each section's
+condition and points and, under it, each part it holds with its condition and magazine.
+
+**The built `bay_refit` reads the grant, in one place (Q-36-33).**
+- **The predicate.** `mush_economy::unit_authority::bay_hull_title_stands` answers both audited
+  hull-title checks, Industry's `bay_refit/authority::current` and Economy's
+  `bay_refit/authority::current`: the hull titled to the requester, or to an organization on
+  which the requester holds `unit.maintain_refit` (`may_maintain_refit`).
+- **What it reads.** It goes through `mush_org::unit_authority::reader::authorize_in_world`, the
+  unit-authority resolver's title and organization path read from the world. The payer is
+  still the requester's own account.
+- **The Tactics participant** (`component_replacement::current_refit_unit`) checks no title. It
+  proves the unit idle and registered, so there was nothing there to change.
+- **(limit)** The per-unit grant registry (`UnitGrant`) is owner-held and not readable from a
+  `&World`. The built bay therefore honours title and org grants (`@org/grant … unit.maintain_refit`,
+  GC.8a's harness grant), but not a per-unit grant. `+bay`'s `right_of` still reads both
+  through Org's owner read. Closing that gap means an owner read inside the three prepares,
+  which is a kernel protocol change.
+
+**The order's typed family (`tacsim.bay_work`).** Every inventory move now rides it. The order
+record itself stays on the legacy post-image lane, and the allowlist stanza says why: the hold
+hook (`BayHold`) and the launch gate read it synchronously from the World, and the fee rides
+the legacy contract ops. Moving it means a World mirror of a typed record for those readers.
+That is its own cut.
+
+**Not done here.**
+- The salvor's live custody (GC.5/GC.6).
+- Remains scrapping (GC.3).
+- A per-unit grant in the built bay (the limit above).
+- Disposing of a scrapped shell.
+
+**The gates** (`tests/shard_1/bay_gc8.rs`):
+- **Story (c) with its rearm** (`gc8_the_refit_run_at_stickney_and_an_armour_patch_in_the_bay`).
+  At Ceres the captain buys a full magazine of `ammo_he_105` and the coaxial's boxes of
+  `ammo_ball_762` at the Co-op chandlery into the Dray's hold. Staff stock 200 t of
+  `industrial_parts`, since GC.7's gate covers buying. The escort comes in with both magazines
+  empty. The workshop quote shows the doll and the hold's goods. `rebuild,unjam,rearm` draws
+  exactly the munitions and the parts' tonnes at completion, and both magazines are full. After
+  `stow` the escort is unheld and `Operational`: it fields again.
+- **`gc8b_a_stripped_part_carries_its_provenance_and_a_hot_part_is_refused`.** At Ceres' C14:
+  1. The lessee may not strip.
+  2. A grant holder strips the machine gun. Its lot sits in the Dray's hold with the full
+     provenance, and the slot reads `Missing`.
+  3. The cannon comes off too.
+  4. The machine gun's claim is vacated, so it is hot and `+bay/fit` refuses it.
+  5. The cannon is fitted back from its lot. The lot is consumed and the provenance names the
+     escort.
+- **`gc8b_scrap_breaks_a_workshop_hull_into_alloys_and_parts`.** A spare pool escort is titled
+  to the captain and berthed.
+  1. The lessee's scrap of the leased escort is refused.
+  2. The title holder's scrap lays an alloys lot and the parts' lots, with `scrapped`
+     provenance, into the hold.
+  3. The shell is `Irrecoverable` and its berth is free.
+  4. A second scrap is refused, and the remains seam refuses.
+- **`act::tests::gc8b_a_lot_id_is_derived_and_distinct_per_row`.**
+
+**Also changed:**
+- `mush-inventory` gains `InventoryFamilies::mint_origins`. It mints several origin lots at one
+  endpoint and stages the lot census once, because one bundle writes a record only once and
+  a scrap mints several lots.
+- `hardware::bay` exposes its part catalogue (`part_commodity`, `part_grade`) to strip and
+  scrap.
+- The `+bay` allowlist stanza is rewritten for the new action and families.
+
+**Verified** on Windows:
+- the four shard_1 bay gates;
+- tacsim's lib tests filtered to `bay_work`, `gc8` and `ud4b`;
+- `mush-industry`'s `bay_refit` tests;
+- `mush-economy`'s `bay_refit` and `unit_authority` tests;
+- `mush-org`'s `unit_authority` tests;
+- all of `mush-contract-tests`;
+- clippy and rustdoc with `-D warnings` on the five changed crates.
+
+The broad suites run on Linux CI.
+
 ## As built (GC.9)
 
 GC.9 landed on 2026-11-01 as the lease's damage charge (Q-36-34). It touches no kernel hash and
@@ -2085,6 +2235,167 @@ CF.6c's gate returns a damaged escort. Its return now reads the charge, and stil
 **Defaults taken (provisional):** the lessor port's workshop multiplier as the charge's
 multiplier; rearm labour included in the charge; no charge for parts tonnage; the whole deposit
 for a rig past repair.
+## GC.11 as built (the raid director)
+
+Built on `main` at `396d473c`, after GC.0, GC.1 and GC.1b merged. It covers Q-36-41 and Q-36-55.
+No practice hash moved: the one kernel change is a message an OOC task ignores. Where the rulings
+left something open, this is what the cut decided, for the owner to object to.
+
+**The director** (`surface/raid.rs`, one call at the end of the surface tick in `surface/tick.rs`).
+- *When it runs.* Once a second on the surface tick, only under the new
+  `[tacsim.field].raid_director` (default **off**: raiders stay staff-run, and every existing
+  story is untouched). It visits each raider in `raiders.json` that carries a `director` block.
+- *The schedule, per raider and so per site* (`raiders.json` schema 4, `RaidSchedule`, all
+  provisional):
+  - `presence_flights` (3): flights out on the site's ground. A raider's own units, carriers on
+    their pads, and casualties or wrecks on the site record don't count.
+  - `ore_kg` (1,000): ore aboard the rigs on the site's ground. This is the "ore value", read by
+    mass because a price would make the trigger depend on the market.
+  - `cooldown_ic_s` (43,200, twelve IC hours): from one landing to the next.
+  - `threat` (2): the most hulls one raid puts down, each hull costing one.
+- *What a raid does.*
+  1. It seeds the raider if it has never stood (`raiders::seed`).
+  2. It lands the carrier at its authored cell and puts at most `threat` hulls beside the ramp
+     (`raiders::land_and_launch`, factored out of `@field/raiders/launch`). The site hears "The
+     {name} sets down on {site} and lowers its ramp."
+  3. On open ground, the leader declares at the next fire: a Hostile mark on the nearest flight
+     through the ordinary door (`field::mark_from_order`), which promotes the site. Admission takes
+     the raid in with everyone else.
+  4. On a site where a field already runs, the raid **arrives by the kernel's join**: see below.
+- *What is durable.* The raid's state rides the carrier's own raider attribute (owned by `GOD`):
+  - `raid` while one is under way, with its landing's IC second and the field it entered (its
+    ordinal and the arena millisecond it entered at);
+  - `last_raid_ic`, for the cooldown;
+  - `spent`, once the carrier is a wreck on the site record.
+
+  Only the idle trigger's "last seen in reach" is RAM (`RaidBook`). After a restart it counts
+  again from the resumed field's first check.
+- *Staff raids are untouched.* The director sends, withdraws and ends only raids it landed (the
+  `raid` key). A raider staff launched (a hull of it on the ground) is never sent; one staff
+  only seeded, every hull aboard, is sent like any other. `@field/raiders/withdraw` stays the
+  staff override.
+- *No respawn.* A raider whose carrier is a wreck is marked spent and never sent again. Seeding is
+  refused anyway while any of its hulls stands, and a wreck stands. A raider that has lost every
+  hull, with its carrier whole, has nobody aboard to send, so it sends nothing.
+
+**Arriving mid-field** (GC.1b's join; `field/raiders.rs`, `arena/join.rs`, `arena_task.rs`,
+`arena_bridge.rs`).
+- *How it joins.* The carrier and the hulls just put down are each checked out under the field's
+  mark, given an `arrived` row in the raider's party, and sent as `ArenaMsg::Join` at the pose
+  they stand at (`raiders::join_raid`, through GC.1b's `carrier::joining`). The party holds its
+  leader's standing Hostile mark on every other party, as at an admission.
+- *Its home.* A party that joins has no home on the field's ground, and the doctrine's withdrawal
+  drives to a home (`ArenaDefinition::homes`). Without one the group could never go up its ramp.
+  - A new message, **`ArenaMsg::Home { zone }`**, lays the carrier's ramp as the party's home.
+    `Arena::add_home` applies it at the next pulse's head, before the joins. A party that already
+    has a home keeps it.
+  - The live record's `homes` gains the same zone, so a snapshot decodes on the same ground.
+  - A task with no field terms, or with a tape, ignores the message. So no OOC match sees one, and
+    no practice hash can move.
+- *Its answer.* The bridge sends a raider's `Joined` to `raiders::on_joined`, not to GC.1b's
+  carrier handler, so a tank is never told it "set down on the pad". A refused hull is checked
+  back in, leaves the live record, and goes back aboard.
+- *A refused join is retried.* The kernel refuses a join while a mind's think is in flight on any
+  unit ("a think awaits its answer … the batch was not delivered before the encode"). The gate met
+  this in about half its runs. A director raid refused before it ever entered the field lands and
+  joins again at the next fire. GC.1b's own arrivals are not retried while their field runs, by
+  its ruling; that is flagged as a follow-up, not changed here.
+- *Not covered:* a restart between a raider's join and the next snapshot. The resume re-joins
+  every `arrived` row through GC.1b's path, which stands a raider at the pad rather than its ramp.
+
+**Withdrawal** (Q-36-55; `field/raiders.rs`'s `lift_check`, the paced snapshot check GC.0 built).
+- *One decode.* The check decodes the last snapshot once, and keeps the arena as well as the
+  returns. GC.0 read the returns through `close::snapshot_returns`, which `field/close.rs` (GC.3's
+  file) still has unchanged. The check runs on GC.0's pace (`LIFT_CHECK_MS`, 10 s of arena time).
+- *The three triggers.* For a director raid with hulls still standing in the field, the group
+  orders those hulls home up the ramp (`raiders::order_withdraw`, the staff verb's path) when any
+  of these holds:
+  - **Losses:** its casualties and wrecks reach `[tacsim.field].raid_lost_permille` (500, half)
+    of the hulls it launched into the field. That count is the hulls in the field plus those out
+    at the ramp.
+  - **Time in the field:** `[tacsim.field].raid_field_s` (1,200, twenty minutes; arena time,
+    which a field runs at the wall's pace) since it entered.
+  - **Idle:** none of its hulls has held an armed hostile party in reach for `idle_demote_s`
+    (Q-36-5's interval). The read is a new `Arena::party_holds_armed_hostile_in_reach(party)`:
+    `hostile_in_weapons_range`'s rule restricted to one party. It is a read, never a step, and
+    nothing is hashed.
+- *The way out.* Each hull boards at the ramp, and the carrier lifts by GC.0's lift once the last
+  hull is aboard or down. "What it lost stays where it fell" is unchanged.
+- *A wrecked carrier* neither lifts nor withdraws its group. Its hulls fight on to the field's
+  end, which is the "does not respawn" ruling read strictly.
+- *The end of a raid.* A raid is over once its carrier has lifted. If its field demoted first (by
+  the field's own quiet or idle bound), the director takes the standing hulls aboard on open
+  ground and the carrier lifts there. A landing that finds nobody to declare on ends the same way.
+
+**The raiders' organizations** (Q-36-55; `mush-faction`, `raiders.json`).
+- Each raider names one, in a new required `organization` field: "Skulk Syndicate" and "Reach
+  Reavers". The names must be unique and at most 40 characters.
+- At the seed, `mush_faction::register_content_faction(ctx, name, leader)` makes the faction once
+  (idempotent by name, with no backing org; staff may bind one with `@faction/org`) and adds the
+  leader to its principals.
+- A world with no faction registry seeds the raider all the same. GC.10's standing writes find
+  the leader as the raider side's principal.
+
+**Config.** `[tacsim.field].raid_director` (false), `raid_lost_permille` (500, 1 to 1,000) and
+`raid_field_s` (1,200, 60 to 7,200) are in `tacsim::config`, `mush-config` (with the key table)
+and `config_ext.rs`.
+
+**Files beyond the cut's line.**
+- `arena/join.rs`, `arena/state.rs`, `arena_task.rs`: `add_home`, the reach read and the `Home`
+  message.
+- `arena_bridge.rs`: one branch.
+- `surface/tick.rs`: the call and the `RaidBook` slot.
+- The config files.
+- `field/close.rs` and `field/carrier.rs` are **not touched**. GC.1b's `carrier::joining`,
+  `ring_cells` and `is_carrier` are only called.
+
+**The gates** (`tests/shard_1/field_director.rs`, the composed `driving` world).
+- **`gc11_a_scheduled_raid_arrives_declares_and_leaves_with_its_losses`.** No staff hand: the
+  site has a prospector's carrier on its pad, its two rigs out (rig 1 holding 3 t of ore), and an
+  armed hull a hired NPC sits in, its magazines rationed to six rounds.
+  1. The director seeds and lands the raider. The landing is stamped for the cooldown, and the
+     Skulk Syndicate is in the registry with the leader as its one principal.
+  2. One raider hull is worn thin. The leader's mark promotes the site, and the raid is its
+     leader's fixture party.
+  3. The guard takes the worn hull. That is half, so the other turns for home and boards, and
+     the carrier lifts.
+  4. The field settles with the lost hull on the site record and the other aboard.
+  5. Ten more seconds later, the raid is over and the cooldown keeps the carrier away, though the
+     site still tempts it.
+- **`gc11_a_raid_due_while_a_field_runs_arrives_by_the_join_and_goes_home`.**
+  1. The prospector's mark opens a field on the guard first (its magazines empty, so it can't
+     wreck the carrier).
+  2. Ore comes aboard, and the raid arrives by the join: three `arrived` rows in one party, and
+     the ramp on the live record's homes.
+  3. With `raid_field_s` at 60, it turns for home after a minute in the field. Every hull that
+     didn't fall leaves at its ramp, and the carrier lifts.
+- In-source, `raiders::tests::the_authored_raiders_parse_and_check` covers schema 4.
+
+**The bot's captain story** (`mush-bot/tests/mining_cohort.rs`) takes `FIELD_RAID=director`.
+- The harness then seeds and wears the raider as the staff run does, and launches, declares and
+  withdraws nothing; the director is on. The story waits for the field the director's raid
+  opens.
+- `FIELD_IDLE_S` sets `idle_demote_s` for the run.
+- The default run, which CI's bot-stories shard runs, is unchanged.
+
+**Defaults taken (provisional).**
+- Every number above.
+- Presence counted in flights, ore read by mass.
+- The landing line's wording.
+- The director off by default.
+- Withdrawal applying only to director raids.
+- The cooldown counted from the landing.
+- A refused mid-field join retried every fire.
+
+**Verified** on Windows:
+- The two gates, run several times each (stable once the guard's rounds were rationed).
+- tacsim's lib tests for `raiders`, `arena::join`, `gc1b` and config; shard_1's `field_raiders`
+  and `field_carrier`; GC.0's field story at 256; shard_3's duel hashes.
+- `mush-faction` and `mush-config`.
+- All of `mush-contract-tests`.
+- Clippy and rustdoc `-D warnings`.
+
+The broad suites run on Linux CI on the PR.
 
 ## GC.3 as built (remains, and the carrier's loss)
 
@@ -2126,6 +2437,15 @@ not.
   it `Destroyed` belongs in that family's own act. A raider's hull has no epoch, so it leaves
   remains and nothing else.
 - *Not changed:* a carrier is never remains in this cut. Its hull's loss is the table's wreck.
+- *GC.8b's scrap seam is not wired* (`port::bay_work::strip::scrap_remains` still refuses, and
+  GC.8b's gate still asserts that). The remains record now exists, but scrapping remains where
+  they lie is not a small step. It needs an act on the site that takes the remains object off the
+  site record and mints the alloys lot in the same bundle (the site record and the inventory are
+  different families, and a mint moves only inside an authoritative bundle). It also needs a rule
+  for where the alloys go, a rig's hopper or a carrier's hold, and the claimant's right, which
+  waits on GC.5/GC.6's custody record. `GroundKind::Remains { of, mass_kg }` carries what that
+  act reads: the hull, for the title check, and the mass, for the yield at `SCRAP_KG_PER_T`.
+  Wiring it is a follow-up, beside GC.6.
 
 **One consequence table** (Q-36-8, Q-36-47; the new `tacsim::carrier_damage`).
 - *Keyed by role, not by name* (`CarrierPart`): the hull is the section whose loss is

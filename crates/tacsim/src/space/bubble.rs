@@ -160,6 +160,26 @@ impl EmconPosture {
     }
 }
 
+fn default_dry_mass_t() -> u32 {
+    240
+}
+
+fn default_payload_ceiling_kg() -> u64 {
+    181_000
+}
+
+fn default_propellant_cap_kg() -> u32 {
+    80_000
+}
+
+fn default_rated_accel_mg() -> u32 {
+    50
+}
+
+fn default_exhaust_kms() -> u32 {
+    6_000
+}
+
 /// A ship or hull inside a [`LocalSpaceBubble`].
 #[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize)]
 pub struct SpaceShipState {
@@ -176,8 +196,23 @@ pub struct SpaceShipState {
     pub vel_mmps: [i64; 3],
     /// Commanded 3D thrust acceleration in $\text{m/s}^2$ (`[ax, ay, az]`).
     pub thrust_mps2: [i64; 3],
-    /// Maximum rated drive acceleration in $\text{m/s}^2$.
+    /// Maximum maneuvering / combat thrust acceleration in $\text{m/s}^2$.
     pub max_accel_mps2: i64,
+    /// Dry hull mass in tonnes from `UnitSpec::logistics` (`D-35-1`, `240 t` for Dray/Dray-P, `4,000 t` for Halcyon).
+    #[serde(default = "default_dry_mass_t")]
+    pub dry_mass_t: u32,
+    /// Payload ceiling in kilograms from `UnitSpec::logistics` (`D-35-1`).
+    #[serde(default = "default_payload_ceiling_kg")]
+    pub payload_ceiling_kg: u64,
+    /// Propellant tank capacity in kilograms from `UnitSpec::logistics.stowage["propellant"]` (`D-35-1`).
+    #[serde(default = "default_propellant_cap_kg")]
+    pub propellant_cap_kg: u32,
+    /// Rated flip-drive continuous acceleration in milli-g from `UnitSpec::logistics.drive.law` (`50 mg` $\approx 0.49\text{ m/s}^2$, `D-35-1`).
+    #[serde(default = "default_rated_accel_mg")]
+    pub rated_accel_mg: u32,
+    /// Drive exhaust velocity in $\text{km/s}$ from `UnitSpec::logistics.drive.law` (`6,000 km/s`, `D-35-1`).
+    #[serde(default = "default_exhaust_kms")]
+    pub exhaust_kms: u32,
     /// Hull attitude `(yaw_deg, pitch_deg, roll_deg)` in whole degrees.
     pub attitude_deg: (i32, i32, i32),
     /// Remaining reaction mass in `kg` (`D-35-6`).
@@ -273,6 +308,11 @@ impl SpaceShipState {
             vel_mmps,
             thrust_mps2: [0, 0, 0],
             max_accel_mps2: 25,
+            dry_mass_t: 240,
+            payload_ceiling_kg: 181_000,
+            propellant_cap_kg: 80_000,
+            rated_accel_mg: 50,
+            exhaust_kms: 6_000,
             attitude_deg: (0, 0, 0),
             propellant_kg: 80_000,
             delta_v_mps: 4_500,
@@ -294,6 +334,13 @@ impl SpaceShipState {
             decoys_remaining: 4,
             active_decoy_ms: 0,
         }
+    }
+
+    /// Rated continuous flip-drive acceleration in $\text{m/s}^2$ from [`Self::rated_accel_mg`]
+    /// (`50 mg` $\approx 0.4903\text{ m/s}^2$, `D-35-1`).
+    #[must_use]
+    pub fn rated_accel_mps2(&self) -> f64 {
+        f64::from(self.rated_accel_mg) / 1_000.0 * crate::port::passage::G0_MPS2
     }
 
     /// Construct an armed corvette / raider hull with torpedo tubes, spinal railgun,

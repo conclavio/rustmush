@@ -97,8 +97,15 @@ pub struct BayOrder {
     /// The fee contract, `ContractId.0`: the requester's escrow, captured by the operator at
     /// completion or cancelled.
     pub contract: u64,
-    /// The hold the rounds come from (`VaultId.0`), when the order rearms from goods.
+    /// The hold the order's goods come from (`VaultId.0`), when it draws any (doc 36 cut
+    /// GC.8b): munitions for a rearm, `industrial_parts` for its points, a fitted part's lot.
     pub munitions_vault: Option<u64>,
+    /// The goods the order draws from that hold at completion (GC.8b).
+    #[serde(default)]
+    pub goods: Vec<super::act::GoodUnits>,
+    /// The ordinal of the draw this order owes at completion, once owed (GC.8b).
+    #[serde(default)]
+    pub draw_act: Option<u32>,
     /// The hull's unit revision when the order was taken: the work is refused if it moved.
     pub unit_revision: u64,
     /// The IC second the order was taken.
@@ -127,6 +134,16 @@ pub struct BayHull {
     pub order: Option<BayOrder>,
     /// Orders taken on this hull, ever.
     pub orders: u32,
+    /// Inventory acts owed on this hull, ever: the next owed act's ordinal is one more
+    /// (doc 36 cut GC.8b; the hull's `tacsim.bay_work` ledger lands them in order).
+    #[serde(default)]
+    pub acts: u32,
+    /// The inventory act this record owes, until the hull's ledger shows it landed.
+    #[serde(default)]
+    pub owed: Option<Box<super::act::OwedAct>>,
+    /// When the hull was scrapped, IC: it is an irrecoverable shell after it.
+    #[serde(default)]
+    pub scrapped_ic: Option<i64>,
 }
 
 impl BayHull {
@@ -139,6 +156,9 @@ impl BayHull {
             berth: None,
             order: None,
             orders: 0,
+            acts: 0,
+            owed: None,
+            scrapped_ic: None,
         }
     }
 
@@ -169,12 +189,23 @@ impl BayHull {
             if order.seq > self.orders {
                 return Err("an order's sequence runs ahead of the record's".to_owned());
             }
+            if order.draw_act.is_some_and(|act| act > self.acts) {
+                return Err("an order's draw runs ahead of the record's acts".to_owned());
+            }
+        }
+        if let Some(owed) = &self.owed {
+            owed.check()?;
+            if owed.act > self.acts {
+                return Err("an owed act runs ahead of the record's acts".to_owned());
+            }
         }
         Ok(())
     }
 }
 
 /// A bay record as the boot read it.
+// One per hull that has seen the bay, in RAM; the rare `Unreadable` costs a record's size.
+#[allow(clippy::large_enum_variant)]
 #[derive(Clone, Debug, PartialEq, Eq)]
 pub enum BayHullState {
     /// It read.
