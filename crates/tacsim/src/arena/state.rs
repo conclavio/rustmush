@@ -2583,6 +2583,84 @@ pub(crate) fn check_poses(terrain: &ArenaTerrain, units: &[UnitState]) -> Result
     check_occupancy(terrain, units)
 }
 
+/// **A seated pilot's station raising the epoch table** (doc 36 cut GC.1b factored it out of
+/// [`Arena::new_with_minds`] unchanged, for [`Arena::join`] too): a station literally named
+/// `helm`, `sensors` or `fire` raises that one channel, any other all three.
+pub(crate) fn raise_seat(epochs: &mut EpochTable, pilot: &Pilot) {
+    match Channel::parse(&pilot.station) {
+        Some(channel) => {
+            epochs.raise(pilot.unit, channel, pilot.epoch);
+        }
+        None => {
+            for channel in Channel::ALL {
+                epochs.raise(pilot.unit, channel, pilot.epoch);
+            }
+        }
+    }
+}
+
+/// **16b cut M.4's substep bound over `states`** (doc 36 cut GC.1b factored it out of
+/// [`Arena::new_with_minds`] unchanged, for [`Arena::join`] too).
+///
+/// # Errors
+///
+/// [`ArenaError::SubstepBound`].
+pub(crate) fn check_substep(
+    terrain: &ArenaTerrain,
+    states: &[UnitState],
+    min_cost: &[u32; 3],
+) -> Result<(), ArenaError> {
+    let ceiling_cms = speed_ceiling_cms(states, min_cost);
+    let cell_cm = terrain.cell_cm();
+    if u64::from(crate::arena::clock::MIN_SUBSTEP_MS).saturating_mul(u64::from(ceiling_cms))
+        > u64::from(cell_cm.saturating_sub(1)).saturating_mul(1_000)
+    {
+        return Err(ArenaError::SubstepBound {
+            ceiling_cms,
+            cell_cm,
+        });
+    }
+    Ok(())
+}
+
+/// **`tempo.alert_range_cm` over `states`** (16b §9; doc 36 cut GC.1b factored it out of
+/// [`Arena::new_with_minds`] unchanged, for [`Arena::join`] too): the configured value, or for
+/// `0` the lesser of twice the longest weapon reach and the window's diagonal.
+pub(crate) fn alert_range_cm(
+    arena_cfg: &ArenaConfig,
+    terrain: &ArenaTerrain,
+    states: &[UnitState],
+) -> u32 {
+    if arena_cfg.tempo.alert_range_cm != 0 {
+        return arena_cfg.tempo.alert_range_cm;
+    }
+    let twice = u64::from(
+        states
+            .iter()
+            .map(UnitState::weapon_reach_cm)
+            .max()
+            .unwrap_or(0),
+    )
+    .saturating_mul(2);
+    let width = u64::from(terrain.width());
+    let height = u64::from(terrain.height());
+    let diagonal = width
+        .saturating_mul(width)
+        .saturating_add(height.saturating_mul(height))
+        .isqrt()
+        .saturating_mul(u64::from(terrain.cell_cm()));
+    u32::try_from(twice.min(diagonal)).unwrap_or(u32::MAX)
+}
+
+/// **The widest pod bubble over `states`** (16b cut X.4), `0` with no pod.
+pub(crate) fn jam_radius_cm(states: &[UnitState]) -> u32 {
+    states
+        .iter()
+        .filter_map(|state| state.jammer.map(|jammer| jammer.radius_cm))
+        .max()
+        .unwrap_or(0)
+}
+
 /// **Give every unit its public callsign** (16b cut Q.1; doc 32 Q-CF-11),
 /// over the sorted unit vector [`Arena::new`] has just built: the unit's party
 /// letter, then a letter drawn by [`crate::arena::party::draw_unit_letters`]
@@ -4637,263 +4715,20 @@ impl Arena {
         let mut cards = crate::arena::runtime_card::CardCatalog::default();
         let mut profiles = BTreeMap::new();
         let mut conditions = crate::arena::conditions::ConditionTable::default();
-        for mut unit in units {
-            // Doc 17h cut M8a (A1): the arena has no holding in hand, so the line's licence
-            // state is what the seal's origin alone can say (a filed seal reads `active`
-            // until cut M8e passes the holding's phase through the IC admission).
-            let licence_state = crate::minds::licence_state::origin_state(&unit.seal.origin);
-            sealed.push((unit.id, unit.seal.sealed_line(licence_state)));
-            // **16b cut AF.1**: the heading and the window, in one function the
-            // snapshot's decode calls too (`check_poses`), in the order they
-            // always ran.
-            let opening_cell = check_pose(&definition.terrain, unit.id, &unit.pose)?;
-            // **16b cut AE.1**: the row this unit pays, read beside its slope
-            // limit below and first because the opening test needs it.
-            let cost_row = CostRow::read(&unit.unit);
-            // **16b cut AE.3**: and its class, off the same record, for the cap
-            // counted below once every unit is in hand.
-            let class = UnitClass::read(&unit.unit);
-            // **16b cut M.4** (16c `T-14`): and on a cell a unit may stand on —
-            // **its own row** since 16b cut AE.1, so a car handed over on rubble
-            // is refused here as a tank in deep water is. The announcement names
-            // nobody, so the unit and the cell go to the log.
-            if !definition
-                .terrain
-                .passable_for(cost_row, opening_cell.0, opening_cell.1)
-            {
-                tracing::warn!(
-                    unit = %unit.id,
-                    x = opening_cell.0,
-                    y = opening_cell.1,
-                    "arena refused: a unit's opening cell is not passable"
-                );
-                return Err(ArenaError::CellImpassable {
-                    unit: unit.id,
-                    x: opening_cell.0,
-                    y: opening_cell.1,
-                });
-            }
-            // **16b cut X.6** (doc 16 §3.2 "Terrain"): *a unit's `z_cm` equals the
-            // cell's `elev_cm`*, and that is true from the opening hash and not
-            // merely from the first crossing. [`CustodyOut`] is the only door into
-            // an arena; the arena is the authority for its own grid, so it does not
-            // trust an inbound z — a stale one, or the flat zero every world-side
-            // placement writes, is corrected here rather than carried for however
-            // many substeps it takes the tank to cross a boundary.
-            if let Some(cell) = definition.terrain.get(opening_cell.0, opening_cell.1) {
-                unit.pose.z_cm = i32::from(cell.elev_cm);
-            }
-            // **16b cut X.1**: the heat numbers, read off the cells the
-            // `TacticalUnit` already carries rather than across a widened seam
-            // (see [`HeatState`]). `None` for every unit whose content declares
-            // no ceiling.
-            let heat = HeatState::read(&unit.unit, &unit.profile, &unit.weapons);
-            // **16b cut X.3**: the sight's thermal channel, read the same way and
-            // `None` for every unit whose mount authors none.
-            let thermal = ThermalSignature::read(&unit.unit);
-            // **16b cut X.4**: the jamming pod, likewise — and the window's own
-            // cell size applied here, once, so the pass compares centimetres.
-            let jammer = Jammer::read(&unit.unit, definition.terrain.cell_cm());
-            // **16b cut X.5**: the counter-jamming filter, likewise — and `None`
-            // when its component has been shot off, which is the one thing that
-            // stops a filter working.
-            let eccm = Eccm::read(&unit.unit);
-            // **16b cut X.6**: the steepest edge this unit's locomotion will
-            // cross, read off the same record and `None` for a unit that declares
-            // no locomotion the shipped table knows — every engine fixture, which
-            // therefore still drives and still pays the surcharge.
-            let slope_limit_pct = crate::arena::slope::SlopeLimit::read(&unit.unit);
-            // **16b cut F.1** (doc 16 §3.1 "Custody"): the match opens on the unit
-            // the world hands over, and that unit's own record may already say it
-            // is a wreck, has lost a track or has had its turret shot off. Until
-            // this cut every match opened at `MotionLimits::default()`, so a hulk
-            // drove and shot and could never be killed again; this reads the
-            // consequences off the record and puts them in force before pulse one.
-            let entry = crate::arena::damage::entry_consequences(&unit.unit, &unit.profile);
-            // **16b cut E.2** (`B-45`): which sections of this unit are the body,
-            // as one mask in the unit's own section order — the order every
-            // `Condition` is packed in, so a reading and this mask can be ANDed.
-            // Read once here for the reason the slope limit and the heat cells
-            // are: it is a fact about the fit that nothing in a match moves.
-            let fatal_sections = fatal_section_mask(&unit.unit, &unit.profile);
-            let operands = unit
-                .weapons
-                .iter()
-                .map(|weapon| crate::arena::rules::RuleWeapon {
-                    id: weapon.id.clone(),
-                    rounds_max: weapon.count_per_load,
-                })
-                .collect::<Vec<_>>();
-            let admission_error = |error: crate::arena::schema::SchemaError| ArenaError::Mind {
-                unit: unit.id,
-                reason: error.to_string(),
-            };
-            unit.seal
-                .verify(&minds_cfg.classes, &operands)
-                .map_err(admission_error)?;
-            if unit.seal.odds_floor_permille != minds_cfg.odds_floor_permille {
-                return Err(ArenaError::Mind {
-                    unit: unit.id,
-                    reason: "seal floor differs from frozen match floor".into(),
-                });
-            }
-            let runtime = crate::arena::runtime::prepare_profile_runtime(
-                &mut cards,
-                unit.id,
-                &unit.seal.cards,
-                &unit.seal.rom,
+        for unit in units {
+            let (state, line) = Self::admit_unit(
+                unit,
+                &definition.terrain,
+                sensors_cfg,
                 &minds_cfg.classes,
-                unit.seal.class,
-                &operands,
-                &unit.seal.channels,
                 minds_cfg.odds_floor_permille,
-            )
-            .map_err(admission_error)?;
-            runtime
-                .program
-                .install(
-                    &mut conditions,
-                    unit.id,
-                    minds_cfg.classes.row(unit.seal.class).slots,
-                )
-                .map_err(admission_error)?;
-            profiles.insert(unit.id, runtime);
-            // Doc 36 cut GC.2 (Q-36-38): and a gun whose part the record calls
-            // jammed, destroyed or missing does not come into the match either —
-            // a jam a field left is still a jam in the next one, until the bay
-            // clears it.
-            let weapons: Vec<WeaponSummary> = unit
-                .weapons
-                .into_iter()
-                .filter(|weapon| entry.carries(&weapon.mount_section))
-                .filter(|weapon| part_works(&unit.unit, &weapon.id))
-                .collect();
-            let weapons_left = weapons.len();
-            // **16b cut Q.2**: the first value of the band cache, off the record
-            // the world handed over — so a tank that checks in with a shot-off
-            // turret reads `destroyed` there from the opening frame, exactly as
-            // cut F.1's entry consequences already put its lost track in force.
-            let condition = crate::arena::condition::Condition::of(
-                &unit.unit,
-                sensors_cfg.condition_green_permille.min(1_000),
-                sensors_cfg.condition_yellow_permille.min(1_000),
-            );
-            states.push(UnitState {
-                id: unit.id,
-                team: unit.team,
-                // **16b cut Q.1**: the slot as it was handed over, carried here
-                // unresolved — `resolve_callsigns` below turns a `0` into the
-                // lowest free slot of the team once every unit is in hand and the
-                // vector is in unit-id order.
-                callsign: Designator::Provisional(0),
-                desired_heading_mdeg: unit.pose.heading_mdeg,
-                pose: unit.pose,
-                speed_cms: 0,
-                desired_speed_cms: 0,
-                power: Power::Off,
-                mobility: unit.mobility,
-                slope_limit_pct,
-                cost_row,
-                class,
-                fatal_sections,
-                // A unit opens the match standing still, so it entered its cell by
-                // no edge at all: grade zero, which is the flat factor.
-                grade_pct: 0,
-                // **16b cut E.3**: and it is not standing against anybody.
-                occupied_hold: None,
-                // **16b cut Q.6**: and it has spent no arena time moving, so there
-                // is no fraction of a turn, a speed change or a centimetre to
-                // carry into its first substep.
-                carry: MotionCarry::default(),
-                limits: entry.limits,
-                sensor_height_cm: if unit.sensor_height_cm == 0 {
-                    DEFAULT_SENSOR_HEIGHT_CM
-                } else {
-                    unit.sensor_height_cm
-                },
-                // A wreck sees nothing (`Arena::destroy_unit`'s own rule), so one
-                // that arrives as a wreck sees nothing either.
-                sensor: if entry.limits.wreck {
-                    None
-                } else {
-                    unit.sensor
-                },
-                thermal,
-                jammer,
-                // **16b cut O.2**: every pod checks out radiating (the owner's
-                // default, 16c N12); a unit with no pod carries the switch too and
-                // nothing reads it.
-                ecm_on: true,
-                eccm,
-                // **16b cut D.4**: a unit checks out with a clean receiver and
-                // learns otherwise at its first pass. There is no notice for it:
-                // the transition is what is said, and there has been none.
-                receiver: None,
-                // 16b cut W.1: the two live cells, one row per weapon, laid down
-                // here so that every later lookup is a read of a complete table.
-                // A weapon id declared twice on one unit keeps one row, which is
-                // the same thing the component table itself is.
-                ready_at_ms: weapons
-                    .iter()
-                    .map(|weapon| (weapon.id.clone(), 0_i64))
-                    .collect(),
-                // **16b cut F.1**: the rounds the unit's own `ammo` cell carries,
-                // not the catalog's full load. A tank that checked in with 31
-                // rounds checks out with 31. The authored load is the fallback for
-                // a unit whose record declares no such cell at all — every fixture
-                // arena in this crate, and any content whose weapon keeps its
-                // ammunition somewhere else.
-                ammo: weapons
-                    .iter()
-                    .map(|weapon| {
-                        (
-                            weapon.id.clone(),
-                            rounds_on_record(&unit.unit, &weapon.id)
-                                .unwrap_or(weapon.count_per_load),
-                        )
-                    })
-                    .collect(),
-                weapons,
-                profile: unit.profile,
-                // Doc 16 §3.5 step 2: *every stock rating is 1 through the
-                // `PilotProfile` seam*, which is also the sheet's own floor, so a
-                // check-out that named none resolves a green gunner rather than
-                // dividing by zero.
-                gunnery: if unit.gunnery == 0 {
-                    crate::arena::resolution::STOCK_GUNNERY
-                } else {
-                    unit.gunnery
-                },
-                heat,
-                controller: unit.controller,
-                // **17b cut M3.3** (doc 17 §13): the seal's reference, off the
-                // custody's own seal — what the check-out sealed, never
-                // re-derived here (a resume decodes it whole).
-                seal: unit.seal.seal_ref(),
-                // **17b cut M5.2**: every hull checks out on its first
-                // sealed profile, never switched.
-                card_profile: crate::arena::card::ActiveProfile::FIRST,
-                // Doc 21 cut G.12a (Q-21-9): every seat starts weapons free in the
-                // simulator; doc 32 Q-CF-41: an IC field opens every seat at HOLD.
-                weapons_hold: host.weapons_hold,
-                unit: unit.unit,
-                condition,
-                lock: None,
-                blocked: false,
-                held: None,
-                linkdead: false,
-                // **16b cut F.1**: doc 16 §3.8's *disabled — no weapons and no
-                // motion* is a fact about the unit, so a unit that arrives that
-                // way arrives disabled. A wreck is past disabled and is never
-                // journalled both (`Arena::settle_disabled`'s own rule).
-                disabled: !entry.limits.wreck && weapons_left == 0 && entry.limits.motion_disabled,
-                shots_fired: 0,
-                hits: 0,
-                own_last_hit_ms: None,
-                // **16b cut M.1** (`T-82`): no seat has ordered anything yet.
-                orders_window_s: 0,
-                orders_in_window: 0,
-            });
+                host.weapons_hold,
+                &mut cards,
+                &mut profiles,
+                &mut conditions,
+            )?;
+            sealed.push((state.id, line));
+            states.push(state);
         }
         states.sort_by_key(|state| state.id);
         if let Some(duplicate) = states
@@ -4969,16 +4804,7 @@ impl Arena {
                     station: pilot.station.clone(),
                 });
             }
-            match Channel::parse(&pilot.station) {
-                Some(channel) => {
-                    epochs.raise(pilot.unit, channel, pilot.epoch);
-                }
-                None => {
-                    for channel in Channel::ALL {
-                        epochs.raise(pilot.unit, channel, pilot.epoch);
-                    }
-                }
-            }
+            raise_seat(&mut epochs, pilot);
         }
         let mut due = DueHeap::new();
         due.schedule(
@@ -5018,16 +4844,7 @@ impl Arena {
         // terrain factor allows — a conservative margin, since the order clamp
         // (`apply_intent`) keeps every unit at or under its authored speed. Each
         // unit on its own row's cheapest cell (16b cut AE.1).
-        let ceiling_cms = speed_ceiling_cms(&states, &min_cost);
-        let cell_cm = definition.terrain.cell_cm();
-        if u64::from(crate::arena::clock::MIN_SUBSTEP_MS).saturating_mul(u64::from(ceiling_cms))
-            > u64::from(cell_cm.saturating_sub(1)).saturating_mul(1_000)
-        {
-            return Err(ArenaError::SubstepBound {
-                ceiling_cms,
-                cell_cm,
-            });
-        }
+        check_substep(&definition.terrain, &states, &min_cost)?;
         // 16b §9's `tempo.alert_range_cm`: **the lesser of twice the longest
         // weapon range in the match and the window's own diagonal**, and the
         // configured `0` is what asks for that. Derived once, here, from the units
@@ -5044,33 +4861,10 @@ impl Arena {
         // is honest on any window, and on the shipped one it is still wider than
         // anything a sight plus a mesh hop can hold (900 m), so nothing about a
         // shipped match's tempo moves.
-        let alert_range_cm = if arena_cfg.tempo.alert_range_cm == 0 {
-            let twice = u64::from(
-                states
-                    .iter()
-                    .map(UnitState::weapon_reach_cm)
-                    .max()
-                    .unwrap_or(0),
-            )
-            .saturating_mul(2);
-            let width = u64::from(definition.terrain.width());
-            let height = u64::from(definition.terrain.height());
-            let diagonal = width
-                .saturating_mul(width)
-                .saturating_add(height.saturating_mul(height))
-                .isqrt()
-                .saturating_mul(u64::from(definition.terrain.cell_cm()));
-            u32::try_from(twice.min(diagonal)).unwrap_or(u32::MAX)
-        } else {
-            arena_cfg.tempo.alert_range_cm
-        };
+        let alert_range_cm = alert_range_cm(arena_cfg, &definition.terrain, &states);
         // **16b cut X.4**: the widest pod bubble on the field, and `0` when there is
         // no pod — see `jam_radius_cm`.
-        let jam_radius_cm = states
-            .iter()
-            .filter_map(|state| state.jammer.map(|jammer| jammer.radius_cm))
-            .max()
-            .unwrap_or(0);
+        let jam_radius_cm = jam_radius_cm(&states);
         // 16c T-105: each unit's chassis-static words, once, in the unit
         // table's order.
         let chassis = ChassisWords::table(&states);
@@ -5208,6 +5002,279 @@ impl Arena {
             reason: error.to_string(),
         })?;
         Ok(arena)
+    }
+
+    /// **One custody unit's row, admitted** (doc 36 cut GC.1b): factored out of
+    /// [`Arena::new_with_minds`] unchanged, so a check-out and a join ([`Arena::join`]) build a
+    /// unit by one path — its pose and opening cell, its row and class, the consequences its
+    /// record already carries, its seal verified against the frozen mind limits and its cards
+    /// admitted into `cards` and `profiles`, its sensors, guns and band cache. Answers the row
+    /// and its `mind_sealed` line, which the caller journals.
+    ///
+    /// # Errors
+    ///
+    /// [`ArenaError`] naming the unit, as [`Arena::new_with_minds`] refuses it.
+    #[allow(clippy::too_many_arguments)] // the check-out's parts, each read once
+    pub(crate) fn admit_unit(
+        mut unit: CustodyUnit,
+        terrain: &ArenaTerrain,
+        sensors_cfg: &SensorsConfig,
+        classes: &crate::arena::core::ClassTable,
+        odds_floor_permille: u32,
+        weapons_hold: bool,
+        cards: &mut crate::arena::runtime_card::CardCatalog,
+        profiles: &mut BTreeMap<ObjId, crate::arena::profile_runtime::ProfileRuntime>,
+        conditions: &mut crate::arena::conditions::ConditionTable,
+    ) -> Result<(UnitState, EventKind), ArenaError> {
+        // Doc 17h cut M8a (A1): the arena has no holding in hand, so the line's licence
+        // state is what the seal's origin alone can say (a filed seal reads `active`
+        // until cut M8e passes the holding's phase through the IC admission).
+        let licence_state = crate::minds::licence_state::origin_state(&unit.seal.origin);
+        let sealed = unit.seal.sealed_line(licence_state);
+        // **16b cut AF.1**: the heading and the window, in one function the
+        // snapshot's decode calls too (`check_poses`), in the order they
+        // always ran.
+        let opening_cell = check_pose(terrain, unit.id, &unit.pose)?;
+        // **16b cut AE.1**: the row this unit pays, read beside its slope
+        // limit below and first because the opening test needs it.
+        let cost_row = CostRow::read(&unit.unit);
+        // **16b cut AE.3**: and its class, off the same record, for the cap
+        // counted below once every unit is in hand.
+        let class = UnitClass::read(&unit.unit);
+        // **16b cut M.4** (16c `T-14`): and on a cell a unit may stand on —
+        // **its own row** since 16b cut AE.1, so a car handed over on rubble
+        // is refused here as a tank in deep water is. The announcement names
+        // nobody, so the unit and the cell go to the log.
+        if !terrain.passable_for(cost_row, opening_cell.0, opening_cell.1) {
+            tracing::warn!(
+                unit = %unit.id,
+                x = opening_cell.0,
+                y = opening_cell.1,
+                "arena refused: a unit's opening cell is not passable"
+            );
+            return Err(ArenaError::CellImpassable {
+                unit: unit.id,
+                x: opening_cell.0,
+                y: opening_cell.1,
+            });
+        }
+        // **16b cut X.6** (doc 16 §3.2 "Terrain"): *a unit's `z_cm` equals the
+        // cell's `elev_cm`*, and that is true from the opening hash and not
+        // merely from the first crossing. [`CustodyOut`] is the only door into
+        // an arena; the arena is the authority for its own grid, so it does not
+        // trust an inbound z — a stale one, or the flat zero every world-side
+        // placement writes, is corrected here rather than carried for however
+        // many substeps it takes the tank to cross a boundary.
+        if let Some(cell) = terrain.get(opening_cell.0, opening_cell.1) {
+            unit.pose.z_cm = i32::from(cell.elev_cm);
+        }
+        // **16b cut X.1**: the heat numbers, read off the cells the
+        // `TacticalUnit` already carries rather than across a widened seam
+        // (see [`HeatState`]). `None` for every unit whose content declares
+        // no ceiling.
+        let heat = HeatState::read(&unit.unit, &unit.profile, &unit.weapons);
+        // **16b cut X.3**: the sight's thermal channel, read the same way and
+        // `None` for every unit whose mount authors none.
+        let thermal = ThermalSignature::read(&unit.unit);
+        // **16b cut X.4**: the jamming pod, likewise — and the window's own
+        // cell size applied here, once, so the pass compares centimetres.
+        let jammer = Jammer::read(&unit.unit, terrain.cell_cm());
+        // **16b cut X.5**: the counter-jamming filter, likewise — and `None`
+        // when its component has been shot off, which is the one thing that
+        // stops a filter working.
+        let eccm = Eccm::read(&unit.unit);
+        // **16b cut X.6**: the steepest edge this unit's locomotion will
+        // cross, read off the same record and `None` for a unit that declares
+        // no locomotion the shipped table knows — every engine fixture, which
+        // therefore still drives and still pays the surcharge.
+        let slope_limit_pct = crate::arena::slope::SlopeLimit::read(&unit.unit);
+        // **16b cut F.1** (doc 16 §3.1 "Custody"): the match opens on the unit
+        // the world hands over, and that unit's own record may already say it
+        // is a wreck, has lost a track or has had its turret shot off. Until
+        // this cut every match opened at `MotionLimits::default()`, so a hulk
+        // drove and shot and could never be killed again; this reads the
+        // consequences off the record and puts them in force before pulse one.
+        let entry = crate::arena::damage::entry_consequences(&unit.unit, &unit.profile);
+        // **16b cut E.2** (`B-45`): which sections of this unit are the body,
+        // as one mask in the unit's own section order — the order every
+        // `Condition` is packed in, so a reading and this mask can be ANDed.
+        // Read once here for the reason the slope limit and the heat cells
+        // are: it is a fact about the fit that nothing in a match moves.
+        let fatal_sections = fatal_section_mask(&unit.unit, &unit.profile);
+        let operands = unit
+            .weapons
+            .iter()
+            .map(|weapon| crate::arena::rules::RuleWeapon {
+                id: weapon.id.clone(),
+                rounds_max: weapon.count_per_load,
+            })
+            .collect::<Vec<_>>();
+        let admission_error = |error: crate::arena::schema::SchemaError| ArenaError::Mind {
+            unit: unit.id,
+            reason: error.to_string(),
+        };
+        unit.seal
+            .verify(classes, &operands)
+            .map_err(admission_error)?;
+        if unit.seal.odds_floor_permille != odds_floor_permille {
+            return Err(ArenaError::Mind {
+                unit: unit.id,
+                reason: "seal floor differs from frozen match floor".into(),
+            });
+        }
+        let runtime = crate::arena::runtime::prepare_profile_runtime(
+            cards,
+            unit.id,
+            &unit.seal.cards,
+            &unit.seal.rom,
+            classes,
+            unit.seal.class,
+            &operands,
+            &unit.seal.channels,
+            odds_floor_permille,
+        )
+        .map_err(admission_error)?;
+        runtime
+            .program
+            .install(conditions, unit.id, classes.row(unit.seal.class).slots)
+            .map_err(admission_error)?;
+        profiles.insert(unit.id, runtime);
+        // Doc 36 cut GC.2 (Q-36-38): and a gun whose part the record calls
+        // jammed, destroyed or missing does not come into the match either —
+        // a jam a field left is still a jam in the next one, until the bay
+        // clears it.
+        let weapons: Vec<WeaponSummary> = unit
+            .weapons
+            .into_iter()
+            .filter(|weapon| entry.carries(&weapon.mount_section))
+            .filter(|weapon| part_works(&unit.unit, &weapon.id))
+            .collect();
+        let weapons_left = weapons.len();
+        // **16b cut Q.2**: the first value of the band cache, off the record
+        // the world handed over — so a tank that checks in with a shot-off
+        // turret reads `destroyed` there from the opening frame, exactly as
+        // cut F.1's entry consequences already put its lost track in force.
+        let condition = crate::arena::condition::Condition::of(
+            &unit.unit,
+            sensors_cfg.condition_green_permille.min(1_000),
+            sensors_cfg.condition_yellow_permille.min(1_000),
+        );
+        let state = UnitState {
+            id: unit.id,
+            team: unit.team,
+            // **16b cut Q.1**: the slot as it was handed over, carried here
+            // unresolved — `resolve_callsigns` below turns a `0` into the
+            // lowest free slot of the team once every unit is in hand and the
+            // vector is in unit-id order.
+            callsign: Designator::Provisional(0),
+            desired_heading_mdeg: unit.pose.heading_mdeg,
+            pose: unit.pose,
+            speed_cms: 0,
+            desired_speed_cms: 0,
+            power: Power::Off,
+            mobility: unit.mobility,
+            slope_limit_pct,
+            cost_row,
+            class,
+            fatal_sections,
+            // A unit opens the match standing still, so it entered its cell by
+            // no edge at all: grade zero, which is the flat factor.
+            grade_pct: 0,
+            // **16b cut E.3**: and it is not standing against anybody.
+            occupied_hold: None,
+            // **16b cut Q.6**: and it has spent no arena time moving, so there
+            // is no fraction of a turn, a speed change or a centimetre to
+            // carry into its first substep.
+            carry: MotionCarry::default(),
+            limits: entry.limits,
+            sensor_height_cm: if unit.sensor_height_cm == 0 {
+                DEFAULT_SENSOR_HEIGHT_CM
+            } else {
+                unit.sensor_height_cm
+            },
+            // A wreck sees nothing (`Arena::destroy_unit`'s own rule), so one
+            // that arrives as a wreck sees nothing either.
+            sensor: if entry.limits.wreck {
+                None
+            } else {
+                unit.sensor
+            },
+            thermal,
+            jammer,
+            // **16b cut O.2**: every pod checks out radiating (the owner's
+            // default, 16c N12); a unit with no pod carries the switch too and
+            // nothing reads it.
+            ecm_on: true,
+            eccm,
+            // **16b cut D.4**: a unit checks out with a clean receiver and
+            // learns otherwise at its first pass. There is no notice for it:
+            // the transition is what is said, and there has been none.
+            receiver: None,
+            // 16b cut W.1: the two live cells, one row per weapon, laid down
+            // here so that every later lookup is a read of a complete table.
+            // A weapon id declared twice on one unit keeps one row, which is
+            // the same thing the component table itself is.
+            ready_at_ms: weapons
+                .iter()
+                .map(|weapon| (weapon.id.clone(), 0_i64))
+                .collect(),
+            // **16b cut F.1**: the rounds the unit's own `ammo` cell carries,
+            // not the catalog's full load. A tank that checked in with 31
+            // rounds checks out with 31. The authored load is the fallback for
+            // a unit whose record declares no such cell at all — every fixture
+            // arena in this crate, and any content whose weapon keeps its
+            // ammunition somewhere else.
+            ammo: weapons
+                .iter()
+                .map(|weapon| {
+                    (
+                        weapon.id.clone(),
+                        rounds_on_record(&unit.unit, &weapon.id).unwrap_or(weapon.count_per_load),
+                    )
+                })
+                .collect(),
+            weapons,
+            profile: unit.profile,
+            // Doc 16 §3.5 step 2: *every stock rating is 1 through the
+            // `PilotProfile` seam*, which is also the sheet's own floor, so a
+            // check-out that named none resolves a green gunner rather than
+            // dividing by zero.
+            gunnery: if unit.gunnery == 0 {
+                crate::arena::resolution::STOCK_GUNNERY
+            } else {
+                unit.gunnery
+            },
+            heat,
+            controller: unit.controller,
+            // **17b cut M3.3** (doc 17 §13): the seal's reference, off the
+            // custody's own seal — what the check-out sealed, never
+            // re-derived here (a resume decodes it whole).
+            seal: unit.seal.seal_ref(),
+            // **17b cut M5.2**: every hull checks out on its first
+            // sealed profile, never switched.
+            card_profile: crate::arena::card::ActiveProfile::FIRST,
+            // Doc 21 cut G.12a (Q-21-9): every seat starts weapons free in the
+            // simulator; doc 32 Q-CF-41: an IC field opens every seat at HOLD.
+            weapons_hold,
+            unit: unit.unit,
+            condition,
+            lock: None,
+            blocked: false,
+            held: None,
+            linkdead: false,
+            // **16b cut F.1**: doc 16 §3.8's *disabled — no weapons and no
+            // motion* is a fact about the unit, so a unit that arrives that
+            // way arrives disabled. A wreck is past disabled and is never
+            // journalled both (`Arena::settle_disabled`'s own rule).
+            disabled: !entry.limits.wreck && weapons_left == 0 && entry.limits.motion_disabled,
+            shots_fired: 0,
+            hits: 0,
+            own_last_hit_ms: None,
+            // **16b cut M.1** (`T-82`): no seat has ordered anything yet.
+            orders_window_s: 0,
+            orders_in_window: 0,
+        };
+        Ok((state, sealed))
     }
 
     /// One unit by id, by binary search over the sorted vector.

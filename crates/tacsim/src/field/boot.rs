@@ -182,6 +182,44 @@ fn resume(ctx: &mut Ctx<'_>, site: &CanonicalId, held: &Held) -> Result<(), Stri
     for unit in gone {
         arena.remove_unit(unit);
     }
+    // Doc 36 cut GC.1b (Q-36-4): a carrier the host took in after this snapshot was taken is on
+    // the live record and checked out, and the snapshot never held it; the arena joins it again
+    // at its pad, as the kernel did at the pulse it joined. One that can no longer join is checked
+    // back in and leaves the record, as a refused join does.
+    let arrived: Vec<ObjId> = live
+        .units
+        .iter()
+        .filter(|row| row.arrived && arena.unit(row.unit).is_none())
+        .map(|row| row.unit)
+        .collect();
+    for hull in arrived {
+        let joined = super::carrier::pad_pose(ctx.w, site, &arena.definition.terrain, hull)
+            .and_then(|pose| super::carrier::joining(ctx, site, &live, hull, pose))
+            .and_then(|joining| {
+                arena
+                    .join(
+                        joining.unit,
+                        joining.pilot,
+                        &joining.host,
+                        super::carrier::PAD_SPREAD_CELLS,
+                    )
+                    .map_err(|error| error.to_string())
+            });
+        match joined {
+            Ok(_) => {
+                if let Some(state) = arena.unit_mut(hull) {
+                    state.power = crate::arena::state::Power::Online;
+                }
+            }
+            Err(why) => {
+                tracing::warn!(site = %site, hull = hull.0, reason = %why, "tacsim: a resumed field could not take its arrival in again; it stands outside");
+                let _ = mush_tactics::custody::check_in(ctx, hull, None);
+                live.units.retain(|row| row.unit != hull);
+                live.parties
+                    .retain(|party| party.key != super::record::PartyKey::Unit { unit: hull });
+            }
+        }
+    }
     let task = ctx
         .w
         .module_state_mut::<FieldBook>()
