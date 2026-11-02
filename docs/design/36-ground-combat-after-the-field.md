@@ -1368,6 +1368,134 @@ field on `FieldBook` in `field/mod.rs`).
 - the held-out hull's one-cell footprint, and the site's line for it;
 - the owed arrivals as RAM only, rebuilt by the tick after a restart.
 
+## 10. GC.2 as built (the kernel batch)
+
+Built 2026-11-01 on `main` at `9877284f`, beside GC.0 and GC.7, as the programme's one kernel
+rebless (§7's first rule, Q-36-56). Four changes, one cut. What the cut had to decide where the
+rulings left it open, for the owner to object to:
+
+- **The tempo (Q-36-6, the tempo half).** `Arena::hostile_in_weapons_range`
+  (`arena/state.rs`) counts a held Hostile contact only when its hull **came into the field
+  armed** (`UnitState::armed_at_checkout`, a weapon row at check-out) **or has fired a shot**.
+  "Never armed" is read at check-out, not now: a hull that was armed and has lost or spent its
+  guns still keeps a field engaged, as it did. The test reads truth the presence picture already
+  names (the hull's class), so the tempo leaks nothing a pilot could not see.
+- **The idle bound (Q-36-5).** `[tacsim.field].idle_demote_s`, 600 by default, banded 10 to
+  3,600 like `disengage_s` (`config.rs`, `mush-config`, `config_ext.rs`). The arena clock keeps
+  the last shot's millisecond (`Clock::last_shot_ms`, `arena/clock.rs`), carried in a snapshot's
+  `ClockState` (serde default, absent before the first shot), so a resumed field's bound counts
+  from the shot it really saw. `Task::disengaged` (`arena_task.rs`) demotes on either interval,
+  under the same "no round in flight" rule; `FieldTerms` carries both (`field/admit.rs`,
+  `field/boot.rs`). Arena time is the measure, which a field runs at the wall's pace.
+- **Wreck cover (Q-36-7, G-8).** A new module, `arena/wreck_cover.rs`. A wreck's cell reads as
+  `TerrainClass::Wall` — the class CF.4 lays a site record's objects as — in both traces while
+  the wreck stands in it. The fire trace (`Arena::trace_eye_to`, `arena/damage.rs`: the shot, the
+  impact's re-trace and the cockpit's cover advice) walks the terrain through an overlay grid;
+  the sensor trace (`Arena::sight`, `arena/perception.rs`) keeps the terrain's horizon index and
+  then asks whether a wreck stands on the line's interior. Neither end of a line is ever its own
+  cover, so a shot at a wreck reads the ground under it. A field with no wreck pays nothing. The
+  trace stayed in `arena/`, not `mush-atlas`: the atlas has no notion of a unit.
+- **Component outcomes (Q-36-38, combat's half).** A round that reaches a section's internals
+  and leaves the section standing takes one more draw, `component:<shot_seq>` (the seventh draw
+  label, pinned in `arena/rng.rs` and `mush-contract-tests`' `arena_library`). Below the unit's
+  `jam_permille` it jams a part of the section, below `jam_permille + damage_permille` it damages
+  one, else nothing; the same value, divided by a thousand, picks the part in component-id order
+  among those the outcome can change (intact or damaged for a jam, intact for a damage). The op
+  rides the hit's one plan, and the draw is the hit line's third. The chances are content:
+  `UnitSpec::component_hits` (`definitions/unit.rs`), absent in every shipped unit, so no
+  `DefinitionRef` moves, and `COMPONENT_HITS` — **50 and 100 per mille, provisional** — when a
+  unit names none. They reach the kernel on `UnitProfile::component_hits`
+  (`arena/resolution.rs`, `match_/arena_def.rs`); a hand-built profile has none, so no fixture
+  jams. A round that stops in the armour touches no part.
+- **What a jam does.** A jammed gun leaves the weapon table as a shot-off turret's guns do (its
+  rounds kept for the check-in, its slots cleared; `Arena::drop_weapons`, factored out of
+  `remove_weapons`). A jammed or damaged part of any other kind changes nothing in the match yet.
+  At check-out a gun whose part the record reads jammed, destroyed or missing does not come into
+  the match (`part_works`, `arena/state.rs`), so a jam a field left stays a jam until the bay
+  clears it. A damaged gun still fires.
+- **The check-in keeps it.** Nothing new was needed: the IC condition plan
+  (`field_ops::apply_ic_combat_return`) already carried an explicit component condition, and
+  `effective_component_condition` keeps a stored `jammed`. A hull whose only gun jammed reads
+  `Unarmed`, which the demotion lists as a casualty on the site record.
+- **`Missing` (Q-36-38).** `ComponentCondition::Missing` (`mush-tactics`'
+  `field_ops/condition.rs`), after `Destroyed` in the order; `"missing"`, `"stripped"` and
+  `"removed"` classify to it. It neither works nor salvages, it survives whatever its section
+  suffers, and the assessment lists it apart (`FieldUnitAssessment::missing_components`). The
+  workshop's own `"stripped"` word is unchanged; field engineering refuses a missing part as it
+  refuses a destroyed one.
+
+**Not done, and why.** The unit-mind API's `line_to` (`stock_mind::line_to`, the `line_to(v, id)`
+kernel) still reads the terrain alone: a mind's view holds no wreck positions, and giving it
+them is a mind API change with its own seal digests, which this cut's rebless did not take. A
+mind may therefore believe it has a line through a wreck, fire, and find the wreck at the impact.
+That is a follow-up for whoever next bumps the mind API.
+
+**The gates.**
+- `gc2_an_unarmed_barge_does_not_hold_a_field_engaged` and `gc2_an_idle_declared_field_demotes`
+  (`tests/shard_1/field_gc2.rs`): through the production command paths on Ahuna Flank, a pilot's
+  `+field/mark E=hostile` on a prospector (never armed) and on a second armed hull; no shot is
+  fired, and each field demotes on its own interval with the Hostile still in reach.
+- `gc2_a_wreck_hides_what_stands_behind_it` (`arena/wreck_cover.rs`): the sensor and fire lines
+  blocked at the wreck's cell from both ends, open with the same hull alive, open to the wreck
+  itself. The CF.7 story's G-8 assert flips with it (`tests/shard_1/field_story.rs` step 13: the
+  escort's sensors never hold the raider behind the wreck).
+- `gc2_a_survivable_hit_can_jam_a_weapon_and_the_check_in_keeps_it` (`arena/damage.rs`): a
+  turret hit that leaves the turret at 100 jams the cannon; the record reads `jammed`, the gun is
+  off the table with its rounds kept, the hit line carries three draws, the IC check-in keeps the
+  jam (`Jammed`, degraded, not an operational weapon), and the next arena the hull enters brings
+  no gun.
+- Beside them: `gc2_an_unarmed_target_keeps_nobody_engaged` and
+  `gc2_only_a_round_through_to_the_internals_can_touch_a_part` (the kernel halves), and
+  `gc2_a_stripped_part_is_missing_and_not_destroyed` (`mush-tactics`). The CF.7 story's step 7
+  lost its Friendly stand-down: the field demotes with only the unarmed barge Hostile.
+
+**The rebless, taken once.**
+What moved, each re-pinned with its reason beside it:
+- **The stock pool's record** (`tests/shard_2/twin.rs`, `M4_5_POOLED_RECORD`, 21 lines): its
+  hulls are content-backed, so the shipped chances jam and damage parts and wrecks give cover.
+  Match ends move by up to 43 s, thinks 10,281 → 10,603, shots and wrecks a few per cent; every
+  winner, the 14–1 split and `first_divergence_ms` stand, and nothing is `unlawful`. Two
+  divergence counters leave nought: `line` 0 → 28 and `no_line` 0 → 31. That is the follow-up
+  above, measured: the kernel's fire line finds a wreck that the mind's `line_to` cannot see.
+- **Gate A's coverage pairs** (`COVERAGE`): `pooled` 10,008 / 273 → 10,295 / 308, `mixed`
+  13,220 / 502 → 13,230 / 502, `lance` 6,001 / 164 → 7,157 / 130, and
+  `POOLED_MATCHES_WITH_STAND_IN` 11 → 12. T1 ≡ T2 still holds on every lane, with no divergence.
+- **The draw-label set**: seven kinds, `component` last (`arena/rng.rs`'s own pin and
+  `mush-contract-tests`' `the_draw_label_set_is_pinned`). Adding it shifts no existing draw
+  (`adding_a_label_shifts_no_existing_draw` is unchanged and green).
+- **The cross-platform practice rows** (`tests/shard_2/minds_rhai.rs`,
+  `M2_CROSS_PLATFORM_PINS`, D-UM-28): the twin corpus is content-backed too. Rows 0 and 1 fight
+  differently, their stopping times moving 170,250 → 176,250 and 192,500 → 235,250 with every
+  hash. Row 2 stops at the same 170,000 with the same state hash and substep digest, and only
+  its ledger digest moved (its hit lines carry the third draw). Row 3, the float probe, is
+  unmoved, with its 3,600 thinks and the 369098751 bitmask. The test is `#[ignore]`d and run by
+  name only in CI's `tacsim-minds` cell, so the first local pass missed it and the PR's first CI
+  run caught it (run 41387953901). Windows and Linux print the same four rows byte for byte, so
+  this is a pin left behind, not a divergence between hosts. The two other by-name lanes beside
+  it, the whole-match hashes between the runners and the thirty real pool tasks, were unmoved
+  and green.
+
+What did **not** move, and was checked: the shipped duel's hash and its 34 lines
+(`tests/shard_3/motor.rs`), the (j) field's substep hashes and its 50 lines
+(`tests/shard_2/reflex.rs`), the production encoding pins (`tests/shard_2/minds.rs`),
+`STANDARD_SHA256` and the default seal digests. Those fights are hand-built fixtures with no
+chances, or end before a wreck stands in a line. No snapshot format bump: the clock's new field
+and the profile's new row decode from older snapshots by serde default.
+
+Five tests changed their fixtures, not their claims. Four tempo tests (`reflex.rs`'s `t1_in_band…`,
+`t1_t32…` and `e2_b45…`, and `weapons.rs`' `the_engaged_tempo_is_entered_on_a_shot_and_held`)
+asserted `Engaged` against a target with no gun. That target now counts only once it has fired, so
+each sets it to have fired. `extensions.rs`' `x4_a_shut_down_or_wrecked_pod_jams_nothing` moves its
+wrecked pod one cell off the watch line, because a wreck there now hides the mark for a reason
+that test is not about.
+
+**Verified** on Windows: tacsim's lib (2,087), all six integration shards (shard_1's 401 with the
+CF.7 story, shards 2 and 3's 800, shards 4 to 6's 786), `mush-tactics` and `mush-contract-tests`
+(census, panic budget, restriction lints) green; clippy and rustdoc `-D warnings` clean on the
+touched crates. As a probe, the two field gates fail with the tempo and idle rules switched off.
+The broad suites run once more on Linux CI on the draft PR (#296) and the gate sweep on
+conclav.dev.
+
 ## As built (GC.13)
 
 GC.13 covers Q-36-45 (treatment). It touches no kernel hash. It changes content pins: the lane
@@ -1433,6 +1561,134 @@ the medical block.
 
 **Defaults taken (provisional):** the three times; the leaving rule; the two rooms and their
 operators; beds that are not yet a limit.
+
+## 11. GC.1b as built (the kernel join)
+
+Built 2026-11-01 on GC.2's branch (`claude/gc2-kernel-batch` at `17bd256a`, PR #296), because
+GC.2 is the batch that reblessed the practice hashes, and stacked on it. It finishes Q-36-4: a
+carrier that settles on a running field's pad is admitted at its pad, as a unit of its own party,
+at the next pulse. No practice hash moved.
+
+**The kernel's join** (`arena/join.rs`, `arena/state.rs`, `arena_task.rs`).
+- *One path for a unit.* The per-unit build of `Arena::new_with_minds` moved, unchanged, into
+  `Arena::admit_unit`: the pose and opening cell, the cost row and class, the consequences the
+  record already carries, the seal verified against the frozen mind limits, the cards and
+  profiles admitted, the sensors, the guns, the band cache. The check-out calls it once per unit;
+  `Arena::join` calls it once. Four small pieces of the check-out came out with it for the same
+  reason (`raise_seat`, `check_substep`, `alert_range_cm`, `jam_radius_cm`).
+- *The message.* `ArenaMsg::Join { unit, pilot, host, spread }`. Like a withdrawal, it is buffered
+  (one per unit, the first offer wins) and decided at the next pulse's head, before the step, so
+  the unit lands at a pulse boundary. The answer, `ArenaOut::Joined`, carries the name it joined
+  under or the refusal, and is queued behind the ledger so it is never lost. The message carries
+  more than `{ unit, pilot }`: `host` is the field's standing friendships and marks (Q-CF-5,
+  Q-CF-44) for a party the field has not seen yet, and `spread` is how far it may be stood from
+  its pad.
+- *What a join does.* The unit is inserted in unit-id order. Its party's book is opened if the
+  field has none, with only those friendships and marks that name it, so every book already open
+  is kept as it stands. It takes a letter its party has not given, drawn by the check-out's keyed
+  mix of seed, party and id (Q-CF-11), so no other unit's name moves. The chassis table, the
+  spatial index, the alert range and the jamming radius are laid down again. The substep bound is
+  checked again. Its first sensor pass, and for a mind's hull its first think, fall at its next
+  slot of their stagger grids. One `mind_sealed` line journals it at the join's millisecond, as
+  every unit's does at check-out. The task puts it online, as `spawn_field` puts every admitted
+  unit.
+- *Where it stands.* At its pad pose, or, if another unit holds that cell, at the centre of the
+  nearest free cell it may stand on within `spread` (`PAD_SPREAD_CELLS`, 8). The search goes
+  nearest ring first, row-major within a ring: `pad_poses`' own rule, read against the arena's
+  live occupancy, which only the arena knows while it runs. The ring walk moved into the kernel
+  (`arena::join::ring_cells`), and `field::carrier` re-exports it.
+- *All or nothing.* The join is built on a copy of the arena and swapped in whole. A refusal (a
+  check-out's refusals, a unit already here, no free cell, a scripted seal, a host that is not
+  the IC field's) leaves the arena exactly as it was.
+- *What never joins.* A squad: squads are dealt at check-out for the OOC lobby. A scripted mind:
+  an IC field carries none until doc 23 S.4b, and the task holds no source. An OOC match: the
+  arena refuses unless its own end is `EndCondition::Host`, which only the IC host supplies, so an
+  OOC arena refuses whatever host it is handed. The task refuses first, with no `FieldTerms` or
+  with a tape, so no Join reaches an OOC arena's step or its input tape.
+- *A fix on the way.* `Arena::remove_unit` (CF.5's withdraw) left the chassis table as it was,
+  though it is kept in row order. After a withdrawal, every later row's frame words came from the
+  unit before it. It now lays the table down again, as a join does. Frames only: the table is
+  never hashed.
+
+**The host's side** (`field/carrier.rs`, `field/admit.rs`, `field/boot.rs`, `field/record.rs`,
+`arena_bridge.rs`).
+- *The check-out GC.1 moved here.* Each tick, after GC.1 notes the owed arrivals, the host takes
+  each one in (`carrier::join_arrivals`). It builds the hull's entrant as admission does: a
+  carrier's party is the roster it launched, else its commander's party of one. The party keeps
+  its letter if the field already has it, else takes the next one. The hull is checked out under
+  the field's custody mark, its row (`FieldUnit::arrived`) and any new party go on the live
+  record, which is written, and the Join is offered at its pad pose. The check-out row comes from
+  `admit::custody_unit`, factored out of admission's check-out, so an arrival is sealed and
+  described exactly as an admitted unit is. A busy inbox checks the hull straight back in, and the
+  next tick tries again.
+- *The answer* (`carrier::on_joined`). If the hull is taken in, the site is told
+  `ARRIVED_IN_FIELD` ("The {name} has set down on the pad and is in field {n}; nothing launches
+  from it while the field runs."). If it is refused, the hull is checked back in as it went out,
+  its row and its own party of one leave the live record, and it is not asked again while this
+  field runs (`FieldBook::join_refused`). It stays owed, so `owed_arrivals` still names it.
+- *The registry.* At the offer, the hull is bound to the task with its controller and whether it
+  comes in armed (`ArenaRegistry::bind_joining`), as the check-out binds every admitted unit. A
+  refusal unbinds it.
+- *Every party's presence picture.* A carrier admitted at promotion stays the pad on the map. One
+  whose live row says it arrived is a flight in the presence book
+  (`carrier::arrived_mid_field`, read by `surface::presence::publish`). So every party reads its
+  arrival as a row, by bearing and band, with its class inside sight (Q-CF-15).
+- *No launch.* Unchanged: the existing Q-CF-17 refusal (`FIELD_LAUNCH`) holds the arrived
+  carrier's bay shut while the site is promoted.
+- *Close and void.* Nothing new. The joined hull is a live row, so demotion checks it in with the
+  field's own rows, and its carrier crew is checked in from the row's `aboard` like any other.
+
+**The determinism record and its replay.** A field records no input tape (an IC field has none,
+Q-CF-43), and an OOC match never joins, so no `TapeEvent` was needed and the tape format did not
+move. A field's durable record is its live record plus its last snapshot, and a restart resumes
+from the two (Q-CF-33). A join changes both:
+- The live record gains the hull's row in the same batch as the check-out, before the message is
+  sent.
+- Every snapshot after the join holds the unit, its letter and its party's book (they are arena
+  state, carried and hashed as any unit's).
+
+The gap is a restart between the join and the next snapshot. The live record names the hull and
+its custody mark holds it, but the snapshot predates it. The resume (`boot::resume`) closes the
+gap: every `arrived` row the decoded arena does not hold is joined again, at its pad, through the
+same `carrier::joining` builder and `Arena::join`, before the task reopens. A hull that can no
+longer join is checked back in and leaves the record, as a refused join does. A resumed field
+rewinds to its snapshot in any case, so the re-join lands at the snapshot's millisecond, and the
+field runs on from there. `FieldUnit::arrived` is serde-default and omitted when false, so every
+live record written before this cut decodes, and re-encodes byte for byte.
+
+**The gates.**
+- `field_carrier::gc1_a_carrier_arriving_mid_field_is_admitted_at_its_pad_and_cannot_launch`
+  (shard_1, GC.1's deferred gate, replacing GC.1's interim test). A second Dray-P settles on
+  Ahuna Flank's pad while CF.3's field runs. It is checked out under the field's mark with an
+  `arrived` row in a party nobody held at the opening. Nothing is owed after that. The armed
+  hull's sensors, which held one contact on the pad before, hold two. The presence book has the
+  arrival as a flight, the field runs on, and the arrival's rig launch is refused. When the field
+  demotes, its black box carries the arrival's `mind_sealed` line at a non-zero millisecond, and
+  the demotion has checked it in with the field's own rows.
+- `motor::gc1b_an_ooc_match_offered_a_join_keeps_its_practice_hashes` (shard_3). This is the
+  no-OOC-hash pin. The shipped duel is offered a join between every pair of pulses of its minute,
+  under an IC-shaped host. It refuses each one, each refusal leaves the state hash as it was, and
+  the duel ends on GC.2's reblessed `DUEL_HASH_API6_OBSERVED` and, through the API 4 control, on
+  `DUEL_HASH_AT_HEAD`.
+- Beside them, in-source: `arena::join`'s four (a joiner in a party of its own with its books;
+  one in a held cell stood beside it, or refused whole with no spread; one in a party already on
+  the field taking an ungiven letter, and a duplicate refused; an OOC arena refusing and
+  unchanged) and `arena_task::gc1b_only_a_field_task_takes_a_join`.
+
+**Defaults taken (provisional).**
+- The arrival's line to the site.
+- A refused arrival is not retried while its field runs. It stands outside, owed, until the field
+  demotes.
+- A party's letter for a newcomer is the next in the alphabet, not re-sorted by key. The opening
+  rule (Q-CF-11, letters by key order) cannot be kept without renaming the parties already on the
+  field.
+
+**Verified** on Windows: the gate, the no-OOC-hash pin beside `m1a1_the_shipped_duel_hashes_as_before`,
+the five in-source join tests, and the CF.7/GC.0 field story at 256
+(`gc0_the_raiders_barge_lifts_and_the_field_demotes_without_a_friendly_mark`) and at 512
+(`s2_the_field_story_at_512`) are green; `mush-contract-tests`' panic budget, restriction lints,
+gated-test census, tacsim shard and arena library guards are green; clippy and rustdoc `-D warnings`
+are clean on tacsim. The broad suites run on Linux CI on the draft PR.
 
 ## As built (GC.12)
 

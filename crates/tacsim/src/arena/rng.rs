@@ -80,14 +80,29 @@ pub enum DrawLabel {
         /// The draw's place in the think, from 0.
         n: u32,
     },
+    /// **Whether a survivable hit jams or damages a part, and which** (doc 36
+    /// cut GC.2, Q-36-38): taken once, after the plan, for a round that reached
+    /// a section's internals and did not destroy it.
+    Component {
+        /// The shot's sequence number.
+        shot_seq: u64,
+    },
 }
 
 impl DrawLabel {
     /// **The pinned label kinds**, in code order. A contract test asserts this
-    /// exact array, so a seventh reason to draw is a reviewed diff (the sixth,
-    /// `mind`, was 17b cut M2.2's; D-UM-29).
-    pub const LABEL_KINDS: [&'static str; 6] =
-        ["hit", "facet", "burst", "classify", "contact", "mind"];
+    /// exact array, so an eighth reason to draw is a reviewed diff (the sixth,
+    /// `mind`, was 17b cut M2.2's; D-UM-29; the seventh, `component`, doc 36
+    /// cut GC.2's).
+    pub const LABEL_KINDS: [&'static str; 7] = [
+        "hit",
+        "facet",
+        "burst",
+        "classify",
+        "contact",
+        "mind",
+        "component",
+    ];
 
     /// This label's kind word — the first colon-separated field of
     /// [`DrawLabel::encode`].
@@ -100,6 +115,7 @@ impl DrawLabel {
             DrawLabel::Classify { .. } => "classify",
             DrawLabel::Contact { .. } => "contact",
             DrawLabel::Mind { .. } => "mind",
+            DrawLabel::Component { .. } => "component",
         }
     }
 
@@ -113,6 +129,7 @@ impl DrawLabel {
     /// classify:<observer>:<target>:<pass_seq>
     /// contact:<viewer>:<target>
     /// mind:<unit>:<think_seq>:<n>
+    /// component:<shot_seq>
     /// ```
     ///
     /// Object ids are their **decimal numbers**, not their `#42` display form:
@@ -134,6 +151,7 @@ impl DrawLabel {
                 format!("contact:{}:{}", viewer.0, target.0)
             }
             DrawLabel::Mind { unit, think_seq, n } => format!("mind:{unit}:{think_seq}:{n}"),
+            DrawLabel::Component { shot_seq } => format!("component:{shot_seq}"),
         }
     }
 
@@ -178,6 +196,7 @@ impl DrawLabel {
                 think_seq: seq(1)?,
                 n: u32::try_from(seq(2)?).ok()?,
             },
+            ("component", 1) => DrawLabel::Component { shot_seq: seq(0)? },
             _ => return None,
         };
         (label.encode() == text).then_some(label)
@@ -195,7 +214,7 @@ fn decimal(field: &str) -> Option<u64> {
 
 /// **The pinned label kinds**, as a module-level constant for callers that do not
 /// want the type. The same array as [`DrawLabel::LABEL_KINDS`].
-pub const LABEL_KINDS: [&str; 6] = DrawLabel::LABEL_KINDS;
+pub const LABEL_KINDS: [&str; 7] = DrawLabel::LABEL_KINDS;
 
 /// **`draw(seed, label)`** — the keyed 64-bit value doc 16 §3.5 asks for.
 ///
@@ -286,7 +305,7 @@ mod tests {
     use std::collections::BTreeSet;
 
     /// One label of every kind, in [`DrawLabel::LABEL_KINDS`] order.
-    fn one_of_each() -> [DrawLabel; 6] {
+    fn one_of_each() -> [DrawLabel; 7] {
         [
             DrawLabel::Hit { shot_seq: 1 },
             DrawLabel::Facet { shot_seq: 1 },
@@ -305,15 +324,25 @@ mod tests {
                 think_seq: 2,
                 n: 0,
             },
+            DrawLabel::Component { shot_seq: 1 },
         ]
     }
 
     #[test]
     fn the_label_kinds_are_pinned_and_every_variant_declares_one() {
-        // 17b cut M2.2 (D-UM-29): five -> six, `mind` last.
+        // 17b cut M2.2 (D-UM-29): five -> six, `mind` last; doc 36 cut GC.2:
+        // seven, `component` last.
         assert_eq!(
             LABEL_KINDS,
-            ["hit", "facet", "burst", "classify", "contact", "mind"]
+            [
+                "hit",
+                "facet",
+                "burst",
+                "classify",
+                "contact",
+                "mind",
+                "component"
+            ]
         );
         assert_eq!(LABEL_KINDS, DrawLabel::LABEL_KINDS);
         for (label, kind) in one_of_each().iter().zip(LABEL_KINDS) {

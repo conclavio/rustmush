@@ -742,6 +742,7 @@ fn profile() -> UnitProfile {
             consequences: Vec::new(),
             struck_through: None,
         }],
+        ..Default::default()
     }
 }
 

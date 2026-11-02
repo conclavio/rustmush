@@ -300,7 +300,7 @@ impl FieldEngineeringBook {
         )
         .unwrap_or(ComponentCondition::Intact);
         match current_cond {
-            ComponentCondition::Destroyed => {
+            ComponentCondition::Destroyed | ComponentCondition::Missing => {
                 return Err(FieldEngineeringError::RequiresWorkshopFacility {
                     unit: target_unit.object(),
                     reason: SmolStr::new_static(

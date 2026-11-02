@@ -2597,6 +2597,10 @@ fn x4_a_shut_down_or_wrecked_pod_jams_nothing() {
     let mut wreck = field();
     if let Some(state) = wreck.unit_mut(POD) {
         state.limits.wreck = true;
+        // Doc 36 cut GC.2 (Q-36-7): a wreck is cover in the sensor trace, so the
+        // burnt-out pod stands a cell off the watch line, still among the two
+        // tanks, or it would hide the mark for a reason this test is not about.
+        state.pose.x_cm += 1_000;
     }
     assert!(holds(&mut wreck), "a burnt-out pod still jammed");
 

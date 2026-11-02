@@ -11,7 +11,7 @@
 //! demotion with no Friendly mark (doc 36 cut GC.0); the fill plan resumed; the casualty and the
 //! wreck on the site record; a restart; the carrier's departure on the leave-behind confirmation;
 //! a second visit finding both where they fell; and a second field on the same ground, the barge
-//! landed again, where the wreck's cover is pinned at its gap (G-8).
+//! landed again, where the wreck hides the raider behind it (G-8, doc 36 cut GC.2).
 //!
 //! What the story stands in for, each named in doc 32 §17:
 //! - **the escort's delivered orders**: tacsim's world harness lands no DT activation (CF.6c's
@@ -940,7 +940,8 @@ async fn field_story(at: &Ground) {
     // Doc 36 cut GC.0 (Q-36-6, the host half): with the tank aboard and the walker a wreck, the
     // raider's unarmed barge lifts out of the field and off the site by F-6's departure. Nobody
     // marks the raider Friendly: the escort still holds its party Hostile, and with nothing of it
-    // left standing the field demotes on its own quiet interval.
+    // left standing the field demotes on its own quiet interval (and since doc 36 cut GC.2, Q-36-6,
+    // an unarmed hull standing there would not hold it engaged either).
     let lifted = until(&mut rig, &mut rx, &mut lines, 60, |rig, _| {
         mush_sim::pose_of(rig.tw.world(), barge).is_none()
     })
@@ -1092,10 +1093,10 @@ async fn field_story(at: &Ground) {
             unit.0
         );
     }
-    // G-8, pinned at its gap (doc 32 §17): the wreck stands between the escort and the raider,
-    // on the one row, and the kernel's lines are the terrain's alone — a unit standing in a cell,
-    // wreck or not, hides nothing behind it. So the escort's sensors still hold the raider past
-    // the wreck. When a wreck gives cover, this assert flips.
+    // G-8 (doc 32 §17, flipped by doc 36 cut GC.2, Q-36-7): the wreck stands between the escort
+    // and the raider, on the one row, and a wreck's cell is a wall in the kernel's fire and
+    // sensor traces while it stands there. So the escort's sensors never hold the raider behind
+    // it.
     let focus = run(
         &mut rig.tw,
         escort,
@@ -1115,11 +1116,18 @@ async fn field_story(at: &Ground) {
             })
         })
     };
-    let seen = until(&mut rig, &mut rx, &mut lines, 60, |rig, _| behind(rig)).await;
+    let framed = until(&mut rig, &mut rx, &mut lines, 30, |rig, _| {
+        frame(rig, escort).is_some()
+    })
+    .await;
     assert!(
-        seen,
-        "G-8 pinned: the wreck at {wreck_at:?} hides nothing, so the escort holds the raider \
-         behind it; the escort's frame {:?}",
+        framed,
+        "the escort's cockpit frame arrives in the second field"
+    );
+    let seen = until(&mut rig, &mut rx, &mut lines, 30, |rig, _| behind(rig)).await;
+    assert!(
+        !seen,
+        "G-8: the wreck at {wreck_at:?} hides the raider behind it; the escort's frame {:?}",
         frame(&rig, escort).map(|frame| (
             frame.cell,
             frame

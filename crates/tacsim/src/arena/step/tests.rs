@@ -1795,6 +1795,7 @@ fn m2_a_kill_on_the_deadlines_own_millisecond_wins() {
                 consequences: vec![Consequence::DestroyUnit],
                 struck_through: None,
             }],
+            ..Default::default()
         };
         blue
     };
@@ -3170,6 +3171,7 @@ fn o1_holder(glass: bool) -> crate::arena::state::CustodyUnit {
                 consequences: vec![Consequence::DestroyUnit],
                 struck_through: None,
             }],
+            ..Default::default()
         };
     }
     blue
