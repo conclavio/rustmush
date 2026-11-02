@@ -182,11 +182,11 @@ fn ic2_the_locker_limits_agree_on_crew_days() {
 fn ic2_the_catalog_rows_derive_from_the_goods_table() {
     let table = table();
     let entries = table.catalog_entries().expect("the rows derive");
-    // Doc 20 cut SM.3a: and its four ores (was 8).
+    // Doc 20 cut SM.3a: and its four ores (was 8). Doc 36 cut GC.7: and its four munitions.
     assert_eq!(
         entries.len(),
-        12,
-        "six rows, doc 19 cut A.8's two and doc 20 cut SM.3a's four"
+        16,
+        "six rows, doc 19 cut A.8's two, doc 20 cut SM.3a's four and doc 36 cut GC.7's four"
     );
     for (entry, good) in entries.iter().zip(&table.goods) {
         mush_market::check_entry(entry).unwrap_or_else(|error| panic!("{}: {error:?}", good.id));

@@ -1953,11 +1953,18 @@ pub struct TacsimConfig {
 /// seconds, so a field is never demoted between two volleys, and an hour.
 pub const FIELD_DISENGAGE_S: std::ops::RangeInclusive<u32> = 10..=3_600;
 
+/// **The shortest and longest idle bound a server may set** (doc 36 cut GC.2, Q-36-5): the
+/// demotion interval's own range.
+pub const FIELD_IDLE_DEMOTE_S: std::ops::RangeInclusive<u32> = 10..=3_600;
+
 /// **The shortest and longest extraction delay** (doc 32 cut CF.5): an IC minute, an IC week.
 pub const FIELD_EXTRACT_S: std::ops::RangeInclusive<u32> = 60..=604_800;
 
 /// **The longest rescue bound** (doc 32 cut CF.5): an IC day.
 pub const FIELD_RESCUE_BOUND_S: u32 = 86_400;
+
+/// **The shortest and longest treatment time** (doc 36 cut GC.13): an IC minute, an IC month.
+pub const FIELD_TREAT_S: std::ops::RangeInclusive<u32> = 60..=2_592_000;
 
 /// **`[tacsim.field]`** (doc 32 cut CF.2; Q-CF-20, Q-CF-21, Q-CF-45): provisional (the owner's
 /// economy-defaults rule).
@@ -1966,6 +1973,10 @@ pub struct FieldConfig {
     /// Seconds of arena time a field runs with no hostile pair firing, within weapons range or
     /// with a round in flight before it demotes (120).
     pub disengage_s: u32,
+    /// **Doc 36 cut GC.2** (Q-36-5): seconds of arena time a field runs with no shot fired before
+    /// it demotes **whatever its contacts**, so a declared but idle raider cannot hold bays shut
+    /// (600, provisional; a field runs at the wall's pace, so ten wall-clock minutes).
+    pub idle_demote_s: u32,
     /// The field cap (24): the most units one field admits, and so the most flights one site's
     /// surface takes (Q-CF-21). Never above the record's own bound
     /// ([`crate::surface::site_record::FIELD_MAX_UNITS`]).
@@ -1977,15 +1988,28 @@ pub struct FieldConfig {
     /// **Doc 32 cut CF.5** (Q-CF-39): the published bound — IC seconds past the due instant an
     /// extraction waits while a Friend's recovery flight is on the site (7,200).
     pub rescue_bound_s: u32,
+    /// **Doc 36 cut GC.13** (Q-36-45): IC seconds an injured character spends at a port before
+    /// they are fit again (86,400: one IC day).
+    pub treat_injured_s: u32,
+    /// **Doc 36 cut GC.13** (Q-36-45): IC seconds an incapacitated character spends at a port
+    /// before they are fit again (259,200: three IC days).
+    pub treat_incapacitated_s: u32,
+    /// **Doc 36 cut GC.13** (Q-36-45): the treatment time at a port with a medical room, per
+    /// mille of the two above (500: half).
+    pub treat_medical_permille: u32,
 }
 
 impl Default for FieldConfig {
     fn default() -> Self {
         Self {
             disengage_s: 120,
+            idle_demote_s: 600,
             max_units: crate::surface::site_record::FIELD_MAX_UNITS,
             extract_s: 21_600,
             rescue_bound_s: 7_200,
+            treat_injured_s: 86_400,
+            treat_incapacitated_s: 259_200,
+            treat_medical_permille: 500,
         }
     }
 }
@@ -2004,6 +2028,14 @@ impl FieldConfig {
                 FIELD_DISENGAGE_S.start(),
                 FIELD_DISENGAGE_S.end(),
                 self.disengage_s
+            ));
+        }
+        if !FIELD_IDLE_DEMOTE_S.contains(&self.idle_demote_s) {
+            return Err(format!(
+                "[tacsim.field].idle_demote_s must be {} to {} (it is {})",
+                FIELD_IDLE_DEMOTE_S.start(),
+                FIELD_IDLE_DEMOTE_S.end(),
+                self.idle_demote_s
             ));
         }
         let cap = crate::surface::site_record::FIELD_MAX_UNITS;
@@ -2027,6 +2059,24 @@ impl FieldConfig {
                 self.rescue_bound_s
             ));
         }
+        for (key, value) in [
+            ("treat_injured_s", self.treat_injured_s),
+            ("treat_incapacitated_s", self.treat_incapacitated_s),
+        ] {
+            if !FIELD_TREAT_S.contains(&value) {
+                return Err(format!(
+                    "[tacsim.field].{key} must be {} to {} (it is {value})",
+                    FIELD_TREAT_S.start(),
+                    FIELD_TREAT_S.end(),
+                ));
+            }
+        }
+        if !(1..=1_000).contains(&self.treat_medical_permille) {
+            return Err(format!(
+                "[tacsim.field].treat_medical_permille must be 1 to 1000 (it is {})",
+                self.treat_medical_permille
+            ));
+        }
         Ok(())
     }
 
@@ -2034,6 +2084,12 @@ impl FieldConfig {
     #[must_use]
     pub const fn disengage_ms(&self) -> u32 {
         self.disengage_s.saturating_mul(1_000)
+    }
+
+    /// The idle bound in arena milliseconds (doc 36 cut GC.2).
+    #[must_use]
+    pub const fn idle_demote_ms(&self) -> u32 {
+        self.idle_demote_s.saturating_mul(1_000)
     }
 }
 

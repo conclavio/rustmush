@@ -23,6 +23,9 @@ pub(super) struct Snapshot {
     heads: Vec<Write<UnitHead>>,
     flights: Vec<Write<Flight>>,
     surface_records: Vec<Write<crate::surface::excursion::RigRecord>>,
+    /// Doc 36 cut GC.0 (Q-36-17): the site's record with a recovering unit off its index.
+    #[serde(skip_serializing_if = "Vec::is_empty")]
+    site_records: Vec<Write<crate::surface::site_record::SiteRecord>>,
     observations: Vec<Value>,
     lines: Vec<(ObjId, crate::surface::black_box::BlackBoxLine)>,
     #[serde(skip_serializing_if = "Option::is_none")]
@@ -39,6 +42,7 @@ impl Snapshot {
             heads: Vec::new(),
             flights: Vec::new(),
             surface_records: Vec::new(),
+            site_records: Vec::new(),
             observations: Vec::new(),
             lines: Vec::new(),
             transport: None,
@@ -138,6 +142,10 @@ impl Snapshot {
                 true,
                 write.after.clone(),
             )?;
+        }
+        for write in self.site_records {
+            let key = write.after.key();
+            save(txn, &handles.ports.sites, &key, true, write.after)?;
         }
         for write in flights {
             write.after.validate().map_err(runtime::error)?;
@@ -359,6 +367,18 @@ pub(super) fn snapshot(
             next.due = due(intent.ic.clone(), crate::surface::excursion::RECOVER_S)?;
             let mut patch = Snapshot::new(*operation)?;
             patch.observations.push(json!({"recovery":recovery,"parent":world.module_state::<mush_sim::SpatialState>().map(|s|s.parent_of(*unit))}));
+            // Doc 36 cut GC.0 (Q-36-17): a unit recovering under its own power leaves the site's
+            // unit index in this commit.
+            let site = crate::surface::site_record::SiteKey(berth.entry.clone());
+            let record = read.get(&h.ports.sites, &site)?;
+            if let Some(after) =
+                crate::surface::site_record::left_under_own_power(record.as_ref(), *unit)
+            {
+                patch.site_records.push(Write {
+                    before: record,
+                    after,
+                });
+            }
             patch.flights.push(Write {
                 before: Some(flight),
                 after: next,

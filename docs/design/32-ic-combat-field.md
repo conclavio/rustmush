@@ -1557,7 +1557,8 @@ Not built here, each for a reason:
 ## 17. CF.7 finished (the whole field story at 256 a side)
 
 Built 2026-11-01 on `main` after the bot cut (§16). CF.7's story
-(`tacsim/tests/shard_1/field_story.rs`, `cf7_the_field_story`) now runs the whole of Q-CF-47 at
+(`tacsim/tests/shard_1/field_story.rs`, `cf7_the_field_story`; since doc 36 cut GC.0
+`gc0_the_raiders_barge_lifts_and_the_field_demotes_without_a_friendly_mark`) now runs the whole of Q-CF-47 at
 256 a side, through the production command paths as every CF gate does. The 512 run was not
 part of this cut. It waited on a 512 site to run on (S.0 and S.1, §18 and §19), not on doc 30's
 WG.6, whose window had already landed; it ran in S.2 (§20). What the cut had to decide where the
@@ -1695,7 +1696,8 @@ rulings left it open, for the owner to object to:
   the barge beside it keeps the field open after the tank has gone home. In the story the
   escort's pilot stands down with a Friendly mark on the raider's party, which outweighs the fire
   it took (CF.0). A player has to do the same today. Ending the raider's barge once its hulls
-  are home is the gap's own cut.
+  are home is the gap's own cut. *(Built by doc 36 cut GC.0: the barge lifts, and the story's
+  stand-down mark is gone.)*
 
 **Defaults taken (provisional):** the G-7 rule's reach (party principals, not Friends); the
 unstacking order (unit order; nearest ring, row-major, within 4 cells); the lease preview's
@@ -1902,7 +1904,7 @@ Built 2026-11-01 on `main` after S.1 (§19). This is Q-CF-51's second run, the C
 side, plus the measurements that ruling 7 left for it. Doc 30's WG.6 had already landed, so the
 field map is drawn through its window.
 
-**One script, two grounds.** `cf7_the_field_story` and `s2_the_field_story_at_512`
+**One script, two grounds.** `cf7_the_field_story` (doc 36 GC.0's gate since, renamed) and `s2_the_field_story_at_512`
 (`tacsim/tests/shard_1/field_story.rs`) are the same story, `field_story`, run over a `Ground`. A
 `Ground` holds the site, its raider and where the story stands everyone. Every other number in
 the story belongs to the site (its pad, its ramp, its record) or to the field. Ahuna Flank's ground

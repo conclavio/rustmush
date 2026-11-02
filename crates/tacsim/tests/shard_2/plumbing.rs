@@ -2110,7 +2110,9 @@ fn sm5_an_untouched_intake_renews_before_the_market_ttl() {
     );
     assert!(report.lines().any(|l| l == gone), "{report}");
     let mut lapsed = renewed.clone();
-    for _ in 0..8 {
+    // Doc 36 cut GC.7: the clerk relists every lapsed ask before the drip re-posts the bid,
+    // and Ceres asks four more (the munitions), so the bound grows with the port's rows.
+    for _ in 0..16 {
         fire_quietly(&mut rig);
         lapsed = bid_row(&rig.tw, "freeport_exchange", "metal_ore");
         if lapsed.listing != renewed.listing {

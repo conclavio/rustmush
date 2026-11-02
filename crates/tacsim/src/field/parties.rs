@@ -308,6 +308,7 @@ pub(crate) fn letter(
                 pilot: entrant.pilot.clone(),
                 epoch: entrant.epoch,
                 aboard: entrant.aboard.clone(),
+                arrived: false,
             })
         })
         .collect();

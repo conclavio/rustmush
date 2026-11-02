@@ -25,10 +25,14 @@ mod support;
 #[path = "support/vertex.rs"]
 mod vertex;
 
+#[path = "shard_1/bay_gc8.rs"]
+mod bay_gc8;
 #[path = "shard_1/coop.rs"]
 mod coop;
 #[path = "shard_1/crew_exit.rs"]
 mod crew_exit;
+#[path = "shard_1/crew_treatment.rs"]
+mod crew_treatment;
 #[path = "shard_1/driving.rs"]
 mod driving;
 #[path = "shard_1/escort_lease.rs"]
@@ -37,10 +41,14 @@ mod escort_lease;
 mod field_carrier;
 #[path = "shard_1/field_crash.rs"]
 mod field_crash;
+#[path = "shard_1/field_gc2.rs"]
+mod field_gc2;
 #[path = "shard_1/field_host.rs"]
 mod field_host;
 #[path = "shard_1/field_raiders.rs"]
 mod field_raiders;
+#[path = "shard_1/field_scale.rs"]
+mod field_scale;
 #[path = "shard_1/field_story.rs"]
 mod field_story;
 #[path = "shard_1/hulls.rs"]

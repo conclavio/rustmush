@@ -104,6 +104,10 @@ pub(crate) fn launch_plan(w: &World, actor: ObjId, rig: &RigAt) -> Result<ActPla
             },
         });
     }
+    // Doc 36 cut GC.8a (Q-36-32): a rig under a repair order is held in its bay.
+    if crate::port::bay_work::under_work(w, rig.tv) {
+        return Err(Refusal::Held { n: rig.slot });
+    }
     if where_is(w, rig.tv) != (Where::Bay { hull: rig.hull }) {
         return Err(Refusal::Out { n: rig.slot });
     }

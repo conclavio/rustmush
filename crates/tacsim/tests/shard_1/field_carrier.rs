@@ -11,7 +11,8 @@ use mush_core::ObjId;
 use tacsim::field::CrewLocation;
 
 use crate::driving::{
-    cid, command, land, launched, on_pad, prospector, run, staff_hand, stocked_tuned, to_cell, warm,
+    cid, command, en_route, land, launched, on_pad, prospector, run, staff_hand, stocked_tuned,
+    to_cell, to_ic, warm,
 };
 use crate::field_host::{
     armed, egress, frame, seat, second, site_record, task, tune, until, weapon_of,
@@ -326,4 +327,155 @@ async fn f6_a_carrier_lifts_out_of_a_running_field_only_on_the_confirmation() {
     assert!(live.units.iter().all(|row| row.unit != carrier));
     assert!(live.units.iter().any(|row| row.unit == rig_a));
     assert!(tacsim::field::field_of_unit(rig.tw.world(), rig_a).is_some());
+}
+
+/// **Doc 36 cut GC.1b's gate: F-6 arrival** (Q-36-4, Q-CF-16, Q-CF-17, Q-CF-19). A second
+/// Dray-P is under way to Ahuna Flank when CF.3's field opens there, and settles on the pad
+/// mid-field. The host owes it its admission (GC.1) and takes it in (GC.1b): it is checked out
+/// under the field's mark, it has a row on the live record in a party of its own, the kernel
+/// joins it at the next pulse (its `mind_sealed` line on the black box) beside the pad, where the
+/// armed hull's sensors hold it as a second contact; its arrival is a row in the presence
+/// picture, the field runs on, and its rig's launch is refused while the field runs.
+#[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+#[allow(clippy::too_many_lines)]
+async fn gc1_a_carrier_arriving_mid_field_is_admitted_at_its_pad_and_cannot_launch() {
+    let mut rig = stocked_tuned(tune);
+    let (a, _, a_tvs) = on_pad(&mut rig, 1);
+    launched(&mut rig, a, a_tvs[0]);
+    to_cell(&mut rig, a_tvs[0], (120, 120));
+    let (b, _) = prospector(&mut rig, "Other", 2, "Tally Moth");
+    let hull_b = armed(&mut rig, "Grey Hound", (120, 128), 90_000);
+    seat(&mut rig, hull_b, b);
+    let (late, late_row, _, ticket) = en_route(&mut rig, "Late", 3, "Late Moth");
+    let late_hull = ObjId(late_row.hull);
+    warm(&mut rig);
+    let mut rx = egress(&mut rig);
+    let mut lines = Vec::new();
+    for _ in 0..3 {
+        let _ = second(&mut rig);
+    }
+    let (out, queued) = command(&mut rig, b, "+field/fire S");
+    assert_eq!(queued.len(), 1, "one promotion: {out}");
+    land(&mut rig, &queued[0]).expect("the promotion lands");
+    assert!(
+        until(&mut rig, &mut rx, &mut lines, 10, |rig, _| task(rig)
+            .is_some())
+        .await,
+        "the field opens"
+    );
+    let site = cid(crate::driving::AHUNA);
+    assert!(tacsim::field::carrier::owed_arrivals(rig.tw.world(), &site).is_empty());
+    let opening = tacsim::field::live_on(rig.tw.world(), &site).expect("the live record");
+    assert!(opening.units.iter().all(|row| row.unit != late_hull));
+    // Every contact B's sensors hold within a cell of the pad (CF.3's carrier stands on it).
+    let near_pad = |rig: &crate::driving::Rig| -> usize {
+        frame(rig, b).map_or(0, |frame| {
+            frame
+                .contacts
+                .iter()
+                .filter(|contact| {
+                    contact
+                        .cell
+                        .is_some_and(|(x, y)| x.abs_diff(128) <= 1 && y.abs_diff(128) <= 1)
+                })
+                .count()
+        })
+    };
+    assert!(
+        until(&mut rig, &mut rx, &mut lines, 20, |rig, _| near_pad(rig)
+            == 1)
+        .await,
+        "B's sensors hold the one carrier on the pad"
+    );
+
+    // The late hull settles on the pad while the field runs.
+    let _ = to_ic(&mut rig, ticket.plan.depart_ic + ticket.plan.total_s);
+    assert!(
+        matches!(
+            tacsim::port::ship::berth_of(rig.tw.world(), late_hull),
+            tacsim::port::ship::Berth::Docked { map, .. } if map.entry.as_str() == crate::driving::AHUNA
+        ),
+        "the late hull is settled on the pad"
+    );
+    // (1) The host takes it in: checked out under the field's mark, a row of its own.
+    assert!(
+        until(&mut rig, &mut rx, &mut lines, 10, |rig, _| {
+            tacsim::field::field_of_unit(rig.tw.world(), late_hull) == Some(site.clone())
+        })
+        .await,
+        "the arrival is checked out into the field"
+    );
+    assert!(
+        tacsim::field::carrier::owed_arrivals(rig.tw.world(), &site).is_empty(),
+        "nothing is owed once it is taken in"
+    );
+    let live = tacsim::field::live_on(rig.tw.world(), &site).expect("the live record");
+    let row = live
+        .units
+        .iter()
+        .find(|row| row.unit == late_hull)
+        .expect("its row on the live record");
+    assert!(row.arrived, "it joined the running field");
+    assert!(
+        opening.parties.iter().all(|party| party.party != row.party),
+        "a party of its own, lettered next: {:?}",
+        live.parties
+    );
+    assert!(live.parties.iter().any(|party| party.party == row.party));
+    // (2) The kernel joins it at the next pulse, beside the pad: B's sensors hold a second
+    // carrier there.
+    assert!(
+        until(&mut rig, &mut rx, &mut lines, 10, |rig, _| near_pad(rig)
+            == 2)
+        .await,
+        "B's sensors hold a second carrier beside the pad: {:?}",
+        frame(&rig, b).map(|frame| frame
+            .contacts
+            .iter()
+            .map(|contact| (contact.designator, contact.cell))
+            .collect::<Vec<_>>())
+    );
+    // (3) Its arrival is a row in the presence picture.
+    assert!(
+        until(&mut rig, &mut rx, &mut lines, 10, |rig, _| {
+            tacsim::surface::tick::presence_book(rig.tw.world())
+                .and_then(|book| book.sites.get(&site))
+                .is_some_and(|flights| flights.iter().any(|flight| flight.tv == late_hull))
+        })
+        .await,
+        "the arrival is a row in the presence picture"
+    );
+    assert!(task(&rig).is_some(), "the field runs on");
+
+    // (4) No launch goes down from it while the field runs (Q-CF-17).
+    let refused = run(&mut rig.tw, late, "+tv/1 launch go");
+    assert!(refused.contains("is being fought on"), "{refused}");
+
+    // (5) Nobody fires: the field demotes, and its black box holds the join, sealed mid-field.
+    // The demotion checks the arrival in with the field's own rows.
+    assert!(
+        until(&mut rig, &mut rx, &mut lines, 60, |rig, _| {
+            task(rig).is_none()
+                && site_record(rig).is_some_and(|record| record.open_field().is_none())
+        })
+        .await,
+        "the field demotes after its quiet interval"
+    );
+    let sealed: Vec<(ObjId, i64)> = lines
+        .iter()
+        .filter_map(|line| match &line.kind {
+            tacsim::arena::ledger::EventKind::MindSealed { unit, .. } => Some((*unit, line.t_ms)),
+            _ => None,
+        })
+        .collect();
+    assert!(
+        sealed
+            .iter()
+            .any(|(unit, at)| *unit == late_hull && *at > 0),
+        "the kernel joined it mid-field: {sealed:?}"
+    );
+    assert!(
+        !mush_sim::deployed::is_deployed(rig.tw.world(), late_hull),
+        "the arrival is checked in at the demotion"
+    );
 }
