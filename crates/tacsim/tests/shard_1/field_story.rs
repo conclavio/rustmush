@@ -8,10 +8,12 @@
 //! and the worked block on the escort's map (G-7); the bystander fired on, hostile to that party
 //! only; the escort's fight while the miners hold; an escort mission-killed by an engine hit and a
 //! raider by a control-section hit (G-6); the raiders home up their ramp, the barge's lift and the
-//! demotion with no Friendly mark (doc 36 cut GC.0); the fill plan resumed; the casualty and the
-//! wreck on the site record; a restart; the carrier's departure on the leave-behind confirmation;
-//! a second visit finding both where they fell; and a second field on the same ground, the barge
-//! landed again, where the wreck hides the raider behind it (G-8, doc 36 cut GC.2).
+//! demotion with no Friendly mark (doc 36 cut GC.0); the fill plan resumed; the casualty on the
+//! site record and the walker's remains (doc 36 cut GC.3: a hull with every section destroyed is
+//! irrecoverable, closes destroyed and leaves remains, Q-36-18); a restart; the carrier's
+//! departure on the leave-behind confirmation; a second visit finding both where they fell; and a
+//! second field on the same ground, the barge landed again, where the remains hide the raider
+//! behind them (G-8, doc 36 cuts GC.2 and GC.3).
 //!
 //! What the story stands in for, each named in doc 32 §17:
 //! - **the escort's delivered orders**: tacsim's world harness lands no DT activation (CF.6c's
@@ -32,7 +34,7 @@ use smol_str::SmolStr;
 use tacsim::arena::ledger::{EventKind, LedgerEvent};
 use tacsim::arena::party::Relation;
 use tacsim::arena::state::Classification;
-use tacsim::surface::site_record::LeftCondition;
+use tacsim::surface::site_record::{GroundKind, LeftCondition};
 
 use crate::driving::{
     AHUNA, RAMP, Rig, act_go, at_counter, cid, command, finish, land, launched, launched_at,
@@ -973,7 +975,10 @@ async fn field_story(at: &Ground) {
         "the surface is the miners' again: {resumed}"
     );
 
-    // (9) The casualty and the raider wreck are on the site record, where they fell.
+    // (9) The casualty is on the site record where it fell. The walker went down with every
+    // section destroyed (its fixture left each at its floor, and the head's loss took the last),
+    // so it is irrecoverable: doc 36 cut GC.3 (Q-36-18) takes it off the ground and leaves its
+    // remains where it fell, not a wreck on the unit index.
     let fell = |rig: &mut Rig, unit: ObjId, condition: LeftCondition| {
         let record = site_record_at(rig, at.entry).expect("the record");
         let left = record
@@ -994,8 +999,32 @@ async fn field_story(at: &Ground) {
         );
         at
     };
+    let remains = |rig: &mut Rig, unit: ObjId| {
+        let record = site_record_at(rig, at.entry).expect("the record");
+        assert!(
+            record.units.iter().all(|left| left.unit != unit),
+            "#{} is no index entry: {:?}",
+            unit.0,
+            record.units
+        );
+        let object = record
+            .objects
+            .iter()
+            .find(|object| {
+                matches!(object.kind, GroundKind::Remains { of: Some(of), .. } if of == unit)
+            })
+            .unwrap_or_else(|| panic!("#{} left remains: {:?}", unit.0, record.objects))
+            .clone();
+        assert!(
+            mush_sim::pose_of(rig.tw.world(), unit).is_none(),
+            "#{} is off the ground",
+            unit.0
+        );
+        assert_eq!(object.pose.cell(), at.walker.0, "#{} where it fell", unit.0);
+        (object.pose.x_cm, object.pose.y_cm)
+    };
     let casualty_at = fell(&mut rig, leased, LeftCondition::Casualty);
-    let wreck_at = fell(&mut rig, walker, LeftCondition::Wreck);
+    let wreck_at = remains(&mut rig, walker);
 
     // (10) The server restarts.
     drop(rx);
@@ -1006,7 +1035,7 @@ async fn field_story(at: &Ground) {
         let _ = second(&mut rig);
     }
     assert_eq!(fell(&mut rig, leased, LeftCondition::Casualty), casualty_at);
-    assert_eq!(fell(&mut rig, walker, LeftCondition::Wreck), wreck_at);
+    assert_eq!(remains(&mut rig, walker), wreck_at);
 
     // (11) The carrier departs with the leave-behind confirmation. The miner ends the fill plan's
     // run after its cycle first (a lift waits on a drilling rig), and the rig stays out.
@@ -1053,11 +1082,12 @@ async fn field_story(at: &Ground) {
         "the miner's carrier has lifted"
     );
     assert_eq!(fell(&mut rig, leased, LeftCondition::Casualty), casualty_at);
-    assert_eq!(fell(&mut rig, walker, LeftCondition::Wreck), wreck_at);
+    assert_eq!(remains(&mut rig, walker), wreck_at);
     let _ = visitor;
 
     // (13) A second field at the same site, on the same ground: the raider launches again and
-    // declares on the escort's hull, and the wreck is admitted where it fell.
+    // declares on the escort's hull. The casualty is admitted where it fell; the walker's remains
+    // are ground, not a unit (doc 36 cut GC.3).
     let again = run(
         &mut rig.tw,
         GOD,
@@ -1086,17 +1116,21 @@ async fn field_story(at: &Ground) {
         "field 2 on the same site"
     );
     let live = tacsim::field::live_on(rig.tw.world(), &cid(at.entry)).expect("the live record");
-    for unit in [walker, leased, tank] {
+    for unit in [leased, tank] {
         assert!(
             live.units.iter().any(|row| row.unit == unit),
             "#{} is in the second field",
             unit.0
         );
     }
-    // G-8 (doc 32 §17, flipped by doc 36 cut GC.2, Q-36-7): the wreck stands between the escort
-    // and the raider, on the one row, and a wreck's cell is a wall in the kernel's fire and
-    // sensor traces while it stands there. So the escort's sensors never hold the raider behind
-    // it.
+    assert!(
+        live.units.iter().all(|row| row.unit != walker),
+        "the walker's remains are no unit of the second field"
+    );
+    // G-8 (doc 32 §17, flipped by doc 36 cut GC.2, Q-36-7): the walker's remains lie between the
+    // escort and the raider, on the one row, and the field lays a site record's objects as walls
+    // in its ground (CF.4; doc 36 cut GC.3 made the walker remains). So the escort's sensors never
+    // hold the raider behind them.
     let focus = run(
         &mut rig.tw,
         escort,
@@ -1127,7 +1161,7 @@ async fn field_story(at: &Ground) {
     let seen = until(&mut rig, &mut rx, &mut lines, 30, |rig, _| behind(rig)).await;
     assert!(
         !seen,
-        "G-8: the wreck at {wreck_at:?} hides the raider behind it; the escort's frame {:?}",
+        "G-8: the remains at {wreck_at:?} hide the raider behind them; the escort's frame {:?}",
         frame(&rig, escort).map(|frame| (
             frame.cell,
             frame

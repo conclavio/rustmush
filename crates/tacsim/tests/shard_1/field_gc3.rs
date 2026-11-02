@@ -10,14 +10,14 @@
 //!   whose hull falls in a field is a wreck that never lifts, strands the crew aboard it and
 //!   wrecks the rig in its bay.
 //!
-//! **What is a fixture.** No combat path makes a hull `Irrecoverable` today: a hull's loss writes
-//! `wreck` on its hull section (`Arena::wreck_ops`), and a wreck is never a target, so "every
-//! section destroyed" is never reached. The first gate therefore marks one of the prospector's
-//! sections `irrecoverable` by staff hand before the field, standing in for a catastrophe the
-//! kernel does not yet model; everything after the mark runs the production field. The drive
-//! gate stands a destroyed drive in by staff hand too, as a field's damage leaves it (the
-//! section's `destroyed` condition, its internals at their floor). The hull's loss is fought:
-//! B's gun takes the carrier's last point of hull structure in the field.
+//! **What is a fixture.** A field reaches `Irrecoverable` only when a hull goes down with every
+//! section destroyed (the IC check-in reads a section at its internals' floor as destroyed), as
+//! the CF.7 story's walker does. The first gate does not fight every section down: it marks one
+//! of the prospector's sections `irrecoverable` by staff hand before the field, and everything
+//! after the mark runs the production field. The drive gate stands a destroyed drive in by staff
+//! hand too, as a field's damage leaves it (the section's `destroyed` condition, its internals at
+//! their floor). The hull's loss is fought: B's gun takes the carrier's last point of hull
+//! structure in the field.
 
 use mush_core::ObjId;
 use tacsim::arena::ledger::{EventKind, LedgerEvent};
