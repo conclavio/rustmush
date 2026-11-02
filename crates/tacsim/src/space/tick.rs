@@ -481,6 +481,18 @@ pub struct SpaceBubbleBook {
     pub pending_space_burns: Vec<crate::port::burn::PendingSpaceBurn>,
     /// Monotonic sequence allocator for [`Self::pending_space_burns`].
     pub next_space_burn_seq: u32,
+    /// Laid-up orbital cluster sites (`ceres_halo`, `kirkwood_gap_3_1`, `pallas_inclined_belt`, `saturn_b_ring_edge`) (`SF.R5`, `D-35-13`).
+    pub cluster_sites: BTreeMap<super::mining::OrbitalClusterId, super::mining::ClusterSiteState>,
+    /// Active orbital cluster mining sessions keyed by carrier hull [`ObjId`] (`SF.R5`, `D-35-13`).
+    pub cluster_sessions: BTreeMap<ObjId, super::mining::ActiveClusterMiningSession>,
+    /// Pending licensed player claim stake/contest orders in orbital clusters (`SF.R5`, `D-35-13`).
+    pub cluster_tenure_orders: BTreeMap<ObjId, super::mining::ClusterTenureOrder>,
+    /// Server-authenticated space mining ore draws queued for `tacsim_site_work` (`SF.R5`, `D-35-13`).
+    pub pending_space_mine_draws: Vec<super::mining::PendingSpaceMineDraw>,
+    /// Completed space mining ore draws (`SF.R5`, `D-35-13`).
+    pub completed_space_mine_draws: Vec<super::mining::PendingSpaceMineDraw>,
+    /// Monotonic sequence allocator for [`Self::pending_space_mine_draws`].
+    pub next_space_mine_draw_seq: u64,
     /// Monotonic revision counter for `mush-sim` standing orders (`SF.R3`).
     pub next_order_revision: u64,
     /// Monotonic allocator for space salvage [`RecoveryOpId`]s.
@@ -713,6 +725,7 @@ pub fn space_tick(ctx: &mut Ctx<'_>, _tag: &str, _scene: Option<SceneId>) {
     settle_disabled_carrier_bubbles(ctx, &now);
     step_active_bubbles(ctx, &now);
     step_free_flight_records(ctx, &now);
+    super::mining::step_clusters_on_tick(ctx, now.clone());
     promote_due_interdictions(ctx, &now);
 }
 

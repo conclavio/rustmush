@@ -56,6 +56,11 @@ impl SystemOpener for SiteOpener {
             return None;
         }
         let deposits = self.industry.get()?.deposits.clone();
+        if let Some(cluster_open) =
+            crate::space::mining::next_cluster_opening(engine, &deposits, actor)
+        {
+            return Some(cluster_open);
+        }
         let (map, site) = clerk_site(w, actor)?;
         let jurisdiction = org_principal(w, &site.issuer)?;
         let PlanRead::Plan(plan) = read_plan(w, &map, &site) else {
@@ -164,6 +169,9 @@ impl TenureAuthority for SurfaceTenure {
         if clerk_site(w, actor).is_some() {
             let reads = crate::port::site_map::EngineReads(engine);
             return crate::port::site::next_system_act(w, &reads, actor, w.world_ic_now().at);
+        }
+        if let Some(cluster_act) = crate::space::mining::next_cluster_tenure(engine, actor) {
+            return Some(cluster_act);
         }
         crate::port::claims::order_tenure(engine, actor)
     }

@@ -475,6 +475,20 @@ pub(crate) fn register(reg: &mut Registrar<'_>) -> Result<(), ModError> {
         },
         Arc::new(crate::space::tac_cmd),
     )?;
+    reg.command(
+        CommandSpec {
+            name: crate::space::MINE_VERB.into(),
+            shape: ArgShape::Raw,
+            switches: crate::space::MINE_SWITCHES
+                .iter()
+                .copied()
+                .map(SmolStr::new)
+                .collect(),
+            help: crate::space::MINE_HELP.into(),
+            ..CommandSpec::default()
+        },
+        Arc::new(crate::space::mine_cmd),
+    )?;
     reg.classify_commands(mush_core::CommandCompatibility::LegacyPostImage);
     // ---- Doc 30 §8, §13 Q-30-5 (cut WG.7): `@ground`, live ground draft staging ----
     //

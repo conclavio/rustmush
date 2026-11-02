@@ -1271,8 +1271,13 @@ impl mush_core::ActionProvider for SiteWorkProvider {
             return Ok(None);
         }
         let clerk = query.actor();
-        let (map, row) = match next_work_row(engine, &self.pockets, clerk) {
-            None => return Ok(None),
+        let (row_receipt, value) = match next_work_row(engine, &self.pockets, clerk) {
+            None => {
+                match crate::space::mining::next_space_mine_work_row(engine, &self.pockets, clerk) {
+                    Some(found) => found,
+                    None => return Ok(None),
+                }
+            }
             Some(Err(receipt)) => {
                 if let Ok(mut warned) = self.warned.lock()
                     && warned.insert(receipt.clone())
@@ -1285,10 +1290,12 @@ impl mush_core::ActionProvider for SiteWorkProvider {
                 }
                 return Ok(None);
             }
-            Some(Ok(found)) => found,
-        };
-        let Some(value) = work_row_value(&map, &engine.world, &row, clerk) else {
-            return Ok(None);
+            Some(Ok((map, row))) => {
+                let Some(value) = work_row_value(&map, &engine.world, &row, clerk) else {
+                    return Ok(None);
+                };
+                (row.receipt.clone(), value)
+            }
         };
         let integrity = |message: &'static str| {
             crate::port_tick::port_error(mush_core::ActionErrorCode::Integrity, message)
@@ -1309,11 +1316,11 @@ impl mush_core::ActionProvider for SiteWorkProvider {
                 .map_err(|_| integrity("the site work's parameter id is invalid"))?,
             required: true,
             kind: mush_core::ProjectedParameterKind::Choice {
-                choices: vec![row.receipt.clone()],
+                choices: vec![row_receipt.clone()],
             },
         };
         let mut rows = serde_json::Map::new();
-        rows.insert(row.receipt.clone(), value);
+        rows.insert(row_receipt, value);
         Ok(Some(mush_core::ProviderOfferDraft {
             fixed_parameters: serde_json::json!({ "rows": serde_json::Value::Object(rows) }),
             parameters: mush_core::ProjectedParameterSchema::new(vec![receipt])
@@ -1386,26 +1393,47 @@ impl mush_core::ActionProvider for SiteWorkProvider {
                 "that site row is another clerk's",
             ));
         }
+        let is_space_mine = entry
+            .get("space_mine")
+            .and_then(Value::as_bool)
+            .unwrap_or(false);
+        let deposit_receipt = if is_space_mine {
+            receipt.split_once("/draw/").map_or(receipt, |(b, _)| b)
+        } else {
+            receipt
+        };
         // The deposit is the receipt's own (the receipt is the id, D5).
-        if mush_industry::derive_system_deposit_id(receipt).ok() != Some(deposit) {
+        if mush_industry::derive_system_deposit_id(deposit_receipt).ok() != Some(deposit) {
             return Err(error(
                 ActionErrorCode::Integrity,
                 "the site row does not name its own deposit",
             ));
         }
         // 2. The sidecar is the replay guard.
-        let prior = txn.get(&self.pockets, &deposit).map_err(|_| {
-            error(
-                ActionErrorCode::Integrity,
-                "the pocket cursors are unavailable",
-            )
-        })?;
-        if prior.is_some() {
+        let prior = txn
+            .get(&self.pockets, &deposit)
+            .map_err(|_| {
+                error(
+                    ActionErrorCode::Integrity,
+                    "the pocket cursors are unavailable",
+                )
+            })?
+            .cloned();
+        if !is_space_mine && prior.is_some() {
             return Err(error(
                 ActionErrorCode::Conflict,
                 "that block is already worked",
             ));
         }
+        let prior_drawn = match &prior {
+            Some(c) => c.drawn_total().ok_or_else(|| {
+                error(
+                    ActionErrorCode::Integrity,
+                    "the site row's prior cursor does not sum",
+                )
+            })?,
+            None => 0,
+        };
         // 4 (checked first, so nothing is staged for a bad row): the cursor accounts for the
         // whole transfer.
         let record = crate::surface::cursor::PocketCursor {
@@ -1413,13 +1441,14 @@ impl mush_core::ActionProvider for SiteWorkProvider {
             deposit,
             rows: cursor,
         };
-        if record.check().is_err() || record.drawn_total() != Some(worked_t) || worked_t == 0 {
+        let expected_total = prior_drawn.checked_add(worked_t);
+        if record.check().is_err() || record.drawn_total() != expected_total || worked_t == 0 {
             return Err(error(
                 ActionErrorCode::Integrity,
                 "the site row's cursor does not account for its share",
             ));
         }
-        // 3. The share moves, deposit pool to spoil, in this bundle.
+        // 3. The share moves, deposit pool to spoil (or hull hold), in this bundle.
         self.inventory
             .transfer(
                 txn,
@@ -1434,7 +1463,12 @@ impl mush_core::ActionProvider for SiteWorkProvider {
                     "the block's worked share could not be moved",
                 )
             })?;
-        txn.insert(&self.pockets, &deposit, record).map_err(|_| {
+        let staged = if prior.is_some() {
+            txn.replace(&self.pockets, &deposit, record)
+        } else {
+            txn.insert(&self.pockets, &deposit, record)
+        };
+        staged.map_err(|_| {
             error(
                 ActionErrorCode::Integrity,
                 "the pocket cursor did not stage",

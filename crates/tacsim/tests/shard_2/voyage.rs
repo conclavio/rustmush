@@ -4245,3 +4245,313 @@ fn sfr4_free_flight_decouples_debits_live_propellant_warns_return_reserve_and_re
         "ship arrived and docked at Stickney Yards after autopilot recouple: {ship_after}"
     );
 }
+
+fn drain_space_and_industry(tw: &mut TestWorld) -> Vec<AuthoritativeSubmit> {
+    let mut kept = Vec::new();
+    while let Some(submit) = tw.engine_mut().take_authoritative_submit() {
+        let owner = submit.action.key().owner.as_str();
+        if owner == tacsim::NS || owner == "inventory" || owner == "market" {
+            kept.push(*submit);
+        } else if owner == mush_industry::NS {
+            let rec = submit
+                .parameters
+                .get("receipt")
+                .and_then(|v| v.as_str())
+                .unwrap_or("");
+            if rec.contains("pallas_inclined_belt")
+                || rec.contains("ceres_halo")
+                || rec.contains("kirkwood_gap_3_1")
+                || rec.contains("saturn_b_ring_edge")
+                || rec.contains("tacsim.space.")
+            {
+                kept.push(*submit);
+            }
+        }
+    }
+    kept
+}
+
+/// **Doc 35 cut SF.R5 (`+mine`, `Q-35-3`, `D-35-13`, `35a` §3 #6/#9, §4 `SF.12`–`SF.15`, §5 #11/#13)**:
+/// 1. A non-GOD chartered pilot refits *Salt Moth* to a `Dray-P` (`+coop/refit prospector`, `86 t` hold)
+///    and buys a `2,500 cr` (`168` IC-day) Freeport Registry prospecting licence (`+licence/buy go`).
+/// 2. Entering `pallas_inclined_belt` (`+helm/cluster pallas_inclined_belt`) opens conserved
+///    `mush_industry::OreDeposit` pools (`120 t` per family) and seeds Pallas Syndicate tenure on
+///    Blocks `A` and `B` while leaving Block `C` open.
+/// 3. `+helm/match A` from `[3_800, 0, 0] m` and `12 m/s` is refused (never teleports);
+///    `+helm/approach A` + `space_tick` closes range and brakes relative speed inside the `2,000 m` /
+///    `< 5.0 m/s` 3D Euclidean gate, after which `+helm/match A` locks velocity match.
+/// 4. `+mine/laser A` (`4 t`, `60 s`) and `+mine/drones A 4` (`4` collector drones under real
+///    `ExcursionId`s, `16 t` total, `120 s`) extract `20 t` of conserved `metal_ore` from Block `A`'s
+///    deposit vault into *Salt Moth*'s `stow.ore` hold vault and advance `PocketCursor` in
+///    `tacsim.pockets`, while flagging frontier thermal bloom (`+18` heat) without scripting any
+///    rival spawn inside `+mine/laser`.
+/// 5. `+mine/stake C` and `+mine/contest C` stage real `BlockTenure` records in `tacsim.claims`
+///    and enforce the `30` IC-day (`CONTEST_WINDOW_IC_SECS`) contest window.
+/// 6. Selling the `20 t` of mined `metal_ore` at the Ceres Freeport Exchange (`+market/sell <bid>=20`)
+///    and firing `tacsim.port` mills the `20 t` of `metal_ore` into `8 t` of `concentrate`.
+#[test]
+#[allow(clippy::too_many_lines)]
+fn sfr5_chartered_dray_p_buys_licence_matches_velocity_in_pallas_mines_into_stow_ore_and_sells_at_ceres_mill()
+ {
+    let mut rig = stocked_with(Roster::default());
+    let (pilot_actor, row) = chartered(&mut rig, "Pilot", 1);
+    let rival_actor = pilot(&mut rig, "Rival", 2);
+    let _ = run(&mut rig.tw, rival_actor, "+coop/enrol Rival Moth");
+    let _hull = ObjId(row.hull);
+    let vault_id = hold_vault(&rig.tw, &row);
+
+    // 1. Refit *Salt Moth* to a `Dray-P` (`86 t` hold) at the Co-op office before loading stores.
+    let desk = station_room(&rig.tw, "ceres_port", "room.c05_registry");
+    teleport(&mut rig.tw, pilot_actor, desk);
+    let refit_out = run(&mut rig.tw, pilot_actor, "+coop/refit prospector");
+    assert!(
+        refit_out.contains("Dray-P") && refit_out.contains("86 t"),
+        "coop/refit prospector output: {refit_out}"
+    );
+
+    // Provision propellant and rations (leaving `stow.ore` empty) and board *Salt Moth*.
+    seed_pool(&mut rig, vault_id, "propellant", 40, LotId(903));
+    seed_pool(&mut rig, vault_id, "provisions", 40, LotId(904));
+    set_rate(&mut rig.tw, 3_600);
+    board(&mut rig, pilot_actor);
+
+    // Place `rival_actor` aboard on the `flight_ops` bridge station so we can also test
+    // unlicensed refusal and the 30-IC-day claim contest window.
+    let airlock = location(&rig.tw, pilot_actor).expect("pilot is in airlock");
+    teleport(&mut rig.tw, rival_actor, airlock);
+    let _ = run(&mut rig.tw, pilot_actor, "+helm/station flight_ops=Rival");
+
+    // 2. Enter `pallas_inclined_belt` (`+helm/cluster pallas_inclined_belt`) and land the
+    //    cluster's `DepositOpen` and `ClaimTenure` (Pallas Syndicate seed) submissions.
+    let cluster_out = run(
+        &mut rig.tw,
+        pilot_actor,
+        "+helm/cluster pallas_inclined_belt",
+    );
+    assert!(
+        cluster_out.contains("Pallas Inclined Belt (`pallas_inclined_belt`)"),
+        "cluster output: {cluster_out}"
+    );
+    let open_submits = drain_space_and_industry(&mut rig.tw);
+    assert_eq!(
+        open_submits.len(),
+        4,
+        "4 OreDeposit openings submitted for Pallas rocks A (S), B (M: 2 families), C (S)"
+    );
+    land_all(&mut rig, &open_submits);
+
+    // Advance one tick so the block places seed Pallas Syndicate tenure on Blocks A and B.
+    let t = rig.tw.world().now().saturating_add(6);
+    rig.tw.set_now(t);
+    let _ = rig.tw.fire_due(t.saturating_mul(1_000));
+    let seed_submits = drain_space_and_industry(&mut rig.tw);
+    land_quietly(&mut rig, &seed_submits);
+
+    // Verify `+mine/ping` reports all 3 rocks, their spectral classes, specific volumes, and tenure.
+    let ping_out = run(&mut rig.tw, pilot_actor, "+mine/ping");
+    assert!(
+        ping_out.contains("Block A (`rock_1` S-TYPE)")
+            && ping_out.contains("metal_ore=120 t (500 L/t)")
+            && ping_out.contains("Block B (`rock_2` M-TYPE)")
+            && ping_out.contains("strategic_ore=120 t (600 L/t)")
+            && ping_out.contains("Block C (`rock_3` S-TYPE)")
+            && ping_out.contains("tenure: open"),
+        "mine/ping output: {ping_out}"
+    );
+    // `rival_actor` also pings Block C so they hold discovery evidence for contesting later.
+    let _ = run(&mut rig.tw, rival_actor, "+mine/ping C");
+
+    // Verify unlicensed mining or staking is refused (`D-35-13`: Freeport Registry licence required).
+    let unlic_stake = run(&mut rig.tw, pilot_actor, "+mine/stake C metals");
+    assert!(
+        unlic_stake.contains("prospecting licence") && unlic_stake.contains("Freeport Registry"),
+        "unlicensed stake refused: {unlic_stake}"
+    );
+
+    // Buy the 2,500 cr (168 IC-day) Freeport Registry prospecting licence for both pilots.
+    let lic_out = run(&mut rig.tw, pilot_actor, "+licence/buy go");
+    assert!(
+        lic_out.contains("Freeport Registry") && lic_out.contains("2500.00cr"),
+        "licence/buy go output: {lic_out}"
+    );
+    let _ = run(&mut rig.tw, rival_actor, "+licence/buy go");
+
+    // 3. Verify `+helm/match A` from standoff (`3,800 m`, `12 m/s`) is refused (`35a` §5 #11: never teleports!).
+    let match_far = run(&mut rig.tw, pilot_actor, "+helm/match A");
+    assert!(
+        match_far.contains("outside the 2,000 m velocity-match envelope"),
+        "match from 3,800 m refused: {match_far}"
+    );
+
+    // Run `+helm/approach A`, step `space_tick` to close range and brake relative velocity, then `+helm/match A`.
+    let app_out = run(&mut rig.tw, pilot_actor, "+helm/approach A");
+    assert!(
+        app_out.contains("Braking approach ordered toward Block A"),
+        "approach output: {app_out}"
+    );
+    let t = rig.tw.world().now().saturating_add(6);
+    rig.tw.set_now(t);
+    let _ = rig.tw.fire_due(t.saturating_mul(1_000));
+    let app_submits = drain_space_and_industry(&mut rig.tw);
+    land_quietly(&mut rig, &app_submits);
+
+    let match_ok = run(&mut rig.tw, pilot_actor, "+helm/match A");
+    assert!(
+        match_ok.contains("RCS velocity match locked on Block A"),
+        "match locked after approach braking: {match_ok}"
+    );
+
+    // 4. Start a timed mining-laser cycle (`+mine/laser A`, 4 t) and launch 4 collector drones
+    //    (`+mine/drones A 4`, 4 x 4 t = 16 t under real `ExcursionId`s).
+    let laser_out = run(&mut rig.tw, pilot_actor, "+mine/laser A");
+    assert!(
+        laser_out.contains("Mining laser engaged on Block A (S-TYPE) for 60s: extracting 4 t `metal_ore` (500 L/t) into `stow.ore`")
+            && laser_out.contains("FRONTIER BLOOM +18 heat"),
+        "laser output: {laser_out}"
+    );
+    let drones_out = run(&mut rig.tw, pilot_actor, "+mine/drones A 4");
+    assert!(
+        drones_out.contains("Launched 4 collector drone(s) onto Block A (S-TYPE) for 120s (4 t `metal_ore` each into `stow.ore`)"),
+        "drones output: {drones_out}"
+    );
+    // Verify launching a 5th drone is refused (`MAX_EXCURSIONS_PER_OPERATOR = 4`, `35a` §3 #6).
+    let drone_cap = run(&mut rig.tw, pilot_actor, "+mine/drones A 1");
+    assert!(
+        drone_cap.contains("Drone bay cap exceeded"),
+        "5th drone refused: {drone_cap}"
+    );
+
+    // Advance 6 seconds of wall time (= 21,600 IC seconds at rate 3,600, past the 60s laser and
+    // 120s drone timers) so `space_tick` queues the 20 t `PendingSpaceMineDraw` and the cluster
+    // clerk submits `tacsim_site_work` in the same tick!
+    let t = rig.tw.world().now().saturating_add(6);
+    rig.tw.set_now(t);
+    let _ = rig.tw.fire_due(t.saturating_mul(1_000));
+    let work_submits = drain_space_and_industry(&mut rig.tw);
+    assert!(
+        work_submits
+            .iter()
+            .any(|s| s.action.key().id.as_str() == "tacsim_site_work"),
+        "cluster clerk submitted tacsim_site_work for completed laser + drone extraction: {work_submits:?}"
+    );
+    land_all(&mut rig, &work_submits);
+
+    // Verify 20 t of conserved `metal_ore` moved from Block A's deposit vault into *Salt Moth*'s
+    // `stow.ore` hold vault (`vault_id`), and `PocketCursor` in `tacsim.pockets` recorded 20 t!
+    assert_eq!(
+        pool(&mut rig.tw, vault_id, "metal_ore"),
+        20,
+        "20 t of metal_ore (4 t laser + 16 t from 4 drones) transferred into stow.ore hold vault"
+    );
+    let ship_hold = run(&mut rig.tw, pilot_actor, "+ship/hold");
+    assert!(
+        ship_hold.contains("metal ore") && ship_hold.contains("20 t"),
+        "+ship/hold shows 20 t of metal ore in stow.ore: {ship_hold}"
+    );
+    let ping_after = run(&mut rig.tw, pilot_actor, "+mine/ping A");
+    assert!(
+        ping_after.contains("metal_ore=100 t"),
+        "Block A OreDeposit pool conserved (120 t - 20 t = 100 t): {ping_after}"
+    );
+
+    // 5. Verify Freeport Registry claim staking (`+mine/stake C metals`) and the 30-IC-day
+    //    (`CONTEST_WINDOW_IC_SECS = 30 * 86_400`) contest window (`+mine/contest C`).
+    let stake_out = run(&mut rig.tw, pilot_actor, "+mine/stake C metals");
+    assert!(
+        stake_out
+            .contains("Filed Freeport Registry claim stake on Block C at Pallas Inclined Belt"),
+        "stake output: {stake_out}"
+    );
+    let stake_submits = drain_space_and_industry(&mut rig.tw);
+    land_all(&mut rig, &stake_submits);
+
+    let ping_staked = run(&mut rig.tw, pilot_actor, "+mine/ping C");
+    assert!(
+        ping_staked.contains("your claim"),
+        "Block C now held by Pilot: {ping_staked}"
+    );
+
+    // Within the 30-IC-day contest window, `rival_actor` contests Block C (`+mine/contest C`).
+    let contest_out = run(&mut rig.tw, rival_actor, "+mine/contest C");
+    assert!(
+        contest_out.contains("Filed Freeport Registry contest on Block C at Pallas Inclined Belt within the 30-day contest window."),
+        "contest output: {contest_out}"
+    );
+    let contest_submits = drain_space_and_industry(&mut rig.tw);
+    land_all(&mut rig, &contest_submits);
+
+    let ping_contested = run(&mut rig.tw, pilot_actor, "+mine/ping C");
+    assert!(
+        ping_contested.contains("held by Rival"),
+        "Block C transferred to Rival on contest: {ping_contested}"
+    );
+
+    // Advance past the 30-IC-day contest window (`31 * 86_400` IC seconds = 744 real seconds at rate 3,600)
+    // and verify `+mine/contest C` is refused!
+    let t_after_window = rig.tw.world().now().saturating_add(750);
+    rig.tw.set_now(t_after_window);
+    let contest_late = run(&mut rig.tw, pilot_actor, "+mine/contest C");
+    assert!(
+        contest_late.contains(
+            "The 30-day Registry contest window on Block C at Pallas Inclined Belt has closed."
+        ),
+        "contest past 30 IC days refused: {contest_late}"
+    );
+
+    // 6. Sell the 20 t of mined `metal_ore` from *Salt Moth*'s `stow.ore` hold at the Ceres Freeport
+    //    Exchange (`room.c07_exchange`) and verify `tacsim_port_mill` mills it into `8 t` of `concentrate`!
+    set_rate(&mut rig.tw, 1);
+    let _ = run(&mut rig.tw, pilot_actor, "+ship/leave");
+    let room_c07 = c07(&rig.tw);
+    teleport(&mut rig.tw, pilot_actor, room_c07);
+
+    let bid_id = port_map(&rig.tw, "ceres_port").vendors[&cid("freeport_exchange")].bids
+        [&cid("metal_ore")]
+        .listing;
+    let sell_out = run(
+        &mut rig.tw,
+        pilot_actor,
+        &format!("+market/sell {bid_id}=20"),
+    );
+    assert!(
+        sell_out.contains("Sold 20") && sell_out.contains("metal ore"),
+        "sold 20 t of mined metal_ore at Ceres Freeport Exchange: {sell_out}"
+    );
+    let sell_submits = drain_space_and_industry(&mut rig.tw);
+    land_all(&mut rig, &sell_submits);
+    assert_eq!(
+        pool(&mut rig.tw, vault_id, "metal_ore"),
+        0,
+        "stow.ore hold vault emptied by market delivery"
+    );
+
+    // Sweep and fire the port tick until `tacsim_port_mill` mills the 20 t batch of `metal_ore`
+    // into `8 t` of `metals` (`5:2` ratio).
+    let exchange_vault =
+        VaultId(port_map(&rig.tw, "ceres_port").vendors[&cid("freeport_exchange")].vault);
+    let conc_before = pool(&mut rig.tw, exchange_vault, "metals");
+    let mut milled = false;
+    for _ in 0..15 {
+        sweep(&mut rig.tw, 31);
+        let queued = drain_space_and_industry(&mut rig.tw);
+        let had_mill = queued
+            .iter()
+            .any(|s| s.action.key().id.as_str() == "tacsim_port_mill");
+        land_quietly(&mut rig, &queued);
+        if had_mill {
+            milled = true;
+            break;
+        }
+    }
+    assert!(
+        milled,
+        "Ceres Freeport Exchange mill processed the 20 t batch of space-mined metal_ore"
+    );
+    let conc_after = pool(&mut rig.tw, exchange_vault, "metals");
+    assert_eq!(
+        conc_after.saturating_sub(conc_before),
+        8,
+        "20 t of space-mined metal_ore milled into 8 t of metal concentrate (metals) at Ceres Freeport"
+    );
+    no_refused_writes(&rig.tw);
+}
