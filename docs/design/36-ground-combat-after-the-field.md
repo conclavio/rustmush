@@ -1692,9 +1692,9 @@ are clean on tacsim. The broad suites run on Linux CI on the draft PR.
 
 ## As built (GC.12)
 
-**The cap, measured** (Q-36-9). `FIELD_MAX_UNITS` is still 24. This section records the first
-measurement, taken on main. The cap moves after GC.2 merges and the harness has measured its tree
-(below).
+**The cap, measured** (Q-36-9). `FIELD_MAX_UNITS` is now **100**, raised from 24. This section
+records two measurements: the first on main before GC.2, and the second on main after GC.2
+merged. The constant is set from the second.
 
 **The harness.** `field_scale::gc12_the_field_pulse_is_measured_at_scale` in
 `crates/tacsim/tests/shard_1/field_scale.rs`, one `#[ignore]` test, so the ordinary shards never
@@ -1798,6 +1798,37 @@ units up, the field was engaged by 3.25 s and stayed engaged: 467 of the 480 wak
 - **Caveat:** the machine is conclav.dev, not conclav.io, the host the 40 ms was set on. The
   sixfold margin is the reason a conclav.dev figure is trusted here.
 
-**The re-measure after GC.2.** Owed: GC.2 (PR #296) changes the tempo rule in the hot loop.
-When it merges, this branch rebases, the harness runs again on the same machine, and the
-constant is set from that run.
+**The re-measure after GC.2.** GC.2 (PR #296, merged as `c2653243`) changes the tempo rule in
+the hot loop, so the harness ran again. Tree: main after GC.2 plus the harness (`34416410`, the
+branch's merge of main). Same machine, conditions and lanes as above. The opening is the same
+world as on main; GC.2 changes how the fight goes (more shots, more units standing), so the rows
+differ from the table above.
+
+| Units | Shots in 120 s | Standing at the end | Pulse median / p95 / p99 / max | Worst 500 ms window | Snapshot, opening → end | Contacts at peak | Worst wake: traces / cell probes / share ops |
+|---|---|---|---|---|---|---|---|
+| 9 | 344 | 5 | 0.047 / 0.094 / 0.115 / 0.204 | 0.28 | 138 KB → 159 KB | 46 | 42 / 144 / 2 |
+| 24 | 1,633 | 12 | 0.239 / 0.489 / 0.634 / 0.678 | 1.25 | 352 KB → 460 KB | 544 | 260 / 504 / 30 |
+| 48 | 2,263 | 26 | 0.519 / 1.092 / 1.916 / 2.252 | 3.99 | 687 KB → 906 KB | 2,192 | 780 / 1,509 / 112 |
+| 64 | 3,262 | 38 | 0.931 / 1.828 / 2.261 / 3.808 | 4.78 | 904 KB → 1.31 MB | 3,915 | 1,333 / 2,941 / 189 |
+| 80 | 4,028 | 42 | 1.496 / 2.991 / 3.554 / 7.516 | 8.87 | 1.13 MB → 1.65 MB | 6,227 | 1,863 / 3,814 / 267 |
+| 100 | 3,818 | 63 | 1.612 / 4.870 / 5.986 / 12.385 | 14.32 | 1.41 MB → 1.96 MB | 9,704 | 2,896 / 6,063 / 419 |
+
+- **Debug, lattice `Engaged` p99 / max:** 9 units 1.78 / 2.33; 24 units 6.38 / 7.33; 48 units
+  12.74 / 25.29; 100 units 60.17 / 146.80, past the budget, as on main.
+- **The fixed100 lane at 100 units (release):** median 0.591, p99 2.820, max 7.456.
+- **The ledger at 100 units:** 7.8 MB in two minutes, as on main.
+- **Determinism:** each size's closing hash is the same in release and in debug.
+
+**The cap: 100.** The largest size measured is 100 units. Its `Engaged` p99 is 6.0 ms against
+the 40 ms budget (`[tacsim.harness].engaged_p99_ms`), and its worst wake is 12.4 ms. So
+`FIELD_MAX_UNITS` (`site_record.rs`) is 100. With it move the default of `[tacsim.field].max_units`,
+which may still be set anywhere from 2 to 100; `MAX_EXCURSIONS_PER_SITE`, which is the cap;
+and the mush-config default. Nothing past 100 was measured, so nothing past it is claimed. Past
+about 120 units, the worst wake's traces would cross the OOC harness's 4,000 bound, and a cap
+above 100 needs its own run. Two other things were checked at the cap:
+- A site record whose open field holds 100 settled rigs and 100 exits, beside a full salvage
+  memory, stays under the 64 KiB record ceiling (`gc12_a_field_at_the_cap_fits_the_record`).
+- An `open`'s rig list at 100 ids is about 1.1 KB, under the 4 KiB bound on an offer's text.
+
+The ledger still fills in about 18 engaged minutes at 100 units, as noted above; that is a
+follow-up for the ledger's sizing, not a bound on the cap.
