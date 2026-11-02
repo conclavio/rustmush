@@ -723,6 +723,11 @@ fn load_cells(indent: &str) -> Vec<String> {
         // Doc 19 cut A.8: the moon goods, two more zero cells.
         format!("{indent}instrument boards, crated: 0 t · 0.0 m³"),
         format!("{indent}carbon billet, pressed: 0 t · 0.0 m³"),
+        // Doc 36 cut GC.7: the munitions, four more zero cells.
+        format!("{indent}30 mm AP rounds: 0 t · 0.0 m³"),
+        format!("{indent}7.62 mm ball, boxed: 0 t · 0.0 m³"),
+        format!("{indent}105 mm HE rounds: 0 t · 0.0 m³"),
+        format!("{indent}anti-armour missiles, canistered: 0 t · 0.0 m³"),
         format!("{indent}TOTAL: 100 t · 120.0 m³"),
         format!("{indent}LIMIT: 100 t · 120 m³"),
         format!("{indent}FULL: mass and packed volume"),

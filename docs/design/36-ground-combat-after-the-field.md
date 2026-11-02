@@ -1164,3 +1164,21 @@ GC.8, which makes the bay live there.
 
 The bay rigs (`ud4b_*`) assert the tariff-derived fee: 2,500 minor in the industry rig, and
 40,000 minor in `hardware/flow/bay.rs` on the shipped tariff.
+
+**Pins that moved with the content** (CI round 1). These were fixed as pins, not as logic:
+- the goods count, now 16, in the content studio, its split-gateway round trip and the catalog
+  rows;
+- every hold gauge's load cells, which list the four munitions at 0;
+- the goods-name refusal;
+- the readiness commerce lines, now 60;
+- the stock receipts, 16 instead of 8;
+- the C08 board, which now shows the munitions asks;
+- the older-lane upgrade plans, where Stickney's port is now an update too;
+- the site sentence, which now names the workshop block;
+- the site-map web fixture, re-blessed because the extra stocking fires start it 72 IC s later.
+
+The bounds that grew with the clerk's longer queue have their reasons in the tests: the
+plumbing re-post at 16 fires, and the mill batch after an apply that also adds the munitions
+rows at 24 fires. The cost-lane census now credits a fire's `economy:meta` op to the economy
+sweep exactly when the sweep's stamp moved in that fire. Any other write the restock adds
+still fails the check. No version moved beyond goods v4, lane v18 and relay v9.

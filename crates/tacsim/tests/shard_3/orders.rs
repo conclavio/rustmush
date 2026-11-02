@@ -1230,10 +1230,11 @@ fn ic11_the_verbs_edit_the_plan() {
             "buy unobtainium 5",
             UNKNOWN_GOOD.replace(
                 "{list}",
-                // Doc 20 cut SM.3a: goods v3's four ores close the list.
+                // Doc 20 cut SM.3a: goods v3's four ores; doc 36 cut GC.7: goods v4's four
+                // munitions close the list.
                 "metals, volatiles, structural_alloys, industrial_parts, propellant, provisions, \
                  instrument_boards, carbon_feedstock, metal_ore, ice_ore, carbon_ore, \
-                 strategic_ore",
+                 strategic_ore, ammo_ap_30, ammo_ball_762, ammo_he_105, ammo_missile",
             ),
         ),
         (

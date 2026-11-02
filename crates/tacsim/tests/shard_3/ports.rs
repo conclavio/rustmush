@@ -1913,9 +1913,10 @@ fn ic3_the_readiness_report_lists_every_binding_and_flags_the_rate() {
     // the shipped lane (a count of report lines, not a vertex): Ceres 3 + 4 + 6 (doc 20
     // cut SM.5: the four ore intakes) + 2 mills (doc 20 cut SM.12a), Stickney 3 + 4 + 2,
     // Luna 4 + 4 + 3, Deimos 2 + 2 + 4, Titan 3 + 4 + 2. The bid-only vendors' lines are
-    // counted though they read Ready.
+    // counted though they read Ready. Doc 36 cut GC.7: four munitions asks each at Ceres's
+    // Co-op and Stickney Yards.
     assert_eq!(
-        commerce_lines, 52,
+        commerce_lines, 60,
         "the shipped lane's vendor, ask, bid and mill lines at the five ports"
     );
     let total = want.len();

@@ -2580,7 +2580,9 @@ fn sm12a_a_pack_apply_adds_the_mills_to_a_kept_world() {
         no_counter(&stored(&mut rig, &key).expect("the map")),
         "the apply writes none"
     );
-    let batch = fire_until_batch(&mut rig, 12);
+    // Doc 36 cut GC.7: the seed is stripped of the munitions rows too, so the apply also adds
+    // them, and both ports' clerks mint and list them (eight fires) before the mill's turn.
+    let batch = fire_until_batch(&mut rig, 24);
     assert_eq!(batch.parameters["ordinal"], 1);
     assert_eq!(
         counter(&rig.tw, EXCHANGE, "metal_ore"),

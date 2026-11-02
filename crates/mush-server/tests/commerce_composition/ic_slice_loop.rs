@@ -1283,6 +1283,11 @@ async fn ic12_part_one_a_leg_by_hand() {
         // Doc 19 cut A.8: the moon goods.
         cell("instrument_boards", 0),
         cell("carbon_feedstock", 0),
+        // Doc 36 cut GC.7: the munitions, ordinary hold goods.
+        cell("ammo_ap_30", 0),
+        cell("ammo_ball_762", 0),
+        cell("ammo_he_105", 0),
+        cell("ammo_missile", 0),
         format!(
             "    TOTAL: {} t · {} m³",
             tacsim::port::capacity::format_tonnes(mass),

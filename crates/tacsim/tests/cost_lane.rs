@@ -2745,13 +2745,16 @@ fn debit_pool(rig: &mut Rig, vault: VaultId, good: &str, qty: u64) {
 }
 
 /// **What the port's normal-lane steps write, read before and after a fire**: the Ceres map, its
-/// vendors' asks (listing id and quantity by org and good), and whether Occator Rim's yard holds
-/// the house's licence.
+/// vendors' asks (listing id and quantity by org and good), whether Occator Rim's yard holds
+/// the house's licence, and the economy sweep's stamps (doc 36 cut GC.7: a fire the economy's
+/// `Coarse` sweep also ran in carries its `economy:meta` stamp, which is the sweep's write and
+/// no clerk's).
 #[derive(Clone, Debug, Default)]
 struct TickRead {
     ceres: Option<PortMap>,
     asks: BTreeMap<(String, String), Option<(u64, u64)>>,
     house_licence: bool,
+    sweep: Option<(i64, i64)>,
 }
 
 /// The Ceres map, if present.
@@ -2791,6 +2794,10 @@ fn tick_read(tw: &TestWorld) -> TickRead {
         ceres,
         asks,
         house_licence,
+        sweep: tw
+            .world()
+            .module_state::<mush_economy::EconomyStore>()
+            .map(mush_economy::EconomyStore::last_sweep),
     }
 }
 
@@ -2991,8 +2998,15 @@ fn tick_writes(
         // over the expected keys cannot see an added key or a doubled write): where the census
         // constructs it, every op the fire wrote is one the restock counted, once.
         if kind == "mill.restock" && constructed.is_some() {
+            // The economy sweep's own stamp, exactly when the sweep ran in this fire.
+            let swept = before.sweep != after.sweep;
+            let sweep_stamp = ops
+                .iter()
+                .filter(|op| swept && op.ns == "economy" && op.key == mush_economy::META_KEY)
+                .count();
+            assert!(sweep_stamp <= 1, "one sweep stamp a fire: {ops:?}");
             assert_eq!(
-                ops.len(),
+                ops.len() - sweep_stamp,
                 writes,
                 "the census's restock fire wrote beyond its counted keys: {ops:?}"
             );

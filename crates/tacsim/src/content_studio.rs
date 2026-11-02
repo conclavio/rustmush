@@ -2411,7 +2411,8 @@ mod tests {
             catalog
                 .get("goods")
                 .and_then(Value::as_array)
-                .is_some_and(|a| a.len() == 12)
+                // Doc 36 cut GC.7: sixteen with the four munitions goods.
+                .is_some_and(|a| a.len() == 16)
         );
 
         // Read + Check a shipped campaign_seed pack (`tacsim.crew.ceres`) and a standalone table (`market/goods.json`)

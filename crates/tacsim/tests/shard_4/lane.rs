@@ -1411,9 +1411,10 @@ fn sm3a_a_vehicles_block_out_of_bounds_is_refused() {
             }),
         ),
         (
-            // Doc 20 cut SM.5: the sentence names the licence block too.
+            // Doc 20 cut SM.5: the sentence names the licence block too; doc 36 cut GC.7: and
+            // the workshop block.
             "site: a site authors no orgs, rooms, programme, vendors, premium or emergency, and no \
-             vehicles or licence block; its pad is its gallery",
+             vehicles, licence or workshop block; its pad is its gallery",
             Box::new(move |doc| {
                 let block = vehicles(doc);
                 doc["entries"]["ahuna_port"]["def"]["vehicles"] = block;
