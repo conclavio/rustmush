@@ -1166,14 +1166,14 @@ fn hold_to_the_record(lines: &[&String], what: &str) {
 /// and see over the new hills, so match ends and shot counts move a few per
 /// cent while every winner, the 14–1 split and `first_divergence_ms` stand.
 /// **Doc 36 cut GC.2 re-records it, the programme's one kernel rebless** (doc
-/// 36 §9): the pool's units are content-backed, so a survivable hit may now
+/// 36 §10): the pool's units are content-backed, so a survivable hit may now
 /// jam or damage a part (the shipped chances), and a wreck is cover in the
 /// fire and sensor traces. Match ends move by up to 43 s, thinks 10,281 →
 /// 10,603, shots and wrecks a few per cent; every winner, the 14–1 split and
 /// `first_divergence_ms` stand, and nothing is `unlawful`. Two divergence
 /// counters leave nought: `line` 0 → 28 and `no_line` 0 → 31 — the kernel's
 /// fire line now finds a wreck the mind's `line_to` (terrain alone, doc 36
-/// §9's follow-up) cannot see.
+/// §10's follow-up) cannot see.
 const M4_5_POOLED_RECORD: [&str; 21] = [
     "twin_match: seed=2350 end=elimination_red t_ms=176250",
     "twin_match: seed=2351 end=elimination_red t_ms=235250",
@@ -1769,7 +1769,7 @@ impl Coverage {
 /// fights on its own authored field and is unmoved.
 ///
 /// **Doc 36 cut GC.2's re-bless of all three** (the programme's one kernel
-/// rebless, doc 36 §9): content-backed hulls now jam and damage parts on
+/// rebless, doc 36 §10): content-backed hulls now jam and damage parts on
 /// survivable hits, and wrecks are cover, so the fights move — `pooled`
 /// 10,008 / 273 → 10,295 / 308, `mixed` 13,220 / 502 → 13,230 / 502, `lance`
 /// 6,001 / 164 → 7,157 / 130, and [`POOLED_MATCHES_WITH_STAND_IN`] 11 → 12 —

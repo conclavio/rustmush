@@ -3562,7 +3562,7 @@ const M2_FLOAT_PROBE_BITMASK: i64 = (1 << 25) - 1 + (1 << 26) + (1 << 28);
 // 13) and the Standard source moved with the API 7 header, so every ledger
 // line's hash moved with it. Every row's end millisecond is unchanged (170 250,
 // 192 500, 170 000, 900 000): the fights are the same fights.
-/// **Doc 36 cut GC.2's kernel re-bless** (doc 36 §9, the programme's one): the
+/// **Doc 36 cut GC.2's kernel re-bless** (doc 36 §10, the programme's one): the
 /// corpus's hulls are content-backed, so a survivable hit may jam or damage a
 /// part (the shipped chances, the `component:<seq>` draw) and a wreck is cover
 /// in the fire and sensor traces. Rows 0 and 1 fight differently: their

@@ -336,6 +336,18 @@ async fn cf5_a_rig_recovers_out_of_a_running_field_and_a_stranded_pilot_is_extra
     for unit in [hull_a, hull_b, prospector] {
         assert!(in_field(&rig, unit), "#{} is in the field", unit.0);
     }
+    // A holds B's party Hostile: an armed Hostile pair in weapons range keeps the field engaged,
+    // so (1) runs inside the field however slow the runner is. A fire order marks nobody, and
+    // without the mark the quiet interval (15 s) ran from the opening and could demote the field
+    // before (1) finished. The quiet interval runs from (2)'s wreck, which reads dead.
+    let b_party = tacsim::field::live_on(rig.tw.world(), &cid(AHUNA))
+        .and_then(|live| live.party_of(hull_b).map(|party| party.letter()))
+        .expect("B's party in the open field");
+    let (said, queued) = command(&mut rig, a, &format!("+field/mark {b_party}=hostile"));
+    assert!(said.contains("now marks party"), "{said}");
+    for submit in &queued {
+        land(&mut rig, submit).expect("the mark lands");
+    }
 
     // (1) Recovery as exit: the prospector on the ramp leaves the running field.
     let preview = run(&mut rig.tw, c, "+tv/1 recover");

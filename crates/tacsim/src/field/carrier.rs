@@ -234,6 +234,62 @@ pub fn departure_refusal(w: &World, hull: ObjId) -> Option<String> {
     )
 }
 
+/// **The carriers settled on `site`'s ground outside its running field** (doc 36 cut GC.1;
+/// Q-36-4): a hull that arrived by voyage after admission. Q-CF-16 puts everyone on the ground
+/// in the field, so each is owed its admission at its pad as a unit of its own party, which the
+/// kernel's join makes (GC.1b). A launch from it is already refused while the site is promoted
+/// (`FIELD_LAUNCH`, Q-CF-17). A hull left out under a licensed mind (Q-36-44) is no arrival.
+#[must_use]
+pub(crate) fn arrivals(w: &World, site: &CanonicalId) -> Vec<ObjId> {
+    let Some(rows) = w
+        .module_state::<FieldBook>()
+        .and_then(|book| book.hosted(site))
+        .map(|hosted| hosted.live.units.clone())
+    else {
+        return Vec::new();
+    };
+    let Some(domain) = super::parties::site_domain(w, site) else {
+        return Vec::new();
+    };
+    super::parties::on_ground(w, domain)
+        .into_iter()
+        .filter(|unit| {
+            is_carrier(w, *unit)
+                && !rows.iter().any(|row| row.unit == *unit)
+                && !mush_sim::deployed::is_deployed(w, *unit)
+                && !super::admit::held_out(w, *unit)
+        })
+        .collect()
+}
+
+/// **The carriers owed admission to `site`'s running field** (doc 36 cut GC.1): what the tick
+/// last noted, in id order; empty with no field running.
+#[must_use]
+pub fn owed_arrivals(w: &World, site: &CanonicalId) -> Vec<ObjId> {
+    w.module_state::<FieldBook>()
+        .and_then(|book| book.arrivals.get(site))
+        .map(|hulls| hulls.iter().copied().collect())
+        .unwrap_or_default()
+}
+
+/// **The host's owed arrivals on `site`, brought up to date** (doc 36 cut GC.1): the book holds
+/// [`arrivals`] while the field runs and nothing once it is gone; each newly seen one is logged.
+pub(crate) fn note_arrivals(ctx: &mut Ctx<'_>, site: &CanonicalId) {
+    let now: std::collections::BTreeSet<ObjId> = arrivals(ctx.w, site).into_iter().collect();
+    let Some(book) = ctx.w.module_state_mut::<FieldBook>() else {
+        return;
+    };
+    let before = if now.is_empty() {
+        book.arrivals.remove(site)
+    } else {
+        book.arrivals.insert(site.clone(), now.clone())
+    }
+    .unwrap_or_default();
+    for hull in now.difference(&before) {
+        tracing::info!(site = %site, hull = hull.0, "tacsim: a carrier settled mid-field; its admission waits on the kernel's join (GC.1b)");
+    }
+}
+
 /// **The tow gate** (FO-13): `Some(line)` when `target` is a carrier.
 #[must_use]
 pub fn refuse_tow(w: &World, target: ObjId) -> Option<String> {
