@@ -43,9 +43,11 @@ up, and every seat starts at weapons hold, so a standing `FIRE … WHEN` rule do
 not shoot until you set `FIRE FREE`. A hand `FIRE` is always yours. After a
 server restart, take your seat back with the `+focus` the resume line prints.
 
-**No launches while promoted.** `+tv/<n> launch` and `+sortie/launch` onto the
-site are refused until it settles: the fight runs at human speed and is over
-before a newcomer could reach it. Other surface work on the site waits too:
+**No launches while promoted.** `+sortie/launch` onto the site is refused until
+it settles: "Field 1 is being fought on Ahuna Flank. No launch goes down onto it
+until it settles: the fight runs at human speed and will be over before you
+could join it." A rig's `+tv/<n> launch` is refused too. Other surface work on
+the site waits as well:
 "Field 1 is being fought on Ahuna Flank. Surface work there waits until it
 settles."
 

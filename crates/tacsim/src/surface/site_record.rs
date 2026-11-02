@@ -996,7 +996,9 @@ pub const FIELD_OPEN: &str =
 /// **A launch onto a promoted site** (doc 32 cut CF.2; Q-CF-17): `{site}`, `{ordinal}`. The field
 /// runs at human speed and the world outside it at the campaign's, so a fight is over before
 /// anyone launched now could reach it; launches wait for it to settle.
-pub const FIELD_LAUNCH: &str = "Field {ordinal} is being fought on {site}. No launch goes down      onto it until it settles: the fight runs at human speed and will be over before you could      join it.";
+pub const FIELD_LAUNCH: &str = "Field {ordinal} is being fought on {site}. No launch goes down \
+     onto it until it settles: the fight runs at human speed and will be over before you could \
+     join it.";
 /// The start's message for the same refusal (the prepare cannot name the site's display name).
 pub const FIELD_OPEN_CODE: &str = "a field is being fought on that site; surface work waits";
 /// `+tv/map`'s line on a promoted site: `{site}`, `{ordinal}`.
