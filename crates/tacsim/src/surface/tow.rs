@@ -20,7 +20,7 @@
 //!   (its own bay, a party-mate's, a Friend's); a foreign bay and its claim are GC.5's.
 //!
 //! **The coupled drive.** A tug in tow drives with the `drive` act it always had, at
-//! [`crate::field_ops::coupled_drive_rates_for_tow`] ([`crate::surface::act::rig_rates`] reads the
+//! [`crate::field_ops::coupled_drive_rates_for_tow`] (`crate::surface::act::rig_rates` reads the
 //! coupling, so every leg, the reserve and the trip home are planned at the tow rate); the tick
 //! that stands the tug at its leg's end stands its casualty on the same cell. A tug in tow does
 //! nothing else but release or load: no scan, no sounding, no mining, no recover (the command
@@ -33,7 +33,7 @@
 //! submitted by the surface tick as that operator once the act is due. The record is durable, so
 //! **a restart while attached keeps the attachment and a restart while loading keeps the load**:
 //! the tick finds the act due again and finishes it. The facts a prepare checks are fixed by the
-//! offer from a server-written RAM order ([`TowOrders`], the drive's `ActOrders` precedent), which
+//! offer from a server-written RAM order (`TowOrders`, the drive's `ActOrders` precedent), which
 //! decides nothing the prepare does not re-check against the record in its own transaction.
 //!
 //! **Interruption** (Q-36-13): an attach or a load due on a promoted site lands as interrupted,
