@@ -881,16 +881,19 @@ pub fn classify(line: &str) -> Line {
         .unwrap_or_else(|| Line::Other(body.to_owned()))
 }
 
-/// The four lines worth sending again after a moment. The seat's refusal is
+/// The lines worth sending again after a moment. The seat's refusal is
 /// read at the END of a line (`That cockpit will not wake for you: control
 /// state unknown`), never anywhere inside one, so a player's line that merely
-/// mentions it is not taken for it.
+/// mentions it is not taken for it. The engine's two back-pressure refusals
+/// (`drain_authoritative_submit`) are matched whole, as the mining lane's
+/// `ENGINE_BUSY` are.
 fn transient(body: &str) -> Option<Line> {
     let is = body.ends_with("please retry in a moment.")
         || body == "The world is still starting; please try again shortly."
         || body.ends_with("control state unknown")
         || body.ends_with("control state unknown.")
-        || body == "The arena is busy; try that again in a moment.";
+        || body == "The arena is busy; try that again in a moment."
+        || crate::mine::lines::ENGINE_BUSY.contains(&body);
     is.then(|| Line::Transient(body.to_owned()))
 }
 
@@ -3388,6 +3391,8 @@ mod tests {
             "The world is still starting; please try again shortly.",
             "That cockpit will not wake for you: control state unknown",
             "The arena is busy; try that again in a moment.",
+            "Your earlier action is still committing; try again in a moment.",
+            "Too many actions are committing right now; try again in a moment.",
         ] {
             assert_eq!(classify(line), Line::Transient(line.into()), "{line}");
         }
