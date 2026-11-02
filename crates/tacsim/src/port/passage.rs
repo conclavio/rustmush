@@ -923,6 +923,323 @@ pub fn choose_route(
     })
 }
 
+/// Resolve a pack location's body or a sky body id directly (`SF.R4`, `D-35-6`).
+pub fn body_or_place_of(
+    sky: &Sky,
+    pack: &RulesPack,
+    place: &CanonicalId,
+) -> Result<CanonicalId, PlanError> {
+    if let Ok(body) = body_of(sky, pack, place) {
+        return Ok(body);
+    }
+    if sky.epoch_of(place).is_some() {
+        return Ok(place.clone());
+    }
+    Err(PlanError::NoSkyLeg {
+        place: place.to_string(),
+    })
+}
+
+/// Velocity-matching Δv penalty (m/s) for a free-flight ship at `(pos_km, vel_mps)` intercepting
+/// `target_pos_km` moving at `target_vel_mps` (`SF.R4`, `D-35-6`).
+///
+/// Accounts for both relative speed `|v_ship - v_target|` and recession rate along the line of
+/// sight (`max(0, -(v_rel · d_hat))`), so a hull moving away from a port requires strictly more
+/// Δv and reaction mass than one co-moving or closing with it.
+#[allow(
+    clippy::cast_precision_loss,
+    clippy::cast_possible_truncation,
+    clippy::cast_sign_loss
+)]
+pub fn free_flight_velocity_dv_mps(
+    pos_km: PosKm,
+    target_pos_km: PosKm,
+    vel_mps: [i32; 3],
+    target_vel_mps: [i32; 3],
+) -> Result<u32, PlanError> {
+    let [vx, vy, vz] = vel_mps;
+    let [tvx, tvy, tvz] = target_vel_mps;
+    let rvx = f64::from(vx) - f64::from(tvx);
+    let rvy = f64::from(vy) - f64::from(tvy);
+    let rvz = f64::from(vz) - f64::from(tvz);
+    let rel_speed = (rvx * rvx + rvy * rvy + rvz * rvz).sqrt();
+
+    let dx = (target_pos_km.x as f64) - (pos_km.x as f64);
+    let dy = (target_pos_km.y as f64) - (pos_km.y as f64);
+    let dz = (target_pos_km.z as f64) - (pos_km.z as f64);
+    let chord_km = (dx * dx + dy * dy + dz * dz).sqrt();
+    let recession_mps = if chord_km > 0.0 {
+        let closing_mps = (rvx * dx + rvy * dy + rvz * dz) / chord_km;
+        (-closing_mps).max(0.0)
+    } else {
+        0.0
+    };
+
+    let dv = (rel_speed + recession_mps).ceil();
+    if !dv.is_finite() || dv < 0.0 || dv > f64::from(u32::MAX) {
+        return Err(PlanError::Overflow);
+    }
+    Ok(dv as u32)
+}
+
+/// **Plan a passage from arbitrary 3D heliocentric coordinates `(pos_km, vel_mps)` to a port or
+/// body `target_place`** (`SF.R4`, `D-35-6`, `docs/design/35a-space-flight-review.md` §8.3).
+///
+/// Reuses [`detour_km`] (solar keep-out), [`leg_seconds`], [`passage_burn`] (rocket equation),
+/// and [`crew_days`] over [`INTERCEPT_PASSES`] fixed-point intercept passes, folding the ship's
+/// live 3D velocity vector `vel_mps` relative to the target body's orbital velocity at arrival
+/// into the leg's Δv (`ascent_mps`) so [`passage_burn`] and `BurnProvider` agree to the tonne.
+///
+/// # Errors
+///
+/// Returns [`PlanError`] if `target_place` has no sky body, `payload_kg` exceeds the drive's
+/// ceiling, the throttle is out of bounds, or arithmetic overflows.
+#[allow(clippy::too_many_arguments, clippy::cast_precision_loss)]
+pub fn plan_passage_from(
+    sky: &Sky,
+    pack: &RulesPack,
+    pos_km: PosKm,
+    vel_mps: [i32; 3],
+    target_place: &CanonicalId,
+    drive: &HullDrive,
+    dry_kg: u64,
+    payload_kg: u64,
+    occupants: u32,
+    depart_ic: i64,
+) -> Result<PassagePlan, PlanError> {
+    if payload_kg > drive.payload_ceiling_kg {
+        return Err(PlanError::Overloaded {
+            payload_kg,
+            ceiling_kg: drive.payload_ceiling_kg,
+        });
+    }
+    if matches!(drive.law, DriveLaw::Flip { .. }) {
+        throttle(drive)?;
+    }
+    let to_body = body_or_place_of(sky, pack, target_place)?;
+    let site_ascent = match site_end(pack, target_place) {
+        Some(end) => site_end_ascent(drive, dry_kg, payload_kg, target_place, end)?,
+        None => 0,
+    };
+
+    let mut t1 = depart_ic;
+    let mut dist_km: u64 = 0;
+    let mut secs: u32 = 1;
+    let mut vel_dv_mps: u32 = 0;
+    for _ in 0..INTERCEPT_PASSES {
+        let pb = sky
+            .position_km(&to_body, t1)
+            .ok_or_else(|| PlanError::UnknownBody {
+                place: target_place.to_string(),
+            })?;
+        let vb = sky.velocity_mps(&to_body, t1).unwrap_or([0, 0, 0]);
+        let chord = pos_km.distance_km(pb);
+        let detour = detour_km(pos_km, pb, KEEP_OUT_AU * AU_KM as f64);
+        dist_km = detour.max(chord);
+        vel_dv_mps = free_flight_velocity_dv_mps(pos_km, pb, vel_mps, vb)?;
+        let base_secs = leg_seconds(drive, dry_kg, payload_kg, dist_km)?;
+        let vel_extra_secs = match flip_accel_mps2(drive, dry_kg, payload_kg) {
+            Some(a) if a > 0.0 && a.is_finite() => {
+                #[allow(clippy::cast_possible_truncation, clippy::cast_sign_loss)]
+                let extra = (f64::from(vel_dv_mps) / a).ceil() as u32;
+                extra
+            }
+            _ => 0,
+        };
+        secs = base_secs.saturating_add(vel_extra_secs).max(1);
+        t1 = depart_ic
+            .checked_add(i64::from(secs))
+            .ok_or(PlanError::Overflow)?;
+    }
+
+    let ascent_mps = site_ascent
+        .checked_add(vel_dv_mps)
+        .ok_or(PlanError::Overflow)?;
+    let leg = LegPlan {
+        to: target_place.clone(),
+        body: to_body,
+        dist_km,
+        secs,
+        t0: depart_ic,
+        t1,
+        ascent_mps,
+    };
+    let legs = vec![leg];
+    let total_s = i64::from(secs);
+    let burn_t = passage_burn(drive, dry_kg, payload_kg, &legs)?.max(1);
+    let crew = crew_days(occupants, &legs)?;
+    let route_id = CanonicalId::new(format!("free_flight_{}", target_place.as_str()))
+        .or_else(|_| CanonicalId::new("free_flight"))
+        .map_err(|_| PlanError::Overflow)?;
+    let plan = PassagePlan {
+        route: route_id,
+        law: CanonicalId::new(drive.law.word()).map_err(|_| PlanError::Overflow)?,
+        depart_ic,
+        sky_rev: sky.revision().map_err(|_| PlanError::SkyUnavailable)?,
+        legs,
+        total_s,
+        burn_t,
+        crew_days: crew,
+        throttle_permille: drive.throttle_permille,
+        landed_crew_days: 0,
+    };
+    plan.check().map_err(|_| PlanError::Overflow)?;
+    Ok(plan)
+}
+
+/// **Computed return-reserve figure (`RETURN_RESERVE`, `SF.R4`, `D-35-6`)**: the cheapest passage
+/// from the ship's live `(pos_km, vel_mps)` to any open port in `open_ports`.
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub struct ReturnReserve {
+    /// Nearest/cheapest open port place id.
+    pub port: CanonicalId,
+    /// Full [`PassagePlan`] back to `port`.
+    pub plan: PassagePlan,
+    /// Required reaction mass in kilograms (`plan.burn_t * 1_000`).
+    pub reserve_kg: u64,
+    /// Required Δv in m/s (`flip_profile`'s `dv_mps` ceiled).
+    pub reserve_dv_mps: u32,
+}
+
+/// Compute [`ReturnReserve`] (`RETURN_RESERVE`, `D-35-6`) from `(pos_km, vel_mps)` across
+/// `open_ports` using [`plan_passage_from`].
+///
+/// # Errors
+///
+/// Returns [`PlanError`] if `open_ports` is empty or no port can be planned.
+#[allow(
+    clippy::too_many_arguments,
+    clippy::cast_possible_truncation,
+    clippy::cast_sign_loss
+)]
+pub fn return_reserve_from(
+    sky: &Sky,
+    pack: &RulesPack,
+    pos_km: PosKm,
+    vel_mps: [i32; 3],
+    open_ports: &[CanonicalId],
+    drive: &HullDrive,
+    dry_kg: u64,
+    payload_kg: u64,
+    occupants: u32,
+    depart_ic: i64,
+) -> Result<ReturnReserve, PlanError> {
+    let mut best: Option<(CanonicalId, PassagePlan)> = None;
+    let mut first_err: Option<PlanError> = None;
+    for port in open_ports {
+        match plan_passage_from(
+            sky, pack, pos_km, vel_mps, port, drive, dry_kg, payload_kg, occupants, depart_ic,
+        ) {
+            Ok(plan) => {
+                let take = best.as_ref().is_none_or(|(_, cur)| {
+                    plan.burn_t < cur.burn_t
+                        || (plan.burn_t == cur.burn_t && plan.total_s < cur.total_s)
+                });
+                if take {
+                    best = Some((port.clone(), plan));
+                }
+            }
+            Err(err) => {
+                first_err.get_or_insert(err);
+            }
+        }
+    }
+    let Some((port, plan)) = best else {
+        return Err(first_err.unwrap_or_else(|| PlanError::UnknownRoute {
+            route: "(no open ports)".to_owned(),
+        }));
+    };
+    let reserve_kg = plan.burn_t.checked_mul(1_000).ok_or(PlanError::Overflow)?;
+    let reserve_dv_mps = flip_profile(drive, dry_kg, payload_kg, &plan.legs).map_or(0, |prof| {
+        prof.dv_mps.ceil().clamp(0.0, f64::from(u32::MAX)) as u32
+    });
+    Ok(ReturnReserve {
+        port,
+        plan,
+        reserve_kg,
+        reserve_dv_mps,
+    })
+}
+
+/// Reaction mass in kilograms burned by a free-flight maneuver of `dv_mps` m/s under the
+/// rocket equation (`m_total * (1 - exp(-dv / v_e))`, ceiled to whole kg; `SF.R4`, `D-35-6`).
+///
+/// # Errors
+///
+/// Returns [`PlanError::Overflow`] if the mass or exponential overflows.
+#[allow(
+    clippy::cast_precision_loss,
+    clippy::cast_possible_truncation,
+    clippy::cast_sign_loss
+)]
+pub fn burn_kg_for_dv(
+    drive: &HullDrive,
+    dry_kg: u64,
+    payload_kg: u64,
+    dv_mps: u32,
+) -> Result<u64, PlanError> {
+    if dv_mps == 0 {
+        return Ok(0);
+    }
+    let mass_kg = dry_kg.checked_add(payload_kg).ok_or(PlanError::Overflow)?;
+    match drive.law {
+        DriveLaw::Coast { burn_permille, .. } => {
+            let grams = u128::from(mass_kg)
+                .checked_mul(u128::from(burn_permille))
+                .ok_or(PlanError::Overflow)?;
+            u64::try_from(grams.div_ceil(1_000)).map_err(|_| PlanError::Overflow)
+        }
+        DriveLaw::Flip { exhaust_kms, .. } => {
+            let ve_mps = f64::from(exhaust_kms) * 1_000.0;
+            if ve_mps <= 0.0 {
+                return Err(PlanError::Overflow);
+            }
+            let frac = 1.0 - (-f64::from(dv_mps) / ve_mps).exp();
+            let burned = ((mass_kg as f64) * frac).ceil();
+            if !burned.is_finite() || burned < 0.0 || burned > (u64::MAX as f64) {
+                return Err(PlanError::Overflow);
+            }
+            Ok((burned as u64).max(1))
+        }
+    }
+}
+
+/// Remaining Δv budget in m/s for `propellant_kg` of reaction mass aboard (`v_e * ln(m_total / m_dry_without_prop)`,
+/// `SF.R4`, `D-35-6`).
+///
+/// # Errors
+///
+/// Returns [`PlanError::Overflow`] if mass arithmetic overflows.
+#[allow(
+    clippy::cast_precision_loss,
+    clippy::cast_possible_truncation,
+    clippy::cast_sign_loss
+)]
+pub fn remaining_dv_mps_for_propellant(
+    drive: &HullDrive,
+    dry_kg: u64,
+    payload_kg: u64,
+    propellant_kg: u64,
+) -> Result<u32, PlanError> {
+    if propellant_kg == 0 {
+        return Ok(0);
+    }
+    let DriveLaw::Flip { exhaust_kms, .. } = drive.law else {
+        return Ok(0);
+    };
+    let total_kg = dry_kg.checked_add(payload_kg).ok_or(PlanError::Overflow)?;
+    let empty_kg = total_kg.saturating_sub(propellant_kg).max(dry_kg.max(1));
+    if total_kg <= empty_kg {
+        return Ok(0);
+    }
+    let ve_mps = f64::from(exhaust_kms) * 1_000.0;
+    let dv = (ve_mps * ((total_kg as f64) / (empty_kg as f64)).ln()).floor();
+    if !dv.is_finite() || dv < 0.0 {
+        return Ok(0);
+    }
+    Ok(dv.min(f64::from(u32::MAX)) as u32)
+}
+
 /// **The flip law's figures for a planned passage** (D-19-8), for `+ship/plan`
 /// and the chart: the acceleration flown (m/s²), the whole passage's `Δv` and
 /// the peak velocity of its longest leg (both m/s). `None` under the coast law.
@@ -1446,5 +1763,131 @@ mod tests {
                 twr_permille: 0,
             })
         );
+    }
+
+    /// **Doc 35 cut SF.R4 (`D-35-6`)**: `plan_passage_from` and `return_reserve_from` use both
+    /// 3D position and 3D velocity, so a ship moving away from a port requires strictly more Δv,
+    /// seconds, and propellant (`burn_t` / `reserve_kg`) than a ship at the same coordinates
+    /// moving toward or co-moving with that port.
+    #[test]
+    fn sfr4_plan_passage_from_and_return_reserve_depend_on_position_and_velocity() {
+        let Ok(pack) = crate::pack::load_pack(crate::definitions::content::LANE_JSON) else {
+            panic!("the shipped lane loads");
+        };
+        let sky = Sky::from_pack(&pack, &crate::config::EphemerisConfig::default());
+        let drive = flip();
+        let epoch = 74_152_540_800_i64;
+        let Some(ceres_pos) = sky.position_km(&cid("ceres"), epoch) else {
+            panic!("ceres position");
+        };
+        let Some(ceres_vel) = sky.velocity_mps(&cid("ceres"), epoch) else {
+            panic!("ceres velocity");
+        };
+        let [cvx, cvy, cvz] = ceres_vel;
+        // Place the ship 500,000 km (+X) from Ceres.
+        let ship_pos = PosKm {
+            x: ceres_pos.x + 500_000,
+            y: ceres_pos.y,
+            z: ceres_pos.z,
+        };
+        // Case A: closing toward Ceres (-X relative to Ceres at 15 km/s).
+        let vel_toward = [cvx - 15_000, cvy, cvz];
+        // Case B: receding away from Ceres (+X relative to Ceres at 80 km/s).
+        let vel_away = [cvx + 80_000, cvy, cvz];
+
+        let Ok(plan_toward) = plan_passage_from(
+            &sky,
+            &pack,
+            ship_pos,
+            vel_toward,
+            &cid("ceres_freeport"),
+            &drive,
+            240_000,
+            80_000,
+            1,
+            epoch,
+        ) else {
+            panic!("plan_toward succeeds");
+        };
+        let Ok(plan_away) = plan_passage_from(
+            &sky,
+            &pack,
+            ship_pos,
+            vel_away,
+            &cid("ceres_freeport"),
+            &drive,
+            240_000,
+            80_000,
+            1,
+            epoch,
+        ) else {
+            panic!("plan_away succeeds");
+        };
+        let Some(prof_toward) = flip_profile(&drive, 240_000, 80_000, &plan_toward.legs) else {
+            panic!("flip_profile toward");
+        };
+        let Some(prof_away) = flip_profile(&drive, 240_000, 80_000, &plan_away.legs) else {
+            panic!("flip_profile away");
+        };
+        assert!(
+            prof_away.dv_mps > prof_toward.dv_mps,
+            "receding ship needs more dv ({} vs {})",
+            prof_away.dv_mps,
+            prof_toward.dv_mps
+        );
+        assert!(
+            plan_away.total_s > plan_toward.total_s,
+            "receding ship takes longer ({} vs {})",
+            plan_away.total_s,
+            plan_toward.total_s
+        );
+        assert!(
+            plan_away.burn_t > plan_toward.burn_t,
+            "receding ship burns more tonnes ({} vs {})",
+            plan_away.burn_t,
+            plan_toward.burn_t
+        );
+
+        let open_ports = [cid("ceres_freeport"), cid("stickney_yards")];
+        let Ok(res_toward) = return_reserve_from(
+            &sky,
+            &pack,
+            ship_pos,
+            vel_toward,
+            &open_ports,
+            &drive,
+            240_000,
+            80_000,
+            1,
+            epoch,
+        ) else {
+            panic!("return_reserve toward");
+        };
+        let Ok(res_away) = return_reserve_from(
+            &sky,
+            &pack,
+            ship_pos,
+            vel_away,
+            &open_ports,
+            &drive,
+            240_000,
+            80_000,
+            1,
+            epoch,
+        ) else {
+            panic!("return_reserve away");
+        };
+        assert_eq!(res_toward.port, cid("ceres_freeport"));
+        assert!(res_away.reserve_dv_mps > res_toward.reserve_dv_mps);
+        assert!(res_away.reserve_kg > res_toward.reserve_kg);
+
+        let Ok(burned_kg) = burn_kg_for_dv(&drive, 240_000, 80_000, 15_000) else {
+            panic!("burn_kg_for_dv");
+        };
+        assert!(burned_kg > 0);
+        let Ok(rem_dv) = remaining_dv_mps_for_propellant(&drive, 240_000, 80_000, 55_000) else {
+            panic!("remaining_dv_mps");
+        };
+        assert!(rem_dv > 500_000);
     }
 }

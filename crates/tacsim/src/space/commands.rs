@@ -42,29 +42,46 @@ use super::bubble::{
     BubbleInputCommand, EmconPosture, HullStatus, LocalSpaceBubble, SpaceRelation, SpaceShipState,
     SubsystemCrit,
 };
-use super::tick::{ActiveInterdictionBubble, SpaceBubbleBook, apply_bubble_command};
+use super::tick::{
+    ActiveInterdictionBubble, FreeFlightGuidanceMode, SpaceBubbleBook, SpaceFreeFlightRecord,
+    apply_bubble_command,
+};
 use super::weapons::LaserMode;
 
 /// The helm command verb (`+helm`).
 pub const HELM_VERB: &str = "+helm";
 
 /// All switches supported by `+helm`.
-pub const HELM_SWITCHES: [&str; 7] = [
-    "status", "station", "heading", "thrust", "emcon", "roll", "guidance",
+pub const HELM_SWITCHES: [&str; 10] = [
+    "status",
+    "station",
+    "heading",
+    "thrust",
+    "emcon",
+    "roll",
+    "guidance",
+    "decouple",
+    "burn",
+    "autopilot",
 ];
 
 /// Help text for `+helm`.
 pub const HELM_HELP: &str = "\
-+helm  --  Ship helm, bridge stations, and standing orders (doc 35 §5, D-35-9).
++helm  --  Ship helm, bridge stations, and standing orders (doc 35 §5, D-35-6, D-35-9).
 +helm[/status]                        Show bridge stations, standing orders, and flight state.
 +helm/station <seat>[=<crew>]         Assign an aboard crew member (or yourself) to a bridge station
                                       (command|helm|tactical|ew|engineering|flight_ops), or `off`.
 +helm/heading <yaw_deg>[,<pitch_deg>] Set nose attitude and write StandingOrder::Heading.
-+helm/thrust <permille>[,<x>,<y>,<z>] Set main-drive throttle (0..1000) and write StandingOrder::Thrust.
++helm/thrust <permille>[,<x>,<y>,<z>] [force]
+                                      Set main-drive throttle (0..1000) and write StandingOrder::Thrust.
 +helm/emcon <ghost|passive|standard|combat>
                                       Set emission posture and write StandingOrder::Posture.
 +helm/roll <roll_deg>                 Set roll angle in degrees (-180..180).
-+helm/guidance <attitude_deg>         Set guidance yaw attitude in degrees (0..359).";
++helm/guidance <attitude_deg|mode>    Set guidance yaw (0..359) or mode (prograde|retrograde|intercept|match).
++helm/decouple                        Decouple from corridor transit into 3D heliocentric free flight.
++helm/burn <ax>,<ay>,<az> [<s_ic>] [force]
+                                      Execute a timed reaction-mass burn (m/s²) against stow.propellant.
++helm/autopilot <port>                Plan and recouple onto a corridor passage from live (pos, vel).";
 
 /// The tactical command verb (`+tac`).
 pub const TAC_VERB: &str = "+tac";
@@ -617,6 +634,9 @@ pub fn helm_cmd(ctx: &mut Ctx<'_>) -> Result<(), CmdError> {
         Some("emcon") => helm_emcon(ctx),
         Some("roll") => helm_roll(ctx),
         Some("guidance") => helm_guidance(ctx),
+        Some("decouple") => helm_decouple(ctx),
+        Some("burn") => helm_burn(ctx),
+        Some("autopilot") => helm_autopilot(ctx),
         Some(other) => Err(CmdError::msg(format!("Unknown +helm switch: /{other}."))),
     }
 }
@@ -685,6 +705,56 @@ fn helm_status(ctx: &mut Ctx<'_>) -> Result<(), CmdError> {
                 ship.thrust_mps2[2],
                 ship.emcon.code_str(),
             ));
+        }
+        if let Some(ff) = book.free_flight_for_hull(hull).cloned() {
+            let burn_rem = ff
+                .burn_remaining_ic_s
+                .map_or_else(|| "none".to_owned(), |s| format!("{s}s"));
+            lines.push(format!(
+                "  Free flight ({} -> {}) — pos ({}, {}, {}) km, vel ({}, {}, {}) m/s, thrust ({}, {}, {}) mm/s² (burn remaining: {burn_rem}), guidance={}.",
+                ff.origin_place,
+                ff.target_place,
+                ff.pos_km[0],
+                ff.pos_km[1],
+                ff.pos_km[2],
+                ff.vel_mps[0],
+                ff.vel_mps[1],
+                ff.vel_mps[2],
+                ff.thrust_mmps2[0],
+                ff.thrust_mmps2[1],
+                ff.thrust_mmps2[2],
+                ff.guidance.code_str(),
+            ));
+            if let Ok((basis, live_kg)) = live_hull_basis_and_propellant_kg(ctx, hull) {
+                let non_prop_payload = basis
+                    .payload
+                    .saturating_sub(basis.tank.saturating_mul(1_000));
+                let dv_mps = crate::port::passage::remaining_dv_mps_for_propellant(
+                    &basis.spec.drive,
+                    basis.spec.dry_kg,
+                    non_prop_payload,
+                    live_kg,
+                )
+                .unwrap_or(0);
+                let reserve_clause = compute_hull_return_reserve(
+                    ctx.w,
+                    &basis,
+                    live_kg,
+                    ff.pos_km,
+                    ff.vel_mps,
+                    ctx.w.world_ic_now().at,
+                )
+                .map_or_else(String::new, |(res, port)| {
+                    format!(
+                        ", RETURN_RESERVE={} kg ({} t, {} m/s Δv to {port})",
+                        res.reserve_kg, res.plan.burn_t, res.reserve_dv_mps
+                    )
+                });
+                lines.push(format!(
+                    "  Propellant: {live_kg} kg ({:.1} t), remaining Δv={dv_mps} m/s{reserve_clause}.",
+                    (live_kg as f64) / 1_000.0
+                ));
+            }
         }
     }
 
@@ -956,13 +1026,18 @@ fn helm_thrust(ctx: &mut Ctx<'_>) -> Result<(), CmdError> {
     let raw = ctx.args.raw().trim();
     if raw.is_empty() {
         return Err(CmdError::msg(
-            "Usage: +helm/thrust <permille 0..1000>[,<dir_x>,<dir_y>,<dir_z>]",
+            "Usage: +helm/thrust <permille 0..1000>[,<dir_x>,<dir_y>,<dir_z>] [force]",
         ));
     }
-    let parts: Vec<&str> = raw
+    let all_parts: Vec<&str> = raw
         .split([',', ' '])
         .map(str::trim)
         .filter(|s| !s.is_empty())
+        .collect();
+    let force_into_reserve = all_parts.iter().any(|t| t.eq_ignore_ascii_case("force"));
+    let parts: Vec<&str> = all_parts
+        .into_iter()
+        .filter(|t| !t.eq_ignore_ascii_case("force"))
         .collect();
     let thrust_permille: u16 = parts
         .first()
@@ -1033,7 +1108,7 @@ fn helm_thrust(ctx: &mut Ctx<'_>) -> Result<(), CmdError> {
             BubbleInputCommand::CommandBurn {
                 ship_id,
                 thrust_mps2,
-                force_into_reserve: false,
+                force_into_reserve,
             },
         );
     }
@@ -1128,12 +1203,26 @@ fn helm_roll(ctx: &mut Ctx<'_>) -> Result<(), CmdError> {
 
 fn helm_guidance(ctx: &mut Ctx<'_>) -> Result<(), CmdError> {
     let (hull, _) = require_aboard_and_seat(ctx, Some("movement"))?;
-    let yaw_deg: i32 = ctx
-        .args
-        .raw()
-        .trim()
-        .parse()
-        .map_err(|_| CmdError::msg("Usage: +helm/guidance <attitude_deg 0..359>"))?;
+    let raw = ctx.args.raw().trim().to_owned();
+    if let Some(mode) = FreeFlightGuidanceMode::parse(&raw) {
+        if let Some(book) = ctx.w.module_state_mut::<SpaceBubbleBook>()
+            && let Some(ff) = book.free_flight_for_hull_mut(hull)
+        {
+            ff.guidance = mode;
+        }
+        ctx.out.sys_to_actor(
+            ctx.actor,
+            "tacsim.space",
+            format!("Helm guidance mode set: `{}`.", mode.code_str()),
+        );
+        push_space_panels(ctx, hull);
+        return Ok(());
+    }
+    let yaw_deg: i32 = raw.parse().map_err(|_| {
+        CmdError::msg(
+            "Usage: +helm/guidance <attitude_deg 0..359 | manual|prograde|retrograde|radial_in|radial_out|normal|anti_normal|intercept|match>",
+        )
+    })?;
     if !(0..360).contains(&yaw_deg) {
         return Err(CmdError::msg(
             "Guidance attitude must be in 0..359 degrees.",
@@ -1158,6 +1247,615 @@ fn helm_guidance(ctx: &mut Ctx<'_>) -> Result<(), CmdError> {
         format!("Helm guidance attitude set: {yaw_deg}°."),
     );
     push_space_panels(ctx, hull);
+    Ok(())
+}
+
+// ---------------------------------------------------------------------------
+// Free-flight decoupling, live propellant burns, and passage planner (`SF.R4`)
+// ---------------------------------------------------------------------------
+
+fn live_hull_basis_and_propellant_kg(
+    ctx: &Ctx<'_>,
+    hull: ObjId,
+) -> Result<(crate::port::voyage::Basis, u64), CmdError> {
+    let view = crate::port::ship::hull_view(ctx.w, hull)
+        .ok_or_else(|| CmdError::msg("Ship has no registered hull view."))?;
+    let souls = view
+        .airlock()
+        .map_or(1, |a| crate::port::voyage::occupants(ctx.w, a).max(1));
+    let basis = crate::port::voyage::basis(ctx, &view, souls).map_err(CmdError::msg)?;
+    let live_kg = ctx
+        .w
+        .module_state::<SpaceBubbleBook>()
+        .and_then(|b| b.propellant_ledger(hull))
+        .map_or_else(
+            || basis.tank.saturating_mul(1_000),
+            |l| l.effective_live_kg(basis.tank),
+        );
+    Ok((basis, live_kg))
+}
+
+fn open_port_places(
+    w: &World,
+) -> Vec<(
+    mush_core::CanonicalId,
+    String,
+    ObjId,
+    crate::port::def::PortDef,
+)> {
+    let mut out = Vec::new();
+    for (def, map) in crate::port::voyage::lane_ports(w) {
+        if def.site.is_some() {
+            continue;
+        }
+        let Some(map) = map else {
+            continue;
+        };
+        let Some(host_raw) = map.host else {
+            continue;
+        };
+        let host = ObjId(host_raw);
+        let Some(place_id) =
+            crate::port::voyage::place_id_of(w, host).or_else(|| match def.venue.as_str() {
+                "ceres_freeport" => mush_core::CanonicalId::new("ceres_orbit").ok(),
+                "stickney_yards" => mush_core::CanonicalId::new("stickney_berths").ok(),
+                _ => None,
+            })
+        else {
+            continue;
+        };
+        out.push((
+            place_id,
+            crate::port::coop::port_name(def),
+            host,
+            def.clone(),
+        ));
+    }
+    out
+}
+
+fn compute_hull_return_reserve(
+    w: &World,
+    basis: &crate::port::voyage::Basis,
+    live_kg: u64,
+    pos_km: [i64; 3],
+    vel_mps: [i64; 3],
+    at_ic: i64,
+) -> Option<(crate::port::passage::ReturnReserve, String)> {
+    let (sky, pack) = crate::port::voyage::lane_sky_of(w, basis.version).ok()?;
+    let open_ports = open_port_places(w);
+    let place_ids: Vec<mush_core::CanonicalId> = open_ports
+        .iter()
+        .map(|(pid, _, _, _)| pid.clone())
+        .collect();
+    if place_ids.is_empty() {
+        return None;
+    }
+    let non_prop_payload = basis
+        .payload
+        .saturating_sub(basis.tank.saturating_mul(1_000));
+    let effective_payload = non_prop_payload.saturating_add(live_kg);
+    let sky_pos = crate::sky::PosKm {
+        x: pos_km[0],
+        y: pos_km[1],
+        z: pos_km[2],
+    };
+    let sky_vel = [
+        i32::try_from(vel_mps[0].clamp(i64::from(i32::MIN), i64::from(i32::MAX))).unwrap_or(0),
+        i32::try_from(vel_mps[1].clamp(i64::from(i32::MIN), i64::from(i32::MAX))).unwrap_or(0),
+        i32::try_from(vel_mps[2].clamp(i64::from(i32::MIN), i64::from(i32::MAX))).unwrap_or(0),
+    ];
+    let reserve = crate::port::passage::return_reserve_from(
+        &sky,
+        pack,
+        sky_pos,
+        sky_vel,
+        &place_ids,
+        &basis.spec.drive,
+        basis.spec.dry_kg,
+        effective_payload,
+        basis.occupants,
+        at_ic,
+    )
+    .ok()?;
+    let label = open_ports
+        .iter()
+        .find(|(pid, _, _, _)| *pid == reserve.port)
+        .map_or_else(|| reserve.port.to_string(), |(_, name, _, _)| name.clone());
+    Some((reserve, label))
+}
+
+fn submit_space_burn_if_needed(
+    ctx: &mut Ctx<'_>,
+    hull: ObjId,
+    vault: u64,
+    burn_t: u64,
+    crew_days: u32,
+) -> Result<Option<u32>, CmdError> {
+    if burn_t == 0 && crew_days == 0 {
+        return Ok(None);
+    }
+    let burn_handle = ctx
+        .w
+        .module_state::<crate::port::families::PortHandles>()
+        .and_then(|h| h.burn.clone())
+        .ok_or_else(|| CmdError::msg("The port burn action is not wired."))?;
+    let seq = {
+        let book = ctx
+            .w
+            .module_state_mut::<SpaceBubbleBook>()
+            .ok_or_else(|| CmdError::msg("Space bubble state is not registered."))?;
+        let seq = book.alloc_space_burn_seq();
+        book.pending_space_burns
+            .push(crate::port::burn::PendingSpaceBurn {
+                seq,
+                hull,
+                actor: ctx.actor,
+                vault,
+                burn_t,
+                crew_days,
+            });
+        seq
+    };
+    let key = mush_core::IdempotencyKeyText::parse_canonical(format!(
+        "{}{}/space_burn/{seq}",
+        crate::port::burn::BURN_KEY_PREFIX,
+        hull.0
+    ))
+    .map_err(|_| CmdError::msg("Failed to form space burn idempotency key."))?;
+    ctx.submit_authoritative(
+        burn_handle,
+        mush_core::PerceivedRef::SelfActor,
+        Vec::new(),
+        serde_json::json!({ "seq": seq.to_string() }),
+        key,
+    );
+    Ok(Some(seq))
+}
+
+fn helm_decouple(ctx: &mut Ctx<'_>) -> Result<(), CmdError> {
+    let (hull, _) = require_aboard_and_seat(ctx, Some("movement"))?;
+    if ctx
+        .w
+        .module_state::<SpaceBubbleBook>()
+        .is_some_and(|b| b.active_for_hull(hull).is_some())
+    {
+        return Err(CmdError::msg(
+            "Cannot decouple from transit while in an active interdiction bubble.",
+        ));
+    }
+    if ctx
+        .w
+        .module_state::<SpaceBubbleBook>()
+        .is_some_and(|b| b.free_flight_for_hull(hull).is_some())
+    {
+        return Err(CmdError::msg("Ship is already decoupled in free flight."));
+    }
+
+    let journey = ctx
+        .w
+        .module_state::<JourneyBook>()
+        .and_then(|jb| jb.get(hull).cloned())
+        .filter(|j| j.state().is_under_way())
+        .ok_or_else(|| CmdError::msg("Ship is not under way on a transit corridor."))?;
+
+    let now = ctx.w.world_ic_now();
+    let (basis, _) = live_hull_basis_and_propellant_kg(ctx, hull)?;
+    let (sky, pack) = crate::port::voyage::lane_sky_of(ctx.w, basis.version)
+        .map_err(|e| CmdError::msg(e.to_string()))?;
+
+    let legs = journey.route().legs();
+    let cursor = usize::try_from(journey.cursor()).unwrap_or(0);
+    let leg_idx = cursor.min(legs.len().saturating_sub(1));
+    let from_obj = if leg_idx == 0 {
+        journey.route().endpoints().0
+    } else {
+        legs.get(leg_idx.saturating_sub(1))
+            .map_or(journey.route().endpoints().0, |l| l.to())
+    };
+    let to_obj = legs
+        .get(leg_idx)
+        .map_or(journey.route().endpoints().1, |l| l.to());
+
+    let origin_place = crate::port::voyage::place_id_of(ctx.w, from_obj)
+        .or_else(|| mush_core::CanonicalId::new("ceres_orbit").ok())
+        .ok_or_else(|| CmdError::msg("Could not resolve leg origin place."))?;
+    let target_place = crate::port::voyage::place_id_of(ctx.w, to_obj)
+        .or_else(|| mush_core::CanonicalId::new("stickney_berths").ok())
+        .ok_or_else(|| CmdError::msg("Could not resolve leg target place."))?;
+
+    let origin_body = crate::port::passage::body_or_place_of(&sky, pack, &origin_place)
+        .unwrap_or_else(|_| origin_place.clone());
+    let target_body = crate::port::passage::body_or_place_of(&sky, pack, &target_place)
+        .unwrap_or_else(|_| target_place.clone());
+    let p0 = sky
+        .position_km(&origin_body, now.at)
+        .unwrap_or(crate::sky::PosKm {
+            x: 414_000_000,
+            y: 0,
+            z: 0,
+        });
+    let p1 = sky
+        .position_km(&target_body, now.at)
+        .unwrap_or(crate::sky::PosKm {
+            x: 227_940_000,
+            y: 0,
+            z: 0,
+        });
+    let [vx0, vy0, vz0] = sky
+        .velocity_mps(&origin_body, now.at)
+        .unwrap_or([0, 17_900, 0]);
+
+    let leg_s = i64::from(
+        journey
+            .leg_secs(leg_idx)
+            .or_else(|| legs.get(leg_idx).map(|l| l.base_s()))
+            .unwrap_or(86_400)
+            .max(1),
+    );
+    let leg_start_ic = if leg_idx == 0 {
+        journey.departed().at
+    } else {
+        journey
+            .leg_due_at(leg_idx.saturating_sub(1))
+            .unwrap_or(journey.departed().at)
+    };
+    let elapsed_s = now.at.saturating_sub(leg_start_ic).max(0);
+    let frac = if elapsed_s == 0 {
+        0.15
+    } else {
+        ((elapsed_s as f64) / (leg_s as f64)).clamp(0.05, 0.95)
+    };
+    let pos_km = [
+        p0.x + (((p1.x - p0.x) as f64) * frac).round() as i64,
+        p0.y + (((p1.y - p0.y) as f64) * frac).round() as i64,
+        p0.z + (((p1.z - p0.z) as f64) * frac).round() as i64,
+    ];
+    let chord_vel_mps = [
+        ((i128::from(p1.x) - i128::from(p0.x)) * 1_000 / i128::from(leg_s)) as i64,
+        ((i128::from(p1.y) - i128::from(p0.y)) * 1_000 / i128::from(leg_s)) as i64,
+        ((i128::from(p1.z) - i128::from(p0.z)) * 1_000 / i128::from(leg_s)) as i64,
+    ];
+    let vel_mps = [
+        i64::from(vx0).saturating_add(chord_vel_mps[0] / 4),
+        i64::from(vy0).saturating_add(chord_vel_mps[1] / 4),
+        i64::from(vz0).saturating_add(chord_vel_mps[2] / 4),
+    ];
+
+    let domain = ctx
+        .w
+        .module_state::<SpatialState>()
+        .and_then(|s| {
+            s.domain_of_host(to_obj)
+                .or_else(|| s.domain_of_host(from_obj))
+        })
+        .map_or(DomainId(1), |d| d.id);
+    let _ = mush_sim::promote_carrier_journey(ctx, hull, domain, &now);
+
+    let record = SpaceFreeFlightRecord {
+        hull,
+        origin_place: origin_place.clone(),
+        target_place: target_place.clone(),
+        pos_km,
+        vel_mps,
+        thrust_mmps2: [0, 0, 0],
+        burn_remaining_ic_s: None,
+        guidance: FreeFlightGuidanceMode::Manual,
+        braking_flipped: false,
+        decoupled_at_ic_s: now.at,
+        last_ic_s: now.at,
+    };
+    if let Some(book) = ctx.w.module_state_mut::<SpaceBubbleBook>() {
+        book.free_flights.insert(hull, record);
+    }
+
+    ctx.out.sys_to_actor(
+        ctx.actor,
+        "tacsim.space",
+        format!(
+            "Decoupled from corridor leg `{origin_place} -> {target_place}` into 3D heliocentric free flight at pos=({}, {}, {}) km, vel=({}, {}, {}) m/s.",
+            pos_km[0], pos_km[1], pos_km[2], vel_mps[0], vel_mps[1], vel_mps[2]
+        ),
+    );
+    Ok(())
+}
+
+fn helm_burn(ctx: &mut Ctx<'_>) -> Result<(), CmdError> {
+    let (hull, _) = require_aboard_and_seat(ctx, Some("movement"))?;
+    let raw = ctx.args.raw().trim();
+    if raw.is_empty() {
+        return Err(CmdError::msg(
+            "Usage: +helm/burn <ax_mps2>,<ay_mps2>,<az_mps2> [<dur_ic_s>] [force]",
+        ));
+    }
+
+    let tokens: Vec<&str> = raw.split_whitespace().collect();
+    let force_into_reserve = tokens.iter().any(|t| t.eq_ignore_ascii_case("force"));
+    let non_force: Vec<&str> = tokens
+        .into_iter()
+        .filter(|t| !t.eq_ignore_ascii_case("force"))
+        .collect();
+    let vec_token = non_force.first().ok_or_else(|| {
+        CmdError::msg("Usage: +helm/burn <ax_mps2>,<ay_mps2>,<az_mps2> [<dur_ic_s>] [force]")
+    })?;
+    let axes: Vec<&str> = vec_token.split(',').map(str::trim).collect();
+    if axes.len() != 3 {
+        return Err(CmdError::msg(
+            "Burn acceleration must be three comma-separated integers: <ax>,<ay>,<az> (m/s²).",
+        ));
+    }
+    let ax_mps2: i64 = axes[0]
+        .parse()
+        .map_err(|_| CmdError::msg("Burn ax must be an integer (m/s²)."))?;
+    let ay_mps2: i64 = axes[1]
+        .parse()
+        .map_err(|_| CmdError::msg("Burn ay must be an integer (m/s²)."))?;
+    let az_mps2: i64 = axes[2]
+        .parse()
+        .map_err(|_| CmdError::msg("Burn az must be an integer (m/s²)."))?;
+    if ax_mps2.abs() > 100 || ay_mps2.abs() > 100 || az_mps2.abs() > 100 {
+        return Err(CmdError::msg(
+            "Burn acceleration components must be in -100..=100 m/s².",
+        ));
+    }
+
+    let dur_ic_s: u32 = match non_force.get(1) {
+        Some(s) => s
+            .parse::<u32>()
+            .map_err(|_| CmdError::msg("Burn duration must be a positive integer (IC seconds)."))?,
+        None => 60,
+    };
+    if dur_ic_s == 0 || dur_ic_s > 86_400 {
+        return Err(CmdError::msg(
+            "Burn duration must be in 1..=86400 IC seconds.",
+        ));
+    }
+
+    let ff = ctx
+        .w
+        .module_state::<SpaceBubbleBook>()
+        .and_then(|b| b.free_flight_for_hull(hull).cloned())
+        .ok_or_else(|| {
+            CmdError::msg("Ship is not in free flight; use +helm/decouple first (or +helm/thrust inside a bubble).")
+        })?;
+
+    let accel_sq =
+        i128::from(ax_mps2).pow(2) + i128::from(ay_mps2).pow(2) + i128::from(az_mps2).pow(2);
+    let accel_mag_mps2 = libm::sqrt(accel_sq as f64);
+    let dv_mps = (accel_mag_mps2 * (dur_ic_s as f64)).round() as u32;
+
+    let (basis, live_kg) = live_hull_basis_and_propellant_kg(ctx, hull)?;
+    let non_prop_payload = basis
+        .payload
+        .saturating_sub(basis.tank.saturating_mul(1_000));
+    let effective_payload = non_prop_payload.saturating_add(live_kg);
+    let burn_kg = crate::port::passage::burn_kg_for_dv(
+        &basis.spec.drive,
+        basis.spec.dry_kg,
+        effective_payload,
+        dv_mps,
+    )
+    .map_err(|e| CmdError::msg(e.to_string()))?;
+
+    if burn_kg > live_kg {
+        return Err(CmdError::msg(format!(
+            "Insufficient propellant: burn requires {burn_kg} kg ({dv_mps} m/s Δv), tank holds {live_kg} kg."
+        )));
+    }
+
+    let now_ic = ctx.w.world_ic_now().at;
+    if let Some((reserve, nearest_port)) =
+        compute_hull_return_reserve(ctx.w, &basis, live_kg, ff.pos_km, ff.vel_mps, now_ic)
+    {
+        let remaining_after_burn_kg = live_kg.saturating_sub(burn_kg);
+        if remaining_after_burn_kg < reserve.reserve_kg && !force_into_reserve {
+            return Err(CmdError::msg(format!(
+                "RETURN_RESERVE warning: burn requires {burn_kg} kg ({dv_mps} m/s Δv), leaving {remaining_after_burn_kg} kg below the {} kg ({} t, {} m/s Δv) return reserve to {nearest_port}. Pass `force` to override.",
+                reserve.reserve_kg, reserve.plan.burn_t, reserve.reserve_dv_mps
+            )));
+        }
+    }
+
+    let whole_tonnes = {
+        let book = ctx
+            .w
+            .module_state_mut::<SpaceBubbleBook>()
+            .ok_or_else(|| CmdError::msg("Space bubble state is not registered."))?;
+        let ledger = book.propellant_ledger_mut(hull);
+        let tonnes = ledger.record_burn_kg(basis.tank, burn_kg);
+        if let Some(rec) = book.free_flight_for_hull_mut(hull) {
+            rec.thrust_mmps2 = [ax_mps2 * 1_000, ay_mps2 * 1_000, az_mps2 * 1_000];
+            rec.burn_remaining_ic_s = Some(dur_ic_s);
+        }
+        tonnes
+    };
+
+    let _ = submit_space_burn_if_needed(ctx, hull, basis.vault.0, whole_tonnes, 0)?;
+
+    let (domain, generation, tick) = domain_stamp_for_hull(ctx.w, hull);
+    let throttle_scalar = ((accel_mag_mps2 * 200.0).round() as i32).clamp(0, MAX_ORDER_SCALAR);
+    let order = record_hull_standing_order(
+        ctx.w,
+        hull,
+        OrderChannel::Thrust,
+        OrderValue::Scalar {
+            value: throttle_scalar,
+        },
+        ctx.actor,
+        domain,
+        generation,
+        tick,
+    )?;
+
+    let after_kg = live_kg.saturating_sub(burn_kg);
+    ctx.out.sys_to_actor(
+        ctx.actor,
+        "tacsim.space",
+        format!(
+            "Timed burn engaged: ({ax_mps2}, {ay_mps2}, {az_mps2}) m/s² for {dur_ic_s}s (Δv={dv_mps} m/s, burned {burn_kg} kg, {after_kg} kg remaining; standing order `{}` rev {}).",
+            order.channel().token(),
+            order.revision()
+        ),
+    );
+    Ok(())
+}
+
+fn helm_autopilot(ctx: &mut Ctx<'_>) -> Result<(), CmdError> {
+    let (hull, _) = require_aboard_and_seat(ctx, Some("movement"))?;
+    let port_word = ctx.args.raw().trim().to_owned();
+    if port_word.is_empty() {
+        return Err(CmdError::msg("Usage: +helm/autopilot <port>"));
+    }
+    if ctx
+        .w
+        .module_state::<SpaceBubbleBook>()
+        .is_some_and(|b| b.active_for_hull(hull).is_some())
+    {
+        return Err(CmdError::msg(
+            "Cannot engage autopilot while in an active interdiction bubble.",
+        ));
+    }
+    let ff = ctx
+        .w
+        .module_state::<SpaceBubbleBook>()
+        .and_then(|b| b.free_flight_for_hull(hull).cloned())
+        .ok_or_else(|| {
+            CmdError::msg(
+                "Ship is not in free flight; use +helm/decouple first or +ship/undock from a berth.",
+            )
+        })?;
+
+    let open_ports = open_port_places(ctx.w);
+    let lower = port_word.to_ascii_lowercase();
+    let (target_place, port_label, dest_host, dest_def) = open_ports
+        .into_iter()
+        .find(|(place_id, label, _, def)| {
+            place_id.as_str().eq_ignore_ascii_case(&lower)
+                || def.venue.as_str().eq_ignore_ascii_case(&lower)
+                || label.to_ascii_lowercase().starts_with(&lower)
+        })
+        .ok_or_else(|| {
+            CmdError::msg(format!(
+                "Unknown or closed autopilot destination: `{port_word}`."
+            ))
+        })?;
+
+    let now = ctx.w.world_ic_now();
+    let (basis, live_kg) = live_hull_basis_and_propellant_kg(ctx, hull)?;
+    let (sky, pack) = crate::port::voyage::lane_sky_of(ctx.w, basis.version)
+        .map_err(|e| CmdError::msg(e.to_string()))?;
+
+    let non_prop_payload = basis
+        .payload
+        .saturating_sub(basis.tank.saturating_mul(1_000));
+    let effective_payload = non_prop_payload.saturating_add(live_kg);
+    let ff_pos = crate::sky::PosKm {
+        x: ff.pos_km[0],
+        y: ff.pos_km[1],
+        z: ff.pos_km[2],
+    };
+    let ff_vel = [
+        i32::try_from(ff.vel_mps[0].clamp(i64::from(i32::MIN), i64::from(i32::MAX))).unwrap_or(0),
+        i32::try_from(ff.vel_mps[1].clamp(i64::from(i32::MIN), i64::from(i32::MAX))).unwrap_or(0),
+        i32::try_from(ff.vel_mps[2].clamp(i64::from(i32::MIN), i64::from(i32::MAX))).unwrap_or(0),
+    ];
+    let plan = crate::port::passage::plan_passage_from(
+        &sky,
+        pack,
+        ff_pos,
+        ff_vel,
+        &target_place,
+        &basis.spec.drive,
+        basis.spec.dry_kg,
+        effective_payload,
+        basis.occupants,
+        now.at,
+    )
+    .map_err(|e| CmdError::msg(e.to_string()))?;
+
+    let live_tank_t = live_kg / 1_000;
+    if live_tank_t < plan.burn_t {
+        return Err(CmdError::msg(format!(
+            "Insufficient propellant for autopilot passage to {port_label}: requires {} t, tank holds {live_tank_t} t.",
+            plan.burn_t
+        )));
+    }
+    if basis.locker < u64::from(plan.crew_days) {
+        return Err(CmdError::msg(format!(
+            "Insufficient provisions for autopilot passage to {port_label}: requires {} crew-days, locker holds {}.",
+            plan.crew_days, basis.locker
+        )));
+    }
+
+    let dest_domain = ctx
+        .w
+        .module_state::<SpatialState>()
+        .and_then(|s| s.domain_of_host(dest_host))
+        .map(|d| d.id)
+        .ok_or_else(|| CmdError::msg("Destination port has no active domain."))?;
+    let pose_val = mush_sim::passive_rules_value(serde_json::json!({}))
+        .map_err(|e| CmdError::msg(e.to_string()))?;
+    let dest_parent = mush_sim::SpatialParent::Direct {
+        domain: dest_domain,
+        pose: mush_sim::Pose::passive(pose_val),
+    };
+
+    let origin_host = ctx
+        .w
+        .module_state::<JourneyBook>()
+        .and_then(|jb| jb.get(hull).map(|j| j.route().endpoints().0))
+        .unwrap_or(dest_host);
+    let leg_secs = plan.legs.first().map_or(3_600, |l| l.secs.max(1));
+    let leg_def =
+        mush_sim::LegDef::new(dest_host, leg_secs).map_err(|e| CmdError::msg(e.to_string()))?;
+    let drive_class =
+        mush_core::CanonicalId::new("fusion_torch").map_err(|e| CmdError::msg(e.to_string()))?;
+    let route_def = mush_sim::RouteDef::new(
+        plan.route.clone(),
+        (origin_host, dest_host),
+        vec![leg_def],
+        drive_class,
+        plan.burn_t.max(1),
+    )
+    .map_err(|e| CmdError::msg(e.to_string()))?;
+
+    mush_sim::recouple_carrier_journey(ctx, hull, route_def, dest_parent, vec![leg_secs], &now)
+        .map_err(|e| CmdError::msg(e.to_string()))?;
+
+    if let Some(book) = ctx.w.module_state_mut::<SpaceBubbleBook>() {
+        book.free_flights.remove(&hull);
+        book.propellant_ledger_mut(hull)
+            .record_passage_burn_t(basis.tank, plan.burn_t);
+    }
+    let _ = submit_space_burn_if_needed(ctx, hull, basis.vault.0, plan.burn_t, plan.crew_days)?;
+
+    if let Some(mut voyage) =
+        ctx.w
+            .module_state::<crate::store::TacsimStore>()
+            .and_then(|s| match s.voyage_state(hull) {
+                crate::port::voyage::VoyageState::Present(v) => Some(v.clone()),
+                crate::port::voyage::VoyageState::Absent
+                | crate::port::voyage::VoyageState::Unreadable => None,
+            })
+    {
+        if let Some(dep) = &mut voyage.departed {
+            dep.to_venue = dest_def.venue.clone();
+            dep.depart_ic = now.at;
+        }
+        crate::store::put_voyage(ctx, &voyage);
+    }
+
+    ctx.out.sys_to_actor(
+        ctx.actor,
+        "tacsim.space",
+        format!(
+            "Autopilot engaged for {port_label} (`{target_place}`): burn {} t reaction mass, {} crew-days, transit {}s ({} IC days).",
+            plan.burn_t,
+            plan.crew_days,
+            plan.total_s,
+            crate::port::voyage::ic_days(plan.total_s)
+        ),
+    );
     Ok(())
 }
 

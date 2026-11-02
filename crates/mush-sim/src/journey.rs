@@ -1493,6 +1493,57 @@ pub fn resume_carrier_journey(
     Some(domain)
 }
 
+/// **Doc 35 cut SF.R4 (`D-35-6`)** — recouple a free-flying carrier onto a newly
+/// planned `RouteDef` to `destination` at `now` (`+helm/autopilot <port>`), returning
+/// the carrier to `JourneyState::Cruising` with frozen `leg_s` durations.
+///
+/// # Errors
+///
+/// Returns [`CarrierJourneyError`] if the route, destination, or leg durations
+/// violate [`CarrierJourney`]'s constructor invariants.
+pub fn recouple_carrier_journey(
+    ctx: &mut Ctx<'_>,
+    root: ObjId,
+    route: RouteDef,
+    destination: SpatialParent,
+    leg_s: Vec<u32>,
+    now: &ClockStamp,
+) -> Result<JourneyId, CarrierJourneyError> {
+    let existing_id = ctx
+        .w
+        .module_state::<JourneyBook>()
+        .and_then(|book| book.get(root).map(CarrierJourney::id));
+    let id = match existing_id {
+        Some(id) => id,
+        None => ctx
+            .w
+            .module_state_mut::<JourneyBook>()
+            .and_then(JourneyBook::alloc_id)
+            .unwrap_or(JourneyId(1)),
+    };
+    let journey = CarrierJourney::new(
+        id,
+        root,
+        route,
+        destination,
+        now.clone(),
+        now.clone(),
+        0,
+        JourneyState::Cruising,
+        None,
+    )?
+    .with_leg_times(leg_s)?;
+    persist_journey(ctx.out, &journey);
+    if let Some(book) = ctx.w.module_state_mut::<JourneyBook>() {
+        let next_id = book.next_id;
+        let cursor = book.cursor;
+        book.journeys.insert(root, journey);
+        persist_journey_meta(ctx.out, next_id, cursor);
+    }
+    refresh_carrier_links(ctx, root);
+    Ok(id)
+}
+
 /// Latch a stopped journey's root into the recovery room (E7 cut 6 fold, D1),
 /// and re-derive the crew's links against the settled truth (C5).
 fn hold_stopped_root(ctx: &mut Ctx<'_>, root: ObjId) -> Step {

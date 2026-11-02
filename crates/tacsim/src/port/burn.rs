@@ -35,7 +35,7 @@ use mush_core::{
 use mush_economy::VaultId;
 use mush_inventory::InventoryFamilies;
 use mush_inventory::record::EndpointRef;
-use serde::Deserialize;
+use serde::{Deserialize, Serialize};
 use serde_json::{Map, Value, json};
 
 use crate::definitions::goods::Consumable;
@@ -226,6 +226,26 @@ struct FixedVoyage {
     pending: PendingVoyage,
 }
 
+/// **Doc 35 cut SF.R4 (`D-35-6`)** — a server-authenticated in-flight reaction-mass debit
+/// queued by `+helm/burn`, `+helm/thrust`, or `+helm/autopilot` against the hull's live
+/// `stow.propellant` vault.
+#[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(deny_unknown_fields)]
+pub struct PendingSpaceBurn {
+    /// Monotonic sequence number for this space burn (`seq` parameter).
+    pub seq: u32,
+    /// Carrier hull root [`ObjId`].
+    pub hull: ObjId,
+    /// Actor who commanded the burn.
+    pub actor: ObjId,
+    /// Hold vault id (`VaultId.0`) holding the hull's `propellant` and `provisions` pools.
+    pub vault: u64,
+    /// Whole tonnes of reaction mass to debit from `stow.propellant`.
+    pub burn_t: u64,
+    /// Crew-days of provisions to debit from `stow.provisions` (non-zero when re-entering an autopilot passage).
+    pub crew_days: u32,
+}
+
 fn invalid() -> mush_core::ActionError {
     port_error(
         ActionErrorCode::InvalidRequest,
@@ -271,6 +291,20 @@ pub(crate) fn burnable(w: &mush_core::World, actor: ObjId) -> Option<(ObjId, Pen
     Some((hull, pending))
 }
 
+/// **Doc 35 cut SF.R4 (`D-35-6`)** — whether `actor` has one or more server-authenticated
+/// in-flight space burns queued on the hull they are physically aboard.
+pub(crate) fn space_burnable(w: &mush_core::World, actor: ObjId) -> Option<Vec<PendingSpaceBurn>> {
+    let hull = crate::space::commands::hull_aboard_for_actor(w, actor)?;
+    let book = w.module_state::<crate::space::SpaceBubbleBook>()?;
+    let burns: Vec<PendingSpaceBurn> = book
+        .pending_space_burns
+        .iter()
+        .filter(|b| b.actor == actor && b.hull == hull)
+        .cloned()
+        .collect();
+    (!burns.is_empty()).then_some(burns)
+}
+
 /// A pool's quantity and availability through the delegated families (absent is
 /// 0); a refusal is the closure's `Unreadable`.
 fn pool_of(
@@ -285,6 +319,32 @@ fn pool_of(
         .map_err(|error| PlanError::Unreadable {
             what: format!("the hold's {good} ({error})"),
         })
+}
+
+fn rejected(message: &'static str) -> mush_core::ActionError {
+    port_error(ActionErrorCode::ProviderRejected, message)
+}
+
+fn debit_consumables(
+    inventory: &InventoryFamilies,
+    txn: &mut ActionTxn<'_>,
+    vault: VaultId,
+    propellant: &CanonicalId,
+    burn_t: u64,
+    provisions: &CanonicalId,
+    crew: u64,
+) -> Result<(), mush_core::ActionError> {
+    if burn_t > 0 {
+        inventory
+            .debit(txn, EndpointRef(vault), propellant, burn_t)
+            .map_err(|_| rejected("the tank could not be drawn down"))?;
+    }
+    if crew > 0 {
+        inventory
+            .debit(txn, EndpointRef(vault), provisions, crew)
+            .map_err(|_| rejected("the stores locker could not be drawn down"))?;
+    }
+    Ok(())
 }
 
 impl ActionProvider for BurnProvider {
@@ -310,12 +370,32 @@ impl ActionProvider for BurnProvider {
         {
             return Ok(None);
         }
-        let Some((hull, pending)) = burnable(&engine.world, query.actor()) else {
-            return Ok(None);
-        };
         let integrity = |message: &'static str| port_error(ActionErrorCode::Integrity, message);
-        let filed = serde_json::to_value(&pending)
-            .map_err(|_| integrity("the filed passage does not encode"))?;
+        let (choices, fixed_parameters) =
+            if let Some((hull, pending)) = burnable(&engine.world, query.actor()) {
+                let filed = serde_json::to_value(&pending)
+                    .map_err(|_| integrity("the filed passage does not encode"))?;
+                (
+                    vec![pending.seq.to_string()],
+                    json!({
+                        "now": engine.world.world_ic_now().at,
+                        "voyage": { "hull": hull.0, "pending": filed },
+                    }),
+                )
+            } else if let Some(burns) = space_burnable(&engine.world, query.actor()) {
+                let choices: Vec<String> = burns.iter().map(|b| b.seq.to_string()).collect();
+                let encoded = serde_json::to_value(&burns)
+                    .map_err(|_| integrity("the filed space burn does not encode"))?;
+                (
+                    choices,
+                    json!({
+                        "now": engine.world.world_ic_now().at,
+                        "space_burns": encoded,
+                    }),
+                )
+            } else {
+                return Ok(None);
+            };
         let definitions = engine
             .registry
             .definitions()
@@ -331,15 +411,10 @@ impl ActionProvider for BurnProvider {
             id: CanonicalId::new("seq")
                 .map_err(|_| integrity("the burn's parameter id is invalid"))?,
             required: true,
-            kind: ProjectedParameterKind::Choice {
-                choices: vec![pending.seq.to_string()],
-            },
+            kind: ProjectedParameterKind::Choice { choices },
         };
         Ok(Some(ProviderOfferDraft {
-            fixed_parameters: json!({
-                "now": engine.world.world_ic_now().at,
-                "voyage": { "hull": hull.0, "pending": filed },
-            }),
+            fixed_parameters,
             parameters: ProjectedParameterSchema::new(vec![seq])
                 .map_err(|_| integrity("the burn's parameter schema is invalid"))?,
             targets: ProjectedTargetSchema::None,
@@ -369,6 +444,76 @@ impl ActionProvider for BurnProvider {
             .and_then(Value::as_str)
             .and_then(crate::port::families::strict_decimal_u32)
             .ok_or_else(invalid)?;
+        if let Some(space_burns_val) = parameters.get("space_burns") {
+            let burns: Vec<PendingSpaceBurn> =
+                serde_json::from_value(space_burns_val.clone()).map_err(|_| invalid())?;
+            let Some(pending) = burns.into_iter().find(|b| b.seq == seq) else {
+                return Err(port_error(
+                    ActionErrorCode::InvalidRequest,
+                    "that space burn is not the one on file",
+                ));
+            };
+            let actor = invocation.actor();
+            if actor != pending.actor {
+                return Err(port_error(
+                    ActionErrorCode::Unauthorized,
+                    "that space burn is another pilot's",
+                ));
+            }
+            let (Some(propellant), Some(provisions)) = (
+                self.table.consumable(Consumable::Propellant),
+                self.table.consumable(Consumable::Provisions),
+            ) else {
+                return Err(port_error(
+                    ActionErrorCode::Integrity,
+                    "the goods table names no propellant or no provisions",
+                ));
+            };
+            let vault = VaultId(pending.vault);
+            let unreadable =
+                |_: PlanError| port_error(ActionErrorCode::Integrity, "the hold cannot be read");
+            let (_, tank_free) =
+                pool_of(&self.inventory, txn, vault, &propellant).map_err(unreadable)?;
+            let (_, locker_free) =
+                pool_of(&self.inventory, txn, vault, &provisions).map_err(unreadable)?;
+            if tank_free < pending.burn_t {
+                return Err(port_error(
+                    ActionErrorCode::ProviderRejected,
+                    "the tank holds less reaction mass than the burn needs",
+                ));
+            }
+            let crew = u64::from(pending.crew_days);
+            if locker_free < crew {
+                return Err(port_error(
+                    ActionErrorCode::ProviderRejected,
+                    "the stores locker holds fewer crew-days than the passage needs",
+                ));
+            }
+            debit_consumables(
+                &self.inventory,
+                txn,
+                vault,
+                &propellant,
+                pending.burn_t,
+                &provisions,
+                crew,
+            )?;
+            let outcome_fields = json!({
+                "actor": actor.0,
+                "burn_t": pending.burn_t,
+                "crew_days": pending.crew_days,
+                "hull": pending.hull.0,
+                "seq": seq,
+            });
+            let outcome = RulesValue::new(self.outcome.clone(), outcome_fields).map_err(|_| {
+                port_error(
+                    ActionErrorCode::BoundsExceeded,
+                    "the burn's outcome exceeds canonical bounds",
+                )
+            })?;
+            return Ok(AuthoritativeActionOutput::new(outcome)
+                .with_eligible_witnesses(vec![invocation.principal().clone()]));
+        }
         // 1. The server-authenticated filing (L4).
         let fixed: FixedVoyage = parameters
             .get("voyage")
@@ -527,18 +672,15 @@ impl ActionProvider for BurnProvider {
             occupants: pending.occupants,
         };
         // 7. Matter first, in this one bundle: the debits, then the ticket.
-        let rejected =
-            |message: &'static str| port_error(ActionErrorCode::ProviderRejected, message);
-        if plan.burn_t > 0 {
-            self.inventory
-                .debit(txn, EndpointRef(vault), &propellant, plan.burn_t)
-                .map_err(|_| rejected("the tank could not be drawn down"))?;
-        }
-        if crew > 0 {
-            self.inventory
-                .debit(txn, EndpointRef(vault), &provisions, crew)
-                .map_err(|_| rejected("the stores locker could not be drawn down"))?;
-        }
+        debit_consumables(
+            &self.inventory,
+            txn,
+            vault,
+            &propellant,
+            plan.burn_t,
+            &provisions,
+            crew,
+        )?;
         let ticket = Ticket {
             hull,
             seq,
