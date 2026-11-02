@@ -254,4 +254,8 @@ inside ±0.25 m lateral, ±1.5 deg attitude, and under 0.80 m/s closing speed;
 clamping onto an uncooperative derelict hull within 500 m requires manual
 alignment before a salvage tow line (`+helm/tow`) can be rigged.
 
-See also: `help orders`, `help ports`, `help trade`, `help coop`, `help mining`.
+To lift with a rig or a detachment unit still out on the ground, name it with
+`leave=` on a live `+ship/lift` or `+ship/undock` (`help field`).
+
+See also: `help orders`, `help ports`, `help trade`, `help coop`, `help mining`,
+`help field`.

@@ -39,7 +39,9 @@ It needs the escort clearance: a licence in force (its grace does not serve), no
 lease of yours forfeit, one armed hull at a time, and none written off in the
 last 28 IC days. You board it in the bay and fly it from its cab, which carries
 the helm, the sensors and the guns. A leased rig wrecked out of the bay is
-written off at the counter: the lease ends and Occator keeps the deposit.
+written off at the counter: the lease ends and Occator keeps the deposit. When a
+shot is fired or a hostile is marked on a site, the whole site becomes a combat
+field; `help field` covers the fight, getting home and leaving units behind.
 
 **2. Pick a body and a site.** `+chart` shows every site with the Registry's
 survey of its province (the same for everyone) and its tenure: commons, open,
@@ -405,4 +407,4 @@ sounding thumps through the ground from the southeast, over 1 km off."
 
 Occator's mill and its drones.
 
-See also: `help ships`, `help coop`, `help travel`, `help trade`.
+See also: `help ships`, `help coop`, `help travel`, `help trade`, `help field`.
