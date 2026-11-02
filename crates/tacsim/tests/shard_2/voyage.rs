@@ -5230,8 +5230,7 @@ fn sfr7_docking_session_pauses_ship_replays_valid_tape_into_berth_docked_rejects
         ),
     );
     assert!(
-        bounce_out.contains("[DOCKING] Hard collar bounce")
-            && bounce_out.contains("hull unpaused"),
+        bounce_out.contains("[DOCKING] Hard collar bounce") && bounce_out.contains("hull unpaused"),
         "expected hard collar bounce and unpause: {bounce_out}"
     );
     {
@@ -5276,7 +5275,8 @@ fn sfr7_docking_session_pauses_ship_replays_valid_tape_into_berth_docked_rejects
         ),
     );
     assert!(
-        clamp_derelict_out.contains("[DOCKING] Hard dock and magnetic collar seal confirmed on derelict"),
+        clamp_derelict_out
+            .contains("[DOCKING] Hard dock and magnetic collar seal confirmed on derelict"),
         "expected hard dock on derelict: {clamp_derelict_out}"
     );
 

@@ -3172,7 +3172,9 @@ fn helm_dock(ctx: &mut Ctx<'_>) -> Result<(), CmdError> {
                 .ok_or_else(|| CmdError::msg("No active docking session for this ship."))?;
             let auth = session.challenge.rcs_authority;
             let tumble = session.challenge.target_tumble_mdeg_s;
-            session.live_stepper.step_frame(control_input, &auth, tumble);
+            session
+                .live_stepper
+                .step_frame(control_input, &auth, tumble);
             let gates = super::docking::evaluate_docking_gates(&session.live_stepper.pose);
             format!(
                 "6-DOF RCS pulse applied (`{maybe_order_str}`): dx={} mm, dy={} mm, dz={} mm, vz={} mm/s ({}/5 gates green).",
@@ -3183,7 +3185,8 @@ fn helm_dock(ctx: &mut Ctx<'_>) -> Result<(), CmdError> {
                 gates.green_count()
             )
         };
-        ctx.out.sys_to_actor(ctx.actor, "tacsim.space", pose_summary);
+        ctx.out
+            .sys_to_actor(ctx.actor, "tacsim.space", pose_summary);
         push_space_panels(ctx, hull);
         return Ok(());
     }
@@ -3291,7 +3294,8 @@ fn helm_dock(ctx: &mut Ctx<'_>) -> Result<(), CmdError> {
                         ref port_id,
                         ref port_name,
                     } => {
-                        let (dest_parent, _) = resolve_port_destination_parent(ctx.w, hull, port_id)?;
+                        let (dest_parent, _) =
+                            resolve_port_destination_parent(ctx.w, hull, port_id)?;
                         if let Some(book) = ctx.w.module_state_mut::<SpaceBubbleBook>() {
                             book.free_flights.remove(&hull);
                             book.by_hull.remove(&hull);

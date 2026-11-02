@@ -510,11 +510,7 @@ impl DockingClientSession {
     /// Format the server verification command (`"+helm/dock tape <session_id> <rle_tape>"`).
     #[must_use]
     pub fn format_tape_command(&self) -> String {
-        format!(
-            "+helm/dock tape {} {}",
-            self.session_id,
-            self.encode_rle()
-        )
+        format!("+helm/dock tape {} {}", self.session_id, self.encode_rle())
     }
 }
 

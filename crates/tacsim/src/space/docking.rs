@@ -449,9 +449,9 @@ impl DockingInputTape {
     /// Return the total number of 60 Hz frames across all spans.
     #[must_use]
     pub fn total_frames(&self) -> usize {
-        self.spans
-            .iter()
-            .fold(0usize, |acc, span| acc.saturating_add(usize::from(span.frames)))
+        self.spans.iter().fold(0usize, |acc, span| {
+            acc.saturating_add(usize::from(span.frames))
+        })
     }
 
     /// Encode the tape as a compact ASCII RLE string (`"<hex_mask>*<frames>,..."`).
@@ -668,17 +668,11 @@ impl DockingStepperState {
 
         // Exact modulo-60 sub-frame integration (`35a` §5 #2):
         let tot_x = self.pose.vel_x_mmps.saturating_add(self.rem_x);
-        self.pose.lateral_x_mm = self
-            .pose
-            .lateral_x_mm
-            .saturating_add(tot_x / DOCKING_FPS);
+        self.pose.lateral_x_mm = self.pose.lateral_x_mm.saturating_add(tot_x / DOCKING_FPS);
         self.rem_x = tot_x % DOCKING_FPS;
 
         let tot_y = self.pose.vel_y_mmps.saturating_add(self.rem_y);
-        self.pose.lateral_y_mm = self
-            .pose
-            .lateral_y_mm
-            .saturating_add(tot_y / DOCKING_FPS);
+        self.pose.lateral_y_mm = self.pose.lateral_y_mm.saturating_add(tot_y / DOCKING_FPS);
         self.rem_y = tot_y % DOCKING_FPS;
 
         let tot_z = self.pose.closure_mmps.saturating_add(self.rem_z);
