@@ -1488,3 +1488,69 @@ CF.7 story, shards 2 and 3's 800, shards 4 to 6's 786), `mush-tactics` and `mush
 touched crates. As a probe, the two field gates fail with the tempo and idle rules switched off.
 The broad suites run once more on Linux CI on the draft PR (#296) and the gate sweep on
 conclav.dev.
+
+## As built (GC.13)
+
+GC.13 covers Q-36-45 (treatment). It touches no kernel hash. It changes content pins: the lane
+goes to v19 and the relay seed to v10, re-signed to require it, with no entry changes. Every
+number below is provisional under the owner's rule of 2026-10-24.
+
+**The rule.** An injured or incapacitated character who stands in a room of an IC port
+(`ic_return::port_of_room`) is under treatment there. They are fit again after a stay of IC
+time. There is no skill check and no cost. The host's field tick drives treatment the same way
+it drives extraction (`field/crew.rs`, `tick` → `treat`). The crew record carries the due
+instant (`Treatment { port, started_ic, due_ic, medical }`), so no new scheduler was added.
+A frozen world runs no tick, so a W-clock freeze pauses treatment as it pauses extraction.
+
+- **Leaving (the rule chosen):** if the tick finds the character outside every port room, the
+  treatment is dropped and the condition kept. That covers being aboard a hull, out on a site,
+  or in Limbo or the OOC area. The clock starts over, in full, at the next port they stand in.
+  A treatment begun at one port and found at another also starts over. This rule was chosen
+  because it is the simplest one that cannot be gamed by stepping in and out. It needs no
+  partial-progress state. Stepping out to Limbo or the OOC area also counts as leaving.
+- **What counts as treated:** the character's physical room, not the crew record's location.
+  A pilot who flies home and walks into the port is treated the same way as one extracted
+  there.
+- **Times** (`[tacsim.field]`): `treat_injured_s` = 86,400 (one IC day) and
+  `treat_incapacitated_s` = 259,200 (three IC days). Each may be set from 60 to 2,592,000.
+  `treat_medical_permille` = 500 (half), from 1 to 1,000, applies at a port with a medical room.
+  An incapacitated character goes straight to fit, not through injured.
+- **What the character hears:** a line when treatment begins (port, medical room, hours left),
+  "Your treatment is done: you are fit again." when it ends, and a line when they leave first.
+- **The crew status line:** `+sortie/condition` shows the condition and location, and the IC
+  hours left on an extraction or a treatment. It names the medical room, or says that treatment
+  begins at the next port. Note that `+sortie/crew` was already taken by the NPC hiring terms.
+
+**The medical rooms** (port content). This follows GC.7's workshop: each port entry has a
+`medical` block (`PortDef.medical`, `MedicalDef { room, operator, capabilities, beds }`).
+The `PortApplier`'s new part k (`port/medical.rs`) opens the room as an industry facility of
+its operator. The facility holds the `medical` capability (`port::def::MEDICAL_CAPABILITY`).
+Treatment reads it back with `port::medical::has_medical_room`: a facility holding the
+capability whose room is in that port. The block is refused on a site and on the workshop's
+own room.
+- **Ceres:** room C03, Arrivals (the customs counter under the Port Watch's crest), the Co-op's
+  room, two beds.
+- **Stickney:** room P03, Customs (the Republic's queue lanes), the Yard's room, four beds.
+
+These are existing rooms, chosen because arrivals and customs are where a port screens the
+people it takes in. Unlike the workshop, nothing is kept in the room, so moving it to a dedicated
+clinic room later is cheap. The beds are authored but are not a limit yet: GC.13 treats every
+character at the port at once.
+
+**Pins moved:** the lane digest and `LANE_VERSION` (19), the relay digest and its v10
+latches, and the strip helpers that rebuild older lanes (`support::sites::strip_workshops` and
+`relay_registry`'s `strip_urvara` also remove `medical`). The site refusal sentence now names
+the medical block.
+
+**The gates** (shard_1, `crew_treatment.rs`):
+- `gc13_an_extracted_incapacitated_pilot_is_fit_again_after_treatment`: B's biped has its head
+  destroyed, and B is incapacitated in the field's first frames. B asks for extraction and lands
+  at the port. Treatment begins at the medical room's time. Stepping out to a room off the map
+  drops it and keeps the condition. Back at the port the clock starts over. At the due instant B
+  is fit and told. `+sortie/condition` is checked at each stage.
+- `gc13_a_port_without_a_medical_room_treats_slower`: the same path, with every medical facility
+  closed before the extraction lands. The treatment takes the full time, twice the medical room's.
+- `field::crew::tests::a_medical_room_treats_faster` (in-source): the times at the defaults.
+
+**Defaults taken (provisional):** the three times; the leaving rule; the two rooms and their
+operators; beds that are not yet a limit.

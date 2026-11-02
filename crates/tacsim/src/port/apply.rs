@@ -184,6 +184,10 @@ pub(crate) fn room_references(def: &PortDef) -> Vec<&str> {
     if let Some(workshop) = &def.workshop {
         refs.push(workshop.room.as_str());
     }
+    // Doc 36 cut GC.13: the medical room.
+    if let Some(medical) = &def.medical {
+        refs.push(medical.room.as_str());
+    }
     refs
 }
 
@@ -385,6 +389,8 @@ impl PortApplier {
         let (yard_hulls, yard_rigs) = crate::port::yard::preflight(w, source, id, def, map)?;
         // Doc 36 cut GC.7 (part j): a facility already on the workshop room is this entry's.
         crate::port::workshop::preflight(w, id, def, map)?;
+        // Doc 36 cut GC.13 (part k): a facility already on the medical room is this entry's.
+        crate::port::medical::preflight(w, id, def, map)?;
         let hulls_to_title = hulls_to_title.saturating_add(yard_hulls);
         let rigs_to_title = rigs_to_title.saturating_add(yard_rigs);
         // The mint cap (D-18-14): the largest tranche still to be created. The
@@ -942,6 +948,9 @@ impl PortApplier {
         // (j) Doc 36 cut GC.7: the workshop room becomes its operator's `bay_refit` facility,
         // after the institutions, whose org owns it.
         crate::port::workshop::put(ctx, id, &def, &map)?;
+
+        // (k) Doc 36 cut GC.13: the medical room becomes its operator's `medical` facility.
+        crate::port::medical::put(ctx, id, &def, &map)?;
 
         // (f) The hulls (cut IC4; L8): after the institutions, because the
         // title goes to the programme org part c made in this same pass.
