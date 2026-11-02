@@ -32,6 +32,7 @@ use super::docking::{
     SalvageTowRecord,
 };
 use super::flight::SpaceFlightRecord;
+use super::hulls::SpaceHullCatalog;
 use super::mining::{AsteroidClusterField, OreHoldState};
 use super::picket::{HAULER_SHIP_ID, HaulerManifest, KirkwoodPicketEncounter, PicketPhase};
 use super::stations::{
@@ -54,7 +55,7 @@ pub const SPACE_COCKPIT_FEED: &str = "space.cockpit";
 pub const SPACE_DOCKING_FEED: &str = "space.docking";
 
 /// Switches for `+helm`.
-pub const HELM_SWITCHES: [&str; 14] = [
+pub const HELM_SWITCHES: [&str; 15] = [
     "enter",
     "burn",
     "roll",
@@ -69,6 +70,7 @@ pub const HELM_SWITCHES: [&str; 14] = [
     "coolant",
     "repair",
     "linkdead",
+    "refit",
 ];
 
 /// Switches for `+tac`.
@@ -95,7 +97,8 @@ pub const HELM_HELP: &str = "\
 +helm/station [<ship_id>] <seat>         bind a multicrew bridge seat (command, helm, tactical, ew, engineering, flight_ops).\n\
 +helm/coolant                            emergency open-cycle coolant blowdown (250 kg propellant -> -450 permille hull heat).\n\
 +helm/repair <radiator|drive|pdc|sensor> damage-control repair of a subsystem critical hit.\n\
-+helm/linkdead <on|off>                  toggle linkdead ballistic-drift safety posture (D-35-7) for your bridge seat.";
++helm/linkdead <on|off>                  toggle linkdead ballistic-drift safety posture (D-35-7) for your bridge seat.\n\
++helm/refit [<package_id_or_hull_id>]    inspect the Space Hull & Refit Bay catalog or apply a slot-stable refit package.";
 
 /// `+tac` help text.
 pub const TAC_HELP: &str = "\
@@ -1203,6 +1206,93 @@ fn helm_cmd(ctx: &mut Ctx<'_>) -> Result<(), CmdError> {
                 format!(
                     "Crew linkdead flag for actor #{} on '{ship_id}' set to {is_ld} (all_crew_linkdead={all_ld}; D-35-7 ballistic safety).",
                     actor.0
+                ),
+            );
+            push_actor_space_feeds(ctx, actor);
+            Ok(())
+        }
+        Some("refit") => {
+            let cat = SpaceHullCatalog::embedded();
+            if raw.is_empty() {
+                let hulls_list: Vec<String> = cat
+                    .hulls
+                    .iter()
+                    .map(|h| {
+                        format!(
+                            "{} ({}, family={}, model={}, dv={} m/s)",
+                            h.short_id, h.label, h.refit_family, h.pixel_model, h.delta_v_mps
+                        )
+                    })
+                    .collect();
+                let pkgs_list: Vec<String> = cat
+                    .refit_packages
+                    .iter()
+                    .map(|p| {
+                        format!(
+                            "{} [{}] -> {} ({} cr, {} h)",
+                            p.id, p.refit_family, p.target_hull_id, p.cost_cr, p.work_hours
+                        )
+                    })
+                    .collect();
+                ctx.out.info(
+                    actor,
+                    format!(
+                        "Space Hull Catalog:\n  {}\nRefit Bay Packages:\n  {}",
+                        hulls_list.join("\n  "),
+                        pkgs_list.join("\n  ")
+                    ),
+                );
+                return Ok(());
+            }
+            let book = ctx
+                .w
+                .module_state_mut::<SpaceBook>()
+                .ok_or_else(|| CmdError::msg(NOT_ENABLED))?;
+            let (bubble, resolved_id) = book
+                .bubble_for_ship_mut(&ship_id)
+                .ok_or_else(|| CmdError::msg("No active space bubble (+helm/enter <site>)."))?;
+            let ship = bubble
+                .ships
+                .get_mut(&resolved_id)
+                .ok_or_else(|| CmdError::msg("Ship not found in bubble."))?;
+            if let Some(hull_spec) = cat.find_hull(&raw) {
+                let updated = hull_spec.instantiate_ship(
+                    ship.id.clone(),
+                    ship.callsign.clone(),
+                    ship.party,
+                    ship.pos_m,
+                    ship.vel_mmps,
+                );
+                *ship = updated;
+                ctx.out.info(
+                    actor,
+                    format!(
+                        "Commissioned space hull '{}' ({}, refit_family={}, model={}, dv={} m/s).",
+                        hull_spec.id,
+                        hull_spec.label,
+                        hull_spec.refit_family,
+                        hull_spec.pixel_model,
+                        hull_spec.delta_v_mps
+                    ),
+                );
+                push_actor_space_feeds(ctx, actor);
+                return Ok(());
+            }
+            let receipt = cat
+                .apply_refit(ship, &raw)
+                .map_err(|e| CmdError::msg(format!("Refit refused: {e}")))?;
+            ctx.out.info(
+                actor,
+                format!(
+                    "Applied refit package '{}' (family={}): {} -> {}, cost={} cr, work={} h, new_dv={} m/s, propellant={} kg.",
+                    receipt.package_id,
+                    receipt.refit_family,
+                    receipt.previous_hull_class,
+                    receipt.new_hull_class,
+                    receipt.cost_cr,
+                    receipt.work_hours,
+                    receipt.new_delta_v_mps,
+                    receipt.new_propellant_kg
                 ),
             );
             push_actor_space_feeds(ctx, actor);

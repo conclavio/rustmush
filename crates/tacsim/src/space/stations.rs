@@ -117,7 +117,7 @@ impl BridgeSeat {
             return true;
         }
         match (verb, sw) {
-            ("+helm", "coolant" | "repair" | "droptanks") => {
+            ("+helm", "coolant" | "repair" | "droptanks" | "refit") => {
                 matches!(self, Self::Engineering | Self::Helm)
             }
             ("+helm", "dock" | "tow") => matches!(self, Self::FlightOps | Self::Helm),
