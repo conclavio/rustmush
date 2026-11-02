@@ -621,3 +621,46 @@ export function spacePictureKey(key: string, mode: SpaceCameraMode): SpacePictur
       return null;
   }
 }
+
+/** Per-frame 60 Hz client-side 6-DOF docking input (`SF.R7`, `D-35-14`). */
+export interface DockingFrameInput {
+  transX: -1 | 0 | 1;
+  transY: -1 | 0 | 1;
+  closurePulse: -1 | 0 | 1;
+  pitchTrim: -1 | 0 | 1;
+  yawTrim: -1 | 0 | 1;
+  rollTrim: -1 | 0 | 1;
+  toggleDampeners?: boolean;
+  abort?: boolean;
+}
+
+/** Encode a single 60 Hz `DockingFrameInput` into its 16-bit RLE bitmask (`D-35-14`). */
+export function encodeDockingInputMask(input: DockingFrameInput): number {
+  const axis = (v: -1 | 0 | 1): number => (v > 0 ? 1 : v < 0 ? 2 : 0);
+  let mask =
+    axis(input.transX) |
+    (axis(input.transY) << 2) |
+    (axis(input.closurePulse) << 4) |
+    (axis(input.pitchTrim) << 6) |
+    (axis(input.yawTrim) << 8) |
+    (axis(input.rollTrim) << 10);
+  if (input.toggleDampeners) mask |= 1 << 12;
+  if (input.abort) mask |= 1 << 13;
+  return mask;
+}
+
+/** Encode a sequence of 60 Hz `DockingFrameInput`s into the bounded RLE wire string (`<= 3,600` frames). */
+export function encodeDockingTape(frames: readonly DockingFrameInput[]): string {
+  const capped = frames.slice(0, 3_600);
+  const spans: Array<{ mask: number; count: number }> = [];
+  for (const frame of capped) {
+    const mask = encodeDockingInputMask(frame);
+    const last = spans[spans.length - 1];
+    if (last && last.mask === mask && last.count < 65_535) {
+      last.count += 1;
+    } else {
+      spans.push({ mask, count: 1 });
+    }
+  }
+  return spans.map((s) => `${s.mask.toString(16).padStart(4, "0")}*${s.count}`).join(",");
+}
