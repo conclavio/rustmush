@@ -147,6 +147,10 @@ pub struct FieldBook {
     /// **Arrivals the kernel refused to join** (doc 36 cut GC.1b), by site: not asked again while
     /// that field runs.
     pub(crate) join_refused: BTreeMap<CanonicalId, BTreeSet<ObjId>>,
+    /// **The snapshot each site's raider lift check last ran at** (doc 36 cut GC.0), in arena
+    /// milliseconds: the check decodes the whole snapshot, so it is paced
+    /// ([`raiders::LIFT_CHECK_MS`]).
+    pub(crate) lift_checked: BTreeMap<CanonicalId, i64>,
 }
 
 impl FieldBook {
@@ -189,9 +193,10 @@ impl FieldBook {
         self.snapshots.get(site)
     }
 
-    /// Forget `site`'s snapshot (its field is over).
+    /// Forget `site`'s snapshot and its lift check's pace (its field is over).
     pub(crate) fn forget_snapshot(&mut self, site: &CanonicalId) {
         self.snapshots.remove(site);
+        self.lift_checked.remove(site);
     }
 
     /// Whether a resume is held for `site` (or the boot is still to decide it).
@@ -352,7 +357,7 @@ pub(crate) fn on_snapshot(ctx: &mut Ctx<'_>, task: MatchId, snapshot: Arc<crate:
         record::write_live(ctx, &live);
     }
     // Doc 36 cut GC.0: a raider's carrier whose hulls are all aboard or down lifts.
-    raiders::lift_check(ctx, &site);
+    raiders::lift_check_paced(ctx, &site, at_ms);
 }
 
 /// **One pulse's frames of a field** (the bridge's branch; Q-CF-14): a fire order whose
