@@ -862,6 +862,12 @@ Q-36-50, Q-36-51.
   one test for the licensed-mind case.
 - **Depends on:** GC.0, for the harness hook (Q-36-49) its gate flies through. No files
   overlap (Q-36-57).
+- **Split (owner ruling, 2026-11-01): GC.1 and GC.1b.** The kernel has no way to add a unit to
+  a running arena, and `arena/` is GC.2's while GC.2 runs. GC.1 ships the licensed-mind half
+  and arrival's host side, with `arena/` untouched. **GC.1b** comes after GC.2 merges and is
+  stacked on it: `ArenaMsg::Join` and `Arena::join`, factored out of `Arena::new_with_minds`,
+  and the check-out of an owed arrival. It carries the gate above, plus a test pinning that the
+  OOC practice hashes do not move (no OOC match ever joins). §9 has what GC.1 built.
 
 **GC.2 — The kernel batch (the one rebless).** Q-36-5, Q-36-6 (the tempo half), Q-36-7,
 Q-36-38 (combat's half).
@@ -897,7 +903,8 @@ Q-36-38 (combat's half).
 - **Gates:** `gc3_an_irrecoverable_hull_leaves_remains_and_closes_destroyed` and
   `gc3_a_carrier_with_its_drive_destroyed_cannot_lift`.
 - **Depends on:** GC.2, because the component outcomes feed the table, and GC.1, because both
-  touch `field/carrier.rs` and the voyage gates.
+  touch `field/carrier.rs` and the voyage gates. Since the split (§9), it waits on GC.1b, which
+  brings the arrival itself, not on GC.1.
 
 ### Lane 2: H2 recovery
 
@@ -1052,7 +1059,8 @@ Q-36-39, Q-36-40, Q-36-53 (the acts).
   content.
 - **Gate:** `gc11_a_scheduled_raid_arrives_declares_and_leaves_with_its_losses`. The bot's
   captain story runs once with a director raid instead of a staff one.
-- **Depends on:** GC.0 and GC.1.
+- **Depends on:** GC.0 and GC.1. Since the split (§9), it waits on GC.1b: a raider arrives by
+  the kernel's join.
 
 **GC.12 — The cap, measured.** Q-36-9.
 - A scale harness fields 48 and then 100 IC units from mixed parties on conclav.dev, and reports
@@ -1073,8 +1081,8 @@ Q-36-39, Q-36-40, Q-36-53 (the acts).
 
 | Starts at once | Then | Then | Then |
 |---|---|---|---|
-| GC.0 housekeeping, barge lift | GC.1 arrival | GC.11 raid director | |
-| GC.2 kernel batch (one rebless) | GC.3 remains, carrier loss (after GC.1 too) | GC.4 tow (story a) → GC.5 later visit → GC.6 claim (story b) | GC.10 relations, beside GC.4 |
+| GC.0 housekeeping, barge lift | GC.1 licensed minds, arrival's host side → GC.1b the join (after GC.2) | GC.11 raid director | |
+| GC.2 kernel batch (one rebless) | GC.3 remains, carrier loss (after GC.1b too) | GC.4 tow (story a) → GC.5 later visit → GC.6 claim (story b) | GC.10 relations, beside GC.4 |
 | GC.7 munitions, tariff | GC.8 repair, `+bay` (story c), after GC.2 | GC.9 lease charge | |
 | GC.12 the cap; GC.13 treatment | | | |
 
@@ -1280,3 +1288,74 @@ plumbing re-post at 16 fires, and the mill batch after an apply that also adds t
 rows at 24 fires. The cost-lane census now credits a fire's `economy:meta` op to the economy
 sweep exactly when the sweep's stamp moved in that fire. Any other write the restock adds
 still fails the check. No version moved beyond goods v4, lane v18 and relay v9.
+
+## 9. GC.1 as built (licensed minds left out; arrival's host side)
+
+Built on GC.0's branch (`claude/gc0-housekeeping-barge-exit`, PR #295), beside GC.2 and GC.7,
+and rebased onto `main` once #295 and GC.7's #294 merged. It covers Q-36-44 and the host half of Q-36-4. No kernel file changed, and no hash moved.
+
+**The split** (owner ruling, 2026-11-01, "Yes, GC.1b"). Q-36-4's ruling stands: an arriving
+carrier joins the field at the next pulse, at its pad, as a unit of its own party. Building it
+found that the kernel cannot add a unit to a running arena. `Arena::new_with_minds` is the only
+constructor of a unit row (its seal and cards, sensors, squads, epochs, its party's book), and
+no `ArenaMsg` admits one. That code is `arena/`, which GC.2 holds while it runs. So the cut is
+split:
+
+- **GC.1** (this section): the licensed-mind half, and arrival's host side, which spots an
+  arrival and holds it owed.
+- **GC.1b**, after GC.2 merges and stacked on it: `ArenaMsg::Join` with `Arena::join`, factored
+  out of `new_with_minds`, and the host's check-out of each owed arrival at its pad pose
+  (`carrier::pad_poses`), sent as a Join at the next pulse. The arrival also becomes a row in
+  every party's presence picture. Its gate is
+  `gc1_a_carrier_arriving_mid_field_is_admitted_at_its_pad_and_cannot_launch`. A second test
+  pins that the OOC practice hashes do not move, since no OOC match ever joins. GC.3 and GC.11
+  wait on GC.1b, not on GC.1 (§7).
+
+**A licensed-mind hull is left out** (Q-36-44; `field/admit.rs`).
+- *What counts:* a hull held by dedicated IC custody (`UnitStore::is_ic_custodied`), which is
+  a licensed mind's hold until doc 23 S.4b. `custody::check_out` refuses it, and admission was
+  all or nothing (Q-CF-21), so one such hull closed every field on its site.
+- *What happens:* admission now sets such a hull apart before the cap, the parties and the
+  check-out. Every other unit on the ground is admitted as before. The hull is neither counted
+  nor lettered nor checked out.
+- *How it becomes a wall:* its cell is laid on the field's ground as a one-cell object
+  (`with_held_walls`), which `field::ground` reads as a wall, so nobody drives through it or
+  sees past it. Only the copy of the record the ground is built from gains the object. The
+  stored site record is never written, and the hull's custody and claim are untouched.
+- *What the site hears:* "The {name} stands out of field {n}: its licensed mind cannot be taken
+  into a field yet, so it stands as ground nobody crosses."
+- *Why it is no arrival:* the same rule keeps it out of the owed arrivals below. A field never
+  takes it in.
+
+**Arrival's host side** (Q-36-4; `field/carrier.rs`, one hook in `field/admit.rs`'s tick, one
+field on `FieldBook` in `field/mod.rs`).
+- *What is spotted:* each second, for a site with a field running, the tick takes the carriers
+  on the site's ground that are not in the field, not deployed and not held out
+  (`carrier::arrivals`).
+- *What is held:* it keeps them in the host's RAM book as owed (`FieldBook::arrivals`, read
+  through `carrier::owed_arrivals`). Each newly seen one is logged. The set empties once the
+  field is gone.
+- *Not checked out here:* a check-out with no Join would leave the hull marked deployed with
+  nothing to check it in, since the close checks in only the field's own rows. The check-out
+  moves to GC.1b, beside the Join.
+- *Already refused:* a launch from the arrived carrier while the site is promoted, by the
+  existing Q-CF-17 refusal (`FIELD_LAUNCH` and the surface act provider's promoted-site gate).
+  No new code was needed.
+- *Changed in no way:* nothing in `port/voyage.rs` or `port/executor.rs`. The voyage settles
+  the hull exactly as before, and the field side notices it.
+
+**The gates.**
+- `field::admit::tests::gc1_a_licensed_mind_hull_is_left_out_of_the_field_as_a_wall`
+  (in-source): the held hull's cell becomes a one-cell object on the copy, numbered after the
+  record's own, and the kept record gains nothing. *Not covered:* an admission run with a held
+  hull on the ground. No tacsim rig turns on the four-owner IC custody, which is the only
+  source of a real `open_ic_mind` row, so the partition rests on this test and on review.
+- `field_carrier::gc1_a_carrier_arriving_mid_field_is_owed_its_admission_and_cannot_launch`
+  (shard_1): a second Dray-P under way when CF.3's field opens on Ahuna Flank settles mid-field.
+  The host owes it its admission, it is not in the field, the field runs on, and its rig's
+  launch is refused. The test helper `driving::en_route` is `on_pad_as` stopped at the launch.
+
+**Defaults taken (provisional):**
+
+- the held-out hull's one-cell footprint, and the site's line for it;
+- the owed arrivals as RAM only, rebuilt by the tick after a restart.

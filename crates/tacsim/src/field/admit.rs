@@ -111,6 +111,8 @@ pub(crate) fn tick(ctx: &mut Ctx<'_>, _tag: &str, _scene: Option<mush_core::Scen
         if !open.by.hosted() {
             continue;
         }
+        // Doc 36 cut GC.1 (Q-36-4): a carrier settled mid-field is owed its admission.
+        super::carrier::note_arrivals(ctx, &site);
         let busy = ctx.w.module_state::<FieldBook>().is_none_or(|book| {
             book.hosted(&site).is_some() || book.pending(&site) || book.closing.contains(&site)
         });
@@ -319,7 +321,30 @@ fn admit(ctx: &mut Ctx<'_>, site: &CanonicalId, record: &SiteRecord) -> Result<(
     // (3) Everyone on the ground, and the cap (Q-CF-21): the casualties and wrecks an earlier
     // field left are admitted but never counted (Q-CF-26, Q-CF-45; doc 32 §15, the review's
     // CF-3a). A carrier counts: no ruling exempts it.
-    let units = parties::on_ground(ctx.w, domain);
+    // Doc 36 cut GC.1 (Q-36-44): a hull held out of the field is a wall, never an entrant.
+    let (held, units): (Vec<ObjId>, Vec<ObjId>) = parties::on_ground(ctx.w, domain)
+        .into_iter()
+        .partition(|unit| held_out(ctx.w, *unit));
+    let walled;
+    let record = if held.is_empty() {
+        record
+    } else {
+        let poses: Vec<(ObjId, crate::surface::site_record::SitePose)> = held
+            .iter()
+            .filter_map(|hull| {
+                mush_sim::pose_of(ctx.w, *hull).map(|(_, at)| {
+                    let pose = crate::surface::site_record::SitePose {
+                        x_cm: at.x_cm,
+                        y_cm: at.y_cm,
+                        heading_mdeg: at.heading_mdeg,
+                    };
+                    (*hull, pose)
+                })
+            })
+            .collect();
+        walled = with_held_walls(record, &poses);
+        &walled
+    };
     let cap = super::config(ctx.w).max_units;
     let counted = parties::counted(&units, record);
     if u32::try_from(counted).unwrap_or(u32::MAX) > cap {
@@ -445,6 +470,12 @@ fn admit(ctx: &mut Ctx<'_>, site: &CanonicalId, record: &SiteRecord) -> Result<(
         .replace("{n}", &field.ordinal.to_string())
         .replace("{site}", &site_name(ctx, site));
     super::tell_site(ctx, site, &line);
+    for hull in &held {
+        let line = HELD_OUT
+            .replace("{name}", &crate::port::coop::name_of(ctx.w, *hull))
+            .replace("{n}", &field.ordinal.to_string());
+        super::tell_site(ctx, site, &line);
+    }
     tracing::info!(
         site = %site,
         ordinal = field.ordinal,
@@ -453,6 +484,52 @@ fn admit(ctx: &mut Ctx<'_>, site: &CanonicalId, record: &SiteRecord) -> Result<(
         "tacsim: an IC field opened"
     );
     Ok(())
+}
+
+/// **A hull left out of a field** (doc 36 cut GC.1; Q-36-44), told to everyone on the site:
+/// `{name}`, `{n}` the ordinal.
+pub const HELD_OUT: &str = "The {name} stands out of field {n}: its licensed mind cannot be      taken into a field yet, so it stands as ground nobody crosses.";
+
+/// **Whether `unit` is left out of a field** (doc 36 cut GC.1; Q-36-44): a hull held by dedicated
+/// IC custody, which is a licensed mind's hold until doc 23 S.4b. `custody::check_out` refuses
+/// it, and admission is all or nothing (Q-CF-21), so one such hull used to close every field on
+/// its site. It is left on the ground instead, its claim untouched.
+pub(super) fn held_out(w: &mush_core::World, unit: ObjId) -> bool {
+    w.module_state::<mush_tactics::module::UnitStore>()
+        .is_some_and(|store| store.is_ic_custodied(unit))
+}
+
+/// **`record` with each `held` hull laid on it as a one-cell object** (doc 36 cut GC.1;
+/// Q-36-44), for the field's ground only: its cell reads as a wall ([`super::ground`]), so the
+/// hull is an inert obstacle nobody drives through or sees past. The record itself is never
+/// written: the hull is no ground object, and its custody and claim stay as they were.
+fn with_held_walls(
+    record: &SiteRecord,
+    held: &[(ObjId, crate::surface::site_record::SitePose)],
+) -> SiteRecord {
+    use crate::surface::site_record::{GroundKind, GroundObject};
+    let mut walled = record.clone();
+    let mut id = record
+        .objects
+        .iter()
+        .map(|object| object.id)
+        .max()
+        .unwrap_or(0);
+    for (hull, pose) in held {
+        id = id.saturating_add(1);
+        walled.objects.push(GroundObject {
+            id,
+            pose: *pose,
+            footprint: 1,
+            kind: GroundKind::Remains {
+                of: Some(*hull),
+                mass_kg: 0,
+                merged: 1,
+            },
+            left_ic: 0,
+        });
+    }
+    walled
 }
 
 /// **The check-out message** (Q-CF-3, Q-CF-41): each unit at its placement (a carrier at its
@@ -599,4 +676,34 @@ fn custody(
             weapons_hold: true,
         },
     })
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use crate::surface::site_record::{GroundKind, SitePose};
+
+    /// **Doc 36 cut GC.1's licensed-mind gate** (Q-36-44): a held hull stands in the field's
+    /// ground as a one-cell wall at its own cell, beside the record's own objects, and the record
+    /// the host keeps is untouched, so the hull's claim and custody are never written.
+    #[test]
+    fn gc1_a_licensed_mind_hull_is_left_out_of_the_field_as_a_wall() {
+        let site = CanonicalId::new("ahuna_flank").expect("canonical");
+        let record = SiteRecord::new(site);
+        let hull = ObjId(41);
+        let at = SitePose::at_cell(120, 128);
+        let walled = with_held_walls(&record, &[(hull, at)]);
+        assert!(record.objects.is_empty(), "the kept record gains nothing");
+        assert_eq!(walled.objects.len(), 1);
+        let wall = &walled.objects[0];
+        assert_eq!(wall.pose.cell(), (120, 128));
+        assert_eq!(wall.footprint, 1, "one cell: the hull's own");
+        assert!(matches!(wall.kind, GroundKind::Remains { of: Some(of), .. } if of == hull));
+        // A second held hull takes the next number, after the record's own objects.
+        let again = with_held_walls(&walled, &[(ObjId(42), SitePose::at_cell(10, 10))]);
+        assert_eq!(
+            again.objects.iter().map(|o| o.id).collect::<Vec<_>>(),
+            vec![1, 2]
+        );
+    }
 }

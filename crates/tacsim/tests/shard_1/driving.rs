@@ -861,6 +861,33 @@ pub(crate) fn on_pad_with_at(
     (pilot, row, tvs)
 }
 
+/// **A Dray-P under way to Ahuna Flank's pad** (doc 36 cut GC.1): [`on_pad_as`] stopped at the
+/// launch, so a test can open a field before it settles; the pilot, the hull's row, its one
+/// leased rig and the ticket, whose plan's `depart_ic + total_s` is the landing.
+pub(crate) fn en_route(
+    rig: &mut Rig,
+    who: &str,
+    seed: i64,
+    name: &str,
+) -> (ObjId, HullRow, ObjId, Ticket) {
+    let (pilot, row) = prospector(rig, who, seed, name);
+    lease_one(rig, pilot);
+    load(
+        rig,
+        &row,
+        20,
+        20,
+        9_100 + u64::try_from(seed).unwrap_or(0) * 10,
+    );
+    board(rig, pilot);
+    let hull = ObjId(row.hull);
+    open_site(rig, AHUNA);
+    let t = file_and_launch(rig, pilot, hull, "+ship/undock ahuna");
+    let tvs = rigs_of(&rig.tw, pilot);
+    assert_eq!(tvs.len(), 1);
+    (pilot, row, tvs[0], t)
+}
+
 /// **Open a site by its port entry** (doc 20 cut SM.6, D2; `support::sites::open_site`), keeping
 /// the landed bundles' typed post-images for a reboot; the port fires it took. A no-op once it is
 /// open.
