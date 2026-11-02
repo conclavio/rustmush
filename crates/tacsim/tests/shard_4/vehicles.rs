@@ -29,7 +29,7 @@ use mush_core::{
     OfferSubmission, RequestUid, ScopedIdempotencyKey,
 };
 use mush_economy::{
-    ContractId, EconomyConfig, EconomyStore, HoldId, HoldPurpose, HoldStatus, VaultId,
+    Amount, ContractId, EconomyConfig, EconomyStore, HoldId, HoldPurpose, HoldStatus, VaultId,
 };
 use mush_inventory::{EndpointRef, Grade, InventoryHandles, LotId};
 use mush_org::{OrgId, PrincipalId, SystemPrincipalId};
@@ -49,12 +49,12 @@ use tacsim::port::refit::{
     REFIT_UNDER_WAY, REFIT_USAGE, REFIT_WHERE, REFITTED_PROSPECTOR, REFITTED_STANDARD,
 };
 use tacsim::port::tv::{
-    BAY_FULL, HOPPER_FULL, LEASE_FAILED, LEASE_FUNDS, LEASE_NOT_HERE, LEASE_PREVIEW,
-    LEASE_UNDER_WAY, LEASE_WHERE, LEASED, NO_BAY, NO_RIG, NO_RIG_FREE, REPOSSESSED,
-    REPOSSESSED_FORFEIT, RETURN_PREVIEW, RETURN_PREVIEW_FORFEIT, RETURNED, RETURNED_FORFEIT,
-    RIG_EMPTY, RIG_FORFEIT, RIG_LEASE_ENDED, RIG_LINE, RIG_OUT, RIG_PAST_TERM, SLOT_TAKEN,
-    TERM_FORFEIT, TERM_RENEWED, TV_DARK, TV_USAGE, TvLease, TvLeaseState, TvLeaseStatus, WHERE_BAY,
-    WHICH_RIG,
+    BAY_FULL, CHARGE_PART, CHARGE_WHOLE, HOPPER_FULL, LEASE_FAILED, LEASE_FUNDS, LEASE_NOT_HERE,
+    LEASE_PREVIEW, LEASE_UNDER_WAY, LEASE_WHERE, LEASED, NO_BAY, NO_RIG, NO_RIG_FREE, REPOSSESSED,
+    REPOSSESSED_FORFEIT, RETURN_PREVIEW, RETURN_PREVIEW_CHARGED, RETURN_PREVIEW_FORFEIT, RETURNED,
+    RETURNED_CHARGED, RETURNED_FORFEIT, RIG_EMPTY, RIG_FORFEIT, RIG_LEASE_ENDED, RIG_LINE, RIG_OUT,
+    RIG_PAST_TERM, SLOT_TAKEN, TERM_FORFEIT, TERM_RENEWED, TV_DARK, TV_USAGE, TvLease,
+    TvLeaseState, TvLeaseStatus, WHERE_BAY, WHICH_RIG,
 };
 use tacsim::port::voyage::{SITE_HOME, SITE_HOME_LADEN, Voyage, VoyageState};
 use tacsim::port::{
@@ -4237,4 +4237,192 @@ fn rk1_the_site_plan_prices_the_leg_home_with_a_full_hold() {
 {plan}"
         );
     }
+}
+
+// ---------------------------------------------------------------------------
+// Doc 36 cut GC.9: the lease's damage charge (Q-36-34)
+// ---------------------------------------------------------------------------
+
+/// A section internals cell of a rig.
+fn internals(section: &str) -> mush_tactics::CellAddr {
+    mush_tactics::CellAddr::Section {
+        section: mush_tactics::SectionId::new(section).expect("a section"),
+        cell: mush_tactics::CellId::new(tacsim::definitions::unit::INTERNALS_CELL)
+            .expect("internals"),
+    }
+}
+
+/// `(current, max)` of one internals cell of `tv`'s unit.
+fn internals_of(tw: &TestWorld, tv: ObjId, section: &str) -> (i64, i64) {
+    mush_tactics::module::unit_of(tw.world(), tv)
+        .and_then(|unit| unit.cell(&internals(section)))
+        .map(|cell| (cell.current, cell.max))
+        .expect("the rig's internals cell")
+}
+
+/// **Staff damage a rig**: each named section's internals set to its value, through the unit's
+/// own plan seam (what CF.3's field close writes after a fight).
+fn damage(rig: &mut Rig, tv: ObjId, cells: &[(&str, i64)]) {
+    let ops = cells
+        .iter()
+        .map(|(section, value)| mush_tactics::UnitMutationOp::SetCell {
+            addr: internals(section),
+            value: *value,
+        })
+        .collect();
+    let plan = mush_tactics::UnitMutationPlan::new(ops, None, None).expect("a plan");
+    support::with_ctx(&mut rig.tw, |ctx| {
+        mush_tactics::module::apply_plan(ctx, tv, &plan)
+    })
+    .expect("the damage applies");
+}
+
+/// The prospector's damage the GC.9 stories give it: 50 points of the chassis's 120 internals
+/// and 20 of the hopper's 80. At Ceres's workshop (Occator's, 1.2x) a structural point is
+/// 1.20cr, so the chassis is 60.00cr, the hopper 24.00cr, 84.00cr in all.
+const GC9_DAMAGE: [(&str, i64); 2] = [("chassis", 70), ("hopper", 60)];
+/// [`GC9_DAMAGE`]'s restoration, minor units.
+const GC9_CHARGE_MINOR: i64 = 8_400;
+/// [`GC9_DAMAGE`]'s breakdown and total, as the lessee reads them.
+const GC9_LINES: &str = "chassis 60.00cr, hopper 24.00cr";
+const GC9_TOTAL: &str = "84.00cr";
+
+/// **GC.9's gate** (doc 36 §7, Q-36-34): a leased rig returned damaged to Occator's counter has
+/// its damage assessed and its restoration priced at Ceres's workshop tariff; the preview and the
+/// return name the charge by section; that much of the deposit is captured to Occator by one
+/// capture of the deposit hold and the rest released; and the rig is whole again when it is next
+/// leased.
+#[test]
+#[allow(clippy::too_many_lines)]
+fn gc9_a_damaged_lease_rig_returned_pays_its_restoration_from_the_deposit() {
+    let mut rig = stocked();
+    let (pilot, _) = prospector(&mut rig, "Pilot", 1, "Salt Moth");
+    lease_one(&mut rig, pilot);
+    let tv = ObjId(rig_named(&rig.tw, "OWP-TV-01").tv);
+    damage(&mut rig, tv, &GC9_DAMAGE);
+    assert_eq!(internals_of(&rig.tw, tv, "chassis"), (70, 120));
+    let account = account_of(&rig.tw, pilot);
+    let occ = occator_account(&rig.tw);
+    let (posted, held) = balances(&rig.tw, account);
+    let (occ_posted, _) = balances(&rig.tw, occ);
+    let record = record_on(&rig.tw, pilot, tv);
+    let settle = CHARGE_PART
+        .replace("{charge}", GC9_TOTAL)
+        .replace("{deposit}", DEPOSIT)
+        .replace("{refund}", "4916.00cr");
+    // The preview names the charge by section and signs nothing.
+    let preview = at_occator(&mut rig, pilot, "+tv/1 lease return");
+    let want = RETURN_PREVIEW_CHARGED
+        .replace("{mark}", "OWP-TV-01")
+        .replace("{lines}", GC9_LINES)
+        .replace("{total}", GC9_TOTAL)
+        .replace("{settle}", &settle)
+        .replace("{n}", "1");
+    assert!(preview.contains(&want), "{preview}\nwanted: {want}");
+    assert_eq!(hold_status(&rig.tw, record.hold), HoldStatus::Held);
+    // The return.
+    let out = at_occator(&mut rig, pilot, "+tv/1 lease return go");
+    let want = RETURNED_CHARGED
+        .replace("{mark}", "OWP-TV-01")
+        .replace("{lines}", GC9_LINES)
+        .replace("{total}", GC9_TOTAL)
+        .replace("{settle}", &settle);
+    assert!(out.contains(&want), "{out}\nwanted: {want}");
+    // The money: the deposit hold captured for the charge alone, the rest released by the
+    // same capture; the pilot pays 84.00cr and Occator receives it.
+    assert!(
+        matches!(hold_status(&rig.tw, record.hold), HoldStatus::Consumed { amount, .. }
+            if amount == Amount::from_minor(GC9_CHARGE_MINOR)),
+        "the deposit hold is captured for the charge alone"
+    );
+    assert_eq!(
+        balances(&rig.tw, account),
+        (posted - GC9_CHARGE_MINOR, held - DEPOSIT_MINOR)
+    );
+    assert_eq!(balances(&rig.tw, occ).0, occ_posted + GC9_CHARGE_MINOR);
+    let after = record_on(&rig.tw, pilot, tv);
+    assert_eq!(after.status, TvLeaseStatus::Returned);
+    assert!(!after.written_off);
+    assert!(in_shed(&rig.tw, tv));
+    // Occator restores the rig before it is leased again: the next lessee takes it whole, and
+    // hands it back for the whole deposit.
+    let out = at_occator(&mut rig, pilot, "+tv/lease go");
+    let want = leased_line(LEASED, "OWP-TV-01", "Salt Moth", 1);
+    assert!(out.contains(&want), "{out}\nwanted: {want}");
+    assert_eq!(internals_of(&rig.tw, tv, "chassis"), (120, 120));
+    assert_eq!(internals_of(&rig.tw, tv, "hopper"), (80, 80));
+    let out = at_occator(&mut rig, pilot, "+tv/1 lease return go");
+    let want = RETURNED
+        .replace("{mark}", "OWP-TV-01")
+        .replace("{deposit}", DEPOSIT);
+    assert!(out.contains(&want), "{out}\nwanted: {want}");
+    no_refused_writes(&rig.tw);
+}
+
+/// **GC.9: damage that costs more than the deposit** takes the whole deposit and no more. On a
+/// lane whose prospector deposit is 50.00cr, the 84.00cr restoration keeps all of it: the hold
+/// is captured whole, nothing is released, and the pilot's posted balance falls by the deposit
+/// alone.
+#[test]
+fn gc9_a_lease_rig_whose_damage_costs_more_than_its_deposit_pays_the_deposit() {
+    let small = lane_variant(LANE_VERSION, |doc| {
+        doc["entries"]["ceres_port"]["def"]["vehicles"]["deposit_major"] = serde_json::json!(50);
+    });
+    let mut rig = stocked_on(Roster::seeded(small));
+    let (pilot, _) = prospector(&mut rig, "Pilot", 1, "Salt Moth");
+    lease_one(&mut rig, pilot);
+    let tv = ObjId(rig_named(&rig.tw, "OWP-TV-01").tv);
+    damage(&mut rig, tv, &GC9_DAMAGE);
+    let account = account_of(&rig.tw, pilot);
+    let occ = occator_account(&rig.tw);
+    let (posted, held) = balances(&rig.tw, account);
+    let (occ_posted, _) = balances(&rig.tw, occ);
+    let record = record_on(&rig.tw, pilot, tv);
+    assert_eq!(record.deposit_minor, 5_000, "the variant's 50.00cr deposit");
+    let out = at_occator(&mut rig, pilot, "+tv/1 lease return go");
+    let want = RETURNED_CHARGED
+        .replace("{mark}", "OWP-TV-01")
+        .replace("{lines}", GC9_LINES)
+        .replace("{total}", GC9_TOTAL)
+        .replace("{settle}", &CHARGE_WHOLE.replace("{deposit}", "50.00cr"));
+    assert!(out.contains(&want), "{out}\nwanted: {want}");
+    assert!(
+        matches!(hold_status(&rig.tw, record.hold), HoldStatus::Consumed { amount, .. }
+            if amount == Amount::from_minor(5_000)),
+        "the whole deposit is captured"
+    );
+    assert_eq!(balances(&rig.tw, account), (posted - 5_000, held - 5_000));
+    assert_eq!(balances(&rig.tw, occ).0, occ_posted + 5_000);
+    assert_eq!(
+        record_on(&rig.tw, pilot, tv).status,
+        TvLeaseStatus::Returned
+    );
+    no_refused_writes(&rig.tw);
+}
+
+/// **GC.9: an undamaged return** is charged nothing: the preview and the return read as they
+/// always did, and the whole deposit is released.
+#[test]
+fn gc9_an_undamaged_lease_rig_returned_gets_its_whole_deposit_back() {
+    let mut rig = stocked();
+    let (pilot, _) = prospector(&mut rig, "Pilot", 1, "Salt Moth");
+    lease_one(&mut rig, pilot);
+    let tv = ObjId(rig_named(&rig.tw, "OWP-TV-01").tv);
+    let account = account_of(&rig.tw, pilot);
+    let (posted, held) = balances(&rig.tw, account);
+    let record = record_on(&rig.tw, pilot, tv);
+    let preview = at_occator(&mut rig, pilot, "+tv/1 lease return");
+    let want = RETURN_PREVIEW
+        .replace("{mark}", "OWP-TV-01")
+        .replace("{deposit}", DEPOSIT)
+        .replace("{n}", "1");
+    assert!(preview.contains(&want), "{preview}\nwanted: {want}");
+    let out = at_occator(&mut rig, pilot, "+tv/1 lease return go");
+    let want = RETURNED
+        .replace("{mark}", "OWP-TV-01")
+        .replace("{deposit}", DEPOSIT);
+    assert!(out.contains(&want), "{out}\nwanted: {want}");
+    assert_eq!(hold_status(&rig.tw, record.hold), HoldStatus::Released);
+    assert_eq!(balances(&rig.tw, account), (posted, held - DEPOSIT_MINOR));
+    no_refused_writes(&rig.tw);
 }

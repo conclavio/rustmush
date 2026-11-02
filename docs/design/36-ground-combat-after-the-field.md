@@ -1360,3 +1360,103 @@ field on `FieldBook` in `field/mod.rs`).
 
 - the held-out hull's one-cell footprint, and the site's line for it;
 - the owed arrivals as RAM only, rebuilt by the tick after a restart.
+
+## As built (GC.9)
+
+GC.9 landed on 2026-11-01 as the lease's damage charge (Q-36-34). It touches no kernel hash and
+no content pin: the tariff, the workshop multipliers and the deposits are GC.7's and CF.6c's
+content, read as they are. Every number below is provisional under the owner's economy rule of
+2026-10-24.
+
+**The charge, at the return** (`crates/tacsim/src/port/tv.rs`, `plan_return` step 12 and
+`give_back` step b).
+- *When:* an `Active` record returned from its bay. A write-off (CF.6c) already keeps the whole
+  deposit, and a deposit that is forfeit, or that this return's own term settle forfeits, has
+  nothing left to pay from. Neither is charged.
+- *The assessment:* `restoration_charge` reads the rig's unit, assesses it over its spec's anatomy
+  with the existing assessment (`assess_tactical_unit`, the condition vocabulary), and quotes it
+  with the GC.7 tariff (`WorkshopBook::quote_full_restoration`). The multiplier is the lessor
+  port's workshop multiplier: Occator's own counter at Ceres, room C14 at 1.2x. An entry with no
+  workshop prices at 1x. The quote is labour only, as the tariff is: the tonnes of
+  `industrial_parts` and the rounds themselves are not charged.
+- *Past repair:* the tariff quotes no restoration of an `Irrecoverable` hull, so a rig past repair
+  in its bay is charged the whole deposit.
+- *The cap:* the charge is the quote, capped at the deposit. The rest of the deposit is released.
+
+**By section.** The lessee hears the charge broken down by section, in the preview and in the
+return: `chassis 60.00cr, hopper 24.00cr, 84.00cr in all; 84.00cr is taken from your 5000.00cr
+deposit and 4916.00cr is released.` Each line is a section's points (repaired, or rebuilt with
+the rebuild's base cost) plus the components installed in it (repaired, replaced or rearmed). A
+component installed at unit level reads under `fittings`. Each item is priced exactly as the
+quote prices it, and the lines must sum to the quote's total, or the return refuses with
+`LEASE_FAILED` and logs. Above the deposit the line ends `that is more than your 50.00cr
+deposit, so Occator keeps all of it.` An undamaged return reads exactly as it did before
+(`RETURN_PREVIEW`, `RETURNED`).
+
+**The money: the same hold and settlement.** The deposit is still the engine-owned
+`tacsim.tv.deposit` reservation, settled only through `mush_economy`'s engine-reservation seam.
+Before this cut that seam could release a hold or capture it whole. GC.9 adds
+`capture_engine_reservation_part` beside `settle_engine_reservation`. It is the same
+`EngineReservationAuth`, carrying an explicit amount (`0 < amount <= hold.amount`) in place of
+the hold's own. The economy's `HoldOp::Capture` already releases the uncaptured remainder in the
+same effect (invariant 26), so a charge is one post:
+- one `Capture { hold, amount }`;
+- the two lines that move `amount` from the pilot's account to Occator's;
+- key `tacsim.tv.charge/{lease}`, public like the forfeit.
+
+A retry reads the hold. `Consumed` answers "charged" with no second post, which is
+`settle_deposit`'s idempotence. No new hold, account or money path was added.
+
+**The restoration, at the next take.** Occator restores the rig at the take, as the first write
+of `+tv/lease go`. The return's alternative was rejected because a take-time restore is the one
+place every path home passes through: a return, a charter's repossession, a staff move, and
+later GC.5's hand-back of a written-off rig. The restore is the arena reset's own
+put-back-to-spec (`match_::reset::reset_one`, now `pub(crate)`): cells to their initial values,
+conditions to `intact`, capabilities restored, and a refit first if the record's schema is not
+the loaded one. It writes nothing for an undamaged rig, so no census or story that leases a
+fresh rig moves. If the restore refuses, the lease refuses with nothing written. The rig's
+battery charge lives in its excursion record, not in its unit cells, so it is left as it was.
+
+**The figures** at Ceres (1.2x on the GC.7 tariff):
+
+| Work | Charge |
+|---|---|
+| a structural point | 1.20 cr |
+| repair a component | 240 cr |
+| replace a component | 480 cr |
+| rebuild a section | 960 cr plus its points |
+| load a round | 0.30 cr |
+
+Basis: the GC.7 tariff at the workshop's authored multiplier, so the lessee pays what Occator's
+own workshop would quote a customer. The prospector's whole restoration short of
+`Irrecoverable` is 4,380 cr: three sections rebuilt (2,880 cr), 450 points (540 cr) and two
+components replaced (960 cr). That sits inside its 5,000 cr deposit, so on shipped content only
+a rig past repair takes the whole prospector deposit. The cap story uses a lane variant with a
+50 cr deposit.
+
+**Gates** (`crates/tacsim/tests/shard_4/vehicles.rs`):
+- `gc9_a_damaged_lease_rig_returned_pays_its_restoration_from_the_deposit`: a prospector returned
+  50 points down on its chassis and 20 on its hopper. The preview and the return name
+  `chassis 60.00cr, hopper 24.00cr`. The deposit hold is `Consumed` for 84.00cr. The pilot's
+  posted balance falls by 84.00cr and their held balance by the deposit, and Occator gains
+  84.00cr. When the rig is leased again its internals are whole, and its next return gets the
+  whole deposit back.
+- `gc9_a_lease_rig_whose_damage_costs_more_than_its_deposit_pays_the_deposit`: on the 50 cr
+  variant, the same damage takes the whole deposit and no more.
+- `gc9_an_undamaged_lease_rig_returned_gets_its_whole_deposit_back`: no charge, the old texts,
+  and the hold `Released`.
+
+CF.6c's gate returns a damaged escort. Its return now reads the charge, and still names the
+15000.00cr deposit it asserts.
+
+**Not built here:**
+- *Q-36-22's write-off of a rig left out for 28 IC days, and Q-36-29's hand-back of a loaded
+  written-off rig to Occator:* both are GC.5's, which also touches `port/tv.rs`.
+- *A charter repossession (`repossess`):* it still releases the deposit within the term without
+  a damage charge. The cut's ruling names the return, and the repossession is Occator's own act.
+  The take-time restore still gives the next lessee a whole rig. Whether a repossession should
+  also charge is an open question for the economy owner.
+
+**Defaults taken (provisional):** the lessor port's workshop multiplier as the charge's
+multiplier; rearm labour included in the charge; no charge for parts tonnage; the whole deposit
+for a rig past repair.

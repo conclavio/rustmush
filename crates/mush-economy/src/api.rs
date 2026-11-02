@@ -3140,12 +3140,16 @@ pub fn is_engine_owned_reservation(purpose: &crate::record::HoldPurpose) -> bool
 /// The injected authority one engine-owned reservation is settled under. It is
 /// deliberately built **per settlement, around one hold**, exactly as
 /// [`crate::ContractAuth`] is built around one contract's own escrow: it authorizes a
-/// `Release` of that hold, or a `Capture` of that hold's **own** amount plus the two
-/// lines that move it, and nothing else at all.
+/// `Release` of that hold, or a `Capture` of one named amount of it (its whole
+/// amount, or the part [`capture_engine_reservation_part`] names) plus the two lines
+/// that move it, and nothing else at all.
 struct EngineReservationAuth {
     hold: Hold,
     /// The account a capture pays. `None` settles as a release.
     capture_to: Option<AccountId>,
+    /// How much a capture takes: the hold's own amount, or a part of it
+    /// (`0 < amount <= hold.amount`). The rest is released by the same effect.
+    amount: Amount,
 }
 
 impl AuthEval for EngineReservationAuth {
@@ -3158,9 +3162,9 @@ impl AuthEval for EngineReservationAuth {
             return false;
         };
         if delta.is_negative() {
-            account.id == self.hold.account && delta.checked_neg() == Some(self.hold.amount)
+            account.id == self.hold.account && delta.checked_neg() == Some(self.amount)
         } else {
-            account.id == to && delta == self.hold.amount
+            account.id == to && delta == self.amount
         }
     }
 
@@ -3171,7 +3175,7 @@ impl AuthEval for EngineReservationAuth {
         match op {
             HoldOp::Release { hold: id } => self.capture_to.is_none() && *id == hold.id,
             HoldOp::Capture { hold: id, amount } => {
-                self.capture_to.is_some() && *id == hold.id && *amount == hold.amount
+                self.capture_to.is_some() && *id == hold.id && *amount == self.amount
             }
             HoldOp::Place { .. } | HoldOp::Expire { .. } => false,
         }
@@ -3204,7 +3208,49 @@ pub fn settle_engine_reservation(
     else {
         return Err(EconomyError::Unauthorized);
     };
-    let auth = EngineReservationAuth { hold, capture_to };
+    let amount = hold.amount;
+    let auth = EngineReservationAuth {
+        hold,
+        capture_to,
+        amount,
+    };
+    post_with(ctx, plan, PostAuth::Injected(&auth))
+}
+
+/// **Capture part of one engine-owned reservation** — [`settle_engine_reservation`]'s
+/// capture with an explicit `amount` (`0 < amount <= hold.amount`) in place of the
+/// hold's whole amount. The economy's own `HoldOp::Capture` releases the uncaptured
+/// remainder by the same effect, so this is the same seam and the same one post: the
+/// plan carries one `Capture { hold, amount }` and the two lines that move `amount`
+/// from the hold's account to `capture_to` (doc 36 cut GC.9: a lease deposit that
+/// pays the rig's restoration and releases the rest).
+///
+/// # Errors
+///
+/// [`EconomyError::Unauthorized`] when the hold is absent, is not live, is not in an
+/// engine-owned namespace, or `amount` is not positive or exceeds the hold; every
+/// other refusal is the ordinary posting error.
+pub fn capture_engine_reservation_part(
+    ctx: &mut Ctx<'_>,
+    plan: &EconomyPlan,
+    hold: HoldId,
+    capture_to: AccountId,
+    amount: Amount,
+) -> Result<PostOutcome, EconomyError> {
+    let Some(hold) = ctx
+        .w
+        .module_state::<EconomyStore>()
+        .and_then(|s| s.snapshot().hold(hold).cloned())
+        .filter(|h| is_engine_owned_reservation(&h.purpose))
+        .filter(|h| !amount.is_negative() && !amount.is_zero() && amount <= h.amount)
+    else {
+        return Err(EconomyError::Unauthorized);
+    };
+    let auth = EngineReservationAuth {
+        hold,
+        capture_to: Some(capture_to),
+        amount,
+    };
     post_with(ctx, plan, PostAuth::Injected(&auth))
 }
 

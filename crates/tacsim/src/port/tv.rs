@@ -81,7 +81,7 @@ pub const TV_HELP: &str = "+tv  --  Your Dray-P's rigs: each bay slot's terrain 
 +tv/lease [go]  at Occator's counter in Ceres Freeport, with your Dray-P docked: lease a terrain vehicle into a free bay slot, 1400.00cr a term of 168 IC days and a 5000.00cr deposit held on your account. A lease needs a prospecting licence in force or in its grace (+licence). Without go it shows the terms and signs nothing.
 +tv/lease escort [go]  the same for an escort line tank, armed for escort work: 2500.00cr a term of 168 IC days and a 15000.00cr deposit. It needs the escort clearance: a prospecting licence in force (its grace does not serve), no lease of yours forfeit, no other armed lease of yours, and none written off in the last 28 IC days. Board it in the bay (+tv/<n> board) and fly it from its cab: its one console carries the helm, the sensors and the guns.
 +tv/<n>/permissions [go]  at Occator's counter: inspect or request an explicit operational loan for the actual rental. Operate/crew and command may be delegated within this lease; deploy and recover/load may not. No title or refit right, and no additional charge.
-+tv/<n> lease return [go]  at the same counter: hand rig n back, its hopper empty, and the deposit is released. A rig wrecked out of the bay is written off instead: the lease ends, Occator keeps the deposit, and the wreck stays where it fell.
++tv/<n> lease return [go]  at the same counter: hand rig n back, its hopper empty, and the deposit is released, less what Occator's workshop tariff charges to restore any damage, at most the whole deposit. A rig wrecked out of the bay is written off instead: the lease ends, Occator keeps the deposit, and the wreck stays where it fell.
 A lease past its term is re-debited at your next +tv/lease, or the deposit is forfeit.
 +tv/<n> launch [mind=<mind>] [org=<org>] [go]  with your Dray-P settled on a site's pad and you aboard: send rig n down the stern ramp onto the site (300 IC s). A rig with a core flies the mind you name sealed aboard, filed:<licence> for a licence you hold (org=<org> for one your organisation holds) or, on an ungoverned core, draft:<name>; without one it flies Standard Doctrine.
 +tv/<n> recover [go]  bring rig n up the ramp into the bay (300 IC s); a rig further off drives to the ramp first, even while the instruments are dark. With ore in its hopper it unloads into the hold next, on its own.
@@ -179,6 +179,27 @@ pub const RETURNED: &str =
 /// The return, the deposit forfeit: `{mark}`.
 pub const RETURNED_FORFEIT: &str =
     "You hand {mark} back across Occator's counter; its deposit was forfeit.";
+/// **Doc 36 cut GC.9** (Q-36-34): the return's preview of a damaged rig, its restoration taken
+/// from the deposit: `{mark}`, `{lines}` ([`CHARGE_LINE`]s), `{total}`, `{settle}`
+/// ([`CHARGE_PART`] or [`CHARGE_WHOLE`]), `{n}`.
+pub const RETURN_PREVIEW_CHARGED: &str = "You hand {mark} back to Occator, who restores it before it is leased again: {lines}, {total} in all; {settle} +tv/{n} lease return go signs it.";
+/// The return of a damaged rig (GC.9): `{mark}`, `{lines}`, `{total}`, `{settle}`.
+pub const RETURNED_CHARGED: &str = "You hand {mark} back across Occator's counter, and Occator restores it before it is leased again: {lines}, {total} in all; {settle}";
+/// One section's part of the restoration (GC.9): `{section}`, `{cost}`.
+pub const CHARGE_LINE: &str = "{section} {cost}";
+/// The restoration within the deposit (GC.9): `{charge}`, `{deposit}`, `{refund}`.
+pub const CHARGE_PART: &str =
+    "{charge} is taken from your {deposit} deposit and {refund} is released.";
+/// The restoration beyond the deposit (GC.9): `{deposit}`.
+pub const CHARGE_WHOLE: &str =
+    "that is more than your {deposit} deposit, so Occator keeps all of it.";
+/// The return's preview of a rig past repair (GC.9: the tariff quotes no restoration of an
+/// irrecoverable hull, so the charge is the whole deposit): `{mark}`, `{deposit}`, `{n}`.
+pub const RETURN_PREVIEW_PAST_REPAIR: &str = "You hand {mark} back to Occator; it is past repair, so Occator rebuilds it before it is leased again and keeps all of your {deposit} deposit. +tv/{n} lease return go signs it.";
+/// The return of a rig past repair (GC.9): `{mark}`, `{deposit}`.
+pub const RETURNED_PAST_REPAIR: &str = "You hand {mark} back across Occator's counter; it is past repair, so Occator rebuilds it before it is leased again and keeps all of your {deposit} deposit.";
+/// The section word for a component installed at unit level (GC.9's breakdown).
+pub const UNIT_FITTINGS: &str = "fittings";
 /// The settle's re-debit: `{fee}`, `{mark}`, `{terms}`, `{days}`.
 pub const TERM_RENEWED: &str =
     "Occator re-debits {fee} for {mark}: {terms} more term(s), to {days} IC days on.";
@@ -1004,6 +1025,9 @@ pub const LEASE_KEY_NAMESPACE: &str = "tacsim.tv.lease";
 pub const FEE_KEY_NAMESPACE: &str = "tacsim.tv.fee";
 /// A deposit capture's idempotency namespace (`tacsim.tv.forfeit/{lease}`).
 pub const FORFEIT_KEY_NAMESPACE: &str = "tacsim.tv.forfeit";
+/// **Doc 36 cut GC.9**: a damage charge's idempotency namespace and cause kind
+/// (`tacsim.tv.charge/{lease}`): the part of the deposit the rig's restoration takes.
+pub const CHARGE_KEY_NAMESPACE: &str = "tacsim.tv.charge";
 
 /// IC seconds in an IC day.
 const DAY: i64 = 86_400;
@@ -3391,6 +3415,250 @@ fn capture_deposit(
     }
 }
 
+/// **Doc 36 cut GC.9**: take `amount` of a deposit to Occator for the rig's restoration and
+/// release the rest, through the engine's own seam (`capture_engine_reservation_part`: one
+/// `Capture` of `amount`, the remainder released by the same effect), key
+/// `tacsim.tv.charge/{lease}`. Idempotent like [`settle_deposit`]: a deposit an earlier run
+/// already captured answers `true` without a second post, one already released `false`.
+///
+/// # Errors
+///
+/// The hold is missing or not this lease's deposit, or the economy refused.
+fn charge_deposit(
+    ctx: &mut Ctx<'_>,
+    record: &TvLease,
+    lessor: &PrincipalId,
+    lessor_account: AccountId,
+    amount: i64,
+) -> Result<bool, String> {
+    let hold = deposit_hold(ctx.w, record)?;
+    match hold.status {
+        HoldStatus::Held => {}
+        HoldStatus::Released | HoldStatus::Expired => return Ok(false),
+        HoldStatus::Consumed { .. } => return Ok(true),
+    }
+    let debit = Amount::from_minor(amount.saturating_neg());
+    let amount = Amount::from_minor(amount);
+    let plan = EconomyPlan {
+        hold_ops: vec![HoldOp::Capture {
+            hold: hold.id,
+            amount,
+        }],
+        description: format!("rig lease {} restoration from the deposit", record.lease),
+        visibility: EconomicVisibility::Public,
+        ..EconomyPlan::new(
+            IdempotencyKey::new(CHARGE_KEY_NAMESPACE, record.lease.to_string()),
+            lessor.clone(),
+            EconomicCause::Internal {
+                kind: SmolStr::new_static(CHARGE_KEY_NAMESPACE),
+                id: record.lease,
+            },
+            vec![
+                RequestedLine {
+                    account: hold.account,
+                    delta: debit,
+                    memo: SmolStr::new_static(CHARGE_KEY_NAMESPACE),
+                },
+                RequestedLine {
+                    account: lessor_account,
+                    delta: amount,
+                    memo: SmolStr::new_static(CHARGE_KEY_NAMESPACE),
+                },
+            ],
+        )
+    };
+    match mush_economy::capture_engine_reservation_part(ctx, &plan, hold.id, lessor_account, amount)
+    {
+        Ok(PostOutcome::Posted(_) | PostOutcome::AlreadyPosted(_)) => Ok(true),
+        other => Err(format!("{other:?}")),
+    }
+}
+
+// ---- the damage charge (doc 36 cut GC.9) -------------------------------------------
+
+/// **What a returned rig's restoration costs** (doc 36 cut GC.9, Q-36-34): the GC.7 tariff's
+/// full-restoration quote at the lessor port's workshop multiplier, broken down by section.
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub struct RestorationCharge {
+    /// Each section's part, in section order, minor units: its points, its rebuild, and the
+    /// components installed in it (repaired, replaced or rearmed). [`UNIT_FITTINGS`] for a
+    /// component installed at unit level.
+    pub lines: Vec<(String, i64)>,
+    /// The whole restoration, minor units (the lines' sum).
+    pub total_minor: i64,
+    /// The tariff quotes no restoration of an irrecoverable hull: the charge is the deposit.
+    pub past_repair: bool,
+}
+
+impl RestorationCharge {
+    /// What the deposit pays: the restoration, capped at `deposit_minor`.
+    #[must_use]
+    pub fn charged_minor(&self, deposit_minor: i64) -> i64 {
+        if self.past_repair {
+            deposit_minor
+        } else {
+            self.total_minor.min(deposit_minor)
+        }
+    }
+
+    /// Whether there is anything to restore.
+    #[must_use]
+    pub fn is_nothing(&self) -> bool {
+        !self.past_repair && self.total_minor == 0
+    }
+}
+
+/// A section id as the lessee reads it (`left_track` becomes `left track`).
+fn section_words(id: &str) -> String {
+    id.replace('_', " ")
+}
+
+/// **Price `tv`'s restoration** (doc 36 cut GC.9): its unit assessed with the existing
+/// assessment (`assess_tactical_unit` over its spec's anatomy, the condition vocabulary) and
+/// quoted with the GC.7 tariff (`quote_full_restoration`) at `port`'s workshop multiplier
+/// (1x where the entry authors no workshop). Labour only, as the tariff is: the tonnes of
+/// `industrial_parts` the points consume and the rounds themselves are not priced. Read-only.
+///
+/// # Errors
+///
+/// The rig has no unit, design or spec, or the tariff or the quote refused.
+pub fn restoration_charge(
+    w: &World,
+    port: &ProgrammePort<'_>,
+    tv: ObjId,
+) -> Result<RestorationCharge, String> {
+    use mush_tactics::field_ops::{WorkshopBook, assess_tactical_unit};
+    use mush_tactics::{CellAddr, ComponentId, InstallPoint, SectionId};
+    let unit = mush_tactics::module::unit_of(w, tv).ok_or("the rig holds no unit")?;
+    let terms = crate::port::vehicle::rig_terms(w, tv).ok_or("the rig's design")?;
+    let spec = w
+        .module_state::<TacsimStore>()
+        .and_then(|store| store.definitions().specs.get(terms.unit))
+        .ok_or_else(|| format!("no unit spec {}", terms.unit))?;
+    let anatomy = crate::field_ops::anatomy_for_unit_spec(spec).map_err(|e| e.to_string())?;
+    if !assess_tactical_unit(unit, &anatomy)
+        .state
+        .retains_salvageable_hull()
+    {
+        return Ok(RestorationCharge {
+            lines: Vec::new(),
+            total_minor: 0,
+            past_repair: true,
+        });
+    }
+    let multiplier = port
+        .def
+        .workshop
+        .as_ref()
+        .map_or(1_000, |workshop| workshop.multiplier_permille);
+    let tariff = crate::definitions::workshop::workshop_tariff()
+        .map_err(|error| error.to_string())?
+        .with_multiplier_permille(multiplier)
+        .map_err(|error| error.to_string())?;
+    let quote = WorkshopBook::new()
+        .quote_full_restoration(unit, &anatomy, &tariff)
+        .map_err(|error| error.to_string())?;
+    // The breakdown: the quote's own items, each priced as the quote prices it.
+    let missing = |section: &SectionId| -> u64 {
+        unit.cells()
+            .filter(|(addr, _)| {
+                matches!(addr, CellAddr::Section { section: s, .. }
+                    | CellAddr::Facet { section: s, .. } if s == section)
+            })
+            .map(|(_, cell)| u64::try_from(cell.max.saturating_sub(cell.current)).unwrap_or(0))
+            .sum()
+    };
+    let home = |component: &ComponentId| -> String {
+        match unit.component(component).map(|c| &c.install) {
+            Some(InstallPoint::Section(section) | InstallPoint::Slot { section, .. }) => {
+                section_words(section.as_str())
+            }
+            Some(InstallPoint::Unit) | None => UNIT_FITTINGS.to_owned(),
+        }
+    };
+    let per_point = tariff.cost_per_structural_point_repair;
+    let mut by_section: Vec<(String, u64)> = Vec::new();
+    let mut add =
+        |section: String, cost: u64| match by_section.iter_mut().find(|(s, _)| *s == section) {
+            Some((_, sum)) => *sum = sum.saturating_add(cost),
+            None => by_section.push((section, cost)),
+        };
+    for section in &quote.sections_to_repair {
+        add(
+            section_words(section.as_str()),
+            missing(section).max(1).saturating_mul(per_point),
+        );
+    }
+    for section in &quote.sections_to_reconstruct {
+        add(
+            section_words(section.as_str()),
+            tariff
+                .base_cost_reconstruct_section
+                .saturating_add(missing(section).saturating_mul(per_point)),
+        );
+    }
+    for component in &quote.components_to_repair {
+        add(home(component), tariff.cost_repair_component);
+    }
+    for component in &quote.components_to_replace {
+        add(home(component), tariff.labor_cost_replace_component);
+    }
+    for (component, rounds) in &quote.components_to_rearm {
+        add(
+            home(component),
+            u64::try_from(*rounds)
+                .unwrap_or(0)
+                .saturating_mul(tariff.cost_per_ammo_round),
+        );
+    }
+    by_section.retain(|(_, cost)| *cost > 0);
+    let sum = by_section
+        .iter()
+        .fold(0_u64, |sum, (_, cost)| sum.saturating_add(*cost));
+    if sum != quote.total_resource_cost {
+        return Err(format!(
+            "the breakdown sums to {sum}, the quote to {}",
+            quote.total_resource_cost
+        ));
+    }
+    let minor = |cost: u64| i64::try_from(cost).unwrap_or(i64::MAX);
+    Ok(RestorationCharge {
+        lines: by_section
+            .into_iter()
+            .map(|(section, cost)| (section, minor(cost)))
+            .collect(),
+        total_minor: minor(sum),
+        past_repair: false,
+    })
+}
+
+/// A damage charge's sentence: `template` with `{lines}`, `{total}` and `{settle}` filled.
+fn charge_text(ctx: &Ctx<'_>, template: &str, charge: &RestorationCharge, deposit: i64) -> String {
+    let lines = charge
+        .lines
+        .iter()
+        .map(|(section, cost)| {
+            CHARGE_LINE
+                .replace("{section}", section)
+                .replace("{cost}", &money(ctx, *cost))
+        })
+        .collect::<Vec<_>>()
+        .join(", ");
+    let charged = charge.charged_minor(deposit);
+    let settle = if charge.total_minor > deposit {
+        CHARGE_WHOLE.replace("{deposit}", &money(ctx, deposit))
+    } else {
+        CHARGE_PART
+            .replace("{charge}", &money(ctx, charged))
+            .replace("{deposit}", &money(ctx, deposit))
+            .replace("{refund}", &money(ctx, deposit - charged))
+    };
+    template
+        .replace("{lines}", &lines)
+        .replace("{total}", &money(ctx, charge.total_minor))
+        .replace("{settle}", &settle)
+}
+
 // ---- the take --------------------------------------------------------------------
 
 /// Everything the take resolved before its first write.
@@ -3761,6 +4029,18 @@ fn take(
         return Ok(());
     }
     let actor = ctx.actor;
+    // Doc 36 cut GC.9 (Q-36-34): Occator restores the rig before it is leased again, here at the
+    // take, so every way a rig comes home (a return, a repossession, a staff move) reaches the
+    // next lessee whole. The arena reset's own put-back-to-spec: cells to their initial values,
+    // conditions to `intact`, capabilities restored; nothing written for an undamaged rig. The
+    // first write: a refusal here leaves nothing else written.
+    if let Some(terms) = crate::port::vehicle::rig_terms(ctx.w, plan.tv) {
+        let schema = SmolStr::new(terms.unit.as_str());
+        if let Err(error) = crate::match_::reset::reset_one(ctx, plan.tv, &schema) {
+            tracing::error!(tv = plan.tv.0, %error, "tacsim: +tv/lease: the rig could not be restored before its lease");
+            return Err(CmdError::msg(LEASE_FAILED));
+        }
+    }
     // 0. The term settle: its own committed unit (reviewer F5).
     let wrote = run_settle(ctx, &plan.settle, plan.pilot_account, &plan.lessor);
     let refuse = |ctx: &mut Ctx<'_>, wrote: bool| {
@@ -3942,6 +4222,9 @@ struct ReturnPlan {
     record: TvLease,
     /// **Doc 32 cut CF.6c**: the rig is a wreck out of the bay, so the return writes it off.
     write_off: bool,
+    /// **Doc 36 cut GC.9**: the restoration an Active deposit pays, when there is any; `None`
+    /// for an undamaged rig, a write-off and a deposit already forfeit or forfeit by the settle.
+    charge: Option<RestorationCharge>,
     settle: Vec<Settle>,
     pilot_account: Option<AccountId>,
 }
@@ -4159,10 +4442,29 @@ fn plan_return(ctx: &Ctx<'_>, named: Option<u8>) -> Result<ReturnPlan, String> {
         now,
         funds.map_or(0, |(_, available)| available),
     );
+    // 12. Doc 36 cut GC.9 (Q-36-34): an Active deposit pays the rig's restoration, assessed
+    // and priced here, capped at the deposit at step b. A write-off already keeps the whole
+    // deposit, and a deposit forfeit (now or by this settle) has nothing left to pay from.
+    let charge = if write_off
+        || record.status != TvLeaseStatus::Active
+        || settle_forfeits(&settle, &record)
+    {
+        None
+    } else {
+        let charge = restoration_charge(w, &port, record.tv).map_err(|error| {
+            tracing::error!(tv = record.tv.0, lease = record.lease, %error, "tacsim: +tv/lease return: the rig's restoration could not be priced");
+            LEASE_FAILED.to_owned()
+        })?;
+        if !charge.is_nothing() && lessor.account.is_none() {
+            return Err(failed("Occator's account"));
+        }
+        Some(charge).filter(|charge| !charge.is_nothing())
+    };
     Ok(ReturnPlan {
         lessor,
         record,
         write_off,
+        charge,
         settle,
         pilot_account: funds.map(|(account, _)| account),
     })
@@ -4223,12 +4525,17 @@ fn give_back(ctx: &mut Ctx<'_>, named: Option<u8>, go: bool) -> Result<(), CmdEr
             let line = settle_line(ctx, step, now);
             say(ctx, line);
         }
-        let template = if plan.write_off {
-            WRITE_OFF_PREVIEW
-        } else if forfeit_now {
-            RETURN_PREVIEW_FORFEIT
-        } else {
-            RETURN_PREVIEW
+        let template = match &plan.charge {
+            _ if plan.write_off => WRITE_OFF_PREVIEW.to_owned(),
+            _ if forfeit_now => RETURN_PREVIEW_FORFEIT.to_owned(),
+            Some(charge) if charge.past_repair => RETURN_PREVIEW_PAST_REPAIR.to_owned(),
+            Some(charge) => charge_text(
+                ctx,
+                RETURN_PREVIEW_CHARGED,
+                charge,
+                plan.record.deposit_minor,
+            ),
+            None => RETURN_PREVIEW.to_owned(),
         };
         let line = template
             .replace("{mark}", &plan.record.mark)
@@ -4286,21 +4593,40 @@ fn give_back(ctx: &mut Ctx<'_>, named: Option<u8>, go: bool) -> Result<(), CmdEr
         .account
         .filter(|_| plan.write_off)
         .map(|account| (&plan.lessor.principal, account));
-    let forfeit = match record.status {
-        TvLeaseStatus::Active => match settle_deposit(ctx, &record, capture) {
-            Ok(deposit) => deposit == Deposit::Captured,
-            Err(error) => {
-                tracing::error!(
-                    lease = record.lease,
-                    %error,
-                    "tacsim: +tv/lease return: the deposit did not settle; the lease record \
-                     stays live and the return runs again"
-                );
-                return Err(refuse_after_writes(ctx, LEASE_FAILED));
-            }
-        },
-        TvLeaseStatus::Forfeit | TvLeaseStatus::Returned => true,
+    // Doc 36 cut GC.9: a damaged rig's restoration is taken from the deposit, capped at it,
+    // and the rest released, by one capture of that part through the same seam.
+    let charge = plan
+        .charge
+        .as_ref()
+        .zip(plan.lessor.account)
+        .map(|(charge, account)| (charge, account, charge.charged_minor(record.deposit_minor)));
+    let settled = match (record.status, charge) {
+        (TvLeaseStatus::Active, Some((_, account, amount))) => {
+            charge_deposit(ctx, &record, &plan.lessor.principal, account, amount).map(|charged| {
+                if charged {
+                    Deposit::Captured
+                } else {
+                    Deposit::Released
+                }
+            })
+        }
+        (TvLeaseStatus::Active, None) => settle_deposit(ctx, &record, capture),
+        (TvLeaseStatus::Forfeit | TvLeaseStatus::Returned, _) => Ok(Deposit::Captured),
     };
+    let captured = match settled {
+        Ok(deposit) => deposit == Deposit::Captured,
+        Err(error) => {
+            tracing::error!(
+                lease = record.lease,
+                %error,
+                "tacsim: +tv/lease return: the deposit did not settle; the lease record \
+                 stays live and the return runs again"
+            );
+            return Err(refuse_after_writes(ctx, LEASE_FAILED));
+        }
+    };
+    let charged = captured && charge.is_some();
+    let forfeit = captured && !charged;
     // c. The placement: back in the shed (a written-off wreck stays where it fell).
     match plan.lessor.shed {
         _ if plan.write_off => {}
@@ -4323,14 +4649,19 @@ fn give_back(ctx: &mut Ctx<'_>, named: Option<u8>, go: bool) -> Result<(), CmdEr
     };
     put_tv_lease(ctx, &returned);
     // e. The reply.
-    let line = if plan.write_off {
-        WRITTEN_OFF.replace("{mark}", &record.mark)
-    } else if forfeit {
-        RETURNED_FORFEIT.replace("{mark}", &record.mark)
-    } else {
-        RETURNED
+    let line = match charge {
+        _ if plan.write_off => WRITTEN_OFF.replace("{mark}", &record.mark),
+        _ if forfeit => RETURNED_FORFEIT.replace("{mark}", &record.mark),
+        Some((charge, _, _)) if charged && charge.past_repair => RETURNED_PAST_REPAIR
             .replace("{mark}", &record.mark)
-            .replace("{deposit}", &money(ctx, record.deposit_minor))
+            .replace("{deposit}", &money(ctx, record.deposit_minor)),
+        Some((charge, _, _)) if charged => {
+            charge_text(ctx, RETURNED_CHARGED, charge, record.deposit_minor)
+                .replace("{mark}", &record.mark)
+        }
+        _ => RETURNED
+            .replace("{mark}", &record.mark)
+            .replace("{deposit}", &money(ctx, record.deposit_minor)),
     };
     say(ctx, line);
     Ok(())
