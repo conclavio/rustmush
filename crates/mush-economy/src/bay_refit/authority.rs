@@ -203,8 +203,18 @@ fn current(
     {
         return Err(Error::Unavailable);
     }
+    // Doc 36 cut GC.8b (Q-36-33): the hull's title holder, or a `unit.maintain_refit` grant
+    // holder on its title — the one predicate Industry's check asks too.
+    let hull_title = state
+        .snapshot()
+        .asset(s.hull)
+        .filter(|a| {
+            a.object == s.hull && crate::unit_authority::bay_hull_title_stands(w, a, s.requester)
+        })
+        .cloned()
+        .ok_or(Error::Unavailable)?;
     let titles = vec![
-        title(state, s.hull, &PrincipalId::Object(s.requester), None)?,
+        hull_title,
         title(
             state,
             site.facility,

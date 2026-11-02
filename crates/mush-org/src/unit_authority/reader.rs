@@ -124,6 +124,43 @@ pub fn definition_descriptor() -> Result<DefinitionDescriptor, ModError> {
     ).map_err(|e| ModError::msg(e.to_string()))
 }
 
+/// **The world-readable half of unit authority** (doc 36 cut GC.8b, Q-36-33): whether
+/// `actor` may exercise `capability` on `unit` by its title or by the organization path (a
+/// grant or a role grant of the capability word on the org that holds the title). The
+/// per-unit grant registry is owner-held and is not read here, so a caller with only a
+/// `&World` (an audited prepare's live check) answers for title and org grants alone;
+/// [`UnitAuthorityRequest::Authorize`] through the owner read answers for both.
+#[must_use]
+pub fn authorize_in_world(
+    world: &World,
+    facts: &dyn UnitAuthorityFacts,
+    actor: ObjId,
+    unit: ObjId,
+    capability: UnitCapability,
+) -> bool {
+    let Some(store) = world.module_state::<OrgStore>() else {
+        return false;
+    };
+    let predicates = WorldPredicates {
+        w: world,
+        providers: store.providers(),
+    };
+    authorize_unit(
+        store.state(),
+        &std::collections::BTreeMap::new(),
+        facts,
+        &predicates,
+        &UnitAuthRequest {
+            actor,
+            unit,
+            action: UnitAction::Exercise(capability),
+            now: world.now(),
+            mission: None,
+        },
+    )
+    .is_allow()
+}
+
 pub(crate) fn evaluate(
     world: &World,
     factory: &dyn UnitAuthorityWorldFacts,

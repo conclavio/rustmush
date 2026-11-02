@@ -67,10 +67,14 @@ pub enum BayJob {
         /// The part.
         component: ComponentId,
     },
-    /// Fit a new part of the slot's own definition where one is destroyed or missing.
+    /// Fit a part of the slot's own definition where one is destroyed or missing: a new one
+    /// the workshop supplies, or a stripped part from a lot in the carrier's hold (GC.8b).
     Replace {
         /// The slot.
         component: ComponentId,
+        /// The lot the part comes from, when it is fitted from the hold.
+        #[serde(default, skip_serializing_if = "Option::is_none")]
+        lot: Option<mush_inventory::LotId>,
     },
     /// Load rounds into a weapon's magazine, drawn from munitions goods (Q-36-36).
     Rearm {
@@ -125,7 +129,7 @@ impl BayJob {
             Self::Armor { section } | Self::Rebuild { section } => section.as_str(),
             Self::Mend { component }
             | Self::Unjam { component }
-            | Self::Replace { component }
+            | Self::Replace { component, .. }
             | Self::Rearm { component, .. } => component.as_str(),
         }
     }
@@ -143,6 +147,7 @@ impl BayJob {
             Self::Rearm { rounds, .. } => {
                 format!("recharge {} ({rounds} rounds)", self.target())
             }
+            Self::Replace { lot: Some(lot), .. } => format!("fit {} from {lot}", self.target()),
             _ => format!("{} {}", self.kind_word(), self.target()),
         }
     }
@@ -322,6 +327,7 @@ pub fn quote(
                 replaced.push(component.clone());
                 BayJob::Replace {
                     component: component.clone(),
+                    lot: None,
                 }
             }
             ComponentCondition::Intact => continue,
@@ -410,17 +416,20 @@ const fn rank(job: &BayJob) -> u8 {
 /// throwaway book, in rank order, so the engine's own refusals hold (a part in a section
 /// that does not stand is refused). A replaced part is fitted intact with its cells full, but a
 /// weapon's magazine empty: rounds are goods (Q-36-36). `loaded` caps each rearm at the rounds
-/// actually drawn. `custody` is the salvor's pending claim when one does the work at their own
-/// risk (Q-S14), else the title.
+/// actually drawn. A part fitted from a lot (GC.8b) comes in the condition its provenance
+/// records (`fitted`), its cells full but a weapon's magazine empty. `custody` is the salvor's
+/// pending claim when one does the work at their own risk (Q-S14), else the title.
 ///
 /// # Errors
 ///
 /// The engine's refusal, as a sentence.
+#[allow(clippy::too_many_arguments)]
 pub fn work(
     unit: &TacticalUnit,
     anatomy: &UnitAnatomyProfile,
     jobs: &[QuotedJob],
     loaded: &BTreeMap<ComponentId, i64>,
+    fitted: &BTreeMap<ComponentId, ComponentCondition>,
     actor: ObjId,
     custody: &CustodyTitleStatus,
     at_ic: i64,
@@ -455,7 +464,7 @@ pub fn work(
                 .map_err(say)?
                 .0
             }
-            BayJob::Replace { component } => {
+            BayJob::Replace { component, lot } => {
                 let installed = now
                     .component(component)
                     .ok_or_else(|| format!("{component} is not on this hull"))?;
@@ -465,10 +474,17 @@ pub fn work(
                 {
                     cell_values.insert(ammo.clone(), 0);
                 }
+                let condition = match lot {
+                    Some(_) => fitted
+                        .get(component)
+                        .copied()
+                        .ok_or_else(|| format!("{component}'s fitted part is not traced"))?,
+                    None => ComponentCondition::Intact,
+                };
                 let part = ReplacementPartSpec {
                     source_stripped_record_id: None,
                     definition: installed.definition.clone(),
-                    condition: ComponentCondition::Intact,
+                    condition,
                     cell_values,
                     asset: None,
                 };
