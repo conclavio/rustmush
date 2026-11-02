@@ -12,8 +12,13 @@
 //! leader (doc 26), else its slot-order leader; a party of one is led by whoever sits in it, else
 //! by the operator who launched it. Two parties are **Friends** when one owner stands behind both
 //! — the same organizer for two rosters, the same leader for two parties of one, or a roster's
-//! organizer leading a party of one (Q-CF-5); no organization or faction reputation is read in
-//! this version (F-1).
+//! organizer leading a party of one (Q-CF-5) — or, since doc 36 cut GC.10 (Q-36-10, F-1), when
+//! their leaders or owners share an organization: an active organization membership, a faction
+//! membership, or a faction's principalship, each only where fellow members may know it
+//! ([`affiliations`]). A raider's organization (doc 36 cut GC.11) is a faction whose principal is
+//! the raider's leader, so a member of it is the raider's friend. Friends rank below a leader's
+//! mark and below hostility fire produced (the kernel's [`crate::arena::party::Relations`]);
+//! there are no declared stances between organizations yet.
 //!
 //! **Letters in admission order** (Q-CF-11): the parties sorted by their keys take `A`, `B`, … in
 //! that order. Never by who promoted the site: the first letter would tell everyone on the ground
@@ -49,6 +54,73 @@ pub(crate) struct Entrant {
     /// **The carrier it came from and goes home to** (doc 32 cut CF.6b): its DT flight's, its
     /// rig lease's hull, or its raider's fixture carrier.
     pub carrier: Option<ObjId>,
+    /// **The organizations its leader and owner openly stand in** (doc 36 cut GC.10, Q-36-10).
+    pub affiliations: BTreeSet<Affiliation>,
+}
+
+/// **One organization a character openly stands in** (doc 36 cut GC.10, Q-36-10, F-1): what two
+/// parties share to be Friends.
+#[derive(Clone, Copy, Debug, PartialEq, Eq, PartialOrd, Ord)]
+pub(crate) enum Affiliation {
+    /// An organization it is an active member of.
+    Org(mush_org::OrgId),
+    /// A faction it is a member or a principal of.
+    Faction(mush_faction::FactionId),
+}
+
+/// **The organizations `who` openly stands in** (doc 36 cut GC.10): each organization it is an
+/// active member of, and each faction [`mush_faction::open_factions`] names, only where fellow
+/// members may know it (public or members-know). A covert membership makes nobody a friend, so a
+/// field's colours never tell anyone what it hides.
+#[must_use]
+pub(crate) fn affiliations(w: &World, who: ObjId) -> BTreeSet<Affiliation> {
+    let mut out: BTreeSet<Affiliation> = mush_faction::open_factions(w, who)
+        .into_iter()
+        .map(Affiliation::Faction)
+        .collect();
+    if let Some(store) = w.module_state::<mush_org::OrgStore>() {
+        let orgs = store.state();
+        out.extend(
+            orgs.member_orgs(who)
+                .filter(|org| {
+                    orgs.membership(*org, who).is_some_and(|m| {
+                        m.status == mush_org::MembershipStatus::Active
+                            && matches!(
+                                m.visibility,
+                                mush_org::Visibility::Public | mush_org::Visibility::MembersKnow
+                            )
+                    })
+                })
+                .map(Affiliation::Org),
+        );
+    }
+    out
+}
+
+/// The affiliations of a party's leader and owner together.
+fn party_affiliations(
+    w: &World,
+    leader: Option<ObjId>,
+    owner: Option<ObjId>,
+) -> BTreeSet<Affiliation> {
+    let mut out = BTreeSet::new();
+    for who in [leader, owner].into_iter().flatten() {
+        out.extend(affiliations(w, who));
+    }
+    out
+}
+
+/// **Who stands behind `party`** (doc 36 cut GC.10): its leader and, for a roster, its
+/// organizer — the principals a field's standing writes name. Deduplicated, in that order.
+#[must_use]
+pub(crate) fn principals(party: &FieldParty) -> Vec<ObjId> {
+    let mut out: Vec<ObjId> = party.leader.into_iter().collect();
+    if let PartyKey::Operation { operation } = party.key
+        && !out.contains(&operation.organizer)
+    {
+        out.push(operation.organizer);
+    }
+    out
 }
 
 /// **The site's passive domain** (its port map's), when it is a lane site.
@@ -204,6 +276,7 @@ pub(crate) fn entrants(ctx: &Ctx<'_>, entry: &CanonicalId, units: &[ObjId]) -> V
                     epoch: *epoch,
                     aboard: Vec::new(),
                     carrier: Some(*carrier),
+                    affiliations: party_affiliations(ctx.w, *leader, *organizer),
                 };
             }
             // A fixture raider's hull: its leader's party (doc 32 cut CF.6, Q-CF-44).
@@ -217,6 +290,7 @@ pub(crate) fn entrants(ctx: &Ctx<'_>, entry: &CanonicalId, units: &[ObjId]) -> V
                     epoch: None,
                     aboard: Vec::new(),
                     carrier: super::raiders::carrier_of(ctx.w, *unit),
+                    affiliations: affiliations(ctx.w, leader),
                 };
             }
             let record = rig_record(ctx, *unit);
@@ -237,6 +311,7 @@ pub(crate) fn entrants(ctx: &Ctx<'_>, entry: &CanonicalId, units: &[ObjId]) -> V
                 carrier: record
                     .as_ref()
                     .and_then(|record| record.excursion.as_ref().map(|out| out.hull)),
+                affiliations: party_affiliations(ctx.w, leader, None),
             }
         })
         .collect()
@@ -271,6 +346,7 @@ fn carrier_entrant(ctx: &Ctx<'_>, carrier: ObjId, flights: &[(ObjId, FlightFacts
         epoch: super::carrier::open_epoch(ctx, carrier),
         aboard: super::carrier::souls_aboard(ctx.w, carrier),
         carrier: None,
+        affiliations: party_affiliations(ctx.w, leader, owner),
     }
 }
 
@@ -316,23 +392,21 @@ pub(crate) fn letter(
     Ok((parties, units))
 }
 
-/// **The standing friendships** (Q-CF-5): every pair of parties one owner stands behind.
-#[must_use]
-pub(crate) fn friends(entrants: &[Entrant], parties: &[FieldParty]) -> Vec<(PartyId, PartyId)> {
-    let letter_of = |key: &PartyKey| {
-        parties
-            .iter()
-            .find(|party| &party.key == key)
-            .map(|party| party.party)
-    };
-    let mut by_owner: BTreeMap<ObjId, BTreeSet<PartyId>> = BTreeMap::new();
-    for entrant in entrants {
-        if let (Some(owner), Some(party)) = (entrant.owner, letter_of(&entrant.key)) {
-            by_owner.entry(owner).or_default().insert(party);
-        }
+/// What two parties may share to be Friends: an owner, or an organization.
+#[derive(Clone, Copy, Debug, PartialEq, Eq, PartialOrd, Ord)]
+enum Tie {
+    Owner(ObjId),
+    Org(Affiliation),
+}
+
+/// Every pair of parties some tie holds together, each pair once, lower letter first.
+fn pair_up(ties: impl IntoIterator<Item = (Tie, PartyId)>) -> Vec<(PartyId, PartyId)> {
+    let mut by_tie: BTreeMap<Tie, BTreeSet<PartyId>> = BTreeMap::new();
+    for (tie, party) in ties {
+        by_tie.entry(tie).or_default().insert(party);
     }
     let mut pairs = BTreeSet::new();
-    for set in by_owner.values() {
+    for set in by_tie.values() {
         for a in set {
             for b in set {
                 if a < b {
@@ -342,6 +416,77 @@ pub(crate) fn friends(entrants: &[Entrant], parties: &[FieldParty]) -> Vec<(Part
         }
     }
     pairs.into_iter().collect()
+}
+
+/// **The standing friendships** (Q-CF-5; doc 36 cut GC.10, Q-36-10): every pair of parties one
+/// owner stands behind, or whose leaders or owners share an organization ([`affiliations`]).
+#[must_use]
+pub(crate) fn friends(entrants: &[Entrant], parties: &[FieldParty]) -> Vec<(PartyId, PartyId)> {
+    let letter_of = |key: &PartyKey| {
+        parties
+            .iter()
+            .find(|party| &party.key == key)
+            .map(|party| party.party)
+    };
+    let mut ties = Vec::new();
+    for entrant in entrants {
+        let Some(party) = letter_of(&entrant.key) else {
+            continue;
+        };
+        if let Some(owner) = entrant.owner {
+            ties.push((Tie::Owner(owner), party));
+        }
+        ties.extend(
+            entrant
+                .affiliations
+                .iter()
+                .map(|affiliation| (Tie::Org(*affiliation), party)),
+        );
+    }
+    pair_up(ties)
+}
+
+/// **The standing friendships of a field's parties, read now** (doc 36 cut GC.10): [`friends`]'s
+/// rule over the live record's parties, each owned by its leader or, for a roster, its organizer.
+/// The demotion reads it to tell friendly fire.
+#[must_use]
+pub(crate) fn friends_of(w: &World, parties: &[FieldParty]) -> Vec<(PartyId, PartyId)> {
+    let mut ties = Vec::new();
+    for party in parties {
+        let owner = match party.key {
+            PartyKey::Operation { operation } => Some(operation.organizer),
+            PartyKey::Unit { .. } | PartyKey::Fixture { .. } => party.leader,
+        };
+        if let Some(owner) = owner {
+            ties.push((Tie::Owner(owner), party.party));
+        }
+        ties.extend(
+            party_affiliations(w, party.leader, owner)
+                .into_iter()
+                .map(|affiliation| (Tie::Org(affiliation), party.party)),
+        );
+    }
+    pair_up(ties)
+}
+
+/// **The parties on `site`'s ground as a field would admit them now, and which are Friends**
+/// (doc 36 cut GC.10; Q-36-10): the presence picture's parties, lettered, with every standing
+/// friendship among them. Staff and the gates read it; nothing is written.
+#[must_use]
+pub fn friends_on_ground(
+    ctx: &Ctx<'_>,
+    site: &CanonicalId,
+) -> (Vec<FieldParty>, Vec<(PartyId, PartyId)>) {
+    let Some(domain) = site_domain(ctx.w, site) else {
+        return (Vec::new(), Vec::new());
+    };
+    let units = on_ground(ctx.w, domain);
+    let entrants = entrants(ctx, site, &units);
+    let Ok((parties, _)) = letter(&entrants) else {
+        return (Vec::new(), Vec::new());
+    };
+    let pairs = friends(&entrants, &parties);
+    (parties, pairs)
 }
 
 #[cfg(test)]
@@ -358,7 +503,25 @@ mod tests {
             epoch: None,
             aboard: Vec::new(),
             carrier: None,
+            affiliations: BTreeSet::new(),
         }
+    }
+
+    #[test]
+    fn one_organization_makes_friends_across_owners_and_a_third_party_stays_apart() {
+        // Doc 36 cut GC.10 (Q-36-10): three owners; the first two share a faction, the third a
+        // different one. Only the first pair are friends.
+        let shared = Affiliation::Faction(mush_faction::FactionId(7));
+        let other = Affiliation::Faction(mush_faction::FactionId(8));
+        let mut entrants = vec![one(10, Some(1)), one(20, Some(2)), one(30, Some(3))];
+        entrants[0].affiliations.insert(shared);
+        entrants[1].affiliations.insert(shared);
+        entrants[2].affiliations.insert(other);
+        let (parties, _) = letter(&entrants).expect("three parties");
+        assert_eq!(
+            friends(&entrants, &parties),
+            vec![(PartyId::nth(0).expect("A"), PartyId::nth(1).expect("B"))]
+        );
     }
 
     #[test]
