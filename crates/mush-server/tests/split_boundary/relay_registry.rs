@@ -4276,11 +4276,13 @@ fn relay_v4() -> mush_content::Pack {
 }
 /// **Doc 32 cut S.1: the 512 site's rows** — Urvara Reach's place, its two routes, its port and
 /// Ceres's `urvara` routes key — stripped from the shipped lane to rebuild an older one. Doc 36
-/// cut GC.7 (lane v18): the two ports' `workshop` blocks and the vendors' munitions rows first.
+/// cut GC.7 (lane v18): the two ports' `workshop` blocks and the vendors' munitions rows first;
+/// cut GC.13 (lane v19): and their `medical` blocks.
 fn strip_urvara(lane: &mut serde_json::Value) {
     for port in ["ceres_port", "stickney_port"] {
         let def = lane["entries"][port]["def"].as_object_mut().unwrap();
         def.remove("workshop");
+        def.remove("medical");
         for vendor in def["vendors"].as_array_mut().unwrap() {
             for rows in ["stock", "asks"] {
                 if let Some(rows) = vendor[rows].as_array_mut() {
@@ -4448,7 +4450,7 @@ impl Rig {
 /// the operator org, the bindings, the Terms story and the money never move, across two
 /// restarts.
 #[tokio::test]
-async fn sm12b_a_kept_v13_star_takes_lane_v18_and_relay_v9() {
+async fn sm12b_a_kept_v13_star_takes_lane_v19_and_relay_v10() {
     let lane = tacsim::definitions::content::LANE_PACK;
     let relay = "tacsim.relay.luna_ceres";
     let mut rig = Rig::v13_star().await;
@@ -4477,41 +4479,44 @@ async fn sm12b_a_kept_v13_star_takes_lane_v18_and_relay_v9() {
         .to_owned();
     let applied = rig.run(GOD, &format!("@atlas/pack apply {fingerprint}"));
     assert!(
-        applied.contains(&format!("Applied {lane}@18: ")),
+        applied.contains(&format!("Applied {lane}@19: ")),
         "{plan}\n{applied}"
     );
     assert!(!applied.contains("STOPPED"), "{applied}");
-    assert_eq!(rig.latched(lane), Some(18));
+    assert_eq!(rig.latched(lane), Some(19));
 
-    // Relay v9 differs from v2 only in its manifest: staff have nothing to apply.
+    // Relay v10 differs from v2 only in its manifest: staff have nothing to apply.
     let plan = rig.run(GOD, &format!("@atlas/pack plan {relay}"));
     assert!(plan.contains("Nothing to do."), "{plan}");
     rig.flush().await;
     rig.restart().await.unwrap();
-    assert_eq!((rig.latched(lane), rig.latched(relay)), (Some(18), Some(2)));
+    assert_eq!((rig.latched(lane), rig.latched(relay)), (Some(19), Some(2)));
     assert_eq!(rig.registry(), original);
     assert_eq!(
         rig.story(),
         story,
-        "relay v2 beside lane v18 is still the full star"
+        "relay v2 beside lane v19 is still the full star"
     );
 
-    // The operator's apply of the shipped seed latches v9 and changes nothing else.
+    // The operator's apply of the shipped seed latches v10 and changes nothing else.
     rig.apply_content(vec![
         mush_content::load_pack(tacsim::relay_content::JSON).unwrap(),
     ])
     .await;
-    assert_eq!(rig.latched(relay), Some(9));
+    assert_eq!(rig.latched(relay), Some(10));
     assert_eq!(rig.registry(), original);
     rig.flush().await;
     rig.restart().await.unwrap();
-    assert_eq!((rig.latched(lane), rig.latched(relay)), (Some(18), Some(9)));
+    assert_eq!(
+        (rig.latched(lane), rig.latched(relay)),
+        (Some(19), Some(10))
+    );
     assert_eq!(rig.registry(), original);
     assert_eq!(rig.operator_org(), org);
     assert_eq!(
         rig.story(),
         story,
-        "relay v9 is the full star: the Terms story boots unchanged"
+        "relay v10 is the full star: the Terms story boots unchanged"
     );
     assert!(rig.run(GOD, "@relay/check").contains("Bindings OK"));
     assert_eq!(rig.money_total(), money);
@@ -4698,13 +4703,17 @@ async fn oduya_kept_ceres_v2_and_relay_v4_upgrade_without_replacing_the_live_sta
     // Only the manifest changed; applying the checked seed advances its latch
     // without replacing the operator, node/half objects or disabled link state.
     // Doc 32 cut CF.6c: the shipped relay requires lane v16, so the lane comes first (doc 32
-    // cut S.1: lane v17, relay v8; doc 36 cut GC.7: lane v18, relay v9).
+    // cut S.1: lane v17, relay v8; doc 36 cut GC.7: lane v18, relay v9; cut GC.13: lane v19,
+    // relay v10).
     rig.apply_content(vec![
         mush_content::load_pack(tacsim::definitions::content::LANE_JSON).unwrap(),
         mush_content::load_pack(tacsim::relay_content::JSON).unwrap(),
     ])
     .await;
-    assert_eq!((rig.latched(ceres), rig.latched(relay)), (Some(4), Some(9)));
+    assert_eq!(
+        (rig.latched(ceres), rig.latched(relay)),
+        (Some(4), Some(10))
+    );
     assert_eq!(rig.registry(), original);
     rig.flush().await;
     rig.restart().await.unwrap();
@@ -4751,8 +4760,9 @@ fn r10_public_star_content_digests_are_pinned() {
             // Qureshi's trust service: v6 requires Ceres v4, with no entry changes (was
             // `b8e247be…`). Doc 32 cut CF.6c: v7, re-signed to require lane v16 (was
             // `ed73b84d…`). Doc 32 cut S.1: v8, re-signed to require lane v17. Doc 36 cut
-            // GC.7: v9, re-signed to require lane v18 (was `77b71203…` at v8).
-            "850923eb8e5b55fca38564400acc4174758717c0cd5ab6ce7a2fb53d903aad2d",
+            // GC.7: v9, re-signed to require lane v18 (was `77b71203…` at v8). Doc 36 cut GC.13:
+            // v10, re-signed to require lane v19 (was `850923eb…` at v9).
+            "28dea88535d239b4f5cbde163df3f6ef1c3bc79ad824c3c454b0c0f2e481a52c",
         ),
     ];
     let packs = tacsim::relay_content::packs().unwrap();

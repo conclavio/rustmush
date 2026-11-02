@@ -29,6 +29,8 @@ mod vertex;
 mod coop;
 #[path = "shard_1/crew_exit.rs"]
 mod crew_exit;
+#[path = "shard_1/crew_treatment.rs"]
+mod crew_treatment;
 #[path = "shard_1/driving.rs"]
 mod driving;
 #[path = "shard_1/escort_lease.rs"]
