@@ -2296,10 +2296,26 @@ left something open, this is what the cut decided, for the owner to object to.
   carrier handler, so a tank is never told it "set down on the pad". A refused hull is checked
   back in, leaves the live record, and goes back aboard.
 - *A refused join is retried.* The kernel refuses a join while a mind's think is in flight on any
-  unit ("a think awaits its answer … the batch was not delivered before the encode"). The gate met
-  this in about half its runs. A director raid refused before it ever entered the field lands and
-  joins again at the next fire. GC.1b's own arrivals are not retried while their field runs, by
-  its ruling; that is flagged as a follow-up, not changed here.
+  unit ("a think awaits its answer … the batch was not delivered before the encode"). The joins
+  of one raid land over more than one pulse, and the carrier that joined first is thinking when
+  its hulls arrive, so a partial refusal is the common case. Each shape is retried at the next
+  fire:
+  - *All refused*, before the raid ever entered the field: it lands and joins again.
+  - *The carrier refused, its hulls taken in*: the carrier lands alone and joins again, so the
+    group has a ramp to go home up and a carrier to lift with.
+  - *Hulls refused, the carrier taken in*: the refused hulls went back aboard. Until the raid
+    turns for home, they stand beside the ramp again, up to the threat budget less the hulls in
+    the field, and join again.
+  - A carrier left in the field with no hull in it and none out at the ramp waits for those
+    retries, and lifts once a withdrawal trigger holds. So a hull the kernel keeps refusing never
+    strands its carrier.
+
+  GC.1b's own arrivals are not retried while their field runs, by its ruling; that is flagged as
+  a follow-up, not changed here. Awaiting the think batch before the joins, in the kernel task,
+  would remove the refusal at its root. It was tried and set aside: it lets GC.1b's
+  `f6_a_carrier_lifts_out_of_a_running_field_only_on_the_confirmation` take its prospector's
+  carrier in as an arrival, and that join is lost and sent again every pulse. The test passes on
+  main only because the first join is refused.
 - *Not covered:* a restart between a raider's join and the next snapshot. The resume re-joins
   every `arrived` row through GC.1b's path, which stands a raider at the pad rather than its ramp.
 

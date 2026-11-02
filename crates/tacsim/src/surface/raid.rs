@@ -223,7 +223,8 @@ fn under_way(
         };
         // In the running field: note the field it entered (the snapshots' check reads it).
         if live.units.iter().any(|row| row.unit == carrier) {
-            return entered(ctx, carrier, live.field.ordinal, live.at_ms);
+            entered(ctx, carrier, live.field.ordinal, live.at_ms)?;
+            return rejoin_refused(ctx, def, schedule, carrier, &live, record);
         }
         if mush_sim::pose_of(ctx.w, carrier).is_some() {
             return Ok(()); // its join is still to be answered
@@ -235,6 +236,17 @@ fn under_way(
             field_entered(ctx, carrier).is_some_and(|(ordinal, _)| ordinal == live.field.ordinal);
         if entered_here {
             return over(ctx, carrier);
+        }
+        // The kernel refused the carrier and took its hulls: it lands alone and joins again, so
+        // its group has a ramp to go home up and a carrier to lift with.
+        if live
+            .units
+            .iter()
+            .any(|row| raiders::carrier_of(ctx.w, row.unit) == Some(carrier))
+        {
+            raiders::land_carrier(ctx, def, carrier)?;
+            tracing::info!(raider = %def.id, "tacsim: a refused raider carrier lands and joins again");
+            return raiders::join_raid(ctx, &def.site, carrier, &[]);
         }
         let (carrier, launched) =
             raiders::land_and_launch(ctx, def, usize::from(schedule.threat), record)?;
@@ -267,6 +279,45 @@ fn under_way(
         .map_err(|error| error.to_string())?;
     tracing::info!(raider = %def.id, at = at.0, "tacsim: a director raid declared on open ground");
     Ok(())
+}
+
+/// **Hulls the kernel refused at the join land and join again** (a director raid in its field):
+/// a refused hull went back aboard, so while the raid has not turned for home (no hull of it
+/// withdrawing or out at the ramp), the hulls aboard stand beside the ramp again, up to its
+/// threat less those in the field, and are sent as joins. The kernel refuses a join while a
+/// think is in flight, so this is the common case, not a rare one.
+fn rejoin_refused(
+    ctx: &mut Ctx<'_>,
+    def: &RaiderDef,
+    schedule: RaidSchedule,
+    carrier: ObjId,
+    live: &crate::field::FieldLive,
+    record: &SiteRecord,
+) -> Result<(), String> {
+    let hulls: Vec<ObjId> = raiders::hulls_of(ctx.w, def.id.as_str())
+        .into_iter()
+        .filter(|hull| *hull != carrier && raiders::carrier_of(ctx.w, *hull) == Some(carrier))
+        .collect();
+    let turned = hulls
+        .iter()
+        .any(|hull| raiders::withdrawing(ctx.w, *hull) || record.exited(*hull));
+    if turned {
+        return Ok(());
+    }
+    let standing = hulls
+        .iter()
+        .filter(|hull| live.units.iter().any(|row| row.unit == **hull))
+        .count();
+    let cap = usize::from(schedule.threat).saturating_sub(standing);
+    let aboard = hulls
+        .iter()
+        .any(|hull| mush_sim::pose_of(ctx.w, *hull).is_none());
+    if cap == 0 || !aboard {
+        return Ok(());
+    }
+    let (carrier, launched) = raiders::land_and_launch(ctx, def, cap, record)?;
+    tracing::info!(raider = %def.id, hulls = launched.len(), "tacsim: refused raider hulls land and join again");
+    raiders::join_raid(ctx, &def.site, carrier, &launched)
 }
 
 /// **Note the field a director raid entered** (once a field ordinal): the arena millisecond it

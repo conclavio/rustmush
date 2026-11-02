@@ -576,20 +576,7 @@ pub(crate) fn land_and_launch(
     if aboard.is_empty() {
         return Err(format!("{} has nobody aboard to launch.", def.label));
     }
-    // Doc 36 cut GC.0: a carrier that lifted ([`lift`]) lands again at its authored cell first.
-    match mush_sim::pose_of(ctx.w, carrier) {
-        Some((on, _)) if on == domain => {}
-        Some(_) => return Err(format!("{}'s carrier stands on other ground.", def.label)),
-        None => {
-            let (cell, _) = def
-                .carrier
-                .cells_at(crate::surface::excursion::site_pad_cell(ctx.w, &def.site))
-                .ok_or_else(|| format!("{}'s carrier stands off {}.", def.label, def.site))?;
-            let pose = crate::surface::excursion::cell_pose(cell, def.carrier.heading_mdeg)?;
-            mush_sim::place(ctx, carrier, domain, pose)
-                .map_err(|error| format!("{} did not land ({error}).", def.carrier.name))?;
-        }
-    }
+    land_carrier(ctx, def, carrier)?;
     let ground = super::ground::definition(ctx.w, &def.site, record, Vec::new())?;
     let terrain = &ground.terrain;
     let mut taken: std::collections::BTreeSet<(u16, u16)> =
@@ -624,6 +611,34 @@ pub(crate) fn land_and_launch(
             .map_err(|error| format!("#{} was not placed ({error}).", hull.0))?;
     }
     Ok((carrier, aboard))
+}
+
+/// **Land `def`'s carrier** ([`land_and_launch`]'s first step): doc 36 cut GC.0, a carrier that
+/// lifted ([`lift`]) lands again at its authored cell; one on the site's ground stays where it is.
+///
+/// # Errors
+///
+/// Not a lane site, the carrier on other ground, its cell off the site, or the landing refused.
+pub(crate) fn land_carrier(
+    ctx: &mut Ctx<'_>,
+    def: &RaiderDef,
+    carrier: ObjId,
+) -> Result<(), String> {
+    let domain = super::parties::site_domain(ctx.w, &def.site)
+        .ok_or_else(|| format!("{} is not a lane site.", def.site))?;
+    match mush_sim::pose_of(ctx.w, carrier) {
+        Some((on, _)) if on == domain => Ok(()),
+        Some(_) => Err(format!("{}'s carrier stands on other ground.", def.label)),
+        None => {
+            let (cell, _) = def
+                .carrier
+                .cells_at(crate::surface::excursion::site_pad_cell(ctx.w, &def.site))
+                .ok_or_else(|| format!("{}'s carrier stands off {}.", def.label, def.site))?;
+            let pose = crate::surface::excursion::cell_pose(cell, def.carrier.heading_mdeg)?;
+            mush_sim::place(ctx, carrier, domain, pose)
+                .map_err(|error| format!("{} did not land ({error}).", def.carrier.name))
+        }
+    }
 }
 
 /// **The leader's WITHDRAW to every hull of `def` in a field** (this module's head): marked on
@@ -777,8 +792,9 @@ pub const RAIDER_LIFTED: &str =
 /// "A casualty or a wreck" is what demotion would write for the hull now
 /// (`super::close::condition_now`), read off the last snapshot the host holds, so a hull still
 /// fighting holds its carrier on the ground. A carrier that launched no hull into this field (none
-/// admitted, none named on the open promotion's exits) has nothing to wait for and stays. A
-/// carrier that is itself a wreck does not lift. The host runs this after each hull boards and,
+/// admitted, none named on the open promotion's exits) has nothing to wait for and stays; a
+/// director raid's (doc 36 cut GC.11), whose hulls the kernel refused at the join, waits for the
+/// director to land them again and lifts once a withdrawal trigger holds. A carrier that is itself a wreck does not lift. The host runs this after each hull boards and,
 /// paced, at the field's snapshots ([`lift_check_paced`]); a field holding no raider's carrier
 /// decodes nothing.
 pub(crate) fn lift_check(ctx: &mut Ctx<'_>, site: &CanonicalId) {
@@ -826,7 +842,11 @@ pub(crate) fn lift_check(ctx: &mut Ctx<'_>, site: &CanonicalId) {
             .iter()
             .filter(|hull| record.as_ref().is_some_and(|record| record.exited(**hull)))
             .count();
-        if in_field.is_empty() && exited == 0 {
+        // Doc 36 cut GC.11: a director raid's carrier whose hulls were all refused at the join
+        // (each back aboard) waits while the director lands them again, and lifts once its
+        // triggers say so.
+        let refused = in_field.is_empty() && exited == 0;
+        if refused && !crate::surface::raid::director_raid(ctx.w, carrier) {
             continue;
         }
         let decoded = decoded.get_or_insert_with(|| decode(ctx, site, live.homes.clone()));
@@ -848,6 +868,18 @@ pub(crate) fn lift_check(ctx: &mut Ctx<'_>, site: &CanonicalId) {
         );
         if wrecked {
             continue;
+        }
+        if refused {
+            let reading = crate::surface::raid::RaidReading {
+                ordinal: live.field.ordinal,
+                at_ms: live.at_ms,
+                launched: 0,
+                lost: 0,
+                in_reach: false,
+            };
+            if crate::surface::raid::withdrawal_due(ctx, carrier, &reading).is_none() {
+                continue;
+            }
         }
         if !down {
             // Doc 36 cut GC.11 (Q-36-55): a director raid turns for home on its triggers.
@@ -971,7 +1003,12 @@ pub(crate) fn join_raid(
         .ok_or_else(|| "the field's task is gone".to_owned())?;
     let mark = mush_sim::deployed::DeployedMark::field(site.as_str(), live.field.ordinal);
     let mut joined = 0_usize;
-    for unit in std::iter::once(carrier).chain(hulls.iter().copied()) {
+    // A carrier already in the field (its hulls refused and landed again) is not joined twice.
+    let carrier_in = live.units.iter().any(|row| row.unit == carrier);
+    let joining = std::iter::once(carrier)
+        .filter(|_| !carrier_in)
+        .chain(hulls.iter().copied());
+    for unit in joining {
         match join_one(ctx, site, carrier, unit, &mut live, &tasks, task, &mark) {
             Ok(()) => joined += 1,
             Err(why) => {
