@@ -11,6 +11,7 @@
 use serde::{Deserialize, Serialize};
 
 pub mod bubble;
+pub mod commands;
 pub mod custody;
 pub mod tick;
 pub mod weapons;
@@ -20,6 +21,13 @@ pub use bubble::{
     BubbleStepReport, DERELICT_WINDOW_S, EmconPosture, FacetBand, HullStatus, LocalSpaceBubble,
     MAX_SUBSTEP_MS, ShipSectionId, ShipSectionState, SpaceCombatEvent, SpacePartyId, SpaceRelation,
     SpaceShipState, SubsystemCrit,
+};
+pub use commands::{
+    BridgeRole, HELM_HELP, HELM_SWITCHES, HELM_VERB, HOLOTANK_FEED, NO_BRIDGE_STATION,
+    NO_SUCH_CONTACT, NOT_ABOARD_SHIP, SPACE_COCKPIT_FEED, SpaceContactObservation, TAC_HELP,
+    TAC_SWITCHES, TAC_VERB, emcon_level_for_posture, emcon_posture_for_level,
+    evaluate_space_contact_detection, heading_order_vector, helm_cmd, hull_aboard_for_actor,
+    is_hull_captain, observe_bubble_contacts, parse_emcon_token, seat_role_for_actor, tac_cmd,
 };
 pub use custody::{
     ALL_FACET_BANDS, ALL_SHIP_SECTIONS, apply_unit_spec_to_space_ship,

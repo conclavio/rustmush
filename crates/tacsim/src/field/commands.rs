@@ -11,6 +11,8 @@
 //! - `+field/fire <bearing> [<band>]` on the unpromoted surface — the pilot's fire order at a
 //!   presence row: it promotes the site, and the shot resolves in the field's first pulses under
 //!   the normal lock rules (the host's [`super::FIRE_WINDOW_MS`]).
+//! - `+field/void` after a field (doc 36 cut GC.10, Q-36-11) — the leader cancels the standing
+//!   their party's fire on a friendly party cost ([`super::standing`]).
 //!
 //! **How a presence row is named** (CF.1 left no stable token, and the picture must not hand
 //! one out): by what the viewer reads — its octant and, when two flights share it, its band — and
@@ -35,18 +37,18 @@ use crate::surface::excursion::cells_apart;
 use crate::surface::presence::Band;
 
 /// The verb's switches.
-pub const SWITCHES: [&str; 2] = ["mark", "fire"];
+pub const SWITCHES: [&str; 3] = ["mark", "fire", "void"];
 
 /// The verb's help.
 pub const HELP: &str = "+field shows the field your party stands in. On a site's surface, \
 +field/mark <bearing> [near|far|close|distant]=hostile marks the party of the flight you see there \
 Hostile, and +field/fire <bearing> [band] orders the unit you fly to fire at it: either opens a \
 field on the site. Inside a field, +field/mark <letter>=hostile|friendly|clear sets your party's \
-own mark on another party. Only a party's leader marks; marks are private.";
+own mark on another party. Only a party's leader marks; marks are private. After a field, +field/void cancels the standing your party's fire on a friendly party cost, until your next command or ten IC minutes.";
 
 /// `Usage`.
 const USAGE: &str = "Usage: +field | +field/mark <bearing> [<band>]=hostile | \
-+field/mark <party letter>=hostile|friendly|clear | +field/fire <bearing> [<band>]";
++field/mark <party letter>=hostile|friendly|clear | +field/fire <bearing> [<band>] | +field/void";
 
 /// **The units `actor` leads on one site's ground**, with the site, for every lane site where
 /// there are any.
@@ -150,6 +152,14 @@ pub(crate) fn command(ctx: &mut Ctx<'_>) -> Result<(), CmdError> {
     }
     if ctx.switches.has("fire") {
         return fire(ctx, &raw);
+    }
+    // Doc 36 cut GC.10 (Q-36-11): the leader's void of friendly fire's standing.
+    if ctx.switches.has("void") {
+        if !raw.is_empty() {
+            return Err(CmdError::msg(USAGE));
+        }
+        super::standing::void(ctx);
+        return Ok(());
     }
     if !raw.is_empty() {
         return Err(CmdError::msg(USAGE));

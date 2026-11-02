@@ -3744,6 +3744,8 @@ fn on_chunk(ctx: &mut Ctx<'_>, match_id: MatchId, seq: u64, bytes: &[u8]) {
         })
         .collect();
     let arena_ms = last_event_ms(&events);
+    // Doc 36 cut GC.10 (Q-36-11): an IC field counts the rounds each party saw arrive.
+    crate::field::standing::note_chunk(ctx, match_id, &events);
     // **17b cut M1b.5**: `@mind/live`'s read-back is written from the tape — a
     // `mind_card` line is the card the arena applied, whole, at its
     // millisecond. A `Sent` entry newer than the line (a later offer still on

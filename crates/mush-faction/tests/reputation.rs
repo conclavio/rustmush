@@ -10,7 +10,8 @@ use mush_core::{
 };
 use mush_faction::{
     FactionId, FactionModule, FactionStandingProvider, FactionState, StandingEffect,
-    ensure_organization_faction, public_standing, record_standing,
+    ensure_organization_faction, public_standing, record_standing, record_voidable_standing,
+    standing_receipt, void_standing,
 };
 use mush_org::{OrgId, OrgModule, OrgPredicateProvider};
 use mush_testkit::{TestWorld, fold_module_ops_into, text_of};
@@ -31,6 +32,62 @@ impl GameModule for Producer {
                 ..CommandSpec::default()
             },
             Arc::new(grant),
+        )?;
+        // Doc 36 cut GC.10: `test-vgrant <cause>=<subject>/<faction>:<delta>/<voider>`, a grant
+        // the voider may void, and `test-void <cause>` as the actor.
+        reg.command(
+            CommandSpec {
+                name: "test-vgrant".into(),
+                shape: ArgShape::EqPair,
+                ..CommandSpec::default()
+            },
+            Arc::new(|ctx: &mut Ctx<'_>| {
+                let cause = ctx.args.lhs().to_owned();
+                let rhs = ctx.args.rhs().unwrap_or_default().to_owned();
+                let parts: Vec<&str> = rhs.split('/').collect();
+                let number = |text: Option<&&str>| {
+                    text.and_then(|text| text.parse::<u64>().ok())
+                        .ok_or_else(|| CmdError::msg("number"))
+                };
+                let subject = ObjId(u32::try_from(number(parts.first())?).unwrap_or(0));
+                let (fid, delta) = parts
+                    .get(1)
+                    .and_then(|effect| effect.split_once(':'))
+                    .ok_or_else(|| CmdError::msg("effect"))?;
+                let effect = StandingEffect {
+                    faction: FactionId(fid.parse().map_err(|_| CmdError::msg("faction"))?),
+                    delta: delta.parse().map_err(|_| CmdError::msg("delta"))?,
+                };
+                let voider = ObjId(u32::try_from(number(parts.get(2))?).unwrap_or(0));
+                let fresh = record_voidable_standing(
+                    ctx,
+                    &cause,
+                    subject,
+                    &[effect],
+                    "Friendly fire",
+                    Some(voider),
+                )
+                .map_err(CmdError::msg)?;
+                ctx.out
+                    .sys_to_actor(ctx.actor, "test", if fresh { "applied" } else { "replay" });
+                Ok(())
+            }),
+        )?;
+        reg.command(
+            CommandSpec {
+                name: "test-void".into(),
+                shape: ArgShape::Raw,
+                ..CommandSpec::default()
+            },
+            Arc::new(|ctx: &mut Ctx<'_>| {
+                let cause = ctx.args.raw().trim().to_owned();
+                let actor = ctx.actor;
+                let fresh = void_standing(ctx, &cause, actor, "Voided as friendly fire")
+                    .map_err(CmdError::msg)?;
+                ctx.out
+                    .sys_to_actor(ctx.actor, "test", if fresh { "voided" } else { "replay" });
+                Ok(())
+            }),
         )?;
         reg.command(
             CommandSpec {
@@ -415,5 +472,45 @@ fn corrupt_receipt_prevents_boot_without_orphan_purging_deduplication() {
             .take_module_ops()
             .iter()
             .all(|op| !matches!(op.op, mush_core::ModuleWrite::Del { .. }))
+    );
+}
+
+/// **Doc 36 cut GC.10** (Q-36-11): a friendly-fire grant names who may void it; only that one
+/// voids it, the grant stays as written beside its void, the score no longer counts it, and both
+/// replay after a reboot.
+#[test]
+fn a_voidable_grant_is_voided_only_by_its_named_leader_and_replays() {
+    let (mut world, pilot, victim) = boot(true);
+    run(&mut world, GOD, "@faction/create Surveyors");
+    let fid = faction(&world, "Surveyors");
+    let cause = "field:00ab:1:ab:7";
+    let grant = format!("test-vgrant {cause}={}/{}:-3/{}", pilot.0, fid.0, pilot.0);
+    assert!(run(&mut world, GOD, &grant).contains("applied"));
+    assert_eq!(score(&world, fid, pilot), -3);
+    // Somebody else may not void it.
+    assert!(run(&mut world, victim, &format!("test-void {cause}")).contains("not yours"));
+    assert_eq!(score(&world, fid, pilot), -3);
+    assert!(run(&mut world, pilot, &format!("test-void {cause}")).contains("voided"));
+    assert_eq!(score(&world, fid, pilot), 0);
+    assert!(run(&mut world, pilot, &format!("test-void {cause}")).contains("replay"));
+    assert_eq!(score(&world, fid, pilot), 0);
+    let receipt = standing_receipt(world.world(), cause).expect("the receipt");
+    assert_eq!(receipt.voidable_by, Some(pilot));
+    assert_eq!(receipt.voided_by, Some(pilot));
+    assert!(
+        run(&mut world, pilot, "+standing Surveyors").contains("(voided)"),
+        "the history keeps the change and says it is void"
+    );
+    let mut saved = HashMap::new();
+    fold_module_ops_into(&mut saved, world.take_module_ops());
+    let (world, pilot, _) = reboot(saved);
+    assert_eq!(
+        score(&world, fid, pilot),
+        0,
+        "the void replays with its grant"
+    );
+    assert_eq!(
+        standing_receipt(world.world(), cause).and_then(|receipt| receipt.voided_by),
+        Some(pilot)
     );
 }
