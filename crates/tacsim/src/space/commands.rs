@@ -52,7 +52,7 @@ use super::weapons::LaserMode;
 pub const HELM_VERB: &str = "+helm";
 
 /// All switches supported by `+helm`.
-pub const HELM_SWITCHES: [&str; 15] = [
+pub const HELM_SWITCHES: [&str; 17] = [
     "status",
     "station",
     "heading",
@@ -68,11 +68,13 @@ pub const HELM_SWITCHES: [&str; 15] = [
     "match",
     "submit",
     "run",
+    "dock",
+    "tow",
 ];
 
 /// Help text for `+helm`.
 pub const HELM_HELP: &str = "\
-+helm  --  Ship helm, bridge stations, and standing orders (doc 35 §5, §7, D-35-6, D-35-9, D-35-11, D-35-13).
++helm  --  Ship helm, bridge stations, and standing orders (doc 35 §5, §7, §8, D-35-6, D-35-9, D-35-11..14).
 +helm[/status]                        Show bridge stations, standing orders, and flight state.
 +helm/station <seat>[=<crew>]         Assign an aboard crew member (or yourself) to a bridge station
                                       (command|helm|tactical|ew|engineering|flight_ops), or `off`.
@@ -91,7 +93,10 @@ pub const HELM_HELP: &str = "\
 +helm/approach <rock>                 Execute a braking approach toward rock `A`, `B`, or `C` inside the cluster.
 +helm/match <rock>                    Lock RCS velocity match (`|Δv| < 5 m/s` within `2,000 m`) with rock `A`, `B`, or `C`.
 +helm/submit                          Heave-to and submit cargo manifest to a customs picket inspection (`D-35-11`).
-+helm/run                             Refuse customs inspection and run the picket (`D-35-11`).";
++helm/run                             Refuse customs inspection and run the picket (`D-35-11`).
++helm/dock [<port|derelict> | tape <session_id> <rle> | abort]
+                                      Initiate, step, or verify a 60 fps 6-DOF docking approach (`D-35-14`).
++helm/tow [<derelict_id>]             Attach a salvage tow line to a hard-docked derelict (`D-35-12`).";
 
 /// The asteroid field mining command verb (`+mine`, `SF.R5`, `D-35-13`).
 pub const MINE_VERB: &str = "+mine";
@@ -132,6 +137,9 @@ pub const HOLOTANK_FEED: &str = "space.holotank";
 
 /// Feed identifier for the first-person canopy cockpit display (`SF.2`, `SF.7`).
 pub const SPACE_COCKPIT_FEED: &str = "space.cockpit";
+
+/// Feed identifier for the 60 fps 6-DOF bow docking camera (`SF.5`, `SF.R7`, `D-35-14`).
+pub const SPACE_DOCKING_FEED: &str = "space.docking";
 
 /// Canonical refusal when the caller is not physically aboard any ship.
 pub const NOT_ABOARD_SHIP: &str = "You are not aboard a ship.";
@@ -605,36 +613,90 @@ pub fn observe_bubble_contacts(
     out
 }
 
-/// Emit viewer-filtered `space.holotank` and `space.cockpit` panel frames to `actor` containing
-/// **only** detected contacts (`D-35-10`, `35a` §1).
+/// Emit viewer-filtered `space.holotank`, `space.cockpit`, and `space.docking` panel frames to
+/// `actor` (`D-35-10`, `D-35-14`).
 fn push_space_panels(ctx: &mut Ctx<'_>, hull: ObjId) {
-    let Some((holotank_payload, cockpit_payload)) = ({
+    let (bubble_payloads, docking_payload) = {
         let book = ctx.w.module_state::<SpaceBubbleBook>();
-        book.and_then(|b| b.active_for_hull(hull)).map(|active| {
+        let bubble_pair = book.and_then(|b| b.active_for_hull(hull)).map(|active| {
             (
                 active.bubble.holotank_feed(&active.carrier_ship_id),
                 active.bubble.cockpit_feed(&active.carrier_ship_id),
             )
-        })
-    }) else {
-        return;
+        });
+        let dock_json = book
+            .and_then(|b| b.docking_sessions.get(&hull))
+            .map(build_docking_panel_payload);
+        (bubble_pair, dock_json)
     };
-    ctx.out.push(
-        Audience::Actor(ctx.actor),
-        OutputEvent::Panel {
-            feed: HOLOTANK_FEED.into(),
-            kind: PanelFrameKind::Keyframe,
-            data: holotank_payload,
-        },
-    );
-    ctx.out.push(
-        Audience::Actor(ctx.actor),
-        OutputEvent::Panel {
-            feed: SPACE_COCKPIT_FEED.into(),
-            kind: PanelFrameKind::Keyframe,
-            data: cockpit_payload,
-        },
-    );
+    if let Some((holotank_payload, cockpit_payload)) = bubble_payloads {
+        ctx.out.push(
+            Audience::Actor(ctx.actor),
+            OutputEvent::Panel {
+                feed: HOLOTANK_FEED.into(),
+                kind: PanelFrameKind::Keyframe,
+                data: holotank_payload,
+            },
+        );
+        ctx.out.push(
+            Audience::Actor(ctx.actor),
+            OutputEvent::Panel {
+                feed: SPACE_COCKPIT_FEED.into(),
+                kind: PanelFrameKind::Keyframe,
+                data: cockpit_payload,
+            },
+        );
+    }
+    if let Some(dock_data) = docking_payload {
+        ctx.out.push(
+            Audience::Actor(ctx.actor),
+            OutputEvent::Panel {
+                feed: SPACE_DOCKING_FEED.into(),
+                kind: PanelFrameKind::Keyframe,
+                data: dock_data,
+            },
+        );
+    }
+}
+
+fn build_docking_panel_payload(session: &super::docking::DockingSession) -> serde_json::Value {
+    let pose = &session.live_stepper.pose;
+    let gates = super::docking::evaluate_docking_gates(pose);
+    let (target_label, target_kind) = match &session.target {
+        super::docking::DockingTargetKind::PortBerth { port_name, .. } => {
+            (port_name.as_str(), "station")
+        }
+        super::docking::DockingTargetKind::DisabledDerelict { derelict_name, .. } => {
+            (derelict_name.as_str(), "ship")
+        }
+    };
+    let status = if gates.all_green() {
+        "ALIGNED-READY"
+    } else {
+        "APPROACHING"
+    };
+    serde_json::json!({
+        "session_id": session.challenge.session_id,
+        "dx_mm": pose.lateral_x_mm,
+        "dy_mm": pose.lateral_y_mm,
+        "dz_mm": pose.range_z_mm,
+        "pitch_mdeg": pose.pitch_err_mdeg,
+        "yaw_mdeg": pose.yaw_err_mdeg,
+        "roll_mdeg": pose.roll_err_mdeg,
+        "vx_mmps": pose.vel_x_mmps,
+        "vy_mmps": pose.vel_y_mmps,
+        "vz_mmps": pose.closure_mmps,
+        "pitch_rate_mdeg_s": pose.pitch_rate_mdeg_s,
+        "yaw_rate_mdeg_s": pose.yaw_rate_mdeg_s,
+        "roll_rate_mdeg_s": pose.roll_rate_mdeg_s,
+        "target_label": target_label,
+        "target_kind": target_kind,
+        "paused_from_world_tick": session.paused_from_world_tick,
+        "dampeners": session.live_stepper.dampeners_on,
+        "status": status,
+        "gates_green": gates.green_count(),
+        "target_tumble_mdeg_s": session.challenge.target_tumble_mdeg_s,
+    })
 }
 
 // ---------------------------------------------------------------------------
@@ -669,6 +731,8 @@ pub fn helm_cmd(ctx: &mut Ctx<'_>) -> Result<(), CmdError> {
         Some("match") => helm_match(ctx),
         Some("submit") => helm_submit(ctx),
         Some("run") => helm_run(ctx),
+        Some("dock") => helm_dock(ctx),
+        Some("tow") => helm_tow(ctx),
         Some(other) => Err(CmdError::msg(format!("Unknown +helm switch: /{other}."))),
     }
 }
@@ -787,6 +851,26 @@ fn helm_status(ctx: &mut Ctx<'_>) -> Result<(), CmdError> {
                     (live_kg as f64) / 1_000.0
                 ));
             }
+        }
+        if let Some(session) = book.docking_sessions.get(&hull) {
+            let gates = super::docking::evaluate_docking_gates(&session.live_stepper.pose);
+            lines.push(format!(
+                "  Docking session `{}` — range={} mm, closure={} mm/s, gates={}/5 green, paused_from_world_tick={}.",
+                session.challenge.session_id,
+                session.live_stepper.pose.range_z_mm,
+                session.live_stepper.pose.closure_mmps,
+                gates.green_count(),
+                session.paused_from_world_tick
+            ));
+        }
+        if let Some(tow) = book.active_tows.get(&hull) {
+            lines.push(format!(
+                "  Active tow: derelict #{} ({} t <= 2x {} t tug cap), 48h Registry salvage window expires at {} real s.",
+                tow.derelict_hull.0,
+                tow.derelict_dry_mass_t,
+                tow.tug_dry_mass_t,
+                tow.contest_expires_real_s
+            ));
         }
     }
 
@@ -2766,6 +2850,685 @@ fn helm_run(ctx: &mut Ctx<'_>) -> Result<(), CmdError> {
         "[PICKET] You refuse inspection and run the Republic Customs picket! Corvette transitions to Hostile; campaign front `{}` #{} advanced.",
         mush_faction::CUSTOMS_ASSERTION_TITLE,
         front_id.unwrap_or(0)
+    );
+    crate::port::voyage::narrate_hull(ctx, hull, &line);
+    ctx.out.sys_to_actor(ctx.actor, "tacsim.space", line);
+    push_space_panels(ctx, hull);
+    Ok(())
+}
+
+// ---------------------------------------------------------------------------
+// 60 fps 6-DOF Docking Mini-Game, Input-Tape Verification & Salvage Tow (`SF.R7`)
+// ---------------------------------------------------------------------------
+
+fn debit_hull_propellant_kg(ctx: &mut Ctx<'_>, hull: ObjId, spent_kg: u32) -> Result<(), CmdError> {
+    if spent_kg == 0 {
+        return Ok(());
+    }
+    let Ok((basis, live_kg)) = live_hull_basis_and_propellant_kg(ctx, hull) else {
+        return Ok(());
+    };
+    let clamped_kg = u64::from(spent_kg).min(live_kg);
+    if clamped_kg == 0 {
+        return Ok(());
+    }
+    let whole_tonnes = {
+        let Some(book) = ctx.w.module_state_mut::<SpaceBubbleBook>() else {
+            return Ok(());
+        };
+        let ledger = book.propellant_ledger_mut(hull);
+        ledger.record_burn_kg(basis.tank, clamped_kg)
+    };
+    let _ = submit_space_burn_if_needed(ctx, hull, basis.vault.0, whole_tonnes, 0)?;
+    Ok(())
+}
+
+fn apply_collar_scrape_damage(ctx: &mut Ctx<'_>, hull: ObjId, front_armor_damage: u32, at_ic: i64) {
+    if front_armor_damage == 0 {
+        return;
+    }
+    let bubble_ship = {
+        let mut out = None;
+        if let Some(book) = ctx.w.module_state_mut::<SpaceBubbleBook>()
+            && let Some(active) = book.by_hull.get_mut(&hull)
+            && let Some(ship) = active.bubble.ships.get_mut(&active.carrier_ship_id)
+        {
+            if let Some(hull_sec) = ship.sections.get_mut(&super::bubble::ShipSectionId::Hull)
+                && let Some(front) = hull_sec.facets.get_mut(&super::bubble::FacetBand::Front)
+            {
+                *front = front.saturating_sub(front_armor_damage);
+            }
+            out = Some(ship.clone());
+        }
+        out
+    };
+    if let Some(ship) = bubble_ship {
+        let _ = super::custody::check_in_space_unit(ctx, hull, &ship, at_ic);
+        return;
+    }
+
+    // Not in an active bubble: check out or instantiate the hull's `TacticalUnit`, apply Front
+    // facet scrape damage, and check it back in so `TacticalState` records the collar scrape (`D-35-14`).
+    let ship_name = display_name(ctx.w, hull);
+    if let Ok(mut s) = super::custody::check_out_space_unit(
+        ctx,
+        hull,
+        "tacsim.unit.dray_p",
+        1,
+        format!("ship.{}", hull.0),
+        ship_name,
+        super::tick::CARRIER_PARTY,
+        [0, 0, 0],
+        [0, 0, 0],
+    ) {
+        if let Some(hull_sec) = s.sections.get_mut(&super::bubble::ShipSectionId::Hull)
+            && let Some(front) = hull_sec.facets.get_mut(&super::bubble::FacetBand::Front)
+        {
+            *front = front.saturating_sub(front_armor_damage);
+        }
+        let _ = super::custody::check_in_space_unit(ctx, hull, &s, at_ic);
+    }
+}
+
+fn unpause_hull_after_docking(ctx: &mut Ctx<'_>, hull: ObjId, now: &ClockStamp) {
+    let has_active_bubble = ctx
+        .w
+        .module_state::<SpaceBubbleBook>()
+        .is_some_and(|b| b.by_hull.contains_key(&hull));
+    if !has_active_bubble {
+        let _ = mush_sim::resume_carrier_journey(ctx, hull, now);
+    }
+}
+
+fn resolve_docking_target(
+    ctx: &Ctx<'_>,
+    hull: ObjId,
+    token: &str,
+) -> Result<super::docking::DockingTargetKind, CmdError> {
+    let trimmed = token.trim();
+    let lower = trimmed.to_ascii_lowercase();
+
+    // 1. Check disabled contacts in the hull's active bubble or `SpaceBubbleBook::derelicts`.
+    if let Some(book) = ctx.w.module_state::<SpaceBubbleBook>() {
+        if let Some(active) = book.active_for_hull(hull) {
+            let parsed_obj = trimmed
+                .strip_prefix('#')
+                .or_else(|| trimmed.strip_prefix("ship."))
+                .and_then(|s| s.parse::<u32>().ok())
+                .map(ObjId);
+            for (ship_id, ship) in &active.bubble.ships {
+                if ship_id == &active.carrier_ship_id {
+                    continue;
+                }
+                let contact_hull = if ship_id == &active.interdictor_ship_id {
+                    active.interdictor_hull
+                } else if let Some(picket) = &active.picket
+                    && ship_id == &picket.raider_ship_id
+                {
+                    picket.raider_hull
+                } else {
+                    ObjId(hull.0.saturating_add(1_000))
+                };
+                let matches_token = trimmed.eq_ignore_ascii_case("derelict")
+                    || ship_id.eq_ignore_ascii_case(trimmed)
+                    || ship.callsign.to_ascii_lowercase().contains(&lower)
+                    || parsed_obj == Some(contact_hull);
+                if matches_token {
+                    if !matches!(ship.status, HullStatus::DisabledDerelict { .. }) {
+                        return Err(CmdError::msg(format!(
+                            "Target `{}` (#{}) is still operational; disable its drive before initiating collar docking.",
+                            ship.callsign, contact_hull.0
+                        )));
+                    }
+                    return Ok(super::docking::DockingTargetKind::DisabledDerelict {
+                        derelict_hull: contact_hull,
+                        derelict_name: ship.callsign.clone(),
+                    });
+                }
+            }
+        }
+
+        // Also check `SpaceBubbleBook::derelicts`:
+        let parsed_obj = trimmed
+            .strip_prefix('#')
+            .or_else(|| trimmed.strip_prefix("ship."))
+            .and_then(|s| s.parse::<u32>().ok())
+            .map(ObjId);
+        for &derelict_hull in book.derelicts.keys() {
+            let dname = display_name(ctx.w, derelict_hull);
+            if trimmed.eq_ignore_ascii_case("derelict")
+                || parsed_obj == Some(derelict_hull)
+                || dname.to_ascii_lowercase().contains(&lower)
+            {
+                return Ok(super::docking::DockingTargetKind::DisabledDerelict {
+                    derelict_hull,
+                    derelict_name: dname,
+                });
+            }
+        }
+    }
+
+    // 2. Check open ports / berths (`open_port_places`).
+    let open_ports = open_port_places(ctx.w);
+    if let Some((place_id, port_label, _, _)) =
+        open_ports.into_iter().find(|(place_id, label, _, def)| {
+            place_id.as_str().eq_ignore_ascii_case(&lower)
+                || def.venue.as_str().eq_ignore_ascii_case(&lower)
+                || label.to_ascii_lowercase().contains(&lower)
+                || lower.contains(&def.venue.as_str().to_ascii_lowercase())
+        })
+    {
+        return Ok(super::docking::DockingTargetKind::PortBerth {
+            port_id: place_id.as_str().to_owned(),
+            port_name: port_label,
+        });
+    }
+
+    Err(CmdError::msg(format!(
+        "Unknown docking target `{trimmed}` (specify an open port berth or a disabled derelict hull)."
+    )))
+}
+
+fn resolve_port_destination_parent(
+    w: &World,
+    hull: ObjId,
+    port_id: &str,
+) -> Result<(mush_sim::SpatialParent, mush_sim::DomainId), CmdError> {
+    let lower = port_id.to_ascii_lowercase();
+    let open_ports = open_port_places(w);
+    if let Some((_, _, dest_host, _)) = open_ports.into_iter().find(|(place_id, label, _, def)| {
+        place_id.as_str().eq_ignore_ascii_case(&lower)
+            || def.venue.as_str().eq_ignore_ascii_case(&lower)
+            || label.to_ascii_lowercase().contains(&lower)
+    }) && let Some(dest_domain) = w
+        .module_state::<SpatialState>()
+        .and_then(|s| s.domain_of_host(dest_host))
+        .map(|d| d.id)
+    {
+        let pose_val = mush_sim::passive_rules_value(serde_json::json!({}))
+            .map_err(|e| CmdError::msg(e.to_string()))?;
+        return Ok((
+            mush_sim::SpatialParent::Direct {
+                domain: dest_domain,
+                pose: mush_sim::Pose::passive(pose_val),
+            },
+            dest_domain,
+        ));
+    }
+
+    if let Some(journey) = w.module_state::<JourneyBook>().and_then(|jb| jb.get(hull)) {
+        let dest = journey.destination().clone();
+        let dom = match &dest {
+            mush_sim::SpatialParent::Direct { domain, .. } => *domain,
+            _ => DomainId(1),
+        };
+        return Ok((dest, dom));
+    }
+
+    Err(CmdError::msg(format!(
+        "Port `{port_id}` has no active spatial domain for docking."
+    )))
+}
+
+fn helm_dock(ctx: &mut Ctx<'_>) -> Result<(), CmdError> {
+    let (hull, _) = require_aboard_and_seat(ctx, Some("movement"))?;
+    let raw = ctx.args.raw().trim().to_owned();
+    let now = ctx.w.world_ic_now();
+
+    if raw.is_empty() || raw.eq_ignore_ascii_case("status") {
+        let Some(book) = ctx.w.module_state::<SpaceBubbleBook>() else {
+            return Err(CmdError::msg("Space state is not registered."));
+        };
+        if let Some(session) = book.docking_sessions.get(&hull) {
+            let pose = &session.live_stepper.pose;
+            let gates = super::docking::evaluate_docking_gates(pose);
+            ctx.out.sys_to_actor(
+                ctx.actor,
+                "tacsim.space",
+                format!(
+                    "Docking session `{}` (paused_from_world_tick={}): dx={} mm, dy={} mm, dz={} mm, vz={} mm/s, pitch={} mdeg, yaw={} mdeg, roll={} mdeg ({}/5 gates green).",
+                    session.challenge.session_id,
+                    session.paused_from_world_tick,
+                    pose.lateral_x_mm,
+                    pose.lateral_y_mm,
+                    pose.range_z_mm,
+                    pose.closure_mmps,
+                    pose.pitch_err_mdeg,
+                    pose.yaw_err_mdeg,
+                    pose.roll_err_mdeg,
+                    gates.green_count()
+                ),
+            );
+            push_space_panels(ctx, hull);
+            return Ok(());
+        }
+        if let Some(&derelict_hull) = book.clamped_derelicts.get(&hull) {
+            ctx.out.sys_to_actor(
+                ctx.actor,
+                "tacsim.space",
+                format!(
+                    "Collar hard-docked to derelict #{} ({}); run `+helm/tow` to attach salvage tow line.",
+                    derelict_hull.0,
+                    display_name(ctx.w, derelict_hull)
+                ),
+            );
+            return Ok(());
+        }
+        return Err(CmdError::msg(
+            "No active docking session. Usage: +helm/dock <port|derelict> | +helm/dock tape <session_id> <rle_tape> | +helm/dock abort",
+        ));
+    }
+
+    if raw.eq_ignore_ascii_case("abort") {
+        let removed = ctx
+            .w
+            .module_state_mut::<SpaceBubbleBook>()
+            .and_then(|b| b.docking_sessions.remove(&hull));
+        let Some(session) = removed else {
+            return Err(CmdError::msg("No active docking session to abort."));
+        };
+        let spent_kg = session
+            .live_stepper
+            .rcs_spent_kg(&session.challenge.rcs_authority);
+        debit_hull_propellant_kg(ctx, hull, spent_kg)?;
+        unpause_hull_after_docking(ctx, hull, &now);
+        ctx.out.sys_to_actor(
+            ctx.actor,
+            "tacsim.space",
+            format!(
+                "Docking session `{}` aborted; hull unpaused and returned to live world tick (spent {spent_kg} kg RCS propellant).",
+                session.challenge.session_id
+            ),
+        );
+        push_space_panels(ctx, hull);
+        return Ok(());
+    }
+
+    // Interactive single-frame text control order (`DOCK TRANS UP`, `+helm/dock order DOCK TRANS UP`, etc.):
+    let maybe_order_str = raw.strip_prefix("order ").unwrap_or(raw.as_str()).trim();
+    if let Some(control_input) = super::docking::parse_dock_text_order(maybe_order_str) {
+        if control_input.abort {
+            let _ = ctx
+                .w
+                .module_state_mut::<SpaceBubbleBook>()
+                .and_then(|b| b.docking_sessions.remove(&hull));
+            unpause_hull_after_docking(ctx, hull, &now);
+            ctx.out.sys_to_actor(
+                ctx.actor,
+                "tacsim.space",
+                "Docking approach aborted via control order; hull unpaused.".to_owned(),
+            );
+            push_space_panels(ctx, hull);
+            return Ok(());
+        }
+        let pose_summary = {
+            let book = ctx
+                .w
+                .module_state_mut::<SpaceBubbleBook>()
+                .ok_or_else(|| CmdError::msg("Space state is not registered."))?;
+            let session = book
+                .docking_sessions
+                .get_mut(&hull)
+                .ok_or_else(|| CmdError::msg("No active docking session for this ship."))?;
+            let auth = session.challenge.rcs_authority;
+            let tumble = session.challenge.target_tumble_mdeg_s;
+            session.live_stepper.step_frame(control_input, &auth, tumble);
+            let gates = super::docking::evaluate_docking_gates(&session.live_stepper.pose);
+            format!(
+                "6-DOF RCS pulse applied (`{maybe_order_str}`): dx={} mm, dy={} mm, dz={} mm, vz={} mm/s ({}/5 gates green).",
+                session.live_stepper.pose.lateral_x_mm,
+                session.live_stepper.pose.lateral_y_mm,
+                session.live_stepper.pose.range_z_mm,
+                session.live_stepper.pose.closure_mmps,
+                gates.green_count()
+            )
+        };
+        ctx.out.sys_to_actor(ctx.actor, "tacsim.space", pose_summary);
+        push_space_panels(ctx, hull);
+        return Ok(());
+    }
+
+    // Tape verification submission (`+helm/dock tape <session_id> <rle_tape>` or `+helm/dock tape <rle_tape>`):
+    if let Some(tape_tail) = raw.strip_prefix("tape").map(str::trim) {
+        if tape_tail.is_empty() {
+            return Err(CmdError::msg(
+                "Usage: +helm/dock tape <session_id> <rle_tape>",
+            ));
+        }
+        let session = ctx
+            .w
+            .module_state::<SpaceBubbleBook>()
+            .and_then(|b| b.docking_sessions.get(&hull).cloned())
+            .ok_or_else(|| CmdError::msg("No active docking session for this ship."))?;
+
+        let parts: Vec<&str> = tape_tail.split_whitespace().collect();
+        let (submitted_session_id, rle_str) = if parts.len() >= 2 {
+            (Some(parts[0]), parts[1..].join(""))
+        } else {
+            (None, parts[0].to_owned())
+        };
+        if let Some(sub_id) = submitted_session_id
+            && sub_id != session.challenge.session_id
+        {
+            return Err(CmdError::msg(
+                super::docking::DockingTapeError::SessionIdMismatch {
+                    expected: session.challenge.session_id.clone(),
+                    got: sub_id.to_owned(),
+                }
+                .to_string(),
+            ));
+        }
+
+        let tape = super::docking::DockingInputTape::decode_rle(&rle_str)
+            .map_err(|e| CmdError::msg(e.to_string()))?;
+        let report = super::docking::replay_docking_tape(&session.challenge, &tape)
+            .map_err(|e| CmdError::msg(e.to_string()))?;
+
+        match report.outcome {
+            super::docking::DockingOutcome::OutOfGate { gates } => {
+                return Err(CmdError::msg(format!(
+                    "Docking input tape rejected: collar gates not aligned at end of {} frames ({}/5 gates green: lateral={}, attitude={}, roll={}, closure={}, range={}; final pose dx={} mm, dy={} mm, dz={} mm, vz={} mm/s).",
+                    report.frames_replayed,
+                    gates.green_count(),
+                    gates.lateral_ok,
+                    gates.attitude_ok,
+                    gates.roll_ok,
+                    gates.closure_ok,
+                    gates.range_ok,
+                    report.final_pose.lateral_x_mm,
+                    report.final_pose.lateral_y_mm,
+                    report.final_pose.range_z_mm,
+                    report.final_pose.closure_mmps,
+                )));
+            }
+            super::docking::DockingOutcome::Aborted => {
+                if let Some(book) = ctx.w.module_state_mut::<SpaceBubbleBook>() {
+                    book.docking_sessions.remove(&hull);
+                }
+                debit_hull_propellant_kg(ctx, hull, report.rcs_spent_kg)?;
+                unpause_hull_after_docking(ctx, hull, &now);
+                ctx.out.sys_to_actor(
+                    ctx.actor,
+                    "tacsim.space",
+                    format!(
+                        "Docking session `{}` aborted on frame {} (spent {} kg RCS propellant); hull unpaused.",
+                        session.challenge.session_id, report.frames_replayed, report.rcs_spent_kg
+                    ),
+                );
+                push_space_panels(ctx, hull);
+                return Ok(());
+            }
+            super::docking::DockingOutcome::CollarScrapeBounce {
+                impact_closure_mmps,
+                front_armor_damage,
+            } => {
+                if let Some(book) = ctx.w.module_state_mut::<SpaceBubbleBook>() {
+                    book.docking_sessions.remove(&hull);
+                }
+                debit_hull_propellant_kg(ctx, hull, report.rcs_spent_kg)?;
+                apply_collar_scrape_damage(ctx, hull, front_armor_damage, now.at);
+                unpause_hull_after_docking(ctx, hull, &now);
+                let line = format!(
+                    "[DOCKING] Hard collar bounce at {} mm/s on frame {}! Bow collar scraped (`Front` facet -{} armor, spent {} kg RCS propellant); docking session closed and hull unpaused.",
+                    impact_closure_mmps,
+                    report.frames_replayed,
+                    front_armor_damage,
+                    report.rcs_spent_kg
+                );
+                crate::port::voyage::narrate_hull(ctx, hull, &line);
+                ctx.out.sys_to_actor(ctx.actor, "tacsim.space", line);
+                push_space_panels(ctx, hull);
+                return Ok(());
+            }
+            super::docking::DockingOutcome::Clamped => {
+                if let Some(book) = ctx.w.module_state_mut::<SpaceBubbleBook>() {
+                    book.docking_sessions.remove(&hull);
+                }
+                debit_hull_propellant_kg(ctx, hull, report.rcs_spent_kg)?;
+
+                match session.target {
+                    super::docking::DockingTargetKind::PortBerth {
+                        ref port_id,
+                        ref port_name,
+                    } => {
+                        let (dest_parent, _) = resolve_port_destination_parent(ctx.w, hull, port_id)?;
+                        if let Some(book) = ctx.w.module_state_mut::<SpaceBubbleBook>() {
+                            book.free_flights.remove(&hull);
+                            book.by_hull.remove(&hull);
+                        }
+                        mush_sim::dock_carrier_at_destination(ctx, hull, dest_parent, &now)
+                            .map_err(CmdError::msg)?;
+                        let line = format!(
+                            "[DOCKING] Hard dock and magnetic collar seal confirmed at {port_name} on frame {} (dz={} mm, vz={} mm/s, spent {} kg RCS propellant; berth transitioned to `Berth::Docked`).",
+                            report.frames_replayed,
+                            report.final_pose.range_z_mm,
+                            report.final_pose.closure_mmps,
+                            report.rcs_spent_kg
+                        );
+                        crate::port::voyage::narrate_hull(ctx, hull, &line);
+                        ctx.out.sys_to_actor(ctx.actor, "tacsim.space", line);
+                    }
+                    super::docking::DockingTargetKind::DisabledDerelict {
+                        derelict_hull,
+                        ref derelict_name,
+                    } => {
+                        if let Some(book) = ctx.w.module_state_mut::<SpaceBubbleBook>() {
+                            book.clamped_derelicts.insert(hull, derelict_hull);
+                        }
+                        unpause_hull_after_docking(ctx, hull, &now);
+                        let line = format!(
+                            "[DOCKING] Hard dock and magnetic collar seal confirmed on derelict {derelict_name} (#{}) on frame {} (dz={} mm, vz={} mm/s, spent {} kg RCS propellant). Run `+helm/tow` to attach salvage tow line.",
+                            derelict_hull.0,
+                            report.frames_replayed,
+                            report.final_pose.range_z_mm,
+                            report.final_pose.closure_mmps,
+                            report.rcs_spent_kg
+                        );
+                        crate::port::voyage::narrate_hull(ctx, hull, &line);
+                        ctx.out.sys_to_actor(ctx.actor, "tacsim.space", line);
+                    }
+                }
+                push_space_panels(ctx, hull);
+                return Ok(());
+            }
+        }
+    }
+
+    // Initiate a new `DockingSession` (`+helm/dock <port|derelict>` or `+helm/dock start <port|derelict>`):
+    let target_token = raw.strip_prefix("start ").unwrap_or(raw.as_str()).trim();
+    let target = resolve_docking_target(ctx, hull, target_token)?;
+
+    let session_id = ctx
+        .w
+        .module_state_mut::<SpaceBubbleBook>()
+        .map(|b| b.alloc_docking_session_id(hull))
+        .ok_or_else(|| CmdError::msg("Space state is not registered."))?;
+
+    let challenge = match &target {
+        super::docking::DockingTargetKind::PortBerth { port_id, .. } => {
+            if let Ok((_, port_domain)) = resolve_port_destination_parent(ctx.w, hull, port_id) {
+                let _ = mush_sim::promote_carrier_journey(ctx, hull, port_domain, &now);
+            }
+            super::docking::DockingChallenge::standard_port(session_id.clone())
+        }
+        super::docking::DockingTargetKind::DisabledDerelict { .. } => {
+            super::docking::DockingChallenge::derelict_collar(session_id.clone())
+        }
+    };
+
+    let live_stepper = super::docking::DockingStepperState::new(challenge.start_pose.clone());
+    let target_desc = match &target {
+        super::docking::DockingTargetKind::PortBerth { port_name, .. } => port_name.clone(),
+        super::docking::DockingTargetKind::DisabledDerelict {
+            derelict_hull,
+            derelict_name,
+        } => format!("{derelict_name} (#{})", derelict_hull.0),
+    };
+    let session = super::docking::DockingSession {
+        hull_id: hull,
+        target,
+        challenge: challenge.clone(),
+        live_stepper,
+        paused_from_world_tick: true,
+        started_ic_s: now.at,
+    };
+
+    if let Some(book) = ctx.w.module_state_mut::<SpaceBubbleBook>() {
+        book.docking_sessions.insert(hull, session);
+    }
+
+    let line = format!(
+        "[DOCKING] Initiated 60 fps 6-DOF docking session `{session_id}` toward {target_desc}: hull stepped out of live world tick (`paused_from_world_tick=true`, start dz={} mm, dx={} mm, dy={} mm). Submit `+helm/dock tape {session_id} <rle_tape>` to clamp.",
+        challenge.start_pose.range_z_mm,
+        challenge.start_pose.lateral_x_mm,
+        challenge.start_pose.lateral_y_mm,
+    );
+    crate::port::voyage::narrate_hull(ctx, hull, &line);
+    ctx.out.sys_to_actor(ctx.actor, "tacsim.space", line);
+    push_space_panels(ctx, hull);
+    Ok(())
+}
+
+fn canonical_hull_dry_mass_t(w: &World, hull: ObjId, default_t: u32) -> u32 {
+    if let Some(view) = crate::port::ship::hull_view(w, hull)
+        && let Some(spec) = super::custody::unit_spec_for_id(view.unit.as_str())
+        && let Some(log) = &spec.logistics
+    {
+        return log.dry_mass_t;
+    }
+    if let Some(book) = w.module_state::<SpaceBubbleBook>()
+        && let Some(active) = book.active_for_hull(hull)
+    {
+        if hull == active.interdictor_hull
+            && let Some(iship) = active.bubble.ships.get(&active.interdictor_ship_id)
+        {
+            return iship.dry_mass_t;
+        }
+        if let Some(cship) = active.bubble.ships.get(&active.carrier_ship_id) {
+            return cship.dry_mass_t;
+        }
+    }
+    default_t
+}
+
+fn helm_tow(ctx: &mut Ctx<'_>) -> Result<(), CmdError> {
+    let (hull, _) = require_aboard_and_seat(ctx, Some("movement"))?;
+    let raw = ctx.args.raw().trim().to_owned();
+    let now = ctx.w.world_ic_now();
+
+    let clamped_derelict = ctx
+        .w
+        .module_state::<SpaceBubbleBook>()
+        .and_then(|b| b.clamped_derelicts.get(&hull).copied())
+        .ok_or_else(|| {
+            CmdError::msg(
+                "Must complete a 6-DOF hard-dock clamp (`+helm/dock <derelict>` then `+helm/dock tape ...`) before attaching a tow line.",
+            )
+        })?;
+
+    if !raw.is_empty()
+        && let Some(parsed_id) = raw
+            .strip_prefix('#')
+            .or_else(|| raw.strip_prefix("ship."))
+            .and_then(|s| s.parse::<u32>().ok())
+            .map(ObjId)
+        && parsed_id != clamped_derelict
+    {
+        return Err(CmdError::msg(format!(
+            "Ship is hard-docked to derelict #{}, not #{}.",
+            clamped_derelict.0, parsed_id.0
+        )));
+    }
+
+    let tug_dry_mass_t = canonical_hull_dry_mass_t(ctx.w, hull, 240);
+    let derelict_dry_mass_t = canonical_hull_dry_mass_t(ctx.w, clamped_derelict, 180);
+    let max_tow_mass_t = tug_dry_mass_t.saturating_mul(2);
+    if derelict_dry_mass_t > max_tow_mass_t {
+        return Err(CmdError::msg(format!(
+            "Derelict #{} dry mass ({derelict_dry_mass_t} t) exceeds 2x tug dry-mass cap ({max_tow_mass_t} t for {tug_dry_mass_t} t tug; `doc 27/27a`).",
+            clamped_derelict.0
+        )));
+    }
+
+    let filed_real_s = if ctx.w.now() > 0 {
+        (ctx.w.now() / 1_000).max(1)
+    } else {
+        (now.at / 24).max(1)
+    };
+    let contest_expires_real_s =
+        filed_real_s.saturating_add(i64::from(super::bubble::DERELICT_WINDOW_S));
+
+    // Ensure the derelict is registered in `SalvageClaimBook` and `SpaceBubbleBook::derelicts` (`D-35-12`):
+    let already_claimed = ctx
+        .w
+        .module_state::<SpaceBubbleBook>()
+        .and_then(|b| b.derelicts.get(&clamped_derelict))
+        .is_some_and(|d| d.salvage_title_status.is_some());
+    if !already_claimed {
+        let (domain, op_id) = {
+            let book = ctx
+                .w
+                .module_state_mut::<SpaceBubbleBook>()
+                .ok_or_else(|| CmdError::msg("Space state is not registered."))?;
+            let dom = book
+                .active_for_hull(hull)
+                .map(|a| a.domain)
+                .or_else(|| book.derelicts.get(&clamped_derelict).map(|d| d.domain))
+                .unwrap_or(DomainId(1));
+            book.next_recovery_op_id = book.next_recovery_op_id.saturating_add(1);
+            let op = crate::field_ops::RecoveryOpId::new(book.next_recovery_op_id)
+                .map_err(|e| CmdError::msg(e.to_string()))?;
+            (dom, op)
+        };
+        let prior_owner = ObjId(clamped_derelict.0.saturating_add(1_000));
+        let base_obj = ObjId(domain.0.try_into().unwrap_or(1u32).max(1));
+        let title_status = ctx
+            .w
+            .module_state_mut::<crate::field_ops::SalvageClaimBook>()
+            .and_then(|sb| {
+                super::custody::register_derelict_salvage_in_book(
+                    sb,
+                    op_id,
+                    clamped_derelict,
+                    hull,
+                    hull,
+                    prior_owner,
+                    base_obj,
+                    now.at,
+                    filed_real_s,
+                )
+                .ok()
+            });
+        if let Some(book) = ctx.w.module_state_mut::<SpaceBubbleBook>() {
+            book.derelicts
+                .entry(clamped_derelict)
+                .or_insert(super::tick::SpaceDerelictRecord {
+                    hull: clamped_derelict,
+                    domain,
+                    disabled_at_ic_s: now.at,
+                    epoch_open: true,
+                    life_support_remaining_s: super::bubble::DERELICT_WINDOW_S,
+                    salvage_contest_window_s: super::bubble::DERELICT_WINDOW_S,
+                    assessment: None,
+                    salvage_title_status: title_status,
+                });
+        }
+    }
+
+    let tow_record = super::docking::SalvageTowRecord {
+        tug_hull: hull,
+        derelict_hull: clamped_derelict,
+        tug_dry_mass_t,
+        derelict_dry_mass_t,
+        contest_expires_real_s,
+    };
+    if let Some(book) = ctx.w.module_state_mut::<SpaceBubbleBook>() {
+        book.active_tows.insert(hull, tow_record);
+    }
+
+    let line = format!(
+        "[SALVAGE] Tow line locked to disabled derelict #{} ({} t <= 2x {} t tug cap); 48-hour Freeport Registry salvage claim window active until {} real s (`SalvageClaimBook`).",
+        clamped_derelict.0, derelict_dry_mass_t, tug_dry_mass_t, contest_expires_real_s
     );
     crate::port::voyage::narrate_hull(ctx, hull, &line);
     ctx.out.sys_to_actor(ctx.actor, "tacsim.space", line);

@@ -13,6 +13,7 @@ use serde::{Deserialize, Serialize};
 pub mod bubble;
 pub mod commands;
 pub mod custody;
+pub mod docking;
 pub mod mining;
 pub mod picket;
 pub mod tick;
@@ -27,10 +28,10 @@ pub use bubble::{
 pub use commands::{
     BridgeRole, HELM_HELP, HELM_SWITCHES, HELM_VERB, HOLOTANK_FEED, MINE_HELP, MINE_SWITCHES,
     MINE_VERB, NO_BRIDGE_STATION, NO_SUCH_CONTACT, NOT_ABOARD_SHIP, SPACE_COCKPIT_FEED,
-    SpaceContactObservation, TAC_HELP, TAC_SWITCHES, TAC_VERB, emcon_level_for_posture,
-    emcon_posture_for_level, evaluate_space_contact_detection, heading_order_vector, helm_cmd,
-    hull_aboard_for_actor, is_hull_captain, mine_cmd, observe_bubble_contacts, parse_emcon_token,
-    seat_role_for_actor, tac_cmd,
+    SPACE_DOCKING_FEED, SpaceContactObservation, TAC_HELP, TAC_SWITCHES, TAC_VERB,
+    emcon_level_for_posture, emcon_posture_for_level, evaluate_space_contact_detection,
+    heading_order_vector, helm_cmd, hull_aboard_for_actor, is_hull_captain, mine_cmd,
+    observe_bubble_contacts, parse_emcon_token, seat_role_for_actor, tac_cmd,
 };
 pub use custody::{
     ALL_FACET_BANDS, ALL_SHIP_SECTIONS, apply_unit_spec_to_space_ship,
@@ -39,6 +40,14 @@ pub use custody::{
     record_space_combat_to_black_box, register_derelict_salvage_in_book,
     resolve_tactical_section_id, space_ship_from_tactical_unit,
     space_ship_from_tactical_unit_with_spec, unit_spec_for_id,
+};
+pub use docking::{
+    COLLAR_SCRAPE_FRONT_ARMOR_DAMAGE, DOCK_GATE_MAX_ANG_RATE_MDEG_S, DOCK_GATE_MAX_LAT_VEL_MMPS,
+    DOCK_GATE_RANGE_Z_MM, DOCKING_FPS, DockingChallenge, DockingControlInput, DockingGateStatus,
+    DockingInputTape, DockingOutcome, DockingRcsAuthority, DockingReplayReport, DockingSession,
+    DockingStepperState, DockingTapeError, DockingTapeSpan, DockingTargetKind, SalvageTowRecord,
+    evaluate_docking_gates, parse_dock_text_order, replay_docking_tape, solve_docking_tape,
+    solve_hard_bounce_tape,
 };
 pub use mining::{
     ActiveClusterMiningSession, ClusterRockSpec, ClusterSiteState, ClusterTenureOrder, ClusterZone,
@@ -76,8 +85,8 @@ pub const MAX_DOCKING_INIT_RANGE_M: i64 = 500;
 /// Maximum relative speed (m/s) to initiate a 6-DOF docking approach (`<= 5 m/s`).
 pub const MAX_DOCKING_INIT_REL_SPEED_MPS: i64 = 5;
 
-/// Lateral alignment gate (`|x| <= 500 mm`, `|y| <= 500 mm`).
-pub const DOCK_GATE_LATERAL_MM: i64 = 500;
+/// Lateral alignment gate (`|x| <= 250 mm`, `|y| <= 250 mm`; `D-35-14`).
+pub const DOCK_GATE_LATERAL_MM: i64 = 250;
 
 /// Attitude alignment gate (`|pitch| <= 2,000 mdeg`, `|yaw| <= 2,000 mdeg`, i.e. `<= 2.0 deg`).
 pub const DOCK_GATE_ATTITUDE_MDEG: i32 = 2_000;
@@ -85,8 +94,8 @@ pub const DOCK_GATE_ATTITUDE_MDEG: i32 = 2_000;
 /// Roll alignment gate (`|roll_err| <= 3,000 mdeg`, i.e. `<= 3.0 deg`).
 pub const DOCK_GATE_ROLL_MDEG: i32 = 3_000;
 
-/// Minimum forward closure speed at collar contact (`>= 50 mm/s`, i.e. `0.05 m/s`).
-pub const DOCK_GATE_CLOSURE_MIN_MMPS: i64 = 50;
+/// Minimum forward closure speed at collar contact (`>= 100 mm/s`, i.e. `0.10 m/s`; `D-35-14`).
+pub const DOCK_GATE_CLOSURE_MIN_MMPS: i64 = 100;
 
 /// Maximum safe forward closure speed at collar contact (`<= 800 mm/s`, i.e. `0.80 m/s`).
 pub const DOCK_GATE_CLOSURE_MAX_MMPS: i64 = 800;
@@ -708,6 +717,51 @@ mod tests {
         assert!(
             halcyon_dmg.contains("power destroyed"),
             "unexpected halcyon damage line: {halcyon_dmg}"
+        );
+    }
+
+    #[test]
+    fn docking_input_tape_replays_60hz_gates_rejects_uncommanded_and_detects_collar_scrape() {
+        let challenge = DockingChallenge::standard_port("dock.4201.1");
+
+        // 1. Starting pose must be outside all 5 alignment gates so an uncommanded tape never auto-wins (`35a` §1, §4).
+        let start_gates = evaluate_docking_gates(&challenge.start_pose);
+        assert_eq!(start_gates.green_count(), 0);
+        let default_tape = DockingInputTape::from_frames(&[DockingControlInput::default(); 200]);
+        let default_report =
+            replay_docking_tape(&challenge, &default_tape).expect("replay default tape");
+        assert!(
+            matches!(default_report.outcome, DockingOutcome::OutOfGate { .. }),
+            "uncommanded default tape must be rejected as OutOfGate, got {:?}",
+            default_report.outcome
+        );
+
+        // 2. Closed-loop pilot solver produces a bounded RLE tape (`<= 3,600` frames) that clamps with all 5 gates green.
+        let valid_tape = solve_docking_tape(&challenge);
+        assert!(valid_tape.total_frames() <= super::docking::MAX_DOCKING_TAPE_FRAMES);
+        let rle = valid_tape.encode_rle();
+        let decoded = DockingInputTape::decode_rle(&rle).expect("decode RLE");
+        assert_eq!(decoded, valid_tape);
+
+        let valid_report = replay_docking_tape(&challenge, &decoded).expect("replay valid tape");
+        assert_eq!(valid_report.outcome, DockingOutcome::Clamped);
+        assert!(valid_report.final_gates.all_green());
+        assert!(valid_report.rcs_spent_kg >= 1);
+
+        // 3. Hard closure impact (`> 800 mm/s` into `range_z_mm == 0`) triggers CollarScrapeBounce + Front armor damage.
+        let bounce_tape = solve_hard_bounce_tape(&challenge);
+        let bounce_report =
+            replay_docking_tape(&challenge, &bounce_tape).expect("replay hard bounce tape");
+        assert!(
+            matches!(
+                bounce_report.outcome,
+                DockingOutcome::CollarScrapeBounce {
+                    impact_closure_mmps,
+                    front_armor_damage,
+                } if impact_closure_mmps > DOCK_GATE_CLOSURE_MAX_MMPS && front_armor_damage >= COLLAR_SCRAPE_FRONT_ARMOR_DAMAGE
+            ),
+            "expected CollarScrapeBounce, got {:?}",
+            bounce_report.outcome
         );
     }
 }

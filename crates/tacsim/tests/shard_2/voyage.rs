@@ -5052,3 +5052,292 @@ fn sfr6_kirkwood_customs_picket_story_1_end_to_end_rhai_doctrine_triad_combat_an
     );
     no_refused_writes(&rig.tw);
 }
+
+/// **Doc 35 cut SF.R7 (`D-35-12`, `D-35-14`, `Q-35-5`, Story 2 step 3)**:
+/// End-to-end integration test verifying:
+/// 1. Initiating a 6-DOF `DockingSession` (`+helm/dock`) steps the ship out of the live world tick
+///    (`paused_from_world_tick == true`) and emits the `"space.docking"` panel feed.
+/// 2. Server-side `replay_docking_tape` rejects forged session IDs, over-length tapes (`> 3,600` frames),
+///    and uncommanded/out-of-gate tapes (`DockingOutcome::OutOfGate`).
+/// 3. Submitting a hard-bounce tape (`vz > 800 mm/s` into `dz == 0`) inflicts `Front`-facet armor
+///    damage on the hull's `TacticalUnit`, debits `stow.propellant`, and immediately unpauses the ship
+///    (`35a` §5 #7).
+/// 4. Submitting a valid client-side 60 Hz `DockingInputTape` against a disabled derelict clamps the
+///    collar (`DockingOutcome::Clamped`), debits `rcs_spent_kg` from `stow.propellant`, and enables
+///    `+helm/tow` under the $2\times$ canonical `UnitSpec` dry-mass cap and 48-hour `SalvageClaimBook`
+///    window (Story 2 step 3).
+/// 5. Submitting a valid client-side 60 Hz `DockingInputTape` on approach to Stickney Yards merges
+///    directly into `Berth::Docked { map, def }` (`D-35-14`).
+#[test]
+fn sfr7_docking_session_pauses_ship_replays_valid_tape_into_berth_docked_rejects_forged_tape_and_tows_derelict()
+ {
+    let mut rig = stocked_with(Roster {
+        seed_lane: Some(lane_with_interdicted_kirkwood()),
+        ..Roster::default()
+    });
+    let (pilot, row) = chartered(&mut rig, "Pilot", 1);
+    let hull = ObjId(row.hull);
+    let vault_id = hold_vault(&rig.tw, &row);
+
+    seed_pool(&mut rig, vault_id, "propellant", 53, LotId(921));
+    seed_pool(&mut rig, vault_id, "provisions", 19, LotId(922));
+    set_rate(&mut rig.tw, 3_600);
+    board(&mut rig, pilot);
+
+    let pending = undock_and_burn(&mut rig, pilot, hull);
+    let depart_ic = pending.plan.depart_ic;
+    let leg1_secs = i64::from(pending.plan.legs[0].secs);
+
+    let _ = fire_quietly(&mut rig);
+    // Cross the interdicted Kirkwood boundary to open the tactical bubble:
+    let _ = to_ic(&mut rig, depart_ic + leg1_secs);
+
+    // Disable the interdictor so it becomes an open-epoch `DisabledDerelict` inside the bubble:
+    let interdictor_hull = {
+        let book = rig
+            .tw
+            .world_mut()
+            .module_state_mut::<tacsim::space::SpaceBubbleBook>()
+            .expect("SpaceBubbleBook");
+        let active = book.active_for_hull_mut(hull).expect("active bubble");
+        active.bubble.torpedoes.clear();
+        active.bubble.railgun_slugs.clear();
+        let ihull = active.interdictor_hull;
+        let iship_id = active.interdictor_ship_id.clone();
+        if let Some(iship) = active.bubble.ships.get_mut(&iship_id) {
+            iship.status = tacsim::space::HullStatus::DisabledDerelict {
+                epoch_open: true,
+                life_support_remaining_s: tacsim::space::DERELICT_WINDOW_S,
+                salvage_contest_window_s: tacsim::space::DERELICT_WINDOW_S,
+            };
+            iship.thrust_mps2 = [0, 0, 0];
+        }
+        ihull
+    };
+
+    // 1. Attempting `+helm/tow` before hard-docking must be refused:
+    let premature_tow = run(&mut rig.tw, pilot, "+helm/tow");
+    assert!(
+        premature_tow.contains("Must complete a 6-DOF hard-dock clamp"),
+        "premature +helm/tow before docking clamp must be refused: {premature_tow}"
+    );
+
+    // 2. Initiate a 6-DOF docking session against the disabled derelict (`+helm/dock derelict`):
+    let dock_start = run(&mut rig.tw, pilot, "+helm/dock derelict");
+    assert!(
+        dock_start.contains("[DOCKING] Initiated 60 fps 6-DOF docking session"),
+        "expected docking session start: {dock_start}"
+    );
+
+    let (session_id_1, challenge_1, steps_before_pause) = {
+        let book = rig
+            .tw
+            .world()
+            .module_state::<tacsim::space::SpaceBubbleBook>()
+            .expect("SpaceBubbleBook");
+        assert!(
+            book.is_hull_paused_for_docking(hull),
+            "hull must be paused from world tick during active DockingSession"
+        );
+        let session = book.docking_sessions.get(&hull).expect("docking session");
+        let steps = book.active_for_hull(hull).expect("active bubble").steps;
+        (
+            session.challenge.session_id.clone(),
+            session.challenge.clone(),
+            steps,
+        )
+    };
+
+    // Advance the world tick while `paused_from_world_tick == true` and verify the bubble neither
+    // steps nor auto-closes while the pilot is in the 60 Hz docking mini-game (`Q-35-5`, `D-35-14`):
+    let next_real = rig.tw.world().now() + 2;
+    rig.tw.set_now(next_real);
+    let _ = rig.tw.fire_due(next_real * 1_000);
+    {
+        let book = rig
+            .tw
+            .world()
+            .module_state::<tacsim::space::SpaceBubbleBook>()
+            .expect("SpaceBubbleBook");
+        let active = book
+            .active_for_hull(hull)
+            .expect("bubble must remain open while paused for docking");
+        assert_eq!(
+            active.steps, steps_before_pause,
+            "paused hull's bubble must not step while DockingSession is active"
+        );
+    }
+
+    // Also verify interactive text control order parsing (`DOCK TRANS UP`, `35a` §1 row 8):
+    let order_out = run(&mut rig.tw, pilot, "+helm/dock DOCK TRANS UP");
+    assert!(
+        order_out.contains("6-DOF RCS pulse applied"),
+        "server must parse interactive DOCK TRANS UP order: {order_out}"
+    );
+
+    // 3. Verify server rejects a forged session ID, an over-length tape (`> 3,600` frames), and an
+    //    uncommanded/out-of-gate tape:
+    let forged_id_out = run(
+        &mut rig.tw,
+        pilot,
+        "+helm/dock tape dock.forged.999 0000*10",
+    );
+    assert!(
+        forged_id_out.contains("docking session ID mismatch"),
+        "forged session ID must be rejected: {forged_id_out}"
+    );
+
+    let overlength_out = run(
+        &mut rig.tw,
+        pilot,
+        &format!("+helm/dock tape {session_id_1} 0000*3601"),
+    );
+    assert!(
+        overlength_out.contains("exceeds cap (3600 frames)"),
+        "tape > 3,600 frames must be rejected: {overlength_out}"
+    );
+
+    let out_of_gate_out = run(
+        &mut rig.tw,
+        pilot,
+        &format!("+helm/dock tape {session_id_1} 0000*120"),
+    );
+    assert!(
+        out_of_gate_out.contains("Docking input tape rejected: collar gates not aligned"),
+        "uncommanded/out-of-gate tape must be rejected: {out_of_gate_out}"
+    );
+
+    // 4. Submit a hard-bounce tape (`vz > 800 mm/s` into `dz == 0`) and verify:
+    //    - `Front` facet armor damage is inflicted on the hull's `TacticalUnit`
+    //    - `paused_from_world_tick` is immediately cleared (`35a` §5 #7)
+    let front_armor_before = {
+        let book = rig
+            .tw
+            .world()
+            .module_state::<tacsim::space::SpaceBubbleBook>()
+            .expect("SpaceBubbleBook");
+        let active = book.active_for_hull(hull).expect("active bubble");
+        active.bubble.ships[&active.carrier_ship_id].sections[&tacsim::space::ShipSectionId::Hull]
+            .facets[&tacsim::space::FacetBand::Front]
+    };
+    let bounce_tape = tacsim::space::solve_hard_bounce_tape(&challenge_1);
+    let bounce_out = run(
+        &mut rig.tw,
+        pilot,
+        &format!(
+            "+helm/dock tape {session_id_1} {}",
+            bounce_tape.encode_rle()
+        ),
+    );
+    assert!(
+        bounce_out.contains("[DOCKING] Hard collar bounce")
+            && bounce_out.contains("hull unpaused"),
+        "expected hard collar bounce and unpause: {bounce_out}"
+    );
+    {
+        let book = rig
+            .tw
+            .world()
+            .module_state::<tacsim::space::SpaceBubbleBook>()
+            .expect("SpaceBubbleBook");
+        assert!(
+            !book.is_hull_paused_for_docking(hull),
+            "hull must not stay paused after a bounced dock (`35a` §5 #7)"
+        );
+        let active = book.active_for_hull(hull).expect("active bubble");
+        let front_armor_after = active.bubble.ships[&active.carrier_ship_id].sections
+            [&tacsim::space::ShipSectionId::Hull]
+            .facets[&tacsim::space::FacetBand::Front];
+        assert!(
+            front_armor_after < front_armor_before,
+            "hard collar bounce must damage Front facet armor ({front_armor_before} -> {front_armor_after})"
+        );
+    }
+
+    // 5. Re-initiate `+helm/dock derelict`, solve a valid 60 Hz `DockingInputTape`, verify hard-dock
+    //    clamp + `stow.propellant` RCS debit, and attach the salvage tow line (`+helm/tow`, Story 2 step 3):
+    let _ = run(&mut rig.tw, pilot, "+helm/dock derelict");
+    let (session_id_2, challenge_2) = {
+        let book = rig
+            .tw
+            .world()
+            .module_state::<tacsim::space::SpaceBubbleBook>()
+            .expect("SpaceBubbleBook");
+        let s = book.docking_sessions.get(&hull).expect("session 2");
+        (s.challenge.session_id.clone(), s.challenge.clone())
+    };
+    let valid_derelict_tape = tacsim::space::solve_docking_tape(&challenge_2);
+    let clamp_derelict_out = run(
+        &mut rig.tw,
+        pilot,
+        &format!(
+            "+helm/dock tape {session_id_2} {}",
+            valid_derelict_tape.encode_rle()
+        ),
+    );
+    assert!(
+        clamp_derelict_out.contains("[DOCKING] Hard dock and magnetic collar seal confirmed on derelict"),
+        "expected hard dock on derelict: {clamp_derelict_out}"
+    );
+
+    let tow_out = run(&mut rig.tw, pilot, "+helm/tow");
+    assert!(
+        tow_out.contains("[SALVAGE] Tow line locked to disabled derelict")
+            && tow_out.contains("48-hour Freeport Registry salvage claim window"),
+        "expected salvage tow line attachment: {tow_out}"
+    );
+    {
+        let book = rig
+            .tw
+            .world()
+            .module_state::<tacsim::space::SpaceBubbleBook>()
+            .expect("SpaceBubbleBook");
+        let tow = book.active_tows.get(&hull).expect("active tow record");
+        assert_eq!(tow.derelict_hull, interdictor_hull);
+        assert!(tow.derelict_dry_mass_t <= tow.tug_dry_mass_t * 2);
+        let ledger = book.propellant_ledger(hull).expect("propellant ledger");
+        assert!(
+            ledger.total_burned_kg >= 1,
+            "RCS propellant must be debited from hull's live propellant ledger"
+        );
+    }
+
+    // 6. Now initiate a port docking session (`+helm/dock stickney`), replay a valid 60 Hz client
+    //    `DockingInputTape`, and verify `berth_of(w, hull)` transitions directly into `Berth::Docked` (`D-35-14`):
+    let dock_port_start = run(&mut rig.tw, pilot, "+helm/dock stickney");
+    assert!(
+        dock_port_start.contains("Toward Stickney Yards")
+            || dock_port_start.contains("toward Stickney Yards"),
+        "expected port docking session toward Stickney Yards: {dock_port_start}"
+    );
+    let (session_id_3, challenge_3) = {
+        let book = rig
+            .tw
+            .world()
+            .module_state::<tacsim::space::SpaceBubbleBook>()
+            .expect("SpaceBubbleBook");
+        let s = book.docking_sessions.get(&hull).expect("port session");
+        (s.challenge.session_id.clone(), s.challenge.clone())
+    };
+    let valid_port_tape = tacsim::space::solve_docking_tape(&challenge_3);
+    let clamp_port_out = run(
+        &mut rig.tw,
+        pilot,
+        &format!(
+            "+helm/dock tape {session_id_3} {}",
+            valid_port_tape.encode_rle()
+        ),
+    );
+    assert!(
+        clamp_port_out.contains("Hard dock and magnetic collar seal confirmed at Stickney Yards")
+            && clamp_port_out.contains("Berth::Docked"),
+        "expected port clamp into Berth::Docked: {clamp_port_out}"
+    );
+
+    let status_at_stickney = run(&mut rig.tw, pilot, "+ship");
+    assert!(
+        status_at_stickney.contains("Stickney Yards"),
+        "+ship must report ship berthed (`Berth::Docked`) at Stickney Yards: {status_at_stickney}"
+    );
+    no_refused_writes(&rig.tw);
+}

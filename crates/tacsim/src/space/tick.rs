@@ -509,6 +509,14 @@ pub struct SpaceBubbleBook {
     pub next_space_mine_draw_seq: u64,
     /// Waypoint domains explicitly configured as 3-party Kirkwood Customs Pickets (`SF.R6`, `D-35-11`).
     pub kirkwood_picket_domains: std::collections::BTreeSet<DomainId>,
+    /// Active 6-DOF docking sessions keyed by carrier hull [`ObjId`] (`SF.R7`, `Q-35-5`, `D-35-14`).
+    pub docking_sessions: BTreeMap<ObjId, super::docking::DockingSession>,
+    /// Hard-docked derelict hulls keyed by tug carrier hull [`ObjId`] (`SF.R7`, `D-35-12`).
+    pub clamped_derelicts: BTreeMap<ObjId, ObjId>,
+    /// Active salvage tow-line records keyed by tug carrier hull [`ObjId`] (`SF.R7`, `D-35-12`).
+    pub active_tows: BTreeMap<ObjId, super::docking::SalvageTowRecord>,
+    /// Monotonic sequence allocator for [`Self::docking_sessions`].
+    pub next_docking_session_seq: u64,
     /// Monotonic revision counter for `mush-sim` standing orders (`SF.R3`).
     pub next_order_revision: u64,
     /// Monotonic allocator for space salvage [`RecoveryOpId`]s.
@@ -565,6 +573,21 @@ impl SpaceBubbleBook {
     pub fn alloc_space_burn_seq(&mut self) -> u32 {
         self.next_space_burn_seq = self.next_space_burn_seq.saturating_add(1);
         1_000_000_u32.saturating_add(self.next_space_burn_seq)
+    }
+
+    /// Return whether `hull` is currently stepped out of the live world tick for a 6-DOF
+    /// [`super::docking::DockingSession`] (`Q-35-5`, `D-35-14`).
+    #[must_use]
+    pub fn is_hull_paused_for_docking(&self, hull: ObjId) -> bool {
+        self.docking_sessions
+            .get(&hull)
+            .is_some_and(|s| s.paused_from_world_tick)
+    }
+
+    /// Allocate a unique docking session ID (`"dock.<hull>.<seq>"`).
+    pub fn alloc_docking_session_id(&mut self, hull: ObjId) -> String {
+        self.next_docking_session_seq = self.next_docking_session_seq.saturating_add(1);
+        format!("dock.{}.{}", hull.0, self.next_docking_session_seq)
     }
 
     /// Borrow the current validated [`mush_sim::tick::StandingOrder`] for `(unit, channel)` (`D-35-9`).
@@ -788,7 +811,9 @@ fn clear_resolved_bubbles(ctx: &mut Ctx<'_>, now: &ClockStamp) {
     let cleared_hulls: Vec<ObjId> = book
         .by_hull
         .iter()
-        .filter(|(_, active)| active.is_clear_to_resume())
+        .filter(|(hull, active)| {
+            !book.is_hull_paused_for_docking(**hull) && active.is_clear_to_resume()
+        })
         .map(|(&hull, _)| hull)
         .collect();
     if cleared_hulls.is_empty() {
@@ -988,9 +1013,16 @@ fn step_active_bubbles(ctx: &mut Ctx<'_>, now: &ClockStamp) {
         return;
     }
 
+    let paused_hulls: std::collections::BTreeSet<ObjId> = book
+        .docking_sessions
+        .iter()
+        .filter(|(_, s)| s.paused_from_world_tick)
+        .map(|(&h, _)| h)
+        .collect();
+
     for (&hull, active) in &mut book.by_hull {
         active.bubble.outage_frozen = frozen;
-        if frozen {
+        if frozen || paused_hulls.contains(&hull) {
             continue;
         }
         let dt_wall_ms = active.adaptive_step_wall_ms();
@@ -1098,16 +1130,37 @@ fn step_free_flight_records(ctx: &mut Ctx<'_>, now: &ClockStamp) {
     if ctx.w.world_timeline().is_frozen() {
         return;
     }
-    let hulls: Vec<(ObjId, mush_core::CanonicalId)> = ctx
+    let (hulls, paused_hulls): (
+        Vec<(ObjId, mush_core::CanonicalId)>,
+        std::collections::BTreeSet<ObjId>,
+    ) = ctx
         .w
         .module_state::<SpaceBubbleBook>()
         .map(|b| {
-            b.free_flights
+            let paused: std::collections::BTreeSet<ObjId> = b
+                .docking_sessions
                 .iter()
+                .filter(|(_, s)| s.paused_from_world_tick)
+                .map(|(&h, _)| h)
+                .collect();
+            let active = b
+                .free_flights
+                .iter()
+                .filter(|(hull, _)| !paused.contains(hull))
                 .map(|(&hull, rec)| (hull, rec.target_place.clone()))
-                .collect()
+                .collect();
+            (active, paused)
         })
         .unwrap_or_default();
+    if !paused_hulls.is_empty()
+        && let Some(book) = ctx.w.module_state_mut::<SpaceBubbleBook>()
+    {
+        for hull in paused_hulls {
+            if let Some(rec) = book.free_flights.get_mut(&hull) {
+                rec.last_ic_s = rec.last_ic_s.max(now.at);
+            }
+        }
+    }
     if hulls.is_empty() {
         return;
     }
