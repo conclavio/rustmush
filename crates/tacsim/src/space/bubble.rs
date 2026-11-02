@@ -488,7 +488,7 @@ impl SpaceShipState {
     }
 }
 
-/// Discrete combat & telemetry events emitted during a [`LocalSpaceBubble::step_wall_ms`] call.
+/// Discrete combat & telemetry events emitted during a [`LocalSpaceBubble::step_wall_ms_at`] call.
 #[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize)]
 pub enum SpaceCombatEvent {
     TorpedoLaunched {
@@ -576,7 +576,7 @@ pub enum SpaceCombatEvent {
     },
 }
 
-/// Summary returned by [`LocalSpaceBubble::step_wall_ms`].
+/// Summary returned by [`LocalSpaceBubble::step_wall_ms_at`].
 #[derive(Clone, Debug, Default, PartialEq, Eq, Serialize, Deserialize)]
 pub struct BubbleStepReport {
     pub wall_advanced_ms: u32,
