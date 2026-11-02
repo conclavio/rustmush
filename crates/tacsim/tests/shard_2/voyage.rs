@@ -3024,3 +3024,257 @@ fn a8_the_plan_names_the_throttle_that_fits() {
     assert!(plan.contains("Plan for Stickney Yards"), "{plan}");
     assert!(throttle_lines(&plan).is_empty(), "{plan}");
 }
+
+/// The shipped lane with `ceres_stickney`'s first leg (`ceres_freeport -> kirkwood_depot`)
+/// carrying `hazard: 4, interdiction: 3` (`D-35-5`, `SF.R1`).
+fn lane_with_interdicted_kirkwood() -> &'static str {
+    let mut doc: serde_json::Value = serde_json::from_str(LANE_JSON).expect("the lane is JSON");
+    doc["manifest"]["digest"] = serde_json::json!(UNSIGNED);
+    doc["entries"]["ceres_stickney"]["def"]["legs"][0]["hazard"] = serde_json::json!(4);
+    doc["entries"]["ceres_stickney"]["def"]["legs"][0]["interdiction"] = serde_json::json!(3);
+    let signed = sign(&serde_json::to_string_pretty(&doc).expect("serializes"));
+    Box::leak(signed.into_boxed_str())
+}
+
+/// **Doc 35 cut SF.R1 acceptance (`D-35-3`, `D-35-5`, `Q-35-4(1)`)** — a chartered pilot
+/// aboard the *Salt Moth* flies an interdicted `ceres_stickney` leg:
+/// 1. Crossing the Kirkwood waypoint boundary on the world tick raises
+///    `PromotionTrigger::Interception`, promotes the `CarrierJourney` to
+///    `JourneyState::Promoted { domain }`, and opens a `LocalSpaceBubble` in
+///    `SpaceBubbleBook` with canonical `UnitSpec`-derived hulls.
+/// 2. Advancing the world IC clock well past the original Stickney arrival time while the
+///    bubble is open keeps the `CarrierJourney` paused at `cursor == 1` (`JourneyState::Promoted`),
+///    preserves its remaining leg 2 duration (`1_274_226 s`), and steps the `LocalSpaceBubble`
+///    strictly on **1:1 wall time** (`1,000 ms` combat step per tick fire, never scaled by the
+///    `3,600:1` IC rate) with live W-clock stamps, input tape, and snapshots.
+/// 3. Clearing the interdiction encounter closes the bubble into `SpaceBubbleBook::completed`,
+///    stands down the domain activation with a `DomainSummary`, and resumes the `CarrierJourney`
+///    to `JourneyState::Cruising`.
+/// 4. Advancing the world IC clock by the preserved remaining leg 2 duration (`1_274_226 s`)
+///    completes the voyage and docks the *Salt Moth* at Stickney Yards.
+#[test]
+#[allow(clippy::too_many_lines)]
+fn sfr1_interdicted_leg_promotes_pauses_leg_timer_steps_wall_bubble_and_resumes_to_dock() {
+    let mut rig = stocked_with(Roster {
+        seed_lane: Some(lane_with_interdicted_kirkwood()),
+        ..Roster::default()
+    });
+    let (pilot, row) = chartered(&mut rig, "Pilot", 1);
+    let hull = ObjId(row.hull);
+    load(&mut rig, &row, 53, 19);
+    set_rate(&mut rig.tw, 3_600);
+    board(&mut rig, pilot);
+
+    let pending = undock_and_burn(&mut rig, pilot, hull);
+    let depart_ic = pending.plan.depart_ic;
+    assert_eq!(pending.plan.legs.len(), 2);
+    let leg1_secs = i64::from(pending.plan.legs[0].secs);
+    let leg2_secs = i64::from(pending.plan.legs[1].secs);
+    let total_secs = i64::from(pending.plan.total_s);
+    assert_eq!(
+        (leg1_secs, leg2_secs, total_secs),
+        (326_136, 1_274_226, 1_600_362)
+    );
+
+    // Launch on `tacsim.port`.
+    let _ = fire_quietly(&mut rig);
+    let j0 = journey(&rig.tw, hull).expect("launched journey");
+    assert_eq!(j0.cursor(), 0);
+    assert_eq!(*j0.state(), mush_sim::JourneyState::Cruising);
+
+    // 1. Cross the interdicted Kirkwood boundary (`depart_ic + leg1_secs`).
+    let boundary_target = depart_ic + leg1_secs;
+    let events = to_ic(&mut rig, boundary_target);
+    let boundary_ic = ic_now(&rig.tw);
+    let heard = said(&rig.tw, &events, pilot);
+    assert!(
+        heard.contains("Kirkwood Depot slides past"),
+        "boundary narration heard: {heard}"
+    );
+    assert!(
+        heard.contains(
+            "[SPACE] Interdiction contact detected at waypoint boundary; local space bubble opened on 1:1 wall clock."
+        ),
+        "interdiction promotion narration heard: {heard}"
+    );
+
+    let j_promoted = journey(&rig.tw, hull).expect("promoted journey");
+    assert_eq!(j_promoted.cursor(), 1);
+    let mush_sim::JourneyState::Promoted { domain } = *j_promoted.state() else {
+        panic!(
+            "expected JourneyState::Promoted, got {:?}",
+            j_promoted.state()
+        );
+    };
+
+    let act_book = rig
+        .tw
+        .world()
+        .module_state::<mush_sim::ActivationBook>()
+        .expect("ActivationBook");
+    let activation = act_book
+        .activations
+        .get(&domain)
+        .expect("live interception activation on Kirkwood domain");
+    assert!(!activation.is_queued());
+    assert_eq!(
+        activation.trigger(),
+        mush_sim::PromotionTrigger::Interception
+    );
+
+    let bubble_book = rig
+        .tw
+        .world()
+        .module_state::<tacsim::space::SpaceBubbleBook>()
+        .expect("SpaceBubbleBook");
+    let active0 = bubble_book
+        .active_for_hull(hull)
+        .expect("active interdiction bubble for Salt Moth");
+    assert_eq!(active0.domain, domain);
+    assert_eq!(active0.leg_cursor, 1);
+    assert_eq!(active0.opened_ic_s, boundary_ic);
+    assert_eq!(active0.steps, 0);
+    assert_eq!(active0.bubble.wall_elapsed_ms, 0);
+    assert_eq!(active0.bubble.ships.len(), 2);
+    let carrier_ship = active0
+        .bubble
+        .ships
+        .get(&active0.carrier_ship_id)
+        .expect("carrier ship in bubble");
+    assert_eq!(carrier_ship.sections.len(), 3);
+
+    // 2. Advance the world IC clock well past the original Stickney arrival time
+    // (`boundary_ic + leg2_secs + 1_000_000 > depart_ic + total_secs`) while the bubble is active.
+    // Do 4 one-second real fires first, then jump past `leg2_secs + 1_000_000` IC seconds on the 5th fire.
+    for _ in 0..4 {
+        let next_real = rig.tw.world().now() + 1;
+        rig.tw.set_now(next_real);
+        let _ = rig.tw.fire_due(next_real * 1_000);
+    }
+    let paused_events = to_ic(&mut rig, boundary_ic + leg2_secs + 1_000_000);
+    assert!(
+        !said(&rig.tw, &paused_events, pilot).contains("docks at"),
+        "ship must NOT dock while paused in an active interdiction bubble"
+    );
+
+    let paused_ic = ic_now(&rig.tw);
+    let j_paused = journey(&rig.tw, hull).expect("journey still present while promoted");
+    assert_eq!(j_paused.cursor(), 1, "leg cursor stays paused at 1");
+    assert_eq!(
+        *j_paused.state(),
+        mush_sim::JourneyState::Promoted { domain },
+        "journey remains Promoted while bubble is active"
+    );
+    // `departed.at` shifted forward by the exact IC duration spent paused since `boundary_ic`.
+    let paused_ic_delta = paused_ic - boundary_ic;
+    assert_eq!(
+        j_paused.departed().at,
+        depart_ic + paused_ic_delta,
+        "departed.at shifts forward to preserve remaining leg 2 duration"
+    );
+
+    let bubble_book = rig
+        .tw
+        .world()
+        .module_state::<tacsim::space::SpaceBubbleBook>()
+        .expect("SpaceBubbleBook");
+    let active_paused = bubble_book
+        .active_for_hull(hull)
+        .expect("bubble still active");
+    assert_eq!(
+        active_paused.steps, 5,
+        "5 tick fires stepped the bubble 5 times"
+    );
+    assert_eq!(
+        active_paused.bubble.wall_elapsed_ms,
+        5 * u64::from(tacsim::space::COMBAT_STEP_WALL_MS),
+        "bubble steps on 1:1 wall time (5,000 ms across 5 combat fires), NOT scaled by 3,600:1 IC rate"
+    );
+    assert_eq!(
+        active_paused.bubble.ic_timestamp_s, paused_ic,
+        "bubble stamps live W-clock IC timestamp on each step"
+    );
+    assert_eq!(active_paused.snapshots.len(), 6);
+    let (replayed, _) = active_paused.tape.replay();
+    assert_eq!(replayed.state_hash(), active_paused.bubble.state_hash());
+
+    // 3. Clear the interdiction encounter and fire one tick to close the bubble and resume leg 2.
+    assert!(tacsim::space::clear_interdiction_bubble(
+        rig.tw.world_mut(),
+        hull
+    ));
+    let next_real = rig.tw.world().now() + 1;
+    rig.tw.set_now(next_real);
+    let clear_events = rig.tw.fire_due(next_real * 1_000);
+    let resume_ic = ic_now(&rig.tw);
+    let clear_heard = said(&rig.tw, &clear_events, pilot);
+    assert!(
+        clear_heard.contains(
+            "[SPACE] Interdiction contact cleared; local bubble closed and transit burn resumed."
+        ),
+        "clear narration heard: {clear_heard}"
+    );
+
+    let bubble_book = rig
+        .tw
+        .world()
+        .module_state::<tacsim::space::SpaceBubbleBook>()
+        .expect("SpaceBubbleBook");
+    assert!(bubble_book.active_for_hull(hull).is_none());
+    let completed = bubble_book
+        .completed_for_hull(hull)
+        .expect("completed bubble archived");
+    assert_eq!(completed.opened_ic_s, boundary_ic);
+    assert_eq!(completed.closed_ic_s, resume_ic);
+    assert_eq!(completed.steps, 5);
+    assert_eq!(completed.wall_elapsed_ms, 5_000);
+
+    let act_book = rig
+        .tw
+        .world()
+        .module_state::<mush_sim::ActivationBook>()
+        .expect("ActivationBook");
+    assert!(
+        !act_book.activations.contains_key(&domain),
+        "interdiction domain stood down on clear"
+    );
+    let summary = act_book
+        .summaries
+        .get(&domain)
+        .expect("DomainSummary written on stand-down");
+    assert_eq!(summary.from().at, boundary_ic);
+    assert_eq!(summary.to().at, resume_ic);
+
+    let j_resumed = journey(&rig.tw, hull).expect("resumed journey");
+    assert_eq!(j_resumed.cursor(), 1);
+    assert_eq!(*j_resumed.state(), mush_sim::JourneyState::Cruising);
+    assert_eq!(
+        j_resumed.departed().at,
+        depart_ic + (resume_ic - boundary_ic),
+        "remaining leg 2 time (1,274,226 s from boundary_ic) is preserved at resume"
+    );
+
+    // 4. Advance the world IC clock by the remaining leg 2 duration (`leg2_secs`) and verify docking.
+    let expected_arrival = j_resumed.departed().at + total_secs;
+    assert_eq!(
+        expected_arrival,
+        depart_ic + leg1_secs + (resume_ic - boundary_ic) + leg2_secs
+    );
+
+    let pre_arrival = to_ic(&mut rig, expected_arrival - 3_600);
+    assert!(
+        !said(&rig.tw, &pre_arrival, pilot).contains("docks at"),
+        "still under way 1 hour before shifted arrival"
+    );
+
+    let arrival_events = to_ic(&mut rig, expected_arrival);
+    let arrival_heard = said(&rig.tw, &arrival_events, pilot);
+    assert!(
+        arrival_heard.contains("Salt Moth docks at Stickney Yards."),
+        "docked at Stickney after completing remaining leg 2 duration: {arrival_heard}"
+    );
+    match tacsim::port::ship::berth_of(rig.tw.world(), hull) {
+        tacsim::port::ship::Berth::Docked { def, .. } => assert_eq!(def.venue.as_str(), "stickney"),
+        other => panic!("expected Berth::Docked at stickney, got {other:?}"),
+    }
+}

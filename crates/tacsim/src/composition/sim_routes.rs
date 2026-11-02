@@ -92,6 +92,18 @@ impl CarrierHooks for TacsimCarrierHooks {
         if crate::port::ship::hull_view(ctx.w, hull).is_none() {
             return false;
         }
+        if let Some(leg) = usize::try_from(reached.saturating_sub(1))
+            .ok()
+            .and_then(|idx| journey.route().legs().get(idx))
+            && leg.is_interdicted()
+            && ctx
+                .w
+                .module_state::<mush_sim::SpatialState>()
+                .and_then(|s| s.domain_of_host(leg.to()))
+                .is_none()
+        {
+            let _ = mush_sim::open_passive_domain(ctx, leg.to(), leg.to());
+        }
         let Some(line) = crate::port::voyage::boundary_line(ctx.w, journey, reached) else {
             return false;
         };
