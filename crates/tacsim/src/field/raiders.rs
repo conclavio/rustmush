@@ -647,6 +647,33 @@ pub(crate) fn board(ctx: &mut Ctx<'_>, hull: ObjId, site: &CanonicalId) -> Resul
     Ok(())
 }
 
+/// **How often the snapshots' lift check runs**, in arena milliseconds (doc 36 cut GC.0; a
+/// provisional default). The check decodes the whole snapshot, about 300 ms of the world task at
+/// 512 a side, and snapshots come every `[tacsim.arena].snapshot_ms` (500 ms in the harness): on
+/// every one, the decodes held the world task most of the fight's time, and a slower runner's
+/// world fell behind its field. A lift waits at most this long past its last hull going down; a
+/// board checks at once.
+pub const LIFT_CHECK_MS: i64 = 10_000;
+
+/// **The snapshots' lift check, paced** (doc 36 cut GC.0): [`lift_check`] at the field's first
+/// snapshot, then once each [`LIFT_CHECK_MS`] of arena time. A snapshot earlier than the last
+/// check (a new field on the site, or a resume that rewound) checks again.
+pub(crate) fn lift_check_paced(ctx: &mut Ctx<'_>, site: &CanonicalId, at_ms: i64) {
+    let Some(book) = ctx.w.module_state_mut::<super::FieldBook>() else {
+        return;
+    };
+    if !lift_due(book.lift_checked.get(site).copied(), at_ms) {
+        return;
+    }
+    book.lift_checked.insert(site.clone(), at_ms);
+    lift_check(ctx, site);
+}
+
+/// Whether a snapshot at `at_ms` is owed the lift check, the last having run at `last`.
+fn lift_due(last: Option<i64>, at_ms: i64) -> bool {
+    last.is_none_or(|last| at_ms < last || at_ms - last >= LIFT_CHECK_MS)
+}
+
 /// The line the site hears when a raider's carrier lifts (doc 36 cut GC.0).
 pub const RAIDER_LIFTED: &str =
     "The {name} lifts from {site} with its hulls aboard, leaving what it lost where it fell.";
@@ -661,8 +688,9 @@ pub const RAIDER_LIFTED: &str =
 /// (`super::close::condition_now`), read off the last snapshot the host holds, so a hull still
 /// fighting holds its carrier on the ground. A carrier that launched no hull into this field (none
 /// admitted, none named on the open promotion's exits) has nothing to wait for and stays. A
-/// carrier that is itself a wreck does not lift. The host runs this after each hull boards and at
-/// each of the field's snapshots; a field holding no raider's carrier decodes nothing.
+/// carrier that is itself a wreck does not lift. The host runs this after each hull boards and,
+/// paced, at the field's snapshots ([`lift_check_paced`]); a field holding no raider's carrier
+/// decodes nothing.
 pub(crate) fn lift_check(ctx: &mut Ctx<'_>, site: &CanonicalId) {
     let Some(live) = ctx
         .w
@@ -767,5 +795,16 @@ mod tests {
         let defs = raiders().expect("the shipped raiders check");
         assert!(!defs.is_empty());
         assert!(defs.iter().all(|def| !def.units.is_empty()));
+    }
+
+    /// Doc 36 cut GC.0: the snapshots' lift check runs at the first, then once a pace, and again
+    /// at a snapshot earlier than the last check.
+    #[test]
+    fn gc0_the_snapshots_lift_check_is_paced() {
+        assert!(lift_due(None, 0));
+        assert!(!lift_due(Some(0), 500));
+        assert!(!lift_due(Some(0), LIFT_CHECK_MS - 1));
+        assert!(lift_due(Some(0), LIFT_CHECK_MS));
+        assert!(lift_due(Some(20_000), 5_000));
     }
 }
