@@ -3,7 +3,7 @@
     "id": "tacsim.pack.halcyon",
     "version": 1,
     "kind": "rules_definition",
-    "digest": "a45e9c6ce55fe0fa169d5a1850e38a89f321cb7d70a981fc2f42f476227a0f8f",
+    "digest": "336da0d84a12554fa767f115fcd265c03beb537b3390ec1943edb2d82b1c134a",
     "requires": []
   },
   "entries": {
@@ -355,7 +355,11 @@
               "room": "bay",
               "slot": {
                 "id": "rigs",
-                "maximum_items": 2
+                "maximum_items": 2,
+                "limits": {
+                  "si.mass_kg": 40000,
+                  "si.volume_l": 140000
+                }
               },
               "egress": {
                 "label": "stern ramp",

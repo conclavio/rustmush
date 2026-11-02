@@ -140,6 +140,13 @@ pub struct TacsimRecoveryConfig {
     pub insurance: String,
     /// The lease's upkeep per campaign cadence period.
     pub upkeep_per_period: i64,
+    /// **Doc 36 cut GC.4 (Q-36-13)**: a tow's inspection, IC seconds (provisional, 300).
+    pub inspect_s: u32,
+    /// **Doc 36 cut GC.4 (Q-36-13)**: a tow's attachment, IC seconds (provisional, 600).
+    pub attach_s: u32,
+    /// **Doc 36 cut GC.4 (Q-36-13)**: a casualty's load into a bay, IC seconds (provisional,
+    /// 900).
+    pub load_s: u32,
 }
 
 impl Default for TacsimRecoveryConfig {
@@ -154,6 +161,9 @@ impl Default for TacsimRecoveryConfig {
             max_operational_assets: 0,
             insurance: "approved_operations".to_string(),
             upkeep_per_period: 0,
+            inspect_s: 300,
+            attach_s: 600,
+            load_s: 900,
         }
     }
 }

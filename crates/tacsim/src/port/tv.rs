@@ -1749,15 +1749,32 @@ enum Act {
     PlanShow,
     /// **Doc 20 cut SM.11**: `+tv[/<n>]/plan clear` — committed with no `go` (D6).
     PlanClear,
+    /// **Doc 36 cut GC.4**: `+tv[/<n>] tow [#unit|name] [go]`.
+    Tow {
+        /// The casualty named, as typed.
+        named: Option<String>,
+        /// Committed.
+        go: bool,
+    },
+    /// **Doc 36 cut GC.4**: `+tv[/<n>] release [go]`.
+    Release {
+        /// Committed.
+        go: bool,
+    },
+    /// **Doc 36 cut GC.4**: `+tv[/<n>] load [go]`.
+    Load {
+        /// Committed.
+        go: bool,
+    },
 }
 
 /// The act words a `+tv` switch or first word may name (the lease's, the acts', and since doc
 /// 20 cut SM.4a `scan` with its alias `survey`, `sound`, `forget` and `quiet`; since SM.4b
 /// `drive` and `map`; since SM.7 `mine` with its alias `drill`; since SM.8 `unload`; since SM.11
-/// `plan`).
-const ACT_WORDS: [&str; 15] = [
+/// `plan`; since doc 36 cut GC.4 `tow`, `release` and `load`, as first words).
+const ACT_WORDS: [&str; 18] = [
     "lease", "launch", "recover", "dump", "scan", "survey", "sound", "forget", "quiet", "drive",
-    "map", "mine", "drill", "unload", "plan",
+    "map", "mine", "drill", "unload", "plan", "tow", "release", "load",
 ];
 
 /// **`/show`** (doc 20 cut SM.11; the brief's D11): a switch accepted only beside `plan`, so the
@@ -1966,6 +1983,33 @@ fn parse_parts(has: &dyn Fn(&str) -> bool, raw: &str) -> Result<(Option<u8>, Act
                 next = words.next();
             }
             return Ok((slot, Act::Mine { family, cycles, go }));
+        }
+        // Doc 36 cut GC.4: `tow [#unit|name] [go]`, `release [go]`, `load [go]`.
+        "tow" | "release" | "load" => {
+            let tow_usage = || CmdError::msg(crate::surface::tow::TOW_USAGE);
+            let mut named: Option<String> = None;
+            let mut go = false;
+            while let Some(word) = next.take() {
+                if go {
+                    return Err(tow_usage());
+                }
+                if word == "go" {
+                    go = true;
+                } else if act == "tow" && named.is_none() {
+                    named = Some(word);
+                } else {
+                    return Err(tow_usage());
+                }
+                next = words.next();
+            }
+            return Ok((
+                slot,
+                match act.as_str() {
+                    "tow" => Act::Tow { named, go },
+                    "release" => Act::Release { go },
+                    _ => Act::Load { go },
+                },
+            ));
         }
         // Doc 20 cut SM.8 (the brief's 3.5): `unload [<t>] [go]` — at most one whole tonnage
         // (`1..=99`, decimal digits only), then `go`; anything else is `UNLOAD_USAGE`.
@@ -2188,6 +2232,8 @@ pub(crate) fn tv_cmd(ctx: &mut Ctx<'_>) -> Result<(), CmdError> {
             mind,
         } => {
             let rig = select(ctx, slot, kind).map_err(CmdError::msg)?;
+            // Doc 36 cut GC.4: a tug in tow, or a casualty in one, starts no other act.
+            crate::surface::tow::act_gate(ctx, &rig, false)?;
             let recover = kind == crate::surface::excursion::ActKind::Recover;
             // Doc 32 cut CF.5 (Q-CF-18): a rig in a running field leaves it at the ramp first,
             // and its recover runs once it is out.
@@ -2226,6 +2272,8 @@ pub(crate) fn tv_cmd(ctx: &mut Ctx<'_>) -> Result<(), CmdError> {
             let rig = select(ctx, slot, crate::surface::excursion::ActKind::Drive)
                 .map_err(CmdError::msg)?;
             crate::surface::site_record::field_gate(ctx, rig.hull)?;
+            // Doc 36 cut GC.4: a tug in tow drives at the tow rate; a casualty in tow does not.
+            crate::surface::tow::act_gate(ctx, &rig, true)?;
             crate::surface::act::drive_cmd(ctx, &rig, &words, go)
         }
         Act::Map { site, family } => {
@@ -2236,6 +2284,7 @@ pub(crate) fn tv_cmd(ctx: &mut Ctx<'_>) -> Result<(), CmdError> {
             let rig = select(ctx, slot, crate::surface::excursion::ActKind::Mine)
                 .map_err(CmdError::msg)?;
             crate::surface::site_record::field_gate(ctx, rig.hull)?;
+            crate::surface::tow::act_gate(ctx, &rig, false)?;
             let named = match family.as_deref() {
                 None => None,
                 Some(word) => Some(
@@ -2286,6 +2335,22 @@ pub(crate) fn tv_cmd(ctx: &mut Ctx<'_>) -> Result<(), CmdError> {
         Act::PlanClear => {
             let rig = select_plan_word(ctx, slot, "plan clear").map_err(CmdError::msg)?;
             crate::surface::act::plan_clear_cmd(ctx, &rig)
+        }
+        // Doc 36 cut GC.4: the tow's three acts, on the open ground only.
+        Act::Tow { named, go } => {
+            let rig = select_word(ctx, slot, "tow").map_err(CmdError::msg)?;
+            crate::surface::site_record::field_gate(ctx, rig.hull)?;
+            crate::surface::tow::tow_cmd(ctx, &rig, named.as_deref(), go)
+        }
+        Act::Release { go } => {
+            let rig = select_word(ctx, slot, "release").map_err(CmdError::msg)?;
+            crate::surface::site_record::field_gate(ctx, rig.hull)?;
+            crate::surface::tow::release_cmd(ctx, &rig, go)
+        }
+        Act::Load { go } => {
+            let rig = select_word(ctx, slot, "load").map_err(CmdError::msg)?;
+            crate::surface::site_record::field_gate(ctx, rig.hull)?;
+            crate::surface::tow::load_cmd(ctx, &rig, go)
         }
     }
 }

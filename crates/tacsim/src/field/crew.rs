@@ -460,6 +460,56 @@ pub(crate) fn check_in_aboard(
     }
 }
 
+/// **A casualty loaded into a friendly carrier's bay** (doc 36 cut GC.4; Q-36-52's friendly
+/// half): every character whose record holds them in `casualty` — aboard it, or stranded in it —
+/// is aboard `carrier` now, and any extraction they had asked for is cancelled. The caller
+/// (`crate::surface::tow`) has checked that the carrier is of the casualty's own party or a
+/// Friend's; a load into anyone else's bay is GC.5's abandonment.
+pub(crate) fn aboard_loaded(ctx: &mut Ctx<'_>, casualty: ObjId, carrier: ObjId) {
+    let now = ctx.w.world_ic_now().at;
+    let souls: Vec<CrewRecord> = ctx
+        .w
+        .module_state::<CrewBook>()
+        .map(|book| {
+            book.0
+                .values()
+                .filter_map(|record| loaded_aboard(record, casualty, carrier, now))
+                .collect()
+        })
+        .unwrap_or_default();
+    let line = crate::surface::tow::CREW_ABOARD
+        .replace("{name}", &crate::port::coop::name_of(ctx.w, casualty))
+        .replace("{carrier}", &crate::port::coop::name_of(ctx.w, carrier));
+    for record in souls {
+        let who = record.character;
+        put(ctx, record);
+        ctx.out.sys_to_actor(who, "tacsim.field", line.clone());
+    }
+}
+
+/// **[`aboard_loaded`]'s rule for one record**: a character aboard or stranded in `casualty` is
+/// aboard `carrier` at `now`, with no extraction pending; anyone else is untouched (`None`).
+#[must_use]
+pub(crate) fn loaded_aboard(
+    record: &CrewRecord,
+    casualty: ObjId,
+    carrier: ObjId,
+    now: i64,
+) -> Option<CrewRecord> {
+    let held = match &record.location {
+        CrewLocation::Unit { unit } | CrewLocation::Stranded { unit, .. } => *unit == casualty,
+        CrewLocation::Carrier { .. } | CrewLocation::Port { .. } => false,
+    };
+    if !held {
+        return None;
+    }
+    let mut next = record.clone();
+    next.location = CrewLocation::Carrier { hull: carrier };
+    next.extraction = None;
+    next.at_ic = now;
+    Some(next)
+}
+
 /// **A field's frames** (the host's branch, before the fire door): a pilot inside a hull whose
 /// control section the frame shows destroyed is incapacitated now, and told once.
 pub(crate) fn on_frames(ctx: &mut Ctx<'_>, frames: &[(ObjId, crate::arena::step::Frame)]) {
@@ -995,5 +1045,53 @@ mod tests {
             serde_json::from_value(serde_json::to_value(&record).expect("encodes"))
                 .expect("decodes");
         assert_eq!(back, record);
+    }
+
+    /// **Doc 36 cut GC.4** (Q-36-52's friendly half): a character stranded in a casualty, with
+    /// an extraction asked for, is aboard the carrier once the casualty is loaded into it, and the
+    /// extraction is gone; a character in another hull, or at a port, is untouched.
+    #[test]
+    fn gc4_a_friendly_load_sets_the_crew_aboard_and_cancels_the_extraction() {
+        let site = CanonicalId::new("ahuna").expect("a site");
+        let stranded = CrewRecord {
+            format: CREW_FORMAT,
+            character: ObjId(7),
+            location: CrewLocation::Stranded {
+                site,
+                unit: ObjId(40),
+            },
+            condition: CrewCondition::Injured,
+            at_ic: 100,
+            organizer: Some(ObjId(3)),
+            extraction: Some(Extraction {
+                port: SmolStr::new("stickney"),
+                requested_ic: 150,
+                due_ic: 21_750,
+            }),
+            treatment: None,
+        };
+        let aboard = loaded_aboard(&stranded, ObjId(40), ObjId(90), 500).expect("aboard");
+        assert_eq!(aboard.location, CrewLocation::Carrier { hull: ObjId(90) });
+        assert!(aboard.extraction.is_none(), "the extraction is cancelled");
+        assert_eq!(
+            aboard.condition,
+            CrewCondition::Injured,
+            "the hurt stay hurt"
+        );
+        assert_eq!(aboard.at_ic, 500);
+        let in_unit = CrewRecord {
+            location: CrewLocation::Unit { unit: ObjId(40) },
+            extraction: None,
+            ..stranded.clone()
+        };
+        assert!(loaded_aboard(&in_unit, ObjId(40), ObjId(90), 500).is_some());
+        assert!(loaded_aboard(&stranded, ObjId(41), ObjId(90), 500).is_none());
+        let home = CrewRecord {
+            location: CrewLocation::Port {
+                port: SmolStr::new("stickney"),
+            },
+            ..stranded
+        };
+        assert!(loaded_aboard(&home, ObjId(40), ObjId(90), 500).is_none());
     }
 }

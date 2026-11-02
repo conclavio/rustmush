@@ -3596,11 +3596,11 @@ fn ic2_the_goods_table_is_pinned() {
 
 /// **The terrain vehicle's pin** (doc 20 cut SM.3a; §4.1, D-20-6). Re-signed in
 /// place under `TACSIM_WRITE_CONTENT=1` and copied here by hand.
-const TV_DIGEST: &str = "c55b9b5e30fa4ac21050f5b48bb6bfa9fa8ac2b2d2e7fca3dbfdbeca455f6c1f";
+const TV_DIGEST: &str = "26744d62f2c42b4cd1a2c4a9d6af0cedd290ae6095c5cc5c10c77ad8c2c1bc49";
 
 /// **The Dray-P's pin** (doc 20 cut SM.3a; §4.3, D-20-7). Re-signed in place
 /// under `TACSIM_WRITE_CONTENT=1` and copied here by hand.
-const DRAY_P_DIGEST: &str = "67c6558731e386077d89009ad10997585b981de79285e1af990c6d57cbd9ab31";
+const DRAY_P_DIGEST: &str = "bdf82f880760284f9da6246de83e97059cd783d7cc7a254d88d4f7fc34ad972c";
 
 /// **The tools' pins** (doc 20 cut SM.3a; §4.1): each tool's canonical digest
 /// under `tacsim.tools.v1`. Printed under `TACSIM_WRITE_CONTENT=1` and copied here

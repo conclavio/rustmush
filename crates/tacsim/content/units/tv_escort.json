@@ -3,7 +3,7 @@
     "id": "tacsim.pack.tv_escort",
     "version": 1,
     "kind": "rules_definition",
-    "digest": "37d463b714d3e711cb49528883b7f0e08e2f90e1592a71ac38c243cddd1867ce",
+    "digest": "808bd7452f2b154b6559ba094d23f0b1d40f8ec4b78892e993a8f91adbc1b58a",
     "requires": [
       {
         "id": "tacsim.pack.cannon_105",
@@ -327,6 +327,7 @@
           }
         ],
         "sensor_height_cm": 150,
+        "stowage_volume_l": 32000,
         "logistics": {
           "dry_mass_t": 8,
           "stowage": {

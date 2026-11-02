@@ -453,6 +453,9 @@ fn surface_tick(ctx: &mut Ctx<'_>, _tag: &str, _scene: Option<SceneId>) {
     };
     let mut state = std::mem::take(slot);
     state.fires = state.fires.saturating_add(1);
+    // Doc 36 cut GC.4: the tows first — the RAM mirror the walk's drives read, and every tow act
+    // due.
+    crate::surface::tow::tick(ctx);
     let mut stats = walk(ctx, &mut state);
     // Doc 36 cut GC.11 (Q-36-41): the raid director, after the rigs' work.
     crate::surface::raid::tick(ctx);
@@ -1464,6 +1467,8 @@ fn world_step(ctx: &mut Ctx<'_>, record: &RigRecord) {
                         if let Err(error) = mush_sim::place(ctx, tv, domain, pose) {
                             tracing::warn!(tv = tv.0, %error, "tacsim: a drive's placement was refused; the finish records it");
                         }
+                        // Doc 36 cut GC.4: a tug's casualty comes with it.
+                        crate::surface::tow::follow(ctx, tv);
                     }
                     Err(error) => {
                         tracing::warn!(tv = tv.0, %error, "tacsim: a drive's end does not read as a pose");

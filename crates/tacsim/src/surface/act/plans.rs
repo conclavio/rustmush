@@ -594,9 +594,15 @@ pub(crate) fn rig_rates(w: &World, tv: ObjId, battery: Option<&BatteryDef>) -> O
     if speed == 0 {
         return None;
     }
-    Some(DriveRates {
+    let rates = DriveRates {
         max_speed_cms: speed,
         cu_per_nominal_cell: battery.map_or(0, |battery| battery.drive_cu_per_nominal_cell),
+    };
+    // Doc 36 cut GC.4 (Q-36-12): a tug in tow drives at the tow rate, its draw scaled by the
+    // combined mass — every leg, reserve and trip home planned from here.
+    Some(match crate::surface::tow::coupled(w, tv) {
+        Some(op) => crate::field_ops::coupled_drive_rates_for_tow(&rates, op),
+        None => rates,
     })
 }
 

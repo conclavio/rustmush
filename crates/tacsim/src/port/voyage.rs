@@ -2629,6 +2629,9 @@ pub(crate) enum DepartRefusalKind {
     /// **Doc 36 cut GC.3 (Q-36-8)**: a destroyed drive or a wrecked hull refuses lift
     /// ([`crate::carrier_damage::lift_refusal`]).
     Damaged,
+    /// **Doc 36 cut GC.4 (Q-36-15)**: the bay holds more mass or volume of hulls than its
+    /// limits ([`crate::surface::tow::bay_over_line`]).
+    BayOver,
 }
 
 /// A typed refusal: its kind and the line `+ship/undock` answers with.
@@ -3282,6 +3285,10 @@ pub(crate) fn prepare_departure(
     // wrecked hull never lifts again.
     if let Some(line) = crate::carrier_damage::lift_refusal(w, hull) {
         return Err(refusal(K::Damaged, line));
+    }
+    // Doc 36 cut GC.4 (Q-36-15): the bay gate counts mass and volume as well as rigs.
+    if let Some(line) = crate::surface::tow::bay_over_line(w, hull, &name) {
+        return Err(refusal(K::BayOver, line));
     }
     let dests = destinations(w, def);
     // Doc 18 cut IC14 row 25: a queued depart resolves its stored venue word exactly;

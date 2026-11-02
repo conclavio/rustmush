@@ -883,6 +883,23 @@ impl SurfaceActProvider {
                 crate::surface::site_record::FIELD_OPEN_CODE,
             ));
         }
+        // Doc 36 cut GC.4: a tug busy with a tow act starts nothing, a tug in tow only drives, and
+        // a casualty in tow starts nothing — read from the site's record in this transaction.
+        if let Some(site) = plan.site.as_ref() {
+            let key = crate::surface::site_record::SiteKey(site.clone());
+            let refusal = txn
+                .get(&self.sites, &key)
+                .map_err(|_| {
+                    port_error(
+                        ActionErrorCode::Integrity,
+                        "the site records are unavailable",
+                    )
+                })?
+                .and_then(|record| crate::surface::tow::start_refusal(record, tv, kind));
+            if let Some(word) = refusal {
+                return Err(port_error(ActionErrorCode::ProviderRejected, word));
+            }
+        }
         // Doc 36 cut GC.0 (Q-36-17): a rig recovering under its own power leaves the site's unit
         // index in this commit.
         if kind == ActKind::Recover

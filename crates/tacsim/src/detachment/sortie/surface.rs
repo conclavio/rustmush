@@ -7,7 +7,6 @@ use super::{
     prepare,
     runtime::{Read, SortieHandles},
 };
-use crate::detachment::crew::CrewDuty;
 use mush_core::{ObjId, ObjKind, World};
 use mush_tactics::detachment::planning::PlannedController;
 use serde::{Deserialize, Serialize};
@@ -52,11 +51,10 @@ pub(super) fn selected(
     }
     let op = prepare::operation(read, h, flight.operation)?;
     let id = op.id;
-    if !matches!(op.roster.duty, CrewDuty::Mining | CrewDuty::Combat) {
-        // Doc 32 cut CF.6: an escort's combat contract drives its unit over the open ground
-        // like a mining crew's; recovery stays its own duty's.
-        return Err("No active mining or combat assignment.".into());
-    }
+    // Doc 36 cut GC.4 (Q-36-14, the owner's ruling of 2026-11-02): every duty drives, tows,
+    // attaches and loads on the open ground. An ordinary operation drags its own casualty home;
+    // there is no separate recovery sortie, and the recovery duty keeps only its hire-terms
+    // meaning and the Friend's extraction deferral (CF.5).
     let standing = prepare::standing(read, h, &op)?;
     if standing {
         let reservation = read

@@ -468,6 +468,12 @@ pub struct SiteRecord {
     /// shipped default ([`SITE_CELLS`]), so a 256 site's record is byte-identical to CF.4's.
     #[serde(default = "default_side", skip_serializing_if = "is_default_side")]
     pub side: u16,
+    /// **The site's tows** (doc 36 cut GC.4; Q-36-12, Q-36-13): the library's book of the tows
+    /// on this ground and each tug's timed act in flight ([`crate::surface::tow`]). Omitted
+    /// while nothing was ever towed here, so an untowed site's record is byte-identical to
+    /// GC.3's.
+    #[serde(default, skip_serializing_if = "crate::surface::tow::Tows::is_fresh")]
+    pub tows: crate::surface::tow::Tows,
 }
 
 /// [`SiteRecord::side`]'s default: the shipped side.
@@ -545,6 +551,7 @@ impl SiteRecord {
             next_object: 0,
             known: Vec::new(),
             side,
+            tows: crate::surface::tow::Tows::default(),
         }
     }
 
@@ -707,6 +714,14 @@ impl SiteRecord {
         self.units = index.into_values().collect();
         self.promoted = None;
         self.demoted_ic = Some(at_ic);
+        // Doc 36 cut GC.4 (Q-36-20): a tug the field left a casualty or a wreck ends its tow
+        // there; its casualty lies where it was set down.
+        let tugs: Vec<ObjId> = self.tows.active().map(|op| op.tug()).collect();
+        for tug in tugs {
+            if self.units.iter().any(|left| left.unit == tug) {
+                self.tows.end(tug, at_ic);
+            }
+        }
         Ok(field)
     }
 
@@ -837,6 +852,8 @@ impl SiteRecord {
             remains.left_ic,
         )?;
         let _ = self.take_unit(remains.unit);
+        // Doc 36 cut GC.4: remains are never towed; a tow either end of which fell ends.
+        self.tows.end(remains.unit, remains.left_ic);
         Ok(id)
     }
 
@@ -1015,6 +1032,7 @@ impl SiteRecord {
                  each 1 to {MAX_KNOWN_ITEMS} things on the site's ground"
             ));
         }
+        self.tows.check()?;
         Ok(())
     }
 }

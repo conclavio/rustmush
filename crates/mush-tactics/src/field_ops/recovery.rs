@@ -416,67 +416,43 @@ pub fn inspect_field_unit(
     }
 }
 
-/// Destination carrier bay capacity envelope checked when loading a towed/recovered unit (`Q-S8`).
+/// **The room a carrier bay has free now** (`Q-S8`; doc 36 cut GC.4, Q-36-15, Q-36-54): what is
+/// left of the bay compartment's item cap and of its `si.mass_kg` and `si.volume_l` limits once
+/// the units already in it are counted. The host reads it fresh off the compartment's own
+/// occupants at each load, so it is never a stored counter beside the compartment's owner (the
+/// parallel counter `Q-S8` forbids, which `BayCapacitySpec` was).
 #[derive(Clone, Copy, Debug, PartialEq, Eq, Serialize, Deserialize)]
 #[serde(deny_unknown_fields)]
-pub struct BayCapacitySpec {
-    /// Maximum units the bay slot can hold.
-    pub max_units: u32,
-    /// Units currently stowed in the bay slot.
-    pub current_units: u32,
-    /// Maximum total mass (`kg`) the bay/carrier can accept.
-    pub max_mass_kg: u64,
-    /// Current stowed mass (`kg`) in the bay/carrier.
-    pub current_mass_kg: u64,
-    /// Maximum cargo/stowed volume (`L`) the bay/carrier can accept.
-    pub max_volume_l: u64,
-    /// Current stowed volume (`L`) in the bay/carrier.
-    pub current_volume_l: u64,
-    /// Maximum unit width (`cm`) the bay entrance/cradle accepts.
-    pub max_width_cm: u32,
-    /// Maximum unit height (`cm`) the bay entrance/cradle accepts.
-    pub max_height_cm: u32,
+pub struct BayRoom {
+    /// Units the compartment still takes (`maximum_items` less its occupants).
+    pub items_free: u32,
+    /// Mass (`kg`) it still takes.
+    pub mass_free_kg: u64,
+    /// Stowage volume (`L`) it still takes.
+    pub volume_free_l: u64,
 }
 
-impl BayCapacitySpec {
-    /// Validate that `casualty` (including its retained cargo mass and volume) fits into this bay (`Q-S8`).
+impl BayRoom {
+    /// Whether a casualty of `mass_kg` (dry plus retained cargo) and `volume_l` (its stowage
+    /// volume) fits: one item, its mass and its volume, all three (`Q-S8`, Q-36-15's "fits
+    /// both").
     ///
     /// # Errors
-    /// Returns [`RecoveryError`] if unit count, width/height dimensions, total mass, or volume
-    /// would exceed the bay's capacity.
-    pub fn check_can_load(&self, casualty: &UnitMassProfile) -> Result<(), RecoveryError> {
-        if self.current_units >= self.max_units {
-            return Err(RecoveryError::BaySlotFull {
-                current_units: self.current_units,
-                max_units: self.max_units,
-            });
+    /// Returns [`RecoveryError`] naming the first limit the casualty would pass.
+    pub const fn check_can_load(&self, mass_kg: u64, volume_l: u64) -> Result<(), RecoveryError> {
+        if self.items_free == 0 {
+            return Err(RecoveryError::BaySlotFull);
         }
-        if casualty.width_cm() > self.max_width_cm || casualty.height_cm() > self.max_height_cm {
-            return Err(RecoveryError::BayDimensionExceeded {
-                unit_width_cm: casualty.width_cm(),
-                unit_height_cm: casualty.height_cm(),
-                max_width_cm: self.max_width_cm,
-                max_height_cm: self.max_height_cm,
-            });
-        }
-        let next_mass = self
-            .current_mass_kg
-            .checked_add(casualty.total_mass_kg())
-            .ok_or(RecoveryError::MassOverflow)?;
-        if next_mass > self.max_mass_kg {
+        if mass_kg > self.mass_free_kg {
             return Err(RecoveryError::BayMassExceeded {
-                required_mass_kg: next_mass,
-                max_mass_kg: self.max_mass_kg,
+                mass_kg,
+                free_kg: self.mass_free_kg,
             });
         }
-        let next_volume = self
-            .current_volume_l
-            .checked_add(casualty.cargo_volume_l())
-            .ok_or(RecoveryError::MassOverflow)?;
-        if next_volume > self.max_volume_l {
+        if volume_l > self.volume_free_l {
             return Err(RecoveryError::BayVolumeExceeded {
-                required_volume_l: next_volume,
-                max_volume_l: self.max_volume_l,
+                volume_l,
+                free_l: self.volume_free_l,
             });
         }
         Ok(())
@@ -875,8 +851,10 @@ pub struct LoadIntoBayRequest<'a> {
     pub carrier_pose: FieldPose,
     /// Maximum allowed loading distance in centimeters.
     pub max_load_distance_cm: u64,
-    /// Carrier bay capacity envelope.
-    pub bay_capacity: &'a BayCapacitySpec,
+    /// The room the destination bay has free now.
+    pub bay_room: BayRoom,
+    /// The casualty's stowage volume (`L`; Q-36-54), what it takes of the bay's `si.volume_l`.
+    pub casualty_stowage_volume_l: u64,
     /// Damaged casualty `TacticalUnit` (must match pinned revision; not auto-healed).
     pub casualty_unit: &'a TacticalUnit,
     /// IC timestamp of bay load.
@@ -1308,7 +1286,8 @@ impl RecoveryBook {
             slot,
             carrier_pose,
             max_load_distance_cm,
-            bay_capacity,
+            bay_room,
+            casualty_stowage_volume_l,
             casualty_unit,
             at_ic,
         } = req;
@@ -1372,7 +1351,10 @@ impl RecoveryBook {
             });
         }
 
-        bay_capacity.check_can_load(&current.casualty_mass)?;
+        bay_room.check_can_load(
+            current.casualty_mass.total_mass_kg(),
+            casualty_stowage_volume_l,
+        )?;
 
         let close_outcome = FieldCloseOutcome::RecoveredToBase { base: carrier };
         validate_close_outcome(current.casualty, current.casualty_state, &close_outcome)
@@ -1408,6 +1390,28 @@ impl RecoveryBook {
         };
         op.updated_at_ic = at_ic;
         Ok(outcome)
+    }
+
+    /// **Take a finished operation out of the book** (doc 36 cut GC.4): a `Detached` or
+    /// `LoadedIntoBay` operation, returned, so a live book holds its active tows and stays far
+    /// under [`MAX_RECOVERY_OPERATIONS`]. Ids are never reissued ([`Self::next_id`] keeps
+    /// counting).
+    ///
+    /// # Errors
+    /// Returns [`RecoveryError::UnknownOperation`] if there is no such operation, or
+    /// [`RecoveryError::OperationNotActive`]'s twin, [`RecoveryError::OperationStillActive`],
+    /// if it is still `Attached` or `Towing`.
+    pub fn retire(&mut self, id: RecoveryOpId) -> Result<RecoveryOperation, RecoveryError> {
+        let op = self
+            .operations
+            .get(&id)
+            .ok_or(RecoveryError::UnknownOperation(id))?;
+        if op.stage.is_active() {
+            return Err(RecoveryError::OperationStillActive(id));
+        }
+        self.operations
+            .remove(&id)
+            .ok_or(RecoveryError::UnknownOperation(id))
     }
 }
 
@@ -1644,36 +1648,22 @@ pub enum RecoveryError {
         actual: u64,
     },
     /// Carrier bay slot has no free unit capacity (`Q-S8`).
-    BaySlotFull {
-        /// Current units in slot.
-        current_units: u32,
-        /// Max units in slot.
-        max_units: u32,
-    },
-    /// Casualty silhouette exceeds carrier bay entrance/cradle dimensions (`Q-S8`).
-    BayDimensionExceeded {
-        /// Casualty width in cm.
-        unit_width_cm: u32,
-        /// Casualty height in cm.
-        unit_height_cm: u32,
-        /// Bay max width in cm.
-        max_width_cm: u32,
-        /// Bay max height in cm.
-        max_height_cm: u32,
-    },
-    /// Casualty total mass (dry + retained cargo) exceeds carrier bay mass limit (`Q-S8`).
+    BaySlotFull,
+    /// The operation is still `Attached` or `Towing`, so it cannot be retired (doc 36 cut GC.4).
+    OperationStillActive(RecoveryOpId),
+    /// The casualty's laden mass is more than the bay has free (`Q-S8`).
     BayMassExceeded {
-        /// Total required mass (`current + casualty`) in kg.
-        required_mass_kg: u64,
-        /// Bay max mass in kg.
-        max_mass_kg: u64,
+        /// The casualty's laden mass in kg.
+        mass_kg: u64,
+        /// The bay's free mass in kg.
+        free_kg: u64,
     },
-    /// Casualty retained cargo volume exceeds carrier bay volume limit (`Q-S8`).
+    /// The casualty's stowage volume is more than the bay has free (`Q-S8`, Q-36-54).
     BayVolumeExceeded {
-        /// Total required volume (`current + casualty`) in L.
-        required_volume_l: u64,
-        /// Bay max volume in L.
-        max_volume_l: u64,
+        /// The casualty's stowage volume in L.
+        volume_l: u64,
+        /// The bay's free volume in L.
+        free_l: u64,
     },
 }
 
@@ -1796,35 +1786,15 @@ impl fmt::Display for RecoveryError {
                 f,
                 "casualty {casualty:?} revision changed during recovery: expected {expected}, got {actual}"
             ),
-            Self::BaySlotFull {
-                current_units,
-                max_units,
-            } => write!(
+            Self::BaySlotFull => write!(f, "carrier bay compartment full"),
+            Self::OperationStillActive(id) => write!(f, "recovery operation {id} is still active"),
+            Self::BayMassExceeded { mass_kg, free_kg } => write!(
                 f,
-                "carrier bay slot full ({current_units}/{max_units} units)"
+                "casualty mass {mass_kg} kg exceeds the bay's free {free_kg} kg"
             ),
-            Self::BayDimensionExceeded {
-                unit_width_cm,
-                unit_height_cm,
-                max_width_cm,
-                max_height_cm,
-            } => write!(
+            Self::BayVolumeExceeded { volume_l, free_l } => write!(
                 f,
-                "unit envelope {unit_width_cm}x{unit_height_cm} cm exceeds bay limit {max_width_cm}x{max_height_cm} cm"
-            ),
-            Self::BayMassExceeded {
-                required_mass_kg,
-                max_mass_kg,
-            } => write!(
-                f,
-                "required bay mass {required_mass_kg} kg exceeds limit {max_mass_kg} kg"
-            ),
-            Self::BayVolumeExceeded {
-                required_volume_l,
-                max_volume_l,
-            } => write!(
-                f,
-                "required bay volume {required_volume_l} L exceeds limit {max_volume_l} L"
+                "casualty stowage volume {volume_l} L exceeds the bay's free {free_l} L"
             ),
         }
     }
