@@ -1,11 +1,12 @@
 # 36. Ground combat after the field — recovery, repair and the field's open edges
 
-Draft 0.2, 2026-11-02, docs only. Surveyed against `origin/main` at `d5ba6b2c`. Draft 0.1, the
+Draft 0.3, 2026-11-02, docs only. Surveyed against `origin/main` at `d5ba6b2c`. Draft 0.1, the
 same day, was the survey: it asked the owner questions, each with a proposed default and an
 alternative, in the form docs 27 §7 and 32 §4 used. **Draft 0.2 records the owner's rulings of
 2026-11-02 on every question:** Q-36-8, Q-36-11, Q-36-14, Q-36-29 and Q-36-35 amended, every
-other default accepted as written. §4a lists what the amendments change elsewhere. It plans no
-cuts yet; §7 sketches an order.
+other default accepted as written. §4a lists what the amendments change elsewhere. **Draft
+0.3, the same day,** replaces §7's provisional order with the cut list GC.0–GC.13, planned from
+the rulings.
 
 ## 1. Why this document exists
 
@@ -736,23 +737,246 @@ world harness, then the bot over SSH for the parts a player types.
   jammed weapon unjammed and the magazines rearmed from bought munitions. The removed engine
   becomes a lot with its parent hull's provenance. The captain then fields the hull again.
 
-## 7. A first sequence (to be replaced after the rulings)
+## 7. Cuts (GC.0–GC.13)
 
-Every name here is provisional.
+Planned 2026-11-02 from the rulings. Like doc 32's CF cuts, each one runs through the production
+command paths, ships its own gate, and is recorded as built in a section of its own after this
+one. A cut's line must name the files it touches, and two cuts that touch the same files never
+run at the same time. Cut names are GC ("ground combat"); everything else in this section is
+provisional and the owner's to reorder.
 
-1. **The field's edges** (§4 B, small cuts, parallel to H2): the barge lift, the time-bounded
-   field, arrival, close-destroyed with remains, and the stale-index fix. Then wreck cover and
-   the carrier loss table, each with its rebless.
-2. **H2 physical recovery** (§4 D): the tow act open to every duty, the stages, bay mass and
-   envelope, loading a foreign hull, the lease write-off rule, scanning for salvage. Story (a).
-3. **H2 entitlement** (§4 E): the claim contract, the registry and notice, the evidence path,
-   adjudication. Story (b). Space moves onto it afterwards (Q-36-46).
-4. **H3 restoration** (§4 F): `Missing` and component outcomes, munitions goods, the tariff
-   quote, the repair actions split by facility class (minor in a carrier bay at 2× time), UD.4c's
-   `+bay` player surface, the lease's damage charge. Story (c).
-   Its content and the tariff can start alongside step 2.
-5. **Opposition** (§4 G): the raid director, once arrival and the barge lift exist.
-6. **The cap** (Q-36-9): measured at 48 and 100 units, in parallel with any of the above.
+**Two rules for every cut:**
+- **One kernel rebless.** Every change to the kernel's hashes in this programme lands in GC.2,
+  together, so the practice hashes are reblessed once (as Q-CF-3 did).
+- **Stories grow.** Each story in §6 is one test file. The cut that first makes a step pass adds
+  that step, and the story's last cut runs it whole, at 256 and at 512 (Ahuna Flank and Urvara
+  Reach).
 
-The next design doc takes the rulings, fixes the cut list, and records each cut as built, as doc
-32 §7–§20 did.
+### Lane 1: the field's edges
+
+**GC.0 — Housekeeping and the barge's exit.** Q-36-6 (the host half), Q-36-17, Q-36-42, Q-36-49,
+Q-36-50, Q-36-51.
+- **The raider's carrier lifts** once every hull it launched is aboard or is a casualty or wreck
+  (CF.7's F-6 departure, run by the host for the NPC carrier). Files: `field/raiders.rs`,
+  `field/exit.rs`.
+- **The site index stays current.** A unit that leaves the site under its own power, through a
+  DT recover or a rig's recover, is taken out of the index (`take_unit`) in the same commit.
+  Files: `surface/site_record.rs`, `detachment/sortie/prepare.rs`.
+- **SCREEN and SUPPORT gates** in a field, and `help field` saying they bind only in a field.
+  Files: `tests/shard_1/`, `docs/help/field.md`.
+- **The harness hook** for the org unit grant, so a tacsim world-harness story can land a DT
+  activation and fly delivered orders end to end. Files: tacsim's world harness.
+- **The two world-task items:** the `DecisionResult` arm gated on no pending commit, and a waiting
+  notice for lines queued behind a held lifecycle slot after 250 ms, each with its regression.
+  Files: `mush-server/src/world_task.rs`.
+- **Doc 27a** rows for deleted code marked superseded.
+- **Gate:** `gc0_the_raiders_barge_lifts_and_the_field_demotes_without_a_friendly_mark`, which is
+  doc 32's story with the stand-down mark removed.
+- **Depends on:** nothing. Starts first.
+
+**GC.1 — Arrival, and licensed minds left out.** Q-36-4, Q-36-45.
+- **An arriving carrier joins a running field** at the next pulse, at its pad, as a unit of its
+  own party, without launches. Files: `port/voyage.rs` or `port/executor.rs` (the arrival),
+  `field/carrier.rs`, `field/admit.rs`.
+- **A licensed-mind hull is left out** of a field as a wall object, and every other party is
+  admitted. Files: `field/admit.rs`.
+- **Gate:** `gc1_a_carrier_arriving_mid_field_is_admitted_at_its_pad_and_cannot_launch`, plus
+  one test for the licensed-mind case.
+- **Depends on:** GC.0, because both touch the voyage's field hooks.
+
+**GC.2 — The kernel batch (the one rebless).** Q-36-5, Q-36-6 (the tempo half), Q-36-7,
+Q-36-38 (combat's half).
+- **The tempo:** a target that has never been armed and is not firing does not keep `Engaged`.
+  A field with no shot for a provisional 10 wall-clock minutes demotes regardless
+  (`[tacsim.field].idle_demote_s`).
+- **Wreck cover (G-8):** a wreck's cell takes its class's wall cover and opacity in the fire and
+  sensor traces while the wreck stands in it. The CF.7 story's G-8 assert flips.
+- **Component outcomes:** a hit that does not destroy a section may jam or damage one component in
+  it, by provisional content chances. `ComponentCondition` gains `Missing`, distinct from
+  `Destroyed`, and `"stripped"` maps to it.
+- Files: `arena/state.rs`, `arena/clock.rs`, `arena/damage.rs`, the trace in `mush-atlas` or
+  `arena/`, `mush-tactics/src/field_ops/condition.rs`, and the snapshot and hash pins. Reblessed
+  once.
+- **Gates:** `gc2_an_unarmed_barge_does_not_hold_a_field_engaged`,
+  `gc2_a_wreck_hides_what_stands_behind_it`,
+  `gc2_a_survivable_hit_can_jam_a_weapon_and_the_check_in_keeps_it`, and
+  `gc2_an_idle_declared_field_demotes`.
+- **Depends on:** nothing. Starts beside GC.0. It is the largest cut; split it into GC.2a (tempo
+  and cover) and GC.2b (components) if the rebless allows two.
+
+**GC.3 — Remains, and the carrier's loss.** Q-36-8, Q-36-18, Q-36-47.
+- **Close-destroyed:** an irrecoverable hull's epoch closes `Destroyed` at demotion, and a
+  `Remains` object with its mass replaces it in the site record. Files: `field/close.rs`,
+  `surface/site_record.rs`.
+- **One consequence table** for carrier and ship damage, in one module that both tracks read:
+  - a destroyed drive refuses lift;
+  - a destroyed hull wrecks the carrier, its crew are stranded, and its bay rigs become wrecks;
+  - a carrier wreck needs a tug of at least half its tonnage.
+  
+  Files: a new `tacsim::carrier_damage` module (name provisional), `field/carrier.rs`, and the
+  lift and voyage gates. Space reads the table in its own tree, as Q-36-47's follow-up.
+- **Gates:** `gc3_an_irrecoverable_hull_leaves_remains_and_closes_destroyed` and
+  `gc3_a_carrier_with_its_drive_destroyed_cannot_lift`.
+- **Depends on:** GC.2, because the component outcomes feed the table, and GC.1, because both
+  touch `field/carrier.rs` and the voyage gates.
+
+### Lane 2: H2 recovery
+
+**GC.4 — The tow (story a).** Q-36-12, Q-36-13, Q-36-14, Q-36-15, Q-36-20, Q-36-21.
+- **`tow`, attach and release** as surface acts on the IC tick, open to every duty. Any mobile
+  unit within the 2× tonnage cap may do them, at `coupled_drive_rates_for_tow`. The acts are
+  timed by `[tacsim.recovery].inspect_s`, `attach_s` and `load_s`, and each is interruptible.
+  The live acts use the library's `RecoveryBook` rules.
+- **A tow in a promoted field** is admitted coupled, and a coupled tug drives at the tow rate on
+  wall time.
+- **Loading into one's own carrier's bay**, checked against the bay's new mass and envelope limits
+  as well as `maximum_items`. `BayCapacitySpec` is retired.
+- Licence and compute seats stay with the casualty until its epoch closes.
+- Files: `surface/` (a new `tow.rs`), `detachment/sortie/surface.rs` (the duty refusal goes),
+  `definitions/logistics.rs` (the bay limits), `port/voyage.rs` (the bay gate counts mass),
+  `field/admit.rs` (coupled admission), `field/carrier.rs`, and the content bays.
+- **Story (a), main path:** the escort's wingman drags the disabled escort to the ramp during the
+  field and loads it before the carrier lifts. A restart while attached keeps the attachment; a
+  restart while loading keeps the load. The bot's escort pilot learns the tow lines.
+- **Depends on:** GC.0 (the site index), GC.1 (both touch `field/admit.rs`) and GC.3 (both touch
+  `field/carrier.rs` and the voyage's bay gate).
+
+**GC.5 — Salvage on a later visit.** Q-36-16, Q-36-19, Q-36-22, Q-36-23, Q-36-29.
+- **A scan reveals salvage** (casualties, wrecks, remains and cargo in reach) into the scanner's
+  own `known` record.
+- **Loading into a foreign bay:** the epoch closes `RecoveredToBase{carrier}` with `recovered_by`,
+  and the carrier's operator gets custody and a pending claim, which GC.6 files.
+- **Cargo pickup** by inventory relocation, on open ground for anyone and on owned ground by
+  FO-4.
+- **Lease rigs.**
+  - A disabled lease rig recovered to a bay can be returned.
+  - One still out after 28 IC days is written off and becomes Occator's alone.
+  - A written-off rig can be towed, but loading it hands it back to Occator, with no claim.
+- Files: the scan in `surface/`, `surface/tow.rs`, `port/tv.rs`, and `mush-inventory`'s relocate
+  path.
+- **Story (a), second variant:** a casualty left behind is found by a scan on a later visit and
+  brought home by the returning party.
+- **Depends on:** GC.4.
+
+**GC.6 — The claim (story b).** Q-36-24 to Q-36-28, Q-36-30.
+- **A salvage claim is an E4b2 economy contract** with a `RealUtc` 48-hour contest deadline,
+  paused by outages through `contract_live`. It is filed at the site's port registry (the
+  Freeport Registry for frontier sites), and refused at filing for an Occator write-off.
+- **Notice** goes by IC mail to the title holder, and to the landholder on owned ground.
+- **Tenure** is kept across the same tug's detach and reattach, an interruption by combat, and a
+  restart with the attachment intact.
+- **Evidence:** a party's own `known` and sensor records, the durable surface black box read
+  with bay access, and delivered reports. The RAM tape in `SalvageClaimBook` is retired for the
+  ground.
+- **Adjudication** at the deadline by `adjudicate_claim`'s rules: an uncontested claim becomes
+  title. Unlawful recovery stays evidence only.
+- Files: `mush-economy` (the contract kind), `mush-tactics/src/field_ops/salvage.rs` (made live
+  and durable), a new `tacsim::salvage` host (name provisional), the mail and registry hooks.
+- **Story (b):** three parties on Urvara Reach. The window is compressed by a test knob and paused
+  across a W-clock outage.
+- **Depends on:** GC.5.
+- **Afterwards, in the space track's tree:** `+helm/tow` moves onto this claim, its window, its
+  stages and the bay check, and `SpacePartyId` becomes `PartyId` (Q-36-46, Q-36-48). This is the
+  space track's cut, not this programme's, and it is listed here so the two tracks agree on the
+  order.
+
+### Lane 3: H3 restoration
+
+**GC.7 — Munitions and the tariff (content and economy).** Q-36-31, Q-36-36.
+- **A munitions good** per ammunition family, with mass and price, sold at the Ceres ports and
+  Stickney Yard. A carrier can carry munitions as cargo.
+- **The workshop tariff** becomes content: per point, per section, per component, per round, in
+  IC time. Operators may set a multiplier, not a free fee. `industrial_parts` are consumed per
+  structural point.
+- Files: `content/goods.json`, the ammunition packs, the vendor content, a tariff content file, and
+  `mush-tactics/src/field_ops/workshop.rs`'s `WorkshopFacilityTariff` read from content.
+- **Gate:** `gc7_munitions_are_bought_and_carried_and_the_tariff_quotes_a_known_repair`.
+- **Depends on:** nothing. Starts beside GC.0 and GC.2.
+
+**GC.8 — The repair actions and `+bay` (story c).** Q-36-32, Q-36-33, Q-36-35, Q-36-37,
+Q-36-39, Q-36-40.
+- **A new authoritative action** for changes that touch only cells and conditions (repair a
+  section, repair a component, unjam, rearm from munitions lots), beside `bay_refit` for part
+  changes. Work units run on the IC clock and pause under a W-clock freeze, and the hull is held.
+- **Facility classes:**
+  - a carrier bay does minor repair (armor, and damaged parts that are not destroyed) at 2× time;
+  - a workshop does everything, including destroyed parts, reconstruction, replacement and refit;
+  - out on the ground, field engineering stays as doc 27a §10 has it.
+- **Authority:** the title holder or a holder of a `MaintainRefit` grant may repair, rearm and
+  refit. A lessee may repair and rearm. A salvor with custody may stabilize and repair at their
+  own risk. The bay's authority check reads the grant.
+- **Provenance:** a stripped or removed part's lot carries its parent hull, its condition and its
+  claim reference. Hot parts are refused.
+- **Scrap:** structural mass becomes `structural_alloys`, and salvageable parts become lots.
+  Remains can be scrapped where they lie by their title holder or a winning claimant.
+- **UD.4c's `+bay`** player surface over all of it: the doll, the quote, the order.
+- Files: `mush-industry/src/bay_refit/` (the authority), a new repair action beside it,
+  `mush-tactics/src/field_ops/workshop.rs` (made live), `hardware/bay.rs`, the `+bay` commands,
+  and `mush-inventory` lots.
+- **Story (c):** the casualty from story (a), inspected at Stickney Yard. It gets a new engine, a
+  jammed weapon unjammed and its magazines rearmed from bought munitions, then fields again. A
+  second unit is armor-patched in its carrier's bay at double time.
+- **Depends on:** GC.2 (for `Missing` and jammed parts) and GC.7 (for munitions and the tariff).
+  It does not need GC.4: a damaged rig that drove home is enough to start.
+
+**GC.9 — The lease's damage charge.** Q-36-34.
+- At return, the damage is assessed, and the tariff's restoration cost is taken from the deposit,
+  up to the deposit. Occator restores the rig before it is leased again.
+- Files: `port/tv.rs`.
+- **Gate:** `gc9_a_damaged_lease_rig_returned_pays_its_restoration_from_the_deposit`.
+- **Depends on:** GC.7 (the tariff). GC.5 also touches `port/tv.rs`, so the two do not run at
+  once.
+
+### Lane 4: around the field
+
+**GC.10 — Relations (F-1, F-2).** Q-36-10, Q-36-11.
+- **Shared organization membership** makes two parties Friends, below a mark and fire in the
+  order.
+- **At demotion,** observed fire adjusts the victim faction's standing of the shooter's
+  principals by a bounded, provisional amount. The detachment's leader may void the changes their
+  own party caused, for friendly fire, until their next command or a provisional 10 IC minutes.
+  The change and the void are recorded together.
+- Files: `field/parties.rs`, `field/close.rs` (at demotion), and `mush-faction`'s reputation write
+  path.
+- **Gates:** `gc10_two_rosters_in_one_organization_are_friends` and
+  `gc10_a_leader_voids_friendly_fire_standing`.
+- **Depends on:** GC.3, because both touch `field/close.rs`.
+
+**GC.11 — The raid director.** Q-36-41.
+- **A raid director on the surface tick** seeds, launches and marks authored raiders by a per-site
+  schedule and threat budget, triggered by presence and ore value, with a cooldown. Raiders
+  arrive by GC.1's arrival and leave by GC.0's lift. A raider group whose carrier is wrecked does
+  not respawn.
+- Files: `field/raiders.rs`, a new `surface/raid.rs` (name provisional), and
+  `content/field/raiders.json`.
+- **Gate:** `gc11_a_scheduled_raid_arrives_declares_and_leaves_with_its_losses`. The bot's
+  captain story runs once with a director raid instead of a staff one.
+- **Depends on:** GC.0 and GC.1.
+
+**GC.12 — The cap, measured.** Q-36-9.
+- A scale harness fields 48 and then 100 IC units from mixed parties on conclav.dev, and reports
+  pulse time, snapshot bytes and relation-table cost. `FIELD_MAX_UNITS` rises to the largest
+  measured size within budget, and the result is recorded in this doc.
+- Files: a scale test, and `site_record.rs`'s constant at the end.
+- **Depends on:** nothing. It can run any time, and is better after GC.2 because the tempo rule
+  changes the hot loop.
+
+**GC.13 — Crew treatment.** Q-36-44.
+- An injured or incapacitated character recovers to fit at a port after a provisional IC time,
+  faster at a port with a medical room.
+- Files: `field/crew.rs`, and port content.
+- **Gate:** `gc13_an_extracted_incapacitated_pilot_is_fit_again_after_treatment`.
+- **Depends on:** nothing.
+
+### Lanes at a glance
+
+| Starts at once | Then | Then | Then |
+|---|---|---|---|
+| GC.0 housekeeping, barge lift | GC.1 arrival | GC.11 raid director | |
+| GC.2 kernel batch (one rebless) | GC.3 remains, carrier loss (after GC.1 too) | GC.4 tow (story a) → GC.5 later visit → GC.6 claim (story b) | GC.10 relations, beside GC.4 |
+| GC.7 munitions, tariff | GC.8 repair, `+bay` (story c), after GC.2 | GC.9 lease charge | |
+| GC.12 the cap; GC.13 treatment | | | |
+
+At most four writers run at once: one per row, with the files kept apart as each cut's line
+names them. The three stories close the programme. Then a short review, in the form of the
+2026-10-31 one, before the next survey.
