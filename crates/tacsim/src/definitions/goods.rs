@@ -2,13 +2,15 @@
 //! table" and "The validator"; D-18-13 as amended by R7, D-18-28 as replaced by
 //! R7, D-18-39, D-18-40).
 //!
-//! Twelve sale items in one tacsim-owned compiled-in document,
+//! Sixteen sale items in one tacsim-owned compiled-in document,
 //! `crates/tacsim/content/market/goods.json`: eleven from doc 10 S4A's ten
 //! families (doc 19 cut A.8 added `instrument_boards` and `carbon_feedstock`, the
 //! moon ports' goods; v2; doc 20 cut SM.3a added the four run-of-mine ores,
 //! `metal_ore`, `ice_ore`, `carbon_ore` and `strategic_ore`, under their own
 //! stowage tag `stow.ore`, which a terrain vehicle's hopper and a Dray-P's hold
-//! accept and a standard Dray's does not — doc 20 §7.3, Q-20-1; v3) and one
+//! accept and a standard Dray's does not — doc 20 §7.3, Q-20-1; v3; doc 36 cut GC.7 added
+//! the four munitions goods, `ammo_ap_30`, `ammo_ball_762`, `ammo_he_105` and `ammo_missile`,
+//! each naming the ammunition family it loads; v4) and one
 //! aggregate (`provisions`, class `ship_supply`, no family; Q-18-3). A top-level `measures` registry (`si.mass_kg` → kg, `si.volume_l` →
 //! L) names doc 06 D3's measures, and every row carries its binding mass **and**
 //! packed volume per unit, so a later measure is a data key on both sides and
@@ -122,10 +124,35 @@ pub struct GoodDef {
     /// the derived `CatalogEntry.baseline`, which mush-market itself never
     /// charges.
     pub reference_major: u64,
+    /// **What a munitions good loads** (doc 36 cut GC.7, Q-36-36): present exactly when the
+    /// family is `munitions`. Skipped when absent, so every other row encodes as before.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub munitions: Option<MunitionsDef>,
     /// Why these numbers; never a mix or a best load (D-18-39).
     #[serde(default, skip_serializing_if = "String::is_empty")]
     pub note: String,
 }
+
+/// The most rounds one unit of a munitions good may hold.
+pub const MAX_ROUNDS_PER_UNIT: u32 = 10_000;
+
+/// **The ammunition a munitions good is** (doc 36 cut GC.7, Q-36-36). The link runs from the
+/// good to the ammunition entry, so no ammunition pack (nor its digest) changes: a rearm
+/// draws `ceil(rounds / rounds_per_unit)` units of the good for a magazine of `ammunition`.
+/// Beam charge (`tacsim.ammunition.laser_charge`) is no good: it is a cell the workshop's
+/// power recharges at the tariff's per-round labour, since heat, not the magazine, is the
+/// laser's limit (16b cut X.1).
+#[derive(Clone, Debug, Eq, PartialEq, Serialize, Deserialize)]
+#[serde(deny_unknown_fields)]
+pub struct MunitionsDef {
+    /// The ammunition entry (`tacsim.ammunition.he_105`).
+    pub ammunition: CanonicalId,
+    /// Rounds in one unit of the good, `1..=`[`MAX_ROUNDS_PER_UNIT`].
+    pub rounds_per_unit: u32,
+}
+
+/// The munitions family's id (doc 10 S4A).
+pub const MUNITIONS_FAMILY: &str = "munitions";
 
 /// A good's class.
 #[derive(Clone, Copy, Debug, Eq, PartialEq, Serialize, Deserialize)]
@@ -299,6 +326,40 @@ impl GoodsTable {
                     format!("declares no {MASS_KG}; every good weighs something"),
                 ));
             }
+            let is_munitions = good
+                .family
+                .as_ref()
+                .is_some_and(|family| family.as_str() == MUNITIONS_FAMILY);
+            match &good.munitions {
+                None if is_munitions => {
+                    return Err(row_error(
+                        name,
+                        id,
+                        "a munitions good names the ammunition it loads",
+                    ));
+                }
+                Some(_) if !is_munitions => {
+                    return Err(row_error(
+                        name,
+                        id,
+                        "only a munitions good names an ammunition",
+                    ));
+                }
+                Some(munitions)
+                    if munitions.rounds_per_unit == 0
+                        || munitions.rounds_per_unit > MAX_ROUNDS_PER_UNIT =>
+                {
+                    return Err(row_error(
+                        name,
+                        id,
+                        format!(
+                            "rounds_per_unit is 1 to {MAX_ROUNDS_PER_UNIT}; {} is not",
+                            munitions.rounds_per_unit
+                        ),
+                    ));
+                }
+                _ => {}
+            }
             if good.reference_major > MAX_REFERENCE_MAJOR {
                 return Err(row_error(
                     name,
@@ -317,6 +378,16 @@ impl GoodsTable {
     #[must_use]
     pub fn good(&self, id: &CanonicalId) -> Option<&GoodDef> {
         self.goods.iter().find(|good| &good.id == id)
+    }
+
+    /// **The munitions good that loads `ammunition`** (doc 36 cut GC.7), if one does.
+    #[must_use]
+    pub fn munitions_for(&self, ammunition: &str) -> Option<&GoodDef> {
+        self.goods.iter().find(|good| {
+            good.munitions
+                .as_ref()
+                .is_some_and(|m| m.ammunition.as_str() == ammunition)
+        })
     }
 
     /// Whether `id` is a registered measure.

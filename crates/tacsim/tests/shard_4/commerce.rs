@@ -855,7 +855,8 @@ fn ic8_the_ticks_seed_every_pool_exactly_once() {
         assert!(report.contains(&line), "want `{line}`:\n{report}");
     }
     let all = receipts(&mut rig.tw);
-    assert_eq!(all.len(), 8, "Ceres 4 and Stickney 4");
+    // Doc 36 cut GC.7: each port's four munitions rows.
+    assert_eq!(all.len(), 16, "Ceres 8 and Stickney 8");
     for (id, receipt) in &all {
         assert_eq!(receipt.issue_id().expect("derives"), *id);
         assert_eq!(
@@ -900,7 +901,8 @@ fn ic8_a_reboot_mid_seed_re_mints_nothing() {
     assert_eq!(receipts(&mut rig.tw).len(), 2, "the receipts survive");
     stock(&mut rig);
     let all = receipts(&mut rig.tw);
-    assert_eq!(all.len(), 8);
+    // Doc 36 cut GC.7: sixteen with the munitions rows.
+    assert_eq!(all.len(), 16);
     let mut sums: BTreeMap<(VaultId, String), u64> = BTreeMap::new();
     for (_, receipt) in &all {
         *sums
@@ -1421,13 +1423,21 @@ fn ic8_the_board_counts_down_to_sold_out() {
     ]) {
         assert!(line.starts_with(want), "{want}:\n{out}");
     }
-    // C08: only the Co-op's fittings bid.
+    // C08: the Co-op's four munitions asks (doc 36 cut GC.7), then its fittings bid.
     let c08 = station_room(&rig.tw, "ceres_port", "room.c08_chandlery");
     let out = look_in(&mut rig.tw, pilot, c08);
     let lines = board(&out);
-    assert_eq!(lines.len(), 1, "{out}");
+    assert_eq!(lines.len(), 5, "{out}");
+    for (line, want) in lines[..4].iter().zip([
+        "  30 mm AP rounds: 12.00cr/round",
+        "  7.62 mm ball, boxed: 25.00cr/box",
+        "  105 mm HE rounds: 150.00cr/round",
+        "  anti-armour missiles, canistered: 1500.00cr/round",
+    ]) {
+        assert!(line.starts_with(want), "{want}:\n{out}");
+    }
     assert!(
-        lines[0].starts_with("  wanted, yard fittings, crated: 560.00cr/t, 5,400 t more"),
+        lines[4].starts_with("  wanted, yard fittings, crated: 560.00cr/t, 5,400 t more"),
         "{out}"
     );
     // P11 and P08: the Yard's fittings ask.
@@ -2511,7 +2521,8 @@ fn ic8_a_world_on_lane_v2_takes_v3_by_the_shelf() {
         assert_eq!(text, slate, "{}: the detail is restored", row.mark);
     }
     stock(&mut rig);
-    assert_eq!(receipts(&mut rig.tw).len(), 8);
+    // Doc 36 cut GC.7: sixteen with the munitions rows.
+    assert_eq!(receipts(&mut rig.tw).len(), 16);
     no_refused_writes(&rig.tw);
 }
 
@@ -3072,8 +3083,9 @@ fn a8_a_world_on_lane_v7_takes_v8_by_the_shelf() {
         plan.contains(&format!(
             // Doc 20 cut SM.2: the shipped lane is v9, so the step also creates the six
             // sites' places, ports and routes and updates the eight bodies and the Freeport;
-            // doc 32 cut S.1 (lane v17): and the 512 site's place, port and two routes.
-            "Plan for {LANE_PACK}@{LANE_VERSION}: 40 create, 10 update, 0 retire, 14 unchanged"
+            // doc 32 cut S.1 (lane v17): and the 512 site's place, port and two routes;
+            // doc 36 cut GC.7 (lane v18): and Stickney's port (its workshop and munitions).
+            "Plan for {LANE_PACK}@{LANE_VERSION}: 40 create, 11 update, 0 retire, 13 unchanged"
         )),
         "{plan}"
     );
@@ -3084,7 +3096,7 @@ fn a8_a_world_on_lane_v7_takes_v8_by_the_shelf() {
     );
     assert!(
         apply.contains(&format!(
-            "Applied {LANE_PACK}@{LANE_VERSION}: 40 created, 10 updated, 0 retired, 14 unchanged."
+            "Applied {LANE_PACK}@{LANE_VERSION}: 40 created, 11 updated, 0 retired, 13 unchanged."
         )),
         "{plan}\n{apply}"
     );

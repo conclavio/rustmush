@@ -1,5 +1,5 @@
 {
-  "version": 3,
+  "version": 4,
   "measures": [
     { "id": "si.mass_kg", "unit": "kg", "word": "mass" },
     { "id": "si.volume_l", "unit": "L", "word": "packed volume" }
@@ -160,6 +160,62 @@
       "consumable": null,
       "reference_major": 600,
       "note": "Rare-earth and platinum-group rock drilled from a Registry site and bought only at Ceres; no mill takes it in phase 1, so it waits on the Exchange's prize shelf. Broken rock at about 1.67 t to the cubic metre packs to 600 L a tonne. The reference is the Exchange's bid that cut SM.5 posts."
+    },
+    {
+      "id": "ammo_ap_30",
+      "label": "30 mm AP rounds",
+      "family": "munitions",
+      "class": "trade",
+      "ledger_unit": "round",
+      "quote_unit": "round",
+      "measures": { "si.mass_kg": 1, "si.volume_l": 1 },
+      "stowage": "stow.bulk",
+      "consumable": null,
+      "reference_major": 12,
+      "munitions": { "ammunition": "tacsim.ammunition.ap_30", "rounds_per_unit": 1 },
+      "note": "Doc 36 cut GC.7. A 30 mm round is about 0.9 kg complete; linked and canned it packs to a litre, so it is counted whole. 12 cr a round makes the scout car's 240-round load 2,880 cr: precious enough to count, cheap enough to fire."
+    },
+    {
+      "id": "ammo_ball_762",
+      "label": "7.62 mm ball, boxed",
+      "family": "munitions",
+      "class": "trade",
+      "ledger_unit": "box",
+      "quote_unit": "box",
+      "measures": { "si.mass_kg": 3, "si.volume_l": 3 },
+      "stowage": "stow.bulk",
+      "consumable": null,
+      "reference_major": 25,
+      "munitions": { "ammunition": "tacsim.ammunition.ball_762", "rounds_per_unit": 100 },
+      "note": "Doc 36 cut GC.7. A box is 100 linked rounds, about 2.5 kg of cartridges and half a kilo of links and can: a round alone would weigh under the table's 1 kg grain. The coaxial's 2,000-round belt is twenty boxes, 500 cr."
+    },
+    {
+      "id": "ammo_he_105",
+      "label": "105 mm HE rounds",
+      "family": "munitions",
+      "class": "trade",
+      "ledger_unit": "round",
+      "quote_unit": "round",
+      "measures": { "si.mass_kg": 21, "si.volume_l": 30 },
+      "stowage": "stow.bulk",
+      "consumable": null,
+      "reference_major": 150,
+      "munitions": { "ammunition": "tacsim.ammunition.he_105", "rounds_per_unit": 1 },
+      "note": "Doc 36 cut GC.7. A complete 105 mm HE round is about 21 kg and ships in a 30 L tube container. 150 cr a round makes the line tank's 40-round load 6,000 cr, about a sixteenth of the tank: the reason a tank comes home with rounds left."
+    },
+    {
+      "id": "ammo_missile",
+      "label": "anti-armour missiles, canistered",
+      "family": "munitions",
+      "class": "trade",
+      "ledger_unit": "round",
+      "quote_unit": "round",
+      "measures": { "si.mass_kg": 50, "si.volume_l": 100 },
+      "stowage": "stow.bulk",
+      "consumable": null,
+      "reference_major": 1500,
+      "munitions": { "ammunition": "tacsim.ammunition.missile_round", "rounds_per_unit": 1 },
+      "note": "Doc 36 cut GC.7. A vehicle missile in its launch canister, about 50 kg and 100 L crated. 1,500 cr a round makes the heavy's six-round rack 9,000 cr: the dearest thing a unit fires."
     }
   ]
 }

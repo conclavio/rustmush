@@ -1,0 +1,19 @@
+{
+  "version": 1,
+  "tariff": {
+    "cost_per_structural_point_repair": 100,
+    "duration_ic_per_structural_point_repair": 36,
+    "structural_points_per_industrial_parts_t": 100,
+    "base_cost_reconstruct_section": 80000,
+    "base_duration_ic_reconstruct_section": 28800,
+    "cost_repair_component": 20000,
+    "duration_ic_repair_component": 7200,
+    "labor_cost_replace_component": 40000,
+    "duration_ic_replace_component": 14400,
+    "cost_per_ammo_round": 25,
+    "duration_ic_rearm_component": 1800,
+    "min_multiplier_permille": 500,
+    "max_multiplier_permille": 2000
+  },
+  "note": "Doc 36 cut GC.7 (Q-36-31), provisional under the owner's economy rule of 2026-10-24. Costs are centicredits, durations IC seconds. The basis is one IC hour of bay labour at 100 cr, the core-fitting fee (hardware's fitting_minor): a structural point takes 36 s, 100 points an IC hour, so 1 cr a point; a component repair is two IC hours, 200 cr; a replacement or a bay refit is four IC hours (the bay's BAY_WORK_UNITS), 400 cr; a section rebuilt from its shell is eight IC hours, 800 cr, before its points; loading a round is 0.25 cr and a rearm half an IC hour. A tonne of industrial_parts (400 cr at Stickney) restores 100 points, so parts cost four times the labour of a structural repair. Operators scale costs between half and twice the schedule; the bay's 1,000 cr fee ceiling holds a refit at the full 2x."
+}

@@ -66,9 +66,47 @@ pub const WIDE_SITE_ROWS: [&str; 4] = [
     "urvara_port",
 ];
 
+/// **Doc 36 cut GC.7: the munitions goods the lane's vendors stock.**
+pub const MUNITIONS_GOODS: [&str; 4] =
+    ["ammo_ap_30", "ammo_ball_762", "ammo_he_105", "ammo_missile"];
+
+/// Remove what doc 36 cut GC.7 added to the lane (lane v18): Ceres's and Stickney's `workshop`
+/// blocks and every vendor's munitions stock and asks — the lane v17 shape but its manifest
+/// (idempotent).
+pub fn strip_workshops(doc: &mut Value) {
+    let Some(entries) = doc["entries"].as_object_mut() else {
+        return;
+    };
+    for port in ["ceres_port", "stickney_port"] {
+        let Some(def) = entries
+            .get_mut(port)
+            .and_then(|entry| entry["def"].as_object_mut())
+        else {
+            continue;
+        };
+        def.remove("workshop");
+        for vendor in def
+            .get_mut("vendors")
+            .and_then(Value::as_array_mut)
+            .into_iter()
+            .flatten()
+        {
+            for rows in ["stock", "asks"] {
+                if let Some(rows) = vendor[rows].as_array_mut() {
+                    rows.retain(|row| {
+                        !MUNITIONS_GOODS.contains(&row["good"].as_str().unwrap_or_default())
+                    });
+                }
+            }
+        }
+    }
+}
+
 /// Remove what doc 32 cut S.1 added to the lane (lane v17): Urvara Reach's rows and Ceres's
-/// `urvara` routes key — the lane v16 shape but its manifest.
+/// `urvara` routes key — the lane v16 shape but its manifest. Since lane v18, doc 36 cut GC.7's
+/// rows first ([`strip_workshops`]), so every strip chain rebuilds its older lane.
 pub fn strip_wide_sites(doc: &mut Value) {
+    strip_workshops(doc);
     let entries = doc["entries"].as_object_mut().expect("the lane's entries");
     for id in WIDE_SITE_ROWS {
         entries.remove(id);

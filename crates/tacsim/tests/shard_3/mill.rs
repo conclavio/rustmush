@@ -1122,7 +1122,7 @@ fn enrol(rig: &mut Rig, who: &str, seed: i64) -> Result<String, (String, String)
 /// digest; and `strip_mill` removes exactly those two rows and the yard, idempotently.
 #[test]
 fn sm12a_strip_mill_rebuilds_the_published_v13() {
-    assert_eq!(LANE_VERSION, 17, "lane v17 since doc 32 cut S.1");
+    assert_eq!(LANE_VERSION, 18, "lane v18 since doc 36 cut GC.7");
     let shipped = load_pack(LANE_JSON).expect("the lane verifies");
     assert_eq!(shipped.manifest().version(), LANE_VERSION);
     let mut mills = Vec::new();
@@ -2580,7 +2580,9 @@ fn sm12a_a_pack_apply_adds_the_mills_to_a_kept_world() {
         no_counter(&stored(&mut rig, &key).expect("the map")),
         "the apply writes none"
     );
-    let batch = fire_until_batch(&mut rig, 12);
+    // Doc 36 cut GC.7: the seed is stripped of the munitions rows too, so the apply also adds
+    // them, and both ports' clerks mint and list them (eight fires) before the mill's turn.
+    let batch = fire_until_batch(&mut rig, 24);
     assert_eq!(batch.parameters["ordinal"], 1);
     assert_eq!(
         counter(&rig.tw, EXCHANGE, "metal_ore"),

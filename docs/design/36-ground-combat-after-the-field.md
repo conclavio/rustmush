@@ -1081,3 +1081,104 @@ Q-36-39, Q-36-40, Q-36-53 (the acts).
 At most five writers run at once: one per row, GC.12 and GC.13 beside them as single-file cuts
 (Q-36-57), with the files kept apart as each cut's line names them. The three stories close the
 programme. Then a short review, in the form of the 2026-10-31 one, before the next survey.
+
+## As built (GC.7)
+
+GC.7 landed on 2026-11-01 as content and economy (Q-36-31, Q-36-36, Q-36-53's rooms). It touches
+no kernel hash. It does change content pins: the goods table goes to v4, the lane to v18 and the
+relay seed to v9. Every number below is provisional under the owner's economy rule of 2026-10-24.
+The expensive-to-reverse choices are marked.
+
+**Content files.**
+- `crates/tacsim/content/market/goods.json` (v4): four munitions goods of family `munitions`.
+  Each row has an optional `munitions` link (`{ammunition, rounds_per_unit}`) naming the
+  ammunition entry it loads, read by `GoodsTable::munitions_for`. The link goes from the good to
+  the ammunition, so no ammunition pack or digest changes.
+- `crates/tacsim/content/market/workshop_tariff.json` (v1): the tariff, loaded by
+  `tacsim::definitions::workshop::workshop_tariff`.
+- `crates/tacsim/content/lane/ceres_phobos.json` (v18): the munitions stock and asks, and both
+  ports' `workshop` blocks.
+- `crates/tacsim/content/relays/luna_ceres.json` (v9): re-signed to require lane v18. No entry
+  changed.
+
+**The goods** (stowage `stow.bulk`, so any hold carries them as ordinary cargo):
+
+| Good | Loads | Unit | kg / L per unit | Price | Basis |
+|---|---|---|---|---|---|
+| `ammo_ap_30` | `ap_30` | round | 1 / 1 | 12 cr | a 240-round scout-car load is 2,880 cr |
+| `ammo_ball_762` | `ball_762` | box of 100 | 3 / 3 | 25 cr | a single round weighs less than the table's 1 kg unit; the 2,000-round belt is 500 cr |
+| `ammo_he_105` | `he_105` | round | 21 / 30 | 150 cr | a 40-round tank load is 6,000 cr, about 6% of the tank's 100,000 cr |
+| `ammo_missile` | `missile_round` | round | 50 / 100 | 1,500 cr | a six-round rack is 9,000 cr |
+
+Who sells them: the Co-op's chandlery at Ceres (`coop`, board `chandlery`) and Stickney Yards
+(`stickney_yards`, board `yard`), at the reference prices above. Each holds 4,800 / 400 / 800 /
+120 units of stock. **Beam charge stays a cell and is not a good.** The laser's magazine is
+deliberately larger than any match spends, because heat is the laser's limit (16b cut X.1). A
+workshop recharges beam charge at the tariff's per-round labour.
+
+**The tariff** (`WorkshopFacilityTariff`, costs in centicredits, times in IC seconds). The basis
+is one IC hour of bay labour at 100 cr, the core-fitting fee:
+
+| Work | Cost | Time |
+|---|---|---|
+| per structural point | 1 cr | 36 s (100 points an IC hour) |
+| `industrial_parts` | 1 t per 100 points, drawn from lots, not priced in the quote | — |
+| repair a component | 200 cr | 2 IC h |
+| replace a component, or a bay refit | 400 cr | 4 IC h (`BAY_WORK_UNITS`) |
+| rebuild a section shell | 800 cr plus its points | 8 IC h |
+| load a round | 0.25 cr, rounds brought as goods | 30 IC min a rearm |
+
+An operator may scale costs by a multiplier between 0.5x and 2x and cannot set a free fee.
+`with_multiplier_permille` rounds each cost up and never changes durations. The `Default`
+impl is gone, so the engine carries no numbers of its own. The quote now also returns
+`structural_points` and `industrial_parts_t`. **The bay's quote path:** `BayRefitConfig`
+carries the tariff, and `offer_bay_refit`'s selector replaces `fee` with
+`multiplier_permille`. The fee is the replacement labour at that multiplier, refused above the
+bay's `max_fee_minor`. At 2x a refit is 800 cr, under the bay's 1,000 cr ceiling.
+
+**The workshop rooms** (Q-36-53). Each port entry has a `workshop` block (`PortDef.workshop`,
+`WorkshopDef`). The `PortApplier`'s new part j opens the room itself as an industry facility of
+the operator org, holding `bay_refit`, with the berths as its slots. Part j is idempotent, and
+any drift is refused in preflight. `tacsim::port::workshop::quote` gives the tariff at the
+workshop's multiplier.
+- **Ceres:** room C14, the Dockmaster's Office (on the transfer junction, behind FREIGHT, BERTH
+  HOLDERS), operated by `occator`. 2 berths at 1.2x.
+- **Stickney:** room P11, the Service Counter (the drydock window and the refit queue),
+  operated by `stickney_yards`. 4 berths at 1x.
+
+**(expensive to reverse)** The rooms are existing rooms, not new atlas rooms. A new room would
+mean a neighborhood version bump and its requirement chain. GC.8's `berth` puts hulls in these
+rooms, so moving a workshop to a dedicated room later means re-homing berthed hulls. If a
+dedicated room is wanted, add it before GC.8 ships. The authority check also needs the room
+titled to the operator's scope and the bay's payment site composed over it. Both are left to
+GC.8, which makes the bay live there.
+
+**Gate:** `gc7_munitions_are_bought_and_carried_and_the_tariff_quotes_a_known_repair`
+(`crates/tacsim/tests/shard_2/voyage.rs`). The test steps:
+1. A chartered captain buys 40 rounds of `ammo_he_105` at the Co-op chandlery for 6,000 cr. They
+   land in the Dray's hold.
+2. Both workshop rooms are their operators' `bay_refit` facilities with 2 and 4 berths.
+3. A line tank that is 50 points down on its hull, 40 points down on its left track and 10
+   rounds short in the cannon gets two quotes. At Ceres the quote is 111.00 cr, 90 points, 1 t
+   of parts and 5,040 IC s. At Stickney it is 92.50 cr in the same time.
+
+The bay rigs (`ud4b_*`) assert the tariff-derived fee: 2,500 minor in the industry rig, and
+40,000 minor in `hardware/flow/bay.rs` on the shipped tariff.
+
+**Pins that moved with the content** (CI round 1). These were fixed as pins, not as logic:
+- the goods count, now 16, in the content studio, its split-gateway round trip and the catalog
+  rows;
+- every hold gauge's load cells, which list the four munitions at 0;
+- the goods-name refusal;
+- the readiness commerce lines, now 60;
+- the stock receipts, 16 instead of 8;
+- the C08 board, which now shows the munitions asks;
+- the older-lane upgrade plans, where Stickney's port is now an update too;
+- the site sentence, which now names the workshop block;
+- the site-map web fixture, re-blessed because the extra stocking fires start it 72 IC s later.
+
+The bounds that grew with the clerk's longer queue have their reasons in the tests: the
+plumbing re-post at 16 fires, and the mill batch after an apply that also adds the munitions
+rows at 24 fires. The cost-lane census now credits a fire's `economy:meta` op to the economy
+sweep exactly when the sweep's stamp moved in that fire. Any other write the restock adds
+still fails the check. No version moved beyond goods v4, lane v18 and relay v9.

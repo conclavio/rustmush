@@ -5,7 +5,7 @@
 //! - `Catalog` — live reference catalog of all 11 corridor ports, station/site
 //!   rooms with authored and live `atlas:detail:<kw>` keys, NPCs with code-bound
 //!   flags (`port/relationships.rs`, `lane/ceres_phobos.json` vendor signatories),
-//!   lore pools, 12 goods, registered interface providers and command refs, and
+//!   lore pools, 16 goods, registered interface providers and command refs, and
 //!   shipped/published pack summaries.
 //! - `Read` — loads the full JSON document for a requested pack id or standalone
 //!   table (`market/goods.json`, `resources.json`, `tools/*.json`).
@@ -2411,7 +2411,8 @@ mod tests {
             catalog
                 .get("goods")
                 .and_then(Value::as_array)
-                .is_some_and(|a| a.len() == 12)
+                // Doc 36 cut GC.7: sixteen with the four munitions goods.
+                .is_some_and(|a| a.len() == 16)
         );
 
         // Read + Check a shipped campaign_seed pack (`tacsim.crew.ceres`) and a standalone table (`market/goods.json`)

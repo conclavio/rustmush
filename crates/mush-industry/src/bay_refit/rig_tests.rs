@@ -45,6 +45,25 @@ type Boot = HashMap<SmolStr, ModuleBootData>;
 fn cid(s: &str) -> Result<CanonicalId> {
     Ok(CanonicalId::new(s)?)
 }
+/// The rig's workshop tariff (doc 36 Q-36-31): a refit's labour is 2,500 minor, so the
+/// offer at the schedule's own multiplier quotes the fee the rig has always asserted.
+fn tariff() -> mush_tactics::field_ops::WorkshopFacilityTariff {
+    mush_tactics::field_ops::WorkshopFacilityTariff {
+        cost_per_structural_point_repair: 100,
+        duration_ic_per_structural_point_repair: 36,
+        structural_points_per_industrial_parts_t: 100,
+        base_cost_reconstruct_section: 80_000,
+        base_duration_ic_reconstruct_section: 28_800,
+        cost_repair_component: 20_000,
+        duration_ic_repair_component: 7_200,
+        labor_cost_replace_component: 2_500,
+        duration_ic_replace_component: 14_400,
+        cost_per_ammo_round: 25,
+        duration_ic_rearm_component: 1_800,
+        min_multiplier_permille: 500,
+        max_multiplier_permille: 2_000,
+    }
+}
 fn token(n: u8) -> CommitToken {
     CommitToken::from_bytes([n; 16])
 }
@@ -401,6 +420,7 @@ impl Rig {
         let config = BayRefitConfig::new(
             payment,
             2,
+            tariff(),
             BTreeMap::from([(bay, stores)]),
             units.roots(),
             vec![],
@@ -734,7 +754,7 @@ impl Rig {
     /// Offer the laser refit, then accept it: the order it opens.
     fn accepted(&mut self) -> Result<crate::workorder::WorkOrderId> {
         let offer = json!({"requester":self.requester,"hull":self.hull,"facility":self.bay,
-            "target":"bay_unit_b","part":self.lot,"fee":2500});
+            "target":"bay_unit_b","part":self.lot,"multiplier_permille":1000});
         self.commit(1, self.operator, 20, offer)?;
         self.commit(
             2,

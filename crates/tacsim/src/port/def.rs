@@ -22,6 +22,7 @@
 //! | `routes` | validated here; the passage planner's route list (IC9, D-18-47) |
 //! | `venue` | the routes key; the market venue (IC7/IC8) |
 //! | `faction` (per org) | nothing until the faction cut (carried and validated, L16) |
+//! | `workshop` | the `PortApplier`'s part j (doc 36 cut GC.7): the room's `bay_refit` facility; the workshop quote (`crate::port::workshop`) |
 //!
 //! Every number is an integer and every bound is checked twice: by
 //! [`PortDef::check`] (the entry alone) and by [`check_ports`] (the rules that
@@ -184,6 +185,38 @@ pub struct PortDef {
     /// so a port entry does not grow every `PackEntry` (clippy's `large_enum_variant`).
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub licence: Option<Box<LicenceDef>>,
+    /// **Doc 36 cut GC.7 (Q-36-53's rooms, Q-36-31)** — the port's workshop: a room of the
+    /// port's area that the applier opens as a facility of its operator org holding the
+    /// `bay_refit` capability with a provisional berth count, and the operator's multiplier
+    /// on the workshop tariff. Absent at a port with no workshop and at every site. Boxed,
+    /// as `vehicles` and `licence` are.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub workshop: Option<Box<WorkshopDef>>,
+}
+
+/// The most berths one workshop may author: the industry facility's own slot cap
+/// (`crate::pack::MAX_FACILITY_SLOTS`).
+pub const MAX_WORKSHOP_BERTHS: u32 = crate::pack::MAX_FACILITY_SLOTS;
+
+/// **A port's workshop** (doc 36 cut GC.7; Q-36-53's rooms, Q-36-31's multiplier): a room
+/// authored with the bay capability. The numbers are provisional (the owner's economy rule of
+/// 2026-10-24); the room and the operator are the expensive part to move, since GC.8's
+/// `berth` puts hulls in the room.
+#[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(deny_unknown_fields)]
+pub struct WorkshopDef {
+    /// `"<area>.<entry>"`: the room, which becomes the facility object itself, so a hull
+    /// berthed there is at the facility (`bay_refit/authority.rs`'s one-location rule).
+    pub room: String,
+    /// One of this entry's orgs: the facility's owner and the workshop's operator.
+    pub operator: CanonicalId,
+    /// The facility's capabilities; must hold `bay_refit` (`mush_industry`'s
+    /// `BAY_CAPABILITY`), at most `crate::pack::MAX_FACILITY_CAPABILITIES`.
+    pub capabilities: BTreeSet<CanonicalId>,
+    /// Hulls the workshop holds at once, `1..=`[`MAX_WORKSHOP_BERTHS`]: the facility's slots.
+    pub berths: u32,
+    /// The operator's multiplier on the tariff, per mille, within the tariff's own bounds.
+    pub multiplier_permille: u32,
 }
 
 /// The most a prospecting licence's fee may be, major units (doc 20 cut SM.5).
@@ -1188,12 +1221,14 @@ impl PortDef {
                 || self.emergency.is_some()
                 || self.vehicles.is_some()
                 || self.licence.is_some()
+                || self.workshop.is_some()
             {
                 // Doc 20 cut SM.3a: nor a rig pool (rigs are leased at a station);
                 // cut SM.5: nor a licence (the Registry issues it at its station).
                 return Err(
                     "site: a site authors no orgs, rooms, programme, vendors, premium or \
-                     emergency, and no vehicles or licence block; its pad is its gallery"
+                     emergency, and no vehicles, licence or workshop block; its pad is its \
+                     gallery"
                         .to_owned(),
                 );
             }
@@ -1396,6 +1431,55 @@ impl PortDef {
         // Doc 20 cut SM.5: the licence block.
         if let Some(licence) = &self.licence {
             self.check_licence(licence)?;
+        }
+        // Doc 36 cut GC.7: the workshop.
+        if let Some(workshop) = &self.workshop {
+            self.check_workshop(workshop)?;
+        }
+        Ok(())
+    }
+
+    /// **The workshop's bounds** (doc 36 cut GC.7): the room in the port's area, the operator
+    /// one of the entry's orgs, the bay capability held, the berths and capabilities within
+    /// the facility's caps, and the multiplier within the shipped tariff's bounds. Each
+    /// sentence starts `workshop: `.
+    fn check_workshop(&self, workshop: &WorkshopDef) -> Result<(), String> {
+        room_key(&self.area, &workshop.room).map_err(|detail| format!("workshop: {detail}"))?;
+        if !self.orgs.iter().any(|org| org.id == workshop.operator) {
+            return Err(format!(
+                "workshop: operator {} is not one of this port's orgs",
+                workshop.operator
+            ));
+        }
+        if !workshop
+            .capabilities
+            .iter()
+            .any(|word| word.as_str() == mush_industry::bay_refit::BAY_CAPABILITY)
+            || workshop.capabilities.len() > crate::pack::MAX_FACILITY_CAPABILITIES
+        {
+            return Err(format!(
+                "workshop: capabilities hold {} and at most {}",
+                mush_industry::bay_refit::BAY_CAPABILITY,
+                crate::pack::MAX_FACILITY_CAPABILITIES
+            ));
+        }
+        if !(1..=MAX_WORKSHOP_BERTHS).contains(&workshop.berths) {
+            return Err(format!(
+                "workshop: berths must be 1..={MAX_WORKSHOP_BERTHS}, not {}",
+                workshop.berths
+            ));
+        }
+        let tariff = crate::definitions::workshop::workshop_tariff()
+            .map_err(|error| format!("workshop: {error}"))?;
+        if !(tariff.min_multiplier_permille..=tariff.max_multiplier_permille)
+            .contains(&workshop.multiplier_permille)
+        {
+            return Err(format!(
+                "workshop: multiplier_permille must be {}..={}, not {}",
+                tariff.min_multiplier_permille,
+                tariff.max_multiplier_permille,
+                workshop.multiplier_permille
+            ));
         }
         Ok(())
     }
@@ -2462,6 +2546,7 @@ mod tests {
             site: None,
             vehicles: None,
             licence: None,
+            workshop: None,
         }
     }
 
@@ -2691,6 +2776,7 @@ mod tests {
             })),
             vehicles: None,
             licence: None,
+            workshop: None,
         }
     }
 
@@ -3018,7 +3104,7 @@ mod tests {
         assert_eq!(
             refused(&site),
             "site: a site authors no orgs, rooms, programme, vendors, premium or emergency, and \
-             no vehicles or licence block; its pad is its gallery"
+             no vehicles, licence or workshop block; its pad is its gallery"
         );
         assert!(
             serde_json::from_value::<LicenceDef>(serde_json::json!({

@@ -401,7 +401,7 @@ fn latches(tw: &TestWorld) -> BTreeMap<String, (u32, String)> {
 /// **The loaded lane is the roster's** (S3): `LANE_PACK`'s latch at `(LANE_VERSION, the roster's
 /// digest)`, and `LANE_VERSION` 15.
 fn assert_lane(rig: &Rig) {
-    assert_eq!(LANE_VERSION, 17, "the cost lane moves no lane version");
+    assert_eq!(LANE_VERSION, 18, "the cost lane moves no lane version");
     let latched = latches(&rig.tw).get(LANE_PACK).cloned();
     assert_eq!(
         latched,
@@ -2745,13 +2745,16 @@ fn debit_pool(rig: &mut Rig, vault: VaultId, good: &str, qty: u64) {
 }
 
 /// **What the port's normal-lane steps write, read before and after a fire**: the Ceres map, its
-/// vendors' asks (listing id and quantity by org and good), and whether Occator Rim's yard holds
-/// the house's licence.
+/// vendors' asks (listing id and quantity by org and good), whether Occator Rim's yard holds
+/// the house's licence, and the economy sweep's stamps (doc 36 cut GC.7: a fire the economy's
+/// `Coarse` sweep also ran in carries its `economy:meta` stamp, which is the sweep's write and
+/// no clerk's).
 #[derive(Clone, Debug, Default)]
 struct TickRead {
     ceres: Option<PortMap>,
     asks: BTreeMap<(String, String), Option<(u64, u64)>>,
     house_licence: bool,
+    sweep: Option<(i64, i64)>,
 }
 
 /// The Ceres map, if present.
@@ -2791,6 +2794,10 @@ fn tick_read(tw: &TestWorld) -> TickRead {
         ceres,
         asks,
         house_licence,
+        sweep: tw
+            .world()
+            .module_state::<mush_economy::EconomyStore>()
+            .map(mush_economy::EconomyStore::last_sweep),
     }
 }
 
@@ -2991,8 +2998,15 @@ fn tick_writes(
         // over the expected keys cannot see an added key or a doubled write): where the census
         // constructs it, every op the fire wrote is one the restock counted, once.
         if kind == "mill.restock" && constructed.is_some() {
+            // The economy sweep's own stamp, exactly when the sweep ran in this fire.
+            let swept = before.sweep != after.sweep;
+            let sweep_stamp = ops
+                .iter()
+                .filter(|op| swept && op.ns == "economy" && op.key == mush_economy::META_KEY)
+                .count();
+            assert!(sweep_stamp <= 1, "one sweep stamp a fire: {ops:?}");
             assert_eq!(
-                ops.len(),
+                ops.len() - sweep_stamp,
                 writes,
                 "the census's restock fire wrote beyond its counted keys: {ops:?}"
             );
@@ -4026,7 +4040,7 @@ fn cohort_lane(hulls: u32, rigs: u32, levers: &Levers) -> String {
 
 /// The shipped lane's digest (`tests/lane.rs`' `LANE_DIGEST`, lane v15 since doc 20 cut SM.12b).
 const SHIPPED_LANE_DIGEST: &str =
-    "b27a3c20471701e1b95c3f1840ab3401180c5d614840773d9269056667a0e452";
+    "4969afa44fe21918117a358bbab76fce4b64c9c692b17cdbca500a73c5b6d01d";
 
 /// **C7 — the cohort lane is the shipped lane but its levers** (O-21; the brief's L9.2): the
 /// 32-hull, 64-rig variant parses and verifies, carries `manifest.version == LANE_VERSION`, and
@@ -4037,7 +4051,7 @@ const SHIPPED_LANE_DIGEST: &str =
 #[test]
 fn sm12c_the_cohort_lane_is_the_shipped_lane_but_its_levers() {
     let _lock = shared();
-    assert_eq!(LANE_VERSION, 17);
+    assert_eq!(LANE_VERSION, 18);
     assert_eq!(
         load_pack(LANE_JSON)
             .expect("the lane")

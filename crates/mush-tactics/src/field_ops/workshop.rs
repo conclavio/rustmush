@@ -231,46 +231,145 @@ pub enum WorkshopOperationKind {
     },
 }
 
-/// Deterministic tariff schedule for a bay or settlement workshop (`Q-S12`, `Q-A4`).
+/// Deterministic tariff schedule for a bay or settlement workshop (`Q-S12`, `Q-A4`;
+/// doc 36 `Q-36-31`).
+///
+/// Every cost is in the facility currency's minor units (centicredits in TacSim) and every
+/// duration in IC seconds. The schedule is content: the ruleset authors it and this crate
+/// carries no default. An operator never sets a free fee; it may only scale the schedule's
+/// costs by a multiplier within the schedule's own bounds ([`Self::with_multiplier_permille`]).
 #[derive(Clone, Copy, Debug, PartialEq, Eq, Serialize, Deserialize)]
 #[serde(deny_unknown_fields)]
 pub struct WorkshopFacilityTariff {
-    /// Resource cost per structural point repaired on a `Damaged` section.
+    /// Labour cost per structural point repaired on a `Damaged` section.
     pub cost_per_structural_point_repair: u64,
     /// Work time in IC seconds per structural point repaired on a `Damaged` section.
     pub duration_ic_per_structural_point_repair: i64,
-    /// Base resource cost to reconstruct a `Destroyed` or `Wreck` section shell.
+    /// Structural points one tonne of `industrial_parts` restores (`Q-36-31`): a quote
+    /// consumes `ceil(points / this)` tonnes across every section it repairs or rebuilds.
+    pub structural_points_per_industrial_parts_t: u64,
+    /// Base labour cost to reconstruct a `Destroyed` or `Wreck` section shell.
     pub base_cost_reconstruct_section: u64,
     /// Work time in IC seconds to reconstruct a `Destroyed` or `Wreck` section shell.
     pub base_duration_ic_reconstruct_section: i64,
-    /// Resource cost to repair an extant `Damaged` or `Jammed` component in place.
+    /// Labour cost to repair an extant `Damaged` or `Jammed` component in place.
     pub cost_repair_component: u64,
     /// Work time in IC seconds to repair an extant `Damaged` or `Jammed` component.
     pub duration_ic_repair_component: i64,
-    /// Labor/facility resource cost to install a replacement component into a slot.
+    /// Labour cost to install a replacement component into a slot (and of a bay refit,
+    /// which is one part out and one in).
     pub labor_cost_replace_component: u64,
     /// Work time in IC seconds to install a replacement component into a slot.
     pub duration_ic_replace_component: i64,
-    /// Resource cost per round/unit of ammunition replenished.
+    /// Labour cost per round/unit of ammunition loaded. The rounds themselves are goods
+    /// the customer brings or buys (`Q-36-36`); the tariff never sells them.
     pub cost_per_ammo_round: u64,
     /// Work time in IC seconds per rearm operation.
     pub duration_ic_rearm_component: i64,
+    /// The least multiplier, per mille, an operator may quote at.
+    pub min_multiplier_permille: u32,
+    /// The greatest multiplier, per mille, an operator may quote at.
+    pub max_multiplier_permille: u32,
 }
 
-impl Default for WorkshopFacilityTariff {
-    fn default() -> Self {
-        Self {
-            cost_per_structural_point_repair: 25,
-            duration_ic_per_structural_point_repair: 10,
-            base_cost_reconstruct_section: 1_500,
-            base_duration_ic_reconstruct_section: 240,
-            cost_repair_component: 400,
-            duration_ic_repair_component: 90,
-            labor_cost_replace_component: 600,
-            duration_ic_replace_component: 120,
-            cost_per_ammo_round: 10,
-            duration_ic_rearm_component: 30,
+/// The greatest cost one tariff field may carry, minor units: a full quote of the largest
+/// unit stays far inside `u64` and an `i64` fee.
+pub const MAX_TARIFF_COST: u64 = 1_000_000_000;
+/// The greatest duration one tariff field may carry, IC seconds (thirty IC days).
+pub const MAX_TARIFF_DURATION_IC: i64 = 30 * 86_400;
+/// The greatest multiplier bound a tariff may name, per mille (ten times the schedule).
+pub const MAX_TARIFF_MULTIPLIER_PERMILLE: u32 = 10_000;
+
+impl WorkshopFacilityTariff {
+    /// Check every bound: costs `0..=`[`MAX_TARIFF_COST`], durations
+    /// `1..=`[`MAX_TARIFF_DURATION_IC`], at least one point per tonne of parts, and
+    /// `1 <= min <= 1000 <= max <=` [`MAX_TARIFF_MULTIPLIER_PERMILLE`].
+    ///
+    /// # Errors
+    /// [`WorkshopError::InvalidTariff`] naming the field.
+    pub fn validate(&self) -> Result<(), WorkshopError> {
+        for (field, cost) in [
+            (
+                "cost_per_structural_point_repair",
+                self.cost_per_structural_point_repair,
+            ),
+            (
+                "base_cost_reconstruct_section",
+                self.base_cost_reconstruct_section,
+            ),
+            ("cost_repair_component", self.cost_repair_component),
+            (
+                "labor_cost_replace_component",
+                self.labor_cost_replace_component,
+            ),
+            ("cost_per_ammo_round", self.cost_per_ammo_round),
+        ] {
+            if cost > MAX_TARIFF_COST {
+                return Err(WorkshopError::InvalidTariff(field));
+            }
         }
+        for (field, secs) in [
+            (
+                "duration_ic_per_structural_point_repair",
+                self.duration_ic_per_structural_point_repair,
+            ),
+            (
+                "base_duration_ic_reconstruct_section",
+                self.base_duration_ic_reconstruct_section,
+            ),
+            (
+                "duration_ic_repair_component",
+                self.duration_ic_repair_component,
+            ),
+            (
+                "duration_ic_replace_component",
+                self.duration_ic_replace_component,
+            ),
+            (
+                "duration_ic_rearm_component",
+                self.duration_ic_rearm_component,
+            ),
+        ] {
+            if !(1..=MAX_TARIFF_DURATION_IC).contains(&secs) {
+                return Err(WorkshopError::InvalidTariff(field));
+            }
+        }
+        if self.structural_points_per_industrial_parts_t == 0 {
+            return Err(WorkshopError::InvalidTariff(
+                "structural_points_per_industrial_parts_t",
+            ));
+        }
+        if self.min_multiplier_permille == 0
+            || self.min_multiplier_permille > 1_000
+            || self.max_multiplier_permille < 1_000
+            || self.max_multiplier_permille > MAX_TARIFF_MULTIPLIER_PERMILLE
+        {
+            return Err(WorkshopError::InvalidTariff("multiplier bounds"));
+        }
+        Ok(())
+    }
+
+    /// This schedule as one operator quotes it: every cost times `permille / 1000`, rounded
+    /// up to the minor unit; durations unchanged. The multiplier is the operator's only
+    /// lever (`Q-36-31`).
+    ///
+    /// # Errors
+    /// [`WorkshopError::InvalidTariff`] for a schedule that fails [`Self::validate`], and
+    /// [`WorkshopError::MultiplierOutOfRange`] for a multiplier outside its bounds.
+    pub fn with_multiplier_permille(&self, permille: u32) -> Result<Self, WorkshopError> {
+        self.validate()?;
+        if !(self.min_multiplier_permille..=self.max_multiplier_permille).contains(&permille) {
+            return Err(WorkshopError::MultiplierOutOfRange(permille));
+        }
+        let scale = |cost: u64| cost.saturating_mul(u64::from(permille)).div_ceil(1_000);
+        Ok(Self {
+            cost_per_structural_point_repair: scale(self.cost_per_structural_point_repair),
+            base_cost_reconstruct_section: scale(self.base_cost_reconstruct_section),
+            cost_repair_component: scale(self.cost_repair_component),
+            labor_cost_replace_component: scale(self.labor_cost_replace_component),
+            cost_per_ammo_round: scale(self.cost_per_ammo_round),
+            ..*self
+        })
     }
 }
 
@@ -291,7 +390,11 @@ pub struct WorkshopCostQuote {
     pub components_to_replace: Vec<ComponentId>,
     /// Weapon components with depleted ammo and the missing round count for each.
     pub components_to_rearm: BTreeMap<ComponentId, i64>,
-    /// Total estimated resource/credit cost (excluding replacement component purchase price).
+    /// Structural points the quote restores across every section it repairs or rebuilds.
+    pub structural_points: u64,
+    /// Tonnes of `industrial_parts` those points consume (`Q-36-31`), drawn from lots.
+    pub industrial_parts_t: u64,
+    /// Total labour cost, minor units (excluding parts, replacement components and rounds).
     pub total_resource_cost: u64,
     /// Total estimated workshop duration in IC seconds.
     pub total_work_duration_ic: i64,
@@ -1397,6 +1500,7 @@ impl WorkshopBook {
         let mut sections_to_reconstruct = Vec::new();
         let mut total_resource_cost: u64 = 0;
         let mut total_work_duration_ic: i64 = 0;
+        let mut structural_points: u64 = 0;
 
         for (sec_id, cond) in &assessment.section_conditions {
             match cond {
@@ -1404,6 +1508,7 @@ impl WorkshopBook {
                     let missing_pts = missing_section_points(unit, sec_id);
                     if missing_pts > 0 {
                         sections_to_repair.push(sec_id.clone());
+                        structural_points = structural_points.saturating_add(missing_pts);
                         total_resource_cost = total_resource_cost.saturating_add(
                             missing_pts.saturating_mul(tariff.cost_per_structural_point_repair),
                         );
@@ -1418,6 +1523,7 @@ impl WorkshopBook {
                 SectionCondition::Damaged => {
                     sections_to_repair.push(sec_id.clone());
                     let missing_pts = missing_section_points(unit, sec_id).max(1);
+                    structural_points = structural_points.saturating_add(missing_pts);
                     total_resource_cost = total_resource_cost.saturating_add(
                         missing_pts.saturating_mul(tariff.cost_per_structural_point_repair),
                     );
@@ -1431,6 +1537,7 @@ impl WorkshopBook {
                 SectionCondition::Destroyed | SectionCondition::Wreck => {
                     sections_to_reconstruct.push(sec_id.clone());
                     let missing_pts = missing_section_points(unit, sec_id);
+                    structural_points = structural_points.saturating_add(missing_pts);
                     let pt_cost =
                         missing_pts.saturating_mul(tariff.cost_per_structural_point_repair);
                     total_resource_cost = total_resource_cost.saturating_add(
@@ -1492,8 +1599,13 @@ impl WorkshopBook {
             }
         }
 
+        let industrial_parts_t =
+            structural_points.div_ceil(tariff.structural_points_per_industrial_parts_t.max(1));
+
         Ok(WorkshopCostQuote {
             unit: unit.object(),
+            structural_points,
+            industrial_parts_t,
             sections_to_repair,
             sections_to_reconstruct,
             components_to_repair,
@@ -1602,6 +1714,10 @@ fn missing_section_points(unit: &TacticalUnit, section_id: &SectionId) -> u64 {
 pub enum WorkshopError {
     /// Object id was `ObjId(0)`.
     InvalidObjectId(&'static str),
+    /// A tariff field is outside its bound (doc 36 `Q-36-31`).
+    InvalidTariff(&'static str),
+    /// An operator's multiplier is outside the tariff's bounds (doc 36 `Q-36-31`).
+    MultiplierOutOfRange(u32),
     /// Monotonic id counter overflowed `u64`.
     IdOverflow,
     /// Work duration was `<= 0`.
@@ -1740,6 +1856,13 @@ impl fmt::Display for WorkshopError {
     fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
         match self {
             Self::InvalidObjectId(field) => write!(f, "{field} object id must be non-zero"),
+            Self::InvalidTariff(field) => write!(f, "workshop tariff {field} is out of bounds"),
+            Self::MultiplierOutOfRange(m) => {
+                write!(
+                    f,
+                    "a multiplier of {m} per mille is outside the tariff's bounds"
+                )
+            }
             Self::IdOverflow => f.write_str("workshop id counter overflow"),
             Self::InvalidWorkDuration(d) => write!(f, "work duration must be positive, got {d}"),
             Self::InvalidRearmAmount(n) => write!(f, "rearm amount must be positive, got {n}"),
@@ -2478,11 +2601,35 @@ mod tests {
         check_eq!(unarmed_assess.state, OperationalState::Unarmed);
 
         let mut workshop = WorkshopBook::new();
-        let tariff = WorkshopFacilityTariff::default();
+        let tariff = WorkshopFacilityTariff {
+            cost_per_structural_point_repair: 25,
+            duration_ic_per_structural_point_repair: 10,
+            structural_points_per_industrial_parts_t: 100,
+            base_cost_reconstruct_section: 1_500,
+            base_duration_ic_reconstruct_section: 240,
+            cost_repair_component: 400,
+            duration_ic_repair_component: 90,
+            labor_cost_replace_component: 600,
+            duration_ic_replace_component: 120,
+            cost_per_ammo_round: 10,
+            duration_ic_rearm_component: 30,
+            min_multiplier_permille: 500,
+            max_multiplier_permille: 2_000,
+        };
+        tariff.validate()?;
         let quote = workshop.quote_full_restoration(&unarmed_unit, &anatomy, &tariff)?;
         check_eq!(quote.components_to_rearm.get(&autocannon), Some(&20));
         check_eq!(quote.total_resource_cost, 200);
         check_eq!(quote.total_work_duration_ic, 30);
+        check_eq!((quote.structural_points, quote.industrial_parts_t), (0, 0));
+        // The operator's multiplier scales costs, rounded up, and never durations.
+        let dear = tariff.with_multiplier_permille(1_250)?;
+        check_eq!(dear.cost_per_ammo_round, 13);
+        check_eq!(dear.duration_ic_rearm_component, 30);
+        check_eq!(
+            tariff.with_multiplier_permille(2_001),
+            Err(WorkshopError::MultiplierOutOfRange(2_001))
+        );
 
         let custody = CustodyTitleStatus::ResolvedTitle { owner };
         let (rearmed_unit, rearmed_assess, order) = workshop.rearm_component(

@@ -89,6 +89,8 @@ pub(crate) fn config(
     BayRefitConfig::new(
         payment,
         super::BAY_WORK_UNITS,
+        // Doc 36 cut GC.7 (Q-36-31): the bay quotes from the shipped workshop tariff.
+        crate::definitions::workshop::workshop_tariff().map_err(bad)?,
         BTreeMap::from([(site.facility, EndpointRef(site.stores))]),
         fielded,
         derived,
