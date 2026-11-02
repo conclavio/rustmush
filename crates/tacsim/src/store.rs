@@ -192,6 +192,8 @@ pub struct TacsimStore {
     pub(crate) relay_foundry: Option<crate::relay_foundry::Foundry>,
     pub(crate) relay_foundry_held: bool,
     pub(crate) relay_proposals: BTreeMap<ObjId, crate::relay_foundry::Proposal>,
+    /// Doc 35 cut SF.R8 (`D-35-12`): persisted space state (`tacsim:space:state`).
+    pub(crate) space_state: Option<crate::space::SpacePersistedState>,
     /// Frozen at wiring.
     pub(crate) cfg: TacsimConfig,
     /// The packs the host read and this module verified, keyed `(id, version)`.
@@ -462,6 +464,12 @@ impl TacsimStore {
     #[must_use]
     pub fn black_box_dark(&self) -> bool {
         self.black_box_dark
+    }
+
+    /// Borrow the persisted space state (`tacsim:space:state`, `SF.R8`, `D-35-12`).
+    #[must_use]
+    pub fn space_state(&self) -> Option<&crate::space::SpacePersistedState> {
+        self.space_state.as_ref()
     }
 
     /// **Test hook** (17b cut M1b.5): replace the `[tacsim.minds]` block this
@@ -2566,6 +2574,15 @@ pub fn load(kv: &[(SmolStr, serde_json::Value)], cfg: TacsimConfig) -> TacsimSto
             // that will not read is `Unreadable`, which disables the geology layer and
             // is never rewritten by the boot.
             store.geology_pin = crate::surface::key::load_geology_pin(key, value);
+        } else if key == crate::space::SPACE_STATE_KEY {
+            // Doc 35 cut SF.R8 (`D-35-12`): persisted space bubbles, free-flight records,
+            // open-epoch derelicts, paused docking sessions, and 48h salvage claims.
+            match serde_json::from_value::<crate::space::SpacePersistedState>(value.clone()) {
+                Ok(state) if state.format == crate::space::SPACE_STATE_FORMAT => {
+                    store.space_state = Some(state);
+                }
+                _ => tracing::warn!(%key, "tacsim: space state document is unreadable; skipped"),
+            }
         } else if key == META_KEY {
             load_meta(&mut store, value);
         }

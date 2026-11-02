@@ -667,6 +667,44 @@ pub struct BubbleStepReport {
     pub state_hash: u64,
 }
 
+/// Serde helper that encodes a [`BTreeMap<K, V>`] as a JSON array of `[K, V]` pairs so
+/// non-string map keys (tuples, `ObjId`, structs, enums) round-trip through `serde_json`.
+pub mod vec_tuple_map {
+    use std::collections::BTreeMap;
+
+    use serde::{Deserialize, Deserializer, Serialize, Serializer};
+
+    /// Serialize `map` as a `Vec<(&K, &V)>`.
+    ///
+    /// # Errors
+    ///
+    /// Propagates any serializer error.
+    pub fn serialize<K, V, S>(map: &BTreeMap<K, V>, serializer: S) -> Result<S::Ok, S::Error>
+    where
+        K: Serialize + Ord,
+        V: Serialize,
+        S: Serializer,
+    {
+        let entries: Vec<(&K, &V)> = map.iter().collect();
+        entries.serialize(serializer)
+    }
+
+    /// Deserialize a `BTreeMap<K, V>` from a `Vec<(K, V)>`.
+    ///
+    /// # Errors
+    ///
+    /// Propagates any deserializer error.
+    pub fn deserialize<'de, K, V, D>(deserializer: D) -> Result<BTreeMap<K, V>, D::Error>
+    where
+        K: Deserialize<'de> + Ord,
+        V: Deserialize<'de>,
+        D: Deserializer<'de>,
+    {
+        let entries: Vec<(K, V)> = Vec::deserialize(deserializer)?;
+        Ok(entries.into_iter().collect())
+    }
+}
+
 /// A Tier-2 **Local Space Bubble** anchored at an orbital site or encounter point (`D-35-3`, `D-35-5`).
 #[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize)]
 pub struct LocalSpaceBubble {
@@ -680,6 +718,7 @@ pub struct LocalSpaceBubble {
     /// Whether the bubble is frozen due to a W-clock outage (`Q-CF-33`).
     pub outage_frozen: bool,
     pub ships: BTreeMap<String, SpaceShipState>,
+    #[serde(default, with = "vec_tuple_map")]
     pub relations: BTreeMap<(SpacePartyId, SpacePartyId), SpaceRelation>,
     /// Canonical kernel party relation books (`D-35-1`, `D-35-11`, `Q-CF-5`–`Q-CF-8`).
     #[serde(default)]
