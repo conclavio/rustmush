@@ -617,9 +617,6 @@ pub struct PortHandles {
     /// close over `tacsim.field` (`crate::field::provider::FieldProvider`); registered on every
     /// roster (it needs only its two families).
     pub field: Option<mush_core::DefinitionRef>,
-    /// **Doc 36 cut GC.4**: the registered `tacsim_surface_tow` action, the tow's start and
-    /// finish over `tacsim.field` (`crate::surface::tow::TowProvider`).
-    pub tow: Option<mush_core::DefinitionRef>,
 }
 
 pub(crate) fn canonical(text: &str) -> Result<CanonicalId, ModError> {

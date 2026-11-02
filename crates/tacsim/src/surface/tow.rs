@@ -919,11 +919,21 @@ pub(crate) struct TowProvider {
     >,
 }
 
-/// Register the provider and its RAM slots.
+/// **The tow's registered action** (module state, the bay's `BayActHandles` precedent: kept off
+/// `PortHandles`, so the port's registration frame stays inside the M7 memory-size limits).
+#[derive(Clone, Debug, Default)]
+pub(crate) struct TowHandles {
+    /// `tacsim_surface_tow`, when registered.
+    pub action: Option<DefinitionRef>,
+}
+
+/// Register the provider, its handles and its RAM slots — out of line, so its temporaries are
+/// never on the port registration's frame.
 ///
 /// # Errors
 ///
 /// Any registration the registrar refuses.
+#[inline(never)]
 pub(crate) fn register(
     reg: &mut Registrar<'_>,
     actions: &BTreeMap<String, DefinitionRef>,
@@ -932,12 +942,13 @@ pub(crate) fn register(
     black_box: Option<
         mush_core::participant::ParticipantHandle<crate::surface::black_box::BlackBoxParticipant>,
     >,
-) -> Result<Option<DefinitionRef>, ModError> {
+) -> Result<(), ModError> {
     reg.state(TowOrders::default());
     reg.state(TowIndex::default());
     reg.state(TowWatch::default());
     let (Some(action), Some(outcome)) = (actions.get(TOW_ACTION), outcomes.get(TOW_OUTCOME)) else {
-        return Ok(None);
+        reg.state(TowHandles::default());
+        return Ok(());
     };
     reg.action_provider(
         action.clone(),
@@ -949,7 +960,10 @@ pub(crate) fn register(
             black_box,
         },
     )?;
-    Ok(Some(action.clone()))
+    reg.state(TowHandles {
+        action: Some(action.clone()),
+    });
+    Ok(())
 }
 
 fn parameters(
@@ -1347,8 +1361,8 @@ impl TowProvider {
 fn submit(ctx: &mut Ctx<'_>, actor: ObjId, tug: ObjId, order: TowOrder, tag: u32) -> bool {
     let Some(action) = ctx
         .w
-        .module_state::<PortHandles>()
-        .and_then(|handles| handles.tow.clone())
+        .module_state::<TowHandles>()
+        .and_then(|handles| handles.action.clone())
     else {
         return false;
     };

@@ -558,7 +558,7 @@ pub(crate) fn register_with_coverage(
     )?;
     // Doc 36 cut GC.4: the tow's provider, its black box handle closing a loaded casualty's
     // epoch, and its RAM slots.
-    let tow = crate::surface::tow::register(
+    crate::surface::tow::register(
         reg,
         &action_refs,
         &outcome_refs,
@@ -587,7 +587,6 @@ pub(crate) fn register_with_coverage(
         dispatch: dispatch_action.clone(),
         site_record,
         field,
-        tow,
     });
     reg.state(PortTickState::new(
         probe_action,
