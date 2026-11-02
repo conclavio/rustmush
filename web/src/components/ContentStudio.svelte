@@ -12,6 +12,7 @@
   import CorridorStudio from "./CorridorStudio.svelte";
   import NpcStudio from "./NpcStudio.svelte";
   import QuestStudio from "./QuestStudio.svelte";
+  import SpaceStudio from "./SpaceStudio.svelte";
   import {
     type CatalogData,
     DocumentHistory,
@@ -58,6 +59,7 @@
       if (subTab === "quests") return p.family === "quest";
       if (subTab === "components") return p.family === "component";
       if (subTab === "corridor") return p.family === "corridor";
+      if (subTab === "space") return p.family === "space";
       return true;
     }),
   );
@@ -126,6 +128,7 @@
       if (next === "quests") return p.family === "quest";
       if (next === "components") return p.family === "component";
       if (next === "corridor") return p.family === "corridor";
+      if (next === "space") return p.family === "space";
       return false;
     });
     if (first && first.id !== selectedPackId) {
@@ -300,6 +303,16 @@
       >
         Corridor &amp; Relays
       </button>
+      <button
+        type="button"
+        role="tab"
+        aria-selected={subTab === "space"}
+        class="pill"
+        class:active={subTab === "space"}
+        onclick={() => selectSubTab("space")}
+      >
+        Space &amp; Hulls ({catalog.space_hulls.length})
+      </button>
     </div>
 
     <div class="pack-bar">
@@ -427,6 +440,8 @@
         <CatalogStudio {documentJson} onChange={applyStructuredEdit} />
       {:else if subTab === "corridor"}
         <CorridorStudio {documentJson} {catalog} onChange={applyStructuredEdit} />
+      {:else if subTab === "space"}
+        <SpaceStudio {documentJson} {catalog} onChange={applyStructuredEdit} />
       {/if}
       <div class="pane-head">
         <span>Canonical Pack / Table JSON (<code>{selectedPackId}</code>)</span>
