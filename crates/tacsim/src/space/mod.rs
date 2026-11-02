@@ -22,15 +22,18 @@ pub use bubble::{
     SpaceShipState, SubsystemCrit,
 };
 pub use custody::{
-    ALL_FACET_BANDS, ALL_SHIP_SECTIONS, build_space_damage_mutation_plan,
+    ALL_FACET_BANDS, ALL_SHIP_SECTIONS, apply_unit_spec_to_space_ship,
+    build_space_damage_mutation_plan, check_in_space_unit, check_out_space_unit,
     format_tactical_unit_damage_line, instantiate_stock_space_unit,
     record_space_combat_to_black_box, register_derelict_salvage_in_book,
-    space_ship_from_tactical_unit,
+    resolve_tactical_section_id, space_ship_from_tactical_unit,
+    space_ship_from_tactical_unit_with_spec, unit_spec_for_id,
 };
 pub use tick::{
     ActiveInterdictionBubble, CARRIER_PARTY, COMBAT_STEP_WALL_MS, CRUISE_STEP_WALL_MS,
     CompletedInterdictionBubble, INTERDICTION_STANDOFF_M, INTERDICTOR_PARTY, ORDNANCE_STEP_WALL_MS,
-    SPACE_TICK, SPACE_TICK_PERIOD, SpaceBubbleBook, clear_interdiction_bubble,
+    SPACE_TICK, SPACE_TICK_PERIOD, SpaceBubbleBook, SpaceDerelictRecord, apply_bubble_command,
+    clear_interdiction_bubble,
 };
 pub use weapons::{
     DEFAULT_TORPEDO_MAX_FLIGHT_MS, InFlightSlug, InFlightTorpedo, LaserMode, LaserMount, PdcMount,
@@ -574,11 +577,20 @@ mod tests {
         )
         .expect("ship from tactical unit");
 
-        // Inflict combat damage to rear drive armor and drive internals.
+        // Canonical `dray.json` logistics (`D-35-1`, `35a` §1 row 2 & §6 row `SF.16/19`):
+        assert_eq!(ship.dry_mass_t, 240);
+        assert_eq!(ship.payload_ceiling_kg, 181_000);
+        assert_eq!(ship.propellant_cap_kg, 80_000);
+        assert_eq!(ship.rated_accel_mg, 50);
+        assert!((ship.rated_accel_mps2() - 0.490_332_5).abs() < 1e-4);
+        assert_eq!(ship.exhaust_kms, 6_000);
+
+        // Inflict combat damage to rear drive armor and drive internals, plus a DriveDegraded crit.
         if let Some(drive_sec) = ship.sections.get_mut(&ShipSectionId::Drive) {
             drive_sec.facets.insert(FacetBand::Rear, 0);
             drive_sec.internals = 12;
         }
+        ship.crits.push(SubsystemCrit::DriveDegraded);
 
         let (unit_after, assessment, plan) =
             build_space_damage_mutation_plan(&unit_before, &ship, Some(&unit_spec), 60_000)
@@ -592,6 +604,80 @@ mod tests {
         assert!(
             dmg_line.contains("drive 12/"),
             "unexpected damage line: {dmg_line}"
+        );
+
+        // Also verify `dray_p.json` and `halcyon.json` canonical `UnitSpec` mapping (`D-35-1`).
+        let (dray_p_unit, _) = instantiate_stock_space_unit(ObjId(4202), "tacsim.unit.dray_p")
+            .expect("stock dray_p unit");
+        let dray_p_ship = space_ship_from_tactical_unit(
+            &dray_p_unit,
+            "ship.dray_p",
+            "CSS Prospector",
+            SpacePartyId(1),
+            [0, 0, 0],
+            [0, 0, 0],
+        )
+        .expect("dray_p ship");
+        assert_eq!(dray_p_ship.dry_mass_t, 240);
+        assert_eq!(dray_p_ship.propellant_cap_kg, 80_000);
+        assert_eq!(dray_p_ship.rated_accel_mg, 50);
+
+        let (halcyon_unit, halcyon_spec) =
+            instantiate_stock_space_unit(ObjId(4203), "tacsim.unit.halcyon")
+                .expect("stock halcyon unit");
+        let mut halcyon_ship = space_ship_from_tactical_unit(
+            &halcyon_unit,
+            "ship.halcyon",
+            "CNS Halcyon",
+            SpacePartyId(1),
+            [0, 0, 0],
+            [0, 0, 0],
+        )
+        .expect("halcyon ship");
+        assert_eq!(halcyon_ship.dry_mass_t, 4_000);
+        assert_eq!(halcyon_ship.payload_ceiling_kg, 1_920_000);
+        assert_eq!(halcyon_ship.propellant_cap_kg, 1_800_000);
+        assert_eq!(halcyon_ship.rated_accel_mg, 50);
+        assert_eq!(
+            halcyon_ship.sections[&ShipSectionId::Hull].internals,
+            12_000
+        );
+        assert_eq!(
+            halcyon_ship.sections[&ShipSectionId::Drive].internals,
+            3_000
+        );
+
+        // Disable Halcyon's `power` section (`ShipSectionId::Drive` -> `"power"` on `halcyon.json`)
+        halcyon_ship
+            .sections
+            .get_mut(&ShipSectionId::Drive)
+            .expect("halcyon drive/power")
+            .internals = 0;
+        halcyon_ship.status = HullStatus::DisabledDerelict {
+            epoch_open: true,
+            life_support_remaining_s: DERELICT_WINDOW_S,
+            salvage_contest_window_s: DERELICT_WINDOW_S,
+        };
+        let (halcyon_after, halcyon_assessment, halcyon_plan) = build_space_damage_mutation_plan(
+            &halcyon_unit,
+            &halcyon_ship,
+            Some(&halcyon_spec),
+            61_000,
+        )
+        .expect("halcyon damage plan");
+        assert!(halcyon_plan.is_some());
+        assert_eq!(
+            halcyon_assessment.state,
+            crate::field_ops::OperationalState::Disabled
+        );
+        assert_eq!(
+            halcyon_assessment.epoch_disposition,
+            crate::field_ops::FieldEpochDisposition::RemainOpen
+        );
+        let halcyon_dmg = format_tactical_unit_damage_line(&halcyon_after).expect("halcyon damage");
+        assert!(
+            halcyon_dmg.contains("power destroyed"),
+            "unexpected halcyon damage line: {halcyon_dmg}"
         );
     }
 }

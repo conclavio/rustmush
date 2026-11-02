@@ -470,10 +470,19 @@ impl EventHook for PlacementGate {
     fn perceives(
         &self,
         ctx: &HookReadContext<'_>,
-        _observer: ObjId,
+        observer: ObjId,
         subject: ObjId,
     ) -> mush_core::module::Perceive {
-        if crate::deployed::excluded(ctx.world(), crate::deployed::Shown::Unit(subject)) {
+        let w = ctx.world();
+        if state(w).is_some_and(|st| {
+            matches!(
+                st.parent_of(observer),
+                SpatialParent::Interior { space, .. } if aboard_host(st, space) == subject
+            )
+        }) {
+            return mush_core::module::Perceive::Abstain;
+        }
+        if crate::deployed::excluded(w, crate::deployed::Shown::Unit(subject)) {
             return mush_core::module::Perceive::Conceal;
         }
         mush_core::module::Perceive::Abstain
