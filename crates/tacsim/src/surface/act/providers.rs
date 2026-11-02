@@ -883,6 +883,29 @@ impl SurfaceActProvider {
                 crate::surface::site_record::FIELD_OPEN_CODE,
             ));
         }
+        // Doc 36 cut GC.0 (Q-36-17): a rig recovering under its own power leaves the site's unit
+        // index in this commit.
+        if kind == ActKind::Recover
+            && let Some(site) = plan.site.as_ref()
+        {
+            let key = crate::surface::site_record::SiteKey(site.clone());
+            let integrity = || {
+                port_error(
+                    ActionErrorCode::Integrity,
+                    "the site records are unavailable",
+                )
+            };
+            let record = txn
+                .get(&self.sites, &key)
+                .map_err(|_| integrity())?
+                .cloned();
+            if let Some(next) =
+                crate::surface::site_record::left_under_own_power(record.as_ref(), tv)
+            {
+                txn.replace(&self.sites, &key, next)
+                    .map_err(|_| integrity())?;
+            }
+        }
         let work = self.task_work(
             context.as_deref(),
             txn,

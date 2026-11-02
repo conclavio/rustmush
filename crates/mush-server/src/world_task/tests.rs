@@ -12283,3 +12283,96 @@ fn w_clock_outage_countdown_admits_inspection_and_ooc_while_refusing_movement_an
         );
     }
 }
+
+/// **Doc 36 cut GC.0 (Q-36-50), the decision arm.** A provider's answer is taken only while no
+/// commit is pending: staged behind an unresolved commit it would build on that commit's
+/// tentative post-image. It waits in its bounded channel until the receipt lands.
+#[test]
+fn gc0_a_decision_result_waits_behind_a_pending_commit() {
+    assert!(decision_result_armed(true, false));
+    assert!(
+        !decision_result_armed(true, true),
+        "a provider's answer is not taken while a commit pends"
+    );
+    assert!(!decision_result_armed(false, false));
+    assert!(!decision_result_armed(false, true));
+}
+
+/// **Doc 36 cut GC.0 (Q-36-50), the lifecycle slot.** A line typed behind a disconnect parked in
+/// the lifecycle slot used to sit in the inbound channel with no word to its player until the
+/// commit resolved. The world now takes it behind the slot; once it has waited 250 ms its player
+/// hears it is waiting, and once the receipt lands it runs after the disconnect, refused nothing.
+#[tokio::test]
+async fn gc0_a_line_behind_a_held_lifecycle_slot_hears_it_waits_then_runs() {
+    let mut rig = held_receipt_rig().await;
+    rig.attach(1).await;
+    rig.attach(2).await;
+    rig.line(2, "@create receipt-anchor").await;
+    let (serial, receipt) = rig.next_write().await;
+
+    // Connection 2 quits behind the held receipt: its `ConnDown` takes the slot.
+    assert!(
+        rig.handle
+            .inbound(Inbound::ConnDown {
+                conn: 2,
+                actor: GOD,
+                reason: DisconnectKind::Quit,
+            })
+            .await
+    );
+    inbound_taken(&rig.handle).await;
+    // Connection 1 types behind it. The world takes the line off its inbound
+    // channel (it did not, before this cut) without serving or refusing it.
+    rig.line(1, "who").await;
+    inbound_taken(&rig.handle).await;
+    let recorder = Arc::clone(&rig.recorder);
+    wait_until("the waiting notice", || {
+        recorder
+            .sends
+            .lock()
+            .expect("recording gateway poisoned")
+            .iter()
+            .any(|(target, event)| {
+                *target == SendTarget::Conn(1)
+                    && matches!(event.as_ref(), OutputEvent::Sys(text)
+                        if text.to_plain_text() == BEHIND_SLOT_WAITING)
+            })
+    })
+    .await;
+    assert_eq!(
+        rig.metrics.snapshot().command_deferred_total,
+        0,
+        "the line waits behind the slot, not in the defer queue"
+    );
+    let who = |rig: &HeldReceiptRig| {
+        rig.recorder
+            .sends
+            .lock()
+            .expect("recording gateway poisoned")
+            .iter()
+            .any(|(_, event)| matches!(event.as_ref(), OutputEvent::Who(_)))
+    };
+    assert!(
+        !who(&rig),
+        "nothing behind the slot runs before the receipt"
+    );
+    receipt
+        .send(Ok(serial))
+        .expect("world still owns the exact receipt");
+    rig.serve_until("the WHO typed behind the slot", |rig| who(rig))
+        .await;
+    assert_eq!(
+        rig.heard()
+            .iter()
+            .filter(|line| line.as_str() == BEHIND_SLOT_WAITING)
+            .count(),
+        1,
+        "the notice is said once"
+    );
+    assert!(
+        !rig.heard_any("committing another action") && !rig.heard_any("busy too long"),
+        "{:?}",
+        rig.heard()
+    );
+    rig.shut_down().await;
+}

@@ -345,6 +345,8 @@ pub(crate) fn on_snapshot(ctx: &mut Ctx<'_>, task: MatchId, snapshot: Arc<crate:
     if let Some(live) = live {
         record::write_live(ctx, &live);
     }
+    // Doc 36 cut GC.0: a raider's carrier whose hulls are all aboard or down lifts.
+    raiders::lift_check(ctx, &site);
 }
 
 /// **One pulse's frames of a field** (the bridge's branch; Q-CF-14): a fire order whose

@@ -1873,6 +1873,16 @@ enum Wake {
     /// 16b cut B.5: the oldest queued message has waited
     /// [`COMMAND_DEFER_MS`] while a commit still pends.
     DeferExpiry,
+    /// Doc 36 cut GC.0 (Q-36-50): a message taken off `rx` while the lifecycle
+    /// slot is held; it joins the [`BehindSlot`].
+    Behind(WorldMsg),
+    /// Doc 36 cut GC.0: the slot is empty and the [`BehindSlot`] is not; its
+    /// front becomes a [`Wake::Msg`] before the dispatch, and this variant
+    /// survives only when the queue turned out empty.
+    BehindDrain,
+    /// Doc 36 cut GC.0: a typed line behind the slot has waited
+    /// [`COMMAND_DEFER_MS`] and hears it is waiting.
+    BehindNotice,
     Shutdown,
     ShutdownDeadline,
     Closed,
@@ -3496,6 +3506,12 @@ async fn run(
     // whatever fills that slot (`rx` stops once it is full), and a connection's
     // lines stay in the order it typed them.
     let mut defer = DeferQueue::default();
+    // Doc 36 cut GC.0 (Q-36-50): what arrives while the lifecycle slot above is
+    // held, in arrival order, bounded; served after the slot, and a typed line
+    // that waits 250 ms there hears it is waiting (`BehindSlot`). `rx` closing
+    // while the slot is held is left for the ordinary arm to find.
+    let mut behind = BehindSlot::default();
+    let mut behind_closed = false;
     // Store-backed staff operations drained beside a local operation remain
     // ordered behind any commit that local operation starts.
     let mut deferred_staff_ops: Vec<StaffOp> = Vec::new();
@@ -3677,6 +3693,14 @@ async fn run(
         } else {
             None
         };
+        // Doc 36 cut GC.0 (Q-36-50): what queued behind the slot drains once the
+        // slot is empty, under the rule `rx` itself is taken by, before `rx`.
+        let behind_ready = deferred_world_msg.is_none()
+            && !behind.is_empty()
+            && (defer.is_empty() || pending_commit.is_some());
+        let behind_taking =
+            inbound_open && !behind_closed && deferred_world_msg.is_some() && !behind.is_full();
+        let behind_notice = behind.next_notice();
         let wake = if let Some(msg) = ready_deferred {
             Wake::Msg(msg)
         } else {
@@ -3685,11 +3709,24 @@ async fn run(
             // lifecycle traffic and bookkeeping are never head-of-line blocked
             // behind the queue; once it resolves the queue drains before
             // anything new is taken.
-            m = rx.recv(), if inbound_open
+            //
+            // Doc 36 cut GC.0 (Q-36-50): while the lifecycle slot is held, `rx`
+            // is still taken, into the bounded queue behind it (`behind_taking`).
+            m = rx.recv(), if behind_taking || (inbound_open
                 && deferred_world_msg.is_none()
-                && (defer.is_empty() || pending_commit.is_some()) => {
-                m.map_or(Wake::Closed, Wake::Msg)
+                && behind.is_empty()
+                && (defer.is_empty() || pending_commit.is_some())) => match m {
+                Some(msg) if behind_taking => Wake::Behind(msg),
+                None if behind_taking => { behind_closed = true; Wake::Timer }
+                m => m.map_or(Wake::Closed, Wake::Msg),
             },
+            () = std::future::ready(()), if behind_ready => Wake::BehindDrain,
+            () = async {
+                match behind_notice {
+                    Some(deadline) => tokio::time::sleep_until(deadline).await,
+                    None => std::future::pending().await,
+                }
+            }, if behind_notice.is_some() => Wake::BehindNotice,
             () = async {
                 match defer_deadline {
                     Some(deadline) => tokio::time::sleep_until(deadline).await,
@@ -3731,7 +3768,10 @@ async fn run(
                     Some(completions) => completions.recv().await,
                     None => std::future::pending().await,
                 }
-            }, if durable_decisions.is_some() => match completion {
+            // Doc 36 cut GC.0 (Q-36-50; doc 32 §17's second latent item): a
+            // provider's answer is staged only with no commit pending, as every
+            // other arm that stages authoritative work is.
+            }, if decision_result_armed(durable_decisions.is_some(), pending_commit.is_some()) => match completion {
                 Some(completion) => Wake::DecisionResult(Box::new(completion)),
                 None => Wake::DurableDecisions,
             },
@@ -3787,6 +3827,7 @@ async fn run(
                 }) => Wake::DeferredBarrier(reply),
                 None => Wake::Deferred,
             },
+            Wake::BehindDrain => behind.pop_front().map_or(Wake::BehindDrain, Wake::Msg),
             wake => wake,
         };
         let iteration_start = Instant::now();
@@ -4320,6 +4361,23 @@ async fn run(
             // 16b cut B.5: the 250 ms bound, while the commit still pends. A
             // typed line is refused in a player's words; everything else hears
             // exactly the `CommitPending` refusal it always did.
+            Wake::Behind(msg) => {
+                behind.push(msg, DeferInstant::now());
+                StepOutcome::Continue
+            }
+            Wake::BehindNotice => {
+                for (conn, _) in behind.due(DeferInstant::now()) {
+                    gateway.transmit(vec![(
+                        SendTarget::Conn(conn),
+                        Arc::new(OutputEvent::Sys(RichText::tag(
+                            "system",
+                            BEHIND_SLOT_WAITING,
+                        ))),
+                    )]);
+                }
+                StepOutcome::Continue
+            }
+            Wake::BehindDrain => StepOutcome::Continue,
             Wake::DeferExpiry => {
                 for msg in defer.expire(DeferInstant::now()) {
                     if is_typed_line(&msg) {
@@ -5221,6 +5279,14 @@ async fn run(
                         }
                     }
                 }
+                // Doc 36 cut GC.0: what queued behind the slot is refused the same way.
+                for msg in behind.drain_all() {
+                    if is_typed_line(&msg) {
+                        metrics.command_processed();
+                    }
+                    let brackets = output_brackets_for_engine(&engine, &msg);
+                    refuse_world_msg(msg, RefusalReason::CommitPending, &gateway, brackets);
+                }
                 if pending_commit.is_some() {
                     // Supersede the one already-dequeued ordinary message and
                     // stop polling the bounded queue. The shutdown request did
@@ -5932,6 +5998,14 @@ async fn run(
                 let _ = reply.send(Err(WorldReadError::Unavailable));
             }
         }
+    }
+    // Doc 36 cut GC.0: and whatever queued behind the lifecycle slot.
+    for msg in behind.drain_all() {
+        if is_typed_line(&msg) {
+            metrics.command_processed();
+        }
+        let brackets = output_brackets_for_engine(&engine, &msg);
+        refuse_world_msg(msg, RefusalReason::CommitPending, &gateway, brackets);
     }
     // Dropping `writer` here closes the job queue; the writer task drains
     // whatever is still pending and exits (awaited by the shutdown

@@ -539,6 +539,15 @@ pub(super) fn must_defer_behind_commit(msg: &WorldMsg) -> bool {
     )
 }
 
+/// **Whether the loop takes a decision provider's answer now** (doc 36 cut GC.0; Q-36-50): only
+/// while durable decisions are composed and no commit is pending. The answer stages
+/// authoritative work (an attempt, a fallback, a response), and staging behind an unresolved
+/// commit would build on its tentative post-image; it waits in its bounded channel until the
+/// receipt lands, as a command submission and an arena chunk do.
+pub(super) const fn decision_result_armed(decisions_composed: bool, commit_pending: bool) -> bool {
+    decisions_composed && !commit_pending
+}
+
 /// **What waits in the [`DeferQueue`] when it meets a commit** (16b cut B.5,
 /// `B-13`): a typed line, a query, and the five world reads that carry a reply
 /// channel. Each is retryable input that has transferred no custody, so a
