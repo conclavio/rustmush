@@ -31,9 +31,34 @@ pub const DERELICT_WINDOW_S: u32 = 48 * 3_600;
 #[derive(Clone, Debug, PartialEq, Eq, PartialOrd, Ord, Hash, Serialize, Deserialize)]
 pub struct BubbleId(pub String);
 
-/// Party identifier inside a multi-party space bubble (`D-35-1`, `D-35-11`).
+/// Party identifier inside a multi-party space bubble (`D-35-1`, `D-35-11`),
+/// mapped onto canonical [`crate::arena::party::PartyId`] letters (`A`..`Z`).
 #[derive(Clone, Copy, Debug, PartialEq, Eq, PartialOrd, Ord, Hash, Serialize, Deserialize)]
 pub struct SpacePartyId(pub u32);
+
+impl SpacePartyId {
+    /// Convert this space party identifier into its canonical [`crate::arena::party::PartyId`]
+    /// (`SpacePartyId(1)` $\rightarrow$ `'A'`, `SpacePartyId(2)` $\rightarrow$ `'B'`,
+    /// `SpacePartyId(3)` $\rightarrow$ `'C'`, etc., `D-35-1`, `D-35-11`).
+    #[must_use]
+    pub const fn to_party_id(self) -> crate::arena::party::PartyId {
+        let idx = self.0.saturating_sub(1) as usize;
+        match crate::arena::party::PartyId::nth(idx) {
+            Some(pid) => pid,
+            None => crate::arena::party::PartyId::known(b'Z'),
+        }
+    }
+
+    /// Construct a [`SpacePartyId`] from a canonical [`crate::arena::party::PartyId`].
+    #[must_use]
+    pub fn from_party_id(party: crate::arena::party::PartyId) -> Self {
+        let pos = crate::arena::party::LETTERS
+            .iter()
+            .position(|&b| b == party.code())
+            .unwrap_or(0);
+        Self(u32::try_from(pos).unwrap_or(0).saturating_add(1))
+    }
+}
 
 /// Standing relation between two parties in a [`LocalSpaceBubble`] (`D-35-11`).
 #[derive(Clone, Copy, Debug, Default, PartialEq, Eq, Serialize, Deserialize)]
@@ -54,6 +79,16 @@ impl SpaceRelation {
             Self::Neutral => "neutral",
             Self::Inspecting => "neutral",
             Self::Hostile => "hostile",
+        }
+    }
+
+    /// Project this [`SpaceRelation`] onto the kernel's [`crate::arena::party::Relation`] (`D-35-1`).
+    #[must_use]
+    pub const fn to_arena_relation(self) -> crate::arena::party::Relation {
+        match self {
+            Self::Friendly => crate::arena::party::Relation::Friend,
+            Self::Neutral | Self::Inspecting => crate::arena::party::Relation::Neutral,
+            Self::Hostile => crate::arena::party::Relation::Hostile,
         }
     }
 }
@@ -646,6 +681,9 @@ pub struct LocalSpaceBubble {
     pub outage_frozen: bool,
     pub ships: BTreeMap<String, SpaceShipState>,
     pub relations: BTreeMap<(SpacePartyId, SpacePartyId), SpaceRelation>,
+    /// Canonical kernel party relation books (`D-35-1`, `D-35-11`, `Q-CF-5`–`Q-CF-8`).
+    #[serde(default)]
+    pub party_relations: crate::arena::party::Relations,
     pub torpedoes: Vec<InFlightTorpedo>,
     pub railgun_slugs: Vec<InFlightSlug>,
     next_ordnance_id: u64,
@@ -669,18 +707,20 @@ impl LocalSpaceBubble {
             outage_frozen: false,
             ships: BTreeMap::new(),
             relations: BTreeMap::new(),
+            party_relations: crate::arena::party::Relations::new(),
             torpedoes: Vec::new(),
             railgun_slugs: Vec::new(),
             next_ordnance_id: 1,
         }
     }
 
-    /// Insert or update a ship in the bubble.
+    /// Insert or update a ship in the bubble and admit its [`crate::arena::party::PartyId`].
     pub fn insert_ship(&mut self, ship: SpaceShipState) {
+        self.party_relations.admit(ship.party.to_party_id());
         self.ships.insert(ship.id.clone(), ship);
     }
 
-    /// Set the symmetric standing relation between `party_a` and `party_b`.
+    /// Set the symmetric standing relation between `party_a` and `party_b` (`D-35-1`, `D-35-11`).
     pub fn set_party_relation(
         &mut self,
         party_a: SpacePartyId,
@@ -689,6 +729,29 @@ impl LocalSpaceBubble {
     ) {
         self.relations.insert((party_a, party_b), relation);
         self.relations.insert((party_b, party_a), relation);
+        let pa = party_a.to_party_id();
+        let pb = party_b.to_party_id();
+        self.party_relations.admit(pa);
+        self.party_relations.admit(pb);
+        match relation {
+            SpaceRelation::Friendly => {
+                self.party_relations
+                    .mark(pa, pb, Some(crate::arena::party::Mark::Friendly));
+                self.party_relations
+                    .mark(pb, pa, Some(crate::arena::party::Mark::Friendly));
+                self.party_relations.befriend(pa, pb);
+            }
+            SpaceRelation::Hostile => {
+                self.party_relations
+                    .mark(pa, pb, Some(crate::arena::party::Mark::Hostile));
+                self.party_relations
+                    .mark(pb, pa, Some(crate::arena::party::Mark::Hostile));
+            }
+            SpaceRelation::Neutral | SpaceRelation::Inspecting => {
+                self.party_relations.mark(pa, pb, None);
+                self.party_relations.mark(pb, pa, None);
+            }
+        }
     }
 
     /// Query the standing relation between two parties.
@@ -697,10 +760,32 @@ impl LocalSpaceBubble {
         if party_a == party_b {
             return SpaceRelation::Friendly;
         }
-        self.relations
-            .get(&(party_a, party_b))
-            .copied()
-            .unwrap_or(SpaceRelation::Neutral)
+        if let Some(&rel) = self.relations.get(&(party_a, party_b)) {
+            return rel;
+        }
+        match self
+            .party_relations
+            .relation(party_a.to_party_id(), party_b.to_party_id())
+        {
+            crate::arena::party::Relation::Own | crate::arena::party::Relation::Friend => {
+                SpaceRelation::Friendly
+            }
+            crate::arena::party::Relation::Hostile => SpaceRelation::Hostile,
+            crate::arena::party::Relation::Neutral | crate::arena::party::Relation::Unknown => {
+                SpaceRelation::Neutral
+            }
+        }
+    }
+
+    /// Query the canonical [`crate::arena::party::Relation`] from `viewer` toward `other` (`D-35-1`).
+    #[must_use]
+    pub fn canonical_party_relation(
+        &self,
+        viewer: SpacePartyId,
+        other: SpacePartyId,
+    ) -> crate::arena::party::Relation {
+        self.party_relations
+            .relation(viewer.to_party_id(), other.to_party_id())
     }
 
     /// Toggle automatic point-defense (`+tac/pdc auto`) for `ship_id` (`Q-35-4`, `D-35-8`).
@@ -874,10 +959,18 @@ impl LocalSpaceBubble {
         };
         if shooter.status != HullStatus::Operational
             || shooter_id == target_id
-            || self.party_relation(shooter.party, target.party) == SpaceRelation::Friendly
+            || self.party_relation(shooter.party, target.party) != SpaceRelation::Hostile
         {
             return events;
         }
+        let shooter_party = shooter.party;
+        let target_party = target.party;
+        self.party_relations
+            .note_fire(shooter_party.to_party_id(), target_party.to_party_id());
+        let (Some(shooter), Some(target)) = (self.ships.get(shooter_id), self.ships.get(target_id))
+        else {
+            return events;
+        };
         let shooter_pos = shooter.pos_m;
         let shooter_vel = shooter.vel_mmps;
         let target_pos = target.pos_m;
@@ -955,10 +1048,18 @@ impl LocalSpaceBubble {
         };
         if shooter.status != HullStatus::Operational
             || shooter_id == target_id
-            || self.party_relation(shooter.party, target.party) == SpaceRelation::Friendly
+            || self.party_relation(shooter.party, target.party) != SpaceRelation::Hostile
         {
             return events;
         }
+        let shooter_party = shooter.party;
+        let target_party = target.party;
+        self.party_relations
+            .note_fire(shooter_party.to_party_id(), target_party.to_party_id());
+        let (Some(shooter), Some(target)) = (self.ships.get(shooter_id), self.ships.get(target_id))
+        else {
+            return events;
+        };
         let shooter_pos = shooter.pos_m;
         let target_pos = target.pos_m;
         let dx = (target_pos[0] - shooter_pos[0]) as i128;
@@ -1037,10 +1138,18 @@ impl LocalSpaceBubble {
         };
         if shooter.status != HullStatus::Operational
             || shooter_id == target_id
-            || self.party_relation(shooter.party, target.party) == SpaceRelation::Friendly
+            || self.party_relation(shooter.party, target.party) != SpaceRelation::Hostile
         {
             return events;
         }
+        let shooter_party = shooter.party;
+        let target_party = target.party;
+        self.party_relations
+            .note_fire(shooter_party.to_party_id(), target_party.to_party_id());
+        let (Some(shooter), Some(target)) = (self.ships.get(shooter_id), self.ships.get(target_id))
+        else {
+            return events;
+        };
         let shooter_pos = shooter.pos_m;
         let shooter_vel = shooter.vel_mmps;
         let target_pos = target.pos_m;

@@ -176,7 +176,7 @@ impl Picture for DockingPicture {
 }
 
 /// 6-DOF pose and velocity state parsed from the `space.docking` feed.
-#[derive(Debug, Clone, Copy)]
+#[derive(Debug, Clone, Copy, Default, PartialEq, Eq)]
 pub struct DockingCameraPose {
     /// Lateral horizontal offset from collar centerline in mm (`+` = right).
     pub dx_mm: i64,
@@ -233,6 +233,284 @@ impl DockingCameraPose {
     #[must_use]
     pub const fn ready_to_clamp(&self) -> bool {
         self.pose_aligned() && self.closure_safe()
+    }
+}
+
+/// Maximum number of 60 Hz frames in a client docking input tape (`3,600` frames = `60 s`, `D-35-14`).
+pub const MAX_DOCKING_CLIENT_TAPE_FRAMES: usize = 3_600;
+
+/// Client-side 60 Hz 6-DOF control input for a single frame (`Q-35-5`, `D-35-14`).
+#[derive(Clone, Copy, Debug, Default, PartialEq, Eq)]
+pub struct DockingClientInput {
+    /// Lateral horizontal RCS pulse (`-1`, `0`, `+1`).
+    pub trans_x: i8,
+    /// Lateral vertical RCS pulse (`-1`, `0`, `+1`).
+    pub trans_y: i8,
+    /// Forward/aft closure RCS pulse (`-1`, `0`, `+1`).
+    pub closure_pulse: i8,
+    /// Pitch trim pulse (`-1`, `0`, `+1`).
+    pub pitch_trim: i8,
+    /// Yaw trim pulse (`-1`, `0`, `+1`).
+    pub yaw_trim: i8,
+    /// Roll trim pulse (`-1`, `0`, `+1`).
+    pub roll_trim: i8,
+    /// Toggle coupled RCS rotational/lateral dampeners (`X` / `Space`).
+    pub toggle_dampeners: bool,
+    /// Abort the docking session (`Esc`).
+    pub abort: bool,
+}
+
+impl DockingClientInput {
+    const fn encode_axis(val: i8) -> u16 {
+        if val > 0 {
+            0b01
+        } else if val < 0 {
+            0b10
+        } else {
+            0b00
+        }
+    }
+
+    /// Pack this frame's control inputs into the 16-bit RLE wire bitmask (`D-35-14`).
+    #[must_use]
+    pub const fn to_bitmask(&self) -> u16 {
+        let mut mask = 0u16;
+        mask |= Self::encode_axis(self.trans_x);
+        mask |= Self::encode_axis(self.trans_y) << 2;
+        mask |= Self::encode_axis(self.closure_pulse) << 4;
+        mask |= Self::encode_axis(self.pitch_trim) << 6;
+        mask |= Self::encode_axis(self.yaw_trim) << 8;
+        mask |= Self::encode_axis(self.roll_trim) << 10;
+        if self.toggle_dampeners {
+            mask |= 1 << 12;
+        }
+        if self.abort {
+            mask |= 1 << 13;
+        }
+        mask
+    }
+}
+
+/// Client-side 60 Hz 6-DOF docking session stepper and RLE input-tape recorder (`Q-35-5`, `D-35-14`).
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub struct DockingClientSession {
+    /// Server-issued session ID (`"dock.<hull>.<seq>"`).
+    pub session_id: String,
+    /// Live 6-DOF collar pose stepped locally at 60 Hz.
+    pub pose: DockingCameraPose,
+    /// Pitch angular rate in `mdeg/s`.
+    pub pitch_rate_mdeg_s: i32,
+    /// Yaw angular rate in `mdeg/s`.
+    pub yaw_rate_mdeg_s: i32,
+    /// Roll angular rate in `mdeg/s`.
+    pub roll_rate_mdeg_s: i32,
+    /// Target collar tumble rate `[pitch_mdeg_s, yaw_mdeg_s, roll_mdeg_s]`.
+    pub target_tumble_mdeg_s: [i32; 3],
+    /// Whether coupled RCS dampeners are enabled.
+    pub dampeners_on: bool,
+    rem_x: i64,
+    rem_y: i64,
+    rem_z: i64,
+    rem_pitch: i32,
+    rem_yaw: i32,
+    rem_roll: i32,
+    spans: Vec<(u16, u16)>,
+    frames_stepped: usize,
+}
+
+impl DockingClientSession {
+    /// Initialize a client-side 60 Hz docking session from a `space.docking` feed JSON value.
+    #[must_use]
+    pub fn from_feed(docking: &Value) -> Self {
+        let session_id = docking
+            .get("session_id")
+            .and_then(Value::as_str)
+            .unwrap_or("dock.0.1")
+            .to_owned();
+        let tumble = docking
+            .get("target_tumble_mdeg_s")
+            .and_then(Value::as_array)
+            .map_or([0, 0, 0], |arr| {
+                let p = arr.first().and_then(Value::as_i64).unwrap_or(0) as i32;
+                let y = arr.get(1).and_then(Value::as_i64).unwrap_or(0) as i32;
+                let r = arr.get(2).and_then(Value::as_i64).unwrap_or(0) as i32;
+                [p, y, r]
+            });
+        Self {
+            session_id,
+            pose: DockingCameraPose {
+                dx_mm: int_field(docking, "dx_mm", 600),
+                dy_mm: int_field(docking, "dy_mm", -420),
+                dz_mm: int_field(docking, "dz_mm", 2_400),
+                pitch_mdeg: int_field(docking, "pitch_mdeg", -2_400),
+                yaw_mdeg: int_field(docking, "yaw_mdeg", 2_400),
+                roll_mdeg: int_field(docking, "roll_mdeg", -3_600),
+                vx_mmps: int_field(docking, "vx_mmps", 0),
+                vy_mmps: int_field(docking, "vy_mmps", 0),
+                vz_mmps: int_field(docking, "vz_mmps", 0),
+            },
+            pitch_rate_mdeg_s: int_field(docking, "pitch_rate_mdeg_s", 0) as i32,
+            yaw_rate_mdeg_s: int_field(docking, "yaw_rate_mdeg_s", 0) as i32,
+            roll_rate_mdeg_s: int_field(docking, "roll_rate_mdeg_s", 0) as i32,
+            target_tumble_mdeg_s: tumble,
+            dampeners_on: docking
+                .get("dampeners")
+                .and_then(Value::as_bool)
+                .unwrap_or(true),
+            rem_x: 0,
+            rem_y: 0,
+            rem_z: 0,
+            rem_pitch: 0,
+            rem_yaw: 0,
+            rem_roll: 0,
+            spans: Vec::new(),
+            frames_stepped: 0,
+        }
+    }
+
+    const fn bleed_i64(val: i64, step: i64) -> i64 {
+        if val > step {
+            val - step
+        } else if val < -step {
+            val + step
+        } else {
+            0
+        }
+    }
+
+    const fn bleed_i32(val: i32, step: i32) -> i32 {
+        if val > step {
+            val - step
+        } else if val < -step {
+            val + step
+        } else {
+            0
+        }
+    }
+
+    /// Step the local 6-DOF collar pose by one 60 Hz frame (`16.67 ms`) and append `input`
+    /// to the bounded RLE tape (`<= 3,600` frames).
+    pub fn step_60fps(&mut self, input: DockingClientInput) {
+        if self.frames_stepped >= MAX_DOCKING_CLIENT_TAPE_FRAMES {
+            return;
+        }
+        let mask = input.to_bitmask();
+        if let Some(last) = self.spans.last_mut()
+            && last.0 == mask
+            && last.1 < u16::MAX
+        {
+            last.1 = last.1.saturating_add(1);
+        } else {
+            self.spans.push((mask, 1));
+        }
+
+        if input.toggle_dampeners {
+            self.dampeners_on = !self.dampeners_on;
+        }
+
+        let tx = i64::from(input.trans_x.clamp(-1, 1));
+        let ty = i64::from(input.trans_y.clamp(-1, 1));
+        let tz = i64::from(input.closure_pulse.clamp(-1, 1));
+        let dpitch = i32::from(input.pitch_trim.clamp(-1, 1));
+        let dyaw = i32::from(input.yaw_trim.clamp(-1, 1));
+        let droll = i32::from(input.roll_trim.clamp(-1, 1));
+
+        self.pose.vx_mmps = self.pose.vx_mmps.saturating_add(tx.saturating_mul(30));
+        self.pose.vy_mmps = self.pose.vy_mmps.saturating_add(ty.saturating_mul(30));
+        self.pose.vz_mmps = self.pose.vz_mmps.saturating_add(tz.saturating_mul(25));
+        self.pitch_rate_mdeg_s = self
+            .pitch_rate_mdeg_s
+            .saturating_add(dpitch.saturating_mul(180));
+        self.yaw_rate_mdeg_s = self
+            .yaw_rate_mdeg_s
+            .saturating_add(dyaw.saturating_mul(180));
+        self.roll_rate_mdeg_s = self
+            .roll_rate_mdeg_s
+            .saturating_add(droll.saturating_mul(240));
+
+        if self.dampeners_on {
+            if tx == 0 && self.pose.vx_mmps != 0 {
+                self.pose.vx_mmps = Self::bleed_i64(self.pose.vx_mmps, 15);
+            }
+            if ty == 0 && self.pose.vy_mmps != 0 {
+                self.pose.vy_mmps = Self::bleed_i64(self.pose.vy_mmps, 15);
+            }
+            if dpitch == 0 && self.pitch_rate_mdeg_s != 0 {
+                self.pitch_rate_mdeg_s = Self::bleed_i32(self.pitch_rate_mdeg_s, 90);
+            }
+            if dyaw == 0 && self.yaw_rate_mdeg_s != 0 {
+                self.yaw_rate_mdeg_s = Self::bleed_i32(self.yaw_rate_mdeg_s, 90);
+            }
+            if droll == 0 && self.roll_rate_mdeg_s != 0 {
+                self.roll_rate_mdeg_s = Self::bleed_i32(self.roll_rate_mdeg_s, 120);
+            }
+        }
+
+        let tot_x = self.pose.vx_mmps.saturating_add(self.rem_x);
+        self.pose.dx_mm = self.pose.dx_mm.saturating_add(tot_x / 60);
+        self.rem_x = tot_x % 60;
+
+        let tot_y = self.pose.vy_mmps.saturating_add(self.rem_y);
+        self.pose.dy_mm = self.pose.dy_mm.saturating_add(tot_y / 60);
+        self.rem_y = tot_y % 60;
+
+        let tot_z = self.pose.vz_mmps.saturating_add(self.rem_z);
+        self.pose.dz_mm = self.pose.dz_mm.saturating_sub(tot_z / 60).max(0);
+        self.rem_z = tot_z % 60;
+
+        let net_pitch = self
+            .pitch_rate_mdeg_s
+            .saturating_sub(self.target_tumble_mdeg_s[0]);
+        let tot_pitch = net_pitch.saturating_add(self.rem_pitch);
+        self.pose.pitch_mdeg = self
+            .pose
+            .pitch_mdeg
+            .saturating_add(i64::from(tot_pitch / 60));
+        self.rem_pitch = tot_pitch % 60;
+
+        let net_yaw = self
+            .yaw_rate_mdeg_s
+            .saturating_sub(self.target_tumble_mdeg_s[1]);
+        let tot_yaw = net_yaw.saturating_add(self.rem_yaw);
+        self.pose.yaw_mdeg = self.pose.yaw_mdeg.saturating_add(i64::from(tot_yaw / 60));
+        self.rem_yaw = tot_yaw % 60;
+
+        let net_roll = self
+            .roll_rate_mdeg_s
+            .saturating_sub(self.target_tumble_mdeg_s[2]);
+        let tot_roll = net_roll.saturating_add(self.rem_roll);
+        self.pose.roll_mdeg = self.pose.roll_mdeg.saturating_add(i64::from(tot_roll / 60));
+        self.rem_roll = tot_roll % 60;
+
+        self.frames_stepped = self.frames_stepped.saturating_add(1);
+    }
+
+    /// Return whether all 5 clamp alignment gates (including `dz_mm <= 500`) are satisfied.
+    #[must_use]
+    pub const fn clamped(&self) -> bool {
+        self.pose.dz_mm <= 500
+            && self.pose.ready_to_clamp()
+            && self.pose.vx_mmps.abs() <= 300
+            && self.pose.vy_mmps.abs() <= 300
+            && self.pitch_rate_mdeg_s.abs() <= 500
+            && self.yaw_rate_mdeg_s.abs() <= 500
+            && self.roll_rate_mdeg_s.abs() <= 500
+    }
+
+    /// Encode the recorded 60 Hz input spans into the RLE wire string (`"<hex_mask>*<frames>,..."`).
+    #[must_use]
+    pub fn encode_rle(&self) -> String {
+        self.spans
+            .iter()
+            .map(|(mask, count)| format!("{mask:04x}*{count}"))
+            .collect::<Vec<_>>()
+            .join(",")
+    }
+
+    /// Format the server verification command (`"+helm/dock tape <session_id> <rle_tape>"`).
+    #[must_use]
+    pub fn format_tape_command(&self) -> String {
+        format!("+helm/dock tape {} {}", self.session_id, self.encode_rle())
     }
 }
 

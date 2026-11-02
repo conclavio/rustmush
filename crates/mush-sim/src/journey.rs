@@ -1544,6 +1544,50 @@ pub fn recouple_carrier_journey(
     Ok(id)
 }
 
+/// **Doc 35 cut SF.R7 (`D-35-14`)** — merge a verified client docking tape outcome
+/// into [`JourneyState::Arrived`] and place the carrier root at `destination`
+/// (`Berth::Docked { map, def }`).
+///
+/// If the carrier has an active [`CarrierJourney`], updates its destination to
+/// `destination` and commits the arrival via `apply_arrival` (firing
+/// [`CarrierHooks::arrived`] and raising onboard scene IC floors). If the carrier
+/// is in free flight without a `CarrierJourney` record, moves the carrier subtree
+/// directly to `destination` and refreshes the crew's links.
+///
+/// # Errors
+///
+/// Returns an error string if the carrier subtree cannot be placed at `destination`.
+pub fn dock_carrier_at_destination(
+    ctx: &mut Ctx<'_>,
+    root: ObjId,
+    destination: SpatialParent,
+    now: &ClockStamp,
+) -> Result<(), String> {
+    if let Some(mut journey) = ctx
+        .w
+        .module_state::<JourneyBook>()
+        .and_then(|b| b.get(root).cloned())
+    {
+        journey.destination = destination;
+        journey.cursor = u32::try_from(journey.route.legs().len()).unwrap_or(journey.cursor);
+        let _ = apply_arrival(ctx, journey, now, Source::Tick);
+        let arrived_ok = ctx
+            .w
+            .module_state::<JourneyBook>()
+            .and_then(|b| b.get(root))
+            .is_some_and(|j| j.state == JourneyState::Arrived);
+        if !arrived_ok {
+            return Err("the carrier could not be placed at its docking berth".to_string());
+        }
+        return Ok(());
+    }
+    crate::transition::move_carrier_subtree(ctx, root, Some(destination))
+        .map_err(|e| format!("the carrier could not be placed at its docking berth ({e})"))?;
+    refresh_carrier_links(ctx, root);
+    raise_onboard_scene_floors(ctx, root, now.at);
+    Ok(())
+}
+
 /// Latch a stopped journey's root into the recovery room (E7 cut 6 fold, D1),
 /// and re-derive the crew's links against the settled truth (C5).
 fn hold_stopped_root(ctx: &mut Ctx<'_>, root: ObjId) -> Step {

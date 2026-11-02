@@ -965,6 +965,78 @@ pub fn record_relay_discovery(
     Ok(front.id)
 }
 
+/// Canonical campaign front title for Kirkwood customs picket contraband fines,
+/// seizures, and picket-running incidents (`D-35-11`, `SF.R6`).
+pub const CUSTOMS_ASSERTION_TITLE: &str = "Customs Assertion";
+
+/// Open or advance the [`CUSTOMS_ASSERTION_TITLE`] campaign front on `operator`'s
+/// faction board when the Kirkwood Customs Picket assesses a contraband fine or
+/// records a vessel running the picket (`D-35-11`, `SF.R6`).
+///
+/// # Errors
+///
+/// Returns an error string if the faction/front state or canon publication is unavailable.
+pub fn record_customs_assertion(
+    ctx: &mut Ctx<'_>,
+    operator: mush_org::OrgId,
+    mut draft: mush_canon::CanonDraft,
+) -> Result<FrontId, String> {
+    let faction = ctx
+        .w
+        .module_state::<FactionState>()
+        .and_then(|s| s.factions.values().find(|f| f.org == Some(operator)))
+        .map(|f| f.id);
+    let front = ctx
+        .w
+        .module_state::<SimState>()
+        .and_then(|s| {
+            s.fronts
+                .values()
+                .find(|f| Some(f.faction) == faction && f.title == CUSTOMS_ASSERTION_TITLE)
+        })
+        .cloned();
+    let Some(front) = front else {
+        return publish_front_clock(
+            ctx,
+            operator,
+            CUSTOMS_ASSERTION_TITLE,
+            "Unlicensed strategic ore & picket incidents",
+            6,
+            1,
+            None,
+            "Republic Customs tightens Kirkwood picket inspections and seizes unlicensed strategic ore shipments.",
+            draft,
+        );
+    };
+    let mut clock = ctx
+        .w
+        .module_state::<SimState>()
+        .and_then(|s| s.clocks.values().find(|c| c.front == front.id))
+        .cloned()
+        .ok_or("Customs Assertion clock missing")?;
+    let completed = clock.advance(1);
+    if completed {
+        draft.summary.push_str(&format!(" {}", clock.consequence));
+    }
+    if mush_canon::commit(ctx, draft).is_none() {
+        return Err("Customs Assertion canon unavailable".into());
+    }
+    if let Some(s) = ctx.w.module_state_mut::<SimState>() {
+        s.clocks.insert(clock.id, clock.clone());
+    }
+    sim::persist_clock(ctx.out, &clock);
+    if completed {
+        let mut resolved = front.clone();
+        resolved.resolved = true;
+        if let Some(s) = ctx.w.module_state_mut::<SimState>() {
+            s.fronts.insert(resolved.id, resolved.clone());
+        }
+        sim::persist_front(ctx.out, &resolved);
+    }
+    ctx.out.pin_deferred();
+    Ok(front.id)
+}
+
 /// R9b's dormant authored clock. Treasury, consent and refit producers own their
 /// durable receipts; only this module writes the corresponding front clock.
 pub fn seed_mobile_relay_front(
