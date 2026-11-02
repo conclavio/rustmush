@@ -1,6 +1,6 @@
 # 34 — TacSim Content Studio & LLM Co-Authoring
 
-*Draft 0.2, 2026-10-30 — owner questions `Q-34-1..4` all ruled (`D-34-1..4`); review pass against `f659d907` folded (`D-34-5..9`); cuts `CS.0a`–`CS.4`.*
+*Draft 0.2, 2026-10-30 — owner questions `Q-34-1..4` all ruled (`D-34-1..4`); review pass against `f659d907` folded (`D-34-5..9`); cuts `CS.0a`–`CS.4`. As built: CS.0a–CS.5e (PRs #223–#239: CS.5a LLM assist, 5b structured corridor builders, 5c split-boundary and restart tests, 5d station room details, 5e hot reload).*
 
 ## 1. Goal & Scope
 

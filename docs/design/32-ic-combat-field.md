@@ -549,7 +549,8 @@ row); Q-CF-19 was the one default marked expensive to reverse, and the owner rev
 **Q-CF-45 — The first field budget.**
 - **Decision (accepted default):** 24 units a field (two full rosters, a raider party of six, six
   bystanders), one task per site, the M7 memory gate extended with one full-field fixture, and a
-  measured run at 24 before the cap is raised toward the 100-unit target. Ground salvage does not
+  measured run at 24 before the cap is raised toward the 100-unit target. (Doc 36 cut GC.12 raised it to
+  100, `FIELD_MAX_UNITS`, after measuring.) Ground salvage does not
   count against it (Q-CF-26).
 - **Alternative:** 12, the two-roster minimum.
 - **Why:** the escort flow needs three parties on one site from the first acceptance; 12 cannot
@@ -745,6 +746,78 @@ When CF.7 passes, doc 27b is revised to sit on the engine: its seven steps stand
 content work has already landed as CF.6's content, and its FC.2 through FC.5 become the field
 story's slices. Doc 27 §5 gains one row for the field engine and marks W-clock built.
 
+## 6a. CF.0 and CF.1 as built
+
+Both merged 2026-10-30, the two halves of the engine that touch disjoint code (§6): CF.0 as PR #207
+(merge `f6cfee4c`), CF.1 as PR #202 (feature commit `02b7471f`, merge `2892c0e2`). Neither PR touched
+this document; the notes below are written from their bodies and checked against the tree.
+
+**CF.0, parties in the kernel** (Q-CF-1/3/5/6/7/11/12/46/51). The closed `Team { Red, Blue }` is gone.
+
+- `PartyId` (`crates/tacsim/src/arena/party.rs`) is a party's letter, one byte of a 23-letter alphabet (A–Z
+  less I, O and X; `PARTY_LETTERS`). `PartyId::nth(n)` gives letters in admission order for the IC host. The
+  OOC names `RED`/`BLUE` (`R`/`B`), `OOC` and `ooc_other()` live in the match wrapper (`match_/parties.rs`),
+  never in the kernel. Wire words stay `red`/`blue` for R/B; other parties use the lowercase letter.
+- **Relations** are one book per party (`Arena.relations`). Precedence: the leader's explicit mark, then
+  fire-derived hostility, then the host's roster/organization friendship, then Neutral; an unclassified
+  contact reads Unknown. `Arena::mark_party(by, of, Option<Mark>)` is private kernel state (no ledger line,
+  only `by`'s book changes); a Friendly mark cancels the hostility friendly fire produced, and clearing the
+  mark leaves the fire's belief underneath. Fire is noted at impact, hit or miss, into the victim's book and
+  its friends' books. The kernel never refuses a shot by relation. Every `team != mine` became a relation read.
+- **Host-supplied field rules**: `CustodyOut.host: FieldHost` carries the opening marks and friendships and
+  `EndCondition::{Elimination, Host}`; elimination and Spent settle only under `Elimination`. The OOC range
+  passes `FieldHost::all_hostile()`.
+- **Designators** (Q-CF-11): `Designator::Unit { party, letter }`, the unit letter drawn per unit per field
+  from the seed, party and unit id. A party over 23 units (only the 300-hull scale harnesses) gets a drawn
+  pair, `Designator::Wide`; past 552 it is refused. The PR asked the owner whether to refuse at 23 instead.
+- **The picture** (Q-CF-12): body colour follows the viewer's relation (supersedes D-22-3's team colour); the
+  party letter sits beside the health gauge in the pixel HUD, the overhead and the iso badge.
+- **Window side** (Q-CF-51): `definitions::arena::DEFAULT_WINDOW_SIDE` (256) is the default, bound by
+  `MAX_ARENA_SIDE` (512); `match_::ARENA_CELLS` aliases the default; `SITE_CELLS` was left for CF.2.
+- **One rebless**: snapshot format 19, state hash item 13 (books and end condition), `REPLAY_ENGINE` →
+  `tacsim-engine-cf0-v1`, mind API 7 (`View.team` gone, `Contact.relation` new), `FRAME_VERSION` 9 (`team` →
+  `party`). Every D-UM-28 row kept its end millisecond: the OOC fights are the same fights.
+- **Gate** (Q-CF-46): `tacsim/tests/shard_4/parties.rs`: a three-party OOC practice (R, B, G) resolves by
+  elimination; private marks, fire-derived belief and a Friendly mark cancelling it; a third party nobody
+  marked is never fired on; the end is the host's under `EndCondition::Host`; a 512 window.
+- **Deferred to CF.2 and later**: the IC host (admission, letters in order, the mark verbs, `Host` demotion,
+  friendships); entry zones stay on `ArenaDefinition` for the OOC layer; the house and field_pilot minds still
+  read `!friendly` as hostile (API 7 gives them `c.relation`; adoption is S.4b's, Q-CF-43); the lobby stays
+  two-team. Parties now sort by letter, so `B` precedes `R` in `BTreeMap` walks.
+
+**CF.1, the site record and the presence picture** (Q-CF-15/21/24/25/27/28/30).
+
+- **The site record**: a typed, Redis-authoritative family `tacsim.field` (`SITE_RECORD_FAMILY`), one record
+  per site keyed by its port entry (`crates/tacsim/src/surface/site_record.rs`), restored through the
+  typed-state lane. `SiteRecord { schema: 1, site, ordinal, promoted, demoted_ic, units, objects,
+  next_object }`; `LeftUnit` indexes a unit (condition Casualty or Wreck, its epoch) and leaves `unit:<obj>`
+  under tactics custody; `GroundObject` is Remains or Cargo with a footprint of 1..=8 cells. Bounds: 64 objects
+  (past it the two oldest remains merge at their mass-weighted centroid; cargo and units are never dropped),
+  128 indexed units, 8 goods a crate, 64 KiB a record; strict serde, `check()` on every write.
+- **The staff fixture**: `@tacsim/site <site>` reads the record; `leave|drop|take|remove|promote|demote …`
+  edit it. The promoted flag was set only here until CF.2.
+- **Surface acts refused while promoted** (Q-CF-30), naming the field: the `+tv` act/drive/mine/unload command
+  gate, the start's prepare (it reads `tacsim.field` in its own transaction), and the surface tick, which holds
+  queued unloads, plan steps and the idle return. CF.1 refuses *starts* only: an act in flight when a site is
+  flagged still finishes, so CF.2 settles those before setting the flag.
+- **The presence picture** (Q-CF-15): `crates/tacsim/src/surface/presence.rs`. The surface tick publishes a
+  `PresenceBook` (RAM) every fire; `+tv/map` shows each other flight as an octant bearing and a range band from
+  the viewer's nearest rig, with its hull class within sight, and no identity, party or `ContactId`. The map
+  also names an open field and lists the record's units and objects within sight of the viewer's own rigs, never
+  the whole record (Q-CF-28). The new frame keys are omitted when empty, so older frames are byte-identical.
+- **The per-site flight cap** became the field cap (Q-CF-21): `MAX_EXCURSIONS_PER_SITE` =
+  `FIELD_MAX_UNITS`, 24 here (was 32), 100 since doc 36 cut GC.12.
+- **Deferred**: `[tacsim.field].max_units` as config (a constant here; CF.2 added the section, §7); recovery as
+  exit; a per-party *known* salvage layer (CF.4's one picture); the SM.4b map still draws other rigs as `o` at
+  their exact cell, which is more than the presence picture; the NPC field executor's refused surface acts do
+  not yet know why.
+- **Gate** (`tacsim/tests/shard_1/site_record.rs`): a staff fixture leaves a wreck and a crate at Ahuna Flank;
+  `+tv/map` shows them to the viewer in sight and not to the other, and both see the other's rig as a band;
+  a restart leaves the record, the staff view and both prints unchanged; a drive queued before the flag is
+  refused at the prepare; drive, recover, scan, launch and mine refuse at the command; demotion returns the
+  ground unchanged and the drive starts. The blessed `site_map_other.json` and `site_events.json` were
+  re-blessed (additive).
+
 ## 7. CF.2 as built (the field host)
 
 Built 2026-10-30 on `main` at `a22770e4`; the module is `crates/tacsim/src/field/`. What the cut
@@ -780,11 +853,11 @@ had to decide where the rulings left it open, for the owner to object to:
 - **After a restart** each pilot takes the cockpit back with `+focus <unit>/<station>`, as the
   resume line says: focus never survives a boot (mush-sim D-E7-34).
 - **The site cap** is `[tacsim.field].max_units` at the launch command; the start's prepare and
-  the fill plan keep the record's ceiling (24) as their backstop.
+  the fill plan keep the record's ceiling (24; 100 since doc 36 cut GC.12, `FIELD_MAX_UNITS`) as their backstop.
 
 Not built in CF.2, each for a reason stated in its PR: **recovery as exit** (Q-CF-18: the kernel
 has no way for a unit to leave a running arena, and the surface recover is itself refused while
-the site is promoted; built by CF.5, §8); the site record's **objects as sensor contacts** and cover beyond their
+the site is promoted; built by CF.5, §10); the site record's **objects as sensor contacts** and cover beyond their
 cells (they are impassable cells, Q-CF-26); **remains and crates dropped at demotion** (an
 irrecoverable hull's remains wait for the epoch close-destroyed rule, 27a H3, and a hopper's
 crate for the inventory transfer that empties it); a hull under **dedicated IC custody** (a
@@ -1152,10 +1225,10 @@ the owner to object to:
   still land on their old pins. Gate A's twin lanes hold T1 ≡ T2 with no divergence and under its
   1,200-op STOP, and the whole-match hashes agree between the runners over the pool. The
   reblessed pins: `STANDARD_SHA256` and its two test twins, the nine default seal digests
-  (`match_::seal`), the production encoding pins (`tests/minds.rs`), the (j) field's first and
-  last substep hashes and its 50 lines (`tests/reflex.rs`), the shipped duel's hash and its 34
-  lines (`tests/motor.rs`), and the four cross-platform rows (`tests/minds_rhai.rs`), each with
-  its reason beside it. `tests/twin.rs` counts five `line_to` sites in the script, where it
+  (`match_::seal`), the production encoding pins (`tests/shard_2/minds.rs`), the (j) field's first and
+  last substep hashes and its 50 lines (`tests/shard_2/reflex.rs`), the shipped duel's hash and its 34
+  lines (`tests/shard_3/motor.rs`), and the four cross-platform rows (`tests/shard_2/minds_rhai.rs`), each with
+  its reason beside it. `tests/shard_2/twin.rs` counts five `line_to` sites in the script, where it
   counted three.
 - **Where an NPC goes home** (G-3; Q-CF-18). A field has no entry zones (Q-CF-17), so the
   doctrine's `Withdraw` had no goal and held where it stood. The kernel's ground gains **homes**
@@ -1841,7 +1914,7 @@ site_map's `PAD_CELL` retire from every reader (the berth's ramp, the landing fa
 pad poses, the heard lines' listener, the site map's reference and ground rows, the picture's
 `H` and heard origin) and remain only as the fallback for a site whose pad room is not on the
 world. Every shipped site's room gives `(128 000, 128 000)` exactly
-(`s1_every_site_pad_comes_from_its_pad_room`). `content/field/raiders.json` is schema 3: the
+(`s1_every_site_pad_comes_from_its_pad_room`). `content/field/raiders.json` was schema 3 here (schema 4 since doc 36 cut GC.11): the
 carrier's and its ramp's cells are offsets from the pad, `(28, −2)` and `(31, −2)`, which land
 on Ahuna Flank at the `(156, 126)` and `(159, 126)` they were.
 
@@ -1880,7 +1953,7 @@ boot, so every object made after it takes another id; the arena seeds its draws 
 who locks and fires first moves. Ahuna Flank's field opened identically (every pose, party, pilot
 and station), but the raider's condition slot, not its mind, fired first and its coaxial killed
 the prospector-hull bystander in one ledger chunk, before step 5 looked. The story now tolerates
-it (§17's G-6 story, `cf7_the_field_story`): the bystander's hull is CF.6c's armoured escort
+it (§17's G-6 story, now `gc0_the_raiders_barge_lifts_and_the_field_demotes_without_a_friendly_mark`): the bystander's hull is CF.6c's armoured escort
 design with its sensors and its magazines seeded empty, so it outlives the raider's fire however
 it comes and still never fires; step 5 accepts any raider's shot; and naming a party in a
 demoted field fails with its reason rather than a bare panic.
@@ -1904,7 +1977,7 @@ Built 2026-11-01 on `main` after S.1 (§19). This is Q-CF-51's second run, the C
 side, plus the measurements that ruling 7 left for it. Doc 30's WG.6 had already landed, so the
 field map is drawn through its window.
 
-**One script, two grounds.** `cf7_the_field_story` (doc 36 GC.0's gate since, renamed) and `s2_the_field_story_at_512`
+**One script, two grounds.** `gc0_the_raiders_barge_lifts_and_the_field_demotes_without_a_friendly_mark` (`cf7_the_field_story` until doc 36 cut GC.0 renamed it) and `s2_the_field_story_at_512`
 (`tacsim/tests/shard_1/field_story.rs`) are the same story, `field_story`, run over a `Ground`. A
 `Ground` holds the site, its raider and where the story stands everyone. Every other number in
 the story belongs to the site (its pad, its ramp, its record) or to the field. Ahuna Flank's ground
