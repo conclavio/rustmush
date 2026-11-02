@@ -5,7 +5,7 @@
 //! - `Catalog` — live reference catalog of all 11 corridor ports, station/site
 //!   rooms with authored and live `atlas:detail:<kw>` keys, NPCs with code-bound
 //!   flags (`port/relationships.rs`, `lane/ceres_phobos.json` vendor signatories),
-//!   lore pools, 12 goods, registered interface providers and command refs, and
+//!   lore pools, 16 goods, registered interface providers and command refs, and
 //!   shipped/published pack summaries.
 //! - `Read` — loads the full JSON document for a requested pack id or standalone
 //!   table (`market/goods.json`, `resources.json`, `tools/*.json`).

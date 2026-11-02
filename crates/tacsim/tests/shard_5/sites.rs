@@ -1010,10 +1010,11 @@ fn sm2_the_lane_carries_six_sites() {
     // paper; no new entry). Doc 20 cut SM.12a: v14 (the two mill rows; no new entry). Doc 20
     // cut SM.12b: v15 (Occator Rim's yard; no new entry). Doc 32 cut CF.6c: v16 (Occator's
     // escort design; no new entry). Doc 32 cut S.1: v17 (Urvara Reach, the 512 site: its place,
-    // its port and its two routes, four entries; `s1_the_lane_carries_the_512_site`).
+    // its port and its two routes, four entries; `s1_the_lane_carries_the_512_site`). Doc 36 cut
+    // GC.7: v18 (the munitions rows and the two workshops; no new entry).
     assert_eq!(
-        LANE_VERSION, 17,
-        "lane v9 since doc 20 cut SM.2, v10 since SM.3a, v11 since SM.5, v12 since SM.10, v13 since relay R9b, v14 since doc 20 cut SM.12a, v15 since doc 20 cut SM.12b, v16 since doc 32 cut CF.6c, v17 since doc 32 cut S.1"
+        LANE_VERSION, 18,
+        "lane v9 since doc 20 cut SM.2, v10 since SM.3a, v11 since SM.5, v12 since SM.10, v13 since relay R9b, v14 since doc 20 cut SM.12a, v15 since doc 20 cut SM.12b, v16 since doc 32 cut CF.6c, v17 since doc 32 cut S.1, v18 since doc 36 cut GC.7"
     );
     assert_eq!(
         parse_pack(LANE_JSON).expect("parses").entries().len(),

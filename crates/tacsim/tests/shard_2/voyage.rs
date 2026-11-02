@@ -3024,3 +3024,195 @@ fn a8_the_plan_names_the_throttle_that_fits() {
     assert!(plan.contains("Plan for Stickney Yards"), "{plan}");
     assert!(throttle_lines(&plan).is_empty(), "{plan}");
 }
+
+// ---------------------------------------------------------------------------
+// Doc 36 cut GC.7: munitions and the tariff
+// ---------------------------------------------------------------------------
+
+/// A principal's own `tacsim.credit` posted balance, minor units.
+fn posted(tw: &TestWorld, who: ObjId) -> i64 {
+    let instrument = mush_economy::InstrumentId::new(tacsim::CREDIT).expect("credit");
+    economy(tw)
+        .snapshot()
+        .accounts_of(&mush_org::PrincipalId::Object(who))
+        .find(|a| a.instrument == instrument)
+        .map_or(0, |a| a.posted_balance.minor())
+}
+
+/// **Doc 36 cut GC.7's gate** (Q-36-31, Q-36-36, Q-36-53's rooms). A captain at Ceres buys a
+/// load of 105 mm HE (`ammo_he_105`, 40 rounds at the Co-op chandlery's 150 cr) and it lands
+/// in the chartered Dray's hold as ordinary cargo. Both ports' authored workshop rooms are open
+/// facilities of their operators holding `bay_refit` with their berths. A known repair — a
+/// line tank 50 points down on its hull, 40 on its left track and 10 rounds short in the cannon
+/// — quoted at Ceres's workshop is the shipped tariff at Occator's 1.2x: 90 points at 1.20 cr
+/// and 10 rounds at 0.30 cr is 111.00 cr, a tonne of `industrial_parts`, and 5,040 IC seconds
+/// (90 points at 36 s and one rearm of half an IC hour). At Stickney's 1x it is 92.50 cr.
+#[test]
+fn gc7_munitions_are_bought_and_carried_and_the_tariff_quotes_a_known_repair() {
+    let mut rig = stocked();
+    let (pilot, row) = chartered(&mut rig, "Pilot", 1);
+    let vault = hold_vault(&rig.tw, &row);
+    let account = economy(&rig.tw)
+        .snapshot()
+        .accounts_of(&mush_org::PrincipalId::Object(pilot))
+        .find(|a| a.instrument == mush_economy::InstrumentId::new(tacsim::CREDIT).expect("cr"))
+        .map(|a| a.id)
+        .expect("the pilot's account");
+    let treasury = port_map(&rig.tw, "ceres_port")
+        .treasury
+        .expect("a treasury");
+    let _ = run(
+        &mut rig.tw,
+        GOD,
+        &format!("@econ/mint {treasury}={account} 1000000"),
+    );
+    let before = posted(&rig.tw, pilot);
+
+    // (1) The munitions good is bought at a Ceres vendor and rides in the hold.
+    let he = market(&rig.tw)
+        .lot_listing_of(
+            EndpointRef(VaultId(
+                port_map(&rig.tw, "ceres_port").vendors[&cid("coop")].vault,
+            )),
+            &cid("ammo_he_105"),
+        )
+        .expect("the Co-op chandlery lists 105 mm HE");
+    let quoted = run(&mut rig.tw, pilot, &format!("+market/quote {he}=40"));
+    assert!(quoted.contains("Quote #"), "{quoted}");
+    let quote = market(&rig.tw)
+        .quotes_of_buyer(&mush_org::PrincipalId::Object(pilot))
+        .map(|q| q.id)
+        .max()
+        .expect("a quote");
+    let accepted = run(&mut rig.tw, pilot, &format!("+market/accept {quote}"));
+    let draw = drain(&mut rig.tw);
+    assert_eq!(draw.len(), 1, "{accepted}");
+    land_all(&mut rig, &draw);
+    for _ in 0..30 {
+        if market(&rig.tw)
+            .quote(quote)
+            .is_some_and(|q| q.drawn_at.is_some())
+        {
+            break;
+        }
+        let _ = fire_quietly(&mut rig);
+    }
+    assert_eq!(
+        pool(&mut rig.tw, vault, "ammo_he_105"),
+        40,
+        "a load in the hold"
+    );
+    assert_eq!(
+        before - posted(&rig.tw, pilot),
+        40 * 150 * 100,
+        "forty rounds at 150 cr"
+    );
+    let goods = tacsim::definitions::goods::goods_table().expect("the goods table");
+    let he_good = goods
+        .munitions_for("tacsim.ammunition.he_105")
+        .expect("105 mm HE is a good");
+    assert_eq!(he_good.id.as_str(), "ammo_he_105");
+    assert_eq!(he_good.mass_kg_per_unit(), Some(21));
+    assert!(
+        goods
+            .munitions_for("tacsim.ammunition.laser_charge")
+            .is_none(),
+        "beam charge stays a cell"
+    );
+
+    // (2) The authored workshop rooms are their operators' `bay_refit` facilities.
+    let industry = rig
+        .tw
+        .world()
+        .module_state::<mush_industry::IndustryStore>()
+        .expect("industry");
+    for (entry, operator, berths) in [
+        ("ceres_port", "occator", 2),
+        ("stickney_port", "stickney_yards", 4),
+    ] {
+        let def = port_def(entry);
+        let workshop = def.workshop.as_ref().expect("the port authors a workshop");
+        let room = room_by_key(
+            rig.tw.world(),
+            &room_key(&def.area, &workshop.room).expect("in the area"),
+        )
+        .expect("the workshop room is on the world");
+        let facility = industry.facility(room).expect("the room is a facility");
+        let org = port_map(&rig.tw, entry).orgs[&cid(operator)].org;
+        assert_eq!(
+            facility.owner(),
+            &mush_org::PrincipalId::Organization(mush_org::OrgId(org)),
+            "{entry}'s workshop is {operator}'s"
+        );
+        assert!(
+            facility
+                .capabilities()
+                .iter()
+                .any(|w| w.as_str() == mush_industry::bay_refit::BAY_CAPABILITY),
+            "{entry}'s workshop holds the bay capability"
+        );
+        assert_eq!(facility.maximum_slots(), berths, "{entry}'s berths");
+    }
+
+    // (3) A known repair, quoted from the tariff at each workshop's multiplier.
+    let catalog =
+        tacsim::definitions::Catalog::build_fielded(&[], "tacsim").expect("the stock catalog");
+    let key = cid("tacsim.unit.line_tank");
+    let spec = catalog.specs.get(&key).expect("the line tank's spec");
+    let fresh = mush_tactics::TacticalUnit::from_spec(
+        &catalog.bindings.get(&key).expect("its binding").spec,
+        ObjId(9_001),
+    )
+    .expect("a line tank");
+    let section = |id: &str, value: i64| mush_tactics::UnitMutationOp::SetCell {
+        addr: mush_tactics::CellAddr::Section {
+            section: mush_tactics::SectionId::new(id).expect("a section"),
+            cell: mush_tactics::CellId::new(tacsim::definitions::unit::INTERNALS_CELL)
+                .expect("internals"),
+        },
+        value,
+    };
+    let cannon = mush_tactics::ComponentId::new("cannon").expect("the cannon");
+    let plan = mush_tactics::UnitMutationPlan::new(
+        vec![
+            section("hull", 150),
+            section("left_track", 60),
+            mush_tactics::UnitMutationOp::SetCell {
+                addr: mush_tactics::CellAddr::Component {
+                    component: cannon.clone(),
+                    cell: mush_tactics::CellId::new(tacsim::definitions::unit::AMMO_CELL)
+                        .expect("ammo"),
+                },
+                value: 30,
+            },
+        ],
+        Some(fresh.revision()),
+        None,
+    )
+    .expect("a plan");
+    let (damaged, _) = mush_tactics::apply(&fresh, &plan, 100).expect("the damage applies");
+    let ceres = port_def("ceres_port");
+    let at_ceres = tacsim::port::workshop::quote(
+        ceres.workshop.as_ref().expect("Ceres's workshop"),
+        &damaged,
+        spec,
+    )
+    .expect("a quote at Ceres");
+    assert_eq!(at_ceres.structural_points, 90);
+    assert_eq!(at_ceres.industrial_parts_t, 1);
+    assert_eq!(at_ceres.components_to_rearm.get(&cannon), Some(&10));
+    assert_eq!(at_ceres.total_resource_cost, 11_100, "111.00 cr at 1.2x");
+    assert_eq!(at_ceres.total_work_duration_ic, 5_040);
+    let stickney = port_def("stickney_port");
+    let at_stickney = tacsim::port::workshop::quote(
+        stickney.workshop.as_ref().expect("Stickney's workshop"),
+        &damaged,
+        spec,
+    )
+    .expect("a quote at Stickney");
+    assert_eq!(at_stickney.total_resource_cost, 9_250, "92.50 cr at 1x");
+    assert_eq!(
+        at_stickney.total_work_duration_ic, 5_040,
+        "the multiplier never moves time"
+    );
+}

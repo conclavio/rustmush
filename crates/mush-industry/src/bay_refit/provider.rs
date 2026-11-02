@@ -39,7 +39,9 @@ struct OfferSelector {
     /// The lot the part comes from, when the refit fits one.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     part: Option<LotId>,
-    fee: i64,
+    /// The operator's multiplier on the workshop tariff, per mille (doc 36 Q-36-31): the
+    /// operator never names a fee, only how far it scales the tariff's.
+    multiplier_permille: u32,
 }
 #[derive(Serialize, Deserialize)]
 #[serde(deny_unknown_fields)]
@@ -247,6 +249,16 @@ impl Provider {
                 .map_err(|_| Error::Unavailable)?;
         let (remove, install) = config::moves(registry, unit, &target)?;
         let stores = *c.stores.get(&s.facility).ok_or(Error::Unavailable)?;
+        // Doc 36 Q-36-31: the fee is the tariff's replacement labour (a refit is one part out
+        // and one in) at the operator's multiplier, never a number the operator names.
+        let fee = c
+            .tariff
+            .with_multiplier_permille(s.multiplier_permille)
+            .map_err(|_| Error::Invalid)
+            .and_then(|t| i64::try_from(t.labor_cost_replace_component).map_err(bad))?;
+        if !(1..=c.payment.max_fee_minor).contains(&fee) {
+            return Err(Error::Invalid);
+        }
         // The part fitted is a one-unit lot of its commodity in the bay's
         // stores; the part taken out must be a stocked commodity too.
         if s.part.is_some() != install.is_some() {
@@ -292,7 +304,7 @@ impl Provider {
             recipe: BayRecipe {
                 work_units: c.work_units,
             },
-            fee_minor: s.fee,
+            fee_minor: fee,
             observed_ic: live.at.clone(),
             observed_utc: live.utc,
             expires_utc: live

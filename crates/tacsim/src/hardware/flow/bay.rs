@@ -4,12 +4,15 @@
 //! refit bay composes the bay through the shipped hardware composition, and
 //! a line tank there is refitted to its laser variant — the cannon out of
 //! the turret, a laser from the bay's stores in, the hull's heat pair added —
-//! over the bay's IC hours, for its quoted fee.
+//! over the bay's IC hours, for the fee the workshop tariff quotes (doc 36 cut GC.7: the
+//! operator names a multiplier, never a fee).
 use super::*;
 use mush_inventory::LotId;
 
 const PART: LotId = LotId(77);
-const FEE: i64 = 4_000;
+/// The shipped tariff's refit labour, four IC hours at 100 cr, at the schedule's own
+/// multiplier (`content/market/workshop_tariff.json`).
+const FEE: i64 = 40_000;
 
 /// Provisioning: a bay of the Basin organization's factory scope, its
 /// stores holding one laser, and a line tank in it.
@@ -125,7 +128,7 @@ async fn ud4b_a_shipped_line_tank_is_refitted_to_its_laser_in_a_bay() -> Result 
         "offer_bay_refit",
         agent,
         json!({"requester":buyer,"hull":hull,"facility":site.facility,
-            "target":"tacsim.unit.line_tank_laser","part":PART,"fee":FEE}),
+            "target":"tacsim.unit.line_tank_laser","part":PART,"multiplier_permille":1000}),
     )?;
     let (_, accepted) = r.perform_direct(
         "industry",

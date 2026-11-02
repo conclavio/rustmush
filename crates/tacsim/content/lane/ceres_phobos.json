@@ -1,9 +1,9 @@
 {
   "manifest": {
     "id": "tacsim.lane.ceres_phobos",
-    "version": 17,
+    "version": 18,
     "kind": "campaign_seed",
-    "digest": "b27a3c20471701e1b95c3f1840ab3401180c5d614840773d9269056667a0e452",
+    "digest": "4969afa44fe21918117a358bbab76fce4b64c9c692b17cdbca500a73c5b6d01d",
     "requires": []
   },
   "entries": {
@@ -2647,8 +2647,16 @@
             "mill":  [ { "ore": "ice_ore", "into": "volatiles", "ratio": { "ore": 5, "product": 2 }, "batch_t": 20, "per_ic_day_t": 40 } ] },
           { "org": "coop", "storefront": "neighborhood.ceres_freeport.item.chandlery_cage",
             "agent": "ceres_port.clerk", "signatory": "neighborhood.ceres_freeport.npc.akintola",
-            "stock": [ { "good": "provisions", "qty": 2600, "grade": 50, "issue": 1 } ],
-            "asks":  [ { "good": "provisions", "price_major": 10 } ],
+            "stock": [ { "good": "provisions", "qty": 2600, "grade": 50, "issue": 1 },
+                       { "good": "ammo_ap_30", "qty": 4800, "grade": 50, "issue": 1 },
+                       { "good": "ammo_ball_762", "qty": 400, "grade": 50, "issue": 1 },
+                       { "good": "ammo_he_105", "qty": 800, "grade": 50, "issue": 1 },
+                       { "good": "ammo_missile", "qty": 120, "grade": 50, "issue": 1 } ],
+            "asks":  [ { "good": "provisions", "price_major": 10 },
+                       { "good": "ammo_ap_30", "price_major": 12, "boards": ["chandlery"] },
+                       { "good": "ammo_ball_762", "price_major": 25, "boards": ["chandlery"] },
+                       { "good": "ammo_he_105", "price_major": 150, "boards": ["chandlery"] },
+                       { "good": "ammo_missile", "price_major": 1500, "boards": ["chandlery"] } ],
             "bids":  [ { "good": "industrial_parts", "price_major": 560, "intake": 5400, "boards": ["chandlery"] } ] }
         ],
         "routes": { "ahuna": [ "ceres_ahuna" ], "commons": [ "ceres_commons" ], "juling": [ "ceres_juling" ],
@@ -2666,7 +2674,9 @@
               "fee_major": 2500, "deposit_major": 15000, "term_ic_days": 168,
               "tools": [ "tacsim.tool.battery_mk1" ], "gate": "escort" } ] },
         "licence": { "org": "freeport_registry", "fee_major": 2500, "term_ic_days": 168, "grace_ic_days": 3,
-                     "claim_stake_major": 2000, "claim_term_major": 2000 }
+                     "claim_stake_major": 2000, "claim_term_major": 2000 },
+        "workshop": { "room": "neighborhood.ceres_freeport.room.c14_dockmaster", "operator": "occator",
+                      "capabilities": ["bay_refit"], "berths": 2, "multiplier_permille": 1200 }
       }
     },
     "stickney_port": {
@@ -2702,8 +2712,16 @@
                        { "good": "volatiles", "price_major": 200, "intake": 9600, "boards": ["receiving", "exchange"] } ] },
           { "org": "stickney_yards", "storefront": "neighborhood.stickney_yards.item.yard_spares",
             "agent": "stickney_port.clerk", "signatory": "neighborhood.stickney_yards.npc.castillo_haugen",
-            "stock": [ { "good": "industrial_parts", "qty": 5400, "grade": 50, "issue": 1 } ],
-            "asks":  [ { "good": "industrial_parts", "price_major": 400, "boards": ["exchange", "yard"] } ] },
+            "stock": [ { "good": "industrial_parts", "qty": 5400, "grade": 50, "issue": 1 },
+                       { "good": "ammo_ap_30", "qty": 4800, "grade": 50, "issue": 1 },
+                       { "good": "ammo_ball_762", "qty": 400, "grade": 50, "issue": 1 },
+                       { "good": "ammo_he_105", "qty": 800, "grade": 50, "issue": 1 },
+                       { "good": "ammo_missile", "qty": 120, "grade": 50, "issue": 1 } ],
+            "asks":  [ { "good": "industrial_parts", "price_major": 400, "boards": ["exchange", "yard"] },
+                       { "good": "ammo_ap_30", "price_major": 12, "boards": ["yard"] },
+                       { "good": "ammo_ball_762", "price_major": 25, "boards": ["yard"] },
+                       { "good": "ammo_he_105", "price_major": 150, "boards": ["yard"] },
+                       { "good": "ammo_missile", "price_major": 1500, "boards": ["yard"] } ] },
           { "org": "yard_commissary", "storefront": "neighborhood.stickney_yards.item.commissary_locker",
             "agent": "stickney_port.clerk", "signatory": "neighborhood.stickney_yards.npc.okonkwo",
             "stock": [ { "good": "provisions", "qty": 2600, "grade": 50, "issue": 1 } ],
@@ -2711,7 +2729,9 @@
         ],
         "routes": { "ceres": [ "stickney_ceres" ] },
         "premium": { "k_permille": 300, "cap_permille": 500 },
-        "emergency": { "org": "stickney_yards", "ratio_permille": 1500, "goods": ["provisions", "volatiles", "propellant"], "intake": 100 }
+        "emergency": { "org": "stickney_yards", "ratio_permille": 1500, "goods": ["provisions", "volatiles", "propellant"], "intake": 100 },
+        "workshop": { "room": "neighborhood.stickney_yards.room.p11_service", "operator": "stickney_yards",
+                      "capabilities": ["bay_refit"], "berths": 4, "multiplier_permille": 1000 }
       }
     },
     "luna_port": {
