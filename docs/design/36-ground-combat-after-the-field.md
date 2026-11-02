@@ -1,9 +1,11 @@
 # 36. Ground combat after the field — recovery, repair and the field's open edges
 
-Draft 0.1, 2026-11-02, docs only. Surveyed against `origin/main` at `d5ba6b2c`. This is a
-survey: it asks the owner questions, each with a proposed default and an alternative, in the
-form docs 27 §7 and 32 §4 used. It plans no cuts yet. §7 sketches an order, to be replaced once
-the rulings are in.
+Draft 0.2, 2026-11-02, docs only. Surveyed against `origin/main` at `d5ba6b2c`. Draft 0.1, the
+same day, was the survey: it asked the owner questions, each with a proposed default and an
+alternative, in the form docs 27 §7 and 32 §4 used. **Draft 0.2 records the owner's rulings of
+2026-11-02 on every question:** Q-36-8, Q-36-11, Q-36-14, Q-36-29 and Q-36-35 amended, every
+other default accepted as written. §4a lists what the amendments change elsewhere. It plans no
+cuts yet; §7 sketches an order.
 
 ## 1. Why this document exists
 
@@ -209,6 +211,12 @@ changes a default.
 
 ## 4. Owner survey
 
+**Ruled 2026-11-02.** The owner amended Q-36-8 (the carrier's tug), Q-36-11 (a leader may void
+friendly-fire standing changes), Q-36-14 (anyone may recover, with no separate recovery step),
+Q-36-29 (a written-off lease rig is Occator's alone) and Q-36-35 (minor repairs in a carrier bay
+at double time). Every other default is accepted as written. Each amended question carries its
+decision first, with the proposed text kept under it for the record.
+
 Each question has a proposed default, an alternative and a reason. "Provisional" marks a number
 to be tuned later. Questions marked **(expensive to reverse)** are ones whose answer shapes stored
 data or the kernel's hashes.
@@ -288,7 +296,11 @@ data or the kernel's hashes.
   **(expensive to reverse)**
 
 **Q-36-8 — F-3: the carrier's loss story.**
-- **Proposed default:** one consequence table, keyed on section state and shared with space.
+- **Decision (owner ruling, 2026-11-02):** the default, with one correction. Since a unit tows
+  up to twice its own tonnage (FO-13), a carrier wreck needs a tug of at least **half** its
+  tonnage, not twice. No such unit exists yet, so in practice a carrier wreck still cannot be
+  towed.
+- **Proposed default (as written):** one consequence table, keyed on section state and shared with space.
   - A destroyed drive refuses lift.
   - A destroyed hull wrecks the carrier. Its crew are stranded and use extraction (Q-CF-39), and
     the rigs in its bay become wrecks where it stands.
@@ -319,7 +331,10 @@ data or the kernel's hashes.
   already stored and needs no new authoring surface.
 
 **Q-36-11 — F-2: faction effects of hostility.**
-- **Proposed default:** at demotion, each shot a party observed being fired at it adjusts the
+- **Decision (owner ruling, 2026-11-02):** the default, plus a void. A detachment's leader may
+  void any standing change that fire by their own party caused, for friendly fire. The void is
+  offered at demotion, alongside the change it cancels, and is recorded with it.
+- **Proposed default (as written):** at demotion, each shot a party observed being fired at it adjusts the
   victim's faction standing of the shooter's principals by a bounded amount. A mark alone never
   does.
 - **Alternative:** staff-only adjustments, read from the black box.
@@ -344,7 +359,13 @@ data or the kernel's hashes.
 - **Why:** doc 27 Q-S5 rules separate timed stages. The knobs let a test compress them.
 
 **Q-36-14 — Who may recover.**
-- **Proposed default:** any DT unit on a `Recovery`-duty activation, or a rig its owner drives
+- **Decision (owner ruling, 2026-11-02):** anybody, on any duty. On an ordinary operation, when a
+  unit is disabled, someone drags it home as part of that operation; there is no separate second
+  recovery sortie. Any mobile unit within the 2× tonnage cap may attach, tow and load, whatever
+  its crew's duty. `surface.rs:55` stops refusing the recovery duty, and the tow, attach and load
+  acts are open to mining and combat duties too. The recovery duty keeps its one effect (a
+  Friend's recovery flight defers an extraction, CF.5) and its hire-terms meaning.
+- **Proposed default (as written):** any DT unit on a `Recovery`-duty activation, or a rig its owner drives
   (the prospector included, within the 2× tonnage cap). `surface.rs:55` stops refusing the
   recovery duty for drive, attach and load. Recovery duty cannot mine or fire.
 - **Alternative:** any operator on any duty.
@@ -456,7 +477,12 @@ data or the kernel's hashes.
 - **Why:** two black boxes will disagree. The durable one is the one that survives a restart.
 
 **Q-36-29 — A written-off lease rig.**
-- **Proposed default:** Occator holds title. A third party may still salvage it under Q-R1 and
+- **Decision (owner ruling, 2026-11-02):** the alternative. A written-off lease rig is Occator's
+  alone and cannot be claimed by anyone else. Lease units are a special case of FO-1 and Q-R1:
+  otherwise players could cooperate to destroy leased rigs and claim them. Anyone may still tow
+  one physically (Q-36-14), for example to clear a ramp, but it gains no claim, and loading it
+  into a bay returns it to Occator, not to the carrier's operator.
+- **Proposed default (as written):** Occator holds title. A third party may still salvage it under Q-R1 and
   claim it. Occator may contest like any title holder, and sends no recovery of its own in this
   phase.
 - **Alternative:** a written-off rig is Occator's alone and cannot be claimed.
@@ -506,7 +532,12 @@ data or the kernel's hashes.
 - **Why:** a free return makes the lease a free repair, and the next lessee gets a broken rig.
 
 **Q-36-35 — Field repair and which facilities count.**
-- **Proposed default:** keep doc 27a §10's boundary. In the field, a tender may unjam, stabilize
+- **Decision (owner ruling, 2026-11-02):** a carrier's bay counts for **minor** repairs at double
+  the workshop's time: replacing armor, and repairing a damaged section or component that is not
+  destroyed. A destroyed component or section, or any significant repair (reconstruction, part
+  replacement, refit), needs a dedicated facility. The field-engineering boundary of doc 27a §10
+  stays as it is for units out on the ground.
+- **Proposed default (as written):** keep doc 27a §10's boundary. In the field, a tender may unjam, stabilize
   and rearm. Destroyed parts need a facility, meaning a port workshop: Stickney Yard and the
   Ceres ports' workshops, authored as rooms with the bay capability. A carrier's bay is not a
   facility in this phase.
@@ -646,6 +677,31 @@ data or the kernel's hashes.
 - **Alternative:** rewrite 27a.
 - **Why:** 27a is a catalogue of a library, and half of that library is now gone.
 
+## 4a. Consequences of the amended rulings
+
+- **Q-36-14 changes the recovery story.** The recovery run in §6 becomes part of an ordinary
+  operation: the escort's own party drags its casualty to the ramp and loads it before leaving,
+  under fire or after. A return visit to a site to recover what was left behind is the
+  second-visit variant, not the main path. Q-36-16 (loading into a foreign bay) and the
+  contested salvage (§6 b) are unchanged, because they turn on who holds the casualty, not on
+  duty.
+- **Q-36-14 and Q-36-20 together:** a tow in progress when a site promotes is admitted coupled.
+  An ordinary escort can therefore drag its wingman to the ramp during the fight.
+- **Q-36-29 also settles Q-36-22's write-off.** A leased rig left disabled for 28 IC days is
+  written off on the wreck's terms, which now means Occator's alone. A lessee who recovers their
+  own disabled lease rig to a bay before then can return it (Q-36-22) and pays the damage charge
+  (Q-36-34).
+- **Q-36-29 and the claim contract (Q-36-24).** Filing a claim on a hull whose title is
+  Occator's write-off is refused at filing. This is a lease rule, not a title rule: other
+  companies' titles are claimable as Q-R1 says.
+- **Q-36-35 splits the repair actions (Q-36-40) by facility class.** The quote names the class
+  each action needs: a carrier bay or a workshop for armor and damaged parts, a workshop alone
+  for destroyed parts, reconstruction and refit. A carrier bay's quote doubles the time, not the
+  cost.
+- **Q-36-11's void needs a record.** The standing change and its void are written together at
+  demotion. The default's bounded amount is provisional, and so is the window to void: until
+  the leader's next command after demotion, or a provisional 10 IC minutes.
+
 ## 5. Out of scope for this survey
 
 - **The 10 km ground** (doc 16 D-16-5); its own programme.
@@ -661,9 +717,10 @@ data or the kernel's hashes.
 The three stories of Q-36-3, in the form doc 32 used: production command paths through tacsim's
 world harness, then the bot over SSH for the parts a player types.
 
-- **(a) The recovery run.** After a field like doc 32's, the escort's casualty lies at Ahuna
-  Flank. Its captain hires a recovery crew, sails back, scans and finds it, drives a recovery
-  rig to it, attaches, tows it (at the 2× tow rate) to the carrier's ramp and loads it.
+- **(a) The recovery run** (as amended by Q-36-14). During and after a field like doc 32's, the
+  escort's wingman drags the disabled escort to the carrier's ramp at the tow rate and loads it
+  before the carrier lifts. A second variant: a casualty left behind is found on a later visit
+  by a scan, attached, towed and loaded by any unit of the returning party.
   - A restart while attached keeps the attachment.
   - A restart while loading keeps the load.
   - The hull comes home with every section as it was. The site record no longer lists it.
@@ -686,12 +743,13 @@ Every name here is provisional.
 1. **The field's edges** (§4 B, small cuts, parallel to H2): the barge lift, the time-bounded
    field, arrival, close-destroyed with remains, and the stale-index fix. Then wreck cover and
    the carrier loss table, each with its rebless.
-2. **H2 physical recovery** (§4 D): the tow act, the stages, recovery duty, bay mass and envelope,
-   loading a foreign hull, scanning for salvage. Story (a).
+2. **H2 physical recovery** (§4 D): the tow act open to every duty, the stages, bay mass and
+   envelope, loading a foreign hull, the lease write-off rule, scanning for salvage. Story (a).
 3. **H2 entitlement** (§4 E): the claim contract, the registry and notice, the evidence path,
    adjudication. Story (b). Space moves onto it afterwards (Q-36-46).
 4. **H3 restoration** (§4 F): `Missing` and component outcomes, munitions goods, the tariff
-   quote, the repair action, UD.4c's `+bay` player surface, the lease's damage charge. Story (c).
+   quote, the repair actions split by facility class (minor in a carrier bay at 2× time), UD.4c's
+   `+bay` player surface, the lease's damage charge. Story (c).
    Its content and the tariff can start alongside step 2.
 5. **Opposition** (§4 G): the raid director, once arrival and the barge lift exist.
 6. **The cap** (Q-36-9): measured at 48 and 100 units, in parallel with any of the above.
