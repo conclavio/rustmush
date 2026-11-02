@@ -1106,10 +1106,17 @@ left something open, this is what the cut decided, for the owner to object to:
     demotion's rule is factored out of `close::demote_units` (`close::condition_now`) and read
     off the last snapshot the host holds. A hull still fighting therefore holds its barge on the
     ground. An immobile or unarmed hull counts as a casualty, as it does on the site record.
-  - *When it is checked* (`raiders::lift_check`): after each hull boards, and at each of the
-    field's snapshots (every `[tacsim.arena].snapshot_ms`, 5 s by default). A field holding no
-    raider's carrier decodes nothing. A field holding one decodes its snapshot at that cadence
-    while the carrier stands.
+  - *When it is checked* (`raiders::lift_check`): after each hull boards, and at the field's
+    snapshots, paced to once each `raiders::LIFT_CHECK_MS` (10 s of arena time, a provisional
+    default; `raiders::lift_check_paced`). A field holding no raider's carrier decodes nothing.
+    A field holding one decodes its snapshot at that pace while the carrier stands.
+  - *Why it is paced* (the fix after GC.0 merged). As first built, the check ran at every
+    snapshot. The decode costs about 300 ms of the world task at 512 a side on conclav.dev, and
+    the harness snapshots every 500 ms, so the world task spent most of the fight decoding.
+    `s2_the_field_story_at_512` went red on main's hosted CI: its world fell behind its field,
+    the escort was hit past mission-kill before the story's stand-down landed, and the field
+    ended before the walker's head fell. Pinned to three cores on conclav.dev, main failed it
+    three times in four, at both of CI's assert points; the paced check passed four in four.
   - *Not lifted:* a carrier that launched no hull into this field (none admitted, none named on
     the open promotion's exits), and a carrier that is itself a wreck. What a damaged drive does
     to lift is still F-3's (Q-36-8, GC.3).
