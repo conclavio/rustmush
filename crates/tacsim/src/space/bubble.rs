@@ -750,8 +750,6 @@ pub struct LocalSpaceBubble {
     /// Whether the bubble is frozen due to a W-clock outage (`Q-CF-33`).
     pub outage_frozen: bool,
     pub ships: BTreeMap<String, SpaceShipState>,
-    #[serde(default, with = "vec_tuple_map")]
-    pub relations: BTreeMap<(SpacePartyId, SpacePartyId), SpaceRelation>,
     /// Canonical kernel party relation books (`D-35-1`, `D-35-11`, `Q-CF-5`–`Q-CF-8`).
     #[serde(default)]
     pub party_relations: crate::arena::party::Relations,
@@ -777,7 +775,6 @@ impl LocalSpaceBubble {
             ic_timestamp_s,
             outage_frozen: false,
             ships: BTreeMap::new(),
-            relations: BTreeMap::new(),
             party_relations: crate::arena::party::Relations::new(),
             torpedoes: Vec::new(),
             railgun_slugs: Vec::new(),
@@ -798,8 +795,6 @@ impl LocalSpaceBubble {
         party_b: SpacePartyId,
         relation: SpaceRelation,
     ) {
-        self.relations.insert((party_a, party_b), relation);
-        self.relations.insert((party_b, party_a), relation);
         let pa = party_a.to_party_id();
         let pb = party_b.to_party_id();
         self.party_relations.admit(pa);
@@ -810,7 +805,6 @@ impl LocalSpaceBubble {
                     .mark(pa, pb, Some(crate::arena::party::Mark::Friendly));
                 self.party_relations
                     .mark(pb, pa, Some(crate::arena::party::Mark::Friendly));
-                self.party_relations.befriend(pa, pb);
             }
             SpaceRelation::Hostile => {
                 self.party_relations
@@ -830,9 +824,6 @@ impl LocalSpaceBubble {
     pub fn party_relation(&self, party_a: SpacePartyId, party_b: SpacePartyId) -> SpaceRelation {
         if party_a == party_b {
             return SpaceRelation::Friendly;
-        }
-        if let Some(&rel) = self.relations.get(&(party_a, party_b)) {
-            return rel;
         }
         match self
             .party_relations
@@ -1560,16 +1551,22 @@ impl LocalSpaceBubble {
             torp.tti_s = (new_dist_m / closing_mps).max(0);
 
             // Check automatic defensive laser & PDC interception across target and escorting ships
+            let shooter_party = self.ships.get(&torp.shooter_id).map(|s| s.party);
             let defender_ids: Vec<String> = self
                 .ships
                 .values()
                 .filter(|s| {
-                    s.id != torp.shooter_id
-                        && s.status == HullStatus::Operational
-                        && matches!(
-                            self.party_relation(s.party, target_party),
-                            SpaceRelation::Friendly | SpaceRelation::Inspecting
-                        )
+                    if s.id == torp.shooter_id || s.status != HullStatus::Operational {
+                        return false;
+                    }
+                    let rel_to_target = self.party_relation(s.party, target_party);
+                    matches!(
+                        rel_to_target,
+                        SpaceRelation::Friendly | SpaceRelation::Inspecting
+                    ) || (rel_to_target == SpaceRelation::Neutral
+                        && shooter_party.is_some_and(|sp| {
+                            self.party_relation(s.party, sp) == SpaceRelation::Hostile
+                        }))
                 })
                 .map(|s| s.id.clone())
                 .collect();

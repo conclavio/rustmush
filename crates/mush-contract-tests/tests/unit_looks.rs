@@ -46,6 +46,10 @@ const LOOKLESS: &[(&str, &str)] = &[
         "tacsim.unit.conduct_carrier",
         "the unarmed Safe Conduct proving carrier (doc 17f M7.6), loaded only for the Registry's Conduct trials: its look comes with its own cut",
     ),
+    (
+        "tacsim.unit.corvette",
+        "a space customs patrol cutter (doc 35b cut SF.R12), never in the ground arena: space tactical uses section rows, with no arena sprite",
+    ),
 ];
 
 /// One shipped unit type's rules, as far as a look needs them.

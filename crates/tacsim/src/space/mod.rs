@@ -57,15 +57,17 @@ pub use mining::{
     OrbitalClusterId, PendingSpaceMineDraw, SpectralClass, build_updated_pocket_cursor,
     check_velocity_match_gate, ore_specific_volume_l_per_t,
 };
+#[cfg(test)]
+pub use picket::build_kirkwood_picket_ships;
 pub use picket::{
     BELT_RAIDER_PARTY, BELT_RAIDER_RHAI, CUSTOMS_CORVETTE_PARTY, CUSTOMS_FINE_CONTRACT_NAME,
     CUSTOMS_FINE_MAJOR_PER_TONNE, CUSTOMS_FINE_MIN_MAJOR, HEAVE_TO_REL_VEL_MMPS,
-    KIRKWOOD_PICKET_RHAI, KirkwoodPicketState, LiveCustomsManifest, PICKET_RUN_BOUNDARY_M,
-    PicketInspectionOutcome, PicketInspectionStatus, RAIDER_AMBUSH_RANGE_M,
-    assess_customs_fine_and_advance_front, build_kirkwood_picket_ships, customs_fine_spec,
-    distance_3d_m, emit_light_lagged_picket_hail, inspect_hull_manifest,
-    record_ran_the_picket_incident, relative_speed_3d_mmps, run_space_rhai_think,
-    should_open_kirkwood_picket, step_kirkwood_picket,
+    INTERDICTOR_PATROL_RHAI, KIRKWOOD_PICKET_RHAI, KirkwoodPicketState, LiveCustomsManifest,
+    PICKET_RUN_BOUNDARY_M, PicketInspectionOutcome, PicketInspectionStatus, RAIDER_AMBUSH_RANGE_M,
+    assess_customs_fine_and_advance_front, customs_fine_spec, distance_3d_m,
+    emit_light_lagged_picket_hail, inspect_hull_manifest, record_ran_the_picket_incident,
+    relative_speed_3d_mmps, run_space_rhai_think, seize_contraband_and_advance_front,
+    should_open_kirkwood_picket, spawn_kirkwood_picket_ships_in_world, step_kirkwood_picket,
 };
 pub use tick::{
     ActiveInterdictionBubble, CARRIER_PARTY, COMBAT_STEP_WALL_MS, CRUISE_STEP_WALL_MS,
@@ -806,8 +808,25 @@ mod tests {
             },
         );
         let snap = bubble.snapshot();
-        book.by_hull.insert(
+        let mut carriers = std::collections::BTreeMap::new();
+        carriers.insert(
             hull,
+            tick::BubbleCarrierEntry {
+                hull,
+                ship_id: "ship.4201".to_owned(),
+                leg_cursor: 1,
+                departed_at_ic_s: 74_152_600_000,
+                approaching_derelict: false,
+                holding_for_salvage: false,
+                last_synced_propellant_kg: 12_000,
+            },
+        );
+        let mut ship_hulls = std::collections::BTreeMap::new();
+        ship_hulls.insert("ship.4201".to_owned(), hull);
+        ship_hulls.insert("ship.9801".to_owned(), mush_core::ObjId(9801));
+        ship_hulls.insert("ship.9901".to_owned(), interdictor);
+        book.by_domain.insert(
+            domain,
             ActiveInterdictionBubble {
                 hull,
                 interdictor_hull: interdictor,
@@ -815,6 +834,8 @@ mod tests {
                 carrier_ship_id: "ship.4201".to_owned(),
                 interdictor_ship_id: "ship.9901".to_owned(),
                 leg_cursor: 1,
+                carriers,
+                ship_hulls,
                 opened_ic_s: 74_152_600_000,
                 steps: 1,
                 cleared: false,
@@ -827,6 +848,8 @@ mod tests {
                     interdictor,
                     "ship.9901".to_owned(),
                 )),
+                interdictor_memory: Vec::new(),
+                interdictor_think_seq: 0,
                 approaching_derelict: false,
                 holding_for_salvage: false,
                 last_stepped_wall_s: 0,

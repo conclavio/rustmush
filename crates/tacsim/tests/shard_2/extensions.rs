@@ -8620,8 +8620,8 @@ fn ae1_the_three_chassis_load_beside_the_stock_game_without_moving_it() {
     let fielded = Catalog::build_fielded(&[], tacsim::NS).expect("the fielded content binds");
     assert_eq!(
         fielded.specs.len(),
-        // Doc 32 cut CF.6c: seventeen with the escort line tank (was sixteen).
-        17,
+        // Doc 35 cut SF.R12: eighteen with the Republic Corvette (was seventeen).
+        18,
         "the line tank, doc 16 section 9's five, the range's target, the three chassis, \
          16b cut AE.3's drone, doc 18 cut IC2's Dray and doc 20 cut SM.3a's terrain vehicle \
          and Dray-P, plus R7's relay station and R9b's Halcyon"
@@ -10146,8 +10146,8 @@ fn ae2_the_ordnance_loads_beside_the_stock_game_without_moving_it() {
     // with the terrain vehicle and the Dray-P (was twelve).
     assert_eq!(
         fielded.specs.len(),
-        // Doc 32 cut CF.6c: seventeen with the escort line tank (was sixteen).
-        17,
+        // Doc 35 cut SF.R12: eighteen with the Republic Corvette (was seventeen).
+        18,
         "no unit schema of its own: the ten AE.1 left, 16b cut AE.3's drone, doc 18 cut \
          IC2's Dray and doc 20 cut SM.3a's terrain vehicle and Dray-P, plus R7's relay station and R9b's Halcyon"
     );
@@ -10972,8 +10972,8 @@ fn ae3_the_drone_loads_beside_the_stock_game_without_moving_it() {
     let fielded = Catalog::build_fielded(&[], tacsim::NS).expect("the fielded content binds");
     assert_eq!(
         fielded.specs.len(),
-        // Doc 32 cut CF.6c: seventeen with the escort line tank (was sixteen).
-        17,
+        // Doc 35 cut SF.R12: eighteen with the Republic Corvette (was seventeen).
+        18,
         "the line tank, doc 16 section 9's five, the range's target, the three chassis, \
          the drone, the Dray, the terrain vehicle and the Dray-P, plus R7's relay station and R9b's Halcyon"
     );
@@ -11061,12 +11061,13 @@ fn ae3_the_drone_loads_beside_the_stock_game_without_moving_it() {
     let station_key = CanonicalId::new(tacsim::relay_loss::STATION).expect("a canonical id");
     let capital_key = CanonicalId::new(tacsim::relay_mobile::UNIT).expect("a canonical id");
     let escort_key = CanonicalId::new(content::TV_ESCORT).expect("a canonical id");
+    let corvette_key = CanonicalId::new(content::CORVETTE).expect("a canonical id");
     assert_eq!(
         classes
             .get(&UnitClass::Capital)
             .cloned()
             .unwrap_or_default(),
-        vec!["halcyon"]
+        vec!["corvette", "halcyon"]
     );
     assert_eq!(
         classes
@@ -11085,9 +11086,10 @@ fn ae3_the_drone_loads_beside_the_stock_game_without_moving_it() {
                 || *id == tv_key
                 || *id == station_key
                 || *id == capital_key
-                || *id == escort_key,
-            "{id}: only the drone, the Dray, the Dray-P, the terrain vehicle, the relay station, Halcyon \
-             and the escort line tank write a class word"
+                || *id == escort_key
+                || *id == corvette_key,
+            "{id}: only the drone, the Dray, the Dray-P, the terrain vehicle, the relay station, Halcyon, \
+             the escort line tank and the corvette write a class word"
         );
     }
 
