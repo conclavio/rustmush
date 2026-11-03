@@ -2853,9 +2853,12 @@ pub(crate) fn bay_gate_leaving(
     let mut left: Vec<ObjId> = Vec::new();
     // Each unit out the departure does not name: its label and its own refusal line.
     let mut unnamed: Vec<(String, String)> = Vec::new();
+    // Doc 36a lane 3 (P0-5): a combat hull a tow loaded is cargo here too.
     let inert: std::collections::BTreeSet<_> = crate::port::vehicle::rigs_in_bay(w, view)
         .into_iter()
-        .filter(|r| crate::relay_foundry::cargo(w, r.tv))
+        .filter(|r| {
+            crate::relay_foundry::cargo(w, r.tv) || crate::port::vehicle::combat_hull(w, r.tv)
+        })
         .map(|r| r.tv)
         .collect();
     // The rigs: the bay's placements and the live records naming the hull, by slot.

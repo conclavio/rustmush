@@ -153,6 +153,10 @@ pub const NOT_AT_RAMP: &str =
     "Rig {n} is not within a cell of a carrier's ramp on this site: drive the tow there first.";
 /// The bay has no room: `{carrier}`, `{name}`, `{why}`.
 pub const BAY_NO_ROOM: &str = "The {carrier}'s bay has no room for the {name}: {why}.";
+/// **Doc 36a lane 3 (P0-5's rider)**: the only carrier in reach is a stranger's. A tug loads
+/// into its own carrier's bay or a Friend's, never a stranger's.
+pub const LOAD_NOT_YOUR_CARRIER: &str =
+    "Rig {n} may only load into its own carrier's bay or a Friend's; the {carrier} is neither.";
 /// The rig is not on the ground: `{n}`.
 pub const NOT_ON_GROUND: &str = "Rig {n} is not on a site's ground.";
 /// Its own state forbids towing: `{n}`.
@@ -425,6 +429,10 @@ pub struct LoadFacts {
     pub tug_pose: FieldPose,
     /// Whether the carrier is the casualty's own party's or a Friend's.
     pub friendly: bool,
+    /// **Doc 36a lane 3 (P0-5's rider)**: whether the carrier is the tug's own hull or a Friend's
+    /// of the tug's party — the command fixes it, the prepare refuses a load without it.
+    #[serde(default)]
+    pub own_carrier: bool,
     /// **Doc 36 cut GC.5**: who would hold the casualty in custody (the carrier's operator), when
     /// anyone can be named; the load's operator otherwise.
     pub custodian: Option<ObjId>,
@@ -812,6 +820,13 @@ fn friendly(ctx: &Ctx<'_>, site: &CanonicalId, casualty: ObjId, carrier: ObjId) 
         .any(|pair| pair == (x, y) || pair == (y, x))
 }
 
+/// **Whether `carrier` is `tug`'s own hull or a Friend's** (doc 36a lane 3, P0-5's rider): the
+/// tug's own lease hull, else [`friendly`]'s Friend rule between the tug and the carrier. A tug
+/// loads into no stranger's bay, whatever the casualty's party.
+fn own_or_friends(ctx: &Ctx<'_>, site: &CanonicalId, tug: ObjId, carrier: ObjId) -> bool {
+    friendly(ctx, site, tug, carrier)
+}
+
 /// **Who holds what a carrier takes into custody** (doc 36 cut GC.5; Q-36-16): its party's owner
 /// as the field reads it, else its leader, else whoever holds its helm.
 fn custodian_of(ctx: &Ctx<'_>, site: &CanonicalId, carrier: ObjId) -> Option<ObjId> {
@@ -836,6 +851,7 @@ fn load_facts(
     Some(LoadFacts {
         secs: recovery_config(w).load_s,
         friendly: friendly(ctx, &site, casualty, carrier),
+        own_carrier: own_or_friends(ctx, &site, tug, carrier),
         custodian: custodian_of(ctx, &site, carrier),
         written_off: crate::port::tv::written_off(w, casualty),
         handed_back: crate::port::tv::in_shed(w, casualty),
@@ -1328,6 +1344,10 @@ impl ActionProvider for TowProvider {
                 }
                 if record.tows.act_of(tv).is_some() {
                     return Err(refused("tow_busy"));
+                }
+                // Doc 36a lane 3 (P0-5's rider): never into a stranger's carrier.
+                if !facts.own_carrier {
+                    return Err(refused("tow_foreign_carrier"));
                 }
                 // Within a cell of the ramp, as the command and the tick count it.
                 if facts.tug_pose.site != facts.ramp.site
@@ -1960,14 +1980,29 @@ pub(crate) fn load_cmd(ctx: &mut Ctx<'_>, rig: &act::RigAt, go: bool) -> Result<
         .ok_or_else(|| CmdError::msg(NOT_TOWING.replace("{n}", &n)))?;
     let casualty = op.casualty();
     let label = name(ctx.w, casualty);
-    // The carrier: the rig's own hull when its ramp is in reach, else the nearest in reach.
+    // The carrier: the rig's own hull when its ramp is in reach, else the nearest in reach
+    // that is a Friend's (doc 36a lane 3, P0-5's rider: never a stranger's).
     let carriers = carriers_at(ctx.w, &site, &pose);
+    let nearest = carriers
+        .first()
+        .cloned()
+        .ok_or_else(|| CmdError::msg(NOT_AT_RAMP.replace("{n}", &n)))?;
     let (carrier, ramp) = carriers
         .iter()
         .find(|(hull, _)| *hull == rig.hull)
-        .or_else(|| carriers.first())
+        .or_else(|| {
+            carriers
+                .iter()
+                .find(|(hull, _)| own_or_friends(ctx, &site, rig.tv, *hull))
+        })
         .cloned()
-        .ok_or_else(|| CmdError::msg(NOT_AT_RAMP.replace("{n}", &n)))?;
+        .ok_or_else(|| {
+            CmdError::msg(
+                LOAD_NOT_YOUR_CARRIER
+                    .replace("{n}", &n)
+                    .replace("{carrier}", &name(ctx.w, nearest.0)),
+            )
+        })?;
     let carrier_name = name(ctx.w, carrier);
     let facts = load_facts(ctx, rig.tv, casualty, carrier, ramp)
         .ok_or_else(|| CmdError::msg(NOT_AT_RAMP.replace("{n}", &n)))?;

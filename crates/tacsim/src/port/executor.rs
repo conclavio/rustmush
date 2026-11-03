@@ -3147,6 +3147,10 @@ fn rigs_out(ctx: &Ctx<'_>, hull: ObjId, slot: Option<u8>) -> Vec<u8> {
         if slot.is_some_and(|wanted| wanted != n) {
             continue;
         }
+        // Doc 36a lane 3 (P0-5): a combat hull a tow loaded is cargo, never a rig out.
+        if crate::port::vehicle::combat_hull(w, tv) {
+            continue;
+        }
         let record = match handles.map(|handles| {
             ctx.action_state(
                 &handles.families.excursions,
