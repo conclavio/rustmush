@@ -19,6 +19,7 @@
 //! | P0-3 the Occator rig after the write-off | [`p0_3_a_leased_rig_written_off_in_custody_goes_home_and_is_never_awarded`] |
 //! | P0-7 the award/contest second | [`p0_7_the_windows_last_second_belongs_to_the_award_not_a_contest`] |
 //! | P0-7 the lost `Loaded` | [`p0_7_a_lost_loaded_finish_still_lands_after_the_carrier_has_gone`] |
+//! | P1-3 `TowOrders` clobber | [`p1_3_the_salvors_inspect_spam_does_not_kill_a_queued_contest`] |
 
 use mush_core::ObjId;
 use mush_economy::{ContractId, ContractState, EconomyStore};
@@ -611,4 +612,52 @@ fn p0_7_a_lost_loaded_finish_still_lands_after_the_carrier_has_gone() {
     );
     let held = custody(&mut stage.rig, far).expect("in O's custody");
     assert_eq!((held.holder, held.carrier), (o, o_carrier));
+}
+
+/// **P1-3** (doc 36a §3): the tow orders were one row a hull, so a salvor aboard the carrier
+/// spamming `+salvage/inspect #H` near the deadline replaced the challenger's queued contest,
+/// which then died unauthorized after CONTEST_FILED had printed. Keyed by actor and hull, the
+/// contest lands whatever the salvor types, and it vacates the unlawful claim.
+#[test]
+fn p1_3_the_salvors_inspect_spam_does_not_kill_a_queued_contest() {
+    let mut stage = Stage::build();
+    let (near, t, o) = (stage.near, stage.t, stage.o);
+    let (c, _) = stage.recover_and_claim(near);
+    // T's contest is queued, not yet landed; O then spams the inspection three times.
+    let (out, contest) = command(
+        &mut stage.rig,
+        t,
+        &format!("+salvage/contest #{} go", near.0),
+    );
+    assert!(out.contains("You file your contest"), "{out}");
+    assert_eq!(contest.len(), 1, "one contest queued: {out}");
+    let mut inspects = Vec::new();
+    for _ in 0..3 {
+        let (out, queued) = command(&mut stage.rig, o, &format!("+salvage/inspect #{}", near.0));
+        assert!(out.contains("black box"), "{out}");
+        inspects.extend(queued);
+    }
+    assert_eq!(inspects.len(), 3);
+    crate::driving::land(&mut stage.rig, &contest[0]).expect("the contest lands after the spam");
+    for submit in &inspects {
+        // O's own later inspections replaced O's earlier ones: the first two have no order
+        // left to land on, the last lands.
+        let _ = crate::driving::land(&mut stage.rig, submit);
+    }
+    let row = custody(&mut stage.rig, near).expect("still in custody until the tick");
+    assert_eq!(row.claim, ClaimSeam::Filed { contract: c });
+    let file = row.file.as_deref().expect("the claim");
+    assert_eq!(file.contests.len(), 1, "{file:?}");
+    assert!(file.has_vacating_contest(), "{file:?}");
+    assert!(
+        row.evidence.iter().any(|e| e.holder == o),
+        "O's inspection was recorded too: {:?}",
+        row.evidence
+    );
+    assert!(
+        seconds_until(&mut stage.rig, 10, |rig| custody(rig, near).is_none()),
+        "the contest vacates the claim"
+    );
+    assert_eq!(contract(&stage.rig, c).state, ContractState::Cancelled);
+    assert_eq!(title(&stage.rig, near), Some(PrincipalId::Object(t)));
 }

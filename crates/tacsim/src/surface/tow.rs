@@ -515,9 +515,45 @@ impl TowOrder {
     }
 }
 
-/// **The tow orders** (RAM, keyed by the tug): the actor who may submit it and the order.
+/// **The tow orders** (RAM, keyed by the actor and the tug; doc 36a P1-3): each actor's own
+/// order on a rig, so one party's `+salvage/inspect` never clobbers another's queued contest on
+/// the same hull. Past [`crate::port::tv::MAX_POINTERS`] rows the oldest written goes, never the
+/// lowest id.
 #[derive(Clone, Debug, Default)]
-pub(crate) struct TowOrders(BTreeMap<ObjId, (ObjId, TowOrder)>);
+pub(crate) struct TowOrders {
+    /// `(actor, tug)` → (when it was written, the order).
+    rows: BTreeMap<(ObjId, ObjId), (u64, TowOrder)>,
+    /// The last write's sequence.
+    written: u64,
+}
+
+impl TowOrders {
+    /// Write `order` as `actor`'s on `tug`, replacing that actor's earlier order on it.
+    fn put(&mut self, actor: ObjId, tug: ObjId, order: TowOrder) {
+        self.written = self.written.wrapping_add(1);
+        self.rows.insert((actor, tug), (self.written, order));
+        while self.rows.len() > crate::port::tv::MAX_POINTERS {
+            let oldest = self
+                .rows
+                .iter()
+                .min_by_key(|(_, (at, _))| *at)
+                .map(|(key, _)| *key);
+            match oldest {
+                Some(key) => {
+                    self.rows.remove(&key);
+                }
+                None => break,
+            }
+        }
+    }
+
+    /// `actor`'s orders, by tug.
+    fn of(&self, actor: ObjId) -> impl Iterator<Item = (ObjId, &TowOrder)> {
+        self.rows
+            .range((actor, ObjId(0))..=(actor, ObjId(u32::MAX)))
+            .map(|((_, tug), (_, order))| (*tug, order))
+    }
+}
 
 /// **The active tows, mirrored in RAM** (refreshed by the tow tick from every lane site's
 /// record): tug → (site, its tow). A convenience for the drive's rates and the tick's placement,
@@ -1121,10 +1157,7 @@ impl ActionProvider for TowProvider {
             return Ok(None);
         };
         let mut rows = Map::new();
-        for (tv, (actor, order)) in &orders.0 {
-            if *actor != query.actor() {
-                continue;
-            }
+        for (tv, order) in orders.of(query.actor()) {
             if let Ok(value) = serde_json::to_value(order) {
                 rows.insert(tv.0.to_string(), value);
             }
@@ -1745,12 +1778,7 @@ pub(crate) fn submit(
         return false;
     };
     if let Some(orders) = ctx.w.module_state_mut::<TowOrders>() {
-        orders.0.insert(tug, (actor, order));
-        while orders.0.len() > crate::port::tv::MAX_POINTERS {
-            if orders.0.pop_first().is_none() {
-                break;
-            }
-        }
+        orders.put(actor, tug, order);
     }
     let saved = ctx.actor;
     ctx.actor = actor;
