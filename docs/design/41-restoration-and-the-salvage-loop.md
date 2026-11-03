@@ -521,8 +521,11 @@ Q-39-24: Tycho Mutual's quote is days × 2,100 × 1.25 plus the passage's propel
 retrieval is the same: `mush_economy::post_retrieval(ctx, RetrievalSpec)` files one `Offered`
 contract whose shape `retrieval_contract_hull(c)` recognises — issuer the poster, subject the hull
 (a `TitleHeld`-style condition naming it), **destination** a port (its `PortDef` id), **fee** in
-minor, deadline `WorldIc` at posting + 28 IC days (`RETRIEVAL_WINDOW_IC_DAYS`, provisional 28, a
-config key beside `claim_window_s`), visibility `Public` (a board must be seen; this is the owner's
+minor, deadline `WorldIc` at posting + **56** IC days (twice `RETRIEVAL_WINDOW_IC_DAYS`, provisional
+28, a config key beside `claim_window_s`: 28 to accept and 28 to perform — a contract has one
+deadline, hashed into its consent (`contract.rs:487`), so it cannot move without a re-consented
+amendment, and `expire` makes an unsettled contract `Expired` with the escrow refunded
+(`contract_live.rs:3987–4032`); the two windows live on tacsim's `RetrievalOrder`, below), visibility `Public` (a board must be seen; this is the owner's
 own notice of their own property, not doc 27 Q-S4's theft broadcast), audience Tycho Mutual. The
 fee is escrowed at posting from the poster's account (Occator's capital under the capital clause;
 a player's balance). Acceptance is the one thing the engine lacks: `acting_party` admits only a
@@ -572,15 +575,34 @@ a week's rent for an afternoon's tow, which is what "a viable occupation" means.
 lands, `slot_day` is a lane constant on Tycho's org row (2,100), replaced by the cost model's figure
 when it does. (Q-41-10.)
 
-**The window and the fallback.** At the WorldIc deadline with no acceptance, the sweep offers the
-job to Tycho Mutual, which accepts it (`accept_contract_as` by the house arm) and runs it as §4.4
-says. A PC acceptor carries a performance deadline of **28 IC days from acceptance** (the owner's
+**The windows and the fallback.** Both windows are tacsim's, on a typed record per retrieval,
+`tacsim:retrieval:{hull}` (`RetrievalOrder { contract, hull, poster, destination, fee, posted_ic,
+accept_by_ic, acceptor, perform_by_ic, state }`), driven by the clerk's arm on the port tick; the
+contract's one deadline is their sum. *Acceptance:* `accept_by_ic` = posting + 28 IC days; a PC
+acceptance inside it sets `acceptor` and `perform_by_ic` = acceptance + 28 IC days (the owner's
 ruling on Q-41-11: the same figure as the acceptance window — a little over a real day at rate 24,
 so a player can come back the next day at the same hour with four hours in hand; Draft 0.1's 7 IC
-days was seven real hours, which nobody can be held online for): not delivered by then, the
-acceptance lapses, the job goes to Tycho at once (the poster has waited up to 56 IC days by then)
-and the acceptor loses nothing but the job. One knob, `RETRIEVAL_WINDOW_IC_DAYS`, serves both
-windows. (Q-41-11.)
+days was seven real hours, which nobody can be held online for). *No acceptance by `accept_by_ic`:*
+the clerk's tick has Tycho Mutual accept the same contract (`accept_contract_as` by the house arm),
+whose remaining 28 days are Tycho's performance window, and §4.4 runs. *A PC lapse at
+`perform_by_ic`:* the acceptor loses nothing but the job; the clerk cancels the contract (the escrow
+back to the poster) and posts a fresh one for Tycho with a 28-day deadline, which Tycho accepts on
+the same tick — a new contract rather than an amended party list, because adding Tycho to the
+lapsed PC's contract would be a re-consent of every party. The contract's own expiry at day 56 is a
+backstop the clerk never lets run. One knob, `RETRIEVAL_WINDOW_IC_DAYS`, serves both windows.
+(Q-41-11; round-2 item 41-11.)
+
+**Retrieval custody, not salvage custody.** A load into the acceptor's carrier is a foreign load
+today: `load_facts` knows only the friend rule (`tow.rs:842–870`, `:902`), so the load writes a
+`SalvageCustody` row (`:1576–1614`), logs `Recovery` on owned ground (`:1583–1597`) and, while that
+row stands, `right_of` answers the title holder `None` (`bay_work/mod.rs:379–381`) — the acceptor
+could berth her as a Salvor, but the retrieval would have become a 48-hour salvage claim on the
+poster's own hull. RS.5 teaches `load_facts` a third case: an active `RetrievalOrder` on the casualty
+held by the carrier's operator (or their organization) makes the load **retrieval custody** — no
+salvage row, no `Recovery` log, no claim owed; the hull's `BayHull` records `retrieval: Some(order)`,
+the acceptor's `right_of` answers `Right::Retrieval` (berth and stow only, a Salvor without the
+repair) until the delivery fact clears it, and the title holder keeps `Title` throughout. The friend
+rule is untouched (round-2 item 41-11).
 
 **The repossession charge.** `repossess` gains GC.9's assessment with two changes and one addition,
 and `give_back` and the dormancy recall take the same: (1) the **wear allowance**: structural points
@@ -895,9 +917,11 @@ the player's half is RS.0's.
 What the four amendments of 2026-11-03 change beyond their own questions.
 
 - **The acceptor's deadline (Q-41-11).** One knob serves both windows: `RETRIEVAL_WINDOW_IC_DAYS`
-  (28) is the acceptance window from posting and the performance window from acceptance. A lapsed
-  acceptance hands the job to Tycho at once rather than reopening it; RS.5's story runs the lapse
-  under the clock beside the no-acceptor variant.
+  (28) is the acceptance window from posting and the performance window from acceptance, both kept
+  on tacsim's `RetrievalOrder` because a contract's one deadline is hashed into its consent (round-2
+  item 41-11); the contract runs to day 56 and the clerk's tick moves the job to Tycho at day 28
+  unaccepted, or on a fresh contract at a PC's lapse; RS.5's story runs the lapse under the clock
+  beside the no-acceptor variant.
 - **Tycho's designs are buildable (Q-41-15).** `tycho_crawler` and `tycho_lifter` are registered
   designs with bills the catalogue build derives (doc 39 IN.8 as revised in Draft 0.3), authored in
   the kit with class, `dry_mass_t` and the bill inputs, not as house-only content; the Stickney yard
@@ -1200,7 +1224,7 @@ RS.3 and RS.5; RS.8 after RS.3 and RS.5, in the space tree; RS.9 last. One marke
 | **RS.2** the bay away from port | Q-41-5..7, Q-38-16, Q-36-35 | `facility_of`'s fourth case; `source_carrier` without the port; no fee contract away from port; the "needs a workshop" line naming the nearest; `+bay/fit` from the hold on a site; bay acts waiting under a field; the yard's rearm through the bay | none (replace is refused away from port, so IN.5 does not reach it) | (a) extended, the bay half: a mend at 2× on the site from the hold, a replace refused with the line, the order finishing under way |
 | **RS.3** the claim's close | Q-41-20..23, Q-38-19, Q-S13, Q-S14 | `claim_window_s` into `TacsimRecoveryCfg`; `+salvage/authorize` (RecoverLoad for a hull, the delegation row for a block) read at the attach; org-titled claims through `principal_holders` and the narrowed award refusal; at-risk repairs written at `complete` under Salvor and reported; `+salvage/contest =recovery\|procedure\|right` with the registry's box read; `strip::vacate_claim` wired at settle, the mush-tactics twin retired | none | (b) extended at 512 and 256: the three contest kinds each vacating or failing on its named source; an org's holders told; the at-risk line in the quote and the notice |
 | **RS.4** the vacated hull's return | Q-41-18, Q-41-19, Q-38-19 | `held_for` on the bay record; `+bay/stow <hull>=<carrier>` bay to bay; the docking hook berthing held hulls into the workshop room; the fix thread's defect note closed | none | (b) extended: T's carrier takes her out of O's bay at Ceres; without one, the port holds her "held for T" and T's next carrier stows her |
-| **RS.5** the retrieval contract and the charge | Q-41-8..14, Q-38-6, Q-38-7 | `post_retrieval`, the shape, `accept_retrieval`, `+salvage/retrieve\|jobs\|accept`, `RETRIEVAL_WINDOW_IC_DAYS` serving both the acceptance window and the acceptor's 28-IC-day performance window (Q-41-11), the delivery fact and payment, a lapsed acceptance handed to Tycho; the wear allowance, the retrieval fee and the one-term obligation at `repossess`, `give_back` and the recall; Q-38-7's second clock; the `capture: None` hole closed with a test | IN.2 as revised (Tycho's slot-day); a lane constant until it lands | (c) extended: a dormant charter's prospector on Ahuna and on Urvara repossessed with allowance, fee and debt; a second player accepts the job, delivers to the shed and is paid; a third accepts and lapses at 28 IC days and the job is Tycho's; the desk refuses the delinquent lessee |
+| **RS.5** the retrieval contract and the charge | Q-41-8..14, Q-38-6, Q-38-7 | `post_retrieval`, the shape, `accept_retrieval`, `+salvage/retrieve\|jobs\|accept`, the `RetrievalOrder` record carrying the acceptance and performance windows (`RETRIEVAL_WINDOW_IC_DAYS`, Q-41-11) under a 56-day contract, the four handover facts and payment, a lapsed acceptance handed to Tycho on a fresh contract; retrieval custody in `load_facts` and `Right::Retrieval`; a written-off rig's hand-back moved from the load to the destination; the wear allowance, the retrieval fee and the one-term obligation at `repossess`, `give_back` and the recall; Q-38-7's second clock; the `capture: None` hole closed with a test | IN.2 as revised (Tycho's slot-day); a lane constant until it lands | (c) extended: a dormant charter's prospector on Ahuna and on Urvara repossessed with allowance, fee and debt; a second player accepts the job, delivers to the shed and is paid; a third accepts and lapses at 28 IC days and the job is Tycho's; the desk refuses the delinquent lessee |
 | **RS.6** Tycho Mutual | Q-41-15..17, Q-38-18, Q-39-7, Q-39-24 | the crawler and lifter as registered designs with bills, buildable at the yard (Q-41-15); Tycho's berth, its two house hulls, a storefront party and `capital_major` 500,000 (lane v21, Q-41-17); the house arm sequencing voyage, landing, launch, tow, load, lift, dock, berth; the fallback acceptance at the window's end and on a lapse; the fee from the recovery row; the 56-day sweep with the assessment and its two exits — repair and a hull-sale offer at the reference price, or scrap at Occator's workshop (Q-41-16) | IN.2, IN.7 and IN.8 as revised; PR #340 (P0-5, a wreck in a bay) | (d) at 512 and 256: the carrier wreck retrieved by the lifter and berthed at C14, the fee paid; (c)'s no-acceptor variant; (e) the sweep: a repairable hull resold to a player, a hull past repair scrapped, the census holding |
 | **RS.7** port security | Q-41-24, Q-41-25, Q-38-20, Q-S4 | the `arrived` hook's read of proven rows across the lane's site records; `+salvage/report <hull>=registry`; the fines by kind to the Registry; the obligation on a shortfall; `DepartRefusalKind::Quarantined` and its release; rows marked settled | none | (b) extended: O fined at docking after the `recovery` vacate, O's carrier held until the obligation settles, a bare pickup row never fined |
 | **RS.8** the space seams | Q-41-26, Q-36-46, Q-36-47 | `+helm/tow` onto `file_salvage_claim` and `award_salvage_title`; `tacsim:space:custody`; the stages; real principals; the RAM path and the bounty retired; `ShipSectionId` onto `CarrierPart`; the retrieval's delivery at a dock | none | a derelict clamped, towed and docked at Ceres under the one window, contested by `+salvage/contest`, and a space retrieval job on `+salvage/jobs` delivered by a ship; built in the space tree (doc 35b §8) |
