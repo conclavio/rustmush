@@ -7,7 +7,7 @@
 > destruction: accepted Q-H7/Q-H9 keep a recoverable unit's epoch open. The as-built epoch ledger
 > below is preserved; this note does not claim that code has changed.
 
-**Draft 0.7, 2026-10-27 — S.0–S.4a as built, S.4b open (§14).** Draft 0.3 was written read-only at `563259b7` (`main`, with 17g cuts C0–C2 merged);
+**Draft 0.10, 2026-11-03 — the round-2 outside review of §17 folded (nine items, every claim re-verified at `f146734e`): the claim now opens before the launch (D-23-21; Q-23-21 open, amending D-23-13), a licensed mind flies only a titled hull in S.4b (D-23-22; Q-23-22 open), the pending-launch protocol is one contract with doc 40 §4.4 (D-23-23), the cursor lives on `RigRecord`, `Opening.transition` carries the book's ordinal, the seam moves only by observing the committed row, the `abi` drop is `Execution::install`'s own, and the testimony producer reads the field's log; S.0–S.4a as built (§14), S.4b open.** Draft 0.9, the same day: the owner accepted Q-23-7 to Q-23-20 at their defaults, so D-23-11 to D-23-20 stand as ruled and S.4b-T may start. Draft 0.8 added §17, written read-only at `c83c2eff` (`origin/main`) under doc 38 Q-38-21: D-23-11 to D-23-20 and Q-23-7 to Q-23-20, and the cut S.4b restated with the host moved from the drone phase to the IC field (§17.10). Draft 0.3 was written read-only at `563259b7` (`main`, with 17g cuts C0–C2 merged);
 Draft 0.1 was reviewed the same day against doc 17, doc 20, 17f, doc 18 and the IC-sortie code,
 Draft 0.2 carried the review's corrections (§15), and Draft 0.3 carries the owner's rulings of the
 same day (§16): Q-23-1 to Q-23-5 accepted as proposed, Q-23-6 ruled (the lapse hold runs to the
@@ -375,7 +375,9 @@ cut off `main`), ledger here in §14. Sizes are the lead's estimates.
     and an active claim freezes the hull (`mush-tactics ic_custody.rs` `holds` `:164`, `movement_preimage` `:167`).
   - **S.4b** is the claim Open/Close (the production `HostTransition`), the pool seat, the `abi`
     drop on resume and the long-leg snapshots. It lands with the thinking mind and the drone phase
-    (D-UM-47), after M8, together with a custody design for moving anchors.
+    (D-UM-47), after M8, together with a custody design for moving anchors. *Draft 0.8: the custody
+    design is §17, and §17.10 restates S.4b with the IC field as its host (D-23-20) and adds S.4b-T,
+    the testimony producer; this bullet is superseded by it.*
 - **S.5 — The M8 gate check (small).** §10's two tiers as dispatch-only CI stories, folded into
   doc 17h's cut M8g.
 
@@ -422,6 +424,7 @@ inspection verbs, seizure) then have a real epoch to read at each end.
 | D-23-8 | Until a mind thinks on an IC host, pool admission is recorded and never refused | lead's proposal, Q-23-4 |
 | D-23-9 | A licence that lapses mid-epoch is in grace until the top-level hull reaches a hangar port; a hosted hull's launches inside that passage seal under the held licence; the fall to doctrine is at the first seal after the hangar | **the owner's ruling, 2026-10-27** (Q-23-6) |
 | D-23-10 | A match is a simulator concept, not an IC one: an IC epoch's id never shares the arena's `(match, unit)` packing; `SortieId` gains a kind | **the owner's ruling, 2026-10-27** (risk 1) |
+| D-23-11 to D-23-23 | Custody for moving anchors: the anchor, the production Open/Close, the custody re-scoped, the two seats, the `abi` drop, the carried memory, the testimony producer, the field as S.4b's host; Draft 0.10's D-23-21 (the Open before the launch), D-23-22 (titled hulls only) and D-23-23 (the pending-launch protocol) | **D-23-11 to D-23-20 accepted by the owner, 2026-11-03** (Q-23-7 to Q-23-20 at their defaults; D-23-13, 14, 17 and 19 restated in Draft 0.10); D-23-21 to D-23-23 proposed (Q-23-21, Q-23-22); §17.11 |
 
 ## 12. Questions for the owner
 
@@ -433,6 +436,8 @@ inspection verbs, seizure) then have a real epoch to read at each end.
 | Q-23-4 | Who rations an IC site's compute pool once minds fly IC? | The region's de facto holder (doc 11 §5), published as an allotment; recorded, never refused, until the drone phase. **Accepted 2026-10-27.** |
 | Q-23-5 | The player's words. | **Amended 2026-10-28:** `+sortie` and "sortie" for the player's operation are approved (doc 27 FO-7). Keep that operation distinct from the technical hull epoch. The 2026-10-27 blanket "Sortie never prints" ruling is superseded. |
 | Q-23-6 | Does a licence that lapses mid-epoch still hold to the close (doc 17 §23)? | **Ruled 2026-10-27**: it holds to the close of the top-level passage, not each excursion — the licence is in grace until the hull reaches the next hangar. D-23-9. |
+| Q-23-7 to Q-23-20 | The S.4b precondition's questions (the anchor, the Open's commit, one seal, the freeze, salvage under a claim, the compute seat, the ABI mismatch, the wall's exit, memory between fields, the testimony author and cut, the host, org-held licences, the acceptance) | **Accepted 2026-11-03, all at their defaults**; §17.12 |
+| Q-23-21, Q-23-22 | Draft 0.10, from the round-2 review: where the Open commits, revisited (before the launch, amending D-23-13); a licensed mind on a hull the pilot holds no title to (refused at `go`; lease authority as S.4c) | **Open**; §17.12 |
 
 ## 13. Risks
 
@@ -800,7 +805,8 @@ S.4 was split by the owner (doc 17h Q-M8-1, then option C). S.4a is built.
 No claim Open/Close, pool seat or `abi` drop: an IC base needs a fixed-domain anchor
 (`mush-sim ic_exclusion.rs:322`, `:341`), and an active claim freezes the hull
 (`mush-tactics ic_custody.rs` `holds` `:164`, `movement_preimage` `:167`). Those move to **S.4b**, with the drone phase and a custody
-design for moving anchors.
+design for moving anchors. *Draft 0.8: that design is §17, and S.4b is restated there with the IC
+field as its host.*
 
 S.5's dispatch-only stories are folded into doc 17h's M8g. The leak battery is on main (#106,
 #132).
@@ -854,3 +860,808 @@ On reading Draft 0.2 the owner ruled, in their words:
   withdrawn.
 - **Q-23-1 to Q-23-5**: "all other questions defaults accepted as proposed." Q-23-1 is accepted as
   narrowed above.
+
+## 17. Custody for moving anchors (the S.4b precondition)
+
+**Draft 0.8, 2026-11-03, written read-only at `c83c2eff` (`origin/main`); rulings the same day: the
+owner accepted Q-23-7 to Q-23-20 at their defaults, so D-23-11 to D-23-20 stand as ruled (Draft
+0.9); Draft 0.10, the same day, folds the round-2 outside review (two reviewers, every claim
+re-verified read-only at `f146734e`): items 23-1 to 23-10 are marked in place by number, 23-11 was
+refuted and §17.4 says so, D-23-21 to D-23-23 are proposed, and Q-23-21 and Q-23-22 are open.**
+Doc 37 §5.5 names S.4b
+the blocker of docs 32, 36 and GC.1 and says its precondition, "custody for moving anchors", has no
+owning document; doc 38 Q-38-21 (accepted at its default) rules that the note is written here, as a
+section of this doc, before S.4b's cut, from the questions §9's S.4b bullet lists — the claim
+Open/Close over a carrier anchor that moves, the pool seat, the `abi` drop on resume and the
+long-leg snapshots — and that S.4b's cut is then restated with the note's answers folded in (§17.10).
+The questions are the owner's, in doc 38's form (Q-23-7 to Q-23-20, §17.12); the lead's proposals are
+D-23-11 to D-23-20 (§17.11). Nothing in the tree changed. The note's premise is the one doc 17h
+recorded when the owner split S.4 (17h l.584–596, option C): the M8e builder found that a four-owner
+IC claim cannot sit on a surface excursion for three reasons — an IC base accepts only a
+fixed-domain anchor, the Open needs the hull inside the base, and an active claim freezes the hull —
+and every one of the three is a property of the claim code's OOC shape, not of the claim. This
+section says what the claim is for an IC hull, and lets the three go.
+
+### 17.1 What the tree holds (verified at `c83c2eff`; round 2's anchors at `f146734e`)
+
+- **The four owners and their Open.** A claim is one commit prepared by four owners in order
+  (`mush-roll` `ic_claims/writer.rs:190–305`): the Roll's admission reader (`:198–203`,
+  `IcAdmissionFacts`, `reader.rs:93–133` — the holding, the hull's title fence, the capacity,
+  `PaidSeats { seats }` or `OwnedDispatch`), tacsim's seal participant (`:206–208`), tactics'
+  custody (`:224–233`), sim's exclusion (`:251–259`) and the Roll's root (`:297–303`), the
+  participants fixed as `retention, seal, custody, exclusion` (`config.rs:40–50`). The seal
+  participant's Open re-seals the mind (`execution.rs:102–126`, `seal_with_policy` under
+  `SortieId::Packed(next_transition)`, the book's ordinal, `:106–108`), compiles it before admission
+  (`:134–137`) and refuses an IC epoch's id outright (`:148`; the book likewise at load,
+  `state.rs:36–44` — S.1's L1 deferred "the book carries the host's id" to S.4). The book keeps one
+  active open per unit (`state.rs:109`) under `MAX_OPEN` 1024 and `MAX_HISTORY` 8192
+  (`protocol.rs:4–5`).
+- **The missing producer.** `HostTransition { _private: () }` is private and non-Clone
+  (`participant.rs:21–26`), minted only by `#[cfg(test)]` fixtures (`:499–547`, and `:552–613` for
+  cover), with `StartPermit { unit: TacticalUnit, actor }` (`:27–31`) and `CloseEvent { actor, open,
+  unit, seal, sequence, kind, at_ic, conditions: UnitMutationPlan, coverage }` (`:32–43`) carrying
+  it. `IcHost::enqueue_start`/`enqueue_close` take the permits into a RAM inbox under random request
+  ids (`host.rs:273–315`, `:288`, `:307`), one pending Open per actor (`:247–249`); `submit` must
+  run from a real actor dispatch (`:321–328`), and the provider offers the ticket as a self-action
+  of the actor, "Apply owned IC transition" (`provider.rs:59–72`, `:98–160`). The seal
+  participant's prepare demands that the action being prepared be one of the claim's own two
+  (`participant.rs:95–102`), so the Open cannot ride another provider's bundle.
+  `IcRetainedExecution::install(world, &mut Arena)` and `IcHost::resume(world, open)`
+  (`host.rs:172–232`) install a retained execution into a running arena — the integration story
+  does exactly that and the mind thinks (`minds/bulk/ic_integration_tests.rs:1075–1091`,
+  `think_seq > 0`), survives a reboot with its seal (`:1100–1140`), and holds its licence's seat
+  against a second hull (`:1095–1098`).
+- **The fixed base.** The sim's exclusion admits an Open only for a hull `Interior` to a
+  `ConfiguredIcBase` (`mush-sim` `ic_exclusion.rs:645–660`), whose space must be
+  `SpaceAnchor::FixedDomain` (`:341`, `:366`); it refuses a hull under a deployed mark (`:604`)
+  or on a journey (`:622–636`). Its boot check requires the held hull's placement to equal the
+  Open's image (`:960–975`, "held IC hull placement requires explicit recovery"), its journey
+  check says in words "these fixed bases are not travelling carriers" (`:1002–1003`), and
+  `check_plan` refuses every placement write and projection of a held hull and any retire of the
+  base's domain (`:1021–1047`). A bay is the other anchor kind, `MovingObject { host: hull }`
+  (`data.rs:793–797`; the Dray-P's bay `port/hull.rs:869`, a rig's cab `port/vehicle.rs:723`).
+- **The freeze.** Tactics' `is_ic_custodied` (`ic_custody.rs:265`, `holds` `:164`) refuses the
+  field's check-out (`custody.rs:160–163`, "held by dedicated IC custody"), component replacement
+  (`component_replacement.rs:243`), every mutation ("held by an IC sortie", `:272–277`) and the
+  sim's movement custody (`mush-tactics` `movement_custody.rs:95`; `mush-sim`
+  `movement_custody.rs:110`); the sim reads IC custody as custody (`deployed.rs:248–250`,
+  `:300–302`). The Close's identity check requires the live unit to equal the Open's image
+  (`participant.rs:310–316`, `current_unit` `:272`, `:317`) and projects every physical change as
+  the Close's `conditions` plan over that image (`:324–337`; `ic_custody.rs:218`): the OOC shape, in
+  which nothing touches a held hull but its Close.
+- **The field.** Admission partitions on `held_out` (`field/admit.rs:338–341`, `:518–521`:
+  `is_ic_custodied`), lays each held hull on a copy of the record as a one-cell object
+  (`with_held_walls`, `:527–554`; the record is never written, `:526`), tells the site `HELD_OUT`
+  (`:512`), and admits everyone else; the check-out is all or nothing (`:393–407`). Every entrant,
+  cored or not, is sealed on the ROM over its epoch (`custody_unit`, `:647–700`, `seal_rom_for`
+  `:677–690`; `Controller::Mind` with no pilot, `:668`): the field never reads S.4a's dispatch seal
+  (no `DispatchSeal` reader under `field/`). The join refuses a `SealEngine::Scripted` seal
+  (`arena/join.rs:130–131`), the task says "an IC field carries no licensed mind until doc 23
+  S.4b" (`arena_task.rs:742`) and installs runners from `sources` the field never passes
+  (`:753`, `:765`; none under `field/boot.rs`). An arrival excludes held-out hulls
+  (`field/carrier.rs:257`) and is sealed by the same `custody_unit`. A field resumes from its live
+  record and snapshot (`field/boot.rs:145–290`; re-joining `arrived` rows the snapshot predates,
+  `:185–195`), voids from the last snapshot (`:293–302`), snapshots every
+  `[tacsim.arena].snapshot_ms` of arena time (`arena_task.rs:101–124`; `field/mod.rs:338–367`),
+  and at demotion checks every unit in through the IC condition plan (`field/close.rs:280`) —
+  carrying no mind memory home (no `memory` under `field/`). Since doc 36a §11 row 1 the walls are
+  known to be rebuilt only at admission; PR #340 (open) puts them on the live record
+  (`FieldLive::held`, `admit::ground_with_held`).
+- **The surface and the ship.** S.4a seals the held mind at the launch's dispatch
+  (`surface/dispatch.rs:363–446`, `SortieId::ic(tv, launch_ic)` `:398`; `seal_held` `:303`),
+  carries it on the act (`excursion.rs:728–734`) and the open epoch (`OpenSortie.seal`,
+  `:1283`), and leaves it dormant: "no IC claim opens — the claim book's Open and Close and the
+  pool seat land with the moving-anchor custody design" (`dispatch.rs:13–15`). The dispatch's
+  `Admitted { class, host, count }` records the pool admission (`black_box.rs:138–152`, D-23-8).
+  The only cored hull is a rig (M8b cores the TV; the Dray is Class 0, `dray.json:200`; "a cored
+  ship" waits, 17h §4), so the ship's epoch (`port/epoch.rs`) seals the ROM and carries no claim.
+- **The `abi`.** `MindSeal.abi` (`arena/mind_seal.rs:80`) records `MIND_ABI`
+  (`minds/mod.rs:202`, `rhai=1.26.0;api=7;stock=3`). The OOC resume refuses a differing seal by
+  name (`match_/resume.rs:676–700`, `ResumeRefusal::MindAbi` `:683–688`). `DropCause::Abi` is
+  produced by `Execution::install` (`execution.rs:183–265`; round 2's 23-8 corrected Draft 0.8,
+  which quoted the stale comment at `arena/mind.rs:245–250`, "by NOTHING in the arena"): a
+  retained execution whose `seal.abi` is not this build's installs the ROM runner (`runner()`,
+  `:166–182`), journals `MindDropped { cause: "abi" }` (`:243–248`), sets the row's `dropped = Abi`
+  (`:260`) and cancels any think in flight (`:264`); `IcRetainedExecution::install` calls it
+  (`host.rs:188`), and the player sentence is ready (`arena_bridge.rs:5787`). Three things sit
+  around that check: `install` first requires the arena's unit to carry the claim's own seal
+  (`u.seal == self.seal.seal_ref()`, `:184–190`); `runner()` fails outright when `RhaiRunner::new`
+  cannot compile the retained source at the current ABI (`:170–177`); and the four-owner audit
+  compiles every retained row at boot (`audit.rs:133–135`), one failure failing the whole book's
+  load, which the Roll's commerce audit takes as one `?` (`commerce/audit.rs:528–529`).
+  `MindState.memory` is the mind's bytes (`arena/mind.rs:586–590`).
+- **The pool.** `pool_for`, `load_of` and `admit_side` (`match_/pool.rs:59`, `:71`, `:143`) are
+  read at the lobby and a match's check-out only; nothing under `field/` reads them. The think
+  pool is one per process (`minds/pool.rs:1–35`).
+- **Testimony.** `EarnedContacts` is a per-author ring of 256 (`minds/earned_contacts.rs:18`,
+  `admit` `:39–46`, `has_earned` `:51–56`), registered with the claim
+  (`registry_inspection/mod.rs:249`), "no producer yet", fed in design "from the author's own
+  `Detected { viewer == me }` in an IC fight, persisted beside its RAM mirror" (`:4–11`); the only
+  consumer is `@mind/claim`'s observer rule (`registry_inspection/claims.rs:53`, `:99–103`). The
+  field's ledger already writes `Detected` and `Classified { viewer, contact, target }`
+  (`arena/ledger.rs:168–190`).
+
+### 17.2 The anchor — D-23-11, D-23-12
+
+**The claim's anchor is the hull's hangar as §2 defines it, named by id, and the claim's lifetime
+is the hull's epoch — D-23-11.** For a rig that is the bay of the carrier it launched from — the
+`Hangar::Bay { hull, slot, sortie }` the `mind_sealed` line already names (S.1's L7, S.2's V4) — and
+for a cored ship later it will be the port's berth. A claim is a custody record over an epoch, not
+over a place: it opens at the launch's `go`, two fires before the epoch (D-23-21, §17.3), and
+closes with the epoch's close — or with the launch's cancellation when no epoch follows — by the
+four kinds the two protocols share (`IcCloseKind`, `EventKind`, `records.rs:55–60`), so it needs
+no image of where the hull stands and no domain to retire.
+"Moving" is therefore not a property the claim tracks; it is the list of what may happen to the
+hangar and the hull while the claim is open, each already ruled elsewhere and each leaving the claim
+where it is:
+
+- **A voyage leg.** A rig's epoch is one excursion (D-23-3) and a carrier cannot lift with a rig
+  out (D-20-7, D-23-4), so no claim is open on a rig riding in a bay. The one exception is doc 32
+  F-6's live leave-behind lift (`field/carrier.rs:25–27`, `exit.rs:22–28`): the carrier leaves the
+  field and the site; the rig stays in the field with its epoch and claim open, as a rig staff
+  `close`d with it out does (S.3), and the claim closes when the rig's epoch does — `RecoveredToBase
+  { base: <the recoverer> }` when a second carrier homes it (S.3's A4), or `Destroyed`.
+- **An F-6 arrival mid-field.** The arriving carrier's rigs are `Interior` to its bay with no epoch
+  open, so no claim; the carrier itself has no core (17h §4) and joins on the ROM as today (doc 36
+  §11). Nothing in the claim path moves.
+- **A lift-out by F-6 departure** is the first bullet seen from the carrier: its own ship epoch
+  stays open (S.2) and carries no claim.
+- **A wreck.** A carrier wrecked with a rig out leaves the rig's epoch open (S.3's A6; GC.3 wrecks
+  the bay's rigs, `field/close.rs:383`, and closes nothing of a rig on the ground); the claim
+  stays open with it and closes `Destroyed` only when the rig's own hull is irrecoverable (GC.3's
+  `close_destroyed`) or by recovery. A rig's own wreck inside a field closes its epoch `Destroyed`
+  in the close's bundle (S.1 as amended by GC.3), and the claim's Close follows it (§17.3).
+- **The site** is never the anchor: a site is the field (D-23-3), and the field moves the hull
+  under its own custody mark (§17.4).
+
+**S.4b opens claims for rigs only — D-23-12.** The ship's epoch seals the ROM and carries no claim
+until a cut cores a ship (17h §4); when one does, D-23-11 holds unchanged with the port's berth as
+the hangar, which moves less than a bay. A carrier's F-6 arrival and departure, and its wreck,
+therefore touch no claim of its own in S.4b.
+
+### 17.3 The production Open and Close — D-23-13, D-23-14
+
+**Who produces `HostTransition`.** The surface host — the same composed provider that opens and
+closes the epoch (`tacsim_surface_done` and the staff recovery, S.1's L2) — and nobody else: not the
+voyage (no claim rides a ship, D-23-12) and not the field (a field admits a claim already open and
+never opens one, §17.4). The `StartPermit` is minted in the prepare of the launch command's own
+dispatch (`+tv/<n> launch mind=… go`: the composed path's step 9, `act/providers.rs:1286–1301`,
+where S.4a seals today), from the holding the word resolved and the rig's live `TacticalUnit`
+standing in its bay, **before the launch act is queued** — D-23-21, below: the claim is the
+reservation; the `CloseEvent` is minted in the prepare of each finish that closes the epoch —
+`+tv/recover`'s `Done` and staff `home` (`ReturnedToBase`/`RecoveredToBase`, S.1, S.3), the
+second-carrier completion (S.3's R1), GC.3's `close_destroyed` (`Destroyed`) — and in the
+cancellation of a launch whose claim opened but whose ramp never ran (`PoweredDownInBase { base:
+<the hangar's hull> }`, the kind the protocol has for a hull that never left) — with the kind that
+finish writes, the hull as it stands, and a `sequence` that is the epoch's close ordinal (1). `fixture_start`/`fixture_close` and `ic_integration_tests`' stories stay as the claim
+path's own gate; `participant.rs` exports the constructor to the surface host under a `pub(crate)`
+seam that only the surface's prepare can reach (the module's own rule, `:21–23`: "a later host
+must supply its actual transition before any permit is minted").
+
+**The Open is the host's own commit as the operator on the fire after the launch's `go`, before
+the ramp; the Close is the same on the fire after the finish that closed the epoch; the rig record
+is their cursor — D-23-13, as amended by D-23-21.** The seal participant admits only its own two
+actions (`participant.rs:95–102`) and the provider's ticket is a self-action of the actor
+(`provider.rs:59–72`), so neither can ride another provider's bundle; both are submitted the way
+S.2's epoch arm submits `tacsim_voyage_epoch`: at most one claim transition per rig per fire, as
+the operator through `Fire::as_principal` (the principal per D-23-5: the excursion's operator),
+the ticket read off the provider's offer. **The ordering is the claim first, the epoch second**
+(Draft 0.10; Draft 0.8 had it the other way round, and round 2's 23-1, 23-2 and 23-5 each found
+the rig that order leaves on the ground with no claim, §17.5 and §17.4): `go` resolves the word,
+mints the `StartPermit` with the rig `Interior` to its bay, enqueues it, and lands in one bundle
+the cursor `RigRecord.claim = Opening` and the launch act **queued behind the claim**
+(`RigRecord.queued`, SM.8's slot, `excursion.rs:1299–1313`, gaining the launch's kind and its
+params) — the command still answers `Queued.`; the next fire submits the Open; the fire that
+observes the book's active row moves the cursor to `Open` and starts the queued act, whose finish
+opens the epoch and prints the claim's own seal on the `mind_sealed` line (D-23-14). The epoch's
+close finishes land `Closing` on the cursor, and the next fire submits the Close.
+
+**The cursor lives on `RigRecord`, beside `sortie` (`excursion.rs:1242`), never on `OpenSortie`**
+(round 2's 23-4): every path that closes an epoch `take()`s the `OpenSortie` — the recover's finish
+(`act/providers.rs:2667`), the second-carrier completion and the staff home (`recovery.rs:907`,
+`:1043`, `:1066`), the salvage load (`tow.rs:1619`) — and a `sortie` left `Some` to carry a cursor
+would trip the relaunch refusal "that rig's last trip is still open" (`providers.rs:1122–1135`,
+`:2647–2658`), the DT launch's guard (`detachment/sortie/prepare.rs:616`) and the home's parked
+test (`recovery.rs:481`); and under D-23-21 there is no `OpenSortie` at the Open at all.
+`RigRecord.claim: Option<ClaimCursor>` — `Opening { operator, licence, since_ic, tries }`, `Open {
+open: CommitToken, operator }`, `Closing { open, kind, operator }`, `Closed { open, close:
+CommitToken }`, `Refused { reason, at_ic }` — serde default `None` for a rig with no held mind, so
+schema 1 stands and every S.1–S.3 record decodes byte for byte. It carries the operator because
+the paths that close an epoch also clear the excursion (`tow.rs:1637`) and take the `OpenSortie`
+that named them (`:1260`), and the Close is submitted as the operator. `Closed` and `Refused` are
+terminal and stand until the operator's next `go` replaces them; a `go` over an `Opening`, `Open`
+or `Closing` cursor is refused ("that rig's mind claim is still open"), the relaunch guard the
+claim needs, as `sortie` already gives the epoch one. Under Q-23-21's alternative a rig recovered,
+homed or salvaged while its claim is still owed ends `Refused { reason: "epoch ended before the
+claim opened" }` — a terminal tombstone the relaunch cannot overwrite without a new `go`, so no
+claim ever opens over a hull back in its bay and the operator reads why; under the default no such
+rig exists. The next surface fire finds every `Opening` and `Closing` cursor, enqueues the permit
+it re-mints from the record and submits.
+
+**DT flights carry no claim** (round 2's 23-10): `+sortie/launch` keeps its `OpenSortie` on
+`Flight.epoch` (`detachment/sortie/model.rs:212`, `prepare.rs:772–773`), seals the ROM alone
+(`prepare.rs:868–874`, no `mind=`), and so has no cursor to scan; a scan of `RigRecord.claim`
+misses nothing today. It becomes real the day doc 40's `+sortie/launch` reinforcement gains
+`mind=`: `Flight` then takes the same cursor, the same protocol (D-23-23) and the same producer. **The seam never moves in the claim's own commit** (round
+2's 23-6): the capacity owner admits an Open or a Close only as a transaction holding exactly one
+typed mutation, the Roll's claim row (`mush-core` `terminal_capacity/ic_claim.rs:516–517`, "IC
+exact sole typed target"); a transaction's `mutations` span every owner and family
+(`action_state.rs:3770–3775`) and `tacsim.excursion` is one of them (`port/families.rs:671–690`);
+and the four owners' images must be exactly four, all under the claim's own action (`mush-core`
+`participant.rs:1117–1135`, `require_exact_ic`). So the record moves on the fire that **observes
+the committed row**, in the surface tick's own write: the Open's seam when the book's
+`active[unit]` names an open token (`state.rs:16`, `:109`) — to `Open { open }` — and the Close's
+when `rows[open].closed` is set. Nothing matches on a request id: the inbox's ids are random RAM
+(`host.rs:288`, `:307`), `request_used` (`state.rs:93`) answers only for a request the book has
+already admitted, and a reboot forgets every pending one. A fire that finds the book already
+holding an active open for the hull enqueues nothing and moves the seam; `IcHost`'s
+one-pending-per-actor guard (`host.rs:247–249`) and `MAX_PENDING` are capacity, never state, and
+a refused enqueue is retried next fire. So a re-run fire mints nothing
+twice, a reboot between `go` and the Open, or between a close and the Close, re-owes it from the
+record (the RAM inbox is empty at boot by design, `ic_sortie/boot.rs:11–12`: "no closure is
+inferred from a reboot"), and the window between `go` and the ramp is two fires plus deferrals —
+V1's accepted window (S.2) once more, spent in the bay.
+
+**What a restart does.** (i) Between `go` and the Open: the cursor says `Opening`, the launch act
+is queued behind it, the rig is in its bay; the next fire re-mints the permit from the record and
+the holding and submits — reading the holding again is the same admission, since the rig has not
+moved and no claim has opened. (ii) Between the Open and the ramp: the claim is durable at its
+commit (the Roll's row and the four owners' documents); the fire that observes it starts the
+queued act. (iii) Between the finish and the next field snapshot, with the rig on the surface: the
+excursion resumes as S.1's restart test already proves; nothing to re-do. (iv) With the rig in a
+field whose live record names it and whose snapshot predates its join: `boot::resume` re-joins it
+(`field/boot.rs:185–195`), installing the retained execution (§17.4); with no snapshot at all the
+field voids from the check-out as it went out (`:293–302`) and the rig stands on the surface,
+dormant, its claim open, until the next promotion. (v) Between an epoch's close and the Close: the
+cursor says `Closing`; the rig is in its bay, in a recoverer's, or a wreck; the next fire closes
+the claim. The licence's seat is held through every window, which is the point of a durable
+cursor, and no window has a rig out of its bay without a claim.
+
+**One seal per epoch — D-23-14.** D-UM-45 says the seal is per sortie and S.4a already takes it at
+the dispatch; `Execution::capture` seals the mind a second time at the Open (`execution.rs:102–126`)
+because the OOC fixture had no earlier seal. Draft 0.8 had S.4b capture the claim's `Execution`
+from the dispatch's seal, which round 2's 23-2 found has nothing durable to capture from:
+`DispatchSeal` is `facts: SealFacts` and `licence` (`dispatch.rs:38–47`), the act carries that
+(`excursion.rs:733`) and the epoch record keeps the facts (`OpenSortie.seal: Option<SealFacts>`,
+`:1283`) — the line's fields (`black_box.rs:171–200`), not the `MindSeal` and not the source — so
+a capture on a later fire would read the holding again, a second admission over a source that may
+have been edited or withdrawn since. **Under D-23-21 the Open's capture is the one seal**:
+`Execution::capture` at `go` seals from the holding the word resolved, under `SortieId::Ic { hull,
+at_ic }` with the book's ordinal on `Opening.transition`, and the claim row retains it whole —
+seal, source, arena configuration, class table (`execution.rs:22–29`) — under the four owners'
+documents, which is the durable execution and admission identity the finding asks for. The act
+carries the claim's open token (`DispatchSeal.open: Option<CommitToken>`) and the `mind_sealed`
+line's facts are taken from the claim's seal, so the claim's `seal_digest` equals the line's by
+construction and an inspection reads one seal; `seal_held` (`dispatch.rs:303–335`) is no longer
+called for a held mind. Where the dispatch still seals on its own — a draft (`mind=draft:`, which
+opens no claim) through `seal_held`, a lapsed or impounded hull through `seal_rom` (`:341–361`) —
+it must pass the hull's armament summaries as `Execution::capture` (`execution.rs:81–87`) and the
+field's `custody_unit` (`admit.rs:713`) do, not the empty list both pass today (`:317`, `:352`;
+"a rig carries none", `:298`, which the escort disproves: armed and cored, `tv_escort.json:165–182`,
+`:205–211`), and the DT launch's `seal_rom_for` the same (`detachment/sortie/prepare.rs:868–874`);
+as it stands every dispatch seal's digest differs from the field's for an armed rig, and a held
+seal taken with an empty list could never equal a claim's. `Execution::validate` and
+the book accept `SortieId::Ic { hull, at_ic }` as the seal's sortie (`execution.rs:148`,
+`state.rs:38–44`; S.1's L1 deferral). The book's transition ordinal then needs a field of its own
+(round 2's 23-7), because today it is read off the seal and nowhere else: `Opening` has no
+`transition` (`records.rs:89–107`, `deny_unknown_fields`) where `Closing` carries one (`:138`), and
+every site reads the Open's ordinal as `seal.sortie.as_match_packed()` — the book's load
+(`state.rs:38–44`) and its `opening` (`:109`), the participant's `sortie()` (`participant.rs:138–148`,
+`unwrap_or(0)`) and `transition()` (`:149–154`), the Close's `transition <= sortie` check
+(`records.rs:193–198`), the audit (`audit.rs:104`), and the Roll's writer, which requires
+`seal.sortie() == seal.transition()` (`writer.rs:221`) and mints `SortieNumber::try_from(seal.sortie())`
+(`:275`). **S.4b adds `Opening.transition: u64`**, the book's next ordinal, set by the book's
+`opening` and stored on the row — a book-format bump, fine pre-launch (the stories re-seed) — and
+every site above reads the ordinal from it: the load orders by it, `sortie()` returns it, the Close
+compares against it, the audit compares it with the Roll's `claim.sortie()`, the writer's equality
+reads it, and the Roll's `SortieNumber` is minted from it, so the Roll's row formats do not move.
+`seal.sortie` is then the epoch's id alone, equal on the claim and on the `mind_sealed` line. The
+compile-before-admission step stays (`:134–137`).
+
+**Whose hull — D-23-22.** The Roll's reader admits the Open only for a hull titled to the
+dispatcher: `TitleFence::capture(world, unit, actor)` (`reader.rs:283`) reads the economy's asset
+and requires `title_owner == Object(actor)` with no scope (`:66–67`). No rig in the stock world is:
+an Occator lease titles the rig to the lessor's organization under its scope
+(`port/vehicle.rs:821–830`, `issue_title(…, Organization(lessor.org), Some(root_scope))`) and names
+the lessee only on the lease (`TvLease.pilot`, `port/tv.rs:1058–1098`); a rig bought out of the
+Trust is the first a character holds title to (`port/buyout.rs`, `TitleHeld { hull, Trust }` then
+the transfer to the pilot). So a licensed captain on a leased escort passes `+tv/<n> launch mind=`
+as built and would fail the Open (round 2's 23-3). **S.4b refuses the combination at `go`**: a
+`mind=` word over a hull not titled to the actor is refused with one sentence ("{mark} is
+{owner}'s hull; a licensed mind flies a hull titled to you until the Roll admits a lease"), before
+any permit is minted, and §17.10's story runs over a bought-out rig. Lease authority is the Roll's
+own cut after S.4b, **S.4c**: the reader gains a second fence beside the title's, `LeaseFence {
+lease, lessor, lessee: actor, term_ends_ic }`, captured from a live `TvLease { status: Active, pilot
+== actor }` under the lessor's title into the admission facts and audited like the title's revision
+(a lease ending mid-claim is the lessor's repossession, which closes the epoch and the claim as a
+home does); the exclusion's hangar check is unchanged, since the lease names the bay. An org-held
+licence (Q-23-19) and a leased hull are the same shape of question and the same owner's cut.
+Q-23-22.
+
+### 17.4 Physical custody while the hull moves — D-23-15
+
+**IC custody means "moved only by the epoch's hosts", not "frozen in a base" — D-23-15.** The
+exclusion's Open records the hangar (the bay's hull and slot) and the launch's id in place of the
+`BaseImage`, and admits an Open for a hull **`Interior` to that hangar** — the OOC shape's own
+requirement (`ic_exclusion.rs:644–647`, "not in a configured base") with the bay in the configured
+base's place, met rather than let go now that the claim opens before the ramp (D-23-21; the M8e
+builder's second reason was a property of the Open's timing) — with no `ConfiguredIcBase` at all
+for a rig (the `ic_base` registration and `MAX_IC_BASES` stay for the fixture and for a port hangar
+later). Its freeze is re-scoped from every placement write to **re-anchoring**: `check_plan`
+(`ic_exclusion.rs:1021–1047`) admits the launch's own re-parent out of the hangar onto the domain
+its carrier is settled on (the ramp), a pose write on the hull's current domain, and a re-parent
+`Interior` back into the claim's own hangar or into a recoverer's bay (S.3's second carrier), and
+refuses every other change of `SpatialParent` (a staff teleport, a transfer's placement, a load into
+a stranger's carrier) and any retire of the domain the hull stands on; the boot check (`:960–995`)
+requires the hull to stand in its hangar, on a domain or in a bay the record allows, not at the
+Open's pose. On the tactics side the field's check-out admits an IC-custodied
+hull whose claim is the IC host's (`custody.rs:160–163` relaxed for a `DeployedMark::field`,
+`deployed.rs:64–84`), and the two custodies coexist: the IC claim says who the hull's mind is and
+who holds its seat for the epoch; the field mark says who moves it now. A field is the lawful mover
+while its mark stands (the arena's poses come home at check-in, Q-CF-31), the surface tick while the
+rig is out of a field (its drives and legs, `mush_sim::place` on the site's domain), and the
+recover's finish for the one re-parent into the bay. Mutation under the claim is the hosts' own
+(the IC condition plan at check-in, `field/close.rs:280`; repairs in a bay are the epoch's close and
+beyond), so **the Close's physical image is the live hull**: the Close carries an empty
+`UnitMutationPlan` fenced on the live revision (as the fixture does, `participant.rs:538–542`), the
+identity check compares the live unit's object and lineage, not its bytes, with the Open's
+(`:310–316`), and custody's `project_close_unit_digest` (`ic_custody.rs:218`) projects over the
+live unit. The Open's refusal of a hull under a deployed mark (`ic_exclusion.rs:605`) stands and
+is never met: a claim opens in the bay, before the launch, never on the ground and never inside a
+field.
+
+**The pending-launch protocol — D-23-23 (round 2's 23-5 and X-1; one contract with doc 40
+§4.4).** Doc 40's launch rule checks a reinforcing rig out under the field's mark at the act's
+landing and offers its Join at the ramp (its Q-40-19, doc 40 l.262–274), and the exclusion refuses
+an Open under a mark (`ic_exclusion.rs:605`): with the Open on the fire after the finish, as Draft
+0.8 had it, a reinforcement's claim could never open. Under D-23-21 the two rules meet in one
+order, for a carrier on its pad at promotion and for one arrived by F-6 alike: (1) **claim** —
+`go` mints the Open with the rig in its bay, where no mark reaches, and queues the ramp behind it;
+a refusal the host reports retryable (`IcSubmissionState::Retryable`, `host.rs:87–93`) is retried
+each fire up to `[tacsim.minds].claim_tries` (8, provisional), and a refusal for good, or the
+bound, cancels the queued act with the Roll's word and `Refused` on the cursor, nothing having
+left the bay; (2) **landing** — the ramp act runs as today on the IC clock (`LAUNCH_S`, doc 40
+§4.4) under doc 40's launch cycle; (3) **check-out and join** — at the landing the field checks
+the hull out under its mark and offers the Join (doc 40's rule; its 40-9 moves that check-out to
+the `tacsim.field` tick, which changes nothing here), reading the cursor: `Open` seals the claim's
+`MindSeal` and installs the retained execution at the join (§17.6, §17.10), anything else seals
+the ROM as every entrant today; the field never opens, waits for, or closes a claim; (4) **a
+refused join** goes back aboard and is offered again at the next tick (doc 40 Q-40-20) with its
+epoch open and its claim untouched — a bay is the claim's own hangar, so that re-parent is the one
+the freeze admits; (5) **abort** — a launch cancelled after its Open and before its ramp closes
+`PoweredDownInBase { base: <the hangar's hull> }` on the next fire, and a ramp that lands nobody
+(`NeverLeft`) the same. **Doc 40 Draft 0.3 writes the protocol into its §4.4 in six steps under
+Q-23-21's alternative** (the Open after the finish; its message of 2026-11-03 crossed this
+draft's), and doc 23 carries those six as that alternative's shape, so whichever way the owner
+rules both docs already hold it: (1) *accepted* — at the prepare the cap over one count (ground
+plus pending rows, doc 40 Q-40-24), the launch cycle's slot and, for a licensed hull, the licence
+and compute seats are taken and recorded on a pending row of the site record and on the dispatch,
+which captures the `Execution` whole onto the act (boxed) so the later Open opens from it and
+never re-reads the holding (23-2 under this order); (2) *landed* — the finish puts the hull at
+the ramp and opens the epoch, no mark, no join, a pending entrant counted by its row; (3) *claim
+opened* (licensed only) — the next surface fire opens the claim with the hull on open ground
+under no mark; (4) *checked out and joined* — the field tick (`field/admit.rs:120–121`, beside
+`note_arrivals`/`join_arrivals`, the one caller with a `Ctx`) takes each pending entrant whose
+claim is open or needs none: `custody::check_out` under the field's mark, the Join at the ramp,
+`FieldLive.units` and the retired pending row in one batch; (5) *retried* — a refused join takes
+the check-out back (`check_in(…, None)`, `carrier.rs:523`'s pattern), the hull goes back aboard
+with its epoch and claim unchanged and the pending row holding its count, and the next tick puts
+it down again; (6) *aborted* — the field demotes, the carrier is wrecked or the operator cancels
+before the join lands: the hull stays aboard, the row, the slot and the seats are released, and
+an open claim closes with the epoch as `ReturnedToBase { base: <its own carrier> }`, the staff
+home's precedent for a hull put back into its own bay (`recovery.rs:1043–1048`; `RecoveredToBase`
+names a recoverer that is not the hull's own hangar), while a claim still owed takes 23-4's
+tombstone. Under the default, steps 1 and 3 collapse into the Open in the bay and the pending row
+carries the cap and the cycle alone; steps 2, 4, 5 and 6 read the same under both. The acceptance
+story is shared either way: a licensed reinforcement into a running field (§17.10; doc 40's FR.3
+story).
+
+**Salvage under a claim.** A hull under an open claim that a stranger's tug loads (GC.4/GC.5's
+salvage custody row, `surface/claim.rs`) is the re-parent the freeze would refuse. The default is
+to admit it and close the claim at the load's completion `RecoveredToBase { base: <the carrier> }`
+naming the recoverer, exactly as S.3's second-carrier home closes a rig's epoch at the placement
+(R1): the IC claim is a custody record, not a title, and the salvage row and the Registry's
+inspection at the next berth are where a stolen mind is found (M8's channels). Round 2's 23-11
+checked that close against the four owners and found it closes as written: `EventKind::validate`
+refuses only `base == 0` or `base == unit` (`records.rs:70–79`), the Close checks the event's
+actor against the invocation's alone (`participant.rs:302`), and neither the exclusion nor the
+capacity owner compares the Close's actor with the dispatcher (`ic_exclusion.rs:758–768`,
+`ic_claim.rs:544–563`); `complete_load`'s `RecoveredToBase { base: carrier }` (`tow.rs:1619–1630`)
+is the kind the cursor carries to the next fire, submitted as the operator the cursor kept
+(23-4). Q-23-11.
+
+### 17.5 The pool seat — D-23-16
+
+Two seats are called "the seat" in this doc's history and they are different things. **The licence
+seat** is the Roll's: a paid licence's `PaidSeats { seats }` or an owner's `OwnedDispatch`
+(`reader.rs:127–133`), bound by the claim from Open to Close, one hull per seat (the story at
+`ic_integration_tests.rs:1095–1098`). S.4b gets it with the Open, in the bay, and holds it through
+every window of §17.3; a second `go` under the same licence while a claim is `Opening` or `Open`
+is refused at the dispatch with the Roll's word (the reader's `PaidSeats` count over the book's
+active rows and the inbox's pending Opens), before any rig leaves a bay — literally so under
+D-23-21, since no rig leaves before its claim is active. **The compute seat** is D-UM-36's: a hull
+loads its mind's class ceiling against a deterministic allotment, "admitted at the startup in the
+hangar or base, never mid-sortie, a hull already out never evicted", with a region's split left to
+"the corridor's design" and, by Q-23-4 (accepted), rationed by the region's de facto holder as a
+published allotment, recorded and never refused until a mind thinks IC.
+
+**The compute seat is the site's, counted at the Open, held for the claim, and charged only in a
+field — D-23-16.** The dispatch already records `Admitted { class, host, count }` (`black_box.rs:138–152`);
+S.4b makes the count a sum of `load_of(class)` (`match_/pool.rs:71`) over **the book's active
+claims whose hangar stands at the site** (`IcSorties.active`, `state.rs:16`; the hangar on the
+exclusion's image, §17.4) plus the one being opened, against `pool_for` of those (`:59`, the stock
+keys `config.rs:798–808`, read per site: the lead's reading of "a region's pool", a site being the
+region a field runs on), and **refuses at `go`, with the arithmetic** (`PoolRefusal`'s wording)
+once the sum would pass it — D-UM-36's "refused there before the hull leaves", which S.4b is the
+first cut able to honour. Round 2's 23-1 asked what reserves the seats of a launch in flight
+(`dispatch::dispatch`, `dispatch.rs:373–441`, checks neither seat today, and Draft 0.8 counted open
+epochs, which a rig on the ramp was not yet): under D-23-21 nothing needs to, because **the claim
+is the reservation** — a hull counts from its Open and its Open precedes its ramp; the inbox's
+pending Opens (`host.rs:247–249`, one per actor) are counted beside the active rows, so two `go`s
+on one fire cannot both pass, and a `go` the count refuses enqueues nothing. The end state of an
+Open the four owners refuse for good — a lapsed licence, a withdrawn holding, a changed hull — is
+**`Refused` on the cursor with the Roll's word to the operator, the queued launch cancelled,
+nothing having left the bay**: never a hull out on the ground without a claim (Q-23-21). At the stock keys no site refuses below a dozen Class III minds,
+so the gate bites only under an operator's lowered pool or a holder's rationing, and the holder's
+rationing verb is not built here (a later cut; the allotment is a provisional default under the
+owner's economy rule). The seat is held while the hull is out, dormant or not, and spent only while
+its hull is in a field: the field task's think pool is process-wide (`minds/pool.rs`) and its
+admission counts nothing (no `pool_for` under `field/`), so a field never refuses a mind for the
+pool and a hull already out is never evicted. **On the carrier between fields** there is nothing to
+hold: a rig in its bay has no epoch, hence no claim and no seat; a rig out on the surface between
+two fields on one excursion holds its seat and spends nothing. Q-23-12 asks whether the refusal
+starts now or stays recorded-only.
+
+### 17.6 The `abi` drop on resume, and Q-36-44's wall as the fallback — D-23-17
+
+Doc 17 §13's IC rule is unchanged: across a `MIND_ABI` or rhai change a sortie keeps its epoch,
+seal and memory, every mind hull on it drops to the drive ROM, and `MindDropped` is journalled with
+the cause word `abi`, the sealed record keeping the old ABI. S.4b says *where* that happens, because
+an IC hull thinks only inside a field: **the drop is decided per hull at the moment its retained
+execution is installed into a field's arena — admission, an F-6 join, or a field's resume — never
+at boot and never by voiding the field — D-23-17.** The check itself exists (round 2's 23-8):
+`Execution::install` already installs the ROM runner for a seal whose `abi` is not this build's,
+journals one `MindDropped { cause: abi }` and sets `dropped = Abi` (`execution.rs:195–265`), and
+`IcRetainedExecution::install` calls it (`host.rs:188`); the ROM is Standard Doctrine as this
+build ships it, which is what every un-piloted field hull flies today (`admit.rs:668`), and
+`dropped_line` says it to the operator (`arena_bridge.rs:5787`). What S.4b builds is the seam
+around it. (a) The field admits the hull **under the claim's `MindSeal`**: `custody_unit` takes it
+from `IcHost::resume(open)?.seal()` (`host.rs:169`), never from `OpenSortie.seal`, which is the
+line's `SealFacts` and cannot satisfy `install`'s equality (`u.seal == self.seal.seal_ref()`,
+`execution.rs:184–190`); the join then sees a scripted seal with a retained execution behind it.
+(b) A retained source that no longer compiles at the current ABI is treated **like an ABI
+mismatch, per row**: `runner()` falls to the ROM with the compiler's words in the line's `fault`
+(`MindDropped { cause: abi, fault: Some(…) }`) instead of failing (`:170–177`), and the boot audit
+records the row uncompilable (`Record.stale: Option<SmolStr>`, set where `audit.rs:135` fails
+today) instead of refusing the book, so one authored source never blocks every claim's load
+through the Roll's one `?` (`commerce/audit.rs:528–529`); the audit's other refusals keep their
+meaning. The journal line lands on the field's log in its segment; the claim, the licence seat
+and the compute seat stay, the epoch's record carries `dropped: abi` so a second field on the same
+epoch does not journal it again, and the next seal at a hangar is on the new ABI. A field's own resume across the change is
+therefore never refused for a mind (the field's units are the kernel's, Q-CF-33/35, and a void
+would demote every party for one hull's engine); the OOC refusal by name stays the OOC rule.
+
+**Q-36-44's wall is the fallback for an execution that cannot be installed at all**, which is not
+the ABI case: a book that did not load — the audit passes or refuses the whole book, never a row
+(`state.loaded`, `state.rs:100–101`; `audited_state`, `host.rs:191–210`), so every held hull on the
+site is walled together and the operator paged once — or a closed-or-crossed claim (`:182–186`),
+or a cursor the record cannot read. Such a hull is `held_out` as
+GC.1 built it (`admit.rs:338–361`; the walls on the live record once PR #340 lands) — an inert
+obstacle, its claim untouched, the site told `HELD_OUT` — and is paged once a boot. **It leaves the
+wall state when the field ends, or earlier when the hull leaves the site's ground** (a recover or a
+staff home, which the surface tick may still drive under D-23-15); there is no staff verb that
+closes a claim, since the four kinds are the epoch's close and a wall is evidence of a store that
+needs an operator, not of a hull that needs a word. No rig reaches the ground with its claim
+owed (D-23-21), so admission never waits for a claim: a cursor other than `Open` seals the ROM as
+every entrant does today, and Draft 0.8's one-tick wait (beside the ramp handoff's,
+`admit.rs:301–313`) is withdrawn with round 2's 23-5. Q-23-13 and Q-23-14.
+
+### 17.7 The long-leg snapshots — D-23-18
+
+Doc 17 §22 sized "long-sortie snapshots" for a region sim task running a mind for hours; in the
+S.4b shape a mind runs only inside a field, whose snapshot is the kernel's at
+`[tacsim.arena].snapshot_ms` of arena time and carries every `MindState` row whole — `think_seq`,
+the pending answer, the memory bytes (D-UM-23, `arena/mind.rs:580–605`) — beside the live record
+(Q-CF-33: "the snapshot cadence is the kernel's"), and outside a field the mind is dormant with
+nothing to snapshot beyond its seal (17h §4). What a long leg loses today is the **memory between
+fields**: demotion and exit check a unit in through the condition plan and drop its `MindState`
+(no `memory` under `field/`), so a mind that fought at dawn and again at dusk on one excursion
+remembers nothing of the morning, against §13's "keeps … its memory bytes". **The long-leg
+snapshot is the mind's memory carried on the epoch's record — D-23-18.** At every check-in (exit,
+demotion, a void's return from the last snapshot) the host writes the unit's `MindState.memory`
+and `think_seq`, and its `dropped` cause, onto `OpenSortie.mind: Option<CarriedMind>` (serde
+default; bounded by `memory_bound`, the per-class cap doc 17 §23 names) in the check-in's own
+bundle; the next install on that epoch seeds the row from it, so the mind resumes its own memory
+and its `think_seq` is monotone across the epoch; a field's own cadence stands and no second
+snapshot mechanism is built. The record is bounded by one rig's memory cap, which the M7 stack-size
+lint will see (the rig record rides many a tick's frame, `excursion.rs:730–733`: boxed, as the
+dispatch seal is). Q-23-15 asks whether memory is carried or forgotten at demotion.
+
+### 17.8 The testimony producer — D-23-19
+
+**A field contact is earned when the author's own hull classified the target by its own sensors
+in an IC field, and the field's chunk reader feeds the index as the line lands — D-23-19.**
+`EarnedContacts::admit(author, target)` (`earned_contacts.rs:39–46`) is called for every
+`Classified { viewer: <the unit>, target }` line (`arena/ledger.rs:182–191`) **of the field's arena
+log** — `field.<site>.<ordinal>.<segment>` (`field/mod.rs:330–335`), which the bridge's `on_chunk`
+routes there (`arena_bridge.rs:3701–3704`) and parses once for every reader (`:3933–3934`); round
+2's 23-9 corrected Draft 0.8, which read the hull's own box, `hull.<n>` (`black_box.rs:67–80`),
+where only `MindSealed` and `SortieClosed` are ever written (`:317`, `:381`). The producer is one
+more reader of the parsed chunk, run as the chunk lands rather than at check-in, so a void loses
+at most the unshipped tail. **Provenance**: only a classification the viewer's own pass made
+counts — the line carrying its `classify:<observer>:<target>:<pass_seq>` draw
+(`ledger.rs:176–181`); a classification that arrived over the comms mesh carries no draw (the
+sharer's pass recorded one) and earns nothing for the recipient, and a `Detected` blip is not
+"saw" (D-UM-55's observer rule is about what the author's sensors told apart). **Author**: the
+ledger records no seat change and `FieldUnit.pilot` is the admission-time pilot
+(`field/record.rs:128–130`, carried in by `custody_unit`, `admit.rs:755–761`), so the author is
+the pilot seated at admission, else the seal's warrant principal (D-23-5), whose instruments the
+mind's sensors are and whose box read is the only other channel that would learn it; a pilot who
+boards mid-field (doc 42's custody) earns from the next admission on, and the doc says so rather
+than inventing an instant the record does not hold. The index is persisted beside its RAM mirror
+as the module's head asks (`:10`): one small document per author, `tacsim:earned:<author>`, the
+ring of 256 (`:18`), written in the chunk's bundle and restored at boot. What M8g needs is exactly this: `@mind/claim` refuses every hull today with the one sentence
+(`claims.rs:99–103`), so the tier-2 remainder 17h M8g lists "To S.4b" — the pending-transfer
+refusal and the IC audit over a draft claim — has no claim to run through; with the producer, an
+author whose rig classified the suspect hull in a field may file, and the two stories run over a
+real claim. The producer needs no licensed mind and no claim: any IC field writes the lines today.
+It is therefore its own small cut (§17.10's S.4b-T), buildable now, beside S.4b rather than inside
+it. Q-23-16 and Q-23-17.
+
+### 17.9 Defect thread versus S.4b
+
+**The defect thread's** (fixed or owed there, not S.4b's): the walls rebuilt only at admission
+(doc 36a §11 row 1; PR #340's `FieldLive::held` and `admit::ground_with_held`, open); S.2's owed
+"a carrier wreck writes nothing to `tacsim.ship_epoch`" (doc 37 §5.5); the `LeftUnit` instants and
+the party-letter collision (36a §11 rows 9 and 2, fixed in #340 and lane 5); GC.1's untested
+"admission run with a held hull on the ground" (doc 36 §9, the gates: "no tacsim rig turns on the
+four-owner IC custody") stays untestable until S.4b's harness exists and is then S.4b's first gate,
+not a defect.
+
+**S.4b's** (this section, built as §17.10 says): the production `HostTransition` and the
+`RigRecord.claim` cursor (D-23-13, 23-4); the one-seal capture and the book's IC id (D-23-14); the
+exclusion's re-scoped freeze, the custody coexistence and the live-hull Close (D-23-15); the
+compute seat's count and refusal at `go` (D-23-16); the claim's seal on the admitted unit, the
+per-row compile drop and the wall (D-23-17); the carried memory (D-23-18); the field admitting a held mind's seal in place
+of the ROM (`custody_unit` reading `OpenSortie.seal` and installing the retained execution; the
+join admitting it; the task's `sources`/`install_runners` seam); the dispatch's seat refusals
+(licence and compute); M8g's "To S.4b" stories once S.4b-T lands. **S.4b-T's** (its own cut, may
+start now): the testimony producer and its document (D-23-19). **Neither's** (named here so nobody
+builds them by accident): the holder's rationing verb for the compute pool (after S.4b); the
+org-held licence's claim (M8c B3's `org=`; the Roll's reader admits the actor's own holding,
+`IcAdmissionRequest::own`, and an org path is the Roll's cut, Q-23-19); a leased hull's claim
+(S.4c, the Roll's `LeaseFence`, D-23-22, Q-23-22); a DT flight's claim, until `+sortie/launch`
+gains `mind=` (23-10); a cored ship's claim over a
+port hangar (17h §4); hull cover's withheld departure and zone (§8, unchanged); a staff verb over
+claims (none, §17.6).
+
+### 17.10 S.4b restated
+
+**S.4b — the thinking mind in the field: the claim Open/Close, the seat, the `abi` drop and the
+carried memory (medium-large; after S.4b-T or beside it; the host is the IC field, D-23-20).**
+Through the cut loop (§9), one PR off `main`, the owner merging.
+
+- **Host.** The IC field of docs 32 and 36 is where a licensed mind thinks IC; doc 20 §17's drone
+  phase (reserved, not built, `20-surface-mining.md:2922`) is no longer S.4b's gate and D-UM-47's
+  "lands inside the drone phase's cut" is amended by this section. Q-23-18.
+- **The producer and the cursor** (D-23-13, D-23-21): the surface host mints the `StartPermit` at
+  `go`, with the rig in its bay, and the `CloseEvent` in the finishes that close an epoch and in a
+  launch's cancellation; the launch act queued behind the claim; `RigRecord.claim` and the surface
+  fire's claim arm; the Roll's seat refusal and the compute sum at `go`; `Refused` as the end
+  state.
+- **One seal, the IC id** (D-23-14): the Open's capture as the seal, the act carrying the open
+  token, the line printing the claim's facts (23-2); `SortieId::Ic` accepted by `execution.rs:148`
+  and the book; `Opening.transition` carrying the book's ordinal and every ordinal reader moved
+  onto it (23-7); the dispatch's `seal_held`/`seal_rom` and the DT launch's seal passing the
+  hull's armament summaries; the collision test of S.1 extended to the claim's digest equalling
+  the open line's and the field's.
+- **Custody** (D-23-15): the exclusion's hangar-and-epoch image and re-scoped `check_plan`/boot
+  checks; the field check-out admitting the IC host's own claim; the live-hull Close; the salvage
+  load closing `RecoveredToBase` (Q-23-11).
+- **The field takes the mind**: `custody_unit` takes the claim's `MindSeal` from
+  `IcHost::resume(open)?.seal()` when the cursor is `Open` (23-8), the host installs the retained
+  execution through `IcHost::resume(open)?.install` at admission, join and resume (the `sources`
+  seam carrying the retained source), the join's scripted refusal becomes "a scripted seal with no
+  retained execution"; `arena_task.rs:742`'s sentence goes.
+- **The compute seat** (D-23-16): the site sum at the dispatch, the refusal with the arithmetic,
+  `Admitted.count` as the loaded ops.
+- **The `abi` drop and the wall** (D-23-17): the claim's seal on the admitted unit so `install`'s
+  own check runs, a compile failure as a per-row drop with its `fault`, the audit's `stale` row,
+  the journal line once an epoch, the wall for an unloaded book or a crossed claim, paged once.
+- **The carried memory** (D-23-18): `OpenSortie.mind` written at every check-in, seeded at every
+  install.
+- **Acceptance, through production command paths, at 256 and 512 (doc 38 Q-38-29).** One story in
+  the field story's harness (`tests/shard_9/field_story.rs`: `driving_rig` on Ahuna Flank at 256,
+  Urvara Reach at 512, `:405–416`) composed with M8e's fitted roster
+  (`excursions::stocked_fitted`, `fit(RIG_I)`, `shard_9/ic_sortie_surface.rs:2553`) and the filed
+  commerce world the licensed path needs (`:2794`; M8g's `LaunchComposition`), which is the cut's
+  first task — PR #340 records that the shard_1 field harness composes no IC custody. The story: an
+  operator's bought-out cored rig (D-23-22: titled to the operator, `port/buyout.rs`) launches
+  `+tv/1 launch mind=filed:<n> go` from a Dray-P settled on the pad;
+  the next fire opens the claim with the rig still in its bay (the Roll's row, the four owners'
+  documents, the licence's seat held: a second `go` under the licence on another rig refused by
+  name, a third refused by the compute sum under a lowered `pool_for`), the fire after starts the
+  ramp, and the finish opens the epoch with the claim's seal on the line (`seal_digest` equal by
+  construction); a raider's mark promotes the site; the rig is
+  admitted under its own seal, not the ROM, and thinks (`think_seq > 0` on its row), drives and
+  fires under doctrine's orders, lands one hit and takes one; **a licensed reinforcement** — a
+  second cored rig launched `mind=` from the pad after the first shot — opens its claim in the
+  bay, lands, is checked out and joined under its own seal and thinks (D-23-23; doc 40's FR.3
+  story, the shared one); **a restart mid-field** resumes the
+  field from its snapshot with the mind's `think_seq` continuing and the claim still active
+  (`IcHost::resume` on the open token); the field demotes; the rig's memory is on its epoch record;
+  a second promotion on the same ground re-admits it with that memory; `+tv/1 recover go` exits,
+  closes the epoch `ReturnedToBase { base: hull }` and the next fire closes the claim, the seat
+  released (the second launch now admitted); a reboot between the recover and the Close re-owes
+  and lands it, as does one between `go` and the Open. Beside the story, in-source: a `go` whose
+  Open the four owners refuse for good (`Refused` on the cursor, the queued launch cancelled, the
+  rig in its bay, the operator told once); a launch cancelled after its Open closing
+  `PoweredDownInBase`; the `mind=` word refused over a leased rig with the sentence (D-23-22); the `abi` drop (a seal recorded under `OLD_ABI` as
+  `store.rs:3584`'s test shapes one, installed → the ROM, one `MindDropped { cause: abi }`; a
+  retained source that no longer compiles → the same, with its `fault`, the book still loading);
+  the wall for an unloaded book; the re-scoped `check_plan` admitting a surface drive and refusing a
+  staff teleport; the Close over a damaged live hull. The bot types the player's half over SSH
+  (Q-38-29's default; the bot's vocabulary gains `+tv/<n> launch mind=`). Q-23-20.
+- **Gates.** The claim path's own stories (`ic_integration_tests`) unchanged; the OOC practice
+  hashes unmoved (no OOC arena ever installs a retained execution); `mush-contract-tests`' census,
+  panic budget and restriction lints; the SM.12c cost lane re-run with the claim arm's write
+  (`other.ic_mind_transition`, two per epoch); the M7 stack-size lint on `RigRecord`.
+- **Not in S.4b:** §17.9's "neither's" list.
+
+**S.4b-T — the testimony producer (small; independent; may start now).** D-23-19:
+`EarnedContacts::admit` fed from the field log's own-sensor `Classified` lines as each chunk
+lands (`on_chunk`; 23-9), authored by the admission pilot else the warrant principal;
+`tacsim:earned:<author>` persisted and restored; then
+M8g's "To S.4b" stories (the pending-transfer refusal and the IC audit over a draft claim) over a
+real claim. Test: a rig that classified a raider in the field story's first field may `@mind/claim`
+it after, a rig that only detected it may not, a blind radio recipient — a hull that held the
+contact only over the mesh — may not, the ring survives a reboot, and a bystander who saw nothing
+is refused with the one sentence.
+
+### 17.11 Decisions proposed here
+
+| # | Decision | Status |
+|---|---|---|
+| D-23-11 | The claim's anchor is the hull's hangar by id (a rig's bay: hull and slot; a ship's berth later) and the claim's lifetime is the hull's epoch, opening and closing with it by the four kinds; the claim keeps no image of where the hull stands; a site is never the anchor | **accepted by the owner, 2026-11-03** (Q-23-7) |
+| D-23-12 | S.4b opens claims for rigs only; the ship's epoch carries no claim until a ship is cored, and D-23-11 then holds unchanged | stands with Q-23-7's ruling, 2026-11-03 |
+| D-23-13 | The surface host mints the `StartPermit` at the launch's `go` (D-23-21) and the `CloseEvent` in the finishes that close an epoch; the Open and Close are the host's own commits as the operator on the next surface fire (`Fire::as_principal`), with `RigRecord.claim` as the durable cursor; claim first, epoch second; a reboot re-owes from the record | **accepted by the owner, 2026-11-03** (Q-23-8); **amended in Draft 0.10** by D-23-21 (Q-23-21 open): the Open precedes the ramp |
+| D-23-14 | One seal per epoch: the Open's `Execution::capture` at `go` is the seal, retained whole in the claim row; the act carries the open token and the `mind_sealed` line prints the claim's seal; the book and `Execution::validate` accept `SortieId::Ic`; the book's ordinal moves to `Opening.transition` (round 2's 23-7) and the Roll's `SortieNumber` keeps carrying it; the dispatch's own seals pass the hull's armament summaries | **accepted by the owner, 2026-11-03** (Q-23-9); **restated in Draft 0.10** (round 2's 23-2: the dispatch seal is not durable enough to capture from; under D-23-21 the Open seals) |
+| D-23-15 | IC custody means moved only by the epoch's hosts: the exclusion records the hangar and epoch, admits an Open on the ground, freezes re-anchoring only; the field mark and the claim coexist; the Close's physical image is the live hull | **accepted by the owner, 2026-11-03** (Q-23-10, Q-23-11) |
+| D-23-16 | The compute seat is counted at `go`, with the Open, over the book's active claims at the site plus the inbox's pending Opens, held for the claim, spent only in a field, refused at `go` with the arithmetic under a provisional stock allotment; never refused or evicted in a field | **accepted by the owner, 2026-11-03** (Q-23-12); **restated in Draft 0.10** (round 2's 23-1: the claim is the reservation) |
+| D-23-17 | The `abi` drop is `Execution::install`'s own, run per hull when its retained execution is installed into a field (admission, join, resume) under the claim's seal, to the ROM with one `MindDropped { cause: abi }` an epoch; a source that no longer compiles drops the same way, per row, never failing the book; it never voids a field; Q-36-44's wall is the fallback for a book that did not load or a crossed claim, left when the field ends or the hull leaves the ground | **accepted by the owner, 2026-11-03** (Q-23-13, Q-23-14); **restated in Draft 0.10** (round 2's 23-8: the check exists, the seam around it is S.4b's) |
+| D-23-18 | The long-leg snapshot is the mind's memory carried on the epoch record at every check-in and seeded at every install; the field's cadence stands | **accepted by the owner, 2026-11-03** (Q-23-15) |
+| D-23-19 | The testimony producer feeds `EarnedContacts` from the field log's own-sensor `Classified` lines as each chunk lands, authored by the admission pilot else the warrant principal, persisted per author; it is its own cut, S.4b-T | **accepted by the owner, 2026-11-03** (Q-23-16, Q-23-17); **restated in Draft 0.10** (round 2's 23-9: the field's log, not the hull's box; own-sensor provenance; the admission pilot) |
+| D-23-20 | S.4b's host is the IC field; the drone phase is no longer its gate; its acceptance runs at 256 and 512 with the bot per Q-38-29 | **accepted by the owner, 2026-11-03** (Q-23-18, Q-23-20) |
+| D-23-21 | The claim opens before the launch: `go` mints the `StartPermit` with the rig in its bay and queues the launch act behind the claim; the fire that observes the active row starts the ramp; the claim is the licence and compute reservation, counted with the inbox's pending Opens; an Open refused for good leaves `Refused` on the cursor, the launch cancelled, nothing out of the bay; a launch cancelled after its Open closes `PoweredDownInBase` | proposed, Draft 0.10 (round 2's 23-1, 23-2, 23-5); Q-23-21 |
+| D-23-22 | A `mind=` word over a hull not titled to the actor is refused at `go` with one sentence; S.4b's story runs over a bought-out rig; lease authority is the Roll's next cut, S.4c (`LeaseFence` from a live `TvLease`, audited like the title's revision) | proposed, Draft 0.10 (round 2's 23-3); Q-23-22 |
+| D-23-23 | The pending-launch protocol, one contract with doc 40 §4.4: claim in the bay → ramp → field check-out and Join at the landing reading the cursor (`Open` installs, else the ROM) → a refused join back aboard with the claim untouched → a cancelled launch closes `PoweredDownInBase`; the field never opens, waits for or closes a claim; under Q-23-21's alternative, doc 40 Draft 0.3's six steps with the Open after the landing and the seats on the pending row; the shared story is a licensed reinforcement into a running field | proposed, Draft 0.10 (round 2's 23-5, X-1); under Q-23-21 |
+
+### 17.12 Questions for the owner
+
+**Q-23-7 to Q-23-20: all accepted at their defaults by the owner, 2026-11-03** ("Q-23-7 through
+20 accepted as defaults"). **Q-23-21 and Q-23-22 (Draft 0.10, from the round-2 review) are
+open.**
+
+**Q-23-7 — What the claim is anchored to.**
+- **Decision (accepted default, 2026-11-03):** the epoch, with the hangar named by id (D-23-11): a claim per excursion,
+  opened at the launch's end and closed with the epoch's close kind.
+- **Alternative:** a field-scoped claim, opened at admission and closed at demotion, leaving the
+  fixed-base code as it is.
+- **Why:** doc 17 §13 and §5 make the claim the custody record M8's inspection reads at the two
+  ends of a sortie and the thing that holds the licence seat for its length; a field-scoped claim
+  would hold the seat only while shots fly and leave the hangar ends with nothing to inspect.
+
+**Q-23-8 — Where the Open commits.**
+- **Decision (accepted default, 2026-11-03):** its own commit on the surface fire after the finish, as the operator, with
+  the epoch record as cursor (D-23-13; S.2's epoch arm pattern).
+- **Alternative:** inside the finish's bundle, which needs the seal participant's action check
+  (`participant.rs:95–102`) relaxed to admit the surface's action and the four owners prepared
+  from a foreign provider — and, round 2 found, the capacity owner's one-typed-mutation rule
+  (`ic_claim.rs:516–517`) and `require_exact_ic` relaxed with it.
+- **Why:** the claim path's one-action rule is its security boundary (the module says so at every
+  type), and the accepted V1 window already exists for the ship.
+
+**Q-23-9 — One seal or two.**
+- **Decision (accepted default, 2026-11-03):** one: the claim captures the dispatch's seal (D-23-14).
+- **Alternative:** the Open seals again as today and the record carries two digests.
+- **Why:** D-UM-45's seal is per sortie; two seals on one epoch would make the inspection choose.
+
+**Q-23-10 — The physical freeze.** **(expensive to reverse)**
+- **Decision (accepted default, 2026-11-03):** re-scope the exclusion to re-anchoring and let the epoch's hosts move the
+  hull (D-23-15).
+- **Alternative:** keep the freeze and drop the sim's exclusion from the IC composition for rigs
+  (three owners), relying on tactics custody and the hangar id alone.
+- **Why:** the exclusion is the owner that knows the spatial graph, and a claim that cannot say
+  "not into a stranger's hold" is weaker than the one we have; four owners stay, their reading of
+  "held" changes.
+
+**Q-23-11 — A claimed hull loaded as salvage.**
+- **Decision (accepted default, 2026-11-03):** admit the load and close the claim `RecoveredToBase` naming the
+  recoverer at the completion (§17.4).
+- **Alternative:** refuse the load while a claim is open.
+- **Why:** a claim is custody, not title; refusing would make a licensed mind an unsalvageable
+  hull, and the Registry's inspection at the next berth is where the mind's theft is found.
+
+**Q-23-12 — When the compute seat refuses.**
+- **Decision (accepted default, 2026-11-03):** at the launch, with the arithmetic, under a provisional per-site stock
+  allotment (D-23-16); the holder's rationing verb later.
+- **Alternative:** keep D-23-8's recorded-never-refused until the rationing verb exists.
+- **Why:** D-UM-36's region rule says refuse in the hangar before the hull leaves; S.4b is the
+  first cut that can, and at the stock keys nothing is refused.
+
+**Q-23-13 — The ABI mismatch in a field.**
+- **Decision (accepted default, 2026-11-03):** the hull is installed on the ROM and fights, one journal line (D-23-17).
+- **Alternative:** the hull is walled (Q-36-44's rule applied to the ABI case too).
+- **Why:** doc 17 §13 wrote the IC rule to strand nothing; a walled rig in a fight is stranded in
+  the fiction's eyes, and the ROM is the fallback every other drop uses.
+
+**Q-23-14 — When a walled hull leaves the wall.**
+- **Decision (accepted default, 2026-11-03):** when the field ends or the hull leaves the site's ground; no staff verb
+  over claims (§17.6).
+- **Alternative:** a staff `@tacsim/claim close #hull` that closes the claim `RecoveredToBase`.
+- **Why:** a wall is evidence of a store that needs an operator; a verb that closes claims is a
+  verb that forges a close kind, which the module refuses to export for a reason.
+
+**Q-23-15 — Memory between fields.**
+- **Decision (accepted default, 2026-11-03):** carried on the epoch record at every check-in (D-23-18).
+- **Alternative:** forgotten at every demotion; the mind starts fresh in each field.
+- **Why:** §13 promised the memory bytes across a resume, and a mind that cannot remember the
+  morning's raider is not the mind the operator licensed.
+
+**Q-23-16 — Who earns a mind-flown hull's contacts.**
+- **Decision (accepted default, 2026-11-03):** the seal's warrant principal when no pilot is seated (D-23-19).
+- **Alternative:** seated pilots only; a mind-flown hull earns nothing for anyone.
+- **Why:** the operator reads that hull's box anyway, and D-UM-55's point is that nobody else does.
+
+**Q-23-17 — The testimony producer's cut.**
+- **Decision (accepted default, 2026-11-03):** its own small cut, S.4b-T, started now beside S.4b.
+- **Alternative:** inside S.4b.
+- **Why:** it needs no licensed mind and unblocks M8g's remainder on its own.
+
+**Q-23-18 — S.4b's host.**
+- **Decision (accepted default, 2026-11-03):** the IC field (D-23-20); the drone phase is no longer S.4b's gate.
+- **Alternative:** wait for a drone phase as §9's S.4 bullet and D-UM-47 planned.
+- **Why:** doc 20 §17 is reserved and unbuilt; the field is built, reviewed and running stories at
+  two sizes.
+
+**Q-23-19 — Org-held licences.**
+- **Decision (accepted default, 2026-11-03):** S.4b claims the operator's own filed licence; the `org=` claim waits for the
+  Roll's org admission path.
+- **Alternative:** both in S.4b.
+- **Why:** the reader's request is `own(unit, licence)` and an org path is a Roll change with its
+  own review.
+
+**Q-23-20 — S.4b's acceptance.**
+- **Decision (accepted default, 2026-11-03):** one story at 256 and 512 with the bot typing the player's half (doc 38
+  Q-38-29).
+- **Alternative:** one size, as GC's stories ran.
+- **Why:** Q-38-29 is accepted and the field story already runs at both sizes.
+
+**Q-23-21 — Where the Open commits, revisited (round 2's 23-1, 23-2, 23-5).** **(amends D-23-13,
+accepted at Q-23-8)**
+- **Proposed default:** before the launch — `go` enqueues the Open with the rig in its bay and
+  queues the ramp behind the claim; the claim is the reservation (D-23-21).
+- **Alternative:** keep Q-23-8's order (the Open on the fire after the finish) with doc 40 Draft
+  0.3's six-step protocol (§17.4): the seats reserved at the prepare on the site record's pending
+  row (doc 40 Q-40-24) and converted at the Open, the dispatch capturing the `Execution` whole
+  onto the act so the Open never re-reads the holding, the field tick admitting a pending entrant
+  only once its claim is open, and an Open refused for good aborting the launch by its step 6
+  (back aboard, the seats released, 23-4's tombstone on the cursor).
+- **Why:** three of round 2's findings are one finding — a rig out of its bay whose claim is not
+  yet open: nothing reserves its seats (23-1), the dispatch's seal is not durable enough to open
+  from later (23-2), and the field marks it before the Open can run (23-5). Opening first removes
+  that state instead of guarding it: the seat is the claim's own, the one seal is the Open's
+  capture retained in the book, the exclusion's Open image is a hull `Interior` to its hangar (the
+  OOC shape's own requirement, so the M8e builder's second reason stops being one), and the field
+  finds every licensed entrant's claim already active. The cost is two fires between `go` and the
+  ramp (seconds at rate 24, under a five-minute launch act) and `PoweredDownInBase` for a launch
+  cancelled after its Open — a kind that already exists for exactly that.
+
+**Q-23-22 — A licensed mind on a hull the pilot holds no title to (round 2's 23-3).**
+- **Proposed default:** refused at `go` in S.4b, with the sentence; lease authority as the Roll's
+  next cut, S.4c, the `LeaseFence` (D-23-22).
+- **Alternative:** the `LeaseFence` inside S.4b.
+- **Why:** the reader's fence is title-only by design and a second fence is a Roll change with
+  its own review, as Q-23-19 ruled for the org path; S.4b's story needs one titled rig, which the
+  buyout already makes. The cost is real and is the owner's to weigh: the escort every player
+  flies early is Occator's, so until S.4c a licensed mind flies only a bought-out hull.

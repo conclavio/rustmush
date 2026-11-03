@@ -10,7 +10,9 @@ binding from this draft and CR.0 may start now. **Draft 0.3 folds the second out
 each a "Draft 0.3 (review round 2, 42-n)" note under the question it corrects — 42-1 under Q-42-12,
 42-5/42-8 under Q-42-1 and Q-42-12, 42-2 and 42-7 under Q-42-7, 42-3 under Q-42-6, 42-4 under
 Q-42-5, 42-6 under Q-42-2 — plus 42-9's advice under Q-42-16. None changes an accepted ruling;
-42-4 needed a choice the rulings did not make, asked as **Q-42-26, open**. This is the crew document doc 38 §6 proposes: "new rulings first (the reviewers are right
+42-4 needed a choice the rulings did not make, asked as **Q-42-26, open**. Docs 23 (custody for
+moving anchors), 39, 40 and 41 are merged beside this one; references to them point at the
+merged text, and 42-7's settle path is doc 41's `+debts/pay`. This is the crew document doc 38 §6 proposes: "new rulings first (the reviewers are right
 that none exist); touches ownership and permissions". It is a survey in the form doc 38 used: it
 asks the owner questions, each with a proposed default, an alternative and a reason. "Provisional"
 marks a number to be tuned later under the 2026-10-24 rule. **(expensive to reverse)** has doc 38
@@ -393,7 +395,7 @@ for a fee, or held."
   setting gives each port a governing body; reusing the medical operator would make the Co-op
   Ceres' gaoler.
 - **Draft 0.3 (review round 2, 42-3, shared with doc 41's 41-3): custody when the hull moves.**
-  Doc 41 Q-41-18/19 (PR #352) moves a vacated hull bay to bay (`+bay/stow <hull>=<carrier>`) and
+  [Doc 41](41-restoration-and-the-salvage-loop.md) Q-41-18/19 moves a vacated hull bay to bay (`+bay/stow <hull>=<carrier>`) and
   has a docking hook berth every `held_for` hull into the workshop; doc 36's GC.5 hands a
   written-off rig back to Occator's shed. Had a captive stayed inside the casualty, any of those
   moves would carry them off while the record still named the old carrier, whose next docking
@@ -408,8 +410,10 @@ for a fee, or held."
   `Carrier { hull }` the same. (2) **At one docking, persons first.** When a hull docks, the crew
   handover (Q-42-6) runs before doc 41's `held_for` berth and any other hull hook of the same
   arrival, so no hull hook ever finds a captive aboard. Custody of a person therefore changes only
-  by the transitions of Q-42-1, never as a side effect of custody of a hull. Doc 41's session is
-  given the same item; its Q-41-18/19 hooks need rule (1)'s first step.
+  by the transitions of Q-42-1, never as a side effect of custody of a hull. Doc 41 as merged
+  agrees (its §1, round-2 item 41-3: "doc 41 moves no occupants"); what doc 41's `recovery` vacate
+  does to a captive taken in that unlawful load is left to doc 42 there, and rule (1) answers it —
+  the captive is already in the captor's bay room, so the vacate moves only the hull.
 
 **Q-42-7 — The fee: who pays, how much, and what if they cannot.**
 - **Proposed default:** the captive's own account pays `PortDef.release_fee_cr`, authored per
@@ -463,14 +467,15 @@ for a fee, or held."
   with `capability` a new `port.release_fee` held on the authority's scope and `levied_by` the
   authority's operator, paying the authority's levy sink. The sweep settles it at once when the
   account covers it; the record's `charge` names it either way (42-2). (2) **The settle path** is
-  one new economy entry point, `pay_obligation(ctx, obligation, payer)` (name provisional): it
-  settles a one-period obligation in `Grace` or `Delinquent` from the **payer's own** account under
-  the payer's own debit authority (the captive's, their organization's through its treasurer's,
-  anyone's), credits the obligation's payee and marks it satisfied. The verb is `+port/pay
-  [<obligation>]` at any IC port, listing the actor's own unpaid fines and fees bare. Doc 41's
-  fines and repossession debt (41-9) should use the same two pieces, so one cure exists. (3) The
-  release never waits on the obligation (FO-12); nothing reads it but `+port/pay`, `+sortie/
-  condition` and doc 41's crime consumer.
+  doc 41's, as merged (its §4.6 and RS.5, round-2 item 41-9): the engine's own cure,
+  `reinstate_obligation` (`api.rs:2517`), which returns a `Delinquent` obligation to the due pool
+  for one more attempt, called by doc 41's `+debts/pay <id>` (reinstate and settle in one post when
+  the debtor's account covers it) and by port security's docking check. A release fee is one more
+  row `+debts` lists; doc 42 adds no verb and no economy entry point. "Anyone may settle"
+  (Q-42-7) is met the way doc 41 meets it for its debts: a payer moves credit into the captive's
+  account and the captive's `+debts/pay` (or the next docking check) settles it; nothing debits a
+  third party's account for someone else's debt. (3) The release never waits on the obligation
+  (FO-12); nothing reads it but `+debts`, `+sortie/condition` and doc 41's crime consumer.
 
 **Q-42-8 — The held case and its clock.**
 - **Proposed default:** "held" is the captor's choice not to dock. It is bounded by doc 27 Q-F4's
@@ -635,10 +640,10 @@ Q-36-52's friendly half stands.
   case one command long.
 - **Draft 0.3 (review round 2, 42-9, advice): one crew branch for every load.** Today a load's
   physical step runs only outside a promoted field (`tow.rs:2252`, `if !promoted`), so every
-  capture passes `place_in_bay`. Doc 40 adds a ramp `+tv/<n> load` inside a running field with a
+  capture passes `place_in_bay`. [Doc 40](40-field-second-round.md) adds a ramp `+tv/<n> load` inside a running field with a
   trailer-follow tow; that load must call the same crew branch (`aboard_loaded` for a Friend's
   carrier, the capture of 42-5 otherwise) so this question holds inside a field too. Doc 42 §5
-  already rules licensed-mind hulls out of capture, so doc 23's foreign-load item is not this
+  already rules licensed-mind hulls out of capture, so [doc 23](23-ic-sorties.md)'s foreign-load item is not this
   document's.
 
 ### E. Treatment
@@ -717,7 +722,7 @@ effects; the unlawful log has four kinds; the bot has no crew vocabulary; space 
 - **Proposed default:** the captive's half and the captor's half are typed over SSH in the
   stories: `+sortie/condition`, `+sortie/eject`, `+sortie/extract` (refused, then allowed),
   `+ship/captives`, `+ship/release`, and the fee's line read at the handover; added to the field
-  and escort lanes' vocabularies in the first cut (CR.0), beside whatever doc 39's first cut did
+  and escort lanes' vocabularies in the first cut (CR.0), beside whatever [doc 39](39-industry-production-chain.md)'s first cut did
   for the GC verbs doc 38 §4 K lists.
 - **Alternative:** the harness types the player's half.
 - **Why:** Q-38-29.
@@ -835,8 +840,8 @@ row; the `capture:` standing grant; `+ship/captives` and `+ship/release`. Files:
 **CR.2 — The port handover and release.** Q-42-6, Q-42-7, Q-42-19. `PortDef.authority`,
 `release_fee_cr`, `release_s`; the docking hook (`sim_routes.rs:151–161`); the fee post and the
 obligation; Draft 0.3 (42-7): the fee is `create_sanction_obligation` under a `port.release_fee` grant
-authored for each authority, the new `mush_economy::pay_obligation` (shared with doc 41) and
-`+port/pay`, adding `mush-economy/src/api.rs` to the files; the release into the arrival room, the stamp, treatment picking them up. Files:
+authored for each authority, settled through doc 41 RS.5's `+debts/pay` (CR.2 waits on RS.5 or
+lands after it); the release into the arrival room, the stamp, treatment picking them up. Files:
 `port/def.rs`, the lane content (version bump), `composition/sim_routes.rs`, `field/crew.rs`.
 Story: (a′) whole, both sizes, the bot typing the captive's half.
 

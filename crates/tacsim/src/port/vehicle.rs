@@ -1179,13 +1179,32 @@ pub(crate) fn carried_rigs(
     Ok(out)
 }
 
+/// **Whether a unit in the bay is a combat hull, not a rig** (doc 36a lane 3, P0-5): its live
+/// unit's spec carries no logistics — a casualty or wreck a tow loaded (doc 36 cuts GC.4, GC.5),
+/// never a leased rig, which has a hopper and stowage. The bay gate reads it as inert cargo, as
+/// it reads relay cargo: it has no excursion record to be out on, no hopper to be empty.
+#[must_use]
+pub(crate) fn combat_hull(w: &World, tv: ObjId) -> bool {
+    let Some(store) = w.module_state::<TacsimStore>() else {
+        return false;
+    };
+    crate::port::hull::live_unit_id(w, tv)
+        .and_then(|unit| store.definitions().specs.get(&unit))
+        .is_some_and(|spec| spec.logistics.is_none())
+}
+
 /// **One rig as the payload counts it** ([`carried_rigs`]' per-rig read): its dry mass and the
 /// goods its hopper accepts, from its live unit's logistics (a fitted root reads as its base
 /// chassis, `crate::port::hull::live_unit_id`; doc 17h cut M8b G1), else the pool's unit's.
 ///
+/// **Doc 36a lane 3 (P0-5)**: a hull whose unit carries no logistics — a combat casualty or
+/// wreck a tow loaded into the bay (doc 36 cuts GC.4, GC.5) — weighs its FO-13 dry mass
+/// (`crate::field_ops::dry_mass_kg_for_spec`) with no hopper and no goods, as relay cargo does,
+/// so a loaded wreck never darkens the passage's basis.
+///
 /// # Errors
 ///
-/// A rig whose unit or logistics cannot be read.
+/// A rig whose unit cannot be read.
 pub(crate) fn carried_rig(
     w: &World,
     store: &TacsimStore,
@@ -1197,12 +1216,19 @@ pub(crate) fn carried_rig(
     let unit = crate::port::hull::live_unit_id(w, tv)
         .or_else(|| pool_unit.cloned())
         .ok_or_else(|| format!("rig #{} has no unit", tv.0))?;
-    let logistics = store
+    let spec = store
         .definitions()
         .specs
         .get(&unit)
-        .and_then(|spec| spec.logistics.as_ref())
-        .ok_or_else(|| format!("rig #{}'s unit {unit} carries no logistics", tv.0))?;
+        .ok_or_else(|| format!("rig #{}'s unit {unit} has no spec", tv.0))?;
+    let Some(logistics) = spec.logistics.as_ref() else {
+        return Ok(CarriedRig {
+            tv: tv.0,
+            dry_kg: crate::field_ops::dry_mass_kg_for_spec(spec),
+            hopper: None,
+            goods: Vec::new(),
+        });
+    };
     let dry_kg = u64::from(logistics.dry_mass_t)
         .checked_mul(1_000)
         .ok_or_else(|| format!("rig #{}'s dry mass overflows", tv.0))?;
