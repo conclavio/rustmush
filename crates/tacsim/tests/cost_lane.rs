@@ -4040,7 +4040,7 @@ fn cohort_lane(hulls: u32, rigs: u32, levers: &Levers) -> String {
 
 /// The shipped lane's digest (`tests/lane.rs`' `LANE_DIGEST`, lane v15 since doc 20 cut SM.12b).
 const SHIPPED_LANE_DIGEST: &str =
-    "9756baab9c26c7246aceb98fa176de33007f963a63523e16cf2bb2ed89ea29a6";
+    "10fcdaa65772aa34ca28d33c0a38ed5167276b640400f771f803050d3173fa3a";
 
 /// **C7 — the cohort lane is the shipped lane but its levers** (O-21; the brief's L9.2): the
 /// 32-hull, 64-rig variant parses and verifies, carries `manifest.version == LANE_VERSION`, and

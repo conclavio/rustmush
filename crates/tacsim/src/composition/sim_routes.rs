@@ -92,17 +92,46 @@ impl CarrierHooks for TacsimCarrierHooks {
         if crate::port::ship::hull_view(ctx.w, hull).is_none() {
             return false;
         }
-        if let Some(leg) = usize::try_from(reached.saturating_sub(1))
-            .ok()
-            .and_then(|idx| journey.route().legs().get(idx))
+        if let Some(leg_idx) = usize::try_from(reached.saturating_sub(1)).ok()
+            && let Some(leg) = journey.route().legs().get(leg_idx)
             && leg.is_interdicted()
-            && ctx
-                .w
-                .module_state::<mush_sim::SpatialState>()
-                .and_then(|s| s.domain_of_host(leg.to()))
-                .is_none()
         {
-            let _ = mush_sim::open_passive_domain(ctx, leg.to(), leg.to());
+            let now_ic = ctx.w.world_ic_now().at;
+            let on_time_boundary = journey
+                .leg_due_at(reached as usize)
+                .is_none_or(|next_due| now_ic < next_due)
+                && journey
+                    .leg_due_at(leg_idx)
+                    .is_some_and(|due_ic| now_ic.saturating_sub(due_ic) < 3_600);
+            let active_bridge_crew =
+                crate::port::ship::hull_view(ctx.w, hull).is_some_and(|view| {
+                    let crew_room = mush_core::CanonicalId::new("crew")
+                        .ok()
+                        .and_then(|id| view.room(&id));
+                    view.row.rooms.values().any(|&room_u32| {
+                        let room = mush_core::ObjId(room_u32);
+                        Some(room) != crew_room
+                            && ctx.w.contents_of(room).iter().any(|&obj| {
+                                ctx.w
+                                    .get(obj)
+                                    .is_some_and(|o| o.kind == mush_core::ObjKind::Player)
+                                    && ctx.w.is_connected(obj)
+                            })
+                    })
+                });
+            if on_time_boundary && active_bridge_crew {
+                let dom_opt = ctx
+                    .w
+                    .module_state::<mush_sim::SpatialState>()
+                    .and_then(|s| s.domain_of_host(leg.to()).map(|d| d.id))
+                    .or_else(|| mush_sim::open_passive_domain(ctx, leg.to(), leg.to()).ok());
+                if let Some(dom) = dom_opt
+                    && crate::space::picket::is_kirkwood_picket_host(ctx.w, leg.to())
+                    && let Some(book) = ctx.w.module_state_mut::<crate::space::SpaceBubbleBook>()
+                {
+                    book.kirkwood_picket_domains.insert(dom);
+                }
+            }
         }
         let Some(line) = crate::port::voyage::boundary_line(ctx.w, journey, reached) else {
             return false;

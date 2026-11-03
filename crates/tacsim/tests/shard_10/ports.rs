@@ -1604,8 +1604,9 @@ fn ic3_a_world_on_lane_v1_takes_v2_by_the_shelf() {
         assert!(
             plan.contains(&format!(
                 // Doc 20 cut SM.2 (lane v9): the six sites' twenty-four entries are created,
-                // and the eight bodies and the Freeport's place updated, beside v8's thirteen.
-                "Plan for {LANE_PACK}@{LANE_VERSION}: 39 create, 11 update, 0 retire, 14 unchanged"
+                // and the eight bodies and the Freeport's place updated, beside v8's thirteen
+                // (doc 35b cut SF.R14: and Kirkwood Depot's clusters/picket).
+                "Plan for {LANE_PACK}@{LANE_VERSION}: 39 create, 12 update, 0 retire, 13 unchanged"
             )),
             "{plan}"
         );
@@ -1633,7 +1634,7 @@ fn ic3_a_world_on_lane_v1_takes_v2_by_the_shelf() {
         let (_, apply) = plan_and_apply(&mut next);
         assert!(
             apply.contains(&format!(
-                "Applied {LANE_PACK}@{LANE_VERSION}: 39 created, 11 updated, 0 retired, 14 unchanged."
+                "Applied {LANE_PACK}@{LANE_VERSION}: 39 created, 12 updated, 0 retired, 13 unchanged."
             )),
             "{apply}"
         );

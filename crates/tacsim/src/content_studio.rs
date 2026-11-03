@@ -319,6 +319,61 @@ fn shipped_docs() -> Vec<DocSpec> {
             family: "corridor",
             bytes: include_str!("../content/relays/manufacture-v1.json"),
         },
+        DocSpec {
+            id: crate::sky::OUTER_BODIES_PACK,
+            repo_path: "sky/outer_bodies.json",
+            family: "corridor",
+            bytes: crate::sky::OUTER_BODIES_JSON,
+        },
+        // Space & Mining Doctrines (`SF.R14`, `D-35-17`)
+        DocSpec {
+            id: "minds/kirkwood_picket.rhai",
+            repo_path: "minds/kirkwood_picket.rhai",
+            family: "component",
+            bytes: crate::minds::content::kirkwood_picket_source(),
+        },
+        DocSpec {
+            id: "minds/kirkwood_picket.json",
+            repo_path: "minds/kirkwood_picket.json",
+            family: "component",
+            bytes: crate::minds::content::kirkwood_picket_manifest_json(),
+        },
+        DocSpec {
+            id: "minds/belt_raider.rhai",
+            repo_path: "minds/belt_raider.rhai",
+            family: "component",
+            bytes: crate::minds::content::belt_raider_source(),
+        },
+        DocSpec {
+            id: "minds/belt_raider.json",
+            repo_path: "minds/belt_raider.json",
+            family: "component",
+            bytes: crate::minds::content::belt_raider_manifest_json(),
+        },
+        DocSpec {
+            id: "minds/interdictor_patrol.rhai",
+            repo_path: "minds/interdictor_patrol.rhai",
+            family: "component",
+            bytes: crate::minds::content::interdictor_patrol_source(),
+        },
+        DocSpec {
+            id: "minds/interdictor_patrol.json",
+            repo_path: "minds/interdictor_patrol.json",
+            family: "component",
+            bytes: crate::minds::content::interdictor_patrol_manifest_json(),
+        },
+        DocSpec {
+            id: "minds/drone_mining.rhai",
+            repo_path: "minds/drone_mining.rhai",
+            family: "component",
+            bytes: crate::minds::content::drone_mining_source(),
+        },
+        DocSpec {
+            id: "minds/drone_mining.json",
+            repo_path: "minds/drone_mining.json",
+            family: "component",
+            bytes: crate::minds::content::drone_mining_manifest_json(),
+        },
     ];
     // Station cast packs (52 station NPCs and 20 lore pools split from `atlas/neighborhood.*.json`, D-34-3).
     for (pack_id, bytes) in CAST_SOURCES {
@@ -867,6 +922,17 @@ fn shelf_or_shipped_value(
     {
         return val.clone();
     }
+    if spec.repo_path.ends_with(".rhai") {
+        use sha2::{Digest as _, Sha256};
+        let digest: [u8; 32] = Sha256::digest(spec.bytes.as_bytes()).into();
+        let sha256: String = digest.iter().map(|b| format!("{b:02x}")).collect();
+        return json!({
+            "kind": "mind_script",
+            "repo_path": spec.repo_path,
+            "sha256": sha256,
+            "source": spec.bytes,
+        });
+    }
     serde_json::from_str(spec.bytes).unwrap_or_else(|_| json!({}))
 }
 
@@ -914,11 +980,16 @@ fn read_document(ctx: &Ctx<'_>, id: &str) -> InvokeResult {
         .into_iter()
         .find(|d| d.id == id || d.repo_path == id)
     {
-        let Ok(content) = serde_json::from_str::<Value>(spec.bytes) else {
-            return error(
-                "corrupt_shipped",
-                "Shipped content document failed to parse.",
-            );
+        let content = if spec.repo_path.ends_with(".rhai") {
+            shelf_or_shipped_value(atlas_state, tacsim_store, &spec)
+        } else {
+            let Ok(parsed) = serde_json::from_str::<Value>(spec.bytes) else {
+                return error(
+                    "corrupt_shipped",
+                    "Shipped content document failed to parse.",
+                );
+            };
+            parsed
         };
         let latch = CanonicalId::new(spec.id)
             .ok()
@@ -990,6 +1061,53 @@ fn validate_and_sign(
                 cascade: Vec::new(),
             });
         }
+        if id.starts_with("minds/") || repo_path.starts_with("minds/") {
+            use sha2::{Digest as _, Sha256};
+            if repo_path.ends_with(".rhai") {
+                let source = content
+                    .as_str()
+                    .or_else(|| content.get("source").and_then(Value::as_str))
+                    .ok_or_else(|| {
+                        vec![format!(
+                            "{id}: mind script document must provide `source` text"
+                        )]
+                    })?
+                    .to_owned();
+                let digest_bytes: [u8; 32] = Sha256::digest(source.as_bytes()).into();
+                let sha256: String = digest_bytes.iter().map(|b| format!("{b:02x}")).collect();
+                crate::minds::standard_sandbox()
+                    .compile(
+                        &source,
+                        mush_mind::Digest(digest_bytes),
+                        crate::minds::MIND_ABI,
+                    )
+                    .map_err(|e| vec![format!("{id}: Rhai compile error: {e}")])?;
+                let signed_doc = json!({
+                    "kind": "mind_script",
+                    "repo_path": repo_path,
+                    "sha256": sha256,
+                    "source": source,
+                });
+                return Ok(CheckedDocument {
+                    pack: None,
+                    signed_doc,
+                    digest: Some(sha256),
+                    cascade: Vec::new(),
+                });
+            }
+            if repo_path.ends_with(".json") {
+                let _manifest: crate::minds::MindManifest = serde_json::from_value(content.clone())
+                    .map_err(|e| vec![format!("{id}: invalid MindManifest: {e}")])?;
+                let digest_bytes: [u8; 32] = Sha256::digest(encoded.as_bytes()).into();
+                let sha256: String = digest_bytes.iter().map(|b| format!("{b:02x}")).collect();
+                return Ok(CheckedDocument {
+                    pack: None,
+                    signed_doc: content,
+                    digest: Some(sha256),
+                    cascade: Vec::new(),
+                });
+            }
+        }
         return Err(vec![format!(
             "{id}: document has no `manifest` and is not a recognized standalone table"
         )]);
@@ -1036,7 +1154,11 @@ fn validate_and_sign(
     if pack.manifest().kind() == PackKind::RulesDefinition || has_owned_kind {
         match crate::pack::load_pack(&signed_bytes) {
             Ok(rules_pack) => {
-                if pack.manifest().kind() == PackKind::RulesDefinition
+                if pack.manifest().id().as_str() == crate::sky::OUTER_BODIES_PACK {
+                    if let Err(err) = crate::sky::outer_catalog_from_pack(&rules_pack) {
+                        refusals.push(err);
+                    }
+                } else if pack.manifest().kind() == PackKind::RulesDefinition
                     && pack.manifest().id().as_str() != crate::hardware::PACK
                 {
                     // Check catalog build for definition packs unless replacing an existing shipped pack version

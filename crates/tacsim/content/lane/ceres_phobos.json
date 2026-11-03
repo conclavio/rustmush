@@ -3,7 +3,7 @@
     "id": "tacsim.lane.ceres_phobos",
     "version": 19,
     "kind": "campaign_seed",
-    "digest": "9756baab9c26c7246aceb98fa176de33007f963a63523e16cf2bb2ed89ea29a6",
+    "digest": "10fcdaa65772aa34ca28d33c0a38ed5167276b640400f771f803050d3173fa3a",
     "requires": []
   },
   "entries": {
@@ -2131,7 +2131,152 @@
       "def": {
         "label": "Kirkwood Depot",
         "role": "depot",
-        "body": "kirkwood"
+        "body": "kirkwood",
+        "kirkwood_picket": true,
+        "clusters": [
+          {
+            "id": "ceres_halo",
+            "label": "Ceres Halo",
+            "zone": "Core",
+            "anchor_body": "ceres",
+            "rocks": [
+              {
+                "letter": "A",
+                "alias": "rock_1",
+                "spectral": "C-TYPE",
+                "pos_m": [1200, 0, 0],
+                "vel_mmps": [0, 1000, 0],
+                "gross_t": 120,
+                "tenure": "commons"
+              },
+              {
+                "letter": "B",
+                "alias": "rock_2",
+                "spectral": "S-TYPE",
+                "pos_m": [-1400, 900, 0],
+                "vel_mmps": [1000, 0, 0],
+                "gross_t": 120,
+                "tenure": "commons"
+              },
+              {
+                "letter": "C",
+                "alias": "rock_3",
+                "spectral": "C-TYPE",
+                "pos_m": [600, -1500, 300],
+                "vel_mmps": [0, -1000, 0],
+                "gross_t": 120,
+                "tenure": "commons"
+              }
+            ]
+          },
+          {
+            "id": "kirkwood_gap_3_1",
+            "label": "Kirkwood 3:1 Gap",
+            "zone": "Frontier",
+            "anchor_body": "ceres",
+            "rocks": [
+              {
+                "letter": "A",
+                "alias": "rock_1",
+                "spectral": "S-TYPE",
+                "pos_m": [1000, 400, 0],
+                "vel_mmps": [2000, 0, 0],
+                "gross_t": 120,
+                "tenure": "open"
+              },
+              {
+                "letter": "B",
+                "alias": "rock_2",
+                "spectral": "M-TYPE",
+                "pos_m": [-1100, 1200, 200],
+                "vel_mmps": [0, 2000, 0],
+                "gross_t": 120,
+                "tenure": "open"
+              },
+              {
+                "letter": "C",
+                "alias": "rock_3",
+                "spectral": "C-TYPE",
+                "pos_m": [500, -1300, -200],
+                "vel_mmps": [-1000, 1000, 0],
+                "gross_t": 120,
+                "tenure": "open"
+              }
+            ]
+          },
+          {
+            "id": "pallas_inclined_belt",
+            "label": "Pallas Inclined Belt",
+            "zone": "Frontier",
+            "anchor_body": "pallas",
+            "rocks": [
+              {
+                "letter": "A",
+                "alias": "rock_1",
+                "spectral": "S-TYPE",
+                "pos_m": [1200, 300, 0],
+                "vel_mmps": [2000, 1000, 0],
+                "gross_t": 120,
+                "tenure": "held",
+                "holder_org": "pallas_syndicate"
+              },
+              {
+                "letter": "B",
+                "alias": "rock_2",
+                "spectral": "M-TYPE",
+                "pos_m": [-900, 1400, 300],
+                "vel_mmps": [-1000, 2000, 0],
+                "gross_t": 120,
+                "tenure": "held",
+                "holder_org": "pallas_syndicate"
+              },
+              {
+                "letter": "C",
+                "alias": "rock_3",
+                "spectral": "S-TYPE",
+                "pos_m": [800, -1100, -200],
+                "vel_mmps": [1000, -1000, 0],
+                "gross_t": 120,
+                "tenure": "open"
+              }
+            ]
+          },
+          {
+            "id": "saturn_b_ring_edge",
+            "label": "Saturn B-Ring Edge",
+            "zone": "Frontier",
+            "anchor_body": "titan",
+            "rocks": [
+              {
+                "letter": "A",
+                "alias": "rock_1",
+                "spectral": "C-TYPE",
+                "pos_m": [900, 600, 0],
+                "vel_mmps": [3000, 1000, 0],
+                "gross_t": 120,
+                "tenure": "open"
+              },
+              {
+                "letter": "B",
+                "alias": "rock_2",
+                "spectral": "C-TYPE",
+                "pos_m": [-1000, 800, 150],
+                "vel_mmps": [-2000, 2000, 0],
+                "gross_t": 120,
+                "tenure": "open"
+              },
+              {
+                "letter": "C",
+                "alias": "rock_3",
+                "spectral": "S-TYPE",
+                "pos_m": [700, -1200, -150],
+                "vel_mmps": [1000, -2000, 0],
+                "gross_t": 120,
+                "tenure": "open"
+              }
+            ]
+          }
+        ]
       }
     },
     "stickney_yards": {
@@ -2244,7 +2389,9 @@
         "legs": [
           {
             "to": "kirkwood_depot",
-            "base_s": 61776
+            "base_s": 61776,
+            "hazard": 4,
+            "interdiction": 3
           },
           {
             "to": "stickney_yards",

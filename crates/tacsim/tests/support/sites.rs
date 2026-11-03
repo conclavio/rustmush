@@ -101,6 +101,21 @@ pub fn strip_workshops(doc: &mut Value) {
             }
         }
     }
+    if let Some(def) = entries
+        .get_mut("kirkwood_depot")
+        .and_then(|entry| entry["def"].as_object_mut())
+    {
+        def.remove("kirkwood_picket");
+        def.remove("clusters");
+    }
+    if let Some(legs) = entries
+        .get_mut("ceres_stickney")
+        .and_then(|entry| entry["def"]["legs"].as_array_mut())
+        && let Some(leg0) = legs.first_mut().and_then(Value::as_object_mut)
+    {
+        leg0.remove("hazard");
+        leg0.remove("interdiction");
+    }
 }
 
 /// Remove what doc 32 cut S.1 added to the lane (lane v17): Urvara Reach's rows and Ceres's
