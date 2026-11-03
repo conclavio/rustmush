@@ -303,6 +303,25 @@ fn cmd_contract(ctx: &mut Ctx<'_>) -> Result<(), CmdError> {
     {
         return Err(CmdError::msg(EconomyError::ManagedContract.to_string()));
     }
+    // Doc 36a P0-2 (doc 36 cut GC.6, Q-36-24, Q-36-27): a salvage claim is the registry's
+    // record, settled by the host's own rules — a contest through `+salvage/contest`, or the
+    // window running its course. No `@contract` switch of a player's edits, shortens, disputes,
+    // agrees away or cancels it; staff keep theirs.
+    if !sw.has("draft")
+        && let Some(id) = parse_contract_id(ctx.args.lhs())
+        && !is_admin(ctx.w, ctx.actor)
+        && may_view_contract(ctx.w, ctx.actor, id)
+        && ctx.w.module_state::<EconomyStore>().is_some_and(|store| {
+            store
+                .snapshot()
+                .contract(id)
+                .is_some_and(|c| salvage_claim_hull(c).is_some())
+        })
+    {
+        return Err(CmdError::msg(
+            SALVAGE_CLAIM_LOCKED.replace("{id}", &id.0.to_string()),
+        ));
+    }
     if sw.has("draft") {
         contract_draft(ctx)
     } else if sw.has("party") {
@@ -5863,6 +5882,10 @@ pub(crate) fn on_world_clock_resumed(ctx: &mut Ctx<'_>, ev: &mush_core::WorldEve
 
 // ---- the salvage claim (doc 36 cut GC.6; Q-36-24, Q-36-27) -------------------------
 
+/// **Doc 36a P0-2**: the line every player `@contract` switch answers on a salvage claim:
+/// `{id}`.
+pub const SALVAGE_CLAIM_LOCKED: &str = "Contract #{id} is a salvage claim: the registry settles it when its contest window runs, and +salvage/contest is the only answer to it.";
+
 /// The most real seconds a salvage claim's contest window may run (a week). The
 /// ruling's window is 48 real hours ([`SALVAGE_CLAIM_WINDOW_SECS`]); a host's test knob
 /// compresses it, and nothing may stretch it past this.
@@ -6251,14 +6274,28 @@ pub fn award_salvage_title(
         return Err(EconomyError::Unauthorized);
     }
     let c = salvage_claim_of(ctx, id, claimant, hull).ok_or(EconomyError::Unauthorized)?;
+    // Doc 36a P0-3 (doc 36 Q-36-29): an organization's hull is never awarded by salvage — a
+    // leased rig is Occator's alone (its lessee answers for it, and the write-off takes it
+    // home), and no company's title moves by a claim in this phase.
+    let organization_titled = ctx
+        .w
+        .module_state::<EconomyStore>()
+        .and_then(|store| store.snapshot().asset(hull))
+        .is_some_and(|asset| matches!(asset.title_owner, PrincipalId::Organization(_)));
+    if organization_titled {
+        return Err(EconomyError::Unauthorized);
+    }
     let now = ctx.w.now();
+    // Doc 36a P0-2: only a claim still in force (`Active`), or one the sweep lapsed at its
+    // effective deadline (`Expired`), is awarded; a Draft, a disputed, a cancelled or a settled
+    // claim never is.
     let run = match c.state {
         ContractState::Expired => true,
-        ContractState::Cancelled | ContractState::Settled { .. } | ContractState::Disputed => false,
-        _ => {
+        ContractState::Active => {
             c.paused_real_remaining_secs.is_none_or(|rem| rem <= 0)
                 && c.effective_real_window_end().is_some_and(|end| now >= end)
         }
+        _ => false,
     };
     if !run {
         return Err(EconomyError::RetryShortly);
