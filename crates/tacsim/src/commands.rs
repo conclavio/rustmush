@@ -362,12 +362,14 @@ pub(crate) fn register(reg: &mut Registrar<'_>) -> Result<(), ModError> {
     // `+salvage` is a pure read and a bare switch previews; `go` (and `/inspect`) is at most
     // the economy's own API (`/claim`: one salvage-claim contract) and exactly ONE submission
     // of GC.4's `tacsim_surface_tow` (its `claim` op) as the actor: `+claim`'s and `+tv`'s
-    // rule, so the verb takes the `Authoritative` class in the same bracket.
+    // rule, so the verb takes the `Authoritative` class in the same bracket. Doc 41 cut RS.3:
+    // `/authorize` on a hull is exactly ONE submission of Org's unit-grant action (the grant
+    // `@unitgrant/issue` would make), on a block ONE `claim` op of the tow action.
     reg.command(
         CommandSpec {
             name: crate::surface::claim::SALVAGE_VERB.into(),
             shape: ArgShape::Raw,
-            switches: ["claim", "contest", "report", "inspect"]
+            switches: ["claim", "contest", "report", "inspect", "authorize"]
                 .iter()
                 .copied()
                 .map(SmolStr::new)

@@ -11,11 +11,12 @@
 //!   transitions the ship into [`HullStatus::DisabledDerelict`] with `epoch_open: true`
 //!   and a 48 h ($172{,}800\text{ s}$) life-support & salvage contest window.
 
-use std::collections::BTreeMap;
+use std::collections::{BTreeMap, BTreeSet};
 
 use serde::{Deserialize, Serialize};
 use serde_json::{Value, json};
 
+use crate::arena::party::{Mark, PartyId, Relation};
 use crate::space::weapons::{
     DEFAULT_TORPEDO_MAX_FLIGHT_MS, InFlightSlug, InFlightTorpedo, LaserMode, LaserMount, PdcMount,
     RailgunMount, TorpedoTube, compute_railgun_lead, isqrt_i128,
@@ -31,65 +32,56 @@ pub const DERELICT_WINDOW_S: u32 = 48 * 3_600;
 #[derive(Clone, Debug, PartialEq, Eq, PartialOrd, Ord, Hash, Serialize, Deserialize)]
 pub struct BubbleId(pub String);
 
-/// Party identifier inside a multi-party space bubble (`D-35-1`, `D-35-11`),
-/// mapped onto canonical [`crate::arena::party::PartyId`] letters (`A`..`Z`).
-#[derive(Clone, Copy, Debug, PartialEq, Eq, PartialOrd, Ord, Hash, Serialize, Deserialize)]
-pub struct SpacePartyId(pub u32);
-
-impl SpacePartyId {
-    /// Convert this space party identifier into its canonical [`crate::arena::party::PartyId`]
-    /// (`SpacePartyId(1)` $\rightarrow$ `'A'`, `SpacePartyId(2)` $\rightarrow$ `'B'`,
-    /// `SpacePartyId(3)` $\rightarrow$ `'C'`, etc., `D-35-1`, `D-35-11`).
-    #[must_use]
-    pub const fn to_party_id(self) -> crate::arena::party::PartyId {
-        let idx = self.0.saturating_sub(1) as usize;
-        match crate::arena::party::PartyId::nth(idx) {
-            Some(pid) => pid,
-            None => crate::arena::party::PartyId::known(b'Z'),
-        }
-    }
-
-    /// Construct a [`SpacePartyId`] from a canonical [`crate::arena::party::PartyId`].
-    #[must_use]
-    pub fn from_party_id(party: crate::arena::party::PartyId) -> Self {
-        let pos = crate::arena::party::LETTERS
-            .iter()
-            .position(|&b| b == party.code())
-            .unwrap_or(0);
-        Self(u32::try_from(pos).unwrap_or(0).saturating_add(1))
+/// **The `n`-th party admitted to a bubble, lettered by the arena** (Q-CF-11,
+/// Q-40-22): `A` first. Past the twenty-third it stays on the last letter, as a
+/// bubble never admits that many.
+#[must_use]
+pub const fn admitted_party(n: usize) -> PartyId {
+    match PartyId::nth(n) {
+        Some(party) => party,
+        None => PartyId::known(b'Z'),
     }
 }
 
-/// Standing relation between two parties in a [`LocalSpaceBubble`] (`D-35-11`).
-#[derive(Clone, Copy, Debug, Default, PartialEq, Eq, Serialize, Deserialize)]
-pub enum SpaceRelation {
-    Friendly,
-    #[default]
-    Neutral,
-    /// Customs picket or patrol actively inspecting or screening a vessel.
-    Inspecting,
-    Hostile,
-}
+/// **The space track's party wire** (Q-40-22): a [`SpaceShipState`]'s party
+/// persists as its admission number from 1 (`A` is 1), the number the documents
+/// already hold, so the seam moves no persisted document. 0 reads as `A`, as it
+/// always did.
+mod party_wire {
+    use serde::{Deserialize, Deserializer, Serialize, Serializer};
 
-impl SpaceRelation {
-    #[must_use]
-    pub fn as_feed_str(self) -> &'static str {
-        match self {
-            Self::Friendly => "friend",
-            Self::Neutral => "neutral",
-            Self::Inspecting => "neutral",
-            Self::Hostile => "hostile",
-        }
+    use super::{PartyId, admitted_party};
+    use crate::arena::party::LETTERS;
+
+    pub(super) fn serialize<S: Serializer>(
+        party: &PartyId,
+        serializer: S,
+    ) -> Result<S::Ok, S::Error> {
+        let at = LETTERS.iter().position(|&b| b == party.code()).unwrap_or(0);
+        u32::try_from(at)
+            .unwrap_or(0)
+            .saturating_add(1)
+            .serialize(serializer)
     }
 
-    /// Project this [`SpaceRelation`] onto the kernel's [`crate::arena::party::Relation`] (`D-35-1`).
-    #[must_use]
-    pub const fn to_arena_relation(self) -> crate::arena::party::Relation {
-        match self {
-            Self::Friendly => crate::arena::party::Relation::Friend,
-            Self::Neutral | Self::Inspecting => crate::arena::party::Relation::Neutral,
-            Self::Hostile => crate::arena::party::Relation::Hostile,
-        }
+    pub(super) fn deserialize<'de, D: Deserializer<'de>>(
+        deserializer: D,
+    ) -> Result<PartyId, D::Error> {
+        let number = u32::deserialize(deserializer)?;
+        Ok(admitted_party(
+            usize::try_from(number.saturating_sub(1)).unwrap_or(usize::MAX),
+        ))
+    }
+}
+
+/// **The feed word a holotank or cockpit reads for `relation`** (`D-35-1`): own
+/// and friend read `friend`, neutral and unknown read `neutral`.
+#[must_use]
+pub const fn relation_feed_word(relation: Relation) -> &'static str {
+    match relation {
+        Relation::Own | Relation::Friend => "friend",
+        Relation::Hostile => "hostile",
+        Relation::Neutral | Relation::Unknown => "neutral",
     }
 }
 
@@ -302,7 +294,10 @@ pub struct SpaceShipState {
     pub id: String,
     pub callsign: String,
     pub hull_class: String,
-    pub party: SpacePartyId,
+    /// The ship's party, lettered by the arena; its wire stays the space
+    /// track's admission number (Q-40-22: no persisted document moves).
+    #[serde(with = "party_wire")]
+    pub party: PartyId,
     /// 3D local position in metres (`[x, y, z]`).
     pub pos_m: [i64; 3],
     /// Sub-metre position remainder in micrometres (`-999_999..=999_999`, `35a` §5.2).
@@ -407,7 +402,7 @@ impl SpaceShipState {
     pub fn new_dray(
         id: impl Into<String>,
         callsign: impl Into<String>,
-        party: SpacePartyId,
+        party: PartyId,
         pos_m: [i64; 3],
         vel_mmps: [i64; 3],
     ) -> Self {
@@ -522,7 +517,7 @@ impl SpaceShipState {
     pub fn new_corvette(
         id: impl Into<String>,
         callsign: impl Into<String>,
-        party: SpacePartyId,
+        party: PartyId,
         pos_m: [i64; 3],
         vel_mmps: [i64; 3],
     ) -> Self {
@@ -1212,6 +1207,12 @@ pub struct LocalSpaceBubble {
     /// Canonical kernel party relation books (`D-35-1`, `D-35-11`, `Q-CF-5`–`Q-CF-8`).
     #[serde(default)]
     pub party_relations: crate::arena::party::Relations,
+    /// **The parties screening as a customs picket** (doc 40 Q-40-22): a picket's
+    /// inspection, which the arena has no relation for, is a flag on the picket's
+    /// party; it guards the neutrals it screens as it would a friend. Absent from
+    /// the document while empty, so only a screening picket's bubble carries it.
+    #[serde(default, skip_serializing_if = "BTreeSet::is_empty")]
+    pub inspecting: BTreeSet<PartyId>,
     pub torpedoes: Vec<InFlightTorpedo>,
     pub railgun_slugs: Vec<InFlightSlug>,
     /// Celestial bodies visible in the bridge canopy (`SF.R13`, `SF.R16`, `D-35-15`).
@@ -1240,6 +1241,7 @@ impl LocalSpaceBubble {
             outage_frozen: false,
             ships: BTreeMap::new(),
             party_relations: crate::arena::party::Relations::new(),
+            inspecting: BTreeSet::new(),
             torpedoes: Vec::new(),
             railgun_slugs: Vec::new(),
             bodies,
@@ -1247,72 +1249,43 @@ impl LocalSpaceBubble {
         }
     }
 
-    /// Insert or update a ship in the bubble and admit its [`crate::arena::party::PartyId`].
+    /// Insert or update a ship in the bubble and admit its [`PartyId`].
     pub fn insert_ship(&mut self, ship: SpaceShipState) {
-        self.party_relations.admit(ship.party.to_party_id());
+        self.party_relations.admit(ship.party);
         self.ships.insert(ship.id.clone(), ship);
     }
 
-    /// Set the symmetric standing relation between `party_a` and `party_b` (`D-35-1`, `D-35-11`).
-    pub fn set_party_relation(
-        &mut self,
-        party_a: SpacePartyId,
-        party_b: SpacePartyId,
-        relation: SpaceRelation,
-    ) {
-        let pa = party_a.to_party_id();
-        let pb = party_b.to_party_id();
-        self.party_relations.admit(pa);
-        self.party_relations.admit(pb);
-        match relation {
-            SpaceRelation::Friendly => {
-                self.party_relations
-                    .mark(pa, pb, Some(crate::arena::party::Mark::Friendly));
-                self.party_relations
-                    .mark(pb, pa, Some(crate::arena::party::Mark::Friendly));
-            }
-            SpaceRelation::Hostile => {
-                self.party_relations
-                    .mark(pa, pb, Some(crate::arena::party::Mark::Hostile));
-                self.party_relations
-                    .mark(pb, pa, Some(crate::arena::party::Mark::Hostile));
-            }
-            SpaceRelation::Neutral | SpaceRelation::Inspecting => {
-                self.party_relations.mark(pa, pb, None);
-                self.party_relations.mark(pb, pa, None);
-            }
+    /// **Mark `party_a` and `party_b` each other's `mark`** (`D-35-1`, `D-35-11`,
+    /// Q-40-22): both books, so the standing is symmetric; `None` clears both
+    /// marks back to neutral.
+    pub fn set_party_relation(&mut self, party_a: PartyId, party_b: PartyId, mark: Option<Mark>) {
+        self.party_relations.admit(party_a);
+        self.party_relations.admit(party_b);
+        self.party_relations.mark(party_a, party_b, mark);
+        self.party_relations.mark(party_b, party_a, mark);
+    }
+
+    /// **What `viewer` believes `other` is** (`D-35-1`, Q-CF-7): the arena's
+    /// precedence over this bubble's books.
+    #[must_use]
+    pub fn party_relation(&self, viewer: PartyId, other: PartyId) -> Relation {
+        self.party_relations.relation(viewer, other)
+    }
+
+    /// Flag `party` as screening (a customs picket's inspection, Q-40-22), or
+    /// clear the flag.
+    pub fn set_inspecting(&mut self, party: PartyId, screening: bool) {
+        if screening {
+            self.inspecting.insert(party);
+        } else {
+            self.inspecting.remove(&party);
         }
     }
 
-    /// Query the standing relation between two parties.
+    /// Whether `party` is screening as a customs picket (Q-40-22).
     #[must_use]
-    pub fn party_relation(&self, party_a: SpacePartyId, party_b: SpacePartyId) -> SpaceRelation {
-        if party_a == party_b {
-            return SpaceRelation::Friendly;
-        }
-        match self
-            .party_relations
-            .relation(party_a.to_party_id(), party_b.to_party_id())
-        {
-            crate::arena::party::Relation::Own | crate::arena::party::Relation::Friend => {
-                SpaceRelation::Friendly
-            }
-            crate::arena::party::Relation::Hostile => SpaceRelation::Hostile,
-            crate::arena::party::Relation::Neutral | crate::arena::party::Relation::Unknown => {
-                SpaceRelation::Neutral
-            }
-        }
-    }
-
-    /// Query the canonical [`crate::arena::party::Relation`] from `viewer` toward `other` (`D-35-1`).
-    #[must_use]
-    pub fn canonical_party_relation(
-        &self,
-        viewer: SpacePartyId,
-        other: SpacePartyId,
-    ) -> crate::arena::party::Relation {
-        self.party_relations
-            .relation(viewer.to_party_id(), other.to_party_id())
+    pub fn is_inspecting(&self, party: PartyId) -> bool {
+        self.inspecting.contains(&party)
     }
 
     /// Toggle automatic point-defense (`+tac/pdc auto`) for `ship_id` (`Q-35-4`, `D-35-8`).
@@ -1524,14 +1497,13 @@ impl LocalSpaceBubble {
         };
         if shooter.status != HullStatus::Operational
             || shooter_id == target_id
-            || self.party_relation(shooter.party, target.party) != SpaceRelation::Hostile
+            || self.party_relation(shooter.party, target.party) != Relation::Hostile
         {
             return events;
         }
         let shooter_party = shooter.party;
         let target_party = target.party;
-        self.party_relations
-            .note_fire(shooter_party.to_party_id(), target_party.to_party_id());
+        self.party_relations.note_fire(shooter_party, target_party);
         let (Some(shooter), Some(target)) = (self.ships.get(shooter_id), self.ships.get(target_id))
         else {
             return events;
@@ -1613,14 +1585,13 @@ impl LocalSpaceBubble {
         };
         if shooter.status != HullStatus::Operational
             || shooter_id == target_id
-            || self.party_relation(shooter.party, target.party) != SpaceRelation::Hostile
+            || self.party_relation(shooter.party, target.party) != Relation::Hostile
         {
             return events;
         }
         let shooter_party = shooter.party;
         let target_party = target.party;
-        self.party_relations
-            .note_fire(shooter_party.to_party_id(), target_party.to_party_id());
+        self.party_relations.note_fire(shooter_party, target_party);
         let (Some(shooter), Some(target)) = (self.ships.get(shooter_id), self.ships.get(target_id))
         else {
             return events;
@@ -1703,14 +1674,13 @@ impl LocalSpaceBubble {
         };
         if shooter.status != HullStatus::Operational
             || shooter_id == target_id
-            || self.party_relation(shooter.party, target.party) != SpaceRelation::Hostile
+            || self.party_relation(shooter.party, target.party) != Relation::Hostile
         {
             return events;
         }
         let shooter_party = shooter.party;
         let target_party = target.party;
-        self.party_relations
-            .note_fire(shooter_party.to_party_id(), target_party.to_party_id());
+        self.party_relations.note_fire(shooter_party, target_party);
         let (Some(shooter), Some(target)) = (self.ships.get(shooter_id), self.ships.get(target_id))
         else {
             return events;
@@ -2033,13 +2003,12 @@ impl LocalSpaceBubble {
                         return false;
                     }
                     let rel_to_target = self.party_relation(s.party, target_party);
-                    matches!(
-                        rel_to_target,
-                        SpaceRelation::Friendly | SpaceRelation::Inspecting
-                    ) || (rel_to_target == SpaceRelation::Neutral
-                        && shooter_party.is_some_and(|sp| {
-                            self.party_relation(s.party, sp) == SpaceRelation::Hostile
-                        }))
+                    rel_to_target.is_friendly()
+                        || (rel_to_target == Relation::Neutral
+                            && (self.is_inspecting(s.party)
+                                || shooter_party.is_some_and(|sp| {
+                                    self.party_relation(s.party, sp) == Relation::Hostile
+                                })))
                 })
                 .map(|s| s.id.clone())
                 .collect();
@@ -2288,7 +2257,7 @@ impl LocalSpaceBubble {
     #[must_use]
     pub fn holotank_feed(&self, observer_ship_id: &str) -> Value {
         let obs = self.ships.get(observer_ship_id);
-        let obs_party = obs.map(|s| s.party).unwrap_or(SpacePartyId(0));
+        let obs_party = obs.map(|s| s.party);
         let locked_id = obs.and_then(|s| s.locked_target_id.as_deref());
         let pdc_range_km = obs
             .and_then(|s| s.pdcs.first())
@@ -2304,7 +2273,9 @@ impl LocalSpaceBubble {
             {
                 continue;
             }
-            let rel = self.party_relation(obs_party, ship.party).as_feed_str();
+            let rel = obs_party.map_or("neutral", |viewer| {
+                relation_feed_word(self.party_relation(viewer, ship.party))
+            });
             contacts.push(json!({
                 "id": ship.id,
                 "label": ship.callsign,
@@ -2407,7 +2378,7 @@ impl LocalSpaceBubble {
                     "ship"
                 },
                 "pixel_model": ship.pixel_model(),
-                "relation": self.party_relation(obs.party, ship.party).as_feed_str(),
+                "relation": relation_feed_word(self.party_relation(obs.party, ship.party)),
                 "locked": locked,
                 "burning": ship.is_burning(),
                 "bearing_deg": bearing_deg,

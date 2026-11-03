@@ -395,6 +395,7 @@ fn seed_custody(rig: &mut Rig, hull: ObjId, holder: ObjId, carrier: ObjId) {
         file: None,
         told: vec![],
         evidence: vec![],
+        at_risk: vec![],
     });
     record.custody.sort_by_key(|row| row.hull);
     let h = handles(&rig.tw);
@@ -659,6 +660,119 @@ async fn b36a_6_a_a_salvors_order_completes_under_the_claim() {
     assert_eq!(
         assess(&rig, hull).component_conditions[&cannon],
         ComponentCondition::Intact
+    );
+}
+
+/// **Doc 41 cut RS.3 (Q-41-20, Q-S14) — the salvor's repair is at their own risk.** Salvor S
+/// holds owner O's escort under a custody whose pin records O's sensor record of an unlawful
+/// recovery off O's own block. S's `+bay` quote prints the at-risk line first; S's unjam order
+/// completes, and the claims' tick writes it on the custody; S's claim carries it at filing; O
+/// contests on the recovery, and the vacate notice O reads lists the repair, repaid by nobody.
+#[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+async fn b36a_rs3_the_salvors_repair_is_at_risk_and_reported() {
+    let mut rig = stocked();
+    let (s, _, o, hull) = salvor_holds_owners_hull(&mut rig);
+    // The custody as a tow on O's ground would have left it: pinned, with O's witness record.
+    let mut site = site_record_at(&mut rig, URVARA).expect("the site record");
+    if let Some(row) = site.custody.iter_mut().find(|row| row.hull == hull) {
+        let now = rig.tw.world().world_ic_now().at;
+        row.recovered_by = ObjId(row.carrier.0);
+        row.operation = Some(mush_tactics::field_ops::RecoveryOpId::new(1).expect("an op"));
+        row.pin = Some(tacsim::surface::claim::TenurePin {
+            casualty: hull,
+            tug: row.carrier,
+            recoverer: s,
+            title: Some(PrincipalId::Object(o)),
+            answering: Some(o),
+            answerers: Vec::new(),
+            owner_grant: None,
+            landholder_authorized: false,
+            tenure: mush_tactics::field_ops::GroundTenure::Owned {
+                landholder: o,
+                claim_id: None,
+            },
+            witnesses: vec![tacsim::surface::claim::Witness {
+                holder: o,
+                unit: hull,
+                kind: tacsim::surface::claim::WitnessKind::Known,
+            }],
+            pinned_ic: now,
+        });
+    }
+    let h = handles(&rig.tw);
+    reseed_typed(&mut rig, &h.families.sites, &SiteKey(cid(URVARA)), site);
+    let cannon = jam_cannon(&mut rig, hull);
+    let workshop = station_room(&rig.tw, CERES, C14);
+    put(&mut rig, s, workshop, false);
+    let berthed = run(&mut rig.tw, s, &format!("+bay/berth #{}", hull.0));
+    assert!(berthed.contains("berthed in the workshop"), "{berthed}");
+    let quote = run(&mut rig.tw, s, &format!("+bay #{}", hull.0));
+    assert!(
+        quote.starts_with(tacsim::surface::claim::AT_RISK_QUOTE),
+        "the at-risk line first: {quote}"
+    );
+    let taken = run(&mut rig.tw, s, &format!("+bay/order #{}=unjam", hull.0));
+    assert!(taken.contains("taken in the workshop"), "{taken}");
+    let due = order_of(&rig, hull).due_ic;
+    let _ = to_ic(&mut rig, due + 60);
+    assert_eq!(order_of(&rig, hull).status, OrderStatus::Done);
+    assert_eq!(
+        assess(&rig, hull).component_conditions[&cannon],
+        ComponentCondition::Intact
+    );
+    let custody = |rig: &mut Rig| {
+        site_record_at(rig, URVARA)
+            .and_then(|record| record.custody.into_iter().find(|row| row.hull == hull))
+            .expect("still in custody")
+    };
+    for _ in 0..5 {
+        let (_, queued) = fire(&mut rig);
+        land_quietly(&mut rig, &queued);
+        if !custody(&mut rig).at_risk.is_empty() {
+            break;
+        }
+    }
+    let kept = custody(&mut rig).at_risk;
+    assert_eq!(
+        kept.len(),
+        1,
+        "the repair is written on the custody: {kept:?}"
+    );
+    assert!(kept[0].description.contains("unjam"), "{kept:?}");
+    assert!(kept[0].cost_incurred > 0, "{kept:?}");
+    // S files; the claim carries the repair. O contests on O's record of the recovery.
+    let (out, queued) = command(&mut rig, s, &format!("+salvage/claim #{} go", hull.0));
+    assert!(out.contains("You file a salvage claim"), "{out}");
+    land_quietly(&mut rig, &queued);
+    let row = custody(&mut rig);
+    assert!(row.at_risk.is_empty());
+    assert_eq!(
+        row.file
+            .as_ref()
+            .map(|f| f.documented_repairs_at_risk.clone()),
+        Some(kept)
+    );
+    let (out, queued) = command(
+        &mut rig,
+        o,
+        &format!("+salvage/contest #{}=recovery go", hull.0),
+    );
+    assert!(out.contains("You file your contest"), "{out}");
+    land_quietly(&mut rig, &queued);
+    let mut heard = String::new();
+    for _ in 0..5 {
+        let (events, queued) = fire(&mut rig);
+        heard.push_str(&crate::driving_rig::said(&rig.tw, &events, o));
+        land_quietly(&mut rig, &queued);
+        if heard.contains("vacates the salvage claim") {
+            break;
+        }
+    }
+    assert!(
+        heard.contains("vacates the salvage claim")
+            && heard.contains("at their own risk, repaid by nobody")
+            && heard.contains("unjam"),
+        "the vacate notice lists the repair: {heard}"
     );
 }
 

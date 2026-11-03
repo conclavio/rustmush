@@ -16,6 +16,8 @@ pub const BAY_PREFIX: &str = "tacsim:baywork:";
 pub const BAY_SCHEMA: u16 = 1;
 /// The most jobs one order carries.
 pub const MAX_ORDER_JOBS: usize = 64;
+/// The most lots one hull's record lists under pending salvage claims (doc 41 §4.6).
+pub const MAX_CLAIM_LOTS: usize = 16;
 
 /// **`tacsim:baywork:{hull.0}`**.
 #[must_use]
@@ -149,6 +151,12 @@ pub struct BayHull {
     /// When the hull was scrapped, IC: it is an irrecoverable shell after it.
     #[serde(default)]
     pub scrapped_ic: Option<i64>,
+    /// **The lots stripped off this hull under a pending salvage claim** (doc 41 cut RS.3,
+    /// §4.6, round-2 item 41-12a), at most [`MAX_CLAIM_LOTS`]: the claims' tick marks each
+    /// vacated when its claim is, and flags it hot through
+    /// [`crate::port::bay_work::strip::vacate_claim`] one act at a time. Omitted while empty.
+    #[serde(default, skip_serializing_if = "Vec::is_empty")]
+    pub claim_lots: Vec<ClaimLot>,
     /// **The hull's opened bale** (doc 39 cut IN.1, §4.10, Q-39-26), once a repair has opened
     /// one: the kilograms of each bulk good debited to it and not yet consumed. The title
     /// holder's; it rides the hull from workshop to carrier bay.
@@ -223,6 +231,29 @@ impl Bale {
     }
 }
 
+/// **A lot stripped under a pending salvage claim** (doc 41 §4.6).
+#[derive(Clone, Copy, Debug, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(deny_unknown_fields)]
+pub struct ClaimLot {
+    /// The lot, `LotId.0`.
+    pub lot: u64,
+    /// The claim it came off under: the filed contract, `ContractId.0`.
+    pub claim: u64,
+    /// Once the claim is vacated: who may clear the flag, and whose hand submits it.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub vacated: Option<VacatedLot>,
+}
+
+/// **A listed lot's claim was vacated** (doc 41 §4.6).
+#[derive(Clone, Copy, Debug, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(deny_unknown_fields)]
+pub struct VacatedLot {
+    /// The title holder the claim never moved the title from.
+    pub rightful_owner: ObjId,
+    /// The hand that submits the flag (a character, never GOD).
+    pub by: ObjId,
+}
+
 impl BayHull {
     /// A hull with no record yet.
     #[must_use]
@@ -236,6 +267,7 @@ impl BayHull {
             acts: 0,
             owed: None,
             scrapped_ic: None,
+            claim_lots: Vec::new(),
             bale: None,
         }
     }
@@ -270,6 +302,11 @@ impl BayHull {
             if order.draw_act.is_some_and(|act| act > self.acts) {
                 return Err("an order's draw runs ahead of the record's acts".to_owned());
             }
+        }
+        if self.claim_lots.len() > MAX_CLAIM_LOTS {
+            return Err(format!(
+                "a hull lists at most {MAX_CLAIM_LOTS} lots under claims"
+            ));
         }
         if let Some(owed) = &self.owed {
             owed.check()?;

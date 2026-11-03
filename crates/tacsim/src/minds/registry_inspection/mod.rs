@@ -245,8 +245,8 @@ impl Composition {
                     action.clone(),
                     claims::Provider::new(action.clone(), outcome, writer.clone())?,
                 )?;
-                // The earned-contacts index the claim reads; no producer until the IC fight.
-                reg.state(crate::minds::earned_contacts::EarnedContacts::default());
+                // The earned-contacts index the claim reads is the field host's (doc 23 cut
+                // S.4b-T): registered with it, fed by its IC fields.
                 Some(claims::ClaimHost { action })
             }
             (None, false) => None,

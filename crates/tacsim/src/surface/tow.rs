@@ -1577,12 +1577,16 @@ impl TowProvider {
         } else {
             let holder = facts.custodian.unwrap_or(operator);
             // Doc 36 cut GC.6 (Q-36-30): a recovery off owned ground with neither the title
-            // holder's nor the landholder's authority is written to the evidence log.
+            // holder's nor the landholder's authority is written to the evidence log; doc 41
+            // Q-41-21: either authorization as the attach read it counts.
             if let Some(landholder) = pin
                 .as_ref()
                 .and_then(crate::surface::claim::TenurePin::landholder)
                 && landholder != holder
                 && pin.as_ref().and_then(|pin| pin.answering) != Some(holder)
+                && !pin
+                    .as_ref()
+                    .is_some_and(|pin| pin.owner_grant.is_some() || pin.landholder_authorized)
             {
                 crate::surface::claim::log_unlawful(
                     record,
@@ -1610,6 +1614,7 @@ impl TowProvider {
                     file: None,
                     told: Vec::new(),
                     evidence: Vec::new(),
+                    at_risk: Vec::new(),
                 },
             );
         }

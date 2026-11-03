@@ -651,32 +651,6 @@ impl WorkshopBook {
         Ok((updated_unit, post_assessment, record))
     }
 
-    /// Flag a detached component record as [`ProvenanceLegalityStatus::ContrabandHotPart`]
-    /// when a salvage claim covering the parent hull or component is contested and vacated
-    /// (`Q-S13`, `Q-F5`, `Q-F6`).
-    ///
-    /// # Errors
-    /// Returns [`WorkshopError`] if `record_id` is unknown or `rightful_owner.0 == 0`.
-    pub fn mark_stripped_component_contraband_on_vacated_claim(
-        &mut self,
-        record_id: u64,
-        claim_id: SalvageClaimId,
-        rightful_owner: ObjId,
-    ) -> Result<&StrippedComponentRecord, WorkshopError> {
-        if rightful_owner.0 == 0 {
-            return Err(WorkshopError::InvalidObjectId("rightful_owner"));
-        }
-        let rec = self
-            .stripped_components
-            .get_mut(&record_id)
-            .ok_or(WorkshopError::UnknownStrippedComponentRecord(record_id))?;
-        rec.provenance.legality = ProvenanceLegalityStatus::ContrabandHotPart {
-            rightful_owner,
-            reason: ContrabandReason::VacatedSalvageClaim { claim_id },
-        };
-        Ok(rec)
-    }
-
     /// Clear a [`ProvenanceLegalityStatus::ContrabandHotPart`] flag back to
     /// [`ProvenanceLegalityStatus::CleanTitle`] when authorized by `rightful_owner` (`FO-4`, `Q-S4`).
     ///
