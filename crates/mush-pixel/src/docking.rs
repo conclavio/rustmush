@@ -291,7 +291,40 @@ impl DockingClientInput {
     }
 }
 
-/// Client-side 60 Hz 6-DOF docking session stepper and RLE input-tape recorder (`Q-35-5`, `D-35-14`).
+/// Per-hull 6-DOF RCS thruster authority parameters for the 60 Hz client docking simulation (`SF.R16`, `D-35-14`).
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub struct DockingClientRcsAuthority {
+    /// Lateral velocity change per 60 Hz frame of RCS thrust (`mm/s`).
+    pub trans_dv_mmps_per_frame: i64,
+    /// Closure velocity change per 60 Hz frame of RCS thrust (`mm/s`).
+    pub closure_dv_mmps_per_frame: i64,
+    /// Pitch/yaw angular rate change per 60 Hz frame of RCS trim (`mdeg/s`).
+    pub attitude_rate_mdeg_s_per_frame: i32,
+    /// Roll angular rate change per 60 Hz frame of RCS trim (`mdeg/s`).
+    pub roll_rate_mdeg_s_per_frame: i32,
+    /// Coupled dampener lateral velocity bleed per 60 Hz frame (`mm/s`).
+    pub damp_trans_mmps_per_frame: i64,
+    /// Coupled dampener pitch/yaw rate bleed per 60 Hz frame (`mdeg/s`).
+    pub damp_attitude_mdeg_s_per_frame: i32,
+    /// Coupled dampener roll rate bleed per 60 Hz frame (`mdeg/s`).
+    pub damp_roll_mdeg_s_per_frame: i32,
+}
+
+impl Default for DockingClientRcsAuthority {
+    fn default() -> Self {
+        Self {
+            trans_dv_mmps_per_frame: 30,
+            closure_dv_mmps_per_frame: 25,
+            attitude_rate_mdeg_s_per_frame: 180,
+            roll_rate_mdeg_s_per_frame: 240,
+            damp_trans_mmps_per_frame: 15,
+            damp_attitude_mdeg_s_per_frame: 90,
+            damp_roll_mdeg_s_per_frame: 120,
+        }
+    }
+}
+
+/// Client-side 60 Hz 6-DOF docking session stepper and RLE input-tape recorder (`Q-35-5`, `D-35-14`, `SF.R16`).
 #[derive(Clone, Debug, PartialEq, Eq)]
 pub struct DockingClientSession {
     /// Server-issued session ID (`"dock.<hull>.<seq>"`).
@@ -306,6 +339,8 @@ pub struct DockingClientSession {
     pub roll_rate_mdeg_s: i32,
     /// Target collar tumble rate `[pitch_mdeg_s, yaw_mdeg_s, roll_mdeg_s]`.
     pub target_tumble_mdeg_s: [i32; 3],
+    /// Hull-specific 6-DOF RCS thruster authority (`SF.R16`).
+    pub rcs_authority: DockingClientRcsAuthority,
     /// Whether coupled RCS dampeners are enabled.
     pub dampeners_on: bool,
     rem_x: i64,
@@ -336,6 +371,36 @@ impl DockingClientSession {
                 let r = arr.get(2).and_then(Value::as_i64).unwrap_or(0) as i32;
                 [p, y, r]
             });
+        let rcs_authority =
+            docking
+                .get("rcs_authority")
+                .map_or_else(DockingClientRcsAuthority::default, |auth| {
+                    DockingClientRcsAuthority {
+                        trans_dv_mmps_per_frame: int_field(auth, "trans_dv_mmps_per_frame", 30),
+                        closure_dv_mmps_per_frame: int_field(auth, "closure_dv_mmps_per_frame", 25),
+                        attitude_rate_mdeg_s_per_frame: int_field(
+                            auth,
+                            "attitude_rate_mdeg_s_per_frame",
+                            180,
+                        ) as i32,
+                        roll_rate_mdeg_s_per_frame: int_field(
+                            auth,
+                            "roll_rate_mdeg_s_per_frame",
+                            240,
+                        ) as i32,
+                        damp_trans_mmps_per_frame: int_field(auth, "damp_trans_mmps_per_frame", 15),
+                        damp_attitude_mdeg_s_per_frame: int_field(
+                            auth,
+                            "damp_attitude_mdeg_s_per_frame",
+                            90,
+                        ) as i32,
+                        damp_roll_mdeg_s_per_frame: int_field(
+                            auth,
+                            "damp_roll_mdeg_s_per_frame",
+                            120,
+                        ) as i32,
+                    }
+                });
         Self {
             session_id,
             pose: DockingCameraPose {
@@ -353,6 +418,7 @@ impl DockingClientSession {
             yaw_rate_mdeg_s: int_field(docking, "yaw_rate_mdeg_s", 0) as i32,
             roll_rate_mdeg_s: int_field(docking, "roll_rate_mdeg_s", 0) as i32,
             target_tumble_mdeg_s: tumble,
+            rcs_authority,
             dampeners_on: docking
                 .get("dampeners")
                 .and_then(Value::as_bool)
@@ -366,6 +432,12 @@ impl DockingClientSession {
             spans: Vec::new(),
             frames_stepped: 0,
         }
+    }
+
+    /// Return the total number of 60 Hz frames stepped in this client session.
+    #[must_use]
+    pub const fn frames_stepped(&self) -> usize {
+        self.frames_stepped
     }
 
     const fn bleed_i64(val: i64, step: i64) -> i64 {
@@ -408,6 +480,7 @@ impl DockingClientSession {
             self.dampeners_on = !self.dampeners_on;
         }
 
+        let auth = self.rcs_authority;
         let tx = i64::from(input.trans_x.clamp(-1, 1));
         let ty = i64::from(input.trans_y.clamp(-1, 1));
         let tz = i64::from(input.closure_pulse.clamp(-1, 1));
@@ -415,34 +488,48 @@ impl DockingClientSession {
         let dyaw = i32::from(input.yaw_trim.clamp(-1, 1));
         let droll = i32::from(input.roll_trim.clamp(-1, 1));
 
-        self.pose.vx_mmps = self.pose.vx_mmps.saturating_add(tx.saturating_mul(30));
-        self.pose.vy_mmps = self.pose.vy_mmps.saturating_add(ty.saturating_mul(30));
-        self.pose.vz_mmps = self.pose.vz_mmps.saturating_add(tz.saturating_mul(25));
+        self.pose.vx_mmps = self
+            .pose
+            .vx_mmps
+            .saturating_add(tx.saturating_mul(auth.trans_dv_mmps_per_frame));
+        self.pose.vy_mmps = self
+            .pose
+            .vy_mmps
+            .saturating_add(ty.saturating_mul(auth.trans_dv_mmps_per_frame));
+        self.pose.vz_mmps = self
+            .pose
+            .vz_mmps
+            .saturating_add(tz.saturating_mul(auth.closure_dv_mmps_per_frame));
         self.pitch_rate_mdeg_s = self
             .pitch_rate_mdeg_s
-            .saturating_add(dpitch.saturating_mul(180));
+            .saturating_add(dpitch.saturating_mul(auth.attitude_rate_mdeg_s_per_frame));
         self.yaw_rate_mdeg_s = self
             .yaw_rate_mdeg_s
-            .saturating_add(dyaw.saturating_mul(180));
+            .saturating_add(dyaw.saturating_mul(auth.attitude_rate_mdeg_s_per_frame));
         self.roll_rate_mdeg_s = self
             .roll_rate_mdeg_s
-            .saturating_add(droll.saturating_mul(240));
+            .saturating_add(droll.saturating_mul(auth.roll_rate_mdeg_s_per_frame));
 
         if self.dampeners_on {
             if tx == 0 && self.pose.vx_mmps != 0 {
-                self.pose.vx_mmps = Self::bleed_i64(self.pose.vx_mmps, 15);
+                self.pose.vx_mmps =
+                    Self::bleed_i64(self.pose.vx_mmps, auth.damp_trans_mmps_per_frame);
             }
             if ty == 0 && self.pose.vy_mmps != 0 {
-                self.pose.vy_mmps = Self::bleed_i64(self.pose.vy_mmps, 15);
+                self.pose.vy_mmps =
+                    Self::bleed_i64(self.pose.vy_mmps, auth.damp_trans_mmps_per_frame);
             }
             if dpitch == 0 && self.pitch_rate_mdeg_s != 0 {
-                self.pitch_rate_mdeg_s = Self::bleed_i32(self.pitch_rate_mdeg_s, 90);
+                self.pitch_rate_mdeg_s =
+                    Self::bleed_i32(self.pitch_rate_mdeg_s, auth.damp_attitude_mdeg_s_per_frame);
             }
             if dyaw == 0 && self.yaw_rate_mdeg_s != 0 {
-                self.yaw_rate_mdeg_s = Self::bleed_i32(self.yaw_rate_mdeg_s, 90);
+                self.yaw_rate_mdeg_s =
+                    Self::bleed_i32(self.yaw_rate_mdeg_s, auth.damp_attitude_mdeg_s_per_frame);
             }
             if droll == 0 && self.roll_rate_mdeg_s != 0 {
-                self.roll_rate_mdeg_s = Self::bleed_i32(self.roll_rate_mdeg_s, 120);
+                self.roll_rate_mdeg_s =
+                    Self::bleed_i32(self.roll_rate_mdeg_s, auth.damp_roll_mdeg_s_per_frame);
             }
         }
 
@@ -495,6 +582,196 @@ impl DockingClientSession {
             && self.pitch_rate_mdeg_s.abs() <= 500
             && self.yaw_rate_mdeg_s.abs() <= 500
             && self.roll_rate_mdeg_s.abs() <= 500
+    }
+
+    /// Compute the next 60 Hz control input toward the 5-gate clamp envelope using this hull's
+    /// [`DockingClientRcsAuthority`] (`SF.R16`).
+    #[must_use]
+    pub fn next_guidance_input(&self) -> DockingClientInput {
+        let mut input = DockingClientInput::default();
+        let dv_trans = self.rcs_authority.trans_dv_mmps_per_frame.max(5);
+        let dv_close = self.rcs_authority.closure_dv_mmps_per_frame.max(5);
+        let d_att = self.rcs_authority.attitude_rate_mdeg_s_per_frame.max(30);
+        let d_roll = self.rcs_authority.roll_rate_mdeg_s_per_frame.max(30);
+
+        let fast_vx = (dv_trans * 6).min(240);
+        let slow_vx = (dv_trans * 2).min(120);
+        let dead_vx = (dv_trans / 2).max(5);
+        let target_vx = if self.pose.dx_mm > 120 {
+            -fast_vx
+        } else if self.pose.dx_mm < -120 {
+            fast_vx
+        } else if self.pose.dx_mm > 20 {
+            -slow_vx
+        } else if self.pose.dx_mm < -20 {
+            slow_vx
+        } else {
+            0
+        };
+        if self.pose.vx_mmps < target_vx - dead_vx {
+            input.trans_x = 1;
+        } else if self.pose.vx_mmps > target_vx + dead_vx {
+            input.trans_x = -1;
+        }
+
+        let target_vy = if self.pose.dy_mm > 120 {
+            -fast_vx
+        } else if self.pose.dy_mm < -120 {
+            fast_vx
+        } else if self.pose.dy_mm > 20 {
+            -slow_vx
+        } else if self.pose.dy_mm < -20 {
+            slow_vx
+        } else {
+            0
+        };
+        if self.pose.vy_mmps < target_vy - dead_vx {
+            input.trans_y = 1;
+        } else if self.pose.vy_mmps > target_vy + dead_vx {
+            input.trans_y = -1;
+        }
+
+        let fast_att = (d_att * 2).min(420);
+        let slow_att = d_att.min(240);
+        let dead_att = (d_att / 2).max(15);
+        let target_pitch_rate = if self.pose.pitch_mdeg > 600 {
+            -fast_att
+        } else if self.pose.pitch_mdeg < -600 {
+            fast_att
+        } else if self.pose.pitch_mdeg > 90 {
+            -slow_att
+        } else if self.pose.pitch_mdeg < -90 {
+            slow_att
+        } else {
+            self.target_tumble_mdeg_s[0]
+        };
+        if self.pitch_rate_mdeg_s < target_pitch_rate - dead_att {
+            input.pitch_trim = 1;
+        } else if self.pitch_rate_mdeg_s > target_pitch_rate + dead_att {
+            input.pitch_trim = -1;
+        }
+
+        let target_yaw_rate = if self.pose.yaw_mdeg > 600 {
+            -fast_att
+        } else if self.pose.yaw_mdeg < -600 {
+            fast_att
+        } else if self.pose.yaw_mdeg > 90 {
+            -slow_att
+        } else if self.pose.yaw_mdeg < -90 {
+            slow_att
+        } else {
+            self.target_tumble_mdeg_s[1]
+        };
+        if self.yaw_rate_mdeg_s < target_yaw_rate - dead_att {
+            input.yaw_trim = 1;
+        } else if self.yaw_rate_mdeg_s > target_yaw_rate + dead_att {
+            input.yaw_trim = -1;
+        }
+
+        let fast_roll = (d_roll * 2).min(480);
+        let slow_roll = d_roll.min(240);
+        let dead_roll = (d_roll / 2).max(15);
+        let target_roll_rate = if self.pose.roll_mdeg > 900 {
+            -fast_roll
+        } else if self.pose.roll_mdeg < -900 {
+            fast_roll
+        } else if self.pose.roll_mdeg > 120 {
+            -slow_roll
+        } else if self.pose.roll_mdeg < -120 {
+            slow_roll
+        } else {
+            self.target_tumble_mdeg_s[2]
+        };
+        if self.roll_rate_mdeg_s < target_roll_rate - dead_roll {
+            input.roll_trim = 1;
+        } else if self.roll_rate_mdeg_s > target_roll_rate + dead_roll {
+            input.roll_trim = -1;
+        }
+
+        let lat_ok = self.pose.lateral_aligned()
+            && self.pose.vx_mmps.abs() <= 300
+            && self.pose.vy_mmps.abs() <= 300;
+        let att_ok = self.pose.attitude_aligned()
+            && self.pitch_rate_mdeg_s.abs() <= 500
+            && self.yaw_rate_mdeg_s.abs() <= 500;
+        let roll_ok = self.pose.roll_aligned() && self.roll_rate_mdeg_s.abs() <= 500;
+        let target_closure = if lat_ok && att_ok && roll_ok { 350 } else { 0 };
+        let dead_close = dv_close.clamp(5, 20);
+        if self.pose.vz_mmps < target_closure - dead_close {
+            input.closure_pulse = 1;
+        } else if self.pose.vz_mmps > target_closure + dead_close {
+            input.closure_pulse = -1;
+        }
+
+        input
+    }
+
+    /// Play the client 60 Hz docking session forward until `clamped()` is reached (up to 3,600 frames).
+    pub fn play_to_clamp(&mut self) {
+        while !self.clamped() && self.frames_stepped < MAX_DOCKING_CLIENT_TAPE_FRAMES {
+            let input = self.next_guidance_input();
+            self.step_60fps(input);
+        }
+    }
+
+    /// Overlay the live client-stepped 6-DOF pose onto a `space.docking` feed JSON object (`SF.R16`).
+    #[must_use]
+    pub fn to_feed_value(&self, base: &Value) -> Value {
+        let mut obj = base.as_object().cloned().unwrap_or_default();
+        obj.insert("dx_mm".to_owned(), Value::from(self.pose.dx_mm));
+        obj.insert("dy_mm".to_owned(), Value::from(self.pose.dy_mm));
+        obj.insert("dz_mm".to_owned(), Value::from(self.pose.dz_mm));
+        obj.insert("pitch_mdeg".to_owned(), Value::from(self.pose.pitch_mdeg));
+        obj.insert("yaw_mdeg".to_owned(), Value::from(self.pose.yaw_mdeg));
+        obj.insert("roll_mdeg".to_owned(), Value::from(self.pose.roll_mdeg));
+        obj.insert("vx_mmps".to_owned(), Value::from(self.pose.vx_mmps));
+        obj.insert("vy_mmps".to_owned(), Value::from(self.pose.vy_mmps));
+        obj.insert("vz_mmps".to_owned(), Value::from(self.pose.vz_mmps));
+        obj.insert(
+            "pitch_rate_mdeg_s".to_owned(),
+            Value::from(self.pitch_rate_mdeg_s),
+        );
+        obj.insert(
+            "yaw_rate_mdeg_s".to_owned(),
+            Value::from(self.yaw_rate_mdeg_s),
+        );
+        obj.insert(
+            "roll_rate_mdeg_s".to_owned(),
+            Value::from(self.roll_rate_mdeg_s),
+        );
+        let mut gates_green = 0u8;
+        if self.pose.lateral_aligned()
+            && self.pose.vx_mmps.abs() <= 300
+            && self.pose.vy_mmps.abs() <= 300
+        {
+            gates_green += 1;
+        }
+        if self.pose.attitude_aligned()
+            && self.pitch_rate_mdeg_s.abs() <= 500
+            && self.yaw_rate_mdeg_s.abs() <= 500
+        {
+            gates_green += 1;
+        }
+        if self.pose.roll_aligned() && self.roll_rate_mdeg_s.abs() <= 500 {
+            gates_green += 1;
+        }
+        if self.pose.closure_safe() {
+            gates_green += 1;
+        }
+        if self.pose.dz_mm >= 0 && self.pose.dz_mm <= 500 {
+            gates_green += 1;
+        }
+        obj.insert("dampeners".to_owned(), Value::from(self.dampeners_on));
+        obj.insert("gates_green".to_owned(), Value::from(gates_green));
+        obj.insert(
+            "status".to_owned(),
+            Value::from(if self.clamped() {
+                "ALIGNED-READY"
+            } else {
+                "APPROACHING"
+            }),
+        );
+        Value::Object(obj)
     }
 
     /// Encode the recorded 60 Hz input spans into the RLE wire string (`"<hex_mask>*<frames>,..."`).

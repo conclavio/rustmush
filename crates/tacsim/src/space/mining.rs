@@ -1208,6 +1208,26 @@ pub fn step_clusters_on_tick(ctx: &mut Ctx<'_>, now: ClockStamp) {
         .unwrap_or_default();
 
     for hull in hulls {
+        if ctx
+            .w
+            .module_state::<super::tick::SpaceBubbleBook>()
+            .is_some_and(|b| b.is_hull_paused_for_docking(hull))
+        {
+            if let Some(book) = ctx.w.module_state_mut::<super::tick::SpaceBubbleBook>()
+                && let Some(s) = book.cluster_sessions.get_mut(&hull)
+            {
+                let dt_paused = now.at.saturating_sub(s.last_ic_s).max(0);
+                s.last_ic_s = s.last_ic_s.max(now.at);
+                if let Some(laser) = &mut s.active_laser {
+                    laser.due_ic = laser.due_ic.saturating_add(dt_paused);
+                }
+                for drone in &mut s.active_drones {
+                    drone.due_ic = drone.due_ic.saturating_add(dt_paused);
+                }
+            }
+            continue;
+        }
+
         let Some((session_snapshot, site_snapshot)) = ctx
             .w
             .module_state::<super::tick::SpaceBubbleBook>()

@@ -72,6 +72,14 @@
     swingLook,
     wrap360Mdeg,
     wrapMdeg,
+    type WebDockingSession,
+    createWebDockingSession,
+    dockOrderToFrameInput,
+    formatWebDockingTapeCommand,
+    isWebDockingClamped,
+    playWebDockingToClamp,
+    stepWebDockingFrame,
+    webDockingFeedOverlay,
   } from "$lib/picture";
   import {
     FRAME_H,
@@ -112,6 +120,21 @@
   let turning = $state<-1 | 0 | 1>(0);
   /** The 2.5D camera zoom in permille (`500..=2000`, `1000` = 100%). */
   let zoomPermille = $state(ZOOM_DEFAULT_PERMILLE);
+  /** Active 60 Hz client-side 6-DOF docking game session (`SF.R16`, `D-35-14`). */
+  let webDockingSession = $state<WebDockingSession | null>(null);
+  let submittedDockingSessionId = $state<string | null>(null);
+
+  $effect(() => {
+    const rawDock = app.picture.spaceDockingData as { session_id?: unknown } | null;
+    const feedSessionId = typeof rawDock?.session_id === "string" ? rawDock.session_id : null;
+    if (!feedSessionId) {
+      webDockingSession = null;
+      return;
+    }
+    if (untrack(() => webDockingSession?.sessionId) !== feedSessionId) {
+      webDockingSession = createWebDockingSession(rawDock);
+    }
+  });
 
   const PICTURE_WIDTH_KEY = "rustmush.pictureWidth";
   const PICTURE_HD_KEY = "rustmush.pictureHd";
@@ -471,7 +494,9 @@
                 app.picture.spaceMode,
                 app.picture.spaceHolotankData,
                 app.picture.spaceCockpitData,
-                app.picture.spaceDockingData,
+                webDockingSession !== null
+                  ? webDockingFeedOverlay(webDockingSession, app.picture.spaceDockingData)
+                  : app.picture.spaceDockingData,
                 (app as { chart?: { frame?: unknown } }).chart?.frame ?? null,
                 app.picture.lookMdeg,
                 effectiveZoomPermille,
@@ -812,6 +837,27 @@
           local?.forget();
           break;
         case "dockOrder":
+          if (webDockingSession !== null) {
+            if (skey.cmd === "DOCK CLAMP ASSIST") {
+              playWebDockingToClamp(webDockingSession);
+            } else {
+              const input = dockOrderToFrameInput(skey.cmd);
+              if (input !== null) {
+                stepWebDockingFrame(webDockingSession, input);
+              }
+            }
+            local?.forget();
+            if (
+              isWebDockingClamped(webDockingSession) &&
+              submittedDockingSessionId !== webDockingSession.sessionId
+            ) {
+              submittedDockingSessionId = webDockingSession.sessionId;
+              app.helm(formatWebDockingTapeCommand(webDockingSession));
+            }
+          } else if (!ev.repeat) {
+            app.helm(skey.cmd);
+          }
+          break;
         case "spaceOrder":
           if (!ev.repeat) app.helm(skey.cmd);
           break;

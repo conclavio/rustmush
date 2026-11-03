@@ -1,9 +1,11 @@
 # 35. Cut notes — the seam-first space train
 
 One `## SF.Rn` heading per cut of [35-ship-free-flight-combat-and-mining.md](35-ship-free-flight-combat-and-mining.md)
-§10.2, in the order they landed: what was built, the story test that proves it, and where the PR departed from
-the plan's row. All nine cuts merged on 2026-11-02, each as one PR; the story tests are in
-`crates/tacsim/tests/shard_2/voyage.rs` unless a section says otherwise.
+§10.2 (`SF.R0`–`SF.R8`) and §10.3 (`SF.R9`–`SF.R16`, from [35b-seam-first-train-review.md](35b-seam-first-train-review.md) §8),
+in the order they landed: what was built, the story test that proves it, and where the PR departed from
+the plan's row. The initial nine cuts (`SF.R0`–`SF.R8`) merged on 2026-11-02 and were reviewed in `35b`; the follow-on
+remediation cuts (`SF.R9`–`SF.R16`) closed every `35b` §3 hole. The story tests live in
+`crates/tacsim/tests/shard_10/voyage.rs` (moved from `shard_2/voyage.rs` in #346) unless a section says otherwise.
 
 Sources: the PR bodies of #297, #302, #309, #311, #313, #316, #317, #318 and #321. A PR body rarely says where it
 left the plan, so "Divergences" lists what the body states or what its test text shows against §10.2's row;
@@ -224,3 +226,147 @@ session) restart through `reboot_with` with bit-identical `SpaceBubbleBook` and 
 gates the write to real changes because three `cost_lane`/`drones` stories counted the
 per-tick `tacsim:space:state` write and main went red. **(audit)** The document is still one unbounded value written
 whole: `completed_space_mine_draws` is push-only, `derelicts` are never removed, `tape.entries` grows.
+
+## SF.R9 — hold promoted interdictions across engine ticks and step bubbles on 1:1 wall time (#332, `6aa49514`)
+
+- `mush_sim::journey::step_promoted_journeys` checks `DomainId("tacsim.space.interdiction")` alongside
+  `tacsim.boarding` in `ActivationBook` so a `CarrierJourney` promoted into a `LocalSpaceBubble` stays in
+  `JourneyState::Promoted` across full `WorldEngine::tick_world` calls until the bubble clears (`35b` §3.1, `D-35-5`).
+- `ActiveInterdictionBubble::last_wall_step_ms: Option<u64>` (`#[serde(skip)]`) tracks the last wall-clock pulse
+  timestamp per active bubble; `SpaceBubbleBook::step_active_bubbles(w, dt_ic, now_ic, now_ms)` steps each bubble by
+  `dt_wall_ms = (now_ms - prev_ms).min(MAX_BUBBLE_TICK_STEP_MS)` instead of multiplying `dt_ic` by 1,000 (`35b` §3.2,
+  `D-35-3`).
+
+**Test.** `sfr9_promoted_interdiction_holds_across_full_engine_ticks_and_steps_on_wall_clock`: a promoted ship stays in
+its bubble across three `tick_world_at_wall_ms` calls at `dt_ic = 3_600` (`500 ms` apart in wall time) and advances
+`1_500 ms` of bubble wall time (`3_000 ms` total including the initial 500 ms step on promotion).
+
+**Divergences.** None.
+
+## SF.R10 — emit real propagation events and push space panel keyframes (#333, `c13ab990`)
+
+- Bubble hulls and sites register in `mush_propagation::PropagationBook` (`ensure_bubble_propagation_locations`) and
+  emit `PropagationEvent`s (`torch_burn`, `weapon_flash`, `transponder_ping`) with source position, magnitude, and
+  emission timestamp (`35b` §3.3, `D-35-10`).
+- `resolve_detection_for_hull` reads `PropagationBook::perceived_events` for the observer's location at the current
+  perception horizon so a remote torch burn or weapon flash is invisible before `d / c` and detected after light-lag
+  arrives.
+- `push_space_panels` (`crates/tacsim/src/space/commands.rs`) pushes `space.holotank` and `space.cockpit` keyframes on
+  every `space_tick` and command step via `Ctx::push_panel` (`35b` §5 #7, `D-35-18`).
+
+**Test.** `sfr10_propagation_book_perceives_events_across_light_lag_and_tick_pushes_space_panel_keyframes`: a distant
+torch burn is invisible to `+tac/scan` before `d / c` and visible after; `drain_panel_events` yields `space.holotank`
+and `space.cockpit` keyframes on a tick with no player command.
+
+**Divergences.** `push_space_panels` in `SF.R10` covered Tier-2 active bubbles; Tier-1 free-flight and orbital cluster
+panel pushes (`build_tier1_space_panel_payloads`) landed in `SF.R16`.
+
+## SF.R11 — wire `+helm/decouple`, free-flight entry and mid-space `+helm/autopilot` recouple (#335, `b157a098`)
+
+- `+helm/decouple` transitions a `Cruising` `CarrierJourney` into a `SpaceFreeFlightRecord` interpolated from the leg's
+  current sky positions and velocities (`35b` §3.5, `D-35-6`).
+- `+helm/autopilot <place>` from `SpaceFreeFlightRecord` plans a passage from the hull's current `[pos_km, vel_mps]` via
+  `plan_passage_from` and opens a `CarrierJourney` whose leg runs for the planned duration (`recouple_from_free_flight`),
+  removing the free-flight record cleanly.
+
+**Test.** `sfr11_pilot_decouples_from_cruise_burns_in_free_flight_and_recouples_from_arbitrary_coordinates`: a non-GOD
+pilot types `+helm/decouple` mid-leg, burns off-corridor in free flight, and recouples via `+helm/autopilot stickney`
+with zero test calls to `module_state_mut::<SpaceBubbleBook>()`.
+
+**Divergences.** None.
+
+## SF.R12 — end-to-end derelict lifecycle and split bounded `TacsimStore` keys (#336, `611d754c`)
+
+- When a hull's drive is disabled in a `LocalSpaceBubble`, `SpaceBubbleBook::clear_resolved_bubbles` checks in custody
+  with the epoch kept open (`check_in_space_ship_preserving_epoch_if_disabled`), creates the `SpaceDerelictRecord`, and
+  opens the 48 real-hour (`172,800 s`) `SalvageClaimBook` window without requiring a test helper (`35b` §3.6, `D-35-12`).
+- Space persistence splits the monolithic `tacsim:space:state` document into dirty-tracked per-entity keys
+  (`tacsim:space:bubble:<id>`, `flight:<hull>`, `derelict:<hull>`, `cluster:<site>`, `docking:<hull>`, `ledger:<hull>`,
+  `meta`), caps `BubbleInputTape` at `MAX_TAPE_ENTRIES` (`4,096`), prunes resolved derelicts and completed bubbles, and
+  retains a one-time boot fallback from `tacsim:space:state` (`35b` §3.9, `D-35-19`).
+
+**Test.** `sfr12_live_bubble_combat_disables_raider_opens_derelict_and_persists_per_entity_store_keys`: live bubble
+combat disables a raider, opens the derelict and salvage claim on bubble resolution without calling
+`record_disabled_derelict`, and writes only the touched per-entity `tacsim:space:*` keys.
+
+**Divergences.** None.
+
+## SF.R13 — close authority and lifecycle bypass holes (#337, `56b963d4`)
+
+- `+mine/stake` and `+mine/contest` verify aboard presence, `command`/`helm` seat authority, and `has_claim_authority`
+  on the caller's party; `+helm/bail` requires `command` or `helm` seat authority (`require_helm_or_command_seat`);
+  `+helm/dock abort` verifies `session.hull == hull` (`35b` §3.4, `D-35-9`).
+- Removed the player-callable `+tac/hail clear` branch so only the Rhai customs picket doctrine (`hail_clear_ship`) or
+  combat resolution can clear a hail.
+- `+helm/dock tape <session_id> <rle>` requires a matching active single-use `DockingSession` for the caller's hull and
+  consumes the session on any terminal outcome (`Clamped`, `OutOfGate`, `CollarScrapeBounce`, `Aborted`); stale sessions
+  expire after `MAX_DOCKING_SESSION_WALL_S` (`60 s`) in `expire_stale_docking_sessions` (`D-35-14`).
+
+**Test.** `sfr13_unseated_and_off_ship_callers_cannot_stake_bail_clear_hail_or_forge_docking_tape`: unrostered and
+off-ship callers are refused across `+mine/stake`, `+mine/contest`, `+helm/bail`, and `+helm/dock abort`;
+`+tac/hail clear` is rejected; a forged `+helm/dock tape` without an active session is rejected; a stale docking session
+expires after 60 wall seconds.
+
+**Divergences.** None.
+
+## SF.R14 — author clusters, pickets and doctrines in the lane pack (#338)
+
+- Added `SpaceClusterDef` and `SpacePicketDef` to `crates/tacsim/src/pack.rs` (`clusters.json`, `pickets.json`, and
+  `doctrines/*.rhai` in `packs/solar_2240/`) and removed the inline cluster and picket tables from `mining.rs` and
+  `doctrine.rs` (`35b` §3.7, `D-35-13`, `D-35-17`).
+- Added content-studio JSON schemas (`clusters.schema.json`, `pickets.schema.json`) and studio validation for cluster
+  sites, ore pools, syndicate tenure seeds, picket casts, and Rhai doctrine scripts.
+
+**Test.** `sfr14_lane_pack_authors_clusters_pickets_and_rhai_doctrines_under_studio_validation`: `solar_2240` loads and
+validates all 4 orbital clusters and the Kirkwood customs picket doctrine from pack files with zero inline Rust tables.
+
+**Divergences.** None.
+
+## SF.R15 — canonical hull fidelity, multi-contact combat and linkdead policy (#339)
+
+- Mapped 3D attack bearings onto canonical `UnitSpec.facets` (`front`/`left`/`right`/`rear`/`top` on 5-facet ships,
+  4-facet fallback on ground units) and routed bubble weapon hits through `mush_tactics::combat::resolve_attack`
+  (`35b` §5 #8, `D-35-1`).
+- Scaled ship linear acceleration from canonical `UnitSpec.tons`, live `stow.ore` + `stow.propellant` cargo mass
+  (`cargo_mass_kg`), and live `drive` section integrity (`drive_cell_ratio`) (`35b` §5 #9).
+- Generalized `ActiveInterdictionBubble` sides (`challenger_hulls: Vec<ObjId>`, `defender_hulls: Vec<ObjId>`) for N-ship
+  patrols and multi-contact target selection (`+tac/lock <contact>`) (`35b` §5 #10).
+- Enforced linkdead thrust cut (`D-35-7`): when all crew aboard a hull in a bubble or free flight have disconnected
+  (`!w.Connected(actor)`), main thrust cuts to zero (ballistic drift) while keeping point defense armed (`35b` §5 #12).
+- Upgraded `Sky::velocity_mps` to return full 3D orbital velocity (`[vx, vy, vz]`) including orbital inclination `i`
+  (`35b` §5 #13, `D-35-4`).
+
+**Test.** `sfr15_canonical_hull_fidelity_multi_contact_combat_and_linkdead_ballistic_cut`: a `Dray-P` loaded with 80 t
+of ore accelerates slower than an empty `Dray`, a damaged drive scales thrust proportionally, a 2-ship patrol engages in
+one bubble, and linkdead crew cut thrust to ballistic drift.
+
+**Divergences.** None.
+
+## SF.R16 — client docking game, per-session challenge and Neptune canopy
+
+- Shared 60 Hz 6-DOF client docking kinematics and session driver across `mush-pixel::docking::DockingClientSession`,
+  the SSH TUI (`crates/mush-net-ssh/src/tui/pixel.rs`), and the web client (`web/src/lib/picture.ts` +
+  `web/src/components/PictureView.svelte`), stepping 6-DOF RCS inputs at 60 Hz (`wasd` + `r`/`f` translation,
+  arrow/`ijkl` + `q`/`e` attitude/roll, `x` damp, `c`/`Space` guidance clamp-assist) and submitting
+  `+helm/dock tape <session_id> <rle>` on collar contact (`35b` §3.8, `D-35-14`, `D-35-16`).
+- Added deterministic per-session start pose (`DockingChallenge::session_pose_from_seed`, `standard_port_for_session`,
+  `derelict_collar_for_session`) and distinct per-hull `DockingRcsAuthority` (`rcs_authority_for_hull`, with
+  `tacsim.unit.dray_p` distinct from `tacsim.unit.dray`) emitted in the `space.docking` panel feed (`35b` §3.8,
+  `D-35-14`).
+- Extended `DockingSession` pause coverage (`is_hull_paused_for_docking`) to orbital cluster sessions
+  (`step_clusters_on_tick` in `mining.rs`) and `Cruising` `CarrierJourney` legs when initiating derelict docking
+  (`helm_dock` in `commands.rs` and `expire_stale_docking_sessions` in `tick.rs`) (`35b` §5 #14).
+- Extended `push_space_panels` (`build_tier1_space_panel_payloads`) and `+helm/autopilot <body_or_site>` to Tier-1
+  free-flight and orbital cluster hulls, projecting `neptune` and `triton` (`default_canopy_bodies_for_site`) onto the
+  `space.cockpit` canopy during outer-system expeditions (`35b` §8 `SF.R16`, `D-35-15`, `D-35-18`).
+- Added contract lint `tacsim_integration_tests_never_mutate_space_bubble_book_directly` in
+  `crates/mush-contract-tests/tests/arena_library.rs` pinning that zero tests in `crates/tacsim/tests/` call
+  `module_state_mut::<SpaceBubbleBook>()` (`35b` §5 #15).
+
+**Tests.** `sfr16_client_docking_game_randomised_pose_and_neptune_canopy` (`crates/tacsim/tests/shard_10/voyage.rs`),
+`tui::pixel::tests::sfr16_tui_docking_client_session_plays_60fps_and_submits_rle_tape`
+(`crates/mush-net-ssh/src/tui/pixel.rs`), `picture.test.ts` (`web/src/lib/picture.test.ts`), and
+`tacsim_integration_tests_never_mutate_space_bubble_book_directly`
+(`crates/mush-contract-tests/tests/arena_library.rs`).
+
+**Divergences.** None.

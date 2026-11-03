@@ -343,6 +343,80 @@ impl DockingChallenge {
             target_tumble_mdeg_s: [0, 0, 60],
         }
     }
+
+    fn session_pose_from_seed(seed: u64, derelict: bool) -> DockingPose6Dof {
+        const LAT_X_TABLE: [i64; 6] = [420, -480, 540, -420, 480, -540];
+        const LAT_Y_TABLE: [i64; 6] = [360, -420, 480, -360, 420, -480];
+        const PITCH_TABLE: [i32; 6] = [-2_880, 2_520, -3_240, 2_880, -2_520, 3_240];
+        const YAW_TABLE: [i32; 6] = [2_880, -2_520, 3_240, -2_880, 2_520, -3_240];
+        const ROLL_TABLE: [i32; 6] = [-4_080, 3_840, -4_320, 4_080, -3_840, 4_320];
+
+        let mut h = seed.wrapping_add(if derelict {
+            0x9e37_79b9_7f4a_7c15
+        } else {
+            0x517c_c1b7_2722_0a95
+        });
+        h = (h ^ (h >> 30)).wrapping_mul(0xbf58_476d_1ce4_e5b9);
+        h = (h ^ (h >> 27)).wrapping_mul(0x94d0_49bb_1331_11eb);
+        h ^= h >> 31;
+
+        let parity = (seed as usize) & 1;
+        let idx0 = (((h >> 3) as usize) % 3) * 2 + parity;
+        let idx1 = (((h >> 9) as usize) % 3) * 2 + parity;
+        let idx2 = ((h >> 11) as usize) % 6;
+        let idx3 = ((h >> 17) as usize) % 6;
+        let idx4 = ((h >> 23) as usize) % 6;
+        let z_step = ((h >> 29) % 5) as i64;
+
+        DockingPose6Dof {
+            lateral_x_mm: LAT_X_TABLE[idx0],
+            lateral_y_mm: LAT_Y_TABLE[idx1],
+            range_z_mm: (if derelict { 1_950 } else { 2_100 }) + z_step * 150,
+            vel_x_mmps: 0,
+            vel_y_mmps: 0,
+            closure_mmps: 0,
+            pitch_err_mdeg: PITCH_TABLE[idx2],
+            yaw_err_mdeg: YAW_TABLE[idx3],
+            roll_err_mdeg: ROLL_TABLE[idx4],
+            pitch_rate_mdeg_s: 0,
+            yaw_rate_mdeg_s: 0,
+            roll_rate_mdeg_s: 0,
+        }
+    }
+
+    /// Construct a per-session port berth docking challenge seeded from the session ID and hull
+    /// [`DockingRcsAuthority`] (`SF.R16`, `D-35-14`).
+    #[must_use]
+    pub fn standard_port_for_session(
+        session_id: impl Into<String>,
+        rcs_authority: DockingRcsAuthority,
+        seed: u64,
+    ) -> Self {
+        Self {
+            session_id: session_id.into(),
+            start_pose: Self::session_pose_from_seed(seed, false),
+            rcs_authority,
+            max_frames: MAX_DOCKING_TAPE_FRAMES,
+            target_tumble_mdeg_s: [0, 0, 0],
+        }
+    }
+
+    /// Construct a per-session derelict collar docking challenge seeded from the session ID and hull
+    /// [`DockingRcsAuthority`] (`SF.R16`, `D-35-14`).
+    #[must_use]
+    pub fn derelict_collar_for_session(
+        session_id: impl Into<String>,
+        rcs_authority: DockingRcsAuthority,
+        seed: u64,
+    ) -> Self {
+        Self {
+            session_id: session_id.into(),
+            start_pose: Self::session_pose_from_seed(seed, true),
+            rcs_authority,
+            max_frames: MAX_DOCKING_TAPE_FRAMES,
+            target_tumble_mdeg_s: [0, 0, 60],
+        }
+    }
 }
 
 /// Active server-side docking session state for a hull (`Q-35-5`, `D-35-14`).
@@ -912,94 +986,110 @@ pub fn solve_docking_tape(challenge: &DockingChallenge) -> DockingInputTape {
         }
 
         let mut input = DockingControlInput::default();
+        let dv_trans = challenge.rcs_authority.trans_dv_mmps_per_frame.max(5);
+        let dv_close = challenge.rcs_authority.closure_dv_mmps_per_frame.max(5);
+        let d_att = challenge
+            .rcs_authority
+            .attitude_rate_mdeg_s_per_frame
+            .max(30);
+        let d_roll = challenge.rcs_authority.roll_rate_mdeg_s_per_frame.max(30);
 
-        // 1. Lateral X control: target `lateral_x_mm -> 0` with bounded approach speed `<= 180 mm/s`.
+        // 1. Lateral X control: target `lateral_x_mm -> 0` with bounded approach speed `<= 240 mm/s`.
+        let fast_vx = (dv_trans * 6).min(240);
+        let slow_vx = (dv_trans * 2).min(120);
+        let dead_vx = (dv_trans / 2).max(5);
         let target_vx = if stepper.pose.lateral_x_mm > 120 {
-            -180
+            -fast_vx
         } else if stepper.pose.lateral_x_mm < -120 {
-            180
+            fast_vx
         } else if stepper.pose.lateral_x_mm > 20 {
-            -60
+            -slow_vx
         } else if stepper.pose.lateral_x_mm < -20 {
-            60
+            slow_vx
         } else {
             0
         };
-        if stepper.pose.vel_x_mmps < target_vx - 15 {
+        if stepper.pose.vel_x_mmps < target_vx - dead_vx {
             input.trans_x = 1;
-        } else if stepper.pose.vel_x_mmps > target_vx + 15 {
+        } else if stepper.pose.vel_x_mmps > target_vx + dead_vx {
             input.trans_x = -1;
         }
 
-        // 2. Lateral Y control: target `lateral_y_mm -> 0` with bounded approach speed `<= 180 mm/s`.
+        // 2. Lateral Y control: target `lateral_y_mm -> 0` with bounded approach speed `<= 240 mm/s`.
         let target_vy = if stepper.pose.lateral_y_mm > 120 {
-            -180
+            -fast_vx
         } else if stepper.pose.lateral_y_mm < -120 {
-            180
+            fast_vx
         } else if stepper.pose.lateral_y_mm > 20 {
-            -60
+            -slow_vx
         } else if stepper.pose.lateral_y_mm < -20 {
-            60
+            slow_vx
         } else {
             0
         };
-        if stepper.pose.vel_y_mmps < target_vy - 15 {
+        if stepper.pose.vel_y_mmps < target_vy - dead_vx {
             input.trans_y = 1;
-        } else if stepper.pose.vel_y_mmps > target_vy + 15 {
+        } else if stepper.pose.vel_y_mmps > target_vy + dead_vx {
             input.trans_y = -1;
         }
 
         // 3. Pitch control: target `pitch_err_mdeg -> 0`.
+        let fast_att = (d_att * 2).min(420);
+        let slow_att = d_att.min(240);
+        let dead_att = (d_att / 2).max(15);
         let target_pitch_rate = if stepper.pose.pitch_err_mdeg > 600 {
-            -360
+            -fast_att
         } else if stepper.pose.pitch_err_mdeg < -600 {
-            360
+            fast_att
         } else if stepper.pose.pitch_err_mdeg > 90 {
-            -180
+            -slow_att
         } else if stepper.pose.pitch_err_mdeg < -90 {
-            180
+            slow_att
         } else {
             challenge.target_tumble_mdeg_s[0]
         };
-        if stepper.pose.pitch_rate_mdeg_s < target_pitch_rate - 90 {
+        if stepper.pose.pitch_rate_mdeg_s < target_pitch_rate - dead_att {
             input.pitch_trim = 1;
-        } else if stepper.pose.pitch_rate_mdeg_s > target_pitch_rate + 90 {
+        } else if stepper.pose.pitch_rate_mdeg_s > target_pitch_rate + dead_att {
             input.pitch_trim = -1;
         }
 
         // 4. Yaw control: target `yaw_err_mdeg -> 0`.
         let target_yaw_rate = if stepper.pose.yaw_err_mdeg > 600 {
-            -360
+            -fast_att
         } else if stepper.pose.yaw_err_mdeg < -600 {
-            360
+            fast_att
         } else if stepper.pose.yaw_err_mdeg > 90 {
-            -180
+            -slow_att
         } else if stepper.pose.yaw_err_mdeg < -90 {
-            180
+            slow_att
         } else {
             challenge.target_tumble_mdeg_s[1]
         };
-        if stepper.pose.yaw_rate_mdeg_s < target_yaw_rate - 90 {
+        if stepper.pose.yaw_rate_mdeg_s < target_yaw_rate - dead_att {
             input.yaw_trim = 1;
-        } else if stepper.pose.yaw_rate_mdeg_s > target_yaw_rate + 90 {
+        } else if stepper.pose.yaw_rate_mdeg_s > target_yaw_rate + dead_att {
             input.yaw_trim = -1;
         }
 
         // 5. Roll control: target `roll_err_mdeg -> 0`.
+        let fast_roll = (d_roll * 2).min(480);
+        let slow_roll = d_roll.min(240);
+        let dead_roll = (d_roll / 2).max(15);
         let target_roll_rate = if stepper.pose.roll_err_mdeg > 900 {
-            -480
+            -fast_roll
         } else if stepper.pose.roll_err_mdeg < -900 {
-            480
+            fast_roll
         } else if stepper.pose.roll_err_mdeg > 120 {
-            -240
+            -slow_roll
         } else if stepper.pose.roll_err_mdeg < -120 {
-            240
+            slow_roll
         } else {
             challenge.target_tumble_mdeg_s[2]
         };
-        if stepper.pose.roll_rate_mdeg_s < target_roll_rate - 120 {
+        if stepper.pose.roll_rate_mdeg_s < target_roll_rate - dead_roll {
             input.roll_trim = 1;
-        } else if stepper.pose.roll_rate_mdeg_s > target_roll_rate + 120 {
+        } else if stepper.pose.roll_rate_mdeg_s > target_roll_rate + dead_roll {
             input.roll_trim = -1;
         }
 
@@ -1011,9 +1101,10 @@ pub fn solve_docking_tape(challenge: &DockingChallenge) -> DockingInputTape {
         } else {
             0
         };
-        if stepper.pose.closure_mmps < target_closure - 20 {
+        let dead_close = dv_close.clamp(5, 20);
+        if stepper.pose.closure_mmps < target_closure - dead_close {
             input.closure_pulse = 1;
-        } else if stepper.pose.closure_mmps > target_closure + 20 {
+        } else if stepper.pose.closure_mmps > target_closure + dead_close {
             input.closure_pulse = -1;
         }
 
