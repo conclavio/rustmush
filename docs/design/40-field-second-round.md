@@ -272,7 +272,7 @@ landing of a `Phase::Field` flight, `sortie/model.rs:163–169`, or of a rig's o
 checks it out under the field's mark and offers it as `ArenaMsg::Join` at the carrier's ramp
 (`LAUNCH_SPREAD_CELLS` 4, the director's spread), landing at the next pulse through
 `carrier::joining` and GC.1b's handler, told to the site with a line of its own. The cap is counted
-twice as today, at the prepare and by the kernel's `PartyFull` (`join.rs:273`). The cycle is
+once, over the one count below (Q-40-24). The cycle is
 `[tacsim.field].launch_cycle_s` (60, provisional, banded like `disengage_s`): one hull a carrier
 a cycle, a launch act of several slots putting them down one a cycle in slot order, and a second
 act inside the cycle refused with a line naming the field and the seconds left. A carrier that
@@ -280,6 +280,18 @@ arrived by F-6 launches under the same rule once it has joined, which closes the
 Q-36-5 named. The W-clock freeze needs no new rule: the act and the join both ride ticks that
 hold while it is frozen. The bay under fire: no hold beyond the cycle; GC.3's table already closes
 a wrecked carrier's bay and a hull put down beside the ramp is a target from its first pulse.
+
+**The one count** (Q-40-24). Draft 0.2 said the cap was counted twice; it is counted once, and
+not where that sentence said. `ArenaError::PartyFull` (`join.rs:291`, `state.rs:3938–3946`) means
+a party has used all 552 callsign names, never `max_units`; `join_in_place` (`join.rs:114–238`)
+checks no cap and no `Join` sender reads one, so the kernel counts nothing. The only count is at
+the prepare (`prepare.rs:576–586`), at the rig ramp's launch half (`surface/act/commands.rs:188–195`)
+and at admission (`admit.rs:364–366`), each over `site_population` (`parties.rs:185–198`): the
+units on the ground **now**, which cannot see a launch in flight, so at 99 of 100 two carriers
+each prepare one and both land. Q-40-24 adds the launches in flight to that one function through
+a pending row on the site record, written by the launch's own transaction and retired by the
+join's batch or the abort; arrivals and raids need nothing new, an arrival standing on the ground
+before it joins and the director's shapes being counted at its fire over the same function.
 
 **The refusal** (Q-40-20). A hull on the ground and not in the field is the one state the design
 forbids (Q-CF-21), so a launch whose join the kernel refuses goes back aboard and is offered
@@ -290,7 +302,7 @@ demotes; GC.1b's refused arrival takes the same retry instead of waiting for dem
 **Its story.** Doc 32 Q-CF-47's escort story with a second escort launched from the pad after the
 first shot, on Ahuna and on Urvara (§6, FR.3).
 
-**Questions.** Q-40-19, Q-40-20.
+**Questions.** Q-40-19, Q-40-20, Q-40-24 (open, Draft 0.3).
 
 ### 4.5 The ledger per segment (I)
 
@@ -610,7 +622,8 @@ reason for the record; §6 is the plan built from them.
   at the ramp by the field tick once the act has landed (the landing has no `Ctx` to do it with,
   §4.4), one hull a carrier a `launch_cycle_s` (60 s wall, provisional,
   banded 10–600), a multi-slot act putting its hulls down one a cycle in slot order, a second act
-  inside the cycle refused with the seconds left; the cap at the prepare and at the join; no hold
+  inside the cycle refused with the seconds left; the cap once, at the prepare over the one count
+  (Q-40-24); no hold
   for a bay under fire beyond GC.3's table.
 - **Alternative:** one act a cycle with every slot down at once; or a "ramp under fire" hold for
   N seconds after a hit on the carrier.
@@ -625,6 +638,25 @@ reason for the record; §6 is the plan built from them.
 - **Alternative:** a refused launch is told and the player launches again.
 - **Why:** Q-CF-21 forbids a hull on the ground and not in the field; a hull that is back aboard
   is on neither, and the retry is code the raid already runs.
+
+**Q-40-24 — The one population count.** *(open: raised by the round-2 review, Draft 0.3)*
+- **Proposed default:** a pending row on the site record. The launch's own transaction writes
+  `PendingLaunch { hull, carrier, accepted_ic }` to `SiteRecord.pending` (beside `tows`; the DT
+  prepare already reads and saves the record, `prepare.rs:148`, `:560`, and the rig ramp's launch
+  half reads it, `surface/act/commands.rs:188–195`); `site_population` (`parties.rs:185–198`)
+  counts the rows with the ground, so the prepare, the ramp's half and admission
+  (`admit.rs:364–366`) all see a launch in flight; the join's batch retires the row as the unit
+  lands on the live record, the abort retires it too, and a row older than `LAUNCH_S` plus one
+  cycle with no hull on the ground is dropped by the field tick as stale. No kernel count:
+  `PartyFull` (`join.rs:291`, `state.rs:3938–3946`) stays what it is, a party out of callsign
+  names.
+- **Alternative:** a kernel cap: `join_in_place` (`join.rs:114`) reads `max_units` from the
+  `FieldHost` and refuses a join past it by name, the host retrying as Q-40-20 says.
+- **Why:** the kernel cannot see a launch in flight either, so a kernel cap would still let two
+  carriers at 99 of 100 both land and then refuse one of them at the join — a hull on the ground
+  and not in the field for the retry's length (Q-CF-21); a count that includes what is accepted
+  but not yet down is the only one that refuses at the prepare, where the line can name the
+  reason. One row kind, one reader, no kernel file.
 
 ### 5.5 Segments, the seam, acceptance
 
