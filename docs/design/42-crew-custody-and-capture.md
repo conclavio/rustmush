@@ -1,6 +1,6 @@
 # 42. Crew: custody, capture, ejection, treatment — survey
 
-Draft 0.3, 2026-11-03, docs only. Surveyed against `origin/main` at `c83c2eff` (doc 38 Draft 0.2
+Draft 0.4, 2026-11-03, docs only. Surveyed against `origin/main` at `c83c2eff` (doc 38 Draft 0.2
 merged as PR #345; doc 36a's lane 5 merged as PR #346, so `check_in` already keeps a prior
 injury). Draft 0.1, the same day, was the survey. **Draft 0.2 records the owner's ruling of
 2026-11-03: every Q-42 default is accepted as written, and §5's consequences are acknowledged.**
@@ -10,7 +10,10 @@ binding from this draft and CR.0 may start now. **Draft 0.3 folds the second out
 each a "Draft 0.3 (review round 2, 42-n)" note under the question it corrects — 42-1 under Q-42-12,
 42-5/42-8 under Q-42-1 and Q-42-12, 42-2 and 42-7 under Q-42-7, 42-3 under Q-42-6, 42-4 under
 Q-42-5, 42-6 under Q-42-2 — plus 42-9's advice under Q-42-16. None changes an accepted ruling;
-42-4 needed a choice the rulings did not make, asked as **Q-42-26, open**. Docs 23 (custody for
+42-4 needed a choice the rulings did not make, asked as Q-42-26. **Draft 0.4 records the owner's ruling
+of 2026-11-03 on Q-42-26: the proposed default is accepted as written** ("Accept all seven", across
+docs 23, 40, 41 and 42), and notes doc 40's Q-40-25, accepted at its default the same day, where
+CR.4 and 42-9 read it. Docs 23 (custody for
 moving anchors), 39, 40 and 41 are merged beside this one; references to them point at the
 merged text, and 42-7's settle path is doc 41's `+debts/pay`. This is the crew document doc 38 §6 proposes: "new rulings first (the reviewers are right
 that none exist); touches ownership and permissions". It is a survey in the form doc 38 used: it
@@ -227,7 +230,7 @@ Flank through `support/field/driving_rig.rs`.
 acknowledged §5. No question is amended, so the proposed text below is the decision and is kept
 as written for the record; a cut cites the question it builds. Draft 0.3's review notes are
 precisions of those decisions and bind the build with them. **Q-42-26** (Draft 0.3, under Q-42-5)
-is open: it gates CR.1 only, so CR.0 may still start.
+was ruled the same day at its default (Draft 0.4), so CR.1 is unblocked once CR.0 lands.
 
 Each question has a proposed default, an alternative and a reason. Numbers are provisional.
 
@@ -349,10 +352,10 @@ released; captivity created also by an ejection into a held cell (§4 C).
   contracted NPCs (`crew/mod.rs:157`) — so ending the contract alone would put a still-reserved NPC
   back on offer. The load's physical step (`place_in_bay`, `tow.rs:2296`) runs from `tow::tick`
   (`:2206`), which changes action state only by submitting an action, as it does the load's own
-  finish (`TowOrder::Loaded`, `:2273–2280`). How the two records end is Q-42-26.
+  finish (`TowOrder::Loaded`, `:2273–2280`). How the two records end is Q-42-26 (ruled in Draft 0.4).
 
-**Q-42-26 — How a captured hull's NPC crew leave the roster.** (Draft 0.3, new; open.)
-- **Proposed default:** one authoritative K3 action that declares both families and, for the
+**Q-42-26 — How a captured hull's NPC crew leave the roster.** (Draft 0.3, new; ruled in Draft 0.4.)
+- **Decision (accepted default, 2026-11-03):** one authoritative K3 action that declares both families and, for the
   NPC, deletes the contract and clears the reservation in one bundle. The load's pass does the
   world half at once (42-5's vacate-and-release on the NPC's station, the NPC object moved to its
   hire port's pool room, the organizer told); the tow tick then submits the action as the
@@ -367,6 +370,14 @@ released; captivity created also by an ejection into a held cell (§4 C).
   the alternative is cheaper but leaves a hired NPC an organizer cannot use and nobody else can
   hire for as long as an operation stays open. The action's owner is whichever definition may
   declare both families under the action ledger's ownership rules; CR.1 names it.
+- **Draft 0.4: the action's owner and key.** Both families are the `tacsim` module's
+  (`OwnerId::new(crate::NS)`: `detachment/crew/runtime.rs:118`, `detachment/activation/runtime.rs:463`),
+  and the activation definition already declares two families in one descriptor
+  (`activation/runtime.rs:156`). So the action is a new definition of the `tacsim` module,
+  `tacsim_crew_captured` (name provisional), registered beside `tacsim_crew_hire` in
+  `detachment/crew/runtime.rs` with `"families":["tacsim.crew_contracts",
+  "tacsim.detachment_reservations"]`; its idempotency key is `tacsim.crew/<npc>/captured/<recovered_ic>`,
+  its principal the organizer (`Fire::as_principal`), its submitter the tow tick.
 
 ### B. The port handover
 
@@ -642,7 +653,12 @@ Q-36-52's friendly half stands.
   physical step runs only outside a promoted field (`tow.rs:2252`, `if !promoted`), so every
   capture passes `place_in_bay`. [Doc 40](40-field-second-round.md) adds a ramp `+tv/<n> load` inside a running field with a
   trailer-follow tow; that load must call the same crew branch (`aboard_loaded` for a Friend's
-  carrier, the capture of 42-5 otherwise) so this question holds inside a field too. Doc 42 §5
+  carrier, the capture of 42-5 otherwise) so this question holds inside a field too. **Draft 0.4:
+  doc 40's Q-40-25 is ruled at its default (2026-11-03), which settles this:** a coupled pair
+  leaves a running field by a coupled withdraw at the ramp (`+tv/<n> load [go]` on a promoted site,
+  both checked in through the ordinary exit), and the host then runs the ordinary
+  `TowOrder::Load`/`Loaded`. A capture inside a running field therefore passes the same
+  `place_in_bay` and `captured_loaded` branch as one on open ground; doc 42 adds no field-side load. Doc 42 §5
   already rules licensed-mind hulls out of capture, so [doc 23](23-ic-sorties.md)'s foreign-load item is not this
   document's.
 
@@ -832,7 +848,11 @@ decode and gate tests; no story yet.
 
 **CR.1 — Capture at the load.** Q-42-4, Q-42-5, Q-42-16, Q-42-21, Q-42-22. `tow.rs:2316–2321`'s
 second branch calls `captured_loaded`; the NPC seat's return to the pool; Draft 0.3 (42-4): the NPC exit's K3 action (Q-42-26), adding `detachment/crew/runtime.rs` and
-`detachment/activation/runtime.rs` to the files; the `Capture` evidence
+`detachment/activation/runtime.rs` to the files; Draft 0.4 (Q-42-26 ruled): the action is the
+`tacsim` module's `tacsim_crew_captured` declaring both families, submitted by the tow tick as
+the organizer (`Fire::as_principal`) and keyed `tacsim.crew/<npc>/captured/<recovered_ic>`, resubmitted
+each pass until the ledger shows it landed; until then the NPC stands in its hire port's pool room
+but is not on offer; the `Capture` evidence
 row; the `capture:` standing grant; `+ship/captives` and `+ship/release`. Files: `surface/tow.rs`,
 `field/crew.rs`, `surface/claim.rs`, `port/voyage.rs` or `port/ship.rs` for the verbs. Story:
 (a′) to the load, at both sizes; the GC.5 gate and its twin rewritten.
@@ -853,7 +873,7 @@ captor's wreck. Files: `field/crew.rs`, `mush-config`. Story: (e), both sizes, w
 test on live cells; the holding query to the arena task; the deterministic draw and
 `eject_capture_permille`; the forced extraction's two landings; the deferral keyed on Friends
 rather than the duty. Files: `detachment/sortie/commands.rs`, `field/crew.rs`, `arena_bridge.rs`,
-the arena task's message handler (a read; no hash). Draft 0.3 (42-5): also `field/raiders.rs` (`lift_check` waits on a pending capture naming its carrier). Story: (d), both sizes, knob at 1,000 and 0.
+the arena task's message handler (a read; no hash). Draft 0.3 (42-5): also `field/raiders.rs` (`lift_check` waits on a pending capture naming its carrier). Draft 0.4 (Q-40-25 ruled): the coupled-casualty crew rule reads doc 40's coupled withdraw at the ramp, after which the ordinary `TowOrder::Load`/`Loaded` runs, so a casualty recovered from a running field reaches the same `place_in_bay`/`captured_loaded` branch as CR.1's. Story: (d), both sizes, knob at 1,000 and 0.
 After CR.1 (both touch `crew.rs`).
 
 **CR.5 — Beds as a limit.** Q-42-17, Q-42-18. `treat` counts the medical room's occupants
@@ -890,6 +910,10 @@ Every number is provisional under the 2026-10-24 rule.
   `Extraction::forced` omitted when false, `CREW_FORMAT` unchanged (Q-42-1); Draft 0.3 adds
   `Extraction::capture: Option<EjectCapture { party, carrier, captor }>` (42-5) and the
   `Processing` location (42-2), both CR.0's to decode and display.
+- **The NPC exit's action** (Q-42-26, Draft 0.4): `tacsim_crew_captured` (name provisional), owned by
+  the `tacsim` module, declaring `tacsim.crew_contracts` and `tacsim.detachment_reservations`;
+  idempotency key `tacsim.crew/<npc>/captured/<recovered_ic>`; principal the organizer
+  (`Fire::as_principal`); submitted by the tow tick each pass until it lands.
 - **Verbs:** `+sortie/eject` (Q-42-10); `+ship/captives`, `+ship/release <who>` (Q-42-9); the
   `held` refusal on the verbs Q-42-2 lists, one line: "You are held aboard the {carrier}."
 - **Lines** (the builder's wording, in the house voice): the capture at a load, the capture at an
