@@ -64,7 +64,7 @@ use mush_org::{OrgId, PrincipalId};
 use mush_proto::RichText;
 use mush_sim::{SpatialParent, SpatialState};
 use mush_tactics::TacticalUnit;
-use mush_tactics::field_ops::{ComponentCondition, CustodyTitleStatus};
+use mush_tactics::field_ops::{ComponentCondition, CustodyTitleStatus, SalvageClaimId};
 use mush_tactics::unit::ComponentId;
 use smol_str::SmolStr;
 
@@ -836,7 +836,8 @@ fn take(
             }
         }
     }
-    dry_run(ctx, hull, ctx.actor, &picked, &fitted)
+    let custody = custody_for(ctx, ctx.actor, right, hull);
+    dry_run(ctx, hull, ctx.actor, &custody, &picked, &fitted)
         .map_err(|error| format!("That work cannot be done as ordered: {error}."))?;
     // GC.8b: the goods come from the carrier's hold, checked now and drawn at completion.
     let goods = order_goods(&picked);
@@ -982,6 +983,49 @@ fn refused_now(w: &World, hull: ObjId, order: &BayOrder) -> Option<&'static str>
     None
 }
 
+/// **The custody a requester's work runs under** (doc 36a P2-5): a salvor works at their own
+/// risk under the pending claim — as filed when it is, else the custody row itself (the claim's
+/// number is the filed contract's, else the recovery operation's, else the hull's; the prior
+/// owner is the file's, else the one the pin says answers for the title, else the asset's title
+/// holder) — and every other right works under the requester's resolved title.
+fn custody_for(ctx: &Ctx<'_>, requester: ObjId, right: Right, hull: ObjId) -> CustodyTitleStatus {
+    let pending = (right == Right::Salvor)
+        .then(|| salvor_custody(ctx, requester, hull))
+        .flatten()
+        .and_then(|row| {
+            let number = match row.claim {
+                crate::surface::salvage::ClaimSeam::Filed { contract } => contract,
+                crate::surface::salvage::ClaimSeam::Owed => row
+                    .file
+                    .as_ref()
+                    .map(|file| file.id.get())
+                    .or_else(|| row.operation.map(|op| op.get()))
+                    .unwrap_or(u64::from(hull.0)),
+            };
+            let title_holder = ctx
+                .w
+                .module_state::<EconomyStore>()
+                .and_then(|e| e.snapshot().asset(hull))
+                .and_then(|asset| match asset.title_owner {
+                    PrincipalId::Object(owner) => Some(owner),
+                    _ => None,
+                });
+            let prior_owner = row
+                .file
+                .as_ref()
+                .map(|file| file.prior_owner)
+                .or_else(|| row.pin.as_ref().and_then(|pin| pin.answering))
+                .or(title_holder)?;
+            Some(CustodyTitleStatus::PendingSalvageClaim {
+                claim_id: SalvageClaimId::new(number).ok()?,
+                custodian: requester,
+                prior_owner,
+                deadline_real_s: row.file.as_ref().map_or(0, |file| file.deadline_real_s),
+            })
+        });
+    pending.unwrap_or(CustodyTitleStatus::ResolvedTitle { owner: requester })
+}
+
 /// **The conditions the order's fitted parts come in**, read from their lots' provenance.
 fn fitted_of(ctx: &Ctx<'_>, order: &BayOrder) -> BTreeMap<ComponentId, ComponentCondition> {
     let mut fitted = BTreeMap::new();
@@ -1008,11 +1052,11 @@ fn dry_run(
     ctx: &Ctx<'_>,
     hull: ObjId,
     requester: ObjId,
+    custody: &CustodyTitleStatus,
     jobs: &[QuotedJob],
     fitted: &BTreeMap<ComponentId, ComponentCondition>,
 ) -> Result<(), String> {
     let (before, _, anatomy) = unit_parts(ctx.w, hull)?;
-    let custody = CustodyTitleStatus::ResolvedTitle { owner: requester };
     jobs::work(
         &before,
         &anatomy,
@@ -1020,7 +1064,7 @@ fn dry_run(
         &BTreeMap::new(),
         fitted,
         requester,
-        &custody,
+        custody,
         ctx.w.world_ic_now().at,
     )
     .map(|_| ())
@@ -1067,10 +1111,12 @@ fn finish(ctx: &mut Ctx<'_>, hull: ObjId) {
         );
         return;
     }
+    let custody = custody_for(ctx, order.requester, order.right, hull);
     if let Err(error) = dry_run(
         ctx,
         hull,
         order.requester,
+        &custody,
         &order.jobs,
         &fitted_of(ctx, &order),
     ) {
@@ -1124,11 +1170,17 @@ fn complete(ctx: &mut Ctx<'_>, hull: ObjId) {
         close_cancelled(ctx, record, "the hull's design cannot be read");
         return;
     };
+    // Doc 36a P2-5: the work runs under the custody the order's right gives — a salvor's under
+    // the pending claim, which must still stand (a vacated claim works nothing) — at the IC
+    // instant the engine stamps. (The right itself is not re-read here: a grant is an owner read
+    // the tick has no line to.)
+    if order.right == Right::Salvor && salvor_custody(ctx, order.requester, hull).is_none() {
+        close_cancelled(ctx, record, "the requester's custody of the hull has ended");
+        return;
+    }
     let fitted = fitted_of(ctx, &order);
-    let custody = CustodyTitleStatus::ResolvedTitle {
-        owner: order.requester,
-    };
-    let at = ctx.w.now();
+    let custody = custody_for(ctx, order.requester, order.right, hull);
+    let at = ctx.w.world_ic_now().at;
     let plan = jobs::work(
         &before,
         &anatomy,
@@ -1386,6 +1438,9 @@ pub fn berth(ctx: &mut Ctx<'_>, hull: ObjId) -> Result<ObjId, String> {
     if record.open().is_some() {
         return Err(HELD_OPEN.to_owned());
     }
+    if record.owed.is_some() {
+        return Err(SETTLING.to_owned());
+    }
     if record.berth.is_some() {
         return Err("That hull is already berthed.".to_owned());
     }
@@ -1451,6 +1506,9 @@ pub fn stow(ctx: &mut Ctx<'_>, hull: ObjId) -> Result<ObjId, String> {
     let mut record = record_of(ctx.w, hull).map_err(str::to_owned)?;
     if record.open().is_some() {
         return Err(HELD_OPEN.to_owned());
+    }
+    if record.owed.is_some() {
+        return Err(SETTLING.to_owned());
     }
     let row = record.berth.clone().ok_or("That hull is not berthed.")?;
     if ctx.w.get(ctx.actor).and_then(|o| o.location) != Some(row.workshop) {

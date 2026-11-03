@@ -16,7 +16,7 @@ use mush_org::PrincipalId;
 use mush_tactics::UnitMutationOp;
 use mush_tactics::field_ops::ComponentCondition;
 use tacsim::port::HullRow;
-use tacsim::port::bay_work::{BayHull, BayHullState, OrderStatus};
+use tacsim::port::bay_work::{BayHull, BayHullState, OrderStatus, Right};
 use tacsim::surface::salvage::{ClaimSeam, SalvageCustody};
 use tacsim::surface::site_record::{SiteKey, SiteRecord};
 
@@ -633,4 +633,51 @@ async fn b36a_5_c_dissolve_consults_the_holds_room() {
         HOLD_FULL_T
     );
     assert!(lot_record(&mut rig, lot).is_some(), "the lot still stands");
+}
+
+/// **36a P2-5 (a) — a salvor's order completes under the pending claim.** S's unjam order on
+/// the hull in S's custody comes due and is written: the engine runs it as documented repair at
+/// the salvor's risk under `PendingSalvageClaim`, not under a title the salvor does not hold.
+#[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+async fn b36a_6_a_a_salvors_order_completes_under_the_claim() {
+    let mut rig = stocked();
+    let (s, _, _, hull) = salvor_holds_owners_hull(&mut rig);
+    let cannon = jam_cannon(&mut rig, hull);
+    let workshop = station_room(&rig.tw, CERES, C14);
+    put(&mut rig, s, workshop, false);
+    let berthed = run(&mut rig.tw, s, &format!("+bay/berth #{}", hull.0));
+    assert!(berthed.contains("berthed in the workshop"), "{berthed}");
+    let taken = run(&mut rig.tw, s, &format!("+bay/order #{}=unjam", hull.0));
+    assert!(taken.contains("taken in the workshop"), "{taken}");
+    assert_eq!(order_of(&rig, hull).right, Right::Salvor);
+    let due = order_of(&rig, hull).due_ic;
+    let _ = to_ic(&mut rig, due + 60);
+    let order = order_of(&rig, hull);
+    assert_eq!(order.status, OrderStatus::Done, "{order:?}");
+    assert_eq!(
+        assess(&rig, hull).component_conditions[&cannon],
+        ComponentCondition::Intact
+    );
+}
+
+/// **36a P2-5 (b) — no stow while an act settles.** The title holder strips the spare's cannon
+/// at C14; until the tick lays the lot, `+bay/stow` is refused (SETTLING) and the hull stands
+/// berthed; once it has landed, she stows.
+#[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+async fn b36a_6_b_no_stow_while_the_mint_settles() {
+    let mut rig = stocked();
+    let (pilot, row, spare) = berthed_spare(&mut rig);
+    let out = run(
+        &mut rig.tw,
+        pilot,
+        &format!("+bay/strip #{}=cannon", spare.0),
+    );
+    assert!(out.contains("goes to the carrier's hold"), "{out}");
+    let refused = run(&mut rig.tw, pilot, &format!("+bay/stow #{}", spare.0));
+    assert!(refused.contains("settling"), "{refused}");
+    assert!(bay_record(&rig, spare).berth.is_some());
+    settle_until(&mut rig, spare);
+    let stowed = run(&mut rig.tw, pilot, &format!("+bay/stow #{}", spare.0));
+    assert!(stowed.contains("stowed back"), "{stowed}");
+    assert!(in_bay(&rig, spare, bay_room(&row)));
 }
