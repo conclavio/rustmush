@@ -362,7 +362,8 @@ fn admit(ctx: &mut Ctx<'_>, site: &CanonicalId, record: &SiteRecord) -> Result<(
         &walled
     };
     let cap = super::config(ctx.w).max_units;
-    let counted = parties::counted(&units, record);
+    // The same count the ramp refuses a launch on (doc 36a §11 row 5, `parties::site_population`).
+    let counted = parties::site_population(ctx.w, site, Some(record));
     if u32::try_from(counted).unwrap_or(u32::MAX) > cap {
         return Err(format!(
             "{counted} units are on the ground and a field holds {cap}"

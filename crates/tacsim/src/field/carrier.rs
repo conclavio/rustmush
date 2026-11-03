@@ -321,8 +321,9 @@ pub const ARRIVED_IN_FIELD: &str = "The {name} has set down on the pad and is in
 
 /// **Take every owed arrival on `site` into its running field** (doc 36 cut GC.1b; Q-36-4), at
 /// the tick after it is seen: each is checked out under the field's mark, given its row on the
-/// live record (its party: the roster it launched, else its commander's party of one, lettered
-/// next when the field has no such party yet), and sent to the kernel as
+/// live record (its party: the roster it launched, else its commander's party of one, on the
+/// lowest letter no party holds when the field has no such party yet, doc 36a §11 row 2), and
+/// sent to the kernel as
 /// [`crate::arena_task::ArenaMsg::Join`] at its pad pose ([`pad_poses`]), which admits it at the
 /// next pulse. The row is written beside the check-out, so a restart before the kernel took it
 /// finds the row and the resume joins it again (`super::boot`). A hull the kernel refused is not
@@ -408,7 +409,12 @@ pub(crate) fn joining(
     let party = match known {
         Some(party) => party,
         None => {
-            let party = crate::arena::PartyId::nth(live.parties.len())
+            // Doc 36a §11 row 2: the lowest free letter, never the count. A refused join
+            // (`on_joined`) leaves a gap in the middle of the record, and a count would hand the
+            // next arrival the last letter in use: another party's relations and marks, and a
+            // record the boot refuses.
+            let party = live
+                .next_party()
                 .ok_or("more parties are on the ground than a field letters")?;
             live.parties.push(FieldParty {
                 party,
@@ -527,8 +533,14 @@ fn join(ctx: &mut Ctx<'_>, site: &CanonicalId, hull: ObjId) -> Result<(), String
     Ok(())
 }
 
-/// The host's live record of `site`, replaced and written.
+/// The host's live record of `site`, replaced and written. A record that breaks its own
+/// invariants replaces nothing (doc 36a §11 row 2): the book and the lane never hold what the
+/// boot would refuse.
 fn set_live(ctx: &mut Ctx<'_>, site: &CanonicalId, live: super::FieldLive) {
+    if let Err(error) = live.check() {
+        tracing::error!(%error, site = %site, "tacsim: a field's live record is not replaced: it breaks its own invariants");
+        return;
+    }
     if let Some(hosted) = ctx
         .w
         .module_state_mut::<FieldBook>()
