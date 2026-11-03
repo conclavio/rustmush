@@ -703,6 +703,17 @@ fn build_docking_panel_payload(session: &super::docking::DockingSession) -> serd
 // `+helm` handler and switches
 // ---------------------------------------------------------------------------
 
+fn require_space_state_healthy(w: &World) -> Result<(), CmdError> {
+    if w.module_state::<crate::store::TacsimStore>()
+        .is_some_and(crate::store::TacsimStore::is_space_state_held)
+    {
+        return Err(CmdError::msg(
+            "The space state document (tacsim:space:state) is unreadable and held for staff repair.",
+        ));
+    }
+    Ok(())
+}
+
 /// Top-level command handler for `+helm` (`SF.R3`, `D-35-9`).
 ///
 /// # Errors
@@ -711,6 +722,7 @@ fn build_docking_panel_payload(session: &super::docking::DockingSession) -> serd
 /// the caller lacks the required bridge seat/channel, or the arguments are malformed.
 pub fn helm_cmd(ctx: &mut Ctx<'_>) -> Result<(), CmdError> {
     crate::commands::require_enabled(ctx)?;
+    require_space_state_healthy(ctx.w)?;
     if ctx.switches.iter().count() > 1 {
         return Err(CmdError::msg("Choose one +helm switch."));
     }
@@ -2308,6 +2320,7 @@ fn default_nose_burn_dir(w: &World, hull: ObjId) -> [i32; 3] {
 /// the caller lacks the required bridge seat/channel, or the target contact is undetected.
 pub fn tac_cmd(ctx: &mut Ctx<'_>) -> Result<(), CmdError> {
     crate::commands::require_enabled(ctx)?;
+    require_space_state_healthy(ctx.w)?;
     if ctx.switches.iter().count() > 1 {
         return Err(CmdError::msg("Choose one +tac switch."));
     }
@@ -3839,19 +3852,11 @@ fn helm_dock(ctx: &mut Ctx<'_>) -> Result<(), CmdError> {
                             if let Some(book) = ctx.w.module_state_mut::<SpaceBubbleBook>() {
                                 book.completed.insert(
                                     hull,
-                                    super::tick::CompletedInterdictionBubble {
-                                        hull,
-                                        domain: active.domain,
-                                        bubble_id: active.bubble.id.clone(),
-                                        opened_ic_s: active.opened_ic_s,
-                                        closed_ic_s: now.at,
-                                        wall_elapsed_ms: active.bubble.wall_elapsed_ms,
-                                        steps: active.steps,
-                                        tape: active.tape,
-                                        snapshots: active.snapshots,
-                                        picket: active.picket,
-                                    },
+                                    super::tick::CompletedInterdictionBubble::from_closed(
+                                        &active, now.at,
+                                    ),
                                 );
+                                book.pending_space_burns.retain(|b| b.hull != hull);
                             }
                             let _ = mush_sim::stand_down_domain(ctx, active.domain, now.clone());
                         }
@@ -4110,6 +4115,7 @@ fn helm_tow(ctx: &mut Ctx<'_>) -> Result<(), CmdError> {
 /// is not velocity-matched to the target asteroid pocket.
 pub fn mine_cmd(ctx: &mut Ctx<'_>) -> Result<(), CmdError> {
     crate::commands::require_enabled(ctx)?;
+    require_space_state_healthy(ctx.w)?;
     if ctx.switches.iter().count() > 1 {
         return Err(CmdError::msg("Choose one +mine switch."));
     }

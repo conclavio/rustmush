@@ -79,6 +79,15 @@ pub const INTERDICTOR_PARTY: SpacePartyId = SpacePartyId(2);
 /// Default standoff distance (`18,000 m`) at which an interdicting picket opens the bubble.
 pub const INTERDICTION_STANDOFF_M: i64 = 18_000;
 
+/// Maximum number of snapshots retained per active bubble (`SF.R10`, `35b` §5 #9).
+pub const MAX_BUBBLE_SNAPSHOTS: usize = 6;
+
+/// Maximum number of input tape entries retained per active bubble before rolling the checkpoint (`SF.R10`, `35b` §5 #9).
+pub const MAX_BUBBLE_TAPE_ENTRIES: usize = 64;
+
+/// Maximum number of completed bubble summary records retained in [`SpaceBubbleBook::completed`] (`SF.R10`, `35b` §5 #9).
+pub const MAX_COMPLETED_BUBBLES: usize = 8;
+
 /// Active interdiction bubble bound to a promoted [`CarrierJourney`].
 #[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize)]
 pub struct ActiveInterdictionBubble {
@@ -114,11 +123,14 @@ pub struct ActiveInterdictionBubble {
     /// Whether the bubble is held open while the carrier docks with / attaches a tow line to a disabled derelict (`SF.R9`).
     #[serde(default)]
     pub holding_for_salvage: bool,
+    /// Engine wall-clock timestamp (seconds, `World::now()`) of the last tick fire (`SF.R10`, `D-35-3`).
+    #[serde(default)]
+    pub last_stepped_wall_s: i64,
 }
 
 impl ActiveInterdictionBubble {
-    /// Compute the adaptive 1:1 wall-clock step duration (`500 ms`, `1,000 ms`, or `5,000 ms`)
-    /// from the bubble's live ordnance and hostile posture (`Q-35-4(1)`).
+    /// Compute the adaptive 1:1 wall-clock cadence period (`500 ms`, `1,000 ms`, or `5,000 ms`)
+    /// from the bubble's live ordnance and hostile posture (`Q-35-4(1)`, `SF.R10`).
     #[must_use]
     pub fn adaptive_step_wall_ms(&self) -> u32 {
         if !self.bubble.torpedoes.is_empty() || !self.bubble.railgun_slugs.is_empty() {
@@ -128,10 +140,27 @@ impl ActiveInterdictionBubble {
             ship.status == HullStatus::Operational
                 && self.bubble.party_relation(CARRIER_PARTY, ship.party) == SpaceRelation::Hostile
         });
-        if has_operational_hostile {
+        if has_operational_hostile || self.picket.is_some() || self.approaching_derelict {
             COMBAT_STEP_WALL_MS
         } else {
             CRUISE_STEP_WALL_MS
+        }
+    }
+
+    /// Push a snapshot while capping [`Self::snapshots`] at [`MAX_BUBBLE_SNAPSHOTS`] (`SF.R10`, `35b` §5 #9).
+    pub fn push_bounded_snapshot(&mut self) {
+        if self.snapshots.len() >= MAX_BUBBLE_SNAPSHOTS {
+            let remove_idx = if self.snapshots.len() > 1 { 1 } else { 0 };
+            self.snapshots.remove(remove_idx);
+        }
+        self.snapshots.push(self.bubble.snapshot());
+    }
+
+    /// Bound [`Self::tape`] so a long heave-to or `+helm/roll` loop cannot grow the persisted
+    /// document without bound (`SF.R10`, `35b` §5 #9).
+    pub fn compact_tape_if_needed(&mut self) {
+        if self.tape.entries.len() > MAX_BUBBLE_TAPE_ENTRIES {
+            self.tape = BubbleInputTape::new(&self.bubble);
         }
     }
 
@@ -208,6 +237,26 @@ pub struct CompletedInterdictionBubble {
     pub snapshots: Vec<BubbleSnapshot>,
     /// Final Kirkwood Customs Picket state when the bubble closed (`SF.R6`, `D-35-11`).
     pub picket: Option<super::picket::KirkwoodPicketState>,
+}
+
+impl CompletedInterdictionBubble {
+    /// Construct a bounded summary record when `active` closes, pruning historical snapshots and
+    /// tape entries so closed bubbles do not bloat `tacsim:space:state` (`SF.R10`, `35b` §5 #9).
+    #[must_use]
+    pub fn from_closed(active: &ActiveInterdictionBubble, closed_ic_s: i64) -> Self {
+        Self {
+            hull: active.hull,
+            domain: active.domain,
+            bubble_id: active.bubble.id.clone(),
+            opened_ic_s: active.opened_ic_s,
+            closed_ic_s,
+            wall_elapsed_ms: active.bubble.wall_elapsed_ms,
+            steps: active.steps,
+            tape: BubbleInputTape::new(&active.bubble),
+            snapshots: Vec::new(),
+            picket: None,
+        }
+    }
 }
 
 /// Open-epoch derelict hull record persisted when a ship's drive or hull is disabled
@@ -692,7 +741,7 @@ pub fn apply_bubble_command(
         return Vec::new();
     };
     let events = active.tape.record_and_apply(&mut active.bubble, cmd);
-    active.snapshots.push(active.bubble.snapshot());
+    active.compact_tape_if_needed();
     if events.is_empty() {
         return events;
     }
@@ -787,6 +836,13 @@ pub struct SpacePersistedState {
 /// Persist the current [`SpaceBubbleBook`] and [`SalvageClaimBook`] into [`TacsimStore`] and
 /// emit a [`ModuleWrite::JsonSet`] document under [`SPACE_STATE_KEY`] (`SF.R8`, `D-35-12`).
 pub fn persist_space_state(ctx: &mut Ctx<'_>) {
+    if ctx
+        .w
+        .module_state::<TacsimStore>()
+        .is_some_and(TacsimStore::is_space_state_held)
+    {
+        return;
+    }
     let Some(book) = ctx.w.module_state::<SpaceBubbleBook>().cloned() else {
         return;
     };
@@ -826,6 +882,7 @@ pub fn persist_space_state(ctx: &mut Ctx<'_>) {
     }
     if let Some(store) = ctx.w.module_state_mut::<TacsimStore>() {
         store.space_state = Some(snapshot);
+        store.space_state_held = true;
     }
 }
 
@@ -835,6 +892,9 @@ pub fn boot_read(ctx: &mut Ctx<'_>, kv: &[(SmolStr, serde_json::Value)]) {
     for (key, value) in kv {
         if key.as_str() != SPACE_STATE_KEY {
             continue;
+        }
+        if let Some(store) = ctx.w.module_state_mut::<TacsimStore>() {
+            store.space_state_held = true;
         }
         match serde_json::from_value::<SpacePersistedState>(value.clone()) {
             Ok(state) if state.format == SPACE_STATE_FORMAT => {
@@ -849,17 +909,45 @@ pub fn boot_read(ctx: &mut Ctx<'_>, kv: &[(SmolStr, serde_json::Value)]) {
                 }
             }
             Ok(state) => {
+                if let Some(store) = ctx.w.module_state_mut::<TacsimStore>() {
+                    store.space_state = None;
+                }
                 tracing::warn!(
                     format = state.format,
-                    "tacsim: tacsim:space:state has unsupported format; skipped"
+                    "tacsim: tacsim:space:state has unsupported format; held for staff repair"
                 );
             }
             Err(error) => {
+                if let Some(store) = ctx.w.module_state_mut::<TacsimStore>() {
+                    store.space_state = None;
+                }
                 tracing::warn!(
                     %error,
-                    "tacsim: tacsim:space:state did not decode; skipped"
+                    "tacsim: tacsim:space:state did not decode; held for staff repair"
                 );
             }
+        }
+    }
+}
+
+/// Re-acquire `DeployedMark::field` custody for any active space bubbles after `field::boot::phase`
+/// runs during engine startup (`SF.R10`, `35b` §5 #6).
+pub fn reacquire_custody_after_boot(ctx: &mut Ctx<'_>) {
+    let active_hulls: Vec<(ObjId, DomainId, u32)> = ctx
+        .w
+        .module_state::<SpaceBubbleBook>()
+        .map(|b| {
+            b.by_hull
+                .iter()
+                .map(|(&hull, active)| (hull, active.domain, active.leg_cursor))
+                .collect()
+        })
+        .unwrap_or_default();
+    for (hull, domain, leg_cursor) in active_hulls {
+        if !mush_sim::deployed::is_deployed(ctx.w, hull) {
+            let mark =
+                mush_sim::DeployedMark::field(format!("domain.{}", domain.0), leg_cursor.max(1));
+            let _ = mush_tactics::custody::check_out(ctx, hull, mark);
         }
     }
 }
@@ -885,7 +973,7 @@ pub fn space_tick(ctx: &mut Ctx<'_>, _tag: &str, _scene: Option<SceneId>) {
     if !ctx
         .w
         .module_state::<TacsimStore>()
-        .is_some_and(TacsimStore::enabled)
+        .is_some_and(|s| s.enabled() && !s.is_space_state_held())
     {
         return;
     }
@@ -971,13 +1059,9 @@ fn step_derelict_records(ctx: &mut Ctx<'_>) {
     }
 }
 
-fn real_now_secs(w: &World, now: &ClockStamp) -> i64 {
-    let wall_ms = w.now();
-    if wall_ms > 0 {
-        (wall_ms / 1_000).max(1)
-    } else {
-        (now.at / 24).max(1)
-    }
+fn real_now_secs(w: &World, _now: &ClockStamp) -> i64 {
+    let wall_s = w.now();
+    if wall_s > 0 { wall_s } else { 1 }
 }
 
 fn open_salvage_claim_for_derelict(
@@ -1041,19 +1125,18 @@ fn clear_resolved_bubbles(ctx: &mut Ctx<'_>, now: &ClockStamp) {
                 disabled_contacts.push((picket.raider_hull, rship.clone()));
             }
             let domain = active.domain;
-            let completed = CompletedInterdictionBubble {
-                hull,
-                domain,
-                bubble_id: active.bubble.id.clone(),
-                opened_ic_s: active.opened_ic_s,
-                closed_ic_s: now.at,
-                wall_elapsed_ms: active.bubble.wall_elapsed_ms,
-                steps: active.steps,
-                tape: active.tape,
-                snapshots: active.snapshots,
-                picket: active.picket,
-            };
+            let completed = CompletedInterdictionBubble::from_closed(&active, now.at);
+            if book.completed.len() >= MAX_COMPLETED_BUBBLES
+                && !book.completed.contains_key(&hull)
+                && let Some(&oldest_hull) = book.completed.keys().next()
+            {
+                book.completed.remove(&oldest_hull);
+            }
             book.completed.insert(hull, completed);
+            if book.pending_space_burns.len() > 16 {
+                let excess = book.pending_space_burns.len() - 16;
+                book.pending_space_burns.drain(0..excess);
+            }
             to_finalize.push((hull, domain, carrier_ship, disabled_contacts));
         }
     }
@@ -1139,19 +1222,18 @@ fn settle_disabled_carrier_bubbles(ctx: &mut Ctx<'_>, now: &ClockStamp) {
             let carrier_ship = active.bubble.ships.get(&active.carrier_ship_id).cloned();
             let domain = active.domain;
             let interdictor_hull = active.interdictor_hull;
-            let completed = CompletedInterdictionBubble {
-                hull,
-                domain,
-                bubble_id: active.bubble.id.clone(),
-                opened_ic_s: active.opened_ic_s,
-                closed_ic_s: now.at,
-                wall_elapsed_ms: active.bubble.wall_elapsed_ms,
-                steps: active.steps,
-                tape: active.tape,
-                snapshots: active.snapshots,
-                picket: active.picket,
-            };
+            let completed = CompletedInterdictionBubble::from_closed(&active, now.at);
+            if book.completed.len() >= MAX_COMPLETED_BUBBLES
+                && !book.completed.contains_key(&hull)
+                && let Some(&oldest_hull) = book.completed.keys().next()
+            {
+                book.completed.remove(&oldest_hull);
+            }
             book.completed.insert(hull, completed);
+            if book.pending_space_burns.len() > 16 {
+                let excess = book.pending_space_burns.len() - 16;
+                book.pending_space_burns.drain(0..excess);
+            }
             settled.push((hull, interdictor_hull, domain, carrier_ship));
         }
     }
@@ -1220,6 +1302,7 @@ fn settle_disabled_carrier_bubbles(ctx: &mut Ctx<'_>, now: &ClockStamp) {
 
 fn step_active_bubbles(ctx: &mut Ctx<'_>, now: &ClockStamp) {
     let frozen = ctx.w.world_timeline().is_frozen();
+    let wall_now_s = ctx.w.now();
     let mut combat_reports = Vec::new();
     let mut ran_picket_hulls = Vec::new();
 
@@ -1242,7 +1325,26 @@ fn step_active_bubbles(ctx: &mut Ctx<'_>, now: &ClockStamp) {
         if frozen || paused_hulls.contains(&hull) {
             continue;
         }
-        let dt_wall_ms = active.adaptive_step_wall_ms();
+        let cadence_ms = active.adaptive_step_wall_ms();
+        let elapsed_wall_s =
+            if active.last_stepped_wall_s > 0 && wall_now_s > active.last_stepped_wall_s {
+                wall_now_s - active.last_stepped_wall_s
+            } else {
+                1
+            };
+        if cadence_ms == CRUISE_STEP_WALL_MS
+            && active.last_stepped_wall_s > 0
+            && wall_now_s > active.last_stepped_wall_s
+            && elapsed_wall_s * 1_000 < i64::from(CRUISE_STEP_WALL_MS)
+        {
+            continue;
+        }
+        active.last_stepped_wall_s = wall_now_s;
+        let dt_wall_ms = if (1..=10).contains(&elapsed_wall_s) {
+            u32::try_from(elapsed_wall_s * 1_000).unwrap_or(1_000)
+        } else {
+            1_000
+        };
         let mut events = active.tape.record_and_apply(
             &mut active.bubble,
             BubbleInputCommand::StepWall {
@@ -1275,7 +1377,8 @@ fn step_active_bubbles(ctx: &mut Ctx<'_>, now: &ClockStamp) {
         if active.approaching_derelict {
             step_derelict_approach_in_bubble(active);
         }
-        active.snapshots.push(active.bubble.snapshot());
+        active.push_bounded_snapshot();
+        active.compact_tape_if_needed();
         active.steps = active.steps.saturating_add(1);
         if !events.is_empty() {
             let carrier_state = active
@@ -1741,6 +1844,7 @@ fn build_interdiction_bubble(
         picket,
         approaching_derelict: false,
         holding_for_salvage: false,
+        last_stepped_wall_s: ctx.w.now(),
     })
 }
 

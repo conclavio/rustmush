@@ -550,6 +550,31 @@ fn minimal_space_arena_definition() -> Option<ArenaDefinition> {
     })
 }
 
+static CACHED_RHAI_RUNNERS: std::sync::LazyLock<
+    std::sync::Mutex<BTreeMap<[u8; 32], Arc<RhaiRunner>>>,
+> = std::sync::LazyLock::new(|| std::sync::Mutex::new(BTreeMap::new()));
+
+static CACHED_SPACE_ARENA_DEF: std::sync::LazyLock<Option<Arc<ArenaDefinition>>> =
+    std::sync::LazyLock::new(|| minimal_space_arena_definition().map(Arc::new));
+
+/// Compile or retrieve a cached [`RhaiRunner`] for `source` (`SF.R10`, `35b` §5 #9).
+pub fn cached_space_rhai_runner(source: &str) -> Option<Arc<RhaiRunner>> {
+    use sha2::{Digest as _, Sha256};
+
+    let bytes: [u8; 32] = Sha256::digest(source.as_bytes()).into();
+    if let Ok(guard) = CACHED_RHAI_RUNNERS.lock()
+        && let Some(found) = guard.get(&bytes)
+    {
+        return Some(found.clone());
+    }
+    let cfg = ArenaConfig::default();
+    let runner = Arc::new(RhaiRunner::new(&cfg, source, mush_mind::Digest(bytes)).ok()?);
+    if let Ok(mut guard) = CACHED_RHAI_RUNNERS.lock() {
+        guard.insert(bytes, runner.clone());
+    }
+    Some(runner)
+}
+
 /// Compile and run one Rhai [`MindRunner::think`] step for `ship_id` inside `bubble` (`D-35-1`, `D-35-11`).
 ///
 /// Builds a propagation-gated [`MindView`] (`mush_propagation::resolve_detection`) so the AI mind
@@ -563,12 +588,8 @@ pub fn run_space_rhai_think(
     think_seq: u64,
     memory: &[u8],
 ) -> Option<(ThinkResult, BTreeMap<ContactId, String>)> {
-    use sha2::{Digest as _, Sha256};
-
     let observer = bubble.ships.get(ship_id)?;
-    let cfg = ArenaConfig::default();
-    let digest = mush_mind::Digest(Sha256::digest(source.as_bytes()).into());
-    let runner = RhaiRunner::new(&cfg, source, digest).ok()?;
+    let runner = cached_space_rhai_runner(source)?;
 
     let mut contact_map = BTreeMap::new();
     let mut contacts = Vec::new();
@@ -753,7 +774,7 @@ pub fn run_space_rhai_think(
         key: card.key(),
     };
 
-    let map: Arc<ArenaDefinition> = Arc::new(minimal_space_arena_definition()?);
+    let map: Arc<ArenaDefinition> = CACHED_SPACE_ARENA_DEF.as_ref()?.clone();
     let job = ThinkJob {
         unit: unit_obj,
         think_seq,
@@ -814,8 +835,7 @@ pub fn step_kirkwood_picket(
     // never uncloak before `+helm/submit` has had a chance to inspect while hove-to!).
     let should_uncloak_raider = !picket.raider_ambush_launched
         && (picket.inspection_outcome.is_some()
-            || picket.inspection_status == PicketInspectionStatus::RanThePicket
-            || bubble.wall_elapsed_ms >= 30_000);
+            || picket.inspection_status == PicketInspectionStatus::RanThePicket);
     if should_uncloak_raider
         && let Some(raider) = bubble.ships.get(&picket.raider_ship_id)
         && raider.status == HullStatus::Operational
@@ -863,28 +883,45 @@ pub fn step_kirkwood_picket(
                     } else {
                         EmconPosture::Ghost
                     };
-                    emitted_events.extend(tape.record_and_apply(
-                        bubble,
-                        BubbleInputCommand::SetEmcon {
-                            ship_id: picket.raider_ship_id.clone(),
-                            posture,
-                        },
-                    ));
-                }
-                IntentKind::Lock { contact } => {
-                    if let Some(target_id) = cmap.get(contact) {
-                        locked_ship = target_id.clone();
+                    if bubble
+                        .ships
+                        .get(&picket.raider_ship_id)
+                        .is_some_and(|s| s.emcon != posture)
+                    {
                         emitted_events.extend(tape.record_and_apply(
                             bubble,
-                            BubbleInputCommand::SetLockedTarget {
+                            BubbleInputCommand::SetEmcon {
                                 ship_id: picket.raider_ship_id.clone(),
-                                target_id: Some(target_id.clone()),
+                                posture,
                             },
                         ));
                     }
                 }
+                IntentKind::Lock { contact } => {
+                    if let Some(target_id) = cmap.get(contact) {
+                        locked_ship = target_id.clone();
+                        if bubble
+                            .ships
+                            .get(&picket.raider_ship_id)
+                            .is_some_and(|s| s.locked_target_id.as_deref() != Some(target_id))
+                        {
+                            emitted_events.extend(tape.record_and_apply(
+                                bubble,
+                                BubbleInputCommand::SetLockedTarget {
+                                    ship_id: picket.raider_ship_id.clone(),
+                                    target_id: Some(target_id.clone()),
+                                },
+                            ));
+                        }
+                    }
+                }
                 IntentKind::Speed { cms } => {
-                    if *cms > 0 {
+                    if *cms > 0
+                        && bubble
+                            .ships
+                            .get(&picket.raider_ship_id)
+                            .is_some_and(|s| s.thrust_mps2 != [-15, 0, 0])
+                    {
                         emitted_events.extend(tape.record_and_apply(
                             bubble,
                             BubbleInputCommand::CommandBurn {
@@ -975,35 +1012,53 @@ pub fn step_kirkwood_picket(
                     } else {
                         EmconPosture::Standard
                     };
-                    emitted_events.extend(tape.record_and_apply(
-                        bubble,
-                        BubbleInputCommand::SetEmcon {
-                            ship_id: picket.corvette_ship_id.clone(),
-                            posture,
-                        },
-                    ));
-                }
-                IntentKind::Lock { contact } => {
-                    if let Some(target_id) = cmap.get(contact) {
-                        locked_ship = target_id.clone();
+                    if bubble
+                        .ships
+                        .get(&picket.corvette_ship_id)
+                        .is_some_and(|s| s.emcon != posture)
+                    {
                         emitted_events.extend(tape.record_and_apply(
                             bubble,
-                            BubbleInputCommand::SetLockedTarget {
+                            BubbleInputCommand::SetEmcon {
                                 ship_id: picket.corvette_ship_id.clone(),
-                                target_id: Some(target_id.clone()),
+                                posture,
                             },
                         ));
                     }
                 }
+                IntentKind::Lock { contact } => {
+                    if let Some(target_id) = cmap.get(contact) {
+                        locked_ship = target_id.clone();
+                        if bubble
+                            .ships
+                            .get(&picket.corvette_ship_id)
+                            .is_some_and(|s| s.locked_target_id.as_deref() != Some(target_id))
+                        {
+                            emitted_events.extend(tape.record_and_apply(
+                                bubble,
+                                BubbleInputCommand::SetLockedTarget {
+                                    ship_id: picket.corvette_ship_id.clone(),
+                                    target_id: Some(target_id.clone()),
+                                },
+                            ));
+                        }
+                    }
+                }
                 IntentKind::Goal(MotorGoal::Hold) => {
-                    emitted_events.extend(tape.record_and_apply(
-                        bubble,
-                        BubbleInputCommand::CommandBurn {
-                            ship_id: picket.corvette_ship_id.clone(),
-                            thrust_mps2: [0, 0, 0],
-                            force_into_reserve: false,
-                        },
-                    ));
+                    if bubble
+                        .ships
+                        .get(&picket.corvette_ship_id)
+                        .is_some_and(|s| s.thrust_mps2 != [0, 0, 0])
+                    {
+                        emitted_events.extend(tape.record_and_apply(
+                            bubble,
+                            BubbleInputCommand::CommandBurn {
+                                ship_id: picket.corvette_ship_id.clone(),
+                                thrust_mps2: [0, 0, 0],
+                                force_into_reserve: false,
+                            },
+                        ));
+                    }
                 }
                 IntentKind::Fire { weapon, .. } if weapon.as_str().starts_with("laser") => {
                     emitted_events.extend(tape.record_and_apply(

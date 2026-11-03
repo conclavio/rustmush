@@ -70,10 +70,11 @@ pub use picket::{
 pub use tick::{
     ActiveInterdictionBubble, CARRIER_PARTY, COMBAT_STEP_WALL_MS, CRUISE_STEP_WALL_MS,
     CompletedInterdictionBubble, FreeFlightGuidanceMode, HullPropellantLedger,
-    INTERDICTION_STANDOFF_M, INTERDICTOR_PARTY, ORDNANCE_STEP_WALL_MS, SOLAR_MU_KM3_S2,
-    SPACE_STATE_FORMAT, SPACE_STATE_KEY, SPACE_TICK, SPACE_TICK_PERIOD, SpaceBubbleBook,
-    SpaceDerelictRecord, SpaceFreeFlightRecord, SpacePersistedState, apply_bubble_command,
-    boot_read, clear_interdiction_bubble, persist_space_state,
+    INTERDICTION_STANDOFF_M, INTERDICTOR_PARTY, MAX_BUBBLE_SNAPSHOTS, MAX_BUBBLE_TAPE_ENTRIES,
+    MAX_COMPLETED_BUBBLES, ORDNANCE_STEP_WALL_MS, SOLAR_MU_KM3_S2, SPACE_STATE_FORMAT,
+    SPACE_STATE_KEY, SPACE_TICK, SPACE_TICK_PERIOD, SpaceBubbleBook, SpaceDerelictRecord,
+    SpaceFreeFlightRecord, SpacePersistedState, apply_bubble_command, boot_read,
+    clear_interdiction_bubble, persist_space_state, reacquire_custody_after_boot,
 };
 pub use weapons::{
     DEFAULT_TORPEDO_MAX_FLIGHT_MS, InFlightSlug, InFlightTorpedo, LaserMode, LaserMount, PdcMount,
@@ -828,6 +829,7 @@ mod tests {
                 )),
                 approaching_derelict: false,
                 holding_for_salvage: false,
+                last_stepped_wall_s: 0,
             },
         );
 

@@ -1590,15 +1590,9 @@ pub fn step_clusters_on_tick(ctx: &mut Ctx<'_>, now: ClockStamp) {
         if !landed_receipts.is_empty()
             && let Some(book) = ctx.w.module_state_mut::<super::tick::SpaceBubbleBook>()
         {
-            let mut idx = 0;
-            while idx < book.pending_space_mine_draws.len() {
-                if landed_receipts.contains(&book.pending_space_mine_draws[idx].receipt) {
-                    let finished = book.pending_space_mine_draws.remove(idx);
-                    book.completed_space_mine_draws.push(finished);
-                } else {
-                    idx += 1;
-                }
-            }
+            book.pending_space_mine_draws
+                .retain(|d| !landed_receipts.contains(&d.receipt));
+            book.completed_space_mine_draws.clear();
         }
         if ctx.authoritative_pending(clerk) {
             continue;
