@@ -1,6 +1,6 @@
 # 40. The field, second round — surveyed
 
-Draft 0.3, 2026-11-03, docs only. Surveyed against `origin/main` at `c83c2eff` (SF.R14 and SF.R15
+Draft 0.4, 2026-11-03, docs only. Surveyed against `origin/main` at `c83c2eff` (SF.R14 and SF.R15
 merged as PRs #338 and #339; doc 36a's lane 5 as #346; doc 38 Draft 0.2 as #345; lane 3 still open
 as PR #340 at `claude/relaxed-fermat-60b65b`, read here for the shape its held-out walls take on
 the live record). Stacked on [doc 39](39-industry-production-chain.md)'s PR #347 while that was
@@ -26,10 +26,20 @@ is `detections`' early return, not `sensor_pass`'s); a lowered heat ceiling neve
 (`heat.rs:127–130` returns before the clamp, `weapons.rs:1102–1108` refuses the hot shot); and
 `line_to` proposes no eye heights (`stock_mind.rs:634–647`, the default at both ends). The
 protocol is doc 23 Draft 0.10's D-23-23, its five-step default and its six-step alternative both
-stated here, keyed to Q-23-21 as doc 23 §17.4 keys them. Two questions are new and open, Q-40-24 and Q-40-25; no ruling
+stated here, keyed to Q-23-21 as doc 23 §17.4 keyed them. Two questions were new and open, Q-40-24 and Q-40-25; no ruling
 changed. Draft 0.3's anchors are at
 `f146734e`, where `join.rs`, `state.rs`, `admit.rs`, `carrier.rs`, `record.rs`, `tow.rs` and
 `raiders.rs` moved by a few lines since `c83c2eff` (§3's table keeps its lines).
+
+**Draft 0.4, the same day, records the owner's rulings on the two questions Draft 0.3 opened** —
+"Accept all seven" (2026-11-03): the seven open questions across docs 23, 40, 41 and 42, every
+proposed default as written. Q-40-24 (the pending row as the one population count) and Q-40-25
+(the coupled withdraw at the ramp) carry a decision line each in doc 36's form (§5.4, §5.1), and
+doc 23's Q-23-21 was accepted at its default the same way — the Open commits before the launch
+(D-23-21, D-23-23's default shape) — so §4.4's two pending-launch shapes resolve to that one:
+FR.3's step 1 is the claim opened in the bay, and the six-step alternative stands under the record
+only. Doc 41's RS.1 and doc 42's CR.4 read Q-40-25's withdraw (§7). Draft 0.3 merged into `main`
+as PR #351 (`1078b212`); Draft 0.4 is docs only off `main` `f1b2a1e4` and moves no anchor.
 
 This is a survey in the form doc 38 used: what the tree has, what the rulings require, and the
 questions each area raised, each with a proposed default, an alternative and a reason.
@@ -321,7 +331,7 @@ Q-36-5 named. The W-clock freeze needs no new rule: the act and the join both ri
 hold while it is frozen. The bay under fire: no hold beyond the cycle; GC.3's table already closes
 a wrecked carrier's bay and a hull put down beside the ramp is a target from its first pulse.
 
-**The one count** (Q-40-24). Draft 0.2 said the cap was counted twice; it is counted once, and
+**The one count** (Q-40-24, accepted 2026-11-03). Draft 0.2 said the cap was counted twice; it is counted once, and
 not where that sentence said. `ArenaError::PartyFull` (`join.rs:291`, `state.rs:3938–3946`) means
 a party has used all 552 callsign names, never `max_units`; `join_in_place` (`join.rs:114–238`)
 checks no cap and no `Join` sender reads one, so the kernel counts nothing. The only count is at
@@ -371,12 +381,14 @@ unlicensed hull but the first, which it skips:
    slot are released. A field that demotes first is no abort: the ramp act goes down onto open
    ground under its claim, doc 23's ordinary sortie.
 
-**The premise, and the other shape.** Step 1 rests on doc 23's Q-23-21, open for the owner:
-D-23-21 proposes the claim opens before the launch, amending the accepted D-23-13 (the Open on
-the fire after the finish). Doc 23 §17.4 (its Draft 0.10, `c4772ce0`) carries both shapes keyed
-to that question, and so does this section. Under Q-23-21's alternative — D-23-13 kept, with a
-reservation ledger — the protocol is six steps, the same in substance as doc 23's alternative
-text:
+**The premise, ruled.** Step 1 rested on doc 23's Q-23-21: D-23-21 proposed the claim opens
+before the launch, amending the accepted D-23-13 (the Open on the fire after the finish), and doc
+23 §17.4 (its Draft 0.10, `c4772ce0`) carried both shapes keyed to that question, as this section
+did. **The owner accepted Q-23-21 at its default on 2026-11-03** ("Accept all seven"), so the five
+steps above are the protocol under both documents, step 1 the claim opened in the bay before the
+launch, and FR.3 and S.4b build no other. The shape not taken stands here for the record only —
+Q-23-21's alternative, D-23-13 kept with a reservation ledger, six steps, the same in substance as
+doc 23's alternative text:
 
 1. **Accepted** — the prepare takes the cap over the one count, the cycle's slot and, for a
    licensed hull, the licence seat and the compute seat, recorded on the pending row and the
@@ -397,11 +409,11 @@ text:
    own hangar (the second carrier, the salvage load, `surface/tow.rs:1626–1628`) and is never
    this close. A claim still `Owed` takes doc 23's terminal tombstone (its review item 23-4).
 
-Under the default, steps 1 and 3 of this shape collapse into the Open in the bay and the pending
-row carries the cap and the launch cycle alone; steps 2, 4, 5 and 6 read the same under both.
-The field tick as the one caller with a `Ctx` (the launch rule above) holds under both. FR.3
-builds the shared steps for every hull, with the read of `RigRecord.claim`, and the claim's own
-step is doc 23's S.4b under whichever shape Q-23-21 takes.
+Under the ruling, steps 1 and 3 of that shape collapse into the Open in the bay and the pending
+row carries the cap and the launch cycle alone; its steps 2, 4, 5 and 6 are the five steps' 2 to
+5, which read the same under either shape, as does the field tick as the one caller with a `Ctx`
+(the launch rule above). FR.3 builds steps 2 to 5 for every hull, with step 3's read of
+`RigRecord.claim`; step 1 is doc 23's S.4b, under the ruled shape.
 
 **A seal defect on the same path**, listed for doc 23's fix thread and not for a cut here: a DT
 `+sortie/launch` seals the ROM with an empty armament list (`prepare.rs:868–872`, `&[]` into
@@ -421,7 +433,7 @@ first shot, on Ahuna and on Urvara (§6, FR.3); and the same with a second cored
 behind it, the next tick joining it under its own seal and thinking — the shared acceptance story
 of doc 23 D-23-23, run once S.4b lands.
 
-**Questions.** Q-40-19, Q-40-20, Q-40-24 (open, Draft 0.3).
+**Questions.** Q-40-19, Q-40-20, Q-40-24 (opened by Draft 0.3, accepted at its default in Draft 0.4).
 
 ### 4.5 The ledger per segment (I)
 
@@ -520,8 +532,10 @@ cargo invocation on the owner's Windows box carries `-j 8`, one workspace build 
 **Ruled 2026-11-03.** The owner accepted every default as written ("all Q-40s accepted as their
 proposed defaults"); nothing was amended, so no question carries a decision line of its own and the
 proposed text of each is its ruling. Each question keeps its proposed default, alternative and
-reason for the record; §6 is the plan built from them. Draft 0.3 adds Q-40-24 and Q-40-25, open,
-each marked so where it stands.
+reason for the record; §6 is the plan built from them. Draft 0.3 added Q-40-24 and Q-40-25,
+open; Draft 0.4 records the owner's acceptance of both at their defaults ("Accept all seven",
+2026-11-03: the seven open questions across docs 23, 40, 41 and 42, every default as written),
+each with a decision line in doc 36's form, the only two questions here that carry one.
 
 ### 5.1 Order and shape
 
@@ -650,15 +664,20 @@ each marked so where it stands.
   waiting (Q-CF-30). At demotion `tow::set_down` reads the casualty's own check-in pose. **How a
   coupled pair leaves a running field** is Q-40-25: today it cannot — `TowOrder::Load` refuses on
   a promoted site (`surface/tow.rs:1390–1392`) and `act_gate` refuses a tug in tow every act but
-  a drive (`:2158–2175`, `IN_TOW`) — so release and demotion are its only exits until that
-  question is ruled.
+  a drive (`:2158–2175`, `IN_TOW`) — so release and demotion are its only exits until FR.5
+  builds Q-40-25's coupled withdraw at the ramp (accepted 2026-11-03).
 - **Alternative:** the casualty shares the tug's cell as a second occupant.
 - **Why:** Q-38-17 and Q-36-20 as ruled; a trailer keeps every occupancy invariant the kernel
   has and lets a hit land on the casualty by its own geometry. Expensive because a unit that
   follows another is a new locomotion kind the step, the index, the snapshot and the hash all
   carry.
 
-**Q-40-25 — How a coupled pair leaves a running field.** *(open: raised by the round-2 review, Draft 0.3)*
+**Q-40-25 — How a coupled pair leaves a running field.** *(raised by the round-2 review, Draft 0.3; ruled in Draft 0.4)*
+- **Decision (accepted default, 2026-11-03):** the coupled withdraw at the ramp, as proposed.
+  `+tv/<n> load [go]` on a promoted site sends `ArenaMsg::Withdraw` for the tug and its casualty,
+  both check out through the ordinary exit, and `TowOrder::Load`/`Loaded` then runs as on open
+  ground; `+tv/<n> recover` and `+sortie/recover` keep refusing a tug in tow. FR.5 builds it;
+  doc 41's RS.1 and doc 42's CR.4 read it (§7).
 - **Proposed default:** a coupled withdraw at the ramp: `+tv/<n> load [go]` on a promoted site,
   with the tug at its carrier's ramp cell (`withdraw.rs:17`'s one-cell rule) and its casualty
   trailing, sends `ArenaMsg::Withdraw` for both; the answer checks both in through the ordinary
@@ -814,7 +833,11 @@ each marked so where it stands.
 - **Why:** Q-CF-21 forbids a hull on the ground and not in the field; a hull that is back aboard
   is on neither, and the retry is code the raid already runs.
 
-**Q-40-24 — The one population count.** *(open: raised by the round-2 review, Draft 0.3)*
+**Q-40-24 — The one population count.** *(raised by the round-2 review, Draft 0.3; ruled in Draft 0.4)*
+- **Decision (accepted default, 2026-11-03):** the pending row, as proposed. The launch's
+  transaction writes `PendingLaunch { hull, carrier, accepted_ic }` to `SiteRecord.pending`,
+  `site_population` counts it with the ground, the join's batch or the abort retires it, and the
+  field tick drops a stale row; no kernel count. FR.3 builds it.
 - **Proposed default:** a pending row on the site record. The launch's own transaction writes
   `PendingLaunch { hull, carrier, accepted_ic }` to `SiteRecord.pending` (beside `tows`; the DT
   prepare already reads and saves the record, `prepare.rs:148`, `:560`, and the rig ramp's launch
@@ -882,9 +905,9 @@ after FR.0, FR.3 and FR.4; FR.7 last. Two cuts carry the marker and are built ex
 | **FR.0** the inventory and the bot's words | Q-38-29, Q-40-23, doc 38 §8 | §4a's rows run at the base commit and recorded; the four-digit parser (unless doc 41's RS.0 has landed it first, doc 39 Draft 0.5's rule); the bot's `+field/void`, launch, `release` and `+faction/stance` words; `field_story.rs`'s two grounds hoisted to `tests/support/field` for every later story | the recorded inventory in `40-cut-notes.md`; the bot drives to a four-digit pocket on Urvara and types `+field/void` in a smoke |
 | **FR.1** stances | Q-38-23, Q-40-11..14 | the table in `FactionState` and its key; `+faction/stance`, `@faction/stance`, `+faction`'s rows; the `org.stance.declare` capability; `parties.rs` reading it into `FieldHost.marks` and `.friends` at admission and in `carrier::joining` at a join; `FieldParty.stance_hostile` on the live record and `mark_in_field`'s clear returning to it; `friends_of` counting a mutual Allied pair | two co-ops with a declared Hostile meet on Ahuna and on Urvara; a `+field/mark` by one promotes; each presence picture colours the other hostile from the first pulse; a leader's clear of the declared-Hostile party that shares a member with theirs reads Hostile, not Friend; a third co-op mutually Allied to the first is Friend and its one-sided Allied to the second is not; a stance changed mid-field changes nothing until the next field, which reads it; an arriving org joins under the declared Hostile in the existing party's book |
 | **FR.2** durable standing | Q-38-24, Q-40-15..18 | `FieldLive.fire` at the snapshot cadence; the window on the grant, `VoidOffers` and the sweep retired; `prev_input` in mush-core and the synchronous close in `+field/void`; the director's auto-void at demotion | GC.10's void gate re-run at both sizes with a restart mid-field (the tally survives), a void after another command refused at once, a void with no command between accepted; a director raid's friendly fire on a Syndicate member voided with no hand |
-| **FR.3** reinforcement | Q-38-25, Q-38-26, Q-40-19, Q-40-20, Q-40-24 | `FIELD_LAUNCH` replaced by the cap check over the one count (`SiteRecord.pending`, Q-40-24) and the cycle; §4.4's pending-launch protocol, steps 2 to 5, with step 3's read of `RigRecord.claim` (Open → the claim's seal, else the ROM) and step 1 doc 23's S.4b; the launch's join offered by the field tick at the ramp with the director's spread; `launch_cycle_s`; the refused join back aboard and retried; GC.1b's arrival retried | the escort story with a second escort launched by `+sortie/launch` after the first shot, standing beside the ramp at the next pulse and counted; a second launch inside the cycle refused with the seconds left; a launch past the cap refused at the prepare; two carriers one short of the cap each launching one, the second refused at its prepare by the pending row; an F-6 arrival that joins and then launches; the licensed reinforcement (a second cored rig launched `mind=`, its claim opened in the bay, joined by the next tick under its own seal) once S.4b lands |
+| **FR.3** reinforcement | Q-38-25, Q-38-26, Q-40-19, Q-40-20, Q-40-24; doc 23's Q-23-21 | `FIELD_LAUNCH` replaced by the cap check over the one count (`SiteRecord.pending`, Q-40-24) and the cycle; §4.4's pending-launch protocol in its ruled shape (Q-23-21 accepted: the claim opened in the bay before the launch, D-23-21), steps 2 to 5 here with step 3's read of `RigRecord.claim` (Open → the claim's seal, else the ROM), step 1 doc 23's S.4b; the launch's join offered by the field tick at the ramp with the director's spread; `launch_cycle_s`; the refused join back aboard and retried; GC.1b's arrival retried | the escort story with a second escort launched by `+sortie/launch` after the first shot, standing beside the ramp at the next pulse and counted; a second launch inside the cycle refused with the seconds left; a launch past the cap refused at the prepare; two carriers one short of the cap each launching one, the second refused at its prepare by the pending row; an F-6 arrival that joins and then launches; the licensed reinforcement (a second cored rig launched `mind=`, its claim opened in the bay, joined by the next tick under its own seal) once S.4b lands |
 | **FR.4** segments | Q-38-28, Q-40-21 | `Ledger::roll_segment`, the task's threshold at the snapshot cadence, the resume's roll, the `segment` line, `FieldLive.segment` in the host's batch | a field driven past the threshold under a test knob (`max_bytes` lowered) rolls in its first minute, is restarted, resumes from the segment's head, and the world holds every chunk of both segments under one match id; the OOC pins of §4a unmoved |
-| **FR.5** the rebless | Q-38-17, Q-38-27, Q-36-56, Q-40-2..10 | §4.1's five items in its order: the await, `note_fire`, `line_to`, the effects (the compiled table, the resolution pack's block, the derivation at admission and after a part change), the coupled tow (admission's `carried` filter lifted, the trailer step in the tug's turn, `Release` as a field act, the drop; the ramp exit as Q-40-25 rules); §4a's pins re-pinned once with reasons | the in-source kernel gates (one a row of Q-40-3's table; a trailer struck and released; a mind that no longer fires through a wreck); story (a) re-run at both sizes with the casualty struck while towed, released in the field by `+tv/<n> release`, and dropped where it stands by a tug that fell; `field_gc10`'s gate demoting on `disengage_s`; `field_scale` re-measured at 100 |
+| **FR.5** the rebless | Q-38-17, Q-38-27, Q-36-56, Q-40-2..10, Q-40-25 | §4.1's five items in its order: the await, `note_fire`, `line_to`, the effects (the compiled table, the resolution pack's block, the derivation at admission and after a part change), the coupled tow (admission's `carried` filter lifted, the trailer step in the tug's turn, `Release` as a field act, the drop; the ramp exit as Q-40-25 rules: the coupled withdraw at the ramp, then the load as on open ground); §4a's pins re-pinned once with reasons | the in-source kernel gates (one a row of Q-40-3's table; a trailer struck and released; a mind that no longer fires through a wreck); story (a) re-run at both sizes with the casualty struck while towed, released in the field by `+tv/<n> release`, and dropped where it stands by a tug that fell; a coupled pair withdrawn at the ramp by `+tv/<n> load go` under fire and loaded into the bay; `field_gc10`'s gate demoting on `disengage_s`; `field_scale` re-measured at 100 |
 | **FR.6** the seam | Q-36-48, Q-40-22 | `SpacePartyId` deleted, `PartyId` in `space/*` and `shard_10/voyage.rs`, `SpaceRelation` onto `Relation`+`Mark` with the picket's flag | the voyage test's parties lettered by the arena; a compile with no `SpacePartyId` in the tree; no persisted document moved |
 | **FR.7** the round's story | Q-38-29 | one script: a declared-Hostile co-op's raid on a mining field, reinforcement from the pad, a tow struck and released under fire, a jammed sensor, friendly fire voided at once, a segment rolled; at 256 and 512; the bot typing the player's half over SSH on conclav.dev | the script green at both sizes on gate.yml; the SSH run recorded |
 
@@ -908,7 +931,13 @@ resume's), and Q-40-23 (the four-digit parser is FR.0's). Each is built as its d
 cut that finds its default does not hold at the tree records the departure in `40-cut-notes.md`
 for the owner, as the GC cuts did.
 
-**Open after Draft 0.3:** Q-40-24 (the pending row as the one population count) and Q-40-25 (the
-coupled pair's exit at the ramp), both raised by the round-2 review with a default each; FR.3 and
-FR.5 take the defaults unless the owner rules otherwise, and doc 41's tender and doc 42's crew
-rules read Q-40-25's answer.
+**Ruled after Draft 0.3 (Draft 0.4, 2026-11-03):** Q-40-24 (the pending row as the one population
+count) and Q-40-25 (the coupled pair's exit at the ramp), both raised by the round-2 review, were
+accepted at their defaults with the owner's "Accept all seven" across docs 23, 40, 41 and 42;
+FR.3 and FR.5 build them as written. Doc 23's Q-23-21 was accepted at its default the same way,
+so FR.3's step 1 is the claim opened in the bay before the launch (D-23-21, D-23-23) and §4.4's
+other shape is the record's only. Doc 41's RS.1 (the tender's acts under a field, which hang on
+how a coupled pair leaves) and doc 42's CR.4 (the crew aboard a coupled casualty at an ejection)
+now read Q-40-25's withdraw, as doc 38 Draft 0.3's programme map lists them (§9.3's seams, §9.4's
+gates); neither needs a text of its own here, since the withdraw is the exit every unit already
+takes and the load that follows is the path both documents already read.
