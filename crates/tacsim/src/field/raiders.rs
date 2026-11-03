@@ -1072,6 +1072,10 @@ fn join_one(
             .map_err(|_| "the field is busy".to_owned())?;
         joining.live.homes.push(zone);
     }
+    // Doc 36a lane 3 (P0-8): the site's record must have a row for everyone on the ground.
+    if let Some(domain) = super::parties::site_domain(ctx.w, site) {
+        super::admit::index_room(ctx.w, domain)?;
+    }
     mush_tactics::custody::check_out(ctx, unit, mark.clone())
         .map_err(|error| format!("#{} could not be taken into the field ({error})", unit.0))?;
     let controller = joining.unit.controller;

@@ -366,6 +366,9 @@ fn admit(ctx: &mut Ctx<'_>, site: &CanonicalId, record: &SiteRecord) -> Result<(
             "{counted} units are on the ground and a field holds {cap}"
         ));
     }
+    // Doc 36a lane 3 (P0-8): and the record's index must have room for everyone, counted or
+    // not, so the demotion can never refuse `UnitsFull`.
+    index_room(ctx.w, domain)?;
     if units.is_empty() {
         return Err("nobody is on the ground".to_owned());
     }
@@ -509,6 +512,27 @@ fn admit(ctx: &mut Ctx<'_>, site: &CanonicalId, record: &SiteRecord) -> Result<(
 /// **A hull left out of a field** (doc 36 cut GC.1; Q-36-44), told to everyone on the site:
 /// `{name}`, `{n}` the ordinal.
 pub const HELD_OUT: &str = "The {name} stands out of field {n}: its licensed mind cannot be      taken into a field yet, so it stands as ground nobody crosses.";
+
+/// **Whether the site's record could index everyone on its ground** (doc 36a lane 3, P0-8): a
+/// demotion writes a row for every casualty and wreck the field leaves, and every unit on the
+/// ground — counted or not, held out, carried — may be one, so a field never opens over, or
+/// takes a join past, more units than [`crate::surface::site_record::MAX_LEFT_UNITS`]. The
+/// bound is met here, early, where the refusal has a reader; `SiteRecord::demote` then never
+/// answers `UnitsFull` for a field this admitted.
+///
+/// # Errors
+///
+/// The reason the field refuses, in words.
+pub(crate) fn index_room(w: &mush_core::World, domain: mush_sim::DomainId) -> Result<(), String> {
+    let standing = parties::on_ground(w, domain).len();
+    let bound = crate::surface::site_record::MAX_LEFT_UNITS;
+    if standing > bound {
+        return Err(format!(
+            "{standing} units are on the ground and the site's record indexes {bound}"
+        ));
+    }
+    Ok(())
+}
 
 /// **Whether `unit` is left out of a field** (doc 36 cut GC.1; Q-36-44): a hull held by dedicated
 /// IC custody, which is a licensed mind's hold until doc 23 S.4b. `custody::check_out` refuses

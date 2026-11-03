@@ -365,7 +365,54 @@ pub(crate) fn demote_units(
     // Doc 36 cut GC.4 (Q-36-20): every casualty the field carried as a tug's load stands at its
     // tug's cell, indexed as it was.
     crate::surface::tow::set_down(ctx, site, units, &mut left, side);
+    // Doc 36a lane 3 (P0-8): a hull the field never held keeps the row an earlier field gave it.
+    keep_held_out(ctx, site, units, &mut left, &remains, side);
     Demoted { left, remains }
+}
+
+/// **The rows of hulls that were never in the field** (doc 36a lane 3, P0-8): a hull held out of
+/// the field under IC custody stood on the ground as a wall (`super::admit`, Q-36-44) and was no
+/// unit of it, so the close's index — which replaces the record's — would have wiped the row an
+/// earlier field gave it. Every indexed hull not among `units`, not already in `left` and not
+/// remains, still standing on this site's ground, keeps its row at the pose it stands at. A row
+/// for a hull no longer on the ground is stale and goes, as it always did.
+fn keep_held_out(
+    ctx: &Ctx<'_>,
+    site: &CanonicalId,
+    units: &[ObjId],
+    left: &mut Vec<LeftUnit>,
+    remains: &[LeftRemains],
+    side: u16,
+) {
+    let Some(record) = site_record(ctx, site) else {
+        return;
+    };
+    let Some(domain) = super::parties::site_domain(ctx.w, site) else {
+        return;
+    };
+    for mut row in record.units {
+        if units.contains(&row.unit)
+            || left.iter().any(|kept| kept.unit == row.unit)
+            || remains.iter().any(|lost| lost.unit == row.unit)
+        {
+            continue;
+        }
+        let Some((on, at)) = mush_sim::pose_of(ctx.w, row.unit) else {
+            continue;
+        };
+        if on != domain {
+            continue;
+        }
+        let pose = SitePose {
+            x_cm: at.x_cm,
+            y_cm: at.y_cm,
+            heading_mdeg: at.heading_mdeg,
+        };
+        if pose.on_site(side) {
+            row.pose = pose;
+        }
+        left.push(row);
+    }
 }
 
 /// **Whether `unit`'s own record reads `Irrecoverable`** (doc 36 cut GC.3; Q-36-18): a hull that

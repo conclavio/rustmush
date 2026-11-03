@@ -2344,7 +2344,8 @@ pub(crate) fn carried(record: &SiteRecord) -> BTreeMap<ObjId, (ObjId, u32)> {
 }
 
 /// **At a field's demotion, every carried casualty stands at its tug's cell**, indexed there as
-/// it was before (Q-36-20): `left` gains its entry at the new pose.
+/// it was before (Q-36-20): `left` gains its entry at the new pose. A tug that left the surface
+/// (irrecoverable; doc 36a lane 3, P0-8) leaves its casualty indexed where it stands.
 pub(crate) fn set_down(
     ctx: &mut Ctx<'_>,
     site: &CanonicalId,
@@ -2367,10 +2368,19 @@ pub(crate) fn set_down(
         else {
             continue;
         };
-        let Some((domain, pose)) = mush_sim::pose_of(ctx.w, tug) else {
+        // Doc 36a lane 3 (P0-8): a tug that fell irrecoverable left the surface before this runs
+        // (`close::demote_units`' remains), so its casualty stands where it was held out — at its
+        // own pose, which the index keeps. The tow itself ends with the remains.
+        let at_tug = mush_sim::pose_of(ctx.w, tug);
+        let Some((domain, pose)) = at_tug
+            .clone()
+            .or_else(|| mush_sim::pose_of(ctx.w, casualty))
+        else {
             continue;
         };
-        if let Err(error) = mush_sim::place(ctx, casualty, domain, pose.clone()) {
+        if at_tug.is_some()
+            && let Err(error) = mush_sim::place(ctx, casualty, domain, pose.clone())
+        {
             tracing::warn!(tug = tug.0, casualty = casualty.0, %error, "tacsim: a carried casualty could not be set down at its tug");
         }
         let at = crate::surface::site_record::SitePose {

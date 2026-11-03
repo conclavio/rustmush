@@ -23,6 +23,7 @@ use crate::driving::{
     AHUNA, act_go, cid, command, finish, launched, on_pad, on_pad_as, ramp_at, reboot, record_of,
     run, staff_hand, stocked_tuned, to_cell, warm,
 };
+use crate::field_gc3::set_section;
 use crate::field_host::{armed, egress, seat, second, site_record, task, tune, until};
 
 /// **Destroy `unit`'s power component** (the staff fixture standing in for the round that
@@ -77,6 +78,86 @@ pub(crate) fn seconds_until(
 /// The tug's tow, as the site's record holds it.
 pub(crate) fn towing(rig: &mut crate::driving::Rig, tug: ObjId) -> Option<ObjId> {
     site_record(rig).and_then(|record| record.tows.towing(tug).map(|op| op.casualty()))
+}
+
+// ---- doc 36a lane 3: P0-8 ------------------------------------------------------------------
+
+/// **Doc 36a lane 3, P0-8**: the tug falls irrecoverable with the casualty in tow. GC.4's ground
+/// — the escort a casualty, its wingman attached by `+tv/2 tow go` — then the wingman goes down
+/// with everything (GC.3's fixture stands in for the rounds) before the second field. At that
+/// field's demotion the tug is remains and off the ground, the tow has ended with it, and the
+/// casualty keeps its row on the index at the cell it stands on; before the fix the close read the
+/// casualty's pose off its gone tug and dropped the row.
+#[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+#[allow(clippy::too_many_lines)]
+async fn lane3_a_casualty_keeps_its_row_when_its_tug_falls_irrecoverable() {
+    let mut rig = stocked_tuned(lane3_tune);
+    let (a, _, tvs) = on_pad(&mut rig, 2);
+    let (escort, wingman) = (tvs[0], tvs[1]);
+    launched(&mut rig, a, escort);
+    let _ = act_go(&mut rig, a, "+tv/2 launch go");
+    let _ = finish(&mut rig, wingman, a);
+    let (rx, ry, _) = ramp_at(&rig.tw, AHUNA);
+    let ramp = (rx.div_euclid(1_000), ry.div_euclid(1_000));
+    to_cell(&mut rig, escort, (ramp.0 + 4, ramp.1));
+    to_cell(&mut rig, wingman, (ramp.0 + 5, ramp.1));
+    powerless(&mut rig, escort);
+    let (b, _, _) = on_pad_as(&mut rig, "Second", 2, "Red Moth", 1);
+    let hull = armed(&mut rig, "Red Hound", (ramp.0 - 8, ramp.1), 90_000);
+    seat(&mut rig, hull, b);
+    seat(&mut rig, wingman, a);
+    warm(&mut rig);
+    let mut rx = egress(&mut rig);
+    let mut lines: Vec<LedgerEvent> = Vec::new();
+
+    // Field 1 settles with the escort a casualty; the wingman takes it in tow.
+    field_settles(&mut rig, &mut rx, &mut lines, b).await;
+    let (out, queued) = command(&mut rig, a, "+tv/2 tow go");
+    assert_eq!(queued.len(), 1, "one tow start: {out}");
+    crate::driving::land(&mut rig, &queued[0]).expect("the tow start lands");
+    assert!(
+        seconds_until(&mut rig, 120, |rig| towing(rig, wingman) == Some(escort)),
+        "the tow attaches"
+    );
+    let escort_cell = cell_of(&rig, escort).expect("the casualty is on the ground");
+
+    // The tug goes down with everything, still coupled; field 2 opens over it and settles.
+    set_section(&mut rig, wingman, "boom", Some("irrecoverable"), None);
+    field_settles(&mut rig, &mut rx, &mut lines, b).await;
+    assert!(
+        mush_sim::pose_of(rig.tw.world(), wingman).is_none(),
+        "the tug is remains, off the ground"
+    );
+    assert_eq!(
+        cell_of(&rig, escort),
+        Some(escort_cell),
+        "the casualty stands where it was held"
+    );
+    let record = site_record(&mut rig).expect("the site record");
+    let row = record
+        .units
+        .iter()
+        .find(|left| left.unit == escort)
+        .unwrap_or_else(|| panic!("the casualty keeps its row: {:?}", record.units));
+    assert_eq!(row.condition, LeftCondition::Casualty);
+    assert_eq!(row.pose.cell(), escort_cell, "indexed where it stands");
+    assert!(
+        record.units.iter().all(|left| left.unit != wingman),
+        "an irrecoverable tug is no casualty or wreck on the index: {:?}",
+        record.units
+    );
+    assert!(
+        record.tows.towing(wingman).is_none(),
+        "the tow ended with the tug"
+    );
+    assert!(
+        record.objects.iter().any(|object| matches!(
+            object.kind,
+            tacsim::surface::site_record::GroundKind::Remains { of: Some(of), .. } if of == wingman
+        )),
+        "the tug's remains lie where it fell: {:?}",
+        record.objects
+    );
 }
 
 /// **GC.4's gate: story (a)'s main path.**

@@ -36,7 +36,7 @@ use crate::field_host::{
 
 /// **Write `condition` on `section` of `unit`, and its internals to `internals`** (or leave them
 /// when `None`): the staff fixture standing in for damage.
-fn set_section(
+pub(crate) fn set_section(
     rig: &mut crate::driving::Rig,
     unit: ObjId,
     section: &str,
