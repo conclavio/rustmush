@@ -1071,12 +1071,13 @@ the paths that close an epoch also clear the excursion (`tow.rs:1637`) and take 
 that named them (`:1260`), and the Close is submitted as the operator. `Closed` and `Refused` are
 terminal and stand until the operator's next `go` replaces them; a `go` over an `Opening`, `Open`
 or `Closing` cursor is refused ("that rig's mind claim is still open"), the relaunch guard the
-claim needs, as `sortie` already gives the epoch one. Under Q-23-21's alternative a rig recovered,
-homed or salvaged while its claim is still owed ends `Refused { reason: "epoch ended before the
-claim opened" }` — a terminal tombstone the relaunch cannot overwrite without a new `go`, so no
-claim ever opens over a hull back in its bay and the operator reads why; under the default no such
-rig exists. The next surface fire finds every `Opening` and `Closing` cursor, enqueues the permit
-it re-mints from the record and submits.
+claim needs, as `sortie` already gives the epoch one. No rig is recovered, homed or salvaged while
+its claim is still owed: under D-23-21 (Q-23-21, accepted) the hull stands in its bay until the
+committed row is observed, and the recover, the home's parked test and the salvage load each want
+a hull out of it, so the tombstone Q-23-21's alternative needed for that case (`Refused { reason:
+"epoch ended before the claim opened" }`, kept under its record) has no rig to mark. The next
+surface fire finds every `Opening` and `Closing` cursor, enqueues the permit it re-mints from the
+record and submits.
 
 **DT flights carry no claim** (round 2's 23-10): `+sortie/launch` keeps its `OpenSortie` on
 `Flight.epoch` (`detachment/sortie/model.rs:212`, `prepare.rs:772–773`), seals the ROM alone
@@ -1176,7 +1177,7 @@ lease, lessor, lessee: actor, term_ends_ic }`, captured from a live `TvLease { s
 (a lease ending mid-claim is the lessor's repossession, which closes the epoch and the claim as a
 home does); the exclusion's hangar check is unchanged, since the lease names the bay. An org-held
 licence (Q-23-19) and a leased hull are the same shape of question and the same owner's cut.
-Q-23-22.
+Q-23-22, accepted at its default.
 
 ### 17.4 Physical custody while the hull moves — D-23-15
 
@@ -1230,31 +1231,19 @@ refused join** goes back aboard and is offered again at the next tick (doc 40 Q-
 epoch open and its claim untouched — a bay is the claim's own hangar, so that re-parent is the one
 the freeze admits; (5) **abort** — a launch cancelled after its Open and before its ramp closes
 `PoweredDownInBase { base: <the hangar's hull> }` on the next fire, and a ramp that lands nobody
-(`NeverLeft`) the same. **Doc 40 Draft 0.3 writes the protocol into its §4.4 in six steps under
+(`NeverLeft`) the same. **Doc 40 Draft 0.3 wrote the protocol into its §4.4 in six steps under
 Q-23-21's alternative** (the Open after the finish; its message of 2026-11-03 crossed this
-draft's), and doc 23 carries those six as that alternative's shape, so whichever way the owner
-rules both docs already hold it: (1) *accepted* — at the prepare the cap over one count (ground
-plus pending rows, doc 40 Q-40-24), the launch cycle's slot and, for a licensed hull, the licence
-and compute seats are taken and recorded on a pending row of the site record and on the dispatch,
-which captures the `Execution` whole onto the act (boxed) so the later Open opens from it and
-never re-reads the holding (23-2 under this order); (2) *landed* — the finish puts the hull at
-the ramp and opens the epoch, no mark, no join, a pending entrant counted by its row; (3) *claim
-opened* (licensed only) — the next surface fire opens the claim with the hull on open ground
-under no mark; (4) *checked out and joined* — the field tick (`field/admit.rs:120–121`, beside
-`note_arrivals`/`join_arrivals`, the one caller with a `Ctx`) takes each pending entrant whose
-claim is open or needs none: `custody::check_out` under the field's mark, the Join at the ramp,
-`FieldLive.units` and the retired pending row in one batch; (5) *retried* — a refused join takes
-the check-out back (`check_in(…, None)`, `carrier.rs:523`'s pattern), the hull goes back aboard
-with its epoch and claim unchanged and the pending row holding its count, and the next tick puts
-it down again; (6) *aborted* — the field demotes, the carrier is wrecked or the operator cancels
-before the join lands: the hull stays aboard, the row, the slot and the seats are released, and
-an open claim closes with the epoch as `ReturnedToBase { base: <its own carrier> }`, the staff
-home's precedent for a hull put back into its own bay (`recovery.rs:1043–1048`; `RecoveredToBase`
-names a recoverer that is not the hull's own hangar), while a claim still owed takes 23-4's
-tombstone. Under the default, steps 1 and 3 collapse into the Open in the bay and the pending row
-carries the cap and the cycle alone; steps 2, 4, 5 and 6 read the same under both. The acceptance
-story is shared either way: a licensed reinforcement into a running field (§17.10; doc 40's FR.3
-story).
+draft's); the owner took the default the same day, so these five steps are the contract, doc 40
+records the same ruling on its side (its FR.3's step 1), and the six-step shape stays under
+Q-23-21's record (§17.12) as the shape not taken. Two of its facts hold under either shape and
+stay here: the holding is read once, at `go` — here by the Open's capture, retained in the claim
+row and named by the act's `DispatchSeal.open` (23-2, D-23-14), never re-read at the landing;
+and step (3)'s check-out runs in the field tick (`field/admit.rs:120–121`, beside
+`note_arrivals`/`join_arrivals`, the one caller with a `Ctx`), which takes `custody::check_out`
+under the field's mark, the Join at the ramp and `FieldLive.units` in one batch and, on a refused
+join, takes the check-out back by `check_in(…, None)` (`carrier.rs:523`'s pattern) before step
+(4)'s retry. The acceptance story is shared: a licensed reinforcement into a running field
+(§17.10; doc 40's FR.3 story).
 
 **Salvage under a claim.** A hull under an open claim that a stranger's tug loads (GC.4/GC.5's
 salvage custody row, `surface/claim.rs`) is the re-parent the freeze would refuse. The default is
@@ -1301,7 +1290,7 @@ pending Opens (`host.rs:247–249`, one per actor) are counted beside the active
 on one fire cannot both pass, and a `go` the count refuses enqueues nothing. The end state of an
 Open the four owners refuse for good — a lapsed licence, a withdrawn holding, a changed hull — is
 **`Refused` on the cursor with the Roll's word to the operator, the queued launch cancelled,
-nothing having left the bay**: never a hull out on the ground without a claim (Q-23-21). At the stock keys no site refuses below a dozen Class III minds,
+nothing having left the bay**: never a hull out on the ground without a claim (Q-23-21, accepted). At the stock keys no site refuses below a dozen Class III minds,
 so the gate bites only under an operator's lowered pool or a holder's rationing, and the holder's
 rationing verb is not built here (a later cut; the allotment is a provisional default under the
 owner's economy rule). The seat is held while the hull is out, dormant or not, and spent only while
