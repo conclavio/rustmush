@@ -22,8 +22,8 @@ use tacsim::surface::site_record::{LeftCondition, PromotedBy, SiteKey, SiteRecor
 use tokio::sync::mpsc::Receiver;
 
 use crate::driving::{
-    AHUNA, Rig, cid, command, drain, handles, land, launched, on_pad, on_pad_as, reboot, run,
-    site_domain, staff_hand, stocked_tuned, to_cell, typed, warm,
+    AHUNA, Rig, cid, command, drain, handles, land, land_composed, launched, on_pad, on_pad_as,
+    reboot, run, site_domain, staff_hand, stocked_tuned, to_cell, typed, warm,
 };
 
 /// A fast field: the simulator's lab tempo, a snapshot every half second, a short quiet
@@ -226,13 +226,30 @@ pub(crate) fn pump(
 
 /// One world second: the ticks due, and every tacsim submission they queued, landed.
 pub(crate) fn second(rig: &mut Rig) -> Vec<String> {
+    second_with(rig, false)
+}
+
+/// [`second`] with the ticks' submissions landed on the composed path (doc 36a lane 4;
+/// `driving::land_composed`, production's path): the host's close act then writes the hull's
+/// black box close line, which the plain prepare never does.
+pub(crate) fn second_composed(rig: &mut Rig) -> Vec<String> {
+    second_with(rig, true)
+}
+
+fn second_with(rig: &mut Rig, composed: bool) -> Vec<String> {
     let t = rig.tw.world().now().saturating_add(1);
     rig.tw.set_now(t);
     let _ = rig.tw.fire_due(t.saturating_mul(1_000));
     let queued = drain(&mut rig.tw);
     queued
         .iter()
-        .filter_map(|submit| land(rig, submit).err())
+        .filter_map(|submit| {
+            if composed {
+                land_composed(rig, submit).err()
+            } else {
+                land(rig, submit).err()
+            }
+        })
         .collect()
 }
 
@@ -242,6 +259,28 @@ pub(crate) async fn until(
     rx: &mut Receiver<ArenaOut>,
     lines: &mut Vec<LedgerEvent>,
     secs: u64,
+    done: impl FnMut(&mut Rig, &[LedgerEvent]) -> bool,
+) -> bool {
+    until_with(rig, rx, lines, secs, false, done).await
+}
+
+/// [`until`] with every tick's submissions landed on the composed path ([`second_composed`]).
+pub(crate) async fn until_composed(
+    rig: &mut Rig,
+    rx: &mut Receiver<ArenaOut>,
+    lines: &mut Vec<LedgerEvent>,
+    secs: u64,
+    done: impl FnMut(&mut Rig, &[LedgerEvent]) -> bool,
+) -> bool {
+    until_with(rig, rx, lines, secs, true, done).await
+}
+
+async fn until_with(
+    rig: &mut Rig,
+    rx: &mut Receiver<ArenaOut>,
+    lines: &mut Vec<LedgerEvent>,
+    secs: u64,
+    composed: bool,
     mut done: impl FnMut(&mut Rig, &[LedgerEvent]) -> bool,
 ) -> bool {
     let deadline = std::time::Instant::now() + Duration::from_secs(secs);
@@ -251,7 +290,7 @@ pub(crate) async fn until(
         pump(rig, rx, lines);
         beat += 1;
         if beat.is_multiple_of(8) {
-            let _ = second(rig);
+            let _ = second_with(rig, composed);
         }
         if done(rig, lines) {
             return true;

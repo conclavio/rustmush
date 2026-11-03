@@ -2,16 +2,31 @@
 //! (`driving`'s keyed rig on Ahuna Flank), the arena's egress pumped by hand as
 //! `field_raiders.rs` pumps it.
 //!
-//! The gate: with no staff hand anywhere, the director lands the content's raider on a site where
-//! three flights are out and a rig holds ore, its leader declares through the ordinary door, the
-//! field runs, and once the raid has lost half of what it launched it turns for home: its
-//! standing hull goes up the ramp and aboard, its carrier lifts by GC.0's lift, and what it lost
-//! stays where it fell. The raider's organization stands in the faction registry with its leader
-//! as principal, and the cooldown holds the next raid back though the site still tempts it.
+//! The gate: the director lands the content's raider on a site where three flights are out and a
+//! rig holds ore, its leader declares through the ordinary door, the field runs, the site's guard
+//! takes the raid's worn hull, and the raid, having lost half of what it launched, turns for
+//! home: its standing hull goes up the ramp and aboard, its carrier lifts by GC.0's lift, and
+//! what it lost stays where it fell. The raider's organization stands in the faction registry
+//! with its leader as principal, and the cooldown holds the next raid back though the site still
+//! tempts it.
 //!
 //! Beside it, the arrival: a raid scheduled while a field already runs on the site arrives by the
 //! kernel's join (GC.1b) — its carrier and hulls rows of the raider's own party, its carrier's
-//! ramp laid as that party's home — and goes home up that ramp once it has lost half.
+//! ramp laid as that party's home — and, once it has spent `raid_field_s` there (its guard
+//! carries no rounds, so it loses nothing), goes home up that ramp.
+//!
+//! **What is a fixture** (doc 36a lane 4). The site the director reads is seeded by staff hand:
+//! the ore in a rig's hopper (`seed_pool`), the guard's hull (`armed`), the hired NPC in its seat
+//! (`seat_npc`) and its magazines rationed (`rationed`, to `ROUNDS`). Both gates seed the raider
+//! itself by staff before the raid (`raiders::seed`) and lift its carrier (`unplace`), so it
+//! stands as one that has raided before and lifted, and the director sends it as it is. In the
+//! first gate one of its hulls came home from that earlier raid worn thin (`fragile`, armour at
+//! its floor): it is the one the guard's fire engages first, the guard's six rounds take it, and
+//! nothing of the raider's is touched once the director has landed it. A whole line tank is not
+//! what the gate kills: lane 4 gave the guard full magazines against two whole hulls, and in
+//! 73 s of fire it wrecked only the raider's carrier, never a hull, then fell; the raiders had
+//! wrecked both rigs and the prospector's carrier first, and with its own carrier gone the raid
+//! could not turn for home. So the loss the gate earns is the worn hull's.
 
 use mush_core::{GOD, ObjId, ObjKind};
 use mush_inventory::LotId;
@@ -84,7 +99,9 @@ fn tempting_site(rig: &mut Rig, loaded: bool) -> (ObjId, Vec<ObjId>, ObjId) {
     (a, tvs, guard)
 }
 
-/// The rounds the guard carries in each magazine: enough to take a worn hull, never a whole one.
+/// The rounds the guard carries in each magazine: enough to take a worn hull (its armour at the
+/// floor, a 105 mm round's 120 against internals of 200 or less), never a whole one (a facet of
+/// 400 before them) or the raider's carrier.
 const ROUNDS: i64 = 6;
 
 /// **Ration `unit`'s magazines** to at most `rounds` each (a staff hand).
@@ -127,31 +144,109 @@ fn kills(lines: &[LedgerEvent]) -> Vec<(ObjId, Option<ObjId>, i64)> {
         .collect()
 }
 
+/// Every shot `shooter` fired: at whom, how many rounds, when.
+fn fire(lines: &[LedgerEvent], shooter: ObjId) -> Vec<(ObjId, u32, i64)> {
+    lines
+        .iter()
+        .filter_map(|line| match &line.kind {
+            tacsim::arena::ledger::EventKind::Fired {
+                unit,
+                target,
+                rounds,
+                ..
+            } if *unit == shooter => Some((*target, *rounds, line.t_ms)),
+            _ => None,
+        })
+        .collect()
+}
+
+/// Every hit `shooter` scored: on whom, which section, when.
+fn hits(lines: &[LedgerEvent], shooter: ObjId) -> Vec<(ObjId, String, i64)> {
+    lines
+        .iter()
+        .filter_map(|line| match &line.kind {
+            tacsim::arena::ledger::EventKind::Hit {
+                unit,
+                target,
+                section,
+                ..
+            } if *unit == shooter => Some((*target, section.to_string(), line.t_ms)),
+            _ => None,
+        })
+        .collect()
+}
+
+/// **The raider as one that has raided before** (this file's head): seeded by staff, one hull
+/// worn thin when `worn`, its carrier lifted off the ground; the director sends it as it is.
+/// Answers its carrier and its hulls.
+fn raided_before(rig: &mut Rig, worn: bool) -> (ObjId, Vec<ObjId>) {
+    let def = tacsim::field::raiders::raiders()
+        .expect("the fixture raiders")
+        .into_iter()
+        .find(|def| def.id.as_str() == SKULKS)
+        .expect("the content's raider");
+    let seeded = staff_hand(rig, |ctx| tacsim::field::raiders::seed(ctx, &def));
+    assert!(seeded.is_ok(), "{seeded:?}");
+    let barge = carrier_seeded(rig);
+    let raiders = raider_hulls(rig);
+    assert_eq!(raiders.len(), 2, "the content's two hulls");
+    // The second hull is the one the site's guard's fire engages first.
+    if worn {
+        fragile(rig, raiders[1]);
+    }
+    staff_hand(rig, |ctx| {
+        mush_sim::unplace(ctx, barge, "test: lifted").expect("lifted");
+    });
+    (barge, raiders)
+}
+
 /// **The GC.11 gate** (doc 36 §7; Q-36-41, Q-36-55).
 #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
 #[allow(clippy::too_many_lines)] // one raid, in order
 async fn gc11_a_scheduled_raid_arrives_declares_and_leaves_with_its_losses() {
     let mut rig = stocked_tuned(tune);
+    // The raider has raided before: one hull came home worn thin, and its carrier lifted.
+    let (barge, raiders) = raided_before(&mut rig, true);
     assert!(
-        raider_hulls(&rig).is_empty(),
-        "nobody seeded the raider: the director does"
+        mush_sim::pose_of(rig.tw.world(), barge).is_none(),
+        "the raider's carrier is off the ground until the director sends it"
     );
-    let (a, _, _) = tempting_site(&mut rig, true);
+    let (a, _, guard) = tempting_site(&mut rig, true);
     let mut rx = egress(&mut rig);
     let mut lines: Vec<LedgerEvent> = Vec::new();
 
-    // The director lands it: seeded, its carrier down at its cell, both hulls beside the ramp.
+    // The director lands it: its carrier down at its cell, both hulls beside the ramp.
     let landed = until(&mut rig, &mut rx, &mut lines, 20, |rig, _| {
-        let hulls = raider_hulls(rig);
-        hulls.len() == 2
-            && hulls
+        mush_sim::pose_of(rig.tw.world(), barge).is_some()
+            && raiders
                 .iter()
                 .all(|hull| mush_sim::pose_of(rig.tw.world(), *hull).is_some())
     })
     .await;
     assert!(landed, "the director lands the raid on its own");
-    let raiders = raider_hulls(&rig);
-    let barge = carrier(&rig).expect("the raider's carrier");
+    assert_eq!(carrier(&rig), Some(barge));
+    // The wear came through the landing: the worn hull's armour is at its floor.
+    let armour = |rig: &Rig, unit: ObjId| -> Vec<(String, i64, i64)> {
+        mush_tactics::module::unit_of(rig.tw.world(), unit)
+            .expect("the unit")
+            .cells()
+            .filter(|(addr, _)| {
+                matches!(addr, mush_tactics::CellAddr::Facet { cell, .. }
+                    if cell.as_str() == tacsim::definitions::unit::ARMOR_CELL)
+            })
+            .map(|(addr, cell)| (format!("{addr:?}"), cell.current, cell.min))
+            .collect()
+    };
+    let worn = armour(&rig, raiders[1]);
+    let whole = armour(&rig, raiders[0]);
+    assert!(
+        worn.iter().all(|(_, current, min)| current == min),
+        "the worn hull's armour is at its floor after the landing: worn {worn:?}; whole {whole:?}; poses {:?}",
+        raiders
+            .iter()
+            .map(|hull| mush_sim::pose_of(rig.tw.world(), *hull))
+            .collect::<Vec<_>>()
+    );
     assert!(mush_sim::pose_of(rig.tw.world(), barge).is_some());
     assert!(tacsim::surface::raid::director_raid(rig.tw.world(), barge));
     let landed_ic = tacsim::surface::raid::last_raid_ic(rig.tw.world(), barge)
@@ -166,8 +261,6 @@ async fn gc11_a_scheduled_raid_arrives_declares_and_leaves_with_its_losses() {
         .cloned()
         .expect("the raider's organization is registered");
     assert_eq!(organization.principals, vec![leader]);
-    // One of the two is worn thin: the guard's fire takes it, which is half of what launched.
-    fragile(&mut rig, raiders[0]);
 
     // The leader declares through the ordinary door, and the field opens on its mark.
     let opened = until(&mut rig, &mut rx, &mut lines, 20, |rig, _| {
@@ -192,22 +285,33 @@ async fn gc11_a_scheduled_raid_arrives_declares_and_leaves_with_its_losses() {
         "the raid is its leader's party"
     );
 
-    // It loses half, turns for home, its standing hull boards, and its carrier lifts.
-    let left = until(&mut rig, &mut rx, &mut lines, 150, |rig, _| {
-        mush_sim::pose_of(rig.tw.world(), barge).is_none()
-            && mush_sim::pose_of(rig.tw.world(), raiders[1]).is_none()
+    // The guard's fire takes the worn hull, which is half of what launched: the raid turns for
+    // home, its standing hull boards, and its carrier lifts. Which of the two falls is read off
+    // the record, not assumed.
+    let aboard = |rig: &Rig| {
+        raiders
+            .iter()
+            .filter(|hull| mush_sim::pose_of(rig.tw.world(), **hull).is_none())
+            .count()
+    };
+    let left = until(&mut rig, &mut rx, &mut lines, 300, |rig, _| {
+        mush_sim::pose_of(rig.tw.world(), barge).is_none() && aboard(rig) == 1
     })
     .await;
     let record = site_record(&mut rig).expect("the record");
     assert!(
         left,
-        "the raid leaves with its losses; kills {:?}; record units {:?}, withdrawing {:?}",
+        "the raid leaves with its losses; kills {:?}; the guard fired {:?} and hit {:?}; record units {:?}, withdrawing {:?}, aboard {}, guard standing {}",
         kills(&lines),
+        fire(&lines, guard),
+        hits(&lines, guard),
         record.units,
         raiders
             .iter()
             .map(|hull| tacsim::field::raiders::withdrawing(rig.tw.world(), *hull))
-            .collect::<Vec<_>>()
+            .collect::<Vec<_>>(),
+        aboard(&rig),
+        !kills(&lines).iter().any(|(unit, _, _)| *unit == guard)
     );
     // What it lost stays where it fell; the one that went home is aboard, not on the record.
     let settled = until(&mut rig, &mut rx, &mut lines, 60, |rig, _| {
@@ -216,20 +320,36 @@ async fn gc11_a_scheduled_raid_arrives_declares_and_leaves_with_its_losses() {
     .await;
     assert!(settled, "the field settles once the carrier has gone");
     let record = site_record(&mut rig).expect("the record");
+    let lost: Vec<ObjId> = record
+        .units
+        .iter()
+        .filter(|unit| {
+            raiders.contains(&unit.unit)
+                && matches!(
+                    unit.condition,
+                    LeftCondition::Casualty | LeftCondition::Wreck
+                )
+        })
+        .map(|unit| unit.unit)
+        .collect();
+    assert_eq!(
+        lost.len(),
+        1,
+        "the guard took one hull, and it stays where it fell: {:?}; kills {:?}",
+        record.units,
+        kills(&lines)
+    );
+    let home = raiders
+        .iter()
+        .copied()
+        .find(|hull| *hull != lost[0])
+        .expect("the other hull");
     assert!(
-        record.units.iter().any(|unit| unit.unit == raiders[0]
-            && matches!(
-                unit.condition,
-                LeftCondition::Casualty | LeftCondition::Wreck
-            )),
-        "the lost hull stays where it fell: {:?}",
+        record.units.iter().all(|unit| unit.unit != home),
+        "the hull that went home is aboard: {:?}",
         record.units
     );
-    assert!(
-        record.units.iter().all(|unit| unit.unit != raiders[1]),
-        "the hull that went home is aboard"
-    );
-    assert!(mush_sim::pose_of(rig.tw.world(), raiders[0]).is_some());
+    assert!(mush_sim::pose_of(rig.tw.world(), lost[0]).is_some());
 
     // The raid is over, and the cooldown holds the next one back though the site still tempts it.
     for _ in 0..10 {
@@ -266,23 +386,13 @@ async fn gc11_a_raid_due_while_a_field_runs_arrives_by_the_join_and_goes_home() 
         cfg.field.raid_field_s = 60;
     });
     // No ore aboard yet, so the director waits. The guard carries no rounds here: it holds the
-    // field open as an armed party without wrecking the raider's carrier, which never lifts.
+    // field open as an armed party without wrecking the raider's carrier, which never lifts, so
+    // this raid loses nothing and leaves on `raid_field_s`.
     let (a, tvs, guard) = tempting_site(&mut rig, false);
     rationed(&mut rig, guard, 0);
     // The raider has stood before and lifted: seeded, its carrier off the ground, nothing under
-    // way. The director sends it as it is.
-    let def = tacsim::field::raiders::raiders()
-        .expect("the fixture raiders")
-        .into_iter()
-        .find(|def| def.id.as_str() == SKULKS)
-        .expect("the content's raider");
-    let seeded = staff_hand(&mut rig, |ctx| tacsim::field::raiders::seed(ctx, &def));
-    assert!(seeded.is_ok(), "{seeded:?}");
-    let barge = carrier_seeded(&rig);
-    let raiders = raider_hulls(&rig);
-    staff_hand(&mut rig, |ctx| {
-        mush_sim::unplace(ctx, barge, "test: lifted").expect("lifted");
-    });
+    // way, both hulls whole. The director sends it as it is.
+    let (barge, raiders) = raided_before(&mut rig, false);
     let mut rx = egress(&mut rig);
     let mut lines: Vec<LedgerEvent> = Vec::new();
     // The prospector marks the guard, west of its rigs, Hostile: a field opens before the raid.
@@ -331,8 +441,9 @@ async fn gc11_a_raid_due_while_a_field_runs_arrives_by_the_join_and_goes_home() 
         live.homes
     );
 
-    // It turns for home and goes up its ramp; its carrier lifts.
-    // Each standing hull's exit at the ramp is named on the open promotion while the field runs.
+    // Its field time spent (`raid_field_s`), it turns for home and goes up its ramp; its carrier
+    // lifts. Each standing hull's exit at the ramp is named on the open promotion while the field
+    // runs.
     let mut exited: Vec<ObjId> = Vec::new();
     let left = until(&mut rig, &mut rx, &mut lines, 240, |rig, _| {
         if let Some(record) = site_record(rig) {
