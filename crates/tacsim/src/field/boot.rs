@@ -243,6 +243,10 @@ fn resume(ctx: &mut Ctx<'_>, site: &CanonicalId, held: &Held) -> Result<(), Stri
         if let Some(fire) = live.fire.clone() {
             book.fire.insert(site.clone(), fire);
         }
+        // Doc 40 cut FR.2 (Q-40-15): the tally as the snapshot it rewinds to held it; the pulses
+        // re-fought after it count again.
+        book.tally
+            .insert(site.clone(), super::standing::seed(&live.tally));
     }
     let config = super::config(ctx.w);
     let terms = crate::arena_task::FieldTerms {
@@ -252,6 +256,7 @@ fn resume(ctx: &mut Ctx<'_>, site: &CanonicalId, held: &Held) -> Result<(), Stri
     if let Err(error) = crate::arena_bridge::resume_field_task(ctx, task, arena, terms) {
         if let Some(book) = ctx.w.module_state_mut::<FieldBook>() {
             book.live.remove(site);
+            book.tally.remove(site);
         }
         return Err(format!("its task did not reopen ({error})"));
     }

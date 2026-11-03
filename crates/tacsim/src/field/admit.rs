@@ -429,6 +429,7 @@ fn admit(ctx: &mut Ctx<'_>, site: &CanonicalId, record: &SiteRecord) -> Result<(
         fire: None,
         owed_exits: Vec::new(),
         held: held_walls,
+        tally: Vec::new(),
     };
     if let Some(book) = ctx.w.module_state_mut::<FieldBook>() {
         book.live.insert(
@@ -438,6 +439,7 @@ fn admit(ctx: &mut Ctx<'_>, site: &CanonicalId, record: &SiteRecord) -> Result<(
                 live: live.clone(),
             },
         );
+        book.tally.remove(site);
     }
     let opened = crate::arena_bridge::open_field_task(
         ctx,

@@ -420,6 +420,7 @@ pub(crate) fn joining(
                 party,
                 key: entrant.key,
                 leader: entrant.leader,
+                director: entrant.director,
             });
             live.parties.sort_by_key(|party| party.party);
             party
