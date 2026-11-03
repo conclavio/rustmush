@@ -1521,23 +1521,39 @@ async fn part_three(w: &mut World, sold: &Sold) -> TestResult {
             .any(|l| l.starts_with(&paid_prefix(sealed, "sealed")) && l.ends_with("; revoked")),
         "{held:?}"
     );
+    // The recall's notice reaches each live holder on the readback's own
+    // tick (`registry_recall::notice`, five seconds), so the buyer's (the
+    // open licence's holder) is awaited, and what the same tick said to the
+    // others dropped, before the buyer's own recall, whose reply is compared
+    // line for line. That tick can fire before the operator reads its own
+    // `Done.` (the nightly of 2026-11-02, two of four copies at production's
+    // pace on conclav.dev): every wait drains the whole recorder, so the
+    // operator's step keeps what reached the buyer meanwhile (`Seen`) and
+    // the buyer waits only when the notice was not among it.
+    let notice = format!(
+        "Registry recall: your mind licence {open} selects filed revision {filed}, recalled by operation "
+    );
+    let mut recall = typed_seen(w, operator, format!("@registry/recall {filed}")).await?;
+    if !recall.own.iter().any(|l| answered(l)) {
+        recall.extend(await_own(&w.server, operator, answered).await?);
+    }
     check_eq!(
-        submitted(w, operator, format!("@registry/recall {filed}")).await?,
+        recall.own,
         vec![
             format!("Recalling filed revision {filed}."),
             QUEUED.to_owned(),
             "Done.".to_owned()
         ]
     );
-    // The recall's notice reaches each live holder on the readback's own
-    // tick (`registry_recall::notice`, five seconds), so the buyer's (the
-    // open licence's holder) is awaited, and what the same tick said to the
-    // others dropped, before the buyer's own recall, whose reply is compared
-    // line for line.
-    let notice = format!(
-        "Registry recall: your mind licence {open} selects filed revision {filed}, recalled by operation "
-    );
-    await_own(&w.server, buyer, |l| l.starts_with(&notice)).await?;
+    if !recall
+        .reaching(buyer)
+        .iter()
+        .any(|l| l.starts_with(&notice))
+    {
+        await_own(&w.server, buyer, |l| l.starts_with(&notice))
+            .await
+            .map_err(|e| format!("{e}; the buyer's recall notice ({notice}…)"))?;
+    }
     for who in [author, cy] {
         let _ = w.server.take_seen(who)?;
     }

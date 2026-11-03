@@ -336,6 +336,37 @@ pub(crate) fn seed_typed<K, V>(
     keep(rig, ops);
 }
 
+/// [`seed_typed`] over a record that may already stand: rewritten when it does, written when
+/// not (doc 36a lane 2: a lane site's record carries the seeded custody rows).
+pub(crate) fn reseed_typed<K, V>(
+    rig: &mut Rig,
+    handle: &mush_core::StateFamilyHandle<K, V>,
+    key: &K,
+    value: V,
+) where
+    K: Send + Sync + 'static,
+    V: Clone + Send + Sync + 'static,
+{
+    let prepared = {
+        let engine = rig.tw.engine_mut();
+        let mut txn = engine.action_transaction(handle).expect("a transaction");
+        let stands = txn.get(handle, key).expect("the record reads").is_some();
+        if stands {
+            txn.replace(handle, key, value)
+                .expect("the record rewrites");
+        } else {
+            txn.insert(handle, key, value).expect("the record writes");
+        }
+        txn.prepare().expect("prepares")
+    };
+    let (ops, install) = prepared.into_parts();
+    rig.tw
+        .engine_mut()
+        .install_prepared_action(install)
+        .expect("installs");
+    keep(rig, ops);
+}
+
 /// Fold every write and reboot with the stored `tacsim:` document `key` edited.
 fn reboot_editing(
     mut rig: Rig,
@@ -557,8 +588,18 @@ pub(crate) fn drain(tw: &mut TestWorld) -> Vec<AuthoritativeSubmit> {
 }
 
 pub(crate) fn land_all(rig: &mut Rig, queued: &[AuthoritativeSubmit]) {
+    land_all_with(rig, queued, false);
+}
+
+/// [`land_all`], on the composed path when `composed` ([`land_composed`]).
+pub(crate) fn land_all_with(rig: &mut Rig, queued: &[AuthoritativeSubmit], composed: bool) {
     for submit in queued {
-        land(rig, submit).unwrap_or_else(|error| {
+        let landed = if composed {
+            land_composed(rig, submit)
+        } else {
+            land(rig, submit)
+        };
+        landed.unwrap_or_else(|error| {
             panic!(
                 "{} by #{} did not land: {error}",
                 submit.action.key().id,
@@ -698,6 +739,17 @@ pub(crate) fn hold_pool(tw: &mut TestWorld, vault: VaultId, good: &str) -> u64 {
 
 /// Seed `qty` of `good` into `vault`'s pool through `lot` (the inventory's own path).
 pub(crate) fn seed_pool(rig: &mut Rig, vault: VaultId, good: &str, qty: u64, lot: LotId) {
+    seed_steps(rig, vault, good, qty, lot, 2);
+}
+
+/// Seed `qty` of `good` as the undissolved lot `lot` at `vault` (doc 36a P2-4: a lot for
+/// `@inv/dissolve` to be refused on).
+pub(crate) fn seed_lot(rig: &mut Rig, vault: VaultId, good: &str, qty: u64, lot: LotId) {
+    seed_steps(rig, vault, good, qty, lot, 1);
+}
+
+/// [`seed_pool`]'s two steps — the origin mint, then its dissolve — the first `steps` of them.
+fn seed_steps(rig: &mut Rig, vault: VaultId, good: &str, qty: u64, lot: LotId, steps: usize) {
     let endpoint = EndpointRef(vault);
     let good = cid(good);
     let families = rig
@@ -707,7 +759,7 @@ pub(crate) fn seed_pool(rig: &mut Rig, vault: VaultId, good: &str, qty: u64, lot
         .expect("inventory handles")
         .0
         .clone();
-    for step in 0..2 {
+    for step in 0..steps {
         let engine = rig.tw.engine_mut();
         let prepared = {
             let mut txn = engine
@@ -1105,6 +1157,12 @@ pub(crate) fn act_go(rig: &mut Rig, who: ObjId, line: &str) -> String {
 /// **Finish `tv`'s act**: to its due instant (the fire there queues the finish, landed), then
 /// one more fire for the tell; what each of `who` heard over both, in order.
 fn finish_heard(rig: &mut Rig, tv: ObjId, who: &[ObjId]) -> Vec<String> {
+    finish_heard_with(rig, tv, who, false)
+}
+
+/// [`finish_heard`], the finish landed on the composed path when `composed` (doc 36a lane 4):
+/// the production path, under which the finish's black box line is written.
+fn finish_heard_with(rig: &mut Rig, tv: ObjId, who: &[ObjId], composed: bool) -> Vec<String> {
     let due = due_of(&mut rig.tw, tv);
     let (events, queued) = advance_to(rig, due);
     let mut heard: Vec<String> = who.iter().map(|w| said(&rig.tw, &events, *w)).collect();
@@ -1113,9 +1171,9 @@ fn finish_heard(rig: &mut Rig, tv: ObjId, who: &[ObjId]) -> Vec<String> {
         1,
         "one finish at the due instant: {queued:?}"
     );
-    land_all(rig, &queued);
+    land_all_with(rig, &queued, composed);
     let (events, queued) = fire(rig);
-    land_all(rig, &queued);
+    land_all_with(rig, &queued, composed);
     for (line, w) in heard.iter_mut().zip(who) {
         line.push('\n');
         line.push_str(&said(&rig.tw, &events, *w));
@@ -1126,6 +1184,12 @@ fn finish_heard(rig: &mut Rig, tv: ObjId, who: &[ObjId]) -> Vec<String> {
 /// [`finish_heard`] for one listener.
 pub(crate) fn finish(rig: &mut Rig, tv: ObjId, who: ObjId) -> String {
     finish_heard(rig, tv, &[who]).remove(0)
+}
+
+/// [`finish`] with the finish landed on the composed path ([`land_composed`]): the act's black
+/// box line is written, as production writes it.
+pub(crate) fn finish_composed(rig: &mut Rig, tv: ObjId, who: ObjId) -> String {
+    finish_heard_with(rig, tv, &[who], true).remove(0)
 }
 
 /// How many times `line` appears in `text`.
@@ -1249,10 +1313,27 @@ pub(crate) fn launched(rig: &mut Rig, pilot: ObjId, tv: ObjId) {
     launched_at(rig, AHUNA, pilot, tv);
 }
 
+/// **[`launched`] with the launch's finish landed on the composed path** (doc 36a lane 4;
+/// [`land_composed`], as production's world task lands it): the finish opens the rig's epoch and
+/// writes its black box open line, so the epoch is recorded (`unrecorded` false) and a later
+/// close line can be asserted. [`launched`]'s plain prepare hands the finish no owner
+/// participants, so it writes no line and the epoch says `unrecorded`.
+pub(crate) fn launched_composed(rig: &mut Rig, pilot: ObjId, tv: ObjId) {
+    launched_at_with(rig, AHUNA, pilot, tv, true);
+}
+
 /// [`launched`] on any site (doc 32 cut S.2): rig 1 stands at the ramp off `entry`'s pad.
 pub(crate) fn launched_at(rig: &mut Rig, entry: &str, pilot: ObjId, tv: ObjId) {
+    launched_at_with(rig, entry, pilot, tv, false);
+}
+
+fn launched_at_with(rig: &mut Rig, entry: &str, pilot: ObjId, tv: ObjId, composed: bool) {
     let _ = act_go(rig, pilot, "+tv/1 launch go");
-    let _ = finish(rig, tv, pilot);
+    let _ = if composed {
+        finish_composed(rig, tv, pilot)
+    } else {
+        finish(rig, tv, pilot)
+    };
     let (x, y, heading) = ramp_at(&rig.tw, entry);
     assert!(
         matches!(parent(&rig.tw, tv), SpatialParent::Direct { domain, pose }

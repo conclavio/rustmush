@@ -20,7 +20,8 @@ use smol_str::SmolStr;
 use tacsim::surface::site_record::{KnownItem, KnownWhat};
 
 use crate::driving::{
-    Rig, command, launched, map_frame, on_pad, on_pad_as, run, stocked_tuned, to_cell, warm,
+    Rig, act_go, command, finish, launched, map_frame, on_pad, on_pad_as, run, stocked_tuned,
+    to_cell, warm,
 };
 use crate::field_host::{
     armed, egress, fragile, frame, pump, seat, second, site_record, task, tune, until, weapon_of,
@@ -364,4 +365,71 @@ async fn cf4_one_picture_of_the_site_in_both_layers_and_what_a_party_remembers()
     let never = map_frame(&mut rig, e, json!({ "view": "site" }));
     assert_ne!(site_glyph(&never, (98, 116)), Some('&'));
     assert!(!never["site"]["lines"].to_string().contains("a crate"));
+}
+
+/// **A loud sounding marks the cockpit's presence row as it marks the site map's** (doc 36a lane
+/// 4, P2-3; doc 32 §9: one picture). C's rig sounds loud on Ahuna Flank, out of A's sight. On
+/// the open surface A's `+tv/map` marks C's row "(a sounding)"; inside the field A's cockpit
+/// frame carries the same row, marked the same, on its campaign block.
+#[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+async fn p2_3_the_cockpit_hears_a_loud_sounding_as_the_site_map_does() {
+    let mut rig = stocked_tuned(|cfg| {
+        tune(cfg);
+        cfg.field.disengage_s = 30;
+    });
+    let (a, _, _) = on_pad(&mut rig, 1);
+    let (b, _, _) = on_pad_as(&mut rig, "Other", 2, "Tally Moth", 1);
+    let (c, _, c_tvs) = on_pad_as(&mut rig, "Third", 3, "Lone Moth", 1);
+    launched(&mut rig, c, c_tvs[0]);
+    to_cell(&mut rig, c_tvs[0], (160, 116));
+    let _ = act_go(&mut rig, c, "+tv/1 sound go");
+    let _ = finish(&mut rig, c_tvs[0], c);
+    let hull_a = armed(&mut rig, "Red Hound", (110, 124), 90_000);
+    let hull_b = armed(&mut rig, "Grey Hound", (114, 124), 270_000);
+    seat(&mut rig, hull_a, a);
+    seat(&mut rig, hull_b, b);
+    warm(&mut rig);
+    let mut rx = egress(&mut rig);
+    let mut lines = Vec::new();
+    for _ in 0..3 {
+        let _ = second(&mut rig);
+    }
+    // The open surface: the site map marks C's row.
+    let map = run(&mut rig.tw, a, "+tv/map");
+    assert!(
+        map.contains("E 200-500 m (a sounding)"),
+        "the site map hears C's sounding: {map}"
+    );
+
+    // A's mark opens the field; A's cockpit carries the campaign layer with the same row.
+    let (out, queued) = command(&mut rig, a, "+field/mark E=hostile");
+    assert_eq!(queued.len(), 1, "one promotion: {out}");
+    crate::driving::land(&mut rig, &queued[0]).expect("the promotion lands");
+    assert!(
+        until(&mut rig, &mut rx, &mut lines, 10, |rig, _| task(rig)
+            .is_some())
+        .await,
+        "the field's task opens"
+    );
+    assert!(
+        until(&mut rig, &mut rx, &mut lines, 20, |rig, _| {
+            cockpit(rig, a).get("campaign").is_some()
+        })
+        .await,
+        "A's cockpit frame carries the campaign layer"
+    );
+    let campaign = cockpit(&mut rig, a)["campaign"].clone();
+    let presence = campaign["presence"].as_array().expect("presence rows");
+    assert!(
+        presence
+            .iter()
+            .any(|row| row["dir"] == json!("E") && row["sounding"] == json!(true)),
+        "the cockpit's row of C's rig is heard: {campaign}"
+    );
+    assert!(
+        campaign["presence_line"]
+            .as_str()
+            .is_some_and(|line| line.contains("E 200-500 m (a sounding)")),
+        "{campaign}"
+    );
 }

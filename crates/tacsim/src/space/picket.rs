@@ -139,7 +139,7 @@ fn think(v, c) {
         emcon(true);
         lock(hostile_id);
         for w in v.weapons {
-            if w.ready_in_ms == 0 {
+            if w.ready_in_ms == 0 && w.id == "laser_1" {
                 fire(w.id, 1);
                 break;
             }
@@ -197,10 +197,9 @@ fn think(v, c) {
     let target_range = 0;
     for row in v.contacts {
         if row.relation == "hostile" && row.reads_dead != true {
-            if target_id == () || row.range_m < target_range {
-                target_id = row.id;
-                target_range = row.range_m;
-            }
+            target_id = row.id;
+            target_range = row.range_m;
+            break;
         }
     }
     if target_id == () {
@@ -221,12 +220,50 @@ fn think(v, c) {
     }
     this.stage = 2;
     lock(target_id);
+    trace("RAIDER_PRESS_ATTACK");
+}
+"#;
+
+/// Compiled Rhai doctrine script for a non-Kirkwood **Interdictor Picket** (`SF.R12`, `D-35-1`).
+///
+/// Executed through [`RhaiRunner`] (`MindRunner::think`) on every bubble step:
+/// - If a hostile contact has hove-to (`!row.moving`, $|\Delta \mathbf{v}| < 10\text{ m/s}$),
+///   waves off and stands down (`"INTERDICTOR_STAND_DOWN_CLEARED"`).
+/// - Otherwise locks the hostile contact, closes at speed, and fires ready weapons (`"INTERDICTOR_ENGAGE_HOSTILE"`).
+pub const INTERDICTOR_PATROL_RHAI: &str = r#"
+fn think(v, c) {
+    if !("stage" in this) {
+        this.stage = 0;
+    }
+    let target_id = ();
+    let target_moving = true;
+    for row in v.contacts {
+        if row.relation == "hostile" && row.reads_dead != true {
+            target_id = row.id;
+            target_moving = row.moving;
+            break;
+        }
+    }
+    if target_id == () {
+        hold();
+        return;
+    }
+    if !target_moving {
+        hold();
+        this.stage = 2;
+        trace("INTERDICTOR_STAND_DOWN_CLEARED");
+        return;
+    }
+    this.stage = 1;
+    emcon(true);
+    lock(target_id);
+    speed(1000);
     for w in v.weapons {
         if w.ready_in_ms == 0 {
             fire(w.id, 1);
         }
     }
-    trace("RAIDER_PRESS_ATTACK");
+    trace("INTERDICTOR_ENGAGE_HOSTILE");
 }
 "#;
 
@@ -262,6 +299,8 @@ pub enum PicketInspectionStatus {
     Cleared,
     /// Carrier submitted to inspection with unlicensed `strategic_ore`, paid the Ledger fine, and is cleared.
     ClearedAfterFine,
+    /// Carrier submitted to inspection with unlicensed `strategic_ore` but lacked sufficient credit to pay the fine; contraband was seized and the ship is cleared (`SF.R12`).
+    ClearedAfterSeizure,
     /// Carrier burned past the picket perimeter (`> 35 km`) or ran the picket without clearing inspection.
     RanThePicket,
 }
@@ -283,6 +322,14 @@ pub enum PicketInspectionOutcome {
         fine_minor: i64,
         /// Unlicensed `strategic_ore` quantity in kilograms that triggered the fine.
         unlicensed_strategic_ore_kg: u64,
+        /// Campaign front id (`"Customs Assertion"`) opened or advanced in `mush-faction`.
+        front_id: Option<u64>,
+    },
+    /// Carrier lacked credit to pay the customs fine; the unlicensed `strategic_ore` was seized
+    /// from the hull's hold vault and [`mush_faction::CUSTOMS_ASSERTION_TITLE`] advanced (`SF.R12`).
+    ContrabandSeized {
+        /// Seized `strategic_ore` quantity in kilograms.
+        seized_strategic_ore_kg: u64,
         /// Campaign front id (`"Customs Assertion"`) opened or advanced in `mush-faction`.
         front_id: Option<u64>,
     },
@@ -363,12 +410,14 @@ impl KirkwoodPicketState {
         }
     }
 
-    /// Return whether the customs picket inspection is satisfied (`Cleared` or `ClearedAfterFine`).
+    /// Return whether the customs picket inspection is satisfied (`Cleared`, `ClearedAfterFine`, or `ClearedAfterSeizure`).
     #[must_use]
     pub const fn is_customs_cleared(&self) -> bool {
         matches!(
             self.inspection_status,
-            PicketInspectionStatus::Cleared | PicketInspectionStatus::ClearedAfterFine
+            PicketInspectionStatus::Cleared
+                | PicketInspectionStatus::ClearedAfterFine
+                | PicketInspectionStatus::ClearedAfterSeizure
         )
     }
 }
@@ -556,6 +605,31 @@ fn minimal_space_arena_definition() -> Option<ArenaDefinition> {
     })
 }
 
+static CACHED_RHAI_RUNNERS: std::sync::LazyLock<
+    std::sync::Mutex<BTreeMap<[u8; 32], Arc<RhaiRunner>>>,
+> = std::sync::LazyLock::new(|| std::sync::Mutex::new(BTreeMap::new()));
+
+static CACHED_SPACE_ARENA_DEF: std::sync::LazyLock<Option<Arc<ArenaDefinition>>> =
+    std::sync::LazyLock::new(|| minimal_space_arena_definition().map(Arc::new));
+
+/// Compile or retrieve a cached [`RhaiRunner`] for `source` (`SF.R10`, `35b` §5 #9).
+pub fn cached_space_rhai_runner(source: &str) -> Option<Arc<RhaiRunner>> {
+    use sha2::{Digest as _, Sha256};
+
+    let bytes: [u8; 32] = Sha256::digest(source.as_bytes()).into();
+    if let Ok(guard) = CACHED_RHAI_RUNNERS.lock()
+        && let Some(found) = guard.get(&bytes)
+    {
+        return Some(found.clone());
+    }
+    let cfg = ArenaConfig::default();
+    let runner = Arc::new(RhaiRunner::new(&cfg, source, mush_mind::Digest(bytes)).ok()?);
+    if let Ok(mut guard) = CACHED_RHAI_RUNNERS.lock() {
+        guard.insert(bytes, runner.clone());
+    }
+    Some(runner)
+}
+
 /// Compile and run one Rhai [`MindRunner::think`] step for `ship_id` inside `bubble` (`D-35-1`, `D-35-11`).
 ///
 /// Builds a propagation-gated [`MindView`] (`mush_propagation::resolve_detection`) so the AI mind
@@ -569,12 +643,8 @@ pub fn run_space_rhai_think(
     think_seq: u64,
     memory: &[u8],
 ) -> Option<(ThinkResult, BTreeMap<ContactId, String>)> {
-    use sha2::{Digest as _, Sha256};
-
     let observer = bubble.ships.get(ship_id)?;
-    let cfg = ArenaConfig::default();
-    let digest = mush_mind::Digest(Sha256::digest(source.as_bytes()).into());
-    let runner = RhaiRunner::new(&cfg, source, digest).ok()?;
+    let runner = cached_space_rhai_runner(source)?;
 
     let mut contact_map = BTreeMap::new();
     let mut contacts = Vec::new();
@@ -759,7 +829,7 @@ pub fn run_space_rhai_think(
         key: card.key(),
     };
 
-    let map: Arc<ArenaDefinition> = Arc::new(minimal_space_arena_definition()?);
+    let map: Arc<ArenaDefinition> = CACHED_SPACE_ARENA_DEF.as_ref()?.clone();
     let job = ThinkJob {
         unit: unit_obj,
         think_seq,
@@ -820,8 +890,7 @@ pub fn step_kirkwood_picket(
     // never uncloak before `+helm/submit` has had a chance to inspect while hove-to!).
     let should_uncloak_raider = !picket.raider_ambush_launched
         && (picket.inspection_outcome.is_some()
-            || picket.inspection_status == PicketInspectionStatus::RanThePicket
-            || bubble.wall_elapsed_ms >= 30_000);
+            || picket.inspection_status == PicketInspectionStatus::RanThePicket);
     if should_uncloak_raider
         && let Some(raider) = bubble.ships.get(&picket.raider_ship_id)
         && raider.status == HullStatus::Operational
@@ -869,28 +938,45 @@ pub fn step_kirkwood_picket(
                     } else {
                         EmconPosture::Ghost
                     };
-                    emitted_events.extend(tape.record_and_apply(
-                        bubble,
-                        BubbleInputCommand::SetEmcon {
-                            ship_id: picket.raider_ship_id.clone(),
-                            posture,
-                        },
-                    ));
-                }
-                IntentKind::Lock { contact } => {
-                    if let Some(target_id) = cmap.get(contact) {
-                        locked_ship = target_id.clone();
+                    if bubble
+                        .ships
+                        .get(&picket.raider_ship_id)
+                        .is_some_and(|s| s.emcon != posture)
+                    {
                         emitted_events.extend(tape.record_and_apply(
                             bubble,
-                            BubbleInputCommand::SetLockedTarget {
+                            BubbleInputCommand::SetEmcon {
                                 ship_id: picket.raider_ship_id.clone(),
-                                target_id: Some(target_id.clone()),
+                                posture,
                             },
                         ));
                     }
                 }
+                IntentKind::Lock { contact } => {
+                    if let Some(target_id) = cmap.get(contact) {
+                        locked_ship = target_id.clone();
+                        if bubble
+                            .ships
+                            .get(&picket.raider_ship_id)
+                            .is_some_and(|s| s.locked_target_id.as_deref() != Some(target_id))
+                        {
+                            emitted_events.extend(tape.record_and_apply(
+                                bubble,
+                                BubbleInputCommand::SetLockedTarget {
+                                    ship_id: picket.raider_ship_id.clone(),
+                                    target_id: Some(target_id.clone()),
+                                },
+                            ));
+                        }
+                    }
+                }
                 IntentKind::Speed { cms } => {
-                    if *cms > 0 {
+                    if *cms > 0
+                        && bubble
+                            .ships
+                            .get(&picket.raider_ship_id)
+                            .is_some_and(|s| s.thrust_mps2 != [-15, 0, 0])
+                    {
                         emitted_events.extend(tape.record_and_apply(
                             bubble,
                             BubbleInputCommand::CommandBurn {
@@ -960,6 +1046,19 @@ pub fn step_kirkwood_picket(
             .and_then(|s| s.locked_target_id.clone())
             .unwrap_or_else(|| picket.raider_ship_id.clone());
 
+        if bubble
+            .ships
+            .get(&picket.corvette_ship_id)
+            .is_some_and(|s| s.heat_permille > 600)
+        {
+            emitted_events.extend(tape.record_and_apply(
+                bubble,
+                BubbleInputCommand::BlowdownCoolant {
+                    ship_id: picket.corvette_ship_id.clone(),
+                },
+            ));
+        }
+
         for intent in &res.intents {
             match intent {
                 IntentKind::Emcon { on } => {
@@ -968,40 +1067,67 @@ pub fn step_kirkwood_picket(
                     } else {
                         EmconPosture::Standard
                     };
-                    emitted_events.extend(tape.record_and_apply(
-                        bubble,
-                        BubbleInputCommand::SetEmcon {
-                            ship_id: picket.corvette_ship_id.clone(),
-                            posture,
-                        },
-                    ));
-                }
-                IntentKind::Lock { contact } => {
-                    if let Some(target_id) = cmap.get(contact) {
-                        locked_ship = target_id.clone();
+                    if bubble
+                        .ships
+                        .get(&picket.corvette_ship_id)
+                        .is_some_and(|s| s.emcon != posture)
+                    {
                         emitted_events.extend(tape.record_and_apply(
                             bubble,
-                            BubbleInputCommand::SetLockedTarget {
+                            BubbleInputCommand::SetEmcon {
                                 ship_id: picket.corvette_ship_id.clone(),
-                                target_id: Some(target_id.clone()),
+                                posture,
                             },
                         ));
                     }
                 }
+                IntentKind::Lock { contact } => {
+                    if let Some(target_id) = cmap.get(contact) {
+                        locked_ship = target_id.clone();
+                        if bubble
+                            .ships
+                            .get(&picket.corvette_ship_id)
+                            .is_some_and(|s| s.locked_target_id.as_deref() != Some(target_id))
+                        {
+                            emitted_events.extend(tape.record_and_apply(
+                                bubble,
+                                BubbleInputCommand::SetLockedTarget {
+                                    ship_id: picket.corvette_ship_id.clone(),
+                                    target_id: Some(target_id.clone()),
+                                },
+                            ));
+                        }
+                    }
+                }
                 IntentKind::Goal(MotorGoal::Hold) => {
-                    emitted_events.extend(tape.record_and_apply(
-                        bubble,
-                        BubbleInputCommand::CommandBurn {
-                            ship_id: picket.corvette_ship_id.clone(),
-                            thrust_mps2: [0, 0, 0],
-                            force_into_reserve: false,
-                        },
-                    ));
+                    if bubble
+                        .ships
+                        .get(&picket.corvette_ship_id)
+                        .is_some_and(|s| s.thrust_mps2 != [0, 0, 0])
+                    {
+                        emitted_events.extend(tape.record_and_apply(
+                            bubble,
+                            BubbleInputCommand::CommandBurn {
+                                ship_id: picket.corvette_ship_id.clone(),
+                                thrust_mps2: [0, 0, 0],
+                                force_into_reserve: false,
+                            },
+                        ));
+                    }
                 }
                 IntentKind::Fire { weapon, .. } if weapon.as_str().starts_with("laser") => {
                     emitted_events.extend(tape.record_and_apply(
                         bubble,
                         BubbleInputCommand::FireOffensiveLasers {
+                            shooter_id: picket.corvette_ship_id.clone(),
+                            target_id: locked_ship.clone(),
+                        },
+                    ));
+                }
+                IntentKind::Fire { weapon, .. } if weapon.as_str().starts_with("rail") => {
+                    emitted_events.extend(tape.record_and_apply(
+                        bubble,
+                        BubbleInputCommand::FireRailgun {
                             shooter_id: picket.corvette_ship_id.clone(),
                             target_id: locked_ship.clone(),
                         },
@@ -1198,6 +1324,52 @@ pub fn assess_customs_fine_and_advance_front(
     Ok((contract_id, fine_minor, front_id))
 }
 
+/// Seize unlicensed `strategic_ore` from `hull`'s hold vault when `pilot` cannot pay the customs
+/// fine, and advance [`mush_faction::CUSTOMS_ASSERTION_TITLE`] (`SF.R12`, `35b` §5 #3).
+pub fn seize_contraband_and_advance_front(
+    ctx: &mut Ctx<'_>,
+    pilot: ObjId,
+    hull: ObjId,
+    unlicensed_strategic_ore_kg: u64,
+) -> Option<FrontId> {
+    let seize_t = u32::try_from(unlicensed_strategic_ore_kg.div_ceil(1_000).max(1)).unwrap_or(1);
+    if let Some(view) = crate::port::ship::hull_view(ctx.w, hull)
+        && let Some(hold_vault) = crate::port::ship::hold_vault(ctx.w, &view)
+    {
+        let _ = super::commands::submit_seized_contraband_burn(ctx, hull, hold_vault.0, seize_t);
+    }
+
+    let (registry_org, _, _) = resolve_registry_principal_and_account(ctx.w)?;
+    let saved_actor = ctx.actor;
+    ctx.actor = pilot;
+    let front_id = mush_faction::record_customs_assertion(
+        ctx,
+        registry_org,
+        mush_canon::CanonDraft {
+            kind: "space.customs_seizure".into(),
+            summary: format!(
+                "Republic Customs Corvette seized {} kg unlicensed strategic_ore from hull #{} at the Kirkwood picket in lieu of unpaid fine; {} advances.",
+                unlicensed_strategic_ore_kg,
+                hull.0,
+                mush_faction::CUSTOMS_ASSERTION_TITLE,
+            ),
+            entities: vec![pilot, hull],
+            scope: mush_canon::CanonScope::Public,
+            ic_time: ctx.w.world_ic_now().at,
+            source: format!("space.picket.seize/{}/{}", hull.0, ctx.w.world_ic_now().at),
+            detail: json!({
+                "hull": hull.0,
+                "pilot": pilot.0,
+                "seized_strategic_ore_kg": unlicensed_strategic_ore_kg,
+            }),
+        },
+    )
+    .ok();
+    ctx.actor = saved_actor;
+    ctx.out.pin_deferred();
+    front_id
+}
+
 /// Record a picket-running incident (`RanThePicket`), escalating the Republic Customs Corvette
 /// to [`SpaceRelation::Hostile`] and advancing the [`mush_faction::CUSTOMS_ASSERTION_TITLE`]
 /// campaign front (`D-35-11`, `SF.R6`).
@@ -1234,8 +1406,173 @@ pub fn record_ran_the_picket_incident(
     front_id
 }
 
-/// Populate the Republic Customs Corvette and Belt Raider ships for a Kirkwood Customs Picket
-/// bubble and insert them alongside their 3-party relations into `bubble` (`D-35-11`, `doc 35` §9 Story 1).
+fn configure_corvette_and_raider_ships(corvette: &mut SpaceShipState, raider: &mut SpaceShipState) {
+    corvette.attitude_deg = (180, 0, 0);
+    corvette.pdc_auto = true;
+    corvette.emcon = EmconPosture::ActiveCombat;
+    if let Some(off_laser) = corvette.lasers.first_mut() {
+        off_laser.max_range_m = 160_000;
+        off_laser.base_damage = 180;
+    }
+    if let Some(def_laser) = corvette.lasers.get_mut(1) {
+        def_laser.mode = LaserMode::Defense;
+        def_laser.defense_range_m = 45_000;
+    }
+
+    raider.max_accel_mps2 = 60;
+    raider.delta_v_mps = 9_500;
+    raider.torpedo_tubes = vec![super::weapons::TorpedoTube::standard_twin("torp_bow", 8)];
+    raider.lasers = vec![
+        super::weapons::LaserMount::standard_turret("laser_1"),
+        super::weapons::LaserMount::standard_turret("laser_2"),
+    ];
+    raider.railguns = vec![super::weapons::RailgunMount::standard_spinal(
+        "rail_spinal",
+        24,
+    )];
+    raider.pdcs = vec![
+        super::weapons::PdcMount::standard_rotary("pdc_port", 3_000),
+        super::weapons::PdcMount::standard_rotary("pdc_stbd", 3_000),
+    ];
+    raider.decoys_remaining = 6;
+    raider.attitude_deg = (180, 0, 0);
+    raider.emcon = EmconPosture::Ghost;
+    raider.heat_permille = 0;
+    if let Some(rg) = raider.railguns.first_mut() {
+        rg.max_range_m = 250_000;
+        rg.muzzle_vel_mps = 12_000;
+    }
+    if let Some(tube) = raider.torpedo_tubes.first_mut() {
+        tube.tubes = 2;
+        tube.max_dv_mps = 12_000;
+        tube.accel_mps2 = 250;
+    }
+}
+
+/// Spawn real world `Thing` hulls and checked-out [`mush_tactics::TacticalUnit`]s for the
+/// Republic Customs Corvette (`"tacsim.unit.corvette"`) and Belt Raider (from `raiders.json`),
+/// and insert them alongside their 3-party relations into `bubble` (`SF.R12`, `D-35-1`, `D-35-11`).
+pub fn spawn_kirkwood_picket_ships_in_world(
+    ctx: &mut Ctx<'_>,
+    bubble: &mut LocalSpaceBubble,
+    domain: mush_sim::DomainId,
+    leg_cursor: u32,
+    _carrier_ship_id: &str,
+) -> Option<KirkwoodPicketState> {
+    let site_id = format!("domain.{}", domain.0);
+    let corvette_ship_id = format!("customs.{}.{}", domain.0, leg_cursor);
+    let raider_ship_id = format!("raider.{}.{}", domain.0, leg_cursor);
+
+    let corvette_hull = ctx
+        .w
+        .create(
+            mush_core::ObjKind::Thing,
+            "Republic Customs Corvette",
+            mush_core::GOD,
+            None,
+        )
+        .ok()?;
+    super::custody::create_stock_space_unit_in_world(
+        ctx,
+        corvette_hull,
+        crate::definitions::content::CORVETTE,
+    )
+    .ok()?;
+    let mut corvette = super::custody::check_out_space_unit(
+        ctx,
+        corvette_hull,
+        &site_id,
+        leg_cursor,
+        &corvette_ship_id,
+        "Republic Customs Corvette",
+        CUSTOMS_CORVETTE_PARTY,
+        [-CORVETTE_STANDOFF_M, 400, 0],
+        [10_000, 0, 0],
+    )
+    .ok()?;
+
+    let raider_defs = crate::field::raiders::raiders().ok()?;
+    let raider_def = raider_defs.first()?;
+    let leader = crate::field::raiders::hulls_of(ctx.w, raider_def.id.as_str())
+        .into_iter()
+        .find_map(|h| crate::field::raiders::leader_of(ctx.w, h))
+        .or_else(|| {
+            let l = ctx
+                .w
+                .create(
+                    mush_core::ObjKind::Npc,
+                    &raider_def.leader,
+                    mush_core::GOD,
+                    None,
+                )
+                .ok()?;
+            if ctx.w.module_state::<mush_faction::FactionState>().is_some() {
+                let _ = mush_faction::register_content_faction(ctx, &raider_def.organization, l);
+            }
+            Some(l)
+        })?;
+
+    let raider_hull = ctx
+        .w
+        .create(mush_core::ObjKind::Thing, "Belt Raider", leader, None)
+        .ok()?;
+    super::custody::create_stock_space_unit_in_world(
+        ctx,
+        raider_hull,
+        raider_def.carrier.unit.as_str(),
+    )
+    .ok()?;
+    let _ = ctx.w.set_attr(
+        raider_hull,
+        crate::field::raiders::RAIDER_ATTR,
+        mush_core::Attr::json(
+            serde_json::json!({
+                "raider": raider_def.id.as_str(),
+                "leader": leader.0,
+            }),
+            mush_core::GOD,
+        ),
+    );
+    let mut raider = super::custody::check_out_space_unit(
+        ctx,
+        raider_hull,
+        &site_id,
+        leg_cursor,
+        &raider_ship_id,
+        "Belt Raider",
+        BELT_RAIDER_PARTY,
+        [RAIDER_AMBUSH_RANGE_M, 0, 0],
+        [-20_000, 0, 0],
+    )
+    .ok()?;
+
+    configure_corvette_and_raider_ships(&mut corvette, &mut raider);
+
+    bubble.set_party_relation(
+        CARRIER_PARTY,
+        CUSTOMS_CORVETTE_PARTY,
+        SpaceRelation::Inspecting,
+    );
+    bubble.set_party_relation(CARRIER_PARTY, BELT_RAIDER_PARTY, SpaceRelation::Hostile);
+    bubble.set_party_relation(
+        CUSTOMS_CORVETTE_PARTY,
+        BELT_RAIDER_PARTY,
+        SpaceRelation::Hostile,
+    );
+
+    bubble.insert_ship(corvette);
+    bubble.insert_ship(raider);
+
+    Some(KirkwoodPicketState::new(
+        corvette_hull,
+        corvette_ship_id,
+        raider_hull,
+        raider_ship_id,
+    ))
+}
+
+/// Populate the Republic Customs Corvette and Belt Raider ships for unit tests without a `World`.
+#[cfg(test)]
 #[must_use]
 pub fn build_kirkwood_picket_ships(
     bubble: &mut LocalSpaceBubble,
@@ -1263,14 +1600,6 @@ pub fn build_kirkwood_picket_ships(
         [-CORVETTE_STANDOFF_M, 400, 0],
         [10_000, 0, 0],
     );
-    corvette.attitude_deg = (180, 0, 0);
-    corvette.pdc_auto = true;
-    corvette.emcon = EmconPosture::ActiveCombat;
-    if let Some(def_laser) = corvette.lasers.get_mut(1) {
-        def_laser.mode = LaserMode::Defense;
-        def_laser.defense_range_m = 45_000;
-    }
-
     let mut raider = SpaceShipState::new_corvette(
         &raider_ship_id,
         "Belt Raider",
@@ -1278,18 +1607,7 @@ pub fn build_kirkwood_picket_ships(
         [RAIDER_AMBUSH_RANGE_M, 0, 0],
         [-20_000, 0, 0],
     );
-    raider.attitude_deg = (180, 0, 0);
-    raider.emcon = EmconPosture::Ghost;
-    raider.heat_permille = 0;
-    if let Some(rg) = raider.railguns.first_mut() {
-        rg.max_range_m = 250_000;
-        rg.muzzle_vel_mps = 12_000;
-    }
-    if let Some(tube) = raider.torpedo_tubes.first_mut() {
-        tube.tubes = 2;
-        tube.max_dv_mps = 12_000;
-        tube.accel_mps2 = 250;
-    }
+    configure_corvette_and_raider_ships(&mut corvette, &mut raider);
 
     bubble.set_party_relation(
         CARRIER_PARTY,

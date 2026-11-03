@@ -1342,6 +1342,9 @@ impl GameModule for TacsimRuleset {
         // Doc 32 cut CF.2 (Q-CF-33): every field the boot found, resumed — or held while the
         // W-clock is frozen, until the world's clock resumes.
         field::boot::phase(ctx);
+        // Doc 35 cut SF.R10 (`35b` §5 #6): re-assert custody marks for any active space bubbles
+        // after `field::boot::phase` so mid-bubble restarts retain unit custody on close.
+        space::reacquire_custody_after_boot(ctx);
         match_::selection_refs::reconcile(ctx);
         let ejected = match_::cockpit::eject_all_at_boot(ctx);
         if !ejected.is_empty() {

@@ -25,6 +25,8 @@ mod support;
 #[path = "support/vertex.rs"]
 mod vertex;
 
+#[path = "shard_1/bay_36a.rs"]
+mod bay_36a;
 #[path = "shard_1/bay_gc8.rs"]
 mod bay_gc8;
 #[path = "shard_1/coop.rs"]
@@ -79,6 +81,8 @@ mod perception;
 mod price;
 #[path = "shard_1/replay.rs"]
 mod replay;
+#[path = "shard_1/review_36a.rs"]
+mod review_36a;
 #[path = "shard_1/s9_corridor.rs"]
 mod s9_corridor;
 #[path = "shard_1/sale.rs"]

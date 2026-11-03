@@ -23,10 +23,13 @@
 //! - **Cargo pickup** (Q-36-19, FO-4). `+tv/<n> pickup [n] [go]` takes a crate lying within a cell
 //!   of the rig: the crate leaves the site's record and its manifest moves from the site's spoil
 //!   into the rig's hopper by the inventory's own transfer, in one bundle. No goods are made: a
-//!   crate whose goods the spoil does not hold is refused, and nothing moves. On open ground
-//!   anyone may. On owned ground anyone still can, physically; the pickup is lawful for the
-//!   landholder and for the crate's own hull's holder, and the outcome records it unlawful for
-//!   anyone else (evidence for GC.6, never an omniscient prohibition).
+//!   crate whose goods the spoil does not hold is refused, and nothing moves. Doc 36a P2-2: a
+//!   crate the hopper has no room for is refused at the command (the mining plan's
+//!   merged-compartment rule) and again at the prepare, which re-sums the hopper's pools; the
+//!   command says the pickup is queued, never done. On open ground anyone may. On owned ground
+//!   anyone still can, physically; the pickup is lawful for the landholder and for the crate's
+//!   own hull's holder, and the outcome records it unlawful for anyone else, naming the
+//!   landholder (evidence for GC.6, never an omniscient prohibition).
 
 use std::collections::BTreeMap;
 
@@ -51,8 +54,12 @@ pub const SCAN_FOUND: &str = "Rig {n}'s scan also marks what lies on the ground 
 /// The pickup's preview: `{n}`, `{what}`.
 pub const PICKUP_PREVIEW: &str =
     "Rig {n} can take {what} aboard into its hopper. +tv/{n} pickup go";
-/// The pickup done: `{n}`, `{what}`.
-pub const PICKED_UP: &str = "Rig {n} takes {what} aboard into its hopper.";
+/// The pickup queued (doc 36a P2-2: the goods move when the act lands, never at the command):
+/// `{n}`, `{what}`.
+pub const PICKED_UP: &str = "Rig {n} will take {what} aboard into its hopper: queued.";
+/// The hopper has no room for the crate (doc 36a P2-2): `{n}`, `{what}`, `{free}`, `{kg}`.
+pub const NO_ROOM: &str =
+    "Rig {n}'s hopper has no room for {what}: {free} kg free, and the crate is {kg} kg.";
 /// Nothing to pick up: `{n}`.
 pub const NO_CRATE: &str = "No crate lies within a cell of rig {n}.";
 /// The named crate is not in reach: `{n}`, `{id}`.
@@ -272,6 +279,93 @@ pub struct PickupFacts {
     pub hopper: u64,
     /// Whether the pickup is lawful under FO-4.
     pub lawful: bool,
+    /// **The hopper's limits** (doc 36a P2-2), measure → limit, every compartment merged: what
+    /// the prepare's re-check holds the hopper to.
+    #[serde(default, skip_serializing_if = "BTreeMap::is_empty")]
+    pub limits: BTreeMap<CanonicalId, u64>,
+    /// **The hopper's goods' figures** (doc 36a P2-2): each good the hopper accepts (the
+    /// manifest's among them), measure → per unit, so the prepare can re-sum the hopper's pools
+    /// without the goods table.
+    #[serde(default, skip_serializing_if = "BTreeMap::is_empty")]
+    pub figures: BTreeMap<CanonicalId, BTreeMap<CanonicalId, u64>>,
+    /// **Whose ground the crate lay on** (doc 36a P2-2; Q-36-30): the landholder the evidence
+    /// log names when the pickup is unlawful.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub landholder: Option<ObjId>,
+}
+
+/// The hopper's limits and its goods' figures, as [`hopper_room`] fixes them for the prepare.
+type HopperFigures = (
+    BTreeMap<CanonicalId, u64>,
+    BTreeMap<CanonicalId, BTreeMap<CanonicalId, u64>>,
+);
+
+/// **The hopper's room against a crate** (doc 36a P2-2; the mining plan's merged-compartment
+/// rule, `crate::surface::act::commands`): the rig's compartments merged into one, the hopper's
+/// pools summed per measure, the crate's manifest added. `Ok((limits, figures))` when it fits;
+/// `Err((free_kg, crate_kg))` when a measure would overrun, with the mass figures for the line;
+/// `None` when the rig's unit or the goods table cannot be read (the command refuses as
+/// [`NO_HOPPER`]).
+fn hopper_room(
+    ctx: &Ctx<'_>,
+    tv: ObjId,
+    manifest: &BTreeMap<CanonicalId, u64>,
+) -> Option<Result<HopperFigures, (u64, u64)>> {
+    use crate::port::capacity;
+    let pool_unit = crate::port::tv::pool_unit(ctx.w);
+    let goods = ctx
+        .w
+        .module_state::<crate::store::TacsimStore>()
+        .and_then(crate::store::TacsimStore::goods)?;
+    let comps = crate::port::tv::hopper_compartments(ctx.w, tv, pool_unit.as_ref())?;
+    let mut merged = capacity::Compartment {
+        id: CanonicalId::new("hopper").ok()?,
+        accepts: std::collections::BTreeSet::new(),
+        limits: BTreeMap::new(),
+    };
+    for comp in comps {
+        merged.accepts.extend(comp.accepts);
+        for (measure, limit) in comp.limits {
+            let slot = merged.limits.entry(measure).or_insert(0);
+            *slot = slot.saturating_add(limit);
+        }
+    }
+    let contents =
+        crate::port::tv::hopper_contents_with(ctx.w, tv, pool_unit.as_ref(), &|endpoint, good| {
+            crate::port_tick::read_pool(ctx, endpoint, good)
+        })
+        .ok()?;
+    let held = capacity::load(goods, &merged, &contents).ok()?;
+    let adds = capacity::load(goods, &merged, manifest).ok()?;
+    let mass = CanonicalId::new(crate::definitions::logistics::MASS_KG).ok()?;
+    let over = merged.limits.iter().any(|(measure, limit)| {
+        held.get(measure)
+            .copied()
+            .unwrap_or(0)
+            .saturating_add(adds.get(measure).copied().unwrap_or(0))
+            > *limit
+    });
+    if over {
+        let free = merged
+            .limits
+            .get(&mass)
+            .copied()
+            .unwrap_or(0)
+            .saturating_sub(held.get(&mass).copied().unwrap_or(0));
+        return Some(Err((free, adds.get(&mass).copied().unwrap_or(0))));
+    }
+    let (accepted, _) = crate::port::tv::hopper_goods_of(ctx.w, tv)?;
+    let mut figures = BTreeMap::new();
+    for good in accepted.iter().chain(manifest.keys()) {
+        let def = goods.good(good)?;
+        let per: BTreeMap<CanonicalId, u64> = merged
+            .limits
+            .keys()
+            .filter_map(|measure| def.per_unit(measure).map(|per| (measure.clone(), per)))
+            .collect();
+        figures.insert(good.clone(), per);
+    }
+    Some(Ok((merged.limits, figures)))
 }
 
 /// **Whether `actor` may lawfully take what lies at `cell` on `site`** (FO-4): open ground, or
@@ -381,6 +475,20 @@ pub(crate) fn pickup_cmd(
         return Err(CmdError::msg(CRATE_EMPTY.replace("{n}", &n)));
     }
     let what = crate_words(manifest);
+    // Doc 36a P2-2: the hopper's room, at the command and again at the prepare.
+    let (limits, figures) = match hopper_room(ctx, rig.tv, manifest) {
+        None => return Err(CmdError::msg(NO_HOPPER.replace("{n}", &n))),
+        Some(Err((free, kg))) => {
+            return Err(CmdError::msg(
+                NO_ROOM
+                    .replace("{n}", &n)
+                    .replace("{what}", &what)
+                    .replace("{free}", &free.to_string())
+                    .replace("{kg}", &kg.to_string()),
+            ));
+        }
+        Some(Ok(room)) => room,
+    };
     if !go {
         ctx.out.sys_to_actor(
             ctx.actor,
@@ -389,13 +497,20 @@ pub(crate) fn pickup_cmd(
         );
         return Ok(());
     }
+    let cell = found.pose.cell();
     let facts = PickupFacts {
-        lawful: lawful(ctx, &site, found.pose.cell(), *from),
+        lawful: lawful(ctx, &site, cell, *from),
+        landholder: match crate::surface::claim::tenure_at(ctx, &site, cell) {
+            mush_tactics::field_ops::GroundTenure::Owned { landholder, .. } => Some(landholder),
+            mush_tactics::field_ops::GroundTenure::Unclaimed => None,
+        },
         site,
         object: found.id,
         manifest: manifest.clone(),
         spoil: spoil.0,
         hopper: hopper.0,
+        limits,
+        figures,
     };
     let actor = ctx.actor;
     if !crate::surface::tow::submit(

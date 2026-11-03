@@ -24,6 +24,16 @@ pub const DOCKING_FPS: i64 = 60;
 /// ($3{,}600\text{ frames} = 60\text{ s}$ at $60\text{ Hz}$, `D-35-14`).
 pub const MAX_DOCKING_TAPE_FRAMES: usize = 3_600;
 
+/// Maximum wall-clock duration (`60 s`) a [`DockingSession`] may remain open before
+/// [`super::tick::space_tick`] automatically aborts it, debits RCS propellant, and unpauses the hull (`SF.R9`).
+pub const DOCKING_SESSION_TIMEOUT_WALL_S: i64 = 60;
+
+/// Maximum 3D range (`500 m`) at which `+helm/dock` may initiate a [`DockingSession`] (`SF.R9`).
+pub const MAX_DOCKING_INIT_RANGE_M: i64 = 500;
+
+/// Maximum 3D relative speed (`15,000 mm/s = 15.0 m/s`) at which `+helm/dock` may initiate a [`DockingSession`] (`SF.R9`).
+pub const MAX_DOCKING_INIT_REL_SPEED_MMPS: i64 = 15_000;
+
 /// Maximum forward range ($500\text{ mm}$) at which the docking clamp can engage (`D-35-14`).
 pub const DOCK_GATE_RANGE_Z_MM: i64 = 500;
 
@@ -354,6 +364,9 @@ pub struct DockingSession {
     pub paused_from_world_tick: bool,
     /// World IC timestamp (`s`) when the session was opened.
     pub started_ic_s: i64,
+    /// Real wall-clock timestamp (`s`, from `World::now()`) when the session was opened (`SF.R9`).
+    #[serde(default)]
+    pub started_wall_s: i64,
 }
 
 /// One run-length encoded span of identical 60 Hz [`DockingControlInput`] frames (`D-35-14`).

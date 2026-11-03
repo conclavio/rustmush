@@ -793,6 +793,23 @@ pub const TV_ESCORT: &str = "tacsim.unit.tv_escort";
 pub const EXTENSIONS_ESCORT: [(&str, &str); 1] =
     [("tacsim/content/units/tv_escort.json", TV_ESCORT_JSON)];
 
+/// `crates/tacsim/content/units/corvette.json` (doc 35b cut SF.R12).
+pub const CORVETTE_JSON: &str = include_str!("../../content/units/corvette.json");
+
+/// The corvette's pack id.
+pub const CORVETTE_PACK: &str = "tacsim.pack.corvette";
+
+/// **The customs patrol corvette** (doc 35b cut SF.R12): an armed capital hull
+/// (`hull`, `hold`, `drive`) checked out through custody for Kirkwood picket
+/// corvettes and non-picket interdiction cutters, class `capital`, so never
+/// fielded in a ground arena.
+pub const CORVETTE: &str = "tacsim.unit.corvette";
+
+/// **The customs patrol corvette, one unit schema and no row of its own** (doc 35b cut SF.R12),
+/// fielded **last**, after every earlier table, so none moves.
+pub const EXTENSIONS_CORVETTE: [(&str, &str); 1] =
+    [("tacsim/content/units/corvette.json", CORVETTE_JSON)];
+
 /// `crates/tacsim/content/units/dray_p.json` (doc 20 cut SM.3a).
 pub const DRAY_P_JSON: &str = include_str!("../../content/units/dray_p.json");
 
@@ -1115,6 +1132,7 @@ pub fn fielded_sources() -> Vec<PackSource> {
         EXTENSIONS_WINTER_VALLEY.as_slice(),
         EXTENSIONS_MARS_CANYON.as_slice(),
         EXTENSIONS_ESCORT.as_slice(),
+        EXTENSIONS_CORVETTE.as_slice(),
     ] {
         out.extend(table.iter().map(|(name, bytes)| PackSource {
             name: format!("<built-in {name}>"),

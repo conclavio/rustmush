@@ -558,6 +558,28 @@ pub struct ActiveClusterMiningSession {
     pub last_ic_s: i64,
 }
 
+impl ActiveClusterMiningSession {
+    /// Construct a fresh [`ActiveClusterMiningSession`] for `hull` arriving at `cluster` (`SF.R9`, `D-35-5`).
+    #[must_use]
+    pub fn new(hull: ObjId, cluster: OrbitalClusterId, now_ic: i64) -> Self {
+        Self {
+            hull,
+            cluster,
+            ship_pos_m: [3_800, 0, 0],
+            ship_vel_mmps: [12_000, 0, 0],
+            approaching_rock: None,
+            matched_rock: None,
+            pings: BTreeMap::new(),
+            active_laser: None,
+            active_drones: Vec::new(),
+            drone_things: BTreeMap::new(),
+            frontier_bloom_heat: 0,
+            claim_jump_flagged: false,
+            last_ic_s: now_ic,
+        }
+    }
+}
+
 /// Server-authenticated ore transfer queued for `tacsim_site_work` when a laser cycle or
 /// collector-drone sortie finishes on `space_tick`.
 #[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize)]
@@ -658,6 +680,7 @@ pub fn build_updated_pocket_cursor(
 pub fn ensure_cluster_laid_up(
     ctx: &mut Ctx<'_>,
     cluster: OrbitalClusterId,
+    fallback_room: ObjId,
 ) -> Result<ClusterSiteState, String> {
     if let Some(existing) = ctx
         .w
@@ -671,7 +694,7 @@ pub fn ensure_cluster_laid_up(
         .w
         .get(ctx.actor)
         .and_then(|obj| obj.location)
-        .unwrap_or(ObjId(0));
+        .unwrap_or(fallback_room);
     let cluster_cid = cluster
         .canonical_id()
         .ok_or_else(|| "invalid cluster canonical id".to_owned())?;
@@ -753,30 +776,6 @@ pub fn ensure_cluster_laid_up(
     };
     if let Some(book) = ctx.w.module_state_mut::<super::tick::SpaceBubbleBook>() {
         book.cluster_sites.insert(cluster, state.clone());
-    }
-
-    // Immediately submit `DepositOpen` for each `(letter, family)` via its dedicated opener clerk.
-    if let Some(open_action) =
-        mush_industry::action_ref(ctx.reg, mush_industry::IndustryVerb::DepositOpen)
-    {
-        let mut fire = crate::port_tick::Fire::new(BTreeMap::new());
-        for (&(letter, family), &dep_clerk) in &state.deposit_clerks {
-            let rec = receipt(&cluster_cid, letter, family);
-            if let Ok(key) = mush_core::IdempotencyKeyText::parse_canonical(format!(
-                "{}{rec}",
-                crate::port::site::SITE_OPEN_KEY_PREFIX
-            )) {
-                let _ = fire.as_principal(ctx, dep_clerk, dep_clerk, |ctx| {
-                    ctx.submit_authoritative(
-                        open_action.clone(),
-                        mush_core::PerceivedRef::SelfActor,
-                        Vec::new(),
-                        json!({ "receipt": rec }),
-                        key,
-                    );
-                });
-            }
-        }
     }
 
     Ok(state)
@@ -1257,10 +1256,11 @@ pub fn step_clusters_on_tick(ctx: &mut Ctx<'_>, now: ClockStamp) {
         let dt_ic_s = now.at.saturating_sub(session_snapshot.last_ic_s).max(1);
         let mut next_pos = session_snapshot.ship_pos_m;
         let mut next_vel = session_snapshot.ship_vel_mmps;
-        let mut burn_dv_mps: u64 = 0;
+        let mut reached_approach_standoff = false;
 
-        // If approaching a rock (`+helm/approach <rock>`), close to 600 m standoff and brake
-        // relative velocity to `< 2,000 mm/s` (`2.0 m/s`, well inside the `< 5.0 m/s` gate).
+        // If approaching a rock (`+helm/approach <rock>`), fly toward the 600 m standoff point
+        // at 1,200 m per tick step (requiring multiple ticks to cross from 3,800 m into the 2,000 m
+        // velocity-match envelope, `SF.R9` §8) and brake relative velocity to `< 2,000 mm/s`.
         if let Some(letter) = session_snapshot.approaching_rock
             && let Some(spec) = session_snapshot
                 .cluster
@@ -1270,12 +1270,25 @@ pub fn step_clusters_on_tick(ctx: &mut Ctx<'_>, now: ClockStamp) {
         {
             let target_pos = [spec.pos_m[0] - 600, spec.pos_m[1], spec.pos_m[2]];
             let target_vel = spec.vel_mmps;
-            let dvx = (next_vel[0] - target_vel[0]).abs();
-            let dvy = (next_vel[1] - target_vel[1]).abs();
-            let dvz = (next_vel[2] - target_vel[2]).abs();
-            burn_dv_mps = ((dvx + dvy + dvz) as u64).div_ceil(1_000).max(2);
-            next_pos = target_pos;
-            next_vel = [target_vel[0] + 1_200, target_vel[1], target_vel[2]];
+            let dx = i128::from(target_pos[0]) - i128::from(next_pos[0]);
+            let dy = i128::from(target_pos[1]) - i128::from(next_pos[1]);
+            let dz = i128::from(target_pos[2]) - i128::from(next_pos[2]);
+            let dist_m = super::weapons::isqrt_i128(dx * dx + dy * dy + dz * dz) as i64;
+            let step_m = 1_900_i64;
+            if dist_m <= step_m {
+                next_pos = target_pos;
+                next_vel = [target_vel[0] + 1_200, target_vel[1], target_vel[2]];
+                reached_approach_standoff = true;
+                let _ = super::commands::debit_hull_propellant_for_dv(ctx, hull, 2, true);
+            } else {
+                let d = i128::from(dist_m.max(1));
+                next_pos = [
+                    next_pos[0] + ((dx * i128::from(step_m)) / d) as i64,
+                    next_pos[1] + ((dy * i128::from(step_m)) / d) as i64,
+                    next_pos[2] + ((dz * i128::from(step_m)) / d) as i64,
+                ];
+                next_vel = [target_vel[0] + 8_000, target_vel[1], target_vel[2]];
+            }
         } else if let Some(letter) = session_snapshot.matched_rock
             && let Some(spec) = session_snapshot
                 .cluster
@@ -1289,10 +1302,6 @@ pub fn step_clusters_on_tick(ctx: &mut Ctx<'_>, now: ClockStamp) {
                 let dpos = (i128::from(next_vel[axis]) * i128::from(dt_ic_s.min(10))) / 1_000;
                 next_pos[axis] = next_pos[axis].saturating_add(dpos as i64);
             }
-        }
-
-        if burn_dv_mps > 0 {
-            let _ = super::commands::debit_hull_propellant_for_dv(ctx, hull, burn_dv_mps, true);
         }
 
         let hold_used_t = hull_hold_used_tonnes(ctx, hull);
@@ -1445,7 +1454,7 @@ pub fn step_clusters_on_tick(ctx: &mut Ctx<'_>, now: ClockStamp) {
         {
             session.ship_pos_m = next_pos;
             session.ship_vel_mmps = next_vel;
-            if session.approaching_rock.is_some() {
+            if reached_approach_standoff {
                 session.approaching_rock = None;
             }
             session.active_laser = remaining_laser;
@@ -1582,15 +1591,9 @@ pub fn step_clusters_on_tick(ctx: &mut Ctx<'_>, now: ClockStamp) {
         if !landed_receipts.is_empty()
             && let Some(book) = ctx.w.module_state_mut::<super::tick::SpaceBubbleBook>()
         {
-            let mut idx = 0;
-            while idx < book.pending_space_mine_draws.len() {
-                if landed_receipts.contains(&book.pending_space_mine_draws[idx].receipt) {
-                    let finished = book.pending_space_mine_draws.remove(idx);
-                    book.completed_space_mine_draws.push(finished);
-                } else {
-                    idx += 1;
-                }
-            }
+            book.pending_space_mine_draws
+                .retain(|d| !landed_receipts.contains(&d.receipt));
+            book.completed_space_mine_draws.clear();
         }
         if ctx.authoritative_pending(clerk) {
             continue;

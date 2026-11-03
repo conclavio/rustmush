@@ -578,6 +578,17 @@ pub(crate) fn enrich_cockpit(
         .unwrap_or_default();
     let own: BTreeSet<ObjId> = [frame.unit].into_iter().collect();
     let observers = [(0_u8, from)];
+    let now = w.world_ic_now().at;
+    // Doc 36a lane 4 (P2-3; doc 32 §9, one picture): a loud sounding inside the IC hour made on
+    // this site marks the flight's row "(a sounding)" here as `site.map` marks it.
+    let heard: BTreeSet<ObjId> = flights
+        .iter()
+        .filter(|flight| {
+            let record = reads.rig(flight.tv).ok().flatten();
+            super::loud_sounding(record.as_ref(), &entry, now)
+        })
+        .map(|flight| flight.tv)
+        .collect();
     let layer = campaign_layer(
         w,
         reads,
@@ -589,12 +600,12 @@ pub(crate) fn enrich_cockpit(
             observers: &observers,
             flights: &flights,
             own: &own,
-            heard: &BTreeSet::new(),
+            heard: &heard,
             eyes: Eyes::Field {
                 from,
                 sensed: sensed.clone(),
             },
-            now: w.world_ic_now().at,
+            now,
         },
     );
     let name = crate::surface::act::site_name(w, &entry);
