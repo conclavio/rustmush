@@ -62,4 +62,4 @@ Built against doc 40 Draft 0.4 (§4.2, §5.2 and the FR.1 row of §6), one PR.
   landed, so the story carries its own two-row table (cells from `field_gc10` and `field_story`).
   `driving_rig::en_route_at` is the one support addition (`en_route` for any site).
 - **Shard** (doc 43 rule #3): shard_2, the cell with the room (11 summed minutes in doc 43 §10).
-- **Summed-minutes delta** (rule #14): MINUTES_PENDING.
+- **Summed-minutes delta** (rule #14): **+2.9 min** on `tacsim-integration-2` (the two stories 84.8 s + 86.5 s on the PR run 41730885044 JUnit); the cell now sums 23.0 min (shard_2 14.2 + cost_lane), its wall 17 m 0 s, under the twenty-minute line.
