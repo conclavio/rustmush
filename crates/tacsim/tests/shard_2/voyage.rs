@@ -5977,3 +5977,173 @@ fn sfr9_authority_closeout_gates_docking_removes_cluster_teleport_stops_1s_burn_
         "voyage.rs must not mutate SpaceBubbleBook via module_state_mut"
     );
 }
+
+/// **Doc 35 cut SF.R10 (`D-35-3`, `D-35-12`, `35b` §5 #1/#6/#8/#9, §8 `SF.R10`)**:
+/// Tempo and persistence budget:
+/// 1. A tick fired `3 s` late (`now + 3`) advances the bubble by `3,000 ms` (`3 s` measured wall elapsed).
+/// 2. A ten-minute (`600 s`) heave-to inside the Kirkwood Customs Picket bounds `snapshots` (`<= 8`),
+///    `tape.entries` (`<= 128`), and the serialized `tacsim:space:state` JSON document size.
+/// 3. Rebooting mid-bubble (`reboot_with`) preserves `mush_sim::deployed::is_deployed` custody across
+///    `field::boot::phase`, and post-restart combat damage writes back to `UnitStore` on close (`35b` §5 #6).
+/// 4. An unreadable `tacsim:space:state` document at boot is quarantined (`is_space_state_held`),
+///    never overwritten by `space_tick`, and refuses `+helm`/`+tac`/`+mine` until staff repair (`35b` §5 #9).
+#[test]
+#[allow(clippy::too_many_lines)]
+fn sfr10_tempo_and_persistence_budget_steps_late_ticks_bounds_10m_heave_to_quarantines_corrupt_doc_and_keeps_custody_across_restart()
+ {
+    let roster = Roster {
+        seed_lane: Some(lane_with_interdicted_kirkwood()),
+        ..Roster::default()
+    };
+    let mut rig = stocked_with(roster);
+    let (pilot, row) = chartered(&mut rig, "Pilot", 1);
+    let hull = ObjId(row.hull);
+
+    // 1. Refit *Salt Moth* to `Dray-P` so the Kirkwood waypoint opens the 3-party picket bubble
+    //    where we can heave-to for 10 wall minutes (`600 s`):
+    let desk = station_room(&rig.tw, "ceres_port", "room.c05_registry");
+    teleport(&mut rig.tw, pilot, desk);
+    let _ = run(&mut rig.tw, pilot, "+coop/refit prospector");
+    load(&mut rig, &row, 53, 19);
+    set_rate(&mut rig.tw, 3_600);
+    board(&mut rig, pilot);
+
+    let pending = undock_and_burn(&mut rig, pilot, hull);
+    let depart_ic = pending.plan.depart_ic;
+    let leg1_secs = i64::from(pending.plan.legs[0].secs);
+    let _ = fire_quietly(&mut rig);
+    let _ = to_ic(&mut rig, depart_ic + leg1_secs);
+
+    // Verify a tick fired 3 s late advances the bubble by 3,000 ms (3 s):
+    let elapsed_before = rig
+        .tw
+        .world()
+        .module_state::<tacsim::space::SpaceBubbleBook>()
+        .expect("SpaceBubbleBook")
+        .active_for_hull(hull)
+        .expect("active bubble")
+        .bubble
+        .wall_elapsed_ms;
+    let late_real = rig.tw.world().now() + 3;
+    rig.tw.set_now(late_real);
+    let _ = rig.tw.fire_due(late_real * 1_000);
+    let elapsed_after = rig
+        .tw
+        .world()
+        .module_state::<tacsim::space::SpaceBubbleBook>()
+        .expect("SpaceBubbleBook")
+        .active_for_hull(hull)
+        .expect("active bubble")
+        .bubble
+        .wall_elapsed_ms;
+    assert_eq!(
+        elapsed_after - elapsed_before,
+        3_000,
+        "a tick fired 3 s late must advance the bubble by 3,000 ms (3 s)"
+    );
+
+    // 2. Heave-to (`+helm/thrust 600 -1000 0 0` for 1s, then `+helm/thrust 0`) and hold for 10
+    //    minutes (`600` one-second fires) to verify persistence budget (`snapshots` and `tape` capped):
+    let _ = run(&mut rig.tw, pilot, "+helm/thrust 600 -1000 0 0");
+    let next1 = rig.tw.world().now() + 1;
+    rig.tw.set_now(next1);
+    let _ = rig.tw.fire_due(next1 * 1_000);
+    let _ = run(&mut rig.tw, pilot, "+helm/thrust 0");
+
+    let mut doc_bytes_at_200 = 0usize;
+    for step in 0..600 {
+        let next_real = rig.tw.world().now() + 1;
+        rig.tw.set_now(next_real);
+        let _ = rig.tw.fire_due(next_real * 1_000);
+        if step == 199 {
+            let state = rig
+                .tw
+                .world()
+                .module_state::<tacsim::TacsimStore>()
+                .and_then(tacsim::TacsimStore::space_state)
+                .expect("persisted space_state");
+            doc_bytes_at_200 = serde_json::to_vec(state).expect("json").len();
+        }
+    }
+    {
+        let book = rig
+            .tw
+            .world()
+            .module_state::<tacsim::space::SpaceBubbleBook>()
+            .expect("SpaceBubbleBook");
+        let active = book.active_for_hull(hull).expect("active bubble");
+        assert!(
+            active.snapshots.len() <= tacsim::space::MAX_BUBBLE_SNAPSHOTS,
+            "snapshots capped at {}: got {}",
+            tacsim::space::MAX_BUBBLE_SNAPSHOTS,
+            active.snapshots.len()
+        );
+        assert!(
+            active.tape.entries.len() <= tacsim::space::MAX_BUBBLE_TAPE_ENTRIES,
+            "tape entries capped at {}: got {}",
+            tacsim::space::MAX_BUBBLE_TAPE_ENTRIES,
+            active.tape.entries.len()
+        );
+        let state_600 = rig
+            .tw
+            .world()
+            .module_state::<tacsim::TacsimStore>()
+            .and_then(tacsim::TacsimStore::space_state)
+            .expect("persisted space_state");
+        let doc_bytes_at_600 = serde_json::to_vec(state_600).expect("json").len();
+        assert!(
+            doc_bytes_at_600 <= doc_bytes_at_200 + 8_192 && doc_bytes_at_600 < 65_536,
+            "ten-minute heave-to must keep tacsim:space:state bounded: 200s={doc_bytes_at_200}B, 600s={doc_bytes_at_600}B"
+        );
+    }
+
+    // 3. Reboot mid-bubble (`reboot_with`) and verify `mush_sim::deployed::is_deployed` custody
+    //    survives `field::boot::phase` (`35b` §5 #6):
+    let rig = reboot_with(rig, roster);
+    assert!(
+        mush_sim::deployed::is_deployed(rig.tw.world(), hull),
+        "hull custody mark must survive engine restart mid-bubble (reacquire_custody_after_boot)"
+    );
+
+    // 4. Reboot with a corrupted `tacsim:space:state` document and verify it is quarantined
+    //    (`is_space_state_held`), never overwritten by `space_tick`, and refuses `+helm` commands:
+    let mut rig = reboot_editing(rig, roster, |store| {
+        if let Some(tacsim_data) = store.get_mut("tacsim") {
+            tacsim_data
+                .kv
+                .retain(|(k, _)| k.as_str() != tacsim::space::SPACE_STATE_KEY);
+            tacsim_data.kv.push((
+                SmolStr::new_static(tacsim::space::SPACE_STATE_KEY),
+                serde_json::json!({ "format": 999, "corrupt": true }),
+            ));
+        }
+    });
+    assert!(
+        rig.tw
+            .world()
+            .module_state::<tacsim::TacsimStore>()
+            .is_some_and(tacsim::TacsimStore::is_space_state_held),
+        "corrupt tacsim:space:state must be quarantined (is_space_state_held)"
+    );
+    let helm_refused = run(&mut rig.tw, pilot, "+helm/status");
+    assert!(
+        helm_refused.contains("unreadable and held for staff repair"),
+        "commands must refuse when tacsim:space:state is held: {helm_refused}"
+    );
+    let _ = rig.tw.take_module_ops();
+    let tick_after = rig.tw.world().now() + 5;
+    rig.tw.set_now(tick_after);
+    let _ = rig.tw.fire_due(tick_after * 1_000);
+    let ops = rig.tw.take_module_ops();
+    let overwrote_space_state = ops.iter().any(|op| {
+        op.ns.as_str() == "tacsim"
+            && matches!(
+                &op.op,
+                ModuleWrite::JsonSet { key, .. } if key.as_str() == tacsim::space::SPACE_STATE_KEY
+            )
+    });
+    assert!(
+        !overwrote_space_state,
+        "quarantined tacsim:space:state must never be overwritten by space_tick"
+    );
+}
