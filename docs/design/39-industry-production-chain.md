@@ -1,14 +1,18 @@
 # 39. Industry — the production chain and unit construction, surveyed
 
-Draft 0.1, 2026-11-03, docs only. Surveyed against `origin/main` at `6f9dff29` (PR #344, the ten
+Draft 0.2, 2026-11-03, docs only. Surveyed against `origin/main` at `6f9dff29` (PR #344, the ten
 tacsim shards) with [doc 38](38-after-the-ic-phase-next-systems.md) Draft 0.2 (PR #345, `0c7fd224`)
 stacked under it: every anchor doc 38 §4 A cites was re-read at this tree, and the line numbers
 below are this tree's where they moved (the matter pin is in `shard_9` now, not `shard_3`). This is
 the document doc 38 §6 proposed as "Doc 39 — Industry: the production chain and unit construction",
 economy-owned, and doc 38 §8's list of what it had to settle is this document's table of contents.
+Draft 0.1, the same day, was the survey. **Draft 0.2 records the owner's rulings of 2026-11-03 on
+every question: every default accepted as written** ("all q-39s accepted at their defaults"). No
+question was amended, so each stands with its proposed text as the ruling, and §6's cut list is now
+the implementation order.
 
 The form is doc 38's: a survey that asks the owner numbered questions, each with a proposed default,
-an alternative and a reason; a later draft carries the rulings and the cut list becomes a plan.
+an alternative and a reason; this draft carries the rulings and the cut list is the plan.
 "Provisional" marks a number to be tuned later under the 2026-10-24 rule (take a reasonable default,
 tune later, never hold a build on it). **(expensive to reverse)** keeps doc 38 Q-38-10's meaning: an
 answer that would take a significant refactor of the codebase to undo — not stored data and not a
@@ -28,7 +32,7 @@ What is left to decide is what doc 38 §8 named: the catalogue rows, the station
 recipes, the facility cost model's inputs, the scrap ceiling's mechanism — and the pieces the brief
 added beside them: the part lot's stores and bill, the mass budget as one rule, the yard's delivery,
 and the cut list. Each gets a section in §4 with what exists, what is missing and the questions it
-raises; §5 is the owner survey (Q-39-1..24); §6 the provisional cuts IN.0–IN.10.
+raises; §5 is the owner survey (Q-39-1..24, all ruled at the defaults); §6 the plan, cuts IN.0–IN.10.
 
 ## 2. What binds this survey, and what it leaves alone
 
@@ -563,8 +567,10 @@ and Urvara (512) and the port half once; the bot gains `+yard`, `+market/sell` o
 
 ## 5. Owner survey
 
-Each question carries a proposed default, an alternative and a reason. The owner may accept the
-defaults as a body; §7 says what Draft 0.2 then needs.
+**Ruled 2026-11-03.** The owner accepted every default as written ("all q-39s accepted at their
+defaults"); nothing was amended, so no question carries a decision line of its own and the proposed
+text of each is its ruling. Each question keeps its proposed default, alternative and reason for the
+record; §6 is the plan built from them.
 
 ### 5.1 The catalogue
 
@@ -796,32 +802,38 @@ defaults as a body; §7 says what Draft 0.2 then needs.
 - **Why:** the org exists with the word in its name and 50,000 of capital to be raised like Occator's;
   Ceres is where the rigs and the claims are.
 
-## 6. A provisional cut list
+## 6. The plan: cuts IN.0–IN.10
 
-Each cut lands as one PR over E7's engine, tested through the production command paths with its
-story at both ground sizes where the ground is in it (Q-38-29). Dependencies: IN.1 ∥ IN.2 ∥ IN.3
-from day one; IN.4 after IN.3; IN.5 after IN.1 and IN.2; IN.7 after IN.1 and IN.2; IN.6 after IN.4
-and IN.5; IN.8 after IN.2 and IN.5; IN.9 after IN.8; IN.10 last.
+The rulings of 2026-11-03 make this the implementation order. Each cut lands as one PR over E7's
+engine, built from the rulings its row names and tested through the production command paths, with
+its story at both ground sizes where the ground is in it (Q-38-29); each cut's note goes to
+`39-cut-notes.md` as the GC and SF trains did. **Dependencies:** IN.1 ∥ IN.2 ∥ IN.3 may start now;
+IN.4 after IN.3; IN.5 after IN.1 and IN.2; IN.7 after IN.1 and IN.2; IN.6 after IN.4 and IN.5; IN.8
+after IN.2 and IN.5; IN.9 after IN.8; IN.10 last. Two cuts carry the expensive-to-reverse marker
+(IN.1's part identity, Q-39-3; IN.8's delivery target, Q-39-18) and are built exactly as ruled. Doc
+41 may start once IN.1, IN.2 and IN.5 have landed (the lot shapes, the fees and the stores it needs).
 
-| Cut | What | Acceptance (the story) |
-|---|---|---|
-| **IN.0** | this document, its README row, Draft 0.2 with the rulings | — |
-| **IN.1** the catalogue | goods v5: the part rows keyed by hardware row (Q-39-3), masses, references; lane v20's ladder (Q-39-1); `ShippedParts::commodity` and the fit check on the row; `hold_takes` counts parts; the census pin on `.mint_origins(` and the receipt-kind pin | `+bay/strip` a cannon off an escort at Stickney: `+market/list` shows the lot with 2.4 t; the hold's load line moves; a heavy's `+bay/fit` takes it; the pins pass |
-| **IN.2** the cost model | `FacilityCostDef` on the port rows, the daily and slot-day rates on the facility's policy half, `+bay` quotes printing the floor, the multiplier clamped at it, the Tycho row | `+bay <hull>` at Ceres and Stickney prints the quote and the floor; an operator multiplier under the floor is refused by the validator |
-| **IN.3** the refine | `MillDef.kind: refine`, the family rule relaxed for it, Kasei's row (5:4, 20 t, 40 t a day), the seed as opening stock, the bid's refresh from the row's consumption | concentrate sold into Kasei's bid at Stickney is refined on the next fires and Kasei's alloy ask restocks by the milled units; the matter pin and the mill's drift check hold |
-| **IN.4** the works | `works` rows at Stickney (the Yards) and Ceres (Freeport Works, the new org); `content/industry/recipes-v1.json` loaded by the deploy template; the `fittings` recipe; the NPC house arm running house orders on the port tick under the capital clause; the Stickney carbon-ore bid | carbon ore mined on Kerwan and sold at the Exchange is hauled to Stickney and sold; the Yards' fittings ask restocks from a delivered house order; a player's `@wo` at the Ceres works does the same from the hold |
-| **IN.5** the part lot | `Replace{lot: Store}` from the operator's storefront at the catalogue price, `NO_PART`, the seeded part rows with receipts, `PartProvenance.origin`, `+bay/fit` on every origin | GC.8's refit run pays 480 of labour and 28,000 for the cannon; the seventh replace at Ceres refuses `NO_PART`; the lot's provenance reads `Seeded` |
-| **IN.6** the part recipes | the mount, sight, pod and plant recipes at the works; outputs at grade 9 with `Manufactured` provenance; the Stickney strategic-ore bid; instrument boards from Luna | 2 t of strategic ore, 1 t of boards and 3 t of fittings become ten `visual_mk1` lots at Stickney; one is fitted to a scout by `+bay/fit`; the seeds retire |
-| **IN.7** the mass budget | per-design `structure_kg_per_point` and `fittings_kg_per_point`; repair draws both; the three constants retire; scrap as §4.6 at a workshop (the operator's stock, the credit, the fee) and on a site (the capped yield, the room check) | a whole escort scrapped at Stickney credits ~1,300 cr and 2.9 t to the Yards' pool with its four parts in the hold; a Dray credits 10,500 after the fee and 79 t to the pool; a Dray's remains on Urvara (512) and an escort's on Ahuna (256) yield 40 t and 2.9 t into the hold, the full hold refusing |
-| **IN.8** the yard | the `yard` row at Stickney; `DeliveryTarget::Hull`; `tacsim.hull_provenance`; the bill from the design (σ, φ, days, parts, core); `+yard`, `/quote`, `/order`, `/cancel`; the hull laid up and titled | a captain with the money and a hold of alloys, fittings and four part lots orders an escort at Stickney; two IC days later it stands in `p11_service` titled to them with a fresh mark; `+bay` quotes it clean; `+bay/stow` puts it in the Dray-P's bay; the bot types it |
-| **IN.9** the pools | the Trust's and Occator's floors and house orders; `NO_HULL` names the order | eight charters leave no free Dray; the ninth captain hears the due day; fourteen IC days later a ninth Dray stands in Ceres' gallery under the Trust's title and the desk enrols them |
-| **IN.10** the matter story and the bot | one story at 256 and 512: mine → sell → mill → refine → works → part → fit, and ore → alloys → hull, with Σ mined = Σ (pools + lots + bills + losses) asserted; the bot's `+yard`, `+market/sell` and `+bay/order replace` vocabulary | the story passes at both sizes with the bot typing the player's half; the sum holds to the tonne |
+| Cut | Rulings | What | Acceptance (the story) |
+|---|---|---|---|
+| **IN.0** | — | this document, its README row, Draft 0.2 with the rulings (**done**, PR #347) | — |
+| **IN.1** the catalogue | Q-39-1, Q-39-2, Q-39-3, Q-39-8 | goods v5: the part rows keyed by hardware row, masses, references; lane v20's ladder; `ShippedParts::commodity` and the fit check on the row; `hold_takes` counts parts; the census pin on `.mint_origins(` and the receipt-kind pin | `+bay/strip` a cannon off an escort at Stickney: `+market/list` shows the lot with 2.4 t; the hold's load line moves; a heavy's `+bay/fit` takes it; the pins pass |
+| **IN.2** the cost model | Q-39-9, Q-39-10, Q-39-24 | `FacilityCostDef` on the port rows, the daily and slot-day rates on the facility's policy half, `+bay` quotes printing the floor, the multiplier clamped at it, the Tycho Mutual row | `+bay <hull>` at Ceres and Stickney prints the quote and the floor; an operator multiplier under the floor is refused by the validator |
+| **IN.3** the refine | Q-39-4, Q-39-5, Q-39-6, Q-39-8 | the `refinery` row at Kasei; `MillDef.kind: refine`, the family rule relaxed for it, Kasei's row (5:4, 20 t, 40 t a day), the seed as opening stock, the bid's refresh from the row's consumption | concentrate sold into Kasei's bid at Stickney is refined on the next fires and Kasei's alloy ask restocks by the milled units; the matter pin and the mill's drift check hold |
+| **IN.4** the works | Q-39-4, Q-39-5, Q-39-6, Q-39-7, Q-39-23 | `works` rows at Stickney (the Yards) and Ceres (Freeport Works, the new org); `content/industry/recipes-v1.json` loaded by the deploy template; the `fittings` recipe; the NPC house arm running house orders on the port tick under the capital clause; the Stickney carbon-ore bid | carbon ore mined on Kerwan and sold at the Exchange is hauled to Stickney and sold; the Yards' fittings ask restocks from a delivered house order; a player's `@wo` at the Ceres works does the same from the hold |
+| **IN.5** the part lot | Q-39-11, Q-39-12, Q-39-13 | `Replace{lot: Store}` from the operator's storefront at the catalogue price, `NO_PART`, the seeded part rows with receipts, `PartProvenance.origin`, `+bay/fit` on every origin | GC.8's refit run pays 480 of labour and 28,000 for the cannon; the seventh replace at Ceres refuses `NO_PART`; the lot's provenance reads `Seeded` |
+| **IN.6** the part recipes | Q-39-4, Q-39-22 | the mount, sight, pod and plant recipes at the works; outputs at grade 9 with `Manufactured` provenance; the Stickney strategic-ore bid; instrument boards from Luna | 2 t of strategic ore, 1 t of boards and 3 t of fittings become ten `visual_mk1` lots at Stickney; one is fitted to a scout by `+bay/fit`; the seeds retire |
+| **IN.7** the mass budget | Q-39-15, Q-39-16, Q-39-17 | per-design `structure_kg_per_point` and `fittings_kg_per_point`; repair draws both; the three constants retire; scrap as §4.6 at a workshop (the operator's stock, the credit, the fee) and on a site (the capped yield, the room check) | a whole escort scrapped at Stickney credits ~1,300 cr and 2.9 t to the Yards' pool with its four parts in the hold; a Dray credits 10,500 after the fee and 79 t to the pool; a Dray's remains on Urvara (512) and an escort's on Ahuna (256) yield 40 t and 2.9 t into the hold, the full hold refusing |
+| **IN.8** the yard | Q-39-14, Q-39-17, Q-39-18, Q-39-19, Q-39-20 | the `yard` row at Stickney; `DeliveryTarget::Hull`; `tacsim.hull_provenance`; the bill from the design (σ, φ, days, parts, core); `+yard`, `/quote`, `/order`, `/cancel`; the hull laid up and titled; capital hulls refused | a captain with the money and a hold of alloys, fittings and four part lots orders an escort at Stickney; two IC days later it stands in `p11_service` titled to them with a fresh mark; `+bay` quotes it clean; `+bay/stow` puts it in the Dray-P's bay; the bot types it |
+| **IN.9** the pools | Q-39-7, Q-39-21 | the Trust's and Occator's floors and house orders; `NO_HULL` names the order | eight charters leave no free Dray; the ninth captain hears the due day; fourteen IC days later a ninth Dray stands in Ceres' gallery under the Trust's title and the desk enrols them |
+| **IN.10** the matter story and the bot | Q-39-8, Q-38-29 | one story at 256 and 512: mine → sell → mill → refine → works → part → fit, and ore → alloys → hull, with Σ mined = Σ (pools + lots + bills + losses) asserted; the bot's `+yard`, `+market/sell` and `+bay/order replace` vocabulary | the story passes at both sizes with the bot typing the player's half; the sum holds to the tonne |
 
-## 7. What Draft 0.2 needs
+## 7. What the first cuts need
 
-The rulings on Q-39-1..24, then: lane v20's rows (the ladder, the part stock, the three
-facility rows and their `FacilityCostDef`s, the Freeport Works org, the Stickney bids), the goods v5
-rows, `content/industry/recipes-v1.json`, the new rooms in Stickney's and Ceres' atlas entries, and
-the `tacsim.hull_provenance` schema; the test lists the pins become (`shard_9/mill.rs:2508`'s
-successor, the receipt-kind pin); and, for doc 41, the lot shapes (§4.5), the facility fees (§4.4)
-and Tycho Mutual's row (Q-39-24) as the inputs doc 38 §8 promised it.
+Content and schema the cuts author as they land, listed once so no two cuts invent them twice:
+lane v20's rows (the ladder, the part stock, the three facility rows and their `FacilityCostDef`s,
+the Freeport Works org, the Stickney bids; IN.1–IN.4), the goods v5 rows (IN.1),
+`content/industry/recipes-v1.json` and its path in the deploy template (IN.4), the new rooms in
+Stickney's and Ceres' atlas entries (IN.3, IN.4, IN.8), the `tacsim.hull_provenance` schema (IN.8),
+the test list the pins become (`shard_9/mill.rs:2508`'s successor and the receipt-kind pin, IN.1);
+and, for doc 41, the lot shapes (§4.5), the facility fees (§4.4) and Tycho Mutual's row (Q-39-24)
+as the inputs doc 38 §8 promised it, available once IN.1, IN.2 and IN.5 have landed.
