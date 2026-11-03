@@ -180,6 +180,8 @@ Direct `tacsim::space::` calls from the stories: `solve_docking_tape` ×8, `solv
 
 ## 8. Doc corrections owed (do these first)
 
+*(Closed by PR #362 across items #1–#7 below.)*
+
 1. Rewrite 35-cut-notes §SF.R9–SF.R16 from the PR bodies and this review: the real scope, the real test name, the real SHA, and a Divergences line per cut. Delete the five dead SHAs and the "#346" claim.
 2. Doc 35 Draft 0.5: §3 drops `raider_heavy.json` and names what exists; `D-35-3` states today's `last_stepped_wall_s` (persisted, whole seconds, 1–10 s clamp, fixed 1 s cadence) as the state and the measured-elapsed-with-cap as the target; `D-35-5` says every Promoted journey pauses; `D-35-12` says one key `tacsim:space:state` today and the per-entity split as `SF.R21`'s target; `D-35-14` names `DOCKING_SESSION_TIMEOUT_WALL_S`, the free re-initiation, and the three kinematics copies; §10.2's disposition column is 35b §6 verbatim; §10.3 is §7 above.
 3. README rows for doc 35 and 35-cut-notes: "SF.R9–SF.R16 landed; reviewed in 35c; not seam-complete".
