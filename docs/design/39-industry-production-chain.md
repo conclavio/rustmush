@@ -1,8 +1,8 @@
 # 39. Industry — the production chain and unit construction, surveyed
 
-Draft 0.4, 2026-11-03, docs only. Surveyed against `origin/main` at `6f9dff29` (PR #344, the ten
+Draft 0.5, 2026-11-03, docs only. Surveyed against `origin/main` at `6f9dff29` (PR #344, the ten
 tacsim shards) with [doc 38](38-after-the-ic-phase-next-systems.md) Draft 0.2 (PR #345, merged)
-and re-verified at `c83c2eff` (SF.R15 merged): every anchor doc 38 §4 A cites was re-read, and the
+and re-verified at `c83c2eff` (SF.R15 merged) and `f146734e`: every anchor doc 38 §4 A cites was re-read, and the
 line numbers below are the current tree's where they moved (the matter pin is in `shard_9` now,
 not `shard_3`). This is the document doc 38 §6 proposed as "Doc 39 — Industry: the production chain
 and unit construction", economy-owned, and doc 38 §8's list of what it had to settle is this
@@ -19,7 +19,15 @@ consumers and the first player production story is IN.5. **Draft 0.4 records the
 the salvageable parts, which come back at a used value less their removal; a hull with a good plant
 is sold, not scrapped), **Q-39-26 amended** (an opened bale's unused kilograms are raw material and
 are bought back at the reference, never through the fifth), **every other default accepted as
-written**. §4.6 and §4.10 carry the amendments; every question is now ruled.
+written**. §4.6 and §4.10 carry the amendments; every question is now ruled. **Draft 0.5 folds the
+round-2 outside review of Draft 0.4** (§8.3: six items and one cross-document contract, every claim
+confirmed, none refuted): the assembly loss on the input side of the bill (§4.8, every figure
+redone), part provenance written by a durable commission and never by an observer (§4.11), the
+owned-hull register's two missing readers and the organization's path to the helm (§4.13), the
+facility's shop bale for returned kilograms and the five-term conservation rule (§4.10), a Running
+cancel returning the whole bill (§4.12), the bot's four-digit addresses as IN.5's dependency (§6),
+and the material and provenance contract with doc 41 (§7). No ruling changes; Q-39-27, Q-39-29 and
+Q-39-33 carry a note on the mechanism.
 
 The form is doc 38's: a survey that asks the owner numbered questions, each with a proposed default,
 an alternative and a reason; this draft carries the rulings on Q-39-1..36 and the cut list is the
@@ -1354,7 +1362,9 @@ for the record. §6 is the plan built from all of them.
   register row, berth row); the `tacsim.owned_hulls` register read by the view, helm, berth and
   free-hull paths after the programme rows and never by the applier; `+bay/stow <hull>=<carrier>`;
   a `title_view` for owned rigs so board, launch, tow and sortie work and the buyout and refit
-  refusals exempt them; `armour_cab` and `walker_cab` templates for the tanks and bipeds.
+  refusals exempt them; `armour_cab` and `walker_cab` templates for the tanks and bipeds. *(Draft
+  0.5, round 2's 39-5: the register's readers include `carrier_of_bay` and `world_hulls`, and an
+  org-titled hull reaches the helm through the officer's `acts_for`; §4.13 as it now reads.)*
 - **Alternative:** Q-39-18 as ruled (`DeliveryTarget::Hull`), with mush-industry given a world at
   delivery (a change to the kernel's prepare contract) and the simulator units given templates by
   hand.
@@ -1519,3 +1529,21 @@ its own room. `checked_consume` ignores the deadline (8.1 row 2.2.3), so an over
 sweep's business, which the escrow rule in §4.12 makes explicit. And `class: part` goods must be
 refused by the pool verbs outright, or every lifecycle rule in §4.11 has a hole the size of
 `@inv/dissolve`.
+
+### 8.3 Round 2: the review of Draft 0.4 (`2a8bcfb7`), verified at `f146734e`
+
+Two reviewers, merged; every claim re-verified by an independent read-only lane and again here.
+Both say Drafts 0.3 and 0.4 resolved the earlier seventeen cleanly and that "material identity,
+long orders and usable hulls are now addressed; what is left is the accounting rules and the
+handoffs between the five plans". Nothing refuted.
+
+| # | Claim | Verdict | What decides it | Draft 0.5 |
+|---|---|---|---|---|
+| 39-1 | the assembly loss sat inside the dry mass, so the Dray's bill (30 + 153 + 51 = 234 t) made a 240 t hull and declared 8 t of waste — 14 t created | **CONFIRMED** (arithmetic) | Draft 0.4's §4.8 subtracted `loss_kg` before the split; the validator's "a bill whose partition exceeds the dry mass" would have refused the corrected bill | §4.8: the hull is parts + core + structure + fittings and the loss is waste on top, split by the structure share; the Dray is 163 + 55 t in for 240 + 8 out, ≈ 160,800 cr; the escort's lines unchanged; per-point 86.5 / 28.8 and 0.86 / 0.29 kg; §4.4, §4.6, §4.7, §4.10, §4.12, Q-39-28 and IN.8 redone |
+| 39-2 | returned bale kilograms had nowhere to go: a pool is whole ledger units | **CONFIRMED** | `pool.rs:309` (a `BoundedScalar` of tonnes); goods `:39–40`, `:52–53` | §4.10: the facility's shop bale, a kilogram accumulator that mints a tonne per 1,000 kg; the five-term conservation rule; a workshop scrap's fraction to the shop bale, a site's a loss |
+| 39-3 | a `Manufactured` row written by an observer after the commit can be missed, leaving a paid-for part unfittable | **CONFIRMED** | industry's observers "must not persist" (`mush-industry/src/store.rs:1089–1091`); the completion ring evicts (`families.rs:1137–1172`, `provider.rs:3805–3812`); the bay refuses an untraced lot (`act.rs:719–722`) | §4.11: the part commission consumes the industry lot by its lineage and mints the one-unit lots with their rows in one bundle as an `OwedAct` under the bay ledger's replay (`act.rs:14–21`, the foundry's pull `relay_foundry.rs:385–400`); the refit's removed part the same; unfittable until the row exists |
+| 39-4 | "the unconsumed materials" on a Running cancel reads as partial consumption | **CONFIRMED** | submit reserves every line (`provider.rs:3460`), only delivery consumes (`:3727–3745`), cancel releases every `Held` reservation whole (`:3852–3871`) | §4.12, Q-39-29, IN.3: the whole bill returns; the booking fee and the elapsed slot-hours are forfeit |
+| 39-5 | `helm_of` matches `Object(pilot)` only while an organization may be the beneficiary; `carrier_of_bay` and `world_hulls` scan programme rows only, so a yard-built carrier is invisible to the bay and to a tow | **CONFIRMED** | `titled_to` (`coop.rs:585`) compares one principal; `carrier_of_bay` (`bay_work/mod.rs:176–187`) walks `port_maps()`; `world_hulls` (`surface/recovery.rs:262–274`) programme and yard rows; `carriers_at` (`tow.rs:806`) | §4.13: both scans read the register; the helm and the title view accept an organization the pilot `acts_for`; IN.9's story uses a yard-built Dray-P and an officer's helm |
+| 39-6 | IN.5 runs the bot on Urvara with a three-digit parser | **CONFIRMED** | `is_addr` (`mush-bot/src/mine/lines.rs:343–353`) | §6: the four-digit addresses named as IN.5's dependency (doc 40 FR.0 / doc 41 RS.0), carried by IN.1 when neither has landed |
+| 39-7 | doc 41 must draw repair materials by doc 39's bale rule, alloys and fittings | taken | — | §7 names §4.8 and §4.10 as doc 41's source |
+| X-2 | one material and provenance contract across docs 39 and 41 | taken | — | §7's contract paragraph: the bale on both sides, kilogram custody on the ground, provenance in the lot's bundle, the register's readers, one cross-plan story |
