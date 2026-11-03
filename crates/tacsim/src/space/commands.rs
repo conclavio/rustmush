@@ -4548,6 +4548,11 @@ fn helm_tow(ctx: &mut Ctx<'_>) -> Result<(), CmdError> {
         }
     }
 
+    let already_towed = ctx
+        .w
+        .module_state::<SpaceBubbleBook>()
+        .and_then(|b| b.active_tows.get(&hull))
+        .is_some_and(|t| t.derelict_hull == clamped_derelict);
     let tow_record = super::docking::SalvageTowRecord {
         tug_hull: hull,
         derelict_hull: clamped_derelict,
@@ -4561,6 +4566,13 @@ fn helm_tow(ctx: &mut Ctx<'_>) -> Result<(), CmdError> {
             active.set_approaching_derelict_for(hull, false);
             active.set_holding_for_salvage_for(hull, false);
         }
+    }
+    if !already_towed {
+        let _ = super::picket::settle_salvage_recovery_payout_from_registry(
+            ctx,
+            ctx.actor,
+            clamped_derelict,
+        );
     }
 
     let line = format!(

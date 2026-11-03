@@ -2563,8 +2563,13 @@ fn build_interdiction_bubble(
     let carrier_ship_id = format!("hull.{}", hull.0);
     let site_id = format!("domain.{}", domain.0);
 
-    let carrier_ship = build_carrier_ship_state(ctx, hull, &site_id, leg_cursor, &carrier_ship_id)?;
+    let mut carrier_ship =
+        build_carrier_ship_state(ctx, hull, &site_id, leg_cursor, &carrier_ship_id)?;
     let open_kirkwood = super::picket::should_open_kirkwood_picket(ctx.w, hull, domain);
+    if !open_kirkwood {
+        // Flip-and-burn braking attitude as the carrier decelerates into the waypoint (`D-35-1`).
+        carrier_ship.attitude_deg = (180, 0, 0);
+    }
 
     let bubble_id = format!("bubble.interdiction.{}.{}", domain.0, leg_cursor);
     let mut bubble = LocalSpaceBubble::new(
@@ -2637,7 +2642,7 @@ fn build_interdiction_bubble(
             [-20_000, 0, 0],
         )
         .ok()?;
-        interdictor_ship.attitude_deg = (180, 0, 0);
+        interdictor_ship.attitude_deg = (0, 0, 0);
         interdictor_ship.emcon = super::bubble::EmconPosture::Ghost;
         interdictor_ship.heat_permille = 0;
         interdictor_ship.thrust_mps2 = [0, 0, 0];

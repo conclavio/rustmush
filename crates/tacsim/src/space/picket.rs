@@ -1603,6 +1603,10 @@ pub fn record_ran_the_picket_incident(
 }
 
 fn configure_corvette_and_raider_ships(corvette: &mut SpaceShipState, raider: &mut SpaceShipState) {
+    super::custody::apply_space_unit_overlay(
+        corvette,
+        &super::custody::space_unit_overlay_for_id("tacsim.unit.corvette"),
+    );
     corvette.attitude_deg = (180, 0, 0);
     corvette.pdc_auto = true;
     corvette.emcon = EmconPosture::ActiveCombat;
@@ -1615,22 +1619,12 @@ fn configure_corvette_and_raider_ships(corvette: &mut SpaceShipState, raider: &m
         def_laser.defense_range_m = 45_000;
     }
 
+    super::custody::apply_space_unit_overlay(
+        raider,
+        &super::custody::space_unit_overlay_for_id("tacsim.unit.raider_heavy"),
+    );
     raider.max_accel_mps2 = 60;
     raider.delta_v_mps = 9_500;
-    raider.torpedo_tubes = vec![super::weapons::TorpedoTube::standard_twin("torp_bow", 8)];
-    raider.lasers = vec![
-        super::weapons::LaserMount::standard_turret("laser_1"),
-        super::weapons::LaserMount::standard_turret("laser_2"),
-    ];
-    raider.railguns = vec![super::weapons::RailgunMount::standard_spinal(
-        "rail_spinal",
-        24,
-    )];
-    raider.pdcs = vec![
-        super::weapons::PdcMount::standard_rotary("pdc_port", 3_000),
-        super::weapons::PdcMount::standard_rotary("pdc_stbd", 3_000),
-    ];
-    raider.decoys_remaining = 6;
     raider.attitude_deg = (180, 0, 0);
     raider.emcon = EmconPosture::Ghost;
     raider.heat_permille = 0;
@@ -1643,6 +1637,116 @@ fn configure_corvette_and_raider_ships(corvette: &mut SpaceShipState, raider: &m
         tube.max_dv_mps = 12_000;
         tube.accel_mps2 = 250;
     }
+}
+
+/// Standard Freeport Registry derelict salvage recovery bounty (`1,200 cr`, `SF.R15`).
+pub const SALVAGE_RECOVERY_BOUNTY_MAJOR: i64 = 1_200;
+
+/// Contract name for the Freeport Registry derelict salvage recovery payout (`SF.R15`).
+pub const SALVAGE_RECOVERY_CONTRACT_NAME: &str = "Freeport Registry Derelict Salvage Bounty";
+
+/// Settle the Freeport Registry derelict salvage recovery payout (`1,200.00 cr`) from
+/// `freeport_registry`'s account into `pilot`'s credit account via a real `mush-economy`
+/// Public E4 contract (`SF.R15`, `D-35-12`, `D-35-14`).
+///
+/// # Errors
+///
+/// Returns an error string if the Registry or pilot lacks a live credit account or if
+/// contract activation fails.
+pub fn settle_salvage_recovery_payout_from_registry(
+    ctx: &mut Ctx<'_>,
+    pilot: ObjId,
+    _derelict_hull: ObjId,
+) -> Result<(ContractId, i64), String> {
+    let bounty_minor = minor_of(
+        u64::try_from(SALVAGE_RECOVERY_BOUNTY_MAJOR).unwrap_or(1_200),
+        credit_scale(ctx.w),
+    )
+    .ok_or_else(|| "salvage bounty overflows credit scale".to_owned())?;
+    let credit = crate::port::credit::own_account(ctx.w, pilot)
+        .ok_or_else(|| "pilot holds no credit account for salvage payout".to_owned())?;
+    let pilot_account = credit.id;
+    let (_, registry_principal, registry_account) =
+        resolve_registry_principal_and_account(ctx.w)
+            .ok_or_else(|| "Freeport Registry account unavailable".to_owned())?;
+
+    let now = ctx.w.now();
+    let deadline = EconomicDeadline {
+        clock: EconomicClock::RealUtc,
+        at: now.saturating_add(LICENCE_SETTLE_WINDOW_SECS),
+    };
+    let me = PrincipalId::Object(pilot);
+    let bounty = Amount::from_minor(bounty_minor);
+    let spec = ContractSpec {
+        name: SmolStr::new_static(SALVAGE_RECOVERY_CONTRACT_NAME),
+        scope: None,
+        parties: vec![registry_principal.clone()],
+        considerations: vec![ConsiderationSpec {
+            account: registry_account,
+            amount: bounty,
+        }],
+        outcomes: vec![OutcomeTerms {
+            name: SmolStr::new_static("recovered"),
+            when: vec![0],
+            payouts: vec![PayoutShare {
+                to: pilot_account,
+                share: Share::Exact(bounty),
+            }],
+            expense_treatment: mush_economy::ExpenseTreatment::None,
+            asset_consequences: Vec::new(),
+        }],
+        remainder_to: registry_account,
+        conditions: vec![TypedCondition::Before { deadline }],
+        adjudicator: None,
+        evidence: vec![EvidenceKind::Before],
+        deadline: Some(deadline),
+        on_expiry: Expiry::Forfeit {
+            to: registry_account,
+        },
+        visibility: EconomicVisibility::Public,
+        roles: ContractRoles {
+            author: Some(me),
+            payer: Some(registry_principal.clone()),
+            representative: None,
+            facilitator: None,
+        },
+        deterministic: true,
+        deliverables: Vec::new(),
+    };
+
+    let saved_actor = ctx.actor;
+    ctx.actor = pilot;
+    let contract_id = match mush_economy::offer_contract(ctx, spec) {
+        Ok(id) => id,
+        Err(e) => {
+            ctx.actor = saved_actor;
+            return Err(format!("salvage payout contract offer failed: {e}"));
+        }
+    };
+    if !matches!(
+        mush_economy::accept_contract(ctx, contract_id),
+        Ok(AcceptOutcome::Accepted { .. })
+    ) {
+        let _ = mush_economy::cancel_contract(ctx, contract_id);
+        ctx.actor = saved_actor;
+        ctx.out.pin_deferred();
+        return Err("pilot salvage contract acceptance failed".to_owned());
+    }
+    if !matches!(
+        mush_economy::accept_contract_as(ctx, contract_id, &registry_principal),
+        Ok(AcceptOutcome::Accepted {
+            activated: true,
+            ..
+        })
+    ) {
+        let _ = mush_economy::cancel_contract(ctx, contract_id);
+        ctx.actor = saved_actor;
+        ctx.out.pin_deferred();
+        return Err("Registry salvage escrow acceptance failed".to_owned());
+    }
+    ctx.actor = saved_actor;
+    ctx.out.pin_deferred();
+    Ok((contract_id, bounty_minor))
 }
 
 /// Spawn real world `Thing` hulls and checked-out [`mush_tactics::TacticalUnit`]s for the

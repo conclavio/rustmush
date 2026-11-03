@@ -881,16 +881,19 @@ impl WorkshopBook {
 
         let mut ops = Vec::new();
         for (addr, cell) in unit.cells() {
-            let belongs_to_sec = match addr {
-                CellAddr::Section { section, .. } | CellAddr::Facet { section, .. } => {
-                    section == section_id
+            let (belongs_to_sec, target_val) = match addr {
+                CellAddr::Section { section, cell: cid } if cid.as_str() == "heat" => {
+                    (section == section_id, cell.min)
                 }
-                _ => false,
+                CellAddr::Section { section, .. } | CellAddr::Facet { section, .. } => {
+                    (section == section_id, cell.max)
+                }
+                _ => (false, cell.current),
             };
-            if belongs_to_sec && cell.current < cell.max {
+            if belongs_to_sec && cell.current != target_val {
                 ops.push(UnitMutationOp::SetCell {
                     addr: addr.clone(),
-                    value: cell.max,
+                    value: target_val,
                 });
             }
         }
@@ -1005,16 +1008,19 @@ impl WorkshopBook {
         }
 
         for (addr, cell) in unit.cells() {
-            let belongs_to_sec = match addr {
-                CellAddr::Section { section, .. } | CellAddr::Facet { section, .. } => {
-                    section == section_id
+            let (belongs_to_sec, target_val) = match addr {
+                CellAddr::Section { section, cell: cid } if cid.as_str() == "heat" => {
+                    (section == section_id, cell.min)
                 }
-                _ => false,
+                CellAddr::Section { section, .. } | CellAddr::Facet { section, .. } => {
+                    (section == section_id, cell.max)
+                }
+                _ => (false, cell.current),
             };
-            if belongs_to_sec && cell.current < cell.max {
+            if belongs_to_sec && cell.current != target_val {
                 ops.push(UnitMutationOp::SetCell {
                     addr: addr.clone(),
-                    value: cell.max,
+                    value: target_val,
                 });
             }
         }
@@ -1707,6 +1713,11 @@ fn missing_section_points(unit: &TacticalUnit, section_id: &SectionId) -> u64 {
     let mut missing: u64 = 0;
     for (addr, cell) in unit.cells() {
         let belongs_to_sec = match addr {
+            CellAddr::Section { cell: cid, .. }
+                if cid.as_str() == "heat" || cid.as_str() == "heat_sink" =>
+            {
+                false
+            }
             CellAddr::Section { section, .. } | CellAddr::Facet { section, .. } => {
                 section == section_id
             }
