@@ -37,6 +37,8 @@ mod field_director;
 mod field_host_rig;
 #[path = "support/field/field_raiders_rig.rs"]
 mod field_raiders_rig;
+#[path = "support/field/grounds_rig.rs"]
+mod grounds_rig;
 #[path = "shard_9/field_story.rs"]
 mod field_story;
 #[path = "shard_9/ic_sortie_surface.rs"]

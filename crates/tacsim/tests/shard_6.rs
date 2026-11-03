@@ -33,6 +33,8 @@ mod driving_rig;
 mod field_host_rig;
 #[path = "support/field/field_raiders_rig.rs"]
 mod field_raiders_rig;
+#[path = "support/field/grounds_rig.rs"]
+mod grounds_rig;
 #[path = "shard_6/plans.rs"]
 mod plans;
 #[path = "support/field/site_record_rig.rs"]

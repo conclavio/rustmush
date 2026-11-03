@@ -35,6 +35,8 @@ mod escort_lease;
 mod field_host_rig;
 #[path = "support/field/field_raiders_rig.rs"]
 mod field_raiders_rig;
+#[path = "support/field/grounds_rig.rs"]
+mod grounds_rig;
 #[path = "shard_8/hulls.rs"]
 mod hulls;
 #[path = "shard_8/match_lifecycle.rs"]

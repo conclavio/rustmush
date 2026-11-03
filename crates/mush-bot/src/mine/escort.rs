@@ -800,7 +800,7 @@ pub fn in_vocabulary(line: &str) -> bool {
     if line.len() > 512 || line.contains(['\n', '\r']) || line.starts_with("@channel") {
         return false;
     }
-    if super::in_vocabulary(line) {
+    if super::in_vocabulary(line) || super::field::round_word(line) {
         return true;
     }
     let digits = |s: &str| !s.is_empty() && s.len() <= 10 && s.bytes().all(|b| b.is_ascii_digit());

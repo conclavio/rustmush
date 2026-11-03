@@ -49,6 +49,8 @@ mod ephemeris;
 mod field_host_rig;
 #[path = "support/field/field_raiders_rig.rs"]
 mod field_raiders_rig;
+#[path = "support/field/grounds_rig.rs"]
+mod grounds_rig;
 #[path = "shard_3/orders.rs"]
 mod orders;
 #[path = "shard_3/port_tick.rs"]

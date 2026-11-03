@@ -53,7 +53,7 @@ pub use report::Report;
 
 /// `--mine`'s refusal for a word it does not know.
 pub const MINE_SITE_USAGE: &str =
-    "--mine takes one of ahuna, commons, juling, kerwan, occator, rheasilvia";
+    "--mine takes one of ahuna, commons, juling, kerwan, occator, rheasilvia, urvara";
 
 /// The `help coop` "Signing" rule for a ship's name, as the Registry refuses
 /// a name that breaks it.
@@ -72,17 +72,20 @@ pub enum Site {
     Kerwan,
     Occator,
     Rheasilvia,
+    /// Urvara Reach, the first 512 site (doc 32 cut S.1): its pockets run to `P1024`.
+    Urvara,
 }
 
 impl Site {
     /// Every site, in the route words' alphabetical order.
-    pub const ALL: [Site; 6] = [
+    pub const ALL: [Site; 7] = [
         Site::Ahuna,
         Site::Commons,
         Site::Juling,
         Site::Kerwan,
         Site::Occator,
         Site::Rheasilvia,
+        Site::Urvara,
     ];
 
     /// The route word, in any case, trimmed; else [`MINE_SITE_USAGE`].
@@ -95,7 +98,7 @@ impl Site {
     }
 
     /// The route word: `ahuna`, `commons`, `juling`, `kerwan`, `occator`,
-    /// `rheasilvia`.
+    /// `rheasilvia`, `urvara`.
     pub fn word(self) -> &'static str {
         match self {
             Site::Ahuna => "ahuna",
@@ -104,6 +107,7 @@ impl Site {
             Site::Kerwan => "kerwan",
             Site::Occator => "occator",
             Site::Rheasilvia => "rheasilvia",
+            Site::Urvara => "urvara",
         }
     }
 
@@ -116,6 +120,7 @@ impl Site {
             Site::Kerwan => "Kerwan Floor",
             Site::Occator => "Occator Rim",
             Site::Rheasilvia => "Rheasilvia Commons",
+            Site::Urvara => "Urvara Reach",
         }
     }
 }

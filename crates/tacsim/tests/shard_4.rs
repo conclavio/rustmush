@@ -43,6 +43,8 @@ mod economy;
 mod field_host_rig;
 #[path = "support/field/field_raiders_rig.rs"]
 mod field_raiders_rig;
+#[path = "support/field/grounds_rig.rs"]
+mod grounds_rig;
 #[path = "shard_4/geology.rs"]
 mod geology;
 #[path = "shard_4/knowing.rs"]
