@@ -685,8 +685,8 @@ tick from their own capital. The organization is doc 39's; this document gives i
 a sweep, and re-asks nothing it ruled. Ceres is inside the player's zone, which the owner's words
 put it outside of; the mitigation is price, not fiat (the owner's ruling on Q-41-15): Tycho's own two
 hulls are house hulls like the Occator Yard, reached only through the contract, but their designs
-are registered designs the Stickney yard builds for anyone at their bill (doc 39 IN.9 as revised in
-Draft 0.4), which by doc 39 §4.4's provisional arithmetic puts a lifter near 300,000 cr and a crawler
+are registered designs the Stickney yard builds for anyone at their bill (doc 39 IN.9 as merged in
+Draft 0.5), which by doc 39 §4.4's provisional arithmetic puts a lifter near 300,000 cr and a crawler
 near 80,000 cr — out of a new captain's reach and in a prosperous one's sights, which is what
 expensive things people can look forward to are for. No lease programme offers either this round: a
 deposit's price would undo the point.
@@ -770,8 +770,8 @@ Q-S13/Q-R1: a contest proves unlawful recovery, defective procedure or a superio
 Proposed: `settle`'s vacate branch writes `held_for: Some(title_holder)` on the hull's bay record
 (`BayHull`, the record that already holds her berth and order), and `right_of` answers that
 principal `Right::Title` for berth and stow alone while the flag stands. Then: (1) **the owner's own
-carrier takes her out of any bay**: doc 39's `+bay/stow <hull>[=<carrier>]` (IN.9 as revised in
-Draft 0.4 — a named carrier the actor has the run of; doc 39 owns the verb, and RS.4 only widens
+carrier takes her out of any bay**: doc 39's `+bay/stow <hull>[=<carrier>]` (IN.9 as merged in
+Draft 0.5 — a named carrier the actor has the run of; doc 39 owns the verb, and RS.4 only widens
 where the hull may come from: another carrier's bay under `held_for`, a round-2 lane finding), by
 the title holder (or their `MaintainRefit` grantee) aboard a carrier of theirs that stands where the
 custodian's does (both docked at one port, or both on one site), moving her bay to bay with the
@@ -1378,7 +1378,7 @@ The rulings of 2026-11-03 make this the implementation order. Each cut lands as 
 through the production command paths with its story at both ground sizes (Q-38-29); each cut's note
 goes to `41-cut-notes.md`. Doc 39's rulings bind
 throughout; where a cut consumes one of doc 39's cuts it says so in one line and names it "as
-revised in Draft 0.4", never its mechanics. **Dependencies:** RS.0 ∥ RS.1 ∥ RS.2 ∥ RS.3 may start
+merged in Draft 0.5", never its mechanics. **Dependencies:** RS.0 ∥ RS.1 ∥ RS.2 ∥ RS.3 may start
 now; RS.4 after RS.3 (they share `claim.rs`'s `settle` and the bay record); RS.5 after RS.3 (one
 writer in `contract_live.rs`); RS.6 after RS.5 and doc 39's IN.4, IN.8 and IN.9 (PR #340 has merged); RS.7 after
 RS.3 and RS.5; RS.8 after RS.3 and RS.5, in the space tree; RS.9 last. One marker: Q-41-7 in RS.2.
