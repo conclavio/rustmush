@@ -691,6 +691,16 @@ impl TacsimStore {
             })
     }
 
+    /// **Every live rig lease record** (doc 36a lane 3, P1-6), in lease order: what a boarding
+    /// reads to find the rig whose lessee delegated its crewing to the actor.
+    pub fn tv_leases_live(&self) -> impl Iterator<Item = &crate::port::tv::TvLease> {
+        self.tv_leases.values().filter_map(|state| match state {
+            crate::port::tv::TvLeaseState::Present(record) if record.live() => Some(record),
+            crate::port::tv::TvLeaseState::Present(_)
+            | crate::port::tv::TvLeaseState::Unreadable { .. } => None,
+        })
+    }
+
     /// **The live rig lease record on `tv`** (doc 20 cut SM.3a; reviewer F2): the
     /// readable record naming the TV whose status is not `Returned` (Active or
     /// Forfeit). At most one by construction: a take refuses a rig with one.

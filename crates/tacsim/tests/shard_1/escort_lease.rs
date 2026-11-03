@@ -26,7 +26,8 @@ use tacsim::arena::ledger::{EventKind, LedgerEvent};
 
 use crate::driving::{
     RAMP, Rig, act_go, at_counter, command, file_and_launch, finish, land, land_composed, launched,
-    on_ground_at, on_pad_as, on_pad_with, run, staff_hand, stocked_tuned, to_cell, to_ic, warm,
+    on_ground_at, on_pad_as, on_pad_with, pilot, run, staff_hand, stocked_tuned, teleport, to_cell,
+    to_ic, warm,
 };
 use crate::field_host::{
     armed, egress, fragile, frame, seat, second, site_record, task, tune, until, weapon_of,
@@ -537,4 +538,112 @@ async fn gc0_the_harness_lands_the_org_unit_grant() {
             land_composed(rig, grant).expect("the composed prepare lands the grant");
         }
     });
+}
+
+/// **Doc 36a lane 3, P1-6**: a delegated OperateCrew grant can be used. The lessee signs the
+/// escort and lands Occator's loans at the counter (GC.0's hook), then delegates operate/crew to
+/// a crewmate within the delegable loan (`@unitgrant/issue … parent=<loan>`); the crewmate,
+/// standing in the carrier's vehicle bay, boards the lessee's rig with `+tv/1 board` and is put
+/// at its console, and the lessee stays the lease's principal. Before the fix the board listed
+/// only the actor's own leases, so a held grant could never be used.
+#[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+async fn lane3_a_delegate_with_operate_crew_boards_the_lessees_rig() {
+    let mut rig = stocked_tuned(tune);
+    let mut loan: Option<u64> = None;
+    let (lessee, _, tvs) = on_pad_with(&mut rig, "Pilot", 1, "Salt Moth", |rig, pilot| {
+        at_counter(rig, pilot);
+        let signed = run(&mut rig.tw, pilot, "+tv/lease escort go");
+        assert!(signed.contains("leases you OWP-ES-01"), "{signed}");
+        let _ = run(&mut rig.tw, pilot, "+tv/1/permissions go");
+        let mut queued = Vec::new();
+        while let Some(submit) = rig.tw.engine_mut().take_authoritative_submit() {
+            queued.push(*submit);
+        }
+        let grants: Vec<_> = queued
+            .iter()
+            .filter(|submit| submit.action.key().id.as_str() == "unitgrant_issue")
+            .collect();
+        assert!(!grants.is_empty(), "the loans are submitted");
+        for grant in grants {
+            land_composed(rig, grant).expect("the composed prepare lands the loan");
+        }
+        // The loans stand; the operate/crew one is delegable within the lease.
+        let loans = run(&mut rig.tw, pilot, "+tv/1/permissions");
+        let line = loans
+            .lines()
+            .find(|line| line.contains("operate_crew"))
+            .unwrap_or_else(|| panic!("the operate/crew loan is listed: {loans}"));
+        assert!(
+            line.contains("allowed now") && line.contains("delegable within this lease"),
+            "{loans}"
+        );
+        loan = line
+            .split("loan ")
+            .nth(1)
+            .and_then(|rest| rest.split(':').next())
+            .and_then(|n| n.trim().parse().ok());
+    });
+    let hull = tvs[0];
+    let loan = loan.expect("the loan's number");
+
+    // The crewmate stands in the carrier's vehicle bay beside the lessee.
+    for step in ["inner", "hold"] {
+        let _ = run(&mut rig.tw, lessee, step);
+    }
+    let bay = run(&mut rig.tw, lessee, "+tv/bay in");
+    assert!(bay.contains("entered vehicle bay"), "{bay}");
+    let bay_room = rig
+        .tw
+        .world()
+        .get(lessee)
+        .and_then(|o| o.location)
+        .expect("the bay");
+    let mate = pilot(&mut rig, "Mate", 4);
+    teleport(&mut rig.tw, mate, bay_room);
+    // Without the delegation the crewmate has no rig to board.
+    let refused = run(&mut rig.tw, mate, "+tv/1 board");
+    assert!(refused.contains("rental rig slots"), "{refused}");
+
+    // The lessee delegates operate/crew within the loan; the grant lands.
+    let issued = run(
+        &mut rig.tw,
+        lessee,
+        &format!(
+            "@unitgrant/issue #{}=#{} operate_crew parent={loan}",
+            hull.0, mate.0
+        ),
+    );
+    let mut queued = Vec::new();
+    while let Some(submit) = rig.tw.engine_mut().take_authoritative_submit() {
+        queued.push(*submit);
+    }
+    let grants: Vec<_> = queued
+        .iter()
+        .filter(|submit| submit.action.key().id.as_str() == "unitgrant_issue")
+        .collect();
+    assert_eq!(grants.len(), 1, "one delegation is submitted: {issued}");
+    land_composed(&mut rig, grants[0]).expect("the composed prepare lands the delegation");
+
+    // The crewmate boards the lessee's rig and is put at its console.
+    let boarded = run(&mut rig.tw, mate, "+tv/1 board");
+    assert!(
+        boarded.contains("console"),
+        "the delegate is put at the rig's console: {boarded}"
+    );
+    assert!(
+        tacsim::port::vehicle::rig_row(rig.tw.world(), hull)
+            .and_then(|(_, row)| row.rooms.iter().find(|(id, _)| id.as_str() == "cab"))
+            .is_some_and(
+                |(_, room)| rig.tw.world().get(mate).and_then(|o| o.location) == Some(ObjId(*room))
+            ),
+        "the delegate stands in the rig's cab"
+    );
+    // The lessee is still the lease's principal.
+    let lease = rig
+        .tw
+        .world()
+        .module_state::<tacsim::TacsimStore>()
+        .and_then(|store| store.tv_lease_on(hull).cloned())
+        .expect("the live lease");
+    assert_eq!(lease.pilot, lessee, "the lessee stays the principal");
 }
