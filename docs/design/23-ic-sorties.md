@@ -1100,9 +1100,28 @@ cursor, and no window has a rig out of its bay without a claim.
 
 **One seal per epoch — D-23-14.** D-UM-45 says the seal is per sortie and S.4a already takes it at
 the dispatch; `Execution::capture` seals the mind a second time at the Open (`execution.rs:102–126`)
-because the OOC fixture had no earlier seal. S.4b captures the claim's `Execution` from the
-dispatch's `MindSeal` and the holding the dispatch resolved (`DispatchReads`), so the claim's
-`seal_digest` equals the open line's and an inspection reads one seal; `Execution::validate` and
+because the OOC fixture had no earlier seal. Draft 0.8 had S.4b capture the claim's `Execution`
+from the dispatch's seal, which round 2's 23-2 found has nothing durable to capture from:
+`DispatchSeal` is `facts: SealFacts` and `licence` (`dispatch.rs:38–47`), the act carries that
+(`excursion.rs:733`) and the epoch record keeps the facts (`OpenSortie.seal: Option<SealFacts>`,
+`:1283`) — the line's fields (`black_box.rs:171–200`), not the `MindSeal` and not the source — so
+a capture on a later fire would read the holding again, a second admission over a source that may
+have been edited or withdrawn since. **Under D-23-21 the Open's capture is the one seal**:
+`Execution::capture` at `go` seals from the holding the word resolved, under `SortieId::Ic { hull,
+at_ic }` with the book's ordinal on `Opening.transition`, and the claim row retains it whole —
+seal, source, arena configuration, class table (`execution.rs:22–29`) — under the four owners'
+documents, which is the durable execution and admission identity the finding asks for. The act
+carries the claim's open token (`DispatchSeal.open: Option<CommitToken>`) and the `mind_sealed`
+line's facts are taken from the claim's seal, so the claim's `seal_digest` equals the line's by
+construction and an inspection reads one seal; `seal_held` (`dispatch.rs:303–335`) is no longer
+called for a held mind. Where the dispatch still seals on its own — a draft (`mind=draft:`, which
+opens no claim) through `seal_held`, a lapsed or impounded hull through `seal_rom` (`:341–361`) —
+it must pass the hull's armament summaries as `Execution::capture` (`execution.rs:81–87`) and the
+field's `custody_unit` (`admit.rs:713`) do, not the empty list both pass today (`:317`, `:352`;
+"a rig carries none", `:298`, which the escort disproves: armed and cored, `tv_escort.json:165–182`,
+`:205–211`), and the DT launch's `seal_rom_for` the same (`detachment/sortie/prepare.rs:868–874`);
+as it stands every dispatch seal's digest differs from the field's for an armed rig, and a held
+seal taken with an empty list could never equal a claim's. `Execution::validate` and
 the book accept `SortieId::Ic { hull, at_ic }` as the seal's sortie (`execution.rs:148`,
 `state.rs:38–44`; S.1's L1 deferral). The book's transition ordinal then needs a field of its own
 (round 2's 23-7), because today it is read off the seal and nowhere else: `Opening` has no
@@ -1313,10 +1332,12 @@ Through the cut loop (§9), one PR off `main`, the owner merging.
   launch's cancellation; the launch act queued behind the claim; `RigRecord.claim` and the surface
   fire's claim arm; the Roll's seat refusal and the compute sum at `go`; `Refused` as the end
   state.
-- **One seal, the IC id** (D-23-14): `Execution` captured from the dispatch seal; `SortieId::Ic`
-  accepted by `execution.rs:148` and the book; `Opening.transition` carrying the book's ordinal
-  and every ordinal reader moved onto it (23-7); the collision test of S.1 extended to the
-  claim's digest equalling the open line's.
+- **One seal, the IC id** (D-23-14): the Open's capture as the seal, the act carrying the open
+  token, the line printing the claim's facts (23-2); `SortieId::Ic` accepted by `execution.rs:148`
+  and the book; `Opening.transition` carrying the book's ordinal and every ordinal reader moved
+  onto it (23-7); the dispatch's `seal_held`/`seal_rom` and the DT launch's seal passing the
+  hull's armament summaries; the collision test of S.1 extended to the claim's digest equalling
+  the open line's and the field's.
 - **Custody** (D-23-15): the exclusion's hangar-and-epoch image and re-scoped `check_plan`/boot
   checks; the field check-out admitting the IC host's own claim; the live-hull Close; the salvage
   load closing `RecoveredToBase` (Q-23-11).
@@ -1379,7 +1400,7 @@ nothing is refused with the one sentence.
 | D-23-11 | The claim's anchor is the hull's hangar by id (a rig's bay: hull and slot; a ship's berth later) and the claim's lifetime is the hull's epoch, opening and closing with it by the four kinds; the claim keeps no image of where the hull stands; a site is never the anchor | **accepted by the owner, 2026-11-03** (Q-23-7) |
 | D-23-12 | S.4b opens claims for rigs only; the ship's epoch carries no claim until a ship is cored, and D-23-11 then holds unchanged | stands with Q-23-7's ruling, 2026-11-03 |
 | D-23-13 | The surface host mints the `StartPermit` at the launch's `go` (D-23-21) and the `CloseEvent` in the finishes that close an epoch; the Open and Close are the host's own commits as the operator on the next surface fire (`Fire::as_principal`), with `RigRecord.claim` as the durable cursor; claim first, epoch second; a reboot re-owes from the record | **accepted by the owner, 2026-11-03** (Q-23-8); **amended in Draft 0.10** by D-23-21 (Q-23-21 open): the Open precedes the ramp |
-| D-23-14 | One seal per epoch: the claim's `Execution` is captured from the dispatch's seal; the book and `Execution::validate` accept `SortieId::Ic`; the book's ordinal moves to `Opening.transition` (round 2's 23-7) and the Roll's `SortieNumber` keeps carrying it | **accepted by the owner, 2026-11-03** (Q-23-9) |
+| D-23-14 | One seal per epoch: the Open's `Execution::capture` at `go` is the seal, retained whole in the claim row; the act carries the open token and the `mind_sealed` line prints the claim's seal; the book and `Execution::validate` accept `SortieId::Ic`; the book's ordinal moves to `Opening.transition` (round 2's 23-7) and the Roll's `SortieNumber` keeps carrying it; the dispatch's own seals pass the hull's armament summaries | **accepted by the owner, 2026-11-03** (Q-23-9); **restated in Draft 0.10** (round 2's 23-2: the dispatch seal is not durable enough to capture from; under D-23-21 the Open seals) |
 | D-23-15 | IC custody means moved only by the epoch's hosts: the exclusion records the hangar and epoch, admits an Open on the ground, freezes re-anchoring only; the field mark and the claim coexist; the Close's physical image is the live hull | **accepted by the owner, 2026-11-03** (Q-23-10, Q-23-11) |
 | D-23-16 | The compute seat is counted at the launch against the site's allotment, held for the epoch, spent only in a field, refused at the launch with the arithmetic under a provisional stock allotment; never refused or evicted in a field | **accepted by the owner, 2026-11-03** (Q-23-12) |
 | D-23-17 | The `abi` drop is decided per hull when its retained execution is installed into a field (admission, join, resume), to the ROM with one `MindDropped { cause: abi }` an epoch; it never voids a field; Q-36-44's wall is the fallback for an execution that cannot be installed at all, left when the field ends or the hull leaves the ground | **accepted by the owner, 2026-11-03** (Q-23-13, Q-23-14) |
