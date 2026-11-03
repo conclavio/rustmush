@@ -260,9 +260,17 @@ against the cap, and has a launch cycle (provisional 60 s wall) so a bay cannot 
 stay as they are. Q-38-26: no sub-leaders, no open-ground SCREEN/SUPPORT.
 
 **The launch rule** (Q-40-19). `+sortie/launch` and the rig ramp's launch run as today on the IC
-clock; the prepare's `FIELD_LAUNCH` refusal becomes the cap check alone, and at the act's landing
-each hull is checked out under the field's mark and offered as `ArenaMsg::Join` at the carrier's
-ramp (`LAUNCH_SPREAD_CELLS` 4, the director's spread), landing at the next pulse through
+clock; the prepare's `FIELD_LAUNCH` refusal becomes the cap check alone. The act's landing —
+`finish` for a DT flight (`prepare.rs:715–746`), the surface act's `Done` for a rig — puts the
+hull at the ramp and nothing more: it runs over `&World` and the action's own `Read` with no
+`Ctx`, and `carrier::join` (`carrier.rs:492`) wants one for `custody::check_out` (`:510–512`),
+`tasks.offer` (`:521`) and `set_live` (`:525`), so the landing can neither check a hull out nor
+offer a join. The join is the field tick's, as an F-6 arrival's is: beside `note_arrivals` and
+`join_arrivals` (`admit.rs:120–121`) the tick takes every **pending entrant** — a hull standing on
+the promoted domain that the live record does not name, is not held out and is not carried (the
+landing of a `Phase::Field` flight, `sortie/model.rs:163–169`, or of a rig's opened excursion) —
+checks it out under the field's mark and offers it as `ArenaMsg::Join` at the carrier's ramp
+(`LAUNCH_SPREAD_CELLS` 4, the director's spread), landing at the next pulse through
 `carrier::joining` and GC.1b's handler, told to the site with a line of its own. The cap is counted
 twice as today, at the prepare and by the kernel's `PartyFull` (`join.rs:273`). The cycle is
 `[tacsim.field].launch_cycle_s` (60, provisional, banded like `disengage_s`): one hull a carrier
@@ -599,7 +607,8 @@ reason for the record; §6 is the plan built from them.
 
 **Q-40-19 — The launch rule's shape.**
 - **Proposed default:** §4.4's rule: the act on the IC clock as today, the hull offered as a join
-  at the ramp at the act's landing, one hull a carrier a `launch_cycle_s` (60 s wall, provisional,
+  at the ramp by the field tick once the act has landed (the landing has no `Ctx` to do it with,
+  §4.4), one hull a carrier a `launch_cycle_s` (60 s wall, provisional,
   banded 10–600), a multi-slot act putting its hulls down one a cycle in slot order, a second act
   inside the cycle refused with the seconds left; the cap at the prepare and at the join; no hold
   for a bay under fire beyond GC.3's table.
