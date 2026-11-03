@@ -262,12 +262,12 @@ speed, and the free-flight branch treats `< 2,000 m` from the body centre as `20
 
 ## SF.R10 — tempo and persistence budget (#333, `21c67a91`)
 
-- `ActiveInterdictionBubble::last_stepped_wall_s: Option<i64>` records the wall-clock second of the previous tick fire;
+- `ActiveInterdictionBubble::last_stepped_wall_s: i64` records the wall-clock second of the previous tick fire;
   `step_active_bubbles` steps active bubbles by measured wall elapsed seconds (with 250 ms substeps and no catch-up
   burst on restart) rather than multiplying by `adaptive_step_wall_ms` (`D-35-3`).
-- Persistence caps on per-bubble snapshots (`MAX_BUBBLE_SNAPSHOTS = 6`, keeping the initial snapshot) and input tape
-  entries (`MAX_BUBBLE_TAPE_ENTRIES = 64`), completed bubbles (`MAX_COMPLETED_BUBBLES = 8`), and completed mine draws
-  (`MAX_COMPLETED_SPACE_MINE_DRAWS = 64`); no-op ticks skip writing `tacsim:space:state` (`35b` §5 #9).
+- Persistence caps on per-bubble snapshots (`MAX_BUBBLE_SNAPSHOTS = 6`, keeping the initial snapshot), input tape
+  entries (`MAX_BUBBLE_TAPE_ENTRIES = 64`), and completed bubbles (`MAX_COMPLETED_BUBBLES = 8`), plus clearing
+  `completed_space_mine_draws` when draws land (`mining.rs:1597`); no-op ticks skip writing `tacsim:space:state` (`35b` §5 #9).
 - Unreadable `tacsim:space:state` documents are quarantined (`TacsimStore::is_space_state_held`) across boot,
   `space_tick`, and `+helm`/`+tac`/`+mine` (`persist_space_state`).
 - `reacquire_custody_after_boot` re-checks out active space bubble hulls immediately after `field::boot::phase` so
@@ -344,7 +344,7 @@ with millisecond/1970 timestamps (`35c` §6.4).
 - `SpacePresenceHook` registered on `HookPoint::Connected`, `HookPoint::Linkdead`, and `HookPoint::Disconnected`
   (`D-35-7`, `35b` §5 #19): when all live-connected crew aboard a hull disconnect (`is_connected && has_live_conns`),
   main-drive thrust cuts to `[0, 0, 0]`, `pdc_auto` holds armed through the 120 s grace window, `queued_return_port` is
-  recorded on `HullLinkdeadState`, and reconnect (`from_linkdead: true`) restores manual control.
+  recorded on `SpaceLinkdeadState`, and reconnect (`from_linkdead: true`) restores manual control.
 - Restored `space.cockpit` and `space.docking` to TUI `Chart` Home-key view cycling and wired `l`/`b`/`t`/`r`/`p`/`m`
   tactical keys in TUI and web (`PictureView.svelte` / `picture.ts`) to `+tac/*` and `+helm/*`.
 
@@ -381,12 +381,12 @@ a fixed 4 t with a hand-built `ExcursionId` and discarded mind intents; the pick
 
 ## SF.R15 — hull fidelity, facet split, heat cell, bay repair, and salvage bounty (#339, `50f7aedc`)
 
-- `dray.json`, `dray_p.json`, and `corvette.json` define `"heat"` (`0..=1_000`) and `"heat_sink"` (`30`) cells on
-  `"hull"`, round-tripped through `build_space_damage_mutation_plan` and `space_ship_from_tactical_unit_with_spec`
-  (`D-35-1`).
+- `dray.json`, `dray_p.json`, and `corvette.json` define `"heat_max": 1000` and `"heat_dissipation_per_s": 30`
+  (materializing the `"heat"` cell on `"hull"`), round-tripped through `build_space_damage_mutation_plan` and
+  `space_ship_from_tactical_unit_with_spec` (`D-35-1`).
 - `SpaceShipState::apply_damage` reads facet weights, `struck_through` armour, section internals, and consequences
   (`slow_75`, `disable_motion`, `destroy_unit`) from `UnitSpec`, and inflicts `SubsystemCrit::PdcOffline` and
-  `SensorsBlinded` (`35b` §5 #16); `step_pdc_intercepts` skips non-operational PDC mounts.
+  `SubsystemCrit::SensorDegraded` (`35b` §5 #16); `step_pdc_intercepts` skips non-operational PDC mounts.
 - `+helm/tow` settles a 1,200.00 cr salvage recovery payout from `freeport_registry`, and `sfr15` exercises a doc 31
   `+bay/order #<hull>=all` repair at Stickney Yards.
 

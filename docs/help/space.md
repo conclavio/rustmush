@@ -2,64 +2,66 @@
 
 While aboard a carrier hull, bridge crew operate the vessel through three station-gated command families:
 
-- **`+helm`** — flight controls, attitude, propulsion, navigation computers, docking, and towing.
-- **`+tac`** — passive and active sensors, target locks, the space weapon triad, and point defence.
-- **`+mine`** — zero-G orbital cluster prospecting, claim beacons, mining lasers, and collector drones.
+- **`+helm`** — bridge stations, standing orders, attitude, propulsion, flight guidance, docking, and towing.
+- **`+tac`** — passive and active infrared sensors, fire-control locks, the space ordnance triad, and point defence.
+- **`+mine`** — zero-G orbital cluster prospecting, Freeport Registry claims, mining lasers, and collector drones.
 
-All three commands require you to be physically aboard a carrier hull and seated at a bridge station that grants the corresponding control channel (`helm`, `nav`, `sensors`, `fire`, `eng`, or `command`). On the graphical terminal and web client, press `v` on the chart screen to cycle between the bridge holotank (`space.holotank`), the pilot canopy (`space.cockpit`), and the docking approach view (`space.docking`).
+All three commands require you to be physically aboard a carrier hull and seated at a bridge station (`command`, `helm`, `tactical`, `ew`, `engineering`, or `flight_ops`) that grants the corresponding control channel (`movement`, `sensors`, or `fire`; a captain or crew member at `command` controls all three). On the graphical terminal and web client, press `v` on the chart screen to cycle between the bridge holotank (`space.holotank`), the pilot canopy (`space.cockpit`), and the docking approach view (`space.docking`).
 
 ---
 
 ## Bridge Stations and Flight Controls (`+helm`)
 
-Seat yourself at a bridge console before issuing flight or tactical commands:
+Assign or claim a bridge station before issuing flight or tactical orders:
 
 ```text
-+helm/station <station>
 +helm/status
++helm/station <seat>[=<crew>]
 ```
 
-- `+helm/station <station>` claims a bridge console on your current hull (for example `pilot`, `tactical`, or `command`).
-- `+helm/status` (or bare `+helm`) displays hull attitude, velocity, propulsion state, fuel reserves, active local bubble status, and the bridge visual frame.
+- `+helm/status` (or bare `+helm`) shows bridge station assignments, standing orders, attitude, velocity, propellant reserves, and active bubble or free-flight state.
+- `+helm/station <seat>[=<crew>]` assigns an aboard crew member (or yourself when `=<crew>` is omitted) to a bridge station (`command|helm|tactical|ew|engineering|flight_ops`), or `off` to vacate.
 
-### Attitude, Thrust, and Flight Computers
+### Attitude, Thrust, and Flight Guidance
 
-When a journey enters a local space bubble, your carrier transitions from long-range transit to 1 Hz 3D Newtonian flight:
+ Commands on the `movement` channel update the ship's continuous standing orders and maneuver state:
 
 ```text
-+helm/heading <yaw> <pitch>
-+helm/roll <deg>
-+helm/thrust <0..100>
-+helm/burn <0..100>
-+helm/guidance <grade>
-+helm/decouple <on|off>
-+helm/emcon <mode>
++helm/heading <yaw_deg>[,<pitch_deg>]
++helm/roll <roll_deg>
++helm/thrust <permille>[,<x>,<y>,<z>] [force]
++helm/burn <ax>,<ay>,<az> [<s_ic>] [force]
++helm/guidance <attitude_deg|mode>
++helm/decouple
++helm/emcon <ghost|passive|standard|combat>
 ```
 
-- `+helm/heading <yaw> <pitch>` commands nose attitude in degrees (`yaw` `0..360`, `pitch` `-90..+90`). Turn rate scales with hull moment of inertia and reaction control propellant availability.
-- `+helm/roll <deg>` sets bank angle (`-180..+180` degrees).
-- `+helm/thrust <0..100>` and `+helm/burn <0..100>` set main drive throttle percentage and commit propellant consumption for the burn.
-- `+helm/guidance <grade>` selects flight-computer assistance (`manual`, `assisted`, or `autonomous`), up to the hull's installed guidance tier.
-- `+helm/decouple <on|off>` toggles decoupled translation so the nose can slew independently of your velocity vector.
-- `+helm/emcon <mode>` sets emissions control posture (`silent`, `nominal`, or `full`), trading sensor signature against active subsystem output.
+- `+helm/heading <yaw_deg>[,<pitch_deg>]` sets nose attitude in degrees (`yaw_deg` `0..360`, optional `pitch_deg` `-90..90`) and writes `StandingOrder::Heading`.
+- `+helm/roll <roll_deg>` sets bank angle in degrees (`-180..180`) to rotate fresh armour facets toward incoming fire.
+- `+helm/thrust <permille>[,<x>,<y>,<z>] [force]` sets main-drive throttle in permille (`0..1000`), with an optional 3D direction vector and `force` to override the return-reserve warning, and writes `StandingOrder::Thrust`.
+- `+helm/burn <ax>,<ay>,<az> [<s_ic>] [force]` executes a timed reaction-mass burn in m/s² (`-100..100` per axis, capped by the hull drive's rated acceleration) for `<s_ic>` IC seconds (`1..86400`, default `60`) against `stow.propellant`. Pass `force` to burn into the return reserve.
+- `+helm/guidance <attitude_deg|mode>` sets a guidance yaw (`0..359`) or flight-computer mode (`manual`, `prograde`, `retrograde`, `radial_in`, `radial_out`, `normal`, `anti_normal`, `intercept`, `match`).
+- `+helm/decouple` decouples the ship from a corridor transit leg into 3D heliocentric free flight.
+- `+helm/emcon <ghost|passive|standard|combat>` sets emissions posture (`silent`, `nominal`, and `full` are accepted aliases) and writes `StandingOrder::Posture`.
 
-### Navigation, Evasion, Docking, and Towing
+### Navigation, Customs Pickets, Docking, and Towing
 
 ```text
-+helm/autopilot <destination>
-+helm/approach <contact>
-+helm/match <contact>
++helm/autopilot <port|cluster_id>
++helm/approach <rock|derelict>
++helm/match <rock>
 +helm/submit
 +helm/run
-+helm/dock
-+helm/tow <contact|off>
++helm/dock [<port|derelict> | tape <session_id> <rle> | abort]
++helm/tow [<derelict_id>]
 ```
 
-- `+helm/autopilot <destination>` plots a course to an orbital cluster (`belt_main`, `trojan_l4`, `saturn_b_ring`) or outer body (`ceres`, `jupiter`, `saturn`, `titan`, `enceladus`, `uranus`, `neptune`, `triton`), checking delta-v and life-support endurance before departure.
-- `+helm/approach <contact>` and `+helm/match <contact>` slave the flight computer to close range or match velocity with a detected bubble contact.
-- `+helm/submit` throttles down and yields to a customs picket inspection during an interdiction; `+helm/run` triggers an emergency breakaway burn.
-- `+helm/dock` opens an interactive 60 Hz six-degree-of-freedom docking approach (`space.docking`) once inside port approach range. Align lateral offset, closure rate, and roll inside the port corridor before the session timer expires.
-- `+helm/tow <contact|off>` latches or releases a magnetic tow line on a neutralized derelict hull within 250 m and 5 m/s relative speed, adding the towed mass to your carrier's inertia and burn costs.
+- `+helm/autopilot <port|cluster_id>` plans and flies a passage from live `(pos, vel)` to an open port, an orbital asteroid cluster (`ceres_halo`, `kirkwood_gap_3_1`, `pallas_inclined_belt`, `saturn_b_ring_edge`), or an outer-system body (`ceres`, `jupiter`, `saturn`, `titan`, `enceladus`, `uranus`, `neptune`, `triton`).
+- `+helm/approach <rock|derelict>` executes a braking approach toward asteroid pocket `A`, `B`, or `C`, or toward a disabled derelict in the current bubble.
+- `+helm/match <rock>` locks an RCS velocity match (`|Δv| < 5 m/s` within `2,000 m`) with rock `A`, `B`, or `C`.
+- `+helm/submit` heaves to and submits the hull's cargo manifest to a customs picket inspection; `+helm/run` refuses inspection and runs the picket.
+- `+helm/dock [<port|derelict> | tape <session_id> <rle> | abort]` initiates a 60 fps 6-DOF docking approach (`space.docking`) against an open port at leg end or a disabled derelict within `500 m`, submits a recorded `<rle>` input tape for `<session_id>`, or aborts an open docking session.
+- `+helm/tow [<derelict_id>]` attaches a salvage tow line to a derelict after a verified hard-dock clamp.
 
 ---
 
@@ -69,7 +71,7 @@ Tactical commands require a bridge station with the `sensors` channel (`+tac/sta
 
 ### Sensors and Target Locks
 
-Vacuum detection scales with target thermal signature, main-drive plume bloom, emissions posture, observer sensor aperture, and inverse-square range. Undetected contacts do not appear on scans or bridge displays and cannot be locked.
+Vacuum detection resolves through light-lagged infrared propagation, comparing target thermal signature, drive plume bloom, and emissions posture against inverse-square range and observer sensor aperture. Undetected contacts do not appear on scans or bridge displays and cannot be locked.
 
 ```text
 +tac/status
@@ -77,46 +79,46 @@ Vacuum detection scales with target thermal signature, main-drive plume bloom, e
 +tac/lock <contact|off>
 ```
 
-- `+tac/status` (or bare `+tac`) displays current sensor locks, weapon mounts, capacitor charge, magazine stores, and point-defence posture.
-- `+tac/scan` sweeps the active space bubble and lists all detected contacts with bearing, range, relative closure speed, and classification.
-- `+tac/lock <contact|off>` acquires or drops a fire-control lock on a detected hull or asteroid contact.
+- `+tac/status` (or bare `+tac`) shows tactical mounts, active locks, and sensor status.
+- `+tac/scan` runs a passive/active infrared sensor pass with light-lag across the active space bubble.
+- `+tac/lock <contact|off>` acquires or clears a fire-control lock on a detected contact.
 
-### Space Weapon Triad and Point Defence
+### Space Ordnance Triad and Point Defence
 
-Space engagements combine three weapon classes with distinct range and counterplay profiles:
+Space engagements combine three offensive mount classes with distinct flight profiles and counterplay:
 
 ```text
-+tac/beam [contact]
-+tac/torp [contact]
-+tac/railgun [contact]
-+tac/pdc <auto|conserve|off>
++tac/beam [<contact>]
++tac/torp [<contact>[=<count>]]
++tac/railgun [<contact>]
++tac/pdc <auto|manual|point|offense>
 ```
 
-- `+tac/beam [contact]` fires directed-energy lasers. Beams resolve at speed of light inside short range (`<= 1,500 m`), draw from the weapon capacitor, and build hull thermal load.
-- `+tac/torp [contact]` launches a guided torpedo from the ordnance magazine. Torpedoes track across long range (`> 5,000 m`) with an intercept countdown, giving the defender time to maneuver or intercept with point defence.
-- `+tac/railgun [contact]` fires a hypervelocity kinetic slug along a lead solution at medium range (`1,500..5,000 m`), checking target lateral acceleration and time-to-intercept.
-- `+tac/pdc <auto|conserve|off>` configures point-defence cannons to engage incoming torpedoes automatically, conserve ammunition for close threats, or stand down.
+- `+tac/beam [<contact>]` fires offensive laser mounts at a detected hostile contact (speed-of-light hit within mount range, up to `160 km` on a corvette laser; draws capacitor charge and builds hull heat).
+- `+tac/torp [<contact>[=<count>]]` launches a torpedo salvo (default `1`) at a detected hostile contact (`10–500 km` envelope, accelerating under 3D proportional navigation before ballistic coast).
+- `+tac/railgun [<contact>]` fires spinal or turret railguns at a detected hostile contact along a world-frame lead solution (`10–250 km` envelope; countered by lateral jinking thrust during time-of-flight).
+- `+tac/pdc <auto|manual|point|offense>` configures point-defence autocannons or dual-mode laser mounts to intercept incoming torpedoes automatically, stand in manual/point mode, or switch dual-mode mounts to offensive fire.
 
-When weapons fire cripples a hostile carrier's reactor, drive, or hull structure, the vessel is neutralized in place as a derelict rather than vanishing, preserving its black-box flight recorder and cargo for boarding, salvage, or towing.
+When fire disables a hull's drive or structure, the vessel remains in place as an open-epoch derelict with its flight recorder and cargo intact for salvage and towing.
 
 ---
 
 ## Asteroid Mining (`+mine`)
 
-When your carrier arrives at an orbital resource cluster, use `+mine` to prospect asteroids, register or contest claims, fracture rock with mining lasers, and sweep ore fragments into the cargo hold.
+When your carrier arrives at an orbital resource cluster, use `+mine` to prospect asteroid pockets, stake or contest Freeport Registry claims, and extract ore into `stow.ore`.
 
 ```text
 +mine/status
-+mine/ping
-+mine/stake <rock>
++mine/ping [<rock>]
++mine/stake <rock> [<family>]
 +mine/contest <rock>
-+mine/laser <rock> [power]
-+mine/drones <launch|recall> [rock]
++mine/laser <rock> [<family>]
++mine/drones <rock> [<1..4>] [<family>]
 ```
 
-- `+mine/status` (or bare `+mine`) summarizes your active orbital cluster, registered claims, drone wings, laser heat, and refined ore stowed aboard.
-- `+mine/ping` triggers an active spectrographic pulse across the cluster, revealing asteroid composition (`C-type` carbonaceous/volatiles, `S-type` silicate/industrial metals, `M-type` heavy/precious metals) and richness while temporarily raising your hull's electromagnetic signature.
-- `+mine/stake <rock>` deploys a cryptographic claim beacon on an unclaimed asteroid in the cluster.
-- `+mine/contest <rock>` challenges an existing claim beacon, broadcasting a piracy alert to the cluster picket roster.
-- `+mine/laser <rock> [power]` fires the hull mining laser at a target asteroid (`1..100` power). Staying inside the rock's fracture band cleaves harvestable ore fragments into space; overheating past the thermal threshold triggers a volatile blowout that damages nearby equipment and cuts yield.
-- `+mine/drones <launch|recall> [rock]` launches collector drones to haul cleaved ore fragments into your carrier's hold and refine them into resource units, or recalls your drone wing before departure.
+- `+mine/status` (or bare `+mine`) shows the active orbital cluster, velocity-matched rock, extraction cycles, and `stow.ore` hold usage.
+- `+mine/ping [<rock>]` pings asteroid pockets (`A`, `B`, `C`) for spectral class (`C-type`, `S-type`, `M-type`), ore reserves (`metal_ore`, `ice_ore`, `carbon_ore`, `strategic_ore`), and claim tenure.
+- `+mine/stake <rock> [<family>]` stakes a 168-day Freeport Registry claim on an open pinged asteroid block (requires a live Registry prospecting licence).
+- `+mine/contest <rock>` contests an existing player claim within the 30-day Registry contest window.
+- `+mine/laser <rock> [<family>]` starts a timed 60 s mining-laser extraction cycle on rock `A`, `B`, or `C` into the hull's `stow.ore` hold.
+- `+mine/drones <rock> [<1..4>] [<family>]` launches up to 4 collector-drone sorties (`ExcursionId`) against rock `A`, `B`, or `C` into `stow.ore`.

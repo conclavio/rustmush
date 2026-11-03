@@ -478,7 +478,7 @@ customs picket's screening, which the arena has no word for — stays a bubble-s
 picket's party rather than a fifth relation; the bubble's `set_party_relation` takes a `Mark`.
 The stance table of §4.2 then feeds a bubble's opening marks and friend pairs as it feeds
 `FieldHost`, so one authoring verb serves both hosts. Types only: no hash and no content move at
-`c83c2eff`; `tacsim:space:state` has persisted `SpacePartyId` since `SF.R8` (`6410a8cc`), and under
+`c83c2eff`; `tacsim:space:state` has persisted `SpacePartyId` since `SF.R8` (`009efd2f`), and under
 `Q-38-9` any persisted `SpacePartyId` values in `tacsim:space:state` are wiped rather than migrated
 (doc 35c §2, §8).
 
