@@ -1,11 +1,16 @@
 # 42. Crew: custody, capture, ejection, treatment — survey
 
-Draft 0.2, 2026-11-03, docs only. Surveyed against `origin/main` at `c83c2eff` (doc 38 Draft 0.2
+Draft 0.3, 2026-11-03, docs only. Surveyed against `origin/main` at `c83c2eff` (doc 38 Draft 0.2
 merged as PR #345; doc 36a's lane 5 merged as PR #346, so `check_in` already keeps a prior
 injury). Draft 0.1, the same day, was the survey. **Draft 0.2 records the owner's ruling of
 2026-11-03: every Q-42 default is accepted as written, and §5's consequences are acknowledged.**
 No question is amended, so each question's proposed default is its decision; §7's cut list is
-binding from this draft and CR.0 may start now. This is the crew document doc 38 §6 proposes: "new rulings first (the reviewers are right
+binding from this draft and CR.0 may start now. **Draft 0.3 folds the second outside review**
+(two reviewers, every claim re-verified read-only against `main` at `f146734e`): seven items,
+each a "Draft 0.3 (review round 2, 42-n)" note under the question it corrects — 42-1 under Q-42-12,
+42-5/42-8 under Q-42-1 and Q-42-12, 42-2 and 42-7 under Q-42-7, 42-3 under Q-42-6, 42-4 under
+Q-42-5, 42-6 under Q-42-2 — plus 42-9's advice under Q-42-16. None changes an accepted ruling;
+42-4 needed a choice the rulings did not make, asked as **Q-42-26, open**. This is the crew document doc 38 §6 proposes: "new rulings first (the reviewers are right
 that none exist); touches ownership and permissions". It is a survey in the form doc 38 used: it
 asks the owner questions, each with a proposed default, an alternative and a reason. "Provisional"
 marks a number to be tuned later under the 2026-10-24 rule. **(expensive to reverse)** has doc 38
@@ -218,7 +223,9 @@ Flank through `support/field/driving_rig.rs`.
 
 **Ruled 2026-11-03.** The owner accepted every default as written, Q-42-1 to Q-42-25, and
 acknowledged §5. No question is amended, so the proposed text below is the decision and is kept
-as written for the record; a cut cites the question it builds.
+as written for the record; a cut cites the question it builds. Draft 0.3's review notes are
+precisions of those decisions and bind the build with them. **Q-42-26** (Draft 0.3, under Q-42-5)
+is open: it gates CR.1 only, so CR.0 may still start.
 
 Each question has a proposed default, an alternative and a reason. Numbers are provisional.
 
@@ -875,7 +882,9 @@ Every number is provisional under the 2026-10-24 rule.
 - **Constants:** `STANDING_CAPTURE` −5 with the cause prefix `capture:` (Q-42-21);
   `UnlawfulKind::Capture` (Q-42-22).
 - **The record:** `CrewLocation::Captured { carrier, captor, since_ic }` under the `at` tag, and `Processing { port, release_due_ic, charge }` (Draft 0.3, 42-2),
-  `Extraction::forced` omitted when false, `CREW_FORMAT` unchanged (Q-42-1).
+  `Extraction::forced` omitted when false, `CREW_FORMAT` unchanged (Q-42-1); Draft 0.3 adds
+  `Extraction::capture: Option<EjectCapture { party, carrier, captor }>` (42-5) and the
+  `Processing` location (42-2), both CR.0's to decode and display.
 - **Verbs:** `+sortie/eject` (Q-42-10); `+ship/captives`, `+ship/release <who>` (Q-42-9); the
   `held` refusal on the verbs Q-42-2 lists, one line: "You are held aboard the {carrier}."
 - **Lines** (the builder's wording, in the house voice): the capture at a load, the capture at an
