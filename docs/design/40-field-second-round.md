@@ -1,6 +1,6 @@
 # 40. The field, second round — surveyed
 
-Draft 0.2, 2026-11-03, docs only. Surveyed against `origin/main` at `c83c2eff` (SF.R14 and SF.R15
+Draft 0.3, 2026-11-03, docs only. Surveyed against `origin/main` at `c83c2eff` (SF.R14 and SF.R15
 merged as PRs #338 and #339; doc 36a's lane 5 as #346; doc 38 Draft 0.2 as #345; lane 3 still open
 as PR #340 at `claude/relaxed-fermat-60b65b`, read here for the shape its held-out walls take on
 the live record). Stacked on [doc 39](39-industry-production-chain.md)'s PR #347 so its README row
@@ -10,6 +10,22 @@ given. Draft 0.1, the same day, was the survey. **Draft 0.2 records the owner's 
 2026-11-03 on every question: every default accepted as written** ("all Q-40s accepted as their
 proposed defaults"). No question was amended, so each stands with its proposed text as the ruling,
 and §6's cut list is now the implementation order.
+
+**Draft 0.3, the same day, folds the round-2 outside review** (two reviewers, every claim re-read
+against `origin/main` at `f146734e`): six fixes — the pending-launch protocol shared with doc 23
+(§4.4), the one population count (§4.4, Q-40-24), the clear that erased a stance (§4.2), the join
+moved from the act's landing to the field tick (§4.4), STARTUP under a jammed plant (Q-40-4), the
+core's class derived read-side (Q-40-3) — and three clarifications (the sensor baseline and a
+jammed sensor's contacts, Q-40-3; `prev_input` seeded empty, §4.3 and Q-40-17; the coupled pair's
+admission and its exit, Q-40-7 and Q-40-25). Four claims were refuted and changed nothing: Power
+and Core carry a condition word like every part (`mush-tactics/src/unit.rs:341`,
+`definitions/unit.rs:2045`); a jammed sensor's contacts age rather than freeze (`perception.rs:1233`
+is `detections`' early return, not `sensor_pass`'s); a lowered heat ceiling never cools a hull
+(`heat.rs:127–130` returns before the clamp, `weapons.rs:1102–1108` refuses the hot shot); and
+`line_to` proposes no eye heights (`stock_mind.rs:634–647`, the default at both ends). Two
+questions are new and open, Q-40-24 and Q-40-25; no ruling changed. Draft 0.3's anchors are at
+`f146734e`, where `join.rs`, `state.rs`, `admit.rs`, `carrier.rs`, `record.rs`, `tow.rs` and
+`raiders.rs` moved by a few lines since `c83c2eff` (§3's table keeps its lines).
 
 This is a survey in the form doc 38 used: what the tree has, what the rulings require, and the
 questions each area raised, each with a proposed default, an alternative and a reason.
@@ -461,7 +477,8 @@ cargo invocation on the owner's Windows box carries `-j 8`, one workspace build 
 **Ruled 2026-11-03.** The owner accepted every default as written ("all Q-40s accepted as their
 proposed defaults"); nothing was amended, so no question carries a decision line of its own and the
 proposed text of each is its ruling. Each question keeps its proposed default, alternative and
-reason for the record; §6 is the plan built from them.
+reason for the record; §6 is the plan built from them. Draft 0.3 adds Q-40-24 and Q-40-25, open,
+each marked so where it stands.
 
 ### 5.1 Order and shape
 
@@ -844,3 +861,8 @@ wall seconds at rate 24, closed at the next command), Q-40-21 (the live segment 
 resume's), and Q-40-23 (the four-digit parser is FR.0's). Each is built as its default says, and a
 cut that finds its default does not hold at the tree records the departure in `40-cut-notes.md`
 for the owner, as the GC cuts did.
+
+**Open after Draft 0.3:** Q-40-24 (the pending row as the one population count) and Q-40-25 (the
+coupled pair's exit at the ramp), both raised by the round-2 review with a default each; FR.3 and
+FR.5 take the defaults unless the owner rules otherwise, and doc 41's tender and doc 42's crew
+rules read Q-40-25's answer.
