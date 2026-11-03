@@ -1034,11 +1034,21 @@ first, the claim second.** The finish lands the `mind_sealed` line and `RigRecor
 `Open { open: CommitToken }`, `Closing { open, kind }`, `Closed { open, close: CommitToken }` (serde
 default `None` for a rig with no held mind, so schema 1 stands and every S.1–S.3 record decodes byte
 for byte) — and the next surface fire finds every `Owed` and `Closing` seam, enqueues the permit it
-re-mints from the record, submits, and moves the seam at the claim's commit, in the claim's own
-bundle through the finish's participant. A fire that finds the book already holding an active open
-for the hull (`state.rs:109`) or a used request (`request_used`) moves the seam without
-submitting; `IcHost`'s one-pending-per-actor guard (`host.rs:247–249`) and `MAX_PENDING` are
-capacity, never state, and a refused enqueue is retried next fire. So a re-run fire mints nothing
+re-mints from the record and submits. **The seam never moves in the claim's own commit** (round
+2's 23-6): the capacity owner admits an Open or a Close only as a transaction holding exactly one
+typed mutation, the Roll's claim row (`mush-core` `terminal_capacity/ic_claim.rs:516–517`, "IC
+exact sole typed target"); a transaction's `mutations` span every owner and family
+(`action_state.rs:3770–3775`) and `tacsim.excursion` is one of them (`port/families.rs:671–690`);
+and the four owners' images must be exactly four, all under the claim's own action (`mush-core`
+`participant.rs:1117–1135`, `require_exact_ic`). So the record moves on the fire that **observes
+the committed row**, in the surface tick's own write: the Open's seam when the book's
+`active[unit]` names an open token (`state.rs:16`, `:109`) — to `Open { open }` — and the Close's
+when `rows[open].closed` is set. Nothing matches on a request id: the inbox's ids are random RAM
+(`host.rs:288`, `:307`), `request_used` (`state.rs:93`) answers only for a request the book has
+already admitted, and a reboot forgets every pending one. A fire that finds the book already
+holding an active open for the hull enqueues nothing and moves the seam; `IcHost`'s
+one-pending-per-actor guard (`host.rs:247–249`) and `MAX_PENDING` are capacity, never state, and
+a refused enqueue is retried next fire. So a re-run fire mints nothing
 twice, a reboot between the finish and the Open re-owes it from the record (the RAM inbox is
 empty at boot by design, `ic_sortie/boot.rs:11–12`: "no closure is inferred from a reboot"), and the window
 between the finish and the claim's commit is V1's accepted window (S.2), one fire plus deferrals.
@@ -1327,7 +1337,8 @@ nothing is refused with the one sentence.
   the epoch record as cursor (D-23-13; S.2's epoch arm pattern).
 - **Alternative:** inside the finish's bundle, which needs the seal participant's action check
   (`participant.rs:95–102`) relaxed to admit the surface's action and the four owners prepared
-  from a foreign provider.
+  from a foreign provider — and, round 2 found, the capacity owner's one-typed-mutation rule
+  (`ic_claim.rs:516–517`) and `require_exact_ic` relaxed with it.
 - **Why:** the claim path's one-action rule is its security boundary (the module says so at every
   type), and the accepted V1 window already exists for the ship.
 
