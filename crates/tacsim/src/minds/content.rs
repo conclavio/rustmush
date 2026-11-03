@@ -44,10 +44,101 @@ use crate::arena::mind::MindRunner;
 use crate::config::ArenaConfig;
 
 /// **Standard Doctrine's source** (`content/minds/standard.rhai`).
-pub const STANDARD_RHAI: &str = include_str!("../../content/minds/standard.rhai");
+pub static STANDARD_RHAI: &str = include_str!("../../content/minds/standard.rhai");
 
 /// **Standard Doctrine's manifest** (`content/minds/standard.json`).
 pub const STANDARD_MANIFEST_JSON: &str = include_str!("../../content/minds/standard.json");
+
+/// **Kirkwood Picket Doctrine's source** (`content/minds/kirkwood_picket.rhai`, `SF.R14`, `D-35-17`).
+#[must_use]
+pub const fn kirkwood_picket_source() -> &'static str {
+    include_str!("../../content/minds/kirkwood_picket.rhai")
+}
+
+/// **Kirkwood Picket Doctrine's manifest** (`content/minds/kirkwood_picket.json`, `SF.R14`, `D-35-17`).
+#[must_use]
+pub const fn kirkwood_picket_manifest_json() -> &'static str {
+    include_str!("../../content/minds/kirkwood_picket.json")
+}
+
+/// **Kirkwood Picket Doctrine's SHA-256 digest** (`SF.R14`, `D-35-17`).
+#[must_use]
+pub fn kirkwood_picket_digest() -> Digest {
+    static DIGEST: std::sync::LazyLock<Digest> = std::sync::LazyLock::new(|| {
+        Digest(Sha256::digest(kirkwood_picket_source().as_bytes()).into())
+    });
+    *DIGEST
+}
+
+/// **Belt Raider Doctrine's source** (`content/minds/belt_raider.rhai`, `SF.R14`, `D-35-17`).
+#[must_use]
+pub const fn belt_raider_source() -> &'static str {
+    include_str!("../../content/minds/belt_raider.rhai")
+}
+
+/// **Belt Raider Doctrine's manifest** (`content/minds/belt_raider.json`, `SF.R14`, `D-35-17`).
+#[must_use]
+pub const fn belt_raider_manifest_json() -> &'static str {
+    include_str!("../../content/minds/belt_raider.json")
+}
+
+/// **Belt Raider Doctrine's SHA-256 digest** (`SF.R14`, `D-35-17`).
+#[must_use]
+pub fn belt_raider_digest() -> Digest {
+    static DIGEST: std::sync::LazyLock<Digest> =
+        std::sync::LazyLock::new(|| Digest(Sha256::digest(belt_raider_source().as_bytes()).into()));
+    *DIGEST
+}
+
+/// **Interdictor Patrol Doctrine's source** (`content/minds/interdictor_patrol.rhai`, `SF.R14`, `D-35-17`).
+#[must_use]
+pub const fn interdictor_patrol_source() -> &'static str {
+    include_str!("../../content/minds/interdictor_patrol.rhai")
+}
+
+/// **Interdictor Patrol Doctrine's manifest** (`content/minds/interdictor_patrol.json`, `SF.R14`, `D-35-17`).
+#[must_use]
+pub const fn interdictor_patrol_manifest_json() -> &'static str {
+    include_str!("../../content/minds/interdictor_patrol.json")
+}
+
+/// **Interdictor Patrol Doctrine's SHA-256 digest** (`SF.R14`, `D-35-17`).
+#[must_use]
+pub fn interdictor_patrol_digest() -> Digest {
+    static DIGEST: std::sync::LazyLock<Digest> = std::sync::LazyLock::new(|| {
+        Digest(Sha256::digest(interdictor_patrol_source().as_bytes()).into())
+    });
+    *DIGEST
+}
+
+/// **Collector Drone Doctrine's source** (`content/minds/drone_mining.rhai`, `SF.R14`, `D-35-17`).
+#[must_use]
+pub const fn drone_mining_source() -> &'static str {
+    include_str!("../../content/minds/drone_mining.rhai")
+}
+
+/// **Collector Drone Doctrine's manifest** (`content/minds/drone_mining.json`, `SF.R14`, `D-35-17`).
+#[must_use]
+pub const fn drone_mining_manifest_json() -> &'static str {
+    include_str!("../../content/minds/drone_mining.json")
+}
+
+/// **Collector Drone Doctrine's SHA-256 digest** (`SF.R14`, `D-35-17`).
+#[must_use]
+pub fn drone_mining_digest() -> Digest {
+    static DIGEST: std::sync::LazyLock<Digest> = std::sync::LazyLock::new(|| {
+        Digest(Sha256::digest(drone_mining_source().as_bytes()).into())
+    });
+    *DIGEST
+}
+
+/// Install the four shipped space/mining doctrine sources into `TacsimStore` (`SF.R14`, `D-35-17`).
+pub fn ensure_space_mind_sources_installed(store: &mut crate::store::TacsimStore) {
+    let _ = crate::store::install_mind_source(store, kirkwood_picket_source());
+    let _ = crate::store::install_mind_source(store, belt_raider_source());
+    let _ = crate::store::install_mind_source(store, interdictor_patrol_source());
+    let _ = crate::store::install_mind_source(store, drone_mining_source());
+}
 
 /// **The SHA-256 of [`STANDARD_RHAI`]'s bytes**, 64 lowercase characters
 /// (doc 17 §13) — pinned by `tests/content.rs`'s
@@ -105,10 +196,25 @@ pub fn source_lookup<'s>(
     store: Option<&'s crate::store::TacsimStore>,
     sha256: &[u8; 32],
 ) -> Option<&'s str> {
+    if let Some(found) = store.and_then(|store| store.mind_source(sha256)) {
+        return Some(found);
+    }
     if *sha256 == standard_digest().0 {
         return Some(STANDARD_RHAI);
     }
-    store.and_then(|store| store.mind_source(sha256))
+    if *sha256 == kirkwood_picket_digest().0 {
+        return Some(kirkwood_picket_source());
+    }
+    if *sha256 == belt_raider_digest().0 {
+        return Some(belt_raider_source());
+    }
+    if *sha256 == interdictor_patrol_digest().0 {
+        return Some(interdictor_patrol_source());
+    }
+    if *sha256 == drone_mining_digest().0 {
+        return Some(drone_mining_source());
+    }
+    None
 }
 
 /// **A stock mind's manifest** (doc 17 §11, §13, §22's italics):

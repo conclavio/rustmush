@@ -434,7 +434,7 @@ fn a1_lane_legs_at_the_epoch_are_printed() {
 }
 
 /// The outer-system golden table written by `fetch_elements.py --write-outer`.
-const OUTER_BODIES_JSON: &str = include_str!("../../content/sky/outer_bodies.json");
+const OUTER_BODIES_JSON: &str = include_str!("../support/outer_bodies_golden.json");
 
 #[derive(Deserialize)]
 struct OuterGolden {

@@ -2376,6 +2376,8 @@ mod tests {
             body: Some(cid("ceres")),
             lat_mdeg: Some(lat),
             lon_mdeg: Some(lon),
+            kirkwood_picket: false,
+            clusters: Vec::new(),
         }
     }
 

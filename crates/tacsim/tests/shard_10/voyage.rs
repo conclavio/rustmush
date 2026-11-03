@@ -3025,11 +3025,13 @@ fn a8_the_plan_names_the_throttle_that_fits() {
     assert!(throttle_lines(&plan).is_empty(), "{plan}");
 }
 
-/// The shipped lane with `ceres_stickney`'s first leg (`ceres_freeport -> kirkwood_depot`)
-/// carrying `hazard: 4, interdiction: 3` (`D-35-5`, `SF.R1`).
+/// The shipped lane with `kirkwood_depot`'s `kirkwood_picket` set to `false` so `ceres_stickney`'s
+/// first leg (`ceres_freeport -> kirkwood_depot`, `hazard: 4, interdiction: 3`) opens the 2-ship
+/// `Interdictor Picket` bubble (`D-35-5`, `SF.R1`, `SF.R14`).
 fn lane_with_interdicted_kirkwood() -> &'static str {
     let mut doc: serde_json::Value = serde_json::from_str(LANE_JSON).expect("the lane is JSON");
     doc["manifest"]["digest"] = serde_json::json!(UNSIGNED);
+    doc["entries"]["kirkwood_depot"]["def"]["kirkwood_picket"] = serde_json::json!(false);
     doc["entries"]["ceres_stickney"]["def"]["legs"][0]["hazard"] = serde_json::json!(4);
     doc["entries"]["ceres_stickney"]["def"]["legs"][0]["interdiction"] = serde_json::json!(3);
     let signed = sign(&serde_json::to_string_pretty(&doc).expect("serializes"));
@@ -4562,10 +4564,7 @@ fn sfr5_chartered_dray_p_buys_licence_matches_velocity_in_pallas_mines_into_stow
 #[test]
 #[allow(clippy::too_many_lines)]
 fn sfr6_kirkwood_customs_picket_story_1_end_to_end_rhai_doctrine_triad_combat_and_ledger_fine() {
-    let mut rig = stocked_with(Roster {
-        seed_lane: Some(lane_with_interdicted_kirkwood()),
-        ..Roster::default()
-    });
+    let mut rig = stocked();
     let (pilot, row) = chartered(&mut rig, "Pilot", 1);
     let hull = ObjId(row.hull);
     let vault_id = hold_vault(&rig.tw, &row);
@@ -5391,10 +5390,7 @@ fn sfr7_docking_session_pauses_ship_replays_valid_tape_into_berth_docked_rejects
 #[test]
 fn sfr8_space_state_persists_in_tacsim_store_and_survives_full_engine_restart_mid_bubble_free_flight_derelict_and_docking()
  {
-    let roster = Roster {
-        seed_lane: Some(lane_with_interdicted_kirkwood()),
-        ..Roster::default()
-    };
+    let roster = Roster::default();
     let mut rig = stocked_with(roster);
     let (pilot, row) = chartered(&mut rig, "Pilot", 1);
     let hull = ObjId(row.hull);
@@ -5892,10 +5888,7 @@ fn sfr9_authority_closeout_gates_docking_removes_cluster_teleport_stops_1s_burn_
 
     // 4 & 6. Charter a second hull (`Dray-P` on the Kirkwood picket leg) to verify `+helm/run`
     //        status guarding and disabled derelict carrier journey failure + maneuver lock:
-    let mut rig2 = stocked_with(Roster {
-        seed_lane: Some(lane_with_interdicted_kirkwood()),
-        ..Roster::default()
-    });
+    let mut rig2 = stocked();
     let (pilot2, row2) = chartered(&mut rig2, "PilotTwo", 2);
     let hull2 = ObjId(row2.hull);
     let desk2 = station_room(&rig2.tw, "ceres_port", "room.c05_registry");
@@ -5997,10 +5990,7 @@ fn sfr9_authority_closeout_gates_docking_removes_cluster_teleport_stops_1s_burn_
 #[allow(clippy::too_many_lines)]
 fn sfr10_tempo_and_persistence_budget_steps_late_ticks_bounds_10m_heave_to_quarantines_corrupt_doc_and_keeps_custody_across_restart()
  {
-    let roster = Roster {
-        seed_lane: Some(lane_with_interdicted_kirkwood()),
-        ..Roster::default()
-    };
+    let roster = Roster::default();
     let mut rig = stocked_with(roster);
     let (pilot, row) = chartered(&mut rig, "Pilot", 1);
     let hull = ObjId(row.hull);
@@ -6397,10 +6387,7 @@ fn sfr11_one_ledger_rated_drive_debits_bubble_jink_in_vault_persists_across_reen
 #[allow(clippy::too_many_lines)]
 fn sfr12_domain_bubbles_and_real_hulls_share_kirkwood_bubble_tow_real_raider_thing_with_leader_claim_and_seize_indigent_contraband()
  {
-    let mut rig = stocked_with(Roster {
-        seed_lane: Some(lane_with_interdicted_kirkwood()),
-        ..Roster::default()
-    });
+    let mut rig = stocked();
 
     // 1. Charter *Salt Moth* (indigent miner on `Dray-P` carrying 2 t unlicensed `strategic_ore`):
     let (pilot_miner, row_miner) = chartered(&mut rig, "Miner", 1);
@@ -7032,5 +7019,312 @@ fn sfr13_presence_and_feeds_push_to_all_crew_filter_torpedoes_and_handle_linkdea
             !ship.crew_linkdead,
             "reviving pilot must clear ship.crew_linkdead"
         );
+    }
+}
+
+/// **Doc 35b cut SF.R14 acceptance (`D-35-17`, `35b` §4 #1–#5, §8 `SF.R14`)** — verifies:
+/// 1. Zero Rust `const .*_RHAI` or `const .*_ROCKS` in `crates/tacsim/src/`.
+/// 2. `content/sky/outer_bodies.json` is a signed `rules_definition` pack (`tacsim.sky.outer_bodies@1`)
+///    verified through `tacsim::pack::load_pack`.
+/// 3. The shipped lane (`Roster::default()`, with no `seed_lane` override) authors `kirkwood_picket: true`
+///    and the four orbital clusters (`ceres_halo`, `kirkwood_gap_3_1`, `pallas_inclined_belt`,
+///    `saturn_b_ring_edge`) on `kirkwood_depot` and `hazard: 4, interdiction: 3` on `ceres_stickney`
+///    leg 0, promoting a ship on `ceres_stickney` into the 3-party Kirkwood Customs Picket.
+/// 4. Picket NPC ships (`corvette_hull`, `raider_hull`) carry verified `MindSeal`s (`SealEngine::Scripted`)
+///    whose `source_sha256` resolves through `TacsimStore::mind_source` (`kirkwood_picket.rhai`,
+///    `belt_raider.rhai`), and `step_kirkwood_picket` derives stage transitions from Rhai memory
+///    rather than re-deciding stage in Rust before calling Rhai.
+/// 5. An interdicted non-Kirkwood leg (`kirkwood_picket: false`) does NOT open the Kirkwood Customs Picket
+///    even when flown by a `Dray-P` (`active.picket.is_none()`, `active.bubble.ships.len() == 2`), and its
+///    `interdictor_hull` carries a verified `MindSeal` for `interdictor_patrol.rhai`.
+/// 6. Launching collector drones (`+mine/drones 2 B`) creates `DroneSortieState`s with `ExcursionId`s
+///    and verified `MindSeal`s (`drone_mining.rhai`) whose `mind_think_seq` advances on the tick and
+///    whose `mind_last_trace` records `"DRONE_MINING_OUTBOUND"` / `"DRONE_MINING_COLLECT"`.
+#[test]
+#[allow(clippy::too_many_lines)]
+fn sfr14_authoring_loads_clusters_doctrines_and_outer_bodies_from_packs_opens_picket_only_on_kirkwood_and_seals_drone_minds()
+ {
+    // 1. Contract lint: no `const .*_RHAI` or `const .*_ROCKS` in `crates/tacsim/src/`:
+    fn check_no_const_rhai_or_rocks(dir: &std::path::Path) {
+        for entry in std::fs::read_dir(dir).expect("read_dir") {
+            let entry = entry.expect("dir entry");
+            let path = entry.path();
+            if path.is_dir() {
+                check_no_const_rhai_or_rocks(&path);
+            } else if path.extension().is_some_and(|e| e == "rs") {
+                let text = std::fs::read_to_string(&path).expect("read rs file");
+                for (lineno, line) in text.lines().enumerate() {
+                    let trimmed = line.trim();
+                    if let Some(rest) = trimmed
+                        .strip_prefix("const ")
+                        .or_else(|| trimmed.strip_prefix("pub const "))
+                        .or_else(|| trimmed.strip_prefix("pub(crate) const "))
+                    {
+                        let name = rest.split(':').next().unwrap_or_default().trim();
+                        assert!(
+                            !name.ends_with("_RHAI") && !name.ends_with("_ROCKS"),
+                            "found forbidden constant `{name}` at {}:{}: {trimmed}",
+                            path.display(),
+                            lineno + 1
+                        );
+                    }
+                }
+            }
+        }
+    }
+    let src_dir = std::path::Path::new(env!("CARGO_MANIFEST_DIR")).join("src");
+    check_no_const_rhai_or_rocks(&src_dir);
+
+    // 2. Verify `content/sky/outer_bodies.json` is a signed `rules_definition` pack loaded via `load_pack`:
+    let outer_raw = std::fs::read_to_string(
+        std::path::Path::new(env!("CARGO_MANIFEST_DIR")).join("content/sky/outer_bodies.json"),
+    )
+    .expect("outer_bodies.json exists");
+    let outer_pack = load_pack(&outer_raw).expect("outer_bodies.json verifies as a signed pack");
+    assert_eq!(
+        outer_pack.manifest().id().as_str(),
+        "tacsim.sky.outer_bodies"
+    );
+    assert_eq!(
+        outer_pack.manifest().kind(),
+        tacsim::PackKind::RulesDefinition
+    );
+
+    // 3 & 4. Boot the shipped lane (`Roster::default()`, no `seed_lane` override) and verify `ceres_stickney`
+    //        promotes a standard Dray into the 3-party Kirkwood Customs Picket with sealed NPC minds:
+    let mut rig = stocked();
+    let (pilot, row) = chartered(&mut rig, "Pilot", 1);
+    let hull = ObjId(row.hull);
+    load(&mut rig, &row, 53, 19);
+    set_rate(&mut rig.tw, 3_600);
+    board(&mut rig, pilot);
+
+    let pending = undock_and_burn(&mut rig, pilot, hull);
+    let depart_ic = pending.plan.depart_ic;
+    let leg1_secs = i64::from(pending.plan.legs[0].secs);
+    let _ = fire_quietly(&mut rig);
+    let _ = to_ic(&mut rig, depart_ic + leg1_secs);
+
+    {
+        let tstore = store(&rig.tw);
+        let book = rig
+            .tw
+            .world()
+            .module_state::<tacsim::space::SpaceBubbleBook>()
+            .expect("SpaceBubbleBook");
+        let active = book
+            .active_for_hull(hull)
+            .expect("shipped lane must promote ceres_stickney into Kirkwood Customs Picket");
+        assert!(
+            book.kirkwood_picket_domains.contains(&active.domain),
+            "kirkwood_picket_domains must contain the Kirkwood waypoint domain from authored content"
+        );
+        assert_eq!(
+            active.bubble.ships.len(),
+            3,
+            "shipped lane Kirkwood waypoint must open the 3-party picket bubble even for an un-refitted Dray"
+        );
+        let picket = active.picket.as_ref().expect("KirkwoodPicketState");
+        let corvette_seal = picket
+            .corvette_seal
+            .as_ref()
+            .expect("Corvette must carry a verified MindSeal");
+        let raider_seal = picket
+            .raider_seal
+            .as_ref()
+            .expect("Raider must carry a verified MindSeal");
+        assert_eq!(
+            corvette_seal.engine,
+            tacsim::arena::mind::SealEngine::Scripted
+        );
+        assert_eq!(
+            raider_seal.engine,
+            tacsim::arena::mind::SealEngine::Scripted
+        );
+        assert_eq!(
+            tacsim::space::space_mind_seal_of(rig.tw.world(), picket.corvette_hull).as_ref(),
+            Some(corvette_seal)
+        );
+        assert_eq!(
+            tacsim::space::space_mind_seal_of(rig.tw.world(), picket.raider_hull).as_ref(),
+            Some(raider_seal)
+        );
+        let corvette_sha = corvette_seal.source_sha256;
+        let raider_sha = raider_seal.source_sha256;
+        assert_eq!(
+            corvette_sha,
+            tacsim::minds::content::kirkwood_picket_digest().0
+        );
+        assert_eq!(raider_sha, tacsim::minds::content::belt_raider_digest().0);
+        assert!(
+            tstore.mind_source(&corvette_sha).is_some(),
+            "Corvette source_sha256 must resolve in TacsimStore::mind_source"
+        );
+        assert!(
+            tstore.mind_source(&raider_sha).is_some(),
+            "Raider source_sha256 must resolve in TacsimStore::mind_source"
+        );
+    }
+
+    // 5. Verify an interdicted non-Kirkwood leg (`kirkwood_picket: false`) does NOT open the Kirkwood
+    //    Customs Picket even when flown by a `Dray-P`, and seals `interdictor_hull` with `interdictor_patrol.rhai`:
+    let mut rig2 = stocked_with(Roster {
+        seed_lane: Some(lane_with_interdicted_kirkwood()),
+        ..Roster::default()
+    });
+    let (pilot2, row2) = chartered(&mut rig2, "PilotTwo", 2);
+    let hull2 = ObjId(row2.hull);
+    let vault2 = hold_vault(&rig2.tw, &row2);
+    let desk2 = station_room(&rig2.tw, "ceres_port", "room.c05_registry");
+    teleport(&mut rig2.tw, pilot2, desk2);
+    let refit2 = run(&mut rig2.tw, pilot2, "+coop/refit prospector");
+    assert!(refit2.contains("Dray-P"), "{refit2}");
+    seed_pool(&mut rig2, vault2, "propellant", 75, LotId(981));
+    seed_pool(&mut rig2, vault2, "provisions", 45, LotId(982));
+    set_rate(&mut rig2.tw, 3_600);
+    board(&mut rig2, pilot2);
+
+    let pending2 = undock_and_burn(&mut rig2, pilot2, hull2);
+    let _ = fire_quietly(&mut rig2);
+    let _ = to_ic(
+        &mut rig2,
+        pending2.plan.depart_ic + i64::from(pending2.plan.legs[0].secs),
+    );
+    {
+        let tstore2 = store(&rig2.tw);
+        let book2 = rig2
+            .tw
+            .world()
+            .module_state::<tacsim::space::SpaceBubbleBook>()
+            .expect("SpaceBubbleBook");
+        let active2 = book2
+            .active_for_hull(hull2)
+            .expect("active 2-ship interdictor bubble");
+        assert!(
+            active2.picket.is_none() && active2.bubble.ships.len() == 2,
+            "an interdicted non-Kirkwood leg must NOT open the 3-party Kirkwood Customs Picket even for a Dray-P"
+        );
+        let int_seal = active2
+            .interdictor_seal
+            .as_ref()
+            .expect("interdictor must carry a verified MindSeal");
+        assert_eq!(int_seal.engine, tacsim::arena::mind::SealEngine::Scripted);
+        let int_sha = int_seal.source_sha256;
+        assert_eq!(
+            int_sha,
+            tacsim::minds::content::interdictor_patrol_digest().0
+        );
+        assert!(
+            tstore2.mind_source(&int_sha).is_some(),
+            "interdictor source_sha256 must resolve in TacsimStore::mind_source"
+        );
+    }
+
+    // 6. Clear the 2-ship interdiction on `rig2`, fly to `ceres_halo`, and launch 2 collector drones
+    //    (`+mine/drones 2 B`) to verify `DroneSortieState` carries `ExcursionId` + verified `MindSeal`
+    //    (`drone_mining.rhai`) and steps `mind_think_seq` on the tick:
+    for i in 0..4 {
+        let next_r = rig2.tw.world().now() + 1;
+        rig2.tw.set_now(next_r);
+        let _ = rig2.tw.fire_due(next_r * 1_000);
+        if i == 0 || i == 2 || i == 3 {
+            let _ = run(&mut rig2.tw, pilot2, "+tac/beam Interdictor Picket");
+        }
+        if i == 1 || i == 2 {
+            let _ = run(&mut rig2.tw, pilot2, "+damage/vent");
+        }
+    }
+    let next_r = rig2.tw.world().now() + 1;
+    rig2.tw.set_now(next_r);
+    let _ = rig2.tw.fire_due(next_r * 1_000);
+
+    let lic2 = run(&mut rig2.tw, pilot2, "+licence/buy go");
+    assert!(lic2.contains("Freeport Registry"), "{lic2}");
+    let dec2 = run(&mut rig2.tw, pilot2, "+helm/decouple");
+    assert!(dec2.contains("Decoupled"), "{dec2}");
+    let auto_halo = run(&mut rig2.tw, pilot2, "+helm/autopilot ceres_halo");
+    assert!(auto_halo.contains("Ceres Halo Commons"), "{auto_halo}");
+    let halo_burn = drain_space_and_industry(&mut rig2.tw);
+    land_quietly(&mut rig2, &halo_burn);
+    let halo_arr_ic = rig2
+        .tw
+        .world()
+        .module_state::<tacsim::space::SpaceBubbleBook>()
+        .expect("SpaceBubbleBook")
+        .free_flights[&hull2]
+        .cluster_arrival_ic_s
+        .expect("cluster_arrival_ic_s");
+    let halo_real_s = (halo_arr_ic.saturating_sub(ic_now(&rig2.tw)) + 3_599) / 3_600;
+    let t_halo = rig2.tw.world().now().saturating_add(halo_real_s.max(6));
+    rig2.tw.set_now(t_halo);
+    let _ = rig2.tw.fire_due(t_halo.saturating_mul(1_000));
+    let open_halo = drain_space_and_industry(&mut rig2.tw);
+    land_all(&mut rig2, &open_halo);
+    let t_seed = rig2.tw.world().now().saturating_add(6);
+    rig2.tw.set_now(t_seed);
+    let _ = rig2.tw.fire_due(t_seed.saturating_mul(1_000));
+    let seed_halo = drain_space_and_industry(&mut rig2.tw);
+    land_quietly(&mut rig2, &seed_halo);
+
+    let _ = run(&mut rig2.tw, pilot2, "+helm/approach A");
+    let app_b = drain_space_and_industry(&mut rig2.tw);
+    land_quietly(&mut rig2, &app_b);
+    for _ in 0..3 {
+        let t = rig2.tw.world().now().saturating_add(6);
+        rig2.tw.set_now(t);
+        let _ = rig2.tw.fire_due(t.saturating_mul(1_000));
+        let sub = drain_space_and_industry(&mut rig2.tw);
+        land_quietly(&mut rig2, &sub);
+    }
+    let _ = run(&mut rig2.tw, pilot2, "+helm/match A");
+    let match_b = drain_space_and_industry(&mut rig2.tw);
+    land_quietly(&mut rig2, &match_b);
+
+    set_rate(&mut rig2.tw, 1);
+    let drones_out = run(&mut rig2.tw, pilot2, "+mine/drones A 2");
+    assert!(
+        drones_out.contains("Launched 2 collector drone(s)"),
+        "{drones_out}"
+    );
+    let t_step = rig2.tw.world().now().saturating_add(6);
+    rig2.tw.set_now(t_step);
+    let _ = rig2.tw.fire_due(t_step.saturating_mul(1_000));
+    {
+        let tstore2 = store(&rig2.tw);
+        let book2 = rig2
+            .tw
+            .world()
+            .module_state::<tacsim::space::SpaceBubbleBook>()
+            .expect("SpaceBubbleBook");
+        let sess = book2
+            .cluster_sessions
+            .get(&hull2)
+            .expect("cluster session for hull2");
+        assert_eq!(sess.active_drones.len(), 2);
+        for d in &sess.active_drones {
+            let seal = d
+                .mind_seal
+                .as_ref()
+                .expect("collector drone must carry a verified MindSeal");
+            assert_eq!(seal.engine, tacsim::arena::mind::SealEngine::Scripted);
+            let sha = seal.source_sha256;
+            assert_eq!(sha, tacsim::minds::content::drone_mining_digest().0);
+            assert!(
+                tstore2.mind_source(&sha).is_some(),
+                "drone_mining.rhai source_sha256 must resolve in TacsimStore::mind_source"
+            );
+            assert!(
+                d.mind_think_seq >= 2,
+                "collector drone mind_think_seq must advance on the tick: got {}",
+                d.mind_think_seq
+            );
+            assert!(
+                d.mind_last_trace
+                    .iter()
+                    .any(|t| t.starts_with("DRONE_MINING_")),
+                "collector drone mind_last_trace must record drone_mining.rhai trace: {:?}",
+                d.mind_last_trace
+            );
+        }
     }
 }

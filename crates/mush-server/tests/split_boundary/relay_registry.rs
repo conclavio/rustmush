@@ -4304,6 +4304,21 @@ fn strip_urvara(lane: &mut serde_json::Value) {
         .as_object_mut()
         .unwrap()
         .remove("urvara");
+    if let Some(def) = lane["entries"]
+        .get_mut("kirkwood_depot")
+        .and_then(|entry| entry["def"].as_object_mut())
+    {
+        def.remove("kirkwood_picket");
+        def.remove("clusters");
+    }
+    if let Some(legs) = lane["entries"]
+        .get_mut("ceres_stickney")
+        .and_then(|entry| entry["def"]["legs"].as_array_mut())
+        && let Some(leg0) = legs.first_mut().and_then(serde_json::Value::as_object_mut)
+    {
+        leg0.remove("hazard");
+        leg0.remove("interdiction");
+    }
 }
 /// The published lane v15 (doc 20 cut SM.12b): the shipped lane less doc 32 cut S.1's 512 site
 /// and CF.6c's escort design, at version 15, re-signed to its published digest.
