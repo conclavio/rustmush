@@ -13,12 +13,12 @@ use tacsim::field::crew::{FIT_AGAIN, Treatment};
 use tacsim::field::{CrewCondition, CrewLocation, crew_of};
 use tokio::sync::mpsc::Receiver;
 
-use crate::driving::{
+use crate::driving_rig::{
     Rig, command, drain, land, launched, on_pad, on_pad_as, run, staff_hand, stocked_tuned,
     to_cell, warm,
 };
 use crate::field_crash::{control_destroyed, hull_of};
-use crate::field_host::{armed, egress, seat, second, site_record, task, until};
+use crate::field_host_rig::{armed, egress, seat, second, site_record, task, until};
 
 /// Treatment of an incapacitated character, IC seconds (the gate's compressed time).
 const TREAT_INCAPACITATED_S: u32 = 600;
@@ -27,7 +27,7 @@ const MEDICAL_PERMILLE: u32 = 500;
 
 /// A fast field, a short extraction and a short treatment (`field_crash`'s tune).
 fn tune(cfg: &mut TacsimConfig) {
-    crate::field_host::tune(cfg);
+    crate::field_host_rig::tune(cfg);
     cfg.field.extract_s = 60;
     cfg.field.treat_injured_s = 300;
     cfg.field.treat_incapacitated_s = TREAT_INCAPACITATED_S;
@@ -393,8 +393,11 @@ async fn gc13_review_a_check_in_from_a_sound_carrier_never_heals_an_injury() {
         .await,
         "the second field opens"
     );
-    let live = tacsim::field::live_on(rig.tw.world(), &crate::driving::cid(crate::driving::AHUNA))
-        .expect("the live record");
+    let live = tacsim::field::live_on(
+        rig.tw.world(),
+        &crate::driving_rig::cid(crate::driving_rig::AHUNA),
+    )
+    .expect("the live record");
     assert!(
         live.units
             .iter()

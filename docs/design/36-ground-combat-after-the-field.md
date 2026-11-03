@@ -3352,7 +3352,7 @@ Still owed from this lane:
 
 - **The driving rig never resumed a field.** Its `reboot` hydrated the typed records after the
   modules loaded, so the field host's boot found no site record and voided; the CF-1 restart gates
-  in `field_crash.rs` pass through that void and a reopened field. `driving::reboot_resuming`
+  in `field_crash.rs` pass through that void and a reopened field. `driving_rig::reboot_resuming` (with `crash_resuming`, in `tests/support/field/driving_rig.rs`)
   (production's order) is new and only row 2's test uses it. Under it, the CF-1 exit gate fails:
   after a resumed field lands the owed `exit`, `live.owed_exits` keeps the row. That is CF-1's
   resume path (`field/boot.rs`, `field/exit.rs`), not this lane's.

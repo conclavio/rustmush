@@ -24,13 +24,13 @@ use tacsim::port::tv::TvLeaseStatus;
 use tacsim::surface::salvage::ClaimSeam;
 use tacsim::surface::site_record::{KnownItem, KnownWhat, LeftCondition};
 
-use crate::driving::{
+use crate::driving_rig::{
     AHUNA, act_go, command, finish, hold_pool, launched, on_pad, on_pad_as, port_map, ramp_at, run,
     seed_pool, stocked_tuned, store, to_cell, to_ic, warm,
 };
 use crate::field_gc4::{demoted, powerless, seconds_until, towing};
-use crate::field_host::{armed, egress, seat, second, site_record, task, tune, until};
-use crate::site_record::{staff, staff_member};
+use crate::field_host_rig::{armed, egress, seat, second, site_record, task, tune, until};
+use crate::site_record_rig::{staff, staff_member};
 
 /// Short tow stages and a short extraction, on the field host's lab tempo.
 fn quick(cfg: &mut tacsim::TacsimConfig) {
@@ -45,7 +45,7 @@ fn quick(cfg: &mut tacsim::TacsimConfig) {
 
 /// **Move the world on to IC `target` without firing a tick** (`vehicles.rs`'s `skip_days`): the
 /// next fire is the first the jump sees.
-pub(crate) fn skip_to_ic(rig: &mut crate::driving::Rig, target: i64) {
+pub(crate) fn skip_to_ic(rig: &mut crate::driving_rig::Rig, target: i64) {
     let w = rig.tw.world();
     let rate = i64::from(w.world_timeline().current().rate.max(1));
     let ahead = target.saturating_sub(w.world_ic_now().at).max(0);
@@ -54,16 +54,16 @@ pub(crate) fn skip_to_ic(rig: &mut crate::driving::Rig, target: i64) {
 }
 
 /// The ramp's site cell.
-fn ramp_cell(rig: &crate::driving::Rig) -> (i64, i64) {
+fn ramp_cell(rig: &crate::driving_rig::Rig) -> (i64, i64) {
     let (rx, ry, _) = ramp_at(&rig.tw, AHUNA);
     (rx.div_euclid(1_000), ry.div_euclid(1_000))
 }
 
 /// The tow attached: `tug`'s `+tv/<slot> tow go` filed and landed, then on to the attachment.
-fn attach(rig: &mut crate::driving::Rig, who: ObjId, slot: u8, tug: ObjId, casualty: ObjId) {
+fn attach(rig: &mut crate::driving_rig::Rig, who: ObjId, slot: u8, tug: ObjId, casualty: ObjId) {
     let (out, queued) = command(rig, who, &format!("+tv/{slot} tow go"));
     assert_eq!(queued.len(), 1, "one tow start: {out}");
-    crate::driving::land(rig, &queued[0]).expect("the tow start lands");
+    crate::driving_rig::land(rig, &queued[0]).expect("the tow start lands");
     assert!(
         seconds_until(rig, 120, |rig| towing(rig, tug) == Some(casualty)),
         "the tow attaches"
@@ -71,10 +71,10 @@ fn attach(rig: &mut crate::driving::Rig, who: ObjId, slot: u8, tug: ObjId, casua
 }
 
 /// The load filed and landed: on to the casualty's leaving the site's index.
-fn load(rig: &mut crate::driving::Rig, who: ObjId, slot: u8, tug: ObjId, casualty: ObjId) {
+fn load(rig: &mut crate::driving_rig::Rig, who: ObjId, slot: u8, tug: ObjId, casualty: ObjId) {
     let (out, queued) = command(rig, who, &format!("+tv/{slot} load go"));
     assert_eq!(queued.len(), 1, "one load start: {out}");
-    crate::driving::land(rig, &queued[0]).expect("the load start lands");
+    crate::driving_rig::land(rig, &queued[0]).expect("the load start lands");
     assert!(
         seconds_until(rig, 120, |rig| site_record(rig).is_some_and(|record| {
             record.tows.act_of(tug).is_none() && record.units.iter().all(|l| l.unit != casualty)
@@ -169,7 +169,7 @@ fn gc5_a_casualty_left_behind_is_found_by_a_scan_and_brought_home() {
         queued[0].action.key().id.as_str(),
         tacsim::surface::tow::TOW_ACTION
     );
-    crate::driving::land(&mut rig, &queued[0]).expect("the pickup lands");
+    crate::driving_rig::land(&mut rig, &queued[0]).expect("the pickup lands");
     let hopper =
         tacsim::port::vehicle::hopper_of(rig.tw.world(), wingman).expect("the wingman's hopper");
     assert_eq!(
@@ -218,7 +218,7 @@ fn gc5_a_casualty_left_behind_is_found_by_a_scan_and_brought_home() {
         record.custody.is_empty(),
         "a friendly load is nobody's custody"
     );
-    let escort_record = crate::driving::record_of(&mut rig.tw, escort).expect("its rig record");
+    let escort_record = crate::driving_rig::record_of(&mut rig.tw, escort).expect("its rig record");
     assert!(escort_record.sortie.is_none(), "its epoch is closed");
 }
 
@@ -245,7 +245,7 @@ struct Loaded {
 /// inside it; a stranger's mark opens a field, which settles with the escort a casualty and the
 /// captain stranded in it; the stranger's rig tows the escort into the stranger's own carrier,
 /// and the load completes.
-async fn non_friend_loaded(rig: &mut crate::driving::Rig) -> Loaded {
+async fn non_friend_loaded(rig: &mut crate::driving_rig::Rig) -> Loaded {
     let (a, _, tvs) = on_pad(rig, 1);
     let escort = tvs[0];
     let ramp = ramp_cell(rig);
@@ -253,7 +253,7 @@ async fn non_friend_loaded(rig: &mut crate::driving::Rig) -> Loaded {
     to_cell(rig, escort, (ramp.0 + 1, ramp.1));
     powerless(rig, escort);
     seat(rig, escort, a);
-    crate::driving::staff_hand(rig, |ctx| {
+    crate::driving_rig::staff_hand(rig, |ctx| {
         ctx.w.move_to(a, escort).expect("A climbs into the escort");
     });
     // The stranger: a carrier on the same pad with one rig, and an armed hull whose mark opens
@@ -271,7 +271,7 @@ async fn non_friend_loaded(rig: &mut crate::driving::Rig) -> Loaded {
     let mut lines: Vec<LedgerEvent> = Vec::new();
     let (out, queued) = command(rig, b, "+field/mark E=hostile");
     assert_eq!(queued.len(), 1, "one promotion: {out}");
-    crate::driving::land(rig, &queued[0]).expect("the promotion lands");
+    crate::driving_rig::land(rig, &queued[0]).expect("the promotion lands");
     assert!(
         until(rig, &mut rx, &mut lines, 20, |rig, _| task(rig).is_some()).await,
         "the field opens"
@@ -357,7 +357,7 @@ async fn gc5_a_non_friend_load_takes_custody_and_abandons_the_crew() {
     assert_eq!(custody.recovered_by, tug);
     assert_eq!(custody.claim, ClaimSeam::Owed, "a claim owed for GC.6");
     assert!(custody.left_ic.is_some(), "the ground's clock rides along");
-    let escort_record = crate::driving::record_of(&mut rig.tw, escort).expect("its rig record");
+    let escort_record = crate::driving_rig::record_of(&mut rig.tw, escort).expect("its rig record");
     assert!(escort_record.sortie.is_none(), "its epoch is closed");
     assert!(
         store(&rig.tw).tv_lease_on(escort).is_some(),
@@ -491,7 +491,7 @@ fn gc5_a_lease_rig_out_28_days_is_written_off_and_handed_back_when_loaded() {
     );
     let record = site_record(&mut rig).expect("the site record");
     assert!(record.custody.is_empty(), "no custody, so no claim");
-    let escort_record = crate::driving::record_of(&mut rig.tw, escort).expect("its rig record");
+    let escort_record = crate::driving_rig::record_of(&mut rig.tw, escort).expect("its rig record");
     assert!(escort_record.sortie.is_none(), "its epoch is closed");
     assert!(escort_record.excursion.is_none(), "its excursion is closed");
 }
@@ -556,14 +556,14 @@ async fn gc5_review_the_captors_field_close_keeps_the_abandoned_extraction() {
     );
     let (out, queued) = command(&mut rig, b, "+field/mark E=hostile");
     assert_eq!(queued.len(), 1, "one promotion: {out}");
-    crate::driving::land(&mut rig, &queued[0]).expect("the promotion lands");
+    crate::driving_rig::land(&mut rig, &queued[0]).expect("the promotion lands");
     assert!(
         until(&mut rig, &mut rx, &mut lines, 20, |rig, _| task(rig)
             .is_some())
         .await,
         "the second field opens"
     );
-    let live = tacsim::field::live_on(rig.tw.world(), &crate::driving::cid(AHUNA))
+    let live = tacsim::field::live_on(rig.tw.world(), &crate::driving_rig::cid(AHUNA))
         .expect("the live record");
     assert!(
         live.units

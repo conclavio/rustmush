@@ -16,18 +16,18 @@ use tacsim::field::{CrewLocation, FieldLive};
 use tacsim::port::Ticket;
 use tokio::sync::mpsc::Receiver;
 
-use crate::driving::{
+use crate::driving_rig::crash_resuming;
+use crate::driving_rig::{
     Rig, cid, command, en_route, land, launched, on_pad, prospector, run, staff_hand,
     stocked_tuned, to_cell, to_ic, warm,
 };
-use crate::field_crash::crash_resuming;
-use crate::field_host::{
+use crate::field_host_rig::{
     armed, egress, frame, seat, second, site_record, task, tune, until, weapon_of,
 };
 
 /// **Strip `unit`'s armour to its floor**, leaving its internals whole, so the next rounds that
 /// land are section damage (a fixture, so the gate fights in seconds).
-fn unarmoured(rig: &mut crate::driving::Rig, unit: ObjId) {
+fn unarmoured(rig: &mut crate::driving_rig::Rig, unit: ObjId) {
     staff_hand(rig, |ctx| {
         let cells = mush_tactics::module::unit_of(ctx.w, unit)
             .expect("the unit")
@@ -120,7 +120,7 @@ async fn cf3_a_carrier_takes_a_hit_in_a_field_and_the_damage_shows_in_port() {
 
     // (3) B locks the carrier on its pad and fires until rounds have left the gun at it.
     let gun = weapon_of(&rig, hull_b);
-    let rounds = |rig: &crate::driving::Rig| -> Option<u32> {
+    let rounds = |rig: &crate::driving_rig::Rig| -> Option<u32> {
         frame(rig, b).and_then(|frame| {
             frame
                 .weapons
@@ -129,7 +129,7 @@ async fn cf3_a_carrier_takes_a_hit_in_a_field_and_the_damage_shows_in_port() {
                 .map(|weapon| weapon.rounds)
         })
     };
-    let pad_contact = |rig: &crate::driving::Rig| {
+    let pad_contact = |rig: &crate::driving_rig::Rig| {
         frame(rig, b).and_then(|frame| {
             frame
                 .contacts
@@ -308,7 +308,7 @@ async fn f6_a_carrier_lifts_out_of_a_running_field_only_on_the_confirmation() {
         queued.is_empty(),
         "nothing is filed while the field holds the hull"
     );
-    let filed = |rig: &crate::driving::Rig| match rig
+    let filed = |rig: &crate::driving_rig::Rig| match rig
         .tw
         .world()
         .module_state::<tacsim::TacsimStore>()
@@ -341,7 +341,7 @@ async fn f6_a_carrier_lifts_out_of_a_running_field_only_on_the_confirmation() {
     );
     // The field runs on, and the rig it left stays in it.
     assert!(task(&rig).is_some(), "the field carries on");
-    let live = tacsim::field::live_on(rig.tw.world(), &cid(crate::driving::AHUNA))
+    let live = tacsim::field::live_on(rig.tw.world(), &cid(crate::driving_rig::AHUNA))
         .expect("the live record");
     assert!(live.units.iter().all(|row| row.unit != carrier));
     assert!(live.units.iter().any(|row| row.unit == rig_a));
@@ -382,12 +382,12 @@ async fn gc1_a_carrier_arriving_mid_field_is_admitted_at_its_pad_and_cannot_laun
         .await,
         "the field opens"
     );
-    let site = cid(crate::driving::AHUNA);
+    let site = cid(crate::driving_rig::AHUNA);
     assert!(tacsim::field::carrier::owed_arrivals(rig.tw.world(), &site).is_empty());
     let opening = tacsim::field::live_on(rig.tw.world(), &site).expect("the live record");
     assert!(opening.units.iter().all(|row| row.unit != late_hull));
     // Every contact B's sensors hold within a cell of the pad (CF.3's carrier stands on it).
-    let near_pad = |rig: &crate::driving::Rig| -> usize {
+    let near_pad = |rig: &crate::driving_rig::Rig| -> usize {
         frame(rig, b).map_or(0, |frame| {
             frame
                 .contacts
@@ -412,7 +412,7 @@ async fn gc1_a_carrier_arriving_mid_field_is_admitted_at_its_pad_and_cannot_laun
     assert!(
         matches!(
             tacsim::port::ship::berth_of(rig.tw.world(), late_hull),
-            tacsim::port::ship::Berth::Docked { map, .. } if map.entry.as_str() == crate::driving::AHUNA
+            tacsim::port::ship::Berth::Docked { map, .. } if map.entry.as_str() == crate::driving_rig::AHUNA
         ),
         "the late hull is settled on the pad"
     );
@@ -630,7 +630,7 @@ fn letter_of(live: &FieldLive, hull: ObjId) -> Option<PartyId> {
 fn settled(rig: &Rig, hull: ObjId) -> bool {
     matches!(
         tacsim::port::ship::berth_of(rig.tw.world(), hull),
-        tacsim::port::ship::Berth::Docked { map, .. } if map.entry.as_str() == crate::driving::AHUNA
+        tacsim::port::ship::Berth::Docked { map, .. } if map.entry.as_str() == crate::driving_rig::AHUNA
     )
 }
 
@@ -683,7 +683,7 @@ async fn gc1b_a_refused_middle_party_never_lends_its_letter_to_the_next_arrival(
         .await,
         "the field opens"
     );
-    let site = cid(crate::driving::AHUNA);
+    let site = cid(crate::driving_rig::AHUNA);
     let opening = tacsim::field::live_on(rig.tw.world(), &site).expect("the live record");
     assert!(opening.check().is_ok(), "{:?}", opening.parties);
 
@@ -850,7 +850,7 @@ async fn gc_review_the_ramp_refuses_a_launch_the_field_could_not_hold() {
     let refused = run(&mut rig.tw, a, "+tv/1 launch go");
     assert!(refused.contains("has 2 rigs out already"), "{refused}");
     assert!(
-        crate::driving::record_of(&mut rig.tw, a_tvs[0])
+        crate::driving_rig::record_of(&mut rig.tw, a_tvs[0])
             .is_none_or(|record| record.excursion.is_none()),
         "no excursion opened"
     );
@@ -865,7 +865,7 @@ async fn gc_review_the_ramp_refuses_a_launch_the_field_could_not_hold() {
         .await,
         "the field opens"
     );
-    let live = tacsim::field::live_on(rig.tw.world(), &cid(crate::driving::AHUNA))
+    let live = tacsim::field::live_on(rig.tw.world(), &cid(crate::driving_rig::AHUNA))
         .expect("the live record");
     let mut units: Vec<ObjId> = live.units.iter().map(|row| row.unit).collect();
     units.sort_unstable();

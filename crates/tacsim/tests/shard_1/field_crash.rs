@@ -20,17 +20,17 @@ use tacsim::field::{CrewCondition, CrewLocation, crew_of};
 use tacsim::surface::site_record::LeftCondition;
 use tokio::sync::mpsc::Receiver;
 
-use crate::driving::{
+use crate::driving_rig::{
     AHUNA, Rig, ahuna_domain, cid, command, drain, land, launched, on_pad, on_pad_as, reboot,
     retune, run, staff_hand, stocked_tuned, to_cell, warm,
 };
-use crate::field_host::{
+use crate::field_host_rig::{
     armed, egress, fragile, frame, pump, seat, second, site_record, task, until, weapon_of,
 };
 
 /// A fast field and a short extraction (`field_host`'s tune and `crew_exit`'s extraction).
 fn tune(cfg: &mut TacsimConfig) {
-    crate::field_host::tune(cfg);
+    crate::field_host_rig::tune(cfg);
     cfg.field.extract_s = 60;
 }
 
@@ -85,21 +85,6 @@ async fn until_dropping(
 
 /// **The restart**: every task stopped and its egress drained, then [`reboot`].
 async fn crash(rig: Rig, rx: &mut Receiver<ArenaOut>, reconnect: &[ObjId]) -> Rig {
-    reboot(stopped(rig, rx).await, reconnect)
-}
-
-/// **The restart in production's boot order** ([`crate::driving::reboot_resuming`]): every task
-/// stopped and its egress drained, then a reboot that resumes a running field.
-pub(crate) async fn crash_resuming(
-    rig: Rig,
-    rx: &mut Receiver<ArenaOut>,
-    reconnect: &[ObjId],
-) -> Rig {
-    crate::driving::reboot_resuming(stopped(rig, rx).await, reconnect)
-}
-
-/// Every task stopped and its egress drained.
-async fn stopped(rig: Rig, rx: &mut Receiver<ArenaOut>) -> Rig {
     let tasks = rig
         .tw
         .world()
@@ -108,7 +93,7 @@ async fn stopped(rig: Rig, rx: &mut Receiver<ArenaOut>) -> Rig {
         .expect("the registry");
     tasks.shutdown(tacsim::arena_bridge::JOIN_TIMEOUT).await;
     while rx.try_recv().is_ok() {}
-    rig
+    reboot(rig, reconnect)
 }
 
 fn in_field(rig: &Rig, unit: ObjId) -> bool {
