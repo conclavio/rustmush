@@ -918,6 +918,19 @@ fn window(w: &World, id: u64) -> Option<(i64, bool)> {
     mush_economy::salvage_claim_window(w, ContractId(id))
 }
 
+/// **The window a filed claim actually runs** (doc 36a P0-2): the economy's effective end, never
+/// earlier than the deadline the claim was filed with — an outage extends the end; nothing
+/// shortens it below the filing's — and whether it is paused. `None` for an unfiled row, or a
+/// contract the economy no longer knows.
+fn effective_window(w: &World, row: &SalvageCustody) -> Option<(i64, bool)> {
+    let ClaimSeam::Filed { contract } = row.claim else {
+        return None;
+    };
+    let (end, paused) = window(w, contract)?;
+    let floor = row.file.as_deref().map_or(end, |file| file.deadline_real_s);
+    Some((end.max(floor), paused))
+}
+
 /// The economy contract's state.
 fn contract_state(w: &World, id: u64) -> Option<ContractState> {
     w.module_state::<EconomyStore>()?
@@ -1018,7 +1031,7 @@ fn list_cmd(ctx: &mut Ctx<'_>) -> Result<(), CmdError> {
             (ClaimSeam::Owed, _) => "a claim owed".to_owned(),
             (ClaimSeam::Filed { contract }, file) => {
                 let contests = file.map_or(0, |f| f.contests.len());
-                let when = match window(ctx.w, *contract) {
+                let when = match effective_window(ctx.w, &row) {
                     Some((_, true)) => "its window paused".to_owned(),
                     Some((end, false)) => format!(
                         "its window closing in {}",
@@ -1175,7 +1188,7 @@ fn open_window(ctx: &Ctx<'_>, row: &SalvageCustody, label: &str) -> Result<(u64,
     let ClaimSeam::Filed { contract } = row.claim else {
         return Err(CmdError::msg(NOT_FILED.replace("{name}", label)));
     };
-    match window(ctx.w, contract) {
+    match effective_window(ctx.w, row) {
         Some((_, true)) => Err(CmdError::msg(WINDOW_PAUSED.replace("{name}", label))),
         Some((end, false))
             if ctx.w.now() <= end
@@ -1350,7 +1363,7 @@ pub(crate) fn tick(ctx: &mut Ctx<'_>) {
             continue;
         }
         let state = contract_state(ctx.w, contract);
-        let (end, paused) = window(ctx.w, contract).unwrap_or((file.deadline_real_s, false));
+        let (end, paused) = effective_window(ctx.w, &row).unwrap_or((file.deadline_real_s, false));
         let settlement = if file.has_vacating_contest() {
             Settlement::Vacate
         } else if matches!(state, Some(ContractState::Cancelled) | None) {

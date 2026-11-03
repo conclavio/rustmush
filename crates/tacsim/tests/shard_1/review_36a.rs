@@ -1,0 +1,375 @@
+//! **Doc 36a lane 1 — salvage claims and tow, the regressions** (doc 36a §3, §4, §10 "Lane 1";
+//! doc 36 Q-36-20..Q-36-29, doc 32 §10), over the composed world (`driving`'s keyed rig) on
+//! Urvara Reach, with GC.6's three parties:
+//!
+//! - **the title holder** (T), whose two disabled spare rigs lie on the ground and whose carrier
+//!   stands on the pad;
+//! - **the opportunist** (O), whose rig tows them into O's own carrier and files the claims;
+//! - **the landholder** (L), who holds the Registry's claim on the block where the first lies.
+//!
+//! Every test reproduces the external review's steps as a player types them through the
+//! production command paths (`+tv/<n> tow|load|release|pickup`, `+salvage/*`, `@contract/*`);
+//! the stage's fixtures are GC.6's (the rigs' power destroyed and the rigs indexed by staff
+//! hand, their title moved by `@asset/transfer`, L's block claim seeded as a typed record).
+//!
+//! | Review item | Test |
+//! |---|---|
+//! | P0-2 `@contract/amend` + `/deadline` | [`p0_2_the_salvor_cannot_amend_or_shorten_their_own_claim`] |
+//! | P0-2 `@contract/dispute` + `/agree` | [`p0_2_the_salvor_cannot_dispute_and_agree_their_claim_away`] |
+
+use mush_core::ObjId;
+use mush_economy::{ContractId, ContractState, EconomyStore};
+use mush_org::PrincipalId;
+use tacsim::surface::salvage::{ClaimSeam, SalvageCustody};
+use tacsim::surface::site_record::SiteRecord;
+
+use crate::driving::{
+    Rig, cid, command, launched_at, on_pad_as_at, pilot, port_map, run, seed_typed, stocked_tuned,
+    to_cell_on,
+};
+use crate::field_gc4::{powerless, seconds_until};
+use crate::field_host::{second, site_record_at, tune};
+use crate::site_record::{staff, staff_member};
+
+/// Urvara Reach's port entry.
+pub(crate) const URVARA: &str = "urvara_port";
+/// The compressed contest window, real seconds.
+pub(crate) const WINDOW: i64 = 600;
+
+/// Short tow stages and a ten-minute contest window, on the field host's lab tempo.
+pub(crate) fn quick(cfg: &mut tacsim::TacsimConfig) {
+    tune(cfg);
+    cfg.recovery.inspect_s = 30;
+    cfg.recovery.attach_s = 30;
+    cfg.recovery.load_s = 60;
+    cfg.recovery.claim_window_s = WINDOW;
+}
+
+/// **GC.6's stage**: T's carrier on Urvara's pad; O's carrier on the same pad with one rig at
+/// the ramp; L the landholder of the block `near` lies on; T's two spare rigs disabled and
+/// indexed, `near` beside the pad (in sight of T's carrier) on L's block, `far` out of sight on
+/// open ground.
+pub(crate) struct Stage {
+    pub rig: Rig,
+    pub t: ObjId,
+    pub o: ObjId,
+    pub o_carrier: ObjId,
+    pub tug: ObjId,
+    pub l: ObjId,
+    pub near: ObjId,
+    pub far: ObjId,
+    pub near_cell: (i64, i64),
+    pub far_cell: (i64, i64),
+    pub ramp: (i64, i64),
+}
+
+pub(crate) fn record(rig: &mut Rig) -> SiteRecord {
+    site_record_at(rig, URVARA).expect("Urvara Reach's record")
+}
+
+pub(crate) fn custody(rig: &mut Rig, hull: ObjId) -> Option<SalvageCustody> {
+    record(rig).custody.into_iter().find(|row| row.hull == hull)
+}
+
+pub(crate) fn title(rig: &Rig, hull: ObjId) -> Option<PrincipalId> {
+    rig.tw
+        .world()
+        .module_state::<EconomyStore>()
+        .and_then(|e| e.snapshot().asset(hull).map(|a| a.title_owner.clone()))
+}
+
+pub(crate) fn contract(rig: &Rig, id: u64) -> mush_economy::EconomicContract {
+    rig.tw
+        .world()
+        .module_state::<EconomyStore>()
+        .and_then(|e| e.snapshot().contract(ContractId(id)).cloned())
+        .expect("the claim's contract")
+}
+
+/// `line` as `who`, every submission it queued landed; the reply.
+pub(crate) fn go(rig: &mut Rig, who: ObjId, line: &str) -> String {
+    let (out, queued) = command(rig, who, line);
+    assert_eq!(queued.len(), 1, "{line}: one submission: {out}");
+    crate::driving::land(rig, &queued[0]).unwrap_or_else(|e| panic!("{line}: {e}"));
+    out
+}
+
+/// Move real time `secs` on, then a second of ticks.
+pub(crate) fn jump(rig: &mut Rig, secs: i64) {
+    let t = rig.tw.world().now().saturating_add(secs);
+    rig.tw.set_now(t);
+    let _ = second(rig);
+}
+
+/// The tug's tow on Urvara Reach.
+pub(crate) fn towing(rig: &mut Rig, tug: ObjId) -> Option<ObjId> {
+    record(rig).tows.towing(tug).map(|op| op.casualty())
+}
+
+impl Stage {
+    /// The stage, built.
+    #[allow(clippy::too_many_lines)]
+    pub(crate) fn build() -> Stage {
+        let mut rig = stocked_tuned(quick);
+        let (t, _, _) = on_pad_as_at(&mut rig, ("Pilot", 1, "Salt Moth"), ("urvara", URVARA), 1);
+        let (o, o_row, o_tvs) =
+            on_pad_as_at(&mut rig, ("Second", 2, "Red Moth"), ("urvara", URVARA), 1);
+        let o_carrier = ObjId(o_row.hull);
+        let tug = o_tvs[0];
+        let l = pilot(&mut rig, "Lander", 3);
+        let schema = mush_tactics::module::unit_of(rig.tw.world(), tug)
+            .expect("the tug's unit")
+            .schema()
+            .clone();
+        let spares: Vec<ObjId> = rig
+            .tw
+            .world()
+            .module_state::<mush_tactics::UnitStore>()
+            .expect("the units")
+            .units
+            .iter()
+            .filter(|(id, unit)| **id != tug && unit.schema() == &schema)
+            .map(|(id, _)| *id)
+            .filter(|id| crate::driving::store(&rig.tw).tv_lease_on(*id).is_none())
+            .take(2)
+            .collect();
+        let [near, far] = spares.as_slice() else {
+            panic!("two spare rigs in Occator's pool: {spares:?}");
+        };
+        let (near, far) = (*near, *far);
+        for hull in [near, far] {
+            let moved = run(
+                &mut rig.tw,
+                mush_core::GOD,
+                &format!("@asset/transfer #{}=#{}", hull.0, t.0),
+            );
+            assert_eq!(title(&rig, hull), Some(PrincipalId::Object(t)), "{moved}");
+        }
+        let near_cell = (258_i64, 254_i64);
+        let far_cell = (258_i64, 300_i64);
+        to_cell_on(&mut rig, URVARA, near, near_cell);
+        to_cell_on(&mut rig, URVARA, far, far_cell);
+        let s = staff_member(&mut rig);
+        for (hull, (x, y)) in [(near, near_cell), (far, far_cell)] {
+            powerless(&mut rig, hull);
+            staff(
+                &mut rig,
+                s,
+                &format!("@tacsim/site {URVARA} leave #{} casualty {x},{y}", hull.0),
+            );
+        }
+        // L's block: the Registry's claim on the block `near` lies in, seeded.
+        let scheme = tacsim::surface::address::Scheme::of_site(512);
+        let letter = tacsim::field_ops::block_letter_at_site_pose(
+            mush_tactics::field_ops::FieldPose {
+                site: ObjId(1),
+                x_cm: near_cell.0 * 1_000 + 500,
+                y_cm: near_cell.1 * 1_000 + 500,
+            },
+            scheme,
+        )
+        .expect("a block");
+        let place = port_map(&rig.tw, URVARA)
+            .site
+            .and_then(|site| site.blocks.get(letter.to_string().as_str()).copied())
+            .map(ObjId)
+            .expect("the block's place");
+        let now = rig.tw.world().world_ic_now().at;
+        let mut tenure = tacsim::surface::claims::BlockTenure::new(cid(URVARA), letter, place);
+        tenure.claim = Some(tacsim::surface::claims::BlockClaim {
+            holder: PrincipalId::Object(l),
+            account: rig
+                .tw
+                .world()
+                .module_state::<mush_sim::AccountOracle>()
+                .and_then(|oracle| oracle.account_of(l)),
+            epoch: 1,
+            opened_ic: None,
+            registered_ic: now,
+            term_start_ic: now,
+            term_end_ic: now + 365 * 86_400,
+            worked_at_term_start: 0,
+            discovered_ic: None,
+            declared: None,
+            fee: None,
+            refund: None,
+            lapsed_ic: None,
+        });
+        let handles = rig
+            .tw
+            .world()
+            .module_state::<tacsim::port::PortHandles>()
+            .cloned()
+            .expect("the port's handles");
+        seed_typed(
+            &mut rig,
+            &handles.families.claims,
+            &tacsim::surface::claims::BlockKey {
+                site: cid(URVARA),
+                letter,
+            },
+            tenure,
+        );
+        launched_at(&mut rig, URVARA, o, tug);
+        let ramp = {
+            let (x, y, _) = crate::driving::ramp_at(&rig.tw, URVARA);
+            (x.div_euclid(1_000), y.div_euclid(1_000))
+        };
+        Stage {
+            rig,
+            t,
+            o,
+            o_carrier,
+            tug,
+            l,
+            near,
+            far,
+            near_cell,
+            far_cell,
+            ramp,
+        }
+    }
+
+    /// O's rig, beside `casualty`, takes it in tow (`+tv/1 tow #<hull> go`, landed at its
+    /// due instant).
+    pub(crate) fn attach(&mut self, casualty: ObjId) {
+        let cell = if casualty == self.near {
+            self.near_cell
+        } else {
+            self.far_cell
+        };
+        to_cell_on(&mut self.rig, URVARA, self.tug, (cell.0 + 1, cell.1));
+        let _ = second(&mut self.rig);
+        let out = go(
+            &mut self.rig,
+            self.o,
+            &format!("+tv/1 tow #{} go", casualty.0),
+        );
+        let tug = self.tug;
+        assert!(
+            seconds_until(&mut self.rig, 120, |rig| towing(rig, tug) == Some(casualty)),
+            "the tow attaches: {out}"
+        );
+    }
+
+    /// O drives the tow to O's own ramp and loads it into the Red Moth: in O's custody.
+    pub(crate) fn load(&mut self, casualty: ObjId) -> SalvageCustody {
+        to_cell_on(&mut self.rig, URVARA, self.tug, self.ramp);
+        let _ = second(&mut self.rig);
+        let out = go(&mut self.rig, self.o, "+tv/1 load go");
+        let tug = self.tug;
+        assert!(
+            seconds_until(&mut self.rig, 120, |rig| custody(rig, casualty).is_some()
+                && record(rig).tows.act_of(tug).is_none()),
+            "the load lands in custody: {out}"
+        );
+        custody(&mut self.rig, casualty).expect("in O's custody")
+    }
+
+    /// O tows and loads `casualty`, then files the claim: the contract id and the filing's
+    /// real instant.
+    pub(crate) fn recover_and_claim(&mut self, casualty: ObjId) -> (u64, i64) {
+        self.attach(casualty);
+        let _ = self.load(casualty);
+        let filed_at = self.rig.tw.world().now();
+        let out = go(
+            &mut self.rig,
+            self.o,
+            &format!("+salvage/claim #{} go", casualty.0),
+        );
+        assert!(out.contains("You file a salvage claim"), "{out}");
+        let row = custody(&mut self.rig, casualty).expect("still in custody");
+        let ClaimSeam::Filed { contract } = row.claim else {
+            panic!("filed: {row:?}");
+        };
+        (contract, filed_at)
+    }
+}
+
+/// The claim's window as the economy and the record run it, real seconds.
+fn window_end(rig: &Rig, contract: u64) -> i64 {
+    mush_economy::salvage_claim_window(rig.tw.world(), ContractId(contract))
+        .expect("a salvage claim's window")
+        .0
+}
+
+/// **P0-2, path A** (doc 36a §3): the salvor, the contract's only party, may not amend their
+/// own claim back to a draft and set its deadline to one second. Both switches are refused,
+/// the contract stays `Active` with its window unmoved, the custody row stays `Filed`, and the
+/// next ticks award nothing: the title is still T's.
+#[test]
+fn p0_2_the_salvor_cannot_amend_or_shorten_their_own_claim() {
+    let mut stage = Stage::build();
+    let far = stage.far;
+    let (c, filed_at) = stage.recover_and_claim(far);
+    let end = window_end(&stage.rig, c);
+    assert_eq!(end, filed_at + WINDOW, "the ruled window");
+    let o = stage.o;
+    let amend = run(&mut stage.rig.tw, o, &format!("@contract/amend #{c}"));
+    assert!(
+        amend.contains("is a salvage claim"),
+        "the amend is refused: {amend}"
+    );
+    let shorten = run(&mut stage.rig.tw, o, &format!("@contract/deadline #{c}=1"));
+    assert!(
+        shorten.contains("is a salvage claim"),
+        "the deadline is refused: {shorten}"
+    );
+    let after = contract(&stage.rig, c);
+    assert_eq!(after.state, ContractState::Active, "{after:?}");
+    assert_eq!(after.amendments, 0);
+    assert_eq!(window_end(&stage.rig, c), end, "the window is unchanged");
+    // Nothing settles early: a minute of ticks awards nothing, and the claim still stands.
+    jump(&mut stage.rig, 60);
+    for _ in 0..3 {
+        let _ = second(&mut stage.rig);
+    }
+    let row = custody(&mut stage.rig, far).expect("still in custody");
+    assert_eq!(row.claim, ClaimSeam::Filed { contract: c });
+    assert_eq!(title(&stage.rig, far), Some(PrincipalId::Object(stage.t)));
+    // The title holder's own answer is still open to them.
+    let bare = run(
+        &mut stage.rig.tw,
+        stage.t,
+        &format!("+salvage/contest #{}", far.0),
+    );
+    assert!(bare.contains("Bare title never defeats"), "{bare}");
+}
+
+/// **P0-2, path B** (doc 36a §3): the salvor may not dispute their own claim and, alone and
+/// so unanimous, agree it to a refund — which would withdraw it and drop a contest on bare
+/// title. Both switches are refused; the contract is never `Disputed`.
+#[test]
+fn p0_2_the_salvor_cannot_dispute_and_agree_their_claim_away() {
+    let mut stage = Stage::build();
+    let far = stage.far;
+    let (c, _) = stage.recover_and_claim(far);
+    let o = stage.o;
+    let dispute = run(&mut stage.rig.tw, o, &format!("@contract/dispute #{c}"));
+    assert!(
+        dispute.contains("is a salvage claim"),
+        "the dispute is refused: {dispute}"
+    );
+    assert_eq!(contract(&stage.rig, c).state, ContractState::Active);
+    let agree = run(
+        &mut stage.rig.tw,
+        o,
+        &format!("@contract/agree #{c}=refund"),
+    );
+    assert!(
+        agree.contains("is a salvage claim"),
+        "the agreement is refused: {agree}"
+    );
+    let cancel = run(&mut stage.rig.tw, o, &format!("@contract/cancel #{c}"));
+    assert!(
+        cancel.contains("is a salvage claim"),
+        "the cancel is refused: {cancel}"
+    );
+    let after = contract(&stage.rig, c);
+    assert_eq!(after.state, ContractState::Active, "{after:?}");
+    assert!(after.agreements.is_empty());
+    let _ = second(&mut stage.rig);
+    let row = custody(&mut stage.rig, far).expect("still in custody");
+    assert_eq!(row.claim, ClaimSeam::Filed { contract: c });
+    assert!(row.file.is_some_and(|file| file.state.is_pending()));
+}
