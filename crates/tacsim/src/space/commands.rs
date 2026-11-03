@@ -4548,6 +4548,11 @@ fn helm_tow(ctx: &mut Ctx<'_>) -> Result<(), CmdError> {
         }
     }
 
+    let already_towed = ctx
+        .w
+        .module_state::<SpaceBubbleBook>()
+        .and_then(|b| b.active_tows.get(&hull))
+        .is_some_and(|t| t.derelict_hull == clamped_derelict);
     let tow_record = super::docking::SalvageTowRecord {
         tug_hull: hull,
         derelict_hull: clamped_derelict,
@@ -4561,6 +4566,13 @@ fn helm_tow(ctx: &mut Ctx<'_>) -> Result<(), CmdError> {
             active.set_approaching_derelict_for(hull, false);
             active.set_holding_for_salvage_for(hull, false);
         }
+    }
+    if !already_towed {
+        let _ = super::picket::settle_salvage_recovery_payout_from_registry(
+            ctx,
+            ctx.actor,
+            clamped_derelict,
+        );
     }
 
     let line = format!(
@@ -5316,30 +5328,54 @@ fn mine_drones(ctx: &mut Ctx<'_>) -> Result<(), CmdError> {
             tv: drone_obj,
             launch_ic: now_ic,
         };
-        launched_ids.push((slot, excursion_id));
+        let mind_seal = super::picket::seal_space_unit_in_world(
+            ctx,
+            drone_obj,
+            crate::arena::mind::SortieId::ic(drone_obj, now_ic.max(1)),
+            "drone_mining",
+            crate::minds::content::drone_mining_digest().0,
+        );
+        let (mind_memory, mind_think_seq, mind_last_trace) =
+            super::picket::run_drone_rhai_think(drone_obj, session.ship_pos_m, 0, &[])
+                .filter(|r| r.fault.is_none())
+                .map_or_else(|| (Vec::new(), 0, Vec::new()), |r| (r.memory, 1, r.trace));
+        launched_ids.push((
+            slot,
+            excursion_id,
+            mind_seal,
+            mind_memory,
+            mind_think_seq,
+            mind_last_trace,
+        ));
     }
 
     if let Some(book) = ctx.w.module_state_mut::<SpaceBubbleBook>()
         && let Some(sess_mut) = book.cluster_sessions.get_mut(&hull)
     {
-        for &(slot, excursion_id) in &launched_ids {
+        for (slot, excursion_id, mind_seal, mind_memory, mind_think_seq, mind_last_trace) in
+            &launched_ids
+        {
             sess_mut
                 .active_drones
                 .push(super::mining::DroneSortieState {
-                    slot,
-                    excursion_id,
+                    slot: *slot,
+                    excursion_id: *excursion_id,
                     rock_letter: spec.letter,
                     family,
                     due_ic,
                     yield_t: super::mining::DRONE_SORTIE_YIELD_T,
                     operator: ctx.actor,
+                    mind_seal: mind_seal.clone(),
+                    mind_memory: mind_memory.clone(),
+                    mind_think_seq: *mind_think_seq,
+                    mind_last_trace: mind_last_trace.clone(),
                 });
         }
     }
 
     let exc_summary: Vec<String> = launched_ids
         .iter()
-        .map(|(slot, exc)| format!("slot {slot} (#{exc})"))
+        .map(|(slot, exc, ..)| format!("slot {slot} (#{exc})"))
         .collect();
     ctx.out.sys_to_actor(
         ctx.actor,

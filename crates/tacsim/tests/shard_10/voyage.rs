@@ -3025,11 +3025,13 @@ fn a8_the_plan_names_the_throttle_that_fits() {
     assert!(throttle_lines(&plan).is_empty(), "{plan}");
 }
 
-/// The shipped lane with `ceres_stickney`'s first leg (`ceres_freeport -> kirkwood_depot`)
-/// carrying `hazard: 4, interdiction: 3` (`D-35-5`, `SF.R1`).
+/// The shipped lane with `kirkwood_depot`'s `kirkwood_picket` set to `false` so `ceres_stickney`'s
+/// first leg (`ceres_freeport -> kirkwood_depot`, `hazard: 4, interdiction: 3`) opens the 2-ship
+/// `Interdictor Picket` bubble (`D-35-5`, `SF.R1`, `SF.R14`).
 fn lane_with_interdicted_kirkwood() -> &'static str {
     let mut doc: serde_json::Value = serde_json::from_str(LANE_JSON).expect("the lane is JSON");
     doc["manifest"]["digest"] = serde_json::json!(UNSIGNED);
+    doc["entries"]["kirkwood_depot"]["def"]["kirkwood_picket"] = serde_json::json!(false);
     doc["entries"]["ceres_stickney"]["def"]["legs"][0]["hazard"] = serde_json::json!(4);
     doc["entries"]["ceres_stickney"]["def"]["legs"][0]["interdiction"] = serde_json::json!(3);
     let signed = sign(&serde_json::to_string_pretty(&doc).expect("serializes"));
@@ -4562,10 +4564,7 @@ fn sfr5_chartered_dray_p_buys_licence_matches_velocity_in_pallas_mines_into_stow
 #[test]
 #[allow(clippy::too_many_lines)]
 fn sfr6_kirkwood_customs_picket_story_1_end_to_end_rhai_doctrine_triad_combat_and_ledger_fine() {
-    let mut rig = stocked_with(Roster {
-        seed_lane: Some(lane_with_interdicted_kirkwood()),
-        ..Roster::default()
-    });
+    let mut rig = stocked();
     let (pilot, row) = chartered(&mut rig, "Pilot", 1);
     let hull = ObjId(row.hull);
     let vault_id = hold_vault(&rig.tw, &row);
@@ -5391,10 +5390,7 @@ fn sfr7_docking_session_pauses_ship_replays_valid_tape_into_berth_docked_rejects
 #[test]
 fn sfr8_space_state_persists_in_tacsim_store_and_survives_full_engine_restart_mid_bubble_free_flight_derelict_and_docking()
  {
-    let roster = Roster {
-        seed_lane: Some(lane_with_interdicted_kirkwood()),
-        ..Roster::default()
-    };
+    let roster = Roster::default();
     let mut rig = stocked_with(roster);
     let (pilot, row) = chartered(&mut rig, "Pilot", 1);
     let hull = ObjId(row.hull);
@@ -5892,10 +5888,7 @@ fn sfr9_authority_closeout_gates_docking_removes_cluster_teleport_stops_1s_burn_
 
     // 4 & 6. Charter a second hull (`Dray-P` on the Kirkwood picket leg) to verify `+helm/run`
     //        status guarding and disabled derelict carrier journey failure + maneuver lock:
-    let mut rig2 = stocked_with(Roster {
-        seed_lane: Some(lane_with_interdicted_kirkwood()),
-        ..Roster::default()
-    });
+    let mut rig2 = stocked();
     let (pilot2, row2) = chartered(&mut rig2, "PilotTwo", 2);
     let hull2 = ObjId(row2.hull);
     let desk2 = station_room(&rig2.tw, "ceres_port", "room.c05_registry");
@@ -5997,10 +5990,7 @@ fn sfr9_authority_closeout_gates_docking_removes_cluster_teleport_stops_1s_burn_
 #[allow(clippy::too_many_lines)]
 fn sfr10_tempo_and_persistence_budget_steps_late_ticks_bounds_10m_heave_to_quarantines_corrupt_doc_and_keeps_custody_across_restart()
  {
-    let roster = Roster {
-        seed_lane: Some(lane_with_interdicted_kirkwood()),
-        ..Roster::default()
-    };
+    let roster = Roster::default();
     let mut rig = stocked_with(roster);
     let (pilot, row) = chartered(&mut rig, "Pilot", 1);
     let hull = ObjId(row.hull);
@@ -6397,10 +6387,7 @@ fn sfr11_one_ledger_rated_drive_debits_bubble_jink_in_vault_persists_across_reen
 #[allow(clippy::too_many_lines)]
 fn sfr12_domain_bubbles_and_real_hulls_share_kirkwood_bubble_tow_real_raider_thing_with_leader_claim_and_seize_indigent_contraband()
  {
-    let mut rig = stocked_with(Roster {
-        seed_lane: Some(lane_with_interdicted_kirkwood()),
-        ..Roster::default()
-    });
+    let mut rig = stocked();
 
     // 1. Charter *Salt Moth* (indigent miner on `Dray-P` carrying 2 t unlicensed `strategic_ore`):
     let (pilot_miner, row_miner) = chartered(&mut rig, "Miner", 1);
@@ -7033,4 +7020,659 @@ fn sfr13_presence_and_feeds_push_to_all_crew_filter_torpedoes_and_handle_linkdea
             "reviving pilot must clear ship.crew_linkdead"
         );
     }
+}
+
+/// **Doc 35b cut SF.R14 acceptance (`D-35-17`, `35b` §4 #1–#5, §8 `SF.R14`)** — verifies:
+/// 1. Zero Rust `const .*_RHAI` or `const .*_ROCKS` in `crates/tacsim/src/`.
+/// 2. `content/sky/outer_bodies.json` is a signed `rules_definition` pack (`tacsim.sky.outer_bodies@1`)
+///    verified through `tacsim::pack::load_pack`.
+/// 3. The shipped lane (`Roster::default()`, with no `seed_lane` override) authors `kirkwood_picket: true`
+///    and the four orbital clusters (`ceres_halo`, `kirkwood_gap_3_1`, `pallas_inclined_belt`,
+///    `saturn_b_ring_edge`) on `kirkwood_depot` and `hazard: 4, interdiction: 3` on `ceres_stickney`
+///    leg 0, promoting a ship on `ceres_stickney` into the 3-party Kirkwood Customs Picket.
+/// 4. Picket NPC ships (`corvette_hull`, `raider_hull`) carry verified `MindSeal`s (`SealEngine::Scripted`)
+///    whose `source_sha256` resolves through `TacsimStore::mind_source` (`kirkwood_picket.rhai`,
+///    `belt_raider.rhai`), and `step_kirkwood_picket` derives stage transitions from Rhai memory
+///    rather than re-deciding stage in Rust before calling Rhai.
+/// 5. An interdicted non-Kirkwood leg (`kirkwood_picket: false`) does NOT open the Kirkwood Customs Picket
+///    even when flown by a `Dray-P` (`active.picket.is_none()`, `active.bubble.ships.len() == 2`), and its
+///    `interdictor_hull` carries a verified `MindSeal` for `interdictor_patrol.rhai`.
+/// 6. Launching collector drones (`+mine/drones 2 B`) creates `DroneSortieState`s with `ExcursionId`s
+///    and verified `MindSeal`s (`drone_mining.rhai`) whose `mind_think_seq` advances on the tick and
+///    whose `mind_last_trace` records `"DRONE_MINING_OUTBOUND"` / `"DRONE_MINING_COLLECT"`.
+#[test]
+#[allow(clippy::too_many_lines)]
+fn sfr14_authoring_loads_clusters_doctrines_and_outer_bodies_from_packs_opens_picket_only_on_kirkwood_and_seals_drone_minds()
+ {
+    // 1. Contract lint: no `const .*_RHAI` or `const .*_ROCKS` in `crates/tacsim/src/`:
+    fn check_no_const_rhai_or_rocks(dir: &std::path::Path) {
+        for entry in std::fs::read_dir(dir).expect("read_dir") {
+            let entry = entry.expect("dir entry");
+            let path = entry.path();
+            if path.is_dir() {
+                check_no_const_rhai_or_rocks(&path);
+            } else if path.extension().is_some_and(|e| e == "rs") {
+                let text = std::fs::read_to_string(&path).expect("read rs file");
+                for (lineno, line) in text.lines().enumerate() {
+                    let trimmed = line.trim();
+                    if let Some(rest) = trimmed
+                        .strip_prefix("const ")
+                        .or_else(|| trimmed.strip_prefix("pub const "))
+                        .or_else(|| trimmed.strip_prefix("pub(crate) const "))
+                    {
+                        let name = rest.split(':').next().unwrap_or_default().trim();
+                        assert!(
+                            !name.ends_with("_RHAI") && !name.ends_with("_ROCKS"),
+                            "found forbidden constant `{name}` at {}:{}: {trimmed}",
+                            path.display(),
+                            lineno + 1
+                        );
+                    }
+                }
+            }
+        }
+    }
+    let src_dir = std::path::Path::new(env!("CARGO_MANIFEST_DIR")).join("src");
+    check_no_const_rhai_or_rocks(&src_dir);
+
+    // 2. Verify `content/sky/outer_bodies.json` is a signed `rules_definition` pack loaded via `load_pack`:
+    let outer_raw = std::fs::read_to_string(
+        std::path::Path::new(env!("CARGO_MANIFEST_DIR")).join("content/sky/outer_bodies.json"),
+    )
+    .expect("outer_bodies.json exists");
+    let outer_pack = load_pack(&outer_raw).expect("outer_bodies.json verifies as a signed pack");
+    assert_eq!(
+        outer_pack.manifest().id().as_str(),
+        "tacsim.sky.outer_bodies"
+    );
+    assert_eq!(
+        outer_pack.manifest().kind(),
+        tacsim::PackKind::RulesDefinition
+    );
+
+    // 3 & 4. Boot the shipped lane (`Roster::default()`, no `seed_lane` override) and verify `ceres_stickney`
+    //        promotes a standard Dray into the 3-party Kirkwood Customs Picket with sealed NPC minds:
+    let mut rig = stocked();
+    let (pilot, row) = chartered(&mut rig, "Pilot", 1);
+    let hull = ObjId(row.hull);
+    load(&mut rig, &row, 53, 19);
+    set_rate(&mut rig.tw, 3_600);
+    board(&mut rig, pilot);
+
+    let pending = undock_and_burn(&mut rig, pilot, hull);
+    let depart_ic = pending.plan.depart_ic;
+    let leg1_secs = i64::from(pending.plan.legs[0].secs);
+    let _ = fire_quietly(&mut rig);
+    let _ = to_ic(&mut rig, depart_ic + leg1_secs);
+
+    {
+        let tstore = store(&rig.tw);
+        let book = rig
+            .tw
+            .world()
+            .module_state::<tacsim::space::SpaceBubbleBook>()
+            .expect("SpaceBubbleBook");
+        let active = book
+            .active_for_hull(hull)
+            .expect("shipped lane must promote ceres_stickney into Kirkwood Customs Picket");
+        assert!(
+            book.kirkwood_picket_domains.contains(&active.domain),
+            "kirkwood_picket_domains must contain the Kirkwood waypoint domain from authored content"
+        );
+        assert_eq!(
+            active.bubble.ships.len(),
+            3,
+            "shipped lane Kirkwood waypoint must open the 3-party picket bubble even for an un-refitted Dray"
+        );
+        let picket = active.picket.as_ref().expect("KirkwoodPicketState");
+        let corvette_seal = picket
+            .corvette_seal
+            .as_ref()
+            .expect("Corvette must carry a verified MindSeal");
+        let raider_seal = picket
+            .raider_seal
+            .as_ref()
+            .expect("Raider must carry a verified MindSeal");
+        assert_eq!(
+            corvette_seal.engine,
+            tacsim::arena::mind::SealEngine::Scripted
+        );
+        assert_eq!(
+            raider_seal.engine,
+            tacsim::arena::mind::SealEngine::Scripted
+        );
+        assert_eq!(
+            tacsim::space::space_mind_seal_of(rig.tw.world(), picket.corvette_hull).as_ref(),
+            Some(corvette_seal)
+        );
+        assert_eq!(
+            tacsim::space::space_mind_seal_of(rig.tw.world(), picket.raider_hull).as_ref(),
+            Some(raider_seal)
+        );
+        let corvette_sha = corvette_seal.source_sha256;
+        let raider_sha = raider_seal.source_sha256;
+        assert_eq!(
+            corvette_sha,
+            tacsim::minds::content::kirkwood_picket_digest().0
+        );
+        assert_eq!(raider_sha, tacsim::minds::content::belt_raider_digest().0);
+        assert!(
+            tstore.mind_source(&corvette_sha).is_some(),
+            "Corvette source_sha256 must resolve in TacsimStore::mind_source"
+        );
+        assert!(
+            tstore.mind_source(&raider_sha).is_some(),
+            "Raider source_sha256 must resolve in TacsimStore::mind_source"
+        );
+    }
+
+    // 5. Verify an interdicted non-Kirkwood leg (`kirkwood_picket: false`) does NOT open the Kirkwood
+    //    Customs Picket even when flown by a `Dray-P`, and seals `interdictor_hull` with `interdictor_patrol.rhai`:
+    let mut rig2 = stocked_with(Roster {
+        seed_lane: Some(lane_with_interdicted_kirkwood()),
+        ..Roster::default()
+    });
+    let (pilot2, row2) = chartered(&mut rig2, "PilotTwo", 2);
+    let hull2 = ObjId(row2.hull);
+    let vault2 = hold_vault(&rig2.tw, &row2);
+    let desk2 = station_room(&rig2.tw, "ceres_port", "room.c05_registry");
+    teleport(&mut rig2.tw, pilot2, desk2);
+    let refit2 = run(&mut rig2.tw, pilot2, "+coop/refit prospector");
+    assert!(refit2.contains("Dray-P"), "{refit2}");
+    seed_pool(&mut rig2, vault2, "propellant", 75, LotId(981));
+    seed_pool(&mut rig2, vault2, "provisions", 45, LotId(982));
+    set_rate(&mut rig2.tw, 3_600);
+    board(&mut rig2, pilot2);
+
+    let pending2 = undock_and_burn(&mut rig2, pilot2, hull2);
+    let _ = fire_quietly(&mut rig2);
+    let _ = to_ic(
+        &mut rig2,
+        pending2.plan.depart_ic + i64::from(pending2.plan.legs[0].secs),
+    );
+    {
+        let tstore2 = store(&rig2.tw);
+        let book2 = rig2
+            .tw
+            .world()
+            .module_state::<tacsim::space::SpaceBubbleBook>()
+            .expect("SpaceBubbleBook");
+        let active2 = book2
+            .active_for_hull(hull2)
+            .expect("active 2-ship interdictor bubble");
+        assert!(
+            active2.picket.is_none() && active2.bubble.ships.len() == 2,
+            "an interdicted non-Kirkwood leg must NOT open the 3-party Kirkwood Customs Picket even for a Dray-P"
+        );
+        let int_seal = active2
+            .interdictor_seal
+            .as_ref()
+            .expect("interdictor must carry a verified MindSeal");
+        assert_eq!(int_seal.engine, tacsim::arena::mind::SealEngine::Scripted);
+        let int_sha = int_seal.source_sha256;
+        assert_eq!(
+            int_sha,
+            tacsim::minds::content::interdictor_patrol_digest().0
+        );
+        assert!(
+            tstore2.mind_source(&int_sha).is_some(),
+            "interdictor source_sha256 must resolve in TacsimStore::mind_source"
+        );
+    }
+
+    // 6. Clear the 2-ship interdiction on `rig2`, fly to `ceres_halo`, and launch 2 collector drones
+    //    (`+mine/drones 2 B`) to verify `DroneSortieState` carries `ExcursionId` + verified `MindSeal`
+    //    (`drone_mining.rhai`) and steps `mind_think_seq` on the tick:
+    for i in 0..4 {
+        let next_r = rig2.tw.world().now() + 1;
+        rig2.tw.set_now(next_r);
+        let _ = rig2.tw.fire_due(next_r * 1_000);
+        if i == 0 || i == 2 || i == 3 {
+            let _ = run(&mut rig2.tw, pilot2, "+tac/beam Interdictor Picket");
+        }
+        if i == 1 || i == 2 {
+            let _ = run(&mut rig2.tw, pilot2, "+damage/vent");
+        }
+    }
+    let next_r = rig2.tw.world().now() + 1;
+    rig2.tw.set_now(next_r);
+    let _ = rig2.tw.fire_due(next_r * 1_000);
+
+    let lic2 = run(&mut rig2.tw, pilot2, "+licence/buy go");
+    assert!(lic2.contains("Freeport Registry"), "{lic2}");
+    let dec2 = run(&mut rig2.tw, pilot2, "+helm/decouple");
+    assert!(dec2.contains("Decoupled"), "{dec2}");
+    let auto_halo = run(&mut rig2.tw, pilot2, "+helm/autopilot ceres_halo");
+    assert!(auto_halo.contains("Ceres Halo Commons"), "{auto_halo}");
+    let halo_burn = drain_space_and_industry(&mut rig2.tw);
+    land_quietly(&mut rig2, &halo_burn);
+    let halo_arr_ic = rig2
+        .tw
+        .world()
+        .module_state::<tacsim::space::SpaceBubbleBook>()
+        .expect("SpaceBubbleBook")
+        .free_flights[&hull2]
+        .cluster_arrival_ic_s
+        .expect("cluster_arrival_ic_s");
+    let halo_real_s = (halo_arr_ic.saturating_sub(ic_now(&rig2.tw)) + 3_599) / 3_600;
+    let t_halo = rig2.tw.world().now().saturating_add(halo_real_s.max(6));
+    rig2.tw.set_now(t_halo);
+    let _ = rig2.tw.fire_due(t_halo.saturating_mul(1_000));
+    let open_halo = drain_space_and_industry(&mut rig2.tw);
+    land_all(&mut rig2, &open_halo);
+    let t_seed = rig2.tw.world().now().saturating_add(6);
+    rig2.tw.set_now(t_seed);
+    let _ = rig2.tw.fire_due(t_seed.saturating_mul(1_000));
+    let seed_halo = drain_space_and_industry(&mut rig2.tw);
+    land_quietly(&mut rig2, &seed_halo);
+
+    let _ = run(&mut rig2.tw, pilot2, "+helm/approach A");
+    let app_b = drain_space_and_industry(&mut rig2.tw);
+    land_quietly(&mut rig2, &app_b);
+    for _ in 0..3 {
+        let t = rig2.tw.world().now().saturating_add(6);
+        rig2.tw.set_now(t);
+        let _ = rig2.tw.fire_due(t.saturating_mul(1_000));
+        let sub = drain_space_and_industry(&mut rig2.tw);
+        land_quietly(&mut rig2, &sub);
+    }
+    let _ = run(&mut rig2.tw, pilot2, "+helm/match A");
+    let match_b = drain_space_and_industry(&mut rig2.tw);
+    land_quietly(&mut rig2, &match_b);
+
+    set_rate(&mut rig2.tw, 1);
+    let drones_out = run(&mut rig2.tw, pilot2, "+mine/drones A 2");
+    assert!(
+        drones_out.contains("Launched 2 collector drone(s)"),
+        "{drones_out}"
+    );
+    let t_step = rig2.tw.world().now().saturating_add(6);
+    rig2.tw.set_now(t_step);
+    let _ = rig2.tw.fire_due(t_step.saturating_mul(1_000));
+    {
+        let tstore2 = store(&rig2.tw);
+        let book2 = rig2
+            .tw
+            .world()
+            .module_state::<tacsim::space::SpaceBubbleBook>()
+            .expect("SpaceBubbleBook");
+        let sess = book2
+            .cluster_sessions
+            .get(&hull2)
+            .expect("cluster session for hull2");
+        assert_eq!(sess.active_drones.len(), 2);
+        for d in &sess.active_drones {
+            let seal = d
+                .mind_seal
+                .as_ref()
+                .expect("collector drone must carry a verified MindSeal");
+            assert_eq!(seal.engine, tacsim::arena::mind::SealEngine::Scripted);
+            let sha = seal.source_sha256;
+            assert_eq!(sha, tacsim::minds::content::drone_mining_digest().0);
+            assert!(
+                tstore2.mind_source(&sha).is_some(),
+                "drone_mining.rhai source_sha256 must resolve in TacsimStore::mind_source"
+            );
+            assert!(
+                d.mind_think_seq >= 2,
+                "collector drone mind_think_seq must advance on the tick: got {}",
+                d.mind_think_seq
+            );
+            assert!(
+                d.mind_last_trace
+                    .iter()
+                    .any(|t| t.starts_with("DRONE_MINING_")),
+                "collector drone mind_last_trace must record drone_mining.rhai trace: {:?}",
+                d.mind_last_trace
+            );
+        }
+    }
+}
+
+/// **Doc 35b cut SF.R15 — Hull fidelity (`35b` §5 #6/#7/#13, §8 `SF.R15`)**:
+/// 1. `dray.json`, `dray_p.json`, and `corvette.json` instantiate `"heat"` (`0..=1_000`) and
+///    `"heat_sink"` (`30`) cells on `"hull"`, and `heat_permille` round-trips through
+///    `build_space_damage_mutation_plan` and `space_ship_from_tactical_unit_with_spec`.
+/// 2. A rear-aspect hit on a Dray (`apply_damage(FacetBand::Rear, 160)`) strips `hull.rear`
+///    armour (`60 -> 0`) and splits the remaining `100` internal damage 50/50 between `hull`
+///    (`600 -> 550`) and `drive` (`250 -> 200`) per `dray.json`'s `struck_through`; `left`/`right`/`top`
+///    hits route into `hold` per `dray.json`'s `facets` weights, and destroying `hold` (`0/400`)
+///    applies `slow_75` (`rated_accel_mg: 50 -> 12`).
+/// 3. Stripping a PDC mount (`SubsystemCrit::PdcOffline`, setting `PdcMount::operational = false`
+///    on `pdc_dorsal` / `pdc_ventral`) opens a real gap in the point-defense screen so a 2-torpedo
+///    salvo that was fully intercepted by 2 operational PDCs now has 1 torpedo penetrate.
+/// 4. In Story 2 (`sfr2` / `sfr7`), after taking combat damage across `hull` and `drive`, clamping
+///    and towing the disabled interdictor (`+helm/tow`, settling the `1,200.00 cr` Freeport Registry
+///    salvage recovery payout into the pilot's credit account), and docking at Stickney Yards, the
+///    pilot quotes (`+bay #<hull>`) and completes (`+bay/order #<hull>=all`) a doc 31 bay repair at
+///    Stickney Yards' workshop that restores the Dray's armour and internals to full (`600/600` hull,
+///    `250/250` drive).
+#[test]
+#[allow(clippy::too_many_lines)]
+fn sfr15_hull_fidelity_splits_rear_hit_per_dray_json_strips_pdc_and_refits_in_bay_after_salvage_payout()
+ {
+    // 1. Verify `dray.json` facet weights, `struck_through` rear split (`50/50` hull/drive),
+    //    `hold` `slow_75` consequence, and `TacticalUnit` `"heat"` / `"heat_sink"` cell round-trip:
+    let dray_spec = tacsim::space::unit_spec_for_id("tacsim.unit.dray").expect("dray UnitSpec");
+    let mut dray = tacsim::space::SpaceShipState::new_dray(
+        "dray.fidelity",
+        "carrier",
+        tacsim::space::SpacePartyId(0),
+        [0, 0, 0],
+        [0, 0, 0],
+    );
+    tacsim::space::apply_unit_spec_to_space_ship(&mut dray, dray_spec);
+    assert!(
+        dray.pdcs.iter().any(|m| m.id == "pdc_dorsal")
+            && dray.pdcs.iter().any(|m| m.id == "pdc_ventral"),
+        "Dray must carry canonical pdc_dorsal and pdc_ventral mounts (no 'pdc_ dorsal' typo): {:?}",
+        dray.pdcs
+    );
+
+    // Apply 160 raw damage to `Rear`: 60 absorbed by `hull.rear` armour (`60 -> 0`), remaining 100
+    // split 50/50 between `Hull` (`600 -> 550`) and `Drive` (`250 -> 200`):
+    let (_sec, abs_rear, pen_rear) = dray.apply_damage(tacsim::space::FacetBand::Rear, 160);
+    assert_eq!(abs_rear, 60);
+    assert_eq!(pen_rear, 100);
+    assert_eq!(
+        dray.sections[&tacsim::space::ShipSectionId::Hull].facets[&tacsim::space::FacetBand::Rear],
+        0
+    );
+    assert_eq!(
+        dray.sections[&tacsim::space::ShipSectionId::Hull].internals,
+        550,
+        "rear hit must split 50% of internal damage into Hull (600 - 50 = 550)"
+    );
+    assert_eq!(
+        dray.sections[&tacsim::space::ShipSectionId::Drive].internals,
+        200,
+        "rear hit must split 50% of internal damage into Drive (250 - 50 = 200)"
+    );
+
+    // Apply 920 raw damage to `Left` (`50/50` Hull/Hold): 80 absorbed by `hull.left` armor,
+    // remaining 840 split 50/50 (`420` each) destroying `Hold` (`400 -> 0`) and triggering `slow_75` (`50 -> 37 mg`):
+    let _ = dray.apply_damage(tacsim::space::FacetBand::Left, 920);
+    assert_eq!(
+        dray.sections[&tacsim::space::ShipSectionId::Hold].internals,
+        0,
+        "Left hit must route 50% into Hold and destroy Hold internals"
+    );
+    assert_eq!(
+        dray.rated_accel_mg, 37,
+        "destroying Hold must trigger slow_75 consequence (50 mg * 75% = 37 mg)"
+    );
+
+    // Verify `TacticalUnit` instantiates `"heat"` (`max = 1000`) and `"heat_sink"` (`30`) cells and
+    // round-trips `heat_permille`:
+    let (unit, _) = tacsim::space::instantiate_stock_space_unit(ObjId(999), "tacsim.unit.dray")
+        .expect("instantiate dray");
+    let heat_addr = mush_tactics::CellAddr::Section {
+        section: mush_tactics::SectionId::new("hull").expect("hull"),
+        cell: mush_tactics::CellId::new("heat").expect("heat"),
+    };
+    let sink_addr = mush_tactics::CellAddr::Section {
+        section: mush_tactics::SectionId::new("hull").expect("hull"),
+        cell: mush_tactics::CellId::new("heat_sink").expect("heat_sink"),
+    };
+    assert_eq!(
+        unit.cell(&heat_addr).map(|c| (c.current, c.max)),
+        Some((0, 1_000))
+    );
+    assert_eq!(
+        unit.cell(&sink_addr).map(|c| (c.current, c.max)),
+        Some((30, 30))
+    );
+    dray.heat_permille = 420;
+    let (unit_after, _assessment, plan) =
+        tacsim::space::build_space_damage_mutation_plan(&unit, &dray, Some(dray_spec), 2)
+            .expect("mutation plan");
+    assert!(plan.is_some(), "expected non-empty mutation plan");
+    assert_eq!(unit_after.cell(&heat_addr).map(|c| c.current), Some(420));
+    let roundtripped = tacsim::space::space_ship_from_tactical_unit_with_spec(
+        &unit_after,
+        Some(dray_spec),
+        "dray.rt",
+        "carrier",
+        tacsim::space::SpacePartyId(0),
+        [0, 0, 0],
+        [0, 0, 0],
+    )
+    .expect("roundtrip");
+    assert_eq!(roundtripped.heat_permille, 420);
+
+    // 2. Verify stripping a PDC mount (`SubsystemCrit::PdcOffline`, `operational = false`) opens a
+    //    real gap in the point-defense screen (`step_pdc_intercepts`):
+    let mut bubble_full_pdc =
+        tacsim::space::LocalSpaceBubble::new("b.pdc.full", "kirkwood", "PDC Test", 1_000);
+    let mut ship_full = tacsim::space::SpaceShipState::new_dray(
+        "defender",
+        "carrier",
+        tacsim::space::SpacePartyId(0),
+        [0, 0, 0],
+        [0, 0, 0],
+    );
+    ship_full.pdc_auto = true;
+    bubble_full_pdc.insert_ship(ship_full.clone());
+    for idx in 0..2 {
+        bubble_full_pdc
+            .torpedoes
+            .push(tacsim::space::InFlightTorpedo {
+                id: idx,
+                shooter_id: "attacker".to_owned(),
+                target_id: "defender".to_owned(),
+                pos_m: [5_000, 0, 0],
+                pos_rem_um: [0, 0, 0],
+                vel_mmps: [-1_000_000, 0, 0],
+                accel_mps2: 120,
+                remaining_dv_mmps: 4_000_000,
+                warhead_damage: 180,
+                integrity: 100,
+                tti_s: 5,
+                flight_elapsed_ms: 0,
+                max_flight_ms: 45_000,
+                dv_exhausted_emitted: false,
+            });
+    }
+    let rep_full = bubble_full_pdc.step_wall_ms_at(1_000, 1_001);
+    let intercepted_full = rep_full
+        .events
+        .iter()
+        .filter(|e| {
+            matches!(
+                e,
+                tacsim::space::SpaceCombatEvent::TorpedoInterceptedByPdc { .. }
+            )
+        })
+        .count();
+    assert_eq!(
+        intercepted_full, 2,
+        "2 operational PDCs (dorsal + ventral, 2 bursts each) intercept both incoming torpedoes"
+    );
+
+    let mut bubble_stripped_pdc =
+        tacsim::space::LocalSpaceBubble::new("b.pdc.stripped", "kirkwood", "PDC Test", 1_000);
+    let mut ship_stripped = ship_full;
+    ship_stripped
+        .crits
+        .push(tacsim::space::SubsystemCrit::PdcOffline);
+    ship_stripped.pdcs[0].operational = false;
+    bubble_stripped_pdc.insert_ship(ship_stripped);
+    for idx in 0..2 {
+        bubble_stripped_pdc
+            .torpedoes
+            .push(tacsim::space::InFlightTorpedo {
+                id: idx,
+                shooter_id: "attacker".to_owned(),
+                target_id: "defender".to_owned(),
+                pos_m: [5_000, 0, 0],
+                pos_rem_um: [0, 0, 0],
+                vel_mmps: [-1_000_000, 0, 0],
+                accel_mps2: 120,
+                remaining_dv_mmps: 4_000_000,
+                warhead_damage: 180,
+                integrity: 100,
+                tti_s: 5,
+                flight_elapsed_ms: 0,
+                max_flight_ms: 45_000,
+                dv_exhausted_emitted: false,
+            });
+    }
+    let rep_stripped = bubble_stripped_pdc.step_wall_ms_at(1_000, 1_001);
+    let intercepted_stripped = rep_stripped
+        .events
+        .iter()
+        .filter(|e| {
+            matches!(
+                e,
+                tacsim::space::SpaceCombatEvent::TorpedoInterceptedByPdc { .. }
+            )
+        })
+        .count();
+    assert_eq!(
+        intercepted_stripped, 1,
+        "with 1 PDC mount stripped offline, only 1 torpedo is intercepted and 1 penetrates the screen"
+    );
+
+    // 3. End-to-end Story 2 (`sfr2`/`sfr7`): take rear-aspect combat damage (`hull 480/600, drive 190/250`),
+    //    disable, clamp, and tow the interdictor derelict (`+helm/tow`, settling the `1,200.00 cr`
+    //    Freeport Registry salvage recovery payout), dock at Stickney Yards, and run `+bay` +
+    //    `+bay/order #<hull>=all` to repair the Dray back to full (`600/600` hull, `250/250` drive):
+    let mut rig = stocked_with(Roster {
+        seed_lane: Some(lane_with_interdicted_kirkwood()),
+        ..Roster::default()
+    });
+    let (pilot, row) = chartered(&mut rig, "Pilot", 1);
+    let hull = ObjId(row.hull);
+    let vault_id = hold_vault(&rig.tw, &row);
+    seed_pool(&mut rig, vault_id, "propellant", 55, LotId(991));
+    seed_pool(&mut rig, vault_id, "provisions", 19, LotId(992));
+    seed_pool(&mut rig, vault_id, "industrial_parts", 8, LotId(993));
+    set_rate(&mut rig.tw, 3_600);
+    board(&mut rig, pilot);
+
+    let pending = undock_and_burn(&mut rig, pilot, hull);
+    let depart_ic = pending.plan.depart_ic;
+    let leg1_secs = i64::from(pending.plan.legs[0].secs);
+    let total_secs = pending.plan.total_s;
+
+    let _ = fire_quietly(&mut rig);
+    let _ = to_ic(&mut rig, depart_ic + leg1_secs);
+
+    for i in 0..4 {
+        let next_real = rig.tw.world().now() + 1;
+        rig.tw.set_now(next_real);
+        let _ = rig.tw.fire_due(next_real * 1_000);
+        if i == 0 || i == 2 || i == 3 {
+            let _ = run(&mut rig.tw, pilot, "+tac/beam Interdictor Picket");
+        }
+        if i == 1 || i == 2 {
+            let _ = run(&mut rig.tw, pilot, "+damage/vent");
+        }
+    }
+
+    // Approach, 6-DOF hard-dock clamp, and tow the disabled interdictor (`+helm/tow`):
+    let _ = run(&mut rig.tw, pilot, "+helm/approach derelict");
+    let app_burn = drain(&mut rig.tw);
+    land_quietly(&mut rig, &app_burn);
+    for _ in 0..3 {
+        let next_real = rig.tw.world().now() + 1;
+        rig.tw.set_now(next_real);
+        let _ = rig.tw.fire_due(next_real * 1_000);
+    }
+    let _ = run(&mut rig.tw, pilot, "+helm/dock derelict");
+    let (session_id, challenge) = {
+        let book = rig
+            .tw
+            .world()
+            .module_state::<tacsim::space::SpaceBubbleBook>()
+            .expect("SpaceBubbleBook");
+        let s = book.docking_sessions.get(&hull).expect("docking session");
+        (s.challenge.session_id.clone(), s.challenge.clone())
+    };
+    let clamp_tape = tacsim::space::solve_docking_tape(&challenge);
+    let _ = run(
+        &mut rig.tw,
+        pilot,
+        &format!("+helm/dock tape {session_id} {}", clamp_tape.encode_rle()),
+    );
+    let clamp_burn = drain(&mut rig.tw);
+    land_quietly(&mut rig, &clamp_burn);
+
+    let pilot_acct = tacsim::port::credit::own_account(rig.tw.world(), pilot)
+        .expect("pilot account")
+        .id;
+    let balance_before_tow = economy(&rig.tw)
+        .snapshot()
+        .account(pilot_acct)
+        .expect("acct")
+        .available()
+        .expect("amt")
+        .minor();
+    let tow_out = run(&mut rig.tw, pilot, "+helm/tow");
+    assert!(
+        tow_out.contains("[SALVAGE] Tow line locked to disabled derelict"),
+        "tow output: {tow_out}"
+    );
+    // Settle the Freeport Registry salvage recovery payout (`1,200.00 cr` = `120_000` minor credits):
+    sweep(&mut rig.tw, 60);
+    let balance_after_tow = economy(&rig.tw)
+        .snapshot()
+        .account(pilot_acct)
+        .expect("acct")
+        .available()
+        .expect("amt")
+        .minor();
+    assert_eq!(
+        balance_after_tow - balance_before_tow,
+        120_000,
+        "towing a disabled derelict settles the 1,200.00 cr Freeport Registry salvage recovery bounty"
+    );
+
+    // Fire one tick to close the cleared interdiction bubble and resume transit to Stickney Yards:
+    let next_real = rig.tw.world().now() + 1;
+    rig.tw.set_now(next_real);
+    let _ = rig.tw.fire_due(next_real * 1_000);
+    let j_resumed = journey(&rig.tw, hull).expect("resumed journey");
+    let expected_arrival = j_resumed.departed().at + total_secs;
+    let _ = to_ic(&mut rig, expected_arrival);
+
+    // Confirm rear-split combat damage was written to *Salt Moth*'s `TacticalUnit` (`drive` and `hull` both damaged):
+    let ship_damaged = run(&mut rig.tw, pilot, "+ship");
+    assert!(
+        ship_damaged.contains("Damage: drive 64/250, hull 418/600."),
+        "expected rear-split combat damage on docked Dray: {ship_damaged}"
+    );
+
+    // Quote and order full bay repair (`+bay #<hull>` and `+bay/order #<hull>=all`) at Stickney Yards:
+    let bay_quote = run(&mut rig.tw, pilot, &format!("+bay #{}", hull.0));
+    assert!(
+        bay_quote.contains("stands in a workshop")
+            && bay_quote.contains("armor hull")
+            && bay_quote.contains("armor drive"),
+        "bay quote at Stickney Yards workshop: {bay_quote}"
+    );
+    let bay_order = run(&mut rig.tw, pilot, &format!("+bay/order #{}=all", hull.0));
+    assert!(
+        bay_order.contains("Order 1 taken in the workshop:"),
+        "bay order taken using salvage recovery proceeds: {bay_order}"
+    );
+    let bay_draws = drain(&mut rig.tw);
+    land_all(&mut rig, &bay_draws);
+
+    // Advance IC clock past the workshop order's `due_ic` and settle the workshop fee contract:
+    let now_ic = ic_now(&rig.tw);
+    let _ = to_ic(&mut rig, now_ic + 72_000);
+    sweep(&mut rig.tw, 60);
+
+    // Verify *Salt Moth*'s `TacticalUnit` is restored to full health (`hull 600/600, drive 250/250`, no `Damage:` line):
+    let ship_repaired = run(&mut rig.tw, pilot, "+ship");
+    assert!(
+        !ship_repaired.contains("Damage:"),
+        "Dray must have zero damage after Stickney workshop bay repair completes: {ship_repaired}"
+    );
+    let bay_after = run(&mut rig.tw, pilot, &format!("+bay #{}", hull.0));
+    assert!(
+        bay_after.contains("Nothing needs doing.") && bay_after.contains("Order 1: workshop"),
+        "bay after repair completion: {bay_after}"
+    );
 }

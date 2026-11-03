@@ -3,7 +3,7 @@
     "id": "tacsim.pack.dray",
     "version": 3,
     "kind": "rules_definition",
-    "digest": "b40cfff4943616ec798534fee10a7a995433477ef248a5875a87b69b53b9e372",
+    "digest": "89093a73c7680e0f8c700412aa17aaec188f0c0b7ef617970e640ff8513ee523",
     "requires": []
   },
   "entries": {
@@ -79,6 +79,8 @@
           { "band": "top", "width_cm": 6000, "height_cm": 1800 }
         ],
         "sensor_height_cm": 1500,
+        "heat_max": 1000,
+        "heat_dissipation_per_s": 30,
         "logistics": {
           "dry_mass_t": 240,
           "stowage": {

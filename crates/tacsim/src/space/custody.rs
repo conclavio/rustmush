@@ -39,7 +39,9 @@ use smol_str::SmolStr;
 
 use crate::definitions::Catalog;
 use crate::definitions::logistics::DriveLaw;
-use crate::definitions::unit::{ARMOR_CELL, HEAT_CELL, INTERNALS_CELL, UnitSpec};
+use crate::definitions::unit::{
+    ARMOR_CELL, Consequence, HEAT_CELL, HEAT_SINK_CELL, INTERNALS_CELL, UnitSpec,
+};
 use crate::field_ops::{
     BlackBoxFlightEntry, ComponentCondition, CustodyTitleStatus, FieldOpsError,
     FieldUnitAssessment, GroundTenure, OperationalState, RecoveryAuthorityContext, RecoveryOpId,
@@ -48,8 +50,182 @@ use crate::field_ops::{
 use crate::port::ship::SHIP_DAMAGE;
 use crate::space::bubble::{
     DERELICT_WINDOW_S, FacetBand, HullStatus, ShipSectionId, ShipSectionState, SpaceCombatEvent,
-    SpacePartyId, SpaceShipState, SubsystemCrit,
+    SpacePartyId, SpaceSectionConsequence, SpaceShipState, SubsystemCrit,
 };
+use crate::space::docking::DockingRcsAuthority;
+use crate::space::weapons::{LaserMount, PdcMount, RailgunMount, TorpedoTube};
+
+/// Space-only hull parameters that do not exist on [`UnitSpec`] (`D-35-1`, `35b` §4 & §8 `SF.R15`):
+/// 6-DOF RCS thruster authority, weapon/point-defense mounts, and `mush-pixel` 3D model archetype.
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub struct SpaceUnitOverlay {
+    pub unit_id: &'static str,
+    pub rcs_authority: DockingRcsAuthority,
+    pub torpedo_tubes: Vec<TorpedoTube>,
+    pub lasers: Vec<LaserMount>,
+    pub railguns: Vec<RailgunMount>,
+    pub pdcs: Vec<PdcMount>,
+    pub decoys_remaining: u8,
+    pub pixel_model: &'static str,
+}
+
+/// Look up the canonical [`SpaceUnitOverlay`] for `unit_entry_id` (`D-35-1`, `SF.R15`).
+#[must_use]
+pub fn space_unit_overlay_for_id(unit_entry_id: &str) -> SpaceUnitOverlay {
+    let base_id = crate::definitions::core_replacement::surface_chassis(unit_entry_id);
+    match base_id {
+        "tacsim.unit.corvette" => SpaceUnitOverlay {
+            unit_id: "tacsim.unit.corvette",
+            rcs_authority: DockingRcsAuthority {
+                trans_dv_mmps_per_frame: 40,
+                closure_dv_mmps_per_frame: 35,
+                attitude_rate_mdeg_s_per_frame: 240,
+                roll_rate_mdeg_s_per_frame: 320,
+                damp_trans_mmps_per_frame: 20,
+                damp_attitude_mdeg_s_per_frame: 120,
+                damp_roll_mdeg_s_per_frame: 160,
+                kg_per_pulse_batch: 1,
+            },
+            torpedo_tubes: vec![TorpedoTube::standard_twin("torp_bow", 8)],
+            lasers: vec![
+                LaserMount::standard_turret("laser_1"),
+                LaserMount::standard_turret("laser_2"),
+            ],
+            railguns: vec![RailgunMount::standard_spinal("rail_spinal", 24)],
+            pdcs: vec![
+                PdcMount::standard_rotary("pdc_port", 3_000),
+                PdcMount::standard_rotary("pdc_stbd", 3_000),
+            ],
+            decoys_remaining: 6,
+            pixel_model: "corvette",
+        },
+        "tacsim.unit.raider_heavy" => SpaceUnitOverlay {
+            unit_id: "tacsim.unit.raider_heavy",
+            rcs_authority: DockingRcsAuthority {
+                trans_dv_mmps_per_frame: 35,
+                closure_dv_mmps_per_frame: 30,
+                attitude_rate_mdeg_s_per_frame: 210,
+                roll_rate_mdeg_s_per_frame: 280,
+                damp_trans_mmps_per_frame: 18,
+                damp_attitude_mdeg_s_per_frame: 105,
+                damp_roll_mdeg_s_per_frame: 140,
+                kg_per_pulse_batch: 1,
+            },
+            torpedo_tubes: vec![TorpedoTube::standard_twin("torp_bow", 8)],
+            lasers: vec![
+                LaserMount::standard_turret("laser_1"),
+                LaserMount::standard_turret("laser_2"),
+            ],
+            railguns: vec![RailgunMount::standard_spinal("rail_spinal", 24)],
+            pdcs: vec![
+                PdcMount::standard_rotary("pdc_port", 3_000),
+                PdcMount::standard_rotary("pdc_stbd", 3_000),
+            ],
+            decoys_remaining: 6,
+            pixel_model: "raider",
+        },
+        "tacsim.unit.halcyon" => SpaceUnitOverlay {
+            unit_id: "tacsim.unit.halcyon",
+            rcs_authority: DockingRcsAuthority {
+                trans_dv_mmps_per_frame: 18,
+                closure_dv_mmps_per_frame: 15,
+                attitude_rate_mdeg_s_per_frame: 100,
+                roll_rate_mdeg_s_per_frame: 140,
+                damp_trans_mmps_per_frame: 9,
+                damp_attitude_mdeg_s_per_frame: 50,
+                damp_roll_mdeg_s_per_frame: 70,
+                kg_per_pulse_batch: 2,
+            },
+            torpedo_tubes: vec![TorpedoTube::standard_twin("torp_bow", 16)],
+            lasers: vec![
+                LaserMount::standard_turret("laser_dorsal"),
+                LaserMount::standard_turret("laser_ventral"),
+            ],
+            railguns: vec![RailgunMount::standard_spinal("rail_spinal", 32)],
+            pdcs: vec![
+                PdcMount::standard_rotary("pdc_port", 4_000),
+                PdcMount::standard_rotary("pdc_stbd", 4_000),
+                PdcMount::standard_rotary("pdc_dorsal", 4_000),
+                PdcMount::standard_rotary("pdc_ventral", 4_000),
+            ],
+            decoys_remaining: 8,
+            pixel_model: "halcyon",
+        },
+        "tacsim.unit.dray_p" => SpaceUnitOverlay {
+            unit_id: "tacsim.unit.dray_p",
+            rcs_authority: DockingRcsAuthority::default(),
+            torpedo_tubes: Vec::new(),
+            lasers: vec![
+                LaserMount::standard_turret("laser_dorsal"),
+                LaserMount::standard_turret("laser_ventral"),
+            ],
+            railguns: Vec::new(),
+            pdcs: vec![
+                PdcMount::standard_rotary("pdc_dorsal", 2_000),
+                PdcMount::standard_rotary("pdc_ventral", 2_000),
+            ],
+            decoys_remaining: 4,
+            pixel_model: "freighter",
+        },
+        _ => SpaceUnitOverlay {
+            unit_id: "tacsim.unit.dray",
+            rcs_authority: DockingRcsAuthority::default(),
+            torpedo_tubes: Vec::new(),
+            lasers: vec![
+                LaserMount::standard_turret("laser_dorsal"),
+                LaserMount::standard_turret("laser_ventral"),
+            ],
+            railguns: Vec::new(),
+            pdcs: vec![
+                PdcMount::standard_rotary("pdc_dorsal", 2_000),
+                PdcMount::standard_rotary("pdc_ventral", 2_000),
+            ],
+            decoys_remaining: 4,
+            pixel_model: "freighter",
+        },
+    }
+}
+
+/// Apply [`SpaceUnitOverlay`] RCS authority and weapon/PDC mounts to `ship` (`D-35-1`, `SF.R15`).
+pub fn apply_space_unit_overlay(ship: &mut SpaceShipState, overlay: &SpaceUnitOverlay) {
+    ship.rcs_authority = overlay.rcs_authority;
+    ship.torpedo_tubes = overlay.torpedo_tubes.clone();
+    ship.lasers = overlay.lasers.clone();
+    ship.railguns = overlay.railguns.clone();
+    ship.pdcs = overlay.pdcs.clone();
+    ship.decoys_remaining = overlay.decoys_remaining;
+}
+
+fn parse_ship_section_id(word: &str) -> Option<ShipSectionId> {
+    match word {
+        "hull" => Some(ShipSectionId::Hull),
+        "hold" => Some(ShipSectionId::Hold),
+        "drive" | "power" => Some(ShipSectionId::Drive),
+        _ => None,
+    }
+}
+
+fn parse_facet_band(word: &str) -> Option<FacetBand> {
+    match word {
+        "front" => Some(FacetBand::Front),
+        "left" => Some(FacetBand::Left),
+        "right" => Some(FacetBand::Right),
+        "rear" => Some(FacetBand::Rear),
+        "top" => Some(FacetBand::Top),
+        _ => None,
+    }
+}
+
+fn map_consequence_word(word: &Consequence) -> Option<SpaceSectionConsequence> {
+    match word {
+        Consequence::DestroyUnit => Some(SpaceSectionConsequence::DestroyUnit),
+        Consequence::DisableMotion => Some(SpaceSectionConsequence::DisableMotion),
+        Consequence::Slow { percent } => Some(SpaceSectionConsequence::Slow {
+            percent: u32::from(*percent),
+        }),
+        _ => None,
+    }
+}
 
 /// All canonical [`FacetBand`]s on a spacecraft hull (`dray.json`, `D-35-1`).
 pub const ALL_FACET_BANDS: [FacetBand; 5] = [
@@ -105,9 +281,53 @@ pub fn resolve_tactical_section_id(
     None
 }
 
-/// Apply canonical [`UnitSpec`] logistics, drive parameters, propellant capacity, and
-/// silhouette hit radius to `ship` (`D-35-1`, `35a` §1 row 2 & §6 row `SF.16/19`).
+/// Apply canonical [`UnitSpec`] logistics, drive parameters, propellant capacity,
+/// authored section `struck_through` / `consequences`, facet band weights, heat dissipation,
+/// and silhouette hit radius to `ship` (`D-35-1`, `35a` §1 row 2 & §6 row `SF.16/19`, `SF.R15`).
 pub fn apply_unit_spec_to_space_ship(ship: &mut SpaceShipState, spec: &UnitSpec) {
+    if spec.heat_dissipation_per_s > 0 {
+        ship.cooling_rate_permille_s = u16::try_from(spec.heat_dissipation_per_s).unwrap_or(30);
+    }
+    if !spec.facets.is_empty() {
+        let mut weights_map = BTreeMap::new();
+        for fb in &spec.facets {
+            let Some(band) = parse_facet_band(fb.band.as_str()) else {
+                continue;
+            };
+            let mut band_weights = Vec::new();
+            for entry in &fb.sections {
+                if let Some(sec_id) = parse_ship_section_id(entry.section.as_str())
+                    && entry.weight > 0
+                {
+                    band_weights.push((sec_id, u32::from(entry.weight)));
+                }
+            }
+            if !band_weights.is_empty() {
+                weights_map.insert(band, band_weights);
+            }
+        }
+        if !weights_map.is_empty() {
+            ship.facet_weights = weights_map;
+        }
+    }
+    for sec_spec in &spec.sections {
+        let Some(sec_id) = parse_ship_section_id(sec_spec.id.as_str()) else {
+            continue;
+        };
+        if let Some(sec_state) = ship.sections.get_mut(&sec_id) {
+            sec_state.struck_through = sec_spec.struck_through.as_ref().and_then(|st| {
+                Some((
+                    parse_ship_section_id(st.section.as_str())?,
+                    parse_facet_band(st.facet.as_str())?,
+                ))
+            });
+            sec_state.consequences = sec_spec
+                .consequences
+                .iter()
+                .filter_map(map_consequence_word)
+                .collect();
+        }
+    }
     if let Some(logistics) = &spec.logistics {
         ship.dry_mass_t = logistics.dry_mass_t;
         ship.payload_ceiling_kg = logistics.payload_ceiling_kg;
@@ -244,11 +464,12 @@ pub fn space_ship_from_tactical_unit_with_spec(
         SpaceShipState::new_dray(ship_id, callsign, party, pos_m, vel_mmps)
     };
     ship.hull_class = base_id.to_owned();
+    apply_space_unit_overlay(&mut ship, &space_unit_overlay_for_id(base_id));
 
     let resolved_spec = spec.or_else(|| unit_spec_for_id(base_id));
     if let Some(s) = resolved_spec {
         apply_unit_spec_to_space_ship(&mut ship, s);
-        if base_id == "tacsim.unit.corvette" {
+        if matches!(base_id, "tacsim.unit.corvette" | "tacsim.unit.raider_heavy") {
             ship.max_accel_mps2 = 60;
             ship.delta_v_mps = 9_500;
         }
@@ -289,6 +510,12 @@ pub fn space_ship_from_tactical_unit_with_spec(
             }
         }
 
+        let (struck_through, consequences) = ship
+            .sections
+            .get(&sec_id)
+            .map(|s| (s.struck_through, s.consequences.clone()))
+            .unwrap_or_default();
+
         sections.insert(
             sec_id,
             ShipSectionState {
@@ -296,23 +523,55 @@ pub fn space_ship_from_tactical_unit_with_spec(
                 facets,
                 internals,
                 max_internals,
+                struck_through,
+                consequences,
             },
         );
     }
 
     if !sections.is_empty() {
         ship.sections = sections;
+        if let Some(s) = resolved_spec {
+            for sec_spec in &s.sections {
+                let Some(sec_id) = parse_ship_section_id(sec_spec.id.as_str()) else {
+                    continue;
+                };
+                if let Some(sec_state) = ship.sections.get_mut(&sec_id) {
+                    sec_state.struck_through = sec_spec.struck_through.as_ref().and_then(|st| {
+                        Some((
+                            parse_ship_section_id(st.section.as_str())?,
+                            parse_facet_band(st.facet.as_str())?,
+                        ))
+                    });
+                    sec_state.consequences = sec_spec
+                        .consequences
+                        .iter()
+                        .filter_map(map_consequence_word)
+                        .collect();
+                }
+            }
+        }
     }
 
-    // Read optional hull `heat` cell (`D-35-1`).
-    if let Ok(hull_sec) = SectionId::new(ShipSectionId::Hull.id_str())
-        && let Ok(heat_cell) = CellId::new(HEAT_CELL)
-        && let Some(cell) = unit.cell(&CellAddr::Section {
-            section: hull_sec,
-            cell: heat_cell,
-        })
-    {
-        ship.heat_permille = u16::try_from(cell.current.clamp(0, 1_000)).unwrap_or(0);
+    // Read hull `heat` and `heat_sink` cells (`D-35-1`, `SF.R15`).
+    if let Ok(hull_sec) = SectionId::new(ShipSectionId::Hull.id_str()) {
+        if let Ok(heat_cell) = CellId::new(HEAT_CELL)
+            && let Some(cell) = unit.cell(&CellAddr::Section {
+                section: hull_sec.clone(),
+                cell: heat_cell,
+            })
+        {
+            ship.heat_permille = u16::try_from(cell.current.clamp(0, 1_000)).unwrap_or(0);
+        }
+        if let Ok(sink_cell) = CellId::new(HEAT_SINK_CELL)
+            && let Some(cell) = unit.cell(&CellAddr::Section {
+                section: hull_sec,
+                cell: sink_cell,
+            })
+            && cell.current > 0
+        {
+            ship.cooling_rate_permille_s = u16::try_from(cell.current.min(1_000)).unwrap_or(30);
+        }
     }
 
     // Reflect degraded `power` component condition as a drive/radiator subsystem crit.

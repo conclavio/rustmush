@@ -3,7 +3,7 @@
     "id": "tacsim.pack.corvette",
     "version": 1,
     "kind": "rules_definition",
-    "digest": "b0dea8c6de429c9577f2e4e35ba29f399aa31bd35fae703a0b9bbde2e9b5a140",
+    "digest": "9f75aa3469d4eec3c2c0b7ebe817dcc08845c4193eecce2399d2a236a70286db",
     "requires": []
   },
   "entries": {
@@ -79,6 +79,8 @@
           { "band": "top", "width_cm": 6000, "height_cm": 1800 }
         ],
         "sensor_height_cm": 1500,
+        "heat_max": 1000,
+        "heat_dissipation_per_s": 30,
         "logistics": {
           "dry_mass_t": 240,
           "stowage": {
@@ -88,8 +90,7 @@
           },
           "berths": 2,
           "occupant_allowance_kg": 100,
-          "payload_ceiling_kg": 181000,
-          "drive": { "class": "picket_cutter", "law": { "flip": { "accel_mg": 50, "exhaust_kms": 6000 } } }
+          "payload_ceiling_kg": 181000
         },
         "interior": {
           "space": "airlock",

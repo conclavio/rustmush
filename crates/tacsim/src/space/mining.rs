@@ -166,6 +166,17 @@ impl SpectralClass {
             Self::SType | Self::MType => OreFamily::Metals,
         }
     }
+
+    /// Parse a spectral class token (`"C"`, `"C-TYPE"`, `"S"`, `"S-TYPE"`, `"M"`, `"M-TYPE"`).
+    #[must_use]
+    pub fn parse(token: &str) -> Option<Self> {
+        match token.trim().to_ascii_uppercase().as_str() {
+            "C" | "C-TYPE" => Some(Self::CType),
+            "S" | "S-TYPE" => Some(Self::SType),
+            "M" | "M-TYPE" => Some(Self::MType),
+            _ => None,
+        }
+    }
 }
 
 /// Authored specification of one asteroid pocket (`A`, `B`, `C`) inside an [`OrbitalClusterId`].
@@ -189,137 +200,54 @@ pub struct ClusterRockSpec {
     pub holder_org: Option<&'static str>,
 }
 
-const CERES_HALO_ROCKS: [ClusterRockSpec; 3] = [
-    ClusterRockSpec {
-        letter: 'A',
-        alias: "rock_1",
-        spectral: SpectralClass::CType,
-        pos_m: [1_200, 0, 0],
-        vel_mmps: [0, 1_000, 0],
-        gross_t: 120,
-        tenure: Tenure::Commons,
-        holder_org: None,
-    },
-    ClusterRockSpec {
-        letter: 'B',
-        alias: "rock_2",
-        spectral: SpectralClass::SType,
-        pos_m: [-1_400, 900, 0],
-        vel_mmps: [1_000, 0, 0],
-        gross_t: 120,
-        tenure: Tenure::Commons,
-        holder_org: None,
-    },
-    ClusterRockSpec {
-        letter: 'C',
-        alias: "rock_3",
-        spectral: SpectralClass::CType,
-        pos_m: [600, -1_500, 300],
-        vel_mmps: [0, -1_000, 0],
-        gross_t: 120,
-        tenure: Tenure::Commons,
-        holder_org: None,
-    },
-];
-
-const KIRKWOOD_GAP_ROCKS: [ClusterRockSpec; 3] = [
-    ClusterRockSpec {
-        letter: 'A',
-        alias: "rock_1",
-        spectral: SpectralClass::SType,
-        pos_m: [1_000, 400, 0],
-        vel_mmps: [2_000, 0, 0],
-        gross_t: 120,
-        tenure: Tenure::Open,
-        holder_org: None,
-    },
-    ClusterRockSpec {
-        letter: 'B',
-        alias: "rock_2",
-        spectral: SpectralClass::MType,
-        pos_m: [-1_100, 1_200, 200],
-        vel_mmps: [0, 2_000, 0],
-        gross_t: 120,
-        tenure: Tenure::Open,
-        holder_org: None,
-    },
-    ClusterRockSpec {
-        letter: 'C',
-        alias: "rock_3",
-        spectral: SpectralClass::CType,
-        pos_m: [500, -1_300, -200],
-        vel_mmps: [-1_000, 1_000, 0],
-        gross_t: 120,
-        tenure: Tenure::Open,
-        holder_org: None,
-    },
-];
-
-const PALLAS_BELT_ROCKS: [ClusterRockSpec; 3] = [
-    ClusterRockSpec {
-        letter: 'A',
-        alias: "rock_1",
-        spectral: SpectralClass::SType,
-        pos_m: [1_200, 300, 0],
-        vel_mmps: [2_000, 1_000, 0],
-        gross_t: 120,
-        tenure: Tenure::Held,
-        holder_org: Some("pallas_syndicate"),
-    },
-    ClusterRockSpec {
-        letter: 'B',
-        alias: "rock_2",
-        spectral: SpectralClass::MType,
-        pos_m: [-900, 1_400, 300],
-        vel_mmps: [-1_000, 2_000, 0],
-        gross_t: 120,
-        tenure: Tenure::Held,
-        holder_org: Some("pallas_syndicate"),
-    },
-    ClusterRockSpec {
-        letter: 'C',
-        alias: "rock_3",
-        spectral: SpectralClass::SType,
-        pos_m: [800, -1_100, -200],
-        vel_mmps: [1_000, -1_000, 0],
-        gross_t: 120,
-        tenure: Tenure::Open,
-        holder_org: None,
-    },
-];
-
-const SATURN_RING_ROCKS: [ClusterRockSpec; 3] = [
-    ClusterRockSpec {
-        letter: 'A',
-        alias: "rock_1",
-        spectral: SpectralClass::CType,
-        pos_m: [900, 600, 0],
-        vel_mmps: [3_000, 1_000, 0],
-        gross_t: 120,
-        tenure: Tenure::Open,
-        holder_org: None,
-    },
-    ClusterRockSpec {
-        letter: 'B',
-        alias: "rock_2",
-        spectral: SpectralClass::CType,
-        pos_m: [-1_000, 800, 150],
-        vel_mmps: [-2_000, 2_000, 0],
-        gross_t: 120,
-        tenure: Tenure::Open,
-        holder_org: None,
-    },
-    ClusterRockSpec {
-        letter: 'C',
-        alias: "rock_3",
-        spectral: SpectralClass::SType,
-        pos_m: [700, -1_200, -150],
-        vel_mmps: [1_000, -2_000, 0],
-        gross_t: 120,
-        tenure: Tenure::Open,
-        holder_org: None,
-    },
-];
+static LANE_CLUSTER_ROCKS: std::sync::LazyLock<BTreeMap<OrbitalClusterId, [ClusterRockSpec; 3]>> =
+    std::sync::LazyLock::new(|| {
+        let mut map = BTreeMap::new();
+        if let Ok(pack) = crate::pack::load_pack(crate::definitions::content::LANE_JSON) {
+            for entry in pack.entries().values() {
+                let crate::pack::PackEntry::Location(loc) = entry else {
+                    continue;
+                };
+                for cdef in &loc.clusters {
+                    let Some(cid) = OrbitalClusterId::parse(cdef.id.as_str()) else {
+                        continue;
+                    };
+                    if cdef.rocks.len() < 3 {
+                        continue;
+                    }
+                    let parse_rock = |r: &crate::pack::ClusterRockDef| -> ClusterRockSpec {
+                        let letter = r.letter;
+                        let alias: &'static str = Box::leak(r.alias.clone().into_boxed_str());
+                        let spectral =
+                            SpectralClass::parse(&r.spectral).unwrap_or(SpectralClass::CType);
+                        let tenure = r.tenure;
+                        let holder_org = r.holder_org.as_ref().map(|h| -> &'static str {
+                            Box::leak(h.as_str().to_owned().into_boxed_str())
+                        });
+                        ClusterRockSpec {
+                            letter,
+                            alias,
+                            spectral,
+                            pos_m: r.pos_m,
+                            vel_mmps: r.vel_mmps,
+                            gross_t: r.gross_t,
+                            tenure,
+                            holder_org,
+                        }
+                    };
+                    map.insert(
+                        cid,
+                        [
+                            parse_rock(&cdef.rocks[0]),
+                            parse_rock(&cdef.rocks[1]),
+                            parse_rock(&cdef.rocks[2]),
+                        ],
+                    );
+                }
+            }
+        }
+        map
+    });
 
 impl OrbitalClusterId {
     /// All four canonical orbital clusters (`doc 35` §7.1).
@@ -394,15 +322,42 @@ impl OrbitalClusterId {
         CanonicalId::new(self.as_str()).ok()
     }
 
-    /// Authored asteroid pockets (`A`, `B`, `C`) in this cluster.
+    /// Authored asteroid pockets (`A`, `B`, `C`) in this cluster (`SF.R14`, `D-35-17`).
     #[must_use]
-    pub const fn rocks(self) -> &'static [ClusterRockSpec; 3] {
-        match self {
-            Self::CeresHalo => &CERES_HALO_ROCKS,
-            Self::KirkwoodGap31 => &KIRKWOOD_GAP_ROCKS,
-            Self::PallasInclinedBelt => &PALLAS_BELT_ROCKS,
-            Self::SaturnBRingEdge => &SATURN_RING_ROCKS,
-        }
+    pub fn rocks(self) -> &'static [ClusterRockSpec; 3] {
+        static EMPTY: [ClusterRockSpec; 3] = [
+            ClusterRockSpec {
+                letter: 'A',
+                alias: "rock_1",
+                spectral: SpectralClass::CType,
+                pos_m: [0, 0, 0],
+                vel_mmps: [0, 0, 0],
+                gross_t: 0,
+                tenure: Tenure::Open,
+                holder_org: None,
+            },
+            ClusterRockSpec {
+                letter: 'B',
+                alias: "rock_2",
+                spectral: SpectralClass::CType,
+                pos_m: [0, 0, 0],
+                vel_mmps: [0, 0, 0],
+                gross_t: 0,
+                tenure: Tenure::Open,
+                holder_org: None,
+            },
+            ClusterRockSpec {
+                letter: 'C',
+                alias: "rock_3",
+                spectral: SpectralClass::CType,
+                pos_m: [0, 0, 0],
+                vel_mmps: [0, 0, 0],
+                gross_t: 0,
+                tenure: Tenure::Open,
+                holder_org: None,
+            },
+        ];
+        LANE_CLUSTER_ROCKS.get(&self).unwrap_or(&EMPTY)
     }
 
     /// Look up a rock in this cluster by block letter (`'A'`..`'C'`) or alias (`"rock_1"`..`"rock_3"`).
@@ -523,6 +478,18 @@ pub struct DroneSortieState {
     pub yield_t: u64,
     /// Operator who launched the sortie.
     pub operator: ObjId,
+    /// Sealed mind attached to the collector drone (`drone_mining.rhai`, `SF.R14`, `D-35-13`, `D-35-17`).
+    #[serde(default, with = "super::picket::compact_mind_seal")]
+    pub mind_seal: Option<crate::arena::mind::MindSeal>,
+    /// Persistent Rhai memory bytes for the collector drone (`SF.R14`).
+    #[serde(default)]
+    pub mind_memory: Vec<u8>,
+    /// Monotonic Rhai think sequence counter (`SF.R14`).
+    #[serde(default)]
+    pub mind_think_seq: u64,
+    /// Last trace lines emitted by `drone_mining.rhai` (`SF.R14`).
+    #[serde(default)]
+    pub mind_last_trace: Vec<String>,
 }
 
 /// Active orbital cluster session for a carrier hull (`+helm/cluster`).
@@ -1354,7 +1321,21 @@ pub fn step_clusters_on_tick(ctx: &mut Ctx<'_>, now: ClockStamp) {
                     }
                 }
             } else {
-                remaining_drones.push(drone.clone());
+                let mut updated = drone.clone();
+                if let Some(res) = super::picket::run_drone_rhai_think(
+                    updated.excursion_id.tv,
+                    session_snapshot.ship_pos_m,
+                    updated.mind_think_seq,
+                    &updated.mind_memory,
+                ) && res.fault.is_none()
+                {
+                    updated.mind_think_seq = updated.mind_think_seq.saturating_add(1);
+                    updated.mind_memory = res.memory;
+                    if !res.trace.is_empty() {
+                        updated.mind_last_trace = res.trace;
+                    }
+                }
+                remaining_drones.push(updated);
             }
         }
 

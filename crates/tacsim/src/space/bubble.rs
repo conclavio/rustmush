@@ -160,6 +160,14 @@ pub enum HullStatus {
     },
 }
 
+/// Authored section destruction consequence from `UnitSpec::sections` (`D-35-1`, `SF.R15`).
+#[derive(Clone, Copy, Debug, PartialEq, Eq, Serialize, Deserialize)]
+pub enum SpaceSectionConsequence {
+    DestroyUnit,
+    DisableMotion,
+    Slow { percent: u32 },
+}
+
 /// Armour and structure state for one section of a ship (`D-35-1`).
 #[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize)]
 pub struct ShipSectionState {
@@ -167,6 +175,43 @@ pub struct ShipSectionState {
     pub facets: BTreeMap<FacetBand, u32>,
     pub internals: u32,
     pub max_internals: u32,
+    /// Optional armour facet on another section through which this section is struck
+    /// (e.g. `drive` struck through `(Hull, Rear)` in `dray.json`, `D-35-1`, `SF.R15`).
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub struck_through: Option<(ShipSectionId, FacetBand)>,
+    /// Authored consequences applied when this section reaches `0` internals (`D-35-1`, `SF.R15`).
+    #[serde(default, skip_serializing_if = "Vec::is_empty")]
+    pub consequences: Vec<SpaceSectionConsequence>,
+}
+
+fn default_dray_facet_weights() -> BTreeMap<FacetBand, Vec<(ShipSectionId, u32)>> {
+    BTreeMap::from([
+        (FacetBand::Front, vec![(ShipSectionId::Hull, 100)]),
+        (
+            FacetBand::Left,
+            vec![(ShipSectionId::Hull, 50), (ShipSectionId::Hold, 50)],
+        ),
+        (
+            FacetBand::Right,
+            vec![(ShipSectionId::Hull, 50), (ShipSectionId::Hold, 50)],
+        ),
+        (
+            FacetBand::Rear,
+            vec![(ShipSectionId::Hull, 50), (ShipSectionId::Drive, 50)],
+        ),
+        (
+            FacetBand::Top,
+            vec![(ShipSectionId::Hull, 40), (ShipSectionId::Hold, 60)],
+        ),
+    ])
+}
+
+fn is_default_dray_facet_weights(weights: &BTreeMap<FacetBand, Vec<(ShipSectionId, u32)>>) -> bool {
+    *weights == default_dray_facet_weights()
+}
+
+fn is_default_rcs_authority(rcs: &super::docking::DockingRcsAuthority) -> bool {
+    *rcs == super::docking::DockingRcsAuthority::default()
 }
 
 /// Emissions control posture (`mush-sim` `Emcon{0..=3}`, `D-35-9`, `D-35-10`).
@@ -199,20 +244,56 @@ fn default_dry_mass_t() -> u32 {
     240
 }
 
+fn is_default_dry_mass_t(v: &u32) -> bool {
+    *v == 240
+}
+
 fn default_payload_ceiling_kg() -> u64 {
     181_000
+}
+
+fn is_default_payload_ceiling_kg(v: &u64) -> bool {
+    *v == 181_000
 }
 
 fn default_propellant_cap_kg() -> u32 {
     80_000
 }
 
+fn is_default_propellant_cap_kg(v: &u32) -> bool {
+    *v == 80_000
+}
+
 fn default_rated_accel_mg() -> u32 {
     50
 }
 
+fn is_default_rated_accel_mg(v: &u32) -> bool {
+    *v == 50
+}
+
 fn default_exhaust_kms() -> u32 {
     6_000
+}
+
+fn is_default_exhaust_kms(v: &u32) -> bool {
+    *v == 6_000
+}
+
+fn is_zero_vec3(v: &[i64; 3]) -> bool {
+    *v == [0, 0, 0]
+}
+
+fn is_zero_u32(v: &u32) -> bool {
+    *v == 0
+}
+
+fn is_zero_u64(v: &u64) -> bool {
+    *v == 0
+}
+
+fn is_zero_i64(v: &i64) -> bool {
+    *v == 0
 }
 
 /// A ship or hull inside a [`LocalSpaceBubble`].
@@ -225,7 +306,7 @@ pub struct SpaceShipState {
     /// 3D local position in metres (`[x, y, z]`).
     pub pos_m: [i64; 3],
     /// Sub-metre position remainder in micrometres (`-999_999..=999_999`, `35a` §5.2).
-    #[serde(default)]
+    #[serde(default, skip_serializing_if = "is_zero_vec3")]
     pub pos_rem_um: [i64; 3],
     /// 3D local velocity in $\text{mm/s}$ (`[vx, vy, vz]`).
     pub vel_mmps: [i64; 3],
@@ -234,19 +315,34 @@ pub struct SpaceShipState {
     /// Maximum maneuvering / combat thrust acceleration in $\text{m/s}^2$.
     pub max_accel_mps2: i64,
     /// Dry hull mass in tonnes from `UnitSpec::logistics` (`D-35-1`, `240 t` for Dray/Dray-P, `4,000 t` for Halcyon).
-    #[serde(default = "default_dry_mass_t")]
+    #[serde(
+        default = "default_dry_mass_t",
+        skip_serializing_if = "is_default_dry_mass_t"
+    )]
     pub dry_mass_t: u32,
     /// Payload ceiling in kilograms from `UnitSpec::logistics` (`D-35-1`).
-    #[serde(default = "default_payload_ceiling_kg")]
+    #[serde(
+        default = "default_payload_ceiling_kg",
+        skip_serializing_if = "is_default_payload_ceiling_kg"
+    )]
     pub payload_ceiling_kg: u64,
     /// Propellant tank capacity in kilograms from `UnitSpec::logistics.stowage["propellant"]` (`D-35-1`).
-    #[serde(default = "default_propellant_cap_kg")]
+    #[serde(
+        default = "default_propellant_cap_kg",
+        skip_serializing_if = "is_default_propellant_cap_kg"
+    )]
     pub propellant_cap_kg: u32,
     /// Rated flip-drive continuous acceleration in milli-g from `UnitSpec::logistics.drive.law` (`50 mg` $\approx 0.49\text{ m/s}^2$, `D-35-1`).
-    #[serde(default = "default_rated_accel_mg")]
+    #[serde(
+        default = "default_rated_accel_mg",
+        skip_serializing_if = "is_default_rated_accel_mg"
+    )]
     pub rated_accel_mg: u32,
     /// Drive exhaust velocity in $\text{km/s}$ from `UnitSpec::logistics.drive.law` (`6,000 km/s`, `D-35-1`).
-    #[serde(default = "default_exhaust_kms")]
+    #[serde(
+        default = "default_exhaust_kms",
+        skip_serializing_if = "is_default_exhaust_kms"
+    )]
     pub exhaust_kms: u32,
     /// Hull attitude `(yaw_deg, pitch_deg, roll_deg)` in whole degrees.
     pub attitude_deg: (i32, i32, i32),
@@ -265,27 +361,42 @@ pub struct SpaceShipState {
     /// Whether all crew are currently linkdead (`D-35-7` ballistic safety rule).
     pub crew_linkdead: bool,
     pub emcon: EmconPosture,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
     pub locked_target_id: Option<String>,
     /// Effective hull cross-section radius for unguided projectile impacts in metres.
     pub hit_radius_m: i64,
     pub sections: BTreeMap<ShipSectionId, ShipSectionState>,
+    /// Authored facet band section weights from `UnitSpec::facets` (`D-35-1`, `SF.R15`).
+    #[serde(
+        default = "default_dray_facet_weights",
+        skip_serializing_if = "is_default_dray_facet_weights"
+    )]
+    pub facet_weights: BTreeMap<FacetBand, Vec<(ShipSectionId, u32)>>,
+    /// 6-DOF RCS thruster authority from the hull's [`crate::space::custody::SpaceUnitOverlay`] (`D-35-1`, `SF.R15`).
+    #[serde(default, skip_serializing_if = "is_default_rcs_authority")]
+    pub rcs_authority: super::docking::DockingRcsAuthority,
+    #[serde(default, skip_serializing_if = "Vec::is_empty")]
     pub crits: Vec<SubsystemCrit>,
     pub status: HullStatus,
+    #[serde(default, skip_serializing_if = "Vec::is_empty")]
     pub torpedo_tubes: Vec<TorpedoTube>,
+    #[serde(default, skip_serializing_if = "Vec::is_empty")]
     pub lasers: Vec<LaserMount>,
+    #[serde(default, skip_serializing_if = "Vec::is_empty")]
     pub railguns: Vec<RailgunMount>,
+    #[serde(default, skip_serializing_if = "Vec::is_empty")]
     pub pdcs: Vec<PdcMount>,
     /// Remaining ECM / thermal-radar decoy canisters (`SF.15`, `D-35-8`).
     #[serde(default)]
     pub decoys_remaining: u8,
     /// Remaining active duration of a deployed decoy cloud in wall milliseconds (`SF.15`).
-    #[serde(default)]
+    #[serde(default, skip_serializing_if = "is_zero_u32")]
     pub active_decoy_ms: u32,
     /// Non-propellant cargo/bay payload mass in kilograms for rocket-equation burns (`SF.R11`, `D-35-6`).
-    #[serde(default)]
+    #[serde(default, skip_serializing_if = "is_zero_u64")]
     pub non_prop_payload_kg: u64,
     /// Sub-$\text{m/s}$ $\Delta v$ remainder in $\text{mm/s}$ accumulated across `250 ms` substeps (`SF.R11`).
-    #[serde(default)]
+    #[serde(default, skip_serializing_if = "is_zero_i64")]
     pub dv_rem_mmps: i64,
 }
 
@@ -314,6 +425,8 @@ impl SpaceShipState {
                 ]),
                 internals: 600,
                 max_internals: 600,
+                struck_through: None,
+                consequences: vec![SpaceSectionConsequence::DestroyUnit],
             },
         );
         sections.insert(
@@ -327,6 +440,8 @@ impl SpaceShipState {
                 ]),
                 internals: 400,
                 max_internals: 400,
+                struck_through: None,
+                consequences: vec![SpaceSectionConsequence::Slow { percent: 75 }],
             },
         );
         sections.insert(
@@ -336,10 +451,12 @@ impl SpaceShipState {
                 facets: BTreeMap::new(),
                 internals: 250,
                 max_internals: 250,
+                struck_through: Some((ShipSectionId::Hull, FacetBand::Rear)),
+                consequences: vec![SpaceSectionConsequence::DisableMotion],
             },
         );
 
-        Self {
+        let mut ship = Self {
             id: id.into(),
             callsign: callsign.into(),
             hull_class: "tacsim.unit.dray".to_owned(),
@@ -358,7 +475,7 @@ impl SpaceShipState {
             propellant_kg: 80_000,
             delta_v_mps: 4_500,
             return_reserve_dv_mps: 900,
-            heat_permille: 80,
+            heat_permille: 0,
             cooling_rate_permille_s: 30,
             pdc_auto: true,
             crew_linkdead: false,
@@ -366,6 +483,8 @@ impl SpaceShipState {
             locked_target_id: None,
             hit_radius_m: 5,
             sections,
+            facet_weights: default_dray_facet_weights(),
+            rcs_authority: super::docking::DockingRcsAuthority::default(),
             crits: Vec::new(),
             status: HullStatus::Operational,
             torpedo_tubes: Vec::new(),
@@ -374,12 +493,20 @@ impl SpaceShipState {
                 LaserMount::standard_turret("laser_ventral"),
             ],
             railguns: Vec::new(),
-            pdcs: vec![PdcMount::standard_rotary("pdc_ dorsal", 2_000)],
+            pdcs: vec![
+                PdcMount::standard_rotary("pdc_dorsal", 2_000),
+                PdcMount::standard_rotary("pdc_ventral", 2_000),
+            ],
             decoys_remaining: 4,
             active_decoy_ms: 0,
             non_prop_payload_kg: 0,
             dv_rem_mmps: 0,
-        }
+        };
+        super::custody::apply_space_unit_overlay(
+            &mut ship,
+            &super::custody::space_unit_overlay_for_id("tacsim.unit.dray"),
+        );
+        ship
     }
 
     /// Rated continuous flip-drive acceleration in $\text{m/s}^2$ from [`Self::rated_accel_mg`]
@@ -401,19 +528,15 @@ impl SpaceShipState {
     ) -> Self {
         let mut ship = Self::new_dray(id, callsign, party, pos_m, vel_mmps);
         ship.hull_class = "tacsim.unit.corvette".to_owned();
+        if let Some(spec) = super::custody::unit_spec_for_id("tacsim.unit.corvette") {
+            super::custody::apply_unit_spec_to_space_ship(&mut ship, spec);
+        }
         ship.max_accel_mps2 = 60;
         ship.delta_v_mps = 9_500;
-        ship.torpedo_tubes = vec![TorpedoTube::standard_twin("torp_bow", 8)];
-        ship.lasers = vec![
-            LaserMount::standard_turret("laser_1"),
-            LaserMount::standard_turret("laser_2"),
-        ];
-        ship.railguns = vec![RailgunMount::standard_spinal("rail_spinal", 24)];
-        ship.pdcs = vec![
-            PdcMount::standard_rotary("pdc_port", 3_000),
-            PdcMount::standard_rotary("pdc_stbd", 3_000),
-        ];
-        ship.decoys_remaining = 6;
+        super::custody::apply_space_unit_overlay(
+            &mut ship,
+            &super::custody::space_unit_overlay_for_id("tacsim.unit.corvette"),
+        );
         ship
     }
 
@@ -541,64 +664,129 @@ impl SpaceShipState {
         }
     }
 
-    /// Apply raw weapon `damage` arriving on `facet` (`D-35-1`, `D-35-12`).
+    /// Apply raw weapon `damage` arriving on `facet` (`D-35-1`, `D-35-12`, `SF.R15`).
     ///
-    /// Follows `dray.json`'s section mapping:
-    /// - `Front` $\to$ `Hull`
-    /// - `Left` / `Right` / `Top` $\to$ `Hull` and `Hold`
-    /// - `Rear` $\to$ `Hull` with `struck_through` to `Drive`
+    /// Routes incoming damage through the hull's authored [`Self::facet_weights`],
+    /// [`ShipSectionState::struck_through`] armour facets, and [`ShipSectionState::consequences`]:
+    /// - `Front` $\to$ `Hull` (`100%`)
+    /// - `Left` / `Right` $\to$ `Hull` (`50%`) and `Hold` (`50%`)
+    /// - `Top` $\to$ `Hull` (`40%`) and `Hold` (`60%`)
+    /// - `Rear` $\to$ `Hull` (`50%`) and `Drive` (`50%`, struck through `Hull.Rear`)
     pub fn apply_damage(&mut self, facet: FacetBand, damage: u32) -> (ShipSectionId, u32, u32) {
-        let primary_section = match facet {
-            FacetBand::Front => ShipSectionId::Hull,
-            FacetBand::Rear => ShipSectionId::Hull,
-            FacetBand::Left | FacetBand::Right | FacetBand::Top => ShipSectionId::Hull,
-        };
+        let weights: Vec<(ShipSectionId, u32)> = self
+            .facet_weights
+            .get(&facet)
+            .cloned()
+            .filter(|w| !w.is_empty())
+            .unwrap_or_else(|| vec![(ShipSectionId::Hull, 100)]);
+        let total_weight: u32 = weights.iter().map(|(_, w)| *w).sum::<u32>().max(1);
 
-        let mut remaining = damage;
-        let mut armor_absorbed = 0u32;
-
-        if let Some(sec) = self.sections.get_mut(&primary_section)
-            && let Some(armor) = sec.facets.get_mut(&facet)
-        {
-            let absorbed = (*armor).min(remaining);
-            *armor -= absorbed;
-            armor_absorbed = absorbed;
-            remaining -= absorbed;
+        let mut armor_groups: Vec<(_, Vec<_>)> = Vec::new();
+        for (sec_id, weight) in &weights {
+            if !self.sections.contains_key(sec_id) || *weight == 0 {
+                continue;
+            }
+            let armor_key = self
+                .sections
+                .get(sec_id)
+                .and_then(|s| s.struck_through)
+                .unwrap_or((*sec_id, facet));
+            if let Some((_, members)) = armor_groups.iter_mut().find(|(k, _)| *k == armor_key) {
+                members.push((*sec_id, *weight));
+            } else {
+                armor_groups.push((armor_key, vec![(*sec_id, *weight)]));
+            }
+        }
+        if armor_groups.is_empty() {
+            armor_groups.push((
+                (ShipSectionId::Hull, facet),
+                vec![(ShipSectionId::Hull, 100)],
+            ));
         }
 
-        // In `dray.json`, `drive` has `struck_through: { section: "hull", facet: "rear" }`
-        // and penetrating hits through the hull structure also shock the drive column.
-        let target_section = if facet == FacetBand::Rear && remaining > 0 {
-            ShipSectionId::Drive
-        } else {
-            primary_section
-        };
-
+        let mut armor_absorbed = 0u32;
         let mut internal_dmg = 0u32;
-        if remaining > 0 {
-            if facet == FacetBand::Rear {
-                if let Some(sec) = self.sections.get_mut(&ShipSectionId::Drive) {
-                    let dealt = sec.internals.min(remaining);
-                    sec.internals -= dealt;
-                    internal_dmg = dealt;
-                }
+        let mut target_section = weights
+            .first()
+            .map_or(ShipSectionId::Hull, |(sec_id, _)| *sec_id);
+        let mut remaining_damage = damage;
+        let group_count = armor_groups.len();
+
+        for (group_idx, ((armor_sec, armor_band), members)) in armor_groups.into_iter().enumerate()
+        {
+            let group_weight: u32 = members.iter().map(|(_, w)| *w).sum::<u32>().max(1);
+            let group_damage = if group_idx + 1 == group_count {
+                remaining_damage
             } else {
-                let drive_share = remaining.div_ceil(2);
-                let hull_share = remaining.saturating_sub(drive_share);
-                if let Some(sec) = self.sections.get_mut(&ShipSectionId::Hull) {
-                    let dealt = sec.internals.min(hull_share);
+                let share = ((u64::from(damage) * u64::from(group_weight))
+                    / u64::from(total_weight)) as u32;
+                share.min(remaining_damage)
+            };
+            remaining_damage = remaining_damage.saturating_sub(group_damage);
+
+            let mut group_overflow = group_damage;
+            if let Some(sec) = self.sections.get_mut(&armor_sec)
+                && let Some(armor) = sec.facets.get_mut(&armor_band)
+            {
+                let absorbed = (*armor).min(group_overflow);
+                *armor -= absorbed;
+                armor_absorbed = armor_absorbed.saturating_add(absorbed);
+                group_overflow -= absorbed;
+            }
+
+            if group_overflow == 0 {
+                continue;
+            }
+
+            let mut rem_overflow = group_overflow;
+            let member_count = members.len();
+            let mut spillover = 0u32;
+            for (mem_idx, (sec_id, weight)) in members.iter().copied().enumerate() {
+                let sec_share = if mem_idx + 1 == member_count {
+                    rem_overflow
+                } else {
+                    let share = ((u64::from(group_overflow) * u64::from(weight))
+                        / u64::from(group_weight)) as u32;
+                    share.min(rem_overflow)
+                };
+                rem_overflow = rem_overflow.saturating_sub(sec_share);
+                if let Some(sec) = self.sections.get_mut(&sec_id) {
+                    let dealt = sec.internals.min(sec_share);
                     sec.internals -= dealt;
                     internal_dmg = internal_dmg.saturating_add(dealt);
+                    if dealt > 0 {
+                        target_section = sec_id;
+                    }
+                    spillover = spillover.saturating_add(sec_share.saturating_sub(dealt));
                 }
-                if let Some(sec) = self.sections.get_mut(&ShipSectionId::Drive) {
-                    let dealt = sec.internals.min(drive_share);
-                    sec.internals -= dealt;
+            }
+            if spillover > 0 {
+                for (sec_id, _) in &members {
+                    if spillover == 0 {
+                        break;
+                    }
+                    if let Some(sec) = self.sections.get_mut(sec_id)
+                        && sec.internals > 0
+                    {
+                        let dealt = sec.internals.min(spillover);
+                        sec.internals -= dealt;
+                        internal_dmg = internal_dmg.saturating_add(dealt);
+                        spillover -= dealt;
+                        target_section = *sec_id;
+                    }
+                }
+                if spillover > 0
+                    && let Some(hull_sec) = self.sections.get_mut(&ShipSectionId::Hull)
+                    && hull_sec.internals > 0
+                {
+                    let dealt = hull_sec.internals.min(spillover);
+                    hull_sec.internals -= dealt;
                     internal_dmg = internal_dmg.saturating_add(dealt);
                 }
             }
         }
 
-        // Subsystem crit check when internals take heavy damage
+        // Subsystem crit check when internals take penetrating damage (`D-35-1`, §6.3, `SF.R15`)
         let hull_lost = self
             .sections
             .get(&ShipSectionId::Hull)
@@ -617,19 +805,59 @@ impl SpaceShipState {
         {
             self.crits.push(SubsystemCrit::DriveDegraded);
         }
+        if internal_dmg >= 25
+            && matches!(
+                facet,
+                FacetBand::Top | FacetBand::Left | FacetBand::Right | FacetBand::Front
+            )
+            && let Some(pdc) = self.pdcs.iter_mut().find(|p| p.operational)
+        {
+            pdc.operational = false;
+            if !self.crits.contains(&SubsystemCrit::PdcOffline) {
+                self.crits.push(SubsystemCrit::PdcOffline);
+            }
+        }
+        if internal_dmg >= 35
+            && matches!(facet, FacetBand::Front | FacetBand::Top)
+            && !self.crits.contains(&SubsystemCrit::SensorDegraded)
+        {
+            self.crits.push(SubsystemCrit::SensorDegraded);
+        }
 
-        // Open-epoch derelict disablement check (`D-35-12`, `FO-12`):
-        // Never permadeath-delete the hull; transition to DisabledDerelict with epoch_open = true.
-        let drive_zero = self
-            .sections
-            .get(&ShipSectionId::Drive)
-            .is_some_and(|s| s.internals == 0);
-        let hull_zero = self
-            .sections
-            .get(&ShipSectionId::Hull)
-            .is_some_and(|s| s.internals == 0);
-
-        if (drive_zero || hull_zero) && self.status == HullStatus::Operational {
+        // Apply authored section consequences (`slow_75`, `disable_motion`, `destroy_unit`)
+        // and open-epoch derelict disablement (`D-35-1`, `D-35-12`, `FO-12`, `SF.R15`).
+        let mut disable_ship = false;
+        let mut slow_percent: Option<u32> = None;
+        for sec in self.sections.values() {
+            if sec.internals == 0 {
+                if sec.consequences.is_empty() {
+                    if matches!(sec.id, ShipSectionId::Hull | ShipSectionId::Drive) {
+                        disable_ship = true;
+                    }
+                } else {
+                    for cons in &sec.consequences {
+                        match *cons {
+                            SpaceSectionConsequence::DestroyUnit
+                            | SpaceSectionConsequence::DisableMotion => {
+                                disable_ship = true;
+                            }
+                            SpaceSectionConsequence::Slow { percent } => {
+                                slow_percent =
+                                    Some(slow_percent.map_or(percent, |cur| cur.min(percent)));
+                            }
+                        }
+                    }
+                }
+            }
+        }
+        if let Some(pct) = slow_percent {
+            self.rated_accel_mg = (self.rated_accel_mg.saturating_mul(pct) / 100).max(1);
+            self.max_accel_mps2 = ((self.max_accel_mps2 * i64::from(pct)) / 100).max(1);
+            if !self.crits.contains(&SubsystemCrit::DriveDegraded) {
+                self.crits.push(SubsystemCrit::DriveDegraded);
+            }
+        }
+        if disable_ship && self.status == HullStatus::Operational {
             self.status = HullStatus::DisabledDerelict {
                 epoch_open: true,
                 life_support_remaining_s: DERELICT_WINDOW_S,
