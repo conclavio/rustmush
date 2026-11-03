@@ -34,7 +34,7 @@ use tacsim::arena::party::{EndCondition, FieldHost, Mark, PartyId};
 use tacsim::arena::state::Arena;
 use tacsim::definitions::content;
 
-use crate::driving::{AHUNA, Rig, cid, staff_hand, stocked};
+use crate::driving_rig::{AHUNA, Rig, cid, staff_hand, stocked};
 
 /// The cohort, in the order a party's units take it: tracked, laser, legged, thermal, ECM, ECCM.
 const COHORT: [&str; 8] = [

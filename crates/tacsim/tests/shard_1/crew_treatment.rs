@@ -13,11 +13,11 @@ use tacsim::field::crew::{FIT_AGAIN, Treatment};
 use tacsim::field::{CrewCondition, CrewLocation, crew_of};
 use tokio::sync::mpsc::Receiver;
 
-use crate::driving::{
+use crate::driving_rig::{
     Rig, command, drain, land, on_pad, on_pad_as, run, staff_hand, stocked_tuned, warm,
 };
 use crate::field_crash::{control_destroyed, hull_of};
-use crate::field_host::{armed, egress, seat, second, until};
+use crate::field_host_rig::{armed, egress, seat, second, until};
 
 /// Treatment of an incapacitated character, IC seconds (the gate's compressed time).
 const TREAT_INCAPACITATED_S: u32 = 600;
@@ -26,7 +26,7 @@ const MEDICAL_PERMILLE: u32 = 500;
 
 /// A fast field, a short extraction and a short treatment (`field_crash`'s tune).
 fn tune(cfg: &mut TacsimConfig) {
-    crate::field_host::tune(cfg);
+    crate::field_host_rig::tune(cfg);
     cfg.field.extract_s = 60;
     cfg.field.treat_injured_s = 300;
     cfg.field.treat_incapacitated_s = TREAT_INCAPACITATED_S;
