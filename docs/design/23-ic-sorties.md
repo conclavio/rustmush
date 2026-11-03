@@ -1230,8 +1230,31 @@ refused join** goes back aboard and is offered again at the next tick (doc 40 Q-
 epoch open and its claim untouched — a bay is the claim's own hangar, so that re-parent is the one
 the freeze admits; (5) **abort** — a launch cancelled after its Open and before its ramp closes
 `PoweredDownInBase { base: <the hangar's hull> }` on the next fire, and a ramp that lands nobody
-(`NeverLeft`) the same. Doc 40 carries the same five steps in its §4.4, and the acceptance story is
-shared: a licensed reinforcement into a running field (§17.10; doc 40's FR.3 story).
+(`NeverLeft`) the same. **Doc 40 Draft 0.3 writes the protocol into its §4.4 in six steps under
+Q-23-21's alternative** (the Open after the finish; its message of 2026-11-03 crossed this
+draft's), and doc 23 carries those six as that alternative's shape, so whichever way the owner
+rules both docs already hold it: (1) *accepted* — at the prepare the cap over one count (ground
+plus pending rows, doc 40 Q-40-24), the launch cycle's slot and, for a licensed hull, the licence
+and compute seats are taken and recorded on a pending row of the site record and on the dispatch,
+which captures the `Execution` whole onto the act (boxed) so the later Open opens from it and
+never re-reads the holding (23-2 under this order); (2) *landed* — the finish puts the hull at
+the ramp and opens the epoch, no mark, no join, a pending entrant counted by its row; (3) *claim
+opened* (licensed only) — the next surface fire opens the claim with the hull on open ground
+under no mark; (4) *checked out and joined* — the field tick (`field/admit.rs:120–121`, beside
+`note_arrivals`/`join_arrivals`, the one caller with a `Ctx`) takes each pending entrant whose
+claim is open or needs none: `custody::check_out` under the field's mark, the Join at the ramp,
+`FieldLive.units` and the retired pending row in one batch; (5) *retried* — a refused join takes
+the check-out back (`check_in(…, None)`, `carrier.rs:523`'s pattern), the hull goes back aboard
+with its epoch and claim unchanged and the pending row holding its count, and the next tick puts
+it down again; (6) *aborted* — the field demotes, the carrier is wrecked or the operator cancels
+before the join lands: the hull stays aboard, the row, the slot and the seats are released, and
+an open claim closes with the epoch as `ReturnedToBase { base: <its own carrier> }`, the staff
+home's precedent for a hull put back into its own bay (`recovery.rs:1043–1048`; `RecoveredToBase`
+names a recoverer that is not the hull's own hangar), while a claim still owed takes 23-4's
+tombstone. Under the default, steps 1 and 3 collapse into the Open in the bay and the pending row
+carries the cap and the cycle alone; steps 2, 4, 5 and 6 read the same under both. The acceptance
+story is shared either way: a licensed reinforcement into a running field (§17.10; doc 40's FR.3
+story).
 
 **Salvage under a claim.** A hull under an open claim that a stranger's tug loads (GC.4/GC.5's
 salvage custody row, `surface/claim.rs`) is the re-parent the freeze would refuse. The default is
@@ -1511,7 +1534,7 @@ is refused with the one sentence.
 | D-23-20 | S.4b's host is the IC field; the drone phase is no longer its gate; its acceptance runs at 256 and 512 with the bot per Q-38-29 | **accepted by the owner, 2026-11-03** (Q-23-18, Q-23-20) |
 | D-23-21 | The claim opens before the launch: `go` mints the `StartPermit` with the rig in its bay and queues the launch act behind the claim; the fire that observes the active row starts the ramp; the claim is the licence and compute reservation, counted with the inbox's pending Opens; an Open refused for good leaves `Refused` on the cursor, the launch cancelled, nothing out of the bay; a launch cancelled after its Open closes `PoweredDownInBase` | proposed, Draft 0.10 (round 2's 23-1, 23-2, 23-5); Q-23-21 |
 | D-23-22 | A `mind=` word over a hull not titled to the actor is refused at `go` with one sentence; S.4b's story runs over a bought-out rig; lease authority is the Roll's next cut, S.4c (`LeaseFence` from a live `TvLease`, audited like the title's revision) | proposed, Draft 0.10 (round 2's 23-3); Q-23-22 |
-| D-23-23 | The pending-launch protocol, one contract with doc 40 §4.4: claim in the bay → ramp → field check-out and Join at the landing reading the cursor (`Open` installs, else the ROM) → a refused join back aboard with the claim untouched → a cancelled launch closes `PoweredDownInBase`; the field never opens, waits for or closes a claim; the shared story is a licensed reinforcement into a running field | proposed, Draft 0.10 (round 2's 23-5, X-1); under Q-23-21 |
+| D-23-23 | The pending-launch protocol, one contract with doc 40 §4.4: claim in the bay → ramp → field check-out and Join at the landing reading the cursor (`Open` installs, else the ROM) → a refused join back aboard with the claim untouched → a cancelled launch closes `PoweredDownInBase`; the field never opens, waits for or closes a claim; under Q-23-21's alternative, doc 40 Draft 0.3's six steps with the Open after the landing and the seats on the pending row; the shared story is a licensed reinforcement into a running field | proposed, Draft 0.10 (round 2's 23-5, X-1); under Q-23-21 |
 
 ### 17.12 Questions for the owner
 
@@ -1618,12 +1641,12 @@ open.**
 accepted at Q-23-8)**
 - **Proposed default:** before the launch — `go` enqueues the Open with the rig in its bay and
   queues the ramp behind the claim; the claim is the reservation (D-23-21).
-- **Alternative:** keep Q-23-8's order (the Open on the fire after the finish) and add a
-  reservation ledger: `RigRecord.reservation { licence, class, since_ic }` written at the
-  dispatch, counted by the Roll's seat reader and the site's compute sum beside the active claims,
-  converted at the Open or released at a `NeverLeft`, a refused Open or a bound
-  (`[tacsim.minds].reservation_s`); an Open refused for good leaves the rig out on the ROM with the
-  operator told once, its reservation released and 23-4's tombstone on the cursor.
+- **Alternative:** keep Q-23-8's order (the Open on the fire after the finish) with doc 40 Draft
+  0.3's six-step protocol (§17.4): the seats reserved at the prepare on the site record's pending
+  row (doc 40 Q-40-24) and converted at the Open, the dispatch capturing the `Execution` whole
+  onto the act so the Open never re-reads the holding, the field tick admitting a pending entrant
+  only once its claim is open, and an Open refused for good aborting the launch by its step 6
+  (back aboard, the seats released, 23-4's tombstone on the cursor).
 - **Why:** three of round 2's findings are one finding — a rig out of its bay whose claim is not
   yet open: nothing reserves its seats (23-1), the dispatch's seal is not durable enough to open
   from later (23-2), and the field marks it before the Open can run (23-5). Opening first removes
