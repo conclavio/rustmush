@@ -1559,6 +1559,43 @@ pub fn fixture_key(
     .ok()
 }
 
+/// **Take `unit` off `site`'s index once it has left the ground** (doc 36a lane 3, P1-11): a
+/// carrier that lifts is no casualty where it stood, so its row goes with it. The write is the
+/// record's own `take` op, submitted as the system's staff hand (`GOD`) under a key folded from
+/// the unit, so it never collides with a staff member's `take` in the same IC second. Nothing is
+/// submitted for a unit the record does not index.
+pub(crate) fn take_off_index(ctx: &mut mush_core::Ctx<'_>, site: &CanonicalId, unit: ObjId) {
+    let Some(record) = crate::field::close::site_record(ctx, site) else {
+        return;
+    };
+    if !record.units.iter().any(|row| row.unit == unit) {
+        return;
+    }
+    let Some(action) = ctx
+        .w
+        .module_state::<crate::port::families::PortHandles>()
+        .and_then(|handles| handles.site_record.clone())
+    else {
+        return;
+    };
+    let now = ctx.w.world_ic_now().at;
+    let serial = serial_of(Some(&record)) ^ (u64::from(unit.0) << 48);
+    let Some(key) = fixture_key(mush_core::GOD, site, "take", now, serial) else {
+        return;
+    };
+    let saved = ctx.actor;
+    ctx.actor = mush_core::GOD;
+    ctx.submit_authoritative(
+        action,
+        mush_core::PerceivedRef::SelfActor,
+        Vec::new(),
+        json!({ "site": site.to_string(), "op": "take", "unit": unit.0 }),
+        key,
+    );
+    ctx.actor = saved;
+    tracing::info!(site = %site, unit = unit.0, "tacsim: a lifted carrier is taken off the site's index");
+}
+
 /// The record's serial for [`fixture_key`]: its ordinal, issued objects and index size, folded.
 fn serial_of(record: Option<&SiteRecord>) -> u64 {
     record.map_or(0, |record| {

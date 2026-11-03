@@ -964,7 +964,14 @@ fn decode(
 ///
 /// The carrier could not be taken off the ground.
 pub(crate) fn lift(ctx: &mut Ctx<'_>, carrier: ObjId, site: &CanonicalId) -> Result<(), String> {
+    // Doc 36a lane 3 (P1-11; doc 36 cut GC.3, Q-36-8): a barge whose drive is down stays on the
+    // ground, whoever asks for the lift.
+    if let Some(line) = crate::carrier_damage::lift_refusal(ctx.w, carrier) {
+        return Err(line);
+    }
     mush_sim::unplace(ctx, carrier, "tacsim: a raider's carrier lifts")?;
+    // A carrier off the ground is no casualty on the site's index.
+    crate::surface::site_record::take_off_index(ctx, site, carrier);
     let line = RAIDER_LIFTED
         .replace("{name}", &crate::port::coop::name_of(ctx.w, carrier))
         .replace("{site}", &crate::surface::act::site_name(ctx.w, site));

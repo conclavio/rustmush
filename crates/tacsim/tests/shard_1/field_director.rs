@@ -17,6 +17,7 @@ use mush_core::{GOD, ObjId, ObjKind};
 use mush_inventory::LotId;
 use tacsim::TacsimConfig;
 use tacsim::arena::ledger::LedgerEvent;
+use tacsim::carrier_damage::CarrierLoss;
 use tacsim::field::PartyKey;
 use tacsim::surface::site_record::{LeftCondition, PromotedBy};
 
@@ -24,6 +25,7 @@ use crate::driving::{
     AHUNA, Rig, act_go, cid, command, finish, land, launched, on_pad, seed_pool, staff_hand,
     stocked_tuned, to_cell, warm,
 };
+use crate::field_gc3::set_section;
 use crate::field_raiders::{
     SKULKS, armed, egress, fragile, raider_hulls, seat_npc, second, site_record, task, until,
 };
@@ -368,4 +370,105 @@ async fn gc11_a_raid_due_while_a_field_runs_arrives_by_the_join_and_goes_home() 
             kills(&lines)
         );
     }
+}
+
+/// **Doc 36a lane 3, P1-11** (doc 36 cut GC.3's rule, for the director's own barge): a barge
+/// whose drive is down stays on the ground. The director lands its raid as the GC.11 gate has
+/// it; staff then destroy the barge's drive where a round would have. The raid loses half, turns
+/// for home and its standing hull boards — and the barge, which cannot lift, stays in the field
+/// until it settles, a casualty on the index. The director reads it stuck: the raid is over, the
+/// raider spent, and no visit afterwards takes the barge off the ground or its row off the record
+/// (before the fix `recall` lifted it anyway and left the row behind).
+#[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+#[allow(clippy::too_many_lines)] // one raid, in order
+async fn lane3_a_barge_whose_drive_is_down_stays_on_the_ground() {
+    // The raid turns for home on its time in the field (the band's floor), whatever the guard's
+    // rounds do: the gate is the barge's lift, not the fight.
+    let mut rig = stocked_tuned(|cfg| {
+        tune(cfg);
+        cfg.field.raid_field_s = 60;
+    });
+    let (a, _, _) = tempting_site(&mut rig, true);
+    let mut rx = egress(&mut rig);
+    let mut lines: Vec<LedgerEvent> = Vec::new();
+    let landed = until(&mut rig, &mut rx, &mut lines, 20, |rig, _| {
+        let hulls = raider_hulls(rig);
+        hulls.len() == 2
+            && hulls
+                .iter()
+                .all(|hull| mush_sim::pose_of(rig.tw.world(), *hull).is_some())
+    })
+    .await;
+    assert!(landed, "the director lands the raid on its own");
+    let raiders = raider_hulls(&rig);
+    let barge = carrier(&rig).expect("the raider's carrier");
+    // The drive as a field leaves it (GC.3's fixture): destroyed, its internals at their floor.
+    set_section(&mut rig, barge, "drive", Some("destroyed"), Some(0));
+    let damage = tacsim::carrier_damage::damage_of(rig.tw.world(), barge).expect("a reading");
+    assert!(damage.has(CarrierLoss::RefusesLift) && !damage.has(CarrierLoss::Wrecked));
+    fragile(&mut rig, raiders[0]);
+
+    let opened = until(&mut rig, &mut rx, &mut lines, 20, |rig, _| {
+        task(rig).is_some()
+    })
+    .await;
+    assert!(opened, "the director's declaration opens a field");
+    rig.tw.world_mut().set_connected(a, false);
+
+    // It turns for home — on its losses or its time — and its standing hulls board; the barge
+    // cannot follow.
+    let boarded = until(&mut rig, &mut rx, &mut lines, 300, |rig, _| {
+        raiders.iter().all(|hull| {
+            mush_sim::pose_of(rig.tw.world(), *hull).is_none()
+                || site_record(rig)
+                    .is_some_and(|record| record.units.iter().any(|left| left.unit == *hull))
+        })
+    })
+    .await;
+    assert!(
+        boarded,
+        "the standing hull goes home up the ramp; kills {:?}",
+        kills(&lines)
+    );
+    assert!(
+        mush_sim::pose_of(rig.tw.world(), barge).is_some(),
+        "the barge cannot lift"
+    );
+    let settled = until(&mut rig, &mut rx, &mut lines, 120, |rig, _| {
+        site_record(rig).is_some_and(|record| record.promoted.is_none())
+    })
+    .await;
+    assert!(settled, "the field settles with the barge on the ground");
+    let record = site_record(&mut rig).expect("the record");
+    assert!(
+        record
+            .units
+            .iter()
+            .any(|unit| unit.unit == barge && unit.condition == LeftCondition::Casualty),
+        "the barge is a casualty on the index: {:?}",
+        record.units
+    );
+
+    // The director's visits afterwards: the raid is over, the raider spent, the barge stays.
+    for _ in 0..10 {
+        second(&mut rig);
+    }
+    assert!(
+        mush_sim::pose_of(rig.tw.world(), barge).is_some(),
+        "a barge whose drive is down stays on the ground"
+    );
+    let record = site_record(&mut rig).expect("the record");
+    assert!(
+        record.units.iter().any(|unit| unit.unit == barge),
+        "its row stands: {:?}",
+        record.units
+    );
+    assert!(
+        !tacsim::surface::raid::director_raid(rig.tw.world(), barge),
+        "the raid is over"
+    );
+    assert!(
+        tacsim::surface::raid::spent(rig.tw.world(), barge),
+        "the director never sends it again"
+    );
 }
