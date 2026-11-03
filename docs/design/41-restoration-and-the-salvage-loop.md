@@ -815,9 +815,14 @@ site has no security), for every principal aboard the docking carrier (the helm 
 operator, the crew the carrier's row lists), every `UnlawfulAct` across the lane's site records that
 names them as `actor` and is **proven and unsettled**. Proven means one of two things: a `Vacated`
 row on the same hull whose vacating contest was `recovery` (the registry adjudicated it), or a row a
-witness has reported to the registry — `+salvage/report <hull>=registry`, a new recipient for the
-existing verb, which hands the challenger's `SensorLog`/`DirectWitness` to the clerk and marks the
-row reported. A bare row nobody contested or reported stays what Q-36-30 made it, evidence. The
+witness has reported to the registry — `+salvage/report <site>[=<actor>|#<hull>] registry`, a new
+form of the verb that reads `SiteRecord.unlawful` directly rather than a custody row: a `Pickup` or
+`Scrap` row's `subject` is the ground object, not a hull (`tow.rs:1744–1750`, `:1824–1830`), and the
+existing `+salvage/report <hull>=<who>` resolves live custody rows only (`claim.rs:907–915`,
+`report_cmd` `:1268`), so the 500 cr and 2,000 cr fines could never have been levied (round-2 item
+41-14). The witness names the site and the actor or the hull; the clerk takes the matching rows,
+with the reporter's own `known` or sensor record for that site and time as the evidence, and marks
+them reported. A bare row nobody contested or reported stays what Q-36-30 made it, evidence. The
 alternative fines every row at docking, which is Q-S4's rejected omniscient fine and makes every
 unlawful pickup on a Registry seed a fine nobody saw. (Q-41-24.)
 
@@ -1208,7 +1213,8 @@ provisional unless the line says otherwise.
 
 **Q-41-24 — What port security acts on.**
 - **Proposed default:** proven rows only: a `Recovery` row proved by a `recovery` vacate, or any row a
-  witness reported to the registry (`+salvage/report <hull>=registry`); bare rows stay evidence.
+  witness reported to the registry (`+salvage/report <site>[=<actor>|#<hull>] registry`, reading the
+  site's log directly); bare rows stay evidence.
 - **Alternative:** every row at docking, Q-38-20 read literally.
 - **Why:** doc 27 Q-S4 forbids the automatic omniscient fine; a fine on a reported or adjudicated
   row is "if caught", which is the ruling's model.
@@ -1261,7 +1267,7 @@ RS.3 and RS.5; RS.8 after RS.3 and RS.5, in the space tree; RS.9 last. One marke
 | **RS.4** the vacated hull's return | Q-41-18, Q-41-19, Q-38-19 | `held_for` on the bay record; `+bay/stow <hull>=<carrier>` bay to bay; the docking hook berthing held hulls into the workshop room; the fix thread's defect note closed | none | (b) extended: T's carrier takes her out of O's bay at Ceres; without one, the port holds her "held for T" and T's next carrier stows her |
 | **RS.5** the retrieval contract and the charge | Q-41-8..14, Q-38-6, Q-38-7 | `post_retrieval`, the shape, `accept_retrieval`, `+salvage/retrieve\|jobs\|accept`, the `RetrievalOrder` record carrying the acceptance and performance windows (`RETRIEVAL_WINDOW_IC_DAYS`, Q-41-11) under a 56-day contract, the four handover facts and payment, a lapsed acceptance handed to Tycho on a fresh contract; retrieval custody in `load_facts` and `Right::Retrieval`; a written-off rig's hand-back moved from the load to the destination; the wear allowance, the retrieval fee and the one-term obligation at `repossess`, `give_back` and the recall, with `+debts`, `+debts/pay` and the desk's `reinstate_obligation`; Q-38-7's second clock; the `capture: None` hole closed with a test | IN.2 as revised (Tycho's slot-day); a lane constant until it lands | (c) extended: a dormant charter's prospector on Ahuna and on Urvara repossessed with allowance, fee and debt; a second player accepts the job, delivers to the shed and is paid; a third accepts and lapses at 28 IC days and the job is Tycho's; the desk refuses the delinquent lessee |
 | **RS.6** Tycho Mutual | Q-41-15..17, Q-38-18, Q-39-7, Q-39-24 | the crawler and lifter as registered designs with bills, buildable at the yard (Q-41-15); Tycho's berth, its two house hulls, a storefront party and `capital_major` 500,000 (lane v21, Q-41-17); the house arm sequencing voyage, landing, launch, tow, load, lift, dock, berth; the fallback acceptance at the window's end and on a lapse; the fee from the recovery row; the 56-day sweep claimed by the house dispatcher with the title passed to the org at the award (41-7), the assessment and its two exits — repair and a hull-sale offer at the reference price, or scrap at Occator's workshop (Q-41-16) | IN.2, IN.7 and IN.8 as revised; PR #340 (P0-5, a wreck in a bay) | (d) at 512 and 256: the carrier wreck retrieved by the lifter and berthed at C14, the fee paid; (c)'s no-acceptor variant; (e) the sweep: a repairable hull resold to a player, a hull past repair scrapped, the census holding |
-| **RS.7** port security | Q-41-24, Q-41-25, Q-38-20, Q-S4 | the `arrived` hook's read of proven rows across the lane's site records; `+salvage/report <hull>=registry`; the fines by kind to the Registry; the obligation on a shortfall; `DepartRefusalKind::Quarantined` and its release; rows marked settled | none | (b) extended: O fined at docking after the `recovery` vacate, O's carrier held until the obligation settles, a bare pickup row never fined |
+| **RS.7** port security | Q-41-24, Q-41-25, Q-38-20, Q-S4 | the `arrived` hook's read of proven rows across the lane's site records; `+salvage/report <site>[=<actor>|#<hull>] registry` over `SiteRecord.unlawful`; the fines by kind to the Registry; the obligation on a shortfall; `DepartRefusalKind::Quarantined` and its release; rows marked settled | none | (b) extended: O fined at docking after the `recovery` vacate, O's carrier held until the obligation settles, a bare pickup row never fined |
 | **RS.8** the space seams | Q-41-26, Q-36-46, Q-36-47 | `+helm/tow` onto `file_salvage_claim` and `award_salvage_title`; `tacsim:space:custody`; the stages; real principals; the RAM path and the bounty retired; `ShipSectionId` onto `CarrierPart`; the retrieval's delivery at a dock | none | a derelict clamped, towed and docked at Ceres under the one window, contested by `+salvage/contest`, and a space retrieval job on `+salvage/jobs` delivered by a ship; built in the space tree (doc 35b §8) |
 | **RS.9** the stories whole | Q-38-29 | (a)–(e) run whole at 256 and 512 with the bot typing the player's half over SSH; `41-cut-notes.md` closed | IN.10's census line for (e) | every story green on gate.yml at both sizes; the bot run recorded |
 
