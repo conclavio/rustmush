@@ -1,19 +1,22 @@
 # 40. The field, second round — surveyed
 
-Draft 0.1, 2026-11-03, docs only. Surveyed against `origin/main` at `c83c2eff` (SF.R14 and SF.R15
+Draft 0.2, 2026-11-03, docs only. Surveyed against `origin/main` at `c83c2eff` (SF.R14 and SF.R15
 merged as PRs #338 and #339; doc 36a's lane 5 as #346; doc 38 Draft 0.2 as #345; lane 3 still open
 as PR #340 at `claude/relaxed-fermat-60b65b`, read here for the shape its held-out walls take on
 the live record). Stacked on [doc 39](39-industry-production-chain.md)'s PR #347 so its README row
 lands after doc 39's. Every tree fact below was re-read at `c83c2eff`; where doc 38 §4's anchor
 has moved by a few lines (the join loop, `arena_task.rs:1879`, was `:1869` there) the new line is
-given.
+given. Draft 0.1, the same day, was the survey. **Draft 0.2 records the owner's rulings of
+2026-11-03 on every question: every default accepted as written** ("all Q-40s accepted as their
+proposed defaults"). No question was amended, so each stands with its proposed text as the ruling,
+and §6's cut list is now the implementation order.
 
 This is a survey in the form doc 38 used: what the tree has, what the rulings require, and the
-questions each area still raises, each with a proposed default, an alternative and a reason.
+questions each area raised, each with a proposed default, an alternative and a reason.
 "Provisional" marks a number to be tuned later under the 2026-10-24 rule. **(expensive to
 reverse)** keeps doc 38 Q-38-10's meaning — an answer a significant refactor would be needed to
-undo — and stands on three questions only (Q-40-3, Q-40-7, Q-40-22). The owner rules; Draft 0.2
-carries the rulings and the cut list becomes the plan.
+undo — and stands on three questions only (Q-40-3, Q-40-7, Q-40-22), each now ruled and built
+exactly as written.
 
 ## 1. Why this document exists
 
@@ -375,7 +378,10 @@ cargo invocation on the owner's Windows box carries `-j 8`, one workspace build 
 
 ## 5. Owner survey
 
-Each question: a proposed default, an alternative, the reason. Draft 0.2 records the rulings.
+**Ruled 2026-11-03.** The owner accepted every default as written ("all Q-40s accepted as their
+proposed defaults"); nothing was amended, so no question carries a decision line of its own and the
+proposed text of each is its ruling. Each question keeps its proposed default, alternative and
+reason for the record; §6 is the plan built from them.
 
 ### 5.1 Order and shape
 
@@ -642,7 +648,7 @@ Each question: a proposed default, an alternative, the reason. Draft 0.2 records
 
 ## 6. The plan: cuts FR.0–FR.7
 
-Provisional until Draft 0.2. Each cut is one PR, tested through the production command paths
+The rulings of 2026-11-03 make this the implementation order. Each cut is one PR, tested through the production command paths
 (`+faction/stance`, `+field/mark`, `+field/fire`, `+field/void`, `+sortie/launch`,
 `+tv/<n> tow|release`, `+standing`), never a staff hand past the seams doc 36a §8 allows; each
 cut with a ground in it runs its story at 256 (Ahuna Flank) and 512 (Urvara Reach) as one script
@@ -674,9 +680,11 @@ compiled table and the resolution pack's optional block (FR.5); `ArenaMsg::Relea
 doc 41: the tender's unjam between fields is what makes a jammed part worth carrying home, and
 doc 39's part lot is what a damaged one costs; neither gates a cut here.
 
-**What this draft could not default** (for the owner, in one place): Q-40-4 (whether a jammed
-plant is the whole hull off, the literal reading, or only its heat), Q-40-8 (whether a changed
-`line_to` answer is an API bump), Q-40-11 (who "an organization's owner" is in two crates that
-have no owner), Q-40-12 (Allied mutual or one-way), Q-40-17 (the void window's clock, now
-twenty-five wall seconds), Q-40-21 (the live segment roll against the ruling's literal
-resume-only reset), and Q-40-23 (which document's first cut the four-digit parser is).
+**The questions this draft had least confidence in**, now ruled as written: Q-40-4 (a jammed
+plant is the whole hull off, the literal reading), Q-40-8 (a changed `line_to` answer is no API
+bump), Q-40-11 (a faction's principals and officers, a mush-org's `org.stance.declare` holders),
+Q-40-12 (Allied mutual, Hostile directional), Q-40-17 (the window stays 600 IC seconds, twenty-five
+wall seconds at rate 24, closed at the next command), Q-40-21 (the live segment roll beside the
+resume's), and Q-40-23 (the four-digit parser is FR.0's). Each is built as its default says, and a
+cut that finds its default does not hold at the tree records the departure in `40-cut-notes.md`
+for the owner, as the GC cuts did.
