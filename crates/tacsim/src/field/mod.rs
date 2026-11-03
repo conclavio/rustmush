@@ -295,8 +295,6 @@ pub fn register(reg: &mut Registrar<'_>) -> Result<(), ModError> {
     reg.state(crew::CrewBook::default());
     reg.state(orders::Offered::default());
     reg.state(home::Asked::default());
-    reg.state(standing::FireTally::default());
-    reg.state(standing::VoidOffers::default());
     // Doc 23 cut S.4b-T (D-23-19): the earned-contacts index this host feeds and the quirk
     // claim reads.
     reg.state(crate::minds::earned_contacts::EarnedContacts::default());
