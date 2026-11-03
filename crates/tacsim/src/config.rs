@@ -149,8 +149,8 @@ pub struct TacsimRecoveryConfig {
     pub load_s: u32,
     /// **Doc 36 cut GC.6 (Q-36-24)**: a salvage claim's contest window, **real** seconds
     /// (172,800: 48 real hours, doc 27 Q-S15). A test knob compresses it; it is clamped to
-    /// `1..=mush_economy::MAX_SALVAGE_CLAIM_WINDOW_SECS`, and the server's config file does not
-    /// set it yet.
+    /// `1..=mush_economy::MAX_SALVAGE_CLAIM_WINDOW_SECS`; the server's config file sets it as
+    /// `[tacsim.recovery].claim_window_s` (doc 41 cut RS.3).
     pub claim_window_s: i64,
 }
 

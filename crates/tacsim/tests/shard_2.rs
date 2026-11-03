@@ -57,6 +57,8 @@ mod minds_rhai;
 mod moon_ports;
 #[path = "shard_2/reflex.rs"]
 mod reflex;
+#[path = "shard_2/salvage_close.rs"]
+mod salvage_close;
 #[path = "shard_2/sight.rs"]
 mod sight;
 #[path = "support/field/site_record_rig.rs"]

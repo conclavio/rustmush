@@ -45,6 +45,31 @@
 //!   which a winning claimant is once the award lands; untitled remains are open to anyone, and
 //!   the evidence log records it on owned ground for anyone but the landholder.
 //!
+//! **The claim's close** (doc 41 cut RS.3; Q-41-20 to Q-41-23, Q-41-28, Q-38-19, Q-S13, Q-S14):
+//!
+//! - **Who answers for a title** ([`answerers_of`]): a character's own title is theirs; an
+//!   organization's is answered by everyone it names — its live rig lessee first, then its
+//!   active members and its grantees, unfiltered by capability (Q-41-28: an NPC organization's
+//!   only grantee is its house agent, the lessor agent or a clerk). Each is told at filing and
+//!   any may contest; the pin's `answering` is the first. An organization's hull with no live
+//!   lease or charter is claimable and awardable (Q-41-22).
+//! - **`+salvage/authorize`** (Q-41-21): the title holder's authorization is the existing
+//!   `unit.recover_load` grant, issued per hull through Org's unit authority; the landholder's
+//!   is a recovery delegation row on the site's record ([`LandGrant`]), bound to the block's
+//!   live claim. Both are read **at the attach** into the pin, never later.
+//! - **The contest kinds** (Q-41-23): `+salvage/contest <hull>=recovery|procedure|right`, the
+//!   bare form keeping the automatic choice. `recovery` rests on the challenger's own sensor or
+//!   witness record; `procedure` on the registry's own records — the audience against who
+//!   answered at the attach, the pin, and the hull's black box read against the custody row's
+//!   tug and carrier, never against the claimant; `right` on an authorization that bound the
+//!   claimant at the attach, filed by its grantor (the library vacates only when the obligor is
+//!   the claimant; a third party's authorization is no ground).
+//! - **Repairs at risk** (Q-41-20, Q-S14): a bay order a salvor completed is written onto the
+//!   custody row's claim by the claims' tick and listed in the award and vacate notices; nothing
+//!   is repaid.
+//! - **Hot parts** (§4.6): a lot stripped under a pending claim is listed on the hull's bay
+//!   record; the tick flags each through `strip::vacate_claim` when the claim is vacated.
+//!
 //! **Where it is written.** One action writes the site's record: GC.4's `tacsim_surface_tow`,
 //! with two more ops, `claim` (file, contest, report, inspect and settle) and `scrap`. The
 //! commands submit as the actor; the surface tick's claim tick submits a settlement as the
@@ -57,9 +82,9 @@ use mush_core::{CanonicalId, CmdError, Ctx, ObjId, World};
 use mush_economy::{ContractId, ContractState, EconomyStore};
 use mush_org::PrincipalId;
 use mush_tactics::field_ops::{
-    ContestGround, CustodyTitleStatus, GroundTenure, RecoveryAuthorityContext, RecoveryOpId,
-    SalvageClaim, SalvageClaimId, SalvageClaimState, SalvageEvidenceKind, SalvageEvidenceRecord,
-    SalvageSubject, evaluate_recovery_entitlement,
+    AtRiskRepairEntry, ContestGround, CustodyTitleStatus, GroundTenure, RecoveryAuthorityContext,
+    RecoveryOpId, SalvageClaim, SalvageClaimId, SalvageClaimState, SalvageEvidenceKind,
+    SalvageEvidenceRecord, SalvageSubject, evaluate_recovery_entitlement,
 };
 use serde::{Deserialize, Serialize};
 
@@ -70,7 +95,7 @@ use crate::surface::site_record::{GroundKind, KnownWhat, SiteKey, SiteRecord};
 /// The verb.
 pub const SALVAGE_VERB: &str = "+salvage";
 /// Its help.
-pub const SALVAGE_HELP: &str = "+salvage  --  Salvage claims on hulls recovered into a carrier's custody. +salvage lists the claims you stand in. +salvage/claim <hull> [go] files the custodian's claim at the site's port registry; the title holder, and the landholder on owned ground, are told by IC mail. +salvage/contest <hull> [go] contests it on the best ground you hold: evidence of an unlawful recovery, else bare title (which never defeats a lawful claim). +salvage/report <hull>=<who> [go] hands your evidence to another. +salvage/inspect <hull> reads the hull's black box from aboard the carrier that holds it. Bare, each previews and commits nothing; go commits exactly the preview.";
+pub const SALVAGE_HELP: &str = "+salvage  --  Salvage claims on hulls recovered into a carrier's custody. +salvage lists the claims you stand in. +salvage/claim <hull> [go] files the custodian's claim at the site's port registry; everyone who answers for the title, and the landholder on owned ground, are told by IC mail. +salvage/contest <hull>[=recovery|procedure|right] [go] contests it: recovery on your own record of an unlawful recovery, procedure on the registry's own records (for whoever answers for the title), right on an authorization of yours that bound the claimant; bare, on the best ground you hold, where bare title never defeats a lawful claim. +salvage/report <hull>=<who> [go] hands your evidence to another. +salvage/inspect <hull> reads the hull's black box from aboard the carrier that holds it. +salvage/authorize <hull>=<who> [until=<UTC seconds>] [go] authorizes a recovery of your hull; +salvage/authorize <site>/<block>=<who> [until=<IC seconds>] [go] a recovery off your block. Bare, each previews and commits nothing; go commits exactly the preview.";
 /// The most witnesses a pin keeps.
 pub const MAX_WITNESSES: usize = 16;
 /// The most delivered or read evidence records one custody keeps.
@@ -82,7 +107,7 @@ pub const MAX_UNLAWFUL: usize = 64;
 pub const AWARD_ISSUER: &str = crate::port::hull::REGISTRY_ISSUER;
 
 /// `+salvage` usage.
-pub const SALVAGE_USAGE: &str = "Usage: +salvage, +salvage/claim <hull> [go], +salvage/contest <hull> [go], +salvage/report <hull>=<who> [go] or +salvage/inspect <hull>.";
+pub const SALVAGE_USAGE: &str = "Usage: +salvage, +salvage/claim <hull> [go], +salvage/contest <hull>[=recovery|procedure|right] [go], +salvage/report <hull>=<who> [go], +salvage/inspect <hull> or +salvage/authorize <hull>|<site>/<block>=<who> [until=<when>] [go].";
 /// Nothing to list.
 pub const NO_CLAIMS: &str = "You stand in no salvage claim.";
 /// No custody record names the hull: `{hull}`.
@@ -138,8 +163,57 @@ pub const INSPECTED: &str =
 pub const FIELD_OPEN: &str = "The registry's books for {site} wait while a field is open there.";
 /// The award told: `{name}`, `{claimant}`, `{registry}`.
 pub const AWARDED: &str = "The {registry} awards the {name} to {claimant}: the salvage claim stood, and the title is theirs.";
-/// The vacate told: `{name}`, `{registry}`.
-pub const VACATED: &str = "The {registry} vacates the salvage claim on the {name}: the recovery is proven unlawful, and the title stays where it was.";
+/// The vacate told: `{name}`, `{registry}`, `{why}`.
+pub const VACATED: &str = "The {registry} vacates the salvage claim on the {name}: {why}, and the title stays where it was.";
+/// Why a vacate: the recovery.
+pub const WHY_RECOVERY: &str = "the recovery is proven unlawful";
+/// Why a vacate: the procedure.
+pub const WHY_PROCEDURE: &str = "the claim's procedure was defective";
+/// Why a vacate: a right.
+pub const WHY_RIGHT: &str = "the claimant was bound by a prior right to deliver her";
+/// The repairs at risk in a notice: `{list}`.
+pub const AT_RISK_NOTICE: &str =
+    " Repairs the salvor made at their own risk, repaid by nobody: {list}.";
+/// The Q-S14 line a salvor's quote prints first.
+pub const AT_RISK_QUOTE: &str =
+    "At your risk: the claim on her is open, and a failed claim repays nothing.";
+/// The contest preview on procedure: `{name}`, `{defect}`.
+pub const CONTEST_PREVIEW_PROCEDURE: &str = "You would contest the claim on the {name} on its procedure: the registry's own records show {defect}. +salvage/contest {hull}=procedure go";
+/// No defect the registry's records show: `{name}`.
+pub const NO_DEFECT: &str = "The registry's own records show no defect in the claim on the {name}: everyone who answered for her title was told, the pin stands, and her black box agrees with the custody.";
+/// Only whoever answers for the title contests the procedure: `{name}`.
+pub const NOT_ANSWERING: &str =
+    "Only someone who answers for the {name}'s title may contest the claim's procedure.";
+/// The contest preview on a right: `{name}`, `{claimant}`, `{right}`.
+pub const CONTEST_PREVIEW_RIGHT: &str = "You would contest the claim on the {name} on your prior right: {right}, which bound {claimant} to deliver her. +salvage/contest {hull}=right go";
+/// No right binding the claimant: `{name}`, `{claimant}`.
+pub const NO_RIGHT: &str = "You hold no right that bound {claimant} over the {name} when the recovery began: an authorization of your own, or one {claimant} never held, is no ground against their claim.";
+/// Nothing to contest the recovery on: `{name}`.
+pub const NO_RECOVERY_GROUND: &str = "You hold no record of how the {name} was recovered.";
+/// A contest kind not known: `{kind}`.
+pub const NO_SUCH_KIND: &str =
+    "A contest is on recovery, procedure or right; {kind} is none of them.";
+/// The authorize preview for a hull: `{name}`, `{who}`, `{until}`, `{hull}`, `{until_arg}`.
+pub const AUTHORIZE_HULL_PREVIEW: &str = "You would authorize {who} to recover the {name} and load her{until}; a claim they file on her afterwards is defeated by your right. +salvage/authorize {hull}={who}{until_arg} go";
+/// The authorize sent for a hull: `{name}`, `{who}`.
+pub const AUTHORIZE_HULL_SENT: &str =
+    "You authorize {who} to recover the {name}; Org's unit authority records the grant.";
+/// Not the hull's title holder: `{name}`.
+pub const NOT_TITLED: &str =
+    "You do not answer for the {name}'s title, so its recovery is not yours to authorize.";
+/// The authorize preview for a block: `{block}`, `{who}`, `{until}`, `{until_arg}`.
+pub const AUTHORIZE_BLOCK_PREVIEW: &str = "You would authorize {who} to recover hulls off your block {block}{until}, while your claim on it stands. +salvage/authorize {block}={who}{until_arg} go";
+/// The authorize written for a block: `{block}`, `{who}`.
+pub const AUTHORIZE_BLOCK_SENT: &str =
+    "You authorize {who} to recover hulls off your block {block}.";
+/// Not the block's holder: `{block}`.
+pub const NOT_LANDHOLDER: &str = "You hold no live claim on block {block}.";
+/// No such block: `{block}`.
+pub const NO_SUCH_BLOCK: &str = "There is no block {block} on the lane's sites.";
+/// The most recovery delegations one site's record keeps.
+pub const MAX_LAND_GRANTS: usize = 32;
+/// The most repairs at risk one claim keeps.
+pub const MAX_AT_RISK: usize = 16;
 
 // ---- the pin ------------------------------------------------------------------------------
 
@@ -179,10 +253,23 @@ pub struct TenurePin {
     /// The casualty's title holder then, when it had a title.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub title: Option<PrincipalId>,
-    /// Who answers for that title: the character who holds it, or, for an organization's
-    /// title, the hull's lessee (provisional).
+    /// Who answers for that title first: the character who holds it, or, for an
+    /// organization's title, the first of [`TenurePin::answerers`] (doc 41 Q-41-28).
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub answering: Option<ObjId>,
+    /// **Everyone who answered for that title then** (doc 41 Q-41-22, Q-41-28;
+    /// [`answerers_of`]), at most [`MAX_WITNESSES`]: empty for a character's title, whose one
+    /// answerer is `answering`.
+    #[serde(default, skip_serializing_if = "Vec::is_empty")]
+    pub answerers: Vec<ObjId>,
+    /// **The title holder's authorization the recoverer held then** (doc 41 Q-41-21): their
+    /// live `unit.recover_load` grant on the casualty.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub owner_grant: Option<PinnedGrant>,
+    /// **Whether the landholder's recovery delegation covered the recoverer then** (doc 41
+    /// Q-41-21; [`LandGrant`]).
+    #[serde(default, skip_serializing_if = "std::ops::Not::not")]
+    pub landholder_authorized: bool,
     /// The ground's tenure at the casualty's cell.
     pub tenure: GroundTenure,
     /// Who saw it, at most [`MAX_WITNESSES`].
@@ -190,6 +277,50 @@ pub struct TenurePin {
     pub witnesses: Vec<Witness>,
     /// When it was pinned, IC.
     pub pinned_ic: i64,
+}
+
+/// **A recovery authorization a pin read** (doc 41 Q-41-21): the `unit.recover_load` grant on
+/// the casualty, and who issued it.
+#[derive(Clone, Copy, Debug, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(deny_unknown_fields)]
+pub struct PinnedGrant {
+    /// The grant's id in Org's unit authority.
+    pub grant: u64,
+    /// Who issued it: the one whose right it is.
+    pub grantor: ObjId,
+}
+
+/// **A landholder's recovery delegation** (doc 41 Q-41-21): `to` may recover hulls off the
+/// block `letter` while the claim it rides — `landholder`'s, registered at `registered_ic` —
+/// stands, until `until_ic` when set. Kept on the site's record
+/// ([`crate::surface::site_record::SiteRecord::land_grants`]), which the claim's own action
+/// writes; a new holding of the block voids it.
+#[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(deny_unknown_fields)]
+pub struct LandGrant {
+    /// The block letter.
+    pub letter: char,
+    /// The claim's holder who issued it.
+    pub landholder: ObjId,
+    /// The claim's registration instant: the holding it rides.
+    pub registered_ic: i64,
+    /// Who may recover.
+    pub to: ObjId,
+    /// When it lapses, IC; `None` while the claim stands.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub until_ic: Option<i64>,
+    /// When it was issued, IC.
+    pub issued_ic: i64,
+}
+
+impl LandGrant {
+    /// Whether it covers `to` under `claim` at `now_ic`.
+    #[must_use]
+    pub fn covers(&self, to: ObjId, claim: (ObjId, i64), now_ic: i64) -> bool {
+        self.to == to
+            && (self.landholder, self.registered_ic) == claim
+            && self.until_ic.is_none_or(|until| now_ic < until)
+    }
 }
 
 impl TenurePin {
@@ -231,26 +362,72 @@ pub(crate) fn pin(pins: &mut Vec<TenurePin>, pin: TenurePin) {
     }
 }
 
-/// **The title of `hull` now**, and who answers for it.
-fn title_of(w: &World, hull: ObjId) -> (Option<PrincipalId>, Option<ObjId>) {
+/// **Who answers for `title`** (doc 41 Q-41-22, Q-41-28): a character's own title is theirs;
+/// an organization's is answered by its live rig lessee on `hull` first, then by its active
+/// members and its live grantees, unfiltered by capability — an NPC organization's grantee is
+/// its house agent (the lessor agent, a clerk), a player organization's its officers — in
+/// object order, at most [`MAX_WITNESSES`]. A system principal answers by nobody.
+#[must_use]
+pub fn answerers_of(w: &World, hull: ObjId, title: &PrincipalId) -> Vec<ObjId> {
+    match title {
+        PrincipalId::Object(holder) => vec![*holder],
+        PrincipalId::System(_) => Vec::new(),
+        PrincipalId::Organization(org) => {
+            let mut found: Vec<ObjId> = w
+                .module_state::<crate::store::TacsimStore>()
+                .and_then(|store| store.tv_lease_on(hull))
+                .map(|lease| lease.pilot)
+                .into_iter()
+                .collect();
+            let now = w.now();
+            let mut named: std::collections::BTreeSet<ObjId> = std::collections::BTreeSet::new();
+            if let Some(store) = w.module_state::<mush_org::OrgStore>() {
+                let state = store.state();
+                named.extend(
+                    state
+                        .members_in(*org)
+                        .filter(|m| m.status == mush_org::MembershipStatus::Active)
+                        .map(|m| m.member),
+                );
+                named.extend(
+                    state
+                        .grants_in(*org)
+                        .filter(|g| {
+                            g.valid_from.is_none_or(|from| from <= now)
+                                && g.valid_until.is_none_or(|until| now < until)
+                        })
+                        .map(|g| g.grantee),
+                );
+            }
+            for who in named {
+                if who.0 != 0 && !found.contains(&who) {
+                    found.push(who);
+                }
+            }
+            found.truncate(MAX_WITNESSES);
+            found
+        }
+    }
+}
+
+/// **The title of `hull` now**, and everyone who answers for it ([`answerers_of`]).
+fn title_of(w: &World, hull: ObjId) -> (Option<PrincipalId>, Vec<ObjId>) {
     let title = w
         .module_state::<EconomyStore>()
         .and_then(|store| store.snapshot().asset(hull).map(|a| a.title_owner.clone()));
-    let answering = match &title {
-        Some(PrincipalId::Object(holder)) => Some(*holder),
-        Some(_) => w
-            .module_state::<crate::store::TacsimStore>()
-            .and_then(|store| store.tv_lease_on(hull))
-            .map(|lease| lease.pilot),
-        None => None,
-    };
-    (title, answering)
+    let answerers = title
+        .as_ref()
+        .map(|title| answerers_of(w, hull, title))
+        .unwrap_or_default();
+    (title, answerers)
 }
 
-/// **The ground's tenure at `cell` on `site`** (FO-4, Q-S1): the live claim on its block, when a
-/// character holds one. An organization's seed reads as open ground (provisional: a tenure names
-/// a character).
-pub(crate) fn tenure_at(ctx: &Ctx<'_>, site: &CanonicalId, cell: (i64, i64)) -> GroundTenure {
+/// **The live claim on the block at `cell` on `site`**: its letter and its record.
+fn block_claim_at(
+    ctx: &Ctx<'_>,
+    site: &CanonicalId,
+    cell: (i64, i64),
+) -> Option<(char, crate::surface::claims::BlockClaim)> {
     use crate::port::site_map::SurfaceReads;
     let scheme = crate::surface::chart::site_scheme(ctx.w, site);
     let pose = mush_tactics::field_ops::FieldPose {
@@ -258,29 +435,92 @@ pub(crate) fn tenure_at(ctx: &Ctx<'_>, site: &CanonicalId, cell: (i64, i64)) -> 
         x_cm: cell.0.saturating_mul(1_000).saturating_add(500),
         y_cm: cell.1.saturating_mul(1_000).saturating_add(500),
     };
-    let Some(letter) = crate::field_ops::block_letter_at_site_pose(pose, scheme) else {
-        return GroundTenure::Unclaimed;
-    };
+    let letter = crate::field_ops::block_letter_at_site_pose(pose, scheme)?;
     let now = ctx.w.world_ic_now().at;
-    let claim = ctx
-        .block_tenure(&crate::surface::claims::BlockKey {
-            site: site.clone(),
-            letter,
-        })
-        .ok()
-        .flatten()
-        .and_then(|record| record.claim)
-        .filter(|claim| claim.live(now));
-    match claim.map(|claim| claim.holder) {
-        Some(PrincipalId::Object(landholder)) if landholder.0 != 0 => GroundTenure::Owned {
-            landholder,
-            claim_id: Some(smol_str::SmolStr::new(format!(
-                "{site}/{}",
-                letter.to_ascii_lowercase()
-            ))),
+    ctx.block_tenure(&crate::surface::claims::BlockKey {
+        site: site.clone(),
+        letter,
+    })
+    .ok()
+    .flatten()
+    .and_then(|record| record.claim)
+    .filter(|claim| claim.live(now))
+    .map(|claim| (letter, claim))
+}
+
+/// **The ground's tenure at `cell` on `site`** (FO-4, Q-S1): the live claim on its block, when a
+/// character holds one. An organization's seed reads as open ground (provisional: a tenure names
+/// a character).
+pub(crate) fn tenure_at(ctx: &Ctx<'_>, site: &CanonicalId, cell: (i64, i64)) -> GroundTenure {
+    match block_claim_at(ctx, site, cell) {
+        Some((letter, claim)) => match claim.holder {
+            PrincipalId::Object(landholder) if landholder.0 != 0 => GroundTenure::Owned {
+                landholder,
+                claim_id: Some(smol_str::SmolStr::new(format!(
+                    "{site}/{}",
+                    letter.to_ascii_lowercase()
+                ))),
+            },
+            _ => GroundTenure::Unclaimed,
         },
-        _ => GroundTenure::Unclaimed,
+        None => GroundTenure::Unclaimed,
     }
+}
+
+/// **The `unit.recover_load` grant `ctx.actor` holds on `casualty` now** (doc 41 Q-41-21):
+/// Org's unit authority allows it and one of the actor's own grants of the capability covers
+/// the casualty. `None` without the authority's reader.
+fn recover_grant(ctx: &Ctx<'_>, casualty: ObjId) -> Option<PinnedGrant> {
+    use mush_org::unit_authority::reader::{UnitAuthorityRequest, UnitAuthorityResponse};
+    use mush_org::unit_authority::{UnitCapability, UnitGrantStatus, UnitGrantee, UnitScope};
+    let reader = ctx
+        .w
+        .module_state::<crate::detachment::planning::PlanningHandles>()
+        .and_then(|h| h.unit_authority_reader.clone())?;
+    let allowed = matches!(
+        ctx.read_owner(
+            &reader,
+            UnitAuthorityRequest::Authorize {
+                unit: casualty,
+                capability: UnitCapability::RecoverLoad,
+                delegate: false,
+                mission: None,
+            }
+        ),
+        Ok(UnitAuthorityResponse::Authority { allowed: true })
+    );
+    if !allowed {
+        return None;
+    }
+    let now = ctx.w.now();
+    let mut after = 0_u64;
+    // The registry answers 32 rows a page; a character's own grants are few.
+    for _ in 0..8 {
+        let Ok(UnitAuthorityResponse::Grants { grants, more }) =
+            ctx.read_owner(&reader, UnitAuthorityRequest::List { after })
+        else {
+            return None;
+        };
+        if let Some(grant) = grants.iter().find(|g| {
+            g.capability == UnitCapability::RecoverLoad
+                && g.status == UnitGrantStatus::Active
+                && g.grantee == UnitGrantee::Character(ctx.actor)
+                && g.grantor != ctx.actor
+                && matches!(&g.scope, UnitScope::Units { units } if units.contains(&casualty))
+                && g.valid_from.is_none_or(|from| from <= now)
+                && g.valid_until.is_none_or(|until| now < until)
+        }) {
+            return Some(PinnedGrant {
+                grant: grant.id.0,
+                grantor: grant.grantor,
+            });
+        }
+        match grants.last() {
+            Some(last) if more => after = last.id.0,
+            _ => return None,
+        }
+    }
+    None
 }
 
 /// **Who saw `casualty` at `cell`** (Q-36-28): the principal behind every other unit on the
@@ -368,13 +608,32 @@ pub(crate) fn pin_for(
     (tug, casualty): (ObjId, ObjId),
     cell: (i64, i64),
 ) -> TenurePin {
-    let (title, answering) = title_of(ctx.w, casualty);
+    let (title, answerers) = title_of(ctx.w, casualty);
+    let now_ic = ctx.w.world_ic_now().at;
+    let landholder_authorized = block_claim_at(ctx, site, cell).is_some_and(|(letter, claim)| {
+        let PrincipalId::Object(landholder) = claim.holder else {
+            return false;
+        };
+        record.land_grants.iter().any(|grant| {
+            grant.letter == letter
+                && grant.covers(ctx.actor, (landholder, claim.registered_ic), now_ic)
+        })
+    });
     TenurePin {
         casualty,
         tug,
         recoverer: ctx.actor,
+        answering: answerers.first().copied(),
+        // A character's title answers by its holder alone (`answering`); the list is kept for
+        // an organization's, so a character's pin prints as it did.
+        answerers: if matches!(title, Some(PrincipalId::Organization(_))) {
+            answerers
+        } else {
+            Vec::new()
+        },
         title,
-        answering,
+        owner_grant: recover_grant(ctx, casualty),
+        landholder_authorized,
         tenure: tenure_at(ctx, site, cell),
         witnesses: witnesses(ctx, record, site, (casualty, tug), cell),
         pinned_ic: ctx.w.world_ic_now().at,
@@ -506,7 +765,7 @@ pub enum ClaimOrder {
         /// Who was told.
         told: Vec<ObjId>,
     },
-    /// `+salvage/contest <hull> go`.
+    /// `+salvage/contest <hull>[=<kind>] go`.
     Contest {
         /// The site.
         site: CanonicalId,
@@ -548,6 +807,26 @@ pub enum ClaimOrder {
         /// Now, real seconds.
         now_real: i64,
     },
+    /// **Doc 41 cut RS.3** (Q-41-20): the tick writes a salvor's completed bay order onto the
+    /// claim, as the custodian.
+    AtRisk {
+        /// The site.
+        site: CanonicalId,
+        /// The hull.
+        hull: ObjId,
+        /// The repair.
+        entry: AtRiskRepairEntry,
+    },
+    /// **Doc 41 cut RS.3** (Q-41-21): `+salvage/authorize <site>/<block>=<who> go`, keyed by
+    /// the block's place.
+    AuthorizeBlock {
+        /// The site.
+        site: CanonicalId,
+        /// The block's place object.
+        place: ObjId,
+        /// The delegation.
+        grant: LandGrant,
+    },
 }
 
 impl ClaimOrder {
@@ -559,11 +838,13 @@ impl ClaimOrder {
             | Self::Contest { site, .. }
             | Self::Report { site, .. }
             | Self::Inspect { site, .. }
-            | Self::Settle { site, .. } => site,
+            | Self::Settle { site, .. }
+            | Self::AtRisk { site, .. }
+            | Self::AuthorizeBlock { site, .. } => site,
         }
     }
 
-    /// The hull it is about.
+    /// The hull it is about (a block delegation's block place).
     #[must_use]
     pub fn hull(&self) -> ObjId {
         match self {
@@ -571,7 +852,9 @@ impl ClaimOrder {
             | Self::Contest { hull, .. }
             | Self::Report { hull, .. }
             | Self::Inspect { hull, .. }
-            | Self::Settle { hull, .. } => *hull,
+            | Self::Settle { hull, .. }
+            | Self::AtRisk { hull, .. } => *hull,
+            Self::AuthorizeBlock { place, .. } => *place,
         }
     }
 }
@@ -581,9 +864,126 @@ fn custody_mut(record: &mut SiteRecord, hull: ObjId) -> Option<&mut SalvageCusto
     record.custody.iter_mut().find(|row| row.hull == hull)
 }
 
+impl TenurePin {
+    /// Whether `who` answered for the casualty's title when the attach began (doc 41 Q-41-22).
+    #[must_use]
+    pub fn answers_for(&self, who: ObjId) -> bool {
+        who.0 != 0 && (self.answering == Some(who) || self.answerers.contains(&who))
+    }
+}
+
+/// **The contest kinds** (doc 41 Q-41-23), as `+salvage/contest <hull>=<kind>` names them.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub enum ContestKind {
+    /// An unlawful recovery, on the challenger's own record.
+    Recovery,
+    /// A defective procedure, on the registry's own records.
+    Procedure,
+    /// A superior specific right that bound the claimant.
+    Right,
+}
+
+impl ContestKind {
+    /// The kind a word names.
+    #[must_use]
+    pub fn parse(word: &str) -> Option<Self> {
+        match word.trim().to_ascii_lowercase().as_str() {
+            "recovery" => Some(Self::Recovery),
+            "procedure" => Some(Self::Procedure),
+            "right" => Some(Self::Right),
+            _ => None,
+        }
+    }
+}
+
+/// **What the hull's black box says of her recovery** (doc 41 Q-41-23): the last
+/// `recovered_to_base` close line's base and recoverer. The registry reads it, never a player.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub struct BoxRecovery {
+    /// The carrier the line says she was recovered into.
+    pub base: ObjId,
+    /// The tug the line names.
+    pub recovered_by: Option<ObjId>,
+}
+
+/// **The registry's own reading of a claim's procedure** (doc 41 Q-41-23, round-2 item 41-1):
+/// a defect code when its records show one — someone who answered for the title at the attach
+/// (or the landholder) was not told; the pin is missing or another tug's; the hull's black box
+/// names another tug or another carrier than the **custody row's** (`recovered_by`,
+/// `carrier`), never compared with the claimant, who is a character. A hull whose box holds no
+/// recovery line (a casualty no sortie carried) shows no defect by that absence.
+#[must_use]
+pub fn procedure_defect(
+    custody: &SalvageCustody,
+    black_box: Option<BoxRecovery>,
+) -> Option<String> {
+    let Some(pin) = custody.pin.as_ref() else {
+        return Some("pin_missing".to_owned());
+    };
+    if pin.casualty != custody.hull || pin.tug != custody.recovered_by {
+        return Some("pin_replaced".to_owned());
+    }
+    let owed = pin
+        .answering
+        .into_iter()
+        .chain(pin.answerers.iter().copied())
+        .chain(pin.landholder());
+    for who in owed {
+        if who != custody.holder && !custody.told.contains(&who) {
+            return Some(format!("unnotified:{}", who.0));
+        }
+    }
+    match black_box {
+        Some(line)
+            if line
+                .recovered_by
+                .is_some_and(|tug| tug != custody.recovered_by) =>
+        {
+            Some("box_recoverer".to_owned())
+        }
+        Some(line) if line.base != custody.carrier => Some("box_base".to_owned()),
+        _ => None,
+    }
+}
+
+/// A defect code in words, as the preview prints it.
+fn defect_words(w: &World, code: &str) -> String {
+    match code.split_once(':') {
+        Some(("unnotified", id)) => id.parse::<u32>().map_or_else(
+            |_| "someone who answered for her title was never told".to_owned(),
+            |id| {
+                format!(
+                    "{} answered for her title and was never told",
+                    name(w, ObjId(id))
+                )
+            },
+        ),
+        _ => match code {
+            "pin_missing" => "no tenure was pinned when her recovery began".to_owned(),
+            "pin_replaced" => "the pin is another tug's than the one that recovered her".to_owned(),
+            "box_recoverer" => "her black box names another tug than the custody does".to_owned(),
+            "box_base" => "her black box names another carrier than the custody does".to_owned(),
+            other => other.to_owned(),
+        },
+    }
+}
+
+/// **The right a pin records that bound the claimant** (doc 41 Q-41-23, round-2 item 41-10):
+/// the title holder's `unit.recover_load` grant the recoverer held at the attach, when the
+/// recoverer is the claimant and `who` issued it — the contract id `grant/<id>` and the obligor.
+/// A grant the claimant never held, or one `who` did not issue, is no ground.
+#[must_use]
+pub fn right_of_grantor(custody: &SalvageCustody, who: ObjId) -> Option<(String, ObjId)> {
+    let pin = custody.pin.as_ref()?;
+    let grant = pin.owner_grant?;
+    (grant.grantor == who && pin.recoverer == custody.holder)
+        .then(|| (format!("grant/{}", grant.grant), custody.holder))
+}
+
 /// **The library's claim** a filing opens over `custody` (Q-36-24): the claimant the custodian,
-/// the prior owner whoever answers for the title, and the entitlement evaluated from the pinned
-/// tenure (Q-S1, Q-S3).
+/// the prior owner whoever answers for the title first, the entitlement evaluated from the pinned
+/// tenure and the authorizations read at the attach (Q-S1, Q-S3, doc 41 Q-41-21), and the
+/// repairs already made at the custodian's risk.
 ///
 /// # Errors
 ///
@@ -599,8 +999,8 @@ fn open_claim(
     let entitlement = evaluate_recovery_entitlement(&RecoveryAuthorityContext {
         recoverer: custody.holder,
         unit_title_holder: prior,
-        has_owner_authorization: false,
-        has_landholder_authorization: false,
+        has_owner_authorization: pin.is_some_and(|pin| pin.owner_grant.is_some()),
+        has_landholder_authorization: pin.is_some_and(|pin| pin.landholder_authorized),
         ground_tenure_at_attach: tenure.clone(),
     })
     .map_err(|_| "claim_no_title")?;
@@ -619,9 +1019,29 @@ fn open_claim(
         paused_at_real_s: None,
         total_paused_real_s: 0,
         contests: Vec::new(),
-        documented_repairs_at_risk: Vec::new(),
+        documented_repairs_at_risk: custody.at_risk.clone(),
         state: SalvageClaimState::Open,
     })
+}
+
+/// **A block's recovery delegation written** (doc 41 Q-41-21): one row a block, landholder and
+/// grantee, replaced; past [`MAX_LAND_GRANTS`] the oldest goes.
+fn put_land_grant(
+    record: &mut SiteRecord,
+    actor: ObjId,
+    grant: &LandGrant,
+) -> Result<(), &'static str> {
+    if grant.landholder != actor || grant.to.0 == 0 || grant.to == actor {
+        return Err("claim_not_landholder");
+    }
+    record.land_grants.retain(|kept| {
+        !(kept.letter == grant.letter && kept.landholder == grant.landholder && kept.to == grant.to)
+    });
+    record.land_grants.push(grant.clone());
+    while record.land_grants.len() > MAX_LAND_GRANTS {
+        record.land_grants.remove(0);
+    }
+    Ok(())
 }
 
 /// **A claim order's prepare** (the tow provider's `claim` op): every fact re-checked against
@@ -630,12 +1050,17 @@ fn open_claim(
 /// # Errors
 ///
 /// The refusal code.
+#[allow(clippy::too_many_lines)]
 pub(crate) fn prepare(
     record: &mut SiteRecord,
     actor: ObjId,
     order: &ClaimOrder,
     now_ic: i64,
 ) -> Result<String, &'static str> {
+    if let ClaimOrder::AuthorizeBlock { grant, .. } = order {
+        put_land_grant(record, actor, grant)?;
+        return Ok("authorized".to_owned());
+    }
     let hull = order.hull();
     let custody = custody_mut(record, hull).ok_or("claim_no_custody")?;
     match order {
@@ -657,6 +1082,7 @@ pub(crate) fn prepare(
                 contract: *contract,
             };
             custody.file = Some(Box::new(claim));
+            custody.at_risk.clear();
             custody.told.clone_from(told);
             custody.told.truncate(MAX_WITNESSES);
             Ok("filed".to_owned())
@@ -667,18 +1093,54 @@ pub(crate) fn prepare(
             now_real,
             ..
         } => {
-            if let ContestGround::UnlawfulRecovery { evidence } = ground
-                && evidence_of(custody, actor).as_ref() != Some(evidence)
-            {
-                return Err("claim_no_evidence");
-            }
-            if matches!(ground, ContestGround::BarePriorTitle)
-                && custody
-                    .file
-                    .as_ref()
-                    .is_none_or(|file| file.prior_owner != actor)
-            {
-                return Err("claim_no_ground");
+            match ground {
+                ContestGround::UnlawfulRecovery { evidence } => {
+                    if evidence_of(custody, actor).as_ref() != Some(evidence) {
+                        return Err("claim_no_evidence");
+                    }
+                }
+                ContestGround::BarePriorTitle => {
+                    let answers = custody
+                        .file
+                        .as_ref()
+                        .is_some_and(|file| file.prior_owner == actor)
+                        || custody
+                            .pin
+                            .as_ref()
+                            .is_some_and(|pin| pin.answers_for(actor));
+                    if !answers {
+                        return Err("claim_no_ground");
+                    }
+                }
+                // Doc 41 Q-41-23: whoever answers for the title, on a defect the record shows; a
+                // black-box defect is the command's own reading of the box (the registry's).
+                ContestGround::DefectiveProcedure { defect_code } => {
+                    if !custody
+                        .pin
+                        .as_ref()
+                        .is_some_and(|pin| pin.answers_for(actor))
+                    {
+                        return Err("claim_not_answering");
+                    }
+                    let shown = procedure_defect(custody, None);
+                    let boxed = defect_code.starts_with("box_");
+                    if !boxed && shown.as_deref() != Some(defect_code.as_str()) {
+                        return Err("claim_no_defect");
+                    }
+                }
+                // Doc 41 Q-41-23 (round-2 item 41-10): only the right's grantor, against the
+                // claimant it bound.
+                ContestGround::SuperiorSpecificRight {
+                    contract_id,
+                    obligor,
+                } => {
+                    let held = right_of_grantor(custody, actor);
+                    if held.as_ref().map(|(id, by)| (id.as_str(), *by))
+                        != Some((contract_id.as_str(), *obligor))
+                    {
+                        return Err("claim_no_right");
+                    }
+                }
             }
             // Doc 36a P0-7: the window's last second is the award's, never a contest's.
             if now_real >= window_end {
@@ -728,12 +1190,31 @@ pub(crate) fn prepare(
             }
             Ok("inspected".to_owned())
         }
+        // Doc 41 Q-41-20 (Q-S14): onto the filed claim, else kept for its filing; once.
+        ClaimOrder::AtRisk { entry, .. } => {
+            if custody.holder != actor {
+                return Err("claim_not_custodian");
+            }
+            let list = match custody.file.as_mut() {
+                Some(file) => &mut file.documented_repairs_at_risk,
+                None => &mut custody.at_risk,
+            };
+            if list.contains(entry) {
+                return Ok("recorded".to_owned());
+            }
+            if list.len() >= MAX_AT_RISK {
+                return Err("claim_at_risk_full");
+            }
+            list.push(entry.clone());
+            Ok("recorded".to_owned())
+        }
         ClaimOrder::Settle {
             settlement,
             window_end,
             now_real,
             ..
         } => settle(record, hull, *settlement, (*window_end, *now_real), now_ic),
+        ClaimOrder::AuthorizeBlock { .. } => Err("claim_no_custody"),
     }
 }
 
@@ -845,8 +1326,12 @@ fn tell(ctx: &mut Ctx<'_>, site: &CanonicalId, to: &[ObjId], subject: &str, body
         .and_then(|slot| slot.0.clone());
     if let Some(mail) = mail {
         let from = clerk_of(ctx.w, site).unwrap_or(ctx.actor);
-        if let Err(error) = mail(ctx, from, to, subject, body) {
-            tracing::warn!(%error, "tacsim: a salvage claim's notice was not mailed");
+        // One letter each (doc 41 Q-41-28): a house agent the post refuses never costs the
+        // others theirs.
+        for who in to {
+            if let Err(error) = mail(ctx, from, std::slice::from_ref(who), subject, body) {
+                tracing::warn!(%error, to = who.0, "tacsim: a salvage claim's notice was not mailed");
+            }
         }
     }
     for who in to {
@@ -1001,8 +1486,34 @@ pub(crate) fn salvage_cmd(ctx: &mut Ctx<'_>) -> Result<(), CmdError> {
         return claim_cmd(ctx, &word, go);
     }
     if ctx.switches.has("contest") {
-        let (word, go) = split_go(&raw);
-        return contest_cmd(ctx, &word, go);
+        let (rest, go) = split_go(&raw);
+        let (word, kind) = match rest.split_once('=') {
+            Some((word, kind)) => {
+                let kind = ContestKind::parse(kind)
+                    .ok_or_else(|| CmdError::msg(NO_SUCH_KIND.replace("{kind}", kind.trim())))?;
+                (word.trim().to_owned(), Some(kind))
+            }
+            None => (rest, None),
+        };
+        return contest_cmd(ctx, &word, kind, go);
+    }
+    if ctx.switches.has("authorize") {
+        let (rest, go) = split_go(&raw);
+        let (word, who) = rest
+            .split_once('=')
+            .ok_or_else(|| CmdError::msg(SALVAGE_USAGE))?;
+        let (who, until) = match who.trim().split_once(char::is_whitespace) {
+            Some((who, tail)) => {
+                let until = tail
+                    .trim()
+                    .strip_prefix("until=")
+                    .and_then(|n| n.trim().parse::<i64>().ok())
+                    .ok_or_else(|| CmdError::msg(SALVAGE_USAGE))?;
+                (who.trim(), Some(until))
+            }
+            None => (who.trim(), None),
+        };
+        return authorize_cmd(ctx, word.trim(), who, until, go);
     }
     if ctx.switches.has("report") {
         let (rest, go) = split_go(&raw);
@@ -1030,8 +1541,8 @@ fn list_cmd(ctx: &mut Ctx<'_>) -> Result<(), CmdError> {
         if row.holder == me {
             roles.push("custodian");
         }
-        if pin.and_then(|p| p.answering) == Some(me) {
-            roles.push("title holder");
+        if pin.is_some_and(|p| p.answers_for(me)) {
+            roles.push("answers for the title");
         }
         if pin.and_then(TenurePin::landholder) == Some(me) {
             roles.push("landholder");
@@ -1098,13 +1609,21 @@ fn claim_cmd(ctx: &mut Ctx<'_>, word: &str, go: bool) -> Result<(), CmdError> {
     if answering.is_none() || row.operation.is_none() {
         return Err(CmdError::msg(NO_TITLE.replace("{name}", &label)));
     }
-    let mut told: Vec<ObjId> = answering.into_iter().collect();
-    if let Some(landholder) = pin.as_ref().and_then(TenurePin::landholder)
-        && !told.contains(&landholder)
+    // Doc 41 Q-41-22, Q-41-28: everyone who answered for the title at the attach and everyone
+    // who answers for it now, then the landholder.
+    let now_answering = title_of(ctx.w, row.hull).1;
+    let mut told: Vec<ObjId> = Vec::new();
+    for who in answering
+        .into_iter()
+        .chain(pin.iter().flat_map(|p| p.answerers.iter().copied()))
+        .chain(now_answering)
+        .chain(pin.as_ref().and_then(TenurePin::landholder))
     {
-        told.push(landholder);
+        if who != ctx.actor && !told.contains(&who) {
+            told.push(who);
+        }
     }
-    told.retain(|who| *who != ctx.actor);
+    told.truncate(MAX_WITNESSES);
     let registry = registry_name(ctx.w);
     let secs = window_secs(ctx.w);
     let window_text = window_words(secs);
@@ -1218,28 +1737,101 @@ fn open_window(ctx: &Ctx<'_>, row: &SalvageCustody, label: &str) -> Result<(u64,
     }
 }
 
-/// `+salvage/contest <hull> [go]`.
-fn contest_cmd(ctx: &mut Ctx<'_>, word: &str, go: bool) -> Result<(), CmdError> {
+/// **What the hull's black box says of her recovery** (doc 41 Q-41-23): its last
+/// `recovered_to_base` close line, read by the registry.
+fn box_recovery(w: &World, hull: ObjId) -> Option<BoxRecovery> {
+    let (lines, _) = w
+        .module_state::<crate::store::TacsimStore>()?
+        .black_box_lines(hull);
+    lines.into_iter().rev().find_map(|(_, line)| match line {
+        crate::surface::black_box::BlackBoxLine::SortieClosed {
+            close: mush_roll::commerce::ic_claims::IcCloseKind::RecoveredToBase { base },
+            recovered_by,
+            ..
+        } => Some(BoxRecovery { base, recovered_by }),
+        _ => None,
+    })
+}
+
+/// `+salvage/contest <hull>[=<kind>] [go]`.
+fn contest_cmd(
+    ctx: &mut Ctx<'_>,
+    word: &str,
+    kind: Option<ContestKind>,
+    go: bool,
+) -> Result<(), CmdError> {
     let (site, row) = named(ctx, word)?;
     let label = name(ctx.w, row.hull);
     let hull_arg = format!("#{}", row.hull.0);
     let (_, end) = open_window(ctx, &row, &label)?;
     let me = ctx.actor;
-    let (ground, preview) = match evidence_of(&row, me) {
-        Some(evidence) => {
-            let preview = CONTEST_PREVIEW_EVIDENCE
-                .replace("{name}", &label)
-                .replace("{kind}", evidence_words(&evidence.kind))
-                .replace("{hull}", &hull_arg);
-            (ContestGround::UnlawfulRecovery { evidence }, preview)
-        }
-        None if row.file.as_ref().is_some_and(|f| f.prior_owner == me) => (
-            ContestGround::BarePriorTitle,
-            CONTEST_PREVIEW_TITLE
-                .replace("{name}", &label)
-                .replace("{hull}", &hull_arg),
+    let answers = row.pin.as_ref().is_some_and(|pin| pin.answers_for(me))
+        || row.file.as_ref().is_some_and(|f| f.prior_owner == me);
+    let recovery = |evidence: SalvageEvidenceRecord| {
+        let preview = CONTEST_PREVIEW_EVIDENCE
+            .replace("{name}", &label)
+            .replace("{kind}", evidence_words(&evidence.kind))
+            .replace("{hull}", &hull_arg);
+        (ContestGround::UnlawfulRecovery { evidence }, preview)
+    };
+    let (ground, preview) = match kind {
+        None => match evidence_of(&row, me) {
+            Some(evidence) => recovery(evidence),
+            None if answers => (
+                ContestGround::BarePriorTitle,
+                CONTEST_PREVIEW_TITLE
+                    .replace("{name}", &label)
+                    .replace("{hull}", &hull_arg),
+            ),
+            None => return Err(CmdError::msg(NO_GROUND.replace("{name}", &label))),
+        },
+        Some(ContestKind::Recovery) => recovery(
+            evidence_of(&row, me)
+                .ok_or_else(|| CmdError::msg(NO_RECOVERY_GROUND.replace("{name}", &label)))?,
         ),
-        None => return Err(CmdError::msg(NO_GROUND.replace("{name}", &label))),
+        Some(ContestKind::Procedure) => {
+            if !answers {
+                return Err(CmdError::msg(NOT_ANSWERING.replace("{name}", &label)));
+            }
+            let defect = procedure_defect(&row, box_recovery(ctx.w, row.hull))
+                .ok_or_else(|| CmdError::msg(NO_DEFECT.replace("{name}", &label)))?;
+            let preview = CONTEST_PREVIEW_PROCEDURE
+                .replace("{name}", &label)
+                .replace("{defect}", &defect_words(ctx.w, &defect))
+                .replace("{hull}", &hull_arg);
+            (
+                ContestGround::DefectiveProcedure {
+                    defect_code: smol_str::SmolStr::new(defect),
+                },
+                preview,
+            )
+        }
+        Some(ContestKind::Right) => {
+            let claimant = name(ctx.w, row.holder);
+            let (contract_id, obligor) = right_of_grantor(&row, me).ok_or_else(|| {
+                CmdError::msg(
+                    NO_RIGHT
+                        .replace("{name}", &label)
+                        .replace("{claimant}", &claimant),
+                )
+            })?;
+            let right = format!(
+                "the recovery authorization you issued them ({contract_id}), held when the \
+                 recovery began"
+            );
+            let preview = CONTEST_PREVIEW_RIGHT
+                .replace("{name}", &label)
+                .replace("{right}", &right)
+                .replace("{claimant}", &claimant)
+                .replace("{hull}", &hull_arg);
+            (
+                ContestGround::SuperiorSpecificRight {
+                    contract_id: smol_str::SmolStr::new(contract_id),
+                    obligor,
+                },
+                preview,
+            )
+        }
     };
     if !go {
         ctx.out.sys_to_actor(me, "tacsim.salvage", preview);
@@ -1259,6 +1851,188 @@ fn contest_cmd(ctx: &mut Ctx<'_>, word: &str, go: bool) -> Result<(), CmdError> 
         me,
         "tacsim.salvage",
         CONTEST_FILED.replace("{name}", &label),
+    );
+    Ok(())
+}
+
+/// The character a `<who>` names: `#n`, or a player's name.
+fn who_named(ctx: &Ctx<'_>, who: &str) -> Result<ObjId, CmdError> {
+    let wanted = who.trim();
+    ctx.w
+        .iter()
+        .find(|o| {
+            o.kind == mush_core::ObjKind::Player
+                && (o.name.eq_ignore_ascii_case(wanted)
+                    || wanted.strip_prefix('#') == Some(o.id.0.to_string().as_str()))
+        })
+        .map(|o| o.id)
+        .ok_or_else(|| CmdError::msg(NO_SUCH_WHO.replace("{who}", wanted)))
+}
+
+/// `+salvage/authorize <hull>|<site>/<block>=<who> [until=<when>] [go]` (doc 41 Q-41-21).
+fn authorize_cmd(
+    ctx: &mut Ctx<'_>,
+    word: &str,
+    who: &str,
+    until: Option<i64>,
+    go: bool,
+) -> Result<(), CmdError> {
+    let to = who_named(ctx, who)?;
+    let who_name = name(ctx.w, to);
+    let until_arg = until.map_or_else(String::new, |at| format!(" until={at}"));
+    if let Some((site_word, letter_word)) = word.split_once('/') {
+        return authorize_block(ctx, (site_word, letter_word), (to, &who_name), until, go);
+    }
+    // The title holder's: `unit.recover_load` on the hull, through Org's unit authority.
+    let wanted = word.trim().trim_start_matches('#');
+    let hull = crate::surface::recovery::world_hulls(ctx.w)
+        .into_iter()
+        .chain(
+            ctx.w
+                .module_state::<mush_tactics::UnitStore>()
+                .map(|units| units.units.keys().copied().collect::<Vec<_>>())
+                .unwrap_or_default(),
+        )
+        .find(|hull| {
+            hull.0.to_string() == wanted || name(ctx.w, *hull).eq_ignore_ascii_case(word.trim())
+        })
+        .ok_or_else(|| CmdError::msg(NOT_IN_CUSTODY.replace("{hull}", word.trim())))?;
+    let label = name(ctx.w, hull);
+    let (_, answering) = title_of(ctx.w, hull);
+    if !answering.contains(&ctx.actor) {
+        return Err(CmdError::msg(NOT_TITLED.replace("{name}", &label)));
+    }
+    if !go {
+        let until_words = until.map_or_else(String::new, |at| format!(" until {at} (UTC)"));
+        ctx.out.sys_to_actor(
+            ctx.actor,
+            "tacsim.salvage",
+            AUTHORIZE_HULL_PREVIEW
+                .replace("{name}", &label)
+                .replace("{who}", &who_name)
+                .replace("{until}", &until_words)
+                .replace("{until_arg}", &until_arg)
+                .replace("{hull}", &format!("#{}", hull.0)),
+        );
+        return Ok(());
+    }
+    let reader = ctx
+        .w
+        .module_state::<crate::detachment::planning::PlanningHandles>()
+        .and_then(|h| h.unit_authority_reader.clone())
+        .ok_or_else(|| CmdError::msg(crate::port::tv::TV_UNWIRED))?;
+    let draft = mush_org::unit_authority::reader::UnitGrantDraft {
+        grantee: mush_org::unit_authority::UnitGrantee::Character(to),
+        capability: mush_org::unit_authority::UnitCapability::RecoverLoad,
+        scope: mush_org::unit_authority::UnitScope::Units {
+            units: std::collections::BTreeSet::from([hull]),
+        },
+        valid_until: until,
+        delegable: false,
+        recovery: mush_org::unit_authority::RecoveryPolicy::None,
+        parent: None,
+    };
+    mush_org::unit_authority::runtime::submit_from(
+        ctx,
+        &reader,
+        mush_org::unit_authority::reader::UnitGrantMutation::Issue(draft),
+    )
+    .map_err(CmdError::msg)?;
+    ctx.out.sys_to_actor(
+        ctx.actor,
+        "tacsim.salvage",
+        AUTHORIZE_HULL_SENT
+            .replace("{name}", &label)
+            .replace("{who}", &who_name),
+    );
+    Ok(())
+}
+
+/// `+salvage/authorize <site>/<block>=<who> [until=<IC seconds>] [go]`: the landholder's
+/// recovery delegation on the block's live claim (doc 41 Q-41-21).
+fn authorize_block(
+    ctx: &mut Ctx<'_>,
+    (site_word, letter_word): (&str, &str),
+    (to, who_name): (ObjId, &str),
+    until: Option<i64>,
+    go: bool,
+) -> Result<(), CmdError> {
+    use crate::port::site_map::SurfaceReads;
+    let block = format!("{}/{}", site_word.trim(), letter_word.trim());
+    let no_block = || CmdError::msg(NO_SUCH_BLOCK.replace("{block}", &block));
+    let site = crate::surface::chart::lane_sites(ctx.w)
+        .into_iter()
+        .find(|s| {
+            s.entry.as_str().eq_ignore_ascii_case(site_word.trim())
+                || s.name.eq_ignore_ascii_case(site_word.trim())
+        })
+        .map(|s| s.entry)
+        .ok_or_else(no_block)?;
+    let letter = {
+        let mut chars = letter_word.trim().chars();
+        match (chars.next(), chars.next()) {
+            (Some(letter), None) if letter.is_ascii_alphabetic() => letter.to_ascii_uppercase(),
+            _ => return Err(no_block()),
+        }
+    };
+    if promoted(ctx, &site) {
+        return Err(CmdError::msg(
+            FIELD_OPEN.replace("{site}", &site_name(ctx.w, &site)),
+        ));
+    }
+    let now_ic = ctx.w.world_ic_now().at;
+    let tenure = ctx
+        .block_tenure(&crate::surface::claims::BlockKey {
+            site: site.clone(),
+            letter,
+        })
+        .ok()
+        .flatten()
+        .ok_or_else(no_block)?;
+    let claim = tenure
+        .claim
+        .as_ref()
+        .filter(|claim| claim.live(now_ic) && claim.holder == PrincipalId::Object(ctx.actor))
+        .ok_or_else(|| CmdError::msg(NOT_LANDHOLDER.replace("{block}", &block)))?;
+    if to == ctx.actor {
+        return Err(CmdError::msg(SALVAGE_USAGE));
+    }
+    let until_arg = until.map_or_else(String::new, |at| format!(" until={at}"));
+    if !go {
+        let until_words = until.map_or_else(String::new, |at| format!(" until IC {at}"));
+        ctx.out.sys_to_actor(
+            ctx.actor,
+            "tacsim.salvage",
+            AUTHORIZE_BLOCK_PREVIEW
+                .replace("{block}", &block)
+                .replace("{who}", who_name)
+                .replace("{until}", &until_words)
+                .replace("{until_arg}", &until_arg),
+        );
+        return Ok(());
+    }
+    let actor = ctx.actor;
+    let order = ClaimOrder::AuthorizeBlock {
+        site,
+        place: tenure.place,
+        grant: LandGrant {
+            letter,
+            landholder: actor,
+            registered_ic: claim.registered_ic,
+            to,
+            until_ic: until,
+            issued_ic: now_ic,
+        },
+    };
+    if !submit(ctx, actor, order, 6) {
+        return Err(CmdError::msg(crate::port::tv::TV_UNWIRED));
+    }
+    ctx.out.sys_to_actor(
+        actor,
+        "tacsim.salvage",
+        AUTHORIZE_BLOCK_SENT
+            .replace("{block}", &block)
+            .replace("{who}", who_name),
     );
     Ok(())
 }
@@ -1360,18 +2134,150 @@ fn inspect_cmd(ctx: &mut Ctx<'_>, word: &str) -> Result<(), CmdError> {
 
 // ---- the tick -----------------------------------------------------------------------------
 
+/// A good's reference price, minor units, from the goods table (0 when it does not read).
+fn reference_minor(w: &World, good: &CanonicalId) -> u64 {
+    w.module_state::<crate::store::TacsimStore>()
+        .and_then(crate::store::TacsimStore::goods)
+        .and_then(|goods| goods.good(good).map(|row| row.reference_major))
+        .and_then(|major| crate::port::apply::minor_of(major, crate::port::apply::credit_scale(w)))
+        .and_then(|minor| u64::try_from(minor).ok())
+        .unwrap_or(0)
+}
+
+/// **The repair a salvor's last completed bay order made at their own risk** (doc 41 Q-41-20,
+/// Q-S14): an order the custodian took on the salvor's right, done since the recovery — its job
+/// lines, its fee plus its goods at their reference, and when it closed.
+fn at_risk_of(w: &World, row: &SalvageCustody) -> Option<AtRiskRepairEntry> {
+    use crate::port::bay_work::{BayHullState, OrderStatus, Right};
+    let Some(BayHullState::Present(bay)) = w
+        .module_state::<crate::store::TacsimStore>()?
+        .bay_hull(row.hull)
+    else {
+        return None;
+    };
+    let order = bay.order.as_ref()?;
+    let closed = order.closed_ic?;
+    if order.status != OrderStatus::Done
+        || order.right != Right::Salvor
+        || order.requester != row.holder
+        || closed < row.recovered_ic
+    {
+        return None;
+    }
+    let goods: u64 = order
+        .goods
+        .iter()
+        .map(|g| reference_minor(w, &g.good).saturating_mul(g.units))
+        .fold(0, u64::saturating_add);
+    let mut description = order
+        .jobs
+        .iter()
+        .map(|job| job.job.describe())
+        .collect::<Vec<_>>()
+        .join(", ");
+    if description.len() > 160 {
+        let mut cut = 157;
+        while !description.is_char_boundary(cut) {
+            cut -= 1;
+        }
+        description.truncate(cut);
+        description.push_str("...");
+    }
+    Some(AtRiskRepairEntry {
+        description: smol_str::SmolStr::new(description),
+        cost_incurred: u64::try_from(order.fee_minor)
+            .unwrap_or(0)
+            .saturating_add(goods),
+        performed_at_ic: closed,
+    })
+}
+
+/// The repairs at risk a notice lists (doc 41 Q-41-20), or nothing.
+fn at_risk_words(ctx: &Ctx<'_>, entries: &[AtRiskRepairEntry]) -> String {
+    if entries.is_empty() {
+        return String::new();
+    }
+    let list = entries
+        .iter()
+        .map(|entry| {
+            format!(
+                "{} ({})",
+                entry.description,
+                crate::port::coop::money_minor(
+                    ctx,
+                    i64::try_from(entry.cost_incurred).unwrap_or(i64::MAX)
+                )
+            )
+        })
+        .collect::<Vec<_>>()
+        .join("; ");
+    AT_RISK_NOTICE.replace("{list}", &list)
+}
+
+/// Why the vacating contest won, in words.
+fn why_vacated(file: &SalvageClaim) -> &'static str {
+    use mush_tactics::field_ops::ContestSuccessReason;
+    match file
+        .contests
+        .iter()
+        .find_map(|contest| contest.valid_to_vacate.clone())
+    {
+        Some(ContestSuccessReason::DefectiveProcedure) => WHY_PROCEDURE,
+        Some(ContestSuccessReason::SuperiorSpecificRight) => WHY_RIGHT,
+        Some(ContestSuccessReason::ProvenUnlawfulRecovery) | None => WHY_RECOVERY,
+    }
+}
+
+/// **Whether an organization's hull is under a live lease or charter** (doc 41 Q-41-22, doc 36
+/// Q-36-29): a rig lease, or a programme charter; such a hull is never awarded by salvage.
+fn leased_or_chartered(w: &World, hull: ObjId) -> bool {
+    w.module_state::<crate::store::TacsimStore>()
+        .and_then(|store| store.tv_lease_on(hull))
+        .is_some()
+        || crate::port::coop::charter_tenant(w, hull).is_some()
+}
+
 /// **The claims' tick** (on the surface tick, beside the tow's): every filed claim whose window
 /// has run or which a contest vacates is settled — the economy first (the title award, or the
-/// contract's close), then the site's record — and the parties are told.
+/// contract's close), then the site's record — and the parties are told. A salvor's completed
+/// bay order is written onto the claim first (doc 41 Q-41-20), and a vacated claim's listed lots
+/// are flagged hot one act at a time (§4.6).
+#[allow(clippy::too_many_lines)]
 pub(crate) fn tick(ctx: &mut Ctx<'_>) {
     let now_real = ctx.w.now();
     let registry = registry_name(ctx.w);
     let Some(issuer) = mush_org::SystemPrincipalId::new(AWARD_ISSUER) else {
         return;
     };
+    let waiting: Vec<ObjId> = ctx
+        .w
+        .module_state::<crate::store::TacsimStore>()
+        .map(crate::store::TacsimStore::bay_vacated_lot_hulls)
+        .unwrap_or_default();
+    for hull in waiting {
+        let _ = crate::port::bay_work::strip::flag_next_vacated(ctx, hull);
+    }
     for (site, row) in custody_rows(ctx) {
         if ctx.authoritative_pending(row.holder) || promoted(ctx, &site) {
             continue;
+        }
+        // Doc 41 Q-41-20: a repair the salvor finished is written before anything settles.
+        if !crate::port::tv::written_off(ctx.w, row.hull)
+            && let Some(entry) = at_risk_of(ctx.w, &row)
+        {
+            let kept = row
+                .file
+                .as_ref()
+                .map_or(&row.at_risk, |file| &file.documented_repairs_at_risk);
+            if !kept.contains(&entry) {
+                let order = ClaimOrder::AtRisk {
+                    site: site.clone(),
+                    hull: row.hull,
+                    entry,
+                };
+                let _ = submit(ctx, row.holder, order, 7);
+                continue;
+            }
         }
         // Doc 36a P0-3 (Q-36-29, Q-36-22): a hull written off while in custody is Occator's
         // alone — the write-off already handed it back to the shed. Its claim's contract is
@@ -1424,15 +2330,16 @@ pub(crate) fn tick(ctx: &mut Ctx<'_>) {
         } else {
             continue;
         };
-        // Doc 36a P0-3 (Q-36-29): an organization's hull is never awarded by salvage. A leased
-        // rig is Occator's alone — its lessee answers for the title, and the 28-day write-off
-        // takes it home — so the claim stands pending until then, or until a contest vacates
-        // it; the economy refuses the award outright as well.
+        // Doc 36a P0-3 (Q-36-29), narrowed by doc 41 Q-41-22: an organization's hull under a
+        // live lease or charter is never awarded by salvage — a leased rig is Occator's alone,
+        // and the 28-day write-off takes it home — so the claim stands pending until then, or
+        // until a contest vacates it. An organization's hull with neither is awarded.
         if settlement == Settlement::Award
             && matches!(
                 title_of(ctx.w, row.hull).0,
                 Some(PrincipalId::Organization(_))
             )
+            && leased_or_chartered(ctx.w, row.hull)
         {
             continue;
         }
@@ -1481,6 +2388,17 @@ pub(crate) fn tick(ctx: &mut Ctx<'_>) {
         if !submit(ctx, row.holder, order, 5) {
             continue;
         }
+        // Doc 41 §4.6: every lot the hull's record lists under this claim is flagged hot.
+        if settlement == Settlement::Vacate
+            && crate::port::bay_work::strip::claim_vacated(
+                ctx,
+                row.hull,
+                contract,
+                (file.prior_owner, row.holder),
+            )
+        {
+            let _ = crate::port::bay_work::strip::flag_next_vacated(ctx, row.hull);
+        }
         let mut told: Vec<ObjId> = vec![row.holder];
         for who in row
             .told
@@ -1492,16 +2410,18 @@ pub(crate) fn tick(ctx: &mut Ctx<'_>) {
                 told.push(who);
             }
         }
-        let line = match settlement {
+        let mut line = match settlement {
             Settlement::Award => AWARDED
                 .replace("{registry}", &registry)
                 .replace("{name}", &label)
                 .replace("{claimant}", &name(ctx.w, row.holder)),
             Settlement::Vacate => VACATED
                 .replace("{registry}", &registry)
-                .replace("{name}", &label),
+                .replace("{name}", &label)
+                .replace("{why}", why_vacated(file)),
             Settlement::Withdrawn | Settlement::HandedBack => continue,
         };
+        line.push_str(&at_risk_words(ctx, &file.documented_repairs_at_risk));
         tell(
             ctx,
             &site,
@@ -1714,6 +2634,7 @@ mod tests {
             file: None,
             told: Vec::new(),
             evidence: Vec::new(),
+            at_risk: Vec::new(),
         }
     }
 
@@ -1724,6 +2645,9 @@ mod tests {
             recoverer: ObjId(20),
             title: Some(PrincipalId::Object(ObjId(30))),
             answering: Some(ObjId(30)),
+            answerers: Vec::new(),
+            owner_grant: None,
+            landholder_authorized: false,
             tenure,
             witnesses: vec![Witness {
                 holder: ObjId(30),
@@ -1891,5 +2815,282 @@ mod tests {
             window_end: 1_000,
             now_real,
         }
+    }
+
+    fn contest_on(ground: ContestGround) -> ClaimOrder {
+        ClaimOrder::Contest {
+            site: CanonicalId::new("tacsim.port.urvara").expect("an id"),
+            hull: ObjId(7),
+            ground,
+            window_end: 1_000,
+            now_real: 200,
+        }
+    }
+
+    fn filed_record(pin: TenurePin, told: Vec<ObjId>) -> SiteRecord {
+        let mut record = SiteRecord::new(CanonicalId::new("tacsim.port.urvara").expect("an id"));
+        record.custody.push(custody(pin));
+        let mut file = file_on(&record, 11);
+        if let ClaimOrder::File { told: kept, .. } = &mut file {
+            *kept = told;
+        }
+        assert_eq!(
+            prepare(&mut record, ObjId(20), &file, 1).as_deref(),
+            Ok("filed")
+        );
+        record
+    }
+
+    /// **Doc 41 Q-41-23 (round-2 item 41-1)**: the registry's procedure reading — an answerer
+    /// not told is a defect, and only an answerer contests on it; the black box is compared with
+    /// the custody row's tug and carrier, never with the claimant; a clean claim shows nothing.
+    #[test]
+    fn rs3_procedure_reads_the_audience_the_pin_and_the_box_against_the_custody() {
+        let mut org_pin = pin_on(GroundTenure::Unclaimed);
+        org_pin.title = Some(PrincipalId::Organization(mush_org::OrgId(5)));
+        org_pin.answerers = vec![ObjId(30), ObjId(33)];
+        // Filed telling 30 alone: 33 answered for the title and was never told.
+        let mut record = filed_record(org_pin.clone(), vec![ObjId(30)]);
+        let row = record.custody[0].clone();
+        assert_eq!(
+            procedure_defect(&row, None).as_deref(),
+            Some("unnotified:33")
+        );
+        let ground = ContestGround::DefectiveProcedure {
+            defect_code: smol_str::SmolStr::new("unnotified:33"),
+        };
+        assert_eq!(
+            prepare(&mut record, ObjId(40), &contest_on(ground.clone()), 2),
+            Err("claim_not_answering"),
+            "the landholder of nothing, a stranger, answers for no title"
+        );
+        let wrong = ContestGround::DefectiveProcedure {
+            defect_code: smol_str::SmolStr::new("pin_missing"),
+        };
+        assert_eq!(
+            prepare(&mut record, ObjId(33), &contest_on(wrong), 2),
+            Err("claim_no_defect")
+        );
+        assert_eq!(
+            prepare(&mut record, ObjId(33), &contest_on(ground), 2).as_deref(),
+            Ok("contested")
+        );
+        assert!(
+            record.custody[0]
+                .file
+                .as_ref()
+                .expect("filed")
+                .has_vacating_contest()
+        );
+        let vacate = settle_on(&record, Settlement::Vacate, 300);
+        assert_eq!(
+            prepare(&mut record, ObjId(20), &vacate, 3).as_deref(),
+            Ok("vacated")
+        );
+
+        // Everyone told: the box agreeing with the custody (tug 22 into carrier 21) is no
+        // defect, though the claimant (20) is neither; a box naming another tug or carrier is.
+        let record = filed_record(org_pin, vec![ObjId(30), ObjId(33)]);
+        let row = &record.custody[0];
+        let agrees = BoxRecovery {
+            base: ObjId(21),
+            recovered_by: Some(ObjId(22)),
+        };
+        assert_eq!(procedure_defect(row, None), None);
+        assert_eq!(procedure_defect(row, Some(agrees)), None);
+        assert_eq!(
+            procedure_defect(
+                row,
+                Some(BoxRecovery {
+                    recovered_by: Some(ObjId(23)),
+                    ..agrees
+                })
+            )
+            .as_deref(),
+            Some("box_recoverer")
+        );
+        assert_eq!(
+            procedure_defect(
+                row,
+                Some(BoxRecovery {
+                    base: ObjId(24),
+                    ..agrees
+                })
+            )
+            .as_deref(),
+            Some("box_base")
+        );
+        let mut replaced = row.clone();
+        if let Some(pin) = replaced.pin.as_mut() {
+            pin.tug = ObjId(23);
+        }
+        assert_eq!(
+            procedure_defect(&replaced, None).as_deref(),
+            Some("pin_replaced")
+        );
+    }
+
+    /// **Doc 41 Q-41-23 (round-2 item 41-10)**: a right vacates only when it bound the claimant
+    /// and its grantor files it; a third party's authorization is no ground. The authorization
+    /// read at the attach makes the recovery lawful, so the same claimant's recovery stands
+    /// against a recovery contest.
+    #[test]
+    fn rs3_a_right_binds_the_claimant_and_only_its_grantor_files_it() {
+        let mut pin = pin_on(GroundTenure::Owned {
+            landholder: ObjId(40),
+            claim_id: None,
+        });
+        pin.owner_grant = Some(PinnedGrant {
+            grant: 9,
+            grantor: ObjId(30),
+        });
+        let mut record = filed_record(pin, vec![ObjId(30), ObjId(40)]);
+        let row = record.custody[0].clone();
+        assert!(
+            row.file
+                .as_ref()
+                .expect("filed")
+                .entitlement_at_attach
+                .is_lawful(),
+            "the title holder's authorization, read at the attach"
+        );
+        assert_eq!(
+            right_of_grantor(&row, ObjId(40)),
+            None,
+            "a third party holds none"
+        );
+        let (contract_id, obligor) = right_of_grantor(&row, ObjId(30)).expect("T's right");
+        assert_eq!((contract_id.as_str(), obligor), ("grant/9", ObjId(20)));
+        let ground = ContestGround::SuperiorSpecificRight {
+            contract_id: smol_str::SmolStr::new(contract_id),
+            obligor,
+        };
+        assert_eq!(
+            prepare(&mut record, ObjId(40), &contest_on(ground.clone()), 2),
+            Err("claim_no_right")
+        );
+        // The witness's own record is evidence, but of a lawful recovery: no vacate.
+        let evidence = evidence_of(&record.custody[0], ObjId(30)).expect("T saw it");
+        let recovery = contest_on(ContestGround::UnlawfulRecovery { evidence });
+        assert_eq!(
+            prepare(&mut record, ObjId(30), &recovery, 2).as_deref(),
+            Ok("contested")
+        );
+        assert!(
+            !record.custody[0]
+                .file
+                .as_ref()
+                .expect("filed")
+                .has_vacating_contest()
+        );
+        assert_eq!(
+            prepare(&mut record, ObjId(30), &contest_on(ground), 3).as_deref(),
+            Ok("contested")
+        );
+        assert!(
+            record.custody[0]
+                .file
+                .as_ref()
+                .expect("filed")
+                .has_vacating_contest()
+        );
+        // A grant the claimant never held (another recoverer took it in tow) binds nobody.
+        let mut other = record.custody[0].clone();
+        if let Some(pin) = other.pin.as_mut() {
+            pin.recoverer = ObjId(25);
+        }
+        assert_eq!(right_of_grantor(&other, ObjId(30)), None);
+    }
+
+    /// **Doc 41 Q-41-20 (Q-S14)**: a repair at the salvor's risk is kept on the custody before
+    /// filing and carried into the claim at filing; after, it goes onto the claim; once each.
+    #[test]
+    fn rs3_repairs_at_risk_ride_the_claim() {
+        let mut record = SiteRecord::new(CanonicalId::new("tacsim.port.urvara").expect("an id"));
+        record
+            .custody
+            .push(custody(pin_on(GroundTenure::Unclaimed)));
+        let entry = |at: i64| AtRiskRepairEntry {
+            description: smol_str::SmolStr::new("mend the chassis"),
+            cost_incurred: 125_000,
+            performed_at_ic: at,
+        };
+        let at_risk = |at: i64| ClaimOrder::AtRisk {
+            site: CanonicalId::new("tacsim.port.urvara").expect("an id"),
+            hull: ObjId(7),
+            entry: entry(at),
+        };
+        assert_eq!(
+            prepare(&mut record, ObjId(30), &at_risk(60), 1),
+            Err("claim_not_custodian")
+        );
+        for _ in 0..2 {
+            assert_eq!(
+                prepare(&mut record, ObjId(20), &at_risk(60), 1).as_deref(),
+                Ok("recorded")
+            );
+        }
+        assert_eq!(record.custody[0].at_risk, vec![entry(60)]);
+        let file = file_on(&record, 12);
+        assert_eq!(
+            prepare(&mut record, ObjId(20), &file, 2).as_deref(),
+            Ok("filed")
+        );
+        assert!(record.custody[0].at_risk.is_empty());
+        assert_eq!(
+            prepare(&mut record, ObjId(20), &at_risk(90), 3).as_deref(),
+            Ok("recorded")
+        );
+        assert_eq!(
+            record.custody[0]
+                .file
+                .as_ref()
+                .expect("filed")
+                .documented_repairs_at_risk,
+            vec![entry(60), entry(90)]
+        );
+    }
+
+    /// **Doc 41 Q-41-21**: a landholder's delegation is the landholder's alone to write, one row
+    /// a grantee, and covers only under the holding it was issued on and before it lapses.
+    #[test]
+    fn rs3_a_land_grant_rides_its_holding() {
+        let mut record = SiteRecord::new(CanonicalId::new("tacsim.port.urvara").expect("an id"));
+        let grant = LandGrant {
+            letter: 'F',
+            landholder: ObjId(40),
+            registered_ic: 10,
+            to: ObjId(20),
+            until_ic: Some(500),
+            issued_ic: 12,
+        };
+        let order = ClaimOrder::AuthorizeBlock {
+            site: record.site.clone(),
+            place: ObjId(99),
+            grant: grant.clone(),
+        };
+        assert_eq!(order.hull(), ObjId(99));
+        assert_eq!(
+            prepare(&mut record, ObjId(20), &order, 12),
+            Err("claim_not_landholder")
+        );
+        for _ in 0..2 {
+            assert_eq!(
+                prepare(&mut record, ObjId(40), &order, 12).as_deref(),
+                Ok("authorized")
+            );
+        }
+        assert_eq!(record.land_grants, vec![grant.clone()]);
+        assert!(grant.covers(ObjId(20), (ObjId(40), 10), 100));
+        assert!(
+            !grant.covers(ObjId(20), (ObjId(40), 11), 100),
+            "a new holding"
+        );
+        assert!(!grant.covers(ObjId(20), (ObjId(40), 10), 500), "lapsed");
+        assert!(
+            !grant.covers(ObjId(21), (ObjId(40), 10), 100),
+            "another recoverer"
+        );
+        assert!(record.check().is_ok());
     }
 }

@@ -126,6 +126,11 @@ pub struct SalvageCustody {
     /// with bay access, at most [`crate::surface::claim::MAX_EVIDENCE`].
     #[serde(default, skip_serializing_if = "Vec::is_empty")]
     pub evidence: Vec<mush_tactics::field_ops::SalvageEvidenceRecord>,
+    /// **Doc 41 cut RS.3** (Q-41-20, Q-S14): repairs the custodian had made at their own risk
+    /// before the claim was filed, carried into the filed claim's own list at filing; at most
+    /// [`crate::surface::claim::MAX_AT_RISK`].
+    #[serde(default, skip_serializing_if = "Vec::is_empty")]
+    pub at_risk: Vec<mush_tactics::field_ops::AtRiskRepairEntry>,
 }
 
 /// **Put `custody` on `record`**, replacing any earlier one for the same hull; past
@@ -633,6 +638,7 @@ mod tests {
             file: None,
             told: Vec::new(),
             evidence: Vec::new(),
+            at_risk: Vec::new(),
         };
         hold(&mut record, custody(9, 5));
         hold(&mut record, custody(7, 6));

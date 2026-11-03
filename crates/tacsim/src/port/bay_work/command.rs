@@ -151,6 +151,10 @@ fn hours(secs: i64) -> String {
 fn show(ctx: &mut Ctx<'_>, hull: ObjId) -> Result<(), String> {
     let name = crate::port::coop::name_of(ctx.w, hull);
     let mut lines = Vec::new();
+    // Doc 41 Q-41-20 (Q-S14): a salvor reads the risk before anything else.
+    if super::right_of(ctx, hull) == Some(super::Right::Salvor) {
+        lines.push(crate::surface::claim::AT_RISK_QUOTE.to_owned());
+    }
     match quote_here(ctx.w, hull) {
         Ok((facility, quote)) => {
             let factor = match facility.class {
