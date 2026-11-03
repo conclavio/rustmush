@@ -248,6 +248,23 @@ released; captivity created also by an ejection into a held cell (§4 C).
   `Carrier` check it. Expensive because the record is persisted, read at boot, and matched in
   `check_in`, `crew_location`, `status_line`, `land`, `loaded_aboard`, `abandon` and `tick`:
   renaming or merging it later is a refactor across all of them.
+- **Draft 0.3 (review round 2, 42-5 and 42-8): where a captive's body is.** A record that says
+  `Captured { carrier }` while the character's object still sits in the casualty's seat is two
+  truths. Nothing in the tree reconciles them: `aboard_loaded` and `abandoned_loaded` change only
+  the record (`crew.rs:499–607`); only `land` vacates a seat, and only when it is given a unit
+  (`:1015–1046`); a written-off rig goes through `tv::hand_back` → `place_interior(tv, shed)`
+  (`tow.rs:2341–2344`, `port/tv.rs:4664–4683`), carrying its seated pilot to Occator's shed at the
+  port. **The rule:** a capture is three steps in one pass of the load's physical step, before the
+  casualty itself is placed or handed back: (1) for each soul the record holds in the casualty,
+  `mush_sim::vacate_station` (`mush-sim/src/station.rs:191`) on every station they hold in it and
+  `request_control_release` (`:449`) on its K6 control lease, as `land` does for an extraction; (2)
+  the soul is moved into the captor's carrier's **bay room** — the room `+tv/bay in` enters — and
+  unplaced from the site's domain if placed; (3) the record is written `Captured { carrier }`,
+  where `carrier` is that carrier, never the casualty. The casualty then goes into the bay or back
+  to the shed with nobody in it. From then on the captive's body and record agree: `inside` and
+  `souls_aboard` find them in the captor's hull, `on_frames` cannot reach them (no seat), and no
+  later move of the casualty moves them (42-3's note under Q-42-6). The same three steps run
+  for a captured ejection's landing (Q-42-12) and, in space, for a hard-dock capture (Q-42-24).
 
 **Q-42-2 — What a captive can and cannot do.**
 - **Proposed default:** a captive is a passenger who cannot leave and cannot operate. While the
@@ -270,7 +287,7 @@ released; captivity created also by an ejection into a held cell (§4 C).
   record; `check_in` leaves a `Captured` soul alone (the `abandoned` guard at `crew.rs:407–413`
   widened), so the captor's carrier checking in from a later field neither re-crews nor frees
   them; `crew_location` prefers a `Captured` record over the carrier row's `aboard` (`:226–239`);
-  `on_frames` never reaches a captive (they sit in no seat). A restart mid-capture resumes the
+  `on_frames` never reaches a captive (they sit in no seat). (Draft 0.3: they sit in no seat because the capture vacates it, 42-5 under Q-42-1.) A restart mid-capture resumes the
   bound from `since_ic`, in IC time, so a W-clock freeze pauses it.
 - **Alternative:** re-derive custody from physical location at each check-in (whoever's rooms
   the character stands in holds them).
@@ -361,7 +378,9 @@ for a fee, or held."
   captives aboard with their time to the bound, and `+ship/release <who>` releases one at will:
   docked, into the port's arrival room as `Port` with no fee; under way or on a site, as a
   passenger, `Carrier { hull }` on a hull not their own — and that is extractable (the `extractable`
-  rule widened by one arm), so they ask for extraction or walk off at the next port. A captor who
+  rule widened by one arm), so they ask for extraction or walk off at the next port. (Draft 0.3, 42-5 (C): the released character already stands in the carrier's bay room, so
+  `+tv/bay out` and the hull's airlock are their way off at a port; the tick's `Carrier { .. } =>
+  (None, None)` arm (`crew.rs:818–822`) is right for them, because no seat is left to vacate.) A captor who
   neither docks nor releases meets the bound (Q-42-8). A captive aboard a carrier that lifts is
   carried (no `leave=` for persons); one aboard a carrier that is wrecked is stranded in it
   (Q-42-15).
@@ -417,6 +436,26 @@ a Hostile party holds the cell."
   1,000 or 0. A captured pilot's forced extraction lands them aboard P's carrier as `Captured`
   (the "recovery service" being P's own pickup, after the same `extract_s`); an uncaptured one
   lands at the port, deferrable by a Friend on the site (Q-42-14).
+  **Draft 0.3 (review round 2, 42-5 (B)): the ejectee between the eject and the landing.** The
+  eject vacates the seat and releases the K6 lease at once (Q-42-10) but cannot put the pilot
+  anywhere on foot (Q-CF-39), so the body stays in the cockpit room until the landing moves it.
+  Three rules make that safe. (1) A record whose extraction is `forced` is skipped by every load
+  rule — `loaded_aboard` (`crew.rs:530–533`) and the capture branch's filter (`:567–572`) match
+  the record's `Stranded { unit }` today, so a load of the empty hull inside `extract_s` would
+  otherwise carry off, or a Friend's load cancel, an ejection whose draw is already decided; the
+  ejectee rides where the hull goes and lands where the extraction says. (2) The draw's outcome is
+  kept on the record: `Extraction` gains `capture: Option<EjectCapture { party, carrier, captor
+  }>` (omitted when `None`), written at the eject, so the six IC hours survive a restart. (3) The
+  `held` gate (Q-42-2) also refuses movement and operation to a pilot whose extraction is `forced`
+  ("You are waiting for your pickup."), so the body cannot walk off a hull it ejected from.
+  **The landing**, at the due instant: when `capture` is set and its carrier still stands on the
+  site and is not wrecked (`CarrierLoss::CrewStranded`), the three capture steps of 42-5 run into
+  that carrier and the record becomes `Captured`; otherwise — the carrier lifted, left or fell —
+  the extraction lands at the safe port they know, uncaptured. A director raider's carrier lifts
+  once its hulls are aboard (`field/raiders.rs:800`, `lift` `:968`); `lift_check` therefore waits
+  while a pending capture names its carrier, at most until that extraction's due instant, so story
+  (d)'s capture lands before the lift. A player's carrier is not held: its captain may lift, and
+  the ejectee then lands at a port.
 - **Alternative:** certain when held, never otherwise (no draw).
 - **Why:** the ruling says a chance; the kernel's no-dice rule (doc 16) is kept by a seeded draw;
   (d) answers where the captive physically goes without a brig on a tank; the reach test is the
@@ -476,7 +515,8 @@ Q-36-52's friendly half stands.
 - **Proposed default:** as ruled: every completed non-friend load, Neutral or Hostile; a salvor
   who wants no captive releases them at will (Q-42-9) and pays nothing. The friendly half of
   Q-36-52 stands unchanged. A written-off lease rig's crew, abandoned today on the hand-back to
-  Occator (GC.5), are captured by the loader like any other crew.
+  Occator (GC.5), are captured by the loader like any other crew. (Draft 0.3, 42-8: the capture's vacate-and-move runs **before** `tv::hand_back`, so the pilot is
+  in the loader's bay room and the empty rig goes to the shed.)
 - **Alternative:** only a loader whose party held the crew's party `Hostile` captures; a Neutral
   loader's crew ride as passengers.
 - **Why:** Q-38-22 says "a completed non-friend load"; the salvor's release makes the Neutral
@@ -686,7 +726,7 @@ captor's wreck. Files: `field/crew.rs`, `mush-config`. Story: (e), both sizes, w
 test on live cells; the holding query to the arena task; the deterministic draw and
 `eject_capture_permille`; the forced extraction's two landings; the deferral keyed on Friends
 rather than the duty. Files: `detachment/sortie/commands.rs`, `field/crew.rs`, `arena_bridge.rs`,
-the arena task's message handler (a read; no hash). Story: (d), both sizes, knob at 1,000 and 0.
+the arena task's message handler (a read; no hash). Draft 0.3 (42-5): also `field/raiders.rs` (`lift_check` waits on a pending capture naming its carrier). Story: (d), both sizes, knob at 1,000 and 0.
 After CR.1 (both touch `crew.rs`).
 
 **CR.5 — Beds as a limit.** Q-42-17, Q-42-18. `treat` counts the medical room's occupants
