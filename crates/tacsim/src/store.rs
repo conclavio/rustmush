@@ -625,6 +625,23 @@ impl TacsimStore {
         self.bay_hulls.get(&hull)
     }
 
+    /// **Every hull whose bay record lists a lot under a vacated claim** (doc 41 cut RS.3,
+    /// §4.6), in hull order.
+    #[must_use]
+    pub fn bay_vacated_lot_hulls(&self) -> Vec<ObjId> {
+        self.bay_hulls
+            .iter()
+            .filter(|(_, state)| {
+                matches!(
+                    state,
+                    crate::port::bay_work::BayHullState::Present(row)
+                        if row.claim_lots.iter().any(|lot| lot.vacated.is_some())
+                )
+            })
+            .map(|(hull, _)| *hull)
+            .collect()
+    }
+
     /// **Every hull with an open repair order** (doc 36 cut GC.8), in hull order.
     #[must_use]
     pub fn bay_open_hulls(&self) -> Vec<ObjId> {

@@ -237,10 +237,16 @@ the site has settled:
   own party's or a Friend's carrier, it is home. Loaded into anyone else's, it
   is in that carrier's custody with a salvage claim owed, never its title, and
   anyone still aboard is abandoned to extraction. The custodian files the claim
-  (`+salvage/claim <hull> go`), the title holder is told by IC mail, and either
-  side's evidence is read and contested at the registry (`+salvage/inspect`,
-  `+salvage/contest`). An uncontested claim passes the title when its window
-  runs out.
+  (`+salvage/claim <hull> go`), everyone who answers for the title (a company's
+  people, or its agent) is told by IC mail, and either side's evidence is read
+  and contested at the registry (`+salvage/inspect`,
+  `+salvage/contest <hull>=recovery|procedure|right`): an unlawful recovery on
+  your own record of it, a defect in the claim's procedure, or a right of yours
+  that bound the claimant. A title holder authorizes a recovery beforehand with
+  `+salvage/authorize <hull>=<who> go`, a landholder with
+  `+salvage/authorize <site>/<block>=<who> go`. Repairs a salvor makes are at
+  their own risk and are never repaid. An uncontested claim passes the title
+  when its window runs out.
 - **A carrier** is towed only by a tug of at least half its tonnage, which no
   rig is. A carrier whose drive is destroyed cannot lift. One whose hull falls
   is a wreck that never lifts and strands its crew.
