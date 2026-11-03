@@ -764,13 +764,23 @@ Both are read **at the attach** (where the pin is written, Q-S3's "when physical
 which is what Q-38-19's "read at filing" means in this tree: the filing reads the pin. An
 authorization dated after the attach changes nothing. (Q-41-21.)
 
-**Org-titled claims.** `title_of` gains the organization case: who answers for an org's title is
-`principal_holders(org)` filtered to those `acts_for` the org (the "economy.account.post" holders,
-which is the organization's owner read this engine has), each told at filing, any of them able to
-contest; `award_salvage_title`'s blanket refusal of an org title (`:6277–6287`) narrows to what
-P0-3 meant — a hull under a live lease or charter follows the lease rule (Q-36-29: never awarded;
-its claim closes at the write-off) — so an org-titled hull with no lessee (a house Dray lost on a
-raid, Tycho's crawler, a Co-op hull after its charter lapsed) is claimable and awardable. (Q-41-22.)
+**Org-titled claims.** `title_of` gains the organization case. Draft 0.2's answer — the org's
+`principal_holders` filtered to its `acts_for` holders — is empty for every NPC organization: the
+lane's orgs are made by `CreateOrg` alone (`port/apply.rs:785–817`) and the only grants are the
+lessor agent's (`port/equipment.rs:20–25`, `:81`) and the vendor clerk's `vault.withdraw`
+(`vendor.rs:52`, `:618`), so `claim_cmd` would refuse `NO_TITLE` (`claim.rs:1097–1100`; `open_claim`
+`:600`) for the very hulls Q-41-22 names (round-2 item 41-8). Who answers for an organization's
+title is therefore its **house agent**: the object the lane names for the org — Occator's lessor
+agent, a yard's dispatcher, a vendor's clerk — and, for a player organization, its members and
+grantees (`principal_holders` unfiltered); lane v21 gives Tycho's dispatcher a grant so it is found
+the same way. Each is told at filing and any may contest; the pin's `answering` is the first of
+them. The spec needs no `prior_owner` (it has none, `contract_live.rs:5905–5920`; its `TitleHeld`
+names the claimant, `:6075–6078` — the review's second half is refuted), so nothing in the contract
+changes; `award_salvage_title`'s blanket refusal of an org title (`:6277–6287`) narrows to what P0-3
+meant — a hull under a live lease or charter follows the lease rule (Q-36-29: never awarded; its
+claim closes at the write-off) — so an org-titled hull with no lessee (a house Dray lost on a raid,
+Tycho's crawler, a Co-op hull after its charter lapsed) is claimable and awardable. Whether the
+house agent or the organization itself should answer is Q-41-28. (Q-41-22.)
 
 **The contest kinds and their evidence.** `+salvage/contest <hull>[=recovery|procedure|right] [go]`,
 the bare form keeping today's automatic choice:
@@ -1171,9 +1181,11 @@ provisional unless the line says otherwise.
   sortie's recover; a block's rights live on its claim record.
 
 **Q-41-22 — Org-titled claims.**
-- **Proposed default:** who answers for an organization's title is its `economy.account.post`
-  holders; each is told, any may contest; the award's blanket refusal narrows to hulls under a live
-  lease or charter (the lease rule).
+- **Proposed default:** who answers for an organization's title is its house agent (an NPC org) or
+  its members and grantees (a player org) — Draft 0.3's correction of round-2 item 41-8: the
+  `economy.account.post` holders Draft 0.2 named are nobody for every NPC org; each is told, any may
+  contest; the award's blanket refusal narrows to hulls under a live lease or charter (the lease
+  rule). The ruling stands; Q-41-28 asks whether the org itself should answer instead.
 - **Alternative:** org titles stay unclaimable.
 - **Why:** an organization has no owner field and its owner read is the capability; a house hull
   lost on a raid and never recovered is FO-1's lost unit like any other.
