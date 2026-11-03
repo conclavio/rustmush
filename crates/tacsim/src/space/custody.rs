@@ -37,6 +37,7 @@ use mush_tactics::{
 };
 use smol_str::SmolStr;
 
+use crate::arena::party::PartyId;
 use crate::definitions::Catalog;
 use crate::definitions::logistics::DriveLaw;
 use crate::definitions::unit::{
@@ -50,7 +51,7 @@ use crate::field_ops::{
 use crate::port::ship::SHIP_DAMAGE;
 use crate::space::bubble::{
     DERELICT_WINDOW_S, FacetBand, HullStatus, ShipSectionId, ShipSectionState, SpaceCombatEvent,
-    SpacePartyId, SpaceSectionConsequence, SpaceShipState, SubsystemCrit,
+    SpaceSectionConsequence, SpaceShipState, SubsystemCrit,
 };
 use crate::space::docking::DockingRcsAuthority;
 use crate::space::weapons::{LaserMount, PdcMount, RailgunMount, TorpedoTube};
@@ -443,7 +444,7 @@ pub fn space_ship_from_tactical_unit(
     unit: &TacticalUnit,
     ship_id: impl Into<String>,
     callsign: impl Into<String>,
-    party: SpacePartyId,
+    party: PartyId,
     pos_m: [i64; 3],
     vel_mmps: [i64; 3],
 ) -> Result<SpaceShipState, FieldOpsError> {
@@ -461,7 +462,7 @@ pub fn space_ship_from_tactical_unit_with_spec(
     spec: Option<&UnitSpec>,
     ship_id: impl Into<String>,
     callsign: impl Into<String>,
-    party: SpacePartyId,
+    party: PartyId,
     pos_m: [i64; 3],
     vel_mmps: [i64; 3],
 ) -> Result<SpaceShipState, FieldOpsError> {
@@ -772,7 +773,7 @@ pub fn check_out_space_unit(
     ordinal: u32,
     ship_id: impl Into<String>,
     callsign: impl Into<String>,
-    party: SpacePartyId,
+    party: PartyId,
     pos_m: [i64; 3],
     vel_mmps: [i64; 3],
 ) -> Result<SpaceShipState, String> {
