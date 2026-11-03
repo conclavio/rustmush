@@ -7,9 +7,12 @@
 //! former file, unchanged but for its paths; its tests are `<module>::<fn>`.
 //!
 //! The grouping is line 3 of .github/tacsim-integration-shards.txt, the CI shard
-//! that runs it, balanced by test time rather than by theme (six
-//! groups since 2026-10-27, on the JUnit per-module times); a rebalance moves
-//! a `mod` line between the six shard roots.
+//! that runs it, balanced by test time rather than by theme (ten
+//! groups since 2026-11-03, six from 2026-10-27, on the JUnit per-module
+//! times); a rebalance moves a `mod` line between the shard roots, with the
+//! file. A module may import only from its own binary: the field helpers it
+//! needs are the `*_rig` modules under tests/support/field/, declared in
+//! every root.
 //!
 //! One module: `cargo nextest run -p tacsim --test shard_3 -E 'test(/^capacity::/)'`
 //! or `cargo test -p tacsim --test shard_3 capacity::` (a substring filter, so no
@@ -30,29 +33,27 @@ mod capacity;
 mod composition_edges;
 #[path = "shard_3/definitions.rs"]
 mod definitions;
-#[path = "shard_3/deliberation.rs"]
-mod deliberation;
 #[path = "shard_3/deposits.rs"]
 mod deposits;
 #[path = "shard_3/designs.rs"]
 mod designs;
+#[path = "support/field/driving_rig.rs"]
+mod driving_rig;
 #[path = "shard_3/drones.rs"]
 mod drones;
 #[path = "shard_3/e7c1.rs"]
 mod e7c1;
 #[path = "shard_3/ephemeris.rs"]
 mod ephemeris;
-#[path = "shard_3/mill.rs"]
-mod mill;
-#[path = "shard_3/motor.rs"]
-mod motor;
+#[path = "support/field/field_host_rig.rs"]
+mod field_host_rig;
+#[path = "support/field/field_raiders_rig.rs"]
+mod field_raiders_rig;
 #[path = "shard_3/orders.rs"]
 mod orders;
 #[path = "shard_3/port_tick.rs"]
 mod port_tick;
-#[path = "shard_3/ports.rs"]
-mod ports;
 #[path = "shard_3/report.rs"]
 mod report;
-#[path = "shard_3/reset.rs"]
-mod reset;
+#[path = "support/field/site_record_rig.rs"]
+mod site_record_rig;

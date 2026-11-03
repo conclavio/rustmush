@@ -36,15 +36,15 @@ use tacsim::arena::party::Relation;
 use tacsim::arena::state::Classification;
 use tacsim::surface::site_record::{GroundKind, LeftCondition};
 
-use crate::driving::{
+use crate::driving_rig::{
     AHUNA, RAMP, Rig, act_go, at_counter, cid, command, finish, land, launched, launched_at,
     map_frame, on_pad, on_pad_as, on_pad_as_at, on_pad_with_at, pilot, ramp_at, reboot, run,
     site_domain, staff_hand, stocked, stocked_tuned, to_cell_on, warm,
 };
-use crate::field_host::{
+use crate::field_host_rig::{
     armed, armed_on, egress, frame, seat, second, site_record_at, task, until,
 };
-use crate::field_raiders::{SKULKS, raider_hulls, seat_npc};
+use crate::field_raiders_rig::{SKULKS, raider_hulls, seat_npc};
 
 /// A site cell and a heading, millidegrees.
 type Placed = ((i64, i64), u32);
@@ -420,7 +420,7 @@ async fn s2_the_field_story_at_512() {
 async fn field_story(at: &Ground) {
     let wide = at.side > 256;
     let mut rig = stocked_tuned(|cfg| {
-        crate::field_host::tune(cfg);
+        crate::field_host_rig::tune(cfg);
         cfg.field.disengage_s = 15;
     });
 
@@ -1044,7 +1044,7 @@ async fn field_story(at: &Ground) {
     // run after its cycle first (a lift waits on a drilling rig), and the rig stays out.
     let stop = typed(&mut rig, miner, "+tv/1 mine stop");
     let now = rig.tw.world().world_ic_now().at;
-    let _ = crate::driving::to_ic(&mut rig, now + 3_600);
+    let _ = crate::driving_rig::to_ic(&mut rig, now + 3_600);
     let (refused, queued) = command(&mut rig, miner, "+ship/lift ceres");
     assert!(!refused.contains("is drilling"), "{stop} / {refused}");
     assert!(queued.is_empty(), "nothing is filed: {refused}");
@@ -1364,7 +1364,7 @@ fn s2_a_field_pulse_is_measured_at_both_sides() {
 /// stood on the nearest free cell, and admits both.
 #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
 async fn cf7_two_rigs_on_one_ramp_cell_are_parted_at_admission_and_the_field_opens() {
-    let mut rig = stocked_tuned(crate::field_host::tune);
+    let mut rig = stocked_tuned(crate::field_host_rig::tune);
     let (a, _, a_tvs) = on_pad(&mut rig, 1);
     let (b, _, b_tvs) = on_pad_as(&mut rig, "Other", 2, "Tally Moth", 1);
     launched(&mut rig, a, a_tvs[0]);

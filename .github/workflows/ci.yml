@@ -125,7 +125,7 @@ jobs:
   m8-gate-stories:
     name: M8 ${{ matrix.name }}
     # Doc 17h cut M8g G5 (doc 23 S.5 folded in): the M8 gate's stories over the combined M8
-    # world (`crates/tacsim/tests/shard_4/m8_world.rs`: the production launch composition over
+    # world (`crates/tacsim/tests/shard_9/m8_world.rs`: the production launch composition over
     # the test world's game content, the three named Houses' sources genuinely rated). Each
     # takes the three Registry ratings, so it is dispatch- or schedule-only, as the M7 stories
     # are; the owner's rule: never run locally.
@@ -150,7 +150,7 @@ jobs:
         with:
           key: m8-gate-stories
       - name: Execute the exact M8 story
-        run: cargo test --locked -p tacsim --test shard_4 ${{ matrix.test }} -j 2 -- --ignored --exact --test-threads=1 --nocapture
+        run: cargo test --locked -p tacsim --test shard_9 ${{ matrix.test }} -j 2 -- --ignored --exact --test-threads=1 --nocapture
 
   mind-author-acceptance:
     name: M6 author story and fresh external pilot comparison
@@ -213,7 +213,7 @@ jobs:
       - uses: Swatinem/rust-cache@v2
       - name: Every witness asks every question; only the built channels answer
         run: |
-          cargo test -p tacsim --test shard_4 m8_leaks:: -j 2 -- --ignored --test-threads=1 --nocapture
+          cargo test -p tacsim --test shard_9 m8_leaks:: -j 2 -- --ignored --test-threads=1 --nocapture
   # Doc 17h M8 (the zero-PC story's precondition), dispatch-only: the launch's House
   # combat doctrines (Meridiani, Coprates) win some, not all, of the Registry's trials
   # against Standard. The first runs every Trial case of the three House minds (about
@@ -349,6 +349,23 @@ jobs:
     # (5) The release job runs on the nightly and dispatches only, not on
     # pushes to main: 27 min of runner that uploaded nothing and set main's
     # wall. Measured on the cut's own PR run.
+    #
+    # 2026-11-03: TEN TACSIM SHARDS, twenty cells. Over main's eight green
+    # runs of 2026-11-02/03 tacsim-integration-1 was the wall six times at
+    # 21-34 min: the six integration shards had grown from ~318 to ~380 mean
+    # summed test-minutes in three days and shard_1 carried 92 of them,
+    # because the GC line's field modules all import the driving Rig, and a
+    # module can only import from its own binary (field_host, field_raiders
+    # and site_record were hubs under it). The test phase runs at a 1-min
+    # load of 5-6 on the four vCPUs, so more threads were no lever; more
+    # cells were. Three cuts in one PR: (1) the four hubs' helper preambles
+    # hoisted to crates/tacsim/tests/support/field/*_rig.rs, declared in
+    # every shard root, so the field modules can spread; (2) shard_7 to
+    # shard_10; (3) 31 modules moved to ~41 summed minutes a shard (the
+    # figures in .github/tacsim-integration-shards.txt). The M8 jobs above
+    # name shard_9 now (the M8 cluster moved with excursions and
+    # ic_sortie_surface). Expected: ~15 min a cell, the PR wall in the high
+    # teens. Measured on the cut's own PR run.
     strategy:
       fail-fast: false
       matrix:
@@ -357,18 +374,23 @@ jobs:
           # the pool's four threads (two until 2026-10-31), then tacsim's
           # doc-tests, which rest-libs' `--exclude tacsim` drops with the lib.
           - tacsim-lib
-          # (b) tacsim's integration test binaries, a sixth each by measured
-          # time (lines 1 to 6 of .github/tacsim-integration-shards.txt; four
+          # (b) tacsim's integration test binaries, a tenth each by measured
+          # time (lines 1 to 10 of .github/tacsim-integration-shards.txt; four
           # since 2026-10-26, cut T.0, when the third of three swung between
           # 18 and 30 min of execution run to run; six since 2026-10-27, on
           # the JUnit per-module times, when the four were the run's wall at
-          # 23-26 min each with 65-74 summed test-minutes apiece).
+          # 23-26 min each with 65-74 summed test-minutes apiece; ten since
+          # 2026-11-03, when the six were 37-92 and shard_1 the wall).
           - tacsim-integration-1
           - tacsim-integration-2
           - tacsim-integration-3
           - tacsim-integration-4
           - tacsim-integration-5
           - tacsim-integration-6
+          - tacsim-integration-7
+          - tacsim-integration-8
+          - tacsim-integration-9
+          - tacsim-integration-10
           # (b2) the three #[ignore]d mind-hash tests, run by name: a cell of
           # their own since 2026-10-27, because the serial 5-min pooled-seam
           # step sat on top of the longest shard and set the run's wall.
