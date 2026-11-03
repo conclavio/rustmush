@@ -30,52 +30,11 @@ use crate::driving_rig::{
     command, land, launched, launched_composed, on_pad, on_pad_as, prospector, record_of, run,
     staff_hand, stocked_tuned, to_cell, warm,
 };
+use crate::field_host_rig::set_section;
 use crate::field_host_rig::{
     armed, egress, frame, seat, second, second_composed, site_record, task, tune, until,
     until_composed, weapon_of,
 };
-
-/// **Write `condition` on `section` of `unit`, and its internals to `internals`** (or leave them
-/// when `None`): the staff fixture standing in for damage.
-fn set_section(
-    rig: &mut crate::driving_rig::Rig,
-    unit: ObjId,
-    section: &str,
-    condition: Option<&str>,
-    internals: Option<i64>,
-) {
-    staff_hand(rig, |ctx| {
-        let cells = mush_tactics::module::unit_of(ctx.w, unit)
-            .expect("the unit")
-            .clone();
-        let id = mush_tactics::SectionId::new(section).expect("a section id");
-        assert!(cells.section(&id).is_some(), "#{} has a {section}", unit.0);
-        let mut ops = Vec::new();
-        if let Some(condition) = condition {
-            ops.push(mush_tactics::UnitMutationOp::SetSectionCondition {
-                section: id.clone(),
-                condition: mush_tactics::ConditionId::new(condition).expect("a condition"),
-            });
-        }
-        if let Some(value) = internals {
-            ops.push(mush_tactics::UnitMutationOp::SetCell {
-                addr: mush_tactics::CellAddr::Section {
-                    section: id,
-                    cell: mush_tactics::CellId::new(tacsim::definitions::unit::INTERNALS_CELL)
-                        .expect("a cell id"),
-                },
-                value,
-            });
-        }
-        let plan = mush_tactics::UnitMutationPlan::new(
-            ops,
-            None,
-            Some(smol_str::SmolStr::new_static("test:gc3-damage")),
-        )
-        .expect("a plan");
-        mush_tactics::module::apply_plan(ctx, unit, &plan).expect("applied");
-    });
-}
 
 /// **Strip `unit`'s armour to its floor** (CF.3's fixture), so the next rounds that land are
 /// section damage.
@@ -404,4 +363,41 @@ async fn gc3_a_carrier_whose_hull_falls_strands_its_crew_and_wrecks_its_bay() {
     let (out, queued) = command(&mut rig, a, "+ship/lift ceres");
     assert!(out.contains("is a wreck"), "{out}");
     assert!(queued.is_empty(), "{out}");
+}
+
+/// **Doc 36a lane 3, P2-6**: the dry runs read the filing's refusals. With the Dray-P's drive
+/// destroyed (GC.3's fixture), `+ship/plan ceres` and the dry run of a queued `+ship/order depart
+/// ceres` both read the drive's refusal, as `+ship/lift ceres` does; before the fix both read a
+/// plan where the filing refused.
+#[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+async fn lane3_the_dry_run_reads_the_lift_refusal_the_filing_makes() {
+    let mut rig = stocked_tuned(tune);
+    let (a, row, _) = on_pad(&mut rig, 1);
+    let carrier = ObjId(row.hull);
+    let whole = run(&mut rig.tw, a, "+ship/plan ceres");
+    assert!(
+        whole.contains("Plan for") && !whole.contains("drive is destroyed"),
+        "a whole carrier plans: {whole}"
+    );
+    set_section(&mut rig, carrier, "drive", Some("destroyed"), Some(0));
+    let plan = run(&mut rig.tw, a, "+ship/plan ceres");
+    assert!(
+        plan.contains("Plan for") && plan.contains("drive is destroyed"),
+        "the dry run reads the drive's refusal: {plan}"
+    );
+    let (out, queued) = command(&mut rig, a, "+ship/lift ceres");
+    assert!(
+        out.contains("drive is destroyed") && queued.is_empty(),
+        "{out}"
+    );
+    // The queue's dry run reads it too.
+    let order = run(&mut rig.tw, a, "+ship/order depart ceres");
+    assert!(order.contains("Order 1 filed"), "{order}");
+    let dry = run(&mut rig.tw, a, "+ship/plan ceres");
+    assert!(
+        dry.contains("Order 1, depart for")
+            && dry.contains("it would hold: ")
+            && dry.contains("drive is destroyed"),
+        "the queued depart's dry run reads the drive's refusal: {dry}"
+    );
 }

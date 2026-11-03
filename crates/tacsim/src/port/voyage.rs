@@ -2110,6 +2110,13 @@ fn plan_block(
     if let Err(refused) = bay_gate(ctx, view, &name_of(w, view.hull())) {
         return Ok(vec![format!("Plan for {}:", dest.port), refused.line]);
     }
+    // Doc 36a lane 3 (P2-6): the dry run reads the filing's own refusals — the carrier's loss
+    // table (doc 36 cut GC.3) and the bay's mass and volume (GC.4) — where it read a plan.
+    if let Some(line) = crate::carrier_damage::lift_refusal(w, view.hull())
+        .or_else(|| crate::surface::tow::bay_over_line(w, view.hull(), &name_of(w, view.hull())))
+    {
+        return Ok(vec![format!("Plan for {}:", dest.port), line]);
+    }
     let mut plan = plan_on(w, basis, &dest.routes);
     // Doc 20 cut SM.2 (Q-20-7): at a site berth the plan carries the stay's charge the
     // filing would make.
@@ -2853,9 +2860,12 @@ pub(crate) fn bay_gate_leaving(
     let mut left: Vec<ObjId> = Vec::new();
     // Each unit out the departure does not name: its label and its own refusal line.
     let mut unnamed: Vec<(String, String)> = Vec::new();
+    // Doc 36a lane 3 (P0-5): a combat hull a tow loaded is cargo here too.
     let inert: std::collections::BTreeSet<_> = crate::port::vehicle::rigs_in_bay(w, view)
         .into_iter()
-        .filter(|r| crate::relay_foundry::cargo(w, r.tv))
+        .filter(|r| {
+            crate::relay_foundry::cargo(w, r.tv) || crate::port::vehicle::combat_hull(w, r.tv)
+        })
         .map(|r| r.tv)
         .collect();
     // The rigs: the bay's placements and the live records naming the hull, by slot.

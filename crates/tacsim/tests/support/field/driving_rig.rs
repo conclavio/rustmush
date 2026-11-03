@@ -230,23 +230,16 @@ pub(crate) fn retune(rig: &mut Rig, tune: impl FnOnce(&mut TacsimConfig)) {
 }
 
 /// Fold every write since the first boot and reboot keyed into the same roster; every
-/// connection drops (a real restart has no sessions) and `reconnect` come back.
+/// connection drops (a real restart has no sessions) and `reconnect` come back. Production's
+/// boot order (`mush_server::modules::boot_modules`, doc 36a lane 5): the typed records hydrate
+/// before any module's load hook runs, so the field host's boot finds the site record and resumes
+/// a running field.
 pub(crate) fn reboot(rig: Rig, reconnect: &[ObjId]) -> Rig {
     reboot_with(rig, reconnect, true)
 }
 
-/// **[`reboot`] in production's boot order** (doc 36a lane 5): the typed records hydrated before
-/// the modules load, as `mush_server::modules::boot_modules` does, so the field host's boot finds
-/// the site record and resumes a running field. [`reboot`] hydrates them after the load, so a
-/// field there never finds its site record and voids at the restart (doc 36's "36a lane 5 …
-/// as built": the CF-1 exit gate fails on a true resume).
-pub(crate) fn reboot_resuming(rig: Rig, reconnect: &[ObjId]) -> Rig {
-    reboot_ordered(rig, reconnect, true, true)
-}
-
-/// **The restart in production's boot order**: every arena task stopped and its egress drained,
-/// then [`reboot_resuming`].
-pub(crate) async fn crash_resuming(
+/// **The restart**: every arena task stopped and its egress drained, then [`reboot`].
+pub(crate) async fn crash(
     rig: Rig,
     rx: &mut tokio::sync::mpsc::Receiver<tacsim::arena_task::ArenaOut>,
     reconnect: &[ObjId],
@@ -259,7 +252,7 @@ pub(crate) async fn crash_resuming(
         .expect("the registry");
     tasks.shutdown(tacsim::arena_bridge::JOIN_TIMEOUT).await;
     while rx.try_recv().is_ok() {}
-    reboot_resuming(rig, reconnect)
+    reboot(rig, reconnect)
 }
 
 /// The typed records into `engine`'s action state.
@@ -281,11 +274,6 @@ fn hydrate(
 
 /// [`reboot`], keyed or not (a restart without the geology key darkens the layer).
 pub(crate) fn reboot_with(rig: Rig, reconnect: &[ObjId], keyed: bool) -> Rig {
-    reboot_ordered(rig, reconnect, keyed, false)
-}
-
-/// [`reboot_with`], with the typed records hydrated before the modules load or after.
-fn reboot_ordered(rig: Rig, reconnect: &[ObjId], keyed: bool, typed_first: bool) -> Rig {
     let Rig {
         mut tw,
         cfg,
@@ -303,16 +291,7 @@ fn reboot_ordered(rig: Rig, reconnect: &[ObjId], keyed: bool, typed_first: bool)
     for id in connected {
         world.set_connected(id, false);
     }
-    let mut tw = boot_over_typed(
-        world,
-        store.clone(),
-        typed_first.then_some(&typed),
-        keyed,
-        &cfg,
-    );
-    if !typed_first {
-        hydrate(tw.engine_mut(), &typed);
-    }
+    let mut tw = boot_over_typed(world, store.clone(), Some(&typed), keyed, &cfg);
     with_offer_keys(&mut tw);
     install_oracle(&mut tw, &oracle);
     for who in reconnect {

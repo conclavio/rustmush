@@ -3305,6 +3305,38 @@ salvor's carrier (today: no stow into that bay, no lot into that hold, and no ve
 carrier of the owner's own must take her, which `+bay/stow` does not yet do); GC.6's remains scrap
 (`+tv/<n> scrap`, `surface/claim.rs`) has no room check: neither lane 1 nor lane 2 took it.
 
+### 36a lane 3 as built (2026-11-03)
+
+[Doc 36a](36a-ground-combat-review-triage-2026-11-02.md)'s third fix lane (the carrier, the site, the kernel and
+the world task) landed as one PR against main, one commit per item, with two findings of a second review (its #1 and #9) beside it.
+Each tacsim item has a regression test in `crates/tacsim/tests/shard_1` that drives the player's own commands;
+the world-task items are pinned in `mush-server`'s world-task tests. Struck from what this programme owed:
+
+- A combat hull loaded into a carrier's bay darkened every departure of that carrier (P0-5, `40e066b8`):
+  it weighs its dry mass as inert cargo; a load goes only into the tug's own carrier or a Friend's.
+- A carried casualty whose tug fell irrecoverable lost its row, and so did a hull held out of the field
+  (P0-8, `45cbde42`): the casualty stands at its own pose; rows of hulls never in the field are kept;
+  admission refuses a ground the index cannot hold.
+- A raider barge whose drive is down lifted anyway (P1-11, `452c753c`): the raid ends with it on the
+  ground; a lifted carrier's row comes off the index.
+- A delegated OperateCrew grant could be held but never used (P1-6, `cffcde90`): the delegate boards; the
+  lessee stays the principal.
+- `+ship/plan` read green where the filing refused (P2-6, `6777f386`).
+- A decision worker's answer could land in the re-emit state and latch an integrity freeze (P1-8,
+  `50574037`).
+- A mind hull joining in place lost its profile's condition rows (P1-9, `02fe08d8`); the OOC practice
+  hashes did not move.
+- A staff barrier behind the slot was answered `Busy` at shutdown (P2-7, `a3c60c3b`).
+- A line told BEHIND_SLOT_WAITING could then hear CommitTimedOut (P0-10, `5e892680`): the queue behind
+  the slot waits a pending commit out.
+- The held-out walls were lost on every ground rebuild, so a resume or a void sent every unit home as it went
+  out (second review #1, `35625329`): the live record carries them and every rebuild lays them.
+- A later field restarted the 28-day write-off clock (second review #9, `fd69ba90`): a re-indexed unit keeps the
+  instant it was first left.
+
+Still owed from this lane: a field-level test of a held-out IC custody hull (its row, its wall across a
+resume), which needs a harness that composes the licensed-mind sortie; and a loop-level re-emit rig for P1-8.
+
 ### F-6 under load, as built (2026-11-03)
 
 `f6_a_carrier_lifts_out_of_a_running_field_only_on_the_confirmation` was the one red cell left on
@@ -3350,12 +3382,17 @@ Each test fails with its fix reverted (checked together, all fixes off at once).
 
 Still owed from this lane:
 
-- **The driving rig never resumed a field.** Its `reboot` hydrated the typed records after the
-  modules loaded, so the field host's boot found no site record and voided; the CF-1 restart gates
-  in `field_crash.rs` pass through that void and a reopened field. `driving_rig::reboot_resuming` (with `crash_resuming`, in `tests/support/field/driving_rig.rs`)
-  (production's order) is new and only row 2's test uses it. Under it, the CF-1 exit gate fails:
-  after a resumed field lands the owed `exit`, `live.owed_exits` keeps the row. That is CF-1's
-  resume path (`field/boot.rs`, `field/exit.rs`), not this lane's.
+- **The driving rig never resumed a field** (done, 2026-11-03, the CF-1 resume follow-up). Its
+  `reboot` hydrated the typed records after the modules loaded, so the field host's boot found no
+  site record and voided; the CF-1 restart gates in `field_crash.rs` passed through that void and
+  a reopened field. The rig's `reboot` (and `crash`, the one restart helper, in
+  `tests/support/field/driving_rig.rs`) now hydrates them before the load, production's order
+  (`mush_server::modules::boot_modules`); `reboot_resuming` / `crash_resuming` folded into them.
+  The CF-1 exit gate's failure on a true resume was the gate, not the host: an exit lands at the
+  end of a pass, and the host learns of it by reading the site record at its next pass
+  (`field::exit::tick` prunes `OwedExits` and `live.owed_exits` before it submits, so nothing is
+  written twice), with or without a restart; the gate asserted the very pass the exit landed. It
+  now asserts the field that ran resumed (ordinal 1, a later segment) and waits for that pass.
 - **A pilot seated by `+tv/<n> board` is never stranded.** The check-in's `inside` reads a rig's
   cab as outside the rig, so no crew record is written for a pilot in the cab (doc 36a §8 already
   lists the gap for field_gc5); GC.5's abandonment and row 4's second half can reach such a pilot
