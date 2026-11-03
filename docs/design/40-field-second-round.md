@@ -493,13 +493,20 @@ reason for the record; §6 is the plan built from them.
   | Eccm | the filter is off: `eccm = None` | the same | `state.rs:2215` |
   | Power | the plant is `Power::Off`: motion and fire refuse (Q-40-4) | the heat ceiling and the dissipation at 500 ‰, read-side (`heat_max()` scaled, the cell untouched); on the surface the rig's recharge at 500 ‰ (host, doc 20 SM.4a's charge) | `heat.rs:82`, `:148`; `excursion.rs` |
   | Relay | the party's orders are held until the field ends or the part is unjammed (Q-40-5) | delivered a provisional 10 s wall late | `field/orders.rs`, host |
-  | Core | `core_class` lowered by one while jammed, as `DegradeCore` | lowered by one until repaired | `arena/core.rs`, `damage.rs:1238` |
+  | Core | the effective class one below the cell's while jammed, derived read-side in `read_core` (`arena/core.rs:382`), which the mind's class (`:460`), `slot_capacity` (`:476`) and `truncate_slots` (`conditions.rs:2209`) already read; the `core_class` cell untouched | the same, until repaired | `arena/core.rs:382`, `:460`, `:476`; `damage.rs:1238` |
   | The mount | as GC.2 built: off the fire table, rounds kept | fires as before | `damage.rs:782–789` |
 
   A jam inside a field lasts the field (the tender refuses `site_in_combat`); a damage lasts to
   the bay. A jammed or damaged core that falls below a mind's sealed class drops the mind to the
   ROM at its next landing, as a destroyed section's `DegradeCore` does today, and it is not
   re-seated when the class returns: a mind comes back at the next check-out.
+
+  The core's cell is left to `DegradeCore`: that consequence lowers `core_class` by one with
+  `AdjustCell −1` (`damage.rs:1158–1166`), the check-in copies every changed cell home
+  (`mush-tactics field_ops/condition.rs:719–728`) and unjam writes only the condition word
+  (`field_ops/engineering.rs:349–356`), so a jam that touched the cell would be a class lost for
+  good and one more each field; a class derived from the word returns when the word does, as the
+  plant's and the sensor's do.
 - **Alternative:** a mount-only kernel with the five others host-side at check-in (the degraded
   sensor range read into the next field's profile, no mid-match effect).
 - **Why:** Q-38-27's words, kind by kind; the numbers are one knob each and provisional; the
