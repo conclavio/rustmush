@@ -98,16 +98,18 @@ impl std::fmt::Display for JourneyId {
     }
 }
 
-/// Where a carrier journey has got to (10b §3.6; contradiction (iii): no
-/// `resume`, no `Pulse` — `Promoted` is only the marker cut 8's authority sets).
+/// Where a carrier journey has got to (10b §3.6; amended by doc 35 `D-35-5` / `SF.R1`:
+/// every `Promoted` journey pauses its leg countdown while promoted and shifts its
+/// remaining leg schedule on [`resume_carrier_journey`]).
 #[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize)]
 #[serde(tag = "state")]
 pub enum JourneyState {
     /// Under way. The root is deliberately **not** directly placed in a live
     /// domain; its subtree is, and rides with it.
     Cruising,
-    /// Under way inside a promoted (tactical) domain. Cut 8's authority sets
-    /// this; cut 6 only reads it, and treats it as under way.
+    /// Paused inside a promoted (tactical or docking) domain (`D-35-5`). While in
+    /// `Promoted`, the leg timer is held and does not advance or arrive until
+    /// [`resume_carrier_journey`] or [`dock_carrier_at_destination`] completes.
     Promoted {
         /// The domain the carrier was promoted into.
         domain: DomainId,

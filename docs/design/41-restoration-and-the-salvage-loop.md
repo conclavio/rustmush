@@ -1,11 +1,12 @@
 # 41. Restoration and the salvage loop, second round — surveyed
 
-Draft 0.3, 2026-11-03, docs only. Surveyed against `origin/main` at `c83c2eff` (PR #339, SF.R15; doc
+Draft 0.4, 2026-11-03, docs only. Surveyed against `origin/main` at `c83c2eff` (PR #339, SF.R15; doc
 36a's lanes 1, 2, 4 and 5 merged as PRs #334, #343, #342 and #346), the round-2 review's anchors
 re-verified by a read-only lane at `f146734e` (lane 3 merged as PR #340, `1441fa29`), with
 [doc 39](39-industry-production-chain.md) (PR #347, merged into `main` at `9899e0eb` as Draft 0.5)
-and [doc 40](40-field-second-round.md) (PR #351, Draft 0.3, its branch merged here at `caf5bca4`)
-under it, so the README row lands after doc 40's. This is the
+and [doc 40](40-field-second-round.md) (PR #351, Draft 0.3, merged into `main` at `1078b212`; its
+Draft 0.4, Q-40-24/25 ruled, as PR #356 at `a8194be9`) under it, so the README row lands after doc
+40's; Draft 0.3 of this document merged into `main` at `bc526579` (PR #352). This is the
 document [doc 38](38-after-the-ic-phase-next-systems.md) §6 proposed as "Doc 41 — Restoration and
 the salvage loop, second round": categories B (restoration away from port), C's tug half (heavy
 recovery), D (the loop's close, forensics, crime), the Q-36-46/47 seams with space, Q-38-6's
@@ -18,8 +19,13 @@ Q-41-16 and Q-41-17 amended, every other default accepted as written. §4a lists
 amendments change elsewhere. **Draft 0.3, later the same day, folds the round-2 outside review**
 (two reviewers merged, every claim re-verified by an independent lane): fourteen items, four lane
 findings and three pieces of advice, each marked in place with its item number and indexed in §4b;
-the two questions it raised that are the owner's, Q-41-28 and Q-41-29, are open in §5.8. No accepted
-ruling changed.
+the two questions it raised that are the owner's, Q-41-28 and Q-41-29, went to the owner in §5.8. No
+accepted ruling changed. **Draft 0.4, the same day and after the merge, records the owner's
+acceptance of both at their defaults** ("Accept all seven", the one ruling across docs 23, 40, 41
+and 42): an NPC organization's title is answered by its house agent, and the tow counts the
+casualty's laden mass with the crawler at 130 t. §5.8 carries the decision lines; §4.4, §4.8,
+Q-41-15 and RS.1/RS.6 carry the figures; §4.1 notes doc 40's Q-40-25, accepted at its default the
+same day. Every question of this document is now ruled.
 
 The form is doc 38's: a survey that asks the owner numbered questions, each with a proposed default,
 an alternative and a reason; this draft carries the rulings and §6's cut list is the plan.
@@ -51,7 +57,7 @@ NPC organization's hulls and whether it works on its own account; how a vacated 
 what a port does with her; which evidence source each contest kind reads; what port security fines
 and quarantines, and on what proof; and how the space tow rides the same path. Each gets a section
 in §4 with what exists, what the rulings require and the questions it raises; §5 is the owner survey
-(Q-41-1..27 ruled; Q-41-28 and Q-41-29 open since Draft 0.3); §6 the plan, cuts RS.0–RS.9, ordered after doc 39's IN.1, IN.4,
+(Q-41-1..29 all ruled; Q-41-28 and Q-41-29 accepted at their defaults in Draft 0.4); §6 the plan, cuts RS.0–RS.9, ordered after doc 39's IN.1, IN.4,
 IN.8 and IN.9 (the numbering of doc 39 as merged, Draft 0.5, unchanged since its Draft 0.4) where it
 depends on them.
 
@@ -477,9 +483,12 @@ definition's `reach_cm`. The tender and the target must both be on the site's in
 (a casualty, a wreck, or an operational unit between fields; never a hull carried in tow, doc 27a
 §10). Inside a promoted field every `tend` act waits, as every surface act does (Q-CF-30); doc 40's
 coupled kernel unit is the only way a tender works under fire — and how a coupled pair leaves a
-running field is doc 40's Q-40-25 (open in its Draft 0.3, raised by the same review as X-4; its
-default a coupled withdraw at the ramp, `+tv/<n> load go` on a promoted site), on which the tender's
-rules under fire hang.
+running field is doc 40's Q-40-25 (raised by the same review as X-4 and **accepted at its default
+on 2026-11-03**, recorded in its Draft 0.4: a coupled withdraw at the ramp — `+tv/<n> load [go]` on a promoted site sends the
+withdraw for tug and casualty together, the ordinary exit checks both in, and the host then runs
+the ordinary `TowOrder::Load`/`Loaded` as on open ground), which RS.1's acts under a field read: a
+tender coupled to a casualty under fire leaves by that exit, and its `tend` acts resume on open
+ground or in the bay, never inside the running field.
 
 **What stabilize does to a casualty.** The library's rule stands: a Damaged section's internals
 are restored up to their maximum (`min(requested, missing)`), the condition reads `intact` at the
@@ -696,11 +705,11 @@ deposit's price would undo the point.
 - `tacsim.unit.tycho_crawler`, class vehicle, **130 t dry** (provisional; Q-36-8's half-tonnage floor
   for a 240 t Dray is 120 t, and the inclusive 2× cap of a 120 t tug reaches exactly 240 t — the
   Dray-P's dry mass and not a kilogram more. The tow counts dry mass alone today,
-  `unit_mass_profile_for_spec(spec, 0, 0)` at `tow.rs:642`, so a 120 t crawler would pass; but story
-  (d) loads her with her wrecked bay rigs, 16 t, and doc 36 already owes the hopper's ore in a
-  casualty's laden mass, so once the tow counts what is carried the crawler must be 130 t —
-  Q-41-29 asks which basis; round-2 item 41-5), tracked, unarmed, `recovery_profile: heavy` (§4.8),
-  a crew of two.
+  `unit_mass_profile_for_spec(spec, 0, 0)` at `tow.rs:642`; **Q-41-29, accepted 2026-11-03, makes
+  it count the casualty's laden mass** — dry plus her bay's hulls, her hopper's ore and her hold's
+  goods, RS.1's change — and story (d) loads her with her wrecked bay rigs, 16 t, so the 256 t she
+  weighs needs a 128 t tug at 2×: the crawler is 130 t; round-2 item 41-5), tracked, unarmed,
+  `recovery_profile: heavy` (§4.8), a crew of two.
 - `tacsim.unit.tycho_lifter`, class hauler, **600 t dry** (provisional), one bay slot for the
   crawler (130,000 kg, 400,000 L) and one for the load (`maximum_items` 1, 300,000 kg, 1,200,000 L),
   no hold to speak of, the Dray's drive rated for the mass; it lands where a Dray-P lands (doc 20's
@@ -830,8 +839,8 @@ names the claimant, `:6075–6078` — the review's second half is refuted), so 
 changes; `award_salvage_title`'s blanket refusal of an org title (`:6277–6287`) narrows to what P0-3
 meant — a hull under a live lease or charter follows the lease rule (Q-36-29: never awarded; its
 claim closes at the write-off) — so an org-titled hull with no lessee (a house Dray lost on a raid,
-Tycho's crawler, a Co-op hull after its charter lapsed) is claimable and awardable. Whether the
-house agent or the organization itself should answer is Q-41-28. (Q-41-22.)
+Tycho's crawler, a Co-op hull after its charter lapsed) is claimable and awardable. The house
+agent answers, not the organization as a principal (Q-41-28, accepted 2026-11-03). (Q-41-22.)
 
 **The contest kinds and their evidence.** `+salvage/contest <hull>[=recovery|procedure|right] [go]`,
 the bare form keeping today's automatic choice:
@@ -950,10 +959,13 @@ least half its tonnage (the floor, separate from the cap).
 **The profile carries the cap.** `TowRigProfile` gains a cap multiplier beside its speed factor:
 `Standard` 2× (today's, `recovery.rs:170–173` reads the profile instead of the constant),
 `RecoveryOptimized` **3×** (the ruling's provisional figure), and a new `Heavy` with the optimized
-speed factor and a 2× cap (a 120 t crawler reaches exactly a Dray's 240 t dry and a 130 t one her
-256 t laden with two wrecked rigs; the tow counts dry mass alone today, `tow.rs:642`, and Q-41-29
-asks whether it should count what is carried; the floor, not the cap, is what sizes it for a
-carrier). The profile is authored on the unit definition — `logistics.recovery_profile:
+speed factor and a 2× cap (a 120 t crawler would reach exactly a Dray's 240 t dry; the 130 t one
+reaches her 256 t laden with two wrecked rigs, which is the figure that counts: **the tow counts the
+casualty's laden mass**, Q-41-29 accepted 2026-11-03 — `unit_mass_profile_for_spec(spec, 0, 0)` at
+`tow.rs:642` is fed the casualty's bay hulls, hopper ore and hold goods, the same change doc 36
+owed as "the hopper's ore in a casualty's laden mass", landing in RS.1 with the cap; the floor, not
+the cap, is what sizes it for a carrier). The profile is authored on the unit definition —
+`logistics.recovery_profile:
 standard|recovery_optimized|heavy`, default `standard` — and `attach_request` reads it from the
 spec instead of hard-coding `Standard` (`tow.rs:686`). The tender (§4.1) is the escort-scale
 recovery rig doc 27a §10 named in the same breath ("Mobile Recovery Rigs & Resupply Tenders"): at 7 t
@@ -997,7 +1009,8 @@ whole at both sizes and that (c) used a fixture instead of (a)'s casualty is ans
 - **(d) The carrier wreck (new).** GC.3's fought hull loss on Urvara (512) and on Ahuna (256): the
   owner posts a retrieval; no tug of the shipped kit can take her (the floor's line; a player-built
   crawler, Q-41-15, could); Tycho's lifter lands, the
-  crawler tows her to the pad, loads her with her wrecked bay rigs, lifts, docks at Ceres and berths
+  crawler tows her to the pad (256 t laden with her two wrecked rigs aboard, inside the 130 t
+  crawler's 2×, Q-41-29), loads her with her wrecked bay rigs, lifts, docks at Ceres and berths
   her in C14; the fee pays; `+bay` quotes the rebuild.
 - **(e) The sweep (new).** A raider wreck left 56 IC days on Ahuna is claimed by Tycho, retrieved and
   assessed at Ceres: a repairable hull is repaired and sold to a player at the reference price, a
@@ -1034,6 +1047,18 @@ What the four amendments of 2026-11-03 change beyond their own questions.
   margin.
 - **Capital (Q-41-17).** `capital_major` 500,000 on the lane row; no raise clause.
 
+What the two acceptances of Draft 0.4 change beyond their own questions.
+
+- **The house agent answers (Q-41-28).** Nothing in the contract shape moves: `SalvageClaimSpec`,
+  `TitleHeld` and `award_salvage_title` keep their `Object` principals; RS.3's `principal_holders`
+  read is the whole of it, and lane v21's grant on Tycho's dispatcher is content RS.6 authors.
+- **The laden basis (Q-41-29).** The tow's count at `tow.rs:642` changes once, in RS.1 with the
+  profile's cap, and every tug feels it: a loaded prospector weighs her hopper, a Dray her bay. The
+  crawler's 130 t and the lifter's 130,000 kg crawler slot are the figures everywhere (§4.4, Q-41-15,
+  RS.6); doc 36's owed "hopper's ore in a casualty's laden mass" is closed by the same change, and
+  doc 36 should say so when its next draft lands. A 120 t player-built crawler (Q-41-15) still
+  takes a bare Dray-P at 240 t and not a loaded one.
+
 ## 4b. The round-2 review, folded (Draft 0.3)
 
 Two outside reviewers read Draft 0.2; the parent session merged their claims and an independent
@@ -1050,20 +1075,20 @@ marked where it landed; this table is the index. No accepted ruling changed.
 | 41-9 (P1) | a one-shot obligation goes straight to `Delinquent` and the sweep never retries it | `reinstate_obligation` with three callers (`+debts/pay`, the desk, the docking check), the authority note; §4.3, §4.6, Q-41-13, Q-41-25 |
 | 41-11 (P1) | one hashed contract deadline cannot carry two 28-day windows; a load into the acceptor's carrier was salvage custody | `RetrievalOrder` under a 56-day contract, Tycho on a fresh contract at a lapse; retrieval custody and `Right::Retrieval`; §4.3, §4a |
 | 41-7 (P1) | an organization cannot be a claim's issuer or an award's recipient | Tycho's dispatcher claims, the title transferred to the org at the award; §4.4, §4a |
-| 41-8 (P1) | NPC orgs have no capability holders, so nobody answered for their titles | the house agent answers; the `prior_owner` half refuted; §4.5, Q-41-22, Q-41-28 |
+| 41-8 (P1) | NPC orgs have no capability holders, so nobody answered for their titles | the house agent answers (Q-41-28, accepted in Draft 0.4); the `prior_owner` half refuted; §4.5, Q-41-22 |
 | 41-10 (P1) | the `right` ground vacates only when the obligor is the claimant | the row binds the claimant; story (b)'s L case rewritten; §4.5, §4.9, Q-41-23 |
 | 41-14 (P1) | `+salvage/report` could not name a Pickup or Scrap row | `+salvage/report <site>[=<actor>\|#<hull>] registry` over the site log; §4.6, Q-41-24, RS.7 |
 | 41-4 | the tender and the bay drew fittings alone from whole-tonne pools; the stores could not hold a tonne and a magazine | the tender's bale (alloys and fittings), 4,800 L stores, `+bay/return` refused away from port; §4.1, §4.2, Q-41-1, Q-41-2, RS.1, RS.2 |
 | 41-12a | `vacate_claim` takes one lot and a context `settle` lacks | `BayHull.claim_lots`, flagged by `claim::tick`; §4.6, RS.3 |
 | 41-12b | Tycho's repair test cited GC.9's lessor-only, labour-only quote | the full quote: labour, bale materials, replacement parts; §4.4, Q-41-16 |
 | 41-12c | doc 39's cuts renumbered in Draft 0.4 | every reference; §1, §2, §4, §5, §6 |
-| 41-5 | the 120 t crawler at 2× does not reach a laden Dray-P | 130 t, the mass basis stated, Q-41-29; §4.4, §4.8 |
+| 41-5 | the 120 t crawler at 2× does not reach a laden Dray-P | 130 t on the laden basis (Q-41-29, accepted in Draft 0.4); §4.4, §4.8, RS.1, RS.6 |
 | 41-6 | the 64-row ring could evict a proven offence | proven rows copied to `tacsim:security:{actor}` until settled; §4.6, RS.7 |
 | 41-15 | two held hulls would lock Ceres' two berths; two documents added `+bay/stow <hull>=<carrier>` | held hulls outside the stand count; doc 39 owns the verb, RS.4 widens its source; §4.5, Q-41-18, Q-41-19, RS.4 |
 | 41-16 | `carrier_of_bay` misses the yard | reads the yards as `world_hulls` does, the register after IN.9; §4.2, RS.2 |
 | lane | `repossess` moves a non-wreck rig into the shed from anywhere | a rig away from the lessor's port stays where it lies; §4.3, RS.5 |
 | lane | PR #340 merged | §2.2, §6, RS.6 |
-| 41-3, 41-13, X-4 (advice) | occupants, the stowaway quarantine, the coupled pair's exit | noted in §2.3, §4.6 and §4.1 |
+| 41-3, 41-13, X-4 (advice) | occupants, the stowaway quarantine, the coupled pair's exit | noted in §2.3, §4.6 and §4.1 (doc 40's Q-40-25 accepted at its default, Draft 0.4) |
 
 ## 5. Owner survey
 
@@ -1074,7 +1099,10 @@ a bill that prices them out of near-term reach), Q-41-16 (a swept hull is repair
 that pays, scrapped only when it would not) and Q-41-17 (capital 500,000); every other default is
 accepted as written. Each amended question carries its decision first, with the proposed text kept
 under it for the record; the rest stand with their proposed text as the ruling. Numbers are
-provisional unless the line says otherwise.
+provisional unless the line says otherwise. **Draft 0.4:** Q-41-28 and Q-41-29, raised by the
+round-2 review and open since Draft 0.3, were accepted at their defaults the same day ("Accept all
+seven", the owner's one ruling across docs 23, 40, 41 and 42); §5.8 carries their decision lines in
+the same form, so every question of this document is ruled.
 
 ### 5.1 The tender
 
@@ -1215,7 +1243,11 @@ provisional unless the line says otherwise.
   naturally. So `tycho_crawler` and `tycho_lifter` are registered designs the Stickney yard builds
   at their bill (doc 39 IN.9 as merged in Draft 0.5; near 80,000 and near 300,000 cr by doc 39
   §4.4's provisional arithmetic); Tycho's own two are house hulls it keeps; no lease programme
-  offers them this round, since a deposit's price would undo the point.
+  offers them this round, since a deposit's price would undo the point. The figures (Draft 0.4,
+  Q-41-29's laden basis): the crawler **130 t dry**, not the proposed text's 120 t, so her 2× takes a
+  Dray-P at 256 t with two wrecked rigs aboard; the lifter 600 t dry with a 130,000 kg / 400,000 L
+  crawler slot and a 300,000 kg / 1,200,000 L load slot, as §4.4 lists them; the bills follow the
+  masses.
 - **Proposed default (as written):** a 120 t tracked `tycho_crawler` (`heavy`) and a 600 t
   `tycho_lifter` with a crawler slot and a 300 t / 1,200 m3 load slot, both house hulls on a Tycho
   berth at Ceres, never leased or sold.
@@ -1289,7 +1321,8 @@ provisional unless the line says otherwise.
   its members and grantees (a player org) — Draft 0.3's correction of round-2 item 41-8: the
   `economy.account.post` holders Draft 0.2 named are nobody for every NPC org; each is told, any may
   contest; the award's blanket refusal narrows to hulls under a live lease or charter (the lease
-  rule). The ruling stands; Q-41-28 asks whether the org itself should answer instead.
+  rule). The ruling stands; Q-41-28, accepted at its default in Draft 0.4, keeps the house agent as
+  the answerer.
 - **Alternative:** org titles stay unclaimable.
 - **Why:** an organization has no owner field and its owner read is the capability; a house hull
   lost on a raid and never recovered is FO-1's lost unit like any other.
@@ -1346,9 +1379,17 @@ provisional unless the line says otherwise.
 - **Why:** the ruling names a profile above `Standard` with a 3× cap; one enum holding both figures
   is one place to tune; no kernel hash moves.
 
-### 5.8 Open after the round-2 review (Draft 0.3)
+### 5.8 Raised by the round-2 review (Draft 0.3), ruled in Draft 0.4
+
+Both were accepted at their defaults on 2026-11-03 — the owner's "Accept all seven", one ruling over
+the seven questions then open across docs 23, 40, 41 and 42 — after Draft 0.3 merged; the proposed
+text is kept under each decision for the record, as §5's amended questions keep theirs.
 
 **Q-41-28 — Who answers for an NPC organization's title.**
+- **Decision (accepted default, 2026-11-03):** the house agent — the lane's Thing for the
+  organization (Occator's lessor agent, a yard's dispatcher, a vendor's clerk, Tycho's dispatcher on
+  lane v21) — found through `principal_holders` unfiltered; a player organization by its members and
+  grantees; no contract-shape change. RS.3 builds it so.
 - **Proposed default:** the organization's house agent — the object the lane names for it (Occator's
   lessor agent, a yard's dispatcher, a vendor's clerk; Tycho's dispatcher given a grant on lane v21)
   — found through `principal_holders` unfiltered, with a player organization answered by its members
@@ -1362,6 +1403,10 @@ provisional unless the line says otherwise.
   and is a consent-shape change across the claim and the award.
 
 **Q-41-29 — What mass the tow counts.**
+- **Decision (accepted default, 2026-11-03):** the casualty's laden mass — dry plus her bay's hulls,
+  her hopper's ore and her hold's goods — against the tug's cap, and the crawler at 130 t; doc 36's
+  owed "hopper's ore in laden mass" is the same change. RS.1 changes the count with the cap; RS.6
+  authors the crawler at 130 t; Q-41-15's figures follow.
 - **Proposed default:** the casualty's laden mass — dry mass plus what it carries (its bay's hulls,
   its hopper's ore, its hold's goods) — against the tug's cap, and the crawler at 130 t so a Dray-P
   wrecked with two rigs aboard (256 t) is within its 2×; doc 36's owed "hopper's ore in a casualty's
@@ -1386,12 +1431,12 @@ RS.3 and RS.5; RS.8 after RS.3 and RS.5, in the space tree; RS.9 last. One marke
 | Cut | Rulings | What | Depends on doc 39 | Acceptance (the story) |
 |---|---|---|---|---|
 | **RS.0** the vocabulary | Q-38-29 | the bot's `+tv/<n> pickup\|scrap`, `+salvage/*`, `+bay/*`, `+field/void`, `+sortie/condition` lines and the four-digit address parser (`mine/lines.rs:343–353`), unless doc 39's IN.11 or doc 40 has taken them first; this document and its README row | — | the bot types story (b)'s `+salvage/claim`, `/contest` and `+tv/1 scrap` on Urvara over SSH and the lines classify |
-| **RS.1** the tender | Q-41-1..4, Q-41-27, Q-38-16, Q-36-35/36 | `logistics.tender` and `logistics.recovery_profile` on the definition; the cap on `TowRigProfile`; `tv_tender` in the kit and Occator's lease row (lane v21); `+tv/<n> stores open` and the rig's bale; the `tend` op on `tacsim_surface_tow` with `unjam`, `stabilize`, `rearm` from the bale and the stores at `TENDER_TIME_FACTOR` 3; `register_tender` fed from the compartment | IN.1 as revised (the bale) and IN.8 (the per-point figures); the tariff's constant until IN.8 lands | (a) extended, the ground half at 256 and 512: a jammed cannon cleared, a chassis patched, a magazine refilled on the ground, each act interrupted by a field and resumed |
+| **RS.1** the tender | Q-41-1..4, Q-41-27, Q-41-29, Q-38-16, Q-36-35/36 | `logistics.tender` and `logistics.recovery_profile` on the definition; the cap on `TowRigProfile` and the tow's count moved to the casualty's laden mass (`tow.rs:642` fed her bay hulls, hopper ore and hold goods, Q-41-29; doc 36's owed hopper change with it); `tv_tender` in the kit and Occator's lease row (lane v21); `+tv/<n> stores open` and the rig's bale; the `tend` op on `tacsim_surface_tow` with `unjam`, `stabilize`, `rearm` from the bale and the stores at `TENDER_TIME_FACTOR` 3; `register_tender` fed from the compartment | IN.1 as revised (the bale) and IN.8 (the per-point figures); the tariff's constant until IN.8 lands | (a) extended, the ground half at 256 and 512: a jammed cannon cleared, a chassis patched, a magazine refilled on the ground, each act interrupted by a field and resumed; a casualty over the tug's cap on her laden mass refused where her dry mass would have passed |
 | **RS.2** the bay away from port | Q-41-5..7, Q-38-16, Q-36-35 | `facility_of`'s fourth case; `carrier_of_bay` reading the yards as `world_hulls` does (and `tacsim.owned_hulls` after IN.9, 41-16); `source_carrier` without the port; no fee contract away from port; the "needs a workshop" line naming the nearest; `+bay/fit` from the hold on a site; bay acts waiting under a field; the yard's rearm through the bay | IN.1 as revised (the hull's bale continued in the carrier's bay); replace is refused away from port, so IN.6's store does not reach it | (a) extended, the bay half: a mend at 2× on the site from the hold, a replace refused with the line, the order finishing under way |
-| **RS.3** the claim's close | Q-41-20..23, Q-38-19, Q-S13, Q-S14 | `claim_window_s` into `TacsimRecoveryCfg`; `+salvage/authorize` (RecoverLoad for a hull, the delegation row for a block) read at the attach; org-titled claims through `principal_holders` and the narrowed award refusal; at-risk repairs written at `complete` under Salvor and reported; `+salvage/contest =recovery\|procedure\|right` with the registry's box read; `strip::vacate_claim` called by `claim::tick` for each lot the bay record lists under the vacated claim, the mush-tactics twin retired | none | (b) extended at 512 and 256: the three contest kinds each vacating or failing on its named source; an org's holders told; the at-risk line in the quote and the notice |
+| **RS.3** the claim's close | Q-41-20..23, Q-41-28, Q-38-19, Q-S13, Q-S14 | `claim_window_s` into `TacsimRecoveryCfg`; `+salvage/authorize` (RecoverLoad for a hull, the delegation row for a block) read at the attach; org-titled claims through `principal_holders` (an NPC organization answered by its house agent, Q-41-28) and the narrowed award refusal; at-risk repairs written at `complete` under Salvor and reported; `+salvage/contest =recovery\|procedure\|right` with the registry's box read; `strip::vacate_claim` called by `claim::tick` for each lot the bay record lists under the vacated claim, the mush-tactics twin retired | none | (b) extended at 512 and 256: the three contest kinds each vacating or failing on its named source; an NPC org's house agent told and contesting, a player org's holders told; the at-risk line in the quote and the notice |
 | **RS.4** the vacated hull's return | Q-41-18, Q-41-19, Q-38-19 | `held_for` on the bay record; doc 39's `+bay/stow` (IN.9) given a bay-to-bay source under `held_for`; the docking hook berthing held hulls into the workshop room outside the stand count; the fix thread's defect note closed | IN.9's `+bay/stow <hull>[=<carrier>]` (doc 39 owns the verb; RS.4 lands after it or carries its first form) | (b) extended: T's carrier takes her out of O's bay at Ceres; without one, the port holds her "held for T" and T's next carrier stows her |
 | **RS.5** the retrieval contract and the charge | Q-41-8..14, Q-38-6, Q-38-7 | `post_retrieval`, the shape, `accept_retrieval`, `+salvage/retrieve\|jobs\|accept`, the `RetrievalOrder` record carrying the acceptance and performance windows (`RETRIEVAL_WINDOW_IC_DAYS`, Q-41-11) under a 56-day contract, the four handover facts and payment, a lapsed acceptance handed to Tycho on a fresh contract; retrieval custody in `load_facts` and `Right::Retrieval`; a written-off rig's hand-back moved from the load to the destination; `repossess` leaving a rig away from the lessor's port where it stands; the wear allowance, the retrieval fee and the one-term obligation at `repossess`, `give_back` and the recall, with `+debts`, `+debts/pay` and the desk's `reinstate_obligation`; Q-38-7's second clock; the `capture: None` hole closed with a test | IN.4 as revised (Tycho's slot-day); a lane constant until it lands | (c) extended: a dormant charter's prospector on Ahuna and on Urvara repossessed with allowance, fee and debt; a second player accepts the job, delivers to the shed and is paid; a third accepts and lapses at 28 IC days and the job is Tycho's; the desk refuses the delinquent lessee |
-| **RS.6** Tycho Mutual | Q-41-15..17, Q-38-18, Q-39-7, Q-39-24 | the crawler and lifter as registered designs with bills, buildable at the yard (Q-41-15); Tycho's berth, its two house hulls, a storefront party and `capital_major` 500,000 (lane v21, Q-41-17); the house arm sequencing voyage, landing, launch, tow, load, lift, dock, berth; the fallback acceptance at the window's end and on a lapse; the fee from the recovery row; the 56-day sweep claimed by the house dispatcher with the title passed to the org at the award (41-7), the assessment and its two exits — repair and a hull-sale offer at the reference price, or scrap at Occator's workshop (Q-41-16) | IN.4, IN.8 and IN.9 as revised (PR #340's P0-5, a wreck in a bay, is merged) | (d) at 512 and 256: the carrier wreck retrieved by the lifter and berthed at C14, the fee paid; (c)'s no-acceptor variant; (e) the sweep: a repairable hull resold to a player, a hull past repair scrapped, the census holding |
+| **RS.6** Tycho Mutual | Q-41-15..17, Q-41-29, Q-38-18, Q-39-7, Q-39-24 | the 130 t crawler (Q-41-29's laden basis) and the 600 t lifter as registered designs with bills, buildable at the yard (Q-41-15); Tycho's berth, its two house hulls, a storefront party and `capital_major` 500,000 (lane v21, Q-41-17); the house arm sequencing voyage, landing, launch, tow, load, lift, dock, berth; the fallback acceptance at the window's end and on a lapse; the fee from the recovery row; the 56-day sweep claimed by the house dispatcher with the title passed to the org at the award (41-7), the assessment and its two exits — repair and a hull-sale offer at the reference price, or scrap at Occator's workshop (Q-41-16) | IN.4, IN.8 and IN.9 as revised (PR #340's P0-5, a wreck in a bay, is merged) | (d) at 512 and 256: the carrier wreck, 256 t laden with her two wrecked rigs, taken by the 130 t crawler, retrieved by the lifter and berthed at C14, the fee paid; (c)'s no-acceptor variant; (e) the sweep: a repairable hull resold to a player, a hull past repair scrapped, the census holding |
 | **RS.7** port security | Q-41-24, Q-41-25, Q-38-20, Q-S4 | the `arrived` hook's read of proven rows across the lane's site records; `+salvage/report <site>[=<actor>|#<hull>] registry` over `SiteRecord.unlawful`; the fines by kind to the Registry; the obligation on a shortfall; `DepartRefusalKind::Quarantined` and its release; proven rows copied to `tacsim:security:{actor}` at proof (the site's 64-row ring evicts, 41-6) and marked settled there | none | (b) extended: O fined at docking after the `recovery` vacate, O's carrier held until the obligation settles, a bare pickup row never fined |
 | **RS.8** the space seams | Q-41-26, Q-36-46, Q-36-47 | `+helm/tow` onto `file_salvage_claim` and `award_salvage_title`; `tacsim:space:custody`; the stages; real principals; the RAM path and the bounty retired; `ShipSectionId` onto `CarrierPart`; the retrieval's delivery at a dock | none | a derelict clamped, towed and docked at Ceres under the one window, contested by `+salvage/contest`, and a space retrieval job on `+salvage/jobs` delivered by a ship; built in the space tree (doc 35b §8) |
 | **RS.9** the stories whole | Q-38-29 | (a)–(e) run whole at 256 and 512 with the bot typing the player's half over SSH; `41-cut-notes.md` closed | IN.11's census line for (e) | every story green on gate.yml at both sizes; the bot run recorded |
@@ -1410,6 +1455,8 @@ table, the `tacsim.retrieval.delivered` fact, the `Quarantined` refusal line, th
 **Ruled.** The six questions Draft 0.1 named as least confidently defaulted went to the owner the
 same day. Q-41-10's fee basis stands as written (the acceptor's deadline it travelled with is
 Q-41-11's amendment: 28 IC days, not 7); Q-41-15 and Q-41-16 were amended as §5 records, and
-Q-41-17 with them; Q-41-24, Q-41-7 and Q-41-23 are accepted as written. Two questions the round-2
-review raised wait on the owner (Q-41-28, the organization's answerer; Q-41-29, the tow's mass
-basis); neither blocks RS.0, RS.1, RS.2 or RS.3, which may start.
+Q-41-17 with them; Q-41-24, Q-41-7 and Q-41-23 are accepted as written. The two questions the
+round-2 review raised were accepted at their defaults the same day, after the merge (Draft 0.4):
+Q-41-28, the organization's answerer is its house agent; Q-41-29, the tow counts the casualty's
+laden mass and the crawler is 130 t. Nothing waits on the owner; RS.0, RS.1, RS.2 and RS.3 may
+start.

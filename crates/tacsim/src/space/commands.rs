@@ -704,17 +704,20 @@ pub fn observe_bubble_contacts(
 }
 
 /// Emit viewer-filtered `space.holotank`, `space.cockpit`, and `space.docking` panel frames to
-/// every crew member aboard `hull` (`SF.R13`, `D-35-10`, `D-35-14`).
+/// every crew member aboard `hull` (`SF.R13`, `SF.R16`, `D-35-10`, `D-35-14`, `D-35-15`).
 pub(crate) fn push_space_panels(ctx: &mut Ctx<'_>, hull: ObjId) {
     let (bubble_payloads, docking_payload) = {
         let book = ctx.w.module_state::<SpaceBubbleBook>();
-        let bubble_pair = book.and_then(|b| b.active_for_hull(hull)).map(|active| {
-            let own_ship_id = active.carrier_ship_id_for(hull);
-            (
-                active.bubble.holotank_feed(own_ship_id),
-                active.bubble.cockpit_feed(own_ship_id),
-            )
-        });
+        let bubble_pair = book
+            .and_then(|b| b.active_for_hull(hull))
+            .map(|active| {
+                let own_ship_id = active.carrier_ship_id_for(hull);
+                (
+                    active.bubble.holotank_feed(own_ship_id),
+                    active.bubble.cockpit_feed(own_ship_id),
+                )
+            })
+            .or_else(|| build_tier1_space_panel_payloads(ctx.w, hull));
         let dock_json = book
             .and_then(|b| b.docking_sessions.get(&hull))
             .map(build_docking_panel_payload);
@@ -759,8 +762,80 @@ pub(crate) fn push_space_panels(ctx: &mut Ctx<'_>, hull: ObjId) {
     }
 }
 
+fn build_tier1_space_panel_payloads(
+    w: &World,
+    hull: ObjId,
+) -> Option<(serde_json::Value, serde_json::Value)> {
+    let book = w.module_state::<SpaceBubbleBook>()?;
+    let (site_id, speed_mps) = if let Some(ff) = book.free_flight_for_hull(hull) {
+        let vx = i128::from(ff.vel_mps[0]);
+        let vy = i128::from(ff.vel_mps[1]);
+        let vz = i128::from(ff.vel_mps[2]);
+        let spd = super::weapons::isqrt_i128(vx * vx + vy * vy + vz * vz) as i64;
+        (ff.target_place.as_str().to_owned(), spd)
+    } else {
+        let cs = book.cluster_sessions.get(&hull)?;
+        let vx = i128::from(cs.ship_vel_mmps[0]);
+        let vy = i128::from(cs.ship_vel_mmps[1]);
+        let vz = i128::from(cs.ship_vel_mmps[2]);
+        let spd = (super::weapons::isqrt_i128(vx * vx + vy * vy + vz * vz) / 1_000) as i64;
+        (cs.cluster.anchor_body().to_owned(), spd)
+    };
+
+    let callsign = display_name(w, hull);
+    let bodies_json: Vec<serde_json::Value> =
+        super::bubble::default_canopy_bodies_for_site(&site_id)
+            .iter()
+            .map(super::bubble::CanopyBodyProjection::to_feed_json)
+            .collect();
+
+    let holotank = serde_json::json!({
+        "title": format!("{} ({})", callsign, site_id.to_ascii_uppercase()),
+        "range_km": 250.0,
+        "pdc_range_km": 15.0,
+        "contacts": [{
+            "id": format!("ship.{}", hull.0),
+            "label": callsign,
+            "kind": "ship",
+            "relation": "own",
+            "you": true,
+            "locked": false,
+            "x_km": 0.0,
+            "y_km": 0.0,
+            "z_km": 0.0,
+            "vx_kms": 0.0,
+            "vy_kms": 0.0,
+            "vz_kms": 0.0,
+            "ax_mps2": 0,
+            "ay_mps2": 0,
+            "az_mps2": 0,
+        }],
+        "torpedoes": [],
+    });
+    let cockpit = serde_json::json!({
+        "callsign": callsign,
+        "site_id": site_id,
+        "yaw_deg": 0,
+        "pitch_deg": 0,
+        "roll_deg": 0,
+        "speed_mps": speed_mps,
+        "prograde_bearing_deg": 0.0,
+        "prograde_pitch_deg": 0.0,
+        "delta_v_mps": 4_500,
+        "heat_permille": 0,
+        "hull_pct": 100,
+        "pdc_mode": "AUTO",
+        "emcon": "STD",
+        "bodies": bodies_json,
+        "contacts": [],
+    });
+    Some((holotank, cockpit))
+}
+
 fn build_docking_panel_payload(session: &super::docking::DockingSession) -> serde_json::Value {
     let pose = &session.live_stepper.pose;
+    let start_pose = &session.challenge.start_pose;
+    let auth = &session.challenge.rcs_authority;
     let gates = super::docking::evaluate_docking_gates(pose);
     let (target_label, target_kind) = match &session.target {
         super::docking::DockingTargetKind::PortBerth { port_name, .. } => {
@@ -796,7 +871,59 @@ fn build_docking_panel_payload(session: &super::docking::DockingSession) -> serd
         "status": status,
         "gates_green": gates.green_count(),
         "target_tumble_mdeg_s": session.challenge.target_tumble_mdeg_s,
+        "max_frames": session.challenge.max_frames,
+        "start_pose": {
+            "dx_mm": start_pose.lateral_x_mm,
+            "dy_mm": start_pose.lateral_y_mm,
+            "dz_mm": start_pose.range_z_mm,
+            "vx_mmps": start_pose.vel_x_mmps,
+            "vy_mmps": start_pose.vel_y_mmps,
+            "vz_mmps": start_pose.closure_mmps,
+            "pitch_mdeg": start_pose.pitch_err_mdeg,
+            "yaw_mdeg": start_pose.yaw_err_mdeg,
+            "roll_mdeg": start_pose.roll_err_mdeg,
+            "pitch_rate_mdeg_s": start_pose.pitch_rate_mdeg_s,
+            "yaw_rate_mdeg_s": start_pose.yaw_rate_mdeg_s,
+            "roll_rate_mdeg_s": start_pose.roll_rate_mdeg_s,
+        },
+        "rcs_authority": {
+            "trans_dv_mmps_per_frame": auth.trans_dv_mmps_per_frame,
+            "closure_dv_mmps_per_frame": auth.closure_dv_mmps_per_frame,
+            "attitude_rate_mdeg_s_per_frame": auth.attitude_rate_mdeg_s_per_frame,
+            "roll_rate_mdeg_s_per_frame": auth.roll_rate_mdeg_s_per_frame,
+            "damp_trans_mmps_per_frame": auth.damp_trans_mmps_per_frame,
+            "damp_attitude_mdeg_s_per_frame": auth.damp_attitude_mdeg_s_per_frame,
+            "damp_roll_mdeg_s_per_frame": auth.damp_roll_mdeg_s_per_frame,
+            "kg_per_pulse_batch": auth.kg_per_pulse_batch,
+        },
     })
+}
+
+/// Resolve the hull-specific [`super::docking::DockingRcsAuthority`] for `hull` (`SF.R16`, `D-35-14`).
+#[must_use]
+pub fn rcs_authority_for_hull(w: &World, hull: ObjId) -> super::docking::DockingRcsAuthority {
+    if let Some(book) = w.module_state::<SpaceBubbleBook>()
+        && let Some(active) = book.active_for_hull(hull)
+    {
+        if hull == active.interdictor_hull
+            && let Some(ship) = active.bubble.ships.get(&active.interdictor_ship_id)
+        {
+            return ship.rcs_authority;
+        }
+        if let Some(picket) = &active.picket
+            && picket.corvette_hull == hull
+            && let Some(ship) = active.bubble.ships.get(&picket.corvette_ship_id)
+        {
+            return ship.rcs_authority;
+        }
+        if let Some(ship) = active.bubble.ships.get(active.carrier_ship_id_for(hull)) {
+            return ship.rcs_authority;
+        }
+    }
+    if let Some(view) = crate::port::ship::hull_view(w, hull) {
+        return super::custody::space_unit_overlay_for_id(view.unit.as_str()).rcs_authority;
+    }
+    super::docking::DockingRcsAuthority::default()
 }
 
 // ---------------------------------------------------------------------------
@@ -2461,6 +2588,160 @@ fn helm_autopilot(ctx: &mut Ctx<'_>) -> Result<(), CmdError> {
                 crate::port::voyage::ic_days(plan.total_s)
             ),
         );
+        push_space_panels(ctx, hull);
+        return Ok(());
+    }
+
+    if matched_port.is_none()
+        && let Ok(body_cid) = mush_core::CanonicalId::new(port_word.to_ascii_lowercase())
+        && sky.position_km(&body_cid, now.at).is_some()
+    {
+        let (start_pos_km, start_vel_mps, origin_place) = if let Some(ff) = ctx
+            .w
+            .module_state::<SpaceBubbleBook>()
+            .and_then(|b| b.free_flight_for_hull(hull).cloned())
+        {
+            (ff.pos_km, ff.vel_mps, ff.origin_place)
+        } else if let Some(cs) = ctx
+            .w
+            .module_state::<SpaceBubbleBook>()
+            .and_then(|b| b.cluster_sessions.get(&hull).cloned())
+        {
+            let anchor_id = mush_core::CanonicalId::new(cs.cluster.anchor_body())
+                .map_err(|e| CmdError::msg(e.to_string()))?;
+            let p = sky
+                .position_km(&anchor_id, now.at)
+                .unwrap_or(crate::sky::PosKm {
+                    x: 414_000_000,
+                    y: 0,
+                    z: 0,
+                });
+            let [vx, vy, vz] = sky
+                .velocity_mps(&anchor_id, now.at)
+                .unwrap_or([0, 17_900, 0]);
+            (
+                [p.x, p.y, p.z],
+                [i64::from(vx), i64::from(vy), i64::from(vz)],
+                anchor_id,
+            )
+        } else if let crate::port::ship::Berth::Docked { def, .. } =
+            crate::port::ship::berth_of(ctx.w, hull)
+        {
+            let origin_cid = def.venue.clone();
+            let anchor_id = crate::port::passage::body_or_place_of(&sky, pack, &origin_cid)
+                .unwrap_or_else(|_| origin_cid.clone());
+            let p = sky
+                .position_km(&anchor_id, now.at)
+                .unwrap_or(crate::sky::PosKm {
+                    x: 414_000_000,
+                    y: 0,
+                    z: 0,
+                });
+            let [vx, vy, vz] = sky
+                .velocity_mps(&anchor_id, now.at)
+                .unwrap_or([0, 17_900, 0]);
+            (
+                [p.x, p.y, p.z],
+                [i64::from(vx), i64::from(vy), i64::from(vz)],
+                origin_cid,
+            )
+        } else {
+            return Err(CmdError::msg(
+                "Ship must be docked at a berth, in free flight, or in an orbital cluster to engage celestial body autopilot.",
+            ));
+        };
+
+        let ff_pos = crate::sky::PosKm {
+            x: start_pos_km[0],
+            y: start_pos_km[1],
+            z: start_pos_km[2],
+        };
+        let ff_vel = [
+            i32::try_from(start_vel_mps[0].clamp(i64::from(i32::MIN), i64::from(i32::MAX)))
+                .unwrap_or(0),
+            i32::try_from(start_vel_mps[1].clamp(i64::from(i32::MIN), i64::from(i32::MAX)))
+                .unwrap_or(0),
+            i32::try_from(start_vel_mps[2].clamp(i64::from(i32::MIN), i64::from(i32::MAX)))
+                .unwrap_or(0),
+        ];
+        let plan = crate::port::passage::plan_passage_from(
+            &sky,
+            pack,
+            ff_pos,
+            ff_vel,
+            &body_cid,
+            &basis.spec.drive,
+            basis.spec.dry_kg,
+            effective_payload,
+            basis.occupants,
+            now.at,
+        )
+        .map_err(|e| CmdError::msg(e.to_string()))?;
+
+        let live_tank_t = live_kg / 1_000;
+        let is_outer_expedition = plan.legs.first().is_some_and(|l| l.dist_km > 500_000_000);
+        let (burn_t, crew_days) = if is_outer_expedition {
+            // Outer-system gravity-assist expedition profile (`doc 35` §9 Story 2, `D-35-16`):
+            (
+                plan.burn_t.min(live_tank_t.max(1)).max(1),
+                u32::try_from(u64::from(plan.crew_days).min(basis.locker.max(1)))
+                    .unwrap_or(1)
+                    .max(1),
+            )
+        } else {
+            (plan.burn_t, plan.crew_days)
+        };
+        if live_tank_t < burn_t {
+            return Err(CmdError::msg(format!(
+                "Insufficient propellant for expedition to {}: requires {burn_t} t, tank holds {live_tank_t} t.",
+                body_cid.as_str(),
+            )));
+        }
+        if basis.locker < u64::from(crew_days) {
+            return Err(CmdError::msg(format!(
+                "Insufficient provisions for expedition to {}: requires {crew_days} crew-days, locker holds {}.",
+                body_cid.as_str(),
+                basis.locker
+            )));
+        }
+
+        let arrival_ic = now.at.saturating_add(plan.total_s.max(1));
+        let record = SpaceFreeFlightRecord {
+            hull,
+            origin_place,
+            target_place: body_cid.clone(),
+            pos_km: start_pos_km,
+            vel_mps: start_vel_mps,
+            thrust_mmps2: [0, 0, 0],
+            burn_remaining_ic_s: None,
+            guidance: FreeFlightGuidanceMode::Intercept,
+            braking_flipped: false,
+            decoupled_at_ic_s: now.at,
+            last_ic_s: now.at,
+            cluster_arrival_ic_s: Some(arrival_ic),
+            prepaid_unflown_t: 0,
+        };
+        if let Some(book) = ctx.w.module_state_mut::<SpaceBubbleBook>() {
+            book.cluster_sessions.remove(&hull);
+            book.free_flights.insert(hull, record);
+            book.propellant_ledger_mut(hull)
+                .record_passage_burn_t(basis.tank, burn_t);
+        }
+        let _ = submit_space_burn_if_needed(ctx, hull, basis.vault.0, burn_t, crew_days)?;
+
+        ctx.out.sys_to_actor(
+            ctx.actor,
+            "tacsim.space",
+            format!(
+                "Autopilot engaged for celestial body `{}`: burn {} t reaction mass, {} crew-days, transit {}s ({} IC days).",
+                body_cid.as_str(),
+                burn_t,
+                crew_days,
+                plan.total_s,
+                crate::port::voyage::ic_days(plan.total_s)
+            ),
+        );
+        push_space_panels(ctx, hull);
         return Ok(());
     }
 
@@ -4370,21 +4651,52 @@ fn helm_dock(ctx: &mut Ctx<'_>) -> Result<(), CmdError> {
     let target = resolve_docking_target(ctx, hull, target_token)?;
     validate_docking_initiation_gates(ctx.w, hull, &target, now.at)?;
 
-    let session_id = ctx
+    let (session_id, session_seed) = ctx
         .w
         .module_state_mut::<SpaceBubbleBook>()
-        .map(|b| b.alloc_docking_session_id(hull))
+        .map(|b| {
+            let sid = b.alloc_docking_session_id(hull);
+            let seed = b
+                .next_docking_session_seq
+                .wrapping_add(u64::from(hull.0).wrapping_mul(131));
+            (sid, seed)
+        })
         .ok_or_else(|| CmdError::msg("Space state is not registered."))?;
+    let rcs_auth = rcs_authority_for_hull(ctx.w, hull);
 
     let challenge = match &target {
         super::docking::DockingTargetKind::PortBerth { port_id, .. } => {
             if let Ok((_, port_domain)) = resolve_port_destination_parent(ctx.w, hull, port_id) {
                 let _ = mush_sim::promote_carrier_journey(ctx, hull, port_domain, &now);
             }
-            super::docking::DockingChallenge::standard_port(session_id.clone())
+            super::docking::DockingChallenge::standard_port_for_session(
+                session_id.clone(),
+                rcs_auth,
+                session_seed,
+            )
         }
-        super::docking::DockingTargetKind::DisabledDerelict { .. } => {
-            super::docking::DockingChallenge::derelict_collar(session_id.clone())
+        super::docking::DockingTargetKind::DisabledDerelict { derelict_hull, .. } => {
+            let derelict_domain = ctx
+                .w
+                .module_state::<SpaceBubbleBook>()
+                .and_then(|b| {
+                    b.active_for_hull(hull)
+                        .map(|a| a.domain)
+                        .or_else(|| b.derelicts.get(derelict_hull).map(|d| d.domain))
+                })
+                .or_else(|| {
+                    ctx.w
+                        .module_state::<SpatialState>()
+                        .and_then(|s| s.domain_of_host(*derelict_hull))
+                        .map(|d| d.id)
+                })
+                .unwrap_or(DomainId(1));
+            let _ = mush_sim::promote_carrier_journey(ctx, hull, derelict_domain, &now);
+            super::docking::DockingChallenge::derelict_collar_for_session(
+                session_id.clone(),
+                rcs_auth,
+                session_seed,
+            )
         }
     };
 

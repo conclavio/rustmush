@@ -293,8 +293,12 @@ fixture and compiles anywhere, including to WebAssembly (§4.3).
 **Colour discipline.** Every producer draws from a closed set of colours so a frame never exceeds
 256 and the PNG is always indexed (the raycaster's 16 bases times 12 fog steps plus 16 sky; the
 overlay's two dozen; a scene's palette declared with the scene). The encoder's truecolor fallback
-stays as a safety net and is logged when it fires. No dithering: it quadruples the bytes for nothing
-at these palettes.
+stays as a safety net and is logged when it fires. No dithering on ground raycast/heightfield/scene
+producers: it quadruples the bytes for nothing at those palettes. *Amended in [doc 35](35-ship-free-flight-combat-and-mining.md) (`D-35-15`):*
+the space bridge canopy's analytical planet/ring raycaster (`planet_shader.rs`) and 3D ship sprite
+shader (`ship_shader.rs`) use deterministic 4×4 Bayer ordered dithering over fixed 6-step colour
+ramps so curved planetary limbs, rings, and hull normals shade smoothly while staying strictly
+within the closed 256-colour per-frame budget.
 
 ### 3.3 The scene model — D-21-8
 
@@ -655,7 +659,9 @@ No deploy without the owner; dev2 is the box these cuts smoke on.
 - **D-21-6** Three buckets by what changes the picture: the camera (A), the feed (B), the typing (C);
   A and B share everything but the producer; C embeds B.
 - **D-21-7** One `Frame`, three producers (raycast, heightfield, scene), one overlay; a closed colour
-  set per producer so the PNG stays indexed; no dithering.
+  set per producer so the PNG stays indexed; no dithering on ground producers. *Amended by [doc 35](35-ship-free-flight-combat-and-mining.md)
+  `D-35-15`: `planet_shader.rs` and `ship_shader.rs` use deterministic 4×4 Bayer ordered dithering
+  over fixed 6-step colour ramps within the closed 256-colour per-frame cap.*
 - **D-21-8** The scene model: viewport, layers, lines/polylines with age, rects, circles, sectors,
   text, sprites, embedded frames; one rasteriser for every bucket-B use.
 - **D-21-9** The deadline clock per connection; pictures only on the clock; idle writes nothing;

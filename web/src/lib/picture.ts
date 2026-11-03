@@ -583,6 +583,10 @@ export function spacePictureKey(key: string, mode: SpaceCameraMode): SpacePictur
       case "x":
       case "X":
         return { kind: "dockOrder", cmd: "DOCK DAMPENERS TOGGLE" };
+      case "c":
+      case "C":
+      case " ":
+        return { kind: "dockOrder", cmd: "DOCK CLAMP ASSIST" };
       default:
         return null;
     }
@@ -689,4 +693,418 @@ export function encodeDockingTape(frames: readonly DockingFrameInput[]): string 
     }
   }
   return spans.map((s) => `${s.mask.toString(16).padStart(4, "0")}*${s.count}`).join(",");
+}
+
+/** Per-hull 6-DOF RCS thruster authority parameters (`SF.R16`, `D-35-14`). */
+export interface WebDockingRcsAuthority {
+  transDvMmpsPerFrame: number;
+  closureDvMmpsPerFrame: number;
+  attitudeRateMdegSPerFrame: number;
+  rollRateMdegSPerFrame: number;
+  dampTransMmpsPerFrame: number;
+  dampAttitudeMdegSPerFrame: number;
+  dampRollMdegSPerFrame: number;
+  kgPerPulseBatch: number;
+}
+
+/** Default 6-DOF RCS authority (`Dray-P` / standard freighter). */
+export const DEFAULT_WEB_DOCKING_RCS_AUTHORITY: WebDockingRcsAuthority = {
+  transDvMmpsPerFrame: 30,
+  closureDvMmpsPerFrame: 25,
+  attitudeRateMdegSPerFrame: 180,
+  rollRateMdegSPerFrame: 240,
+  dampTransMmpsPerFrame: 15,
+  dampAttitudeMdegSPerFrame: 90,
+  dampRollMdegSPerFrame: 120,
+  kgPerPulseBatch: 1,
+};
+
+/** Client-side 60 Hz 6-DOF docking game session (`SF.R16`, `D-35-14`). */
+export interface WebDockingSession {
+  sessionId: string;
+  dxMm: number;
+  dyMm: number;
+  dzMm: number;
+  vxMmps: number;
+  vyMmps: number;
+  vzMmps: number;
+  pitchMdeg: number;
+  yawMdeg: number;
+  rollMdeg: number;
+  pitchRateMdegS: number;
+  yawRateMdegS: number;
+  rollRateMdegS: number;
+  remX: number;
+  remY: number;
+  remZ: number;
+  remPitch: number;
+  remYaw: number;
+  remRoll: number;
+  dampenersOn: boolean;
+  rcsAuthority: WebDockingRcsAuthority;
+  targetTumbleMdegS: [number, number, number];
+  maxFrames: number;
+  framesElapsed: number;
+  pulseFrames: number;
+  recordedFrames: DockingFrameInput[];
+}
+
+/** Convert a `dockOrder` command string into a single 60 Hz `DockingFrameInput`. */
+export function dockOrderToFrameInput(cmd: string): DockingFrameInput | null {
+  const base: DockingFrameInput = {
+    transX: 0,
+    transY: 0,
+    closurePulse: 0,
+    pitchTrim: 0,
+    yawTrim: 0,
+    rollTrim: 0,
+  };
+  switch (cmd) {
+    case "DOCK TRANS UP":
+      return { ...base, transY: 1 };
+    case "DOCK TRANS DOWN":
+      return { ...base, transY: -1 };
+    case "DOCK TRANS LEFT":
+      return { ...base, transX: -1 };
+    case "DOCK TRANS RIGHT":
+      return { ...base, transX: 1 };
+    case "DOCK PITCH UP":
+      return { ...base, pitchTrim: 1 };
+    case "DOCK PITCH DOWN":
+      return { ...base, pitchTrim: -1 };
+    case "DOCK YAW LEFT":
+      return { ...base, yawTrim: -1 };
+    case "DOCK YAW RIGHT":
+      return { ...base, yawTrim: 1 };
+    case "DOCK ROLL CCW":
+      return { ...base, rollTrim: -1 };
+    case "DOCK ROLL CW":
+      return { ...base, rollTrim: 1 };
+    case "DOCK CLOSURE FORWARD":
+      return { ...base, closurePulse: 1 };
+    case "DOCK CLOSURE REVERSE":
+      return { ...base, closurePulse: -1 };
+    case "DOCK DAMPENERS TOGGLE":
+      return { ...base, toggleDampeners: true };
+    default:
+      return null;
+  }
+}
+
+/** Initialize a 60 Hz `WebDockingSession` from a `space.docking` keyframe (`SF.R16`). */
+export function createWebDockingSession(feed: unknown): WebDockingSession | null {
+  if (!feed || typeof feed !== "object") return null;
+  const obj = feed as Record<string, unknown>;
+  const sessionId = typeof obj.session_id === "string" && obj.session_id.length > 0 ? obj.session_id : null;
+  if (!sessionId) return null;
+
+  const num = (v: unknown, def: number): number => (typeof v === "number" && Number.isFinite(v) ? Math.trunc(v) : def);
+  const rawAuth =
+    obj.rcs_authority && typeof obj.rcs_authority === "object"
+      ? (obj.rcs_authority as Record<string, unknown>)
+      : null;
+  const rcsAuthority: WebDockingRcsAuthority = rawAuth
+    ? {
+        transDvMmpsPerFrame: num(rawAuth.trans_dv_mmps_per_frame, DEFAULT_WEB_DOCKING_RCS_AUTHORITY.transDvMmpsPerFrame),
+        closureDvMmpsPerFrame: num(rawAuth.closure_dv_mmps_per_frame, DEFAULT_WEB_DOCKING_RCS_AUTHORITY.closureDvMmpsPerFrame),
+        attitudeRateMdegSPerFrame: num(
+          rawAuth.attitude_rate_mdeg_s_per_frame,
+          DEFAULT_WEB_DOCKING_RCS_AUTHORITY.attitudeRateMdegSPerFrame,
+        ),
+        rollRateMdegSPerFrame: num(rawAuth.roll_rate_mdeg_s_per_frame, DEFAULT_WEB_DOCKING_RCS_AUTHORITY.rollRateMdegSPerFrame),
+        dampTransMmpsPerFrame: num(rawAuth.damp_trans_mmps_per_frame, DEFAULT_WEB_DOCKING_RCS_AUTHORITY.dampTransMmpsPerFrame),
+        dampAttitudeMdegSPerFrame: num(
+          rawAuth.damp_attitude_mdeg_s_per_frame,
+          DEFAULT_WEB_DOCKING_RCS_AUTHORITY.dampAttitudeMdegSPerFrame,
+        ),
+        dampRollMdegSPerFrame: num(rawAuth.damp_roll_mdeg_s_per_frame, DEFAULT_WEB_DOCKING_RCS_AUTHORITY.dampRollMdegSPerFrame),
+        kgPerPulseBatch: num(rawAuth.kg_per_pulse_batch, DEFAULT_WEB_DOCKING_RCS_AUTHORITY.kgPerPulseBatch),
+      }
+    : { ...DEFAULT_WEB_DOCKING_RCS_AUTHORITY };
+
+  const tumbleArr = Array.isArray(obj.target_tumble_mdeg_s) ? obj.target_tumble_mdeg_s : [0, 0, 0];
+  const targetTumbleMdegS: [number, number, number] = [
+    num(tumbleArr[0], 0),
+    num(tumbleArr[1], 0),
+    num(tumbleArr[2], 0),
+  ];
+
+  return {
+    sessionId,
+    dxMm: num(obj.dx_mm, 0),
+    dyMm: num(obj.dy_mm, 0),
+    dzMm: num(obj.dz_mm, 2400),
+    vxMmps: num(obj.vx_mmps, 0),
+    vyMmps: num(obj.vy_mmps, 0),
+    vzMmps: num(obj.vz_mmps, 0),
+    pitchMdeg: num(obj.pitch_mdeg, 0),
+    yawMdeg: num(obj.yaw_mdeg, 0),
+    rollMdeg: num(obj.roll_mdeg, 0),
+    pitchRateMdegS: num(obj.pitch_rate_mdeg_s, 0),
+    yawRateMdegS: num(obj.yaw_rate_mdeg_s, 0),
+    rollRateMdegS: num(obj.roll_rate_mdeg_s, 0),
+    remX: 0,
+    remY: 0,
+    remZ: 0,
+    remPitch: 0,
+    remYaw: 0,
+    remRoll: 0,
+    dampenersOn: typeof obj.dampeners === "boolean" ? obj.dampeners : true,
+    rcsAuthority,
+    targetTumbleMdegS,
+    maxFrames: Math.min(num(obj.max_frames, 600), 3600),
+    framesElapsed: 0,
+    pulseFrames: 0,
+    recordedFrames: [],
+  };
+}
+
+/** Count how many of the 5 collar alignment gates (`D-35-14`) are green. */
+export function countWebDockingGatesGreen(s: WebDockingSession): number {
+  let count = 0;
+  if (Math.abs(s.dxMm) <= 250 && Math.abs(s.dyMm) <= 250 && Math.abs(s.vxMmps) <= 300 && Math.abs(s.vyMmps) <= 300) {
+    count += 1;
+  }
+  if (
+    Math.abs(s.pitchMdeg) <= 2000 &&
+    Math.abs(s.yawMdeg) <= 2000 &&
+    Math.abs(s.pitchRateMdegS) <= 500 &&
+    Math.abs(s.yawRateMdegS) <= 500
+  ) {
+    count += 1;
+  }
+  if (Math.abs(s.rollMdeg) <= 3000 && Math.abs(s.rollRateMdegS) <= 500) {
+    count += 1;
+  }
+  if (s.vzMmps >= 100 && s.vzMmps <= 800) {
+    count += 1;
+  }
+  if (s.dzMm >= 0 && s.dzMm <= 500) {
+    count += 1;
+  }
+  return count;
+}
+
+/** True when all 5 collar gates are green (`dz <= 500 mm`, `100 <= vz <= 800 mm/s`, aligned). */
+export function isWebDockingClamped(s: WebDockingSession): boolean {
+  return countWebDockingGatesGreen(s) === 5;
+}
+
+/** Step one 60 Hz frame (`1/60 s`) of the client-side 6-DOF docking kinematics (`SF.R16`, `D-35-14`). */
+export function stepWebDockingFrame(s: WebDockingSession, input: DockingFrameInput): void {
+  if (s.recordedFrames.length >= s.maxFrames) return;
+  s.recordedFrames.push(input);
+  if (input.abort) return;
+  if (input.toggleDampeners) {
+    s.dampenersOn = !s.dampenersOn;
+  }
+  if (
+    input.transX !== 0 ||
+    input.transY !== 0 ||
+    input.closurePulse !== 0 ||
+    input.pitchTrim !== 0 ||
+    input.yawTrim !== 0 ||
+    input.rollTrim !== 0
+  ) {
+    s.pulseFrames += 1;
+  }
+
+  const auth = s.rcsAuthority;
+  s.vxMmps += input.transX * auth.transDvMmpsPerFrame;
+  s.vyMmps += input.transY * auth.transDvMmpsPerFrame;
+  s.vzMmps += input.closurePulse * auth.closureDvMmpsPerFrame;
+  s.pitchRateMdegS += input.pitchTrim * auth.attitudeRateMdegSPerFrame;
+  s.yawRateMdegS += input.yawTrim * auth.attitudeRateMdegSPerFrame;
+  s.rollRateMdegS += input.rollTrim * auth.rollRateMdegSPerFrame;
+
+  const dampStep = (val: number, step: number): number => {
+    if (val > 0) return Math.max(0, val - step);
+    if (val < 0) return Math.min(0, val + step);
+    return 0;
+  };
+  if (s.dampenersOn) {
+    if (input.transX === 0) s.vxMmps = dampStep(s.vxMmps, auth.dampTransMmpsPerFrame);
+    if (input.transY === 0) s.vyMmps = dampStep(s.vyMmps, auth.dampTransMmpsPerFrame);
+    if (input.pitchTrim === 0) s.pitchRateMdegS = dampStep(s.pitchRateMdegS, auth.dampAttitudeMdegSPerFrame);
+    if (input.yawTrim === 0) s.yawRateMdegS = dampStep(s.yawRateMdegS, auth.dampAttitudeMdegSPerFrame);
+    if (input.rollTrim === 0) s.rollRateMdegS = dampStep(s.rollRateMdegS, auth.dampRollMdegSPerFrame);
+  }
+
+  const stepAxis60 = (pos: number, rem: number, rate: number): [number, number] => {
+    const total = rem + rate;
+    const delta = Math.trunc(total / 60);
+    const nextRem = total - delta * 60;
+    return [pos + delta, nextRem];
+  };
+
+  [s.dxMm, s.remX] = stepAxis60(s.dxMm, s.remX, s.vxMmps);
+  [s.dyMm, s.remY] = stepAxis60(s.dyMm, s.remY, s.vyMmps);
+  const totZ = s.vzMmps + s.remZ;
+  const deltaZ = Math.trunc(totZ / 60);
+  s.dzMm = Math.max(0, s.dzMm - deltaZ);
+  s.remZ = totZ - deltaZ * 60;
+
+  [s.pitchMdeg, s.remPitch] = stepAxis60(s.pitchMdeg, s.remPitch, s.pitchRateMdegS - s.targetTumbleMdegS[0]);
+  [s.yawMdeg, s.remYaw] = stepAxis60(s.yawMdeg, s.remYaw, s.yawRateMdegS - s.targetTumbleMdegS[1]);
+  [s.rollMdeg, s.remRoll] = stepAxis60(s.rollMdeg, s.remRoll, s.rollRateMdegS - s.targetTumbleMdegS[2]);
+  s.framesElapsed += 1;
+}
+
+/** Compute the next 60 Hz guidance-assist `DockingFrameInput` toward all 5 collar gates (`SF.R16`). */
+export function nextWebDockingGuidanceInput(s: WebDockingSession): DockingFrameInput {
+  const auth = s.rcsAuthority;
+  const tumble = s.targetTumbleMdegS;
+  const input: DockingFrameInput = {
+    transX: 0,
+    transY: 0,
+    closurePulse: 0,
+    pitchTrim: 0,
+    yawTrim: 0,
+    rollTrim: 0,
+  };
+
+  const dvTrans = Math.max(auth.transDvMmpsPerFrame, 5);
+  const dvClose = Math.max(auth.closureDvMmpsPerFrame, 5);
+  const dAtt = Math.max(auth.attitudeRateMdegSPerFrame, 30);
+  const dRoll = Math.max(auth.rollRateMdegSPerFrame, 30);
+
+  const fastVx = Math.min(dvTrans * 6, 240);
+  const slowVx = Math.min(dvTrans * 2, 120);
+  const deadVx = Math.max(Math.trunc(dvTrans / 2), 5);
+  const targetVx =
+    s.dxMm > 120 ? -fastVx : s.dxMm < -120 ? fastVx : s.dxMm > 20 ? -slowVx : s.dxMm < -20 ? slowVx : 0;
+  if (s.vxMmps < targetVx - deadVx) {
+    input.transX = 1;
+  } else if (s.vxMmps > targetVx + deadVx) {
+    input.transX = -1;
+  }
+
+  const targetVy =
+    s.dyMm > 120 ? -fastVyOrVx(fastVx) : s.dyMm < -120 ? fastVx : s.dyMm > 20 ? -slowVx : s.dyMm < -20 ? slowVx : 0;
+  if (s.vyMmps < targetVy - deadVx) {
+    input.transY = 1;
+  } else if (s.vyMmps > targetVy + deadVx) {
+    input.transY = -1;
+  }
+
+  const fastAtt = Math.min(dAtt * 2, 420);
+  const slowAtt = Math.min(dAtt, 240);
+  const deadAtt = Math.max(Math.trunc(dAtt / 2), 15);
+  const targetPitchRate =
+    s.pitchMdeg > 600
+      ? -fastAtt
+      : s.pitchMdeg < -600
+        ? fastAtt
+        : s.pitchMdeg > 90
+          ? -slowAtt
+          : s.pitchMdeg < -90
+            ? slowAtt
+            : tumble[0];
+  if (s.pitchRateMdegS < targetPitchRate - deadAtt) {
+    input.pitchTrim = 1;
+  } else if (s.pitchRateMdegS > targetPitchRate + deadAtt) {
+    input.pitchTrim = -1;
+  }
+
+  const targetYawRate =
+    s.yawMdeg > 600
+      ? -fastAtt
+      : s.yawMdeg < -600
+        ? fastAtt
+        : s.yawMdeg > 90
+          ? -slowAtt
+          : s.yawMdeg < -90
+            ? slowAtt
+            : tumble[1];
+  if (s.yawRateMdegS < targetYawRate - deadAtt) {
+    input.yawTrim = 1;
+  } else if (s.yawRateMdegS > targetYawRate + deadAtt) {
+    input.yawTrim = -1;
+  }
+
+  const fastRoll = Math.min(dRoll * 2, 480);
+  const slowRoll = Math.min(dRoll, 240);
+  const deadRoll = Math.max(Math.trunc(dRoll / 2), 15);
+  const targetRollRate =
+    s.rollMdeg > 900
+      ? -fastRoll
+      : s.rollMdeg < -900
+        ? fastRoll
+        : s.rollMdeg > 120
+          ? -slowRoll
+          : s.rollMdeg < -120
+            ? slowRoll
+            : tumble[2];
+  if (s.rollRateMdegS < targetRollRate - deadRoll) {
+    input.rollTrim = 1;
+  } else if (s.rollRateMdegS > targetRollRate + deadRoll) {
+    input.rollTrim = -1;
+  }
+
+  const latOk =
+    Math.abs(s.dxMm) <= 250 &&
+    Math.abs(s.dyMm) <= 250 &&
+    Math.abs(s.vxMmps) <= 300 &&
+    Math.abs(s.vyMmps) <= 300;
+  const attOk =
+    Math.abs(s.pitchMdeg) <= 2000 &&
+    Math.abs(s.yawMdeg) <= 2000 &&
+    Math.abs(s.pitchRateMdegS) <= 500 &&
+    Math.abs(s.yawRateMdegS) <= 500;
+  const rollOk = Math.abs(s.rollMdeg) <= 3000 && Math.abs(s.rollRateMdegS) <= 500;
+  const targetClosure = latOk && attOk && rollOk ? 350 : 0;
+  const deadClose = Math.max(Math.min(dvClose, 20), 5);
+  if (s.vzMmps < targetClosure - deadClose) {
+    input.closurePulse = 1;
+  } else if (s.vzMmps > targetClosure + deadClose) {
+    input.closurePulse = -1;
+  }
+
+  return input;
+}
+
+function fastVyOrVx(v: number): number {
+  return v;
+}
+
+/** Play the 60 Hz client docking game to collar clamp (`SF.R16`). */
+export function playWebDockingToClamp(s: WebDockingSession): boolean {
+  while (s.recordedFrames.length < s.maxFrames) {
+    if (isWebDockingClamped(s) && s.recordedFrames.length > 0) return true;
+    if (s.dzMm === 0 && !isWebDockingClamped(s)) return false;
+    const next = nextWebDockingGuidanceInput(s);
+    stepWebDockingFrame(s, next);
+    if (isWebDockingClamped(s)) return true;
+  }
+  return isWebDockingClamped(s);
+}
+
+/** Format the `+helm/dock tape <session_id> <rle>` command for server verification (`SF.R16`). */
+export function formatWebDockingTapeCommand(s: WebDockingSession): string {
+  return `+helm/dock tape ${s.sessionId} ${encodeDockingTape(s.recordedFrames)}`;
+}
+
+/** Overlay the live 60 Hz `WebDockingSession` pose onto a `space.docking` feed object. */
+export function webDockingFeedOverlay(s: WebDockingSession, baseFeed: unknown): Record<string, unknown> {
+  const base = baseFeed && typeof baseFeed === "object" ? (baseFeed as Record<string, unknown>) : {};
+  const greenCount = countWebDockingGatesGreen(s);
+  return {
+    ...base,
+    session_id: s.sessionId,
+    dx_mm: s.dxMm,
+    dy_mm: s.dyMm,
+    dz_mm: s.dzMm,
+    vx_mmps: s.vxMmps,
+    vy_mmps: s.vyMmps,
+    vz_mmps: s.vzMmps,
+    pitch_mdeg: s.pitchMdeg,
+    yaw_mdeg: s.yawMdeg,
+    roll_mdeg: s.rollMdeg,
+    pitch_rate_mdeg_s: s.pitchRateMdegS,
+    yaw_rate_mdeg_s: s.yawRateMdegS,
+    roll_rate_mdeg_s: s.rollRateMdegS,
+    dampeners: s.dampenersOn,
+    gates_green: greenCount,
+    status: greenCount === 5 ? "ALIGNED-READY" : "APPROACHING",
+  };
 }
