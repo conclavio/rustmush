@@ -199,7 +199,9 @@ impl ShipModelStyle {
         {
             return ShipModelStyle::Halcyon;
         }
-        if lower_id.contains("dray")
+        if kind == "freighter"
+            || kind == "dray"
+            || lower_id.contains("dray")
             || lower_id.contains("hauler")
             || lower_id.contains("freighter")
             || lower_label.contains("dray")
@@ -207,7 +209,11 @@ impl ShipModelStyle {
         {
             return ShipModelStyle::Freighter;
         }
-        if relation == "hostile"
+        if kind == "corvette" {
+            return ShipModelStyle::Corvette;
+        }
+        if kind == "raider"
+            || relation == "hostile"
             || lower_id.contains("raider")
             || lower_id.contains("pirate")
             || lower_id.contains("kestrel")

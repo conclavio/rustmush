@@ -6708,3 +6708,329 @@ fn sfr12_domain_bubbles_and_real_hulls_share_kirkwood_bubble_tow_real_raider_thi
         );
     }
 }
+
+/// **Doc 35b cut SF.R13 acceptance (`D-35-7`, `D-35-10`, `D-35-15`)** — verifies:
+/// 1. Every crew member aboard a carrier hull (`pilot` + `gunner`) receives `space.holotank`
+///    and `space.cockpit` panel frames directly from the `SPACE_TICK` without typing a command,
+///    and sees an incoming torpedo's `tti_s` count down across ticks in both feeds.
+/// 2. `cockpit_feed` carries `bodies` and `pixel_model` on contacts, while `holotank_feed`
+///    and `cockpit_feed` filter `torpedoes` through `mush_propagation` detection (`is_bubble_torpedo_detected`).
+/// 3. Disconnecting the crew uncleanly (`Inbound::ConnDown` -> `HookPoint::Linkdead`) sets
+///    `crew_linkdead = true`, cuts main-drive thrust to `[0, 0, 0]` (ballistic drift), holds
+///    `pdc_auto` armed through the grace window with a queued return plan, and `Inbound::ConnUp`
+///    (`from_linkdead: true`) restores manual bridge control.
+#[test]
+#[allow(clippy::too_many_lines)]
+fn sfr13_presence_and_feeds_push_to_all_crew_filter_torpedoes_and_handle_linkdead_grace() {
+    let mut rig = stocked_with(Roster {
+        seed_lane: Some(lane_with_interdicted_kirkwood()),
+        ..Roster::default()
+    });
+    let (pilot, row) = chartered(&mut rig, "Pilot", 1);
+    let hull = ObjId(row.hull);
+    let gunner = rig.tw.spawn_player("Gunner");
+    load(&mut rig, &row, 55, 60);
+    set_rate(&mut rig.tw, 3_600);
+    board(&mut rig, pilot);
+    let airlock = tacsim::port::ship::hull_view(rig.tw.world(), hull)
+        .and_then(|v| v.airlock())
+        .expect("carrier airlock");
+    teleport(&mut rig.tw, gunner, airlock);
+    let _ = run(&mut rig.tw, pilot, "+helm/station command=Pilot");
+    let st_out = run(&mut rig.tw, pilot, "+helm/station tactical=Gunner");
+    assert!(
+        st_out.contains("Gunner now holds `tactical`"),
+        "gunner assumes tactical station: {st_out}"
+    );
+
+    let pending = undock_and_burn(&mut rig, pilot, hull);
+    let depart_ic = pending.plan.depart_ic;
+    let leg1_secs = i64::from(pending.plan.legs[0].secs);
+    let _ = fire_quietly(&mut rig);
+
+    // Promote into the Kirkwood interdiction bubble.
+    let promote_events = to_ic(&mut rig, depart_ic + leg1_secs);
+
+    let panel_data_for = |events: &[(Audience, OutputEvent)], who: ObjId, feed_name: &str| {
+        events.iter().rev().find_map(|(aud, ev)| match (aud, ev) {
+            (Audience::Actor(a), OutputEvent::Panel { feed, data, .. })
+                if *a == who && feed.as_str() == feed_name =>
+            {
+                Some(data.clone())
+            }
+            _ => None,
+        })
+    };
+
+    // Both pilot and gunner received `space.holotank` and `space.cockpit` on promotion without typing!
+    let gunner_holo_0 = panel_data_for(&promote_events, gunner, "space.holotank")
+        .expect("gunner must receive space.holotank on bubble promotion");
+    assert!(gunner_holo_0["contacts"].is_array());
+    let gunner_cockpit_0 = panel_data_for(&promote_events, gunner, "space.cockpit")
+        .expect("gunner must receive space.cockpit on bubble promotion");
+    let bodies = gunner_cockpit_0["bodies"]
+        .as_array()
+        .expect("cockpit_feed must emit bodies array");
+    assert!(
+        !bodies.is_empty(),
+        "cockpit_feed bodies must be non-empty: {gunner_cockpit_0}"
+    );
+
+    // Light up the interdictor with active radar (`+helm/emcon combat`) and step the tick:
+    // the interdictor fires a torpedo at the carrier and both crew receive updated feeds from the tick!
+    let _ = run(&mut rig.tw, pilot, "+helm/emcon combat");
+    let tick1_events = fire_quietly(&mut rig);
+    let gunner_holo_1 = panel_data_for(&tick1_events, gunner, "space.holotank")
+        .expect("gunner receives space.holotank from tick step 1 without typing");
+    let gunner_cockpit_1 = panel_data_for(&tick1_events, gunner, "space.cockpit")
+        .expect("gunner receives space.cockpit from tick step 1 without typing");
+
+    let contacts_1 = gunner_cockpit_1["contacts"]
+        .as_array()
+        .expect("cockpit_feed contacts array");
+    let ship_contact = contacts_1
+        .iter()
+        .find(|c| c["kind"] == "ship")
+        .expect("detected interdictor ship contact in cockpit_feed");
+    assert_eq!(
+        ship_contact["pixel_model"].as_str(),
+        Some("corvette"),
+        "cockpit_feed ship contact must carry pixel_model: {ship_contact}"
+    );
+    let torp_holo_1 = gunner_holo_1["torpedoes"]
+        .as_array()
+        .and_then(|arr| arr.first())
+        .expect("detected incoming burning torpedo in holotank_feed");
+    let tti_1 = torp_holo_1["tti_s"].as_i64().expect("torp tti_s on tick 1");
+    let torp_cockpit_1 = contacts_1
+        .iter()
+        .find(|c| c["kind"] == "torpedo")
+        .expect("detected incoming torpedo in cockpit_feed contacts");
+    assert_eq!(torp_cockpit_1["pixel_model"].as_str(), Some("torpedo"));
+    assert_eq!(torp_cockpit_1["tti_s"].as_i64(), Some(tti_1));
+
+    // Advance wall time by 1 s per tick and fire `SPACE_TICK` without gunner typing: torpedo `tti_s` counts down!
+    let mut tti_after = tti_1;
+    for _ in 1..=3 {
+        let t = rig.tw.world().now().saturating_add(1);
+        rig.tw.set_now(t);
+        let tick_ev = rig.tw.fire_due(t.saturating_mul(1_000));
+        let queued = drain(&mut rig.tw);
+        land_quietly(&mut rig, &queued);
+        if let Some(holo) = panel_data_for(&tick_ev, gunner, "space.holotank")
+            && let Some(torp) = holo["torpedoes"].as_array().and_then(|a| a.first())
+            && let Some(v) = torp["tti_s"].as_i64()
+        {
+            tti_after = v;
+        }
+    }
+    assert!(
+        tti_after < tti_1,
+        "gunner must see torpedo tti_s count down across ticks ({tti_1} -> {tti_after}) without typing"
+    );
+
+    // Pure unit check on `holotank_feed` torpedo detection filtering:
+    // a cold coasting torpedo (`remaining_dv_mmps == 0`) at 25 km is filtered out of `holotank_feed`,
+    // while a burning torpedo (`remaining_dv_mmps > 0`) at 25 km is included.
+    {
+        let mut unit_bubble =
+            tacsim::space::LocalSpaceBubble::new("b.test", "kirkwood", "Test", 100);
+        unit_bubble.insert_ship(tacsim::space::SpaceShipState::new_dray(
+            "obs",
+            "Observer",
+            tacsim::space::SpacePartyId(1),
+            [0, 0, 0],
+            [0, 0, 0],
+        ));
+        let mut foe = tacsim::space::SpaceShipState::new_corvette(
+            "foe",
+            "Raider",
+            tacsim::space::SpacePartyId(2),
+            [25_000, 0, 0],
+            [0, 0, 0],
+        );
+        foe.emcon = tacsim::space::EmconPosture::Ghost;
+        foe.heat_permille = 0;
+        unit_bubble.insert_ship(foe);
+        unit_bubble.set_party_relation(
+            tacsim::space::SpacePartyId(1),
+            tacsim::space::SpacePartyId(2),
+            tacsim::space::SpaceRelation::Hostile,
+        );
+        let _ = unit_bubble.fire_torpedo_salvo("foe", "obs", 1);
+        assert_eq!(
+            unit_bubble.holotank_feed("obs")["torpedoes"]
+                .as_array()
+                .map(Vec::len),
+            Some(1),
+            "burning torpedo at 25 km must be detected in holotank_feed"
+        );
+        unit_bubble.torpedoes[0].remaining_dv_mmps = 0;
+        assert_eq!(
+            unit_bubble.holotank_feed("obs")["torpedoes"]
+                .as_array()
+                .map(Vec::len),
+            Some(0),
+            "cold ballistic coasting torpedo at 25 km must be filtered out of holotank_feed"
+        );
+    }
+
+    // 3. Test D-35-7 linkdead presence hook:
+    // Pilot orders a forward burn (`+helm/thrust 1000 force`) and switches PDC to manual first to prove
+    // that going linkdead re-arms `pdc_auto = true` and cuts `thrust_mps2 = [0, 0, 0]`.
+    let _ = run(&mut rig.tw, gunner, "+tac/pdc manual");
+    let burn_out = run(&mut rig.tw, pilot, "+helm/thrust 1000 force");
+    assert!(
+        burn_out.contains("Helm thrust set"),
+        "pilot commands forward burn: {burn_out}"
+    );
+
+    let conns_for = |tw: &TestWorld, who: ObjId| -> Vec<u64> {
+        (1..=64)
+            .filter(|conn| tw.engine().actor_of(*conn) == Some(who))
+            .collect()
+    };
+    let pilot_conns = conns_for(&rig.tw, pilot);
+    let gunner_conns = conns_for(&rig.tw, gunner);
+    assert!(!pilot_conns.is_empty() && !gunner_conns.is_empty());
+
+    // Drop pilot's connection first: gunner is still live-connected aboard, so hull is NOT linkdead yet.
+    for &conn in &pilot_conns {
+        let mut out = mush_core::Outbox::new();
+        let mut fx = mush_core::Effects::new();
+        rig.tw.engine_mut().step(
+            mush_core::Inbound::ConnDown {
+                conn,
+                actor: pilot,
+                reason: mush_core::DisconnectKind::Lost,
+            },
+            &mut out,
+            &mut fx,
+        );
+    }
+    {
+        let book = rig
+            .tw
+            .world()
+            .module_state::<tacsim::space::SpaceBubbleBook>()
+            .expect("SpaceBubbleBook");
+        assert!(
+            book.linkdead_state(hull).is_none(),
+            "hull must not go linkdead while gunner is still live-connected aboard"
+        );
+    }
+
+    // Now drop gunner's connection: no live-connected crew remain aboard -> D-35-7 linkdead triggers!
+    for &conn in &gunner_conns {
+        let mut out = mush_core::Outbox::new();
+        let mut fx = mush_core::Effects::new();
+        rig.tw.engine_mut().step(
+            mush_core::Inbound::ConnDown {
+                conn,
+                actor: gunner,
+                reason: mush_core::DisconnectKind::Lost,
+            },
+            &mut out,
+            &mut fx,
+        );
+    }
+    let (vel_at_linkdead, prop_at_linkdead) = {
+        let book = rig
+            .tw
+            .world()
+            .module_state::<tacsim::space::SpaceBubbleBook>()
+            .expect("SpaceBubbleBook");
+        let ld = book
+            .linkdead_state(hull)
+            .expect("hull must enter linkdead state when all crew lose connection");
+        assert!(
+            ld.pdc_held,
+            "point-defense must be held armed during grace window"
+        );
+        assert!(!ld.grace_expired, "grace window must start unexpired");
+        assert!(
+            ld.queued_return_port.is_some(),
+            "return plan port must be queued on linkdead"
+        );
+        let active = book.active_for_hull(hull).expect("active bubble");
+        let ship = active
+            .bubble
+            .ships
+            .get(active.carrier_ship_id_for(hull))
+            .expect("carrier ship");
+        assert!(ship.crew_linkdead, "ship.crew_linkdead must be true");
+        assert_eq!(
+            ship.thrust_mps2,
+            [0, 0, 0],
+            "main-drive thrust must be cut immediately on linkdead"
+        );
+        assert!(
+            ship.pdc_auto,
+            "pdc_auto must be held armed through the linkdead grace window"
+        );
+        (ship.vel_mmps, ship.propellant_kg)
+    };
+
+    // Step the bubble while linkdead: ship drifts ballistically (constant velocity, zero propellant burned).
+    let now_w = rig.tw.world().now();
+    rig.tw.world_mut().set_now(now_w + 10);
+    let _ = fire_quietly(&mut rig);
+    {
+        let book = rig
+            .tw
+            .world()
+            .module_state::<tacsim::space::SpaceBubbleBook>()
+            .expect("SpaceBubbleBook");
+        let active = book.active_for_hull(hull).expect("active bubble");
+        let ship = active
+            .bubble
+            .ships
+            .get(active.carrier_ship_id_for(hull))
+            .expect("carrier ship");
+        assert_eq!(
+            ship.vel_mmps, vel_at_linkdead,
+            "linkdead ship must drift ballistically without accelerating"
+        );
+        assert_eq!(
+            ship.propellant_kg, prop_at_linkdead,
+            "linkdead ship must not burn reaction mass while drifting"
+        );
+    }
+
+    // Reconnect pilot (`Inbound::ConnUp { from_linkdead: true }`): manual control is restored!
+    {
+        let mut out = mush_core::Outbox::new();
+        let mut fx = mush_core::Effects::new();
+        rig.tw.engine_mut().step(
+            mush_core::Inbound::ConnUp {
+                conn: pilot_conns[0],
+                actor: pilot,
+                caps_structured: true,
+                from_linkdead: true,
+            },
+            &mut out,
+            &mut fx,
+        );
+    }
+    {
+        let book = rig
+            .tw
+            .world()
+            .module_state::<tacsim::space::SpaceBubbleBook>()
+            .expect("SpaceBubbleBook");
+        assert!(
+            book.linkdead_state(hull).is_none(),
+            "reviving pilot must clear linkdead state for hull"
+        );
+        let active = book.active_for_hull(hull).expect("active bubble");
+        let ship = active
+            .bubble
+            .ships
+            .get(active.carrier_ship_id_for(hull))
+            .expect("carrier ship");
+        assert!(
+            !ship.crew_linkdead,
+            "reviving pilot must clear ship.crew_linkdead"
+        );
+    }
+}

@@ -521,6 +521,8 @@ export type SpacePictureKey =
   | { kind: "holotankOrbit"; deltaMdeg: number }
   /** Send an out-of-time-loop 6-DOF docking order (`D-35-16`). */
   | { kind: "dockOrder"; cmd: string }
+  /** Send a space tactical weapon or scan order (`+tac/beam`, `+tac/torp`, `+tac/railgun`, `+tac/scan`, `SF.R13`). */
+  | { kind: "spaceOrder"; cmd: string }
   /** Swing the canopy look (`-1` left, `1` right). */
   | { kind: "look"; dir: -1 | 1 }
   /** Centre the look (`0` mdeg). */
@@ -597,14 +599,26 @@ export function spacePictureKey(key: string, mode: SpaceCameraMode): SpacePictur
       case "D":
       case "ArrowRight":
         return { kind: "holotankOrbit", deltaMdeg: 15_000 };
+      case "z":
+      case "Z":
+      case "F1":
+        return { kind: "spaceOrder", cmd: "+tac/beam" };
+      case "x":
+      case "X":
+      case "F2":
+        return { kind: "spaceOrder", cmd: "+tac/torp" };
       case "c":
       case "C":
-        return { kind: "centre" };
+      case "F3":
+        return { kind: "spaceOrder", cmd: "+tac/railgun" };
+      case "r":
+      case "R":
+        return { kind: "spaceOrder", cmd: "+tac/scan" };
       default:
         return null;
     }
   }
-  // `space_cockpit`: camera-local look and centre controls only (no legacy +helm/+tac verbs).
+  // `space_cockpit`: camera-local look and `+tac/*` weapon group fire keys (`SF.R13`, matching TUI `pixel.rs`).
   switch (key) {
     case ",":
     case "q":
@@ -614,9 +628,21 @@ export function spacePictureKey(key: string, mode: SpaceCameraMode): SpacePictur
     case "e":
     case "E":
       return { kind: "look", dir: 1 };
+    case "z":
+    case "Z":
+    case "F1":
+      return { kind: "spaceOrder", cmd: "+tac/beam" };
+    case "x":
+    case "X":
+    case "F2":
+      return { kind: "spaceOrder", cmd: "+tac/torp" };
     case "c":
     case "C":
-      return { kind: "centre" };
+    case "F3":
+      return { kind: "spaceOrder", cmd: "+tac/railgun" };
+    case "r":
+    case "R":
+      return { kind: "spaceOrder", cmd: "+tac/scan" };
     default:
       return null;
   }

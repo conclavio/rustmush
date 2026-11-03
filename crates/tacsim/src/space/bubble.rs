@@ -449,6 +449,46 @@ impl SpaceShipState {
             && (self.thrust_mps2[0] != 0 || self.thrust_mps2[1] != 0 || self.thrust_mps2[2] != 0)
     }
 
+    /// Canonical `mush-pixel` 3D sprite archetype (`"freighter"`, `"corvette"`, `"raider"`,
+    /// `"halcyon"`, `"drone"`, or `"derelict"`, `SF.R13`, `D-35-15`).
+    #[must_use]
+    pub fn pixel_model(&self) -> &'static str {
+        if matches!(self.status, HullStatus::DisabledDerelict { .. }) {
+            return "derelict";
+        }
+        let hc = self.hull_class.to_ascii_lowercase();
+        let id = self.id.to_ascii_lowercase();
+        let cs = self.callsign.to_ascii_lowercase();
+        if hc.contains("halcyon") || id.contains("halcyon") || cs.contains("halcyon") {
+            "halcyon"
+        } else if hc.contains("raider")
+            || id.contains("raider")
+            || cs.contains("raider")
+            || cs.contains("pirate")
+            || cs.contains("corsair")
+        {
+            "raider"
+        } else if hc.contains("corvette")
+            || id.contains("corvette")
+            || cs.contains("corvette")
+            || cs.contains("customs")
+            || cs.contains("picket")
+        {
+            "corvette"
+        } else if hc.contains("drone") || id.contains("drone") || cs.contains("drone") {
+            "drone"
+        } else if hc.contains("dray")
+            || hc.contains("freighter")
+            || id.contains("dray")
+            || cs.contains("dray")
+            || cs.contains("hauler")
+        {
+            "freighter"
+        } else {
+            "corvette"
+        }
+    }
+
     /// Select which [`FacetBand`] faces an incoming attack arriving along vector
     /// `incoming_from_m = attacker_pos_m - self.pos_m`, accounting for the hull's
     /// attitude `(yaw_deg, pitch_deg, roll_deg)` (`D-35-1`, §6.3).
@@ -737,6 +777,197 @@ pub mod vec_tuple_map {
     }
 }
 
+/// Projected celestial body for the `space.cockpit` bridge canopy feed (`SF.R13`, `SF.R16`, `D-35-15`).
+#[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize)]
+pub struct CanopyBodyProjection {
+    pub id: String,
+    pub label: String,
+    pub bearing_deg: i32,
+    pub pitch_deg: i32,
+    pub radius_px: i32,
+    pub radius_km: i64,
+    pub distance_km: i64,
+}
+
+impl CanopyBodyProjection {
+    /// Convert this projection into its `space.cockpit` JSON entry.
+    #[must_use]
+    pub fn to_feed_json(&self) -> Value {
+        json!({
+            "id": self.id,
+            "name": self.label,
+            "label": self.label,
+            "kind": self.id,
+            "bearing_deg": self.bearing_deg,
+            "pitch_deg": self.pitch_deg,
+            "radius_px": self.radius_px,
+            "radius_km": self.radius_km,
+            "distance_km": self.distance_km,
+        })
+    }
+}
+
+/// Default celestial bodies visible in the bridge canopy for an encounter site (`SF.R13`, `D-35-15`).
+#[must_use]
+pub fn default_canopy_bodies_for_site(site_id: &str) -> Vec<CanopyBodyProjection> {
+    let lower = site_id.to_ascii_lowercase();
+    if lower.contains("neptune") || lower.contains("triton") {
+        vec![
+            CanopyBodyProjection {
+                id: "neptune".to_owned(),
+                label: "NEPTUNE".to_owned(),
+                bearing_deg: 0,
+                pitch_deg: -4,
+                radius_px: 44,
+                radius_km: 24_622,
+                distance_km: 85_000,
+            },
+            CanopyBodyProjection {
+                id: "triton".to_owned(),
+                label: "TRITON".to_owned(),
+                bearing_deg: 26,
+                pitch_deg: 5,
+                radius_px: 20,
+                radius_km: 1_353,
+                distance_km: 42_000,
+            },
+            CanopyBodyProjection {
+                id: "sun".to_owned(),
+                label: "SOL".to_owned(),
+                bearing_deg: 180,
+                pitch_deg: 2,
+                radius_px: 6,
+                radius_km: 696_340,
+                distance_km: 4_495_000_000,
+            },
+        ]
+    } else if lower.contains("saturn") || lower.contains("enceladus") {
+        vec![
+            CanopyBodyProjection {
+                id: "saturn".to_owned(),
+                label: "SATURN".to_owned(),
+                bearing_deg: 0,
+                pitch_deg: -3,
+                radius_px: 46,
+                radius_km: 58_232,
+                distance_km: 140_000,
+            },
+            CanopyBodyProjection {
+                id: "enceladus".to_owned(),
+                label: "ENCELADUS".to_owned(),
+                bearing_deg: 24,
+                pitch_deg: 4,
+                radius_px: 16,
+                radius_km: 252,
+                distance_km: 35_000,
+            },
+            CanopyBodyProjection {
+                id: "sun".to_owned(),
+                label: "SOL".to_owned(),
+                bearing_deg: 180,
+                pitch_deg: 2,
+                radius_px: 8,
+                radius_km: 696_340,
+                distance_km: 1_430_000_000,
+            },
+        ]
+    } else if lower.contains("jupiter")
+        || lower.contains("europa")
+        || lower.contains("callisto")
+        || lower.contains("ganymede")
+    {
+        vec![
+            CanopyBodyProjection {
+                id: "jupiter".to_owned(),
+                label: "JUPITER".to_owned(),
+                bearing_deg: 0,
+                pitch_deg: -4,
+                radius_px: 48,
+                radius_km: 69_911,
+                distance_km: 180_000,
+            },
+            CanopyBodyProjection {
+                id: "europa".to_owned(),
+                label: "EUROPA".to_owned(),
+                bearing_deg: 22,
+                pitch_deg: 4,
+                radius_px: 18,
+                radius_km: 1_560,
+                distance_km: 45_000,
+            },
+            CanopyBodyProjection {
+                id: "sun".to_owned(),
+                label: "SOL".to_owned(),
+                bearing_deg: 180,
+                pitch_deg: 2,
+                radius_px: 10,
+                radius_km: 696_340,
+                distance_km: 778_500_000,
+            },
+        ]
+    } else if lower.contains("phobos") || lower.contains("mars") {
+        vec![
+            CanopyBodyProjection {
+                id: "mars".to_owned(),
+                label: "MARS".to_owned(),
+                bearing_deg: 10,
+                pitch_deg: -5,
+                radius_px: 38,
+                radius_km: 3_390,
+                distance_km: 9_376,
+            },
+            CanopyBodyProjection {
+                id: "phobos".to_owned(),
+                label: "PHOBOS".to_owned(),
+                bearing_deg: 342,
+                pitch_deg: 4,
+                radius_px: 18,
+                radius_km: 11,
+                distance_km: 120,
+            },
+            CanopyBodyProjection {
+                id: "sun".to_owned(),
+                label: "SOL".to_owned(),
+                bearing_deg: 180,
+                pitch_deg: 2,
+                radius_px: 14,
+                radius_km: 696_340,
+                distance_km: 227_900_000,
+            },
+        ]
+    } else {
+        vec![
+            CanopyBodyProjection {
+                id: "ceres".to_owned(),
+                label: "CERES".to_owned(),
+                bearing_deg: 12,
+                pitch_deg: -4,
+                radius_px: 28,
+                radius_km: 473,
+                distance_km: 4_500,
+            },
+            CanopyBodyProjection {
+                id: "jupiter".to_owned(),
+                label: "JUPITER".to_owned(),
+                bearing_deg: 72,
+                pitch_deg: 3,
+                radius_px: 14,
+                radius_km: 69_911,
+                distance_km: 360_000_000,
+            },
+            CanopyBodyProjection {
+                id: "sun".to_owned(),
+                label: "SOL".to_owned(),
+                bearing_deg: 180,
+                pitch_deg: 2,
+                radius_px: 12,
+                radius_km: 696_340,
+                distance_km: 414_000_000,
+            },
+        ]
+    }
+}
+
 /// A Tier-2 **Local Space Bubble** anchored at an orbital site or encounter point (`D-35-3`, `D-35-5`).
 #[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize)]
 pub struct LocalSpaceBubble {
@@ -755,6 +986,9 @@ pub struct LocalSpaceBubble {
     pub party_relations: crate::arena::party::Relations,
     pub torpedoes: Vec<InFlightTorpedo>,
     pub railgun_slugs: Vec<InFlightSlug>,
+    /// Celestial bodies visible in the bridge canopy (`SF.R13`, `SF.R16`, `D-35-15`).
+    #[serde(default)]
+    pub bodies: Vec<CanopyBodyProjection>,
     next_ordnance_id: u64,
 }
 
@@ -767,9 +1001,11 @@ impl LocalSpaceBubble {
         title: impl Into<String>,
         ic_timestamp_s: i64,
     ) -> Self {
+        let site_id = site_id.into();
+        let bodies = default_canopy_bodies_for_site(&site_id);
         Self {
             id: BubbleId(id.into()),
-            site_id: site_id.into(),
+            site_id,
             title: title.into(),
             wall_elapsed_ms: 0,
             ic_timestamp_s,
@@ -778,6 +1014,7 @@ impl LocalSpaceBubble {
             party_relations: crate::arena::party::Relations::new(),
             torpedoes: Vec::new(),
             railgun_slugs: Vec::new(),
+            bodies,
             next_ordnance_id: 1,
         }
     }
@@ -1548,7 +1785,15 @@ impl LocalSpaceBubble {
             let rel_vz = ((torp.vel_mmps[2] - target_vel[2]) / 1_000) as i128;
             let closing_mps =
                 isqrt_i128(rel_vx * rel_vx + rel_vy * rel_vy + rel_vz * rel_vz).max(100) as i64;
-            torp.tti_s = (new_dist_m / closing_mps).max(0);
+            torp.tti_s = if torp.remaining_dv_mmps > 0 && torp.accel_mps2 > 0 {
+                let v = i128::from(closing_mps);
+                let a = i128::from(torp.accel_mps2);
+                let d = i128::from(new_dist_m.max(0));
+                let disc = v.saturating_mul(v).saturating_add(2 * a * d);
+                ((isqrt_i128(disc) - v) / a).max(0) as i64
+            } else {
+                (new_dist_m / closing_mps).max(0)
+            };
 
             // Check automatic defensive laser & PDC interception across target and escorting ships
             let shooter_party = self.ships.get(&torp.shooter_id).map(|s| s.party);
@@ -1857,6 +2102,11 @@ impl LocalSpaceBubble {
 
         let mut torpedoes = Vec::with_capacity(self.torpedoes.len());
         for torp in &self.torpedoes {
+            if obs.is_some_and(|o| {
+                !super::commands::is_bubble_torpedo_detected(o, torp, self.ic_timestamp_s)
+            }) {
+                continue;
+            }
             let target_pos = self
                 .ships
                 .get(&torp.target_id)
@@ -1923,7 +2173,12 @@ impl LocalSpaceBubble {
             contacts.push(json!({
                 "id": ship.id,
                 "label": ship.callsign,
-                "kind": "ship",
+                "kind": if matches!(ship.status, HullStatus::DisabledDerelict { .. }) {
+                    "derelict"
+                } else {
+                    "ship"
+                },
+                "pixel_model": ship.pixel_model(),
                 "relation": self.party_relation(obs.party, ship.party).as_feed_str(),
                 "locked": locked,
                 "burning": ship.is_burning(),
@@ -1933,6 +2188,46 @@ impl LocalSpaceBubble {
                 "lead_pitch_deg": lead_p,
             }));
         }
+
+        for torp in &self.torpedoes {
+            if !super::commands::is_bubble_torpedo_detected(obs, torp, self.ic_timestamp_s) {
+                continue;
+            }
+            let rel_pos = [
+                torp.pos_m[0] - obs.pos_m[0],
+                torp.pos_m[1] - obs.pos_m[1],
+                torp.pos_m[2] - obs.pos_m[2],
+            ];
+            let (bearing_deg, pitch_c) = vector_to_bearing_pitch(rel_pos);
+            contacts.push(json!({
+                "id": format!("torp.{}", torp.id),
+                "label": format!("TORP-{}", torp.id),
+                "kind": "torpedo",
+                "pixel_model": "torpedo",
+                "relation": if torp.shooter_id == observer_ship_id {
+                    "friend"
+                } else {
+                    "hostile"
+                },
+                "locked": false,
+                "burning": torp.remaining_dv_mmps > 0,
+                "bearing_deg": bearing_deg,
+                "pitch_deg": pitch_c,
+                "tti_s": torp.tti_s,
+            }));
+        }
+
+        let bodies_json: Vec<Value> = if self.bodies.is_empty() {
+            default_canopy_bodies_for_site(&self.site_id)
+                .iter()
+                .map(CanopyBodyProjection::to_feed_json)
+                .collect()
+        } else {
+            self.bodies
+                .iter()
+                .map(CanopyBodyProjection::to_feed_json)
+                .collect()
+        };
 
         json!({
             "callsign": obs.callsign,
@@ -1947,6 +2242,7 @@ impl LocalSpaceBubble {
             "hull_pct": obs.hull_integrity_pct(),
             "pdc_mode": if obs.pdc_auto { "AUTO" } else { "MAN" },
             "emcon": obs.emcon.code_str(),
+            "bodies": bodies_json,
             "contacts": contacts,
         })
     }

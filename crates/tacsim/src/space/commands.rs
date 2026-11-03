@@ -281,6 +281,43 @@ pub fn hull_aboard_for_actor(w: &World, actor: ObjId) -> Option<ObjId> {
     None
 }
 
+/// Return all crew members (`ObjKind::Player` or seated bridge crew) currently aboard `hull` (`SF.R13`).
+#[must_use]
+pub fn all_aboard_crew_for_hull(w: &World, hull: ObjId) -> Vec<ObjId> {
+    let mut crew = std::collections::BTreeSet::new();
+    let mut check_room = |room: ObjId| {
+        for &obj in w.contents_of(room) {
+            if w.get(obj)
+                .is_some_and(|o| o.kind == mush_core::ObjKind::Player)
+            {
+                crew.insert(obj);
+            }
+        }
+    };
+    check_room(hull);
+    if let Some(view) = crate::port::ship::hull_view(w, hull) {
+        for room in crate::port::voyage::walkable_rooms(&view) {
+            check_room(room);
+        }
+    }
+    if let Some(sim) = w.module_state::<SpatialState>() {
+        for (&room, space) in &sim.spaces {
+            if matches!(space.anchor, mush_sim::SpaceAnchor::MovingObject { host } if host == hull)
+            {
+                check_room(room);
+            }
+        }
+        if let Some(assignments) = sim.assignments.get(&hull) {
+            for seat in assignments.seats.values() {
+                if hull_aboard_for_actor(w, seat.actor) == Some(hull) {
+                    crew.insert(seat.actor);
+                }
+            }
+        }
+    }
+    crew.into_iter().collect()
+}
+
 /// Return whether `actor` is the legal captain/principal of `hull` (Co-op charter holder,
 /// graduated title holder via [`crate::port::coop::helm_of`], or yard dispatcher).
 #[must_use]
@@ -583,6 +620,58 @@ pub fn is_bubble_ship_detected(
         .is_detected()
 }
 
+/// Pure helper used by [`LocalSpaceBubble::holotank_feed`] and [`LocalSpaceBubble::cockpit_feed`]
+/// to filter out undetected torpedoes through `mush_propagation::resolve_detection` (`SF.R13`, `D-35-10`).
+#[must_use]
+pub fn is_bubble_torpedo_detected(
+    observer: &SpaceShipState,
+    torp: &super::InFlightTorpedo,
+    at_ic: i64,
+) -> bool {
+    if torp.shooter_id == observer.id {
+        return true;
+    }
+    let dx = (torp.pos_m[0] - observer.pos_m[0]) as i128;
+    let dy = (torp.pos_m[1] - observer.pos_m[1]) as i128;
+    let dz = (torp.pos_m[2] - observer.pos_m[2]) as i128;
+    let dist_m = super::weapons::isqrt_i128(dx * dx + dy * dy + dz * dz).max(0) as i64;
+    let base_ir: u32 = if torp.remaining_dv_mmps > 0 {
+        let accel_mag = torp.accel_mps2.max(1);
+        400u32.saturating_add(u32::try_from(accel_mag.saturating_mul(180)).unwrap_or(50_000))
+    } else {
+        2
+    };
+    let aperture_permille = observer_sensor_aperture_permille(observer);
+    let scaled_signature = base_ir.saturating_mul(aperture_permille) / 1_000;
+    let range_10km = ((dist_m + 5_000) / 10_000).max(1);
+    let range_sq_term = u32::try_from(
+        i128::from(range_10km)
+            .saturating_mul(i128::from(range_10km))
+            .min(i128::from(u32::MAX / 2)),
+    )
+    .unwrap_or(u32::MAX / 2);
+    let stamp = ClockStamp {
+        clock: ClockRef::WorldIc { generation: 1 },
+        at: at_ic.max(1),
+    };
+    let prop_ctx = PropagationContext {
+        domain: None,
+        geometry: Geometry {
+            near: ObjId(1),
+            far: ObjId(2),
+            range: range_sq_term,
+            occluded: false,
+        },
+        medium: Medium::Vacuum,
+        interference: Interference {
+            noise_floor: Medium::Vacuum.attenuation(),
+            jamming: 0,
+        },
+        at: stamp,
+    };
+    resolve_detection(&prop_ctx, scaled_signature).is_detected()
+}
+
 /// Evaluate all other ships in `active.bubble` from the perspective of `hull`'s carrier ship.
 #[must_use]
 pub fn observe_bubble_contacts(
@@ -615,8 +704,8 @@ pub fn observe_bubble_contacts(
 }
 
 /// Emit viewer-filtered `space.holotank`, `space.cockpit`, and `space.docking` panel frames to
-/// `actor` (`D-35-10`, `D-35-14`).
-fn push_space_panels(ctx: &mut Ctx<'_>, hull: ObjId) {
+/// every crew member aboard `hull` (`SF.R13`, `D-35-10`, `D-35-14`).
+pub(crate) fn push_space_panels(ctx: &mut Ctx<'_>, hull: ObjId) {
     let (bubble_payloads, docking_payload) = {
         let book = ctx.w.module_state::<SpaceBubbleBook>();
         let bubble_pair = book.and_then(|b| b.active_for_hull(hull)).map(|active| {
@@ -631,33 +720,42 @@ fn push_space_panels(ctx: &mut Ctx<'_>, hull: ObjId) {
             .map(build_docking_panel_payload);
         (bubble_pair, dock_json)
     };
-    if let Some((holotank_payload, cockpit_payload)) = bubble_payloads {
-        ctx.out.push(
-            Audience::Actor(ctx.actor),
-            OutputEvent::Panel {
-                feed: HOLOTANK_FEED.into(),
-                kind: PanelFrameKind::Keyframe,
-                data: holotank_payload,
-            },
-        );
-        ctx.out.push(
-            Audience::Actor(ctx.actor),
-            OutputEvent::Panel {
-                feed: SPACE_COCKPIT_FEED.into(),
-                kind: PanelFrameKind::Keyframe,
-                data: cockpit_payload,
-            },
-        );
+    if bubble_payloads.is_none() && docking_payload.is_none() {
+        return;
     }
-    if let Some(dock_data) = docking_payload {
-        ctx.out.push(
-            Audience::Actor(ctx.actor),
-            OutputEvent::Panel {
-                feed: SPACE_DOCKING_FEED.into(),
-                kind: PanelFrameKind::Keyframe,
-                data: dock_data,
-            },
-        );
+    let mut recipients = all_aboard_crew_for_hull(ctx.w, hull);
+    if hull_aboard_for_actor(ctx.w, ctx.actor) == Some(hull) && !recipients.contains(&ctx.actor) {
+        recipients.push(ctx.actor);
+    }
+    for actor in recipients {
+        if let Some((ref holotank_payload, ref cockpit_payload)) = bubble_payloads {
+            ctx.out.push(
+                Audience::Actor(actor),
+                OutputEvent::Panel {
+                    feed: HOLOTANK_FEED.into(),
+                    kind: PanelFrameKind::Keyframe,
+                    data: holotank_payload.clone(),
+                },
+            );
+            ctx.out.push(
+                Audience::Actor(actor),
+                OutputEvent::Panel {
+                    feed: SPACE_COCKPIT_FEED.into(),
+                    kind: PanelFrameKind::Keyframe,
+                    data: cockpit_payload.clone(),
+                },
+            );
+        }
+        if let Some(ref dock_data) = docking_payload {
+            ctx.out.push(
+                Audience::Actor(actor),
+                OutputEvent::Panel {
+                    feed: SPACE_DOCKING_FEED.into(),
+                    kind: PanelFrameKind::Keyframe,
+                    data: dock_data.clone(),
+                },
+            );
+        }
     }
 }
 
@@ -1557,6 +1655,15 @@ pub(crate) fn compute_carrier_bubble_return_reserve_dv(
     .unwrap_or(2_400)
     .max(2_400);
     Some(reserve_dv)
+}
+
+/// Resolve the nearest open port place ID for `hull`'s linkdead return plan (`SF.R13`, `D-35-7`).
+#[must_use]
+pub(crate) fn nearest_return_port_for_hull(w: &World, _hull: ObjId) -> Option<String> {
+    open_port_places(w)
+        .into_iter()
+        .next()
+        .map(|(pid, _, _, _)| pid.as_str().to_owned())
 }
 
 fn resolve_hull_captain_aboard(w: &World, hull: ObjId, fallback_actor: ObjId) -> ObjId {
