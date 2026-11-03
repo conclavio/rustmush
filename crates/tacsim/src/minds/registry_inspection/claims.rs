@@ -97,7 +97,8 @@ pub(crate) fn file(ctx: &mut Ctx<'_>, text: &str) -> Result<(), CmdError> {
             .as_ref()
             .ok_or_else(|| CmdError::msg(words::CLAIMS_OFF))?;
         // The observer rule first: a hull the actor's own sensors never earned is the one
-        // sentence, whoever asks (until the IC fight, every hull: `earned_contacts`).
+        // sentence, whoever asks (only an IC field's own-sensor classification earns one:
+        // `earned_contacts`, doc 23 cut S.4b-T).
         if hulls.iter().any(|hull| !earned(w, actor, *hull)) {
             return Err(CmdError::msg(crate::surface::hull::NO_BOX));
         }
