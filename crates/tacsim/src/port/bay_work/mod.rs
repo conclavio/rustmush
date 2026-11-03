@@ -742,6 +742,23 @@ fn take(
         return Err("Too many jobs for one order; order them in parts.".to_owned());
     }
     allowed(right, &picked)?;
+    // Doc 36a P0-6: the work is run through the workshop engine on a throwaway book now, as
+    // `complete` will run it, so an order the engine would refuse then (a part in a section
+    // that does not stand, ordered without its rebuild) is refused before the escrow.
+    let mut fitted = BTreeMap::new();
+    if let Some((_, part)) = &fit {
+        for job in &picked {
+            if let BayJob::Replace {
+                component,
+                lot: Some(_),
+            } = &job.job
+            {
+                fitted.insert(component.clone(), part.condition);
+            }
+        }
+    }
+    dry_run(ctx, hull, ctx.actor, &picked, &fitted)
+        .map_err(|error| format!("That work cannot be done as ordered: {error}."))?;
     // GC.8b: the goods come from the carrier's hold, checked now and drawn at completion.
     let goods = order_goods(&picked);
     let vault = if goods.is_empty() && fit.is_none() {
@@ -857,6 +874,11 @@ pub fn cancel_order(ctx: &mut Ctx<'_>, hull: ObjId) -> Result<(), String> {
     if order.requester != ctx.actor && right_of(ctx, hull).is_none() {
         return Err(NO_RIGHT.to_owned());
     }
+    // Doc 36a P0-6: an order whose draw is settling is not cancelled under it — the draw
+    // would land on a cancelled order and its goods be lost.
+    if record.owed.is_some() {
+        return Err(SETTLING.to_owned());
+    }
     close_cancelled(ctx, record, "cancelled by order");
     Ok(())
 }
@@ -880,10 +902,56 @@ fn refused_now(w: &World, hull: ObjId, order: &BayOrder) -> Option<&'static str>
     None
 }
 
+/// **The conditions the order's fitted parts come in**, read from their lots' provenance.
+fn fitted_of(ctx: &Ctx<'_>, order: &BayOrder) -> BTreeMap<ComponentId, ComponentCondition> {
+    let mut fitted = BTreeMap::new();
+    for job in &order.jobs {
+        if let BayJob::Replace {
+            component,
+            lot: Some(lot),
+        } = &job.job
+            && let Ok(Some(part)) = act::provenance(ctx, *lot)
+        {
+            fitted.insert(component.clone(), part.condition);
+        }
+    }
+    fitted
+}
+
+/// **The work, dry-run** (doc 36a P0-6): `jobs` on `hull` as it stands, through the workshop
+/// engine on a throwaway book, as [`complete`] runs them. Nothing is written.
+///
+/// # Errors
+///
+/// The engine's refusal, as a sentence.
+fn dry_run(
+    ctx: &Ctx<'_>,
+    hull: ObjId,
+    requester: ObjId,
+    jobs: &[QuotedJob],
+    fitted: &BTreeMap<ComponentId, ComponentCondition>,
+) -> Result<(), String> {
+    let (before, _, anatomy) = unit_parts(ctx.w, hull)?;
+    let custody = CustodyTitleStatus::ResolvedTitle { owner: requester };
+    jobs::work(
+        &before,
+        &anatomy,
+        jobs,
+        &BTreeMap::new(),
+        fitted,
+        requester,
+        &custody,
+        ctx.w.world_ic_now().at,
+    )
+    .map(|_| ())
+}
+
 /// **Finish one due order** (the port tick): the hull still at the facility and its unit
 /// unchanged. An order that draws goods first owes its draw (GC.8b): the hold must still be
-/// its carrier's, docked here, and the draw lands through `tacsim_bay_work` before the work is
-/// written ([`settle`]). An order that draws nothing is completed at once ([`complete`]).
+/// its carrier's, docked here, the work must still run on the hull (doc 36a P0-6: a dry run,
+/// so no draw is owed for work that would be refused), and the draw lands through
+/// `tacsim_bay_work` before the work is written ([`settle`]). An order that draws nothing is
+/// completed at once ([`complete`]).
 fn finish(ctx: &mut Ctx<'_>, hull: ObjId) {
     let Ok(mut record) = record_of(ctx.w, hull) else {
         return;
@@ -916,6 +984,20 @@ fn finish(ctx: &mut Ctx<'_>, hull: ObjId) {
             ctx,
             record,
             "her carrier's hold is no longer here to draw from",
+        );
+        return;
+    }
+    if let Err(error) = dry_run(
+        ctx,
+        hull,
+        order.requester,
+        &order.jobs,
+        &fitted_of(ctx, &order),
+    ) {
+        close_cancelled(
+            ctx,
+            record,
+            &format!("the work could not be done ({error})"),
         );
         return;
     }
@@ -962,17 +1044,7 @@ fn complete(ctx: &mut Ctx<'_>, hull: ObjId) {
         close_cancelled(ctx, record, "the hull's design cannot be read");
         return;
     };
-    let mut fitted: BTreeMap<ComponentId, ComponentCondition> = BTreeMap::new();
-    for job in &order.jobs {
-        if let BayJob::Replace {
-            component,
-            lot: Some(lot),
-        } = &job.job
-            && let Ok(Some(part)) = act::provenance(ctx, *lot)
-        {
-            fitted.insert(component.clone(), part.condition);
-        }
-    }
+    let fitted = fitted_of(ctx, &order);
     let custody = CustodyTitleStatus::ResolvedTitle {
         owner: order.requester,
     };
@@ -1097,6 +1169,15 @@ fn settle(ctx: &mut Ctx<'_>, hull: ObjId) {
             }
             OwedKind::Hot { .. } => {}
         }
+        return;
+    }
+    // Doc 36a P0-6 (b), the belt under `cancel_order`'s SETTLING: a Draw serves an open order;
+    // one whose order has closed under it is dropped before it is submitted, and the record's
+    // count follows the ledger.
+    if matches!(owed.kind, OwedKind::Draw { .. }) && record.open().is_none() {
+        record.owed = None;
+        record.acts = landed;
+        put_bay_hull(ctx, &record);
         return;
     }
     if ctx.authoritative_pending(owed.by) {

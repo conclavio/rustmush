@@ -13,18 +13,18 @@
 use mush_core::{GOD, ObjId};
 
 use mush_org::PrincipalId;
-
+use mush_tactics::UnitMutationOp;
 use mush_tactics::field_ops::ComponentCondition;
 use tacsim::port::HullRow;
 use tacsim::port::bay_work::{BayHull, BayHullState, OrderStatus};
 
 use crate::bay_gc8::{
     bay_room, buy, component_id, damage, empty_magazine, lot_record, magazine, mint, order_of,
-    provenance, put, unit,
+    provenance, put, section_id, unit, wreck_section,
 };
 use crate::driving::{
     Rig, at_counter, fire, hold_pool, hold_vault_of, land_quietly, pilot, prospector, rigs_of, run,
-    station_room, stocked, store, to_ic,
+    seed_hold, station_room, stocked, store, to_ic,
 };
 
 const CERES: &str = "ceres_port";
@@ -254,4 +254,118 @@ async fn b36a_1_b_the_hull_takes_a_new_order_after_the_give_up() {
         1,
         "the draw landed at the ledger's next ordinal"
     );
+}
+
+/// The cannon jammed, through the unit's one plan path.
+fn jam_cannon(rig: &mut Rig, hull: ObjId) -> mush_tactics::ComponentId {
+    let cannon = component_id(&unit(rig, hull), "cannon");
+    damage(
+        rig,
+        hull,
+        vec![UnitMutationOp::SetComponentCondition {
+            component: cannon.clone(),
+            condition: ComponentCondition::Jammed
+                .to_condition_id()
+                .expect("jammed"),
+        }],
+    );
+    cannon
+}
+
+/// **36a P0-6 (a) — a doomed order is refused at the counter.** The escort's turret is
+/// destroyed, and its parts with it; berthed at C14, the lessee orders the parts replaced
+/// without the turret's rebuild. The workshop engine would refuse that work at completion (the
+/// host section does not stand) — after the parts were drawn from the hold — so the order is
+/// refused now, with the engine's reason, and no fee is held. Ordered with the rebuild, it is
+/// taken.
+#[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+async fn b36a_2_a_doomed_order_is_refused_at_the_counter() {
+    let mut rig = stocked();
+    let (pilot, row, escort, _) = two_escorts(&mut rig);
+    seed_hold(&mut rig, &row, "industrial_parts", 40, 9_700);
+    let u = unit(&rig, escort);
+    let turret = section_id(&u, "turret");
+    damage(&mut rig, escort, wreck_section(&u, &turret));
+    let workshop = station_room(&rig.tw, CERES, C14);
+    put(&mut rig, pilot, workshop, false);
+    let berthed = run(&mut rig.tw, pilot, &format!("+bay/berth #{}", escort.0));
+    assert!(berthed.contains("berthed in the workshop"), "{berthed}");
+    let quote = run(&mut rig.tw, pilot, &format!("+bay #{}", escort.0));
+    assert!(
+        quote.contains("replace cannon") && quote.contains("rebuild turret"),
+        "{quote}"
+    );
+    let refused = run(
+        &mut rig.tw,
+        pilot,
+        &format!("+bay/order #{}=replace", escort.0),
+    );
+    assert!(
+        refused.contains("cannot be done as ordered") && refused.contains("reconstruct"),
+        "{refused}"
+    );
+    assert!(
+        bay_record(&rig, escort).open().is_none(),
+        "nothing was taken: {:?}",
+        bay_record(&rig, escort)
+    );
+    let taken = run(
+        &mut rig.tw,
+        pilot,
+        &format!("+bay/order #{}=rebuild,replace", escort.0),
+    );
+    assert!(taken.contains("taken in the workshop"), "{taken}");
+    let cancelled = run(&mut rig.tw, pilot, &format!("+bay/cancel #{}", escort.0));
+    assert!(cancelled.contains("cancelled"), "{cancelled}");
+}
+
+/// **36a P0-6 (b) — no cancel while the draw settles.** The spare's rearm comes due on an empty
+/// hold: its draw is owed and refused, and until the bay gives the act up the order is not
+/// cancelled under it (SETTLING); once given up there is nothing left to cancel.
+#[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+async fn b36a_2_b_no_cancel_while_the_draw_settles() {
+    let mut rig = stocked();
+    let (pilot, row, escort, spare) = two_rearms_one_load(&mut rig);
+    first_draw_lands(&mut rig, &row, escort);
+    let due = order_of(&rig, spare).due_ic;
+    let _ = to_ic(&mut rig, due + 60);
+    let record = bay_record(&rig, spare);
+    assert!(record.owed.is_some(), "the draw is owed: {record:?}");
+    assert_eq!(order_of(&rig, spare).status, OrderStatus::Open);
+    let refused = run(&mut rig.tw, pilot, &format!("+bay/cancel #{}", spare.0));
+    assert!(refused.contains("settling"), "{refused}");
+    assert_eq!(order_of(&rig, spare).status, OrderStatus::Open);
+    let _ = given_up(&mut rig, spare);
+    let gone = run(&mut rig.tw, pilot, &format!("+bay/cancel #{}", spare.0));
+    assert!(gone.contains("no open order"), "{gone}");
+}
+
+/// **36a P0-6 (c) — no cancel once the draw has landed either.** The second window: the
+/// escort's draw has landed (the hold is empty) but the tick has not yet settled it into the
+/// work. A cancel now would refund the fee and leave the goods gone, so it is refused
+/// (SETTLING) until the next tick completes the order.
+#[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+async fn b36a_2_c_no_cancel_once_the_draw_has_landed() {
+    let mut rig = stocked();
+    let (pilot, row, escort, _) = two_rearms_one_load(&mut rig);
+    let due = order_of(&rig, escort).due_ic;
+    let _ = to_ic(&mut rig, due + 60);
+    let vault = hold_vault_of(&rig.tw, &row);
+    assert_eq!(
+        hold_pool(&mut rig.tw, vault, "ammo_he_105"),
+        0,
+        "the draw has landed"
+    );
+    let record = bay_record(&rig, escort);
+    assert!(record.owed.is_some(), "not yet settled: {record:?}");
+    assert_eq!(order_of(&rig, escort).status, OrderStatus::Open);
+    let refused = run(&mut rig.tw, pilot, &format!("+bay/cancel #{}", escort.0));
+    assert!(refused.contains("settling"), "{refused}");
+    assert_eq!(order_of(&rig, escort).status, OrderStatus::Open);
+    let _ = to_ic(&mut rig, due + 600);
+    let order = order_of(&rig, escort);
+    assert_eq!(order.status, OrderStatus::Done, "{order:?}");
+    let cannon = component_id(&unit(&rig, escort), "cannon");
+    let (loaded, capacity) = magazine(&unit(&rig, escort), &cannon);
+    assert_eq!(loaded, capacity, "the escort is rearmed");
 }
