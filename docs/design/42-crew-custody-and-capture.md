@@ -315,6 +315,35 @@ released; captivity created also by an ejection into a held cell (§4 C).
 - **Why:** doc 27 Q-R5 says NPC crew suffer injury like any character, but nothing reads an NPC's
   condition today and a captive nobody plays is a record nobody acts on; the pool return is the
   smallest thing that keeps the roster honest.
+- **Draft 0.3 (review round 2, 42-4): two corrections.** (1) "or their seat's unit is captured
+  at an ejection" cannot happen and is struck: a slot is one unit and one character
+  (`detachment/activation/runtime.rs:343–346`), and NPC pilots never eject (Q-42-10). An NPC's exit
+  is only ever at a load. (2) "Their contract ends" cannot be written where the load runs. The
+  contract is K3 state in `tacsim.crew_contracts`, owned by `tacsim_crew_hire`
+  (`detachment/crew/runtime.rs:14–16`); the NPC also holds a reservation in
+  `tacsim.detachment_reservations` (`activation/runtime.rs:184–196`) that refuses any later
+  activation with "A unit or person is already reserved." (`:393–396`), while `offers()` hides only
+  contracted NPCs (`crew/mod.rs:157`) — so ending the contract alone would put a still-reserved NPC
+  back on offer. The load's physical step (`place_in_bay`, `tow.rs:2296`) runs from `tow::tick`
+  (`:2206`), which changes action state only by submitting an action, as it does the load's own
+  finish (`TowOrder::Loaded`, `:2273–2280`). How the two records end is Q-42-26.
+
+**Q-42-26 — How a captured hull's NPC crew leave the roster.** (Draft 0.3, new; open.)
+- **Proposed default:** one authoritative K3 action that declares both families and, for the
+  NPC, deletes the contract and clears the reservation in one bundle. The load's pass does the
+  world half at once (42-5's vacate-and-release on the NPC's station, the NPC object moved to its
+  hire port's pool room, the organizer told); the tow tick then submits the action as the
+  organizer, by `Fire::as_principal` as the surface tick submits a plan's steps, keyed
+  `tacsim.crew/<npc>/captured/<recovered_ic>`, and resubmits on each pass until the ledger shows it
+  landed (the bay's owed-act precedent, `legacy-handlers.toml:53`). Until it lands the NPC stands
+  in the pool room but is not on offer.
+- **Alternative:** no action at the load: the contract and the reservation stand until the
+  organizer deactivates or the operation closes; the NPC stands at the hire port, off the field
+  roster, and is offered again only then.
+- **Why:** the ruled outcome (Q-42-5) is that the contract ends and the NPC is back in the pool;
+  the alternative is cheaper but leaves a hired NPC an organizer cannot use and nobody else can
+  hire for as long as an operation stays open. The action's owner is whichever definition may
+  declare both families under the action ledger's ownership rules; CR.1 names it.
 
 ### B. The port handover
 
@@ -748,7 +777,8 @@ the gate, `help/field.md`, `mush-bot/src/mine/*.rs`, `legacy-handlers.toml`. Gat
 decode and gate tests; no story yet.
 
 **CR.1 — Capture at the load.** Q-42-4, Q-42-5, Q-42-16, Q-42-21, Q-42-22. `tow.rs:2316–2321`'s
-second branch calls `captured_loaded`; the NPC seat's return to the pool; the `Capture` evidence
+second branch calls `captured_loaded`; the NPC seat's return to the pool; Draft 0.3 (42-4): the NPC exit's K3 action (Q-42-26), adding `detachment/crew/runtime.rs` and
+`detachment/activation/runtime.rs` to the files; the `Capture` evidence
 row; the `capture:` standing grant; `+ship/captives` and `+ship/release`. Files: `surface/tow.rs`,
 `field/crew.rs`, `surface/claim.rs`, `port/voyage.rs` or `port/ship.rs` for the verbs. Story:
 (a′) to the load, at both sizes; the GC.5 gate and its twin rewritten.
