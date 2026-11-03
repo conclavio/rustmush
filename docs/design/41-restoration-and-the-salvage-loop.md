@@ -612,9 +612,19 @@ on the structure, not a free part); (2) the charge is no longer capped at the de
 captured first (the part-capture of GC.9) and the **remainder is a debt**; (3) the **retrieval fee**
 is added when a retrieval is posted for the rig — the floor at posting, since the lessee is charged
 what the lessor would pay, not what a premium bought. The debt: a one-term `Obligation` (debtor the
-lessee, creditor Occator, due now, grace none), which the economy's sweep collects when the account
-can cover it and which reads `Delinquent` until then; Occator's desk (`+tv/lease`, `+coop/enrol`)
-refuses a delinquent debtor with the amount. The alternative is an account overdraft to a floor
+lessee, creditor Occator, due now). **A one-shot obligation does not retry on its own:** its first
+missed sweep sends it straight to `Delinquent` (`obligation.rs:697–707`) and out of the due pool,
+which holds Active and Grace alone (`:308–314`) — round-2 item 41-9 against Draft 0.2's "the sweep
+collects when the account can cover it". The cure the engine has is `reinstate_obligation`
+(`api.rs:2517`), which returns a Delinquent obligation to Active for one more attempt, and RS.5
+gives it three callers: a `+debts` verb (`+debts` lists a character's delinquent obligations with
+creditor and amount; `+debts/pay <id>` reinstates and settles one in a single post when the account
+covers it), Occator's desk (`+tv/lease` and `+coop/enrol` refuse a delinquent debtor with the amount
+and reinstate the debt, so the next sweep tries once more), and port security's docking check
+(§4.6). Authority: `create_obligation_with_terms` authorizes the actor to debit the debtor's account
+(`api.rs:2097–2100`); the recall, the write-off and Tycho's arm run on ticks as GOD and pass, and
+RS.5 creates a debt only from a tick or from the debtor's own return, never from another character's
+command. Doc 42's Q-42-7 debt is the same shape and the two stay in step. The alternative is an account overdraft to a floor
 (`CreditPolicy.floor`), which the ledger supports today but which hides the debt in a balance.
 (Q-41-12, Q-41-13.)
 
@@ -801,8 +811,10 @@ the `Recovery` row it follows. The fine posts from the actor's account at dockin
 (the customs fine's one-post shape, `picket.rs:1425`); when it does not, the shortfall is the
 one-term obligation of §4.3 and the **carrier the actor docked aboard is quarantined**:
 `DepartRefusalKind::Quarantined` in `prepare_departure`, the line "The Salt Moth is held at Ceres
-Freeport: a fine of 5,000.00cr stands against her master; it lifts when it is paid.", released on
-the sweep after the obligation settles. The row is marked `settled` with the receipt so it is never
+Freeport: a fine of 5,000.00cr stands against her master; it lifts when it is paid.", released
+when the obligation settles — by `+debts/pay`, or by the docking check itself reinstating the
+obligation (`reinstate_obligation`) at every later docking so the sweep tries again while the hold
+stands (§4.3: a one-shot never retries unprompted). The row is marked `settled` with the receipt so it is never
 charged twice. The alternative scales the fine by the subject hull's reference price (doc 39's
 Q-39-17), which fines a Dray's unlawful tow at a fifth of a Dray and a prospector's at a trifle.
 (Q-41-25.)
@@ -1057,9 +1069,12 @@ provisional unless the line says otherwise.
 - **Why:** the ruling says "a tenth of the hull's points"; wear is structure, a lost part is not wear.
 
 **Q-41-13 — The debt beyond the deposit.**
-- **Proposed default:** a one-term `Obligation` (debtor the lessee, creditor Occator, due now), collected
-  by the sweep when the account covers it, `Delinquent` until then; the desk refuses a delinquent
-  debtor a new lease or charter and names the amount.
+- **Proposed default:** a one-term `Obligation` (debtor the lessee, creditor Occator, due now),
+  `Delinquent` after its first missed sweep and cured through `reinstate_obligation` by `+debts/pay`,
+  the desk's refusal or the docking check (Draft 0.3, round-2 item 41-9: a one-shot never retries on
+  its own, so Draft 0.2's "collected by the sweep when the account covers it" was wrong; the ruling
+  stands with the cure made explicit); the desk refuses a delinquent debtor a new lease or charter
+  and names the amount.
 - **Alternative:** an overdraft to a floor on the lessee's account (`CreditPolicy.floor`).
 - **Why:** the obligation engine already knows delinquency and a creditor; an overdraft hides a debt
   inside a balance and lets it be spent.
@@ -1182,7 +1197,8 @@ provisional unless the line says otherwise.
 **Q-41-25 — The fine and the quarantine.**
 - **Proposed default:** `Pickup` 500, `Scrap` 2,000, `Recovery` 5,000 cr to the Freeport Registry,
   posted at docking from the actor's account; the shortfall an obligation and the docking carrier
-  quarantined (`DepartRefusalKind::Quarantined`) until it settles; the row marked settled.
+  quarantined (`DepartRefusalKind::Quarantined`) until it settles through `+debts/pay` or the
+  docking check's reinstate; the row marked settled.
 - **Alternative:** scaled by the subject hull's reference price.
 - **Why:** a kind is what Q-38-20 named; a reference-scaled fine makes a prospector's theft a trifle
   and a Dray's a fifth of a Dray.
@@ -1224,7 +1240,7 @@ RS.3 and RS.5; RS.8 after RS.3 and RS.5, in the space tree; RS.9 last. One marke
 | **RS.2** the bay away from port | Q-41-5..7, Q-38-16, Q-36-35 | `facility_of`'s fourth case; `source_carrier` without the port; no fee contract away from port; the "needs a workshop" line naming the nearest; `+bay/fit` from the hold on a site; bay acts waiting under a field; the yard's rearm through the bay | none (replace is refused away from port, so IN.5 does not reach it) | (a) extended, the bay half: a mend at 2× on the site from the hold, a replace refused with the line, the order finishing under way |
 | **RS.3** the claim's close | Q-41-20..23, Q-38-19, Q-S13, Q-S14 | `claim_window_s` into `TacsimRecoveryCfg`; `+salvage/authorize` (RecoverLoad for a hull, the delegation row for a block) read at the attach; org-titled claims through `principal_holders` and the narrowed award refusal; at-risk repairs written at `complete` under Salvor and reported; `+salvage/contest =recovery\|procedure\|right` with the registry's box read; `strip::vacate_claim` wired at settle, the mush-tactics twin retired | none | (b) extended at 512 and 256: the three contest kinds each vacating or failing on its named source; an org's holders told; the at-risk line in the quote and the notice |
 | **RS.4** the vacated hull's return | Q-41-18, Q-41-19, Q-38-19 | `held_for` on the bay record; `+bay/stow <hull>=<carrier>` bay to bay; the docking hook berthing held hulls into the workshop room; the fix thread's defect note closed | none | (b) extended: T's carrier takes her out of O's bay at Ceres; without one, the port holds her "held for T" and T's next carrier stows her |
-| **RS.5** the retrieval contract and the charge | Q-41-8..14, Q-38-6, Q-38-7 | `post_retrieval`, the shape, `accept_retrieval`, `+salvage/retrieve\|jobs\|accept`, the `RetrievalOrder` record carrying the acceptance and performance windows (`RETRIEVAL_WINDOW_IC_DAYS`, Q-41-11) under a 56-day contract, the four handover facts and payment, a lapsed acceptance handed to Tycho on a fresh contract; retrieval custody in `load_facts` and `Right::Retrieval`; a written-off rig's hand-back moved from the load to the destination; the wear allowance, the retrieval fee and the one-term obligation at `repossess`, `give_back` and the recall; Q-38-7's second clock; the `capture: None` hole closed with a test | IN.2 as revised (Tycho's slot-day); a lane constant until it lands | (c) extended: a dormant charter's prospector on Ahuna and on Urvara repossessed with allowance, fee and debt; a second player accepts the job, delivers to the shed and is paid; a third accepts and lapses at 28 IC days and the job is Tycho's; the desk refuses the delinquent lessee |
+| **RS.5** the retrieval contract and the charge | Q-41-8..14, Q-38-6, Q-38-7 | `post_retrieval`, the shape, `accept_retrieval`, `+salvage/retrieve\|jobs\|accept`, the `RetrievalOrder` record carrying the acceptance and performance windows (`RETRIEVAL_WINDOW_IC_DAYS`, Q-41-11) under a 56-day contract, the four handover facts and payment, a lapsed acceptance handed to Tycho on a fresh contract; retrieval custody in `load_facts` and `Right::Retrieval`; a written-off rig's hand-back moved from the load to the destination; the wear allowance, the retrieval fee and the one-term obligation at `repossess`, `give_back` and the recall, with `+debts`, `+debts/pay` and the desk's `reinstate_obligation`; Q-38-7's second clock; the `capture: None` hole closed with a test | IN.2 as revised (Tycho's slot-day); a lane constant until it lands | (c) extended: a dormant charter's prospector on Ahuna and on Urvara repossessed with allowance, fee and debt; a second player accepts the job, delivers to the shed and is paid; a third accepts and lapses at 28 IC days and the job is Tycho's; the desk refuses the delinquent lessee |
 | **RS.6** Tycho Mutual | Q-41-15..17, Q-38-18, Q-39-7, Q-39-24 | the crawler and lifter as registered designs with bills, buildable at the yard (Q-41-15); Tycho's berth, its two house hulls, a storefront party and `capital_major` 500,000 (lane v21, Q-41-17); the house arm sequencing voyage, landing, launch, tow, load, lift, dock, berth; the fallback acceptance at the window's end and on a lapse; the fee from the recovery row; the 56-day sweep with the assessment and its two exits — repair and a hull-sale offer at the reference price, or scrap at Occator's workshop (Q-41-16) | IN.2, IN.7 and IN.8 as revised; PR #340 (P0-5, a wreck in a bay) | (d) at 512 and 256: the carrier wreck retrieved by the lifter and berthed at C14, the fee paid; (c)'s no-acceptor variant; (e) the sweep: a repairable hull resold to a player, a hull past repair scrapped, the census holding |
 | **RS.7** port security | Q-41-24, Q-41-25, Q-38-20, Q-S4 | the `arrived` hook's read of proven rows across the lane's site records; `+salvage/report <hull>=registry`; the fines by kind to the Registry; the obligation on a shortfall; `DepartRefusalKind::Quarantined` and its release; rows marked settled | none | (b) extended: O fined at docking after the `recovery` vacate, O's carrier held until the obligation settles, a bare pickup row never fined |
 | **RS.8** the space seams | Q-41-26, Q-36-46, Q-36-47 | `+helm/tow` onto `file_salvage_claim` and `award_salvage_title`; `tacsim:space:custody`; the stages; real principals; the RAM path and the bounty retired; `ShipSectionId` onto `CarrierPart`; the retrieval's delivery at a dock | none | a derelict clamped, towed and docked at Ceres under the one window, contested by `+salvage/contest`, and a space retrieval job on `+salvage/jobs` delivered by a ship; built in the space tree (doc 35b §8) |
