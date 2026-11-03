@@ -1041,10 +1041,29 @@ the cursor `RigRecord.claim = Opening` and the launch act **queued behind the cl
 params) — the command still answers `Queued.`; the next fire submits the Open; the fire that
 observes the book's active row moves the cursor to `Open` and starts the queued act, whose finish
 opens the epoch and prints the claim's own seal on the `mind_sealed` line (D-23-14). The epoch's
-close finishes land `Closing` on the cursor, and the next fire submits the Close. The cursor's
-shape and home are 23-4's, below (serde default `None` for a rig with no held mind, so schema 1
-stands and every S.1–S.3 record decodes byte for byte), and the next surface fire finds every
-`Opening` and `Closing` cursor, enqueues the permit it re-mints from the record and submits. **The seam never moves in the claim's own commit** (round
+close finishes land `Closing` on the cursor, and the next fire submits the Close.
+
+**The cursor lives on `RigRecord`, beside `sortie` (`excursion.rs:1242`), never on `OpenSortie`**
+(round 2's 23-4): every path that closes an epoch `take()`s the `OpenSortie` — the recover's finish
+(`act/providers.rs:2667`), the second-carrier completion and the staff home (`recovery.rs:907`,
+`:1043`, `:1066`), the salvage load (`tow.rs:1619`) — and a `sortie` left `Some` to carry a cursor
+would trip the relaunch refusal "that rig's last trip is still open" (`providers.rs:1122–1135`,
+`:2647–2658`), the DT launch's guard (`detachment/sortie/prepare.rs:616`) and the home's parked
+test (`recovery.rs:481`); and under D-23-21 there is no `OpenSortie` at the Open at all.
+`RigRecord.claim: Option<ClaimCursor>` — `Opening { operator, licence, since_ic, tries }`, `Open {
+open: CommitToken, operator }`, `Closing { open, kind, operator }`, `Closed { open, close:
+CommitToken }`, `Refused { reason, at_ic }` — serde default `None` for a rig with no held mind, so
+schema 1 stands and every S.1–S.3 record decodes byte for byte. It carries the operator because
+the paths that close an epoch also clear the excursion (`tow.rs:1637`) and take the `OpenSortie`
+that named them (`:1260`), and the Close is submitted as the operator. `Closed` and `Refused` are
+terminal and stand until the operator's next `go` replaces them; a `go` over an `Opening`, `Open`
+or `Closing` cursor is refused ("that rig's mind claim is still open"), the relaunch guard the
+claim needs, as `sortie` already gives the epoch one. Under Q-23-21's alternative a rig recovered,
+homed or salvaged while its claim is still owed ends `Refused { reason: "epoch ended before the
+claim opened" }` — a terminal tombstone the relaunch cannot overwrite without a new `go`, so no
+claim ever opens over a hull back in its bay and the operator reads why; under the default no such
+rig exists. The next surface fire finds every `Opening` and `Closing` cursor, enqueues the permit
+it re-mints from the record and submits. **The seam never moves in the claim's own commit** (round
 2's 23-6): the capacity owner admits an Open or a Close only as a transaction holding exactly one
 typed mutation, the Roll's claim row (`mush-core` `terminal_capacity/ic_claim.rs:516–517`, "IC
 exact sole typed target"); a transaction's `mutations` span every owner and family
@@ -1266,7 +1285,7 @@ four-owner IC custody") stays untestable until S.4b's harness exists and is then
 not a defect.
 
 **S.4b's** (this section, built as §17.10 says): the production `HostTransition` and the
-`OpenSortie.claim` cursor (D-23-13); the one-seal capture and the book's IC id (D-23-14); the
+`RigRecord.claim` cursor (D-23-13, 23-4); the one-seal capture and the book's IC id (D-23-14); the
 exclusion's re-scoped freeze, the custody coexistence and the live-hull Close (D-23-15); the
 compute seat's count and refusal at the launch (D-23-16); the install-time `abi` drop and the wall
 as fallback (D-23-17); the carried memory (D-23-18); the field admitting a held mind's seal in place
