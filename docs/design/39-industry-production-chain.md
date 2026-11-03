@@ -527,23 +527,26 @@ withdraws them from the fee model. A customer's fittings order at the Stickney w
 600 clears about 127 cr a tonne after the fee — the first production story's margin (IN.5).
 
 **The arithmetic for two hulls**, on §4.8's partition (parts and the core off the top, then
-structure and fittings from the remainder, the bill's lines rounded up to whole tonnes, the
-remainder declared as the build's loss) at the proposed references:
+structure and fittings from the remainder; the assembly loss on top of the hull, split by the
+structure share; each bulk line rounded up to whole tonnes, the rounding's remainder joining the
+waste) at the proposed references:
 
 | Line | Escort (`tv_escort`, 8 t, class vehicle) | Dray (240 t, class hauler) |
 |---|---|---|
 | parts (one lot a slot) | cannon_105 28,000 + mg_coax 2,500 + visual_mk1 9,000 + plant.vehicle_mk1 22,000 = 61,500 (4,330 kg) | plant.hauler_mk1 30,000 (30,000 kg) |
 | core | Class II line core 8,000 (250 kg) | none (Class 0) |
-| assembly loss (3 %) | 240 kg | 7,200 kg |
-| remainder for structure and fittings | 8,000 − 4,330 − 250 − 240 = 3,180 kg | 240,000 − 30,000 − 7,200 = 202,800 kg |
-| alloys (0.75 of the remainder) | 2,385 kg → **3 t** × 450 = 1,350 | 152,100 kg → **153 t** × 450 = 68,850 |
-| fittings (0.25) | 795 kg → **1 t** × 520 = 520 | 50,700 kg → **51 t** × 520 = 26,520 |
+| remainder for structure and fittings | 8,000 − 4,330 − 250 = 3,420 kg | 240,000 − 30,000 = 210,000 kg |
+| structure and fittings in the hull | 2,565 + 855 kg | 157,500 + 52,500 kg |
+| assembly loss (3 % of the hull, on top, split 0.75 / 0.25) | 240 kg = 180 + 60 | 7,200 kg = 5,400 + 1,800 |
+| alloys line (structure + its loss, rounded up) | 2,745 kg → **3 t** × 450 = 1,350 (255 kg of rounding to the waste) | 162,900 kg → **163 t** × 450 = 73,350 (100 kg to the waste) |
+| fittings line | 915 kg → **1 t** × 520 = 520 (85 kg to the waste) | 54,300 kg → **55 t** × 520 = 28,600 (700 kg to the waste) |
+| inputs = hull + waste | 4,000 + 4,330 + 250 = 8,580 kg in; 8,000 of hull + 580 of waste out | 218,000 + 30,000 = 248,000 kg in; 240,000 + 8,000 out |
 | build (1 day per 20 t, floor 2) | 2 IC days = 48 work units × 68.75 = 3,300 | 14 IC days = 336 × 68.75 = 23,100 |
 | margin on the build | 25 % = 825 | 25 % = 5,775 |
-| **bill** | **≈ 75,500** | **≈ 154,000** |
+| **bill** | **≈ 75,500** | **≈ 160,800** |
 
 Against the tree: the escort's 15,000 lease deposit is a fifth of its bill; the Dray's 90,000 buyout
-is 58 % of a new one, which is what a stake-financed used hull should cost; the line tank's 100,000
+is 56 % of a new one, which is what a stake-financed used hull should cost; the line tank's 100,000
 basis stays the core-price basis. The Dray's "two weeks" (Q-38-12) is 12 days by the 20 t rule and
 14 by the owner's sentence — the table takes 14 and the rule needs the owner's eye (Q-39-14). The
 workshop row prices a berth-hour at 26 cr (Ceres) against the tariff's 100: the model's figure is
@@ -616,10 +619,10 @@ salvageable part into its stores as a lot with its `Stripped` row — the facili
 their used value less the removal labour (the tariff's strip, four IC hours) and keeps the matter
 above the fifth, which is the owner's "a navy pays its scrappers". The Dray (reference 90,000, the
 programme's buyout; plant 30,000 new): scrappable 60,000, a fifth 12,000 against a mass yield of
-91 t worth 41,000, so 12,000 for the structure; the plant used 22,500 less 400 of removal (the
-tariff's four IC hours at Stickney's ×1.0), 22,100; **about 34,000 for a 90,000 Dray**, and 91 t of
+94 t worth 42,500, so 12,000 for the structure; the plant used 22,500 less 400 of removal (the
+tariff's four IC hours at Stickney's ×1.0), 22,100; **about 34,000 for a 90,000 Dray**, and 94 t of
 alloys refill the Yards' pool. The escort (bill 75,500; parts 61,500 new): scrappable 14,000, a
-fifth 2,800 against a yield of 1.4 t worth 644, so 644 for the structure; the four parts used
+fifth 2,800 against a yield of 1.5 t worth 692, so 692 for the structure; the four parts used
 46,125 less four removals at 400, about 44,500; **about 45,000 for a 75,500 escort** — most of a
 tank is its parts, and the parts keep their value, which is the
 ruling's point. A worn part (grade 3) comes back at 0.40; a destroyed one is structure. For remains
@@ -651,22 +654,24 @@ design costs to register and to build" to doc 08.
 pools' funded way back to it.
 
 - **The bill.** `design.bill = { parts: one row a slot (from the component list and its plant
-  field), core: the design's core class or none, alloys_t: ceil(structure_kg / 1,000), fittings_t:
-  ceil(fittings_kg / 1,000), days: max(2, ceil(dry_mass_t / 20)) }`, computed at the catalogue build
-  from §4.8's partition and the goods table, with authored overrides on the unit def (`bill: {…}`)
-  for a design the rule misjudges. The price is the bill at the references plus the yard's
+  field), core: the design's core class or none, alloys_t: ceil((structure_kg + loss_kg ×
+  structure_share) / 1,000), fittings_t: ceil((fittings_kg + loss_kg × (1 − structure_share)) /
+  1,000), days: max(2, ceil(dry_mass_t / 20)) }`, computed at the catalogue build from §4.8's
+  partition and the goods table, with authored overrides on the unit def (`bill: {…}`) for a design
+  the rule misjudges. The price is the bill at the references plus the yard's
   manufacturing cost and margin (§4.4's table). A buildable design needs `logistics` (its dry mass
   and stowage) and an `interior` (§4.13); the thirteen simulator units get class templates in IN.9
   (`armour_cab`, `walker_cab`: a cab room with a console, the stowage a locker) for the line-tank
   family, the heavy, the scout and the two bipeds, and the drone, the carrier, the target, the relay
-  station and the capital hulls stay unbuildable (Q-39-20, Q-39-35). The check refuses a bill whose
-  partition exceeds the dry mass.
+  station and the capital hulls stay unbuildable (Q-39-20, Q-39-35). The check refuses a design
+  whose parts and core leave no remainder; a bill's inputs exceed the dry mass by the loss and the
+  rounding, by design, and the matter story sums the difference as waste.
 - **The order.** `+yard` at a port whose `yard` row exists, the way `+bay` fronts the bay: `+yard`
   lists the designs the yard builds and the orders standing, `+yard/quote <design>` prints the bill,
   the days and the fee, `+yard/order <design>` books the order (§4.12: an escrow endpoint at the
   yard, the booking fee held), `+yard/deliver <order>=<good> <qty>` moves bill lines from a hold
   docked at the port or from a part lot the requester holds into the escrow, in as many trips as the
-  bill takes (a Dray's 204 t over a 100 t hold is three), or buys them at the port's asks straight
+  bill takes (a Dray's 218 t over a 100 t hold is three), or buys them at the port's asks straight
   into escrow; the order submits itself when the bill is covered, the fee held and the slot reserved
   for the days; `+yard/cancel` under §4.12's charges; `+yard/collect <order>` is the handover
   (§4.13). `@wo` stays the staff and test grammar under it. `+works` is the same front at a works for
@@ -675,7 +680,7 @@ pools' funded way back to it.
 - **The pools** (Q-39-34, revising Q-39-21). The content pools are houses with floors: the Trust
   keeps two free Drays, Occator two free rigs and one escort. A house orders at the yard **when its
   account covers the bill**, never on the floor alone: the Trust's 250,000 posts eight 25,000 stakes
-  and is at 50,000 after the eighth enrolment, so a 154,000 Dray is funded by the buyouts that come
+  and is at 50,000 after the eighth enrolment, so a 160,800 Dray is funded by the buyouts that come
   back to it (90,000 each, `buyout.rs`) and by a lane raise of 250,000 to the Trust (`raises`,
   Occator's precedent, :2599) so the first reorder does not wait on the second graduation. House
   orders deliver at Stickney, where the yard is; **a house ferry** on the port tick files the
@@ -700,21 +705,24 @@ bill massed 10.7 t for an 8 t hull (review 2 #1).
 **What is missing.** The hull's own figures from **one complete partition**:
 
 ```
-dry_mass_kg      = parts_kg + core_kg + loss_kg + structure_kg + fittings_kg
+dry_mass_kg      = parts_kg + core_kg + structure_kg + fittings_kg                       (the finished hull: nothing else is in it)
 parts_kg         = Σ the catalogue mass of one part a slot (§4.1; a plant by its plant row)
 core_kg          = 150 / 250 / 500 kg for Class I / II / III, 0 for Class 0            (provisional)
-loss_kg          = dry_mass_kg × loss_permille / 1000                                   (30 ‰, the assembly loss)
-remainder_kg     = dry_mass_kg − parts_kg − core_kg − loss_kg                            (refused when ≤ 0)
+remainder_kg     = dry_mass_kg − parts_kg − core_kg                                      (refused when ≤ 0)
 structure_kg     = remainder_kg × structure_share(class)
 fittings_kg      = remainder_kg − structure_kg
+loss_kg          = dry_mass_kg × loss_permille / 1000                                   (30 ‰, the assembly loss: waste ON TOP of the hull, split by structure_share)
+inputs_kg        = dry_mass_kg + loss_kg                                                 (what the yard takes in: the hull and the waste)
 structure_kg_per_point = structure_kg / total structural points                           (armour + internals; never a heat cell)
 fittings_kg_per_point  = fittings_kg / total structural points
 ```
 
-`structure_share` by `UnitClass`: armour 0.75, vehicle 0.75, walker 0.70, hauler 0.75, drone 0.65
-(provisional); capital and station are not partitioned (not built here). The escort: 3,180 kg of
-remainder → 2,385 kg of structure and 795 of fittings, 0.80 kg of alloys and 0.27 kg of fittings a
-point; the Dray: 202,800 → 152,100 and 50,700, 83.6 kg and 27.9 kg a point. A design with no
+The loss is on the input side of the equation, never inside the hull (round 2's 39-1: a loss
+subtracted from the dry mass made the Dray's bill 234 t for a 240 t hull, matter created twice
+over). `structure_share` by `UnitClass`: armour 0.75, vehicle 0.75, walker 0.70, hauler 0.75, drone
+0.65 (provisional); capital and station are not partitioned (not built here). The escort: 3,420 kg
+of remainder → 2,565 kg of structure and 855 of fittings, 0.86 kg of alloys and 0.29 kg of fittings
+a point; the Dray: 210,000 → 157,500 and 52,500, 86.5 kg and 28.8 kg a point. A design with no
 `dry_mass_t` (the simulator units) takes its class template's (§4.13), and an authored `bill`
 override wins over the rule. Then, with §4.10's rounding:
 
@@ -725,12 +733,13 @@ override wins over the rule. Then, with §4.10's rounding:
 | strip | labour | the part at its grade | the same |
 | scrap at a workshop | — | §4.6: the yield to the operator in whole tonnes and the salvageable parts to its stores; the holder credited a fifth of the scrappable value for the structure and the parts' used value less their removal; the bale's unused kilograms bought back at the reference (§4.10) | 100 kg a point to the hold |
 | remains scrap | — | §4.6's capped yield to the hold in whole tonnes | 100 kg a point |
-| build | the bill, rounded up a line; the remainder the build's loss | the hull | — |
+| build | the bill: each bulk line the hull's share plus its share of the loss, rounded up; the rounding's remainder joins the waste | the hull, and the declared waste | — |
 
-An escort's armour patch of 100 points draws 80 kg of alloys and 27 kg of fittings from the bale; a
-Dray's draws 8.4 t and 2.8 t — 3,760 and 1,450 cr, which is what a 240 t hull's hundred points
-should cost. The imbalance resolves because repair draws 1.07 kg a point and scrap returns at most
-0.48 (0.80 × 0.6): repair-then-scrap loses mass and money. `structural_points_per_industrial_parts_t`
+An escort's armour patch of 100 points draws 86 kg of alloys and 29 kg of fittings from the bale; a
+Dray's draws 8.65 t and 2.88 t — 3,890 and 1,500 cr, which is what a 240 t hull's hundred points
+should cost. The imbalance resolves because repair draws 1.15 kg a point and scrap returns at most
+0.52 (0.86 × 0.6): repair-then-scrap loses mass and money. The matter story (IN.11) sums inputs =
+the hull + the waste at every build, which is the check that would have caught 39-1. `structural_points_per_industrial_parts_t`
 leaves the tariff with the two scrap constants; the tariff keeps labour and time only. Milling keeps
 its ratio and O-3; mining is already conserved.
 
@@ -765,9 +774,10 @@ computation, tonnes for the ledger and the market, and one rounding rule an act*
 - *Computation.* The catalogue build and every quote carry kilograms (`si.mass_kg` is already the
   measure every good declares, goods :4); the partition (§4.8), the per-point figures, the scrap
   yield and the bill's lines are kilograms until the moment they touch the ledger.
-- *A bill* rounds each bulk line **up** to whole tonnes; the rounded remainder (615 kg of alloys and
-  205 of fittings for an escort) is declared as part of the build's loss line, so the matter story
-  sums. Parts are one lot a slot and round nothing.
+- *A bill* rounds each bulk line — the hull's share plus its share of the assembly loss — **up** to
+  whole tonnes; the rounded remainder (255 kg of alloys and 85 of fittings for an escort) joins the
+  declared waste, so the matter story sums: inputs = the hull + the waste. Parts are one lot a slot
+  and round nothing.
 - *A repair* draws from **the hull's opened bale**: the first repair on a hull debits one whole tonne
   of alloys and one of fittings from the source hold or store into the hull's bay record
   (`BayHull.bale: { alloys_kg, fittings_kg }`), and every repair after it consumes kilograms from
@@ -778,7 +788,7 @@ computation, tonnes for the ledger and the market, and one rounding rule an act*
   buys the remainder back at the reference price, kilogram for kilogram, with no labour and no fifth
   applied, and the kilograms join its pool. A hull with an opened bale therefore owes nothing and
   holds nothing it did not pay for, and a one-point repair on a fresh hull costs a tonne of each
-  good up front and 1.07 kg of them for real — the tonne a yard would open anyway, and the rest of
+  good up front and 1.15 kg of them for real — the tonne a yard would open anyway, and the rest of
   it comes back at what it cost.
 - *Scrap* mints **down** to whole tonnes into the receiving pool and declares the fraction a loss;
   the holder's credit is computed on the exact kilograms (§4.6), so the money never rounds against
@@ -861,7 +871,7 @@ arm: the house is requester, payer and beneficiary, its storefront the source, a
 limit (§4.7). The old `@wo` grammar stays for staff and tests and drafts against the same records.
 
 Escrow custody and the collection: an order's escrow is the requester's vault at the port; a hull's
-bill may arrive over several voyages (a Dray's 204 t over three 100 t holds); an uncollected delivery
+bill may arrive over several voyages (a Dray's 218 t over three 100 t holds); an uncollected delivery
 sits in escrow and, after 28 IC days, the facility charges a slot-day a day of storage from the
 requester's account until it is collected or the account runs dry, when the facility takes the goods
 (the lease's dormancy shape, doc 18). The house arm delivers and collects its own.
@@ -1264,7 +1274,7 @@ for the record. §6 is the plan built from all of them.
   `AwaitingDelivery` order on its next fire; an uncollected delivery pays storage after 28 IC days.
 - **Alternative:** the holder renews reservations by hand (`@wo/restamp`'s shape) and collects by
   hand.
-- **Why:** a 20-day plant and a 14-day Dray cannot live on a 7-day stamp, and a 204 t bill cannot
+- **Why:** a 20-day plant and a 14-day Dray cannot live on a 7-day stamp, and a 218 t bill cannot
   arrive in one hold; a delivery nobody triggers is an order that never finishes.
 
 **Q-39-29 — Cancellation.**
@@ -1378,7 +1388,7 @@ fees and the stores it needs).
 | **IN.5** the first production story: the refine and the works | Q-39-4, Q-39-5, Q-39-6, Q-39-23, Q-39-31 | the `refinery` row and `MillDef.kind: refine` at Kasei (5:4, 20 t, 40 t a day, the seed as opening stock, the bid's `refresh`); the `works` rows at Stickney and Ceres (Freeport Works, the new org, with the alloy and carbon bids); `content/industry/recipes-v1.json` with `fittings` and `output_lots`, loaded by the deploy template; the Exchange's ore asks; the house purchase of Kasei's alloys | **the bot, over SSH, at 256 and 512:** a captain mines carbon ore on Kerwan (Ahuna / Urvara for the ground half), sells concentrate to the Exchange and buys its carbon ask, hauls both to Stickney, sells the concentrate to Kasei (refined on the next fires, Kasei's ask restocking by the milled units), orders fittings at the works with their own alloys and carbon through `+works`, collects five tonnes two fires later and sells them to the Co-op at Ceres for 600; the matter pin and the mill's drift check hold throughout |
 | **IN.6** the part lot at the workshop | Q-39-12 | `Replace{lot: Store}` from the operator's storefront at the catalogue price, `NO_PART`, the seeded part rows | GC.8's refit run pays 480 of labour and 28,000 for the cannon; the seventh replace at Ceres refuses `NO_PART`; the lot's row reads `Seeded`; the store's count after the order is six less one |
 | **IN.7** the part recipes | Q-39-22, Q-39-31 | the mount, sight, pod and plant recipes at the works with `output_lots: each`; the Stickney strategic-ore bid; instrument boards from Luna; the seeds retire | 2 t of strategic ore, 1 t of boards and 3 t of fittings become ten `sensor.visual_mk1` lots at Stickney with `Manufactured` rows; one is fitted to a scout by `+bay/fit`; a disputed part (a `Stripped` row under a live claim) is refused at a build's custody |
-| **IN.8** the mass budget and scrap | Q-39-15, Q-39-16, Q-39-17, Q-39-25, Q-39-26 | the partition at the catalogue build, per-design `structure_kg_per_point` and `fittings_kg_per_point` counting structural cells only; repair draws both from the bale and `+bay/return` sells the remainder back at the reference; the three constants retire; scrap as §4.6 and §4.10 at a workshop (the yield to the operator's stock in tonnes, the salvageable parts to its stores at a used value less removal, a fifth of the scrappable value for the structure) and on a site (the capped yield, the room check) | a whole intact escort scrapped at Stickney puts 1 t in the Yards' pool and four part lots in its stores and credits about 45,000 of its 75,500; a whole Dray credits about 34,000 of 90,000 and 91 t of alloys; a Dray with a destroyed plant credits 18,000; an opened bale's 920 kg comes back at 414 cr; a Dray's remains on Urvara (512) and an escort's on Ahuna (256) yield 40 t and 1 t into the hold, the full hold refusing; a Dray after SF.R15 counts no heat points |
+| **IN.8** the mass budget and scrap | Q-39-15, Q-39-16, Q-39-17, Q-39-25, Q-39-26 | the partition at the catalogue build, per-design `structure_kg_per_point` and `fittings_kg_per_point` counting structural cells only; repair draws both from the bale and `+bay/return` sells the remainder back at the reference; the three constants retire; scrap as §4.6 and §4.10 at a workshop (the yield to the operator's stock in tonnes, the salvageable parts to its stores at a used value less removal, a fifth of the scrappable value for the structure) and on a site (the capped yield, the room check) | a whole intact escort scrapped at Stickney puts 1 t in the Yards' pool and four part lots in its stores and credits about 45,000 of its 75,500; a whole Dray credits about 34,000 of 90,000 and 94 t of alloys; a Dray with a destroyed plant credits 18,000; an opened bale's 914 kg comes back at 411 cr; a Dray's remains on Urvara (512) and an escort's on Ahuna (256) yield 40 t and 1 t into the hold, the full hold refusing; a Dray after SF.R15 counts no heat points |
 | **IN.9** the yard and the handover | Q-39-14, Q-39-18, Q-39-19, Q-39-20, Q-39-33, Q-39-36 | the `yard` row at `p14_slipway`; the hull recipe and the kit lot; the `YardCommission` record and the commission action; `tacsim.owned_hulls` and `tacsim.hull_provenance`; the register read by view, helm, berth and free-hull paths; `+bay/stow <hull>=<carrier>`; the rig `title_view`; `armour_cab` and `walker_cab` templates on the tanks and bipeds; empty magazines; the bill from the design | a captain books an escort at Stickney, delivers its bill over two trips, waits two IC days with the clock stepped, collects it: it stands in the slipway's workshop room titled to them with a fresh mark, `+bay` quotes it clean with empty magazines, `+bay/order rearm` loads it from the hold, `+bay/stow <hull>=<their Dray-P>` puts it in the bay, `+tv/<n> board` and `launch` work on Ahuna, and `+coop/buyout` on the Dray-P is not refused for it; a commission failed by staff hand between the kit's consumption and the title resumes on the next fire and finishes; the bot types it |
 | **IN.10** the pools | Q-39-7, Q-39-21, Q-39-34 | the Trust's raise; the floors and the funded house orders; the house ferry under a DARK house helm; `NO_HULL`'s two texts | eight charters leave no free Dray and the ninth captain hears "cannot yet fund one"; two buyouts later the Trust orders; fourteen IC days plus the passage later a ninth Dray docks at Ceres under the Trust's title as a register row, the desk enrols the captain, and the applier's preflight still passes |
 | **IN.11** the matter story and the adversarial set | Q-39-8, Q-38-29 | one story at 256 and 512: mine → sell → mill → refine → works → part → fit, and ore → alloys → hull, with Σ mined = Σ (pools + lots + bills + losses) asserted; the adversarial stories not already in a cut (two orders for one bale, the failure between consumption and title under a restart, a competing reservation at the deadline); the bot's `+yard`, `+works`, `+market/sell` and `+bay/order replace` vocabulary | the story passes at both sizes with the bot typing the player's half; the sum holds to the kilogram with the losses declared |
