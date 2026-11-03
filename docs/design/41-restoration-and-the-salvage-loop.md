@@ -1,6 +1,6 @@
 # 41. Restoration and the salvage loop, second round — surveyed
 
-Draft 0.1, 2026-11-03, docs only. Surveyed against `origin/main` at `c83c2eff` (PR #339, SF.R15; doc
+Draft 0.2, 2026-11-03, docs only. Surveyed against `origin/main` at `c83c2eff` (PR #339, SF.R15; doc
 36a's lanes 1, 2, 4 and 5 merged as PRs #334, #343, #342 and #346; lane 3 open as PR #340), with
 [doc 39](39-industry-production-chain.md) (PR #347, Draft 0.2 at `62218176`, being revised to Draft
 0.3 after two outside reviews) stacked under it so the README row lands after doc 39's. This is the
@@ -10,10 +10,13 @@ recovery), D (the loop's close, forensics, crime), the Q-36-46/47 seams with spa
 retrieval contracts and Q-38-18's NPC salvage organization. Doc 38 §8's list of what it had to
 settle is this document's table of contents. Three read-only lanes re-verified every anchor doc 38
 §4 B, C and D cite at this tree; §3 carries the line numbers as they stand now and §3.10 the eight
-places doc 38's reading was wrong or has moved.
+places doc 38's reading was wrong or has moved. Draft 0.1, earlier the same day, was the survey.
+**Draft 0.2 records the owner's rulings of 2026-11-03 on every question:** Q-41-11, Q-41-15,
+Q-41-16 and Q-41-17 amended, every other default accepted as written. §4a lists what the
+amendments change elsewhere.
 
 The form is doc 38's: a survey that asks the owner numbered questions, each with a proposed default,
-an alternative and a reason; a later draft carries the rulings and §6's cut list becomes the plan.
+an alternative and a reason; this draft carries the rulings and §6's cut list is the plan.
 "Provisional" marks a number to be tuned later under the 2026-10-24 rule (take a reasonable default,
 tune later, never hold a build on it). **(expensive to reverse)** keeps doc 38 Q-38-10's meaning: an
 answer that would take a significant refactor of the codebase to undo — not stored data and not a
@@ -42,8 +45,8 @@ NPC organization's hulls and whether it works on its own account; how a vacated 
 what a port does with her; which evidence source each contest kind reads; what port security fines
 and quarantines, and on what proof; and how the space tow rides the same path. Each gets a section
 in §4 with what exists, what the rulings require and the questions it raises; §5 is the owner survey
-(Q-41-1..26); §6 the plan, cuts RS.0–RS.9, ordered after doc 39's IN.2 and IN.7 where it depends on
-them.
+(Q-41-1..27, all ruled in this draft); §6 the plan, cuts RS.0–RS.9, ordered after doc 39's IN.2,
+IN.7 and IN.8 where it depends on them.
 
 ## 2. What binds this survey, and what it leaves alone
 
@@ -557,10 +560,13 @@ when it does. (Q-41-10.)
 
 **The window and the fallback.** At the WorldIc deadline with no acceptance, the sweep offers the
 job to Tycho Mutual, which accepts it (`accept_contract_as` by the house arm) and runs it as §4.4
-says. A PC acceptor carries a performance deadline (provisional 7 IC days from acceptance, 7 real
-hours at rate 24): not delivered by then, the acceptance lapses, the job reopens for what is left
-of the window or goes to Tycho if the window has run, and the acceptor loses nothing but the job;
-the alternative bonds a tenth of the fee at acceptance, forfeit on a lapse. (Q-41-11.)
+says. A PC acceptor carries a performance deadline of **28 IC days from acceptance** (the owner's
+ruling on Q-41-11: the same figure as the acceptance window — a little over a real day at rate 24,
+so a player can come back the next day at the same hour with four hours in hand; Draft 0.1's 7 IC
+days was seven real hours, which nobody can be held online for): not delivered by then, the
+acceptance lapses, the job goes to Tycho at once (the poster has waited up to 56 IC days by then)
+and the acceptor loses nothing but the job. One knob, `RETRIEVAL_WINDOW_IC_DAYS`, serves both
+windows. (Q-41-11.)
 
 **The repossession charge.** `repossess` gains GC.9's assessment with two changes and one addition,
 and `give_back` and the dormancy recall take the same: (1) the **wear allowance**: structural points
@@ -593,8 +599,13 @@ recovery of a carrier wreck on the ground; its fee from the cost model. Q-39-24 
 Mutual Assurance & Salvage at Ceres, the recovery row, the formula. Q-39-7: houses run on the port
 tick from their own capital. The organization is doc 39's; this document gives it hulls, an arm and
 a sweep, and re-asks nothing it ruled. Ceres is inside the player's zone, which the owner's words
-put it outside of; the mitigation is that nothing of Tycho's is ever leased, sold or bought by a
-player: its hulls are house hulls like the Occator Yard, reached only through the contract.
+put it outside of; the mitigation is price, not fiat (the owner's ruling on Q-41-15): Tycho's own two
+hulls are house hulls like the Occator Yard, reached only through the contract, but their designs
+are registered designs the Stickney yard builds for anyone at their bill (doc 39 IN.8 as revised in
+Draft 0.3), which by doc 39 §4.4's provisional arithmetic puts a lifter near 300,000 cr and a crawler
+near 80,000 cr — out of a new captain's reach and in a prosperous one's sights, which is what
+expensive things people can look forward to are for. No lease programme offers either this round: a
+deposit's price would undo the point.
 
 **Its hulls.** Two definitions and two house hulls on a Tycho berth at Ceres Freeport (lane v21):
 
@@ -625,20 +636,31 @@ The crawler and lifter are in the field's count while on the ground (Q-CF-21's c
 units of Tycho's party if a field opens over them, which is the one place an NPC hull of a concord
 faction can be shot at; its loss is a wreck like any other, and Tycho posts a retrieval for it.
 
-**On its own account.** Proposed: Tycho **sweeps**. A wreck that has lain on a lane site's index for
-56 IC days (two write-off bars, provisional) with no claim filed and no retrieval posted is
-recovered by Tycho under its own salvage claim on the one claim path — lawful on open ground;
-lawful on owned ground only with the landholder's authorization (§4.5), which Tycho asks for by the
-registry's notice and takes as given after 7 IC days of silence; a Registry seed reads as open
-ground — then scrapped at Occator's workshop at Ceres under doc 39's IN.7 as revised (the yield into
-Occator's stock, Tycho credited the capped value less the fee), so a raid's wrecks return to the
-chain as alloys instead of filling a site record's object cap. Remains it never touches (anyone's
-to scrap). The alternative is no account of its own: wrecks lie until a player claims them, and a
-long-lived site fills. The raid director's wrecks are the case this decides. (Q-41-16.)
+**On its own account.** Tycho **sweeps**, and disposes by condition (the owner's ruling on Q-41-16).
+A wreck that has lain on a lane site's index for 56 IC days (two write-off bars, provisional) with no
+claim filed and no retrieval posted is recovered by Tycho under its own salvage claim on the one
+claim path — lawful on open ground; lawful on owned ground only with the landholder's authorization
+(§4.5), which Tycho asks for by the registry's notice and takes as given after 7 IC days of silence;
+a Registry seed reads as open ground — awarded to Tycho at the window's end (an organization's
+award, which §4.5's narrowing allows) and brought to Ceres. There she is assessed and quoted (GC.9's
+assessment, the tariff at Occator's 1.2): where the restoration quote is **under the hull's
+reference price** (Q-39-17: the bill-derived price, or a programme hull's buyout) less a resale
+margin (provisional 20 %), Tycho has her repaired at the workshop and **resells** her at the
+reference price — through a hull-sale contract on the generic engine (an `Offered` contract with
+the hull's `TransferTitle` as its deliverable and the price as its payment, `Public`, accepted by a
+buyer the way a retrieval is accepted; the path doc 37 §5.4's "an armed hull for sale" already
+owes, listed at the port by `+salvage/forsale`, a provisional name), title passing at the buyer's
+acceptance; where the quote is over that line, or the hull is past repair, she is scrapped at
+Occator's workshop under doc 39's IN.7 as revised (the yield into Occator's stock, Tycho credited
+the capped value less the fee). Either way a raid's wrecks come back to the economy — as a hull for
+sale or as alloys — instead of filling a site record's object cap. Remains it never touches
+(anyone's to scrap). The raid director's wrecks are the case this decides. (Q-41-16.)
 
-**Capital.** 50,000 and a raise of 500,000 (provisional; Occator's raise is 250,000), so it can
-escrow its own fees and absorb a lost crawler; the capital clause bounds how many jobs it holds at
-once (one slot, one job). Its fee income and its scrap credit are its recapitalization. (Q-41-17.)
+**Capital.** `capital_major` 500,000 on the lane row (the owner's ruling on Q-41-17: Tycho is a big
+company and is not resource-constrained at an individual trader's scale; Draft 0.1 proposed 50,000
+and a raise), so it escrows its own fees, carries a repair ahead of a resale and absorbs a lost
+crawler; the capital clause still binds it, but the practical bound is its one lifter (one slot, one
+job). Its fee income, its resales and its scrap credit are its recapitalization. (Q-41-17.)
 
 ### 4.5 The loop's close
 
@@ -836,20 +858,52 @@ whole at both sizes and that (c) used a fixture instead of (a)'s casualty is ans
   a second player accepts, tows and loads it, docks at Ceres, hands it to the shed and is paid; the
   variant where nobody accepts runs 28 IC days under the clock and Tycho's lifter comes.
 - **(d) The carrier wreck (new).** GC.3's fought hull loss on Urvara (512) and on Ahuna (256): the
-  owner posts a retrieval; no player tug can take her (the floor's line); Tycho's lifter lands, the
+  owner posts a retrieval; no tug of the shipped kit can take her (the floor's line; a player-built
+  crawler, Q-41-15, could); Tycho's lifter lands, the
   crawler tows her to the pad, loads her with her wrecked bay rigs, lifts, docks at Ceres and berths
   her in C14; the fee pays; `+bay` quotes the rebuild.
 - **(e) The sweep (new).** A raider wreck left 56 IC days on Ahuna is claimed by Tycho, retrieved and
-  scrapped at Ceres; the matter census holds to the tonne (doc 39's IN.10 story takes the line).
+  assessed at Ceres: a repairable hull is repaired and sold to a player at the reference price, a
+  hull past repair is scrapped; the matter census holds to the tonne (doc 39's IN.10 story takes the
+  line).
 
 Every step through the production command paths (`+tv`, `+bay`, `+salvage`, `@contract` for the
 staff view, `+ship`), never a staff hand past the seams doc 36a §8 allows; the bot's vocabulary for
 the player's half is RS.0's.
 
+## 4a. Consequences of the rulings
+
+What the four amendments of 2026-11-03 change beyond their own questions.
+
+- **The acceptor's deadline (Q-41-11).** One knob serves both windows: `RETRIEVAL_WINDOW_IC_DAYS`
+  (28) is the acceptance window from posting and the performance window from acceptance. A lapsed
+  acceptance hands the job to Tycho at once rather than reopening it; RS.5's story runs the lapse
+  under the clock beside the no-acceptor variant.
+- **Tycho's designs are buildable (Q-41-15).** `tycho_crawler` and `tycho_lifter` are registered
+  designs with bills the catalogue build derives (doc 39 IN.8 as revised in Draft 0.3), authored in
+  the kit with class, `dry_mass_t` and the bill inputs, not as house-only content; the Stickney yard
+  builds them for anyone with the money and the materials; no lease programme offers them; Tycho's
+  own two are house hulls it keeps. A player-built crawler is a tug at the carrier floor like
+  Tycho's, so story (d)'s "no tug can take her" holds for the shipped kit, and the story says so.
+- **Disposition by condition (Q-41-16).** RS.6's sweep gains an assessment step and two exits:
+  repair and resale at the reference price through a hull-sale contract (the generic engine's offer
+  with a `TransferTitle` deliverable — a path the game owes anyway, doc 37 §5.4), or scrap under IN.7.
+  Tycho's org needs a storefront party and an account for the resale (Occator's precedent) on lane
+  v21, and its sweep claim's award is an organization's award, which RS.3's narrowing allows. The
+  rule is any owner's: a hull is scrapped only when it costs more to repair than it sells for with a
+  margin.
+- **Capital (Q-41-17).** `capital_major` 500,000 on the lane row; no raise clause.
+
 ## 5. Owner survey
 
-Each question: a proposed default, an alternative, the reason. Numbers are provisional unless the
-line says otherwise.
+**Ruled 2026-11-03.** The owner amended Q-41-11 (the acceptor's performance deadline is 28 IC days
+from acceptance; the owner's note cited it under Q-41-10's number, whose fee basis stands as
+written), Q-41-15 (Tycho's hulls are not withheld by fiat: their designs are buildable at the yard at
+a bill that prices them out of near-term reach), Q-41-16 (a swept hull is repaired and resold when
+that pays, scrapped only when it would not) and Q-41-17 (capital 500,000); every other default is
+accepted as written. Each amended question carries its decision first, with the proposed text kept
+under it for the record; the rest stand with their proposed text as the ruling. Numbers are
+provisional unless the line says otherwise.
 
 ### 5.1 The tender
 
@@ -940,8 +994,13 @@ line says otherwise.
   underbid by the house; the owner should look at 5,250 against 5,000 before it ships.
 
 **Q-41-11 — A PC acceptor who fails.**
-- **Proposed default:** a performance deadline of 7 IC days from acceptance; past it the acceptance
-  lapses, the job reopens or goes to Tycho, no penalty.
+- **Decision (owner ruling, 2026-11-03):** the deadline is **28 IC days from acceptance**, the same
+  figure as the acceptance window. Seven IC days is only seven real hours at rate 24, and players
+  cannot be expected to be online or available for the whole of it; 28 IC days is a little over a
+  real day, so a player can come back the next day at the same time and still have four hours to
+  finish up. Past it the acceptance lapses and the job goes to Tycho; no penalty.
+- **Proposed default (as written):** a performance deadline of 7 IC days from acceptance; past it
+  the acceptance lapses, the job reopens or goes to Tycho, no penalty.
 - **Alternative:** a bond of a tenth of the fee at acceptance, forfeit on a lapse.
 - **Why:** a first job board should not take money to look at; a griefer who accepts and sits costs
   the poster seven real hours, which the alternative is there to price if it happens.
@@ -972,25 +1031,41 @@ line says otherwise.
 ### 5.4 Tycho Mutual
 
 **Q-41-15 — Tycho's hulls.**
-- **Proposed default:** a 120 t tracked `tycho_crawler` (`heavy`) and a 600 t `tycho_lifter` with a
-  crawler slot and a 300 t / 1,200 m3 load slot, both house hulls on a Tycho berth at Ceres, never
-  leased or sold.
+- **Decision (owner ruling, 2026-11-03):** the default's two hulls, without "never leased or sold".
+  It is good to have expensive things people can look forward to; the point was that they should
+  not be achievable in the near term, and a significant bill of materials prices them high
+  naturally. So `tycho_crawler` and `tycho_lifter` are registered designs the Stickney yard builds
+  at their bill (doc 39 IN.8 as revised in Draft 0.3; near 80,000 and near 300,000 cr by doc 39
+  §4.4's provisional arithmetic); Tycho's own two are house hulls it keeps; no lease programme
+  offers them this round, since a deposit's price would undo the point.
+- **Proposed default (as written):** a 120 t tracked `tycho_crawler` (`heavy`) and a 600 t
+  `tycho_lifter` with a crawler slot and a 300 t / 1,200 m3 load slot, both house hulls on a Tycho
+  berth at Ceres, never leased or sold.
 - **Alternative:** one landing recovery ship that is itself the tug, clamping the wreck on the
   ground as `+helm/tow` clamps a derelict.
 - **Why:** the owner chose the crawler over the ship's tow; a crawler needs a carrier and a Dray's
   20 t bay is not it; two authored hulls are content.
 
 **Q-41-16 — Tycho on its own account.**
-- **Proposed default:** it sweeps: a wreck 56 IC days on a lane site with no claim and no retrieval
-  is claimed by Tycho on the one claim path (open ground; owned ground with the landholder's
-  authorization, taken as given after 7 IC days of silence), retrieved and scrapped at Occator's
-  workshop under IN.7, the alloys into the chain; remains untouched.
+- **Decision (owner ruling, 2026-11-03):** the sweep, with the disposition decided by condition. A
+  hull that can be repaired and resold is repaired and resold — that is the obvious route; scrapping
+  is for a hull that would cost more to repair than it can be resold for with a profit. The test is
+  the restoration quote (GC.9's assessment at Occator's multiplier) against the reference price
+  (Q-39-17) less a provisional 20 % resale margin: under it, repair at the workshop and a hull-sale
+  offer at the reference price; over it, or past repair, scrap under IN.7.
+- **Proposed default (as written):** it sweeps: a wreck 56 IC days on a lane site with no claim and
+  no retrieval is claimed by Tycho on the one claim path (open ground; owned ground with the
+  landholder's authorization, taken as given after 7 IC days of silence), retrieved and scrapped at
+  Occator's workshop under IN.7, the alloys into the chain; remains untouched.
 - **Alternative:** never on its own account; wrecks lie until a player claims them.
 - **Why:** the raid director leaves wrecks every raid and a site record caps its objects; a sweeper
   that scraps returns the matter to Kasei's chain, which is Q-38-14's conservation.
 
 **Q-41-17 — Tycho's capital.**
-- **Proposed default:** 50,000 and a raise of 500,000; one job at a time (one slot).
+- **Decision (owner ruling, 2026-11-03):** at least 500,000 from the start: Tycho is a big company
+  and is not resource-constrained at the scale of individual traders. `capital_major` 500,000 on
+  the lane row; one job at a time stays, bounded by the one lifter rather than by money.
+- **Proposed default (as written):** 50,000 and a raise of 500,000; one job at a time (one slot).
 - **Alternative:** no raise; the capital clause stalls it after a few fees.
 - **Why:** it escrows its own fees as the fallback acceptor and may lose a crawler.
 
@@ -1086,8 +1161,9 @@ line says otherwise.
 
 ## 6. The plan: cuts RS.0–RS.9
 
-Each cut lands as one PR, tested through the production command paths with its story at both
-ground sizes (Q-38-29); each cut's note goes to `41-cut-notes.md`. Doc 39's rulings bind
+The rulings of 2026-11-03 make this the implementation order. Each cut lands as one PR, tested
+through the production command paths with its story at both ground sizes (Q-38-29); each cut's note
+goes to `41-cut-notes.md`. Doc 39's rulings bind
 throughout; where a cut consumes one of doc 39's cuts it says so in one line and names it "as
 revised in Draft 0.3", never its mechanics. **Dependencies:** RS.0 ∥ RS.1 ∥ RS.2 ∥ RS.3 may start
 now; RS.4 after RS.3 (they share `claim.rs`'s `settle` and the bay record); RS.5 after RS.3 (one
@@ -1101,8 +1177,8 @@ RS.3 and RS.5; RS.8 after RS.3 and RS.5, in the space tree; RS.9 last. One marke
 | **RS.2** the bay away from port | Q-41-5..7, Q-38-16, Q-36-35 | `facility_of`'s fourth case; `source_carrier` without the port; no fee contract away from port; the "needs a workshop" line naming the nearest; `+bay/fit` from the hold on a site; bay acts waiting under a field; the yard's rearm through the bay | none (replace is refused away from port, so IN.5 does not reach it) | (a) extended, the bay half: a mend at 2× on the site from the hold, a replace refused with the line, the order finishing under way |
 | **RS.3** the claim's close | Q-41-20..23, Q-38-19, Q-S13, Q-S14 | `claim_window_s` into `TacsimRecoveryCfg`; `+salvage/authorize` (RecoverLoad for a hull, the delegation row for a block) read at the attach; org-titled claims through `principal_holders` and the narrowed award refusal; at-risk repairs written at `complete` under Salvor and reported; `+salvage/contest =recovery\|procedure\|right` with the registry's box read; `strip::vacate_claim` wired at settle, the mush-tactics twin retired | none | (b) extended at 512 and 256: the three contest kinds each vacating or failing on its named source; an org's holders told; the at-risk line in the quote and the notice |
 | **RS.4** the vacated hull's return | Q-41-18, Q-41-19, Q-38-19 | `held_for` on the bay record; `+bay/stow <hull>=<carrier>` bay to bay; the docking hook berthing held hulls into the workshop room; the fix thread's defect note closed | none | (b) extended: T's carrier takes her out of O's bay at Ceres; without one, the port holds her "held for T" and T's next carrier stows her |
-| **RS.5** the retrieval contract and the charge | Q-41-8..14, Q-38-6, Q-38-7 | `post_retrieval`, the shape, `accept_retrieval`, `+salvage/retrieve\|jobs\|accept`, `RETRIEVAL_WINDOW_IC_DAYS`, the delivery fact and payment; the wear allowance, the retrieval fee and the one-term obligation at `repossess`, `give_back` and the recall; Q-38-7's second clock; the `capture: None` hole closed with a test | IN.2 as revised (Tycho's slot-day); a lane constant until it lands | (c) extended: a dormant charter's prospector on Ahuna and on Urvara repossessed with allowance, fee and debt; a second player accepts the job, delivers to the shed and is paid; the desk refuses the delinquent lessee |
-| **RS.6** Tycho Mutual | Q-41-15..17, Q-38-18, Q-39-7, Q-39-24 | the crawler and lifter definitions, Tycho's berth, pool and raise (lane v21); the house arm sequencing voyage, landing, launch, tow, load, lift, dock, berth; the fallback acceptance at the window's end; the fee from the recovery row; the 56-day sweep with the scrap at Occator's workshop | IN.2 and IN.7 as revised; PR #340 (P0-5, a wreck in a bay) | (d) at 512 and 256: the carrier wreck retrieved by the lifter and berthed at C14, the fee paid; (c)'s no-acceptor variant; (e) the sweep with the census |
+| **RS.5** the retrieval contract and the charge | Q-41-8..14, Q-38-6, Q-38-7 | `post_retrieval`, the shape, `accept_retrieval`, `+salvage/retrieve\|jobs\|accept`, `RETRIEVAL_WINDOW_IC_DAYS` serving both the acceptance window and the acceptor's 28-IC-day performance window (Q-41-11), the delivery fact and payment, a lapsed acceptance handed to Tycho; the wear allowance, the retrieval fee and the one-term obligation at `repossess`, `give_back` and the recall; Q-38-7's second clock; the `capture: None` hole closed with a test | IN.2 as revised (Tycho's slot-day); a lane constant until it lands | (c) extended: a dormant charter's prospector on Ahuna and on Urvara repossessed with allowance, fee and debt; a second player accepts the job, delivers to the shed and is paid; a third accepts and lapses at 28 IC days and the job is Tycho's; the desk refuses the delinquent lessee |
+| **RS.6** Tycho Mutual | Q-41-15..17, Q-38-18, Q-39-7, Q-39-24 | the crawler and lifter as registered designs with bills, buildable at the yard (Q-41-15); Tycho's berth, its two house hulls, a storefront party and `capital_major` 500,000 (lane v21, Q-41-17); the house arm sequencing voyage, landing, launch, tow, load, lift, dock, berth; the fallback acceptance at the window's end and on a lapse; the fee from the recovery row; the 56-day sweep with the assessment and its two exits — repair and a hull-sale offer at the reference price, or scrap at Occator's workshop (Q-41-16) | IN.2, IN.7 and IN.8 as revised; PR #340 (P0-5, a wreck in a bay) | (d) at 512 and 256: the carrier wreck retrieved by the lifter and berthed at C14, the fee paid; (c)'s no-acceptor variant; (e) the sweep: a repairable hull resold to a player, a hull past repair scrapped, the census holding |
 | **RS.7** port security | Q-41-24, Q-41-25, Q-38-20, Q-S4 | the `arrived` hook's read of proven rows across the lane's site records; `+salvage/report <hull>=registry`; the fines by kind to the Registry; the obligation on a shortfall; `DepartRefusalKind::Quarantined` and its release; rows marked settled | none | (b) extended: O fined at docking after the `recovery` vacate, O's carrier held until the obligation settles, a bare pickup row never fined |
 | **RS.8** the space seams | Q-41-26, Q-36-46, Q-36-47 | `+helm/tow` onto `file_salvage_claim` and `award_salvage_title`; `tacsim:space:custody`; the stages; real principals; the RAM path and the bounty retired; `ShipSectionId` onto `CarrierPart`; the retrieval's delivery at a dock | none | a derelict clamped, towed and docked at Ceres under the one window, contested by `+salvage/contest`, and a space retrieval job on `+salvage/jobs` delivered by a ship; built in the space tree (doc 35b §8) |
 | **RS.9** the stories whole | Q-38-29 | (a)–(e) run whole at 256 and 512 with the bot typing the player's half over SSH; `41-cut-notes.md` closed | IN.10's census line for (e) | every story green on gate.yml at both sizes; the bot run recorded |
@@ -1118,15 +1194,8 @@ table, the `tacsim.retrieval.delivered` fact, the `Quarantined` refusal line, th
 (`docs/help/field.md`'s recovery section gains the tender, the retrieval and the return), and the
 `41-cut-notes.md` file.
 
-**Questions I could not default with confidence**, for the owner's eye before the cuts start:
-Q-41-10's figure (a retrieval on a Ceres site at 5,250 cr exceeds a prospector's deposit, so an
-abandoned rig always leaves a debt; the ruling intends a real occupation, but the number was derived
-from doc 39's provisional slot-day, not chosen); Q-41-16 (whether an NPC sweeper claiming wrecks
-after 56 days is the owner's intent for the raid director's leavings, or whether wrecks should lie
-as the field's memory); Q-41-15's hulls (a 600 t lifter is the largest hull in the game by far and
-needs a look and a landing figure nobody has authored); Q-41-24 (reading Q-38-20's "reads unlawful
-at docking" through Q-S4's "no omniscient fine" is my reconciliation of two rulings, and the owner
-may mean the literal one); Q-41-7 (no fee away from port makes the carrier's bay cheaper than the
-workshop for minor work, which the 2× time may not offset at rate 24); and Q-41-23's reading of the
-black box as the registry's instrument rather than a player's, which closes GC.6's contradiction one
-way when the owner may prefer the other.
+**Ruled.** The six questions Draft 0.1 named as least confidently defaulted went to the owner the
+same day. Q-41-10's fee basis stands as written (the acceptor's deadline it travelled with is
+Q-41-11's amendment: 28 IC days, not 7); Q-41-15 and Q-41-16 were amended as §5 records, and
+Q-41-17 with them; Q-41-24, Q-41-7 and Q-41-23 are accepted as written. Nothing in this document
+waits on a ruling; RS.0, RS.1, RS.2 and RS.3 may start.
