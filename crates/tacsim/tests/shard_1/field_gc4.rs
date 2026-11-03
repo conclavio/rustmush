@@ -384,6 +384,64 @@ async fn gc4_the_wingman_drags_the_casualty_to_the_ramp_and_loads_it_before_the_
     assert!(!queued.is_empty(), "the carrier lifts: {out}");
 }
 
+// ---- doc 36a §11 #9 ---------------------------------------------------------------------
+
+/// **Doc 36a §11 #9**: a casualty one field left stands through a second field over the
+/// same ground as an uncounted entrant; the second demotion indexes it again, and its row keeps
+/// the instant the first left it — where before the fix every demotion restarted the 28-day
+/// write-off clock (doc 36 cut GC.5), so a rig abandoned on day 0 and fought over on day 27
+/// waited until day 55.
+#[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+async fn lane3_a_later_field_never_restarts_the_write_off_clock() {
+    let mut rig = stocked_tuned(lane3_tune);
+    let (a, _, tvs) = on_pad(&mut rig, 2);
+    let (escort, wingman) = (tvs[0], tvs[1]);
+    launched(&mut rig, a, escort);
+    let _ = act_go(&mut rig, a, "+tv/2 launch go");
+    let _ = finish(&mut rig, wingman, a);
+    let (rx, ry, _) = ramp_at(&rig.tw, AHUNA);
+    let ramp = (rx.div_euclid(1_000), ry.div_euclid(1_000));
+    to_cell(&mut rig, escort, (ramp.0 + 4, ramp.1));
+    to_cell(&mut rig, wingman, (ramp.0 + 6, ramp.1));
+    powerless(&mut rig, escort);
+    let (b, _, _) = on_pad_as(&mut rig, "Second", 2, "Red Moth", 1);
+    let hull = armed(&mut rig, "Red Hound", (ramp.0 - 8, ramp.1), 90_000);
+    seat(&mut rig, hull, b);
+    seat(&mut rig, wingman, a);
+    warm(&mut rig);
+    let mut rx = egress(&mut rig);
+    let mut lines: Vec<LedgerEvent> = Vec::new();
+
+    // Field 1 leaves the escort a casualty on the index.
+    field_settles(&mut rig, &mut rx, &mut lines, b).await;
+    let first = site_record(&mut rig).expect("the site record");
+    let first_left_ic = first
+        .units
+        .iter()
+        .find(|left| left.unit == escort)
+        .unwrap_or_else(|| panic!("the casualty is indexed: {:?}", first.units))
+        .left_ic;
+
+    // Field 2 over the same ground: the casualty stands in it, uncounted, and is indexed again.
+    field_settles(&mut rig, &mut rx, &mut lines, b).await;
+    let second = site_record(&mut rig).expect("the site record");
+    assert!(
+        second.ordinal > first.ordinal,
+        "a second field closed over it: {} after {}",
+        second.ordinal,
+        first.ordinal
+    );
+    let row = second
+        .units
+        .iter()
+        .find(|left| left.unit == escort)
+        .unwrap_or_else(|| panic!("the casualty keeps its row: {:?}", second.units));
+    assert_eq!(
+        row.left_ic, first_left_ic,
+        "the instant it was first left is kept"
+    );
+}
+
 /// **The bay's measures** (Q-36-15, Q-36-54): the Dray-P's bay takes 20 t and 70 m3 of hulls
 /// beside its two-rig cap, the prospector stows at its authored 24 m3, and an empty bay has room
 /// for exactly what its limits say.

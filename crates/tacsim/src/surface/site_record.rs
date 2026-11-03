@@ -729,6 +729,14 @@ impl SiteRecord {
         if index.len() > MAX_LEFT_UNITS {
             return Err(SiteRefused::UnitsFull);
         }
+        // Doc 36a §11 #9: a unit the index already held keeps the instant it was first
+        // left — a later field over a disabled hull never restarts its write-off clock (doc 36
+        // cut GC.5), as the remains merge keeps the earlier instant.
+        for row in index.values_mut() {
+            if let Some(prior) = self.units.iter().find(|left| left.unit == row.unit) {
+                row.left_ic = row.left_ic.min(prior.left_ic);
+            }
+        }
         self.units = index.into_values().collect();
         self.promoted = None;
         self.demoted_ic = Some(at_ic);
@@ -2056,6 +2064,44 @@ mod tests {
         let mut stale = r.clone();
         stale.ordinal = 3;
         assert!(stale.check().is_err(), "an open field is the last ordinal");
+    }
+
+    /// **Doc 36a §11 #9: a later demotion keeps the instant a unit was first left** (doc 36
+    /// cut GC.5's write-off clock): a unit the index held before is indexed again at its later
+    /// pose and condition with its first instant; a unit new to the index takes the demotion's.
+    #[test]
+    fn lane3_a_later_demotion_keeps_the_instant_a_unit_was_first_left() {
+        let mut r = record();
+        let staff = PromotedBy::Staff { staff: ObjId(1) };
+        let _ = r
+            .promote(10, staff.clone())
+            .unwrap_or_else(|e| panic!("{e:?}"));
+        let mut first = left(9, 3, 3, LeftCondition::Casualty);
+        first.left_ic = 20;
+        let _ = r
+            .demote(20, vec![first])
+            .unwrap_or_else(|e| panic!("{e:?}"));
+        let _ = r.promote(30, staff).unwrap_or_else(|e| panic!("{e:?}"));
+        let mut again = left(9, 4, 4, LeftCondition::Wreck);
+        again.left_ic = 40;
+        let mut fresh = left(4, 2, 2, LeftCondition::Casualty);
+        fresh.left_ic = 40;
+        let _ = r
+            .demote(40, vec![again, fresh])
+            .unwrap_or_else(|e| panic!("{e:?}"));
+        let row = |unit: u32| r.units.iter().find(|u| u.unit.0 == unit).expect("indexed");
+        assert_eq!(row(9).left_ic, 20, "the first instant is kept");
+        assert_eq!(row(9).pose.cell(), (4, 4), "at the later pose");
+        assert_eq!(
+            row(9).condition,
+            LeftCondition::Wreck,
+            "in the later condition"
+        );
+        assert_eq!(
+            row(4).left_ic,
+            40,
+            "a unit new to the index takes this demotion's"
+        );
     }
 
     /// **The object cap merges the two oldest remains and never drops cargo** (doc 32 Q-CF-27):
