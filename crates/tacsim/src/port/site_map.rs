@@ -2670,8 +2670,8 @@ fn ground_rows(
 
 /// **A loud sounding of `record`'s rig inside the IC hour, made on `entry`** (doc 20 §5's
 /// transient mark; the review's correctness/F1: a sounding heard on another site's ground is no
-/// mark here).
-fn loud_sounding(record: Option<&RigRecord>, entry: &CanonicalId, now: i64) -> bool {
+/// mark here). The cockpit's half of the picture reads it too (`picture::enrich_cockpit`).
+pub(super) fn loud_sounding(record: Option<&RigRecord>, entry: &CanonicalId, now: i64) -> bool {
     record
         .and_then(|record| record.last.as_ref())
         .is_some_and(|last| {
