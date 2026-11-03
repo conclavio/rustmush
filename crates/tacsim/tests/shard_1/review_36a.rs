@@ -17,6 +17,8 @@
 //! | P0-2 `@contract/amend` + `/deadline` | [`p0_2_the_salvor_cannot_amend_or_shorten_their_own_claim`] |
 //! | P0-2 `@contract/dispute` + `/agree` | [`p0_2_the_salvor_cannot_dispute_and_agree_their_claim_away`] |
 //! | P0-3 the Occator rig after the write-off | [`p0_3_a_leased_rig_written_off_in_custody_goes_home_and_is_never_awarded`] |
+//! | P0-7 the award/contest second | [`p0_7_the_windows_last_second_belongs_to_the_award_not_a_contest`] |
+//! | P0-7 the lost `Loaded` | [`p0_7_a_lost_loaded_finish_still_lands_after_the_carrier_has_gone`] |
 
 use mush_core::ObjId;
 use mush_economy::{ContractId, ContractState, EconomyStore};
@@ -497,4 +499,116 @@ fn p0_3_a_leased_rig_written_off_in_custody_goes_home_and_is_never_awarded() {
     assert!(ended.written_off);
     let listed = run(&mut rig.tw, b, "+salvage");
     assert!(listed.contains("no salvage claim"), "{listed}");
+}
+
+/// **P0-7, the boundary** (doc 36a §4): a contest filed in the window's last second used to
+/// land on a claim whose title the same tick had posted, so the next tick vacated a void claim
+/// with the title gone. Now the window's last second is the award's alone: at `end - 1` the
+/// title holder may still answer, at `end` the window has closed, and the tick then awards with
+/// the custody row dropped in the same bundle.
+#[test]
+fn p0_7_the_windows_last_second_belongs_to_the_award_not_a_contest() {
+    let mut stage = Stage::build();
+    let far = stage.far;
+    let (c, filed_at) = stage.recover_and_claim(far);
+    let end = window_end(&stage.rig, c);
+    assert_eq!(end, filed_at + WINDOW);
+    let t = stage.t;
+    stage.rig.tw.set_now(end - 1);
+    let open = run(
+        &mut stage.rig.tw,
+        t,
+        &format!("+salvage/contest #{}", far.0),
+    );
+    assert!(
+        open.contains("Bare title never defeats"),
+        "still open: {open}"
+    );
+    stage.rig.tw.set_now(end);
+    let closed = run(
+        &mut stage.rig.tw,
+        t,
+        &format!("+salvage/contest #{} go", far.0),
+    );
+    assert!(closed.contains("has closed"), "closed at the end: {closed}");
+    assert!(
+        seconds_until(&mut stage.rig, 30, |rig| custody(rig, far).is_none()),
+        "the uncontested claim settles"
+    );
+    assert_eq!(title(&stage.rig, far), Some(PrincipalId::Object(stage.o)));
+    let again = run(
+        &mut stage.rig.tw,
+        t,
+        &format!("+salvage/contest #{} go", far.0),
+    );
+    assert!(
+        again.contains("No salvage custody names"),
+        "nothing left to vacate: {again}"
+    );
+    assert!(
+        record(&mut stage.rig)
+            .unlawful
+            .iter()
+            .all(|act| act.subject != far.0),
+        "no vacate was logged against the award"
+    );
+}
+
+/// **P0-7, the lost `Loaded`** (doc 36a §4): the load's finish is lost after the tick put the
+/// casualty in the bay, and the carrier is gone from the pad before the next tick (the stand-in:
+/// the carrier unplaced by staff hand, as a lift unplaces it). The next tick's finish still
+/// completes the load off the bay's own facts: the casualty is off the site's index, the tow is
+/// spent, and the custody row stands.
+#[test]
+fn p0_7_a_lost_loaded_finish_still_lands_after_the_carrier_has_gone() {
+    let mut stage = Stage::build();
+    let (far, tug, o, o_carrier) = (stage.far, stage.tug, stage.o, stage.o_carrier);
+    stage.attach(far);
+    to_cell_on(&mut stage.rig, URVARA, tug, stage.ramp);
+    let _ = second(&mut stage.rig);
+    let out = go(&mut stage.rig, o, "+tv/1 load go");
+    assert!(out.contains("hauls the"), "{out}");
+    // The finish lands at its due instant; its submission is drained and lost.
+    let mut lost = false;
+    for _ in 0..40 {
+        let (_, queued) = crate::driving::fire(&mut stage.rig);
+        if queued
+            .iter()
+            .any(|submit| submit.action.key().id.as_str() == tacsim::surface::tow::TOW_ACTION)
+        {
+            lost = true;
+            break;
+        }
+    }
+    assert!(lost, "the load's finish was submitted");
+    assert!(
+        tacsim::surface::tow::in_bay_of(stage.rig.tw.world(), far, o_carrier),
+        "the tick put the casualty in the bay"
+    );
+    let residue = record(&mut stage.rig);
+    assert!(
+        residue.units.iter().any(|left| left.unit == far),
+        "still indexed"
+    );
+    assert_eq!(residue.tows.towing(tug).map(|op| op.casualty()), Some(far));
+    assert!(residue.tows.act_of(tug).is_some(), "the act is still due");
+    // The carrier is gone from the pad before the next tick.
+    crate::driving::staff_hand(&mut stage.rig, |ctx| {
+        mush_sim::unplace(ctx, o_carrier, "lifted").expect("the carrier lifts");
+    });
+    assert!(
+        mush_sim::pose_of(stage.rig.tw.world(), o_carrier).is_none(),
+        "no longer berthed here"
+    );
+    assert!(
+        seconds_until(&mut stage.rig, 30, |rig| {
+            let record = record(rig);
+            record.units.iter().all(|left| left.unit != far)
+                && record.tows.towing(tug).is_none()
+                && record.tows.act_of(tug).is_none()
+        }),
+        "the next tick's finish completes the load"
+    );
+    let held = custody(&mut stage.rig, far).expect("in O's custody");
+    assert_eq!((held.holder, held.carrier), (o, o_carrier));
 }

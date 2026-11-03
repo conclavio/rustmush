@@ -2121,13 +2121,21 @@ pub(crate) fn tick(ctx: &mut Ctx<'_>) {
                     place_in_bay(ctx, &site, act.tug, casualty, carrier);
                 }
                 let facts = casualty.and_then(|casualty| {
-                    let ramp = crate::surface::tick::hull_view_berth(ctx.w, carrier).map(
-                        |(_, domain, ramp, _, _)| FieldPose {
+                    let ramp = crate::surface::tick::hull_view_berth(ctx.w, carrier)
+                        .map(|(_, domain, ramp, _, _)| FieldPose {
                             site: ObjId(u32::try_from(domain.0).unwrap_or(0)),
                             x_cm: ramp.x_cm,
                             y_cm: ramp.y_cm,
-                        },
-                    )?;
+                        })
+                        .or_else(|| {
+                            // Doc 36a P0-7: a casualty already in the carrier's bay when the
+                            // carrier is no longer berthed here (a finish lost, the carrier
+                            // lifted) still finishes its load: the facts read the bay, and the
+                            // tug's own stand serves as the ramp.
+                            in_bay_of(ctx.w, casualty, carrier)
+                                .then(|| on_ground(ctx.w, act.tug).map(|(_, _, pose)| pose))
+                                .flatten()
+                        })?;
                     load_facts(ctx, act.tug, casualty, carrier, ramp)
                 });
                 TowOrder::Loaded {

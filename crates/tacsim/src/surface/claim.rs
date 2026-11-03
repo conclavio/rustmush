@@ -680,6 +680,10 @@ pub(crate) fn prepare(
             {
                 return Err("claim_no_ground");
             }
+            // Doc 36a P0-7: the window's last second is the award's, never a contest's.
+            if now_real >= window_end {
+                return Err("claim_window_closed");
+            }
             let mut file = custody.file.as_deref().cloned().ok_or("claim_not_filed")?;
             file.deadline_real_s = *window_end;
             file.contest(actor, ground.clone(), *now_real)
@@ -768,6 +772,9 @@ fn settle(
         custody.holder,
         custody.pin.as_ref().and_then(TenurePin::landholder),
     );
+    // The settlement's bundle drops the custody row either way (doc 36a P0-7): once the award
+    // has posted there is no custody left for a contest to vacate; a vacated claim's custody
+    // is void.
     record.custody.retain(|row| row.hull != hull);
     if awarded {
         Ok("awarded".to_owned())
@@ -1198,8 +1205,11 @@ fn open_window(ctx: &Ctx<'_>, row: &SalvageCustody, label: &str) -> Result<(u64,
     };
     match effective_window(ctx.w, row) {
         Some((_, true)) => Err(CmdError::msg(WINDOW_PAUSED.replace("{name}", label))),
+        // Doc 36a P0-7: a contest is admitted only while `now < end`. The tick awards at
+        // `now >= end`, so the two never share a second: no contest lands on a claim whose title
+        // has posted.
         Some((end, false))
-            if ctx.w.now() <= end
+            if ctx.w.now() < end
                 && contract_state(ctx.w, contract).is_some_and(|s| !s.is_terminal()) =>
         {
             Ok((contract, end))
