@@ -281,6 +281,20 @@ released; captivity created also by an ejection into a held cell (§4 C).
 - **Why:** `+tv/<n> leave` would put a captive loose in the captor's bay room, and `+sortie/
   extract` would make captivity a six-hour inconvenience; both are one refusal each. A brig room
   is content a carrier definition does not have, and FO-12 needs no cell: the bound is the cell.
+- **Draft 0.3 (review round 2, 42-6): the gate list, against the real verbs.** `+sortie/orders` is
+  a read (`detachment/sortie/commands.rs:155–161` → `field_commands::report`) and comes off the
+  list. Orders are the cockpit keyword `ORDER DT:…` (`match_/cockpit/orders.rs:383` →
+  `detachment::commands::order`), already covered by "a cockpit keyword"; there is no `REPORT`.
+  Added: the top-level responses `WILCO` and `NEGATIVE` (`detachment/commands.rs:161–189`, which
+  check only `cockpit::flying`), `@station/*` (`mush-sim/src/commands.rs:3662`) and `+focus`
+  (`:3642`). 42-5's vacate already makes `WILCO`/`NEGATIVE` refuse a captive in practice (no seat
+  is flown); the gate states it, and covers the window before the vacate lands. Of the rest of
+  `+sortie`: `/activate`, `/hire`, `/board`, `/contract`, `/seat`, `/launch`, `/recover` and
+  `/cancel-launch` are gated (each commits a person or a unit to an operation); `/deactivate`,
+  `/end`, `/history`, `/operation`, `/refresh`, `/orders` and `/plans` are not, so a captive can
+  stand their own operation down and read its state. Draft 0.3's 42-5 and 42-2 add two more lines
+  to the same gate: a pending forced extraction ("waiting for your pickup") and `Processing`
+  (leaving the port only).
 
 **Q-42-3 — Captivity across a restart and a later field.**
 - **Proposed default:** the record is the authority. `Captured` is read at boot like any crew
