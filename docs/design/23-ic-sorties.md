@@ -1234,7 +1234,14 @@ salvage custody row, `surface/claim.rs`) is the re-parent the freeze would refus
 to admit it and close the claim at the load's completion `RecoveredToBase { base: <the carrier> }`
 naming the recoverer, exactly as S.3's second-carrier home closes a rig's epoch at the placement
 (R1): the IC claim is a custody record, not a title, and the salvage row and the Registry's
-inspection at the next berth are where a stolen mind is found (M8's channels). Q-23-11.
+inspection at the next berth are where a stolen mind is found (M8's channels). Round 2's 23-11
+checked that close against the four owners and found it closes as written: `EventKind::validate`
+refuses only `base == 0` or `base == unit` (`records.rs:70–79`), the Close checks the event's
+actor against the invocation's alone (`participant.rs:302`), and neither the exclusion nor the
+capacity owner compares the Close's actor with the dispatcher (`ic_exclusion.rs:758–768`,
+`ic_claim.rs:544–563`); `complete_load`'s `RecoveredToBase { base: carrier }` (`tow.rs:1619–1630`)
+is the kind the cursor carries to the next fire, submitted as the operator the cursor kept
+(23-4). Q-23-11.
 
 ### 17.5 The pool seat — D-23-16
 
