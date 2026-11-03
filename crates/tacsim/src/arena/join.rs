@@ -140,7 +140,8 @@ impl Arena {
             });
         }
         unit.pose = self.free_pose(&unit, spread)?;
-        let mut conditions = crate::arena::conditions::ConditionTable::default();
+        let class = unit.seal.class;
+        let mut admitted = crate::arena::conditions::ConditionTable::default();
         let (mut state, line) = Self::admit_unit(
             unit,
             &self.definition.terrain,
@@ -150,17 +151,34 @@ impl Arena {
             host.weapons_hold,
             &mut self.cards,
             &mut self.profiles,
-            &mut conditions,
+            &mut admitted,
         )?;
         let party = state.team;
         state.callsign = self.joining_name(party, id)?;
         let name = state.callsign;
+        let controller = state.controller;
         let at = self
             .units
             .binary_search_by_key(&id, |state| state.id)
             .err()
             .ok_or(ArenaError::DuplicateUnit { unit: id })?;
         self.units.insert(at, state);
+        // Doc 36a lane 3 (P1-9): the rules `admit_unit` installed went into a scratch table; a
+        // mind hull's native profile rows go into the arena's own (a piloted hull keeps none, by
+        // design: `crate::arena::conditions`).
+        if controller == super::state::Controller::Mind
+            && let Some(runtime) = self.profiles.get(&id)
+        {
+            runtime
+                .program
+                .install(&mut self.conditions, id, self.classes.row(class).slots)
+                .map_err(|error| {
+                    refused(
+                        id,
+                        &format!("its profile rules were not installed: {error}"),
+                    )
+                })?;
+        }
         super::state::check_substep(&self.definition.terrain, &self.units, &self.min_cost)?;
         if !self.relations.contains(party) {
             self.relations.admit(party);

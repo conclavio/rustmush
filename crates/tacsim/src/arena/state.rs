@@ -4714,8 +4714,14 @@ impl Arena {
         let mut sealed: Vec<(ObjId, EventKind)> = Vec::with_capacity(units.len());
         let mut cards = crate::arena::runtime_card::CardCatalog::default();
         let mut profiles = BTreeMap::new();
+        let mut admitted = crate::arena::conditions::ConditionTable::default();
+        // Doc 36a lane 3 (P1-9): `admit_unit` installs every unit's profile rules into `admitted`,
+        // a scratch table this constructor used to drop (real since M6), so a mind hull's native
+        // rows were gone until a profile switch. The arena's own table takes the mind hulls'
+        // rows; a piloted hull's slots stay its pilot's (`crate::arena::conditions`, by design).
         let mut conditions = crate::arena::conditions::ConditionTable::default();
         for unit in units {
+            let class = unit.seal.class;
             let (state, line) = Self::admit_unit(
                 unit,
                 &definition.terrain,
@@ -4725,11 +4731,27 @@ impl Arena {
                 host.weapons_hold,
                 &mut cards,
                 &mut profiles,
-                &mut conditions,
+                &mut admitted,
             )?;
+            if state.controller == Controller::Mind
+                && let Some(runtime) = profiles.get(&state.id)
+            {
+                runtime
+                    .program
+                    .install(
+                        &mut conditions,
+                        state.id,
+                        minds_cfg.classes.row(class).slots,
+                    )
+                    .map_err(|error| ArenaError::Mind {
+                        unit: state.id,
+                        reason: error.to_string(),
+                    })?;
+            }
             sealed.push((state.id, line));
             states.push(state);
         }
+        drop(admitted);
         states.sort_by_key(|state| state.id);
         if let Some(duplicate) = states
             .windows(2)
@@ -4899,9 +4921,9 @@ impl Arena {
             detachment_commands: BTreeMap::new(),
             cards,
             profiles,
-            // 17b cut M1b.1: no slot, nothing said, and the default floor —
-            // `spawn_arena` writes the configured one before the move.
-            conditions: crate::arena::conditions::ConditionTable::default(),
+            // 17b cut M1b.1: nothing said; the table holds the mind hulls' profile rows
+            // (doc 36a lane 3, P1-9) and no other slot.
+            conditions,
             held_said: BTreeMap::new(),
             odds_floor_permille: minds_cfg.odds_floor_permille,
             // 17b cut M3.1: the stock table — `spawn_arena` writes the
