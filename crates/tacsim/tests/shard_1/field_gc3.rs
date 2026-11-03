@@ -401,3 +401,40 @@ async fn gc3_a_carrier_whose_hull_falls_strands_its_crew_and_wrecks_its_bay() {
     assert!(out.contains("is a wreck"), "{out}");
     assert!(queued.is_empty(), "{out}");
 }
+
+/// **Doc 36a lane 3, P2-6**: the dry runs read the filing's refusals. With the Dray-P's drive
+/// destroyed (GC.3's fixture), `+ship/plan ceres` and the dry run of a queued `+ship/order depart
+/// ceres` both read the drive's refusal, as `+ship/lift ceres` does; before the fix both read a
+/// plan where the filing refused.
+#[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+async fn lane3_the_dry_run_reads_the_lift_refusal_the_filing_makes() {
+    let mut rig = stocked_tuned(tune);
+    let (a, row, _) = on_pad(&mut rig, 1);
+    let carrier = ObjId(row.hull);
+    let whole = run(&mut rig.tw, a, "+ship/plan ceres");
+    assert!(
+        whole.contains("Plan for") && !whole.contains("drive is destroyed"),
+        "a whole carrier plans: {whole}"
+    );
+    set_section(&mut rig, carrier, "drive", Some("destroyed"), Some(0));
+    let plan = run(&mut rig.tw, a, "+ship/plan ceres");
+    assert!(
+        plan.contains("Plan for") && plan.contains("drive is destroyed"),
+        "the dry run reads the drive's refusal: {plan}"
+    );
+    let (out, queued) = command(&mut rig, a, "+ship/lift ceres");
+    assert!(
+        out.contains("drive is destroyed") && queued.is_empty(),
+        "{out}"
+    );
+    // The queue's dry run reads it too.
+    let order = run(&mut rig.tw, a, "+ship/order depart ceres");
+    assert!(order.contains("Order 1 filed"), "{order}");
+    let dry = run(&mut rig.tw, a, "+ship/plan ceres");
+    assert!(
+        dry.contains("Order 1, depart for")
+            && dry.contains("it would hold: ")
+            && dry.contains("drive is destroyed"),
+        "the queued depart's dry run reads the drive's refusal: {dry}"
+    );
+}

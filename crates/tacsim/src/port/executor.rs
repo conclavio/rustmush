@@ -1408,6 +1408,20 @@ pub(crate) fn plan_queue(
                     ));
                     continue;
                 }
+                // Doc 36a lane 3 (P2-6): and the filing's other gates — the carrier's loss table
+                // (doc 36 cut GC.3), the bay's mass and volume (GC.4) and, for a queued depart,
+                // the field's hold on the carrier (doc 32 cut CF.3) — read now, as the filing
+                // will read them.
+                if let Some(line) = crate::carrier_damage::lift_refusal(w, view.hull())
+                    .or_else(|| crate::surface::tow::bay_over_line(w, view.hull(), &name))
+                    .or_else(|| crate::field::carrier::departure_refusal(w, view.hull()))
+                {
+                    lines.push(format!(
+                        "  Order {id}, depart for {port}: it would hold: {}.{note}",
+                        inline_reason(&line)
+                    ));
+                    continue;
+                }
                 let Ok(basis) = crate::port::voyage::basis(ctx, view, occupants) else {
                     return dark;
                 };
