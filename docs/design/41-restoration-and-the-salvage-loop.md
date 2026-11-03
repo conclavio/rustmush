@@ -530,11 +530,18 @@ named party. Proposed: `accept_retrieval(ctx, contract, acceptor)` adds the acce
 party and accepts in one post (the survey board's `accept_contract_as` precedent, run by the
 acceptor's own command rather than a sponsor's tick), guarded by the shape — the generic
 `@contract/accept` stays closed to strangers. **Delivery** is a fact condition,
-`tacsim.retrieval.delivered`, posted by the act that puts the hull at the destination: `+bay/berth`
-into the destination port's workshop room, a `+bay/stow` into the poster's own carrier docked
-there, or the shed's `hand_back` for a lease rig; one predicate for ground and space — the hull
-`Direct` on the destination port's domain (`berth_of` reads it), which a docked derelict satisfies
-too (§4.7). Payment on delivery: the escrow pays the acceptor and the contract settles. (Q-41-8.)
+`tacsim.retrieval.delivered { contract, port }`, posted by whichever **handover act** completes
+the job — four of them, since no placement test can serve: a hull berthed into a workshop room is
+unplaced and moved into the room (`bay_work/mod.rs:1532–1533`), one stowed is an interior of its
+carrier (`:1581`), one handed to the shed an interior of the shed (`tv.rs:4675`), and `berth_of`
+answers `Elsewhere` for all three (`ship.rs:396–401`; `pose_of`, `mush-sim/src/window.rs:399–405`);
+only a ship docking under her own power is ever `Direct` on a port's domain (round-2 item 41-2).
+The four: (i) `+bay/berth` into the destination port's workshop room; (ii) `+bay/stow
+<hull>=<carrier>` into the poster's own carrier docked at the destination; (iii) the shed's
+`hand_back` for a lease rig, run at the destination (below); (iv) a ship's own docking at the
+destination with the derelict clamped, the space seam's (§4.7). Each posts the fact with the port it
+happened at, which the contract's condition checks against its destination. Payment on delivery:
+the escrow pays the acceptor and the contract settles. (Q-41-8.)
 
 **Who posts.** `repossess` and `write_off_left_out` post one automatically when the rig is not in
 the shed and not aboard a carrier (left on a site, or on a site in a custody the write-off just
@@ -543,6 +550,13 @@ closed), destination Ceres Freeport, from Occator's account; any title holder po
 someone else's custody with no claim filed, or a wreck anywhere; and the lessor of a wreck under
 Q-38-7 is Occator again. `+salvage/jobs` lists the open retrievals (hull, where it lies, destination,
 fee, days left); `+salvage/accept <job> [go]` accepts. The bot learns the three. (Q-41-9.)
+
+**A written-off rig under a retrieval.** Today a written-off rig that is loaded goes to Occator's
+shed **at the load, on the site** (`tow.rs:1575`, `:2338–2343`, `hand_back`) — a teleport the
+retrieval must not keep, since nothing would be left to deliver. Under an active retrieval the load
+puts the rig in the acceptor's bay as retrieval custody (below) and the hand-back runs at the
+destination when the carrier docks there, posting the delivery fact; a load with no retrieval on
+the rig keeps GC.5's hand-back as it is (a round-2 lane finding).
 
 **The fee.** One basis for both PC and NPC: Tycho's quote is the floor and the market's reference —
 `days × slot_day × (1 + margin)` + the passage's propellant at the ask, with the recovery row's
@@ -797,8 +811,9 @@ document keyed by domain (a space site has no `SiteRecord`), with the pin's tenu
 ones (the actor, the derelict's title); `register_derelict_salvage_in_book`, `DERELICT_WINDOW_S` and
 the 1,200 cr bounty retire. `+salvage/claim|contest|report|inspect` then work on a space custody as
 on a ground one, through the same `claim.rs` paths given a custody source. **What a space tow truck
-needs from §4.3:** nothing more than the delivery predicate — a derelict towed to a port and docked
-is `Direct` on the port's domain, so `tacsim.retrieval.delivered` fires for a ship as for a crawler;
+needs from §4.3:** nothing more than the fourth handover act — a derelict towed to a port and docked
+under the ship's own power is `Direct` on the port's domain, and that docking posts
+`tacsim.retrieval.delivered` for a ship as a berth or a hand-back posts it for a crawler;
 a retrieval's `destination` is a port either way, and `+salvage/jobs` lists space jobs beside ground
 ones. (Q-41-26 asks only who builds it.)
 
@@ -858,7 +873,8 @@ whole at both sizes and that (c) used a fixture instead of (a)'s casualty is ans
   the replace draws doc 39's store (IN.5 as revised) and the destroyed part is nothing; the charter's
   half: a dormant lessee's damaged prospector on Ahuna (256) and Urvara (512) is repossessed with the
   wear allowance, the retrieval fee and a debt beyond the deposit; the retrieval is on `+salvage/jobs`,
-  a second player accepts, tows and loads it, docks at Ceres, hands it to the shed and is paid; the
+  a second player accepts, tows and loads it (into their own bay as retrieval custody, no hand-back
+  on the site), docks at Ceres, where the hand-back runs and posts the delivery, and is paid; the
   variant where nobody accepts runs 28 IC days under the clock and Tycho's lifter comes.
 - **(d) The carrier wreck (new).** GC.3's fought hull loss on Urvara (512) and on Ahuna (256): the
   owner posts a retrieval; no tug of the shipped kit can take her (the floor's line; a player-built
@@ -972,8 +988,9 @@ provisional unless the line says otherwise.
   the poster, subject the hull, destination a port, fee escrowed at posting, `WorldIc` deadline at
   28 IC days (`RETRIEVAL_WINDOW_IC_DAYS`, a config key), `Public`, audience Tycho; `accept_retrieval`
   adds the acceptor as a party and accepts in one post, guarded by the shape; delivery the fact
-  `tacsim.retrieval.delivered` posted when the hull is `Direct` on the destination port's domain;
-  payment on delivery.
+  `tacsim.retrieval.delivered { contract, port }` posted by one of four handover acts at the
+  destination (a workshop berth, a stow into the poster's carrier, the shed's hand-back, a ship's
+  own docking); payment on delivery.
 - **Alternative:** a `ManagedWire` variant (a closed managed kind) with its own wire.
 - **Why:** the salvage claim and the lease are shape-recognised and the lock on the claim is a
   shape check; one delivery predicate serves a crawler's berth and a ship's dock.
