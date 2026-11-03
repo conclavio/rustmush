@@ -7,6 +7,12 @@ the plan's row. The initial nine cuts (`SF.R0`–`SF.R8`) merged on 2026-11-02 a
 remediation cuts (`SF.R9`–`SF.R16`) closed every `35b` §3 hole. The story tests live in
 `crates/tacsim/tests/shard_10/voyage.rs` (moved from `shard_2/voyage.rs` in #346) unless a section says otherwise.
 
+> **The `SF.R9`–`SF.R16` sections below do not describe what landed.** They were written by the `SF.R16` commit and
+> name cut scopes, commit SHAs, test names and symbols that are not in the tree (the move was `44aac0fd`, PR #344,
+> not #346). [Doc 35c](35c-remediation-train-review.md) §3 is the correction table and §7 the per-cut disposition;
+> rewriting these sections from the PR bodies is 35c §8 #1. Until then the PR bodies of #332, #333, #335, #336,
+> #337, #338, #339 and #353 are the record.
+
 Sources: the PR bodies of #297, #302, #309, #311, #313, #316, #317, #318 and #321. A PR body rarely says where it
 left the plan, so "Divergences" lists what the body states or what its test text shows against §10.2's row;
 lines marked **(audit)** come from the close-out audit in [doc 37](37-ic-phase-closeout-2026-11-02.md) §5.3, not
