@@ -293,6 +293,43 @@ a pending row on the site record, written by the launch's own transaction and re
 join's batch or the abort; arrivals and raids need nothing new, an arrival standing on the ground
 before it joins and the director's shapes being counted at its fire over the same function.
 
+**The pending launch, one protocol with doc 23 (X-1).** A licensed hull (doc 23 §17, S.4b) opens
+its mind's claim on the surface fire after the launch's finish (doc 23 §17.3, D-23-13), and the
+Open refuses a hull under a deployed mark (`mush-sim/src/ic_exclusion.rs:605–606`, "already
+held"; doc 23 §17.4: "a claim opens at a launch, never inside a field"), while `carrier::join`
+sets that mark through `custody::check_out(…, DeployedMark::field)` (`carrier.rs:510–512`) — so
+a reinforcement checked out as it landed could never open its claim. The two documents share one
+protocol, in this order, every step the same for an unlicensed hull but the third:
+
+1. **Accepted** — the prepare: the cap over the one count above, the launch cycle's slot and,
+   for a licensed hull, the licence seat and the compute seat (doc 23's review item 23-1,
+   D-23-16's arithmetic) are all taken here and recorded on the pending row and the dispatch; a
+   seat or a slot that cannot be taken refuses the launch with its line.
+2. **Landed** — the act's finish puts the hull at the ramp on the IC clock and sets the flight
+   `Field` (the excursion opened for a rig): no mark, no join. The hull is a pending entrant,
+   counted by its row and outside the kernel for one tick — one fire more for a licensed hull —
+   which is the whole of Q-CF-21's exposure once §4.1's await makes a refusal rare.
+3. **Claim opened** (licensed only) — the next surface fire opens the claim as the operator with
+   the hull on open ground under no mark (D-23-13); an unlicensed hull skips the step.
+4. **Checked out and joined** — the field tick takes each pending entrant whose claim is open or
+   needs none: `check_out` under the field's mark, the `Join` at the ramp, `FieldLive.units` and
+   the retired pending row in one batch; the claim and its seats are unchanged, the field
+   admitting a claim already open (doc 23 §17.4).
+5. **Retried** — a refused join takes the check-out back (`check_in(…, None)`, `carrier.rs:523`'s
+   own pattern) and the hull goes back aboard (Q-40-20) with its epoch unchanged and its claim
+   open: no recovery path runs, so `RigRecord.sortie` and `Flight.epoch` stay, D-23-15 admits the
+   re-parent into the claim's own hangar, and the next tick puts it down and offers it again. The
+   pending row holds its count through the retry.
+6. **Aborted** — the field demotes, the carrier is wrecked (GC.3) or the operator cancels
+   (`+sortie/cancel-launch`) before the join lands: the hull stays aboard, the pending row, the
+   cycle slot and the seats are released, and a licensed hull's open claim closes as the epoch's
+   close `RecoveredToBase { base: its own carrier }` (doc 23's kinds); a claim still `Owed` takes
+   doc 23's terminal tombstone (its review item 23-4).
+
+FR.3 builds steps 1, 2, 4, 5 and 6 for every hull and leaves step 3's predicate ("claim open or
+none") as the seam doc 23's S.4b fills; the same six steps are written into doc 23 §17 by its
+session, so neither document owns a step the other reads differently.
+
 **The refusal** (Q-40-20). A hull on the ground and not in the field is the one state the design
 forbids (Q-CF-21), so a launch whose join the kernel refuses goes back aboard and is offered
 again at the next tick, the director's pattern (`raiders::join_raid`), until taken or the field
@@ -300,7 +337,10 @@ demotes; GC.1b's refused arrival takes the same retry instead of waiting for dem
 §4.1's item 1 a refusal is rare; the retry is the guard.
 
 **Its story.** Doc 32 Q-CF-47's escort story with a second escort launched from the pad after the
-first shot, on Ahuna and on Urvara (§6, FR.3).
+first shot, on Ahuna and on Urvara (§6, FR.3); and the same with the second escort under a held
+mind: the fire after its landing opens the claim, the next tick joins it, it thinks in the field
+under its mind, and its epoch closes through the ordinary check-in at demotion — the licensed
+half runs once doc 23's S.4b lands.
 
 **Questions.** Q-40-19, Q-40-20, Q-40-24 (open, Draft 0.3).
 
@@ -704,7 +744,7 @@ after FR.0, FR.3 and FR.4; FR.7 last. Two cuts carry the marker and are built ex
 | **FR.0** the inventory and the bot's words | Q-38-29, Q-40-23, doc 38 §8 | §4a's rows run at the base commit and recorded; the four-digit parser; the bot's `+field/void`, launch, `release` and `+faction/stance` words; `field_story.rs`'s two grounds hoisted to `tests/support/field` for every later story | the recorded inventory in `40-cut-notes.md`; the bot drives to a four-digit pocket on Urvara and types `+field/void` in a smoke |
 | **FR.1** stances | Q-38-23, Q-40-11..14 | the table in `FactionState` and its key; `+faction/stance`, `@faction/stance`, `+faction`'s rows; the `org.stance.declare` capability; `parties.rs` reading it into `FieldHost.marks` and `.friends` at admission and in `carrier::joining` at a join; `friends_of` counting a mutual Allied pair | two co-ops with a declared Hostile meet on Ahuna and on Urvara; a `+field/mark` by one promotes; each presence picture colours the other hostile from the first pulse; a third co-op mutually Allied to the first is Friend and its one-sided Allied to the second is not; a stance changed mid-field changes nothing until the next field, which reads it; an arriving org joins under the declared Hostile in the existing party's book |
 | **FR.2** durable standing | Q-38-24, Q-40-15..18 | `FieldLive.fire` at the snapshot cadence; the window on the grant, `VoidOffers` and the sweep retired; `prev_input` in mush-core and the synchronous close in `+field/void`; the director's auto-void at demotion | GC.10's void gate re-run at both sizes with a restart mid-field (the tally survives), a void after another command refused at once, a void with no command between accepted; a director raid's friendly fire on a Syndicate member voided with no hand |
-| **FR.3** reinforcement | Q-38-25, Q-38-26, Q-40-19, Q-40-20 | `FIELD_LAUNCH` replaced by the cap check and the cycle; the launch's join at the ramp with the director's spread; `launch_cycle_s`; the refused join back aboard and retried; GC.1b's arrival retried | the escort story with a second escort launched by `+sortie/launch` after the first shot, standing beside the ramp at the next pulse and counted; a second launch inside the cycle refused with the seconds left; a launch past the cap refused at the prepare; an F-6 arrival that joins and then launches |
+| **FR.3** reinforcement | Q-38-25, Q-38-26, Q-40-19, Q-40-20, Q-40-24 | `FIELD_LAUNCH` replaced by the cap check over the one count (`SiteRecord.pending`, Q-40-24) and the cycle; §4.4's pending-launch protocol, steps 1, 2, 4, 5 and 6, with step 3's predicate left as the seam for doc 23's S.4b; the launch's join offered by the field tick at the ramp with the director's spread; `launch_cycle_s`; the refused join back aboard and retried; GC.1b's arrival retried | the escort story with a second escort launched by `+sortie/launch` after the first shot, standing beside the ramp at the next pulse and counted; a second launch inside the cycle refused with the seconds left; a launch past the cap refused at the prepare; two carriers one short of the cap each launching one, the second refused at its prepare by the pending row; an F-6 arrival that joins and then launches; the licensed reinforcement (the second escort under a held mind, its claim opened by the fire after its landing, joined by the next tick) once S.4b lands |
 | **FR.4** segments | Q-38-28, Q-40-21 | `Ledger::roll_segment`, the task's threshold at the snapshot cadence, the resume's roll, the `segment` line, `FieldLive.segment` in the host's batch | a field driven past the threshold under a test knob (`max_bytes` lowered) rolls in its first minute, is restarted, resumes from the segment's head, and the world holds every chunk of both segments under one match id; the OOC pins of §4a unmoved |
 | **FR.5** the rebless | Q-38-17, Q-38-27, Q-36-56, Q-40-2..10 | §4.1's five items in its order: the await, `note_fire`, `line_to`, the effects (the compiled table, the resolution pack's block, the derivation at admission and after a part change), the coupled tow (the trailer, `Release` as a field act, the drop); §4a's pins re-pinned once with reasons | the in-source kernel gates (one a row of Q-40-3's table; a trailer struck and released; a mind that no longer fires through a wreck); story (a) re-run at both sizes with the casualty struck while towed, released in the field by `+tv/<n> release`, and dropped where it stands by a tug that fell; `field_gc10`'s gate demoting on `disengage_s`; `field_scale` re-measured at 100 |
 | **FR.6** the seam | Q-36-48, Q-40-22 | `SpacePartyId` deleted, `PartyId` in `space/*` and `shard_10/voyage.rs`, `SpaceRelation` onto `Relation`+`Mark` with the picket's flag | the voyage test's parties lettered by the arena; a compile with no `SpacePartyId` in the tree; no persisted document moved |
@@ -715,7 +755,7 @@ after FR.0, FR.3 and FR.4; FR.7 last. Two cuts carry the marker and are built ex
 Content and schema the cuts author as they land, listed once: the stance row's persisted shape
 and its receipt-less write (FR.1); the `org.stance.declare` capability's name in mush-org's
 built-in list (FR.1); `prev_input` on `SessionStat` (FR.2, mush-core); `launch_cycle_s` in
-`[tacsim.field]` with its band (FR.3); the `segment` ledger line's kind (FR.4); `ComponentEffects`'
+`[tacsim.field]` with its band and `SiteRecord.pending`'s row (FR.3); the `segment` ledger line's kind (FR.4); `ComponentEffects`'
 compiled table and the resolution pack's optional block (FR.5); `ArenaMsg::Release` and
 `ArenaOut::Released` (FR.5); the two `Ground`s hoisted into `tests/support/field` (FR.0). For
 doc 41: the tender's unjam between fields is what makes a jammed part worth carrying home, and
