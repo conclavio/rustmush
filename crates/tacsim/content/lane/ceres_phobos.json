@@ -2823,7 +2823,12 @@
         "licence": { "org": "freeport_registry", "fee_major": 2500, "term_ic_days": 168, "grace_ic_days": 3,
                      "claim_stake_major": 2000, "claim_term_major": 2000 },
         "workshop": { "room": "neighborhood.ceres_freeport.room.c14_dockmaster", "operator": "occator",
-                      "capabilities": ["bay_refit"], "berths": 2, "multiplier_permille": 1200 },
+                      "capabilities": ["bay_refit"], "berths": 2, "multiplier_permille": 1200,
+                      "cost": { "capital_major": 1500000, "lifetime_years": 20, "upkeep_permille": 30,
+                                "staff": 6, "wage_major": 150, "margin_permille": 250 } },
+        "recovery": { "operator": "tycho_mutual", "slots": 1,
+                      "cost": { "capital_major": 4000000, "lifetime_years": 15, "upkeep_permille": 40,
+                                "staff": 6, "wage_major": 150, "margin_permille": 250 } },
         "medical": { "room": "neighborhood.ceres_freeport.room.c03_arrivals", "operator": "coop",
                      "capabilities": ["medical"], "beds": 2 }
       }
@@ -2880,7 +2885,9 @@
         "premium": { "k_permille": 300, "cap_permille": 500 },
         "emergency": { "org": "stickney_yards", "ratio_permille": 1500, "goods": ["provisions", "volatiles", "propellant"], "intake": 100 },
         "workshop": { "room": "neighborhood.stickney_yards.room.p11_service", "operator": "stickney_yards",
-                      "capabilities": ["bay_refit"], "berths": 4, "multiplier_permille": 1000 },
+                      "capabilities": ["bay_refit"], "berths": 4, "multiplier_permille": 1000,
+                      "cost": { "capital_major": 1500000, "lifetime_years": 20, "upkeep_permille": 30,
+                                "staff": 6, "wage_major": 150, "margin_permille": 250 } },
         "medical": { "room": "neighborhood.stickney_yards.room.p03_customs", "operator": "stickney_yards",
                      "capabilities": ["medical"], "beds": 4 }
       }

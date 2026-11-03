@@ -204,7 +204,7 @@ fn paid(w: &World, wo: &mush_industry::WorkOrder) -> bool {
         && w.module_state::<EconomyStore>().is_some_and(|s| s.snapshot().holds().any(|h|
             h.purpose == mush_industry::money::purpose(wo.id())
                 && h.account == wo.budget_account()
-                && matches!(h.status, mush_economy::HoldStatus::Consumed { amount, .. } if amount == mush_industry::money::order_price(wo))))
+                && matches!(h.status, mush_economy::HoldStatus::Consumed { amount, .. } if amount == mush_industry::money::order_price(w, wo))))
 }
 fn proposal_current(e: &mush_core::Engine, p: &Proposal) -> bool {
     let Some(h) = e.world.module_state::<mush_industry::IndustryHandles>() else {

@@ -75,6 +75,7 @@ mod test_checks;
 pub mod bay_refit;
 pub mod commands;
 pub mod core_production;
+pub mod cost;
 pub mod custody;
 pub mod facility;
 pub mod facts;
@@ -88,6 +89,7 @@ pub mod seams;
 pub mod store;
 pub mod workorder;
 
+pub use cost::FacilityCostDef;
 pub use custody::IndustryCustodyProvider;
 pub use facility::{
     CapacityGuardValidator, FACILITY_CLASS, FacilityRecord, MAX_FACILITY_CAPABILITIES,

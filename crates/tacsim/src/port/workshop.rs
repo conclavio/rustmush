@@ -41,13 +41,19 @@ pub fn room(w: &World, id: &CanonicalId, def: &PortDef) -> Result<Option<ObjId>,
 
 /// The facility record the workshop's room carries, owned by `operator`.
 fn record(room: ObjId, operator: OrgId, workshop: &WorkshopDef) -> Result<FacilityRecord, String> {
-    FacilityRecord::new(
+    let record = FacilityRecord::new(
         room,
         PrincipalId::Organization(operator),
         workshop.capabilities.clone(),
         workshop.berths,
     )
-    .map_err(|error| error.to_string())
+    .map_err(|error| error.to_string())?;
+    match workshop.cost {
+        Some(cost) => record
+            .with_authored_cost(cost)
+            .map_err(|error| error.to_string()),
+        None => Ok(record),
+    }
 }
 
 /// **Part j's refusals before any write**: the room resolves, and a facility already on it is
@@ -76,7 +82,11 @@ pub(crate) fn preflight(
         .and_then(|m| m.orgs.get(&workshop.operator))
         .map(|row| record(room, OrgId(row.org), workshop))
         .transpose()?;
-    if expected.as_ref() != Some(existing) {
+    // Doc 39 cut IN.4: a changed cost model is not drift; part j re-prices it in place.
+    if !expected
+        .as_ref()
+        .is_some_and(|expected| expected.same_identity(existing))
+    {
         return Err(format!(
             "{id}: the workshop room {} is already a facility this entry did not open as \
              authored (its owner, capabilities or berths differ); repair it by hand",

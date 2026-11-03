@@ -4310,13 +4310,15 @@ fn strip_ladder(doc: &mut serde_json::Value) {
 /// Ceres's `urvara` routes key — stripped from the shipped lane to rebuild an older one. Doc 36
 /// cut GC.7 (lane v18): the two ports' `workshop` blocks and the vendors' munitions rows first;
 /// cut GC.13 (lane v19): and their `medical` blocks; doc 39 cut IN.1 (lane v20): the ladder
-/// first ([`strip_ladder`]).
+/// first ([`strip_ladder`]); doc 39 cut IN.4 (lane v20): Ceres's `recovery` row (the workshops'
+/// `cost` goes with their blocks).
 fn strip_urvara(lane: &mut serde_json::Value) {
     strip_ladder(lane);
     for port in ["ceres_port", "stickney_port"] {
         let def = lane["entries"][port]["def"].as_object_mut().unwrap();
         def.remove("workshop");
         def.remove("medical");
+        def.remove("recovery");
         for vendor in def["vendors"].as_array_mut().unwrap() {
             for rows in ["stock", "asks"] {
                 if let Some(rows) = vendor[rows].as_array_mut() {
@@ -4753,7 +4755,7 @@ async fn oduya_kept_ceres_v2_and_relay_v4_upgrade_without_replacing_the_live_sta
     // without replacing the operator, node/half objects or disabled link state.
     // Doc 32 cut CF.6c: the shipped relay requires lane v16, so the lane comes first (doc 32
     // cut S.1: lane v17, relay v8; doc 36 cut GC.7: lane v18, relay v9; cut GC.13: lane v19,
-    // relay v10; doc 39 cut IN.1: lane v20, relay v11).
+    // relay v10; doc 39 cuts IN.1 and IN.4: lane v20, relay v11).
     rig.apply_content(vec![
         mush_content::load_pack(tacsim::definitions::content::LANE_JSON).unwrap(),
         mush_content::load_pack(tacsim::relay_content::JSON).unwrap(),
@@ -4810,7 +4812,7 @@ fn r10_public_star_content_digests_are_pinned() {
             // `b8e247be…`). Doc 32 cut CF.6c: v7, re-signed to require lane v16 (was
             // `ed73b84d…`). Doc 32 cut S.1: v8, re-signed to require lane v17. Doc 36 cut
             // GC.7: v9, re-signed to require lane v18 (was `77b71203…` at v8). Doc 36 cut GC.13:
-            // v10, re-signed to require lane v19 (was `850923eb…` at v9). Doc 39 cut IN.1: v11,
+            // v10, re-signed to require lane v19 (was `850923eb…` at v9). Doc 39 cuts IN.1 and IN.4: v11,
             // re-signed to require lane v20 (was `28dea885…` at v10).
             "a057e314f37967b3366857d025c9f618a245402403071e4b08538355fdab9fc6",
         ),

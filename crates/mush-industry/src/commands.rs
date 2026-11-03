@@ -1446,15 +1446,26 @@ fn cmd_wo(
             ctx.out.info(ctx.actor, NO_SUCH_WORK_ORDER);
             return Ok(());
         }
-        let price = quote_price(order.pinned(), order.quantity());
         let duration = quote_duration(order.pinned(), order.quantity());
-        ctx.out.info(
-            ctx.actor,
-            format!(
-                "{}: price {price} input units, duration {duration} work units.",
-                order.id()
+        // Doc 39 cut IN.4: a facility priced by the cost model quotes its fee.
+        let priced = ctx
+            .w
+            .module_state::<IndustryStore>()
+            .and_then(|store| store.facility(order.facility()))
+            .and_then(|facility| facility.fee_minor(duration));
+        let line = match priced {
+            Some(fee) => format!(
+                "{}: fee {} cr, duration {duration} work units.",
+                order.id(),
+                fee / crate::cost::MINOR_PER_CREDIT
             ),
-        );
+            None => format!(
+                "{}: price {} input units, duration {duration} work units.",
+                order.id(),
+                quote_price(order.pinned(), order.quantity())
+            ),
+        };
+        ctx.out.info(ctx.actor, line);
         return Ok(());
     }
     if ctx.switches.has("show") {

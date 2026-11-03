@@ -2253,6 +2253,12 @@ pub enum IndustryRecordError {
     /// (doc 17h cut M8b C2): an ungoverning shop is one WITHOUT the charter.
     #[error("a facility runs core_refit or core_ungovern, never both")]
     FacilityChartedAndUngoverning,
+    /// A facility's cost model with a field out of bounds (doc 39 cut IN.4).
+    #[error("a facility's cost field {field} is out of bounds")]
+    FacilityCost {
+        /// The field.
+        field: &'static str,
+    },
     /// A work order input line count past the cap (E7c4 B3).
     #[error("a work order names at most {max} material inputs")]
     WorkOrderInputs {

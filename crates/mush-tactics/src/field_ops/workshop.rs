@@ -281,6 +281,17 @@ pub const MAX_TARIFF_DURATION_IC: i64 = 30 * 86_400;
 pub const MAX_TARIFF_MULTIPLIER_PERMILLE: u32 = 10_000;
 
 impl WorkshopFacilityTariff {
+    /// **The schedule's labour hour**, minor units: a structural point's cost over its
+    /// duration, scaled to one IC hour (100 cr in the shipped tariff). Doc 39 cut IN.4 sets the
+    /// cost model's berth-hour against it to find the multiplier's floor.
+    #[must_use]
+    pub fn labour_hour_minor(&self) -> u64 {
+        let secs = u64::try_from(self.duration_ic_per_structural_point_repair.max(1)).unwrap_or(1);
+        self.cost_per_structural_point_repair
+            .saturating_mul(3_600)
+            .div_ceil(secs)
+    }
+
     /// Check every bound: costs `0..=`[`MAX_TARIFF_COST`], durations
     /// `1..=`[`MAX_TARIFF_DURATION_IC`], at least one point per tonne of parts, and
     /// `1 <= min <= 1000 <= max <=` [`MAX_TARIFF_MULTIPLIER_PERMILLE`].

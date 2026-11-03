@@ -1214,11 +1214,22 @@ pub fn install_authored_facility(
         .module_state::<IndustryStore>()
         .ok_or("Industry unavailable")?;
     if let Some(existing) = store.facility(facility.object()) {
-        return if existing == &facility {
-            Ok(())
-        } else {
-            Err("Authored facility identity drift".into())
-        };
+        if !existing.same_identity(&facility) {
+            return Err("Authored facility identity drift".into());
+        }
+        if existing.cost() == facility.cost() {
+            return Ok(());
+        }
+        // Doc 39 cut IN.4: a changed cost model re-prices the facility in place, bumping its
+        // policy revision so an order drafted against the old numbers re-validates.
+        let repriced = existing
+            .with_cost(facility.cost().copied())
+            .map_err(|error| error.to_string())?;
+        persist_facility(ctx.out, &repriced);
+        if let Some(store) = ctx.w.module_state_mut::<IndustryStore>() {
+            store.put_facility(repriced);
+        }
+        return Ok(());
     }
     if ctx.w.get(facility.object()).is_none() {
         return Err("Authored facility object missing".into());

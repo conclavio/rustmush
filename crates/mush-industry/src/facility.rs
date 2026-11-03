@@ -45,6 +45,7 @@ use mush_org::PrincipalId;
 use serde::{Deserialize, Serialize};
 use smol_str::SmolStr;
 
+use crate::cost::FacilityCostDef;
 use crate::families::IndustryError;
 use crate::record::{IndustryRecordError, owner};
 
@@ -79,6 +80,11 @@ pub struct FacilityRecord {
     maximum_slots: u32,
     capacity_revision: u64,
     policy_revision: u64,
+    /// Doc 39 cut IN.4 (§4.4): the cost model's inputs, when the facility is priced by it.
+    /// Absent on a facility no fee is drawn from (the medical rooms, the relay foundry), whose
+    /// stored bytes are therefore unchanged.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    cost: Option<FacilityCostDef>,
 }
 
 #[derive(Deserialize)]
@@ -90,6 +96,8 @@ struct FacilityRecordWire {
     maximum_slots: u32,
     capacity_revision: u64,
     policy_revision: u64,
+    #[serde(default)]
+    cost: Option<FacilityCostDef>,
 }
 
 impl<'de> Deserialize<'de> for FacilityRecord {
@@ -105,6 +113,7 @@ impl<'de> Deserialize<'de> for FacilityRecord {
             wire.maximum_slots,
             wire.capacity_revision,
             wire.policy_revision,
+            wire.cost,
         )
         .map_err(serde::de::Error::custom)
     }
@@ -122,7 +131,22 @@ impl FacilityRecord {
         capabilities: BTreeSet<CanonicalId>,
         maximum_slots: u32,
     ) -> Result<Self, IndustryRecordError> {
-        Self::from_parts(object, owner, capabilities, maximum_slots, 1, 1)
+        Self::from_parts(object, owner, capabilities, maximum_slots, 1, 1, None)
+    }
+
+    /// The same facility authored with its cost model (doc 39 cut IN.4), still at revision 1/1.
+    ///
+    /// # Errors
+    /// [`IndustryRecordError::FacilityCost`] for a cost out of bounds.
+    pub fn with_authored_cost(
+        mut self,
+        cost: FacilityCostDef,
+    ) -> Result<Self, IndustryRecordError> {
+        if let Some(field) = cost.bad_field() {
+            return Err(IndustryRecordError::FacilityCost { field });
+        }
+        self.cost = Some(cost);
+        Ok(self)
     }
 
     fn from_parts(
@@ -132,6 +156,7 @@ impl FacilityRecord {
         maximum_slots: u32,
         capacity_revision: u64,
         policy_revision: u64,
+        cost: Option<FacilityCostDef>,
     ) -> Result<Self, IndustryRecordError> {
         if maximum_slots == 0 || maximum_slots > MAX_FACILITY_SLOTS {
             return Err(IndustryRecordError::FacilitySlots {
@@ -145,6 +170,9 @@ impl FacilityRecord {
         }
         if capacity_revision == 0 || policy_revision == 0 {
             return Err(IndustryRecordError::ZeroRevision);
+        }
+        if let Some(field) = cost.as_ref().and_then(FacilityCostDef::bad_field) {
+            return Err(IndustryRecordError::FacilityCost { field });
         }
         // Doc 17h cut M8b C2 (doc 17 §10, D-UM-42): "a facility without a
         // `core_integration` charter" is one holding `core_ungovern` and not
@@ -162,6 +190,7 @@ impl FacilityRecord {
             maximum_slots,
             capacity_revision,
             policy_revision,
+            cost,
         })
     }
 
@@ -201,6 +230,51 @@ impl FacilityRecord {
     #[must_use]
     pub const fn policy_revision(&self) -> u64 {
         self.policy_revision
+    }
+    /// The cost model's inputs, on a facility priced by it (doc 39 cut IN.4).
+    #[must_use]
+    pub const fn cost(&self) -> Option<&FacilityCostDef> {
+        self.cost.as_ref()
+    }
+    /// **`fee(order)`** for `work_units` here (§4.4), minor units: `None` on a facility the
+    /// cost model does not price.
+    #[must_use]
+    pub fn fee_minor(&self, work_units: u64) -> Option<u64> {
+        self.cost
+            .as_ref()
+            .map(|cost| cost.fee_minor(work_units, self.maximum_slots))
+    }
+    /// Whether `other` is this facility as authored, the revisions and the cost aside: the
+    /// identity an applier refuses drift on (doc 39 cut IN.4 re-prices instead).
+    #[must_use]
+    pub fn same_identity(&self, other: &Self) -> bool {
+        self.object == other.object
+            && self.owner == other.owner
+            && self.capabilities == other.capabilities
+            && self.maximum_slots == other.maximum_slots
+    }
+
+    /// **Re-price** (doc 39 cut IN.4): the cost model's inputs replaced, bumping the policy
+    /// revision as [`Self::with_owner`] does, so an order drafted against the old numbers
+    /// re-validates. The capacity revision does not move.
+    ///
+    /// # Errors
+    /// [`IndustryRecordError::RevisionOverflow`] at `u64::MAX`;
+    /// [`IndustryRecordError::FacilityCost`] for a cost out of bounds.
+    pub fn with_cost(&self, cost: Option<FacilityCostDef>) -> Result<Self, IndustryRecordError> {
+        let policy_revision = self
+            .policy_revision
+            .checked_add(1)
+            .ok_or(IndustryRecordError::RevisionOverflow)?;
+        Self::from_parts(
+            self.object,
+            self.owner.clone(),
+            self.capabilities.clone(),
+            self.maximum_slots,
+            self.capacity_revision,
+            policy_revision,
+            cost,
+        )
     }
 
     /// ---- E7r2: P0a — **re-assign the owner, bumping the policy revision** ----
@@ -242,6 +316,7 @@ impl FacilityRecord {
             self.maximum_slots,
             self.capacity_revision,
             policy_revision,
+            self.cost,
         )
     }
 }

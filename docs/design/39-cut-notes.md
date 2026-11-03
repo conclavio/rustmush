@@ -85,3 +85,75 @@ and the hold's two tonnes of each good.
 - *The four-digit bot parser* is FR.0's (the session brief), not carried here.
 
 **Cell delta.** shard_2: _filled from the PR's JUnit_.
+
+## IN.4 — the cost model (Q-39-9, Q-39-10, Q-39-24, Q-39-32)
+
+**Built.**
+
+- `mush_industry::cost::FacilityCostDef { capital_major, lifetime_years, upkeep_permille, staff,
+  wage_major, margin_permille }` (§4.4) with its bounds (`check`), the daily cost, the slot-hour (exact as a
+  fraction; callers multiply before they divide), `fee_minor` (work units × slot-hour × (1 + margin)),
+  `floor_minor_for_secs` (margin 0) and `floor_multiplier_permille`. All integer, minor units: each capital
+  term rounds up to the minor unit; a fee or a floor rounds up to the **whole credit**, the grain a quote
+  prints.
+- `FacilityRecord` carries `cost: Option<FacilityCostDef>` on its policy half (`skip_serializing_if` none, so
+  an unpriced facility's stored bytes are unchanged). `with_authored_cost` at open; `with_cost` re-prices
+  and bumps `policy_revision` as `with_owner` does, so a draft against the old numbers is refused at
+  submit. `same_identity` (object, owner, capabilities, slots) is what `install_authored_facility` and the
+  workshop's preflight now refuse drift on: a changed cost on a kept world re-prices in place instead of
+  stopping the applier.
+- `money::order_price(world, order)` is **`fee(order)`** — the order's work units (`quote_duration`) at the
+  facility's slot-hour and margin — when the order's facility carries a cost model, and `quote_price`'s one
+  minor an input unit otherwise (the relay foundry and the medical rooms are unpriced, so their holds do not
+  move). `place` holds it; the relay foundry's `paid` check reads it with the world. `@wo/quote` prints
+  `fee N cr` for a priced facility.
+- `WorkshopDef.cost` (lane): both workshops author §4.4's workshop row (1.5 M over 20 years, 3 % upkeep, six
+  at 150, 25 % margin = 1,228.77 cr a day). The validator refuses a `multiplier_permille` under
+  `floor_multiplier_permille(berths, tariff.labour_hour_minor())` — the berth-hour over the tariff's own
+  labour hour (100 cr, `WorkshopFacilityTariff::labour_hour_minor`): 256 ‰ at Ceres (two berths), 128 ‰ at
+  Stickney (four). Both sit under the tariff's 500 ‰ minimum, so the shipped multipliers (1,200 and 1,000)
+  pass; the clamp bites only on a costlier row. The tariff's rows are left as they are (Q-39-9).
+- `+bay <hull>` prints a `floor` line under `all` whenever the port's workshop is priced: the work's
+  workshop-time hours at a berth's slot-hour, before margin. A carrier bay docked at the port prints the
+  same floor (the labour is the workshop's crew either way; the bay's ×2 time factor is not charged to it).
+- `PortDef.recovery: RecoveryDef { operator, slots, cost }` — **Tycho Mutual's row** at Ceres (4 M over 15
+  years, 4 % upkeep, six at 150, one slot = 2,068.96 cr a day) with `retrieval_fee_minor(days)` = the days'
+  work units at the margin (one day 2,587 cr). A cost row only: no room is opened; doc 41 adds the passage's
+  propellant and quotes it on the contract.
+- **The mills are withdrawn from the fee model** by construction: a `MillDef` carries no cost and
+  `deny_unknown_fields` refuses one; §4.4's 360-a-day crusher shed stays a coverage figure in the doc.
+- **Lane v20** (IN.1's bump, PR #370; this cut stacks on it and adds its rows to the same version): the lane
+  re-signed with both cuts' rows; relay v11 unmoved (it requires the lane by version). `strip_urvara`
+  (`relay_registry.rs`) and `support/sites.rs::strip_workshops` remove the `recovery` row; the `cost` blocks
+  go with the workshops.
+
+**Tests.**
+
+- `mush-industry` `cost::tests` (4): §4.4's daily costs exactly (yard 3,261.20, works 1,693.16, workshop
+  1,228.77, recovery 2,068.96); a six-unit fittings order 265 cr; the floor multipliers 256 / 128 ‰; bounds.
+- `mush-industry/tests/e7r2.rs` `in4_order_price_is_the_fee_from_the_facilitys_cost_model`: facility #7
+  re-priced with §4.4's works row; a draft against the unpriced record is refused at submit; a six-work-unit
+  order's `@wo/quote` prints **`fee 265 cr`** and the submitted hold is 26,500 minor.
+- `tacsim` lib `in4_an_operator_multiplier_under_the_floor_is_refused` (a payroll of thirty lifts the floor to
+  1,006 ‰: 1,000 is refused with its sentence, 1,006 accepted) and
+  `in4_the_recovery_row_is_bounded_and_prices_a_retrieval`.
+- `shard_1/bay_gc8.rs`: `gc8_who_may_have_a_hull_worked_on` asserts the **Ceres** quote's floor (the unjam's
+  two hours of a Ceres berth = 51.20, billed 52 cr); `gc8_the_refit_run_at_stickney_…` asserts the
+  **Stickney** workshop quote's floor against the cost model over the quote's hours, under the tariff's
+  labour at 1×. Both through `+bay` on the production command path.
+
+**Divergences from §6's row.**
+
+- **`+works/quote fittings` does not exist** — `+works` is IN.3's verb. The 265 cr figure is asserted through
+  `@wo/quote` and the submitted hold, i.e. `order_price`, at a facility carrying §4.4's works row (the works
+  rows themselves, with their rooms, are IN.5's). 264.56 cr exactly; 265 because a fee rounds up to the
+  whole credit.
+- **No 256/512 story**: the cut touches no site; the acceptance is at the two ports.
+- **Lane v20 is IN.1's bump** (agreed with `in1-accounting-identity`): this PR stacks on #370, so #370 merges
+  first; no second version bump.
+- The "multiplier clamped at the floor" is a refusal by the validator at pack load (the house's "refused by
+  the validator"), not a silent raise.
+
+**Cell delta (rule #14).** No new story: two assertions in the GC.8 stories and one `@wo` test in `e7r2`
+(0.08 s for the binary locally), three tacsim lib unit tests (≈ 0 s). Local `shard_1` `gc8_` pair: 16.7 s,
+unchanged by the cut. The PR run's JUnit delta is to be read off the draft PR's CI.
