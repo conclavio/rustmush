@@ -14,10 +14,11 @@ use tacsim::field::{CrewCondition, CrewLocation, crew_of};
 use tokio::sync::mpsc::Receiver;
 
 use crate::driving::{
-    Rig, command, drain, land, on_pad, on_pad_as, run, staff_hand, stocked_tuned, warm,
+    Rig, command, drain, land, launched, on_pad, on_pad_as, run, staff_hand, stocked_tuned,
+    to_cell, warm,
 };
 use crate::field_crash::{control_destroyed, hull_of};
-use crate::field_host::{armed, egress, seat, second, until};
+use crate::field_host::{armed, egress, seat, second, site_record, task, until};
 
 /// Treatment of an incapacitated character, IC seconds (the gate's compressed time).
 const TREAT_INCAPACITATED_S: u32 = 600;
@@ -264,6 +265,174 @@ async fn gc13_a_port_without_a_medical_room_treats_slower() {
     let status = run(&mut rig.tw, b, "+sortie/condition");
     assert!(
         status.contains("fit again in about 1 IC h") && !status.contains("medical room"),
+        "{status}"
+    );
+}
+
+/// **Every control section of `unit` damaged, none destroyed** (a fixture, as
+/// `field_crash::control_destroyed`: its pilot checks in injured, Q-CF-38).
+fn control_damaged(rig: &mut Rig, unit: ObjId) {
+    staff_hand(rig, |ctx| {
+        let cells = mush_tactics::module::unit_of(ctx.w, unit)
+            .expect("the unit")
+            .clone();
+        let ops: Vec<mush_tactics::UnitMutationOp> = cells
+            .cells()
+            .filter_map(|(addr, cell)| match addr {
+                mush_tactics::CellAddr::Section { section, cell: id }
+                    if tacsim::field::crew::CONTROL_SECTIONS.contains(&section.as_str())
+                        && id.as_str() == tacsim::definitions::unit::INTERNALS_CELL =>
+                {
+                    assert!(cell.max > cell.min + 1, "room to damage without destroying");
+                    Some(mush_tactics::UnitMutationOp::SetCell {
+                        addr: addr.clone(),
+                        value: cell.max - 1,
+                    })
+                }
+                _ => None,
+            })
+            .collect();
+        assert!(!ops.is_empty(), "the design has a control section");
+        let plan = mush_tactics::UnitMutationPlan::new(
+            ops,
+            None,
+            Some(smol_str::SmolStr::new_static("test:36a-row4-damaged")),
+        )
+        .expect("a plan");
+        mush_tactics::module::apply_plan(ctx, unit, &plan).expect("applied");
+    });
+}
+
+/// **Doc 36a §11 row 4: a check-in never heals** (GC.13's "the condition kept"; Q-36-45). B
+/// flies a biped from inside it with its control sections damaged. A's mark at it from A's
+/// unarmed rig opens a field nobody fires in, and at its close B checks in injured. B then leaves
+/// the seat for the cabin of the Tally Moth, a sound carrier on the pad, and rides it through a
+/// second field A's mark opens at the empty hull. The carrier's check-in once rebuilt B's record
+/// from the carrier's own sections and wrote B fit; it keeps the worse of what the record held
+/// and what the hull says: B is still injured, aboard the carrier, and only a port's treatment
+/// makes B fit.
+#[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+#[allow(clippy::too_many_lines)]
+async fn gc13_review_a_check_in_from_a_sound_carrier_never_heals_an_injury() {
+    let mut rig = stocked_tuned(tune);
+    let (a, _, a_tvs) = on_pad(&mut rig, 1);
+    launched(&mut rig, a, a_tvs[0]);
+    to_cell(&mut rig, a_tvs[0], (120, 124));
+    let (b, b_row, _) = on_pad_as(&mut rig, "Other", 2, "Tally Moth", 1);
+    let carrier_b = ObjId(b_row.hull);
+    let hull_b = hull_of(
+        &mut rig,
+        "tacsim.unit.biped_mk1",
+        "Grey Strider",
+        (114, 124),
+        270_000,
+    );
+    seat(&mut rig, hull_b, b);
+    let cabin = rig
+        .tw
+        .world()
+        .get(b)
+        .and_then(|object| object.location)
+        .expect("B's room aboard the Tally Moth");
+    staff_hand(&mut rig, |ctx| {
+        ctx.w.move_to(b, hull_b).expect("B climbs into the hull");
+    });
+    control_damaged(&mut rig, hull_b);
+    warm(&mut rig);
+    let mut rx = egress(&mut rig);
+    let mut lines = Vec::new();
+    for _ in 0..3 {
+        let _ = second(&mut rig);
+    }
+    let demoted = |rig: &mut Rig| {
+        task(rig).is_none() && site_record(rig).is_some_and(|record| record.open_field().is_none())
+    };
+
+    // (1) The first field: A's mark west from the rig at B's hull; nobody fires, it demotes, and
+    // B checks in injured inside the hull.
+    let (out, queued) = command(&mut rig, a, "+field/mark W=hostile");
+    assert_eq!(queued.len(), 1, "one promotion: {out}");
+    land(&mut rig, &queued[0]).expect("the promotion lands");
+    assert!(
+        until(&mut rig, &mut rx, &mut lines, 20, |rig, _| task(rig)
+            .is_some())
+        .await,
+        "the first field opens"
+    );
+    assert!(
+        until(&mut rig, &mut rx, &mut lines, 180, |rig, _| demoted(rig)).await,
+        "the first field demotes"
+    );
+    let crew = crew_of(rig.tw.world(), b).cloned().expect("B's record");
+    assert_eq!(crew.condition, CrewCondition::Injured, "{crew:?}");
+    assert!(
+        matches!(crew.location, CrewLocation::Unit { unit } | CrewLocation::Stranded { unit, .. } if unit == hull_b),
+        "{crew:?}"
+    );
+    assert!(crew.extraction.is_none(), "{crew:?}");
+
+    // (2) B leaves the seat and the hull for the carrier's cabin.
+    staff_hand(&mut rig, |ctx| {
+        let station = mush_sim::StationId::new("cockpit").expect("a station id");
+        let vacated =
+            mush_sim::vacate_station(ctx, hull_b, &station, b).expect("the seat is vacated");
+        assert!(vacated, "B held the seat");
+        ctx.w
+            .move_to(b, cabin)
+            .expect("B is back aboard the carrier");
+    });
+
+    // (3) The second field: A's mark at the empty hull promotes, the carrier is admitted with B
+    // aboard, and the field demotes with the carrier checked in sound.
+    let (out, queued) = command(&mut rig, a, "+field/mark W=hostile");
+    assert_eq!(queued.len(), 1, "one promotion: {out}");
+    land(&mut rig, &queued[0]).expect("the promotion lands");
+    assert!(
+        until(&mut rig, &mut rx, &mut lines, 20, |rig, _| task(rig)
+            .is_some())
+        .await,
+        "the second field opens"
+    );
+    let live = tacsim::field::live_on(rig.tw.world(), &crate::driving::cid(crate::driving::AHUNA))
+        .expect("the live record");
+    assert!(
+        live.units
+            .iter()
+            .any(|row| row.unit == carrier_b && row.aboard.contains(&b)),
+        "B is aboard the carrier's row: {:?}",
+        live.units
+    );
+    assert!(
+        live.units
+            .iter()
+            .all(|row| row.unit != hull_b || row.pilot.is_none()),
+        "nobody flies the hull B left: {:?}",
+        live.units
+    );
+    assert!(
+        until(&mut rig, &mut rx, &mut lines, 180, |rig, _| demoted(rig)).await,
+        "the second field demotes"
+    );
+
+    // (4) The carrier's check-in kept B's condition.
+    let crew = crew_of(rig.tw.world(), b).cloned().expect("B's record");
+    assert_eq!(
+        crew.condition,
+        CrewCondition::Injured,
+        "a sound carrier's check-in is no treatment: {crew:?}"
+    );
+    assert_eq!(
+        crew.location,
+        CrewLocation::Carrier { hull: carrier_b },
+        "{crew:?}"
+    );
+    assert_eq!(crew.treatment, None, "{crew:?}");
+    let status = run(&mut rig.tw, b, "+sortie/condition");
+    assert!(
+        status.starts_with(&format!(
+            "Crew: injured, aboard the carrier #{}",
+            carrier_b.0
+        )),
         "{status}"
     );
 }
