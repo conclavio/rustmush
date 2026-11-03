@@ -596,6 +596,21 @@ pub(super) const fn is_typed_line(msg: &WorldMsg) -> bool {
     matches!(msg, WorldMsg::Inbound(Inbound::Cmd { .. }))
 }
 
+/// **Whether the queue behind the lifecycle slot drains now** (doc 36 cut GC.0; Q-36-50): the slot
+/// empty, something behind it, nothing in the defer queue ahead of it, and — **doc 36a lane 3
+/// (P0-10)** — no commit pending. Draining into a pending commit put a line told
+/// [`BEHIND_SLOT_WAITING`] ("not refused") into the defer queue, where its bound restarted and it
+/// could hear `CommitTimedOut`; the queue now waits the commit out, as the slot itself did, and
+/// drains once the receipt lands. `rx` is still taken into it meanwhile (`behind_taking`).
+pub(super) const fn behind_drains(
+    slot_empty: bool,
+    behind_empty: bool,
+    defer_empty: bool,
+    commit_pending: bool,
+) -> bool {
+    slot_empty && !behind_empty && defer_empty && !commit_pending
+}
+
 pub(super) fn classify_writer_signal(signal: &WriterSignal) -> IngressClass {
     match signal {
         WriterSignal::StoreStatus { .. }

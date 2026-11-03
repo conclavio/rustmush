@@ -3718,11 +3718,18 @@ async fn run(
         };
         // Doc 36 cut GC.0 (Q-36-50): what queued behind the slot drains once the
         // slot is empty, under the rule `rx` itself is taken by, before `rx`.
-        let behind_ready = deferred_world_msg.is_none()
-            && !behind.is_empty()
-            && (defer.is_empty() || pending_commit.is_some());
-        let behind_taking =
-            inbound_open && !behind_closed && deferred_world_msg.is_some() && !behind.is_full();
+        let behind_ready = behind_drains(
+            deferred_world_msg.is_none(),
+            behind.is_empty(),
+            defer.is_empty(),
+            pending_commit.is_some(),
+        );
+        // Doc 36a lane 3 (P0-10): and while the queue waits a commit out, `rx` keeps arriving
+        // behind it in order, as it does while the slot is held.
+        let behind_taking = inbound_open
+            && !behind_closed
+            && !behind.is_full()
+            && (deferred_world_msg.is_some() || (!behind.is_empty() && pending_commit.is_some()));
         let behind_notice = behind.next_notice();
         let wake = if let Some(msg) = ready_deferred {
             Wake::Msg(msg)
