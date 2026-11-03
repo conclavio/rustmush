@@ -11,13 +11,13 @@
 //!   1,000 kg, and each salvageable part a lot with its provenance. The hull is left an
 //!   irrecoverable shell in the workshop, its berth freed.
 //! - **When the hull changes** (doc 36a §5.1): a strip or a scrap is checked against the hull
-//!   when it is ordered, but written to it only when its mint has landed ([`land_mint`], from
+//!   when it is ordered, but written to it only when its mint has landed (`land_mint`, from
 //!   the port tick's settle), so a mint given up destroys nothing. The command writes the owed
 //!   act and nothing else; the tick submits it (doc 36a §5.4).
 //! - **Room** (doc 36a P2-4): the bulk a strip or a scrap lays in the hold (`structural_alloys`;
 //!   a part is a lot of its own kind and takes no governed room) must fit the hold as it stands
 //!   by [`crate::port::market::PortCapacity`]'s rule, read before any plan is owed
-//!   ([`hold_takes`]) and again in the mint's prepare from the plan the offer carries.
+//!   (`hold_takes`) and again in the mint's prepare from the plan the offer carries.
 //! - **Hot parts** (Q-F6): [`vacate_claim`] flags a stripped part hot when the claim it came off
 //!   under is vacated — the seam GC.5/GC.6's contest calls, a staff fixture until then. The bay
 //!   refuses to fit a hot part (`+bay/fit`).
