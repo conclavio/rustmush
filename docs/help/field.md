@@ -282,10 +282,25 @@ The game keeps a record of every character a field touched: **where** they are a
 
 - **Where.** Aboard a unit, aboard a carrier (a pilot at a remote console on the
   carrier), **stranded** on the site (inside a hull that cannot bring them home
-  under its own power, or a wreck), or at a port.
+  under its own power, or a wreck), at a port, **held** aboard another party's
+  carrier (a captive), or **in processing** at a port after a captor hands you
+  over.
 - **How.** Fit, **injured** (a control section damaged around you) or
   **incapacitated** (a control section destroyed around you). A pilot at a remote
-  console aboard the carrier is always fit. There is no ejection or capture.
+  console aboard the carrier is always fit.
+
+**Held.** A captive is a passenger who cannot leave and cannot operate. Exits,
+boarding and leaving a hull or a rig, the bay, every unit, ship, field, bay and
+salvage act, the cockpit, `WILCO`, `NEGATIVE`, `@station`, `+focus`, the
+`+sortie` switches that seat, hire, launch or recover, `+sortie/chat` and
+`+sortie/extract` are refused with one line: "You are held aboard the Kestrel."
+Speech in the room, `look`, `+sortie/condition`, mail, pages and OOC channels
+work, and so do the reads (`+ship`, `+field`, `+tv`, `+sortie/operation`) and
+standing your own operation down (`+sortie/deactivate`, `+sortie/end`). A
+character in processing at a port may go anywhere in the port and nowhere else:
+"You are being processed at Ceres Freeport; about 1 IC h." What takes a
+character captive, hands them over and frees them is still being built; the
+record and the refusals are in place first.
 
 A control-section kill incapacitates you at once: "Your head is gone and you with
 it, for now: you are incapacitated." A stranded pilot is told so when the field
@@ -318,7 +333,7 @@ stand in. While world time is frozen the clock does not run.
   +sortie/extract          stranded or incapacitated: ask a recovery service to
                            lift you to a safe port
   +sortie/condition        how you are and where, and the time left on an
-                           extraction or a treatment
+                           extraction, a treatment or a processing hour
 
 ## Leaving units behind
 

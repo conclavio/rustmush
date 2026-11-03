@@ -995,6 +995,10 @@ fn submit(ctx: &mut Ctx<'_>, actor: ObjId, order: ClaimOrder, tag: u32) -> bool 
 ///
 /// The line that refuses.
 pub(crate) fn salvage_cmd(ctx: &mut Ctx<'_>) -> Result<(), CmdError> {
+    // Doc 42 cut CR.0 (Q-42-2): every `+salvage` switch is the held gate's.
+    if ctx.switches.iter().next().is_some() {
+        crate::field::crew::gate(ctx, crate::field::crew::Gate::Operate)?;
+    }
     let raw = ctx.args.raw().to_owned();
     if ctx.switches.has("claim") {
         let (word, go) = split_go(&raw);

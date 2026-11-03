@@ -743,7 +743,8 @@ pub fn in_vocabulary(line: &str) -> bool {
     if line.len() > 4096 || line.contains(['\n', '\r']) {
         return false;
     }
-    if super::detachment::in_vocabulary(line) {
+    // Doc 42 cut CR.0 (Q-42-23): the crew's lines, both halves.
+    if super::detachment::in_vocabulary(line) || super::crew::in_vocabulary(line) {
         return true;
     }
     if ["+field", "CONTACTS", "+tv/1 board", "+tv/1 leave"].contains(&line) {

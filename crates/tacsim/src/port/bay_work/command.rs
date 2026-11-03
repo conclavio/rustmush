@@ -268,6 +268,10 @@ fn show(ctx: &mut Ctx<'_>, hull: ObjId) -> Result<(), String> {
 /// Every refusal is a [`CmdError`] line said to the actor.
 pub(crate) fn bay_cmd(ctx: &mut Ctx<'_>) -> Result<(), CmdError> {
     crate::commands::require_enabled(ctx)?;
+    // Doc 42 cut CR.0 (Q-42-2): every bay act is the held gate's; the quote, a read, passes.
+    if ctx.switches.iter().any(|switch| switch != "quote") {
+        crate::field::crew::gate(ctx, crate::field::crew::Gate::Operate)?;
+    }
     let raw = ctx.args.raw().trim().to_owned();
     if raw.is_empty() {
         return Err(CmdError::msg(BAY_USAGE));

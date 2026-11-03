@@ -1074,6 +1074,8 @@ fn refusal(error: CockpitError) -> CmdError {
 /// verb takes it — each reads the cockpit as [`Seat::driver`] and answers
 /// `ctx.actor`.
 fn cockpit_command(ctx: &mut Ctx<'_>, verb: &'static str) -> Result<(), CmdError> {
+    // Doc 42 cut CR.0 (Q-42-2): no cockpit keyword answers a captive or an ejectee.
+    crate::field::crew::gate(ctx, crate::field::crew::Gate::Operate)?;
     if verb == "order" {
         let raw = ctx.args.raw().trim().to_owned();
         if let Some(result) = crate::detachment::sortie::field_order(ctx, &raw) {
