@@ -710,9 +710,12 @@ claim's issuer must be an `Object` (`salvage_claim_hull`, `contract_live.rs:5930
 object (`:6297`), so an organization cannot be the claimant; on the award's tick the house arm posts
 one `TransferTitle` from the dispatcher to `PrincipalId::Organization(tycho_mutual)` under Tycho's
 own authority, and the hull is the company's (round-2 item 41-7; the alternative, a `PrincipalId`
-claimant through the spec and the award, is a consent-shape change this document does not ask for). There she is assessed and quoted (GC.9's
-assessment, the tariff at Occator's 1.2): where the restoration quote is **under the hull's
-reference price** (Q-39-17: the bill-derived price, or a programme hull's buyout) less a resale
+claimant through the spec and the award, is a consent-shape change this document does not ask for). There she is assessed and quoted — **the full quote**, not GC.9's: `restoration_charge` answers
+only a hull of a lessor's pool (`tv.rs:3662`, `vehicle.rs:424–428`) and prices labour alone, so the
+test sums the tariff's labour at Occator's 1.2, the bale materials (alloys and fittings per point at
+the references) and the catalogue price of every destroyed part's replacement, which is the sum
+`+bay`'s own quote assembles once doc 39's IN.6 and IN.8 land (round-2 item 41-12b): where that
+quote is **under the hull's reference price** (Q-39-17: the bill-derived price, or a programme hull's buyout) less a resale
 margin (provisional 20 %), Tycho has her repaired at the workshop and **resells** her at the
 reference price — through a hull-sale contract on the generic engine (an `Offered` contract with
 the hull's `TransferTitle` as its deliverable and the price as its payment, `Public`, accepted by a
@@ -1154,8 +1157,9 @@ provisional unless the line says otherwise.
 - **Decision (owner ruling, 2026-11-03):** the sweep, with the disposition decided by condition. A
   hull that can be repaired and resold is repaired and resold — that is the obvious route; scrapping
   is for a hull that would cost more to repair than it can be resold for with a profit. The test is
-  the restoration quote (GC.9's assessment at Occator's multiplier) against the reference price
-  (Q-39-17) less a provisional 20 % resale margin: under it, repair at the workshop and a hull-sale
+  the full restoration quote (labour, bale materials and replacement parts at Occator's multiplier —
+  Draft 0.3, round-2 item 41-12b; GC.9's lessor-only, labour-only quote does not serve) against the
+  reference price (Q-39-17) less a provisional 20 % resale margin: under it, repair at the workshop and a hull-sale
   offer at the reference price; over it, or past repair, scrap under IN.7.
 - **Proposed default (as written):** it sweeps: a wreck 56 IC days on a lane site with no claim and
   no retrieval is claimed by Tycho on the one claim path (open ground; owned ground with the
