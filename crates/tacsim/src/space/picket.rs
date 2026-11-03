@@ -7,9 +7,9 @@
 //! 1. **Three distinct [`crate::arena::party::PartyId`] parties**:
 //!    - [`CARRIER_PARTY`] (`PartyId::nth(0)` = `'A'`): The player's `Dray-P` carrier.
 //!    - [`CUSTOMS_CORVETTE_PARTY`] (`PartyId::nth(1)` = `'B'`): **Republic Customs Corvette**
-//!      (`SpaceRelation::Inspecting` / `Relation::Neutral` toward the carrier; `SpaceRelation::Hostile`
-//!      toward the Belt Raider), flown by a compiled [`RhaiRunner`] executing `kirkwood_picket.rhai`.
-//!    - [`BELT_RAIDER_PARTY`] (`PartyId::nth(2)` = `'C'`): **Belt Raider** (`SpaceRelation::Hostile`
+//!      (`Relation::Neutral` toward the carrier under the bubble's inspecting flag, Q-40-22;
+//!      `Relation::Hostile` toward the Belt Raider), flown by a compiled [`RhaiRunner`] executing `kirkwood_picket.rhai`.
+//!    - [`BELT_RAIDER_PARTY`] (`PartyId::nth(2)` = `'C'`): **Belt Raider** (`Relation::Hostile`
 //!      toward both the carrier and the Republic Customs Corvette), flown by a compiled
 //!      [`RhaiRunner`] executing `belt_raider.rhai`.
 //! 2. **Light-lagged radio hail (`D-35-10`, `35a` §4 row 2)**:
@@ -26,7 +26,7 @@
 //!      campaign front via [`mush_faction::record_customs_assertion`].
 //!    - Burning past [`PICKET_RUN_BOUNDARY_M`] (`35 km`) or running `+helm/run` without clearing
 //!      inspection records [`PicketInspectionOutcome::RanThePicket`], escalates the Republic
-//!      Customs Corvette to [`SpaceRelation::Hostile`], and advances the
+//!      Customs Corvette to [`Relation::Hostile`](crate::arena::party::Relation::Hostile), and advances the
 //!      [`mush_faction::CUSTOMS_ASSERTION_TITLE`] front.
 
 use std::collections::BTreeMap;
@@ -45,14 +45,15 @@ use serde_json::json;
 use smol_str::SmolStr;
 
 use super::bubble::{
-    BubbleInputCommand, BubbleInputTape, EmconPosture, HullStatus, LocalSpaceBubble, SpacePartyId,
-    SpaceRelation, SpaceShipState,
+    BubbleInputCommand, BubbleInputTape, EmconPosture, HullStatus, LocalSpaceBubble,
+    SpaceShipState, admitted_party,
 };
 use super::weapons::{LaserMode, isqrt_i128};
 use crate::arena::card::line;
 use crate::arena::core::{ClassTable, CoreClass};
 use crate::arena::intents::{IntentKind, MotorGoal};
 use crate::arena::mind::{MindRunner, MindView, ThinkJob, ThinkResult, ViewContact};
+use crate::arena::party::{Mark, PartyId};
 use crate::arena::perception::{Aspect, FrameCondition, FrameNotice, Receiver as FrameReceiver};
 use crate::arena::profile_rules::BoundProgram;
 use crate::arena::profile_runtime::ProfileToken;
@@ -69,13 +70,13 @@ use crate::port::apply::{credit_scale, minor_of};
 use crate::port::licence::{LICENCE_SETTLE_WINDOW_SECS, licence_gate, licence_port};
 
 /// Party A (`PartyId::nth(0)` = `'A'`): Promoted player carrier (`Dray-P`).
-pub const CARRIER_PARTY: SpacePartyId = SpacePartyId(1);
+pub const CARRIER_PARTY: PartyId = admitted_party(0);
 
-/// Party B (`PartyId::nth(1)` = `'B'`): **Republic Customs Corvette** (`Neutral`/`Inspecting` to carrier, `Hostile` to raider).
-pub const CUSTOMS_CORVETTE_PARTY: SpacePartyId = SpacePartyId(2);
+/// Party B (`PartyId::nth(1)` = `'B'`): **Republic Customs Corvette** (`Neutral` and inspecting to carrier, `Hostile` to raider).
+pub const CUSTOMS_CORVETTE_PARTY: PartyId = admitted_party(1);
 
 /// Party C (`PartyId::nth(2)` = `'C'`): **Belt Raider** (`Hostile` to both carrier and customs corvette).
-pub const BELT_RAIDER_PARTY: SpacePartyId = SpacePartyId(3);
+pub const BELT_RAIDER_PARTY: PartyId = admitted_party(2);
 
 /// Initial standoff distance ($6\text{ km} = 6{,}000\text{ m}$) of the Republic Customs Corvette
 /// when opening a Kirkwood Customs Picket bubble (`doc 35` §9 Story 1 step 2).
@@ -335,7 +336,7 @@ pub enum PicketInspectionOutcome {
         front_id: Option<u64>,
     },
     /// Carrier ran the picket without clearing inspection, escalating the Republic Customs
-    /// Corvette to [`SpaceRelation::Hostile`] and advancing [`mush_faction::CUSTOMS_ASSERTION_TITLE`].
+    /// Corvette to [`Relation::Hostile`](crate::arena::party::Relation::Hostile) and advancing [`mush_faction::CUSTOMS_ASSERTION_TITLE`].
     RanThePicket {
         /// Campaign front id (`"Customs Assertion"`) opened or advanced in `mush-faction`.
         front_id: Option<u64>,
@@ -429,6 +430,17 @@ impl KirkwoodPicketState {
             raider_last_intents: Vec::new(),
             raider_seal,
         }
+    }
+
+    /// Whether the Customs Corvette is still screening the carrier (hailed or hove-to, neither
+    /// cleared nor run): the bubble's inspecting flag on its party (Q-40-22).
+    #[must_use]
+    pub const fn is_screening(&self) -> bool {
+        matches!(
+            self.inspection_status,
+            PicketInspectionStatus::AwaitingHeaveTo
+                | PicketInspectionStatus::HoveToReadyForInspection
+        )
     }
 
     /// Return whether the customs picket inspection is satisfied (`Cleared`, `ClearedAfterFine`, or `ClearedAfterSeizure`).
@@ -712,13 +724,11 @@ pub fn run_space_rhai_think(
         let cid = ContactId((idx as u64).saturating_add(1));
         contact_map.insert(cid, other.id.clone());
 
-        let rel = bubble
-            .party_relation(observer.party, other.party)
-            .to_arena_relation();
+        let rel = bubble.party_relation(observer.party, other.party);
         let rel_speed_mmps = relative_speed_3d_mmps(observer.vel_mmps, other.vel_mmps);
         let moving = rel_speed_mmps >= HEAVE_TO_REL_VEL_MMPS;
         let reads_dead = other.status != HullStatus::Operational;
-        let party_id = other.party.to_party_id();
+        let party_id = other.party;
         let letter = char::from(b'A'.saturating_add(u8::try_from(idx.min(25)).unwrap_or(0)));
         let desig = Designator::Unit {
             party: party_id,
@@ -809,10 +819,10 @@ pub fn run_space_rhai_think(
     let view = Arc::new(MindView {
         unit: unit_obj.0,
         callsign: Designator::Unit {
-            party: observer.party.to_party_id(),
+            party: observer.party,
             letter: 'A',
         },
-        party: observer.party.to_party_id(),
+        party: observer.party,
         cell: Some((8, 8)),
         mode: MatchMode::Skirmish,
         own_last_hit_ms: None,
@@ -908,10 +918,10 @@ pub fn run_drone_rhai_think(
     let view = Arc::new(MindView {
         unit: drone_obj.0,
         callsign: Designator::Unit {
-            party: CARRIER_PARTY.to_party_id(),
+            party: CARRIER_PARTY,
             letter: 'A',
         },
-        party: CARRIER_PARTY.to_party_id(),
+        party: CARRIER_PARTY,
         cell: Some((8, 8)),
         mode: MatchMode::Skirmish,
         own_last_hit_ms: None,
@@ -1043,7 +1053,7 @@ fn step_corvette_mind_on_bubble(
                 bubble.set_party_relation(
                     CUSTOMS_CORVETTE_PARTY,
                     CARRIER_PARTY,
-                    SpaceRelation::Hostile,
+                    Some(Mark::Hostile),
                 );
             } else if stage == 2
                 && picket.inspection_status == PicketInspectionStatus::AwaitingHeaveTo
@@ -1162,11 +1172,7 @@ fn step_corvette_mind_on_bubble(
         && distance_3d_m(carrier.pos_m, corvette.pos_m) > PICKET_RUN_BOUNDARY_M
     {
         picket.inspection_status = PicketInspectionStatus::RanThePicket;
-        bubble.set_party_relation(
-            CUSTOMS_CORVETTE_PARTY,
-            CARRIER_PARTY,
-            SpaceRelation::Hostile,
-        );
+        bubble.set_party_relation(CUSTOMS_CORVETTE_PARTY, CARRIER_PARTY, Some(Mark::Hostile));
     }
 }
 
@@ -1327,6 +1333,7 @@ pub fn step_kirkwood_picket(
     carrier_ship_id: &str,
 ) -> Vec<super::bubble::SpaceCombatEvent> {
     let mut emitted_events = Vec::new();
+    bubble.set_inspecting(CUSTOMS_CORVETTE_PARTY, picket.is_screening());
     if picket.inspection_outcome.is_some() {
         step_raider_mind_on_bubble(bubble, tape, picket, carrier_ship_id, &mut emitted_events);
         step_corvette_mind_on_bubble(bubble, tape, picket, carrier_ship_id, &mut emitted_events);
@@ -1334,6 +1341,7 @@ pub fn step_kirkwood_picket(
         step_corvette_mind_on_bubble(bubble, tape, picket, carrier_ship_id, &mut emitted_events);
         step_raider_mind_on_bubble(bubble, tape, picket, carrier_ship_id, &mut emitted_events);
     }
+    bubble.set_inspecting(CUSTOMS_CORVETTE_PARTY, picket.is_screening());
     emitted_events
 }
 
@@ -1567,7 +1575,7 @@ pub fn seize_contraband_and_advance_front(
 }
 
 /// Record a picket-running incident (`RanThePicket`), escalating the Republic Customs Corvette
-/// to [`SpaceRelation::Hostile`] and advancing the [`mush_faction::CUSTOMS_ASSERTION_TITLE`]
+/// to [`Relation::Hostile`](crate::arena::party::Relation::Hostile) and advancing the [`mush_faction::CUSTOMS_ASSERTION_TITLE`]
 /// campaign front (`D-35-11`, `SF.R6`).
 pub fn record_ran_the_picket_incident(
     ctx: &mut Ctx<'_>,
@@ -1848,16 +1856,13 @@ pub fn spawn_kirkwood_picket_ships_in_world(
 
     configure_corvette_and_raider_ships(&mut corvette, &mut raider);
 
-    bubble.set_party_relation(
-        CARRIER_PARTY,
-        CUSTOMS_CORVETTE_PARTY,
-        SpaceRelation::Inspecting,
-    );
-    bubble.set_party_relation(CARRIER_PARTY, BELT_RAIDER_PARTY, SpaceRelation::Hostile);
+    bubble.set_party_relation(CARRIER_PARTY, CUSTOMS_CORVETTE_PARTY, None);
+    bubble.set_inspecting(CUSTOMS_CORVETTE_PARTY, true);
+    bubble.set_party_relation(CARRIER_PARTY, BELT_RAIDER_PARTY, Some(Mark::Hostile));
     bubble.set_party_relation(
         CUSTOMS_CORVETTE_PARTY,
         BELT_RAIDER_PARTY,
-        SpaceRelation::Hostile,
+        Some(Mark::Hostile),
     );
 
     bubble.insert_ship(corvette);
@@ -1928,16 +1933,13 @@ pub fn build_kirkwood_picket_ships(
     );
     configure_corvette_and_raider_ships(&mut corvette, &mut raider);
 
-    bubble.set_party_relation(
-        CARRIER_PARTY,
-        CUSTOMS_CORVETTE_PARTY,
-        SpaceRelation::Inspecting,
-    );
-    bubble.set_party_relation(CARRIER_PARTY, BELT_RAIDER_PARTY, SpaceRelation::Hostile);
+    bubble.set_party_relation(CARRIER_PARTY, CUSTOMS_CORVETTE_PARTY, None);
+    bubble.set_inspecting(CUSTOMS_CORVETTE_PARTY, true);
+    bubble.set_party_relation(CARRIER_PARTY, BELT_RAIDER_PARTY, Some(Mark::Hostile));
     bubble.set_party_relation(
         CUSTOMS_CORVETTE_PARTY,
         BELT_RAIDER_PARTY,
-        SpaceRelation::Hostile,
+        Some(Mark::Hostile),
     );
 
     bubble.insert_ship(corvette);
@@ -1954,6 +1956,7 @@ pub fn build_kirkwood_picket_ships(
 #[cfg(test)]
 mod tests {
     use super::*;
+    use crate::arena::party::Relation;
 
     #[test]
     fn kirkwood_picket_and_belt_raider_rhai_doctrines_run_on_rhai_runner_without_faults() {
@@ -2027,11 +2030,7 @@ mod tests {
             unlicensed_strategic_ore_kg: 4_000,
             front_id: Some(1),
         });
-        bubble.set_party_relation(
-            CUSTOMS_CORVETTE_PARTY,
-            CARRIER_PARTY,
-            SpaceRelation::Friendly,
-        );
+        bubble.set_party_relation(CUSTOMS_CORVETTE_PARTY, CARRIER_PARTY, Some(Mark::Friendly));
 
         let ambush_events = step_kirkwood_picket(&mut bubble, &mut tape, &mut picket, "hull.10");
         assert!(picket.raider_ambush_launched);
@@ -2085,7 +2084,7 @@ mod tests {
         );
         assert_eq!(
             bubble.party_relation(CUSTOMS_CORVETTE_PARTY, CARRIER_PARTY),
-            SpaceRelation::Hostile
+            Relation::Hostile
         );
     }
 }

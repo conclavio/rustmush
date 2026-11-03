@@ -23,8 +23,8 @@ pub use bubble::{
     BubbleId, BubbleInputCommand, BubbleInputEntry, BubbleInputTape, BubbleSnapshot,
     BubbleStepReport, CanopyBodyProjection, DERELICT_WINDOW_S, EmconPosture, FacetBand, HullStatus,
     LocalSpaceBubble, MAX_SUBSTEP_MS, ShipSectionId, ShipSectionState, SpaceCombatEvent,
-    SpacePartyId, SpaceRelation, SpaceSectionConsequence, SpaceShipState, SubsystemCrit,
-    default_canopy_bodies_for_site,
+    SpaceSectionConsequence, SpaceShipState, SubsystemCrit, admitted_party,
+    default_canopy_bodies_for_site, relation_feed_word,
 };
 pub use commands::{
     BridgeRole, HELM_HELP, HELM_SWITCHES, HELM_VERB, HOLOTANK_FEED, MINE_HELP, MINE_SWITCHES,
@@ -188,6 +188,7 @@ impl DockingPose6Dof {
 #[cfg(test)]
 mod tests {
     use super::*;
+    use crate::arena::party::{Mark, Relation};
     use mush_core::ObjId;
 
     #[test]
@@ -198,13 +199,13 @@ mod tests {
             "Railgun Lead Test",
             1_000,
         );
-        bubble.set_party_relation(SpacePartyId(1), SpacePartyId(2), SpaceRelation::Hostile);
+        bubble.set_party_relation(admitted_party(0), admitted_party(1), Some(Mark::Hostile));
 
         // Both shooter and target have significant 3D world velocities (`35a` §5.1).
         let mut shooter = SpaceShipState::new_corvette(
             "ship.shooter",
             "Corvette",
-            SpacePartyId(1),
+            admitted_party(0),
             [1_500, -400, 250],
             [5_000_000, -2_000_000, 1_000_000], // +5 km/s X, -2 km/s Y, +1 km/s Z
         );
@@ -214,7 +215,7 @@ mod tests {
         let target = SpaceShipState::new_dray(
             "ship.target",
             "Target",
-            SpacePartyId(2),
+            admitted_party(1),
             [75_500, 1_600, -750],
             [-1_000_000, 3_000_000, -500_000], // -1 km/s X, +3 km/s Y, -0.5 km/s Z
         );
@@ -266,7 +267,7 @@ mod tests {
         let dray = SpaceShipState::new_dray(
             "ship.dray",
             "Dray-P",
-            SpacePartyId(1),
+            admitted_party(0),
             [0, 0, 0],
             [490, 0, 0],
         );
@@ -285,19 +286,19 @@ mod tests {
     fn torpedo_3d_proportional_navigation_and_ballistic_coasting_after_dv_exhaustion() {
         let mut bubble =
             LocalSpaceBubble::new("bubble.torp_pn", "site.test", "Torpedo PN & Coast", 3_000);
-        bubble.set_party_relation(SpacePartyId(1), SpacePartyId(2), SpaceRelation::Hostile);
+        bubble.set_party_relation(admitted_party(0), admitted_party(1), Some(Mark::Hostile));
 
         let attacker = SpaceShipState::new_corvette(
             "ship.attacker",
             "Attacker",
-            SpacePartyId(1),
+            admitted_party(0),
             [0, 0, 0],
             [0, 0, 0],
         );
         let mut target = SpaceShipState::new_dray(
             "ship.target",
             "Target",
-            SpacePartyId(2),
+            admitted_party(1),
             [12_000, 1_500, 0],
             [0, 180_000, 0], // moving laterally at +180 m/s Y
         );
@@ -346,18 +347,18 @@ mod tests {
         // for 48 s (288 km) and coasts at 12 km/s for ~13.5 s (162 km), impacting around 61.5 s.
         let mut long_bubble =
             LocalSpaceBubble::new("bubble.long_torp", "site.test", "Long-Range Torpedo", 5_000);
-        long_bubble.set_party_relation(SpacePartyId(1), SpacePartyId(2), SpaceRelation::Hostile);
+        long_bubble.set_party_relation(admitted_party(0), admitted_party(1), Some(Mark::Hostile));
         long_bubble.insert_ship(SpaceShipState::new_corvette(
             "ship.attacker",
             "Attacker",
-            SpacePartyId(1),
+            admitted_party(0),
             [0, 0, 0],
             [0, 0, 0],
         ));
         let mut far_target = SpaceShipState::new_dray(
             "ship.far_target",
             "Far Target",
-            SpacePartyId(2),
+            admitted_party(1),
             [450_000, 0, 0],
             [0, 0, 0],
         );
@@ -385,19 +386,19 @@ mod tests {
     fn pdc_burst_cooldown_accumulates_hits_allows_salvo_saturation_and_decoy_checks_target_lock() {
         let mut bubble =
             LocalSpaceBubble::new("bubble.pdc_decoy", "site.test", "PDC & Decoy", 4_000);
-        bubble.set_party_relation(SpacePartyId(1), SpacePartyId(2), SpaceRelation::Hostile);
+        bubble.set_party_relation(admitted_party(0), admitted_party(1), Some(Mark::Hostile));
 
         let attacker = SpaceShipState::new_corvette(
             "ship.attacker",
             "Attacker",
-            SpacePartyId(1),
+            admitted_party(0),
             [0, 0, 0],
             [1_500_000, 0, 0], // closing at 1.5 km/s
         );
         let mut defender = SpaceShipState::new_dray(
             "ship.defender",
             "Defender",
-            SpacePartyId(2),
+            admitted_party(1),
             [2_500, 0, 0],
             [0, 0, 0],
         );
@@ -413,7 +414,7 @@ mod tests {
         let mut escort = SpaceShipState::new_dray(
             "ship.escort",
             "Escort",
-            SpacePartyId(2),
+            admitted_party(1),
             [2_400, 50, 0],
             [0, 0, 0],
         );
@@ -484,7 +485,7 @@ mod tests {
         let mut ship = SpaceShipState::new_dray(
             "ship.derelict",
             "Derelict",
-            SpacePartyId(1),
+            admitted_party(0),
             [0, 0, 0],
             [0, 0, 0],
         );
@@ -543,18 +544,18 @@ mod tests {
     #[test]
     fn bubble_input_tape_and_snapshot_replay_deterministically() {
         let mut bubble = LocalSpaceBubble::new("bubble.replay", "site.test", "Tape Replay", 50_000);
-        bubble.set_party_relation(SpacePartyId(1), SpacePartyId(2), SpaceRelation::Hostile);
+        bubble.set_party_relation(admitted_party(0), admitted_party(1), Some(Mark::Hostile));
         bubble.insert_ship(SpaceShipState::new_corvette(
             "ship.alpha",
             "Alpha",
-            SpacePartyId(1),
+            admitted_party(0),
             [0, 0, 0],
             [100_000, 0, 0],
         ));
         bubble.insert_ship(SpaceShipState::new_corvette(
             "ship.beta",
             "Beta",
-            SpacePartyId(2),
+            admitted_party(1),
             [2_500, 200, 0],
             [-150_000, 0, 0],
         ));
@@ -618,7 +619,7 @@ mod tests {
             &unit_before,
             "ship.dray_custody",
             "CSS Custody",
-            SpacePartyId(1),
+            admitted_party(0),
             [0, 0, 0],
             [0, 0, 0],
         )
@@ -660,7 +661,7 @@ mod tests {
             &dray_p_unit,
             "ship.dray_p",
             "CSS Prospector",
-            SpacePartyId(1),
+            admitted_party(0),
             [0, 0, 0],
             [0, 0, 0],
         )
@@ -676,7 +677,7 @@ mod tests {
             &halcyon_unit,
             "ship.halcyon",
             "CNS Halcyon",
-            SpacePartyId(1),
+            admitted_party(0),
             [0, 0, 0],
             [0, 0, 0],
         )
@@ -790,18 +791,18 @@ mod tests {
         bubble.insert_ship(SpaceShipState::new_dray(
             "ship.4201",
             "Salt Moth",
-            SpacePartyId(1),
+            admitted_party(0),
             [0, 0, 0],
             [0, 0, 0],
         ));
         bubble.insert_ship(SpaceShipState::new_corvette(
             "ship.9901",
             "Belt Raider",
-            SpacePartyId(3),
+            admitted_party(2),
             [18_000, 0, 0],
             [-250_000, 0, 0],
         ));
-        bubble.set_party_relation(SpacePartyId(1), SpacePartyId(3), SpaceRelation::Hostile);
+        bubble.set_party_relation(admitted_party(0), admitted_party(2), Some(Mark::Hostile));
 
         let mut tape = BubbleInputTape::new(&bubble);
         let _ = tape.record_and_apply(
@@ -911,5 +912,42 @@ mod tests {
         let decoded: SpacePersistedState =
             serde_json::from_value(encoded).expect("decode SpacePersistedState");
         assert_eq!(decoded, state);
+    }
+
+    /// FR.6 (doc 40 Q-40-22): space parties are the arena's letters, the
+    /// persisted wire keeps its admission numbers, marks are symmetric, and the
+    /// picket's inspecting flag is a bubble-side flag a document carries only while set.
+    #[test]
+    fn fr6_space_parties_are_arena_letters_on_an_unmoved_wire() {
+        for (n, letter) in [(0, 'A'), (1, 'B'), (2, 'C')] {
+            let party = admitted_party(n);
+            assert_eq!(party.letter(), letter);
+            let ship = SpaceShipState::new_dray("ship.1", "Salt Moth", party, [0, 0, 0], [0, 0, 0]);
+            let wire = serde_json::to_value(&ship).expect("encode ship");
+            assert_eq!(wire["party"], serde_json::json!(n + 1));
+            let back: SpaceShipState = serde_json::from_value(wire).expect("decode ship");
+            assert_eq!(back.party, party);
+        }
+
+        let (a, b) = (admitted_party(0), admitted_party(1));
+        let mut bubble = LocalSpaceBubble::new("bubble.fr6", "site.test", "FR.6", 1_000);
+        assert_eq!(bubble.party_relation(a, a), Relation::Own);
+        bubble.set_party_relation(a, b, Some(Mark::Hostile));
+        assert_eq!(bubble.party_relation(a, b), Relation::Hostile);
+        assert_eq!(bubble.party_relation(b, a), Relation::Hostile);
+        bubble.set_party_relation(a, b, None);
+        assert_eq!(bubble.party_relation(b, a), Relation::Neutral);
+
+        let wire = serde_json::to_value(&bubble).expect("encode bubble");
+        assert!(
+            wire.get("inspecting").is_none(),
+            "no key while nobody screens"
+        );
+        bubble.set_inspecting(b, true);
+        assert!(bubble.is_inspecting(b) && !bubble.is_inspecting(a));
+        let wire = serde_json::to_value(&bubble).expect("encode bubble");
+        assert_eq!(wire["inspecting"], serde_json::json!([b.as_str()]));
+        let back: LocalSpaceBubble = serde_json::from_value(wire).expect("decode bubble");
+        assert_eq!(back, bubble);
     }
 }
