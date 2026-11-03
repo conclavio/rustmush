@@ -21,7 +21,7 @@ use tacsim::surface::site_record::LeftCondition;
 use tokio::sync::mpsc::Receiver;
 
 use crate::driving_rig::{
-    AHUNA, Rig, ahuna_domain, cid, command, drain, land, launched, on_pad, on_pad_as, reboot,
+    AHUNA, Rig, ahuna_domain, cid, command, crash, drain, land, launched, on_pad, on_pad_as,
     retune, run, staff_hand, stocked_tuned, to_cell, warm,
 };
 use crate::field_host_rig::{
@@ -81,19 +81,6 @@ async fn until_dropping(
         }
     }
     (false, dropped)
-}
-
-/// **The restart**: every task stopped and its egress drained, then [`reboot`].
-async fn crash(rig: Rig, rx: &mut Receiver<ArenaOut>, reconnect: &[ObjId]) -> Rig {
-    let tasks = rig
-        .tw
-        .world()
-        .module_state::<tacsim::arena_bridge::ArenaRegistry>()
-        .map(|registry| registry.tasks().clone())
-        .expect("the registry");
-    tasks.shutdown(tacsim::arena_bridge::JOIN_TIMEOUT).await;
-    while rx.try_recv().is_ok() {}
-    reboot(rig, reconnect)
 }
 
 fn in_field(rig: &Rig, unit: ObjId) -> bool {
@@ -326,11 +313,20 @@ async fn cf_review_a_crash_before_the_exit_lands_owes_it_again_and_the_recover_p
     .await;
     assert!(named, "the owed exit lands after the restart");
     assert!(task(&rig).is_some(), "the field resumed and carries on");
+    // The resumed field, not a fresh one: the boot found the site record and the live record.
     assert!(
         tacsim::field::live_on(rig.tw.world(), &cid(AHUNA))
-            .is_some_and(|live| live.owed_exits.is_empty()),
-        "the live record forgets the exit once it landed"
+            .is_some_and(|live| live.field.ordinal == 1 && live.segment > 1),
+        "the field that ran before the restart resumed"
     );
+    // The host learns an exit landed by reading the record at its next pass (`field::exit::tick`
+    // prunes before it submits, so a crash in between owes nothing twice).
+    let forgot = until(&mut rig, &mut rx, &mut lines, 10, |rig, _| {
+        tacsim::field::live_on(rig.tw.world(), &cid(AHUNA))
+            .is_some_and(|live| live.owed_exits.is_empty())
+    })
+    .await;
+    assert!(forgot, "the live record forgets the exit once it landed");
     // C's own recover passes the field's gate: the record names the exit.
     let again = run(&mut rig.tw, c, "+tv/1 recover go");
     assert!(!again.contains("being fought"), "{again}");
