@@ -1200,6 +1200,29 @@ live unit. The Open's refusal of a hull under a deployed mark (`ic_exclusion.rs:
 is never met: a claim opens in the bay, before the launch, never on the ground and never inside a
 field.
 
+**The pending-launch protocol — D-23-23 (round 2's 23-5 and X-1; one contract with doc 40
+§4.4).** Doc 40's launch rule checks a reinforcing rig out under the field's mark at the act's
+landing and offers its Join at the ramp (its Q-40-19, doc 40 l.262–274), and the exclusion refuses
+an Open under a mark (`ic_exclusion.rs:605`): with the Open on the fire after the finish, as Draft
+0.8 had it, a reinforcement's claim could never open. Under D-23-21 the two rules meet in one
+order, for a carrier on its pad at promotion and for one arrived by F-6 alike: (1) **claim** —
+`go` mints the Open with the rig in its bay, where no mark reaches, and queues the ramp behind it;
+a refusal the host reports retryable (`IcSubmissionState::Retryable`, `host.rs:87–93`) is retried
+each fire up to `[tacsim.minds].claim_tries` (8, provisional), and a refusal for good, or the
+bound, cancels the queued act with the Roll's word and `Refused` on the cursor, nothing having
+left the bay; (2) **landing** — the ramp act runs as today on the IC clock (`LAUNCH_S`, doc 40
+§4.4) under doc 40's launch cycle; (3) **check-out and join** — at the landing the field checks
+the hull out under its mark and offers the Join (doc 40's rule; its 40-9 moves that check-out to
+the `tacsim.field` tick, which changes nothing here), reading the cursor: `Open` seals the claim's
+`MindSeal` and installs the retained execution at the join (§17.6, §17.10), anything else seals
+the ROM as every entrant today; the field never opens, waits for, or closes a claim; (4) **a
+refused join** goes back aboard and is offered again at the next tick (doc 40 Q-40-20) with its
+epoch open and its claim untouched — a bay is the claim's own hangar, so that re-parent is the one
+the freeze admits; (5) **abort** — a launch cancelled after its Open and before its ramp closes
+`PoweredDownInBase { base: <the hangar's hull> }` on the next fire, and a ramp that lands nobody
+(`NeverLeft`) the same. Doc 40 carries the same five steps in its §4.4, and the acceptance story is
+shared: a licensed reinforcement into a running field (§17.10; doc 40's FR.3 story).
+
 **Salvage under a claim.** A hull under an open claim that a stranger's tug loads (GC.4/GC.5's
 salvage custody row, `surface/claim.rs`) is the re-parent the freeze would refuse. The default is
 to admit it and close the claim at the load's completion `RecoveredToBase { base: <the carrier> }`
@@ -1288,9 +1311,10 @@ obstacle, its claim untouched, the site told `HELD_OUT` — and is paged once a 
 wall state when the field ends, or earlier when the hull leaves the site's ground** (a recover or a
 staff home, which the surface tick may still drive under D-23-15); there is no staff verb that
 closes a claim, since the four kinds are the epoch's close and a wall is evidence of a store that
-needs an operator, not of a hull that needs a word. A rig whose claim is still `Owed` at admission
-(the §17.3 window) is neither walled nor refused: admission waits one tick for it, as it waits for a
-ramp handoff in flight (`admit.rs:301–313`). Q-23-13 and Q-23-14.
+needs an operator, not of a hull that needs a word. No rig reaches the ground with its claim
+owed (D-23-21), so admission never waits for a claim: a cursor other than `Open` seals the ROM as
+every entrant does today, and Draft 0.8's one-tick wait (beside the ramp handoff's,
+`admit.rs:301–313`) is withdrawn with round 2's 23-5. Q-23-13 and Q-23-14.
 
 ### 17.7 The long-leg snapshots — D-23-18
 
@@ -1409,7 +1433,10 @@ Through the cut loop (§9), one PR off `main`, the owner merging.
   ramp, and the finish opens the epoch with the claim's seal on the line (`seal_digest` equal by
   construction); a raider's mark promotes the site; the rig is
   admitted under its own seal, not the ROM, and thinks (`think_seq > 0` on its row), drives and
-  fires under doctrine's orders, lands one hit and takes one; **a restart mid-field** resumes the
+  fires under doctrine's orders, lands one hit and takes one; **a licensed reinforcement** — a
+  second cored rig launched `mind=` from the pad after the first shot — opens its claim in the
+  bay, lands, is checked out and joined under its own seal and thinks (D-23-23; doc 40's FR.3
+  story, the shared one); **a restart mid-field** resumes the
   field from its snapshot with the mind's `think_seq` continuing and the claim still active
   (`IcHost::resume` on the open token); the field demotes; the rig's memory is on its epoch record;
   a second promotion on the same ground re-admits it with that memory; `+tv/1 recover go` exits,
@@ -1453,6 +1480,7 @@ nothing is refused with the one sentence.
 | D-23-19 | The testimony producer feeds `EarnedContacts` at check-in from the field's `Classified` lines, authored by the seated pilot else the warrant principal, persisted per author; it is its own cut, S.4b-T | **accepted by the owner, 2026-11-03** (Q-23-16, Q-23-17) |
 | D-23-20 | S.4b's host is the IC field; the drone phase is no longer its gate; its acceptance runs at 256 and 512 with the bot per Q-38-29 | **accepted by the owner, 2026-11-03** (Q-23-18, Q-23-20) |
 | D-23-21 | The claim opens before the launch: `go` mints the `StartPermit` with the rig in its bay and queues the launch act behind the claim; the fire that observes the active row starts the ramp; the claim is the licence and compute reservation, counted with the inbox's pending Opens; an Open refused for good leaves `Refused` on the cursor, the launch cancelled, nothing out of the bay; a launch cancelled after its Open closes `PoweredDownInBase` | proposed, Draft 0.10 (round 2's 23-1, 23-2, 23-5); Q-23-21 |
+| D-23-23 | The pending-launch protocol, one contract with doc 40 §4.4: claim in the bay → ramp → field check-out and Join at the landing reading the cursor (`Open` installs, else the ROM) → a refused join back aboard with the claim untouched → a cancelled launch closes `PoweredDownInBase`; the field never opens, waits for or closes a claim; the shared story is a licensed reinforcement into a running field | proposed, Draft 0.10 (round 2's 23-5, X-1); under Q-23-21 |
 | D-23-22 | A `mind=` word over a hull not titled to the actor is refused at `go` with one sentence; S.4b's story runs over a bought-out rig; lease authority is the Roll's next cut, S.4c (`LeaseFence` from a live `TvLease`, audited like the title's revision) | proposed, Draft 0.10 (round 2's 23-3); Q-23-22 |
 
 ### 17.12 Questions for the owner
