@@ -2179,24 +2179,6 @@ pub fn to_tactical_unit(
 /// unit authored before the class existed binds to the same blob — and the same
 /// `DefinitionRef` — as it did; [`UnitClass::read`] derives the class of such a
 /// unit from its profile instead.
-/// **The components as the bound rules carry them** (doc 39 cut IN.1): the authored roles less
-/// a power role's `plant`, which names the part the bay stocks and nothing the unit runs on, so
-/// a bound unit's definition is the bytes it was before the plant rows (Q-39-3: the bind's
-/// component definition stays).
-fn bound_components(components: &[ComponentDef]) -> serde_json::Value {
-    let mut value = serde_json::to_value(components).unwrap_or(serde_json::Value::Null);
-    for component in value.as_array_mut().into_iter().flatten() {
-        if let Some(role) = component
-            .get_mut("role")
-            .and_then(serde_json::Value::as_object_mut)
-            && role.get("kind").and_then(serde_json::Value::as_str) == Some("power")
-        {
-            role.remove("plant");
-        }
-    }
-    value
-}
-
 fn game_rules(spec: &UnitSpec) -> serde_json::Value {
     let consequences: Vec<serde_json::Value> = spec
         .sections
@@ -2214,7 +2196,7 @@ fn game_rules(spec: &UnitSpec) -> serde_json::Value {
         "silhouettes": spec.silhouettes,
         "sensor_height_cm": spec.sensor_height_cm,
         "consequences": consequences,
-        "components": bound_components(&spec.components),
+        "components": spec.components,
         "mobility": spec.mobility,
     });
     if let (Some(class), Some(map)) = (spec.class, rules.as_object_mut()) {

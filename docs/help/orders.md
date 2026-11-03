@@ -90,8 +90,8 @@ Aboard at Ceres, loaded for Stickney, you might file:
   sell volatiles all min=150
   buy propellant fill max=60
   buy provisions fill
-  buy industrial_parts 49 max=400
-  buy structural_alloys 55 max=400
+  buy industrial_parts 49 max=600
+  buy structural_alloys 55 max=600
   depart ceres at=+10m
 
 and log off. The ship clears on the next tick and flies; at Stickney the port

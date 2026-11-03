@@ -1660,8 +1660,8 @@ fn ic11_the_queue_runs_the_day_unattended() {
         "sell volatiles all min=150".to_owned(),
         "buy propellant fill max=60".to_owned(),
         "buy provisions fill".to_owned(),
-        "buy industrial_parts 49 max=400".to_owned(),
-        "buy structural_alloys 55 max=400".to_owned(),
+        "buy industrial_parts 49 max=600".to_owned(),
+        "buy structural_alloys 55 max=600".to_owned(),
         format!("depart ceres at=daily {home}"),
     ];
     for (n, line) in filed.iter().enumerate() {
@@ -1734,8 +1734,9 @@ fn ic11_the_queue_runs_the_day_unattended() {
     assert_eq!(pool(&mut rig.tw, hold, "propellant"), 50);
     assert_eq!(pool(&mut rig.tw, hold, "provisions"), 19);
     assert_eq!(pool(&mut rig.tw, hold, "industrial_parts"), 49);
-    // 17 t since doc 19 cut A.2: the costlier bunkering leaves less for the alloys.
-    assert_eq!(pool(&mut rig.tw, hold, "structural_alloys"), 17);
+    // 17 t since doc 19 cut A.2: the costlier bunkering leaves less for the alloys; 2 t since
+    // doc 39 cut IN.1 (lane v20's ladder: fittings at 520, alloys at 450).
+    assert_eq!(pool(&mut rig.tw, hold, "structural_alloys"), 2);
     // The funds path, from journals: the stake less Ceres, plus the two nets, less
     // the four Stickney costs.
     let net = |q: &mush_market::Quote| {
@@ -1774,12 +1775,13 @@ fn ic11_the_queue_runs_the_day_unattended() {
         listing_of(&rig.tw, "stickney_port", "kasei", "structural_alloys"),
     );
     // 49 t of fuel and 17 t of alloys since doc 19 cut A.2 (the return's fill is 50 t
-    // under the flip law, one aboard; the slice's were 36 and 20).
+    // under the flip law, one aboard; the slice's were 36 and 20); 2 t of alloys since doc 39
+    // cut IN.1 (lane v20's ladder).
     let before_alloys = start - ceres + nets - 49 * fuel - 19 * food - 49 * parts;
     assert_eq!(
         before_alloys / alloys,
-        17,
-        "the alloys are cut to 17 t by funds"
+        2,
+        "the alloys are cut to 2 t by funds"
     );
 
     // Hold the second departure's hour: walk the clock to it.
@@ -1876,11 +1878,11 @@ fn ic11_the_queue_runs_the_day_unattended() {
     assert_eq!(
         log[6],
         BOUGHT_SHORT
-            .replace("{qty}", "17")
+            .replace("{qty}", "2")
             .replace("{unit}", "t")
             .replace("{label}", "structural alloy stock")
             .replace("{price}", &cr(alloys))
-            .replace("{total}", &cr(17 * alloys))
+            .replace("{total}", &cr(2 * alloys))
             .replace("{want}", "55")
             .replace("{bounds}", "funds")
     );
@@ -3121,7 +3123,7 @@ fn ic11_the_cargo_clamp_reserves_the_next_departures_fuel_and_stores() {
     let gallery = p01(&rig.tw);
     board_at(&mut rig, pilot, "Salt Moth", gallery);
     for line in [
-        "buy industrial_parts 49",
+        "buy industrial_parts 38",
         "buy structural_alloys 55",
         "buy propellant fill",
         "buy provisions fill",
@@ -3157,7 +3159,7 @@ fn ic11_the_cargo_clamp_reserves_the_next_departures_fuel_and_stores() {
     let span = [
         tacsim::port::What::Buy {
             good: cid("industrial_parts"),
-            qty: tacsim::port::Qty::Units(49),
+            qty: tacsim::port::Qty::Units(38),
             max_major: None,
             on_short: tacsim::port::OnShort::Partial,
         },
@@ -3185,7 +3187,7 @@ fn ic11_the_cargo_clamp_reserves_the_next_departures_fuel_and_stores() {
     .minor();
     assert!(reserve > 0, "the departure needs fuel and stores");
     let a0 = pilot_available(&rig.tw, pilot);
-    let want_parts = 49.min(u64::try_from((a0 - reserve) / parts).expect("units"));
+    let want_parts = 38.min(u64::try_from((a0 - reserve) / parts).expect("units"));
     let a1 = a0 - parts * i64::try_from(want_parts).expect("qty");
     let room = 24_u64;
     let want_alloys = room.min(u64::try_from((a1 - reserve) / alloys).expect("units"));
@@ -3824,7 +3826,7 @@ fn ic11_the_plan_dry_runs_the_queue() {
     for line in [
         "buy propellant fill",
         "buy provisions fill",
-        "buy industrial_parts 49",
+        "buy industrial_parts 38",
         "buy structural_alloys 55",
         "depart ceres",
     ] {
@@ -3854,12 +3856,12 @@ fn ic11_the_plan_dry_runs_the_queue() {
         listing_of(&rig.tw, "stickney_port", "kasei", "structural_alloys"),
     );
     let a0 = pilot_available(&rig.tw, pilot);
-    let fill_t = 50 - tank;
+    let fill_t = 51 - tank;
     let fill_d = 19 - locker;
     let k = (a0
         - i64::try_from(fill_t).expect("t") * fuel
         - i64::try_from(fill_d).expect("d") * food
-        - 49 * parts)
+        - 38 * parts)
         / alloys;
     let _ = rig.tw.take_module_ops();
     let out = run(&mut rig.tw, pilot, "+ship/plan");
@@ -3867,13 +3869,13 @@ fn ic11_the_plan_dry_runs_the_queue() {
     for want in [
         "The sailing plan from order 1, as it stands now:".to_owned(),
         format!(
-            "  Order 1, buy reaction mass, fill: {fill_t} t, tank 50/80, for the 73 t your orders can load."
+            "  Order 1, buy reaction mass, fill: {fill_t} t, tank 51/80, for the 93 t your orders can load."
         ),
         format!(
-            "  Order 2, buy voyage provisions, fill: {fill_d} crew-days, locker 19/120, for the 73 t your orders can load."
+            "  Order 2, buy voyage provisions, fill: {fill_d} crew-days, locker 19/120, for the 93 t your orders can load."
         ),
         format!(
-            "  Order 3, buy yard fittings, crated: 49 t at {}/t.",
+            "  Order 3, buy yard fittings, crated: 38 t at {}/t.",
             cr(parts)
         ),
         format!(
@@ -3883,7 +3885,7 @@ fn ic11_the_plan_dry_runs_the_queue() {
     ] {
         assert!(lines.iter().any(|l| *l == want), "missing {want:?}:\n{out}");
     }
-    // The depart, planned on the projected load (the clamped alloys, not the 73 t
+    // The depart, planned on the projected load (the clamped alloys, not the 93 t
     // the fills were sized for) at its not-before (now: `depart ceres`), with the one
     // allowance of an empty hull (the pilot is ashore; the planner counts at least one).
     let goods = tacsim::definitions::goods::goods_table().expect("goods");
@@ -3907,15 +3909,15 @@ fn ic11_the_plan_dry_runs_the_queue() {
         )
     };
     let k_t = u64::try_from(k).expect("tonnes");
-    let payload = 49 * mass("industrial_parts")
+    let payload = 38 * mass("industrial_parts")
         + k_t * mass("structural_alloys")
-        + 50 * mass("propellant")
+        + 51 * mass("propellant")
         + 19 * mass("provisions")
         + allowance;
     let planner = lane_planner(0, "stickney_port", "ceres");
     let plan = planner(payload, 1, ic_now(&rig.tw)).expect("the return plans");
     assert!(
-        plan.burn_t <= 50 && u64::from(plan.crew_days) <= 19,
+        plan.burn_t <= 51 && u64::from(plan.crew_days) <= 19,
         "{plan:?}"
     );
     let tenths = (payload + 50) / 100;

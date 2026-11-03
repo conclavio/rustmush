@@ -1915,8 +1915,8 @@ async fn ic12_part_two_the_queue_runs_the_return() {
         "sell volatiles all min=150",
         "buy propellant fill max=60",
         "buy provisions fill",
-        "buy industrial_parts 49 max=400",
-        "buy structural_alloys 55 max=400",
+        "buy industrial_parts 49 max=600",
+        "buy structural_alloys 55 max=600",
         "depart ceres at=+10m",
     ];
     for (n, line) in (1_u32..).zip(queue) {
@@ -2448,8 +2448,8 @@ fn stickney_buys(
     let (parts_price, alloy_price) = (price_of(tw, parts_listing), price_of(tw, alloy_listing));
     assert!(fuel_price <= 6_000, "under the fill's max=60");
     assert!(
-        parts_price <= 40_000 && alloy_price <= 40_000,
-        "under max=400"
+        parts_price <= 60_000 && alloy_price <= 60_000,
+        "under max=600 (doc 39 cut IN.1's ladder: 520 and 450)"
     );
 
     // The fill's fixed point.

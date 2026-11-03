@@ -21,11 +21,15 @@ Rulings: Q-39-1, Q-39-2, Q-39-3, Q-39-8, Q-39-26, Q-39-35 (expensive to reverse:
   `ComponentRole::Power` gains a required `plant`; the catalogue build refuses a missing plant and a power role
   whose states are not its plant's. Every chassis names one: light (the prospector, scout, drone, target),
   vehicle (the five line tanks, the escort, the heavy, the carrier), walker (the bipeds), hauler (the Dray, the
-  Dray-P). The bound payload is the role's states as before; the unit packs were re-signed, not re-versioned
-  (SF.R15's precedent).
+  Dray-P). The bound power capability is the role's states as before, but the unit's rules carry its
+  authored components, so every unit definition moves by content (the line tank's pin `6bfa9bdb…` →
+  `c85d03ac…`; pre-launch, nothing persisted to migrate). An attempt to keep `plant` out of the bound rules
+  broke every check that rebuilds a unit's rules from its spec (the Conduct registry's evidence, the core
+  replacement family) and was dropped. The unit packs were re-signed, not re-versioned (SF.R15's precedent).
 - **Part identity** (Q-39-3): `Catalog::parts` indexes each component definition `{unit}.{slot}` to its
   `PartRow { commodity, row }` — the hardware row the slot names and its part good, only where goods v5 has the
-  row. `ShippedParts` reads that index (the bay refit's catalogue); `hardware::bay::part_of` serves strip and
+  row. The standing-order verbs (`+ship/order buy|sell`) do not trade parts: a part is a lot, never a
+  pool quantity, and the unknown-good list names bulk goods only. `ShippedParts` reads that index (the bay refit's catalogue); `hardware::bay::part_of` serves strip and
   scrap. `PartProvenance.definition` is now the hardware row's reference, and `+bay/fit`'s check matches the
   slot's row, so a line tank's cannon fits a heavy. The bind's component definition id is unchanged.
 - **The tonne ledger with kilogram computation** (Q-39-26, §4.10): `BayHull.bale: Option<Bale { alloys_kg,

@@ -278,7 +278,12 @@ const VISUAL_MK1_SIGNATURE: &str = concat!(
 /// `destroy_core` beside its `remove_weapons`, so the unit definition is a new
 /// one by content; the same refit rule takes a persisted `line_tank` to it.
 /// Was `b8fa366613da1a39345a0a74eacc662aba00f954213972bc4ff135aaa9ef74dc`.
-const LINE_TANK_DIGEST: &str = "6bfa9bdbb4f75724e77228ade042700d4bdce398d4facf98f92c746e30200714";
+///
+/// **Doc 39 cut IN.1 moved it a fourth time, with the content** (Q-39-35): the power
+/// component names its plant (`tacsim.plant.vehicle_mk1`), and the unit's rules carry the
+/// authored components, so the definition is a new one by content (pre-launch: no persisted
+/// unit to migrate). Was `6bfa9bdbb4f75724e77228ade042700d4bdce398d4facf98f92c746e30200714`.
+const LINE_TANK_DIGEST: &str = "c85d03ac6b1cb4455cb7a9a6a37d1d9eebd98ebe480edaeb30071d00cdf61e18";
 
 fn content_dir() -> PathBuf {
     Path::new(env!("CARGO_MANIFEST_DIR")).join("content")
