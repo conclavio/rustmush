@@ -20,6 +20,7 @@
 //! | P0-7 the award/contest second | [`p0_7_the_windows_last_second_belongs_to_the_award_not_a_contest`] |
 //! | P0-7 the lost `Loaded` | [`p0_7_a_lost_loaded_finish_still_lands_after_the_carrier_has_gone`] |
 //! | P1-3 `TowOrders` clobber | [`p1_3_the_salvors_inspect_spam_does_not_kill_a_queued_contest`] |
+//! | P1-4 the attach race drops the pin | [`p1_4_a_second_tugs_attach_waits_and_the_first_tugs_pin_stands`] |
 
 use mush_core::ObjId;
 use mush_economy::{ContractId, ContractState, EconomyStore};
@@ -60,6 +61,8 @@ pub(crate) struct Stage {
     pub o: ObjId,
     pub o_carrier: ObjId,
     pub tug: ObjId,
+    /// T's own rig, still in the Salt Moth's bay.
+    pub t_tug: ObjId,
     pub l: ObjId,
     pub near: ObjId,
     pub far: ObjId,
@@ -116,7 +119,9 @@ impl Stage {
     #[allow(clippy::too_many_lines)]
     pub(crate) fn build() -> Stage {
         let mut rig = stocked_tuned(quick);
-        let (t, _, _) = on_pad_as_at(&mut rig, ("Pilot", 1, "Salt Moth"), ("urvara", URVARA), 1);
+        let (t, _, t_tvs) =
+            on_pad_as_at(&mut rig, ("Pilot", 1, "Salt Moth"), ("urvara", URVARA), 1);
+        let t_tug = t_tvs[0];
         let (o, o_row, o_tvs) =
             on_pad_as_at(&mut rig, ("Second", 2, "Red Moth"), ("urvara", URVARA), 1);
         let o_carrier = ObjId(o_row.hull);
@@ -226,6 +231,7 @@ impl Stage {
             o,
             o_carrier,
             tug,
+            t_tug,
             l,
             near,
             far,
@@ -660,4 +666,76 @@ fn p1_3_the_salvors_inspect_spam_does_not_kill_a_queued_contest() {
     );
     assert_eq!(contract(&stage.rig, c).state, ContractState::Cancelled);
     assert_eq!(title(&stage.rig, near), Some(PrincipalId::Object(t)));
+}
+
+/// **P1-4** (doc 36a §3): tug B's attach during tug A's 900 IC-second act replaced A's tenure
+/// pin; A landed first and loaded with no pin, so no `Recovery` entry was logged, no witnesses
+/// were kept and `+salvage/claim` answered NO_TITLE for good. Now the second attach start waits
+/// while the first is in flight: O's attach lands, the load carries O's pin into custody with
+/// the unlawful recovery logged, and O's claim is open to file.
+#[test]
+fn p1_4_a_second_tugs_attach_waits_and_the_first_tugs_pin_stands() {
+    let mut stage = Stage::build();
+    let (near, near_cell, t, o, tug, t_tug, l) = (
+        stage.near,
+        stage.near_cell,
+        stage.t,
+        stage.o,
+        stage.tug,
+        stage.t_tug,
+        stage.l,
+    );
+    // Both tugs stand beside the casualty; O's attach starts (in flight for a minute of IC
+    // time), and T's rig tries to take it in the same second: refused.
+    launched_at(&mut stage.rig, URVARA, t, t_tug);
+    to_cell_on(
+        &mut stage.rig,
+        URVARA,
+        t_tug,
+        (near_cell.0, near_cell.1 + 1),
+    );
+    to_cell_on(&mut stage.rig, URVARA, tug, (near_cell.0 + 1, near_cell.1));
+    let _ = second(&mut stage.rig);
+    let out = go(&mut stage.rig, o, &format!("+tv/1 tow #{} go", near.0));
+    assert!(out.contains("makes fast"), "{out}");
+    assert!(record(&mut stage.rig).tows.act_of(tug).is_some());
+    let refused = run(&mut stage.rig.tw, t, &format!("+tv/1 tow #{} go", near.0));
+    assert!(
+        refused.contains("Another tug is making fast"),
+        "the second attach waits: {refused}"
+    );
+    assert!(
+        record(&mut stage.rig).tows.act_of(t_tug).is_none(),
+        "nothing of T's is in flight"
+    );
+    let pin = record(&mut stage.rig)
+        .tows
+        .pins
+        .into_iter()
+        .find(|pin| pin.casualty == near)
+        .expect("O's pin stands");
+    assert_eq!(pin.tug, tug, "{pin:?}");
+    // O's attach lands; O loads into the Red Moth: the pin rides into custody.
+    assert!(
+        seconds_until(&mut stage.rig, 120, |rig| towing(rig, tug) == Some(near)),
+        "O's attach lands"
+    );
+    let held = stage.load(near);
+    assert_eq!(held.pin.as_ref(), Some(&pin), "the pin rides into custody");
+    assert_eq!(pin.landholder(), Some(l));
+    assert_eq!(pin.answering, Some(t));
+    assert!(pin.witnesses.iter().any(|w| w.holder == t), "{pin:?}");
+    assert!(
+        record(&mut stage.rig).unlawful.iter().any(|act| act.kind
+            == tacsim::surface::claim::UnlawfulKind::Recovery
+            && act.actor == o
+            && act.subject == near.0
+            && act.landholder == Some(l)),
+        "the unlawful recovery is evidence on the site's log"
+    );
+    let preview = run(&mut stage.rig.tw, o, &format!("+salvage/claim #{}", near.0));
+    assert!(
+        preview.contains("You would file a salvage claim") && !preview.contains("carries no title"),
+        "{preview}"
+    );
 }

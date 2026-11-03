@@ -155,6 +155,9 @@ pub const NOT_AT_RAMP: &str =
 pub const BAY_NO_ROOM: &str = "The {carrier}'s bay has no room for the {name}: {why}.";
 /// The rig is not on the ground: `{n}`.
 pub const NOT_ON_GROUND: &str = "Rig {n} is not on a site's ground.";
+/// **Doc 36a P1-4**: another tug's attach is in flight on the casualty: `{n}`, `{name}`.
+pub const ATTACHING_ELSEWHERE: &str =
+    "Another tug is making fast to the {name} already; rig {n} waits for that to land or let go.";
 /// Its own state forbids towing: `{n}`.
 pub const TUG_NOT_MOBILE: &str =
     "Rig {n} cannot tow: it must be whole enough to drive under its own power.";
@@ -282,6 +285,16 @@ impl Tows {
             .operations()
             .map(|(_, op)| op)
             .filter(|op| op.stage().is_active())
+    }
+
+    /// **Whether another tug than `tug` has an attach in flight on `casualty`** (doc 36a
+    /// P1-4): a second attach start waits for it, so the pin the first wrote is never replaced
+    /// under it.
+    #[must_use]
+    pub fn attaching_elsewhere(&self, tug: ObjId, casualty: ObjId) -> bool {
+        self.acts
+            .iter()
+            .any(|act| act.tug != tug && act.stage == TowStage::Attach { casualty })
     }
 
     /// Take `tug`'s act out.
@@ -1249,6 +1262,11 @@ impl ActionProvider for TowProvider {
                 if facts.carrier_refusal.is_some() {
                     return Err(refused("tow_carrier_floor"));
                 }
+                // Doc 36a P1-4: one attach in flight a casualty, so the first tug's pin stands
+                // until its attach lands or is let go.
+                if record.tows.attaching_elsewhere(tv, facts.casualty) {
+                    return Err(refused("tow_taken"));
+                }
                 let rig = act::read_record(txn, &self.excursions, tv)?;
                 if rig
                     .as_ref()
@@ -1878,6 +1896,15 @@ pub(crate) fn tow_cmd(
     let label = name(ctx.w, casualty);
     if let Some(line) = &facts.carrier_refusal {
         return Err(CmdError::msg(line.clone()));
+    }
+    // Doc 36a P1-4 (Q-36-26): a second tug's attach start while another's is in flight on the
+    // casualty would replace the first's tenure pin; it waits instead.
+    if record.tows.attaching_elsewhere(rig.tv, casualty) {
+        return Err(CmdError::msg(
+            ATTACHING_ELSEWHERE
+                .replace("{n}", &n)
+                .replace("{name}", &label),
+        ));
     }
     let now = ctx.w.world_ic_now().at;
     let mut probe = record.tows.book.clone();
