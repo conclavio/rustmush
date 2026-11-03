@@ -4976,6 +4976,64 @@ async fn until_hosted(
     Err("the field never opened".into())
 }
 
+/// **Doc 36a §11 row 7: a subordinate's fire door** (Q-CF-14; help/field.md: "The pilot of a
+/// unit on the ground orders a shot"). Two players fly one operation on Ahuna Flank; the one who
+/// does not lead sits in an armed rig with a bystander's hull to the east. Their `+field/fire E`
+/// once met `led()` before any seat was read, and was refused as "You lead no party". It opens
+/// the field now, the promotion naming them and their own unit; and inside the field the same
+/// order tells them to fire from the cockpit (where `FIRE FREE` lifts the field's opening hold).
+#[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+async fn ic_field_a_subordinate_pilot_opens_a_field_by_fire() -> TestResult {
+    use tacsim::surface::site_record::PromotedBy;
+    let store = InMemoryStore::new();
+    let (mut rig, units, pilots, leader) = two_pilot_fixture(&store).await?;
+    let at = |who: ObjId| pilots.iter().position(|p| *p == who).ok_or("a pilot");
+    let (led_unit, sub) = (units[at(leader)?], pilots[1 - at(leader)?]);
+    let sub_unit = units[at(sub)?];
+    // The subordinate's rig rebuilt as an armed design (a staff hand, as the open-ground ENGAGE
+    // gate does: no armed rig is leased).
+    ordinary(
+        &mut rig.world,
+        GOD,
+        &format!("@unit/remove #{}", sub_unit.0),
+    )?;
+    ordinary(
+        &mut rig.world,
+        GOD,
+        &format!("@unit/create #{}=tacsim.unit.line_tank", sub_unit.0),
+    )?;
+    staff_place_on_ahuna(&mut rig.world, led_unit, (100, 126))?;
+    staff_place_on_ahuna(&mut rig.world, sub_unit, (110, 126))?;
+    let bystander = bystander_at(&mut rig.world, "tacsim.unit.line_tank", (118, 126))?;
+    persist_legacy(&mut rig.world, &store).await?;
+    let mut rx = rig
+        .world
+        .world()
+        .module_state::<tacsim::arena_bridge::ArenaRegistry>()
+        .map(|registry| registry.tasks().clone())
+        .and_then(|tasks| tasks.take_egress())
+        .ok_or("the registry's egress")?;
+
+    // The subordinate's fire order opens the field.
+    commit(&mut rig.world, &store, sub, "+field/fire E").await?;
+    assert_eq!(
+        promoted_by(&rig.world)?,
+        Some(PromotedBy::Fire {
+            pilot: sub,
+            shooter: sub_unit,
+            target: bystander,
+        }),
+        "the promotion names the subordinate and their own unit"
+    );
+    let live = until_hosted(&mut rig.world, &store, &mut rx).await?;
+    assert!(live.party_of(sub_unit).is_some() && live.party_of(bystander).is_some());
+
+    // Inside the field the fire door is the cockpit's, for a subordinate as for a leader.
+    let again = text(&mut rig.world, sub, "+field/fire E");
+    assert!(again.contains("fire from your cockpit"), "{again}");
+    Ok(())
+}
+
 /// **Doc 36a §11 row 6: the mark follows the succession** (doc 32 §4a, doc 26). Two players fly
 /// one operation; its leader's Hostile mark at a bystander opens a field on Ahuna Flank. The
 /// leader then drops (their session gone; a hull disabled inside a field cannot stand in, since

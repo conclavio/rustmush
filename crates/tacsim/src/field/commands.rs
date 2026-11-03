@@ -21,8 +21,10 @@
 //!
 //! **Who leads** (doc 32 §4a): the roster's leader (doc 26), the pilot of a one-unit party —
 //! read now, from the operation's command roster, so a succession moves the mark with it (doc
-//! 36a §11 row 6, `parties::led_now`). Doctrine never opens a field by itself; CF.6 hands a
-//! delivered `ENGAGE` received on the surface to [`mark_from_order`] as its leader's mark.
+//! 36a §11 row 6, `parties::led_now`). **Who fires** (Q-CF-14; doc 36a §11 row 7): the pilot
+//! seated in a unit on the ground, leader or not; the fire door is the flown unit's, the mark
+//! door the leader's. Doctrine never opens a field by itself; CF.6 hands a delivered `ENGAGE`
+//! received on the surface to [`mark_from_order`] as its leader's mark.
 
 use std::collections::BTreeSet;
 
@@ -66,6 +68,31 @@ fn led(ctx: &Ctx<'_>, actor: ObjId) -> Vec<(CanonicalId, Vec<parties::Entrant>, 
         }
     }
     out
+}
+
+/// **The unit `actor` flies on a site's ground** (doc 36a §11 row 7; Q-CF-14: "a unit firing"
+/// opens a field, whoever leads its party), with the site, its entrants and its units: the fire
+/// door's own. The first lane site where a unit on the ground seats the actor.
+fn flown(
+    ctx: &Ctx<'_>,
+    actor: ObjId,
+) -> Option<(CanonicalId, Vec<parties::Entrant>, Vec<ObjId>, ObjId)> {
+    for site in crate::surface::chart::lane_sites(ctx.w) {
+        let Some(domain) = parties::site_domain(ctx.w, &site.entry) else {
+            continue;
+        };
+        let units = parties::on_ground(ctx.w, domain);
+        let Some(unit) = units
+            .iter()
+            .copied()
+            .find(|unit| parties::seated(ctx.w, *unit).is_some_and(|(pilot, _)| pilot == actor))
+        else {
+            continue;
+        };
+        let entrants = parties::entrants(ctx, &site.entry, &units);
+        return Some((site.entry, entrants, units, unit));
+    }
+    None
 }
 
 /// A unit's cell on the site grid.
@@ -239,7 +266,7 @@ fn mark(ctx: &mut Ctx<'_>, raw: &str) -> Result<(), CmdError> {
 /// `+field/fire …`.
 fn fire(ctx: &mut Ctx<'_>, raw: &str) -> Result<(), CmdError> {
     let actor = ctx.actor;
-    if in_field(ctx, actor).is_some() {
+    if in_field(ctx, actor).is_some() || seated_in_field(ctx, actor) {
         return Err(CmdError::msg(
             "You are in a field: fire from your cockpit (LOCK, then FIRE).",
         ));
@@ -272,6 +299,21 @@ fn in_field(ctx: &Ctx<'_>, actor: ObjId) -> Option<(CanonicalId, PartyId)> {
     book.running().find_map(|(site, hosted)| {
         parties::led_now(ctx, &hosted.live, actor).map(|party| (site.clone(), party))
     })
+}
+
+/// Whether a running field holds a unit `actor` sits in (doc 36a §11 row 7): a seated
+/// subordinate is told to fire from the cockpit, as a leader is, never that they lead nothing.
+fn seated_in_field(ctx: &Ctx<'_>, actor: ObjId) -> bool {
+    ctx.w
+        .module_state::<super::FieldBook>()
+        .is_some_and(|book| {
+            book.running().any(|(_, hosted)| {
+                hosted.live.units.iter().any(|row| {
+                    row.pilot.as_ref().is_some_and(|(pilot, _)| *pilot == actor)
+                        || parties::seated(ctx.w, row.unit).is_some_and(|(pilot, _)| pilot == actor)
+                })
+            })
+        })
 }
 
 /// **A mark inside a field** (Q-CF-7): private, the marking party's book only.
@@ -317,7 +359,8 @@ fn mark_in_field(
 }
 
 /// **A door onto the surface**: resolve the row, refuse what cannot open, and submit the
-/// promotion.
+/// promotion. The mark door is the leader's ([`led`]); the fire door is the flown unit's
+/// ([`flown`]; doc 36a §11 row 7): the shooter's party is its own, whoever leads it.
 fn open_by(
     ctx: &mut Ctx<'_>,
     actor: ObjId,
@@ -325,44 +368,59 @@ fn open_by(
     bearing: Octant,
     band: Option<Band>,
 ) -> Result<(), CmdError> {
-    let mut sites = led(ctx, actor);
-    let (site, entrants, units) = match sites.len() {
-        0 => {
+    let (site, entrants, units, own_keys, own_for_door): (
+        CanonicalId,
+        Vec<parties::Entrant>,
+        Vec<ObjId>,
+        BTreeSet<PartyKey>,
+        Vec<ObjId>,
+    ) = if door == "fire" {
+        // A fire order is the flown unit's: the actor must sit in a unit on the ground.
+        let (site, entrants, units, unit) = flown(ctx, actor)
+            .ok_or_else(|| CmdError::msg("You are not flying a unit on a site's ground."))?;
+        let key = entrants
+            .iter()
+            .find(|entrant| entrant.unit == unit)
+            .map(|entrant| entrant.key)
+            .ok_or_else(|| CmdError::msg("You are not flying a unit on a site's ground."))?;
+        (site, entrants, units, BTreeSet::from([key]), vec![unit])
+    } else {
+        let mut sites = led(ctx, actor);
+        let (site, entrants, units) = match sites.len() {
+            0 => {
+                return Err(CmdError::msg(
+                    "You lead no party on a site's ground.".to_owned(),
+                ));
+            }
+            1 => sites.remove(0),
+            _ => {
+                return Err(CmdError::msg(
+                    "You lead parties on more than one site's ground; recover all but one first.",
+                ));
+            }
+        };
+        let own_keys: BTreeSet<PartyKey> = entrants
+            .iter()
+            .filter(|entrant| entrant.leader == Some(actor))
+            .map(|entrant| entrant.key)
+            .collect();
+        let own: Vec<ObjId> = entrants
+            .iter()
+            .filter(|entrant| own_keys.contains(&entrant.key))
+            .map(|entrant| entrant.unit)
+            .collect();
+        if own.is_empty() {
             return Err(CmdError::msg(
-                "You lead no party on a site's ground.".to_owned(),
+                "You are not flying a unit on that site's ground.",
             ));
         }
-        1 => sites.remove(0),
-        _ => {
-            return Err(CmdError::msg(
-                "You lead parties on more than one site's ground; recover all but one first.",
-            ));
-        }
+        (site, entrants, units, own_keys, own)
     };
-    let own_keys: BTreeSet<PartyKey> = entrants
-        .iter()
-        .filter(|entrant| entrant.leader == Some(actor))
-        .map(|entrant| entrant.key)
-        .collect();
     let own: Vec<ObjId> = entrants
         .iter()
         .filter(|entrant| own_keys.contains(&entrant.key))
         .map(|entrant| entrant.unit)
         .collect();
-    // A fire order is the flown unit's: the actor must sit in one of them.
-    let own_for_door: Vec<ObjId> = if door == "fire" {
-        own.iter()
-            .copied()
-            .filter(|unit| parties::seated(ctx.w, *unit).is_some_and(|(p, _)| p == actor))
-            .collect()
-    } else {
-        own.clone()
-    };
-    if own_for_door.is_empty() {
-        return Err(CmdError::msg(
-            "You are not flying a unit on that site's ground.",
-        ));
-    }
     let others: Vec<ObjId> = units
         .iter()
         .copied()
