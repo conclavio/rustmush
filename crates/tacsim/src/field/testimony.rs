@@ -175,6 +175,7 @@ mod tests {
             party: party(n),
             key: PartyKey::Unit { unit: ObjId(key) },
             leader: by.map(ObjId),
+            director: false,
         };
         FieldLive {
             format: FIELD_LIVE_FORMAT,
@@ -196,6 +197,7 @@ mod tests {
             fire: None,
             owed_exits: Vec::new(),
             held: Vec::new(),
+            tally: Vec::new(),
         }
     }
 
