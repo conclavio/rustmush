@@ -8,6 +8,7 @@
 //! and `+ship` reads it in port. F-6's own story is the second test.
 
 use mush_core::{GOD, ObjId};
+use tacsim::TacsimConfig;
 use tacsim::arena::ledger::LedgerEvent;
 use tacsim::arena::party::PartyId;
 use tacsim::arena_task::ArenaOut;
@@ -498,6 +499,12 @@ async fn gc1_a_carrier_arriving_mid_field_is_admitted_at_its_pad_and_cannot_laun
     );
 }
 
+/// A field of two (doc 36a §11 row 5's cap) on `field_host`'s tempo.
+fn capped(cfg: &mut TacsimConfig) {
+    tune(cfg);
+    cfg.field.max_units = 2;
+}
+
 /// [`pump`], with the kernel's answer to `refused`'s join turned into a refusal on its way to
 /// the bridge (doc 36a §11 row 2's one stand-in: production's kernel refuses a join on a scripted
 /// seal, which no command makes, or when a mind's think is in flight at the join's encode, a
@@ -784,4 +791,54 @@ async fn gc1b_a_refused_middle_party_never_lends_its_letter_to_the_next_arrival(
             && tacsim::field::field_of_unit(rig.tw.world(), kept) == Some(site),
         "both arrivals are in the resumed field"
     );
+}
+
+/// **Doc 36a §11 row 5: the cap at the ramp** (Q-CF-21). With `[tacsim.field].max_units` at
+/// two, A's Dray-P stands on Ahuna Flank's pad and B's armed hull on its ground: two units the
+/// next promotion would admit, a field's full complement. A's launch is refused at the ramp with
+/// CF.2's line, where the launch half once counted only the rigs out (none) and let a third unit
+/// down for the field to refuse at the opening. The site still promotes: B's fire at the carrier
+/// opens a field of exactly those two.
+#[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+async fn gc_review_the_ramp_refuses_a_launch_the_field_could_not_hold() {
+    let mut rig = stocked_tuned(capped);
+    let (a, a_row, a_tvs) = on_pad(&mut rig, 1);
+    let carrier = ObjId(a_row.hull);
+    let (b, _) = prospector(&mut rig, "Other", 2, "Tally Moth");
+    let hull_b = armed(&mut rig, "Grey Hound", (120, 128), 90_000);
+    seat(&mut rig, hull_b, b);
+    let bearing = bearing_to(&rig, hull_b, carrier);
+    warm(&mut rig);
+    let mut rx = egress(&mut rig);
+    let mut lines = Vec::new();
+    for _ in 0..3 {
+        let _ = second(&mut rig);
+    }
+
+    // (1) The ramp refuses the third unit on the ground, naming the field's cap.
+    let refused = run(&mut rig.tw, a, "+tv/1 launch go");
+    assert!(refused.contains("has 2 rigs out already"), "{refused}");
+    assert!(
+        crate::driving::record_of(&mut rig.tw, a_tvs[0])
+            .is_none_or(|record| record.excursion.is_none()),
+        "no excursion opened"
+    );
+
+    // (2) The site still promotes, with the two it holds.
+    let (out, queued) = command(&mut rig, b, &format!("+field/fire {bearing}"));
+    assert_eq!(queued.len(), 1, "one promotion: {out}");
+    land(&mut rig, &queued[0]).expect("the promotion lands");
+    assert!(
+        until(&mut rig, &mut rx, &mut lines, 10, |rig, _| task(rig)
+            .is_some())
+        .await,
+        "the field opens"
+    );
+    let live = tacsim::field::live_on(rig.tw.world(), &cid(crate::driving::AHUNA))
+        .expect("the live record");
+    let mut units: Vec<ObjId> = live.units.iter().map(|row| row.unit).collect();
+    units.sort_unstable();
+    let mut expected = vec![carrier, hull_b];
+    expected.sort_unstable();
+    assert_eq!(units, expected, "the field holds the carrier and the hull");
 }

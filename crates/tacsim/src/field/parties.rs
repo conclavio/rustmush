@@ -174,6 +174,30 @@ pub(crate) fn counted(units: &[ObjId], record: &crate::surface::site_record::Sit
         .count()
 }
 
+/// **How many units `site`'s ground holds against `[tacsim.field].max_units`** (Q-CF-21; doc
+/// 36a §11 row 5): everyone the next promotion would admit — every tactical unit on the ground,
+/// the carriers on their pads included, less the casualties a tug carries (a tow is one unit,
+/// Q-36-20), the hulls held out under a licensed mind (Q-36-44), and the casualties and wrecks an
+/// earlier field left ([`counted`]). The admission, the ramp's launch half
+/// (`crate::surface::act::commands`) and a DT launch (`crate::detachment::sortie::prepare`) all
+/// read it, so a launch refused at the ramp is exactly one the next promotion could not admit.
+#[must_use]
+pub(crate) fn site_population(
+    w: &World,
+    site: &CanonicalId,
+    record: Option<&crate::surface::site_record::SiteRecord>,
+) -> usize {
+    let Some(domain) = site_domain(w, site) else {
+        return 0;
+    };
+    let carried = record.map(crate::surface::tow::carried).unwrap_or_default();
+    let units: Vec<ObjId> = on_ground(w, domain)
+        .into_iter()
+        .filter(|unit| !carried.contains_key(unit) && !super::admit::held_out(w, *unit))
+        .collect();
+    record.map_or(units.len(), |record| counted(&units, record))
+}
+
 /// **Who sits in `unit`**: the first occupied station, by station id.
 #[must_use]
 pub(crate) fn seated(w: &World, unit: ObjId) -> Option<(ObjId, SmolStr)> {

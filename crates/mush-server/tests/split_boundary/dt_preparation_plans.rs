@@ -29,8 +29,19 @@ async fn fixture(store: &InMemoryStore) -> TestResult<Rig> {
     fixture_keyed(store, false).await
 }
 async fn fixture_keyed(store: &InMemoryStore, geology: bool) -> TestResult<Rig> {
+    fixture_capped(store, geology, None).await
+}
+/// [`fixture_keyed`] with `[tacsim.field].max_units` at `field_cap` (doc 36a §11 row 5).
+async fn fixture_capped(
+    store: &InMemoryStore,
+    geology: bool,
+    field_cap: Option<u32>,
+) -> TestResult<Rig> {
     let mut config = mush_config::config::Config::default();
     config.tacsim.enabled = true;
+    if let Some(cap) = field_cap {
+        config.tacsim.field.max_units = cap;
+    }
     let llm = Arc::new(mush_llm::LlmService::from_config(
         &mush_llm::LlmConfig::default(),
     )?);
@@ -801,7 +812,16 @@ async fn field_commander_fixture(
     npc: bool,
     commander: bool,
 ) -> TestResult<(Rig, ObjId)> {
-    let mut rig = fixture(store).await?;
+    field_commander_fixture_capped(store, npc, commander, None).await
+}
+/// [`field_commander_fixture`] under a field cap (doc 36a §11 row 5).
+async fn field_commander_fixture_capped(
+    store: &InMemoryStore,
+    npc: bool,
+    commander: bool,
+    field_cap: Option<u32>,
+) -> TestResult<(Rig, ObjId)> {
+    let mut rig = fixture_capped(store, false, field_cap).await?;
     let cab = rig
         .world
         .world_mut()
@@ -4669,5 +4689,77 @@ async fn cf_review_an_open_ground_engage_ends_in_the_hired_escorts_fire() -> Tes
         fired,
         "the hired escort fires on the Hostile row with no order inside the field"
     );
+    Ok(())
+}
+
+/// **Doc 36a §11 row 5: a DT launch respects the field cap** (Q-CF-21; the reviewer's probe,
+/// adapted). With `[tacsim.field].max_units` at two, the operation's carrier and a bystander's
+/// hull stand on Ahuna Flank: the next field's full complement. The prepare once checked only
+/// the site's `FIELD_LAUNCH` gate and put a third unit down; it refuses the launch now with
+/// CF.2's line, and nothing goes down.
+#[tokio::test]
+async fn dt_launch_refuses_what_the_field_cap_could_not_hold() -> TestResult {
+    let store = InMemoryStore::new();
+    let (mut rig, _) = field_commander_fixture_capped(&store, false, false, Some(2)).await?;
+    let (domain, _) =
+        mush_sim::pose_of(rig.world.world(), rig.carrier).ok_or("carrier's surface domain")?;
+    let bystander =
+        rig.world
+            .world_mut()
+            .create(ObjKind::Thing, "Capacity review bystander", GOD, None)?;
+    rig.world.world_mut().attach_behavior(
+        bystander,
+        BehaviorId::new("sim.participant")?,
+        BehaviorBinding {
+            schema_version: 1,
+            attached_by: GOD,
+            attached_at: 0,
+        },
+    )?;
+    for command in [
+        format!("@unit/create #{}=tacsim.unit.biped_mk1", bystander.0),
+        format!("@spatial/place/domain #{}={}", bystander.0, domain.0),
+    ] {
+        ordinary(&mut rig.world, GOD, &command)?;
+    }
+    persist_legacy(&mut rig.world, &store).await?;
+    let count_ground = |world: &TestWorld| -> TestResult<usize> {
+        let units = world
+            .world()
+            .module_state::<mush_tactics::module::UnitStore>()
+            .ok_or("units")?;
+        let spatial = world
+            .world()
+            .module_state::<mush_sim::SpatialState>()
+            .ok_or("spatial")?;
+        Ok(units
+            .units
+            .keys()
+            .filter(|unit| {
+                matches!(spatial.parent_of(**unit), mush_sim::SpatialParent::Direct { domain: on, .. } if on == domain)
+            })
+            .count())
+    };
+    assert_eq!(
+        count_ground(&rig.world)?,
+        2,
+        "the field's complement stands"
+    );
+    let refused = commit(
+        &mut rig.world,
+        &store,
+        rig.organizer,
+        "+sortie/launch 1:1=all",
+    )
+    .await;
+    assert!(
+        refused
+            .as_ref()
+            .is_err_and(|error| error.to_string().contains("rigs out already")),
+        "the launch is refused at the ramp: {:?}",
+        refused.map_err(|error| error.to_string())
+    );
+    assert!(flight(&rig.world, rig.unit, 1).is_err(), "no flight");
+    assert_eq!(count_ground(&rig.world)?, 2, "nothing went down");
     Ok(())
 }
