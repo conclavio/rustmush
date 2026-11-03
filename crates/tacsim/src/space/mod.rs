@@ -826,6 +826,8 @@ mod tests {
                     interdictor,
                     "ship.9901".to_owned(),
                 )),
+                approaching_derelict: false,
+                holding_for_salvage: false,
             },
         );
 

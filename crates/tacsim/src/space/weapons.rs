@@ -95,7 +95,7 @@ impl LaserMount {
         Self {
             id: id.into(),
             mode: LaserMode::Offense,
-            base_damage: 55,
+            base_damage: 110,
             half_range_m: 120_000,
             max_range_m: 500_000,
             defense_range_m: 45_000,
