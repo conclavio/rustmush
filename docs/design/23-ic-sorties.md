@@ -953,10 +953,19 @@ section says what the claim is for an IC hull, and lets the three go.
   ship" waits, 17h §4), so the ship's epoch (`port/epoch.rs`) seals the ROM and carries no claim.
 - **The `abi`.** `MindSeal.abi` (`arena/mind_seal.rs:80`) records `MIND_ABI`
   (`minds/mod.rs:202`, `rhai=1.26.0;api=7;stock=3`). The OOC resume refuses a differing seal by
-  name (`match_/resume.rs:676–700`, `ResumeRefusal::MindAbi` `:683–688`); `DropCause::Abi` is
-  produced "by NOTHING in the arena" and carried for the region map (`arena/mind.rs:243–250`), with
-  its player sentence ready (`arena_bridge.rs:5787`). `MindState.memory` is the mind's bytes
-  (`arena/mind.rs:586–590`).
+  name (`match_/resume.rs:676–700`, `ResumeRefusal::MindAbi` `:683–688`). `DropCause::Abi` is
+  produced by `Execution::install` (`execution.rs:183–265`; round 2's 23-8 corrected Draft 0.8,
+  which quoted the stale comment at `arena/mind.rs:245–250`, "by NOTHING in the arena"): a
+  retained execution whose `seal.abi` is not this build's installs the ROM runner (`runner()`,
+  `:166–182`), journals `MindDropped { cause: "abi" }` (`:243–248`), sets the row's `dropped = Abi`
+  (`:260`) and cancels any think in flight (`:264`); `IcRetainedExecution::install` calls it
+  (`host.rs:188`), and the player sentence is ready (`arena_bridge.rs:5787`). Three things sit
+  around that check: `install` first requires the arena's unit to carry the claim's own seal
+  (`u.seal == self.seal.seal_ref()`, `:184–190`); `runner()` fails outright when `RhaiRunner::new`
+  cannot compile the retained source at the current ABI (`:170–177`); and the four-owner audit
+  compiles every retained row at boot (`audit.rs:133–135`), one failure failing the whole book's
+  load, which the Roll's commerce audit takes as one `?` (`commerce/audit.rs:528–529`).
+  `MindState.memory` is the mind's bytes (`arena/mind.rs:586–590`).
 - **The pool.** `pool_for`, `load_of` and `admit_side` (`match_/pool.rs:59`, `:71`, `:143`) are
   read at the lobby and a match's check-out only; nothing under `field/` reads them. The think
   pool is one per process (`minds/pool.rs:1–35`).
@@ -1227,21 +1236,33 @@ seal and memory, every mind hull on it drops to the drive ROM, and `MindDropped`
 the cause word `abi`, the sealed record keeping the old ABI. S.4b says *where* that happens, because
 an IC hull thinks only inside a field: **the drop is decided per hull at the moment its retained
 execution is installed into a field's arena — admission, an F-6 join, or a field's resume — never
-at boot and never by voiding the field — D-23-17.** `IcRetainedExecution::install`
-(`host.rs:172–189`) gains the check the OOC resume makes by name (`match_/resume.rs:683–688`): a
-seal whose `abi` is not this build's, or whose source the store no longer compiles, installs the
-hull on the ROM — Standard Doctrine as this build ships it, which is what every un-piloted field
-hull flies today (`admit.rs:668`) — sets `MindState.dropped = Abi`, and journals one `MindDropped {
-cause: abi }` on the hull's black box in the field's segment, with `dropped_line`'s sentence to the
-operator (`arena_bridge.rs:5787`); the claim, the licence seat and the compute seat stay, the
-epoch's record carries `dropped: abi` so a second field on the same epoch does not journal it
-again, and the next seal at a hangar is on the new ABI. A field's own resume across the change is
+at boot and never by voiding the field — D-23-17.** The check itself exists (round 2's 23-8):
+`Execution::install` already installs the ROM runner for a seal whose `abi` is not this build's,
+journals one `MindDropped { cause: abi }` and sets `dropped = Abi` (`execution.rs:195–265`), and
+`IcRetainedExecution::install` calls it (`host.rs:188`); the ROM is Standard Doctrine as this
+build ships it, which is what every un-piloted field hull flies today (`admit.rs:668`), and
+`dropped_line` says it to the operator (`arena_bridge.rs:5787`). What S.4b builds is the seam
+around it. (a) The field admits the hull **under the claim's `MindSeal`**: `custody_unit` takes it
+from `IcHost::resume(open)?.seal()` (`host.rs:169`), never from `OpenSortie.seal`, which is the
+line's `SealFacts` and cannot satisfy `install`'s equality (`u.seal == self.seal.seal_ref()`,
+`execution.rs:184–190`); the join then sees a scripted seal with a retained execution behind it.
+(b) A retained source that no longer compiles at the current ABI is treated **like an ABI
+mismatch, per row**: `runner()` falls to the ROM with the compiler's words in the line's `fault`
+(`MindDropped { cause: abi, fault: Some(…) }`) instead of failing (`:170–177`), and the boot audit
+records the row uncompilable (`Record.stale: Option<SmolStr>`, set where `audit.rs:135` fails
+today) instead of refusing the book, so one authored source never blocks every claim's load
+through the Roll's one `?` (`commerce/audit.rs:528–529`); the audit's other refusals keep their
+meaning. The journal line lands on the field's log in its segment; the claim, the licence seat
+and the compute seat stay, the epoch's record carries `dropped: abi` so a second field on the same
+epoch does not journal it again, and the next seal at a hangar is on the new ABI. A field's own resume across the change is
 therefore never refused for a mind (the field's units are the kernel's, Q-CF-33/35, and a void
 would demote every party for one hull's engine); the OOC refusal by name stays the OOC rule.
 
 **Q-36-44's wall is the fallback for an execution that cannot be installed at all**, which is not
-the ABI case: a retained open the four-owner audit refuses (`audited_state`, `host.rs:191–210`), a
-closed-or-crossed claim (`:182–186`), a record the book cannot read. Such a hull is `held_out` as
+the ABI case: a book that did not load — the audit passes or refuses the whole book, never a row
+(`state.loaded`, `state.rs:100–101`; `audited_state`, `host.rs:191–210`), so every held hull on the
+site is walled together and the operator paged once — or a closed-or-crossed claim (`:182–186`),
+or a cursor the record cannot read. Such a hull is `held_out` as
 GC.1 built it (`admit.rs:338–361`; the walls on the live record once PR #340 lands) — an inert
 obstacle, its claim untouched, the site told `HELD_OUT` — and is paged once a boot. **It leaves the
 wall state when the field ends, or earlier when the hull leaves the site's ground** (a recover or a
@@ -1306,8 +1327,8 @@ not a defect.
 **S.4b's** (this section, built as §17.10 says): the production `HostTransition` and the
 `RigRecord.claim` cursor (D-23-13, 23-4); the one-seal capture and the book's IC id (D-23-14); the
 exclusion's re-scoped freeze, the custody coexistence and the live-hull Close (D-23-15); the
-compute seat's count and refusal at the launch (D-23-16); the install-time `abi` drop and the wall
-as fallback (D-23-17); the carried memory (D-23-18); the field admitting a held mind's seal in place
+compute seat's count and refusal at `go` (D-23-16); the claim's seal on the admitted unit, the
+per-row compile drop and the wall (D-23-17); the carried memory (D-23-18); the field admitting a held mind's seal in place
 of the ROM (`custody_unit` reading `OpenSortie.seal` and installing the retained execution; the
 join admitting it; the task's `sources`/`install_runners` seam); the dispatch's seat refusals
 (licence and compute); M8g's "To S.4b" stories once S.4b-T lands. **S.4b-T's** (its own cut, may
@@ -1341,15 +1362,16 @@ Through the cut loop (§9), one PR off `main`, the owner merging.
 - **Custody** (D-23-15): the exclusion's hangar-and-epoch image and re-scoped `check_plan`/boot
   checks; the field check-out admitting the IC host's own claim; the live-hull Close; the salvage
   load closing `RecoveredToBase` (Q-23-11).
-- **The field takes the mind**: `custody_unit` seals from `OpenSortie.seal` when the rig's claim
-  is `Open`, the host installs the retained execution through `IcHost::resume(open)?.install`
-  at admission, join and resume (the `sources` seam carrying the retained source), the join's
-  scripted refusal becomes "a scripted seal with no retained execution"; `arena_task.rs:742`'s
-  sentence goes.
+- **The field takes the mind**: `custody_unit` takes the claim's `MindSeal` from
+  `IcHost::resume(open)?.seal()` when the cursor is `Open` (23-8), the host installs the retained
+  execution through `IcHost::resume(open)?.install` at admission, join and resume (the `sources`
+  seam carrying the retained source), the join's scripted refusal becomes "a scripted seal with no
+  retained execution"; `arena_task.rs:742`'s sentence goes.
 - **The compute seat** (D-23-16): the site sum at the dispatch, the refusal with the arithmetic,
   `Admitted.count` as the loaded ops.
-- **The `abi` drop and the wall** (D-23-17): the install-time check, the journal line once an
-  epoch, the wall for an uninstallable execution, paged once.
+- **The `abi` drop and the wall** (D-23-17): the claim's seal on the admitted unit so `install`'s
+  own check runs, a compile failure as a per-row drop with its `fault`, the audit's `stale` row,
+  the journal line once an epoch, the wall for an unloaded book or a crossed claim, paged once.
 - **The carried memory** (D-23-18): `OpenSortie.mind` written at every check-in, seeded at every
   install.
 - **Acceptance, through production command paths, at 256 and 512 (doc 38 Q-38-29).** One story in
@@ -1375,8 +1397,9 @@ Through the cut loop (§9), one PR off `main`, the owner merging.
   Open the four owners refuse for good (`Refused` on the cursor, the queued launch cancelled, the
   rig in its bay, the operator told once); a launch cancelled after its Open closing
   `PoweredDownInBase`; the `abi` drop (a seal recorded under `OLD_ABI` as
-  `store.rs:3584`'s test shapes one, installed → the ROM, one `MindDropped { cause: abi }`); the
-  wall for a refused audit; the re-scoped `check_plan` admitting a surface drive and refusing a
+  `store.rs:3584`'s test shapes one, installed → the ROM, one `MindDropped { cause: abi }`; a
+  retained source that no longer compiles → the same, with its `fault`, the book still loading);
+  the wall for an unloaded book; the re-scoped `check_plan` admitting a surface drive and refusing a
   staff teleport; the Close over a damaged live hull. The bot types the player's half over SSH
   (Q-38-29's default; the bot's vocabulary gains `+tv/<n> launch mind=`). Q-23-20.
 - **Gates.** The claim path's own stories (`ic_integration_tests`) unchanged; the OOC practice
@@ -1403,7 +1426,7 @@ nothing is refused with the one sentence.
 | D-23-14 | One seal per epoch: the Open's `Execution::capture` at `go` is the seal, retained whole in the claim row; the act carries the open token and the `mind_sealed` line prints the claim's seal; the book and `Execution::validate` accept `SortieId::Ic`; the book's ordinal moves to `Opening.transition` (round 2's 23-7) and the Roll's `SortieNumber` keeps carrying it; the dispatch's own seals pass the hull's armament summaries | **accepted by the owner, 2026-11-03** (Q-23-9); **restated in Draft 0.10** (round 2's 23-2: the dispatch seal is not durable enough to capture from; under D-23-21 the Open seals) |
 | D-23-15 | IC custody means moved only by the epoch's hosts: the exclusion records the hangar and epoch, admits an Open on the ground, freezes re-anchoring only; the field mark and the claim coexist; the Close's physical image is the live hull | **accepted by the owner, 2026-11-03** (Q-23-10, Q-23-11) |
 | D-23-16 | The compute seat is counted at the launch against the site's allotment, held for the epoch, spent only in a field, refused at the launch with the arithmetic under a provisional stock allotment; never refused or evicted in a field | **accepted by the owner, 2026-11-03** (Q-23-12) |
-| D-23-17 | The `abi` drop is decided per hull when its retained execution is installed into a field (admission, join, resume), to the ROM with one `MindDropped { cause: abi }` an epoch; it never voids a field; Q-36-44's wall is the fallback for an execution that cannot be installed at all, left when the field ends or the hull leaves the ground | **accepted by the owner, 2026-11-03** (Q-23-13, Q-23-14) |
+| D-23-17 | The `abi` drop is `Execution::install`'s own, run per hull when its retained execution is installed into a field (admission, join, resume) under the claim's seal, to the ROM with one `MindDropped { cause: abi }` an epoch; a source that no longer compiles drops the same way, per row, never failing the book; it never voids a field; Q-36-44's wall is the fallback for a book that did not load or a crossed claim, left when the field ends or the hull leaves the ground | **accepted by the owner, 2026-11-03** (Q-23-13, Q-23-14); **restated in Draft 0.10** (round 2's 23-8: the check exists, the seam around it is S.4b's) |
 | D-23-18 | The long-leg snapshot is the mind's memory carried on the epoch record at every check-in and seeded at every install; the field's cadence stands | **accepted by the owner, 2026-11-03** (Q-23-15) |
 | D-23-19 | The testimony producer feeds `EarnedContacts` at check-in from the field's `Classified` lines, authored by the seated pilot else the warrant principal, persisted per author; it is its own cut, S.4b-T | **accepted by the owner, 2026-11-03** (Q-23-16, Q-23-17) |
 | D-23-20 | S.4b's host is the IC field; the drone phase is no longer its gate; its acceptance runs at 256 and 512 with the bot per Q-38-29 | **accepted by the owner, 2026-11-03** (Q-23-18, Q-23-20) |
