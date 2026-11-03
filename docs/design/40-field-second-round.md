@@ -509,8 +509,16 @@ reason for the record; §6 is the plan built from them.
 **Q-40-4 — A jammed plant.**
 - **Proposed default:** the literal ruling: `Power::Off`, so the hull stands and does not fire
   until the field ends — a disabled hull in the kernel's own vocabulary, towable as a casualty,
-  not a wreck. The chance is the unit's `jam_permille` (50) on a penetrating hit to the plant's
-  section, and the draw picks among that section's parts, so it is rare.
+  not a wreck. `Power::Off` alone is not enough: `resolve_startup` (`arena/intents.rs:1473–1492`)
+  refuses only an unknown unit or a wreck and schedules `StartupComplete` for anything off, so a
+  pilot's STARTUP would bring the plant back and a startup already scheduled would still land.
+  Two lines more in the derivation: `resolve_startup` refuses, by name (`Refusal::Plant`), a unit
+  whose plant's condition word is jammed or destroyed, and `apply_part_effects` takes a pending
+  `DueKind::StartupComplete { unit }` off the heap as it sets `Power::Off`, with the retain
+  `destroy_unit` already runs for a wreck (`damage.rs:1448–1452`); unjam restores STARTUP, never
+  the power, so a hull comes back the way it came up. The chance is the unit's `jam_permille`
+  (50) on a penetrating hit to the plant's section, and the draw picks among that section's
+  parts, so it is rare.
 - **Alternative:** a jammed plant takes the heat ceiling to nought (a laser hull cannot fire; the
   rest unchanged) and leaves motion alone.
 - **Why:** "jammed is off until unjammed"; a plant that is off is a hull that is off. The
