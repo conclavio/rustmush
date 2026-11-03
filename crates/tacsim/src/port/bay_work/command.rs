@@ -39,9 +39,12 @@ pub const BAY_HELP: &str = "+bay <hull> quotes the work on a hull where it stand
     the fee into escrow and holds the hull until the work is done on the IC clock \
     (all, armor, rebuild, mend, unjam, replace, rearm, or a section or part). +bay/cancel \
     releases the fee. At a port's workshop, +bay/berth <hull> takes a hull out of your docked \
-    carrier's bay and +bay/stow <hull> puts it back. Munitions and industrial parts come from \
-    the carrier's hold when the work is done. In a workshop, +bay/fit <hull>=<slot> <lot> fits \
-    a traced part from the hold (a hot part is refused), +bay/strip <hull>=<part> takes a part \
+    carrier's bay and +bay/stow <hull> puts it back. Munitions come from the carrier's hold \
+    when the work is done; armour and rebuilds draw from the hull's bale, which the first repair \
+    opens with a tonne each of structural alloys and industrial parts from the hold, topped up \
+    by the tonne when it runs short. In a workshop, +bay/fit <hull>=<slot> <lot> fits a traced \
+    part from the hold into any slot of its kind (a hot part is refused), +bay/strip \
+    <hull>=<part> takes a part \
     off into the hold, and the title holder's +bay/scrap <hull> breaks the hull up into \
     structural alloys and parts.";
 
@@ -187,7 +190,8 @@ fn show(ctx: &mut Ctx<'_>, hull: ObjId) -> Result<(), String> {
                     ),
                     hours(BayQuote::secs(&quote.jobs, facility.class))
                 ));
-                let goods = super::order_goods(&quote.jobs);
+                let bale = super::record_of(ctx.w, hull).ok().and_then(|r| r.bale);
+                let (goods, after) = super::order_goods(&quote.jobs, bale);
                 if !goods.is_empty() {
                     let words: Vec<String> = goods
                         .iter()
@@ -196,6 +200,13 @@ fn show(ctx: &mut Ctx<'_>, hull: ObjId) -> Result<(), String> {
                     lines.push(format!(
                         "  From the carrier's hold, all of it: {}.",
                         words.join(", ")
+                    ));
+                }
+                // Doc 39 cut IN.1: what the hull's bale holds once the work is done.
+                if let Some(after) = after {
+                    lines.push(format!(
+                        "  Her bale after it: {} kg of alloys and {} kg of fittings left.",
+                        after.alloys_kg, after.fittings_kg
                     ));
                 }
             }

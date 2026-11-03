@@ -86,9 +86,10 @@ fn ready(ctx: &mut Ctx<'_>, hull: ObjId, act: Act) -> Result<(BayHull, super::Fa
     Ok((record, facility))
 }
 
-/// **Whether the hold takes the bulk `lots` lay in it** (doc 36a P2-4): every lot without a
-/// part provenance, summed by commodity, against [`PortCapacity`]'s plan for the hold as it
-/// stands. An ungoverned hold takes anything; an unreadable plan or pool refuses.
+/// **Whether the hold takes what `lots` lay in it** (doc 36a P2-4; doc 39 cut IN.1): every lot,
+/// a part by its catalogue mass, summed by commodity, against [`PortCapacity`]'s plan for the
+/// hold as it stands (the parts already aboard included). An ungoverned hold takes anything; an
+/// unreadable plan or pool refuses.
 ///
 /// # Errors
 ///
@@ -99,7 +100,7 @@ fn hold_takes(ctx: &Ctx<'_>, vault: VaultId, lots: &[LotMint]) -> Result<(), Str
         return Ok(());
     };
     let mut bulk: BTreeMap<CanonicalId, u64> = BTreeMap::new();
-    for lot in lots.iter().filter(|lot| lot.part.is_none()) {
+    for lot in lots {
         let slot = bulk.entry(lot.commodity.clone()).or_insert(0);
         *slot = slot.saturating_add(lot.quantity);
     }
@@ -195,7 +196,7 @@ pub fn strip(ctx: &mut Ctx<'_>, hull: ObjId, part: &str) -> Result<LotId, String
         .component(&slot)
         .map(|c| c.definition.clone())
         .ok_or("That hull has no such part.")?;
-    let commodity = crate::hardware::bay::part_commodity(&definition)
+    let part_row = crate::hardware::bay::part_of(ctx.w, &definition)
         .ok_or("That part is not one the bay stocks; it does not come off.")?;
     let at_ic = ctx.w.world_ic_now().at;
     let (after, _, stripped) = WorkshopBook::new()
@@ -226,11 +227,18 @@ pub fn strip(ctx: &mut Ctx<'_>, hull: ObjId, part: &str) -> Result<LotId, String
     let condition = stripped.condition;
     let row = LotMint {
         lot,
-        commodity,
+        commodity: part_row.commodity,
         quantity: 1,
         grade: crate::hardware::bay::part_grade(condition == ComponentCondition::Intact),
         part: Some(provenance(
-            lot, &before, &slot, definition, condition, ctx.actor, at_ic, false,
+            lot,
+            &before,
+            &slot,
+            part_row.row,
+            condition,
+            ctx.actor,
+            at_ic,
+            false,
         )),
     };
     hold_takes(ctx, vault, std::slice::from_ref(&row))?;
@@ -287,17 +295,24 @@ pub fn scrap(ctx: &mut Ctx<'_>, hull: ObjId) -> Result<Scrapped, String> {
         let Some(definition) = before.component(slot).map(|c| c.definition.clone()) else {
             continue;
         };
-        let Some(commodity) = crate::hardware::bay::part_commodity(&definition) else {
+        let Some(part_row) = crate::hardware::bay::part_of(ctx.w, &definition) else {
             continue;
         };
         let lot = act::lot_id(hull, act_no, lots.len().saturating_add(1))?;
         lots.push(LotMint {
             lot,
-            commodity,
+            commodity: part_row.commodity,
             quantity: 1,
             grade: crate::hardware::bay::part_grade(*condition == ComponentCondition::Intact),
             part: Some(provenance(
-                lot, &before, slot, definition, *condition, ctx.actor, at_ic, true,
+                lot,
+                &before,
+                slot,
+                part_row.row,
+                *condition,
+                ctx.actor,
+                at_ic,
+                true,
             )),
         });
     }

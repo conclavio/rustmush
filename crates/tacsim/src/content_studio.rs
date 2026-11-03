@@ -258,6 +258,12 @@ fn shipped_docs() -> Vec<DocSpec> {
             bytes: CORES_JSON,
         },
         DocSpec {
+            id: "tacsim.pack.plants",
+            repo_path: "plants/plants.json",
+            family: "component",
+            bytes: crate::definitions::content::PLANTS_JSON,
+        },
+        DocSpec {
             id: crate::hardware::PACK,
             repo_path: "hardware/governed_hardware.json",
             family: "component",

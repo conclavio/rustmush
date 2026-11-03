@@ -233,6 +233,9 @@ pub enum PackEntry {
     /// **17b cut M3.1** — one core (doc 17 §9, D-UM-33): a Compact class and
     /// a governed bit, fitted to a chassis by a `core` component.
     Core(crate::definitions::CoreDef),
+    /// **Doc 39 cut IN.1** — one power plant (Q-39-35): the hardware row a `power` component
+    /// names, its mass and its states.
+    Plant(crate::definitions::PlantDef),
     /// **16b cut C.2 (C1)** — one resolution table (doc 16 §3.5, D-16-8).
     Resolution(crate::definitions::ResolutionDef),
     /// **16b cut C.2 (C3)** — one arena: the window, its zones, its waypoints
@@ -267,6 +270,7 @@ impl PackEntry {
             PackEntry::Ammunition(_) => "ammunition",
             PackEntry::Sensor(_) => "sensor",
             PackEntry::Core(_) => "core",
+            PackEntry::Plant(_) => "plant",
             PackEntry::Resolution(_) => "resolution",
             PackEntry::Arena(_) => "arena",
             PackEntry::Port(_) => "port",
@@ -304,6 +308,8 @@ impl PackEntry {
             PackEntry::Sensor(def) => def.check(&def.label).map_err(definition_error)?,
             // 17b cut M3.1: the seventh content kind, on the same rule.
             PackEntry::Core(def) => def.check(&def.label).map_err(definition_error)?,
+            // Doc 39 cut IN.1: the eighth, likewise.
+            PackEntry::Plant(def) => def.check(&def.label).map_err(definition_error)?,
             PackEntry::Resolution(def) => def.check(&def.label).map_err(definition_error)?,
             PackEntry::Arena(def) => def.check(&def.label).map_err(definition_error)?,
             // Checked in `from_content`'s per-entry loop, where the entry id is
@@ -1317,8 +1323,8 @@ fn place_coordinates_fault(place: &LocationDef) -> Option<String> {
 ///
 /// 16b cut C.2 added the six of doc 16 §4 to E7 cut 1's eight; 17b cut M3.1
 /// the fifteenth, `core` (doc 17 §9); doc 18 cut IC3 the sixteenth, `port`
-/// (doc 18 §4.7).
-pub const OWNED_KINDS: [&str; 18] = [
+/// (doc 18 §4.7); doc 39 cut IN.1 the nineteenth, `plant` (Q-39-35).
+pub const OWNED_KINDS: [&str; 19] = [
     "commodity",
     "recipe",
     "hardware_recipe",
@@ -1334,6 +1340,7 @@ pub const OWNED_KINDS: [&str; 18] = [
     "ammunition",
     "sensor",
     "core",
+    "plant",
     "resolution",
     "arena",
     "port",
@@ -1592,6 +1599,7 @@ impl RulesPack {
                         | PackEntry::Ammunition(_)
                         | PackEntry::Sensor(_)
                         | PackEntry::Core(_)
+                        | PackEntry::Plant(_)
                         | PackEntry::Resolution(_)
                 )
             );

@@ -215,7 +215,7 @@ async fn b36a_1_a_given_up_draw_does_not_brick_the_hull() {
     settle_until(&mut rig, spare);
     let lot = tacsim::port::bay_work::act::lot_id(spare, 1, 0).expect("the lot");
     let found = lot_record(&mut rig, lot).expect("the cannon's lot is minted");
-    assert_eq!(found.commodity().as_str(), "tacsim.part.cannon");
+    assert_eq!(found.commodity().as_str(), "tacsim.part.weapon.cannon_105");
     assert_eq!(provenance(&mut rig, lot).slot, cannon);
     assert_eq!(
         assess(&rig, spare).component_conditions[&cannon],
@@ -287,6 +287,8 @@ async fn b36a_2_a_doomed_order_is_refused_at_the_counter() {
     let mut rig = stocked();
     let (pilot, row, escort, _) = two_escorts(&mut rig);
     seed_hold(&mut rig, &row, "industrial_parts", 40, 9_700);
+    // Doc 39 cut IN.1: the first repair opens the hull's bale with a tonne of alloys too.
+    seed_hold(&mut rig, &row, "structural_alloys", 2, 9_701);
     let u = unit(&rig, escort);
     let turret = section_id(&u, "turret");
     damage(&mut rig, escort, wreck_section(&u, &turret));

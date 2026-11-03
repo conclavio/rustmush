@@ -3,8 +3,13 @@
     "id": "tacsim.pack.halcyon",
     "version": 1,
     "kind": "rules_definition",
-    "digest": "336da0d84a12554fa767f115fcd265c03beb537b3390ec1943edb2d82b1c134a",
-    "requires": []
+    "digest": "dcfebfb682960d461b9e987f2b48cea7d765886de409c4125334e16db1523bb6",
+    "requires": [
+      {
+        "id": "tacsim.pack.plants",
+        "version": 1
+      }
+    ]
   },
   "entries": {
     "tacsim.unit.halcyon": {
@@ -65,6 +70,7 @@
             "section": "power",
             "role": {
               "kind": "power",
+              "plant": "tacsim.plant.capital_mk1",
               "capability": "tacsim.power",
               "states": [
                 "off",

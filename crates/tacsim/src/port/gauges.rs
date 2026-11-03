@@ -129,6 +129,14 @@ fn render_load(goods: &GoodsTable, measure: &CanonicalId, value: u64) -> String 
     }
 }
 
+/// **A part's mass in tonnes to the tenth** (doc 39 cut IN.1): a 105 mm mount is `2.4`, where
+/// a bulk good's whole-tonne figure would read `2`.
+#[must_use]
+pub fn part_tonnes(kg: u64) -> String {
+    let tenths = kg.saturating_add(50) / 100;
+    format!("{}.{}", tenths / 10, tenths % 10)
+}
+
 /// A limit in `measure`: whole tonnes, whole cubic metres, else `{n} {unit}`.
 fn render_limit(goods: &GoodsTable, measure: &CanonicalId, value: u64) -> String {
     match measure.as_str() {
@@ -207,7 +215,14 @@ pub fn goods_list(
         .into_iter()
         .filter_map(|good| {
             let qty = contents.get(&good.id).copied().unwrap_or(0);
-            (qty > 0).then(|| format!("{qty} {} {}", unit_word(good), good.label))
+            (qty > 0).then(|| {
+                // Doc 39 cut IN.1: a part is counted, not measured.
+                if good.class == crate::definitions::GoodClass::Part {
+                    format!("{qty} {}", good.label)
+                } else {
+                    format!("{qty} {} {}", unit_word(good), good.label)
+                }
+            })
         })
         .collect();
     if listed.is_empty() {
@@ -309,6 +324,12 @@ fn load_cell_lines(
     let mut out: Vec<String> = Vec::new();
     for good in accepted(goods, comp) {
         let qty = contents.get(&good.id).copied().unwrap_or(0);
+        // Doc 39 cut IN.1: a part is listed only when one is aboard; thirteen zero lines would
+        // bury the bulk goods the line is for.
+        let part = good.class == crate::definitions::GoodClass::Part;
+        if qty == 0 && part {
+            continue;
+        }
         let mut parts: Vec<String> = Vec::with_capacity(comp.limits.len());
         for measure in comp.limits.keys() {
             let per_unit = good
@@ -318,7 +339,11 @@ fn load_cell_lines(
                     measure: measure.clone(),
                 })?;
             let value = qty.checked_mul(per_unit).ok_or(CapacityError::Overflow)?;
-            parts.push(render_load(goods, measure, value));
+            parts.push(if part && measure.as_str() == MASS_KG {
+                format!("{} t", part_tonnes(value))
+            } else {
+                render_load(goods, measure, value)
+            });
         }
         out.push(format!("{indent}{}: {}", good.label, parts.join(" · ")));
     }

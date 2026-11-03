@@ -42,8 +42,8 @@ pub mod strip;
 
 pub use jobs::{BayJob, BayQuote, CARRIER_TIME_FACTOR, FacilityClass, QuotedJob};
 pub use record::{
-    BAY_PREFIX, BAY_SCHEMA, BayHull, BayHullState, BayOrder, BerthRow, MAX_ORDER_JOBS, OrderStatus,
-    Right, bay_key, bay_key_owner,
+    BAY_PREFIX, BAY_SCHEMA, Bale, BaleDraw, BayHull, BayHullState, BayOrder, BerthRow, KG_PER_T,
+    MAX_ORDER_JOBS, OrderStatus, Right, bay_key, bay_key_owner,
 };
 
 use std::collections::BTreeMap;
@@ -126,6 +126,8 @@ pub const SETTLING: &str =
     "That hull's last work is still settling in the bay's stores; try again shortly.";
 /// The good a section's points consume (Q-36-31).
 pub const PARTS_GOOD: &str = "industrial_parts";
+/// The structural good a repair's bale holds beside the fittings (doc 39 cut IN.1, §4.10).
+pub const ALLOYS_GOOD: &str = "structural_alloys";
 
 // ---- where the work is done -------------------------------------------------------------
 
@@ -570,11 +572,37 @@ pub fn quote_here(w: &World, hull: ObjId) -> Result<(Facility, BayQuote), String
 
 // ---- the hold ---------------------------------------------------------------------------
 
-/// **The goods `jobs` draw** (Q-36-31, Q-36-36): each rearm's munitions good, summed by good,
-/// and the `industrial_parts` tonnes their points consume at the tariff's rate. Beam charge
-/// and a replaced part draw nothing.
+/// **A minted lot as the requester reads it** (doc 39 cut IN.1): the good's label, and a part's
+/// catalogue mass to the tenth of a tonne — `1 105 mm cannon mount, 2.4 t (lot 7)`; a bulk
+/// lot reads by its quantity and id, as it always has.
+fn lot_words(w: &World, lot: &act::LotMint) -> String {
+    let good = w
+        .module_state::<TacsimStore>()
+        .and_then(|store| store.goods())
+        .and_then(|goods| goods.good(&lot.commodity).cloned());
+    match good {
+        Some(good) if good.class == crate::definitions::GoodClass::Part => format!(
+            "{} {}, {} t ({})",
+            lot.quantity,
+            good.label,
+            crate::port::gauges::part_tonnes(
+                good.mass_kg_per_unit()
+                    .unwrap_or(0)
+                    .saturating_mul(lot.quantity)
+            ),
+            lot.lot
+        ),
+        _ => format!("{} {} ({})", lot.quantity, lot.commodity, lot.lot),
+    }
+}
+
+/// **The goods `jobs` draw** (Q-36-31, Q-36-36; doc 39 cut IN.1): each rearm's munitions good,
+/// summed by good, and the whole tonnes of `structural_alloys` and `industrial_parts` the hull's
+/// `bale` takes in to cover the kilograms their points consume ([`Bale::draw`]); with the bale
+/// once the work is done, `None` when the jobs touch no bale. Beam charge and a replaced part
+/// draw nothing.
 #[must_use]
-pub fn order_goods(jobs: &[QuotedJob]) -> Vec<GoodUnits> {
+pub fn order_goods(jobs: &[QuotedJob], bale: Option<Bale>) -> (Vec<GoodUnits>, Option<Bale>) {
     let mut goods: BTreeMap<CanonicalId, u64> = BTreeMap::new();
     for job in jobs {
         if let BayJob::Rearm {
@@ -587,19 +615,24 @@ pub fn order_goods(jobs: &[QuotedJob]) -> Vec<GoodUnits> {
             *sum = sum.saturating_add(*units);
         }
     }
-    if let Ok(tariff) = crate::definitions::workshop::workshop_tariff() {
-        let parts = BayQuote::parts_t(jobs, &tariff);
-        if parts > 0
-            && let Ok(good) = CanonicalId::new(PARTS_GOOD)
-        {
-            goods.insert(good, parts);
+    let mut after = None;
+    if let Ok(tariff) = crate::definitions::workshop::workshop_tariff()
+        && let Some(draw) = Bale::draw(bale, BayQuote::bale_need(jobs, &tariff))
+    {
+        for (good, units) in [(ALLOYS_GOOD, draw.alloys_t), (PARTS_GOOD, draw.fittings_t)] {
+            if let Ok(good) = CanonicalId::new(good) {
+                let sum = goods.entry(good).or_default();
+                *sum = sum.saturating_add(units);
+            }
         }
+        after = Some(draw.after);
     }
-    goods
+    let goods = goods
         .into_iter()
         .filter(|(_, units)| *units > 0)
         .map(|(good, units)| GoodUnits { good, units })
-        .collect()
+        .collect();
+    (goods, after)
 }
 
 /// **The carrier whose hold serves `hull` at `facility`**: the carrier whose bay it stands in,
@@ -729,7 +762,8 @@ pub fn take_order(ctx: &mut Ctx<'_>, hull: ObjId, selector: &str) -> Result<Take
 
 /// **`+bay/fit`** (Q-36-37): an order that fits the part in `lot`, from the carrier's hold,
 /// into the slot it fits. The lot must carry the bay's provenance (a part the bay can trace),
-/// be clean, unfitted and of the slot's definition; it is consumed when the work is done.
+/// be clean, unfitted and of the slot's hardware row (doc 39 cut IN.1); it is consumed when the
+/// work is done.
 ///
 /// # Errors
 ///
@@ -777,9 +811,11 @@ fn fit_job(
     let BayJob::Replace { component, .. } = job.job else {
         return Err("That slot has no part to replace.".to_owned());
     };
-    let definition = mush_tactics::module::unit_of(w, hull)
-        .and_then(|u| u.component(&component).map(|c| c.definition.clone()));
-    if definition.as_ref() != Some(&part.definition) {
+    // Doc 39 cut IN.1 (Q-39-3): a part fits a slot that names its hardware row, on any unit.
+    let row = mush_tactics::module::unit_of(w, hull)
+        .and_then(|u| u.component(&component).map(|c| c.definition.clone()))
+        .and_then(|definition| crate::hardware::bay::part_of(w, &definition));
+    if row.as_ref().map(|row| &row.row) != Some(&part.definition) {
         return Err("That part does not fit that slot.".to_owned());
     }
     Ok(QuotedJob {
@@ -865,7 +901,7 @@ fn take(
     dry_run(ctx, hull, ctx.actor, &custody, &picked, &fitted)
         .map_err(|error| format!("That work cannot be done as ordered: {error}."))?;
     // GC.8b: the goods come from the carrier's hold, checked now and drawn at completion.
-    let mut goods = order_goods(&picked);
+    let (mut goods, mut bale_after) = order_goods(&picked, record.bale);
     let vault = if goods.is_empty() && fit.is_none() {
         None
     } else if facility.class == FacilityClass::Workshop
@@ -875,7 +911,9 @@ fn take(
             .and_then(|v| hold_carries(ctx, v, &goods).map(|()| v))
             .is_err()
     {
+        // The workshop supplies the work itself and the hull's bale is not touched.
         goods.clear();
+        bale_after = None;
         None
     } else {
         berth_stands(ctx, ctx.actor, &record)?;
@@ -935,6 +973,7 @@ fn take(
         munitions_vault: vault,
         goods,
         draw_act: None,
+        bale_after,
         unit_revision,
         started_ic: started,
         due_ic: started.saturating_add(secs),
@@ -1290,6 +1329,10 @@ fn complete(ctx: &mut Ctx<'_>, hull: ObjId) {
         row.status = OrderStatus::Done;
         row.closed_ic = Some(ctx.w.world_ic_now().at);
     }
+    // Doc 39 cut IN.1: the bale the work drew through, its draw landed with the order's.
+    if let Some(after) = order.bale_after {
+        record.bale = Some(after);
+    }
     put_bay_hull(ctx, &record);
     let words: Vec<String> = order.jobs.iter().map(|j| j.job.describe()).collect();
     ctx.out.sys_to_actor(
@@ -1340,7 +1383,7 @@ fn settle(ctx: &mut Ctx<'_>, hull: ObjId) {
                         "The {why} of #{} is laid into the carrier's hold: {}.",
                         hull.0,
                         lots.iter()
-                            .map(|l| format!("{} {} ({})", l.quantity, l.commodity, l.lot))
+                            .map(|l| lot_words(ctx.w, l))
                             .collect::<Vec<_>>()
                             .join(", ")
                     ),

@@ -1524,8 +1524,12 @@ pub const NO_REMAINS: &str = "No remains lie within a cell of rig {n}.";
 pub const REMAINS_NOT_IN_REACH: &str = "Object {id} is not remains within a cell of rig {n}.";
 /// Not the title holder: `{what}`.
 pub const SCRAP_NOT_TITLED: &str = "Only the title holder of {what} may break them up; a winning claimant holds that title once the registry awards it.";
-/// Too little to scrap: `{what}`.
-pub const SCRAP_TOO_LITTLE: &str = "{what} hold less than a tonne of structural mass.";
+/// **The preview of remains under a tonne** (doc 39 cut IN.1, §4.10): scrap mints down to whole
+/// tonnes, and on a site, where no facility keeps the fraction, it is a declared loss. `{n}`,
+/// `{what}`, `{carrier}`.
+pub const SCRAP_LOSS_PREVIEW: &str = "Rig {n} can break up {what} where it lies: under a tonne of structural mass, which is lost; nothing goes into the {carrier}'s hold. +tv/{n} scrap go";
+/// The scrap of remains under a tonne done: `{n}`, `{what}`, `{carrier}`.
+pub const SCRAPPED_LOSS: &str = "Rig {n} breaks up {what} where it lies: under a tonne of structural mass, lost; nothing goes into the {carrier}'s hold.";
 /// No hold to take the alloys: `{n}`.
 pub const SCRAP_NO_HOLD: &str =
     "Rig {n}'s carrier has no hold on this ground to take the alloys into.";
@@ -1638,10 +1642,13 @@ pub(crate) fn scrap_cmd(
         Some(_) => return Err(CmdError::msg(SCRAP_NOT_TITLED.replace("{what}", &what))),
         None => landholder.is_none_or(|holder| holder == ctx.actor),
     };
+    // Doc 39 cut IN.1 (§4.10): down to whole tonnes; a yield under one is a declared loss.
     let alloys_t = mass_kg / crate::port::bay_work::strip::SCRAP_KG_PER_T;
-    if alloys_t == 0 {
-        return Err(CmdError::msg(SCRAP_TOO_LITTLE.replace("{what}", &what)));
-    }
+    let (preview, done) = if alloys_t == 0 {
+        (SCRAP_LOSS_PREVIEW, SCRAPPED_LOSS)
+    } else {
+        (SCRAP_PREVIEW, SCRAPPED)
+    };
     let hold = crate::port::ship::hull_view(ctx.w, rig.hull)
         .and_then(|view| crate::port::ship::hold_vault(ctx.w, &view))
         .filter(|_| {
@@ -1657,8 +1664,7 @@ pub(crate) fn scrap_cmd(
             .replace("{carrier}", &carrier)
     };
     if !go {
-        ctx.out
-            .sys_to_actor(ctx.actor, "tacsim.tow", fill(SCRAP_PREVIEW));
+        ctx.out.sys_to_actor(ctx.actor, "tacsim.tow", fill(preview));
         return Ok(());
     }
     let lot = remains_lot(&site, found.id).map_err(CmdError::msg)?;
@@ -1685,7 +1691,7 @@ pub(crate) fn scrap_cmd(
     ) {
         return Err(CmdError::msg(crate::port::tv::TV_UNWIRED));
     }
-    ctx.out.sys_to_actor(actor, "tacsim.tow", fill(SCRAPPED));
+    ctx.out.sys_to_actor(actor, "tacsim.tow", fill(done));
     Ok(())
 }
 

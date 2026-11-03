@@ -1,0 +1,89 @@
+{
+  "manifest": {
+    "id": "tacsim.pack.plants",
+    "version": 1,
+    "kind": "rules_definition",
+    "digest": "c43273d380345d4c3cb507fa42721adb1b72ffd1d57d7bbe5d751e5ac55f94b2",
+    "requires": []
+  },
+  "entries": {
+    "tacsim.plant.light_mk1": {
+      "kind": "plant",
+      "def": {
+        "label": "light power plant",
+        "mass_kg": 300,
+        "states": [
+          "off",
+          "starting",
+          "online"
+        ],
+        "note": "The plant in the prospector rig, the scout, the drone and the target (doc 39 cut IN.1, Q-39-35): 300 kg, priced at 5,000 cr in goods.json."
+      }
+    },
+    "tacsim.plant.vehicle_mk1": {
+      "kind": "plant",
+      "def": {
+        "label": "vehicle power plant",
+        "mass_kg": 1800,
+        "states": [
+          "off",
+          "starting",
+          "online"
+        ],
+        "note": "The plant in the line tanks, the escort, the heavy and the carrier: 1.8 t, 22,000 cr."
+      }
+    },
+    "tacsim.plant.walker_mk1": {
+      "kind": "plant",
+      "def": {
+        "label": "walker power plant",
+        "mass_kg": 2500,
+        "states": [
+          "off",
+          "starting",
+          "online"
+        ],
+        "note": "The bipeds' plant: 2.5 t, 26,000 cr."
+      }
+    },
+    "tacsim.plant.hauler_mk1": {
+      "kind": "plant",
+      "def": {
+        "label": "hauler power plant",
+        "mass_kg": 30000,
+        "states": [
+          "off",
+          "starting",
+          "online"
+        ],
+        "note": "The Dray's and the Dray-P's plant: 30 t, 30,000 cr."
+      }
+    },
+    "tacsim.plant.capital_mk1": {
+      "kind": "plant",
+      "def": {
+        "label": "capital power plant",
+        "mass_kg": 60000,
+        "states": [
+          "off",
+          "starting",
+          "online"
+        ],
+        "note": "The corvette's and the Halcyon's plant. Unpriced and no part: capital hulls are not built (doc 39 Q-39-20), so goods.json carries no row and the bay stocks none. The mass is provisional and nothing reads it yet."
+      }
+    },
+    "tacsim.plant.station_mk1": {
+      "kind": "plant",
+      "def": {
+        "label": "station power plant",
+        "mass_kg": 8000,
+        "states": [
+          "off",
+          "starting",
+          "online"
+        ],
+        "note": "The relay station's plant. Unpriced and no part: stations are not built (doc 39 Q-39-20). The mass is provisional and nothing reads it yet."
+      }
+    }
+  }
+}

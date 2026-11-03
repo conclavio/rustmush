@@ -1406,6 +1406,13 @@ fn pack_show(ctx: &mut Ctx<'_>, arg: &str, cursor: &str) -> Result<(), CmdError>
                     "ungoverned"
                 }
             ),
+            // Doc 39 cut IN.1: a plant is its mass and its states.
+            PackEntry::Plant(def) => format!(
+                "{} — {} kg, {} states",
+                def.label,
+                def.mass_kg,
+                def.states.len()
+            ),
             PackEntry::Resolution(def) => format!(
                 "{} — {} curve points, clamped {}‰ to {}‰",
                 def.label,

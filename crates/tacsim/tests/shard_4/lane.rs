@@ -63,7 +63,9 @@ use support::ground::{UNSIGNED, sign};
 /// Rim's paper (was `c7239b0a…` at v11).
 /// Doc 20 cut SM.12a: v14, the Exchange's and Occator's mills (was `34d47907…` at v13, relay R9b).
 /// Doc 20 cut SM.12b: v15, Occator's yard (was `c507f74c…` at v14).
-const LANE_DIGEST: &str = "10fcdaa65772aa34ca28d33c0a38ed5167276b640400f771f803050d3173fa3a";
+/// Doc 39 cut IN.1: v20, the ladder (Kasei's alloys at 450, the Yards' fittings at 520, the
+/// Co-op's fittings bid at 600; was `10fcdaa6…` at v19).
+const LANE_DIGEST: &str = "16119f54b80e915f2966ee923184006899db70ef6ff5f06a2174a77e52203bb3";
 
 /// The date the lane's bodies stand at (the script's chord minimum, R4).
 const LANE_DATE: &str = "2351-05-13";
@@ -239,8 +241,8 @@ fn ic2_the_lane_pack_is_pinned() {
     assert_eq!(manifest.version(), LANE_VERSION);
     assert_eq!(
         manifest.version(),
-        19,
-        "lane v19 since doc 36 cut GC.13 (v18 at GC.7, v17 at S.1, v16 at CF.6c, v15 at SM.12b, v14 at SM.12a, v13 at relay R9b, v12 at doc 20 cut SM.10) (v11 \
+        20,
+        "lane v20 since doc 39 cut IN.1 (v19 at GC.13, v18 at GC.7, v17 at S.1, v16 at CF.6c, v15 at SM.12b, v14 at SM.12a, v13 at relay R9b, v12 at doc 20 cut SM.10) (v11 \
          at SM.5, v10 at SM.3a, v9 at SM.2, v8 at A.8, v7 at A.7, v6 at A.4b, v5 at A.4, v4 at A.1)"
     );
     assert_eq!(manifest.kind(), tacsim::PackKind::CampaignSeed);

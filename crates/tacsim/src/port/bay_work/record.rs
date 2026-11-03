@@ -106,6 +106,11 @@ pub struct BayOrder {
     /// The ordinal of the draw this order owes at completion, once owed (GC.8b).
     #[serde(default)]
     pub draw_act: Option<u32>,
+    /// **The hull's bale once this order's work is done** (doc 39 cut IN.1, §4.10): the tonnes
+    /// [`BayOrder::goods`] opens or tops it up by, less the kilograms the work consumes; `None`
+    /// for an order that touches no bale.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub bale_after: Option<Bale>,
     /// The hull's unit revision when the order was taken: the work is refused if it moved.
     pub unit_revision: u64,
     /// The IC second the order was taken.
@@ -144,6 +149,78 @@ pub struct BayHull {
     /// When the hull was scrapped, IC: it is an irrecoverable shell after it.
     #[serde(default)]
     pub scrapped_ic: Option<i64>,
+    /// **The hull's opened bale** (doc 39 cut IN.1, §4.10, Q-39-26), once a repair has opened
+    /// one: the kilograms of each bulk good debited to it and not yet consumed. The title
+    /// holder's; it rides the hull from workshop to carrier bay.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub bale: Option<Bale>,
+}
+
+/// **A hull's bale** (doc 39 §4.10, Q-39-26): the sub-tonne remainder of the whole tonnes a
+/// repair debited from the hold, kilograms of each good, so no repair rounds matter into the
+/// hull or out of it. The first repair opens it with a tonne of each good; a line that runs
+/// short takes the next whole tonne.
+#[derive(Clone, Copy, Debug, Default, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(deny_unknown_fields)]
+pub struct Bale {
+    /// Kilograms of `structural_alloys`.
+    pub alloys_kg: u64,
+    /// Kilograms of `industrial_parts` (yard fittings).
+    pub fittings_kg: u64,
+}
+
+/// The kilograms in one ledger tonne.
+pub const KG_PER_T: u64 = 1_000;
+
+/// **What a repair draws through the bale** (doc 39 §4.10): the whole tonnes of each good
+/// debited from the hold, and the bale after the work's kilograms come out of it.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub struct BaleDraw {
+    /// Tonnes of `structural_alloys` debited into the bale.
+    pub alloys_t: u64,
+    /// Tonnes of `industrial_parts` debited into the bale.
+    pub fittings_t: u64,
+    /// The bale once the work has consumed `need`.
+    pub after: Bale,
+}
+
+impl Bale {
+    /// **The draw `need` makes on `bale`** (doc 39 §4.10): `None` when the work needs no
+    /// kilograms. An unopened bale opens with one tonne of each good; then each line takes
+    /// whole tonnes until it covers its kilograms, which the work consumes. Up for the hold,
+    /// exact for the hull: nothing rounds matter in or out.
+    #[must_use]
+    pub fn draw(bale: Option<Bale>, need: Bale) -> Option<BaleDraw> {
+        if need == Bale::default() {
+            return None;
+        }
+        let (mut have, open) = match bale {
+            Some(bale) => (bale, 0),
+            None => (
+                Bale {
+                    alloys_kg: KG_PER_T,
+                    fittings_kg: KG_PER_T,
+                },
+                1,
+            ),
+        };
+        let top_up = |have: u64, need: u64| need.saturating_sub(have).div_ceil(KG_PER_T);
+        let alloys_t = top_up(have.alloys_kg, need.alloys_kg);
+        let fittings_t = top_up(have.fittings_kg, need.fittings_kg);
+        have.alloys_kg = have
+            .alloys_kg
+            .saturating_add(alloys_t.saturating_mul(KG_PER_T))
+            .saturating_sub(need.alloys_kg);
+        have.fittings_kg = have
+            .fittings_kg
+            .saturating_add(fittings_t.saturating_mul(KG_PER_T))
+            .saturating_sub(need.fittings_kg);
+        Some(BaleDraw {
+            alloys_t: alloys_t.saturating_add(open),
+            fittings_t: fittings_t.saturating_add(open),
+            after: have,
+        })
+    }
 }
 
 impl BayHull {
@@ -159,6 +236,7 @@ impl BayHull {
             acts: 0,
             owed: None,
             scrapped_ic: None,
+            bale: None,
         }
     }
 

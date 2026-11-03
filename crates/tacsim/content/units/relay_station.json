@@ -3,8 +3,13 @@
     "id": "tacsim.pack.relay_station",
     "version": 1,
     "kind": "rules_definition",
-    "requires": [],
-    "digest": "9db7f4ad577e1071c124369289f9fdd6d5ff395b78160b9362c4718e29a7827e"
+    "requires": [
+      {
+        "id": "tacsim.pack.plants",
+        "version": 1
+      }
+    ],
+    "digest": "eadf31296816ca5fa914e5bf4691c648d3ce779ed012473e1d39d888ad35d4c5"
   },
   "entries": {
     "tacsim.unit.relay_station": {
@@ -64,6 +69,7 @@
             "section": "core",
             "role": {
               "kind": "power",
+              "plant": "tacsim.plant.station_mk1",
               "capability": "tacsim.power",
               "states": [
                 "off",

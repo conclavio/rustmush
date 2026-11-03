@@ -57,8 +57,8 @@ pub const CORRIDOR_MODE: &str = "spacecraft";
 /// applier owns — even though the shipped ones never do: they are verified and
 /// registered by [`crate::verify_sources`], and there is no world state in a
 /// weapon. **17b cut M3.1** adds the core (doc 17 §9), so an operator's `core`
-/// pack reaches the latch on the same applier.
-const DEFINITION_KINDS: [&str; 14] = [
+/// pack reaches the latch on the same applier; doc 39 cut IN.1 the plant (Q-39-35).
+const DEFINITION_KINDS: [&str; 15] = [
     "commodity",
     "recipe",
     "hardware_recipe",
@@ -72,6 +72,7 @@ const DEFINITION_KINDS: [&str; 14] = [
     "ammunition",
     "sensor",
     "core",
+    "plant",
     "resolution",
 ];
 
