@@ -727,7 +727,7 @@ the bare form keeping today's automatic choice:
 |---|---|---|---|
 | `recovery` | `UnlawfulRecovery` | the challenger's own `SensorLog` or `DirectWitness` (the pin's witnesses, delivered reports) | anyone holding such evidence |
 | `procedure` | `DefectiveProcedure` | **the registry's own records**: the contract's audience against who answers for the title (someone was not told), the filing registry against the site's, a pin missing or replaced (P1-4), and the hull's black box checked **against the custody row, never against the claimant**: the claimant is `custody.holder`, a character (the carrier's operator, `custodian_of`, `tow.rs:880–886`; `claim.rs:612`), while the box's `SortieClosed { RecoveredToBase { base }, recovered_by }` names the **tug unit** (`tow.rs:1630`, `.recovered_by(tv)`) — so the registry vacates a claim whose `custody.recovered_by` is not the box's `recovered_by`, or whose `custody.carrier` is not the line's `base`. A hull with no open sortie at the load (a casualty a staff hand placed, `recovery.rs:916/1080`) writes no close line (`tow.rs:1617`), and the line's absence is no ground | whoever answers for the title |
-| `right` | `SuperiorSpecificRight` | a recovery authorization (the grant or the delegation row) held by the challenger and dated before the attach, or a retrieval contract on the hull accepted by the challenger before the attach | its holder |
+| `right` | `SuperiorSpecificRight { contract_id, obligor }` | a specific right that **binds the claimant**: the library vacates only when `obligor == claimant` (`mush-tactics field_ops/salvage.rs:376–381`, `:572–577`) — a retrieval contract the claimant accepted on this hull, or a recovery authorization issued to the claimant, dated before the attach, under which the claimant was bound to deliver her and filed for title instead. An authorization a **third party** holds is no ground: under FO-1 and Q-S9 a private permission slip does not defeat a stranger's lawful open-ground salvage (round-2 item 41-10) | the beneficiary of that right: the poster, the authorizer, or the party the contract names |
 
 This resolves GC.6's contradiction: the black box is **never a player's evidence** of an unlawful
 recovery (a player cannot reach it from outside the custodian's carrier, and it holds no hit or tow
@@ -844,8 +844,11 @@ whole at both sizes and that (c) used a fixture instead of (a)'s casualty is ans
   nearest workshop; the carrier lifts for Stickney and the bay keeps working under way.
 - **(b) The contested salvage, extended.** On Urvara Reach (512) and Ahuna Flank (256): T is now an
   organization's officer and the hulls are org-titled; O's claim tells every holder (`procedure`
-  stands when one is missed); L holds a recovery authorization T issued before the raid
-  (`+salvage/authorize`) and contests `right`; T contests `recovery` on the sensor record and the
+  stands when one is missed); in the `right` variant O had accepted T's retrieval contract on the
+  hull (or held T's `+salvage/authorize`) before the attach, recovered her under it and filed a
+  claim instead of delivering, and T contests `right` with the contract id — the obligor is the
+  claimant and the claim vacates; L, holding only an authorization of their own, has no `right`
+  ground and is told so; T contests `recovery` on the sensor record and the
   claim vacates; O's bay quote under the Salvor right read "at your risk" and the at-risk repair is
   in the vacate notice; at Ceres, T's carrier `+bay/stow`s the vacated hull out of O's bay; in the
   variant where T has no carrier docked, the port berths her "held for T" at O's docking; O's proven
@@ -1118,8 +1121,9 @@ provisional unless the line says otherwise.
   against who answers, the filing registry, the pin, and the hull's box read by the registry — a
   custody row whose tug and carrier are not the box's `recovered_by` and `base` is vacated; the
   claimant, a character, is never compared with the box's tug, Draft 0.3's correction of round-2
-  item 41-1); `right` on an authorization or a retrieval
-  contract dated before the attach. The box is never a player's evidence; story (b) stays on the
+  item 41-1); `right` on a retrieval contract or an authorization that **bound the claimant** before
+  the attach (the library's `obligor == claimant`; a third party's authorization is no ground, item
+  41-10). The box is never a player's evidence; story (b) stays on the
   sensor record.
 - **Alternative:** the title holder may read the box from outside the carrier.
 - **Why:** the box holds only seal and close lines and the close line names the recoverer; that is a
