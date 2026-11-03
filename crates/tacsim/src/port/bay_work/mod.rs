@@ -17,7 +17,9 @@
 //!   the same cost; a workshop does everything. Each quoted job names the class it needs.
 //! - **Who may** (Q-36-33): [`crate::port::bay_work::permits`]. The title holder and a holder of a current
 //!   `unit.maintain_refit` grant may repair, rearm and refit; a lessee repairs and rearms; a
-//!   salvor with custody repairs at their own risk. None but the title holder scraps.
+//!   salvor with custody repairs at their own risk. None but the title holder scraps. While a
+//!   hull is in another's live salvage custody, the custodian alone acts (doc 36a P1-2), and a
+//!   hull leaves a carrier's bay only by the hand of one who has the run of that carrier.
 //!
 //! - **The hold** (GC.8b; Q-36-31, Q-36-36): an order's munitions and `industrial_parts` come
 //!   from the carrier's hold — the carrier whose bay the hull stands in, or the carrier it was
@@ -62,7 +64,7 @@ use mush_org::{OrgId, PrincipalId};
 use mush_proto::RichText;
 use mush_sim::{SpatialParent, SpatialState};
 use mush_tactics::TacticalUnit;
-use mush_tactics::field_ops::{ComponentCondition, CustodyTitleStatus};
+use mush_tactics::field_ops::{ComponentCondition, CustodyTitleStatus, SalvageClaimId};
 use mush_tactics::unit::ComponentId;
 use smol_str::SmolStr;
 
@@ -254,11 +256,68 @@ pub fn salvor_custody(
     crate::surface::salvage::custody_of(ctx, hull).filter(|custody| custody.holder == actor)
 }
 
-/// Whether `actor` holds the hull's title outright.
+/// Whether `actor` holds the hull's title outright, as the bay reads a title (doc 36a P1-2:
+/// `mush_economy::unit_authority::bay_hull_title_stands` — unscoped, unfrozen, unstolen, active
+/// and unencumbered; the grant half of that predicate is [`right_of`]'s grant arm).
 fn holds_title(w: &World, actor: ObjId, hull: ObjId) -> bool {
     w.module_state::<EconomyStore>()
-        .and_then(|e| e.snapshot().asset(hull).cloned())
-        .is_some_and(|a| a.title_owner == PrincipalId::Object(actor) && !a.frozen)
+        .and_then(|e| e.snapshot().asset(hull))
+        .is_some_and(|asset| {
+            asset.title_owner == PrincipalId::Object(actor)
+                && mush_economy::unit_authority::bay_hull_title_stands(w, asset, actor)
+        })
+}
+
+/// **Whether `actor` has the run of `carrier`** (doc 36a P1-2): they hold her helm (a charter's
+/// tenant, the fleet's commander, a titled programme hull's owner) or operate her from a yard.
+fn carrier_right(w: &World, actor: ObjId, carrier: ObjId) -> bool {
+    crate::port::coop::helm_holder(w, carrier) == Some(actor)
+        || crate::port::yard::operates(w, actor, carrier)
+}
+
+/// **The right a third party `actor` holds over `hull`**, as far as the bay can read it for
+/// someone other than `ctx.actor`: title, a live lease, a salvor's custody — never a grant,
+/// which is Org's owner read and answers for the command's own caller alone, so a berther's
+/// grant cannot be read on their behalf (that berther stows her themself).
+fn right_held_by(ctx: &Ctx<'_>, actor: ObjId, hull: ObjId) -> Option<Right> {
+    let custody = crate::surface::salvage::custody_of(ctx, hull);
+    if custody.as_ref().is_some_and(|row| row.holder != actor) {
+        return None;
+    }
+    if holds_title(ctx.w, actor, hull) {
+        return Some(Right::Title);
+    }
+    if leases(ctx.w, actor, hull) {
+        return Some(Right::Lessee);
+    }
+    custody.map(|_| Right::Salvor)
+}
+
+/// **Whether a berthed hull's carrier still serves her** (doc 36a P1-2): the hold a berthed
+/// hull draws from and mints into, and the bay a stow returns her to, are the carrier she came
+/// off — hers to use only while `actor` has the run of that carrier, or the one who berthed
+/// her still holds a right over her that the bay can read for them ([`right_held_by`]: title,
+/// lease or custody). A salvor's carrier whose claim has since been vacated serves the prior
+/// owner nothing: no stow into her bay, no lot into her hold, no draw from it. A hull not
+/// berthed is served by the bay it stands in.
+///
+/// # Errors
+///
+/// The sentence for a berth whose carrier is nobody's here to use.
+fn berth_stands(ctx: &Ctx<'_>, actor: ObjId, record: &BayHull) -> Result<(), String> {
+    let Some(berth) = &record.berth else {
+        return Ok(());
+    };
+    if carrier_right(ctx.w, actor, berth.carrier)
+        || right_held_by(ctx, berth.by, record.hull).is_some()
+    {
+        return Ok(());
+    }
+    Err(
+        "Her berth's carrier is not yours to use, and whoever berthed her holds no right over \
+         her now; a carrier of your own must take her."
+            .to_owned(),
+    )
 }
 
 /// Whether Org's unit authority allows `ctx.actor` `capability` on `hull` now: the grant
@@ -294,10 +353,17 @@ fn leases(w: &World, actor: ObjId, hull: ObjId) -> bool {
 }
 
 /// **The right `ctx.actor` holds over `hull`** (Q-36-33), strongest first: title, a
-/// `maintain_refit` grant, a live lease, a salvor's custody.
+/// `maintain_refit` grant, a live lease, a salvor's custody. **While another holds the hull in
+/// live salvage custody** (doc 36a P1-2; doc 36 GC.5 "custody is not title"), nobody else's
+/// title, grant or lease reaches the bay: the custodian alone acts, as the salvor (Q-S14), and
+/// the prior owner answers for her again only when the claim is vacated or awarded.
 #[must_use]
 pub fn right_of(ctx: &Ctx<'_>, hull: ObjId) -> Option<Right> {
     let actor = ctx.actor;
+    let custody = crate::surface::salvage::custody_of(ctx, hull);
+    if custody.as_ref().is_some_and(|row| row.holder != actor) {
+        return None;
+    }
     if holds_title(ctx.w, actor, hull) {
         return Some(Right::Title);
     }
@@ -307,7 +373,7 @@ pub fn right_of(ctx: &Ctx<'_>, hull: ObjId) -> Option<Right> {
     if leases(ctx.w, actor, hull) {
         return Some(Right::Lessee);
     }
-    salvor_custody(ctx, actor, hull).map(|_| Right::Salvor)
+    custody.map(|_| Right::Salvor)
 }
 
 /// The right that lets `right` do every job in `jobs` (repair and rearm separately).
@@ -342,7 +408,17 @@ fn record_of(w: &World, hull: ObjId) -> Result<BayHull, &'static str> {
     }
 }
 
-/// **Whether `hull` is held** (Q-36-32): an open order, a berth (it leaves only by stow), or
+/// **The ordinal the next owed act takes** (doc 36a §5.1): one past the hull's ledger when it
+/// reads — the ledger, not the record, is what the prepare accepts — else one past the
+/// record's own count. A record that ran ahead of its ledger (an act given up) heals here.
+fn next_act(ctx: &Ctx<'_>, record: &BayHull) -> u32 {
+    act::landed(ctx, record.hull)
+        .unwrap_or(record.acts)
+        .saturating_add(1)
+}
+
+/// **Whether `hull` is held** (Q-36-32): an open order, a berth (it leaves only by stow), a
+/// scrapped shell (doc 36a P1-7: the remains are the workshop's, not a thing to carry off), or
 /// an unreadable record.
 #[must_use]
 pub fn held(w: &World, hull: ObjId) -> bool {
@@ -351,9 +427,21 @@ pub fn held(w: &World, hull: ObjId) -> bool {
         .and_then(|s| s.bay_hull(hull))
     {
         None => false,
-        Some(BayHullState::Present(row)) => row.open().is_some() || row.berth.is_some(),
+        Some(BayHullState::Present(row)) => {
+            row.open().is_some() || row.berth.is_some() || row.scrapped_ic.is_some()
+        }
         Some(BayHullState::Unreadable) => true,
     }
+}
+
+/// **Whether `hull` has been scrapped** (doc 36a P1-7): its shell answers to no `+bay` word
+/// but its number.
+#[must_use]
+pub fn scrapped(w: &World, hull: ObjId) -> bool {
+    matches!(
+        w.module_state::<TacsimStore>().and_then(|s| s.bay_hull(hull)),
+        Some(BayHullState::Present(row)) if row.scrapped_ic.is_some()
+    )
 }
 
 /// **Whether `hull` has an open repair order** (the launch gate reads this).
@@ -733,11 +821,30 @@ fn take(
         return Err("Too many jobs for one order; order them in parts.".to_owned());
     }
     allowed(right, &picked)?;
+    // Doc 36a P0-6: the work is run through the workshop engine on a throwaway book now, as
+    // `complete` will run it, so an order the engine would refuse then (a part in a section
+    // that does not stand, ordered without its rebuild) is refused before the escrow.
+    let mut fitted = BTreeMap::new();
+    if let Some((_, part)) = &fit {
+        for job in &picked {
+            if let BayJob::Replace {
+                component,
+                lot: Some(_),
+            } = &job.job
+            {
+                fitted.insert(component.clone(), part.condition);
+            }
+        }
+    }
+    let custody = custody_for(ctx, ctx.actor, right, hull);
+    dry_run(ctx, hull, ctx.actor, &custody, &picked, &fitted)
+        .map_err(|error| format!("That work cannot be done as ordered: {error}."))?;
     // GC.8b: the goods come from the carrier's hold, checked now and drawn at completion.
     let goods = order_goods(&picked);
     let vault = if goods.is_empty() && fit.is_none() {
         None
     } else {
+        berth_stands(ctx, ctx.actor, &record)?;
         let vault = source_hold(ctx.w, hull, &facility)?;
         hold_carries(ctx, vault, &goods)?;
         if let Some((lot, _)) = &fit
@@ -848,6 +955,11 @@ pub fn cancel_order(ctx: &mut Ctx<'_>, hull: ObjId) -> Result<(), String> {
     if order.requester != ctx.actor && right_of(ctx, hull).is_none() {
         return Err(NO_RIGHT.to_owned());
     }
+    // Doc 36a P0-6: an order whose draw is settling is not cancelled under it — the draw
+    // would land on a cancelled order and its goods be lost.
+    if record.owed.is_some() {
+        return Err(SETTLING.to_owned());
+    }
     close_cancelled(ctx, record, "cancelled by order");
     Ok(())
 }
@@ -871,10 +983,99 @@ fn refused_now(w: &World, hull: ObjId, order: &BayOrder) -> Option<&'static str>
     None
 }
 
+/// **The custody a requester's work runs under** (doc 36a P2-5): a salvor works at their own
+/// risk under the pending claim — as filed when it is, else the custody row itself (the claim's
+/// number is the filed contract's, else the recovery operation's, else the hull's; the prior
+/// owner is the file's, else the one the pin says answers for the title, else the asset's title
+/// holder) — and every other right works under the requester's resolved title.
+fn custody_for(ctx: &Ctx<'_>, requester: ObjId, right: Right, hull: ObjId) -> CustodyTitleStatus {
+    let pending = (right == Right::Salvor)
+        .then(|| salvor_custody(ctx, requester, hull))
+        .flatten()
+        .and_then(|row| {
+            let number = match row.claim {
+                crate::surface::salvage::ClaimSeam::Filed { contract } => contract,
+                crate::surface::salvage::ClaimSeam::Owed => row
+                    .file
+                    .as_ref()
+                    .map(|file| file.id.get())
+                    .or_else(|| row.operation.map(|op| op.get()))
+                    .unwrap_or(u64::from(hull.0)),
+            };
+            let title_holder = ctx
+                .w
+                .module_state::<EconomyStore>()
+                .and_then(|e| e.snapshot().asset(hull))
+                .and_then(|asset| match asset.title_owner {
+                    PrincipalId::Object(owner) => Some(owner),
+                    _ => None,
+                });
+            let prior_owner = row
+                .file
+                .as_ref()
+                .map(|file| file.prior_owner)
+                .or_else(|| row.pin.as_ref().and_then(|pin| pin.answering))
+                .or(title_holder)?;
+            Some(CustodyTitleStatus::PendingSalvageClaim {
+                claim_id: SalvageClaimId::new(number).ok()?,
+                custodian: requester,
+                prior_owner,
+                deadline_real_s: row.file.as_ref().map_or(0, |file| file.deadline_real_s),
+            })
+        });
+    pending.unwrap_or(CustodyTitleStatus::ResolvedTitle { owner: requester })
+}
+
+/// **The conditions the order's fitted parts come in**, read from their lots' provenance.
+fn fitted_of(ctx: &Ctx<'_>, order: &BayOrder) -> BTreeMap<ComponentId, ComponentCondition> {
+    let mut fitted = BTreeMap::new();
+    for job in &order.jobs {
+        if let BayJob::Replace {
+            component,
+            lot: Some(lot),
+        } = &job.job
+            && let Ok(Some(part)) = act::provenance(ctx, *lot)
+        {
+            fitted.insert(component.clone(), part.condition);
+        }
+    }
+    fitted
+}
+
+/// **The work, dry-run** (doc 36a P0-6): `jobs` on `hull` as it stands, through the workshop
+/// engine on a throwaway book, as [`complete`] runs them. Nothing is written.
+///
+/// # Errors
+///
+/// The engine's refusal, as a sentence.
+fn dry_run(
+    ctx: &Ctx<'_>,
+    hull: ObjId,
+    requester: ObjId,
+    custody: &CustodyTitleStatus,
+    jobs: &[QuotedJob],
+    fitted: &BTreeMap<ComponentId, ComponentCondition>,
+) -> Result<(), String> {
+    let (before, _, anatomy) = unit_parts(ctx.w, hull)?;
+    jobs::work(
+        &before,
+        &anatomy,
+        jobs,
+        &BTreeMap::new(),
+        fitted,
+        requester,
+        custody,
+        ctx.w.world_ic_now().at,
+    )
+    .map(|_| ())
+}
+
 /// **Finish one due order** (the port tick): the hull still at the facility and its unit
 /// unchanged. An order that draws goods first owes its draw (GC.8b): the hold must still be
-/// its carrier's, docked here, and the draw lands through `tacsim_bay_work` before the work is
-/// written ([`settle`]). An order that draws nothing is completed at once ([`complete`]).
+/// its carrier's, docked here, the work must still run on the hull (doc 36a P0-6: a dry run,
+/// so no draw is owed for work that would be refused), and the draw lands through
+/// `tacsim_bay_work` before the work is written ([`settle`]). An order that draws nothing is
+/// completed at once ([`complete`]).
 fn finish(ctx: &mut Ctx<'_>, hull: ObjId) {
     let Ok(mut record) = record_of(ctx.w, hull) else {
         return;
@@ -910,7 +1111,23 @@ fn finish(ctx: &mut Ctx<'_>, hull: ObjId) {
         );
         return;
     }
-    let act = record.acts.saturating_add(1);
+    let custody = custody_for(ctx, order.requester, order.right, hull);
+    if let Err(error) = dry_run(
+        ctx,
+        hull,
+        order.requester,
+        &custody,
+        &order.jobs,
+        &fitted_of(ctx, &order),
+    ) {
+        close_cancelled(
+            ctx,
+            record,
+            &format!("the work could not be done ({error})"),
+        );
+        return;
+    }
+    let act = next_act(ctx, &record);
     record.acts = act;
     record.owed = Some(Box::new(OwedAct {
         act,
@@ -953,21 +1170,17 @@ fn complete(ctx: &mut Ctx<'_>, hull: ObjId) {
         close_cancelled(ctx, record, "the hull's design cannot be read");
         return;
     };
-    let mut fitted: BTreeMap<ComponentId, ComponentCondition> = BTreeMap::new();
-    for job in &order.jobs {
-        if let BayJob::Replace {
-            component,
-            lot: Some(lot),
-        } = &job.job
-            && let Ok(Some(part)) = act::provenance(ctx, *lot)
-        {
-            fitted.insert(component.clone(), part.condition);
-        }
+    // Doc 36a P2-5: the work runs under the custody the order's right gives — a salvor's under
+    // the pending claim, which must still stand (a vacated claim works nothing) — at the IC
+    // instant the engine stamps. (The right itself is not re-read here: a grant is an owner read
+    // the tick has no line to.)
+    if order.right == Right::Salvor && salvor_custody(ctx, order.requester, hull).is_none() {
+        close_cancelled(ctx, record, "the requester's custody of the hull has ended");
+        return;
     }
-    let custody = CustodyTitleStatus::ResolvedTitle {
-        owner: order.requester,
-    };
-    let at = ctx.w.now();
+    let fitted = fitted_of(ctx, &order);
+    let custody = custody_for(ctx, order.requester, order.right, hull);
+    let at = ctx.w.world_ic_now().at;
     let plan = jobs::work(
         &before,
         &anatomy,
@@ -1046,9 +1259,12 @@ fn complete(ctx: &mut Ctx<'_>, hull: ObjId) {
 
 /// **Settle the act `hull`'s record owes** (the two writes; the
 /// [`crate::port::bay_work::act`] module doc): landed on the ledger, the record lets it go and
-/// its consequence follows (a draw completes its order); otherwise it is submitted as its
-/// actor, at most [`act::MAX_ACT_TRIES`] times, and then given up (a draw cancels its order
-/// and releases the fee; a lost mint pages staff).
+/// its consequence follows (a draw completes its order; a mint writes the strip or the scrap
+/// to the hull, [`strip::land_mint`]); otherwise it is submitted as its actor, at most
+/// [`act::MAX_ACT_TRIES`] times, and then given up (a draw cancels its order and releases the
+/// fee; a lost mint leaves the hull as it was and pages staff). A given-up act rolls the
+/// record's count back to the ledger's (doc 36a §5.1), so the next act takes the ordinal the
+/// prepare accepts.
 fn settle(ctx: &mut Ctx<'_>, hull: ObjId) {
     let Ok(mut record) = record_of(ctx.w, hull) else {
         return;
@@ -1068,20 +1284,32 @@ fn settle(ctx: &mut Ctx<'_>, hull: ObjId) {
         put_bay_hull(ctx, &record);
         match &owed.kind {
             OwedKind::Draw { .. } => complete(ctx, hull),
-            OwedKind::Mint { why, lots } => ctx.out.sys_to_actor(
-                owed.by,
-                "tacsim",
-                format!(
-                    "The {why} of #{} is laid into the carrier's hold: {}.",
-                    hull.0,
-                    lots.iter()
-                        .map(|l| format!("{} {} ({})", l.quantity, l.commodity, l.lot))
-                        .collect::<Vec<_>>()
-                        .join(", ")
-                ),
-            ),
+            OwedKind::Mint { why, lots } => {
+                strip::land_mint(ctx, hull, owed.by, why, lots);
+                ctx.out.sys_to_actor(
+                    owed.by,
+                    "tacsim",
+                    format!(
+                        "The {why} of #{} is laid into the carrier's hold: {}.",
+                        hull.0,
+                        lots.iter()
+                            .map(|l| format!("{} {} ({})", l.quantity, l.commodity, l.lot))
+                            .collect::<Vec<_>>()
+                            .join(", ")
+                    ),
+                );
+            }
             OwedKind::Hot { .. } => {}
         }
+        return;
+    }
+    // Doc 36a P0-6 (b), the belt under `cancel_order`'s SETTLING: a Draw serves an open order;
+    // one whose order has closed under it is dropped before it is submitted, and the record's
+    // count follows the ledger.
+    if matches!(owed.kind, OwedKind::Draw { .. }) && record.open().is_none() {
+        record.owed = None;
+        record.acts = landed;
+        put_bay_hull(ctx, &record);
         return;
     }
     if ctx.authoritative_pending(owed.by) {
@@ -1089,12 +1317,39 @@ fn settle(ctx: &mut Ctx<'_>, hull: ObjId) {
     }
     if owed.tries >= act::MAX_ACT_TRIES {
         record.owed = None;
+        // Doc 36a §5.1: a given-up act never landed, so the record's count follows the
+        // ledger; left one ahead, every later act on the hull would be refused Conflict.
+        record.acts = landed;
         match &owed.kind {
             OwedKind::Draw { .. } => {
+                if let Some(order) = record.order.as_mut() {
+                    order.draw_act = None;
+                }
                 close_cancelled(
                     ctx,
                     record,
                     "the carrier's hold could not supply the goods the work needs",
+                );
+            }
+            OwedKind::Mint { why, .. } => {
+                // The strip or the scrap was never written to the hull (`strip::land_mint`
+                // writes it when the mint lands): a lost mint destroys nothing.
+                put_bay_hull(ctx, &record);
+                tracing::error!(
+                    hull = hull.0,
+                    act = owed.act,
+                    op = why,
+                    "tacsim: a bay mint was refused every try; no lot was laid in the hold and \
+                     nothing came off the hull"
+                );
+                ctx.out.sys_to_actor(
+                    owed.by,
+                    "tacsim",
+                    format!(
+                        "The {why} of #{} could not be laid into the carrier's hold; nothing \
+                         came off her.",
+                        hull.0
+                    ),
                 );
             }
             kind => {
@@ -1103,8 +1358,8 @@ fn settle(ctx: &mut Ctx<'_>, hull: ObjId) {
                     hull = hull.0,
                     act = owed.act,
                     op = kind.word(),
-                    "tacsim: a bay act was refused every try; its lots or flag were not written, \
-                     staff write them by hand"
+                    "tacsim: a bay act was refused every try; its flag was not written, staff \
+                     write it by hand"
                 );
             }
         }
@@ -1183,6 +1438,9 @@ pub fn berth(ctx: &mut Ctx<'_>, hull: ObjId) -> Result<ObjId, String> {
     if record.open().is_some() {
         return Err(HELD_OPEN.to_owned());
     }
+    if record.owed.is_some() {
+        return Err(SETTLING.to_owned());
+    }
     if record.berth.is_some() {
         return Err("That hull is already berthed.".to_owned());
     }
@@ -1204,6 +1462,17 @@ pub fn berth(ctx: &mut Ctx<'_>, hull: ObjId) -> Result<ObjId, String> {
     let right = right_of(ctx, hull).ok_or(NO_RIGHT)?;
     if !permits(right, Act::Berth) {
         return Err(NO_RIGHT.to_owned());
+    }
+    // Doc 36a P1-2: a hull leaves a carrier's bay by the hand of one who has the run of that
+    // carrier, or holds the hull in custody aboard her.
+    if !carrier_right(ctx.w, ctx.actor, carrier)
+        && salvor_custody(ctx, ctx.actor, hull).is_none_or(|row| row.carrier != carrier)
+    {
+        return Err(
+            "Hulls are berthed out of your own carrier's bay, or out of the bay that holds your \
+             salvage."
+                .to_owned(),
+        );
     }
     let berths = def.workshop.as_ref().map_or(0, |w| w.berths);
     let used = ctx
@@ -1238,6 +1507,9 @@ pub fn stow(ctx: &mut Ctx<'_>, hull: ObjId) -> Result<ObjId, String> {
     if record.open().is_some() {
         return Err(HELD_OPEN.to_owned());
     }
+    if record.owed.is_some() {
+        return Err(SETTLING.to_owned());
+    }
     let row = record.berth.clone().ok_or("That hull is not berthed.")?;
     if ctx.w.get(ctx.actor).and_then(|o| o.location) != Some(row.workshop) {
         return Err("Hulls are stowed from the workshop they stand in.".to_owned());
@@ -1246,6 +1518,7 @@ pub fn stow(ctx: &mut Ctx<'_>, hull: ObjId) -> Result<ObjId, String> {
     if !permits(right, Act::Berth) {
         return Err(NO_RIGHT.to_owned());
     }
+    berth_stands(ctx, ctx.actor, &record)?;
     let docked_here = match crate::port::ship::berth_of(ctx.w, row.carrier) {
         crate::port::ship::Berth::Docked { map, def } => {
             crate::port::workshop::room(ctx.w, &map.entry, def)
