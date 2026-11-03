@@ -333,7 +333,7 @@ describe("the keyframes the picture is drawn from here (doc 21 cut G.3b)", () =>
     expect(spacePictureKey("0", "docking")).toBeNull();
     expect(spacePictureKey("9", "docking")).toBeNull();
 
-    // Holo-Tank orbit & Space Canopy camera-only keys (no legacy +helm/+tac verbs).
+    // Holo-Tank orbit & Space Canopy camera + tactical fire keys (`SF.R13`, matching TUI `pixel.rs`).
     expect(spacePictureKey("a", "holotank")).toEqual({
       kind: "holotankOrbit",
       deltaMdeg: -15_000,
@@ -342,12 +342,41 @@ describe("the keyframes the picture is drawn from here (doc 21 cut G.3b)", () =>
       kind: "holotankOrbit",
       deltaMdeg: 15_000,
     });
+    expect(spacePictureKey("z", "holotank")).toEqual({
+      kind: "spaceOrder",
+      cmd: "+tac/beam",
+    });
+    expect(spacePictureKey("x", "holotank")).toEqual({
+      kind: "spaceOrder",
+      cmd: "+tac/torp",
+    });
+    expect(spacePictureKey("c", "holotank")).toEqual({
+      kind: "spaceOrder",
+      cmd: "+tac/railgun",
+    });
+    expect(spacePictureKey("r", "holotank")).toEqual({
+      kind: "spaceOrder",
+      cmd: "+tac/scan",
+    });
     expect(spacePictureKey("q", "space_cockpit")).toEqual({
       kind: "look",
       dir: -1,
     });
+    expect(spacePictureKey("z", "space_cockpit")).toEqual({
+      kind: "spaceOrder",
+      cmd: "+tac/beam",
+    });
+    expect(spacePictureKey("x", "space_cockpit")).toEqual({
+      kind: "spaceOrder",
+      cmd: "+tac/torp",
+    });
     expect(spacePictureKey("c", "space_cockpit")).toEqual({
-      kind: "centre",
+      kind: "spaceOrder",
+      cmd: "+tac/railgun",
+    });
+    expect(spacePictureKey("r", "space_cockpit")).toEqual({
+      kind: "spaceOrder",
+      cmd: "+tac/scan",
     });
     expect(spacePictureKey("w", "space_cockpit")).toBeNull();
     expect(spacePictureKey("g", "space_cockpit")).toBeNull();

@@ -812,6 +812,7 @@
           local?.forget();
           break;
         case "dockOrder":
+        case "spaceOrder":
           if (!ev.repeat) app.helm(skey.cmd);
           break;
         case "look":

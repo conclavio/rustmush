@@ -676,6 +676,26 @@ impl HullPropellantLedger {
     }
 }
 
+/// Linkdead grace window in real wall seconds (`2 minutes`) before queued return-plan activation (`SF.R13`, `D-35-7`).
+pub const SPACE_LINKDEAD_GRACE_WALL_S: i64 = 120;
+
+/// Linkdead grace-window and queued return-plan state for a carrier hull (`SF.R13`, `D-35-7`).
+#[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize)]
+pub struct SpaceLinkdeadState {
+    /// Carrier hull root [`ObjId`].
+    pub hull: ObjId,
+    /// Real wall epoch seconds (`w.now()`) when the crew went linkdead.
+    pub grace_started_wall_s: i64,
+    /// World IC epoch seconds when the crew went linkdead.
+    pub grace_started_ic_s: i64,
+    /// Whether active point-defense (`pdc_auto`) is held armed during the grace window (`D-35-7`).
+    pub pdc_held: bool,
+    /// Whether the linkdead grace window has expired into full disconnect (`D-35-7`).
+    pub grace_expired: bool,
+    /// Nearest open port queued for the return plan (`D-35-7`).
+    pub queued_return_port: Option<String>,
+}
+
 /// World-state registry of active and completed space interdiction bubbles,
 /// open-epoch derelicts, validated `mush-sim` standing orders, Tier-1 free-flight records,
 /// live propellant ledgers, orbital cluster mining sessions, and 6-DOF docking sessions (`SF.R1`–`SF.R8`).
@@ -748,9 +768,18 @@ pub struct SpaceBubbleBook {
     /// Monotonic allocator for space salvage [`RecoveryOpId`]s.
     #[serde(default)]
     pub next_recovery_op_id: u64,
+    /// Linkdead grace-window and queued return-plan state keyed by carrier hull [`ObjId`] (`SF.R13`, `D-35-7`).
+    #[serde(default, with = "super::bubble::vec_tuple_map")]
+    pub linkdead_hulls: BTreeMap<ObjId, SpaceLinkdeadState>,
 }
 
 impl SpaceBubbleBook {
+    /// Borrow the linkdead state for `hull`, if any (`SF.R13`, `D-35-7`).
+    #[must_use]
+    pub fn linkdead_state(&self, hull: ObjId) -> Option<&SpaceLinkdeadState> {
+        self.linkdead_hulls.get(&hull)
+    }
+
     /// Borrow the active interdiction bubble for `hull`, if any (`SF.R12`).
     #[must_use]
     pub fn active_for_hull(&self, hull: ObjId) -> Option<&ActiveInterdictionBubble> {
@@ -1155,7 +1184,190 @@ pub fn reacquire_custody_after_boot(ctx: &mut Ctx<'_>) {
     }
 }
 
-/// Register [`SpaceBubbleBook`], [`SalvageClaimBook`], and the [`SPACE_TICK`] consumer on `reg`.
+struct SpacePresenceHook;
+
+impl mush_core::EventHook for SpacePresenceHook {
+    fn connected(&self, ctx: &mut Ctx<'_>, player: ObjId) {
+        handle_crew_revived_or_connected(ctx, player);
+    }
+
+    fn revived(&self, ctx: &mut Ctx<'_>, player: ObjId) {
+        handle_crew_revived_or_connected(ctx, player);
+    }
+
+    fn linkdead(&self, ctx: &mut Ctx<'_>, player: ObjId) {
+        handle_crew_linkdead(ctx, player);
+    }
+
+    fn disconnected(&self, ctx: &mut Ctx<'_>, player: ObjId) {
+        handle_crew_disconnected(ctx, player);
+    }
+}
+
+fn any_other_live_crew_aboard(w: &World, hull: ObjId, excluding: ObjId) -> bool {
+    super::commands::all_aboard_crew_for_hull(w, hull)
+        .into_iter()
+        .any(|c| c != excluding && w.is_connected(c) && w.has_live_conns(c))
+}
+
+fn handle_crew_linkdead(ctx: &mut Ctx<'_>, player: ObjId) {
+    let Some(hull) = super::commands::hull_aboard_for_actor(ctx.w, player) else {
+        return;
+    };
+    if any_other_live_crew_aboard(ctx.w, hull, player) {
+        return;
+    }
+    let ic_now_s = ctx.w.world_ic_now().at;
+    let wall_now_s = ctx.w.now();
+    let queued_return_port = super::commands::nearest_return_port_for_hull(ctx.w, hull)
+        .or_else(|| Some("ceres_freeport".to_owned()));
+    let has_journey = ctx
+        .w
+        .module_state::<JourneyBook>()
+        .is_some_and(|jb| jb.get(hull).is_some());
+
+    let mut affected = false;
+    if let Some(book) = ctx.w.module_state_mut::<SpaceBubbleBook>() {
+        if let Some(active) = book.active_for_hull_mut(hull) {
+            let ship_id = active.carrier_ship_id_for(hull).to_owned();
+            if let Some(ship) = active.bubble.ships.get_mut(&ship_id) {
+                ship.crew_linkdead = true;
+                ship.thrust_mps2 = [0, 0, 0];
+                ship.pdc_auto = true;
+                affected = true;
+            }
+        }
+        if let Some(ff) = book.free_flights.get_mut(&hull) {
+            ff.thrust_mmps2 = [0, 0, 0];
+            ff.burn_remaining_ic_s = None;
+            affected = true;
+        }
+        if affected || has_journey {
+            book.linkdead_hulls.insert(
+                hull,
+                SpaceLinkdeadState {
+                    hull,
+                    grace_started_wall_s: wall_now_s,
+                    grace_started_ic_s: ic_now_s,
+                    pdc_held: true,
+                    grace_expired: false,
+                    queued_return_port: queued_return_port.clone(),
+                },
+            );
+            affected = true;
+        }
+    }
+    if affected {
+        let port_label = queued_return_port.as_deref().unwrap_or("nearest port");
+        let line = format!(
+            "[SPACE] Bridge crew linkdead; main drive cut to ballistic drift, point-defense held AUTO for {}s grace window, return plan queued for {}.",
+            SPACE_LINKDEAD_GRACE_WALL_S, port_label
+        );
+        crate::port::voyage::narrate_hull(ctx, hull, &line);
+    }
+}
+
+fn handle_crew_disconnected(ctx: &mut Ctx<'_>, player: ObjId) {
+    let Some(hull) = super::commands::hull_aboard_for_actor(ctx.w, player) else {
+        return;
+    };
+    if any_other_live_crew_aboard(ctx.w, hull, player) {
+        return;
+    }
+    expire_linkdead_grace_for_hull(ctx, hull);
+}
+
+fn expire_linkdead_grace_for_hull(ctx: &mut Ctx<'_>, hull: ObjId) {
+    let mut newly_expired_port: Option<String> = None;
+    if let Some(book) = ctx.w.module_state_mut::<SpaceBubbleBook>() {
+        if let Some(active) = book.active_for_hull_mut(hull) {
+            let ship_id = active.carrier_ship_id_for(hull).to_owned();
+            if let Some(ship) = active.bubble.ships.get_mut(&ship_id) {
+                ship.crew_linkdead = true;
+                ship.thrust_mps2 = [0, 0, 0];
+            }
+        }
+        if let Some(ff) = book.free_flights.get_mut(&hull) {
+            ff.thrust_mmps2 = [0, 0, 0];
+            ff.burn_remaining_ic_s = None;
+            ff.guidance = FreeFlightGuidanceMode::Retrograde;
+        }
+        if let Some(state) = book.linkdead_hulls.get_mut(&hull)
+            && !state.grace_expired
+        {
+            state.grace_expired = true;
+            newly_expired_port = Some(
+                state
+                    .queued_return_port
+                    .clone()
+                    .unwrap_or_else(|| "ceres".to_owned()),
+            );
+        }
+    }
+    if let Some(port) = newly_expired_port {
+        let line = format!(
+            "[SPACE] Linkdead grace window expired; hull holding ballistic life-support reserve with queued return plan to {}.",
+            port
+        );
+        crate::port::voyage::narrate_hull(ctx, hull, &line);
+    }
+}
+
+fn handle_crew_revived_or_connected(ctx: &mut Ctx<'_>, player: ObjId) {
+    let Some(hull) = super::commands::hull_aboard_for_actor(ctx.w, player) else {
+        return;
+    };
+    let mut restored = false;
+    if let Some(book) = ctx.w.module_state_mut::<SpaceBubbleBook>() {
+        if book.linkdead_hulls.remove(&hull).is_some() {
+            restored = true;
+        }
+        if let Some(active) = book.active_for_hull_mut(hull) {
+            let ship_id = active.carrier_ship_id_for(hull).to_owned();
+            if let Some(ship) = active.bubble.ships.get_mut(&ship_id)
+                && ship.crew_linkdead
+            {
+                ship.crew_linkdead = false;
+                restored = true;
+            }
+        }
+    }
+    super::commands::push_space_panels(ctx, hull);
+    if restored {
+        crate::port::voyage::narrate_hull(
+            ctx,
+            hull,
+            "[SPACE] Bridge link restored; manual helm and tactical authority resumed.",
+        );
+    }
+}
+
+fn step_linkdead_grace_windows(ctx: &mut Ctx<'_>) {
+    if ctx.w.world_timeline().is_frozen() {
+        return;
+    }
+    let wall_now_s = ctx.w.now();
+    let due_hulls: Vec<ObjId> = ctx
+        .w
+        .module_state::<SpaceBubbleBook>()
+        .map(|b| {
+            b.linkdead_hulls
+                .values()
+                .filter(|s| {
+                    !s.grace_expired
+                        && s.grace_started_wall_s > 0
+                        && wall_now_s - s.grace_started_wall_s >= SPACE_LINKDEAD_GRACE_WALL_S
+                })
+                .map(|s| s.hull)
+                .collect()
+        })
+        .unwrap_or_default();
+    for hull in due_hulls {
+        expire_linkdead_grace_for_hull(ctx, hull);
+    }
+}
+
+/// Register [`SpaceBubbleBook`], [`SalvageClaimBook`], `SpacePresenceHook`, and the [`SPACE_TICK`] consumer on `reg`.
 ///
 /// # Errors
 ///
@@ -1163,6 +1375,12 @@ pub fn reacquire_custody_after_boot(ctx: &mut Ctx<'_>) {
 pub fn register(reg: &mut Registrar<'_>) -> Result<(), ModError> {
     reg.state(SpaceBubbleBook::default());
     reg.state(SalvageClaimBook::new());
+    reg.hook(mush_core::HookPoint::Connected, Arc::new(SpacePresenceHook));
+    reg.hook(mush_core::HookPoint::Linkdead, Arc::new(SpacePresenceHook));
+    reg.hook(
+        mush_core::HookPoint::Disconnected,
+        Arc::new(SpacePresenceHook),
+    );
     reg.tick(
         SPACE_TICK,
         TickCadence::Coarse(SPACE_TICK_PERIOD),
@@ -1181,6 +1399,7 @@ pub fn space_tick(ctx: &mut Ctx<'_>, _tag: &str, _scene: Option<SceneId>) {
         return;
     }
     let now = ctx.w.world_ic_now();
+    step_linkdead_grace_windows(ctx);
     expire_stale_docking_sessions(ctx, &now);
     step_derelict_records(ctx);
     clear_resolved_bubbles(ctx, &now);
@@ -1808,6 +2027,25 @@ fn step_active_bubbles(ctx: &mut Ctx<'_>, now: &ClockStamp) {
             );
         }
     }
+
+    let stepped_carrier_hulls: Vec<ObjId> = ctx
+        .w
+        .module_state::<SpaceBubbleBook>()
+        .map(|b| {
+            let mut out = Vec::new();
+            for active in b.by_domain.values() {
+                for (chull, _, _, _) in active.all_carrier_hulls() {
+                    if !out.contains(&chull) {
+                        out.push(chull);
+                    }
+                }
+            }
+            out
+        })
+        .unwrap_or_default();
+    for chull in stepped_carrier_hulls {
+        super::commands::push_space_panels(ctx, chull);
+    }
 }
 
 fn step_free_flight_records(ctx: &mut Ctx<'_>, now: &ClockStamp) {
@@ -2016,6 +2254,24 @@ fn step_interdictor_picket(
             },
         ));
     }
+    if bubble
+        .ships
+        .get(carrier_ship_id)
+        .is_some_and(|s| s.emcon == super::bubble::EmconPosture::ActiveCombat)
+        && bubble
+            .ships
+            .get(interdictor_ship_id)
+            .is_some_and(|s| s.torpedo_tubes.iter().any(|t| t.magazine_remaining == 8))
+    {
+        emitted.extend(tape.record_and_apply(
+            bubble,
+            BubbleInputCommand::FireTorpedoSalvo {
+                shooter_id: interdictor_ship_id.to_owned(),
+                target_id: carrier_ship_id.to_owned(),
+                count: 1,
+            },
+        ));
+    }
     emitted.extend(tape.record_and_apply(
         bubble,
         BubbleInputCommand::FireOffensiveLasers {
@@ -2172,6 +2428,7 @@ fn promote_due_interdictions(ctx: &mut Ctx<'_>, now: &ClockStamp) {
             }
             let line = "[SPACE] Interdiction contact detected at waypoint boundary; joined active domain space bubble on 1:1 wall clock.";
             crate::port::voyage::narrate_hull(ctx, hull, line);
+            super::commands::push_space_panels(ctx, hull);
             if is_kirkwood_picket {
                 let _ = super::picket::emit_light_lagged_picket_hail(
                     ctx,
@@ -2192,6 +2449,7 @@ fn promote_due_interdictions(ctx: &mut Ctx<'_>, now: &ClockStamp) {
         }
         let line = "[SPACE] Interdiction contact detected at waypoint boundary; local space bubble opened on 1:1 wall clock.";
         crate::port::voyage::narrate_hull(ctx, hull, line);
+        super::commands::push_space_panels(ctx, hull);
         if is_kirkwood_picket {
             let _ = super::picket::emit_light_lagged_picket_hail(
                 ctx,
