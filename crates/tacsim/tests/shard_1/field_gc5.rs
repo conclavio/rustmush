@@ -45,7 +45,7 @@ fn quick(cfg: &mut tacsim::TacsimConfig) {
 
 /// **Move the world on to IC `target` without firing a tick** (`vehicles.rs`'s `skip_days`): the
 /// next fire is the first the jump sees.
-fn skip_to_ic(rig: &mut crate::driving::Rig, target: i64) {
+pub(crate) fn skip_to_ic(rig: &mut crate::driving::Rig, target: i64) {
     let w = rig.tw.world();
     let rate = i64::from(w.world_timeline().current().rate.max(1));
     let ahead = target.saturating_sub(w.world_ic_now().at).max(0);
