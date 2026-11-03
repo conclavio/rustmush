@@ -4835,6 +4835,27 @@ fn only_transferred_semantic_or_lifecycle_custody_uses_deferred_slot() {
     )));
 }
 
+/// **Doc 36a lane 3 (P0-10).** The queue behind the lifecycle slot drains only with no commit
+/// pending: drained into one, a line told `BEHIND_SLOT_WAITING` ("not refused") restarted its
+/// bound in the defer queue and could hear `CommitTimedOut`.
+#[test]
+fn lane3_the_queue_behind_the_slot_waits_a_commit_out() {
+    assert!(behind_drains(true, false, true, false));
+    assert!(
+        !behind_drains(true, false, true, true),
+        "nothing behind the slot drains into a pending commit"
+    );
+    assert!(
+        !behind_drains(true, false, false, false),
+        "the defer queue ahead of it goes first"
+    );
+    assert!(
+        !behind_drains(false, false, true, false),
+        "the slot runs first"
+    );
+    assert!(!behind_drains(true, true, true, false), "nothing to drain");
+}
+
 #[test]
 fn writer_and_staff_classifiers_cover_every_variant() {
     assert_eq!(
@@ -12289,13 +12310,43 @@ fn w_clock_outage_countdown_admits_inspection_and_ooc_while_refusing_movement_an
 /// tentative post-image. It waits in its bounded channel until the receipt lands.
 #[test]
 fn gc0_a_decision_result_waits_behind_a_pending_commit() {
-    assert!(decision_result_armed(true, false));
+    assert!(decision_result_armed(true, false, true, false, true, false));
     assert!(
-        !decision_result_armed(true, true),
+        !decision_result_armed(true, true, true, false, true, false),
         "a provider's answer is not taken while a commit pends"
     );
-    assert!(!decision_result_armed(false, false));
-    assert!(!decision_result_armed(false, true));
+    assert!(!decision_result_armed(
+        false, false, true, false, true, false
+    ));
+    assert!(!decision_result_armed(
+        false, true, true, false, true, false
+    ));
+}
+
+/// **Doc 36a lane 3 (P1-8).** A provider's answer stages authoritative work, so it is taken only
+/// when a command submit would be: no retained seal re-emitting, the clock running, timers
+/// admitted, and no answer parked behind legacy persistence work. Before the fix the re-emit
+/// state let it stage; `flush_prepared_action` rejected it and `abort_without_receipt` latched
+/// `IntegrityFrozen`.
+#[test]
+fn lane3_a_decision_result_waits_out_the_reemit_state() {
+    assert!(decision_result_armed(true, false, true, false, true, false));
+    assert!(
+        !decision_result_armed(true, false, false, false, true, false),
+        "a retained seal re-emitting holds the answer"
+    );
+    assert!(
+        !decision_result_armed(true, false, true, true, true, false),
+        "a frozen clock holds it"
+    );
+    assert!(
+        !decision_result_armed(true, false, true, false, false, false),
+        "an admission mode refusing timers holds it"
+    );
+    assert!(
+        !decision_result_armed(true, false, true, false, true, true),
+        "a parked answer drains before the channel is read again"
+    );
 }
 
 /// **Doc 36 cut GC.0 (Q-36-50), the lifecycle slot.** A line typed behind a disconnect parked in
@@ -12375,4 +12426,23 @@ async fn gc0_a_line_behind_a_held_lifecycle_slot_hears_it_waits_then_runs() {
         rig.heard()
     );
     rig.shut_down().await;
+}
+
+/// **Doc 36a lane 3 (P2-7).** A staff barrier drained from behind the slot at shutdown or exit is
+/// told apart from the lines, which are refused; the barrier is settled as a deferred one is.
+#[test]
+fn lane3_a_barrier_behind_the_slot_is_told_from_the_lines() {
+    let (reply, mut waits) = oneshot::channel();
+    let Ok(barrier) = behind_barrier(WorldMsg::StaffBarrier { reply }) else {
+        panic!("a barrier is told from the lines");
+    };
+    let _ = barrier.send(Ok(()));
+    assert!(
+        matches!(waits.try_recv(), Ok(Ok(()))),
+        "the barrier's reply is the sender's"
+    );
+    assert!(
+        behind_barrier(WorldMsg::Inbound(cmd("look"))).is_err(),
+        "a typed line is not a barrier"
+    );
 }

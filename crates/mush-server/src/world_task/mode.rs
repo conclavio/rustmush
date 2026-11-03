@@ -544,8 +544,26 @@ pub(super) fn must_defer_behind_commit(msg: &WorldMsg) -> bool {
 /// authoritative work (an attempt, a fallback, a response), and staging behind an unresolved
 /// commit would build on its tentative post-image; it waits in its bounded channel until the
 /// receipt lands, as a command submission and an arena chunk do.
-pub(super) const fn decision_result_armed(decisions_composed: bool, commit_pending: bool) -> bool {
-    decisions_composed && !commit_pending
+///
+/// **Doc 36a lane 3 (P1-8)**: and only when a command submit would be taken — no retained seal
+/// re-emitting (`retained_empty`; staged in that state, the answer was rejected by
+/// `flush_prepared_action` and `abort_without_receipt` latched an integrity freeze), the clock
+/// running, the admission mode admitting timers — and while no answer is parked behind legacy
+/// persistence work (`parked`: the loop drains that one before it reads the channel again).
+pub(super) const fn decision_result_armed(
+    decisions_composed: bool,
+    commit_pending: bool,
+    retained_empty: bool,
+    clock_frozen: bool,
+    timers_admitted: bool,
+    parked: bool,
+) -> bool {
+    decisions_composed
+        && !commit_pending
+        && retained_empty
+        && !clock_frozen
+        && timers_admitted
+        && !parked
 }
 
 /// **What waits in the [`DeferQueue`] when it meets a commit** (16b cut B.5,
@@ -578,11 +596,38 @@ pub(super) const fn is_typed_line(msg: &WorldMsg) -> bool {
     matches!(msg, WorldMsg::Inbound(Inbound::Cmd { .. }))
 }
 
+/// **Whether the queue behind the lifecycle slot drains now** (doc 36 cut GC.0; Q-36-50): the slot
+/// empty, something behind it, nothing in the defer queue ahead of it, and — **doc 36a lane 3
+/// (P0-10)** — no commit pending. Draining into a pending commit put a line told
+/// [`BEHIND_SLOT_WAITING`] ("not refused") into the defer queue, where its bound restarted and it
+/// could hear `CommitTimedOut`; the queue now waits the commit out, as the slot itself did, and
+/// drains once the receipt lands. `rx` is still taken into it meanwhile (`behind_taking`).
+pub(super) const fn behind_drains(
+    slot_empty: bool,
+    behind_empty: bool,
+    defer_empty: bool,
+    commit_pending: bool,
+) -> bool {
+    slot_empty && !behind_empty && defer_empty && !commit_pending
+}
+
 pub(super) fn classify_writer_signal(signal: &WriterSignal) -> IngressClass {
     match signal {
         WriterSignal::StoreStatus { .. }
         | WriterSignal::LedgerBreach { .. }
         | WriterSignal::DeterministicFailure { .. } => IngressClass::WriterRecovery,
+    }
+}
+
+/// **What a message drained from behind the slot at shutdown or exit is** (doc 36a lane 3,
+/// P2-7): a staff barrier, answered as a deferred one is (`settle_barrier`, or `Unavailable` at
+/// exit), or any other message, refused as before.
+pub(super) fn behind_barrier(
+    msg: WorldMsg,
+) -> Result<oneshot::Sender<Result<(), WorldReadError>>, Box<WorldMsg>> {
+    match msg {
+        WorldMsg::StaffBarrier { reply } => Ok(reply),
+        msg => Err(Box::new(msg)),
     }
 }
 

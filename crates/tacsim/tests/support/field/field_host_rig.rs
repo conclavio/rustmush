@@ -326,3 +326,46 @@ pub(crate) fn weapon_of(rig: &Rig, unit: ObjId) -> String {
         .map(|weapon| weapon.id.to_string())
         .expect("an armed hull")
 }
+
+/// Hoisted from `field_gc3` (doc 36a lane 3): `field_gc4` and `field_director` share it.
+/// **Write `condition` on `section` of `unit`, and its internals to `internals`** (or leave them
+/// when `None`): the staff fixture standing in for damage.
+pub(crate) fn set_section(
+    rig: &mut crate::driving_rig::Rig,
+    unit: ObjId,
+    section: &str,
+    condition: Option<&str>,
+    internals: Option<i64>,
+) {
+    staff_hand(rig, |ctx| {
+        let cells = mush_tactics::module::unit_of(ctx.w, unit)
+            .expect("the unit")
+            .clone();
+        let id = mush_tactics::SectionId::new(section).expect("a section id");
+        assert!(cells.section(&id).is_some(), "#{} has a {section}", unit.0);
+        let mut ops = Vec::new();
+        if let Some(condition) = condition {
+            ops.push(mush_tactics::UnitMutationOp::SetSectionCondition {
+                section: id.clone(),
+                condition: mush_tactics::ConditionId::new(condition).expect("a condition"),
+            });
+        }
+        if let Some(value) = internals {
+            ops.push(mush_tactics::UnitMutationOp::SetCell {
+                addr: mush_tactics::CellAddr::Section {
+                    section: id,
+                    cell: mush_tactics::CellId::new(tacsim::definitions::unit::INTERNALS_CELL)
+                        .expect("a cell id"),
+                },
+                value,
+            });
+        }
+        let plan = mush_tactics::UnitMutationPlan::new(
+            ops,
+            None,
+            Some(smol_str::SmolStr::new_static("test:gc3-damage")),
+        )
+        .expect("a plan");
+        mush_tactics::module::apply_plan(ctx, unit, &plan).expect("applied");
+    });
+}

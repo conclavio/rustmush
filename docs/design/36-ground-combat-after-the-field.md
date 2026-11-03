@@ -3305,6 +3305,38 @@ salvor's carrier (today: no stow into that bay, no lot into that hold, and no ve
 carrier of the owner's own must take her, which `+bay/stow` does not yet do); GC.6's remains scrap
 (`+tv/<n> scrap`, `surface/claim.rs`) has no room check: neither lane 1 nor lane 2 took it.
 
+### 36a lane 3 as built (2026-11-03)
+
+[Doc 36a](36a-ground-combat-review-triage-2026-11-02.md)'s third fix lane (the carrier, the site, the kernel and
+the world task) landed as one PR against main, one commit per item, with two findings of a second review (its #1 and #9) beside it.
+Each tacsim item has a regression test in `crates/tacsim/tests/shard_1` that drives the player's own commands;
+the world-task items are pinned in `mush-server`'s world-task tests. Struck from what this programme owed:
+
+- A combat hull loaded into a carrier's bay darkened every departure of that carrier (P0-5, `40e066b8`):
+  it weighs its dry mass as inert cargo; a load goes only into the tug's own carrier or a Friend's.
+- A carried casualty whose tug fell irrecoverable lost its row, and so did a hull held out of the field
+  (P0-8, `45cbde42`): the casualty stands at its own pose; rows of hulls never in the field are kept;
+  admission refuses a ground the index cannot hold.
+- A raider barge whose drive is down lifted anyway (P1-11, `452c753c`): the raid ends with it on the
+  ground; a lifted carrier's row comes off the index.
+- A delegated OperateCrew grant could be held but never used (P1-6, `cffcde90`): the delegate boards; the
+  lessee stays the principal.
+- `+ship/plan` read green where the filing refused (P2-6, `6777f386`).
+- A decision worker's answer could land in the re-emit state and latch an integrity freeze (P1-8,
+  `50574037`).
+- A mind hull joining in place lost its profile's condition rows (P1-9, `02fe08d8`); the OOC practice
+  hashes did not move.
+- A staff barrier behind the slot was answered `Busy` at shutdown (P2-7, `a3c60c3b`).
+- A line told BEHIND_SLOT_WAITING could then hear CommitTimedOut (P0-10, `5e892680`): the queue behind
+  the slot waits a pending commit out.
+- The held-out walls were lost on every ground rebuild, so a resume or a void sent every unit home as it went
+  out (second review #1, `35625329`): the live record carries them and every rebuild lays them.
+- A later field restarted the 28-day write-off clock (second review #9, `fd69ba90`): a re-indexed unit keeps the
+  instant it was first left.
+
+Still owed from this lane: a field-level test of a held-out IC custody hull (its row, its wall across a
+resume), which needs a harness that composes the licensed-mind sortie; and a loop-level re-emit rig for P1-8.
+
 ### F-6 under load, as built (2026-11-03)
 
 `f6_a_carrier_lifts_out_of_a_running_field_only_on_the_confirmation` was the one red cell left on
