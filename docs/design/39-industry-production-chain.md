@@ -951,10 +951,34 @@ and the provenance record, which every later claim reads):
   lots fitted, at_ic }`, the record every later claim, resale and scrap reads (Q-38-12's reason).
 - **The berth and the stow.** The commission writes a `BerthRow { workshop, carrier: None, bay_room:
   None, slot: None }` for a vehicle in the yard's workshop room, so `held` locks it to the floor and
-  `+bay` quotes it; `+bay/stow <hull>[=<carrier>]` takes a named carrier docked at the port when the
-  row names none, resolves a free slot of a bay the actor has the run of, and places the hull there
-  (`stow`, `bay_work/mod.rs:1552–1586`, gains the argument; the carrier's own `hold_takes` room
-  check applies with the part's catalogue mass).
+  `+bay` quotes it. **`+bay/stow <hull>[=<carrier>]` is this document's verb** (doc 41's RS.4 widens
+  who may use it for a vacated hull and changes nothing below; §8.4):
+  - *The argument.* Without it, the hull goes back to the carrier its berth row names, as today
+    (`stow`, `bay_work/mod.rs:1552–1586`; a row with no carrier refuses: "That hull came off no
+    carrier; name the one to take her."). With it, `<carrier>` names a carrier **docked at this
+    port** (`berth_of` `Docked` at the facility's port, the check the row's carrier already passes,
+    `:1569–1580`); the hull is placed in a free slot of that carrier's bay (`place_interior`,
+    `:1583`), the slot's mass limit read against the hull's catalogue mass (a Dray-P's rig slot takes
+    20 t, `dray_p.json:206`; an escort is 8), and the berth row is cleared.
+  - *Who may name a carrier.* Two rights at once: a berth right over the hull (`permits(right,
+    Act::Berth)`, `mod.rs:96–104`: the title holder, a `maintain_refit` grantee, a lessee, a salvor
+    with custody) **and the run of the named carrier** — `carrier_right`, the predicate
+    `berth_stands` already asks of the row's carrier (`:312–334`, "a carrier of your own must take
+    her"; its other arm, a right still held by whoever berthed her, applies to the row's carrier
+    only). A lessee and a salvor may stow only to the row's own
+    carrier; naming a different one than the row's takes the title or a grant, because moving a
+    hull between carriers is the title holder's act.
+  - *The refusals, in order.* An open order (`HELD_OPEN`) or an owed act (`SETTLING`); **a hull in
+    another's live salvage custody — "The <name> is in <custodian>'s custody; only they may move
+    her."** (doc 36a P1-2's rule, the custodian alone acts, extended from the acts to the stow);
+    no berth right (`NO_RIGHT`); a named carrier not docked here ("The <carrier> is not docked at
+    this port."); no run of it ("You do not have the run of the <carrier>'s bay."); a lessee or
+    salvor naming a carrier other than the row's ("Only her title holder may stow her into another
+    carrier."); no slot that takes her ("Her bay will not take her: …", the existing sentence).
+  - *What doc 41 adds.* RS.4's vacated hull is a hull whose row names the salvor's carrier and
+    whose title holder names their own: the second right above, which RS.4 grants to the owner of a
+    vacated claim's hull by the claim's outcome. The verb, its argument and its refusals are not
+    touched there.
 - **The title view for rigs.** `TvLease::house_view` (`port/yard.rs`) is the precedent: a
   **`title_view`** for a titled unit riding a carrier the pilot has the run of, shaped like a lease
   with no term and no deposit, read by `rig_lease`, `live_on_hull` and `operating_hull`'s seams, so
@@ -1430,7 +1454,7 @@ fees and the stores it needs).
 | **IN.6** the part lot at the workshop | Q-39-12 | `Replace{lot: Store}` from the operator's storefront at the catalogue price, `NO_PART`, the seeded part rows | GC.8's refit run pays 480 of labour and 28,000 for the cannon; the seventh replace at Ceres refuses `NO_PART`; the lot's row reads `Seeded`; the store's count after the order is six less one |
 | **IN.7** the part recipes | Q-39-22, Q-39-31 | the mount, sight, pod and plant recipes at the works with `output_lots: each`, commissioned by the arm; the Stickney strategic-ore bid; instrument boards from Luna; the seeds retire | 2 t of strategic ore, 1 t of boards and 3 t of fittings become ten `sensor.visual_mk1` lots at Stickney with `Manufactured` rows, and between the delivery and the commission the ten-unit industry lot refuses `+bay/fit`; one is then fitted to a scout by `+bay/fit`; a commission interrupted by a restart lands once; a disputed part (a `Stripped` row under a live claim) is refused at a build's custody |
 | **IN.8** the mass budget and scrap | Q-39-15, Q-39-16, Q-39-17, Q-39-25, Q-39-26 | the partition at the catalogue build, per-design `structure_kg_per_point` and `fittings_kg_per_point` counting structural cells only; repair draws both from the bale and `+bay/return` sells the remainder back at the reference; the three constants retire; scrap as §4.6 and §4.10 at a workshop (the yield to the operator's stock in tonnes, the salvageable parts to its stores at a used value less removal, a fifth of the scrappable value for the structure) and on a site (the capped yield, the room check) | a whole intact escort scrapped at Stickney puts 1 t in the Yards' pool and four part lots in its stores and credits about 45,000 of its 75,500; a whole Dray credits about 34,000 of 90,000 and 94 t of alloys; a Dray with a destroyed plant credits 18,000; an opened bale's 914 kg comes back at 411 cr and sits in the Yards' shop bale, which mints a tonne when a second return takes it past 1,000 kg; a Dray's remains on Urvara (512) and an escort's on Ahuna (256) yield 40 t and 1 t into the hold, the full hold refusing; a Dray after SF.R15 counts no heat points |
-| **IN.9** the yard and the handover | Q-39-14, Q-39-18, Q-39-19, Q-39-20, Q-39-33, Q-39-36 | the `yard` row at `p14_slipway`; the hull recipe and the kit lot; the `YardCommission` record and the commission action; `tacsim.owned_hulls` and `tacsim.hull_provenance`; the register read by view, helm, berth and free-hull paths; `+bay/stow <hull>=<carrier>`; the rig `title_view`; `armour_cab` and `walker_cab` templates on the tanks and bipeds; empty magazines; the bill from the design | a captain books an escort at Stickney, delivers its bill over two trips, waits two IC days with the clock stepped, collects it: it stands in the slipway's workshop room titled to them with a fresh mark, `+bay` quotes it clean with empty magazines, `+bay/order rearm` loads it from the hold, `+bay/stow <hull>=<their Dray-P>` puts it in the bay of **a Dray-P the yard built for them earlier in the story** (so the stow, `facility_of`'s bay lookup and a tow's `carriers_at` on Ahuna read the register and not a programme row), `+tv/<n> board` and `launch` work on Ahuna, a second carrier recovers the escort there, and `+coop/buyout` on a programme Dray-P is not refused for a titled rig in its bay; the Co-op orders a second escort through an officer, who helms it by `acts_for` and whose crewmate without office cannot; a commission failed by staff hand between the kit's consumption and the title resumes on the next fire and finishes; the bot types it |
+| **IN.9** the yard and the handover | Q-39-14, Q-39-18, Q-39-19, Q-39-20, Q-39-33, Q-39-36 | the `yard` row at `p14_slipway`; the hull recipe and the kit lot; the `YardCommission` record and the commission action; `tacsim.owned_hulls` and `tacsim.hull_provenance`; the register read by view, helm, berth and free-hull paths; `+bay/stow <hull>=<carrier>` (this document's verb, §4.13; doc 41's RS.4 widens its right, §8.4); the rig `title_view`; `armour_cab` and `walker_cab` templates on the tanks and bipeds; empty magazines; the bill from the design | a captain books an escort at Stickney, delivers its bill over two trips, waits two IC days with the clock stepped, collects it: it stands in the slipway's workshop room titled to them with a fresh mark, `+bay` quotes it clean with empty magazines, `+bay/order rearm` loads it from the hold, `+bay/stow <hull>=<their Dray-P>` puts it in the bay of **a Dray-P the yard built for them earlier in the story** (so the stow, `facility_of`'s bay lookup and a tow's `carriers_at` on Ahuna read the register and not a programme row), `+tv/<n> board` and `launch` work on Ahuna, a second carrier recovers the escort there, and `+coop/buyout` on a programme Dray-P is not refused for a titled rig in its bay; the Co-op orders a second escort through an officer, who helms it by `acts_for` and whose crewmate without office cannot; a commission failed by staff hand between the kit's consumption and the title resumes on the next fire and finishes; the bot types it |
 | **IN.10** the pools | Q-39-7, Q-39-21, Q-39-34 | the Trust's raise; the floors and the funded house orders; the house ferry under a DARK house helm; `NO_HULL`'s two texts | eight charters leave no free Dray and the ninth captain hears "cannot yet fund one"; two buyouts later the Trust orders; fourteen IC days plus the passage later a ninth Dray docks at Ceres under the Trust's title as a register row, the desk enrols the captain, and the applier's preflight still passes |
 | **IN.11** the matter story and the adversarial set | Q-39-8, Q-38-29 | one story at 256 and 512: mine → sell → mill → refine → works → part → fit, and ore → alloys → hull, with Σ mined = Σ (pools + lots + bills + losses) asserted; the adversarial stories not already in a cut (two orders for one bale, the failure between consumption and title under a restart, a competing reservation at the deadline); the bot's `+yard`, `+works`, `+market/sell` and `+bay/order replace` vocabulary | the story passes at both sizes with the bot typing the player's half; the sum holds to the kilogram across pools, lots, hull bales and shop bales with the waste declared, at every build inputs = the hull + the waste |
 
@@ -1547,3 +1571,15 @@ handoffs between the five plans". Nothing refuted.
 | 39-6 | IN.5 runs the bot on Urvara with a three-digit parser | **CONFIRMED** | `is_addr` (`mush-bot/src/mine/lines.rs:343–353`) | §6: the four-digit addresses named as IN.5's dependency (doc 40 FR.0 / doc 41 RS.0), carried by IN.1 when neither has landed |
 | 39-7 | doc 41 must draw repair materials by doc 39's bale rule, alloys and fittings | taken | — | §7 names §4.8 and §4.10 as doc 41's source |
 | X-2 | one material and provenance contract across docs 39 and 41 | taken | — | §7's contract paragraph: the bale on both sides, kilogram custody on the ground, provenance in the lot's bundle, the register's readers, one cross-plan story |
+
+### 8.4 Cross-document ownership: `+bay/stow <hull>=<carrier>`
+
+Doc 39's IN.9 and doc 41's RS.4 both added the carrier argument to `+bay/stow`, with different
+hulls in mind: here a yard-delivered hull whose berth row names no carrier, there a vacated hull
+leaving a salvor's bay for its owner's carrier. One document owns a verb and the other depends on
+it; doc 39 lands first, so **the verb is doc 39's** — §4.13 defines the argument, the two rights
+(a berth right over the hull and the run of the named carrier), and the refusals, the custody one
+included. **Doc 41's RS.4 widens the right, not the verb:** it grants the owner of a vacated claim's
+hull the run-of-carrier right for their own carrier by the claim's outcome, so the same verb with
+the same refusals stows the vacated hull home. Doc 41's session carries the same note; its RS.4
+depends on IN.9.
