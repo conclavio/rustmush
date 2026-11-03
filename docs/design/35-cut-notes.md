@@ -4,18 +4,15 @@ One `## SF.Rn` heading per cut of [35-ship-free-flight-combat-and-mining.md](35-
 §10.2 (`SF.R0`–`SF.R8`) and §10.3 (`SF.R9`–`SF.R16`, from [35b-seam-first-train-review.md](35b-seam-first-train-review.md) §8),
 in the order they landed: what was built, the story test that proves it, and where the PR departed from
 the plan's row. The initial nine cuts (`SF.R0`–`SF.R8`) merged on 2026-11-02 and were reviewed in `35b`; the follow-on
-remediation cuts (`SF.R9`–`SF.R16`) closed every `35b` §3 hole. The story tests live in
-`crates/tacsim/tests/shard_10/voyage.rs` (moved from `shard_2/voyage.rs` in #346) unless a section says otherwise.
+remediation cuts (`SF.R9`–`SF.R16`) merged on 2026-11-02..03 and were reviewed in
+[doc 35c](35c-remediation-train-review.md). The story tests live in
+`crates/tacsim/tests/shard_10/voyage.rs` (moved from `shard_2/voyage.rs` in `44aac0fd`, PR #344) unless a section says otherwise.
 
-> **The `SF.R9`–`SF.R16` sections below do not describe what landed.** They were written by the `SF.R16` commit and
-> name cut scopes, commit SHAs, test names and symbols that are not in the tree (the move was `44aac0fd`, PR #344,
-> not #346). [Doc 35c](35c-remediation-train-review.md) §3 is the correction table and §7 the per-cut disposition;
-> rewriting these sections from the PR bodies is 35c §8 #1. Until then the PR bodies of #332, #333, #335, #336,
-> #337, #338, #339 and #353 are the record.
-
-Sources: the PR bodies of #297, #302, #309, #311, #313, #316, #317, #318 and #321. A PR body rarely says where it
-left the plan, so "Divergences" lists what the body states or what its test text shows against §10.2's row;
-lines marked **(audit)** come from the close-out audit in [doc 37](37-ic-phase-closeout-2026-11-02.md) §5.3, not
+Sources: the PR bodies of #297, #302, #309, #311, #313, #316, #317, #318, #321, #332, #333, #335, #336, #337, #338,
+#339 and #353. A PR body rarely says where it
+left the plan, so "Divergences" lists what the body states or what its test text shows against §10.2/§10.3's row;
+lines marked **(audit)** come from the close-out audits in [doc 37](37-ic-phase-closeout-2026-11-02.md) §5.3,
+[doc 35b](35b-seam-first-train-review.md), and [doc 35c](35c-remediation-train-review.md), not
 from a PR body.
 
 The train replaced SF.1–SF.20 (PRs #266–#291), which [doc 35a](35a-space-flight-review.md) found to be an
@@ -233,122 +230,177 @@ gates the write to real changes because three `cost_lane`/`drones` stories count
 per-tick `tacsim:space:state` write and main went red. **(audit)** The document is still one unbounded value written
 whole: `completed_space_mine_draws` is push-only, `derelicts` are never removed, `tape.entries` grows.
 
-## SF.R9 — hold promoted interdictions across engine ticks and step bubbles on 1:1 wall time (#332, `6aa49514`)
+## SF.R9 — authority close-out (#332, `67ee3347`)
 
-- `mush_sim::journey::step_promoted_journeys` checks `DomainId("tacsim.space.interdiction")` alongside
-  `tacsim.boarding` in `ActivationBook` so a `CarrierJourney` promoted into a `LocalSpaceBubble` stays in
-  `JourneyState::Promoted` across full `WorldEngine::tick_world` calls until the bubble clears (`35b` §3.1, `D-35-5`).
-- `ActiveInterdictionBubble::last_wall_step_ms: Option<u64>` (`#[serde(skip)]`) tracks the last wall-clock pulse
-  timestamp per active bubble; `SpaceBubbleBook::step_active_bubbles(w, dt_ic, now_ic, now_ms)` steps each bubble by
-  `dt_wall_ms = (now_ms - prev_ms).min(MAX_BUBBLE_TICK_STEP_MS)` instead of multiplying `dt_ic` by 1,000 (`35b` §3.2,
-  `D-35-3`).
+- `+helm/dock`: target must be a disabled derelict in the hull's current bubble or an open port at the end of the
+  current leg (`MAX_DOCKING_INIT_RANGE_M`, `MAX_DOCKING_INIT_REL_SPEED_MPS`), refused while any operational contact in
+  the bubble is `Hostile` or ordnance is in flight; mandatory `<session_id>` on `+helm/dock tape`, single-use session
+  closed on every replay outcome (`Clamped`, `OutOfGate`, `CollarScrapeBounce`, `Aborted`), and a 60 s wall deadline
+  (`DOCKING_SESSION_TIMEOUT_WALL_S`) enforced by `expire_stale_docking_sessions` on `space_tick`; an in-bubble port
+  clamp runs `check_in_space_unit`, files the completed bubble record, and calls `mush_sim::stand_down_domain` (`35b`
+  §3 #1).
+- `+helm/cluster` is removed; orbital cluster transit routes through `+helm/autopilot <cluster_id>` with arrival
+  promotion on `space_tick` (`35b` §3 #2); `+helm/approach` steps closure across ticks instead of snapping in one call.
+- Timed free-flight burns clear `burn_remaining_ic_s` and zero `thrust_mmps2` when `burn_s == dt_ic_s` (`tick.rs`,
+  `35b` §3 #3).
+- Settling a disabled primary carrier calls `mush_sim::fail_carrier_journey` (`JourneyState::Failed`), and
+  `ensure_hull_can_maneuver` refuses `+helm/decouple`, `+helm/burn`, `+helm/autopilot`, `+helm/dock`,
+  `+helm/approach`, and `+helm/match` for a hull in `derelicts` (`35b` §3 #4).
+- `+helm/run` is guarded by `picket.inspection_status`; player integer magnitudes use `unsigned_abs`; `+helm/thrust`
+  surfaces `TankReserveWarning`; direct `module_state_mut::<SpaceBubbleBook>()` writes and `clear_interdiction_bubble`
+  calls are removed from `sfr1`–`sfr8`.
 
-**Test.** `sfr9_promoted_interdiction_holds_across_full_engine_ticks_and_steps_on_wall_clock`: a promoted ship stays in
-its bubble across three `tick_world_at_wall_ms` calls at `dt_ic = 3_600` (`500 ms` apart in wall time) and advances
-`1_500 ms` of bubble wall time (`3_000 ms` total including the initial 500 ms step on promotion).
+**Test.** `sfr9_authority_closeout_gates_docking_removes_cluster_teleport_stops_1s_burn_and_locks_disabled_derelict`.
 
-**Divergences.** None.
+**Divergences.** **(audit, 35c §4, §5, §6)** `+helm/dock DOCK ABORT` (`order abort`) runs `unpause_hull_after_docking`
+whether or not a session existed and resumes any `Promoted` journey (`35c` §4 #1); `+helm/autopilot <cluster|body>`
+departs directly from `Berth::Docked` without `prepare_departure` (`35c` §4 #2); the outer-system expedition branch
+caps `burn_t` and `crew_days` at the live tank and locker (`35c` §4 #3); re-initiating `+helm/dock` overwrites an open
+session and resets `started_wall_s` (`35c` §4 #7); `holding_for_salvage` blocks bubble resolution for every carrier in
+the domain (`35c` §4 #8); the port-at-leg-end dock branch tests `remaining_s > 60` IC seconds rather than 3D range and
+speed, and the free-flight branch treats `< 2,000 m` from the body centre as `200 m` (`35c` §4).
 
-## SF.R10 — emit real propagation events and push space panel keyframes (#333, `c13ab990`)
+## SF.R10 — tempo and persistence budget (#333, `21c67a91`)
 
-- Bubble hulls and sites register in `mush_propagation::PropagationBook` (`ensure_bubble_propagation_locations`) and
-  emit `PropagationEvent`s (`torch_burn`, `weapon_flash`, `transponder_ping`) with source position, magnitude, and
-  emission timestamp (`35b` §3.3, `D-35-10`).
-- `resolve_detection_for_hull` reads `PropagationBook::perceived_events` for the observer's location at the current
-  perception horizon so a remote torch burn or weapon flash is invisible before `d / c` and detected after light-lag
-  arrives.
-- `push_space_panels` (`crates/tacsim/src/space/commands.rs`) pushes `space.holotank` and `space.cockpit` keyframes on
-  every `space_tick` and command step via `Ctx::push_panel` (`35b` §5 #7, `D-35-18`).
+- `ActiveInterdictionBubble::last_stepped_wall_s: Option<i64>` records the wall-clock second of the previous tick fire;
+  `step_active_bubbles` steps active bubbles by measured wall elapsed seconds (with 250 ms substeps and no catch-up
+  burst on restart) rather than multiplying by `adaptive_step_wall_ms` (`D-35-3`).
+- Persistence caps on per-bubble snapshots (`MAX_BUBBLE_SNAPSHOTS = 6`, keeping the initial snapshot) and input tape
+  entries (`MAX_BUBBLE_TAPE_ENTRIES = 64`), completed bubbles (`MAX_COMPLETED_BUBBLES = 8`), and completed mine draws
+  (`MAX_COMPLETED_SPACE_MINE_DRAWS = 64`); no-op ticks skip writing `tacsim:space:state` (`35b` §5 #9).
+- Unreadable `tacsim:space:state` documents are quarantined (`TacsimStore::is_space_state_held`) across boot,
+  `space_tick`, and `+helm`/`+tac`/`+mine` (`persist_space_state`).
+- `reacquire_custody_after_boot` re-checks out active space bubble hulls immediately after `field::boot::phase` so
+  `DeployedMark::field` custody survives a normal engine restart (`35b` §5 #6).
+- `RhaiRunner` and `ArenaDefinition` instances are compiled and cached by source hash across ticks.
 
-**Test.** `sfr10_propagation_book_perceives_events_across_light_lag_and_tick_pushes_space_panel_keyframes`: a distant
-torch burn is invisible to `+tac/scan` before `d / c` and visible after; `drain_panel_events` yields `space.holotank`
-and `space.cockpit` keyframes on a tick with no player command.
+**Test.** `sfr10_tempo_and_persistence_budget_steps_late_ticks_bounds_10m_heave_to_quarantines_corrupt_doc_and_keeps_custody_across_restart`.
 
-**Divergences.** `push_space_panels` in `SF.R10` covered Tier-2 active bubbles; Tier-1 free-flight and orbital cluster
-panel pushes (`build_tier1_space_panel_payloads`) landed in `SF.R16`.
+**Divergences.** **(audit, 35c §6.2, §6.3, §6.6)** `last_stepped_wall_s` is persisted in whole seconds and clamped to
+`1..=10` s (so a stall > 10 s loses the excess, and `elapsed == 0` advances 1 s), and `Registrar::tick` remains a fixed
+`TickCadence::Coarse(1 s)` (`35c` §6.6); persistence is still one `tacsim:space:state` document cloned for equality on
+every tick without `deny_unknown_fields`, and `derelicts`, `cleared_interdiction_legs`, `clamped_derelicts`,
+`active_tows`, `cluster_tenure_orders`, `propellant_ledgers`, and `standing_orders` are never pruned (`35c` §6.2);
+`reacquire_custody_after_boot` fails if the server reboots while the W-clock is frozen (`35c` §6.3).
 
-## SF.R11 — wire `+helm/decouple`, free-flight entry and mid-space `+helm/autopilot` recouple (#335, `b157a098`)
+## SF.R11 — one propellant ledger, rated drive acceleration, and post-burn reserve (#335, `3e4e2018`)
 
-- `+helm/decouple` transitions a `Cruising` `CarrierJourney` into a `SpaceFreeFlightRecord` interpolated from the leg's
-  current sky positions and velocities (`35b` §3.5, `D-35-6`).
-- `+helm/autopilot <place>` from `SpaceFreeFlightRecord` plans a passage from the hull's current `[pos_km, vel_mps]` via
-  `plan_passage_from` and opens a `CarrierJourney` whose leg runs for the planned duration (`recouple_from_free_flight`),
-  removing the free-flight record cleanly.
+- In-bubble `CommandBurn` and substep burns debit reaction mass with the Tsiolkovsky rocket equation from `exhaust_kms`
+  (`burn_kg_for_law_dv`) and sync into `HullPropellantLedger` / `PendingSpaceBurn` so bubble jinks debit
+  `stow.propellant` and `fractional_burned_kg` persists across bubble close and re-entry without refilling (`35b` §1,
+  `D-35-6`).
+- `max_accel_mps2` is hydrated from `rated_accel_mg` via `flip_accel_mps2`, and `+helm/burn` is capped at the hull
+  drive's rated acceleration.
+- `return_reserve_from` is evaluated on the post-burn `(pos_km, vel_mps)` state (`35b` §5 #10), and `+helm/thrust`
+  surfaces `TankReserveWarning` refusals.
+- Tick-context space burns (`step_active_bubbles`, `step_clusters_on_tick`) submit as the hull's captain via
+  `Fire::as_principal` (`35b` §5 #11).
+- `+helm/decouple` records `prepaid_unflown_t` and `+helm/autopilot` recouple charges only
+  `plan.burn_t.saturating_sub(prepaid_unflown_t)` (`35b` §5 #12).
 
-**Test.** `sfr11_pilot_decouples_from_cruise_burns_in_free_flight_and_recouples_from_arbitrary_coordinates`: a non-GOD
-pilot types `+helm/decouple` mid-leg, burns off-corridor in free flight, and recouples via `+helm/autopilot stickney`
-with zero test calls to `module_state_mut::<SpaceBubbleBook>()`.
+**Test.** `sfr11_one_ledger_rated_drive_debits_bubble_jink_in_vault_persists_across_reentry_and_warns_burn_away_from_port`.
 
-**Divergences.** None.
+**Divergences.** **(audit, 35c §6.5, §6.10, §7)** `max_accel_mps2` rounds `flip_accel` up with `ceil` in integer
+`m/s²` (turning `0.49–0.65 m/s²` into `1 m/s²`) and `command_burn` applies 1 s of Δv immediately on each thrust change
+(`35c` §5 `sfr11`, §6.5); `+helm/approach`, docking RCS, and session-expiry RCS debit `HullPropellantLedger` without
+updating the active bubble ship's private `propellant_kg`/`delta_v_mps` (`35c` §6.10); tick burns fall back to `GOD`
+when no captain resolves and discard submission errors (`35c` §7).
 
-## SF.R12 — end-to-end derelict lifecycle and split bounded `TacsimStore` keys (#336, `611d754c`)
+## SF.R12 — domain bubbles, real NPC hulls, and contraband seizure (#336, `6410a8cc`)
 
-- When a hull's drive is disabled in a `LocalSpaceBubble`, `SpaceBubbleBook::clear_resolved_bubbles` checks in custody
-  with the epoch kept open (`check_in_space_ship_preserving_epoch_if_disabled`), creates the `SpaceDerelictRecord`, and
-  opens the 48 real-hour (`172,800 s`) `SalvageClaimBook` window without requiring a test helper (`35b` §3.6, `D-35-12`).
-- Space persistence splits the monolithic `tacsim:space:state` document into dirty-tracked per-entity keys
-  (`tacsim:space:bubble:<id>`, `flight:<hull>`, `derelict:<hull>`, `cluster:<site>`, `docking:<hull>`, `ledger:<hull>`,
-  `meta`), caps `BubbleInputTape` at `MAX_TAPE_ENTRIES` (`4,096`), prunes resolved derelicts and completed bubbles, and
-  retains a one-time boot fallback from `tacsim:space:state` (`35b` §3.9, `D-35-19`).
+- `SpaceBubbleBook::by_domain: BTreeMap<DomainId, ActiveInterdictionBubble>` with multi-carrier
+  `carriers: BTreeMap<ObjId, BubbleCarrierEntry>` and `ship_hulls` so multiple hulls arriving at a waypoint share one
+  domain bubble (`35b` §5 #2).
+- Added `crates/tacsim/content/units/corvette.json` (`tacsim.unit.corvette`); NPC picket/interdictor hulls and the
+  Raider (crewed by named NPC leader `"Varga Teodor"` from `raiders.json`) spawn as world `Thing`s with
+  `TacticalUnit`s checked out through `custody::check_out` (`35b` §5 #7).
+- Collapsed `LocalSpaceBubble::relations` onto `party_relations`; `apply_collar_scrape_damage` preserves `leg_cursor`
+  (`35b` §5 #5); salvage claims resolve `prior_owner` from `RAIDER_ATTR` and `port_base_obj` from the waypoint's domain
+  host (`35b` §5 #7).
+- Added contraband seizure (`PicketInspectionOutcome::ContrabandSeized`, `PicketInspectionStatus::ClearedAfterSeizure`)
+  debiting unlicensed `strategic_ore` from `stow.ore` via `tacsim_port_burn` when an indigent pilot cannot cover the
+  customs fine (`35b` §1 `D-35-11`).
 
-**Test.** `sfr12_live_bubble_combat_disables_raider_opens_derelict_and_persists_per_entity_store_keys`: live bubble
-combat disables a raider, opens the derelict and salvage claim on bubble resolution without calling
-`record_disabled_derelict`, and writes only the touched per-entity `tacsim:space:*` keys.
+**Test.** `sfr12_domain_bubbles_and_real_hulls_share_kirkwood_bubble_tow_real_raider_thing_with_leader_claim_and_seize_indigent_contraband`.
 
-**Divergences.** None.
+**Divergences.** **(audit, 35c §4 #4–#6, §6.3, §6.4)** Shared-bubble lifecycle (`is_clear_to_resume`,
+`is_carrier_disabled_and_settled`, `settle_disabled_carrier_bubbles`, and the port dock clamp check-in) still reads
+only the primary `carrier_ship_id` (`35c` §4 #4, §6.3); all carriers share `CARRIER_PARTY` and a single
+`picket.inspection_status` so one carrier's `+helm/submit` or `+helm/run` applies to all (`35c` §4 #5); `SpacePartyId`
+and `SpaceRelation` remain separate from `arena::party::PartyId`; the space raider spawns from `raiders().first()`
+(`tacsim.unit.dray` stamped with `RAIDER_ATTR` naming `tacsim.raider.ahuna_skulks`), blocking `@field/raiders`, and
+GOD-owned NPC `Thing`s are never destroyed on stand-down (`35c` §6.4); `cleared_interdiction_legs` keys on
+`departed.at`, which shifts under pause/resume (`35c` §6.4); `+helm/tow` still files on the private `SalvageClaimBook`
+with millisecond/1970 timestamps (`35c` §6.4).
 
-## SF.R13 — close authority and lifecycle bypass holes (#337, `56b963d4`)
+## SF.R13 — presence and feeds (#337, `b1fc0391`)
 
-- `+mine/stake` and `+mine/contest` verify aboard presence, `command`/`helm` seat authority, and `has_claim_authority`
-  on the caller's party; `+helm/bail` requires `command` or `helm` seat authority (`require_helm_or_command_seat`);
-  `+helm/dock abort` verifies `session.hull == hull` (`35b` §3.4, `D-35-9`).
-- Removed the player-callable `+tac/hail clear` branch so only the Rhai customs picket doctrine (`hail_clear_ship`) or
-  combat resolution can clear a hail.
-- `+helm/dock tape <session_id> <rle>` requires a matching active single-use `DockingSession` for the caller's hull and
-  consumes the session on any terminal outcome (`Clamped`, `OutOfGate`, `CollarScrapeBounce`, `Aborted`); stale sessions
-  expire after `MAX_DOCKING_SESSION_WALL_S` (`60 s`) in `expire_stale_docking_sessions` (`D-35-14`).
+- `SPACE_TICK` pushes `space.holotank` and `space.cockpit` keyframes on bubble promotion and every bubble step to all
+  aboard crew (`all_aboard_crew_for_hull`, `35b` §5 #17, `D-35-10`).
+- `cockpit_feed` populates `bodies` and per-contact `pixel_model` (`freighter`, `corvette`, `raider`, `halcyon`,
+  `drone`, `derelict`, `torpedo`), and `mush-pixel::ship_shader` adds the `halcyon` 3D procedural shader archetype.
+- `holotank_feed` and `cockpit_feed` filter `torpedoes` through `mush_propagation::resolve_detection`
+  (`is_bubble_torpedo_detected`, scaling IR plume signature by observer sensor aperture).
+- `SpacePresenceHook` registered on `HookPoint::Connected`, `HookPoint::Linkdead`, and `HookPoint::Disconnected`
+  (`D-35-7`, `35b` §5 #19): when all live-connected crew aboard a hull disconnect (`is_connected && has_live_conns`),
+  main-drive thrust cuts to `[0, 0, 0]`, `pdc_auto` holds armed through the 120 s grace window, `queued_return_port` is
+  recorded on `HullLinkdeadState`, and reconnect (`from_linkdead: true`) restores manual control.
+- Restored `space.cockpit` and `space.docking` to TUI `Chart` Home-key view cycling and wired `l`/`b`/`t`/`r`/`p`/`m`
+  tactical keys in TUI and web (`PictureView.svelte` / `picture.ts`) to `+tac/*` and `+helm/*`.
 
-**Test.** `sfr13_unseated_and_off_ship_callers_cannot_stake_bail_clear_hail_or_forge_docking_tape`: unrostered and
-off-ship callers are refused across `+mine/stake`, `+mine/contest`, `+helm/bail`, and `+helm/dock abort`;
-`+tac/hail clear` is rejected; a forged `+helm/dock tape` without an active session is rejected; a stale docking session
-expires after 60 wall seconds.
+**Test.** `sfr13_presence_and_feeds_push_to_all_crew_filter_torpedoes_and_handle_linkdead_grace`.
 
-**Divergences.** None.
+**Divergences.** **(audit, 35c §6.8)** `queued_return_port` is a port-name string that never executes at grace expiry
+(expiry only zeroes thrust), orbital cluster sessions are not covered by the linkdead hook or tick panel push, and
+linkdead detection is event-only (`35c` §6.8); light lag is printed on hails but not applied to delivery timing (`35c`
+§6.8); undetected contacts can still be named in `+helm/dock` refusals, `+helm/approach`, and torpedo `target_pos_m`
+(`35c` §6.8); the Tier-1 cockpit feed fabricates `delta_v_mps: 4_500`, hull 100%, heat 0 (`35c` §6.8).
 
-## SF.R14 — author clusters, pickets and doctrines in the lane pack (#338)
+## SF.R14 — authoring for doctrines, clusters, outer bodies, and mind seals (#338, `e6f573c4`)
 
-- Added `SpaceClusterDef` and `SpacePicketDef` to `crates/tacsim/src/pack.rs` (`clusters.json`, `pickets.json`, and
-  `doctrines/*.rhai` in `packs/solar_2240/`) and removed the inline cluster and picket tables from `mining.rs` and
-  `doctrine.rs` (`35b` §3.7, `D-35-13`, `D-35-17`).
-- Added content-studio JSON schemas (`clusters.schema.json`, `pickets.schema.json`) and studio validation for cluster
-  sites, ore pools, syndicate tenure seeds, picket casts, and Rhai doctrine scripts.
+- Authored `kirkwood_picket.{rhai,json}`, `belt_raider.{rhai,json}`, `interdictor_patrol.{rhai,json}`, and
+  `drone_mining.{rhai,json}` under `crates/tacsim/content/minds/`, registered in `minds/content.rs` and
+  `content_studio.rs` (`D-35-17`, `35b` §5 #20).
+- Authored `kirkwood_picket: true` and the four orbital cluster rock tables on `kirkwood_depot` and
+  `hazard: 4, interdiction: 3` on `ceres_stickney` leg 0 in `crates/tacsim/content/lane/ceres_phobos.json`.
+- Converted `crates/tacsim/content/sky/outer_bodies.json` into a signed `rules_definition` pack
+  (`tacsim.sky.outer_bodies@1`) verified through `pack::load_pack`.
+- Attached `MindSeal` (`SealEngine::Scripted`) records onto NPC space hulls (`corvette_hull`, `raider_hull`,
+  `interdictor_hull`) and collector drones (`DroneSortieState`) resolving in `TacsimStore::mind_source`;
+  `step_kirkwood_picket` reads `this.stage` from `picket.corvette_memory`, and `should_open_kirkwood_picket` checks
+  whether the waypoint domain/host is authored with `kirkwood_picket: true`.
 
-**Test.** `sfr14_lane_pack_authors_clusters_pickets_and_rhai_doctrines_under_studio_validation`: `solar_2240` loads and
-validates all 4 orbital clusters and the Kirkwood customs picket doctrine from pack files with zero inline Rust tables.
+**Test.** `sfr14_authoring_loads_clusters_doctrines_and_outer_bodies_from_packs_opens_picket_only_on_kirkwood_and_seals_drone_minds`.
 
-**Divergences.** None.
+**Divergences.** **(audit, 35c §6.9)** Clusters remain a four-variant Rust enum (`OrbitalClusterId` in `mining.rs`)
+whose rock tables load from compiled-in `LANE_JSON` through a process-global `LazyLock` rather than the applied lane
+pack (with authored `zone`, `anchor_body`, and `label` ignored and all four clusters placed on `kirkwood_depot`);
+doctrines run on a private cached `RhaiRunner::new` with `source_lookup(None, ...)` rather than the sealed runner host
+and `MindPool` cadence, and the interdictor ignores its doctrine's lock/speed/fire intents; drones remain timers paying
+a fixed 4 t with a hand-built `ExcursionId` and discarded mind intents; the picket cast remains in Rust (`35c` §6.9).
 
-## SF.R15 — canonical hull fidelity, multi-contact combat and linkdead policy (#339)
+## SF.R15 — hull fidelity, facet split, heat cell, bay repair, and salvage bounty (#339, `50f7aedc`)
 
-- Mapped 3D attack bearings onto canonical `UnitSpec.facets` (`front`/`left`/`right`/`rear`/`top` on 5-facet ships,
-  4-facet fallback on ground units) and routed bubble weapon hits through `mush_tactics::combat::resolve_attack`
-  (`35b` §5 #8, `D-35-1`).
-- Scaled ship linear acceleration from canonical `UnitSpec.tons`, live `stow.ore` + `stow.propellant` cargo mass
-  (`cargo_mass_kg`), and live `drive` section integrity (`drive_cell_ratio`) (`35b` §5 #9).
-- Generalized `ActiveInterdictionBubble` sides (`challenger_hulls: Vec<ObjId>`, `defender_hulls: Vec<ObjId>`) for N-ship
-  patrols and multi-contact target selection (`+tac/lock <contact>`) (`35b` §5 #10).
-- Enforced linkdead thrust cut (`D-35-7`): when all crew aboard a hull in a bubble or free flight have disconnected
-  (`!w.Connected(actor)`), main thrust cuts to zero (ballistic drift) while keeping point defense armed (`35b` §5 #12).
-- Upgraded `Sky::velocity_mps` to return full 3D orbital velocity (`[vx, vy, vz]`) including orbital inclination `i`
-  (`35b` §5 #13, `D-35-4`).
+- `dray.json`, `dray_p.json`, and `corvette.json` define `"heat"` (`0..=1_000`) and `"heat_sink"` (`30`) cells on
+  `"hull"`, round-tripped through `build_space_damage_mutation_plan` and `space_ship_from_tactical_unit_with_spec`
+  (`D-35-1`).
+- `SpaceShipState::apply_damage` reads facet weights, `struck_through` armour, section internals, and consequences
+  (`slow_75`, `disable_motion`, `destroy_unit`) from `UnitSpec`, and inflicts `SubsystemCrit::PdcOffline` and
+  `SensorsBlinded` (`35b` §5 #16); `step_pdc_intercepts` skips non-operational PDC mounts.
+- `+helm/tow` settles a 1,200.00 cr salvage recovery payout from `freeport_registry`, and `sfr15` exercises a doc 31
+  `+bay/order #<hull>=all` repair at Stickney Yards.
 
-**Test.** `sfr15_canonical_hull_fidelity_multi_contact_combat_and_linkdead_ballistic_cut`: a `Dray-P` loaded with 80 t
-of ore accelerates slower than an empty `Dray`, a damaged drive scales thrust proportionally, a 2-ship patrol engages in
-one bubble, and linkdead crew cut thrust to ballistic drift.
+**Test.** `sfr15_hull_fidelity_splits_rear_hit_per_dray_json_strips_pdc_and_refits_in_bay_after_salvage_payout`.
 
-**Divergences.** None.
+**Divergences.** **(audit, 35c §4 #6, §6.5)** `SpaceShipState::apply_damage` is still a private damage pipeline
+separate from `arena/damage.rs` (splitting hits proportionally across sections instead of `choose_section`, and
+compounding `Slow` on every hit while `hold` is at 0 instead of taking `min`); PDC and sensor crits come from hardcoded
+internal-damage thresholds (`25`/`35`) rather than authored components and are not persisted on `check_in_space_unit`;
+corvette and raider `max_accel_mps2 = 60` and `delta_v_mps = 9_500`, NPC `4,500`, and `DRAY_P_HOLD_CAPACITY_T = 86`
+remain hardcoded Rust constants (`corvette.json` authors no drive law); the 1,200 cr tow bounty pays at clamp before
+delivery and can be collected repeatedly (`35c` §4 #6).
 
-## SF.R16 — client docking game, per-session challenge and Neptune canopy
+## SF.R16 — client docking game, per-session challenge and Neptune canopy (#353, `020e567c`)
 
 - Shared 60 Hz 6-DOF client docking kinematics and session driver across `mush-pixel::docking::DockingClientSession`,
   the SSH TUI (`crates/mush-net-ssh/src/tui/pixel.rs`), and the web client (`web/src/lib/picture.ts` +
@@ -375,4 +427,11 @@ one bubble, and linkdead crew cut thrust to ballistic drift.
 `tacsim_integration_tests_never_mutate_space_bubble_book_directly`
 (`crates/mush-contract-tests/tests/arena_library.rs`).
 
-**Divergences.** None.
+**Divergences.** **(audit, 35c §3, §5, §6.10)** `tacsim/src/space/docking.rs`, `mush-pixel/src/docking.rs`, and
+`web/src/lib/picture.ts` carry three separate copies of the 60 Hz kinematics; both TUI and web bind `c`/`Space` to
+`play_to_clamp` (auto-solver) and `solve_docking_tape` is `pub` in `tacsim::space`; `sfr16` drives the client through
+`play_to_clamp` rather than key input and departs Ceres from the berth via `+helm/autopilot` (`35c` §4 #2); the
+Neptune/Triton canopy (`default_canopy_bodies_for_site`) is a static bearing table keyed on the target name rather than
+computed from the `Sky` ephemeris at the hull's live state vector (`35c` §6.10); the contract lint in `arena_library.rs`
+matched only the unqualified `module_state_mut::<SpaceBubbleBook>()` spelling (`35c` §5); and the commit's edits to
+`doc 35` and `35-cut-notes.md` described an earlier draft table (`35c` §3, corrected in `35c` §8).
