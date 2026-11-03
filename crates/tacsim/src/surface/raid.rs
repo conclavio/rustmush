@@ -126,6 +126,20 @@ fn visit(ctx: &mut Ctx<'_>, def: &RaiderDef, schedule: RaidSchedule) -> Result<(
             tracing::info!(raider = %def.id, carrier = carrier.0, "tacsim: a raider's carrier is a wreck; the director never sends it again");
             return Ok(());
         }
+        // Doc 36a lane 3 (P1-11; doc 36 cut GC.3): a casualty barge whose drive is down stays on
+        // the ground, stuck where it stands; its raid is over, and the director never sends it
+        // again.
+        if left_down(record.as_ref(), carrier) == Some(LeftCondition::Casualty)
+            && crate::carrier_damage::damage_of(ctx.w, carrier)
+                .is_some_and(|damage| damage.has(crate::carrier_damage::CarrierLoss::RefusesLift))
+        {
+            if mark_key(ctx, carrier, "raid").is_some() {
+                over(ctx, carrier)?;
+            }
+            raiders::set_mark(ctx, carrier, "spent", Some(serde_json::Value::Bool(true)))?;
+            tracing::info!(raider = %def.id, carrier = carrier.0, "tacsim: a raider's carrier is a casualty with its drive down; it stays on the ground and the director never sends it again");
+            return Ok(());
+        }
         if let Some(raid) = mark_key(ctx, carrier, "raid") {
             return under_way(ctx, def, schedule, carrier, &raid, record.as_ref());
         }
@@ -266,6 +280,13 @@ fn under_way(
         target(ctx, def, record)
     };
     let Some((from, at)) = target else {
+        // Doc 36a lane 3 (P1-11): a barge that cannot lift is stuck where it stands; the raid is
+        // over and the raider spent, its standing hulls left as they are.
+        if let Some(line) = crate::carrier_damage::lift_refusal(ctx.w, carrier) {
+            raiders::set_mark(ctx, carrier, "spent", Some(serde_json::Value::Bool(true)))?;
+            tracing::info!(raider = %def.id, carrier = carrier.0, %line, "tacsim: a director raid's carrier cannot lift; it stays on the ground");
+            return over(ctx, carrier);
+        }
         recall(ctx, def, carrier, record)?;
         return over(ctx, carrier);
     };
@@ -402,6 +423,10 @@ fn recall(
     carrier: ObjId,
     record: Option<&SiteRecord>,
 ) -> Result<(), String> {
+    // Doc 36a lane 3 (P1-11): nothing boards a barge that cannot lift.
+    if let Some(line) = crate::carrier_damage::lift_refusal(ctx.w, carrier) {
+        return Err(line);
+    }
     for hull in raiders::hulls_of(ctx.w, def.id.as_str()) {
         if raiders::carrier_of(ctx.w, hull) != Some(carrier)
             || mush_sim::pose_of(ctx.w, hull).is_none()

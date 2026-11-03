@@ -185,14 +185,31 @@ pub(crate) fn player(ctx: &mut Ctx<'_>) -> Result<(), String> {
             return Err(usage.into());
         }
     }
-    let rentals = ctx
+    let store = ctx
         .w
         .module_state::<crate::TacsimStore>()
-        .ok_or("Rig leases unavailable.")?
+        .ok_or("Rig leases unavailable.")?;
+    let mut rentals = store
         .tv_leases_of(ctx.actor)
         .filter(|r| r.live() && named.is_none_or(|n| n == r.slot))
         .cloned()
         .collect::<Vec<_>>();
+    // Doc 36a lane 3 (P1-6): or a live lease on the carrier whose bay the actor stands in, when
+    // its lessee delegated OperateCrew to them (`+tv/<n>/permissions`, then `@unitgrant/issue`
+    // within that loan); the lessee stays the lease's principal.
+    if rentals.is_empty() && !leave {
+        let here = ctx.w.get(ctx.actor).and_then(|o| o.location);
+        let delegated: Vec<_> = store
+            .tv_leases_live()
+            .filter(|r| r.pilot != ctx.actor && named.is_none_or(|n| n == r.slot))
+            .filter(|r| bay(ctx.w, r.tv, r.hull).ok() == here)
+            .cloned()
+            .collect();
+        rentals = delegated
+            .into_iter()
+            .filter(|r| operate_crew(ctx, r.tv))
+            .collect();
+    }
     let [rental] = rentals.as_slice() else {
         return Err("Name one of your current rental rig slots.".into());
     };
@@ -267,6 +284,30 @@ pub(crate) fn player(ctx: &mut Ctx<'_>) -> Result<(), String> {
     );
     ctx.show_room(actor, room);
     Ok(())
+}
+
+/// **Whether the actor holds a current OperateCrew permission on `unit`** (the owner read
+/// `+tv/<n> board` makes; doc 36a lane 3, P1-6 reads it for a delegate too).
+fn operate_crew(ctx: &Ctx<'_>, unit: ObjId) -> bool {
+    let Some(reader) = ctx
+        .w
+        .module_state::<PlanningHandles>()
+        .and_then(|h| h.unit_authority_reader.as_ref())
+    else {
+        return false;
+    };
+    matches!(
+        ctx.read_owner(
+            reader,
+            UnitAuthorityRequest::Authorize {
+                unit,
+                capability: UnitCapability::OperateCrew,
+                delegate: false,
+                mission: None,
+            }
+        ),
+        Ok(UnitAuthorityResponse::Authority { allowed: true })
+    )
 }
 
 pub(crate) fn unseat_npc(

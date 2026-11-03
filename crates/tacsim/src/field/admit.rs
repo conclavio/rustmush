@@ -22,7 +22,7 @@ use mush_core::{CanonicalId, Ctx, ObjId, PerceivedRef};
 use serde_json::json;
 
 use super::parties::{self, Entrant};
-use super::record::{FIELD_LIVE_FORMAT, FieldLive};
+use super::record::{FIELD_LIVE_FORMAT, FieldLive, HeldWall};
 use super::{FieldBook, Hosted, PendingFire};
 use crate::arena::FieldHost;
 use crate::arena::party::{EndCondition, Mark};
@@ -339,24 +339,26 @@ fn admit(ctx: &mut Ctx<'_>, site: &CanonicalId, record: &SiteRecord) -> Result<(
         .into_iter()
         .filter(|unit| !carried.contains_key(unit))
         .partition(|unit| held_out(ctx.w, *unit));
+    // Doc 36a §11 #1: the walls go on the live record too, so every rebuild of the ground
+    // lays them as admission did (`ground_with_held`).
+    let held_walls: Vec<HeldWall> = held
+        .iter()
+        .filter_map(|hull| {
+            mush_sim::pose_of(ctx.w, *hull).map(|(_, at)| HeldWall {
+                hull: *hull,
+                pose: crate::surface::site_record::SitePose {
+                    x_cm: at.x_cm,
+                    y_cm: at.y_cm,
+                    heading_mdeg: at.heading_mdeg,
+                },
+            })
+        })
+        .collect();
     let walled;
-    let record = if held.is_empty() {
+    let record = if held_walls.is_empty() {
         record
     } else {
-        let poses: Vec<(ObjId, crate::surface::site_record::SitePose)> = held
-            .iter()
-            .filter_map(|hull| {
-                mush_sim::pose_of(ctx.w, *hull).map(|(_, at)| {
-                    let pose = crate::surface::site_record::SitePose {
-                        x_cm: at.x_cm,
-                        y_cm: at.y_cm,
-                        heading_mdeg: at.heading_mdeg,
-                    };
-                    (*hull, pose)
-                })
-            })
-            .collect();
-        walled = with_held_walls(record, &poses);
+        walled = with_held_walls(record, &held_walls);
         &walled
     };
     let cap = super::config(ctx.w).max_units;
@@ -367,6 +369,9 @@ fn admit(ctx: &mut Ctx<'_>, site: &CanonicalId, record: &SiteRecord) -> Result<(
             "{counted} units are on the ground and a field holds {cap}"
         ));
     }
+    // Doc 36a lane 3 (P0-8): and the record's index must have room for everyone, counted or
+    // not, so the demotion can never refuse `UnitsFull`.
+    index_room(ctx.w, domain)?;
     if units.is_empty() {
         return Err("nobody is on the ground".to_owned());
     }
@@ -423,6 +428,7 @@ fn admit(ctx: &mut Ctx<'_>, site: &CanonicalId, record: &SiteRecord) -> Result<(
         homes,
         fire: None,
         owed_exits: Vec::new(),
+        held: held_walls,
     };
     if let Some(book) = ctx.w.module_state_mut::<FieldBook>() {
         book.live.insert(
@@ -511,6 +517,27 @@ fn admit(ctx: &mut Ctx<'_>, site: &CanonicalId, record: &SiteRecord) -> Result<(
 /// `{name}`, `{n}` the ordinal.
 pub const HELD_OUT: &str = "The {name} stands out of field {n}: its licensed mind cannot be      taken into a field yet, so it stands as ground nobody crosses.";
 
+/// **Whether the site's record could index everyone on its ground** (doc 36a lane 3, P0-8): a
+/// demotion writes a row for every casualty and wreck the field leaves, and every unit on the
+/// ground — counted or not, held out, carried — may be one, so a field never opens over, or
+/// takes a join past, more units than [`crate::surface::site_record::MAX_LEFT_UNITS`]. The
+/// bound is met here, early, where the refusal has a reader; `SiteRecord::demote` then never
+/// answers `UnitsFull` for a field this admitted.
+///
+/// # Errors
+///
+/// The reason the field refuses, in words.
+pub(crate) fn index_room(w: &mush_core::World, domain: mush_sim::DomainId) -> Result<(), String> {
+    let standing = parties::on_ground(w, domain).len();
+    let bound = crate::surface::site_record::MAX_LEFT_UNITS;
+    if standing > bound {
+        return Err(format!(
+            "{standing} units are on the ground and the site's record indexes {bound}"
+        ));
+    }
+    Ok(())
+}
+
 /// **Whether `unit` is left out of a field** (doc 36 cut GC.1; Q-36-44): a hull held by dedicated
 /// IC custody, which is a licensed mind's hold until doc 23 S.4b. `custody::check_out` refuses
 /// it, and admission is all or nothing (Q-CF-21), so one such hull used to close every field on
@@ -524,10 +551,7 @@ pub(super) fn held_out(w: &mush_core::World, unit: ObjId) -> bool {
 /// Q-36-44), for the field's ground only: its cell reads as a wall ([`super::ground`]), so the
 /// hull is an inert obstacle nobody drives through or sees past. The record itself is never
 /// written: the hull is no ground object, and its custody and claim stay as they were.
-fn with_held_walls(
-    record: &SiteRecord,
-    held: &[(ObjId, crate::surface::site_record::SitePose)],
-) -> SiteRecord {
+fn with_held_walls(record: &SiteRecord, held: &[HeldWall]) -> SiteRecord {
     use crate::surface::site_record::{GroundKind, GroundObject};
     let mut walled = record.clone();
     let mut id = record
@@ -536,14 +560,14 @@ fn with_held_walls(
         .map(|object| object.id)
         .max()
         .unwrap_or(0);
-    for (hull, pose) in held {
+    for wall in held {
         id = id.saturating_add(1);
         walled.objects.push(GroundObject {
             id,
-            pose: *pose,
+            pose: wall.pose,
             footprint: 1,
             kind: GroundKind::Remains {
-                of: Some(*hull),
+                of: Some(wall.hull),
                 mass_kg: 0,
                 merged: 1,
             },
@@ -551,6 +575,24 @@ fn with_held_walls(
         });
     }
     walled
+}
+
+/// **The field's ground as admission laid it** (doc 36a §11 #1): `record` with the live
+/// record's held hulls walled on it ([`with_held_walls`]), for every rebuild of the ground — a
+/// resume, the void rule's read of the last snapshot, a raider lift's. Before this each rebuilt
+/// the ground from the stored record alone, the snapshot's definition digest failed, its returns
+/// read empty, and the demotion sent every unit home as it went out.
+pub(super) fn ground_with_held(
+    w: &mush_core::World,
+    site: &CanonicalId,
+    record: &SiteRecord,
+    homes: Vec<crate::arena::state::EntryZone>,
+    held: &[HeldWall],
+) -> Result<crate::arena::state::ArenaDefinition, String> {
+    if held.is_empty() {
+        return super::ground::definition(w, site, record, homes);
+    }
+    super::ground::definition(w, site, &with_held_walls(record, held), homes)
 }
 
 /// **The check-out message** (Q-CF-3, Q-CF-41): each unit at its placement (a carrier at its
@@ -733,7 +775,7 @@ mod tests {
         let record = SiteRecord::new(site);
         let hull = ObjId(41);
         let at = SitePose::at_cell(120, 128);
-        let walled = with_held_walls(&record, &[(hull, at)]);
+        let walled = with_held_walls(&record, &[HeldWall { hull, pose: at }]);
         assert!(record.objects.is_empty(), "the kept record gains nothing");
         assert_eq!(walled.objects.len(), 1);
         let wall = &walled.objects[0];
@@ -741,7 +783,13 @@ mod tests {
         assert_eq!(wall.footprint, 1, "one cell: the hull's own");
         assert!(matches!(wall.kind, GroundKind::Remains { of: Some(of), .. } if of == hull));
         // A second held hull takes the next number, after the record's own objects.
-        let again = with_held_walls(&walled, &[(ObjId(42), SitePose::at_cell(10, 10))]);
+        let again = with_held_walls(
+            &walled,
+            &[HeldWall {
+                hull: ObjId(42),
+                pose: SitePose::at_cell(10, 10),
+            }],
+        );
         assert_eq!(
             again.objects.iter().map(|o| o.id).collect::<Vec<_>>(),
             vec![1, 2]

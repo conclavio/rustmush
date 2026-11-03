@@ -114,9 +114,12 @@ pub(super) fn selected(
                     .into(),
             );
         }
-    } else if lease.pilot != actor {
-        return Err("This surface host needs the player's own mining lease.".into());
     }
+    // Doc 36a lane 3 (P1-6): a player who is not the lessee operates under a delegated
+    // OperateCrew grant. The grant is fenced where the flight was made — the launch's authority
+    // keys name `(operator, unit, OperateCrew)` (`prepare::authority_keys`) and every refresh
+    // re-fences it — and `member` above is the roster's acceptance of this actor as the unit's
+    // operator, so the lease's own pilot is no longer required here; they stay the `principal`.
     let unit_state = mush_tactics::module::unit_of(world, unit).ok_or("Unit unavailable.")?;
     let condition =
         crate::field_ops::assess_tacsim_unit(unit_state, None).map_err(|e| e.to_string())?;
