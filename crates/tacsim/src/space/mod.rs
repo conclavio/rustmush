@@ -77,10 +77,11 @@ pub use tick::{
     ActiveInterdictionBubble, CARRIER_PARTY, COMBAT_STEP_WALL_MS, CRUISE_STEP_WALL_MS,
     CompletedInterdictionBubble, FreeFlightGuidanceMode, HullPropellantLedger,
     INTERDICTION_STANDOFF_M, INTERDICTOR_PARTY, MAX_BUBBLE_SNAPSHOTS, MAX_BUBBLE_TAPE_ENTRIES,
-    MAX_COMPLETED_BUBBLES, ORDNANCE_STEP_WALL_MS, SOLAR_MU_KM3_S2, SPACE_STATE_FORMAT,
-    SPACE_STATE_KEY, SPACE_TICK, SPACE_TICK_PERIOD, SpaceBubbleBook, SpaceDerelictRecord,
-    SpaceFreeFlightRecord, SpacePersistedState, apply_bubble_command, boot_read,
-    clear_interdiction_bubble, persist_space_state, reacquire_custody_after_boot,
+    MAX_BUBBLE_TICK_STEP_MS, MAX_COMPLETED_BUBBLES, ORDNANCE_STEP_WALL_MS,
+    SALVAGE_HOLD_TIMEOUT_WALL_S, SOLAR_MU_KM3_S2, SPACE_STATE_FORMAT, SPACE_STATE_KEY, SPACE_TICK,
+    SPACE_TICK_PERIOD, SpaceBubbleBook, SpaceDerelictRecord, SpaceFreeFlightRecord,
+    SpacePersistedState, apply_bubble_command, boot_read, clear_interdiction_bubble,
+    persist_space_state, reacquire_custody_after_boot,
 };
 pub use weapons::{
     DEFAULT_TORPEDO_MAX_FLIGHT_MS, InFlightSlug, InFlightTorpedo, LaserMode, LaserMount, PdcMount,
@@ -823,6 +824,7 @@ mod tests {
                 departed_at_ic_s: 74_152_600_000,
                 approaching_derelict: false,
                 holding_for_salvage: false,
+                holding_for_salvage_until_wall_s: None,
                 last_synced_propellant_kg: 12_000,
             },
         );

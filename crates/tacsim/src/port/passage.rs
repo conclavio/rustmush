@@ -75,6 +75,10 @@ pub const KEEP_OUT_AU: f64 = 0.3;
 /// The slowest a passage may be flown, permille of the hull's thrust (D-19-9,
 /// Q-19-4: at most twice its full-thrust length).
 pub const MIN_THROTTLE_PERMILLE: u32 = 250;
+/// Deep-space cruise throttle floor (`180‰`) for outer-system free-flight expeditions
+/// (`plan_passage_from`) so an 80 t `Dray`/`Dray-P` tank can reach Neptune (`30.07 AU`)
+/// without exceeding its rated propellant capacity (`SF.R17`).
+pub const MIN_EXPEDITION_THROTTLE_PERMILLE: u32 = 180;
 /// Full thrust.
 pub const MAX_THROTTLE_PERMILLE: u32 = 1_000;
 /// The throttle a passage is flown at unless the captain says otherwise.
@@ -1013,8 +1017,13 @@ pub fn plan_passage_from(
             ceiling_kg: drive.payload_ceiling_kg,
         });
     }
-    if matches!(drive.law, DriveLaw::Flip { .. }) {
-        throttle(drive)?;
+    if matches!(drive.law, DriveLaw::Flip { .. })
+        && !(MIN_EXPEDITION_THROTTLE_PERMILLE..=MAX_THROTTLE_PERMILLE)
+            .contains(&drive.throttle_permille)
+    {
+        return Err(PlanError::Throttle {
+            permille: drive.throttle_permille,
+        });
     }
     let to_body = body_or_place_of(sky, pack, target_place)?;
     let site_ascent = match site_end(pack, target_place) {
@@ -1037,7 +1046,22 @@ pub fn plan_passage_from(
         let detour = detour_km(pos_km, pb, KEEP_OUT_AU * AU_KM as f64);
         dist_km = detour.max(chord);
         vel_dv_mps = free_flight_velocity_dv_mps(pos_km, pb, vel_mps, vb)?;
-        let base_secs = leg_seconds(drive, dry_kg, payload_kg, dist_km)?;
+        let base_secs = if drive.throttle_permille < MIN_THROTTLE_PERMILLE {
+            let a = flip_accel_mps2(drive, dry_kg, payload_kg).ok_or(PlanError::Overflow)?;
+            if a <= 0.0 || !a.is_finite() {
+                return Err(PlanError::Overflow);
+            }
+            let d_m = dist_km as f64 * 1_000.0;
+            let s = (2.0 * (d_m / a).sqrt()).ceil();
+            if !s.is_finite() || s < 0.0 || s > f64::from(u32::MAX) {
+                return Err(PlanError::Overflow);
+            }
+            #[allow(clippy::cast_possible_truncation, clippy::cast_sign_loss)]
+            let s_u32 = s as u32;
+            s_u32
+        } else {
+            leg_seconds(drive, dry_kg, payload_kg, dist_km)?
+        };
         let vel_extra_secs = match flip_accel_mps2(drive, dry_kg, payload_kg) {
             Some(a) if a > 0.0 && a.is_finite() => {
                 #[allow(clippy::cast_possible_truncation, clippy::cast_sign_loss)]
@@ -1046,15 +1070,19 @@ pub fn plan_passage_from(
             }
             _ => 0,
         };
-        secs = base_secs.saturating_add(vel_extra_secs).max(1);
+        secs = base_secs.saturating_add(vel_extra_secs).max(60);
         t1 = depart_ic
             .checked_add(i64::from(secs))
             .ok_or(PlanError::Overflow)?;
+        if dist_km == 0 {
+            break;
+        }
     }
 
     let ascent_mps = site_ascent
         .checked_add(vel_dv_mps)
-        .ok_or(PlanError::Overflow)?;
+        .ok_or(PlanError::Overflow)?
+        .max(1);
     let leg = LegPlan {
         to: target_place.clone(),
         body: to_body,
@@ -1066,7 +1094,7 @@ pub fn plan_passage_from(
     };
     let legs = vec![leg];
     let total_s = i64::from(secs);
-    let burn_t = passage_burn(drive, dry_kg, payload_kg, &legs)?.max(1);
+    let burn_t = passage_burn(drive, dry_kg, payload_kg, &legs)?;
     let crew = crew_days(occupants, &legs)?;
     let route_id = CanonicalId::new(format!("free_flight_{}", target_place.as_str()))
         .or_else(|_| CanonicalId::new("free_flight"))

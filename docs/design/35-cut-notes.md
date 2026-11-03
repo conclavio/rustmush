@@ -435,3 +435,37 @@ Neptune/Triton canopy (`default_canopy_bodies_for_site`) is a static bearing tab
 computed from the `Sky` ephemeris at the hull's live state vector (`35c` §6.10); the contract lint in `arena_library.rs`
 matched only the unqualified `module_state_mut::<SpaceBubbleBook>()` spelling (`35c` §5); and the commit's edits to
 `doc 35` and `35-cut-notes.md` described an earlier draft table (`35c` §3, corrected in `35c` §8).
+
+## SF.R17 — hole close-out II
+
+- `helm_dock` (`crates/tacsim/src/space/commands.rs`) requires an existing `DockingSession` on `DOCK ABORT` / `abort`
+  (`"No active docking session to abort."`), debits `rcs_spent_kg`, persists space state on `OutOfGate`, refuses a
+  second `+helm/dock` while a session is already open in `docking_sessions` without resetting `started_wall_s`, and
+  `unpause_hull_after_docking` and `expire_stale_docking_sessions` (`crates/tacsim/src/space/tick.rs`) never call
+  `mush_sim::resume_carrier_journey` (`35c` §4 #1, #7).
+- `helm_autopilot` (`commands.rs`) refuses from `Berth::Docked` (`"Ship is docked at a berth; undock first (+ship/undock)."`),
+  and `+ship/undock <cluster|body>` (`prepare_departure` in `crates/tacsim/src/port/voyage.rs` via
+  `resolve_space_undock_destination`, `plan_space_undock_on`, and `promote_departed_hull_to_space_free_flight`) runs
+  all berth departure and `hold_back` checks, submits `tacsim_port_burn`, and promotes the hull into
+  `SpaceFreeFlightRecord` on `launch_step` with cluster arrival opening `ActiveClusterSession` on `space_tick` (`35c` §4 #2).
+- Removed the `.min(live_tank_t.max(1))` and `.min(basis.locker)` clamps from `helm_autopilot`'s outer-system expedition
+  branch so `+helm/autopilot <body_id>` refuses when tank or locker is short (`35c` §4 #3).
+- `expire_stale_docking_sessions` calls `debit_hull_propellant_kg(ctx, hull, 15)` so crossing a whole-tonne boundary
+  submits a `PendingSpaceBurn` (`tacsim_port_burn`) (`35c` §9 `SF.R17`).
+- `BubbleCarrierEntry::holding_for_salvage_until_wall_s` (`SALVAGE_HOLD_TIMEOUT_WALL_S = 60`) bounds per-hull salvage
+  holds, and `clear_resolved_bubbles` (`tick.rs`) lets any ready carrier in a multi-carrier bubble where
+  `is_combat_clear()` holds detach and resume its `CarrierJourney` immediately without waiting for another carrier's
+  `holding_for_salvage` (`35c` §4 #8).
+- `validate_docking_initiation_gates` (`commands.rs`) evaluates physical terminal-braking range (`<= 500 m`) and
+  relative speed (`<= 15,000 mm/s`) on the port-at-leg-end branch (replacing `remaining_s > 60`) and removes the
+  `dist_km <= 2 -> 200 m` clamp on the free-flight branch (`35c` §4).
+- `step_active_bubbles` (`tick.rs`) steps active bubbles by `min(elapsed_ms, MAX_BUBBLE_TICK_STEP_MS)`
+  (`MAX_BUBBLE_TICK_STEP_MS = 30_000`) and skips stepping when `wall_now_s <= last_stepped_wall_s` (`35c` §6.6).
+- Hardened `tacsim_integration_tests_never_mutate_space_bubble_book_directly` (`crates/mush-contract-tests/tests/arena_library.rs`)
+  to forbid qualified/unqualified/aliased `module_state_mut` on space books, `clear_interdiction_bubble(`,
+  `apply_bubble_command(`, `solve_docking_tape(`, and `solve_hard_bounce_tape(` across `crates/tacsim/tests/`, and
+  updated `sfr5`, `sfr6`, `sfr7`, `sfr8`, `sfr9`, `sfr12`, `sfr15`, and `sfr16` (`35c` §5, §9 `SF.R17`).
+
+**Test.** `sfr17_hole_closeout_ii_abort_undock_expedition_dock_gates_salvage_hold_and_30s_tempo`.
+
+**Divergences.** None from the `35c` §9 `SF.R17` specification.
