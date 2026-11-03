@@ -239,6 +239,17 @@ impl FieldLive {
             .map(|party| party.party)
     }
 
+    /// **The letter the next party takes** (doc 36a §11 row 2): the lowest letter no party on
+    /// the record holds. A refused join leaves a gap in the middle (`super::carrier::on_joined`),
+    /// and the next arrival takes the gap, never a letter in use; `None` once the alphabet is
+    /// spent.
+    #[must_use]
+    pub fn next_party(&self) -> Option<PartyId> {
+        (0..)
+            .map_while(PartyId::nth)
+            .find(|letter| !self.parties.iter().any(|party| party.party == *letter))
+    }
+
     /// The black box's log for this segment: `field.<site>.<ordinal>.<segment>`.
     #[must_use]
     pub fn log_id(&self) -> String {
@@ -298,8 +309,14 @@ impl FieldLive {
     }
 }
 
-/// **Write the live record** on the module's own lane.
+/// **Write the live record** on the module's own lane. A record that breaks its own invariants
+/// ([`FieldLive::check`]: two parties on one letter, a unit in no party) is never written (doc
+/// 36a §11 row 2): the boot would refuse it and void the field.
 pub(crate) fn write_live(ctx: &mut Ctx<'_>, live: &FieldLive) {
+    if let Err(error) = live.check() {
+        tracing::error!(%error, site = %live.field.site, "tacsim: a field's live record is not written: it breaks its own invariants");
+        return;
+    }
     match live.document() {
         Ok(value) => push_op(
             ctx.out,
@@ -431,5 +448,25 @@ mod tests {
         let mut live = live();
         live.parties.pop();
         assert!(FieldLive::from_document(&live.document().expect("encodes")).is_err());
+    }
+
+    /// Doc 36a §11 row 2: the next letter is the lowest free one, and a record with two parties
+    /// on one letter fails its check (so `write_live` refuses it).
+    #[test]
+    fn the_next_party_takes_the_lowest_free_letter_and_a_duplicate_fails_the_check() {
+        let mut record = live();
+        assert_eq!(record.next_party(), PartyId::nth(2), "A and B are taken: C");
+        // A refused join removed A's row's party in the middle: B stays, A is free again.
+        record.parties.remove(0);
+        record.units.remove(0);
+        assert_eq!(
+            record.next_party(),
+            PartyId::nth(0),
+            "the gap is taken first"
+        );
+        let mut twice = live();
+        twice.parties[1].party = PartyId::nth(0).expect("A");
+        twice.units[1].party = PartyId::nth(0).expect("A");
+        assert!(twice.check().is_err(), "two parties on one letter");
     }
 }

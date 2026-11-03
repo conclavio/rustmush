@@ -162,6 +162,7 @@ fn with_offer_keys(tw: &mut TestWorld) {
 fn boot_over(
     world: World,
     store: HashMap<SmolStr, mush_core::ModuleBootData>,
+    typed_first: Option<&BTreeMap<(SmolStr, SmolStr), serde_json::Value>>,
     keyed: bool,
     cfg: &TacsimConfig,
 ) -> TestWorld {
@@ -169,6 +170,12 @@ fn boot_over(
     let mut engine =
         mush_core::Engine::with_modules(world, registry, Roster(cfg.clone()).modules())
             .expect("the roster composes");
+    // Production's order (`mush_server::modules::boot_modules`), when asked: the typed records
+    // hydrated before any module's load hook runs, so a boot hook that reads them (the field
+    // host's resume reads the site record) sees what the store holds.
+    if let Some(typed) = typed_first {
+        hydrate(&mut engine, typed);
+    }
     if keyed {
         assert!(tacsim::surface::install_geology(
             &mut engine.world,
@@ -199,7 +206,7 @@ pub(crate) fn stocked_tuned(tune: impl FnOnce(&mut TacsimConfig)) -> Rig {
 
 fn stocked_under(keyed: bool, cfg: TacsimConfig) -> Rig {
     let (world, _) = mush_testkit::boot_world();
-    let mut tw = boot_over(world, HashMap::new(), keyed, &cfg);
+    let mut tw = boot_over(world, HashMap::new(), None, keyed, &cfg);
     with_offer_keys(&mut tw);
     let oracle = Arc::new(MapOracle::default());
     install_oracle(&mut tw, &oracle);
@@ -230,11 +237,38 @@ pub(crate) fn retune(rig: &mut Rig, tune: impl FnOnce(&mut TacsimConfig)) {
 /// Fold every write since the first boot and reboot keyed into the same roster; every
 /// connection drops (a real restart has no sessions) and `reconnect` come back.
 pub(crate) fn reboot(rig: Rig, reconnect: &[ObjId]) -> Rig {
-    reboot_with(rig, reconnect, true)
+    reboot_with(rig, reconnect, true, false)
 }
 
-/// [`reboot`], keyed or not (a restart without the geology key darkens the layer).
-fn reboot_with(rig: Rig, reconnect: &[ObjId], keyed: bool) -> Rig {
+/// **[`reboot`] in production's boot order** (doc 36a lane 5): the typed records hydrated before
+/// the modules load, as `mush_server::modules::boot_modules` does, so the field host's boot finds
+/// the site record and resumes a running field. [`reboot`] hydrates them after the load, so a
+/// field there never finds its site record and voids at the restart (doc 36a lane 5's
+/// follow-up: the CF-1 exit gate fails on a true resume).
+pub(crate) fn reboot_resuming(rig: Rig, reconnect: &[ObjId]) -> Rig {
+    reboot_with(rig, reconnect, true, true)
+}
+
+/// The typed records into `engine`'s action state.
+fn hydrate(
+    engine: &mut mush_core::Engine,
+    typed: &BTreeMap<(SmolStr, SmolStr), serde_json::Value>,
+) {
+    engine
+        .hydrate_action_state(
+            typed
+                .iter()
+                .map(|((ns, key), value)| {
+                    ActionStateBootRecord::new(ns.clone(), key.clone(), value.clone())
+                })
+                .collect::<Vec<_>>(),
+        )
+        .expect("the typed state hydrates");
+}
+
+/// [`reboot`], keyed or not (a restart without the geology key darkens the layer), and with the
+/// typed records hydrated before the modules load or after.
+fn reboot_with(rig: Rig, reconnect: &[ObjId], keyed: bool, typed_first: bool) -> Rig {
     let Rig {
         mut tw,
         cfg,
@@ -252,17 +286,16 @@ fn reboot_with(rig: Rig, reconnect: &[ObjId], keyed: bool) -> Rig {
     for id in connected {
         world.set_connected(id, false);
     }
-    let mut tw = boot_over(world, store.clone(), keyed, &cfg);
-    tw.engine_mut()
-        .hydrate_action_state(
-            typed
-                .iter()
-                .map(|((ns, key), value)| {
-                    ActionStateBootRecord::new(ns.clone(), key.clone(), value.clone())
-                })
-                .collect::<Vec<_>>(),
-        )
-        .expect("the typed state hydrates");
+    let mut tw = boot_over(
+        world,
+        store.clone(),
+        typed_first.then_some(&typed),
+        keyed,
+        &cfg,
+    );
+    if !typed_first {
+        hydrate(tw.engine_mut(), &typed);
+    }
     with_offer_keys(&mut tw);
     install_oracle(&mut tw, &oracle);
     for who in reconnect {
@@ -1542,7 +1575,7 @@ pub(crate) fn on_pad_at(
 /// A world booted without the geology key (the census reads no key), its ticks swept once.
 fn booted() -> TestWorld {
     let (world, _) = mush_testkit::boot_world();
-    let mut tw = boot_over(world, HashMap::new(), false, &rig_config());
+    let mut tw = boot_over(world, HashMap::new(), None, false, &rig_config());
     sweep(&mut tw, 120);
     tw
 }
@@ -1952,7 +1985,7 @@ fn sm4b_a_dark_site_still_warms_its_way_home() {
     let (pilot, _, tvs) = on_pad(&mut rig, 1);
     launched(&mut rig, pilot, tvs[0]);
     let keyed = home_field(&rig.tw);
-    let mut rig = reboot_with(rig, &[pilot], false);
+    let mut rig = reboot_with(rig, &[pilot], false, false);
     assert!(!cached(&rig.tw));
     assert_eq!(home_built(&rig.tw), None);
     let (_, queued) = fire(&mut rig);
@@ -2406,7 +2439,7 @@ fn sm4b_recover_from_afar_drives_home_and_climbs_aboard() {
     put_charge(&mut rig, tv, 100_000, true);
     launched(&mut rig, pilot, tv);
     let keyed_cu = leg.cu;
-    let mut rig = reboot_with(rig, &[pilot], false);
+    let mut rig = reboot_with(rig, &[pilot], false, false);
     // Staff place the rig far out after restart through the durable placement seam.
     to_cell(&mut rig, tv, far);
     let dark = INSTRUMENTS_DARK.to_owned();

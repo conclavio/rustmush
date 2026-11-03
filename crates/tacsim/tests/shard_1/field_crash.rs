@@ -85,6 +85,21 @@ async fn until_dropping(
 
 /// **The restart**: every task stopped and its egress drained, then [`reboot`].
 async fn crash(rig: Rig, rx: &mut Receiver<ArenaOut>, reconnect: &[ObjId]) -> Rig {
+    reboot(stopped(rig, rx).await, reconnect)
+}
+
+/// **The restart in production's boot order** ([`crate::driving::reboot_resuming`]): every task
+/// stopped and its egress drained, then a reboot that resumes a running field.
+pub(crate) async fn crash_resuming(
+    rig: Rig,
+    rx: &mut Receiver<ArenaOut>,
+    reconnect: &[ObjId],
+) -> Rig {
+    crate::driving::reboot_resuming(stopped(rig, rx).await, reconnect)
+}
+
+/// Every task stopped and its egress drained.
+async fn stopped(rig: Rig, rx: &mut Receiver<ArenaOut>) -> Rig {
     let tasks = rig
         .tw
         .world()
@@ -93,7 +108,7 @@ async fn crash(rig: Rig, rx: &mut Receiver<ArenaOut>, reconnect: &[ObjId]) -> Ri
         .expect("the registry");
     tasks.shutdown(tacsim::arena_bridge::JOIN_TIMEOUT).await;
     while rx.try_recv().is_ok() {}
-    reboot(rig, reconnect)
+    rig
 }
 
 fn in_field(rig: &Rig, unit: ObjId) -> bool {
