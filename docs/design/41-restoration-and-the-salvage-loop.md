@@ -726,7 +726,7 @@ the bare form keeping today's automatic choice:
 | Kind | Library ground | Evidence source the switch names | Who may file |
 |---|---|---|---|
 | `recovery` | `UnlawfulRecovery` | the challenger's own `SensorLog` or `DirectWitness` (the pin's witnesses, delivered reports) | anyone holding such evidence |
-| `procedure` | `DefectiveProcedure` | **the registry's own records**: the contract's audience against `principal_holders` of the title (someone who answers was not told), the filing registry against the site's, a pin missing or replaced (P1-4), and the hull's black box — the registry reads the `SortieClosed { RecoveredToBase, recovered_by }` line and vacates a claim whose claimant is not the recoverer the box names | whoever answers for the title |
+| `procedure` | `DefectiveProcedure` | **the registry's own records**: the contract's audience against who answers for the title (someone was not told), the filing registry against the site's, a pin missing or replaced (P1-4), and the hull's black box checked **against the custody row, never against the claimant**: the claimant is `custody.holder`, a character (the carrier's operator, `custodian_of`, `tow.rs:880–886`; `claim.rs:612`), while the box's `SortieClosed { RecoveredToBase { base }, recovered_by }` names the **tug unit** (`tow.rs:1630`, `.recovered_by(tv)`) — so the registry vacates a claim whose `custody.recovered_by` is not the box's `recovered_by`, or whose `custody.carrier` is not the line's `base`. A hull with no open sortie at the load (a casualty a staff hand placed, `recovery.rs:916/1080`) writes no close line (`tow.rs:1617`), and the line's absence is no ground | whoever answers for the title |
 | `right` | `SuperiorSpecificRight` | a recovery authorization (the grant or the delegation row) held by the challenger and dated before the attach, or a retrieval contract on the hull accepted by the challenger before the attach | its holder |
 
 This resolves GC.6's contradiction: the black box is **never a player's evidence** of an unlawful
@@ -1116,7 +1116,9 @@ provisional unless the line says otherwise.
 - **Proposed default:** `+salvage/contest <hull>[=recovery|procedure|right]`: `recovery` on the
   challenger's sensor or witness evidence; `procedure` on the registry's own records (the audience
   against who answers, the filing registry, the pin, and the hull's box read by the registry — a
-  claimant who is not the box's `recovered_by` is vacated); `right` on an authorization or a retrieval
+  custody row whose tug and carrier are not the box's `recovered_by` and `base` is vacated; the
+  claimant, a character, is never compared with the box's tug, Draft 0.3's correction of round-2
+  item 41-1); `right` on an authorization or a retrieval
   contract dated before the attach. The box is never a player's evidence; story (b) stays on the
   sensor record.
 - **Alternative:** the title holder may read the box from outside the carrier.
