@@ -935,3 +935,31 @@ fn the_observer_has_no_path_into_a_pilot_feed() {
         offences.join("\n")
     );
 }
+
+#[test]
+fn tacsim_integration_tests_never_mutate_space_bubble_book_directly() {
+    let root = repo_root();
+    let tests_dir = root.join("crates/tacsim/tests");
+    let mut files = Vec::new();
+    rust_files(&tests_dir, &mut files);
+    assert!(!files.is_empty(), "expected tacsim integration test files");
+
+    let forbidden = concat!("module_state_mut::<", "SpaceBubbleBook>()");
+    let mut offences = Vec::new();
+    for file in files {
+        let text = fs::read_to_string(&file).unwrap_or_else(|e| panic!("{}: {e}", file.display()));
+        for (idx, line) in text.lines().enumerate() {
+            if line.contains(forbidden) {
+                let rel = file.strip_prefix(&root).unwrap_or(&file);
+                offences.push(format!("{}:{}", rel.display(), idx + 1));
+            }
+        }
+    }
+    assert!(
+        offences.is_empty(),
+        "integration tests in crates/tacsim/tests/ must drive space state through player/admin \
+         commands and tick hooks rather than calling `{forbidden}` \
+         directly (doc 35b §6, §8):\n{}",
+        offences.join("\n")
+    );
+}

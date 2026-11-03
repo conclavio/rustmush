@@ -153,7 +153,16 @@ pub fn space_unit_overlay_for_id(unit_entry_id: &str) -> SpaceUnitOverlay {
         },
         "tacsim.unit.dray_p" => SpaceUnitOverlay {
             unit_id: "tacsim.unit.dray_p",
-            rcs_authority: DockingRcsAuthority::default(),
+            rcs_authority: DockingRcsAuthority {
+                trans_dv_mmps_per_frame: 32,
+                closure_dv_mmps_per_frame: 28,
+                attitude_rate_mdeg_s_per_frame: 195,
+                roll_rate_mdeg_s_per_frame: 260,
+                damp_trans_mmps_per_frame: 16,
+                damp_attitude_mdeg_s_per_frame: 95,
+                damp_roll_mdeg_s_per_frame: 130,
+                kg_per_pulse_batch: 1,
+            },
             torpedo_tubes: Vec::new(),
             lasers: vec![
                 LaserMount::standard_turret("laser_dorsal"),

@@ -21,9 +21,10 @@ pub mod weapons;
 
 pub use bubble::{
     BubbleId, BubbleInputCommand, BubbleInputEntry, BubbleInputTape, BubbleSnapshot,
-    BubbleStepReport, DERELICT_WINDOW_S, EmconPosture, FacetBand, HullStatus, LocalSpaceBubble,
-    MAX_SUBSTEP_MS, ShipSectionId, ShipSectionState, SpaceCombatEvent, SpacePartyId, SpaceRelation,
-    SpaceSectionConsequence, SpaceShipState, SubsystemCrit,
+    BubbleStepReport, CanopyBodyProjection, DERELICT_WINDOW_S, EmconPosture, FacetBand, HullStatus,
+    LocalSpaceBubble, MAX_SUBSTEP_MS, ShipSectionId, ShipSectionState, SpaceCombatEvent,
+    SpacePartyId, SpaceRelation, SpaceSectionConsequence, SpaceShipState, SubsystemCrit,
+    default_canopy_bodies_for_site,
 };
 pub use commands::{
     BridgeRole, HELM_HELP, HELM_SWITCHES, HELM_VERB, HOLOTANK_FEED, MINE_HELP, MINE_SWITCHES,
@@ -31,7 +32,8 @@ pub use commands::{
     SPACE_DOCKING_FEED, SpaceContactObservation, TAC_HELP, TAC_SWITCHES, TAC_VERB,
     emcon_level_for_posture, emcon_posture_for_level, evaluate_space_contact_detection,
     heading_order_vector, helm_cmd, hull_aboard_for_actor, is_hull_captain, mine_cmd,
-    observe_bubble_contacts, parse_emcon_token, seat_role_for_actor, tac_cmd,
+    observe_bubble_contacts, parse_emcon_token, rcs_authority_for_hull, seat_role_for_actor,
+    tac_cmd,
 };
 pub use custody::{
     ALL_FACET_BANDS, ALL_SHIP_SECTIONS, SpaceUnitOverlay, apply_space_unit_overlay,

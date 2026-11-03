@@ -14,9 +14,13 @@ import { describe, expect, it } from "vitest";
 import { decodeCockpitFrame, type CockpitContact } from "./cockpit";
 import {
   canvasClickHeadingDeg,
+  createWebDockingSession,
+  dockOrderToFrameInput,
+  formatWebDockingTapeCommand,
   gateLine,
   gateWord,
   helmLine,
+  isWebDockingClamped,
   lockOrder,
   LOOK_MDEG_PER_S,
   nextLock,
@@ -26,14 +30,17 @@ import {
   pickCanvasContact,
   pictureCommand,
   pictureKey,
+  playWebDockingToClamp,
   predictedOffsetCm,
   spacePictureKey,
   speedLine,
   speedOutstanding,
   speedStep,
   steppedSpeed,
+  stepWebDockingFrame,
   stepZoomPermille,
   swingLook,
+  webDockingFeedOverlay,
   wrapMdeg,
 } from "./picture";
 import { PictureStore } from "./stores/picture.svelte";
@@ -389,5 +396,60 @@ describe("the keyframes the picture is drawn from here (doc 21 cut G.3b)", () =>
     expect(store.spaceMode).toBe("holotank");
     store.observeSpaceDocking({ session_id: "dock.ship.1" });
     expect(store.spaceMode).toBe("docking");
+  });
+
+  it("plays the 60 Hz web client docking game to clamp and formats +helm/dock tape <session_id> <rle>", () => {
+    const feed = {
+      session_id: "dock-42-1",
+      dx_mm: -480,
+      dy_mm: -420,
+      dz_mm: 2400,
+      vx_mmps: 0,
+      vy_mmps: 0,
+      vz_mmps: 0,
+      pitch_mdeg: -2880,
+      yaw_mdeg: 2520,
+      roll_mdeg: -3840,
+      pitch_rate_mdeg_s: 0,
+      yaw_rate_mdeg_s: 0,
+      roll_rate_mdeg_s: 0,
+      dampeners: true,
+      target_tumble_mdeg_s: [0, 0, 0],
+      rcs_authority: {
+        trans_dv_mmps_per_frame: 32,
+        closure_dv_mmps_per_frame: 28,
+        attitude_rate_mdeg_s_per_frame: 195,
+        roll_rate_mdeg_s_per_frame: 260,
+        damp_trans_mmps_per_frame: 16,
+        damp_attitude_mdeg_s_per_frame: 95,
+        damp_roll_mdeg_s_per_frame: 130,
+        kg_per_pulse_batch: 1,
+      },
+    };
+    const session = createWebDockingSession(feed);
+    expect(session).not.toBeNull();
+    if (!session) return;
+
+    const rightKey = spacePictureKey("d", "docking");
+    expect(rightKey).toEqual({ kind: "dockOrder", cmd: "DOCK TRANS RIGHT" });
+    const rightInput = dockOrderToFrameInput("DOCK TRANS RIGHT");
+    expect(rightInput).not.toBeNull();
+    if (rightInput) {
+      stepWebDockingFrame(session, rightInput);
+    }
+    expect(session.vxMmps).toBe(32);
+    expect(isWebDockingClamped(session)).toBe(false);
+
+    const clampKey = spacePictureKey("c", "docking");
+    expect(clampKey).toEqual({ kind: "dockOrder", cmd: "DOCK CLAMP ASSIST" });
+    expect(playWebDockingToClamp(session)).toBe(true);
+    expect(isWebDockingClamped(session)).toBe(true);
+
+    const overlay = webDockingFeedOverlay(session, feed);
+    expect(overlay.status).toBe("ALIGNED-READY");
+    expect(overlay.gates_green).toBe(5);
+
+    const cmd = formatWebDockingTapeCommand(session);
+    expect(cmd.startsWith("+helm/dock tape dock-42-1 ")).toBe(true);
   });
 });

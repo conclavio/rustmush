@@ -1515,6 +1515,13 @@ fn expire_stale_docking_sessions(ctx: &mut Ctx<'_>, now: &ClockStamp) {
                 .propellant_ledger_mut(hull)
                 .record_burn_kg(vault_tank_t, 15);
         }
+        let has_active_bubble = ctx
+            .w
+            .module_state::<SpaceBubbleBook>()
+            .is_some_and(|b| b.active_for_hull(hull).is_some());
+        if !has_active_bubble {
+            let _ = mush_sim::resume_carrier_journey(ctx, hull, now);
+        }
         crate::port::voyage::narrate_hull(
             ctx,
             hull,
@@ -2141,7 +2148,11 @@ fn step_free_flight_records(ctx: &mut Ctx<'_>, now: &ClockStamp) {
     {
         for hull in paused_hulls {
             if let Some(rec) = book.free_flights.get_mut(&hull) {
+                let dt_paused = now.at.saturating_sub(rec.last_ic_s).max(0);
                 rec.last_ic_s = rec.last_ic_s.max(now.at);
+                if let Some(arr_ic) = &mut rec.cluster_arrival_ic_s {
+                    *arr_ic = arr_ic.saturating_add(dt_paused);
+                }
             }
         }
     }
@@ -2150,6 +2161,7 @@ fn step_free_flight_records(ctx: &mut Ctx<'_>, now: &ClockStamp) {
     }
 
     let mut target_vels: BTreeMap<ObjId, Option<[i64; 3]>> = BTreeMap::new();
+    let mut target_positions: BTreeMap<ObjId, Option<[i64; 3]>> = BTreeMap::new();
     if let Some(store) = ctx.w.module_state::<TacsimStore>()
         && let Ok(lane) = mush_core::CanonicalId::new(crate::definitions::content::LANE_PACK)
         && let Some(version) = store.applied_in(ctx.w, &lane)
@@ -2161,20 +2173,44 @@ fn step_free_flight_records(ctx: &mut Ctx<'_>, now: &ClockStamp) {
                     .velocity_mps(&body, now.at)
                     .map(|[vx, vy, vz]| [i64::from(vx), i64::from(vy), i64::from(vz)]);
                 target_vels.insert(*hull, vel);
+                let pos = sky.position_km(&body, now.at).map(|p| [p.x, p.y, p.z]);
+                target_positions.insert(*hull, pos);
             }
         }
     }
 
+    let mut arrived_bodies: Vec<(ObjId, String)> = Vec::new();
     if let Some(book) = ctx.w.module_state_mut::<SpaceBubbleBook>() {
-        for (hull, _) in hulls {
-            let tvel = target_vels.get(&hull).copied().flatten();
-            if let Some(rec) = book.free_flights.get_mut(&hull) {
+        for (hull, _) in &hulls {
+            let tvel = target_vels.get(hull).copied().flatten();
+            let tpos = target_positions.get(hull).copied().flatten();
+            if let Some(rec) = book.free_flights.get_mut(hull) {
                 let dt_ic_s = now.at.saturating_sub(rec.last_ic_s);
                 if dt_ic_s > 0 {
                     rec.step_ic_s(dt_ic_s, tvel);
                 }
+                if super::mining::OrbitalClusterId::parse(rec.target_place.as_str()).is_none()
+                    && rec
+                        .cluster_arrival_ic_s
+                        .is_some_and(|arr_ic| now.at >= arr_ic)
+                {
+                    if let Some(pos) = tpos {
+                        rec.pos_km = pos;
+                    }
+                    if let Some(vel) = tvel {
+                        rec.vel_mps = vel;
+                    }
+                    rec.cluster_arrival_ic_s = None;
+                    arrived_bodies.push((*hull, rec.target_place.as_str().to_owned()));
+                }
             }
         }
+    }
+    for (hull, body_name) in arrived_bodies {
+        let line = format!(
+            "[SPACE] Arrived in orbit at `{body_name}`; bridge canopy tracking local system."
+        );
+        crate::port::voyage::narrate_hull(ctx, hull, &line);
     }
 
     // Promote any free-flight hulls that have reached their destination orbital cluster (`SF.R9`, `D-35-5`):
@@ -2214,6 +2250,9 @@ fn step_free_flight_records(ctx: &mut Ctx<'_>, now: &ClockStamp) {
             cluster.as_str(),
         );
         crate::port::voyage::narrate_hull(ctx, hull, &line);
+    }
+    for (hull, _) in hulls {
+        super::commands::push_space_panels(ctx, hull);
     }
 }
 

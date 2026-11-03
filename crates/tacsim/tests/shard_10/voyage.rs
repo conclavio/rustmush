@@ -7676,3 +7676,341 @@ fn sfr15_hull_fidelity_splits_rear_hit_per_dray_json_strips_pdc_and_refits_in_ba
         "bay after repair completion: {bay_after}"
     );
 }
+
+/// **Doc 35 cut SF.R16 (`Q-35-5`, `D-35-14`, `D-35-15`, `D-35-16`, `doc 35` §9 Story 2, `35b` §5 #14 & §8 `SF.R16`)**:
+/// Client 60 Hz docking game, per-hull `rcs_authority`, per-session randomised start pose, and Neptune/Triton canopy:
+/// 1. All 5 hull classes (`dray`, `dray_p`, `corvette`, `raider_heavy`, `halcyon`) expose distinct
+///    `DockingRcsAuthority` profiles in `space.docking`.
+/// 2. A hand-typed / constant-pose tape (`DockingChallenge::standard_port`) or a stale tape from a
+///    previous session submitted against a randomised session pose fails `OutOfGate`.
+/// 3. Playing the shared 60 Hz client docking game (`mush_pixel::docking::DockingClientSession`)
+///    from the `space.docking` keyframe clamps all 5 gates with bit-identical client/server final
+///    6-DOF poses and docks the ship via `+helm/dock tape <session_id> <rle>`.
+/// 4. Flying a Tier-1 free-flight expedition to Neptune/Triton (`+helm/autopilot neptune`) emits a
+///    `space.cockpit` keyframe with `"neptune"` and `"triton"` in `"bodies"`, and both bodies
+///    render visibly on the bridge canopy (`SpaceCockpitPicture`).
+#[test]
+#[allow(clippy::too_many_lines)]
+fn sfr16_client_docking_game_randomised_pose_and_neptune_canopy() {
+    use mush_pixel::picture::{Feeds, Look, Picture};
+
+    struct SingleFeed<'a>(&'a str, &'a serde_json::Value);
+    impl Feeds for SingleFeed<'_> {
+        fn feed(&self, name: &str) -> Option<&serde_json::Value> {
+            (name == self.0).then_some(self.1)
+        }
+    }
+
+    // 1. Verify all 5 hull classes have distinct `rcs_authority` profiles:
+    let auth_dray = tacsim::space::space_unit_overlay_for_id("tacsim.unit.dray").rcs_authority;
+    let auth_dray_p = tacsim::space::space_unit_overlay_for_id("tacsim.unit.dray_p").rcs_authority;
+    let auth_corvette =
+        tacsim::space::space_unit_overlay_for_id("tacsim.unit.corvette").rcs_authority;
+    let auth_raider =
+        tacsim::space::space_unit_overlay_for_id("tacsim.unit.raider_heavy").rcs_authority;
+    let auth_halcyon =
+        tacsim::space::space_unit_overlay_for_id("tacsim.unit.halcyon").rcs_authority;
+    assert_ne!(auth_dray, auth_dray_p);
+    assert_ne!(auth_dray_p, auth_corvette);
+    assert_ne!(auth_corvette, auth_raider);
+    assert_ne!(auth_raider, auth_halcyon);
+
+    let roster = Roster::default();
+    let mut rig = stocked_with(roster);
+    let (pilot, row) = chartered(&mut rig, "Pilot", 1);
+    let hull = ObjId(row.hull);
+
+    // Refit *Salt Moth* to `Dray-P` (`tacsim.unit.dray_p`):
+    let desk = station_room(&rig.tw, "ceres_port", "room.c05_registry");
+    teleport(&mut rig.tw, pilot, desk);
+    let _ = run(&mut rig.tw, pilot, "+coop/refit prospector");
+    assert_eq!(
+        tacsim::space::rcs_authority_for_hull(rig.tw.world(), hull),
+        auth_dray_p,
+        "refitted Dray-P hull must resolve Dray-P DockingRcsAuthority"
+    );
+
+    load(&mut rig, &row, 70, 50);
+    set_rate(&mut rig.tw, 3_600);
+    board(&mut rig, pilot);
+
+    // Fly to within 10 IC seconds of Stickney Yards so we are inside the port collar envelope:
+    let pending = undock_and_burn(&mut rig, pilot, hull);
+    let depart_ic = pending.plan.depart_ic;
+    let leg1_secs = i64::from(pending.plan.legs[0].secs);
+    let _ = fire_quietly(&mut rig);
+    let _ = to_ic(&mut rig, depart_ic + leg1_secs / 2);
+    let dec_out = run(&mut rig.tw, pilot, "+helm/decouple");
+    assert!(
+        dec_out.contains("Decoupled from corridor leg"),
+        "decouple output: {dec_out}"
+    );
+    let auto_out = run(&mut rig.tw, pilot, "+helm/autopilot stickney");
+    assert!(
+        auto_out.contains("Autopilot engaged for Stickney Yards"),
+        "autopilot stickney output: {auto_out}"
+    );
+    let auto_submits = drain(&mut rig.tw);
+    land_quietly(&mut rig, &auto_submits);
+    let arrival_at = journey(&rig.tw, hull)
+        .and_then(|j| j.arrival_at())
+        .expect("recoupled arrival_at");
+    let _ = to_ic(&mut rig, arrival_at - 7_200);
+    set_rate(&mut rig.tw, 1);
+    let _ = to_ic(&mut rig, arrival_at - 10);
+
+    // 2. Initiate session 1 (`+helm/dock stickney`): verify a hand-typed tape solved for the
+    //    constant `standard_port` pose fails against the randomised session pose:
+    let dock1_out = run(&mut rig.tw, pilot, "+helm/dock stickney");
+    assert!(
+        dock1_out.contains("[DOCKING] Initiated 60 fps 6-DOF docking session"),
+        "dock1 initiation: {dock1_out}"
+    );
+    let (sid1, ch1) = {
+        let book = rig
+            .tw
+            .world()
+            .module_state::<tacsim::space::SpaceBubbleBook>()
+            .expect("SpaceBubbleBook");
+        let s = book.docking_sessions.get(&hull).expect("session 1");
+        (s.challenge.session_id.clone(), s.challenge.clone())
+    };
+    assert_eq!(ch1.rcs_authority, auth_dray_p);
+    let constant_challenge = tacsim::space::DockingChallenge::standard_port(sid1.clone());
+    assert_ne!(
+        ch1.start_pose, constant_challenge.start_pose,
+        "per-session start_pose must be randomised away from constant standard_port"
+    );
+    let hand_typed_constant_tape = tacsim::space::solve_docking_tape(&constant_challenge);
+    let fail1_out = run(
+        &mut rig.tw,
+        pilot,
+        &format!(
+            "+helm/dock tape {sid1} {}",
+            hand_typed_constant_tape.encode_rle()
+        ),
+    );
+    assert!(
+        (fail1_out.contains("Docking input tape rejected: collar gates not aligned")
+            || fail1_out.contains("[DOCKING] Hard collar bounce"))
+            && !fail1_out.contains("Hard dock and magnetic collar seal confirmed"),
+        "hand-typed constant-pose tape must fail against randomised pose: {fail1_out}"
+    );
+    let fail1_burn = drain(&mut rig.tw);
+    land_quietly(&mut rig, &fail1_burn);
+
+    // Initiate session 2 (`+helm/dock stickney`): verify replaying session 1's solved tape
+    // against session 2's randomised pose also fails:
+    let session1_valid_tape = tacsim::space::solve_docking_tape(&ch1);
+    let _ = run(&mut rig.tw, pilot, "+helm/dock stickney");
+    let (sid2, ch2) = {
+        let book = rig
+            .tw
+            .world()
+            .module_state::<tacsim::space::SpaceBubbleBook>()
+            .expect("SpaceBubbleBook");
+        let s = book.docking_sessions.get(&hull).expect("session 2");
+        (s.challenge.session_id.clone(), s.challenge.clone())
+    };
+    assert_ne!(
+        ch1.start_pose, ch2.start_pose,
+        "consecutive docking sessions must have distinct start poses"
+    );
+    let fail2_out = run(
+        &mut rig.tw,
+        pilot,
+        &format!(
+            "+helm/dock tape {sid2} {}",
+            session1_valid_tape.encode_rle()
+        ),
+    );
+    assert!(
+        (fail2_out.contains("Docking input tape rejected: collar gates not aligned")
+            || fail2_out.contains("[DOCKING] Hard collar bounce"))
+            && !fail2_out.contains("Hard dock and magnetic collar seal confirmed"),
+        "stale tape from previous session must fail against new session pose: {fail2_out}"
+    );
+    let fail2_burn = drain(&mut rig.tw);
+    land_quietly(&mut rig, &fail2_burn);
+
+    // 3. Initiate session 3 (`+helm/dock stickney`), capture the `space.docking` panel frame,
+    //    play the shared 60 Hz client docking game (`mush_pixel::docking::DockingClientSession`),
+    //    and submit its RLE tape to clamp at Stickney Yards:
+    let dock3_events = rig.tw.run(pilot, "+helm/dock stickney");
+    let dock_panel = dock3_events
+        .iter()
+        .find_map(|(_, ev)| match ev {
+            OutputEvent::Panel { feed, data, .. }
+                if feed.as_str() == tacsim::space::SPACE_DOCKING_FEED =>
+            {
+                Some(data.clone())
+            }
+            _ => None,
+        })
+        .expect("space.docking panel keyframe emitted on +helm/dock");
+
+    let mut client_game = mush_pixel::docking::DockingClientSession::from_feed(&dock_panel);
+    assert_eq!(client_game.rcs_authority.trans_dv_mmps_per_frame, 32);
+    client_game.play_to_clamp();
+    assert!(
+        client_game.clamped(),
+        "60 Hz client docking game must clamp within max_frames"
+    );
+
+    let ch3 = rig
+        .tw
+        .world()
+        .module_state::<tacsim::space::SpaceBubbleBook>()
+        .expect("SpaceBubbleBook")
+        .docking_sessions
+        .get(&hull)
+        .expect("session 3")
+        .challenge
+        .clone();
+    let decoded_tape = tacsim::space::DockingInputTape::decode_rle(&client_game.encode_rle())
+        .expect("decode client RLE");
+    let server_replay =
+        tacsim::space::replay_docking_tape(&ch3, &decoded_tape).expect("server replay");
+    assert_eq!(
+        server_replay.outcome,
+        tacsim::space::DockingOutcome::Clamped
+    );
+    assert_eq!(
+        server_replay.final_pose.lateral_x_mm,
+        client_game.pose.dx_mm
+    );
+    assert_eq!(
+        server_replay.final_pose.lateral_y_mm,
+        client_game.pose.dy_mm
+    );
+    assert_eq!(server_replay.final_pose.range_z_mm, client_game.pose.dz_mm);
+    assert_eq!(
+        server_replay.final_pose.vel_x_mmps,
+        client_game.pose.vx_mmps
+    );
+    assert_eq!(
+        server_replay.final_pose.vel_y_mmps,
+        client_game.pose.vy_mmps
+    );
+    assert_eq!(
+        server_replay.final_pose.closure_mmps,
+        client_game.pose.vz_mmps
+    );
+    assert_eq!(
+        i64::from(server_replay.final_pose.pitch_err_mdeg),
+        client_game.pose.pitch_mdeg
+    );
+    assert_eq!(
+        i64::from(server_replay.final_pose.yaw_err_mdeg),
+        client_game.pose.yaw_mdeg
+    );
+    assert_eq!(
+        i64::from(server_replay.final_pose.roll_err_mdeg),
+        client_game.pose.roll_mdeg
+    );
+
+    let clamp_cmd = client_game.format_tape_command();
+    let clamp_out = run(&mut rig.tw, pilot, &clamp_cmd);
+    assert!(
+        clamp_out.contains("Hard dock and magnetic collar seal confirmed at Stickney Yards"),
+        "client game tape must clamp at Stickney Yards: {clamp_out}"
+    );
+    let clamp_burn = drain(&mut rig.tw);
+    land_quietly(&mut rig, &clamp_burn);
+    assert!(
+        matches!(
+            tacsim::port::ship::berth_of(rig.tw.world(), hull),
+            tacsim::port::ship::Berth::Docked { .. }
+        ),
+        "ship must be Berth::Docked at Stickney Yards after client docking game clamp"
+    );
+
+    // 4. Tier-1 free-flight expedition to Neptune & Triton (`doc 35` §9 Story 2 steps 3–4, `D-35-15`):
+    let neptune_events = rig.tw.run(pilot, "+helm/autopilot neptune");
+    let neptune_text = said(&rig.tw, &neptune_events, pilot);
+    assert!(
+        neptune_text.contains("Autopilot engaged for celestial body `neptune`"),
+        "neptune autopilot output: {neptune_text}"
+    );
+    let neptune_draws = drain(&mut rig.tw);
+    land_quietly(&mut rig, &neptune_draws);
+
+    let cockpit_panel = neptune_events
+        .iter()
+        .find_map(|(_, ev)| match ev {
+            OutputEvent::Panel { feed, data, .. }
+                if feed.as_str() == tacsim::space::SPACE_COCKPIT_FEED =>
+            {
+                Some(data.clone())
+            }
+            _ => None,
+        })
+        .expect("space.cockpit panel keyframe emitted for Neptune expedition");
+
+    let bodies = cockpit_panel
+        .get("bodies")
+        .and_then(serde_json::Value::as_array)
+        .expect("bodies array in space.cockpit");
+    let body_ids: Vec<&str> = bodies
+        .iter()
+        .filter_map(|b| b.get("id").and_then(serde_json::Value::as_str))
+        .collect();
+    assert!(
+        body_ids.contains(&"neptune") && body_ids.contains(&"triton"),
+        "Neptune expedition canopy must include both `neptune` and `triton` in `bodies`: {body_ids:?}"
+    );
+
+    // Render `cockpit_panel` through `SpaceCockpitPicture` and verify Neptune (cobalt-azure) and
+    // Triton (pinkish-nitrogen ice) pixels render on the canopy viewport:
+    let mut canopy_pic = mush_pixel::space_cockpit::SpaceCockpitPicture::new();
+    let mut canopy_frame = mush_pixel::Frame::new(640, 360);
+    let feeds = SingleFeed(tacsim::space::SPACE_COCKPIT_FEED, &cockpit_panel);
+    assert!(
+        canopy_pic.draw(&mut canopy_frame, &feeds, &Look::default()),
+        "SpaceCockpitPicture must render Neptune & Triton canopy keyframe"
+    );
+
+    // Sample the rendered canopy around Neptune's projected centre (`bearing=0, pitch=-4`)
+    // and Triton's projected centre (`bearing=26, pitch=5`):
+    let (nep_cx, nep_cy) = mush_pixel::space_cockpit::project_canopy(
+        (640, 360),
+        (0.0, -4.0),
+        (0.0, 0.0, 0.0),
+        mush_pixel::space_cockpit::CANOPY_FOV_DEG,
+    )
+    .expect("Neptune projected on canopy");
+    let mut neptune_lit_pixels = 0usize;
+    for y in (nep_cy - 35).max(0) as usize..=(nep_cy + 35).min(359) as usize {
+        for x in (nep_cx - 35).max(0) as usize..=(nep_cx + 35).min(639) as usize {
+            let [r, _g, b] = canopy_frame.get(x, y);
+            if b > 100 && b > r {
+                neptune_lit_pixels += 1;
+            }
+        }
+    }
+    assert!(
+        neptune_lit_pixels > 200,
+        "Neptune disc must render cobalt-azure lit pixels on the canopy (got {neptune_lit_pixels})"
+    );
+
+    let (tri_cx, tri_cy) = mush_pixel::space_cockpit::project_canopy(
+        (640, 360),
+        (26.0, 5.0),
+        (0.0, 0.0, 0.0),
+        mush_pixel::space_cockpit::CANOPY_FOV_DEG,
+    )
+    .expect("Triton projected on canopy");
+    let mut triton_lit_pixels = 0usize;
+    for y in (tri_cy - 20).max(0) as usize..=(tri_cy + 20).min(359) as usize {
+        for x in (tri_cx - 20).max(0) as usize..=(tri_cx + 20).min(639) as usize {
+            let [r, g, b] = canopy_frame.get(x, y);
+            if r > 60 && g > 50 && b > 50 {
+                triton_lit_pixels += 1;
+            }
+        }
+    }
+    assert!(
+        triton_lit_pixels > 40,
+        "Triton disc must render lit pixels on the canopy (got {triton_lit_pixels})"
+    );
+}

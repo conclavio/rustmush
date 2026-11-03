@@ -499,8 +499,28 @@ pub struct PixelView {
     /// When the current `seen_t_ms` cockpit frame was first observed, for
     /// sub-pulse smooth weapon cooldown countdowns.
     frame_arrived_at: Option<Instant>,
+    /// Local 60 Hz 6-DOF client docking session (`SF.R16`, `D-35-14`).
+    docking_session: Option<mush_pixel::docking::DockingClientSession>,
+    /// Session ID of the most recently submitted `+helm/dock tape` command.
+    docking_submitted_session: Option<String>,
     /// Counters.
     pub stats: Stats,
+}
+
+struct DockingFeedsOverride<'a> {
+    inner: &'a dyn Feeds,
+    docking_override: Option<Value>,
+}
+
+impl Feeds for DockingFeedsOverride<'_> {
+    fn feed(&self, name: &str) -> Option<&Value> {
+        if name == mush_pixel::docking::SPACE_DOCKING_FEED
+            && let Some(ref ov) = self.docking_override
+        {
+            return Some(ov);
+        }
+        self.inner.feed(name)
+    }
 }
 
 impl Default for PixelView {
@@ -572,16 +592,49 @@ impl PixelView {
             auto_fire_armed: false,
             weapon_ids: Vec::new(),
             frame_arrived_at: None,
+            docking_session: None,
+            docking_submitted_session: None,
             stats: Stats::default(),
         }
     }
 
+    /// Synchronize the local 60 Hz [`mush_pixel::docking::DockingClientSession`] with the
+    /// `space.docking` feed keyframe (`SF.R16`, `D-35-14`).
+    pub fn sync_docking_session(&mut self, feeds: &dyn Feeds) {
+        let Some(dock_feed) = feeds.feed(mush_pixel::docking::SPACE_DOCKING_FEED) else {
+            self.docking_session = None;
+            return;
+        };
+        let Some(feed_sid) = dock_feed.get("session_id").and_then(Value::as_str) else {
+            self.docking_session = None;
+            return;
+        };
+        if self
+            .docking_session
+            .as_ref()
+            .is_none_or(|s| s.session_id.as_str() != feed_sid)
+        {
+            self.docking_session = Some(mush_pixel::docking::DockingClientSession::from_feed(
+                dock_feed,
+            ));
+        }
+    }
+
+    /// Inspect the active 60 Hz client docking session, if any (`SF.R16`).
+    #[must_use]
+    pub fn docking_session(&self) -> Option<&mush_pixel::docking::DockingClientSession> {
+        self.docking_session.as_ref()
+    }
+
     /// The frame clock's wait: `[pixel]`'s clock (20 Hz, in either encoder),
-    /// its low clock while stepped down, or ~1 ms when uncapped.
+    /// its low clock while stepped down, 60 Hz (`16 ms`) in [`PictureKind::Docking`],
+    /// or ~1 ms when uncapped.
     #[must_use]
     pub fn interval(&self) -> Duration {
         if self.uncapped {
             FRAME_INTERVAL_UNCAPPED
+        } else if self.kind == PictureKind::Docking && !self.stepped_down {
+            Duration::from_millis(16)
         } else if self.kind == PictureKind::Replay && self.replay.playing {
             REPLAY_PLAY_INTERVAL
         } else if matches!(
@@ -1330,10 +1383,100 @@ impl PixelView {
             }
             return KeyUse::Used;
         }
-        // The Out-of-Time-Loop 6-DOF Docking Camera's keys (doc 35 cut SF.7, D-35-16):
+        // The Out-of-Time-Loop 6-DOF Docking Camera's keys (doc 35 cut SF.7 & SF.R16, D-35-14, D-35-16):
         // WASD translation, Arrow Keys pitch/yaw, Q/E roll, R/F closure pulse, X dampeners,
-        // `v` view mode toggle, while preserving digits '0'..'9' for global screen switching.
+        // C/Space 60 Hz guidance-assist clamp, `v` view mode toggle, while preserving digits '0'..'9'
+        // for global screen switching.
         if self.kind == PictureKind::Docking {
+            if matches!(
+                key,
+                Key::Char('0'..='9' | '"' | ':' | ';' | '\\' | '/' | '?' | 'p')
+                    | Key::Enter
+                    | Key::Esc
+                    | Key::Ctrl(_)
+                    | Key::Alt(_)
+            ) {
+                return KeyUse::Passed;
+            }
+            if key == Key::Char('v') {
+                self.cycle_space_view();
+                return KeyUse::Used;
+            }
+            if let Some(ref mut session) = self.docking_session {
+                use mush_pixel::docking::DockingClientInput;
+                let mut stepped = true;
+                match key {
+                    Key::Char('w' | 'W') => session.step_60fps(DockingClientInput {
+                        trans_y: 1,
+                        ..Default::default()
+                    }),
+                    Key::Char('s' | 'S') => session.step_60fps(DockingClientInput {
+                        trans_y: -1,
+                        ..Default::default()
+                    }),
+                    Key::Char('a' | 'A') => session.step_60fps(DockingClientInput {
+                        trans_x: -1,
+                        ..Default::default()
+                    }),
+                    Key::Char('d' | 'D') => session.step_60fps(DockingClientInput {
+                        trans_x: 1,
+                        ..Default::default()
+                    }),
+                    Key::Up => session.step_60fps(DockingClientInput {
+                        pitch_trim: 1,
+                        ..Default::default()
+                    }),
+                    Key::Down => session.step_60fps(DockingClientInput {
+                        pitch_trim: -1,
+                        ..Default::default()
+                    }),
+                    Key::Left => session.step_60fps(DockingClientInput {
+                        yaw_trim: -1,
+                        ..Default::default()
+                    }),
+                    Key::Right => session.step_60fps(DockingClientInput {
+                        yaw_trim: 1,
+                        ..Default::default()
+                    }),
+                    Key::Char('q' | 'Q') => session.step_60fps(DockingClientInput {
+                        roll_trim: -1,
+                        ..Default::default()
+                    }),
+                    Key::Char('e' | 'E') => session.step_60fps(DockingClientInput {
+                        roll_trim: 1,
+                        ..Default::default()
+                    }),
+                    Key::Char('r' | 'R') => session.step_60fps(DockingClientInput {
+                        closure_pulse: 1,
+                        ..Default::default()
+                    }),
+                    Key::Char('f' | 'F') => session.step_60fps(DockingClientInput {
+                        closure_pulse: -1,
+                        ..Default::default()
+                    }),
+                    Key::Char('x' | 'X') => session.step_60fps(DockingClientInput {
+                        toggle_dampeners: true,
+                        ..Default::default()
+                    }),
+                    Key::Char('c' | 'C' | ' ') => {
+                        session.play_to_clamp();
+                    }
+                    _ => {
+                        stepped = false;
+                    }
+                }
+                if stepped {
+                    self.last_sent = None;
+                    if session.clamped()
+                        && self.docking_submitted_session.as_deref()
+                            != Some(session.session_id.as_str())
+                    {
+                        self.docking_submitted_session = Some(session.session_id.clone());
+                        self.orders.push(session.format_tape_command());
+                    }
+                }
+                return KeyUse::Used;
+            }
             match key {
                 Key::Char('w' | 'W') => self.orders.push("DOCK TRANS UP".to_string()),
                 Key::Char('s' | 'S') => self.orders.push("DOCK TRANS DOWN".to_string()),
@@ -1348,12 +1491,6 @@ impl PixelView {
                 Key::Char('r' | 'R') => self.orders.push("DOCK CLOSURE FORWARD".to_string()),
                 Key::Char('f' | 'F') => self.orders.push("DOCK CLOSURE REVERSE".to_string()),
                 Key::Char('x' | 'X') => self.orders.push("DOCK DAMPENERS TOGGLE".to_string()),
-                Key::Char('v') => self.cycle_space_view(),
-                Key::Char('0'..='9' | '"' | ':' | ';' | '\\' | '/' | '?' | 'p')
-                | Key::Enter
-                | Key::Esc
-                | Key::Ctrl(_)
-                | Key::Alt(_) => return KeyUse::Passed,
                 _ => {}
             }
             return KeyUse::Used;
@@ -1638,6 +1775,23 @@ impl PixelView {
         let Some(encoder) = self.encoder(now) else {
             return Vec::new();
         };
+        self.sync_docking_session(feeds);
+        let docking_override = if self.kind == PictureKind::Docking {
+            let base = feeds
+                .feed(mush_pixel::docking::SPACE_DOCKING_FEED)
+                .cloned()
+                .unwrap_or(Value::Null);
+            self.docking_session
+                .as_ref()
+                .map(|s| s.to_feed_value(&base))
+        } else {
+            None
+        };
+        let wrapped_feeds = DockingFeedsOverride {
+            inner: feeds,
+            docking_override,
+        };
+        let feeds: &dyn Feeds = &wrapped_feeds;
         // G.1b: the write before this tick's was slow; let the link drain.
         if std::mem::take(&mut self.skip_next) {
             self.stats.slow_skips += 1;
@@ -3565,5 +3719,71 @@ mod tests {
         for digit in '0'..='9' {
             assert_eq!(v.key(Key::Char(digit), t0), KeyUse::Passed);
         }
+    }
+
+    #[test]
+    fn sfr16_tui_docking_client_session_plays_60fps_and_submits_rle_tape() {
+        let t0 = Instant::now();
+        let mut v = PixelView::new();
+        v.probe_sent(t0);
+        v.graphics_reply(true);
+
+        let mut space_feeds = std::collections::HashMap::new();
+        space_feeds.insert(
+            mush_pixel::docking::SPACE_DOCKING_FEED.to_string(),
+            serde_json::json!({
+                "session_id": "dock-42-1",
+                "target_label": "CERES CENTRAL PORT",
+                "target_kind": "station",
+                "paused_from_world_tick": true,
+                "dx_mm": -480,
+                "dy_mm": -420,
+                "dz_mm": 2400,
+                "pitch_mdeg": -2880,
+                "yaw_mdeg": 2520,
+                "roll_mdeg": -3840,
+                "vx_mmps": 0,
+                "vy_mmps": 0,
+                "vz_mmps": 0,
+                "dampeners": true,
+                "status": "APPROACHING",
+                "target_tumble_mdeg_s": [0, 0, 0],
+                "rcs_authority": {
+                    "trans_dv_mmps_per_frame": 32,
+                    "closure_dv_mmps_per_frame": 28,
+                    "attitude_rate_mdeg_s_per_frame": 195,
+                    "roll_rate_mdeg_s_per_frame": 260,
+                    "damp_trans_mmps_per_frame": 16,
+                    "damp_attitude_mdeg_s_per_frame": 95,
+                    "damp_roll_mdeg_s_per_frame": 130,
+                    "kg_per_pulse_batch": 1
+                }
+            }),
+        );
+
+        assert!(v.toggle_for(PictureKind::Docking, t0));
+        assert_eq!(v.interval(), Duration::from_millis(16));
+        assert!(!v.paint(&space_feeds, 120, 40, t0).is_empty());
+        assert_eq!(
+            v.docking_session().map(|s| s.session_id.as_str()),
+            Some("dock-42-1")
+        );
+
+        // Step one manual 60 Hz frame (`d` -> +X translation) and verify local pose advances:
+        assert_eq!(v.key(Key::Char('d'), t0), KeyUse::Used);
+        assert_eq!(v.docking_session().map(|s| s.pose.vx_mmps), Some(32));
+        assert!(v.take_orders().is_empty(), "not yet clamped");
+
+        // Complete the 60 Hz client docking game (`c`) -> clamps all 5 gates and emits
+        // `+helm/dock tape dock-42-1 <rle>`:
+        assert_eq!(v.key(Key::Char('c'), t0), KeyUse::Used);
+        assert!(v.docking_session().is_some_and(|s| s.clamped()));
+        let orders = v.take_orders();
+        assert_eq!(orders.len(), 1);
+        assert!(
+            orders[0].starts_with("+helm/dock tape dock-42-1 "),
+            "unexpected order: {}",
+            orders[0]
+        );
     }
 }

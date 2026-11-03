@@ -96,6 +96,7 @@ fault-injection = []
 [dev-dependencies]
 mush-testkit.workspace = true
 mush-proto.workspace = true
+mush-pixel.workspace = true
 # 17g cut C3a: `minds::market_commands::tests`' panel projection test asks the
 # workspace's own projection lens (`assert_projection_text_clean`), as the
 # gateway's and the SSH TUI's projection tests do. A dev-dependency is no edge
