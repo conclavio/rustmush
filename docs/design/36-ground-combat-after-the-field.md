@@ -3240,6 +3240,29 @@ Every cut of §7 has landed. What each as-built section left open, gathered in o
   - GC.3/4: the close's black-box line is covered only by review.
   - Expensive to reverse (owner decision, doc 37 §6): the workshops live in existing rooms (GC.7/GC.8a); moving them now means re-homing berthed hulls.
 
+### 36a lane 2, the bay, as built (2026-11-02)
+
+Doc 36a §10's lane 2, one PR against `main`, one commit an item, each with a regression test in
+`crates/tacsim/tests/shard_1/bay_36a.rs` driven through `+bay/*` as a player types it (the fixtures
+are staff's: the hulls' damage through the unit's one plan path, a spare titled by `@asset/transfer`,
+a salvor's custody row seeded on Urvara's site record).
+
+| Item | What changed | Test |
+|---|---|---|
+| §5.1 the ordinal desync | a given-up act rolls `record.acts` back to the ledger's `landed()` and the next act takes `landed + 1` (`next_act`); a strip's or a scrap's unit plan is written only when its mint lands (`strip::land_mint`, from the tick's settle), so a lost mint destroys nothing; the trigger needs no bad intent (two rearms against one load; `take` reserves nothing) and the hull takes a new order after the give-up | `b36a_1_a`, `b36a_1_b` |
+| P0-6 | `take` and `finish` dry-run `jobs::work` on a throwaway book before the fee and before the draw is owed; `cancel_order` refuses SETTLING while an act is owed (the Draw owed and not landed; the Draw landed and not yet settled); `settle` drops an owed Draw whose order has closed before submitting it | `b36a_2_a`, `b36a_2_b`, `b36a_2_c` |
+| P1-2 | live custody by another answers `right_of` None (the custodian alone acts, as Salvor); `berth` needs the run of the carrier (`helm_holder` / `yard::operates`) or custody aboard her; a berth's carrier serves the hull only while the actor has that run or the one who berthed her still holds a title, lease or custody the bay can read for them (`berth_stands`, read by stow, strip, scrap and a drawing order; a grant is Org's owner read and answers for the command's caller alone); `holds_title` reads `bay_hull_title_stands` | `b36a_3_a` |
+| P1-7 | `held()` is true for a scrapped shell; `hull_named` skips scrapped hulls | `b36a_4_a` |
+| P2-4 | strip and scrap refuse before any plan when `PortCapacity` would refuse the bulk lots (`hold_takes`); the Mint's prepare checks the plan the offer carries (`"plans"`); `@inv/dissolve` consults the new `mush_inventory::PoolCapacity` seam, which tacsim's `PortCapacity` implements and the composition wires | `b36a_5_a`, `b36a_5_b`, `b36a_5_c` |
+| P2-5 | `complete` runs the work under `custody_for` from the order's right (a salvor under `PendingSalvageClaim`, cancelled when the custody has ended) at `world_ic_now().at`; berth and stow refuse SETTLING | `b36a_6_a`, `b36a_6_b` |
+| §5.4 the stanza | `owe_mint` and `vacate_claim` no longer call `settle`: the tick alone submits `tacsim_bay_work`; the `+bay` note in `legacy-handlers.toml` says so | `b36a_7_a` |
+| P0-1 | no code; the owner question with today's numbers in doc 36a §9.1 | — |
+
+Still owed from this lane: the prior owner's recourse over a hull a vacated claim left berthed off a
+salvor's carrier (today: no stow into that bay, no lot into that hold, and no verb returns her — a
+carrier of the owner's own must take her, which `+bay/stow` does not yet do); GC.6's remains scrap
+has no capacity check (doc 36a lane 1).
+
 ### F-6 under load, as built (2026-11-03)
 
 `f6_a_carrier_lifts_out_of_a_running_field_only_on_the_confirmation` was the one red cell left on

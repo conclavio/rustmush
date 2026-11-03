@@ -35,18 +35,18 @@ Nothing of this is deployed (doc 37 §3.2). The fixes are grouped into four lane
 | P0-3 Occator rig title | PARTLY | P1 | the award is refused while the lease encumbers the rig; it posts after the 28-day write-off |
 | P0-4 `repossess` no charge | BY-DESIGN | P2 (owner) | doc 36 GC.9 "Not built here" names it; reached only via dormancy or `@coop/revoke` |
 | P0-5 non-logistics hull bricks the bay | **CONFIRMED, worse** | **P0** | nothing filters the load; `carried_rig` fails every `basis`; the load can target a stranger's carrier |
-| P0-6 lot lost after the draw | PARTLY | P1 | doomed orders (component in a destroyed section) and cancel-during-draw confirmed; hull-moved race by design |
+| P0-6 lot lost after the draw | PARTLY | P1 | doomed orders (component in a destroyed section) and cancel-during-draw confirmed; hull-moved race by design; **fixed** lane 2 `42206731` |
 | P0-7 side effects before commit | PARTLY | P2 | the Vacate→Withdrawn flip is refuted; a one-second award/contest boundary and a lost `Loaded` remain |
 | P0-8 demotion erases casualties | PARTLY | P1 | parts 1–2 confirmed (unplace precedes `pose_of`; held-out rows wiped); the `wreck_bay_rigs` step refuted |
-| P0-9 strip/scrap before the mint | PARTLY, **new P1** | P1 | the writes are by design; a given-up act desyncs `record.acts` and bricks the hull (§5) |
+| P0-9 strip/scrap before the mint | PARTLY, **new P1** | P1 | the writes are by design; a given-up act desyncs `record.acts` and bricks the hull (§5); **fixed** lane 2 `cb4df20c` |
 | P0-10 BehindSlot drains into a commit | PARTLY | P3 | the designed behaviour; only the BEHIND_SLOT_WAITING promise is broken |
 | P1-1 bay wreck skips the 28-day bar | BY-DESIGN | P3 (owner) | doc 32:1321 and doc 36:693 — the lessee pays restoration up to the deposit |
-| P1-2 owner acts on a hull in custody | CONFIRMED | P1 | `right_of` ranks title first; `berth` checks no carrier right; a vacated claim stows into the salvor's bay |
+| P1-2 owner acts on a hull in custody | CONFIRMED | P1 | `right_of` ranks title first; `berth` checks no carrier right; a vacated claim stows into the salvor's bay; **fixed** lane 2 `307b76ee` |
 | P1-3 `TowOrders` clobber | CONFIRMED | P1 | `+salvage/inspect` spam kills a queued contest; eviction cap is 4,096 not 64 |
 | P1-4 attach race drops the pin | CONFIRMED | P1 | a second tug's attach replaces the pin; the winner loads with none; no `Recovery` entry, claim refused |
 | P1-5 left-behind rigs not indexed | BY-DESIGN | — | an operational rig "stays where it stands, still yours" (CF.5); the write-off is for disabled rigs (Q-36-22) |
 | P1-6 delegated crew blocked | PARTLY | P2 | the delegation gap is real and fails closed; the slots-5/6 half is refuted |
-| P1-7 bay/refit blind; scrapped shell | PARTLY | P2 | both sides pin the revision; no resurrection; the scrapped shell is loose and any player can `get` it |
+| P1-7 bay/refit blind; scrapped shell | PARTLY | P2 | both sides pin the revision; no resurrection; the scrapped shell is loose and any player can `get` it; **fixed** lane 2 `111e5d6f` |
 | P1-8 `DecisionResult` guard | PARTLY | P2 | the retained-seal path latches an integrity freeze; the legacy-work path only drops the answer |
 | P1-9 condition table dropped | PARTLY | P2 | real since M6 for mind hulls; pilot hulls by design; hash/power by design |
 | P1-10 `Release` lacks `promoted` | CONFIRMED | P1 | a release draining after a promotion drops the casualty from the index |
@@ -56,8 +56,8 @@ Nothing of this is deployed (doc 37 §3.2). The fixes are grouped into four lane
 | P2-1 `+field/void` window | BY-DESIGN | P4 | the comment at `standing.rs:296` states it; the proposed fix would break the void |
 | P2-2 pickup capacity, landholder | PARTLY, worse | P2 | there is no capacity check at all, so the hopper overfills; `landholder: None` confirmed |
 | P2-3 cockpit `heard`; rig panel leak | PARTLY | P3 | `heard` is empty on the cockpit; the panel is per seated pilot, no leak |
-| P2-4 mint with no capacity | CONFIRMED | P2 | strip, scrap, the Mint and `@inv/dissolve` all skip capacity; GC.6's remains scrap too |
-| P2-5 berth/stow guard; wall clock | PARTLY | P3 | all true in the code, none has an effect; no `CancelFee` act exists |
+| P2-4 mint with no capacity | CONFIRMED | P2 | strip, scrap, the Mint and `@inv/dissolve` all skip capacity; GC.6's remains scrap too; **fixed** lane 2 `3803351a` (the bay and `@inv/dissolve`; GC.6's scrap is lane 1's) |
+| P2-5 berth/stow guard; wall clock | PARTLY | P3 | all true in the code, none has an effect; no `CancelFee` act exists; **fixed** lane 2 `93619a2f` |
 | P2-6 `+ship/plan` gates | PARTLY | P3 | `lift_refusal`, `bay_over_line` and the queue's `departure_refusal` missing; `detachment_out` is present |
 | P2-7 BehindSlot barriers | PARTLY | P4 | barriers answered `Busy` on shutdown/exit; one notice per line is by design |
 | P2-8 medical quarantine | REFUTED | — | quarantine needs a work order; a medical room takes none; `workshop_at` does not exist |
@@ -190,13 +190,15 @@ GC.2), "there is no tow yet" (205–206; GC.3/4), and parked armed parties "keep
    destroys the part or hull and mints nothing. A player triggers it by selling an order's munitions before the
    due time (the Draw is refused "hold does not carry", act.rs:697). Fix: roll `record.acts` back to
    `landed()` on give-up, or accept any `act > ledger.acts`; apply strip/scrap plans only once the mint lands.
+   **Fixed** lane 2 `cb4df20c` (the roll-back; `strip::land_mint`).
 2. **A wreck can be loaded into a stranger's carrier** (P0-5's rider): `load_cmd` picks the nearest carrier
    in reach and no arm checks the carrier's owner.
 3. **The one-second award/contest boundary** (§4, P0-7).
 4. **`+bay`'s allowlist stanza is wrong** (P2): `legacy-handlers.toml:49–54` says the tick submits the owed
    act, but `/strip`, `/scrap` and staff `vacate_claim` call `settle → act::submit → submit_authoritative`
    inside the handler, against `submit_authoritative`'s "perform no world mutation" contract
-   (mush-core module.rs:6438). The reviewer blamed `take` and `cancel_order`, which do not.
+   (mush-core module.rs:6438). The reviewer blamed `take` and `cancel_order`, which do not. **Fixed** lane 2
+   `23d0afab`: the tick alone submits; the stanza now says so.
 5. **GC.6's as-built overclaims**: doc 36:3153 says the rights table reads O's Salvor right before the award;
    the test asserts only Title after, and no `+bay` act by O exercises the right.
 
@@ -261,9 +263,18 @@ facts: `launched()` lands on the plain path; `land_composed` has **exactly one c
 ## 9. Owner questions raised
 
 1. **A part price** (P0-1): keep the workshop as an uncapped vendor at 400 cr, or price `Replace{lot: None}`.
+   Lane 2 (2026-11-02) changed no code here. The question, with today's numbers: a `replace` with no lot
+   costs 400 cr × 1.2 at Ceres (480 cr) and 4 IC h, and the workshop supplies the part inside that labour
+   without limit — keep that as the one source of parts, or price the part?
 2. **Repossession damage charge** (P0-4): already doc 37 §6.3; the dormancy path makes it a leak.
 3. **Does the 28-day bar follow a rig that came home wrecked** (P1-1)?
 4. **Delegated crew** (P1-6): fail-closed today; is a delegate meant to board?
+5. **The scrap yield against the hold** (surfaced by P2-4's gate, lane 2): `scrap_hull` yields
+   `SCRAP_KG_PER_STRUCTURAL_POINT` (100 kg) a surviving structural point, so a whole escort (2,990 points)
+   is 299 t of `structural_alloys`, against a Dray-P hold rated 86 t by mass — and a bay slot that takes the
+   same escort at 20 t. With the gate, `+bay/scrap` of a whole escort off a Dray-P is always refused; a worn
+   one (a quarter of its points) fits. Is the yield 15× too high (a mush-tactics constant), or should a
+   workshop scrap spill to the port's stock rather than the carrier's hold?
 
 ## 10. Fix lanes
 
@@ -275,7 +286,10 @@ that reproduces the review's steps as a player would type them.
   P2-2.
 - **Lane 2, the bay** (`port/bay_work/*`, `legacy-handlers.toml`): the ordinal desync (§5.1), P0-6, P1-2,
   P1-7's shell, P2-4, P2-5's `at_ic` and `PendingSalvageClaim`, the stanza; a note closing P0-1's question
-  one way or the other.
+  one way or the other. **Built 2026-11-02**, one commit an item: `cb4df20c` §5.1, `42206731` P0-6,
+  `307b76ee` P1-2, `111e5d6f` P1-7, `3803351a` P2-4, `93619a2f` P2-5, `23d0afab` the stanza; P0-1 stays
+  the owner's (§9.1). Tests: `crates/tacsim/tests/shard_1/bay_36a.rs`. As built: doc 36, "36a lane 2, the
+  bay, as built".
 - **Lane 3, carrier, site, kernel, world task** (`port/vehicle.rs`, `surface/tow.rs` load/set_down,
   `field/close.rs`, `surface/raid.rs`, `port/boarding.rs`, `port/voyage.rs`, `arena/join.rs`,
   `mush-server/src/world_task*`): P0-5 with the stranger's-carrier rider, P0-8, P1-11, P1-6's delegation,
