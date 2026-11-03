@@ -1329,6 +1329,12 @@ impl ActionProvider for TowProvider {
                 }
             }
             TowOrder::Release { .. } => {
+                // Doc 36a P1-10 (Q-CF-30): a release draining after a hostile mark promoted the
+                // site waits like every other surface act; otherwise the retired tow's casualty
+                // is neither fielded nor carried, and the demotion drops it.
+                if promoted {
+                    return Err(refused(crate::surface::site_record::FIELD_OPEN_CODE));
+                }
                 // Doc 36 cut GC.6 (Q-36-26): a release starts the tenure again.
                 let released = record
                     .tows

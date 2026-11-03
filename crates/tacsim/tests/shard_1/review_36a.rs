@@ -21,6 +21,7 @@
 //! | P0-7 the lost `Loaded` | [`p0_7_a_lost_loaded_finish_still_lands_after_the_carrier_has_gone`] |
 //! | P1-3 `TowOrders` clobber | [`p1_3_the_salvors_inspect_spam_does_not_kill_a_queued_contest`] |
 //! | P1-4 the attach race drops the pin | [`p1_4_a_second_tugs_attach_waits_and_the_first_tugs_pin_stands`] |
+//! | P1-10 `Release` lacks `promoted` | [`p1_10_a_release_draining_after_a_promotion_waits`] |
 
 use mush_core::ObjId;
 use mush_economy::{ContractId, ContractState, EconomyStore};
@@ -34,7 +35,7 @@ use crate::driving::{
 };
 use crate::field_gc4::{powerless, seconds_until};
 use crate::field_gc5::skip_to_ic;
-use crate::field_host::{second, site_record, site_record_at, tune};
+use crate::field_host::{armed_on, seat, second, site_record, site_record_at, tune};
 use crate::site_record::{staff, staff_member};
 
 /// Urvara Reach's port entry.
@@ -737,5 +738,53 @@ fn p1_4_a_second_tugs_attach_waits_and_the_first_tugs_pin_stands() {
     assert!(
         preview.contains("You would file a salvage claim") && !preview.contains("carries no title"),
         "{preview}"
+    );
+}
+
+/// **P1-10** (doc 36a §3): every other player arm of the tow action refused under `promoted`;
+/// `Release` did not, and the field gate had run at command time. A release queued before a
+/// hostile mark promotes the site, and draining after it, retired the tow with the casualty
+/// neither fielded nor carried. Now it waits (FIELD_OPEN), and the tow stands.
+#[test]
+fn p1_10_a_release_draining_after_a_promotion_waits() {
+    let mut stage = Stage::build();
+    let (far, far_cell, t, o, tug) = (stage.far, stage.far_cell, stage.t, stage.o, stage.tug);
+    stage.attach(far);
+    // The release is queued on the open ground...
+    let (out, release) = command(&mut stage.rig, o, "+tv/1 release go");
+    assert!(out.contains("lets go of"), "{out}");
+    assert_eq!(release.len(), 1, "one release queued: {out}");
+    // ...and a stranger's hostile mark promotes the site before it drains.
+    let hull = armed_on(
+        &mut stage.rig,
+        URVARA,
+        "Red Hound",
+        (far_cell.0 - 8, far_cell.1),
+        90_000,
+    );
+    seat(&mut stage.rig, hull, t);
+    crate::driving::warm(&mut stage.rig);
+    let (out, mark) = command(&mut stage.rig, t, "+field/mark E=hostile");
+    assert_eq!(mark.len(), 1, "one promotion: {out}");
+    crate::driving::land(&mut stage.rig, &mark[0]).expect("the promotion lands");
+    assert!(
+        record(&mut stage.rig).open_field().is_some(),
+        "the site is promoted"
+    );
+    let refused = crate::driving::land(&mut stage.rig, &release[0])
+        .expect_err("the release waits for the field");
+    assert!(
+        refused.contains("a field is being fought"),
+        "FIELD_OPEN: {refused}"
+    );
+    let after = record(&mut stage.rig);
+    assert_eq!(
+        after.tows.towing(tug).map(|op| op.casualty()),
+        Some(far),
+        "the tow stands"
+    );
+    assert!(
+        after.units.iter().any(|left| left.unit == far),
+        "the casualty is still indexed"
     );
 }
