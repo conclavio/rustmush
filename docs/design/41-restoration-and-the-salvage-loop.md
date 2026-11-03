@@ -91,7 +91,9 @@ mechanism and the facility cost model are doc 39's (its rulings bind; its cuts I
 are referenced below "as revised in Draft 0.4" — doc 39 renumbered its cuts in Draft 0.4, round-2
 item 41-12c — and each dependent cut in §6 states its dependency
 in one line, never their mechanics). Crew aboard a hull in custody, capture and ejection are doc
-42's. The service market (E8), a technician duty (Q-38-15), bounties and standing hits (Q-38-20's
+42's (round-2 item 41-3: doc 41 moves no occupants — a `held_for` return moves the hull, and doc 42's
+capture moves the captive into the captor's carrier at capture; what a `recovery` vacate does to a
+captive taken in that unlawful load is doc 42's residual). The service market (E8), a technician duty (Q-38-15), bounties and standing hits (Q-38-20's
 "later"), facility assaults and persistent known-hostile memory stay out by ruling.
 
 ## 3. The tree at `c83c2eff`: what exists
@@ -467,7 +469,9 @@ standing where a tug would; the library's `max_service_distance_cm` is set to 1,
 definition's `reach_cm`. The tender and the target must both be on the site's index or the ground
 (a casualty, a wreck, or an operational unit between fields; never a hull carried in tow, doc 27a
 §10). Inside a promoted field every `tend` act waits, as every surface act does (Q-CF-30); doc 40's
-coupled kernel unit is the only way a tender works under fire.
+coupled kernel unit is the only way a tender works under fire — and doc 40 is deciding how a coupled
+pair leaves at the ramp (release and demotion only, or a coupled withdraw and load; round-2 X-4), on
+which the tender's rules under fire hang.
 
 **What stabilize does to a casualty.** The library's rule stands: a Damaged section's internals
 are restored up to their maximum (`min(requested, missing)`), the condition reads `intact` at the
@@ -850,8 +854,10 @@ fine". The two rulings meet only if the port acts on proof, not on the bare row.
 
 **What port security reads.** At `TacsimCarrierHooks::arrived`'s `Docked` branch, at a port whose
 registry answers for lane sites (the Freeport Registry: the Ceres ports and Stickney; a frontier
-site has no security), for every principal aboard the docking carrier (the helm holder, the
-operator, the crew the carrier's row lists), every `UnlawfulAct` across the lane's site records that
+site has no security), for the carrier's **master and operator** — her helm holder and the character
+or organization that operates her, never a passenger or a crew member, so a penniless debtor aboard
+another captain's Dray cannot hold it, and a charter's change of hands clears a hold tied to the
+previous master (round-2 item 41-13) — every `UnlawfulAct` across the lane's site records that
 names them as `actor` and is **proven and unsettled**. Proven means one of two things: a `Vacated`
 row on the same hull whose vacating contest was `recovery` (the registry adjudicated it), or a row a
 witness has reported to the registry — `+salvage/report <site>[=<actor>|#<hull>] registry`, a new
