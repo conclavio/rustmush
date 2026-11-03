@@ -12,7 +12,8 @@
 //!   irrecoverable shell in the workshop, its berth freed.
 //! - **When the hull changes** (doc 36a §5.1): a strip or a scrap is checked against the hull
 //!   when it is ordered, but written to it only when its mint has landed ([`land_mint`], from
-//!   the port tick's settle), so a mint given up destroys nothing.
+//!   the port tick's settle), so a mint given up destroys nothing. The command writes the owed
+//!   act and nothing else; the tick submits it (doc 36a §5.4).
 //! - **Room** (doc 36a P2-4): the bulk a strip or a scrap lays in the hold (`structural_alloys`;
 //!   a part is a lot of its own kind and takes no governed room) must fit the hold as it stands
 //!   by [`crate::port::market::PortCapacity`]'s rule, read before any plan is owed
@@ -121,7 +122,8 @@ fn hold_takes(ctx: &Ctx<'_>, vault: VaultId, lots: &[LotMint]) -> Result<(), Str
     Ok(())
 }
 
-/// Owe `lots` minted into `vault` for `why`, as the actor, and settle it at once.
+/// Owe `lots` minted into `vault` for `why`, as the actor. The port tick submits it (doc 36a
+/// §5.4: no command submits inside its handler) and writes the hull when it lands.
 fn owe_mint(
     ctx: &mut Ctx<'_>,
     mut record: BayHull,
@@ -141,9 +143,7 @@ fn owe_mint(
         },
         tries: 0,
     }));
-    let hull = record.hull;
     put_bay_hull(ctx, &record);
-    super::settle(ctx, hull);
 }
 
 /// A part's provenance as it comes off `hull`.
@@ -437,6 +437,5 @@ pub fn vacate_claim(
         tries: 0,
     }));
     put_bay_hull(ctx, &record);
-    super::settle(ctx, hull);
     Ok(())
 }

@@ -681,3 +681,32 @@ async fn b36a_6_b_no_stow_while_the_mint_settles() {
     assert!(stowed.contains("stowed back"), "{stowed}");
     assert!(in_bay(&rig, spare, bay_room(&row)));
 }
+
+/// **36a §5.4 — the tick submits, never the handler.** `+bay/strip` queues no authoritative
+/// submit of its own; the next port tick submits the owed mint — one `tacsim_bay_work`, as the
+/// stripper — and the lot lands when it does.
+#[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+async fn b36a_7_a_the_tick_submits_the_owed_act() {
+    let mut rig = stocked();
+    let (pilot, _, spare) = berthed_spare(&mut rig);
+    let _ = drain(&mut rig.tw);
+    let (out, queued) = command(&mut rig, pilot, &format!("+bay/strip #{}=cannon", spare.0));
+    assert!(out.contains("goes to the carrier's hold"), "{out}");
+    assert!(
+        queued.is_empty(),
+        "the handler submitted {} acts",
+        queued.len()
+    );
+    assert!(bay_record(&rig, spare).owed.is_some());
+    let (_, queued) = fire(&mut rig);
+    let acts: Vec<_> = queued
+        .iter()
+        .filter(|s| s.action.key().id.as_str() == tacsim::port::bay_work::act::BAY_ACT_ACTION)
+        .collect();
+    assert_eq!(acts.len(), 1, "the tick submits the one owed act");
+    assert_eq!(acts[0].actor, pilot);
+    land_quietly(&mut rig, &queued);
+    settle_until(&mut rig, spare);
+    let lot = tacsim::port::bay_work::act::lot_id(spare, 1, 0).expect("the lot");
+    assert!(lot_record(&mut rig, lot).is_some());
+}
