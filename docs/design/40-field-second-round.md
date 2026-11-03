@@ -488,7 +488,7 @@ reason for the record; §6 is the plan built from them.
 
   | Kind | Jammed (off until unjammed) | Damaged (degraded until repaired) | Where the kernel reads it |
   |---|---|---|---|
-  | Sensor | the hull's sight is gone: `UnitState.sensor = None`, no detection, no lock, its contacts age out as a wreck's do | `max_range_cells` at 500 ‰ — detection and lock range; `share_range_cells` untouched | `perception.rs:1236`, `lock_range_step_m` `:2663` |
+  | Sensor | the hull's sight is gone: `UnitState.sensor = None`, no detection, no lock; its contacts age out through `sensor_pass`'s loss band (`perception.rs:1113–1114`, which runs for a platform with no sensor — only `detections` returns early, `:1233`), not cleared at once as a wreck's are (`damage.rs:1439`) | `max_range_cells` at 500 ‰ of the authored row — detection and lock range; `share_range_cells` untouched | `perception.rs:1236`, `lock_range_step_m` `:2663` |
   | Ecm | the pod radiates nothing: `jammer = None`; the field's `jam_radius_cm` shrinks | the same (the ruling: "their modifiers off") | `state.rs:2185`, `:2656` |
   | Eccm | the filter is off: `eccm = None` | the same | `state.rs:2215` |
   | Power | the plant is `Power::Off`: motion and fire refuse (Q-40-4) | the heat ceiling and the dissipation at 500 ‰, read-side (`heat_max()` scaled, the cell untouched); on the surface the rig's recharge at 500 ‰ (host, doc 20 SM.4a's charge) | `heat.rs:82`, `:148`; `excursion.rs` |
@@ -500,6 +500,18 @@ reason for the record; §6 is the plan built from them.
   the bay. A jammed or damaged core that falls below a mind's sealed class drops the mind to the
   ROM at its next landing, as a destroyed section's `DegradeCore` does today, and it is not
   re-seated when the class returns: a mind comes back at the next check-out.
+
+  **Where each baseline lives.** The pod and the filter are re-read from their cells
+  (`Jammer::read`, `perception.rs:372`; `Eccm::read`, `:448`) and the heat ceiling is the cell's
+  own maximum (`state.rs:1655`), so those rows derive from the unit and nothing is halved in
+  place. The sensor row is on no cell: the host hands it at check-out (`CustodyUnit.sensor`,
+  `state.rs:1894`, onto `UnitState.sensor`, `:2168`) and nowhere else holds it, so a derivation
+  that halved `max_range_cells` on each run would compound (500 ‰, then 250 ‰). `UnitState`
+  keeps the authored row while the derived one differs from it (`sensor_authored:
+  Option<SensorProfile>`, `None` meaning the live row is the authored one, so it encodes and
+  folds only when present, as `coupled_to` does, §4a), and `apply_part_effects` derives `sensor`
+  from the authored row and the part's condition word — the profile names its part
+  (`SensorProfile.component`, `resolution.rs:1037`), one lookup — never from the live row.
 
   The core's cell is left to `DegradeCore`: that consequence lowers `core_class` by one with
   `AdjustCell −1` (`damage.rs:1158–1166`), the check-in copies every changed cell home
