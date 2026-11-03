@@ -88,20 +88,41 @@ pub const MAX_BUBBLE_TAPE_ENTRIES: usize = 64;
 /// Maximum number of completed bubble summary records retained in [`SpaceBubbleBook::completed`] (`SF.R10`, `35b` §5 #9).
 pub const MAX_COMPLETED_BUBBLES: usize = 8;
 
-/// Active interdiction bubble bound to a promoted [`CarrierJourney`].
+/// Per-carrier entry inside a domain-keyed [`ActiveInterdictionBubble`] (`SF.R12`, `D-35-5`).
+#[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize)]
+pub struct BubbleCarrierEntry {
+    /// Carrier hull root object id.
+    pub hull: ObjId,
+    /// Carrier ship id inside [`ActiveInterdictionBubble::bubble`].
+    pub ship_id: String,
+    /// 1-based leg cursor at which this carrier was promoted.
+    pub leg_cursor: u32,
+    /// Departure IC timestamp of the [`CarrierJourney`] when promoted.
+    pub departed_at_ic_s: i64,
+    /// Last `propellant_kg` synced into [`HullPropellantLedger`] (`SF.R11`).
+    pub last_synced_propellant_kg: u32,
+    /// Whether this carrier is actively executing a `+helm/approach` burn toward a derelict (`SF.R9`).
+    #[serde(default)]
+    pub approaching_derelict: bool,
+    /// Whether this carrier is holding the bubble open while docking with / towing a derelict (`SF.R9`).
+    #[serde(default)]
+    pub holding_for_salvage: bool,
+}
+
+/// Active interdiction bubble bound to a promoted waypoint [`DomainId`] (`SF.R12`, `D-35-5`).
 #[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize)]
 pub struct ActiveInterdictionBubble {
-    /// Carrier hull root object id.
+    /// Primary carrier hull root object id.
     pub hull: ObjId,
     /// Hostile interdictor hull object id.
     pub interdictor_hull: ObjId,
     /// Promoted waypoint domain id.
     pub domain: DomainId,
-    /// Carrier ship id inside [`Self::bubble`].
+    /// Primary carrier ship id inside [`Self::bubble`].
     pub carrier_ship_id: String,
     /// Hostile interdictor ship id inside [`Self::bubble`].
     pub interdictor_ship_id: String,
-    /// 1-based leg cursor at which the carrier was promoted.
+    /// 1-based leg cursor at which the primary carrier was promoted.
     pub leg_cursor: u32,
     /// W-clock IC timestamp (seconds) when the bubble was opened.
     pub opened_ic_s: i64,
@@ -129,9 +150,118 @@ pub struct ActiveInterdictionBubble {
     /// Last carrier `propellant_kg` synced into [`HullPropellantLedger`] (`SF.R11`, `D-35-6`).
     #[serde(default)]
     pub last_synced_propellant_kg: u32,
+    /// All promoted carrier hulls participating in this domain bubble (`SF.R12`, `D-35-5`).
+    #[serde(default, with = "super::bubble::vec_tuple_map")]
+    pub carriers: BTreeMap<ObjId, BubbleCarrierEntry>,
+    /// Mapping from ship id in [`LocalSpaceBubble::ships`] to real world [`ObjId`] (`SF.R12`).
+    #[serde(default)]
+    pub ship_hulls: BTreeMap<String, ObjId>,
+    /// Persistent Rhai memory bytes for a non-picket interdictor (`INTERDICTOR_PATROL_RHAI`, `SF.R12`).
+    #[serde(default)]
+    pub interdictor_memory: Vec<u8>,
+    /// Think sequence counter for a non-picket interdictor (`SF.R12`).
+    #[serde(default)]
+    pub interdictor_think_seq: u64,
 }
 
 impl ActiveInterdictionBubble {
+    /// Return whether `hull` is a promoted carrier participating in this domain bubble (`SF.R12`).
+    #[must_use]
+    pub fn contains_carrier(&self, hull: ObjId) -> bool {
+        self.hull == hull || self.carriers.contains_key(&hull)
+    }
+
+    /// Return the ship id in [`Self::bubble`] for carrier `hull` (`SF.R12`).
+    #[must_use]
+    pub fn carrier_ship_id_for(&self, hull: ObjId) -> &str {
+        if let Some(entry) = self.carriers.get(&hull) {
+            entry.ship_id.as_str()
+        } else {
+            self.carrier_ship_id.as_str()
+        }
+    }
+
+    /// Return the promoted leg cursor for carrier `hull` (`SF.R12`).
+    #[must_use]
+    pub fn carrier_leg_cursor_for(&self, hull: ObjId) -> u32 {
+        self.carriers
+            .get(&hull)
+            .map_or(self.leg_cursor, |e| e.leg_cursor)
+    }
+
+    /// Resolve the real world [`ObjId`] for `ship_id` inside this bubble (`SF.R12`).
+    #[must_use]
+    pub fn hull_for_ship_id(&self, ship_id: &str) -> Option<ObjId> {
+        if let Some(&h) = self.ship_hulls.get(ship_id) {
+            return Some(h);
+        }
+        if ship_id == self.carrier_ship_id {
+            return Some(self.hull);
+        }
+        if ship_id == self.interdictor_ship_id {
+            return Some(self.interdictor_hull);
+        }
+        if let Some(picket) = &self.picket {
+            if ship_id == picket.corvette_ship_id {
+                return Some(picket.corvette_hull);
+            }
+            if ship_id == picket.raider_ship_id {
+                return Some(picket.raider_hull);
+            }
+        }
+        for entry in self.carriers.values() {
+            if entry.ship_id == ship_id {
+                return Some(entry.hull);
+            }
+        }
+        ship_id
+            .strip_prefix("hull.")
+            .or_else(|| ship_id.strip_prefix("ship."))
+            .and_then(|s| s.parse::<u32>().ok())
+            .map(ObjId)
+    }
+
+    /// Return all carrier `(hull, ship_id, leg_cursor, departed_at_ic_s)` entries in this bubble (`SF.R12`).
+    #[must_use]
+    pub fn all_carrier_hulls(&self) -> Vec<(ObjId, String, u32, i64)> {
+        if self.carriers.is_empty() {
+            vec![(
+                self.hull,
+                self.carrier_ship_id.clone(),
+                self.leg_cursor,
+                self.opened_ic_s,
+            )]
+        } else {
+            self.carriers
+                .values()
+                .map(|c| (c.hull, c.ship_id.clone(), c.leg_cursor, c.departed_at_ic_s))
+                .collect()
+        }
+    }
+
+    /// Set `approaching_derelict` for `hull` (`SF.R12`).
+    pub fn set_approaching_derelict_for(&mut self, hull: ObjId, val: bool) {
+        if let Some(c) = self.carriers.get_mut(&hull) {
+            c.approaching_derelict = val;
+        }
+        if hull == self.hull || self.carriers.is_empty() {
+            self.approaching_derelict = val;
+        } else {
+            self.approaching_derelict = self.carriers.values().any(|c| c.approaching_derelict);
+        }
+    }
+
+    /// Set `holding_for_salvage` for `hull` (`SF.R12`).
+    pub fn set_holding_for_salvage_for(&mut self, hull: ObjId, val: bool) {
+        if let Some(c) = self.carriers.get_mut(&hull) {
+            c.holding_for_salvage = val;
+        }
+        if hull == self.hull || self.carriers.is_empty() {
+            self.holding_for_salvage = val;
+        } else {
+            self.holding_for_salvage = self.carriers.values().any(|c| c.holding_for_salvage);
+        }
+    }
     /// Compute the adaptive 1:1 wall-clock cadence period (`500 ms`, `1,000 ms`, or `5,000 ms`)
     /// from the bubble's live ordnance and hostile posture (`Q-35-4(1)`, `SF.R10`).
     #[must_use]
@@ -178,7 +308,13 @@ impl ActiveInterdictionBubble {
         if !carrier_operational {
             return false;
         }
-        if self.approaching_derelict || self.holding_for_salvage {
+        if self.approaching_derelict
+            || self.holding_for_salvage
+            || self
+                .carriers
+                .values()
+                .any(|c| c.approaching_derelict || c.holding_for_salvage)
+        {
             return false;
         }
         if self.cleared {
@@ -545,9 +681,12 @@ impl HullPropellantLedger {
 /// live propellant ledgers, orbital cluster mining sessions, and 6-DOF docking sessions (`SF.R1`–`SF.R8`).
 #[derive(Clone, Debug, Default, PartialEq, Eq, Serialize, Deserialize)]
 pub struct SpaceBubbleBook {
-    /// Active interdiction bubbles keyed by carrier hull root [`ObjId`].
+    /// Active interdiction bubbles keyed by waypoint [`DomainId`] (`SF.R12`, `D-35-5`).
     #[serde(default, with = "super::bubble::vec_tuple_map")]
-    pub by_hull: BTreeMap<ObjId, ActiveInterdictionBubble>,
+    pub by_domain: BTreeMap<DomainId, ActiveInterdictionBubble>,
+    /// Carrier legs `(hull, departed_at_ic_s, leg_cursor)` that have already cleared an interdiction bubble (`SF.R12`).
+    #[serde(default)]
+    pub cleared_interdiction_legs: std::collections::BTreeSet<(ObjId, i64, u32)>,
     /// Completed interdiction bubbles keyed by carrier hull root [`ObjId`].
     #[serde(default, with = "super::bubble::vec_tuple_map")]
     pub completed: BTreeMap<ObjId, CompletedInterdictionBubble>,
@@ -612,15 +751,61 @@ pub struct SpaceBubbleBook {
 }
 
 impl SpaceBubbleBook {
-    /// Borrow the active interdiction bubble for `hull`, if any.
+    /// Borrow the active interdiction bubble for `hull`, if any (`SF.R12`).
     #[must_use]
     pub fn active_for_hull(&self, hull: ObjId) -> Option<&ActiveInterdictionBubble> {
-        self.by_hull.get(&hull)
+        self.by_domain
+            .values()
+            .find(|active| active.contains_carrier(hull))
     }
 
-    /// Mutably borrow the active interdiction bubble for `hull`, if any.
+    /// Mutably borrow the active interdiction bubble for `hull`, if any (`SF.R12`).
     pub fn active_for_hull_mut(&mut self, hull: ObjId) -> Option<&mut ActiveInterdictionBubble> {
-        self.by_hull.get_mut(&hull)
+        self.by_domain
+            .values_mut()
+            .find(|active| active.contains_carrier(hull))
+    }
+
+    /// Borrow the active interdiction bubble for `domain`, if any (`SF.R12`).
+    #[must_use]
+    pub fn active_for_domain(&self, domain: DomainId) -> Option<&ActiveInterdictionBubble> {
+        self.by_domain.get(&domain)
+    }
+
+    /// Mutably borrow the active interdiction bubble for `domain`, if any (`SF.R12`).
+    pub fn active_for_domain_mut(
+        &mut self,
+        domain: DomainId,
+    ) -> Option<&mut ActiveInterdictionBubble> {
+        self.by_domain.get_mut(&domain)
+    }
+
+    /// Remove and return the active interdiction bubble containing `hull`, or detach `hull` from
+    /// a multi-carrier domain bubble (`SF.R12`).
+    pub fn remove_carrier_from_active(&mut self, hull: ObjId) -> Option<ActiveInterdictionBubble> {
+        let domain = self
+            .by_domain
+            .iter()
+            .find_map(|(&dom, a)| a.contains_carrier(hull).then_some(dom))?;
+        let mut active = self.by_domain.remove(&domain)?;
+        if active.carriers.len() > 1 {
+            if let Some(removed) = active.carriers.remove(&hull) {
+                active.bubble.ships.remove(&removed.ship_id);
+                active.ship_hulls.remove(&removed.ship_id);
+            }
+            if active.hull == hull
+                && let Some(first) = active.carriers.values().next().cloned()
+            {
+                active.hull = first.hull;
+                active.carrier_ship_id = first.ship_id;
+                active.leg_cursor = first.leg_cursor;
+            }
+            let snapshot = active.clone();
+            self.by_domain.insert(domain, active);
+            Some(snapshot)
+        } else {
+            Some(active)
+        }
     }
 
     /// Borrow the most recent completed interdiction bubble for `hull`, if any.
@@ -743,7 +928,7 @@ pub fn apply_bubble_command(
     let Some(book) = w.module_state_mut::<SpaceBubbleBook>() else {
         return Vec::new();
     };
-    let Some(active) = book.by_hull.get_mut(&hull) else {
+    let Some(active) = book.active_for_hull_mut(hull) else {
         return Vec::new();
     };
     let events = active.tape.record_and_apply(&mut active.bubble, cmd);
@@ -751,10 +936,11 @@ pub fn apply_bubble_command(
     if events.is_empty() {
         return events;
     }
+    let carrier_ship_id = active.carrier_ship_id_for(hull).to_owned();
     let carrier_state = active
         .bubble
         .ships
-        .get(&active.carrier_ship_id)
+        .get(&carrier_ship_id)
         .map(|s| match s.status {
             HullStatus::Operational => OperationalState::Operational,
             HullStatus::DisabledDerelict { .. } => OperationalState::Disabled,
@@ -770,7 +956,6 @@ pub fn apply_bubble_command(
         })
         .unwrap_or(OperationalState::Operational);
     let interdictor_hull = active.interdictor_hull;
-    let carrier_ship_id = active.carrier_ship_id.clone();
     let interdictor_ship_id = active.interdictor_ship_id.clone();
 
     if let Some(salvage_book) = w.module_state_mut::<SalvageClaimBook>() {
@@ -803,7 +988,7 @@ pub fn clear_interdiction_bubble(w: &mut World, hull: ObjId) -> bool {
     let Some(book) = w.module_state_mut::<SpaceBubbleBook>() else {
         return false;
     };
-    let Some(active) = book.by_hull.get_mut(&hull) else {
+    let Some(active) = book.active_for_hull_mut(hull) else {
         return false;
     };
     active.cleared = true;
@@ -943,14 +1128,26 @@ pub fn reacquire_custody_after_boot(ctx: &mut Ctx<'_>) {
         .w
         .module_state::<SpaceBubbleBook>()
         .map(|b| {
-            b.by_hull
-                .iter()
-                .map(|(&hull, active)| (hull, active.domain, active.leg_cursor))
-                .collect()
+            let mut out = Vec::new();
+            for (&domain, active) in &b.by_domain {
+                for (chull, _, cleg, _) in active.all_carrier_hulls() {
+                    out.push((chull, domain, cleg));
+                }
+                out.push((active.interdictor_hull, domain, active.leg_cursor));
+                if let Some(picket) = &active.picket {
+                    out.push((picket.corvette_hull, domain, active.leg_cursor));
+                    if picket.raider_hull != active.interdictor_hull {
+                        out.push((picket.raider_hull, domain, active.leg_cursor));
+                    }
+                }
+            }
+            out
         })
         .unwrap_or_default();
     for (hull, domain, leg_cursor) in active_hulls {
-        if !mush_sim::deployed::is_deployed(ctx.w, hull) {
+        if mush_tactics::module::unit_of(ctx.w, hull).is_some()
+            && !mush_sim::deployed::is_deployed(ctx.w, hull)
+        {
             let mark =
                 mush_sim::DeployedMark::field(format!("domain.{}", domain.0), leg_cursor.max(1));
             let _ = mush_tactics::custody::check_out(ctx, hull, mark);
@@ -1070,6 +1267,71 @@ fn real_now_secs(w: &World, _now: &ClockStamp) -> i64 {
     if wall_s > 0 { wall_s } else { 1 }
 }
 
+/// Resolve the real world owner or charterer [`ObjId`] of `hull` for salvage claim filing (`SF.R12`, `35b` §5 #7).
+#[must_use]
+pub(crate) fn resolve_hull_prior_owner(w: &World, hull: ObjId, recoverer_hull: ObjId) -> ObjId {
+    if let Some(leader) = crate::field::raiders::leader_of(w, hull)
+        && leader != recoverer_hull
+    {
+        return leader;
+    }
+    if let Some(pilot) =
+        w.module_state::<crate::store::TacsimStore>()
+            .and_then(|s| match s.voyage_state(hull) {
+                crate::port::voyage::VoyageState::Present(v) => {
+                    v.departed.as_ref().map(|d| d.pilot)
+                }
+                crate::port::voyage::VoyageState::Absent
+                | crate::port::voyage::VoyageState::Unreadable => None,
+            })
+        && pilot != recoverer_hull
+    {
+        return pilot;
+    }
+    if let Some(owner) = w.get(hull).map(|o| o.owner)
+        && owner != hull
+        && owner != recoverer_hull
+    {
+        return owner;
+    }
+    if mush_core::GOD != recoverer_hull {
+        mush_core::GOD
+    } else {
+        ObjId(2)
+    }
+}
+
+/// Resolve a real world base/port [`ObjId`] for salvage claim filing at `domain` (`SF.R12`, `35b` §5 #7).
+#[must_use]
+pub(crate) fn resolve_nearest_port_base_obj(
+    w: &World,
+    domain: DomainId,
+    recoverer_hull: ObjId,
+) -> ObjId {
+    if let Some(host) = w
+        .module_state::<SpatialState>()
+        .and_then(|s| s.domains.get(&domain))
+        .map(|d| d.host)
+        && w.get(host).is_some()
+        && host != recoverer_hull
+    {
+        return host;
+    }
+    for (_, map) in crate::port::voyage::lane_ports(w) {
+        if let Some(host_raw) = map.and_then(|m| m.host) {
+            let host = ObjId(host_raw);
+            if w.get(host).is_some() && host != recoverer_hull {
+                return host;
+            }
+        }
+    }
+    if mush_core::GOD != recoverer_hull {
+        mush_core::GOD
+    } else {
+        ObjId(2)
+    }
+}
+
 fn open_salvage_claim_for_derelict(
     w: &mut World,
     derelict_obj: ObjId,
@@ -1101,71 +1363,93 @@ fn clear_resolved_bubbles(ctx: &mut Ctx<'_>, now: &ClockStamp) {
     let Some(book) = ctx.w.module_state::<SpaceBubbleBook>() else {
         return;
     };
-    let cleared_hulls: Vec<ObjId> = book
-        .by_hull
+    let cleared_domains: Vec<DomainId> = book
+        .by_domain
         .iter()
-        .filter(|(hull, active)| {
-            !book.is_hull_paused_for_docking(**hull) && active.is_clear_to_resume()
+        .filter(|(_, active)| {
+            let any_paused = active
+                .all_carrier_hulls()
+                .iter()
+                .any(|(ch, _, _, _)| book.is_hull_paused_for_docking(*ch));
+            !any_paused && active.is_clear_to_resume()
         })
-        .map(|(&hull, _)| hull)
+        .map(|(&domain, _)| domain)
         .collect();
-    if cleared_hulls.is_empty() {
+    if cleared_domains.is_empty() {
         return;
     }
 
     let mut to_finalize = Vec::new();
     if let Some(book) = ctx.w.module_state_mut::<SpaceBubbleBook>() {
-        for hull in cleared_hulls {
-            let Some(active) = book.by_hull.remove(&hull) else {
+        for domain in cleared_domains {
+            let Some(active) = book.by_domain.remove(&domain) else {
                 continue;
             };
-            let carrier_ship = active.bubble.ships.get(&active.carrier_ship_id).cloned();
-            let mut disabled_contacts: Vec<(ObjId, SpaceShipState)> = Vec::new();
+            let carrier_entries: Vec<(ObjId, Option<SpaceShipState>, u32, i64)> = active
+                .all_carrier_hulls()
+                .into_iter()
+                .map(|(ch, sid, cleg, dep_ic)| {
+                    book.cleared_interdiction_legs.insert((ch, dep_ic, cleg));
+                    (ch, active.bubble.ships.get(&sid).cloned(), cleg, dep_ic)
+                })
+                .collect();
+            let mut npc_contacts: Vec<(ObjId, SpaceShipState)> = Vec::new();
             if let Some(iship) = active.bubble.ships.get(&active.interdictor_ship_id) {
-                disabled_contacts.push((active.interdictor_hull, iship.clone()));
+                npc_contacts.push((active.interdictor_hull, iship.clone()));
             }
-            if let Some(picket) = &active.picket
-                && picket.raider_hull != active.interdictor_hull
-                && let Some(rship) = active.bubble.ships.get(&picket.raider_ship_id)
-            {
-                disabled_contacts.push((picket.raider_hull, rship.clone()));
+            if let Some(picket) = &active.picket {
+                if picket.corvette_hull != active.interdictor_hull
+                    && let Some(cship) = active.bubble.ships.get(&picket.corvette_ship_id)
+                {
+                    npc_contacts.push((picket.corvette_hull, cship.clone()));
+                }
+                if picket.raider_hull != active.interdictor_hull
+                    && let Some(rship) = active.bubble.ships.get(&picket.raider_ship_id)
+                {
+                    npc_contacts.push((picket.raider_hull, rship.clone()));
+                }
             }
-            let domain = active.domain;
-            let completed = CompletedInterdictionBubble::from_closed(&active, now.at);
-            if book.completed.len() >= MAX_COMPLETED_BUBBLES
-                && !book.completed.contains_key(&hull)
-                && let Some(&oldest_hull) = book.completed.keys().next()
-            {
-                book.completed.remove(&oldest_hull);
+            for &(ch, _, _, _) in &carrier_entries {
+                let mut completed = CompletedInterdictionBubble::from_closed(&active, now.at);
+                completed.hull = ch;
+                if book.completed.len() >= MAX_COMPLETED_BUBBLES
+                    && !book.completed.contains_key(&ch)
+                    && let Some(&oldest_hull) = book.completed.keys().next()
+                {
+                    book.completed.remove(&oldest_hull);
+                }
+                book.completed.insert(ch, completed);
             }
-            book.completed.insert(hull, completed);
             if book.pending_space_burns.len() > 16 {
                 let excess = book.pending_space_burns.len() - 16;
                 book.pending_space_burns.drain(0..excess);
             }
-            to_finalize.push((hull, domain, carrier_ship, disabled_contacts));
+            to_finalize.push((active.hull, domain, carrier_entries, npc_contacts));
         }
     }
 
     let filed_real_s = real_now_secs(ctx.w, now);
-    for (hull, domain, carrier_ship, disabled_contacts) in to_finalize {
-        if let Some(ship) = &carrier_ship {
-            let _ = check_in_space_unit(ctx, hull, ship, now.at);
+    for (primary_hull, domain, carrier_entries, npc_contacts) in to_finalize {
+        for (ch, cship, _, _) in &carrier_entries {
+            if let Some(ship) = cship {
+                let _ = check_in_space_unit(ctx, *ch, ship, now.at);
+            }
         }
 
-        for (contact_hull, iship) in disabled_contacts {
+        for (contact_hull, iship) in npc_contacts {
+            let assessment = check_in_space_unit(ctx, contact_hull, &iship, now.at).ok();
             if let HullStatus::DisabledDerelict {
                 epoch_open,
                 life_support_remaining_s,
                 salvage_contest_window_s,
             } = iship.status
             {
-                let prior_owner = ObjId(contact_hull.0.saturating_add(1_000));
-                let base_obj = ObjId(domain.0.try_into().unwrap_or(1u32).max(1));
+                let prior_owner = resolve_hull_prior_owner(ctx.w, contact_hull, primary_hull);
+                let base_obj = resolve_nearest_port_base_obj(ctx.w, domain, primary_hull);
                 let title_status = open_salvage_claim_for_derelict(
                     ctx.w,
                     contact_hull,
-                    hull,
+                    primary_hull,
                     prior_owner,
                     base_obj,
                     now.at,
@@ -1181,7 +1465,7 @@ fn clear_resolved_bubbles(ctx: &mut Ctx<'_>, now: &ClockStamp) {
                             epoch_open,
                             life_support_remaining_s,
                             salvage_contest_window_s,
-                            assessment: None,
+                            assessment,
                             salvage_title_status: title_status,
                         },
                     );
@@ -1189,19 +1473,19 @@ fn clear_resolved_bubbles(ctx: &mut Ctx<'_>, now: &ClockStamp) {
             }
         }
 
-        let _ = resume_carrier_journey(ctx, hull, now);
+        for (ch, _, _, _) in &carrier_entries {
+            let _ = resume_carrier_journey(ctx, *ch, now);
+            let line = "[SPACE] Interdiction contact cleared; local bubble closed and transit burn resumed.";
+            crate::port::voyage::narrate_hull(ctx, *ch, line);
+        }
         let any_other_promoted = ctx.w.module_state::<JourneyBook>().is_some_and(|jb| {
-            jb.journeys.values().any(|j| {
-                j.root() != hull
-                    && matches!(j.state(), JourneyState::Promoted { domain: d } if *d == domain)
-            })
+            jb.journeys
+                .values()
+                .any(|j| matches!(j.state(), JourneyState::Promoted { domain: d } if *d == domain))
         });
         if !any_other_promoted {
             let _ = stand_down_domain(ctx, domain, now.clone());
         }
-        let line =
-            "[SPACE] Interdiction contact cleared; local bubble closed and transit burn resumed.";
-        crate::port::voyage::narrate_hull(ctx, hull, line);
     }
 }
 
@@ -1209,25 +1493,41 @@ fn settle_disabled_carrier_bubbles(ctx: &mut Ctx<'_>, now: &ClockStamp) {
     let Some(book) = ctx.w.module_state::<SpaceBubbleBook>() else {
         return;
     };
-    let disabled_hulls: Vec<ObjId> = book
-        .by_hull
+    let disabled_domains: Vec<DomainId> = book
+        .by_domain
         .iter()
         .filter(|(_, active)| active.is_carrier_disabled_and_settled())
-        .map(|(&hull, _)| hull)
+        .map(|(&domain, _)| domain)
         .collect();
-    if disabled_hulls.is_empty() {
+    if disabled_domains.is_empty() {
         return;
     }
 
     let mut settled = Vec::new();
     if let Some(book) = ctx.w.module_state_mut::<SpaceBubbleBook>() {
-        for hull in disabled_hulls {
-            let Some(active) = book.by_hull.remove(&hull) else {
+        for domain in disabled_domains {
+            let Some(active) = book.by_domain.remove(&domain) else {
                 continue;
             };
+            let hull = active.hull;
             let carrier_ship = active.bubble.ships.get(&active.carrier_ship_id).cloned();
-            let domain = active.domain;
             let interdictor_hull = active.interdictor_hull;
+            let mut npc_contacts: Vec<(ObjId, SpaceShipState)> = Vec::new();
+            if let Some(iship) = active.bubble.ships.get(&active.interdictor_ship_id) {
+                npc_contacts.push((active.interdictor_hull, iship.clone()));
+            }
+            if let Some(picket) = &active.picket {
+                if picket.corvette_hull != active.interdictor_hull
+                    && let Some(cship) = active.bubble.ships.get(&picket.corvette_ship_id)
+                {
+                    npc_contacts.push((picket.corvette_hull, cship.clone()));
+                }
+                if picket.raider_hull != active.interdictor_hull
+                    && let Some(rship) = active.bubble.ships.get(&picket.raider_ship_id)
+                {
+                    npc_contacts.push((picket.raider_hull, rship.clone()));
+                }
+            }
             let completed = CompletedInterdictionBubble::from_closed(&active, now.at);
             if book.completed.len() >= MAX_COMPLETED_BUBBLES
                 && !book.completed.contains_key(&hull)
@@ -1240,12 +1540,15 @@ fn settle_disabled_carrier_bubbles(ctx: &mut Ctx<'_>, now: &ClockStamp) {
                 let excess = book.pending_space_burns.len() - 16;
                 book.pending_space_burns.drain(0..excess);
             }
-            settled.push((hull, interdictor_hull, domain, carrier_ship));
+            settled.push((hull, interdictor_hull, domain, carrier_ship, npc_contacts));
         }
     }
 
     let filed_real_s = real_now_secs(ctx.w, now);
-    for (hull, interdictor_hull, domain, carrier_ship) in settled {
+    for (hull, interdictor_hull, domain, carrier_ship, npc_contacts) in settled {
+        for (npc_hull, npc_ship) in npc_contacts {
+            let _ = check_in_space_unit(ctx, npc_hull, &npc_ship, now.at);
+        }
         let Some(ship) = carrier_ship else {
             continue;
         };
@@ -1262,12 +1565,13 @@ fn settle_disabled_carrier_bubbles(ctx: &mut Ctx<'_>, now: &ClockStamp) {
             ),
             HullStatus::Operational => (true, DERELICT_WINDOW_S, DERELICT_WINDOW_S),
         };
-        let base_obj = ObjId(domain.0.try_into().unwrap_or(1u32).max(1));
+        let prior_owner = resolve_hull_prior_owner(ctx.w, hull, interdictor_hull);
+        let base_obj = resolve_nearest_port_base_obj(ctx.w, domain, interdictor_hull);
         let title_status = open_salvage_claim_for_derelict(
             ctx.w,
             hull,
             interdictor_hull,
-            hull,
+            prior_owner,
             base_obj,
             now.at,
             filed_real_s,
@@ -1293,10 +1597,9 @@ fn settle_disabled_carrier_bubbles(ctx: &mut Ctx<'_>, now: &ClockStamp) {
             "carrier hull disabled into an open-epoch derelict",
         );
         let any_other_promoted = ctx.w.module_state::<JourneyBook>().is_some_and(|jb| {
-            jb.journeys.values().any(|j| {
-                j.root() != hull
-                    && matches!(j.state(), JourneyState::Promoted { domain: d } if *d == domain)
-            })
+            jb.journeys
+                .values()
+                .any(|j| matches!(j.state(), JourneyState::Promoted { domain: d } if *d == domain))
         });
         if !any_other_promoted {
             let _ = stand_down_domain(ctx, domain, now.clone());
@@ -1315,7 +1618,7 @@ fn step_active_bubbles(ctx: &mut Ctx<'_>, now: &ClockStamp) {
     let Some(book) = ctx.w.module_state_mut::<SpaceBubbleBook>() else {
         return;
     };
-    if book.by_hull.is_empty() {
+    if book.by_domain.is_empty() {
         return;
     }
 
@@ -1326,9 +1629,15 @@ fn step_active_bubbles(ctx: &mut Ctx<'_>, now: &ClockStamp) {
         .map(|(&h, _)| h)
         .collect();
 
-    for (&hull, active) in &mut book.by_hull {
+    for active in book.by_domain.values_mut() {
+        let hull = active.hull;
         active.bubble.outage_frozen = frozen;
-        if frozen || paused_hulls.contains(&hull) {
+        if frozen
+            || active
+                .all_carrier_hulls()
+                .iter()
+                .any(|(ch, _, _, _)| paused_hulls.contains(ch))
+        {
             continue;
         }
         let cadence_ms = active.adaptive_step_wall_ms();
@@ -1375,12 +1684,15 @@ fn step_active_bubbles(ctx: &mut Ctx<'_>, now: &ClockStamp) {
             let picket_events = step_interdictor_picket(
                 &mut active.bubble,
                 &mut active.tape,
+                active.interdictor_hull,
                 &active.interdictor_ship_id,
                 &active.carrier_ship_id,
+                &mut active.interdictor_think_seq,
+                &mut active.interdictor_memory,
             );
             events.extend(picket_events);
         }
-        if active.approaching_derelict {
+        if active.approaching_derelict || active.carriers.values().any(|c| c.approaching_derelict) {
             step_derelict_approach_in_bubble(active);
         }
         active.push_bounded_snapshot();
@@ -1421,17 +1733,31 @@ fn step_active_bubbles(ctx: &mut Ctx<'_>, now: &ClockStamp) {
         .w
         .module_state::<SpaceBubbleBook>()
         .map(|b| {
-            b.by_hull
-                .iter()
-                .filter_map(|(&hull, active)| {
+            let mut out = Vec::new();
+            for active in b.by_domain.values() {
+                if active.carriers.is_empty() {
                     let cur_kg = active
                         .bubble
                         .ships
                         .get(&active.carrier_ship_id)
                         .map_or(0, |s| s.propellant_kg);
-                    (active.last_synced_propellant_kg > cur_kg).then_some(hull)
-                })
-                .collect()
+                    if active.last_synced_propellant_kg > cur_kg {
+                        out.push(active.hull);
+                    }
+                } else {
+                    for entry in active.carriers.values() {
+                        let cur_kg = active
+                            .bubble
+                            .ships
+                            .get(&entry.ship_id)
+                            .map_or(0, |s| s.propellant_kg);
+                        if entry.last_synced_propellant_kg > cur_kg {
+                            out.push(entry.hull);
+                        }
+                    }
+                }
+            }
+            out
         })
         .unwrap_or_default();
     for hull in burned_hulls {
@@ -1441,7 +1767,7 @@ fn step_active_bubbles(ctx: &mut Ctx<'_>, now: &ClockStamp) {
     for hull in ran_picket_hulls {
         let front_id = super::picket::record_ran_the_picket_incident(ctx, hull, hull).map(|f| f.0);
         if let Some(book) = ctx.w.module_state_mut::<SpaceBubbleBook>()
-            && let Some(active) = book.by_hull.get_mut(&hull)
+            && let Some(active) = book.active_for_hull_mut(hull)
             && let Some(picket) = active.picket.as_mut()
         {
             picket.inspection_outcome =
@@ -1594,8 +1920,11 @@ fn step_free_flight_records(ctx: &mut Ctx<'_>, now: &ClockStamp) {
 fn step_interdictor_picket(
     bubble: &mut LocalSpaceBubble,
     tape: &mut BubbleInputTape,
+    interdictor_hull: ObjId,
     interdictor_ship_id: &str,
     carrier_ship_id: &str,
+    think_seq: &mut u64,
+    memory: &mut Vec<u8>,
 ) -> Vec<super::bubble::SpaceCombatEvent> {
     let mut emitted = Vec::new();
     let Some(iship) = bubble.ships.get(interdictor_ship_id) else {
@@ -1619,6 +1948,40 @@ fn step_interdictor_picket(
                 posture: super::bubble::EmconPosture::Standard,
             },
         ));
+    }
+    if let Some((res, _)) = super::picket::run_space_rhai_think(
+        bubble,
+        interdictor_ship_id,
+        interdictor_hull,
+        super::picket::INTERDICTOR_PATROL_RHAI,
+        *think_seq,
+        memory,
+    ) && res.fault.is_none()
+    {
+        *think_seq = think_seq.saturating_add(1);
+        *memory = res.memory;
+        if res
+            .trace
+            .iter()
+            .any(|t| t == "INTERDICTOR_STAND_DOWN_CLEARED")
+        {
+            bubble.set_party_relation(CARRIER_PARTY, INTERDICTOR_PARTY, SpaceRelation::Neutral);
+            emitted.extend(tape.record_and_apply(
+                bubble,
+                BubbleInputCommand::CommandBurn {
+                    ship_id: interdictor_ship_id.to_owned(),
+                    thrust_mps2: [0, 0, 0],
+                    force_into_reserve: false,
+                },
+            ));
+            return emitted;
+        }
+    }
+    if bubble
+        .ships
+        .get(interdictor_ship_id)
+        .is_some_and(|s| s.locked_target_id.as_deref() != Some(carrier_ship_id))
+    {
         emitted.extend(tape.record_and_apply(
             bubble,
             BubbleInputCommand::SetLockedTarget {
@@ -1626,6 +1989,12 @@ fn step_interdictor_picket(
                 target_id: Some(carrier_ship_id.to_owned()),
             },
         ));
+    }
+    if bubble
+        .ships
+        .get(interdictor_ship_id)
+        .is_some_and(|s| s.thrust_mps2 == [0, 0, 0])
+    {
         emitted.extend(tape.record_and_apply(
             bubble,
             BubbleInputCommand::CommandBurn {
@@ -1658,20 +2027,27 @@ fn step_interdictor_picket(
 }
 
 fn step_derelict_approach_in_bubble(active: &mut ActiveInterdictionBubble) {
+    let approaching_ship_id = active
+        .carriers
+        .values()
+        .find(|c| c.approaching_derelict)
+        .map_or_else(|| active.carrier_ship_id.clone(), |c| c.ship_id.clone());
     let derelict_pos_vel = active
         .bubble
         .ships
         .values()
         .find(|s| {
-            s.id != active.carrier_ship_id
-                && matches!(s.status, HullStatus::DisabledDerelict { .. })
+            s.id != approaching_ship_id && matches!(s.status, HullStatus::DisabledDerelict { .. })
         })
         .map(|s| (s.pos_m, s.vel_mmps));
     let Some((d_pos, d_vel)) = derelict_pos_vel else {
         active.approaching_derelict = false;
+        for c in active.carriers.values_mut() {
+            c.approaching_derelict = false;
+        }
         return;
     };
-    let Some(carrier) = active.bubble.ships.get_mut(&active.carrier_ship_id) else {
+    let Some(carrier) = active.bubble.ships.get_mut(&approaching_ship_id) else {
         active.approaching_derelict = false;
         return;
     };
@@ -1682,6 +2058,9 @@ fn step_derelict_approach_in_bubble(active: &mut ActiveInterdictionBubble) {
         carrier.pos_m = [d_pos[0] - 120, d_pos[1], d_pos[2]];
         carrier.vel_mmps = [d_vel[0] + 2_000, d_vel[1], d_vel[2]];
         active.approaching_derelict = false;
+        for c in active.carriers.values_mut() {
+            c.approaching_derelict = false;
+        }
     } else {
         let new_dist = (dist_m - step_m).max(120);
         let dx = i128::from(carrier.pos_m[0]) - i128::from(d_pos[0]);
@@ -1696,6 +2075,9 @@ fn step_derelict_approach_in_bubble(active: &mut ActiveInterdictionBubble) {
         carrier.vel_mmps = [d_vel[0] + 2_000, d_vel[1], d_vel[2]];
         if new_dist <= 250 {
             active.approaching_derelict = false;
+            for c in active.carriers.values_mut() {
+                c.approaching_derelict = false;
+            }
         }
     }
 }
@@ -1704,45 +2086,109 @@ fn promote_due_interdictions(ctx: &mut Ctx<'_>, now: &ClockStamp) {
     let Some(journey_book) = ctx.w.module_state::<JourneyBook>().cloned() else {
         return;
     };
-    let (already_open, already_derelict, in_free_flight): (Vec<ObjId>, Vec<ObjId>, Vec<ObjId>) =
-        ctx.w
-            .module_state::<SpaceBubbleBook>()
-            .map(|b| {
-                (
-                    b.by_hull.keys().copied().collect(),
-                    b.derelicts.keys().copied().collect(),
-                    b.free_flights.keys().copied().collect(),
-                )
-            })
-            .unwrap_or_default();
+    let (already_open, already_derelict, in_free_flight, cleared_legs) = ctx
+        .w
+        .module_state::<SpaceBubbleBook>()
+        .map(|b| {
+            let mut open = Vec::new();
+            for active in b.by_domain.values() {
+                for (ch, _, _, _) in active.all_carrier_hulls() {
+                    open.push(ch);
+                }
+            }
+            (
+                open,
+                b.derelicts.keys().copied().collect::<Vec<ObjId>>(),
+                b.free_flights.keys().copied().collect::<Vec<ObjId>>(),
+                b.cleared_interdiction_legs.clone(),
+            )
+        })
+        .unwrap_or_default();
 
-    let mut to_promote: Vec<(ObjId, DomainId, u32)> = Vec::new();
+    let mut to_promote: Vec<(ObjId, DomainId, u32, i64)> = Vec::new();
     for (&hull, journey) in &journey_book.journeys {
+        let cursor = journey.cursor();
+        let dep_at = journey.departed().at;
         if already_open.contains(&hull)
             || already_derelict.contains(&hull)
             || in_free_flight.contains(&hull)
+            || cleared_legs.contains(&(hull, dep_at, cursor))
         {
             continue;
         }
         if let Some(domain) = interdicted_domain_for_journey(ctx.w, journey) {
-            to_promote.push((hull, domain, journey.cursor()));
+            to_promote.push((hull, domain, cursor, dep_at));
         }
     }
 
     if to_promote.is_empty() {
         return;
     }
+    to_promote.sort_by_key(|(hull, domain, _, _)| {
+        (
+            !super::picket::should_open_kirkwood_picket(ctx.w, *hull, *domain),
+            hull.0,
+        )
+    });
 
-    for (hull, domain, cursor) in to_promote {
+    for (hull, domain, cursor, dep_at) in to_promote {
         if !promote_carrier_journey(ctx, hull, domain, now) {
             continue;
         }
-        let Some(active) = build_interdiction_bubble(ctx, hull, domain, cursor, now.at) else {
+        let domain_has_active = ctx
+            .w
+            .module_state::<SpaceBubbleBook>()
+            .is_some_and(|b| b.by_domain.contains_key(&domain));
+        if domain_has_active {
+            let carrier_ship_id = format!("hull.{}", hull.0);
+            let site_id = format!("domain.{}", domain.0);
+            let Some(mut carrier_ship) =
+                build_carrier_ship_state(ctx, hull, &site_id, cursor, &carrier_ship_id)
+            else {
+                continue;
+            };
+            let initial_prop_kg = carrier_ship.propellant_kg;
+            let mut is_kirkwood_picket = false;
+            if let Some(book) = ctx.w.module_state_mut::<SpaceBubbleBook>()
+                && let Some(active) = book.by_domain.get_mut(&domain)
+            {
+                let offset_idx = i64::try_from(active.carriers.len().max(1)).unwrap_or(1);
+                carrier_ship.pos_m = [0, 200 * offset_idx, 0];
+                is_kirkwood_picket = active.picket.is_some();
+                active.carriers.insert(
+                    hull,
+                    BubbleCarrierEntry {
+                        hull,
+                        ship_id: carrier_ship_id.clone(),
+                        leg_cursor: cursor,
+                        departed_at_ic_s: dep_at,
+                        last_synced_propellant_kg: initial_prop_kg,
+                        approaching_derelict: false,
+                        holding_for_salvage: false,
+                    },
+                );
+                active.ship_hulls.insert(carrier_ship_id, hull);
+                active.bubble.insert_ship(carrier_ship);
+            }
+            let line = "[SPACE] Interdiction contact detected at waypoint boundary; joined active domain space bubble on 1:1 wall clock.";
+            crate::port::voyage::narrate_hull(ctx, hull, line);
+            if is_kirkwood_picket {
+                let _ = super::picket::emit_light_lagged_picket_hail(
+                    ctx,
+                    hull,
+                    super::picket::CORVETTE_STANDOFF_M,
+                );
+            }
+            continue;
+        }
+
+        let Some(active) = build_interdiction_bubble(ctx, hull, domain, cursor, dep_at, now.at)
+        else {
             continue;
         };
         let is_kirkwood_picket = active.picket.is_some();
         if let Some(book) = ctx.w.module_state_mut::<SpaceBubbleBook>() {
-            book.by_hull.insert(hull, active);
+            book.by_domain.insert(domain, active);
         }
         let line = "[SPACE] Interdiction contact detected at waypoint boundary; local space bubble opened on 1:1 wall clock.";
         crate::port::voyage::narrate_hull(ctx, hull, line);
@@ -1791,6 +2237,7 @@ fn build_interdiction_bubble(
     hull: ObjId,
     domain: DomainId,
     leg_cursor: u32,
+    departed_at_ic_s: i64,
     ic_now_s: i64,
 ) -> Option<ActiveInterdictionBubble> {
     let carrier_ship_id = format!("hull.{}", hull.0);
@@ -1799,10 +2246,10 @@ fn build_interdiction_bubble(
     let carrier_ship = build_carrier_ship_state(ctx, hull, &site_id, leg_cursor, &carrier_ship_id)?;
     let open_kirkwood = super::picket::should_open_kirkwood_picket(ctx.w, hull, domain);
 
-    let bubble_id = format!("bubble.interdiction.{}.{}", hull.0, leg_cursor);
+    let bubble_id = format!("bubble.interdiction.{}.{}", domain.0, leg_cursor);
     let mut bubble = LocalSpaceBubble::new(
         bubble_id,
-        site_id,
+        site_id.clone(),
         if open_kirkwood {
             "Kirkwood Customs Picket Bubble"
         } else {
@@ -1812,27 +2259,50 @@ fn build_interdiction_bubble(
     );
     bubble.insert_ship(carrier_ship);
 
+    let mut ship_hulls = BTreeMap::new();
+    ship_hulls.insert(carrier_ship_id.clone(), hull);
+
     let (interdictor_hull, interdictor_ship_id, picket) = if open_kirkwood {
-        let picket_state = super::picket::build_kirkwood_picket_ships(
+        let picket_state = super::picket::spawn_kirkwood_picket_ships_in_world(
+            ctx,
             &mut bubble,
             domain,
             leg_cursor,
             &carrier_ship_id,
         )?;
+        ship_hulls.insert(
+            picket_state.corvette_ship_id.clone(),
+            picket_state.corvette_hull,
+        );
+        ship_hulls.insert(
+            picket_state.raider_ship_id.clone(),
+            picket_state.raider_hull,
+        );
         let raider_hull = picket_state.raider_hull;
         let raider_ship_id = picket_state.raider_ship_id.clone();
         (raider_hull, raider_ship_id, Some(picket_state))
     } else {
         let interdictor_ship_id = format!("picket.{}.{}", domain.0, leg_cursor);
-        let interdictor_hull = ObjId(
-            900_000_u32
-                .saturating_add(u32::try_from(domain.0).unwrap_or(0))
-                .max(1),
-        );
-        let (interdictor_unit, _) =
-            instantiate_stock_space_unit(interdictor_hull, "tacsim.unit.dray").ok()?;
-        let mut interdictor_ship = space_ship_from_tactical_unit(
-            &interdictor_unit,
+        let interdictor_hull = ctx
+            .w
+            .create(
+                mush_core::ObjKind::Thing,
+                "Interdictor Picket",
+                mush_core::GOD,
+                None,
+            )
+            .ok()?;
+        super::custody::create_stock_space_unit_in_world(
+            ctx,
+            interdictor_hull,
+            crate::definitions::content::CORVETTE,
+        )
+        .ok()?;
+        let mut interdictor_ship = check_out_space_unit(
+            ctx,
+            interdictor_hull,
+            &site_id,
+            leg_cursor,
             &interdictor_ship_id,
             "Interdictor Picket",
             INTERDICTOR_PARTY,
@@ -1849,6 +2319,7 @@ fn build_interdiction_bubble(
         }
         bubble.set_party_relation(CARRIER_PARTY, INTERDICTOR_PARTY, SpaceRelation::Hostile);
         bubble.insert_ship(interdictor_ship);
+        ship_hulls.insert(interdictor_ship_id.clone(), interdictor_hull);
         (interdictor_hull, interdictor_ship_id, None)
     };
 
@@ -1858,6 +2329,20 @@ fn build_interdiction_bubble(
         .map_or(0, |s| s.propellant_kg);
     let initial_snapshot = bubble.snapshot();
     let tape = BubbleInputTape::new(&bubble);
+
+    let mut carriers = BTreeMap::new();
+    carriers.insert(
+        hull,
+        BubbleCarrierEntry {
+            hull,
+            ship_id: carrier_ship_id.clone(),
+            leg_cursor,
+            departed_at_ic_s,
+            last_synced_propellant_kg: initial_prop_kg,
+            approaching_derelict: false,
+            holding_for_salvage: false,
+        },
+    );
 
     Some(ActiveInterdictionBubble {
         hull,
@@ -1877,6 +2362,10 @@ fn build_interdiction_bubble(
         holding_for_salvage: false,
         last_stepped_wall_s: ctx.w.now(),
         last_synced_propellant_kg: initial_prop_kg,
+        carriers,
+        ship_hulls,
+        interdictor_memory: Vec::new(),
+        interdictor_think_seq: 0,
     })
 }
 

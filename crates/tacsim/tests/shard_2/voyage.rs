@@ -4724,7 +4724,7 @@ fn sfr6_kirkwood_customs_picket_story_1_end_to_end_rhai_doctrine_triad_combat_an
                 tacsim::space::CARRIER_PARTY,
                 tacsim::space::CUSTOMS_CORVETTE_PARTY,
             ),
-            tacsim::space::SpaceRelation::Inspecting
+            tacsim::space::SpaceRelation::Neutral
         );
         assert_eq!(
             active.bubble.party_relation(
@@ -6376,4 +6376,335 @@ fn sfr11_one_ledger_rated_drive_debits_bubble_jink_in_vault_persists_across_reen
         u64::from(reentry_prop_kg) < (vault_now_t + 1) * 1_000,
         "re-entered bubble propellant_kg ({reentry_prop_kg}) reflects sub-tonne burn rather than refilling"
     );
+}
+
+/// **Doc 35 cut SF.R12 (`35b` §5 #2/#3/#4/#5/#6/#7/#13, §8 `SF.R12`)**:
+/// Domain bubbles and real hulls:
+/// 1. Two chartered hulls (`*Salt Moth*` `Dray-P` miner and `*Escort Hawk*` `Dray-M` escort) arriving
+///    at the Kirkwood waypoint share one bubble in `SpaceBubbleBook::by_domain` (`by_domain.len() == 1`,
+///    `active.carriers.len() == 2`).
+/// 2. The Republic Corvette (`corvette.json`, `tacsim.unit.corvette`) and Raider (`dray_m.json`,
+///    crewed by named NPC leader `"Varga Teodor"` from `raiders.json`) are spawned as real world
+///    `Thing`s with `TacticalUnit`s checked out through custody.
+/// 3. An indigent pilot (`0` credits in personal vault) who heaves-to and runs `+helm/submit` while
+///    carrying unlicensed `strategic_ore` has the contraband seized (`PicketInspectionOutcome::ContrabandSeized`,
+///    `PicketInspectionStatus::ClearedAfterSeizure`) and debited from `stow.ore`, and is cleared.
+/// 4. The escort disables the Raider; the miner approaches (`+helm/approach derelict`), docks
+///    (`+helm/dock derelict` + `+helm/dock tape`), and tows (`+helm/tow`) the real Raider `Thing`;
+///    the salvage claim in `SalvageClaimBook` names `"Varga Teodor"` as `prior_owner` and resolves a
+///    real port/waypoint `ObjId` (`!= GOD`) as `port_base_obj`.
+#[test]
+#[allow(clippy::too_many_lines)]
+fn sfr12_domain_bubbles_and_real_hulls_share_kirkwood_bubble_tow_real_raider_thing_with_leader_claim_and_seize_indigent_contraband()
+ {
+    let mut rig = stocked_with(Roster {
+        seed_lane: Some(lane_with_interdicted_kirkwood()),
+        ..Roster::default()
+    });
+
+    // 1. Charter *Salt Moth* (indigent miner on `Dray-P` carrying 2 t unlicensed `strategic_ore`):
+    let (pilot_miner, row_miner) = chartered(&mut rig, "Miner", 1);
+    let hull_miner = ObjId(row_miner.hull);
+    let vault_miner = hold_vault(&rig.tw, &row_miner);
+    let desk = station_room(&rig.tw, "ceres_port", "room.c05_registry");
+    teleport(&mut rig.tw, pilot_miner, desk);
+    let refit_miner = run(&mut rig.tw, pilot_miner, "+coop/refit prospector");
+    assert!(refit_miner.contains("Dray-P"), "{refit_miner}");
+    seed_pool(&mut rig, vault_miner, "propellant", 75, LotId(961));
+    seed_pool(&mut rig, vault_miner, "provisions", 25, LotId(962));
+    seed_pool(&mut rig, vault_miner, "strategic_ore", 51, LotId(963));
+
+    // Charter *Escort Hawk* (armed Dray escort):
+    let pilot_escort = pilot(&mut rig, "Escort", 2);
+    let enrol_escort = run(&mut rig.tw, pilot_escort, "+coop/enrol Escort Hawk");
+    assert!(
+        enrol_escort.contains("now the Escort Hawk"),
+        "{enrol_escort}"
+    );
+    let charter_escort =
+        tacsim::port::live_charter(rig.tw.world(), pilot_escort).expect("escort charter");
+    let row_escort = port_map(&rig.tw, "ceres_port")
+        .hulls
+        .into_iter()
+        .find(|r| r.hull == charter_escort.hull.0)
+        .expect("escort hull row");
+    let hull_escort = ObjId(row_escort.hull);
+    let vault_escort = hold_vault(&rig.tw, &row_escort);
+    seed_pool(&mut rig, vault_escort, "propellant", 53, LotId(964));
+    seed_pool(&mut rig, vault_escort, "provisions", 19, LotId(965));
+
+    set_rate(&mut rig.tw, 3_600);
+    board(&mut rig, pilot_miner);
+    let gallery = c01(&rig.tw);
+    teleport(&mut rig.tw, pilot_escort, gallery);
+    let board_escort = run(&mut rig.tw, pilot_escort, "+ship/board");
+    assert!(
+        board_escort.contains("You cycle the lock into the Escort Hawk."),
+        "{board_escort}"
+    );
+
+    let pending_miner = undock_and_burn(&mut rig, pilot_miner, hull_miner);
+    let pending_escort = undock_and_burn(&mut rig, pilot_escort, hull_escort);
+    let _ = fire_quietly(&mut rig);
+
+    let miner_leg1_due = pending_miner.plan.depart_ic + i64::from(pending_miner.plan.legs[0].secs);
+    let escort_leg1_due =
+        pending_escort.plan.depart_ic + i64::from(pending_escort.plan.legs[0].secs);
+    let convoy_kirkwood_due = miner_leg1_due.max(escort_leg1_due);
+    let _ = to_ic(&mut rig, convoy_kirkwood_due);
+
+    // 2. Verify both chartered hulls share one domain-keyed Kirkwood bubble, and that both NPC
+    //    hulls (`corvette_hull` and `raider_hull`) are real world `Thing`s with checked-out `TacticalUnit`s:
+    let (corvette_hull, raider_hull) = {
+        let book = rig
+            .tw
+            .world()
+            .module_state::<tacsim::space::SpaceBubbleBook>()
+            .expect("SpaceBubbleBook");
+        assert_eq!(
+            book.by_domain.len(),
+            1,
+            "two chartered hulls at the Kirkwood waypoint must share a single domain-keyed bubble"
+        );
+        let active = book
+            .active_for_hull(hull_miner)
+            .expect("miner in active bubble");
+        assert!(
+            active.carriers.contains_key(&hull_miner) && active.carriers.contains_key(&hull_escort),
+            "shared bubble must contain both *Salt Moth* and *Escort Hawk*"
+        );
+        assert_eq!(
+            active.carriers.len(),
+            2,
+            "shared bubble must track both carrier entries"
+        );
+        let picket = active.picket.as_ref().expect("KirkwoodPicketState");
+        (picket.corvette_hull, picket.raider_hull)
+    };
+
+    assert!(
+        rig.tw.world().get(corvette_hull).is_some()
+            && mush_tactics::custody::marker_of(rig.tw.world(), corvette_hull).is_some(),
+        "Republic Corvette must be a real world Thing with a TacticalUnit checked out through custody"
+    );
+    assert_eq!(
+        mush_tactics::module::unit_of(rig.tw.world(), corvette_hull)
+            .expect("corvette TacticalUnit")
+            .schema()
+            .key()
+            .id
+            .as_str(),
+        tacsim::definitions::content::CORVETTE
+    );
+    assert!(
+        rig.tw.world().get(raider_hull).is_some()
+            && mush_tactics::custody::marker_of(rig.tw.world(), raider_hull).is_some(),
+        "Raider must be a real world Thing with a TacticalUnit checked out through custody"
+    );
+
+    // 3. Indigent contraband seizure (`35b` §5 #13): *Salt Moth* heaves-to and runs `+helm/submit`
+    //    with 2 t unlicensed `strategic_ore` and 0 credits in personal vault:
+    let _ = run(&mut rig.tw, pilot_miner, "+helm/thrust 600 -1000 0 0");
+    for _ in 0..6 {
+        let next_r = rig.tw.world().now() + 1;
+        rig.tw.set_now(next_r);
+        let _ = rig.tw.fire_due(next_r * 1_000);
+    }
+    let _ = run(&mut rig.tw, pilot_miner, "+helm/thrust 0");
+    let brake_submits = drain_space_and_industry(&mut rig.tw);
+    land_quietly(&mut rig, &brake_submits);
+
+    let submit_out = run(&mut rig.tw, pilot_miner, "+helm/submit");
+    assert!(
+        submit_out.contains("confiscated in lieu of fine")
+            && submit_out.contains("customs clearance granted"),
+        "indigent pilot must have contraband seized and be cleared: {submit_out}"
+    );
+    let seizure_submits = drain(&mut rig.tw);
+    assert!(
+        !seizure_submits.is_empty(),
+        "contraband seizure must queue an authoritative tacsim_port_burn debit"
+    );
+    for s in &seizure_submits {
+        land(&mut rig, s).expect("contraband seizure burn lands");
+    }
+    assert_eq!(
+        pool(&mut rig.tw, vault_miner, "strategic_ore"),
+        0,
+        "seized strategic_ore must be debited from the hull's stow.ore hold"
+    );
+    {
+        let book = rig
+            .tw
+            .world()
+            .module_state::<tacsim::space::SpaceBubbleBook>()
+            .expect("SpaceBubbleBook");
+        let picket = book
+            .active_for_hull(hull_miner)
+            .and_then(|a| a.picket.as_ref())
+            .expect("KirkwoodPicketState");
+        assert_eq!(
+            picket.inspection_status,
+            tacsim::space::PicketInspectionStatus::ClearedAfterSeizure
+        );
+        assert!(matches!(
+            picket.inspection_outcome,
+            Some(tacsim::space::PicketInspectionOutcome::ContrabandSeized {
+                seized_strategic_ore_kg: 51_000,
+                ..
+            })
+        ));
+    }
+
+    // 4. Step the bubble so the Raider ambush launches, have the Escort (`*Escort Hawk*`) engage
+    //    the Raider (`+tac/beam Raider`) alongside the Corvette until the Raider's drive is disabled:
+    for step in 0..55 {
+        let next_r = rig.tw.world().now() + 1;
+        rig.tw.set_now(next_r);
+        let _ = rig.tw.fire_due(next_r * 1_000);
+        if step % 2 == 1 {
+            let _ = run(&mut rig.tw, pilot_escort, "+tac/beam Raider");
+        } else if step % 4 == 2 {
+            let _ = run(&mut rig.tw, pilot_escort, "+damage/vent");
+        }
+        let raider_disabled = rig
+            .tw
+            .world()
+            .module_state::<tacsim::space::SpaceBubbleBook>()
+            .and_then(|b| b.active_for_hull(hull_miner))
+            .and_then(|a| {
+                let rsid = a.picket.as_ref()?.raider_ship_id.as_str();
+                a.bubble.ships.get(rsid)
+            })
+            .is_some_and(|s| {
+                matches!(s.status, tacsim::space::HullStatus::DisabledDerelict { .. })
+            });
+        if raider_disabled {
+            break;
+        }
+    }
+
+    // Have the miner (`*Salt Moth*`) order `+helm/approach derelict` on the disabled Raider `Thing`,
+    // step until in-flight torpedoes clear and range closes inside the collar-initiation envelope,
+    // dock via a 60 Hz `DockingInputTape`, and attach the salvage tow line (`+helm/tow`):
+    let approach_out = run(&mut rig.tw, pilot_miner, "+helm/approach derelict");
+    assert!(
+        approach_out.contains("Braking approach ordered toward disabled derelict"),
+        "expected miner approach on disabled Raider derelict: {approach_out}"
+    );
+    for _ in 0..48 {
+        let next_r = rig.tw.world().now() + 1;
+        rig.tw.set_now(next_r);
+        let _ = rig.tw.fire_due(next_r * 1_000);
+        let ready = rig
+            .tw
+            .world()
+            .module_state::<tacsim::space::SpaceBubbleBook>()
+            .and_then(|b| b.active_for_hull(hull_miner))
+            .is_some_and(|a| {
+                a.bubble.torpedoes.is_empty()
+                    && !a
+                        .carriers
+                        .get(&hull_miner)
+                        .is_some_and(|c| c.approaching_derelict)
+            });
+        if ready {
+            break;
+        }
+    }
+    let dock_raider_start = run(&mut rig.tw, pilot_miner, "+helm/dock derelict");
+    assert!(
+        dock_raider_start.contains("[DOCKING] Initiated 60 fps 6-DOF docking session"),
+        "miner must initiate docking session on disabled Raider Thing: {dock_raider_start}"
+    );
+    let (sid_raider, chal_raider) = {
+        let book = rig
+            .tw
+            .world()
+            .module_state::<tacsim::space::SpaceBubbleBook>()
+            .expect("SpaceBubbleBook");
+        let s = book
+            .docking_sessions
+            .get(&hull_miner)
+            .expect("miner docking session");
+        (s.challenge.session_id.clone(), s.challenge.clone())
+    };
+    let valid_raider_tape = tacsim::space::solve_docking_tape(&chal_raider);
+    let clamp_raider_out = run(
+        &mut rig.tw,
+        pilot_miner,
+        &format!(
+            "+helm/dock tape {sid_raider} {}",
+            valid_raider_tape.encode_rle()
+        ),
+    );
+    assert!(
+        clamp_raider_out
+            .contains("[DOCKING] Hard dock and magnetic collar seal confirmed on derelict"),
+        "miner must hard-dock onto disabled Raider Thing: {clamp_raider_out}"
+    );
+    let tow_raider_out = run(&mut rig.tw, pilot_miner, "+helm/tow");
+    assert!(
+        tow_raider_out.contains("[SALVAGE] Tow line locked to disabled derelict"),
+        "miner must lock salvage tow line to disabled Raider Thing: {tow_raider_out}"
+    );
+    {
+        let book = rig
+            .tw
+            .world()
+            .module_state::<tacsim::space::SpaceBubbleBook>()
+            .expect("SpaceBubbleBook");
+        let tow = book
+            .active_tows
+            .get(&hull_miner)
+            .expect("miner active salvage tow");
+        assert_eq!(
+            tow.derelict_hull, raider_hull,
+            "miner must tow the real Raider Thing (#{})",
+            raider_hull.0
+        );
+        let derelict = book
+            .derelicts
+            .get(&raider_hull)
+            .expect("disabled Raider settled into SpaceBubbleBook::derelicts");
+        let Some(tacsim::field_ops::CustodyTitleStatus::PendingSalvageClaim { claim_id, .. }) =
+            &derelict.salvage_title_status
+        else {
+            panic!(
+                "expected PendingSalvageClaim on disabled Raider, got {:?}",
+                derelict.salvage_title_status
+            );
+        };
+        let salvage = rig
+            .tw
+            .world()
+            .module_state::<tacsim::field_ops::SalvageClaimBook>()
+            .expect("SalvageClaimBook");
+        let claim = salvage.claim(*claim_id).expect("Raider salvage claim");
+        let bay_base = salvage
+            .black_box_tape_for_hull(raider_hull)
+            .iter()
+            .find_map(|e| match e {
+                tacsim::field_ops::BlackBoxFlightEntry::EpochClosedInBay { base, .. } => {
+                    Some(*base)
+                }
+                _ => None,
+            })
+            .expect("EpochClosedInBay entry on Raider black box");
+        assert_ne!(
+            bay_base, GOD,
+            "port_base_obj must resolve to a real world port/waypoint ObjId, not GOD"
+        );
+        let prior_owner = claim.prior_owner;
+        let leader_obj = rig
+            .tw
+            .world()
+            .get(prior_owner)
+            .expect("prior_owner must be a real world object");
+        assert_eq!(
+            leader_obj.name.as_str(),
+            "Varga Teodor",
+            "Raider salvage claim must name the raider's NPC leader from raiders.json"
+        );
+    }
 }

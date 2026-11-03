@@ -183,6 +183,26 @@ pub fn instantiate_stock_space_unit(
     Ok((unit, spec))
 }
 
+/// Create and register a stock spacecraft [`TacticalUnit`] in `ctx.w`'s `UnitStore` from the
+/// compiled-in fielded catalog (`"tacsim.unit.corvette"`, `"tacsim.unit.dray"`, etc.) (`SF.R12`, `D-35-1`).
+///
+/// # Errors
+/// Returns an error string if the catalog binding cannot be resolved or `create_unit` fails.
+pub fn create_stock_space_unit_in_world(
+    ctx: &mut Ctx<'_>,
+    obj: ObjId,
+    unit_entry_id: &str,
+) -> Result<TacticalUnit, String> {
+    let catalog = fielded_space_catalog().ok_or_else(|| "space catalog unavailable".to_owned())?;
+    let base_id = crate::definitions::core_replacement::surface_chassis(unit_entry_id);
+    let key = CanonicalId::new(base_id).map_err(|e| e.to_string())?;
+    let binding = catalog
+        .bindings
+        .get(&key)
+        .ok_or_else(|| format!("no binding for {base_id}"))?;
+    mush_tactics::module::create_unit(ctx, obj, &binding.spec)
+}
+
 /// Construct a [`SpaceShipState`] directly from a bound [`TacticalUnit`]'s live section
 /// `internals`, facet `armor`, `heat` cell, component conditions, and canonical [`UnitSpec`]
 /// (`D-35-1`).
@@ -216,14 +236,22 @@ pub fn space_ship_from_tactical_unit_with_spec(
     pos_m: [i64; 3],
     vel_mmps: [i64; 3],
 ) -> Result<SpaceShipState, FieldOpsError> {
-    let mut ship = SpaceShipState::new_dray(ship_id, callsign, party, pos_m, vel_mmps);
     let base_id =
         crate::definitions::core_replacement::surface_chassis(unit.schema().key().id.as_str());
+    let mut ship = if base_id == "tacsim.unit.corvette" {
+        SpaceShipState::new_corvette(ship_id, callsign, party, pos_m, vel_mmps)
+    } else {
+        SpaceShipState::new_dray(ship_id, callsign, party, pos_m, vel_mmps)
+    };
     ship.hull_class = base_id.to_owned();
 
     let resolved_spec = spec.or_else(|| unit_spec_for_id(base_id));
     if let Some(s) = resolved_spec {
         apply_unit_spec_to_space_ship(&mut ship, s);
+        if base_id == "tacsim.unit.corvette" {
+            ship.max_accel_mps2 = 60;
+            ship.delta_v_mps = 9_500;
+        }
     }
 
     let internals_cell = CellId::new(INTERNALS_CELL).map_err(FieldOpsError::Unit)?;

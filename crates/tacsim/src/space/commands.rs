@@ -263,9 +263,11 @@ pub fn hull_aboard_for_actor(w: &World, actor: ObjId) -> Option<ObjId> {
         return Some(view.hull());
     }
     if let Some(book) = w.module_state::<SpaceBubbleBook>() {
-        for hull in book.by_hull.keys().copied() {
-            if crate::detachment::planning::projection::physically_aboard(w, actor, hull) {
-                return Some(hull);
+        for active in book.by_domain.values() {
+            for (hull, _, _, _) in active.all_carrier_hulls() {
+                if crate::detachment::planning::projection::physically_aboard(w, actor, hull) {
+                    return Some(hull);
+                }
             }
         }
     }
@@ -588,19 +590,18 @@ pub fn observe_bubble_contacts(
     hull: ObjId,
     at_ic: i64,
 ) -> Vec<SpaceContactObservation> {
-    let Some(observer) = active.bubble.ships.get(&active.carrier_ship_id) else {
+    let own_ship_id = active.carrier_ship_id_for(hull);
+    let Some(observer) = active.bubble.ships.get(own_ship_id) else {
         return Vec::new();
     };
     let mut out = Vec::new();
     for (ship_id, target) in &active.bubble.ships {
-        if ship_id == &active.carrier_ship_id {
+        if ship_id == own_ship_id {
             continue;
         }
-        let target_obj = if ship_id == &active.interdictor_ship_id {
-            active.interdictor_hull
-        } else {
-            ObjId(hull.0.saturating_add(1_000))
-        };
+        let target_obj = active
+            .hull_for_ship_id(ship_id)
+            .unwrap_or(active.interdictor_hull);
         out.push(evaluate_space_contact_detection(
             observer,
             hull,
@@ -619,9 +620,10 @@ fn push_space_panels(ctx: &mut Ctx<'_>, hull: ObjId) {
     let (bubble_payloads, docking_payload) = {
         let book = ctx.w.module_state::<SpaceBubbleBook>();
         let bubble_pair = book.and_then(|b| b.active_for_hull(hull)).map(|active| {
+            let own_ship_id = active.carrier_ship_id_for(hull);
             (
-                active.bubble.holotank_feed(&active.carrier_ship_id),
-                active.bubble.cockpit_feed(&active.carrier_ship_id),
+                active.bubble.holotank_feed(own_ship_id),
+                active.bubble.cockpit_feed(own_ship_id),
             )
         });
         let dock_json = book
@@ -796,7 +798,7 @@ fn helm_status(ctx: &mut Ctx<'_>) -> Result<(), CmdError> {
             ));
         }
         if let Some(active) = book.active_for_hull(hull)
-            && let Some(ship) = active.bubble.ships.get(&active.carrier_ship_id)
+            && let Some(ship) = active.bubble.ships.get(active.carrier_ship_id_for(hull))
         {
             let (yaw_deg, pitch_deg, roll_deg) = ship.attitude_deg;
             lines.push(format!(
@@ -1602,21 +1604,32 @@ pub(crate) fn sync_bubble_propellant_to_ledger(ctx: &mut Ctx<'_>, hull: ObjId) {
     let Some(burned_kg) = ctx
         .w
         .module_state_mut::<SpaceBubbleBook>()
-        .and_then(|b| b.by_hull.get_mut(&hull))
+        .and_then(|b| b.active_for_hull_mut(hull))
         .and_then(|active| {
+            let ship_id = active.carrier_ship_id_for(hull).to_owned();
             let cur_kg = active
                 .bubble
                 .ships
-                .get(&active.carrier_ship_id)
+                .get(&ship_id)
                 .map_or(0, |s| s.propellant_kg);
-            if active.last_synced_propellant_kg > cur_kg {
-                let diff = u64::from(active.last_synced_propellant_kg - cur_kg);
-                active.last_synced_propellant_kg = cur_kg;
-                Some(diff)
+            let last_synced = active
+                .carriers
+                .get(&hull)
+                .map_or(active.last_synced_propellant_kg, |c| {
+                    c.last_synced_propellant_kg
+                });
+            let diff = if last_synced > cur_kg {
+                Some(u64::from(last_synced - cur_kg))
             } else {
-                active.last_synced_propellant_kg = cur_kg;
                 None
+            };
+            if let Some(entry) = active.carriers.get_mut(&hull) {
+                entry.last_synced_propellant_kg = cur_kg;
             }
+            if active.hull == hull {
+                active.last_synced_propellant_kg = cur_kg;
+            }
+            diff
         })
     else {
         return;
@@ -1664,6 +1677,69 @@ fn submit_space_burn_if_needed(
                 vault,
                 burn_t,
                 crew_days,
+                seized_strategic_ore_t: 0,
+            });
+        seq
+    };
+    let key = mush_core::IdempotencyKeyText::parse_canonical(format!(
+        "{}{}/space_burn/{seq}",
+        crate::port::burn::BURN_KEY_PREFIX,
+        hull.0
+    ))
+    .map_err(|_| CmdError::msg("Failed to form space burn idempotency key."))?;
+    if ctx.actor == burn_actor {
+        ctx.submit_authoritative(
+            burn_handle,
+            mush_core::PerceivedRef::SelfActor,
+            Vec::new(),
+            serde_json::json!({ "seq": seq.to_string() }),
+            key,
+        );
+    } else {
+        let mut fire = crate::port_tick::Fire::new(BTreeMap::new());
+        let _ = fire.as_principal(ctx, burn_actor, burn_actor, |ctx| {
+            ctx.submit_authoritative(
+                burn_handle,
+                mush_core::PerceivedRef::SelfActor,
+                Vec::new(),
+                serde_json::json!({ "seq": seq.to_string() }),
+                key,
+            );
+        });
+    }
+    Ok(Some(seq))
+}
+
+pub(crate) fn submit_seized_contraband_burn(
+    ctx: &mut Ctx<'_>,
+    hull: ObjId,
+    vault: u64,
+    seized_strategic_ore_t: u32,
+) -> Result<Option<u32>, CmdError> {
+    if seized_strategic_ore_t == 0 {
+        return Ok(None);
+    }
+    let burn_actor = resolve_hull_captain_aboard(ctx.w, hull, ctx.actor);
+    let burn_handle = ctx
+        .w
+        .module_state::<crate::port::families::PortHandles>()
+        .and_then(|h| h.burn.clone())
+        .ok_or_else(|| CmdError::msg("The port burn action is not wired."))?;
+    let seq = {
+        let book = ctx
+            .w
+            .module_state_mut::<SpaceBubbleBook>()
+            .ok_or_else(|| CmdError::msg("Space bubble state is not registered."))?;
+        let seq = book.alloc_space_burn_seq();
+        book.pending_space_burns
+            .push(crate::port::burn::PendingSpaceBurn {
+                seq,
+                hull,
+                actor: burn_actor,
+                vault,
+                burn_t: 0,
+                crew_days: 0,
+                seized_strategic_ore_t,
             });
         seq
     };
@@ -1704,7 +1780,7 @@ fn ensure_hull_can_maneuver(w: &World, hull: ObjId) -> Result<(), CmdError> {
             ));
         }
         if let Some(active) = book.active_for_hull(hull)
-            && let Some(ship) = active.bubble.ships.get(&active.carrier_ship_id)
+            && let Some(ship) = active.bubble.ships.get(active.carrier_ship_id_for(hull))
         {
             let drive_zero = ship
                 .sections
@@ -2484,24 +2560,23 @@ fn record_hull_standing_order(
 
 fn active_carrier_ship_and_roll(w: &World, hull: ObjId) -> Option<(String, i32)> {
     let active = w.module_state::<SpaceBubbleBook>()?.active_for_hull(hull)?;
-    let ship = active.bubble.ships.get(&active.carrier_ship_id)?;
-    Some((active.carrier_ship_id.clone(), ship.attitude_deg.2))
+    let ship_id = active.carrier_ship_id_for(hull);
+    let ship = active.bubble.ships.get(ship_id)?;
+    Some((ship_id.to_owned(), ship.attitude_deg.2))
 }
 
 fn active_carrier_ship_and_max_accel(w: &World, hull: ObjId) -> Option<(String, i64)> {
     let active = w.module_state::<SpaceBubbleBook>()?.active_for_hull(hull)?;
-    let ship = active.bubble.ships.get(&active.carrier_ship_id)?;
-    Some((active.carrier_ship_id.clone(), ship.max_accel_mps2.max(1)))
+    let ship_id = active.carrier_ship_id_for(hull);
+    let ship = active.bubble.ships.get(ship_id)?;
+    Some((ship_id.to_owned(), ship.max_accel_mps2.max(1)))
 }
 
 fn active_carrier_attitude(w: &World, hull: ObjId) -> Option<(String, i32, i32)> {
     let active = w.module_state::<SpaceBubbleBook>()?.active_for_hull(hull)?;
-    let ship = active.bubble.ships.get(&active.carrier_ship_id)?;
-    Some((
-        active.carrier_ship_id.clone(),
-        ship.attitude_deg.0,
-        ship.attitude_deg.1,
-    ))
+    let ship_id = active.carrier_ship_id_for(hull);
+    let ship = active.bubble.ships.get(ship_id)?;
+    Some((ship_id.to_owned(), ship.attitude_deg.0, ship.attitude_deg.1))
 }
 
 fn default_nose_burn_dir(w: &World, hull: ObjId) -> [i32; 3] {
@@ -2574,7 +2649,7 @@ fn tac_status(ctx: &mut Ctx<'_>) -> Result<(), CmdError> {
         );
         return Ok(());
     };
-    let Some(ship) = active.bubble.ships.get(&active.carrier_ship_id) else {
+    let Some(ship) = active.bubble.ships.get(active.carrier_ship_id_for(hull)) else {
         return Err(CmdError::msg("Carrier ship state missing from bubble."));
     };
     ctx.out.sys_to_actor(
@@ -2661,10 +2736,11 @@ fn resolve_detected_contact(
     let active = book
         .active_for_hull(hull)
         .ok_or_else(|| CmdError::msg("No active space bubble for this ship."))?;
+    let own_ship_id = active.carrier_ship_id_for(hull);
     let own_ship = active
         .bubble
         .ships
-        .get(&active.carrier_ship_id)
+        .get(own_ship_id)
         .ok_or_else(|| CmdError::msg("Carrier ship state missing from bubble."))?;
     if matches!(own_ship.status, HullStatus::DisabledDerelict { .. }) {
         return Err(CmdError::msg("This ship is disabled."));
@@ -2686,7 +2762,7 @@ fn resolve_detected_contact(
         })
         .ok_or_else(|| CmdError::msg(NO_SUCH_CONTACT))?;
 
-    Ok((active.carrier_ship_id.clone(), matched.ship_id.clone()))
+    Ok((own_ship_id.to_owned(), matched.ship_id.clone()))
 }
 
 fn verify_hostile_fire_allowed(
@@ -3010,32 +3086,31 @@ fn helm_approach(ctx: &mut Ctx<'_>) -> Result<(), CmdError> {
             .module_state::<SpaceBubbleBook>()
             .and_then(|b| b.active_for_hull(hull))
             .and_then(|active| {
+                let own_ship_id = active.carrier_ship_id_for(hull);
+                let mut fallback = None;
                 for (ship_id, ship) in &active.bubble.ships {
-                    if ship_id == &active.carrier_ship_id {
+                    if ship_id == own_ship_id {
                         continue;
                     }
-                    let contact_hull = if ship_id == &active.interdictor_ship_id {
-                        active.interdictor_hull
-                    } else if let Some(picket) = &active.picket
-                        && ship_id == &picket.raider_ship_id
-                    {
-                        picket.raider_hull
-                    } else {
-                        ObjId(hull.0.saturating_add(1_000))
-                    };
+                    let contact_hull = active
+                        .hull_for_ship_id(ship_id)
+                        .unwrap_or(active.interdictor_hull);
+                    let is_disabled = matches!(ship.status, HullStatus::DisabledDerelict { .. });
                     let matches = raw.eq_ignore_ascii_case("derelict")
                         || ship_id.eq_ignore_ascii_case(&raw)
                         || ship.callsign.to_ascii_lowercase().contains(&lower)
                         || parsed_obj == Some(contact_hull);
                     if matches {
-                        return Some((
-                            ship.callsign.clone(),
-                            contact_hull,
-                            matches!(ship.status, HullStatus::DisabledDerelict { .. }),
-                        ));
+                        let entry = (ship.callsign.clone(), contact_hull, is_disabled);
+                        if is_disabled {
+                            return Some(entry);
+                        }
+                        if fallback.is_none() {
+                            fallback = Some(entry);
+                        }
                     }
                 }
-                None
+                fallback
             })
     };
 
@@ -3048,10 +3123,10 @@ fn helm_approach(ctx: &mut Ctx<'_>) -> Result<(), CmdError> {
         }
         let burned_kg = debit_hull_propellant_for_dv(ctx, hull, 12, true)?;
         if let Some(book) = ctx.w.module_state_mut::<SpaceBubbleBook>()
-            && let Some(active) = book.by_hull.get_mut(&hull)
+            && let Some(active) = book.active_for_hull_mut(hull)
         {
-            active.approaching_derelict = true;
-            active.holding_for_salvage = true;
+            active.set_approaching_derelict_for(hull, true);
+            active.set_holding_for_salvage_for(hull, true);
         }
         let (domain, generation, tick) = domain_stamp_for_hull(ctx.w, hull);
         let order = record_hull_standing_order(
@@ -3223,10 +3298,11 @@ fn helm_submit(ctx: &mut Ctx<'_>) -> Result<(), CmdError> {
             .picket
             .as_ref()
             .ok_or_else(|| CmdError::msg("No customs picket is hailing this ship."))?;
+        let own_ship_id = active.carrier_ship_id_for(hull);
         let carrier = active
             .bubble
             .ships
-            .get(&active.carrier_ship_id)
+            .get(own_ship_id)
             .ok_or_else(|| CmdError::msg("Carrier ship state missing from bubble."))?;
         let corvette = active
             .bubble
@@ -3236,7 +3312,7 @@ fn helm_submit(ctx: &mut Ctx<'_>) -> Result<(), CmdError> {
         let rel_speed = super::picket::relative_speed_3d_mmps(carrier.vel_mmps, corvette.vel_mmps);
         (
             picket.corvette_ship_id.clone(),
-            active.carrier_ship_id.clone(),
+            own_ship_id.to_owned(),
             rel_speed,
             picket.inspection_status,
         )
@@ -3246,6 +3322,7 @@ fn helm_submit(ctx: &mut Ctx<'_>) -> Result<(), CmdError> {
         status,
         super::picket::PicketInspectionStatus::Cleared
             | super::picket::PicketInspectionStatus::ClearedAfterFine
+            | super::picket::PicketInspectionStatus::ClearedAfterSeizure
     ) {
         return Err(CmdError::msg(
             "Republic Customs picket has already cleared this ship.",
@@ -3267,48 +3344,91 @@ fn helm_submit(ctx: &mut Ctx<'_>) -> Result<(), CmdError> {
     let manifest = super::picket::inspect_hull_manifest(ctx, hull, Some(ctx.actor), now_ic);
 
     if manifest.unlicensed_strategic_ore_kg > 0 {
-        let (contract_id, fine_minor, front_id) =
-            super::picket::assess_customs_fine_and_advance_front(
-                ctx,
-                ctx.actor,
-                hull,
-                manifest.unlicensed_strategic_ore_kg,
-            )
-            .map_err(CmdError::msg)?;
-        let front_raw = front_id.map(|f| f.0);
+        match super::picket::assess_customs_fine_and_advance_front(
+            ctx,
+            ctx.actor,
+            hull,
+            manifest.unlicensed_strategic_ore_kg,
+        ) {
+            Ok((contract_id, fine_minor, front_id)) => {
+                let front_raw = front_id.map(|f| f.0);
 
-        if let Some(book) = ctx.w.module_state_mut::<SpaceBubbleBook>()
-            && let Some(active) = book.by_hull.get_mut(&hull)
-        {
-            active.bubble.set_party_relation(
-                super::picket::CUSTOMS_CORVETTE_PARTY,
-                super::tick::CARRIER_PARTY,
-                SpaceRelation::Friendly,
-            );
-            if let Some(picket) = active.picket.as_mut() {
-                picket.inspection_status = super::picket::PicketInspectionStatus::ClearedAfterFine;
-                picket.inspection_outcome = Some(super::picket::PicketInspectionOutcome::Fined {
-                    contract_id: contract_id.0,
-                    fine_minor,
-                    unlicensed_strategic_ore_kg: manifest.unlicensed_strategic_ore_kg,
-                    front_id: front_raw,
-                });
+                if let Some(book) = ctx.w.module_state_mut::<SpaceBubbleBook>()
+                    && let Some(active) = book.active_for_hull_mut(hull)
+                {
+                    active.bubble.set_party_relation(
+                        super::picket::CUSTOMS_CORVETTE_PARTY,
+                        super::tick::CARRIER_PARTY,
+                        SpaceRelation::Friendly,
+                    );
+                    if let Some(picket) = active.picket.as_mut() {
+                        picket.inspection_status =
+                            super::picket::PicketInspectionStatus::ClearedAfterFine;
+                        picket.inspection_outcome =
+                            Some(super::picket::PicketInspectionOutcome::Fined {
+                                contract_id: contract_id.0,
+                                fine_minor,
+                                unlicensed_strategic_ore_kg: manifest.unlicensed_strategic_ore_kg,
+                                front_id: front_raw,
+                            });
+                    }
+                }
+
+                let fine_str = crate::port::coop::money_minor(ctx, fine_minor);
+                let line = format!(
+                    "[PICKET] Republic Customs Corvette `{corvette_ship_id}` inspected `{carrier_ship_id}` manifest: {} kg unlicensed `strategic_ore` detected; assessed {fine_str} contraband fine (Ledger contract #{}, campaign front `{}` #{}) and granted customs clearance.",
+                    manifest.unlicensed_strategic_ore_kg,
+                    contract_id.0,
+                    mush_faction::CUSTOMS_ASSERTION_TITLE,
+                    front_raw.unwrap_or(0)
+                );
+                crate::port::voyage::narrate_hull(ctx, hull, &line);
+                ctx.out.sys_to_actor(ctx.actor, "tacsim.space", line);
+            }
+            Err(_) => {
+                // Indigent pilot cannot cover the fine (`35b` §5 #14, `SF.R12`): confiscate the
+                // unlicensed `strategic_ore` from the hull's `stow.ore` hold, record the incident
+                // on `CUSTOMS_ASSERTION_TITLE`, and clear the ship (`ClearedAfterSeizure`)!
+                let front_id = super::picket::seize_contraband_and_advance_front(
+                    ctx,
+                    ctx.actor,
+                    hull,
+                    manifest.unlicensed_strategic_ore_kg,
+                );
+                let front_raw = front_id.map(|f| f.0);
+
+                if let Some(book) = ctx.w.module_state_mut::<SpaceBubbleBook>()
+                    && let Some(active) = book.active_for_hull_mut(hull)
+                {
+                    active.bubble.set_party_relation(
+                        super::picket::CUSTOMS_CORVETTE_PARTY,
+                        super::tick::CARRIER_PARTY,
+                        SpaceRelation::Friendly,
+                    );
+                    if let Some(picket) = active.picket.as_mut() {
+                        picket.inspection_status =
+                            super::picket::PicketInspectionStatus::ClearedAfterSeizure;
+                        picket.inspection_outcome =
+                            Some(super::picket::PicketInspectionOutcome::ContrabandSeized {
+                                seized_strategic_ore_kg: manifest.unlicensed_strategic_ore_kg,
+                                front_id: front_raw,
+                            });
+                    }
+                }
+
+                let line = format!(
+                    "[PICKET] Republic Customs Corvette `{corvette_ship_id}` inspected `{carrier_ship_id}` manifest: {} kg unlicensed `strategic_ore` confiscated in lieu of fine (insufficient credit; campaign front `{}` #{}) and customs clearance granted.",
+                    manifest.unlicensed_strategic_ore_kg,
+                    mush_faction::CUSTOMS_ASSERTION_TITLE,
+                    front_raw.unwrap_or(0)
+                );
+                crate::port::voyage::narrate_hull(ctx, hull, &line);
+                ctx.out.sys_to_actor(ctx.actor, "tacsim.space", line);
             }
         }
-
-        let fine_str = crate::port::coop::money_minor(ctx, fine_minor);
-        let line = format!(
-            "[PICKET] Republic Customs Corvette `{corvette_ship_id}` inspected `{carrier_ship_id}` manifest: {} kg unlicensed `strategic_ore` detected; assessed {fine_str} contraband fine (Ledger contract #{}, campaign front `{}` #{}) and granted customs clearance.",
-            manifest.unlicensed_strategic_ore_kg,
-            contract_id.0,
-            mush_faction::CUSTOMS_ASSERTION_TITLE,
-            front_raw.unwrap_or(0)
-        );
-        crate::port::voyage::narrate_hull(ctx, hull, &line);
-        ctx.out.sys_to_actor(ctx.actor, "tacsim.space", line);
     } else {
         if let Some(book) = ctx.w.module_state_mut::<SpaceBubbleBook>()
-            && let Some(active) = book.by_hull.get_mut(&hull)
+            && let Some(active) = book.active_for_hull_mut(hull)
         {
             active.bubble.set_party_relation(
                 super::picket::CUSTOMS_CORVETTE_PARTY,
@@ -3348,6 +3468,7 @@ fn helm_run(ctx: &mut Ctx<'_>) -> Result<(), CmdError> {
         status,
         super::picket::PicketInspectionStatus::Cleared
             | super::picket::PicketInspectionStatus::ClearedAfterFine
+            | super::picket::PicketInspectionStatus::ClearedAfterSeizure
     ) {
         return Err(CmdError::msg(
             "Republic Customs picket has already cleared this ship; cannot run the picket after clearance.",
@@ -3362,7 +3483,7 @@ fn helm_run(ctx: &mut Ctx<'_>) -> Result<(), CmdError> {
     let front_id = super::picket::record_ran_the_picket_incident(ctx, ctx.actor, hull).map(|f| f.0);
 
     if let Some(book) = ctx.w.module_state_mut::<SpaceBubbleBook>()
-        && let Some(active) = book.by_hull.get_mut(&hull)
+        && let Some(active) = book.active_for_hull_mut(hull)
     {
         active.bubble.set_party_relation(
             super::picket::CUSTOMS_CORVETTE_PARTY,
@@ -3420,26 +3541,28 @@ fn apply_collar_scrape_damage(ctx: &mut Ctx<'_>, hull: ObjId, front_armor_damage
     let bubble_ship = {
         let mut out = None;
         if let Some(book) = ctx.w.module_state_mut::<SpaceBubbleBook>()
-            && let Some(active) = book.by_hull.get_mut(&hull)
-            && let Some(ship) = active.bubble.ships.get_mut(&active.carrier_ship_id)
+            && let Some(active) = book.active_for_hull_mut(hull)
         {
-            if let Some(hull_sec) = ship.sections.get_mut(&super::bubble::ShipSectionId::Hull)
-                && let Some(front) = hull_sec.facets.get_mut(&super::bubble::FacetBand::Front)
-            {
-                *front = front.saturating_sub(front_armor_damage);
+            let own_ship_id = active.carrier_ship_id_for(hull).to_owned();
+            let leg_cursor = active.carrier_leg_cursor_for(hull).max(1);
+            if let Some(ship) = active.bubble.ships.get_mut(&own_ship_id) {
+                if let Some(hull_sec) = ship.sections.get_mut(&super::bubble::ShipSectionId::Hull)
+                    && let Some(front) = hull_sec.facets.get_mut(&super::bubble::FacetBand::Front)
+                {
+                    *front = front.saturating_sub(front_armor_damage);
+                }
+                out = Some((ship.clone(), active.domain, leg_cursor));
             }
-            out = Some((ship.clone(), active.domain));
         }
         out
     };
-    if let Some((ship, domain)) = bubble_ship {
+    if let Some((ship, domain, leg_cursor)) = bubble_ship {
         let _ = super::custody::check_in_space_unit(ctx, hull, &ship, at_ic);
         let site_key = format!("domain.{}", domain.0);
-        let ordinal = u32::try_from(domain.0).unwrap_or(1).max(1);
         let _ = mush_tactics::custody::check_out(
             ctx,
             hull,
-            mush_sim::deployed::DeployedMark::field(site_key, ordinal),
+            mush_sim::deployed::DeployedMark::field(site_key, leg_cursor),
         );
         return;
     }
@@ -3471,7 +3594,7 @@ fn unpause_hull_after_docking(ctx: &mut Ctx<'_>, hull: ObjId, now: &ClockStamp) 
     let has_active_bubble = ctx
         .w
         .module_state::<SpaceBubbleBook>()
-        .is_some_and(|b| b.by_hull.contains_key(&hull));
+        .is_some_and(|b| b.active_for_hull(hull).is_some());
     if !has_active_bubble {
         let _ = mush_sim::resume_carrier_journey(ctx, hull, now);
     }
@@ -3488,40 +3611,41 @@ fn resolve_docking_target(
     // 1. Check disabled contacts in the hull's active bubble or `SpaceBubbleBook::derelicts`.
     if let Some(book) = ctx.w.module_state::<SpaceBubbleBook>() {
         if let Some(active) = book.active_for_hull(hull) {
+            let own_ship_id = active.carrier_ship_id_for(hull);
             let parsed_obj = trimmed
                 .strip_prefix('#')
                 .or_else(|| trimmed.strip_prefix("ship."))
                 .and_then(|s| s.parse::<u32>().ok())
                 .map(ObjId);
+            let mut operational_fallback = None;
             for (ship_id, ship) in &active.bubble.ships {
-                if ship_id == &active.carrier_ship_id {
+                if ship_id == own_ship_id {
                     continue;
                 }
-                let contact_hull = if ship_id == &active.interdictor_ship_id {
-                    active.interdictor_hull
-                } else if let Some(picket) = &active.picket
-                    && ship_id == &picket.raider_ship_id
-                {
-                    picket.raider_hull
-                } else {
-                    ObjId(hull.0.saturating_add(1_000))
-                };
+                let contact_hull = active
+                    .hull_for_ship_id(ship_id)
+                    .unwrap_or(active.interdictor_hull);
                 let matches_token = trimmed.eq_ignore_ascii_case("derelict")
                     || ship_id.eq_ignore_ascii_case(trimmed)
                     || ship.callsign.to_ascii_lowercase().contains(&lower)
                     || parsed_obj == Some(contact_hull);
                 if matches_token {
-                    if !matches!(ship.status, HullStatus::DisabledDerelict { .. }) {
-                        return Err(CmdError::msg(format!(
-                            "Target `{}` (#{}) is still operational; disable its drive before initiating collar docking.",
-                            ship.callsign, contact_hull.0
-                        )));
+                    if matches!(ship.status, HullStatus::DisabledDerelict { .. }) {
+                        return Ok(super::docking::DockingTargetKind::DisabledDerelict {
+                            derelict_hull: contact_hull,
+                            derelict_name: ship.callsign.clone(),
+                        });
                     }
-                    return Ok(super::docking::DockingTargetKind::DisabledDerelict {
-                        derelict_hull: contact_hull,
-                        derelict_name: ship.callsign.clone(),
-                    });
+                    if operational_fallback.is_none() {
+                        operational_fallback = Some((ship.callsign.clone(), contact_hull));
+                    }
                 }
+            }
+            if let Some((callsign, contact_hull)) = operational_fallback {
+                return Err(CmdError::msg(format!(
+                    "Target `{callsign}` (#{}) is still operational; disable its drive before initiating collar docking.",
+                    contact_hull.0
+                )));
             }
         }
 
@@ -3622,8 +3746,9 @@ fn validate_docking_initiation_gates(
                 "Cannot initiate collar docking while ordnance is in flight in the tactical bubble.",
             ));
         }
+        let own_ship_id = active.carrier_ship_id_for(hull);
         for (ship_id, ship) in &active.bubble.ships {
-            if ship_id == &active.carrier_ship_id {
+            if ship_id == own_ship_id {
                 continue;
             }
             if ship.status == HullStatus::Operational
@@ -3654,28 +3779,23 @@ fn validate_docking_initiation_gates(
                     derelict_hull.0
                 ))
             })?;
+            let own_ship_id = active.carrier_ship_id_for(hull);
             let carrier = active
                 .bubble
                 .ships
-                .get(&active.carrier_ship_id)
+                .get(own_ship_id)
                 .ok_or_else(|| CmdError::msg("Carrier ship state missing from bubble."))?;
             let derelict = active
                 .bubble
                 .ships
                 .iter()
                 .find_map(|(sid, s)| {
-                    if sid == &active.carrier_ship_id {
+                    if sid == own_ship_id {
                         return None;
                     }
-                    let chull = if sid == &active.interdictor_ship_id {
-                        active.interdictor_hull
-                    } else if let Some(picket) = &active.picket
-                        && sid == &picket.raider_ship_id
-                    {
-                        picket.raider_hull
-                    } else {
-                        ObjId(hull.0.saturating_add(1_000))
-                    };
+                    let chull = active
+                        .hull_for_ship_id(sid)
+                        .unwrap_or(active.interdictor_hull);
                     (chull == *derelict_hull).then_some(s)
                 })
                 .ok_or_else(|| {
@@ -4041,16 +4161,20 @@ fn helm_dock(ctx: &mut Ctx<'_>) -> Result<(), CmdError> {
                     } => {
                         let (dest_parent, _) =
                             resolve_port_destination_parent(ctx.w, hull, port_id)?;
-                        let removed_bubble =
+                        let (removed_bubble, was_last) =
                             if let Some(book) = ctx.w.module_state_mut::<SpaceBubbleBook>() {
                                 book.free_flights.remove(&hull);
-                                book.by_hull.remove(&hull)
+                                let removed = book.remove_carrier_from_active(hull);
+                                let last = removed
+                                    .as_ref()
+                                    .is_some_and(|a| !book.by_domain.contains_key(&a.domain));
+                                (removed, last)
                             } else {
-                                None
+                                (None, false)
                             };
                         if let Some(active) = removed_bubble {
                             if let Some(carrier_ship) =
-                                active.bubble.ships.get(&active.carrier_ship_id)
+                                active.bubble.ships.get(active.carrier_ship_id_for(hull))
                             {
                                 let _ = super::custody::check_in_space_unit(
                                     ctx,
@@ -4058,6 +4182,29 @@ fn helm_dock(ctx: &mut Ctx<'_>) -> Result<(), CmdError> {
                                     carrier_ship,
                                     now.at,
                                 );
+                            }
+                            if was_last {
+                                if let Some(interdictor_ship) =
+                                    active.bubble.ships.get(&active.interdictor_ship_id)
+                                {
+                                    let _ = super::custody::check_in_space_unit(
+                                        ctx,
+                                        active.interdictor_hull,
+                                        interdictor_ship,
+                                        now.at,
+                                    );
+                                }
+                                if let Some(picket) = &active.picket
+                                    && let Some(corvette_ship) =
+                                        active.bubble.ships.get(&picket.corvette_ship_id)
+                                {
+                                    let _ = super::custody::check_in_space_unit(
+                                        ctx,
+                                        picket.corvette_hull,
+                                        corvette_ship,
+                                        now.at,
+                                    );
+                                }
                             }
                             if let Some(book) = ctx.w.module_state_mut::<SpaceBubbleBook>() {
                                 book.completed.insert(
@@ -4068,7 +4215,10 @@ fn helm_dock(ctx: &mut Ctx<'_>) -> Result<(), CmdError> {
                                 );
                                 book.pending_space_burns.retain(|b| b.hull != hull);
                             }
-                            let _ = mush_sim::stand_down_domain(ctx, active.domain, now.clone());
+                            if was_last {
+                                let _ =
+                                    mush_sim::stand_down_domain(ctx, active.domain, now.clone());
+                            }
                         }
                         mush_sim::dock_carrier_at_destination(ctx, hull, dest_parent, &now)
                             .map_err(CmdError::msg)?;
@@ -4180,7 +4330,7 @@ fn canonical_hull_dry_mass_t(w: &World, hull: ObjId, default_t: u32) -> u32 {
         {
             return iship.dry_mass_t;
         }
-        if let Some(cship) = active.bubble.ships.get(&active.carrier_ship_id) {
+        if let Some(cship) = active.bubble.ships.get(active.carrier_ship_id_for(hull)) {
             return cship.dry_mass_t;
         }
     }
@@ -4234,7 +4384,7 @@ fn helm_tow(ctx: &mut Ctx<'_>) -> Result<(), CmdError> {
     let contest_expires_real_s =
         filed_real_s.saturating_add(i64::from(super::bubble::DERELICT_WINDOW_S));
 
-    // Ensure the derelict is registered in `SalvageClaimBook` and `SpaceBubbleBook::derelicts` (`D-35-12`):
+    // Ensure the derelict is registered in `SalvageClaimBook` and `SpaceBubbleBook::derelicts` (`D-35-12`, `SF.R12`):
     let already_claimed = ctx
         .w
         .module_state::<SpaceBubbleBook>()
@@ -4256,8 +4406,8 @@ fn helm_tow(ctx: &mut Ctx<'_>) -> Result<(), CmdError> {
                 .map_err(|e| CmdError::msg(e.to_string()))?;
             (dom, op)
         };
-        let prior_owner = ObjId(clamped_derelict.0.saturating_add(1_000));
-        let base_obj = ObjId(domain.0.try_into().unwrap_or(1u32).max(1));
+        let prior_owner = super::tick::resolve_hull_prior_owner(ctx.w, clamped_derelict, hull);
+        let base_obj = super::tick::resolve_nearest_port_base_obj(ctx.w, domain, hull);
         let title_status = ctx
             .w
             .module_state_mut::<crate::field_ops::SalvageClaimBook>()
@@ -4300,9 +4450,9 @@ fn helm_tow(ctx: &mut Ctx<'_>) -> Result<(), CmdError> {
     };
     if let Some(book) = ctx.w.module_state_mut::<SpaceBubbleBook>() {
         book.active_tows.insert(hull, tow_record);
-        if let Some(active) = book.by_hull.get_mut(&hull) {
-            active.approaching_derelict = false;
-            active.holding_for_salvage = false;
+        if let Some(active) = book.active_for_hull_mut(hull) {
+            active.set_approaching_derelict_for(hull, false);
+            active.set_holding_for_salvage_for(hull, false);
         }
     }
 

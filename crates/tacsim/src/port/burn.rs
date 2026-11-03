@@ -244,6 +244,9 @@ pub struct PendingSpaceBurn {
     pub burn_t: u64,
     /// Crew-days of provisions to debit from `stow.provisions` (non-zero when re-entering an autopilot passage).
     pub crew_days: u32,
+    /// Whole tonnes of unlicensed `strategic_ore` seized at a customs picket (`SF.R12`, `D-35-11`).
+    #[serde(default)]
+    pub seized_strategic_ore_t: u32,
 }
 
 fn invalid() -> mush_core::ActionError {
@@ -474,30 +477,46 @@ impl ActionProvider for BurnProvider {
                 |_: PlanError| port_error(ActionErrorCode::Integrity, "the hold cannot be read");
             let (_, tank_free) =
                 pool_of(&self.inventory, txn, vault, &propellant).map_err(unreadable)?;
-            let (_, locker_free) =
-                pool_of(&self.inventory, txn, vault, &provisions).map_err(unreadable)?;
             if tank_free < pending.burn_t {
                 return Err(port_error(
                     ActionErrorCode::ProviderRejected,
                     "the tank holds less reaction mass than the burn needs",
                 ));
             }
-            let crew = u64::from(pending.crew_days);
-            if locker_free < crew {
-                return Err(port_error(
-                    ActionErrorCode::ProviderRejected,
-                    "the stores locker holds fewer crew-days than the passage needs",
-                ));
+            if pending.seized_strategic_ore_t > 0 {
+                let strategic_ore = CanonicalId::new("strategic_ore").map_err(|_| invalid())?;
+                let (_, ore_free) =
+                    pool_of(&self.inventory, txn, vault, &strategic_ore).map_err(unreadable)?;
+                let seize_t = u64::from(pending.seized_strategic_ore_t).min(ore_free);
+                debit_consumables(
+                    &self.inventory,
+                    txn,
+                    vault,
+                    &propellant,
+                    pending.burn_t,
+                    &strategic_ore,
+                    seize_t,
+                )?;
+            } else {
+                let (_, locker_free) =
+                    pool_of(&self.inventory, txn, vault, &provisions).map_err(unreadable)?;
+                let crew = u64::from(pending.crew_days);
+                if locker_free < crew {
+                    return Err(port_error(
+                        ActionErrorCode::ProviderRejected,
+                        "the stores locker holds fewer crew-days than the passage needs",
+                    ));
+                }
+                debit_consumables(
+                    &self.inventory,
+                    txn,
+                    vault,
+                    &propellant,
+                    pending.burn_t,
+                    &provisions,
+                    crew,
+                )?;
             }
-            debit_consumables(
-                &self.inventory,
-                txn,
-                vault,
-                &propellant,
-                pending.burn_t,
-                &provisions,
-                crew,
-            )?;
             let outcome_fields = json!({
                 "actor": actor.0,
                 "burn_t": pending.burn_t,
