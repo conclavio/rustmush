@@ -7,41 +7,7 @@
 //! refuses with the field named — at the command, and at the start's prepare for a start queued
 //! before the flag landed. Clearing the flag lets work resume with the ground unchanged.
 
-use mush_core::ObjId;
-use tacsim::surface::site_record::{
-    FIELD_MAX_UNITS, FIELD_OPEN_CODE, GroundKind, LeftCondition, SiteKey, SiteRecord,
-};
-
-use crate::driving::{
-    AHUNA, Rig, cid, command, handles, land, land_all, launched, on_pad, on_pad_as, reboot, run,
-    stocked, to_cell, typed, warm,
-};
-
-/// Ahuna Flank's record, as the family holds it.
-fn site_record(rig: &mut Rig) -> Option<SiteRecord> {
-    let h = handles(&rig.tw);
-    typed(&mut rig.tw, &h.families.sites, &SiteKey(cid(AHUNA)))
-}
-
-/// A staff character (`SIM_ADMIN`): a submitting hand of its own, never GOD (whom the harness
-/// forbids to submit).
-pub(crate) fn staff_member(rig: &mut Rig) -> ObjId {
-    let staff = rig.tw.spawn_player("Site staff");
-    rig.tw
-        .world_mut()
-        .get_mut(staff)
-        .expect("the staff character")
-        .powers
-        .insert(mush_core::Powers::SIM_ADMIN);
-    staff
-}
-
-/// One staff fixture write by `who`, landed.
-pub(crate) fn staff(rig: &mut Rig, who: ObjId, line: &str) {
-    let (out, queued) = command(rig, who, line);
-    assert_eq!(queued.len(), 1, "{line}: one write: {out}");
-    land_all(rig, &queued);
-}
+use crate::site_record_rig::*;
 
 /// **CF.1's gate** (doc 32 §6; Q-CF-15, Q-CF-21, Q-CF-24, Q-CF-28, Q-CF-30): A on the pad with two
 /// rigs — rig 1 out at the ramp, rig 2's unit left by staff as a wreck at (120, 124) beside a crate

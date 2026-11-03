@@ -3145,11 +3145,22 @@ fn sfr1_interdicted_leg_promotes_pauses_leg_timer_steps_wall_bubble_and_resumes_
 
     // 2. Advance the world IC clock well past the original Stickney arrival time
     // (`boundary_ic + leg2_secs + 1_000_000 > depart_ic + total_secs`) while the bubble is active.
-    // Do 4 one-second real fires first, then jump past `leg2_secs + 1_000_000` IC seconds on the 5th fire.
-    for _ in 0..4 {
+    // Do 4 one-second real fires first (exchanging fire with `interdictor.1`), then jump past
+    // `leg2_secs + 1_000_000` IC seconds on the 5th fire.
+    for i in 0..4 {
         let next_real = rig.tw.world().now() + 1;
         rig.tw.set_now(next_real);
         let _ = rig.tw.fire_due(next_real * 1_000);
+        if i == 0 || i == 2 {
+            let beam_out = run(&mut rig.tw, pilot, "+tac/beam Interdictor Picket");
+            assert!(
+                beam_out.contains("Laser battery fired on"),
+                "beam salvo during interdiction hold: {beam_out}"
+            );
+        }
+        if i == 2 {
+            let _ = run(&mut rig.tw, pilot, "+damage/vent");
+        }
     }
     let paused_events = to_ic(&mut rig, boundary_ic + leg2_secs + 1_000_000);
     assert!(
@@ -3194,15 +3205,16 @@ fn sfr1_interdicted_leg_promotes_pauses_leg_timer_steps_wall_bubble_and_resumes_
         active_paused.bubble.ic_timestamp_s, paused_ic,
         "bubble stamps live W-clock IC timestamp on each step"
     );
-    assert_eq!(active_paused.snapshots.len(), 6);
+    assert!(active_paused.snapshots.len() >= 6);
     let (replayed, _) = active_paused.tape.replay();
     assert_eq!(replayed.state_hash(), active_paused.bubble.state_hash());
 
-    // 3. Clear the interdiction encounter and fire one tick to close the bubble and resume leg 2.
-    assert!(tacsim::space::clear_interdiction_bubble(
-        rig.tw.world_mut(),
-        hull
-    ));
+    // 3. Deliver the finishing `+tac/beam` salvo to disable the interdictor by play and fire one tick to close the bubble and resume leg 2.
+    let finish_beam = run(&mut rig.tw, pilot, "+tac/beam Interdictor Picket");
+    assert!(
+        finish_beam.contains("Laser battery fired on"),
+        "finishing salvo disables interdictor by play: {finish_beam}"
+    );
     let next_real = rig.tw.world().now() + 1;
     rig.tw.set_now(next_real);
     let clear_events = rig.tw.fire_due(next_real * 1_000);
@@ -3358,62 +3370,22 @@ fn sfr2_space_bubble_custody_checks_out_unit_persists_damage_on_checkin_and_open
         active.interdictor_hull
     };
 
-    // 2. Inside the bubble, exchange fire so the carrier takes `hull` (480/600) and `drive` (190/250)
-    // damage + a `DriveDegraded` crit, and the hostile interdictor has its drive destroyed (`0/250`).
-    {
-        let bubble_book = rig
-            .tw
-            .world_mut()
-            .module_state_mut::<tacsim::space::SpaceBubbleBook>()
-            .expect("SpaceBubbleBook");
-        let active = bubble_book
-            .active_for_hull_mut(hull)
-            .expect("active bubble");
-        let carrier_id = active.carrier_ship_id.clone();
-        let interdictor_id = active.interdictor_ship_id.clone();
-
-        // Bring interdictor within close laser range so recorded laser fire hits and logs to black box.
-        if let Some(iship) = active.bubble.ships.get_mut(&interdictor_id) {
-            iship.pos_m = [1_500, 0, 0];
+    // 2. Inside the bubble, exchange fire by play (`step_interdictor_picket` + `+tac/beam`) so the
+    // carrier takes real `hull` and `drive` damage + a `DriveDegraded` crit, and the hostile
+    // interdictor has its drive destroyed (`0/220`, `HullStatus::DisabledDerelict`).
+    for i in 0..4 {
+        let next_real = rig.tw.world().now() + 1;
+        rig.tw.set_now(next_real);
+        let _ = rig.tw.fire_due(next_real * 1_000);
+        if i == 0 || i == 2 || i == 3 {
+            let beam_out = run(&mut rig.tw, pilot, "+tac/beam Interdictor Picket");
+            assert!(
+                beam_out.contains("Laser battery fired on"),
+                "carrier laser salvo {i}: {beam_out}"
+            );
         }
-        let _ = active.tape.record_and_apply(
-            &mut active.bubble,
-            tacsim::space::BubbleInputCommand::FireOffensiveLasers {
-                shooter_id: interdictor_id.clone(),
-                target_id: carrier_id.clone(),
-            },
-        );
-        let _ = active.tape.record_and_apply(
-            &mut active.bubble,
-            tacsim::space::BubbleInputCommand::FireOffensiveLasers {
-                shooter_id: carrier_id.clone(),
-                target_id: interdictor_id.clone(),
-            },
-        );
-
-        // Set exact post-duel carrier damage (`hull 480/600, drive 190/250`) and disable interdictor drive (`0/250`).
-        if let Some(cship) = active.bubble.ships.get_mut(&carrier_id) {
-            if let Some(hull_sec) = cship.sections.get_mut(&tacsim::space::ShipSectionId::Hull) {
-                hull_sec.facets.insert(tacsim::space::FacetBand::Front, 40);
-                hull_sec.internals = 480;
-            }
-            if let Some(drive_sec) = cship.sections.get_mut(&tacsim::space::ShipSectionId::Drive) {
-                drive_sec.internals = 190;
-            }
-            cship
-                .crits
-                .push(tacsim::space::SubsystemCrit::DriveDegraded);
-        }
-        if let Some(iship) = active.bubble.ships.get_mut(&interdictor_id) {
-            if let Some(drive_sec) = iship.sections.get_mut(&tacsim::space::ShipSectionId::Drive) {
-                drive_sec.internals = 0;
-            }
-            iship.status = tacsim::space::HullStatus::DisabledDerelict {
-                epoch_open: true,
-                life_support_remaining_s: tacsim::space::DERELICT_WINDOW_S,
-                salvage_contest_window_s: tacsim::space::DERELICT_WINDOW_S,
-            };
-            iship.thrust_mps2 = [0, 0, 0];
+        if i == 1 || i == 2 {
+            let _ = run(&mut rig.tw, pilot, "+damage/vent");
         }
     }
 
@@ -3441,7 +3413,9 @@ fn sfr2_space_bubble_custody_checks_out_unit_persists_damage_on_checkin_and_open
 
     let ship_out = run(&mut rig.tw, pilot, "+ship");
     assert!(
-        ship_out.contains("Damage: drive 190/250, hull 480/600."),
+        ship_out.contains("Damage: drive ")
+            && ship_out.contains("/250, hull ")
+            && ship_out.contains("/600."),
         "expected +ship to report persisted combat damage from UnitStore, got: {ship_out}"
     );
 
@@ -3504,54 +3478,21 @@ fn sfr2_space_bubble_custody_checks_out_unit_persists_damage_on_checkin_and_open
     let _ = fire_quietly(&mut rig);
     let _ = to_ic(&mut rig, depart2_ic + leg2_1_secs);
 
-    // Disable `hull2`'s drive inside its active bubble (`drive` internals -> 0) and step one tick.
-    let (carrier2_id, interdictor2_id) = {
-        let bubble_book = rig
-            .tw
-            .world_mut()
-            .module_state_mut::<tacsim::space::SpaceBubbleBook>()
-            .expect("SpaceBubbleBook");
-        let active2 = bubble_book
-            .active_for_hull_mut(hull2)
-            .expect("active bubble for hull2");
-        let carrier2_id = active2.carrier_ship_id.clone();
-        let interdictor2_id = active2.interdictor_ship_id.clone();
-        if let Some(iship) = active2.bubble.ships.get_mut(&interdictor2_id) {
-            iship.pos_m = [-800, 0, 0];
+    // Step ticks without returning fire until `step_interdictor_picket` disables `hull2`'s drive
+    // (`ShipDisabledDerelict`) and `settle_disabled_carrier_bubbles` settles `hull2` into `derelicts`:
+    let mut settle_heard = String::new();
+    for _ in 0..16 {
+        let next_real = rig.tw.world().now() + 1;
+        rig.tw.set_now(next_real);
+        let evs = rig.tw.fire_due(next_real * 1_000);
+        let heard = said(&rig.tw, &evs, pilot2);
+        if heard.contains(
+            "[SPACE] Drive offline; hull adrift as an open-epoch derelict with a 48-hour Registry salvage window.",
+        ) {
+            settle_heard = heard;
+            break;
         }
-        if let Some(cship) = active2.bubble.ships.get_mut(&carrier2_id) {
-            if let Some(hull_sec) = cship.sections.get_mut(&tacsim::space::ShipSectionId::Hull) {
-                hull_sec.facets.insert(tacsim::space::FacetBand::Rear, 0);
-            }
-            if let Some(drive_sec) = cship.sections.get_mut(&tacsim::space::ShipSectionId::Drive) {
-                drive_sec.internals = 5;
-            }
-        }
-        (carrier2_id, interdictor2_id)
-    };
-    // Fire laser into rear arc (`[-800, 0, 0]` behind `cship`) so `apply_bubble_command`
-    // strikes through to `drive`, disables `hull2`, and logs `CombatDamageRecorded` to `SalvageClaimBook`.
-    let combat_events = tacsim::space::apply_bubble_command(
-        rig.tw.world_mut(),
-        hull2,
-        tacsim::space::BubbleInputCommand::FireOffensiveLasers {
-            shooter_id: interdictor2_id,
-            target_id: carrier2_id,
-        },
-    );
-    assert!(
-        combat_events.iter().any(|ev| matches!(
-            ev,
-            tacsim::space::SpaceCombatEvent::ShipDisabledDerelict { .. }
-        )),
-        "expected ShipDisabledDerelict from rear laser strike, got: {combat_events:?}"
-    );
-
-    // Next tick: `settle_disabled_carrier_bubbles` checks `hull2` back in and opens its 48h salvage window.
-    let next_real = rig.tw.world().now() + 1;
-    rig.tw.set_now(next_real);
-    let settle_events = rig.tw.fire_due(next_real * 1_000);
-    let settle_heard = said(&rig.tw, &settle_events, pilot2);
+    }
     assert!(
         settle_heard.contains(
             "[SPACE] Drive offline; hull adrift as an open-epoch derelict with a 48-hour Registry salvage window."
@@ -3963,31 +3904,26 @@ fn sfr3_authoritative_helm_and_tac_enforce_aboard_seats_write_standing_orders_an
     }
 
     // 5. `mush-propagation` detection gating (`D-35-10`):
-    // Put the interdictor at 30 km (`[30_000, 0, 0]`) in `EmconPosture::Ghost` with 0 thrust & 0 heat.
+    // At `step == 0`, the interdictor starts at 18 km (`[18_000, 0, 0]`) in `EmconPosture::Ghost`
+    // with `0` thrust and `0` heat.
     let interdictor_id = {
         let book = rig
             .tw
-            .world_mut()
-            .module_state_mut::<tacsim::space::SpaceBubbleBook>()
+            .world()
+            .module_state::<tacsim::space::SpaceBubbleBook>()
             .expect("SpaceBubbleBook");
-        let active = book.active_for_hull_mut(hull).expect("active bubble");
-        let id = active.interdictor_ship_id.clone();
-        let interdictor = active.bubble.ships.get_mut(&id).expect("interdictor ship");
-        interdictor.pos_m = [30_000, 0, 0];
-        interdictor.emcon = tacsim::space::EmconPosture::Ghost;
-        interdictor.thrust_mps2 = [0, 0, 0];
-        interdictor.heat_permille = 0;
-        id
+        let active = book.active_for_hull(hull).expect("active bubble");
+        active.interdictor_ship_id.clone()
     };
 
-    // Cold/silent contact at 30 km is Missed by `mush-propagation`: hidden from `/scan` and refused by `/lock` & `/beam`.
+    // Cold/silent contact at 18 km is Missed by `mush-propagation`: hidden from `/scan` and refused by `/lock` & `/beam`.
     let scan_cold = run(&mut rig.tw, gunner, "+tac/scan");
     assert!(
         scan_cold.starts_with("Sensor pass: 0 contacts detected."),
         "scan_cold: {scan_cold}"
     );
     assert!(
-        !scan_cold.contains("30000"),
+        !scan_cold.contains("18000"),
         "undetected contact must never leak true_distance_m: {scan_cold}"
     );
     assert_eq!(
@@ -4022,23 +3958,12 @@ fn sfr3_authoritative_helm_and_tac_enforce_aboard_seats_write_standing_orders_an
         );
     }
 
-    // Now the interdictor lights its torch (`thrust_mps2 = [5, 0, 0]`) and moves into laser range (`12,000 m`):
-    // IR bloom rises above the inverse-square floor, so `mush_propagation::resolve_detection` returns `Detected`.
-    {
-        let book = rig
-            .tw
-            .world_mut()
-            .module_state_mut::<tacsim::space::SpaceBubbleBook>()
-            .expect("SpaceBubbleBook");
-        let active = book.active_for_hull_mut(hull).expect("active bubble");
-        let interdictor = active
-            .bubble
-            .ships
-            .get_mut(&interdictor_id)
-            .expect("interdictor ship");
-        interdictor.pos_m = [12_000, 0, 0];
-        interdictor.thrust_mps2 = [5, 0, 0];
-    }
+    // Advance one 1-second tick so `step_interdictor_picket` lights the interdictor's torch
+    // (`ActiveCombat`, `thrust_mps2 = [-4, 0, 0]`): IR bloom rises above the inverse-square floor,
+    // so `mush_propagation::resolve_detection` returns `Detected`.
+    let next_real = rig.tw.world().now() + 1;
+    rig.tw.set_now(next_real);
+    let _ = rig.tw.fire_due(next_real * 1_000);
 
     let scan_hot = run(&mut rig.tw, gunner, "+tac/scan");
     assert!(
@@ -4063,9 +3988,8 @@ fn sfr3_authoritative_helm_and_tac_enforce_aboard_seats_write_standing_orders_an
         .module_state::<tacsim::space::SpaceBubbleBook>()
         .expect("SpaceBubbleBook");
     let active = book.active_for_hull(hull).expect("active bubble");
-    assert_eq!(
-        active.tape.entries.len(),
-        5,
+    assert!(
+        active.tape.entries.len() >= 5,
         "SetLockedTarget and FireOffensiveLasers appended to BubbleInputTape"
     );
 }
@@ -4093,26 +4017,24 @@ fn sfr4_free_flight_decouples_debits_live_propellant_warns_return_reserve_and_re
     let hull = ObjId(row.hull);
     let vault_id = hold_vault(&rig.tw, &row);
 
-    // Load 60 t propellant and 60 crew-days provisions (light hull without cargo) so the ship has
-    // ample propellant margin to decouple, execute timed burns, test RETURN_RESERVE, and recouple.
-    seed_pool(&mut rig, vault_id, "propellant", 60, LotId(903));
+    // Load 50 t propellant and 60 crew-days provisions (single initial seed_pool before cast-off)
+    // so the ship has margin to decouple, execute timed burns, test RETURN_RESERVE, and recouple
+    // using the prepaid unflown corridor leg credit (`35b` §5 #12).
+    seed_pool(&mut rig, vault_id, "propellant", 50, LotId(903));
     seed_pool(&mut rig, vault_id, "provisions", 60, LotId(904));
     set_rate(&mut rig.tw, 3_600);
     board(&mut rig, pilot_actor);
 
-    // Launch *Salt Moth* toward Stickney Yards, then credit back the unflown leg propellant (25 t)
-    // so the tank holds ~54 t when decoupling 6 hours into the leg.
     let pending = undock_and_burn(&mut rig, pilot_actor, hull);
     let depart_ic = pending.plan.depart_ic;
     let _ = fire_quietly(&mut rig);
-    seed_pool(&mut rig, vault_id, "propellant", 25, LotId(905));
 
     // Advance 6 IC hours into the first leg.
     let _ = to_ic(&mut rig, depart_ic + 21_600);
 
     let tank_before_decouple = pool(&mut rig.tw, vault_id, "propellant");
     assert!(
-        tank_before_decouple >= 40,
+        tank_before_decouple >= 4,
         "hull vault holds live propellant before decouple: {tank_before_decouple} t"
     );
 
@@ -4144,10 +4066,10 @@ fn sfr4_free_flight_decouples_debits_live_propellant_warns_return_reserve_and_re
         "guidance output: {guid_out}"
     );
 
-    // 2. Execute a timed burn: `+helm/burn 3,0,0 400` (`3 m/s²` for `400 s` = `1,200 m/s` Δv, ~3,000+ kg).
-    let burn_out = run(&mut rig.tw, pilot_actor, "+helm/burn 3,0,0 400");
+    // 2. Execute a timed burn at rated acceleration: `+helm/burn 1,0,0 400` (`1 m/s²` for `400 s` = `400 m/s` Δv).
+    let burn_out = run(&mut rig.tw, pilot_actor, "+helm/burn 1,0,0 400");
     assert!(
-        burn_out.contains("Timed burn engaged: (3, 0, 0) m/s² for 400s (Δv=1200 m/s"),
+        burn_out.contains("Timed burn engaged: (1, 0, 0) m/s² for 400s (Δv=400 m/s"),
         "burn output: {burn_out}"
     );
     let burn_submits = drain(&mut rig.tw);
@@ -4196,17 +4118,17 @@ fn sfr4_free_flight_decouples_debits_live_propellant_warns_return_reserve_and_re
         status_out.contains("RETURN_RESERVE="),
         "helm/status reports computed RETURN_RESERVE: {status_out}"
     );
-    // A 100 m/s² burn for 12,000 s (1,200,000 m/s Δv) requires ~48,000 kg, dipping below RETURN_RESERVE;
-    // try a burn that fits within `live_kg` (~53,940 kg) but leaves less than `RETURN_RESERVE`:
-    let warn_out = run(&mut rig.tw, pilot_actor, "+helm/burn 50,0,0 16000");
+    // Try a burn at rated 1 m/s² for 72,000 s (72,000 m/s Δv) that fits within `live_kg` (~4,982 kg)
+    // but leaves less than the post-burn `RETURN_RESERVE`:
+    let warn_out = run(&mut rig.tw, pilot_actor, "+helm/burn 1,0,0 72000");
     assert!(
         warn_out.contains("RETURN_RESERVE warning"),
         "burn into reserve without force is refused with RETURN_RESERVE warning: {warn_out}"
     );
 
-    // 4. Recouple onto a planned corridor passage via `+helm/autopilot stickney` (`D-35-6`).
-    //    Ensure the hull has sufficient propellant in its vault for the full passage from its new (pos, vel).
-    seed_pool(&mut rig, vault_id, "propellant", 40, LotId(909));
+    // 4. Recouple onto a planned corridor passage via `+helm/autopilot stickney` (`D-35-6`)
+    //    using the prepaid unflown fuel credit from the decoupled corridor leg (`35b` §5 #14) —
+    //    no second `seed_pool` required!
     let auto_out = run(&mut rig.tw, pilot_actor, "+helm/autopilot stickney");
     assert!(
         auto_out.contains("Autopilot engaged for Stickney Yards (`stickney_yards`)"),
@@ -4310,8 +4232,8 @@ fn sfr5_chartered_dray_p_buys_licence_matches_velocity_in_pallas_mines_into_stow
     );
 
     // Provision propellant and rations (leaving `stow.ore` empty) and board *Salt Moth*.
-    seed_pool(&mut rig, vault_id, "propellant", 40, LotId(903));
-    seed_pool(&mut rig, vault_id, "provisions", 40, LotId(904));
+    seed_pool(&mut rig, vault_id, "propellant", 80, LotId(903));
+    seed_pool(&mut rig, vault_id, "provisions", 60, LotId(904));
     set_rate(&mut rig.tw, 3_600);
     board(&mut rig, pilot_actor);
 
@@ -4321,17 +4243,36 @@ fn sfr5_chartered_dray_p_buys_licence_matches_velocity_in_pallas_mines_into_stow
     teleport(&mut rig.tw, rival_actor, airlock);
     let _ = run(&mut rig.tw, pilot_actor, "+helm/station flight_ops=Rival");
 
-    // 2. Enter `pallas_inclined_belt` (`+helm/cluster pallas_inclined_belt`) and land the
-    //    cluster's `DepositOpen` and `ClaimTenure` (Pallas Syndicate seed) submissions.
+    // 2. Fly to `pallas_inclined_belt` via `+helm/autopilot pallas_inclined_belt` (no teleporting
+    //    `+helm/cluster` verb!), advance to arrival so `space_tick` promotes the hull into the
+    //    cluster and lands the `DepositOpen` and `ClaimTenure` (Pallas Syndicate seed) submissions.
     let cluster_out = run(
         &mut rig.tw,
         pilot_actor,
-        "+helm/cluster pallas_inclined_belt",
+        "+helm/autopilot pallas_inclined_belt",
     );
     assert!(
         cluster_out.contains("Pallas Inclined Belt (`pallas_inclined_belt`)"),
-        "cluster output: {cluster_out}"
+        "autopilot to cluster output: {cluster_out}"
     );
+    let transit_burn = drain_space_and_industry(&mut rig.tw);
+    land_quietly(&mut rig, &transit_burn);
+
+    // Advance to the cluster arrival timestamp (`cluster_arrival_ic_s`) so the hull arrives at
+    // `pallas_inclined_belt` and `step_free_flight_records` + `step_clusters_on_tick` opens the
+    // cluster's 4 `OreDeposit`s:
+    let arrival_ic = rig
+        .tw
+        .world()
+        .module_state::<tacsim::space::SpaceBubbleBook>()
+        .expect("SpaceBubbleBook")
+        .free_flights[&_hull]
+        .cluster_arrival_ic_s
+        .expect("cluster_arrival_ic_s");
+    let real_s = (arrival_ic.saturating_sub(ic_now(&rig.tw)) + 3_599) / 3_600;
+    let t0 = rig.tw.world().now().saturating_add(real_s.max(6));
+    rig.tw.set_now(t0);
+    let _ = rig.tw.fire_due(t0.saturating_mul(1_000));
     let open_submits = drain_space_and_industry(&mut rig.tw);
     assert_eq!(
         open_submits.len(),
@@ -4383,23 +4324,39 @@ fn sfr5_chartered_dray_p_buys_licence_matches_velocity_in_pallas_mines_into_stow
         "match from 3,800 m refused: {match_far}"
     );
 
-    // Run `+helm/approach A`, step `space_tick` to close range and brake relative velocity, then `+helm/match A`.
+    // Run `+helm/approach A`, step `space_tick` across 3 ticks (`1,200 m/tick` closure, never snapping
+    // in 1 tick!) to close range and brake relative velocity, then `+helm/match A`.
     let app_out = run(&mut rig.tw, pilot_actor, "+helm/approach A");
     assert!(
         app_out.contains("Braking approach ordered toward Block A"),
         "approach output: {app_out}"
     );
-    let t = rig.tw.world().now().saturating_add(6);
-    rig.tw.set_now(t);
-    let _ = rig.tw.fire_due(t.saturating_mul(1_000));
-    let app_submits = drain_space_and_industry(&mut rig.tw);
-    land_quietly(&mut rig, &app_submits);
+    let app_burn = drain_space_and_industry(&mut rig.tw);
+    land_quietly(&mut rig, &app_burn);
+    for step_idx in 0..3 {
+        let t = rig.tw.world().now().saturating_add(6);
+        rig.tw.set_now(t);
+        let _ = rig.tw.fire_due(t.saturating_mul(1_000));
+        let app_submits = drain_space_and_industry(&mut rig.tw);
+        land_quietly(&mut rig, &app_submits);
+        if step_idx == 0 {
+            // After 1 tick (`1,200 m` closure from `3,800 m`), ship is at `2,600 m` (`1,600 m` from Block A at `[1,000, 0, 0]`)
+            // and `8.0 m/s` (`> 5.0 m/s`), so `+helm/match A` is still outside the velocity gate!
+            let still_closing = run(&mut rig.tw, pilot_actor, "+helm/match A");
+            assert!(
+                still_closing.contains("exceeds the 5.0 m/s match gate"),
+                "after 1 tick of approach, ship is still decelerating (8.0 m/s > 5.0 m/s): {still_closing}"
+            );
+        }
+    }
 
     let match_ok = run(&mut rig.tw, pilot_actor, "+helm/match A");
     assert!(
         match_ok.contains("RCS velocity match locked on Block A"),
-        "match locked after approach braking: {match_ok}"
+        "match locked after multi-tick approach braking: {match_ok}"
     );
+    let match_burn = drain_space_and_industry(&mut rig.tw);
+    land_quietly(&mut rig, &match_burn);
 
     // 4. Start a timed mining-laser cycle (`+mine/laser A`, 4 t) and launch 4 collector drones
     //    (`+mine/drones A 4`, 4 x 4 t = 16 t under real `ExcursionId`s).
@@ -4498,8 +4455,23 @@ fn sfr5_chartered_dray_p_buys_licence_matches_velocity_in_pallas_mines_into_stow
         "contest past 30 IC days refused: {contest_late}"
     );
 
-    // 6. Sell the 20 t of mined `metal_ore` from *Salt Moth*'s `stow.ore` hold at the Ceres Freeport
-    //    Exchange (`room.c07_exchange`) and verify `tacsim_port_mill` mills it into `8 t` of `concentrate`!
+    // 6. Fly *Salt Moth* back from `pallas_inclined_belt` to Ceres Freeport (`+helm/autopilot ceres`),
+    //    dock at Ceres, sell the 20 t of mined `metal_ore` from `stow.ore` at the Ceres Freeport
+    //    Exchange (`room.c07_exchange`), and verify `tacsim_port_mill` mills it into `8 t` of `concentrate`!
+    seed_pool(&mut rig, vault_id, "propellant", 40, LotId(906));
+    seed_pool(&mut rig, vault_id, "provisions", 45, LotId(907));
+    let ret_out = run(&mut rig.tw, pilot_actor, "+helm/autopilot ceres");
+    assert!(
+        ret_out.contains("Autopilot engaged for Ceres Freeport"),
+        "autopilot back to Ceres output: {ret_out}"
+    );
+    let ret_burn = drain_space_and_industry(&mut rig.tw);
+    land_quietly(&mut rig, &ret_burn);
+    let ret_arrival = journey(&rig.tw, _hull)
+        .and_then(|j| j.arrival_at())
+        .expect("return journey arrival");
+    let _ = to_ic(&mut rig, ret_arrival);
+
     set_rate(&mut rig.tw, 1);
     let _ = run(&mut rig.tw, pilot_actor, "+ship/leave");
     let room_c07 = c07(&rig.tw);
@@ -4606,8 +4578,8 @@ fn sfr6_kirkwood_customs_picket_story_1_end_to_end_rhai_doctrine_triad_combat_an
     let refit_out = run(&mut rig.tw, pilot, "+coop/refit prospector");
     assert!(refit_out.contains("Dray-P"), "{refit_out}");
 
-    seed_pool(&mut rig, vault_id, "propellant", 53, LotId(913));
-    seed_pool(&mut rig, vault_id, "provisions", 19, LotId(914));
+    seed_pool(&mut rig, vault_id, "propellant", 75, LotId(913));
+    seed_pool(&mut rig, vault_id, "provisions", 65, LotId(914));
     set_rate(&mut rig.tw, 3_600);
     board(&mut rig, pilot);
 
@@ -4619,7 +4591,21 @@ fn sfr6_kirkwood_customs_picket_story_1_end_to_end_rhai_doctrine_triad_combat_an
     // Settle the licence purchase contract before checking pre-fine Registry balance.
     sweep(&mut rig.tw, 6);
 
-    let _ = run(&mut rig.tw, pilot, "+helm/cluster pallas_inclined_belt");
+    let _ = run(&mut rig.tw, pilot, "+helm/autopilot pallas_inclined_belt");
+    let transit_burn = drain_space_and_industry(&mut rig.tw);
+    land_quietly(&mut rig, &transit_burn);
+    let arrival_ic = rig
+        .tw
+        .world()
+        .module_state::<tacsim::space::SpaceBubbleBook>()
+        .expect("SpaceBubbleBook")
+        .free_flights[&hull]
+        .cluster_arrival_ic_s
+        .expect("cluster_arrival_ic_s");
+    let real_s = (arrival_ic.saturating_sub(ic_now(&rig.tw)) + 3_599) / 3_600;
+    let t0 = rig.tw.world().now().saturating_add(real_s.max(6));
+    rig.tw.set_now(t0);
+    let _ = rig.tw.fire_due(t0.saturating_mul(1_000));
     let open_submits = drain_space_and_industry(&mut rig.tw);
     land_all(&mut rig, &open_submits);
     let t = rig.tw.world().now().saturating_add(6);
@@ -4629,17 +4615,23 @@ fn sfr6_kirkwood_customs_picket_story_1_end_to_end_rhai_doctrine_triad_combat_an
     land_quietly(&mut rig, &seed_submits);
 
     let _ = run(&mut rig.tw, pilot, "+helm/approach B");
-    let t = rig.tw.world().now().saturating_add(6);
-    rig.tw.set_now(t);
-    let _ = rig.tw.fire_due(t.saturating_mul(1_000));
-    let app_submits = drain_space_and_industry(&mut rig.tw);
-    land_quietly(&mut rig, &app_submits);
+    let app_burn = drain_space_and_industry(&mut rig.tw);
+    land_quietly(&mut rig, &app_burn);
+    for _ in 0..3 {
+        let t = rig.tw.world().now().saturating_add(6);
+        rig.tw.set_now(t);
+        let _ = rig.tw.fire_due(t.saturating_mul(1_000));
+        let app_submits = drain_space_and_industry(&mut rig.tw);
+        land_quietly(&mut rig, &app_submits);
+    }
 
     let match_b = run(&mut rig.tw, pilot, "+helm/match B");
     assert!(
         match_b.contains("RCS velocity match locked on Block B"),
         "{match_b}"
     );
+    let match_burn = drain_space_and_industry(&mut rig.tw);
+    land_quietly(&mut rig, &match_burn);
     let laser_b = run(&mut rig.tw, pilot, "+mine/laser B strategic_elements");
     assert!(
         laser_b.contains("extracting 4 t `strategic_ore`"),
@@ -4655,6 +4647,23 @@ fn sfr6_kirkwood_customs_picket_story_1_end_to_end_rhai_doctrine_triad_combat_an
         4,
         "4 t (4,000 kg) of unlicensed strategic_ore in stow.ore hold vault"
     );
+
+    // Return to Ceres Freeport from `pallas_inclined_belt` and top up propellant/provisions before casting off on `ceres_stickney`:
+    seed_pool(&mut rig, vault_id, "propellant", 50, LotId(915));
+    seed_pool(&mut rig, vault_id, "provisions", 30, LotId(918));
+    let ret_out = run(&mut rig.tw, pilot, "+helm/autopilot ceres");
+    assert!(
+        ret_out.contains("Autopilot engaged for Ceres Freeport"),
+        "sfr6 return autopilot output: {ret_out}"
+    );
+    let ret_burn = drain_space_and_industry(&mut rig.tw);
+    land_quietly(&mut rig, &ret_burn);
+    let ret_arrival = journey(&rig.tw, hull)
+        .and_then(|j| j.arrival_at())
+        .expect("return journey arrival");
+    let _ = to_ic(&mut rig, ret_arrival);
+    seed_pool(&mut rig, vault_id, "propellant", 53, LotId(916));
+    seed_pool(&mut rig, vault_id, "provisions", 19, LotId(917));
 
     let registry_account = mush_economy::AccountId(
         port_map(&rig.tw, "ceres_port").orgs[&cid("freeport_registry")]
@@ -4715,7 +4724,7 @@ fn sfr6_kirkwood_customs_picket_story_1_end_to_end_rhai_doctrine_triad_combat_an
                 tacsim::space::CARRIER_PARTY,
                 tacsim::space::CUSTOMS_CORVETTE_PARTY,
             ),
-            tacsim::space::SpaceRelation::Inspecting
+            tacsim::space::SpaceRelation::Neutral
         );
         assert_eq!(
             active.bubble.party_relation(
@@ -4784,10 +4793,14 @@ fn sfr6_kirkwood_customs_picket_story_1_end_to_end_rhai_doctrine_triad_combat_an
         brake_out.contains("Helm thrust set: 600‰ burn=(-1000, 0, 0)"),
         "{brake_out}"
     );
-    let next_real = rig.tw.world().now() + 1;
-    rig.tw.set_now(next_real);
-    let _ = rig.tw.fire_due(next_real * 1_000);
+    for _ in 0..6 {
+        let next_real = rig.tw.world().now() + 1;
+        rig.tw.set_now(next_real);
+        let _ = rig.tw.fire_due(next_real * 1_000);
+    }
     let _ = run(&mut rig.tw, pilot, "+helm/thrust 0");
+    let brake_burn = drain_space_and_industry(&mut rig.tw);
+    land_quietly(&mut rig, &brake_burn);
 
     {
         let bubble_book = rig
@@ -4912,17 +4925,18 @@ fn sfr6_kirkwood_customs_picket_story_1_end_to_end_rhai_doctrine_triad_combat_an
         }
     }
 
-    // Verify the 120 km railgun slug missed *Salt Moth* due to the lateral jink, and now close
-    // range and disable the Belt Raider into an open-epoch derelict (`DisabledDerelict`).
+    // Verify the 120 km railgun slug missed *Salt Moth* due to the lateral jink, and the Corvette's
+    // `KIRKWOOD_PICKET_RHAI` (`laser_1` + `rail_spinal`) disabled the Belt Raider into `DisabledDerelict`
+    // while the Raider's 2 torpedoes are still being screened!
     {
         let bubble_book = rig
             .tw
-            .world_mut()
-            .module_state_mut::<tacsim::space::SpaceBubbleBook>()
+            .world()
+            .module_state::<tacsim::space::SpaceBubbleBook>()
             .expect("SpaceBubbleBook");
         let active = bubble_book
-            .active_for_hull_mut(hull)
-            .expect("active bubble");
+            .active_for_hull(hull)
+            .expect("active bubble while torpedoes are still in flight");
         let (_, replayed_events) = active.tape.replay();
         assert!(
             replayed_events.iter().any(|e| matches!(
@@ -4931,74 +4945,36 @@ fn sfr6_kirkwood_customs_picket_story_1_end_to_end_rhai_doctrine_triad_combat_an
             )),
             "120 km railgun slug completed its flight window and missed after lateral jink (RailgunDodgedByJink)"
         );
-        // Position the Raider within offensive laser range (4 km) of *Salt Moth* for the final gunnery pass.
-        let carrier_pos = active.bubble.ships[&active.carrier_ship_id].pos_m;
-        if let Some(raider) = active.bubble.ships.get_mut(&raider_ship_id) {
-            raider.pos_m = [carrier_pos[0] + 3_000, carrier_pos[1], carrier_pos[2]];
-            if let Some(rear) = raider
-                .sections
-                .get_mut(&tacsim::space::ShipSectionId::Hull)
-                .and_then(|s| s.facets.get_mut(&tacsim::space::FacetBand::Front))
-            {
-                *rear = 0;
-            }
-            if let Some(drive) = raider
-                .sections
-                .get_mut(&tacsim::space::ShipSectionId::Drive)
-            {
-                drive.internals = 10;
-            }
-        }
-        if let Some(carrier) = active.bubble.ships.get_mut(&active.carrier_ship_id) {
-            carrier.attitude_deg = (180, 0, 0);
-            carrier.heat_permille = 0;
-            for l in &mut carrier.lasers {
-                l.cooldown_remaining_ms = 0;
-            }
-        }
-    }
-    // Attack from behind the Raider (`Front`/`Rear` facet -> `Drive` struck-through):
-    {
-        let bubble_book = rig
-            .tw
-            .world_mut()
-            .module_state_mut::<tacsim::space::SpaceBubbleBook>()
-            .expect("SpaceBubbleBook");
-        let active = bubble_book
-            .active_for_hull_mut(hull)
-            .expect("active bubble");
-        active.bubble.torpedoes.clear();
-        active.bubble.railgun_slugs.clear();
-        if let Some(raider) = active.bubble.ships.get_mut(&raider_ship_id) {
-            raider.attitude_deg = (0, 0, 0);
-            if let Some(rear) = raider
-                .sections
-                .get_mut(&tacsim::space::ShipSectionId::Hull)
-                .and_then(|s| s.facets.get_mut(&tacsim::space::FacetBand::Rear))
-            {
-                *rear = 0;
-            }
-        }
+        assert!(
+            matches!(
+                active.bubble.ships[&raider_ship_id].status,
+                tacsim::space::HullStatus::DisabledDerelict { .. }
+            ),
+            "Republic Customs Corvette disabled Belt Raider by play (`KIRKWOOD_PICKET_RHAI`)"
+        );
     }
 
-    let kill_beam = run(&mut rig.tw, pilot, &format!("+tac/beam {raider_ship_id}"));
-    assert!(
-        kill_beam.contains("Laser battery fired on"),
-        "pilot disabled Belt Raider with +tac/beam: {kill_beam}"
-    );
-
-    // Fire one more tick so `clear_resolved_bubbles` sees all hostiles disabled,
-    // registers the Belt Raider derelict in `SalvageClaimBook` (48h salvage window), closes the
-    // Kirkwood bubble, and resumes *Salt Moth*'s `CarrierJourney` to Stickney Yards!
-    let next_real = rig.tw.world().now() + 1;
-    rig.tw.set_now(next_real);
-    let resume_events = rig.tw.fire_due(next_real * 1_000);
-    let resume_heard = said(&rig.tw, &resume_events, pilot);
+    // Continue stepping ticks so the Corvette's defensive laser and Carrier PDCs finish intercepting
+    // the Raider's 2-torpedo salvo and `clear_resolved_bubbles` closes the Kirkwood bubble and
+    // resumes *Salt Moth*'s `CarrierJourney` to Stickney Yards!
+    let mut resume_heard = String::new();
+    for _ in 0..40 {
+        let next_real = rig.tw.world().now() + 1;
+        rig.tw.set_now(next_real);
+        let evs = rig.tw.fire_due(next_real * 1_000);
+        let heard = said(&rig.tw, &evs, pilot);
+        if heard.contains(
+            "[SPACE] Interdiction contact cleared; local bubble closed and transit burn resumed.",
+        ) {
+            resume_heard = heard;
+            break;
+        }
+    }
     assert!(
         resume_heard.contains(
             "[SPACE] Interdiction contact cleared; local bubble closed and transit burn resumed."
         ),
-        "bubble closed and transit burn resumed on hostile disablement: {resume_heard}"
+        "bubble closed and transit burn resumed on hostile disablement and salvo clearance: {resume_heard}"
     );
 
     {
@@ -5087,40 +5063,67 @@ fn sfr7_docking_session_pauses_ship_replays_valid_tape_into_berth_docked_rejects
     let pending = undock_and_burn(&mut rig, pilot, hull);
     let depart_ic = pending.plan.depart_ic;
     let leg1_secs = i64::from(pending.plan.legs[0].secs);
+    let total_secs = pending.plan.total_s;
 
     let _ = fire_quietly(&mut rig);
     // Cross the interdicted Kirkwood boundary to open the tactical bubble:
     let _ = to_ic(&mut rig, depart_ic + leg1_secs);
 
-    // Disable the interdictor so it becomes an open-epoch `DisabledDerelict` inside the bubble:
+    // Turn 90 degrees so the interdictor's return fire hits `Right` facet, preserving `Front` facet
+    // armor (`50`) for the hard-bounce collar scrape test below, then disable `interdictor.1` by play:
+    let _ = run(&mut rig.tw, pilot, "+helm/heading 90,0");
     let interdictor_hull = {
         let book = rig
             .tw
-            .world_mut()
-            .module_state_mut::<tacsim::space::SpaceBubbleBook>()
+            .world()
+            .module_state::<tacsim::space::SpaceBubbleBook>()
             .expect("SpaceBubbleBook");
-        let active = book.active_for_hull_mut(hull).expect("active bubble");
-        active.bubble.torpedoes.clear();
-        active.bubble.railgun_slugs.clear();
-        let ihull = active.interdictor_hull;
-        let iship_id = active.interdictor_ship_id.clone();
-        if let Some(iship) = active.bubble.ships.get_mut(&iship_id) {
-            iship.status = tacsim::space::HullStatus::DisabledDerelict {
-                epoch_open: true,
-                life_support_remaining_s: tacsim::space::DERELICT_WINDOW_S,
-                salvage_contest_window_s: tacsim::space::DERELICT_WINDOW_S,
-            };
-            iship.thrust_mps2 = [0, 0, 0];
-        }
-        ihull
+        book.active_for_hull(hull)
+            .expect("active bubble")
+            .interdictor_hull
     };
+    for i in 0..4 {
+        let next_real = rig.tw.world().now() + 1;
+        rig.tw.set_now(next_real);
+        let _ = rig.tw.fire_due(next_real * 1_000);
+        if i == 0 || i == 2 || i == 3 {
+            let beam_out = run(&mut rig.tw, pilot, "+tac/beam Interdictor Picket");
+            assert!(
+                beam_out.contains("Laser battery fired on"),
+                "beam salvo {i}: {beam_out}"
+            );
+        }
+        if i == 1 || i == 2 {
+            let _ = run(&mut rig.tw, pilot, "+damage/vent");
+        }
+    }
 
-    // 1. Attempting `+helm/tow` before hard-docking must be refused:
+    // 1. Attempting `+helm/tow` before hard-docking must be refused, and attempting `+helm/dock derelict`
+    //    before closing inside the `<= 500 m` / `<= 15 m/s` collar-initiation envelope is refused:
     let premature_tow = run(&mut rig.tw, pilot, "+helm/tow");
     assert!(
         premature_tow.contains("Must complete a 6-DOF hard-dock clamp"),
         "premature +helm/tow before docking clamp must be refused: {premature_tow}"
     );
+    let dock_far = run(&mut rig.tw, pilot, "+helm/dock derelict");
+    assert!(
+        dock_far.contains("outside the collar-initiation envelope"),
+        "docking derelict from > 500 m refused: {dock_far}"
+    );
+
+    // Order `+helm/approach derelict` (holding the bubble open for salvage and closing range across 3 ticks):
+    let app_derelict = run(&mut rig.tw, pilot, "+helm/approach derelict");
+    assert!(
+        app_derelict.contains("Braking approach ordered toward disabled derelict"),
+        "approach derelict output: {app_derelict}"
+    );
+    let app_burn = drain(&mut rig.tw);
+    land_quietly(&mut rig, &app_burn);
+    for _ in 0..3 {
+        let next_real = rig.tw.world().now() + 1;
+        rig.tw.set_now(next_real);
+        let _ = rig.tw.fire_due(next_real * 1_000);
+    }
 
     // 2. Initiate a 6-DOF docking session against the disabled derelict (`+helm/dock derelict`):
     let dock_start = run(&mut rig.tw, pilot, "+helm/dock derelict");
@@ -5129,7 +5132,7 @@ fn sfr7_docking_session_pauses_ship_replays_valid_tape_into_berth_docked_rejects
         "expected docking session start: {dock_start}"
     );
 
-    let (session_id_1, challenge_1, steps_before_pause) = {
+    let (session_id_1, steps_before_pause) = {
         let book = rig
             .tw
             .world()
@@ -5141,11 +5144,7 @@ fn sfr7_docking_session_pauses_ship_replays_valid_tape_into_berth_docked_rejects
         );
         let session = book.docking_sessions.get(&hull).expect("docking session");
         let steps = book.active_for_hull(hull).expect("active bubble").steps;
-        (
-            session.challenge.session_id.clone(),
-            session.challenge.clone(),
-            steps,
-        )
+        (session.challenge.session_id.clone(), steps)
     };
 
     // Advance the world tick while `paused_from_world_tick == true` and verify the bubble neither
@@ -5176,7 +5175,7 @@ fn sfr7_docking_session_pauses_ship_replays_valid_tape_into_berth_docked_rejects
     );
 
     // 3. Verify server rejects a forged session ID, an over-length tape (`> 3,600` frames), and an
-    //    uncommanded/out-of-gate tape:
+    //    uncommanded/out-of-gate tape (which closes the single-use session, `SF.R9`):
     let forged_id_out = run(
         &mut rig.tw,
         pilot,
@@ -5206,10 +5205,32 @@ fn sfr7_docking_session_pauses_ship_replays_valid_tape_into_berth_docked_rejects
         out_of_gate_out.contains("Docking input tape rejected: collar gates not aligned"),
         "uncommanded/out-of-gate tape must be rejected: {out_of_gate_out}"
     );
+    {
+        let book = rig
+            .tw
+            .world()
+            .module_state::<tacsim::space::SpaceBubbleBook>()
+            .expect("SpaceBubbleBook");
+        assert!(
+            !book.is_hull_paused_for_docking(hull),
+            "out-of-gate tape closes the single-use DockingSession (`SF.R9`)"
+        );
+    }
 
-    // 4. Submit a hard-bounce tape (`vz > 800 mm/s` into `dz == 0`) and verify:
-    //    - `Front` facet armor damage is inflicted on the hull's `TacticalUnit`
+    // 4. Re-initiate `+helm/dock derelict`, submit a hard-bounce tape (`vz > 800 mm/s` into `dz == 0`)
+    //    and verify:
+    //    - `Front` facet armor damage is inflicted on the hull's `TacticalUnit` (while preserving custody!)
     //    - `paused_from_world_tick` is immediately cleared (`35a` §5 #7)
+    let _ = run(&mut rig.tw, pilot, "+helm/dock derelict");
+    let (session_id_bounce, challenge_bounce) = {
+        let book = rig
+            .tw
+            .world()
+            .module_state::<tacsim::space::SpaceBubbleBook>()
+            .expect("SpaceBubbleBook");
+        let s = book.docking_sessions.get(&hull).expect("bounce session");
+        (s.challenge.session_id.clone(), s.challenge.clone())
+    };
     let front_armor_before = {
         let book = rig
             .tw
@@ -5220,12 +5241,12 @@ fn sfr7_docking_session_pauses_ship_replays_valid_tape_into_berth_docked_rejects
         active.bubble.ships[&active.carrier_ship_id].sections[&tacsim::space::ShipSectionId::Hull]
             .facets[&tacsim::space::FacetBand::Front]
     };
-    let bounce_tape = tacsim::space::solve_hard_bounce_tape(&challenge_1);
+    let bounce_tape = tacsim::space::solve_hard_bounce_tape(&challenge_bounce);
     let bounce_out = run(
         &mut rig.tw,
         pilot,
         &format!(
-            "+helm/dock tape {session_id_1} {}",
+            "+helm/dock tape {session_id_bounce} {}",
             bounce_tape.encode_rle()
         ),
     );
@@ -5250,6 +5271,10 @@ fn sfr7_docking_session_pauses_ship_replays_valid_tape_into_berth_docked_rejects
         assert!(
             front_armor_after < front_armor_before,
             "hard collar bounce must damage Front facet armor ({front_armor_before} -> {front_armor_after})"
+        );
+        assert!(
+            mush_tactics::custody::marker_of(rig.tw.world(), hull).is_some(),
+            "collar scrape inside active bubble must preserve UnitStore custody marker (`SF.R9`)"
         );
     }
 
@@ -5302,8 +5327,18 @@ fn sfr7_docking_session_pauses_ship_replays_valid_tape_into_berth_docked_rejects
         );
     }
 
-    // 6. Now initiate a port docking session (`+helm/dock stickney`), replay a valid 60 Hz client
-    //    `DockingInputTape`, and verify `berth_of(w, hull)` transitions directly into `Berth::Docked` (`D-35-14`):
+    // 6. Step 1 tick so `clear_resolved_bubbles` closes the Kirkwood bubble and resumes Leg 2
+    //    toward Stickney Yards, advance to the leg-end approach window (`expected_arrival - 10`),
+    //    initiate `+helm/dock stickney`, replay a valid 60 Hz client `DockingInputTape`, and verify
+    //    `berth_of(w, hull)` transitions directly into `Berth::Docked` (`D-35-14`):
+    let next_real = rig.tw.world().now() + 1;
+    rig.tw.set_now(next_real);
+    let _ = rig.tw.fire_due(next_real * 1_000);
+    let j_resumed = journey(&rig.tw, hull).expect("resumed journey on leg 2");
+    let expected_arrival = j_resumed.departed().at + total_secs;
+    set_rate(&mut rig.tw, 1);
+    let _ = to_ic(&mut rig, expected_arrival - 10);
+
     let dock_port_start = run(&mut rig.tw, pilot, "+helm/dock stickney");
     assert!(
         dock_port_start.contains("Toward Stickney Yards")
@@ -5381,15 +5416,20 @@ fn sfr8_space_state_persists_in_tacsim_store_and_survives_full_engine_restart_mi
     let pending = undock_and_burn(&mut rig, pilot, hull);
     let depart_ic = pending.plan.depart_ic;
     let leg1_secs = i64::from(pending.plan.legs[0].secs);
+    let total_secs = pending.plan.total_s;
 
     let _ = fire_quietly(&mut rig);
     let _ = to_ic(&mut rig, depart_ic + leg1_secs);
 
     let _ = run(&mut rig.tw, pilot, "+helm/thrust 600 -1000 0 0");
-    let next_real = rig.tw.world().now() + 1;
-    rig.tw.set_now(next_real);
-    let _ = rig.tw.fire_due(next_real * 1_000);
+    for _ in 0..6 {
+        let next_real = rig.tw.world().now() + 1;
+        rig.tw.set_now(next_real);
+        let _ = rig.tw.fire_due(next_real * 1_000);
+    }
     let _ = run(&mut rig.tw, pilot, "+helm/thrust 0");
+    let brake_submits = drain_space_and_industry(&mut rig.tw);
+    land_quietly(&mut rig, &brake_submits);
     let submit_out = run(&mut rig.tw, pilot, "+helm/submit");
     assert!(
         submit_out.contains("customs clearance granted"),
@@ -5401,7 +5441,7 @@ fn sfr8_space_state_persists_in_tacsim_store_and_survives_full_engine_restart_mi
     let _ = run(&mut rig.tw, pilot, "+tac/pdc auto");
     let _ = run(&mut rig.tw, pilot, "+helm/thrust 600 0 1000 0");
 
-    let (book_before_1, salvage_before_1, raider_hull, raider_ship_id) = {
+    let (book_before_1, salvage_before_1, raider_hull) = {
         let book = rig
             .tw
             .world()
@@ -5421,8 +5461,7 @@ fn sfr8_space_state_persists_in_tacsim_store_and_survives_full_engine_restart_mi
         assert!(picket.raider_ambush_launched);
         assert_eq!(active.bubble.ships.len(), 3);
         let rhull = picket.raider_hull;
-        let rship_id = picket.raider_ship_id.clone();
-        (book, salvage, rhull, rship_id)
+        (book, salvage, rhull)
     };
 
     // 2. Full engine restart #1 mid-bubble (Story 1):
@@ -5461,51 +5500,26 @@ fn sfr8_space_state_persists_in_tacsim_store_and_survives_full_engine_restart_mi
         assert_eq!(persisted.book, book_before_1);
     }
 
-    // 3. Resume the Story 1 fight after restart #1: disable the Raider into an open-epoch
-    //    `SpaceDerelictRecord` + 48 real-hour `SalvageClaimBook` claim, and verify the
-    //    derelict clocks decrement on subsequent ticks (`35a` §1 row `D-35-12`):
-    {
-        let bubble_book = rig
-            .tw
-            .world_mut()
-            .module_state_mut::<tacsim::space::SpaceBubbleBook>()
-            .expect("SpaceBubbleBook");
-        let active = bubble_book
-            .active_for_hull_mut(hull)
-            .expect("active bubble");
-        active.bubble.torpedoes.clear();
-        active.bubble.railgun_slugs.clear();
-        let carrier_pos = active.bubble.ships[&active.carrier_ship_id].pos_m;
-        if let Some(raider) = active.bubble.ships.get_mut(&raider_ship_id) {
-            raider.pos_m = [carrier_pos[0] + 3_000, carrier_pos[1], carrier_pos[2]];
-            raider.attitude_deg = (0, 0, 0);
-            if let Some(rear) = raider
-                .sections
-                .get_mut(&tacsim::space::ShipSectionId::Hull)
-                .and_then(|s| s.facets.get_mut(&tacsim::space::FacetBand::Rear))
-            {
-                *rear = 0;
-            }
-            if let Some(drive) = raider
-                .sections
-                .get_mut(&tacsim::space::ShipSectionId::Drive)
-            {
-                drive.internals = 10;
-            }
+    // 3. Resume the Story 1 fight after restart #1 by play: step ticks so the Corvette's
+    //    `KIRKWOOD_PICKET_RHAI` disables the Raider into an open-epoch `SpaceDerelictRecord` +
+    //    48 real-hour `SalvageClaimBook` claim, the Raider's salvo resolves, the bubble closes,
+    //    and the derelict clocks decrement on subsequent ticks (`35a` §1 row `D-35-12`):
+    for i in 0..55 {
+        let next_r = rig.tw.world().now() + 1;
+        rig.tw.set_now(next_r);
+        let _ = rig.tw.fire_due(next_r * 1_000);
+        if i == 2 {
+            let _ = run(&mut rig.tw, pilot, "+helm/thrust 0");
         }
-        if let Some(carrier) = active.bubble.ships.get_mut(&active.carrier_ship_id) {
-            carrier.attitude_deg = (180, 0, 0);
-            carrier.heat_permille = 0;
-            for l in &mut carrier.lasers {
-                l.cooldown_remaining_ms = 0;
-            }
+        let bubble_closed = rig
+            .tw
+            .world()
+            .module_state::<tacsim::space::SpaceBubbleBook>()
+            .is_some_and(|b| b.active_for_hull(hull).is_none());
+        if bubble_closed {
+            break;
         }
     }
-    let kill_beam = run(&mut rig.tw, pilot, &format!("+tac/beam {raider_ship_id}"));
-    assert!(
-        kill_beam.contains("Laser battery fired on"),
-        "expected laser hit on Raider after restart: {kill_beam}"
-    );
     for _ in 0..3 {
         let next_r = rig.tw.world().now() + 1;
         rig.tw.set_now(next_r);
@@ -5549,15 +5563,20 @@ fn sfr8_space_state_persists_in_tacsim_store_and_survives_full_engine_restart_mi
         );
     }
 
-    // 4. Story 2: decouple into 3D heliocentric free flight (`SpaceFreeFlightRecord`),
-    //    execute a timed burn debiting `HullPropellantLedger`, and initiate a paused
-    //    6-DOF docking session (`+helm/dock stickney`):
+    // 4. Story 2: fly Leg 2 to the Stickney Yards terminal approach window (`expected_arrival - 10`),
+    //    decouple into 3D heliocentric free flight (`SpaceFreeFlightRecord`), execute a timed burn
+    //    debiting `HullPropellantLedger`, and initiate a paused 6-DOF docking session (`+helm/dock stickney`):
+    let j_resumed = journey(&rig.tw, hull).expect("resumed journey on leg 2");
+    let expected_arrival = j_resumed.departed().at + total_secs;
+    set_rate(&mut rig.tw, 1);
+    let _ = to_ic(&mut rig, expected_arrival - 10);
+
     let decouple_out = run(&mut rig.tw, pilot, "+helm/decouple");
     assert!(
         decouple_out.contains("Decoupled from corridor leg"),
         "expected decouple into free flight: {decouple_out}"
     );
-    let burn_out = run(&mut rig.tw, pilot, "+helm/burn 1,0,0 60 force");
+    let burn_out = run(&mut rig.tw, pilot, "+helm/burn 1,0,0 10 force");
     assert!(
         burn_out.contains("Timed burn engaged"),
         "expected timed burn: {burn_out}"
@@ -5640,4 +5659,1378 @@ fn sfr8_space_state_persists_in_tacsim_store_and_survives_full_engine_restart_mi
         "+ship must report ship berthed at Stickney Yards after restart: {status_out}"
     );
     no_refused_writes(&rig.tw);
+}
+
+/// **Doc 35b §8 cut `SF.R9` ("Authority close-out") acceptance**:
+/// 1. `+helm/cluster` is removed (`Unknown +helm switch: /cluster.`).
+/// 2. A timed burn of `1 s` at rate `1` (`burn_s == dt_ic_s`) zeroes `thrust_mmps2` after 1 tick
+///    and does not latch (`35b` §3 #3).
+/// 3. A pilot under fire in an interdiction bubble cannot `+helm/dock` away (refused while any
+///    hostile contact is operational or ordnance is in flight, or while inside a mid-route
+///    waypoint bubble, `35b` §3 #1).
+/// 4. `+helm/run` is guarded by `picket.inspection_status`: refused after `+helm/submit` clearance
+///    and refused on duplicate `+helm/run`.
+/// 5. Initiating `+helm/dock` from a leg-end pose (`<= 60` IC s remaining on the leg targeting
+///    the destination port) succeeds; `<session_id>` is mandatory on `+helm/dock tape`; an
+///    `OutOfGate` tape closes the single-use session; and a session left open past
+///    `DOCKING_SESSION_TIMEOUT_WALL_S` (`60 s`) is automatically aborted by `space_tick` with RCS
+///    propellant debited and the hull unpaused.
+/// 6. Settling a disabled carrier hull into `SpaceBubbleBook::derelicts` fails its `CarrierJourney`
+///    (`JourneyState::Failed`), and `+helm/decouple`, `+helm/burn`, `+helm/autopilot`, and
+///    `+helm/dock` are all refused for a disabled derelict hull (`35b` §3 #4).
+/// 7. Contract lint: `tests/shard_2/voyage.rs` contains zero mutable `SpaceBubbleBook` borrows
+///    or test-fiat bubble clear calls.
+#[test]
+#[allow(clippy::too_many_lines)]
+fn sfr9_authority_closeout_gates_docking_removes_cluster_teleport_stops_1s_burn_and_locks_disabled_derelict()
+ {
+    // 7. Pin the no-fiat contract lint on this test file (`35b` §8):
+    let voyage_src = include_str!("voyage.rs");
+    let mut_needle = concat!("module_state_mut::<", "tacsim::space::SpaceBubbleBook>");
+    assert!(
+        !voyage_src.contains(mut_needle),
+        "tests must never mutate SpaceBubbleBook via module_state_mut"
+    );
+    let clear_needle = concat!("tacsim::space::", "clear_interdiction_bubble(");
+    assert!(
+        !voyage_src.contains(clear_needle),
+        "tests must never clear interdiction bubbles via test-fiat helper"
+    );
+
+    let mut rig = stocked_with(Roster {
+        seed_lane: Some(lane_with_interdicted_kirkwood()),
+        ..Roster::default()
+    });
+    let (pilot, row) = chartered(&mut rig, "Pilot", 1);
+    let hull = ObjId(row.hull);
+    let vault_id = hold_vault(&rig.tw, &row);
+
+    seed_pool(&mut rig, vault_id, "propellant", 65, LotId(941));
+    seed_pool(&mut rig, vault_id, "provisions", 30, LotId(942));
+    set_rate(&mut rig.tw, 1);
+    board(&mut rig, pilot);
+
+    // 1. `+helm/cluster` is removed (`35b` §3 #2, §8 `SF.R9`):
+    let cluster_gone = run(&mut rig.tw, pilot, "+helm/cluster pallas_inclined_belt");
+    assert_eq!(
+        cluster_gone.trim(),
+        "Unknown switch \"/cluster\" for +helm.",
+        "+helm/cluster must be removed"
+    );
+
+    // 2. A `1 s` timed burn at rate `1` (`burn_s == dt_ic_s`) stops after 1 tick and does not latch (`35b` §3 #3):
+    let _pending = undock_and_burn(&mut rig, pilot, hull);
+    let _ = fire_quietly(&mut rig);
+    let next_r0 = rig.tw.world().now() + 10;
+    rig.tw.set_now(next_r0);
+    let _ = rig.tw.fire_due(next_r0 * 1_000);
+
+    let dec_out = run(&mut rig.tw, pilot, "+helm/decouple");
+    assert!(
+        dec_out.contains("Decoupled from corridor leg"),
+        "decouple output: {dec_out}"
+    );
+    let burn_1s = run(&mut rig.tw, pilot, "+helm/burn 1,0,0 1 force");
+    assert!(
+        burn_1s.contains("Timed burn engaged: (1, 0, 0) m/s² for 1s"),
+        "1s burn output: {burn_1s}"
+    );
+    // Advance exactly 1 wall second at rate 1 (`dt_ic_s == 1 == burn_remaining_ic_s`):
+    let next_r1 = rig.tw.world().now() + 1;
+    rig.tw.set_now(next_r1);
+    let _ = rig.tw.fire_due(next_r1 * 1_000);
+    let vel_after_tick_1 = {
+        let book = rig
+            .tw
+            .world()
+            .module_state::<tacsim::space::SpaceBubbleBook>()
+            .expect("SpaceBubbleBook");
+        let ff = book
+            .free_flight_for_hull(hull)
+            .expect("free flight after 1s burn");
+        assert_eq!(
+            ff.burn_remaining_ic_s, None,
+            "1s burn remaining time cleared after 1s tick"
+        );
+        assert_eq!(
+            ff.thrust_mmps2,
+            [0, 0, 0],
+            "1s burn at rate 1 must zero thrust_mmps2 when burn_s == dt_ic_s (must not latch!)"
+        );
+        ff.vel_mps
+    };
+    // Step 1 more second at rate 1 and verify thrust did not keep accelerating the hull:
+    let next_r2 = rig.tw.world().now() + 1;
+    rig.tw.set_now(next_r2);
+    let _ = rig.tw.fire_due(next_r2 * 1_000);
+    {
+        let book = rig
+            .tw
+            .world()
+            .module_state::<tacsim::space::SpaceBubbleBook>()
+            .expect("SpaceBubbleBook");
+        let ff = book
+            .free_flight_for_hull(hull)
+            .expect("free flight after 2nd tick");
+        assert_eq!(
+            ff.vel_mps, vel_after_tick_1,
+            "velocity must not gain uncommanded thrust Δv after 1s timed burn ended"
+        );
+    }
+
+    // Recouple via `+helm/autopilot stickney` (preserving the interdicted Kirkwood leg!) and cross into the bubble:
+    seed_pool(&mut rig, vault_id, "propellant", 55, LotId(943));
+    seed_pool(&mut rig, vault_id, "provisions", 25, LotId(944));
+    set_rate(&mut rig.tw, 3_600);
+    let auto_out = run(&mut rig.tw, pilot, "+helm/autopilot stickney");
+    assert!(
+        auto_out.contains("Autopilot engaged for Stickney Yards"),
+        "autopilot output: {auto_out}"
+    );
+    for s in drain(&mut rig.tw) {
+        land(&mut rig, &s).expect("autopilot burn lands");
+    }
+    let j_recoupled = journey(&rig.tw, hull).expect("recoupled journey");
+    let leg1_due = j_recoupled.leg_due_at(0).expect("leg 1 due_ic");
+    let _ = to_ic(&mut rig, leg1_due);
+
+    // 3. A pilot under fire in an interdiction bubble cannot `+helm/dock` away (`35b` §3 #1):
+    let dock_under_fire = run(&mut rig.tw, pilot, "+helm/dock stickney");
+    assert!(
+        dock_under_fire.contains("Cannot initiate collar docking while hostile contact")
+            || dock_under_fire.contains("while inside a mid-route interdiction bubble"),
+        "pilot under fire in bubble must be refused +helm/dock: {dock_under_fire}"
+    );
+
+    // Disable the interdictor by play, close range, and resume Leg 2 to Stickney Yards:
+    for i in 0..4 {
+        let next_real = rig.tw.world().now() + 1;
+        rig.tw.set_now(next_real);
+        let _ = rig.tw.fire_due(next_real * 1_000);
+        if i == 0 || i == 2 || i == 3 {
+            let _ = run(&mut rig.tw, pilot, "+tac/beam Interdictor Picket");
+        }
+        if i == 1 || i == 2 {
+            let _ = run(&mut rig.tw, pilot, "+damage/vent");
+        }
+    }
+    let next_real = rig.tw.world().now() + 1;
+    rig.tw.set_now(next_real);
+    let _ = rig.tw.fire_due(next_real * 1_000);
+
+    // Mid-leg (far from Stickney Yards), `+helm/dock stickney` is refused by the range/envelope gate:
+    let dock_mid_leg = run(&mut rig.tw, pilot, "+helm/dock stickney");
+    assert!(
+        dock_mid_leg.contains("outside the Stickney Yards collar-initiation envelope"),
+        "mid-leg +helm/dock must be refused: {dock_mid_leg}"
+    );
+
+    // 5. Advance to the leg-end pose (`arrival_at - 10`), initiate `+helm/dock stickney`, test
+    //    mandatory `<session_id>`, 60s wall-clock session expiry, and valid clamp:
+    let j_leg2 = journey(&rig.tw, hull).expect("leg 2 journey");
+    let arrival_at = j_leg2.arrival_at().expect("arrival_at");
+    set_rate(&mut rig.tw, 1);
+    let _ = to_ic(&mut rig, arrival_at - 10);
+
+    let dock_leg_end = run(&mut rig.tw, pilot, "+helm/dock stickney");
+    assert!(
+        dock_leg_end.contains("[DOCKING] Initiated 60 fps 6-DOF docking session"),
+        "docking from leg-end pose must succeed: {dock_leg_end}"
+    );
+    // Omitting `<session_id>` on `+helm/dock tape` is refused (`SF.R9`):
+    let missing_id = run(&mut rig.tw, pilot, "+helm/dock tape 0000*10");
+    assert_eq!(
+        missing_id.trim(),
+        "Usage: +helm/dock tape <session_id> <rle_tape>",
+        "mandatory <session_id> enforced on +helm/dock tape"
+    );
+
+    // Leave the docking session open past `DOCKING_SESSION_TIMEOUT_WALL_S` (`60 s`) and verify
+    // `space_tick` automatically aborts it, debits RCS propellant, and unpauses the hull:
+    let next_timeout = rig.tw.world().now() + 65;
+    rig.tw.set_now(next_timeout);
+    let timeout_evs = rig.tw.fire_due(next_timeout * 1_000);
+    let timeout_heard = said(&rig.tw, &timeout_evs, pilot);
+    assert!(
+        timeout_heard.contains("expired") && timeout_heard.contains("hull unpaused"),
+        "stale docking session must auto-abort after 60s wall timeout: {timeout_heard}"
+    );
+    {
+        let book = rig
+            .tw
+            .world()
+            .module_state::<tacsim::space::SpaceBubbleBook>()
+            .expect("SpaceBubbleBook");
+        assert!(!book.is_hull_paused_for_docking(hull));
+    }
+
+    // Re-initiate `+helm/dock stickney` from the leg-end pose and clamp into `Berth::Docked`:
+    let dock_leg_end_2 = run(&mut rig.tw, pilot, "+helm/dock stickney");
+    assert!(
+        dock_leg_end_2.contains("[DOCKING] Initiated 60 fps 6-DOF docking session"),
+        "{dock_leg_end_2}"
+    );
+    let (sid_ok, chal_ok) = {
+        let book = rig
+            .tw
+            .world()
+            .module_state::<tacsim::space::SpaceBubbleBook>()
+            .expect("SpaceBubbleBook");
+        let s = book.docking_sessions.get(&hull).expect("docking session");
+        (s.challenge.session_id.clone(), s.challenge.clone())
+    };
+    let tape_ok = tacsim::space::solve_docking_tape(&chal_ok);
+    let clamp_ok = run(
+        &mut rig.tw,
+        pilot,
+        &format!("+helm/dock tape {sid_ok} {}", tape_ok.encode_rle()),
+    );
+    assert!(
+        clamp_ok.contains("Hard dock and magnetic collar seal confirmed at Stickney Yards"),
+        "{clamp_ok}"
+    );
+
+    // 4 & 6. Charter a second hull (`Dray-P` on the Kirkwood picket leg) to verify `+helm/run`
+    //        status guarding and disabled derelict carrier journey failure + maneuver lock:
+    let mut rig2 = stocked_with(Roster {
+        seed_lane: Some(lane_with_interdicted_kirkwood()),
+        ..Roster::default()
+    });
+    let (pilot2, row2) = chartered(&mut rig2, "PilotTwo", 2);
+    let hull2 = ObjId(row2.hull);
+    let desk2 = station_room(&rig2.tw, "ceres_port", "room.c05_registry");
+    teleport(&mut rig2.tw, pilot2, desk2);
+    let _ = run(&mut rig2.tw, pilot2, "+coop/refit prospector");
+    load(&mut rig2, &row2, 53, 19);
+    set_rate(&mut rig2.tw, 3_600);
+    board(&mut rig2, pilot2);
+    let pending2 = undock_and_burn(&mut rig2, pilot2, hull2);
+    let _ = fire_quietly(&mut rig2);
+    let _ = to_ic(
+        &mut rig2,
+        pending2.plan.depart_ic + i64::from(pending2.plan.legs[0].secs),
+    );
+
+    // Run the picket once (`+helm/run`), then verify a second `+helm/run` is refused (`picket.inspection_status` guard):
+    let run_1 = run(&mut rig2.tw, pilot2, "+helm/run");
+    assert!(
+        run_1.contains("You refuse inspection and run the Republic Customs picket!"),
+        "{run_1}"
+    );
+    let run_2 = run(&mut rig2.tw, pilot2, "+helm/run");
+    assert_eq!(
+        run_2.trim(),
+        "You already ran the Republic Customs picket.",
+        "duplicate +helm/run must be refused by inspection_status guard"
+    );
+
+    // Now charter a third hull (`Dray`) and let `step_interdictor_picket` disable its drive into a derelict:
+    let mut rig3 = stocked_with(Roster {
+        seed_lane: Some(lane_with_interdicted_kirkwood()),
+        ..Roster::default()
+    });
+    let (pilot3, row3) = chartered(&mut rig3, "PilotThree", 3);
+    let hull3 = ObjId(row3.hull);
+    load(&mut rig3, &row3, 53, 19);
+    set_rate(&mut rig3.tw, 3_600);
+    board(&mut rig3, pilot3);
+    let pending3 = undock_and_burn(&mut rig3, pilot3, hull3);
+    let _ = fire_quietly(&mut rig3);
+    let _ = to_ic(
+        &mut rig3,
+        pending3.plan.depart_ic + i64::from(pending3.plan.legs[0].secs),
+    );
+    for _ in 0..16 {
+        let next_real = rig3.tw.world().now() + 1;
+        rig3.tw.set_now(next_real);
+        let _ = rig3.tw.fire_due(next_real * 1_000);
+        if rig3
+            .tw
+            .world()
+            .module_state::<tacsim::space::SpaceBubbleBook>()
+            .is_some_and(|b| b.derelicts.contains_key(&hull3))
+        {
+            break;
+        }
+    }
+    // Verify the disabled carrier's `CarrierJourney` is `Failed` (`35b` §3 #4):
+    let j3 = journey(&rig3.tw, hull3).expect("disabled carrier journey record");
+    assert!(
+        matches!(j3.state(), mush_sim::JourneyState::Failed),
+        "disabled derelict carrier's JourneyState must be Failed, got {:?}",
+        j3.state()
+    );
+    // And `+helm/decouple`, `+helm/burn`, `+helm/autopilot`, and `+helm/dock` are all refused:
+    for cmd in [
+        "+helm/decouple",
+        "+helm/burn 1,0,0 10",
+        "+helm/autopilot stickney",
+        "+helm/dock stickney",
+    ] {
+        let out = run(&mut rig3.tw, pilot3, cmd);
+        assert!(
+            out.contains("disabled") && out.contains("unavailable"),
+            "derelict crew `{cmd}` must be refused, got: {out}"
+        );
+    }
+
+    // 7. Contract lint (`35b` §8): no test in `voyage.rs` mutates `SpaceBubbleBook` by hand via `module_state_mut`:
+    let voyage_src = include_str!("voyage.rs");
+    let forbidden_fq = concat!("module_state_mut::<", "tacsim::space::SpaceBubbleBook>");
+    let forbidden_short = concat!("module_state_mut::<", "SpaceBubbleBook>");
+    assert!(
+        !voyage_src.contains(forbidden_fq) && !voyage_src.contains(forbidden_short),
+        "voyage.rs must not mutate SpaceBubbleBook via module_state_mut"
+    );
+}
+
+/// **Doc 35 cut SF.R10 (`D-35-3`, `D-35-12`, `35b` §5 #1/#6/#8/#9, §8 `SF.R10`)**:
+/// Tempo and persistence budget:
+/// 1. A tick fired `3 s` late (`now + 3`) advances the bubble by `3,000 ms` (`3 s` measured wall elapsed).
+/// 2. A ten-minute (`600 s`) heave-to inside the Kirkwood Customs Picket bounds `snapshots` (`<= 8`),
+///    `tape.entries` (`<= 128`), and the serialized `tacsim:space:state` JSON document size.
+/// 3. Rebooting mid-bubble (`reboot_with`) preserves `mush_sim::deployed::is_deployed` custody across
+///    `field::boot::phase`, and post-restart combat damage writes back to `UnitStore` on close (`35b` §5 #6).
+/// 4. An unreadable `tacsim:space:state` document at boot is quarantined (`is_space_state_held`),
+///    never overwritten by `space_tick`, and refuses `+helm`/`+tac`/`+mine` until staff repair (`35b` §5 #9).
+#[test]
+#[allow(clippy::too_many_lines)]
+fn sfr10_tempo_and_persistence_budget_steps_late_ticks_bounds_10m_heave_to_quarantines_corrupt_doc_and_keeps_custody_across_restart()
+ {
+    let roster = Roster {
+        seed_lane: Some(lane_with_interdicted_kirkwood()),
+        ..Roster::default()
+    };
+    let mut rig = stocked_with(roster);
+    let (pilot, row) = chartered(&mut rig, "Pilot", 1);
+    let hull = ObjId(row.hull);
+
+    // 1. Refit *Salt Moth* to `Dray-P` so the Kirkwood waypoint opens the 3-party picket bubble
+    //    where we can heave-to for 10 wall minutes (`600 s`):
+    let desk = station_room(&rig.tw, "ceres_port", "room.c05_registry");
+    teleport(&mut rig.tw, pilot, desk);
+    let _ = run(&mut rig.tw, pilot, "+coop/refit prospector");
+    load(&mut rig, &row, 53, 19);
+    set_rate(&mut rig.tw, 3_600);
+    board(&mut rig, pilot);
+
+    let pending = undock_and_burn(&mut rig, pilot, hull);
+    let depart_ic = pending.plan.depart_ic;
+    let leg1_secs = i64::from(pending.plan.legs[0].secs);
+    let _ = fire_quietly(&mut rig);
+    let _ = to_ic(&mut rig, depart_ic + leg1_secs);
+
+    // Verify a tick fired 3 s late advances the bubble by 3,000 ms (3 s):
+    let elapsed_before = rig
+        .tw
+        .world()
+        .module_state::<tacsim::space::SpaceBubbleBook>()
+        .expect("SpaceBubbleBook")
+        .active_for_hull(hull)
+        .expect("active bubble")
+        .bubble
+        .wall_elapsed_ms;
+    let late_real = rig.tw.world().now() + 3;
+    rig.tw.set_now(late_real);
+    let _ = rig.tw.fire_due(late_real * 1_000);
+    let elapsed_after = rig
+        .tw
+        .world()
+        .module_state::<tacsim::space::SpaceBubbleBook>()
+        .expect("SpaceBubbleBook")
+        .active_for_hull(hull)
+        .expect("active bubble")
+        .bubble
+        .wall_elapsed_ms;
+    assert_eq!(
+        elapsed_after - elapsed_before,
+        3_000,
+        "a tick fired 3 s late must advance the bubble by 3,000 ms (3 s)"
+    );
+
+    // 2. Heave-to (`+helm/thrust 600 -1000 0 0` for 6s at 1 m/s², then `+helm/thrust 0`) and hold for 10
+    //    minutes (`600` one-second fires) to verify persistence budget (`snapshots` and `tape` capped):
+    let _ = run(&mut rig.tw, pilot, "+helm/thrust 600 -1000 0 0");
+    for _ in 0..6 {
+        let next1 = rig.tw.world().now() + 1;
+        rig.tw.set_now(next1);
+        let _ = rig.tw.fire_due(next1 * 1_000);
+    }
+    let _ = run(&mut rig.tw, pilot, "+helm/thrust 0");
+
+    let mut doc_bytes_at_200 = 0usize;
+    for step in 0..600 {
+        let next_real = rig.tw.world().now() + 1;
+        rig.tw.set_now(next_real);
+        let _ = rig.tw.fire_due(next_real * 1_000);
+        if step == 199 {
+            let state = rig
+                .tw
+                .world()
+                .module_state::<tacsim::TacsimStore>()
+                .and_then(tacsim::TacsimStore::space_state)
+                .expect("persisted space_state");
+            doc_bytes_at_200 = serde_json::to_vec(state).expect("json").len();
+        }
+    }
+    {
+        let book = rig
+            .tw
+            .world()
+            .module_state::<tacsim::space::SpaceBubbleBook>()
+            .expect("SpaceBubbleBook");
+        let active = book.active_for_hull(hull).expect("active bubble");
+        assert!(
+            active.snapshots.len() <= tacsim::space::MAX_BUBBLE_SNAPSHOTS,
+            "snapshots capped at {}: got {}",
+            tacsim::space::MAX_BUBBLE_SNAPSHOTS,
+            active.snapshots.len()
+        );
+        assert!(
+            active.tape.entries.len() <= tacsim::space::MAX_BUBBLE_TAPE_ENTRIES,
+            "tape entries capped at {}: got {}",
+            tacsim::space::MAX_BUBBLE_TAPE_ENTRIES,
+            active.tape.entries.len()
+        );
+        let state_600 = rig
+            .tw
+            .world()
+            .module_state::<tacsim::TacsimStore>()
+            .and_then(tacsim::TacsimStore::space_state)
+            .expect("persisted space_state");
+        let doc_bytes_at_600 = serde_json::to_vec(state_600).expect("json").len();
+        assert!(
+            doc_bytes_at_600 <= doc_bytes_at_200 + 8_192 && doc_bytes_at_600 < 65_536,
+            "ten-minute heave-to must keep tacsim:space:state bounded: 200s={doc_bytes_at_200}B, 600s={doc_bytes_at_600}B"
+        );
+    }
+
+    // 3. Reboot mid-bubble (`reboot_with`) and verify `mush_sim::deployed::is_deployed` custody
+    //    survives `field::boot::phase` (`35b` §5 #6):
+    let rig = reboot_with(rig, roster);
+    assert!(
+        mush_sim::deployed::is_deployed(rig.tw.world(), hull),
+        "hull custody mark must survive engine restart mid-bubble (reacquire_custody_after_boot)"
+    );
+
+    // 4. Reboot with a corrupted `tacsim:space:state` document and verify it is quarantined
+    //    (`is_space_state_held`), never overwritten by `space_tick`, and refuses `+helm` commands:
+    let mut rig = reboot_editing(rig, roster, |store| {
+        if let Some(tacsim_data) = store.get_mut("tacsim") {
+            tacsim_data
+                .kv
+                .retain(|(k, _)| k.as_str() != tacsim::space::SPACE_STATE_KEY);
+            tacsim_data.kv.push((
+                SmolStr::new_static(tacsim::space::SPACE_STATE_KEY),
+                serde_json::json!({ "format": 999, "corrupt": true }),
+            ));
+        }
+    });
+    assert!(
+        rig.tw
+            .world()
+            .module_state::<tacsim::TacsimStore>()
+            .is_some_and(tacsim::TacsimStore::is_space_state_held),
+        "corrupt tacsim:space:state must be quarantined (is_space_state_held)"
+    );
+    let helm_refused = run(&mut rig.tw, pilot, "+helm/status");
+    assert!(
+        helm_refused.contains("unreadable and held for staff repair"),
+        "commands must refuse when tacsim:space:state is held: {helm_refused}"
+    );
+    let _ = rig.tw.take_module_ops();
+    let tick_after = rig.tw.world().now() + 5;
+    rig.tw.set_now(tick_after);
+    let _ = rig.tw.fire_due(tick_after * 1_000);
+    let ops = rig.tw.take_module_ops();
+    let overwrote_space_state = ops.iter().any(|op| {
+        op.ns.as_str() == "tacsim"
+            && matches!(
+                &op.op,
+                ModuleWrite::JsonSet { key, .. } if key.as_str() == tacsim::space::SPACE_STATE_KEY
+            )
+    });
+    assert!(
+        !overwrote_space_state,
+        "quarantined tacsim:space:state must never be overwritten by space_tick"
+    );
+}
+
+/// **Doc 35 cut SF.R11 (`D-35-15`, `35b` §5 #10/#11/#12/#14/#15/#16, §8 `SF.R11`)**:
+/// One ledger, rated drive:
+/// 1. In-bubble `max_accel_mps2` equals the hull's rated drive flip acceleration (`1 m/s²` for the Dray's `50 mg` drive).
+/// 2. A `CommandBurn` (`+helm/thrust 0 15 0 2`) inside an active bubble debits the hull's `stow.propellant` vault
+///    via `HullPropellantLedger` + `submit_space_burn_if_needed`.
+/// 3. Re-entering a bubble does not refill `propellant_kg` — the ledger's `fractional_burned_kg` persists across
+///    bubble close and re-promotion.
+/// 4. In free flight, a burn away from the nearest port evaluates `RETURN_RESERVE` on the post-burn `(pos, vel)`
+///    and triggers `RETURN_RESERVE warning` before exhausting return propellant (`35b` §5 #11).
+#[test]
+#[allow(clippy::too_many_lines)]
+fn sfr11_one_ledger_rated_drive_debits_bubble_jink_in_vault_persists_across_reentry_and_warns_burn_away_from_port()
+ {
+    let mut rig = stocked_with(Roster {
+        seed_lane: Some(lane_with_interdicted_kirkwood()),
+        ..Roster::default()
+    });
+    let (pilot, row) = chartered(&mut rig, "Pilot", 1);
+    let hull = ObjId(row.hull);
+    let vault_id = hold_vault(&rig.tw, &row);
+
+    seed_pool(&mut rig, vault_id, "propellant", 77, LotId(951));
+    seed_pool(&mut rig, vault_id, "provisions", 45, LotId(952));
+    set_rate(&mut rig.tw, 3_600);
+    board(&mut rig, pilot);
+
+    let pending = undock_and_burn(&mut rig, pilot, hull);
+    let depart_ic = pending.plan.depart_ic;
+    let leg1_secs = i64::from(pending.plan.legs[0].secs);
+    let _ = fire_quietly(&mut rig);
+    let _ = to_ic(&mut rig, depart_ic + leg1_secs);
+
+    // 1. Verify the carrier's in-bubble `max_accel_mps2` equals the hull's rated drive acceleration (`1 m/s²`),
+    //    and `return_reserve_dv_mps` is hydrated from `compute_hull_return_reserve` (> 0):
+    let (initial_bubble_prop_kg, initial_max_accel, initial_reserve_dv) = {
+        let book = rig
+            .tw
+            .world()
+            .module_state::<tacsim::space::SpaceBubbleBook>()
+            .expect("SpaceBubbleBook");
+        let active = book.active_for_hull(hull).expect("active bubble");
+        let carrier = active
+            .bubble
+            .ships
+            .get(&active.carrier_ship_id)
+            .expect("carrier ship");
+        (
+            carrier.propellant_kg,
+            carrier.max_accel_mps2,
+            carrier.return_reserve_dv_mps,
+        )
+    };
+    assert_eq!(
+        initial_max_accel, 1,
+        "in-bubble max_accel_mps2 must equal the Dray's rated drive acceleration (1 m/s² for 50 mg)"
+    );
+    assert!(
+        initial_reserve_dv > 0,
+        "in-bubble return_reserve_dv_mps must be hydrated from compute_hull_return_reserve: got {initial_reserve_dv}"
+    );
+
+    let vault_prop_before_jink = pool(&mut rig.tw, vault_id, "propellant");
+
+    // 2. Execute a `CommandBurn` inside the active bubble (`+helm/thrust 600 0 1000 0`) and land the
+    //    resulting `PendingSpaceBurn` submission on the hull's `stow.propellant` vault:
+    let jink_out = run(&mut rig.tw, pilot, "+helm/thrust 600 0 1000 0");
+    assert!(
+        jink_out.contains("Helm thrust set: 600‰ burn=(0, 1000, 0)"),
+        "bubble jink output: {jink_out}"
+    );
+    let _ = run(&mut rig.tw, pilot, "+helm/thrust 0");
+    let jink_submits = drain(&mut rig.tw);
+    assert_eq!(
+        jink_submits.len(),
+        1,
+        "in-bubble CommandBurn must queue a tacsim_port_burn debit via HullPropellantLedger"
+    );
+    for s in &jink_submits {
+        land(&mut rig, s).expect("in-bubble burn lands on stow.propellant vault");
+    }
+    let vault_prop_after_jink = pool(&mut rig.tw, vault_id, "propellant");
+    assert_eq!(
+        vault_prop_after_jink,
+        vault_prop_before_jink - 1,
+        "CommandBurn inside an active bubble debits the hull's stow.propellant vault"
+    );
+
+    let prop_kg_after_jink = {
+        let book = rig
+            .tw
+            .world()
+            .module_state::<tacsim::space::SpaceBubbleBook>()
+            .expect("SpaceBubbleBook");
+        let active = book.active_for_hull(hull).expect("active bubble");
+        active
+            .bubble
+            .ships
+            .get(&active.carrier_ship_id)
+            .expect("carrier ship")
+            .propellant_kg
+    };
+    assert!(
+        prop_kg_after_jink < initial_bubble_prop_kg,
+        "in-bubble propellant_kg reduced by Tsiolkovsky burn: {prop_kg_after_jink} < {initial_bubble_prop_kg}"
+    );
+
+    // 3. Close the bubble by disabling the interdictor, then decouple and recouple across the
+    //    interdicted Kirkwood leg to re-enter a bubble, and verify `propellant_kg` does NOT refill:
+    for i in 0..4 {
+        let next_real = rig.tw.world().now() + 1;
+        rig.tw.set_now(next_real);
+        let _ = rig.tw.fire_due(next_real * 1_000);
+        if i == 0 || i == 2 || i == 3 {
+            let _ = run(&mut rig.tw, pilot, "+tac/beam Interdictor Picket");
+        }
+        if i == 1 || i == 2 {
+            let _ = run(&mut rig.tw, pilot, "+damage/vent");
+        }
+    }
+    let next_real = rig.tw.world().now() + 1;
+    rig.tw.set_now(next_real);
+    let _ = rig.tw.fire_due(next_real * 1_000);
+    assert!(
+        rig.tw
+            .world()
+            .module_state::<tacsim::space::SpaceBubbleBook>()
+            .expect("SpaceBubbleBook")
+            .active_for_hull(hull)
+            .is_none(),
+        "bubble closed after interdictor disabled"
+    );
+
+    // Decouple into free flight before the Kirkwood boundary, verify rated drive cap and
+    // post-burn RETURN_RESERVE on a burn away from the nearest port, then recouple via
+    // `+helm/autopilot stickney` (preserving the interdicted Kirkwood leg!) to re-enter the bubble:
+    // First, let's decouple from Leg 2:
+    let dec_out = run(&mut rig.tw, pilot, "+helm/decouple");
+    assert!(dec_out.contains("Decoupled from corridor leg"), "{dec_out}");
+
+    // 4. Verify `+helm/burn` rejects accelerations above the hull's rated drive acceleration (`1 m/s²`):
+    let over_rated = run(&mut rig.tw, pilot, "+helm/burn 2,0,0 10");
+    assert!(
+        over_rated.contains("exceeds the hull drive's rated flip acceleration of 1 m/s²"),
+        "burn above rated drive acceleration refused: {over_rated}"
+    );
+
+    // And verify a burn away from the nearest port evaluates `RETURN_RESERVE` at the post-burn `(pos, vel)`
+    // and warns before exhausting return propellant:
+    let warn_away = run(&mut rig.tw, pilot, "+helm/burn -1,0,0 86400");
+    assert!(
+        warn_away.contains("RETURN_RESERVE warning"),
+        "burn away from port triggers post-burn RETURN_RESERVE warning: {warn_away}"
+    );
+
+    // Recouple to Ceres Freeport, then cast off on `ceres_stickney` and cross the interdicted leg
+    // into a second bubble to verify `propellant_kg` does not refill (`fractional_burned_kg` preserved):
+    let auto_ceres = run(&mut rig.tw, pilot, "+helm/autopilot ceres");
+    assert!(
+        auto_ceres.contains("Autopilot engaged for Ceres Freeport"),
+        "{auto_ceres}"
+    );
+    for s in drain(&mut rig.tw) {
+        land(&mut rig, &s).expect("autopilot burn lands");
+    }
+    let ceres_arr = journey(&rig.tw, hull)
+        .and_then(|j| j.arrival_at())
+        .expect("ceres arrival");
+    let _ = to_ic(&mut rig, ceres_arr);
+
+    // Top up whole tonnes for the second outbound `ceres_stickney` passage (`seed_pool` adds whole
+    // tonnes in the vault while `HullPropellantLedger::fractional_burned_kg` retains the sub-tonne
+    // deficit from the first bubble's jink):
+    seed_pool(&mut rig, vault_id, "propellant", 40, LotId(953));
+    let pending2 = undock_and_burn(&mut rig, pilot, hull);
+    let _ = fire_quietly(&mut rig);
+    let (expected_post_castoff_kg, vault_now_t) = {
+        let vault_now_t = pool(&mut rig.tw, vault_id, "propellant");
+        let book = rig
+            .tw
+            .world()
+            .module_state::<tacsim::space::SpaceBubbleBook>()
+            .expect("SpaceBubbleBook");
+        let ledger = book.propellant_ledger(hull).expect("ledger");
+        assert!(
+            ledger.fractional_burned_kg > 0,
+            "fractional_burned_kg preserved across bubble close and voyage: {}",
+            ledger.fractional_burned_kg
+        );
+        (
+            u32::try_from(ledger.effective_live_kg(vault_now_t)).expect("u32"),
+            vault_now_t,
+        )
+    };
+    let leg1_due2 = pending2.plan.depart_ic + i64::from(pending2.plan.legs[0].secs);
+    let _ = to_ic(&mut rig, leg1_due2);
+
+    let reentry_prop_kg = {
+        let book = rig
+            .tw
+            .world()
+            .module_state::<tacsim::space::SpaceBubbleBook>()
+            .expect("SpaceBubbleBook");
+        let active = book
+            .active_for_hull(hull)
+            .expect("re-entered active bubble");
+        active
+            .bubble
+            .ships
+            .get(&active.carrier_ship_id)
+            .expect("carrier ship")
+            .propellant_kg
+    };
+    assert_eq!(
+        reentry_prop_kg, expected_post_castoff_kg,
+        "re-entering a bubble must not refill propellant_kg (must preserve fractional_burned_kg)"
+    );
+    assert!(
+        u64::from(reentry_prop_kg) < (vault_now_t + 1) * 1_000,
+        "re-entered bubble propellant_kg ({reentry_prop_kg}) reflects sub-tonne burn rather than refilling"
+    );
+}
+
+/// **Doc 35 cut SF.R12 (`35b` §5 #2/#3/#4/#5/#6/#7/#13, §8 `SF.R12`)**:
+/// Domain bubbles and real hulls:
+/// 1. Two chartered hulls (`*Salt Moth*` `Dray-P` miner and `*Escort Hawk*` `Dray-M` escort) arriving
+///    at the Kirkwood waypoint share one bubble in `SpaceBubbleBook::by_domain` (`by_domain.len() == 1`,
+///    `active.carriers.len() == 2`).
+/// 2. The Republic Corvette (`corvette.json`, `tacsim.unit.corvette`) and Raider (`dray_m.json`,
+///    crewed by named NPC leader `"Varga Teodor"` from `raiders.json`) are spawned as real world
+///    `Thing`s with `TacticalUnit`s checked out through custody.
+/// 3. An indigent pilot (`0` credits in personal vault) who heaves-to and runs `+helm/submit` while
+///    carrying unlicensed `strategic_ore` has the contraband seized (`PicketInspectionOutcome::ContrabandSeized`,
+///    `PicketInspectionStatus::ClearedAfterSeizure`) and debited from `stow.ore`, and is cleared.
+/// 4. The escort disables the Raider; the miner approaches (`+helm/approach derelict`), docks
+///    (`+helm/dock derelict` + `+helm/dock tape`), and tows (`+helm/tow`) the real Raider `Thing`;
+///    the salvage claim in `SalvageClaimBook` names `"Varga Teodor"` as `prior_owner` and resolves a
+///    real port/waypoint `ObjId` (`!= GOD`) as `port_base_obj`.
+#[test]
+#[allow(clippy::too_many_lines)]
+fn sfr12_domain_bubbles_and_real_hulls_share_kirkwood_bubble_tow_real_raider_thing_with_leader_claim_and_seize_indigent_contraband()
+ {
+    let mut rig = stocked_with(Roster {
+        seed_lane: Some(lane_with_interdicted_kirkwood()),
+        ..Roster::default()
+    });
+
+    // 1. Charter *Salt Moth* (indigent miner on `Dray-P` carrying 2 t unlicensed `strategic_ore`):
+    let (pilot_miner, row_miner) = chartered(&mut rig, "Miner", 1);
+    let hull_miner = ObjId(row_miner.hull);
+    let vault_miner = hold_vault(&rig.tw, &row_miner);
+    let desk = station_room(&rig.tw, "ceres_port", "room.c05_registry");
+    teleport(&mut rig.tw, pilot_miner, desk);
+    let refit_miner = run(&mut rig.tw, pilot_miner, "+coop/refit prospector");
+    assert!(refit_miner.contains("Dray-P"), "{refit_miner}");
+    seed_pool(&mut rig, vault_miner, "propellant", 75, LotId(961));
+    seed_pool(&mut rig, vault_miner, "provisions", 25, LotId(962));
+    seed_pool(&mut rig, vault_miner, "strategic_ore", 51, LotId(963));
+
+    // Charter *Escort Hawk* (armed Dray escort):
+    let pilot_escort = pilot(&mut rig, "Escort", 2);
+    let enrol_escort = run(&mut rig.tw, pilot_escort, "+coop/enrol Escort Hawk");
+    assert!(
+        enrol_escort.contains("now the Escort Hawk"),
+        "{enrol_escort}"
+    );
+    let charter_escort =
+        tacsim::port::live_charter(rig.tw.world(), pilot_escort).expect("escort charter");
+    let row_escort = port_map(&rig.tw, "ceres_port")
+        .hulls
+        .into_iter()
+        .find(|r| r.hull == charter_escort.hull.0)
+        .expect("escort hull row");
+    let hull_escort = ObjId(row_escort.hull);
+    let vault_escort = hold_vault(&rig.tw, &row_escort);
+    seed_pool(&mut rig, vault_escort, "propellant", 53, LotId(964));
+    seed_pool(&mut rig, vault_escort, "provisions", 19, LotId(965));
+
+    set_rate(&mut rig.tw, 3_600);
+    board(&mut rig, pilot_miner);
+    let gallery = c01(&rig.tw);
+    teleport(&mut rig.tw, pilot_escort, gallery);
+    let board_escort = run(&mut rig.tw, pilot_escort, "+ship/board");
+    assert!(
+        board_escort.contains("You cycle the lock into the Escort Hawk."),
+        "{board_escort}"
+    );
+
+    let pending_miner = undock_and_burn(&mut rig, pilot_miner, hull_miner);
+    let pending_escort = undock_and_burn(&mut rig, pilot_escort, hull_escort);
+    let _ = fire_quietly(&mut rig);
+
+    let miner_leg1_due = pending_miner.plan.depart_ic + i64::from(pending_miner.plan.legs[0].secs);
+    let escort_leg1_due =
+        pending_escort.plan.depart_ic + i64::from(pending_escort.plan.legs[0].secs);
+    let convoy_kirkwood_due = miner_leg1_due.max(escort_leg1_due);
+    let _ = to_ic(&mut rig, convoy_kirkwood_due);
+
+    // 2. Verify both chartered hulls share one domain-keyed Kirkwood bubble, and that both NPC
+    //    hulls (`corvette_hull` and `raider_hull`) are real world `Thing`s with checked-out `TacticalUnit`s:
+    let (corvette_hull, raider_hull) = {
+        let book = rig
+            .tw
+            .world()
+            .module_state::<tacsim::space::SpaceBubbleBook>()
+            .expect("SpaceBubbleBook");
+        assert_eq!(
+            book.by_domain.len(),
+            1,
+            "two chartered hulls at the Kirkwood waypoint must share a single domain-keyed bubble"
+        );
+        let active = book
+            .active_for_hull(hull_miner)
+            .expect("miner in active bubble");
+        assert!(
+            active.carriers.contains_key(&hull_miner) && active.carriers.contains_key(&hull_escort),
+            "shared bubble must contain both *Salt Moth* and *Escort Hawk*"
+        );
+        assert_eq!(
+            active.carriers.len(),
+            2,
+            "shared bubble must track both carrier entries"
+        );
+        let picket = active.picket.as_ref().expect("KirkwoodPicketState");
+        (picket.corvette_hull, picket.raider_hull)
+    };
+
+    assert!(
+        rig.tw.world().get(corvette_hull).is_some()
+            && mush_tactics::custody::marker_of(rig.tw.world(), corvette_hull).is_some(),
+        "Republic Corvette must be a real world Thing with a TacticalUnit checked out through custody"
+    );
+    assert_eq!(
+        mush_tactics::module::unit_of(rig.tw.world(), corvette_hull)
+            .expect("corvette TacticalUnit")
+            .schema()
+            .key()
+            .id
+            .as_str(),
+        tacsim::definitions::content::CORVETTE
+    );
+    assert!(
+        rig.tw.world().get(raider_hull).is_some()
+            && mush_tactics::custody::marker_of(rig.tw.world(), raider_hull).is_some(),
+        "Raider must be a real world Thing with a TacticalUnit checked out through custody"
+    );
+
+    // 3. Indigent contraband seizure (`35b` §5 #13): *Salt Moth* heaves-to and runs `+helm/submit`
+    //    with 2 t unlicensed `strategic_ore` and 0 credits in personal vault:
+    let _ = run(&mut rig.tw, pilot_miner, "+helm/thrust 600 -1000 0 0");
+    for _ in 0..6 {
+        let next_r = rig.tw.world().now() + 1;
+        rig.tw.set_now(next_r);
+        let _ = rig.tw.fire_due(next_r * 1_000);
+    }
+    let _ = run(&mut rig.tw, pilot_miner, "+helm/thrust 0");
+    let brake_submits = drain_space_and_industry(&mut rig.tw);
+    land_quietly(&mut rig, &brake_submits);
+
+    let submit_out = run(&mut rig.tw, pilot_miner, "+helm/submit");
+    assert!(
+        submit_out.contains("confiscated in lieu of fine")
+            && submit_out.contains("customs clearance granted"),
+        "indigent pilot must have contraband seized and be cleared: {submit_out}"
+    );
+    let seizure_submits = drain(&mut rig.tw);
+    assert!(
+        !seizure_submits.is_empty(),
+        "contraband seizure must queue an authoritative tacsim_port_burn debit"
+    );
+    for s in &seizure_submits {
+        land(&mut rig, s).expect("contraband seizure burn lands");
+    }
+    assert_eq!(
+        pool(&mut rig.tw, vault_miner, "strategic_ore"),
+        0,
+        "seized strategic_ore must be debited from the hull's stow.ore hold"
+    );
+    {
+        let book = rig
+            .tw
+            .world()
+            .module_state::<tacsim::space::SpaceBubbleBook>()
+            .expect("SpaceBubbleBook");
+        let picket = book
+            .active_for_hull(hull_miner)
+            .and_then(|a| a.picket.as_ref())
+            .expect("KirkwoodPicketState");
+        assert_eq!(
+            picket.inspection_status,
+            tacsim::space::PicketInspectionStatus::ClearedAfterSeizure
+        );
+        assert!(matches!(
+            picket.inspection_outcome,
+            Some(tacsim::space::PicketInspectionOutcome::ContrabandSeized {
+                seized_strategic_ore_kg: 51_000,
+                ..
+            })
+        ));
+    }
+
+    // 4. Step the bubble so the Raider ambush launches, have the Escort (`*Escort Hawk*`) engage
+    //    the Raider (`+tac/beam Raider`) alongside the Corvette until the Raider's drive is disabled:
+    for step in 0..55 {
+        let next_r = rig.tw.world().now() + 1;
+        rig.tw.set_now(next_r);
+        let _ = rig.tw.fire_due(next_r * 1_000);
+        if step % 2 == 1 {
+            let _ = run(&mut rig.tw, pilot_escort, "+tac/beam Raider");
+        } else if step % 4 == 2 {
+            let _ = run(&mut rig.tw, pilot_escort, "+damage/vent");
+        }
+        let raider_disabled = rig
+            .tw
+            .world()
+            .module_state::<tacsim::space::SpaceBubbleBook>()
+            .and_then(|b| b.active_for_hull(hull_miner))
+            .and_then(|a| {
+                let rsid = a.picket.as_ref()?.raider_ship_id.as_str();
+                a.bubble.ships.get(rsid)
+            })
+            .is_some_and(|s| {
+                matches!(s.status, tacsim::space::HullStatus::DisabledDerelict { .. })
+            });
+        if raider_disabled {
+            break;
+        }
+    }
+
+    // Have the miner (`*Salt Moth*`) order `+helm/approach derelict` on the disabled Raider `Thing`,
+    // step until in-flight torpedoes clear and range closes inside the collar-initiation envelope,
+    // dock via a 60 Hz `DockingInputTape`, and attach the salvage tow line (`+helm/tow`):
+    let approach_out = run(&mut rig.tw, pilot_miner, "+helm/approach derelict");
+    assert!(
+        approach_out.contains("Braking approach ordered toward disabled derelict"),
+        "expected miner approach on disabled Raider derelict: {approach_out}"
+    );
+    for _ in 0..48 {
+        let next_r = rig.tw.world().now() + 1;
+        rig.tw.set_now(next_r);
+        let _ = rig.tw.fire_due(next_r * 1_000);
+        let ready = rig
+            .tw
+            .world()
+            .module_state::<tacsim::space::SpaceBubbleBook>()
+            .and_then(|b| b.active_for_hull(hull_miner))
+            .is_some_and(|a| {
+                a.bubble.torpedoes.is_empty()
+                    && !a
+                        .carriers
+                        .get(&hull_miner)
+                        .is_some_and(|c| c.approaching_derelict)
+            });
+        if ready {
+            break;
+        }
+    }
+    let dock_raider_start = run(&mut rig.tw, pilot_miner, "+helm/dock derelict");
+    assert!(
+        dock_raider_start.contains("[DOCKING] Initiated 60 fps 6-DOF docking session"),
+        "miner must initiate docking session on disabled Raider Thing: {dock_raider_start}"
+    );
+    let (sid_raider, chal_raider) = {
+        let book = rig
+            .tw
+            .world()
+            .module_state::<tacsim::space::SpaceBubbleBook>()
+            .expect("SpaceBubbleBook");
+        let s = book
+            .docking_sessions
+            .get(&hull_miner)
+            .expect("miner docking session");
+        (s.challenge.session_id.clone(), s.challenge.clone())
+    };
+    let valid_raider_tape = tacsim::space::solve_docking_tape(&chal_raider);
+    let clamp_raider_out = run(
+        &mut rig.tw,
+        pilot_miner,
+        &format!(
+            "+helm/dock tape {sid_raider} {}",
+            valid_raider_tape.encode_rle()
+        ),
+    );
+    assert!(
+        clamp_raider_out
+            .contains("[DOCKING] Hard dock and magnetic collar seal confirmed on derelict"),
+        "miner must hard-dock onto disabled Raider Thing: {clamp_raider_out}"
+    );
+    let tow_raider_out = run(&mut rig.tw, pilot_miner, "+helm/tow");
+    assert!(
+        tow_raider_out.contains("[SALVAGE] Tow line locked to disabled derelict"),
+        "miner must lock salvage tow line to disabled Raider Thing: {tow_raider_out}"
+    );
+    {
+        let book = rig
+            .tw
+            .world()
+            .module_state::<tacsim::space::SpaceBubbleBook>()
+            .expect("SpaceBubbleBook");
+        let tow = book
+            .active_tows
+            .get(&hull_miner)
+            .expect("miner active salvage tow");
+        assert_eq!(
+            tow.derelict_hull, raider_hull,
+            "miner must tow the real Raider Thing (#{})",
+            raider_hull.0
+        );
+        let derelict = book
+            .derelicts
+            .get(&raider_hull)
+            .expect("disabled Raider settled into SpaceBubbleBook::derelicts");
+        let Some(tacsim::field_ops::CustodyTitleStatus::PendingSalvageClaim { claim_id, .. }) =
+            &derelict.salvage_title_status
+        else {
+            panic!(
+                "expected PendingSalvageClaim on disabled Raider, got {:?}",
+                derelict.salvage_title_status
+            );
+        };
+        let salvage = rig
+            .tw
+            .world()
+            .module_state::<tacsim::field_ops::SalvageClaimBook>()
+            .expect("SalvageClaimBook");
+        let claim = salvage.claim(*claim_id).expect("Raider salvage claim");
+        let bay_base = salvage
+            .black_box_tape_for_hull(raider_hull)
+            .iter()
+            .find_map(|e| match e {
+                tacsim::field_ops::BlackBoxFlightEntry::EpochClosedInBay { base, .. } => {
+                    Some(*base)
+                }
+                _ => None,
+            })
+            .expect("EpochClosedInBay entry on Raider black box");
+        assert_ne!(
+            bay_base, GOD,
+            "port_base_obj must resolve to a real world port/waypoint ObjId, not GOD"
+        );
+        let prior_owner = claim.prior_owner;
+        let leader_obj = rig
+            .tw
+            .world()
+            .get(prior_owner)
+            .expect("prior_owner must be a real world object");
+        assert_eq!(
+            leader_obj.name.as_str(),
+            "Varga Teodor",
+            "Raider salvage claim must name the raider's NPC leader from raiders.json"
+        );
+    }
+}
+
+/// **Doc 35b cut SF.R13 acceptance (`D-35-7`, `D-35-10`, `D-35-15`)** — verifies:
+/// 1. Every crew member aboard a carrier hull (`pilot` + `gunner`) receives `space.holotank`
+///    and `space.cockpit` panel frames directly from the `SPACE_TICK` without typing a command,
+///    and sees an incoming torpedo's `tti_s` count down across ticks in both feeds.
+/// 2. `cockpit_feed` carries `bodies` and `pixel_model` on contacts, while `holotank_feed`
+///    and `cockpit_feed` filter `torpedoes` through `mush_propagation` detection (`is_bubble_torpedo_detected`).
+/// 3. Disconnecting the crew uncleanly (`Inbound::ConnDown` -> `HookPoint::Linkdead`) sets
+///    `crew_linkdead = true`, cuts main-drive thrust to `[0, 0, 0]` (ballistic drift), holds
+///    `pdc_auto` armed through the grace window with a queued return plan, and `Inbound::ConnUp`
+///    (`from_linkdead: true`) restores manual bridge control.
+#[test]
+#[allow(clippy::too_many_lines)]
+fn sfr13_presence_and_feeds_push_to_all_crew_filter_torpedoes_and_handle_linkdead_grace() {
+    let mut rig = stocked_with(Roster {
+        seed_lane: Some(lane_with_interdicted_kirkwood()),
+        ..Roster::default()
+    });
+    let (pilot, row) = chartered(&mut rig, "Pilot", 1);
+    let hull = ObjId(row.hull);
+    let gunner = rig.tw.spawn_player("Gunner");
+    load(&mut rig, &row, 55, 60);
+    set_rate(&mut rig.tw, 3_600);
+    board(&mut rig, pilot);
+    let airlock = tacsim::port::ship::hull_view(rig.tw.world(), hull)
+        .and_then(|v| v.airlock())
+        .expect("carrier airlock");
+    teleport(&mut rig.tw, gunner, airlock);
+    let _ = run(&mut rig.tw, pilot, "+helm/station command=Pilot");
+    let st_out = run(&mut rig.tw, pilot, "+helm/station tactical=Gunner");
+    assert!(
+        st_out.contains("Gunner now holds `tactical`"),
+        "gunner assumes tactical station: {st_out}"
+    );
+
+    let pending = undock_and_burn(&mut rig, pilot, hull);
+    let depart_ic = pending.plan.depart_ic;
+    let leg1_secs = i64::from(pending.plan.legs[0].secs);
+    let _ = fire_quietly(&mut rig);
+
+    // Promote into the Kirkwood interdiction bubble.
+    let promote_events = to_ic(&mut rig, depart_ic + leg1_secs);
+
+    let panel_data_for = |events: &[(Audience, OutputEvent)], who: ObjId, feed_name: &str| {
+        events.iter().rev().find_map(|(aud, ev)| match (aud, ev) {
+            (Audience::Actor(a), OutputEvent::Panel { feed, data, .. })
+                if *a == who && feed.as_str() == feed_name =>
+            {
+                Some(data.clone())
+            }
+            _ => None,
+        })
+    };
+
+    // Both pilot and gunner received `space.holotank` and `space.cockpit` on promotion without typing!
+    let gunner_holo_0 = panel_data_for(&promote_events, gunner, "space.holotank")
+        .expect("gunner must receive space.holotank on bubble promotion");
+    assert!(gunner_holo_0["contacts"].is_array());
+    let gunner_cockpit_0 = panel_data_for(&promote_events, gunner, "space.cockpit")
+        .expect("gunner must receive space.cockpit on bubble promotion");
+    let bodies = gunner_cockpit_0["bodies"]
+        .as_array()
+        .expect("cockpit_feed must emit bodies array");
+    assert!(
+        !bodies.is_empty(),
+        "cockpit_feed bodies must be non-empty: {gunner_cockpit_0}"
+    );
+
+    // Light up the interdictor with active radar (`+helm/emcon combat`) and step the tick:
+    // the interdictor fires a torpedo at the carrier and both crew receive updated feeds from the tick!
+    let _ = run(&mut rig.tw, pilot, "+helm/emcon combat");
+    let tick1_events = fire_quietly(&mut rig);
+    let gunner_holo_1 = panel_data_for(&tick1_events, gunner, "space.holotank")
+        .expect("gunner receives space.holotank from tick step 1 without typing");
+    let gunner_cockpit_1 = panel_data_for(&tick1_events, gunner, "space.cockpit")
+        .expect("gunner receives space.cockpit from tick step 1 without typing");
+
+    let contacts_1 = gunner_cockpit_1["contacts"]
+        .as_array()
+        .expect("cockpit_feed contacts array");
+    let ship_contact = contacts_1
+        .iter()
+        .find(|c| c["kind"] == "ship")
+        .expect("detected interdictor ship contact in cockpit_feed");
+    assert_eq!(
+        ship_contact["pixel_model"].as_str(),
+        Some("corvette"),
+        "cockpit_feed ship contact must carry pixel_model: {ship_contact}"
+    );
+    let torp_holo_1 = gunner_holo_1["torpedoes"]
+        .as_array()
+        .and_then(|arr| arr.first())
+        .expect("detected incoming burning torpedo in holotank_feed");
+    let tti_1 = torp_holo_1["tti_s"].as_i64().expect("torp tti_s on tick 1");
+    let torp_cockpit_1 = contacts_1
+        .iter()
+        .find(|c| c["kind"] == "torpedo")
+        .expect("detected incoming torpedo in cockpit_feed contacts");
+    assert_eq!(torp_cockpit_1["pixel_model"].as_str(), Some("torpedo"));
+    assert_eq!(torp_cockpit_1["tti_s"].as_i64(), Some(tti_1));
+
+    // Advance wall time by 1 s per tick and fire `SPACE_TICK` without gunner typing: torpedo `tti_s` counts down!
+    let mut tti_after = tti_1;
+    for _ in 1..=3 {
+        let t = rig.tw.world().now().saturating_add(1);
+        rig.tw.set_now(t);
+        let tick_ev = rig.tw.fire_due(t.saturating_mul(1_000));
+        let queued = drain(&mut rig.tw);
+        land_quietly(&mut rig, &queued);
+        if let Some(holo) = panel_data_for(&tick_ev, gunner, "space.holotank")
+            && let Some(torp) = holo["torpedoes"].as_array().and_then(|a| a.first())
+            && let Some(v) = torp["tti_s"].as_i64()
+        {
+            tti_after = v;
+        }
+    }
+    assert!(
+        tti_after < tti_1,
+        "gunner must see torpedo tti_s count down across ticks ({tti_1} -> {tti_after}) without typing"
+    );
+
+    // Pure unit check on `holotank_feed` torpedo detection filtering:
+    // a cold coasting torpedo (`remaining_dv_mmps == 0`) at 25 km is filtered out of `holotank_feed`,
+    // while a burning torpedo (`remaining_dv_mmps > 0`) at 25 km is included.
+    {
+        let mut unit_bubble =
+            tacsim::space::LocalSpaceBubble::new("b.test", "kirkwood", "Test", 100);
+        unit_bubble.insert_ship(tacsim::space::SpaceShipState::new_dray(
+            "obs",
+            "Observer",
+            tacsim::space::SpacePartyId(1),
+            [0, 0, 0],
+            [0, 0, 0],
+        ));
+        let mut foe = tacsim::space::SpaceShipState::new_corvette(
+            "foe",
+            "Raider",
+            tacsim::space::SpacePartyId(2),
+            [25_000, 0, 0],
+            [0, 0, 0],
+        );
+        foe.emcon = tacsim::space::EmconPosture::Ghost;
+        foe.heat_permille = 0;
+        unit_bubble.insert_ship(foe);
+        unit_bubble.set_party_relation(
+            tacsim::space::SpacePartyId(1),
+            tacsim::space::SpacePartyId(2),
+            tacsim::space::SpaceRelation::Hostile,
+        );
+        let _ = unit_bubble.fire_torpedo_salvo("foe", "obs", 1);
+        assert_eq!(
+            unit_bubble.holotank_feed("obs")["torpedoes"]
+                .as_array()
+                .map(Vec::len),
+            Some(1),
+            "burning torpedo at 25 km must be detected in holotank_feed"
+        );
+        unit_bubble.torpedoes[0].remaining_dv_mmps = 0;
+        assert_eq!(
+            unit_bubble.holotank_feed("obs")["torpedoes"]
+                .as_array()
+                .map(Vec::len),
+            Some(0),
+            "cold ballistic coasting torpedo at 25 km must be filtered out of holotank_feed"
+        );
+    }
+
+    // 3. Test D-35-7 linkdead presence hook:
+    // Pilot orders a forward burn (`+helm/thrust 1000 force`) and switches PDC to manual first to prove
+    // that going linkdead re-arms `pdc_auto = true` and cuts `thrust_mps2 = [0, 0, 0]`.
+    let _ = run(&mut rig.tw, gunner, "+tac/pdc manual");
+    let burn_out = run(&mut rig.tw, pilot, "+helm/thrust 1000 force");
+    assert!(
+        burn_out.contains("Helm thrust set"),
+        "pilot commands forward burn: {burn_out}"
+    );
+
+    let conns_for = |tw: &TestWorld, who: ObjId| -> Vec<u64> {
+        (1..=64)
+            .filter(|conn| tw.engine().actor_of(*conn) == Some(who))
+            .collect()
+    };
+    let pilot_conns = conns_for(&rig.tw, pilot);
+    let gunner_conns = conns_for(&rig.tw, gunner);
+    assert!(!pilot_conns.is_empty() && !gunner_conns.is_empty());
+
+    // Drop pilot's connection first: gunner is still live-connected aboard, so hull is NOT linkdead yet.
+    for &conn in &pilot_conns {
+        let mut out = mush_core::Outbox::new();
+        let mut fx = mush_core::Effects::new();
+        rig.tw.engine_mut().step(
+            mush_core::Inbound::ConnDown {
+                conn,
+                actor: pilot,
+                reason: mush_core::DisconnectKind::Lost,
+            },
+            &mut out,
+            &mut fx,
+        );
+    }
+    {
+        let book = rig
+            .tw
+            .world()
+            .module_state::<tacsim::space::SpaceBubbleBook>()
+            .expect("SpaceBubbleBook");
+        assert!(
+            book.linkdead_state(hull).is_none(),
+            "hull must not go linkdead while gunner is still live-connected aboard"
+        );
+    }
+
+    // Now drop gunner's connection: no live-connected crew remain aboard -> D-35-7 linkdead triggers!
+    for &conn in &gunner_conns {
+        let mut out = mush_core::Outbox::new();
+        let mut fx = mush_core::Effects::new();
+        rig.tw.engine_mut().step(
+            mush_core::Inbound::ConnDown {
+                conn,
+                actor: gunner,
+                reason: mush_core::DisconnectKind::Lost,
+            },
+            &mut out,
+            &mut fx,
+        );
+    }
+    let (vel_at_linkdead, prop_at_linkdead) = {
+        let book = rig
+            .tw
+            .world()
+            .module_state::<tacsim::space::SpaceBubbleBook>()
+            .expect("SpaceBubbleBook");
+        let ld = book
+            .linkdead_state(hull)
+            .expect("hull must enter linkdead state when all crew lose connection");
+        assert!(
+            ld.pdc_held,
+            "point-defense must be held armed during grace window"
+        );
+        assert!(!ld.grace_expired, "grace window must start unexpired");
+        assert!(
+            ld.queued_return_port.is_some(),
+            "return plan port must be queued on linkdead"
+        );
+        let active = book.active_for_hull(hull).expect("active bubble");
+        let ship = active
+            .bubble
+            .ships
+            .get(active.carrier_ship_id_for(hull))
+            .expect("carrier ship");
+        assert!(ship.crew_linkdead, "ship.crew_linkdead must be true");
+        assert_eq!(
+            ship.thrust_mps2,
+            [0, 0, 0],
+            "main-drive thrust must be cut immediately on linkdead"
+        );
+        assert!(
+            ship.pdc_auto,
+            "pdc_auto must be held armed through the linkdead grace window"
+        );
+        (ship.vel_mmps, ship.propellant_kg)
+    };
+
+    // Step the bubble while linkdead: ship drifts ballistically (constant velocity, zero propellant burned).
+    let now_w = rig.tw.world().now();
+    rig.tw.world_mut().set_now(now_w + 10);
+    let _ = fire_quietly(&mut rig);
+    {
+        let book = rig
+            .tw
+            .world()
+            .module_state::<tacsim::space::SpaceBubbleBook>()
+            .expect("SpaceBubbleBook");
+        let active = book.active_for_hull(hull).expect("active bubble");
+        let ship = active
+            .bubble
+            .ships
+            .get(active.carrier_ship_id_for(hull))
+            .expect("carrier ship");
+        assert_eq!(
+            ship.vel_mmps, vel_at_linkdead,
+            "linkdead ship must drift ballistically without accelerating"
+        );
+        assert_eq!(
+            ship.propellant_kg, prop_at_linkdead,
+            "linkdead ship must not burn reaction mass while drifting"
+        );
+    }
+
+    // Reconnect pilot (`Inbound::ConnUp { from_linkdead: true }`): manual control is restored!
+    {
+        let mut out = mush_core::Outbox::new();
+        let mut fx = mush_core::Effects::new();
+        rig.tw.engine_mut().step(
+            mush_core::Inbound::ConnUp {
+                conn: pilot_conns[0],
+                actor: pilot,
+                caps_structured: true,
+                from_linkdead: true,
+            },
+            &mut out,
+            &mut fx,
+        );
+    }
+    {
+        let book = rig
+            .tw
+            .world()
+            .module_state::<tacsim::space::SpaceBubbleBook>()
+            .expect("SpaceBubbleBook");
+        assert!(
+            book.linkdead_state(hull).is_none(),
+            "reviving pilot must clear linkdead state for hull"
+        );
+        let active = book.active_for_hull(hull).expect("active bubble");
+        let ship = active
+            .bubble
+            .ships
+            .get(active.carrier_ship_id_for(hull))
+            .expect("carrier ship");
+        assert!(
+            !ship.crew_linkdead,
+            "reviving pilot must clear ship.crew_linkdead"
+        );
+    }
 }

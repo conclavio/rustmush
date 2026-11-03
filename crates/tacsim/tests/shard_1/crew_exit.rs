@@ -17,7 +17,7 @@ use tacsim::surface::excursion::{ActKind, ActResult, RigKey};
 use tacsim::surface::site_record::{SiteKey, SiteRecord};
 use tokio::sync::mpsc::Receiver;
 
-use crate::driving::{
+use crate::driving_rig::{
     AHUNA, Rig, ahuna_domain, cid, command, drain, handles, land, launched, on_pad, on_pad_as, run,
     staff_hand, stocked, stocked_tuned, typed, warm,
 };

@@ -281,6 +281,12 @@ pub struct SpaceShipState {
     /// Remaining active duration of a deployed decoy cloud in wall milliseconds (`SF.15`).
     #[serde(default)]
     pub active_decoy_ms: u32,
+    /// Non-propellant cargo/bay payload mass in kilograms for rocket-equation burns (`SF.R11`, `D-35-6`).
+    #[serde(default)]
+    pub non_prop_payload_kg: u64,
+    /// Sub-$\text{m/s}$ $\Delta v$ remainder in $\text{mm/s}$ accumulated across `250 ms` substeps (`SF.R11`).
+    #[serde(default)]
+    pub dv_rem_mmps: i64,
 }
 
 impl SpaceShipState {
@@ -342,7 +348,7 @@ impl SpaceShipState {
             pos_rem_um: [0, 0, 0],
             vel_mmps,
             thrust_mps2: [0, 0, 0],
-            max_accel_mps2: 25,
+            max_accel_mps2: 1,
             dry_mass_t: 240,
             payload_ceiling_kg: 181_000,
             propellant_cap_kg: 80_000,
@@ -358,16 +364,21 @@ impl SpaceShipState {
             crew_linkdead: false,
             emcon: EmconPosture::Standard,
             locked_target_id: None,
-            hit_radius_m: 60,
+            hit_radius_m: 5,
             sections,
             crits: Vec::new(),
             status: HullStatus::Operational,
             torpedo_tubes: Vec::new(),
-            lasers: vec![LaserMount::standard_turret("laser_dorsal")],
+            lasers: vec![
+                LaserMount::standard_turret("laser_dorsal"),
+                LaserMount::standard_turret("laser_ventral"),
+            ],
             railguns: Vec::new(),
             pdcs: vec![PdcMount::standard_rotary("pdc_ dorsal", 2_000)],
             decoys_remaining: 4,
             active_decoy_ms: 0,
+            non_prop_payload_kg: 0,
+            dv_rem_mmps: 0,
         }
     }
 
@@ -436,6 +447,46 @@ impl SpaceShipState {
         self.status == HullStatus::Operational
             && !self.crew_linkdead
             && (self.thrust_mps2[0] != 0 || self.thrust_mps2[1] != 0 || self.thrust_mps2[2] != 0)
+    }
+
+    /// Canonical `mush-pixel` 3D sprite archetype (`"freighter"`, `"corvette"`, `"raider"`,
+    /// `"halcyon"`, `"drone"`, or `"derelict"`, `SF.R13`, `D-35-15`).
+    #[must_use]
+    pub fn pixel_model(&self) -> &'static str {
+        if matches!(self.status, HullStatus::DisabledDerelict { .. }) {
+            return "derelict";
+        }
+        let hc = self.hull_class.to_ascii_lowercase();
+        let id = self.id.to_ascii_lowercase();
+        let cs = self.callsign.to_ascii_lowercase();
+        if hc.contains("halcyon") || id.contains("halcyon") || cs.contains("halcyon") {
+            "halcyon"
+        } else if hc.contains("raider")
+            || id.contains("raider")
+            || cs.contains("raider")
+            || cs.contains("pirate")
+            || cs.contains("corsair")
+        {
+            "raider"
+        } else if hc.contains("corvette")
+            || id.contains("corvette")
+            || cs.contains("corvette")
+            || cs.contains("customs")
+            || cs.contains("picket")
+        {
+            "corvette"
+        } else if hc.contains("drone") || id.contains("drone") || cs.contains("drone") {
+            "drone"
+        } else if hc.contains("dray")
+            || hc.contains("freighter")
+            || id.contains("dray")
+            || cs.contains("dray")
+            || cs.contains("hauler")
+        {
+            "freighter"
+        } else {
+            "corvette"
+        }
     }
 
     /// Select which [`FacetBand`] faces an incoming attack arriving along vector
@@ -516,7 +567,7 @@ impl SpaceShipState {
         }
 
         // In `dray.json`, `drive` has `struck_through: { section: "hull", facet: "rear" }`
-        // and `rear` band splits 50/50 between `hull` and `drive`.
+        // and penetrating hits through the hull structure also shock the drive column.
         let target_section = if facet == FacetBand::Rear && remaining > 0 {
             ShipSectionId::Drive
         } else {
@@ -524,23 +575,44 @@ impl SpaceShipState {
         };
 
         let mut internal_dmg = 0u32;
-        if remaining > 0
-            && let Some(sec) = self.sections.get_mut(&target_section)
-        {
-            let dealt = sec.internals.min(remaining);
-            sec.internals -= dealt;
-            internal_dmg = dealt;
+        if remaining > 0 {
+            if facet == FacetBand::Rear {
+                if let Some(sec) = self.sections.get_mut(&ShipSectionId::Drive) {
+                    let dealt = sec.internals.min(remaining);
+                    sec.internals -= dealt;
+                    internal_dmg = dealt;
+                }
+            } else {
+                let drive_share = remaining.div_ceil(2);
+                let hull_share = remaining.saturating_sub(drive_share);
+                if let Some(sec) = self.sections.get_mut(&ShipSectionId::Hull) {
+                    let dealt = sec.internals.min(hull_share);
+                    sec.internals -= dealt;
+                    internal_dmg = internal_dmg.saturating_add(dealt);
+                }
+                if let Some(sec) = self.sections.get_mut(&ShipSectionId::Drive) {
+                    let dealt = sec.internals.min(drive_share);
+                    sec.internals -= dealt;
+                    internal_dmg = internal_dmg.saturating_add(dealt);
+                }
+            }
         }
 
         // Subsystem crit check when internals take heavy damage
-        if internal_dmg >= 40
-            && target_section == ShipSectionId::Hull
+        let hull_lost = self
+            .sections
+            .get(&ShipSectionId::Hull)
+            .map_or(0, |s| s.max_internals.saturating_sub(s.internals));
+        let drive_lost = self
+            .sections
+            .get(&ShipSectionId::Drive)
+            .map_or(0, |s| s.max_internals.saturating_sub(s.internals));
+        if (internal_dmg >= 40 || hull_lost >= 30)
             && !self.crits.contains(&SubsystemCrit::RadiatorDamaged)
         {
             self.crits.push(SubsystemCrit::RadiatorDamaged);
         }
-        if internal_dmg >= 30
-            && target_section == ShipSectionId::Drive
+        if (internal_dmg >= 30 || drive_lost >= 25)
             && !self.crits.contains(&SubsystemCrit::DriveDegraded)
         {
             self.crits.push(SubsystemCrit::DriveDegraded);
@@ -705,6 +777,197 @@ pub mod vec_tuple_map {
     }
 }
 
+/// Projected celestial body for the `space.cockpit` bridge canopy feed (`SF.R13`, `SF.R16`, `D-35-15`).
+#[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize)]
+pub struct CanopyBodyProjection {
+    pub id: String,
+    pub label: String,
+    pub bearing_deg: i32,
+    pub pitch_deg: i32,
+    pub radius_px: i32,
+    pub radius_km: i64,
+    pub distance_km: i64,
+}
+
+impl CanopyBodyProjection {
+    /// Convert this projection into its `space.cockpit` JSON entry.
+    #[must_use]
+    pub fn to_feed_json(&self) -> Value {
+        json!({
+            "id": self.id,
+            "name": self.label,
+            "label": self.label,
+            "kind": self.id,
+            "bearing_deg": self.bearing_deg,
+            "pitch_deg": self.pitch_deg,
+            "radius_px": self.radius_px,
+            "radius_km": self.radius_km,
+            "distance_km": self.distance_km,
+        })
+    }
+}
+
+/// Default celestial bodies visible in the bridge canopy for an encounter site (`SF.R13`, `D-35-15`).
+#[must_use]
+pub fn default_canopy_bodies_for_site(site_id: &str) -> Vec<CanopyBodyProjection> {
+    let lower = site_id.to_ascii_lowercase();
+    if lower.contains("neptune") || lower.contains("triton") {
+        vec![
+            CanopyBodyProjection {
+                id: "neptune".to_owned(),
+                label: "NEPTUNE".to_owned(),
+                bearing_deg: 0,
+                pitch_deg: -4,
+                radius_px: 44,
+                radius_km: 24_622,
+                distance_km: 85_000,
+            },
+            CanopyBodyProjection {
+                id: "triton".to_owned(),
+                label: "TRITON".to_owned(),
+                bearing_deg: 26,
+                pitch_deg: 5,
+                radius_px: 20,
+                radius_km: 1_353,
+                distance_km: 42_000,
+            },
+            CanopyBodyProjection {
+                id: "sun".to_owned(),
+                label: "SOL".to_owned(),
+                bearing_deg: 180,
+                pitch_deg: 2,
+                radius_px: 6,
+                radius_km: 696_340,
+                distance_km: 4_495_000_000,
+            },
+        ]
+    } else if lower.contains("saturn") || lower.contains("enceladus") {
+        vec![
+            CanopyBodyProjection {
+                id: "saturn".to_owned(),
+                label: "SATURN".to_owned(),
+                bearing_deg: 0,
+                pitch_deg: -3,
+                radius_px: 46,
+                radius_km: 58_232,
+                distance_km: 140_000,
+            },
+            CanopyBodyProjection {
+                id: "enceladus".to_owned(),
+                label: "ENCELADUS".to_owned(),
+                bearing_deg: 24,
+                pitch_deg: 4,
+                radius_px: 16,
+                radius_km: 252,
+                distance_km: 35_000,
+            },
+            CanopyBodyProjection {
+                id: "sun".to_owned(),
+                label: "SOL".to_owned(),
+                bearing_deg: 180,
+                pitch_deg: 2,
+                radius_px: 8,
+                radius_km: 696_340,
+                distance_km: 1_430_000_000,
+            },
+        ]
+    } else if lower.contains("jupiter")
+        || lower.contains("europa")
+        || lower.contains("callisto")
+        || lower.contains("ganymede")
+    {
+        vec![
+            CanopyBodyProjection {
+                id: "jupiter".to_owned(),
+                label: "JUPITER".to_owned(),
+                bearing_deg: 0,
+                pitch_deg: -4,
+                radius_px: 48,
+                radius_km: 69_911,
+                distance_km: 180_000,
+            },
+            CanopyBodyProjection {
+                id: "europa".to_owned(),
+                label: "EUROPA".to_owned(),
+                bearing_deg: 22,
+                pitch_deg: 4,
+                radius_px: 18,
+                radius_km: 1_560,
+                distance_km: 45_000,
+            },
+            CanopyBodyProjection {
+                id: "sun".to_owned(),
+                label: "SOL".to_owned(),
+                bearing_deg: 180,
+                pitch_deg: 2,
+                radius_px: 10,
+                radius_km: 696_340,
+                distance_km: 778_500_000,
+            },
+        ]
+    } else if lower.contains("phobos") || lower.contains("mars") {
+        vec![
+            CanopyBodyProjection {
+                id: "mars".to_owned(),
+                label: "MARS".to_owned(),
+                bearing_deg: 10,
+                pitch_deg: -5,
+                radius_px: 38,
+                radius_km: 3_390,
+                distance_km: 9_376,
+            },
+            CanopyBodyProjection {
+                id: "phobos".to_owned(),
+                label: "PHOBOS".to_owned(),
+                bearing_deg: 342,
+                pitch_deg: 4,
+                radius_px: 18,
+                radius_km: 11,
+                distance_km: 120,
+            },
+            CanopyBodyProjection {
+                id: "sun".to_owned(),
+                label: "SOL".to_owned(),
+                bearing_deg: 180,
+                pitch_deg: 2,
+                radius_px: 14,
+                radius_km: 696_340,
+                distance_km: 227_900_000,
+            },
+        ]
+    } else {
+        vec![
+            CanopyBodyProjection {
+                id: "ceres".to_owned(),
+                label: "CERES".to_owned(),
+                bearing_deg: 12,
+                pitch_deg: -4,
+                radius_px: 28,
+                radius_km: 473,
+                distance_km: 4_500,
+            },
+            CanopyBodyProjection {
+                id: "jupiter".to_owned(),
+                label: "JUPITER".to_owned(),
+                bearing_deg: 72,
+                pitch_deg: 3,
+                radius_px: 14,
+                radius_km: 69_911,
+                distance_km: 360_000_000,
+            },
+            CanopyBodyProjection {
+                id: "sun".to_owned(),
+                label: "SOL".to_owned(),
+                bearing_deg: 180,
+                pitch_deg: 2,
+                radius_px: 12,
+                radius_km: 696_340,
+                distance_km: 414_000_000,
+            },
+        ]
+    }
+}
+
 /// A Tier-2 **Local Space Bubble** anchored at an orbital site or encounter point (`D-35-3`, `D-35-5`).
 #[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize)]
 pub struct LocalSpaceBubble {
@@ -718,13 +981,14 @@ pub struct LocalSpaceBubble {
     /// Whether the bubble is frozen due to a W-clock outage (`Q-CF-33`).
     pub outage_frozen: bool,
     pub ships: BTreeMap<String, SpaceShipState>,
-    #[serde(default, with = "vec_tuple_map")]
-    pub relations: BTreeMap<(SpacePartyId, SpacePartyId), SpaceRelation>,
     /// Canonical kernel party relation books (`D-35-1`, `D-35-11`, `Q-CF-5`–`Q-CF-8`).
     #[serde(default)]
     pub party_relations: crate::arena::party::Relations,
     pub torpedoes: Vec<InFlightTorpedo>,
     pub railgun_slugs: Vec<InFlightSlug>,
+    /// Celestial bodies visible in the bridge canopy (`SF.R13`, `SF.R16`, `D-35-15`).
+    #[serde(default)]
+    pub bodies: Vec<CanopyBodyProjection>,
     next_ordnance_id: u64,
 }
 
@@ -737,18 +1001,20 @@ impl LocalSpaceBubble {
         title: impl Into<String>,
         ic_timestamp_s: i64,
     ) -> Self {
+        let site_id = site_id.into();
+        let bodies = default_canopy_bodies_for_site(&site_id);
         Self {
             id: BubbleId(id.into()),
-            site_id: site_id.into(),
+            site_id,
             title: title.into(),
             wall_elapsed_ms: 0,
             ic_timestamp_s,
             outage_frozen: false,
             ships: BTreeMap::new(),
-            relations: BTreeMap::new(),
             party_relations: crate::arena::party::Relations::new(),
             torpedoes: Vec::new(),
             railgun_slugs: Vec::new(),
+            bodies,
             next_ordnance_id: 1,
         }
     }
@@ -766,8 +1032,6 @@ impl LocalSpaceBubble {
         party_b: SpacePartyId,
         relation: SpaceRelation,
     ) {
-        self.relations.insert((party_a, party_b), relation);
-        self.relations.insert((party_b, party_a), relation);
         let pa = party_a.to_party_id();
         let pb = party_b.to_party_id();
         self.party_relations.admit(pa);
@@ -778,7 +1042,6 @@ impl LocalSpaceBubble {
                     .mark(pa, pb, Some(crate::arena::party::Mark::Friendly));
                 self.party_relations
                     .mark(pb, pa, Some(crate::arena::party::Mark::Friendly));
-                self.party_relations.befriend(pa, pb);
             }
             SpaceRelation::Hostile => {
                 self.party_relations
@@ -798,9 +1061,6 @@ impl LocalSpaceBubble {
     pub fn party_relation(&self, party_a: SpacePartyId, party_b: SpacePartyId) -> SpaceRelation {
         if party_a == party_b {
             return SpaceRelation::Friendly;
-        }
-        if let Some(&rel) = self.relations.get(&(party_a, party_b)) {
-            return rel;
         }
         match self
             .party_relations
@@ -968,17 +1228,55 @@ impl LocalSpaceBubble {
         } else {
             ship.max_accel_mps2
         };
-        if requested_mag > max_a && requested_mag > 0 {
+        let next_thrust = if requested_mag > max_a && requested_mag > 0 {
             let max_i128 = i128::from(max_a);
             let mag_i128 = i128::from(requested_mag);
-            ship.thrust_mps2 = [
+            [
                 ((i128::from(clamped[0]) * max_i128) / mag_i128) as i64,
                 ((i128::from(clamped[1]) * max_i128) / mag_i128) as i64,
                 ((i128::from(clamped[2]) * max_i128) / mag_i128) as i64,
-            ];
+            ]
         } else {
-            ship.thrust_mps2 = clamped;
+            clamped
+        };
+        let actual_mag = isqrt_i128(
+            (next_thrust[0] as i128).pow(2)
+                + (next_thrust[1] as i128).pow(2)
+                + (next_thrust[2] as i128).pow(2),
+        ) as i64;
+        if actual_mag > 0
+            && !force_into_reserve
+            && ship.delta_v_mps.saturating_sub(actual_mag) <= ship.return_reserve_dv_mps
+        {
+            return Err(SpaceCombatEvent::TankReserveWarning {
+                ship_id: ship.id.clone(),
+                remaining_dv_mps: ship.delta_v_mps,
+                return_reserve_dv_mps: ship.return_reserve_dv_mps,
+            });
         }
+        if actual_mag > 0 && ship.thrust_mps2 != next_thrust {
+            let law = crate::definitions::logistics::DriveLaw::Flip {
+                accel_mg: ship.rated_accel_mg,
+                exhaust_kms: ship.exhaust_kms.max(1),
+            };
+            let dry_kg = u64::from(ship.dry_mass_t).saturating_mul(1_000);
+            let payload_kg = ship
+                .non_prop_payload_kg
+                .saturating_add(u64::from(ship.propellant_kg));
+            let dv_u32 = u32::try_from(actual_mag).unwrap_or(1).max(1);
+            let burn_kg =
+                crate::port::passage::burn_kg_for_law_dv(&law, dry_kg, payload_kg, dv_u32)
+                    .unwrap_or(1)
+                    .max(1);
+            ship.propellant_kg = ship
+                .propellant_kg
+                .saturating_sub(u32::try_from(burn_kg).unwrap_or(u32::MAX));
+            ship.delta_v_mps = (ship.delta_v_mps - actual_mag).max(0);
+            ship.vel_mmps[0] = ship.vel_mmps[0].saturating_add(next_thrust[0] * 1_000);
+            ship.vel_mmps[1] = ship.vel_mmps[1].saturating_add(next_thrust[1] * 1_000);
+            ship.vel_mmps[2] = ship.vel_mmps[2].saturating_add(next_thrust[2] * 1_000);
+        }
+        ship.thrust_mps2 = next_thrust;
         Ok(())
     }
 
@@ -1340,10 +1638,29 @@ impl LocalSpaceBubble {
                 ship.vel_mmps[1] = ship.vel_mmps[1].saturating_add(ay * step_i64);
                 ship.vel_mmps[2] = ship.vel_mmps[2].saturating_add(az * step_i64);
 
-                let dv_spent_mps = ((accel_mag * step_i64) / 1_000).max(0);
-                ship.delta_v_mps = (ship.delta_v_mps - dv_spent_mps).max(0);
-                let fuel_burned = ((accel_mag as u32).saturating_mul(step_ms) / 2_500).max(1);
-                ship.propellant_kg = ship.propellant_kg.saturating_sub(fuel_burned);
+                let dv_mmps = accel_mag.saturating_mul(step_i64);
+                let total_dv_mmps = ship.dv_rem_mmps.saturating_add(dv_mmps);
+                let dv_spent_mps = (total_dv_mmps / 1_000).max(0);
+                ship.dv_rem_mmps = total_dv_mmps % 1_000;
+                if dv_spent_mps > 0 {
+                    ship.delta_v_mps = (ship.delta_v_mps - dv_spent_mps).max(0);
+                    let law = crate::definitions::logistics::DriveLaw::Flip {
+                        accel_mg: ship.rated_accel_mg,
+                        exhaust_kms: ship.exhaust_kms.max(1),
+                    };
+                    let dry_kg = u64::from(ship.dry_mass_t).saturating_mul(1_000);
+                    let payload_kg = ship
+                        .non_prop_payload_kg
+                        .saturating_add(u64::from(ship.propellant_kg));
+                    let dv_u32 = u32::try_from(dv_spent_mps).unwrap_or(1).max(1);
+                    let fuel_burned =
+                        crate::port::passage::burn_kg_for_law_dv(&law, dry_kg, payload_kg, dv_u32)
+                            .unwrap_or(1)
+                            .max(1);
+                    ship.propellant_kg = ship
+                        .propellant_kg
+                        .saturating_sub(u32::try_from(fuel_burned).unwrap_or(u32::MAX));
+                }
                 if ship.propellant_kg == 0 || ship.delta_v_mps == 0 {
                     ship.thrust_mps2 = [0, 0, 0];
                 }
@@ -1468,19 +1785,33 @@ impl LocalSpaceBubble {
             let rel_vz = ((torp.vel_mmps[2] - target_vel[2]) / 1_000) as i128;
             let closing_mps =
                 isqrt_i128(rel_vx * rel_vx + rel_vy * rel_vy + rel_vz * rel_vz).max(100) as i64;
-            torp.tti_s = (new_dist_m / closing_mps).max(0);
+            torp.tti_s = if torp.remaining_dv_mmps > 0 && torp.accel_mps2 > 0 {
+                let v = i128::from(closing_mps);
+                let a = i128::from(torp.accel_mps2);
+                let d = i128::from(new_dist_m.max(0));
+                let disc = v.saturating_mul(v).saturating_add(2 * a * d);
+                ((isqrt_i128(disc) - v) / a).max(0) as i64
+            } else {
+                (new_dist_m / closing_mps).max(0)
+            };
 
             // Check automatic defensive laser & PDC interception across target and escorting ships
+            let shooter_party = self.ships.get(&torp.shooter_id).map(|s| s.party);
             let defender_ids: Vec<String> = self
                 .ships
                 .values()
                 .filter(|s| {
-                    s.id != torp.shooter_id
-                        && s.status == HullStatus::Operational
-                        && matches!(
-                            self.party_relation(s.party, target_party),
-                            SpaceRelation::Friendly | SpaceRelation::Inspecting
-                        )
+                    if s.id == torp.shooter_id || s.status != HullStatus::Operational {
+                        return false;
+                    }
+                    let rel_to_target = self.party_relation(s.party, target_party);
+                    matches!(
+                        rel_to_target,
+                        SpaceRelation::Friendly | SpaceRelation::Inspecting
+                    ) || (rel_to_target == SpaceRelation::Neutral
+                        && shooter_party.is_some_and(|sp| {
+                            self.party_relation(s.party, sp) == SpaceRelation::Hostile
+                        }))
                 })
                 .map(|s| s.id.clone())
                 .collect();
@@ -1771,6 +2102,11 @@ impl LocalSpaceBubble {
 
         let mut torpedoes = Vec::with_capacity(self.torpedoes.len());
         for torp in &self.torpedoes {
+            if obs.is_some_and(|o| {
+                !super::commands::is_bubble_torpedo_detected(o, torp, self.ic_timestamp_s)
+            }) {
+                continue;
+            }
             let target_pos = self
                 .ships
                 .get(&torp.target_id)
@@ -1837,7 +2173,12 @@ impl LocalSpaceBubble {
             contacts.push(json!({
                 "id": ship.id,
                 "label": ship.callsign,
-                "kind": "ship",
+                "kind": if matches!(ship.status, HullStatus::DisabledDerelict { .. }) {
+                    "derelict"
+                } else {
+                    "ship"
+                },
+                "pixel_model": ship.pixel_model(),
                 "relation": self.party_relation(obs.party, ship.party).as_feed_str(),
                 "locked": locked,
                 "burning": ship.is_burning(),
@@ -1847,6 +2188,46 @@ impl LocalSpaceBubble {
                 "lead_pitch_deg": lead_p,
             }));
         }
+
+        for torp in &self.torpedoes {
+            if !super::commands::is_bubble_torpedo_detected(obs, torp, self.ic_timestamp_s) {
+                continue;
+            }
+            let rel_pos = [
+                torp.pos_m[0] - obs.pos_m[0],
+                torp.pos_m[1] - obs.pos_m[1],
+                torp.pos_m[2] - obs.pos_m[2],
+            ];
+            let (bearing_deg, pitch_c) = vector_to_bearing_pitch(rel_pos);
+            contacts.push(json!({
+                "id": format!("torp.{}", torp.id),
+                "label": format!("TORP-{}", torp.id),
+                "kind": "torpedo",
+                "pixel_model": "torpedo",
+                "relation": if torp.shooter_id == observer_ship_id {
+                    "friend"
+                } else {
+                    "hostile"
+                },
+                "locked": false,
+                "burning": torp.remaining_dv_mmps > 0,
+                "bearing_deg": bearing_deg,
+                "pitch_deg": pitch_c,
+                "tti_s": torp.tti_s,
+            }));
+        }
+
+        let bodies_json: Vec<Value> = if self.bodies.is_empty() {
+            default_canopy_bodies_for_site(&self.site_id)
+                .iter()
+                .map(CanopyBodyProjection::to_feed_json)
+                .collect()
+        } else {
+            self.bodies
+                .iter()
+                .map(CanopyBodyProjection::to_feed_json)
+                .collect()
+        };
 
         json!({
             "callsign": obs.callsign,
@@ -1861,6 +2242,7 @@ impl LocalSpaceBubble {
             "hull_pct": obs.hull_integrity_pct(),
             "pdc_mode": if obs.pdc_auto { "AUTO" } else { "MAN" },
             "emcon": obs.emcon.code_str(),
+            "bodies": bodies_json,
             "contacts": contacts,
         })
     }

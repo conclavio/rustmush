@@ -1,0 +1,165 @@
+{
+  "manifest": {
+    "id": "tacsim.pack.corvette",
+    "version": 1,
+    "kind": "rules_definition",
+    "digest": "b0dea8c6de429c9577f2e4e35ba29f399aa31bd35fae703a0b9bbde2e9b5a140",
+    "requires": []
+  },
+  "entries": {
+    "tacsim.unit.corvette": {
+      "kind": "unit",
+      "def": {
+        "label": "Corvette-class customs patrol cutter",
+        "class": "capital",
+        "sections": [
+          {
+            "id": "hull",
+            "facets": [
+              { "id": "front", "armor": 120 },
+              { "id": "left", "armor": 80 },
+              { "id": "right", "armor": 80 },
+              { "id": "rear", "armor": 60 },
+              { "id": "top", "armor": 60 }
+            ],
+            "internals": 600,
+            "consequences": [{ "kind": "destroy_unit" }]
+          },
+          {
+            "id": "hold",
+            "facets": [
+              { "id": "left", "armor": 60 },
+              { "id": "right", "armor": 60 },
+              { "id": "top", "armor": 50 }
+            ],
+            "internals": 400,
+            "consequences": [{ "kind": "slow", "percent": 75 }]
+          },
+          {
+            "id": "drive",
+            "facets": [],
+            "struck_through": { "section": "hull", "facet": "rear" },
+            "internals": 250,
+            "consequences": [{ "kind": "disable_motion" }]
+          }
+        ],
+        "components": [
+          {
+            "id": "power",
+            "section": "hull",
+            "role": {
+              "kind": "power",
+              "capability": "tacsim.power",
+              "states": ["off", "starting", "online"],
+              "initial": "online"
+            }
+          }
+        ],
+        "mobility": {
+          "tracked": {
+            "max_speed_cms": 0,
+            "accel_cms2": 100,
+            "brake_cms2": 200,
+            "turn_rate_mdeg_s": 1000,
+            "reverse_factor_pct": 0
+          }
+        },
+        "facets": [
+          { "band": "front", "sections": [{ "section": "hull", "weight": 100 }] },
+          { "band": "left", "sections": [{ "section": "hull", "weight": 50 }, { "section": "hold", "weight": 50 }] },
+          { "band": "right", "sections": [{ "section": "hull", "weight": 50 }, { "section": "hold", "weight": 50 }] },
+          { "band": "rear", "sections": [{ "section": "hull", "weight": 50 }, { "section": "drive", "weight": 50 }] },
+          { "band": "top", "sections": [{ "section": "hull", "weight": 40 }, { "section": "hold", "weight": 60 }] }
+        ],
+        "silhouettes": [
+          { "band": "front", "width_cm": 1800, "height_cm": 1600 },
+          { "band": "left", "width_cm": 6000, "height_cm": 1600 },
+          { "band": "right", "width_cm": 6000, "height_cm": 1600 },
+          { "band": "rear", "width_cm": 1800, "height_cm": 1600 },
+          { "band": "top", "width_cm": 6000, "height_cm": 1800 }
+        ],
+        "sensor_height_cm": 1500,
+        "logistics": {
+          "dry_mass_t": 240,
+          "stowage": {
+            "cargo": { "accepts": ["stow.bulk"], "limits": { "si.mass_kg": 100000, "si.volume_l": 120000 } },
+            "propellant": { "accepts": ["stow.propellant"], "limits": { "si.mass_kg": 80000 } },
+            "provisions": { "accepts": ["stow.provisions"], "limits": { "si.mass_kg": 480, "si.volume_l": 1200 } }
+          },
+          "berths": 2,
+          "occupant_allowance_kg": 100,
+          "payload_ceiling_kg": 181000,
+          "drive": { "class": "picket_cutter", "law": { "flip": { "accel_mg": 50, "exhaust_kms": 6000 } } }
+        },
+        "interior": {
+          "space": "airlock",
+          "store": "stowage",
+          "berths_slot": { "id": "berths", "maximum_items": 2 },
+          "rooms": [
+            {
+              "id": "airlock",
+              "name": "Cutter Airlock",
+              "kind": "walkable",
+              "short_desc": "A two-place boarding lock with naval inspection stencils.",
+              "desc": "A two-place boarding lock with naval inspection stencils and a pressure gauge."
+            },
+            {
+              "id": "passage",
+              "name": "Cutter Spine",
+              "kind": "walkable",
+              "short_desc": "A narrow armoured spine linking lock, bridge, quarters, and hold.",
+              "desc": "A narrow armoured spine linking lock, bridge, quarters, and hold."
+            },
+            {
+              "id": "bridge",
+              "name": "Picket Bridge",
+              "kind": "walkable",
+              "short_desc": "Two acceleration couches face customs inspection and fire-control slates.",
+              "desc": "Two acceleration couches face customs inspection and fire-control slates."
+            },
+            {
+              "id": "crew",
+              "name": "Watch Bunkroom",
+              "kind": "walkable",
+              "short_desc": "Two watch bunks and a compact ration locker.",
+              "desc": "Two watch bunks and a compact ration locker."
+            },
+            {
+              "id": "hold",
+              "name": "Ordnance & Prize Hold",
+              "kind": "walkable",
+              "short_desc": "A compact hold framed for customs seizure cages and magazine reloads.",
+              "desc": "A compact hold framed for customs seizure cages and magazine reloads."
+            },
+            {
+              "id": "engineering",
+              "name": "Drive Crawlway",
+              "kind": "walkable",
+              "short_desc": "Reaction-mass feed lines and high-thrust trim valves.",
+              "desc": "Reaction-mass feed lines and high-thrust trim valves."
+            },
+            {
+              "id": "stowage",
+              "name": "Cutter Stowage",
+              "kind": "store",
+              "desc": "Sealed stores frames and propellant tankage behind the bulkhead plating."
+            }
+          ],
+          "exits": [
+            { "from": "airlock", "to": "passage", "names": ["Inner Hatch <I>;inner;in;passage", "Airlock <A>;airlock;forward"] },
+            { "from": "passage", "to": "bridge", "names": ["Bridge <U>;bridge;up;u", "Passage <D>;passage;down;d"] },
+            { "from": "passage", "to": "crew", "names": ["Crew Compartment <C>;crew;galley;bunks;aft", "Passage <P>;passage;out;forward"] },
+            { "from": "passage", "to": "hold", "names": ["Cargo Hold <H>;hold;down;d", "Passage <U>;passage;up;u"] },
+            { "from": "hold", "to": "engineering", "names": ["Engineering <E>;engineering;eng;down;d", "Hold <H>;hold;up;u"] }
+          ],
+          "gauges": {
+            "cargo": ["hold", "passage", "bridge"],
+            "propellant": ["engineering", "passage", "bridge"],
+            "provisions": ["crew", "passage", "bridge"]
+          }
+        },
+        "note": "SF.R12: Armed customs patrol corvette / interdiction cutter (class capital, never fielded in a ground arena) with hull, hold, and drive sections matching SpaceShipState::new_corvette so NPC corvettes and interdictors check out through custody from a real UnitSpec."
+      }
+    }
+  }
+}

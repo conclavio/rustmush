@@ -24,12 +24,12 @@ use crate::bay_gc8::{
     bay_room, buy, component_id, damage, empty_magazine, in_bay, lot_record, magazine, mint,
     order_of, provenance, put, section_id, unit, worn, wreck_section,
 };
-use crate::driving::{
+use crate::driving_rig::{
     Rig, at_counter, cid, command, drain, fire, handles, hold_pool, hold_vault_of, land,
     land_quietly, pilot, prospector, reseed_typed, rigs_of, run, seed_hold, seed_lot, station_room,
     stocked, store, to_ic,
 };
-use crate::field_host::site_record_at;
+use crate::field_host_rig::site_record_at;
 
 const CERES: &str = "ceres_port";
 /// Ceres' workshop room (C14, Occator's).

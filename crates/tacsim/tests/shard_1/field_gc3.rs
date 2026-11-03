@@ -26,60 +26,19 @@ use tacsim::field::CrewLocation;
 use tacsim::surface::black_box::BlackBoxLine;
 use tacsim::surface::site_record::{GroundKind, KnownWhat};
 
-use crate::driving::{
+use crate::driving_rig::{
     command, land, launched, launched_composed, on_pad, on_pad_as, prospector, record_of, run,
     staff_hand, stocked_tuned, to_cell, warm,
 };
-use crate::field_host::{
+use crate::field_host_rig::set_section;
+use crate::field_host_rig::{
     armed, egress, frame, seat, second, second_composed, site_record, task, tune, until,
     until_composed, weapon_of,
 };
 
-/// **Write `condition` on `section` of `unit`, and its internals to `internals`** (or leave them
-/// when `None`): the staff fixture standing in for damage.
-pub(crate) fn set_section(
-    rig: &mut crate::driving::Rig,
-    unit: ObjId,
-    section: &str,
-    condition: Option<&str>,
-    internals: Option<i64>,
-) {
-    staff_hand(rig, |ctx| {
-        let cells = mush_tactics::module::unit_of(ctx.w, unit)
-            .expect("the unit")
-            .clone();
-        let id = mush_tactics::SectionId::new(section).expect("a section id");
-        assert!(cells.section(&id).is_some(), "#{} has a {section}", unit.0);
-        let mut ops = Vec::new();
-        if let Some(condition) = condition {
-            ops.push(mush_tactics::UnitMutationOp::SetSectionCondition {
-                section: id.clone(),
-                condition: mush_tactics::ConditionId::new(condition).expect("a condition"),
-            });
-        }
-        if let Some(value) = internals {
-            ops.push(mush_tactics::UnitMutationOp::SetCell {
-                addr: mush_tactics::CellAddr::Section {
-                    section: id,
-                    cell: mush_tactics::CellId::new(tacsim::definitions::unit::INTERNALS_CELL)
-                        .expect("a cell id"),
-                },
-                value,
-            });
-        }
-        let plan = mush_tactics::UnitMutationPlan::new(
-            ops,
-            None,
-            Some(smol_str::SmolStr::new_static("test:gc3-damage")),
-        )
-        .expect("a plan");
-        mush_tactics::module::apply_plan(ctx, unit, &plan).expect("applied");
-    });
-}
-
 /// **Strip `unit`'s armour to its floor** (CF.3's fixture), so the next rounds that land are
 /// section damage.
-fn unarmoured(rig: &mut crate::driving::Rig, unit: ObjId) {
+fn unarmoured(rig: &mut crate::driving_rig::Rig, unit: ObjId) {
     staff_hand(rig, |ctx| {
         let cells = mush_tactics::module::unit_of(ctx.w, unit)
             .expect("the unit")
@@ -109,12 +68,12 @@ fn unarmoured(rig: &mut crate::driving::Rig, unit: ObjId) {
 }
 
 /// Whether the field has demoted: no task, and the record's promotion closed.
-fn demoted(rig: &mut crate::driving::Rig) -> bool {
+fn demoted(rig: &mut crate::driving_rig::Rig) -> bool {
     task(rig).is_none() && site_record(rig).is_some_and(|record| record.open_field().is_none())
 }
 
 /// `hull`'s black box, its open tail.
-pub(crate) fn black_box(rig: &crate::driving::Rig, hull: ObjId) -> Vec<BlackBoxLine> {
+pub(crate) fn black_box(rig: &crate::driving_rig::Rig, hull: ObjId) -> Vec<BlackBoxLine> {
     rig.tw
         .world()
         .module_state::<tacsim::TacsimStore>()
@@ -127,7 +86,7 @@ pub(crate) fn black_box(rig: &crate::driving::Rig, hull: ObjId) -> Vec<BlackBoxL
 }
 
 /// Whether `unit` is a wreck on its own record.
-fn wrecked(rig: &crate::driving::Rig, unit: ObjId) -> bool {
+fn wrecked(rig: &crate::driving_rig::Rig, unit: ObjId) -> bool {
     mush_tactics::module::unit_of(rig.tw.world(), unit).is_some_and(tacsim::arena::damage::is_wreck)
 }
 
@@ -333,7 +292,7 @@ async fn gc3_a_carrier_whose_hull_falls_strands_its_crew_and_wrecks_its_bay() {
 
     // B locks the carrier on its pad and fires until its hull falls.
     let gun = weapon_of(&rig, hull_b);
-    let pad_contact = |rig: &crate::driving::Rig| {
+    let pad_contact = |rig: &crate::driving_rig::Rig| {
         frame(rig, b).and_then(|frame| {
             frame
                 .contacts
@@ -392,7 +351,7 @@ async fn gc3_a_carrier_whose_hull_falls_strands_its_crew_and_wrecks_its_bay() {
     assert_eq!(
         tacsim::field::crew_location(rig.tw.world(), a),
         Some(CrewLocation::Stranded {
-            site: crate::driving::cid(crate::driving::AHUNA),
+            site: crate::driving_rig::cid(crate::driving_rig::AHUNA),
             unit: carrier,
         }),
         "A, aboard the wreck, is stranded"

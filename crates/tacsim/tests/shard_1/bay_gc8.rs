@@ -34,7 +34,7 @@ use mush_tactics::{CellAddr, UnitMutationOp, UnitMutationPlan};
 use tacsim::port::HullRow;
 use tacsim::port::bay_work::{BayHullState, FacilityClass, OrderStatus};
 
-use crate::driving::{
+use crate::driving_rig::{
     Rig, at_counter, board, cid, drain, file_and_launch, fire, hold_pool, hold_vault_of, land_all,
     land_quietly, load, port_map, prospector, rigs_of, run, seed_hold, staff_hand, station_room,
     stocked, store, to_ic, typed,
@@ -247,12 +247,12 @@ pub(crate) fn put(rig: &mut Rig, who: ObjId, room: ObjId, interior: bool) {
 
 /// The hull's bay room.
 pub(crate) fn bay_room(row: &HullRow) -> ObjId {
-    ObjId(row.rooms[&crate::driving::cid("bay")])
+    ObjId(row.rooms[&crate::driving_rig::cid("bay")])
 }
 
 pub(crate) fn in_bay(rig: &Rig, tv: ObjId, room: ObjId) -> bool {
     matches!(
-        crate::driving::parent(&rig.tw, tv),
+        crate::driving_rig::parent(&rig.tw, tv),
         mush_sim::data::SpatialParent::Interior { space, .. } if space == room
     )
 }
@@ -516,7 +516,7 @@ async fn gc8_who_may_have_a_hull_worked_on() {
         }],
     );
     // A stranger in the bay holds no right.
-    let stranger = crate::driving::pilot(&mut rig, "Stranger", 2);
+    let stranger = crate::driving_rig::pilot(&mut rig, "Stranger", 2);
     put(&mut rig, stranger, bay, true);
     let quote = run(&mut rig.tw, stranger, &format!("+bay #{}", escort.0));
     assert!(quote.contains("You hold no right"), "{quote}");
@@ -538,10 +538,10 @@ async fn gc8_who_may_have_a_hull_worked_on() {
         tacsim::port::bay_work::Act::Refit
     ));
     // A holder of Occator's `unit.maintain_refit`: the grant is read through Org.
-    let mechanic = crate::driving::pilot(&mut rig, "Mechanic", 3);
+    let mechanic = crate::driving_rig::pilot(&mut rig, "Mechanic", 3);
     let enrolled = run(&mut rig.tw, mechanic, "+coop/enrol Grey Heron");
     assert!(enrolled.contains("now the Grey Heron"), "{enrolled}");
-    let occator = port_map(&rig.tw, "ceres_port").orgs[&crate::driving::cid("occator")].org;
+    let occator = port_map(&rig.tw, "ceres_port").orgs[&crate::driving_rig::cid("occator")].org;
     let granted = run(
         &mut rig.tw,
         GOD,
@@ -576,7 +576,7 @@ async fn gc8_who_may_have_a_hull_worked_on() {
 
 /// **A mechanic with Occator's `unit.maintain_refit`**, enrolled, funded, standing in `room`.
 pub(crate) fn mechanic(rig: &mut Rig, room: ObjId) -> ObjId {
-    let mechanic = crate::driving::pilot(rig, "Mechanic", 3);
+    let mechanic = crate::driving_rig::pilot(rig, "Mechanic", 3);
     let enrolled = run(&mut rig.tw, mechanic, "+coop/enrol Grey Heron");
     assert!(enrolled.contains("now the Grey Heron"), "{enrolled}");
     let occator = port_map(&rig.tw, "ceres_port").orgs[&cid("occator")].org;

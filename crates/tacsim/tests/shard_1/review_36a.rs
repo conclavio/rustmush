@@ -30,15 +30,15 @@ use mush_org::PrincipalId;
 use tacsim::surface::salvage::{ClaimSeam, SalvageCustody};
 use tacsim::surface::site_record::SiteRecord;
 
-use crate::driving::{
+use crate::driving_rig::{
     AHUNA, Rig, cid, command, hold_pool, launched, launched_at, on_pad, on_pad_as, on_pad_as_at,
     pilot, port_map, ramp_at, run, seed_pool, seed_typed, stocked_tuned, store, to_cell,
     to_cell_on,
 };
 use crate::field_gc4::{powerless, seconds_until};
 use crate::field_gc5::skip_to_ic;
-use crate::field_host::{armed_on, seat, second, site_record, site_record_at, tune};
-use crate::site_record::{staff, staff_member};
+use crate::field_host_rig::{armed_on, seat, second, site_record, site_record_at, tune};
+use crate::site_record_rig::{staff, staff_member};
 
 /// Urvara Reach's port entry.
 pub(crate) const URVARA: &str = "urvara_port";
@@ -103,7 +103,7 @@ pub(crate) fn contract(rig: &Rig, id: u64) -> mush_economy::EconomicContract {
 pub(crate) fn go(rig: &mut Rig, who: ObjId, line: &str) -> String {
     let (out, queued) = command(rig, who, line);
     assert_eq!(queued.len(), 1, "{line}: one submission: {out}");
-    crate::driving::land(rig, &queued[0]).unwrap_or_else(|e| panic!("{line}: {e}"));
+    crate::driving_rig::land(rig, &queued[0]).unwrap_or_else(|e| panic!("{line}: {e}"));
     out
 }
 
@@ -145,7 +145,11 @@ impl Stage {
             .iter()
             .filter(|(id, unit)| **id != tug && unit.schema() == &schema)
             .map(|(id, _)| *id)
-            .filter(|id| crate::driving::store(&rig.tw).tv_lease_on(*id).is_none())
+            .filter(|id| {
+                crate::driving_rig::store(&rig.tw)
+                    .tv_lease_on(*id)
+                    .is_none()
+            })
             .take(2)
             .collect();
         let [near, far] = spares.as_slice() else {
@@ -227,7 +231,7 @@ impl Stage {
         );
         launched_at(&mut rig, URVARA, o, tug);
         let ramp = {
-            let (x, y, _) = crate::driving::ramp_at(&rig.tw, URVARA);
+            let (x, y, _) = crate::driving_rig::ramp_at(&rig.tw, URVARA);
             (x.div_euclid(1_000), y.div_euclid(1_000))
         };
         Stage {
@@ -584,7 +588,7 @@ fn p0_7_a_lost_loaded_finish_still_lands_after_the_carrier_has_gone() {
     // The finish lands at its due instant; its submission is drained and lost.
     let mut lost = false;
     for _ in 0..40 {
-        let (_, queued) = crate::driving::fire(&mut stage.rig);
+        let (_, queued) = crate::driving_rig::fire(&mut stage.rig);
         if queued
             .iter()
             .any(|submit| submit.action.key().id.as_str() == tacsim::surface::tow::TOW_ACTION)
@@ -606,7 +610,7 @@ fn p0_7_a_lost_loaded_finish_still_lands_after_the_carrier_has_gone() {
     assert_eq!(residue.tows.towing(tug).map(|op| op.casualty()), Some(far));
     assert!(residue.tows.act_of(tug).is_some(), "the act is still due");
     // The carrier is gone from the pad before the next tick.
-    crate::driving::staff_hand(&mut stage.rig, |ctx| {
+    crate::driving_rig::staff_hand(&mut stage.rig, |ctx| {
         mush_sim::unplace(ctx, o_carrier, "lifted").expect("the carrier lifts");
     });
     assert!(
@@ -650,11 +654,12 @@ fn p1_3_the_salvors_inspect_spam_does_not_kill_a_queued_contest() {
         inspects.extend(queued);
     }
     assert_eq!(inspects.len(), 3);
-    crate::driving::land(&mut stage.rig, &contest[0]).expect("the contest lands after the spam");
+    crate::driving_rig::land(&mut stage.rig, &contest[0])
+        .expect("the contest lands after the spam");
     for submit in &inspects {
         // O's own later inspections replaced O's earlier ones: the first two have no order
         // left to land on, the last lands.
-        let _ = crate::driving::land(&mut stage.rig, submit);
+        let _ = crate::driving_rig::land(&mut stage.rig, submit);
     }
     let row = custody(&mut stage.rig, near).expect("still in custody until the tick");
     assert_eq!(row.claim, ClaimSeam::Filed { contract: c });
@@ -768,15 +773,15 @@ fn p1_10_a_release_draining_after_a_promotion_waits() {
         90_000,
     );
     seat(&mut stage.rig, hull, t);
-    crate::driving::warm(&mut stage.rig);
+    crate::driving_rig::warm(&mut stage.rig);
     let (out, mark) = command(&mut stage.rig, t, "+field/mark E=hostile");
     assert_eq!(mark.len(), 1, "one promotion: {out}");
-    crate::driving::land(&mut stage.rig, &mark[0]).expect("the promotion lands");
+    crate::driving_rig::land(&mut stage.rig, &mark[0]).expect("the promotion lands");
     assert!(
         record(&mut stage.rig).open_field().is_some(),
         "the site is promoted"
     );
-    let refused = crate::driving::land(&mut stage.rig, &release[0])
+    let refused = crate::driving_rig::land(&mut stage.rig, &release[0])
         .expect_err("the release waits for the field");
     assert!(
         refused.contains("a field is being fought"),
@@ -874,7 +879,7 @@ fn p2_2_a_crate_the_hopper_cannot_take_is_refused_and_the_landholder_is_named() 
     );
     assert!(!out.contains("takes "), "no claim of a done deed: {out}");
     assert_eq!(queued.len(), 1, "one pickup: {out}");
-    crate::driving::land(&mut stage.rig, &queued[0]).expect("the pickup lands");
+    crate::driving_rig::land(&mut stage.rig, &queued[0]).expect("the pickup lands");
     assert_eq!(hold_pool(&mut stage.rig.tw, hopper, "metal_ore"), 2);
     let logged = record(&mut stage.rig);
     let row = logged
@@ -899,7 +904,7 @@ fn p2_2_a_crate_the_hopper_cannot_take_is_refused_and_the_landholder_is_named() 
         mush_inventory::LotId(9_602),
     );
     let refused =
-        crate::driving::land(&mut stage.rig, &queued[0]).expect_err("the hopper is now short");
+        crate::driving_rig::land(&mut stage.rig, &queued[0]).expect_err("the hopper is now short");
     assert!(refused.contains("pickup_no_room"), "{refused}");
     assert_eq!(
         hold_pool(&mut stage.rig.tw, hopper, "metal_ore"),

@@ -25,12 +25,12 @@ use mush_core::ObjId;
 use mush_org::unit_authority::{UnitCapability, UnitGrantee};
 use tacsim::arena::ledger::{EventKind, LedgerEvent};
 
-use crate::driving::{
+use crate::driving_rig::{
     RAMP, Rig, act_go, at_counter, command, file_and_launch, finish, land, land_composed, launched,
     on_ground_at, on_pad_as, on_pad_with, pilot, run, stocked_tuned, teleport, to_cell, to_ic,
     typed, warm,
 };
-use crate::field_host::{
+use crate::field_host_rig::{
     armed, egress, fragile, frame, seat, second, site_record, task, tune, until, weapon_of,
 };
 
@@ -316,8 +316,8 @@ async fn cf6c_a_leased_escort_flies_out_fights_withdraws_and_goes_back() {
     );
     let home = until(&mut rig, &mut rx, &mut lines, 60, |rig, _| {
         let due = {
-            let h = crate::driving::handles(&rig.tw);
-            crate::driving::typed(
+            let h = crate::driving_rig::handles(&rig.tw);
+            crate::driving_rig::typed(
                 &mut rig.tw,
                 &h.families.excursions,
                 &tacsim::surface::excursion::RigKey(hull),
@@ -328,7 +328,7 @@ async fn cf6c_a_leased_escort_flies_out_fights_withdraws_and_goes_back() {
             to_ic(rig, due);
         }
         matches!(
-            crate::driving::parent(&rig.tw, hull),
+            crate::driving_rig::parent(&rig.tw, hull),
             mush_sim::SpatialParent::Interior { .. }
         )
     })

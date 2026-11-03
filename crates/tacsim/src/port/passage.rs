@@ -1178,11 +1178,30 @@ pub fn burn_kg_for_dv(
     payload_kg: u64,
     dv_mps: u32,
 ) -> Result<u64, PlanError> {
+    burn_kg_for_law_dv(&drive.law, dry_kg, payload_kg, dv_mps)
+}
+
+/// Reaction mass in kilograms burned by a maneuver of `dv_mps` m/s under `law` (`SF.R4`, `SF.R11`, `D-35-6`).
+///
+/// # Errors
+///
+/// Returns [`PlanError::Overflow`] if the mass or exponential overflows.
+#[allow(
+    clippy::cast_precision_loss,
+    clippy::cast_possible_truncation,
+    clippy::cast_sign_loss
+)]
+pub fn burn_kg_for_law_dv(
+    law: &DriveLaw,
+    dry_kg: u64,
+    payload_kg: u64,
+    dv_mps: u32,
+) -> Result<u64, PlanError> {
     if dv_mps == 0 {
         return Ok(0);
     }
     let mass_kg = dry_kg.checked_add(payload_kg).ok_or(PlanError::Overflow)?;
-    match drive.law {
+    match *law {
         DriveLaw::Coast { burn_permille, .. } => {
             let grams = u128::from(mass_kg)
                 .checked_mul(u128::from(burn_permille))

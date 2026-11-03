@@ -27,13 +27,13 @@ use tacsim::surface::claim::UnlawfulKind;
 use tacsim::surface::salvage::{ClaimSeam, SalvageCustody};
 use tacsim::surface::site_record::{GroundKind, SiteRecord};
 
-use crate::driving::{
+use crate::driving_rig::{
     cid, command, launched_at, on_pad_as_at, pilot, port_map, reboot, run, seed_typed, staff_hand,
     stocked_tuned, to_cell_on,
 };
 use crate::field_gc4::{powerless, seconds_until};
-use crate::field_host::{second, site_record_at, tune};
-use crate::site_record::{staff, staff_member};
+use crate::field_host_rig::{second, site_record_at, tune};
+use crate::site_record_rig::{staff, staff_member};
 
 /// Urvara Reach's port entry.
 const URVARA: &str = "urvara_port";
@@ -49,22 +49,22 @@ fn quick(cfg: &mut tacsim::TacsimConfig) {
     cfg.recovery.claim_window_s = WINDOW;
 }
 
-fn record(rig: &mut crate::driving::Rig) -> SiteRecord {
+fn record(rig: &mut crate::driving_rig::Rig) -> SiteRecord {
     site_record_at(rig, URVARA).expect("Urvara Reach's record")
 }
 
-fn custody(rig: &mut crate::driving::Rig, hull: ObjId) -> Option<SalvageCustody> {
+fn custody(rig: &mut crate::driving_rig::Rig, hull: ObjId) -> Option<SalvageCustody> {
     record(rig).custody.into_iter().find(|row| row.hull == hull)
 }
 
-fn title(rig: &crate::driving::Rig, hull: ObjId) -> Option<PrincipalId> {
+fn title(rig: &crate::driving_rig::Rig, hull: ObjId) -> Option<PrincipalId> {
     rig.tw
         .world()
         .module_state::<EconomyStore>()
         .and_then(|e| e.snapshot().asset(hull).map(|a| a.title_owner.clone()))
 }
 
-fn contract(rig: &crate::driving::Rig, id: u64) -> mush_economy::EconomicContract {
+fn contract(rig: &crate::driving_rig::Rig, id: u64) -> mush_economy::EconomicContract {
     rig.tw
         .world()
         .module_state::<EconomyStore>()
@@ -73,27 +73,27 @@ fn contract(rig: &crate::driving::Rig, id: u64) -> mush_economy::EconomicContrac
 }
 
 /// `line` as `who`, every submission it queued landed; the reply.
-fn go(rig: &mut crate::driving::Rig, who: ObjId, line: &str) -> String {
+fn go(rig: &mut crate::driving_rig::Rig, who: ObjId, line: &str) -> String {
     let (out, queued) = command(rig, who, line);
     assert_eq!(queued.len(), 1, "{line}: one submission: {out}");
-    crate::driving::land(rig, &queued[0]).unwrap_or_else(|e| panic!("{line}: {e}"));
+    crate::driving_rig::land(rig, &queued[0]).unwrap_or_else(|e| panic!("{line}: {e}"));
     out
 }
 
 /// Move real time `secs` on, then a second of ticks.
-fn jump(rig: &mut crate::driving::Rig, secs: i64) {
+fn jump(rig: &mut crate::driving_rig::Rig, secs: i64) {
     let t = rig.tw.world().now().saturating_add(secs);
     rig.tw.set_now(t);
     let _ = second(rig);
 }
 
 /// The tug's tow on Urvara Reach.
-fn towing(rig: &mut crate::driving::Rig, tug: ObjId) -> Option<ObjId> {
+fn towing(rig: &mut crate::driving_rig::Rig, tug: ObjId) -> Option<ObjId> {
     record(rig).tows.towing(tug).map(|op| op.casualty())
 }
 
 /// O's rig takes `casualty` in tow from beside it.
-fn attach(rig: &mut crate::driving::Rig, who: ObjId, tug: ObjId, casualty: ObjId) {
+fn attach(rig: &mut crate::driving_rig::Rig, who: ObjId, tug: ObjId, casualty: ObjId) {
     let out = go(rig, who, &format!("+tv/1 tow #{} go", casualty.0));
     assert!(
         seconds_until(rig, 120, |rig| towing(rig, tug) == Some(casualty)),
@@ -102,7 +102,7 @@ fn attach(rig: &mut crate::driving::Rig, who: ObjId, tug: ObjId, casualty: ObjId
 }
 
 /// O's rig, beside its own ramp, loads its tow into O's carrier.
-fn load(rig: &mut crate::driving::Rig, who: ObjId, tug: ObjId, casualty: ObjId) {
+fn load(rig: &mut crate::driving_rig::Rig, who: ObjId, tug: ObjId, casualty: ObjId) {
     let out = go(rig, who, "+tv/1 load go");
     assert!(
         seconds_until(rig, 120, |rig| custody(rig, casualty).is_some()
@@ -139,7 +139,11 @@ async fn gc6_story_b_the_contested_salvage_on_urvara_reach() {
         .iter()
         .filter(|(id, unit)| **id != tug && unit.schema() == &schema)
         .map(|(id, _)| *id)
-        .filter(|id| crate::driving::store(&rig.tw).tv_lease_on(*id).is_none())
+        .filter(|id| {
+            crate::driving_rig::store(&rig.tw)
+                .tv_lease_on(*id)
+                .is_none()
+        })
         .take(2)
         .collect();
     let [near, far] = spares.as_slice() else {
@@ -263,7 +267,7 @@ async fn gc6_story_b_the_contested_salvage_on_urvara_reach() {
         "the pin survives a restart with the attachment intact"
     );
     let ramp = {
-        let (x, y, _) = crate::driving::ramp_at(&rig.tw, URVARA);
+        let (x, y, _) = crate::driving_rig::ramp_at(&rig.tw, URVARA);
         (x.div_euclid(1_000), y.div_euclid(1_000))
     };
     to_cell_on(&mut rig, URVARA, tug, ramp);
@@ -481,7 +485,7 @@ async fn gc6_story_b_the_contested_salvage_on_urvara_reach() {
             ),
         );
     }
-    let remains_of = |rig: &mut crate::driving::Rig, hull: ObjId| {
+    let remains_of = |rig: &mut crate::driving_rig::Rig, hull: ObjId| {
         record(rig)
             .objects
             .iter()
@@ -513,11 +517,11 @@ async fn gc6_story_b_the_contested_salvage_on_urvara_reach() {
         .cloned()
         .and_then(|h| h.inventory)
         .expect("the inventory");
-    let found = crate::driving::typed(&mut rig.tw, &inventory.lots, &lot).expect("the alloys");
+    let found = crate::driving_rig::typed(&mut rig.tw, &inventory.lots, &lot).expect("the alloys");
     assert_eq!(found.commodity().as_str(), "structural_alloys");
     assert_eq!(found.quantity(), 6);
     assert_eq!(
         found.endpoint(),
-        mush_inventory::EndpointRef(crate::driving::hold_vault_of(&rig.tw, &o_row))
+        mush_inventory::EndpointRef(crate::driving_rig::hold_vault_of(&rig.tw, &o_row))
     );
 }

@@ -194,6 +194,10 @@ pub struct TacsimStore {
     pub(crate) relay_proposals: BTreeMap<ObjId, crate::relay_foundry::Proposal>,
     /// Doc 35 cut SF.R8 (`D-35-12`): persisted space state (`tacsim:space:state`).
     pub(crate) space_state: Option<crate::space::SpacePersistedState>,
+    /// Doc 35 cut SF.R10 (`35b` §5 #9, §8): whether a `tacsim:space:state` key was read at boot,
+    /// readable or not (when `space_state.is_none() && space_state_held`, the document is
+    /// unreadable and quarantined against overwrite).
+    pub(crate) space_state_held: bool,
     /// Frozen at wiring.
     pub(crate) cfg: TacsimConfig,
     /// The packs the host read and this module verified, keyed `(id, version)`.
@@ -470,6 +474,13 @@ impl TacsimStore {
     #[must_use]
     pub fn space_state(&self) -> Option<&crate::space::SpacePersistedState> {
         self.space_state.as_ref()
+    }
+
+    /// Return whether a `tacsim:space:state` document was present at boot but failed to decode
+    /// (`SF.R10`, `35b` §5 #9: quarantined like `JourneyBook::held`, never overwritten).
+    #[must_use]
+    pub fn is_space_state_held(&self) -> bool {
+        self.space_state_held && self.space_state.is_none()
     }
 
     /// **Test hook** (17b cut M1b.5): replace the `[tacsim.minds]` block this
@@ -2585,13 +2596,18 @@ pub fn load(kv: &[(SmolStr, serde_json::Value)], cfg: TacsimConfig) -> TacsimSto
             // is never rewritten by the boot.
             store.geology_pin = crate::surface::key::load_geology_pin(key, value);
         } else if key == crate::space::SPACE_STATE_KEY {
-            // Doc 35 cut SF.R8 (`D-35-12`): persisted space bubbles, free-flight records,
-            // open-epoch derelicts, paused docking sessions, and 48h salvage claims.
+            // Doc 35 cut SF.R8 / SF.R10 (`D-35-12`, `35b` §5 #9): persisted space bubbles,
+            // free-flight records, open-epoch derelicts, paused docking sessions, and 48h salvage
+            // claims. An unreadable document is held (`space_state_held = true, space_state = None`)
+            // and never overwritten.
+            store.space_state_held = true;
             match serde_json::from_value::<crate::space::SpacePersistedState>(value.clone()) {
                 Ok(state) if state.format == crate::space::SPACE_STATE_FORMAT => {
                     store.space_state = Some(state);
                 }
-                _ => tracing::warn!(%key, "tacsim: space state document is unreadable; skipped"),
+                _ => {
+                    tracing::warn!(%key, "tacsim: space state document is unreadable; held for staff repair")
+                }
             }
         } else if key == META_KEY {
             load_meta(&mut store, value);

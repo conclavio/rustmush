@@ -36,12 +36,12 @@ use tacsim::carrier_damage::CarrierLoss;
 use tacsim::field::PartyKey;
 use tacsim::surface::site_record::{LeftCondition, PromotedBy};
 
-use crate::driving::{
+use crate::driving_rig::{
     AHUNA, Rig, act_go, cid, command, finish, land, launched, on_pad, seed_pool, staff_hand,
     stocked_tuned, to_cell, warm,
 };
-use crate::field_gc3::set_section;
-use crate::field_raiders::{
+use crate::field_host_rig::set_section;
+use crate::field_raiders_rig::{
     SKULKS, armed, egress, fragile, raider_hulls, seat_npc, second, site_record, task, until,
 };
 

@@ -20,11 +20,11 @@ use tacsim::arena::ledger::LedgerEvent;
 use tacsim::arena::party::{Mark, Relation, Relations};
 use tacsim::field::{FieldParty, PartyKey};
 
-use crate::driving::{
+use crate::driving_rig::{
     AHUNA, Rig, cid, command, land, launched, on_pad, on_pad_as, run, staff_hand, stocked_tuned,
     to_cell, warm,
 };
-use crate::field_host::{
+use crate::field_host_rig::{
     armed, egress, frame, seat, second, site_record, task, tune, until, weapon_of,
 };
 

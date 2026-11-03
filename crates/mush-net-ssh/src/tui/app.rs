@@ -944,12 +944,12 @@ impl TuiApp {
     fn pixel_home(&self) -> bool {
         match self.pixel.kind() {
             PictureKind::Chart => self.active == CHART_SCREEN,
-            PictureKind::Holotank => self.active == CHART_SCREEN || self.active == COCKPIT_SCREEN,
+            PictureKind::Holotank | PictureKind::SpaceCockpit | PictureKind::Docking => {
+                self.active == CHART_SCREEN || self.active == COCKPIT_SCREEN
+            }
             PictureKind::Doll => self.active == super::screen::DAMAGE_SCREEN,
             PictureKind::Replay => self.picture_layout(),
-            PictureKind::Cockpit | PictureKind::SpaceCockpit | PictureKind::Docking => {
-                self.active == COCKPIT_SCREEN
-            }
+            PictureKind::Cockpit => self.active == COCKPIT_SCREEN,
         }
     }
 
@@ -10354,5 +10354,43 @@ mod tests {
             r.invokes
         );
         assert_eq!(r.submit, ["+act wait"]);
+    }
+
+    #[test]
+    fn chart_screen_space_view_cycle_keeps_space_cockpit_and_docking_home_and_fires_tac_keys() {
+        let mut app = app();
+        app.pixel.probe_sent(Instant::now());
+        app.pixel.graphics_reply(true);
+        // Switch to CHART_SCREEN and open the picture ('\x07')
+        app.active = CHART_SCREEN;
+        let _ = app.feed_input(b"\x07");
+        assert!(app.pixel.is_active());
+        assert_eq!(app.pixel.kind(), PictureKind::Chart);
+
+        // Press 'v' to cycle Chart -> Holotank -> SpaceCockpit -> Docking on CHART_SCREEN:
+        // pixel_sync() must keep the picture active on CHART_SCREEN for all three space cameras.
+        let _ = app.feed_input(b"v");
+        let _ = app.pixel_sync();
+        assert!(app.pixel.is_active());
+        assert_eq!(app.pixel.kind(), PictureKind::Holotank);
+
+        let _ = app.feed_input(b"v");
+        let _ = app.pixel_sync();
+        assert!(app.pixel.is_active());
+        assert_eq!(app.pixel.kind(), PictureKind::SpaceCockpit);
+
+        // In SpaceCockpit on CHART_SCREEN, z/x/c submit +tac/beam, +tac/torp, +tac/railgun
+        let r_z = app.feed_input(b"z");
+        let r_x = app.feed_input(b"x");
+        let r_c = app.feed_input(b"c");
+        assert_eq!(r_z.submit, ["+tac/beam"]);
+        assert_eq!(r_x.submit, ["+tac/torp"]);
+        assert_eq!(r_c.submit, ["+tac/railgun"]);
+
+        // Press 'v' again -> Docking remains active on CHART_SCREEN
+        let _ = app.feed_input(b"v");
+        let _ = app.pixel_sync();
+        assert!(app.pixel.is_active());
+        assert_eq!(app.pixel.kind(), PictureKind::Docking);
     }
 }
