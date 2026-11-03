@@ -19,6 +19,12 @@
 //! 105 mm HE and 7.62 mm ball at the Co-op chandlery before sailing, and the workshop order
 //! draws them — and the work's `industrial_parts` — from the Dray's hold at completion. Then
 //! two gates of their own: a stripped part's provenance and a refused hot part, and scrap.
+//!
+//! **The hot part is an unwired seam** (doc 36a §8, lane 4). `strip::vacate_claim`, which flags
+//! a part hot, has no production caller: GC.6's vacating contest never reaches it, because a
+//! salvor's custody reaches no strip, so no part comes off under a claim in play. The hot-part
+//! gate below flags its lot by staff hand through that seam, and proves only the refusal of a
+//! part so flagged, not any way a player makes one.
 
 use mush_core::{GOD, ObjId};
 use mush_economy::VaultId;

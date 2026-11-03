@@ -150,7 +150,8 @@ carried, `set_down` skips it, `demote` drops it. Fix: the one-line guard.
 ### P2-9. The help file (`docs/help/field.md`)
 "Organizations and factions do not make friends yet" (93–94; GC.10), a wreck "gives no cover yet" (200–201;
 GC.2), "there is no tow yet" (205–206; GC.3/4), and parked armed parties "keep the field open" (54–58,
-98–101; GC.2's idle bound). Fix: rewrite the four passages.
+98–101; GC.2's idle bound). Fix: rewrite the four passages. *Fixed in lane 4*, with GC.10's standing and the
+void, GC.4/GC.5/GC.6's tow, load, claim and remains, in the page's own voice.
 
 ## 4. Partly confirmed, smaller (the defect that survives)
 
@@ -176,7 +177,8 @@ GC.2), "there is no tow yet" (205–206; GC.3/4), and parked armed parties "keep
   `under_way → recall → raiders::lift`, which unplaces it with no `carrier_loss` check and leaves its row.
   Breaks doc 36's "a barge whose drive is down stays on the ground".
 - **P2-3**: `enrich_cockpit` passes an empty `heard` (picture.rs:592); the cockpit never shows "(a sounding)"
-  though doc 32 §9 wants one picture. Build `heard` as `site.map` does.
+  though doc 32 §9 wants one picture. Build `heard` as `site.map` does. *Fixed in lane 4:* the cockpit reads
+  each flight's rig record through `loud_sounding`; `one_picture::p2_3_the_cockpit_hears_a_loud_sounding_as_the_site_map_does`.
 - **P2-6**: `plan_block` and `plan_queue` skip `lift_refusal`, `bay_over_line` and (queue only)
   `departure_refusal`; the dry run reads green where the filing refuses.
 - **P2-7**: both `behind.drain_all()` arms answer a waiting `Barrier` with `Busy` where `defer` settles it.
@@ -243,20 +245,22 @@ GC.2), "there is no tow yet" (205–206; GC.3/4), and parked armed parties "keep
 
 The house rule (doc 36 §7 l.820): every cut runs through the production command paths; a seed named in the
 cut's as-built section is allowed when the thing the cut claims is still reached by player commands. Harness
-facts: `launched()` lands on the plain path; `land_composed` has **exactly one caller** in the tree
-(escort_lease.rs:537).
+facts at the review: `launched()` landed on the plain path and `land_composed` had **exactly one caller** in
+the tree (escort_lease.rs:537). Lane 4 (2026-11-03, branch `claude/doc36a-lane-4`) added
+`driving::launched_composed` / `finish_composed` and `field_host::second_composed` / `until_composed`, and the
+fourth column says what each row earns since.
 
-| Test | Allowed | Gap or dead |
-|---|---|---|
-| field_story (CF.7/GC.0) | funding (7,000 cr, not 700,000), the bystander rebuild, seeded sections (G-6), `@field/raiders/withdraw` | G-7 under a DT roster (doc 32:1753 records the stand-in); "the miners hold" (907–912) cannot fail — the prospector has no armament and the bystander's magazines are seeded empty |
-| field_gc3 | `set_section` for the drive and the loss table | **DEAD**: `launched()` is plain, so `PrepareCtx::world()` is `Err`, `black_box::append` is `Ok(false)`, `unrecorded` is always true and the `else` at 235–243 asserting `IcCloseKind::Destroyed` never runs; the header's claim at :7 is unproven, as doc 36:2515 admits |
-| field_gc4 | `powerless` | the `RecoveredToBase` box line (same root cause) |
-| field_gc5 | site seeding, `seed_pool`, `move_to` into the casualty | a pilot who boarded by command being stranded |
-| field_gc6 | `@asset/transfer`, `seed_typed` tenure, staff remains | `emit_world_event` Frozen/Resumed fires the economy's events while the clock keeps ticking — `@tacsim/time freeze/resume` exists and bay_gc8 uses it; `right_of` called directly, and doc 36:3153 overclaims the Salvor read |
-| field_director (GC.11) | the site seeding | **the header is wrong**: "no staff hand anywhere" (:5) against `seed_pool`, `armed`, `seat_npc`, `rationed`, `fragile` at :170 (a staff wear on the raider during the raid), `raiders::seed`, `unplace`; and :12–14's "goes home once it has lost half" is false — the guard has 0 rounds and the raid leaves on `raid_field_s` |
-| bay_gc8 | `@econ/mint`, `seed_hold`, `damage`, `put` | `vacate_claim` has **no production caller** (strip.rs:278 "only a staff fixture calls it"): hot parts are an unwired seam, not a test shortcut; story (c) does not chain from (a) |
-| crew_treatment | the control section, `move_to` | `IndustryStore` mutated by hand instead of closing the facility through its act |
-| escort_lease | — | `lease_escort` drains and discards the grant submission (:90–99); `board_escort` stands in with `place_interior` + `assign_station`; `gc0_the_harness_lands_the_org_unit_grant` asserts neither the record nor a re-run of `+tv/1 board`; doc 36:1154 "GC.1's gate is the first to fly through it" is false |
+| Test | Allowed | Gap or dead (at the review) | After lane 4 |
+|---|---|---|---|
+| field_story (CF.7/GC.0) | funding (7,000 cr, not 700,000), the bystander rebuild, seeded sections (G-6), `@field/raiders/withdraw` | G-7 under a DT roster (doc 32:1753 records the stand-in); "the miners hold" (907–912) cannot fail — the prospector has no armament and the bystander's magazines are seeded empty | the bystander's coaxial stays loaded (only its main gun's magazine is seeded empty), so "the miners hold" is a hull that could fire and does not; G-7's stand-in stays |
+| field_gc3 | `set_section` for the drive and the loss table | **DEAD**: `launched()` is plain, so `PrepareCtx::world()` is `Err`, `black_box::append` is `Ok(false)`, `unrecorded` is always true and the `else` at 235–243 asserting `IcCloseKind::Destroyed` never runs; the header's claim at :7 is unproven, as doc 36:2515 admits | the first gate launches with `launched_composed` and pumps with `until_composed`: `unrecorded` is asserted false, the open line is on the box, and the `Destroyed` close line is asserted (the dead branch is gone) |
+| field_gc4 | `powerless` | the `RecoveredToBase` box line (same root cause) | the casualty's launch is composed and the tow's landings go through `seconds_until_with(.., true, ..)`; the load's `RecoveredToBase { carrier }` close line, `recovered_by` the wingman, is asserted |
+| field_gc5 | site seeding, `seed_pool`, `move_to` into the casualty | a pilot who boarded by command being stranded | not in lane 4 |
+| field_gc6 | `@asset/transfer`, `seed_typed` tenure, staff remains | `emit_world_event` Frozen/Resumed fires the economy's events while the clock keeps ticking — `@tacsim/time freeze/resume` exists and bay_gc8 uses it; `right_of` called directly, and doc 36:3153 overclaims the Salvor read | the outage is `@tacsim/time freeze` / `resume`, the IC clock asserted still through it and the resume's paused seconds asserted; the Salvor claim is struck from doc 36 (no production reader reaches it on Urvara: `+bay` needs a workshop port), and the after-award `right_of` stays as the table's own read, labelled |
+| field_director (GC.11) | the site seeding | **the header is wrong**: "no staff hand anywhere" (:5) against `seed_pool`, `armed`, `seat_npc`, `rationed`, `fragile` at :170 (a staff wear on the raider during the raid), `raiders::seed`, `unplace`; and :12–14's "goes home once it has lost half" is false — the guard has 0 rounds and the raid leaves on `raid_field_s` | the header lists every seed; the second gate's raid is stated to leave on `raid_field_s`; the first gate's wear moves out of the raid into the fixture's seeding: both gates seed the raider by staff before the raid and lift its carrier (gate 2's own idiom), and in gate 1 one hull came home from that earlier raid worn thin, so the director sends a raider the guard's six rounds can halve. A whole-hull kill was measured and rejected: a guard with full magazines against two whole hulls wrecked only the raider's carrier in 73 s of fire, never a hull, then fell, the raiders having wrecked both rigs and the prospector's carrier first, so the raid could not go home. The worn hull is the one the guard engages first; gate 1 passed 8/8 on conclav.dev, four at a time on two cores beside four busy loops (111–148 s a run). |
+| bay_gc8 | `@econ/mint`, `seed_hold`, `damage`, `put` | `vacate_claim` has **no production caller** (strip.rs:278 "only a staff fixture calls it"): hot parts are an unwired seam, not a test shortcut; story (c) does not chain from (a) | the file's header and doc 36's GC.8b section say so; the seam stays unwired (not lane 4's to wire) |
+| crew_treatment | the control section, `move_to` | `IndustryStore` mutated by hand instead of closing the facility through its act | not in lane 4 |
+| escort_lease | — | `lease_escort` drains and discards the grant submission (:90–99); `board_escort` stands in with `place_interior` + `assign_station`; `gc0_the_harness_lands_the_org_unit_grant` asserts neither the record nor a re-run of `+tv/1 board`; doc 36:1154 "GC.1's gate is the first to fly through it" is false | `lease_escort` lands the loan through `land_composed`; `board_escort` is `+tv/1 board` under it; the gc0 gate asserts the OperateCrew grant on Org's registry, `+tv/1/permissions` reading it allowed now, and the board; doc 36:1154 names the hook's real callers |
 
 ## 9. Owner questions raised
 
@@ -283,4 +287,5 @@ that reproduces the review's steps as a player would type them.
 - **Lane 4, tests, help and docs**: field_gc3's dead branch (a `launched_composed`), field_director's header,
   escort_lease through `land_composed`, field_gc6 under `@tacsim/time freeze`, field_story's "the miners hold",
   `docs/help/field.md`'s four passages, P2-3's `heard`, doc 36's GC.6 and GC.1 overclaims, and this doc's
-  §9 answers once ruled.
+  §9 answers once ruled. *Built 2026-11-03* (branch `claude/doc36a-lane-4`): everything but the §9 answers,
+  which are the owner's; §8's fourth column is the result.
