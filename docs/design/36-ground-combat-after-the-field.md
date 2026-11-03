@@ -3350,12 +3350,17 @@ Each test fails with its fix reverted (checked together, all fixes off at once).
 
 Still owed from this lane:
 
-- **The driving rig never resumed a field.** Its `reboot` hydrated the typed records after the
-  modules loaded, so the field host's boot found no site record and voided; the CF-1 restart gates
-  in `field_crash.rs` pass through that void and a reopened field. `driving_rig::reboot_resuming` (with `crash_resuming`, in `tests/support/field/driving_rig.rs`)
-  (production's order) is new and only row 2's test uses it. Under it, the CF-1 exit gate fails:
-  after a resumed field lands the owed `exit`, `live.owed_exits` keeps the row. That is CF-1's
-  resume path (`field/boot.rs`, `field/exit.rs`), not this lane's.
+- **The driving rig never resumed a field** (done, 2026-11-03, the CF-1 resume follow-up). Its
+  `reboot` hydrated the typed records after the modules loaded, so the field host's boot found no
+  site record and voided; the CF-1 restart gates in `field_crash.rs` passed through that void and
+  a reopened field. The rig's `reboot` (and `crash`, the one restart helper, in
+  `tests/support/field/driving_rig.rs`) now hydrates them before the load, production's order
+  (`mush_server::modules::boot_modules`); `reboot_resuming` / `crash_resuming` folded into them.
+  The CF-1 exit gate's failure on a true resume was the gate, not the host: an exit lands at the
+  end of a pass, and the host learns of it by reading the site record at its next pass
+  (`field::exit::tick` prunes `OwedExits` and `live.owed_exits` before it submits, so nothing is
+  written twice), with or without a restart; the gate asserted the very pass the exit landed. It
+  now asserts the field that ran resumed (ordinal 1, a later segment) and waits for that pass.
 - **A pilot seated by `+tv/<n> board` is never stranded.** The check-in's `inside` reads a rig's
   cab as outside the rig, so no crew record is written for a pilot in the cab (doc 36a §8 already
   lists the gap for field_gc5); GC.5's abandonment and row 4's second half can reach such a pilot
