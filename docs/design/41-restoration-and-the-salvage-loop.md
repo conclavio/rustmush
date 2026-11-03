@@ -749,15 +749,20 @@ Q-S13/Q-R1: a contest proves unlawful recovery, defective procedure or a superio
 Proposed: `settle`'s vacate branch writes `held_for: Some(title_holder)` on the hull's bay record
 (`BayHull`, the record that already holds her berth and order), and `right_of` answers that
 principal `Right::Title` for berth and stow alone while the flag stands. Then: (1) **the owner's own
-carrier takes her out of any bay**: `+bay/stow <hull>=<carrier>` — a new form of stow, by the title
-holder (or their `MaintainRefit` grantee) aboard a carrier of theirs that stands where the
+carrier takes her out of any bay**: doc 39's `+bay/stow <hull>[=<carrier>]` (IN.9 as revised in
+Draft 0.4 — a named carrier the actor has the run of; doc 39 owns the verb, and RS.4 only widens
+where the hull may come from: another carrier's bay under `held_for`, a round-2 lane finding), by
+the title holder (or their `MaintainRefit` grantee) aboard a carrier of theirs that stands where the
 custodian's does (both docked at one port, or both on one site), moving her bay to bay with the
 bay's mass and volume check; the custodian cannot refuse it. (2) **The port yard holds her**: at the
 custodian's next docking at a port with a workshop, the docking hook berths every `held_for` hull in
 the bay into the workshop room under the title holder's name (`+bay` lists her "held for <name>"),
-freeing the custodian's slot; the title holder's carrier later `+bay/stow`s her from there. A full
-berth count (2 at Ceres, 4 at Stickney) leaves her in the bay until one frees, which blocks that
-slot of the custodian's — the consequence of carrying what proved not yours. A lease rig takes the
+freeing the custodian's slot; the title holder's carrier later `+bay/stow`s her from there. A `held_for` hull
+**does not count against the workshop's berths**: `berth` counts every berthed hull
+(`bay_work/mod.rs:1522–1531`) against Ceres' two (lane `:2826`), so two held hulls would lock the
+workshop for everyone while their owner is offline (round-2 item 41-15); `bay_berthed_in(room)` is
+filtered for the stand count, and a held hull waits in the room for as long as it takes — no order
+on her, no stand of anyone's taken. A lease rig takes the
 shed as today. The alternative is a hand-over at a port counter only (no bay-to-bay), which strands
 a hull vacated on a site until the custodian chooses to dock. (Q-41-18, Q-41-19.)
 
@@ -1192,20 +1197,21 @@ provisional unless the line says otherwise.
 ### 5.5 The loop's close
 
 **Q-41-18 — The vacated hull's return.**
-- **Proposed default:** `held_for` on the bay record at vacate; `+bay/stow <hull>=<carrier>` bay to
-  bay by the title holder from a carrier of theirs standing where the custodian's does; the custodian
-  cannot refuse.
+- **Proposed default:** `held_for` on the bay record at vacate; doc 39's `+bay/stow <hull>[=<carrier>]`
+  (IN.9, which owns the verb) given a bay-to-bay source by the title holder from a carrier of theirs
+  standing where the custodian's does; the custodian cannot refuse.
 - **Alternative:** a hand-over at a port counter only.
 - **Why:** Q-38-19 says the owner's carrier may berth her out of any bay; a hull vacated on a site
   should not wait for the custodian to feel like docking.
 
 **Q-41-19 — The port yard holding her.**
 - **Proposed default:** at the custodian's next docking at a workshop port, the docking hook berths
-  every `held_for` hull into the workshop room under the owner's name; a full berth count leaves her
-  in the bay, blocking that slot, until one frees.
+  every `held_for` hull into the workshop room under the owner's name; a held hull is excluded from
+  the stand count (Draft 0.3, round-2 item 41-15: counting her would let two held hulls lock Ceres'
+  two berths for everyone) and waits in the room.
 - **Alternative:** an unbounded impound room per port.
-- **Why:** the workshop room and its berths exist; a blocked slot is the cost of carrying what proved
-  not yours.
+- **Why:** the workshop room and its berths exist; a held hull takes no stand, so the custodian pays
+  nothing but the trip and the workshop stays open.
 
 **Q-41-20 — Repairs at risk.**
 - **Proposed default:** written on the custody row's claim by `complete` under a Salvor right, the
@@ -1303,7 +1309,7 @@ RS.3 and RS.5; RS.8 after RS.3 and RS.5, in the space tree; RS.9 last. One marke
 | **RS.1** the tender | Q-41-1..4, Q-41-27, Q-38-16, Q-36-35/36 | `logistics.tender` and `logistics.recovery_profile` on the definition; the cap on `TowRigProfile`; `tv_tender` in the kit and Occator's lease row (lane v21); `+tv/<n> stores open` and the rig's bale; the `tend` op on `tacsim_surface_tow` with `unjam`, `stabilize`, `rearm` from the bale and the stores at `TENDER_TIME_FACTOR` 3; `register_tender` fed from the compartment | IN.1 as revised (the bale) and IN.8 (the per-point figures); the tariff's constant until IN.8 lands | (a) extended, the ground half at 256 and 512: a jammed cannon cleared, a chassis patched, a magazine refilled on the ground, each act interrupted by a field and resumed |
 | **RS.2** the bay away from port | Q-41-5..7, Q-38-16, Q-36-35 | `facility_of`'s fourth case; `source_carrier` without the port; no fee contract away from port; the "needs a workshop" line naming the nearest; `+bay/fit` from the hold on a site; bay acts waiting under a field; the yard's rearm through the bay | IN.1 as revised (the hull's bale continued in the carrier's bay); replace is refused away from port, so IN.6's store does not reach it | (a) extended, the bay half: a mend at 2× on the site from the hold, a replace refused with the line, the order finishing under way |
 | **RS.3** the claim's close | Q-41-20..23, Q-38-19, Q-S13, Q-S14 | `claim_window_s` into `TacsimRecoveryCfg`; `+salvage/authorize` (RecoverLoad for a hull, the delegation row for a block) read at the attach; org-titled claims through `principal_holders` and the narrowed award refusal; at-risk repairs written at `complete` under Salvor and reported; `+salvage/contest =recovery\|procedure\|right` with the registry's box read; `strip::vacate_claim` called by `claim::tick` for each lot the bay record lists under the vacated claim, the mush-tactics twin retired | none | (b) extended at 512 and 256: the three contest kinds each vacating or failing on its named source; an org's holders told; the at-risk line in the quote and the notice |
-| **RS.4** the vacated hull's return | Q-41-18, Q-41-19, Q-38-19 | `held_for` on the bay record; `+bay/stow <hull>=<carrier>` bay to bay; the docking hook berthing held hulls into the workshop room; the fix thread's defect note closed | none | (b) extended: T's carrier takes her out of O's bay at Ceres; without one, the port holds her "held for T" and T's next carrier stows her |
+| **RS.4** the vacated hull's return | Q-41-18, Q-41-19, Q-38-19 | `held_for` on the bay record; doc 39's `+bay/stow` (IN.9) given a bay-to-bay source under `held_for`; the docking hook berthing held hulls into the workshop room outside the stand count; the fix thread's defect note closed | IN.9's `+bay/stow <hull>[=<carrier>]` (doc 39 owns the verb; RS.4 lands after it or carries its first form) | (b) extended: T's carrier takes her out of O's bay at Ceres; without one, the port holds her "held for T" and T's next carrier stows her |
 | **RS.5** the retrieval contract and the charge | Q-41-8..14, Q-38-6, Q-38-7 | `post_retrieval`, the shape, `accept_retrieval`, `+salvage/retrieve\|jobs\|accept`, the `RetrievalOrder` record carrying the acceptance and performance windows (`RETRIEVAL_WINDOW_IC_DAYS`, Q-41-11) under a 56-day contract, the four handover facts and payment, a lapsed acceptance handed to Tycho on a fresh contract; retrieval custody in `load_facts` and `Right::Retrieval`; a written-off rig's hand-back moved from the load to the destination; the wear allowance, the retrieval fee and the one-term obligation at `repossess`, `give_back` and the recall, with `+debts`, `+debts/pay` and the desk's `reinstate_obligation`; Q-38-7's second clock; the `capture: None` hole closed with a test | IN.4 as revised (Tycho's slot-day); a lane constant until it lands | (c) extended: a dormant charter's prospector on Ahuna and on Urvara repossessed with allowance, fee and debt; a second player accepts the job, delivers to the shed and is paid; a third accepts and lapses at 28 IC days and the job is Tycho's; the desk refuses the delinquent lessee |
 | **RS.6** Tycho Mutual | Q-41-15..17, Q-38-18, Q-39-7, Q-39-24 | the crawler and lifter as registered designs with bills, buildable at the yard (Q-41-15); Tycho's berth, its two house hulls, a storefront party and `capital_major` 500,000 (lane v21, Q-41-17); the house arm sequencing voyage, landing, launch, tow, load, lift, dock, berth; the fallback acceptance at the window's end and on a lapse; the fee from the recovery row; the 56-day sweep claimed by the house dispatcher with the title passed to the org at the award (41-7), the assessment and its two exits — repair and a hull-sale offer at the reference price, or scrap at Occator's workshop (Q-41-16) | IN.4, IN.8 and IN.9 as revised; PR #340 (P0-5, a wreck in a bay) | (d) at 512 and 256: the carrier wreck retrieved by the lifter and berthed at C14, the fee paid; (c)'s no-acceptor variant; (e) the sweep: a repairable hull resold to a player, a hull past repair scrapped, the census holding |
 | **RS.7** port security | Q-41-24, Q-41-25, Q-38-20, Q-S4 | the `arrived` hook's read of proven rows across the lane's site records; `+salvage/report <site>[=<actor>|#<hull>] registry` over `SiteRecord.unlawful`; the fines by kind to the Registry; the obligation on a shortfall; `DepartRefusalKind::Quarantined` and its release; proven rows copied to `tacsim:security:{actor}` at proof (the site's 64-row ring evicts, 41-6) and marked settled there | none | (b) extended: O fined at docking after the `recovery` vacate, O's carrier held until the obligation settles, a bare pickup row never fined |
