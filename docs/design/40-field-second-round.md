@@ -3,8 +3,10 @@
 Draft 0.3, 2026-11-03, docs only. Surveyed against `origin/main` at `c83c2eff` (SF.R14 and SF.R15
 merged as PRs #338 and #339; doc 36a's lane 5 as #346; doc 38 Draft 0.2 as #345; lane 3 still open
 as PR #340 at `claude/relaxed-fermat-60b65b`, read here for the shape its held-out walls take on
-the live record). Stacked on [doc 39](39-industry-production-chain.md)'s PR #347 so its README row
-lands after doc 39's. Every tree fact below was re-read at `c83c2eff`; where doc 38 §4's anchor
+the live record). Stacked on [doc 39](39-industry-production-chain.md)'s PR #347 while that was
+open; #347 and doc 23's #350 merged into `main` at `9899e0eb` on 2026-11-03 and that `main` is
+merged here, so the README row sits after doc 39's (now Draft 0.5) and doc 23 reads as Draft 0.10.
+Every tree fact below was re-read at `c83c2eff`; where doc 38 §4's anchor
 has moved by a few lines (the join loop, `arena_task.rs:1879`, was `:1869` there) the new line is
 given. Draft 0.1, the same day, was the survey. **Draft 0.2 records the owner's rulings of
 2026-11-03 on every question: every default accepted as written** ("all Q-40s accepted as their
@@ -121,7 +123,7 @@ What each area of §4 starts from, each fact re-read.
 | The last snapshot document each running field's world holds is the void rule's source, taken every `summary_ms` (5 s) and kept under `tacsim:field:snapshot:<site>` | `field/mod.rs:143`, `:352`; `config.rs:1624` |
 | `SpacePartyId(pub u32)` maps to the arena's letters by `to_party_id`/`from_party_id`; `SpaceRelation` is Friendly/Neutral/Inspecting/Hostile; 68 hits, 57 in code across `space/bubble.rs` (14), `space/mod.rs` (25), `custody.rs`, `picket.rs`, `tick.rs` and `tests/shard_10/voyage.rs` (7), the rest in docs 35a, 36, 37 and 38 | `space/bubble.rs:37–72`, `:1257` |
 | The stories: one script on Ahuna Flank (256) and Urvara Reach (512); every GC story at one size | `tests/shard_9/field_story.rs:90`, `:113`, `:406`, `:414` |
-| Doc 39's cut list takes none of the bot's four-digit addresses (its IN.10 adds `+yard`, `+market` and `+bay` words only) | doc 39 §6 |
+| Doc 39's cut list, as surveyed, took none of the bot's four-digit addresses (its IN.10 adds `+yard`, `+market` and `+bay` words only); doc 39 Draft 0.5, merged since, names them IN.5's dependency — "doc 40 FR.0's or doc 41 RS.0's cut, whichever lands first, else IN.1 carries it" (round 2's 39-6) | doc 39 §6 (Draft 0.5) |
 
 ## 4. The survey
 
@@ -859,6 +861,9 @@ each marked so where it stands.
 - **Alternative:** doc 39's IN.10 takes the parser, FR.0 only the words.
 - **Why:** Q-38-29's rule is "the first cut of whichever document starts first", doc 39 started
   first and did not take it; a cut that exists is better than a rule that waits.
+- **After the merge of 2026-11-03:** doc 39 Draft 0.5 agrees — its §6 names the parser "doc 40
+  FR.0's or doc 41 RS.0's cut, whichever lands first, else IN.1 carries it" (round 2's 39-6). The
+  ruling stands: FR.0 carries it, and the first of FR.0 and RS.0 to land takes it for all three.
 
 ## 6. The plan: cuts FR.0–FR.7
 
@@ -874,7 +879,7 @@ after FR.0, FR.3 and FR.4; FR.7 last. Two cuts carry the marker and are built ex
 
 | Cut | Rulings | What | Acceptance (the story, at both sizes) |
 |---|---|---|---|
-| **FR.0** the inventory and the bot's words | Q-38-29, Q-40-23, doc 38 §8 | §4a's rows run at the base commit and recorded; the four-digit parser; the bot's `+field/void`, launch, `release` and `+faction/stance` words; `field_story.rs`'s two grounds hoisted to `tests/support/field` for every later story | the recorded inventory in `40-cut-notes.md`; the bot drives to a four-digit pocket on Urvara and types `+field/void` in a smoke |
+| **FR.0** the inventory and the bot's words | Q-38-29, Q-40-23, doc 38 §8 | §4a's rows run at the base commit and recorded; the four-digit parser (unless doc 41's RS.0 has landed it first, doc 39 Draft 0.5's rule); the bot's `+field/void`, launch, `release` and `+faction/stance` words; `field_story.rs`'s two grounds hoisted to `tests/support/field` for every later story | the recorded inventory in `40-cut-notes.md`; the bot drives to a four-digit pocket on Urvara and types `+field/void` in a smoke |
 | **FR.1** stances | Q-38-23, Q-40-11..14 | the table in `FactionState` and its key; `+faction/stance`, `@faction/stance`, `+faction`'s rows; the `org.stance.declare` capability; `parties.rs` reading it into `FieldHost.marks` and `.friends` at admission and in `carrier::joining` at a join; `FieldParty.stance_hostile` on the live record and `mark_in_field`'s clear returning to it; `friends_of` counting a mutual Allied pair | two co-ops with a declared Hostile meet on Ahuna and on Urvara; a `+field/mark` by one promotes; each presence picture colours the other hostile from the first pulse; a leader's clear of the declared-Hostile party that shares a member with theirs reads Hostile, not Friend; a third co-op mutually Allied to the first is Friend and its one-sided Allied to the second is not; a stance changed mid-field changes nothing until the next field, which reads it; an arriving org joins under the declared Hostile in the existing party's book |
 | **FR.2** durable standing | Q-38-24, Q-40-15..18 | `FieldLive.fire` at the snapshot cadence; the window on the grant, `VoidOffers` and the sweep retired; `prev_input` in mush-core and the synchronous close in `+field/void`; the director's auto-void at demotion | GC.10's void gate re-run at both sizes with a restart mid-field (the tally survives), a void after another command refused at once, a void with no command between accepted; a director raid's friendly fire on a Syndicate member voided with no hand |
 | **FR.3** reinforcement | Q-38-25, Q-38-26, Q-40-19, Q-40-20, Q-40-24 | `FIELD_LAUNCH` replaced by the cap check over the one count (`SiteRecord.pending`, Q-40-24) and the cycle; §4.4's pending-launch protocol, steps 2 to 5, with step 3's read of `RigRecord.claim` (Open → the claim's seal, else the ROM) and step 1 doc 23's S.4b; the launch's join offered by the field tick at the ramp with the director's spread; `launch_cycle_s`; the refused join back aboard and retried; GC.1b's arrival retried | the escort story with a second escort launched by `+sortie/launch` after the first shot, standing beside the ramp at the next pulse and counted; a second launch inside the cycle refused with the seconds left; a launch past the cap refused at the prepare; two carriers one short of the cap each launching one, the second refused at its prepare by the pending row; an F-6 arrival that joins and then launches; the licensed reinforcement (a second cored rig launched `mind=`, its claim opened in the bay, joined by the next tick under its own seal) once S.4b lands |
