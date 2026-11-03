@@ -1382,6 +1382,8 @@ fn vf_p5_the_entry_cap_and_the_seed_object_cap_are_separate_refusals() {
                 body: None,
                 lat_mdeg: None,
                 lon_mdeg: None,
+                kirkwood_picket: false,
+                clusters: Vec::new(),
             }),
         );
     }

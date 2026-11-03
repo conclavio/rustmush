@@ -23,7 +23,7 @@ pub use bubble::{
     BubbleId, BubbleInputCommand, BubbleInputEntry, BubbleInputTape, BubbleSnapshot,
     BubbleStepReport, DERELICT_WINDOW_S, EmconPosture, FacetBand, HullStatus, LocalSpaceBubble,
     MAX_SUBSTEP_MS, ShipSectionId, ShipSectionState, SpaceCombatEvent, SpacePartyId, SpaceRelation,
-    SpaceShipState, SubsystemCrit,
+    SpaceSectionConsequence, SpaceShipState, SubsystemCrit,
 };
 pub use commands::{
     BridgeRole, HELM_HELP, HELM_SWITCHES, HELM_VERB, HOLOTANK_FEED, MINE_HELP, MINE_SWITCHES,
@@ -34,12 +34,12 @@ pub use commands::{
     observe_bubble_contacts, parse_emcon_token, seat_role_for_actor, tac_cmd,
 };
 pub use custody::{
-    ALL_FACET_BANDS, ALL_SHIP_SECTIONS, apply_unit_spec_to_space_ship,
-    build_space_damage_mutation_plan, check_in_space_unit, check_out_space_unit,
-    format_tactical_unit_damage_line, instantiate_stock_space_unit,
+    ALL_FACET_BANDS, ALL_SHIP_SECTIONS, SpaceUnitOverlay, apply_space_unit_overlay,
+    apply_unit_spec_to_space_ship, build_space_damage_mutation_plan, check_in_space_unit,
+    check_out_space_unit, format_tactical_unit_damage_line, instantiate_stock_space_unit,
     record_space_combat_to_black_box, register_derelict_salvage_in_book,
     resolve_tactical_section_id, space_ship_from_tactical_unit,
-    space_ship_from_tactical_unit_with_spec, unit_spec_for_id,
+    space_ship_from_tactical_unit_with_spec, space_unit_overlay_for_id, unit_spec_for_id,
 };
 pub use docking::{
     COLLAR_SCRAPE_FRONT_ARMOR_DAMAGE, DOCK_GATE_MAX_ANG_RATE_MDEG_S, DOCK_GATE_MAX_LAT_VEL_MMPS,
@@ -60,14 +60,16 @@ pub use mining::{
 #[cfg(test)]
 pub use picket::build_kirkwood_picket_ships;
 pub use picket::{
-    BELT_RAIDER_PARTY, BELT_RAIDER_RHAI, CUSTOMS_CORVETTE_PARTY, CUSTOMS_FINE_CONTRACT_NAME,
+    BELT_RAIDER_PARTY, CUSTOMS_CORVETTE_PARTY, CUSTOMS_FINE_CONTRACT_NAME,
     CUSTOMS_FINE_MAJOR_PER_TONNE, CUSTOMS_FINE_MIN_MAJOR, HEAVE_TO_REL_VEL_MMPS,
-    INTERDICTOR_PATROL_RHAI, KIRKWOOD_PICKET_RHAI, KirkwoodPicketState, LiveCustomsManifest,
-    PICKET_RUN_BOUNDARY_M, PicketInspectionOutcome, PicketInspectionStatus, RAIDER_AMBUSH_RANGE_M,
-    assess_customs_fine_and_advance_front, customs_fine_spec, distance_3d_m,
-    emit_light_lagged_picket_hail, inspect_hull_manifest, record_ran_the_picket_incident,
-    relative_speed_3d_mmps, run_space_rhai_think, seize_contraband_and_advance_front,
-    should_open_kirkwood_picket, spawn_kirkwood_picket_ships_in_world, step_kirkwood_picket,
+    KirkwoodPicketState, LiveCustomsManifest, PICKET_RUN_BOUNDARY_M, PicketInspectionOutcome,
+    PicketInspectionStatus, RAIDER_AMBUSH_RANGE_M, SALVAGE_RECOVERY_BOUNTY_MAJOR,
+    SALVAGE_RECOVERY_CONTRACT_NAME, SPACE_MIND_SEAL_ATTR, assess_customs_fine_and_advance_front,
+    build_space_mind_seal, customs_fine_spec, distance_3d_m, emit_light_lagged_picket_hail,
+    inspect_hull_manifest, record_ran_the_picket_incident, relative_speed_3d_mmps,
+    run_space_rhai_think, seal_space_unit_in_world, seize_contraband_and_advance_front,
+    settle_salvage_recovery_payout_from_registry, should_open_kirkwood_picket, space_mind_seal_of,
+    spawn_kirkwood_picket_ships_in_world, step_kirkwood_picket,
 };
 pub use tick::{
     ActiveInterdictionBubble, CARRIER_PARTY, COMBAT_STEP_WALL_MS, CRUISE_STEP_WALL_MS,
@@ -850,6 +852,7 @@ mod tests {
                 )),
                 interdictor_memory: Vec::new(),
                 interdictor_think_seq: 0,
+                interdictor_seal: None,
                 approaching_derelict: false,
                 holding_for_salvage: false,
                 last_stepped_wall_s: 0,

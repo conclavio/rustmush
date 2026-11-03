@@ -152,7 +152,10 @@ pub(crate) fn run_refusal(w: &World, rig: &RigAt, record: &RigRecord) -> Option<
 
 /// **The launch half's gates** (a launch, or a scan, a sounding or a drive that implies one;
 /// lead ruling 2): an excursion still open (`LAUNCH_OPEN`), then the caps (§8; lead ruling 8),
-/// counted over the world's rig records.
+/// counted over the world's rig records — and, for the site's cap, over everyone on the site's
+/// ground a promotion would admit (Q-CF-21; doc 36a §11 row 5, `field::parties::site_population`):
+/// a carrier on the pad, a bystander's hull or a casualty left behind is a unit of the next
+/// field as much as a rig out.
 pub(super) fn launch_half(
     ctx: &Ctx<'_>,
     handles: &PortHandles,
@@ -180,8 +183,19 @@ pub(super) fn launch_half(
             }
         }
     }
-    // Doc 32 cut CF.2 (Q-CF-21): the site's cap is the configured field cap.
+    // Doc 32 cut CF.2 (Q-CF-21): the site's cap is the configured field cap, over everyone the
+    // next promotion would admit (doc 36a §11 row 5), never only the rigs out.
     let site_cap = crate::field::config(w).max_units;
+    let record = ctx
+        .action_state(
+            &handles.families.sites,
+            &crate::surface::site_record::SiteKey(site.clone()),
+        )
+        .map_err(|_| dark())?;
+    let population = crate::field::parties::site_population(w, site, record);
+    counts.site = counts
+        .site
+        .max(u32::try_from(population).unwrap_or(u32::MAX));
     if let Some(cap) = crate::surface::excursion::cap_refusal_at(&counts, site_cap) {
         return Err(CmdError::msg(
             Refusal::Cap {

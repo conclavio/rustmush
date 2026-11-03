@@ -34,7 +34,7 @@ use serde_json::json;
 
 use crate::config::EphemerisConfig;
 use crate::ephemeris::{AU_KM, Body, Ephemeris, separation_km};
-use crate::kepler::{self, ElementRow, ROW_FIELDS};
+use crate::kepler::{self, ElementRow};
 use crate::pack::{PackEntry, RulesPack};
 
 /// The domain a sky's revision digest is taken under.
@@ -46,7 +46,7 @@ pub const LIGHT_M_PER_S: u64 = 299_792_458;
 /// Half-window in IC seconds for central-difference orbital velocity (`2 * 60 = 120 s`).
 pub const VELOCITY_HALF_WINDOW_S: i64 = 60;
 
-const OUTER_BODIES_JSON: &str = include_str!("../content/sky/outer_bodies.json");
+pub(crate) const OUTER_BODIES_JSON: &str = include_str!("../content/sky/outer_bodies.json");
 
 /// The kind of an outer-system or orbital-cluster sky entry (doc 35 cut SF.1).
 #[derive(Clone, Copy, Debug, Eq, PartialEq, Deserialize, Serialize)]
@@ -86,31 +86,8 @@ pub struct OuterBodyDef {
     pub element_digest: Result<DefinitionDigest, String>,
 }
 
-#[derive(Deserialize)]
-struct RawOuterPack {
-    bodies: BTreeMap<String, RawOuterBody>,
-}
-
-#[derive(Deserialize)]
-#[serde(deny_unknown_fields)]
-struct RawOuterBody {
-    kind: OuterBodyKind,
-    #[serde(default)]
-    parent: Option<String>,
-    orbit_uau: u64,
-    period_mdays: u64,
-    phase_mdeg: i64,
-    epoch_ic: Option<i64>,
-    radius_km: u32,
-    surface_mg: u32,
-    #[serde(default)]
-    zone: Option<String>,
-    #[serde(default)]
-    spectral_classes: Vec<String>,
-    #[serde(default)]
-    ore_families: Vec<String>,
-    elements: Vec<[f64; ROW_FIELDS]>,
-}
+/// The signed `rules_definition` pack id for `content/sky/outer_bodies.json` (`SF.R14`, `D-35-17`).
+pub const OUTER_BODIES_PACK: &str = "tacsim.sky.outer_bodies";
 
 fn digest_element_table(rows: &[ElementRow]) -> Result<DefinitionDigest, String> {
     let value = json!(
@@ -133,72 +110,67 @@ fn digest_element_table(rows: &[ElementRow]) -> Result<DefinitionDigest, String>
         .map_err(|error| error.to_string())
 }
 
-/// Parse and validate an outer-system and orbital asteroid cluster JSON document
-/// through [`crate::pack::BodyDef`] (doc 35 cut SF.1, D-35-4, D-35-13, 35a §5 item 20).
+/// Extract validated [`OuterBodyDef`] entries from a loaded [`crate::pack::RulesPack`] (`SF.R14`, `D-35-17`).
 ///
 /// # Errors
 ///
-/// Returns an error if the JSON is malformed, any identifier is invalid, or any
-/// entry fails [`crate::pack::BodyDef`]'s orbital range or element-table consistency
-/// rules.
-#[allow(clippy::cast_precision_loss)]
-pub fn parse_outer_catalog(json: &str) -> Result<BTreeMap<CanonicalId, OuterBodyDef>, String> {
-    let raw: RawOuterPack =
-        serde_json::from_str(json).map_err(|e| format!("outer_bodies.json decode error: {e}"))?;
+/// Returns an error if any entry is not a [`crate::pack::PackEntry::Body`] or is missing required outer-body fields.
+pub fn outer_catalog_from_pack(
+    pack: &crate::pack::RulesPack,
+) -> Result<BTreeMap<CanonicalId, OuterBodyDef>, String> {
     let mut out = BTreeMap::new();
-    for (name, entry) in raw.bodies {
-        let id = CanonicalId::new(&name).map_err(|e| format!("{name}: {e}"))?;
-        let parent = match entry.parent {
-            Some(p) => Some(CanonicalId::new(&p).map_err(|e| format!("{name}.parent: {e}"))?),
-            None => None,
+    for (id, entry) in pack.entries() {
+        let crate::pack::PackEntry::Body(def) = entry else {
+            return Err(format!("{id}: expected body entry in outer_bodies pack"));
         };
-        if entry.radius_km == 0 {
-            return Err(format!("{name}: radius_km must be positive"));
+        let Some(kind) = def.outer_kind else {
+            return Err(format!("{id}: outer_kind is required"));
+        };
+        let Some(radius_km) = def.radius_km else {
+            return Err(format!("{id}: radius_km is required"));
+        };
+        let Some(surface_mg) = def.surface_mg else {
+            return Err(format!("{id}: surface_mg is required"));
+        };
+        if def.elements.is_empty() {
+            return Err(format!("{id}: element table must not be empty"));
         }
-        if !(1..=crate::pack::MAX_SURFACE_FIGURE).contains(&entry.surface_mg) {
-            return Err(format!(
-                "{name}: surface_mg {} out of range 1..={}",
-                entry.surface_mg,
-                crate::pack::MAX_SURFACE_FIGURE
-            ));
-        }
-        let validated = crate::pack::BodyDef::from_authored(
-            entry.orbit_uau as f64 / 1_000_000.0,
-            entry.period_mdays as f64 / 1_000.0,
-            entry.phase_mdeg as f64 / 1_000.0,
-            entry.epoch_ic,
-        )
-        .and_then(|def| def.with_elements(&entry.elements))
-        .map(|def| def.with_parent(parent.clone()))
-        .map_err(|e| format!("{name}: {e}"))?;
-
-        if validated.elements.is_empty() {
-            return Err(format!("{name}: element table must not be empty"));
-        }
-        let element_digest = digest_element_table(&validated.elements);
+        let element_digest = digest_element_table(&def.elements);
         out.insert(
             id.clone(),
             OuterBodyDef {
-                id,
-                kind: entry.kind,
+                id: id.clone(),
+                kind,
                 body: Body {
-                    orbit_uau: validated.orbit_uau,
-                    period_mdays: validated.period_mdays,
-                    phase_mdeg: validated.phase_mdeg,
-                    epoch_ic: validated.epoch_ic,
-                    parent,
+                    orbit_uau: def.orbit_uau,
+                    period_mdays: def.period_mdays,
+                    phase_mdeg: def.phase_mdeg,
+                    epoch_ic: def.epoch_ic,
+                    parent: def.parent.clone(),
                 },
-                radius_km: entry.radius_km,
-                surface_mg: entry.surface_mg,
-                zone: entry.zone,
-                spectral_classes: entry.spectral_classes,
-                ore_families: entry.ore_families,
-                elements: validated.elements,
+                radius_km,
+                surface_mg,
+                zone: def.zone.clone(),
+                spectral_classes: def.spectral_classes.clone(),
+                ore_families: def.ore_families.clone(),
+                elements: def.elements.clone(),
                 element_digest,
             },
         );
     }
     Ok(out)
+}
+
+/// Parse and validate an outer-system and orbital asteroid cluster pack
+/// through [`crate::pack::load_pack`] (`doc 35` cut `SF.R14`, `D-35-4`, `D-35-13`, `D-35-17`).
+///
+/// # Errors
+///
+/// Returns an error if the JSON fails [`crate::pack::load_pack`] or [`outer_catalog_from_pack`].
+pub fn parse_outer_catalog(json: &str) -> Result<BTreeMap<CanonicalId, OuterBodyDef>, String> {
+    let pack =
+        crate::pack::load_pack(json).map_err(|e| format!("outer_bodies.json pack error: {e}"))?;
+    outer_catalog_from_pack(&pack)
 }
 
 /// Parse and validate the compiled-in `content/sky/outer_bodies.json` catalogue
@@ -1027,6 +999,9 @@ mod tests {
             "circular velocity vector must rotate smoothly over 1h without mdeg quantisation"
         );
 
+        let pack = crate::pack::load_pack(OUTER_BODIES_JSON)
+            .expect("compiled-in outer_bodies.json must load as a signed rules_definition pack");
+        assert_eq!(pack.manifest().id().as_str(), OUTER_BODIES_PACK);
         let validated = try_outer_catalog()
             .expect("compiled-in outer_bodies.json must pass BodyDef validation");
         let cat = outer_catalog();
@@ -1038,8 +1013,8 @@ mod tests {
             "3:1 resonance at 2.50 AU"
         );
 
-        // Malformed or contradictory outer_bodies JSON is rejected by BodyDef validation.
-        let bad_json = r#"{"bodies":{"bad":{"kind":"planet","orbit_uau":1000000,"period_mdays":365250,"phase_mdeg":0,"epoch_ic":74152540800,"radius_km":1000,"surface_mg":100,"elements":[[74152540800,5.0,0.0,0.0,0.0,0.0,0.0,0.9856]]}}}"#;
+        // Malformed or contradictory outer_bodies JSON is rejected by load_pack / BodyDef validation.
+        let bad_json = r#"{"manifest":{"id":"tacsim.sky.outer_bodies","version":1,"kind":"rules_definition","digest":"0000000000000000000000000000000000000000000000000000000000000000","requires":[]},"entries":{"bad":{"kind":"body","def":{"outer_kind":"planet","orbit_au":1.0,"period_days":365.25,"phase_deg_at_epoch":0.0,"epoch_ic":74152540800,"radius_km":1000,"surface_mg":100,"elements":[[74152540800,5.0,0.0,0.0,0.0,0.0,0.0,0.9856]]}}}}"#;
         assert!(parse_outer_catalog(bad_json).is_err());
     }
 }

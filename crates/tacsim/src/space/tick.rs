@@ -162,6 +162,9 @@ pub struct ActiveInterdictionBubble {
     /// Think sequence counter for a non-picket interdictor (`SF.R12`).
     #[serde(default)]
     pub interdictor_think_seq: u64,
+    /// Sealed mind attached to the non-picket interdictor (`SF.R14`, `D-35-17`).
+    #[serde(default, with = "super::picket::compact_mind_seal")]
+    pub interdictor_seal: Option<crate::arena::mind::MindSeal>,
 }
 
 impl ActiveInterdictionBubble {
@@ -1117,7 +1120,66 @@ pub fn boot_read(ctx: &mut Ctx<'_>, kv: &[(SmolStr, serde_json::Value)]) {
             store.space_state_held = true;
         }
         match serde_json::from_value::<SpacePersistedState>(value.clone()) {
-            Ok(state) if state.format == SPACE_STATE_FORMAT => {
+            Ok(mut state) if state.format == SPACE_STATE_FORMAT => {
+                if let Some(store) = ctx.w.module_state_mut::<TacsimStore>() {
+                    crate::minds::content::ensure_space_mind_sources_installed(store);
+                }
+                for active in state.book.by_domain.values_mut() {
+                    if let Some(picket) = active.picket.as_mut() {
+                        picket.corvette_seal =
+                            super::picket::space_mind_seal_of(ctx.w, picket.corvette_hull).or_else(
+                                || {
+                                    super::picket::build_space_mind_seal(
+                                        picket.corvette_hull,
+                                        crate::arena::mind::SortieId::ic(picket.corvette_hull, 1),
+                                        "kirkwood_picket",
+                                        crate::minds::content::kirkwood_picket_digest().0,
+                                    )
+                                },
+                            );
+                        picket.raider_seal =
+                            super::picket::space_mind_seal_of(ctx.w, picket.raider_hull).or_else(
+                                || {
+                                    super::picket::build_space_mind_seal(
+                                        picket.raider_hull,
+                                        crate::arena::mind::SortieId::ic(picket.raider_hull, 1),
+                                        "belt_raider",
+                                        crate::minds::content::belt_raider_digest().0,
+                                    )
+                                },
+                            );
+                    } else {
+                        active.interdictor_seal =
+                            super::picket::space_mind_seal_of(ctx.w, active.interdictor_hull)
+                                .or_else(|| {
+                                    super::picket::build_space_mind_seal(
+                                        active.interdictor_hull,
+                                        crate::arena::mind::SortieId::ic(
+                                            active.interdictor_hull,
+                                            1,
+                                        ),
+                                        "interdictor_patrol",
+                                        crate::minds::content::interdictor_patrol_digest().0,
+                                    )
+                                });
+                    }
+                }
+                for sess in state.book.cluster_sessions.values_mut() {
+                    for d in &mut sess.active_drones {
+                        d.mind_seal = super::picket::space_mind_seal_of(ctx.w, d.excursion_id.tv)
+                            .or_else(|| {
+                                super::picket::build_space_mind_seal(
+                                    d.excursion_id.tv,
+                                    crate::arena::mind::SortieId::ic(
+                                        d.excursion_id.tv,
+                                        d.excursion_id.launch_ic,
+                                    ),
+                                    "drone_mining",
+                                    crate::minds::content::drone_mining_digest().0,
+                                )
+                            });
+                    }
+                }
                 if let Some(book) = ctx.w.module_state_mut::<SpaceBubbleBook>() {
                     *book = state.book.clone();
                 }
@@ -2191,7 +2253,7 @@ fn step_interdictor_picket(
         bubble,
         interdictor_ship_id,
         interdictor_hull,
-        super::picket::INTERDICTOR_PATROL_RHAI,
+        crate::minds::content::interdictor_patrol_source(),
         *think_seq,
         memory,
     ) && res.fault.is_none()
@@ -2501,8 +2563,13 @@ fn build_interdiction_bubble(
     let carrier_ship_id = format!("hull.{}", hull.0);
     let site_id = format!("domain.{}", domain.0);
 
-    let carrier_ship = build_carrier_ship_state(ctx, hull, &site_id, leg_cursor, &carrier_ship_id)?;
+    let mut carrier_ship =
+        build_carrier_ship_state(ctx, hull, &site_id, leg_cursor, &carrier_ship_id)?;
     let open_kirkwood = super::picket::should_open_kirkwood_picket(ctx.w, hull, domain);
+    if !open_kirkwood {
+        // Flip-and-burn braking attitude as the carrier decelerates into the waypoint (`D-35-1`).
+        carrier_ship.attitude_deg = (180, 0, 0);
+    }
 
     let bubble_id = format!("bubble.interdiction.{}.{}", domain.0, leg_cursor);
     let mut bubble = LocalSpaceBubble::new(
@@ -2520,7 +2587,7 @@ fn build_interdiction_bubble(
     let mut ship_hulls = BTreeMap::new();
     ship_hulls.insert(carrier_ship_id.clone(), hull);
 
-    let (interdictor_hull, interdictor_ship_id, picket) = if open_kirkwood {
+    let (interdictor_hull, interdictor_ship_id, picket, interdictor_seal) = if open_kirkwood {
         let picket_state = super::picket::spawn_kirkwood_picket_ships_in_world(
             ctx,
             &mut bubble,
@@ -2538,7 +2605,7 @@ fn build_interdiction_bubble(
         );
         let raider_hull = picket_state.raider_hull;
         let raider_ship_id = picket_state.raider_ship_id.clone();
-        (raider_hull, raider_ship_id, Some(picket_state))
+        (raider_hull, raider_ship_id, Some(picket_state), None)
     } else {
         let interdictor_ship_id = format!("picket.{}.{}", domain.0, leg_cursor);
         let interdictor_hull = ctx
@@ -2556,6 +2623,13 @@ fn build_interdiction_bubble(
             crate::definitions::content::CORVETTE,
         )
         .ok()?;
+        let interdictor_seal = super::picket::seal_space_unit_in_world(
+            ctx,
+            interdictor_hull,
+            crate::arena::mind::SortieId::ic(interdictor_hull, ic_now_s.max(1)),
+            "interdictor_patrol",
+            crate::minds::content::interdictor_patrol_digest().0,
+        );
         let mut interdictor_ship = check_out_space_unit(
             ctx,
             interdictor_hull,
@@ -2568,7 +2642,7 @@ fn build_interdiction_bubble(
             [-20_000, 0, 0],
         )
         .ok()?;
-        interdictor_ship.attitude_deg = (180, 0, 0);
+        interdictor_ship.attitude_deg = (0, 0, 0);
         interdictor_ship.emcon = super::bubble::EmconPosture::Ghost;
         interdictor_ship.heat_permille = 0;
         interdictor_ship.thrust_mps2 = [0, 0, 0];
@@ -2578,7 +2652,12 @@ fn build_interdiction_bubble(
         bubble.set_party_relation(CARRIER_PARTY, INTERDICTOR_PARTY, SpaceRelation::Hostile);
         bubble.insert_ship(interdictor_ship);
         ship_hulls.insert(interdictor_ship_id.clone(), interdictor_hull);
-        (interdictor_hull, interdictor_ship_id, None)
+        (
+            interdictor_hull,
+            interdictor_ship_id,
+            None,
+            interdictor_seal,
+        )
     };
 
     let initial_prop_kg = bubble
@@ -2624,6 +2703,7 @@ fn build_interdiction_bubble(
         ship_hulls,
         interdictor_memory: Vec::new(),
         interdictor_think_seq: 0,
+        interdictor_seal,
     })
 }
 

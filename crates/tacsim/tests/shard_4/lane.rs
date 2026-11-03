@@ -63,7 +63,7 @@ use support::ground::{UNSIGNED, sign};
 /// Rim's paper (was `c7239b0a…` at v11).
 /// Doc 20 cut SM.12a: v14, the Exchange's and Occator's mills (was `34d47907…` at v13, relay R9b).
 /// Doc 20 cut SM.12b: v15, Occator's yard (was `c507f74c…` at v14).
-const LANE_DIGEST: &str = "9756baab9c26c7246aceb98fa176de33007f963a63523e16cf2bb2ed89ea29a6";
+const LANE_DIGEST: &str = "10fcdaa65772aa34ca28d33c0a38ed5167276b640400f771f803050d3173fa3a";
 
 /// The date the lane's bodies stand at (the script's chord minimum, R4).
 const LANE_DATE: &str = "2351-05-13";
@@ -451,13 +451,26 @@ fn ic2_the_lane_pack_is_pinned() {
         assert_eq!(route.drive_class.as_str(), "coast_hauler", "{id}");
         assert_eq!(route.propellant, 0, "{id}");
         assert!(route.controller.is_none(), "{id}");
-        assert!(
-            route
-                .legs
-                .iter()
-                .all(|leg| leg.hazard == 0 && leg.interdiction == 0),
-            "{id}"
-        );
+        if *id == LANE_ROUTE_OUT {
+            assert_eq!(
+                (route.legs[0].hazard, route.legs[0].interdiction),
+                (4, 3),
+                "{id} leg 0"
+            );
+            assert_eq!(
+                (route.legs[1].hazard, route.legs[1].interdiction),
+                (0, 0),
+                "{id} leg 1"
+            );
+        } else {
+            assert!(
+                route
+                    .legs
+                    .iter()
+                    .all(|leg| leg.hazard == 0 && leg.interdiction == 0),
+                "{id}"
+            );
+        }
     }
 }
 

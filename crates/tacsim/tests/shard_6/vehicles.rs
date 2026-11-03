@@ -2409,9 +2409,10 @@ fn sm3a_a_world_on_lane_v9_takes_v10_by_the_shelf() {
     assert!(
         plan.contains(&format!(
             // Doc 32 cut S.1 (lane v17): and the 512 site's place, port and two routes. Doc 36
-            // cut GC.7 (lane v18): and Stickney's port (its workshop and munitions).
-            "Plan for {LANE_PACK}@{LANE_VERSION}: 4 create, 4 update, 0 retire, {} unchanged",
-            entries - 8
+            // cut GC.7 (lane v18): and Stickney's port (its workshop and munitions). Doc 38
+            // cut SF.R14 (lane v19): and Kirkwood Depot and Ceres Stickney places.
+            "Plan for {LANE_PACK}@{LANE_VERSION}: 4 create, 6 update, 0 retire, {} unchanged",
+            entries - 10
         )),
         "{plan}"
     );
@@ -2431,8 +2432,8 @@ fn sm3a_a_world_on_lane_v9_takes_v10_by_the_shelf() {
     }
     assert!(
         apply.contains(&format!(
-            "Applied {LANE_PACK}@{LANE_VERSION}: 4 created, 4 updated, 0 retired, {} unchanged.",
-            entries - 8
+            "Applied {LANE_PACK}@{LANE_VERSION}: 4 created, 6 updated, 0 retired, {} unchanged.",
+            entries - 10
         )),
         "{plan}\n{apply}"
     );
@@ -2474,10 +2475,10 @@ fn sm3a_a_world_on_lane_v9_takes_v10_by_the_shelf() {
     let (plan, apply) = plan_and_apply(&mut rig.tw);
     assert!(
         apply.contains(&format!(
-            // Doc 36 cut GC.7: Stickney's port updates too.
-            "Applied {LANE_PACK}@{}: 4 created, 4 updated, 0 retired, {} unchanged.",
+            // Doc 36 cut GC.7: Stickney's port updates too; Doc 38 cut SF.R14: Kirkwood Depot and Ceres Stickney places update too.
+            "Applied {LANE_PACK}@{}: 4 created, 6 updated, 0 retired, {} unchanged.",
             LANE_VERSION + 1,
-            entries - 8
+            entries - 10
         )),
         "{plan}\n{apply}"
     );

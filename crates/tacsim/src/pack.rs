@@ -611,6 +611,54 @@ pub struct LocationDef {
     /// `0..360_000` (Dawn's convention for Ceres and Vesta).
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub lon_mdeg: Option<i32>,
+    /// **Doc 35 cut SF.R14 (`D-35-17`)** — whether this waypoint hosts the
+    /// multi-party Kirkwood Customs Picket (`kirkwood_picket.rhai` + `belt_raider.rhai`).
+    #[serde(default, skip_serializing_if = "std::ops::Not::not")]
+    pub kirkwood_picket: bool,
+    /// **Doc 35 cut SF.R14 (`D-35-13`, `D-35-17`)** — orbital asteroid clusters
+    /// authored on this frontier waypoint (`ceres_halo`, `kirkwood_gap_3_1`,
+    /// `pallas_inclined_belt`, `saturn_b_ring_edge`).
+    #[serde(default, skip_serializing_if = "Vec::is_empty")]
+    pub clusters: Vec<OrbitalClusterDef>,
+}
+
+/// Authored orbital asteroid cluster attached to a frontier waypoint (`SF.R14`, `D-35-13`, `D-35-17`).
+#[derive(Clone, Debug, Eq, PartialEq, Serialize, Deserialize)]
+#[serde(deny_unknown_fields)]
+pub struct OrbitalClusterDef {
+    /// Canonical cluster identifier (`ceres_halo`, `kirkwood_gap_3_1`, `pallas_inclined_belt`, `saturn_b_ring_edge`).
+    pub id: CanonicalId,
+    /// Display label of the cluster.
+    pub label: String,
+    /// Security/tenure zone (`Core` or `Frontier`).
+    pub zone: String,
+    /// Anchor ephemeris body (`ceres`, `pallas`, `titan`).
+    pub anchor_body: CanonicalId,
+    /// Authored asteroid pockets (`A`, `B`, `C`).
+    pub rocks: Vec<ClusterRockDef>,
+}
+
+/// Authored asteroid pocket inside an [`OrbitalClusterDef`] (`SF.R14`, `D-35-13`, `D-35-17`).
+#[derive(Clone, Debug, Eq, PartialEq, Serialize, Deserialize)]
+#[serde(deny_unknown_fields)]
+pub struct ClusterRockDef {
+    /// Block letter (`'A'`, `'B'`, `'C'`).
+    pub letter: char,
+    /// Short rock alias (`"rock_1"`, `"rock_2"`, `"rock_3"`).
+    pub alias: String,
+    /// Spectral class code (`"C-TYPE"`, `"S-TYPE"`, `"M-TYPE"`).
+    pub spectral: String,
+    /// Position in cluster bubble coordinates (`[x_m, y_m, z_m]`).
+    pub pos_m: [i64; 3],
+    /// Drift velocity in cluster bubble coordinates (`[vx_mmps, vy_mmps, vz_mmps]`).
+    pub vel_mmps: [i64; 3],
+    /// Initial conserved `OreDeposit` reserve per ore family in tonnes.
+    pub gross_t: u64,
+    /// Default tenure (`Commons`, `Open`, `Held`).
+    pub tenure: crate::port::def::Tenure,
+    /// Default holder org id (`Some("pallas_syndicate")` on Pallas blocks `A` and `B`).
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub holder_org: Option<CanonicalId>,
 }
 
 /// **Doc 20 cut SM.2 (§3.1, §3.3; the SM.2 brief's lead ruling 1)** — the role
@@ -684,10 +732,22 @@ pub struct BodyDef {
     /// tables are installed at boot and at apply
     /// (`crate::surface::install_lane_geology`).
     pub geology: Option<crate::surface::GeologyTable>,
+    /// **Doc 35 cut SF.R14 (`D-35-4`, `D-35-13`, `D-35-17`)** — optional outer-system
+    /// or orbital cluster classification (`GasGiant`, `IceGiant`, `Moon`, `OrbitalCluster`).
+    pub outer_kind: Option<crate::sky::OuterBodyKind>,
+    /// **Doc 35 cut SF.R14 (`D-35-13`, `D-35-17`)** — optional security/tenure zone.
+    pub zone: Option<String>,
+    /// **Doc 35 cut SF.R14 (`D-35-13`, `D-35-17`)** — optional asteroid spectral classes.
+    pub spectral_classes: Vec<String>,
+    /// **Doc 35 cut SF.R14 (`D-35-13`, `D-35-17`)** — optional conserved ore families.
+    pub ore_families: Vec<String>,
 }
 
 /// The surface figures' bound, both `surface_mg` and `radius_km` (doc 20 cut SM.2).
 pub const MAX_SURFACE_FIGURE: u32 = 10_000;
+
+/// Maximum mean radius in kilometres for outer-system gas/ice giants (`saturn`, `uranus`, `neptune`, `SF.R14`).
+pub const MAX_OUTER_RADIUS_KM: u32 = 100_000;
 
 /// The largest orbit a pack may author, micro-AU (100 000 AU).
 pub const MAX_ORBIT_UAU: u64 = 100_000_000_000;
@@ -723,6 +783,18 @@ struct BodyDefWire {
     /// Doc 20 cut SM.2: the geology table.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     geology: Option<crate::surface::GeologyTableWire>,
+    /// Doc 35 cut SF.R14: outer-system body or orbital cluster kind.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    outer_kind: Option<crate::sky::OuterBodyKind>,
+    /// Doc 35 cut SF.R14: security/tenure zone.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    zone: Option<String>,
+    /// Doc 35 cut SF.R14: asteroid spectral classes.
+    #[serde(default, skip_serializing_if = "Vec::is_empty")]
+    spectral_classes: Vec<String>,
+    /// Doc 35 cut SF.R14: conserved ore families.
+    #[serde(default, skip_serializing_if = "Vec::is_empty")]
+    ore_families: Vec<String>,
 }
 
 impl Serialize for BodyDef {
@@ -742,6 +814,10 @@ impl Serialize for BodyDef {
                 .geology
                 .as_ref()
                 .map(crate::surface::GeologyTable::wire),
+            outer_kind: self.outer_kind,
+            zone: self.zone.clone(),
+            spectral_classes: self.spectral_classes.clone(),
+            ore_families: self.ore_families.clone(),
         };
         wire.serialize(serializer)
     }
@@ -758,6 +834,14 @@ impl<'de> Deserialize<'de> for BodyDef {
         )
         .and_then(|def| def.with_elements(&wire.elements))
         .map(|def| def.with_parent(wire.parent))
+        .map(|def| {
+            def.with_outer_metadata(
+                wire.outer_kind,
+                wire.zone,
+                wire.spectral_classes,
+                wire.ore_families,
+            )
+        })
         .and_then(|def| def.with_surface(wire.surface_mg, wire.radius_km, wire.geology.as_ref()))
         .map_err(serde::de::Error::custom)
     }
@@ -829,7 +913,27 @@ impl BodyDef {
             surface_mg: None,
             radius_km: None,
             geology: None,
+            outer_kind: None,
+            zone: None,
+            spectral_classes: Vec::new(),
+            ore_families: Vec::new(),
         })
+    }
+
+    /// **Doc 35 cut SF.R14 (`D-35-17`)** — attach outer-system catalogue metadata.
+    #[must_use]
+    pub fn with_outer_metadata(
+        mut self,
+        outer_kind: Option<crate::sky::OuterBodyKind>,
+        zone: Option<String>,
+        spectral_classes: Vec<String>,
+        ore_families: Vec<String>,
+    ) -> BodyDef {
+        self.outer_kind = outer_kind;
+        self.zone = zone;
+        self.spectral_classes = spectral_classes;
+        self.ore_families = ore_families;
+        self
     }
 
     /// **The same body with its surface** (doc 20 cut SM.2; §3.1, §3.2, §3.3,
@@ -853,8 +957,13 @@ impl BodyDef {
                 "a body's surface_mg is 1 to {MAX_SURFACE_FIGURE} milli-g"
             ));
         }
-        if radius_km.is_some_and(|km| !(1..=MAX_SURFACE_FIGURE).contains(&km)) {
-            return Err(format!("a body's radius_km is 1 to {MAX_SURFACE_FIGURE}"));
+        let max_radius = if self.outer_kind.is_some() {
+            MAX_OUTER_RADIUS_KM
+        } else {
+            MAX_SURFACE_FIGURE
+        };
+        if radius_km.is_some_and(|km| !(1..=max_radius).contains(&km)) {
+            return Err(format!("a body's radius_km is 1 to {max_radius}"));
         }
         let table = match geology {
             None => None,
@@ -1549,8 +1658,14 @@ impl RulesPack {
             if let PackEntry::Body(moon) = entry
                 && let Some(parent) = &moon.parent
             {
-                match entries.get(parent) {
+                let prefixed_parent = CanonicalId::new(format!("tacsim.body.{parent}")).ok();
+                let parent_entry = entries
+                    .get(parent)
+                    .or_else(|| prefixed_parent.as_ref().and_then(|cid| entries.get(cid)));
+                match parent_entry {
                     Some(PackEntry::Body(primary)) if !primary.is_moon() && parent != id => {}
+                    None if moon.outer_kind.is_some()
+                        && matches!(parent.as_str(), "jupiter" | "saturn") => {}
                     _ => {
                         return Err(PackError::UnknownParent {
                             moon: id.to_string(),

@@ -3084,8 +3084,9 @@ fn a8_a_world_on_lane_v7_takes_v8_by_the_shelf() {
             // Doc 20 cut SM.2: the shipped lane is v9, so the step also creates the six
             // sites' places, ports and routes and updates the eight bodies and the Freeport;
             // doc 32 cut S.1 (lane v17): and the 512 site's place, port and two routes;
-            // doc 36 cut GC.7 (lane v18): and Stickney's port (its workshop and munitions).
-            "Plan for {LANE_PACK}@{LANE_VERSION}: 40 create, 11 update, 0 retire, 13 unchanged"
+            // doc 36 cut GC.7 (lane v18): and Stickney's port (its workshop and munitions);
+            // doc 38 cut SF.R14 (lane v19): and Kirkwood Depot and Ceres Stickney places.
+            "Plan for {LANE_PACK}@{LANE_VERSION}: 40 create, 13 update, 0 retire, 11 unchanged"
         )),
         "{plan}"
     );
@@ -3096,7 +3097,7 @@ fn a8_a_world_on_lane_v7_takes_v8_by_the_shelf() {
     );
     assert!(
         apply.contains(&format!(
-            "Applied {LANE_PACK}@{LANE_VERSION}: 40 created, 11 updated, 0 retired, 13 unchanged."
+            "Applied {LANE_PACK}@{LANE_VERSION}: 40 created, 13 updated, 0 retired, 11 unchanged."
         )),
         "{plan}\n{apply}"
     );
