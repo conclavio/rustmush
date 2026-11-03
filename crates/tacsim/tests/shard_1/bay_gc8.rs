@@ -36,7 +36,7 @@ use crate::driving::{
 
 /// **Buy `qty` of `good` from `vendor` at Ceres** through the market's own quote, accept and
 /// draw, into the buyer's chartered hold (GC.7's path).
-fn buy(rig: &mut Rig, pilot: ObjId, vendor: &str, good: &str, qty: u64) {
+pub(crate) fn buy(rig: &mut Rig, pilot: ObjId, vendor: &str, good: &str, qty: u64) {
     fn market(rig: &Rig) -> &mush_market::MarketStore {
         rig.tw
             .world()
@@ -76,7 +76,10 @@ fn buy(rig: &mut Rig, pilot: ObjId, vendor: &str, good: &str, qty: u64) {
 }
 
 /// A part's magazine, `(current, max)`.
-fn magazine(u: &mush_tactics::TacticalUnit, part: &mush_tactics::ComponentId) -> (i64, i64) {
+pub(crate) fn magazine(
+    u: &mush_tactics::TacticalUnit,
+    part: &mush_tactics::ComponentId,
+) -> (i64, i64) {
     let cell = u
         .cell(&CellAddr::Component {
             component: part.clone(),
@@ -87,7 +90,7 @@ fn magazine(u: &mush_tactics::TacticalUnit, part: &mush_tactics::ComponentId) ->
 }
 
 /// The magazine of `part` emptied.
-fn empty_magazine(part: &mush_tactics::ComponentId) -> UnitMutationOp {
+pub(crate) fn empty_magazine(part: &mush_tactics::ComponentId) -> UnitMutationOp {
     UnitMutationOp::SetCell {
         addr: CellAddr::Component {
             component: part.clone(),
@@ -97,29 +100,32 @@ fn empty_magazine(part: &mush_tactics::ComponentId) -> UnitMutationOp {
     }
 }
 
-const STICKNEY: &str = "stickney_port";
+pub(crate) const STICKNEY: &str = "stickney_port";
 
-fn order_of(rig: &Rig, hull: ObjId) -> tacsim::port::bay_work::BayOrder {
+pub(crate) fn order_of(rig: &Rig, hull: ObjId) -> tacsim::port::bay_work::BayOrder {
     match store(&rig.tw).bay_hull(hull) {
         Some(BayHullState::Present(row)) => row.order.clone().expect("an order"),
         other => panic!("the bay record: {other:?}"),
     }
 }
 
-fn unit(rig: &Rig, hull: ObjId) -> mush_tactics::TacticalUnit {
+pub(crate) fn unit(rig: &Rig, hull: ObjId) -> mush_tactics::TacticalUnit {
     mush_tactics::module::unit_of(rig.tw.world(), hull)
         .cloned()
         .expect("a unit")
 }
 
-fn section_id(u: &mush_tactics::TacticalUnit, local: &str) -> mush_tactics::SectionId {
+pub(crate) fn section_id(u: &mush_tactics::TacticalUnit, local: &str) -> mush_tactics::SectionId {
     u.sections()
         .map(|(id, _)| id.clone())
         .find(|id| id.as_str() == local || id.as_str().ends_with(&format!(".{local}")))
         .unwrap_or_else(|| panic!("a {local} section"))
 }
 
-fn component_id(u: &mush_tactics::TacticalUnit, local: &str) -> mush_tactics::ComponentId {
+pub(crate) fn component_id(
+    u: &mush_tactics::TacticalUnit,
+    local: &str,
+) -> mush_tactics::ComponentId {
     u.components()
         .map(|(id, _)| id.clone())
         .find(|id| id.as_str() == local || id.as_str().ends_with(&format!(".{local}")))
@@ -127,7 +133,7 @@ fn component_id(u: &mush_tactics::TacticalUnit, local: &str) -> mush_tactics::Co
 }
 
 /// Staff damage through the unit's one plan path.
-fn damage(rig: &mut Rig, hull: ObjId, ops: Vec<UnitMutationOp>) {
+pub(crate) fn damage(rig: &mut Rig, hull: ObjId, ops: Vec<UnitMutationOp>) {
     let u = unit(rig, hull);
     let plan = UnitMutationPlan::new(ops, Some(u.revision()), None).expect("a plan");
     staff_hand(rig, |ctx| {
@@ -136,7 +142,7 @@ fn damage(rig: &mut Rig, hull: ObjId, ops: Vec<UnitMutationOp>) {
 }
 
 /// Every cell of `section` down to its least: the section destroyed.
-fn wreck_section(
+pub(crate) fn wreck_section(
     u: &mush_tactics::TacticalUnit,
     section: &mush_tactics::SectionId,
 ) -> Vec<UnitMutationOp> {
@@ -152,7 +158,7 @@ fn wreck_section(
 }
 
 /// `points` off the first section cell of `section` that has them.
-fn dent(
+pub(crate) fn dent(
     u: &mush_tactics::TacticalUnit,
     section: &mush_tactics::SectionId,
     points: i64,
@@ -170,7 +176,29 @@ fn dent(
     }
 }
 
-fn mint(rig: &mut Rig, pilot: ObjId) {
+/// **`hull` worn to what a Dray-P's hold can take as alloy** (doc 36a P2-4): the scrap yield is
+/// `SCRAP_KG_PER_STRUCTURAL_POINT` (100 kg) a surviving structural point and a whole escort is
+/// 2,990 points — 299 t against the hold's 86 t rating — so every section cell is set to a
+/// quarter of its points, a hull brought back shot up, its sections standing and its parts
+/// salvageable. (That a rig the bay slot rates at 20 t scraps to 299 t of alloy is an owner
+/// question, doc 36a §9.)
+pub(crate) fn worn(rig: &mut Rig, hull: ObjId) {
+    let u = unit(rig, hull);
+    let ops: Vec<UnitMutationOp> = u
+        .cells()
+        .filter(|(addr, cell)| {
+            matches!(addr, CellAddr::Section { .. } | CellAddr::Facet { .. })
+                && cell.current - cell.min > 4
+        })
+        .map(|(addr, cell)| UnitMutationOp::SetCell {
+            addr: addr.clone(),
+            value: cell.min + (cell.current - cell.min) / 4,
+        })
+        .collect();
+    damage(rig, hull, ops);
+}
+
+pub(crate) fn mint(rig: &mut Rig, pilot: ObjId) {
     let treasury = port_map(&rig.tw, "ceres_port")
         .treasury
         .expect("a treasury");
@@ -185,7 +213,7 @@ fn mint(rig: &mut Rig, pilot: ObjId) {
 }
 
 /// The Dray-P with the escort in slot 1 and a prospector rig in slot 2, still at Ceres.
-fn leased(rig: &mut Rig) -> (ObjId, HullRow, ObjId, ObjId) {
+pub(crate) fn leased(rig: &mut Rig) -> (ObjId, HullRow, ObjId, ObjId) {
     let (pilot, row) = prospector(rig, "Pilot", 1, "Salt Moth");
     mint(rig, pilot);
     at_counter(rig, pilot);
@@ -200,7 +228,7 @@ fn leased(rig: &mut Rig) -> (ObjId, HullRow, ObjId, ObjId) {
 
 /// **Staff put `who` in `room`**: into a hull's interior space (`interior`), or out of any
 /// space into a plain port room.
-fn put(rig: &mut Rig, who: ObjId, room: ObjId, interior: bool) {
+pub(crate) fn put(rig: &mut Rig, who: ObjId, room: ObjId, interior: bool) {
     staff_hand(rig, |ctx| {
         if interior {
             mush_sim::place_interior(ctx, who, room, None).expect("into the space");
@@ -212,11 +240,11 @@ fn put(rig: &mut Rig, who: ObjId, room: ObjId, interior: bool) {
 }
 
 /// The hull's bay room.
-fn bay_room(row: &HullRow) -> ObjId {
+pub(crate) fn bay_room(row: &HullRow) -> ObjId {
     ObjId(row.rooms[&crate::driving::cid("bay")])
 }
 
-fn in_bay(rig: &Rig, tv: ObjId, room: ObjId) -> bool {
+pub(crate) fn in_bay(rig: &Rig, tv: ObjId, room: ObjId) -> bool {
     matches!(
         crate::driving::parent(&rig.tw, tv),
         mush_sim::data::SpatialParent::Interior { space, .. } if space == room
@@ -541,7 +569,7 @@ async fn gc8_who_may_have_a_hull_worked_on() {
 }
 
 /// **A mechanic with Occator's `unit.maintain_refit`**, enrolled, funded, standing in `room`.
-fn mechanic(rig: &mut Rig, room: ObjId) -> ObjId {
+pub(crate) fn mechanic(rig: &mut Rig, room: ObjId) -> ObjId {
     let mechanic = crate::driving::pilot(rig, "Mechanic", 3);
     let enrolled = run(&mut rig.tw, mechanic, "+coop/enrol Grey Heron");
     assert!(enrolled.contains("now the Grey Heron"), "{enrolled}");
@@ -557,7 +585,7 @@ fn mechanic(rig: &mut Rig, room: ObjId) -> ObjId {
 }
 
 /// A command, its submissions landed, then fires until `hull`'s record owes nothing.
-fn settled(rig: &mut Rig, who: ObjId, line: &str, hull: ObjId) -> String {
+pub(crate) fn settled(rig: &mut Rig, who: ObjId, line: &str, hull: ObjId) -> String {
     let out = run(&mut rig.tw, who, line);
     let queued = drain(&mut rig.tw);
     land_all(rig, &queued);
@@ -572,7 +600,7 @@ fn settled(rig: &mut Rig, who: ObjId, line: &str, hull: ObjId) -> String {
     panic!("{line}: the bay's act did not settle\n{out}");
 }
 
-fn bay_handles(rig: &Rig) -> tacsim::port::bay_work::act::BayActHandles {
+pub(crate) fn bay_handles(rig: &Rig) -> tacsim::port::bay_work::act::BayActHandles {
     rig.tw
         .world()
         .module_state::<tacsim::port::bay_work::act::BayActHandles>()
@@ -580,7 +608,7 @@ fn bay_handles(rig: &Rig) -> tacsim::port::bay_work::act::BayActHandles {
         .expect("the bay's handles")
 }
 
-fn provenance(
+pub(crate) fn provenance(
     rig: &mut Rig,
     lot: mush_inventory::LotId,
 ) -> tacsim::port::bay_work::act::PartProvenance {
@@ -588,7 +616,7 @@ fn provenance(
     typed(&mut rig.tw, &handles.parts, &lot).expect("the part's provenance")
 }
 
-fn lot_record(rig: &mut Rig, lot: mush_inventory::LotId) -> Option<mush_inventory::Lot> {
+pub(crate) fn lot_record(rig: &mut Rig, lot: mush_inventory::LotId) -> Option<mush_inventory::Lot> {
     let inventory = bay_handles(rig).inventory.expect("the inventory");
     typed(&mut rig.tw, &inventory.lots, &lot)
 }
@@ -693,7 +721,8 @@ async fn gc8b_a_stripped_part_carries_its_provenance_and_a_hot_part_is_refused()
     let order = order_of(&rig, escort);
     let _ = to_ic(&mut rig, order.due_ic + 60);
     let _ = to_ic(&mut rig, order.due_ic + 600);
-    assert_eq!(order_of(&rig, escort).status, OrderStatus::Done);
+    let order = order_of(&rig, escort);
+    assert_eq!(order.status, OrderStatus::Done, "{order:?}");
     let assessment =
         tacsim::field_ops::assess_tacsim_unit(&unit(&rig, escort), None).expect("assessed");
     assert_eq!(
@@ -759,6 +788,9 @@ async fn gc8b_scrap_breaks_a_workshop_hull_into_alloys_and_parts() {
     put(&mut rig, spare, bay, true);
     let berthed = run(&mut rig.tw, pilot, &format!("+bay/berth #{}", spare.0));
     assert!(berthed.contains("berthed in the workshop"), "{berthed}");
+    // Doc 36a P2-4: the hold takes the alloy or the scrap is refused; a whole escort's 299 t
+    // never fits a Dray-P's 86 t, so the spare comes back worn.
+    worn(&mut rig, spare);
     let before = tacsim::field_ops::assess_tacsim_unit(&unit(&rig, spare), None).expect("assessed");
     let salvageable = before
         .component_conditions

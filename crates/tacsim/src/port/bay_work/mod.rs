@@ -342,6 +342,15 @@ fn record_of(w: &World, hull: ObjId) -> Result<BayHull, &'static str> {
     }
 }
 
+/// **The ordinal the next owed act takes** (doc 36a §5.1): one past the hull's ledger when it
+/// reads — the ledger, not the record, is what the prepare accepts — else one past the
+/// record's own count. A record that ran ahead of its ledger (an act given up) heals here.
+fn next_act(ctx: &Ctx<'_>, record: &BayHull) -> u32 {
+    act::landed(ctx, record.hull)
+        .unwrap_or(record.acts)
+        .saturating_add(1)
+}
+
 /// **Whether `hull` is held** (Q-36-32): an open order, a berth (it leaves only by stow), or
 /// an unreadable record.
 #[must_use]
@@ -910,7 +919,7 @@ fn finish(ctx: &mut Ctx<'_>, hull: ObjId) {
         );
         return;
     }
-    let act = record.acts.saturating_add(1);
+    let act = next_act(ctx, &record);
     record.acts = act;
     record.owed = Some(Box::new(OwedAct {
         act,
@@ -1046,9 +1055,12 @@ fn complete(ctx: &mut Ctx<'_>, hull: ObjId) {
 
 /// **Settle the act `hull`'s record owes** (the two writes; the
 /// [`crate::port::bay_work::act`] module doc): landed on the ledger, the record lets it go and
-/// its consequence follows (a draw completes its order); otherwise it is submitted as its
-/// actor, at most [`act::MAX_ACT_TRIES`] times, and then given up (a draw cancels its order
-/// and releases the fee; a lost mint pages staff).
+/// its consequence follows (a draw completes its order; a mint writes the strip or the scrap
+/// to the hull, [`strip::land_mint`]); otherwise it is submitted as its actor, at most
+/// [`act::MAX_ACT_TRIES`] times, and then given up (a draw cancels its order and releases the
+/// fee; a lost mint leaves the hull as it was and pages staff). A given-up act rolls the
+/// record's count back to the ledger's (doc 36a §5.1), so the next act takes the ordinal the
+/// prepare accepts.
 fn settle(ctx: &mut Ctx<'_>, hull: ObjId) {
     let Ok(mut record) = record_of(ctx.w, hull) else {
         return;
@@ -1068,18 +1080,21 @@ fn settle(ctx: &mut Ctx<'_>, hull: ObjId) {
         put_bay_hull(ctx, &record);
         match &owed.kind {
             OwedKind::Draw { .. } => complete(ctx, hull),
-            OwedKind::Mint { why, lots } => ctx.out.sys_to_actor(
-                owed.by,
-                "tacsim",
-                format!(
-                    "The {why} of #{} is laid into the carrier's hold: {}.",
-                    hull.0,
-                    lots.iter()
-                        .map(|l| format!("{} {} ({})", l.quantity, l.commodity, l.lot))
-                        .collect::<Vec<_>>()
-                        .join(", ")
-                ),
-            ),
+            OwedKind::Mint { why, lots } => {
+                strip::land_mint(ctx, hull, owed.by, why, lots);
+                ctx.out.sys_to_actor(
+                    owed.by,
+                    "tacsim",
+                    format!(
+                        "The {why} of #{} is laid into the carrier's hold: {}.",
+                        hull.0,
+                        lots.iter()
+                            .map(|l| format!("{} {} ({})", l.quantity, l.commodity, l.lot))
+                            .collect::<Vec<_>>()
+                            .join(", ")
+                    ),
+                );
+            }
             OwedKind::Hot { .. } => {}
         }
         return;
@@ -1089,12 +1104,39 @@ fn settle(ctx: &mut Ctx<'_>, hull: ObjId) {
     }
     if owed.tries >= act::MAX_ACT_TRIES {
         record.owed = None;
+        // Doc 36a §5.1: a given-up act never landed, so the record's count follows the
+        // ledger; left one ahead, every later act on the hull would be refused Conflict.
+        record.acts = landed;
         match &owed.kind {
             OwedKind::Draw { .. } => {
+                if let Some(order) = record.order.as_mut() {
+                    order.draw_act = None;
+                }
                 close_cancelled(
                     ctx,
                     record,
                     "the carrier's hold could not supply the goods the work needs",
+                );
+            }
+            OwedKind::Mint { why, .. } => {
+                // The strip or the scrap was never written to the hull (`strip::land_mint`
+                // writes it when the mint lands): a lost mint destroys nothing.
+                put_bay_hull(ctx, &record);
+                tracing::error!(
+                    hull = hull.0,
+                    act = owed.act,
+                    op = why,
+                    "tacsim: a bay mint was refused every try; no lot was laid in the hold and \
+                     nothing came off the hull"
+                );
+                ctx.out.sys_to_actor(
+                    owed.by,
+                    "tacsim",
+                    format!(
+                        "The {why} of #{} could not be laid into the carrier's hold; nothing \
+                         came off her.",
+                        hull.0
+                    ),
                 );
             }
             kind => {
@@ -1103,8 +1145,8 @@ fn settle(ctx: &mut Ctx<'_>, hull: ObjId) {
                     hull = hull.0,
                     act = owed.act,
                     op = kind.word(),
-                    "tacsim: a bay act was refused every try; its lots or flag were not written, \
-                     staff write them by hand"
+                    "tacsim: a bay act was refused every try; its flag was not written, staff \
+                     write it by hand"
                 );
             }
         }

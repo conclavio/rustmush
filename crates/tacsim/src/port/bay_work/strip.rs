@@ -10,6 +10,9 @@
 //!   (`WorkshopBook::scrap_hull`): its structural mass becomes `structural_alloys`, a tonne per
 //!   1,000 kg, and each salvageable part a lot with its provenance. The hull is left an
 //!   irrecoverable shell in the workshop, its berth freed.
+//! - **When the hull changes** (doc 36a §5.1): a strip or a scrap is checked against the hull
+//!   when it is ordered, but written to it only when its mint has landed ([`land_mint`], from
+//!   the port tick's settle), so a mint given up destroys nothing.
 //! - **Hot parts** (Q-F6): [`vacate_claim`] flags a stripped part hot when the claim it came off
 //!   under is vacated — the seam GC.5/GC.6's contest calls, a staff fixture until then. The bay
 //!   refuses to fit a hot part (`+bay/fit`).
@@ -160,7 +163,8 @@ pub fn strip(ctx: &mut Ctx<'_>, hull: ObjId, part: &str) -> Result<LotId, String
             at_ic,
         )
         .map_err(|e| e.to_string())?;
-    let plan = mush_tactics::field_ops::ic_condition_plan(
+    // The change is checked here and written when the mint lands (`land_mint`).
+    mush_tactics::field_ops::ic_condition_plan(
         &before,
         &after,
         None,
@@ -168,9 +172,8 @@ pub fn strip(ctx: &mut Ctx<'_>, hull: ObjId, part: &str) -> Result<LotId, String
     )
     .map_err(|e| e.to_string())?
     .ok_or("Nothing came off.")?;
-    let act_no = record.acts.saturating_add(1);
+    let act_no = super::next_act(ctx, &record);
     let lot = act::lot_id(hull, act_no, 0)?;
-    mush_tactics::module::apply_plan(ctx, hull, &plan).map_err(|e| e.to_string())?;
     let condition = stripped.condition;
     let row = LotMint {
         lot,
@@ -215,7 +218,7 @@ pub fn scrap(ctx: &mut Ctx<'_>, hull: ObjId) -> Result<Scrapped, String> {
             at_ic,
         )
         .map_err(|e| e.to_string())?;
-    let act_no = record.acts.saturating_add(1);
+    let act_no = super::next_act(ctx, &record);
     let mut lots = Vec::new();
     let alloys_t = report.structural_scrap_kg / SCRAP_KG_PER_T;
     if alloys_t > 0 {
@@ -255,22 +258,93 @@ pub fn scrap(ctx: &mut Ctx<'_>, hull: ObjId) -> Result<Scrapped, String> {
         Some(SmolStr::new_static("tacsim.bay.scrap")),
     )
     .map_err(|e| e.to_string())?;
-    if let Some(plan) = plan {
-        mush_tactics::module::apply_plan(ctx, hull, &plan).map_err(|e| e.to_string())?;
-    }
     let parts = lots
         .iter()
         .filter(|l| l.part.is_some())
         .map(|l| l.lot)
         .collect();
-    record.scrapped_ic = Some(at_ic);
-    record.berth = None;
     if lots.is_empty() {
+        // Nothing to lay in the hold: the hull is broken up now.
+        if let Some(plan) = plan {
+            mush_tactics::module::apply_plan(ctx, hull, &plan).map_err(|e| e.to_string())?;
+        }
+        record.scrapped_ic = Some(at_ic);
+        record.berth = None;
         put_bay_hull(ctx, &record);
     } else {
+        // The breaking-up is written when the mint lands (`land_mint`); the hull stands
+        // berthed and whole until then.
         owe_mint(ctx, record, act_no, vault.0, "scrap", lots);
     }
     Ok(Scrapped { alloys_t, parts })
+}
+
+/// **A mint landed** (doc 36a §5.1): the change a strip or a scrap owes the hull is written
+/// now that its lots stand in the hold — derived again from the hull as it stands (the strip
+/// of the slot the lot's provenance names, or the breaking-up of the hull), so a mint given up
+/// destroys nothing. A hull that will not take the change any more is paged for staff; its
+/// lots stand. A scrap marks the record scrapped and frees its berth either way.
+pub(crate) fn land_mint(ctx: &mut Ctx<'_>, hull: ObjId, by: ObjId, why: &str, lots: &[LotMint]) {
+    let at_ic = ctx.w.world_ic_now().at;
+    let scrap = why == "scrap";
+    let custody = CustodyTitleStatus::ResolvedTitle { owner: by };
+    let written = (|| -> Result<(), String> {
+        let (before, _, anatomy) = super::unit_parts(ctx.w, hull)?;
+        let (after, cause) = if scrap {
+            let (after, _) = WorkshopBook::new()
+                .scrap_hull(&before, &anatomy, by, &custody, false, at_ic)
+                .map_err(|e| e.to_string())?;
+            (after, SmolStr::new_static("tacsim.bay.scrap"))
+        } else {
+            let slot = lots
+                .iter()
+                .find_map(|l| l.part.as_ref())
+                .map(|p| p.slot.clone())
+                .ok_or("the strip names no slot")?;
+            let (after, _, _) = WorkshopBook::new()
+                .strip_component(
+                    &before,
+                    &anatomy,
+                    &slot,
+                    by,
+                    &StripAuthorization::BayOrWorkshop {
+                        custody: custody.clone(),
+                        has_explicit_owner_permission: true,
+                    },
+                    None,
+                    at_ic,
+                )
+                .map_err(|e| e.to_string())?;
+            (after, SmolStr::new_static("tacsim.bay.strip"))
+        };
+        let plan = mush_tactics::field_ops::ic_condition_plan(&before, &after, None, Some(cause))
+            .map_err(|e| e.to_string())?;
+        if let Some(plan) = plan {
+            mush_tactics::module::apply_plan(ctx, hull, &plan).map_err(|e| e.to_string())?;
+        }
+        Ok(())
+    })();
+    if let Err(error) = written {
+        tracing::error!(
+            hull = hull.0, %error, op = why,
+            "tacsim: a bay mint landed but the hull would not take its change; staff reconcile \
+             the hull against the lots in the hold"
+        );
+        ctx.out.sys_to_actor(
+            by,
+            "tacsim",
+            format!(
+                "The {why} of #{} is laid into the hold, but the hull would not take the change; \
+                 staff are paged.",
+                hull.0
+            ),
+        );
+    }
+    if scrap && let Ok(mut record) = record_of(ctx.w, hull) {
+        record.scrapped_ic = Some(at_ic);
+        record.berth = None;
+        put_bay_hull(ctx, &record);
+    }
 }
 
 /// **A stripped part's claim is vacated** (Q-S13, Q-F6): the provenance of `lot`, a part that
@@ -298,7 +372,7 @@ pub fn vacate_claim(
     if record.owed.is_some() {
         return Err(SETTLING.to_owned());
     }
-    let act_no = record.acts.saturating_add(1);
+    let act_no = super::next_act(ctx, &record);
     record.acts = act_no;
     record.owed = Some(Box::new(OwedAct {
         act: act_no,
