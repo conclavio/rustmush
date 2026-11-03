@@ -604,6 +604,18 @@ pub(super) fn classify_writer_signal(signal: &WriterSignal) -> IngressClass {
     }
 }
 
+/// **What a message drained from behind the slot at shutdown or exit is** (doc 36a lane 3,
+/// P2-7): a staff barrier, answered as a deferred one is (`settle_barrier`, or `Unavailable` at
+/// exit), or any other message, refused as before.
+pub(super) fn behind_barrier(
+    msg: WorldMsg,
+) -> Result<oneshot::Sender<Result<(), WorldReadError>>, WorldMsg> {
+    match msg {
+        WorldMsg::StaffBarrier { reply } => Ok(reply),
+        msg => Err(msg),
+    }
+}
+
 pub(super) fn classify_staff_op(kind: &StaffOpKind) -> IngressClass {
     match kind {
         StaffOpKind::ListBans

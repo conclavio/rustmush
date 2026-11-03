@@ -12406,3 +12406,22 @@ async fn gc0_a_line_behind_a_held_lifecycle_slot_hears_it_waits_then_runs() {
     );
     rig.shut_down().await;
 }
+
+/// **Doc 36a lane 3 (P2-7).** A staff barrier drained from behind the slot at shutdown or exit is
+/// told apart from the lines, which are refused; the barrier is settled as a deferred one is.
+#[test]
+fn lane3_a_barrier_behind_the_slot_is_told_from_the_lines() {
+    let (reply, mut waits) = oneshot::channel();
+    let Ok(barrier) = behind_barrier(WorldMsg::StaffBarrier { reply }) else {
+        panic!("a barrier is told from the lines");
+    };
+    let _ = barrier.send(Ok(()));
+    assert!(
+        matches!(waits.try_recv(), Ok(Ok(()))),
+        "the barrier's reply is the sender's"
+    );
+    assert!(
+        behind_barrier(WorldMsg::Inbound(cmd("look"))).is_err(),
+        "a typed line is not a barrier"
+    );
+}

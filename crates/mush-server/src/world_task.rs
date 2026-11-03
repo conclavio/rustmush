@@ -5311,8 +5311,16 @@ async fn run(
                         }
                     }
                 }
-                // Doc 36 cut GC.0: what queued behind the slot is refused the same way.
+                // Doc 36 cut GC.0: what queued behind the slot is refused the same way — and a
+                // barrier behind it is answered as a deferred one is (doc 36a lane 3, P2-7).
                 for msg in behind.drain_all() {
+                    let msg = match behind_barrier(msg) {
+                        Ok(reply) => {
+                            settle_barrier(reply, pending_commit.as_mut(), &metrics);
+                            continue;
+                        }
+                        Err(msg) => msg,
+                    };
                     if is_typed_line(&msg) {
                         metrics.command_processed();
                     }
@@ -6031,8 +6039,16 @@ async fn run(
             }
         }
     }
-    // Doc 36 cut GC.0: and whatever queued behind the lifecycle slot.
+    // Doc 36 cut GC.0: and whatever queued behind the lifecycle slot; a barrier behind it is
+    // answered as a deferred one is here (doc 36a lane 3, P2-7).
     for msg in behind.drain_all() {
+        let msg = match behind_barrier(msg) {
+            Ok(reply) => {
+                let _ = reply.send(Err(WorldReadError::Unavailable));
+                continue;
+            }
+            Err(msg) => msg,
+        };
         if is_typed_line(&msg) {
             metrics.command_processed();
         }
