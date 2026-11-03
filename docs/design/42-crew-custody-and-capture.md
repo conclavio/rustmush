@@ -429,6 +429,27 @@ for a fee, or held."
   passes it except for leaving the port ("You are being processed at {port}; about {h} IC h."),
   `+ship/captives` lists only `Captured`, `extractable` is `None`, treatment (GC.13) runs, and
   `status_line` shows the processing time left.
+- **Draft 0.3 (review round 2, 42-7, kept in step with doc 41's 41-9): the fee's mechanism.**
+  "Written as an obligation … anyone may settle" does not work on `main`. `create_obligation`
+  (`mush-economy/src/api.rs:2045`) requires the caller to hold debit authority on the debtor's
+  account (`:2094–2097`), and at docking the caller is the captor; a one-term obligation that
+  misses goes `Delinquent`, which leaves the due pool (`obligation.rs:280`, `:308–314`) and is
+  never attempted again; the only cure, `cure_service_obligation` (`api.rs:2302`), is for service
+  obligations and also needs debit authority, so no third party can settle. The build uses:
+  (1) **every** release fee, paid or not, is one `create_sanction_obligation` (`api.rs:2193`):
+  one period due at the handover, debiting the captive's account under the **port authority's**
+  live Org grant, not anyone's debit authority — the Registry fine's precedent (doc 17h M8d D3) —
+  with `capability` a new `port.release_fee` held on the authority's scope and `levied_by` the
+  authority's operator, paying the authority's levy sink. The sweep settles it at once when the
+  account covers it; the record's `charge` names it either way (42-2). (2) **The settle path** is
+  one new economy entry point, `pay_obligation(ctx, obligation, payer)` (name provisional): it
+  settles a one-period obligation in `Grace` or `Delinquent` from the **payer's own** account under
+  the payer's own debit authority (the captive's, their organization's through its treasurer's,
+  anyone's), credits the obligation's payee and marks it satisfied. The verb is `+port/pay
+  [<obligation>]` at any IC port, listing the actor's own unpaid fines and fees bare. Doc 41's
+  fines and repossession debt (41-9) should use the same two pieces, so one cure exists. (3) The
+  release never waits on the obligation (FO-12); nothing reads it but `+port/pay`, `+sortie/
+  condition` and doc 41's crime consumer.
 
 **Q-42-8 — The held case and its clock.**
 - **Proposed default:** "held" is the captor's choice not to dock. It is bounded by doc 27 Q-F4's
@@ -785,7 +806,9 @@ row; the `capture:` standing grant; `+ship/captives` and `+ship/release`. Files:
 
 **CR.2 — The port handover and release.** Q-42-6, Q-42-7, Q-42-19. `PortDef.authority`,
 `release_fee_cr`, `release_s`; the docking hook (`sim_routes.rs:151–161`); the fee post and the
-obligation; the release into the arrival room, the stamp, treatment picking them up. Files:
+obligation; Draft 0.3 (42-7): the fee is `create_sanction_obligation` under a `port.release_fee` grant
+authored for each authority, the new `mush_economy::pay_obligation` (shared with doc 41) and
+`+port/pay`, adding `mush-economy/src/api.rs` to the files; the release into the arrival room, the stamp, treatment picking them up. Files:
 `port/def.rs`, the lane content (version bump), `composition/sim_routes.rs`, `field/crew.rs`.
 Story: (a′) whole, both sizes, the bot typing the captive's half.
 
