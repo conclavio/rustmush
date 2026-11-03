@@ -1,15 +1,20 @@
 # 38. After the IC phase — the next systems, surveyed
 
-Draft 0.1, 2026-11-03, docs only. Surveyed against `origin/main` at `afa082a7` (doc 36a's lanes 1,
+Draft 0.2, 2026-11-03, docs only. Surveyed against `origin/main` at `afa082a7` (doc 36a's lanes 1,
 2 and 4 merged as PRs #334, #343, #342; the f6 fix as #329; lane 3 open as PR #340 at `e9ccb835`
 with main merged in; lane 5 on a local branch with no PR). Four read-only lanes verified every
-claim the two outside reviewers made against that tree; the anchors below are theirs.
+claim the two outside reviewers made against that tree; the anchors below are theirs. Draft 0.1,
+the same day, was the survey. **Draft 0.2 records the owner's rulings of 2026-11-03 on every
+question:** Q-38-5, Q-38-6, Q-38-9, Q-38-10, Q-38-12 and Q-38-18 amended, every other default
+accepted as written. §4a lists what the amendments change elsewhere.
 
 This is a survey in the form doc 36 §4 used: it asks the owner questions, each with a proposed
 default, an alternative and a reason. "Provisional" marks a number to be tuned later under the
-2026-10-24 rule. **(expensive to reverse)** marks an answer that shapes stored data, the kernel's
-hashes or a live box. The implementation plan is a later draft of this document, or of the
-documents §6 proposes, written from the rulings.
+2026-10-24 rule. **(expensive to reverse)** marks an answer that would take a significant refactor
+of the codebase to undo — not stored data and not a live box: there are no continuous games yet,
+and every step may wipe and redeploy (the owner's ruling on Q-38-9 and Q-38-10). Draft 0.1 used the
+wider meaning; Draft 0.2 keeps the marker on Q-38-12, Q-38-17 and Q-38-27 only. The implementation
+plans are written from these rulings, in the documents §6 proposes.
 
 ## 1. Why this document exists
 
@@ -416,12 +421,14 @@ owed. `space::tick::register` and `+helm`/`+tac`/`+mine` still register under `[
 alone (`lib.rs:1022`); `mush-config` knows `space_pulse_ms` and no space flag; docs 35 and 35b carry
 no flag in their text. 35-cut-notes stops at SF.R8.
 
-**What is owed.** Doc 37 §5.3 (P0 before any redeploy) and §7.1; doc 36's "space's own cut"
-(Q-36-46 `+helm/tow` onto the one claim, Q-36-47 `ShipSectionId` onto `CarrierPart`, Q-36-48
-`SpacePartyId` to `PartyId`). Neither reviewer surveyed space; C's heavy recovery lands on its
-Q-36-46 seam.
+**What is owed.** Doc 37 §5.3 and §7.1; doc 36's "space's own cut" (Q-36-46 `+helm/tow` onto the
+one claim, Q-36-47 `ShipSectionId` onto `CarrierPart`, Q-36-48 `SpacePartyId` to `PartyId`).
+Neither reviewer surveyed space. Q-38-9 (ruled): the track's exposure on a redeploy is not a
+concern — the boxes are wiped and redeployed at every step — and it gates nothing in this survey.
 
-**Questions.** Q-38-9; the three seams belong to the document that takes C and D.
+**Questions.** Q-38-9 (ruled); the three seams belong to the document that takes C and D, and
+Q-38-6's retrieval contracts need the one claim path because a space tow truck is the same
+occupation as a ground one.
 
 ### K. Acceptance: the bot over SSH, both sizes, the sweep
 
@@ -450,7 +457,8 @@ and 512 (Ahuna, Urvara), the sweep above 100.
 
 The first routine redeploy of the phase (nothing of it is on dev1/dev2), T-112 backups, the ufw/ACL
 closure of 6790/6793, the nightly's owner, a weekly slot for the dispatch-only stories (doc 37
-§7.10). Nothing here needs a design document; it needs Q-38-9 and Q-38-10 first.
+§7.10). Nothing here needs a design document, and after Q-38-9 and Q-38-10 nothing gates the
+redeploy: it ships `main` as it stands, and a wipe is the migration.
 
 ### Out of scope by ruling
 
@@ -459,7 +467,43 @@ a mission generator beyond the raid director (Q-CF-44, Q-36-41), persistent know
 (doc 32 F-7, the Epistemic Engine), facility assaults, DT.4 (Q-36-43). Both reviewers leave the same
 list deferred.
 
+## 4a. Consequences of the rulings
+
+What the six amendments of 2026-11-03 change beyond their own questions.
+
+- **Retrieval contracts (Q-38-6).** A new contract kind: a title holder (Occator at a repossession,
+  or anyone) posts a retrieval for a rig — the tow fee, the destination, a 28-IC-day acceptance
+  window — and a player accepts it as a job; one not accepted within the window goes to an NPC
+  towing company. The repossession charge adds that fee to the damage charge. "Space tow truck" is
+  an occupation, so the contract runs on the one claim path of Q-36-46 (ground and space) and
+  belongs to doc 41 with C and D.
+- **The NPC salvage-retrieval organization (Q-38-18).** An organization at one of the main ports,
+  outside the player's immediate economic zone, owning a heavy crawler and whatever carries it; the
+  fallback acceptor of retrieval contracts and the only recovery of a carrier wreck on the ground.
+  The player, or Occator, contracts it to retrieve anything. Its fee comes from doc 39's facility
+  cost model, and it answers doc 37 §5.4's "Occator recovering a written-off wreck".
+- **The facility cost model (Q-38-12).** Every facility has a capital cost, an expected lifetime and
+  a staffing, from which a daily cost follows; a work's manufacturing cost is the daily cost over
+  the days the facility spends on it; a registry design's bill is its slots plus that cost; the
+  workshop tariff's labour rows become instances of the same model. Doc 39 owns it, and Q-38-15
+  stands: the facility fee is what covers labour.
+- **The scrap ceiling (Q-38-5).** The yield's mass is bounded by the hull's dry mass, and its value
+  by about a fifth of the hull's buyout: the scrapping facility's fee consumes the rest, as a navy's
+  scrappers do. Doc 39's mass budget carries both rules, and Q-38-14's census covers the mint.
+- **The space track (Q-38-9).** Nothing in §4 J or §7 gates a redeploy on a flag; the first routine
+  redeploy ships `main`. The missing SF.R9–R13 sections in 35-cut-notes stay a docs-owed item.
+- **The marker (Q-38-10).** "(expensive to reverse)" now means a refactor to undo, so it stays on
+  Q-38-12 (the hull's provenance record every later claim reads), Q-38-17 and Q-38-27 (the kernel's
+  hashes) and comes off Q-38-5, Q-38-9, Q-38-10 and Q-38-22.
+
 ## 5. Owner survey
+
+**Ruled 2026-11-03.** The owner amended Q-38-5 (scrap is worth at most a fifth of the buyout),
+Q-38-6 (repossession also charges the retrieval, as a contract players may take), Q-38-9 (no space
+flag, no concern), Q-38-10 (the rooms stay, decided now), Q-38-12 (a design's bill carries the
+facility's amortized time) and Q-38-18 (an NPC salvage organization with a heavy crawler). Every
+other default is accepted as written. Each amended question carries its decision first, with the
+proposed text kept under it for the record.
 
 ### 5.1 Order and shape
 
@@ -499,8 +543,15 @@ list deferred.
 - **Why:** a free part makes strip, salvage and any part market pointless; the 2026-10-24 rule says
   take a number and tune it.
 
-**Q-38-5 — The scrap yield (doc 36a §9.5).** **(expensive to reverse)**
-- **Proposed default:** bound scrap by the hull's mass. A hull's scrap is its dry mass × surviving
+**Q-38-5 — The scrap yield (doc 36a §9.5).**
+- **Decision (owner ruling, 2026-11-03):** the default, with a value ceiling on top of the mass
+  bound. An 8 t hull cannot produce more than 8 t of scrap; and scrapping is work that consumes most
+  of the material's value — a navy pays its scrappers, it does not profit from them — so the scrap
+  of a whole hull is worth on the order of **a fifth of its buyout at most**: a Dray's 90,000 cr
+  buyout scraps to about 18,000 cr. Whether that is a yield tuned so the alloys' bid value lands at
+  the ceiling, or a mass-bounded mint with a scrapping fee the facility takes, is doc 39's; the
+  ceiling is the rule.
+- **Proposed default (as written):** bound scrap by the hull's mass. A hull's scrap is its dry mass × surviving
   structural points ÷ total points × a recovery fraction (provisional 0.6), minted as
   `structural_alloys`; a workshop's scrap goes to the port's stock (the operator's), a site's
   remains scrap to the carrier's hold, where the room check applies. The same mass budget is one
@@ -512,7 +563,12 @@ list deferred.
   box would carry its lots.
 
 **Q-38-6 — Repossession damage charge (doc 36a §9.2, doc 37 §6.3).**
-- **Proposed default:** at repossession and at return, the lessor charges the tariff's quote for
+- **Decision (owner ruling, 2026-11-03):** the default, plus a towage fee. Beyond the damage past
+  the wear allowance, repossession charges the lessee for the retrieval of the lessor's property:
+  whatever the lessor would pay a PC or NPC salvage team to bring the rig in. The retrieval is a
+  contract players may accept; one not accepted within 28 IC days goes to an NPC towing company.
+  "Space tow truck" becomes a viable occupation (§4a).
+- **Proposed default (as written):** at repossession and at return, the lessor charges the tariff's quote for
   repairs beyond a wear allowance (provisional: a tenth of the hull's points), the deposit first and
   the remainder as a debt on the lessee's ledger; the dormancy path pays the same.
 - **Alternative:** no charge, as `repossess` (`tv.rs:4996`) takes today.
@@ -531,18 +587,25 @@ list deferred.
 - **Alternative:** a `MaintainRefit` grantee may board.
 - **Why:** nothing in play needs it yet, and a wrong grant kind is a migration later.
 
-**Q-38-9 — Space exposure on the next redeploy (doc 37 §6.1).** **(expensive to reverse)**
-- **Proposed default:** `[tacsim.space].enabled`, default `false`, gating `space::tick::register`
+**Q-38-9 — Space exposure on the next redeploy (doc 37 §6.1).**
+- **Decision (owner ruling, 2026-11-03):** no flag, and the space track is not a concern of this
+  survey. There are no continuous games; the boxes are wiped and redeployed at every step, so what a
+  redeploy exposes costs nothing. The track's exposure stops being raised as a precondition.
+- **Proposed default (as written):** `[tacsim.space].enabled`, default `false`, gating `space::tick::register`
   and the `+helm`/`+tac`/`+mine` registrations (`lib.rs:1022`), as one cut before SF.R16 and before
   the first routine redeploy.
 - **Alternative:** ship the track live with SF.R9–R15.
 - **Why:** doc 37 §5.3's holes 7, 10 and 11 key persisted records on fake ids; once a live box has
   written them the migration is the owner's.
 
-**Q-38-10 — Workshop rooms (doc 37 §6.2).** **(expensive to reverse)**
-- **Proposed default:** leave the workshops in the existing rooms (GC.7/GC.8a). Nothing is berthed on
-  a live box yet; the first routine redeploy is the last cheap moment, so the decision is taken then,
-  not now.
+**Q-38-10 — Workshop rooms (doc 37 §6.2).**
+- **Decision (owner ruling, 2026-11-03):** leave them where they are, decided now, not deferred to a
+  redeploy. Re-homing hulls berthed on a box that is wiped anyway costs nothing, so the question was
+  never expensive: "expensive to reverse" means a significant refactor of the codebase to undo, and
+  the header now says so.
+- **Proposed default (as written):** leave the workshops in the existing rooms (GC.7/GC.8a).
+  Nothing is berthed on a live box yet; the first routine redeploy is the last cheap moment, so the
+  decision is taken then, not now.
 - **Alternative:** move them to dedicated rooms before that redeploy.
 - **Why:** the cost is re-homing berthed hulls, which is zero until the redeploy.
 
@@ -553,12 +616,20 @@ list deferred.
 ### 5.3 Questions the categories raise
 
 **Q-38-12 — Unit construction (A).** **(expensive to reverse)**
-- **Proposed default:** a hull is built by a work order (doc 08 §10, E7's engine) at a facility with
-  a `yard` capability. Its inputs are the design's bill of materials: `structural_alloys`,
-  `industrial_parts` and one `tacsim.part.*` lot a slot; its output is a hull delivered into the
-  requester's title and the yard's berth, which needs a second `DeliveryTarget` beside `Endpoint`
-  (`workorder.rs:448–454`). The catalogue's six U.6 assemblies each get a bill of materials in the
-  content; a registry design's bill is the sum of its slots.
+- **Decision (owner ruling, 2026-11-03):** the default, with the bill widened. A registry design's
+  bill is the sum of its slots **plus the manufacturing cost**: an amortization of the facility's
+  time on the work over the facility's cost and its expected lifetime, before labour and profit. A
+  shipyard costs tens to hundreds of millions of credits and lives about thirty years; at ten
+  million that is about 1,000 cr a day, so a hull that takes two weeks carries about 14,000 cr of
+  yard time before labour and margin. Doc 39 derives each facility's **daily cost** from its capital,
+  its lifetime and its staffing, and that daily cost drives hull prices. Q-38-15 stands: the
+  facility fee is what covers labour.
+- **Proposed default (as written):** a hull is built by a work order (doc 08 §10, E7's engine) at a
+  facility with a `yard` capability. Its inputs are the design's bill of materials:
+  `structural_alloys`, `industrial_parts` and one `tacsim.part.*` lot a slot; its output is a hull
+  delivered into the requester's title and the yard's berth, which needs a second `DeliveryTarget`
+  beside `Endpoint` (`workorder.rs:448–454`). The catalogue's six U.6 assemblies each get a bill of
+  materials in the content; a registry design's bill is the sum of its slots.
 - **Alternative:** no construction; the content pools restock from the chain on a tick, so the
   desk's `NO_HULL` is answered by production rather than by a player's order.
 - **Why:** Q-31-2 is ruled yes and only staff `@unit/create` does it; doc 10 §5's loop ends at
@@ -606,10 +677,16 @@ list deferred.
 - **Why:** Q-36-20 is already ruled this way; GC.4 deviated to stay inside one rebless.
 
 **Q-38-18 — Heavy recovery (C, J).**
-- **Proposed default:** a carrier wreck on the ground is recovered from orbit by a ship's tow onto the
-  same claim (Q-36-46's `+helm/tow`), not by a ground tug. Ground tugs stay at the escort's scale,
-  with a recovery profile authored above `Standard` (a provisional 3× cap) for a tracked recovery
-  rig in the kit.
+- **Decision (owner ruling, 2026-11-03):** the alternative, placed outside the player's reach. A
+  larger crawler exists, outside the player's immediate economic zone, owned by an NPC
+  salvage-retrieval organization at one of the main ports; the player, or Occator, contracts it to
+  retrieve anything, through Q-38-6's retrieval contracts (§4a). Ground tugs at the escort's scale
+  stay as proposed; the ship's tow from orbit (Q-36-46) stays a seam, not the answer to the carrier
+  wreck.
+- **Proposed default (as written):** a carrier wreck on the ground is recovered from orbit by a
+  ship's tow onto the same claim (Q-36-46's `+helm/tow`), not by a ground tug. Ground tugs stay at
+  the escort's scale, with a recovery profile authored above `Standard` (a provisional 3× cap) for
+  a tracked recovery rig in the kit.
 - **Alternative:** author a 120 t crawler.
 - **Why:** a tug of half a dray's mass cannot ride a 20 t bay, so it could never reach the wreck by
   the carrier that found it; the space seam is ruled and unbuilt.
@@ -641,7 +718,7 @@ list deferred.
 - **Alternative:** fold the note into the cut's PR.
 - **Why:** three documents name S.4b their blocker and none owns its precondition.
 
-**Q-38-22 — Capture's scope (F).** **(expensive to reverse)**
+**Q-38-22 — Capture's scope (F).**
 - **Proposed default:** minimal custody. `CrewLocation::Captured { carrier, captor }` replaces
   Q-36-52's abandonment for a completed non-friend load; a captive is handed to a port's authority at
   docking and released for a fee, or held — no interrogation, no ransom market. Ejection is a forced
@@ -712,18 +789,18 @@ list deferred.
 
 | Document | Categories | Shape |
 |---|---|---|
-| **Doc 39 — Industry: the production chain and unit construction** | A | a survey in this form (the chain's depth, recipes, facilities, the mass budget, the part and hull bills, prices), then a plan of cuts over E7's engine; economy-owned |
+| **Doc 39 — Industry: the production chain and unit construction** | A | a survey in this form (the chain's depth, recipes, facilities, the facility cost model — capital, lifetime, staffing, a daily cost —, the mass budget and the scrap ceiling, the part and hull bills, prices), then a plan of cuts over E7's engine; economy-owned |
 | **Doc 40 — The field, second round** | G, H, I, C's kernel half, the Q-36-48 seam | one rebless (component effects, the coupled tow, `line_to`, `note_fire`, the join await), the stance table, durable standing, reinforcement; kernel-owned |
-| **Doc 41 — Restoration and the salvage loop, second round** | B, C's tug half, D, the Q-36-46/47 seams | the tender and the bay away from port, the loop's close, the crime consumer, the ship's tow; waits on doc 39's lots |
+| **Doc 41 — Restoration and the salvage loop, second round** | B, C's tug half, D, the Q-36-46/47 seams, Q-38-6's retrieval contracts and Q-38-18's NPC salvage organization | the tender and the bay away from port, the loop's close, the crime consumer, the retrieval contract and its NPC fallback, the heavy crawler, the ship's tow on the same claim; waits on doc 39's lots and its facility cost model |
 | **Doc 42 — Crew: custody, capture, ejection, treatment** | F | new rulings first (the reviewers are right that none exist); touches ownership and permissions |
 | **Doc 23, a note** | E | "custody for moving anchors", then S.4b's cut as doc 23 already plans it |
-| **Doc 35b §8** | J | already the re-plan; the enable flag is one cut before SF.R16 |
+| **Doc 35b §8** | J | already the re-plan; no flag (Q-38-9) |
 | **Docs 36 and 37, cut lists** | K, L | no design text; cuts appended to the owed lists |
 
 ## 7. A provisional order
 
-0. **Before anything is deployed:** Q-38-9 (the flag) and Q-38-10 (the rooms), then the first
-   routine redeploy (L).
+0. **The first routine redeploy (L)** whenever it suits: Q-38-9 and Q-38-10 are ruled, nothing
+   gates it, and it ships `main` as it stands.
 1. **Doc 39's survey**, now; beside it the doc 23 custody note (E), the stance table (H's half that
    needs no rebless), and the bot's four-digit addresses and vocabulary (K's first cut).
 2. **Doc 39's plan and cuts**: the mill rows or recipes, `industrial_parts` and alloys, the part
@@ -742,13 +819,19 @@ loop and the component economy each draw from it.
 
 ## 8. What the implementation plans need before they can be written
 
-- The rulings on Q-38-1 to Q-38-29.
+Draft 0.2 carries the rulings. The plans still need:
+
 - For doc 39: the goods catalogue's mass and price rows for alloys, `industrial_parts` and each part
   definition; which stations get which capability (`smelt`, `works`, `yard`); whether `MillDef`'s
-  same-family rule is relaxed or recipes replace mill rows.
+  same-family rule is relaxed or recipes replace mill rows; the facility cost model's inputs for
+  each facility kind (the yard, the refinery, the works, the workshop, the salvage organization's
+  crawler): capital cost, expected lifetime, staffing, from which the daily cost and a hull's
+  manufacturing cost follow (Q-38-12); and the scrap ceiling's mechanism (Q-38-5).
 - For doc 40: the hash-pinned harness runs that the rebless re-blesses, listed before the first
   kernel change (doc 36 §4 Q-36-56's rule).
-- For doc 41: doc 39's lot shapes, and the fix thread's state on the vacated hull and the remains
-  room check (§2.2), so the loop's close does not re-fix them.
+- For doc 41: doc 39's lot shapes and facility fees; the retrieval contract's shape (who posts, the
+  fee's basis, the 28-IC-day window, the NPC towing company as the fallback acceptor) and the NPC
+  salvage organization's content (Q-38-6, Q-38-18); and the fix thread's state on the vacated hull
+  and the remains room check (§2.2), so the loop's close does not re-fix them.
 - For doc 42: a reading of doc 27's crew and custody rulings (Q-H12, FO-12) and doc 32's Q-CF-38/39
   as the base the new rulings amend.
