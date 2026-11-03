@@ -228,9 +228,16 @@ pub fn departure_refusal(w: &World, hull: ObjId) -> Option<String> {
 /// Q-36-4): a hull that arrived by voyage after admission. Q-CF-16 puts everyone on the ground
 /// in the field, so each is owed its admission at its pad as a unit of its own party, which the
 /// kernel's join makes ([`join_arrivals`], GC.1b). A launch from it is already refused while the site is promoted
-/// (`FIELD_LAUNCH`, Q-CF-17). A hull left out under a licensed mind (Q-36-44) is no arrival.
+/// (`FIELD_LAUNCH`, Q-CF-17). A hull left out under a licensed mind (Q-36-44) is no arrival, and
+/// neither is a carrier that left this field by doc 32 F-6 (`record` names its exit, or its exit
+/// is in flight: `crate::field::exit::leaving`): it stands on the pad outside the field until its
+/// departure lifts it, and the host never takes it in again while that field runs.
 #[must_use]
-pub(crate) fn arrivals(w: &World, site: &CanonicalId) -> Vec<ObjId> {
+pub(crate) fn arrivals(
+    w: &World,
+    site: &CanonicalId,
+    record: Option<&crate::surface::site_record::SiteRecord>,
+) -> Vec<ObjId> {
     let Some(rows) = w
         .module_state::<FieldBook>()
         .and_then(|book| book.hosted(site))
@@ -248,6 +255,8 @@ pub(crate) fn arrivals(w: &World, site: &CanonicalId) -> Vec<ObjId> {
                 && !rows.iter().any(|row| row.unit == *unit)
                 && !mush_sim::deployed::is_deployed(w, *unit)
                 && !super::admit::held_out(w, *unit)
+                && !record.is_some_and(|record| record.exited(*unit))
+                && !super::exit::leaving(w, site, *unit)
         })
         .collect()
 }
@@ -284,7 +293,9 @@ pub fn owed_arrivals(w: &World, site: &CanonicalId) -> Vec<ObjId> {
 /// **The host's owed arrivals on `site`, brought up to date** (doc 36 cut GC.1): the book holds
 /// [`arrivals`] while the field runs and nothing once it is gone; each newly seen one is logged.
 pub(crate) fn note_arrivals(ctx: &mut Ctx<'_>, site: &CanonicalId) {
-    let now: std::collections::BTreeSet<ObjId> = arrivals(ctx.w, site).into_iter().collect();
+    let record = super::close::site_record(ctx, site);
+    let now: std::collections::BTreeSet<ObjId> =
+        arrivals(ctx.w, site, record.as_ref()).into_iter().collect();
     let Some(book) = ctx.w.module_state_mut::<FieldBook>() else {
         return;
     };
