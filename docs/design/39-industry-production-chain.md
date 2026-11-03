@@ -1,6 +1,6 @@
 # 39. Industry — the production chain and unit construction, surveyed
 
-Draft 0.3, 2026-11-03, docs only. Surveyed against `origin/main` at `6f9dff29` (PR #344, the ten
+Draft 0.4, 2026-11-03, docs only. Surveyed against `origin/main` at `6f9dff29` (PR #344, the ten
 tacsim shards) with [doc 38](38-after-the-ic-phase-next-systems.md) Draft 0.2 (PR #345, merged)
 and re-verified at `c83c2eff` (SF.R15 merged): every anchor doc 38 §4 A cites was re-read, and the
 line numbers below are the current tree's where they moved (the matter pin is in `shard_9` now,
@@ -12,13 +12,18 @@ accepted at their defaults"). **Draft 0.3 triages two outside reviews of Draft 0
 what they confirmed**: the accounting unit (§4.10), the component lifecycle (§4.11), the order's
 escrow, cancellation and ordering authority (§4.12), the delivery and handover (§4.13), the supply
 paths (§4.2), the cost coverage redone per site (§4.4) and a complete mass partition (§4.8). Twelve
-new questions, Q-39-25..36, go to the owner; three of them (Q-39-33, Q-39-34, Q-39-35) revise
+new questions, Q-39-25..36, went to the owner; three of them (Q-39-33, Q-39-34, Q-39-35) revise
 accepted defaults and say so. The cuts are reordered so identity, units and escrow precede their
-consumers and the first player production story is IN.5.
+consumers and the first player production story is IN.5. **Draft 0.4 records the owner's rulings of
+2026-11-03 on Q-39-25..36: Q-39-25 amended** (the fifth bounds the total recoverable value net of
+the salvageable parts, which come back at a used value less their removal; a hull with a good plant
+is sold, not scrapped), **Q-39-26 amended** (an opened bale's unused kilograms are raw material and
+are bought back at the reference, never through the fifth), **every other default accepted as
+written**. §4.6 and §4.10 carry the amendments; every question is now ruled.
 
 The form is doc 38's: a survey that asks the owner numbered questions, each with a proposed default,
-an alternative and a reason; this draft carries the rulings on Q-39-1..24 and the cut list is the
-plan once Q-39-25..36 are ruled. "Provisional" marks a number to be tuned later under the
+an alternative and a reason; this draft carries the rulings on Q-39-1..36 and the cut list is the
+plan. "Provisional" marks a number to be tuned later under the
 2026-10-24 rule (take a reasonable default, tune later, never hold a build on it). **(expensive to
 reverse)** keeps doc 38 Q-38-10's meaning: an answer that would take a significant refactor of the
 codebase to undo — not stored data and not a live box, since every step may wipe and redeploy.
@@ -40,7 +45,7 @@ yard's delivery, and the cut list. The two reviews (§8) added what Draft 0.1 ha
 did and it does not: whole-tonne ledger units, pooled inputs and batched outputs, a seven-day
 reservation, a free cancel, a delivery that cannot make a hull, and a hull that nobody could sail.
 Each area gets a section in §4 with what exists, what is missing and the questions it raises; §5 is
-the owner survey (Q-39-1..24 ruled at the defaults; Q-39-25..36 open); §6 the plan, cuts
+the owner survey (Q-39-1..36, all ruled; Q-39-25 and Q-39-26 amended); §6 the plan, cuts
 IN.0–IN.11.
 
 ## 2. What binds this survey, and what it leaves alone
@@ -585,41 +590,51 @@ mass (§4.1), so a Dray-P's 20 t rig slot and 86 t hold weigh a cannon.
 points, a sub-tonne yield refused.
 
 **What is missing.** The mechanism, and (review 2 #11) a ruling on what the ceiling bounds. The
-ruling gives two bounds and the fact that a facility takes the rest. Two hulls show that no single
-tuned constant satisfies both bounds: the escort's whole structure (§4.8's partition: 2,385 kg) at a
-recovery fraction `r` 0.6 is 1,431 kg of alloys, ~640 cr at the 450 reference, far under a fifth of
-its 75,500 bill (15,100) — the mass bound binds; the Dray's 152 t of structure at 0.6 is 91 t,
-41,000 cr, far over a fifth of its 90,000 buyout (18,000) — the value bound binds. Proposed:
+owner ruled on 2026-11-03 (Q-39-25): **the fifth bounds the total recoverable value, net of the
+salvageable parts** — a navy pays the scrapyard because the labour of scrapping is significant, so
+the scrap of what is scrapped returns about a fifth; but a part that still works is not scrap, so
+its value is taken out before the fifth is applied and comes back at a **used** value less the
+labour of removing it; and a hull with a good plant should be repaired and sold, not scrapped, so a
+scrap must return well under a sale. The owner's own example: a Dray worth 90,000 with an intact
+plant worth 40,000 new has 50,000 of scrappable value, returning 10,000; the plant, used, is worth
+perhaps 30,000, and 20,000 after the labour of taking it out; the holder gets about 30,000 for a
+90,000 ship. In this document's figures:
 
 ```
-structure_kg     = structure_kg_per_point × surviving structural points        (§4.8; heat cells never counted)
-mass_yield_kg    = structure_kg × r                                             (r 0.6, provisional)
-ceiling_kg       = reference_price / 5 / alloy_reference × 1,000                (18,000 / 450 → 40,000 kg for a Dray)
-yield_kg         = min(mass_yield_kg, ceiling_kg)
-minted_t         = floor(yield_kg / 1,000)                                      (§4.10: whole tonnes in kind, the fraction a declared loss)
-credit           = yield_kg × alloy_reference / 1,000 − scrap_fee               (the money on the exact kilograms)
+parts_new         = Σ reference of each salvageable part (intact or worn; a destroyed part is scrap)
+scrappable        = reference_price − parts_new                                    (the hull less its working parts)
+structural_credit = min(mass_yield_kg × alloy_reference / 1,000, scrappable / 5)   (the fifth, on the materials)
+part_credit       = Σ (reference × used_factor − removal_labour)                   (used_factor 0.75 intact, 0.40 worn; provisional)
+credit            = structural_credit + part_credit                                 (no separate scrap fee: the facility's take is the matter above the fifth)
+mass_yield_kg     = structure_kg_per_point × surviving structural points × r        (§4.8, heat cells never counted; r 0.6, provisional)
+minted_t          = floor(mass_yield_kg / 1,000)                                    (§4.10: whole tonnes in kind, the fraction a declared loss)
 ```
 
-At a workshop, **the whole mass yield goes into the operator's stock** in whole tonnes (Q-38-5's
-"the port's stock"), minted at grade 50 under the `bay_scrap` receipt, and the title holder is
-credited `yield_kg` at the reference less the scrap job's fee from §4.4 (a Dray is 288 work units of
-yard time, 20,000 cr at the slot-hour; an escort 48, 3,300): the facility keeps the tonnes above the
-ceiling in kind, which is the owner's "a navy pays its scrappers". For a Dray: 91 t into the Yards'
-pool, 40 t × 450 = 18,000 credited, 20,000 of fee — **a whole Dray does not pay to scrap at the
-yard's rate**, and should not: the point of the ceiling is that scrapping a hull is not a way to
-make money, and a holder who wants the plant strips it first. For an escort: 1 t into the pool,
-644 cr credited, 3,300 of fee. For remains on a site, where there is no facility, `minted_t` alone
-is minted into the carrier's hold with the room check and no fee, and the rest is lost to the ground:
-scrapping a Dray's remains on Urvara yields 40 t, a whole hold and a half of a Dray-P; an escort's
-yields 1 t. The parts come off as lots at their own value in both cases — **and whether that is what
-the ruling meant is Q-39-25's, raised to the owner and not decided here**: review 2 reads doc 38's
-"the scrap of a whole hull is worth a fifth of its buyout at most" as bounding everything the hull
-yields, parts included, and at the Ceres bid rather than the reference (40 t × 520 = 20,800).
-`SCRAP_KG_PER_STRUCTURAL_POINT` and `FALLBACK_SECTION_SCRAP_KG` retire; the per-design figures come
-from the catalogue build (§4.8). `reference_price` is the design's bill (§4.7), or the programme's
-`buyout_major` for a programme hull.
+At a workshop **everything goes to the operator**: the whole mass yield into its stock in whole
+tonnes (Q-38-5's "the port's stock"), minted at grade 50 under the `bay_scrap` receipt, and every
+salvageable part into its stores as a lot with its `Stripped` row — the facility buys the parts at
+their used value less the removal labour (the tariff's strip, four IC hours) and keeps the matter
+above the fifth, which is the owner's "a navy pays its scrappers". The Dray (reference 90,000, the
+programme's buyout; plant 30,000 new): scrappable 60,000, a fifth 12,000 against a mass yield of
+91 t worth 41,000, so 12,000 for the structure; the plant used 22,500 less 400 of removal (the
+tariff's four IC hours at Stickney's ×1.0), 22,100; **about 34,000 for a 90,000 Dray**, and 91 t of
+alloys refill the Yards' pool. The escort (bill 75,500; parts 61,500 new): scrappable 14,000, a
+fifth 2,800 against a yield of 1.4 t worth 644, so 644 for the structure; the four parts used
+46,125 less four removals at 400, about 44,500; **about 45,000 for a 75,500 escort** — most of a
+tank is its parts, and the parts keep their value, which is the
+ruling's point. A worn part (grade 3) comes back at 0.40; a destroyed one is structure. For remains
+on a site, where there is no facility and nothing can be stripped (Q-36-39), every part is gone, so
+`scrappable` is the whole reference and the tonnage cap is `scrappable / 5 / alloy_reference`:
+scrapping a Dray's remains on Urvara mints 40 t into the carrier's hold with the room check and no
+fee, the rest lost to the ground — a whole hold and a half of a Dray-P; an escort's remains yield
+1 t. The resale the ruling prefers to a scrap — selling the hull as an asset — is the market's
+`Representation::Asset` purchase the buyout already uses (`buyout.rs`), with no player verb for it
+yet; it is listed in §7 as owed, outside this document's cuts. `SCRAP_KG_PER_STRUCTURAL_POINT` and
+`FALLBACK_SECTION_SCRAP_KG` retire; the per-design figures come from the catalogue build (§4.8).
+`reference_price` is the design's bill (§4.7), or the programme's `buyout_major` for a programme
+hull.
 
-**Questions.** Q-39-16, Q-39-17, Q-39-25.
+**Questions.** Q-39-16, Q-39-17, Q-39-25 (ruled).
 
 ### 4.7 Unit construction (Q-38-12)
 
@@ -708,7 +723,7 @@ override wins over the rule. Then, with §4.10's rounding:
 | armour and rebuild | `points × structure_kg_per_point` of alloys **and** `points × fittings_kg_per_point` of fittings, from the hull's opened bale (§4.10), plus labour | — | 10 kg of fittings a point, no alloys |
 | replace | one part lot (its catalogue mass) plus labour | the destroyed part as nothing | a part from nothing |
 | strip | labour | the part at its grade | the same |
-| scrap at a workshop | the scrap fee | §4.6's yield to the operator in whole tonnes, the credit to the holder on the kilograms, parts to the hold | 100 kg a point to the hold |
+| scrap at a workshop | — | §4.6: the yield to the operator in whole tonnes and the salvageable parts to its stores; the holder credited a fifth of the scrappable value for the structure and the parts' used value less their removal; the bale's unused kilograms bought back at the reference (§4.10) | 100 kg a point to the hold |
 | remains scrap | — | §4.6's capped yield to the hold in whole tonnes | 100 kg a point |
 | build | the bill, rounded up a line; the remainder the build's loss | the hull | — |
 
@@ -757,14 +772,19 @@ computation, tonnes for the ledger and the market, and one rounding rule an act*
   of alloys and one of fittings from the source hold or store into the hull's bay record
   (`BayHull.bale: { alloys_kg, fittings_kg }`), and every repair after it consumes kilograms from
   the bale until a line runs short, when the next whole tonne is debited. The bale rides the hull
-  (a carrier's bay or a workshop may continue it), is the title holder's, and is paid out in kind at
-  scrap (its kilograms join the yield) — so a hull with an opened bale owes nothing and holds
-  nothing it did not pay for. A one-point repair on a fresh hull therefore costs a tonne of each
-  good up front and 1.07 kg of them for real, which is the tonne a yard would open anyway.
+  (a carrier's bay or a workshop may continue it) and is the title holder's. **Its unused kilograms
+  are raw material that no work has touched** (the owner's ruling on Q-39-26, 2026-11-03), so they
+  are never scrap: at a scrap, at a sale of the hull, or on the holder's `+bay/return`, the facility
+  buys the remainder back at the reference price, kilogram for kilogram, with no labour and no fifth
+  applied, and the kilograms join its pool. A hull with an opened bale therefore owes nothing and
+  holds nothing it did not pay for, and a one-point repair on a fresh hull costs a tonne of each
+  good up front and 1.07 kg of them for real — the tonne a yard would open anyway, and the rest of
+  it comes back at what it cost.
 - *Scrap* mints **down** to whole tonnes into the receiving pool and declares the fraction a loss;
   the holder's credit is computed on the exact kilograms (§4.6), so the money never rounds against
   the holder and the matter never rounds for them. A yield under a tonne mints nothing and credits
-  the kilograms — no refusal.
+  the kilograms — no refusal. The bale's remainder is bought back separately, at the reference and
+  outside the fifth (above).
 - *A recipe* is whole tonnes in, whole units out, by construction; a part lot is one unit of mass
   `si.mass_kg` and never splits (§4.11).
 - *The market* keeps `quote_unit: "t"`; a part is quoted each.
@@ -915,11 +935,12 @@ and the provenance record, which every later claim reads):
 **Ruled 2026-11-03 (Q-39-1..24).** The owner accepted every default as written ("all q-39s accepted
 at their defaults"); nothing was amended, so no question carries a decision line of its own and the
 proposed text of each is its ruling. Each keeps its proposed default, alternative and reason for the
-record. **Open (Q-39-25..36)**, raised by Draft 0.3 after the two reviews (§8): each carries a
-proposed default except Q-39-25, which the owner asked to have raised and not decided; three revise
-an accepted default and say which (Q-39-33 revises Q-39-18, Q-39-34 revises Q-39-21, Q-39-35
-revises Q-39-3's spelling, Q-39-14's count and Q-39-20's list). §6 is the plan built from all of
-them.
+record. **Ruled 2026-11-03 (Q-39-25..36)**, raised by Draft 0.3 after the two reviews (§8): the
+owner amended Q-39-25 (the ceiling's scope) and Q-39-26 (the bale's remainder) and accepted every
+other default as written, the three that revise an accepted default included (Q-39-33 revises
+Q-39-18, Q-39-34 revises Q-39-21, Q-39-35 revises Q-39-3's spelling, Q-39-14's count and Q-39-20's
+list). The two amended questions carry their decision first, with the proposed text kept under it
+for the record. §6 is the plan built from all of them.
 
 ### 5.1 The catalogue
 
@@ -1083,7 +1104,9 @@ them.
   capped yield at the reference less the scrap job's fee from the cost model; remains scrap mints
   the capped yield into the hold, no fee, the rest lost; the ceiling is on the alloys, parts come
   off at their own value. *(Draft 0.3: in kilograms, minted down to whole tonnes, credited on the
-  kilograms, §4.10; whether the parts are exempt is Q-39-25's.)*
+  kilograms, §4.10. Draft 0.4: Q-39-25's ruling replaces the separate scrap fee and the parts'
+  exemption with the fifth on the value net of the parts and the parts bought at a used value less
+  removal; §4.6 as it now reads.)*
 - **Alternative:** a tuned `r` alone (shown impossible: 0.24 fits the Dray and no value fits the
   escort), or the ceiling on everything a scrap yields, parts included.
 - **Why:** the owner's two bounds bind on different hulls, so both must be rules; minting the whole
@@ -1165,10 +1188,25 @@ them.
 - **Why:** the org exists with the word in its name and 50,000 of capital to be raised like Occator's;
   Ceres is where the rigs and the claims are.
 
-### 5.9 Raised by the reviews: the ceiling's scope (not decided here)
+### 5.9 Raised by the reviews: the ceiling's scope
 
-**Q-39-25 — What the scrap ceiling bounds.** *Raised at the owner's request; no default is taken.*
-- **The question:** doc 38 Q-38-5 says "the scrap of a whole hull is worth on the order of a fifth of
+**Q-39-25 — What the scrap ceiling bounds.** *Raised at the owner's request without a default.*
+- **Decision (owner ruling, 2026-11-03):** the fifth bounds the **total recoverable value**, and
+  it is applied after the working parts are taken out — "a little bit of (1) and a little bit of
+  (2)". The owner's reasoning, in their words: when a navy scraps a ship it does not get a fifth of
+  its value back, it pays the scrapyard, because the effort and labour of scrapping is significant;
+  a Dray with a valid plant should not be scrapped, it should be repaired and sold. So the plant's
+  value is subtracted from what is being scrapped before the fifth is applied: a Dray worth 90,000
+  with a plant worth 40,000 new has 50,000 of scrappable value and returns a fifth of it, 10,000;
+  the plant is not worth 40,000 used, perhaps 30,000, less the labour and facility cost of
+  removing it, so about 20,000 — a total of about 30,000 on a 90,000 ship, when the holder should
+  have sold the ship less whatever the repairs cost. §4.6 carries the mechanism in this document's
+  figures: `scrappable = reference − parts_new`, a fifth of it for the structure (bounded by the
+  mass yield), the salvageable parts bought by the facility at a used factor (0.75 intact, 0.40
+  worn, provisional) less the removal labour, everything into the operator's stock, no separate
+  scrap fee. Remains, which have no working parts, are bounded on the whole reference. The resale
+  the ruling prefers is owed as a verb (§7).
+- **The question (as raised):** doc 38 Q-38-5 says "the scrap of a whole hull is worth on the order of a fifth of
   its buyout at most". Draft 0.1's mechanism (§4.6) bounds the **structural proceeds** — the alloys —
   and lets the parts come off as lots at their own value, so a Dray scrapped whole returns its
   30,000 cr plant beside the 18,000 cr ceiling, and the 40 t of alloys sell at the Ceres bid for
@@ -1188,7 +1226,13 @@ them.
 ### 5.10 Raised by the reviews: accounting, lifecycle, the order
 
 **Q-39-26 — The accounting unit and the rounding policy.**
-- **Proposed default:** §4.10: kilograms for every computation, tonnes for the ledger and the market;
+- **Decision (owner ruling, 2026-11-03):** the default, with the bale's remainder amended.
+  Requiring a tonne of goods and subtracting kilograms from it as the work is done works; but the
+  unused kilograms can be returned at the market rate with no labour or facility cost applied,
+  because no work was required to return that material to raw. §4.10 carries it: the facility buys
+  an opened bale's remainder back at the reference, kilogram for kilogram, at a scrap, at a sale of
+  the hull or on the holder's `+bay/return`, outside the fifth.
+- **Proposed default (as written):** §4.10: kilograms for every computation, tonnes for the ledger and the market;
   a bill rounds each bulk line up with the remainder declared as the build's loss; repairs draw from
   the hull's opened bale (a tonne of each good debited up front, kilograms consumed from it, the rest
   paid out at scrap); scrap mints down to whole tonnes in kind and credits the exact kilograms; a
@@ -1312,15 +1356,14 @@ Q-39-14's count and Q-39-20's list.*
 
 ## 6. The plan: cuts IN.0–IN.11
 
-The rulings of 2026-11-03 on Q-39-1..24 and the ones to come on Q-39-25..36 make this the
-implementation order. Each cut lands as one PR over E7's engine, built from the rulings its row
+The rulings of 2026-11-03 on Q-39-1..36 make this the implementation order. Each cut lands as one PR over E7's engine, built from the rulings its row
 names and tested through the production command paths, with its story at both ground sizes where
 the ground is in it (Q-38-29); each cut's note goes to `39-cut-notes.md` as the GC and SF trains
 did. The order follows review 2's rule: identity, units and escrow before their consumers, and the
 first player production story as early as the chain allows (IN.5). **Dependencies:** IN.1 ∥ IN.2 ∥
 IN.4 may start now; IN.3 after IN.2 and IN.4; IN.5 after IN.1 and IN.3; IN.6 after IN.1, IN.2 and
-IN.4; IN.7 after IN.5 and IN.6; IN.8 after IN.1 and IN.4 (and Q-39-25's ruling); IN.9 after IN.3,
-IN.6 and IN.8; IN.10 after IN.9; IN.11 last. Two cuts carry the expensive-to-reverse marker (IN.1's
+IN.4; IN.7 after IN.5 and IN.6; IN.8 after IN.1 and IN.4; IN.9 after IN.3, IN.6 and IN.8; IN.10
+after IN.9; IN.11 last. Two cuts carry the expensive-to-reverse marker (IN.1's
 part identity, Q-39-3/35; IN.9's register and provenance, Q-39-33) and are built exactly as ruled.
 Doc 41 may start once IN.1, IN.2, IN.4 and IN.6 have landed (the lot shapes, the lifecycle, the
 fees and the stores it needs).
@@ -1335,7 +1378,7 @@ fees and the stores it needs).
 | **IN.5** the first production story: the refine and the works | Q-39-4, Q-39-5, Q-39-6, Q-39-23, Q-39-31 | the `refinery` row and `MillDef.kind: refine` at Kasei (5:4, 20 t, 40 t a day, the seed as opening stock, the bid's `refresh`); the `works` rows at Stickney and Ceres (Freeport Works, the new org, with the alloy and carbon bids); `content/industry/recipes-v1.json` with `fittings` and `output_lots`, loaded by the deploy template; the Exchange's ore asks; the house purchase of Kasei's alloys | **the bot, over SSH, at 256 and 512:** a captain mines carbon ore on Kerwan (Ahuna / Urvara for the ground half), sells concentrate to the Exchange and buys its carbon ask, hauls both to Stickney, sells the concentrate to Kasei (refined on the next fires, Kasei's ask restocking by the milled units), orders fittings at the works with their own alloys and carbon through `+works`, collects five tonnes two fires later and sells them to the Co-op at Ceres for 600; the matter pin and the mill's drift check hold throughout |
 | **IN.6** the part lot at the workshop | Q-39-12 | `Replace{lot: Store}` from the operator's storefront at the catalogue price, `NO_PART`, the seeded part rows | GC.8's refit run pays 480 of labour and 28,000 for the cannon; the seventh replace at Ceres refuses `NO_PART`; the lot's row reads `Seeded`; the store's count after the order is six less one |
 | **IN.7** the part recipes | Q-39-22, Q-39-31 | the mount, sight, pod and plant recipes at the works with `output_lots: each`; the Stickney strategic-ore bid; instrument boards from Luna; the seeds retire | 2 t of strategic ore, 1 t of boards and 3 t of fittings become ten `sensor.visual_mk1` lots at Stickney with `Manufactured` rows; one is fitted to a scout by `+bay/fit`; a disputed part (a `Stripped` row under a live claim) is refused at a build's custody |
-| **IN.8** the mass budget and scrap | Q-39-15, Q-39-16, Q-39-17, Q-39-25 | the partition at the catalogue build, per-design `structure_kg_per_point` and `fittings_kg_per_point` counting structural cells only; repair draws both from the bale; the three constants retire; scrap as §4.6 and §4.10 at a workshop (the operator's stock in tonnes, the credit on the kilograms, the fee) and on a site (the capped yield, the room check), parts under Q-39-25's ruling | a whole escort scrapped at Stickney puts 1 t in the Yards' pool and credits 644 cr less the fee with its four parts in the hold; a Dray's remains on Urvara (512) and an escort's on Ahuna (256) yield 40 t and 1 t into the hold, the full hold refusing; a Dray after SF.R15 counts no heat points |
+| **IN.8** the mass budget and scrap | Q-39-15, Q-39-16, Q-39-17, Q-39-25, Q-39-26 | the partition at the catalogue build, per-design `structure_kg_per_point` and `fittings_kg_per_point` counting structural cells only; repair draws both from the bale and `+bay/return` sells the remainder back at the reference; the three constants retire; scrap as §4.6 and §4.10 at a workshop (the yield to the operator's stock in tonnes, the salvageable parts to its stores at a used value less removal, a fifth of the scrappable value for the structure) and on a site (the capped yield, the room check) | a whole intact escort scrapped at Stickney puts 1 t in the Yards' pool and four part lots in its stores and credits about 45,000 of its 75,500; a whole Dray credits about 34,000 of 90,000 and 91 t of alloys; a Dray with a destroyed plant credits 18,000; an opened bale's 920 kg comes back at 414 cr; a Dray's remains on Urvara (512) and an escort's on Ahuna (256) yield 40 t and 1 t into the hold, the full hold refusing; a Dray after SF.R15 counts no heat points |
 | **IN.9** the yard and the handover | Q-39-14, Q-39-18, Q-39-19, Q-39-20, Q-39-33, Q-39-36 | the `yard` row at `p14_slipway`; the hull recipe and the kit lot; the `YardCommission` record and the commission action; `tacsim.owned_hulls` and `tacsim.hull_provenance`; the register read by view, helm, berth and free-hull paths; `+bay/stow <hull>=<carrier>`; the rig `title_view`; `armour_cab` and `walker_cab` templates on the tanks and bipeds; empty magazines; the bill from the design | a captain books an escort at Stickney, delivers its bill over two trips, waits two IC days with the clock stepped, collects it: it stands in the slipway's workshop room titled to them with a fresh mark, `+bay` quotes it clean with empty magazines, `+bay/order rearm` loads it from the hold, `+bay/stow <hull>=<their Dray-P>` puts it in the bay, `+tv/<n> board` and `launch` work on Ahuna, and `+coop/buyout` on the Dray-P is not refused for it; a commission failed by staff hand between the kit's consumption and the title resumes on the next fire and finishes; the bot types it |
 | **IN.10** the pools | Q-39-7, Q-39-21, Q-39-34 | the Trust's raise; the floors and the funded house orders; the house ferry under a DARK house helm; `NO_HULL`'s two texts | eight charters leave no free Dray and the ninth captain hears "cannot yet fund one"; two buyouts later the Trust orders; fourteen IC days plus the passage later a ninth Dray docks at Ceres under the Trust's title as a register row, the desk enrols the captain, and the applier's preflight still passes |
 | **IN.11** the matter story and the adversarial set | Q-39-8, Q-38-29 | one story at 256 and 512: mine → sell → mill → refine → works → part → fit, and ore → alloys → hull, with Σ mined = Σ (pools + lots + bills + losses) asserted; the adversarial stories not already in a cut (two orders for one bale, the failure between consumption and title under a restart, a competing reservation at the deadline); the bot's `+yard`, `+works`, `+market/sell` and `+bay/order replace` vocabulary | the story passes at both sizes with the bot typing the player's half; the sum holds to the kilogram with the losses declared |
@@ -1354,7 +1397,11 @@ the `customers` and `FacilityCostDef` fields on the facility's policy half and t
 the power role (IN.1, IN.3, IN.4), the test list the pins become (`shard_9/mill.rs:2508`'s successor
 and the receipt-kind pin, IN.1); and, for doc 41, the lot shapes and the lifecycle (§4.5, §4.11), the
 facility fees (§4.4) and Tycho Mutual's row (Q-39-24) as the inputs doc 38 §8 promised it, available
-once IN.1, IN.2, IN.4 and IN.6 have landed.
+once IN.1, IN.2, IN.4 and IN.6 have landed. **Owed outside these cuts:** a hull resale verb — the
+sale of a titled hull as an asset through the market's `Representation::Asset` purchase the buyout
+already uses (`buyout.rs`) — which Q-39-25's ruling names as what a holder with a sound hull should
+do instead of scrapping it; it belongs with doc 41's salvage loop or a later economy cut, and until
+it exists the buyout and the Trust are the only buyers of a hull.
 
 ## 8. The two outside reviews of Draft 0.1, triaged
 
@@ -1403,7 +1450,7 @@ does not support. The last column says what Draft 0.3 did with it.
 | 8 | the mills and the Ceres works do not cover their stated daily cost | **CONFIRMED** | 16 t × 25 = 400 against 650 (the Exchange); 16 × 12.5 = 200 against 650 (Occator); 8 batches × (2,800 − 2,600 − 50) = 1,200 against 1,700 (Ceres) | §4.4 redone per site, billing by work unit, the mill rows withdrawn from the fee model; Q-39-32 |
 | 9 | a slot can be held and cancelled at no cost, from `AwaitingDelivery` included | **CONFIRMED** | `holds_resources` includes `AwaitingDelivery` (`workorder.rs:521–529`); `wo_cancel` releases materials and the slot from any non-terminal state (`provider.rs:3846–3900`); the budget hold is released unspent (`money.rs:366–392`) | §4.12 the booking charge and the cutoff; Q-39-29 |
 | 10 | the Trust cannot fund a ninth Dray and the build is at Stickney | **CONFIRMED** | 250,000 − 7 × 25,000 = 75,000 (lane `:2597`, `:2614`; `coop.rs:1629–1663`); as 8.1 row 2.6 | §4.7 funding from buyouts and a raise, the ferry, the register; Q-39-34 |
-| 11 | the scrap mechanism narrows the accepted ceiling's scope, and 40 t at the 520 bid is 20,800 | **CONFIRMED** as a scope question | §4.6 exempts parts; 40 × 520 = 20,800 > 18,000 | raised to the owner as Q-39-25, not decided here |
+| 11 | the scrap mechanism narrows the accepted ceiling's scope, and 40 t at the 520 bid is 20,800 | **CONFIRMED** as a scope question | §4.6 exempts parts; 40 × 520 = 20,800 > 18,000 | raised to the owner as Q-39-25; ruled 2026-11-03 (§5.9): the fifth on the total recoverable value net of the working parts, which come back used; §4.6 as it now reads |
 | om. 1 | a new unit's magazines are born full | **CONFIRMED** | `definitions/unit.rs:1718–1725` (`init: rounds`) | §4.13 and Q-39-36: delivered empty |
 | om. 2 | `power.walker` has no recipe; "light" is not a class | **CONFIRMED** | as 8.1 row 2.4 | §4.1, §4.3; Q-39-35 |
 | om. 3 | adversarial acceptance is missing | taken | — | §4.9 and §6's stories |
