@@ -387,6 +387,10 @@ pub enum Berth<'a> {
 pub fn berth_of(w: &World, hull: ObjId) -> Berth<'_> {
     if w.module_state::<mush_sim::JourneyBook>()
         .is_some_and(|book| book.under_way(hull))
+        || w.module_state::<crate::space::tick::SpaceBubbleBook>()
+            .is_some_and(|book| {
+                book.free_flights.contains_key(&hull) || book.cluster_sessions.contains_key(&hull)
+            })
     {
         return Berth::UnderWay;
     }

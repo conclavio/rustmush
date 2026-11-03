@@ -1741,6 +1741,30 @@ fn fail(ctx: &mut Ctx<'_>, journey: CarrierJourney, why: &str) -> Step {
     Step::Worked
 }
 
+/// Fail an active (`Cruising` or `Promoted`) carrier journey for `root` (e.g. when
+/// a bubble's carrier hull is disabled into a derelict, doc 35b §3 #4).
+///
+/// Transitions the journey to [`JourneyState::Failed`], quarantines the unplaced
+/// root so the next journey tick's `placed_or_quarantined` invariant holds, and
+/// refreshes carrier control links.
+pub fn fail_carrier_journey(ctx: &mut Ctx<'_>, root: ObjId, why: &str) -> bool {
+    let Some(journey) = ctx
+        .w
+        .module_state::<JourneyBook>()
+        .and_then(|book| book.journeys.get(&root).cloned())
+    else {
+        return false;
+    };
+    if !matches!(
+        journey.state,
+        JourneyState::Cruising | JourneyState::Promoted { .. }
+    ) {
+        return false;
+    }
+    let _ = fail(ctx, journey, why);
+    true
+}
+
 fn bounded_anomaly(mut text: String) -> String {
     if text.len() > MAX_JOURNEY_ANOMALY_BYTES {
         let mut end = MAX_JOURNEY_ANOMALY_BYTES;

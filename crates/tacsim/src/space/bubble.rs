@@ -363,7 +363,10 @@ impl SpaceShipState {
             crits: Vec::new(),
             status: HullStatus::Operational,
             torpedo_tubes: Vec::new(),
-            lasers: vec![LaserMount::standard_turret("laser_dorsal")],
+            lasers: vec![
+                LaserMount::standard_turret("laser_dorsal"),
+                LaserMount::standard_turret("laser_ventral"),
+            ],
             railguns: Vec::new(),
             pdcs: vec![PdcMount::standard_rotary("pdc_ dorsal", 2_000)],
             decoys_remaining: 4,
@@ -516,7 +519,7 @@ impl SpaceShipState {
         }
 
         // In `dray.json`, `drive` has `struck_through: { section: "hull", facet: "rear" }`
-        // and `rear` band splits 50/50 between `hull` and `drive`.
+        // and penetrating hits through the hull structure also shock the drive column.
         let target_section = if facet == FacetBand::Rear && remaining > 0 {
             ShipSectionId::Drive
         } else {
@@ -524,23 +527,44 @@ impl SpaceShipState {
         };
 
         let mut internal_dmg = 0u32;
-        if remaining > 0
-            && let Some(sec) = self.sections.get_mut(&target_section)
-        {
-            let dealt = sec.internals.min(remaining);
-            sec.internals -= dealt;
-            internal_dmg = dealt;
+        if remaining > 0 {
+            if facet == FacetBand::Rear {
+                if let Some(sec) = self.sections.get_mut(&ShipSectionId::Drive) {
+                    let dealt = sec.internals.min(remaining);
+                    sec.internals -= dealt;
+                    internal_dmg = dealt;
+                }
+            } else {
+                let drive_share = remaining.div_ceil(2);
+                let hull_share = remaining.saturating_sub(drive_share);
+                if let Some(sec) = self.sections.get_mut(&ShipSectionId::Hull) {
+                    let dealt = sec.internals.min(hull_share);
+                    sec.internals -= dealt;
+                    internal_dmg = internal_dmg.saturating_add(dealt);
+                }
+                if let Some(sec) = self.sections.get_mut(&ShipSectionId::Drive) {
+                    let dealt = sec.internals.min(drive_share);
+                    sec.internals -= dealt;
+                    internal_dmg = internal_dmg.saturating_add(dealt);
+                }
+            }
         }
 
         // Subsystem crit check when internals take heavy damage
-        if internal_dmg >= 40
-            && target_section == ShipSectionId::Hull
+        let hull_lost = self
+            .sections
+            .get(&ShipSectionId::Hull)
+            .map_or(0, |s| s.max_internals.saturating_sub(s.internals));
+        let drive_lost = self
+            .sections
+            .get(&ShipSectionId::Drive)
+            .map_or(0, |s| s.max_internals.saturating_sub(s.internals));
+        if (internal_dmg >= 40 || hull_lost >= 30)
             && !self.crits.contains(&SubsystemCrit::RadiatorDamaged)
         {
             self.crits.push(SubsystemCrit::RadiatorDamaged);
         }
-        if internal_dmg >= 30
-            && target_section == ShipSectionId::Drive
+        if (internal_dmg >= 30 || drive_lost >= 25)
             && !self.crits.contains(&SubsystemCrit::DriveDegraded)
         {
             self.crits.push(SubsystemCrit::DriveDegraded);

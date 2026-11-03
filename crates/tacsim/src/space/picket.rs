@@ -139,7 +139,7 @@ fn think(v, c) {
         emcon(true);
         lock(hostile_id);
         for w in v.weapons {
-            if w.ready_in_ms == 0 {
+            if w.ready_in_ms == 0 && w.id == "laser_1" {
                 fire(w.id, 1);
                 break;
             }
@@ -197,10 +197,9 @@ fn think(v, c) {
     let target_range = 0;
     for row in v.contacts {
         if row.relation == "hostile" && row.reads_dead != true {
-            if target_id == () || row.range_m < target_range {
-                target_id = row.id;
-                target_range = row.range_m;
-            }
+            target_id = row.id;
+            target_range = row.range_m;
+            break;
         }
     }
     if target_id == () {
@@ -221,11 +220,6 @@ fn think(v, c) {
     }
     this.stage = 2;
     lock(target_id);
-    for w in v.weapons {
-        if w.ready_in_ms == 0 {
-            fire(w.id, 1);
-        }
-    }
     trace("RAIDER_PRESS_ATTACK");
 }
 "#;
@@ -960,6 +954,19 @@ pub fn step_kirkwood_picket(
             .and_then(|s| s.locked_target_id.clone())
             .unwrap_or_else(|| picket.raider_ship_id.clone());
 
+        if bubble
+            .ships
+            .get(&picket.corvette_ship_id)
+            .is_some_and(|s| s.heat_permille > 600)
+        {
+            emitted_events.extend(tape.record_and_apply(
+                bubble,
+                BubbleInputCommand::BlowdownCoolant {
+                    ship_id: picket.corvette_ship_id.clone(),
+                },
+            ));
+        }
+
         for intent in &res.intents {
             match intent {
                 IntentKind::Emcon { on } => {
@@ -1002,6 +1009,15 @@ pub fn step_kirkwood_picket(
                     emitted_events.extend(tape.record_and_apply(
                         bubble,
                         BubbleInputCommand::FireOffensiveLasers {
+                            shooter_id: picket.corvette_ship_id.clone(),
+                            target_id: locked_ship.clone(),
+                        },
+                    ));
+                }
+                IntentKind::Fire { weapon, .. } if weapon.as_str().starts_with("rail") => {
+                    emitted_events.extend(tape.record_and_apply(
+                        bubble,
+                        BubbleInputCommand::FireRailgun {
                             shooter_id: picket.corvette_ship_id.clone(),
                             target_id: locked_ship.clone(),
                         },
@@ -1266,6 +1282,10 @@ pub fn build_kirkwood_picket_ships(
     corvette.attitude_deg = (180, 0, 0);
     corvette.pdc_auto = true;
     corvette.emcon = EmconPosture::ActiveCombat;
+    if let Some(off_laser) = corvette.lasers.first_mut() {
+        off_laser.max_range_m = 160_000;
+        off_laser.base_damage = 180;
+    }
     if let Some(def_laser) = corvette.lasers.get_mut(1) {
         def_laser.mode = LaserMode::Defense;
         def_laser.defense_range_m = 45_000;

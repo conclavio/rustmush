@@ -108,6 +108,12 @@ pub struct ActiveInterdictionBubble {
     pub snapshots: Vec<BubbleSnapshot>,
     /// Multi-party Kirkwood Customs Picket state when this bubble is a Kirkwood picket encounter (`SF.R6`, `D-35-11`).
     pub picket: Option<super::picket::KirkwoodPicketState>,
+    /// Whether the carrier is actively executing a `+helm/approach` burn toward a disabled derelict inside this bubble (`SF.R9`).
+    #[serde(default)]
+    pub approaching_derelict: bool,
+    /// Whether the bubble is held open while the carrier docks with / attaches a tow line to a disabled derelict (`SF.R9`).
+    #[serde(default)]
+    pub holding_for_salvage: bool,
 }
 
 impl ActiveInterdictionBubble {
@@ -138,6 +144,9 @@ impl ActiveInterdictionBubble {
             .get(&self.carrier_ship_id)
             .is_some_and(|ship| ship.status == HullStatus::Operational);
         if !carrier_operational {
+            return false;
+        }
+        if self.approaching_derelict || self.holding_for_salvage {
             return false;
         }
         if self.cleared {
@@ -313,6 +322,9 @@ pub struct SpaceFreeFlightRecord {
     pub decoupled_at_ic_s: i64,
     /// W-clock IC timestamp (seconds) of the last integration step.
     pub last_ic_s: i64,
+    /// Optional orbital cluster arrival deadline (IC seconds) when flying to a cluster via `+helm/autopilot <cluster_id>` (`SF.R9`, `D-35-5`).
+    #[serde(default)]
+    pub cluster_arrival_ic_s: Option<i64>,
 }
 
 impl SpaceFreeFlightRecord {
@@ -347,7 +359,9 @@ impl SpaceFreeFlightRecord {
             self.braking_flipped = false;
         }
 
-        // Timed burn cutoff (`35a` §5 #4): apply thrust only for the remaining burn duration.
+        // Timed burn cutoff (`35a` §5 #4, `35b` §3 #3): apply thrust only for the remaining burn duration,
+        // and clear thrust whenever a timed burn finishes (including when `burn_s == dt_ic_s`).
+        let had_timed_burn = self.burn_remaining_ic_s.is_some();
         let burn_s = match self.burn_remaining_ic_s {
             Some(rem) => {
                 let rem_i64 = i64::from(rem);
@@ -396,12 +410,8 @@ impl SpaceFreeFlightRecord {
                 v1_mps.clamp(i128::from(i64::MIN / 2), i128::from(i64::MAX / 2)) as i64;
         }
 
-        if self.burn_remaining_ic_s.is_none() && burn_s < dt_ic_s {
+        if had_timed_burn && self.burn_remaining_ic_s.is_none() {
             self.thrust_mmps2 = [0, 0, 0];
-        } else if self.burn_remaining_ic_s.is_none() && burn_s == dt_ic_s {
-            // If this was a timed burn that finished exactly on `dt_ic_s`, clear thrust.
-            // (Continuous burns via `+helm/thrust` leave `burn_remaining_ic_s = None` from the start,
-            // whereas `+helm/burn` always sets `burn_remaining_ic_s = Some(dur)`.)
         }
         self.last_ic_s = self.last_ic_s.saturating_add(dt_ic_s);
     }
@@ -880,6 +890,7 @@ pub fn space_tick(ctx: &mut Ctx<'_>, _tag: &str, _scene: Option<SceneId>) {
         return;
     }
     let now = ctx.w.world_ic_now();
+    expire_stale_docking_sessions(ctx, &now);
     step_derelict_records(ctx);
     clear_resolved_bubbles(ctx, &now);
     settle_disabled_carrier_bubbles(ctx, &now);
@@ -888,6 +899,56 @@ pub fn space_tick(ctx: &mut Ctx<'_>, _tag: &str, _scene: Option<SceneId>) {
     super::mining::step_clusters_on_tick(ctx, now.clone());
     promote_due_interdictions(ctx, &now);
     persist_space_state(ctx);
+}
+
+fn expire_stale_docking_sessions(ctx: &mut Ctx<'_>, now: &ClockStamp) {
+    if ctx.w.world_timeline().is_frozen() {
+        return;
+    }
+    let wall_now_s = ctx.w.now();
+    let expired: Vec<ObjId> = ctx
+        .w
+        .module_state::<SpaceBubbleBook>()
+        .map(|b| {
+            b.docking_sessions
+                .iter()
+                .filter(|(_, s)| {
+                    if s.started_wall_s > 0 && wall_now_s >= s.started_wall_s {
+                        wall_now_s - s.started_wall_s
+                            >= super::docking::DOCKING_SESSION_TIMEOUT_WALL_S
+                    } else {
+                        now.at.saturating_sub(s.started_ic_s)
+                            >= super::docking::DOCKING_SESSION_TIMEOUT_WALL_S * 3_600
+                    }
+                })
+                .map(|(&hull, _)| hull)
+                .collect()
+        })
+        .unwrap_or_default();
+    if expired.is_empty() {
+        return;
+    }
+    for hull in expired {
+        let vault_tank_t = crate::port::ship::hull_view(ctx.w, hull)
+            .and_then(|v| crate::port::ship::hold_vault(ctx.w, &v))
+            .and_then(|vid| {
+                let good = mush_core::CanonicalId::new("propellant").ok()?;
+                crate::port_tick::read_pool(ctx, mush_inventory::record::EndpointRef(vid), &good)
+                    .ok()
+            })
+            .unwrap_or(0);
+        if let Some(book) = ctx.w.module_state_mut::<SpaceBubbleBook>() {
+            book.docking_sessions.remove(&hull);
+            let _ = book
+                .propellant_ledger_mut(hull)
+                .record_burn_kg(vault_tank_t, 15);
+        }
+        crate::port::voyage::narrate_hull(
+            ctx,
+            hull,
+            "[DOCKING] Session wall deadline (60s) expired; collar approach aborted with 15 kg RCS spent and hull unpaused.",
+        );
+    }
 }
 
 fn step_derelict_records(ctx: &mut Ctx<'_>) {
@@ -1138,6 +1199,20 @@ fn settle_disabled_carrier_bubbles(ctx: &mut Ctx<'_>, now: &ClockStamp) {
                 },
             );
         }
+        let _ = mush_sim::fail_carrier_journey(
+            ctx,
+            hull,
+            "carrier hull disabled into an open-epoch derelict",
+        );
+        let any_other_promoted = ctx.w.module_state::<JourneyBook>().is_some_and(|jb| {
+            jb.journeys.values().any(|j| {
+                j.root() != hull
+                    && matches!(j.state(), JourneyState::Promoted { domain: d } if *d == domain)
+            })
+        });
+        if !any_other_promoted {
+            let _ = stand_down_domain(ctx, domain, now.clone());
+        }
         let line = "[SPACE] Drive offline; hull adrift as an open-epoch derelict with a 48-hour Registry salvage window.";
         crate::port::voyage::narrate_hull(ctx, hull, line);
     }
@@ -1188,6 +1263,17 @@ fn step_active_bubbles(ctx: &mut Ctx<'_>, now: &ClockStamp) {
             {
                 ran_picket_hulls.push(hull);
             }
+        } else {
+            let picket_events = step_interdictor_picket(
+                &mut active.bubble,
+                &mut active.tape,
+                &active.interdictor_ship_id,
+                &active.carrier_ship_id,
+            );
+            events.extend(picket_events);
+        }
+        if active.approaching_derelict {
+            step_derelict_approach_in_bubble(active);
         }
         active.snapshots.push(active.bubble.snapshot());
         active.steps = active.steps.saturating_add(1);
@@ -1334,6 +1420,154 @@ fn step_free_flight_records(ctx: &mut Ctx<'_>, now: &ClockStamp) {
             }
         }
     }
+
+    // Promote any free-flight hulls that have reached their destination orbital cluster (`SF.R9`, `D-35-5`):
+    let arrived_clusters: Vec<(ObjId, super::mining::OrbitalClusterId)> = ctx
+        .w
+        .module_state::<SpaceBubbleBook>()
+        .map(|b| {
+            b.free_flights
+                .iter()
+                .filter_map(|(&hull, rec)| {
+                    let cluster =
+                        super::mining::OrbitalClusterId::parse(rec.target_place.as_str())?;
+                    let arrived = rec
+                        .cluster_arrival_ic_s
+                        .is_some_and(|arr_ic| now.at >= arr_ic);
+                    arrived.then_some((hull, cluster))
+                })
+                .collect()
+        })
+        .unwrap_or_default();
+    for (hull, cluster) in arrived_clusters {
+        let _ = super::mining::ensure_cluster_laid_up(ctx, cluster, hull);
+        if let Some(book) = ctx.w.module_state_mut::<SpaceBubbleBook>() {
+            book.free_flights.remove(&hull);
+            let existing_drones = book
+                .cluster_sessions
+                .get(&hull)
+                .map(|s| s.drone_things.clone())
+                .unwrap_or_default();
+            let mut session = super::mining::ActiveClusterMiningSession::new(hull, cluster, now.at);
+            session.drone_things = existing_drones;
+            book.cluster_sessions.insert(hull, session);
+        }
+        let line = format!(
+            "[SPACE] Arrived at {} ({}); orbital cluster site promoted.",
+            cluster.display_name(),
+            cluster.as_str(),
+        );
+        crate::port::voyage::narrate_hull(ctx, hull, &line);
+    }
+}
+
+fn step_interdictor_picket(
+    bubble: &mut LocalSpaceBubble,
+    tape: &mut BubbleInputTape,
+    interdictor_ship_id: &str,
+    carrier_ship_id: &str,
+) -> Vec<super::bubble::SpaceCombatEvent> {
+    let mut emitted = Vec::new();
+    let Some(iship) = bubble.ships.get(interdictor_ship_id) else {
+        return emitted;
+    };
+    if iship.status != HullStatus::Operational {
+        return emitted;
+    }
+    let carrier_operational = bubble
+        .ships
+        .get(carrier_ship_id)
+        .is_some_and(|s| s.status == HullStatus::Operational);
+    if !carrier_operational {
+        return emitted;
+    }
+    if iship.emcon == super::bubble::EmconPosture::Ghost {
+        emitted.extend(tape.record_and_apply(
+            bubble,
+            BubbleInputCommand::SetEmcon {
+                ship_id: interdictor_ship_id.to_owned(),
+                posture: super::bubble::EmconPosture::Standard,
+            },
+        ));
+        emitted.extend(tape.record_and_apply(
+            bubble,
+            BubbleInputCommand::SetLockedTarget {
+                ship_id: interdictor_ship_id.to_owned(),
+                target_id: Some(carrier_ship_id.to_owned()),
+            },
+        ));
+        emitted.extend(tape.record_and_apply(
+            bubble,
+            BubbleInputCommand::CommandBurn {
+                ship_id: interdictor_ship_id.to_owned(),
+                thrust_mps2: [-10, 0, 0],
+                force_into_reserve: false,
+            },
+        ));
+    }
+    if bubble
+        .ships
+        .get(interdictor_ship_id)
+        .is_some_and(|s| s.heat_permille > 650)
+    {
+        emitted.extend(tape.record_and_apply(
+            bubble,
+            BubbleInputCommand::BlowdownCoolant {
+                ship_id: interdictor_ship_id.to_owned(),
+            },
+        ));
+    }
+    emitted.extend(tape.record_and_apply(
+        bubble,
+        BubbleInputCommand::FireOffensiveLasers {
+            shooter_id: interdictor_ship_id.to_owned(),
+            target_id: carrier_ship_id.to_owned(),
+        },
+    ));
+    emitted
+}
+
+fn step_derelict_approach_in_bubble(active: &mut ActiveInterdictionBubble) {
+    let derelict_pos_vel = active
+        .bubble
+        .ships
+        .values()
+        .find(|s| {
+            s.id != active.carrier_ship_id
+                && matches!(s.status, HullStatus::DisabledDerelict { .. })
+        })
+        .map(|s| (s.pos_m, s.vel_mmps));
+    let Some((d_pos, d_vel)) = derelict_pos_vel else {
+        active.approaching_derelict = false;
+        return;
+    };
+    let Some(carrier) = active.bubble.ships.get_mut(&active.carrier_ship_id) else {
+        active.approaching_derelict = false;
+        return;
+    };
+    carrier.thrust_mps2 = [0, 0, 0];
+    let dist_m = super::picket::distance_3d_m(carrier.pos_m, d_pos);
+    let step_m = 6_000_i64;
+    if dist_m <= 250 {
+        carrier.pos_m = [d_pos[0] - 120, d_pos[1], d_pos[2]];
+        carrier.vel_mmps = [d_vel[0] + 2_000, d_vel[1], d_vel[2]];
+        active.approaching_derelict = false;
+    } else {
+        let new_dist = (dist_m - step_m).max(120);
+        let dx = i128::from(carrier.pos_m[0]) - i128::from(d_pos[0]);
+        let dy = i128::from(carrier.pos_m[1]) - i128::from(d_pos[1]);
+        let dz = i128::from(carrier.pos_m[2]) - i128::from(d_pos[2]);
+        let d = i128::from(dist_m.max(1));
+        carrier.pos_m = [
+            d_pos[0] + ((dx * i128::from(new_dist)) / d) as i64,
+            d_pos[1] + ((dy * i128::from(new_dist)) / d) as i64,
+            d_pos[2] + ((dz * i128::from(new_dist)) / d) as i64,
+        ];
+        carrier.vel_mmps = [d_vel[0] + 2_000, d_vel[1], d_vel[2]];
+        if new_dist <= 250 {
+            active.approaching_derelict = false;
+        }
+    }
 }
 
 fn promote_due_interdictions(ctx: &mut Ctx<'_>, now: &ClockStamp) {
@@ -1477,6 +1711,12 @@ fn build_interdiction_bubble(
         )
         .ok()?;
         interdictor_ship.attitude_deg = (180, 0, 0);
+        interdictor_ship.emcon = super::bubble::EmconPosture::Ghost;
+        interdictor_ship.heat_permille = 0;
+        interdictor_ship.thrust_mps2 = [0, 0, 0];
+        if let Some(def_laser) = interdictor_ship.lasers.get_mut(1) {
+            def_laser.mode = super::weapons::LaserMode::Defense;
+        }
         bubble.set_party_relation(CARRIER_PARTY, INTERDICTOR_PARTY, SpaceRelation::Hostile);
         bubble.insert_ship(interdictor_ship);
         (interdictor_hull, interdictor_ship_id, None)
@@ -1499,6 +1739,8 @@ fn build_interdiction_bubble(
         tape,
         snapshots: vec![initial_snapshot],
         picket,
+        approaching_derelict: false,
+        holding_for_salvage: false,
     })
 }
 
