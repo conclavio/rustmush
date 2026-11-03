@@ -5326,7 +5326,7 @@ async fn run(
                             settle_barrier(reply, pending_commit.as_mut(), &metrics);
                             continue;
                         }
-                        Err(msg) => msg,
+                        Err(msg) => *msg,
                     };
                     if is_typed_line(&msg) {
                         metrics.command_processed();
@@ -6054,7 +6054,7 @@ async fn run(
                 let _ = reply.send(Err(WorldReadError::Unavailable));
                 continue;
             }
-            Err(msg) => msg,
+            Err(msg) => *msg,
         };
         if is_typed_line(&msg) {
             metrics.command_processed();

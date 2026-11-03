@@ -624,10 +624,10 @@ pub(super) fn classify_writer_signal(signal: &WriterSignal) -> IngressClass {
 /// exit), or any other message, refused as before.
 pub(super) fn behind_barrier(
     msg: WorldMsg,
-) -> Result<oneshot::Sender<Result<(), WorldReadError>>, WorldMsg> {
+) -> Result<oneshot::Sender<Result<(), WorldReadError>>, Box<WorldMsg>> {
     match msg {
         WorldMsg::StaffBarrier { reply } => Ok(reply),
-        msg => Err(msg),
+        msg => Err(Box::new(msg)),
     }
 }
 
