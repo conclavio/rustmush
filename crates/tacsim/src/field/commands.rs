@@ -19,9 +19,10 @@
 //! the flight meant is the nearest one that matches, seen from the nearest of the viewer's own
 //! units. Nothing about a row's identity is ever printed back.
 //!
-//! **Who leads** (doc 32 §4a): the roster's leader (doc 26), the pilot of a one-unit party.
-//! Doctrine never opens a field by itself; CF.6 hands a delivered `ENGAGE` received on the
-//! surface to [`mark_from_order`] as its leader's mark.
+//! **Who leads** (doc 32 §4a): the roster's leader (doc 26), the pilot of a one-unit party —
+//! read now, from the operation's command roster, so a succession moves the mark with it (doc
+//! 36a §11 row 6, `parties::led_now`). Doctrine never opens a field by itself; CF.6 hands a
+//! delivered `ENGAGE` received on the surface to [`mark_from_order`] as its leader's mark.
 
 use std::collections::BTreeSet;
 
@@ -176,7 +177,7 @@ fn status(ctx: &mut Ctx<'_>) -> Result<(), CmdError> {
         .map(|book| {
             book.running()
                 .filter_map(|(site, hosted)| {
-                    let party = hosted.live.led_by(actor).or_else(|| {
+                    let party = parties::led_now(ctx, &hosted.live, actor).or_else(|| {
                         hosted
                             .live
                             .units
@@ -264,11 +265,13 @@ fn row_words(text: &str) -> Result<(Octant, Option<Band>), CmdError> {
     Ok((bearing, band))
 }
 
-/// The running field the actor leads a party in, as its site and party.
+/// The running field the actor leads a party in now (doc 36a §11 row 6: a roster's current
+/// leader, `parties::led_now`), as its site and party.
 fn in_field(ctx: &Ctx<'_>, actor: ObjId) -> Option<(CanonicalId, PartyId)> {
     let book = ctx.w.module_state::<super::FieldBook>()?;
-    book.running()
-        .find_map(|(site, hosted)| hosted.live.led_by(actor).map(|party| (site.clone(), party)))
+    book.running().find_map(|(site, hosted)| {
+        parties::led_now(ctx, &hosted.live, actor).map(|party| (site.clone(), party))
+    })
 }
 
 /// **A mark inside a field** (Q-CF-7): private, the marking party's book only.

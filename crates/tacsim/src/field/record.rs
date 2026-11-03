@@ -230,7 +230,9 @@ impl FieldLive {
             .map(|row| row.party)
     }
 
-    /// The party a leader leads.
+    /// The party a leader leads, as its row names the leader (set at admission or join). A
+    /// roster party's leader changes with the operation's command roster (doc 26 succession),
+    /// which `super::parties::led_now` reads; the commands ask that, never this.
     #[must_use]
     pub fn led_by(&self, leader: ObjId) -> Option<PartyId> {
         self.parties

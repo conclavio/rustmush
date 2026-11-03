@@ -4692,6 +4692,381 @@ async fn cf_review_an_open_ground_engage_ends_in_the_hired_escorts_fire() -> Tes
     Ok(())
 }
 
+/// Every actor the two-pilot fixture plays, each with an account of their own (a handoff and a
+/// `+focus` ask for one).
+struct PilotAccounts(Vec<(ObjId, AccountId)>);
+impl AccountIdentity for PilotAccounts {
+    fn account_of(&self, actor: ObjId) -> Option<AccountId> {
+        self.0
+            .iter()
+            .find(|(who, _)| *who == actor)
+            .map(|(_, account)| *account)
+    }
+}
+
+/// **Two players fly one operation on Ahuna Flank** (doc 36a §11 rows 6 and 7): the organizer
+/// leases two stock rigs, lends one to each pilot through the owner's own loans, and the two
+/// accept, take their helms and ready; the activation launches both into the field phase on the
+/// site. Answers the rig, the two rigs (slots 1 and 2), their pilots, and the roster's leader.
+async fn two_pilot_fixture(
+    store: &InMemoryStore,
+) -> TestResult<(Rig, [ObjId; 2], [ObjId; 2], ObjId)> {
+    use mush_org::unit_authority::{UnitCapability, UnitScope};
+    use tacsim::detachment::sortie::Phase;
+    let (mut rig, _) = rented_mining_fixture(store).await?;
+    let pilots = [rig.invitee, rig.stranger];
+    *rig.world
+        .world_mut()
+        .module_state_mut::<mush_sim::AccountOracle>()
+        .ok_or("account oracle")? = mush_sim::AccountOracle::new(Arc::new(PilotAccounts(vec![
+        (rig.organizer, AccountId::mint("MiningCaptain", 1)?),
+        (pilots[0], AccountId::mint("SlotOnePilot", 1)?),
+        (pilots[1], AccountId::mint("SlotTwoPilot", 1)?),
+    ])));
+    commit(&mut rig.world, store, rig.organizer, "+tv/1/permissions go").await?;
+    ordinary(&mut rig.world, rig.organizer, "+tv/lease go")?;
+    persist_legacy(&mut rig.world, store).await?;
+    commit(&mut rig.world, store, rig.organizer, "+tv/2/permissions go").await?;
+    let second = rig
+        .world
+        .world()
+        .module_state::<tacsim::TacsimStore>()
+        .ok_or("rentals")?
+        .tv_leases_of(rig.organizer)
+        .find(|r| r.live() && r.slot == 2)
+        .ok_or("second rig")?
+        .tv;
+    let units = [rig.unit, second];
+    // The owner's operate loan on each rig, the parent of that rig's grant to its pilot.
+    for (unit, pilot) in units.into_iter().zip(pilots) {
+        let loan = {
+            let h = rig
+                .world
+                .world()
+                .module_state::<mush_org::unit_authority::runtime::UnitAuthorityHandles>()
+                .ok_or("grants")?;
+            rig.world
+                .engine()
+                .action_state()
+                .get(&h.registry, &())?
+                .ok_or("owner loans")?
+                .grants
+                .values()
+                .find(|g| {
+                    g.capability == UnitCapability::OperateCrew
+                        && matches!(&g.scope, UnitScope::Units { units } if units.contains(&unit))
+                })
+                .ok_or("operate loan")?
+                .id
+                .0
+        };
+        commit(
+            &mut rig.world,
+            store,
+            rig.organizer,
+            &format!(
+                "@unitgrant/issue #{}=#{} operate_crew parent={loan}",
+                unit.0, pilot.0
+            ),
+        )
+        .await?;
+    }
+    let site = rig
+        .world
+        .world()
+        .module_state::<tacsim::TacsimStore>()
+        .ok_or("tacsim")?
+        .port_maps()
+        .find(|m| m.entry.as_str() == "ahuna_port")
+        .and_then(|m| m.domain)
+        .ok_or("Ahuna domain")?;
+    let mut opened = false;
+    for _ in 0..80 {
+        let status = text(&mut rig.world, GOD, "@tacsim/port status");
+        if status
+            .lines()
+            .any(|l| l.contains("ahuna_port site:") && l.ends_with("[ready]"))
+        {
+            opened = true;
+            break;
+        }
+        pulse(&mut rig.world, store, 6).await?;
+    }
+    assert!(
+        opened,
+        "the site opener finishes before the carrier arrives"
+    );
+    ordinary(
+        &mut rig.world,
+        GOD,
+        &format!("@spatial/place/domain #{}={site}", rig.carrier.0),
+    )?;
+    let crew_room = {
+        let port = tacsim::port::coop::programme_port(rig.world.world()).ok_or("programme")?;
+        let row = port
+            .map
+            .hulls
+            .iter()
+            .find(|r| r.hull == rig.carrier.0)
+            .ok_or("charter hull")?;
+        ObjId(
+            *row.rooms
+                .get(&mush_core::CanonicalId::new("crew")?)
+                .ok_or("crew")?,
+        )
+    };
+    rig.world.world_mut().move_to(rig.organizer, crew_room)?;
+    // Each pilot at their rig's helm in its cab.
+    for (unit, pilot) in units.into_iter().zip(pilots) {
+        let cab = {
+            let (_, row) =
+                tacsim::port::vehicle::rig_row(rig.world.world(), unit).ok_or("stock rig")?;
+            ObjId(
+                *row.rooms
+                    .get(&mush_core::CanonicalId::new("cab")?)
+                    .ok_or("cab")?,
+            )
+        };
+        ordinary(
+            &mut rig.world,
+            GOD,
+            &format!("@spatial/assign #{}=pilot,#{}", unit.0, pilot.0),
+        )?;
+        rig.world.world_mut().move_to(pilot, cab)?;
+        rig.world.connect(pilot);
+        ordinary(&mut rig.world, pilot, &format!("+focus #{}/pilot", unit.0))?;
+    }
+    persist_legacy(&mut rig.world, store).await?;
+    let payload = json!({"carrier":rig.carrier.0,"slots":[
+        {"slot":1,"unit":units[0].0,"controller":{"kind":"player","character":pilots[0].0},"role":"scout","mind":null},
+        {"slot":2,"unit":units[1].0,"controller":{"kind":"player","character":pilots[1].0},"role":"scout","mind":null}],
+        "npc_commander":null,"financial_terms":null});
+    commit(
+        &mut rig.world,
+        store,
+        rig.organizer,
+        &format!("+sortie/draft {payload}"),
+    )
+    .await?;
+    for (unit, pilot) in units.into_iter().zip(pilots) {
+        let selected = draft(&rig.world, rig.organizer, 1)?;
+        commit(
+            &mut rig.world,
+            store,
+            pilot,
+            &declaration("accept", &selected),
+        )
+        .await?;
+        commit(
+            &mut rig.world,
+            store,
+            pilot,
+            &format!("@station/handoff #{}/pilot", unit.0),
+        )
+        .await?;
+        install_due_handoff(&mut rig.world, store).await?;
+    }
+    for pilot in pilots {
+        let selected = draft(&rig.world, rig.organizer, 1)?;
+        commit(
+            &mut rig.world,
+            store,
+            pilot,
+            &declaration("ready", &selected),
+        )
+        .await?;
+    }
+    commit(
+        &mut rig.world,
+        store,
+        rig.organizer,
+        "+sortie/activate 1:1=combat",
+    )
+    .await?;
+    commit(
+        &mut rig.world,
+        store,
+        rig.organizer,
+        "+sortie/launch 1:1=all",
+    )
+    .await?;
+    for _ in 0..60 {
+        let mut out = true;
+        for unit in units {
+            out &= flight(&rig.world, unit, 1)?.phase == Phase::Field;
+        }
+        if out {
+            break;
+        }
+        pulse(&mut rig.world, store, 6).await?;
+    }
+    for unit in units {
+        assert_eq!(
+            flight(&rig.world, unit, 1)?.phase,
+            Phase::Field,
+            "#{} is out on the site",
+            unit.0
+        );
+    }
+    // The roster settles its leader under the succession policy's own interval.
+    commit(&mut rig.world, store, rig.organizer, "+sortie/refresh 1:1").await?;
+    pulse(&mut rig.world, store, 1).await?;
+    commit(&mut rig.world, store, rig.organizer, "+sortie/refresh 1:1").await?;
+    let leader = field_roster(&rig.world, rig.organizer)?
+        .leader()
+        .map(|l| l.character)
+        .ok_or("the roster has a leader")?;
+    assert!(pilots.contains(&leader), "a pilot leads");
+    Ok((rig, units, pilots, leader))
+}
+
+/// A bystander's hull of `design` on Ahuna Flank at `cell`: nobody's party.
+fn bystander_at(world: &mut TestWorld, design: &str, cell: (i64, i64)) -> TestResult<ObjId> {
+    let bystander = world
+        .world_mut()
+        .create(ObjKind::Thing, "Bystander hull", GOD, None)?;
+    world.world_mut().attach_behavior(
+        bystander,
+        BehaviorId::new("sim.participant")?,
+        BehaviorBinding {
+            schema_version: 1,
+            attached_by: GOD,
+            attached_at: 0,
+        },
+    )?;
+    ordinary(
+        world,
+        GOD,
+        &format!("@unit/create #{}={design}", bystander.0),
+    )?;
+    staff_place_on_ahuna(world, bystander, cell)?;
+    Ok(bystander)
+}
+
+/// Ahuna Flank's site record's promotion, when it is open.
+fn promoted_by(world: &TestWorld) -> TestResult<Option<tacsim::surface::site_record::PromotedBy>> {
+    let h = world
+        .world()
+        .module_state::<tacsim::port::families::PortHandles>()
+        .ok_or("port handles")?;
+    Ok(world
+        .engine()
+        .action_state()
+        .get(
+            &h.families.sites,
+            &tacsim::surface::site_record::SiteKey(mush_core::CanonicalId::new("ahuna_port")?),
+        )?
+        .and_then(|record| record.promoted.clone())
+        .map(|open| open.by))
+}
+
+/// Field seconds until Ahuna Flank's field host holds a live record.
+async fn until_hosted(
+    world: &mut TestWorld,
+    store: &InMemoryStore,
+    rx: &mut tokio::sync::mpsc::Receiver<tacsim::arena_task::ArenaOut>,
+) -> TestResult<tacsim::field::FieldLive> {
+    let site = mush_core::CanonicalId::new("ahuna_port")?;
+    for _ in 0..60 {
+        if let Some(live) = tacsim::field::live_on(world.world(), &site) {
+            return Ok(live);
+        }
+        field_second(world, store, rx).await?;
+    }
+    Err("the field never opened".into())
+}
+
+/// **Doc 36a §11 row 6: the mark follows the succession** (doc 32 §4a, doc 26). Two players fly
+/// one operation; its leader's Hostile mark at a bystander opens a field on Ahuna Flank. The
+/// leader then drops (their session gone; a hull disabled inside a field cannot stand in, since
+/// the field holds its unit record until it settles), and the roster's refresh hands the lead to
+/// the other pilot, who keeps it when the deposed leader comes back. The party's leader on the field's
+/// live record was written once at admission and never moved, so the successor's
+/// `+field/mark <letter>=hostile` was refused and the deposed leader's taken. The field now reads
+/// the roster at command time: the successor's mark is taken and the deposed leader's refused.
+#[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+#[allow(clippy::too_many_lines)]
+async fn ic_field_marks_follow_the_roster_succession() -> TestResult {
+    use tacsim::surface::site_record::PromotedBy;
+    let store = InMemoryStore::new();
+    let (mut rig, units, pilots, leader) = two_pilot_fixture(&store).await?;
+    let at = |who: ObjId| pilots.iter().position(|p| *p == who).ok_or("a pilot");
+    let (led_unit, successor) = (units[at(leader)?], pilots[1 - at(leader)?]);
+    let successor_unit = units[at(successor)?];
+    staff_place_on_ahuna(&mut rig.world, led_unit, (100, 126))?;
+    staff_place_on_ahuna(&mut rig.world, successor_unit, (110, 126))?;
+    let bystander = bystander_at(&mut rig.world, "tacsim.unit.tv_prospector", (118, 126))?;
+    persist_legacy(&mut rig.world, &store).await?;
+    let mut rx = rig
+        .world
+        .world()
+        .module_state::<tacsim::arena_bridge::ArenaRegistry>()
+        .map(|registry| registry.tasks().clone())
+        .and_then(|tasks| tasks.take_egress())
+        .ok_or("the registry's egress")?;
+
+    // (1) The leader's mark opens the field.
+    commit(&mut rig.world, &store, leader, "+field/mark E=hostile").await?;
+    assert!(
+        matches!(promoted_by(&rig.world)?, Some(PromotedBy::Mark { leader: by, .. }) if by == leader),
+        "the leader's mark promotes"
+    );
+    let live = until_hosted(&mut rig.world, &store, &mut rx).await?;
+    let letter = live
+        .party_of(bystander)
+        .ok_or("the bystander's party")?
+        .letter();
+    assert_ne!(live.party_of(bystander), live.party_of(led_unit));
+
+    // (2) The leader drops (their session gone, as the leadership gate reads it); the roster's
+    // refresh hands the lead to the other pilot.
+    rig.world.world_mut().set_connected(leader, false);
+    rig.world.world_mut().set_live_conns(leader, 0);
+    let mut succeeded = false;
+    for _ in 0..6 {
+        commit(&mut rig.world, &store, rig.organizer, "+sortie/refresh 1:1").await?;
+        if field_roster(&rig.world, rig.organizer)?
+            .leader()
+            .map(|l| l.character)
+            == Some(successor)
+        {
+            succeeded = true;
+            break;
+        }
+        field_second(&mut rig.world, &store, &mut rx).await?;
+    }
+    assert!(succeeded, "the other pilot succeeds to the lead");
+    // The deposed leader comes back; the lead stays with the successor.
+    rig.world.world_mut().set_connected(leader, true);
+    rig.world.world_mut().set_live_conns(leader, 1);
+    commit(&mut rig.world, &store, rig.organizer, "+sortie/refresh 1:1").await?;
+    assert_eq!(
+        field_roster(&rig.world, rig.organizer)?
+            .leader()
+            .map(|l| l.character),
+        Some(successor),
+        "the succession stands"
+    );
+
+    // (3) The successor marks the bystander's party; the deposed leader no longer can.
+    let marked = text(
+        &mut rig.world,
+        successor,
+        &format!("+field/mark {letter}=hostile"),
+    );
+    assert!(
+        marked.contains(&format!("Your party now marks party {letter} Hostile.")),
+        "{marked}"
+    );
+    let deposed = text(
+        &mut rig.world,
+        leader,
+        &format!("+field/mark {letter}=hostile"),
+    );
+    assert!(!deposed.contains("Your party now marks party"), "{deposed}");
+    Ok(())
+}
+
 /// **Doc 36a §11 row 5: a DT launch respects the field cap** (Q-CF-21; the reviewer's probe,
 /// adapted). With `[tacsim.field].max_units` at two, the operation's carrier and a bystander's
 /// hull stand on Ahuna Flank: the next field's full complement. The prepare once checked only

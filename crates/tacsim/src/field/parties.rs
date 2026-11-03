@@ -228,27 +228,11 @@ fn flight_of(ctx: &Ctx<'_>, unit: ObjId, entry: &CanonicalId) -> Option<FlightFa
     if !flight.phase.open() || &flight.site != entry {
         return None;
     }
-    let operation = ctx
+    let leader = ctx
         .action_state(&handles.operations, &flight.operation)
         .ok()
-        .flatten();
-    let leader = operation.and_then(|record| {
-        record
-            .command
-            .as_ref()
-            .and_then(|saved| {
-                mush_tactics::detachment::roster::DetachmentRoster::restore(saved).ok()
-            })
-            .and_then(|roster| roster.leader().map(|leader| leader.character))
-            .or_else(|| {
-                record
-                    .roster
-                    .plan
-                    .slots
-                    .first()
-                    .and_then(|slot| slot.controller.character())
-            })
-    });
+        .flatten()
+        .and_then(roster_leader);
     Some((
         flight.operation,
         flight.epoch.as_ref().map(|open| open.id),
@@ -256,6 +240,54 @@ fn flight_of(ctx: &Ctx<'_>, unit: ObjId, entry: &CanonicalId) -> Option<FlightFa
         Some(flight.operation.organizer),
         flight.carrier,
     ))
+}
+
+/// **An operation's current leader** (doc 26): its command roster's, else its first slot's
+/// controller (a roster that has not reconciled yet).
+fn roster_leader(record: &crate::detachment::sortie::OperationRecord) -> Option<ObjId> {
+    record
+        .command
+        .as_ref()
+        .and_then(|saved| mush_tactics::detachment::roster::DetachmentRoster::restore(saved).ok())
+        .and_then(|roster| roster.leader().map(|leader| leader.character))
+        .or_else(|| {
+            record
+                .roster
+                .plan
+                .slots
+                .first()
+                .and_then(|slot| slot.controller.character())
+        })
+}
+
+/// **Who leads `party` now** (doc 36a §11 row 6): a roster party's leader is its operation's
+/// current command roster, read at command time as [`entrants`] reads it at admission, so a
+/// succession (doc 26) moves the mark with it — the successor marks, the deposed leader does
+/// not. A party of one, or a fixture raider's, keeps the leader its row names. An operation
+/// record that will not read keeps the row's leader too.
+#[must_use]
+pub(crate) fn current_leader(ctx: &Ctx<'_>, party: &FieldParty) -> Option<ObjId> {
+    match party.key {
+        PartyKey::Operation { operation } => ctx
+            .w
+            .module_state::<crate::detachment::sortie::SortieHandles>()
+            .and_then(|handles| {
+                ctx.action_state(&handles.operations, &operation)
+                    .ok()
+                    .flatten()
+            })
+            .map_or(party.leader, roster_leader),
+        PartyKey::Unit { .. } | PartyKey::Fixture { .. } => party.leader,
+    }
+}
+
+/// **The party `actor` leads in `live` now** ([`current_leader`] over the record's parties).
+#[must_use]
+pub(crate) fn led_now(ctx: &Ctx<'_>, live: &super::FieldLive, actor: ObjId) -> Option<PartyId> {
+    live.parties
+        .iter()
+        .find(|party| current_leader(ctx, party) == Some(actor))
+        .map(|party| party.party)
 }
 
 /// **The rig's own record on the excursion family**, when it has one.
