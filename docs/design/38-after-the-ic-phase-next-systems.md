@@ -914,6 +914,13 @@ beside IN.1 and IN.2. All three start in the second wave (§9.5).
   `claude/youthful-kowalevski-168ddb` at `50cdbe03`); they overlap FR.3 (`prepare.rs`'s cap) and
   CR.0 (`crew.rs`'s check-in) and should land before either, or be redone inside them. The
   `gc11`/`cf6` module-load flakes on `main` have no owner.
+- **Doc 43 → the plans** (doc 43 §10, Draft 0.4): TS.21 (the timing baseline re-blessed on conclav.dev)
+  lands before FR.5, whose rebless needs a live baseline; doc 43's rule 2.3 #13 (the harness kind
+  dispatched before a cut that touches a hash-pinned file is marked ready) binds FR.5 and S.4b; TS.16
+  (the field tempo) lands before CR.1 and RS.1, which rewrite the `field_gc5`/`field_gc4` gates it
+  retunes; TS.2's tier rule applies to every story a cut adds; TS.8's one strip chain lands before doc
+  41's lane v21; a new story goes to the shard with the most room (rule #3), and each cut's note carries
+  its cell's summed-minutes delta (rule #14).
 - **Owed outside every plan:** a hull resale verb (doc 39 §7: the market's `Representation::Asset`
   purchase the buyout uses), the gate.yml `field_scale` sweep above 100, the first routine
   redeploy (nothing in docs 39–42 is code yet; it ships the CF/GC/SF trains), T-112 backups, the

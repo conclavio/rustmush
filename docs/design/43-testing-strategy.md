@@ -1,8 +1,11 @@
 # 43. The testing strategy — as practised, as reviewed, and what changes at two million lines
 
-Draft 0.3, 2026-11-03, docs only. **Draft 0.3 records the owner's rulings of 2026-11-03 on every question in
-§8: Q-43-6 amended (the timing baseline is re-blessed on conclav.dev, not conclav.io), every other default
-accepted as written; the cuts in §7 are binding, and TS.21 is added for the re-bless.** Written against `origin/main` at `c624cff1` (doc 42 merged) and main's run
+Draft 0.4, 2026-11-03, docs only. **Draft 0.4 adds §10, the fit with doc 38 §9's programme map: six
+amendments (TS.9's job, a new story's shard and TS.16's order, the tier rule, the lane fixtures, a per-cut wall
+budget as rule 2.3 #14, TS.21 before FR.5), none changing a ruling.** **Draft 0.3 records the owner's rulings of
+2026-11-03 on every question in §8: Q-43-6 amended (the timing baseline is re-blessed on conclav.dev, not
+conclav.io), every other default accepted as written; the cuts in §7 are binding, and TS.21 is added for the
+re-bless.** Written against `origin/main` at `c624cff1` (doc 42 merged) and main's run
 41683232696 at `f146734e` (the JUnit reports of its eighteen test cells, downloaded and summed). Two outside
 reviews of the testing strategy arrived the same day, both answering the owner's one question — where do we
 undertest, where do we overtest, and what structural changes should the growth to 2M lines bring. Both are
@@ -134,6 +137,12 @@ lint path, a quiet skip in a deploy script) are cut TS.0's; nothing else here re
     `cfg(unix)` stories await (GG.2 shipped a red cell after a green Windows sweep).
 12. **Clock-bound stories iterate as parallel variants with a checkpoint**, never one 85-minute run per
     hypothesis (2026-10-31).
+13. **A cut that touches a hash-pinned file dispatches the harness kind before it is marked ready** (5.4;
+    TS.0 writes it into docs/ops.md). Doc 40 §4a's inventory names the files; its FR.5 and doc 23's S.4b are
+    the first cuts it binds.
+14. **Every cut's note records its cell's summed-minutes delta** from its PR run's JUnit, and a cut that
+    would set a cell's wall moves its story to the shard with the most room (#3) or lands at the rig's default
+    tempo, never a copied window (5.8; §10.5). The deltas are the step audit's (TS.3b) data.
 
 ### 2.4 The numbers, dated
 
@@ -450,27 +459,27 @@ together. TS.0, TS.1, TS.15, TS.16 and TS.21 may start now.
 |---|---|---|---|
 | **TS.0 hygiene** | the stale text of 5.6; the orphan-module and suffix checks in `ci_tacsim_shards` (5.3); the voyage.rs lint path; `render.sh` fails on an unbuilt binary; the harness-before-ready rule and the honest local recipe in docs/ops.md and the README | cheap, and the guards are only as good as their text | S |
 | **TS.1 CI fold** | delete `direct-rand-policy`, `truth-serialization-policy`, `definition-wire-fixtures`; move `kernel-contracts`' mock LLM cost step into `tacsim-integration-1` as a named step (the inventory pins its name) and delete the job; `provisioning` stays | 36 runner-minutes a run for nothing; the checks list reads true | S |
-| **TS.2 inventory tiers and configuration** | every gated test declares its tier (`pr`, `nightly`, `weekly`, `dispatch`, `by-hand`) and, where it has one, its configuration; a comment-only coverage needs a `by-hand:` tag with the last run's revision; the six dispatch-only jobs get a weekly schedule (doc 37 §7.10); `gate.yml` gains an `env` input; a failure channel for the nightly (Q-43-3) | the tripwire counts a comment as coverage today; twelve variants run nowhere | M |
+| **TS.2 inventory tiers and configuration** | every gated test declares its tier (`pr`, `nightly`, `weekly`, `dispatch`, `by-hand`) and, where it has one, its configuration; a comment-only coverage needs a `by-hand:` tag with the last run's revision; the six dispatch-only jobs get a weekly schedule (doc 37 §7.10); `gate.yml` gains an `env` input; a failure channel for the nightly (Q-43-3); a cut that adds a story declares the story's tier in the same PR, and a programme story on the `dispatch` or `by-hand` tier is named in the Sunday slot or carries its `by-hand:` revision in the cut note (§10.3) | the tripwire counts a comment as coverage today; twelve variants run nowhere | M |
 | **TS.3 optimised dependencies, measured** | one draft PR with `[profile.dev.package."*"] opt-level = 1` (and a variant at 2 for `rhai`, `serde_json`, `rmp-serde`, `sha2`, `blake3`, `image`, `flate2`), the twenty cells and the gate on each; compare summed test minutes per cell against main's last three runs | the shards are CPU-bound; nobody has measured runtime, only link time | S to measure; the decision is Q-43-4 |
 | **TS.3b the step audit** | for the dozen modules of §2.4, classify each story's minutes: boot, real-time wait, work, assertion; one table (5.8 is the first row) | the only honest basis for "unit instead of story" | M, read-only |
 | **TS.4 hostile-input suites** | proptest never-panic over arbitrary lines for `dispatch_line`/`ParsedArgs` in a `TestWorld`; arbitrary bytes into `KeyParser` and `caps.rs`; nested source into both Rhai engines (the depth guard engages, no abort); mush-ipc's corrupt-body-after-valid-prefix and mid-frame EOF; `client_command_strategy` made exhaustive over `ClientCommand`/`Query` variants | 5.1 | M |
 | **TS.5 generated lifecycle** | a proptest state machine over accounts, holds, liens, reservations, title and custody with the engine's invariants 10–26 as the model, random histories whose checkpoint boot equals their whole replay, and the fault matrix extended to sequences (submit → retry → lost ack → restart → cancel → advance time; two faults a case; outbox attempts; the Redis backend in the `redis` group) with conservation, sole custody and recovered-equals-live after every step; `e2a.rs`'s fixed-seed generator replaced by one that shrinks; minimised failures kept as regressions | the generator covers one of twenty-six invariants; the matrix is not a sequence | M–L |
 | **TS.6 fiat budget** | `fiat_budget/<crate>-tests.txt`: a per-file count of test-side `module_state_mut` (and `pair_mut`, path-qualified spellings), baselined at today's 210, ratcheted like `panic_budget` (a raise carries a reason naming the as-built section that allows the seed); `TestWorld::exec_ok` for the common case | the house rule has no ratchet for same-crate writes | S |
 | **TS.7 client verbs are registered** | a contract test over `production_composition()`: every command string the TUI and the web client emit resolves to a registered verb; and a scanner for session types in the net crates with no production constructor | 5.2; it would have refused `DOCK` | S–M |
-| **TS.8 one scanner, one strip chain** | `mush-contract-tests/src/scan.rs`: the walker, the comment-and-literal stripper, the `cfg(test)` blanker, `repo_root`; the two lexers become one; the test-rig rows in `state-slot-owners.toml` keyed by `<crate>/tests::<module>` rather than path; `strip_urvara` folded into the support chain | 19 walkers, two drifted lexers, 21 rows rewritten per reshard, two strip chains | M |
-| **TS.9 web in a browser** | one Playwright smoke in the `web` job: boot `mushd` on the in-memory store, open the SPA in headless Chromium, log in, pick a character, run a verb, one typed action, reconnect, see the WASM canvas paint | the only automatic run of the real canvas and socket path | M |
+| **TS.8 one scanner, one strip chain** | `mush-contract-tests/src/scan.rs`: the walker, the comment-and-literal stripper, the `cfg(test)` blanker, `repo_root`; the two lexers become one; the test-rig rows in `state-slot-owners.toml` keyed by `<crate>/tests::<module>` rather than path; `strip_urvara` folded into the support chain | 19 walkers, two drifted lexers, 21 rows rewritten per reshard, two strip chains; lands before doc 41's lane v21 (RS.1, RS.6) so the second lane bump re-pins one chain, not two (§10.4) | M |
+| **TS.9 web in a browser** | one Playwright smoke in the job that already builds `mushd` (`rest-mushd`, or TS.17's nightly release job), not the npm-only `web` job (1.4 min, no cargo; §10.1): boot `mushd` on the in-memory store, open the SPA in headless Chromium, log in, pick a character, run a verb, one typed action, reconnect, see the WASM canvas paint | the only automatic run of the real canvas and socket path | M |
 | **TS.10 the clock seam** | a design note first: `world_task`'s and `arena_task`'s `now` behind one provider so in-process server, mushd and field tests fast-forward ticks and the disengagement window under `start_paused`; `PLAY_RATE` as `[tacsim.time].play_rate` (docs/testing-rate.md §5) | 251 sleeps, the ticks and the arena windows are the stories' real-time floor | note S; build L |
 | **TS.11 T.3c** | the 33 contract binaries into `ci_policy` and `engine_contracts` (the T.3 plan's manifests) | ~20 GB on the VPS; deferred 2026-10-27 | S |
 | **TS.12 partition experiment** | a branch where tacsim's tests are four domain binaries and the ten cells run `--partition hash:k/10` over them; measure link minutes per cell and the balance over three runs against main | ends resharding if the link cost is under the reshard cost | M to measure; Q-43-5 |
 | **TS.13 shellcheck the rest** | run it over the five unlisted and the nine `bash -n` scripts, fix the findings, add them to the gate | the rule in the file | S–M |
 | **TS.14 release check on PRs** | `cargo check --release -p mushd -p mush-server -p mush-gateway --features tls` in the lint cell | catches `cfg(not(debug_assertions))` errors on the PR; LTO stays nightly | S; Q-43-10 |
 | **TS.15 cancel superseded runs** | `concurrency: { group: ci-${{ github.event_name }}-${{ github.ref }}, cancel-in-progress: ${{ github.event_name == 'pull_request' }} }` in `ci.yml`: a newer push to a PR branch cancels the older run; pushes to main keep every run (the bisect and the rebalances read main's JUnit) | 18 of the last 100 PR runs ran superseded | S |
-| **TS.16 the field tempo** | the two lane3 regressions in `field_gc4` (and `gc5_review…`, the two one-field gc5 tests, `cf6c`) take the rig's default `disengage_s` where the body does nothing inside the field; one representative journey per family keeps 90; measured on shard_1's JUnit (expected −12 summed minutes, the cell off the wall) | 5.8 | S |
+| **TS.16 the field tempo** | the two lane3 regressions in `field_gc4` (and `gc5_review…`, the two one-field gc5 tests, `cf6c`) take the rig's default `disengage_s` where the body does nothing inside the field; one representative journey per family keeps 90; measured on shard_1's JUnit (expected −12 summed minutes, the cell off the wall); lands before doc 42's CR.1 and doc 41's RS.1, which rewrite `field_gc5`'s and `field_gc4`'s gates (§10.2) | 5.8 | S |
 | **TS.17 release-runtime smoke** | in the nightly release job, after the build it already pays for: `--check-config` on the three release binaries; boot mushd on the memory store with a self-signed cert and fetch the embedded SPA over TLS; boot gateway + server and see one handshake and one verb; exit | nothing in CI has ever run a release binary | S–M; Q-43-13 |
 | **TS.18 variant identities** | `FIELD_RAID=director`, `MINE_RATE=24`, the GC12 sizes and the harness variants become named entries (a matrix cell, a `by-hand:` row with its last revision, or a distinct test id) in TS.2's manifest; the director-raid run recorded once | 5.9 | S (with TS.2) |
 | **TS.19 mounted assertions** | the 22 structural source-probe cases in `unit.test.ts`, `game.test.ts` and `roomband.test.ts` become mounted assertions or go; the 11 vocabulary bans stay; the three stale comments go | spelling is not behaviour | S–M |
 | **TS.20 pinned reconstructions** | every rebuilt-old-content test pins a digest or reads a committed fixture: `ooc_v3`, the format-3 body, the pre-O.1 replay, the R4 relay shape; the `golden/v12` pattern as the template | a reconstruction that pins nothing can drift from the version it claims to be | S |
-| **TS.21 the timing baseline on conclav.dev** | re-bless the timing block of `harness_baseline/arena.linux.json` on conclav.dev (`scripts/vps-gate.sh --kind harness --runner conclav-dev`, then `TACSIM_BASELINE_BLESS` on that box as `ghrunner`, with a `harness_timing_update` record naming the host, its core count and the reason); `vps-gate.sh` and `gate.yml` default the `harness` and `cost-lane` kinds to `conclav-dev`; docs/ops.md's "which box" paragraph and the harness section say the timing gate is live there; the cost lane's timing gate follows by the same reason (§8.1) | D-43-6: the gate has been dormant since the baseline host went away; conclav.io carries dev1 and dev2's play, which the framework cannot control; conclav.dev has no other load and is close enough for timing | S |
+| **TS.21 the timing baseline on conclav.dev** | re-bless the timing block of `harness_baseline/arena.linux.json` on conclav.dev (`scripts/vps-gate.sh --kind harness --runner conclav-dev`, then `TACSIM_BASELINE_BLESS` on that box as `ghrunner`, with a `harness_timing_update` record naming the host, its core count and the reason); `vps-gate.sh` and `gate.yml` default the `harness` and `cost-lane` kinds to `conclav-dev`; docs/ops.md's "which box" paragraph and the harness section say the timing gate is live there; the cost lane's timing gate follows by the same reason (§8.1) | D-43-6: the gate has been dormant since the baseline host went away; conclav.io carries dev1 and dev2's play, which the framework cannot control; conclav.dev has no other load and is close enough for timing; lands before doc 40's FR.5, whose rebless needs a live timing baseline to re-bless against (§10.6) | S |
 
 ### 7.1 Order and parallelism
 
@@ -478,8 +487,9 @@ Astra's order (deduplicate and cancel; the browser smoke; the real-time waits; t
 manifest) and this document's agree on the shape. Proposed: **wave 1** TS.0 ∥ TS.1 ∥ TS.15 ∥ TS.16 ∥ TS.13 ∥ TS.21
 (different files; a day); **wave 2** TS.2 + TS.18 (after TS.1, both edit the named jobs) ∥ TS.3 measurement ∥
 TS.3b audit ∥ TS.4 ∥ TS.19 ∥ TS.20; **wave 3** TS.5 ∥ TS.6 ∥ TS.7 ∥ TS.8 (after TS.0) ∥ TS.9 ∥ TS.17 ∥ TS.11;
-**then** TS.10's note and TS.12's measurement, and the decisions Q-43-4/5 rest on them; TS.14 in wave 2 (D-43-10). Nothing here blocks the programmes of docs 39–42; TS.16 and TS.2 are the two that touch files their
-first cuts will touch (the field rigs; `ci.yml`'s named jobs), so those land first.
+**then** TS.10's note and TS.12's measurement, and the decisions Q-43-4/5 rest on them; TS.14 in wave 2 (D-43-10). Nothing here blocks the programmes of docs 39–42: doc 38 §9's wave 0 and this wave 1 write no file in
+common, and the edges between the two trains are §10's — TS.16 before CR.1 and RS.1, TS.2 before the first
+programme story on the dispatch tier, TS.8 before lane v21, TS.21 before FR.5.
 
 ## 8. Owner survey
 
@@ -573,7 +583,8 @@ Ruled by the owner on 2026-11-03.
 - **D-43-6 (amended)** The timing baseline is re-blessed on conclav.dev, now, by TS.21, with a record; not on
   conclav.io and not after the redeploy. The cost lane's timing gate follows (§8.1).
 - **D-43-7** T.3c (TS.11) is in this train.
-- **D-43-8** One Playwright smoke in the `web` job, Chromium only (TS.9); the bot's charter stays line mode.
+- **D-43-8** One Playwright smoke, Chromium only (TS.9), in the job that builds `mushd` (Draft 0.4, §10.1: the
+  ruling named the `web` job, which builds no binary); the bot's charter stays line mode.
 - **D-43-9** The fiat budget as TS.6: per file, baselined at today's 210, a raise carries a reason naming the
   as-built section that allows the seed.
 - **D-43-10** `cargo check --release` of the three binaries on pull requests (TS.14); LTO stays nightly.
@@ -583,3 +594,36 @@ Ruled by the owner on 2026-11-03.
   (TS.16) and the clock seam (TS.10); the house rule of 2.3 #4 stands.
 - **D-43-13** TS.17's TLS leg uses a self-signed certificate generated in the job, never committed.
 - **D-43-14** Cancellation applies to superseded pull-request runs only; every run on main is kept.
+
+## 10. The fit with the programme map (Draft 0.4)
+
+Doc 38 §9 reads the 42 cuts of docs 39–42 and doc 23 §17 as one set; this section reads this document's
+twenty-two against them. Six amendments, none a ruling's. Checked at `535efcb6`: `ci.yml` has no `concurrency`
+block and one cron (TS.15 and D-43-11 stand); the field rigs are under `tests/support/field/` (PR #344) while the
+two-`Ground` table is still `shard_9/field_story.rs:56` (doc 40 FR.0's hoist is that table alone); the `web` job
+runs `npm` only.
+
+1. **TS.9's job.** The ruling named the `web` job; it builds no Rust (1.4 min). Booting `mushd` there adds a
+   full build to the shortest cell. The smoke rides `rest-mushd`, which already builds the binary, or TS.17's
+   nightly release job. D-43-8 is read that way.
+2. **Where a new story goes.** Rule 2.3 #3 is the shard with the most room; doc 42 §7a names
+   `shard_1/crew_custody.rs`, and shard_1 is the run's second-longest cell (58 summed minutes), carrying the
+   990-second timer family of 5.8. A wave-0 cut follows #3 (shard_2 at 11 minutes has the room) unless a
+   `crate::` import pins it, and says so in its note; TS.16 lands before doc 42's CR.1 and doc 41's RS.1, which
+   rewrite the `field_gc5` and `field_gc4` gates TS.16 retunes.
+3. **The tier rule.** The programmes' whole-story cuts (IN.11, FR.7, RS.9, the CR stories) land "on gate.yml"
+   with "the bot over SSH on conclav.dev" — the dispatch and by-hand tiers, where 5.9 found twelve variants with
+   no recorded run. TS.2's manifest requires the cut that adds a story to declare its tier in the same PR; a
+   programme story on those tiers is named in the Sunday slot (D-43-11) or carries its `by-hand:` revision in
+   the cut note. Without it the next phase's acceptance evidence decays the way `FIELD_RAID=director`'s did.
+4. **The lane fixtures.** Doc 39 bumps the lane pack to v20 (IN.1, IN.4, IN.5, IN.10) and doc 41 to v21 (RS.1,
+   RS.6), and the strip chains pin the published digest (§4.1, TS.20): each bump re-pins across
+   `support/sites.rs`, `relay_registry.rs` and their siblings. Those cuts budget the re-pin; TS.8's one strip
+   chain lands before v21 so the second bump re-pins one chain.
+5. **A per-cut wall budget** (rule 2.3 #14). Forty-two cuts add stories at two sizes against a twenty-minute
+   wall where shard_4 sits at 19.7. The levers exist (TS.16, TS.12, TS.10); the rule makes each cut show its
+   cost: the cell's summed-minutes delta from the PR's JUnit in the cut note, and a cut that would set a cell's
+   wall moves its story or lands at the rig's default tempo. The deltas are the step audit's (TS.3b) data.
+6. **TS.21 before FR.5.** Doc 40's one rebless re-blesses the timing block too and needs a live baseline to
+   re-bless against; and rule #13 (the harness kind before ready) binds FR.5 and doc 23's S.4b, the two cuts
+   that touch hash-pinned files. Doc 38 §9.3 carries both edges.
