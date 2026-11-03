@@ -1,14 +1,17 @@
 # 42. Crew: custody, capture, ejection, treatment — survey
 
-Draft 0.1, 2026-11-03, docs only. Surveyed against `origin/main` at `c83c2eff` (doc 38 Draft 0.2
+Draft 0.2, 2026-11-03, docs only. Surveyed against `origin/main` at `c83c2eff` (doc 38 Draft 0.2
 merged as PR #345; doc 36a's lane 5 merged as PR #346, so `check_in` already keeps a prior
-injury). This is the crew document doc 38 §6 proposes: "new rulings first (the reviewers are right
+injury). Draft 0.1, the same day, was the survey. **Draft 0.2 records the owner's ruling of
+2026-11-03: every Q-42 default is accepted as written, and §5's consequences are acknowledged.**
+No question is amended, so each question's proposed default is its decision; §7's cut list is
+binding from this draft and CR.0 may start now. This is the crew document doc 38 §6 proposes: "new rulings first (the reviewers are right
 that none exist); touches ownership and permissions". It is a survey in the form doc 38 used: it
 asks the owner questions, each with a proposed default, an alternative and a reason. "Provisional"
 marks a number to be tuned later under the 2026-10-24 rule. **(expensive to reverse)** has doc 38
 Q-38-10's meaning — an answer that would take a significant refactor of the codebase to undo, not
-stored data and not a live box — and is used once (Q-42-1). The implementation plan is written
-from these rulings, as a Draft 0.2 of this document with its cut list made binding.
+stored data and not a live box — and is used once (Q-42-1). The implementation plan is §7, written
+from these rulings; each cut is recorded as built in a section of this document, as doc 36 did.
 
 **The binding ruling** is doc 38 Q-38-22 (owner, 2026-11-03, the default accepted): *minimal
 custody.* `CrewLocation::Captured { carrier, captor }` replaces doc 36 Q-36-52's abandonment for
@@ -212,6 +215,10 @@ Flank through `support/field/driving_rig.rs`.
   capability and authored beds (`MedicalDef`), which Q-42-17 takes as the facility.
 
 ## 4. Owner survey
+
+**Ruled 2026-11-03.** The owner accepted every default as written, Q-42-1 to Q-42-25, and
+acknowledged §5. No question is amended, so the proposed text below is the decision and is kept
+as written for the record; a cut cites the question it builds.
 
 Each question has a proposed default, an alternative and a reason. Numbers are provisional.
 
@@ -568,9 +575,10 @@ effects; the unlawful log has four kinds; the bot has no crew vocabulary; space 
 - **Alternative:** one size a story, as GC did.
 - **Why:** Q-38-29; the GC.5 gate is the only existing test that asserts the abandonment.
 
-## 5. Consequences of the defaults
+## 5. Consequences of the rulings
 
-What the defaults change beyond their own questions, for the owner to see whole.
+What the rulings change beyond their own questions. **Acknowledged by the owner on 2026-11-03**
+with the defaults; each item is owned by the cut §7 names, CR.7 for the docs.
 
 - **Doc 32.** Q-CF-38's "No treatment, no ejection, no capture in the first version" gets an
   "amended by doc 42" note: the location has five variants, ejection exists, capture exists.
@@ -632,12 +640,12 @@ on the production command paths, then the bot over SSH for the parts a player ty
 The bot's half: `+sortie/condition` at each stage, `+sortie/eject`, the refused and the allowed
 `+sortie/extract`; on the captor's side `+ship/captives` and `+ship/release`.
 
-## 7. Provisional cuts CR.0–CR.7
+## 7. Cuts CR.0–CR.7 (binding since the ruling of 2026-11-03)
 
 Like doc 36's GC cuts: each runs through the production command paths, ships its own gate at both
-sizes, and is recorded as built in a section of this document. A cut names the files it touches;
-two cuts that touch the same files never run at once. Everything here is provisional and the
-owner's to reorder.
+sizes, and is recorded as built in a section of this document. A cut names the files it touches
+and the questions it builds; two cuts that touch the same files never run at once. The order is
+the owner's to change; the content of each cut is its rulings'.
 
 **CR.0 — The record, the gate and the vocabulary.** Q-42-1, Q-42-2, Q-42-3, Q-42-23.
 `CrewLocation::Captured`, `Extraction::forced`, the `check_in` and `crew_location` rules, the
@@ -682,12 +690,37 @@ document with the rulings and the as-built sections.
 
 **Order.** CR.0 → CR.1 → CR.2 → CR.3, one writer, since every cut touches `crew.rs`; CR.4 after
 CR.1; CR.5 last; CR.6 whenever the space track reaches it; CR.7 rides each PR. Nothing here
-consumes doc 39's lots or doc 41's facilities, so the train may start when the owner rules.
+consumes doc 39's lots or doc 41's facilities. **CR.0 may start now**; nothing else runs beside it,
+because every later cut edits `crew.rs` after it.
 
-## 8. What the implementation plan needs before it can be written
+### 7a. What the first cuts author
 
-- The owner's rulings on Q-42-1..25, Q-42-7's fee and Q-42-8's bound above all (both are
-  player-facing numbers the stories pin).
+The names and numbers the rulings leave to the builder, fixed here so the stories can pin them.
+Every number is provisional under the 2026-10-24 rule.
+
+- **Config** (`[tacsim.field]`, documented in `mush-config`'s table beside `extract_s`):
+  `captive_bound_s` 604,800 (60 to 2,592,000; Q-42-8); `release_s` 3,600 (60 to 86,400; Q-42-7);
+  `eject_capture_permille` 500 (0 to 1,000; Q-42-12).
+- **Content** (each lane port entry; lane version and relay seed moved as GC.13 moved them):
+  `authority` — Ceres `freeport_registry`, Stickney `stickney_yards`, Luna `orbital_access`,
+  Deimos `voltaire_bond`, Titan `titan_concession`; `release_fee_cr` 1,500 at every port (Q-42-6,
+  Q-42-7). The handover room is the medical room where one exists, else the arrival room.
+- **Constants:** `STANDING_CAPTURE` −5 with the cause prefix `capture:` (Q-42-21);
+  `UnlawfulKind::Capture` (Q-42-22).
+- **The record:** `CrewLocation::Captured { carrier, captor, since_ic }` under the `at` tag,
+  `Extraction::forced` omitted when false, `CREW_FORMAT` unchanged (Q-42-1).
+- **Verbs:** `+sortie/eject` (Q-42-10); `+ship/captives`, `+ship/release <who>` (Q-42-9); the
+  `held` refusal on the verbs Q-42-2 lists, one line: "You are held aboard the {carrier}."
+- **Lines** (the builder's wording, in the house voice): the capture at a load, the capture at an
+  eject, the uncaptured eject, the handover with the fee paid or owed, the release, the bound
+  reached, the captor's list.
+- **Stories:** `tests/shard_1/crew_custody.rs`, grown by CR.1–CR.5, on both grounds of
+  `field_story.rs`'s `Ground` table; the GC.5 gate and its review twin rewritten in CR.1.
+
+## 8. What the cuts still wait on
+
+The rulings are in (§4). What a builder must know before each cut starts:
+
 - The fix thread's state on the rig cab (`inside` reading a cab as outside the rig, §3a), since
   CR.1's capture reaches a cab-seated pilot only once that lands; until then the stories seat the
   captive through a DT flight.
@@ -697,8 +730,9 @@ consumes doc 39's lots or doc 41's facilities, so the train may start when the o
   kernel message rather than CF.5's `Released` control.
 - The space track's plan for SF.R9–R16, so CR.6 has a place.
 
-**Questions defaulted with least confidence:** Q-42-7 (who pays and what a fee is for when it
-cannot gate release; the obligation shape is new to crew), Q-42-8 (the bound's length against an
-unruled play rate), Q-42-12 (a seeded draw against a kernel that has never rolled; "holds the
-cell" by reach), Q-42-16 (every non-friend load captures, Neutral salvors included), Q-42-21 (a
-standing hit for capturing a non-Hostile, before the stance table exists).
+**Defaults the survey held with least confidence**, ruled as written and worth a second look
+after the first play: Q-42-7 (who pays and what a fee is for when it cannot gate release; the
+obligation shape is new to crew), Q-42-8 (the bound's length against an unruled play rate),
+Q-42-12 (a seeded draw against a kernel that has never rolled; "holds the cell" by reach), Q-42-16
+(every non-friend load captures, Neutral salvors included), Q-42-21 (a standing hit for capturing
+a non-Hostile, before the stance table exists).
