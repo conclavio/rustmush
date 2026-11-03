@@ -4017,26 +4017,24 @@ fn sfr4_free_flight_decouples_debits_live_propellant_warns_return_reserve_and_re
     let hull = ObjId(row.hull);
     let vault_id = hold_vault(&rig.tw, &row);
 
-    // Load 60 t propellant and 60 crew-days provisions (light hull without cargo) so the ship has
-    // ample propellant margin to decouple, execute timed burns, test RETURN_RESERVE, and recouple.
-    seed_pool(&mut rig, vault_id, "propellant", 60, LotId(903));
+    // Load 50 t propellant and 60 crew-days provisions (single initial seed_pool before cast-off)
+    // so the ship has margin to decouple, execute timed burns, test RETURN_RESERVE, and recouple
+    // using the prepaid unflown corridor leg credit (`35b` §5 #12).
+    seed_pool(&mut rig, vault_id, "propellant", 50, LotId(903));
     seed_pool(&mut rig, vault_id, "provisions", 60, LotId(904));
     set_rate(&mut rig.tw, 3_600);
     board(&mut rig, pilot_actor);
 
-    // Launch *Salt Moth* toward Stickney Yards, then credit back the unflown leg propellant (25 t)
-    // so the tank holds ~54 t when decoupling 6 hours into the leg.
     let pending = undock_and_burn(&mut rig, pilot_actor, hull);
     let depart_ic = pending.plan.depart_ic;
     let _ = fire_quietly(&mut rig);
-    seed_pool(&mut rig, vault_id, "propellant", 25, LotId(905));
 
     // Advance 6 IC hours into the first leg.
     let _ = to_ic(&mut rig, depart_ic + 21_600);
 
     let tank_before_decouple = pool(&mut rig.tw, vault_id, "propellant");
     assert!(
-        tank_before_decouple >= 40,
+        tank_before_decouple >= 4,
         "hull vault holds live propellant before decouple: {tank_before_decouple} t"
     );
 
@@ -4068,10 +4066,10 @@ fn sfr4_free_flight_decouples_debits_live_propellant_warns_return_reserve_and_re
         "guidance output: {guid_out}"
     );
 
-    // 2. Execute a timed burn: `+helm/burn 3,0,0 400` (`3 m/s²` for `400 s` = `1,200 m/s` Δv, ~3,000+ kg).
-    let burn_out = run(&mut rig.tw, pilot_actor, "+helm/burn 3,0,0 400");
+    // 2. Execute a timed burn at rated acceleration: `+helm/burn 1,0,0 400` (`1 m/s²` for `400 s` = `400 m/s` Δv).
+    let burn_out = run(&mut rig.tw, pilot_actor, "+helm/burn 1,0,0 400");
     assert!(
-        burn_out.contains("Timed burn engaged: (3, 0, 0) m/s² for 400s (Δv=1200 m/s"),
+        burn_out.contains("Timed burn engaged: (1, 0, 0) m/s² for 400s (Δv=400 m/s"),
         "burn output: {burn_out}"
     );
     let burn_submits = drain(&mut rig.tw);
@@ -4120,17 +4118,17 @@ fn sfr4_free_flight_decouples_debits_live_propellant_warns_return_reserve_and_re
         status_out.contains("RETURN_RESERVE="),
         "helm/status reports computed RETURN_RESERVE: {status_out}"
     );
-    // A 100 m/s² burn for 12,000 s (1,200,000 m/s Δv) requires ~48,000 kg, dipping below RETURN_RESERVE;
-    // try a burn that fits within `live_kg` (~53,940 kg) but leaves less than `RETURN_RESERVE`:
-    let warn_out = run(&mut rig.tw, pilot_actor, "+helm/burn 50,0,0 16000");
+    // Try a burn at rated 1 m/s² for 72,000 s (72,000 m/s Δv) that fits within `live_kg` (~4,982 kg)
+    // but leaves less than the post-burn `RETURN_RESERVE`:
+    let warn_out = run(&mut rig.tw, pilot_actor, "+helm/burn 1,0,0 72000");
     assert!(
         warn_out.contains("RETURN_RESERVE warning"),
         "burn into reserve without force is refused with RETURN_RESERVE warning: {warn_out}"
     );
 
-    // 4. Recouple onto a planned corridor passage via `+helm/autopilot stickney` (`D-35-6`).
-    //    Ensure the hull has sufficient propellant in its vault for the full passage from its new (pos, vel).
-    seed_pool(&mut rig, vault_id, "propellant", 40, LotId(909));
+    // 4. Recouple onto a planned corridor passage via `+helm/autopilot stickney` (`D-35-6`)
+    //    using the prepaid unflown fuel credit from the decoupled corridor leg (`35b` §5 #14) —
+    //    no second `seed_pool` required!
     let auto_out = run(&mut rig.tw, pilot_actor, "+helm/autopilot stickney");
     assert!(
         auto_out.contains("Autopilot engaged for Stickney Yards (`stickney_yards`)"),
@@ -4795,10 +4793,14 @@ fn sfr6_kirkwood_customs_picket_story_1_end_to_end_rhai_doctrine_triad_combat_an
         brake_out.contains("Helm thrust set: 600‰ burn=(-1000, 0, 0)"),
         "{brake_out}"
     );
-    let next_real = rig.tw.world().now() + 1;
-    rig.tw.set_now(next_real);
-    let _ = rig.tw.fire_due(next_real * 1_000);
+    for _ in 0..6 {
+        let next_real = rig.tw.world().now() + 1;
+        rig.tw.set_now(next_real);
+        let _ = rig.tw.fire_due(next_real * 1_000);
+    }
     let _ = run(&mut rig.tw, pilot, "+helm/thrust 0");
+    let brake_burn = drain_space_and_industry(&mut rig.tw);
+    land_quietly(&mut rig, &brake_burn);
 
     {
         let bubble_book = rig
@@ -5420,10 +5422,14 @@ fn sfr8_space_state_persists_in_tacsim_store_and_survives_full_engine_restart_mi
     let _ = to_ic(&mut rig, depart_ic + leg1_secs);
 
     let _ = run(&mut rig.tw, pilot, "+helm/thrust 600 -1000 0 0");
-    let next_real = rig.tw.world().now() + 1;
-    rig.tw.set_now(next_real);
-    let _ = rig.tw.fire_due(next_real * 1_000);
+    for _ in 0..6 {
+        let next_real = rig.tw.world().now() + 1;
+        rig.tw.set_now(next_real);
+        let _ = rig.tw.fire_due(next_real * 1_000);
+    }
     let _ = run(&mut rig.tw, pilot, "+helm/thrust 0");
+    let brake_submits = drain_space_and_industry(&mut rig.tw);
+    land_quietly(&mut rig, &brake_submits);
     let submit_out = run(&mut rig.tw, pilot, "+helm/submit");
     assert!(
         submit_out.contains("customs clearance granted"),
@@ -5724,9 +5730,9 @@ fn sfr9_authority_closeout_gates_docking_removes_cluster_teleport_stops_1s_burn_
         dec_out.contains("Decoupled from corridor leg"),
         "decouple output: {dec_out}"
     );
-    let burn_1s = run(&mut rig.tw, pilot, "+helm/burn 5,0,0 1 force");
+    let burn_1s = run(&mut rig.tw, pilot, "+helm/burn 1,0,0 1 force");
     assert!(
-        burn_1s.contains("Timed burn engaged: (5, 0, 0) m/s² for 1s"),
+        burn_1s.contains("Timed burn engaged: (1, 0, 0) m/s² for 1s"),
         "1s burn output: {burn_1s}"
     );
     // Advance exactly 1 wall second at rate 1 (`dt_ic_s == 1 == burn_remaining_ic_s`):
@@ -6042,12 +6048,14 @@ fn sfr10_tempo_and_persistence_budget_steps_late_ticks_bounds_10m_heave_to_quara
         "a tick fired 3 s late must advance the bubble by 3,000 ms (3 s)"
     );
 
-    // 2. Heave-to (`+helm/thrust 600 -1000 0 0` for 1s, then `+helm/thrust 0`) and hold for 10
+    // 2. Heave-to (`+helm/thrust 600 -1000 0 0` for 6s at 1 m/s², then `+helm/thrust 0`) and hold for 10
     //    minutes (`600` one-second fires) to verify persistence budget (`snapshots` and `tape` capped):
     let _ = run(&mut rig.tw, pilot, "+helm/thrust 600 -1000 0 0");
-    let next1 = rig.tw.world().now() + 1;
-    rig.tw.set_now(next1);
-    let _ = rig.tw.fire_due(next1 * 1_000);
+    for _ in 0..6 {
+        let next1 = rig.tw.world().now() + 1;
+        rig.tw.set_now(next1);
+        let _ = rig.tw.fire_due(next1 * 1_000);
+    }
     let _ = run(&mut rig.tw, pilot, "+helm/thrust 0");
 
     let mut doc_bytes_at_200 = 0usize;
@@ -6145,5 +6153,227 @@ fn sfr10_tempo_and_persistence_budget_steps_late_ticks_bounds_10m_heave_to_quara
     assert!(
         !overwrote_space_state,
         "quarantined tacsim:space:state must never be overwritten by space_tick"
+    );
+}
+
+/// **Doc 35 cut SF.R11 (`D-35-15`, `35b` §5 #10/#11/#12/#14/#15/#16, §8 `SF.R11`)**:
+/// One ledger, rated drive:
+/// 1. In-bubble `max_accel_mps2` equals the hull's rated drive flip acceleration (`1 m/s²` for the Dray's `50 mg` drive).
+/// 2. A `CommandBurn` (`+helm/thrust 0 15 0 2`) inside an active bubble debits the hull's `stow.propellant` vault
+///    via `HullPropellantLedger` + `submit_space_burn_if_needed`.
+/// 3. Re-entering a bubble does not refill `propellant_kg` — the ledger's `fractional_burned_kg` persists across
+///    bubble close and re-promotion.
+/// 4. In free flight, a burn away from the nearest port evaluates `RETURN_RESERVE` on the post-burn `(pos, vel)`
+///    and triggers `RETURN_RESERVE warning` before exhausting return propellant (`35b` §5 #11).
+#[test]
+#[allow(clippy::too_many_lines)]
+fn sfr11_one_ledger_rated_drive_debits_bubble_jink_in_vault_persists_across_reentry_and_warns_burn_away_from_port()
+ {
+    let mut rig = stocked_with(Roster {
+        seed_lane: Some(lane_with_interdicted_kirkwood()),
+        ..Roster::default()
+    });
+    let (pilot, row) = chartered(&mut rig, "Pilot", 1);
+    let hull = ObjId(row.hull);
+    let vault_id = hold_vault(&rig.tw, &row);
+
+    seed_pool(&mut rig, vault_id, "propellant", 77, LotId(951));
+    seed_pool(&mut rig, vault_id, "provisions", 45, LotId(952));
+    set_rate(&mut rig.tw, 3_600);
+    board(&mut rig, pilot);
+
+    let pending = undock_and_burn(&mut rig, pilot, hull);
+    let depart_ic = pending.plan.depart_ic;
+    let leg1_secs = i64::from(pending.plan.legs[0].secs);
+    let _ = fire_quietly(&mut rig);
+    let _ = to_ic(&mut rig, depart_ic + leg1_secs);
+
+    // 1. Verify the carrier's in-bubble `max_accel_mps2` equals the hull's rated drive acceleration (`1 m/s²`),
+    //    and `return_reserve_dv_mps` is hydrated from `compute_hull_return_reserve` (> 0):
+    let (initial_bubble_prop_kg, initial_max_accel, initial_reserve_dv) = {
+        let book = rig
+            .tw
+            .world()
+            .module_state::<tacsim::space::SpaceBubbleBook>()
+            .expect("SpaceBubbleBook");
+        let active = book.active_for_hull(hull).expect("active bubble");
+        let carrier = active
+            .bubble
+            .ships
+            .get(&active.carrier_ship_id)
+            .expect("carrier ship");
+        (
+            carrier.propellant_kg,
+            carrier.max_accel_mps2,
+            carrier.return_reserve_dv_mps,
+        )
+    };
+    assert_eq!(
+        initial_max_accel, 1,
+        "in-bubble max_accel_mps2 must equal the Dray's rated drive acceleration (1 m/s² for 50 mg)"
+    );
+    assert!(
+        initial_reserve_dv > 0,
+        "in-bubble return_reserve_dv_mps must be hydrated from compute_hull_return_reserve: got {initial_reserve_dv}"
+    );
+
+    let vault_prop_before_jink = pool(&mut rig.tw, vault_id, "propellant");
+
+    // 2. Execute a `CommandBurn` inside the active bubble (`+helm/thrust 600 0 1000 0`) and land the
+    //    resulting `PendingSpaceBurn` submission on the hull's `stow.propellant` vault:
+    let jink_out = run(&mut rig.tw, pilot, "+helm/thrust 600 0 1000 0");
+    assert!(
+        jink_out.contains("Helm thrust set: 600‰ burn=(0, 1000, 0)"),
+        "bubble jink output: {jink_out}"
+    );
+    let _ = run(&mut rig.tw, pilot, "+helm/thrust 0");
+    let jink_submits = drain(&mut rig.tw);
+    assert_eq!(
+        jink_submits.len(),
+        1,
+        "in-bubble CommandBurn must queue a tacsim_port_burn debit via HullPropellantLedger"
+    );
+    for s in &jink_submits {
+        land(&mut rig, s).expect("in-bubble burn lands on stow.propellant vault");
+    }
+    let vault_prop_after_jink = pool(&mut rig.tw, vault_id, "propellant");
+    assert_eq!(
+        vault_prop_after_jink,
+        vault_prop_before_jink - 1,
+        "CommandBurn inside an active bubble debits the hull's stow.propellant vault"
+    );
+
+    let prop_kg_after_jink = {
+        let book = rig
+            .tw
+            .world()
+            .module_state::<tacsim::space::SpaceBubbleBook>()
+            .expect("SpaceBubbleBook");
+        let active = book.active_for_hull(hull).expect("active bubble");
+        active
+            .bubble
+            .ships
+            .get(&active.carrier_ship_id)
+            .expect("carrier ship")
+            .propellant_kg
+    };
+    assert!(
+        prop_kg_after_jink < initial_bubble_prop_kg,
+        "in-bubble propellant_kg reduced by Tsiolkovsky burn: {prop_kg_after_jink} < {initial_bubble_prop_kg}"
+    );
+
+    // 3. Close the bubble by disabling the interdictor, then decouple and recouple across the
+    //    interdicted Kirkwood leg to re-enter a bubble, and verify `propellant_kg` does NOT refill:
+    for i in 0..4 {
+        let next_real = rig.tw.world().now() + 1;
+        rig.tw.set_now(next_real);
+        let _ = rig.tw.fire_due(next_real * 1_000);
+        if i == 0 || i == 2 || i == 3 {
+            let _ = run(&mut rig.tw, pilot, "+tac/beam Interdictor Picket");
+        }
+        if i == 1 || i == 2 {
+            let _ = run(&mut rig.tw, pilot, "+damage/vent");
+        }
+    }
+    let next_real = rig.tw.world().now() + 1;
+    rig.tw.set_now(next_real);
+    let _ = rig.tw.fire_due(next_real * 1_000);
+    assert!(
+        rig.tw
+            .world()
+            .module_state::<tacsim::space::SpaceBubbleBook>()
+            .expect("SpaceBubbleBook")
+            .active_for_hull(hull)
+            .is_none(),
+        "bubble closed after interdictor disabled"
+    );
+
+    // Decouple into free flight before the Kirkwood boundary, verify rated drive cap and
+    // post-burn RETURN_RESERVE on a burn away from the nearest port, then recouple via
+    // `+helm/autopilot stickney` (preserving the interdicted Kirkwood leg!) to re-enter the bubble:
+    // First, let's decouple from Leg 2:
+    let dec_out = run(&mut rig.tw, pilot, "+helm/decouple");
+    assert!(dec_out.contains("Decoupled from corridor leg"), "{dec_out}");
+
+    // 4. Verify `+helm/burn` rejects accelerations above the hull's rated drive acceleration (`1 m/s²`):
+    let over_rated = run(&mut rig.tw, pilot, "+helm/burn 2,0,0 10");
+    assert!(
+        over_rated.contains("exceeds the hull drive's rated flip acceleration of 1 m/s²"),
+        "burn above rated drive acceleration refused: {over_rated}"
+    );
+
+    // And verify a burn away from the nearest port evaluates `RETURN_RESERVE` at the post-burn `(pos, vel)`
+    // and warns before exhausting return propellant:
+    let warn_away = run(&mut rig.tw, pilot, "+helm/burn -1,0,0 86400");
+    assert!(
+        warn_away.contains("RETURN_RESERVE warning"),
+        "burn away from port triggers post-burn RETURN_RESERVE warning: {warn_away}"
+    );
+
+    // Recouple to Ceres Freeport, then cast off on `ceres_stickney` and cross the interdicted leg
+    // into a second bubble to verify `propellant_kg` does not refill (`fractional_burned_kg` preserved):
+    let auto_ceres = run(&mut rig.tw, pilot, "+helm/autopilot ceres");
+    assert!(
+        auto_ceres.contains("Autopilot engaged for Ceres Freeport"),
+        "{auto_ceres}"
+    );
+    for s in drain(&mut rig.tw) {
+        land(&mut rig, &s).expect("autopilot burn lands");
+    }
+    let ceres_arr = journey(&rig.tw, hull)
+        .and_then(|j| j.arrival_at())
+        .expect("ceres arrival");
+    let _ = to_ic(&mut rig, ceres_arr);
+
+    // Top up whole tonnes for the second outbound `ceres_stickney` passage (`seed_pool` adds whole
+    // tonnes in the vault while `HullPropellantLedger::fractional_burned_kg` retains the sub-tonne
+    // deficit from the first bubble's jink):
+    seed_pool(&mut rig, vault_id, "propellant", 40, LotId(953));
+    let pending2 = undock_and_burn(&mut rig, pilot, hull);
+    let _ = fire_quietly(&mut rig);
+    let (expected_post_castoff_kg, vault_now_t) = {
+        let vault_now_t = pool(&mut rig.tw, vault_id, "propellant");
+        let book = rig
+            .tw
+            .world()
+            .module_state::<tacsim::space::SpaceBubbleBook>()
+            .expect("SpaceBubbleBook");
+        let ledger = book.propellant_ledger(hull).expect("ledger");
+        assert!(
+            ledger.fractional_burned_kg > 0,
+            "fractional_burned_kg preserved across bubble close and voyage: {}",
+            ledger.fractional_burned_kg
+        );
+        (
+            u32::try_from(ledger.effective_live_kg(vault_now_t)).expect("u32"),
+            vault_now_t,
+        )
+    };
+    let leg1_due2 = pending2.plan.depart_ic + i64::from(pending2.plan.legs[0].secs);
+    let _ = to_ic(&mut rig, leg1_due2);
+
+    let reentry_prop_kg = {
+        let book = rig
+            .tw
+            .world()
+            .module_state::<tacsim::space::SpaceBubbleBook>()
+            .expect("SpaceBubbleBook");
+        let active = book
+            .active_for_hull(hull)
+            .expect("re-entered active bubble");
+        active
+            .bubble
+            .ships
+            .get(&active.carrier_ship_id)
+            .expect("carrier ship")
+            .propellant_kg
+    };
+    assert_eq!(
+        reentry_prop_kg, expected_post_castoff_kg,
+        "re-entering a bubble must not refill propellant_kg (must preserve fractional_burned_kg)"
+    );
+    assert!(
+        u64::from(reentry_prop_kg) < (vault_now_t + 1) * 1_000,
+        "re-entered bubble propellant_kg ({reentry_prop_kg}) reflects sub-tonne burn rather than refilling"
     );
 }

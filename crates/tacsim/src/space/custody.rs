@@ -128,13 +128,31 @@ pub fn apply_unit_spec_to_space_ship(ship: &mut SpaceShipState, spec: &UnitSpec)
                 } => {
                     ship.rated_accel_mg = accel_mg;
                     ship.exhaust_kms = exhaust_kms;
+                    let hull_drive = crate::port::passage::HullDrive {
+                        class: drive.class.clone(),
+                        law: drive.law,
+                        payload_ceiling_kg: logistics.payload_ceiling_kg,
+                        throttle_permille: crate::port::passage::MAX_THROTTLE_PERMILLE,
+                    };
+                    let dry_kg = u64::from(logistics.dry_mass_t).saturating_mul(1_000);
+                    let payload_kg = u64::from(ship.propellant_kg);
+                    if let Some(accel) =
+                        crate::port::passage::flip_accel_mps2(&hull_drive, dry_kg, payload_kg)
+                    {
+                        ship.max_accel_mps2 = (accel.ceil() as i64).max(1);
+                    }
                 }
                 DriveLaw::Coast { .. } => {}
             }
         }
     }
-    if let Some(max_width_cm) = spec.silhouettes.iter().map(|s| s.width_cm).max() {
-        let radius_m = i64::from(max_width_cm / 100).max(10);
+    if let Some(min_dim_cm) = spec
+        .silhouettes
+        .iter()
+        .map(|s| s.width_cm.min(s.height_cm))
+        .min()
+    {
+        let radius_m = i64::from(min_dim_cm / 300).max(5);
         ship.hit_radius_m = radius_m;
     }
 }

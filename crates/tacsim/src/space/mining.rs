@@ -1279,6 +1279,7 @@ pub fn step_clusters_on_tick(ctx: &mut Ctx<'_>, now: ClockStamp) {
                 next_pos = target_pos;
                 next_vel = [target_vel[0] + 1_200, target_vel[1], target_vel[2]];
                 reached_approach_standoff = true;
+                let _ = super::commands::debit_hull_propellant_for_dv(ctx, hull, 2, true);
             } else {
                 let d = i128::from(dist_m.max(1));
                 next_pos = [

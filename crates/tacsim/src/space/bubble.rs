@@ -281,6 +281,12 @@ pub struct SpaceShipState {
     /// Remaining active duration of a deployed decoy cloud in wall milliseconds (`SF.15`).
     #[serde(default)]
     pub active_decoy_ms: u32,
+    /// Non-propellant cargo/bay payload mass in kilograms for rocket-equation burns (`SF.R11`, `D-35-6`).
+    #[serde(default)]
+    pub non_prop_payload_kg: u64,
+    /// Sub-$\text{m/s}$ $\Delta v$ remainder in $\text{mm/s}$ accumulated across `250 ms` substeps (`SF.R11`).
+    #[serde(default)]
+    pub dv_rem_mmps: i64,
 }
 
 impl SpaceShipState {
@@ -342,7 +348,7 @@ impl SpaceShipState {
             pos_rem_um: [0, 0, 0],
             vel_mmps,
             thrust_mps2: [0, 0, 0],
-            max_accel_mps2: 25,
+            max_accel_mps2: 1,
             dry_mass_t: 240,
             payload_ceiling_kg: 181_000,
             propellant_cap_kg: 80_000,
@@ -358,7 +364,7 @@ impl SpaceShipState {
             crew_linkdead: false,
             emcon: EmconPosture::Standard,
             locked_target_id: None,
-            hit_radius_m: 60,
+            hit_radius_m: 5,
             sections,
             crits: Vec::new(),
             status: HullStatus::Operational,
@@ -371,6 +377,8 @@ impl SpaceShipState {
             pdcs: vec![PdcMount::standard_rotary("pdc_ dorsal", 2_000)],
             decoys_remaining: 4,
             active_decoy_ms: 0,
+            non_prop_payload_kg: 0,
+            dv_rem_mmps: 0,
         }
     }
 
@@ -992,17 +1000,55 @@ impl LocalSpaceBubble {
         } else {
             ship.max_accel_mps2
         };
-        if requested_mag > max_a && requested_mag > 0 {
+        let next_thrust = if requested_mag > max_a && requested_mag > 0 {
             let max_i128 = i128::from(max_a);
             let mag_i128 = i128::from(requested_mag);
-            ship.thrust_mps2 = [
+            [
                 ((i128::from(clamped[0]) * max_i128) / mag_i128) as i64,
                 ((i128::from(clamped[1]) * max_i128) / mag_i128) as i64,
                 ((i128::from(clamped[2]) * max_i128) / mag_i128) as i64,
-            ];
+            ]
         } else {
-            ship.thrust_mps2 = clamped;
+            clamped
+        };
+        let actual_mag = isqrt_i128(
+            (next_thrust[0] as i128).pow(2)
+                + (next_thrust[1] as i128).pow(2)
+                + (next_thrust[2] as i128).pow(2),
+        ) as i64;
+        if actual_mag > 0
+            && !force_into_reserve
+            && ship.delta_v_mps.saturating_sub(actual_mag) <= ship.return_reserve_dv_mps
+        {
+            return Err(SpaceCombatEvent::TankReserveWarning {
+                ship_id: ship.id.clone(),
+                remaining_dv_mps: ship.delta_v_mps,
+                return_reserve_dv_mps: ship.return_reserve_dv_mps,
+            });
         }
+        if actual_mag > 0 && ship.thrust_mps2 != next_thrust {
+            let law = crate::definitions::logistics::DriveLaw::Flip {
+                accel_mg: ship.rated_accel_mg,
+                exhaust_kms: ship.exhaust_kms.max(1),
+            };
+            let dry_kg = u64::from(ship.dry_mass_t).saturating_mul(1_000);
+            let payload_kg = ship
+                .non_prop_payload_kg
+                .saturating_add(u64::from(ship.propellant_kg));
+            let dv_u32 = u32::try_from(actual_mag).unwrap_or(1).max(1);
+            let burn_kg =
+                crate::port::passage::burn_kg_for_law_dv(&law, dry_kg, payload_kg, dv_u32)
+                    .unwrap_or(1)
+                    .max(1);
+            ship.propellant_kg = ship
+                .propellant_kg
+                .saturating_sub(u32::try_from(burn_kg).unwrap_or(u32::MAX));
+            ship.delta_v_mps = (ship.delta_v_mps - actual_mag).max(0);
+            ship.vel_mmps[0] = ship.vel_mmps[0].saturating_add(next_thrust[0] * 1_000);
+            ship.vel_mmps[1] = ship.vel_mmps[1].saturating_add(next_thrust[1] * 1_000);
+            ship.vel_mmps[2] = ship.vel_mmps[2].saturating_add(next_thrust[2] * 1_000);
+        }
+        ship.thrust_mps2 = next_thrust;
         Ok(())
     }
 
@@ -1364,10 +1410,29 @@ impl LocalSpaceBubble {
                 ship.vel_mmps[1] = ship.vel_mmps[1].saturating_add(ay * step_i64);
                 ship.vel_mmps[2] = ship.vel_mmps[2].saturating_add(az * step_i64);
 
-                let dv_spent_mps = ((accel_mag * step_i64) / 1_000).max(0);
-                ship.delta_v_mps = (ship.delta_v_mps - dv_spent_mps).max(0);
-                let fuel_burned = ((accel_mag as u32).saturating_mul(step_ms) / 2_500).max(1);
-                ship.propellant_kg = ship.propellant_kg.saturating_sub(fuel_burned);
+                let dv_mmps = accel_mag.saturating_mul(step_i64);
+                let total_dv_mmps = ship.dv_rem_mmps.saturating_add(dv_mmps);
+                let dv_spent_mps = (total_dv_mmps / 1_000).max(0);
+                ship.dv_rem_mmps = total_dv_mmps % 1_000;
+                if dv_spent_mps > 0 {
+                    ship.delta_v_mps = (ship.delta_v_mps - dv_spent_mps).max(0);
+                    let law = crate::definitions::logistics::DriveLaw::Flip {
+                        accel_mg: ship.rated_accel_mg,
+                        exhaust_kms: ship.exhaust_kms.max(1),
+                    };
+                    let dry_kg = u64::from(ship.dry_mass_t).saturating_mul(1_000);
+                    let payload_kg = ship
+                        .non_prop_payload_kg
+                        .saturating_add(u64::from(ship.propellant_kg));
+                    let dv_u32 = u32::try_from(dv_spent_mps).unwrap_or(1).max(1);
+                    let fuel_burned =
+                        crate::port::passage::burn_kg_for_law_dv(&law, dry_kg, payload_kg, dv_u32)
+                            .unwrap_or(1)
+                            .max(1);
+                    ship.propellant_kg = ship
+                        .propellant_kg
+                        .saturating_sub(u32::try_from(fuel_burned).unwrap_or(u32::MAX));
+                }
                 if ship.propellant_kg == 0 || ship.delta_v_mps == 0 {
                     ship.thrust_mps2 = [0, 0, 0];
                 }
