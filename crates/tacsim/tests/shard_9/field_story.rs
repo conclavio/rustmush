@@ -691,16 +691,17 @@ async fn field_story(at: &Ground) {
     }
     let raider_party = live.party_of(tank).expect("the raider's party");
     let bystander_party = live.party_of(bystander).expect("the bystander's party");
-    // The raider's leader holds a standing Hostile mark on everyone (CF.6): it clears every mark
-    // but the bystander's, so the bystander is the one it fires on.
+    // The raider's leader holds a standing Hostile mark on everyone (CF.6): it marks every party
+    // Friendly but the bystander's, so the bystander is the one it fires on. (A clear would return
+    // to the standing mark since doc 40 cut FR.1, §4.2.)
     for party in &live.parties {
         if party.party != raider_party && party.party != bystander_party {
             let said = typed(
                 &mut rig,
                 leader,
-                &format!("+field/mark {}=clear", party.party.letter()),
+                &format!("+field/mark {}=friendly", party.party.letter()),
             );
-            assert!(said.contains("unmarked"), "{said}");
+            assert!(said.contains("Friendly"), "{said}");
         }
     }
 
@@ -787,7 +788,7 @@ async fn field_story(at: &Ground) {
     for (who, line) in [
         (
             leader,
-            format!("+field/mark {}=clear", bystander_party.letter()),
+            format!("+field/mark {}=friendly", bystander_party.letter()),
         ),
         (leader, format!("+field/mark {escort_letter}=hostile")),
         (

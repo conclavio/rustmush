@@ -325,16 +325,32 @@ fn mark_in_field(
 ) -> Result<(), CmdError> {
     let (site, by) =
         in_field(ctx, actor).ok_or_else(|| CmdError::msg("You lead no party in a field."))?;
-    let task = ctx
+    let (task, standing) = ctx
         .w
         .module_state::<super::FieldBook>()
         .and_then(|book| book.hosted(&site))
         .filter(|hosted| hosted.live.parties.iter().any(|party| party.party == of))
-        .map(|hosted| hosted.task)
+        .map(|hosted| {
+            // Doc 40 cut FR.1 (§4.2, round 2's 40-3): a standing Hostile mark (a declared
+            // stance, a raider's) outlives the clear.
+            let standing = hosted
+                .live
+                .parties
+                .iter()
+                .find(|party| party.party == by)
+                .is_some_and(|party| party.stance_hostile.contains(&of));
+            (hosted.task, standing)
+        })
         .ok_or_else(|| CmdError::msg("No party in your field has that letter."))?;
     if of == by {
         return Err(CmdError::msg("That is your own party."));
     }
+    let cleared_to_standing = mark.is_none() && standing;
+    let mark = if cleared_to_standing {
+        Some(Mark::Hostile)
+    } else {
+        mark
+    };
     let tasks = ctx
         .w
         .module_state::<crate::arena_bridge::ArenaRegistry>()
@@ -348,11 +364,15 @@ fn mark_in_field(
         Some(Mark::Friendly) => "Friendly",
         None => "unmarked",
     };
+    let line = if cleared_to_standing {
+        super::PARTY_CLEARED_TO_STANDING
+    } else {
+        super::PARTY_MARKED
+    };
     ctx.out.sys_to_actor(
         actor,
         "tacsim.field",
-        super::PARTY_MARKED
-            .replace("{party}", &of.letter().to_string())
+        line.replace("{party}", &of.letter().to_string())
             .replace("{word}", word),
     );
     Ok(())

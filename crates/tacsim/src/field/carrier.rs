@@ -406,6 +406,7 @@ pub(crate) fn joining(
                 .find(|party| party.key == entrant.key)
                 .map(|party| party.party)
         });
+    let mut allied: Vec<(crate::arena::PartyId, crate::arena::PartyId)> = Vec::new();
     let party = match known {
         Some(party) => party,
         None => {
@@ -420,8 +421,29 @@ pub(crate) fn joining(
                 party,
                 key: entrant.key,
                 leader: entrant.leader,
+                stance_hostile: Vec::new(),
             });
             live.parties.sort_by_key(|party| party.party);
+            // Doc 40 cut FR.1 (Q-38-23, §4.2): the stance table read at the join, for the pairs
+            // the new party opens only — every other pair keeps what the field was built with.
+            let stances = super::parties::opening_stances(ctx.w, &entrants, &live.parties);
+            for (by, of) in stances
+                .hostile
+                .iter()
+                .filter(|(by, of)| *by == party || *of == party)
+            {
+                if let Some(row) = live.parties.iter_mut().find(|row| row.party == *by)
+                    && !row.stance_hostile.contains(of)
+                {
+                    row.stance_hostile.push(*of);
+                    row.stance_hostile.sort_unstable();
+                }
+            }
+            allied = stances
+                .allied
+                .into_iter()
+                .filter(|(a, b)| *a == party || *b == party)
+                .collect();
             party
         }
     };
@@ -436,24 +458,21 @@ pub(crate) fn joining(
         });
         live.units.sort_by_key(|row| row.unit);
     }
-    let friends = super::parties::friends(&entrants, &live.parties)
-        .into_iter()
-        .filter(|(a, b)| *a == party || *b == party)
-        .collect();
-    // A fixture raider's leader holds a standing Hostile mark on every other party (doc 32 cut
-    // CF.6, Q-CF-44): a newcomer's too.
-    let mut marks = Vec::new();
-    for raider in live.parties.iter().filter(|p| p.key.is_fixture()) {
-        for other in live.parties.iter().filter(|o| o.party != raider.party) {
-            if raider.party == party || other.party == party {
-                marks.push((
-                    raider.party,
-                    other.party,
-                    crate::arena::party::Mark::Hostile,
-                ));
-            }
+    let mut friends: Vec<(crate::arena::PartyId, crate::arena::PartyId)> =
+        super::parties::friends(&entrants, &live.parties)
+            .into_iter()
+            .filter(|(a, b)| *a == party || *b == party)
+            .collect();
+    for pair in allied {
+        if !friends.contains(&pair) {
+            friends.push(pair);
         }
     }
+    friends.sort_unstable();
+    // The standing Hostile marks naming the party, from the live record's rows (doc 40 cut
+    // FR.1): a fixture raider's on every other party (doc 32 cut CF.6, Q-CF-44), a newcomer's
+    // too, and each declared Hostile the join opened.
+    let marks = super::parties::standing_marks(&live.parties, Some(party));
     let (unit, pilot) = super::admit::custody_unit(ctx, &entrant, party, pose, 0)?;
     Ok(Joining {
         unit,

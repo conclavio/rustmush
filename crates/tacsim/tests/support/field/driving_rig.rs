@@ -1020,6 +1020,16 @@ pub(crate) fn en_route(
     seed: i64,
     name: &str,
 ) -> (ObjId, HullRow, ObjId, Ticket) {
+    en_route_at(rig, (who, seed, name), ("ahuna", AHUNA))
+}
+
+/// **[`en_route`] to any site** (doc 40 cut FR.1): `(venue, entry)` the `+ship/undock` word and
+/// the site's port entry.
+pub(crate) fn en_route_at(
+    rig: &mut Rig,
+    (who, seed, name): (&str, i64, &str),
+    (venue, entry): (&str, &str),
+) -> (ObjId, HullRow, ObjId, Ticket) {
     let (pilot, row) = prospector(rig, who, seed, name);
     lease_one(rig, pilot);
     load(
@@ -1031,8 +1041,8 @@ pub(crate) fn en_route(
     );
     board(rig, pilot);
     let hull = ObjId(row.hull);
-    open_site(rig, AHUNA);
-    let t = file_and_launch(rig, pilot, hull, "+ship/undock ahuna");
+    open_site(rig, entry);
+    let t = file_and_launch(rig, pilot, hull, &format!("+ship/undock {venue}"));
     let tvs = rigs_of(&rig.tw, pilot);
     assert_eq!(tvs.len(), 1);
     (pilot, row, tvs[0], t)

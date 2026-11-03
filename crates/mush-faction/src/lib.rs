@@ -71,6 +71,8 @@ mod econ;
 mod reputation;
 mod sim;
 mod sim_commands;
+mod stance;
+mod stance_commands;
 mod standing;
 
 use std::collections::BTreeMap;
@@ -83,8 +85,8 @@ use smol_str::SmolStr;
 
 pub use data::{
     ControlKind, ControlRecord, EdgeKind, Faction, FactionEdge, FactionId, FactionMembership,
-    FactionState, MAX_NAME_LEN, META_KEY, NS, Principal, Region, RegionId, ResourceChange,
-    Visibility, control_key, fac_key, member_key, region_key,
+    FactionState, MAX_NAME_LEN, META_KEY, NS, Principal, Region, RegionId, ResourceChange, Stance,
+    StanceRow, StanceSide, Visibility, control_key, fac_key, member_key, region_key, stance_key,
 };
 pub use econ::{LinkError, backing_org};
 pub use reputation::{
@@ -411,6 +413,7 @@ fn load_boot(ctx: &mut ModuleCtx<'_>, data: ModuleBootData) -> Result<(), ModErr
     let mut regions: BTreeMap<data::RegionId, Region> = BTreeMap::new();
     let mut raw_members: Vec<FactionMembership> = Vec::new();
     let mut raw_control: Vec<(data::RegionId, Vec<ControlRecord>)> = Vec::new();
+    let mut raw_stances: Vec<StanceRow> = Vec::new();
     let mut meta_faction: Option<u64> = None;
     let mut meta_region: Option<u64> = None;
 
@@ -484,8 +487,45 @@ fn load_boot(ctx: &mut ModuleCtx<'_>, data: ModuleBootData) -> Result<(), ModErr
                     tracing::error!(%key, error = %e, "faction: unparseable control doc skipped");
                 }
             }
+        } else if key.starts_with("stance:") {
+            // Doc 40 cut FR.1: a stance row is a leaf, skippable like a membership; one whose
+            // document disagrees with its key is refused as corrupt.
+            match (
+                stance::parse_stance_key(&key),
+                serde_json::from_value::<StanceRow>(value),
+            ) {
+                (Some(pair), Ok(row))
+                    if pair == (row.from, row.to)
+                        && row.from != row.to
+                        && row.stance != Stance::Neutral =>
+                {
+                    raw_stances.push(row);
+                }
+                (_, Err(e)) => {
+                    tracing::error!(%key, error = %e, "faction: bad stance doc skipped");
+                }
+                _ => {
+                    tracing::error!(%key, "faction: stance doc disagrees with its key, skipped");
+                }
+            }
         } else {
             tracing::warn!(%key, "faction: unknown persisted key ignored");
+        }
+    }
+
+    // Stance orphan pass: a faction side must exist (an organization's id is never reused, so an
+    // org side stays).
+    let mut stances: BTreeMap<(StanceSide, StanceSide), StanceRow> = BTreeMap::new();
+    let mut orphan_stances: Vec<smol_str::SmolStr> = Vec::new();
+    for row in raw_stances {
+        let live = [row.from, row.to].iter().all(|side| match side {
+            StanceSide::Faction(id) => factions.contains_key(id),
+            StanceSide::Org(_) => true,
+        });
+        if live {
+            stances.insert((row.from, row.to), row);
+        } else {
+            orphan_stances.push(stance_key(row.from, row.to));
         }
     }
 
@@ -578,8 +618,9 @@ fn load_boot(ctx: &mut ModuleCtx<'_>, data: ModuleBootData) -> Result<(), ModErr
         control,
         next_faction_id,
         next_region_id,
+        stances,
     };
-    for key in orphan_keys {
+    for key in orphan_keys.into_iter().chain(orphan_stances) {
         persist_del(ctx.out, key);
     }
     for id in fix_control {

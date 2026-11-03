@@ -376,7 +376,10 @@ fn admit(ctx: &mut Ctx<'_>, site: &CanonicalId, record: &SiteRecord) -> Result<(
         return Err("nobody is on the ground".to_owned());
     }
     let entrants = parties::entrants(ctx, site, &units);
-    let (lettered, rows) = parties::letter(&entrants).map_err(str::to_owned)?;
+    let (mut lettered, rows) = parties::letter(&entrants).map_err(str::to_owned)?;
+    // Doc 40 cut FR.1 (Q-38-23): the stance table, read as the field is built; the live record
+    // keeps each party's standing Hostile marks so a clear returns to them (§4.2).
+    let allied = parties::admit_stances(ctx.w, &entrants, &mut lettered);
     let homes = super::home::homes(ctx.w, &entrants, &rows);
     let definition = super::ground::definition(ctx.w, site, record, homes.clone())?;
     // CF.3 (Q-CF-19): the carriers stand on the pad, clear of everyone else.
@@ -388,7 +391,7 @@ fn admit(ctx: &mut Ctx<'_>, site: &CanonicalId, record: &SiteRecord) -> Result<(
     super::carrier::unstack(ctx, &definition.terrain, &others, &mut taken)?;
     let pads = super::carrier::pad_poses(ctx.w, site, &definition.terrain, &carriers, &mut taken)?;
     let mut custody = custody(
-        ctx, &field, &open.by, &entrants, &lettered, &rows, &pads, definition,
+        ctx, &field, &open.by, &entrants, &lettered, &allied, &rows, &pads, definition,
     )?;
     for (tug, speed) in carried.values() {
         if let Some(unit) = custody.units.iter_mut().find(|unit| unit.id == *tug) {
@@ -605,6 +608,7 @@ fn custody(
     by: &PromotedBy,
     entrants: &[Entrant],
     parties: &[super::record::FieldParty],
+    allied: &[(crate::arena::PartyId, crate::arena::PartyId)],
     rows: &[super::record::FieldUnit],
     pads: &BTreeMap<ObjId, mush_sim::data::Pose>,
     definition: crate::arena::state::ArenaDefinition,
@@ -653,14 +657,16 @@ fn custody(
     {
         marks.push((by, of, Mark::Hostile));
     }
-    // A fixture raider's leader holds a standing Hostile mark on every other party (doc 32 cut
-    // CF.6, Q-CF-44): the raider fights whoever it finds, with no player connected.
-    for raider in parties.iter().filter(|party| party.key.is_fixture()) {
-        for other in parties.iter().filter(|other| other.party != raider.party) {
-            marks.push((raider.party, other.party, Mark::Hostile));
+    // The standing Hostile marks (doc 40 cut FR.1): a fixture raider's on every other party (doc
+    // 32 cut CF.6, Q-CF-44) and each declared Hostile, from the parties' own rows.
+    marks.extend(parties::standing_marks(parties, None));
+    let mut friends = parties::friends(entrants, parties);
+    for pair in allied {
+        if !friends.contains(pair) {
+            friends.push(*pair);
         }
     }
-    let friends = parties::friends(entrants, parties);
+    friends.sort_unstable();
     let seed = crate::match_::seed_for(
         crate::arena_task::MatchId(u64::from(field.ordinal)),
         ctx.w.now(),
