@@ -849,7 +849,8 @@ pub(crate) fn lift_check(ctx: &mut Ctx<'_>, site: &CanonicalId) {
         if refused && !crate::surface::raid::director_raid(ctx.w, carrier) {
             continue;
         }
-        let decoded = decoded.get_or_insert_with(|| decode(ctx, site, live.homes.clone()));
+        let decoded =
+            decoded.get_or_insert_with(|| decode(ctx, site, live.homes.clone(), &live.held));
         let condition = |unit: ObjId| {
             decoded
                 .as_ref()
@@ -933,20 +934,21 @@ pub(crate) fn lift_check(ctx: &mut Ctx<'_>, site: &CanonicalId) {
     }
 }
 
-/// **The last snapshot of `site`'s field, decoded** on its own ground (its `homes` from the live
-/// record), with its units' returns, when it decodes: `close::snapshot_returns`' read, keeping
-/// the arena.
+/// **The last snapshot of `site`'s field, decoded** on its own ground (its `homes` and its `held`
+/// walls from the live record; doc 36a §11 #1), with its units' returns, when it decodes:
+/// `close::snapshot_returns`' read, keeping the arena.
 fn decode(
     ctx: &Ctx<'_>,
     site: &CanonicalId,
     homes: Vec<crate::arena::state::EntryZone>,
+    held: &[super::record::HeldWall],
 ) -> Option<(crate::arena::Arena, Vec<crate::arena::damage::UnitReturn>)> {
     let document = ctx
         .w
         .module_state::<super::FieldBook>()
         .and_then(|book| book.snapshot(site).cloned())?;
     let record = super::close::site_record(ctx, site)?;
-    let ground = super::ground::definition(ctx.w, site, &record, homes).ok()?;
+    let ground = super::admit::ground_with_held(ctx.w, site, &record, homes, held).ok()?;
     let limit = ctx.w.module_state::<crate::store::TacsimStore>().map_or(
         crate::arena::snapshot_capacity::SNAPSHOT_MAX_BYTES,
         |store| store.config().arena.snapshot_max_bytes,
