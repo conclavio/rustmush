@@ -80,6 +80,7 @@ use std::time::Duration;
 use mush_core::module::{ModError, Registrar};
 use mush_core::{ArgShape, CanonicalId, CommandSpec, Ctx, ObjId, TickCadence, World};
 
+use crate::arena::PartyId;
 use crate::arena_task::MatchId;
 pub use commands::mark_from_order;
 pub use crew::{CrewCondition, CrewLocation, CrewRecord, crew_location, crew_of};
@@ -87,14 +88,12 @@ pub use crew::{CrewCondition, CrewLocation, CrewRecord, crew_location, crew_of};
 pub use exit::EXIT_ASKED;
 pub use parties::friends_on_ground;
 pub use provider::{FIELD_ACTION, FIELD_OUTCOME};
-pub use record::{FieldLive, FieldParty, FieldUnit, OwedExit, PartyKey, PendingFire};
+pub use record::{FieldLive, FieldParty, FieldUnit, FireRow, OwedExit, PartyKey, PendingFire};
 
 /// The field host's tick: admission, the fire door's lock, and the held resumes' retry.
 pub const FIELD_TICK: &str = "tacsim.field";
 /// Its period.
 pub const FIELD_TICK_PERIOD: Duration = Duration::from_secs(1);
-/// **The void offers' sweep** (doc 36 cut GC.10), on the same period.
-pub const STANDING_TICK: &str = "tacsim.field.standing";
 /// The verb.
 pub const FIELD_VERB: &str = "+field";
 /// **A field opens**, told to everyone on the site (`{n}` the ordinal, `{site}` its name). A
@@ -140,6 +139,10 @@ pub struct FieldBook {
     closing: BTreeSet<CanonicalId>,
     /// Fire orders waiting for the shooter's sensors, by site.
     fire: BTreeMap<CanonicalId, PendingFire>,
+    /// **The rounds each pair of parties exchanged**, by site, then (shooter, victim) (doc 36
+    /// cut GC.10's tally, `standing::note_chunk`): counted a chunk, laid on the live record at
+    /// each snapshot (doc 40 cut FR.2, [`FieldLive::tally`]) and seeded from it by a resume.
+    pub(crate) tally: BTreeMap<CanonicalId, BTreeMap<(PartyId, PartyId), u32>>,
     /// The last snapshot document each running field's world holds (the void rule's source).
     snapshots: BTreeMap<CanonicalId, serde_json::Value>,
     /// What the boot read: each site's live record and snapshot, for [`boot::phase`].
@@ -318,12 +321,6 @@ pub fn register(reg: &mut Registrar<'_>) -> Result<(), ModError> {
         TickCadence::Coarse(FIELD_TICK_PERIOD),
         Arc::new(admit::tick),
     )?;
-    // Doc 36 cut GC.10 (Q-36-11): the leaders' void offers close on their next command.
-    reg.tick(
-        STANDING_TICK,
-        TickCadence::Coarse(FIELD_TICK_PERIOD),
-        Arc::new(standing::tick),
-    )?;
     reg.subscribe(
         mush_core::module::WorldEventKind::WorldClockResumed,
         Arc::new(boot::on_resumed),
@@ -357,9 +354,12 @@ pub(crate) fn on_snapshot(ctx: &mut Ctx<'_>, task: MatchId, snapshot: Arc<crate:
     // Doc 32 §15 (the review's CF-6): the opening shot as it stands at this snapshot, so a
     // resume that rewinds to it owes the shot again if it had not left yet.
     let fire = book.fire.get(&site).cloned();
+    // Doc 40 cut FR.2 (Q-40-15): the fire tally as it stands at this snapshot.
+    let tally = standing::rows(book.tally.get(&site));
     let live = book.live.get_mut(&site).map(|hosted| {
         hosted.live.at_ms = at_ms;
         hosted.live.fire = fire;
+        hosted.live.tally = tally;
         hosted.live.clone()
     });
     if let Some(registry) = ctx
