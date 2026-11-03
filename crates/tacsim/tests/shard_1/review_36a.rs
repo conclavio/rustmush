@@ -16,6 +16,7 @@
 //! |---|---|
 //! | P0-2 `@contract/amend` + `/deadline` | [`p0_2_the_salvor_cannot_amend_or_shorten_their_own_claim`] |
 //! | P0-2 `@contract/dispute` + `/agree` | [`p0_2_the_salvor_cannot_dispute_and_agree_their_claim_away`] |
+//! | P0-3 the Occator rig after the write-off | [`p0_3_a_leased_rig_written_off_in_custody_goes_home_and_is_never_awarded`] |
 
 use mush_core::ObjId;
 use mush_economy::{ContractId, ContractState, EconomyStore};
@@ -24,11 +25,12 @@ use tacsim::surface::salvage::{ClaimSeam, SalvageCustody};
 use tacsim::surface::site_record::SiteRecord;
 
 use crate::driving::{
-    Rig, cid, command, launched_at, on_pad_as_at, pilot, port_map, run, seed_typed, stocked_tuned,
-    to_cell_on,
+    AHUNA, Rig, cid, command, launched, launched_at, on_pad, on_pad_as, on_pad_as_at, pilot,
+    port_map, ramp_at, run, seed_typed, stocked_tuned, store, to_cell, to_cell_on,
 };
 use crate::field_gc4::{powerless, seconds_until};
-use crate::field_host::{second, site_record_at, tune};
+use crate::field_gc5::skip_to_ic;
+use crate::field_host::{second, site_record, site_record_at, tune};
 use crate::site_record::{staff, staff_member};
 
 /// Urvara Reach's port entry.
@@ -372,4 +374,127 @@ fn p0_2_the_salvor_cannot_dispute_and_agree_their_claim_away() {
     let row = custody(&mut stage.rig, far).expect("still in custody");
     assert_eq!(row.claim, ClaimSeam::Filed { contract: c });
     assert!(row.file.is_some_and(|file| file.state.is_pending()));
+}
+
+/// **P0-3** (doc 36a §3; Q-36-29, Q-36-22): a leased rig in a stranger's custody with a claim
+/// filed on it is written off after 28 IC days out of its bay. The award is never posted — the
+/// title is Occator's — the write-off hands the rig back to the shed, the claim's contract is
+/// closed and the custody row goes: the rig is back in the pool, Occator's alone.
+#[test]
+#[allow(clippy::too_many_lines)]
+fn p0_3_a_leased_rig_written_off_in_custody_goes_home_and_is_never_awarded() {
+    let mut rig = stocked_tuned(quick);
+    // A's leased rig lies disabled beside Ahuna's ramp, indexed by an earlier visit's field.
+    let (a, _, tvs) = on_pad(&mut rig, 1);
+    let escort = tvs[0];
+    let ramp = {
+        let (x, y, _) = ramp_at(&rig.tw, AHUNA);
+        (x.div_euclid(1_000), y.div_euclid(1_000))
+    };
+    launched(&mut rig, a, escort);
+    let lying = (ramp.0 + 3, ramp.1);
+    to_cell(&mut rig, escort, lying);
+    powerless(&mut rig, escort);
+    let s = staff_member(&mut rig);
+    staff(
+        &mut rig,
+        s,
+        &format!(
+            "@tacsim/site {AHUNA} leave #{} casualty {},{}",
+            escort.0, lying.0, lying.1
+        ),
+    );
+    let occator = title(&rig, escort).expect("the pool rig's title");
+    assert!(
+        matches!(occator, PrincipalId::Organization(_)),
+        "a pool rig is Occator's: {occator:?}"
+    );
+    let left = site_record(&mut rig)
+        .and_then(|record| record.units.first().map(|row| row.left_ic))
+        .expect("indexed");
+    // The stranger tows it into the Red Moth and files a claim on it.
+    let (b, b_row, b_tvs) = on_pad_as(&mut rig, "Second", 2, "Red Moth", 1);
+    let b_carrier = ObjId(b_row.hull);
+    let tug = b_tvs[0];
+    launched(&mut rig, b, tug);
+    to_cell(&mut rig, tug, (lying.0 + 1, lying.1));
+    let _ = second(&mut rig);
+    let out = go(&mut rig, b, &format!("+tv/1 tow #{} go", escort.0));
+    assert!(
+        seconds_until(&mut rig, 120, |rig| site_record(rig).is_some_and(
+            |record| { record.tows.towing(tug).map(|op| op.casualty()) == Some(escort) }
+        )),
+        "the tow attaches: {out}"
+    );
+    to_cell(&mut rig, tug, ramp);
+    let _ = second(&mut rig);
+    let out = go(&mut rig, b, "+tv/1 load go");
+    assert!(
+        seconds_until(&mut rig, 120, |rig| site_record(rig).is_some_and(
+            |record| {
+                record.custody.iter().any(|row| row.hull == escort)
+                    && record.tows.act_of(tug).is_none()
+            }
+        )),
+        "the load lands in custody: {out}"
+    );
+    assert!(
+        tacsim::surface::tow::in_bay_of(rig.tw.world(), escort, b_carrier),
+        "in the stranger's bay"
+    );
+    let out = go(&mut rig, b, &format!("+salvage/claim #{} go", escort.0));
+    assert!(out.contains("You file a salvage claim"), "{out}");
+    let row = site_record(&mut rig)
+        .and_then(|record| record.custody.into_iter().find(|row| row.hull == escort))
+        .expect("in custody");
+    let ClaimSeam::Filed { contract: c } = row.claim else {
+        panic!("filed: {row:?}");
+    };
+    // The window runs out long before the write-off: nothing is awarded, the title stays.
+    jump(&mut rig, WINDOW + 60);
+    for _ in 0..3 {
+        let _ = second(&mut rig);
+    }
+    assert_eq!(title(&rig, escort), Some(occator.clone()), "never awarded");
+    assert!(
+        site_record(&mut rig).is_some_and(|record| record.custody.iter().any(|r| r.hull == escort)),
+        "the claim stands pending"
+    );
+    // Past the 28 days: written off on the tick, handed back, and the claim closed.
+    let bar = tacsim::port::tv::WRITE_OFF_LEFT_IC_DAYS * 86_400;
+    skip_to_ic(&mut rig, left + bar + 60);
+    assert!(
+        seconds_until(&mut rig, 120, |rig| tacsim::port::tv::written_off(
+            rig.tw.world(),
+            escort
+        )),
+        "written off"
+    );
+    assert!(
+        seconds_until(&mut rig, 30, |rig| site_record(rig)
+            .is_some_and(|record| record.custody.iter().all(|r| r.hull != escort))),
+        "the custody row goes"
+    );
+    // The sweep lapsed the contract at its deadline (`Expired`, terminal); a claim still live
+    // would have been cancelled. Either way nothing of it is awarded.
+    let closed = contract(&rig, c).state;
+    assert!(closed.is_terminal(), "the claim is closed: {closed:?}");
+    assert_eq!(title(&rig, escort), Some(occator), "Occator's alone");
+    assert!(
+        tacsim::port::tv::in_shed(rig.tw.world(), escort),
+        "back in Occator's shed"
+    );
+    assert!(
+        !tacsim::surface::tow::in_bay_of(rig.tw.world(), escort, b_carrier),
+        "not in the stranger's bay"
+    );
+    let ended = store(&rig.tw)
+        .tv_leases_on(escort)
+        .max_by_key(|record| record.lease)
+        .cloned()
+        .expect("the lease record");
+    assert_eq!(ended.status, tacsim::port::tv::TvLeaseStatus::Returned);
+    assert!(ended.written_off);
+    let listed = run(&mut rig.tw, b, "+salvage");
+    assert!(listed.contains("no salvage claim"), "{listed}");
 }

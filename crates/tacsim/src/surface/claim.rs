@@ -480,6 +480,10 @@ pub enum Settlement {
     Vacate,
     /// The contract was cancelled outside the claim (staff): the claim goes back to owed.
     Withdrawn,
+    /// **Doc 36a P0-3** (Q-36-29): the hull was written off while in custody — it is Occator's
+    /// alone, handed back to the shed; the contract is closed and the custody row goes, with
+    /// no title moved and nothing logged.
+    HandedBack,
 }
 
 /// **One server-written claim order** (this module's head), carried by GC.4's tow action under
@@ -744,6 +748,10 @@ fn settle(
         custody.claim = ClaimSeam::Owed;
         custody.file = None;
         return Ok("withdrawn".to_owned());
+    }
+    if settlement == Settlement::HandedBack {
+        record.custody.retain(|row| row.hull != hull);
+        return Ok("handed_back".to_owned());
     }
     let mut file = custody.file.as_deref().cloned().ok_or("claim_not_filed")?;
     file.deadline_real_s = window_end;
@@ -1352,14 +1360,47 @@ pub(crate) fn tick(ctx: &mut Ctx<'_>) {
         return;
     };
     for (site, row) in custody_rows(ctx) {
+        if ctx.authoritative_pending(row.holder) || promoted(ctx, &site) {
+            continue;
+        }
+        // Doc 36a P0-3 (Q-36-29, Q-36-22): a hull written off while in custody is Occator's
+        // alone — the write-off already handed it back to the shed. Its claim's contract is
+        // closed and the custody row goes; the title never moves.
+        if crate::port::tv::written_off(ctx.w, row.hull) {
+            let closed = match row.claim {
+                ClaimSeam::Owed => true,
+                ClaimSeam::Filed { contract } => match mush_economy::close_salvage_claim(
+                    ctx,
+                    ContractId(contract),
+                    row.holder,
+                    row.hull,
+                ) {
+                    Ok(done) => done,
+                    Err(error) => {
+                        tracing::warn!(hull = row.hull.0, contract, %error, "tacsim: a written-off hull's salvage claim did not close; retried next tick");
+                        false
+                    }
+                },
+            };
+            if closed {
+                let order = ClaimOrder::Settle {
+                    site: site.clone(),
+                    hull: row.hull,
+                    settlement: Settlement::HandedBack,
+                    window_end: now_real,
+                    now_real,
+                };
+                let _ = submit(ctx, row.holder, order, 5);
+            }
+            continue;
+        }
         let ClaimSeam::Filed { contract } = row.claim else {
             continue;
         };
         let Some(file) = row.file.as_deref() else {
             continue;
         };
-        if !file.state.is_pending() || ctx.authoritative_pending(row.holder) || promoted(ctx, &site)
-        {
+        if !file.state.is_pending() {
             continue;
         }
         let state = contract_state(ctx.w, contract);
@@ -1373,6 +1414,18 @@ pub(crate) fn tick(ctx: &mut Ctx<'_>) {
         } else {
             continue;
         };
+        // Doc 36a P0-3 (Q-36-29): an organization's hull is never awarded by salvage. A leased
+        // rig is Occator's alone — its lessee answers for the title, and the 28-day write-off
+        // takes it home — so the claim stands pending until then, or until a contest vacates
+        // it; the economy refuses the award outright as well.
+        if settlement == Settlement::Award
+            && matches!(
+                title_of(ctx.w, row.hull).0,
+                Some(PrincipalId::Organization(_))
+            )
+        {
+            continue;
+        }
         let label = name(ctx.w, row.hull);
         let ready = match settlement {
             Settlement::Award => match mush_economy::award_salvage_title(
@@ -1403,7 +1456,7 @@ pub(crate) fn tick(ctx: &mut Ctx<'_>) {
                     }
                 }
             }
-            Settlement::Withdrawn => true,
+            Settlement::Withdrawn | Settlement::HandedBack => true,
         };
         if !ready {
             continue;
@@ -1437,7 +1490,7 @@ pub(crate) fn tick(ctx: &mut Ctx<'_>) {
             Settlement::Vacate => VACATED
                 .replace("{registry}", &registry)
                 .replace("{name}", &label),
-            Settlement::Withdrawn => continue,
+            Settlement::Withdrawn | Settlement::HandedBack => continue,
         };
         tell(
             ctx,
