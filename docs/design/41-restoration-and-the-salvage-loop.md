@@ -1,9 +1,10 @@
 # 41. Restoration and the salvage loop, second round — surveyed
 
-Draft 0.2, 2026-11-03, docs only. Surveyed against `origin/main` at `c83c2eff` (PR #339, SF.R15; doc
-36a's lanes 1, 2, 4 and 5 merged as PRs #334, #343, #342 and #346; lane 3 open as PR #340), with
-[doc 39](39-industry-production-chain.md) (PR #347, Draft 0.2 at `62218176`, being revised to Draft
-0.3 after two outside reviews) stacked under it so the README row lands after doc 39's. This is the
+Draft 0.3, 2026-11-03, docs only. Surveyed against `origin/main` at `c83c2eff` (PR #339, SF.R15; doc
+36a's lanes 1, 2, 4 and 5 merged as PRs #334, #343, #342 and #346), the round-2 review's anchors
+re-verified by a read-only lane at `f146734e` (lane 3 merged as PR #340, `1441fa29`), with
+[doc 39](39-industry-production-chain.md) (PR #347, Draft 0.4 at `2a8bcfb7`) stacked under it so the
+README row lands after doc 39's. This is the
 document [doc 38](38-after-the-ic-phase-next-systems.md) §6 proposed as "Doc 41 — Restoration and
 the salvage loop, second round": categories B (restoration away from port), C's tug half (heavy
 recovery), D (the loop's close, forensics, crime), the Q-36-46/47 seams with space, Q-38-6's
@@ -13,7 +14,11 @@ settle is this document's table of contents. Three read-only lanes re-verified e
 places doc 38's reading was wrong or has moved. Draft 0.1, earlier the same day, was the survey.
 **Draft 0.2 records the owner's rulings of 2026-11-03 on every question:** Q-41-11, Q-41-15,
 Q-41-16 and Q-41-17 amended, every other default accepted as written. §4a lists what the
-amendments change elsewhere.
+amendments change elsewhere. **Draft 0.3, later the same day, folds the round-2 outside review**
+(two reviewers merged, every claim re-verified by an independent lane): fourteen items, four lane
+findings and three pieces of advice, each marked in place with its item number and indexed in §4b;
+the two questions it raised that are the owner's, Q-41-28 and Q-41-29, are open in §5.8. No accepted
+ruling changed.
 
 The form is doc 38's: a survey that asks the owner numbered questions, each with a proposed default,
 an alternative and a reason; this draft carries the rulings and §6's cut list is the plan.
@@ -45,7 +50,7 @@ NPC organization's hulls and whether it works on its own account; how a vacated 
 what a port does with her; which evidence source each contest kind reads; what port security fines
 and quarantines, and on what proof; and how the space tow rides the same path. Each gets a section
 in §4 with what exists, what the rulings require and the questions it raises; §5 is the owner survey
-(Q-41-1..27, all ruled in this draft); §6 the plan, cuts RS.0–RS.9, ordered after doc 39's IN.1, IN.4,
+(Q-41-1..27 ruled; Q-41-28 and Q-41-29 open since Draft 0.3); §6 the plan, cuts RS.0–RS.9, ordered after doc 39's IN.1, IN.4,
 IN.8 and IN.9 (Draft 0.4's numbering) where it depends on them.
 
 ## 2. What binds this survey, and what it leaves alone
@@ -1026,6 +1031,37 @@ What the four amendments of 2026-11-03 change beyond their own questions.
   margin.
 - **Capital (Q-41-17).** `capital_major` 500,000 on the lane row; no raise clause.
 
+## 4b. The round-2 review, folded (Draft 0.3)
+
+Two outside reviewers read Draft 0.2; the parent session merged their claims and an independent
+read-only lane re-verified each against `main` at `f146734e`. Fourteen items survived, the lane
+found four things neither reviewer raised, three items are advice, and parts of three claims were
+refuted (41-4's rearm reading, 41-8's `prior_owner` half, 41-11's `berth_stands` half). Each is
+marked where it landed; this table is the index. No accepted ruling changed.
+
+| Item | What was wrong | What changed, where |
+|---|---|---|
+| 41-1 (P1) | the procedure contest compared the claimant (a character) with the box's `recovered_by` (the tug) | the registry checks the box against the custody row's tug and carrier; §4.5 table, Q-41-23 |
+| 41-2 (P1) | delivery required the hull `Direct` on the port's domain, which a berth, a stow and a hand-back never satisfy | four handover facts carrying the port; §4.3, §4.7, Q-41-8 |
+| lane | a written-off rig is handed to the shed at the load, on the site | under a retrieval the hand-back runs at the destination; §4.3, story (c) |
+| 41-9 (P1) | a one-shot obligation goes straight to `Delinquent` and the sweep never retries it | `reinstate_obligation` with three callers (`+debts/pay`, the desk, the docking check), the authority note; §4.3, §4.6, Q-41-13, Q-41-25 |
+| 41-11 (P1) | one hashed contract deadline cannot carry two 28-day windows; a load into the acceptor's carrier was salvage custody | `RetrievalOrder` under a 56-day contract, Tycho on a fresh contract at a lapse; retrieval custody and `Right::Retrieval`; §4.3, §4a |
+| 41-7 (P1) | an organization cannot be a claim's issuer or an award's recipient | Tycho's dispatcher claims, the title transferred to the org at the award; §4.4, §4a |
+| 41-8 (P1) | NPC orgs have no capability holders, so nobody answered for their titles | the house agent answers; the `prior_owner` half refuted; §4.5, Q-41-22, Q-41-28 |
+| 41-10 (P1) | the `right` ground vacates only when the obligor is the claimant | the row binds the claimant; story (b)'s L case rewritten; §4.5, §4.9, Q-41-23 |
+| 41-14 (P1) | `+salvage/report` could not name a Pickup or Scrap row | `+salvage/report <site>[=<actor>\|#<hull>] registry` over the site log; §4.6, Q-41-24, RS.7 |
+| 41-4 | the tender and the bay drew fittings alone from whole-tonne pools; the stores could not hold a tonne and a magazine | the tender's bale (alloys and fittings), 4,800 L stores, `+bay/return` refused away from port; §4.1, §4.2, Q-41-1, Q-41-2, RS.1, RS.2 |
+| 41-12a | `vacate_claim` takes one lot and a context `settle` lacks | `BayHull.claim_lots`, flagged by `claim::tick`; §4.6, RS.3 |
+| 41-12b | Tycho's repair test cited GC.9's lessor-only, labour-only quote | the full quote: labour, bale materials, replacement parts; §4.4, Q-41-16 |
+| 41-12c | doc 39's cuts renumbered in Draft 0.4 | every reference; §1, §2, §4, §5, §6 |
+| 41-5 | the 120 t crawler at 2× does not reach a laden Dray-P | 130 t, the mass basis stated, Q-41-29; §4.4, §4.8 |
+| 41-6 | the 64-row ring could evict a proven offence | proven rows copied to `tacsim:security:{actor}` until settled; §4.6, RS.7 |
+| 41-15 | two held hulls would lock Ceres' two berths; two documents added `+bay/stow <hull>=<carrier>` | held hulls outside the stand count; doc 39 owns the verb, RS.4 widens its source; §4.5, Q-41-18, Q-41-19, RS.4 |
+| 41-16 | `carrier_of_bay` misses the yard | reads the yards as `world_hulls` does, the register after IN.9; §4.2, RS.2 |
+| lane | `repossess` moves a non-wreck rig into the shed from anywhere | a rig away from the lessor's port stays where it lies; §4.3, RS.5 |
+| lane | PR #340 merged | §2.2, §6, RS.6 |
+| 41-3, 41-13, X-4 (advice) | occupants, the stowaway quarantine, the coupled pair's exit | noted in §2.3, §4.6 and §4.1 |
+
 ## 5. Owner survey
 
 **Ruled 2026-11-03.** The owner amended Q-41-11 (the acceptor's performance deadline is 28 IC days
@@ -1307,13 +1343,39 @@ provisional unless the line says otherwise.
 - **Why:** the ruling names a profile above `Standard` with a 3× cap; one enum holding both figures
   is one place to tune; no kernel hash moves.
 
+### 5.8 Open after the round-2 review (Draft 0.3)
+
+**Q-41-28 — Who answers for an NPC organization's title.**
+- **Proposed default:** the organization's house agent — the object the lane names for it (Occator's
+  lessor agent, a yard's dispatcher, a vendor's clerk; Tycho's dispatcher given a grant on lane v21)
+  — found through `principal_holders` unfiltered, with a player organization answered by its members
+  and grantees; the agent is told, may contest, and is the pin's `answering`. No contract shape
+  changes.
+- **Alternative:** the organization itself answers everywhere: `SalvageClaimSpec`, `TitleHeld` and
+  `award_salvage_title` take a `PrincipalId`, and any `acts_for` officer contests in its name.
+- **Why:** the lane's NPC organizations hold no capability grantees, so Draft 0.2's answerer was
+  nobody (round-2 item 41-8); the house agent is a Thing every NPC org already has or can be given,
+  and the claim's consent shape stays as built; the alternative is cleaner for player organizations
+  and is a consent-shape change across the claim and the award.
+
+**Q-41-29 — What mass the tow counts.**
+- **Proposed default:** the casualty's laden mass — dry mass plus what it carries (its bay's hulls,
+  its hopper's ore, its hold's goods) — against the tug's cap, and the crawler at 130 t so a Dray-P
+  wrecked with two rigs aboard (256 t) is within its 2×; doc 36's owed "hopper's ore in a casualty's
+  laden mass" is the same change.
+- **Alternative:** dry mass alone, as `tow.rs:642` counts today (`unit_mass_profile_for_spec(spec,
+  0, 0)`), and the crawler at 120 t.
+- **Why:** a tug that moves a 256 t load as if it were 240 t is the matter the census forbids in
+  another form, and the floor Q-36-8 ruled is on tonnage, not dry tonnage; the alternative needs no
+  change to the tow (round-2 item 41-5).
+
 ## 6. The plan: cuts RS.0–RS.9
 
 The rulings of 2026-11-03 make this the implementation order. Each cut lands as one PR, tested
 through the production command paths with its story at both ground sizes (Q-38-29); each cut's note
 goes to `41-cut-notes.md`. Doc 39's rulings bind
 throughout; where a cut consumes one of doc 39's cuts it says so in one line and names it "as
-revised in Draft 0.3", never its mechanics. **Dependencies:** RS.0 ∥ RS.1 ∥ RS.2 ∥ RS.3 may start
+revised in Draft 0.4", never its mechanics. **Dependencies:** RS.0 ∥ RS.1 ∥ RS.2 ∥ RS.3 may start
 now; RS.4 after RS.3 (they share `claim.rs`'s `settle` and the bay record); RS.5 after RS.3 (one
 writer in `contract_live.rs`); RS.6 after RS.5 and doc 39's IN.4, IN.8 and IN.9 (PR #340 has merged); RS.7 after
 RS.3 and RS.5; RS.8 after RS.3 and RS.5, in the space tree; RS.9 last. One marker: Q-41-7 in RS.2.
@@ -1345,5 +1407,6 @@ table, the `tacsim.retrieval.delivered` fact, the `Quarantined` refusal line, th
 **Ruled.** The six questions Draft 0.1 named as least confidently defaulted went to the owner the
 same day. Q-41-10's fee basis stands as written (the acceptor's deadline it travelled with is
 Q-41-11's amendment: 28 IC days, not 7); Q-41-15 and Q-41-16 were amended as §5 records, and
-Q-41-17 with them; Q-41-24, Q-41-7 and Q-41-23 are accepted as written. Nothing in this document
-waits on a ruling; RS.0, RS.1, RS.2 and RS.3 may start.
+Q-41-17 with them; Q-41-24, Q-41-7 and Q-41-23 are accepted as written. Two questions the round-2
+review raised wait on the owner (Q-41-28, the organization's answerer; Q-41-29, the tow's mass
+basis); neither blocks RS.0, RS.1, RS.2 or RS.3, which may start.
