@@ -27,7 +27,7 @@
 //!    (`space.holotank`, `space.cockpit`), and targeting an undetected contact with `+tac/lock`,
 //!    `+tac/beam`, `+tac/torp`, or `+tac/railgun` refuses with `"No such contact."`.
 
-use std::collections::BTreeSet;
+use std::collections::{BTreeMap, BTreeSet};
 
 use mush_core::output::display_name;
 use mush_core::{Audience, ChannelId, ClockRef, ClockStamp, CmdError, Ctx, ObjId, World};
@@ -1233,7 +1233,7 @@ fn helm_thrust(ctx: &mut Ctx<'_>) -> Result<(), CmdError> {
                 [ax, ay, az]
             }
         };
-        let _ = apply_bubble_command(
+        let events = apply_bubble_command(
             ctx.w,
             hull,
             BubbleInputCommand::CommandBurn {
@@ -1242,6 +1242,19 @@ fn helm_thrust(ctx: &mut Ctx<'_>) -> Result<(), CmdError> {
                 force_into_reserve,
             },
         );
+        for ev in &events {
+            if let super::bubble::SpaceCombatEvent::TankReserveWarning {
+                remaining_dv_mps,
+                return_reserve_dv_mps,
+                ..
+            } = ev
+            {
+                return Err(CmdError::msg(format!(
+                    "RETURN_RESERVE warning: burn refused; remaining Δv ({remaining_dv_mps} m/s) is at or below the {return_reserve_dv_mps} m/s return reserve. Pass `force` to override."
+                )));
+            }
+        }
+        sync_bubble_propellant_to_ledger(ctx, hull);
     }
 
     ctx.out.sys_to_actor(
@@ -1496,6 +1509,131 @@ fn compute_hull_return_reserve(
     Some((reserve, label))
 }
 
+/// Compute the carrier's `RETURN_RESERVE` $\Delta v$ ($\text{m/s}$) from its current waypoint
+/// or journey leg position (`SF.R11`, `D-35-6`).
+pub(crate) fn compute_carrier_bubble_return_reserve_dv(
+    w: &World,
+    hull: ObjId,
+    basis: &crate::port::voyage::Basis,
+    live_kg: u64,
+    at_ic: i64,
+) -> Option<u32> {
+    let (sky, pack) = crate::port::voyage::lane_sky_of(w, basis.version).ok()?;
+    let journey = w.module_state::<JourneyBook>()?.get(hull)?;
+    let legs = journey.route().legs();
+    let cursor = usize::try_from(journey.cursor()).unwrap_or(0);
+    let leg_idx = cursor.saturating_sub(1).min(legs.len().saturating_sub(1));
+    let wp_obj = legs
+        .get(leg_idx)
+        .map_or(journey.route().endpoints().0, |l| l.to());
+    let place = crate::port::voyage::place_id_of(w, wp_obj)
+        .or_else(|| mush_core::CanonicalId::new("ceres_orbit").ok())?;
+    let body = crate::port::passage::body_or_place_of(&sky, pack, &place).unwrap_or(place);
+    let p = sky.position_km(&body, at_ic)?;
+    let [vx, vy, vz] = sky.velocity_mps(&body, at_ic).unwrap_or([0, 0, 0]);
+    let (_reserve, _) = compute_hull_return_reserve(
+        w,
+        basis,
+        live_kg,
+        [p.x, p.y, p.z],
+        [i64::from(vx), i64::from(vy), i64::from(vz)],
+        at_ic,
+    )?;
+    // A carrier promoted from an active `CarrierJourney` has already paid its corridor passage
+    // burn at departure (`launch_step`); inside the bubble it holds a 500 kg (~2,400 m/s) tactical
+    // orbital/collar reserve beyond the prepaid corridor transit.
+    let unpaid_reserve_kg = 500_u64;
+    let non_prop_payload = basis
+        .payload
+        .saturating_sub(basis.tank.saturating_mul(1_000));
+    let reserve_dv = crate::port::passage::remaining_dv_mps_for_propellant(
+        &basis.spec.drive,
+        basis.spec.dry_kg,
+        non_prop_payload,
+        unpaid_reserve_kg,
+    )
+    .unwrap_or(2_400)
+    .max(2_400);
+    Some(reserve_dv)
+}
+
+fn resolve_hull_captain_aboard(w: &World, hull: ObjId, fallback_actor: ObjId) -> ObjId {
+    if fallback_actor != ObjId(1) && hull_aboard_for_actor(w, fallback_actor) == Some(hull) {
+        return fallback_actor;
+    }
+    if let Some(sim) = w.module_state::<SpatialState>()
+        && let Some(assignments) = sim.assignments.get(&hull)
+    {
+        for seat_id in ["command", "helm", "tactical", "ew", "flight_ops"] {
+            if let Some(sid) = StationId::new(seat_id)
+                && let Some(seat) = assignments.seats.get(&sid)
+                && hull_aboard_for_actor(w, seat.actor) == Some(hull)
+            {
+                return seat.actor;
+            }
+        }
+    }
+    if let Some(pilot) =
+        w.module_state::<crate::store::TacsimStore>()
+            .and_then(|s| match s.voyage_state(hull) {
+                crate::port::voyage::VoyageState::Present(v) => {
+                    v.departed.as_ref().map(|d| d.pilot)
+                }
+                crate::port::voyage::VoyageState::Absent
+                | crate::port::voyage::VoyageState::Unreadable => None,
+            })
+        && hull_aboard_for_actor(w, pilot) == Some(hull)
+    {
+        return pilot;
+    }
+    if let Some(owner) = w.get(hull).map(|o| o.owner)
+        && owner != ObjId(1)
+        && hull_aboard_for_actor(w, owner) == Some(hull)
+    {
+        return owner;
+    }
+    fallback_actor
+}
+
+/// Sync any reaction mass burned inside `hull`'s active interdiction bubble (`propellant_kg`)
+/// into [`super::tick::HullPropellantLedger`] and submit a whole-tonne [`crate::port::burn::PendingSpaceBurn`]
+/// whenever a whole-tonne boundary is crossed (`SF.R11`, `D-35-6`).
+pub(crate) fn sync_bubble_propellant_to_ledger(ctx: &mut Ctx<'_>, hull: ObjId) {
+    let Some(burned_kg) = ctx
+        .w
+        .module_state_mut::<SpaceBubbleBook>()
+        .and_then(|b| b.by_hull.get_mut(&hull))
+        .and_then(|active| {
+            let cur_kg = active
+                .bubble
+                .ships
+                .get(&active.carrier_ship_id)
+                .map_or(0, |s| s.propellant_kg);
+            if active.last_synced_propellant_kg > cur_kg {
+                let diff = u64::from(active.last_synced_propellant_kg - cur_kg);
+                active.last_synced_propellant_kg = cur_kg;
+                Some(diff)
+            } else {
+                active.last_synced_propellant_kg = cur_kg;
+                None
+            }
+        })
+    else {
+        return;
+    };
+    let Ok((basis, _)) = live_hull_basis_and_propellant_kg(ctx, hull) else {
+        return;
+    };
+    let whole_tonnes = ctx
+        .w
+        .module_state_mut::<SpaceBubbleBook>()
+        .map_or(0, |book| {
+            book.propellant_ledger_mut(hull)
+                .record_burn_kg(basis.tank, burned_kg)
+        });
+    let _ = submit_space_burn_if_needed(ctx, hull, basis.vault.0, whole_tonnes, 0);
+}
+
 fn submit_space_burn_if_needed(
     ctx: &mut Ctx<'_>,
     hull: ObjId,
@@ -1506,6 +1644,7 @@ fn submit_space_burn_if_needed(
     if burn_t == 0 && crew_days == 0 {
         return Ok(None);
     }
+    let burn_actor = resolve_hull_captain_aboard(ctx.w, hull, ctx.actor);
     let burn_handle = ctx
         .w
         .module_state::<crate::port::families::PortHandles>()
@@ -1521,7 +1660,7 @@ fn submit_space_burn_if_needed(
             .push(crate::port::burn::PendingSpaceBurn {
                 seq,
                 hull,
-                actor: ctx.actor,
+                actor: burn_actor,
                 vault,
                 burn_t,
                 crew_days,
@@ -1534,13 +1673,26 @@ fn submit_space_burn_if_needed(
         hull.0
     ))
     .map_err(|_| CmdError::msg("Failed to form space burn idempotency key."))?;
-    ctx.submit_authoritative(
-        burn_handle,
-        mush_core::PerceivedRef::SelfActor,
-        Vec::new(),
-        serde_json::json!({ "seq": seq.to_string() }),
-        key,
-    );
+    if ctx.actor == burn_actor {
+        ctx.submit_authoritative(
+            burn_handle,
+            mush_core::PerceivedRef::SelfActor,
+            Vec::new(),
+            serde_json::json!({ "seq": seq.to_string() }),
+            key,
+        );
+    } else {
+        let mut fire = crate::port_tick::Fire::new(BTreeMap::new());
+        let _ = fire.as_principal(ctx, burn_actor, burn_actor, |ctx| {
+            ctx.submit_authoritative(
+                burn_handle,
+                mush_core::PerceivedRef::SelfActor,
+                Vec::new(),
+                serde_json::json!({ "seq": seq.to_string() }),
+                key,
+            );
+        });
+    }
     Ok(Some(seq))
 }
 
@@ -1712,6 +1864,32 @@ fn helm_decouple(ctx: &mut Ctx<'_>) -> Result<(), CmdError> {
         (p, v)
     };
 
+    let total_journey_s = journey
+        .arrival_at()
+        .map_or(leg_s, |arr| arr.saturating_sub(journey.departed().at))
+        .max(1);
+    let total_elapsed_s = now.at.saturating_sub(journey.departed().at).max(0);
+    let total_remaining_s = total_journey_s.saturating_sub(total_elapsed_s);
+    let route_burn_t = live_hull_basis_and_propellant_kg(ctx, hull)
+        .ok()
+        .and_then(|(basis, _)| {
+            crate::port::passage::plan_passage(
+                &sky,
+                pack,
+                journey.route().id(),
+                &basis.spec.drive,
+                basis.spec.dry_kg,
+                basis.payload,
+                basis.occupants,
+                journey.departed().at,
+            )
+            .ok()
+            .map(|p| p.burn_t)
+        })
+        .unwrap_or_else(|| journey.route().propellant().max(1));
+    let prepaid_unflown_t = ((u128::from(route_burn_t) * u128::from(total_remaining_s as u64))
+        / u128::from(total_journey_s as u64)) as u64;
+
     let domain = ctx
         .w
         .module_state::<SpatialState>()
@@ -1735,6 +1913,7 @@ fn helm_decouple(ctx: &mut Ctx<'_>) -> Result<(), CmdError> {
         decoupled_at_ic_s: now.at,
         last_ic_s: now.at,
         cluster_arrival_ic_s: None,
+        prepaid_unflown_t,
     };
     if let Some(book) = ctx.w.module_state_mut::<SpaceBubbleBook>() {
         book.free_flights.insert(hull, record);
@@ -1822,6 +2001,26 @@ fn helm_burn(ctx: &mut Ctx<'_>) -> Result<(), CmdError> {
         .payload
         .saturating_sub(basis.tank.saturating_mul(1_000));
     let effective_payload = non_prop_payload.saturating_add(live_kg);
+    let rated_accel_mps2 = crate::port::passage::flip_accel_mps2(
+        &basis.spec.drive,
+        basis.spec.dry_kg,
+        effective_payload,
+    )
+    .map_or(1, |a| (a.ceil() as i64).max(1));
+    let rated_u64 = rated_accel_mps2 as u64;
+    if ax_mps2.unsigned_abs() > rated_u64
+        || ay_mps2.unsigned_abs() > rated_u64
+        || az_mps2.unsigned_abs() > rated_u64
+        || accel_mag_mps2 > (rated_accel_mps2 as f64) + 1e-6
+    {
+        let rated_mg = match basis.spec.drive.law {
+            crate::definitions::logistics::DriveLaw::Flip { accel_mg, .. } => accel_mg,
+            crate::definitions::logistics::DriveLaw::Coast { .. } => 0,
+        };
+        return Err(CmdError::msg(format!(
+            "Burn acceleration exceeds the hull drive's rated flip acceleration of {rated_accel_mps2} m/s² ({rated_mg} mg)."
+        )));
+    }
     let burn_kg = crate::port::passage::burn_kg_for_dv(
         &basis.spec.drive,
         basis.spec.dry_kg,
@@ -1837,16 +2036,26 @@ fn helm_burn(ctx: &mut Ctx<'_>) -> Result<(), CmdError> {
     }
 
     let now_ic = ctx.w.world_ic_now().at;
-    if let Some((reserve, nearest_port)) =
-        compute_hull_return_reserve(ctx.w, &basis, live_kg, ff.pos_km, ff.vel_mps, now_ic)
+    let remaining_after_burn_kg = live_kg.saturating_sub(burn_kg);
+    let mut post_ff = ff.clone();
+    post_ff.thrust_mmps2 = [ax_mps2 * 1_000, ay_mps2 * 1_000, az_mps2 * 1_000];
+    post_ff.burn_remaining_ic_s = Some(dur_ic_s);
+    post_ff.step_ic_s(i64::from(dur_ic_s), None);
+    let post_burn_ic = now_ic.saturating_add(i64::from(dur_ic_s));
+    if let Some((reserve, nearest_port)) = compute_hull_return_reserve(
+        ctx.w,
+        &basis,
+        remaining_after_burn_kg,
+        post_ff.pos_km,
+        post_ff.vel_mps,
+        post_burn_ic,
+    ) && remaining_after_burn_kg < reserve.reserve_kg
+        && !force_into_reserve
     {
-        let remaining_after_burn_kg = live_kg.saturating_sub(burn_kg);
-        if remaining_after_burn_kg < reserve.reserve_kg && !force_into_reserve {
-            return Err(CmdError::msg(format!(
-                "RETURN_RESERVE warning: burn requires {burn_kg} kg ({dv_mps} m/s Δv), leaving {remaining_after_burn_kg} kg below the {} kg ({} t, {} m/s Δv) return reserve to {nearest_port}. Pass `force` to override.",
-                reserve.reserve_kg, reserve.plan.burn_t, reserve.reserve_dv_mps
-            )));
-        }
+        return Err(CmdError::msg(format!(
+            "RETURN_RESERVE warning: burn requires {burn_kg} kg ({dv_mps} m/s Δv), leaving {remaining_after_burn_kg} kg below the {} kg ({} t, {} m/s Δv) return reserve to {nearest_port}. Pass `force` to override.",
+            reserve.reserve_kg, reserve.plan.burn_t, reserve.reserve_dv_mps
+        )));
     }
 
     let whole_tonnes = {
@@ -2046,6 +2255,7 @@ fn helm_autopilot(ctx: &mut Ctx<'_>) -> Result<(), CmdError> {
             decoupled_at_ic_s: now.at,
             last_ic_s: now.at,
             cluster_arrival_ic_s: Some(arrival_ic),
+            prepaid_unflown_t: 0,
         };
         if let Some(book) = ctx.w.module_state_mut::<SpaceBubbleBook>() {
             book.cluster_sessions.remove(&hull);
@@ -2077,12 +2287,12 @@ fn helm_autopilot(ctx: &mut Ctx<'_>) -> Result<(), CmdError> {
         ))
     })?;
 
-    let (start_pos_km, start_vel_mps) = if let Some(ff) = ctx
+    let (start_pos_km, start_vel_mps, prepaid_unflown_t) = if let Some(ff) = ctx
         .w
         .module_state::<SpaceBubbleBook>()
         .and_then(|b| b.free_flight_for_hull(hull).cloned())
     {
-        (ff.pos_km, ff.vel_mps)
+        (ff.pos_km, ff.vel_mps, ff.prepaid_unflown_t)
     } else if let Some(cs) = ctx
         .w
         .module_state::<SpaceBubbleBook>()
@@ -2101,6 +2311,7 @@ fn helm_autopilot(ctx: &mut Ctx<'_>) -> Result<(), CmdError> {
         (
             [p.x, p.y, p.z],
             [i64::from(vx), i64::from(vy), i64::from(vz)],
+            0,
         )
     } else {
         return Err(CmdError::msg(
@@ -2135,11 +2346,11 @@ fn helm_autopilot(ctx: &mut Ctx<'_>) -> Result<(), CmdError> {
     )
     .map_err(|e| CmdError::msg(e.to_string()))?;
 
+    let charge_burn_t = plan.burn_t.saturating_sub(prepaid_unflown_t);
     let live_tank_t = live_kg / 1_000;
-    if live_tank_t < plan.burn_t {
+    if live_tank_t < charge_burn_t {
         return Err(CmdError::msg(format!(
-            "Insufficient propellant for autopilot passage to {port_label}: requires {} t, tank holds {live_tank_t} t.",
-            plan.burn_t
+            "Insufficient propellant for autopilot passage to {port_label}: requires {charge_burn_t} t, tank holds {live_tank_t} t."
         )));
     }
     if basis.locker < u64::from(plan.crew_days) {
@@ -2219,9 +2430,9 @@ fn helm_autopilot(ctx: &mut Ctx<'_>) -> Result<(), CmdError> {
         book.free_flights.remove(&hull);
         book.cluster_sessions.remove(&hull);
         book.propellant_ledger_mut(hull)
-            .record_passage_burn_t(basis.tank, plan.burn_t);
+            .record_passage_burn_t(basis.tank, charge_burn_t);
     }
-    let _ = submit_space_burn_if_needed(ctx, hull, basis.vault.0, plan.burn_t, plan.crew_days)?;
+    let _ = submit_space_burn_if_needed(ctx, hull, basis.vault.0, charge_burn_t, plan.crew_days)?;
 
     if let Some(mut voyage) =
         ctx.w
@@ -2746,6 +2957,7 @@ pub(crate) fn debit_hull_propellant_for_dv(
             "Insufficient propellant: manoeuvre requires {burn_kg} kg ({dv_mps} m/s Δv), tank holds {live_kg} kg."
         )));
     }
+    let remaining_after = live_kg.saturating_sub(burn_kg);
     if !force_reserve
         && let Some(ff) = ctx
             .w
@@ -2754,19 +2966,17 @@ pub(crate) fn debit_hull_propellant_for_dv(
         && let Some((reserve, nearest_port)) = compute_hull_return_reserve(
             ctx.w,
             &basis,
-            live_kg,
+            remaining_after,
             ff.pos_km,
             ff.vel_mps,
             ctx.w.world_ic_now().at,
         )
+        && remaining_after < reserve.reserve_kg
     {
-        let remaining_after = live_kg.saturating_sub(burn_kg);
-        if remaining_after < reserve.reserve_kg {
-            return Err(CmdError::msg(format!(
-                "RETURN_RESERVE warning: manoeuvre requires {burn_kg} kg, leaving {remaining_after} kg below the {} kg return reserve to {nearest_port}.",
-                reserve.reserve_kg
-            )));
-        }
+        return Err(CmdError::msg(format!(
+            "RETURN_RESERVE warning: manoeuvre requires {burn_kg} kg, leaving {remaining_after} kg below the {} kg return reserve to {nearest_port}.",
+            reserve.reserve_kg
+        )));
     }
     let whole_tonnes = {
         let book = ctx

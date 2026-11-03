@@ -830,6 +830,7 @@ mod tests {
                 approaching_derelict: false,
                 holding_for_salvage: false,
                 last_stepped_wall_s: 0,
+                last_synced_propellant_kg: 12_000,
             },
         );
 

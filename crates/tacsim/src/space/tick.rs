@@ -126,6 +126,9 @@ pub struct ActiveInterdictionBubble {
     /// Engine wall-clock timestamp (seconds, `World::now()`) of the last tick fire (`SF.R10`, `D-35-3`).
     #[serde(default)]
     pub last_stepped_wall_s: i64,
+    /// Last carrier `propellant_kg` synced into [`HullPropellantLedger`] (`SF.R11`, `D-35-6`).
+    #[serde(default)]
+    pub last_synced_propellant_kg: u32,
 }
 
 impl ActiveInterdictionBubble {
@@ -374,6 +377,9 @@ pub struct SpaceFreeFlightRecord {
     /// Optional orbital cluster arrival deadline (IC seconds) when flying to a cluster via `+helm/autopilot <cluster_id>` (`SF.R9`, `D-35-5`).
     #[serde(default)]
     pub cluster_arrival_ic_s: Option<i64>,
+    /// Prepaid reaction mass (tonnes) for the unflown portion of the corridor passage the hull decoupled from (`SF.R11`, `D-35-6`).
+    #[serde(default)]
+    pub prepaid_unflown_t: u64,
 }
 
 impl SpaceFreeFlightRecord {
@@ -1411,6 +1417,27 @@ fn step_active_bubbles(ctx: &mut Ctx<'_>, now: &ClockStamp) {
         }
     }
 
+    let burned_hulls: Vec<ObjId> = ctx
+        .w
+        .module_state::<SpaceBubbleBook>()
+        .map(|b| {
+            b.by_hull
+                .iter()
+                .filter_map(|(&hull, active)| {
+                    let cur_kg = active
+                        .bubble
+                        .ships
+                        .get(&active.carrier_ship_id)
+                        .map_or(0, |s| s.propellant_kg);
+                    (active.last_synced_propellant_kg > cur_kg).then_some(hull)
+                })
+                .collect()
+        })
+        .unwrap_or_default();
+    for hull in burned_hulls {
+        super::commands::sync_bubble_propellant_to_ledger(ctx, hull);
+    }
+
     for hull in ran_picket_hulls {
         let front_id = super::picket::record_ran_the_picket_incident(ctx, hull, hull).map(|f| f.0);
         if let Some(book) = ctx.w.module_state_mut::<SpaceBubbleBook>()
@@ -1825,6 +1852,10 @@ fn build_interdiction_bubble(
         (interdictor_hull, interdictor_ship_id, None)
     };
 
+    let initial_prop_kg = bubble
+        .ships
+        .get(&carrier_ship_id)
+        .map_or(0, |s| s.propellant_kg);
     let initial_snapshot = bubble.snapshot();
     let tape = BubbleInputTape::new(&bubble);
 
@@ -1845,6 +1876,7 @@ fn build_interdiction_bubble(
         approaching_derelict: false,
         holding_for_salvage: false,
         last_stepped_wall_s: ctx.w.now(),
+        last_synced_propellant_kg: initial_prop_kg,
     })
 }
 
@@ -1895,7 +1927,8 @@ fn build_carrier_ship_state(
         .ok()
     }?;
 
-    // Hydrate `propellant_kg` and `delta_v_mps` from the hull's live `stow.propellant` pool (`D-35-6`).
+    // Hydrate `propellant_kg`, `max_accel_mps2`, `delta_v_mps`, and `return_reserve_dv_mps`
+    // from the hull's live `stow.propellant` pool and `HullPropellantLedger` (`SF.R11`, `D-35-6`).
     if let Some(view) = crate::port::ship::hull_view(ctx.w, hull) {
         let souls = view
             .airlock()
@@ -1912,17 +1945,35 @@ fn build_carrier_ship_state(
             let non_prop_payload = basis
                 .payload
                 .saturating_sub(basis.tank.saturating_mul(1_000));
+            let effective_payload = non_prop_payload.saturating_add(live_kg);
+            ship.non_prop_payload_kg = non_prop_payload;
             ship.propellant_kg =
                 u32::try_from(live_kg.min(u64::from(u32::MAX))).unwrap_or(u32::MAX);
+            if let Some(accel) = crate::port::passage::flip_accel_mps2(
+                &basis.spec.drive,
+                basis.spec.dry_kg,
+                effective_payload,
+            ) {
+                ship.max_accel_mps2 = (accel.ceil() as i64).max(1);
+            }
             ship.delta_v_mps = i64::from(
                 crate::port::passage::remaining_dv_mps_for_propellant(
                     &basis.spec.drive,
                     basis.spec.dry_kg,
-                    non_prop_payload,
+                    effective_payload,
                     live_kg,
                 )
                 .unwrap_or(0),
             );
+            if let Some(reserve_dv) = super::commands::compute_carrier_bubble_return_reserve_dv(
+                ctx.w,
+                hull,
+                &basis,
+                live_kg,
+                ctx.w.world_ic_now().at,
+            ) {
+                ship.return_reserve_dv_mps = i64::from(reserve_dv);
+            }
         }
     }
     Some(ship)
