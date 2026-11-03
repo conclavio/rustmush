@@ -573,10 +573,7 @@ type Pairs = BTreeSet<(PartyId, PartyId)>;
 /// **The declared stances between `sides`, read now** (doc 40 cut FR.1; Q-40-12): every ordered
 /// pair `(by, of)` where an organization of `by` declared Hostile on one of `of`'s, and every pair
 /// some organization of each holds mutually Allied with one of the other's, lower letter first.
-fn declared(
-    w: &World,
-    sides: &BTreeMap<PartyId, BTreeSet<Affiliation>>,
-) -> (Pairs, Pairs) {
+fn declared(w: &World, sides: &BTreeMap<PartyId, BTreeSet<Affiliation>>) -> (Pairs, Pairs) {
     let mut hostile = BTreeSet::new();
     let mut allied = BTreeSet::new();
     let Some(table) = w

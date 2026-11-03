@@ -16,7 +16,7 @@
 //!   `officer_level`; for a mush-org, a member holding [`mush_org::STANCE_DECLARE_CAPABILITY`] on
 //!   its root scope; staff always. A declaration is a notice to the other side's officers.
 //! - **Read at admission and at a join, never mid-field** (Q-38-23): the field host reads
-//!   [`FactionState::stance`] as a field is built; a change while a field runs changes nothing in
+//!   [`crate::data::FactionState::stance`] as a field is built; a change while a field runs changes nothing in
 //!   it. A stance never opens a field (Q-40-13).
 
 use mush_core::ObjId;
