@@ -59,6 +59,7 @@
 //! | `[tacsim.recovery].inspect_s` | `300` | doc 36 cut GC.4: a tow's inspection, IC seconds (provisional) |
 //! | `[tacsim.recovery].attach_s` | `600` | doc 36 cut GC.4: a tow's attachment, IC seconds (provisional) |
 //! | `[tacsim.recovery].load_s` | `900` | doc 36 cut GC.4: a casualty's load into a bay, IC seconds (provisional) |
+//! | `[tacsim.recovery].claim_window_s` | `172800` | doc 41 cut RS.3: a salvage claim's contest window, **real** seconds (48 real hours, doc 27 Q-S15) |
 //! | `[tacsim.economy].housing` | `true` | 16b cut R-b: whether the housing title issuer (`system:tacsim.housing`) is registered so `@property/create` can mint tenancies |
 //! | `[tacsim.economy].market` | `false` | whether the market composes with its title issuer (`system:tacsim.market`) |
 //! | `[tacsim.economy].instrument` | `"tacsim.credit"` | the settlement currency the sheet registers create-only at boot (doc 11 §2); must be a canonical instrument id |
@@ -1201,6 +1202,9 @@ pub struct TacsimRecoveryCfg {
     pub attach_s: u32,
     /// **Doc 36 cut GC.4 (Q-36-13)**: a casualty's load into a bay, IC seconds; provisional.
     pub load_s: u32,
+    /// **Doc 41 cut RS.3 (Q-38-19)**: a salvage claim's contest window, **real** seconds
+    /// (172,800: 48 real hours, doc 27 Q-S15). The game clamps it to one second .. a week.
+    pub claim_window_s: i64,
 }
 
 impl Default for TacsimRecoveryCfg {
@@ -1219,6 +1223,7 @@ impl Default for TacsimRecoveryCfg {
             inspect_s: 300,
             attach_s: 600,
             load_s: 900,
+            claim_window_s: 172_800,
         }
     }
 }

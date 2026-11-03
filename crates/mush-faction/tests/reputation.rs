@@ -66,6 +66,7 @@ impl GameModule for Producer {
                     &[effect],
                     "Friendly fire",
                     Some(voider),
+                    None,
                 )
                 .map_err(CmdError::msg)?;
                 ctx.out

@@ -234,6 +234,23 @@ pub fn strip(ctx: &mut Ctx<'_>, hull: ObjId, part: &str) -> Result<LotId, String
         )),
     };
     hold_takes(ctx, vault, std::slice::from_ref(&row))?;
+    let mut record = record;
+    // Doc 41 §4.6: a lot that comes off under a pending claim is listed under it, so the claim's
+    // vacate flags it. Dormant on the ruled rights table (a salvor never strips, Q-36-33): no
+    // path strips under a claim yet.
+    if let Some(contract) =
+        super::salvor_custody(ctx, ctx.actor, hull).and_then(|row| match row.claim {
+            crate::surface::salvage::ClaimSeam::Filed { contract } => Some(contract),
+            crate::surface::salvage::ClaimSeam::Owed => None,
+        })
+        && record.claim_lots.len() < super::MAX_CLAIM_LOTS
+    {
+        record.claim_lots.push(super::ClaimLot {
+            lot: lot.0,
+            claim: contract,
+            vacated: None,
+        });
+    }
     owe_mint(ctx, record, act_no, vault.0, "strip", vec![row]);
     Ok(lot)
 }
@@ -399,11 +416,12 @@ pub(crate) fn land_mint(ctx: &mut Ctx<'_>, hull: ObjId, by: ObjId, why: &str, lo
 }
 
 /// **A stripped part's claim is vacated** (Q-S13, Q-F6): the provenance of `lot`, a part that
-/// came off `hull`, is flagged hot, `rightful_owner` the one who may clear it. The seam
-/// GC.5/GC.6's salvage contest calls when a claim is vacated. A salvor's custody reaches no
-/// strip in GC.8b's rights table, so no part comes off under a claim yet and GC.6's vacate has
-/// nothing to flag: only a staff fixture calls it. `by` submits the flag (a character, never GOD); the act refuses a lot that did not
-/// come off `hull`.
+/// came off `hull`, is flagged hot, `rightful_owner` the one who may clear it. The claims' tick
+/// calls it (`flag_next_vacated`, doc 41 cut RS.3) for each lot the hull's record lists under
+/// a vacated claim, and the lot leaves the list in the same write; the mush-tactics RAM-book
+/// twin is retired. A salvor's custody reaches no strip in GC.8b's rights table, so no part
+/// comes off under a claim yet and the list stays empty in play. `by` submits the flag (a
+/// character, never GOD); the act refuses a lot that did not come off `hull`.
 ///
 /// # Errors
 ///
@@ -425,6 +443,7 @@ pub fn vacate_claim(
     }
     let act_no = super::next_act(ctx, &record);
     record.acts = act_no;
+    record.claim_lots.retain(|listed| listed.lot != lot.0);
     record.owed = Some(Box::new(OwedAct {
         act: act_no,
         by,
@@ -438,4 +457,68 @@ pub fn vacate_claim(
     }));
     put_bay_hull(ctx, &record);
     Ok(())
+}
+
+/// **A claim on `hull` was vacated** (doc 41 §4.6): every lot its record lists under `claim` is
+/// marked for flagging, `rightful_owner` the title holder and `by` the hand that submits each
+/// flag. Answers whether any lot is now waiting.
+pub(crate) fn claim_vacated(
+    ctx: &mut Ctx<'_>,
+    hull: ObjId,
+    claim: u64,
+    (rightful_owner, by): (ObjId, ObjId),
+) -> bool {
+    let Ok(mut record) = record_of(ctx.w, hull) else {
+        return false;
+    };
+    let mut marked = false;
+    for listed in record
+        .claim_lots
+        .iter_mut()
+        .filter(|listed| listed.claim == claim && listed.vacated.is_none())
+    {
+        listed.vacated = Some(super::VacatedLot { rightful_owner, by });
+        marked = true;
+    }
+    if marked {
+        put_bay_hull(ctx, &record);
+    }
+    marked
+        || record
+            .claim_lots
+            .iter()
+            .any(|listed| listed.vacated.is_some())
+}
+
+/// **Flag the next lot `hull`'s record lists under a vacated claim** (doc 41 §4.6): one
+/// [`vacate_claim`] while no act is owed on the hull, so the tick works the list down one act at
+/// a time. Answers whether one was flagged.
+pub(crate) fn flag_next_vacated(ctx: &mut Ctx<'_>, hull: ObjId) -> bool {
+    let Ok(record) = record_of(ctx.w, hull) else {
+        return false;
+    };
+    if record.owed.is_some() {
+        return false;
+    }
+    let Some((listed, vacated)) = record
+        .claim_lots
+        .iter()
+        .find_map(|listed| listed.vacated.map(|vacated| (*listed, vacated)))
+    else {
+        return false;
+    };
+    match vacate_claim(
+        ctx,
+        vacated.by,
+        hull,
+        LotId(listed.lot),
+        listed.claim,
+        vacated.rightful_owner,
+    ) {
+        Ok(()) => true,
+        Err(error) => {
+            tracing::warn!(hull = hull.0, lot = listed.lot, %error, "tacsim: a vacated claim's lot was not flagged; retried next tick");
+            false
+        }
+    }
 }

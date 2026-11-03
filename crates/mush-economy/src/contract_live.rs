@@ -6255,10 +6255,11 @@ impl crate::engine::AuthEval for SalvageAwardAuth {
 ///
 /// # Errors
 ///
-/// [`EconomyError::Unauthorized`] for an unregistered issuer or a contract that is not
-/// that salvage claim; [`EconomyError::RetryShortly`] while the window is still open (or
-/// paused, or the claim was cancelled: never awarded); every posting error, among them
-/// [`EconomyError::NoSuchAsset`] for a hull with no title.
+/// [`EconomyError::Unauthorized`] for an unregistered issuer, a contract that is not that
+/// salvage claim, or an organization's hull under a live lease or charter (doc 41 Q-41-22);
+/// [`EconomyError::RetryShortly`] while the window is still open (or paused, or the claim was
+/// cancelled: never awarded); every posting error, among them [`EconomyError::NoSuchAsset`]
+/// for a hull with no title.
 pub fn award_salvage_title(
     ctx: &mut Ctx<'_>,
     id: ContractId,
@@ -6274,15 +6275,27 @@ pub fn award_salvage_title(
         return Err(EconomyError::Unauthorized);
     }
     let c = salvage_claim_of(ctx, id, claimant, hull).ok_or(EconomyError::Unauthorized)?;
-    // Doc 36a P0-3 (doc 36 Q-36-29): an organization's hull is never awarded by salvage — a
-    // leased rig is Occator's alone (its lessee answers for it, and the write-off takes it
-    // home), and no company's title moves by a claim in this phase.
-    let organization_titled = ctx
+    // Doc 36a P0-3 (doc 36 Q-36-29), narrowed by doc 41 cut RS.3 (Q-41-22): an organization's
+    // hull under a live lease or charter is never awarded by salvage — the lease rule takes it
+    // home — and the economy's own view of one is a `Lease` or `Collateral` claim on the title
+    // (a rig lease the game keeps itself is the host's to refuse). An organization's hull with
+    // no lessee — a house hull lost on a raid, a hull whose charter lapsed — is awardable.
+    let leased_org_title = ctx
         .w
         .module_state::<EconomyStore>()
         .and_then(|store| store.snapshot().asset(hull))
-        .is_some_and(|asset| matches!(asset.title_owner, PrincipalId::Organization(_)));
-    if organization_titled {
+        .is_some_and(|asset| {
+            matches!(asset.title_owner, PrincipalId::Organization(_))
+                && (asset.assignment.is_some()
+                    || asset.encumbrances.iter().any(|claim| {
+                        matches!(
+                            claim,
+                            crate::record::Encumbrance::Lease { .. }
+                                | crate::record::Encumbrance::Collateral { .. }
+                        )
+                    }))
+        });
+    if leased_org_title {
         return Err(EconomyError::Unauthorized);
     }
     let now = ctx.w.now();

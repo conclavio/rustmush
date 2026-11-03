@@ -800,6 +800,16 @@ fn recovery_config(
             tacsim::RECOVERY_INSURANCE_WORDS.join(" | ")
         ));
     }
+    // Doc 41 cut RS.3: the window is read whatever `enabled` says (it times every salvage
+    // claim, not the loaner provider), so it is checked whatever `enabled` says.
+    if !(1..=mush_economy::MAX_SALVAGE_CLAIM_WINDOW_SECS).contains(&cfg.claim_window_s) {
+        return Err(format!(
+            "[tacsim.recovery]: `claim_window_s` is between 1 and {} real seconds (a week); \
+             `{}` is a window no claim can run",
+            mush_economy::MAX_SALVAGE_CLAIM_WINDOW_SECS,
+            cfg.claim_window_s
+        ));
+    }
     Ok(tacsim::TacsimRecoveryConfig {
         enabled: cfg.enabled,
         pool_account: cfg.pool_account,
@@ -813,8 +823,8 @@ fn recovery_config(
         inspect_s: cfg.inspect_s,
         attach_s: cfg.attach_s,
         load_s: cfg.load_s,
-        // Doc 36 cut GC.6: not in the config file yet; the 48-real-hour window.
-        claim_window_s: tacsim::TacsimRecoveryConfig::default().claim_window_s,
+        // Doc 41 cut RS.3: the contest window from the config file (48 real hours by default).
+        claim_window_s: cfg.claim_window_s,
     })
 }
 

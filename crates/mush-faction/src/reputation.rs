@@ -42,6 +42,22 @@ struct Grant {
     /// caused it, when it was friendly fire. The offer is recorded with the change it cancels.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     voidable_by: Option<ObjId>,
+    /// **The window to void it** (doc 40 cut FR.2, Q-40-16): written once with the grant, so the
+    /// offer outlives a restart; [`void_standing`] refuses past it.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    window: Option<VoidWindow>,
+}
+
+/// **The window a voidable grant may be voided in** (doc 40 cut FR.2, Q-40-16): when it opened,
+/// on the wall clock (the producer closes it on its voider's next input after that), and the IC
+/// second it closes at by itself.
+#[derive(Clone, Copy, Debug, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(deny_unknown_fields)]
+pub struct VoidWindow {
+    /// The wall second it opened.
+    pub opened_at: i64,
+    /// The IC second past which it is closed.
+    pub until_ic: i64,
 }
 
 /// **A void** (doc 36 cut GC.10, Q-36-11): the grant of the same cause no longer counts. Written
@@ -66,6 +82,8 @@ pub struct StandingReceipt {
     pub effects: Vec<StandingEffect>,
     /// Who may void it, when anyone may.
     pub voidable_by: Option<ObjId>,
+    /// The window to void it in, when it has one (doc 40 cut FR.2).
+    pub window: Option<VoidWindow>,
     /// Who voided it, when it is void.
     pub voided_by: Option<ObjId>,
 }
@@ -134,6 +152,9 @@ fn check_grant(grant: &Grant) -> Result<(), String> {
         || !valid_reason(&grant.reason)
         || grant.at < 0
         || grant.subject == ObjId(0)
+        || grant
+            .window
+            .is_some_and(|window| grant.voidable_by.is_none() || window.opened_at < 0)
         || grant.effects.is_empty()
         || grant.effects.len() > MAX_EFFECTS
         || grant
@@ -255,16 +276,19 @@ pub fn record_standing(
     effects: &[StandingEffect],
     reason: &str,
 ) -> Result<bool, String> {
-    record_voidable_standing(ctx, cause, subject, effects, reason, None)
+    record_voidable_standing(ctx, cause, subject, effects, reason, None, None)
 }
 
 /// **[`record_standing`], with the one who may void it** (doc 36 cut GC.10, Q-36-11): a field's
-/// friendly fire names its party's leader, who may cancel it with [`void_standing`]. The window
-/// to void is the producer's to keep; this records only who may.
+/// friendly fire names its party's leader, who may cancel it with [`void_standing`]. `window`
+/// (doc 40 cut FR.2, Q-40-16) is written once with the grant: [`void_standing`] refuses past its
+/// IC end, and the producer closes it on the voider's next input. An identical retry keeps the
+/// first window.
 ///
 /// # Errors
 ///
-/// As [`record_standing`]; also a `voidable_by` that is no live character.
+/// As [`record_standing`]; also a `voidable_by` that is no live character, or a window with no
+/// one to void.
 pub fn record_voidable_standing(
     ctx: &mut Ctx<'_>,
     cause: &str,
@@ -272,6 +296,7 @@ pub fn record_voidable_standing(
     effects: &[StandingEffect],
     reason: &str,
     voidable_by: Option<ObjId>,
+    window: Option<VoidWindow>,
 ) -> Result<bool, String> {
     if voidable_by.is_some_and(|by| !live_actor(ctx.w, by)) {
         return Err("Standing void holder is not a live character.".into());
@@ -296,6 +321,7 @@ pub fn record_voidable_standing(
         reason: reason.into(),
         at: ctx.w.now(),
         voidable_by,
+        window,
     };
     if !prepare_grant(ctx.w, &grant)? {
         return Ok(false);
@@ -323,12 +349,13 @@ fn uninstall_grant(store: &mut StandingStore, grant: &Grant) {
 
 /// **Void the grant of `cause`** (doc 36 cut GC.10, Q-36-11): `by`, the one the grant names as
 /// able to void it, cancels it. The grant stays as written; a void record of the same cause is
-/// written beside it, and the score no longer counts it. An identical retry answers false. The
-/// window to void is the producer's to keep.
+/// written beside it, and the score no longer counts it. An identical retry answers false. A
+/// grant with a window (doc 40 cut FR.2) is refused past its IC end; closing it on the voider's
+/// next input is the producer's.
 ///
 /// # Errors
 ///
-/// No such grant, a grant `by` may not void, or a full store.
+/// No such grant, a grant `by` may not void, a closed window, or a full store.
 pub fn void_standing(
     ctx: &mut Ctx<'_>,
     cause: &str,
@@ -352,6 +379,12 @@ pub fn void_standing(
     }
     if store.voids.contains_key(cause) {
         return Ok(false);
+    }
+    if grant
+        .window
+        .is_some_and(|window| ctx.w.world_ic_now().at > window.until_ic)
+    {
+        return Err("The window to void that standing change has closed.".into());
     }
     if store.voids.len() >= MAX_RECORDS {
         return Err("Standing receipt store is full.".into());
@@ -384,8 +417,28 @@ pub fn standing_receipt(w: &World, cause: &str) -> Option<StandingReceipt> {
         subject: grant.subject,
         effects: grant.effects.clone(),
         voidable_by: grant.voidable_by,
+        window: grant.window,
         voided_by: store.voids.get(cause).map(|void| void.by),
     })
+}
+
+/// **Every grant under `prefix` that `by` may void and has not**, in cause order, with its window
+/// (doc 40 cut FR.2: `+field/void` voids every open one naming its actor).
+#[must_use]
+pub fn voidable_causes(w: &World, prefix: &str, by: ObjId) -> Vec<(String, Option<VoidWindow>)> {
+    w.module_state::<StandingStore>()
+        .map(|store| {
+            store
+                .grants
+                .range(prefix.to_owned()..)
+                .take_while(|(cause, _)| cause.starts_with(prefix))
+                .filter(|(cause, grant)| {
+                    grant.voidable_by == Some(by) && !store.voids.contains_key(*cause)
+                })
+                .map(|(cause, grant)| (cause.clone(), grant.window))
+                .collect()
+        })
+        .unwrap_or_default()
 }
 
 /// **Every receipt's cause that starts with `prefix`**, in cause order (doc 36 cut GC.10: one
@@ -656,6 +709,7 @@ pub fn publish_attack_incident(ctx: &mut Ctx<'_>, cause: &str) -> Result<bool, S
         reason: incident.reason.clone(),
         at: ctx.w.now(),
         voidable_by: None,
+        window: None,
     });
     let grant_op = if let Some(grant) = &grant {
         if !prepare_grant(ctx.w, grant)? {

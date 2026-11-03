@@ -29,6 +29,8 @@ mod support;
 #[path = "support/vertex.rs"]
 mod vertex;
 
+#[path = "support/field/claim_rig.rs"]
+mod claim_rig;
 #[path = "shard_2/content.rs"]
 mod content;
 #[path = "support/field/driving_rig.rs"]
@@ -39,6 +41,8 @@ mod e7r1;
 mod e7r2;
 #[path = "shard_2/extensions.rs"]
 mod extensions;
+#[path = "shard_2/field_fr2.rs"]
+mod field_fr2;
 #[path = "support/field/field_host_rig.rs"]
 mod field_host_rig;
 #[path = "support/field/field_raiders_rig.rs"]
@@ -53,10 +57,14 @@ mod minds_rhai;
 mod moon_ports;
 #[path = "shard_2/reflex.rs"]
 mod reflex;
+#[path = "shard_2/salvage_close.rs"]
+mod salvage_close;
 #[path = "shard_2/sight.rs"]
 mod sight;
 #[path = "support/field/site_record_rig.rs"]
 mod site_record_rig;
+#[path = "shard_2/testimony.rs"]
+mod testimony;
 #[path = "shard_2/twin.rs"]
 mod twin;
 #[path = "shard_2/weapons.rs"]
