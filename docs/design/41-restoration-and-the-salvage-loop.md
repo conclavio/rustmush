@@ -4,9 +4,9 @@ Draft 0.4, 2026-11-03, docs only. Surveyed against `origin/main` at `c83c2eff` (
 36a's lanes 1, 2, 4 and 5 merged as PRs #334, #343, #342 and #346), the round-2 review's anchors
 re-verified by a read-only lane at `f146734e` (lane 3 merged as PR #340, `1441fa29`), with
 [doc 39](39-industry-production-chain.md) (PR #347, merged into `main` at `9899e0eb` as Draft 0.5)
-and [doc 40](40-field-second-round.md) (PR #351, Draft 0.3, merged into `main` at `1078b212`)
-under it, so the README row lands after doc 40's; Draft 0.3 of this document merged into `main` at
-`bc526579` (PR #352). This is the
+and [doc 40](40-field-second-round.md) (PR #351, Draft 0.3, merged into `main` at `1078b212`; its
+Draft 0.4, Q-40-24/25 ruled, as PR #356 at `a8194be9`) under it, so the README row lands after doc
+40's; Draft 0.3 of this document merged into `main` at `bc526579` (PR #352). This is the
 document [doc 38](38-after-the-ic-phase-next-systems.md) §6 proposed as "Doc 41 — Restoration and
 the salvage loop, second round": categories B (restoration away from port), C's tug half (heavy
 recovery), D (the loop's close, forensics, crime), the Q-36-46/47 seams with space, Q-38-6's
@@ -484,7 +484,7 @@ definition's `reach_cm`. The tender and the target must both be on the site's in
 §10). Inside a promoted field every `tend` act waits, as every surface act does (Q-CF-30); doc 40's
 coupled kernel unit is the only way a tender works under fire — and how a coupled pair leaves a
 running field is doc 40's Q-40-25 (raised by the same review as X-4 and **accepted at its default
-on 2026-11-03**: a coupled withdraw at the ramp — `+tv/<n> load [go]` on a promoted site sends the
+on 2026-11-03**, recorded in its Draft 0.4: a coupled withdraw at the ramp — `+tv/<n> load [go]` on a promoted site sends the
 withdraw for tug and casualty together, the ordinary exit checks both in, and the host then runs
 the ordinary `TowOrder::Load`/`Loaded` as on open ground), which RS.1's acts under a field read: a
 tender coupled to a casualty under fire leaves by that exit, and its `tend` acts resume on open
