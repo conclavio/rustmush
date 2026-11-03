@@ -834,9 +834,7 @@ pub fn round_word(line: &str) -> bool {
         let Some((other, stance)) = rest.rsplit_once('/') else {
             return false;
         };
-        return name(mine)
-            && name(other)
-            && matches!(stance, "allied" | "neutral" | "hostile");
+        return name(mine) && name(other) && matches!(stance, "allied" | "neutral" | "hostile");
     }
     false
 }
