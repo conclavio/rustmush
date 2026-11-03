@@ -359,6 +359,29 @@ for a fee, or held."
 - **Why:** a payment to the captor is a ransom with a fixed price, which Q-38-22 rules out, and
   it would make capturing players pay; a fee that gates release contradicts FO-12. The obligation
   is the economy's own debt shape, and the fee is the "fee" the ruling names.
+- **Draft 0.3 (review round 2, 42-2): the processing hour is a state of its own.** Draft 0.2 left
+  the record `Captured { carrier, captor, since_ic }` for the `release_s` hour after the handover,
+  so the `held` gate told someone standing in Arrivals "You are held aboard the {carrier}",
+  `+ship/captives` still listed them, a carrier that undocked left the record naming a ship in
+  space, and a second docking callback for the same hull would hand them over and charge them
+  again. The build uses a fifth location: `CrewLocation::Processing { port, release_due_ic,
+  charge }`, `charge` being the release obligation's id once created (`Option`, Q-42-7, 42-7's
+  note). **The transition**
+  `Captured { carrier: h } → Processing → Port` runs in the docking hook (`sim_routes.rs:151–161`)
+  in one pass a captive: the move into the handover room, the obligation's creation and the
+  record's write. It is **idempotent**: the hook selects only records that are still `Captured`
+  with `carrier == h`, so a duplicate callback, a replayed arrival or a restart after the write
+  finds nobody to hand over. The economy does not deduplicate a sanction's inspection key
+  (`create_sanction_obligation` only bounds it, `api.rs:2193`), so the record is the only guard:
+  the hook writes `Processing { charge: None }` first, then creates the obligation and fills
+  `charge`; a pass that finds `Processing` with `charge: None` (a crash between the two) creates
+  it then, and one that finds it filled creates nothing. The inspection key is
+  `release:<captive>:<since_ic>`, one per capture, for the audit trail.
+  The host's tick moves `Processing` to `Port` at `release_due_ic` (stamp, arrival room, told),
+  restart-safe because the instant is on the record. `Processing` is not `Captured`: `held`
+  passes it except for leaving the port ("You are being processed at {port}; about {h} IC h."),
+  `+ship/captives` lists only `Captured`, `extractable` is `None`, treatment (GC.13) runs, and
+  `status_line` shows the processing time left.
 
 **Q-42-8 — The held case and its clock.**
 - **Proposed default:** "held" is the captor's choice not to dock. It is bounded by doc 27 Q-F4's
@@ -759,7 +782,7 @@ Every number is provisional under the 2026-10-24 rule.
   Q-42-7). The handover room is the medical room where one exists, else the arrival room.
 - **Constants:** `STANDING_CAPTURE` −5 with the cause prefix `capture:` (Q-42-21);
   `UnlawfulKind::Capture` (Q-42-22).
-- **The record:** `CrewLocation::Captured { carrier, captor, since_ic }` under the `at` tag,
+- **The record:** `CrewLocation::Captured { carrier, captor, since_ic }` under the `at` tag, and `Processing { port, release_due_ic, charge }` (Draft 0.3, 42-2),
   `Extraction::forced` omitted when false, `CREW_FORMAT` unchanged (Q-42-1).
 - **Verbs:** `+sortie/eject` (Q-42-10); `+ship/captives`, `+ship/release <who>` (Q-42-9); the
   `held` refusal on the verbs Q-42-2 lists, one line: "You are held aboard the {carrier}."
