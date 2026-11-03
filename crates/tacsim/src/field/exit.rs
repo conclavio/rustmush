@@ -101,6 +101,20 @@ pub(crate) struct ExitBook(pub BTreeMap<ObjId, Exiting>);
 #[derive(Clone, Debug, Default)]
 pub(crate) struct OwedExits(pub BTreeMap<CanonicalId, BTreeMap<ObjId, ObjId>>);
 
+/// **Whether `unit` is on its way out of `site`'s field** (doc 36 cut GC.1b's arrivals read it):
+/// asked out and not yet answered, out and awaiting its recover, or checked in and owed its
+/// `exit` on the record. Such a carrier on the pad is no arrival ([`super::carrier::arrivals`]).
+#[must_use]
+pub(crate) fn leaving(w: &mush_core::World, site: &CanonicalId, unit: ObjId) -> bool {
+    w.module_state::<ExitBook>()
+        .is_some_and(|book| book.0.get(&unit).is_some_and(|asked| asked.site == *site))
+        || w.module_state::<OwedExits>().is_some_and(|owed| {
+            owed.0
+                .get(site)
+                .is_some_and(|units| units.contains_key(&unit))
+        })
+}
+
 /// The line a player hears when the arena takes the unit.
 pub const EXIT_ASKED: &str = "#{unit} makes for the ramp: it leaves field {ordinal} at the next pulse if it stands beside the ramp and can move under its own power.";
 /// The line once it is out.

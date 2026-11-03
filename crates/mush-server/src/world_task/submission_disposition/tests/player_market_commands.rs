@@ -255,7 +255,13 @@ pub(super) async fn until_own(
     done: impl Fn(&str) -> bool,
 ) -> TestResult<Vec<String>> {
     if !lines.iter().any(|line| done(line)) {
-        lines.extend(await_own(server, actor, done).await?.own);
+        // The reply that was not the awaited line is the failure's one fact,
+        // so it is named (the nightly of 2026-11-02 read "no awaited line for
+        // #789: []" and nothing else).
+        let more = await_own(server, actor, done)
+            .await
+            .map_err(|e| format!("{e}; the command's own reply was {lines:?}"))?;
+        lines.extend(more.own);
     }
     Ok(lines)
 }

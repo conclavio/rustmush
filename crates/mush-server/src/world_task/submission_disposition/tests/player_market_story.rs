@@ -12,7 +12,7 @@
 //! `// C2c:` and `// C2d:` markers, written by 17g C2h once the indexes (C2f),
 //! the buy steps and named offers (C2g) and the renewal front (C2h) were
 //! live (`part_two`, `part_three`).
-use super::paid_purchase::runtime::{STEP, rows};
+use super::paid_purchase::runtime::{STEP, Seen, rows};
 use super::paid_purchase::store::PurchaseFaultStore;
 use super::paid_purchase::{auth_account, open_wallet};
 use super::player_market::{CREDIT, Launch, Principals, acknowledged, character, config, scratch};
@@ -187,9 +187,65 @@ const CY: &str = "Cy";
 fn answered(line: &str) -> bool {
     line == "Done." || line == DRIVER || line.ends_with("(already done)")
 }
+/// The engine's two back-pressure refusals of a command's authoritative
+/// submission (`Engine`, the per-actor submit slot and the queue cap): the
+/// line was never run, and nothing follows it. At production's pace the
+/// renewal service submits as the holder on its own schedule (`settle`'s
+/// note), so a typed step can meet the holder's own in-flight submission and
+/// read one of these where `Queued.` was expected, after which nothing is
+/// awaited (the nightly of 2026-11-02: "no awaited line for #789: []"). A
+/// player types the line again after a moment; so does the story, within
+/// `STEP` (`typed`, `typed_seen`).
+const ENGINE_BUSY: [&str; 2] = [
+    "Your earlier action is still committing; try again in a moment.",
+    "Too many actions are committing right now; try again in a moment.",
+];
+/// Whether a command's own reply is one of [`ENGINE_BUSY`].
+fn engine_busy(lines: &[String]) -> bool {
+    lines
+        .iter()
+        .any(|line| ENGINE_BUSY.contains(&line.trim_end()))
+}
+/// The busy wait's pace and its log line (the dispatch log says how often a
+/// step met the service's own submission).
+async fn busy_pause(actor: ObjId, line: &str, reply: &[String], end: Instant) -> TestResult {
+    check!(
+        Instant::now() < end,
+        "the engine stays busy for #{} {line:?}: {reply:?}",
+        actor.0
+    );
+    eprintln!(
+        "M7_STORY_ENGINE_BUSY actor={} line={line:?} reply={reply:?}",
+        actor.0
+    );
+    tokio::time::sleep(Duration::from_millis(250)).await;
+    Ok(())
+}
+/// `w.server.command`, typed again while the engine refuses it as busy.
+async fn typed(w: &World, actor: ObjId, line: String) -> TestResult<Vec<String>> {
+    let end = Instant::now() + STEP;
+    loop {
+        let lines = w.server.command(actor, line.clone()).await?;
+        if !engine_busy(&lines) {
+            return Ok(lines);
+        }
+        busy_pause(actor, &line, &lines, end).await?;
+    }
+}
+/// `w.server.command_seen`, typed again while the engine refuses it as busy.
+async fn typed_seen(w: &World, actor: ObjId, line: String) -> TestResult<Seen> {
+    let end = Instant::now() + STEP;
+    loop {
+        let seen = w.server.command_seen(actor, line.clone()).await?;
+        if !engine_busy(&seen.own) {
+            return Ok(seen);
+        }
+        busy_pause(actor, &line, &seen.own, end).await?;
+    }
+}
 /// One command-submitted step: its own reply until `Done.` or the driver's.
 async fn submitted(w: &World, actor: ObjId, line: String) -> TestResult<Vec<String>> {
-    let lines = w.server.command(actor, line).await?;
+    let lines = typed(w, actor, line).await?;
     until_own(&w.server, actor, lines, answered).await
 }
 /// A command whose reply arrives later (the renewal service's front): its
@@ -200,7 +256,7 @@ async fn later(
     line: String,
     done: impl Fn(&str) -> bool,
 ) -> TestResult<Vec<String>> {
-    let lines = w.server.command(actor, line).await?;
+    let lines = typed(w, actor, line).await?;
     until_own(&w.server, actor, lines, done).await
 }
 /// Waits (within `STEP`) until `actor` has had no line for a whole second,
@@ -235,9 +291,14 @@ async fn private_later(
     done: impl Fn(&str) -> bool,
 ) -> TestResult<Vec<String>> {
     let p = w.launch.principals;
-    let mut seen = w.server.command_seen(actor, line.clone()).await?;
+    let mut seen = typed_seen(w, actor, line.clone()).await?;
     if !seen.own.iter().any(|l| done(l)) {
-        seen.extend(await_own(&w.server, actor, &done).await?);
+        let own = seen.own.clone();
+        seen.extend(
+            await_own(&w.server, actor, &done)
+                .await
+                .map_err(|e| format!("{e}; the command's own reply was {own:?}"))?,
+        );
     }
     for observer in [p.author, p.buyer, w.alt, w.bystander] {
         if observer != actor {
