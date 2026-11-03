@@ -247,7 +247,13 @@ closes the window in the command path is one stamp: the session keeps the input 
 (`prev_input`) beside `last_input`, and `+field/void` refuses when `prev_input > opened_at` — the
 leader entered something since the offer opened, other than this void (Q-40-17). No sweep, no
 tick; `tacsim.field.standing` retires. The one-second ambiguity stays where the stamps are
-seconds, and is named.
+seconds, and is named. The stamp is seeded empty: a full disconnect drops the stat
+(`world.rs:1052–1053`) and `session_start` seeds `last_input = now` at the reconnect
+(`:1034–1041`), so a `prev_input` filled by shifting `last_input` would hold the connect second
+and refuse a `+field/void` typed first after a reconnect; `prev_input` starts `None`, and the
+first `session_input` after it (`engine.rs:3884`, `world.rs:1045–1050`) is what fills it. A
+reconnect therefore forgives a command typed before the drop — the slip in the other direction,
+named with the second.
 
 **The director's auto-void.** A grant whose voider is a raider's leader under a director raid
 (`RAIDER_ATTR`'s `raid` key, GC.11) is voided in the demotion's own batch by the host, as that
@@ -678,8 +684,10 @@ reason for the record; §6 is the plan built from them.
 
 **Q-40-17 — The synchronous close, and the window's clock.**
 - **Proposed default:** `SessionStat` keeps `prev_input` beside `last_input` (mush-core, one
-  field); `+field/void` closes an offer when `prev_input > opened_at` — anything entered since the
-  offer opened, other than this void. The window stays 600 IC seconds as ruled, with the
+  field, seeded `None` by `session_start` and filled by the first `session_input` after it, so a
+  void typed first after a reconnect is not refused by the connect second); `+field/void` closes
+  an offer when `prev_input > opened_at` — anything entered since the offer opened, other than
+  this void. The window stays 600 IC seconds as ruled, with the
   observation that at rate 24 it is twenty-five wall seconds, and the owner may prefer a wall
   window.
 - **Alternative:** a before-dispatch hook in mush-core's command path that `tacsim` registers to
