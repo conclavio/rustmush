@@ -407,8 +407,10 @@ the role is this document's to place. Proposed: a `tender` block in a unit defin
 that accepts `stow.bulk` (munitions and `industrial_parts`), with `register_tender` fed from it. One
 new definition carries it: **`tacsim.unit.tv_tender`**, class vehicle, the prospector's chassis
 without the drill (the kit's prospector look, doc 22's sprites; a different fit, not a new model),
-7 t dry (provisional), unarmed, one pilot, a `stores` compartment of 2,000 kg and 2,400 L
-(provisional) of `stow.bulk`, `stowage_volume_l` 28,000, `recovery_profile: recovery_optimized`
+7 t dry (provisional), unarmed, one pilot, a `stores` compartment of 2,000 kg and 4,800 L
+(provisional: a tonne of fittings is 2,300 L, `goods.json:54`, a tonne of alloys 300 L, so the
+stores take a tonne of each and a magazine beside them — Draft 0.1's 2,400 L held the fittings and
+three 105 mm rounds) of `stow.bulk`, `stowage_volume_l` 28,000, `recovery_profile: recovery_optimized`
 (§4.8), so it rides the Dray-P's bay beside one escort (15 t of 20) or one prospector (13 t), and
 Occator leases it on the rig lease's terms (provisional 1,800 + 7,000 deposit, pool 2; lane v21).
 The alternative, the prospector's hopper doubling as stores (accepting `stow.bulk` beside
@@ -416,15 +418,25 @@ The alternative, the prospector's hopper doubling as stores (accepting `stow.bul
 compartment the unload empties. (Q-41-1.)
 
 **What it carries, and what the library's numbers become.** The tender's reserves stop being
-plain numbers: `spare_parts_kg` is the `industrial_parts` the stores hold, `ammo_supply_rounds` the
+plain numbers, and they follow doc 39 Draft 0.4's bale (its §4.10, Q-39-26): `industrial_parts` and
+`structural_alloys` are whole-tonne goods (`goods.json:52–54`), so a tender cannot give up 10 kg from
+its stores' pool; the tender's rig record carries a **bale** of its own (`RigRecord.bale { alloys_kg,
+fittings_kg }`, the twin of `BayHull.bale`), opened before launch by `+tv/<n> stores open`, which
+debits one whole tonne of each from the stores into the bale, and every unjam and stabilize consumes
+kilograms from it until a line runs short and the next tonne is opened; a stabilize draws **alloys
+and fittings** per point as a repair does (doc 39 §4.8's partition, not fittings alone as Draft 0.2
+had it), an unjam its fittings. The bale's remainder goes back into the stores' pool at the rig's
+return to the carrier, kilogram for kilogram, the owner's Q-39-26 rule. `ammo_supply_rounds` is the
 munition goods by family (the four rows of §3.1, matched to a mount the way the bay's rearm matches
-them, `jobs.rs:378–399`), `charge_reserve_cu` nothing in the first cut (no shipped terrain vehicle
-carries a beam; a charge transfer waits for one that does). `tacsim.part.*` lots ride in the stores
+them, `jobs.rs:378–399`, whole units of the mount's good by `div_ceil`), `charge_reserve_cu` nothing
+in the first cut (no shipped terrain vehicle carries a beam; a charge transfer waits for one that
+does). (Round-2 item 41-4.) `tacsim.part.*` lots ride in the stores
 as cargo for a bay to fit later and are consumed by no field verb: a field replace is a workshop's
 work by Q-36-35, and the tender's "part lots" in Q-38-16 are read as the fittings a patch draws.
-The spare-parts figures are the tariff's until doc 39's IN.7 lands and the design's own
-`fittings_kg_per_point` after it (the tender reads whatever the repair draws, so IN.7 changes a
-constant, not the tender). (Q-41-2.)
+The per-point figures are the tariff's until doc 39's IN.8 (as revised in Draft 0.4) lands and
+the design's own `structure_kg_per_point` and `fittings_kg_per_point` after it (the tender reads
+whatever the repair draws, so IN.8 changes a constant, not the tender); the bale is IN.1's
+accounting. (Q-41-2.)
 
 **The verbs**, first words on `+tv` like the tow's, each a timed act on the surface tick, filed as
 an op of `tacsim_surface_tow` (GC.6's precedent: `claim` and `scrap` joined GC.4's action rather
@@ -493,9 +505,13 @@ it — Occator's counter at Ceres Freeport, or Stickney Yards." (the ports whose
 exists, nearest first by the lane). The part a replace needs is doc 39's store (`Replace{lot:
 Store}`, IN.5 as revised in Draft 0.3) **and a carrier has no storefront, so she never replaces
 away from port**: that is the whole of IN.5's bearing on this document. What she draws from her
-hold is what GC.8b already draws — munitions and `industrial_parts` for the four minor jobs, and a
-traced part lot for `+bay/fit`, which stays a workshop's order unless the owner says otherwise
-(Q-41-6: fit from the hold on a site is the one part change that needs no store).
+hold is what the bay draws after doc 39's IN.1 — munitions, and alloys and fittings through the
+hull's opened bale (`BayHull.bale`, which a carrier's bay may continue, doc 39 §4.10) for the four
+minor jobs — and a traced part lot for `+bay/fit`, which stays a workshop's order unless the owner
+says otherwise (Q-41-6: fit from the hold on a site is the one part change that needs no store).
+Away from port `+bay/return` (the bale's remainder bought back by the facility, doc 39 Q-39-26) is
+refused: there is no operator to buy it, and the remainder rides the hull to the next workshop
+(round-2 item 41-4).
 
 **Who is paid.** Docked, the port's workshop operator is paid "as the parts supplier" (GC.8a). Away
 from port there is no supplier: the parts come from the hold and the labour is the crew's. Proposed:
@@ -986,7 +1002,8 @@ provisional unless the line says otherwise.
 
 **Q-41-1 — The tender's unit.**
 - **Proposed default:** a new `tacsim.unit.tv_tender`: the prospector's chassis without the drill,
-  7 t dry, unarmed, one pilot, a 2,000 kg / 2,400 L `stow.bulk` stores compartment, `recovery_profile:
+  7 t dry, unarmed, one pilot, a 2,000 kg / 4,800 L `stow.bulk` stores compartment (Draft 0.3: a
+  tonne of fittings is 2,300 L), `recovery_profile:
   recovery_optimized`, leased by Occator at 1,800 + 7,000 for 168 IC days (pool 2); the role is
   `logistics.tender { stores, reach_cm }` on the definition.
 - **Alternative:** the prospector's hopper accepts `stow.bulk` beside `stow.ore` and every miner is a
@@ -995,10 +1012,12 @@ provisional unless the line says otherwise.
   of the ore run; 7 t rides beside an escort in a 20 t bay.
 
 **Q-41-2 — What the tender carries and consumes.**
-- **Proposed default:** `industrial_parts` (for unjam and stabilize, at the tariff's kg a point
-  until IN.7, the design's `fittings_kg_per_point` after it) and the four munition goods (for rearm,
-  matched to a mount as the bay matches them); `tacsim.part.*` lots ride as cargo and no field verb
-  fits one; no charge transfer in the first cut.
+- **Proposed default:** `structural_alloys` and `industrial_parts` through a bale of the tender's
+  own (whole tonnes opened before launch, kilograms consumed; Draft 0.3's alignment with doc 39
+  Draft 0.4's bale, round-2 item 41-4; at the tariff's kg a point until IN.8, the design's per-point
+  figures after it) and the four munition goods (for rearm, matched to a mount as the bay matches
+  them, whole units); `tacsim.part.*` lots ride as cargo and no field verb fits one; no charge
+  transfer in the first cut.
 - **Alternative:** a field replace of a Damaged (not Destroyed) part from a lot in the stores.
 - **Why:** Q-36-35 keeps part replacement a workshop's; the library's `spare_parts_kg` is the
   fittings and nothing else; no shipped terrain vehicle carries a beam.
@@ -1261,8 +1280,8 @@ RS.3 and RS.5; RS.8 after RS.3 and RS.5, in the space tree; RS.9 last. One marke
 | Cut | Rulings | What | Depends on doc 39 | Acceptance (the story) |
 |---|---|---|---|---|
 | **RS.0** the vocabulary | Q-38-29 | the bot's `+tv/<n> pickup\|scrap`, `+salvage/*`, `+bay/*`, `+field/void`, `+sortie/condition` lines and the four-digit address parser (`mine/lines.rs:343–353`), unless doc 39's IN.10 or doc 40 has taken them first; this document and its README row | — | the bot types story (b)'s `+salvage/claim`, `/contest` and `+tv/1 scrap` on Urvara over SSH and the lines classify |
-| **RS.1** the tender | Q-41-1..4, Q-41-27, Q-38-16, Q-36-35/36 | `logistics.tender` and `logistics.recovery_profile` on the definition; the cap on `TowRigProfile`; `tv_tender` in the kit and Occator's lease row (lane v21); the `tend` op on `tacsim_surface_tow` with `unjam`, `stabilize`, `rearm` from the stores at `TENDER_TIME_FACTOR` 3; `register_tender` fed from the compartment | IN.7 as revised (the fittings a point); the tariff's constant until it lands | (a) extended, the ground half at 256 and 512: a jammed cannon cleared, a chassis patched, a magazine refilled on the ground, each act interrupted by a field and resumed |
-| **RS.2** the bay away from port | Q-41-5..7, Q-38-16, Q-36-35 | `facility_of`'s fourth case; `source_carrier` without the port; no fee contract away from port; the "needs a workshop" line naming the nearest; `+bay/fit` from the hold on a site; bay acts waiting under a field; the yard's rearm through the bay | none (replace is refused away from port, so IN.5 does not reach it) | (a) extended, the bay half: a mend at 2× on the site from the hold, a replace refused with the line, the order finishing under way |
+| **RS.1** the tender | Q-41-1..4, Q-41-27, Q-38-16, Q-36-35/36 | `logistics.tender` and `logistics.recovery_profile` on the definition; the cap on `TowRigProfile`; `tv_tender` in the kit and Occator's lease row (lane v21); `+tv/<n> stores open` and the rig's bale; the `tend` op on `tacsim_surface_tow` with `unjam`, `stabilize`, `rearm` from the bale and the stores at `TENDER_TIME_FACTOR` 3; `register_tender` fed from the compartment | IN.1 as revised (the bale) and IN.8 (the per-point figures); the tariff's constant until IN.8 lands | (a) extended, the ground half at 256 and 512: a jammed cannon cleared, a chassis patched, a magazine refilled on the ground, each act interrupted by a field and resumed |
+| **RS.2** the bay away from port | Q-41-5..7, Q-38-16, Q-36-35 | `facility_of`'s fourth case; `source_carrier` without the port; no fee contract away from port; the "needs a workshop" line naming the nearest; `+bay/fit` from the hold on a site; bay acts waiting under a field; the yard's rearm through the bay | IN.1 as revised (the hull's bale continued in the carrier's bay); replace is refused away from port, so IN.6's store does not reach it | (a) extended, the bay half: a mend at 2× on the site from the hold, a replace refused with the line, the order finishing under way |
 | **RS.3** the claim's close | Q-41-20..23, Q-38-19, Q-S13, Q-S14 | `claim_window_s` into `TacsimRecoveryCfg`; `+salvage/authorize` (RecoverLoad for a hull, the delegation row for a block) read at the attach; org-titled claims through `principal_holders` and the narrowed award refusal; at-risk repairs written at `complete` under Salvor and reported; `+salvage/contest =recovery\|procedure\|right` with the registry's box read; `strip::vacate_claim` wired at settle, the mush-tactics twin retired | none | (b) extended at 512 and 256: the three contest kinds each vacating or failing on its named source; an org's holders told; the at-risk line in the quote and the notice |
 | **RS.4** the vacated hull's return | Q-41-18, Q-41-19, Q-38-19 | `held_for` on the bay record; `+bay/stow <hull>=<carrier>` bay to bay; the docking hook berthing held hulls into the workshop room; the fix thread's defect note closed | none | (b) extended: T's carrier takes her out of O's bay at Ceres; without one, the port holds her "held for T" and T's next carrier stows her |
 | **RS.5** the retrieval contract and the charge | Q-41-8..14, Q-38-6, Q-38-7 | `post_retrieval`, the shape, `accept_retrieval`, `+salvage/retrieve\|jobs\|accept`, the `RetrievalOrder` record carrying the acceptance and performance windows (`RETRIEVAL_WINDOW_IC_DAYS`, Q-41-11) under a 56-day contract, the four handover facts and payment, a lapsed acceptance handed to Tycho on a fresh contract; retrieval custody in `load_facts` and `Right::Retrieval`; a written-off rig's hand-back moved from the load to the destination; the wear allowance, the retrieval fee and the one-term obligation at `repossess`, `give_back` and the recall, with `+debts`, `+debts/pay` and the desk's `reinstate_obligation`; Q-38-7's second clock; the `capture: None` hole closed with a test | IN.2 as revised (Tycho's slot-day); a lane constant until it lands | (c) extended: a dormant charter's prospector on Ahuna and on Urvara repossessed with allowance, fee and debt; a second player accepts the job, delivers to the shed and is paid; a third accepts and lapses at 28 IC days and the job is Tycho's; the desk refuses the delinquent lessee |
