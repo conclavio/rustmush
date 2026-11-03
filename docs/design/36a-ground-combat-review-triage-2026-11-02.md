@@ -343,3 +343,32 @@ that reproduces the review's steps as a player would type them.
   `docs/help/field.md`'s four passages, P2-3's `heard`, doc 36's GC.6 and GC.1 overclaims, and this doc's
   §9 answers once ruled. *Built 2026-11-03* (branch `claude/doc36a-lane-4`): everything but the §9 answers,
   which are the owner's; §8's fourth column is the result.
+
+## 11. The second review (nine findings, with regression probes)
+
+A second outside review arrived the same day with nine findings and a patch of regression probes (not applied;
+read for the scenarios; its `ground_review.rs` mounts only the bay probes). Verified in two lanes at
+`d0cc7e91`. **Seven are new and all seven are confirmed; two are duplicates of §3/§5.** The reviewer's P1s
+re-rate to P2 on reach, but none is by design.
+
+| # | Claimed | Verdict | Re-rated | One line |
+|---|---|---|---|---|
+| 1 | P1 held-out walls lost on resume/void | CONFIRMED | P2 (P1 once licensed minds fly) | `with_held_walls` runs on a copy at admission only (admit.rs:359, 526–550); every rebuild — boot `resume` (boot.rs:166), `close::snapshot_returns` (close.rs:57), `raiders::decode` (raiders.rs:949) — builds the ground without them, the digest fails (`SnapshotError::Definition`, snapshot.rs:754), `returns` is empty and every unit "goes home as it went out" |
+| 2 | P1 party-letter collision after a refused join | CONFIRMED | P2 | `joining` letters `PartyId::nth(live.parties.len())` (carrier.rs:400); a refusal removes a middle party (carrier.rs:555); the next arrival takes a letter in use, shares that party's relations and marks, and the duplicate fails `FieldLive::check` on restart (record.rs:263) so the field voids with #1's loss; **fixed in lane 5, `810007ba`** |
+| 3 | P1 failed draw bricks the hull | DUPLICATE of §5.1 | P1 | new trigger needing no bad intent: two hulls ordered against one hold that covers one (`take` checks `hold_carries` but reserves nothing) |
+| 4 | P1 check-in overwrites crew state | CONFIRMED, both halves | P2 | `check_in` rebuilds from the hull's sections and writes `treatment: None` (crew.rs:406–451), healing prior injuries against GC.13's "the condition kept"; a captor's carrier closing a field runs `check_in_aboard` on the salvage victim, whose location becomes `Carrier{captor}` and whose abandoned extraction is cleared (crew.rs:448), against Q-36-52; **fixed in lane 5, `0115962f`** |
+| 5 | P2 DT launches skip the field cap | CONFIRMED (Q-CF-21) | P3 at cap 100 | DT prepare checks only `FIELD_LAUNCH` (prepare.rs:558–571); `launch_half` counts only open excursions (surface/act/commands.rs:168–185); admission counts everything (`parties::counted`) and refuses the whole field, so an overfilled site cannot be promoted — a shield; **fixed in lane 5, `16457cc7`** |
+| 6 | P2 marks authorize against the admission-time leader | CONFIRMED | P2 | `led_by` reads `FieldParty.leader` set once at admission or join (parties.rs:273, carrier.rs:405); roster succession never rewrites it; the successor hears "You lead no party in a field", the deposed leader can still mark from a disabled hull; **fixed in lane 5, `40647a6c`** |
+| 7 | P2 a seated subordinate cannot open a field by firing | CONFIRMED (Q-CF-14) | P3 | `fire → open_by → led()` keeps only sites where the actor is a leader (commands.rs:55–67, 325) before the seated check; Q-CF-14 and help/field.md:19 open the fire door to "a unit firing"; **fixed in lane 5, `3fbe5f2d`** |
+| 8 | P2 cancel after the draw destroys materials | DUPLICATE of P0-6 | P1 (in that lane) | the probe pins the landed-but-unsettled window precisely |
+| 9 | P2 later fields reset the write-off clock | CONFIRMED | P2 | `demote_units` pushes a fresh `LeftUnit{left_ic: now}` for every unit still on the ground (close.rs:353–363) and `demote` replaces the index; `left_out_since` reads it (tv.rs:4687–4710); the remains merge keeps the earliest instant (site_record.rs:943) but `LeftUnit` has no carry — a fight on day 27 moves a write-off to day 55 |
+
+Routing: #3's trigger and #8's probe window go to lane 2; #1 and #9 go to lane 3 (they share `demote_units`
+and the held-out family with P0-8); #2, #4, #5, #6, #7 are **lane 5, field commands and crew**
+(`field/carrier.rs` lettering, `field/crew.rs` check-in, `field/commands.rs` mark/fire authority,
+`detachment/sortie/prepare.rs` and `surface/act/commands.rs` population).
+
+**Lane 5 built 2026-11-03**, one commit an item: `810007ba` row 2, `0115962f` row 4, `16457cc7` row 5,
+`40647a6c` row 6, `3fbe5f2d` row 7, each with its regression test through the production command paths
+(each fails with its fix reverted). As built, with what the lane found still owed: doc 36, "36a lane 5,
+field commands and crew, as built".

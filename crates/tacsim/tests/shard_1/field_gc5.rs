@@ -222,55 +222,66 @@ fn gc5_a_casualty_left_behind_is_found_by_a_scan_and_brought_home() {
     assert!(escort_record.sortie.is_none(), "its epoch is closed");
 }
 
-/// **GC.5's gate: the non-friend load** (Q-36-16, Q-36-52, the owner's ruling). The captain flies
-/// the escort from inside it; a stranger's mark opens a field, which settles with the escort a
-/// casualty and the captain stranded in it. The stranger's rig tows the escort into the
-/// stranger's own carrier. The load completes: the escort is in the stranger's bay, in the
-/// stranger's custody with a claim owed (never title), its epoch closed naming the stranger's rig;
-/// the captain is abandoned, the extraction starts at once and no recovery flight defers it, and
-/// after the delay the captain is at a safe port.
-#[tokio::test(flavor = "multi_thread", worker_threads = 2)]
-#[allow(clippy::too_many_lines)]
-async fn gc5_a_non_friend_load_takes_custody_and_abandons_the_crew() {
-    let mut rig = stocked_tuned(quick);
-    let (a, _, tvs) = on_pad(&mut rig, 1);
+/// **The non-friend load, done** ([`non_friend_loaded`]): who and what it left where.
+struct Loaded {
+    /// The captain, abandoned in the escort.
+    a: ObjId,
+    /// The escort, a casualty in the stranger's bay.
+    escort: ObjId,
+    /// The stranger.
+    b: ObjId,
+    /// The stranger's carrier, the captor.
+    b_carrier: ObjId,
+    /// The stranger's rig, which towed and loaded the escort.
+    tug: ObjId,
+    /// The IC instant before the load.
+    before: i64,
+    /// The arena's egress and the ledger lines read so far.
+    rx: tokio::sync::mpsc::Receiver<tacsim::arena_task::ArenaOut>,
+    lines: Vec<LedgerEvent>,
+}
+
+/// **The non-friend load** (GC.5's gate, Q-36-16, Q-36-52): the captain flies the escort from
+/// inside it; a stranger's mark opens a field, which settles with the escort a casualty and the
+/// captain stranded in it; the stranger's rig tows the escort into the stranger's own carrier,
+/// and the load completes.
+async fn non_friend_loaded(rig: &mut crate::driving_rig::Rig) -> Loaded {
+    let (a, _, tvs) = on_pad(rig, 1);
     let escort = tvs[0];
-    let ramp = ramp_cell(&rig);
-    launched(&mut rig, a, escort);
-    to_cell(&mut rig, escort, (ramp.0 + 1, ramp.1));
-    powerless(&mut rig, escort);
-    seat(&mut rig, escort, a);
-    crate::driving_rig::staff_hand(&mut rig, |ctx| {
+    let ramp = ramp_cell(rig);
+    launched(rig, a, escort);
+    to_cell(rig, escort, (ramp.0 + 1, ramp.1));
+    powerless(rig, escort);
+    seat(rig, escort, a);
+    crate::driving_rig::staff_hand(rig, |ctx| {
         ctx.w.move_to(a, escort).expect("A climbs into the escort");
     });
     // The stranger: a carrier on the same pad with one rig, and an armed hull whose mark opens
     // the field.
-    let (b, b_row, b_tvs) = on_pad_as(&mut rig, "Second", 2, "Red Moth", 1);
+    let (b, b_row, b_tvs) = on_pad_as(rig, "Second", 2, "Red Moth", 1);
     let b_carrier = ObjId(b_row.hull);
     let tug = b_tvs[0];
-    launched(&mut rig, b, tug);
+    launched(rig, b, tug);
     // Parked behind the stranger's hull until the field settles, so the mark east sees only A.
-    to_cell(&mut rig, tug, (ramp.0 - 12, ramp.1));
-    let hull = armed(&mut rig, "Red Hound", (ramp.0 - 8, ramp.1), 90_000);
-    seat(&mut rig, hull, b);
-    warm(&mut rig);
-    let mut rx = egress(&mut rig);
+    to_cell(rig, tug, (ramp.0 - 12, ramp.1));
+    let hull = armed(rig, "Red Hound", (ramp.0 - 8, ramp.1), 90_000);
+    seat(rig, hull, b);
+    warm(rig);
+    let mut rx = egress(rig);
     let mut lines: Vec<LedgerEvent> = Vec::new();
-    let (out, queued) = command(&mut rig, b, "+field/mark E=hostile");
+    let (out, queued) = command(rig, b, "+field/mark E=hostile");
     assert_eq!(queued.len(), 1, "one promotion: {out}");
-    crate::driving_rig::land(&mut rig, &queued[0]).expect("the promotion lands");
+    crate::driving_rig::land(rig, &queued[0]).expect("the promotion lands");
     assert!(
-        until(&mut rig, &mut rx, &mut lines, 20, |rig, _| task(rig)
-            .is_some())
-        .await,
+        until(rig, &mut rx, &mut lines, 20, |rig, _| task(rig).is_some()).await,
         "the field opens"
     );
     assert!(
-        until(&mut rig, &mut rx, &mut lines, 180, |rig, _| demoted(rig)).await,
+        until(rig, &mut rx, &mut lines, 180, |rig, _| demoted(rig)).await,
         "the field settles"
     );
     assert!(
-        site_record(&mut rig).is_some_and(|record| record
+        site_record(rig).is_some_and(|record| record
             .units
             .iter()
             .any(|left| left.unit == escort && left.condition == LeftCondition::Casualty)),
@@ -285,9 +296,9 @@ async fn gc5_a_non_friend_load_takes_custody_and_abandons_the_crew() {
     );
 
     // The stranger's rig tows the escort and loads it into the Red Moth.
-    to_cell(&mut rig, tug, (ramp.0 + 1, ramp.1 + 1));
-    let _ = second(&mut rig);
-    attach(&mut rig, b, 1, tug, escort);
+    to_cell(rig, tug, (ramp.0 + 1, ramp.1 + 1));
+    let _ = second(rig);
+    attach(rig, b, 1, tug, escort);
     let preview = run(&mut rig.tw, b, "+tv/1 load");
     assert!(
         preview.contains("into the Red Moth's bay")
@@ -296,11 +307,44 @@ async fn gc5_a_non_friend_load_takes_custody_and_abandons_the_crew() {
         "{preview}"
     );
     let before = rig.tw.world().world_ic_now().at;
-    load(&mut rig, b, 1, tug, escort);
+    load(rig, b, 1, tug, escort);
     assert!(
         tacsim::surface::tow::in_bay_of(rig.tw.world(), escort, b_carrier),
         "the escort is in the stranger's bay"
     );
+    Loaded {
+        a,
+        escort,
+        b,
+        b_carrier,
+        tug,
+        before,
+        rx,
+        lines,
+    }
+}
+
+/// **GC.5's gate: the non-friend load** (Q-36-16, Q-36-52, the owner's ruling). The captain flies
+/// the escort from inside it; a stranger's mark opens a field, which settles with the escort a
+/// casualty and the captain stranded in it. The stranger's rig tows the escort into the
+/// stranger's own carrier. The load completes: the escort is in the stranger's bay, in the
+/// stranger's custody with a claim owed (never title), its epoch closed naming the stranger's rig;
+/// the captain is abandoned, the extraction starts at once and no recovery flight defers it, and
+/// after the delay the captain is at a safe port.
+#[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+#[allow(clippy::too_many_lines)]
+async fn gc5_a_non_friend_load_takes_custody_and_abandons_the_crew() {
+    let mut rig = stocked_tuned(quick);
+    let Loaded {
+        a,
+        escort,
+        b,
+        b_carrier,
+        tug,
+        before,
+        rx: _rx,
+        ..
+    } = non_friend_loaded(&mut rig).await;
     let record = site_record(&mut rig).expect("the site record");
     let custody = record
         .custody
@@ -450,4 +494,115 @@ fn gc5_a_lease_rig_out_28_days_is_written_off_and_handed_back_when_loaded() {
     let escort_record = crate::driving_rig::record_of(&mut rig.tw, escort).expect("its rig record");
     assert!(escort_record.sortie.is_none(), "its epoch is closed");
     assert!(escort_record.excursion.is_none(), "its excursion is closed");
+}
+
+/// **Doc 36a §11 row 4: the captor's field close keeps the abandoned extraction** (GC.5;
+/// Q-36-52). After the non-friend load A is abandoned in the escort in the Red Moth's bay, with
+/// an extraction on its way, and climbs out of the hull and aboard the Red Moth (a staff
+/// `@spatial/place/interior` into its airlock, where `+ship/board` places a soul: no command
+/// climbs out of a hull yet, as none climbs in, and doc 36a §8 allows gc5 its `move_to`). A is
+/// now among the souls aboard the Red Moth. Before it lands, the stranger's mark at a bystander's hull opens a
+/// second field, and the Red Moth is admitted with A among the souls aboard it. Its close once
+/// checked A in as the captor's crew — aboard the Red Moth, the extraction dropped — and A never
+/// landed anywhere. A soul abandoned there is left alone now: the extraction stands, and after
+/// the delay A is at a safe port while the hull stays with the carrier.
+#[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+#[allow(clippy::too_many_lines)]
+async fn gc5_review_the_captors_field_close_keeps_the_abandoned_extraction() {
+    let mut rig = stocked_tuned(quick);
+    let Loaded {
+        a,
+        escort,
+        b,
+        b_carrier,
+        mut rx,
+        mut lines,
+        ..
+    } = non_friend_loaded(&mut rig).await;
+    let ramp = ramp_cell(&rig);
+    let coming = crew_of(rig.tw.world(), a)
+        .and_then(|crew| crew.extraction.clone())
+        .expect("the extraction is on its way");
+    assert!(coming.abandoned, "{coming:?}");
+    let airlock = tacsim::port::ship::hull_view(rig.tw.world(), b_carrier)
+        .and_then(|view| view.airlock())
+        .expect("the Red Moth's airlock");
+    let placed = run(
+        &mut rig.tw,
+        mush_core::GOD,
+        &format!("@spatial/place/interior #{}=#{}", a.0, airlock.0),
+    );
+    assert!(
+        mush_sim::graph::project(
+            rig.tw
+                .world()
+                .module_state::<mush_sim::SpatialState>()
+                .expect("spatial"),
+            rig.tw.world(),
+            a
+        )
+        .is_some(),
+        "A is aboard the Red Moth: {placed}"
+    );
+
+    // A bystander's unarmed rig three cells east of the stranger's hull: the mark's target,
+    // nobody's party, the only flight east of it, and nothing in the field fires.
+    let stray = crate::field_crash::hull_of(
+        &mut rig,
+        "tacsim.unit.tv_prospector",
+        "Stray Moth",
+        (ramp.0 - 5, ramp.1),
+        90_000,
+    );
+    let (out, queued) = command(&mut rig, b, "+field/mark E=hostile");
+    assert_eq!(queued.len(), 1, "one promotion: {out}");
+    crate::driving_rig::land(&mut rig, &queued[0]).expect("the promotion lands");
+    assert!(
+        until(&mut rig, &mut rx, &mut lines, 20, |rig, _| task(rig)
+            .is_some())
+        .await,
+        "the second field opens"
+    );
+    let live = tacsim::field::live_on(rig.tw.world(), &crate::driving_rig::cid(AHUNA))
+        .expect("the live record");
+    assert!(
+        live.units
+            .iter()
+            .any(|row| row.unit == b_carrier && row.aboard.contains(&a)),
+        "A is among the souls aboard the captor's row: {:?}",
+        live.units
+    );
+    assert!(
+        live.units.iter().any(|row| row.unit == stray),
+        "the bystander is in the field: {:?}",
+        live.units
+    );
+    assert!(
+        until(&mut rig, &mut rx, &mut lines, 180, |rig, _| demoted(rig)).await,
+        "the second field settles"
+    );
+
+    // The captor's check-in left the abandoned soul's record alone.
+    let crew = crew_of(rig.tw.world(), a).cloned().expect("A's record");
+    assert_eq!(
+        crew.extraction.as_ref(),
+        Some(&coming),
+        "the extraction stands: {crew:?}"
+    );
+    assert!(
+        !matches!(crew.location, CrewLocation::Carrier { hull } if hull == b_carrier),
+        "A is no crew of the captor's: {crew:?}"
+    );
+    to_ic(&mut rig, coming.due_ic);
+    assert!(
+        seconds_until(&mut rig, 30, |rig| crew_of(rig.tw.world(), a).is_some_and(
+            |crew| matches!(crew.location, CrewLocation::Port { .. })
+        )),
+        "A is at a safe port after the delay: {:?}",
+        crew_of(rig.tw.world(), a)
+    );
+    assert!(
+        tacsim::surface::tow::in_bay_of(rig.tw.world(), escort, b_carrier),
+        "the hull stays with the carrier"
+    );
 }

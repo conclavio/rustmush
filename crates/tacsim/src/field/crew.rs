@@ -123,8 +123,10 @@ pub enum CrewLocation {
     },
 }
 
-/// **How a character is** (Q-CF-38).
-#[derive(Clone, Copy, Debug, PartialEq, Eq, Serialize, Deserialize)]
+/// **How a character is** (Q-CF-38). Ordered by severity, fit first: a check-in keeps the worse
+/// of what the record held and what the hull says (doc 36 cut GC.13, "the condition kept"; doc
+/// 36a §11 row 4), and only a treatment at a port makes a character fit again (`treat`).
+#[derive(Clone, Copy, Debug, PartialEq, Eq, PartialOrd, Ord, Serialize, Deserialize)]
 #[serde(rename_all = "snake_case")]
 pub enum CrewCondition {
     /// Unhurt.
@@ -384,6 +386,14 @@ fn organizer_of(w: &World, site: &CanonicalId, unit: ObjId) -> Option<ObjId> {
 
 /// **Derive `pilot`'s crew state as `unit` checks in from a field on `site`** (this module's
 /// head). The unit's cells are the checked-in record's.
+///
+/// **What a check-in never does** (doc 36a §11 row 4): it never heals. The condition written is
+/// the worse of the record's and the hull's (doc 36 cut GC.13: the condition is kept until a
+/// port treats it; a sound carrier's console, or a replacement hull, is no treatment). And a
+/// soul abandoned in a casualty loaded into a captor's bay (doc 36 cut GC.5, Q-36-52: an
+/// extraction marked `abandoned`) is not the captor's crew: the captor's carrier checking in
+/// from a later field leaves their record alone, so the extraction lands them at a port as the
+/// load promised.
 pub(crate) fn check_in(ctx: &mut Ctx<'_>, site: &CanonicalId, unit: ObjId, pilot: Option<ObjId>) {
     let Some(pilot) = pilot else {
         return;
@@ -392,6 +402,14 @@ pub(crate) fn check_in(ctx: &mut Ctx<'_>, site: &CanonicalId, unit: ObjId, pilot
         .w
         .get(pilot)
         .is_none_or(|object| object.kind != ObjKind::Player)
+    {
+        return;
+    }
+    let prior = crew_of(ctx.w, pilot).cloned();
+    if prior
+        .as_ref()
+        .and_then(|record| record.extraction.as_ref())
+        .is_some_and(|coming| coming.abandoned)
     {
         return;
     }
@@ -435,7 +453,10 @@ pub(crate) fn check_in(ctx: &mut Ctx<'_>, site: &CanonicalId, unit: ObjId, pilot
         return;
     };
     let stranded = matches!(location, CrewLocation::Stranded { .. });
-    let extraction = crew_of(ctx.w, pilot).and_then(|record| record.extraction.clone());
+    let (condition, extraction) = match prior {
+        Some(record) => (record.condition.max(condition), record.extraction),
+        None => (condition, None),
+    };
     put(
         ctx,
         CrewRecord {

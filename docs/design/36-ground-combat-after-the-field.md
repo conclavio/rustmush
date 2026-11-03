@@ -3331,3 +3331,37 @@ continuation files against a demoted record. The probe run showed fifteen such r
 - *GC.11's deferred root fix* (awaiting the think batch before the joins in the kernel task) is
   no longer what carries this test: no join is attempted for the departing carrier at all. It
   stays owed to GC.1b's refused arrival (the host-side entry above), on its own merits.
+
+### 36a lane 5, field commands and crew, as built (2026-11-03)
+
+Doc 36a §11's lane 5, one PR against `main`, one commit an item, each with a regression test driven
+through the production command paths (the reviewer's probes read for their scenarios). The fixtures
+are staff's where no command reaches the state yet, and each test names its own.
+
+| Item | What changed | Test |
+|---|---|---|
+| §11 row 2, party letters (`810007ba`) | `joining` letters a new party the lowest `PartyId` not on the live record (`FieldLive::next_party`), never `nth(len)`; `write_live` and `carrier::set_live` refuse a record that fails `FieldLive::check`, which the boot would refuse and void | `field_carrier::gc1b_a_refused_middle_party_never_lends_its_letter_to_the_next_arrival` (three Dray-Ps by voyage; the kernel's refusal is the one stand-in, because production's kernel refuses a join only on a scripted seal or a think-in-flight race; the refused hull is taken back out of the kernel, so world and kernel agree; the third takes the freed letter as the host takes it in, whatever the kernel then answers, since the kernel may still refuse it for real on a think in flight and a refused hull is not asked again while the field runs; a restart in production's boot order resumes the field with the letters unchanged) |
+| §11 row 4, crew check-in (`0115962f`) | `check_in` keeps the worse of the record's condition and the hull's (`CrewCondition` is ordered by severity; only `treat` sets Fit), and leaves alone a soul whose extraction is `abandoned` (GC.5, Q-36-52), so a captor's carrier closing a later field neither re-crews nor un-abandons them | `crew_treatment::gc13_review_a_check_in_from_a_sound_carrier_never_heals_an_injury`; `field_gc5::gc5_review_the_captors_field_close_keeps_the_abandoned_extraction` |
+| §11 row 5, the field cap at launch (`16457cc7`) | one count, `parties::site_population` (on the ground, less the carried and the held out, then `counted`), read by the admission, the ramp's launch half and a DT launch's prepare; both launches refuse with CF.2's line (Q-CF-21) when the site's population plus what goes down passes `[tacsim.field].max_units` | `field_carrier::gc_review_the_ramp_refuses_a_launch_the_field_could_not_hold` (cap 2, a carrier and a hull stand, `+tv/1 launch go` refused, the site still promotes); `dt_preparation_plans::dt_launch_refuses_what_the_field_cap_could_not_hold` (the reviewer's probe, a refusal instead of a third unit down) |
+| §11 row 6, mark authority (`40647a6c`) | `parties::led_now` resolves an operation party's leader from its command roster at command time (`roster_leader`, shared with `flight_of`); `+field/mark`, `+field/status` and `+field/fire`'s in-field test read it, never `FieldParty.leader` from admission | `dt_preparation_plans::ic_field_marks_follow_the_roster_succession` (two players fly one operation; the leader's mark opens the field, the leader drops, `+sortie/refresh` hands the lead on, the successor's letter mark is taken and the deposed leader's refused after they return) |
+| §11 row 7, the subordinate's fire door (`3fbe5f2d`) | the fire door finds its site from the actor's seated unit (`flown`) and its party from that unit; the mark door keeps `led`; inside a field a seated subordinate is told to fire from the cockpit, as a leader is | `dt_preparation_plans::ic_field_a_subordinate_pilot_opens_a_field_by_fire` (the non-leader's `+field/fire E` promotes, naming them and their unit) |
+
+Each test fails with its fix reverted (checked together, all fixes off at once).
+
+Still owed from this lane:
+
+- **The driving rig never resumed a field.** Its `reboot` hydrated the typed records after the
+  modules loaded, so the field host's boot found no site record and voided; the CF-1 restart gates
+  in `field_crash.rs` pass through that void and a reopened field. `driving_rig::reboot_resuming` (with `crash_resuming`, in `tests/support/field/driving_rig.rs`)
+  (production's order) is new and only row 2's test uses it. Under it, the CF-1 exit gate fails:
+  after a resumed field lands the owed `exit`, `live.owed_exits` keeps the row. That is CF-1's
+  resume path (`field/boot.rs`, `field/exit.rs`), not this lane's.
+- **A pilot seated by `+tv/<n> board` is never stranded.** The check-in's `inside` reads a rig's
+  cab as outside the rig, so no crew record is written for a pilot in the cab (doc 36a §8 already
+  lists the gap for field_gc5); GC.5's abandonment and row 4's second half can reach such a pilot
+  only once that is fixed or a soul can climb out of a hull, which no command does yet.
+- **A hull disabled inside a field never moves the succession.** The roster's `unit_disabled`
+  reads the unit record, which the field holds checked out until it settles; mid-field, only the
+  leader's session or seat moves the lead.
+- **A carrier on a pad is a presence row at its passive origin**, not at the pad's cell, so a
+  bearing "at the carrier" from beside the pad resolves toward the origin; the tests compute it.
