@@ -7,7 +7,7 @@
 > destruction: accepted Q-H7/Q-H9 keep a recoverable unit's epoch open. The as-built epoch ledger
 > below is preserved; this note does not claim that code has changed.
 
-**Draft 0.8, 2026-11-03 — §17 custody for moving anchors (the S.4b precondition) and S.4b restated; S.0–S.4a as built (§14), S.4b open.** Draft 0.8 adds §17, written read-only at `c83c2eff` (`origin/main`) under doc 38 Q-38-21: D-23-11 to D-23-20 and Q-23-7 to Q-23-20, and the cut S.4b restated with the host moved from the drone phase to the IC field (§17.10). Draft 0.3 was written read-only at `563259b7` (`main`, with 17g cuts C0–C2 merged);
+**Draft 0.9, 2026-11-03 — the owner accepted Q-23-7 to Q-23-20 at their defaults the same day, so D-23-11 to D-23-20 stand as ruled and S.4b-T may start; §17 custody for moving anchors (the S.4b precondition) and S.4b restated; S.0–S.4a as built (§14), S.4b open.** Draft 0.8 added §17, written read-only at `c83c2eff` (`origin/main`) under doc 38 Q-38-21: D-23-11 to D-23-20 and Q-23-7 to Q-23-20, and the cut S.4b restated with the host moved from the drone phase to the IC field (§17.10). Draft 0.3 was written read-only at `563259b7` (`main`, with 17g cuts C0–C2 merged);
 Draft 0.1 was reviewed the same day against doc 17, doc 20, 17f, doc 18 and the IC-sortie code,
 Draft 0.2 carried the review's corrections (§15), and Draft 0.3 carries the owner's rulings of the
 same day (§16): Q-23-1 to Q-23-5 accepted as proposed, Q-23-6 ruled (the lapse hold runs to the
@@ -424,7 +424,7 @@ inspection verbs, seizure) then have a real epoch to read at each end.
 | D-23-8 | Until a mind thinks on an IC host, pool admission is recorded and never refused | lead's proposal, Q-23-4 |
 | D-23-9 | A licence that lapses mid-epoch is in grace until the top-level hull reaches a hangar port; a hosted hull's launches inside that passage seal under the held licence; the fall to doctrine is at the first seal after the hangar | **the owner's ruling, 2026-10-27** (Q-23-6) |
 | D-23-10 | A match is a simulator concept, not an IC one: an IC epoch's id never shares the arena's `(match, unit)` packing; `SortieId` gains a kind | **the owner's ruling, 2026-10-27** (risk 1) |
-| D-23-11 to D-23-20 | Custody for moving anchors: the anchor, the production Open/Close, the custody re-scoped, the two seats, the `abi` drop, the carried memory, the testimony producer, the field as S.4b's host | lead's proposals, §17.11 (Draft 0.8) |
+| D-23-11 to D-23-20 | Custody for moving anchors: the anchor, the production Open/Close, the custody re-scoped, the two seats, the `abi` drop, the carried memory, the testimony producer, the field as S.4b's host | **accepted by the owner, 2026-11-03** (Q-23-7 to Q-23-20 at their defaults); §17.11 |
 
 ## 12. Questions for the owner
 
@@ -436,7 +436,7 @@ inspection verbs, seizure) then have a real epoch to read at each end.
 | Q-23-4 | Who rations an IC site's compute pool once minds fly IC? | The region's de facto holder (doc 11 §5), published as an allotment; recorded, never refused, until the drone phase. **Accepted 2026-10-27.** |
 | Q-23-5 | The player's words. | **Amended 2026-10-28:** `+sortie` and "sortie" for the player's operation are approved (doc 27 FO-7). Keep that operation distinct from the technical hull epoch. The 2026-10-27 blanket "Sortie never prints" ruling is superseded. |
 | Q-23-6 | Does a licence that lapses mid-epoch still hold to the close (doc 17 §23)? | **Ruled 2026-10-27**: it holds to the close of the top-level passage, not each excursion — the licence is in grace until the hull reaches the next hangar. D-23-9. |
-| Q-23-7 to Q-23-20 | The S.4b precondition's questions (the anchor, the Open's commit, one seal, the freeze, salvage under a claim, the compute seat, the ABI mismatch, the wall's exit, memory between fields, the testimony author and cut, the host, org-held licences, the acceptance) | §17.12, each with a default (Draft 0.8) |
+| Q-23-7 to Q-23-20 | The S.4b precondition's questions (the anchor, the Open's commit, one seal, the freeze, salvage under a claim, the compute seat, the ABI mismatch, the wall's exit, memory between fields, the testimony author and cut, the host, org-held licences, the acceptance) | **Accepted 2026-11-03, all at their defaults**; §17.12 |
 
 ## 13. Risks
 
@@ -862,7 +862,9 @@ On reading Draft 0.2 the owner ruled, in their words:
 
 ## 17. Custody for moving anchors (the S.4b precondition)
 
-**Draft 0.8, 2026-11-03, written read-only at `c83c2eff` (`origin/main`).** Doc 37 §5.5 names S.4b
+**Draft 0.8, 2026-11-03, written read-only at `c83c2eff` (`origin/main`); rulings the same day: the
+owner accepted Q-23-7 to Q-23-20 at their defaults, so every decision below stands as ruled
+(Draft 0.9).** Doc 37 §5.5 names S.4b
 the blocker of docs 32, 36 and GC.1 and says its precondition, "custody for moving anchors", has no
 owning document; doc 38 Q-38-21 (accepted at its default) rules that the note is written here, as a
 section of this doc, before S.4b's cut, from the questions §9's S.4b bullet lists — the claim
@@ -1296,21 +1298,23 @@ nothing is refused with the one sentence.
 
 | # | Decision | Status |
 |---|---|---|
-| D-23-11 | The claim's anchor is the hull's hangar by id (a rig's bay: hull and slot; a ship's berth later) and the claim's lifetime is the hull's epoch, opening and closing with it by the four kinds; the claim keeps no image of where the hull stands; a site is never the anchor | lead's proposal, Q-23-7 |
-| D-23-12 | S.4b opens claims for rigs only; the ship's epoch carries no claim until a ship is cored, and D-23-11 then holds unchanged | lead's proposal |
-| D-23-13 | The surface host mints `StartPermit`/`CloseEvent` in the finishes that open and close an epoch; the Open and Close are the host's own commits as the operator on the next surface fire (`Fire::as_principal`), with `OpenSortie.claim` as the durable cursor; epoch first, claim second; a reboot re-owes from the record | lead's proposal, Q-23-8 |
-| D-23-14 | One seal per epoch: the claim's `Execution` is captured from the dispatch's seal; the book and `Execution::validate` accept `SortieId::Ic`; the Roll's `SortieNumber` keeps the book's ordinal | lead's proposal, Q-23-9 |
-| D-23-15 | IC custody means moved only by the epoch's hosts: the exclusion records the hangar and epoch, admits an Open on the ground, freezes re-anchoring only; the field mark and the claim coexist; the Close's physical image is the live hull | lead's proposal, Q-23-10, Q-23-11 |
-| D-23-16 | The compute seat is counted at the launch against the site's allotment, held for the epoch, spent only in a field, refused at the launch with the arithmetic under a provisional stock allotment; never refused or evicted in a field | lead's proposal, Q-23-12 |
-| D-23-17 | The `abi` drop is decided per hull when its retained execution is installed into a field (admission, join, resume), to the ROM with one `MindDropped { cause: abi }` an epoch; it never voids a field; Q-36-44's wall is the fallback for an execution that cannot be installed at all, left when the field ends or the hull leaves the ground | lead's proposal, Q-23-13, Q-23-14 |
-| D-23-18 | The long-leg snapshot is the mind's memory carried on the epoch record at every check-in and seeded at every install; the field's cadence stands | lead's proposal, Q-23-15 |
-| D-23-19 | The testimony producer feeds `EarnedContacts` at check-in from the field's `Classified` lines, authored by the seated pilot else the warrant principal, persisted per author; it is its own cut, S.4b-T | lead's proposal, Q-23-16, Q-23-17 |
-| D-23-20 | S.4b's host is the IC field; the drone phase is no longer its gate; its acceptance runs at 256 and 512 with the bot per Q-38-29 | lead's proposal, Q-23-18, Q-23-20 |
+| D-23-11 | The claim's anchor is the hull's hangar by id (a rig's bay: hull and slot; a ship's berth later) and the claim's lifetime is the hull's epoch, opening and closing with it by the four kinds; the claim keeps no image of where the hull stands; a site is never the anchor | **accepted by the owner, 2026-11-03** (Q-23-7) |
+| D-23-12 | S.4b opens claims for rigs only; the ship's epoch carries no claim until a ship is cored, and D-23-11 then holds unchanged | stands with Q-23-7's ruling, 2026-11-03 |
+| D-23-13 | The surface host mints `StartPermit`/`CloseEvent` in the finishes that open and close an epoch; the Open and Close are the host's own commits as the operator on the next surface fire (`Fire::as_principal`), with `OpenSortie.claim` as the durable cursor; epoch first, claim second; a reboot re-owes from the record | **accepted by the owner, 2026-11-03** (Q-23-8) |
+| D-23-14 | One seal per epoch: the claim's `Execution` is captured from the dispatch's seal; the book and `Execution::validate` accept `SortieId::Ic`; the Roll's `SortieNumber` keeps the book's ordinal | **accepted by the owner, 2026-11-03** (Q-23-9) |
+| D-23-15 | IC custody means moved only by the epoch's hosts: the exclusion records the hangar and epoch, admits an Open on the ground, freezes re-anchoring only; the field mark and the claim coexist; the Close's physical image is the live hull | **accepted by the owner, 2026-11-03** (Q-23-10, Q-23-11) |
+| D-23-16 | The compute seat is counted at the launch against the site's allotment, held for the epoch, spent only in a field, refused at the launch with the arithmetic under a provisional stock allotment; never refused or evicted in a field | **accepted by the owner, 2026-11-03** (Q-23-12) |
+| D-23-17 | The `abi` drop is decided per hull when its retained execution is installed into a field (admission, join, resume), to the ROM with one `MindDropped { cause: abi }` an epoch; it never voids a field; Q-36-44's wall is the fallback for an execution that cannot be installed at all, left when the field ends or the hull leaves the ground | **accepted by the owner, 2026-11-03** (Q-23-13, Q-23-14) |
+| D-23-18 | The long-leg snapshot is the mind's memory carried on the epoch record at every check-in and seeded at every install; the field's cadence stands | **accepted by the owner, 2026-11-03** (Q-23-15) |
+| D-23-19 | The testimony producer feeds `EarnedContacts` at check-in from the field's `Classified` lines, authored by the seated pilot else the warrant principal, persisted per author; it is its own cut, S.4b-T | **accepted by the owner, 2026-11-03** (Q-23-16, Q-23-17) |
+| D-23-20 | S.4b's host is the IC field; the drone phase is no longer its gate; its acceptance runs at 256 and 512 with the bot per Q-38-29 | **accepted by the owner, 2026-11-03** (Q-23-18, Q-23-20) |
 
 ### 17.12 Questions for the owner
 
+**All accepted at their defaults by the owner, 2026-11-03** ("Q-23-7 through 20 accepted as defaults").
+
 **Q-23-7 — What the claim is anchored to.**
-- **Proposed default:** the epoch, with the hangar named by id (D-23-11): a claim per excursion,
+- **Decision (accepted default, 2026-11-03):** the epoch, with the hangar named by id (D-23-11): a claim per excursion,
   opened at the launch's end and closed with the epoch's close kind.
 - **Alternative:** a field-scoped claim, opened at admission and closed at demotion, leaving the
   fixed-base code as it is.
@@ -1319,7 +1323,7 @@ nothing is refused with the one sentence.
   would hold the seat only while shots fly and leave the hangar ends with nothing to inspect.
 
 **Q-23-8 — Where the Open commits.**
-- **Proposed default:** its own commit on the surface fire after the finish, as the operator, with
+- **Decision (accepted default, 2026-11-03):** its own commit on the surface fire after the finish, as the operator, with
   the epoch record as cursor (D-23-13; S.2's epoch arm pattern).
 - **Alternative:** inside the finish's bundle, which needs the seal participant's action check
   (`participant.rs:95–102`) relaxed to admit the surface's action and the four owners prepared
@@ -1328,12 +1332,12 @@ nothing is refused with the one sentence.
   type), and the accepted V1 window already exists for the ship.
 
 **Q-23-9 — One seal or two.**
-- **Proposed default:** one: the claim captures the dispatch's seal (D-23-14).
+- **Decision (accepted default, 2026-11-03):** one: the claim captures the dispatch's seal (D-23-14).
 - **Alternative:** the Open seals again as today and the record carries two digests.
 - **Why:** D-UM-45's seal is per sortie; two seals on one epoch would make the inspection choose.
 
 **Q-23-10 — The physical freeze.** **(expensive to reverse)**
-- **Proposed default:** re-scope the exclusion to re-anchoring and let the epoch's hosts move the
+- **Decision (accepted default, 2026-11-03):** re-scope the exclusion to re-anchoring and let the epoch's hosts move the
   hull (D-23-15).
 - **Alternative:** keep the freeze and drop the sim's exclusion from the IC composition for rigs
   (three owners), relying on tactics custody and the hangar id alone.
@@ -1342,63 +1346,63 @@ nothing is refused with the one sentence.
   "held" changes.
 
 **Q-23-11 — A claimed hull loaded as salvage.**
-- **Proposed default:** admit the load and close the claim `RecoveredToBase` naming the
+- **Decision (accepted default, 2026-11-03):** admit the load and close the claim `RecoveredToBase` naming the
   recoverer at the completion (§17.4).
 - **Alternative:** refuse the load while a claim is open.
 - **Why:** a claim is custody, not title; refusing would make a licensed mind an unsalvageable
   hull, and the Registry's inspection at the next berth is where the mind's theft is found.
 
 **Q-23-12 — When the compute seat refuses.**
-- **Proposed default:** at the launch, with the arithmetic, under a provisional per-site stock
+- **Decision (accepted default, 2026-11-03):** at the launch, with the arithmetic, under a provisional per-site stock
   allotment (D-23-16); the holder's rationing verb later.
 - **Alternative:** keep D-23-8's recorded-never-refused until the rationing verb exists.
 - **Why:** D-UM-36's region rule says refuse in the hangar before the hull leaves; S.4b is the
   first cut that can, and at the stock keys nothing is refused.
 
 **Q-23-13 — The ABI mismatch in a field.**
-- **Proposed default:** the hull is installed on the ROM and fights, one journal line (D-23-17).
+- **Decision (accepted default, 2026-11-03):** the hull is installed on the ROM and fights, one journal line (D-23-17).
 - **Alternative:** the hull is walled (Q-36-44's rule applied to the ABI case too).
 - **Why:** doc 17 §13 wrote the IC rule to strand nothing; a walled rig in a fight is stranded in
   the fiction's eyes, and the ROM is the fallback every other drop uses.
 
 **Q-23-14 — When a walled hull leaves the wall.**
-- **Proposed default:** when the field ends or the hull leaves the site's ground; no staff verb
+- **Decision (accepted default, 2026-11-03):** when the field ends or the hull leaves the site's ground; no staff verb
   over claims (§17.6).
 - **Alternative:** a staff `@tacsim/claim close #hull` that closes the claim `RecoveredToBase`.
 - **Why:** a wall is evidence of a store that needs an operator; a verb that closes claims is a
   verb that forges a close kind, which the module refuses to export for a reason.
 
 **Q-23-15 — Memory between fields.**
-- **Proposed default:** carried on the epoch record at every check-in (D-23-18).
+- **Decision (accepted default, 2026-11-03):** carried on the epoch record at every check-in (D-23-18).
 - **Alternative:** forgotten at every demotion; the mind starts fresh in each field.
 - **Why:** §13 promised the memory bytes across a resume, and a mind that cannot remember the
   morning's raider is not the mind the operator licensed.
 
 **Q-23-16 — Who earns a mind-flown hull's contacts.**
-- **Proposed default:** the seal's warrant principal when no pilot is seated (D-23-19).
+- **Decision (accepted default, 2026-11-03):** the seal's warrant principal when no pilot is seated (D-23-19).
 - **Alternative:** seated pilots only; a mind-flown hull earns nothing for anyone.
 - **Why:** the operator reads that hull's box anyway, and D-UM-55's point is that nobody else does.
 
 **Q-23-17 — The testimony producer's cut.**
-- **Proposed default:** its own small cut, S.4b-T, started now beside S.4b.
+- **Decision (accepted default, 2026-11-03):** its own small cut, S.4b-T, started now beside S.4b.
 - **Alternative:** inside S.4b.
 - **Why:** it needs no licensed mind and unblocks M8g's remainder on its own.
 
 **Q-23-18 — S.4b's host.**
-- **Proposed default:** the IC field (D-23-20); the drone phase is no longer S.4b's gate.
+- **Decision (accepted default, 2026-11-03):** the IC field (D-23-20); the drone phase is no longer S.4b's gate.
 - **Alternative:** wait for a drone phase as §9's S.4 bullet and D-UM-47 planned.
 - **Why:** doc 20 §17 is reserved and unbuilt; the field is built, reviewed and running stories at
   two sizes.
 
 **Q-23-19 — Org-held licences.**
-- **Proposed default:** S.4b claims the operator's own filed licence; the `org=` claim waits for the
+- **Decision (accepted default, 2026-11-03):** S.4b claims the operator's own filed licence; the `org=` claim waits for the
   Roll's org admission path.
 - **Alternative:** both in S.4b.
 - **Why:** the reader's request is `own(unit, licence)` and an org path is a Roll change with its
   own review.
 
 **Q-23-20 — S.4b's acceptance.**
-- **Proposed default:** one story at 256 and 512 with the bot typing the player's half (doc 38
+- **Decision (accepted default, 2026-11-03):** one story at 256 and 512 with the bot typing the player's half (doc 38
   Q-38-29).
 - **Alternative:** one size, as GC's stories ran.
 - **Why:** Q-38-29 is accepted and the field story already runs at both sizes.
