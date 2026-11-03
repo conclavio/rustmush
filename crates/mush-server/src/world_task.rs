@@ -3512,6 +3512,9 @@ async fn run(
     // while the slot is held is left for the ordinary arm to find.
     let mut behind = BehindSlot::default();
     let mut behind_closed = false;
+    // Doc 36a lane 3 (P1-8): a decision provider's answer taken while legacy persistence work is
+    // queued waits here, one at a time, until the foot of the loop clears that work.
+    let mut parked_decision: Option<Box<DecisionWorkerCompletion>> = None;
     // Store-backed staff operations drained beside a local operation remain
     // ordered behind any commit that local operation starts.
     let mut deferred_staff_ops: Vec<StaffOp> = Vec::new();
@@ -3659,6 +3662,26 @@ async fn run(
             && retained.is_empty()
             && !engine.has_legacy_persistence_work()
             && admission_for(admission_mode, IngressClass::Timer) == Admission::Allow;
+        // Doc 36a lane 3 (P1-8): a provider's answer is taken under the same conditions a
+        // command submit is; a parked one goes first, once the legacy work it waited on is done.
+        let decision_result_taken = decision_result_armed(
+            durable_decisions.is_some(),
+            pending_commit.is_some(),
+            retained.is_empty(),
+            clock_frozen,
+            admission_for(admission_mode, IngressClass::Timer) == Admission::Allow,
+            parked_decision.is_some(),
+        );
+        let parked_decision_ready = parked_decision.is_some()
+            && !engine.has_legacy_persistence_work()
+            && decision_result_armed(
+                durable_decisions.is_some(),
+                pending_commit.is_some(),
+                retained.is_empty(),
+                clock_frozen,
+                admission_for(admission_mode, IngressClass::Timer) == Admission::Allow,
+                false,
+            );
         // 16b cut T.2 (T4): acknowledge every match-ledger chunk the writer has
         // committed, on the E0 durable-commit high-water and nothing new. Read
         // once per iteration, before the select blocks, so an arena waiting on an
@@ -3703,6 +3726,8 @@ async fn run(
         let behind_notice = behind.next_notice();
         let wake = if let Some(msg) = ready_deferred {
             Wake::Msg(msg)
+        } else if parked_decision_ready && let Some(completion) = parked_decision.take() {
+            Wake::DecisionResult(completion)
         } else {
             tokio::select! {
             // While a commit is in flight `rx` stays polled, so reads,
@@ -3771,7 +3796,7 @@ async fn run(
             // Doc 36 cut GC.0 (Q-36-50; doc 32 §17's second latent item): a
             // provider's answer is staged only with no commit pending, as every
             // other arm that stages authoritative work is.
-            }, if decision_result_armed(durable_decisions.is_some(), pending_commit.is_some()) => match completion {
+            }, if decision_result_taken => match completion {
                 Some(completion) => Wake::DecisionResult(Box::new(completion)),
                 None => Wake::DurableDecisions,
             },
@@ -5033,6 +5058,13 @@ async fn run(
                 StepOutcome::Continue
             }
             Wake::DecisionResult(completion) => {
+                // Doc 36a lane 3 (P1-8): the answer stages authoritative work, so it waits out
+                // queued legacy persistence work as a command submit does — parked, taken again
+                // once the foot of the loop has cleared that work.
+                if engine.has_legacy_persistence_work() {
+                    parked_decision = Some(completion);
+                    continue;
+                }
                 let Some(store) = deps.store.authoritative_store() else {
                     apply_integrity_freeze(
                         &engine.world,

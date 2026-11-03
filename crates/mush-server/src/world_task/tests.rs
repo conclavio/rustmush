@@ -12289,13 +12289,43 @@ fn w_clock_outage_countdown_admits_inspection_and_ooc_while_refusing_movement_an
 /// tentative post-image. It waits in its bounded channel until the receipt lands.
 #[test]
 fn gc0_a_decision_result_waits_behind_a_pending_commit() {
-    assert!(decision_result_armed(true, false));
+    assert!(decision_result_armed(true, false, true, false, true, false));
     assert!(
-        !decision_result_armed(true, true),
+        !decision_result_armed(true, true, true, false, true, false),
         "a provider's answer is not taken while a commit pends"
     );
-    assert!(!decision_result_armed(false, false));
-    assert!(!decision_result_armed(false, true));
+    assert!(!decision_result_armed(
+        false, false, true, false, true, false
+    ));
+    assert!(!decision_result_armed(
+        false, true, true, false, true, false
+    ));
+}
+
+/// **Doc 36a lane 3 (P1-8).** A provider's answer stages authoritative work, so it is taken only
+/// when a command submit would be: no retained seal re-emitting, the clock running, timers
+/// admitted, and no answer parked behind legacy persistence work. Before the fix the re-emit
+/// state let it stage; `flush_prepared_action` rejected it and `abort_without_receipt` latched
+/// `IntegrityFrozen`.
+#[test]
+fn lane3_a_decision_result_waits_out_the_reemit_state() {
+    assert!(decision_result_armed(true, false, true, false, true, false));
+    assert!(
+        !decision_result_armed(true, false, false, false, true, false),
+        "a retained seal re-emitting holds the answer"
+    );
+    assert!(
+        !decision_result_armed(true, false, true, true, true, false),
+        "a frozen clock holds it"
+    );
+    assert!(
+        !decision_result_armed(true, false, true, false, false, false),
+        "an admission mode refusing timers holds it"
+    );
+    assert!(
+        !decision_result_armed(true, false, true, false, true, true),
+        "a parked answer drains before the channel is read again"
+    );
 }
 
 /// **Doc 36 cut GC.0 (Q-36-50), the lifecycle slot.** A line typed behind a disconnect parked in

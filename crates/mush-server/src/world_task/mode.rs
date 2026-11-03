@@ -544,8 +544,26 @@ pub(super) fn must_defer_behind_commit(msg: &WorldMsg) -> bool {
 /// authoritative work (an attempt, a fallback, a response), and staging behind an unresolved
 /// commit would build on its tentative post-image; it waits in its bounded channel until the
 /// receipt lands, as a command submission and an arena chunk do.
-pub(super) const fn decision_result_armed(decisions_composed: bool, commit_pending: bool) -> bool {
-    decisions_composed && !commit_pending
+///
+/// **Doc 36a lane 3 (P1-8)**: and only when a command submit would be taken — no retained seal
+/// re-emitting (`retained_empty`; staged in that state, the answer was rejected by
+/// `flush_prepared_action` and `abort_without_receipt` latched an integrity freeze), the clock
+/// running, the admission mode admitting timers — and while no answer is parked behind legacy
+/// persistence work (`parked`: the loop drains that one before it reads the channel again).
+pub(super) const fn decision_result_armed(
+    decisions_composed: bool,
+    commit_pending: bool,
+    retained_empty: bool,
+    clock_frozen: bool,
+    timers_admitted: bool,
+    parked: bool,
+) -> bool {
+    decisions_composed
+        && !commit_pending
+        && retained_empty
+        && !clock_frozen
+        && timers_admitted
+        && !parked
 }
 
 /// **What waits in the [`DeferQueue`] when it meets a commit** (16b cut B.5,
