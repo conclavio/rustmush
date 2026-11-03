@@ -342,6 +342,24 @@ for a fee, or held."
 - **Why:** docking is the one moment every carrier passes through a port's hands, and the
   setting gives each port a governing body; reusing the medical operator would make the Co-op
   Ceres' gaoler.
+- **Draft 0.3 (review round 2, 42-3, shared with doc 41's 41-3): custody when the hull moves.**
+  Doc 41 Q-41-18/19 (PR #352) moves a vacated hull bay to bay (`+bay/stow <hull>=<carrier>`) and
+  has a docking hook berth every `held_for` hull into the workshop; doc 36's GC.5 hands a
+  written-off rig back to Occator's shed. Had a captive stayed inside the casualty, any of those
+  moves would carry them off while the record still named the old carrier, whose next docking
+  would then hand over someone no longer aboard. Two rules close it without a new ruling.
+  (1) **A person never travels inside a hull a hook or a bay verb moves.** A capture already puts
+  the captive in the captor's bay room (42-5 under Q-42-1). Every other authoritative move of a
+  hull out of a bay or a site — doc 41's stow and workshop berth, a hand-back, an impound, doc 41's
+  retrieval delivery — first runs 42-5's vacate-and-release on each person inside it and moves them
+  into the room the hull leaves (the bay room, or the site's domain for a hull on the ground, as an
+  extraction's start would leave them), and only then moves the hull. Each person's record follows
+  their body: `Captured { carrier }` keeps naming the carrier they stand in, a friend's
+  `Carrier { hull }` the same. (2) **At one docking, persons first.** When a hull docks, the crew
+  handover (Q-42-6) runs before doc 41's `held_for` berth and any other hull hook of the same
+  arrival, so no hull hook ever finds a captive aboard. Custody of a person therefore changes only
+  by the transitions of Q-42-1, never as a side effect of custody of a hull. Doc 41's session is
+  given the same item; its Q-41-18/19 hooks need rule (1)'s first step.
 
 **Q-42-7 — The fee: who pays, how much, and what if they cannot.**
 - **Proposed default:** the captive's own account pays `PortDef.release_fee_cr`, authored per
