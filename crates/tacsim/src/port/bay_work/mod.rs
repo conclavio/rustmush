@@ -417,7 +417,8 @@ fn next_act(ctx: &Ctx<'_>, record: &BayHull) -> u32 {
         .saturating_add(1)
 }
 
-/// **Whether `hull` is held** (Q-36-32): an open order, a berth (it leaves only by stow), or
+/// **Whether `hull` is held** (Q-36-32): an open order, a berth (it leaves only by stow), a
+/// scrapped shell (doc 36a P1-7: the remains are the workshop's, not a thing to carry off), or
 /// an unreadable record.
 #[must_use]
 pub fn held(w: &World, hull: ObjId) -> bool {
@@ -426,9 +427,21 @@ pub fn held(w: &World, hull: ObjId) -> bool {
         .and_then(|s| s.bay_hull(hull))
     {
         None => false,
-        Some(BayHullState::Present(row)) => row.open().is_some() || row.berth.is_some(),
+        Some(BayHullState::Present(row)) => {
+            row.open().is_some() || row.berth.is_some() || row.scrapped_ic.is_some()
+        }
         Some(BayHullState::Unreadable) => true,
     }
+}
+
+/// **Whether `hull` has been scrapped** (doc 36a P1-7): its shell answers to no `+bay` word
+/// but its number.
+#[must_use]
+pub fn scrapped(w: &World, hull: ObjId) -> bool {
+    matches!(
+        w.module_state::<TacsimStore>().and_then(|s| s.bay_hull(hull)),
+        Some(BayHullState::Present(row)) if row.scrapped_ic.is_some()
+    )
 }
 
 /// **Whether `hull` has an open repair order** (the launch gate reads this).

@@ -22,11 +22,11 @@ use tacsim::surface::site_record::{SiteKey, SiteRecord};
 
 use crate::bay_gc8::{
     bay_room, buy, component_id, damage, empty_magazine, in_bay, lot_record, magazine, mint,
-    order_of, provenance, put, section_id, unit, wreck_section,
+    order_of, provenance, put, section_id, unit, worn, wreck_section,
 };
 use crate::driving::{
-    Rig, at_counter, cid, fire, handles, hold_pool, hold_vault_of, land_quietly, pilot, prospector,
-    reseed_typed, rigs_of, run, seed_hold, station_room, stocked, store, to_ic,
+    Rig, at_counter, cid, fire, handles, hold_pool, hold_vault_of, land, land_quietly, pilot,
+    prospector, reseed_typed, rigs_of, run, seed_hold, station_room, stocked, store, to_ic,
 };
 use crate::field_host::site_record_at;
 
@@ -492,4 +492,40 @@ async fn b36a_3_a_custody_caps_the_owner_and_binds_the_berth() {
         assess(&rig, hull).component_conditions[&cannon],
         ComponentCondition::Missing
     );
+}
+
+/// **36a P1-7 — a scrapped shell stays held.** The title holder scraps the spare at C14 and its
+/// lots land; the shell stands in the workshop and no one carries it off (`get` is refused as
+/// a held hull), nor does `+bay` answer to its name any more — only to its number, which says
+/// it has been scrapped.
+#[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+async fn b36a_4_a_scrapped_shell_stays_held() {
+    let mut rig = stocked();
+    let (pilot, _, _, spare) = two_escorts(&mut rig);
+    worn(&mut rig, spare);
+    let workshop = station_room(&rig.tw, CERES, C14);
+    put(&mut rig, pilot, workshop, false);
+    let berthed = run(&mut rig.tw, pilot, &format!("+bay/berth #{}", spare.0));
+    assert!(berthed.contains("berthed in the workshop"), "{berthed}");
+    let out = run(&mut rig.tw, pilot, &format!("+bay/scrap #{}", spare.0));
+    assert!(out.contains("is broken up"), "{out}");
+    settle_until(&mut rig, spare);
+    let record = bay_record(&rig, spare);
+    assert!(
+        record.scrapped_ic.is_some() && record.berth.is_none(),
+        "{record:?}"
+    );
+    assert!(tacsim::port::bay_work::held(rig.tw.world(), spare));
+    let name = rig.tw.world().get(spare).expect("the shell").name.clone();
+    let taken = run(&mut rig.tw, pilot, &format!("get {name}"));
+    assert!(taken.contains("held in the bay"), "{taken}");
+    assert_eq!(
+        rig.tw.world().get(spare).and_then(|o| o.location),
+        Some(workshop),
+        "the shell stands where it was broken up"
+    );
+    let gone = run(&mut rig.tw, pilot, &format!("+bay/scrap {name}"));
+    assert!(gone.contains("no such hull"), "{gone}");
+    let again = run(&mut rig.tw, pilot, &format!("+bay/scrap #{}", spare.0));
+    assert!(again.contains("has been scrapped"), "{again}");
 }

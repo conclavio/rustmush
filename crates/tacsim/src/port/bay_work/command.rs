@@ -45,7 +45,8 @@ pub const BAY_HELP: &str = "+bay <hull> quotes the work on a hull where it stand
     off into the hold, and the title holder's +bay/scrap <hull> breaks the hull up into \
     structural alloys and parts.";
 
-/// `#<id>`, or a thing of that name in the actor's room.
+/// `#<id>`, or a thing of that name in the actor's room — never a scrapped shell by name (doc
+/// 36a P1-7).
 fn hull_named(ctx: &Ctx<'_>, word: &str) -> Result<ObjId, String> {
     let word = word.trim();
     if let Some(id) = word.strip_prefix('#').and_then(|n| n.parse::<u32>().ok()) {
@@ -64,6 +65,7 @@ fn hull_named(ctx: &Ctx<'_>, word: &str) -> Result<ObjId, String> {
             ctx.w
                 .get(*id)
                 .is_some_and(|o| !o.kind.is_actor() && o.name.eq_ignore_ascii_case(word))
+                && !super::scrapped(ctx.w, *id)
         })
         .ok_or_else(|| super::NO_HULL.to_owned())
 }
