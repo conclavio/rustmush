@@ -672,10 +672,14 @@ deposit's price would undo the point.
 
 **Its hulls.** Two definitions and two house hulls on a Tycho berth at Ceres Freeport (lane v21):
 
-- `tacsim.unit.tycho_crawler`, class vehicle, **120 t dry** (provisional; Q-36-8's half-tonnage floor
-  for a 240 t Dray, and the 2× cap reaches 240 t — a Dray-P wreck with two wrecked rigs in its bay
-  is 256 t, so the crawler is 130 t if the owner wants the full laden case), tracked, unarmed,
-  `recovery_profile: heavy` (§4.8), a crew of two.
+- `tacsim.unit.tycho_crawler`, class vehicle, **130 t dry** (provisional; Q-36-8's half-tonnage floor
+  for a 240 t Dray is 120 t, and the inclusive 2× cap of a 120 t tug reaches exactly 240 t — the
+  Dray-P's dry mass and not a kilogram more. The tow counts dry mass alone today,
+  `unit_mass_profile_for_spec(spec, 0, 0)` at `tow.rs:642`, so a 120 t crawler would pass; but story
+  (d) loads her with her wrecked bay rigs, 16 t, and doc 36 already owes the hopper's ore in a
+  casualty's laden mass, so once the tow counts what is carried the crawler must be 130 t —
+  Q-41-29 asks which basis; round-2 item 41-5), tracked, unarmed, `recovery_profile: heavy` (§4.8),
+  a crew of two.
 - `tacsim.unit.tycho_lifter`, class hauler, **600 t dry** (provisional), one bay slot for the
   crawler (130,000 kg, 400,000 L) and one for the load (`maximum_items` 1, 300,000 kg, 1,200,000 L),
   no hold to speak of, the Dray's drive rated for the mass; it lands where a Dray-P lands (doc 20's
@@ -914,8 +918,10 @@ least half its tonnage (the floor, separate from the cap).
 **The profile carries the cap.** `TowRigProfile` gains a cap multiplier beside its speed factor:
 `Standard` 2× (today's, `recovery.rs:170–173` reads the profile instead of the constant),
 `RecoveryOptimized` **3×** (the ruling's provisional figure), and a new `Heavy` with the optimized
-speed factor and a 2× cap (a 120 t crawler reaches 240 t; the floor, not the cap, is what sizes it
-for a carrier). The profile is authored on the unit definition — `logistics.recovery_profile:
+speed factor and a 2× cap (a 120 t crawler reaches exactly a Dray's 240 t dry and a 130 t one her
+256 t laden with two wrecked rigs; the tow counts dry mass alone today, `tow.rs:642`, and Q-41-29
+asks whether it should count what is carried; the floor, not the cap, is what sizes it for a
+carrier). The profile is authored on the unit definition — `logistics.recovery_profile:
 standard|recovery_optimized|heavy`, default `standard` — and `attach_request` reads it from the
 spec instead of hard-coding `Standard` (`tow.rs:686`). The tender (§4.1) is the escort-scale
 recovery rig doc 27a §10 named in the same breath ("Mobile Recovery Rigs & Resupply Tenders"): at 7 t
