@@ -29,6 +29,8 @@ mod vertex;
 
 #[path = "shard_10/arena.rs"]
 mod arena;
+#[path = "support/field/claim_rig.rs"]
+mod claim_rig;
 #[path = "shard_10/commerce.rs"]
 mod commerce;
 #[path = "shard_10/coop.rs"]

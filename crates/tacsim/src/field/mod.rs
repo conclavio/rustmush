@@ -71,6 +71,7 @@ pub mod provider;
 pub mod raiders;
 pub mod record;
 pub mod standing;
+pub(crate) mod testimony;
 
 use std::collections::{BTreeMap, BTreeSet};
 use std::sync::Arc;
@@ -294,6 +295,11 @@ pub fn register(reg: &mut Registrar<'_>) -> Result<(), ModError> {
     reg.state(crew::CrewBook::default());
     reg.state(orders::Offered::default());
     reg.state(home::Asked::default());
+    reg.state(standing::FireTally::default());
+    reg.state(standing::VoidOffers::default());
+    // Doc 23 cut S.4b-T (D-23-19): the earned-contacts index this host feeds and the quirk
+    // claim reads.
+    reg.state(crate::minds::earned_contacts::EarnedContacts::default());
     // `+field` submits the host's authoritative action: the cockpit's command lane, then the
     // module's own default restored for whatever registers after.
     reg.classify_commands(mush_core::CommandCompatibility::Authoritative);

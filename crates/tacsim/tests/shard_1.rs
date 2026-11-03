@@ -32,6 +32,8 @@ mod vertex;
 mod bay_36a;
 #[path = "shard_1/bay_gc8.rs"]
 mod bay_gc8;
+#[path = "support/field/claim_rig.rs"]
+mod claim_rig;
 #[path = "shard_1/crew_exit.rs"]
 mod crew_exit;
 #[path = "shard_1/crew_treatment.rs"]

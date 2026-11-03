@@ -38,6 +38,7 @@ use mush_proto::OutputEvent;
 use mush_sim::{CarrierJourney, JourneyBook, SpatialParent, SpatialState};
 use mush_testkit::{TestWorld, fold_module_ops_into};
 use smol_str::SmolStr;
+use tacsim::arena::party::{Mark, PartyId, Relation};
 use tacsim::definitions::content::{LANE_JSON, LANE_PACK, LANE_VERSION};
 use tacsim::pack::{PackEntry, load_pack};
 use tacsim::port::apply::room_by_key;
@@ -4541,7 +4542,7 @@ fn sfr5_chartered_dray_p_buys_licence_matches_velocity_in_pallas_mines_into_stow
 ///    `LocalSpaceBubble` (`CARRIER_PARTY` `'A'`, `CUSTOMS_CORVETTE_PARTY` `'B'`,
 ///    `BELT_RAIDER_PARTY` `'C'`), and emits the light-lagged radio hail (`mush_propagation::light_delay_secs`)
 ///    + structured `"tacsim:notice"` panel event.
-/// 3. Firing on the non-hostile Republic Customs Corvette (`SpaceRelation::Inspecting` /
+/// 3. Firing on the non-hostile Republic Customs Corvette (the bubble's inspecting flag /
 ///    `Relation::Neutral`) is refused (`"Cannot fire on a non-hostile contact."`), and
 ///    `+helm/submit` before heaving-to ($|\Delta \mathbf{v}| < 10\text{ m/s}$) is refused.
 /// 4. Pilot decelerates via `+helm/thrust -15 0 0 1` to match velocity with the Corvette;
@@ -4723,21 +4724,21 @@ fn sfr6_kirkwood_customs_picket_story_1_end_to_end_rhai_doctrine_triad_combat_an
                 tacsim::space::CARRIER_PARTY,
                 tacsim::space::CUSTOMS_CORVETTE_PARTY,
             ),
-            tacsim::space::SpaceRelation::Neutral
+            Relation::Neutral
         );
         assert_eq!(
             active.bubble.party_relation(
                 tacsim::space::CARRIER_PARTY,
                 tacsim::space::BELT_RAIDER_PARTY,
             ),
-            tacsim::space::SpaceRelation::Hostile
+            Relation::Hostile
         );
         assert_eq!(
             active.bubble.party_relation(
                 tacsim::space::CUSTOMS_CORVETTE_PARTY,
                 tacsim::space::BELT_RAIDER_PARTY,
             ),
-            tacsim::space::SpaceRelation::Hostile
+            Relation::Hostile
         );
         (
             picket.corvette_ship_id.clone(),
@@ -6820,30 +6821,29 @@ fn sfr13_presence_and_feeds_push_to_all_crew_filter_torpedoes_and_handle_linkdea
     // a cold coasting torpedo (`remaining_dv_mmps == 0`) at 25 km is filtered out of `holotank_feed`,
     // while a burning torpedo (`remaining_dv_mmps > 0`) at 25 km is included.
     {
+        let carrier_party = PartyId::nth(0).expect("the arena letters a first party");
+        let raider_party = PartyId::nth(1).expect("the arena letters a second party");
+        assert_eq!((carrier_party.letter(), raider_party.letter()), ('A', 'B'));
         let mut unit_bubble =
             tacsim::space::LocalSpaceBubble::new("b.test", "kirkwood", "Test", 100);
         unit_bubble.insert_ship(tacsim::space::SpaceShipState::new_dray(
             "obs",
             "Observer",
-            tacsim::space::SpacePartyId(1),
+            carrier_party,
             [0, 0, 0],
             [0, 0, 0],
         ));
         let mut foe = tacsim::space::SpaceShipState::new_corvette(
             "foe",
             "Raider",
-            tacsim::space::SpacePartyId(2),
+            raider_party,
             [25_000, 0, 0],
             [0, 0, 0],
         );
         foe.emcon = tacsim::space::EmconPosture::Ghost;
         foe.heat_permille = 0;
         unit_bubble.insert_ship(foe);
-        unit_bubble.set_party_relation(
-            tacsim::space::SpacePartyId(1),
-            tacsim::space::SpacePartyId(2),
-            tacsim::space::SpaceRelation::Hostile,
-        );
+        unit_bubble.set_party_relation(carrier_party, raider_party, Some(Mark::Hostile));
         let _ = unit_bubble.fire_torpedo_salvo("foe", "obs", 1);
         assert_eq!(
             unit_bubble.holotank_feed("obs")["torpedoes"]
@@ -7357,7 +7357,7 @@ fn sfr15_hull_fidelity_splits_rear_hit_per_dray_json_strips_pdc_and_refits_in_ba
     let mut dray = tacsim::space::SpaceShipState::new_dray(
         "dray.fidelity",
         "carrier",
-        tacsim::space::SpacePartyId(0),
+        PartyId::nth(0).expect("the arena letters a first party"),
         [0, 0, 0],
         [0, 0, 0],
     );
@@ -7433,7 +7433,7 @@ fn sfr15_hull_fidelity_splits_rear_hit_per_dray_json_strips_pdc_and_refits_in_ba
         Some(dray_spec),
         "dray.rt",
         "carrier",
-        tacsim::space::SpacePartyId(0),
+        PartyId::nth(0).expect("the arena letters a first party"),
         [0, 0, 0],
         [0, 0, 0],
     )
@@ -7447,7 +7447,7 @@ fn sfr15_hull_fidelity_splits_rear_hit_per_dray_json_strips_pdc_and_refits_in_ba
     let mut ship_full = tacsim::space::SpaceShipState::new_dray(
         "defender",
         "carrier",
-        tacsim::space::SpacePartyId(0),
+        PartyId::nth(0).expect("the arena letters a first party"),
         [0, 0, 0],
         [0, 0, 0],
     );

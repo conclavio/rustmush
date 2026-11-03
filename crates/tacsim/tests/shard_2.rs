@@ -29,6 +29,8 @@ mod support;
 #[path = "support/vertex.rs"]
 mod vertex;
 
+#[path = "support/field/claim_rig.rs"]
+mod claim_rig;
 #[path = "shard_2/content.rs"]
 mod content;
 #[path = "support/field/driving_rig.rs"]
@@ -59,6 +61,8 @@ mod reflex;
 mod sight;
 #[path = "support/field/site_record_rig.rs"]
 mod site_record_rig;
+#[path = "shard_2/testimony.rs"]
+mod testimony;
 #[path = "shard_2/twin.rs"]
 mod twin;
 #[path = "shard_2/weapons.rs"]
