@@ -237,8 +237,17 @@ impl BayQuote {
 
 fn section_points(unit: &TacticalUnit, section: &SectionId) -> u64 {
     unit.cells()
-        .filter(|(addr, _)| {
-            matches!(addr, CellAddr::Section { section: s, .. } | CellAddr::Facet { section: s, .. } if s == section)
+        .filter(|(addr, _)| match addr {
+            CellAddr::Section { cell: cid, .. }
+                if cid.as_str() == crate::definitions::unit::HEAT_CELL
+                    || cid.as_str() == crate::definitions::unit::HEAT_SINK_CELL =>
+            {
+                false
+            }
+            CellAddr::Section { section: s, .. } | CellAddr::Facet { section: s, .. } => {
+                s == section
+            }
+            _ => false,
         })
         .fold(0u64, |sum, (_, cell)| {
             sum.saturating_add(u64::try_from(cell.max.saturating_sub(cell.current)).unwrap_or(0))

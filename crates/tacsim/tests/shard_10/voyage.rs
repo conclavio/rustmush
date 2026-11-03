@@ -7328,3 +7328,351 @@ fn sfr14_authoring_loads_clusters_doctrines_and_outer_bodies_from_packs_opens_pi
         }
     }
 }
+
+/// **Doc 35b cut SF.R15 — Hull fidelity (`35b` §5 #6/#7/#13, §8 `SF.R15`)**:
+/// 1. `dray.json`, `dray_p.json`, and `corvette.json` instantiate `"heat"` (`0..=1_000`) and
+///    `"heat_sink"` (`30`) cells on `"hull"`, and `heat_permille` round-trips through
+///    `build_space_damage_mutation_plan` and `space_ship_from_tactical_unit_with_spec`.
+/// 2. A rear-aspect hit on a Dray (`apply_damage(FacetBand::Rear, 160)`) strips `hull.rear`
+///    armour (`60 -> 0`) and splits the remaining `100` internal damage 50/50 between `hull`
+///    (`600 -> 550`) and `drive` (`250 -> 200`) per `dray.json`'s `struck_through`; `left`/`right`/`top`
+///    hits route into `hold` per `dray.json`'s `facets` weights, and destroying `hold` (`0/400`)
+///    applies `slow_75` (`rated_accel_mg: 50 -> 12`).
+/// 3. Stripping a PDC mount (`SubsystemCrit::PdcOffline`, setting `PdcMount::operational = false`
+///    on `pdc_dorsal` / `pdc_ventral`) opens a real gap in the point-defense screen so a 2-torpedo
+///    salvo that was fully intercepted by 2 operational PDCs now has 1 torpedo penetrate.
+/// 4. In Story 2 (`sfr2` / `sfr7`), after taking combat damage across `hull` and `drive`, clamping
+///    and towing the disabled interdictor (`+helm/tow`, settling the `1,200.00 cr` Freeport Registry
+///    salvage recovery payout into the pilot's credit account), and docking at Stickney Yards, the
+///    pilot quotes (`+bay #<hull>`) and completes (`+bay/order #<hull>=all`) a doc 31 bay repair at
+///    Stickney Yards' workshop that restores the Dray's armour and internals to full (`600/600` hull,
+///    `250/250` drive).
+#[test]
+#[allow(clippy::too_many_lines)]
+fn sfr15_hull_fidelity_splits_rear_hit_per_dray_json_strips_pdc_and_refits_in_bay_after_salvage_payout()
+ {
+    // 1. Verify `dray.json` facet weights, `struck_through` rear split (`50/50` hull/drive),
+    //    `hold` `slow_75` consequence, and `TacticalUnit` `"heat"` / `"heat_sink"` cell round-trip:
+    let dray_spec = tacsim::space::unit_spec_for_id("tacsim.unit.dray").expect("dray UnitSpec");
+    let mut dray = tacsim::space::SpaceShipState::new_dray(
+        "dray.fidelity",
+        "carrier",
+        tacsim::space::SpacePartyId(0),
+        [0, 0, 0],
+        [0, 0, 0],
+    );
+    tacsim::space::apply_unit_spec_to_space_ship(&mut dray, dray_spec);
+    assert!(
+        dray.pdcs.iter().any(|m| m.id == "pdc_dorsal")
+            && dray.pdcs.iter().any(|m| m.id == "pdc_ventral"),
+        "Dray must carry canonical pdc_dorsal and pdc_ventral mounts (no 'pdc_ dorsal' typo): {:?}",
+        dray.pdcs
+    );
+
+    // Apply 160 raw damage to `Rear`: 60 absorbed by `hull.rear` armour (`60 -> 0`), remaining 100
+    // split 50/50 between `Hull` (`600 -> 550`) and `Drive` (`250 -> 200`):
+    let (_sec, abs_rear, pen_rear) = dray.apply_damage(tacsim::space::FacetBand::Rear, 160);
+    assert_eq!(abs_rear, 60);
+    assert_eq!(pen_rear, 100);
+    assert_eq!(
+        dray.sections[&tacsim::space::ShipSectionId::Hull].facets[&tacsim::space::FacetBand::Rear],
+        0
+    );
+    assert_eq!(
+        dray.sections[&tacsim::space::ShipSectionId::Hull].internals,
+        550,
+        "rear hit must split 50% of internal damage into Hull (600 - 50 = 550)"
+    );
+    assert_eq!(
+        dray.sections[&tacsim::space::ShipSectionId::Drive].internals,
+        200,
+        "rear hit must split 50% of internal damage into Drive (250 - 50 = 200)"
+    );
+
+    // Apply 920 raw damage to `Left` (`50/50` Hull/Hold): 80 absorbed by `hull.left` armor,
+    // remaining 840 split 50/50 (`420` each) destroying `Hold` (`400 -> 0`) and triggering `slow_75` (`50 -> 37 mg`):
+    let _ = dray.apply_damage(tacsim::space::FacetBand::Left, 920);
+    assert_eq!(
+        dray.sections[&tacsim::space::ShipSectionId::Hold].internals,
+        0,
+        "Left hit must route 50% into Hold and destroy Hold internals"
+    );
+    assert_eq!(
+        dray.rated_accel_mg, 37,
+        "destroying Hold must trigger slow_75 consequence (50 mg * 75% = 37 mg)"
+    );
+
+    // Verify `TacticalUnit` instantiates `"heat"` (`max = 1000`) and `"heat_sink"` (`30`) cells and
+    // round-trips `heat_permille`:
+    let (unit, _) = tacsim::space::instantiate_stock_space_unit(ObjId(999), "tacsim.unit.dray")
+        .expect("instantiate dray");
+    let heat_addr = mush_tactics::CellAddr::Section {
+        section: mush_tactics::SectionId::new("hull").expect("hull"),
+        cell: mush_tactics::CellId::new("heat").expect("heat"),
+    };
+    let sink_addr = mush_tactics::CellAddr::Section {
+        section: mush_tactics::SectionId::new("hull").expect("hull"),
+        cell: mush_tactics::CellId::new("heat_sink").expect("heat_sink"),
+    };
+    assert_eq!(
+        unit.cell(&heat_addr).map(|c| (c.current, c.max)),
+        Some((0, 1_000))
+    );
+    assert_eq!(
+        unit.cell(&sink_addr).map(|c| (c.current, c.max)),
+        Some((30, 30))
+    );
+    dray.heat_permille = 420;
+    let (unit_after, _assessment, plan) =
+        tacsim::space::build_space_damage_mutation_plan(&unit, &dray, Some(dray_spec), 2)
+            .expect("mutation plan");
+    assert!(plan.is_some(), "expected non-empty mutation plan");
+    assert_eq!(unit_after.cell(&heat_addr).map(|c| c.current), Some(420));
+    let roundtripped = tacsim::space::space_ship_from_tactical_unit_with_spec(
+        &unit_after,
+        Some(dray_spec),
+        "dray.rt",
+        "carrier",
+        tacsim::space::SpacePartyId(0),
+        [0, 0, 0],
+        [0, 0, 0],
+    )
+    .expect("roundtrip");
+    assert_eq!(roundtripped.heat_permille, 420);
+
+    // 2. Verify stripping a PDC mount (`SubsystemCrit::PdcOffline`, `operational = false`) opens a
+    //    real gap in the point-defense screen (`step_pdc_intercepts`):
+    let mut bubble_full_pdc =
+        tacsim::space::LocalSpaceBubble::new("b.pdc.full", "kirkwood", "PDC Test", 1_000);
+    let mut ship_full = tacsim::space::SpaceShipState::new_dray(
+        "defender",
+        "carrier",
+        tacsim::space::SpacePartyId(0),
+        [0, 0, 0],
+        [0, 0, 0],
+    );
+    ship_full.pdc_auto = true;
+    bubble_full_pdc.insert_ship(ship_full.clone());
+    for idx in 0..2 {
+        bubble_full_pdc
+            .torpedoes
+            .push(tacsim::space::InFlightTorpedo {
+                id: idx,
+                shooter_id: "attacker".to_owned(),
+                target_id: "defender".to_owned(),
+                pos_m: [5_000, 0, 0],
+                pos_rem_um: [0, 0, 0],
+                vel_mmps: [-1_000_000, 0, 0],
+                accel_mps2: 120,
+                remaining_dv_mmps: 4_000_000,
+                warhead_damage: 180,
+                integrity: 100,
+                tti_s: 5,
+                flight_elapsed_ms: 0,
+                max_flight_ms: 45_000,
+                dv_exhausted_emitted: false,
+            });
+    }
+    let rep_full = bubble_full_pdc.step_wall_ms_at(1_000, 1_001);
+    let intercepted_full = rep_full
+        .events
+        .iter()
+        .filter(|e| {
+            matches!(
+                e,
+                tacsim::space::SpaceCombatEvent::TorpedoInterceptedByPdc { .. }
+            )
+        })
+        .count();
+    assert_eq!(
+        intercepted_full, 2,
+        "2 operational PDCs (dorsal + ventral, 2 bursts each) intercept both incoming torpedoes"
+    );
+
+    let mut bubble_stripped_pdc =
+        tacsim::space::LocalSpaceBubble::new("b.pdc.stripped", "kirkwood", "PDC Test", 1_000);
+    let mut ship_stripped = ship_full;
+    ship_stripped
+        .crits
+        .push(tacsim::space::SubsystemCrit::PdcOffline);
+    ship_stripped.pdcs[0].operational = false;
+    bubble_stripped_pdc.insert_ship(ship_stripped);
+    for idx in 0..2 {
+        bubble_stripped_pdc
+            .torpedoes
+            .push(tacsim::space::InFlightTorpedo {
+                id: idx,
+                shooter_id: "attacker".to_owned(),
+                target_id: "defender".to_owned(),
+                pos_m: [5_000, 0, 0],
+                pos_rem_um: [0, 0, 0],
+                vel_mmps: [-1_000_000, 0, 0],
+                accel_mps2: 120,
+                remaining_dv_mmps: 4_000_000,
+                warhead_damage: 180,
+                integrity: 100,
+                tti_s: 5,
+                flight_elapsed_ms: 0,
+                max_flight_ms: 45_000,
+                dv_exhausted_emitted: false,
+            });
+    }
+    let rep_stripped = bubble_stripped_pdc.step_wall_ms_at(1_000, 1_001);
+    let intercepted_stripped = rep_stripped
+        .events
+        .iter()
+        .filter(|e| {
+            matches!(
+                e,
+                tacsim::space::SpaceCombatEvent::TorpedoInterceptedByPdc { .. }
+            )
+        })
+        .count();
+    assert_eq!(
+        intercepted_stripped, 1,
+        "with 1 PDC mount stripped offline, only 1 torpedo is intercepted and 1 penetrates the screen"
+    );
+
+    // 3. End-to-end Story 2 (`sfr2`/`sfr7`): take rear-aspect combat damage (`hull 480/600, drive 190/250`),
+    //    disable, clamp, and tow the interdictor derelict (`+helm/tow`, settling the `1,200.00 cr`
+    //    Freeport Registry salvage recovery payout), dock at Stickney Yards, and run `+bay` +
+    //    `+bay/order #<hull>=all` to repair the Dray back to full (`600/600` hull, `250/250` drive):
+    let mut rig = stocked_with(Roster {
+        seed_lane: Some(lane_with_interdicted_kirkwood()),
+        ..Roster::default()
+    });
+    let (pilot, row) = chartered(&mut rig, "Pilot", 1);
+    let hull = ObjId(row.hull);
+    let vault_id = hold_vault(&rig.tw, &row);
+    seed_pool(&mut rig, vault_id, "propellant", 55, LotId(991));
+    seed_pool(&mut rig, vault_id, "provisions", 19, LotId(992));
+    seed_pool(&mut rig, vault_id, "industrial_parts", 8, LotId(993));
+    set_rate(&mut rig.tw, 3_600);
+    board(&mut rig, pilot);
+
+    let pending = undock_and_burn(&mut rig, pilot, hull);
+    let depart_ic = pending.plan.depart_ic;
+    let leg1_secs = i64::from(pending.plan.legs[0].secs);
+    let total_secs = pending.plan.total_s;
+
+    let _ = fire_quietly(&mut rig);
+    let _ = to_ic(&mut rig, depart_ic + leg1_secs);
+
+    for i in 0..4 {
+        let next_real = rig.tw.world().now() + 1;
+        rig.tw.set_now(next_real);
+        let _ = rig.tw.fire_due(next_real * 1_000);
+        if i == 0 || i == 2 || i == 3 {
+            let _ = run(&mut rig.tw, pilot, "+tac/beam Interdictor Picket");
+        }
+        if i == 1 || i == 2 {
+            let _ = run(&mut rig.tw, pilot, "+damage/vent");
+        }
+    }
+
+    // Approach, 6-DOF hard-dock clamp, and tow the disabled interdictor (`+helm/tow`):
+    let _ = run(&mut rig.tw, pilot, "+helm/approach derelict");
+    let app_burn = drain(&mut rig.tw);
+    land_quietly(&mut rig, &app_burn);
+    for _ in 0..3 {
+        let next_real = rig.tw.world().now() + 1;
+        rig.tw.set_now(next_real);
+        let _ = rig.tw.fire_due(next_real * 1_000);
+    }
+    let _ = run(&mut rig.tw, pilot, "+helm/dock derelict");
+    let (session_id, challenge) = {
+        let book = rig
+            .tw
+            .world()
+            .module_state::<tacsim::space::SpaceBubbleBook>()
+            .expect("SpaceBubbleBook");
+        let s = book.docking_sessions.get(&hull).expect("docking session");
+        (s.challenge.session_id.clone(), s.challenge.clone())
+    };
+    let clamp_tape = tacsim::space::solve_docking_tape(&challenge);
+    let _ = run(
+        &mut rig.tw,
+        pilot,
+        &format!("+helm/dock tape {session_id} {}", clamp_tape.encode_rle()),
+    );
+    let clamp_burn = drain(&mut rig.tw);
+    land_quietly(&mut rig, &clamp_burn);
+
+    let pilot_acct = tacsim::port::credit::own_account(rig.tw.world(), pilot)
+        .expect("pilot account")
+        .id;
+    let balance_before_tow = economy(&rig.tw)
+        .snapshot()
+        .account(pilot_acct)
+        .expect("acct")
+        .available()
+        .expect("amt")
+        .minor();
+    let tow_out = run(&mut rig.tw, pilot, "+helm/tow");
+    assert!(
+        tow_out.contains("[SALVAGE] Tow line locked to disabled derelict"),
+        "tow output: {tow_out}"
+    );
+    // Settle the Freeport Registry salvage recovery payout (`1,200.00 cr` = `120_000` minor credits):
+    sweep(&mut rig.tw, 60);
+    let balance_after_tow = economy(&rig.tw)
+        .snapshot()
+        .account(pilot_acct)
+        .expect("acct")
+        .available()
+        .expect("amt")
+        .minor();
+    assert_eq!(
+        balance_after_tow - balance_before_tow,
+        120_000,
+        "towing a disabled derelict settles the 1,200.00 cr Freeport Registry salvage recovery bounty"
+    );
+
+    // Fire one tick to close the cleared interdiction bubble and resume transit to Stickney Yards:
+    let next_real = rig.tw.world().now() + 1;
+    rig.tw.set_now(next_real);
+    let _ = rig.tw.fire_due(next_real * 1_000);
+    let j_resumed = journey(&rig.tw, hull).expect("resumed journey");
+    let expected_arrival = j_resumed.departed().at + total_secs;
+    let _ = to_ic(&mut rig, expected_arrival);
+
+    // Confirm rear-split combat damage was written to *Salt Moth*'s `TacticalUnit` (`drive` and `hull` both damaged):
+    let ship_damaged = run(&mut rig.tw, pilot, "+ship");
+    assert!(
+        ship_damaged.contains("Damage: drive 64/250, hull 418/600."),
+        "expected rear-split combat damage on docked Dray: {ship_damaged}"
+    );
+
+    // Quote and order full bay repair (`+bay #<hull>` and `+bay/order #<hull>=all`) at Stickney Yards:
+    let bay_quote = run(&mut rig.tw, pilot, &format!("+bay #{}", hull.0));
+    assert!(
+        bay_quote.contains("stands in a workshop")
+            && bay_quote.contains("armor hull")
+            && bay_quote.contains("armor drive"),
+        "bay quote at Stickney Yards workshop: {bay_quote}"
+    );
+    let bay_order = run(&mut rig.tw, pilot, &format!("+bay/order #{}=all", hull.0));
+    assert!(
+        bay_order.contains("Order 1 taken in the workshop:"),
+        "bay order taken using salvage recovery proceeds: {bay_order}"
+    );
+    let bay_draws = drain(&mut rig.tw);
+    land_all(&mut rig, &bay_draws);
+
+    // Advance IC clock past the workshop order's `due_ic` and settle the workshop fee contract:
+    let now_ic = ic_now(&rig.tw);
+    let _ = to_ic(&mut rig, now_ic + 72_000);
+    sweep(&mut rig.tw, 60);
+
+    // Verify *Salt Moth*'s `TacticalUnit` is restored to full health (`hull 600/600, drive 250/250`, no `Damage:` line):
+    let ship_repaired = run(&mut rig.tw, pilot, "+ship");
+    assert!(
+        !ship_repaired.contains("Damage:"),
+        "Dray must have zero damage after Stickney workshop bay repair completes: {ship_repaired}"
+    );
+    let bay_after = run(&mut rig.tw, pilot, &format!("+bay #{}", hull.0));
+    assert!(
+        bay_after.contains("Nothing needs doing.") && bay_after.contains("Order 1: workshop"),
+        "bay after repair completion: {bay_after}"
+    );
+}

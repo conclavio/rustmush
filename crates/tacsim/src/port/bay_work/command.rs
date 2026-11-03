@@ -57,17 +57,25 @@ fn hull_named(ctx: &Ctx<'_>, word: &str) -> Result<ObjId, String> {
         .get(ctx.actor)
         .and_then(|o| o.location)
         .ok_or(super::NO_HULL)?;
-    ctx.w
-        .contents_of(here)
-        .iter()
-        .copied()
-        .find(|id| {
-            ctx.w
-                .get(*id)
-                .is_some_and(|o| !o.kind.is_actor() && o.name.eq_ignore_ascii_case(word))
-                && !super::scrapped(ctx.w, *id)
-        })
-        .ok_or_else(|| super::NO_HULL.to_owned())
+    if let Some(found) = ctx.w.contents_of(here).iter().copied().find(|id| {
+        ctx.w
+            .get(*id)
+            .is_some_and(|o| !o.kind.is_actor() && o.name.eq_ignore_ascii_case(word))
+            && !super::scrapped(ctx.w, *id)
+    }) {
+        return Ok(found);
+    }
+    if let Some(helm) = crate::port::coop::helm_of(ctx.w, ctx.actor)
+        .map(|h| h.hull)
+        .or_else(|| crate::space::commands::hull_aboard_for_actor(ctx.w, ctx.actor))
+        && !super::scrapped(ctx.w, helm)
+        && (word.eq_ignore_ascii_case("ship")
+            || word.eq_ignore_ascii_case("dray")
+            || word.eq_ignore_ascii_case(&crate::port::coop::name_of(ctx.w, helm)))
+    {
+        return Ok(helm);
+    }
+    Err(super::NO_HULL.to_owned())
 }
 
 /// **The doll** (UD.4c's damage view): each section's condition and points, and under it each
@@ -82,8 +90,17 @@ fn doll(w: &mush_core::World, hull: ObjId) -> Vec<String> {
     for (section, condition) in &assessment.section_conditions {
         let (current, max) = unit
             .cells()
-            .filter(|(addr, _)| {
-                matches!(addr, CellAddr::Section { section: s, .. } | CellAddr::Facet { section: s, .. } if s == section)
+            .filter(|(addr, _)| match addr {
+                CellAddr::Section { cell: cid, .. }
+                    if cid.as_str() == crate::definitions::unit::HEAT_CELL
+                        || cid.as_str() == crate::definitions::unit::HEAT_SINK_CELL =>
+                {
+                    false
+                }
+                CellAddr::Section { section: s, .. } | CellAddr::Facet { section: s, .. } => {
+                    s == section
+                }
+                _ => false,
             })
             .fold((0i64, 0i64), |(c, m), (_, cell)| {
                 (

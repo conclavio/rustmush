@@ -217,6 +217,22 @@ pub fn facility_of(w: &World, hull: ObjId) -> Result<Facility, String> {
             });
         }
     }
+    if let crate::port::ship::Berth::Docked { map, def } = crate::port::ship::berth_of(w, hull)
+        && let Some(room) = crate::port::workshop::room(w, &map.entry, def)
+            .ok()
+            .flatten()
+        && let Some((operator, operator_account, multiplier_permille)) = operator_of(def, map)
+    {
+        return Ok(Facility {
+            class: FacilityClass::Workshop,
+            room,
+            carrier: Some(hull),
+            port: map.entry.clone(),
+            operator,
+            operator_account,
+            multiplier_permille,
+        });
+    }
     let (bay, _) = interior_of(w, hull).ok_or("That hull is in no bay and no workshop.")?;
     let carrier = carrier_of_bay(w, bay).ok_or("That hull is in no carrier's bay.")?;
     let crate::port::ship::Berth::Docked { map, def } = crate::port::ship::berth_of(w, carrier)
@@ -370,7 +386,9 @@ pub fn right_of(ctx: &Ctx<'_>, hull: ObjId) -> Option<Right> {
     if unit_grant(ctx, hull, UnitCapability::MaintainRefit) {
         return Some(Right::Grant);
     }
-    if leases(ctx.w, actor, hull) {
+    if leases(ctx.w, actor, hull)
+        || crate::port::coop::helm_of(ctx.w, actor).is_some_and(|h| h.hull == hull)
+    {
         return Some(Right::Lessee);
     }
     custody.map(|_| Right::Salvor)
@@ -593,13 +611,15 @@ pub fn order_goods(jobs: &[QuotedJob]) -> Vec<GoodUnits> {
 pub fn source_carrier(w: &World, hull: ObjId, facility: &Facility) -> Result<ObjId, String> {
     let carrier = match facility.class {
         FacilityClass::CarrierBay => facility.carrier,
-        FacilityClass::Workshop => match w
-            .module_state::<TacsimStore>()
-            .and_then(|s| s.bay_hull(hull))
-        {
-            Some(BayHullState::Present(row)) => row.berth.as_ref().map(|b| b.carrier),
-            _ => None,
-        },
+        FacilityClass::Workshop => facility.carrier.or_else(|| {
+            match w
+                .module_state::<TacsimStore>()
+                .and_then(|s| s.bay_hull(hull))
+            {
+                Some(BayHullState::Present(row)) => row.berth.as_ref().map(|b| b.carrier),
+                _ => None,
+            }
+        }),
     }
     .ok_or("That hull came off no carrier, so there is no hold to draw from or lay into.")?;
     match crate::port::ship::berth_of(w, carrier) {
@@ -788,7 +808,12 @@ fn take(
         return Err("That hull has been scrapped.".to_owned());
     }
     let (facility, quote) = quote_here(ctx.w, hull)?;
-    if ctx.w.get(ctx.actor).and_then(|o| o.location) != Some(facility.room) {
+    let in_facility = ctx.w.get(ctx.actor).and_then(|o| o.location) == Some(facility.room)
+        || (facility.carrier == Some(hull)
+            && (crate::space::commands::hull_aboard_for_actor(ctx.w, ctx.actor) == Some(hull)
+                || ctx.w.get(ctx.actor).and_then(|o| o.location)
+                    == ctx.w.get(hull).and_then(|o| o.location)));
+    if !in_facility {
         return Err(format!(
             "Orders for that hull are taken in the {} it stands in.",
             facility.class.word()
@@ -840,8 +865,17 @@ fn take(
     dry_run(ctx, hull, ctx.actor, &custody, &picked, &fitted)
         .map_err(|error| format!("That work cannot be done as ordered: {error}."))?;
     // GC.8b: the goods come from the carrier's hold, checked now and drawn at completion.
-    let goods = order_goods(&picked);
+    let mut goods = order_goods(&picked);
     let vault = if goods.is_empty() && fit.is_none() {
+        None
+    } else if facility.class == FacilityClass::Workshop
+        && facility.carrier == Some(hull)
+        && fit.is_none()
+        && source_hold(ctx.w, hull, &facility)
+            .and_then(|v| hold_carries(ctx, v, &goods).map(|()| v))
+            .is_err()
+    {
+        goods.clear();
         None
     } else {
         berth_stands(ctx, ctx.actor, &record)?;
@@ -968,7 +1002,20 @@ pub fn cancel_order(ctx: &mut Ctx<'_>, hull: ObjId) -> Result<(), String> {
 /// facility or changed since the order was taken.
 fn refused_now(w: &World, hull: ObjId, order: &BayOrder) -> Option<&'static str> {
     let here = match order.class {
-        FacilityClass::Workshop => w.get(hull).and_then(|o| o.location),
+        FacilityClass::Workshop => w
+            .get(hull)
+            .and_then(|o| o.location)
+            .filter(|loc| *loc == order.facility)
+            .or_else(|| {
+                facility_of(w, hull)
+                    .ok()
+                    .filter(|f| {
+                        f.class == order.class
+                            && f.room == order.facility
+                            && f.carrier == Some(hull)
+                    })
+                    .map(|f| f.room)
+            }),
         FacilityClass::CarrierBay => interior_of(w, hull).map(|(room, _)| room),
     };
     let Some(before) = mush_tactics::module::unit_of(w, hull) else {

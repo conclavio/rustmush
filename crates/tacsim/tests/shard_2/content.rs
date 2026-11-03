@@ -2763,7 +2763,7 @@ fn m3_the_stock_class_table_is_the_doc_17_table() {
 
 /// **The Dray's pin** (doc 18 cut IC2; doc 18 §4.2, D-18-29). Re-signed in
 /// place under `TACSIM_WRITE_CONTENT=1` and copied here by hand.
-const DRAY_DIGEST: &str = "b40cfff4943616ec798534fee10a7a995433477ef248a5875a87b69b53b9e372";
+const DRAY_DIGEST: &str = "89093a73c7680e0f8c700412aa17aaec188f0c0b7ef617970e640ff8513ee523";
 
 /// **The goods table's pin** (doc 18 cut IC2; doc 18 §4.3): the canonical digest
 /// of `content/market/goods.json` under `tacsim.goods.v1`. Printed under
@@ -3601,7 +3601,7 @@ const TV_DIGEST: &str = "26744d62f2c42b4cd1a2c4a9d6af0cedd290ae6095c5cc5c10c77ad
 
 /// **The Dray-P's pin** (doc 20 cut SM.3a; §4.3, D-20-7). Re-signed in place
 /// under `TACSIM_WRITE_CONTENT=1` and copied here by hand.
-const DRAY_P_DIGEST: &str = "bdf82f880760284f9da6246de83e97059cd783d7cc7a254d88d4f7fc34ad972c";
+const DRAY_P_DIGEST: &str = "d07737c6b0fb34dcf17976f408c6f12b80ba0b6a7820c8ec700411df84287adb";
 
 /// **The tools' pins** (doc 20 cut SM.3a; §4.1): each tool's canonical digest
 /// under `tacsim.tools.v1`. Printed under `TACSIM_WRITE_CONTENT=1` and copied here
@@ -3911,6 +3911,7 @@ fn sm3a_the_dray_p_is_the_dray_with_a_bay() {
     let relative = "units/dray_p.json";
     if writing() {
         resign(relative, "DRAY_P_DIGEST");
+        resign("units/corvette.json", "CORVETTE_DIGEST");
         return;
     }
     let pack = tacsim::pack::load_pack(content::DRAY_P_JSON)
