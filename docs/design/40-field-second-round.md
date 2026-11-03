@@ -23,8 +23,8 @@ and Core carry a condition word like every part (`mush-tactics/src/unit.rs:341`,
 is `detections`' early return, not `sensor_pass`'s); a lowered heat ceiling never cools a hull
 (`heat.rs:127–130` returns before the clamp, `weapons.rs:1102–1108` refuses the hot shot); and
 `line_to` proposes no eye heights (`stock_mind.rs:634–647`, the default at both ends). The
-protocol is doc 23 Draft 0.10's D-23-23, its five steps stated once more here with Q-23-21's
-premise as a conditional. Two questions are new and open, Q-40-24 and Q-40-25; no ruling
+protocol is doc 23 Draft 0.10's D-23-23, its five-step default and its six-step alternative both
+stated here, keyed to Q-23-21 as doc 23 §17.4 keys them. Two questions are new and open, Q-40-24 and Q-40-25; no ruling
 changed. Draft 0.3's anchors are at
 `f146734e`, where `join.rs`, `state.rs`, `admit.rs`, `carrier.rs`, `record.rs`, `tow.rs` and
 `raiders.rs` moved by a few lines since `c83c2eff` (§3's table keeps its lines).
@@ -369,13 +369,37 @@ unlicensed hull but the first, which it skips:
    slot are released. A field that demotes first is no abort: the ramp act goes down onto open
    ground under its claim, doc 23's ordinary sortie.
 
-**The premise, conditional.** Step 1 rests on doc 23's Q-23-21, open for the owner: D-23-21
-proposes the claim opens before the launch, amending the accepted D-23-13 (the Open on the fire
-after the finish). Should the owner keep D-23-13 with a reservation ledger instead, step 1 becomes
-a reservation of the seats at the dispatch and the Open on the fire after the finish, and step 3's
-check-out waits one tick at the ramp for an owed claim before sealing; nothing else here moves.
-FR.3 builds steps 2 to 5 for every hull, with step 3's read of `RigRecord.claim`, and step 1 is
-doc 23's S.4b.
+**The premise, and the other shape.** Step 1 rests on doc 23's Q-23-21, open for the owner:
+D-23-21 proposes the claim opens before the launch, amending the accepted D-23-13 (the Open on
+the fire after the finish). Doc 23 §17.4 (its Draft 0.10, `c4772ce0`) carries both shapes keyed
+to that question, and so does this section. Under Q-23-21's alternative — D-23-13 kept, with a
+reservation ledger — the protocol is six steps, the same in substance as doc 23's alternative
+text:
+
+1. **Accepted** — the prepare takes the cap over the one count, the cycle's slot and, for a
+   licensed hull, the licence seat and the compute seat, recorded on the pending row and the
+   dispatch: the reservation ledger, over which D-23-16's count then runs beside the book's
+   active claims. The dispatch captures the `Execution` whole onto the act (boxed), so the Open
+   opens from it: today the act carries only `SealFacts` and the licence (`DispatchSeal`,
+   `surface/dispatch.rs:40–47`), and an Open on a later fire that re-read the holding would be a
+   second admission over a source that may have been edited since (doc 23's review item 23-2).
+2. **Landed** — step 2 above.
+3. **Claim opened** (licensed only) — the next surface fire opens the claim from the captured
+   execution, as the operator, with the hull on open ground under no mark (D-23-13).
+4. **Checked out and joined** — step 3 above, the check-out waiting one tick at the ramp for an
+   owed claim before it seals.
+5. **Retried** — step 4 above, the claim open and untouched.
+6. **Aborted** — step 5 above, with the close kind of a hull the host puts back into its own
+   bay after its Open: `ReturnedToBase { base: its own carrier }`, the staff home's precedent
+   (`surface/recovery.rs:1043–1048`); `RecoveredToBase` names a recoverer that is not the hull's
+   own hangar (the second carrier, the salvage load, `surface/tow.rs:1626–1628`) and is never
+   this close. A claim still `Owed` takes doc 23's terminal tombstone (its review item 23-4).
+
+Under the default, steps 1 and 3 of this shape collapse into the Open in the bay and the pending
+row carries the cap and the launch cycle alone; steps 2, 4, 5 and 6 read the same under both.
+The field tick as the one caller with a `Ctx` (the launch rule above) holds under both. FR.3
+builds the shared steps for every hull, with the read of `RigRecord.claim`, and the claim's own
+step is doc 23's S.4b under whichever shape Q-23-21 takes.
 
 **A seal defect on the same path**, listed for doc 23's fix thread and not for a cut here: a DT
 `+sortie/launch` seals the ROM with an empty armament list (`prepare.rs:868–872`, `&[]` into
