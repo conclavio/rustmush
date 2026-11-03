@@ -255,6 +255,8 @@ Every cut after `SF.R0` targets **one real engine seam** and proves its acceptan
 
 ### 10.3 Post-Review Seam Remediation (`SF.R9` – `SF.R16`, `35b` §8)
 
+> **Reviewed in [doc 35c](35c-remediation-train-review.md) (2026-11-03, at `f1b2a1e4`).** The rows below were written by the `SF.R16` landing commit and do not match the PR bodies or the tree (35c §3: the scopes are swapped and the named symbols do not exist). Read 35c §7 for what each cut built and §9 for the `SF.R17`–`SF.R24` plan that follows; the correction of this table is 35c §8 #2.
+
 | Cut | Scope | Engine Seam | Acceptance Criteria |
 |---|---|---|---|
 | **SF.R9** | **Hold Promoted Interdictions Across Engine Ticks & Step Bubbles on 1:1 Wall Time (`35b` §3.1, §3.2) (Built, #332)**: `step_promoted_journeys` checks `tacsim.space.interdiction`; `SpaceBubbleBook::step_active_bubbles` takes `now_ms: u64` and computes `dt_wall_ms = (now_ms - last_wall_step_ms).min(MAX_BUBBLE_TICK_STEP_MS)` (`D-35-3`, `D-35-5`) | `mush-sim::journey::step_promoted_journeys`, `Registrar::tick` | `tests/shard_10/voyage.rs` (`sfr9_promoted_interdiction_holds_across_full_engine_ticks_and_steps_on_wall_clock`): a promoted ship stays in its bubble across three `tick_world_at_wall_ms` calls at `dt_ic = 3_600` (`500 ms` apart) and advances `1_500 ms` of bubble wall time. |
