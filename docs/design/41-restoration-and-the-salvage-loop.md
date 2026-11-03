@@ -3,8 +3,9 @@
 Draft 0.3, 2026-11-03, docs only. Surveyed against `origin/main` at `c83c2eff` (PR #339, SF.R15; doc
 36a's lanes 1, 2, 4 and 5 merged as PRs #334, #343, #342 and #346), the round-2 review's anchors
 re-verified by a read-only lane at `f146734e` (lane 3 merged as PR #340, `1441fa29`), with
-[doc 39](39-industry-production-chain.md) (PR #347, Draft 0.4 at `2a8bcfb7`) stacked under it so the
-README row lands after doc 39's. This is the
+[doc 39](39-industry-production-chain.md) (PR #347, merged into `main` at `9899e0eb` as Draft 0.5)
+and [doc 40](40-field-second-round.md) (PR #351, Draft 0.3, its branch merged here at `caf5bca4`)
+under it, so the README row lands after doc 40's. This is the
 document [doc 38](38-after-the-ic-phase-next-systems.md) §6 proposed as "Doc 41 — Restoration and
 the salvage loop, second round": categories B (restoration away from port), C's tug half (heavy
 recovery), D (the loop's close, forensics, crime), the Q-36-46/47 seams with space, Q-38-6's
@@ -51,7 +52,8 @@ what a port does with her; which evidence source each contest kind reads; what p
 and quarantines, and on what proof; and how the space tow rides the same path. Each gets a section
 in §4 with what exists, what the rulings require and the questions it raises; §5 is the owner survey
 (Q-41-1..27 ruled; Q-41-28 and Q-41-29 open since Draft 0.3); §6 the plan, cuts RS.0–RS.9, ordered after doc 39's IN.1, IN.4,
-IN.8 and IN.9 (Draft 0.4's numbering) where it depends on them.
+IN.8 and IN.9 (the numbering of doc 39 as merged, Draft 0.5, unchanged since its Draft 0.4) where it
+depends on them.
 
 ## 2. What binds this survey, and what it leaves alone
 
@@ -59,7 +61,7 @@ IN.8 and IN.9 (Draft 0.4's numbering) where it depends on them.
 
 | Ruling | What it fixes here |
 |---|---|
-| Q-38-5 (owner) | scrap is bounded by the hull's dry mass and worth at most about a fifth of its buyout; the mechanism is doc 39's (Q-39-16, Q-39-25, IN.8 as revised in Draft 0.4); this document only consumes it for remains scrap on a site and for the salvage organization's own scrapping |
+| Q-38-5 (owner) | scrap is bounded by the hull's dry mass and worth at most about a fifth of its buyout; the mechanism is doc 39's (Q-39-16, Q-39-25, IN.8 as merged in Draft 0.5); this document only consumes it for remains scrap on a site and for the salvage organization's own scrapping |
 | Q-38-6 (owner) | repossession charges damage past a wear allowance (provisional a tenth of the hull's points) **plus** a towage fee: what the lessor would pay a PC or NPC salvage team; the retrieval is a contract players may accept, going to an NPC towing company if not accepted within 28 IC days; deposit first, the remainder a debt on the lessee's ledger; the dormancy path pays the same; "space tow truck" is an occupation, so the contract runs on Q-36-46's one claim path |
 | Q-38-7 | the 28-day write-off bar follows a lease rig that came home a wreck: not returned within 28 days, title to Occator and the deposit forfeit |
 | Q-38-16 | field engineering is both halves: a tender role (a support rig carrying munition and part lots) on the surface tick with `+tv/<n> unjam\|stabilize\|rearm` on an adjacent casualty through the three mush-tactics functions; and the carrier's bay working berthed on a site at the 2× factor for minor repairs, drawing lots from her hold; replace and rebuild refused away from a workshop port |
@@ -93,7 +95,7 @@ The kernel half of recovery under fire — the towed casualty as a kernel unit, 
 bay act *inside a promoted field* waits on it and is doc 40's (§4.1 says what this document does
 while a field runs). The part lot's identity, mass and store, the yard, the pools, the scrap
 mechanism and the facility cost model are doc 39's (its rulings bind; its cuts IN.1, IN.4, IN.6, IN.8 and IN.9
-are referenced below "as revised in Draft 0.4" — doc 39 renumbered its cuts in Draft 0.4, round-2
+are referenced below "as merged in Draft 0.5" — doc 39 renumbered its cuts in Draft 0.4, round-2
 item 41-12c — and each dependent cut in §6 states its dependency
 in one line, never their mechanics). Crew aboard a hull in custody, capture and ejection are doc
 42's (round-2 item 41-3: doc 41 moves no occupants — a `held_for` return moves the hull, and doc 42's
@@ -426,7 +428,7 @@ The alternative, the prospector's hopper doubling as stores (accepting `stow.bul
 compartment the unload empties. (Q-41-1.)
 
 **What it carries, and what the library's numbers become.** The tender's reserves stop being
-plain numbers, and they follow doc 39 Draft 0.4's bale (its §4.10, Q-39-26): `industrial_parts` and
+plain numbers, and they follow doc 39's bale as merged (Draft 0.5 §4.10, Q-39-26): `industrial_parts` and
 `structural_alloys` are whole-tonne goods (`goods.json:52–54`), so a tender cannot give up 10 kg from
 its stores' pool; the tender's rig record carries a **bale** of its own (`RigRecord.bale { alloys_kg,
 fittings_kg }`, the twin of `BayHull.bale`), opened before launch by `+tv/<n> stores open`, which
@@ -441,7 +443,7 @@ in the first cut (no shipped terrain vehicle carries a beam; a charge transfer w
 does). (Round-2 item 41-4.) `tacsim.part.*` lots ride in the stores
 as cargo for a bay to fit later and are consumed by no field verb: a field replace is a workshop's
 work by Q-36-35, and the tender's "part lots" in Q-38-16 are read as the fittings a patch draws.
-The per-point figures are the tariff's until doc 39's IN.8 (as revised in Draft 0.4) lands and
+The per-point figures are the tariff's until doc 39's IN.8 (as merged in Draft 0.5) lands and
 the design's own `structure_kg_per_point` and `fittings_kg_per_point` after it (the tender reads
 whatever the repair draws, so IN.8 changes a constant, not the tender); the bale is IN.1's
 accounting. (Q-41-2.)
@@ -474,9 +476,10 @@ standing where a tug would; the library's `max_service_distance_cm` is set to 1,
 definition's `reach_cm`. The tender and the target must both be on the site's index or the ground
 (a casualty, a wreck, or an operational unit between fields; never a hull carried in tow, doc 27a
 §10). Inside a promoted field every `tend` act waits, as every surface act does (Q-CF-30); doc 40's
-coupled kernel unit is the only way a tender works under fire — and doc 40 is deciding how a coupled
-pair leaves at the ramp (release and demotion only, or a coupled withdraw and load; round-2 X-4), on
-which the tender's rules under fire hang.
+coupled kernel unit is the only way a tender works under fire — and how a coupled pair leaves a
+running field is doc 40's Q-40-25 (open in its Draft 0.3, raised by the same review as X-4; its
+default a coupled withdraw at the ramp, `+tv/<n> load go` on a promoted site), on which the tender's
+rules under fire hang.
 
 **What stabilize does to a casualty.** The library's rule stands: a Damaged section's internals
 are restored up to their maximum (`min(requested, missing)`), the condition reads `intact` at the
@@ -513,7 +516,7 @@ carrier bay at `CARRIER_TIME_FACTOR` 2, Rebuild and Replace in a workshop. Away 
 "needs a workshop" lines name where: "The Salt Moth's cannon is destroyed: a workshop must replace
 it — Occator's counter at Ceres Freeport, or Stickney Yards." (the ports whose `PortDef.workshop`
 exists, nearest first by the lane). The part a replace needs is doc 39's store (`Replace{lot:
-Store}`, IN.6 as revised in Draft 0.4) **and a carrier has no storefront, so she never replaces
+Store}`, IN.6 as merged in Draft 0.5) **and a carrier has no storefront, so she never replaces
 away from port**: that is the whole of IN.6's bearing on this document. What she draws from her
 hold is what the bay draws after doc 39's IN.1 — munitions, and alloys and fittings through the
 hull's opened bale (`BayHull.bale`, which a carrier's bay may continue, doc 39 §4.10) for the four
@@ -606,7 +609,7 @@ Flank or Urvara Reach (both Ceres sites, a landing from Ceres orbit inside a day
 = **5,250 cr** plus the lifter's landing propellant — against the prospector's 5,000 cr deposit and
 1,400 cr rent. The owner should see that figure: it says a rig abandoned on the ground costs its
 lessee the deposit and a debt before any damage, and it says a player with a tender and a bay earns
-a week's rent for an afternoon's tow, which is what "a viable occupation" means. Until doc 39's IN.4 (as revised in Draft 0.4)
+a week's rent for an afternoon's tow, which is what "a viable occupation" means. Until doc 39's IN.4 (as merged in Draft 0.5)
 lands, `slot_day` is a lane constant on Tycho's org row (2,100), replaced by the cost model's figure
 when it does. (Q-41-10.)
 
@@ -745,7 +748,7 @@ the hull's `TransferTitle` as its deliverable and the price as its payment, `Pub
 buyer the way a retrieval is accepted; the path doc 37 §5.4's "an armed hull for sale" already
 owes, listed at the port by `+salvage/forsale`, a provisional name), title passing at the buyer's
 acceptance; where the quote is over that line, or the hull is past repair, she is scrapped at
-Occator's workshop under doc 39's IN.8 as revised in Draft 0.4 (the yield into Occator's stock in
+Occator's workshop under doc 39's IN.8 as merged in Draft 0.5 (the yield into Occator's stock in
 whole tonnes, Tycho credited a fifth of the scrappable value after the working parts come out, no
 separate fee — Q-39-25's rule). Either way a raid's wrecks come back to the economy — as a hull for
 sale or as alloys — instead of filling a site record's object cap. Remains it never touches
@@ -1016,7 +1019,7 @@ What the four amendments of 2026-11-03 change beyond their own questions.
   unaccepted, or on a fresh contract at a PC's lapse; RS.5's story runs the lapse under the clock
   beside the no-acceptor variant.
 - **Tycho's designs are buildable (Q-41-15).** `tycho_crawler` and `tycho_lifter` are registered
-  designs with bills the catalogue build derives (doc 39 IN.9 as revised in Draft 0.4), authored in
+  designs with bills the catalogue build derives (doc 39 IN.9 as merged in Draft 0.5), authored in
   the kit with class, `dry_mass_t` and the bill inputs, not as house-only content; the Stickney yard
   builds them for anyone with the money and the materials; no lease programme offers them; Tycho's
   own two are house hulls it keeps. A player-built crawler is a tug at the carrier floor like
@@ -1089,7 +1092,7 @@ provisional unless the line says otherwise.
 **Q-41-2 — What the tender carries and consumes.**
 - **Proposed default:** `structural_alloys` and `industrial_parts` through a bale of the tender's
   own (whole tonnes opened before launch, kilograms consumed; Draft 0.3's alignment with doc 39
-  Draft 0.4's bale, round-2 item 41-4; at the tariff's kg a point until IN.8, the design's per-point
+  bale as merged in Draft 0.5, round-2 item 41-4; at the tariff's kg a point until IN.8, the design's per-point
   figures after it) and the four munition goods (for rearm, matched to a mount as the bay matches
   them, whole units); `tacsim.part.*` lots ride as cargo and no field verb fits one; no charge
   transfer in the first cut.
@@ -1210,7 +1213,7 @@ provisional unless the line says otherwise.
   It is good to have expensive things people can look forward to; the point was that they should
   not be achievable in the near term, and a significant bill of materials prices them high
   naturally. So `tycho_crawler` and `tycho_lifter` are registered designs the Stickney yard builds
-  at their bill (doc 39 IN.9 as revised in Draft 0.4; near 80,000 and near 300,000 cr by doc 39
+  at their bill (doc 39 IN.9 as merged in Draft 0.5; near 80,000 and near 300,000 cr by doc 39
   §4.4's provisional arithmetic); Tycho's own two are house hulls it keeps; no lease programme
   offers them this round, since a deposit's price would undo the point.
 - **Proposed default (as written):** a 120 t tracked `tycho_crawler` (`heavy`) and a 600 t
