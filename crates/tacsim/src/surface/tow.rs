@@ -1668,11 +1668,47 @@ impl TowProvider {
             .filter(|(_, qty)| **qty > 0)
             .map(|(good, qty)| (good.clone(), *qty))
             .collect();
+        let hopper = mush_inventory::EndpointRef(mush_economy::VaultId(facts.hopper));
+        // Doc 36a P2-2: the hopper's room, re-read here against the facts' limits; what landed
+        // in it since the command (a run's ore, another pickup) counts.
+        let mut load: BTreeMap<CanonicalId, u64> = facts
+            .limits
+            .keys()
+            .map(|measure| (measure.clone(), 0))
+            .collect();
+        for (good, per) in &facts.figures {
+            let qty = inventory
+                .available(txn, hopper, good)
+                .map_err(|_| integrity("the hopper cannot be read"))?;
+            for (measure, per_unit) in per {
+                let slot = load.entry(measure.clone()).or_insert(0);
+                *slot = slot.saturating_add(qty.saturating_mul(*per_unit));
+            }
+        }
+        for (good, qty) in &moves {
+            let Some(per) = facts.figures.get(good) else {
+                if facts.figures.is_empty() {
+                    break;
+                }
+                return Err(refused("pickup_no_stow"));
+            };
+            for (measure, per_unit) in per {
+                let slot = load.entry(measure.clone()).or_insert(0);
+                *slot = slot.saturating_add(qty.saturating_mul(*per_unit));
+            }
+        }
+        if facts
+            .limits
+            .iter()
+            .any(|(measure, limit)| load.get(measure).copied().unwrap_or(0) > *limit)
+        {
+            return Err(refused("pickup_no_room"));
+        }
         inventory
             .transfer_many(
                 txn,
                 mush_inventory::EndpointRef(mush_economy::VaultId(facts.spoil)),
-                mush_inventory::EndpointRef(mush_economy::VaultId(facts.hopper)),
+                hopper,
                 &moves,
             )
             .map_err(|error| {
@@ -1689,7 +1725,7 @@ impl TowProvider {
                 kind: crate::surface::claim::UnlawfulKind::Pickup,
                 actor,
                 subject: facts.object,
-                landholder: None,
+                landholder: facts.landholder,
                 at_ic: now,
             },
         );

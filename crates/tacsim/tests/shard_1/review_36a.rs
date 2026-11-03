@@ -22,6 +22,7 @@
 //! | P1-3 `TowOrders` clobber | [`p1_3_the_salvors_inspect_spam_does_not_kill_a_queued_contest`] |
 //! | P1-4 the attach race drops the pin | [`p1_4_a_second_tugs_attach_waits_and_the_first_tugs_pin_stands`] |
 //! | P1-10 `Release` lacks `promoted` | [`p1_10_a_release_draining_after_a_promotion_waits`] |
+//! | P2-2 the pickup never checks the hopper | [`p2_2_a_crate_the_hopper_cannot_take_is_refused_and_the_landholder_is_named`] |
 
 use mush_core::ObjId;
 use mush_economy::{ContractId, ContractState, EconomyStore};
@@ -30,8 +31,9 @@ use tacsim::surface::salvage::{ClaimSeam, SalvageCustody};
 use tacsim::surface::site_record::SiteRecord;
 
 use crate::driving::{
-    AHUNA, Rig, cid, command, launched, launched_at, on_pad, on_pad_as, on_pad_as_at, pilot,
-    port_map, ramp_at, run, seed_typed, stocked_tuned, store, to_cell, to_cell_on,
+    AHUNA, Rig, cid, command, hold_pool, launched, launched_at, on_pad, on_pad_as, on_pad_as_at,
+    pilot, port_map, ramp_at, run, seed_pool, seed_typed, stocked_tuned, store, to_cell,
+    to_cell_on,
 };
 use crate::field_gc4::{powerless, seconds_until};
 use crate::field_gc5::skip_to_ic;
@@ -69,6 +71,8 @@ pub(crate) struct Stage {
     pub far: ObjId,
     pub near_cell: (i64, i64),
     pub far_cell: (i64, i64),
+    /// The site staff hand the stage was built with (one per world: its name is unique).
+    pub staff: ObjId,
     pub ramp: (i64, i64),
 }
 
@@ -238,6 +242,7 @@ impl Stage {
             far,
             near_cell,
             far_cell,
+            staff: s,
             ramp,
         }
     }
@@ -786,5 +791,126 @@ fn p1_10_a_release_draining_after_a_promotion_waits() {
     assert!(
         after.units.iter().any(|left| left.unit == far),
         "the casualty is still indexed"
+    );
+}
+
+/// **P2-2** (doc 36a §3): the pickup moved a crate's goods into the hopper with no capacity
+/// check anywhere, told the player the rig "takes" the crate when it had only queued the act,
+/// and logged an unlawful pickup with no landholder. Now the command refuses a crate the hopper
+/// cannot take (the mining plan's merged-compartment rule), says "queued", and the prepare
+/// re-sums the hopper's pools against the facts' limits; the evidence row names the landholder.
+/// The last step's hopper fill between the queue and the landing is a staff fixture (a run's
+/// ore would do the same); the landing itself goes through the production path.
+#[test]
+fn p2_2_a_crate_the_hopper_cannot_take_is_refused_and_the_landholder_is_named() {
+    let mut stage = Stage::build();
+    let (near_cell, o, tug, l, s) = (stage.near_cell, stage.o, stage.tug, stage.l, stage.staff);
+    to_cell_on(&mut stage.rig, URVARA, tug, (near_cell.0 + 1, near_cell.1));
+    let _ = second(&mut stage.rig);
+    // Three crates beside the rig on L's block, their goods on Urvara's spoil: one too heavy
+    // for a 12 t hopper, one that fits, one that fits only while the hopper stays as it is.
+    for (qty, dx) in [(13_u64, 1_i64), (2, 2), (10, 0)] {
+        staff(
+            &mut stage.rig,
+            s,
+            &format!(
+                "@tacsim/site {URVARA} drop crate {qty} metal_ore {},{}",
+                near_cell.0 + dx,
+                near_cell.1 + 1
+            ),
+        );
+    }
+    let spoil = mush_economy::VaultId(
+        port_map(&stage.rig.tw, URVARA)
+            .site
+            .as_ref()
+            .and_then(|site| site.spoil_vault)
+            .expect("Urvara's spoil vault"),
+    );
+    seed_pool(
+        &mut stage.rig,
+        spoil,
+        "metal_ore",
+        25,
+        mush_inventory::LotId(9_601),
+    );
+    let crate_of = |rig: &mut Rig, qty: u64| -> u32 {
+        record(rig)
+            .objects
+            .iter()
+            .find(|object| {
+                matches!(
+                    &object.kind,
+                    tacsim::surface::site_record::GroundKind::Cargo { manifest, .. }
+                        if manifest.get(&cid("metal_ore")) == Some(&qty)
+                )
+            })
+            .map(|object| object.id)
+            .expect("the crate is on the record")
+    };
+    let (heavy, light, filling) = (
+        crate_of(&mut stage.rig, 13),
+        crate_of(&mut stage.rig, 2),
+        crate_of(&mut stage.rig, 10),
+    );
+    let hopper = tacsim::port::vehicle::hopper_of(stage.rig.tw.world(), tug).expect("a hopper");
+
+    // The heavy crate is refused at the command: nothing is queued, nothing moves.
+    let (out, queued) = command(&mut stage.rig, o, &format!("+tv/1 pickup {heavy} go"));
+    assert!(
+        out.contains("hopper has no room for a crate of 13 metal_ore")
+            && out.contains("12000 kg free")
+            && out.contains("13000 kg"),
+        "{out}"
+    );
+    assert!(queued.is_empty(), "nothing queued: {out}");
+    assert_eq!(hold_pool(&mut stage.rig.tw, hopper, "metal_ore"), 0);
+
+    // The light crate is queued (and said so), lands, and is logged against L's ground.
+    let (out, queued) = command(&mut stage.rig, o, &format!("+tv/1 pickup {light} go"));
+    assert!(
+        out.contains("will take a crate of 2 metal_ore aboard into its hopper: queued"),
+        "{out}"
+    );
+    assert!(!out.contains("takes "), "no claim of a done deed: {out}");
+    assert_eq!(queued.len(), 1, "one pickup: {out}");
+    crate::driving::land(&mut stage.rig, &queued[0]).expect("the pickup lands");
+    assert_eq!(hold_pool(&mut stage.rig.tw, hopper, "metal_ore"), 2);
+    let logged = record(&mut stage.rig);
+    let row = logged
+        .unlawful
+        .iter()
+        .find(|act| act.kind == tacsim::surface::claim::UnlawfulKind::Pickup)
+        .expect("the pickup off L's ground is evidence");
+    assert_eq!(
+        (row.actor, row.subject, row.landholder),
+        (o, light, Some(l))
+    );
+
+    // The filling crate fits now (2 t + 10 t); queued, then the hopper takes 1 t more before
+    // the landing, and the prepare's re-check refuses it.
+    let (out, queued) = command(&mut stage.rig, o, &format!("+tv/1 pickup {filling} go"));
+    assert_eq!(queued.len(), 1, "queued while it fit: {out}");
+    seed_pool(
+        &mut stage.rig,
+        hopper,
+        "metal_ore",
+        1,
+        mush_inventory::LotId(9_602),
+    );
+    let refused =
+        crate::driving::land(&mut stage.rig, &queued[0]).expect_err("the hopper is now short");
+    assert!(refused.contains("pickup_no_room"), "{refused}");
+    assert_eq!(
+        hold_pool(&mut stage.rig.tw, hopper, "metal_ore"),
+        3,
+        "nothing moved"
+    );
+    assert!(
+        record(&mut stage.rig)
+            .objects
+            .iter()
+            .any(|object| object.id == filling),
+        "the crate is still on the ground"
     );
 }
