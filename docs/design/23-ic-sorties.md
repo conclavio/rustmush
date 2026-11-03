@@ -1507,7 +1507,9 @@ M8g's "To S.4b" stories (the pending-transfer refusal and the IC audit over a dr
 real claim. Test: a rig that classified a raider in the field story's first field may `@mind/claim`
 it after, a rig that only detected it may not, a blind radio recipient — a hull that held the
 contact only over the mesh — may not, the ring survives a reboot, and a bystander who saw nothing
-is refused with the one sentence.
+is refused with the one sentence. *As built: [23-cut-notes.md](23-cut-notes.md) S.4b-T (the producer, the
+ring and the observer rule at both sizes; the filed claim and M8g's two "To S.4b" stories stay
+with S.4b, which mints the claim they read).*
 
 ### 17.11 Decisions proposed here
 

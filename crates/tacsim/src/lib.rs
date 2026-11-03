@@ -1265,6 +1265,8 @@ impl GameModule for TacsimRuleset {
         field::boot::read(ctx, &kv);
         // Doc 32 cut CF.5: the crew records.
         field::crew::read(ctx, &kv);
+        // Doc 23 cut S.4b-T: every author's earned-contacts ring.
+        minds::earned_contacts::read(ctx, &kv);
         // Doc 35 cut SF.R8 (`D-35-12`): hydrate space bubbles, free-flight records,
         // open-epoch derelicts, paused docking sessions, and 48h salvage claims.
         space::boot_read(ctx, &kv);

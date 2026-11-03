@@ -100,7 +100,46 @@ impl Roster {
         mods.push(comp::content_module_with(true, true).expect("the content module composes"));
         mods
     }
+
+    /// [`Self::modules`] under a mind commerce (doc 23 cut S.4b-T: the Registry's claim channel
+    /// over a field world): main's commerce twin of the domain roster and its
+    /// `configure_tacsim` over the same test-world layer, as `excursions.rs`'s roster composes it.
+    pub(crate) fn modules_with(
+        self,
+        commerce: Option<&CommerceFactory>,
+    ) -> Vec<Box<dyn mush_core::GameModule>> {
+        use tacsim::composition as comp;
+
+        let Some(prepare) = commerce else {
+            return self.modules();
+        };
+        let commerce = prepare();
+        let game = tacsim::GameEconomyConfig::default();
+        let (mut mods, inventory) = comp::domain_modules_with_mind_commerce(
+            EconomyConfig::default(),
+            mush_atlas::AtlasConfig::default(),
+            &game,
+            &commerce,
+        )
+        .expect("the commerce roster composes");
+        mods.push(comp::npc_module(comp::npc_agent_adapter()));
+        let layer = tacsim::TacsimRuleset::with_game_content(self.0, true)
+            .with_inventory(inventory)
+            .with_unit_authority()
+            .with_test_world(true);
+        mods.push(Box::new(
+            commerce
+                .configure_tacsim(layer)
+                .expect("the commerce configures the test-world layer"),
+        ));
+        mods.push(comp::content_module_with(true, true).expect("the content module composes"));
+        mods
+    }
 }
+
+/// **How a reboot prepares its mind commerce** (doc 23 cut S.4b-T), when the rig has one.
+pub(crate) type CommerceFactory =
+    Arc<dyn Fn() -> tacsim::composition::mind_commerce::MindCommerce + Send + Sync>;
 
 /// A fixed gateway-account oracle (`match_lifecycle.rs`'s precedent).
 #[derive(Default)]
@@ -120,6 +159,8 @@ pub(crate) struct Rig {
     pub(crate) oracle: Arc<MapOracle>,
     pub(crate) store: HashMap<SmolStr, mush_core::ModuleBootData>,
     pub(crate) typed: BTreeMap<(SmolStr, SmolStr), serde_json::Value>,
+    /// Doc 23 cut S.4b-T: the mind commerce every reboot composes, if any (`claim_rig`).
+    pub(crate) commerce: Option<CommerceFactory>,
 }
 
 pub(crate) fn no_refused_writes(tw: &TestWorld) {
@@ -151,7 +192,7 @@ pub(crate) fn boot_over(
     keyed: bool,
     cfg: &TacsimConfig,
 ) -> TestWorld {
-    boot_over_typed(world, store, None, keyed, cfg)
+    boot_over_typed(world, store, None, keyed, cfg, None)
 }
 
 /// [`boot_over`], with `typed_first` hydrated before any module's load hook runs when given:
@@ -163,11 +204,15 @@ fn boot_over_typed(
     typed_first: Option<&BTreeMap<(SmolStr, SmolStr), serde_json::Value>>,
     keyed: bool,
     cfg: &TacsimConfig,
+    commerce: Option<&CommerceFactory>,
 ) -> TestWorld {
     let (_, registry) = mush_testkit::boot_world();
-    let mut engine =
-        mush_core::Engine::with_modules(world, registry, Roster(cfg.clone()).modules())
-            .expect("the roster composes");
+    let mut engine = mush_core::Engine::with_modules(
+        world,
+        registry,
+        Roster(cfg.clone()).modules_with(commerce),
+    )
+    .expect("the roster composes");
     if let Some(typed) = typed_first {
         hydrate(&mut engine, typed);
     }
@@ -211,6 +256,7 @@ pub(crate) fn stocked_under(keyed: bool, cfg: TacsimConfig) -> Rig {
         oracle,
         store: HashMap::new(),
         typed: BTreeMap::new(),
+        commerce: None,
     };
     sweep(&mut rig.tw, 120);
     stock(&mut rig);
@@ -280,6 +326,7 @@ pub(crate) fn reboot_with(rig: Rig, reconnect: &[ObjId], keyed: bool) -> Rig {
         oracle,
         mut store,
         typed,
+        commerce,
     } = rig;
     fold_module_ops_into(&mut store, tw.take_module_ops());
     let mut world = tw.into_engine().world;
@@ -291,7 +338,14 @@ pub(crate) fn reboot_with(rig: Rig, reconnect: &[ObjId], keyed: bool) -> Rig {
     for id in connected {
         world.set_connected(id, false);
     }
-    let mut tw = boot_over_typed(world, store.clone(), Some(&typed), keyed, &cfg);
+    let mut tw = boot_over_typed(
+        world,
+        store.clone(),
+        Some(&typed),
+        keyed,
+        &cfg,
+        commerce.as_ref(),
+    );
     with_offer_keys(&mut tw);
     install_oracle(&mut tw, &oracle);
     for who in reconnect {
@@ -303,6 +357,7 @@ pub(crate) fn reboot_with(rig: Rig, reconnect: &[ObjId], keyed: bool) -> Rig {
         oracle,
         store,
         typed,
+        commerce,
     }
 }
 

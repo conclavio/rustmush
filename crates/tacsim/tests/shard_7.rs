@@ -27,6 +27,8 @@ mod support;
 #[path = "support/vertex.rs"]
 mod vertex;
 
+#[path = "support/field/claim_rig.rs"]
+mod claim_rig;
 #[path = "shard_7/cockpit.rs"]
 mod cockpit;
 #[path = "support/field/driving_rig.rs"]
