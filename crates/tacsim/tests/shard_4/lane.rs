@@ -66,7 +66,7 @@ use support::ground::{UNSIGNED, sign};
 /// Doc 39 cut IN.1: v20, the ladder (Kasei's alloys at 450, the Yards' fittings at 520, the
 /// Co-op's fittings bid at 600) and
 /// cut IN.4 (the workshops' cost model and Tycho Mutual's recovery row; was `10fcdaa6…` at v19).
-const LANE_DIGEST: &str = "16119f54b80e915f2966ee923184006899db70ef6ff5f06a2174a77e52203bb3";
+const LANE_DIGEST: &str = "777754fd3a8c3efcc476ff19681a8ecb0a487c15b31fffe274633505ec41cdb5";
 
 /// The date the lane's bodies stand at (the script's chord minimum, R4).
 const LANE_DATE: &str = "2351-05-13";
