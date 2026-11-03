@@ -20,21 +20,31 @@
 //!   friend of the shooter's (by owner or organization, `parties::friends_of`), the fire
 //!   was friendly fire: the change is written naming the shooter party's leader as the one who
 //!   may void it, and the leader is offered the void at demotion. `+field/void` cancels every
-//!   change the offer holds. The offer lasts until the leader's next command or
+//!   open change naming the leader. The offer lasts until the leader's next command or
 //!   [`VOID_WINDOW_IC_S`] of IC time, whichever is first. The change and its void are written
-//!   together in `mush-faction`'s receipts: the grant names who may void it, and a void is a
-//!   record of the same cause beside it.
+//!   together in `mush-faction`'s receipts: the grant names who may void it and carries its
+//!   window (doc 40 cut FR.2, Q-40-16), and a void is a record of the same cause beside it.
+//! - **A director raid's friendly fire** (doc 40 cut FR.2, Q-40-18): when the shooter party is a
+//!   raider the raid director landed (`FieldParty::director`), its leader voids it in the
+//!   demotion's own batch, with [`DIRECTOR_VOID_REASON`]; nobody is offered it. A staff-seeded
+//!   raider's leader is offered the void as any leader is, and nothing takes it for it.
 //! - **A void end** (a panic, a stall, a ledger overflow) commits nothing the arena derived, so it
 //!   writes no standing either.
 //!
-//! The tally and the offers are RAM. A restart mid-field loses the rounds counted before it, and a
-//! restart inside a void window closes the window: the change stands.
+//! **What is durable** (doc 40 cut FR.2; Q-38-24, Q-40-15..17). The tally rides the live record
+//! ([`super::FieldLive::tally`]), written at the snapshot cadence: a restart resumes from the
+//! snapshot with the rounds it had counted there and counts the pulses it re-fights again. The
+//! offer rides the grant, so it outlives the field and a restart. "The leader's next command" is
+//! read in the command path: `+field/void` refuses an offer when the leader's input before this
+//! one (mush-core's `SessionStat::prev_input`) came after the offer opened. No sweep runs. The
+//! stamps are wall seconds, so a command typed in the demotion's own second is not seen as after
+//! it; and a reconnect seeds the stamp afresh, so a command typed before a drop is forgiven.
 
 use std::collections::{BTreeMap, BTreeSet};
 
 use mush_core::{CanonicalId, Ctx, ObjId, World};
 
-use super::FieldBook;
+use super::{FieldBook, FireRow};
 use crate::arena::PartyId;
 use crate::arena::ledger::{EventKind, LedgerEvent};
 use crate::arena_task::MatchId;
@@ -62,29 +72,38 @@ pub const VOIDED: &str =
 pub const NOTHING_TO_VOID: &str = "Nothing your party's fire cost is yours to void now.";
 /// The reason every void records.
 const VOID_REASON: &str = "Voided by the party's leader as friendly fire.";
+/// **The reason a director raid's void records** (doc 40 cut FR.2, Q-40-18).
+pub const DIRECTOR_VOID_REASON: &str =
+    "Voided by the raid's leader as friendly fire, at the field's demotion.";
 
-/// **The rounds each pair of parties exchanged**, per site with a field running: by (shooter,
-/// victim).
-#[derive(Clone, Debug, Default)]
-pub(crate) struct FireTally(BTreeMap<CanonicalId, BTreeMap<(PartyId, PartyId), u32>>);
-
-/// One leader's open void offer.
-#[derive(Clone, Debug, PartialEq, Eq)]
-struct Offer {
-    /// The causes it may void.
-    causes: Vec<String>,
-    /// The wall second it opened: an input after it closes it.
-    opened_at: i64,
-    /// The IC second it closes at.
-    until_ic: i64,
+/// A site's tally as the live record's rows ([`super::FieldLive::tally`]), in pair order.
+#[must_use]
+pub(crate) fn rows(counts: Option<&BTreeMap<(PartyId, PartyId), u32>>) -> Vec<FireRow> {
+    counts
+        .into_iter()
+        .flatten()
+        .map(|((shooter, victim), rounds)| FireRow {
+            shooter: *shooter,
+            victim: *victim,
+            rounds: *rounds,
+        })
+        .collect()
 }
 
-/// **Every open void offer**, by leader.
-#[derive(Clone, Debug, Default)]
-pub(crate) struct VoidOffers(BTreeMap<ObjId, Offer>);
+/// A site's tally from the live record's rows (a resume's seed).
+#[must_use]
+pub(crate) fn seed(rows: &[FireRow]) -> BTreeMap<(PartyId, PartyId), u32> {
+    let mut counts = BTreeMap::new();
+    for row in rows {
+        let count: &mut u32 = counts.entry((row.shooter, row.victim)).or_default();
+        *count = count.saturating_add(row.rounds);
+    }
+    counts
+}
 
 /// **A chunk of a field's black box passed** (the bridge's ledger branch): count each round that
-/// reached another party's unit. Any other task's chunk is not a field's and is ignored.
+/// reached another party's unit. Any other task's chunk is not a field's and is ignored. The count
+/// is RAM until the next snapshot lays it on the live record (`super::on_snapshot`).
 pub(crate) fn note_chunk(ctx: &mut Ctx<'_>, task: MatchId, events: &[LedgerEvent]) {
     let Some((site, pairs)) = ctx.w.module_state::<FieldBook>().and_then(|book| {
         let site = book.site_of_task(task)?.clone();
@@ -106,8 +125,8 @@ pub(crate) fn note_chunk(ctx: &mut Ctx<'_>, task: MatchId, events: &[LedgerEvent
     if pairs.is_empty() {
         return;
     }
-    if let Some(tally) = ctx.w.module_state_mut::<FireTally>() {
-        let counts = tally.0.entry(site).or_default();
+    if let Some(book) = ctx.w.module_state_mut::<FieldBook>() {
+        let counts = book.tally.entry(site).or_default();
         for pair in pairs {
             let count = counts.entry(pair).or_default();
             *count = count.saturating_add(1);
@@ -145,13 +164,14 @@ fn live(w: &World, who: ObjId) -> bool {
 }
 
 /// **At demotion** (this module's head): write each pair's standing, offer the void of friendly
-/// fire to its leader, and forget the site's tally. Called by `close::on_ended` while the host
-/// still holds the field. `void` is a void end, which writes nothing.
+/// fire to its leader (or void it, for a director raid), and forget the site's tally. Called by
+/// `close::on_ended` while the host still holds the field. `void` is a void end, which writes
+/// nothing.
 pub(crate) fn at_demotion(ctx: &mut Ctx<'_>, site: &CanonicalId, void: bool) {
     let counts = ctx
         .w
-        .module_state_mut::<FireTally>()
-        .and_then(|tally| tally.0.remove(site))
+        .module_state_mut::<FieldBook>()
+        .and_then(|book| book.tally.remove(site))
         .unwrap_or_default();
     if void || counts.is_empty() {
         return;
@@ -170,8 +190,11 @@ pub(crate) fn at_demotion(ctx: &mut Ctx<'_>, site: &CanonicalId, void: bool) {
     let prefix = cause_prefix(site, ordinal);
     let site_name = crate::surface::act::site_name(ctx.w, site);
     let party = |id: PartyId| parties.iter().find(|row| row.party == id);
-    let now_ic = ctx.w.world_ic_now().at;
-    let opened_at = ctx.w.now();
+    // Doc 40 cut FR.2 (Q-40-16): the window rides each grant, written once with it.
+    let window = mush_faction::VoidWindow {
+        opened_at: ctx.w.now(),
+        until_ic: ctx.w.world_ic_now().at.saturating_add(VOID_WINDOW_IC_S),
+    };
     for ((shooter, victim), rounds) in counts {
         let (Some(by), Some(at)) = (party(shooter), party(victim)) else {
             continue;
@@ -218,6 +241,7 @@ pub(crate) fn at_demotion(ctx: &mut Ctx<'_>, site: &CanonicalId, void: bool) {
                 &effects,
                 &reason,
                 voidable_by,
+                voidable_by.map(|_| window),
             ) {
                 Ok(_) => {
                     let line = STANDING_CHANGED
@@ -236,13 +260,22 @@ pub(crate) fn at_demotion(ctx: &mut Ctx<'_>, site: &CanonicalId, void: bool) {
                 }
             }
         }
-        if let Some(leader) = voidable_by
-            && !voidable.is_empty()
-        {
-            offer(ctx, leader, voidable, opened_at, now_ic);
-            let line = VOID_OFFERED.replace("{party}", &victim.letter().to_string());
-            ctx.out.sys_to_actor(leader, "tacsim.field", line);
+        let Some(leader) = voidable_by.filter(|_| !voidable.is_empty()) else {
+            continue;
+        };
+        if by.director {
+            // Q-40-18: a director raid voids its own friendly fire; nobody is offered it.
+            for cause in &voidable {
+                if let Err(error) =
+                    mush_faction::void_standing(ctx, cause, leader, DIRECTOR_VOID_REASON)
+                {
+                    tracing::warn!(site = %site, cause, %error, "tacsim: a director raid's friendly fire could not be voided");
+                }
+            }
+            continue;
         }
+        let line = VOID_OFFERED.replace("{party}", &victim.letter().to_string());
+        ctx.out.sys_to_actor(leader, "tacsim.field", line);
     }
 }
 
@@ -263,76 +296,28 @@ fn faction_names(w: &World, effects: &[mush_faction::StandingEffect]) -> String 
         .join(", ")
 }
 
-/// Open, or widen, `leader`'s offer: a later demotion's causes join it and its window restarts.
-fn offer(ctx: &mut Ctx<'_>, leader: ObjId, causes: Vec<String>, opened_at: i64, now_ic: i64) {
-    let Some(offers) = ctx.w.module_state_mut::<VoidOffers>() else {
-        return;
-    };
-    let entry = offers.0.entry(leader).or_insert_with(|| Offer {
-        causes: Vec::new(),
-        opened_at,
-        until_ic: now_ic,
-    });
-    for cause in causes {
-        if !entry.causes.contains(&cause) {
-            entry.causes.push(cause);
-        }
-    }
-    entry.opened_at = opened_at;
-    entry.until_ic = now_ic.saturating_add(VOID_WINDOW_IC_S);
+/// **Whether a grant's window is open now** (doc 40 cut FR.2, Q-40-17): inside its IC end, and
+/// nothing entered since it opened but the command reading it. `prev_input` is the voider's
+/// input before this one (`None` with no session, as an NPC's, or no input yet).
+fn open(now_ic: i64, prev_input: Option<i64>, window: mush_faction::VoidWindow) -> bool {
+    now_ic <= window.until_ic && prev_input.is_none_or(|prev| prev <= window.opened_at)
 }
 
-/// Whether `offer` is still open for `leader` now: inside its IC window, and no input of the
-/// leader's since it opened.
-fn open(w: &World, leader: ObjId, offer: &Offer) -> bool {
-    w.world_ic_now().at <= offer.until_ic
-        && w.session_stat(leader)
-            .is_none_or(|stat| stat.last_input <= offer.opened_at)
-}
-
-/// **The offers' sweep** (once a second on the field tick's period): an offer closes when its IC
-/// window ends or once its leader has entered anything since it opened. The leader's
-/// `+field/void` takes its offer in the same dispatch that stamps the input, so the void itself
-/// is never the command that closes it. Two inputs inside one sweep's second can let a void
-/// through after another command; a command in the very second of the demotion is not seen.
-pub(crate) fn tick(ctx: &mut Ctx<'_>, _tag: &str, _scene: Option<mush_core::SceneId>) {
-    let closed: Vec<ObjId> = ctx
-        .w
-        .module_state::<VoidOffers>()
-        .map(|offers| {
-            offers
-                .0
-                .iter()
-                .filter(|(leader, offer)| !open(ctx.w, **leader, offer))
-                .map(|(leader, _)| *leader)
-                .collect()
-        })
-        .unwrap_or_default();
-    if closed.is_empty() {
-        return;
-    }
-    if let Some(offers) = ctx.w.module_state_mut::<VoidOffers>() {
-        for leader in closed {
-            offers.0.remove(&leader);
-        }
-    }
-}
-
-/// **`+field/void`**: the actor voids every change its open offer holds.
+/// **`+field/void`**: the actor voids every open change naming it (doc 40 cut FR.2: each grant
+/// under `field:` it may void whose window is still open). The close is read here, in the command
+/// path: an offer closes at the actor's next command, so a void typed after another command is
+/// refused at once.
 pub(crate) fn void(ctx: &mut Ctx<'_>) {
     let actor = ctx.actor;
-    let offer = ctx
-        .w
-        .module_state_mut::<VoidOffers>()
-        .and_then(|offers| offers.0.remove(&actor));
-    // The deadline is read here too: the sweep runs once a second. The input stamp is this
-    // command's own, so it is not read.
-    let Some(offer) = offer.filter(|offer| ctx.w.world_ic_now().at <= offer.until_ic) else {
-        ctx.out.info(actor, NOTHING_TO_VOID.to_owned());
-        return;
-    };
+    let now_ic = ctx.w.world_ic_now().at;
+    let prev_input = ctx.w.session_stat(actor).and_then(|stat| stat.prev_input);
+    let causes: Vec<String> = mush_faction::voidable_causes(ctx.w, "field:", actor)
+        .into_iter()
+        .filter(|(_, window)| window.is_some_and(|window| open(now_ic, prev_input, window)))
+        .map(|(cause, _)| cause)
+        .collect();
     let mut voided = 0_usize;
-    for cause in &offer.causes {
+    for cause in &causes {
         match mush_faction::void_standing(ctx, cause, actor, VOID_REASON) {
             Ok(_) => voided += 1,
             Err(error) => {
@@ -390,26 +375,49 @@ mod tests {
                 Some(mush_core::LIMBO),
             )
             .expect("the leader");
+        let prev = |w: &World| w.session_stat(leader).and_then(|stat| stat.prev_input);
         w.set_now(1_000);
         w.session_start(leader);
         let ic = w.world_ic_now().at;
-        let offer = Offer {
-            causes: vec!["field:x:1:ab:2".to_owned()],
+        let window = mush_faction::VoidWindow {
             opened_at: 1_000,
             until_ic: ic.saturating_add(VOID_WINDOW_IC_S),
         };
-        assert!(open(&w, leader, &offer), "nothing typed since the demotion");
-        // The leader's next command.
+        // The void, typed first: nothing came before it.
+        w.set_now(1_003);
+        w.session_input(leader);
+        assert!(
+            open(ic, prev(&w), window),
+            "nothing typed since the demotion"
+        );
+        // Another command, then the void: the other command closed it.
         w.set_now(1_005);
         w.session_input(leader);
-        assert!(!open(&w, leader, &offer), "the next command closes it");
-        // A leader with no session (an NPC) keeps it only for the IC window.
-        let npc = ObjId(u32::MAX);
-        assert!(open(&w, npc, &offer));
-        let past = Offer {
-            until_ic: ic.saturating_sub(1),
-            ..offer
-        };
-        assert!(!open(&w, npc, &past), "the IC window ends it");
+        assert!(!open(ic, prev(&w), window), "the next command closes it");
+        // A reconnect seeds the stamp afresh: a void typed first after it is not refused.
+        w.session_end(leader);
+        w.set_now(1_010);
+        w.session_start(leader);
+        w.session_input(leader);
+        assert!(open(ic, prev(&w), window), "a reconnect forgives");
+        // A voider with no session (an NPC) keeps it only for the IC window.
+        assert!(open(ic, None, window));
+        assert!(
+            !open(window.until_ic.saturating_add(1), None, window),
+            "the IC window ends it"
+        );
+    }
+
+    #[test]
+    fn a_tally_round_trips_through_the_live_records_rows() {
+        let a = PartyId::nth(0).expect("A");
+        let b = PartyId::nth(1).expect("B");
+        let mut counts = BTreeMap::new();
+        counts.insert((a, b), 4_u32);
+        counts.insert((b, a), 1_u32);
+        let laid = rows(Some(&counts));
+        assert_eq!(laid.len(), 2);
+        assert_eq!(seed(&laid), counts);
+        assert!(rows(None).is_empty());
     }
 }

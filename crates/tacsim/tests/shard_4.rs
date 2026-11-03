@@ -31,6 +31,8 @@ mod vertex;
 mod arena_task;
 #[path = "shard_4/chart.rs"]
 mod chart;
+#[path = "support/field/claim_rig.rs"]
+mod claim_rig;
 #[path = "shard_4/conditions.rs"]
 mod conditions;
 #[path = "shard_4/core_replacement.rs"]

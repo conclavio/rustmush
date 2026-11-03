@@ -39,14 +39,14 @@ use mush_sim::tick::{MAX_ORDER_SCALAR, MIN_ORDER_SCALAR, OrderChannel, OrderValu
 use mush_sim::{DomainId, JourneyBook, SpatialState, StationId};
 
 use super::bubble::{
-    BubbleInputCommand, EmconPosture, HullStatus, LocalSpaceBubble, SpaceRelation, SpaceShipState,
-    SubsystemCrit,
+    BubbleInputCommand, EmconPosture, HullStatus, LocalSpaceBubble, SpaceShipState, SubsystemCrit,
 };
 use super::tick::{
     ActiveInterdictionBubble, FreeFlightGuidanceMode, SpaceBubbleBook, SpaceFreeFlightRecord,
     apply_bubble_command,
 };
 use super::weapons::LaserMode;
+use crate::arena::party::{Mark, Relation};
 
 /// The helm command verb (`+helm`).
 pub const HELM_VERB: &str = "+helm";
@@ -3175,9 +3175,11 @@ fn verify_hostile_fire_allowed(
         return Err(CmdError::msg(NO_SUCH_CONTACT));
     };
     match active.bubble.party_relation(attacker.party, target.party) {
-        SpaceRelation::Hostile => Ok(()),
-        SpaceRelation::Friendly => Err(CmdError::msg("Cannot fire on a friendly contact.")),
-        SpaceRelation::Neutral | SpaceRelation::Inspecting => {
+        Relation::Hostile => Ok(()),
+        Relation::Own | Relation::Friend => {
+            Err(CmdError::msg("Cannot fire on a friendly contact."))
+        }
+        Relation::Neutral | Relation::Unknown => {
             Err(CmdError::msg("Cannot fire on a non-hostile contact."))
         }
     }
@@ -3747,7 +3749,7 @@ fn helm_submit(ctx: &mut Ctx<'_>) -> Result<(), CmdError> {
                     active.bubble.set_party_relation(
                         super::picket::CUSTOMS_CORVETTE_PARTY,
                         super::tick::CARRIER_PARTY,
-                        SpaceRelation::Friendly,
+                        Some(Mark::Friendly),
                     );
                     if let Some(picket) = active.picket.as_mut() {
                         picket.inspection_status =
@@ -3791,7 +3793,7 @@ fn helm_submit(ctx: &mut Ctx<'_>) -> Result<(), CmdError> {
                     active.bubble.set_party_relation(
                         super::picket::CUSTOMS_CORVETTE_PARTY,
                         super::tick::CARRIER_PARTY,
-                        SpaceRelation::Friendly,
+                        Some(Mark::Friendly),
                     );
                     if let Some(picket) = active.picket.as_mut() {
                         picket.inspection_status =
@@ -3821,7 +3823,7 @@ fn helm_submit(ctx: &mut Ctx<'_>) -> Result<(), CmdError> {
             active.bubble.set_party_relation(
                 super::picket::CUSTOMS_CORVETTE_PARTY,
                 super::tick::CARRIER_PARTY,
-                SpaceRelation::Friendly,
+                Some(Mark::Friendly),
             );
             if let Some(picket) = active.picket.as_mut() {
                 picket.inspection_status = super::picket::PicketInspectionStatus::Cleared;
@@ -3876,7 +3878,7 @@ fn helm_run(ctx: &mut Ctx<'_>) -> Result<(), CmdError> {
         active.bubble.set_party_relation(
             super::picket::CUSTOMS_CORVETTE_PARTY,
             super::tick::CARRIER_PARTY,
-            SpaceRelation::Hostile,
+            Some(Mark::Hostile),
         );
         if let Some(picket) = active.picket.as_mut() {
             picket.inspection_status = super::picket::PicketInspectionStatus::RanThePicket;
@@ -4143,7 +4145,7 @@ fn validate_docking_initiation_gates(
                 && active
                     .bubble
                     .party_relation(ship.party, super::tick::CARRIER_PARTY)
-                    == SpaceRelation::Hostile
+                    == Relation::Hostile
             {
                 return Err(CmdError::msg(format!(
                     "Cannot initiate collar docking while hostile contact `{}` is still operational in the tactical bubble.",

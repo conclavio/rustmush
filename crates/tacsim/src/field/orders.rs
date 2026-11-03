@@ -436,6 +436,7 @@ mod tests {
             fire: None,
             owed_exits: Vec::new(),
             held: Vec::new(),
+            tally: Vec::new(),
         };
         (roster, live)
     }

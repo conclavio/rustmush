@@ -43,13 +43,14 @@ use smol_str::SmolStr;
 
 use super::bubble::{
     BubbleId, BubbleInputCommand, BubbleInputTape, BubbleSnapshot, DERELICT_WINDOW_S, HullStatus,
-    LocalSpaceBubble, SpacePartyId, SpaceRelation, SpaceShipState,
+    LocalSpaceBubble, SpaceShipState, admitted_party,
 };
 use super::custody::{
     check_in_space_unit, check_out_space_unit, instantiate_stock_space_unit,
     record_space_combat_to_black_box, register_derelict_salvage_in_book,
     space_ship_from_tactical_unit,
 };
+use crate::arena::party::{Mark, PartyId, Relation};
 use crate::field_ops::{
     CustodyTitleStatus, FieldUnitAssessment, OperationalState, RecoveryOpId, SalvageClaimBook,
 };
@@ -71,10 +72,10 @@ pub const COMBAT_STEP_WALL_MS: u32 = 1_000;
 pub const ORDNANCE_STEP_WALL_MS: u32 = 500;
 
 /// Party identifier for the promoted carrier's side inside an interdiction bubble.
-pub const CARRIER_PARTY: SpacePartyId = SpacePartyId(1);
+pub const CARRIER_PARTY: PartyId = admitted_party(0);
 
 /// Party identifier for the interdicting hostile picket inside an interdiction bubble.
-pub const INTERDICTOR_PARTY: SpacePartyId = SpacePartyId(2);
+pub const INTERDICTOR_PARTY: PartyId = admitted_party(1);
 
 /// Default standoff distance (`18,000 m`) at which an interdicting picket opens the bubble.
 pub const INTERDICTION_STANDOFF_M: i64 = 18_000;
@@ -274,7 +275,7 @@ impl ActiveInterdictionBubble {
         }
         let has_operational_hostile = self.bubble.ships.values().any(|ship| {
             ship.status == HullStatus::Operational
-                && self.bubble.party_relation(CARRIER_PARTY, ship.party) == SpaceRelation::Hostile
+                && self.bubble.party_relation(CARRIER_PARTY, ship.party) == Relation::Hostile
         });
         if has_operational_hostile || self.picket.is_some() || self.approaching_derelict {
             COMBAT_STEP_WALL_MS
@@ -338,7 +339,7 @@ impl ActiveInterdictionBubble {
         }
         !self.bubble.ships.values().any(|ship| {
             ship.status == HullStatus::Operational
-                && self.bubble.party_relation(CARRIER_PARTY, ship.party) == SpaceRelation::Hostile
+                && self.bubble.party_relation(CARRIER_PARTY, ship.party) == Relation::Hostile
         })
     }
 
@@ -2304,7 +2305,7 @@ fn step_interdictor_picket(
             .iter()
             .any(|t| t == "INTERDICTOR_STAND_DOWN_CLEARED")
         {
-            bubble.set_party_relation(CARRIER_PARTY, INTERDICTOR_PARTY, SpaceRelation::Neutral);
+            bubble.set_party_relation(CARRIER_PARTY, INTERDICTOR_PARTY, None);
             emitted.extend(tape.record_and_apply(
                 bubble,
                 BubbleInputCommand::CommandBurn {
@@ -2688,7 +2689,7 @@ fn build_interdiction_bubble(
         if let Some(def_laser) = interdictor_ship.lasers.get_mut(1) {
             def_laser.mode = super::weapons::LaserMode::Defense;
         }
-        bubble.set_party_relation(CARRIER_PARTY, INTERDICTOR_PARTY, SpaceRelation::Hostile);
+        bubble.set_party_relation(CARRIER_PARTY, INTERDICTOR_PARTY, Some(Mark::Hostile));
         bubble.insert_ship(interdictor_ship);
         ship_hulls.insert(interdictor_ship_id.clone(), interdictor_hull);
         (

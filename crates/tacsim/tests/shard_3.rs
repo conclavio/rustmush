@@ -29,6 +29,8 @@ mod vertex;
 
 #[path = "shard_3/capacity.rs"]
 mod capacity;
+#[path = "support/field/claim_rig.rs"]
+mod claim_rig;
 #[path = "shard_3/composition_edges.rs"]
 mod composition_edges;
 #[path = "shard_3/definitions.rs"]
