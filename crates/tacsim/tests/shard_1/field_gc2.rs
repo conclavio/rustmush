@@ -23,13 +23,15 @@ use tacsim::TacsimConfig;
 use tacsim::arena::ledger::{EventKind, LedgerEvent};
 use tacsim::arena::party::Relation;
 
-use crate::driving::{command, land, launched, on_pad, on_pad_as, stocked_tuned, to_cell, warm};
-use crate::field_host::{armed, egress, frame, seat, second, site_record, task, until};
+use crate::driving_rig::{
+    command, land, launched, on_pad, on_pad_as, stocked_tuned, to_cell, warm,
+};
+use crate::field_host_rig::{armed, egress, frame, seat, second, site_record, task, until};
 
 /// The lab tempo, a snapshot every half second, and the two intervals `quiet` and `idle`.
 fn tuned(quiet: u32, idle: u32) -> impl FnOnce(&mut TacsimConfig) {
     move |cfg: &mut TacsimConfig| {
-        crate::field_host::tune(cfg);
+        crate::field_host_rig::tune(cfg);
         cfg.field.disengage_s = quiet;
         cfg.field.idle_demote_s = idle;
     }
@@ -37,7 +39,7 @@ fn tuned(quiet: u32, idle: u32) -> impl FnOnce(&mut TacsimConfig) {
 
 /// **A's mark on the flight to the east**: one promotion, landed, and the field's task open.
 async fn declare(
-    rig: &mut crate::driving::Rig,
+    rig: &mut crate::driving_rig::Rig,
     rx: &mut tokio::sync::mpsc::Receiver<tacsim::arena_task::ArenaOut>,
     lines: &mut Vec<LedgerEvent>,
     a: ObjId,
@@ -52,7 +54,7 @@ async fn declare(
 }
 
 /// Whether `pilot`'s frame holds a Hostile contact near `at`.
-fn holds_hostile(rig: &crate::driving::Rig, pilot: ObjId, (cx, cy): (u16, u16)) -> bool {
+fn holds_hostile(rig: &crate::driving_rig::Rig, pilot: ObjId, (cx, cy): (u16, u16)) -> bool {
     frame(rig, pilot).is_some_and(|frame| {
         frame.contacts.iter().any(|contact| {
             contact.relation == Relation::Hostile
@@ -64,7 +66,7 @@ fn holds_hostile(rig: &crate::driving::Rig, pilot: ObjId, (cx, cy): (u16, u16)) 
 }
 
 /// Whether the field has demoted: no task, and the record's promotion closed.
-fn demoted(rig: &mut crate::driving::Rig) -> bool {
+fn demoted(rig: &mut crate::driving_rig::Rig) -> bool {
     task(rig).is_none() && site_record(rig).is_some_and(|record| record.open_field().is_none())
 }
 

@@ -19,14 +19,14 @@ use serde_json::{Value, json};
 use smol_str::SmolStr;
 use tacsim::surface::site_record::{KnownItem, KnownWhat};
 
-use crate::driving::{
+use crate::driving_rig::{
     Rig, act_go, command, finish, launched, map_frame, on_pad, on_pad_as, run, stocked_tuned,
     to_cell, warm,
 };
-use crate::field_host::{
+use crate::field_host_rig::{
     armed, egress, fragile, frame, pump, seat, second, site_record, task, tune, until, weapon_of,
 };
-use crate::site_record::{staff, staff_member};
+use crate::site_record_rig::{staff, staff_member};
 
 /// **The `arena.cockpit` keyframe `who` gets** through the feed's own query — the same payload a
 /// resyncing client is answered with, through the context the field's picture needs.
@@ -166,7 +166,7 @@ async fn cf4_one_picture_of_the_site_in_both_layers_and_what_a_party_remembers()
     // (2) A's fire order promotes the site; everyone on the ground is admitted.
     let (out, queued) = command(&mut rig, a, "+field/fire E");
     assert_eq!(queued.len(), 1, "one promotion: {out}");
-    crate::driving::land(&mut rig, &queued[0]).expect("the promotion lands");
+    crate::driving_rig::land(&mut rig, &queued[0]).expect("the promotion lands");
     assert!(
         until(&mut rig, &mut rx, &mut lines, 10, |rig, _| task(rig)
             .is_some())
@@ -404,7 +404,7 @@ async fn p2_3_the_cockpit_hears_a_loud_sounding_as_the_site_map_does() {
     // A's mark opens the field; A's cockpit carries the campaign layer with the same row.
     let (out, queued) = command(&mut rig, a, "+field/mark E=hostile");
     assert_eq!(queued.len(), 1, "one promotion: {out}");
-    crate::driving::land(&mut rig, &queued[0]).expect("the promotion lands");
+    crate::driving_rig::land(&mut rig, &queued[0]).expect("the promotion lands");
     assert!(
         until(&mut rig, &mut rx, &mut lines, 10, |rig, _| task(rig)
             .is_some())

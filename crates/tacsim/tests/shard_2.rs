@@ -9,9 +9,12 @@
 //! The grouping is line 2 of .github/tacsim-integration-shards.txt, the CI shard
 //! that runs it (with `cost_lane`, which stays a target of its own: its timing
 //! sections hold an exclusive lock and its C5 test pins scripts/cost-lane.sh's
-//! run lines), balanced by test time rather than by theme (six
-//! groups since 2026-10-27, on the JUnit per-module times); a rebalance moves
-//! a `mod` line between the six shard roots.
+//! run lines), balanced by test time rather than by theme (ten
+//! groups since 2026-11-03, six from 2026-10-27, on the JUnit per-module
+//! times); a rebalance moves a `mod` line between the shard roots, with the
+//! file. A module may import only from its own binary: the field helpers it
+//! needs are the `*_rig` modules under tests/support/field/, declared in
+//! every root.
 //!
 //! One module: `cargo nextest run -p tacsim --test shard_2 -E 'test(/^content::/)'`
 //! or `cargo test -p tacsim --test shard_2 content::` (a substring filter, so no
@@ -28,14 +31,18 @@ mod vertex;
 
 #[path = "shard_2/content.rs"]
 mod content;
+#[path = "support/field/driving_rig.rs"]
+mod driving_rig;
 #[path = "shard_2/e7r1.rs"]
 mod e7r1;
 #[path = "shard_2/e7r2.rs"]
 mod e7r2;
 #[path = "shard_2/extensions.rs"]
 mod extensions;
-#[path = "shard_2/ic_sortie_voyages.rs"]
-mod ic_sortie_voyages;
+#[path = "support/field/field_host_rig.rs"]
+mod field_host_rig;
+#[path = "support/field/field_raiders_rig.rs"]
+mod field_raiders_rig;
 #[path = "shard_2/minds.rs"]
 mod minds;
 #[path = "shard_2/minds_pool.rs"]
@@ -44,17 +51,13 @@ mod minds_pool;
 mod minds_rhai;
 #[path = "shard_2/moon_ports.rs"]
 mod moon_ports;
-#[path = "shard_2/plumbing.rs"]
-mod plumbing;
-#[path = "shard_2/quarry.rs"]
-mod quarry;
 #[path = "shard_2/reflex.rs"]
 mod reflex;
 #[path = "shard_2/sight.rs"]
 mod sight;
+#[path = "support/field/site_record_rig.rs"]
+mod site_record_rig;
 #[path = "shard_2/twin.rs"]
 mod twin;
-#[path = "shard_2/voyage.rs"]
-mod voyage;
 #[path = "shard_2/weapons.rs"]
 mod weapons;

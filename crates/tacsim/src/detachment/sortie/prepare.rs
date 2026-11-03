@@ -556,16 +556,28 @@ fn launch(
         }))
     }
     let berth = facts::berth(world, roster.plan.carrier)?;
+    let site_record = read.get(
+        &h.ports.sites,
+        &crate::surface::site_record::SiteKey(berth.entry.clone()),
+    )?;
     // Doc 32 cut CF.2 (Q-CF-17): no launch onto a promoted site, with the reason.
-    if let Some(field) = read
-        .get(
-            &h.ports.sites,
-            &crate::surface::site_record::SiteKey(berth.entry.clone()),
-        )?
-        .and_then(|record| record.open_field())
-    {
+    if let Some(field) = site_record.as_ref().and_then(|record| record.open_field()) {
         return Err(crate::surface::site_record::FIELD_LAUNCH
             .replace("{ordinal}", &field.ordinal.to_string())
+            .replace(
+                "{site}",
+                &crate::surface::act::site_name(world, &berth.entry),
+            ));
+    }
+    // Q-CF-21 (doc 36a §11 row 5): a launch that would put more on the ground than a field
+    // holds is refused at the ramp with CF.2's line, counting everyone the next promotion would
+    // admit (`field::parties::site_population`), as the rig ramp's launch half counts.
+    let cap = crate::field::config(world).max_units;
+    let population =
+        crate::field::parties::site_population(world, &berth.entry, site_record.as_ref());
+    if u32::try_from(population.saturating_add(slots.len())).unwrap_or(u32::MAX) > cap {
+        return Err(crate::port::tv::CAP_SITE
+            .replace("{cap}", &cap.to_string())
             .replace(
                 "{site}",
                 &crate::surface::act::site_name(world, &berth.entry),

@@ -8,14 +8,17 @@
 //!
 //! The grouping is line 1 of .github/tacsim-integration-shards.txt, the CI shard
 //! that runs it (with `harness`, which stays a target of its own: its
-//! `#![recursion_limit]` is crate-root-only), balanced by test time rather than by theme (six
-//! groups since 2026-10-27, on the JUnit per-module times); a rebalance moves
-//! a `mod` line between the six shard roots.
+//! `#![recursion_limit]` is crate-root-only), balanced by test time rather than by theme (ten
+//! groups since 2026-11-03, six from 2026-10-27, on the JUnit per-module
+//! times); a rebalance moves a `mod` line between the shard roots, with the
+//! file. A module may import only from its own binary: the field helpers it
+//! needs are the `*_rig` modules under tests/support/field/, declared in
+//! every root.
 //!
-//! One module: `cargo nextest run -p tacsim --test shard_1 -E 'test(/^driving::/)'`
-//! or `cargo test -p tacsim --test shard_1 driving::` (a substring filter, so no
+//! One module: `cargo nextest run -p tacsim --test shard_1 -E 'test(/^bay_36a::/)'`
+//! or `cargo test -p tacsim --test shard_1 bay_36a::` (a substring filter, so no
 //! module here may be a suffix of another's name — the merge refuses that).
-//! One test: `... --test shard_1 driving::<fn> -- --exact`. Sweeps run under nextest,
+//! One test: `... --test shard_1 bay_36a::<fn> -- --exact`. Sweeps run under nextest,
 //! one process per test; under plain multi-threaded `cargo test` these modules
 //! share one process and its statics (locks, global subscribers).
 
@@ -29,22 +32,16 @@ mod vertex;
 mod bay_36a;
 #[path = "shard_1/bay_gc8.rs"]
 mod bay_gc8;
-#[path = "shard_1/coop.rs"]
-mod coop;
 #[path = "shard_1/crew_exit.rs"]
 mod crew_exit;
 #[path = "shard_1/crew_treatment.rs"]
 mod crew_treatment;
 #[path = "shard_1/driving.rs"]
 mod driving;
-#[path = "shard_1/escort_lease.rs"]
-mod escort_lease;
-#[path = "shard_1/field_carrier.rs"]
-mod field_carrier;
+#[path = "support/field/driving_rig.rs"]
+mod driving_rig;
 #[path = "shard_1/field_crash.rs"]
 mod field_crash;
-#[path = "shard_1/field_director.rs"]
-mod field_director;
 #[path = "shard_1/field_gc10.rs"]
 mod field_gc10;
 #[path = "shard_1/field_gc2.rs"]
@@ -59,39 +56,31 @@ mod field_gc5;
 mod field_gc6;
 #[path = "shard_1/field_host.rs"]
 mod field_host;
+#[path = "support/field/field_host_rig.rs"]
+mod field_host_rig;
 #[path = "shard_1/field_raiders.rs"]
 mod field_raiders;
+#[path = "support/field/field_raiders_rig.rs"]
+mod field_raiders_rig;
 #[path = "shard_1/field_scale.rs"]
 mod field_scale;
-#[path = "shard_1/field_story.rs"]
-mod field_story;
-#[path = "shard_1/hulls.rs"]
-mod hulls;
-#[path = "shard_1/landing.rs"]
-mod landing;
-#[path = "shard_1/match_lifecycle.rs"]
-mod match_lifecycle;
 #[path = "shard_1/one_picture.rs"]
 mod one_picture;
 #[path = "shard_1/passage.rs"]
 mod passage;
 #[path = "shard_1/perception.rs"]
 mod perception;
-#[path = "shard_1/price.rs"]
-mod price;
 #[path = "shard_1/replay.rs"]
 mod replay;
 #[path = "shard_1/review_36a.rs"]
 mod review_36a;
 #[path = "shard_1/s9_corridor.rs"]
 mod s9_corridor;
-#[path = "shard_1/sale.rs"]
-mod sale;
 #[path = "shard_1/sheet.rs"]
 mod sheet;
 #[path = "shard_1/shipped_scale.rs"]
 mod shipped_scale;
 #[path = "shard_1/site_record.rs"]
 mod site_record;
-#[path = "shard_1/stations.rs"]
-mod stations;
+#[path = "support/field/site_record_rig.rs"]
+mod site_record_rig;

@@ -22,18 +22,18 @@ use tacsim::arena::ledger::LedgerEvent;
 use tacsim::surface::black_box::BlackBoxLine;
 use tacsim::surface::site_record::LeftCondition;
 
-use crate::driving::{
+use crate::driving_rig::{
     AHUNA, act_go, cid, command, finish, launched_composed, on_pad, on_pad_as, ramp_at, reboot,
     record_of, run, staff_hand, stocked_tuned, to_cell, warm,
 };
 use crate::field_gc3::black_box;
-use crate::field_host::{
+use crate::field_host_rig::{
     armed, egress, seat, second, second_composed, site_record, task, tune, until,
 };
 
 /// **Destroy `unit`'s power component** (the staff fixture standing in for the round that
 /// disabled it): no power is no control, a casualty.
-pub(crate) fn powerless(rig: &mut crate::driving::Rig, unit: ObjId) {
+pub(crate) fn powerless(rig: &mut crate::driving_rig::Rig, unit: ObjId) {
     staff_hand(rig, |ctx| {
         let plan = mush_tactics::UnitMutationPlan::new(
             vec![mush_tactics::UnitMutationOp::SetComponentCondition {
@@ -49,21 +49,21 @@ pub(crate) fn powerless(rig: &mut crate::driving::Rig, unit: ObjId) {
 }
 
 /// Whether the field has demoted: no task, and the record's promotion closed.
-pub(crate) fn demoted(rig: &mut crate::driving::Rig) -> bool {
+pub(crate) fn demoted(rig: &mut crate::driving_rig::Rig) -> bool {
     task(rig).is_none() && site_record(rig).is_some_and(|record| record.open_field().is_none())
 }
 
 /// `unit`'s site cell, when it stands on the ground.
-pub(crate) fn cell_of(rig: &crate::driving::Rig, unit: ObjId) -> Option<(i64, i64)> {
+pub(crate) fn cell_of(rig: &crate::driving_rig::Rig, unit: ObjId) -> Option<(i64, i64)> {
     mush_sim::pose_of(rig.tw.world(), unit)
         .map(|(_, at)| (at.x_cm.div_euclid(1_000), at.y_cm.div_euclid(1_000)))
 }
 
 /// Seconds until `done` holds, at most `limit`.
 pub(crate) fn seconds_until(
-    rig: &mut crate::driving::Rig,
+    rig: &mut crate::driving_rig::Rig,
     limit: u32,
-    done: impl FnMut(&mut crate::driving::Rig) -> bool,
+    done: impl FnMut(&mut crate::driving_rig::Rig) -> bool,
 ) -> bool {
     seconds_until_with(rig, limit, false, done)
 }
@@ -71,10 +71,10 @@ pub(crate) fn seconds_until(
 /// [`seconds_until`], the ticks' submissions landed on the composed path when `composed`
 /// (`field_host::second_composed`): the tow's finishes then write their black box lines.
 pub(crate) fn seconds_until_with(
-    rig: &mut crate::driving::Rig,
+    rig: &mut crate::driving_rig::Rig,
     limit: u32,
     composed: bool,
-    mut done: impl FnMut(&mut crate::driving::Rig) -> bool,
+    mut done: impl FnMut(&mut crate::driving_rig::Rig) -> bool,
 ) -> bool {
     for _ in 0..limit {
         if done(rig) {
@@ -97,7 +97,7 @@ pub(crate) fn seconds_until_with(
 }
 
 /// The tug's tow, as the site's record holds it.
-pub(crate) fn towing(rig: &mut crate::driving::Rig, tug: ObjId) -> Option<ObjId> {
+pub(crate) fn towing(rig: &mut crate::driving_rig::Rig, tug: ObjId) -> Option<ObjId> {
     site_record(rig).and_then(|record| record.tows.towing(tug).map(|op| op.casualty()))
 }
 
@@ -145,7 +145,7 @@ async fn gc4_the_wingman_drags_the_casualty_to_the_ramp_and_loads_it_before_the_
     // Field 1: the stranger marks east; nobody fires; it settles with the escort a casualty.
     let (out, queued) = command(&mut rig, b, "+field/mark E=hostile");
     assert_eq!(queued.len(), 1, "one promotion: {out}");
-    crate::driving::land(&mut rig, &queued[0]).expect("the promotion lands");
+    crate::driving_rig::land(&mut rig, &queued[0]).expect("the promotion lands");
     assert!(
         until(&mut rig, &mut rx, &mut lines, 20, |rig, _| task(rig)
             .is_some())
@@ -175,7 +175,7 @@ async fn gc4_the_wingman_drags_the_casualty_to_the_ramp_and_loads_it_before_the_
         queued[0].action.key().id.as_str(),
         tacsim::surface::tow::TOW_ACTION
     );
-    crate::driving::land(&mut rig, &queued[0]).expect("the tow start lands");
+    crate::driving_rig::land(&mut rig, &queued[0]).expect("the tow start lands");
     let act = site_record(&mut rig)
         .and_then(|record| record.tows.act_of(wingman).cloned())
         .expect("the tow act is on the site's record");
@@ -223,7 +223,7 @@ async fn gc4_the_wingman_drags_the_casualty_to_the_ramp_and_loads_it_before_the_
     let mut rx = egress(&mut rig);
     let (out, queued) = command(&mut rig, b, "+field/mark E=hostile");
     assert_eq!(queued.len(), 1, "one promotion: {out}");
-    crate::driving::land(&mut rig, &queued[0]).expect("the promotion lands");
+    crate::driving_rig::land(&mut rig, &queued[0]).expect("the promotion lands");
     assert!(
         until(&mut rig, &mut rx, &mut lines, 20, |rig, _| task(rig)
             .is_some())
@@ -283,7 +283,7 @@ async fn gc4_the_wingman_drags_the_casualty_to_the_ramp_and_loads_it_before_the_
     assert!(preview.contains("into the Salt Moth's bay"), "{preview}");
     let (out, queued) = command(&mut rig, a, "+tv/2 load go");
     assert_eq!(queued.len(), 1, "one load start: {out}");
-    crate::driving::land(&mut rig, &queued[0]).expect("the load start lands");
+    crate::driving_rig::land(&mut rig, &queued[0]).expect("the load start lands");
     assert!(
         site_record(&mut rig).is_some_and(|record| record.tows.act_of(wingman).is_some()),
         "the load is in flight"

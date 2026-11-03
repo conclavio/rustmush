@@ -7,20 +7,27 @@
 //! hull's fire hits it; and after the field demotes the damage is on the hull's own unit record
 //! and `+ship` reads it in port. F-6's own story is the second test.
 
-use mush_core::ObjId;
-use tacsim::field::CrewLocation;
+use mush_core::{GOD, ObjId};
+use tacsim::TacsimConfig;
+use tacsim::arena::ledger::LedgerEvent;
+use tacsim::arena::party::PartyId;
+use tacsim::arena_task::ArenaOut;
+use tacsim::field::{CrewLocation, FieldLive};
+use tacsim::port::Ticket;
+use tokio::sync::mpsc::Receiver;
 
-use crate::driving::{
-    cid, command, en_route, land, launched, on_pad, prospector, run, staff_hand, stocked_tuned,
-    to_cell, to_ic, warm,
+use crate::driving_rig::crash_resuming;
+use crate::driving_rig::{
+    Rig, cid, command, en_route, land, launched, on_pad, prospector, run, staff_hand,
+    stocked_tuned, to_cell, to_ic, warm,
 };
-use crate::field_host::{
+use crate::field_host_rig::{
     armed, egress, frame, seat, second, site_record, task, tune, until, weapon_of,
 };
 
 /// **Strip `unit`'s armour to its floor**, leaving its internals whole, so the next rounds that
 /// land are section damage (a fixture, so the gate fights in seconds).
-fn unarmoured(rig: &mut crate::driving::Rig, unit: ObjId) {
+fn unarmoured(rig: &mut crate::driving_rig::Rig, unit: ObjId) {
     staff_hand(rig, |ctx| {
         let cells = mush_tactics::module::unit_of(ctx.w, unit)
             .expect("the unit")
@@ -113,7 +120,7 @@ async fn cf3_a_carrier_takes_a_hit_in_a_field_and_the_damage_shows_in_port() {
 
     // (3) B locks the carrier on its pad and fires until rounds have left the gun at it.
     let gun = weapon_of(&rig, hull_b);
-    let rounds = |rig: &crate::driving::Rig| -> Option<u32> {
+    let rounds = |rig: &crate::driving_rig::Rig| -> Option<u32> {
         frame(rig, b).and_then(|frame| {
             frame
                 .weapons
@@ -122,7 +129,7 @@ async fn cf3_a_carrier_takes_a_hit_in_a_field_and_the_damage_shows_in_port() {
                 .map(|weapon| weapon.rounds)
         })
     };
-    let pad_contact = |rig: &crate::driving::Rig| {
+    let pad_contact = |rig: &crate::driving_rig::Rig| {
         frame(rig, b).and_then(|frame| {
             frame
                 .contacts
@@ -301,7 +308,7 @@ async fn f6_a_carrier_lifts_out_of_a_running_field_only_on_the_confirmation() {
         queued.is_empty(),
         "nothing is filed while the field holds the hull"
     );
-    let filed = |rig: &crate::driving::Rig| match rig
+    let filed = |rig: &crate::driving_rig::Rig| match rig
         .tw
         .world()
         .module_state::<tacsim::TacsimStore>()
@@ -334,7 +341,7 @@ async fn f6_a_carrier_lifts_out_of_a_running_field_only_on_the_confirmation() {
     );
     // The field runs on, and the rig it left stays in it.
     assert!(task(&rig).is_some(), "the field carries on");
-    let live = tacsim::field::live_on(rig.tw.world(), &cid(crate::driving::AHUNA))
+    let live = tacsim::field::live_on(rig.tw.world(), &cid(crate::driving_rig::AHUNA))
         .expect("the live record");
     assert!(live.units.iter().all(|row| row.unit != carrier));
     assert!(live.units.iter().any(|row| row.unit == rig_a));
@@ -375,12 +382,12 @@ async fn gc1_a_carrier_arriving_mid_field_is_admitted_at_its_pad_and_cannot_laun
         .await,
         "the field opens"
     );
-    let site = cid(crate::driving::AHUNA);
+    let site = cid(crate::driving_rig::AHUNA);
     assert!(tacsim::field::carrier::owed_arrivals(rig.tw.world(), &site).is_empty());
     let opening = tacsim::field::live_on(rig.tw.world(), &site).expect("the live record");
     assert!(opening.units.iter().all(|row| row.unit != late_hull));
     // Every contact B's sensors hold within a cell of the pad (CF.3's carrier stands on it).
-    let near_pad = |rig: &crate::driving::Rig| -> usize {
+    let near_pad = |rig: &crate::driving_rig::Rig| -> usize {
         frame(rig, b).map_or(0, |frame| {
             frame
                 .contacts
@@ -405,7 +412,7 @@ async fn gc1_a_carrier_arriving_mid_field_is_admitted_at_its_pad_and_cannot_laun
     assert!(
         matches!(
             tacsim::port::ship::berth_of(rig.tw.world(), late_hull),
-            tacsim::port::ship::Berth::Docked { map, .. } if map.entry.as_str() == crate::driving::AHUNA
+            tacsim::port::ship::Berth::Docked { map, .. } if map.entry.as_str() == crate::driving_rig::AHUNA
         ),
         "the late hull is settled on the pad"
     );
@@ -490,4 +497,379 @@ async fn gc1_a_carrier_arriving_mid_field_is_admitted_at_its_pad_and_cannot_laun
         !mush_sim::deployed::is_deployed(rig.tw.world(), late_hull),
         "the arrival is checked in at the demotion"
     );
+}
+
+/// A field of two (doc 36a §11 row 5's cap) on `field_host`'s tempo.
+fn capped(cfg: &mut TacsimConfig) {
+    tune(cfg);
+    cfg.field.max_units = 2;
+}
+
+/// `field_host`'s tempo with a field that stays up a while: the kernel also refuses a join for
+/// real while a mind's think is in flight at the encode (GC.1b's deferred root fix), and the host
+/// owes such an arrival again at the next pulse, so the field must outlast the retry.
+fn lasting(cfg: &mut TacsimConfig) {
+    tune(cfg);
+    cfg.field.disengage_s = 600;
+}
+
+/// [`pump`], with the kernel's answer to `refused`'s join turned into a refusal on its way to
+/// the bridge (doc 36a §11 row 2's one stand-in: production's kernel refuses a join on a scripted
+/// seal, which no command makes, or when a mind's think is in flight at the join's encode, a
+/// wall-clock race). A kernel that refuses never takes the unit in, so the stand-in also takes it
+/// back out of the kernel (a lift-off withdrawal) and swallows that answer: from the refusal on,
+/// world and kernel stand as production's would.
+fn pump_refusing(
+    rig: &mut Rig,
+    rx: &mut Receiver<ArenaOut>,
+    lines: &mut Vec<LedgerEvent>,
+    refused: ObjId,
+) -> usize {
+    let Some(tasks) = rig
+        .tw
+        .world()
+        .module_state::<tacsim::arena_bridge::ArenaRegistry>()
+        .map(|registry| registry.tasks().clone())
+    else {
+        return 0;
+    };
+    let mut staged = 0;
+    while let Ok(message) = rx.try_recv() {
+        if let ArenaOut::Ledger { chunk, .. } = &message
+            && let Ok(text) = std::str::from_utf8(&chunk.bytes)
+        {
+            lines.extend(
+                text.lines()
+                    .filter_map(|line| serde_json::from_str::<LedgerEvent>(line).ok()),
+            );
+        }
+        let message = match message {
+            ArenaOut::Joined { match_id, unit, .. } if unit == refused => {
+                tasks
+                    .offer(
+                        match_id,
+                        tacsim::arena_task::ArenaMsg::Withdraw { unit, ramp: None },
+                    )
+                    .expect("the kernel takes the withdrawal");
+                ArenaOut::Joined {
+                    match_id,
+                    unit,
+                    outcome: Err("test: the field refused it".to_owned()),
+                }
+            }
+            ArenaOut::Withdrawn { unit, .. } if unit == refused => continue,
+            other => other,
+        };
+        if !tasks.stage(message) {
+            break;
+        }
+        staged += 1;
+    }
+    if staged > 0 {
+        rig.tw.apply(mush_core::WorldCommand::ModuleAsyncDone {
+            module: smol_str::SmolStr::new_static(tacsim::arena_bridge::MODULE),
+            actor: GOD,
+            correlation: 0,
+            payload: tacsim::arena_bridge::EGRESS_PAYLOAD.to_owned(),
+        });
+        tasks.stamp_ledger_writes(1);
+        tasks.ack_ledger_upto(1);
+    }
+    staged
+}
+
+/// [`until`], pumped through [`pump_refusing`].
+async fn until_refusing(
+    rig: &mut Rig,
+    rx: &mut Receiver<ArenaOut>,
+    lines: &mut Vec<LedgerEvent>,
+    refused: ObjId,
+    secs: u64,
+    mut done: impl FnMut(&mut Rig, &[LedgerEvent]) -> bool,
+) -> bool {
+    let deadline = std::time::Instant::now() + std::time::Duration::from_secs(secs);
+    let mut beat = 0_u32;
+    while std::time::Instant::now() < deadline {
+        tokio::time::sleep(std::time::Duration::from_millis(25)).await;
+        pump_refusing(rig, rx, lines, refused);
+        beat += 1;
+        if beat.is_multiple_of(8) {
+            let _ = second(rig);
+        }
+        if done(rig, lines) {
+            return true;
+        }
+    }
+    false
+}
+
+/// **The bearing a presence row names `to` by from `from`**: the octant between their own poses
+/// on the site's ground, as `+field`'s row resolution reads them (a carrier settled on the pad
+/// stands at its domain's passive origin, not at the pad's cell).
+fn bearing_to(rig: &Rig, from: ObjId, to: ObjId) -> &'static str {
+    let cell = |unit: ObjId| {
+        mush_sim::pose_of(rig.tw.world(), unit)
+            .map(|(_, at)| tacsim::surface::excursion::site_cell(at.x_cm, at.y_cm))
+            .expect("on the ground")
+    };
+    let (to, from) = (cell(to), cell(from));
+    tacsim::surface::address::Octant::of(to.0 - from.0, to.1 - from.1)
+        .expect("apart")
+        .abbrev()
+}
+
+/// The party letter `hull`'s row on `live` carries.
+fn letter_of(live: &FieldLive, hull: ObjId) -> Option<PartyId> {
+    live.units
+        .iter()
+        .find(|row| row.unit == hull)
+        .map(|row| row.party)
+}
+
+/// Whether `hull` is settled on Ahuna Flank's pad.
+fn settled(rig: &Rig, hull: ObjId) -> bool {
+    matches!(
+        tacsim::port::ship::berth_of(rig.tw.world(), hull),
+        tacsim::port::ship::Berth::Docked { map, .. } if map.entry.as_str() == crate::driving_rig::AHUNA
+    )
+}
+
+/// **Doc 36a §11 row 2: party letters after a refused join** (GC.1b). Three more Dray-Ps are
+/// under way to Ahuna Flank when CF.3's field opens there. The first two settle on the pad
+/// together and the host letters each a party of its own; the kernel's answer for the lower-
+/// lettered of them is a refusal, which takes its row and its party off the live record — a
+/// middle party gone. The third settles after that: its party must take the lowest letter free,
+/// the one the refusal gave back, never a letter in use (the old `nth(len)` reused the last
+/// party's). The live record passes its own check throughout, and a restart resumes the field
+/// with both arrivals in it under the same letters.
+#[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+#[allow(clippy::too_many_lines)]
+async fn gc1b_a_refused_middle_party_never_lends_its_letter_to_the_next_arrival() {
+    let mut rig = stocked_tuned(lasting);
+    // No rig goes out: a rig's mind could hold a think in flight when the kernel encodes the
+    // joins, and the kernel's own refusal of that race is wall-clock timing, not this story.
+    let (a, a_row, _) = on_pad(&mut rig, 1);
+    let carrier = ObjId(a_row.hull);
+    let (b, _) = prospector(&mut rig, "Other", 2, "Tally Moth");
+    let hull_b = armed(&mut rig, "Grey Hound", (120, 128), 90_000);
+    seat(&mut rig, hull_b, b);
+    let bearing = bearing_to(&rig, hull_b, carrier);
+    let (late, late_row, _, late_ticket) = en_route(&mut rig, "Late", 3, "Late Moth");
+    let (last, last_row, _, last_ticket) = en_route(&mut rig, "Last", 4, "Last Moth");
+    let (third, third_row, _, third_ticket) = en_route(&mut rig, "Third", 5, "Third Moth");
+    let (late_hull, last_hull, third_hull) = (
+        ObjId(late_row.hull),
+        ObjId(last_row.hull),
+        ObjId(third_row.hull),
+    );
+    let arrival = |ticket: &Ticket| ticket.plan.depart_ic + ticket.plan.total_s;
+    assert!(
+        arrival(&late_ticket) <= arrival(&last_ticket)
+            && arrival(&last_ticket) < arrival(&third_ticket),
+        "they settle in filing order"
+    );
+    warm(&mut rig);
+    let mut rx = egress(&mut rig);
+    let mut lines = Vec::new();
+    for _ in 0..3 {
+        let _ = second(&mut rig);
+    }
+    let (out, queued) = command(&mut rig, b, &format!("+field/fire {bearing}"));
+    assert_eq!(queued.len(), 1, "one promotion: {out}");
+    land(&mut rig, &queued[0]).expect("the promotion lands");
+    assert!(
+        until(&mut rig, &mut rx, &mut lines, 10, |rig, _| task(rig)
+            .is_some())
+        .await,
+        "the field opens"
+    );
+    let site = cid(crate::driving_rig::AHUNA);
+    let opening = tacsim::field::live_on(rig.tw.world(), &site).expect("the live record");
+    assert!(opening.check().is_ok(), "{:?}", opening.parties);
+
+    // (1) The first two settle together, and the host letters both before any answer is pumped.
+    let _ = to_ic(&mut rig, arrival(&last_ticket));
+    for _ in 0..12 {
+        if tacsim::field::live_on(rig.tw.world(), &site).is_some_and(|live| {
+            letter_of(&live, late_hull).is_some() && letter_of(&live, last_hull).is_some()
+        }) {
+            break;
+        }
+        let _ = second(&mut rig);
+    }
+    assert!(
+        settled(&rig, late_hull) && settled(&rig, last_hull) && !settled(&rig, third_hull),
+        "the first two are on the pad, the third still under way"
+    );
+    let lettered = tacsim::field::live_on(rig.tw.world(), &site).expect("the live record");
+    let late_letter = letter_of(&lettered, late_hull).expect("the first arrival is lettered");
+    let last_letter = letter_of(&lettered, last_hull).expect("the second arrival is lettered");
+    assert_ne!(late_letter, last_letter, "{:?}", lettered.parties);
+    assert!(lettered.check().is_ok(), "{:?}", lettered.parties);
+    assert!(
+        opening
+            .parties
+            .iter()
+            .all(|party| party.party != late_letter && party.party != last_letter),
+        "both lettered past the opening's: {:?}",
+        lettered.parties
+    );
+
+    // (2) The lower-lettered of the two is refused: its row and its party leave the record, the
+    // other joins. The refused hull stands outside the field.
+    let (refused, kept, freed) = if late_letter < last_letter {
+        (late_hull, last_hull, late_letter)
+    } else {
+        (last_hull, late_hull, last_letter)
+    };
+    assert!(
+        until_refusing(&mut rig, &mut rx, &mut lines, refused, 20, |rig, _| {
+            tacsim::field::live_on(rig.tw.world(), &site).is_some_and(|live| {
+                live.units.iter().all(|row| row.unit != refused)
+                    && live.units.iter().any(|row| row.unit == kept && row.arrived)
+            })
+        })
+        .await,
+        "the refusal takes the first arrival off the record and the second joins"
+    );
+    let after = tacsim::field::live_on(rig.tw.world(), &site).expect("the live record");
+    assert!(
+        after.parties.iter().all(|party| party.party != freed),
+        "the refused party is gone: {:?}",
+        after.parties
+    );
+    assert!(after.check().is_ok(), "{:?}", after.parties);
+    assert!(
+        tacsim::field::field_of_unit(rig.tw.world(), refused).is_none(),
+        "the refused hull stands outside the field"
+    );
+    assert!(
+        !settled(&rig, third_hull),
+        "the third is still under way when the refusal lands"
+    );
+    let kept_letter = letter_of(&after, kept).expect("the kept arrival's letter");
+
+    // (3) The third settles into the gap: the host letters it the lowest free letter, the one the
+    // refusal gave back, the moment it takes it in. (The kernel may still refuse it for real while
+    // a mind's think is in flight at the encode, GC.1b's deferred root fix; the letter is the
+    // host's either way, and a refused hull is not asked again while this field runs.)
+    let _ = to_ic(&mut rig, arrival(&third_ticket));
+    // Read before any egress is pumped: the kernel's answer lands at the next pump.
+    let mut lettered = None;
+    for _ in 0..10 {
+        lettered = tacsim::field::live_on(rig.tw.world(), &site)
+            .filter(|live| letter_of(live, third_hull).is_some());
+        if lettered.is_some() {
+            break;
+        }
+        let _ = second(&mut rig);
+    }
+    let taken = lettered.expect("the host takes the third arrival in");
+    let third_letter = letter_of(&taken, third_hull).expect("the third is lettered");
+    assert_eq!(
+        third_letter, freed,
+        "the lowest free letter, never one in use: {:?}",
+        taken.parties
+    );
+    assert_ne!(third_letter, kept_letter);
+    assert_eq!(letter_of(&taken, kept), Some(kept_letter));
+    assert!(taken.check().is_ok(), "{:?}", taken.parties);
+    // The kernel's answer: joined, or refused and off the record.
+    assert!(
+        until_refusing(&mut rig, &mut rx, &mut lines, refused, 30, |rig, _| {
+            tacsim::field::live_on(rig.tw.world(), &site).is_some_and(|live| {
+                live.units
+                    .iter()
+                    .all(|row| row.unit != third_hull || row.arrived)
+            })
+        })
+        .await,
+        "the kernel answers the third's join"
+    );
+    let joined = tacsim::field::live_on(rig.tw.world(), &site).expect("the live record");
+    let third_in = letter_of(&joined, third_hull);
+    assert!(
+        third_in.is_none_or(|letter| letter == freed),
+        "{:?}",
+        joined.parties
+    );
+    assert_eq!(letter_of(&joined, kept), Some(kept_letter));
+    assert!(joined.check().is_ok(), "{:?}", joined.parties);
+    assert!(task(&rig).is_some(), "the field runs on");
+
+    // (4) A restart resumes the field with its arrivals under their letters.
+    let field = joined.field.clone();
+    let mut rig = crash_resuming(rig, &mut rx, &[a, b, late, last, third]).await;
+    let mut rx = egress(&mut rig);
+    assert!(
+        until(&mut rig, &mut rx, &mut lines, 20, |rig, _| task(rig)
+            .is_some())
+        .await,
+        "the field resumes"
+    );
+    let resumed =
+        tacsim::field::live_on(rig.tw.world(), &site).expect("the live record after the restart");
+    assert_eq!(
+        resumed.field, field,
+        "the same field, resumed: never voided and reopened"
+    );
+    assert!(resumed.check().is_ok(), "{:?}", resumed.parties);
+    assert_eq!(letter_of(&resumed, kept), Some(kept_letter));
+    assert_eq!(letter_of(&resumed, third_hull), third_in);
+    assert!(resumed.units.iter().all(|row| row.unit != refused));
+    assert_eq!(
+        tacsim::field::field_of_unit(rig.tw.world(), kept),
+        Some(site),
+        "the kept arrival is in the resumed field"
+    );
+}
+
+/// **Doc 36a §11 row 5: the cap at the ramp** (Q-CF-21). With `[tacsim.field].max_units` at
+/// two, A's Dray-P stands on Ahuna Flank's pad and B's armed hull on its ground: two units the
+/// next promotion would admit, a field's full complement. A's launch is refused at the ramp with
+/// CF.2's line, where the launch half once counted only the rigs out (none) and let a third unit
+/// down for the field to refuse at the opening. The site still promotes: B's fire at the carrier
+/// opens a field of exactly those two.
+#[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+async fn gc_review_the_ramp_refuses_a_launch_the_field_could_not_hold() {
+    let mut rig = stocked_tuned(capped);
+    let (a, a_row, a_tvs) = on_pad(&mut rig, 1);
+    let carrier = ObjId(a_row.hull);
+    let (b, _) = prospector(&mut rig, "Other", 2, "Tally Moth");
+    let hull_b = armed(&mut rig, "Grey Hound", (120, 128), 90_000);
+    seat(&mut rig, hull_b, b);
+    let bearing = bearing_to(&rig, hull_b, carrier);
+    warm(&mut rig);
+    let mut rx = egress(&mut rig);
+    let mut lines = Vec::new();
+    for _ in 0..3 {
+        let _ = second(&mut rig);
+    }
+
+    // (1) The ramp refuses the third unit on the ground, naming the field's cap.
+    let refused = run(&mut rig.tw, a, "+tv/1 launch go");
+    assert!(refused.contains("has 2 rigs out already"), "{refused}");
+    assert!(
+        crate::driving_rig::record_of(&mut rig.tw, a_tvs[0])
+            .is_none_or(|record| record.excursion.is_none()),
+        "no excursion opened"
+    );
+
+    // (2) The site still promotes, with the two it holds.
+    let (out, queued) = command(&mut rig, b, &format!("+field/fire {bearing}"));
+    assert_eq!(queued.len(), 1, "one promotion: {out}");
+    land(&mut rig, &queued[0]).expect("the promotion lands");
+    assert!(
+        until(&mut rig, &mut rx, &mut lines, 10, |rig, _| task(rig)
+            .is_some())
+        .await,
+        "the field opens"
+    );
+    let live = tacsim::field::live_on(rig.tw.world(), &cid(crate::driving_rig::AHUNA))
+        .expect("the live record");
+    let mut units: Vec<ObjId> = live.units.iter().map(|row| row.unit).collect();
+    units.sort_unstable();
+    let mut expected = vec![carrier, hull_b];
+    expected.sort_unstable();
+    assert_eq!(units, expected, "the field holds the carrier and the hull");
 }

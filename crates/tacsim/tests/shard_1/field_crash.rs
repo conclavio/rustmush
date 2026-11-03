@@ -20,17 +20,17 @@ use tacsim::field::{CrewCondition, CrewLocation, crew_of};
 use tacsim::surface::site_record::LeftCondition;
 use tokio::sync::mpsc::Receiver;
 
-use crate::driving::{
+use crate::driving_rig::{
     AHUNA, Rig, ahuna_domain, cid, command, drain, land, launched, on_pad, on_pad_as, reboot,
     retune, run, staff_hand, stocked_tuned, to_cell, warm,
 };
-use crate::field_host::{
+use crate::field_host_rig::{
     armed, egress, fragile, frame, pump, seat, second, site_record, task, until, weapon_of,
 };
 
 /// A fast field and a short extraction (`field_host`'s tune and `crew_exit`'s extraction).
 fn tune(cfg: &mut TacsimConfig) {
-    crate::field_host::tune(cfg);
+    crate::field_host_rig::tune(cfg);
     cfg.field.extract_s = 60;
 }
 
