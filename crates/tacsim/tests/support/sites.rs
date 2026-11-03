@@ -106,7 +106,8 @@ pub fn strip_ladder(doc: &mut Value) {
 /// Remove what doc 36 cut GC.7 added to the lane (lane v18): Ceres's and Stickney's `workshop`
 /// blocks and every vendor's munitions stock and asks — the lane v17 shape but its manifest
 /// (idempotent). Cut GC.13's `medical` blocks (lane v19) go with them, and since lane v20
-/// doc 39 cut IN.1's ladder ([`strip_ladder`]) first.
+/// doc 39 cut IN.1's ladder ([`strip_ladder`]) first and cut IN.4's Ceres `recovery` row (the
+/// workshops' `cost` goes with their blocks).
 pub fn strip_workshops(doc: &mut Value) {
     strip_ladder(doc);
     let Some(entries) = doc["entries"].as_object_mut() else {
@@ -121,6 +122,7 @@ pub fn strip_workshops(doc: &mut Value) {
         };
         def.remove("workshop");
         def.remove("medical");
+        def.remove("recovery");
         for vendor in def
             .get_mut("vendors")
             .and_then(Value::as_array_mut)
