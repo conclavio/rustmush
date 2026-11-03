@@ -3203,7 +3203,7 @@ Every cut of §7 has landed. What each as-built section left open, gathered in o
   - GC.1b's refused arrival is not retried while its field runs (GC.11's flag).
   - A restart between a raider's join and the next snapshot stands the raider at the pad (GC.11).
   - An epoch held by a DT flight is left open at a close-destroyed or a load (GC.3, GC.4).
-  - Releasing a tow inside a promoted field (GC.4).
+  - ~~Releasing a tow inside a promoted field (GC.4).~~ Fixed by 36a lane 1 (P1-10): the release waits.
   - A shard_1 story flying SCREEN and SUPPORT as delivered orders (GC.0).
 - **Recovery and salvage:**
   - Returning a vacated hull to its title holder (GC.6).
@@ -3238,6 +3238,35 @@ Every cut of §7 has landed. What each as-built section left open, gathered in o
   - GC.12: the gate.yml `field_scale` sweep has never been run; a cap above 100 needs its own measurement.
   - GC.13: beds are authored but not a limit.
   - GC.3/4: the close's black-box line is covered only by review.
+
+### 36a lane 1 as built (2026-11-02)
+
+[Doc 36a](36a-ground-combat-review-triage-2026-11-02.md)'s first fix lane (salvage claims and the tow) landed
+as one PR against main, one commit per item, each with a regression test in
+`crates/tacsim/tests/shard_1/review_36a.rs` that walks the review's steps through the player's own commands.
+Struck from what this programme owed:
+
+- The salvor could rewrite their own claim through `@contract/*` (P0-2, `53603c4f`): every non-staff
+  mutating switch on a salvage claim is refused; the award runs only on an Active claim past its window or an
+  Expired one; the window's end is the later of the contract's and the filing's deadline.
+- A leased Occator rig in custody was awarded to the salvor after the 28-day write-off (P0-3, `30c2808b`;
+  Q-36-29): the write-off closes the claim and drops the custody row, and an organization-titled hull is never
+  awarded.
+- The window's last second belonged to both an award and a contest, and a lost `Loaded` finish stranded a
+  carried casualty (P0-7, `45148865`): a contest is admitted only while `now < end`; the finish completes off
+  the bay's own facts when the carrier has gone.
+- A salvor's `+salvage/inspect` spam evicted a challenger's queued contest (P1-3, `f6930752`): tow orders are
+  keyed per actor and rig, the oldest evicted first.
+- A second tug's attach replaced the first tug's tenure pin (P1-4, `062ac032`): the second attach waits while
+  one is in flight on the casualty.
+- A release draining after a promotion retired the tow with the casualty neither fielded nor carried (P1-10,
+  `06859c3f`): the release waits for the field, as every other surface act does.
+- A pickup overfilled the hopper, said "takes" when it had only queued, and logged no landholder (P2-2,
+  `ed7f0d24`): the hopper's room is checked at the command and again at the prepare; the line says "queued";
+  the evidence row names the landholder.
+
+Still owed from the same review: lanes 2–4 of doc 36a §10 (the bay's ordinal desync, P0-5, P0-8, P2-4's mint
+capacity, the help file).
   - Expensive to reverse (owner decision, doc 37 §6): the workshops live in existing rooms (GC.7/GC.8a); moving them now means re-homing berthed hulls.
 
 ### 36a lane 2, the bay, as built (2026-11-02)
@@ -3261,7 +3290,7 @@ a salvor's custody row seeded on Urvara's site record).
 Still owed from this lane: the prior owner's recourse over a hull a vacated claim left berthed off a
 salvor's carrier (today: no stow into that bay, no lot into that hold, and no verb returns her — a
 carrier of the owner's own must take her, which `+bay/stow` does not yet do); GC.6's remains scrap
-has no capacity check (doc 36a lane 1).
+(`+tv/<n> scrap`, `surface/claim.rs`) has no room check: neither lane 1 nor lane 2 took it.
 
 ### F-6 under load, as built (2026-11-03)
 

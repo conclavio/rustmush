@@ -480,6 +480,10 @@ pub enum Settlement {
     Vacate,
     /// The contract was cancelled outside the claim (staff): the claim goes back to owed.
     Withdrawn,
+    /// **Doc 36a P0-3** (Q-36-29): the hull was written off while in custody — it is Occator's
+    /// alone, handed back to the shed; the contract is closed and the custody row goes, with
+    /// no title moved and nothing logged.
+    HandedBack,
 }
 
 /// **One server-written claim order** (this module's head), carried by GC.4's tow action under
@@ -676,6 +680,10 @@ pub(crate) fn prepare(
             {
                 return Err("claim_no_ground");
             }
+            // Doc 36a P0-7: the window's last second is the award's, never a contest's.
+            if now_real >= window_end {
+                return Err("claim_window_closed");
+            }
             let mut file = custody.file.as_deref().cloned().ok_or("claim_not_filed")?;
             file.deadline_real_s = *window_end;
             file.contest(actor, ground.clone(), *now_real)
@@ -745,6 +753,10 @@ fn settle(
         custody.file = None;
         return Ok("withdrawn".to_owned());
     }
+    if settlement == Settlement::HandedBack {
+        record.custody.retain(|row| row.hull != hull);
+        return Ok("handed_back".to_owned());
+    }
     let mut file = custody.file.as_deref().cloned().ok_or("claim_not_filed")?;
     file.deadline_real_s = window_end;
     let status = file.adjudicate(now_real).map_err(|_| "claim_not_due")?;
@@ -760,6 +772,9 @@ fn settle(
         custody.holder,
         custody.pin.as_ref().and_then(TenurePin::landholder),
     );
+    // The settlement's bundle drops the custody row either way (doc 36a P0-7): once the award
+    // has posted there is no custody left for a contest to vacate; a vacated claim's custody
+    // is void.
     record.custody.retain(|row| row.hull != hull);
     if awarded {
         Ok("awarded".to_owned())
@@ -918,6 +933,19 @@ fn window(w: &World, id: u64) -> Option<(i64, bool)> {
     mush_economy::salvage_claim_window(w, ContractId(id))
 }
 
+/// **The window a filed claim actually runs** (doc 36a P0-2): the economy's effective end, never
+/// earlier than the deadline the claim was filed with — an outage extends the end; nothing
+/// shortens it below the filing's — and whether it is paused. `None` for an unfiled row, or a
+/// contract the economy no longer knows.
+fn effective_window(w: &World, row: &SalvageCustody) -> Option<(i64, bool)> {
+    let ClaimSeam::Filed { contract } = row.claim else {
+        return None;
+    };
+    let (end, paused) = window(w, contract)?;
+    let floor = row.file.as_deref().map_or(end, |file| file.deadline_real_s);
+    Some((end.max(floor), paused))
+}
+
 /// The economy contract's state.
 fn contract_state(w: &World, id: u64) -> Option<ContractState> {
     w.module_state::<EconomyStore>()?
@@ -1018,7 +1046,7 @@ fn list_cmd(ctx: &mut Ctx<'_>) -> Result<(), CmdError> {
             (ClaimSeam::Owed, _) => "a claim owed".to_owned(),
             (ClaimSeam::Filed { contract }, file) => {
                 let contests = file.map_or(0, |f| f.contests.len());
-                let when = match window(ctx.w, *contract) {
+                let when = match effective_window(ctx.w, &row) {
                     Some((_, true)) => "its window paused".to_owned(),
                     Some((end, false)) => format!(
                         "its window closing in {}",
@@ -1175,10 +1203,13 @@ fn open_window(ctx: &Ctx<'_>, row: &SalvageCustody, label: &str) -> Result<(u64,
     let ClaimSeam::Filed { contract } = row.claim else {
         return Err(CmdError::msg(NOT_FILED.replace("{name}", label)));
     };
-    match window(ctx.w, contract) {
+    match effective_window(ctx.w, row) {
         Some((_, true)) => Err(CmdError::msg(WINDOW_PAUSED.replace("{name}", label))),
+        // Doc 36a P0-7: a contest is admitted only while `now < end`. The tick awards at
+        // `now >= end`, so the two never share a second: no contest lands on a claim whose title
+        // has posted.
         Some((end, false))
-            if ctx.w.now() <= end
+            if ctx.w.now() < end
                 && contract_state(ctx.w, contract).is_some_and(|s| !s.is_terminal()) =>
         {
             Ok((contract, end))
@@ -1339,18 +1370,51 @@ pub(crate) fn tick(ctx: &mut Ctx<'_>) {
         return;
     };
     for (site, row) in custody_rows(ctx) {
+        if ctx.authoritative_pending(row.holder) || promoted(ctx, &site) {
+            continue;
+        }
+        // Doc 36a P0-3 (Q-36-29, Q-36-22): a hull written off while in custody is Occator's
+        // alone — the write-off already handed it back to the shed. Its claim's contract is
+        // closed and the custody row goes; the title never moves.
+        if crate::port::tv::written_off(ctx.w, row.hull) {
+            let closed = match row.claim {
+                ClaimSeam::Owed => true,
+                ClaimSeam::Filed { contract } => match mush_economy::close_salvage_claim(
+                    ctx,
+                    ContractId(contract),
+                    row.holder,
+                    row.hull,
+                ) {
+                    Ok(done) => done,
+                    Err(error) => {
+                        tracing::warn!(hull = row.hull.0, contract, %error, "tacsim: a written-off hull's salvage claim did not close; retried next tick");
+                        false
+                    }
+                },
+            };
+            if closed {
+                let order = ClaimOrder::Settle {
+                    site: site.clone(),
+                    hull: row.hull,
+                    settlement: Settlement::HandedBack,
+                    window_end: now_real,
+                    now_real,
+                };
+                let _ = submit(ctx, row.holder, order, 5);
+            }
+            continue;
+        }
         let ClaimSeam::Filed { contract } = row.claim else {
             continue;
         };
         let Some(file) = row.file.as_deref() else {
             continue;
         };
-        if !file.state.is_pending() || ctx.authoritative_pending(row.holder) || promoted(ctx, &site)
-        {
+        if !file.state.is_pending() {
             continue;
         }
         let state = contract_state(ctx.w, contract);
-        let (end, paused) = window(ctx.w, contract).unwrap_or((file.deadline_real_s, false));
+        let (end, paused) = effective_window(ctx.w, &row).unwrap_or((file.deadline_real_s, false));
         let settlement = if file.has_vacating_contest() {
             Settlement::Vacate
         } else if matches!(state, Some(ContractState::Cancelled) | None) {
@@ -1360,6 +1424,18 @@ pub(crate) fn tick(ctx: &mut Ctx<'_>) {
         } else {
             continue;
         };
+        // Doc 36a P0-3 (Q-36-29): an organization's hull is never awarded by salvage. A leased
+        // rig is Occator's alone — its lessee answers for the title, and the 28-day write-off
+        // takes it home — so the claim stands pending until then, or until a contest vacates
+        // it; the economy refuses the award outright as well.
+        if settlement == Settlement::Award
+            && matches!(
+                title_of(ctx.w, row.hull).0,
+                Some(PrincipalId::Organization(_))
+            )
+        {
+            continue;
+        }
         let label = name(ctx.w, row.hull);
         let ready = match settlement {
             Settlement::Award => match mush_economy::award_salvage_title(
@@ -1390,7 +1466,7 @@ pub(crate) fn tick(ctx: &mut Ctx<'_>) {
                     }
                 }
             }
-            Settlement::Withdrawn => true,
+            Settlement::Withdrawn | Settlement::HandedBack => true,
         };
         if !ready {
             continue;
@@ -1424,7 +1500,7 @@ pub(crate) fn tick(ctx: &mut Ctx<'_>) {
             Settlement::Vacate => VACATED
                 .replace("{registry}", &registry)
                 .replace("{name}", &label),
-            Settlement::Withdrawn => continue,
+            Settlement::Withdrawn | Settlement::HandedBack => continue,
         };
         tell(
             ctx,

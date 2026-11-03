@@ -155,6 +155,9 @@ pub const NOT_AT_RAMP: &str =
 pub const BAY_NO_ROOM: &str = "The {carrier}'s bay has no room for the {name}: {why}.";
 /// The rig is not on the ground: `{n}`.
 pub const NOT_ON_GROUND: &str = "Rig {n} is not on a site's ground.";
+/// **Doc 36a P1-4**: another tug's attach is in flight on the casualty: `{n}`, `{name}`.
+pub const ATTACHING_ELSEWHERE: &str =
+    "Another tug is making fast to the {name} already; rig {n} waits for that to land or let go.";
 /// Its own state forbids towing: `{n}`.
 pub const TUG_NOT_MOBILE: &str =
     "Rig {n} cannot tow: it must be whole enough to drive under its own power.";
@@ -282,6 +285,16 @@ impl Tows {
             .operations()
             .map(|(_, op)| op)
             .filter(|op| op.stage().is_active())
+    }
+
+    /// **Whether another tug than `tug` has an attach in flight on `casualty`** (doc 36a
+    /// P1-4): a second attach start waits for it, so the pin the first wrote is never replaced
+    /// under it.
+    #[must_use]
+    pub fn attaching_elsewhere(&self, tug: ObjId, casualty: ObjId) -> bool {
+        self.acts
+            .iter()
+            .any(|act| act.tug != tug && act.stage == TowStage::Attach { casualty })
     }
 
     /// Take `tug`'s act out.
@@ -515,9 +528,45 @@ impl TowOrder {
     }
 }
 
-/// **The tow orders** (RAM, keyed by the tug): the actor who may submit it and the order.
+/// **The tow orders** (RAM, keyed by the actor and the tug; doc 36a P1-3): each actor's own
+/// order on a rig, so one party's `+salvage/inspect` never clobbers another's queued contest on
+/// the same hull. Past [`crate::port::tv::MAX_POINTERS`] rows the oldest written goes, never the
+/// lowest id.
 #[derive(Clone, Debug, Default)]
-pub(crate) struct TowOrders(BTreeMap<ObjId, (ObjId, TowOrder)>);
+pub(crate) struct TowOrders {
+    /// `(actor, tug)` → (when it was written, the order).
+    rows: BTreeMap<(ObjId, ObjId), (u64, TowOrder)>,
+    /// The last write's sequence.
+    written: u64,
+}
+
+impl TowOrders {
+    /// Write `order` as `actor`'s on `tug`, replacing that actor's earlier order on it.
+    fn put(&mut self, actor: ObjId, tug: ObjId, order: TowOrder) {
+        self.written = self.written.wrapping_add(1);
+        self.rows.insert((actor, tug), (self.written, order));
+        while self.rows.len() > crate::port::tv::MAX_POINTERS {
+            let oldest = self
+                .rows
+                .iter()
+                .min_by_key(|(_, (at, _))| *at)
+                .map(|(key, _)| *key);
+            match oldest {
+                Some(key) => {
+                    self.rows.remove(&key);
+                }
+                None => break,
+            }
+        }
+    }
+
+    /// `actor`'s orders, by tug.
+    fn of(&self, actor: ObjId) -> impl Iterator<Item = (ObjId, &TowOrder)> {
+        self.rows
+            .range((actor, ObjId(0))..=(actor, ObjId(u32::MAX)))
+            .map(|((_, tug), (_, order))| (*tug, order))
+    }
+}
 
 /// **The active tows, mirrored in RAM** (refreshed by the tow tick from every lane site's
 /// record): tug → (site, its tow). A convenience for the drive's rates and the tick's placement,
@@ -1121,10 +1170,7 @@ impl ActionProvider for TowProvider {
             return Ok(None);
         };
         let mut rows = Map::new();
-        for (tv, (actor, order)) in &orders.0 {
-            if *actor != query.actor() {
-                continue;
-            }
+        for (tv, order) in orders.of(query.actor()) {
             if let Ok(value) = serde_json::to_value(order) {
                 rows.insert(tv.0.to_string(), value);
             }
@@ -1216,6 +1262,11 @@ impl ActionProvider for TowProvider {
                 if facts.carrier_refusal.is_some() {
                     return Err(refused("tow_carrier_floor"));
                 }
+                // Doc 36a P1-4: one attach in flight a casualty, so the first tug's pin stands
+                // until its attach lands or is let go.
+                if record.tows.attaching_elsewhere(tv, facts.casualty) {
+                    return Err(refused("tow_taken"));
+                }
                 let rig = act::read_record(txn, &self.excursions, tv)?;
                 if rig
                     .as_ref()
@@ -1278,6 +1329,12 @@ impl ActionProvider for TowProvider {
                 }
             }
             TowOrder::Release { .. } => {
+                // Doc 36a P1-10 (Q-CF-30): a release draining after a hostile mark promoted the
+                // site waits like every other surface act; otherwise the retired tow's casualty
+                // is neither fielded nor carried, and the demotion drops it.
+                if promoted {
+                    return Err(refused(crate::surface::site_record::FIELD_OPEN_CODE));
+                }
                 // Doc 36 cut GC.6 (Q-36-26): a release starts the tenure again.
                 let released = record
                     .tows
@@ -1611,11 +1668,47 @@ impl TowProvider {
             .filter(|(_, qty)| **qty > 0)
             .map(|(good, qty)| (good.clone(), *qty))
             .collect();
+        let hopper = mush_inventory::EndpointRef(mush_economy::VaultId(facts.hopper));
+        // Doc 36a P2-2: the hopper's room, re-read here against the facts' limits; what landed
+        // in it since the command (a run's ore, another pickup) counts.
+        let mut load: BTreeMap<CanonicalId, u64> = facts
+            .limits
+            .keys()
+            .map(|measure| (measure.clone(), 0))
+            .collect();
+        for (good, per) in &facts.figures {
+            let qty = inventory
+                .available(txn, hopper, good)
+                .map_err(|_| integrity("the hopper cannot be read"))?;
+            for (measure, per_unit) in per {
+                let slot = load.entry(measure.clone()).or_insert(0);
+                *slot = slot.saturating_add(qty.saturating_mul(*per_unit));
+            }
+        }
+        for (good, qty) in &moves {
+            let Some(per) = facts.figures.get(good) else {
+                if facts.figures.is_empty() {
+                    break;
+                }
+                return Err(refused("pickup_no_stow"));
+            };
+            for (measure, per_unit) in per {
+                let slot = load.entry(measure.clone()).or_insert(0);
+                *slot = slot.saturating_add(qty.saturating_mul(*per_unit));
+            }
+        }
+        if facts
+            .limits
+            .iter()
+            .any(|(measure, limit)| load.get(measure).copied().unwrap_or(0) > *limit)
+        {
+            return Err(refused("pickup_no_room"));
+        }
         inventory
             .transfer_many(
                 txn,
                 mush_inventory::EndpointRef(mush_economy::VaultId(facts.spoil)),
-                mush_inventory::EndpointRef(mush_economy::VaultId(facts.hopper)),
+                hopper,
                 &moves,
             )
             .map_err(|error| {
@@ -1632,7 +1725,7 @@ impl TowProvider {
                 kind: crate::surface::claim::UnlawfulKind::Pickup,
                 actor,
                 subject: facts.object,
-                landholder: None,
+                landholder: facts.landholder,
                 at_ic: now,
             },
         );
@@ -1745,12 +1838,7 @@ pub(crate) fn submit(
         return false;
     };
     if let Some(orders) = ctx.w.module_state_mut::<TowOrders>() {
-        orders.0.insert(tug, (actor, order));
-        while orders.0.len() > crate::port::tv::MAX_POINTERS {
-            if orders.0.pop_first().is_none() {
-                break;
-            }
-        }
+        orders.put(actor, tug, order);
     }
     let saved = ctx.actor;
     ctx.actor = actor;
@@ -1850,6 +1938,15 @@ pub(crate) fn tow_cmd(
     let label = name(ctx.w, casualty);
     if let Some(line) = &facts.carrier_refusal {
         return Err(CmdError::msg(line.clone()));
+    }
+    // Doc 36a P1-4 (Q-36-26): a second tug's attach start while another's is in flight on the
+    // casualty would replace the first's tenure pin; it waits instead.
+    if record.tows.attaching_elsewhere(rig.tv, casualty) {
+        return Err(CmdError::msg(
+            ATTACHING_ELSEWHERE
+                .replace("{n}", &n)
+                .replace("{name}", &label),
+        ));
     }
     let now = ctx.w.world_ic_now().at;
     let mut probe = record.tows.book.clone();
@@ -2121,13 +2218,21 @@ pub(crate) fn tick(ctx: &mut Ctx<'_>) {
                     place_in_bay(ctx, &site, act.tug, casualty, carrier);
                 }
                 let facts = casualty.and_then(|casualty| {
-                    let ramp = crate::surface::tick::hull_view_berth(ctx.w, carrier).map(
-                        |(_, domain, ramp, _, _)| FieldPose {
+                    let ramp = crate::surface::tick::hull_view_berth(ctx.w, carrier)
+                        .map(|(_, domain, ramp, _, _)| FieldPose {
                             site: ObjId(u32::try_from(domain.0).unwrap_or(0)),
                             x_cm: ramp.x_cm,
                             y_cm: ramp.y_cm,
-                        },
-                    )?;
+                        })
+                        .or_else(|| {
+                            // Doc 36a P0-7: a casualty already in the carrier's bay when the
+                            // carrier is no longer berthed here (a finish lost, the carrier
+                            // lifted) still finishes its load: the facts read the bay, and the
+                            // tug's own stand serves as the ramp.
+                            in_bay_of(ctx.w, casualty, carrier)
+                                .then(|| on_ground(ctx.w, act.tug).map(|(_, _, pose)| pose))
+                                .flatten()
+                        })?;
                     load_facts(ctx, act.tug, casualty, carrier, ramp)
                 });
                 TowOrder::Loaded {
