@@ -303,6 +303,37 @@ pub(crate) fn seed_typed<K, V>(
     keep(rig, ops);
 }
 
+/// [`seed_typed`] over a record that may already stand: rewritten when it does, written when
+/// not (doc 36a lane 2: a lane site's record carries the seeded custody rows).
+pub(crate) fn reseed_typed<K, V>(
+    rig: &mut Rig,
+    handle: &mush_core::StateFamilyHandle<K, V>,
+    key: &K,
+    value: V,
+) where
+    K: Send + Sync + 'static,
+    V: Clone + Send + Sync + 'static,
+{
+    let prepared = {
+        let engine = rig.tw.engine_mut();
+        let mut txn = engine.action_transaction(handle).expect("a transaction");
+        let stands = txn.get(handle, key).expect("the record reads").is_some();
+        if stands {
+            txn.replace(handle, key, value)
+                .expect("the record rewrites");
+        } else {
+            txn.insert(handle, key, value).expect("the record writes");
+        }
+        txn.prepare().expect("prepares")
+    };
+    let (ops, install) = prepared.into_parts();
+    rig.tw
+        .engine_mut()
+        .install_prepared_action(install)
+        .expect("installs");
+    keep(rig, ops);
+}
+
 /// Fold every write and reboot with the stored `tacsim:` document `key` edited.
 fn reboot_editing(
     mut rig: Rig,

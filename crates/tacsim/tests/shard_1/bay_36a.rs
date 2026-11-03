@@ -17,15 +17,18 @@ use mush_tactics::UnitMutationOp;
 use mush_tactics::field_ops::ComponentCondition;
 use tacsim::port::HullRow;
 use tacsim::port::bay_work::{BayHull, BayHullState, OrderStatus};
+use tacsim::surface::salvage::{ClaimSeam, SalvageCustody};
+use tacsim::surface::site_record::{SiteKey, SiteRecord};
 
 use crate::bay_gc8::{
-    bay_room, buy, component_id, damage, empty_magazine, lot_record, magazine, mint, order_of,
-    provenance, put, section_id, unit, wreck_section,
+    bay_room, buy, component_id, damage, empty_magazine, in_bay, lot_record, magazine, mint,
+    order_of, provenance, put, section_id, unit, wreck_section,
 };
 use crate::driving::{
-    Rig, at_counter, fire, hold_pool, hold_vault_of, land_quietly, pilot, prospector, rigs_of, run,
-    seed_hold, station_room, stocked, store, to_ic,
+    Rig, at_counter, cid, fire, handles, hold_pool, hold_vault_of, land_quietly, pilot, prospector,
+    reseed_typed, rigs_of, run, seed_hold, station_room, stocked, store, to_ic,
 };
+use crate::field_host::site_record_at;
 
 const CERES: &str = "ceres_port";
 /// Ceres' workshop room (C14, Occator's).
@@ -368,4 +371,125 @@ async fn b36a_2_c_no_cancel_once_the_draw_has_landed() {
     let cannon = component_id(&unit(&rig, escort), "cannon");
     let (loaded, capacity) = magazine(&unit(&rig, escort), &cannon);
     assert_eq!(loaded, capacity, "the escort is rearmed");
+}
+
+/// **A hull in a salvor's custody**: the custody row for `hull`, held by `holder` aboard
+/// `carrier`, written on Urvara's site record (the load's record; GC.5's shape).
+fn seed_custody(rig: &mut Rig, hull: ObjId, holder: ObjId, carrier: ObjId) {
+    let now = rig.tw.world().world_ic_now().at;
+    let mut record = site_record_at(rig, URVARA).unwrap_or_else(|| SiteRecord::new(cid(URVARA)));
+    record.custody.retain(|row| row.hull != hull);
+    record.custody.push(SalvageCustody {
+        hull,
+        holder,
+        carrier,
+        recovered_by: carrier,
+        recovered_ic: now,
+        left_ic: None,
+        claim: ClaimSeam::Owed,
+        operation: None,
+        pin: None,
+        file: None,
+        told: vec![],
+        evidence: vec![],
+    });
+    record.custody.sort_by_key(|row| row.hull);
+    let h = handles(&rig.tw);
+    reseed_typed(rig, &h.families.sites, &SiteKey(cid(URVARA)), record);
+}
+
+/// The custody row for `hull` taken off Urvara's record: the claim vacated.
+fn vacate_custody(rig: &mut Rig, hull: ObjId) {
+    let mut record = site_record_at(rig, URVARA).expect("the site record");
+    record.custody.retain(|row| row.hull != hull);
+    let h = handles(&rig.tw);
+    reseed_typed(rig, &h.families.sites, &SiteKey(cid(URVARA)), record);
+}
+
+/// **Salvor S holds owner O's hull in S's bay**: S's Dray-P at Ceres with S's leased escort in
+/// slot 1 and, in slot 2, a spare of the pool titled to O (`@asset/transfer`) under S's live
+/// custody (the seeded row). Returns S, S's hull row, O and the hull.
+fn salvor_holds_owners_hull(rig: &mut Rig) -> (ObjId, HullRow, ObjId, ObjId) {
+    let (s, s_row) = prospector(rig, "Second", 2, "Red Moth");
+    mint(rig, s);
+    at_counter(rig, s);
+    let signed = run(&mut rig.tw, s, "+tv/lease escort go");
+    assert!(signed.contains("leases you OWP-ES-01"), "{signed}");
+    let s_escort = rigs_of(&rig.tw, s)[0];
+    let o = pilot(rig, "Owner", 3);
+    let hull = spare_escort(rig, s_escort);
+    let moved = run(
+        &mut rig.tw,
+        GOD,
+        &format!("@asset/transfer #{}=#{}", hull.0, o.0),
+    );
+    assert_eq!(title_of(rig, hull), Some(PrincipalId::Object(o)), "{moved}");
+    put(rig, hull, bay_room(&s_row), true);
+    seed_custody(rig, hull, s, ObjId(s_row.hull));
+    (s, s_row, o, hull)
+}
+
+/// **36a P1-2 — custody caps the owner, and the berth binds to its carrier.** Owner O's
+/// escort sits in salvor S's bay under S's live custody. O holds no right at the bay (no
+/// berth, no cancel); S acts as the salvor alone (berths her out of S's bay, orders her unjam,
+/// may neither strip nor scrap). Once the claim is vacated, O's title stands again and O
+/// cancels S's order, but the berth still names S's carrier: O cannot stow her into S's bay
+/// nor strip a part into S's hold, and S, with no right left, cannot stow her either.
+#[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+async fn b36a_3_a_custody_caps_the_owner_and_binds_the_berth() {
+    let mut rig = stocked();
+    let (s, s_row, o, hull) = salvor_holds_owners_hull(&mut rig);
+    let _ = jam_cannon(&mut rig, hull);
+    let workshop = station_room(&rig.tw, CERES, C14);
+
+    // O, the title holder, holds no right while S's custody is live.
+    put(&mut rig, o, workshop, false);
+    let quote = run(&mut rig.tw, o, &format!("+bay #{}", hull.0));
+    assert!(quote.contains("You hold no right"), "{quote}");
+    let refused = run(&mut rig.tw, o, &format!("+bay/berth #{}", hull.0));
+    assert!(refused.contains("no right"), "{refused}");
+
+    // S, the salvor, berths her out of S's own bay and orders the repair; S neither strips nor
+    // scraps.
+    put(&mut rig, s, workshop, false);
+    let quote = run(&mut rig.tw, s, &format!("+bay #{}", hull.0));
+    assert!(quote.contains("Your right: salvage custody"), "{quote}");
+    let berthed = run(&mut rig.tw, s, &format!("+bay/berth #{}", hull.0));
+    assert!(berthed.contains("berthed in the workshop"), "{berthed}");
+    let refused = run(&mut rig.tw, s, &format!("+bay/strip #{}=cannon", hull.0));
+    assert!(refused.contains("does not reach taking parts"), "{refused}");
+    let refused = run(&mut rig.tw, s, &format!("+bay/scrap #{}", hull.0));
+    assert!(
+        refused.contains("Only the hull's title holder"),
+        "{refused}"
+    );
+    let taken = run(&mut rig.tw, s, &format!("+bay/order #{}=unjam", hull.0));
+    assert!(taken.contains("taken in the workshop"), "{taken}");
+    let refused = run(&mut rig.tw, o, &format!("+bay/cancel #{}", hull.0));
+    assert!(refused.contains("no right"), "{refused}");
+    assert_eq!(order_of(&rig, hull).status, OrderStatus::Open);
+
+    // The claim is vacated: O's title stands again, S's right is gone.
+    vacate_custody(&mut rig, hull);
+    // (The cancel's one line goes to the order's requester, S.)
+    let _ = run(&mut rig.tw, o, &format!("+bay/cancel #{}", hull.0));
+    assert_eq!(order_of(&rig, hull).status, OrderStatus::Cancelled);
+    let refused = run(&mut rig.tw, s, &format!("+bay/stow #{}", hull.0));
+    assert!(refused.contains("no right"), "{refused}");
+    // ... but the berth still names S's carrier, which serves O nothing.
+    let refused = run(&mut rig.tw, o, &format!("+bay/stow #{}", hull.0));
+    assert!(refused.contains("not yours to use"), "{refused}");
+    assert!(!in_bay(&rig, hull, bay_room(&s_row)));
+    let refused = run(&mut rig.tw, o, &format!("+bay/strip #{}=cannon", hull.0));
+    assert!(refused.contains("not yours to use"), "{refused}");
+    let record = bay_record(&rig, hull);
+    assert!(
+        record.berth.is_some() && record.owed.is_none(),
+        "{record:?}"
+    );
+    let cannon = component_id(&unit(&rig, hull), "cannon");
+    assert_ne!(
+        assess(&rig, hull).component_conditions[&cannon],
+        ComponentCondition::Missing
+    );
 }

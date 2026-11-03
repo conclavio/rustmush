@@ -42,7 +42,7 @@ pub const SCRAP_GRADE: u8 = 50;
 
 /// The record, a berthed workshop hull with no open order, no owed act and no scrapping, and
 /// the actor standing in its workshop with `act` in their right.
-fn ready(ctx: &Ctx<'_>, hull: ObjId, act: Act) -> Result<(BayHull, super::Facility), String> {
+fn ready(ctx: &mut Ctx<'_>, hull: ObjId, act: Act) -> Result<(BayHull, super::Facility), String> {
     let record = record_of(ctx.w, hull).map_err(str::to_owned)?;
     if record.open().is_some() {
         return Err(super::HELD_OPEN.to_owned());
@@ -69,6 +69,9 @@ fn ready(ctx: &Ctx<'_>, hull: ObjId, act: Act) -> Result<(BayHull, super::Facili
             _ => "Your right over that hull does not reach taking parts off it.".to_owned(),
         });
     }
+    // Doc 36a P1-2: the lots go into the hold of the carrier she came off, which must still
+    // serve her — never a salvor's hold after the claim is vacated.
+    super::berth_stands(ctx, ctx.actor, &record)?;
     Ok((record, facility))
 }
 

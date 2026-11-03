@@ -17,7 +17,9 @@
 //!   the same cost; a workshop does everything. Each quoted job names the class it needs.
 //! - **Who may** (Q-36-33): [`crate::port::bay_work::permits`]. The title holder and a holder of a current
 //!   `unit.maintain_refit` grant may repair, rearm and refit; a lessee repairs and rearms; a
-//!   salvor with custody repairs at their own risk. None but the title holder scraps.
+//!   salvor with custody repairs at their own risk. None but the title holder scraps. While a
+//!   hull is in another's live salvage custody, the custodian alone acts (doc 36a P1-2), and a
+//!   hull leaves a carrier's bay only by the hand of one who has the run of that carrier.
 //!
 //! - **The hold** (GC.8b; Q-36-31, Q-36-36): an order's munitions and `industrial_parts` come
 //!   from the carrier's hold — the carrier whose bay the hull stands in, or the carrier it was
@@ -254,11 +256,68 @@ pub fn salvor_custody(
     crate::surface::salvage::custody_of(ctx, hull).filter(|custody| custody.holder == actor)
 }
 
-/// Whether `actor` holds the hull's title outright.
+/// Whether `actor` holds the hull's title outright, as the bay reads a title (doc 36a P1-2:
+/// `mush_economy::unit_authority::bay_hull_title_stands` — unscoped, unfrozen, unstolen, active
+/// and unencumbered; the grant half of that predicate is [`right_of`]'s grant arm).
 fn holds_title(w: &World, actor: ObjId, hull: ObjId) -> bool {
     w.module_state::<EconomyStore>()
-        .and_then(|e| e.snapshot().asset(hull).cloned())
-        .is_some_and(|a| a.title_owner == PrincipalId::Object(actor) && !a.frozen)
+        .and_then(|e| e.snapshot().asset(hull))
+        .is_some_and(|asset| {
+            asset.title_owner == PrincipalId::Object(actor)
+                && mush_economy::unit_authority::bay_hull_title_stands(w, asset, actor)
+        })
+}
+
+/// **Whether `actor` has the run of `carrier`** (doc 36a P1-2): they hold her helm (a charter's
+/// tenant, the fleet's commander, a titled programme hull's owner) or operate her from a yard.
+fn carrier_right(w: &World, actor: ObjId, carrier: ObjId) -> bool {
+    crate::port::coop::helm_holder(w, carrier) == Some(actor)
+        || crate::port::yard::operates(w, actor, carrier)
+}
+
+/// **The right a third party `actor` holds over `hull`**, as far as the bay can read it for
+/// someone other than `ctx.actor`: title, a live lease, a salvor's custody — never a grant,
+/// which is Org's owner read and answers for the command's own caller alone, so a berther's
+/// grant cannot be read on their behalf (that berther stows her themself).
+fn right_held_by(ctx: &Ctx<'_>, actor: ObjId, hull: ObjId) -> Option<Right> {
+    let custody = crate::surface::salvage::custody_of(ctx, hull);
+    if custody.as_ref().is_some_and(|row| row.holder != actor) {
+        return None;
+    }
+    if holds_title(ctx.w, actor, hull) {
+        return Some(Right::Title);
+    }
+    if leases(ctx.w, actor, hull) {
+        return Some(Right::Lessee);
+    }
+    custody.map(|_| Right::Salvor)
+}
+
+/// **Whether a berthed hull's carrier still serves her** (doc 36a P1-2): the hold a berthed
+/// hull draws from and mints into, and the bay a stow returns her to, are the carrier she came
+/// off — hers to use only while `actor` has the run of that carrier, or the one who berthed
+/// her still holds a right over her that the bay can read for them ([`right_held_by`]: title,
+/// lease or custody). A salvor's carrier whose claim has since been vacated serves the prior
+/// owner nothing: no stow into her bay, no lot into her hold, no draw from it. A hull not
+/// berthed is served by the bay it stands in.
+///
+/// # Errors
+///
+/// The sentence for a berth whose carrier is nobody's here to use.
+fn berth_stands(ctx: &Ctx<'_>, actor: ObjId, record: &BayHull) -> Result<(), String> {
+    let Some(berth) = &record.berth else {
+        return Ok(());
+    };
+    if carrier_right(ctx.w, actor, berth.carrier)
+        || right_held_by(ctx, berth.by, record.hull).is_some()
+    {
+        return Ok(());
+    }
+    Err(
+        "Her berth's carrier is not yours to use, and whoever berthed her holds no right over \
+         her now; a carrier of your own must take her."
+            .to_owned(),
+    )
 }
 
 /// Whether Org's unit authority allows `ctx.actor` `capability` on `hull` now: the grant
@@ -294,10 +353,17 @@ fn leases(w: &World, actor: ObjId, hull: ObjId) -> bool {
 }
 
 /// **The right `ctx.actor` holds over `hull`** (Q-36-33), strongest first: title, a
-/// `maintain_refit` grant, a live lease, a salvor's custody.
+/// `maintain_refit` grant, a live lease, a salvor's custody. **While another holds the hull in
+/// live salvage custody** (doc 36a P1-2; doc 36 GC.5 "custody is not title"), nobody else's
+/// title, grant or lease reaches the bay: the custodian alone acts, as the salvor (Q-S14), and
+/// the prior owner answers for her again only when the claim is vacated or awarded.
 #[must_use]
 pub fn right_of(ctx: &Ctx<'_>, hull: ObjId) -> Option<Right> {
     let actor = ctx.actor;
+    let custody = crate::surface::salvage::custody_of(ctx, hull);
+    if custody.as_ref().is_some_and(|row| row.holder != actor) {
+        return None;
+    }
     if holds_title(ctx.w, actor, hull) {
         return Some(Right::Title);
     }
@@ -307,7 +373,7 @@ pub fn right_of(ctx: &Ctx<'_>, hull: ObjId) -> Option<Right> {
     if leases(ctx.w, actor, hull) {
         return Some(Right::Lessee);
     }
-    salvor_custody(ctx, actor, hull).map(|_| Right::Salvor)
+    custody.map(|_| Right::Salvor)
 }
 
 /// The right that lets `right` do every job in `jobs` (repair and rearm separately).
@@ -764,6 +830,7 @@ fn take(
     let vault = if goods.is_empty() && fit.is_none() {
         None
     } else {
+        berth_stands(ctx, ctx.actor, &record)?;
         let vault = source_hold(ctx.w, hull, &facility)?;
         hold_carries(ctx, vault, &goods)?;
         if let Some((lot, _)) = &fit
@@ -1328,6 +1395,17 @@ pub fn berth(ctx: &mut Ctx<'_>, hull: ObjId) -> Result<ObjId, String> {
     if !permits(right, Act::Berth) {
         return Err(NO_RIGHT.to_owned());
     }
+    // Doc 36a P1-2: a hull leaves a carrier's bay by the hand of one who has the run of that
+    // carrier, or holds the hull in custody aboard her.
+    if !carrier_right(ctx.w, ctx.actor, carrier)
+        && salvor_custody(ctx, ctx.actor, hull).is_none_or(|row| row.carrier != carrier)
+    {
+        return Err(
+            "Hulls are berthed out of your own carrier's bay, or out of the bay that holds your \
+             salvage."
+                .to_owned(),
+        );
+    }
     let berths = def.workshop.as_ref().map_or(0, |w| w.berths);
     let used = ctx
         .w
@@ -1369,6 +1447,7 @@ pub fn stow(ctx: &mut Ctx<'_>, hull: ObjId) -> Result<ObjId, String> {
     if !permits(right, Act::Berth) {
         return Err(NO_RIGHT.to_owned());
     }
+    berth_stands(ctx, ctx.actor, &record)?;
     let docked_here = match crate::port::ship::berth_of(ctx.w, row.carrier) {
         crate::port::ship::Berth::Docked { map, def } => {
             crate::port::workshop::room(ctx.w, &map.entry, def)
