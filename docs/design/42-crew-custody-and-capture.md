@@ -421,6 +421,18 @@ a Hostile party holds the cell."
 - **Why:** the ruling says a chance; the kernel's no-dice rule (doc 16) is kept by a seeded draw;
   (d) answers where the captive physically goes without a brig on a tank; the reach test is the
   kernel's own, so "holds" means what the tempo already means by "engaged".
+- **Draft 0.3 (review round 2, 42-1): who contests the cell.** Test (c) as written counts the
+  ejecting hull itself: a hull doomed only by a damaged control section (Q-42-11) still has power,
+  motion and a loaded mount, its reach is that mount's band (`fight_inner_cm`,
+  `arena/weapons.rs:409`) measured from its own pose (`arena/state.rs:5670–5687`), so its own cell
+  is at distance 0 and the cell is never held — story (d) would never draw. The rule the build
+  uses: (c) reads **every unit of the pilot's own party or a Friend's except the ejecting unit**,
+  and only those that are not `limits.wreck` (the filter `party_holds_armed_hostile_in_reach`
+  already applies, `state.rs:5696`), armed at check-out or having fired, with a non-zero reach. An
+  immobile or disabled friend that keeps a loaded mount and its sight still contests the cell: it
+  can still fire on whoever comes for the pilot. A wreck does not. The same exclusion and filter
+  apply to (b) for symmetry (a holder's wreck holds nothing). No ruling changes: this is what
+  "holds the cell" meant, written down so the gate can pin it.
 
 **Q-42-13 — The pilot's condition after.**
 - **Proposed default:** unchanged by the eject: the condition the sections last gave (Fit, or
