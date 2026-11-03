@@ -125,7 +125,38 @@ pub struct InventoryProvider {
     action: DefinitionRef,
     outcome: DefinitionRef,
     families: InventoryFamilies,
+    capacity: Option<std::sync::Arc<dyn PoolCapacity>>,
 }
+
+/// **The room an endpoint has for pooled quantity** (doc 36a P2-4): the composition's capacity
+/// rule — a hull's hold is the game's to measure, and this crate has no edge to it — consulted
+/// when a lot dissolves into its endpoint's pool, as the market's draw consults it. `plan` is
+/// read at projection and rides the offer's fixed parameters (the prepare has no world); `check`
+/// weighs `quantity` more of `commodity` against it, reading the endpoint's pools through
+/// `read_pool` (a pool that cannot be read refuses, never reads as 0). Unwired, nothing is
+/// asked, and the offer is byte-identical to cut E7c2's.
+pub trait PoolCapacity: Send + Sync + std::fmt::Debug {
+    /// The rule for `endpoint`, as a value the prepare can carry; `None` for an ungoverned
+    /// endpoint.
+    fn plan(&self, world: &mush_core::World, endpoint: EndpointRef) -> Option<Value>;
+
+    /// Whether `quantity` more of `commodity` fits under `plan`.
+    ///
+    /// # Errors
+    ///
+    /// The refusal, as the line the actor reads.
+    fn check(
+        &self,
+        plan: &Value,
+        commodity: &CanonicalId,
+        quantity: u64,
+        read_pool: &mut dyn FnMut(&CanonicalId) -> Result<u64, PoolReadFailed>,
+    ) -> Result<(), String>;
+}
+
+/// A pool [`PoolCapacity::check`] asked for could not be read.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub struct PoolReadFailed;
 
 fn error(code: ActionErrorCode, message: impl Into<String>) -> ActionError {
     ActionError::new(code, false, message).expect("bounded inventory action error")
@@ -375,6 +406,43 @@ pub(crate) fn prepare_wall(
 }
 
 impl InventoryProvider {
+    /// **The endpoint's room for `lot`** (doc 36a P2-4), by the plan the offer carried for it;
+    /// an endpoint the offer carried no plan for is ungoverned and takes the lot.
+    fn room_for(
+        &self,
+        txn: &mut ActionTxn<'_>,
+        parameters: &serde_json::Map<String, Value>,
+        endpoint: EndpointRef,
+        lot: LotId,
+    ) -> Result<(), ActionError> {
+        let plan = parameters
+            .get("capacity")
+            .and_then(Value::as_object)
+            .and_then(|plans| plans.get(&endpoint.vault().0.to_string()));
+        let (Some(capacity), Some(plan)) = (&self.capacity, plan) else {
+            return Ok(());
+        };
+        let record = txn
+            .get(&self.families.lots, &lot)
+            .map_err(|_| {
+                error(
+                    ActionErrorCode::Integrity,
+                    "That endpoint cannot be used right now.",
+                )
+            })?
+            .cloned()
+            .ok_or_else(|| error(ActionErrorCode::ProviderRejected, "no such lot"))?;
+        let mut read = |good: &CanonicalId| {
+            self.families
+                .pool(txn, endpoint, good)
+                .map(|pool| pool.map_or(0, |pool| pool.quantity))
+                .map_err(|_| PoolReadFailed)
+        };
+        capacity
+            .check(plan, record.commodity(), record.quantity(), &mut read)
+            .map_err(|line| error(ActionErrorCode::ProviderRejected, line))
+    }
+
     fn parameters<'i>(
         &self,
         invocation: &'i ActionInvocation,
@@ -626,15 +694,34 @@ impl ActionProvider for InventoryProvider {
                 )
             })?;
         let (label, help) = self.verb.label();
+        // The IC stamp rides the offer's FIXED parameters, so preparation
+        // never reaches for a clock it does not have and two replays of one
+        // request stamp the identical marker. Doc 18 cut IC14 row 1: the
+        // real second rides beside it, for the marker ring's age.
+        let mut fixed = json!({
+            "now": engine.world.world_ic_now(),
+            "wall": engine.world.now(),
+        });
+        // Doc 36a P2-4: a dissolve carries each governed live endpoint's capacity plan, so
+        // the prepare (which has no world) refuses a lot its pool has no room for. Without a
+        // rule, or on any other verb, the offer is byte-identical to cut E7c2's.
+        if matches!(self.verb, InventoryVerb::Dissolve)
+            && let Some(capacity) = &self.capacity
+        {
+            let plans: serde_json::Map<String, Value> = endpoints
+                .iter()
+                .filter_map(|vault| {
+                    capacity
+                        .plan(&engine.world, EndpointRef(*vault))
+                        .map(|plan| (vault.0.to_string(), plan))
+                })
+                .collect();
+            if !plans.is_empty() {
+                fixed["capacity"] = Value::Object(plans);
+            }
+        }
         Ok(Some(ProviderOfferDraft {
-            // The IC stamp rides the offer's FIXED parameters, so preparation
-            // never reaches for a clock it does not have and two replays of one
-            // request stamp the identical marker. Doc 18 cut IC14 row 1: the
-            // real second rides beside it, for the marker ring's age.
-            fixed_parameters: json!({
-                "now": engine.world.world_ic_now(),
-                "wall": engine.world.now(),
-            }),
+            fixed_parameters: fixed,
             parameters: ProjectedParameterSchema::new(parameters).map_err(|_| {
                 error(
                     ActionErrorCode::Integrity,
@@ -823,6 +910,7 @@ impl ActionProvider for InventoryProvider {
             InventoryVerb::Dissolve => {
                 let endpoint = endpoint_field(&parameters, "endpoint")?;
                 let lot = lot_field(&parameters, "lot")?;
+                self.room_for(txn, &parameters, endpoint, lot)?;
                 let (tranche, moved) = self
                     .families
                     .dissolve(txn, endpoint, lot)
@@ -954,6 +1042,7 @@ pub fn register(
     reg: &mut Registrar<'_>,
     families: &InventoryFamilies,
     salvage: Option<&std::sync::Arc<dyn crate::salvage::SalvageSource>>,
+    capacity: Option<&std::sync::Arc<dyn PoolCapacity>>,
 ) -> Result<(), ModError> {
     let outcome_descriptor = descriptor(
         "outcome",
@@ -1013,6 +1102,7 @@ pub fn register(
                 action,
                 outcome: outcome.clone(),
                 families: families.clone(),
+                capacity: capacity.cloned(),
             },
         )?;
     }

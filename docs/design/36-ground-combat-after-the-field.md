@@ -1151,7 +1151,9 @@ left something open, this is what the cut decided, for the owner to object to:
   SCREEN reaches the kernel as a screen facing its bearing, and SUPPORT binds only to another
   unit of the recipient's own party in the same field. *Not built:* a shard_1 story that flies
   them as delivered orders. No tacsim test yet runs a DT roster to its field, and the hook below
-  is what such a story needs. GC.1's gate is the first to fly through it.
+  is what such a story needs. No gate flies a roster through it yet (doc 36a lane 4, 2026-11-03):
+  its callers are `escort_lease`'s `gc0_the_harness_lands_the_org_unit_grant` and the escort
+  story's own operational loan, and `field_gc3`'s and `field_gc4`'s launches and ticks.
 - **The harness hook** (Q-36-49). The Org unit grant failed in tacsim's world harness because its
   `land()` prepared on the plain path, which hands a provider no owner reads. Org's
   `unitgrant_issue` reads its owner preimage, so it refused ("unit-grant request refused"). The
@@ -2045,8 +2047,11 @@ copies the mill's provider pattern and its "two writes" rule.
   consumed (`consume_product`) when the work is done, and the part goes in at the condition its
   provenance records.
 - **How a part becomes hot.** `strip::vacate_claim` flags it when its claim is vacated. This is
-  the seam GC.5/GC.6's contest calls. Until then only a staff fixture does, and nothing in play
-  makes a part hot yet. A bay strip is always lawful.
+  the seam a vacated claim would call. **It has no production caller** (doc 36a §8, lane 4):
+  GC.6's vacating contest never reaches it, because a salvor's custody reaches no strip in the
+  rights table, so no part comes off under a claim and nothing in play makes a part hot. The
+  hot-part gate in `tests/shard_1/bay_gc8.rs` flags the lot by staff hand through the seam. Hot
+  parts are an unwired seam, not a built mechanic. A bay strip is always lawful.
 
 **Scrap (Q-36-39).**
 - **`+bay/scrap <hull>`** is the title holder's alone, on a berthed workshop hull, through
@@ -2513,10 +2518,12 @@ Flank).
   the gate does not have to fight every section down. A marks it Hostile, the site promotes with it in the field, nobody fires, and
   the field demotes. The prospector is off the index and off the ground; one remains of it with
   its dry mass lies at its cell; its rig record's epoch is closed and its surface work cleared;
-  A's party knows the remains at that cell. *The black box line:* the gate asserts the
-  `destroyed` close only where the epoch's open line was written. The `driving` rig prepares its
-  acts off the composed path, so it writes no black box line at all (the launch's open line was
-  not written either, and the epoch says `unrecorded`), and the gate then asserts the box empty.
+  A's party knows the remains at that cell. *The black box line* (doc 36a lane 4, 2026-11-03):
+  the gate launches the prospector and lands every tick's submissions on the composed path
+  (`driving::launched_composed`, `field_host::until_composed`), production's, so the launch
+  writes the epoch's open line (`unrecorded` false) and the gate asserts the `destroyed` close
+  line on the box. Before that the `driving` rig prepared every act off the composed path, no
+  line was written, and the close assertion never ran.
   The close's append goes through the same participant and the same `black_box::append` as the
   staff recovery's close (`surface/recovery.rs`), composed for `tacsim_field` in `port_tick.rs`;
   no rig in the tree both composes owner participants and runs a field, so that line is
@@ -2666,8 +2673,9 @@ stands its casualty on the same cell.
      the index, its epoch closed, and still disabled.
   7. The wingman recovers, and the carrier lifts with both.
 
-  The rig prepares its acts off the composed path, so the close's black box line is covered by
-  review (GC.3's finding).
+  The casualty's launch and the tow's landings go through the composed path (doc 36a lane 4,
+  2026-11-03: `driving::launched_composed`, `seconds_until_with`), so the gate asserts the load's
+  `RecoveredToBase { carrier }` close line, `recovered_by` the wingman, on the escort's box.
 - *`gc4_the_bay_counts_mass_and_volume_as_well_as_rigs`*: the Dray-P's bay room by count, mass
   and volume.
 - *In-source tests*: the library's `BayRoom` mass refusal and the volume refusal in
@@ -3152,7 +3160,12 @@ becomes `PartyId` in the same cut.
      contest is refused as paused; resumed, the window is extended by the time lost, still runs
      30 s before its new end, and settles after it.
   8. The award: the title is O's in the economy's journal, the contract lapses, and GC.8b's rights
-     table reads O's `Salvor` right before and `Title` after.
+     table reads O as `Title` after (the table's own read, `bay_work::right_of`; its production
+     reader `+bay` needs a workshop port, which story (b) never visits, so the `Salvor` right
+     before the award is not read by this gate — doc 36a lane 4 struck the claim that it was).
+     Step 7's outage is staff's own `@tacsim/time freeze` and `resume`, under which the IC clock
+     stands still and the window pauses, since lane 4; the two W-clock events were hand-fired
+     before.
   9. Remains: O may not break up remains of T's hull; O breaks up remains of `far` (now O's), and
      a 6 t `structural_alloys` lot lies in O's carrier's hold.
 - *In-source:* `claim::tests` (the pin kept by the same tug and started again by another; a
@@ -3268,6 +3281,29 @@ Struck from what this programme owed:
 Still owed from the same review: lanes 2–4 of doc 36a §10 (the bay's ordinal desync, P0-5, P0-8, P2-4's mint
 capacity, the help file).
   - Expensive to reverse (owner decision, doc 37 §6): the workshops live in existing rooms (GC.7/GC.8a); moving them now means re-homing berthed hulls.
+
+### 36a lane 2, the bay, as built (2026-11-02)
+
+Doc 36a §10's lane 2, one PR against `main`, one commit an item, each with a regression test in
+`crates/tacsim/tests/shard_1/bay_36a.rs` driven through `+bay/*` as a player types it (the fixtures
+are staff's: the hulls' damage through the unit's one plan path, a spare titled by `@asset/transfer`,
+a salvor's custody row seeded on Urvara's site record).
+
+| Item | What changed | Test |
+|---|---|---|
+| §5.1 the ordinal desync | a given-up act rolls `record.acts` back to the ledger's `landed()` and the next act takes `landed + 1` (`next_act`); a strip's or a scrap's unit plan is written only when its mint lands (`strip::land_mint`, from the tick's settle), so a lost mint destroys nothing; the trigger needs no bad intent (two rearms against one load; `take` reserves nothing) and the hull takes a new order after the give-up | `b36a_1_a`, `b36a_1_b` |
+| P0-6 | `take` and `finish` dry-run `jobs::work` on a throwaway book before the fee and before the draw is owed; `cancel_order` refuses SETTLING while an act is owed (the Draw owed and not landed; the Draw landed and not yet settled); `settle` drops an owed Draw whose order has closed before submitting it | `b36a_2_a`, `b36a_2_b`, `b36a_2_c` |
+| P1-2 | live custody by another answers `right_of` None (the custodian alone acts, as Salvor); `berth` needs the run of the carrier (`helm_holder` / `yard::operates`) or custody aboard her; a berth's carrier serves the hull only while the actor has that run or the one who berthed her still holds a title, lease or custody the bay can read for them (`berth_stands`, read by stow, strip, scrap and a drawing order; a grant is Org's owner read and answers for the command's caller alone); `holds_title` reads `bay_hull_title_stands` | `b36a_3_a` |
+| P1-7 | `held()` is true for a scrapped shell; `hull_named` skips scrapped hulls | `b36a_4_a` |
+| P2-4 | strip and scrap refuse before any plan when `PortCapacity` would refuse the bulk lots (`hold_takes`); the Mint's prepare checks the plan the offer carries (`"plans"`); `@inv/dissolve` consults the new `mush_inventory::PoolCapacity` seam, which tacsim's `PortCapacity` implements and the composition wires | `b36a_5_a`, `b36a_5_b`, `b36a_5_c` |
+| P2-5 | `complete` runs the work under `custody_for` from the order's right (a salvor under `PendingSalvageClaim`, cancelled when the custody has ended) at `world_ic_now().at`; berth and stow refuse SETTLING | `b36a_6_a`, `b36a_6_b` |
+| §5.4 the stanza | `owe_mint` and `vacate_claim` no longer call `settle`: the tick alone submits `tacsim_bay_work`; the `+bay` note in `legacy-handlers.toml` says so | `b36a_7_a` |
+| P0-1 | no code; the owner question with today's numbers in doc 36a §9.1 | — |
+
+Still owed from this lane: the prior owner's recourse over a hull a vacated claim left berthed off a
+salvor's carrier (today: no stow into that bay, no lot into that hold, and no verb returns her — a
+carrier of the owner's own must take her, which `+bay/stow` does not yet do); GC.6's remains scrap
+(`+tv/<n> scrap`, `surface/claim.rs`) has no room check: neither lane 1 nor lane 2 took it.
 
 ### 36a lane 3 as built (2026-11-03)
 

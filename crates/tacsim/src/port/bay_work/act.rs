@@ -36,6 +36,7 @@ use mush_core::{
 use mush_economy::VaultId;
 use mush_inventory::record::EndpointRef;
 use mush_inventory::{Grade, InventoryFamilies, LotId};
+use mush_market::{CapacityPlan, CapacityProvider, CapacityReadError, CapacityRefusal};
 use mush_tactics::field_ops::{
     ComponentCondition, ContrabandReason, ProvenanceLegalityStatus, SalvageClaimId,
 };
@@ -43,6 +44,7 @@ use mush_tactics::unit::ComponentId;
 use serde::{Deserialize, Serialize};
 use serde_json::{Map, Value, json};
 
+use crate::port::market::PortCapacity;
 use crate::port_tick::port_error;
 use crate::store::TacsimStore;
 
@@ -525,13 +527,15 @@ fn parameters(
 }
 
 /// **The acts `actor` owes**, as the offer's fixed rows: every hull whose record owes an act
-/// by `actor`, keyed by the hull. Derived from authoritative state at projection, never from
-/// the submitter.
-fn owed_rows(w: &World, actor: ObjId) -> Map<String, Value> {
+/// by `actor`, keyed by the hull, and beside them (doc 36a P2-4) the capacity plan of the hold
+/// each mint lays into, keyed the same, for the holds [`PortCapacity`] governs. Derived from
+/// authoritative state at projection, never from the submitter.
+fn owed_rows(w: &World, actor: ObjId) -> (Map<String, Value>, Map<String, Value>) {
     let Some(store) = w.module_state::<TacsimStore>() else {
-        return Map::new();
+        return (Map::new(), Map::new());
     };
     let mut rows = Map::new();
+    let mut plans = Map::new();
     for hull in store.bay_owing_hulls() {
         if rows.len() >= MAX_OFFER_ROWS {
             break;
@@ -543,10 +547,15 @@ fn owed_rows(w: &World, actor: ObjId) -> Map<String, Value> {
             continue;
         };
         if let Ok(value) = serde_json::to_value(owed) {
+            if let (OwedKind::Mint { .. }, Some(vault)) = (&owed.kind, owed.vault)
+                && let Some(plan) = PortCapacity.plan(w, EndpointRef(VaultId(vault)))
+            {
+                plans.insert(hull.0.to_string(), plan.0);
+            }
             rows.insert(hull.0.to_string(), value);
         }
     }
-    rows
+    (rows, plans)
 }
 
 impl ActionProvider for BayActProvider {
@@ -572,7 +581,7 @@ impl ActionProvider for BayActProvider {
         {
             return Ok(None);
         }
-        let rows = owed_rows(&engine.world, query.actor());
+        let (rows, plans) = owed_rows(&engine.world, query.actor());
         if rows.is_empty() {
             return Ok(None);
         }
@@ -607,9 +616,11 @@ impl ActionProvider for BayActProvider {
             },
         };
         Ok(Some(ProviderOfferDraft {
-            // The prepare has no world, so the IC instant rides the offer beside the rows.
+            // The prepare has no world, so the IC instant rides the offer beside the rows, and
+            // so does each mint's hold plan (doc 36a P2-4).
             fixed_parameters: json!({
                 "rows": Value::Object(rows),
+                "plans": Value::Object(plans),
                 "now": engine.world.world_ic_now().at,
             }),
             parameters: ProjectedParameterSchema::new(vec![hull, act])
@@ -731,6 +742,39 @@ impl ActionProvider for BayActProvider {
             }
             OwedKind::Mint { why, lots } => {
                 let endpoint = endpoint.ok_or_else(invalid)?;
+                // Doc 36a P2-4: the bulk the lots lay in the hold must fit it, by the plan the
+                // offer carried for this hull; a hold the offer carried no plan for is
+                // ungoverned. The pools are read here, in the bundle that writes them.
+                if let Some(plan) = parameters
+                    .get("plans")
+                    .and_then(Value::as_object)
+                    .and_then(|plans| plans.get(&hull.0.to_string()))
+                {
+                    let plan = CapacityPlan(plan.clone());
+                    let mut bulk: BTreeMap<CanonicalId, u64> = BTreeMap::new();
+                    for row in lots.iter().filter(|row| row.part.is_none()) {
+                        let slot = bulk.entry(row.commodity.clone()).or_insert(0);
+                        *slot = slot.saturating_add(row.quantity);
+                    }
+                    for (commodity, quantity) in &bulk {
+                        let mut read = |good: &CanonicalId| {
+                            self.inventory
+                                .pool(txn, endpoint, good)
+                                .map(|pool| pool.map_or(0, |pool| pool.quantity))
+                                .map_err(|_| CapacityReadError)
+                        };
+                        PortCapacity
+                            .check(&plan, commodity, *quantity, &mut read)
+                            .map_err(|refusal| match refusal {
+                                CapacityRefusal::Refused { .. } => {
+                                    refused("the hold has no room for the lots")
+                                }
+                                CapacityRefusal::Unreadable => {
+                                    refused("the hold's room cannot be read")
+                                }
+                            })?;
+                    }
+                }
                 let mut rows = Vec::with_capacity(lots.len());
                 for row in lots {
                     let grade = Grade::new(row.grade).map_err(|_| invalid())?;

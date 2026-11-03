@@ -11,20 +11,25 @@
 //!
 //! **What is a fixture.** The casualty's power is destroyed by staff hand before the first
 //! field, standing in for the round that disabled it (GC.3's precedent): the first field then
-//! indexes it as the casualty it is, and everything after runs the production paths. The rig
-//! prepares its acts off the composed path, so no black box line is written in it at all (GC.3's
-//! finding); the load's close line rides the same participant as the staff recovery's.
+//! indexes it as the casualty it is, and everything after runs the production paths. The
+//! casualty's launch and the tow's landings go through the composed path (doc 36a lane 4:
+//! `launched_composed`, `seconds_until_with`), so its black box holds the epoch's open line and
+//! the load's `RecoveredToBase` close line is asserted.
 
 use mush_core::ObjId;
+use mush_roll::commerce::ic_claims::IcCloseKind;
 use tacsim::arena::ledger::LedgerEvent;
+use tacsim::surface::black_box::BlackBoxLine;
 use tacsim::surface::site_record::LeftCondition;
 
 use crate::driving::{
-    AHUNA, act_go, cid, command, finish, launched, on_pad, on_pad_as, ramp_at, reboot, record_of,
-    run, staff_hand, stocked_tuned, to_cell, warm,
+    AHUNA, act_go, cid, command, finish, launched, launched_composed, on_pad, on_pad_as, ramp_at,
+    reboot, record_of, run, staff_hand, stocked_tuned, to_cell, warm,
 };
-use crate::field_gc3::set_section;
-use crate::field_host::{armed, egress, seat, second, site_record, task, tune, until};
+use crate::field_gc3::{black_box, set_section};
+use crate::field_host::{
+    armed, egress, seat, second, second_composed, site_record, task, tune, until,
+};
 
 /// **Destroy `unit`'s power component** (the staff fixture standing in for the round that
 /// disabled it): no power is no control, a casualty.
@@ -58,6 +63,17 @@ pub(crate) fn cell_of(rig: &crate::driving::Rig, unit: ObjId) -> Option<(i64, i6
 pub(crate) fn seconds_until(
     rig: &mut crate::driving::Rig,
     limit: u32,
+    done: impl FnMut(&mut crate::driving::Rig) -> bool,
+) -> bool {
+    seconds_until_with(rig, limit, false, done)
+}
+
+/// [`seconds_until`], the ticks' submissions landed on the composed path when `composed`
+/// (`field_host::second_composed`): the tow's finishes then write their black box lines.
+pub(crate) fn seconds_until_with(
+    rig: &mut crate::driving::Rig,
+    limit: u32,
+    composed: bool,
     mut done: impl FnMut(&mut crate::driving::Rig) -> bool,
 ) -> bool {
     for _ in 0..limit {
@@ -66,7 +82,12 @@ pub(crate) fn seconds_until(
         }
         // Only the tow's own landings are this gate's; the field host retries its owed close
         // until it forgets it, and a retry after the landing is refused by design.
-        let errors: Vec<String> = second(rig)
+        let landed = if composed {
+            second_composed(rig)
+        } else {
+            second(rig)
+        };
+        let errors: Vec<String> = landed
             .into_iter()
             .filter(|error| error.contains(tacsim::surface::tow::TOW_ACTION))
             .collect();
@@ -177,7 +198,14 @@ async fn gc4_the_wingman_drags_the_casualty_to_the_ramp_and_loads_it_before_the_
     let (a, row, tvs) = on_pad(&mut rig, 2);
     let carrier = ObjId(row.hull);
     let (escort, wingman) = (tvs[0], tvs[1]);
-    launched(&mut rig, a, escort);
+    launched_composed(&mut rig, a, escort);
+    let epoch = record_of(&mut rig.tw, escort)
+        .and_then(|record| record.sortie)
+        .map(|open| {
+            assert!(!open.unrecorded, "the composed launch writes the open line");
+            open.id
+        })
+        .expect("the escort's epoch is open on its rig record");
     let _ = act_go(&mut rig, a, "+tv/2 launch go");
     let _ = finish(&mut rig, wingman, a);
     let (rx, ry, _) = ramp_at(&rig.tw, AHUNA);
@@ -239,7 +267,8 @@ async fn gc4_the_wingman_drags_the_casualty_to_the_ramp_and_loads_it_before_the_
     let busy = run(&mut rig.tw, a, "+tv/2 scan");
     assert!(busy.contains("busy with its tow"), "{busy}");
     assert!(
-        seconds_until(&mut rig, 120, |rig| towing(rig, wingman) == Some(escort)),
+        seconds_until_with(&mut rig, 120, true, |rig| towing(rig, wingman)
+            == Some(escort)),
         "the tow attaches at its due instant"
     );
     assert!(
@@ -345,7 +374,7 @@ async fn gc4_the_wingman_drags_the_casualty_to_the_ramp_and_loads_it_before_the_
         "the load survives the restart"
     );
     assert!(
-        seconds_until(&mut rig, 120, |rig| {
+        seconds_until_with(&mut rig, 120, true, |rig| {
             tacsim::surface::tow::in_bay_of(rig.tw.world(), escort, carrier)
                 && site_record(rig).is_some_and(|record| record.tows.act_of(wingman).is_none())
         }),
@@ -370,6 +399,28 @@ async fn gc4_the_wingman_drags_the_casualty_to_the_ramp_and_loads_it_before_the_
     let escort_record = record_of(&mut rig.tw, escort).expect("the escort's rig record");
     assert!(escort_record.sortie.is_none(), "its epoch is closed");
     assert!(escort_record.excursion.is_none(), "its excursion is closed");
+    // The load's close line, on the black box: `RecoveredToBase` into the carrier, by the tug.
+    let closed = black_box(&rig, escort)
+        .into_iter()
+        .rev()
+        .find_map(|line| match line {
+            BlackBoxLine::SortieClosed {
+                sortie,
+                close,
+                recovered_by,
+                ..
+            } => Some((sortie, close, recovered_by)),
+            BlackBoxLine::MindSealed { .. } => None,
+        });
+    assert_eq!(
+        closed,
+        Some((
+            epoch,
+            IcCloseKind::RecoveredToBase { base: carrier },
+            Some(wingman)
+        )),
+        "the black box closes the epoch recovered to the carrier by the wingman"
+    );
 
     // The wingman comes home under its own power, and the carrier lifts with both.
     let _ = second(&mut rig);

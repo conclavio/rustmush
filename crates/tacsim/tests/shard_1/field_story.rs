@@ -523,14 +523,15 @@ async fn field_story(at: &Ground) {
     // steps 5 and 6 however it comes — one burst from the raider's mind or a run of bursts from
     // its condition slot, which draw order alone decides. A prospector's chassis holds about
     // 150 points against ten coaxial bursts' 165, so once its mine run has started its hull is
-    // rebuilt as the escort's armoured design with sensors (CF.6c's `tv_escort`), its magazines
-    // seeded empty so the bystander still never fires ("the miners hold").
+    // rebuilt as the escort's armoured design with sensors (CF.6c's `tv_escort`). Its main gun's
+    // magazine is seeded empty and its coaxial stays loaded (doc 36a lane 4): the bystander is
+    // an armed hull that could fire and must not, so "the miners hold" below can fail.
     rebuild(&mut rig, bystander, "tacsim.unit.tv_escort", "turret");
     seed_cells(
         &mut rig,
         bystander,
-        "test:cf7-bystander-unarmed",
-        |addr, min, _| magazine(addr).map(|_| min),
+        "test:cf7-bystander-main-gun-empty",
+        |addr, min, _| (magazine(addr) == Some("cannon")).then_some(min),
     );
     let mut rx = egress(&mut rig);
     let mut lines = Vec::new();
@@ -904,6 +905,8 @@ async fn field_story(at: &Ground) {
         "the escort's hull stands"
     );
     assert!(fired(&lines, leased, Some(walker)), "the escort fought");
+    // The miners hold: the prospector has no gun, and the bystander, whose coaxial is loaded,
+    // fired nothing from a seat that was never ordered to.
     assert!(
         [worker, bystander]
             .iter()

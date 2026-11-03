@@ -10,6 +10,14 @@
 //!   (`WorkshopBook::scrap_hull`): its structural mass becomes `structural_alloys`, a tonne per
 //!   1,000 kg, and each salvageable part a lot with its provenance. The hull is left an
 //!   irrecoverable shell in the workshop, its berth freed.
+//! - **When the hull changes** (doc 36a §5.1): a strip or a scrap is checked against the hull
+//!   when it is ordered, but written to it only when its mint has landed (`land_mint`, from
+//!   the port tick's settle), so a mint given up destroys nothing. The command writes the owed
+//!   act and nothing else; the tick submits it (doc 36a §5.4).
+//! - **Room** (doc 36a P2-4): the bulk a strip or a scrap lays in the hold (`structural_alloys`;
+//!   a part is a lot of its own kind and takes no governed room) must fit the hold as it stands
+//!   by [`crate::port::market::PortCapacity`]'s rule, read before any plan is owed
+//!   (`hold_takes`) and again in the mint's prepare from the plan the offer carries.
 //! - **Hot parts** (Q-F6): [`vacate_claim`] flags a stripped part hot when the claim it came off
 //!   under is vacated — the seam GC.5/GC.6's contest calls, a staff fixture until then. The bay
 //!   refuses to fit a hot part (`+bay/fit`).
@@ -18,8 +26,13 @@
 //!   mints the alloys at [`SCRAP_KG_PER_T`] in the same bundle that takes the remains off the
 //!   site's record.
 
+use std::collections::BTreeMap;
+
 use mush_core::{CanonicalId, Ctx, ObjId};
+use mush_economy::VaultId;
 use mush_inventory::LotId;
+use mush_inventory::record::EndpointRef;
+use mush_market::{CapacityProvider, CapacityReadError, CapacityRefusal};
 use mush_tactics::field_ops::{
     ComponentCondition, CustodyTitleStatus, ProvenanceLegalityStatus, StripAuthorization,
     WorkshopBook, assess_tactical_unit,
@@ -28,6 +41,7 @@ use smol_str::SmolStr;
 
 use super::act::{self, LotMint, OwedAct, OwedKind, PartProvenance};
 use super::{Act, BayHull, FacilityClass, NO_RIGHT, SETTLING, permits, record_of, right_of};
+use crate::port::market::PortCapacity;
 use crate::store::put_bay_hull;
 
 /// The bulk good scrap's structural mass becomes (Q-36-39).
@@ -39,7 +53,7 @@ pub const SCRAP_GRADE: u8 = 50;
 
 /// The record, a berthed workshop hull with no open order, no owed act and no scrapping, and
 /// the actor standing in its workshop with `act` in their right.
-fn ready(ctx: &Ctx<'_>, hull: ObjId, act: Act) -> Result<(BayHull, super::Facility), String> {
+fn ready(ctx: &mut Ctx<'_>, hull: ObjId, act: Act) -> Result<(BayHull, super::Facility), String> {
     let record = record_of(ctx.w, hull).map_err(str::to_owned)?;
     if record.open().is_some() {
         return Err(super::HELD_OPEN.to_owned());
@@ -66,10 +80,50 @@ fn ready(ctx: &Ctx<'_>, hull: ObjId, act: Act) -> Result<(BayHull, super::Facili
             _ => "Your right over that hull does not reach taking parts off it.".to_owned(),
         });
     }
+    // Doc 36a P1-2: the lots go into the hold of the carrier she came off, which must still
+    // serve her — never a salvor's hold after the claim is vacated.
+    super::berth_stands(ctx, ctx.actor, &record)?;
     Ok((record, facility))
 }
 
-/// Owe `lots` minted into `vault` for `why`, as the actor, and settle it at once.
+/// **Whether the hold takes the bulk `lots` lay in it** (doc 36a P2-4): every lot without a
+/// part provenance, summed by commodity, against [`PortCapacity`]'s plan for the hold as it
+/// stands. An ungoverned hold takes anything; an unreadable plan or pool refuses.
+///
+/// # Errors
+///
+/// The refusal, as a sentence carrying the hold's own line.
+fn hold_takes(ctx: &Ctx<'_>, vault: VaultId, lots: &[LotMint]) -> Result<(), String> {
+    let endpoint = EndpointRef(vault);
+    let Some(plan) = PortCapacity.plan(ctx.w, endpoint) else {
+        return Ok(());
+    };
+    let mut bulk: BTreeMap<CanonicalId, u64> = BTreeMap::new();
+    for lot in lots.iter().filter(|lot| lot.part.is_none()) {
+        let slot = bulk.entry(lot.commodity.clone()).or_insert(0);
+        *slot = slot.saturating_add(lot.quantity);
+    }
+    for (commodity, quantity) in &bulk {
+        let mut read = |good: &CanonicalId| {
+            crate::port_tick::read_pool(ctx, endpoint, good).map_err(|_| CapacityReadError)
+        };
+        match PortCapacity.check(&plan, commodity, *quantity, &mut read) {
+            Ok(()) => {}
+            Err(CapacityRefusal::Refused { line, .. }) => {
+                return Err(format!(
+                    "Her carrier's hold will not take what comes off her: {line}"
+                ));
+            }
+            Err(CapacityRefusal::Unreadable) => {
+                return Err("Her carrier's hold cannot be read; nothing comes off her.".to_owned());
+            }
+        }
+    }
+    Ok(())
+}
+
+/// Owe `lots` minted into `vault` for `why`, as the actor. The port tick submits it (doc 36a
+/// §5.4: no command submits inside its handler) and writes the hull when it lands.
 fn owe_mint(
     ctx: &mut Ctx<'_>,
     mut record: BayHull,
@@ -89,9 +143,7 @@ fn owe_mint(
         },
         tries: 0,
     }));
-    let hull = record.hull;
     put_bay_hull(ctx, &record);
-    super::settle(ctx, hull);
 }
 
 /// A part's provenance as it comes off `hull`.
@@ -160,7 +212,8 @@ pub fn strip(ctx: &mut Ctx<'_>, hull: ObjId, part: &str) -> Result<LotId, String
             at_ic,
         )
         .map_err(|e| e.to_string())?;
-    let plan = mush_tactics::field_ops::ic_condition_plan(
+    // The change is checked here and written when the mint lands (`land_mint`).
+    mush_tactics::field_ops::ic_condition_plan(
         &before,
         &after,
         None,
@@ -168,9 +221,8 @@ pub fn strip(ctx: &mut Ctx<'_>, hull: ObjId, part: &str) -> Result<LotId, String
     )
     .map_err(|e| e.to_string())?
     .ok_or("Nothing came off.")?;
-    let act_no = record.acts.saturating_add(1);
+    let act_no = super::next_act(ctx, &record);
     let lot = act::lot_id(hull, act_no, 0)?;
-    mush_tactics::module::apply_plan(ctx, hull, &plan).map_err(|e| e.to_string())?;
     let condition = stripped.condition;
     let row = LotMint {
         lot,
@@ -181,6 +233,7 @@ pub fn strip(ctx: &mut Ctx<'_>, hull: ObjId, part: &str) -> Result<LotId, String
             lot, &before, &slot, definition, condition, ctx.actor, at_ic, false,
         )),
     };
+    hold_takes(ctx, vault, std::slice::from_ref(&row))?;
     owe_mint(ctx, record, act_no, vault.0, "strip", vec![row]);
     Ok(lot)
 }
@@ -215,7 +268,7 @@ pub fn scrap(ctx: &mut Ctx<'_>, hull: ObjId) -> Result<Scrapped, String> {
             at_ic,
         )
         .map_err(|e| e.to_string())?;
-    let act_no = record.acts.saturating_add(1);
+    let act_no = super::next_act(ctx, &record);
     let mut lots = Vec::new();
     let alloys_t = report.structural_scrap_kg / SCRAP_KG_PER_T;
     if alloys_t > 0 {
@@ -255,22 +308,94 @@ pub fn scrap(ctx: &mut Ctx<'_>, hull: ObjId) -> Result<Scrapped, String> {
         Some(SmolStr::new_static("tacsim.bay.scrap")),
     )
     .map_err(|e| e.to_string())?;
-    if let Some(plan) = plan {
-        mush_tactics::module::apply_plan(ctx, hull, &plan).map_err(|e| e.to_string())?;
-    }
+    hold_takes(ctx, vault, &lots)?;
     let parts = lots
         .iter()
         .filter(|l| l.part.is_some())
         .map(|l| l.lot)
         .collect();
-    record.scrapped_ic = Some(at_ic);
-    record.berth = None;
     if lots.is_empty() {
+        // Nothing to lay in the hold: the hull is broken up now.
+        if let Some(plan) = plan {
+            mush_tactics::module::apply_plan(ctx, hull, &plan).map_err(|e| e.to_string())?;
+        }
+        record.scrapped_ic = Some(at_ic);
+        record.berth = None;
         put_bay_hull(ctx, &record);
     } else {
+        // The breaking-up is written when the mint lands (`land_mint`); the hull stands
+        // berthed and whole until then.
         owe_mint(ctx, record, act_no, vault.0, "scrap", lots);
     }
     Ok(Scrapped { alloys_t, parts })
+}
+
+/// **A mint landed** (doc 36a §5.1): the change a strip or a scrap owes the hull is written
+/// now that its lots stand in the hold — derived again from the hull as it stands (the strip
+/// of the slot the lot's provenance names, or the breaking-up of the hull), so a mint given up
+/// destroys nothing. A hull that will not take the change any more is paged for staff; its
+/// lots stand. A scrap marks the record scrapped and frees its berth either way.
+pub(crate) fn land_mint(ctx: &mut Ctx<'_>, hull: ObjId, by: ObjId, why: &str, lots: &[LotMint]) {
+    let at_ic = ctx.w.world_ic_now().at;
+    let scrap = why == "scrap";
+    let custody = CustodyTitleStatus::ResolvedTitle { owner: by };
+    let written = (|| -> Result<(), String> {
+        let (before, _, anatomy) = super::unit_parts(ctx.w, hull)?;
+        let (after, cause) = if scrap {
+            let (after, _) = WorkshopBook::new()
+                .scrap_hull(&before, &anatomy, by, &custody, false, at_ic)
+                .map_err(|e| e.to_string())?;
+            (after, SmolStr::new_static("tacsim.bay.scrap"))
+        } else {
+            let slot = lots
+                .iter()
+                .find_map(|l| l.part.as_ref())
+                .map(|p| p.slot.clone())
+                .ok_or("the strip names no slot")?;
+            let (after, _, _) = WorkshopBook::new()
+                .strip_component(
+                    &before,
+                    &anatomy,
+                    &slot,
+                    by,
+                    &StripAuthorization::BayOrWorkshop {
+                        custody: custody.clone(),
+                        has_explicit_owner_permission: true,
+                    },
+                    None,
+                    at_ic,
+                )
+                .map_err(|e| e.to_string())?;
+            (after, SmolStr::new_static("tacsim.bay.strip"))
+        };
+        let plan = mush_tactics::field_ops::ic_condition_plan(&before, &after, None, Some(cause))
+            .map_err(|e| e.to_string())?;
+        if let Some(plan) = plan {
+            mush_tactics::module::apply_plan(ctx, hull, &plan).map_err(|e| e.to_string())?;
+        }
+        Ok(())
+    })();
+    if let Err(error) = written {
+        tracing::error!(
+            hull = hull.0, %error, op = why,
+            "tacsim: a bay mint landed but the hull would not take its change; staff reconcile \
+             the hull against the lots in the hold"
+        );
+        ctx.out.sys_to_actor(
+            by,
+            "tacsim",
+            format!(
+                "The {why} of #{} is laid into the hold, but the hull would not take the change; \
+                 staff are paged.",
+                hull.0
+            ),
+        );
+    }
+    if scrap && let Ok(mut record) = record_of(ctx.w, hull) {
+        record.scrapped_ic = Some(at_ic);
+        record.berth = None;
+        put_bay_hull(ctx, &record);
+    }
 }
 
 /// **A stripped part's claim is vacated** (Q-S13, Q-F6): the provenance of `lot`, a part that
@@ -298,7 +423,7 @@ pub fn vacate_claim(
     if record.owed.is_some() {
         return Err(SETTLING.to_owned());
     }
-    let act_no = record.acts.saturating_add(1);
+    let act_no = super::next_act(ctx, &record);
     record.acts = act_no;
     record.owed = Some(Box::new(OwedAct {
         act: act_no,
@@ -312,6 +437,5 @@ pub fn vacate_claim(
         tries: 0,
     }));
     put_bay_hull(ctx, &record);
-    super::settle(ctx, hull);
     Ok(())
 }

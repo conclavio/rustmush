@@ -27,11 +27,12 @@ use tacsim::surface::black_box::BlackBoxLine;
 use tacsim::surface::site_record::{GroundKind, KnownWhat};
 
 use crate::driving::{
-    command, land, launched, on_pad, on_pad_as, prospector, record_of, run, staff_hand,
-    stocked_tuned, to_cell, warm,
+    command, land, launched, launched_composed, on_pad, on_pad_as, prospector, record_of, run,
+    staff_hand, stocked_tuned, to_cell, warm,
 };
 use crate::field_host::{
-    armed, egress, frame, seat, second, site_record, task, tune, until, weapon_of,
+    armed, egress, frame, seat, second, second_composed, site_record, task, tune, until,
+    until_composed, weapon_of,
 };
 
 /// **Write `condition` on `section` of `unit`, and its internals to `internals`** (or leave them
@@ -113,7 +114,7 @@ fn demoted(rig: &mut crate::driving::Rig) -> bool {
 }
 
 /// `hull`'s black box, its open tail.
-fn black_box(rig: &crate::driving::Rig, hull: ObjId) -> Vec<BlackBoxLine> {
+pub(crate) fn black_box(rig: &crate::driving::Rig, hull: ObjId) -> Vec<BlackBoxLine> {
     rig.tw
         .world()
         .module_state::<tacsim::TacsimStore>()
@@ -131,7 +132,9 @@ fn wrecked(rig: &crate::driving::Rig, unit: ObjId) -> bool {
 }
 
 /// **GC.3's first gate** (Q-36-18, Q-CF-25 c): an irrecoverable hull leaves remains and closes
-/// its epoch destroyed.
+/// its epoch destroyed. The launch and every tick's landing go through the composed path (doc
+/// 36a lane 4: `launched_composed`, `until_composed`), production's, so the black box holds the
+/// epoch's open line and the close line is asserted, not skipped.
 #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
 #[allow(clippy::too_many_lines)]
 async fn gc3_an_irrecoverable_hull_leaves_remains_and_closes_destroyed() {
@@ -144,7 +147,7 @@ async fn gc3_an_irrecoverable_hull_leaves_remains_and_closes_destroyed() {
     let (a, _, _) = on_pad(&mut rig, 1);
     let (c, _, c_tvs) = on_pad_as(&mut rig, "Third", 3, "Lone Moth", 1);
     let lost = c_tvs[0];
-    launched(&mut rig, c, lost);
+    launched_composed(&mut rig, c, lost);
     to_cell(&mut rig, lost, (114, 124));
     let hull = armed(&mut rig, "Red Hound", (110, 124), 90_000);
     seat(&mut rig, hull, a);
@@ -152,6 +155,16 @@ async fn gc3_an_irrecoverable_hull_leaves_remains_and_closes_destroyed() {
         .and_then(|record| record.sortie)
         .map(|open| (open.id, open.unrecorded))
         .expect("the prospector's epoch is open on its rig record");
+    assert!(
+        !unrecorded,
+        "the composed launch writes the epoch's open line"
+    );
+    assert!(
+        black_box(&rig, lost)
+            .iter()
+            .any(|line| matches!(line, BlackBoxLine::MindSealed { .. })),
+        "the open line is on the black box"
+    );
     // The catastrophe the kernel does not model yet (this file's head).
     set_section(&mut rig, lost, "boom", Some("irrecoverable"), None);
     let mass_kg = tacsim::carrier_damage::mass_kg(rig.tw.world(), lost).expect("a mass");
@@ -160,7 +173,7 @@ async fn gc3_an_irrecoverable_hull_leaves_remains_and_closes_destroyed() {
     let mut rx = egress(&mut rig);
     let mut lines: Vec<LedgerEvent> = Vec::new();
     for _ in 0..3 {
-        let _ = second(&mut rig);
+        let _ = second_composed(&mut rig);
     }
 
     // A marks the prospector Hostile; the site promotes with it on the ground, and nobody fires.
@@ -168,7 +181,7 @@ async fn gc3_an_irrecoverable_hull_leaves_remains_and_closes_destroyed() {
     assert_eq!(queued.len(), 1, "one promotion: {out}");
     land(&mut rig, &queued[0]).expect("the promotion lands");
     assert!(
-        until(&mut rig, &mut rx, &mut lines, 15, |rig, _| task(rig)
+        until_composed(&mut rig, &mut rx, &mut lines, 15, |rig, _| task(rig)
             .is_some())
         .await,
         "the field's task opens"
@@ -178,7 +191,7 @@ async fn gc3_an_irrecoverable_hull_leaves_remains_and_closes_destroyed() {
         "the prospector is in the field"
     );
     assert!(
-        until(&mut rig, &mut rx, &mut lines, 60, |rig, _| demoted(rig)).await,
+        until_composed(&mut rig, &mut rx, &mut lines, 60, |rig, _| demoted(rig)).await,
         "the field demotes"
     );
 
@@ -216,10 +229,8 @@ async fn gc3_an_irrecoverable_hull_leaves_remains_and_closes_destroyed() {
     let rig_record = record_of(&mut rig.tw, lost).expect("the rig record");
     assert!(rig_record.sortie.is_none(), "the epoch is closed");
     assert!(rig_record.excursion.is_none(), "nothing of its work stands");
-    // The close line rides the close act through the black box's participant. This rig prepares
-    // its acts off the composed path, so no black box line is written in it at all: the launch's
-    // open line was not either, and its epoch says so (`unrecorded`). Where the open was
-    // written, the close must be.
+    // The close line rides the close act through the black box's participant, on the composed
+    // path the host's owed close was landed on.
     let closed = black_box(&rig, lost)
         .into_iter()
         .rev()
@@ -227,21 +238,14 @@ async fn gc3_an_irrecoverable_hull_leaves_remains_and_closes_destroyed() {
             BlackBoxLine::SortieClosed { sortie, close, .. } => Some((sortie, close)),
             BlackBoxLine::MindSealed { .. } => None,
         });
-    if unrecorded {
-        assert!(
-            black_box(&rig, lost).is_empty(),
-            "an unrecorded epoch's rig writes no line"
-        );
-    } else {
-        assert_eq!(
-            closed,
-            Some((
-                epoch,
-                mush_roll::commerce::ic_claims::IcCloseKind::Destroyed
-            )),
-            "the black box closes the epoch destroyed"
-        );
-    }
+    assert_eq!(
+        closed,
+        Some((
+            epoch,
+            mush_roll::commerce::ic_claims::IcCloseKind::Destroyed
+        )),
+        "the black box closes the epoch destroyed"
+    );
     // A watched it fall from four cells: A's party knows the remains, not a wreck.
     assert!(
         record

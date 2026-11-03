@@ -16,10 +16,11 @@
 //! **What is a fixture.** The rigs' power is destroyed and they are put on the site's index by
 //! staff hand (GC.4's and GC.5's precedent), their title is moved to T by `@asset/transfer`, and
 //! L's block claim is seeded as a typed record (only industry's composed claim act writes one in
-//! play). The world clock's outage is the two `W-clock` events the economy subscribes to. The
-//! remains GC.6 scraps are dropped by staff.
+//! play). The world clock's outage is staff's own `@tacsim/time freeze` and `resume` (doc 36a
+//! lane 4), so the window is proven paused under a real freeze. The remains GC.6 scraps are
+//! dropped by staff.
 
-use mush_core::{GOD, ObjId, WorldEvent};
+use mush_core::{GOD, ObjId};
 use mush_economy::{ContractId, ContractState, EconomyStore};
 use mush_org::PrincipalId;
 use tacsim::surface::claim::UnlawfulKind;
@@ -391,18 +392,12 @@ async fn gc6_story_b_the_contested_salvage_on_urvara_reach() {
     );
 
     // 7. The W-clock outage pauses `far`'s window: frozen past its first deadline, nothing is
-    //    awarded; resumed, the window is extended by the time lost, and runs out after it.
+    //    awarded; resumed, the window is extended by the time lost, and runs out after it. The
+    //    freeze is staff's own command, so the IC clock stops with the window.
     let frozen_at = rig.tw.world().now();
     let ic = rig.tw.world().world_ic_now().at;
-    let (mut out, mut fx) = (mush_core::Outbox::new(), mush_core::Effects::new());
-    rig.tw.engine_mut().emit_world_event(
-        &WorldEvent::WorldClockFrozen {
-            real_unix: frozen_at,
-            ic_unix: ic,
-        },
-        &mut out,
-        &mut fx,
-    );
+    let frozen = run(&mut rig.tw, GOD, "@tacsim/time freeze");
+    assert!(frozen.contains("World time frozen"), "{frozen}");
     assert!(
         contract(&rig, c_far)
             .paused_real_remaining_secs
@@ -420,17 +415,17 @@ async fn gc6_story_b_the_contested_salvage_on_urvara_reach() {
     );
     let refused = run(&mut rig.tw, t, &format!("+salvage/contest #{}", far.0));
     assert!(refused.contains("paused"), "{refused}");
+    assert_eq!(
+        rig.tw.world().world_ic_now().at,
+        ic,
+        "the IC clock stood still through the outage"
+    );
     let resumed_at = rig.tw.world().now();
     let unavailable = resumed_at - frozen_at;
-    rig.tw.engine_mut().emit_world_event(
-        &WorldEvent::WorldClockResumed {
-            frozen_real_unix: frozen_at,
-            resumed_real_unix: resumed_at,
-            unavailable_secs: unavailable,
-            ic_unix: ic,
-        },
-        &mut out,
-        &mut fx,
+    let resumed = run(&mut rig.tw, GOD, "@tacsim/time resume");
+    assert!(
+        resumed.contains(&format!("after {unavailable} real second(s) paused")),
+        "{resumed}"
     );
     let end = contract(&rig, c_far)
         .effective_real_window_end()
@@ -457,7 +452,9 @@ async fn gc6_story_b_the_contested_salvage_on_urvara_reach() {
     );
 
     // 8. The award: the title is O's, through the economy's journal, and GC.8b's rights table
-    //    reads O as the title holder (its title arm reads the economy alone).
+    //    reads O as the title holder (its title arm reads the economy alone; the table's own
+    //    read, since `+bay`, its production reader, needs a workshop port, which story (b) never
+    //    visits — so the Salvor right before the award is not read here).
     assert_eq!(title(&rig, far), Some(PrincipalId::Object(o)));
     assert!(
         seconds_until(&mut rig, 120, |rig| contract(rig, c_far).state

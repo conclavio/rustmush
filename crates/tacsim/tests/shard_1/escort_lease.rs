@@ -22,12 +22,13 @@
 //! story never reads the raider content or the doctrine CF.6b changes.
 
 use mush_core::ObjId;
+use mush_org::unit_authority::{UnitCapability, UnitGrantee};
 use tacsim::arena::ledger::{EventKind, LedgerEvent};
 
 use crate::driving::{
     RAMP, Rig, act_go, at_counter, command, file_and_launch, finish, land, land_composed, launched,
-    on_ground_at, on_pad_as, on_pad_with, pilot, run, staff_hand, stocked_tuned, teleport, to_cell,
-    to_ic, warm,
+    on_ground_at, on_pad_as, on_pad_with, pilot, run, stocked_tuned, teleport, to_cell, to_ic,
+    typed, warm,
 };
 use crate::field_host::{
     armed, egress, fragile, frame, seat, second, site_record, task, tune, until, weapon_of,
@@ -79,29 +80,37 @@ fn lease_escort(rig: &mut Rig, pilot: ObjId) {
         again.contains("one armed hull at a time"),
         "a second armed lease is refused: {again}"
     );
-    // The operational loan is the lessor's own Org submission. It is formed here, by the
-    // player's own command; landing it needs the production composition's owner preimage reads,
-    // which this harness lacks, so mush-server's `dt_preparation_plans` lands it and
-    // `board_escort` stands in for its effect.
+    // The operational loan is the lessor's own Org submission, formed by the player's own
+    // command and landed on the world task's composed path (`driving::land_composed`, doc 36
+    // cut GC.0's hook), as production lands it: the grant then stands in Org's registry and the
+    // board below passes on it.
     let loan = run(&mut rig.tw, pilot, "+tv/1/permissions go");
     assert!(
         loan.contains("recording the four operational loans"),
         "{loan}"
     );
+    let grants = loan_submissions(rig);
+    assert!(!grants.is_empty(), "the loan is submitted");
+    for grant in &grants {
+        land_composed(rig, grant).expect("the loan lands on the composed path");
+    }
+}
+
+/// **The Org unit grants queued** (`unitgrant_issue`), taken off the engine's queue; the Org's
+/// own submissions are left out by `driving::drain`, so they are taken here.
+fn loan_submissions(rig: &mut Rig) -> Vec<mush_core::AuthoritativeSubmit> {
     let mut queued = Vec::new();
     while let Some(submit) = rig.tw.engine_mut().take_authoritative_submit() {
         queued.push(*submit);
     }
-    assert!(
-        queued
-            .iter()
-            .any(|submit| submit.action.key().id.as_str() == "unitgrant_issue"),
-        "the loan is submitted"
-    );
+    queued
+        .into_iter()
+        .filter(|submit| submit.action.key().id.as_str() == "unitgrant_issue")
+        .collect()
 }
 
 /// **Board the leased hull from the carrier's hold** and take its controls: the bay, the cab,
-/// the focus and the handoff — the player's own commands.
+/// the focus and the handoff — the player's own commands, under the landed loan.
 fn board_escort(rig: &mut Rig, pilot: ObjId, tv: ObjId) {
     // From the airlock to the hold, then the internal bay access.
     for step in ["inner", "hold"] {
@@ -109,20 +118,13 @@ fn board_escort(rig: &mut Rig, pilot: ObjId, tv: ObjId) {
     }
     let bay = run(&mut rig.tw, pilot, "+tv/bay in");
     assert!(bay.contains("entered vehicle bay"), "{bay}");
-    // Without the landed loan the board refuses on OperateCrew, as production does; staff then
-    // make the board's two writes (the cab, the helm billet) exactly as `+tv/1 board` makes them.
-    let refused = run(&mut rig.tw, pilot, "+tv/1 board");
-    assert!(refused.contains("OperateCrew"), "{refused}");
-    let cab = tacsim::port::vehicle::rig_row(rig.tw.world(), tv)
-        .and_then(|(_, row)| row.rooms.iter().find(|(id, _)| id.as_str() == "cab"))
-        .map(|(_, room)| ObjId(*room))
-        .expect("the escort's cab");
-    staff_hand(rig, |ctx| {
-        mush_sim::place_interior(ctx, pilot, cab, None).expect("into the cab");
-        ctx.actor = pilot;
-        let station = mush_sim::StationId::new("pilot").expect("the console");
-        mush_sim::commands::assign_station(ctx, tv, &station, pilot).expect("the helm billet");
-    });
+    // The board reads the OperateCrew loan through Org's own authority read and makes its two
+    // writes, the cab and the helm billet.
+    let boarded = run(&mut rig.tw, pilot, "+tv/1 board");
+    assert!(
+        boarded.contains("You are at rig 1's"),
+        "the lessee boards under the loan: {boarded}"
+    );
     let channels = rig
         .tw
         .world()
@@ -507,37 +509,58 @@ async fn cf6c_a_leased_escort_wrecked_in_a_field_is_written_off() {
 /// **Doc 36 cut GC.0's harness hook** (Q-36-49): the Org unit grant lands in tacsim's world
 /// harness. The operational loan `+tv/1/permissions go` submits is refused on the plain prepare,
 /// which hands the provider no owner reads, and lands on the composed one
-/// (`driving::land_composed`), so a harness story can carry a DT activation's grants.
+/// (`driving::land_composed`), so a harness story can carry a DT activation's grants. Landed,
+/// the grant is on Org's registry, the counter reads it as allowed now, and the lessee's
+/// `+tv/1 board` passes on it (doc 36a lane 4).
 #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
 async fn gc0_the_harness_lands_the_org_unit_grant() {
     let mut rig = stocked_tuned(tune);
     // The loan is typed and landed at the counter, where it is offered, as `lease_escort` types
     // it. The Org's own submissions, which `driving::drain` leaves out, are taken as they queue.
-    let _ = on_pad_with(&mut rig, "Pilot", 1, "Salt Moth", |rig, pilot| {
+    let (pilot, _, tvs) = on_pad_with(&mut rig, "Pilot", 1, "Salt Moth", |rig, pilot| {
         at_counter(rig, pilot);
         let signed = run(&mut rig.tw, pilot, "+tv/lease escort go");
         assert!(signed.contains("leases you OWP-ES-01"), "{signed}");
         let loan = run(&mut rig.tw, pilot, "+tv/1/permissions go");
-        let mut queued = Vec::new();
-        while let Some(submit) = rig.tw.engine_mut().take_authoritative_submit() {
-            queued.push(*submit);
-        }
-        let grants: Vec<_> = queued
-            .iter()
-            .filter(|submit| submit.action.key().id.as_str() == "unitgrant_issue")
-            .collect();
+        let grants = loan_submissions(rig);
         assert!(!grants.is_empty(), "the loan is submitted: {loan}");
-        let plain = land(rig, grants[0]);
+        let plain = land(rig, &grants[0]);
         assert!(
             plain
                 .as_ref()
                 .is_err_and(|error| error.contains("unit-grant request refused")),
             "the plain prepare refuses the grant: {plain:?}"
         );
-        for grant in grants {
+        for grant in &grants {
             land_composed(rig, grant).expect("the composed prepare lands the grant");
         }
+        // The record: Org's unit grant registry holds the lessee's OperateCrew loan, and the
+        // counter's own read says it is allowed now.
+        let registry = rig
+            .tw
+            .world()
+            .module_state::<mush_org::unit_authority::runtime::UnitAuthorityHandles>()
+            .cloned()
+            .expect("the unit authority's handles")
+            .registry;
+        let grants = typed(&mut rig.tw, &registry, &()).expect("the grant registry");
+        assert!(
+            grants
+                .grants
+                .values()
+                .any(|grant| grant.grantee == UnitGrantee::Character(pilot)
+                    && grant.capability == UnitCapability::OperateCrew),
+            "the lessee's OperateCrew loan is on the registry: {:?}",
+            grants.grants
+        );
+        let shown = run(&mut rig.tw, pilot, "+tv/1/permissions");
+        assert!(
+            shown.contains("allowed now"),
+            "the counter reads the loan as current: {shown}"
+        );
     });
+    // Landed, the loan lets the lessee board the hull in the bay by the production command.
+    board_escort(&mut rig, pilot, tvs[0]);
 }
 
 /// **Doc 36a lane 3, P1-6**: a delegated OperateCrew grant can be used. The lessee signs the

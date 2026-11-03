@@ -274,7 +274,8 @@ fn compose_domain_modules<E>(
             let module = mush_inventory::InventoryModule::new()
                 .with_quantity_delegates(delegates)
                 .with_salvage_source(Arc::new(self::salvage_source::SimSalvageSource))
-                .with_handle_cell(Arc::clone(&inventory_handles));
+                .with_handle_cell(Arc::clone(&inventory_handles))
+                .with_pool_capacity_if(tacsim_delegate);
             match launch {
                 Some(launch) => launch.configure_inventory(module),
                 None => module,
@@ -348,6 +349,22 @@ impl PortMarketSeamsExt for mush_market::MarketModule {
             self.with_venue_gate(Arc::new(crate::port::market::PortVenueGate))
                 .with_capacity_provider(Arc::new(crate::port::market::PortCapacity))
                 .with_proceeds_policy(Arc::new(crate::port::proceeds::CoopProceeds))
+        } else {
+            self
+        }
+    }
+}
+
+trait InventoryCapacityExt: Sized {
+    fn with_pool_capacity_if(self, on: bool) -> Self;
+}
+
+impl InventoryCapacityExt for mush_inventory::InventoryModule {
+    /// Doc 36a P2-4: `@inv/dissolve` into a hull's hold consults the hold's capacity rule, the
+    /// one the market and the bay consult.
+    fn with_pool_capacity_if(self, on: bool) -> Self {
+        if on {
+            self.with_pool_capacity(Arc::new(crate::port::market::PortCapacity))
         } else {
             self
         }

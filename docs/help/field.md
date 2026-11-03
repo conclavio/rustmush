@@ -52,10 +52,14 @@ the site waits as well:
 settles."
 
 **The field settles** once no two hostile parties have fired, held each other in
-weapons range or had a round in flight for a while (two minutes by default). You
+range or had a round in flight for a while (two minutes by default), and in any
+case once nobody has fired for ten minutes (`[tacsim.field].idle_demote_s`). You
 hear "Field 1 on Ahuna Flank has settled: the ground there is the surface's
-again." Every unit stands on the surface where the fight left it. Two hostile
-armed parties parked within range of each other keep the field open.
+again." Every unit stands on the surface where the fight left it. Only a unit
+that came into the field armed, or has fired in it, holds another party engaged:
+an unarmed rig in a Hostile party's sights keeps nothing open. Two hostile armed
+parties parked within range of each other keep the field open until those ten
+quiet minutes pass, and no longer.
 
   +field                   the field your party stands in: its number, your
                            party's letter, how many parties are on the ground
@@ -90,15 +94,29 @@ that applies wins:
 3. **Standing friendship.** Two parties are Friends when one owner stands behind
    both: the same organizer for two rosters, the same leader for two parties of
    one, or a roster's organizer leading a party of one. Your carrier and the
-   rigs you launched from it are Friends. Organizations and factions do not make
-   friends yet.
+   rigs you launched from it are Friends. Two parties are also Friends when
+   their leaders or owners openly share an organization: an organization
+   membership, a faction membership or a faction's principalship that fellow
+   members may know of. A covert or officers-only membership makes nobody a
+   Friend, since a Friend's colour on a cockpit would give it away. A raider
+   band is a faction of its own, so a captain who openly stands in it is its
+   Friend until it fires on them.
 4. **Neutral**, for a party told apart that is none of these. A contact your
    sensors have not yet classified is **unknown** until they do.
 
 A mark beats fire, so a Friendly mark is how a leader stands down after friendly
 fire, or after a fight is over. While your party holds a party Hostile and an
-armed unit of yours has it in range, the field stays open. A Friendly mark on
-that party lets it settle.
+armed unit of yours has an armed unit of theirs in range, the field stays open,
+until ten minutes pass with no shot fired. A Friendly mark on that party lets it
+settle sooner.
+
+**Standing.** Fire costs standing. When the field settles, every round that
+reached a unit of another party costs the shooter's party's principals one point
+of standing with each faction that party's principals openly stand in, at most
+ten a field for one pair of parties. Each principal is told. A shooter whose
+party fired on a standing Friend is offered the void: `+field/void` within ten
+IC minutes, or before the leader's next command, drops that change. Fire on
+anyone else stands.
 
 Relations decide what a hired pilot's doctrine targets and how your cockpit shows a
 contact. They never stop a shot: you can fire on anyone you hold a lock on. A
@@ -198,13 +216,41 @@ matter after the fight:
 cell where the field left it, and the site keeps it. It is still there after a
 server restart, when another captain lands, and in the next field on that site,
 which admits it again. Casualties and wrecks do not count against the site's
-unit cap. A wreck blocks movement through its cell but not sight or fire: it
-gives no cover yet. On the map a casualty, a wreck or remains is `%` and a crate
-is `&`.
+unit cap. A wreck blocks movement through its cell, and while it stands there it
+is a wall to sight and to fire, like a crate: a unit behind it is covered from
+the far side, and a shot at the wreck itself reads the ground under it. A
+casualty gives no cover. On the map a casualty, a wreck or remains is `%` and a
+crate is `&`.
 
-A field closes no unit's log, and nothing is towed home: there is no tow yet,
-and a carrier is never towed. The damage a hull took is written into its own
-record, and `+ship` prints a "Damage:" line for each damaged section.
+A field closes no unit's log. What it leaves is recovered from the surface once
+the site has settled:
+
+- **The tow.** A rig standing within a cell of a casualty or a wreck on the
+  site's index takes it in tow with `+tv/<n> tow [<unit>] go`. The bare command
+  is the inspection: the casualty's tonnage, its state and the rate the pair
+  will move at. Inspecting and attaching take IC time. A tug in tow only
+  drives, releases (`+tv/<n> release go`) or loads, and a casualty in tow
+  starts nothing. A tow survives a server restart, and a field that opens over
+  it admits the pair coupled, at the tow's rate.
+- **The load.** Beside its carrier's ramp, `+tv/<n> load go` lifts the casualty
+  into the bay, where `+bay` quotes its repair (`help ships`). Loaded into your
+  own party's or a Friend's carrier, it is home. Loaded into anyone else's, it
+  is in that carrier's custody with a salvage claim owed, never its title, and
+  anyone still aboard is abandoned to extraction. The custodian files the claim
+  (`+salvage/claim <hull> go`), the title holder is told by IC mail, and either
+  side's evidence is read and contested at the registry (`+salvage/inspect`,
+  `+salvage/contest`). An uncontested claim passes the title when its window
+  runs out.
+- **A carrier** is towed only by a tug of at least half its tonnage, which no
+  rig is. A carrier whose drive is destroyed cannot lift. One whose hull falls
+  is a wreck that never lifts and strands its crew.
+- **Remains.** A hull that goes down with every section destroyed is
+  irrecoverable: it leaves the site's index and the ground, and remains with its
+  mass lie where it fell. The title holder's `+tv/<n> scrap <remains> go` breaks
+  them up into structural alloys in the carrier's hold.
+
+The damage a hull took is written into its own record, and `+ship` prints a
+"Damage:" line for each damaged section.
 
 ## Getting out
 

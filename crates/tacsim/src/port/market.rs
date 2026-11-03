@@ -477,6 +477,31 @@ impl CapacityProvider for PortCapacity {
     }
 }
 
+/// **The hold's room for a lot dissolving into its pool** (doc 36a P2-4): `@inv/dissolve`
+/// consults the rule the market's draw and the bay's mint consult, through the inventory's own
+/// seam (`mush-inventory` has no edge to this crate; the composition root wires it).
+impl mush_inventory::PoolCapacity for PortCapacity {
+    fn plan(&self, w: &World, endpoint: EndpointRef) -> Option<serde_json::Value> {
+        CapacityProvider::plan(self, w, endpoint).map(|plan| plan.0)
+    }
+
+    fn check(
+        &self,
+        plan: &serde_json::Value,
+        commodity: &CanonicalId,
+        quantity: u64,
+        read_pool: &mut dyn FnMut(&CanonicalId) -> Result<u64, mush_inventory::PoolReadFailed>,
+    ) -> Result<(), String> {
+        let plan = CapacityPlan(plan.clone());
+        let mut read = |good: &CanonicalId| read_pool(good).map_err(|_| CapacityReadError);
+        match CapacityProvider::check(self, &plan, commodity, quantity, &mut read) {
+            Ok(()) => Ok(()),
+            Err(CapacityRefusal::Refused { line, .. }) => Err(line),
+            Err(CapacityRefusal::Unreadable) => Err("The hold's room cannot be read.".to_owned()),
+        }
+    }
+}
+
 /// **A plan's compartments as the capacity function reads them** (doc 20 cut SM.8): the plan's
 /// own compartments, in stowage order.
 #[must_use]
