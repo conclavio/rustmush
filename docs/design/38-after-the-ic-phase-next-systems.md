@@ -1,12 +1,15 @@
 # 38. After the IC phase — the next systems, surveyed
 
-Draft 0.2, 2026-11-03, docs only. Surveyed against `origin/main` at `afa082a7` (doc 36a's lanes 1,
+Draft 0.3, 2026-11-03, docs only. Surveyed against `origin/main` at `afa082a7` (doc 36a's lanes 1,
 2 and 4 merged as PRs #334, #343, #342; the f6 fix as #329; lane 3 open as PR #340 at `e9ccb835`
 with main merged in; lane 5 on a local branch with no PR). Four read-only lanes verified every
 claim the two outside reviewers made against that tree; the anchors below are theirs. Draft 0.1,
 the same day, was the survey. **Draft 0.2 records the owner's rulings of 2026-11-03 on every
 question:** Q-38-5, Q-38-6, Q-38-9, Q-38-10, Q-38-12 and Q-38-18 amended, every other default
-accepted as written. §4a lists what the amendments change elsewhere.
+accepted as written. §4a lists what the amendments change elsewhere. **Draft 0.3, the same day,
+adds §9, the programme map:** the five plans this survey produced (docs 39, 40, 41, 42 and doc 23
+§17, all merged by `c624cff1`) read as one set of 42 cuts — what may start now, what shares a
+file with what, the cross-document edges, and the seven open questions that gate a cut.
 
 This is a survey in the form doc 36 §4 used: it asks the owner questions, each with a proposed
 default, an alternative and a reason. "Provisional" marks a number to be tuned later under the
@@ -835,3 +838,118 @@ Draft 0.2 carries the rulings. The plans still need:
   and the remains room check (§2.2), so the loop's close does not re-fix them.
 - For doc 42: a reading of doc 27's crew and custody rulings (Q-H12, FO-12) and doc 32's Q-CF-38/39
   as the base the new rulings amend.
+
+## 9. The programme map (Draft 0.3)
+
+The five plans are merged: doc 39 §6 (IN.0–IN.11), doc 40 §6 (FR.0–FR.7), doc 41 §6 (RS.0–RS.9),
+doc 42 §7 (CR.0–CR.7) and doc 23 §17.10 (S.4b, S.4b-T). Each plan orders its own cuts; this
+section reads them as one set, so the sessions that build them do not collide. The rules it
+applies are the ones the plans already state: one PR a cut, one writer a file at a time, one
+kernel rebless (FR.5), the lane content's version bumped by one cut at a time, every story at
+256 and 512 with the bot typing the player's half (Q-38-29).
+
+### 9.1 What may start now, and how standalone each is
+
+Ten cuts have no upstream cut and no open question. Eight of them touch nothing another
+startable cut touches; two share a file and are sequenced below.
+
+| Cut | Area it writes | Shares a file with | Standalone? |
+|---|---|---|---|
+| **FR.0** the inventory, the four-digit parser, the `tests/support/field` hoist (doc 40) | `mush-bot/src/mine/lines.rs`, `tests/support/`, `40-cut-notes.md` | RS.0, CR.0, IN.1 (the parser and the bot's words) | **first**: every later story uses its hoist; the parser is owed to IN.5 and RS.0 |
+| **FR.1** stances (doc 40) | `mush-faction`, `mush-org`'s capability list, `field/parties.rs`, `field/carrier.rs::joining` | FR.3 (`carrier.rs`, later) | yes |
+| **FR.2** durable standing (doc 40) | `field/standing.rs`, `field/commands.rs::void`, `mush-core` `SessionStat.prev_input` | — | yes |
+| **FR.6** the `SpacePartyId` seam (doc 40) | `tacsim/src/space/*`, `shard_10/voyage.rs` | RS.8, CR.6 (the space tree, later) | yes; **marker** |
+| **IN.1** accounting and identity (doc 39) | `goods.json` v5, lane v20's first rows, `hardware/bay.rs`, `port/bay_work/{act,strip,mod}.rs` (the bale, `hold_takes`), the census pins | IN.2 (`bay_work/act.rs`), RS.2 (`bay_work/mod.rs`), FR.0 (the parser) | yes; **marker**; the chain's root |
+| **IN.2** the component lifecycle (doc 39) | `mush-inventory` (dissolve/split/merge refusals, the lot sale), `mush-industry` (`output_lots: each`), `port/stock.rs` seeds, `BayPartCustody` in `bay_work/act.rs`, the commission as an `OwedAct` | IN.1 (`bay_work/act.rs`), IN.4 (`mush-industry`, other module) | after IN.1 on `act.rs`, else parallel |
+| **IN.4** the cost model (doc 39) | `port/def.rs` (`FacilityCostDef`), `mush-industry` `order_price`, lane v20's facility rows, `+bay` quotes | IN.1 (lane v20), IN.2 (`mush-industry`) | yes, if one session owns lane v20 |
+| **RS.3** the claim's close (doc 41) | `surface/claim.rs` (`settle`, `tick`, the contest kinds, `+salvage/authorize`), `contract_live.rs` (the org award), `TacsimRecoveryCfg` | CR.1 (`claim.rs`'s evidence row), IN.8 (`claim.rs`'s site scrap), RS.4/RS.5 (after it by its own plan) | yes; Q-41-28 narrows one branch, does not gate it |
+| **S.4b-T** the testimony producer (doc 23) | `minds/earned_contacts.rs`, `field/mod.rs::on_chunk`, `tacsim:earned:<author>` | — | yes |
+| **CR.0** the crew record, the gate, the vocabulary (doc 42) | `field/crew.rs`, the verb files' `held` refusals, `help/field.md`, `mush-bot/src/mine/*`, `legacy-handlers.toml` | FR.0/RS.0 (the bot's words); every later CR cut (`crew.rs`) | yes; the only CR cut that may run beside another |
+
+Doc 41 also lists RS.0, RS.1 and RS.2 as startable. RS.0 is the bot's words and the parser, which
+FR.0 owns first; RS.1 needs IN.1's bale (a constant until IN.8); RS.2 writes `bay_work/mod.rs`
+beside IN.1 and IN.2. All three start in the second wave (§9.5).
+
+### 9.2 One writer a file: where the plans overlap
+
+| File or area | Cuts that write it | Order |
+|---|---|---|
+| `field/crew.rs` | CR.0 → CR.1 → CR.2 → CR.3 → CR.4 → CR.5 | doc 42's own rule; RS.5 and the vacated-hull return (41-3) move no crew — doc 42 owns every crew transition |
+| `surface/tow.rs` | IN.8 (the site scrap cap), RS.1 (the `tend` op), RS.5 (retrieval custody in `load_facts`, the hand-back moved to the destination), CR.1 (the capture branch at the load), FR.5 (the coupled tow, `Release` as a field act) | by readiness, one at a time: RS.1 and IN.8 (small) → CR.1 → RS.5 → FR.5 last, with the rebless |
+| `surface/claim.rs` | RS.3 → RS.4; CR.1 (the `Capture` evidence row); IN.8 (the capped site yield); RS.7 reads | RS.3 first; CR.1 and IN.8 rebase on it |
+| `port/bay_work/*` | IN.1 → IN.2 → IN.6 → IN.8 → IN.9 (doc 39); RS.2 (`facility_of`, `carrier_of_bay`, `source_carrier`); RS.4 (`held_for`, the stow's bay-to-bay source) | RS.2 after IN.2; RS.4 after IN.9 (doc 39 owns `+bay/stow <hull>=<carrier>`, §4.13) |
+| `mush-bot/src/mine/*` | FR.0 (the parser, `+field/void`, launch, release, stance); RS.0 (`pickup`, `scrap`, `+salvage`, `+bay`, `+sortie/condition`); CR.0 (the crew words); IN.11 (`+yard`, `+works`, `+market/sell`, `+bay/order replace`); S.4b (`+tv/<n> launch mind=`) | FR.0 first; the rest add lines after it, one at a time |
+| `tests/support/field` (the two `Ground`s) | FR.0 hoists; every story after reads | FR.0 first |
+| lane content (`ceres_phobos.json`, the version) | doc 39's lane v20 (IN.1, IN.4, IN.5, IN.10); doc 41's lane v21 (RS.1, RS.6); CR.2's bump (`authority`, `release_fee_cr`) | one session owns a version at a time: v20 (doc 39) → v21 (doc 41) → CR.2's; a cut needing a row while another holds the version asks that session for it |
+| `mush-economy/src/contract_live.rs` | RS.3 (the org award) → RS.5 (the retrieval contract) → RS.8 (the space tow) | doc 41's order |
+| `mush-economy` obligations (`obligation.rs`, `api.rs`) | RS.5 (`+debts`, `+debts/pay`, `reinstate_obligation`) → CR.2 (`create_sanction_obligation` under `port.release_fee`) | doc 42 says CR.2 waits on RS.5 |
+| `mush-industry` | IN.2 (`output_lots`) ∥ IN.4 (`order_price`) → IN.3 (escrow, `customers: Public`, the deadline, the booking fee) | different modules; IN.3 after both |
+| `detachment/sortie/prepare.rs`, `field/carrier.rs`, `field/admit.rs` | FR.3 (the launch rule, `SiteRecord.pending`, the join from the field tick) and S.4b (the claim at `go`, `custody_unit` from the retained seal) — D-23-23's one pending-launch protocol; FR.5 (admission's `carried` filter) after FR.3 | **one writer**: whichever of FR.3 and S.4b starts first owns the protocol and the other lands on it; Q-23-21 picks the shape |
+| `field/raiders.rs` | FR.3 (the director's spread at the ramp); CR.4 (`lift_check` waits on a pending capture) | FR.3 first |
+| `arena/*` and the practice hashes | FR.5 only (the one rebless) | S.4b's install at admission moves no OOC hash (its own gate); CR.4's holding query is a read; nothing else touches the kernel |
+| the space tree (`tacsim/src/space/*`) | FR.6, RS.8, CR.6; SF.R16 (PR #353, open) | after SF.R16; doc 35b §8 orders them |
+
+### 9.3 The cross-document edges
+
+- **Doc 39 → doc 41:** RS.1 ← IN.1 (the bale) and IN.8 (the per-point figures; a constant until
+  then); RS.2 ← IN.1 (the hull's bale in the carrier's bay) and, later, IN.9 (`carrier_of_bay`
+  reading `tacsim.owned_hulls`); RS.4 ← IN.9 (the stow verb); RS.5 ← IN.4 (Tycho's slot-day; a
+  constant until then); RS.6 ← IN.4, IN.8, IN.9; RS.9 ← IN.11 (the census line). Doc 41's plan
+  says it may start RS.0–RS.3 before any of these land.
+- **Doc 41 → doc 42:** CR.2 ← RS.5 (`+debts/pay` and the reinstated obligation); the vacated
+  hull's return (RS.4) moves no crew, so doc 42's `Captured` records never point at it.
+- **Doc 40 → docs 41, 42:** Q-40-25 (how a coupled pair leaves at the ramp, FR.5) is read by RS.1
+  (the tender's acts under a field) and CR.4 (crew aboard a coupled casualty); FR.3's `raiders.rs`
+  change precedes CR.4's.
+- **Doc 23 ↔ doc 40:** S.4b and FR.3 share the pending-launch protocol (D-23-23 = doc 40 §4.4) and
+  the files; FR.3's licensed-reinforcement story waits for S.4b; Q-23-21 decides the shape for both.
+- **Doc 40 → everyone:** FR.0's hoist and parser; FR.5 re-measures `field_scale` at 100 (K's sweep).
+- **Doc 39 → doc 40/41 (the parser):** whichever of FR.0, RS.0 and IN.1 lands first carries it;
+  §9.1 gives it to FR.0.
+- **The fix thread → the plans:** the join-during-think await is FR.5's; GC.1b's refused arrival
+  retried is FR.3's; the remains room check is IN.8's; the vacated hull's return verb is RS.4's;
+  the matter-census pin on `.mint_origins(` is IN.1's; the rig cab (`inside` reading a cab as
+  outside the rig, doc 42 §3a) is still the fix thread's and CR.1 seats its captive through a DT
+  flight until it lands. Lane 5's five field-command fixes were never pushed (local branch
+  `claude/youthful-kowalevski-168ddb` at `50cdbe03`); they overlap FR.3 (`prepare.rs`'s cap) and
+  CR.0 (`crew.rs`'s check-in) and should land before either, or be redone inside them. The
+  `gc11`/`cf6` module-load flakes on `main` have no owner.
+- **Owed outside every plan:** a hull resale verb (doc 39 §7: the market's `Representation::Asset`
+  purchase the buyout uses), the gate.yml `field_scale` sweep above 100, the first routine
+  redeploy (nothing in docs 39–42 is code yet; it ships the CF/GC/SF trains), T-112 backups, the
+  ufw closure, the nightly's owner.
+
+### 9.4 The open questions, and the cuts they gate
+
+| Question | Gates | Does not gate |
+|---|---|---|
+| **Q-23-21** where the Open commits, revisited (the pending-launch shape) | S.4b; FR.3's step 1 and its licensed story | S.4b-T; FR.3's unlicensed half may be built under either shape if the session states which |
+| **Q-23-22** a licensed mind on a hull the pilot holds no title to | S.4b's `mind=` refusal (D-23-22) | everything else |
+| **Q-40-24** the one population count (`SiteRecord.pending`) | FR.3 | FR.0–FR.2, FR.4, FR.6 |
+| **Q-40-25** how a coupled pair leaves a running field | FR.5's ramp exit; RS.1's acts under a field; CR.4's coupled-casualty crew | FR.5's other four items (planned now, built once) |
+| **Q-41-28** who answers for an NPC organization's title | RS.3's org-titled claims branch | RS.3's other three contest kinds; RS.0–RS.2 |
+| **Q-41-29** what mass the tow counts | RS.6's crawler (120 t or 130 t) | RS.1's cap field; RS.5 |
+| **Q-42-26** how a captured hull's NPC crew leave the roster | CR.1 | CR.0 |
+
+None gates the first wave. Three (Q-23-21, Q-40-25, Q-42-26) gate the second wave's largest cuts
+and are the ones to rule first.
+
+### 9.5 Waves
+
+Sessions run one cut each; a wave starts when its cuts' upstreams have merged. The markers
+(expensive to reverse) are IN.1, IN.9, FR.5, FR.6, RS.2 (Q-41-7) and S.4b (Q-23-10).
+
+- **Wave 0, now (up to nine sessions):** FR.0, FR.1, FR.2, FR.6, IN.1, IN.4, RS.3, S.4b-T, CR.0;
+  IN.2 starts when IN.1 has landed on `bay_work/act.rs` (or beside it with a rebase).
+- **Wave 1:** IN.3 (← IN.2, IN.4), IN.6 (← IN.1, IN.2, IN.4), IN.8 (← IN.1, IN.4), FR.4 (← FR.0),
+  RS.0 (← FR.0), RS.1 (← IN.1), RS.2 (← IN.2), RS.5 (← RS.3), CR.1 (← CR.0, Q-42-26), and the
+  first of FR.3 / S.4b (← FR.1, Q-40-24; ← Q-23-21/22) as the one writer of the launch protocol.
+- **Wave 2:** IN.5 (← IN.1, IN.3, the parser), IN.7 (← IN.5, IN.6), IN.9 (← IN.3, IN.6, IN.8), the
+  second of FR.3 / S.4b, FR.5 (← FR.0, FR.3, FR.4, Q-40-25; the rebless), RS.6 (← RS.5, IN.4, IN.8,
+  IN.9), RS.7 (← RS.3, RS.5), CR.2 (← CR.1, RS.5), CR.3 (← CR.2), CR.4 (← CR.1, FR.3, Q-40-25).
+- **Wave 3:** IN.10 (← IN.9), IN.11 (← all of doc 39), RS.4 (← RS.3, IN.9), RS.8 and CR.6 and the
+  rest of the space tree (← SF.R16), FR.7, RS.9 (← IN.11), CR.5 (← CR.4), CR.7.
+
+The critical path is doc 39's: IN.1 → IN.2 → IN.3 → IN.9 → IN.10, because RS.4, RS.6 and the
+yard-built carrier's bay and tow all wait on IN.9. The second is the launch protocol: Q-23-21 →
+FR.3/S.4b → FR.5 → CR.4. Everything in wave 0 is off both paths and loses nothing by starting today.
