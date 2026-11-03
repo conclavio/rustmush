@@ -1148,6 +1148,26 @@ reads it, and the Roll's `SortieNumber` is minted from it, so the Roll's row for
 `seal.sortie` is then the epoch's id alone, equal on the claim and on the `mind_sealed` line. The
 compile-before-admission step stays (`:134–137`).
 
+**Whose hull — D-23-22.** The Roll's reader admits the Open only for a hull titled to the
+dispatcher: `TitleFence::capture(world, unit, actor)` (`reader.rs:283`) reads the economy's asset
+and requires `title_owner == Object(actor)` with no scope (`:66–67`). No rig in the stock world is:
+an Occator lease titles the rig to the lessor's organization under its scope
+(`port/vehicle.rs:821–830`, `issue_title(…, Organization(lessor.org), Some(root_scope))`) and names
+the lessee only on the lease (`TvLease.pilot`, `port/tv.rs:1058–1098`); a rig bought out of the
+Trust is the first a character holds title to (`port/buyout.rs`, `TitleHeld { hull, Trust }` then
+the transfer to the pilot). So a licensed captain on a leased escort passes `+tv/<n> launch mind=`
+as built and would fail the Open (round 2's 23-3). **S.4b refuses the combination at `go`**: a
+`mind=` word over a hull not titled to the actor is refused with one sentence ("{mark} is
+{owner}'s hull; a licensed mind flies a hull titled to you until the Roll admits a lease"), before
+any permit is minted, and §17.10's story runs over a bought-out rig. Lease authority is the Roll's
+own cut after S.4b, **S.4c**: the reader gains a second fence beside the title's, `LeaseFence {
+lease, lessor, lessee: actor, term_ends_ic }`, captured from a live `TvLease { status: Active, pilot
+== actor }` under the lessor's title into the admission facts and audited like the title's revision
+(a lease ending mid-claim is the lessor's repossession, which closes the epoch and the claim as a
+home does); the exclusion's hangar check is unchanged, since the lease names the bay. An org-held
+licence (Q-23-19) and a leased hull are the same shape of question and the same owner's cut.
+Q-23-22.
+
 ### 17.4 Physical custody while the hull moves — D-23-15
 
 **IC custody means "moved only by the epoch's hosts", not "frozen in a base" — D-23-15.** The
@@ -1335,7 +1355,8 @@ join admitting it; the task's `sources`/`install_runners` seam); the dispatch's 
 start now): the testimony producer and its document (D-23-19). **Neither's** (named here so nobody
 builds them by accident): the holder's rationing verb for the compute pool (after S.4b); the
 org-held licence's claim (M8c B3's `org=`; the Roll's reader admits the actor's own holding,
-`IcAdmissionRequest::own`, and an org path is the Roll's cut, Q-23-19); a cored ship's claim over a
+`IcAdmissionRequest::own`, and an org path is the Roll's cut, Q-23-19); a leased hull's claim
+(S.4c, the Roll's `LeaseFence`, D-23-22, Q-23-22); a cored ship's claim over a
 port hangar (17h §4); hull cover's withheld departure and zone (§8, unchanged); a staff verb over
 claims (none, §17.6).
 
@@ -1380,7 +1401,8 @@ Through the cut loop (§9), one PR off `main`, the owner merging.
   (`excursions::stocked_fitted`, `fit(RIG_I)`, `shard_9/ic_sortie_surface.rs:2553`) and the filed
   commerce world the licensed path needs (`:2794`; M8g's `LaunchComposition`), which is the cut's
   first task — PR #340 records that the shard_1 field harness composes no IC custody. The story: an
-  operator's cored rig launches `+tv/1 launch mind=filed:<n> go` from a Dray-P settled on the pad;
+  operator's bought-out cored rig (D-23-22: titled to the operator, `port/buyout.rs`) launches
+  `+tv/1 launch mind=filed:<n> go` from a Dray-P settled on the pad;
   the next fire opens the claim with the rig still in its bay (the Roll's row, the four owners'
   documents, the licence's seat held: a second `go` under the licence on another rig refused by
   name, a third refused by the compute sum under a lowered `pool_for`), the fire after starts the
@@ -1396,7 +1418,7 @@ Through the cut loop (§9), one PR off `main`, the owner merging.
   and lands it, as does one between `go` and the Open. Beside the story, in-source: a `go` whose
   Open the four owners refuse for good (`Refused` on the cursor, the queued launch cancelled, the
   rig in its bay, the operator told once); a launch cancelled after its Open closing
-  `PoweredDownInBase`; the `abi` drop (a seal recorded under `OLD_ABI` as
+  `PoweredDownInBase`; the `mind=` word refused over a leased rig with the sentence (D-23-22); the `abi` drop (a seal recorded under `OLD_ABI` as
   `store.rs:3584`'s test shapes one, installed → the ROM, one `MindDropped { cause: abi }`; a
   retained source that no longer compiles → the same, with its `fault`, the book still loading);
   the wall for an unloaded book; the re-scoped `check_plan` admitting a surface drive and refusing a
@@ -1431,6 +1453,7 @@ nothing is refused with the one sentence.
 | D-23-19 | The testimony producer feeds `EarnedContacts` at check-in from the field's `Classified` lines, authored by the seated pilot else the warrant principal, persisted per author; it is its own cut, S.4b-T | **accepted by the owner, 2026-11-03** (Q-23-16, Q-23-17) |
 | D-23-20 | S.4b's host is the IC field; the drone phase is no longer its gate; its acceptance runs at 256 and 512 with the bot per Q-38-29 | **accepted by the owner, 2026-11-03** (Q-23-18, Q-23-20) |
 | D-23-21 | The claim opens before the launch: `go` mints the `StartPermit` with the rig in its bay and queues the launch act behind the claim; the fire that observes the active row starts the ramp; the claim is the licence and compute reservation, counted with the inbox's pending Opens; an Open refused for good leaves `Refused` on the cursor, the launch cancelled, nothing out of the bay; a launch cancelled after its Open closes `PoweredDownInBase` | proposed, Draft 0.10 (round 2's 23-1, 23-2, 23-5); Q-23-21 |
+| D-23-22 | A `mind=` word over a hull not titled to the actor is refused at `go` with one sentence; S.4b's story runs over a bought-out rig; lease authority is the Roll's next cut, S.4c (`LeaseFence` from a live `TvLease`, audited like the title's revision) | proposed, Draft 0.10 (round 2's 23-3); Q-23-22 |
 
 ### 17.12 Questions for the owner
 
@@ -1551,3 +1574,12 @@ accepted at Q-23-8)**
   finds every licensed entrant's claim already active. The cost is two fires between `go` and the
   ramp (seconds at rate 24, under a five-minute launch act) and `PoweredDownInBase` for a launch
   cancelled after its Open — a kind that already exists for exactly that.
+
+**Q-23-22 — A licensed mind on a hull the pilot holds no title to (round 2's 23-3).**
+- **Proposed default:** refused at `go` in S.4b, with the sentence; lease authority as the Roll's
+  next cut, S.4c, the `LeaseFence` (D-23-22).
+- **Alternative:** the `LeaseFence` inside S.4b.
+- **Why:** the reader's fence is title-only by design and a second fence is a Roll change with
+  its own review, as Q-23-19 ruled for the org path; S.4b's story needs one titled rig, which the
+  buyout already makes. The cost is real and is the owner's to weigh: the escort every player
+  flies early is Occator's, so until S.4c a licensed mind flies only a bought-out hull.
