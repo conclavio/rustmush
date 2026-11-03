@@ -1437,8 +1437,24 @@ the Freeport Works org, the Trust's raise, the Exchange's two ore asks, the Stic
 the `customers` and `FacilityCostDef` fields on the facility's policy half and the `plant` field on
 the power role (IN.1, IN.3, IN.4), the test list the pins become (`shard_9/mill.rs:2508`'s successor
 and the receipt-kind pin, IN.1); and, for doc 41, the lot shapes and the lifecycle (§4.5, §4.11), the
-facility fees (§4.4) and Tycho Mutual's row (Q-39-24) as the inputs doc 38 §8 promised it, available
-once IN.1, IN.2, IN.4 and IN.6 have landed. **Owed outside these cuts:** a hull resale verb — the
+facility fees (§4.4), **the repair draw — alloys and fittings together, by the per-point figures of
+§4.8, from the hull's bale of §4.10, which the tender and the carrier's bay away from port draw the
+same way (round 2's 39-7; the work is doc 41's 41-4, the rule is this document's)** — and Tycho
+Mutual's row (Q-39-24) as the inputs doc 38 §8 promised it, available once IN.1, IN.2, IN.4 and
+IN.6 have landed.
+
+**The material and provenance contract with doc 41 (round 2's X-2).** Both reviewers asked for one
+contract across the two plans rather than two readings of it. Doc 39 states the rules and doc 41
+consumes them: the bale on both sides (the hull's bale and the facility's shop bale, §4.10; a tender
+that repairs on the ground draws from the casualty's bale or opens one from a bale lot it carries,
+and returns no kilograms to a pool but to the bale it came from), kilogram custody on the ground
+(a carried bale is the carrier's until opened on a hull, then the hull's title holder's, so a
+salvor's repair at their own risk opens a bale the claim's outcome assigns), provenance written in
+the same bundle as the lot it describes (§4.11's commission, never an observer), and the owned-hull
+register's readers (§4.13, `carrier_of_bay` and `world_hulls` included, so a yard-built carrier
+tows and is towed). One cross-plan story proves it before the trains split: IN.11's chain story
+continued by doc 41's tender story on the same world, with the five-term sum asserted at both ends.
+**Owed outside these cuts:** a hull resale verb — the
 sale of a titled hull as an asset through the market's `Representation::Asset` purchase the buyout
 already uses (`buyout.rs`) — which Q-39-25's ruling names as what a holder with a sound hull should
 do instead of scrapping it; it belongs with doc 41's salvage loop or a later economy cut, and until
