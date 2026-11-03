@@ -1072,7 +1072,13 @@ homed or salvaged while its claim is still owed ends `Refused { reason: "epoch e
 claim opened" }` — a terminal tombstone the relaunch cannot overwrite without a new `go`, so no
 claim ever opens over a hull back in its bay and the operator reads why; under the default no such
 rig exists. The next surface fire finds every `Opening` and `Closing` cursor, enqueues the permit
-it re-mints from the record and submits. **The seam never moves in the claim's own commit** (round
+it re-mints from the record and submits.
+
+**DT flights carry no claim** (round 2's 23-10): `+sortie/launch` keeps its `OpenSortie` on
+`Flight.epoch` (`detachment/sortie/model.rs:212`, `prepare.rs:772–773`), seals the ROM alone
+(`prepare.rs:868–874`, no `mind=`), and so has no cursor to scan; a scan of `RigRecord.claim`
+misses nothing today. It becomes real the day doc 40's `+sortie/launch` reinforcement gains
+`mind=`: `Flight` then takes the same cursor, the same protocol (D-23-23) and the same producer. **The seam never moves in the claim's own commit** (round
 2's 23-6): the capacity owner admits an Open or a Close only as a transaction holding exactly one
 typed mutation, the Roll's claim row (`mush-core` `terminal_capacity/ic_claim.rs:516–517`, "IC
 exact sole typed target"); a transaction's `mutations` span every owner and family
@@ -1390,7 +1396,8 @@ start now): the testimony producer and its document (D-23-19). **Neither's** (na
 builds them by accident): the holder's rationing verb for the compute pool (after S.4b); the
 org-held licence's claim (M8c B3's `org=`; the Roll's reader admits the actor's own holding,
 `IcAdmissionRequest::own`, and an org path is the Roll's cut, Q-23-19); a leased hull's claim
-(S.4c, the Roll's `LeaseFence`, D-23-22, Q-23-22); a cored ship's claim over a
+(S.4c, the Roll's `LeaseFence`, D-23-22, Q-23-22); a DT flight's claim, until `+sortie/launch`
+gains `mind=` (23-10); a cored ship's claim over a
 port hangar (17h §4); hull cover's withheld departure and zone (§8, unchanged); a staff verb over
 claims (none, §17.6).
 
