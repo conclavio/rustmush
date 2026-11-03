@@ -696,6 +696,17 @@ pub(crate) fn hold_pool(tw: &mut TestWorld, vault: VaultId, good: &str) -> u64 {
 
 /// Seed `qty` of `good` into `vault`'s pool through `lot` (the inventory's own path).
 pub(crate) fn seed_pool(rig: &mut Rig, vault: VaultId, good: &str, qty: u64, lot: LotId) {
+    seed_steps(rig, vault, good, qty, lot, 2);
+}
+
+/// Seed `qty` of `good` as the undissolved lot `lot` at `vault` (doc 36a P2-4: a lot for
+/// `@inv/dissolve` to be refused on).
+pub(crate) fn seed_lot(rig: &mut Rig, vault: VaultId, good: &str, qty: u64, lot: LotId) {
+    seed_steps(rig, vault, good, qty, lot, 1);
+}
+
+/// [`seed_pool`]'s two steps — the origin mint, then its dissolve — the first `steps` of them.
+fn seed_steps(rig: &mut Rig, vault: VaultId, good: &str, qty: u64, lot: LotId, steps: usize) {
     let endpoint = EndpointRef(vault);
     let good = cid(good);
     let families = rig
@@ -705,7 +716,7 @@ pub(crate) fn seed_pool(rig: &mut Rig, vault: VaultId, good: &str, qty: u64, lot
         .expect("inventory handles")
         .0
         .clone();
-    for step in 0..2 {
+    for step in 0..steps {
         let engine = rig.tw.engine_mut();
         let prepared = {
             let mut txn = engine

@@ -13,6 +13,10 @@
 //! - **When the hull changes** (doc 36a §5.1): a strip or a scrap is checked against the hull
 //!   when it is ordered, but written to it only when its mint has landed ([`land_mint`], from
 //!   the port tick's settle), so a mint given up destroys nothing.
+//! - **Room** (doc 36a P2-4): the bulk a strip or a scrap lays in the hold (`structural_alloys`;
+//!   a part is a lot of its own kind and takes no governed room) must fit the hold as it stands
+//!   by [`crate::port::market::PortCapacity`]'s rule, read before any plan is owed
+//!   ([`hold_takes`]) and again in the mint's prepare from the plan the offer carries.
 //! - **Hot parts** (Q-F6): [`vacate_claim`] flags a stripped part hot when the claim it came off
 //!   under is vacated — the seam GC.5/GC.6's contest calls, a staff fixture until then. The bay
 //!   refuses to fit a hot part (`+bay/fit`).
@@ -21,8 +25,13 @@
 //!   mints the alloys at [`SCRAP_KG_PER_T`] in the same bundle that takes the remains off the
 //!   site's record.
 
+use std::collections::BTreeMap;
+
 use mush_core::{CanonicalId, Ctx, ObjId};
+use mush_economy::VaultId;
 use mush_inventory::LotId;
+use mush_inventory::record::EndpointRef;
+use mush_market::{CapacityProvider, CapacityReadError, CapacityRefusal};
 use mush_tactics::field_ops::{
     ComponentCondition, CustodyTitleStatus, ProvenanceLegalityStatus, StripAuthorization,
     WorkshopBook, assess_tactical_unit,
@@ -31,6 +40,7 @@ use smol_str::SmolStr;
 
 use super::act::{self, LotMint, OwedAct, OwedKind, PartProvenance};
 use super::{Act, BayHull, FacilityClass, NO_RIGHT, SETTLING, permits, record_of, right_of};
+use crate::port::market::PortCapacity;
 use crate::store::put_bay_hull;
 
 /// The bulk good scrap's structural mass becomes (Q-36-39).
@@ -73,6 +83,42 @@ fn ready(ctx: &mut Ctx<'_>, hull: ObjId, act: Act) -> Result<(BayHull, super::Fa
     // serve her — never a salvor's hold after the claim is vacated.
     super::berth_stands(ctx, ctx.actor, &record)?;
     Ok((record, facility))
+}
+
+/// **Whether the hold takes the bulk `lots` lay in it** (doc 36a P2-4): every lot without a
+/// part provenance, summed by commodity, against [`PortCapacity`]'s plan for the hold as it
+/// stands. An ungoverned hold takes anything; an unreadable plan or pool refuses.
+///
+/// # Errors
+///
+/// The refusal, as a sentence carrying the hold's own line.
+fn hold_takes(ctx: &Ctx<'_>, vault: VaultId, lots: &[LotMint]) -> Result<(), String> {
+    let endpoint = EndpointRef(vault);
+    let Some(plan) = PortCapacity.plan(ctx.w, endpoint) else {
+        return Ok(());
+    };
+    let mut bulk: BTreeMap<CanonicalId, u64> = BTreeMap::new();
+    for lot in lots.iter().filter(|lot| lot.part.is_none()) {
+        let slot = bulk.entry(lot.commodity.clone()).or_insert(0);
+        *slot = slot.saturating_add(lot.quantity);
+    }
+    for (commodity, quantity) in &bulk {
+        let mut read = |good: &CanonicalId| {
+            crate::port_tick::read_pool(ctx, endpoint, good).map_err(|_| CapacityReadError)
+        };
+        match PortCapacity.check(&plan, commodity, *quantity, &mut read) {
+            Ok(()) => {}
+            Err(CapacityRefusal::Refused { line, .. }) => {
+                return Err(format!(
+                    "Her carrier's hold will not take what comes off her: {line}"
+                ));
+            }
+            Err(CapacityRefusal::Unreadable) => {
+                return Err("Her carrier's hold cannot be read; nothing comes off her.".to_owned());
+            }
+        }
+    }
+    Ok(())
 }
 
 /// Owe `lots` minted into `vault` for `why`, as the actor, and settle it at once.
@@ -187,6 +233,7 @@ pub fn strip(ctx: &mut Ctx<'_>, hull: ObjId, part: &str) -> Result<LotId, String
             lot, &before, &slot, definition, condition, ctx.actor, at_ic, false,
         )),
     };
+    hold_takes(ctx, vault, std::slice::from_ref(&row))?;
     owe_mint(ctx, record, act_no, vault.0, "strip", vec![row]);
     Ok(lot)
 }
@@ -261,6 +308,7 @@ pub fn scrap(ctx: &mut Ctx<'_>, hull: ObjId) -> Result<Scrapped, String> {
         Some(SmolStr::new_static("tacsim.bay.scrap")),
     )
     .map_err(|e| e.to_string())?;
+    hold_takes(ctx, vault, &lots)?;
     let parts = lots
         .iter()
         .filter(|l| l.part.is_some())

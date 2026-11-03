@@ -11,7 +11,7 @@
 //! second order against the same hold, not by a sale.
 
 use mush_core::{GOD, ObjId};
-
+use mush_inventory::LotId;
 use mush_org::PrincipalId;
 use mush_tactics::UnitMutationOp;
 use mush_tactics::field_ops::ComponentCondition;
@@ -25,8 +25,9 @@ use crate::bay_gc8::{
     order_of, provenance, put, section_id, unit, worn, wreck_section,
 };
 use crate::driving::{
-    Rig, at_counter, cid, fire, handles, hold_pool, hold_vault_of, land, land_quietly, pilot,
-    prospector, reseed_typed, rigs_of, run, seed_hold, station_room, stocked, store, to_ic,
+    Rig, at_counter, cid, command, drain, fire, handles, hold_pool, hold_vault_of, land,
+    land_quietly, pilot, prospector, reseed_typed, rigs_of, run, seed_hold, seed_lot, station_room,
+    stocked, store, to_ic,
 };
 use crate::field_host::site_record_at;
 
@@ -528,4 +529,108 @@ async fn b36a_4_a_scrapped_shell_stays_held() {
     assert!(gone.contains("no such hull"), "{gone}");
     let again = run(&mut rig.tw, pilot, &format!("+bay/scrap #{}", spare.0));
     assert!(again.contains("has been scrapped"), "{again}");
+}
+
+/// The Dray-P's hold filled to its mass rating with alloy (86 t at 1,000 kg a tonne).
+const HOLD_FULL_T: u64 = 86;
+
+/// The spare, worn so its alloy fits the Dray's hold, berthed at C14 by its title holder, who
+/// stands in the workshop.
+fn berthed_spare(rig: &mut Rig) -> (ObjId, HullRow, ObjId) {
+    let (pilot, row, _, spare) = two_escorts(rig);
+    worn(rig, spare);
+    let workshop = station_room(&rig.tw, CERES, C14);
+    put(rig, pilot, workshop, false);
+    let berthed = run(&mut rig.tw, pilot, &format!("+bay/berth #{}", spare.0));
+    assert!(berthed.contains("berthed in the workshop"), "{berthed}");
+    (pilot, row, spare)
+}
+
+/// **36a P2-4 (a) — no room, no scrap.** The Dray's hold is full; the title holder's
+/// `+bay/scrap` of the spare at C14 is refused with the hold's own sentence before any plan is
+/// owed: the hull stands whole and berthed, nothing is owed, the count is untouched.
+#[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+async fn b36a_5_a_a_full_hold_refuses_the_scrap() {
+    let mut rig = stocked();
+    let (pilot, row, spare) = berthed_spare(&mut rig);
+    seed_hold(&mut rig, &row, "structural_alloys", HOLD_FULL_T, 9_800);
+    let before = assess(&rig, spare);
+    let refused = run(&mut rig.tw, pilot, &format!("+bay/scrap #{}", spare.0));
+    assert!(
+        refused.contains("hold will not take") && refused.contains("The hold has"),
+        "{refused}"
+    );
+    let record = bay_record(&rig, spare);
+    assert!(
+        record.owed.is_none() && record.scrapped_ic.is_none() && record.berth.is_some(),
+        "{record:?}"
+    );
+    assert_eq!(record.acts, 0);
+    assert_eq!(
+        assess(&rig, spare).component_conditions,
+        before.component_conditions
+    );
+}
+
+/// **36a P2-4 (b), §5.1 — a lost mint destroys nothing.** The scrap is accepted on an empty
+/// hold; before the tick lays the lots, the hold is filled. The mint's prepare refuses them (the
+/// plan the offer carries has no room) three times and the act is given up: the hull stands
+/// whole and berthed, no lot exists, and the record's count is back at the ledger's.
+#[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+async fn b36a_5_b_a_lost_mint_destroys_nothing() {
+    let mut rig = stocked();
+    let (pilot, row, spare) = berthed_spare(&mut rig);
+    let before = assess(&rig, spare);
+    let out = run(&mut rig.tw, pilot, &format!("+bay/scrap #{}", spare.0));
+    assert!(out.contains("is broken up"), "{out}");
+    assert!(bay_record(&rig, spare).owed.is_some());
+    seed_hold(&mut rig, &row, "structural_alloys", HOLD_FULL_T, 9_800);
+    for _ in 0..10 {
+        if bay_record(&rig, spare).owed.is_none() {
+            break;
+        }
+        let (_, queued) = fire(&mut rig);
+        land_quietly(&mut rig, &queued);
+    }
+    let record = bay_record(&rig, spare);
+    assert!(record.owed.is_none(), "{record:?}");
+    assert!(
+        record.scrapped_ic.is_none() && record.berth.is_some(),
+        "{record:?}"
+    );
+    assert_eq!(record.acts, 0, "{record:?}");
+    assert_eq!(
+        assess(&rig, spare).component_conditions,
+        before.component_conditions
+    );
+    let lot = tacsim::port::bay_work::act::lot_id(spare, 1, 0).expect("the lot");
+    assert!(lot_record(&mut rig, lot).is_none(), "no alloy lot was laid");
+    let vault = hold_vault_of(&rig.tw, &row);
+    assert_eq!(
+        hold_pool(&mut rig.tw, vault, "structural_alloys"),
+        HOLD_FULL_T
+    );
+}
+
+/// **36a P2-4 (c) — `@inv/dissolve` consults the hold's room.** A tonne of alloy stands as a
+/// lot in the full hold; the pilot's `@inv/dissolve` of it is refused at the prepare with the
+/// hold's own sentence, the pool is unchanged and the lot still stands.
+#[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+async fn b36a_5_c_dissolve_consults_the_holds_room() {
+    let mut rig = stocked();
+    let (pilot, row, _, _) = two_escorts(&mut rig);
+    seed_hold(&mut rig, &row, "structural_alloys", HOLD_FULL_T, 9_800);
+    let vault = hold_vault_of(&rig.tw, &row);
+    let lot = LotId(9_801);
+    seed_lot(&mut rig, vault, "structural_alloys", 1, lot);
+    let _ = drain(&mut rig.tw);
+    let (out, queued) = command(&mut rig, pilot, &format!("@inv/dissolve {lot}"));
+    assert_eq!(queued.len(), 1, "{out}");
+    let refused = land(&mut rig, &queued[0]).expect_err("the dissolve is refused");
+    assert!(refused.contains("The hold has"), "{refused}");
+    assert_eq!(
+        hold_pool(&mut rig.tw, vault, "structural_alloys"),
+        HOLD_FULL_T
+    );
+    assert!(lot_record(&mut rig, lot).is_some(), "the lot still stands");
 }

@@ -57,6 +57,7 @@ pub struct InventoryModule {
     delegates: Vec<SmolStr>,
     cell: Option<InventoryHandleCell>,
     salvage: Option<std::sync::Arc<dyn crate::salvage::SalvageSource>>,
+    capacity: Option<std::sync::Arc<dyn crate::provider::PoolCapacity>>,
     core_inputs: Option<crate::core_input::CoreInputBinding>,
     bay_parts: Option<crate::bay_part::BayPartBinding>,
 }
@@ -70,9 +71,23 @@ impl InventoryModule {
             delegates: Vec::new(),
             cell: None,
             salvage: None,
+            capacity: None,
             core_inputs: None,
             bay_parts: None,
         }
+    }
+
+    /// **Name the composition's capacity rule** (doc 36a P2-4): what room an endpoint has for
+    /// pooled quantity, consulted when a lot dissolves into its pool. The same seam shape as
+    /// [`InventoryModule::with_salvage_source`], for the same reason: a hull's hold is the
+    /// game's to measure and this crate has no edge to it. Unwired, a dissolve asks nothing.
+    #[must_use]
+    pub fn with_pool_capacity(
+        mut self,
+        capacity: std::sync::Arc<dyn crate::provider::PoolCapacity>,
+    ) -> Self {
+        self.capacity = Some(capacity);
+        self
     }
 
     /// ---- E7r2: P2 — **name the composition's wreck oracle** ----
@@ -430,7 +445,12 @@ impl GameModule for InventoryModule {
         )?;
 
         // ---- E7c2: B5 — the prepared path ----
-        crate::provider::register(reg, &families, self.salvage.as_ref())?;
+        crate::provider::register(
+            reg,
+            &families,
+            self.salvage.as_ref(),
+            self.capacity.as_ref(),
+        )?;
 
         reg.state(InventoryStore::default());
         // E7r2 P2: the composed wreck oracle, published read-only so `@salvage`'s
