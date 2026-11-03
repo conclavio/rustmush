@@ -122,6 +122,11 @@ pub struct FieldParty {
     /// one of them returns to the Hostile mark rather than erasing it.
     #[serde(default, skip_serializing_if = "Vec::is_empty")]
     pub stance_hostile: Vec<PartyId>,
+    /// **A director raid's raider** (doc 40 cut FR.2, Q-40-18): its carrier carried the raid
+    /// director's `raid` key at admission. Fixed then, since the key goes when the raid is over,
+    /// which may be before the field demotes; its leader voids its own friendly fire at demotion.
+    #[serde(default, skip_serializing_if = "std::ops::Not::not")]
+    pub director: bool,
 }
 
 /// **One unit in a field.**
@@ -191,6 +196,24 @@ pub struct FieldLive {
     /// lift's — lays the same walls from here, and the snapshot's definition digest holds.
     #[serde(default, skip_serializing_if = "Vec::is_empty")]
     pub held: Vec<HeldWall>,
+    /// **The rounds each pair of parties exchanged** (doc 40 cut FR.2, Q-40-15; doc 36 cut
+    /// GC.10's tally), as they stood at the last snapshot, by (shooter, victim). Written in the
+    /// snapshot's batch only: a resume rewinds to that snapshot and re-fights what followed,
+    /// counting it again, so the resumed field's tally is exactly the rounds it has seen.
+    #[serde(default, skip_serializing_if = "Vec::is_empty")]
+    pub tally: Vec<FireRow>,
+}
+
+/// **One pair's rounds** ([`FieldLive::tally`]'s row).
+#[derive(Clone, Copy, Debug, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(deny_unknown_fields)]
+pub struct FireRow {
+    /// The party that fired.
+    pub shooter: PartyId,
+    /// The party the rounds reached.
+    pub victim: PartyId,
+    /// How many reached it.
+    pub rounds: u32,
 }
 
 /// **A hull held out of the field as a wall** (doc 36a §11 #1): [`FieldLive::held`]'s row.
@@ -408,6 +431,11 @@ mod tests {
                 hull: ObjId(41),
                 pose: SitePose::at_cell(120, 128),
             }],
+            tally: vec![FireRow {
+                shooter: PartyId::nth(0).expect("A"),
+                victim: PartyId::nth(1).expect("B"),
+                rounds: 3,
+            }],
             fire: Some(PendingFire {
                 pilot: ObjId(3),
                 shooter: ObjId(7),
@@ -432,12 +460,14 @@ mod tests {
                     key: PartyKey::Unit { unit: ObjId(7) },
                     leader: Some(ObjId(3)),
                     stance_hostile: vec![PartyId::nth(1).expect("B")],
+                    director: false,
                 },
                 FieldParty {
                     party: PartyId::nth(1).expect("B"),
                     key: PartyKey::Unit { unit: ObjId(9) },
                     leader: None,
                     stance_hostile: Vec::new(),
+                    director: true,
                 },
             ],
             units: vec![

@@ -63,6 +63,9 @@ pub(crate) struct Entrant {
     pub carrier: Option<ObjId>,
     /// **The organizations its leader and owner openly stand in** (doc 36 cut GC.10, Q-36-10).
     pub affiliations: BTreeSet<Affiliation>,
+    /// **A director raid's hull** (doc 40 cut FR.2, Q-40-18): a fixture raider's whose carrier
+    /// carries the raid director's `raid` key now.
+    pub director: bool,
 }
 
 /// **One organization a character openly stands in** (doc 36 cut GC.10, Q-36-10, F-1): what two
@@ -340,6 +343,7 @@ pub(crate) fn entrants(ctx: &Ctx<'_>, entry: &CanonicalId, units: &[ObjId]) -> V
                     aboard: Vec::new(),
                     carrier: Some(*carrier),
                     affiliations: party_affiliations(ctx.w, *leader, *organizer),
+                    director: false,
                 };
             }
             // A fixture raider's hull: its leader's party (doc 32 cut CF.6, Q-CF-44).
@@ -354,6 +358,8 @@ pub(crate) fn entrants(ctx: &Ctx<'_>, entry: &CanonicalId, units: &[ObjId]) -> V
                     aboard: Vec::new(),
                     carrier: super::raiders::carrier_of(ctx.w, *unit),
                     affiliations: affiliations(ctx.w, leader),
+                    director: super::raiders::carrier_of(ctx.w, *unit)
+                        .is_some_and(|carrier| crate::surface::raid::director_raid(ctx.w, carrier)),
                 };
             }
             let record = rig_record(ctx, *unit);
@@ -375,6 +381,7 @@ pub(crate) fn entrants(ctx: &Ctx<'_>, entry: &CanonicalId, units: &[ObjId]) -> V
                     .as_ref()
                     .and_then(|record| record.excursion.as_ref().map(|out| out.hull)),
                 affiliations: party_affiliations(ctx.w, leader, None),
+                director: false,
             }
         })
         .collect()
@@ -410,6 +417,7 @@ fn carrier_entrant(ctx: &Ctx<'_>, carrier: ObjId, flights: &[(ObjId, FlightFacts
         aboard: super::carrier::souls_aboard(ctx.w, carrier),
         carrier: None,
         affiliations: party_affiliations(ctx.w, leader, owner),
+        director: false,
     }
 }
 
@@ -436,6 +444,9 @@ pub(crate) fn letter(
             key: *key,
             leader: *leader,
             stance_hostile: Vec::new(),
+            director: entrants
+                .iter()
+                .any(|entrant| entrant.key == *key && entrant.director),
         });
     }
     parties.sort_by_key(|party| party.party);
@@ -718,6 +729,7 @@ mod tests {
             aboard: Vec::new(),
             carrier: None,
             affiliations: BTreeSet::new(),
+            director: false,
         }
     }
 

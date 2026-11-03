@@ -130,6 +130,13 @@ pub struct SessionStat {
     pub connect_time: i64,
     /// Unix seconds of the actor's most recent input line.
     pub last_input: i64,
+    /// **The input before the most recent one** (doc 40 cut FR.2, Q-40-17): `None` until the
+    /// session's first input, `Some(0)` while that first input is the only one (nothing was
+    /// typed before it), then the second of the one before. Seeded `None` at every
+    /// [`World::session_start`] that makes the stat, so a reconnect never offers the connect
+    /// second as an input. A command reads it to ask "has the actor entered anything since `t`,
+    /// other than this command?" (`prev_input > t`).
+    pub prev_input: Option<i64>,
 }
 
 pub use mush_proto::OutputBrackets;
@@ -1036,15 +1043,18 @@ impl World {
             self.session_stats.entry(id).or_insert(SessionStat {
                 connect_time: now,
                 last_input: now,
+                prev_input: None,
             });
         }
     }
 
-    /// Stamp `last_input` for `id` with [`World::now`]. No-op if no session
-    /// is recorded (e.g. script/NPC origin).
+    /// Stamp `last_input` for `id` with [`World::now`], moving the input it held to
+    /// `prev_input` (the session's first input moves none: `Some(0)`). No-op if no session is
+    /// recorded (e.g. script/NPC origin).
     pub fn session_input(&mut self, id: ObjId) {
         let now = self.now;
         if let Some(s) = self.session_stats.get_mut(&id) {
+            s.prev_input = Some(s.prev_input.map_or(0, |_| s.last_input));
             s.last_input = now;
         }
     }
@@ -2560,7 +2570,8 @@ mod tests {
             w.session_stat(nick),
             Some(SessionStat {
                 connect_time: 1_000,
-                last_input: 1_000
+                last_input: 1_000,
+                prev_input: None,
             })
         );
 
@@ -2569,6 +2580,11 @@ mod tests {
         w.session_input(nick);
         let s = w.session_stat(nick).unwrap();
         assert_eq!((s.connect_time, s.last_input), (1_000, 1_040));
+        // Doc 40 cut FR.2: the first input has nothing before it, never the connect second.
+        assert_eq!(s.prev_input, Some(0));
+        w.set_now(1_050);
+        w.session_input(nick);
+        assert_eq!(w.session_stat(nick).unwrap().prev_input, Some(1_040));
 
         // A second session_start (multi-connect) never resets the times.
         w.set_now(1_100);
@@ -2580,6 +2596,10 @@ mod tests {
         assert_eq!(w.session_stat(nick), None);
         w.session_input(nick);
         assert_eq!(w.session_stat(nick), None);
+        // A reconnect seeds the input before afresh.
+        w.set_now(1_200);
+        w.session_start(nick);
+        assert_eq!(w.session_stat(nick).unwrap().prev_input, None);
 
         // Missing objects never get stats; destroy clears them.
         w.session_start(ObjId(99));

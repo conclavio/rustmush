@@ -488,6 +488,12 @@ pub struct SiteRecord {
     /// byte-identical to GC.5's.
     #[serde(default, skip_serializing_if = "Vec::is_empty")]
     pub unlawful: Vec<crate::surface::claim::UnlawfulAct>,
+    /// **The landholders' recovery delegations** (doc 41 cut RS.3, Q-41-21): who may recover
+    /// hulls off a block while its claim stands, read into a pin at the attach; at most
+    /// [`crate::surface::claim::MAX_LAND_GRANTS`]. Omitted while empty, so a record no
+    /// landholder delegated on is byte-identical to GC.6's.
+    #[serde(default, skip_serializing_if = "Vec::is_empty")]
+    pub land_grants: Vec<crate::surface::claim::LandGrant>,
 }
 
 /// [`SiteRecord::side`]'s default: the shipped side.
@@ -568,6 +574,7 @@ impl SiteRecord {
             tows: crate::surface::tow::Tows::default(),
             custody: Vec::new(),
             unlawful: Vec::new(),
+            land_grants: Vec::new(),
         }
     }
 
@@ -600,6 +607,7 @@ impl SiteRecord {
             && self.known.is_empty()
             && self.custody.is_empty()
             && self.unlawful.is_empty()
+            && self.land_grants.is_empty()
     }
 
     /// **What `principal` remembers here** (doc 32 cut CF.4), most recently learned first.
@@ -1076,13 +1084,23 @@ impl SiteRecord {
                 crate::surface::claim::MAX_UNLAWFUL
             ));
         }
+        if self.land_grants.len() > crate::surface::claim::MAX_LAND_GRANTS {
+            return Err(format!(
+                "a site record keeps at most {} recovery delegations",
+                crate::surface::claim::MAX_LAND_GRANTS
+            ));
+        }
         if self.custody.iter().any(|row| {
             row.evidence.len() > crate::surface::claim::MAX_EVIDENCE
                 || row.told.len() > crate::surface::claim::MAX_WITNESSES
-                || row
-                    .pin
-                    .as_ref()
-                    .is_some_and(|pin| pin.witnesses.len() > crate::surface::claim::MAX_WITNESSES)
+                || row.pin.as_ref().is_some_and(|pin| {
+                    pin.witnesses.len() > crate::surface::claim::MAX_WITNESSES
+                        || pin.answerers.len() > crate::surface::claim::MAX_WITNESSES
+                })
+                || row.at_risk.len() > crate::surface::claim::MAX_AT_RISK
+                || row.file.as_ref().is_some_and(|file| {
+                    file.documented_repairs_at_risk.len() > crate::surface::claim::MAX_AT_RISK
+                })
         }) {
             return Err(
                 "a custody record's evidence, notices and witnesses are bounded".to_owned(),

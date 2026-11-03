@@ -422,6 +422,7 @@ pub(crate) fn joining(
                 key: entrant.key,
                 leader: entrant.leader,
                 stance_hostile: Vec::new(),
+                director: entrant.director,
             });
             live.parties.sort_by_key(|party| party.party);
             // Doc 40 cut FR.1 (Q-38-23, §4.2): the stance table read at the join, for the pairs

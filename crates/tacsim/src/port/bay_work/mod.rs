@@ -42,8 +42,8 @@ pub mod strip;
 
 pub use jobs::{BayJob, BayQuote, CARRIER_TIME_FACTOR, FacilityClass, QuotedJob};
 pub use record::{
-    BAY_PREFIX, BAY_SCHEMA, BayHull, BayHullState, BayOrder, BerthRow, MAX_ORDER_JOBS, OrderStatus,
-    Right, bay_key, bay_key_owner,
+    BAY_PREFIX, BAY_SCHEMA, BayHull, BayHullState, BayOrder, BerthRow, ClaimLot, MAX_CLAIM_LOTS,
+    MAX_ORDER_JOBS, OrderStatus, Right, VacatedLot, bay_key, bay_key_owner,
 };
 
 use std::collections::BTreeMap;

@@ -91,9 +91,9 @@ pub use data::{
 pub use econ::{LinkError, backing_org};
 pub use reputation::{
     AttackIncident, PUBLIC_ATTACK_PENALTY, StandingEffect, StandingReceipt, StandingView,
-    ensure_organization_faction, open_factions, public_standing, publish_attack_incident,
-    record_standing, record_voidable_standing, report_attack_incident, standing_causes,
-    standing_receipt, void_standing,
+    VoidWindow, ensure_organization_faction, open_factions, public_standing,
+    publish_attack_incident, record_standing, record_voidable_standing, report_attack_incident,
+    standing_causes, standing_receipt, void_standing, voidable_causes,
 };
 pub use sim::{Clock, ClockId, Front, FrontId, SimState};
 pub use standing::FactionStandingProvider;
