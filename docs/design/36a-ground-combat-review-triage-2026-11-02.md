@@ -34,23 +34,23 @@ Nothing of this is deployed (doc 37 §3.2). The fixes are grouped into four lane
 | P0-2 `@contract/*` on a claim | **CONFIRMED, worse** | **P0** | `@contract/amend` + `/deadline` shortens the window to 1 s; the "wipe a contest" half is refuted. **Fixed** `53603c4f` |
 | P0-3 Occator rig title | PARTLY | P1 | the award is refused while the lease encumbers the rig; it posts after the 28-day write-off. **Fixed** `30c2808b` |
 | P0-4 `repossess` no charge | BY-DESIGN | P2 (owner) | doc 36 GC.9 "Not built here" names it; reached only via dormancy or `@coop/revoke` |
-| P0-5 non-logistics hull bricks the bay | **CONFIRMED, worse** | **P0** | nothing filters the load; `carried_rig` fails every `basis`; the load can target a stranger's carrier |
+| P0-5 non-logistics hull bricks the bay | **CONFIRMED, worse** | **P0** | nothing filters the load; `carried_rig` fails every `basis`; the load can target a stranger's carrier. **Fixed** `40e066b8` |
 | P0-6 lot lost after the draw | PARTLY | P1 | doomed orders (component in a destroyed section) and cancel-during-draw confirmed; hull-moved race by design; **fixed** lane 2 `42206731` |
 | P0-7 side effects before commit | PARTLY | P2 | the Vacate→Withdrawn flip is refuted; a one-second award/contest boundary and a lost `Loaded` remain. **Fixed** `45148865` |
-| P0-8 demotion erases casualties | PARTLY | P1 | parts 1–2 confirmed (unplace precedes `pose_of`; held-out rows wiped); the `wreck_bay_rigs` step refuted |
+| P0-8 demotion erases casualties | PARTLY | P1 | parts 1–2 confirmed (unplace precedes `pose_of`; held-out rows wiped); the `wreck_bay_rigs` step refuted. **Fixed** `45cbde42` |
 | P0-9 strip/scrap before the mint | PARTLY, **new P1** | P1 | the writes are by design; a given-up act desyncs `record.acts` and bricks the hull (§5); **fixed** lane 2 `cb4df20c` |
-| P0-10 BehindSlot drains into a commit | PARTLY | P3 | the designed behaviour; only the BEHIND_SLOT_WAITING promise is broken |
+| P0-10 BehindSlot drains into a commit | PARTLY | P3 | the designed behaviour; only the BEHIND_SLOT_WAITING promise is broken. **Fixed** `5e892680` |
 | P1-1 bay wreck skips the 28-day bar | BY-DESIGN | P3 (owner) | doc 32:1321 and doc 36:693 — the lessee pays restoration up to the deposit |
 | P1-2 owner acts on a hull in custody | CONFIRMED | P1 | `right_of` ranks title first; `berth` checks no carrier right; a vacated claim stows into the salvor's bay; **fixed** lane 2 `307b76ee` |
 | P1-3 `TowOrders` clobber | CONFIRMED | P1 | `+salvage/inspect` spam kills a queued contest; eviction cap is 4,096 not 64. **Fixed** `f6930752` |
 | P1-4 attach race drops the pin | CONFIRMED | P1 | a second tug's attach replaces the pin; the winner loads with none; no `Recovery` entry, claim refused. **Fixed** `062ac032` |
 | P1-5 left-behind rigs not indexed | BY-DESIGN | — | an operational rig "stays where it stands, still yours" (CF.5); the write-off is for disabled rigs (Q-36-22) |
-| P1-6 delegated crew blocked | PARTLY | P2 | the delegation gap is real and fails closed; the slots-5/6 half is refuted |
+| P1-6 delegated crew blocked | PARTLY | P2 | the delegation gap is real and fails closed; the slots-5/6 half is refuted. **Fixed** `cffcde90` |
 | P1-7 bay/refit blind; scrapped shell | PARTLY | P2 | both sides pin the revision; no resurrection; the scrapped shell is loose and any player can `get` it; **fixed** lane 2 `111e5d6f` |
-| P1-8 `DecisionResult` guard | PARTLY | P2 | the retained-seal path latches an integrity freeze; the legacy-work path only drops the answer |
-| P1-9 condition table dropped | PARTLY | P2 | real since M6 for mind hulls; pilot hulls by design; hash/power by design |
+| P1-8 `DecisionResult` guard | PARTLY | P2 | the retained-seal path latches an integrity freeze; the legacy-work path only drops the answer. **Fixed** `50574037` |
+| P1-9 condition table dropped | PARTLY | P2 | real since M6 for mind hulls; pilot hulls by design; hash/power by design. **Fixed** `02fe08d8` |
 | P1-10 `Release` lacks `promoted` | CONFIRMED | P1 | a release draining after a promotion drops the casualty from the index. **Fixed** `06859c3f` |
-| P1-11 raider barge lifts with no drive | PARTLY | P2 | `raiders::tick` is gated; `raid::visit → recall` is not and leaves a stale row |
+| P1-11 raider barge lifts with no drive | PARTLY | P2 | `raiders::tick` is gated; `raid::visit → recall` is not and leaves a stale row. **Fixed** `452c753c` |
 | P1-12 scrap row off-by-one | REFUTED | — | `MAX_ACT_ROWS` is 32; `lot_id` has no bound and no such error |
 | P1-13 bot 4-digit addresses | ALREADY OWED | P3 | doc 32 §19/§20 list it |
 | P2-1 `+field/void` window | BY-DESIGN | P4 | the comment at `standing.rs:296` states it; the proposed fix would break the void |
@@ -58,8 +58,8 @@ Nothing of this is deployed (doc 37 §3.2). The fixes are grouped into four lane
 | P2-3 cockpit `heard`; rig panel leak | PARTLY | P3 | `heard` is empty on the cockpit; the panel is per seated pilot, no leak |
 | P2-4 mint with no capacity | CONFIRMED | P2 | strip, scrap, the Mint and `@inv/dissolve` all skip capacity; GC.6's remains scrap too; **fixed** lane 2 `3803351a` (the bay and `@inv/dissolve`; `+tv/<n> scrap` of remains is still owed) |
 | P2-5 berth/stow guard; wall clock | PARTLY | P3 | all true in the code, none has an effect; no `CancelFee` act exists; **fixed** lane 2 `93619a2f` |
-| P2-6 `+ship/plan` gates | PARTLY | P3 | `lift_refusal`, `bay_over_line` and the queue's `departure_refusal` missing; `detachment_out` is present |
-| P2-7 BehindSlot barriers | PARTLY | P4 | barriers answered `Busy` on shutdown/exit; one notice per line is by design |
+| P2-6 `+ship/plan` gates | PARTLY | P3 | `lift_refusal`, `bay_over_line` and the queue's `departure_refusal` missing; `detachment_out` is present. **Fixed** `6777f386` |
+| P2-7 BehindSlot barriers | PARTLY | P4 | barriers answered `Busy` on shutdown/exit; one notice per line is by design. **Fixed** `a3c60c3b` |
 | P2-8 medical quarantine | REFUTED | — | quarantine needs a work order; a medical room takes none; `workshop_at` does not exist |
 | P2-9 help contradicts GC | CONFIRMED | P3 | four passages in `docs/help/field.md` (friends, cover, tow, idle demotion) |
 
@@ -93,6 +93,13 @@ when the tug's own ramp is not (tow.rs:1964–1970), and nothing checks who owns
 Repro: a field leaves a `line_tank` wreck; `+tv/1 tow #W go`, drive to a ramp, `+tv/1 load go`, `+ship/lift`:
 PLAN_DARK forever. Fix: `carried_rig` gives a logistics-less hull `dry_kg = dry_mass_kg_for_spec`, no hopper,
 no goods (as relay cargo does, vehicle.rs:1158); and a load goes only into the tug's own carrier or a Friend's.
+**As built** (`40e066b8`): `carried_rig` weighs a logistics-less hull at its FO-13 dry mass, no hopper, no
+goods; `bay_gate_leaving` and the executor's `rigs_out` read it as inert cargo (`vehicle::combat_hull`), so a
+queued depart's await never counts it out; `+tv/<n> load` takes the tug's own carrier or a Friend's and refuses
+any other (`LOAD_NOT_YOUR_CARRIER`; the Load prepare refuses `tow_foreign_carrier`). Tests
+`field_gc4::lane3_a_loaded_combat_casualty_never_darkens_the_lift` (`+ship/plan` plans, `+ship/lift ceres`
+files) and `lane3_a_load_into_a_strangers_carrier_is_refused`. The hull is the Mk1 drone, not a `line_tank`: at
+29.9 t the tank is beyond every rig's tow cap and the Dray-P's 20 t bay, so it can never be loaded.
 
 ### P0-3 → P1. The Occator rig after the write-off (`port/tv.rs`, `surface/claim.rs`)
 The lease is an economy lease with the rig as premises, so `TransferTitle` is refused while it stands
@@ -123,6 +130,13 @@ out of the field at admission (admit.rs:337–341) — is in no list, and `SiteR
 Any hull held out under IC custody with an index row is wiped the same way. Above 128 rows `demote` refuses and
 the site stays promoted (staff `@tacsim/site demote` still works). Fix: `set_down` falls back to the casualty's
 own pose, or runs before the remains unplace; `demote` keeps rows for hulls that were never in the field.
+**As built** (`45cbde42`): `set_down` falls back to the casualty's own pose; `close::keep_held_out` keeps
+the row of every indexed hull still on the site that the field never held; admission, the carrier join and the
+raider join refuse early when the ground holds more units than the index takes (`admit::index_room`), so
+`demote` never answers `UnitsFull` for a field it admitted. Test
+`field_gc4::lane3_a_casualty_keeps_its_row_when_its_tug_falls_irrecoverable`. **Not tested:** a held-out IC
+custody hull keeping its row — IC custody opens only through the licensed-mind sortie, which the shard_1 field
+harness does not compose; `keep_held_out` is the one pass for both.
 
 ### P1-2. The prior owner acts on a hull in custody (`port/bay_work/mod.rs`)
 `right_of` ranks title, grant and lessee before salvor (299–311) and custody leaves title untouched (doc 36
@@ -200,27 +214,41 @@ void, GC.4/GC.5/GC.6's tow, load, claim and remains, in the page's own voice.
   the stand-in).
 - **P0-10**: a line told BEHIND_SLOT_WAITING ("not refused") restarts its 250 ms in `defer` and can then hear
   CommitTimedOut. Gate `behind_ready` on no pending commit, or carry `told` into `defer`, or reword.
+  **Fixed** `5e892680` by the first: `mode::behind_drains` holds the queue while a commit is pending;
+  `rx` is still taken behind it in order.
 - **P1-6**: `+tv/board` lists only `tv_leases_of(actor)` (boarding.rs:188) and the detachment surface path
   refuses `lease.pilot != actor` (sortie/surface.rs:118), so a delegated `OperateCrew` grant can be held but
   never used. Accept any actor with a current grant, keeping `lease.pilot` as principal.
+  **Fixed** `cffcde90`: `+tv/<n> board` lists the live leases on the carrier the actor stands in whose
+  owner read allows OperateCrew; the surface host drops its pilot check (the launch's authority keys fence
+  OperateCrew). Test `escort_lease::lane3_a_delegate_with_operate_crew_boards_the_lessees_rig`.
 - **P1-7**: after scrap `berth = None` so `held()` is false and the shell is a plain `Thing` any player can
   `get`; `hull_named` matches it by name. Keep a scrapped hull held; skip scrapped hulls in `hull_named`.
 - **P1-8**: `decision_result_armed` (mode.rs:547) lacks `retained.is_empty()`; a completion in the re-emit
   state stages, `flush_prepared_action` rejects, `abort_without_receipt` latches IntegrityFrozen. Add the
   guard; park the completion when legacy work is pending, as command submits do.
+  **Fixed** `50574037`: the guard also reads the clock and the Timer admission; a completion meeting legacy
+  work waits in a one-slot local. The test is of the predicate; a loop-level re-emit rig is owed.
 - **P1-9**: `join_in_place` (join.rs:143) and `new_with_minds` (state.rs:4717/4904) drop the installed
   `ConditionTable`; `adopt_mind` never restores it, so a mind hull's native profile rows are gone until a
   profile switch. Since M6 (`34a22ac1`), moved unchanged by GC.1b. Apply the profile rules for mind units
   after `admit_unit`; rebless if the hash folds conditions.
+  **Fixed** `02fe08d8`: both paths install the profile's rows after `admit_unit`. The OOC practice hashes
+  (shard_3 `motor::` pins) did not move; nothing was re-blessed.
 - **P1-11**: `raid::visit` stops only for a Wreck (raid.rs:124); a Casualty barge with a downed drive goes
   `under_way → recall → raiders::lift`, which unplaces it with no `carrier_loss` check and leaves its row.
   Breaks doc 36's "a barge whose drive is down stays on the ground".
+  **Fixed** `452c753c`: `visit` and `under_way` read such a barge as stuck; `recall` and `raiders::lift`
+  refuse on `lift_refusal`; a lifted carrier's row comes off the index (`site_record::take_off_index`). Test
+  `field_director::lane3_a_barge_whose_drive_is_down_stays_on_the_ground`.
 - **P2-3**: `enrich_cockpit` passes an empty `heard` (picture.rs:592); the cockpit never shows "(a sounding)"
   though doc 32 §9 wants one picture. Build `heard` as `site.map` does. *Fixed in lane 4:* the cockpit reads
   each flight's rig record through `loud_sounding`; `one_picture::p2_3_the_cockpit_hears_a_loud_sounding_as_the_site_map_does`.
 - **P2-6**: `plan_block` and `plan_queue` skip `lift_refusal`, `bay_over_line` and (queue only)
   `departure_refusal`; the dry run reads green where the filing refuses.
+  **Fixed** `6777f386`. Test `field_gc3::lane3_the_dry_run_reads_the_lift_refusal_the_filing_makes`.
 - **P2-7**: both `behind.drain_all()` arms answer a waiting `Barrier` with `Busy` where `defer` settles it.
+  **Fixed** `a3c60c3b`: shutdown settles it through `settle_barrier`; exit answers it `Unavailable`.
 
 ## 5. What the review missed (found by the lanes)
 
@@ -233,7 +261,7 @@ void, GC.4/GC.5/GC.6's tow, load, claim and remains, in the page's own voice.
    `landed()` on give-up, or accept any `act > ledger.acts`; apply strip/scrap plans only once the mint lands.
    **Fixed** lane 2 `cb4df20c` (the roll-back; `strip::land_mint`).
 2. **A wreck can be loaded into a stranger's carrier** (P0-5's rider): `load_cmd` picks the nearest carrier
-   in reach and no arm checks the carrier's owner.
+   in reach and no arm checks the carrier's owner. **Fixed** with P0-5 (`40e066b8`).
 3. **The one-second award/contest boundary** (§4, P0-7).
 4. **`+bay`'s allowlist stanza is wrong** (P2): `legacy-handlers.toml:49–54` says the tick submits the owed
    act, but `/strip`, `/scrap` and staff `vacate_claim` call `settle → act::submit → submit_authoritative`
@@ -311,7 +339,8 @@ fourth column says what each row earns since.
    without limit — keep that as the one source of parts, or price the part?
 2. **Repossession damage charge** (P0-4): already doc 37 §6.3; the dormancy path makes it a leak.
 3. **Does the 28-day bar follow a rig that came home wrecked** (P1-1)?
-4. **Delegated crew** (P1-6): fail-closed today; is a delegate meant to board?
+4. **Delegated crew** (P1-6): fail-closed today; is a delegate meant to board? Lane 3 took the answer as yes
+   (`cffcde90`), with the lessee kept as principal; the owner may still rule otherwise.
 5. **The scrap yield against the hold** (surfaced by P2-4's gate, lane 2): `scrap_hull` yields
    `SCRAP_KG_PER_STRUCTURAL_POINT` (100 kg) a surviving structural point, so a whole escort (2,990 points)
    is 299 t of `structural_alloys`, against a Dray-P hold rated 86 t by mass — and a bay slot that takes the
@@ -337,7 +366,10 @@ that reproduces the review's steps as a player would type them.
 - **Lane 3, carrier, site, kernel, world task** (`port/vehicle.rs`, `surface/tow.rs` load/set_down,
   `field/close.rs`, `surface/raid.rs`, `port/boarding.rs`, `port/voyage.rs`, `arena/join.rs`,
   `mush-server/src/world_task*`): P0-5 with the stranger's-carrier rider, P0-8, P1-11, P1-6's delegation,
-  P2-6, P1-8, P1-9 (rebless only if the hash moves), P2-7's barriers, P0-10's wording.
+  P2-6, P1-8, P1-9 (rebless only if the hash moves), P2-7's barriers, P0-10's wording. **Built 2026-11-03**,
+  one commit per item (`40e066b8`, `45cbde42`, `452c753c`, `cffcde90`, `6777f386`,
+  `50574037`, `02fe08d8`, `a3c60c3b`, `5e892680`), with the second review's held-out walls
+  (#1, `35625329`) and write-off clock (#9, `fd69ba90`); the hash did not move.
 - **Lane 4, tests, help and docs**: field_gc3's dead branch (a `launched_composed`), field_director's header,
   escort_lease through `land_composed`, field_gc6 under `@tacsim/time freeze`, field_story's "the miners hold",
   `docs/help/field.md`'s four passages, P2-3's `heard`, doc 36's GC.6 and GC.1 overclaims, and this doc's
@@ -353,7 +385,7 @@ re-rate to P2 on reach, but none is by design.
 
 | # | Claimed | Verdict | Re-rated | One line |
 |---|---|---|---|---|
-| 1 | P1 held-out walls lost on resume/void | CONFIRMED | P2 (P1 once licensed minds fly) | `with_held_walls` runs on a copy at admission only (admit.rs:359, 526–550); every rebuild — boot `resume` (boot.rs:166), `close::snapshot_returns` (close.rs:57), `raiders::decode` (raiders.rs:949) — builds the ground without them, the digest fails (`SnapshotError::Definition`, snapshot.rs:754), `returns` is empty and every unit "goes home as it went out" |
+| 1 | P1 held-out walls lost on resume/void | CONFIRMED | P2 (P1 once licensed minds fly) | `with_held_walls` runs on a copy at admission only (admit.rs:359, 526–550); every rebuild — boot `resume` (boot.rs:166), `close::snapshot_returns` (close.rs:57), `raiders::decode` (raiders.rs:949) — builds the ground without them, the digest fails (`SnapshotError::Definition`, snapshot.rs:754), `returns` is empty and every unit "goes home as it went out". **Fixed** lane 3 `35625329` |
 | 2 | P1 party-letter collision after a refused join | CONFIRMED | P2 | `joining` letters `PartyId::nth(live.parties.len())` (carrier.rs:400); a refusal removes a middle party (carrier.rs:555); the next arrival takes a letter in use, shares that party's relations and marks, and the duplicate fails `FieldLive::check` on restart (record.rs:263) so the field voids with #1's loss; **fixed in lane 5, `810007ba`** |
 | 3 | P1 failed draw bricks the hull | DUPLICATE of §5.1 | P1 | new trigger needing no bad intent: two hulls ordered against one hold that covers one (`take` checks `hold_carries` but reserves nothing) |
 | 4 | P1 check-in overwrites crew state | CONFIRMED, both halves | P2 | `check_in` rebuilds from the hull's sections and writes `treatment: None` (crew.rs:406–451), healing prior injuries against GC.13's "the condition kept"; a captor's carrier closing a field runs `check_in_aboard` on the salvage victim, whose location becomes `Carrier{captor}` and whose abandoned extraction is cleared (crew.rs:448), against Q-36-52; **fixed in lane 5, `0115962f`** |
@@ -361,7 +393,7 @@ re-rate to P2 on reach, but none is by design.
 | 6 | P2 marks authorize against the admission-time leader | CONFIRMED | P2 | `led_by` reads `FieldParty.leader` set once at admission or join (parties.rs:273, carrier.rs:405); roster succession never rewrites it; the successor hears "You lead no party in a field", the deposed leader can still mark from a disabled hull; **fixed in lane 5, `40647a6c`** |
 | 7 | P2 a seated subordinate cannot open a field by firing | CONFIRMED (Q-CF-14) | P3 | `fire → open_by → led()` keeps only sites where the actor is a leader (commands.rs:55–67, 325) before the seated check; Q-CF-14 and help/field.md:19 open the fire door to "a unit firing"; **fixed in lane 5, `3fbe5f2d`** |
 | 8 | P2 cancel after the draw destroys materials | DUPLICATE of P0-6 | P1 (in that lane) | the probe pins the landed-but-unsettled window precisely |
-| 9 | P2 later fields reset the write-off clock | CONFIRMED | P2 | `demote_units` pushes a fresh `LeftUnit{left_ic: now}` for every unit still on the ground (close.rs:353–363) and `demote` replaces the index; `left_out_since` reads it (tv.rs:4687–4710); the remains merge keeps the earliest instant (site_record.rs:943) but `LeftUnit` has no carry — a fight on day 27 moves a write-off to day 55 |
+| 9 | P2 later fields reset the write-off clock | CONFIRMED | P2 | `demote_units` pushes a fresh `LeftUnit{left_ic: now}` for every unit still on the ground (close.rs:353–363) and `demote` replaces the index; `left_out_since` reads it (tv.rs:4687–4710); the remains merge keeps the earliest instant (site_record.rs:943) but `LeftUnit` has no carry — a fight on day 27 moves a write-off to day 55. **Fixed** lane 3 `fd69ba90` |
 
 Routing: #3's trigger and #8's probe window go to lane 2; #1 and #9 go to lane 3 (they share `demote_units`
 and the held-out family with P0-8); #2, #4, #5, #6, #7 are **lane 5, field commands and crew**

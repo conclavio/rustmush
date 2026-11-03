@@ -435,6 +435,7 @@ mod tests {
             homes: Vec::new(),
             fire: None,
             owed_exits: Vec::new(),
+            held: Vec::new(),
         };
         (roster, live)
     }

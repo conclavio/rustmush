@@ -16,7 +16,7 @@ use tacsim::field::{CrewLocation, FieldLive};
 use tacsim::port::Ticket;
 use tokio::sync::mpsc::Receiver;
 
-use crate::driving_rig::crash_resuming;
+use crate::driving_rig::crash;
 use crate::driving_rig::{
     Rig, cid, command, en_route, land, launched, on_pad, prospector, run, staff_hand,
     stocked_tuned, to_cell, to_ic, warm,
@@ -799,7 +799,7 @@ async fn gc1b_a_refused_middle_party_never_lends_its_letter_to_the_next_arrival(
 
     // (4) A restart resumes the field with its arrivals under their letters.
     let field = joined.field.clone();
-    let mut rig = crash_resuming(rig, &mut rx, &[a, b, late, last, third]).await;
+    let mut rig = crash(rig, &mut rx, &[a, b, late, last, third]).await;
     let mut rx = egress(&mut rig);
     assert!(
         until(&mut rig, &mut rx, &mut lines, 20, |rig, _| task(rig)

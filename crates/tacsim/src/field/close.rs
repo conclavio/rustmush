@@ -45,16 +45,18 @@ pub(crate) struct Demoted {
 }
 
 /// **The units the last snapshot holds**, as returns (the void rule), when it decodes on the
-/// field's own ground (its `homes` from its live record, doc 32 cut CF.6b).
+/// field's own ground (its `homes` and its `held` walls from its live record, doc 32 cut CF.6b;
+/// doc 36a §11 #1).
 pub(crate) fn snapshot_returns(
     ctx: &Ctx<'_>,
     site: &CanonicalId,
     document: Option<&serde_json::Value>,
     homes: Vec<crate::arena::state::EntryZone>,
+    held: &[super::record::HeldWall],
 ) -> Option<Vec<UnitReturn>> {
     let document = document?;
     let record = site_record(ctx, site)?;
-    let ground = super::ground::definition(ctx.w, site, &record, homes).ok()?;
+    let ground = super::admit::ground_with_held(ctx.w, site, &record, homes, held).ok()?;
     let limit = ctx.w.module_state::<crate::store::TacsimStore>().map_or(
         crate::arena::snapshot_capacity::SNAPSHOT_MAX_BYTES,
         |store| store.config().arena.snapshot_max_bytes,
@@ -91,13 +93,13 @@ pub(crate) fn on_ended(ctx: &mut Ctx<'_>, task: MatchId, end: MatchEnd, units: &
             .w
             .module_state::<FieldBook>()
             .and_then(|book| book.snapshot(&site).cloned());
-        let homes = ctx
+        let (homes, held) = ctx
             .w
             .module_state::<FieldBook>()
             .and_then(|book| book.hosted(&site))
-            .map(|hosted| hosted.live.homes.clone())
+            .map(|hosted| (hosted.live.homes.clone(), hosted.live.held.clone()))
             .unwrap_or_default();
-        snapshot_returns(ctx, &site, document.as_ref(), homes).unwrap_or_default()
+        snapshot_returns(ctx, &site, document.as_ref(), homes, &held).unwrap_or_default()
     } else {
         units.to_vec()
     };
@@ -365,7 +367,54 @@ pub(crate) fn demote_units(
     // Doc 36 cut GC.4 (Q-36-20): every casualty the field carried as a tug's load stands at its
     // tug's cell, indexed as it was.
     crate::surface::tow::set_down(ctx, site, units, &mut left, side);
+    // Doc 36a lane 3 (P0-8): a hull the field never held keeps the row an earlier field gave it.
+    keep_held_out(ctx, site, units, &mut left, &remains, side);
     Demoted { left, remains }
+}
+
+/// **The rows of hulls that were never in the field** (doc 36a lane 3, P0-8): a hull held out of
+/// the field under IC custody stood on the ground as a wall (`super::admit`, Q-36-44) and was no
+/// unit of it, so the close's index — which replaces the record's — would have wiped the row an
+/// earlier field gave it. Every indexed hull not among `units`, not already in `left` and not
+/// remains, still standing on this site's ground, keeps its row at the pose it stands at. A row
+/// for a hull no longer on the ground is stale and goes, as it always did.
+fn keep_held_out(
+    ctx: &Ctx<'_>,
+    site: &CanonicalId,
+    units: &[ObjId],
+    left: &mut Vec<LeftUnit>,
+    remains: &[LeftRemains],
+    side: u16,
+) {
+    let Some(record) = site_record(ctx, site) else {
+        return;
+    };
+    let Some(domain) = super::parties::site_domain(ctx.w, site) else {
+        return;
+    };
+    for mut row in record.units {
+        if units.contains(&row.unit)
+            || left.iter().any(|kept| kept.unit == row.unit)
+            || remains.iter().any(|lost| lost.unit == row.unit)
+        {
+            continue;
+        }
+        let Some((on, at)) = mush_sim::pose_of(ctx.w, row.unit) else {
+            continue;
+        };
+        if on != domain {
+            continue;
+        }
+        let pose = SitePose {
+            x_cm: at.x_cm,
+            y_cm: at.y_cm,
+            heading_mdeg: at.heading_mdeg,
+        };
+        if pose.on_site(side) {
+            row.pose = pose;
+        }
+        left.push(row);
+    }
 }
 
 /// **Whether `unit`'s own record reads `Irrecoverable`** (doc 36 cut GC.3; Q-36-18): a hull that

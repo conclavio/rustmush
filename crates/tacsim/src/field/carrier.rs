@@ -503,6 +503,10 @@ fn join(ctx: &mut Ctx<'_>, site: &CanonicalId, hull: ObjId) -> Result<(), String
         .ok_or_else(|| "the field's task is gone".to_owned())?;
     let pose = pad_pose(ctx.w, site, &ground.terrain, hull)?;
     let joining = joining(ctx, site, &live, hull, pose)?;
+    // Doc 36a lane 3 (P0-8): the site's record must have a row for everyone on the ground.
+    if let Some(domain) = super::parties::site_domain(ctx.w, site) {
+        super::admit::index_room(ctx.w, domain)?;
+    }
     let mark = mush_sim::deployed::DeployedMark::field(site.as_str(), live.field.ordinal);
     mush_tactics::custody::check_out(ctx, hull, mark)
         .map_err(|error| format!("#{} could not be taken into the field ({error})", hull.0))?;

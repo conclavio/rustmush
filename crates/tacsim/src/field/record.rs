@@ -23,7 +23,7 @@ use crate::arena::PartyId;
 use crate::arena::mind::SortieId;
 use crate::detachment::sortie::OperationId;
 use crate::store::push_op;
-use crate::surface::site_record::FieldId;
+use crate::surface::site_record::{FieldId, SitePose};
 
 /// [`FieldLive::format`].
 pub const FIELD_LIVE_FORMAT: u16 = 1;
@@ -177,6 +177,23 @@ pub struct FieldLive {
     /// it. Written in the batch that checks the unit in; a boot owes them again.
     #[serde(default, skip_serializing_if = "Vec::is_empty")]
     pub owed_exits: Vec<OwedExit>,
+    /// **The hulls held out of the field as walls** (doc 36a §11 #1; doc 36 cut GC.1,
+    /// Q-36-44): each IC-custodied hull on the ground at admission, at the pose it stood at.
+    /// Admission lays them on a copy of the site record for the field's ground only, so every
+    /// rebuild of that ground — a resume, the void rule's read of the last snapshot, a raider
+    /// lift's — lays the same walls from here, and the snapshot's definition digest holds.
+    #[serde(default, skip_serializing_if = "Vec::is_empty")]
+    pub held: Vec<HeldWall>,
+}
+
+/// **A hull held out of the field as a wall** (doc 36a §11 #1): [`FieldLive::held`]'s row.
+#[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(deny_unknown_fields)]
+pub struct HeldWall {
+    /// The hull.
+    pub hull: ObjId,
+    /// Where it stood at admission.
+    pub pose: SitePose,
 }
 
 /// **A fire order waiting for its first pulses** (Q-CF-14).
@@ -380,6 +397,10 @@ mod tests {
     fn live() -> FieldLive {
         FieldLive {
             homes: Vec::new(),
+            held: vec![HeldWall {
+                hull: ObjId(41),
+                pose: SitePose::at_cell(120, 128),
+            }],
             fire: Some(PendingFire {
                 pilot: ObjId(3),
                 shooter: ObjId(7),
