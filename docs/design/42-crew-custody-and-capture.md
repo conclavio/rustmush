@@ -626,6 +626,13 @@ Q-36-52's friendly half stands.
   loader's crew ride as passengers.
 - **Why:** Q-38-22 says "a completed non-friend load"; the salvor's release makes the Neutral
   case one command long.
+- **Draft 0.3 (review round 2, 42-9, advice): one crew branch for every load.** Today a load's
+  physical step runs only outside a promoted field (`tow.rs:2252`, `if !promoted`), so every
+  capture passes `place_in_bay`. Doc 40 adds a ramp `+tv/<n> load` inside a running field with a
+  trailer-follow tow; that load must call the same crew branch (`aboard_loaded` for a Friend's
+  carrier, the capture of 42-5 otherwise) so this question holds inside a field too. Doc 42 §5
+  already rules licensed-mind hulls out of capture, so doc 23's foreign-load item is not this
+  document's.
 
 ### E. Treatment
 
