@@ -1339,18 +1339,28 @@ dispatch seal is). Q-23-15 asks whether memory is carried or forgotten at demoti
 
 ### 17.8 The testimony producer — D-23-19
 
-**A field contact is earned when the author's own hull classified the target in an IC field, and
-the field host feeds the index at each unit's check-in — D-23-19.** `EarnedContacts::admit(author,
-target)` (`earned_contacts.rs:39–46`) is called by the host at exit, demotion and a void's return
-for every `Classified { viewer: <the unit>, target }` line (`arena/ledger.rs:182–190`) in the
-field's segment of that unit's black box — a `Detected` blip is not "saw" (D-UM-55's observer rule
-is about what the author's sensors told apart) — with the author the unit's seated pilot at the
-line's instant, read from the live record's row and the seat epochs; for a hull flown by its mind
-with no pilot, the author is the seal's warrant principal (D-23-5), whose instruments the mind's
-sensors are and whose box read is the only other channel that would learn it. The index is
-persisted beside its RAM mirror as the module's head asks (`:10`): one small document per author,
-`tacsim:earned:<author>`, the ring of 256 (`:18`), written in the check-in's bundle and restored at
-boot. What M8g needs is exactly this: `@mind/claim` refuses every hull today with the one sentence
+**A field contact is earned when the author's own hull classified the target by its own sensors
+in an IC field, and the field's chunk reader feeds the index as the line lands — D-23-19.**
+`EarnedContacts::admit(author, target)` (`earned_contacts.rs:39–46`) is called for every
+`Classified { viewer: <the unit>, target }` line (`arena/ledger.rs:182–191`) **of the field's arena
+log** — `field.<site>.<ordinal>.<segment>` (`field/mod.rs:330–335`), which the bridge's `on_chunk`
+routes there (`arena_bridge.rs:3701–3704`) and parses once for every reader (`:3933–3934`); round
+2's 23-9 corrected Draft 0.8, which read the hull's own box, `hull.<n>` (`black_box.rs:67–80`),
+where only `MindSealed` and `SortieClosed` are ever written (`:317`, `:381`). The producer is one
+more reader of the parsed chunk, run as the chunk lands rather than at check-in, so a void loses
+at most the unshipped tail. **Provenance**: only a classification the viewer's own pass made
+counts — the line carrying its `classify:<observer>:<target>:<pass_seq>` draw
+(`ledger.rs:176–181`); a classification that arrived over the comms mesh carries no draw (the
+sharer's pass recorded one) and earns nothing for the recipient, and a `Detected` blip is not
+"saw" (D-UM-55's observer rule is about what the author's sensors told apart). **Author**: the
+ledger records no seat change and `FieldUnit.pilot` is the admission-time pilot
+(`field/record.rs:128–130`, carried in by `custody_unit`, `admit.rs:755–761`), so the author is
+the pilot seated at admission, else the seal's warrant principal (D-23-5), whose instruments the
+mind's sensors are and whose box read is the only other channel that would learn it; a pilot who
+boards mid-field (doc 42's custody) earns from the next admission on, and the doc says so rather
+than inventing an instant the record does not hold. The index is persisted beside its RAM mirror
+as the module's head asks (`:10`): one small document per author, `tacsim:earned:<author>`, the
+ring of 256 (`:18`), written in the chunk's bundle and restored at boot. What M8g needs is exactly this: `@mind/claim` refuses every hull today with the one sentence
 (`claims.rs:99–103`), so the tier-2 remainder 17h M8g lists "To S.4b" — the pending-transfer
 refusal and the IC audit over a draft claim — has no claim to run through; with the producer, an
 author whose rig classified the suspect hull in a field may file, and the two stories run over a
@@ -1458,12 +1468,14 @@ Through the cut loop (§9), one PR off `main`, the owner merging.
 - **Not in S.4b:** §17.9's "neither's" list.
 
 **S.4b-T — the testimony producer (small; independent; may start now).** D-23-19:
-`EarnedContacts::admit` fed at check-in from the field segment's `Classified` lines, authored by
-the seated pilot else the warrant principal; `tacsim:earned:<author>` persisted and restored; then
+`EarnedContacts::admit` fed from the field log's own-sensor `Classified` lines as each chunk
+lands (`on_chunk`; 23-9), authored by the admission pilot else the warrant principal;
+`tacsim:earned:<author>` persisted and restored; then
 M8g's "To S.4b" stories (the pending-transfer refusal and the IC audit over a draft claim) over a
 real claim. Test: a rig that classified a raider in the field story's first field may `@mind/claim`
-it after, a rig that only detected it may not, the ring survives a reboot, and a bystander who saw
-nothing is refused with the one sentence.
+it after, a rig that only detected it may not, a blind radio recipient — a hull that held the
+contact only over the mesh — may not, the ring survives a reboot, and a bystander who saw nothing
+is refused with the one sentence.
 
 ### 17.11 Decisions proposed here
 
@@ -1477,7 +1489,7 @@ nothing is refused with the one sentence.
 | D-23-16 | The compute seat is counted at the launch against the site's allotment, held for the epoch, spent only in a field, refused at the launch with the arithmetic under a provisional stock allotment; never refused or evicted in a field | **accepted by the owner, 2026-11-03** (Q-23-12) |
 | D-23-17 | The `abi` drop is `Execution::install`'s own, run per hull when its retained execution is installed into a field (admission, join, resume) under the claim's seal, to the ROM with one `MindDropped { cause: abi }` an epoch; a source that no longer compiles drops the same way, per row, never failing the book; it never voids a field; Q-36-44's wall is the fallback for a book that did not load or a crossed claim, left when the field ends or the hull leaves the ground | **accepted by the owner, 2026-11-03** (Q-23-13, Q-23-14); **restated in Draft 0.10** (round 2's 23-8: the check exists, the seam around it is S.4b's) |
 | D-23-18 | The long-leg snapshot is the mind's memory carried on the epoch record at every check-in and seeded at every install; the field's cadence stands | **accepted by the owner, 2026-11-03** (Q-23-15) |
-| D-23-19 | The testimony producer feeds `EarnedContacts` at check-in from the field's `Classified` lines, authored by the seated pilot else the warrant principal, persisted per author; it is its own cut, S.4b-T | **accepted by the owner, 2026-11-03** (Q-23-16, Q-23-17) |
+| D-23-19 | The testimony producer feeds `EarnedContacts` from the field log's own-sensor `Classified` lines as each chunk lands, authored by the admission pilot else the warrant principal, persisted per author; it is its own cut, S.4b-T | **accepted by the owner, 2026-11-03** (Q-23-16, Q-23-17); **restated in Draft 0.10** (round 2's 23-9: the field's log, not the hull's box; own-sensor provenance; the admission pilot) |
 | D-23-20 | S.4b's host is the IC field; the drone phase is no longer its gate; its acceptance runs at 256 and 512 with the bot per Q-38-29 | **accepted by the owner, 2026-11-03** (Q-23-18, Q-23-20) |
 | D-23-21 | The claim opens before the launch: `go` mints the `StartPermit` with the rig in its bay and queues the launch act behind the claim; the fire that observes the active row starts the ramp; the claim is the licence and compute reservation, counted with the inbox's pending Opens; an Open refused for good leaves `Refused` on the cursor, the launch cancelled, nothing out of the bay; a launch cancelled after its Open closes `PoweredDownInBase` | proposed, Draft 0.10 (round 2's 23-1, 23-2, 23-5); Q-23-21 |
 | D-23-23 | The pending-launch protocol, one contract with doc 40 §4.4: claim in the bay → ramp → field check-out and Join at the landing reading the cursor (`Open` installs, else the ROM) → a refused join back aboard with the claim untouched → a cancelled launch closes `PoweredDownInBase`; the field never opens, waits for or closes a claim; the shared story is a licensed reinforcement into a running field | proposed, Draft 0.10 (round 2's 23-5, X-1); under Q-23-21 |
