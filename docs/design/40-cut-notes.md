@@ -646,6 +646,15 @@ the S.4b session on 2026-11-04.
   (D-23-17).
 - Every sender passes `None` today. S.4b-3's host half fills it in.
 
+**Not taken here: doc 23's D-23-18, the carried memory.** S.4b-3 (#411) left its arena side to FR.5. D-23-18
+(doc 23 §17.7) has two halves:
+- the return: `UnitReturn` carries the mind's memory, `think_seq` and drop cause at every check-in;
+- the seed: the next install on that epoch seeds the row from `OpenSortie.mind`.
+
+The seed needs the carried mind on `CustodyUnit`, a struct that dozens of test files build literally, beside the
+S.4b host record. Neither half is useful alone. FR.5 therefore leaves both to one later cut on doc 23's side, which
+owns `arena/*` once FR.5 merges.
+
 ### §4a's pins, re-pinned once (rule #13)
 
 Each row is set against FR.0's inventory and was read on conclav.dev.
