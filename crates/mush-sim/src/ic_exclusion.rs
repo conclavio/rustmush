@@ -83,7 +83,90 @@ struct OpenImage {
     action: DefinitionRef,
     dispatcher: ObjId,
     placement: crate::data::PlacementRecord,
-    base: BaseImage,
+    /// A configured fixed base's image. Exactly one of `base` and `hangar` is present; a
+    /// base-held record serializes as before doc 23 cut S.4b-1, so its digest is unmoved.
+    #[serde(
+        default,
+        skip_serializing_if = "Option::is_none",
+        deserialize_with = "present"
+    )]
+    base: Option<BaseImage>,
+    /// **A carrier bay's image** (doc 23 cut S.4b-1, D-23-11/D-23-15): the hangar the claim
+    /// opened in, by id.
+    #[serde(
+        default,
+        skip_serializing_if = "Option::is_none",
+        deserialize_with = "present"
+    )]
+    hangar: Option<HangarImage>,
+}
+fn present<'de, D: serde::Deserializer<'de>, T: Deserialize<'de>>(
+    d: D,
+) -> Result<Option<T>, D::Error> {
+    T::deserialize(d).map(Some)
+}
+/// Where an Open was admitted: a configured fixed base or a carrier's bay (doc 23 cut
+/// S.4b-1). Never evidence of a later return.
+#[derive(Clone, Debug, PartialEq)]
+enum AnchorImage {
+    Base(BaseImage),
+    Hangar(HangarImage),
+}
+impl OpenImage {
+    fn anchor(&self) -> Result<AnchorImage, ParticipantError> {
+        match (&self.base, &self.hangar) {
+            (Some(base), None) => Ok(AnchorImage::Base(base.clone())),
+            (None, Some(hangar)) => Ok(AnchorImage::Hangar(hangar.clone())),
+            _ => Err(error("exactly one admission anchor")),
+        }
+    }
+    /// The interior the hull was admitted in.
+    fn space(&self) -> Option<&crate::data::InteriorSpaceRecord> {
+        self.base
+            .as_ref()
+            .map(|b| &b.space)
+            .or(self.hangar.as_ref().map(|h| &h.space))
+    }
+    /// The object the admitting interior hangs on: a base domain's host or the carrier.
+    fn host(&self) -> Option<ObjId> {
+        self.base
+            .as_ref()
+            .map(|b| b.domain.host)
+            .or(self.hangar.as_ref().map(|h| h.carrier))
+    }
+}
+/// **A carrier bay at admission** (doc 23 cut S.4b-1, D-23-11): the bay's live interior,
+/// anchored `MovingObject { host: carrier }`, and the carrier. The claim's anchor is the hangar
+/// by id; this image records where the Open was admitted.
+#[derive(Clone, Debug, PartialEq, Serialize, Deserialize)]
+#[serde(deny_unknown_fields)]
+struct HangarImage {
+    space: crate::data::InteriorSpaceRecord,
+    carrier: ObjId,
+}
+impl HangarImage {
+    fn validate(&self, placement: &crate::data::PlacementRecord) -> Result<(), ParticipantError> {
+        let crate::SpatialParent::Interior { space, slot } = &placement.parent else {
+            return Err(error("not in a carrier's bay"));
+        };
+        let anchored = matches!(
+            self.space.anchor,
+            crate::SpaceAnchor::MovingObject { host } if host == self.carrier
+        );
+        if *space != self.space.object
+            || placement.unplaced.is_some()
+            || slot
+                .as_ref()
+                .is_some_and(|s| !self.space.compartments.contains_key(s))
+            || self.carrier.0 == 0
+            || self.carrier == placement.object
+            || self.space.object == placement.object
+            || !anchored
+        {
+            return Err(error("hangar identity"));
+        }
+        Ok(())
+    }
 }
 /// An exact authored base and its live spatial image at admission. This image
 /// records where Open was admitted; it is never evidence of a later return.
@@ -139,7 +222,10 @@ impl Record {
     }
     fn validate(&self) -> Result<(), ParticipantError> {
         self.open.identity.validate()?;
-        self.open.base.validate(&self.open.placement)?;
+        match self.open.anchor()? {
+            AnchorImage::Base(base) => base.validate(&self.open.placement)?,
+            AnchorImage::Hangar(hangar) => hangar.validate(&self.open.placement)?,
+        }
         if self.format != 1
             || self.open.dispatcher.0 == 0
             || self.open.placement.object != self.open.identity.unit
@@ -377,6 +463,9 @@ pub struct IcExclusionConfig {
     participants: [DefinitionRef; 4],
     actions: [DefinitionRef; 2],
     bases: Vec<ConfiguredIcBase>,
+    /// **Carrier bays admit an Open** (doc 23 cut S.4b-1, D-23-15): a hull `Interior` to an
+    /// interior anchored `MovingObject { host }` is admitted with the bay as its hangar.
+    hangars: bool,
     definitions: Arc<OnceLock<DefinitionRegistry>>,
 }
 pub fn participant_descriptor() -> Result<DefinitionDescriptor, ModError> {
@@ -388,9 +477,28 @@ impl IcExclusionConfig {
         participants: [DefinitionRef; 4],
         bases: Vec<ConfiguredIcBase>,
     ) -> Result<Self, ModError> {
+        Self::build(manifest, participants, bases, false)
+    }
+    /// **The composition that admits carrier bays** (doc 23 cut S.4b-1, D-23-11/D-23-15): as
+    /// [`IcExclusionConfig::new`], and an Open is also admitted for a hull `Interior` to a
+    /// carrier's bay (an interior anchored `MovingObject`), recording the hangar; `bases` may
+    /// then be empty. Doc 23 S.4b-2 composes it for the surface host's claims.
+    pub fn with_hangars(
+        manifest: DefinitionRef,
+        participants: [DefinitionRef; 4],
+        bases: Vec<ConfiguredIcBase>,
+    ) -> Result<Self, ModError> {
+        Self::build(manifest, participants, bases, true)
+    }
+    fn build(
+        manifest: DefinitionRef,
+        participants: [DefinitionRef; 4],
+        bases: Vec<ConfiguredIcBase>,
+        hangars: bool,
+    ) -> Result<Self, ModError> {
         let mut spaces = BTreeSet::new();
         let mut references = BTreeSet::new();
-        if bases.is_empty()
+        if (bases.is_empty() && !hangars)
             || bases.len() > MAX_IC_BASES
             || bases.iter().any(|base| {
                 !spaces.insert(base.space.object) || !references.insert(base.definition.clone())
@@ -439,6 +547,7 @@ impl IcExclusionConfig {
             participants,
             actions,
             bases,
+            hangars,
             definitions: Arc::new(OnceLock::new()),
         })
     }
@@ -564,7 +673,7 @@ pub struct IcExclusionPatch {
     commit: CommitToken,
     actor: ObjId,
     identity: IcIdentity,
-    placement: Option<(crate::data::PlacementRecord, BaseImage)>,
+    placement: Option<(crate::data::PlacementRecord, AnchorImage)>,
     post: IcExclusions,
 }
 pub struct BoundIcExclusion<'a> {
@@ -592,7 +701,7 @@ fn admit_world(
     unit: ObjId,
     actor: ObjId,
     config: &IcExclusionConfig,
-) -> Result<(crate::data::PlacementRecord, BaseImage), ParticipantError> {
+) -> Result<(crate::data::PlacementRecord, AnchorImage), ParticipantError> {
     if world
         .get(unit)
         .is_none_or(|row| row.kind != ObjKind::Thing || row.flags.contains(Flags::GOING))
@@ -645,11 +754,9 @@ fn admit_world(
     let crate::SpatialParent::Interior { space, .. } = &placement.parent else {
         return Err(error("not in a configured base"));
     };
-    let configured = config
-        .bases
-        .iter()
-        .find(|b| b.space.object == *space)
-        .ok_or_else(|| error("unconfigured base"))?;
+    let Some(configured) = config.bases.iter().find(|b| b.space.object == *space) else {
+        return admit_hangar(world, state, &placement, config);
+    };
     let interior = mush_core::BehaviorId::new("sim.interior").map_err(error)?;
     if !world.has_behavior(*space, &interior)
         || state.spaces.get(space) != Some(&configured.space)
@@ -689,7 +796,48 @@ fn admit_world(
         domain,
     };
     base.validate(&placement)?;
-    Ok((placement, base))
+    Ok((placement, AnchorImage::Base(base)))
+}
+/// **A hull in a carrier's bay** (doc 23 cut S.4b-1, D-23-11): admitted only where the
+/// composition admits hangars, for a hull `Interior` to a live interior anchored `MovingObject
+/// { host }` on a live carrier. The carrier's journeys were refused above (the ancestors).
+fn admit_hangar(
+    world: &World,
+    state: &crate::SpatialState,
+    placement: &crate::data::PlacementRecord,
+    config: &IcExclusionConfig,
+) -> Result<(crate::data::PlacementRecord, AnchorImage), ParticipantError> {
+    let crate::SpatialParent::Interior { space, .. } = &placement.parent else {
+        return Err(error("not in a carrier's bay"));
+    };
+    if !config.hangars {
+        return Err(error("unconfigured base"));
+    }
+    let record = state
+        .spaces
+        .get(space)
+        .ok_or_else(|| error("bay interior"))?;
+    let crate::SpaceAnchor::MovingObject { host } = record.anchor else {
+        return Err(error("unconfigured base"));
+    };
+    let interior = mush_core::BehaviorId::new("sim.interior").map_err(error)?;
+    if !world.has_behavior(*space, &interior)
+        || world
+            .get(*space)
+            .is_none_or(|row| row.kind != ObjKind::Room || row.flags.contains(Flags::GOING))
+        || world.get(placement.object).and_then(|row| row.location) != Some(*space)
+        || world
+            .get(host)
+            .is_none_or(|row| row.flags.contains(Flags::GOING))
+    {
+        return Err(error("bay changed"));
+    }
+    let hangar = HangarImage {
+        space: record.clone(),
+        carrier: host,
+    };
+    hangar.validate(placement)?;
+    Ok((placement.clone(), AnchorImage::Hangar(hangar)))
 }
 impl OwnerParticipant for IcExclusionParticipant {
     type State = IcExclusions;
@@ -735,14 +883,19 @@ impl OwnerParticipant for IcExclusionParticipant {
                     ctx.invocation().actor(),
                     &self.config,
                 )?;
+                let (base_image, hangar) = match &base {
+                    AnchorImage::Base(b) => (Some(b.clone()), None),
+                    AnchorImage::Hangar(h) => (None, Some(h.clone())),
+                };
                 let record = Record {
                     format: 1,
                     open: OpenImage {
                         identity,
                         action: ctx.action().clone(),
                         dispatcher: ctx.invocation().actor(),
-                        base: base.clone(),
                         placement: placement.clone(),
+                        base: base_image,
+                        hangar,
                     },
                     closed: None,
                 };
@@ -963,25 +1116,40 @@ pub(crate) fn check_boot_spatial(
             .get(operation)
             .ok_or_else(|| bad("IC exclusion index differs"))?;
         let open = &record.open;
+        let interior = open
+            .space()
+            .ok_or_else(|| bad("IC admission anchor missing"))?;
         if spatial.placements.get(&open.identity.unit) != Some(&open.placement)
             || spatial.held_placements.contains_key(&open.identity.unit)
             || !spatial.unbound_placement_docs.is_empty()
-            || spatial.spaces.get(&open.base.space.object) != Some(&open.base.space)
+            || spatial.spaces.get(&interior.object) != Some(interior)
             || crate::boot::validate_live(ctx, spatial, &open.placement).is_some()
             || crate::graph::project(spatial, ctx.w, open.identity.unit)
                 != ctx.w.get(open.identity.unit).and_then(|row| row.location)
             || crate::boot::invalid_members(spatial, ctx.w)
                 .iter()
-                .any(|(space, _)| *space == open.base.space.object)
+                .any(|(space, _)| *space == interior.object)
         {
             return Err(bad("held IC hull placement requires explicit recovery"));
         }
+        // Doc 23 cut S.4b-1: a hangar's carrier must stand; a base's domain must too.
+        if let Some(hangar) = &open.hangar
+            && ctx
+                .w
+                .get(hangar.carrier)
+                .is_none_or(|o| o.flags.contains(Flags::GOING))
+        {
+            return Err(bad("held IC hangar requires explicit recovery"));
+        }
+        let Some(base) = &open.base else {
+            continue;
+        };
         let domain = spatial
             .domains
-            .get(&open.base.domain.id)
+            .get(&base.domain.id)
             .ok_or_else(|| bad("IC base domain missing"))?;
         if domain.status == crate::DomainStatus::Retired
-            || domain.driver != open.base.domain.driver
+            || domain.driver != base.domain.driver
             || ctx
                 .w
                 .get(domain.host)
@@ -999,8 +1167,9 @@ pub(crate) fn check_boot_journeys(
     let state = world
         .module_state::<IcExclusions>()
         .ok_or_else(|| bad("IC exclusion owner missing"))?;
-    // These fixed bases are not travelling carriers. Unknown journey keys may
-    // name a held hull, so no absence conclusion can be drawn from them.
+    // A held hull, its interior and that interior's host (a fixed base's domain host, or,
+    // doc 23 cut S.4b-1, a hangar's carrier) carry no journey while the claim is held in it.
+    // Unknown journey keys may name a held hull, so no absence conclusion can be drawn.
     if !state.active.is_empty() && !journeys.held.is_empty() {
         return Err(bad("held IC hull and unreadable journey"));
     }
@@ -1008,8 +1177,8 @@ pub(crate) fn check_boot_journeys(
         state.active.values().any(|open| {
             state.records.get(open).is_none_or(|r| {
                 j.root() == r.open.identity.unit
-                    || j.root() == r.open.base.space.object
-                    || j.root() == r.open.base.domain.host
+                    || r.open.space().is_none_or(|s| j.root() == s.object)
+                    || r.open.host().is_none_or(|h| j.root() == h)
             })
         })
     }) {
@@ -1034,13 +1203,19 @@ pub(crate) fn check_plan(
         if row.open.identity.unit != unit || row.closed.is_some() {
             return Err(crate::transition::SpatialError::IcCustody(unit));
         }
-        if plan.retire.contains(&row.open.base.domain.id)
+        // Doc 23 cut S.4b-1: the freeze is unchanged for a hangar (no placement write of the
+        // hull, no rewrite of its interior); S.4b-2 re-scopes it to re-anchoring (D-23-15).
+        if row
+            .open
+            .base
+            .as_ref()
+            .is_some_and(|b| plan.retire.contains(&b.domain.id))
             || plan.set_placements.iter().any(|p| p.object == unit)
             || plan.projections.iter().any(|(object, _)| *object == unit)
             || plan
                 .set_spaces
                 .iter()
-                .any(|s| s.object == row.open.base.space.object)
+                .any(|s| row.open.space().is_none_or(|i| s.object == i.object))
         {
             return Err(crate::transition::SpatialError::IcCustody(unit));
         }
