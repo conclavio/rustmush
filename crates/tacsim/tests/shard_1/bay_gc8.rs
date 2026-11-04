@@ -699,15 +699,16 @@ async fn gc8b_a_stripped_part_carries_its_provenance_and_a_hot_part_is_refused()
     assert_eq!(lot.commodity().as_str(), "tacsim.part.weapon.mg_coax");
     assert_eq!(lot.quantity(), 1);
     let part = provenance(&mut rig, gun_lot);
-    assert_eq!(part.parent_hull, escort);
-    assert_eq!(part.slot, gun);
+    let strip = part.stripped().expect("a stripped part").clone();
+    assert_eq!(strip.parent_hull, escort);
+    assert_eq!(strip.slot, gun);
     assert_eq!(part.condition, ComponentCondition::Intact);
     assert_eq!(
-        part.claim, None,
+        strip.claim, None,
         "no salvage claim: the grant holder stripped it"
     );
     assert!(!part.is_hot());
-    assert_eq!(part.stripped_by, mechanic);
+    assert_eq!(strip.stripped_by, mechanic);
     let assessment =
         tacsim::field_ops::assess_tacsim_unit(&unit(&rig, escort), None).expect("assessed");
     assert_eq!(
@@ -724,7 +725,12 @@ async fn gc8b_a_stripped_part_carries_its_provenance_and_a_hot_part_is_refused()
         escort,
     );
     let cannon_lot = tacsim::port::bay_work::act::lot_id(escort, 2, 0).expect("the lot");
-    assert_eq!(provenance(&mut rig, cannon_lot).slot, cannon);
+    assert_eq!(
+        provenance(&mut rig, cannon_lot)
+            .stripped()
+            .map(|s| s.slot.clone()),
+        Some(cannon.clone())
+    );
 
     // (3) The machine gun's claim is vacated: it is hot, and the bay will not fit it.
     staff_hand(&mut rig, |ctx| {
@@ -756,8 +762,10 @@ async fn gc8b_a_stripped_part_carries_its_provenance_and_a_hot_part_is_refused()
     );
     assert!(taken.contains("taken in the workshop"), "{taken}");
     let order = order_of(&rig, escort);
+    // Doc 39 cut IN.2: the fit holds its lot first (one fire), then draws and completes.
     let _ = to_ic(&mut rig, order.due_ic + 60);
     let _ = to_ic(&mut rig, order.due_ic + 600);
+    let _ = to_ic(&mut rig, order.due_ic + 1_200);
     let order = order_of(&rig, escort);
     assert_eq!(order.status, OrderStatus::Done, "{order:?}");
     let assessment =
@@ -853,8 +861,8 @@ async fn gc8b_scrap_breaks_a_workshop_hull_into_alloys_and_parts() {
         };
         assert!(found.commodity().as_str().starts_with("tacsim.part."));
         let part = provenance(&mut rig, lot);
-        assert_eq!(part.parent_hull, spare);
-        assert!(part.scrapped);
+        assert_eq!(part.parent_hull(), Some(spare));
+        assert!(part.stripped().is_some_and(|s| s.scrapped));
         parts += 1;
     }
     assert!(parts > 0, "salvageable parts become lots: {out}");

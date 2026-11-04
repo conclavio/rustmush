@@ -814,7 +814,7 @@ fn split(ctx: &mut Ctx<'_>, families: &InventoryFamilies) -> Result<(), CmdError
         .parse::<u64>()
         .map_err(|_| CmdError::msg("Usage: @inv/split <lot>=<n>"))?;
     let id = LotId::parse(&lot).ok_or_else(|| CmdError::msg(NO_SUCH_LOT))?;
-    let endpoint = lot_endpoint_text(ctx, families, id)?;
+    let endpoint = divisible_lot_endpoint_text(ctx, families, id)?;
     submit(
         ctx,
         InventoryVerb::Split,
@@ -835,7 +835,7 @@ fn merge(ctx: &mut Ctx<'_>, families: &InventoryFamilies) -> Result<(), CmdError
     if ids.len() < 2 {
         return Err(CmdError::msg("Usage: @inv/merge <lot>,<lot>…"));
     }
-    let endpoint = lot_endpoint_text(ctx, families, ids[0])?;
+    let endpoint = divisible_lot_endpoint_text(ctx, families, ids[0])?;
     let list = ids
         .iter()
         .map(ToString::to_string)
@@ -851,7 +851,7 @@ fn merge(ctx: &mut Ctx<'_>, families: &InventoryFamilies) -> Result<(), CmdError
 
 fn dissolve(ctx: &mut Ctx<'_>, families: &InventoryFamilies) -> Result<(), CmdError> {
     let id = LotId::parse(ctx.args.raw()).ok_or_else(|| CmdError::msg(NO_SUCH_LOT))?;
-    let endpoint = lot_endpoint_text(ctx, families, id)?;
+    let endpoint = divisible_lot_endpoint_text(ctx, families, id)?;
     submit(
         ctx,
         InventoryVerb::Dissolve,
@@ -905,6 +905,24 @@ fn crystallize(ctx: &mut Ctx<'_>) -> Result<(), CmdError> {
 /// It adds **no oracle**: a lot that does not exist, a lot at an endpoint the
 /// actor may not take from, and a lot the actor may not see all answer exactly
 /// [`NO_SUCH_LOT`], the same bytes, through this one expression.
+/// [`lot_endpoint_text`], refusing at once a lot of an indivisible good (doc 39 cut IN.2): the
+/// prepare refuses it too, but the holder reads why without waiting for the act.
+fn divisible_lot_endpoint_text(
+    ctx: &Ctx<'_>,
+    families: &InventoryFamilies,
+    lot: LotId,
+) -> Result<String, CmdError> {
+    let endpoint = lot_endpoint_text(ctx, families, lot)?;
+    if let Ok(Some(record)) = ctx.action_state(&families.lots, &lot)
+        && families.is_indivisible(record.commodity())
+    {
+        return Err(CmdError::msg(
+            crate::InventoryError::Indivisible.to_string(),
+        ));
+    }
+    Ok(endpoint)
+}
+
 fn lot_endpoint_text(
     ctx: &Ctx<'_>,
     families: &InventoryFamilies,

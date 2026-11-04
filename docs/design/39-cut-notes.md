@@ -157,3 +157,93 @@ and the hold's two tonnes of each good.
 **Cell delta (rule #14).** No new story: two assertions in the GC.8 stories and one `@wo` test in `e7r2`
 (0.08 s for the binary locally), three tacsim lib unit tests (≈ 0 s). Local `shard_1` `gc8_` pair: 16.7 s,
 unchanged by the cut. The PR run's JUnit delta is to be read off the draft PR's CI.
+
+## IN.2 — the component lifecycle (Q-39-11, Q-39-13, Q-39-27)
+
+**Built.**
+
+- **A part is indivisible** (Q-39-27 "held"): `mush_inventory::IndivisibleGoods`, a composition seam in the
+  `PoolCapacity` shape (`InventoryModule::with_indivisible_goods`), answered by tacsim's `port_tick::PartGoods`
+  (`class: part`, through `is_part`). `split`, `merge` and `dissolve` refuse a part with
+  `InventoryError::Indivisible` ("that is a part: one identified lot, never split, merged or dissolved"), and
+  `@inv/split`, `@inv/merge` and `@inv/dissolve` refuse it at once, before staging anything.
+- **`PartProvenance.origin`** (Q-39-13): `PartOrigin::Stripped(Stripped { parent_hull, parent_schema, slot,
+  claim, stripped_by, stripped_at_ic, scrapped })` (today's fields, moved), `Manufactured { order, facility }`
+  and `Seeded { receipt }` (the stock issue's key text). The row keeps `lot`, `definition`, `condition`,
+  `legality` and `fitted_into` at the top for every origin; `+bay/fit` accepts all three ("traced" is a row of
+  any origin); `check` refuses a hot part that is not `Stripped`, and the `Hot` act flags only a part stripped
+  off that hull. Pre-launch, no stored row migrates.
+- **The lot hold** (Q-39-27 "reserved", "sold"): `inventory.lot_holds`, one exact lot held for one holder text
+  (`mush_inventory::lot_hold`): `hold_lot`, `release_lot`, `relocate_held` (the lot itself, the same id, grade
+  and lineage, to another endpoint) and `consume_held`. Every ordinary lot verb (split, merge, dissolve,
+  relocate, `consume_product`, the commission) refuses a held lot.
+- **The bay's custody**: an order that fits a part from a lot (`+bay/fit`, and `+bay/order replace` when a lot
+  is named) owes a **`Hold`** act at its take (`bay_holder(hull, order)`); `finish` waits for it, the draw
+  consumes the lot through `consume_held`, a cancelled order owes a **`Release`**, and a hold refused every try
+  cancels the order ("the part could not be held for the order …"). `+bay/fit` refuses a lot a sale or another
+  order holds ("That part is held for a sale or another order.").
+- **The lot-transfer sale** (Q-39-27 "sold"): `Supply::Lot { …, lot: Some(id) }` (skipped when `None`, so a
+  pooled listing's bytes are unchanged), stocked with `@market/vendor stock … endpoint=<vault> lot=<lot>` (the
+  lot's own commodity, grade and quantity). Its `reserve` leg holds the lot under `listing/<id>`; `consume`
+  hands the lot itself to the buyer through `relocate_held` (`PaidLot.lot`, matched against the paid entry);
+  `release`, the lapsed-hold release and the sweep's reconcile read the lot hold. The governed-endpoint rule
+  (lead 2e) admits an exact-lot sale into a hold, behind the capacity pre-check, which now reads a part's lot
+  tally (`lot::held_balance`), so a part sold into a Dray weighs its catalogue mass there.
+- **The seeds** (`port/stock.rs`): a part row in a vendor's `stock` mints `qty` one-unit lots
+  (`seed_lot_id(issue, n)`, the first the issue's own lot) with their `Seeded` rows in the receipt's bundle
+  (the offer row carries the part's hardware row, `part_row_of`); the clerk never dissolves them, the pooled
+  ask loop skips part asks, and `part_ask_step` lists each seeded lot still at the storefront, unheld and
+  unlisted, as its own lot ask (`Supply::Lot` naming it, quantity 1). The clerk's one mint is now
+  `mint_origins` (one row of `qty` for bulk, as before).
+- **`output_lots`**: `mush_industry::OutputLots { Pooled (default), Each }` on `PinnedRecipe`
+  (`with_output_lots`) and on tacsim's pack `RecipeDef`, skipped when pooled, so no published pack digest and
+  no pinned order moves.
+- **The part commission** (§4.11, round 2's 39-3): `OwedKind::Commission { source, lineage, lots }` under the
+  bay ledger's ordinal replay; `CommissionSource::{WorkOrder { order }, BayRefit { order }}` names the industry
+  lineage it consumes (`workorder.output` `wo/<order>`, or `bay_refit` `<order>`) and the row it gives
+  (`Manufactured` naming the order, or `Stripped`). The prepare consumes the industry lot and lays it back as
+  one-unit lots (`InventoryFamilies::commission_lots`: `Lineage::Split` of the source, the same quantity,
+  nothing minted, the census staged once) and inserts each row in the same bundle. `bay_work::owe_commission`
+  is the producer's call.
+
+**The story.** `shard_2/in2_lifecycle.rs::in2_a_sight_stripped_at_stickney_is_sold_bought_and_fitted_to_a_scout`
+(shard_2, after IN.1's bay story): two captains sail Dray-Ps to Stickney Yards, the seller with a titled spare
+escort, the buyer with a titled scout. `+bay/strip` takes the escort's sight off as
+`tacsim.part.sensor.visual_mk1` with a `Stripped` row; `@inv/split` on it refuses at once; the seller, a broker
+of the yard, lists that lot on the yard's board (`@market/vendor stock … lot=`), and while it is listed
+`+bay/fit` refuses it; the buyer's `+market/quote` and `+market/accept` hand **the same lot** to the buyer's
+berthed hold with its row unchanged; the scout's wrecked sight is replaced by `+bay/fit`, the order holding the
+lot until its draw; the row then reads the lot with both hulls (`parent_hull` the escort, `fitted_into` the
+scout). The seller's stripped coaxial mount, its claim vacated, refuses at the fit as hot. Unit and crate
+tests: `mush-inventory` `lot_hold::tests::in2_a_part_is_one_lot_held_and_handed_over_whole` (split, merge and
+dissolve refused; one holder; the hand-over; the fit's consume; a commission of three);
+`act::tests::in2_every_origin_is_traced_and_only_a_stripped_part_is_hot`,
+`act::tests::in2_a_commission_names_its_lineage_and_mints_one_unit_parts`,
+`stock::tests::in2_a_part_seed_mints_a_distinct_derived_lot_a_unit`. Seeds (doc 43 rule #4): the two titles and
+bay placements, the seller's `@org/grant … economy.account.post` over Stickney Yards, the scout's damage and the
+vacated claim (GC.8's `vacate_claim`).
+
+**Departures from the row.**
+
+- **The custody is the inventory's lot hold, not `BayPartCustody`.** `inventory_bay_parts` is one of the twelve
+  families the kernel's bay-refit protocol names (`mush-core` `terminal_capacity/bay_refit.rs`): any write to it
+  must be one of industry's three refit actions joined to exactly one industry bay order, so tacsim's bay act
+  cannot write it. The lot hold gives the same guarantee (no move, sale, split or consume before the draw) and
+  serves the market's lot-transfer sale too; `+yard` (IN.9) takes it the same way.
+- **The commission has no producer yet.** The act, its replay and `owe_commission` are built and pinned by unit
+  tests; the work order's commission is owed by the works' arm or `+works/collect` (IN.3/IN.7; IN.7's row
+  carries the commission's end-to-end story and its restart), and the refit's removed part needs a read of
+  industry's refit stores that tacsim does not have, so it is owed with IN.7.
+- **The seeds have no content rows.** The mechanism is built; the part rows in the vendors' `stock` and the part
+  asks are IN.6's (Q-39-12), so the lane does not move here and the seeded path's end-to-end proof is IN.6's
+  story ("the lot's row reads `Seeded`").
+- **The listing verb is the vendor's.** A part is listed through `@market/vendor stock … lot=`, which a player
+  reaches as an officer of the vendor's org (the story's broker grant); a player's own `+market/sell <lot>` is
+  not built.
+- **No 256/512 pair**: the cut is port-side (IN.4's precedent).
+- **The fit takes one more fire**: the hold lands before the draw, so the GC.8 and IN.1 stories' helpers advance
+  one more fire.
+- **The matter pin moved**: `shard_9/mill.rs::sm12a_…` counts the clerk under `.mint_origins(`; `.mint_origin(`
+  is the remains scrap's alone. The receipt kinds are unchanged (`port.stock`).
+
+**Cell delta (rule #14).** shard_2: _filled from the PR's JUnit_ (the story 12.6 s locally).

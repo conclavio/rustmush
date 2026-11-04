@@ -306,6 +306,32 @@ pub struct PinnedRecipe {
     outputs: Vec<RecipeLine>,
     requires: BTreeSet<CanonicalId>,
     work_units: u64,
+    #[serde(default, skip_serializing_if = "OutputLots::is_pooled")]
+    output_lots: OutputLots,
+}
+
+/// **How a recipe's output is lotted** (doc 39 cut IN.2, §4.3/§4.11). The delivery is the same
+/// either way — one lot a line of `units × quantity` into the order's destination — and this
+/// says what the game does with it: a bulk good's is pooled; a part's (`each`) is untraced
+/// until the game's part commission consumes it by its lineage and mints one identified lot a
+/// unit with its provenance. Pooled is the default and is not written, so every recipe pinned
+/// before it encodes byte-identically.
+#[derive(Clone, Copy, Debug, Default, Eq, PartialEq, Serialize, Deserialize)]
+#[serde(rename_all = "snake_case")]
+pub enum OutputLots {
+    /// A bulk good: the delivery's lot is pooled.
+    #[default]
+    Pooled,
+    /// A part: one identified lot a unit, by the part commission.
+    Each,
+}
+
+impl OutputLots {
+    /// Whether this is the default, pooled.
+    #[must_use]
+    pub const fn is_pooled(&self) -> bool {
+        matches!(self, Self::Pooled)
+    }
 }
 
 #[derive(Deserialize)]
@@ -315,6 +341,8 @@ struct PinnedRecipeWire {
     outputs: Vec<RecipeLine>,
     requires: BTreeSet<CanonicalId>,
     work_units: u64,
+    #[serde(default)]
+    output_lots: OutputLots,
 }
 
 impl<'de> Deserialize<'de> for PinnedRecipe {
@@ -324,6 +352,7 @@ impl<'de> Deserialize<'de> for PinnedRecipe {
     {
         let wire = PinnedRecipeWire::deserialize(deserializer)?;
         Self::new(wire.inputs, wire.outputs, wire.requires, wire.work_units)
+            .map(|pinned| pinned.with_output_lots(wire.output_lots))
             .map_err(serde::de::Error::custom)
     }
 }
@@ -374,7 +403,21 @@ impl PinnedRecipe {
             outputs,
             requires,
             work_units,
+            output_lots: OutputLots::Pooled,
         })
+    }
+
+    /// The pin with its output lotted as `lots` (doc 39 cut IN.2).
+    #[must_use]
+    pub const fn with_output_lots(mut self, lots: OutputLots) -> Self {
+        self.output_lots = lots;
+        self
+    }
+
+    /// How its output is lotted.
+    #[must_use]
+    pub const fn output_lots(&self) -> OutputLots {
+        self.output_lots
     }
 
     /// The consumed lines.

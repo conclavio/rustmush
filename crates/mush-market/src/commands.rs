@@ -127,8 +127,9 @@ pub(crate) fn register(reg: &mut Registrar<'_>) -> Result<(), ModError> {
                    @market/vendor stock <vendor>=<ruleset>:<code> price=<n> [qty=<n>] \
                    [object=<obj>] [hidden] [days=<n>] [lead=<secs>]\n\
                    \x20                                 …or, for a lot-represented good, \
-                   [endpoint=<vault>] [commodity=<id>] [grade=<n>] — which RESERVES that much of \
-                   the endpoint's stock until the listing sells or is withdrawn — or, for a \
+                   [endpoint=<vault>] [commodity=<id>] [grade=<n>] [lot=<lot>] — which RESERVES \
+                   that much of the endpoint's stock until the listing sells or is withdrawn \
+                   (with lot=, HOLDS that one lot, and the sale hands the lot itself over) — or, for a \
                    lot-represented good with no endpoint=, a listing DRAWN from the vendor's \
                    own storefront pool: its quantity is the counter, nothing is reserved, and \
                    the pool must hold at least that much. An organization's own officer may \
@@ -1405,10 +1406,50 @@ fn admin_vendor(ctx: &mut Ctx<'_>) -> Result<(), CmdError> {
                             mush_inventory::MAX_GRADE
                         )));
                     }
+                    // Doc 39 cut IN.2: `lot=<id>` sells that one lot itself, at its own
+                    // commodity, grade and quantity.
+                    let exact = match opts.get("lot") {
+                        None => None,
+                        Some(raw) => {
+                            let Some(id) = mush_inventory::LotId::parse(raw) else {
+                                return Err(CmdError::msg("That is not a lot id."));
+                            };
+                            let found = crate::module::lot_supply(ctx.w).and_then(|f| {
+                                ctx.action_state(&f.lots, &id).ok().flatten().cloned()
+                            });
+                            match found {
+                                Some(lot)
+                                    if lot.endpoint() == endpoint
+                                        && lot.commodity() == &commodity
+                                        && lot.quantity() == qty =>
+                                {
+                                    Some(id)
+                                }
+                                _ => {
+                                    return Err(CmdError::msg(
+                                        "That endpoint holds no such lot of that good and \
+                                         quantity.",
+                                    ));
+                                }
+                            }
+                        }
+                    };
+                    let grade = match exact.and_then(|id| {
+                        crate::module::lot_supply(ctx.w).and_then(|f| {
+                            ctx.action_state(&f.lots, &id)
+                                .ok()
+                                .flatten()
+                                .map(|l| l.grade())
+                        })
+                    }) {
+                        Some(own) => own.get(),
+                        None => grade,
+                    };
                     Supply::Lot {
                         endpoint: crate::record::LotEndpoint(endpoint),
                         commodity: crate::record::LotCommodity(commodity),
                         grade,
+                        lot: exact,
                     }
                 }
                 None => match opts.get("lead").and_then(|s| s.parse::<i64>().ok()) {
