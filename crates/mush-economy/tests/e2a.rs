@@ -525,7 +525,8 @@ fn fuzz_never_panics_and_preserves_conservation() {
         if a == b {
             continue;
         }
-        // Extreme amounts included (near i64 bounds) to probe overflow handling.
+        // Wide amounts (to about ±2^39, far inside i64) to probe the arithmetic;
+        // the i64 bounds themselves are not reached here.
         let amt = (next() as i64).wrapping_rem(1 << 40).wrapping_sub(1 << 39);
         let p = plan(
             "fuzz",

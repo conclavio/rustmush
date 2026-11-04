@@ -37,4 +37,4 @@ cargo tree -p mush-bot --edges normal,build --target all
 ```
 
 `mush-bot` must be the only RustMUSH package in that graph. See
-[the bot guide](../../docs/bot.md) for user-facing behavior and the JSON script format.
+[the bot guide](../../docs/bot/guide.md) for user-facing behavior and the [JSON script format](../../docs/bot/guide.md#repeatable-json-scripts).

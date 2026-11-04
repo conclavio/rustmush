@@ -113,7 +113,7 @@ settle_ms = 500    # collect output until this quiet interval
 observation_ms = 3000 # cap an ordinary observation even if ambient output continues
 bootstrap = ["help", "look"] # sent once after login in agent mode; scripts list all their own commands
 
-# The simulator pilot (`--arena red|blue`, `/arena`; docs/bot.md "Arena pilot").
+# The simulator pilot (`--arena red|blue`, `/arena`; docs/bot/guide.md "Arena pilot").
 # It needs no [model]. Every key is optional; these are the defaults.
 # Ready-to-run pilot and commander configs are in bots/arena/.
 # [arena]
@@ -129,7 +129,7 @@ bootstrap = ["help", "look"] # sent once after login in agent mode; scripts list
 # lattice = true            # fire on the arena's 250 ms lattice once each gun's cycle is learned
 # step_timeout_ms = 15000    # the longest one lobby line may go unanswered (2000..60000)
 # The optional model commander sets the pilot's doctrine (where it goes, what it
-# hunts); the pilot still locks, fires and steers. docs/bot.md "The commander".
+# hunts); the pilot still locks, fires and steers. docs/bot/guide.md "The commander".
 # commander = true           # a commander flies when a commander model resolves
 # commander_ms = 1500        # asks again this long after each answer or error (1000..10000)
 # commander_max_calls = 400  # the most commander calls in one match (1..10000)

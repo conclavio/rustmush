@@ -130,4 +130,4 @@ Changing expected values changes the definition revision without changing the
 generated question. This supports reviewing the same captured answer against an
 updated rubric while retaining both revisions. It does not rerun the bot or
 reconstruct evidence that was absent from the original request. See the
-[bot guide](bot.md) for probe commands, harness steps, saved captures and reports.
+[bot guide](guide.md) for probe commands, harness steps, saved captures and reports.

@@ -14,7 +14,7 @@ and explicit goals, and resume after the exchange. `/pause` stops further action
 `/listen` resumes listening. `/activity off` disables the plan and pauses. Loading
 a replacement plan pauses and requires explicitly enabling it again.
 
-The [dog-walker plan](../bots/life/dog-walker.json) is a complete JSON example:
+The [dog-walker plan](../../bots/life/dog-walker.json) is a complete JSON example:
 
 - `clock` is `session_monotonic` for ordinary play or `manual_test` for a controlled
   experiment. The latter requires `--test-controls`; `/activity advance 1000`

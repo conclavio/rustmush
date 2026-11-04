@@ -1593,6 +1593,7 @@ impl Fold {
                 format!("{word} unit={}", unit(id))
             }
             EventKind::PositionSummary { units } => format!("{word} units={}", units.len()),
+            EventKind::Segment { segment } => format!("{word} segment={segment}"),
             EventKind::Blocked {
                 unit: id,
                 x,

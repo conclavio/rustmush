@@ -70,7 +70,7 @@ and needs no model or API key. --scenario is an alias for --script.\n\
 Artifact paths must not already exist.\n\
 Exit codes: 0 completed (or interactive quit), 1 error/assertion failure,\n\
             2 headless blocked/incomplete/budget exhausted.\n\
-See docs/bot.md and mush-bot.toml.example.";
+See docs/bot/guide.md and mush-bot.toml.example.";
 
 fn main() -> ExitCode {
     match launch() {

@@ -57,8 +57,9 @@ is run over the render — `mushd` for the all-in-one, `mush-gateway` **and**
 `mush-server` for the split. Nothing is installed until all of them pass: the
 render lands on `<out>.new` and is moved into place only when it is complete
 and preflighted, so a redeploy with a broken `instance.env` leaves the live
-config alone and starts nothing. A binary that is not built yet is skipped with
-a note (the first deploy of a box renders before it compiles).
+config alone and starts nothing. A binary that is named but not built fails the
+render the same way (every deploy script builds first); to render with no
+preflight, name no binary.
 
 Ship **both** files to the box and keep them together —
 `/opt/rustmush/<name>/mushd.toml` beside `/opt/rustmush/<name>/instance.env`.

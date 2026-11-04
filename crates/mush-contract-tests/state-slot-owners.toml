@@ -1229,7 +1229,8 @@ map mutation or source deletion is exposed across the boundary.
 #
 # So WS03-S14's refusal, now live, broke nothing that runs today. This list must
 # stay EMPTY: a pair here is a write that is REFUSED rather than excused, and the
-# test says so. What the refusal does not reach is the 37 `[[site]]` rows above
+# test says so. What the refusal does not reach is the `[[site]]` rows above
+# (138 on 2026-11-03; 37 when this note was first written)
 # that go around `Ctx` through `World::module_state_mut` (counted at 16b cut F.1,
 # which added two: the release half's own harness and its SSH lens, both wiring
 # the account oracle a boot would have hydrated; the figure this comment carried
