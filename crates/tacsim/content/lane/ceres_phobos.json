@@ -3,7 +3,7 @@
     "id": "tacsim.lane.ceres_phobos",
     "version": 27,
     "kind": "campaign_seed",
-    "digest": "828d2ce059f535c814fa0d11eaba54392e3dc83358deab47de04abf17f7bb2f4",
+    "digest": "ef0b16923cc7df7475d4961a774e4396e9dcdc2100601b024cb36fe35bd30d9c",
     "requires": []
   },
   "entries": {
@@ -2869,7 +2869,7 @@
         "treasury": "tacsim.treasury",
         "orgs": [
           { "id": "kasei", "name": "Kasei Metals", "capital_major": 600000, "faction": "republic" },
-          { "id": "stickney_yards", "name": "Stickney Yards", "capital_major": 50000, "faction": "republic" },
+          { "id": "stickney_yards", "name": "Stickney Yards", "capital_major": 50000, "faction": "republic", "raises": [ 50000 ] },
           { "id": "yard_commissary", "name": "Yard Commissary", "capital_major": 50000, "faction": "republic" }
         ],
         "vendors": [

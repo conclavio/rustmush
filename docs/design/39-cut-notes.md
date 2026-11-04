@@ -851,7 +851,10 @@ money; the officer's grant; the captain's move to Stickney; the escort's disable
   IN.7's v26, IN.5's v24 and CR.2's v23): a `PortDef.yard` block of IN.5's `WorksDef` shape under `tacsim.yard`, opened
   by the applier's part m (`plant::rows`), found by `+yard` through `plant::block_room`. A new atlas room would
   bump Stickney's atlas pack v4 and the Phobos exchange pack that requires it; the gallery over the drydocks is
-  the slipway's counter. `lane_chain::strip_yard` heads the strip chain (`in9_strip_yard_rebuilds_the_published_v26`).
+  the slipway's counter. v27 also carries **Stickney Yards' raise of 50,000** (IN.7's, folded in on the owner's
+  ruling: it funds the Yards' strategic bid, so IN.8's whole-escort scrap can buy back its bale; the tranche count
+  in `plumbing.rs` goes 5 → 6 and the treasury in `ports.rs` to 16,001,000.00 cr). `lane_chain::strip_yard` heads
+  the strip chain and takes out both (`in9_strip_yard_rebuilds_the_published_v26`).
 - **`armour_cab` and `walker_cab` are not in this cut.** Giving the line-tank family, the heavy, the scout and the
   bipeds an authored `logistics` changes every fielded tank's dry mass from the field-ops measure to whole tonnes,
   which moves the tow masses and IN.8's per-point figures for those designs; it is a follow-up with its own review.
