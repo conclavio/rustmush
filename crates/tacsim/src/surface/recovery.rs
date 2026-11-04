@@ -269,6 +269,8 @@ pub(crate) fn world_hulls(w: &World) -> BTreeSet<ObjId> {
             .iter()
             .flat_map(|yard| yard.row.hulls.iter().map(|row| ObjId(row.hull))),
     );
+    // Doc 39 cut IN.9: then the commissioned ships, so a yard-built carrier tows and is towed.
+    hulls.extend(crate::port::owned::ships(w));
     hulls
 }
 

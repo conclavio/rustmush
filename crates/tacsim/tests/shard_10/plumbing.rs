@@ -2298,10 +2298,11 @@ fn sm5_occators_capital_rises_by_a_tranche_on_a_kept_world() {
         .collect();
     // Doc 20 cut SM.10: v12 also adds the Pallas Syndicate (capital 50,000), whose base
     // tranche joins R9b's 100,000-credit Fleet base; Occator's raise is still exactly one. Doc 39
-    // cut IN.5: Freeport Works' 1,000,000 comes in two tranches, 800,000 and 200,000.
+    // cut IN.5: Freeport Works' 1,000,000 comes in two tranches, 800,000 and 200,000. Doc 39
+    // cut IN.9 (lane v27): Stickney Yards' 50,000 raise (IN.7's), one more.
     assert_eq!(
         made.len(),
-        5,
+        6,
         "Occator's one new tranche, the Syndicate's and the Fleet's bases, Freeport Works' two"
     );
     let made: Vec<mush_economy::Obligation> = made
@@ -2405,7 +2406,8 @@ fn sm5_strip_ore_rebuilds_the_published_v10() {
 
 /// **Only Ceres bids ore** (§7.3): the four ore bids are the Exchange's three and Occator's
 /// one, each with its refresh; no other vendor bids, asks or stocks an ore good but Freeport
-/// Works, which stocks and asks carbon ore for the works (doc 39 cut IN.5).
+/// Works, which stocks and asks carbon ore for the works (doc 39 cut IN.5), and Stickney Yards,
+/// which bids strategic ore for the sights (doc 39 cut IN.7).
 #[test]
 fn sm5_only_ceres_bids_ore() {
     let pack = lane();
@@ -2462,6 +2464,15 @@ fn sm5_only_ceres_bids_ore() {
             ceres("freeport_exchange", "carbon_ore", 50, 120, 20, 120),
             ceres("freeport_exchange", "strategic_ore", 600, 12, 2, 12),
             ceres("occator", "ice_ore", 35, 240, 40, 240),
+            // Doc 39 cut IN.7 (Q-39-31): Stickney Yards bids the strategic ore the sights eat.
+            (
+                "stickney_port".to_owned(),
+                "stickney_yards".to_owned(),
+                "strategic_ore".to_owned(),
+                700,
+                12,
+                Some((2, 12)),
+            ),
         ]
     );
     let programme = port_def("ceres_port").programme.expect("the programme");

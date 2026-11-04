@@ -5,8 +5,10 @@
 //! a space bubble). The table is keyed on the state of a hull's sections **by the role each
 //! plays** ([`CarrierPart`]), read off the authored consequences, never off a section's name: the
 //! Dray's `drive` and the Halcyon's `power` are both the part whose loss stops the hull moving.
-//! Space maps its own `ShipSectionId` onto [`CarrierPart`] in its own tree, as Q-36-47's
-//! follow-up; nothing here reads space.
+//! Space maps its own `ShipSectionId` onto [`CarrierPart`] in its own tree (Q-36-47; doc 35
+//! cut SF.R20, recorded by doc 41 cut RS.8): `Hull` onto `Hull`, `Drive` onto `Drive`, and
+//! `Hold` onto nothing here, its `Slow` a space-only consequence (`crate::space::ShipSectionId::carrier_part`).
+//! Nothing here reads space.
 //!
 //! **The table** ([`TABLE`], Q-36-8 as ruled 2026-11-02):
 //!

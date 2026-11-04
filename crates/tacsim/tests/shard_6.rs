@@ -45,3 +45,5 @@ mod plans;
 mod site_record_rig;
 #[path = "shard_6/vehicles.rs"]
 mod vehicles;
+#[path = "shard_6/yard_in9.rs"]
+mod yard_in9;

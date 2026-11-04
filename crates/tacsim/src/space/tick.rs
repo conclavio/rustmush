@@ -43,8 +43,8 @@ use serde::{Deserialize, Serialize};
 use smol_str::SmolStr;
 
 use super::bubble::{
-    BubbleId, BubbleInputCommand, BubbleInputTape, BubbleSnapshot, DERELICT_WINDOW_S, EmconPosture,
-    HullStatus, LocalSpaceBubble, SpaceShipState, admitted_party,
+    BubbleId, BubbleInputCommand, BubbleInputTape, BubbleSnapshot, DERELICT_LIFE_SUPPORT_S,
+    EmconPosture, HullStatus, LocalSpaceBubble, SpaceShipState, admitted_party,
 };
 use super::custody::{
     check_in_space_unit, check_out_space_unit, instantiate_stock_space_unit,
@@ -548,10 +548,9 @@ pub struct SpaceDerelictRecord {
     pub disabled_at_ic_s: i64,
     /// Whether the hull's doc 23 epoch remains open (`D-35-12`, `FO-12`).
     pub epoch_open: bool,
-    /// Remaining life-support window in real seconds (`172,800 s` at disablement).
+    /// Remaining life-support window in real seconds (`172,800 s` at disablement). The salvage
+    /// contest has no clock here: it runs on the claim's one window (doc 41 RS.8, Q-36-46).
     pub life_support_remaining_s: u32,
-    /// Remaining 48 real-hour salvage contest window in real seconds (`172,800 s` at disablement).
-    pub salvage_contest_window_s: u32,
     /// Post-combat `TacticalUnit` assessment (`Immobile`, `Disabled`, `Wreck`), if bound.
     pub assessment: Option<FieldUnitAssessment>,
     /// Active 48 real-hour Registry salvage claim status in [`SalvageClaimBook`].
@@ -930,12 +929,11 @@ pub struct SpaceBubbleBook {
     /// Pinned tenure, title holder, and witnesses recorded at 6-DOF derelict collar clamp, keyed by derelict hull [`ObjId`] (`SF.R19`, `Q-36-46`).
     #[serde(default, with = "super::bubble::vec_tuple_map")]
     pub derelict_pins: BTreeMap<ObjId, crate::surface::claim::TenurePin>,
-    /// Live salvage custody rows for towed space derelicts, keyed by derelict hull [`ObjId`] (`SF.R19`, `Q-36-46`).
-    #[serde(default, with = "super::bubble::vec_tuple_map")]
-    pub space_custody: BTreeMap<ObjId, crate::surface::salvage::SalvageCustody>,
-    /// Derelict hulls whose Freeport Registry salvage recovery bounty has already been paid (`SF.R19`, `35b` §5 #5).
-    #[serde(default)]
-    pub paid_salvage_bounties: std::collections::BTreeSet<ObjId>,
+    /// Salvage custody of towed space derelicts, by recovery domain (doc 41 cut RS.8, Q-36-46):
+    /// persisted as one `tacsim:space:custody:{domain}` document a domain, never in the
+    /// auxiliary `tacsim:space:state`.
+    #[serde(default, skip)]
+    pub space_custody: super::custody::SpaceCustodyBook,
     /// Origin blocks `(cluster_id, letter)` from which a carrier hull extracted `strategic_ore` (`SF.R23`, `35b` §5 #15).
     #[serde(default, with = "super::bubble::vec_tuple_map")]
     pub mined_strategic_blocks:
@@ -962,6 +960,7 @@ impl SpaceBubbleBook {
         aux.derelicts.clear();
         aux.docking_sessions.clear();
         aux.propellant_ledgers.clear();
+        aux.space_custody = super::custody::SpaceCustodyBook::default();
         aux.quarantined_bubbles.clear();
         aux.quarantined_hulls.clear();
         aux
@@ -1186,8 +1185,7 @@ pub fn clear_interdiction_bubble(w: &mut World, hull: ObjId) -> bool {
         if !carrier_parties.contains(&ship.party) && ship.status == HullStatus::Operational {
             ship.status = HullStatus::DisabledDerelict {
                 epoch_open: true,
-                life_support_remaining_s: DERELICT_WINDOW_S,
-                salvage_contest_window_s: DERELICT_WINDOW_S,
+                life_support_remaining_s: DERELICT_LIFE_SUPPORT_S,
             };
             ship.thrust_mps2 = [0, 0, 0];
         }
@@ -1215,6 +1213,9 @@ pub const SPACE_DOCKING_PREFIX: &str = "tacsim:space:docking:";
 
 /// Per-hull propellant ledger store key prefix (`tacsim:space:ledger:{hull}`, `SF.R21`, `35c` §6.2).
 pub const SPACE_LEDGER_PREFIX: &str = "tacsim:space:ledger:";
+
+/// Per-domain salvage custody store key prefix (`tacsim:space:custody:{domain}`, doc 41 cut RS.8).
+pub const SPACE_CUSTODY_PREFIX: &str = "tacsim:space:custody:";
 
 /// Schema format version for [`SpacePersistedState`] and per-entity space documents.
 pub const SPACE_STATE_FORMAT: u16 = 1;
@@ -1247,6 +1248,26 @@ pub fn space_docking_key(hull: ObjId) -> String {
 #[must_use]
 pub fn space_ledger_key(hull: ObjId) -> String {
     format!("{SPACE_LEDGER_PREFIX}{}", hull.0)
+}
+
+/// Format the per-domain store key for a salvage custody document (`tacsim:space:custody:{domain}`).
+#[must_use]
+pub fn space_custody_key(domain: DomainId) -> String {
+    format!("{SPACE_CUSTODY_PREFIX}{}", domain.0)
+}
+
+/// Per-domain salvage custody store document (`tacsim:space:custody:{domain}`, doc 41 cut RS.8,
+/// Q-36-46): the custody rows of the derelicts recovered in one domain, as a ground site's
+/// record holds its own.
+#[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(deny_unknown_fields)]
+pub struct PersistedCustodyDoc {
+    /// Schema format version ([`SPACE_STATE_FORMAT`]).
+    pub format: u16,
+    /// Domain identity matching the key suffix.
+    pub domain: DomainId,
+    /// The rows, at most [`super::custody::MAX_SPACE_CUSTODY`].
+    pub rows: Vec<crate::surface::salvage::SalvageCustody>,
 }
 
 /// Per-domain active bubble store document (`tacsim:space:bubble:{domain}`, `SF.R21`, `35c` §6.2).
@@ -1372,6 +1393,7 @@ pub fn load_space_kv_entry(store: &mut TacsimStore, key: &str, value: &serde_jso
                 for (h, l) in state.book.propellant_ledgers {
                     merged_book.propellant_ledgers.insert(h, l);
                 }
+                merged_book.space_custody = state.book.space_custody;
                 merged_book.quarantined_bubbles = state.book.quarantined_bubbles;
                 merged_book.quarantined_hulls = state.book.quarantined_hulls;
                 state.book = merged_book;
@@ -1397,6 +1419,23 @@ pub fn load_space_kv_entry(store: &mut TacsimStore, key: &str, value: &serde_jso
             (Some(dom), _) => {
                 state.book.quarantined_bubbles.insert(dom);
                 tracing::warn!(%key, domain = dom.0, "tacsim: space bubble document is unreadable; domain quarantined");
+                true
+            }
+            _ => false,
+        }
+    } else if let Some(dom_str) = key.strip_prefix(SPACE_CUSTODY_PREFIX) {
+        // Doc 41 cut RS.8: a custody document that does not read holds the whole space state
+        // for staff repair: a claim is never dropped silently.
+        match (
+            dom_str.parse::<u64>().ok().map(DomainId),
+            serde_json::from_value::<PersistedCustodyDoc>(value.clone()),
+        ) {
+            (Some(dom), Ok(doc))
+                if doc.format == SPACE_STATE_FORMAT
+                    && doc.domain == dom
+                    && doc.rows.len() <= super::custody::MAX_SPACE_CUSTODY =>
+            {
+                state.book.space_custody.restore(dom, doc.rows);
                 true
             }
             _ => false,
@@ -1493,7 +1532,7 @@ pub fn load_space_kv_entry(store: &mut TacsimStore, key: &str, value: &serde_jso
 /// [`mush_sim::tick::StandingOrderBook`] into [`TacsimStore`], emitting dirty-only per-entity
 /// [`ModuleWrite::JsonSet`] / [`ModuleWrite::Del`] operations (`tacsim:space:bubble:{domain}`,
 /// `tacsim:space:flight:{hull}`, `tacsim:space:derelict:{hull}`, `tacsim:space:docking:{hull}`,
-/// `tacsim:space:ledger:{hull}`, and auxiliary `tacsim:space:state`) (`SF.R8`, `SF.R21`, `35c` §6.2).
+/// `tacsim:space:ledger:{hull}`, `tacsim:space:custody:{domain}`, and auxiliary `tacsim:space:state`) (`SF.R8`, `SF.R21`, `35c` §6.2).
 pub fn persist_space_state(ctx: &mut Ctx<'_>) {
     if ctx
         .w
@@ -1703,7 +1742,48 @@ pub fn persist_space_state(ctx: &mut Ctx<'_>) {
         }
     }
 
-    // 6. Auxiliary space state (`tacsim:space:state`), written only when auxiliary fields change.
+    // 6. Per-domain salvage custody (`tacsim:space:custody:{domain}`, doc 41 cut RS.8).
+    for (&domain, rows) in snapshot.book.space_custody.documents() {
+        if prev
+            .as_ref()
+            .and_then(|p| p.book.space_custody.documents().get(&domain))
+            != Some(rows)
+        {
+            let doc = PersistedCustodyDoc {
+                format: SPACE_STATE_FORMAT,
+                domain,
+                rows: rows.clone(),
+            };
+            if let Ok(value) = serde_json::to_value(&doc) {
+                crate::store::push_op(
+                    ctx.out,
+                    ModuleWrite::JsonSet {
+                        key: SmolStr::new(space_custody_key(domain)),
+                        value,
+                    },
+                );
+            }
+        }
+    }
+    if let Some(p) = &prev {
+        for &domain in p.book.space_custody.documents().keys() {
+            if !snapshot
+                .book
+                .space_custody
+                .documents()
+                .contains_key(&domain)
+            {
+                crate::store::push_op(
+                    ctx.out,
+                    ModuleWrite::Del {
+                        key: SmolStr::new(space_custody_key(domain)),
+                    },
+                );
+            }
+        }
+    }
+
+    // 7. Auxiliary space state (`tacsim:space:state`), written only when auxiliary fields change.
     let aux_now = SpacePersistedState {
         format: SPACE_STATE_FORMAT,
         book: snapshot.book.without_per_entity_maps(),
@@ -2674,7 +2754,8 @@ fn prune_space_book_collections(ctx: &mut Ctx<'_>) {
     book.derelicts.retain(|&hull, d| {
         clamped_set.contains(&hull)
             || towed_set.contains(&hull)
-            || (d.epoch_open && (d.life_support_remaining_s > 0 || d.salvage_contest_window_s > 0))
+            || book.space_custody.contains_key(&hull)
+            || (d.epoch_open && d.life_support_remaining_s > 0)
     });
 
     let active_bubble_hulls: std::collections::BTreeSet<ObjId> = book
@@ -2710,12 +2791,14 @@ fn prune_space_book_collections(ctx: &mut Ctx<'_>) {
 }
 
 /// Complete port delivery for any active tow on `tug_hull` once `tug_hull` is berthed at a port
-/// (`SF.R19`, `Q-36-46`, `D-35-12`).
+/// (`SF.R19`, `Q-36-46`, `D-35-12`; doc 41 cut RS.8).
 ///
 /// Docks `derelict_hull` at the tug's port domain so `berth_of(w, derelict_hull)` resolves to
 /// `Berth::Docked` for bay repair (`+workshop`) and claim inspection (`+salvage/inspect`,
-/// `+salvage/contest`, `+salvage/report`), logs `BlackBoxFlightEntry::EpochClosedInBay`, and
-/// settles the one-time `1,200 cr` salvage recovery bounty on port delivery.
+/// `+salvage/contest`, `+salvage/report`), and logs `BlackBoxFlightEntry::EpochClosedInBay`.
+/// No bounty: the derelict is the salvor's when the claim stands (RS.8 retired the 1,200 cr
+/// payout). A retrieval the tug's helm holds on the derelict with this port its destination is
+/// delivered here (doc 41 §4.7: a space tow truck's handover, `tacsim.retrieval.delivered`).
 pub fn deliver_active_tow_at_port(ctx: &mut Ctx<'_>, tug_hull: ObjId, now: &ClockStamp) {
     let Some(tow) = ctx.w.module_state_mut::<SpaceBubbleBook>().and_then(|b| {
         let tow = b.active_tows.remove(&tug_hull)?;
@@ -2737,13 +2820,14 @@ pub fn deliver_active_tow_at_port(ctx: &mut Ctx<'_>, tug_hull: ObjId, now: &Cloc
             now,
         );
         let _ = mush_sim::place(ctx, derelict_hull, port_domain, port_pose);
-        let base_obj = resolve_nearest_port_base_obj(ctx.w, port_domain, tug_hull);
         let op_id = ctx.w.module_state::<SpaceBubbleBook>().and_then(|b| {
             b.space_custody
                 .get(&derelict_hull)
                 .and_then(|c| c.operation)
         });
-        if let Some(salvage_book) = ctx.w.module_state_mut::<SalvageClaimBook>() {
+        if let Some(base_obj) = resolve_nearest_port_base_obj(ctx.w, port_domain, tug_hull)
+            && let Some(salvage_book) = ctx.w.module_state_mut::<SalvageClaimBook>()
+        {
             let _ = salvage_book.append_black_box_entry(
                 derelict_hull,
                 crate::field_ops::BlackBoxFlightEntry::EpochClosedInBay {
@@ -2754,13 +2838,28 @@ pub fn deliver_active_tow_at_port(ctx: &mut Ctx<'_>, tug_hull: ObjId, now: &Cloc
             );
         }
     }
-    if let Some(pilot) = crate::port::coop::helm_holder(ctx.w, tug_hull).or_else(|| {
-        super::commands::all_aboard_crew_for_hull(ctx.w, tug_hull)
-            .into_iter()
-            .next()
-    }) {
-        let _ =
-            super::picket::settle_salvage_recovery_payout_from_registry(ctx, pilot, derelict_hull);
+    if let crate::port::ship::Berth::Docked { map, .. } =
+        crate::port::ship::berth_of(ctx.w, tug_hull)
+        && let Some(helm) = crate::port::coop::helm_holder(ctx.w, tug_hull).or_else(|| {
+            super::commands::all_aboard_crew_for_hull(ctx.w, tug_hull)
+                .into_iter()
+                .next()
+        })
+    {
+        let port = map.entry.clone();
+        let _ = crate::surface::retrieval::deliver(ctx, derelict_hull, &port, helm);
+    }
+}
+
+/// **A hull docked at a port under her own power by a `+helm/dock` clamp** (doc 41 cut RS.8,
+/// §4.7): a retrieval her helm holds on her with this port its destination is delivered, as a
+/// lane arrival's docking delivers it (`crate::composition::sim_routes`).
+pub fn deliver_own_retrieval_at_port(ctx: &mut Ctx<'_>, hull: ObjId) {
+    if let crate::port::ship::Berth::Docked { map, .. } = crate::port::ship::berth_of(ctx.w, hull)
+        && let Some(helm) = crate::port::coop::helm_holder(ctx.w, hull)
+    {
+        let port = map.entry.clone();
+        let _ = crate::surface::retrieval::deliver(ctx, hull, &port, helm);
     }
 }
 
@@ -2840,89 +2939,68 @@ fn step_derelict_records(ctx: &mut Ctx<'_>) {
         if derelict.epoch_open {
             derelict.life_support_remaining_s =
                 derelict.life_support_remaining_s.saturating_sub(step_s);
-            derelict.salvage_contest_window_s =
-                derelict.salvage_contest_window_s.saturating_sub(step_s);
         }
     }
 }
 
-/// Resolve the real world owner or charterer [`ObjId`] of `hull` for salvage claim filing (`SF.R12`, `SF.R19`, `35b` §5 #7).
+/// **Who really held `hull`** when she has no title in the economy (doc 41 cut RS.8; doc 35b
+/// §3, doc 35c §6.3): her title's character, her helm, her raider leader, her last pilot, her
+/// owner — never the recovering tug, never the god object. `None` when nobody held her.
 #[must_use]
-pub(crate) fn resolve_hull_prior_owner(w: &World, hull: ObjId, recoverer_hull: ObjId) -> ObjId {
+pub(crate) fn resolve_hull_prior_owner(
+    w: &World,
+    hull: ObjId,
+    recoverer_hull: ObjId,
+) -> Option<ObjId> {
+    let real = |who: ObjId| who != hull && who != recoverer_hull && who != mush_core::GOD;
     if let Some(mush_org::PrincipalId::Object(holder)) = w
         .module_state::<mush_economy::EconomyStore>()
         .and_then(|s| s.snapshot().asset(hull))
         .map(|a| a.title_owner.clone())
-        && holder != hull
-        && holder != recoverer_hull
+        && real(holder)
     {
-        return holder;
+        return Some(holder);
     }
-    if let Some(pilot) = crate::port::coop::helm_holder(w, hull)
-        && pilot != recoverer_hull
+    if let Some(pilot) = crate::port::coop::helm_holder(w, hull).filter(|p| real(*p)) {
+        return Some(pilot);
+    }
+    if let Some(leader) = crate::field::raiders::leader_of(w, hull).filter(|l| real(*l)) {
+        return Some(leader);
+    }
+    if let Some(pilot) = w
+        .module_state::<crate::store::TacsimStore>()
+        .and_then(|s| match s.voyage_state(hull) {
+            crate::port::voyage::VoyageState::Present(v) => v.departed.as_ref().map(|d| d.pilot),
+            crate::port::voyage::VoyageState::Absent
+            | crate::port::voyage::VoyageState::Unreadable => None,
+        })
+        .filter(|p| real(*p))
     {
-        return pilot;
+        return Some(pilot);
     }
-    if let Some(leader) = crate::field::raiders::leader_of(w, hull)
-        && leader != recoverer_hull
-    {
-        return leader;
-    }
-    if let Some(pilot) =
-        w.module_state::<crate::store::TacsimStore>()
-            .and_then(|s| match s.voyage_state(hull) {
-                crate::port::voyage::VoyageState::Present(v) => {
-                    v.departed.as_ref().map(|d| d.pilot)
-                }
-                crate::port::voyage::VoyageState::Absent
-                | crate::port::voyage::VoyageState::Unreadable => None,
-            })
-        && pilot != recoverer_hull
-    {
-        return pilot;
-    }
-    if let Some(owner) = w.get(hull).map(|o| o.owner)
-        && owner != hull
-        && owner != recoverer_hull
-    {
-        return owner;
-    }
-    if mush_core::GOD != recoverer_hull {
-        mush_core::GOD
-    } else {
-        ObjId(2)
-    }
+    w.get(hull).map(|o| o.owner).filter(|o| real(*o))
 }
 
-/// Resolve a real world base/port [`ObjId`] for salvage claim filing at `domain` (`SF.R12`, `SF.R19`, `35b` §5 #7).
+/// **The port base a delivery closes the black box at** (`SF.R19`; doc 41 cut RS.8): the host of
+/// the first lane port, else the domain's host; `None` when neither is a real object.
 #[must_use]
 pub(crate) fn resolve_nearest_port_base_obj(
     w: &World,
     domain: DomainId,
     recoverer_hull: ObjId,
-) -> ObjId {
+) -> Option<ObjId> {
     for (_, map) in crate::port::voyage::lane_ports(w) {
         if let Some(host_raw) = map.and_then(|m| m.host) {
             let host = ObjId(host_raw);
             if w.get(host).is_some() && host != recoverer_hull {
-                return host;
+                return Some(host);
             }
         }
     }
-    if let Some(host) = w
-        .module_state::<SpatialState>()
+    w.module_state::<SpatialState>()
         .and_then(|s| s.domains.get(&domain))
         .map(|d| d.host)
-        && w.get(host).is_some()
-        && host != recoverer_hull
-    {
-        return host;
-    }
-    if mush_core::GOD != recoverer_hull {
-        mush_core::GOD
-    } else {
-        ObjId(2)
-    }
+        .filter(|host| w.get(*host).is_some() && *host != recoverer_hull)
 }
 
 fn clear_resolved_bubbles(ctx: &mut Ctx<'_>, now: &ClockStamp) {
@@ -3104,7 +3182,6 @@ fn clear_resolved_bubbles(ctx: &mut Ctx<'_>, now: &ClockStamp) {
             if let HullStatus::DisabledDerelict {
                 epoch_open,
                 life_support_remaining_s,
-                salvage_contest_window_s,
             } = iship.status
                 && let Some(book) = ctx.w.module_state_mut::<SpaceBubbleBook>()
             {
@@ -3120,7 +3197,6 @@ fn clear_resolved_bubbles(ctx: &mut Ctx<'_>, now: &ClockStamp) {
                         disabled_at_ic_s: now.at,
                         epoch_open,
                         life_support_remaining_s,
-                        salvage_contest_window_s,
                         assessment,
                         salvage_title_status: existing_status,
                     },
@@ -3213,18 +3289,12 @@ fn settle_disabled_carrier_bubbles(ctx: &mut Ctx<'_>, now: &ClockStamp) {
         mush_sim::tick::clear_unit_standing_orders(ctx.w, hull);
         if let Some(ship) = carrier_ship {
             let assessment = check_in_space_unit(ctx, hull, &ship, now.at).ok();
-            let (epoch_open, life_support_remaining_s, salvage_contest_window_s) = match ship.status
-            {
+            let (epoch_open, life_support_remaining_s) = match ship.status {
                 HullStatus::DisabledDerelict {
                     epoch_open,
                     life_support_remaining_s,
-                    salvage_contest_window_s,
-                } => (
-                    epoch_open,
-                    life_support_remaining_s,
-                    salvage_contest_window_s,
-                ),
-                HullStatus::Operational => (true, DERELICT_WINDOW_S, DERELICT_WINDOW_S),
+                } => (epoch_open, life_support_remaining_s),
+                HullStatus::Operational => (true, DERELICT_LIFE_SUPPORT_S),
             };
             if let Some(book) = ctx.w.module_state_mut::<SpaceBubbleBook>() {
                 let existing_status = book
@@ -3239,7 +3309,6 @@ fn settle_disabled_carrier_bubbles(ctx: &mut Ctx<'_>, now: &ClockStamp) {
                         disabled_at_ic_s: now.at,
                         epoch_open,
                         life_support_remaining_s,
-                        salvage_contest_window_s,
                         assessment,
                         salvage_title_status: existing_status,
                     },
@@ -3251,7 +3320,7 @@ fn settle_disabled_carrier_bubbles(ctx: &mut Ctx<'_>, now: &ClockStamp) {
             hull,
             "carrier hull disabled into an open-epoch derelict",
         );
-        let line = "[SPACE] Drive offline; hull adrift as an open-epoch derelict with a 48-hour Registry salvage window.";
+        let line = "[SPACE] Drive offline; hull adrift as an open-epoch derelict with 48 hours of life support.";
         crate::port::voyage::narrate_hull(ctx, hull, line);
     }
 
@@ -3321,7 +3390,6 @@ fn settle_disabled_carrier_bubbles(ctx: &mut Ctx<'_>, now: &ClockStamp) {
             if let HullStatus::DisabledDerelict {
                 epoch_open,
                 life_support_remaining_s,
-                salvage_contest_window_s,
             } = npc_ship.status
                 && let Some(book) = ctx.w.module_state_mut::<SpaceBubbleBook>()
             {
@@ -3337,7 +3405,6 @@ fn settle_disabled_carrier_bubbles(ctx: &mut Ctx<'_>, now: &ClockStamp) {
                         disabled_at_ic_s: now.at,
                         epoch_open,
                         life_support_remaining_s,
-                        salvage_contest_window_s,
                         assessment,
                         salvage_title_status: existing_status,
                     },
@@ -3351,18 +3418,12 @@ fn settle_disabled_carrier_bubbles(ctx: &mut Ctx<'_>, now: &ClockStamp) {
                 continue;
             };
             let assessment = check_in_space_unit(ctx, hull, &ship, now.at).ok();
-            let (epoch_open, life_support_remaining_s, salvage_contest_window_s) = match ship.status
-            {
+            let (epoch_open, life_support_remaining_s) = match ship.status {
                 HullStatus::DisabledDerelict {
                     epoch_open,
                     life_support_remaining_s,
-                    salvage_contest_window_s,
-                } => (
-                    epoch_open,
-                    life_support_remaining_s,
-                    salvage_contest_window_s,
-                ),
-                HullStatus::Operational => (true, DERELICT_WINDOW_S, DERELICT_WINDOW_S),
+                } => (epoch_open, life_support_remaining_s),
+                HullStatus::Operational => (true, DERELICT_LIFE_SUPPORT_S),
             };
             if let Some(book) = ctx.w.module_state_mut::<SpaceBubbleBook>() {
                 let existing_status = book
@@ -3377,7 +3438,6 @@ fn settle_disabled_carrier_bubbles(ctx: &mut Ctx<'_>, now: &ClockStamp) {
                         disabled_at_ic_s: now.at,
                         epoch_open,
                         life_support_remaining_s,
-                        salvage_contest_window_s,
                         assessment,
                         salvage_title_status: existing_status,
                     },
@@ -3388,7 +3448,7 @@ fn settle_disabled_carrier_bubbles(ctx: &mut Ctx<'_>, now: &ClockStamp) {
                 hull,
                 "carrier hull disabled into an open-epoch derelict",
             );
-            let line = "[SPACE] Drive offline; hull adrift as an open-epoch derelict with a 48-hour Registry salvage window.";
+            let line = "[SPACE] Drive offline; hull adrift as an open-epoch derelict with 48 hours of life support.";
             crate::port::voyage::narrate_hull(ctx, hull, line);
         }
         let any_other_promoted = ctx.w.module_state::<JourneyBook>().is_some_and(|jb| {

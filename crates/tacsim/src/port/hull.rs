@@ -558,6 +558,48 @@ pub(crate) fn row_of(map: &PortMap, which: HullRows, n: u32) -> Option<usize> {
     rows(map, which).iter().position(|row| row.n == n)
 }
 
+/// **Where one hull's lay-up row lives** (doc 39 cut IN.9, §4.13): a port map's row list
+/// ([`MapRows`]) or a yard commission's own record (`crate::port::commission`), so a built hull
+/// is laid up by the applier's steps without ever being a programme row. `save` writes the
+/// owner's document after every object made (L11).
+pub(crate) trait HullRowSink {
+    /// The row, once step 1 made it.
+    fn row(&self) -> Option<&HullRow>;
+    /// The row, mutable.
+    fn row_mut(&mut self) -> Option<&mut HullRow>;
+    /// Record the row step 1 made.
+    fn push(&mut self, row: HullRow);
+    /// Write the owner's document.
+    fn save(&self, ctx: &mut Ctx<'_>);
+}
+
+/// **A port map's hull `n` among `which`'s rows** — the applier's and the yard's sink.
+pub(crate) struct MapRows<'m> {
+    /// The map.
+    pub map: &'m mut PortMap,
+    /// The row list.
+    pub which: HullRows,
+    /// The pool index.
+    pub n: u32,
+}
+
+impl HullRowSink for MapRows<'_> {
+    fn row(&self) -> Option<&HullRow> {
+        let index = row_of(self.map, self.which, self.n)?;
+        rows(self.map, self.which).get(index)
+    }
+    fn row_mut(&mut self) -> Option<&mut HullRow> {
+        let index = row_of(self.map, self.which, self.n)?;
+        rows_mut(self.map, self.which).get_mut(index)
+    }
+    fn push(&mut self, row: HullRow) {
+        rows_mut(self.map, self.which).push(row);
+    }
+    fn save(&self, ctx: &mut Ctx<'_>) {
+        put_port_map(ctx, self.map);
+    }
+}
+
 /// **Part (f): lay up the programme's hulls** (doc 18 §4.7; L8–L16). Per hull
 /// `n` in pool order (so the first hull's Thing has the lowest id: cut IC6's
 /// `next_loaner` takes the lowest), each step idempotent, the map written after
@@ -601,14 +643,17 @@ pub(crate) fn lay_up(
         lay_up_one(
             ctx,
             id,
-            map,
+            &mut MapRows {
+                map,
+                which: HullRows::Programme,
+                n,
+            },
             &HullPlan {
                 name: usize::try_from(n)
                     .ok()
                     .and_then(|i| programme.hull_names.get(i))
                     .map(String::as_str),
                 mark: registry_mark(&programme.registry_prefix, n),
-                rows: HullRows::Programme,
                 interior: &interior,
                 spec: &spec,
                 slot: &slot,
@@ -627,15 +672,14 @@ pub(crate) fn lay_up(
     Ok(())
 }
 
-/// What one hull is made from (doc 20 cut SM.12b: its name, mark and row list named by the
-/// caller, so a yard hull is laid up by the same steps as a programme hull).
+/// What one hull is made from (doc 20 cut SM.12b: its name and mark named by the caller, so a
+/// yard hull is laid up by the same steps as a programme hull; doc 39 cut IN.9: the row it is
+/// recorded in is the caller's [`HullRowSink`]).
 pub(crate) struct HullPlan<'a> {
     /// The hull Thing's name (`hull_names[n]`, or the yard's name); `None` refuses step 1.
     pub name: Option<&'a str>,
     /// Its registry mark, the Thing's alias.
     pub mark: String,
-    /// The row list it is recorded in.
-    pub rows: HullRows,
     /// The unit's interior template.
     pub interior: &'a InteriorDef,
     /// The unit binding's instantiation shape.
@@ -651,18 +695,18 @@ pub(crate) struct HullPlan<'a> {
 
 /// Steps 1–6 for hull `plan.n`: the Thing, the unit, the rooms (dressed), the
 /// exits, the store space and the airlock space with its members and berths;
-/// then step 6b, the bays (doc 20 cut SM.3a).
+/// then step 6b, the bays (doc 20 cut SM.3a). Doc 39 cut IN.9: the row is `sink`'s, written
+/// through it after every object made.
 pub(crate) fn lay_up_one(
     ctx: &mut Ctx<'_>,
     id: &CanonicalId,
-    map: &mut PortMap,
+    sink: &mut dyn HullRowSink,
     plan: &HullPlan<'_>,
     gallery: ObjId,
 ) -> Result<(), String> {
     let HullPlan {
         name,
         ref mark,
-        rows: which,
         interior,
         spec,
         slot,
@@ -671,7 +715,7 @@ pub(crate) fn lay_up_one(
     } = *plan;
     let mark = mark.clone();
     // 1. The Thing.
-    if row_of(map, which, n).is_none() {
+    if sink.row().is_none() {
         let name = name.ok_or_else(|| format!("{id}: hull {mark} has no name"))?;
         let hull = ctx
             .w
@@ -680,18 +724,17 @@ pub(crate) fn lay_up_one(
         ctx.w
             .add_alias(hull, &mark)
             .map_err(|e| format!("{id}: hull {mark}: {e}"))?;
-        rows_mut(map, which).push(HullRow {
+        sink.push(HullRow {
             n,
             mark: mark.clone(),
             hull: hull.0,
             rooms: BTreeMap::new(),
             exits: Vec::new(),
         });
-        put_port_map(ctx, map);
+        sink.save(ctx);
     }
-    let index = row_of(map, which, n).ok_or_else(|| format!("{id}: hull {mark} has no map row"))?;
-    let hull = rows(map, which)
-        .get(index)
+    let hull = sink
+        .row()
         .map(|row| ObjId(row.hull))
         .ok_or_else(|| format!("{id}: hull {mark} has no map row"))?;
     // 2. The unit — only for a hull no unit record claims at all. A record
@@ -705,22 +748,22 @@ pub(crate) fn lay_up_one(
     }
     // 3. The rooms, template order; then every pass, the dress.
     for room in &interior.rooms {
-        let made = rows(map, which)
-            .get(index)
+        let made = sink
+            .row()
             .is_some_and(|row| row.rooms.contains_key(&room.id));
         if !made {
             let obj = ctx
                 .w
                 .create(ObjKind::Room, &room.name, ctx.actor, None)
                 .map_err(|e| format!("{id}: hull {mark} room {}: {e}", room.id))?;
-            if let Some(row) = rows_mut(map, which).get_mut(index) {
+            if let Some(row) = sink.row_mut() {
                 row.rooms.insert(room.id.clone(), obj.0);
             }
-            put_port_map(ctx, map);
+            sink.save(ctx);
         }
     }
-    let rooms: BTreeMap<CanonicalId, ObjId> = rows(map, which)
-        .get(index)
+    let rooms: BTreeMap<CanonicalId, ObjId> = sink
+        .row()
         .map(|row| {
             row.rooms
                 .iter()
@@ -745,7 +788,7 @@ pub(crate) fn lay_up_one(
             .ok_or_else(|| format!("{id}: hull {mark} has no room {}", pair.to))?;
         for (side, (src, dest)) in [(from, to), (to, from)].into_iter().enumerate() {
             let at = i.saturating_mul(2).saturating_add(side);
-            let made = rows(map, which).get(index).map_or(0, |row| row.exits.len());
+            let made = sink.row().map_or(0, |row| row.exits.len());
             let spec = pair
                 .names
                 .get(side)
@@ -756,8 +799,8 @@ pub(crate) fn lay_up_one(
             // is the one the map recorded at `at`, never re-made or re-linked, so a
             // template may change an exit's words but never reorder or drop a pair.
             if at < made {
-                let exit = rows(map, which)
-                    .get(index)
+                let exit = sink
+                    .row()
                     .and_then(|row| row.exits.get(at))
                     .map(|obj| ObjId(*obj))
                     .ok_or_else(|| format!("{id}: hull {mark} exit {at} has no map row"))?;
@@ -770,10 +813,10 @@ pub(crate) fn lay_up_one(
             }
             let exit = open_exit(ctx, src, spec, dest)
                 .map_err(|e| format!("{id}: hull {mark} exit {spec}: {e}"))?;
-            if let Some(row) = rows_mut(map, which).get_mut(index) {
+            if let Some(row) = sink.row_mut() {
                 row.exits.push(exit.0);
             }
-            put_port_map(ctx, map);
+            sink.save(ctx);
         }
     }
     // 5. The store, then 6. the airlock (members and berths).
@@ -826,29 +869,28 @@ pub(crate) fn lay_up_one(
     }
     // 6b. The bays (doc 20 cut SM.3a; §4.3, D-20-7), every pass, idempotent.
     for (bay, template) in bays {
-        lay_up_bay(ctx, id, map, (which, index), hull, bay, template)
+        lay_up_bay(ctx, id, sink, hull, bay, template)
             .map_err(|e| format!("{id}: hull {mark} bay {}: {e}", bay.room))?;
     }
     Ok(())
 }
 
 /// **Step 6b for one bay** (doc 20 cut SM.3a): the room made when the row lacks
-/// it (the room loop's shape, the map written after), dressed, declared an
+/// it (the room loop's shape, the row written after), dressed, declared an
 /// interior space riding the hull, and its rigs compartment declared when it is
 /// not already declared at the bay's maximum (the berths shape). Doc 20 cut SM.12b: the row is
-/// `index` among `which`'s rows ([`HullRows`]), so a yard's bay room is recorded on the yard's
-/// own row, never on a programme row at the same index.
+/// the sink's ([`HullRowSink`]), so a yard's bay room is recorded on the yard's own row, never
+/// on a programme row at the same index.
 fn lay_up_bay(
     ctx: &mut Ctx<'_>,
     id: &CanonicalId,
-    map: &mut PortMap,
-    (which, index): (HullRows, usize),
+    sink: &mut dyn HullRowSink,
     hull: ObjId,
     bay: &BayDef,
     template: &InteriorRoomDef,
 ) -> Result<(), String> {
-    let recorded = rows(map, which)
-        .get(index)
+    let recorded = sink
+        .row()
         .and_then(|row| row.rooms.get(&bay.room))
         .map(|obj| ObjId(*obj));
     let room = match recorded {
@@ -858,10 +900,10 @@ fn lay_up_bay(
                 .w
                 .create(ObjKind::Room, &template.name, ctx.actor, None)
                 .map_err(|e| e.to_string())?;
-            if let Some(row) = rows_mut(map, which).get_mut(index) {
+            if let Some(row) = sink.row_mut() {
                 row.rooms.insert(bay.room.clone(), room.0);
             }
-            put_port_map(ctx, map);
+            sink.save(ctx);
             room
         }
     };

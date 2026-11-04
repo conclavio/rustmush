@@ -799,9 +799,18 @@ async fn field_story(at: &Ground) {
         GOD,
         &format!("@field/raiders/withdraw {}", at.raider),
     );
+    // Doc 40 FR.5 (Q-40-4): the engine hit's part draw may jam the escort's plant, its power then
+    // off and STARTUP refused until a tender clears it; which it does is the rig's `FIELD_SEED`.
+    let plant_down = frame(&rig, escort)
+        .is_some_and(|frame| frame.power == tacsim::arena::state::Power::Off && !frame.wreck);
     assert!(
         headed,
-        "the escort's coaxial finds the walker's head ({said}); {}",
+        "the escort's coaxial finds the walker's head ({said}){}; {}",
+        if plant_down {
+            ": its plant is down, an FR.5 jam on the engine hit under this FIELD_SEED"
+        } else {
+            ""
+        },
         damage_summary(&lines, &[leased, walker, tank])
     );
     assert_eq!(

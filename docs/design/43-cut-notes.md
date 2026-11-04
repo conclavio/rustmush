@@ -175,6 +175,75 @@ base `c252ec8d`. Summed, main → PR:
 
 No cell's wall is set by this cut, and no story moves to another shard.
 
+## TS.3 (2026-11-04) — optimised dependencies, measured
+
+Q-43-4 / D-43-4. `[profile.dev.package."*"] opt-level = 1` in `Cargo.toml`: every non-workspace dependency is
+optimised in dev and test builds, and the workspace's own crates are not. Variant B added `opt-level = 2` for
+`rhai`, `serde_json`, `rmp-serde`, `sha2`, `blake3`, `image` and `flate2` (PR #423, closed unmerged).
+
+**Hosted CI, summed test minutes per cell** (nextest JUnit).
+- main: runs 41870246223 (`7a535806`), 41870167197 and 41827163605.
+- A: run 41871003719, attempts 1 and 2.
+- B: run 41873792386.
+
+| cell | main mean (min–max) | optA mean (min–max) | optB | optA Δ% | optB Δ% |
+|---|---|---|---|---|---|
+| bot | 10.7 (9.7–11.9) | 8.2 (8.2–8.2) | 8.1 | -23 | -24 |
+| bot-stories | 28.3 (28.0–28.6) | 25.3 (25.3–25.3) | 26.2 | -10 | -7 |
+| rest-gateway | 5.0 (4.6–5.4) | 3.0 (2.8–3.2) | 3.5 | -39 | -30 |
+| rest-libs | 18.9 (16.1–20.6) | 11.3 (10.1–12.5) | 12.6 | -40 | -33 |
+| rest-mushd | 31.4 (26.7–34.0) | 17.6 (15.5–19.7) | 17.7 | -44 | -44 |
+| rest-server | 46.5 (36.9–51.6) | 40.9 (35.7–46.0) | 38.9 | -12 | -16 |
+| rest-server-boundary | 33.6 (30.2–40.2) | 21.4 (21.2–21.6) | 16.6 | -36 | -51 |
+| tacsim-integration-1 | 59.0 (43.3–72.6) | 49.6 (43.3–55.9) | 54.8 | -16 | -7 |
+| tacsim-integration-10 | 48.3 (37.3–61.2) | 39.1 (35.1–43.1) | 26.4 | -19 | -45 |
+| tacsim-integration-2 | 28.2 (21.5–40.4) | 27.5 (27.4–27.7) | 29.6 | -2 | +5 |
+| tacsim-integration-3 | 49.0 (46.9–50.1) | 33.3 (32.8–33.7) | 23.1 | -32 | -53 |
+| tacsim-integration-4 | 46.5 (30.4–61.7) | 38.9 (33.1–44.6) | 46.3 | -16 | -0 |
+| tacsim-integration-5 | 42.0 (34.3–46.0) | 33.6 (33.4–33.8) | 34.7 | -20 | -17 |
+| tacsim-integration-6 | 46.3 (46.2–46.5) | 28.5 (23.4–33.6) | 34.3 | -39 | -26 |
+| tacsim-integration-7 | 49.6 (48.9–50.0) | 29.2 (28.1–30.3) | 29.6 | -41 | -40 |
+| tacsim-integration-8 | 51.5 (30.3–62.7) | 36.4 (36.0–36.7) | 49.6 | -29 | -4 |
+| tacsim-integration-9 | 52.3 (51.5–52.9) | 32.1 (24.9–39.2) | 40.6 | -39 | -22 |
+| tacsim-lib | 38.3 (37.7–39.0) | 21.9 (18.9–24.9) | 27.5 | -43 | -28 |
+| **total** | 685.5 (636.8–751.6) | 497.7 (493.6–501.8) | 520.3 | -27 | -24 |
+
+**conclav.dev, tacsim's whole sweep** (`-P ci`, 16 threads, base `7a535806`, summed minutes per binary):
+
+| binary | main-a | main-b | o1-a | o2-a | main-b vs main-a | o1-a vs main-a | o2-a vs main-a |
+|---|---|---|---|---|---|---|---|
+| tacsim::shard_1 | 32.7 | 32.7 | 26.2 | 27.5 | -0% | -20% | -16% |
+| tacsim::shard_9 | 27.5 | 27.4 | 22.1 | 22.9 | -0% | -20% | -17% |
+| tacsim::shard_8 | 26.7 | 26.7 | 20.9 | 21.7 | -0% | -22% | -19% |
+| tacsim::shard_10 | 25.5 | 25.7 | 18.5 | 20.1 | +1% | -27% | -21% |
+| tacsim::shard_4 | 22.0 | 21.5 | 15.3 | 16.2 | -2% | -31% | -26% |
+| tacsim::shard_7 | 20.7 | 20.8 | 16.3 | 17.1 | +1% | -21% | -18% |
+| tacsim::shard_3 | 18.7 | 18.1 | 11.9 | 12.8 | -3% | -36% | -32% |
+| tacsim::shard_6 | 16.4 | 16.6 | 11.9 | 12.9 | +1% | -27% | -21% |
+| tacsim::shard_5 | 16.0 | 15.9 | 11.6 | 12.2 | -1% | -28% | -24% |
+| tacsim | 14.6 | 14.7 | 9.4 | 10.4 | +0% | -36% | -29% |
+| tacsim::shard_2 | 14.0 | 14.2 | 11.1 | 11.9 | +1% | -21% | -15% |
+| tacsim::cost_lane | 4.8 | 4.8 | 3.2 | 3.3 | +1% | -33% | -30% |
+| tacsim::harness | 0.4 | 0.4 | 0.3 | 0.3 | -2% | -31% | -27% |
+| **total** | 240.1 | 239.4 | 178.7 | 189.2 | -0% | -26% | -21% |
+
+The wall of that sweep was 1366 s on both main runs, 1036 s for A and 1082 s for B. A cold build of tacsim's tests
+took 190 s, 198 s and 197 s.
+
+**Reading**
+- **A meets D-43-4's bar.**
+  - On hosted CI, 11 of the 18 cells fall by a fifth or more, and the total by 27%.
+  - On the quiet box every tacsim binary falls by 20–36%, with main against itself at ±0%.
+- **B is slower than A on the same host** (−21% against −26%), so per-crate opt-level 2 is not taken.
+- **Why it works.** TS.3b found that boot (debug-build composition, content, site generation) is 70% of the
+  biggest modules' minutes, and the dependencies (serde, rhai, hashing, compression) do much of that work.
+- **The cost.** Every warm target dir (CI's caches, the VPS gate's, the owner's box) rebuilds its dependencies
+  once. The hosted cells' first run built in 1–4 min more than main's.
+- **The one red.** B's single failure, `field_gc4::gc4_the_wingman_drags…` (`field_gc4.rs:317`), passed on A in
+  every run and on main's three. It also failed twice on TS.12's branch, which has no profile change, so it is not
+  an effect of the opt level. Its cause is not established: a real-time race in that journey, or (on TS.12) the
+  binary's composition.
+
 ## TS.3b (2026-11-04) — the step audit
 
 Read-only. The question was: for the dozen modules of §2.4, where do each story's minutes go? Four buckets:
@@ -416,3 +485,149 @@ upload.
 
 D-43-5's test was whether the partition's link cost is lower than the reshard cost. Measured, it is about 26 s a
 cell and no wall, against a hand-made layout PR every day or two. The decision is the owner's.
+
+## TS.6 (2026-11-04) — the fiat budget
+
+D-43-9 as written. `crates/mush-contract-tests/tests/ci_policy/fiat_budget.rs` (module `fiat_budget::` of
+`ci_policy`) counts the unchecked state-slot accessors in every `crates/<pkg>/tests/**.rs`, after comments and
+literals are blanked. The accessors are `module_state_mut`, `module_state_pair_mut`, `get_pair_mut` and
+`get_captured_pair_mut`, matched as whole words, so path-qualified spellings count too. The checked
+`state_mut`/`try_state_mut` are not counted.
+
+- **The budgets.** `fiat_budget/<crate>-tests.txt` holds one line per file: `<budget> <low-water> <path>`.
+  Today's baseline is **205 sites in 96 files across 21 crates**. Doc 43 counted 210 at its base; tacsim
+  has 86 of today's sites.
+- **The ratchet.** The gate is equality: a file's count is its budget, so a removal is re-blessed down and
+  stays down. A budget above its low-water mark, a new file included (low-water 0), needs
+  `# raised <path> to <n>: <reason>`, and the reason must name an as-built section (`§`). Bless lowers
+  freely. It raises only with `FIAT_BUDGET_RAISE="<path>: <reason naming §…>"` and refuses without it.
+  Unit tests pin the count's spellings (prose and literals excluded) and the raise rules (missing, no `§`,
+  wrong number, stale, new file).
+- **`TestWorld::exec_ok`** runs a line that must succeed and panics, naming the line and its error, on any
+  error-styled answer, `Huh?` included. It is the prefer-instead the gate's failure names. 44 test files
+  today carry their own `has_error`, so the common case is real.
+
+**Departures from §7.** Inline `#[cfg(test)]` modules in `src/` are not counted; they are in-crate unit tests
+of a slot's own owner. Equality rather than a ceiling makes the ratchet bite on removals too. It runs in the
+existing `ci_policy` binary, so CI needs no change.
+
+**Summed minutes.** About +0.01: the walk takes 0.4 s warm and 17 s cold.
+
+## TS.5b (2026-11-04) — the fault matrix as sequences
+
+The second half of §7's TS.5 row. The new test is `gate5_fault_matrix::`
+`lifecycle_sequences_with_two_faults_and_restarts_recover_to_the_clean_run`, in `ci_policy`.
+
+- **The script.** Each case runs one script over each of the matrix's five real bundles (Gate-1 brace, Gate-2
+  tactical fire, and the three Gate-4 delayed-decision bundles):
+  - submit;
+  - reconcile;
+  - one outbox attempt per pending delivery that **fails (`Retry`)**, then is delivered;
+  - checkpoint.
+- **The cases.** Every single fault, and every pair at two different stages, from the matrix's own modes:
+  `BeforeIntent`, `AfterIntent`, every `AfterNMaterializationOps`, `AckLostAfterFinalize`, `TokenConflict`
+  and `AckLostAfterCheckpoint`. Each is crossed with:
+  - no restart;
+  - a restart before each one stage;
+  - a restart before every stage.
+
+  A restart is `InMemoryStore::dump`, then `restore` into a fresh store, as a process reopens the same
+  durable state. The outbox stage's restart falls between the failed attempt and its retry. That makes
+  over 500 cases, and the test asserts the floor.
+- **The check.** Every case ends with its exact receipt, a compact rejoin and no delivery left pending. Its
+  final store, dumped to JSON, must be **identical to the same script run clean**: recovered equals live.
+  All pass. No sequence found a divergence.
+
+**Departures from §7.** The Redis backend is not driven. `AuthoritativeFaultStore` wraps the memory store
+only, so a Redis twin needs a fault wrapper over `RedisStore`, and that run belongs in the `redis` group
+(`.config/nextest.toml`'s `redis-serial`). `cancel` and `advance time` are not modelled, because the store
+has no cancel of an authoritative bundle: a decision's cancellation and its deadline live in the engine.
+Conservation and sole custody are covered by TS.5a's model, not here; this test's check is whole-store
+identity. The minimised-failures part of the row has nothing to keep yet.
+
+**Summed minutes.** About +0.15: 9 s in a debug build.
+
+## TS.19 (2026-11-04) — mounted assertions
+
+The structural source probes in `stores/unit.test.ts`, `lib/game.test.ts` and `lib/roomband.test.ts` are gone.
+Each case is now a mounted assertion in jsdom, or it was already one elsewhere. The three stale "no harness"
+comments went with the probes. The vocabulary bans elsewhere in the suite stay.
+
+- **`components/UnitScreen.test.ts`** (new):
+  - `KeyValue` and `Table` render repeated producer ids, rows and cells.
+  - `UnitScreen` branches refusal, then unanswered, then no-subject, then the panes.
+  - The ring renders under the no-subject line.
+  - An actionable `GenericView` row is a focusable button that prefills on Enter and Space; a row with no
+    action is neither.
+- **`components/RoomBand.test.ts`** (new): the weather chip shows the prose, or the bare state, never an empty
+  chip. The vitals strip names its subject as text, not only as a tooltip.
+- **`components/Game.test.ts`** (new) mounts the whole shell on a real `GameApp` driven through a fake socket.
+  jsdom has no `<dialog>`, so two lines polyfill `showModal`/`close`. It covers:
+  - B-08: one command box, after the screen and before the legend, registered with the app; none on the
+    channel screen, where the app lets go of it.
+  - The unit tab's badge counts nothing until the server answers.
+  - Screen 0 has no tab without a seat or a replay, and draws the replay, not the cockpit, once one opens.
+- **The three app whitelists** (Cockpit, Picture, Replay) are now `components/reach.ts`'s `onlyReaches`. It is
+  a Proxy around each mount's stand-in app that throws on any member outside the list. So every test in those
+  three files enforces the whitelist on every path it drives, child components and aliases included, and the
+  send bans fall out of it.
+- **B-60** (the zoom glyphs) and **B-09** (the label plan) were already asserted by `CockpitScreen.test.ts`'s
+  mounts, so their probes simply went. `Table`'s check that its callers declare constant columns also went:
+  it is spelling, and the header's keying is commented in `Table.svelte`.
+
+Every new assertion was checked against a mutation of the component, and each mutation failed the test that
+covers it.
+
+**Finding.** `PictureView.svelte:487` reads `app.chart` through a cast, `(app as { chart?: … }).chart`. SF.18's
+space views draw the sky chart's frame behind the ship. The source probe's `app\.(\w+)` regex could not see the
+cast, so the "picture and helm only" whitelist passed while the screen reached a third member. The runtime
+whitelist caught it on its first run. `chart` is now an explicit, read-only entry on the Picture and Cockpit
+lists. Whether the cast should become a declared prop is the owner's call.
+
+**Summed minutes.** About +0.1: three jsdom files, 13 cases, a few seconds of the web job.
+
+## TS.5a (2026-11-04) — the generated lifecycle, part one
+
+§7's row has three parts. This PR lands the first two: the state machine with the invariants as its model,
+and the check that a generated history's checkpoint boot equals its whole replay. The fault matrix as
+sequences is TS.5b.
+
+- **The state machine** (`mush-economy/tests/e2a/lifecycle.rs`) replaces `e2a.rs`'s fixed-seed
+  conservation fuzz. That fuzz had one instrument, two-line transfers and no shrinking.
+  - The inputs are histories of up to 47 steps, run against the pure engine: pay, place, capture, release
+    and expire a hold, title, transfer (with or without releasing liens), assign, unassign, encumber,
+    release a lien, and resubmit an earlier plan.
+  - After every step the model checks:
+    - conservation;
+    - the held projection equals the account's `Held` holds;
+    - invariant 23's available floor;
+    - invariant 26's cap;
+    - invariant 24: a hold leaves `Held` once and captures at most what it held, and an `Expire` without a
+      deadline never posts;
+    - invariants 12 and 13: no lien rides a title move, a moved title loses its assignment and maintenance
+      payer, and an asset is never assigned to its own owner;
+    - a posted plan resubmitted is `AlreadyPosted`.
+  - `the_histories_reach_every_kind_of_post` is the reach floor: every step kind posts somewhere in a fixed
+    sample.
+  - Mutation check: with invariant 12's `Encumbered` refusal disabled, the property fails and shrinks to a
+    three-step history (title, lien, transfer).
+- **Checkpoint boot equals whole replay** (`mush-economy/tests/e2b/lifecycle_replay.rs`).
+  - Histories of the economy's own staff verbs run through `TestWorld`:
+    - `@econ/mint`, `@econ/pay`;
+    - `@hold/place`, `@hold/capture`, `@hold/release`;
+    - `@asset/title`, `/transfer`, `/assign`, `/unassign`, `/lien`, `/release`.
+  - The sweep fires at random points, with the checkpoint cadence at 4 and the tail at 3.
+  - The written store is booted twice: as written, which resumes from the newest checkpoint, and with every
+    checkpoint document and the boot manifest removed, which replays the whole journal. The two snapshots
+    must be equal to each other, and to the live one.
+  - Its reach floor: every verb succeeds somewhere, and some boot resumes from a checkpoint. The floor caught
+    the generator's own gap on its first run. Only a hold placed `for=` someone can be captured
+    (`api.rs:710`), and unfunded accounts rarely placed at all, so the cast now starts funded and places
+    with a beneficiary.
+
+**Departures from §7.** It ships in two PRs. The pure engine has no custody provider, so custody is covered
+only through the module rig's title and lien verbs. `@vault` deposit and withdraw need a vault and a carried
+object, and wait for TS.5b's sequences. No minimised failure exists yet to keep as a regression: none was
+found.
+
+**Summed minutes.** About +0.05: 0.7 s in `e2a` and 2.3 s in `e2b`.
