@@ -2753,6 +2753,20 @@ async fn licensed_field_story(at: &FieldSite) {
         "the field opens on {}",
         at.entry
     );
+    let live = tacsim::field::live_on(rig.tw.world(), &crate::driving_rig::cid(at.entry))
+        .expect("the field's live record");
+    eprintln!(
+        "S4B3 {}: units {:?}",
+        at.entry,
+        live.units
+            .iter()
+            .map(|row| (row.unit.0, row.party, row.pilot.as_ref().map(|(p, _)| p.0)))
+            .collect::<Vec<_>>()
+    );
+    assert!(
+        live.units.iter().any(|row| row.unit == tv),
+        "rig 1 is admitted to the field"
+    );
     let sealed_line = |lines: &[LedgerEvent]| {
         lines.iter().find_map(|line| match &line.kind {
             EventKind::MindSealed {
@@ -2776,7 +2790,21 @@ async fn licensed_field_story(at: &FieldSite) {
             sealed_line(lines).is_some()
         })
         .await,
-        "rig 1's seal line lands on the field's log"
+        "rig 1's seal line lands on the field's log: {:?}",
+        lines
+            .iter()
+            .filter_map(|line| match &line.kind {
+                EventKind::MindSealed {
+                    unit,
+                    mind,
+                    licence,
+                    ..
+                } => {
+                    Some(format!("{}:{mind}:{licence}", unit.0))
+                }
+                _ => None,
+            })
+            .collect::<Vec<_>>()
     );
     let (mind, licence, state, card) = sealed_line(&lines).expect("the seal line");
     let facts = tacsim::surface::black_box::SealFacts::of(
