@@ -781,12 +781,13 @@ fn build_tier1_space_panel_payloads(
     hull: ObjId,
 ) -> Option<(serde_json::Value, serde_json::Value)> {
     let book = w.module_state::<SpaceBubbleBook>()?;
-    let (site_id, speed_mps) = if let Some(ff) = book.free_flight_for_hull(hull) {
+    let now_ic = w.world_ic_now().at;
+    let (site_id, speed_mps, observer_pos_km) = if let Some(ff) = book.free_flight_for_hull(hull) {
         let vx = i128::from(ff.vel_mps[0]);
         let vy = i128::from(ff.vel_mps[1]);
         let vz = i128::from(ff.vel_mps[2]);
         let spd = super::weapons::isqrt_i128(vx * vx + vy * vy + vz * vz) as i64;
-        (ff.target_place.as_str().to_owned(), spd)
+        (ff.target_place.as_str().to_owned(), spd, ff.pos_km)
     } else {
         let cs = book.cluster_sessions.get(&hull)?;
         let vx = i128::from(cs.ship_vel_mmps[0]);
@@ -795,15 +796,37 @@ fn build_tier1_space_panel_payloads(
         let spd = (super::weapons::isqrt_i128(vx * vx + vy * vy + vz * vz) / 1_000) as i64;
         let anchor_body = super::mining::cluster_by_id(w, &cs.cluster)
             .map_or_else(|| "ceres".to_owned(), |c| c.anchor_body.as_str().to_owned());
-        (anchor_body, spd)
+        let base_pos_km = w
+            .module_state::<crate::store::TacsimStore>()
+            .and_then(|s| {
+                let lane =
+                    mush_core::CanonicalId::new(crate::definitions::content::LANE_PACK).ok()?;
+                let version = s.applied_in(w, &lane)?;
+                let (sky, _) = crate::port::voyage::lane_sky_of(w, version).ok()?;
+                let cid = mush_core::CanonicalId::new(&anchor_body).ok()?;
+                let p = sky.position_km(&cid, now_ic)?;
+                Some([p.x, p.y, p.z])
+            })
+            .unwrap_or([414_000_000, 0, 0]);
+        let pos_km = [
+            base_pos_km[0].saturating_add(cs.ship_pos_m[0] / 1_000),
+            base_pos_km[1].saturating_add(cs.ship_pos_m[1] / 1_000),
+            base_pos_km[2].saturating_add(cs.ship_pos_m[2] / 1_000),
+        ];
+        (anchor_body, spd, pos_km)
     };
 
     let callsign = display_name(w, hull);
-    let bodies_json: Vec<serde_json::Value> =
-        super::bubble::default_canopy_bodies_for_site(&site_id)
-            .iter()
-            .map(super::bubble::CanopyBodyProjection::to_feed_json)
-            .collect();
+    let bodies =
+        super::bubble::compute_ephemeris_canopy_bodies(w, observer_pos_km, &site_id, now_ic);
+    let cam_yaw_deg = bodies.first().map_or(0, |b| b.bearing_deg);
+    let cam_pitch_deg = bodies
+        .first()
+        .map_or(0, |b| (b.pitch_deg + 4).clamp(-45, 45));
+    let bodies_json: Vec<serde_json::Value> = bodies
+        .iter()
+        .map(super::bubble::CanopyBodyProjection::to_feed_json)
+        .collect();
 
     let holotank = serde_json::json!({
         "title": format!("{} ({})", callsign, site_id.to_ascii_uppercase()),
@@ -879,12 +902,12 @@ fn build_tier1_space_panel_payloads(
     let cockpit = serde_json::json!({
         "callsign": callsign,
         "site_id": site_id,
-        "yaw_deg": 0,
-        "pitch_deg": 0,
+        "yaw_deg": cam_yaw_deg,
+        "pitch_deg": cam_pitch_deg,
         "roll_deg": 0,
         "speed_mps": speed_mps,
-        "prograde_bearing_deg": 0.0,
-        "prograde_pitch_deg": 0.0,
+        "prograde_bearing_deg": f64::from(cam_yaw_deg),
+        "prograde_pitch_deg": f64::from(cam_pitch_deg),
         "delta_v_mps": tier1_dv_mps,
         "heat_permille": heat_permille,
         "hull_pct": hull_pct,
