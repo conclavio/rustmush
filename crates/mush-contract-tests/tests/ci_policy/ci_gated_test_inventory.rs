@@ -935,10 +935,13 @@ fn vf_g6_every_proof_10b_section_14_names_exists_in_the_file_it_is_attributed_to
         "a partial-materialization cell now exists: 10b §14.2's L5/L6 citation \
          must be changed from \"the migration commit must add\" to naming it"
     );
+    // Doc 43 cut TS.5 added the second cell, the same cuts as sequences
+    // (two faults and restarts a case); it is not a partial-materialization
+    // criterion either, so the pin above still stands.
     assert_eq!(
         matrix.matches("#[tokio::test]").count() + matrix.matches("#[test]").count(),
-        1,
-        "gate5_fault_matrix carries exactly one test cell"
+        2,
+        "gate5_fault_matrix carries exactly two test cells: the matrix and its sequences"
     );
 
     // **G15, the negative half.** §14.2's L3 cited "the H3 scale harness job".
