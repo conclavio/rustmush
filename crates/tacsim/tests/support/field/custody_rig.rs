@@ -437,3 +437,137 @@ pub(crate) async fn captors_field_close_keeps_the_captive(at: &Ground) {
         "the hull stays with the carrier"
     );
 }
+
+/// **The captive's own credit balance**, minor units.
+fn balance_minor(rig: &crate::driving_rig::Rig, who: ObjId) -> i64 {
+    tacsim::port::credit::own_account(rig.tw.world(), who).map_or(0, |a| a.posted_balance.minor())
+}
+
+/// **The captive's available credit** (posted less held: a lease deposit is held), minor units.
+fn available_minor(rig: &crate::driving_rig::Rig, who: ObjId) -> i64 {
+    tacsim::port::credit::own_account(rig.tw.world(), who)
+        .map_or(0, |a| a.posted_balance.minor() - a.held_amount.minor())
+}
+
+/// **Doc 42 cut CR.2's story (a′) whole on `at`'s ground** (Q-42-6, Q-42-7, Q-42-19): after
+/// GC.5's load the stranger lifts for Ceres, leaving its rig on the site, and docks. At the docking
+/// the captain is handed to the Freeport Registry: set down in Ceres's medical room (the arrivals
+/// hall), `Processing { ceres, release_due_ic, charge }` with the release fee's obligation named,
+/// told; leaving the port is refused with the processing line, `+sortie/condition` says so, and the
+/// captor's `+ship/captives` is empty. With `paid` the captain's account covers the fee and the
+/// obligation settles; without, a staff hand empties the account before the docking and the
+/// obligation stands unpaid. Either way, after the processing hour the captain is released at the
+/// port: `Port { ceres }`, stamped Ceres as the port they know.
+pub(crate) async fn handover_at_ceres(at: &Ground, paid: bool) {
+    let mut rig = stocked_tuned(quick);
+    let Loaded {
+        a, b, b_carrier, ..
+    } = non_friend_loaded(&mut rig, at).await;
+    let before = balance_minor(&rig, a);
+    assert!(before > 0, "the captain has credit");
+    if !paid {
+        let from = tacsim::port::credit::own_account(rig.tw.world(), a)
+            .map(|a| a.id.0)
+            .expect("A's account");
+        let to = tacsim::port::credit::own_account(rig.tw.world(), b)
+            .map(|a| a.id.0)
+            .expect("B's account");
+        let spend = available_minor(&rig, a);
+        let paid_out = run(
+            &mut rig.tw,
+            mush_core::GOD,
+            // `@econ/pay` takes minor units, as `field_story`'s 7,000 cr is `700000`.
+            &format!("@econ/pay #{from}=#{to} {spend}"),
+        );
+        assert!(
+            available_minor(&rig, a) < 150_000,
+            "A cannot cover the fee: {paid_out}"
+        );
+    }
+
+    // The stranger lifts for Ceres with its rig left on the ground, and docks there.
+    let ticket =
+        crate::driving_rig::file_and_launch(&mut rig, b, b_carrier, "+ship/lift ceres leave=1");
+    let _ = crate::driving_rig::to_ic(&mut rig, ticket.plan.depart_ic + ticket.plan.total_s + 60);
+    assert!(
+        seconds_until(&mut rig, 120, |rig| matches!(
+            crew_of(rig.tw.world(), a).map(|c| &c.location),
+            Some(CrewLocation::Processing { .. })
+        )),
+        "A is handed over at Ceres: {:?}, the carrier {:?}",
+        crew_of(rig.tw.world(), a),
+        tacsim::port::ship::berth_of(rig.tw.world(), b_carrier)
+    );
+    let crew = crew_of(rig.tw.world(), a).cloned().expect("A's record");
+    let CrewLocation::Processing {
+        port,
+        release_due_ic,
+        charge,
+    } = crew.location.clone()
+    else {
+        unreachable!("matched above");
+    };
+    assert_eq!(port.as_str(), "ceres");
+    let charge = charge.expect("the release fee's obligation is named");
+    let room = rig
+        .tw
+        .world()
+        .get(a)
+        .and_then(|object| object.location)
+        .expect("A stands somewhere");
+    assert_eq!(
+        tacsim::ic_return::port_of_room(rig.tw.world(), room).map(|p| p.id),
+        Some("ceres"),
+        "A stands in a room of Ceres"
+    );
+    let condition = run(&mut rig.tw, a, "+sortie/condition");
+    assert!(condition.contains("in processing at Ceres"), "{condition}");
+    let captives = run(&mut rig.tw, b, "+ship/captives");
+    assert!(captives.contains("You hold nobody aboard."), "{captives}");
+
+    // The fee: one obligation to the Registry, settled when the account covers it.
+    let settled = seconds_until(&mut rig, 30, |rig| {
+        rig.tw
+            .world()
+            .module_state::<mush_economy::EconomyStore>()
+            .and_then(|economy| {
+                economy
+                    .snapshot()
+                    .obligation(charge)
+                    .map(|o| o.status.clone())
+            })
+            .is_some_and(|status| status == mush_economy::ObligationStatus::Satisfied)
+    });
+    let status = rig
+        .tw
+        .world()
+        .module_state::<mush_economy::EconomyStore>()
+        .and_then(|economy| {
+            economy
+                .snapshot()
+                .obligation(charge)
+                .map(|o| o.status.clone())
+        });
+    if paid {
+        assert!(settled, "the fee settles: {status:?}");
+        assert_eq!(before - balance_minor(&rig, a), 150_000, "1,500 cr paid");
+    } else {
+        assert!(!settled, "the fee stands unpaid: {status:?}");
+    }
+
+    // After the processing hour: released at the port, stamped, whatever the fee.
+    let _ = crate::driving_rig::to_ic(&mut rig, release_due_ic);
+    assert!(
+        seconds_until(&mut rig, 30, |rig| matches!(
+            crew_of(rig.tw.world(), a).map(|c| &c.location),
+            Some(CrewLocation::Port { port }) if port.as_str() == "ceres"
+        )),
+        "A is released at Ceres: {:?}",
+        crew_of(rig.tw.world(), a)
+    );
+    assert_eq!(
+        tacsim::ic_return::last_port(rig.tw.world(), a).map(|p| p.id),
+        Some("ceres"),
+        "Ceres is the port A knows"
+    );
+}
