@@ -25,8 +25,9 @@ use crate::space::weapons::{
 /// Maximum substep duration in wall milliseconds (`D-16-2`).
 pub const MAX_SUBSTEP_MS: u32 = 250;
 
-/// Default 48-hour open-epoch derelict life-support and salvage contest window in seconds (`D-35-12`).
-pub const DERELICT_WINDOW_S: u32 = 48 * 3_600;
+/// The 48-hour life support of an open-epoch derelict, in seconds (`D-35-12`). Its salvage
+/// contest runs on the claim's one window, `[tacsim.recovery].claim_window_s` (doc 41 RS.8).
+pub const DERELICT_LIFE_SUPPORT_S: u32 = 48 * 3_600;
 
 /// Identifier of a [`LocalSpaceBubble`].
 #[derive(Clone, Debug, PartialEq, Eq, PartialOrd, Ord, Hash, Serialize, Deserialize)]
@@ -159,7 +160,6 @@ pub enum HullStatus {
     DisabledDerelict {
         epoch_open: bool,
         life_support_remaining_s: u32,
-        salvage_contest_window_s: u32,
     },
 }
 
@@ -985,8 +985,7 @@ impl SpaceShipState {
         if disable_ship && self.status == HullStatus::Operational {
             self.status = HullStatus::DisabledDerelict {
                 epoch_open: true,
-                life_support_remaining_s: DERELICT_WINDOW_S,
-                salvage_contest_window_s: DERELICT_WINDOW_S,
+                life_support_remaining_s: DERELICT_LIFE_SUPPORT_S,
             };
             self.thrust_mps2 = [0, 0, 0];
             self.thrust_mmps2 = [0, 0, 0];
@@ -2156,14 +2155,11 @@ impl LocalSpaceBubble {
             for ship in self.ships.values_mut() {
                 if let HullStatus::DisabledDerelict {
                     ref mut life_support_remaining_s,
-                    ref mut salvage_contest_window_s,
                     ..
                 } = ship.status
                 {
                     *life_support_remaining_s =
                         life_support_remaining_s.saturating_sub(elapsed_whole_s);
-                    *salvage_contest_window_s =
-                        salvage_contest_window_s.saturating_sub(elapsed_whole_s);
                 }
             }
         }

@@ -1650,6 +1650,58 @@ impl InventoryFamilies {
         Ok(moved)
     }
 
+    /// **Relocate several lots between two endpoints in one bundle** (doc 39 cut IN.7):
+    /// [`Self::relocate`] for each, with the two endpoints' census and each commodity's tally
+    /// written once — a bundle writes a key once, so ten single relocations of one endpoint's lots
+    /// cannot share a transaction. Each lot is the same lot, as `relocate` keeps it.
+    ///
+    /// # Errors
+    /// As [`Self::relocate`], and [`InventoryError::AlreadyExists`] for a lot named twice.
+    /// **Nothing is written on an error.**
+    pub fn relocate_lots(
+        &self,
+        txn: &mut ActionTxn<'_>,
+        lots: &[LotId],
+        from: EndpointRef,
+        to: EndpointRef,
+    ) -> Result<Vec<Lot>, InventoryError> {
+        if from == to {
+            return Err(InventoryError::MergeMismatch);
+        }
+        let mut moved: Vec<Lot> = Vec::with_capacity(lots.len());
+        for lot in lots {
+            if moved.iter().any(|m| m.id() == *lot) {
+                return Err(InventoryError::AlreadyExists);
+            }
+            let record = txn
+                .get(&self.lots, lot)?
+                .cloned()
+                .ok_or(InventoryError::NoLot)?;
+            if record.endpoint() != from {
+                return Err(InventoryError::NoLot);
+            }
+            self.require_unheld_lot(txn, *lot)?;
+            moved.push(record.checked_relocate(record.revision(), to)?);
+        }
+        if moved.is_empty() {
+            return Ok(moved);
+        }
+        let mut tallies: std::collections::BTreeMap<CanonicalId, i128> =
+            std::collections::BTreeMap::new();
+        for lot in &moved {
+            txn.replace(&self.lots, &lot.id(), lot.clone())?;
+            *tallies.entry(lot.commodity().clone()).or_default() += i128::from(lot.quantity());
+        }
+        let n = i64::try_from(moved.len()).map_err(|_| InventoryError::Identity)?;
+        self.move_lots(txn, from, -n)?;
+        self.move_lots(txn, to, n)?;
+        for (commodity, units) in tallies {
+            self.tally_lots(txn, from, &commodity, -units)?;
+            self.tally_lots(txn, to, &commodity, units)?;
+        }
+        Ok(moved)
+    }
+
     /// Consume one complete, identified lot into a durable product receipt.
     /// The caller must validate authority, provenance and absence of a sale, and
     /// write its receipt in this same transaction. This does not credit a pool.

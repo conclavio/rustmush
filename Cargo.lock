@@ -2381,6 +2381,7 @@ dependencies = [
  "mush-org",
  "mush-proto",
  "mush-testkit",
+ "proptest",
  "serde",
  "serde_json",
  "sha2",

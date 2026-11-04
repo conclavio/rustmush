@@ -77,9 +77,19 @@ pub(crate) fn cid(word: &str) -> CanonicalId {
 pub(crate) struct Roster(pub(crate) TacsimConfig);
 
 /// The `[tacsim]` every keyed rig boots under: the layer on, everything else the default.
+/// **The field rigs' dice seed** (`FieldConfig::seed`, doc 40 FR.5's cut note): every field a
+/// rig world admits draws from it, so a scripted field story's hits, jams and misses hang on the
+/// script and not on whatever lane content or world clock went before the field (IN.5's Ceres
+/// vendor row moved `seed_for`'s seed and jammed gc0's escort plant on its engine hit).
+pub(crate) const FIELD_SEED: u64 = 0x5EED_0002;
+
 pub(crate) fn rig_config() -> TacsimConfig {
     TacsimConfig {
         enabled: true,
+        field: tacsim::config::FieldConfig {
+            seed: Some(FIELD_SEED),
+            ..tacsim::config::FieldConfig::default()
+        },
         ..TacsimConfig::default()
     }
 }
@@ -1775,4 +1785,87 @@ pub(crate) fn spread(mut values: Vec<usize>) -> (usize, usize, usize) {
     let max = values.last().copied().unwrap_or(0);
     let median = values.get(values.len() / 2).copied().unwrap_or(0);
     (min, median, max)
+}
+
+/// **Staff stock a vendor's stores with `n` part lots of `good`** (doc 39 cut IN.7: the lane's
+/// seeded part stock retired, and the works make parts for whoever orders them): each a
+/// one-unit lot at grade 9 in `org`'s storefront at `entry`, minted under a test receipt with
+/// its `Seeded` provenance row, as IN.6's seed laid them. `first` is the first lot's id; the
+/// lots are `first..first + n`.
+pub(crate) fn seed_store_parts(
+    rig: &mut Rig,
+    entry: &str,
+    org: &str,
+    good: &str,
+    n: u64,
+    first: u64,
+) -> Vec<LotId> {
+    let vault = VaultId(port_map(&rig.tw, entry).vendors[&cid(org)].vault);
+    let definition = store(&rig.tw)
+        .definitions()
+        .parts
+        .values()
+        .find(|row| row.commodity.as_str() == good)
+        .map(|row| row.row.clone())
+        .unwrap_or_else(|| panic!("{good} is a part row"));
+    let families = rig
+        .tw
+        .world()
+        .module_state::<InventoryHandles>()
+        .expect("inventory handles")
+        .0
+        .clone();
+    let parts = rig
+        .tw
+        .world()
+        .module_state::<tacsim::port::bay_work::act::BayActHandles>()
+        .expect("the bay's handles")
+        .parts
+        .clone();
+    let mut lots = Vec::new();
+    for lot in (first..first + n).map(LotId) {
+        let engine = rig.tw.engine_mut();
+        let prepared = {
+            let mut txn = engine
+                .action_transaction(&families.pools)
+                .expect("inventory transaction");
+            families
+                .mint_origin(
+                    &mut txn,
+                    EndpointRef(vault),
+                    &cid(good),
+                    1,
+                    Grade::new(9).expect("grade"),
+                    mush_economy::ExternalRef {
+                        provider: "test".into(),
+                        kind: "seed".into(),
+                        id: lot.0.to_string().into(),
+                        revision: None,
+                    },
+                    lot,
+                )
+                .expect("the part's lot mints");
+            txn.prepare().expect("prepares")
+        };
+        let (ops, install) = prepared.into_parts();
+        engine.install_prepared_action(install).expect("installs");
+        keep(rig, ops);
+        seed_typed(
+            rig,
+            &parts,
+            &lot,
+            tacsim::port::bay_work::act::PartProvenance {
+                lot,
+                definition: definition.clone(),
+                condition: mush_tactics::field_ops::ComponentCondition::Intact,
+                legality: mush_tactics::field_ops::ProvenanceLegalityStatus::CleanTitle,
+                fitted_into: None,
+                origin: tacsim::port::bay_work::act::PartOrigin::Seeded {
+                    receipt: format!("test/{}", lot.0),
+                },
+            },
+        );
+        lots.push(lot);
+    }
+    lots
 }

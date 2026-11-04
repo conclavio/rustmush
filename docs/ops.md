@@ -2239,6 +2239,13 @@ things: that the last commit touching those lines is theirs (a merge they made
 of doc 43 TS.2 counts), and that *Settings → Notifications → Actions* has
 "Send notifications for failed workflows only" with email on. A run that went
 red then mails the owner the next morning; nothing in the workflow sends it.
+The run itself names its cause: on the schedule and on a dispatch, ci.yml's
+`nightly-report` job waits for every other job and writes one line per job
+into the run's summary, failed ones first, each failure also an error
+annotation (`ci_gated_test_inventory` refuses a job its `needs` leaves out).
+An artifact upload that fails (the service's ECONNRESET of nightly #1553) no
+longer fails a test cell: the JUnit and the M6 evidence uploads continue on
+error and the next step warns that the cell's JUnit is missing.
 
 ## Test targets since T.3: the group binaries
 
