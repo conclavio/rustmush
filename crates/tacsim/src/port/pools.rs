@@ -824,11 +824,18 @@ fn seller(
 ) -> Result<(crate::port::def::VendorDef, u64), String> {
     let scale = credit_scale(w);
     if part {
+        // The yard's operator's stores (IN.7: no part is seeded; what is made, scrapped or sold
+        // into them is drawable).
+        let operator = def
+            .yard
+            .as_ref()
+            .map(|yard| yard.operator.clone())
+            .ok_or("the yard's port authors no yard")?;
         let vendor = def
             .vendors
             .iter()
-            .find(|v| v.stock.iter().any(|s| &s.good == good))
-            .ok_or("no vendor stocks that part")?;
+            .find(|v| v.org == operator)
+            .ok_or("the yard's operator keeps no stores")?;
         let major = w
             .module_state::<TacsimStore>()
             .and_then(TacsimStore::goods)
@@ -868,19 +875,12 @@ fn yard_port(w: &World) -> Result<(PortMap, PortDef), String> {
 /// The yard facility at the yard's port.
 fn yard(w: &World) -> Result<FacilityRecord, String> {
     let (_, def) = yard_port(w)?;
-    let rooms = crate::port::market::port_rooms(w, &def);
-    let capability =
-        CanonicalId::new(crate::port::works::YARD_CAPABILITY).map_err(|e| e.to_string())?;
+    let entry = CanonicalId::new(YARD_PORT).map_err(|e| e.to_string())?;
+    // The lane's yard row is a room of the port, which is the facility itself (IN.9).
+    let room = crate::port::plant::block_room(w, &entry, &def, "yard")?
+        .ok_or("the yard's port authors no yard")?;
     w.module_state::<mush_industry::IndustryStore>()
-        .into_iter()
-        .flat_map(|store| store.facilities())
-        .find(|f| {
-            f.capabilities().contains(&capability)
-                && (rooms.contains(&f.object())
-                    || w.get(f.object())
-                        .and_then(|o| o.location)
-                        .is_some_and(|at| rooms.contains(&at)))
-        })
+        .and_then(|store| store.facility(room))
         .cloned()
         .ok_or_else(|| "the yard is not open".to_owned())
 }

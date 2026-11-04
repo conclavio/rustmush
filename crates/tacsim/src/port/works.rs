@@ -1946,6 +1946,11 @@ fn port_of(w: &World, facility: &FacilityRecord) -> Option<CanonicalId> {
             at.is_some_and(|at| crate::port::market::port_rooms(w, def).contains(&at))
                 || crate::port::plant::works_room(w, entry, def).ok().flatten()
                     == Some(facility.object())
+                // Doc 39 cut IN.10: or its authored yard room (IN.9's row) is.
+                || crate::port::plant::block_room(w, entry, def, Front::Yard.word())
+                    .ok()
+                    .flatten()
+                    == Some(facility.object())
         })
         .map(|(entry, ..)| entry)
 }
