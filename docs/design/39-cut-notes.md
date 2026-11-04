@@ -507,4 +507,7 @@ room through a strip (a workshop scrap lays nothing in the hold now); `shard_1/f
 at their design's yield; `shard_2/in1_accounting.rs`'s heavy patch draws the heavy's figures; `shard_10/voyage.rs`
 drops `industrial_parts_t`; mush-tactics' scrap test reads 60 points; the tender's unit test the escort's figures.
 
-**Cell delta (rule #14).** `tacsim-integration-2`: _filled from the PR's JUnit_.
+**Cell delta (rule #14).** `tacsim-integration-2`: **+1.37 min** for the three new stories (11.5 s Stickney, 35.6 s
+Ahuna, 35.1 s Urvara on PR run 41838007042's JUnit). The cell's sum reads 21.51 → 30.83 min, main's run at the merge
+base (41827163605, `4390f04c`) against the PR's, 414 → 417 tests: runner speed outweighs the stories, as IN.6's note
+found; the moved tests do no more work than before.
