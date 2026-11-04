@@ -2,11 +2,11 @@
 //! half of a yard order, from the kit lot in the escrow to a hull somebody can sail.
 //!
 //! `+yard/collect <order>` on a delivered hull order writes one **`YardCommission`** record
-//! (`tacsim:commission:{order}`, keyed by the order) at [`Step::Consuming`] and owes one
+//! (`tacsim:commission:{order}`, keyed by the order) at `Step::Consuming` and owes one
 //! `tacsim_works` move that **consumes** the kit lot (by its `workorder.output` lineage, the relay
 //! foundry's check) and the part lots in the escrow (`crate::port::works::Then::Commissioned`):
 //! the record is written before the inputs go, so nothing is lost between them. When the works
-//! ledger shows the move landed, the record steps on, and the port tick ([`tick`]) runs every
+//! ledger shows the move landed, the record steps on, and the port tick (`tick`) runs every
 //! remaining step on every fire, each idempotent and recorded:
 //!
 //! 1. **Laying** — the Thing, the unit (`mush_tactics::module::create_unit` on the design), the

@@ -394,7 +394,7 @@
       "ledger_unit": "each",
       "quote_unit": "each",
       "measures": {},
-      "stowage": "stow.bulk",
+      "stowage": "stow.kit",
       "consumable": null,
       "reference_major": 1,
       "note": "Doc 39 cut IN.9 (§4.13, Q-39-33): a yard order's output, the stable order-to-hull identity; no mass of its own (the mass is the bill's), consumed by the commission in the escrow. The escort, IN.9's first hull: 3 t of alloys, 1 t of fittings and four parts over two yard days."
@@ -407,7 +407,7 @@
       "ledger_unit": "each",
       "quote_unit": "each",
       "measures": {},
-      "stowage": "stow.bulk",
+      "stowage": "stow.kit",
       "consumable": null,
       "reference_major": 1,
       "note": "Doc 39 cut IN.9 (§4.13, Q-39-33): a yard order's output, the stable order-to-hull identity; no mass of its own (the mass is the bill's), consumed by the commission in the escrow. The prospector rig, a light-plant terrain vehicle."
@@ -420,7 +420,7 @@
       "ledger_unit": "each",
       "quote_unit": "each",
       "measures": {},
-      "stowage": "stow.bulk",
+      "stowage": "stow.kit",
       "consumable": null,
       "reference_major": 1,
       "note": "Doc 39 cut IN.9 (§4.13, Q-39-33): a yard order's output, the stable order-to-hull identity; no mass of its own (the mass is the bill's), consumed by the commission in the escrow. The tender, the prospector's frame with a recovery bed."
@@ -433,7 +433,7 @@
       "ledger_unit": "each",
       "quote_unit": "each",
       "measures": {},
-      "stowage": "stow.bulk",
+      "stowage": "stow.kit",
       "consumable": null,
       "reference_major": 1,
       "note": "Doc 39 cut IN.9 (§4.13, Q-39-33): a yard order's output, the stable order-to-hull identity; no mass of its own (the mass is the bill's), consumed by the commission in the escrow. The standard Dray: 163 t of alloys, 55 t of fittings and a hauler plant over twelve yard days."
@@ -446,7 +446,7 @@
       "ledger_unit": "each",
       "quote_unit": "each",
       "measures": {},
-      "stowage": "stow.bulk",
+      "stowage": "stow.kit",
       "consumable": null,
       "reference_major": 1,
       "note": "Doc 39 cut IN.9 (§4.13, Q-39-33): a yard order's output, the stable order-to-hull identity; no mass of its own (the mass is the bill's), consumed by the commission in the escrow. The Dray-P, the Dray with a two-rig vehicle bay: the Dray's bill."

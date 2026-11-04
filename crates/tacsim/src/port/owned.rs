@@ -2,21 +2,21 @@
 //! expensive-to-reverse marker): what a yard commission leaves behind, and the one place every
 //! reader of a built hull asks.
 //!
-//! - **The register** — `tacsim:owned_hull:{hull}` ([`OwnedHull`]): one row a commissioned hull —
+//! - **The register** — `tacsim:owned_hull:{hull}` (`OwnedHull`): one row a commissioned hull —
 //!   the hull, the design, the mark, the home port, the provenance id, and the lay-up row (a
-//!   ship's [`HullRow`] or a rig's [`RigRow`]) the commission made it through. A built hull is
+//!   ship's `HullRow` or a rig's `RigRow`) the commission made it through. A built hull is
 //!   **never a programme row**: the applier's preflight and `hull_line` never read this, so the
 //!   pool stays the seed. The readers — `hull_view`, `hull_of_room`, `helm_of`, the carrier
 //!   scans (`bay_carriers`, `world_hulls`), the rig lessee reader (`rig_lease`'s title view) —
 //!   ask it **after** the programme and yard rows.
-//! - **The provenance** — `tacsim:hull_provenance:{order}` ([`HullProvenance`]): the order, the
+//! - **The provenance** — `tacsim:hull_provenance:{order}` (`HullProvenance`): the order, the
 //!   facility, the design's digest, the kit lot, the part lots fitted and the instant; the record
 //!   every later claim, resale and scrap reads (Q-38-12's reason).
 //! - **Who reaches the helm** (§4.13): a hull titled to the pilot, or to an organization the pilot
-//!   `acts_for` (`mush_economy::acts_for`), lowest id first ([`helm_hulls`]). A delegate without
+//!   `acts_for` (`mush_economy::acts_for`), lowest id first (`helm_hulls`). A delegate without
 //!   office waits on doc 27 Q-A1; until then an organization's hulls are its officers'.
 //!
-//! Each document is written whole through [`put_owned`] / [`put_provenance`], the works
+//! Each document is written whole through `put_owned` / `put_provenance`, the works
 //! contract's shape; an unreadable one is held (its hull reads as no register row) until staff
 //! repair it.
 

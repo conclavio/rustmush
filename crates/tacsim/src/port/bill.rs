@@ -10,7 +10,7 @@
 //! remainder is refused. The figures are provisional (the owner's economy rule of 2026-10-24).
 //!
 //! The hull recipe pack (`content/industry/hulls-v1.json`) carries each buildable design's bulk
-//! lines and work units; its test pins every row to [`design_bill`], so the pack can never drift
+//! lines and work units; its test pins every row to `design_bill`, so the pack can never drift
 //! from the design. The parts are the order's own lines, delivered as lots.
 
 use std::collections::BTreeMap;
