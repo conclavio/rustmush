@@ -20,7 +20,7 @@
 //! it is a **type distinct from `Frame`**: nothing converts one into the other,
 //! it leaves the task in its own field of `ArenaOut::Frames` and the world
 //! publishes it on its own feed (`arena.observer`) to at most eight staff
-//! watchers. `crates/mush-contract-tests/tests/arena_library.rs`'s
+//! watchers. `crates/mush-contract-tests/tests/engine_contracts/arena_library.rs`'s
 //! `the_observer_has_no_path_into_a_pilot_feed` refuses its names in the cockpit
 //! payload module and in the text of `Arena::frames`, so a path from here into a
 //! pilot's feed is a reviewed diff and not an accident.

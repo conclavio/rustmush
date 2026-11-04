@@ -2453,4 +2453,81 @@ mod tests {
         assert!(!s.is_empty());
         assert_eq!(s.iter().collect::<Vec<_>>(), vec!["teleport", "quiet"]);
     }
+
+    // Doc 43 cut TS.4: `ParsedArgs` over arbitrary argument text. Every
+    // player line's rest reaches it on the world task.
+    mod parsed_args_hostile {
+        use super::*;
+        use proptest::prelude::*;
+
+        const SHAPES: [ArgShape; 5] = [
+            ArgShape::None,
+            ArgShape::Raw,
+            ArgShape::EqPair,
+            ArgShape::EqPairList,
+            ArgShape::EqPairSemi,
+        ];
+
+        /// Text weighted toward the splitters and whitespace, with any char.
+        fn rest() -> impl Strategy<Value = String> {
+            prop::collection::vec(
+                prop_oneof![
+                    3 => prop::sample::select(vec!['=', ',', ';', ' ', '\t', '/', '\u{3000}', '\u{a0}']),
+                    2 => any::<char>(),
+                ],
+                0..96,
+            )
+            .prop_map(|chars| chars.into_iter().collect())
+        }
+
+        proptest! {
+            #![proptest_config(ProptestConfig { cases: 512, ..ProptestConfig::default() })]
+
+            /// No text panics any shape, and the split keeps its contract:
+            /// `raw` is the trimmed text; `lhs`/`rhs` are the trimmed halves
+            /// of the first `=`; `rhs_list` items are trimmed, non-empty and
+            /// free of the separator.
+            #[test]
+            fn any_text_parses_to_its_contract(rest in rest()) {
+                for shape in SHAPES {
+                    let parsed = ParsedArgs::parse(shape, &rest);
+                    prop_assert_eq!(parsed.raw(), rest.trim());
+                    match shape {
+                        ArgShape::None | ArgShape::Raw => {
+                            prop_assert_eq!(parsed.lhs(), "");
+                            prop_assert_eq!(parsed.rhs(), None);
+                            prop_assert!(parsed.rhs_list().is_empty());
+                        }
+                        ArgShape::EqPair | ArgShape::EqPairList | ArgShape::EqPairSemi => {
+                            match rest.trim().split_once('=') {
+                                Some((l, r)) => {
+                                    prop_assert_eq!(parsed.lhs(), l.trim());
+                                    prop_assert_eq!(parsed.rhs(), Some(r.trim()));
+                                }
+                                None => {
+                                    prop_assert_eq!(parsed.lhs(), rest.trim());
+                                    prop_assert_eq!(parsed.rhs(), None);
+                                }
+                            }
+                            let sep = match shape {
+                                ArgShape::EqPairList => Some(','),
+                                ArgShape::EqPairSemi => Some(';'),
+                                _ => None,
+                            };
+                            match sep {
+                                None => prop_assert!(parsed.rhs_list().is_empty()),
+                                Some(sep) => {
+                                    for item in parsed.rhs_list() {
+                                        prop_assert!(!item.is_empty());
+                                        prop_assert_eq!(item.as_str(), item.trim());
+                                        prop_assert!(!item.contains(sep));
+                                    }
+                                }
+                            }
+                        }
+                    }
+                }
+            }
+        }
+    }
 }

@@ -40,7 +40,7 @@
 //! deposit's **recorded** classes, and yield is a deterministic curve with
 //! depletion (D-E7-6, Q1A). There is no `rand::`, no `rand_chacha`, no
 //! `thread_rng`, no `SeedableRng` and no `OsRng` in this crate, so
-//! `crates/mush-contract-tests/tests/provider_rng_policy.rs` is green by
+//! `crates/mush-contract-tests/tests/ci_policy/provider_rng_policy.rs` is green by
 //! construction. If a later cut ever wants survey *quality* to vary, the only
 //! lawful source is `PrepareCtx::start_resolution` on the prepared path — never
 //! ambient RNG — and that would move `@survey` to `Authoritative`.
@@ -54,7 +54,7 @@
 //! contested by someone the authority chain does not permit?
 
 // WS01-S12: the panic-shaped restriction lints this crate measures zero of,
-// held at zero. `crates/mush-contract-tests/tests/restriction_lints.rs` carries
+// held at zero. `crates/mush-contract-tests/tests/ci_policy/restriction_lints.rs` carries
 // the measurement this set was cut from — including the counts of the lints
 // NOT named here — and fails if this attribute loses one of them.
 #![deny(
