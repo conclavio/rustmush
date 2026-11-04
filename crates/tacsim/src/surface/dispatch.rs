@@ -92,6 +92,61 @@ pub const MIND_NO_CORE: &str = "That rig carries no core; only Standard Doctrine
 /// **The holdings are not composed here** (a world with no Roll holdings seam).
 pub const MIND_UNAVAILABLE: &str = "Minds cannot be sealed aboard here.";
 
+/// **A licensed mind over a hull not titled to the operator** (doc 23 cut S.4b-1, D-23-22;
+/// Q-23-22, accepted): the Roll's reader admits a claim's Open only for a hull titled to the
+/// dispatcher (`TitleFence`: `title_owner == Object(actor)`, no scope), and a leased rig is
+/// titled to the lessor's organisation, so the launch is refused at `go` before any permit is
+/// minted. Lease authority is the Roll's own cut, S.4c. `{mark}` the rig, `{owner}` its title's
+/// holder as a player reads it.
+pub const MIND_UNTITLED: &str = "{mark} is {owner}'s hull; a licensed mind flies a hull titled to you until the Roll admits a lease.";
+
+/// **D-23-22's refusal, or `None`** (doc 23 cut S.4b-1): only where the claim path is composed
+/// ([`crate::minds::ic_sortie::claim_path_composed`]) — there a filed mind that flies opens a
+/// claim at `go` (D-23-21), and the claim's Open needs the title. Without the claim path the
+/// held mind is S.4a's dormant seal, no claim opens and no title is read: a leased or
+/// organisation-titled hull flies a filed mind as built (doc 17h M8g's stories). A draft opens
+/// no claim either way, and a licence fallen to the ROM flies no mind.
+pub(crate) fn untitled_refusal(
+    world: &mush_core::World,
+    actor: ObjId,
+    tv: ObjId,
+) -> Option<String> {
+    if !crate::minds::ic_sortie::claim_path_composed(world) {
+        return None;
+    }
+    let titled = world
+        .module_state::<mush_economy::EconomyStore>()
+        .and_then(|economy| {
+            economy
+                .snapshot()
+                .asset(tv)
+                .map(|title| (title.title_owner.clone(), title.scope.is_none()))
+        });
+    match titled {
+        Some((owner, unscoped)) if titled_to(&owner, unscoped, actor) => None,
+        found => {
+            let owner = found.map_or_else(
+                || "nobody".to_owned(),
+                |(owner, _)| crate::port::claims::holder_name(world, &owner),
+            );
+            let mark = world
+                .get(tv)
+                .map_or_else(|| format!("#{}", tv.0), |row| row.name.to_string());
+            Some(
+                MIND_UNTITLED
+                    .replace("{mark}", &mark)
+                    .replace("{owner}", &owner),
+            )
+        }
+    }
+}
+
+/// **The Roll's title rule** (`TitleFence`'s two fields): the hull is titled to the actor
+/// themself, under no organisation's scope.
+pub(crate) fn titled_to(owner: &mush_org::PrincipalId, unscoped: bool, actor: ObjId) -> bool {
+    unscoped && *owner == mush_org::PrincipalId::Object(actor)
+}
+
 /// The `mind=` word: `filed:<n>` or a draft (`draft:<name>`, or a bare name).
 #[derive(Clone, Debug, PartialEq, Eq)]
 pub(crate) enum MindWord {
@@ -295,7 +350,9 @@ fn resolve(
 /// **Seal `held` over the rig's unit** (doc 23 §6; D-UM-45: at the dispatch), the IC
 /// execution's policy (`crate::minds::ic_sortie`'s `Execution::capture`): its authored
 /// definition on the Line card, rated as held, capped by `[tacsim.minds].max_class`, the
-/// operator the warrant principal (D-23-5), no weapons (a rig carries none).
+/// operator the warrant principal (D-23-5), over the rig's armament summaries (doc 23 cut
+/// S.4b-1, D-23-14: the list the claim's capture and the field's `custody_unit` pass, so the
+/// digests agree for an armed rig).
 ///
 /// # Errors
 ///
@@ -311,10 +368,11 @@ pub(crate) fn seal_held(
     let principal = Some(CharacterRef::Character { id: operator });
     let card = crate::arena::card::line(&store.cfg.arena.reflex);
     let fallback = None;
+    let armament = crate::match_::seal_armament(store.definitions(), unit);
     crate::match_::seal::seal_with_policy(
         tv,
         unit,
-        &[],
+        &armament,
         sortie,
         &crate::match_::seal::SealPolicy {
             authored: held.definition.as_deref(),
@@ -337,7 +395,7 @@ pub(crate) fn seal_held(
 
 /// **The ROM seal over the rig's unit** (doc 23 cut S.1's `seal_rom_for`), for a licence whose
 /// state falls the hull to doctrine, or (doc 17h cut M8d2) for a rig whose core is impounded,
-/// sealed then as no core.
+/// sealed then as no core; over the rig's armament summaries as [`seal_held`] is.
 pub(crate) fn seal_rom(
     tv: ObjId,
     unit: &mush_tactics::TacticalUnit,
@@ -349,7 +407,7 @@ pub(crate) fn seal_rom(
     crate::match_::seal::seal_rom_for(
         tv,
         unit,
-        &[],
+        &crate::match_::seal_armament(store.definitions(), unit),
         sortie,
         &crate::match_::seal::IcSealConfig {
             minds: &store.cfg.minds,
@@ -395,6 +453,20 @@ pub(crate) fn dispatch(
     let world = ctx
         .world()
         .map_err(|_| refuse(MIND_UNAVAILABLE.to_owned()))?;
+    // Doc 23 cut S.4b-1 (D-23-22): a filed mind that will fly, over a hull not titled to the
+    // operator, where the claim path would open its claim. The word's own refusals stand first.
+    if !impounded
+        && matches!(
+            &resolved,
+            Resolved::Held {
+                licence: Some(_),
+                ..
+            }
+        )
+        && let Some(line) = untitled_refusal(world, actor, tv)
+    {
+        return Err(refuse(line));
+    }
     let store = world
         .module_state::<TacsimStore>()
         .ok_or_else(|| refuse(MIND_UNAVAILABLE.to_owned()))?;

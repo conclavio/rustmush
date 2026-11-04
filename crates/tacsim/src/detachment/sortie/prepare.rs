@@ -867,10 +867,12 @@ fn epoch_facts(
     let unit = mush_tactics::module::unit_of(world, flight.key.unit);
     let seal = unit
         .and_then(|unit| {
+            // Doc 23 cut S.4b-1 (D-23-14): over the unit's armament summaries, as the field's
+            // `custody_unit` seals it.
             crate::match_::seal::seal_rom_for(
                 flight.key.unit,
                 unit,
-                &[],
+                &crate::match_::seal_armament(store.definitions(), unit),
                 crate::arena::mind::SortieId::ic(flight.key.unit, flight.requested.at),
                 &crate::match_::seal::IcSealConfig {
                     minds: &store.cfg.minds,

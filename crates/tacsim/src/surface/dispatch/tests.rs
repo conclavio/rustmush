@@ -388,3 +388,100 @@ fn m8g_the_owner_row_is_read_before_the_paid_view() -> TestResult {
     check_eq!(order(None, None), (None, vec!["owner", "paid"]));
     Ok(())
 }
+
+/// **Doc 23 cut S.4b-1 (D-23-14): the dispatch's seals carry the rig's armament.** The armed
+/// escort (cored, `tv_escort.json`) sealed at the dispatch — the ROM's seal and a held mind's —
+/// digests the same armament list as the field's `custody_unit` and the claim's
+/// `Execution::capture` (`seal_rom_for`/`seal_with_policy` over [`seal_armament`]), so the
+/// dispatch's digest equals the field's for an armed rig; Draft 0.11 found every dispatch seal
+/// taken over an empty list.
+#[test]
+fn s4b1_the_dispatch_seals_an_armed_rig_over_its_armament() -> TestResult {
+    let catalog = crate::definitions::Catalog::build_fielded(&[], crate::NS)?;
+    let key = mush_core::CanonicalId::new(crate::definitions::content::TV_ESCORT)?;
+    let (spec, binding) = (
+        catalog.specs.get(&key).ok_or("the escort is fielded")?,
+        catalog.bindings.get(&key).ok_or("the escort binds")?,
+    );
+    let escort = crate::definitions::to_tactical_unit(spec, binding, TV)?;
+    let armament = crate::match_::seal_armament(&catalog, &escort);
+    check!(!armament.is_empty(), "the escort is armed");
+    let mut store = TacsimStore::default();
+    store.definitions = Arc::new(catalog);
+    let sortie = SortieId::ic(TV, 500);
+    let rom = seal_rom(TV, &escort, sortie, OPERATOR, &store, false)?;
+    let field = crate::match_::seal::seal_rom_for(
+        TV,
+        &escort,
+        &armament,
+        sortie,
+        &crate::match_::seal::IcSealConfig {
+            minds: &store.cfg.minds,
+            reflex: &store.cfg.arena.reflex,
+            principal: Some(CharacterRef::Character { id: OPERATOR }),
+            impounded: false,
+        },
+    )?;
+    check_eq!(rom, field, "the dispatch's ROM seal is the field's");
+    let bare = crate::match_::seal::seal_rom_for(
+        TV,
+        &escort,
+        &[],
+        sortie,
+        &crate::match_::seal::IcSealConfig {
+            minds: &store.cfg.minds,
+            reflex: &store.cfg.arena.reflex,
+            principal: Some(CharacterRef::Character { id: OPERATOR }),
+            impounded: false,
+        },
+    )?;
+    check!(
+        rom.seal_ref() != bare.seal_ref(),
+        "an empty list digests differently, the defect fixed"
+    );
+    Ok(())
+}
+
+/// **Doc 23 cut S.4b-1 (D-23-22, Q-23-22): the untitled refusal guards the claim's Open.**
+/// Without the claim path (S.4a's dormant seal, every world today) no title is read and a
+/// leased hull flies a filed mind as built; with the claim path composed, a hull whose title the
+/// world does not show held by the operator is refused at `go` with the one sentence, naming
+/// the rig. The titled case (`title_owner == Object(actor)`, no scope) passes the Roll's own
+/// `TitleFence`, which reads the same two fields.
+#[test]
+fn s4b1_a_licensed_mind_needs_the_hull_titled_where_claims_open() -> TestResult {
+    let mut world = mush_core::World::new_minimal();
+    check_eq!(
+        untitled_refusal(&world, OPERATOR, TV),
+        None,
+        "no claim path: S.4a's dormant seal, nothing read"
+    );
+    world.module_state_insert(crate::minds::ic_sortie::IcSorties::default());
+    check!(crate::minds::ic_sortie::claim_path_composed(&world));
+    let line = untitled_refusal(&world, OPERATOR, TV).ok_or("refused")?;
+    check_eq!(
+        line,
+        MIND_UNTITLED
+            .replace("{mark}", &format!("#{}", TV.0))
+            .replace("{owner}", "nobody")
+    );
+    check!(line.ends_with("until the Roll admits a lease."));
+    check!(!line.contains("weapon"));
+    Ok(())
+}
+
+/// **The title rule's two fields** (S.4b-1, D-23-22): the actor's own unscoped title passes; a
+/// lessor organisation's (a leased rig, `port/vehicle.rs`), another character's, or the actor's
+/// under an organisation's scope does not.
+#[test]
+fn s4b1_the_title_rule() {
+    use mush_org::PrincipalId;
+    assert!(titled_to(&PrincipalId::Object(OPERATOR), true, OPERATOR));
+    assert!(!titled_to(&PrincipalId::Object(OPERATOR), false, OPERATOR));
+    assert!(!titled_to(&PrincipalId::Object(ObjId(11)), true, OPERATOR));
+    assert!(!titled_to(
+        &PrincipalId::Organization(mush_org::OrgId(3)),
+        true,
+        OPERATOR
+    ));
+}
