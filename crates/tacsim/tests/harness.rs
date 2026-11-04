@@ -9266,6 +9266,9 @@ fn measure_lance(knobs: &Knobs, lance: &LanceKnobs) -> LanceReport {
             // from, so each passes on a fact. Since `5993ba20` (re-pinned by
             // record, see above) `blue-1` stands three at 71,500 ms — #100003
             // takes the minute-one order and is wrecked before the release.
+            // **Doc 40 cut FR.5 re-pins them by record** (the round's one kernel rebless, doc 40
+            // §4a: `line_to` over wrecks and the component effects): `blue-1` stands three at
+            // both marks, `red-1` four at 71,500 ms and three at the release.
             assert_eq!(
                 (
                     stood(71_500, "blue-1", true),
@@ -9273,9 +9276,9 @@ fn measure_lance(knobs: &Knobs, lance: &LanceKnobs) -> LanceReport {
                     stood(71_500, "red-1", true),
                     stood(LANCE_RELEASE_MS, "red-1", false)
                 ),
-                (Some(3), Some(2), Some(3), Some(3)),
-                "at the defaults blue-1 stands three at 71,500 ms and two at {LANCE_RELEASE_MS} \
-                 ms, red-1 three at both (re-pinned by record from `5993ba20`): {marks:?}"
+                (Some(3), Some(3), Some(4), Some(3)),
+                "at the defaults blue-1 stands three at 71,500 ms and three at {LANCE_RELEASE_MS} \
+                 ms, red-1 four and three (re-pinned by record by doc 40 cut FR.5): {marks:?}"
             );
             // The sides whose first squad had a standing machine at the release.
             let stood_at_release: Vec<(ObjId, &str)> = commanders
