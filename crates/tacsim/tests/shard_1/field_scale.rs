@@ -77,6 +77,7 @@ fn opening_host(party: impl Fn(usize) -> PartyId) -> FieldHost {
         end: EndCondition::Host,
         every_class: true,
         weapons_hold: true,
+        tows: Vec::new(),
     }
 }
 

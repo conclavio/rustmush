@@ -138,7 +138,7 @@ fn house_of<'a>(w: &'a World, sale: &SaleTerms<'_>) -> Option<House<'a>> {
 
 /// The live reference price of `good`, or the goods table's baseline with the memo.
 /// `Err` when neither reads (never a zero reference).
-fn reference_of(
+pub(crate) fn reference_of(
     w: &World,
     reference: Option<&String>,
     good: &CanonicalId,

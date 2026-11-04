@@ -167,6 +167,15 @@ impl CarrierHooks for TacsimCarrierHooks {
         // geology layer dark). Doc 20 cut SM.4b (lead ruling 4, R3): and its way home from
         // every cell — the home field for the hull's ramp cell, wanted whatever the layer's
         // state (`want_home` wants the site's ground too).
+        // Doc 41 cut RS.5 (Q-41-8, Q-41-14): the shed's hand-back at the destination, and a
+        // written-off rig aboard handed back at the lessor's port.
+        if let crate::port::ship::Berth::Docked { map, def } =
+            crate::port::ship::berth_of(ctx.w, hull)
+            && def.site.is_none()
+        {
+            let entry = map.entry.clone();
+            crate::surface::retrieval::on_docked(ctx, hull, &entry);
+        }
         if let crate::port::ship::Berth::Docked { map, def } =
             crate::port::ship::berth_of(ctx.w, hull)
             && def.site.is_some()

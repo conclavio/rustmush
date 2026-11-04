@@ -78,9 +78,38 @@ impl UnitState {
     }
 
     /// **The ceiling it refuses to fire at**, or `None` for a unit with no heat.
+    ///
+    /// **Doc 40 cut FR.5** (§4.1 item 4, Q-40-3): a damaged plant holds it at
+    /// `power.damaged_heat_permille` of the cell's own maximum — read-side, the cell untouched
+    /// ([`UnitState::plant_heat_permille`]).
     #[must_use]
     pub fn heat_max(&self) -> Option<u32> {
-        self.heat.as_ref().map(|heat| heat.max)
+        self.heat
+            .as_ref()
+            .map(|heat| scale_permille(heat.max, self.plant_heat_permille()))
+    }
+
+    /// **What it sheds a second** (doc 16 §9 item 1's dissipation), or `None` for a unit with
+    /// no heat — scaled read-side for a damaged plant as [`UnitState::heat_max`] is (doc 40 cut
+    /// FR.5, Q-40-3).
+    #[must_use]
+    pub fn heat_per_s(&self) -> Option<u32> {
+        self.heat
+            .as_ref()
+            .map(|heat| scale_permille(heat.per_s, self.plant_heat_permille()))
+    }
+
+    /// **What its plant leaves of the heat ceiling and the dissipation**, per mille (doc 40 cut
+    /// FR.5, §4.1 item 4, Q-40-3): the unit's `power.damaged_heat_permille` while the plant's
+    /// part reads damaged, else all of it.
+    #[must_use]
+    pub fn plant_heat_permille(&self) -> u32 {
+        match crate::arena::part_effects::plant_condition(&self.unit) {
+            Some(mush_tactics::field_ops::ComponentCondition::Damaged) => {
+                u32::from(self.profile.effects().power.damaged_heat_permille)
+            }
+            _ => PERMILLE_WHOLE,
+        }
     }
 
     /// **Whether `FIRE` refuses for heat** (doc 16 §9 item 1: *a shot refused
@@ -130,7 +159,8 @@ impl Arena {
         let (Some(addr), Some(now)) = (heat.addr(HEAT_CELL), state.heat_now()) else {
             return;
         };
-        let value = i64::from(now.saturating_add(per_shot).min(heat.max));
+        let ceiling = state.heat_max().unwrap_or(heat.max);
+        let value = i64::from(now.saturating_add(per_shot).min(ceiling));
         if value == i64::from(now) {
             return;
         }
@@ -169,11 +199,12 @@ impl Arena {
             return;
         };
         let now = state.heat_now().unwrap_or(0);
+        let per_s = state.heat_per_s().unwrap_or(heat.per_s);
         let addr = heat.addr(HEAT_CELL);
         // Nothing to shed, and nothing to remember: a cold unit's carry is reset
         // so that heat taken later falls from a known start rather than from
         // whatever the last cooling left over.
-        if now == 0 || heat.per_s == 0 {
+        if now == 0 || per_s == 0 {
             if let Some(state) = self.unit_mut(unit)
                 && let Some(heat) = state.heat.as_mut()
             {
@@ -181,7 +212,7 @@ impl Arena {
             }
             return;
         }
-        let budget = u64::from(heat.per_s)
+        let budget = u64::from(per_s)
             .saturating_mul(u64::from(dt_ms))
             .saturating_add(u64::from(heat.carry_milli));
         let whole = u32::try_from(budget / u64::from(MILLI)).unwrap_or(u32::MAX);
@@ -210,6 +241,18 @@ impl Arena {
             t_ms,
         );
     }
+}
+
+/// Every part of a whole, per mille.
+const PERMILLE_WHOLE: u32 = 1_000;
+
+/// `value` at `permille` of itself, rounded down; at 1,000 or more, `value` exactly.
+fn scale_permille(value: u32, permille: u32) -> u32 {
+    if permille >= PERMILLE_WHOLE {
+        return value;
+    }
+    u32::try_from(u64::from(value) * u64::from(permille) / u64::from(PERMILLE_WHOLE))
+        .unwrap_or(value)
 }
 
 /// Set one unit's heat cell through M32, atomically and with a cause.

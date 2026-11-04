@@ -523,6 +523,7 @@ mod tests {
             view: &view,
             memory: &bytes,
             map: &arena.definition,
+            wrecks: &arena.mind_wrecks(),
             card: &card,
             program: &program,
             profile_token: crate::arena::profile_runtime::ProfileToken {
@@ -1109,11 +1110,19 @@ mod tests {
                 .and_then(|row| row.cell)
         };
         assert!(
-            !line_between(&arena.definition, view.cell, row(0x11)),
+            !line_between(
+                &crate::arena::stock_mind::Ground::bare(&arena.definition),
+                view.cell,
+                row(0x11)
+            ),
             "the ridge"
         );
         assert!(
-            line_between(&arena.definition, view.cell, row(0x22)),
+            line_between(
+                &crate::arena::stock_mind::Ground::bare(&arena.definition),
+                view.cell,
+                row(0x22)
+            ),
             "the open"
         );
 
@@ -1682,6 +1691,7 @@ mod tests {
             view: &view,
             memory: &bytes,
             map: &arena.definition,
+            wrecks: &arena.mind_wrecks(),
             card: &card,
             program: &program,
             profile_token: crate::arena::profile_runtime::ProfileToken {

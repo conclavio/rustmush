@@ -338,7 +338,7 @@ impl Arena {
             let effective = if runtime.dropped {
                 CoreClass::Zero
             } else {
-                super::core::read_core(&own.unit)
+                super::core::read_core_under(&own.unit, &own.profile.effects())
                     .map_or(CoreClass::Zero, |core| core.class.min(own.seal.class))
             };
             runtime.lease.validate(

@@ -152,6 +152,12 @@ pub struct TacsimRecoveryConfig {
     /// `1..=mush_economy::MAX_SALVAGE_CLAIM_WINDOW_SECS`; the server's config file sets it as
     /// `[tacsim.recovery].claim_window_s` (doc 41 cut RS.3).
     pub claim_window_s: i64,
+    /// **Doc 41 cut RS.5 (Q-41-11)**: `RETRIEVAL_WINDOW_IC_DAYS`, the one knob both of a
+    /// retrieval's windows read — the acceptance window from posting and a PC acceptor's
+    /// performance window from acceptance, IC days (provisional 28); the contract runs to twice
+    /// it. Clamped to `1..=`[`crate::surface::retrieval::MAX_RETRIEVAL_WINDOW_IC_DAYS`]; the
+    /// server's config file sets it as `[tacsim.recovery].retrieval_window_ic_days`.
+    pub retrieval_window_ic_days: i64,
 }
 
 impl Default for TacsimRecoveryConfig {
@@ -170,6 +176,7 @@ impl Default for TacsimRecoveryConfig {
             attach_s: 600,
             load_s: 900,
             claim_window_s: mush_economy::SALVAGE_CLAIM_WINDOW_SECS,
+            retrieval_window_ic_days: crate::surface::retrieval::RETRIEVAL_WINDOW_IC_DAYS,
         }
     }
 }

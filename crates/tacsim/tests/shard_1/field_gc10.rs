@@ -199,6 +199,10 @@ async fn gc10_a_leader_voids_friendly_fire_standing() {
         tune(cfg);
         cfg.field.disengage_s = 5;
         // GC.2's idle bound: no shot for this long demotes whatever contacts stand in reach.
+        // Doc 40 cut FR.5 (§4a's row, re-read): the field still demotes here and not on
+        // `disengage_s`. B's hull is its own unit party and was the victim, so its book holds A's
+        // hull hostile, while B's Friendly mark is written in the book of B's roster party. No
+        // friend of both holds the tempo, so `note_fire`'s fix leaves this gate as it was.
         cfg.field.idle_demote_s = 8;
     });
     // CF.2's ground: A's and B's armed hulls four cells apart, C's prospector beside them, and
