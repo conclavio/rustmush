@@ -365,6 +365,8 @@ fn compose_server_modules<E>(
                     facts.push(Arc::new(
                         tacsim::port::passenger::facts::PassengerFactProvider::default(),
                     ));
+                    // Doc 41 cut RS.5: the retrieval's delivery fact.
+                    facts.push(Arc::new(tacsim::surface::retrieval::RetrievalFactProvider));
                 }
                 facts
             })

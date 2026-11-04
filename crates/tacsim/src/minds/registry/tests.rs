@@ -280,6 +280,7 @@ fn duplicate_or_foreign_jobs_cannot_become_valid_measurement() -> TestResult {
         view: &view,
         memory: b"{}",
         map: &map,
+        wrecks: &[],
         card: &card,
         program: &program,
         profile_token: ProfileToken {

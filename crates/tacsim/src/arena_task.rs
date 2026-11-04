@@ -141,7 +141,7 @@
 
 mod tape;
 use crate::arena::input_tape::{TapeCard, TapeEvent, TapeRecorder, TapeWrite};
-use std::collections::{BTreeMap, VecDeque};
+use std::collections::{BTreeMap, BTreeSet, VecDeque};
 use std::sync::Arc;
 use std::sync::atomic::{AtomicBool, Ordering};
 use std::time::Duration;
@@ -285,11 +285,27 @@ pub enum ArenaMsg {
         /// Who sits in it, when anyone does.
         pilot: Option<Pilot>,
         /// The host's standing friendships and marks, for its party's book when the field has
-        /// none yet, and its seat rules.
-        host: crate::arena::FieldHost,
+        /// none yet, and its seat rules — boxed (doc 40 cut FR.5) so the message stays small.
+        host: Box<crate::arena::FieldHost>,
         /// How far from its pose, in cells (Chebyshev), it may be stood when another unit holds
         /// that cell (`crate::field::carrier::PAD_SPREAD_CELLS`).
         spread: u16,
+        /// **The retained doctrine source for the unit's seal** (doc 23 cut S.4b-3's kernel
+        /// half, built in doc 40 cut FR.5): the text a fresh check-out would install for a
+        /// scripted seal, keyed by the seal's digest (`MindSeal::digest`, the rule
+        /// `crate::minds::install_sealed_runners` reads), or `None` for a seal that names none.
+        /// A scripted seal with no source is refused by name, never a void of the field.
+        source: Option<String>,
+    },
+    /// **A tug lets its casualty go inside a running field** (doc 40 cut FR.5, §4.1 item 5,
+    /// Q-40-7): buffered once per tug and applied by `Arena::release` at the next pulse's head,
+    /// before the step, like a join; the answer is an [`ArenaOut::Released`], queued behind the
+    /// ledger so it is never lost. Only the IC field host sends it, and a task with no
+    /// [`FieldTerms`] or with a tape refuses it. Held to the intent reserve at
+    /// [`ArenaHandle::offer`].
+    Release {
+        /// The tug.
+        tug: ObjId,
     },
     /// **Give a party arriving mid-field its home** (doc 36 cut GC.11; Q-36-55): its carrier's
     /// ramp, laid on the field's ground by `Arena::add_home` at the next pulse's head, before the
@@ -522,6 +538,17 @@ pub enum ArenaOut {
         /// Its name in the field, or the refusal's sentence.
         outcome: Result<crate::arena::state::Designator, String>,
     },
+    /// **The answer to an [`ArenaMsg::Release`]** (doc 40 cut FR.5, §4.1 item 5): the casualty
+    /// the tug let go, or why the arena refused (the arena is then unchanged). Only an IC field's
+    /// task sends it.
+    Released {
+        /// Which task.
+        match_id: MatchId,
+        /// The tug.
+        tug: ObjId,
+        /// The casualty released, or the refusal's sentence.
+        outcome: Result<ObjId, String>,
+    },
 }
 
 impl ArenaOut {
@@ -539,7 +566,8 @@ impl ArenaOut {
             | ArenaOut::Snapshot { match_id, .. }
             | ArenaOut::Ended { match_id, .. }
             | ArenaOut::Withdrawn { match_id, .. }
-            | ArenaOut::Joined { match_id, .. } => Some(*match_id),
+            | ArenaOut::Joined { match_id, .. }
+            | ArenaOut::Released { match_id, .. } => Some(*match_id),
         }
     }
 }
@@ -617,6 +645,7 @@ impl ArenaHandle {
                 | ArenaMsg::Mark { .. }
                 | ArenaMsg::Withdraw { .. }
                 | ArenaMsg::Join { .. }
+                | ArenaMsg::Release { .. }
                 | ArenaMsg::Home { .. }
         ) && self.inbox.capacity() <= self.reserve
         {
@@ -1144,6 +1173,11 @@ enum Outbound {
         unit: ObjId,
         outcome: Result<crate::arena::state::Designator, String>,
     },
+    /// Sent as [`ArenaOut::Released`] (doc 40 cut FR.5).
+    Released {
+        tug: ObjId,
+        outcome: Result<ObjId, String>,
+    },
 }
 
 impl Outbound {
@@ -1171,6 +1205,11 @@ impl Outbound {
             Outbound::Joined { unit, outcome } => ArenaOut::Joined {
                 match_id,
                 unit: *unit,
+                outcome: outcome.clone(),
+            },
+            Outbound::Released { tug, outcome } => ArenaOut::Released {
+                match_id,
+                tug: *tug,
                 outcome: outcome.clone(),
             },
         }
@@ -1464,6 +1503,16 @@ fn buffer_discrete(
     true
 }
 
+/// **One join waiting for the pulse** (doc 36 cut GC.1b): the check-out row, its pilot, the
+/// host's books, the spread and (doc 40 cut FR.5) the retained source for a scripted seal.
+type PendingJoin = (
+    Box<CustodyUnit>,
+    Option<Pilot>,
+    crate::arena::FieldHost,
+    u16,
+    Option<String>,
+);
+
 /// **Everything the world offered since the last pulse**, under the four rules
 /// above.
 #[derive(Default)]
@@ -1492,15 +1541,10 @@ struct PrePulse {
     withdrawals: BTreeMap<ObjId, Option<(i64, i64)>>,
     /// **Doc 36 cut GC.1b**: the units the host takes in, one per unit (the first offer wins:
     /// a host checks a hull out once), so bounded by the field.
-    joins: BTreeMap<
-        ObjId,
-        (
-            Box<CustodyUnit>,
-            Option<Pilot>,
-            crate::arena::FieldHost,
-            u16,
-        ),
-    >,
+    joins: BTreeMap<ObjId, PendingJoin>,
+    /// **Doc 40 cut FR.5** (§4.1 item 5): the tugs the host asked to release their casualties,
+    /// once per tug, so bounded by the field.
+    tow_releases: BTreeSet<ObjId>,
     /// **Doc 36 cut GC.11**: the homes the host lays for parties arriving mid-field, latest-wins
     /// per party, so bounded by the parties.
     homes: BTreeMap<crate::arena::PartyId, crate::arena::state::EntryZone>,
@@ -1849,8 +1893,12 @@ async fn arena_loop(mut task: Task) {
                         waiting.withdrawals.insert(unit, ramp);
                     }
                     // Doc 36 cut GC.1b: and so does a join.
-                    Some(ArenaMsg::Join { unit, pilot, host, spread }) => {
-                        waiting.joins.entry(unit.id).or_insert((unit, pilot, host, spread));
+                    Some(ArenaMsg::Join { unit, pilot, host, spread, source }) => {
+                        waiting.joins.entry(unit.id).or_insert((unit, pilot, *host, spread, source));
+                    }
+                    // Doc 40 cut FR.5: and so does a tug's release.
+                    Some(ArenaMsg::Release { tug }) => {
+                        waiting.tow_releases.insert(tug);
                     }
                     // Doc 36 cut GC.11: and so does a home for a party arriving mid-field.
                     Some(ArenaMsg::Home { zone }) => {
@@ -1883,26 +1931,16 @@ async fn arena_loop(mut task: Task) {
                         task.arena.stage_card(unit, change);
                     }
                 }
-                // Doc 32 cut CF.2: the leaders' marks, before the step.
-                for ((by, of), mark) in std::mem::take(&mut waiting.marks) {
-                    task.arena.mark_party(by, of, mark);
+                // Doc 40 cut FR.5 (§4.1 item 1, Q-40-10): the last pulse's think batch is
+                // awaited and its answers written HERE, ahead of the head's field acts, so a
+                // join (or a withdrawal) encodes an arena whose answers have landed and never
+                // meets `SnapshotError::Awaiting`. The pulse's own await below then finds
+                // nothing in flight. An OOC match has no field acts, so its order is unchanged.
+                if let Err(reason) = task.await_thinks().await {
+                    let _ = task.void_now(wall, &reason).await;
+                    return;
                 }
-                // Doc 32 cut CF.5: the units leaving at the ramp, before the
-                // step, each answered behind the ledger.
-                for (unit, ramp) in std::mem::take(&mut waiting.withdrawals) {
-                    let outcome = task.arena.withdraw(unit, ramp).map(Box::new);
-                    task.queue_withdrawn(unit, outcome);
-                }
-                // Doc 36 cut GC.1b: the units taken in at their pads, before the step, each
-                // answered behind the ledger.
-                // Doc 36 cut GC.11: the homes of parties arriving mid-field, before their joins.
-                for zone in std::mem::take(&mut waiting.homes).into_values() {
-                    task.home(zone);
-                }
-                for (unit, (custody, pilot, host, spread)) in std::mem::take(&mut waiting.joins) {
-                    let outcome = task.join(*custody, pilot, &host, spread);
-                    task.queue_joined(unit, outcome);
-                }
+                task.apply_field_acts(&mut waiting);
                 match task.pulse(wall, &controls, &intents).await {
                     // 16b cut U.1: from the base, never from now.
                     Pulse::Again(next_due_ms) => {
@@ -1944,6 +1982,40 @@ impl Task {
         };
         quiet_for(self.arena.clock.last_engaged_signal_ms()) >= i64::from(terms.disengage_ms)
             || quiet_for(self.arena.clock.last_shot_ms()) >= i64::from(terms.idle_demote_ms)
+    }
+
+    /// **The pulse head's field acts** (doc 32 cuts CF.2, CF.5; doc 36 cuts GC.1b, GC.11; doc
+    /// 40 cut FR.5), in their order: the leaders' marks, the tugs' releases, the units leaving at
+    /// the ramp — a casualty under tow before every other, so its tug still stands to be judged
+    /// (Q-40-25) — the homes of parties arriving mid-field, then their joins; each release,
+    /// withdrawal and join answered behind the ledger. Doc 40 cut FR.5: the caller awaits the
+    /// think batch first ([`Task::await_thinks`]).
+    fn apply_field_acts(&mut self, waiting: &mut PrePulse) {
+        for ((by, of), mark) in std::mem::take(&mut waiting.marks) {
+            self.arena.mark_party(by, of, mark);
+        }
+        for tug in std::mem::take(&mut waiting.tow_releases) {
+            let outcome = self.release(tug);
+            self.queue_released(tug, outcome);
+        }
+        let (towed, rest): (Vec<_>, Vec<_>) = std::mem::take(&mut waiting.withdrawals)
+            .into_iter()
+            .partition(|(unit, _)| {
+                self.arena
+                    .unit(*unit)
+                    .is_some_and(|state| state.coupled_to.is_some())
+            });
+        for (unit, ramp) in towed.into_iter().chain(rest) {
+            let outcome = self.arena.withdraw(unit, ramp).map(Box::new);
+            self.queue_withdrawn(unit, outcome);
+        }
+        for zone in std::mem::take(&mut waiting.homes).into_values() {
+            self.home(zone);
+        }
+        for (unit, (custody, pilot, host, spread, source)) in std::mem::take(&mut waiting.joins) {
+            let outcome = self.join(*custody, pilot, &host, spread, source);
+            self.queue_joined(unit, outcome);
+        }
     }
 
     /// **One pulse**: the unwind boundary, the watchdog, and the publication of
@@ -2467,7 +2539,8 @@ impl Task {
                     Outbound::Snapshot(_)
                     | Outbound::Tape(_)
                     | Outbound::Withdrawn { .. }
-                    | Outbound::Joined { .. } => None,
+                    | Outbound::Joined { .. }
+                    | Outbound::Released { .. } => None,
                 });
             tracing::error!(
                 match_id = %self.match_id,
@@ -2508,25 +2581,59 @@ impl Task {
     /// [`FieldTerms`] or with a tape — an OOC match never joins, so no practice hash and no
     /// recorded input ever sees one — and otherwise `Arena::join`. A hull standing on IC ground
     /// is running, as [`spawn_field`] puts every admitted unit.
+    ///
+    /// **Doc 23 cut S.4b-3's kernel half** (built in doc 40 cut FR.5): a scripted seal joins with
+    /// its retained `source`, its runner installed by the rule a fresh check-out uses
+    /// ([`crate::minds::install_sealed_runner`], keyed by the seal's digest) inside the copy
+    /// `Arena::join_installing` builds on, so a source that does not install leaves the arena
+    /// as it was and is refused by its own sentence. With no source the arena refuses it by name.
     fn join(
         &mut self,
         unit: CustodyUnit,
         pilot: Option<Pilot>,
         host: &crate::arena::FieldHost,
         spread: u16,
+        source: Option<String>,
     ) -> Result<crate::arena::state::Designator, String> {
         if self.terms.is_none() || self.tape.is_some() {
             return Err("only an IC field takes a unit in once it runs".to_owned());
         }
         let id = unit.id;
-        let name = self
-            .arena
-            .join(unit, pilot, host, spread)
-            .map_err(|error| error.to_string())?;
+        let joined = match source {
+            None => self.arena.join(unit, pilot, host, spread),
+            Some(source) => {
+                let cfg = self.arena.arena_cfg.clone();
+                let install = move |arena: &mut Arena, unit: ObjId| {
+                    crate::minds::install_sealed_runner(arena, &cfg, unit, &|_| {
+                        Some(source.clone())
+                    })
+                    .map(|_| ())
+                    .map_err(|error| error.to_string())
+                };
+                self.arena
+                    .join_installing(unit, pilot, host, spread, &install)
+            }
+        };
+        let name = joined.map_err(|error| error.to_string())?;
         if let Some(state) = self.arena.unit_mut(id) {
             state.power = crate::arena::state::Power::Online;
         }
         Ok(name)
+    }
+
+    /// **A release, decided** (doc 40 cut FR.5, §4.1 item 5): refused outright, as a join is, by
+    /// a task with no [`FieldTerms`] or with a tape, and otherwise `Arena::release`.
+    fn release(&mut self, tug: ObjId) -> Result<ObjId, String> {
+        if self.terms.is_none() || self.tape.is_some() {
+            return Err("only an IC field releases a tow".to_owned());
+        }
+        self.arena.release(tug).map_err(|error| error.to_string())
+    }
+
+    /// **A release's answer**, queued like a join's.
+    fn queue_released(&mut self, tug: ObjId, outcome: Result<ObjId, String>) {
+        self.backlog.push_back(Outbound::Released { tug, outcome });
+        self.drain_backlog();
     }
 
     /// **A home for a party arriving mid-field** (doc 36 cut GC.11): ignored, as a join is
@@ -3889,6 +3996,7 @@ mod tests {
                 Outbound::Snapshot(snapshot) => format!("s{}", snapshot.at_ms),
                 Outbound::Withdrawn { unit, .. } => format!("w{}", unit.0),
                 Outbound::Joined { unit, .. } => format!("j{}", unit.0),
+                Outbound::Released { tug, .. } => format!("r{}", tug.0),
                 Outbound::Tape(_) => "tape".to_owned(),
             })
             .collect()
@@ -3970,6 +4078,7 @@ mod tests {
             None,
             &host,
             8,
+            None,
         );
         assert!(refused.is_err(), "a match never joins");
         assert_eq!(
@@ -3987,11 +4096,195 @@ mod tests {
             None,
             &host,
             8,
+            None,
         )
         .expect("a field's task takes it in");
         assert_eq!(
             task.arena.unit(arrival).map(|unit| unit.power),
             Some(crate::arena::state::Power::Online)
+        );
+    }
+
+    /// The IC host of the doc 40 cut FR.5 gates: every class, hold, the host's end.
+    fn fr5_host() -> crate::arena::FieldHost {
+        crate::arena::FieldHost {
+            end: crate::arena::party::EndCondition::Host,
+            every_class: true,
+            weapons_hold: true,
+            ..crate::arena::FieldHost::default()
+        }
+    }
+
+    /// The field terms of the doc 40 cut FR.5 gates.
+    fn fr5_terms() -> FieldTerms {
+        FieldTerms {
+            disengage_ms: 60_000,
+            idle_demote_ms: 600_000,
+        }
+    }
+
+    /// **Doc 40 cut FR.5** (§4.1 item 5, Q-40-7): a task with no field terms refuses a release
+    /// before its arena sees it — the coupling and the hash stand — and a field's task applies
+    /// it at the pulse head and answers it behind the ledger; a second release is refused by
+    /// name.
+    #[tokio::test(flavor = "current_thread")]
+    async fn fr5_only_a_field_task_takes_a_release() {
+        let tug = ObjId(4);
+        let casualty = ObjId(6);
+        let mut out = crate::arena::test_support::custody(
+            vec![
+                tank(tug, PartyId::RED, pose(1_500, 1_500)),
+                tank(casualty, PartyId::RED, pose(1_500, 1_500)),
+            ],
+            Vec::new(),
+        );
+        out.host = crate::arena::FieldHost {
+            tows: vec![(casualty, tug)],
+            ..fr5_host()
+        };
+        let arena = Arena::new(
+            out,
+            &ArenaConfig::default(),
+            &MatchConfig::default(),
+            &SensorsConfig::default(),
+        )
+        .expect("a field with a tow");
+        let (mut task, mut world) = af2_task(arena, 2, 5_000);
+        let hash = crate::arena::hash::state_hash(&task.arena);
+        assert!(task.release(tug).is_err(), "a match never releases");
+        assert_eq!(
+            crate::arena::hash::state_hash(&task.arena),
+            hash,
+            "untouched"
+        );
+        assert_eq!(task.arena.trailer_of(tug), Some(casualty));
+        task.terms = Some(fr5_terms());
+        let mut waiting = PrePulse::default();
+        waiting.tow_releases.insert(tug);
+        task.apply_field_acts(&mut waiting);
+        assert_eq!(task.arena.trailer_of(tug), None, "released");
+        let mut answered = None;
+        while let Ok(out) = world.try_recv() {
+            if let ArenaOut::Released {
+                tug: t, outcome, ..
+            } = out
+                && t == tug
+            {
+                answered = Some(outcome);
+            }
+            task.drain_backlog();
+        }
+        assert_eq!(answered, Some(Ok(casualty)), "answered behind the ledger");
+        assert!(
+            task.release(tug)
+                .is_err_and(|reason| reason.contains("that unit tows nothing"))
+        );
+    }
+
+    /// **Doc 40 cut FR.5** (Q-40-25): the task applies a coupled casualty's withdrawal before its
+    /// tug's whatever their ids, so the casualty is judged by a tug still standing beside the
+    /// ramp, and both check-in rows are answered.
+    #[test]
+    fn fr5_the_task_withdraws_a_casualty_before_its_tug() {
+        // The casualty's id sorts after its tug's, so id order alone would take the tug first.
+        let tug = ObjId(4);
+        let casualty = ObjId(6);
+        let mut out = crate::arena::test_support::custody(
+            vec![
+                tank(tug, PartyId::RED, pose(1_500, 1_500)),
+                tank(casualty, PartyId::RED, pose(1_500, 1_500)),
+            ],
+            Vec::new(),
+        );
+        out.host = crate::arena::FieldHost {
+            tows: vec![(casualty, tug)],
+            ..fr5_host()
+        };
+        let mut arena = Arena::new(
+            out,
+            &ArenaConfig::default(),
+            &MatchConfig::default(),
+            &SensorsConfig::default(),
+        )
+        .expect("a field with a tow");
+        for state in &mut arena.units {
+            state.power = crate::arena::state::Power::Online;
+        }
+        let (mut task, mut world) = af2_task(arena, 8, 5_000);
+        task.terms = Some(fr5_terms());
+        let mut waiting = PrePulse::default();
+        waiting.withdrawals.insert(tug, Some((2_500, 1_500)));
+        waiting.withdrawals.insert(casualty, Some((2_500, 1_500)));
+        task.apply_field_acts(&mut waiting);
+        assert!(task.arena.unit(tug).is_none() && task.arena.unit(casualty).is_none());
+        // The egress holds one; the rest wait behind it in the backlog, in order.
+        let mut answers: Vec<(ObjId, bool)> = Vec::new();
+        while let Ok(out) = world.try_recv() {
+            if let ArenaOut::Withdrawn { unit, outcome, .. } = out {
+                answers.push((unit, outcome.is_ok()));
+            }
+        }
+        answers.extend(task.backlog.iter().filter_map(|entry| match entry {
+            Outbound::Withdrawn { unit, outcome } => Some((*unit, outcome.is_ok())),
+            _ => None,
+        }));
+        assert_eq!(answers, vec![(casualty, true), (tug, true)]);
+    }
+
+    /// **Doc 23 cut S.4b-3's kernel half** (built in doc 40 cut FR.5): a scripted seal joins a
+    /// running field with its retained source and thinks on its own runner; without the source
+    /// it is refused by name and the arena is untouched — never a void of the field.
+    #[test]
+    fn fr5_a_join_installs_a_scripted_seal() {
+        let mut arena = arena_at_epoch(vec![tank(RED, PartyId::RED, pose(1_500, 1_500))], 1);
+        arena.end = crate::arena::party::EndCondition::Host;
+        let (mut task, _world) = af2_task(arena, 2, 5_000);
+        task.terms = Some(fr5_terms());
+        let arrival = ObjId(77);
+        let scripted = || {
+            let mut unit = tank(arrival, PartyId::RED, pose(4_500, 4_500));
+            unit.seal.engine = crate::arena::mind::SealEngine::Scripted;
+            unit
+        };
+        let hash = crate::arena::hash::state_hash(&task.arena);
+        let refused = task.join(scripted(), None, &fr5_host(), 8, None);
+        assert!(
+            refused
+                .as_ref()
+                .is_err_and(|reason| reason.contains("a scripted seal with no retained source")),
+            "{refused:?}"
+        );
+        assert_eq!(crate::arena::hash::state_hash(&task.arena), hash);
+        assert!(task.arena.unit(arrival).is_none());
+        let broken = task.join(
+            scripted(),
+            None,
+            &fr5_host(),
+            8,
+            Some("fn think(view) {".to_owned()),
+        );
+        assert!(
+            broken.is_err(),
+            "a source that does not compile: {broken:?}"
+        );
+        assert_eq!(crate::arena::hash::state_hash(&task.arena), hash);
+        assert!(!task.arena.runners.contains_key(&arrival));
+        task.join(
+            scripted(),
+            None,
+            &fr5_host(),
+            8,
+            Some(crate::minds::STANDARD_RHAI.to_owned()),
+        )
+        .expect("it joins on its own runner");
+        assert!(task.arena.unit(arrival).is_some());
+        assert!(
+            task.arena.runners.contains_key(&arrival),
+            "installed by the check-out's rule"
+        );
+        assert!(
+            !task.arena.runners.contains_key(&RED),
+            "nobody else's runner is touched"
         );
     }
 
@@ -4431,6 +4724,65 @@ mod tests {
                 .unwrap_or_default()
                 .contains("\"kind\":\"void\""),
             "the unwind boundary journals no void line"
+        );
+    }
+
+    /// **Doc 40 cut FR.5** (§4.1 item 1, Q-40-10; the gc1b finding in `40-cut-notes.md`): a
+    /// join offered while the last pulse's think batch is in flight is refused by name when it
+    /// is taken in first — GC.1b's order — and taken in once the head awaits the batch before
+    /// its field acts, as the loop now does.
+    #[tokio::test(flavor = "current_thread")]
+    async fn fr5_a_join_is_taken_in_after_the_batch_in_flight_lands() {
+        let gate = Gated::closed();
+        let (mut task, mut world, _senders) = minded_task(gate.clone(), 5_000);
+        task.arena.end = crate::arena::party::EndCondition::Host;
+        task.terms = Some(FieldTerms {
+            disengage_ms: 60_000,
+            idle_demote_ms: 600_000,
+        });
+        let host = crate::arena::FieldHost {
+            every_class: true,
+            weapons_hold: true,
+            ..crate::arena::FieldHost::default()
+        };
+        let arrival = ObjId(77);
+        let _ = pulse_until_a_batch(&mut task, 0).await;
+        called(&gate, 1);
+        let refused = task.join(
+            tank(arrival, PartyId::RED, pose(4_500, 4_500)),
+            None,
+            &host,
+            8,
+            None,
+        );
+        assert!(
+            refused
+                .as_ref()
+                .is_err_and(|reason| reason.contains("a think awaits its answer")),
+            "GC.1b's order meets the batch in flight: {refused:?}"
+        );
+        assert!(task.arena.unit(arrival).is_none());
+        gate.set(true);
+        task.await_thinks().await.expect("the batch lands");
+        let mut waiting = PrePulse::default();
+        waiting.joins.insert(
+            arrival,
+            (
+                Box::new(tank(arrival, PartyId::RED, pose(4_500, 4_500))),
+                None,
+                host,
+                8,
+                None,
+            ),
+        );
+        task.apply_field_acts(&mut waiting);
+        assert!(task.arena.unit(arrival).is_some(), "taken in");
+        assert!(
+            drained(&mut world).iter().any(|out| matches!(
+                out,
+                ArenaOut::Joined { unit, outcome: Ok(_), .. } if *unit == arrival
+            )),
+            "answered behind the ledger"
         );
     }
 }

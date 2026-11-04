@@ -206,6 +206,15 @@ pub struct PortDef {
     /// opened for it here. Absent everywhere but Ceres (Tycho Mutual). Boxed, as `medical` is.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub recovery: Option<Box<RecoveryDef>>,
+    /// **Doc 42 cut CR.2 (Q-42-6)** — the port's governing authority: one of the entry's orgs, to
+    /// which a captor docking here hands every captive over, and to whose account the release fee
+    /// is levied. Absent at every site and at a port that takes no handover.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub authority: Option<CanonicalId>,
+    /// **Doc 42 cut CR.2 (Q-42-7)** — the release fee a handed-over captive owes the authority,
+    /// whole credits (1,500 provisional at every IC port). Authored only with [`Self::authority`].
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub release_fee_cr: Option<u64>,
 }
 
 /// **A port's recovery service** (doc 39 cut IN.4; Q-39-24, Q-38-18): the crawler-and-lift
@@ -1508,6 +1517,23 @@ impl PortDef {
         if let Some(medical) = &self.medical {
             self.check_medical(medical)?;
         }
+        // Doc 42 cut CR.2: the authority a captive is handed to, and its fee.
+        if let Some(authority) = &self.authority
+            && !self.orgs.iter().any(|org| &org.id == authority)
+        {
+            return Err(format!(
+                "authority: {authority} is not one of this port's orgs"
+            ));
+        }
+        match (&self.authority, self.release_fee_cr) {
+            (None, Some(_)) => {
+                return Err("release_fee_cr: a release fee needs an authority".to_owned());
+            }
+            (Some(_), Some(0) | None) => {
+                return Err("release_fee_cr: an authority's release fee is at least 1".to_owned());
+            }
+            _ => {}
+        }
         // Doc 39 cut IN.4: the recovery service's cost row.
         if let Some(recovery) = &self.recovery {
             if !self.orgs.iter().any(|org| org.id == recovery.operator) {
@@ -2690,6 +2716,8 @@ mod tests {
             workshop: None,
             medical: None,
             recovery: None,
+            authority: None,
+            release_fee_cr: None,
         }
     }
 
@@ -3026,6 +3054,8 @@ mod tests {
             workshop: None,
             medical: None,
             recovery: None,
+            authority: None,
+            release_fee_cr: None,
         }
     }
 

@@ -2554,6 +2554,190 @@ pub fn reinstate_obligation(
     Ok(true)
 }
 
+// ---- one-term debts (doc 41 cut RS.5; Q-41-13, doc 42 Q-42-7) ------------------------------
+
+/// **Open a one-term debt** (doc 41 cut RS.5, Q-41-13): one [`create_obligation`] record with
+/// one due instant, World IC now, and no cadence — debtor the debit account's owner, creditor
+/// the credit account's, cause `Ruleset { namespace }`. Under the same actor lock as every
+/// ruleset obligation: the actor must be able to debit the debtor's account (the debtor at
+/// their own return, staff for a tick running as GOD), so no character's command opens a debt
+/// on another's wallet. A debt the account cannot cover at its first sweep goes straight to
+/// `Delinquent` and out of the due pool (a one-shot has no next period); [`pay_debt`] and
+/// [`reinstate_debt`] are its cures.
+///
+/// # Errors
+///
+/// Everything [`create_obligation`] refuses.
+pub fn create_debt(
+    ctx: &mut Ctx<'_>,
+    debit_account: AccountId,
+    credit_account: AccountId,
+    amount: Amount,
+    namespace: &str,
+) -> Result<ObligationId, EconomyError> {
+    let due = ctx.w.world_ic_now().at;
+    create_obligation(
+        ctx,
+        ObligationSpec {
+            debit_account,
+            credit_account,
+            amount,
+            schedule: crate::clock::EconomicSchedule::new(
+                crate::EconomicClock::WorldIc,
+                due,
+                None,
+                1,
+            ),
+            grace: crate::obligation::GracePolicy::new(0),
+            notify_on_success: true,
+            cause: crate::obligation::ObligationCause::Ruleset {
+                namespace: SmolStr::new(namespace),
+            },
+        },
+    )
+}
+
+/// Whether `o` is a one-term ruleset debt still owed: no cadence, a ruleset cause, and live.
+fn owed_debt(o: &crate::obligation::Obligation) -> bool {
+    o.schedule.cadence.is_none()
+        && matches!(o.cause, crate::obligation::ObligationCause::Ruleset { .. })
+        && matches!(
+            o.status,
+            crate::obligation::ObligationStatus::Active
+                | crate::obligation::ObligationStatus::Grace { .. }
+                | crate::obligation::ObligationStatus::Delinquent
+        )
+}
+
+/// **The one-term debts `debtor` owes** (doc 41 cut RS.5, `+debts`): every live one-shot
+/// ruleset obligation whose debtor is `debtor`, in id order — `namespaces` narrows it to the
+/// callers' own (an empty slice reads every ruleset's).
+#[must_use]
+pub fn debts_of(
+    w: &mush_core::World,
+    debtor: &PrincipalId,
+    namespaces: &[&str],
+) -> Vec<crate::obligation::Obligation> {
+    let Some(store) = w.module_state::<EconomyStore>() else {
+        return Vec::new();
+    };
+    let mut out: Vec<crate::obligation::Obligation> = store
+        .snapshot()
+        .obligations()
+        .filter(|o| &o.debtor == debtor && owed_debt(o))
+        .filter(|o| {
+            namespaces.is_empty()
+                || matches!(&o.cause, crate::obligation::ObligationCause::Ruleset { namespace }
+                    if namespaces.contains(&namespace.as_str()))
+        })
+        .cloned()
+        .collect();
+    out.sort_by_key(|o| o.id);
+    out
+}
+
+/// **Pay a one-term debt now** (doc 41 cut RS.5, `+debts/pay`): its amount from the debit
+/// account to the credit account and the record `Satisfied`, in one post — a delinquent
+/// debt is reinstated and settled in the same step, so it never waits on a sweep. The actor
+/// lock is [`reinstate_obligation`]'s (the debtor, an authorized officer, or staff), and the
+/// post is the actor's own: an account that cannot cover it refuses with nothing written.
+/// Idempotent under `obligation.debt/{id}`.
+///
+/// # Errors
+///
+/// [`EconomyError::Unauthorized`] (another namespace's record, one that is not a one-term
+/// debt, or an actor with no standing over the debit account),
+/// [`EconomyError::ObligationTerminal`] for one already paid or cancelled, and every posting
+/// refusal (`InsufficientAvailable` among them).
+pub fn pay_debt(
+    ctx: &mut Ctx<'_>,
+    id: ObligationId,
+    namespace: &str,
+) -> Result<PostOutcome, EconomyError> {
+    let o = ruleset_obligation(ctx, id, namespace)?;
+    if !owed_debt(&o) || !o.holders().is_empty() {
+        return Err(EconomyError::Unauthorized);
+    }
+    let minor = o.amount.minor();
+    let mut plan = EconomyPlan::new(
+        crate::IdempotencyKey::new("obligation.debt", id.0.to_string()),
+        PrincipalId::Object(ctx.actor),
+        EconomicCause::Internal {
+            kind: SmolStr::new(namespace),
+            id: id.0,
+        },
+        vec![
+            crate::RequestedLine {
+                account: o.debit_account,
+                delta: Amount::from_minor(minor.saturating_neg()),
+                memo: "debt".into(),
+            },
+            crate::RequestedLine {
+                account: o.credit_account,
+                delta: Amount::from_minor(minor),
+                memo: "debt".into(),
+            },
+        ],
+    );
+    plan.description = format!("debt #{id} paid");
+    let outcome = post(ctx, &plan)?;
+    let transaction = match outcome {
+        PostOutcome::Posted(tx) => tx,
+        PostOutcome::AlreadyPosted(_) => return Err(EconomyError::IdempotencyConflict),
+        PostOutcome::NeedsApproval(_) => return Ok(outcome),
+    };
+    let mut next = crate::commands::transition(
+        &o,
+        crate::obligation::ObligationStatus::Satisfied,
+        Some(crate::obligation::ObligationEvent::Settled {
+            period: o.periods_settled,
+            at: ctx.w.world_ic_now().at,
+            transaction: Some(transaction),
+        }),
+    );
+    next.periods_settled = next.periods_settled.saturating_add(1);
+    next.settled_total = next.settled_total.saturating_add(1);
+    next.schedule.next_due = i64::MAX;
+    put_obligation(ctx, next);
+    ctx.gate_on_durable_ack();
+    Ok(outcome)
+}
+
+/// **Return a delinquent one-term debt to the due pool for one more attempt** (doc 41 cut
+/// RS.5, Q-41-13: the lessor's desk refusing a delinquent debtor, and the docking check):
+/// [`reinstate_obligation`]'s locks, with the one difference a one-shot needs — its due
+/// instant is set to now, since re-anchoring a schedule with no cadence leaves it due never,
+/// so the next sweep tries it once more. Answers whether it returned to the due pool.
+///
+/// # Errors
+///
+/// Everything [`reinstate_obligation`] refuses, and [`EconomyError::Unauthorized`] for a
+/// record that is not a one-term debt.
+pub fn reinstate_debt(
+    ctx: &mut Ctx<'_>,
+    id: ObligationId,
+    namespace: &str,
+) -> Result<bool, EconomyError> {
+    let o = ruleset_obligation(ctx, id, namespace)?;
+    if o.schedule.cadence.is_some() {
+        return Err(EconomyError::Unauthorized);
+    }
+    if !reinstate_obligation(ctx, id, namespace)? {
+        return Ok(false);
+    }
+    let Some(mut next) = ctx
+        .w
+        .module_state::<EconomyStore>()
+        .and_then(|store| store.snapshot().obligation(id).cloned())
+    else {
+        return Ok(false);
+    };
+    next.schedule.next_due = ctx.w.world_ic_now().at;
+    next.revision = next.revision.saturating_add(1);
+    put_obligation(ctx, next);
+    Ok(true)
+}
+
 /// The most cadence clocks one world may name (E4b1's `@econ/cadence` cap, lifted
 /// here so [`create_cadence`] and the staff verb share one number).
 pub const MAX_CADENCES: usize = 32;

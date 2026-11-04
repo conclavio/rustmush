@@ -21,10 +21,26 @@ pub const WIDE_SITE_ROWS: [&str; 4] = [
 pub const MUNITIONS_GOODS: [&str; 4] =
     ["ammo_ap_30", "ammo_ball_762", "ammo_he_105", "ammo_missile"];
 
+/// **Doc 42 cut CR.2 (lane v23): the IC ports' `authority` and `release_fee_cr` taken out**, so a
+/// strip chain rebuilds a lane before v23 (idempotent).
+pub fn strip_release_authority(doc: &mut Value) {
+    let Some(entries) = doc["entries"].as_object_mut() else {
+        return;
+    };
+    // `get_mut`, never `IndexMut`: indexing a missing key inserts it.
+    for entry in entries.values_mut() {
+        if let Some(def) = entry.get_mut("def").and_then(Value::as_object_mut) {
+            def.remove("authority");
+            def.remove("release_fee_cr");
+        }
+    }
+}
+
 /// **Doc 39 cut IN.6 (lane v22): the seeded part rows taken out**: every vendor's `stock` and
 /// `asks` row of a `tacsim.part.*` good, so a strip chain rebuilds a lane before v22
-/// (idempotent).
+/// (idempotent); lane v23's [`strip_release_authority`] first.
 pub fn strip_part_seeds(doc: &mut Value) {
+    strip_release_authority(doc);
     let Some(entries) = doc["entries"].as_object_mut() else {
         return;
     };

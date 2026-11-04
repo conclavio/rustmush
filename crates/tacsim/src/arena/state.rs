@@ -1796,19 +1796,6 @@ pub struct WeaponSummary {
     pub count_per_load: u32,
 }
 
-/// **Whether the part `id` on `unit` can work** (doc 36 cut GC.2, Q-36-38): its
-/// record's condition word reads intact or damaged. A weapon the unit does not
-/// hold as a part (a hand-made rig's) works.
-fn part_works(unit: &mush_tactics::TacticalUnit, id: &str) -> bool {
-    mush_tactics::ComponentId::new(id)
-        .ok()
-        .and_then(|id| unit.component(&id).map(|part| part.condition.clone()))
-        .is_none_or(|condition| {
-            mush_tactics::field_ops::ComponentCondition::classify_condition_id(&condition)
-                .is_operational()
-        })
-}
-
 /// **Who is flying a unit** (16b cut N.1; doc 16 §6, §3.8 "Disconnects"; doc 07
 /// §1.1's fallback controller).
 ///
@@ -2166,6 +2153,18 @@ pub struct UnitState {
     pub sensor_height_cm: u32,
     /// What it sees with (doc 16 §3.6); `None` runs no pass.
     pub sensor: Option<SensorProfile>,
+    /// **The sight as authored, while the live one differs from it** (doc 40 cut FR.5, §4.1
+    /// item 4, Q-40-3), or `None` when `sensor` is the authored row.
+    ///
+    /// The sensor row is on no cell — the host hands it at check-out and nothing else holds it —
+    /// so `crate::arena::part_effects::derive` keeps it here while a jammed sight leaves
+    /// `sensor` `None` or a damaged one shortens its range, and always derives from it: a
+    /// second derivation never compounds (500 ‰, then 250 ‰). Decoded by `serde` default and
+    /// written only when present, so `SNAPSHOT_FORMAT` stands; folded into
+    /// [`crate::arena::hash::state_hash`] **only when present** (item 1's sub-item 22), so every
+    /// match whose sights are intact hashes as it did.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub sensor_authored: Option<SensorProfile>,
     /// **What its sight makes of a target's heat** (16b cut X.3; doc 16 §9 item
     /// 3), or `None` for a sight with no thermal channel — every stock unit, so
     /// the term costs the pass one `Option` test per candidate.
@@ -2408,6 +2407,18 @@ pub struct UnitState {
     /// that finds it at the bound is refused `queue_full`; a new second resets
     /// it. The machine's own orders are never counted. Hashed, with the window.
     pub orders_in_window: u32,
+    /// **The tug this casualty trails** (doc 40 cut FR.5, §4.1 item 5, Q-40-7), or `None` for
+    /// every unit under its own power — every unit of every practice match.
+    ///
+    /// Written by `Arena::couple` at check-out (the host's `FieldHost::tows`) and cleared by
+    /// `Arena::release`, by the tug's destruction (`Arena::destroy_unit`) and by the tug's exit
+    /// (`Arena::withdraw`); read by the step, which sets the casualty on the cell its tug left in
+    /// the tug's own turn (`crate::arena::tow`). Decoded by `serde` default and written only when
+    /// present, so `SNAPSHOT_FORMAT` stands; folded into [`crate::arena::hash::state_hash`]
+    /// **only when present** (item 1's sub-item 23), so every match without a tow hashes as it
+    /// did.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub coupled_to: Option<ObjId>,
 }
 
 // ---------------------------------------------------------------------------
@@ -3881,6 +3892,27 @@ pub enum ArenaError {
         /// The repeated id.
         unit: ObjId,
     },
+    /// **A release the kernel refuses** (doc 40 cut FR.5, §4.1 item 5, Q-40-7): a tug the field
+    /// does not hold, or one that tows nothing.
+    #[error("unit {tug} cannot release a tow: {reason}")]
+    TowRelease {
+        /// The unit asked to release.
+        tug: ObjId,
+        /// Why, by name.
+        reason: &'static str,
+    },
+    /// **A tow the kernel refuses** (doc 40 cut FR.5, §4.1 item 5, Q-40-7): an unknown unit, a
+    /// tug that is a wreck, parties that differ, a casualty already coupled, a tug already
+    /// towing, a tug under tow, a casualty itself towing, or no free ground beside the tug.
+    #[error("unit {casualty} cannot be coupled to {tug}: {reason}")]
+    Coupling {
+        /// The casualty.
+        casualty: ObjId,
+        /// The tug.
+        tug: ObjId,
+        /// Why, by name.
+        reason: &'static str,
+    },
     /// A unit's pose is not on the window.
     #[error(
         "unit {unit} was handed over at ({x_cm}, {y_cm}) cm, which is off the arena window: every \
@@ -4850,6 +4882,13 @@ impl Arena {
         // check-out is its caller and places every tank it checks out on a cell of its own.
         // **16b cut AF.1** moved it into `check_occupancy`, which the snapshot's
         // decode calls too, unchanged.
+        // **Doc 40 cut FR.5** (§4.1 item 5, Q-40-7): a casualty the surface stacked on its tug's
+        // cell is stood apart first, by the join's ring rule (`crate::arena::tow::unstack`), so
+        // a tow never meets this refusal; the coupling itself is laid below, once the arena is
+        // built.
+        for (casualty, tug) in &host.tows {
+            crate::arena::tow::unstack(&definition.terrain, &mut states, *casualty, *tug)?;
+        }
         check_occupancy(&definition.terrain, &states)?;
         let mut index = SpatialIndex::new(&definition.terrain);
         index.rebuild(&definition.terrain, &states);
@@ -4988,6 +5027,11 @@ impl Arena {
             relations,
             end,
         };
+        // **Doc 40 cut FR.5** (§4.1 item 5, Q-40-7): the host's tows, coupled before the opening
+        // hash (a practice match names none, so its opening moves by no byte).
+        for (casualty, tug) in &host.tows {
+            arena.couple(*casualty, *tug)?;
+        }
         let ids = arena.units.iter().map(|unit| unit.id).collect::<Vec<_>>();
         for unit in ids {
             arena.constrain_profile_hardware(unit);
@@ -5164,12 +5208,13 @@ impl Arena {
         // Doc 36 cut GC.2 (Q-36-38): and a gun whose part the record calls
         // jammed, destroyed or missing does not come into the match either —
         // a jam a field left is still a jam in the next one, until the bay
-        // clears it.
+        // clears it. Doc 40 cut FR.5 (Q-40-6) retired the test into the part
+        // derivation (`crate::arena::part_effects::part_works`).
         let weapons: Vec<WeaponSummary> = unit
             .weapons
             .into_iter()
             .filter(|weapon| entry.carries(&weapon.mount_section))
-            .filter(|weapon| part_works(&unit.unit, &weapon.id))
+            .filter(|weapon| crate::arena::part_effects::part_works(&unit.unit, &weapon.id))
             .collect();
         let weapons_left = weapons.len();
         // **16b cut Q.2**: the first value of the band cache, off the record
@@ -5221,6 +5266,9 @@ impl Arena {
             } else {
                 unit.sensor
             },
+            // Doc 40 cut FR.5: the live sight is the authored one until the part
+            // derivation below says otherwise.
+            sensor_authored: None,
             thermal,
             jammer,
             // **16b cut O.2**: every pod checks out radiating (the owner's
@@ -5295,7 +5343,16 @@ impl Arena {
             // **16b cut M.1** (`T-82`): no seat has ordered anything yet.
             orders_window_s: 0,
             orders_in_window: 0,
+            // Doc 40 cut FR.5 (§4.1 item 5): under its own power until `Arena::couple`.
+            coupled_to: None,
         };
+        // **Doc 40 cut FR.5** (§4.1 item 4, Q-40-3, Q-40-6): the rows a part's
+        // condition word decides — the sight, the pod, the filter and the plant
+        // — derived once here, so a condition the bay left is honoured at
+        // check-out and at a join for every kind, as the guns above are. The
+        // power is off at admission already, and no startup is scheduled.
+        let mut state = state;
+        let _ = crate::arena::part_effects::derive(&mut state, terrain.cell_cm());
         Ok((state, sealed))
     }
 
