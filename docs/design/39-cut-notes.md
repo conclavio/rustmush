@@ -336,3 +336,90 @@ pack (the plant and fittings recipes are IN.5's and IN.7's content), the holds' 
   facility's stores vault (opened on the facility object on first need).
 
 **Cell delta (rule #14).** tacsim-integration-2: _filled from the PR's JUnit_.
+
+## IN.6 — the part lot at the workshop (Q-39-11, Q-39-12)
+
+**Built.**
+
+- **The workshop's stores** (Q-39-11): the operator org's storefront at the facility's port (`bay_work::stores_of`,
+  `def.workshop.operator`'s vendor row), the same vault its stock rows mint into. `Replace` with no lot is now
+  `Replace{lot: Store}`: `quote_here` prices it at the part row's catalogue reference (`QuotedJob.part_minor`,
+  beside the labour in `cost_minor`); `+bay` prints the part's price on its own line "from the workshop's
+  stores", or `NO_PART` ("The workshop has no <part> in its stores; +market/list the yard, or bring one in the
+  hold.") when the stores hold none; the "all" line and the fee are `BayQuote::fee_minor` (labour and parts).
+- **The take**: `+bay/order` picks the lowest-grade clean lot of the slot's row in the stores
+  (`port::stock::store_lots`: the vendor's seeded lots of that good at the storefront, unfitted, held by nothing
+  but their own lot ask and claimed by no open order), writes it into the job (`lot: Some`), records the
+  storefront on the order (`BayOrder.part_vault`) and owes IN.2's **`Hold`** act at the storefront, so the lot
+  is the order's until the draw; the draw consumes it there (`OwedKind::Draw.fit_at`), and a cancel owes the
+  `Release` at the storefront. An empty store refuses with `NO_PART`; nothing is escrowed. The store pick runs
+  after the take's dry run (a seeded part comes in intact, as the dry run fits one), so a doomed order keeps the
+  engine's refusal.
+- **The seeds** (Q-39-12; lane v22, relay v13, after RS.1's v21/v12): part `stock`
+  rows only (grade 9, issue 1). Occator at Ceres holds four each of `cannon_105`, `mg_coax`, `visual_mk1`,
+  `plant.vehicle_mk1` and `plant.light_mk1`; Stickney Yards six of all thirteen part rows. `MAX_VENDOR_ROWS`
+  16 → 24 (the Yards carry 18 stock rows). The strip chain's head is `lane_chain::strip_part_seeds`, called first
+  by `strip_tender` (RS.1's v21 strip), so every chain rebuilding an older lane still hits its published digest.
+- **The stores cost a boot no fire**: the clerk's mint of a vendor's bulk row lays every unminted part row of the
+  same vendor in the same bundle (`mush-inventory` `mint_origins_from`, a lineage source a row, so each lot is
+  rooted in its own stock issue; at most ~170 writes at the Yards against the bundle's 1,024), so a port boots in
+  exactly the fires it took before. Readiness counts a part row seeded once its receipt exists (its lots are never
+  dissolved, so IN.2's rule read it as never seeded). A part row added to a kept world (a pack apply) is minted on
+  its own, after the bulk rows, asks and bids (`seed_step(parts: true)`).
+- **For a lane that authors part asks** (none does yet): `part_ask_step` keeps one lot ask a part good standing
+  at a time, and a vendor at `MAX_LISTINGS_PER_VENDOR` lists no more. A store lot an order takes from its own ask
+  is withdrawn by the stock clerk, who listed it (`stock::claimed_step`; the market's release leg is the
+  seller's), and the order's `Hold` waits for that without spending a try; the clerk never lists a claimed lot
+  again (`bay_work::claimed_store_lots`).
+
+**The story.** `shard_2/in6_part_lot.rs::in6_a_refit_at_ceres_takes_the_cannon_from_occators_stores`: a First
+Captain leases Occator's escort at Ceres. By the time the port reads ready the clerk has seeded four cannon lots at
+Occator's storefront, each with a `Seeded` row. The escort's cannon is destroyed and it is berthed at C14
+(Occator's workshop, 1.2x). `+bay` quotes 480 of labour and 28,000 for the part from the stores;
+`+bay/order …=replace` escrows 28,480 and takes the first seeded lot. At the draw the cannon is whole, the lot is
+consumed, its row reads `Seeded` with `fitted_into` the escort, and the stores count three (four less one). Three
+more refits empty the stores; the fifth replace refuses `NO_PART` at the quote and at the order, and nothing is
+taken. Seeds: the destroyed cannon (staff damage through the unit's plan path, GC.8's fixture) and the captain's
+money (`@econ/mint`).
+
+**Departures from the row.**
+
+- **At Ceres the stores hold four, not six** (Q-39-12 as ruled: Occator four of each escort and rig part, the
+  Yards six of every row). The row's numbers (480 of labour, "six less one", "the seventh replace at Ceres")
+  mix the two ports: 480 is Ceres' 1.2x on the 400 labour, six is the Yards' count. The story runs at Ceres
+  with Q-39-12's four, so the store reads four less one and the **fifth** replace refuses `NO_PART`.
+- **The stores are not listed on the market** (Q-39-11's "+market/list at the port already shows it"): the lane
+  authors no part asks. With them, Occator's lots stood on the Exchange board, and their listings and mints were
+  background acts in every rig on the shipped lane (PR #399's first CI run: five cells red; a second, which
+seeded the stores within readiness one row a fire, lengthened every boot and moved four clock-bound stories). The lot-ask path is
+  kept for a cut that authors them, and that cut needs the market's reserve grace (below).
+- **One part from the stores an order** (`ONE_STORE_PART`): an order owes one act at a time (and with lot asks a
+  command can submit only one authoritative act), so an order that would replace several parts from the stores is
+  refused with "order the other replaces after it". A turret's three parts are three orders. A multi-lot hold is
+  a follow-up for IN.8/IN.9 if the owner wants it.
+- **Only the seeds are read** as store lots: the stores are found by the seeds' deterministic lot ids
+  (`seed_lot_id`), because the inventory has no scan of an endpoint's lots. A part sold, made or scrapped into a
+  storefront is not drawn by `Replace{lot: Store}` until IN.7/IN.9 give the stores an index.
+- **The part's fee is the order's one fee**: the price rides the fee contract to the operator, not the
+  market's lot sale; the lot is consumed by the draw, not handed over (doc 39 §4.5: "the draw consumes it and
+  the fee pays the operator").
+- **No 256/512 pair**: the cut is port-side (IN.2's and IN.4's precedent).
+- **A slot with no part row** refuses `NO_PART` (naming the slot) instead of being supplied free.
+
+**Found, and split out: the market's reserve race.** The first build listed the seeded lots, and the story then
+lost its first cannon. The market sweep's lot-hold reconcile withdrew a lot ask whose reserve was staged but had
+not landed (both ran in one fire); the hold then landed under a listing that no longer existed, stranding the lot.
+It applies to any exact-lot listing (IN.2's `@market/vendor stock … lot=`). The fix (`RESERVE_GRACE_SWEEPS`, a RAM
+`reserve_staged` map the reconcile skips for two sweeps) is its own PR, not this one.
+
+**Other tests moved.** `shard_10/commerce.rs`: the receipt counts 16 → 34 and Occator's readiness line
+(7 of 7 rows); part receipts are skipped where a test checks pools. `shard_3/drones.rs` `sm12b_a_delivery…`'s
+licence-fire census leaves out a journey's `atlas` tick (a guard for the boot's length).
+`shard_9/mill.rs`'s matter pin counts the clerk under `.mint_origins_from(`.
+`shard_1/bay_36a.rs` `b36a_2_a…` orders the cannon alone (one store part an order) and lets the order's hold land
+before its cancel. `shard_9/mill.rs`'s pack-apply story waits 64 fires after the apply (it adds the part rows). The
+lane pins: `LANE_VERSION` 22, `LANE_DIGEST`/`SHIPPED_LANE_DIGEST` `af3f150a…`, relay v13 `c55ce471…`
+(`relay_registry.rs`, `boot_parity.rs`, `shard_10/stations.rs`), and the version asserts in `shard_3/drones.rs`,
+`shard_5/sites.rs`, `shard_9/mill.rs`, `cost_lane.rs` and `shard_4/lane.rs`.
+
+**Cell delta (rule #14).** To be read off the PR run's JUnit.

@@ -57,6 +57,8 @@ mod in1_accounting;
 mod in2_lifecycle;
 #[path = "shard_2/in3_order_contract.rs"]
 mod in3_order_contract;
+#[path = "shard_2/in6_part_lot.rs"]
+mod in6_part_lot;
 #[path = "shard_2/minds.rs"]
 mod minds;
 #[path = "shard_2/minds_pool.rs"]

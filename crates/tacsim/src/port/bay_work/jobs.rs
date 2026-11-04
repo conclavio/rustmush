@@ -67,12 +67,13 @@ pub enum BayJob {
         /// The part.
         component: ComponentId,
     },
-    /// Fit a part of the slot's own definition where one is destroyed or missing: a new one
-    /// the workshop supplies, or a stripped part from a lot in the carrier's hold (GC.8b).
+    /// Fit a part of the slot's own definition where one is destroyed or missing: a part from
+    /// the workshop's stores (doc 39 cut IN.6, `lot` named when the order is taken), or a
+    /// traced part from a lot in the carrier's hold (GC.8b).
     Replace {
         /// The slot.
         component: ComponentId,
-        /// The lot the part comes from, when it is fitted from the hold.
+        /// The lot the part comes from: the store's, once an order takes it, or the hold's.
         #[serde(default, skip_serializing_if = "Option::is_none")]
         lot: Option<mush_inventory::LotId>,
     },
@@ -165,6 +166,16 @@ pub struct QuotedJob {
     pub secs: i64,
     /// Structural points the job restores.
     pub points: u64,
+    /// **The part's price** (doc 39 cut IN.6, Q-39-11): a replaced part from the workshop's
+    /// stores, at its catalogue price, minor units, beside the labour; nought for a part fitted
+    /// from the hold and for every other job.
+    #[serde(default, skip_serializing_if = "is_zero")]
+    pub part_minor: u64,
+}
+
+#[allow(clippy::trivially_copy_pass_by_ref)] // serde's `skip_serializing_if` passes a reference
+const fn is_zero(n: &u64) -> bool {
+    *n == 0
 }
 
 /// **A quote for one hull at one facility class** (D-31-13: every action produces a quote first).
@@ -186,6 +197,16 @@ impl BayQuote {
     pub fn cost_minor(jobs: &[QuotedJob]) -> u64 {
         jobs.iter()
             .fold(0u64, |sum, job| sum.saturating_add(job.cost_minor))
+    }
+
+    /// **The fee over `jobs`** (doc 39 cut IN.6): the labour and the price of every part from
+    /// the workshop's stores, minor units.
+    #[must_use]
+    pub fn fee_minor(jobs: &[QuotedJob]) -> u64 {
+        jobs.iter().fold(0u64, |sum, job| {
+            sum.saturating_add(job.cost_minor)
+                .saturating_add(job.part_minor)
+        })
     }
 
     /// Time over `jobs` at `class`, IC seconds: the workshop's, doubled in a carrier bay.
@@ -319,6 +340,7 @@ pub fn quote(
                     cost_minor: cost,
                     secs,
                     points,
+                    part_minor: 0,
                 });
             }
             SectionCondition::Destroyed | SectionCondition::Wreck => all.push(QuotedJob {
@@ -328,6 +350,7 @@ pub fn quote(
                 cost_minor: tariff.base_cost_reconstruct_section.saturating_add(cost),
                 secs: tariff.base_duration_ic_reconstruct_section,
                 points,
+                part_minor: 0,
             }),
             _ => {}
         }
@@ -366,6 +389,7 @@ pub fn quote(
             cost_minor,
             secs,
             points: 0,
+            part_minor: 0,
         });
     }
     if let Some(ammo) = &anatomy.weapon_ammo_cell {
@@ -407,6 +431,7 @@ pub fn quote(
                     .saturating_mul(tariff.cost_per_ammo_round),
                 secs: tariff.duration_ic_rearm_component,
                 points: 0,
+                part_minor: 0,
             });
         }
     }

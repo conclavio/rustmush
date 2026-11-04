@@ -233,6 +233,10 @@ pub enum OwedKind {
         goods: Vec<GoodUnits>,
         /// The lot a fitted part comes from.
         fit: Option<LotId>,
+        /// **Where that lot lies** (doc 39 cut IN.6): the storefront vault (`VaultId.0`) of a
+        /// part from the workshop's stores; `None` for a part in the hold the goods come from.
+        #[serde(default, skip_serializing_if = "Option::is_none")]
+        fit_at: Option<u64>,
     },
     /// Mint lots into the hold.
     Mint {
@@ -956,8 +960,14 @@ impl ActionProvider for BayActProvider {
             |message: &'static str| port_error(ActionErrorCode::ProviderRejected, message);
         let endpoint = owed.vault.map(|v| EndpointRef(VaultId(v)));
         match &owed.kind {
-            OwedKind::Draw { goods, fit, order } => {
+            OwedKind::Draw {
+                goods,
+                fit,
+                fit_at,
+                order,
+            } => {
                 let endpoint = endpoint.ok_or_else(invalid)?;
+                let fit_endpoint = fit_at.map_or(endpoint, |v| EndpointRef(VaultId(v)));
                 for row in goods {
                     let available = self
                         .inventory
@@ -985,8 +995,10 @@ impl ActionProvider for BayActProvider {
                         .get(&self.inventory.lots, lot)
                         .map_err(|_| refused("the part's lot cannot be read"))?
                         .cloned()
-                        .filter(|l| l.endpoint() == endpoint)
-                        .ok_or_else(|| refused("the part's lot is not in the hold"))?;
+                        .filter(|l| l.endpoint() == fit_endpoint)
+                        .ok_or_else(|| {
+                            refused("the part's lot is not in the hold or the stores")
+                        })?;
                     // Doc 39 cut IN.2: the order held the lot at its take; the draw ends the
                     // hold as it consumes the lot.
                     self.inventory

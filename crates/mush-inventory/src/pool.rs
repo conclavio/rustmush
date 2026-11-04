@@ -2049,8 +2049,29 @@ impl InventoryFamilies {
         rows: &[(CanonicalId, u64, Grade, LotId)],
         source: &mush_economy::ExternalRef,
     ) -> Result<Vec<Lot>, InventoryError> {
+        let rows: Vec<_> = rows
+            .iter()
+            .map(|(commodity, amount, grade, child)| {
+                (commodity.clone(), *amount, *grade, *child, source.clone())
+            })
+            .collect();
+        self.mint_origins_from(txn, endpoint, &rows)
+    }
+
+    /// **[`mint_origins`](Self::mint_origins) with a source a row** (doc 39 cut IN.6: one stock
+    /// mint lays several stock issues, each lot rooted in its own issue): the same checks, the
+    /// census and the tallies staged once for all of them.
+    ///
+    /// # Errors
+    /// As [`mint_origins`](Self::mint_origins). **Nothing is written on an error.**
+    pub fn mint_origins_from(
+        &self,
+        txn: &mut ActionTxn<'_>,
+        endpoint: EndpointRef,
+        rows: &[(CanonicalId, u64, Grade, LotId, mush_economy::ExternalRef)],
+    ) -> Result<Vec<Lot>, InventoryError> {
         let mut created: Vec<Lot> = Vec::with_capacity(rows.len());
-        for (commodity, amount, grade, child) in rows {
+        for (commodity, amount, grade, child, source) in rows {
             if created.iter().any(|lot| lot.id() == *child) {
                 return Err(InventoryError::AlreadyExists);
             }
