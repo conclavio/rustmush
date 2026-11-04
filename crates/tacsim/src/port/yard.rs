@@ -385,15 +385,19 @@ pub fn rig_lease(w: &World, tv: ObjId) -> Option<TvLease> {
     {
         return Some(record.clone());
     }
-    yard_rows(w).into_iter().find_map(|(_, row)| {
-        if !row.rigs.iter().any(|rig| rig.tv == tv.0) {
-            return None;
-        }
-        let dispatcher = ObjId(row.dispatcher?);
-        house_views(row, dispatcher)
-            .into_iter()
-            .find(|view| view.tv == tv)
-    })
+    yard_rows(w)
+        .into_iter()
+        .find_map(|(_, row)| {
+            if !row.rigs.iter().any(|rig| rig.tv == tv.0) {
+                return None;
+            }
+            let dispatcher = ObjId(row.dispatcher?);
+            house_views(row, dispatcher)
+                .into_iter()
+                .find(|view| view.tv == tv)
+        })
+        // Doc 39 cut IN.9 (§4.13): a commissioned rig's title view.
+        .or_else(|| crate::port::owned::title_view(w, tv))
 }
 
 /// **Whether `tv` is a yard's rig** (doc 20 cut SM.12b), by the cheap scan — the plan counters'
@@ -486,7 +490,9 @@ pub(crate) fn pack_facts(pack: &Pack) -> YardPack {
 }
 
 /// The yard unit's bays and their room templates (the unit's own, never a refit's).
-fn unit_bays(interior: &crate::definitions::InteriorDef) -> Vec<(BayDef, InteriorRoomDef)> {
+pub(crate) fn unit_bays(
+    interior: &crate::definitions::InteriorDef,
+) -> Vec<(BayDef, InteriorRoomDef)> {
     interior
         .bays
         .iter()
@@ -721,11 +727,14 @@ pub(crate) fn lay_up(
     crate::port::hull::lay_up_one(
         ctx,
         id,
-        map,
+        &mut crate::port::hull::MapRows {
+            map,
+            which: HullRows::Yard,
+            n: 0,
+        },
         &HullPlan {
             name: Some(name.as_str()),
             mark: registry_mark(&yard.registry_prefix, 0),
-            rows: HullRows::Yard,
             interior: &interior,
             spec: &spec,
             slot: &slot,
@@ -792,10 +801,13 @@ pub(crate) fn lay_up(
         crate::port::vehicle::lay_up_rig(
             ctx,
             id,
-            map,
+            &mut crate::port::vehicle::MapRigRows {
+                map,
+                which: RigRows::Yard,
+                n,
+            },
             &RigPlan {
                 mark: registry_mark(&yard.rig_prefix, n),
-                rows: RigRows::Yard,
                 place: place.clone(),
                 interior: &rig_interior,
                 spec: &rig_spec,

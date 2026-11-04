@@ -312,6 +312,8 @@ fn bay_carriers(w: &World) -> Vec<ObjId> {
                 .unwrap_or_default();
             map.hulls.iter().chain(yard).map(|row| ObjId(row.hull))
         })
+        // Doc 39 cut IN.9: then the commissioned ships, after every programme and yard row.
+        .chain(crate::port::owned::ships(w))
         .collect()
 }
 
@@ -534,6 +536,9 @@ fn holds_title(w: &World, actor: ObjId, hull: ObjId) -> bool {
 fn carrier_right(w: &World, actor: ObjId, carrier: ObjId) -> bool {
     crate::port::coop::helm_holder(w, carrier) == Some(actor)
         || crate::port::yard::operates(w, actor, carrier)
+        // Doc 39 cut IN.9: a commissioned carrier titled to them or to an org they act for.
+        || (crate::port::owned::ship_row(w, carrier).is_some()
+            && crate::port::owned::titled_for(w, carrier, actor))
 }
 
 /// **The right a third party `actor` holds over `hull`**, as far as the bay can read it for
@@ -572,9 +577,11 @@ fn berth_stands(ctx: &Ctx<'_>, actor: ObjId, record: &BayHull) -> Result<(), Str
     let Some(berth) = &record.berth else {
         return Ok(());
     };
-    if carrier_right(ctx.w, actor, berth.carrier)
-        || right_held_by(ctx, berth.by, record.hull).is_some()
-    {
+    let Some(carrier) = berth.carrier else {
+        // A yard berth: no carrier to serve her, nothing to refuse.
+        return Ok(());
+    };
+    if carrier_right(ctx.w, actor, carrier) || right_held_by(ctx, berth.by, record.hull).is_some() {
         return Ok(());
     }
     Err(
@@ -634,6 +641,13 @@ pub fn right_of(ctx: &Ctx<'_>, hull: ObjId) -> Option<Right> {
         return None;
     }
     if holds_title(ctx.w, actor, hull) {
+        return Some(Right::Title);
+    }
+    // Doc 39 cut IN.9 (§4.13): a commissioned hull titled to an organization the actor acts for
+    // is theirs to work as its title holder's officer.
+    if crate::port::owned::owned(ctx.w, hull).is_some()
+        && crate::port::owned::titled_for(ctx.w, hull, actor)
+    {
         return Some(Right::Title);
     }
     if unit_grant(ctx, hull, UnitCapability::MaintainRefit) {
@@ -978,10 +992,13 @@ pub fn source_carrier(w: &World, hull: ObjId, facility: &Facility) -> Result<Obj
                 .module_state::<TacsimStore>()
                 .and_then(|s| s.bay_hull(hull))
             {
-                Some(BayHullState::Present(row)) => row.berth.as_ref().map(|b| b.carrier),
+                Some(BayHullState::Present(row)) => row.berth.as_ref().and_then(|b| b.carrier),
                 _ => None,
             }
         })
+        // Doc 39 cut IN.9: a hull the yard built on the floor draws from a carrier her title
+        // holder holds docked at this port (the first load is a rearm from the hold, Q-39-36).
+        .or_else(|| crate::port::owned::titled_carrier_at(w, hull, facility.port.as_ref()?))
         .ok_or(no_carrier)?;
     match crate::port::ship::berth_of(w, carrier) {
         crate::port::ship::Berth::Docked { map, .. }
@@ -1115,6 +1132,9 @@ pub fn fit_order(ctx: &mut Ctx<'_>, hull: ObjId, slot: &str, lot: LotId) -> Resu
             rightful_owner.0
         ));
     }
+    if let Some(refusal) = disputed_refusal(ctx.w, &part) {
+        return Err(refusal);
+    }
     if part.fitted_into.is_some() {
         return Err("That part has already been fitted.".to_owned());
     }
@@ -1122,6 +1142,37 @@ pub fn fit_order(ctx: &mut Ctx<'_>, hull: ObjId, slot: &str, lot: LotId) -> Resu
         return Err("That part is held for a sale or another order.".to_owned());
     }
     take(ctx, hull, slot, Some((lot, part)))
+}
+
+/// **The claim a disputed part is held under** (doc 39 cut IN.7, §4.11; doc 41 §4.6): a
+/// stripped part its parent hull's record lists under a claim that is not vacated and whose
+/// filed contract has not ended (an unreadable one counts as live: fail closed). Who owns it is
+/// the claim's to decide, so no fit or build takes custody of it meanwhile.
+#[must_use]
+pub fn disputed(w: &World, part: &act::PartProvenance) -> Option<u64> {
+    let parent = part.parent_hull()?;
+    let listed = record_of(w, parent)
+        .ok()?
+        .claim_lots
+        .into_iter()
+        .find(|listed| listed.lot == part.lot.0 && listed.vacated.is_none())?;
+    let ended = w
+        .module_state::<EconomyStore>()
+        .and_then(|s| s.snapshot().contract(ContractId(listed.claim)).cloned())
+        .is_some_and(|c| c.state.is_terminal());
+    (!ended).then_some(listed.claim)
+}
+
+/// The refusal a custody reads for a disputed part (doc 39 cut IN.7): `+bay/fit` here, and a
+/// build's delivery of a part into its escrow.
+#[must_use]
+pub fn disputed_refusal(w: &World, part: &act::PartProvenance) -> Option<String> {
+    disputed(w, part).map(|claim| {
+        format!(
+            "That part is disputed: it came off #{} under claim {claim}, which is still open;              nothing takes custody of it until the claim is settled.",
+            part.parent_hull().map_or(0, |h| h.0)
+        )
+    })
 }
 
 /// The `Replace` job for `slot` in `quote`, fitted from `lot`, when `part` fits it.
@@ -2133,7 +2184,13 @@ pub fn berth(ctx: &mut Ctx<'_>, hull: ObjId) -> Result<ObjId, String> {
     let used = ctx
         .w
         .module_state::<TacsimStore>()
-        .map_or(0, |s| s.bay_berthed_in(room).len());
+        // Doc 41 cut RS.4 (round-2 item 41-15): a hull held for her owner takes no stand.
+        .map_or(0, |s| {
+            s.bay_berthed_in(room)
+                .into_iter()
+                .filter(|h| held_for(ctx.w, *h).is_none())
+                .count()
+        });
     if u32::try_from(used).unwrap_or(u32::MAX) >= berths {
         return Err("Every berth in the workshop is taken.".to_owned());
     }
@@ -2141,8 +2198,8 @@ pub fn berth(ctx: &mut Ctx<'_>, hull: ObjId) -> Result<ObjId, String> {
     ctx.w.move_to(hull, room).map_err(|e| e.to_string())?;
     record.berth = Some(BerthRow {
         workshop: room,
-        carrier,
-        bay_room,
+        carrier: Some(carrier),
+        bay_room: Some(bay_room),
         slot,
         by: ctx.actor,
         at_ic: ctx.w.world_ic_now().at,
@@ -2154,13 +2211,19 @@ pub fn berth(ctx: &mut Ctx<'_>, hull: ObjId) -> Result<ObjId, String> {
     Ok(room)
 }
 
-/// **`stow`** (Q-36-53): a berthed hull goes back to the bay slot it came from, its carrier
-/// still docked at this port.
+/// **`stow`** (Q-36-53; doc 39 cut IN.9, §4.13, §8.4: this document's verb): a berthed hull
+/// goes back to the bay slot it came from, its carrier still docked at this port — or, with
+/// `carrier` named, into a free slot of that carrier's bay, the carrier docked at this port.
+///
+/// The refusals, in order: an open order or an owed act; a hull in another's live salvage
+/// custody; no berth right; a named carrier not docked here; no run of it; a lessee or salvor
+/// naming a carrier other than the row's; no slot that takes her (the slot's mass limit read
+/// against her catalogue mass). Doc 41's RS.4 widens the run-of-carrier right, not this verb.
 ///
 /// # Errors
 ///
 /// The refusal, as a sentence; nothing is written on any.
-pub fn stow(ctx: &mut Ctx<'_>, hull: ObjId) -> Result<ObjId, String> {
+pub fn stow(ctx: &mut Ctx<'_>, hull: ObjId, carrier: Option<ObjId>) -> Result<ObjId, String> {
     let mut record = record_of(ctx.w, hull).map_err(str::to_owned)?;
     if record.open().is_some() {
         return Err(HELD_OPEN.to_owned());
@@ -2168,16 +2231,31 @@ pub fn stow(ctx: &mut Ctx<'_>, hull: ObjId) -> Result<ObjId, String> {
     if record.owed.is_some() {
         return Err(SETTLING.to_owned());
     }
+    // Doc 41 cut RS.4 (Q-41-18): a vacated hull held for her owner goes bay to bay.
+    if record.berth.is_none()
+        && let Some(named) = carrier
+        && record.held_for.is_some()
+    {
+        return stow_held(ctx, record, named);
+    }
     let row = record.berth.clone().ok_or("That hull is not berthed.")?;
     if ctx.w.get(ctx.actor).and_then(|o| o.location) != Some(row.workshop) {
         return Err("Hulls are stowed from the workshop they stand in.".to_owned());
+    }
+    if let Some(custody) = crate::surface::salvage::custody_of(ctx, hull)
+        && custody.holder != ctx.actor
+    {
+        return Err(format!(
+            "The {} is in {}'s custody; only they may move her.",
+            mush_core::output::display_name(ctx.w, hull),
+            mush_core::output::display_name(ctx.w, custody.holder)
+        ));
     }
     let right = right_of(ctx, hull).ok_or(NO_RIGHT)?;
     if !permits(right, Act::Berth) {
         return Err(NO_RIGHT.to_owned());
     }
-    berth_stands(ctx, ctx.actor, &record)?;
-    let docked_here = match crate::port::ship::berth_of(ctx.w, row.carrier) {
+    let docked_here = |carrier: ObjId| match crate::port::ship::berth_of(ctx.w, carrier) {
         crate::port::ship::Berth::Docked { map, def } => {
             crate::port::workshop::room(ctx.w, &map.entry, def)
                 .ok()
@@ -2186,25 +2264,293 @@ pub fn stow(ctx: &mut Ctx<'_>, hull: ObjId) -> Result<ObjId, String> {
         }
         _ => false,
     };
-    if !docked_here {
-        return Err("Her carrier is not docked at this port.".to_owned());
-    }
-    mush_sim::place_interior(ctx, hull, row.bay_room, row.slot.clone())
+    let (target, room, slot) = match carrier.filter(|named| Some(*named) != row.carrier) {
+        None => {
+            let (Some(carrier), Some(bay_room)) = (row.carrier, row.bay_room) else {
+                return Err("That hull came off no carrier; name the one to take her.".to_owned());
+            };
+            berth_stands(ctx, ctx.actor, &record)?;
+            if !docked_here(carrier) {
+                return Err("Her carrier is not docked at this port.".to_owned());
+            }
+            (carrier, bay_room, row.slot.clone())
+        }
+        Some(named) => {
+            let name = mush_core::output::display_name(ctx.w, named);
+            if !docked_here(named) {
+                return Err(format!("The {name} is not docked at this port."));
+            }
+            if !carrier_right(ctx.w, ctx.actor, named) {
+                return Err(format!("You do not have the run of the {name}'s bay."));
+            }
+            if !matches!(right, Right::Title | Right::Grant) {
+                return Err("Only her title holder may stow her into another carrier.".to_owned());
+            }
+            let (room, slot) = free_bay_slot(ctx.w, named, hull)?;
+            (named, room, Some(slot))
+        }
+    };
+    mush_sim::place_interior(ctx, hull, room, slot)
         .map_err(|e| format!("Her bay will not take her: {e}"))?;
     record.berth = None;
+    record.held_for = None;
     put_bay_hull(ctx, &record);
     // Doc 41 cut RS.5 (Q-41-8): the second handover — stowed into the poster's own carrier
     // docked at the destination.
-    if let crate::port::ship::Berth::Docked { map, .. } =
-        crate::port::ship::berth_of(ctx.w, row.carrier)
+    if let crate::port::ship::Berth::Docked { map, .. } = crate::port::ship::berth_of(ctx.w, target)
         && let Some(order) = crate::surface::retrieval::held_by(ctx.w, hull, ctx.actor)
-        && crate::port::coop::helm_holder(ctx.w, row.carrier)
+        && crate::port::coop::helm_holder(ctx.w, target)
             .is_some_and(|helm| crate::surface::retrieval::acts_for(ctx.w, helm, &order.poster))
     {
         let entry = map.entry.clone();
         let _ = crate::surface::retrieval::deliver(ctx, hull, &entry, ctx.actor);
     }
-    Ok(row.carrier)
+    Ok(target)
+}
+
+// ---- the vacated hull's return (doc 41 cut RS.4; Q-41-18, Q-41-19, Q-38-19) ----------------
+
+/// **Whom `hull` is held for**, when a vacated claim left her held ([`BayHull::held_for`]).
+#[must_use]
+pub fn held_for(w: &World, hull: ObjId) -> Option<PrincipalId> {
+    match w
+        .module_state::<TacsimStore>()
+        .and_then(|s| s.bay_hull(hull))
+    {
+        Some(BayHullState::Present(row)) => row.held_for.clone(),
+        _ => None,
+    }
+}
+
+/// Whether `actor` answers for `principal`: the character, or one acting for the organization.
+fn answers_for(w: &World, actor: ObjId, principal: &PrincipalId) -> bool {
+    match principal {
+        PrincipalId::Object(who) => *who == actor,
+        other => mush_economy::principal_holders(w, other).contains(&actor),
+    }
+}
+
+/// **Hold a vacated hull for her title holder** (Q-41-18): the claims' tick, at the vacate. A
+/// record that will not read is left as it is (logged); the hull waits for staff.
+pub(crate) fn hold_for(ctx: &mut Ctx<'_>, hull: ObjId, owner: PrincipalId) {
+    let mut record = match record_of(ctx.w, hull) {
+        Ok(record) => record,
+        Err(why) => {
+            tracing::error!(
+                hull = hull.0,
+                why,
+                "tacsim: a vacated hull cannot be held for her owner"
+            );
+            return;
+        }
+    };
+    if record.held_for.as_ref() == Some(&owner) {
+        return;
+    }
+    record.held_for = Some(owner);
+    put_bay_hull(ctx, &record);
+}
+
+/// Where a carrier stands, as the return reads it: the port or site entry she is docked at.
+fn standing(w: &World, carrier: ObjId) -> Option<CanonicalId> {
+    match crate::port::ship::berth_of(w, carrier) {
+        crate::port::ship::Berth::Docked { map, .. } => Some(map.entry.clone()),
+        _ => None,
+    }
+}
+
+/// Whether `who` stands aboard `carrier` (in her or one of her rooms).
+fn aboard(w: &World, who: ObjId, carrier: ObjId) -> bool {
+    let Some(at) = w.get(who).and_then(|o| o.location) else {
+        return false;
+    };
+    crate::port::ship::hull_view(w, carrier)
+        .is_some_and(|view| at == carrier || view.row.rooms.values().any(|room| ObjId(*room) == at))
+}
+
+/// **The bay-to-bay return** (Q-41-18): a hull held for `ctx.actor` (or an organization they act
+/// for, or a `maintain_refit` grantee of hers) goes out of whatever bay holds her into a free slot
+/// of `named`, a carrier the actor has the run of and stands aboard, docked where the holding
+/// carrier is — one port, or one site's pad. The custodian cannot refuse it.
+///
+/// # Errors
+///
+/// The refusal, as a sentence; nothing is written on any.
+fn stow_held(ctx: &mut Ctx<'_>, mut record: BayHull, named: ObjId) -> Result<ObjId, String> {
+    let hull = record.hull;
+    let owner = record.held_for.clone().ok_or(NO_RIGHT)?;
+    if !answers_for(ctx.w, ctx.actor, &owner)
+        && !unit_grant(ctx, hull, UnitCapability::MaintainRefit)
+    {
+        return Err(NO_RIGHT.to_owned());
+    }
+    let crate::surface::act::Where::Bay { hull: holding } =
+        crate::surface::act::where_is(ctx.w, hull)
+    else {
+        return Err("She is in no carrier's bay; she is stowed from where she stands.".to_owned());
+    };
+    let name = mush_core::output::display_name(ctx.w, named);
+    if holding == named {
+        return Err(format!("She is in the {name}'s bay already."));
+    }
+    if !carrier_right(ctx.w, ctx.actor, named) {
+        return Err(format!("You do not have the run of the {name}'s bay."));
+    }
+    if !aboard(ctx.w, ctx.actor, named) {
+        return Err(format!(
+            "You must be aboard the {name} to take her into her bay."
+        ));
+    }
+    let here = standing(ctx.w, named);
+    if here.is_none() || here != standing(ctx.w, holding) {
+        return Err(format!(
+            "The {name} must stand where the {} does, at one port or on one pad.",
+            mush_core::output::display_name(ctx.w, holding)
+        ));
+    }
+    let (room, slot) = free_bay_slot(ctx.w, named, hull)?;
+    mush_sim::place_interior(ctx, hull, room, Some(slot))
+        .map_err(|e| format!("Her bay will not take her: {e}"))?;
+    record.held_for = None;
+    put_bay_hull(ctx, &record);
+    Ok(named)
+}
+
+/// **The port holds her** (Q-41-19; the docking hook): when `carrier` docks at a port with a
+/// workshop, every hull in her bay held for someone is berthed into the workshop room with no
+/// carrier — outside the stand count — under her owner's name, and the custodian's slot frees;
+/// a lease rig goes back to its shed instead. Her owner's carrier `+bay/stow`s her from there.
+pub(crate) fn berth_held(ctx: &mut Ctx<'_>, carrier: ObjId) {
+    let crate::port::ship::Berth::Docked { map, def } = crate::port::ship::berth_of(ctx.w, carrier)
+    else {
+        return;
+    };
+    if def.site.is_some() {
+        return;
+    }
+    let Ok(Some(room)) = crate::port::workshop::room(ctx.w, &map.entry, def) else {
+        return;
+    };
+    let aboard: Vec<ObjId> = ctx
+        .w
+        .module_state::<TacsimStore>()
+        .map(|s| {
+            s.bay_hulls
+                .iter()
+                .filter_map(|(hull, state)| match state {
+                    BayHullState::Present(row) if row.held_for.is_some() && row.berth.is_none() => {
+                        Some(*hull)
+                    }
+                    _ => None,
+                })
+                .collect()
+        })
+        .unwrap_or_default();
+    let by = crate::port::coop::helm_holder(ctx.w, carrier).unwrap_or(mush_core::GOD);
+    for hull in aboard {
+        if crate::surface::act::where_is(ctx.w, hull)
+            != (crate::surface::act::Where::Bay { hull: carrier })
+        {
+            continue;
+        }
+        let lease = ctx
+            .w
+            .module_state::<TacsimStore>()
+            .is_some_and(|s| s.tv_lease_on(hull).is_some());
+        if lease {
+            if crate::port::tv::hand_back(ctx, hull)
+                && let Ok(mut record) = record_of(ctx.w, hull)
+            {
+                record.held_for = None;
+                put_bay_hull(ctx, &record);
+            }
+            continue;
+        }
+        let Ok(mut record) = record_of(ctx.w, hull) else {
+            continue;
+        };
+        if let Err(error) = mush_sim::unplace(ctx, hull, "tacsim.bay.held") {
+            tracing::error!(hull = hull.0, %error, "tacsim: a held hull could not leave the bay");
+            continue;
+        }
+        if let Err(error) = ctx.w.move_to(hull, room) {
+            tracing::error!(hull = hull.0, %error, "tacsim: invariant breach: a held hull left the bay and reached no workshop; staff place her by hand");
+            continue;
+        }
+        record.berth = Some(BerthRow {
+            workshop: room,
+            carrier: None,
+            bay_room: None,
+            slot: None,
+            by,
+            at_ic: ctx.w.world_ic_now().at,
+        });
+        put_bay_hull(ctx, &record);
+    }
+}
+
+/// **A free slot of `carrier`'s bay that takes `hull`** (doc 39 cut IN.9): the bay's rigs
+/// compartment with room for one more, its mass limit at least her catalogue mass.
+fn free_bay_slot(
+    w: &World,
+    carrier: ObjId,
+    hull: ObjId,
+) -> Result<(ObjId, mush_sim::SlotId), String> {
+    let view = crate::port::ship::hull_view(w, carrier)
+        .ok_or("Her bay will not take her: that is no carrier.")?;
+    let (bay, room) = view
+        .bay()
+        .ok_or("Her bay will not take her: that carrier has no bay.")?;
+    let slot = mush_sim::SlotId::new(bay.slot.id.as_str())
+        .ok_or("Her bay will not take her: the bay's slot is misconfigured.")?;
+    let maximum = usize::try_from(bay.slot.maximum_items).unwrap_or(0);
+    let full = w
+        .module_state::<SpatialState>()
+        .is_some_and(|state| state.occupants(room, Some(&slot)) >= maximum);
+    if full {
+        return Err("Her bay will not take her: every slot is taken.".to_owned());
+    }
+    let limit = crate::port::owned::slot_mass_limit_kg(bay);
+    let mass = crate::port::owned::catalogue_mass_kg(w, hull);
+    if let (Some(limit), Some(mass)) = (limit, mass)
+        && mass > limit
+    {
+        return Err(format!(
+            "Her bay will not take her: she masses {} t and the slot takes {} t.",
+            mass.div_ceil(1000),
+            limit / 1000
+        ));
+    }
+    Ok((room, slot))
+}
+
+/// **The commission's yard berth** (doc 39 cut IN.9, §4.13): a rig the yard built on the
+/// workshop floor is berthed there with no carrier, so `held` locks her to the floor and
+/// `+bay` quotes her; `+bay/stow <hull>=<carrier>` takes her off it. Idempotent.
+///
+/// # Errors
+///
+/// The sentence for a bay record that will not read.
+pub(crate) fn berth_built(
+    ctx: &mut Ctx<'_>,
+    hull: ObjId,
+    workshop: ObjId,
+    by: ObjId,
+) -> Result<(), String> {
+    let mut record = record_of(ctx.w, hull).map_err(str::to_owned)?;
+    if record.berth.is_some() {
+        return Ok(());
+    }
+    record.berth = Some(BerthRow {
+        workshop,
+        carrier: None,
+        bay_room: None,
+        slot: None,
+        by,
+        at_ic: ctx.w.world_ic_now().at,
+    });
+    put_bay_hull(ctx, &record);
+    Ok(())
 }
 
 #[cfg(test)]

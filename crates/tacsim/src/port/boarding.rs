@@ -194,6 +194,14 @@ pub(crate) fn player(ctx: &mut Ctx<'_>) -> Result<(), String> {
         .filter(|r| r.live() && named.is_none_or(|n| n == r.slot))
         .cloned()
         .collect::<Vec<_>>();
+    // Doc 39 cut IN.9 (§4.13): or a rig titled to them (or an org they act for) riding a
+    // carrier they have the run of, by its title view.
+    if rentals.is_empty() {
+        rentals = crate::port::owned::title_views_for(ctx.w, ctx.actor)
+            .into_iter()
+            .filter(|r| named.is_none_or(|n| n == r.slot))
+            .collect();
+    }
     // Doc 36a lane 3 (P1-6): or a live lease on the carrier whose bay the actor stands in, when
     // its lessee delegated OperateCrew to them (`+tv/<n>/permissions`, then `@unitgrant/issue`
     // within that loan); the lessee stays the lease's principal.
@@ -213,7 +221,10 @@ pub(crate) fn player(ctx: &mut Ctx<'_>) -> Result<(), String> {
     let [rental] = rentals.as_slice() else {
         return Err("Name one of your current rental rig slots.".into());
     };
-    rental.check()?;
+    // A title view is never stored, so it carries no lease to check.
+    if crate::port::owned::rig_row(ctx.w, rental.tv).is_none() {
+        rental.check()?;
+    }
     let unit = rental.tv;
     let bay = bay(ctx.w, unit, rental.hull)?;
     let actor = ctx.actor;

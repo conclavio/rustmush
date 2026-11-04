@@ -693,6 +693,37 @@ pub fn vacate_claim(
     Ok(())
 }
 
+/// **List a stripped lot under a pending claim** (doc 39 cut IN.7; doc 41 §4.6): staff's seam
+/// for the strip under a claim, which no ruled path makes yet (a salvor never strips, Q-36-33),
+/// [`vacate_claim`]'s pair. `lot` came off `hull`; until `claim` is vacated or its contract
+/// ends, the part is disputed ([`super::disputed`]).
+///
+/// # Errors
+///
+/// A zero claim, the record unreadable, or its claim list full.
+pub fn list_under_claim(
+    ctx: &mut Ctx<'_>,
+    hull: ObjId,
+    lot: LotId,
+    claim: u64,
+) -> Result<(), String> {
+    if claim == 0 {
+        return Err("A claim names its contract.".to_owned());
+    }
+    let mut record = record_of(ctx.w, hull).map_err(str::to_owned)?;
+    if record.claim_lots.len() >= super::MAX_CLAIM_LOTS {
+        return Err("That hull's claim list is full.".to_owned());
+    }
+    record.claim_lots.retain(|listed| listed.lot != lot.0);
+    record.claim_lots.push(super::ClaimLot {
+        lot: lot.0,
+        claim,
+        vacated: None,
+    });
+    put_bay_hull(ctx, &record);
+    Ok(())
+}
+
 /// **A claim on `hull` was vacated** (doc 41 §4.6): every lot its record lists under `claim` is
 /// marked for flagging, `rightful_owner` the title holder and `by` the hand that submits each
 /// flag. Answers whether any lot is now waiting.

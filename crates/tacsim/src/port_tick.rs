@@ -2072,6 +2072,9 @@ fn port_tick(ctx: &mut Ctx<'_>, _tag: &str, _scene: Option<SceneId>) {
     // Doc 36 cut GC.8a: the bay's due repair orders.
     crate::port::bay_work::tick(ctx);
     // Doc 39 cut IN.3: the works arm (submit, deliver, return, collect, storage).
+    // Doc 39 cut IN.9: the commissions past their consumption, every remaining step — before
+    // the works arm, so a consumption it settles this fire is laid up on the next.
+    crate::port::commission::tick(ctx);
     crate::port::works::tick(ctx);
     // Doc 41 cut RS.5 (Q-41-11): the retrieval clerk (Tycho at a window's end, a lapse).
     crate::surface::retrieval::tick(ctx);

@@ -370,6 +370,10 @@ pub struct TacsimStore {
     /// ([`crate::port::works::WorksContract`]), keyed by its escrow vault. Persisted through
     /// [`put_works`]; an unreadable one is held (the arm skips it) until staff repair it.
     pub(crate) works: BTreeMap<u64, crate::port::works::WorksState>,
+    /// **Doc 39 cut IN.9** — the yard's records ([`crate::port::owned::YardBook`]):
+    /// `tacsim:owned_hull:{hull}`, `tacsim:hull_provenance:{order}` and
+    /// `tacsim:commission:{order}`, each loaded by [`crate::port::owned::load`].
+    pub(crate) yard: crate::port::owned::YardBook,
     /// **Doc 41 cut RS.5** — `tacsim:retrieval:{hull}`: each hull's retrieval job
     /// ([`crate::surface::retrieval::RetrievalOrder`]): its contract and its two windows.
     /// Persisted through [`put_retrieval`]; an unreadable one holds its hull's job.
@@ -2685,6 +2689,9 @@ pub fn load(kv: &[(SmolStr, serde_json::Value)], cfg: TacsimConfig) -> TacsimSto
             // staff repair the document.
             store.licence_keys.insert(SmolStr::new(key));
             load_licence(&mut store, key, value);
+        } else if crate::port::owned::load(&mut store, key, value) {
+            // Doc 39 cut IN.9: the register, the provenance and the commissions (an unreadable
+            // one is held until staff repair the document).
         } else if let Some(rest) = key.strip_prefix(crate::port::works::WORKS_PREFIX) {
             // Doc 39 cut IN.3. The claim is the KEY's (the R8 rule): a contract that will not
             // read is held (the arm skips it) until staff repair the document.

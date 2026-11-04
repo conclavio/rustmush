@@ -8,7 +8,8 @@
 //!
 //! The tree's and the workflows' own gates: the gated-test inventory and its
 //! tier manifest (test-tiers.toml), the tacsim shard guard, the clippy test
-//! allowances, the feature census, the panic budget and the restriction
+//! allowances, the feature census, the panic budget, the fiat budget (doc
+//! 43 cut TS.6) and the restriction
 //! lints (three of the four guards run before every push), the toolchain
 //! pin, the RNG and serialization policies, the legacy-handler and
 //! matcher-call-site registries, the schedule source, the fault gates and
@@ -30,6 +31,8 @@ mod ci_tacsim_shards;
 mod clippy_test_allowances;
 #[path = "ci_policy/feature_matrix_inventory.rs"]
 mod feature_matrix_inventory;
+#[path = "ci_policy/fiat_budget.rs"]
+mod fiat_budget;
 #[path = "ci_policy/gate5_fault_matrix.rs"]
 mod gate5_fault_matrix;
 #[path = "ci_policy/legacy_handler_allowlist.rs"]

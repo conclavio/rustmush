@@ -18,6 +18,7 @@ import { fireEvent, render, screen } from "@testing-library/svelte";
 import { tick } from "svelte";
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 
+import { onlyReaches } from "./reach";
 import ReplayScreen from "./ReplayScreen.svelte";
 import type { GameApp } from "$lib/game.svelte";
 import { WAITING_FOR_THE_REPLAY } from "$lib/replay";
@@ -60,12 +61,17 @@ afterEach(() => {
 /** Mount on a replay store with the decoys beside it. */
 function mount(): { replay: ReplayStore } {
   const replay = new ReplayStore();
-  const app = {
-    replay,
-    who: { entries: [{ name: "Decoy Pilot", id: "#909" }] },
-    presence: { thinking: [{ name: "Decoy Pilot" }] },
-    unit: { view: { object: { id: "#909", name: "Decoy Tank" } } },
-  } as unknown as GameApp;
+  // The screen touches nothing on the app but the replay (16b cut I.2): the
+  // decoys sit beside it, and every mount refuses any other member.
+  const { app } = onlyReaches(
+    {
+      replay,
+      who: { entries: [{ name: "Decoy Pilot", id: "#909" }] },
+      presence: { thinking: [{ name: "Decoy Pilot" }] },
+      unit: { view: { object: { id: "#909", name: "Decoy Tank" } } },
+    } as unknown as GameApp,
+    ["replay"],
+  );
   render(ReplayScreen, { props: { app } });
   return { replay };
 }

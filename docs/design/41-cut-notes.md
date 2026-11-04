@@ -489,3 +489,96 @@ once funded, released; T reports the bare one to the registry on T's sensor reco
 - **Security venues are a constant**, not a lane field, to take no lane version.
 
 **Cell cost (rule #14).** Owed from the PR's CI JUnit.
+
+## RS.8 — the space seams (2026-11-04)
+
+Row: §6 RS.8; Q-41-26, Q-36-46, Q-36-47. The owner moved it from the space track to the programme
+session. The as-built is doc 35c §12.1. No lane rows, no config keys, no kernel hash.
+
+**Built.** In the space tree (`space/custody.rs`, `commands.rs`, `tick.rs`, `bubble.rs`, `docking.rs`,
+`picket.rs`, `mod.rs`), plus three changes outside it:
+- `surface/claim.rs`:
+  - `tow_files_salvage` (named clear of `shard_3`'s industry-seam tripwire, which forbids `file_claim(`) is `+salvage/claim`'s filing, and `+helm/tow` calls it.
+  - `title_of` is now `pub(crate)`.
+  - The space orders persist the custody document, and the RAM claim-book mirrors are gone.
+- `composition/sim_routes.rs`: one call. A hull her retriever docks under her own power is
+  delivered.
+- `carrier_damage.rs`: the module doc names where space maps `ShipSectionId`.
+
+The claim path:
+- `+helm/tow` puts the derelict in the tug's custody, in `tacsim:space:custody:{domain}`, and files
+  on the ground's one path.
+- The window is `claim_window_s`. `DERELICT_WINDOW_S` and the derelict's second contest clock are
+  retired.
+- The pins and titles name real principals.
+- The RAM claim registration and the 1,200 cr bounty are deleted.
+
+The retrieval:
+- A tug holding a derelict's retrieval tows her for the job.
+- Docking delivers it, both for a towed derelict and for a hull under her own power.
+
+**Story.** Both stories are in `shard_10/voyage.rs`.
+- `sfr19_one_salvage_path_unifies_space_derelict_claims_with_gc6_and_economy` is rewritten as RS.8's
+  acceptance. A derelict is clamped, towed and docked under the one window, survives a full restart
+  in her domain's custody document, is contested by `+salvage/contest`, and is awarded by the claim
+  tick.
+- `rs8_a_space_retrieval_job_is_delivered_by_the_tug_that_docks_her` is new. A space retrieval job
+  on `+salvage/jobs` is accepted, towed and delivered by the tug's docking, and the fee is paid.
+- sfr2, sfr7, sfr8, sfr12 and sfr15 are re-read for the retired bounty and the retired window.
+
+Rule #1's 256/512 is not applicable: a space bubble has no site scheme. The bot does not fly space
+(no mush-bot space lane, doc 35c §9).
+
+**Divergences.**
+- **The dock is Stickney Yards, not Ceres.** The test lane's interdicted leg is `ceres_stickney`,
+  so the tug's next port is Stickney.
+- **The clamp is not timed by `attach_s`.** The 6-DOF docking session is the act's time. A second
+  timer would be a new space mechanic, and the owner ruled against adding space exposure.
+- **No carrier floor in space.** The tow keeps its 2× dry-mass cap. `TUG_SHARE_PERMILLE` is not
+  applied, and no space hull is a carrier wreck yet.
+- **The space retrieval's poster is a fixture.** A staff `@asset/transfer` gives the Raider to a
+  player. Production has no way for a player to own a hull that lies disabled in space and is not
+  their own carrier.
+- **A derelict nobody held** is towed into custody with no claim, as the ground's `NO_TITLE` does.
+
+**Cell cost (rule #14).** @@CELL@@
+## RS.4 — the vacated hull's return (2026-11-04)
+
+Row: §6 RS.4; Q-41-18, Q-41-19, Q-38-19, round-2 item 41-15. No lane rows. Consumes IN.9's
+`+bay/stow <hull>=<carrier>` as merged; built on its branch (#416). Moves no crew (doc 42's).
+
+**Built.**
+
+- **`held_for`** on the bay record (`BayHull.held_for: Option<PrincipalId>`, serde default, omitted while
+  `None`): the claims' tick writes the hull's title holder at a `Vacate` settlement
+  (`bay_work::hold_for`), right after the site record's settle lands.
+- **Bay to bay** (`bay_work::stow`'s new source, `stow_held`): `+bay/stow <hull>=<carrier>` on a hull
+  that is not berthed and is held moves her out of whatever bay holds her into a free slot of the named
+  carrier, for the holder (the character, or one acting for the organization) or a `maintain_refit`
+  grantee, who has the run of that carrier, stands aboard her, and has her docked where the holding
+  carrier is (one port, or one site's pad). The custodian cannot refuse it and has no right to move her.
+  The slot check is IN.9's `free_bay_slot`.
+- **The port holds her** (`bay_work::berth_held`, from `TacsimCarrierHooks::arrived`): a carrier docking at a
+  port with a workshop has every held hull in her bay berthed into the workshop room with no carrier
+  (`BerthRow.carrier: None`, as IN.9's yard berth), her slot freed; a lease rig is handed back to the
+  shed instead. **Outside the stand count**: `berth`'s count of the workshop's berths skips held hulls.
+  Her owner's carrier stows her from the floor through IN.9's existing named-carrier path, which clears
+  the hold.
+- `+bay <hull>` says "… is held for <name>: a carrier of theirs takes her".
+- `surface::act::where_is` is `pub` (the story reads it).
+- The fix thread's defect note (§2.2, the vacated hull's missing return verb) is closed by this cut.
+
+**Story.** `tacsim` `tests/shard_7/vacated_return_rs4.rs`, story (b) extended at 512 (Urvara) and 256
+(Ahuna): both of O's unlawful recoveries vacated on T's `recovery` contests and held for T; O cannot move
+them; T aboard T's own carrier on the same pad takes one bay to bay; O docks at Ceres with the other, which
+the port berths in the workshop held for T; T's carrier docks and T stows her from the floor.
+
+**Divergences.**
+
+- **A held hull never counts against the workshop's berths**, whatever her owner does: she waits there
+  until a carrier of theirs takes her (no fee, no expiry). A storage charge or a lapse to Tycho's sweep is
+  not ruled; it is RS.6's to consider.
+- **The return carries no crew**, and a hull vacated while crewed keeps whoever is aboard where they are
+  (doc 42 owns it).
+
+**Cell cost (rule #14).** Owed from the PR's CI JUnit.

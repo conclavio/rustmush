@@ -465,3 +465,27 @@ captured one.
   variance, not this cut: the shard's summed minutes go 49.9 → 67.4, and 3.45 of that is CR.4's.
 - shard_8's wall was 21.0 min on that run. The run's slowest cell was shard_1 at 23.9 min, which this
   cut does not touch.
+
+## CR.6 — the space seam
+
+Row: §7 CR.6; Q-42-24. The owner moved it from the space track to the programme session. It is stacked on doc 41's RS.8 (#439). The as-built is doc 35c §12.2. `field/crew.rs` is not edited: CR.6 calls its `check_in`, `put`, `crew_of`, `held_in`, `captured_loaded`, `aboard_loaded` and `hand_over`, all from `space/`.
+
+**Built.**
+- `space/custody.rs`:
+  - `check_in_space_crew` is called from `check_in_space_unit`, so every space check-in writes the crew's records: `Carrier`, or `Stranded` in a derelict.
+  - `space_site` picks the site a space record names.
+  - `capture_at_hard_dock` takes the crew at the derelict clamp: captured by a non-friend under the ground's Friend rule, aboard for a friend.
+- `space/commands.rs`:
+  - the derelict clamp calls `capture_at_hard_dock`;
+  - the port clamp calls `crew::hand_over` before the hull's own delivery.
+
+**Story.** `shard_10/voyage.rs`, `cr6_a_crewed_derelict_hard_docked_by_a_stranger_is_captured_and_handed_over_at_port`. Disabled, stranded, hard-docked, captured, then handed over at Stickney (doc 35c §12.2 has the steps). Rule #1's 256/512 does not apply, because a bubble has no site scheme. The bot does not fly space.
+
+**Divergences.**
+- **The fixture disables the carrier.** Staff `@unit/damage` puts SalvorB's drive at its floor during the cruise. The bubble's own check-out then meets her as a derelict; no test writes the space book (SF.R9's no-fiat lint). Combat's disablement of a player carrier is sfr18's story.
+- **The friend test is the ground's, not the bubble's.** SF.R18 makes every co-participating carrier `Friend` for fire control. Under that relation, two strangers interdicted together could never take each other.
+- **Records, not bodies.** A settled derelict's rooms may be empty by the clamp, so the capture reads the crew's records, as `captured_loaded` does. The scan for crewed records walks the world's characters through `crew_of`, because `CrewBook` has no public iterator and `crew.rs` is not this cut's file.
+- **The space site** is `space_domain_<n>`, not a waypoint entry, on the test lane. Its waypoints carry no port map.
+- **Not exercised:** `+sortie/extract` from a space `Stranded` record, and the friend's `aboard_loaded` branch. Both are the ground's code paths, unchanged.
+
+**Cell cost (rule #14).** Owed from the PR's CI JUnit.
