@@ -290,3 +290,11 @@ lto = "thin"
 # opt-level 1 for dependencies were measured and add little on top.
 [profile.dev]
 debug = "line-tables-only"
+
+# Doc 43 cut TS.3 (measurement, Q-43-4): every non-workspace dependency at
+# opt-level 1 in dev and test builds. The shards are CPU-bound and the
+# 2026-10-18 measurement above read link time only; this branch reads the
+# test minutes per cell against main. Adopted only if a cell's summed minutes
+# fall by a fifth or more (D-43-4).
+[profile.dev.package."*"]
+opt-level = 1
