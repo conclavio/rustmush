@@ -279,3 +279,16 @@ async fn cr1_a_non_friend_load_takes_custody_and_captures_the_crew_at_512() {
 async fn cr1_the_captors_field_close_keeps_the_captive_at_512() {
     crate::custody_rig::captors_field_close_keeps_the_captive(&URVARA_REACH).await;
 }
+
+/// **CR.2's handover at 256, the fee paid** (`custody_rig::handover_at_ceres`).
+#[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+async fn cr2_the_captor_docks_at_ceres_and_the_captive_is_handed_over_and_released() {
+    crate::custody_rig::handover_at_ceres(&AHUNA_FLANK, true).await;
+}
+
+/// **CR.2's handover at 512, the fee unpaid** (`custody_rig::handover_at_ceres`): the release
+/// never waits on it.
+#[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+async fn cr2_an_unpaid_release_fee_stands_and_the_captive_is_released_anyway_at_512() {
+    crate::custody_rig::handover_at_ceres(&URVARA_REACH, false).await;
+}
