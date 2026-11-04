@@ -1,0 +1,146 @@
+{
+  "manifest": {
+    "digest": "3df60e4518dae14ba82bc742b905bbd24997535931306f54eb79276afa00c938",
+    "id": "tacsim.industry.hulls",
+    "kind": "rules_definition",
+    "requires": [],
+    "version": 1
+  },
+  "entries": {
+    "dray": {
+      "def": {
+        "inputs": [
+          {
+            "commodity": "structural_alloys",
+            "units": 163
+          },
+          {
+            "commodity": "industrial_parts",
+            "units": 55
+          }
+        ],
+        "label": "Dray hull",
+        "output_lots": "each",
+        "outputs": [
+          {
+            "commodity": "tacsim.hull_kit.dray",
+            "units": 1
+          }
+        ],
+        "requires": [
+          "tacsim.yard"
+        ],
+        "work_units": 288
+      },
+      "kind": "recipe"
+    },
+    "dray_p": {
+      "def": {
+        "inputs": [
+          {
+            "commodity": "structural_alloys",
+            "units": 163
+          },
+          {
+            "commodity": "industrial_parts",
+            "units": 55
+          }
+        ],
+        "label": "Dray-P hull",
+        "output_lots": "each",
+        "outputs": [
+          {
+            "commodity": "tacsim.hull_kit.dray_p",
+            "units": 1
+          }
+        ],
+        "requires": [
+          "tacsim.yard"
+        ],
+        "work_units": 288
+      },
+      "kind": "recipe"
+    },
+    "tv_escort": {
+      "def": {
+        "inputs": [
+          {
+            "commodity": "structural_alloys",
+            "units": 3
+          },
+          {
+            "commodity": "industrial_parts",
+            "units": 1
+          }
+        ],
+        "label": "Escort hull",
+        "output_lots": "each",
+        "outputs": [
+          {
+            "commodity": "tacsim.hull_kit.tv_escort",
+            "units": 1
+          }
+        ],
+        "requires": [
+          "tacsim.yard"
+        ],
+        "work_units": 48
+      },
+      "kind": "recipe"
+    },
+    "tv_prospector": {
+      "def": {
+        "inputs": [
+          {
+            "commodity": "structural_alloys",
+            "units": 5
+          },
+          {
+            "commodity": "industrial_parts",
+            "units": 2
+          }
+        ],
+        "label": "Prospector hull",
+        "output_lots": "each",
+        "outputs": [
+          {
+            "commodity": "tacsim.hull_kit.tv_prospector",
+            "units": 1
+          }
+        ],
+        "requires": [
+          "tacsim.yard"
+        ],
+        "work_units": 48
+      },
+      "kind": "recipe"
+    },
+    "tv_tender": {
+      "def": {
+        "inputs": [
+          {
+            "commodity": "structural_alloys",
+            "units": 6
+          },
+          {
+            "commodity": "industrial_parts",
+            "units": 2
+          }
+        ],
+        "label": "Tender hull",
+        "output_lots": "each",
+        "outputs": [
+          {
+            "commodity": "tacsim.hull_kit.tv_tender",
+            "units": 1
+          }
+        ],
+        "requires": [
+          "tacsim.yard"
+        ],
+        "work_units": 48
+      },
+      "kind": "recipe"
+    }
+  }
+}

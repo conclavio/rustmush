@@ -18,13 +18,18 @@
 //! **The beats, in order** (each its own section below):
 //! 1. **The raid of a declared-Hostile co-op** (FR.1): the raider types `+faction/stance
 //!    Basin=Concord/hostile`; the captain's `+sortie/launch <op>=1` puts the miner's rig 1 down
-//!    the carrier's ramp; the raider's `+field/mark W=hostile` on it opens the field; Basin's
+//!    the carrier's ramp; the raider's `+field/mark <bearing>=hostile` ([`approach`]) on it opens the field; Basin's
 //!    party holds Concord's Hostile on the live record from admission, and the raider's cockpit
 //!    `LOCK`/`FIRE` lands on Concord.
 //! 2. **Reinforcement from the pad** (FR.3): the captain's `+sortie/launch <op>=2` into the
 //!    running field; rig 2, the captain in its cab, joins Concord's party on the live record.
-//! 3. **A tow struck and released under fire** (FR.5's coupled tow): **pending** — see
-//!    [`tow_struck_before_field`] and [`tow_released_under_fire`], the marked seam.
+//! 3. **A tow struck and released under fire** (GC.4 on open ground, FR.5b into the field):
+//!    staff index the fixture's stranded rig as a casualty beside the ramp; the captain's
+//!    `+tv/1 tow go` takes it in tow with rig 1 before the mark; the field admits the pair coupled;
+//!    the raider's fire strikes the casualty in tow; the captain's `+tv/1 release go` lets it go
+//!    under fire, and the snapshot stands it out of tow where it was ([`tow_struck_before_field`],
+//!    [`tow_released_under_fire`]). The release is typed before beat 2's launch: once rig 2 flies,
+//!    the captain sits at its helm and `+tv/1` names no rig of theirs.
 //! 4. **A jammed sight** (FR.5 item 4): the wing's hull is the fixture design [`JAMMING_UNIT`]
 //!    (the line tank with every survivable hit jamming a part) worn to its armour floor; the
 //!    raider's machine gun on it jams the turret's parts until the sight is one, and the field's
@@ -44,7 +49,10 @@
 //! seated and (the wing's) worn by a staff hand at boot, before the world task spawns; the two
 //! factions are made and staffed by `@faction/create` and `@faction/add` (mush-org has no
 //! membership verb); the jamming design is a test pack on `[tacsim].pack_paths`, signed as any
-//! operator pack is. Everything after the boot is a player's command over SSH. The world is read
+//! operator pack is. The casualty (beat 3) is a stock rig placed at boot with its power destroyed,
+//! and indexed on the site's record by staff's `@tacsim/site … leave … casualty` (GC.5's fixture,
+//! `field_fr5`'s precedent: no player path disables a rig outside a field). Everything after is
+//! a player's command over SSH. The world is read
 //! (never written) through the store: the field's live record and its snapshot.
 //!
 //! `#[ignore]`d, run by name on conclav.dev (tier: dispatch, doc 43 TS.2; `40-cut-notes.md` FR.7):
@@ -77,6 +85,8 @@ const JAMMING_UNIT: &str = "fr7.unit.jamming_tank";
 const JAMMING_PACK: &str = "fr7.pack.jamming_tank";
 /// The shipped line tank: the jamming design's source and the raider's hull.
 const LINE_TANK: &str = "tacsim.unit.line_tank";
+/// The stock rig design the casualty is (beat 3).
+const PROSPECTOR: &str = "tacsim.unit.tv_prospector";
 /// The line tank's pack, as shipped.
 const LINE_TANK_JSON: &str = include_str!("../../../tacsim/content/units/line_tank.json");
 /// A heading due west, millidegrees (`grounds_rig`'s convention: 270 000 faces the pad from the
@@ -168,26 +178,57 @@ fn named(engine: &mush_core::Engine, name: &str) -> ObjId {
         .unwrap_or_else(|| panic!("no object called {name}"))
 }
 
-/// **Where the Basin hulls stand on `ground`**: off the carrier's stern ramp cell (its pad's cell
-/// less four rows, `driving_rig::RAMP_CELL` on every site), the raider's sixteen cells due east of
-/// it facing west, so the rigs that come down the ramp are its `W` and the nearest flight there;
-/// the wing's three cells west of the raider and three north (its `NW`).
-fn stands(engine: &mush_core::Engine, ground: &Ground) -> ((i64, i64), (i64, i64)) {
+/// **Where the raider comes from on a ground**: its cell's offset from the ramp's, its heading,
+/// and the bearing word its `+field/mark` names the rigs at the ramp by.
+#[derive(Clone, Copy, Debug)]
+struct Approach {
+    from_ramp: (i64, i64),
+    heading: u32,
+    mark: &'static str,
+}
+
+/// The raider's approach on `ground`: sixteen cells due east of the ramp facing west, its `W`
+/// (Urvara Reach); on Ahuna Flank the ramp's row is out of sight from the east (the raider saw
+/// only the carrier there), so from the south, facing north, its `N`.
+fn approach(ground: &Ground) -> Approach {
+    if ground.side == 256 {
+        Approach {
+            from_ramp: (0, -12),
+            heading: 0,
+            mark: "N",
+        }
+    } else {
+        Approach {
+            from_ramp: (16, 0),
+            heading: WEST,
+            mark: "W",
+        }
+    }
+}
+
+/// **Where the story stands on `ground`**: off the carrier's stern ramp cell (its pad's cell less
+/// four rows, `driving_rig::RAMP_CELL` on every site), the raider's hull by its [`approach`], so
+/// the rigs that come down the ramp are the nearest flight on its mark's bearing; the wing three
+/// cells west of the raider and three north; the casualty one cell east of the ramp, within a
+/// cell of the rig that lands there (beat 3). Answers `(raider, wing, casualty)`.
+fn stands(engine: &mush_core::Engine, ground: &Ground) -> [(i64, i64); 3] {
     let (x, y) = tacsim::surface::excursion::site_pad_cm(&engine.world, &cid(ground.entry));
     let cell = i64::from(tacsim::surface::ground::SITE_CELL_CM);
     let ramp = (x.div_euclid(cell), y.div_euclid(cell) - 4);
-    ((ramp.0 + 16, ramp.1), (ramp.0 + 13, ramp.1 + 3))
+    let (dx, dy) = approach(ground).from_ramp;
+    let raider = (ramp.0 + dx, ramp.1 + dy);
+    [raider, (raider.0 - 3, raider.1 + 3), (ramp.0 + 1, ramp.1)]
 }
 
-/// **An armed hull of `design` on `ground` at `cell`, its cockpit seated to `pilot`** (the
-/// fixture, as `field_host_rig::armed_on` and `seat`).
-fn armed_seated(
+/// **A hull of `design` on `ground` at `cell`, facing `heading`** (the fixture, as
+/// `field_host_rig::armed_on`).
+fn placed(
     engine: &mut mush_core::Engine,
     ground: &Ground,
     design: &str,
     name: &str,
     cell: (i64, i64),
-    pilot: ObjId,
+    heading: u32,
 ) -> ObjId {
     let domain = engine
         .world
@@ -213,8 +254,25 @@ fn armed_seated(
             .create(mush_core::ObjKind::Thing, name, GOD, None)
             .expect("the hull's object");
         mush_tactics::module::create_unit(ctx, hull, &spec).expect("the hull's unit record");
-        let pose = tacsim::surface::excursion::cell_pose([cell.0, cell.1], WEST).expect("a pose");
+        let pose =
+            tacsim::surface::excursion::cell_pose([cell.0, cell.1], heading).expect("a pose");
         mush_sim::place(ctx, hull, mush_sim::DomainId(domain), pose).expect("on the ground");
+        hull
+    })
+}
+
+/// **An armed hull of `design` on `ground` at `cell`, its cockpit seated to `pilot`** (the
+/// fixture, as `field_host_rig::armed_on` and `seat`).
+fn armed_seated(
+    engine: &mut mush_core::Engine,
+    ground: &Ground,
+    design: &str,
+    name: &str,
+    cell: (i64, i64),
+    pilot: ObjId,
+) -> ObjId {
+    let hull = placed(engine, ground, design, name, cell, approach(ground).heading);
+    staff_hand(engine, |ctx| {
         ctx.actor = pilot;
         let console = ctx.w.get(pilot).and_then(|object| object.location);
         let station = mush_sim::StationId::new("cockpit").expect("a station id");
@@ -272,11 +330,28 @@ fn worn_plan(engine: &mush_core::Engine, hull: ObjId) -> String {
     serde_json::to_string(&plan).expect("the plan's JSON")
 }
 
-/// The hulls the fixture made.
+/// A hull's power destroyed, as a mutation plan's JSON (`field_fr5`'s `powerless`): a casualty a
+/// tug can take.
+fn powerless_plan() -> String {
+    let plan = mush_tactics::UnitMutationPlan::new(
+        vec![mush_tactics::UnitMutationOp::SetComponentCondition {
+            component: mush_tactics::unit::ComponentId::new("power").expect("an id"),
+            condition: mush_tactics::ConditionId::new("destroyed").expect("a condition"),
+        }],
+        None,
+        Some("bot-story:fr7-powerless".into()),
+    )
+    .expect("a plan");
+    serde_json::to_string(&plan).expect("the plan's JSON")
+}
+
+/// The hulls the fixture made, and where the casualty lies.
 #[derive(Clone, Copy, Debug)]
 struct Hulls {
     raider: ObjId,
     wing: ObjId,
+    casualty: ObjId,
+    casualty_cell: (i64, i64),
 }
 
 /// **The fixture**: the two factions and their officers, the raider's line tank and the wing's
@@ -302,15 +377,28 @@ fn fixture(engine: &mut mush_core::Engine, ground: &Ground) -> (Vec<String>, Hul
             ));
         }
     }
-    let (at_raider, at_wing) = stands(engine, ground);
+    let [at_raider, at_wing, at_casualty] = stands(engine, ground);
     let hulls = Hulls {
         raider: armed_seated(engine, ground, LINE_TANK, "Basin Hound", at_raider, raider),
         wing: armed_seated(engine, ground, JAMMING_UNIT, "Basin Whelp", at_wing, wing),
+        casualty: placed(
+            engine,
+            ground,
+            PROSPECTOR,
+            "Stranded Rig",
+            at_casualty,
+            WEST,
+        ),
+        casualty_cell: at_casualty,
     };
     let plan = worn_plan(engine, hulls.wing);
     said.push(mine::staff_line(
         engine,
         &format!("@unit/damage #{}={plan}", hulls.wing.0),
+    ));
+    said.push(mine::staff_line(
+        engine,
+        &format!("@unit/damage #{}={}", hulls.casualty.0, powerless_plan()),
     ));
     (said, hulls)
 }
@@ -380,10 +468,10 @@ fn party_row<'a>(live: &'a Value, party: &Value) -> Option<&'a Value> {
         .find(|row| &row["party"] == party)
 }
 
-/// **Whether the field's snapshot holds `unit` with no sight** (`UnitState::sensor` empty):
-/// `Some(true)` for a dark sight, `Some(false)` for one that sees, `None` while no snapshot holds
-/// the unit.
-async fn sight_dark(rig: &arena::Rig, ground: &Ground, unit: u64) -> Option<bool> {
+/// **`unit`'s row in the field's last snapshot** (`UnitState`, as `tacsim::surface::tow::
+/// field_stand` reads it in-process), read from the store: the snapshot's state rides its
+/// document as one JSON string.
+async fn snapshot_row(rig: &arena::Rig, ground: &Ground, unit: u64) -> Option<Value> {
     let snapshot = rig
         .store
         .module_json_get(
@@ -393,29 +481,54 @@ async fn sight_dark(rig: &arena::Rig, ground: &Ground, unit: u64) -> Option<bool
         .await
         .ok()
         .flatten()?;
-    find_sensor(&snapshot, unit)
+    find_row(&snapshot, unit)
 }
 
-/// The walk: an object naming `unit` as its `id` with a `sensor` key answers whether the key is
-/// null; a long string that parses as JSON (the snapshot's `state`) is walked too.
-fn find_sensor(value: &Value, unit: u64) -> Option<bool> {
+/// The walk: an object naming `unit` as its `id` with a `pose`; a long string that parses as
+/// JSON (the snapshot's `state`) is walked too.
+fn find_row(value: &Value, unit: u64) -> Option<Value> {
     match value {
         Value::Object(map) => {
-            if map.get("id").and_then(Value::as_u64) == Some(unit)
-                && let Some(sensor) = map.get("sensor")
-            {
-                return Some(sensor.is_null());
+            if map.get("id").and_then(Value::as_u64) == Some(unit) && map.contains_key("pose") {
+                return Some(value.clone());
             }
-            map.values().find_map(|inner| find_sensor(inner, unit))
+            map.values().find_map(|inner| find_row(inner, unit))
         }
-        Value::Array(rows) => rows.iter().find_map(|inner| find_sensor(inner, unit)),
+        Value::Array(rows) => rows.iter().find_map(|inner| find_row(inner, unit)),
         Value::String(text) if text.len() > 64 && text.starts_with('{') => {
             serde_json::from_str::<Value>(text)
                 .ok()
-                .and_then(|inner| find_sensor(&inner, unit))
+                .and_then(|inner| find_row(&inner, unit))
         }
         _ => None,
     }
+}
+
+/// **Whether the field's snapshot holds `unit` with no sight** (`UnitState::sensor` empty):
+/// `Some(true)` for a dark sight, `Some(false)` for one that sees, `None` while no snapshot holds
+/// the unit.
+async fn sight_dark(rig: &arena::Rig, ground: &Ground, unit: u64) -> Option<bool> {
+    snapshot_row(rig, ground, unit)
+        .await
+        .map(|row| row.get("sensor").is_none_or(Value::is_null))
+}
+
+/// **Where the field's snapshot stands `unit`, the tug it trails, and whether it has been
+/// struck** (`field_stand`'s reading, plus `own_last_hit_ms`).
+async fn tow_stand(
+    rig: &arena::Rig,
+    ground: &Ground,
+    unit: u64,
+) -> Option<((i64, i64), Option<u64>, bool)> {
+    let row = snapshot_row(rig, ground, unit).await?;
+    let cell = i64::from(tacsim::surface::ground::SITE_CELL_CM);
+    let x = row["pose"]["x_cm"].as_i64()?.div_euclid(cell);
+    let y = row["pose"]["y_cm"].as_i64()?.div_euclid(cell);
+    Some((
+        (x, y),
+        row["coupled_to"].as_u64(),
+        !row["own_last_hit_ms"].is_null(),
+    ))
 }
 
 // ---------------------------------------------------------------------------
@@ -504,11 +617,19 @@ async fn contacts(raider: &mut arena::Client) -> Vec<(String, char)> {
 
 /// The raider locks the first contact of `party` and fires `gun` once; whether a lock was had.
 async fn lock_and_fire(raider: &mut arena::Client, party: char, gun: &str) -> bool {
-    let Some((designator, _)) = contacts(raider)
+    lock_and_fire_nth(raider, party, 0, gun).await
+}
+
+/// The raider locks the `nth` contact of `party` (modulo how many it holds) and fires `gun` once;
+/// whether a lock was had.
+async fn lock_and_fire_nth(raider: &mut arena::Client, party: char, nth: usize, gun: &str) -> bool {
+    let of_party: Vec<String> = contacts(raider)
         .await
         .into_iter()
-        .find(|(_, of)| of.eq_ignore_ascii_case(&party))
-    else {
+        .filter(|(_, of)| of.eq_ignore_ascii_case(&party))
+        .map(|(designator, _)| designator)
+        .collect();
+    let Some(designator) = of_party.get(nth % of_party.len().max(1)).cloned() else {
         return false;
     };
     let (_, locked) = pilot_says(
@@ -562,6 +683,15 @@ async fn drive_to_launch(
             lifted = true;
         }
         for send in lane.tick(now) {
+            // The step can open and go in one tick: its launch is the script's to type.
+            if send.line.starts_with("+sortie/launch ") {
+                println!(
+                    "fr7: +{} s lane held back: {}",
+                    started.elapsed().as_secs(),
+                    send.line
+                );
+                return started.elapsed().as_secs();
+            }
             println!("fr7: +{} s lane {}", started.elapsed().as_secs(), send.line);
             if let Err(error) = client.try_send(&send.line).await {
                 println!("fr7: {error}");
@@ -574,39 +704,174 @@ async fn drive_to_launch(
     started.elapsed().as_secs()
 }
 
-/// **Beat 3, its first half: the tow struck before the field** (FR.5's coupled tow, Q-40-7,
-/// Q-40-25).
+/// **Beat 3, its first half: the tow struck before the field** (doc 36 GC.4's open-ground tow,
+/// carried into the field coupled by FR.5, Q-40-7).
 ///
-/// FR.5 tow half pending: `surface/tow.rs`'s half of FR.5 (PR #415) is not on this branch, so a
-/// tow struck on open ground cannot yet ride into the field coupled. When it lands, this step
-/// types, before the raider's mark: a tug's `+tv/<n> tow go` on a casualty beside the ramp (read
-/// through the bot's `lines::tow_line`), and asserts that the field's admission carries the pair
-/// coupled (the casualty an entrant on its tug's party, in `FieldHost.tows`, not counted). It
-/// answers what it did; nothing else in the script depends on it.
-#[allow(clippy::unused_async)] // the seam the parent fills types over SSH
-async fn tow_struck_before_field(ground: &Ground) -> &'static str {
-    // FR.5 tow half pending: `+tv/<n> tow go` before the field (PR #415's `surface/tow.rs`).
-    println!(
-        "fr7: {} beat 3a (tow struck before the field): FR.5 tow half pending",
-        ground.venue
+/// The casualty is the fixture's stranded rig, its power destroyed at boot and indexed on the
+/// site's record as a casualty by staff's `@tacsim/site <site> leave #<unit> casualty <x>,<y>`
+/// (GC.5's fixture, `field_fr5`'s precedent: the field that disabled it would have written that
+/// row; no player path disables a rig outside a field). Then the captain's `+tv/1 tow go` (the
+/// bot's GC.4 tow line) takes it in tow with rig 1, which came down the ramp a cell east of it,
+/// read through the bot's `lines::tow_line` as attached. Answers what it read.
+async fn tow_struck_before_field(
+    god: &mut arena::Client,
+    cap: &mut arena::Client,
+    ground: &Ground,
+    hulls: &Hulls,
+) -> String {
+    let (x, y) = hulls.casualty_cell;
+    let (_, left) = god
+        .answer(
+            &format!(
+                "@tacsim/site {} leave #{} casualty {x},{y}",
+                ground.entry, hulls.casualty.0
+            ),
+            &[
+                "Site record write requested",
+                "Usage",
+                "not a site",
+                "has no",
+            ],
+        )
+        .await;
+    println!("fr7: god> @tacsim/site leave\n{}", left.trim_end());
+    assert!(
+        left.contains("Site record write requested"),
+        "staff index the casualty:\n{left}"
     );
-    "pending"
+    god.idle(Duration::from_secs(3)).await;
+    let tow = "+tv/1 tow go";
+    assert!(escort::in_vocabulary(tow), "the bot's tow line: {tow}");
+    let from = cap.seen.len();
+    cap.send(tow).await;
+    let mut attached = None;
+    for _ in 0..90 {
+        cap.idle(Duration::from_secs(1)).await;
+        let since = cap.seen.get(from..).unwrap_or("").to_owned();
+        let read: Vec<lines::TowLine> = since.lines().filter_map(lines::tow_line).collect();
+        if read.contains(&lines::TowLine::Attached) {
+            attached = Some(since);
+            break;
+        }
+        assert!(
+            !read
+                .iter()
+                .any(|line| matches!(line, lines::TowLine::Refused | lines::TowLine::Nothing)),
+            "the tow is refused:\n{since}"
+        );
+    }
+    let since = attached.unwrap_or_else(|| {
+        panic!(
+            "rig 1 takes the casualty in tow:\n{}",
+            cap.seen.get(from..).unwrap_or("")
+        )
+    });
+    println!("fr7: captain> {tow}\n{}", since.trim_end());
+    let line = since
+        .lines()
+        .find(|line| lines::tow_line(line) == Some(lines::TowLine::Attached))
+        .unwrap_or_default()
+        .trim()
+        .to_owned();
+    println!("fr7: {} beat 3a: {line}", ground.venue);
+    line
 }
 
-/// **Beat 3, its second half: the casualty hit under tow and released in the field.**
+/// **Beat 3, its second half: the casualty struck while towed, then released under fire.**
 ///
-/// FR.5 tow half pending: once [`tow_struck_before_field`] couples a pair, this step has the
-/// raider `LOCK` and `FIRE` on the towed casualty until a round lands, then the tug's pilot types
-/// `+tv/<n> release go` (admitted by `field::round_word`), reads `ArenaOut::Released`'s line, and
-/// asserts the casualty stands where it was dropped, uncoupled, on the next live record.
-#[allow(clippy::unused_async)] // the seam the parent fills types over SSH
-async fn tow_released_under_fire(ground: &Ground) -> &'static str {
-    // FR.5 tow half pending: the casualty hit under tow, then `+tv/<n> release go` in the field.
+/// The field admits the pair coupled: its snapshot stands the casualty `coupled_to` rig 1
+/// (Q-40-7). The raider locks Concord's contacts in turn and fires until the snapshot reads the
+/// casualty hit while still coupled; then, with one more burst in the air, the captain types
+/// `+tv/1 release go` (`field::round_word`), and the snapshot stands the casualty out of tow
+/// where it was let go. Answers what the captain read.
+#[allow(clippy::too_many_arguments)] // the one beat's cast
+async fn tow_released_under_fire(
+    rig: &arena::Rig,
+    raider: &mut arena::Client,
+    cap: &mut arena::Client,
+    ground: &Ground,
+    hulls: &Hulls,
+    tug: u64,
+    concord: char,
+    gun: &str,
+) -> String {
+    let casualty = u64::from(hulls.casualty.0);
+    let mut coupled = None;
+    for _ in 0..60 {
+        if let Some(stand) = tow_stand(rig, ground, casualty).await
+            && stand.1 == Some(tug)
+        {
+            coupled = Some(stand);
+            break;
+        }
+        raider.idle(Duration::from_secs(1)).await;
+    }
+    let coupled = coupled.unwrap_or_else(|| {
+        panic!("the field admits the casualty coupled to rig 1 #{tug} (Q-40-7)")
+    });
     println!(
-        "fr7: {} beat 3b (tow released under fire): FR.5 tow half pending",
-        ground.venue
+        "fr7: {} beat 3b: the casualty #{casualty} stands at {:?} in tow of #{tug}",
+        ground.venue, coupled.0
     );
-    "pending"
+    let mut struck = None;
+    for nth in 0..120 {
+        let _ = lock_and_fire_nth(raider, concord, nth, gun).await;
+        if let Some(stand) = tow_stand(rig, ground, casualty).await
+            && stand.2
+        {
+            struck = Some(stand);
+            break;
+        }
+        raider.idle(Duration::from_secs(1)).await;
+    }
+    let struck = struck.expect("the raider's fire strikes the casualty in tow");
+    assert_eq!(struck.1, Some(tug), "struck while towed: {struck:?}");
+    println!(
+        "fr7: {} beat 3b: the casualty is struck in tow at {:?}",
+        ground.venue, struck.0
+    );
+    // Under fire: one more burst, then the release.
+    let _ = lock_and_fire(raider, concord, gun).await;
+    let (said, text) = captain_says(
+        cap,
+        "+tv/1 release go",
+        &["lets go of the", "could not let go", "busy", "Usage"],
+    )
+    .await;
+    assert_eq!(
+        said,
+        Some(0),
+        "the release is ordered in the field:\n{text}"
+    );
+    let mut released = None;
+    for _ in 0..60 {
+        if let Some(stand) = tow_stand(rig, ground, casualty).await
+            && stand.1.is_none()
+        {
+            released = Some(stand);
+            break;
+        }
+        cap.idle(Duration::from_secs(1)).await;
+    }
+    let released = released.expect("the snapshot stands the casualty out of tow");
+    let moved = (released.0.0 - struck.0.0)
+        .abs()
+        .max((released.0.1 - struck.0.1).abs());
+    assert!(
+        moved <= 2,
+        "the casualty stands where it was let go: struck at {:?}, released at {:?}",
+        struck.0,
+        released.0
+    );
+    println!(
+        "fr7: {} beat 3b: released at {:?}",
+        ground.venue, released.0
+    );
+    text.lines()
+        .find(|line| line.contains("lets go of the"))
+        .unwrap_or_default()
+        .trim()
+        .to_owned()
 }
 
 /// **The round's story on `ground`.**
@@ -730,10 +995,11 @@ async fn round_story(ground: &'static Ground) {
     }
     assert!(down, "rig 1 stands on the surface");
 
-    // Beat 3a, the seam: the tow struck before the field.
-    let tow_a = tow_struck_before_field(ground).await;
+    // Beat 3a: the tow struck before the field (rig 1 takes the stranded rig in tow).
+    let tow_a = tow_struck_before_field(&mut god, &mut cap, ground, &hulls).await;
 
-    let text = pilot_reads("raider", &mut raider, "+field/mark W=hostile").await;
+    let mark = format!("+field/mark {}=hostile", approach(ground).mark);
+    let text = pilot_reads("raider", &mut raider, &mark).await;
     let mut opened = None;
     for _ in 0..60 {
         if let Some(record) = live(&rig, ground).await {
@@ -745,6 +1011,10 @@ async fn round_story(ground: &'static Ground) {
     let opened = opened.unwrap_or_else(|| panic!("the raider's mark opens the field:\n{text}"));
     println!("fr7: {} the field opens: {opened}", ground.venue);
     let concord = party_of(&opened, rig1).expect("rig 1 is in the field");
+    assert!(
+        party_of(&opened, rig2).is_none(),
+        "rig 2 is still aboard when the field opens: {opened}"
+    );
     let basin = party_of(&opened, hulls.raider.0.into()).expect("the raider is in the field");
     let wing_party = party_of(&opened, hulls.wing.0.into()).expect("the wing is in the field");
     let basin_row = party_row(&opened, &basin).expect("Basin's row");
@@ -772,6 +1042,21 @@ async fn round_story(ground: &'static Ground) {
     }
     assert!(struck, "the raider locks and fires on Concord");
 
+    // -- Beat 3b: the casualty struck while towed, then released under fire (FR.5b) -------
+    // Before the reinforcement: once rig 2 flies, the captain sits at its helm and `+tv/1` names
+    // no rig of theirs (the helm's own rig is the only one a slot can name).
+    let tow_b = tow_released_under_fire(
+        &rig,
+        &mut raider,
+        &mut cap,
+        ground,
+        &hulls,
+        rig1,
+        concord_letter,
+        &gun,
+    )
+    .await;
+
     // -- Beat 2: reinforcement from the pad (FR.3) ------------------------------------------
     let (said, text) = captain_says(
         &mut cap,
@@ -786,8 +1071,7 @@ async fn round_story(ground: &'static Ground) {
     );
     let mut joined = None;
     for _ in 0..90 {
-        // The raider keeps the field engaged while the reinforcement comes down.
-        let _ = lock_and_fire(&mut raider, concord_letter, &gun).await;
+        // The field's idle bound is long: it holds with no round fired while rig 2 comes down.
         if let Some(record) = live(&rig, ground).await
             && party_of(&record, rig2).is_some()
         {
@@ -807,9 +1091,6 @@ async fn round_story(ground: &'static Ground) {
         Some(concord_letter),
         "the captain, in rig 2's cab, reads Concord's party"
     );
-
-    // Beat 3b, the seam: the casualty hit under tow and released.
-    let tow_b = tow_released_under_fire(ground).await;
 
     // -- Beat 4: a jammed sight (FR.5 item 4), by the raider's fire on its wing ---------------
     let mut dark = false;
@@ -902,7 +1183,7 @@ async fn round_story(ground: &'static Ground) {
     assert!(live(&rig, ground).await.is_none(), "the field has demoted");
 
     println!(
-        "fr7: {} green in {} s: raid, reinforcement, tow {tow_a}/{tow_b}, sight jammed, void, segment {rolled}",
+        "fr7: {} green in {} s: raid, reinforcement, tow ({tow_a} / {tow_b}), sight jammed, void, segment {rolled}",
         ground.venue,
         started.elapsed().as_secs()
     );

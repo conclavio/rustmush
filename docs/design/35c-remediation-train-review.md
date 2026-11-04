@@ -238,3 +238,110 @@ Order: §8 first; then `SF.R17` (holes) ∥ `SF.R18` (needs FR.6's types or abso
 - "The enable flag is owed": not owed, Q-38-9 (owner, 2026-11-03).
 - "The surface/ edits in the range break D-35-2": refuted; they are doc 36a lane 5 (PR #346).
 - "The write-census shards are red": refuted at `f1b2a1e4`; CI green.
+
+---
+
+## 12. The programme's space seams (doc 38 §9, wave 3)
+
+The post-IC programme builds two seams in the space tree. The owner moved them to the programme
+session (2026-11-04). Doc 35b §8 owns the space tree and the SF.R* train. Each cut here closes a
+hole that doc 41 or doc 42 named. Neither cut adds a space feature. There is no enable flag
+(Q-38-9). This section records what each cut built, so the next SF.R* writer reads it before
+touching these paths.
+
+### 12.1 RS.8, the salvage seams (doc 41 §4.7; Q-41-26, Q-36-46, Q-36-47)
+
+Built on `main` at `7107db6d`. SF.R19 had already moved `+helm/tow` onto `file_salvage_claim`, but
+it kept the RAM `SalvageClaimBook` claim path alongside it. RS.8 removes that path and its
+fabricated principals.
+
+- **One claim path.** `+helm/tow` no longer builds a claim itself. It puts the derelict in the
+  tug's custody as a `SalvageCustody` row with `ClaimSeam::Owed`, then files through
+  `surface::claim::tow_files_salvage`. That function is `+salvage/claim <hull> go`'s own code, so the
+  audience, the `file_salvage_claim` contract, the `[tacsim.recovery].claim_window_s` window, the
+  IC mail and the claim tick's `award_salvage_title` are all the ground's.
+  - `register_derelict_salvage_in_book` is deleted, and so are the claim book's `submit_contest`
+    and `adjudicate_claim` mirrors in `claim.rs`.
+  - `SalvageClaimBook` is now only the bubble's black box: combat lines and `EpochClosedInBay`.
+- **One window.** `DERELICT_WINDOW_S` is retired.
+  - `HullStatus::DisabledDerelict` and `SpaceDerelictRecord` lose `salvage_contest_window_s`. Only
+    the claim's window runs.
+  - `DERELICT_LIFE_SUPPORT_S` (48 h) keeps life support, which is a separate fact (D-35-12).
+  - A derelict record is retained while its custody row stands.
+  - `SalvageTowRecord.contest_expires_real_s` is gone. `+helm` status points at `+salvage`.
+- **`tacsim:space:custody:{domain}`.** `SpaceBubbleBook.space_custody` is a `SpaceCustodyBook`:
+  rows grouped by recovery domain, at most `MAX_SPACE_CUSTODY` (32) per domain, as on a site.
+  - Each domain is one `PersistedCustodyDoc` (`deny_unknown_fields`, identity rule), written
+    dirty-only by `persist_space_state`. It never rides `tacsim:space:state`.
+  - An unreadable custody document holds the whole space state for staff repair. It is not a
+    domain quarantine, because a claim is never dropped silently.
+  - `claim.rs` persists after every space claim order (file, contest, report, inspect, settle,
+    at-risk).
+- **Real principals** (doc 35b §3, §6.3 above).
+  - The clamp's pin is `custody::pin_at_clamp`. It holds:
+    - the derelict's economy title, and `claim::answerers_of` for who answers for it;
+    - `GroundTenure::Unclaimed`;
+    - as `Sensor` witnesses, the helm of every other carrier in the tug's bubble.
+  - `resolve_hull_prior_owner` returns `Option`. It is used only to title an untitled derelict to
+    whoever really held her, never the god object.
+  - A derelict nobody held stays untitled. She is towed in custody, but her claim cannot be filed
+    (the ground's `NO_TITLE`).
+  - The actor's own hull is a self-recovery: no custody and no claim.
+  - `resolve_nearest_port_base_obj` returns `Option`. A delivery with no real base writes no
+    `EpochClosedInBay`.
+- **The bounty is retired.** `SALVAGE_RECOVERY_BOUNTY_MAJOR` (1,200 cr),
+  `SALVAGE_RECOVERY_CONTRACT_NAME`, `settle_salvage_recovery_payout_from_registry` and
+  `paid_salvage_bounties` are deleted. The salvor is paid by the title, if the claim stands.
+- **The retrieval's delivery at a dock** (doc 41 §4.7, Q-41-8). There are three paths:
+  - A tug whose operator holds the derelict's retrieval (`retrieval::held_by`) tows her for the job
+    (`TOW_FOR_RETRIEVAL`). She is in retrieval custody, with no salvage row and no claim.
+  - `deliver_active_tow_at_port` calls `retrieval::deliver` for the towed derelict at the tug's
+    port.
+  - A hull docked under her own power delivers her own retrieval. On a lane arrival this is
+    `TacsimCarrierHooks::arrived` in `composition/sim_routes.rs`, the one call outside `space/`.
+    On a `+helm/dock` port clamp it is `tick::deliver_own_retrieval_at_port`.
+- **Q-36-47** was already built by SF.R20: `ShipSectionId::carrier_part` maps `Hull` onto `Hull`
+  and `Drive` onto `Drive`, and `Hold` onto nothing. Its `Slow` stays space-side. RS.8 records this
+  in `carrier_damage.rs`'s module doc and adds no code.
+- **Stories** (`shard_10/voyage.rs`):
+  - `sfr19_…` is rewritten as RS.8's acceptance. It covers the real pin, the one window from real
+    seconds against the economy's own window, a full restart reading the custody document back, no
+    bounty, docking at Stickney, `+salvage` / `inspect` / `report` / `contest`, and the award.
+  - `rs8_a_space_retrieval_job_is_delivered_by_the_tug_that_docks_her` is new. A staff
+    `@asset/transfer` gives the Raider to a player as the fixture. The player posts the job, the
+    tug reads `+salvage/jobs`, accepts, clamps and tows, and docking delivers and pays.
+  - sfr7, sfr12 and sfr15 drop the bounty and read the custody row.
+  - sfr2 and sfr8 read life support only.
+- **Divergences.**
+  - The stories dock at Stickney, not Ceres, because the test lane's interdicted leg is
+    `ceres_stickney`.
+  - The clamp's timing is the 6-DOF docking session, not `attach_s`. A second timer would be a new
+    space mechanic.
+  - The tow's cap stays the 2× dry-mass check. The carrier floor (`TUG_SHARE_PERMILLE`) is not
+    applied in space, and no space hull is a carrier wreck yet.
+
+### 12.2 CR.6, the crew seam (doc 42 Q-42-24)
+
+Built on RS.8 (#439). Every crew rule is the ground's own `field/crew.rs`, called from `space/` only. The CR window owns `crew.rs`, so CR.6 does not edit it.
+
+- **Crew records from the space check-in.** `check_in_space_unit` ends with `custody::check_in_space_crew`. It runs `crew::check_in` for every soul aboard (`field::carrier::souls_aboard`). The ground's rules apply:
+  - a record in custody is left alone;
+  - a check-in never heals;
+  - a fallen hull (`CrewStranded`) strands its souls.
+- **The derelict's crew.** A `DisabledDerelict` strands her crew as well: they are `Stranded { site, unit: hull }` and may ask `+sortie/extract`. The site is `custody::space_site`:
+  - the lane entry whose map hosts the domain;
+  - otherwise `space_domain_<n>`. The test lane's waypoints carry no port map, so its stories read `space_domain_<n>`.
+  - The domain comes from the hull's bubble, the bubble's ship rows (a settled carrier stays there), her derelict record, the bubble she just left (`completed`), or her placement.
+- **The hard-dock capture.** The derelict clamp in `+helm/dock tape` calls `custody::capture_at_hard_dock`.
+  - The derelict's crew check in first.
+  - Who is aboard is read from the records (`crew::held_in`), as a ground load reads it. A body need not be in her rooms.
+  - The friend test is the ground's Friend rule (`field::parties::entrants` / `letter` / `friends`: one owner, or an open shared organization). It does not read the bubble's relation, because SF.R18 marks every co-participating carrier `Friend` for fire control.
+  - A non-friend's clamp runs `crew::captured_loaded` into the tug's first bay room, else her airlock.
+  - A friend's clamp runs `crew::aboard_loaded` into the same room.
+- **The handover.** The `+helm/dock` port clamp calls `crew::hand_over(ctx, hull)` before the tow's delivery. A lane arrival already did, through `sim_routes`'s `arrived`, and the crew tick catches any it misses.
+- **Story** (`shard_10/voyage.rs`): `cr6_a_crewed_derelict_hard_docked_by_a_stranger_is_captured_and_handed_over_at_port`.
+  - The fixture is staff `@unit/damage`, which puts SalvorB's drive at its floor during the cruise, while her unit is not deployed. No test writes the space book (SF.R9's lint). Combat's disablement is sfr18's.
+  - The bubble's own check-out meets her as a `DisabledDerelict` and settles her, and her pilot is `Stranded` in her.
+  - SalvorA approaches and hard-docks her. The pilot is `Captured { carrier: SalvorA, captor }`, with her body aboard SalvorA.
+  - SalvorA casts off and docks at Stickney. Stickney's authority takes the captive, and SalvorA's own record is `Carrier`.
+- **Not built** (Q-42-24): ejection in a bubble, and surrender. The owner's ruling stands: crew whose carrier is wrecked fight to the death. Captives aboard NPC hulls are not covered, because NPC crew have no records (Q-42-5).

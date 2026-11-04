@@ -1,4 +1,4 @@
-//! **The lane's newest strip chain** (doc 43 cut TS.8): what lanes v17–v21 added, stripped
+//! **The lane's newest strip chain** (doc 43 cut TS.8): what lanes v17–v26 added, stripped
 //! newest first, so a suite that rebuilds an older lane from the shipped one calls one function
 //! and a lane bump extends one chain.
 //!
@@ -21,12 +21,100 @@ pub const WIDE_SITE_ROWS: [&str; 4] = [
 pub const MUNITIONS_GOODS: [&str; 4] =
     ["ammo_ap_30", "ammo_ball_762", "ammo_he_105", "ammo_missile"];
 
+/// **Doc 39 cut IN.6's seeded part stock, as lane v22 authored it** (Q-39-12): Occator at
+/// Ceres four of each escort and rig part, Stickney Yards six of every row — the rows IN.7
+/// retires, in their authored order.
+pub const SEEDED_PARTS: [(&str, &str, u64); 18] = [
+    ("occator", "tacsim.part.weapon.cannon_105", 4),
+    ("occator", "tacsim.part.weapon.mg_coax", 4),
+    ("occator", "tacsim.part.sensor.visual_mk1", 4),
+    ("occator", "tacsim.part.plant.vehicle_mk1", 4),
+    ("occator", "tacsim.part.plant.light_mk1", 4),
+    ("stickney_yards", "tacsim.part.weapon.cannon_105", 6),
+    ("stickney_yards", "tacsim.part.weapon.autocannon_30", 6),
+    ("stickney_yards", "tacsim.part.weapon.laser_mk1", 6),
+    ("stickney_yards", "tacsim.part.weapon.missile_lr", 6),
+    ("stickney_yards", "tacsim.part.weapon.mg_coax", 6),
+    ("stickney_yards", "tacsim.part.sensor.visual_mk1", 6),
+    ("stickney_yards", "tacsim.part.sensor.thermal_mk1", 6),
+    ("stickney_yards", "tacsim.part.sensor.ecm_mk1", 6),
+    ("stickney_yards", "tacsim.part.sensor.eccm_mk1", 6),
+    ("stickney_yards", "tacsim.part.plant.light_mk1", 6),
+    ("stickney_yards", "tacsim.part.plant.vehicle_mk1", 6),
+    ("stickney_yards", "tacsim.part.plant.walker_mk1", 6),
+    ("stickney_yards", "tacsim.part.plant.hauler_mk1", 6),
+];
+
+/// **Doc 39 cut IN.9 (lane v27): the yard taken out** — Stickney's `yard` block and the Yards'
+/// 50,000 raise (IN.7's, folded into v27 on the owner's ruling), so a strip chain rebuilds a
+/// lane before v27 (idempotent). The chain's head.
+pub fn strip_yard(doc: &mut Value) {
+    if let Some(def) = doc["entries"]
+        .as_object_mut()
+        .and_then(|entries| entries.get_mut("stickney_port"))
+        .and_then(|entry| entry.get_mut("def"))
+        .and_then(Value::as_object_mut)
+    {
+        def.remove("yard");
+        for org in def
+            .get_mut("orgs")
+            .and_then(Value::as_array_mut)
+            .into_iter()
+            .flatten()
+            .filter(|org| org["id"] == "stickney_yards")
+        {
+            if let Some(org) = org.as_object_mut() {
+                org.remove("raises");
+            }
+        }
+    }
+}
+
+/// **Doc 39 cut IN.7: the part recipes' lane rows taken out** — Stickney Yards' strategic-ore
+/// bid removed and IN.6's seeded part stock put back ([`SEEDED_PARTS`]) — so a strip chain
+/// rebuilds the lane before IN.7 (idempotent). A suite that wants the seeded stores runs on
+/// this lane.
+pub fn strip_part_recipes(doc: &mut Value) {
+    strip_yard(doc);
+    let Some(entries) = doc["entries"].as_object_mut() else {
+        return;
+    };
+    for entry in entries.values_mut() {
+        let Some(vendors) = entry
+            .get_mut("def")
+            .and_then(|def| def.get_mut("vendors"))
+            .and_then(Value::as_array_mut)
+        else {
+            continue;
+        };
+        for vendor in vendors {
+            let org = vendor["org"].as_str().unwrap_or_default().to_owned();
+            if org == "stickney_yards"
+                && let Some(vendor) = vendor.as_object_mut()
+            {
+                vendor.remove("bids");
+            }
+            let Some(stock) = vendor.get_mut("stock").and_then(Value::as_array_mut) else {
+                continue;
+            };
+            for (seller, good, qty) in SEEDED_PARTS {
+                if seller == org && !stock.iter().any(|row| row["good"] == good) {
+                    stock.push(serde_json::json!({
+                        "good": good, "qty": qty, "grade": 9, "issue": 1
+                    }));
+                }
+            }
+        }
+    }
+}
+
 /// **Doc 39 cut IN.5 (lane v24): the refinery and the works taken out** — Stickney's `refinery`
 /// and `works` blocks, Kasei's refine row and its bid's `refresh`, Ceres's `works` block, and the
 /// Freeport Works org and vendor (its carbon stock and ask) — so a strip chain rebuilds a lane
 /// before v24 (idempotent). The programme's carbon reference goes back from Freeport Works'
 /// listing to its fixed 25.00cr.
 pub fn strip_industry(doc: &mut Value) {
+    strip_part_recipes(doc);
     let Some(entries) = doc["entries"].as_object_mut() else {
         return;
     };

@@ -409,8 +409,11 @@ pub(crate) fn operator_rigs(w: &World, actor: ObjId) -> Vec<RigAt> {
     let Some(store) = w.module_state::<TacsimStore>() else {
         return Vec::new();
     };
+    let titled = crate::port::owned::title_views_for(w, actor);
     let mut rigs: Vec<RigAt> = store
         .tv_leases_of(actor)
+        // Doc 39 cut IN.9 (§4.13): and the titled rigs riding the helm hull, as title views.
+        .chain(titled.iter())
         .filter(|record| record.live() && record.hull == helm.hull)
         .map(|record| RigAt {
             crew: None,
@@ -434,8 +437,10 @@ pub(crate) fn leased_rigs(w: &World, actor: ObjId) -> Vec<RigAt> {
     let Some(store) = w.module_state::<TacsimStore>() else {
         return Vec::new();
     };
+    let titled = crate::port::owned::title_views_for(w, actor);
     let mut rigs: Vec<RigAt> = store
         .tv_leases_of(actor)
+        .chain(titled.iter())
         .filter(|record| record.live())
         .map(|record| RigAt {
             crew: None,
@@ -495,7 +500,7 @@ pub enum Where {
 /// (`crate::port::vehicle::bay_rooms` over the programme port's hull rows) is `Bay`;
 /// `Direct` is `Ground`; anything else `Elsewhere`.
 #[must_use]
-pub(crate) fn where_is(w: &World, tv: ObjId) -> Where {
+pub fn where_is(w: &World, tv: ObjId) -> Where {
     let Some(st) = w.module_state::<SpatialState>() else {
         return Where::Elsewhere;
     };

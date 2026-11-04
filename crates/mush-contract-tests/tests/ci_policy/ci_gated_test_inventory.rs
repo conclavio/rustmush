@@ -935,10 +935,13 @@ fn vf_g6_every_proof_10b_section_14_names_exists_in_the_file_it_is_attributed_to
         "a partial-materialization cell now exists: 10b §14.2's L5/L6 citation \
          must be changed from \"the migration commit must add\" to naming it"
     );
+    // Doc 43 cut TS.5 added the second cell, the same cuts as sequences
+    // (two faults and restarts a case); it is not a partial-materialization
+    // criterion either, so the pin above still stands.
     assert_eq!(
         matrix.matches("#[tokio::test]").count() + matrix.matches("#[test]").count(),
-        1,
-        "gate5_fault_matrix carries exactly one test cell"
+        2,
+        "gate5_fault_matrix carries exactly two test cells: the matrix and its sequences"
     );
 
     // **G15, the negative half.** §14.2's L3 cited "the H3 scale harness job".
@@ -1652,5 +1655,47 @@ fn x() {
     assert_eq!(
         names,
         ["FIELD_RAID", "GC12_ARENA_S", "MY_ROLE", "TACSIM_SEED"]
+    );
+}
+
+/// **The nightly names its cause** (doc 43 TS.2, D-43-3; 2026-11-04). The
+/// `nightly-report` job writes one line per job of ci.yml into a scheduled
+/// run's summary, and it can only report a job its `needs` names. A job added
+/// to the file and not to that list would be red in silence there.
+#[test]
+fn the_nightly_report_waits_for_every_job() {
+    let root = scan::repo_root();
+    let ci = fs::read_to_string(root.join(".github/workflows/ci.yml")).expect("ci.yml");
+    let jobs: BTreeSet<String> = job_tiers(&ci)
+        .into_keys()
+        .filter(|job| job != "nightly-report")
+        .collect();
+    let needs_line = workflow_lines(&ci)
+        .into_iter()
+        .find(|line| {
+            line.job == Some("nightly-report") && line.text.trim_start().starts_with("needs:")
+        })
+        .expect("ci.yml has a nightly-report job with a one-line `needs: [...]`")
+        .text;
+    let needs: BTreeSet<String> = needs_line
+        .trim_start()
+        .trim_start_matches("needs:")
+        .trim()
+        .trim_start_matches('[')
+        .trim_end_matches(']')
+        .split(',')
+        .map(|job| job.trim().to_string())
+        .filter(|job| !job.is_empty())
+        .collect();
+    assert!(
+        jobs.len() > 10,
+        "found only {jobs:?}: the job reader is broken"
+    );
+    let missing: Vec<&String> = jobs.difference(&needs).collect();
+    let stale: Vec<&String> = needs.difference(&jobs).collect();
+    assert!(
+        missing.is_empty() && stale.is_empty(),
+        "nightly-report's `needs` must name every other job of ci.yml: missing {missing:?}, \
+         no such job {stale:?}"
     );
 }

@@ -1089,6 +1089,4 @@ pub struct SalvageTowRecord {
     pub tug_dry_mass_t: u32,
     /// Derelict dry mass in tonnes (`UnitSpec.logistics.dry_mass_t`, must be `<= 2 * tug_dry_mass_t`).
     pub derelict_dry_mass_t: u32,
-    /// Real wall-clock unix timestamp (`s`) when the 48-hour salvage claim window expires.
-    pub contest_expires_real_s: i64,
 }

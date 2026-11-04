@@ -31,7 +31,7 @@ pub const BAY_SWITCHES: [&str; 9] = [
 pub const BAY_USAGE: &str = "Usage: +bay[/quote] <hull>, +bay/order <hull>=<work>, \
                              +bay/fit <hull>=<slot> <lot>, +bay/strip <hull>=<part>, \
                              +bay/scrap <hull>, +bay/return <hull>, +bay/cancel <hull>, \
-                             +bay/berth <hull>, +bay/stow <hull>";
+                             +bay/berth <hull>, +bay/stow <hull>[=<carrier>]";
 /// The help text.
 pub const BAY_HELP: &str = "+bay <hull> quotes the work on a hull where it stands: a carrier's \
     vehicle bay does armour, mending, unjamming and recharging at twice the time; a port \
@@ -39,7 +39,7 @@ pub const BAY_HELP: &str = "+bay <hull> quotes the work on a hull where it stand
     the fee into escrow and holds the hull until the work is done on the IC clock \
     (all, armor, rebuild, mend, unjam, replace, rearm, or a section or part). +bay/cancel \
     releases the fee. At a port's workshop, +bay/berth <hull> takes a hull out of your docked \
-    carrier's bay and +bay/stow <hull> puts it back. Munitions come from the carrier's hold \
+    carrier's bay and +bay/stow <hull> puts it back; +bay/stow <hull>=<carrier> puts it in a     free slot of another carrier of yours docked here, as a hull the yard built for you. Munitions come from the carrier's hold \
     when the work is done; armour and rebuilds draw from the hull's bale, which the first repair \
     opens with a tonne each of structural alloys and industrial parts from the hold, topped up \
     by the tonne when it runs short. Away from port a carrier's bay works from her own hold for \
@@ -84,6 +84,26 @@ fn hull_named(ctx: &Ctx<'_>, word: &str) -> Result<ObjId, String> {
         return Ok(helm);
     }
     Err(super::NO_HULL.to_owned())
+}
+
+/// **A carrier by `#<id>`, her name or her mark** (doc 39 cut IN.9): any hull the bay's carrier
+/// scan names (programme, yard and commissioned rows); the stow checks she is docked here.
+fn carrier_named(ctx: &Ctx<'_>, word: &str) -> Result<ObjId, String> {
+    let word = word.trim();
+    if let Some(id) = word.strip_prefix('#').and_then(|n| n.parse::<u32>().ok()) {
+        return Ok(ObjId(id));
+    }
+    super::bay_carriers(ctx.w)
+        .into_iter()
+        .find(|hull| {
+            ctx.w.get(*hull).is_some_and(|o| {
+                o.name.eq_ignore_ascii_case(word)
+                    || o.aliases
+                        .iter()
+                        .any(|alias| alias.eq_ignore_ascii_case(word))
+            })
+        })
+        .ok_or_else(|| "There is no such carrier.".to_owned())
 }
 
 /// **The doll** (UD.4c's damage view): each section's condition and points, and under it each
@@ -180,6 +200,21 @@ fn taken_line(ctx: &Ctx<'_>, order: &super::BayOrder) -> String {
 fn show(ctx: &mut Ctx<'_>, hull: ObjId) -> Result<(), String> {
     let name = crate::port::coop::name_of(ctx.w, hull);
     let mut lines = Vec::new();
+    // Doc 41 cut RS.4 (Q-41-19): a vacated hull says whom she is held for.
+    if let Some(owner) = super::held_for(ctx.w, hull) {
+        let owner = match &owner {
+            mush_org::PrincipalId::Object(who) => crate::port::coop::name_of(ctx.w, *who),
+            other => mush_economy::principal_holders(ctx.w, other)
+                .first()
+                .map_or_else(
+                    || "her owner".to_owned(),
+                    |who| crate::port::coop::name_of(ctx.w, *who),
+                ),
+        };
+        lines.push(format!(
+            "{name} is held for {owner}: a carrier of theirs takes her (+bay/stow {name}=<carrier>)."
+        ));
+    }
     // Doc 41 Q-41-20 (Q-S14): a salvor reads the risk before anything else.
     if super::right_of(ctx, hull) == Some(super::Right::Salvor) {
         lines.push(crate::surface::claim::AT_RISK_QUOTE.to_owned());
@@ -316,8 +351,18 @@ fn show(ctx: &mut Ctx<'_>, hull: ObjId) -> Result<(), String> {
         .module_state::<TacsimStore>()
         .and_then(|s| s.bay_hull(hull))
     {
-        if row.berth.is_some() {
-            lines.push("  Berthed in this workshop; +bay/stow returns her to her carrier.".into());
+        match &row.berth {
+            // Doc 39 cut IN.9: the yard's berth names no carrier.
+            Some(berth) if berth.carrier.is_none() => lines.push(
+                "  Built on this floor; +bay/stow <hull>=<carrier> puts her in a carrier's bay."
+                    .into(),
+            ),
+            Some(_) => {
+                lines.push(
+                    "  Berthed in this workshop; +bay/stow returns her to her carrier.".into(),
+                );
+            }
+            None => {}
         }
         if row.scrapped_ic.is_some() {
             lines.push("  Scrapped: an irrecoverable shell.".into());
@@ -403,6 +448,20 @@ pub(crate) fn bay_cmd(ctx: &mut Ctx<'_>) -> Result<(), CmdError> {
             say(ctx, line);
             return Ok(());
         }
+        // Doc 39 cut IN.9 (§4.13): `+bay/stow <hull>=<carrier>`.
+        if ctx.switches.has("stow")
+            && let Some((hull, carrier)) = raw.split_once('=')
+        {
+            let hull = hull_named(ctx, hull)?;
+            let carrier = carrier_named(ctx, carrier)?;
+            super::stow(ctx, hull, Some(carrier))?;
+            let (name, into) = (
+                crate::port::coop::name_of(ctx.w, hull),
+                crate::port::coop::name_of(ctx.w, carrier),
+            );
+            say(ctx, format!("{name} is stowed in the {into}'s bay."));
+            return Ok(());
+        }
         let hull = hull_named(ctx, &raw)?;
         if ctx.switches.has("scrap") {
             let scrapped = super::strip::scrap(ctx, hull)?;
@@ -453,7 +512,7 @@ pub(crate) fn bay_cmd(ctx: &mut Ctx<'_>) -> Result<(), CmdError> {
             return Ok(());
         }
         if ctx.switches.has("stow") {
-            super::stow(ctx, hull)?;
+            super::stow(ctx, hull, None)?;
             let name = crate::port::coop::name_of(ctx.w, hull);
             say(ctx, format!("{name} is stowed back in her carrier's bay."));
             return Ok(());

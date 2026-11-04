@@ -263,7 +263,11 @@ the site has settled:
   `+salvage/authorize <hull>=<who> go`, a landholder with
   `+salvage/authorize <site>/<block>=<who> go`. Repairs a salvor makes are at
   their own risk and are never repaid. An uncontested claim passes the title
-  when its window runs out.
+  when its window runs out. A vacated claim leaves her held for her owner in
+  the custodian's bay: aboard a carrier of yours standing where hers does (one
+  port, or one pad), `+bay/stow <hull>=<your carrier>` takes her. If she is
+  still aboard when the custodian docks at a port with a workshop, the port
+  berths her there for you, and you stow her from the workshop floor.
 - **Port security.** The Freeport Registry acts only on proof: a recovery a
   `recovery` contest vacated, or an act a witness reports to it with a record
   of their own (`+salvage/report <site>[=<who>|#<hull>] registry`). When the

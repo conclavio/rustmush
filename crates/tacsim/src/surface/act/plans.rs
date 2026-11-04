@@ -903,7 +903,10 @@ impl Reach {
 /// battery — the world names **which**; the numbers always come from the server-held table.
 #[must_use]
 pub(crate) fn rig_battery_id(w: &World, rig_tv: ObjId) -> Option<CanonicalId> {
-    crate::port::vehicle::rig_row(w, rig_tv)?;
+    // Doc 39 cut IN.9: a commissioned rig is the register's.
+    if crate::port::vehicle::rig_row(w, rig_tv).is_none() {
+        crate::port::owned::rig_row(w, rig_tv)?;
+    }
     let tools = w.module_state::<PortHandles>()?.surface_tools.clone()?;
     crate::port::vehicle::rig_tools(w, rig_tv)
         .into_iter()
@@ -937,6 +940,15 @@ pub(crate) fn world_rigs(w: &World) -> Vec<ObjId> {
                     .iter()
                     .map(|rig| ObjId(rig.tv))
             }));
+            // Doc 39 cut IN.9: then the commissioned rigs.
+            rigs.extend(
+                store
+                    .yard
+                    .owned
+                    .values()
+                    .filter_map(crate::port::owned::Held::present)
+                    .filter_map(|row| row.rig().map(|rig| ObjId(rig.tv))),
+            );
             rigs
         })
         .unwrap_or_default()

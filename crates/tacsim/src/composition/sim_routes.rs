@@ -162,13 +162,16 @@ impl CarrierHooks for TacsimCarrierHooks {
         crate::port::passenger::voyage_event(ctx, hull, &docks);
         let notice = notice.replace("{hhmm}", &crate::port::voyage::utc_hhmm(ctx.w.now()));
         crate::port::voyage::tell_absent_tenant(ctx, hull, &notice);
+        // Doc 41 cut RS.4 (Q-41-19): the port holds a vacated hull for her owner.
+        crate::port::bay_work::berth_held(ctx, hull);
         // Doc 20 cut SM.4a (lead ruling 6): a hull settled on a site's pad asks for the site's
         // ground, so the surface tick warms it before the first scan (RAM only; a no-op with the
         // geology layer dark). Doc 20 cut SM.4b (lead ruling 4, R3): and its way home from
         // every cell — the home field for the hull's ramp cell, wanted whatever the layer's
         // state (`want_home` wants the site's ground too).
         // Doc 41 cut RS.5 (Q-41-8, Q-41-14): the shed's hand-back at the destination, and a
-        // written-off rig aboard handed back at the lessor's port.
+        // written-off rig aboard handed back at the lessor's port. Doc 41 cut RS.8 (§4.7): a
+        // hull her retriever docks under her own power is delivered by the docking itself.
         if let crate::port::ship::Berth::Docked { map, def } =
             crate::port::ship::berth_of(ctx.w, hull)
             && def.site.is_none()
@@ -176,6 +179,9 @@ impl CarrierHooks for TacsimCarrierHooks {
             let entry = map.entry.clone();
             let (venue, port) = (def.venue.clone(), crate::port::coop::port_name(def));
             crate::surface::retrieval::on_docked(ctx, hull, &entry);
+            if let Some(helm) = crate::port::coop::helm_holder(ctx.w, hull) {
+                let _ = crate::surface::retrieval::deliver(ctx, hull, &entry, helm);
+            }
             // Doc 41 cut RS.7 (Q-41-25): port security fines her master's proven acts.
             crate::surface::security::on_docked(ctx, hull, &venue, &port);
         }
