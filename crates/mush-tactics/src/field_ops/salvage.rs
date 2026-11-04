@@ -866,6 +866,12 @@ impl SalvageClaimBook {
         if hull.0 == 0 {
             return Err(SalvageError::InvalidObjectId("hull"));
         }
+        if !self.black_box_tapes.contains_key(&hull)
+            && self.black_box_tapes.len() >= 64
+            && let Some(&oldest_hull) = self.black_box_tapes.keys().next()
+        {
+            self.black_box_tapes.remove(&oldest_hull);
+        }
         let tape = self.black_box_tapes.entry(hull).or_default();
         if tape.len() >= MAX_BLACK_BOX_ENTRIES_PER_HULL {
             return Err(SalvageError::BlackBoxTapeFull {

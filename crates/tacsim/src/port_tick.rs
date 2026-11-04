@@ -322,6 +322,8 @@ pub(crate) fn register_with_coverage(
     actions.push(crate::port::works::action_descriptor(&outcome_refs)?);
     // Doc 36 cut GC.4: the tow.
     actions.push(crate::surface::tow::action_descriptor(&outcome_refs)?);
+    // Doc 35 cut SF.R21: the space bubble's prepared input tape.
+    actions.push(crate::space::tick::action_descriptor(&outcome_refs)?);
     if let Some(ic) = ic {
         actions.extend(ic.actions()?);
     }
@@ -626,6 +628,8 @@ fn register_providers(
         &port_families,
         (inventory_families.as_ref(), black_box.tow),
     )?;
+    // Doc 35 cut SF.R21: the space bubble's prepared input tape family and provider.
+    crate::space::tick::register_bubble_input(reg, action_refs, outcome_refs)?;
     // Doc 17h cut M8h: the `tacsim.house_attestation` tick and its RAM slot, unconditionally
     // (no agent, no visit).
     crate::house_attestation::register(reg)?;
@@ -687,6 +691,8 @@ fn register_outcomes(
     outcomes.push(crate::port::works::outcome_descriptor()?);
     // Doc 36 cut GC.4: the tow.
     outcomes.push(crate::surface::tow::outcome_descriptor()?);
+    // Doc 35 cut SF.R21: the space bubble's prepared input tape.
+    outcomes.push(crate::space::tick::outcome_descriptor()?);
     if let Some(ic) = ic {
         outcomes.push(ic.outcome()?);
     }
@@ -1227,7 +1233,11 @@ fn kind(word: &str) -> Result<DefinitionKind, ModError> {
 }
 
 /// One current version-1 definition descriptor (`b1_seam`'s helper).
-fn descriptor(kind_word: &str, id: &str, payload: Value) -> Result<DefinitionDescriptor, ModError> {
+pub(crate) fn descriptor(
+    kind_word: &str,
+    id: &str,
+    payload: Value,
+) -> Result<DefinitionDescriptor, ModError> {
     DefinitionDescriptor::new(
         kind(kind_word)?,
         DefinitionId::new(id).map_err(|error| ModError::msg(error.to_string()))?,
