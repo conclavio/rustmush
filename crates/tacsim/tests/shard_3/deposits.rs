@@ -397,7 +397,7 @@ fn fire(rig: &mut Rig) -> Vec<AuthoritativeSubmit> {
 /// the site clerk's work, not the stock clerks').
 fn stock(rig: &mut Rig) {
     let clerks = site_clerks(&rig.tw);
-    for _ in 0..80 {
+    for _ in 0..40 {
         let out = run(&mut rig.tw, GOD, "@tacsim/port status");
         let gated: Vec<&str> = out
             .lines()
@@ -420,7 +420,7 @@ fn stock(rig: &mut Rig) {
             .collect();
         land_all(rig, &queued);
     }
-    panic!("the ports were not stocked within 80 fires");
+    panic!("the ports were not stocked within 40 fires");
 }
 
 /// The six site clerks.

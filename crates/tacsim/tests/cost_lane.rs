@@ -1002,7 +1002,7 @@ fn second(rig: &mut Rig) -> Fired {
 
 /// Fire and land the port tick until every port is stocked and listed (`drones.rs`'s).
 fn stock(rig: &mut Rig) {
-    for _ in 0..80 {
+    for _ in 0..40 {
         let out = run(&mut rig.tw, GOD, "@tacsim/port status");
         let gated: Vec<&str> = out
             .lines()
@@ -1020,7 +1020,7 @@ fn stock(rig: &mut Rig) {
         }
         let _ = fire(rig);
     }
-    panic!("the ports were not stocked within 80 fires");
+    panic!("the ports were not stocked within 40 fires");
 }
 
 fn typed<K, V>(

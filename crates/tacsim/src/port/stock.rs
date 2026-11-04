@@ -409,13 +409,130 @@ impl ActionProvider for StockProvider {
     ) -> Result<AuthoritativeActionOutput, mush_core::ActionError> {
         let parameters = parameters(invocation)?;
         let key = text(parameters, "issue")?;
-        // 1. The server-authenticated row (L4); an absent one is not this clerk's.
-        let entry = parameters
+        // 1. The server-authenticated rows (L4); an absent one is not this clerk's.
+        let carried = parameters
             .get("rows")
             .and_then(Value::as_object)
-            .and_then(|rows| rows.get(key))
+            .ok_or_else(invalid)?;
+        let entry = carried
+            .get(key)
             .and_then(Value::as_object)
             .ok_or_else(invalid)?;
+        let actor = invocation.actor();
+        let first = self.plan_row(txn, key, entry, actor)?;
+        // 5. The receipt is the replay guard.
+        if first.prior {
+            return Err(port_error(
+                ActionErrorCode::Conflict,
+                "that stock issue is already minted",
+            ));
+        }
+        let (lot, qty, vault) = (first.receipt.lot, first.receipt.qty, first.receipt.vault.0);
+        // Doc 39 cut IN.6: a bulk row's mint also lays every part row of the same vendor not
+        // yet minted, so the workshop's stores cost the clerk no fire of its own at a boot.
+        let mut planned = vec![first];
+        if !crate::port_tick::is_part(&planned[0].receipt.good) {
+            for (other, row) in carried {
+                if other == key {
+                    continue;
+                }
+                let Some(row) = row.as_object() else {
+                    return Err(invalid());
+                };
+                let same_vendor = ["pack", "entry", "org"]
+                    .iter()
+                    .all(|field| row.get(*field) == entry.get(*field));
+                let is_part = row
+                    .get("good")
+                    .and_then(Value::as_str)
+                    .and_then(|good| CanonicalId::new(good).ok())
+                    .is_some_and(|good| crate::port_tick::is_part(&good));
+                if !same_vendor || !is_part {
+                    continue;
+                }
+                let part = self.plan_row(txn, other, row, actor)?;
+                if part.receipt.vault.0 != vault {
+                    return Err(invalid());
+                }
+                if !part.prior {
+                    planned.push(part);
+                }
+            }
+        }
+        // 6. The lots and the receipts, in this one bundle.
+        let rows: Vec<_> = planned.iter().flat_map(|p| p.rows.clone()).collect();
+        self.inventory
+            .mint_origins_from(txn, EndpointRef(VaultId(vault)), &rows)
+            .map_err(|_| {
+                port_error(
+                    ActionErrorCode::ProviderRejected,
+                    "the stock lot could not be minted",
+                )
+            })?;
+        for plan in planned {
+            if let Some(definition) = &plan.part {
+                for (_, _, _, lot, _) in &plan.rows {
+                    let row = crate::port::bay_work::act::PartProvenance {
+                        lot: *lot,
+                        definition: definition.clone(),
+                        condition: mush_tactics::field_ops::ComponentCondition::Intact,
+                        legality: mush_tactics::field_ops::ProvenanceLegalityStatus::CleanTitle,
+                        fitted_into: None,
+                        origin: crate::port::bay_work::act::PartOrigin::Seeded {
+                            receipt: plan.id.key_text(),
+                        },
+                    };
+                    txn.insert(&self.parts, lot, row).map_err(|_| {
+                        port_error(
+                            ActionErrorCode::Integrity,
+                            "the seeded part's provenance did not stage",
+                        )
+                    })?;
+                }
+            }
+            txn.insert(&self.receipts, &plan.id, plan.receipt)
+                .map_err(|_| {
+                    port_error(
+                        ActionErrorCode::Integrity,
+                        "the stock receipt did not stage",
+                    )
+                })?;
+        }
+        let outcome = RulesValue::new(
+            self.outcome.clone(),
+            json!({ "actor": actor.0, "issue": key, "lot": lot, "qty": qty, "vault": vault }),
+        )
+        .map_err(|_| {
+            port_error(
+                ActionErrorCode::BoundsExceeded,
+                "the stock mint's outcome exceeds canonical bounds",
+            )
+        })?;
+        Ok(AuthoritativeActionOutput::new(outcome)
+            .with_eligible_witnesses(vec![invocation.principal().clone()]))
+    }
+}
+
+/// **One stock row, checked and planned** ([`StockProvider`]'s prepare): its issue, its receipt,
+/// the lots it mints (each rooted in its own issue) and, for a part, the hardware row its
+/// `Seeded` rows name; `prior` when its receipt already exists.
+struct PlannedRow {
+    id: StockIssueId,
+    receipt: StockReceipt,
+    rows: Vec<(CanonicalId, u64, Grade, LotId, mush_economy::ExternalRef)>,
+    part: Option<DefinitionRef>,
+    prior: bool,
+}
+
+impl StockProvider {
+    /// Steps 2–5 of the prepare for the carried row `entry` under `key`.
+    fn plan_row(
+        &self,
+        txn: &mut ActionTxn<'_>,
+        key: &str,
+        entry: &Map<String, Value>,
+        actor: ObjId,
+    ) -> Result<PlannedRow, mush_core::ActionError> {
         let pack = canonical(entry, "pack")?;
         let port = canonical(entry, "entry")?;
         let org = canonical(entry, "org")?;
@@ -427,7 +544,6 @@ impl ActionProvider for StockProvider {
         let lot = number(entry, "lot")?;
         let clerk = u32::try_from(number(entry, "clerk")?).map_err(|_| invalid())?;
         // 2. The row is the acting clerk's.
-        let actor = invocation.actor();
         if clerk != actor.0 {
             return Err(port_error(
                 ActionErrorCode::Unauthorized,
@@ -448,20 +564,15 @@ impl ActionProvider for StockProvider {
             ));
         }
         let grade_value = Grade::new(grade).map_err(|_| invalid())?;
-        // 5. The receipt is the replay guard.
-        let prior = txn.get(&self.receipts, &id).map_err(|_| {
-            port_error(
-                ActionErrorCode::Integrity,
-                "the stock receipts are unavailable",
-            )
-        })?;
-        if prior.is_some() {
-            return Err(port_error(
-                ActionErrorCode::Conflict,
-                "that stock issue is already minted",
-            ));
-        }
-        // 6. The lot and the receipt, in this one bundle.
+        let prior = txn
+            .get(&self.receipts, &id)
+            .map_err(|_| {
+                port_error(
+                    ActionErrorCode::Integrity,
+                    "the stock receipts are unavailable",
+                )
+            })?
+            .is_some();
         let source = mush_economy::ExternalRef {
             provider: smol_str::SmolStr::new_static(crate::NS),
             kind: smol_str::SmolStr::new_static(STOCK_SOURCE_KIND),
@@ -484,40 +595,20 @@ impl ActionProvider for StockProvider {
         } else {
             None
         };
-        let rows: Vec<(CanonicalId, u64, Grade, LotId)> = match &part {
+        let rows = match &part {
             Some(_) => (0..qty)
-                .map(|n| (good.clone(), 1, grade_value, seed_lot_id(&id, n)))
-                .collect(),
-            None => vec![(good.clone(), qty, grade_value, id.lot_id())],
-        };
-        self.inventory
-            .mint_origins(txn, EndpointRef(VaultId(vault)), &rows, &source)
-            .map_err(|_| {
-                port_error(
-                    ActionErrorCode::ProviderRejected,
-                    "the stock lot could not be minted",
-                )
-            })?;
-        if let Some(definition) = part {
-            for (_, _, _, lot) in &rows {
-                let row = crate::port::bay_work::act::PartProvenance {
-                    lot: *lot,
-                    definition: definition.clone(),
-                    condition: mush_tactics::field_ops::ComponentCondition::Intact,
-                    legality: mush_tactics::field_ops::ProvenanceLegalityStatus::CleanTitle,
-                    fitted_into: None,
-                    origin: crate::port::bay_work::act::PartOrigin::Seeded {
-                        receipt: id.key_text(),
-                    },
-                };
-                txn.insert(&self.parts, lot, row).map_err(|_| {
-                    port_error(
-                        ActionErrorCode::Integrity,
-                        "the seeded part's provenance did not stage",
+                .map(|n| {
+                    (
+                        good.clone(),
+                        1,
+                        grade_value,
+                        seed_lot_id(&id, n),
+                        source.clone(),
                     )
-                })?;
-            }
-        }
+                })
+                .collect(),
+            None => vec![(good.clone(), qty, grade_value, id.lot_id(), source)],
+        };
         let receipt = StockReceipt {
             pack,
             entry: port,
@@ -536,24 +627,13 @@ impl ActionProvider for StockProvider {
                 "the stock receipt is out of bounds",
             )
         })?;
-        txn.insert(&self.receipts, &id, receipt).map_err(|_| {
-            port_error(
-                ActionErrorCode::Integrity,
-                "the stock receipt did not stage",
-            )
-        })?;
-        let outcome = RulesValue::new(
-            self.outcome.clone(),
-            json!({ "actor": actor.0, "issue": key, "lot": lot, "qty": qty, "vault": vault }),
-        )
-        .map_err(|_| {
-            port_error(
-                ActionErrorCode::BoundsExceeded,
-                "the stock mint's outcome exceeds canonical bounds",
-            )
-        })?;
-        Ok(AuthoritativeActionOutput::new(outcome)
-            .with_eligible_witnesses(vec![invocation.principal().clone()]))
+        Ok(PlannedRow {
+            id,
+            receipt,
+            rows,
+            part,
+            prior,
+        })
     }
 }
 

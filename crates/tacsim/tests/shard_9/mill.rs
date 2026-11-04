@@ -548,7 +548,7 @@ fn status(tw: &mut TestWorld) -> String {
 
 /// Fire and land the port tick until every port is stocked and listed.
 fn stock(rig: &mut Rig) {
-    for _ in 0..80 {
+    for _ in 0..40 {
         let out = status(&mut rig.tw);
         let gated: Vec<&str> = out
             .lines()
@@ -562,7 +562,7 @@ fn stock(rig: &mut Rig) {
         let queued = fire(rig);
         land_all(rig, &queued);
     }
-    panic!("the ports were not stocked within 80 fires");
+    panic!("the ports were not stocked within 40 fires");
 }
 
 /// A pilot on a gateway account of their own, standing at the Registry desk.
@@ -2513,7 +2513,9 @@ fn sm12a_only_the_mill_restocks() {
 /// lots of the same quantity). **Doc 41 cut RS.1**: `.debit(` twice in `surface/tow.rs`, the
 /// tender's — its finish draws the work's munitions and the bale's tonnes from its stores, and
 /// `stores open` takes a tonne of each line into the bale: matter spent on a hull or held as the
-/// bale's kilograms (IN.1's accounting, as the bay's draw), never made.
+/// bale's kilograms (IN.1's accounting, as the bay's draw), never made. **Doc 39 cut IN.6**: the
+/// clerk's one mint moved to `.mint_origins_from(` (a source a row: a bulk row's mint lays its
+/// vendor's part rows too, each lot rooted in its own stock issue).
 #[test]
 fn sm12a_only_the_clerk_the_foundry_and_the_mill_create_matter() {
     let files = production_files("tacsim/src");
@@ -2523,10 +2525,11 @@ fn sm12a_only_the_clerk_the_foundry_and_the_mill_create_matter() {
     );
     assert_eq!(
         occurrences(&files, ".mint_origins("),
-        vec![
-            ("tacsim/src/port/bay_work/act.rs".to_owned(), 1),
-            ("tacsim/src/port/stock.rs".to_owned(), 1),
-        ]
+        vec![("tacsim/src/port/bay_work/act.rs".to_owned(), 1)]
+    );
+    assert_eq!(
+        occurrences(&files, ".mint_origins_from("),
+        vec![("tacsim/src/port/stock.rs".to_owned(), 1)]
     );
     let credits = occurrences(&files, ".credit(");
     let (foundry, others): (Vec<_>, Vec<_>) = credits

@@ -492,7 +492,7 @@ fn stock_ready(tw: &mut TestWorld) -> (bool, String) {
 
 /// **Fire and land the port tick until both ports are stocked and listed.** Bounded.
 fn stock(rig: &mut Rig) {
-    for _ in 0..80 {
+    for _ in 0..40 {
         if stock_ready(&mut rig.tw).0 {
             return;
         }
@@ -500,7 +500,7 @@ fn stock(rig: &mut Rig) {
         land_all(rig, &queued);
     }
     let (_, out) = stock_ready(&mut rig.tw);
-    panic!("the ports were not stocked within 80 fires:\n{out}");
+    panic!("the ports were not stocked within 40 fires:\n{out}");
 }
 
 /// Read one typed value through an owner-stamped transaction.
