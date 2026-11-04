@@ -812,19 +812,44 @@ mod tests {
                 max_casualty_mass_kg: 40_000,
             })
         );
+        // Doc 41 cut RS.1 (Q-41-27): the recovery profile carries a 3x cap, `Heavy` the
+        // optimized speed at the standard 2x.
+        check!(
+            scaled_tow_speed_cms(
+                base_speed_cms,
+                tug_mass_kg,
+                60_000,
+                TowRigProfile::RecoveryOptimized,
+            )
+            .is_ok()
+        );
         check_eq!(
             scaled_tow_speed_cms(
                 base_speed_cms,
                 tug_mass_kg,
-                40_001,
+                60_001,
                 TowRigProfile::RecoveryOptimized,
             ),
+            Err(RecoveryError::ExceedsTonnageCap {
+                tug_mass_kg: 20_000,
+                casualty_mass_kg: 60_001,
+                max_casualty_mass_kg: 60_000,
+            })
+        );
+        check_eq!(
+            scaled_tow_speed_cms(base_speed_cms, tug_mass_kg, 40_000, TowRigProfile::Heavy)?,
+            opt_double
+        );
+        check_eq!(
+            scaled_tow_speed_cms(base_speed_cms, tug_mass_kg, 40_001, TowRigProfile::Heavy),
             Err(RecoveryError::ExceedsTonnageCap {
                 tug_mass_kg: 20_000,
                 casualty_mass_kg: 40_001,
                 max_casualty_mass_kg: 40_000,
             })
         );
+        check_eq!(TowRigProfile::Standard.cap_permille(), 2_000);
+        check_eq!(TowRigProfile::RecoveryOptimized.max_casualty_mass_kg(7_000), 21_000);
         Ok(())
     }
 

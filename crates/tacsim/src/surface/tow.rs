@@ -1371,12 +1371,19 @@ impl ActionProvider for TowProvider {
             | TowOrder::Tended { site, .. } => site.clone(),
         };
         let key = SiteKey(site.clone());
-        let mut record = txn
+        let found = txn
             .get(&self.sites, &key)
             .map_err(|_| integrity("the site records are unavailable"))?
             .cloned()
-            .filter(|record| record.key() == key)
-            .ok_or_else(|| refused("tow_no_ground"))?;
+            .filter(|record| record.key() == key);
+        let existed = found.is_some();
+        // Doc 41 cut RS.1: a tend may start on ground no field has written yet (the tow's
+        // casualty always comes of a field, so its record is always there).
+        let mut record = match (found, &order) {
+            (Some(record), _) => record,
+            (None, TowOrder::Tend { facts }) => SiteRecord::with_side(site.clone(), facts.side),
+            (None, _) => return Err(refused("tow_no_ground")),
+        };
         let promoted = record.open_field().is_some();
         let mut closing: Option<(ObjId, crate::surface::black_box::BlackBoxLine)> = None;
         let result: String = match order {
@@ -1606,8 +1613,12 @@ impl ActionProvider for TowProvider {
         record
             .check()
             .map_err(|_| integrity("the site record is out of bounds"))?;
-        txn.replace(&self.sites, &key, record)
-            .map_err(|_| integrity("the site record could not be written"))?;
+        if existed {
+            txn.replace(&self.sites, &key, record)
+        } else {
+            txn.insert(&self.sites, &key, record)
+        }
+        .map_err(|_| integrity("the site record could not be written"))?;
         if let Some((hull, line)) = closing {
             crate::surface::black_box::append(context, self.black_box.as_ref(), hull, line)?;
         }

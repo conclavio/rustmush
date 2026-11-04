@@ -294,6 +294,9 @@ pub struct TendFacts {
     pub tender_pose: FieldPose,
     /// Where the target stands.
     pub target_pose: FieldPose,
+    /// The site's side, cells: a start on ground no field has written makes its record at it
+    /// (the prepare reads no world; `site_record::fixed_record`'s precedent).
+    pub side: u16,
 }
 
 /// **A finish's draw**, fixed by the tick after the work landed on the unit.
@@ -1190,6 +1193,7 @@ fn work(
     }
     let words = job.words();
     let facts = TendFacts {
+        side: crate::surface::site_record::site_side_or_default(ctx.w, &site),
         site,
         target,
         work: job,
@@ -1399,5 +1403,125 @@ pub(crate) fn landed_line(
             .replace("{n}", slot)
             .replace("{name}", &name)
             .replace("{why}", "it was let go"),
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    fn words(line: &str) -> Vec<String> {
+        line.split_whitespace().map(str::to_owned).collect()
+    }
+
+    /// The verbs' grammar: closed both ways.
+    #[test]
+    fn rs1_the_tender_words_parse_closed() {
+        assert_eq!(parse("stores", &[]).ok(), Some(TendAct::Show));
+        assert_eq!(
+            parse("stores", &words("open go")).ok(),
+            Some(TendAct::Open { go: true })
+        );
+        assert_eq!(
+            parse("stores", &words("load 20 ammo_he_105 go")).ok(),
+            Some(TendAct::Load {
+                qty: 20,
+                good: "ammo_he_105".to_owned(),
+                go: true
+            })
+        );
+        assert_eq!(
+            parse("stabilize", &words("#812=hull all go")).ok(),
+            Some(TendAct::Work {
+                verb: "stabilize",
+                unit: "#812".to_owned(),
+                which: Some("hull".to_owned()),
+                points: Some(Points::All),
+                go: true
+            })
+        );
+        assert_eq!(
+            parse("unjam", &words("#812")).ok(),
+            Some(TendAct::Work {
+                verb: "unjam",
+                unit: "#812".to_owned(),
+                which: None,
+                points: None,
+                go: false
+            })
+        );
+        for (verb, line) in [
+            ("stores", "go"),
+            ("stores", "load 0 ammo_he_105"),
+            ("stores", "load x ammo_he_105"),
+            ("unjam", ""),
+            ("unjam", "#812 40"),
+            ("rearm", "#812= go"),
+            ("stabilize", "#812 0"),
+            ("stabilize", "#812 go 4"),
+        ] {
+            assert!(parse(verb, &words(line)).is_err(), "{verb} {line}");
+        }
+    }
+
+    /// Q-41-3: the tariff's time at three times; Q-41-2: the draw.
+    #[test]
+    fn rs1_time_is_the_tariffs_at_three_and_the_draw_is_the_tariffs() {
+        let unjam = TendWork::Unjam {
+            component: "cannon".to_owned(),
+        };
+        assert_eq!(unjam.secs(), 6 * 3_600, "an unjam is six IC hours");
+        let patch = TendWork::Stabilize {
+            section: "hull".to_owned(),
+            points: 50,
+        };
+        assert_eq!(patch.secs(), 5_400, "a 50-point patch is an IC hour and a half");
+        assert_eq!(patch.need().0.fittings_kg, 500);
+        assert_eq!(patch.need().0.alloys_kg, 0, "no alloys until IN.8");
+        let rearm = TendWork::Rearm {
+            component: "cannon".to_owned(),
+            good: CanonicalId::new("ammo_ball_762").expect("an id"),
+            rounds: 250,
+            per_unit: 100,
+        };
+        assert_eq!(
+            rearm.need().1,
+            Some((CanonicalId::new("ammo_ball_762").expect("an id"), 3)),
+            "whole units of the mount's good"
+        );
+        // Through the bale: an unopened bale opens with a tonne of each; an open one draws
+        // kilograms until a line runs short.
+        let (after, debit) = draw_of(None, &patch.need());
+        assert_eq!(debit.len(), 2, "a tonne of each opened");
+        assert_eq!(after.map(|b| b.fittings_kg), Some(500));
+        let (after, debit) = draw_of(after, &patch.need());
+        assert!(debit.is_empty(), "the bale covers it");
+        assert_eq!(after.map(|b| b.fittings_kg), Some(0));
+    }
+
+    /// `register_tender` fed from the compartment.
+    #[test]
+    fn rs1_the_tender_registers_from_its_stores() {
+        let pose = FieldPose {
+            site: ObjId(9),
+            x_cm: 500,
+            y_cm: 500,
+        };
+        let ammo = CanonicalId::new("ammo_he_105").expect("an id");
+        let stores = BTreeMap::from([
+            (CanonicalId::new(FITTINGS).expect("an id"), 2),
+            (ammo.clone(), 20),
+        ]);
+        let bale = Bale {
+            alloys_kg: 1_000,
+            fittings_kg: 300,
+        };
+        let book = register_tender(ObjId(7), pose, 1_500, Some(bale), &stores, Some((&ammo, 1)))
+            .expect("registered");
+        let state = book.tender(ObjId(7)).expect("the tender");
+        assert_eq!(state.spare_parts_kg, 2_300);
+        assert_eq!(state.ammo_supply_rounds, 20);
+        assert_eq!(state.charge_reserve_cu, 0);
+        assert_eq!(state.max_service_distance_cm, 1_500);
     }
 }
