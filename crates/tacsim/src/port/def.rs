@@ -223,6 +223,15 @@ pub struct PortDef {
     pub works: Option<Box<WorksDef>>,
 }
 
+/// "the workshop's", "the works'": a facility block's possessive, for the shared-room sentence.
+fn possessive(block: &str) -> String {
+    if block.ends_with('s') {
+        format!("the {block}'")
+    } else {
+        format!("the {block}'s")
+    }
+}
+
 /// The capability word a port's refinery holds (doc 39 cut IN.5; §4.2's `smelt`).
 pub const REFINE_CAPABILITY: &str = "smelt";
 
@@ -1694,7 +1703,10 @@ impl PortDef {
             .into_iter()
             .find(|(block, room)| *block != "refinery" && *room == refinery.room)
         {
-            return Err(format!("refinery: the room is already the {block}'s"));
+            return Err(format!(
+                "refinery: the room is already {}",
+                possessive(block)
+            ));
         }
         if !self.orgs.iter().any(|org| org.id == refinery.operator) {
             return Err(format!(
@@ -1731,7 +1743,7 @@ impl PortDef {
             .into_iter()
             .find(|(block, room)| *block != "works" && *room == works.room)
         {
-            return Err(format!("works: the room is already the {block}'s"));
+            return Err(format!("works: the room is already {}", possessive(block)));
         }
         if !self.orgs.iter().any(|org| org.id == works.operator) {
             return Err(format!(
@@ -3977,16 +3989,16 @@ mod tests {
         );
         let mut slotless = works(Vec::new());
         slotless.slots = 0;
-        assert_eq!(with(slotless), "works: slots must be 1..=16, not 0");
+        assert_eq!(with(slotless), "works: slots must be 1..=8, not 0");
         let mut bare = works(Vec::new());
         bare.capabilities.clear();
         assert_eq!(
             with(bare),
-            "works: capabilities hold tacsim.works and at most 8"
+            "works: capabilities hold tacsim.works and at most 32"
         );
         let mut shared = works(Vec::new());
         shared.room = "neighborhood.ceres_freeport.room.c06_clearing".to_owned();
-        assert_eq!(with(shared), "works: the room is already the refinery's");
+        assert_eq!(with(shared), "refinery: the room is already the works'");
     }
 
     /// **Doc 20 cut SM.12a**: a vendor with no mill rows re-encodes with no `mill`
