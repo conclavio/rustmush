@@ -238,3 +238,37 @@ Order: §8 first; then `SF.R17` (holes) ∥ `SF.R18` (needs FR.6's types or abso
 - "The enable flag is owed": not owed, Q-38-9 (owner, 2026-11-03).
 - "The surface/ edits in the range break D-35-2": refuted; they are doc 36a lane 5 (PR #346).
 - "The write-census shards are red": refuted at `f1b2a1e4`; CI green.
+
+## 12. Handed in: doc 41's RS.8 and doc 42's CR.6 (owner, 2026-11-04)
+
+The owner handed both space seams of the post-IC programme to this train, not to the programme's sessions: the
+space tree is this train's, and building them beside an open `SF.R*` cut would collide. Each is one cut of this
+train, numbered after whatever `SF.R*` is open when it starts, and built on the ground half that is already on
+`main`.
+
+**RS.8 — the space seams** (doc 41 §6, Q-41-26, Q-36-46, Q-36-47). What it touches, read at `7a535806` (SF.R24
+merged) by the doc 41 session:
+
+- `space/commands.rs`: `+helm/tow` and the derelict paths onto `file_salvage_claim` / `award_salvage_title`, with
+  RS.3's `claim_window_s` (the one window).
+- `space/custody.rs`, `space/mod.rs`, `space/bubble.rs`, `space/tick.rs`: retire
+  `register_derelict_salvage_in_book`, `DERELICT_WINDOW_S` and the 1,200 cr bounty; move
+  `SpaceBubbleBook.space_custody` (in memory) to a durable `tacsim:space:custody` document keyed by domain; real
+  principals, not labels (35b §3's private ledgers, 35c §6.3).
+- `carrier_damage.rs`: `ShipSectionId` onto `CarrierPart` (Hull→Hull, Drive→Drive; Hold stays space-only).
+- One call outside `space/`: a hull docking under her own power hands a retrieval to RS.5's `retrieval::deliver`.
+- Tests: `shard_10/voyage.rs`'s salvage stories rewritten.
+- Story (doc 41): a derelict clamped, towed and docked at Ceres under the one window, contested by
+  `+salvage/contest`; a space retrieval job on `+salvage/jobs` delivered by a ship.
+
+On `main` to build on: RS.3 (the claim's close, `contract_live.rs`'s org award), RS.5 (#415: `RetrievalOrder`,
+`Right::Retrieval`, `+salvage/retrieve|jobs|accept`, `retrieval::deliver`, `+debts`).
+
+**CR.6 — the space seam** (doc 42, Q-42-24): crew records from the space check-in, the derelict's crew, the
+hard-dock capture, the ship's handover through CR.2's hook. On `main` or landing: CR.0 (`field/crew.rs`, the held
+gate), CR.1 (capture at the load, `tacsim_crew_captured`), CR.2 (#417, the release fee as a `Sanction`
+obligation; `+debts` lists it). Owner ruling 2026-11-04: crew whose carrier is wrecked fight to the death;
+surrender is future work (doc 42).
+
+Both follow this train's rules (35b §8): no enable flag (Q-38-9), wipe and redeploy at each step, doc 43's test
+rules (tier rows in `test-tiers.toml` once TS.2 lands; stories at 256 and 512).

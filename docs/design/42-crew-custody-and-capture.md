@@ -885,7 +885,7 @@ casualty waiting for a bed at Ceres. After CR.4.
 
 **CR.6 — The space seam.** Q-42-24. The space track's cut, in its tree, after SF.R9–R16: crew
 records from the space check-in, the derelict's crew, the hard-dock capture, the ship's handover
-through CR.2's hook. Not this train's.
+through CR.2's hook. Not this train's: handed to the SF train on 2026-11-04 (doc 35c §12).
 
 **CR.7 — Docs.** §5's amendments to docs 27, 32, 36 and 38; `42-cut-notes.md`; Draft 0.2 of this
 document with the rulings and the as-built sections.

@@ -955,7 +955,7 @@ Sessions run one cut each; a wave starts when its cuts' upstreams have merged. T
   second of FR.3 / S.4b, FR.5 (← FR.0, FR.3, FR.4, Q-40-25; the rebless), RS.6 (← RS.5, IN.4, IN.8,
   IN.9), RS.7 (← RS.3, RS.5), CR.2 (← CR.1, RS.5), CR.3 (← CR.2), CR.4 (← CR.1, FR.3, Q-40-25).
 - **Wave 3:** IN.10 (← IN.9), IN.11 (← all of doc 39), RS.4 (← RS.3, IN.9), RS.8 and CR.6 and the
-  rest of the space tree (← SF.R16), FR.7, RS.9 (← IN.11), CR.5 (← CR.4), CR.7.
+  rest of the space tree (← SF.R16; handed to the SF train on 2026-11-04, doc 35c §12), FR.7, RS.9 (← IN.11), CR.5 (← CR.4), CR.7.
 
 The critical path is doc 39's: IN.1 → IN.2 → IN.3 → IN.9 → IN.10, because RS.4, RS.6 and the
 yard-built carrier's bay and tow all wait on IN.9. The second is the launch protocol: Q-23-21 →
