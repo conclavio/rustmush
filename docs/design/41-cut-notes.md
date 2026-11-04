@@ -90,6 +90,18 @@ mush-bot's `rs0_the_salvage_lines_are_closed` (the tender's lines). Re-run green
   the bay's contents are still counted dry, as before.
 - The census pin (`mill::sm12a_only_the_clerk_the_foundry_and_the_mill_create_matter`) is re-blessed for
   the tender's two `.debit(` calls, matter spent or held in the bale, never made.
+- **The tender shows in Occator's readiness line**, as Q-41-1 means (Occator leases it): `shard_6`'s
+  `vehicles::sm3a_the_apply_lays_up_occators_rigs_and_every_hulls_bay` pins "tender: 2 of 2 made; 2 in
+  the shed, 0 leased.", and `sm3a_the_rig_pools_preflight_refuses_each_recorded_breach` the port map's
+  12 rigs (8 + 2 escorts + 2 tenders).
+- **`field_director::gc11_a_scheduled_raid_arrives_declares_and_leaves_with_its_losses` pins its
+  meaning, not a roll.** It wore one raider hull and asserted the guard took exactly that one. The
+  field's seed mixes the world's instant and a process salt (`match_::seed_for`), so on #397's first
+  run the guard's first rounds at the worn hull missed, it turned on the whole hull and fell, and the
+  raid stayed. Both hulls now come home worn, and the gate asserts the raid declares, loses at least
+  one hull, leaves with what stands (aboard) and leaves its losses where they fell. Nothing of RS.1
+  reaches the raid's leaving (it boards by the field's withdraw and lifts on the bay gate, still
+  counted dry); the extra boot objects only moved the draw.
 
 **Cell cost (rule #14).** Pending the PR run's JUnit; filled in on the PR.
 

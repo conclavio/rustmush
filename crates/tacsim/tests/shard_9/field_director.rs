@@ -4,7 +4,7 @@
 //!
 //! The gate: the director lands the content's raider on a site where three flights are out and a
 //! rig holds ore, its leader declares through the ordinary door, the field runs, the site's guard
-//! takes the raid's worn hull, and the raid, having lost half of what it launched, turns for
+//! takes one of the raid's worn hulls, and the raid, having lost half of what it launched, turns for
 //! home: its standing hull goes up the ramp and aboard, its carrier lifts by GC.0's lift, and
 //! what it lost stays where it fell. The raider's organization stands in the faction registry
 //! with its leader as principal, and the cooldown holds the next raid back though the site still
@@ -20,9 +20,13 @@
 //! (`seat_npc`) and its magazines rationed (`rationed`, to `ROUNDS`). Both gates seed the raider
 //! itself by staff before the raid (`raiders::seed`) and lift its carrier (`unplace`), so it
 //! stands as one that has raided before and lifted, and the director sends it as it is. In the
-//! first gate one of its hulls came home from that earlier raid worn thin (`fragile`, armour at
-//! its floor): it is the one the guard's fire engages first, the guard's six rounds take it, and
-//! nothing of the raider's is touched once the director has landed it. A whole line tank is not
+//! first gate both its hulls came home from that earlier raid worn thin (`fragile`, armour at
+//! its floor), so whichever the guard's fire lands on first falls, and nothing of the raider's is
+//! touched once the director has landed it. (Doc 41 cut RS.1: the gate wore one hull and pinned
+//! that the guard took exactly it; the field's seed mixes the world's instant and a process salt,
+//! so the guard's first rounds at that hull missed on one draw, it turned on the whole one and
+//! fell. The gate now pins what it means — the raid declares, takes losses and leaves with what
+//! stands — not one roll.) A whole line tank is not
 //! what the gate kills: lane 4 gave the guard full magazines against two whole hulls, and in
 //! 73 s of fire it wrecked only the raider's carrier, never a hull, then fell; the raiders had
 //! wrecked both rigs and the prospector's carrier first, and with its own carrier gone the raid
@@ -192,9 +196,11 @@ fn raided_before(rig: &mut Rig, worn: bool) -> (ObjId, Vec<ObjId>) {
     let barge = carrier_seeded(rig);
     let raiders = raider_hulls(rig);
     assert_eq!(raiders.len(), 2, "the content's two hulls");
-    // The second hull is the one the site's guard's fire engages first.
+    // Both came home worn: whichever the site's guard's fire lands on first falls.
     if worn {
-        fragile(rig, raiders[1]);
+        for hull in &raiders {
+            fragile(rig, *hull);
+        }
     }
     staff_hand(rig, |ctx| {
         mush_sim::unplace(ctx, barge, "test: lifted").expect("lifted");
@@ -207,7 +213,7 @@ fn raided_before(rig: &mut Rig, worn: bool) -> (ObjId, Vec<ObjId>) {
 #[allow(clippy::too_many_lines)] // one raid, in order
 async fn gc11_a_scheduled_raid_arrives_declares_and_leaves_with_its_losses() {
     let mut rig = stocked_tuned(tune);
-    // The raider has raided before: one hull came home worn thin, and its carrier lifted.
+    // The raider has raided before: its hulls came home worn thin, and its carrier lifted.
     let (barge, raiders) = raided_before(&mut rig, true);
     assert!(
         mush_sim::pose_of(rig.tw.world(), barge).is_none(),
@@ -227,7 +233,7 @@ async fn gc11_a_scheduled_raid_arrives_declares_and_leaves_with_its_losses() {
     .await;
     assert!(landed, "the director lands the raid on its own");
     assert_eq!(carrier(&rig), Some(barge));
-    // The wear came through the landing: the worn hull's armour is at its floor.
+    // The wear came through the landing: each hull's armour is at its floor.
     let armour = |rig: &Rig, unit: ObjId| -> Vec<(String, i64, i64)> {
         mush_tactics::module::unit_of(rig.tw.world(), unit)
             .expect("the unit")
@@ -239,11 +245,12 @@ async fn gc11_a_scheduled_raid_arrives_declares_and_leaves_with_its_losses() {
             .map(|(addr, cell)| (format!("{addr:?}"), cell.current, cell.min))
             .collect()
     };
-    let worn = armour(&rig, raiders[1]);
-    let whole = armour(&rig, raiders[0]);
+    let worn: Vec<_> = raiders.iter().map(|hull| armour(&rig, *hull)).collect();
     assert!(
-        worn.iter().all(|(_, current, min)| current == min),
-        "the worn hull's armour is at its floor after the landing: worn {worn:?}; whole {whole:?}; poses {:?}",
+        worn.iter()
+            .flatten()
+            .all(|(_, current, min)| current == min),
+        "the hulls' armour is at its floor after the landing: {worn:?}; poses {:?}",
         raiders
             .iter()
             .map(|hull| mush_sim::pose_of(rig.tw.world(), *hull))
@@ -287,9 +294,9 @@ async fn gc11_a_scheduled_raid_arrives_declares_and_leaves_with_its_losses() {
         "the raid is its leader's party"
     );
 
-    // The guard's fire takes the worn hull, which is half of what launched: the raid turns for
-    // home, its standing hull boards, and its carrier lifts. Which of the two falls is read off
-    // the record, not assumed.
+    // The guard's fire takes a worn hull, half of what launched: the raid turns for home, what
+    // stands boards, and its carrier lifts. Which falls, and whether the guard's fire takes the
+    // other on its way up the ramp, is read off the record, not assumed.
     let aboard = |rig: &Rig| {
         raiders
             .iter()
@@ -297,7 +304,7 @@ async fn gc11_a_scheduled_raid_arrives_declares_and_leaves_with_its_losses() {
             .count()
     };
     let left = until(&mut rig, &mut rx, &mut lines, 300, |rig, _| {
-        mush_sim::pose_of(rig.tw.world(), barge).is_none() && aboard(rig) == 1
+        mush_sim::pose_of(rig.tw.world(), barge).is_none() && aboard(rig) < raiders.len()
     })
     .await;
     let record = site_record(&mut rig).expect("the record");
@@ -334,24 +341,23 @@ async fn gc11_a_scheduled_raid_arrives_declares_and_leaves_with_its_losses() {
         })
         .map(|unit| unit.unit)
         .collect();
-    assert_eq!(
-        lost.len(),
-        1,
-        "the guard took one hull, and it stays where it fell: {:?}; kills {:?}",
+    assert!(
+        !lost.is_empty(),
+        "the guard took a hull, and it stays where it fell: {:?}; kills {:?}",
         record.units,
         kills(&lines)
     );
-    let home = raiders
-        .iter()
-        .copied()
-        .find(|hull| *hull != lost[0])
-        .expect("the other hull");
-    assert!(
-        record.units.iter().all(|unit| unit.unit != home),
-        "the hull that went home is aboard: {:?}",
-        record.units
-    );
-    assert!(mush_sim::pose_of(rig.tw.world(), lost[0]).is_some());
+    for hull in raiders.iter().filter(|hull| !lost.contains(hull)) {
+        assert!(
+            record.units.iter().all(|unit| unit.unit != *hull)
+                && mush_sim::pose_of(rig.tw.world(), *hull).is_none(),
+            "what stood went home aboard: {:?}",
+            record.units
+        );
+    }
+    for hull in &lost {
+        assert!(mush_sim::pose_of(rig.tw.world(), *hull).is_some());
+    }
 
     // The raid is over, and the cooldown holds the next one back though the site still tempts it.
     for _ in 0..10 {
