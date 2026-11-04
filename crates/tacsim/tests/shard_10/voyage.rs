@@ -3201,8 +3201,9 @@ fn sfr1_interdicted_leg_promotes_pauses_leg_timer_steps_wall_bubble_and_resumes_
     );
     assert_eq!(
         active_paused.bubble.wall_elapsed_ms,
-        5 * u64::from(tacsim::space::COMBAT_STEP_WALL_MS),
-        "bubble steps on 1:1 wall time (5,000 ms across 5 combat fires), NOT scaled by 3,600:1 IC rate"
+        4 * u64::from(tacsim::space::COMBAT_STEP_WALL_MS)
+            + u64::from(tacsim::space::MAX_BUBBLE_TICK_STEP_MS),
+        "bubble steps on measured wall time capped at MAX_BUBBLE_TICK_STEP_MS (4x1s + 30s = 34,000 ms), NOT scaled by 3,600:1 IC rate"
     );
     assert_eq!(
         active_paused.bubble.ic_timestamp_s, paused_ic,
@@ -3242,7 +3243,11 @@ fn sfr1_interdicted_leg_promotes_pauses_leg_timer_steps_wall_bubble_and_resumes_
     assert_eq!(completed.opened_ic_s, boundary_ic);
     assert_eq!(completed.closed_ic_s, resume_ic);
     assert_eq!(completed.steps, 5);
-    assert_eq!(completed.wall_elapsed_ms, 5_000);
+    assert_eq!(
+        completed.wall_elapsed_ms,
+        4 * u64::from(tacsim::space::COMBAT_STEP_WALL_MS)
+            + u64::from(tacsim::space::MAX_BUBBLE_TICK_STEP_MS),
+    );
 
     let act_book = rig
         .tw
@@ -4236,7 +4241,7 @@ fn sfr5_chartered_dray_p_buys_licence_matches_velocity_in_pallas_mines_into_stow
 
     // Provision propellant and rations (leaving `stow.ore` empty) and board *Salt Moth*.
     seed_pool(&mut rig, vault_id, "propellant", 80, LotId(903));
-    seed_pool(&mut rig, vault_id, "provisions", 60, LotId(904));
+    seed_pool(&mut rig, vault_id, "provisions", 160, LotId(904));
     set_rate(&mut rig.tw, 3_600);
     board(&mut rig, pilot_actor);
 
@@ -4246,20 +4251,24 @@ fn sfr5_chartered_dray_p_buys_licence_matches_velocity_in_pallas_mines_into_stow
     teleport(&mut rig.tw, rival_actor, airlock);
     let _ = run(&mut rig.tw, pilot_actor, "+helm/station flight_ops=Rival");
 
-    // 2. Fly to `pallas_inclined_belt` via `+helm/autopilot pallas_inclined_belt` (no teleporting
-    //    `+helm/cluster` verb!), advance to arrival so `space_tick` promotes the hull into the
-    //    cluster and lands the `DepositOpen` and `ClaimTenure` (Pallas Syndicate seed) submissions.
+    // 2. Depart Ceres Freeport berth for `pallas_inclined_belt` via `+ship/undock pallas_inclined_belt`
+    //    (no teleporting `+helm/cluster` verb and no berth autopilot!), advance to arrival so
+    //    `space_tick` promotes the hull into the cluster and lands the `DepositOpen` and
+    //    `ClaimTenure` (Pallas Syndicate seed) submissions.
     let cluster_out = run(
         &mut rig.tw,
         pilot_actor,
-        "+helm/autopilot pallas_inclined_belt",
+        "+ship/undock pallas_inclined_belt throttle=500",
     );
     assert!(
         cluster_out.contains("Pallas Inclined Belt (`pallas_inclined_belt`)"),
-        "autopilot to cluster output: {cluster_out}"
+        "undock to cluster output: {cluster_out}"
     );
     let transit_burn = drain_space_and_industry(&mut rig.tw);
     land_quietly(&mut rig, &transit_burn);
+    let _ = fire_quietly(&mut rig);
+    let launch_submits = drain_space_and_industry(&mut rig.tw);
+    land_quietly(&mut rig, &launch_submits);
 
     // Advance to the cluster arrival timestamp (`cluster_arrival_ic_s`) so the hull arrives at
     // `pallas_inclined_belt` and `step_free_flight_records` + `step_clusters_on_tick` opens the
@@ -4277,12 +4286,18 @@ fn sfr5_chartered_dray_p_buys_licence_matches_velocity_in_pallas_mines_into_stow
     rig.tw.set_now(t0);
     let _ = rig.tw.fire_due(t0.saturating_mul(1_000));
     let open_submits = drain_space_and_industry(&mut rig.tw);
+    let deposit_submits: Vec<_> = open_submits
+        .iter()
+        .filter(|s| s.action.key().owner.as_str() == mush_industry::NS)
+        .cloned()
+        .collect();
     assert_eq!(
-        open_submits.len(),
+        deposit_submits.len(),
         4,
         "4 OreDeposit openings submitted for Pallas rocks A (S), B (M: 2 families), C (S)"
     );
-    land_all(&mut rig, &open_submits);
+    land_all(&mut rig, &deposit_submits);
+    land_quietly(&mut rig, &open_submits);
 
     // Advance one tick so the block places seed Pallas Syndicate tenure on Blocks A and B.
     let t = rig.tw.world().now().saturating_add(6);
@@ -4461,8 +4476,6 @@ fn sfr5_chartered_dray_p_buys_licence_matches_velocity_in_pallas_mines_into_stow
     // 6. Fly *Salt Moth* back from `pallas_inclined_belt` to Ceres Freeport (`+helm/autopilot ceres`),
     //    dock at Ceres, sell the 20 t of mined `metal_ore` from `stow.ore` at the Ceres Freeport
     //    Exchange (`room.c07_exchange`), and verify `tacsim_port_mill` mills it into `8 t` of `concentrate`!
-    seed_pool(&mut rig, vault_id, "propellant", 40, LotId(906));
-    seed_pool(&mut rig, vault_id, "provisions", 45, LotId(907));
     let ret_out = run(&mut rig.tw, pilot_actor, "+helm/autopilot ceres");
     assert!(
         ret_out.contains("Autopilot engaged for Ceres Freeport"),
@@ -4578,8 +4591,8 @@ fn sfr6_kirkwood_customs_picket_story_1_end_to_end_rhai_doctrine_triad_combat_an
     let refit_out = run(&mut rig.tw, pilot, "+coop/refit prospector");
     assert!(refit_out.contains("Dray-P"), "{refit_out}");
 
-    seed_pool(&mut rig, vault_id, "propellant", 75, LotId(913));
-    seed_pool(&mut rig, vault_id, "provisions", 65, LotId(914));
+    seed_pool(&mut rig, vault_id, "propellant", 80, LotId(913));
+    seed_pool(&mut rig, vault_id, "provisions", 120, LotId(914));
     set_rate(&mut rig.tw, 3_600);
     board(&mut rig, pilot);
 
@@ -4591,9 +4604,16 @@ fn sfr6_kirkwood_customs_picket_story_1_end_to_end_rhai_doctrine_triad_combat_an
     // Settle the licence purchase contract before checking pre-fine Registry balance.
     sweep(&mut rig.tw, 6);
 
-    let _ = run(&mut rig.tw, pilot, "+helm/autopilot pallas_inclined_belt");
+    let _ = run(
+        &mut rig.tw,
+        pilot,
+        "+ship/undock pallas_inclined_belt throttle=500",
+    );
     let transit_burn = drain_space_and_industry(&mut rig.tw);
     land_quietly(&mut rig, &transit_burn);
+    let _ = fire_quietly(&mut rig);
+    let launch_submits = drain_space_and_industry(&mut rig.tw);
+    land_quietly(&mut rig, &launch_submits);
     let arrival_ic = rig
         .tw
         .world()
@@ -4648,9 +4668,7 @@ fn sfr6_kirkwood_customs_picket_story_1_end_to_end_rhai_doctrine_triad_combat_an
         "4 t (4,000 kg) of unlicensed strategic_ore in stow.ore hold vault"
     );
 
-    // Return to Ceres Freeport from `pallas_inclined_belt` and top up propellant/provisions before casting off on `ceres_stickney`:
-    seed_pool(&mut rig, vault_id, "propellant", 50, LotId(915));
-    seed_pool(&mut rig, vault_id, "provisions", 30, LotId(918));
+    // Return to Ceres Freeport from `pallas_inclined_belt` and top up propellant/provisions at Ceres berth before casting off on `ceres_stickney`:
     let ret_out = run(&mut rig.tw, pilot, "+helm/autopilot ceres");
     assert!(
         ret_out.contains("Autopilot engaged for Ceres Freeport"),
@@ -5241,14 +5259,11 @@ fn sfr7_docking_session_pauses_ship_replays_valid_tape_into_berth_docked_rejects
         active.bubble.ships[&active.carrier_ship_id].sections[&tacsim::space::ShipSectionId::Hull]
             .facets[&tacsim::space::FacetBand::Front]
     };
-    let bounce_tape = tacsim::space::solve_hard_bounce_tape(&challenge_bounce);
+    let bounce_rle = client_solve_hard_bounce_rle(&challenge_bounce);
     let bounce_out = run(
         &mut rig.tw,
         pilot,
-        &format!(
-            "+helm/dock tape {session_id_bounce} {}",
-            bounce_tape.encode_rle()
-        ),
+        &format!("+helm/dock tape {session_id_bounce} {bounce_rle}"),
     );
     assert!(
         bounce_out.contains("[DOCKING] Hard collar bounce") && bounce_out.contains("hull unpaused"),
@@ -5290,14 +5305,11 @@ fn sfr7_docking_session_pauses_ship_replays_valid_tape_into_berth_docked_rejects
         let s = book.docking_sessions.get(&hull).expect("session 2");
         (s.challenge.session_id.clone(), s.challenge.clone())
     };
-    let valid_derelict_tape = tacsim::space::solve_docking_tape(&challenge_2);
+    let valid_derelict_rle = client_solve_docking_rle(&challenge_2);
     let clamp_derelict_out = run(
         &mut rig.tw,
         pilot,
-        &format!(
-            "+helm/dock tape {session_id_2} {}",
-            valid_derelict_tape.encode_rle()
-        ),
+        &format!("+helm/dock tape {session_id_2} {valid_derelict_rle}"),
     );
     assert!(
         clamp_derelict_out
@@ -5354,14 +5366,11 @@ fn sfr7_docking_session_pauses_ship_replays_valid_tape_into_berth_docked_rejects
         let s = book.docking_sessions.get(&hull).expect("port session");
         (s.challenge.session_id.clone(), s.challenge.clone())
     };
-    let valid_port_tape = tacsim::space::solve_docking_tape(&challenge_3);
+    let valid_port_rle = client_solve_docking_rle(&challenge_3);
     let clamp_port_out = run(
         &mut rig.tw,
         pilot,
-        &format!(
-            "+helm/dock tape {session_id_3} {}",
-            valid_port_tape.encode_rle()
-        ),
+        &format!("+helm/dock tape {session_id_3} {valid_port_rle}"),
     );
     assert!(
         clamp_port_out.contains("Hard dock and magnetic collar seal confirmed at Stickney Yards")
@@ -5639,11 +5648,11 @@ fn sfr8_space_state_persists_in_tacsim_store_and_survives_full_engine_restart_mi
 
     // 6. Replay the valid 60 Hz client `DockingInputTape` after restart #2 and verify
     //    the ship clamps into `Berth::Docked` at Stickney Yards:
-    let valid_tape = tacsim::space::solve_docking_tape(&challenge);
+    let valid_rle = client_solve_docking_rle(&challenge);
     let clamp_out = run(
         &mut rig.tw,
         pilot,
-        &format!("+helm/dock tape {session_id} {}", valid_tape.encode_rle()),
+        &format!("+helm/dock tape {session_id} {valid_rle}"),
     );
     assert!(
         clamp_out.contains("Hard dock and magnetic collar seal confirmed at Stickney Yards")
@@ -5688,7 +5697,7 @@ fn sfr9_authority_closeout_gates_docking_removes_cluster_teleport_stops_1s_burn_
         !voyage_src.contains(mut_needle),
         "tests must never mutate SpaceBubbleBook via module_state_mut"
     );
-    let clear_needle = concat!("tacsim::space::", "clear_interdiction_bubble(");
+    let clear_needle = concat!("tacsim::space::", "clear_interdiction", "_bubble(");
     assert!(
         !voyage_src.contains(clear_needle),
         "tests must never clear interdiction bubbles via test-fiat helper"
@@ -5702,8 +5711,8 @@ fn sfr9_authority_closeout_gates_docking_removes_cluster_teleport_stops_1s_burn_
     let hull = ObjId(row.hull);
     let vault_id = hold_vault(&rig.tw, &row);
 
-    seed_pool(&mut rig, vault_id, "propellant", 65, LotId(941));
-    seed_pool(&mut rig, vault_id, "provisions", 30, LotId(942));
+    seed_pool(&mut rig, vault_id, "propellant", 80, LotId(941));
+    seed_pool(&mut rig, vault_id, "provisions", 40, LotId(942));
     set_rate(&mut rig.tw, 1);
     board(&mut rig, pilot);
 
@@ -5776,8 +5785,6 @@ fn sfr9_authority_closeout_gates_docking_removes_cluster_teleport_stops_1s_burn_
     }
 
     // Recouple via `+helm/autopilot stickney` (preserving the interdicted Kirkwood leg!) and cross into the bubble:
-    seed_pool(&mut rig, vault_id, "propellant", 55, LotId(943));
-    seed_pool(&mut rig, vault_id, "provisions", 25, LotId(944));
     set_rate(&mut rig.tw, 3_600);
     let auto_out = run(&mut rig.tw, pilot, "+helm/autopilot stickney");
     assert!(
@@ -5876,11 +5883,11 @@ fn sfr9_authority_closeout_gates_docking_removes_cluster_teleport_stops_1s_burn_
         let s = book.docking_sessions.get(&hull).expect("docking session");
         (s.challenge.session_id.clone(), s.challenge.clone())
     };
-    let tape_ok = tacsim::space::solve_docking_tape(&chal_ok);
+    let tape_ok_rle = client_solve_docking_rle(&chal_ok);
     let clamp_ok = run(
         &mut rig.tw,
         pilot,
-        &format!("+helm/dock tape {sid_ok} {}", tape_ok.encode_rle()),
+        &format!("+helm/dock tape {sid_ok} {tape_ok_rle}"),
     );
     assert!(
         clamp_ok.contains("Hard dock and magnetic collar seal confirmed at Stickney Yards"),
@@ -6617,14 +6624,11 @@ fn sfr12_domain_bubbles_and_real_hulls_share_kirkwood_bubble_tow_real_raider_thi
             .expect("miner docking session");
         (s.challenge.session_id.clone(), s.challenge.clone())
     };
-    let valid_raider_tape = tacsim::space::solve_docking_tape(&chal_raider);
+    let valid_raider_rle = client_solve_docking_rle(&chal_raider);
     let clamp_raider_out = run(
         &mut rig.tw,
         pilot_miner,
-        &format!(
-            "+helm/dock tape {sid_raider} {}",
-            valid_raider_tape.encode_rle()
-        ),
+        &format!("+helm/dock tape {sid_raider} {valid_raider_rle}"),
     );
     assert!(
         clamp_raider_out
@@ -7589,11 +7593,11 @@ fn sfr15_hull_fidelity_splits_rear_hit_per_dray_json_strips_pdc_and_refits_in_ba
         let s = book.docking_sessions.get(&hull).expect("docking session");
         (s.challenge.session_id.clone(), s.challenge.clone())
     };
-    let clamp_tape = tacsim::space::solve_docking_tape(&challenge);
+    let clamp_rle = client_solve_docking_rle(&challenge);
     let _ = run(
         &mut rig.tw,
         pilot,
-        &format!("+helm/dock tape {session_id} {}", clamp_tape.encode_rle()),
+        &format!("+helm/dock tape {session_id} {clamp_rle}"),
     );
     let clamp_burn = drain(&mut rig.tw);
     land_quietly(&mut rig, &clamp_burn);
@@ -7781,14 +7785,11 @@ fn sfr16_client_docking_game_randomised_pose_and_neptune_canopy() {
         ch1.start_pose, constant_challenge.start_pose,
         "per-session start_pose must be randomised away from constant standard_port"
     );
-    let hand_typed_constant_tape = tacsim::space::solve_docking_tape(&constant_challenge);
+    let hand_typed_constant_rle = client_solve_docking_rle(&constant_challenge);
     let fail1_out = run(
         &mut rig.tw,
         pilot,
-        &format!(
-            "+helm/dock tape {sid1} {}",
-            hand_typed_constant_tape.encode_rle()
-        ),
+        &format!("+helm/dock tape {sid1} {hand_typed_constant_rle}"),
     );
     assert!(
         (fail1_out.contains("Docking input tape rejected: collar gates not aligned")
@@ -7801,7 +7802,7 @@ fn sfr16_client_docking_game_randomised_pose_and_neptune_canopy() {
 
     // Initiate session 2 (`+helm/dock stickney`): verify replaying session 1's solved tape
     // against session 2's randomised pose also fails:
-    let session1_valid_tape = tacsim::space::solve_docking_tape(&ch1);
+    let session1_valid_rle = client_solve_docking_rle(&ch1);
     let _ = run(&mut rig.tw, pilot, "+helm/dock stickney");
     let (sid2, ch2) = {
         let book = rig
@@ -7819,10 +7820,7 @@ fn sfr16_client_docking_game_randomised_pose_and_neptune_canopy() {
     let fail2_out = run(
         &mut rig.tw,
         pilot,
-        &format!(
-            "+helm/dock tape {sid2} {}",
-            session1_valid_tape.encode_rle()
-        ),
+        &format!("+helm/dock tape {sid2} {session1_valid_rle}"),
     );
     assert!(
         (fail2_out.contains("Docking input tape rejected: collar gates not aligned")
@@ -7926,14 +7924,34 @@ fn sfr16_client_docking_game_randomised_pose_and_neptune_canopy() {
     );
 
     // 4. Tier-1 free-flight expedition to Neptune & Triton (`doc 35` §9 Story 2 steps 3–4, `D-35-15`):
-    let neptune_events = rig.tw.run(pilot, "+helm/autopilot neptune");
-    let neptune_text = said(&rig.tw, &neptune_events, pilot);
+    //    Charter a second `Dray-P` at Ceres Freeport with full stores (`80 t` propellant, `150` rations)
+    //    loaded before departure, undock for `neptune` via `+ship/undock neptune`, and engage
+    //    `+helm/autopilot neptune` in free flight:
+    let mut rig_nep = stocked_with(Roster::default());
+    let (pilot_nep, row_nep) = chartered(&mut rig_nep, "PilotNeptune", 2);
+    let desk_nep = station_room(&rig_nep.tw, "ceres_port", "room.c05_registry");
+    teleport(&mut rig_nep.tw, pilot_nep, desk_nep);
+    let _ = run(&mut rig_nep.tw, pilot_nep, "+coop/refit prospector");
+    load(&mut rig_nep, &row_nep, 80, 200);
+    set_rate(&mut rig_nep.tw, 3_600);
+    board(&mut rig_nep, pilot_nep);
+    let undock_nep = run(&mut rig_nep.tw, pilot_nep, "+ship/undock neptune");
+    assert!(
+        undock_nep.contains("Clearance filed for neptune"),
+        "undock neptune output: {undock_nep}"
+    );
+    let undock_nep_draws = drain(&mut rig_nep.tw);
+    land_quietly(&mut rig_nep, &undock_nep_draws);
+    let _ = fire_quietly(&mut rig_nep);
+
+    let neptune_events = rig_nep.tw.run(pilot_nep, "+helm/autopilot neptune");
+    let neptune_text = said(&rig_nep.tw, &neptune_events, pilot_nep);
     assert!(
         neptune_text.contains("Autopilot engaged for celestial body `neptune`"),
         "neptune autopilot output: {neptune_text}"
     );
-    let neptune_draws = drain(&mut rig.tw);
-    land_quietly(&mut rig, &neptune_draws);
+    let neptune_draws = drain(&mut rig_nep.tw);
+    land_quietly(&mut rig_nep, &neptune_draws);
 
     let cockpit_panel = neptune_events
         .iter()
@@ -8012,5 +8030,427 @@ fn sfr16_client_docking_game_randomised_pose_and_neptune_canopy() {
     assert!(
         triton_lit_pixels > 40,
         "Triton disc must render lit pixels on the canopy (got {triton_lit_pixels})"
+    );
+}
+
+fn client_docking_session_from_challenge(
+    ch: &tacsim::space::DockingChallenge,
+) -> mush_pixel::docking::DockingClientSession {
+    let feed = serde_json::json!({
+        "session_id": ch.session_id,
+        "dx_mm": ch.start_pose.lateral_x_mm,
+        "dy_mm": ch.start_pose.lateral_y_mm,
+        "dz_mm": ch.start_pose.range_z_mm,
+        "pitch_mdeg": ch.start_pose.pitch_err_mdeg,
+        "yaw_mdeg": ch.start_pose.yaw_err_mdeg,
+        "roll_mdeg": ch.start_pose.roll_err_mdeg,
+        "vx_mmps": ch.start_pose.vel_x_mmps,
+        "vy_mmps": ch.start_pose.vel_y_mmps,
+        "vz_mmps": ch.start_pose.closure_mmps,
+        "pitch_rate_mdeg_s": ch.start_pose.pitch_rate_mdeg_s,
+        "yaw_rate_mdeg_s": ch.start_pose.yaw_rate_mdeg_s,
+        "roll_rate_mdeg_s": ch.start_pose.roll_rate_mdeg_s,
+        "target_tumble_mdeg_s": ch.target_tumble_mdeg_s,
+        "dampeners": true,
+        "rcs_authority": {
+            "trans_dv_mmps_per_frame": ch.rcs_authority.trans_dv_mmps_per_frame,
+            "closure_dv_mmps_per_frame": ch.rcs_authority.closure_dv_mmps_per_frame,
+            "attitude_rate_mdeg_s_per_frame": ch.rcs_authority.attitude_rate_mdeg_s_per_frame,
+            "roll_rate_mdeg_s_per_frame": ch.rcs_authority.roll_rate_mdeg_s_per_frame,
+            "damp_trans_mmps_per_frame": ch.rcs_authority.damp_trans_mmps_per_frame,
+            "damp_attitude_mdeg_s_per_frame": ch.rcs_authority.damp_attitude_mdeg_s_per_frame,
+            "damp_roll_mdeg_s_per_frame": ch.rcs_authority.damp_roll_mdeg_s_per_frame,
+        }
+    });
+    mush_pixel::docking::DockingClientSession::from_feed(&feed)
+}
+
+fn client_solve_docking_rle(ch: &tacsim::space::DockingChallenge) -> String {
+    let mut sess = client_docking_session_from_challenge(ch);
+    sess.play_to_clamp();
+    sess.encode_rle()
+}
+
+fn client_solve_hard_bounce_rle(ch: &tacsim::space::DockingChallenge) -> String {
+    let mut sess = client_docking_session_from_challenge(ch);
+    while (sess.pose.dz_mm > 0 || sess.pose.vz_mmps <= 800) && sess.frames_stepped() < 600 {
+        sess.step_60fps(mush_pixel::docking::DockingClientInput {
+            closure_pulse: 1,
+            ..Default::default()
+        });
+    }
+    sess.encode_rle()
+}
+
+/// **Doc 35c §9 cut `SF.R17` ("Hole close-out II") acceptance**:
+/// 1. `DOCK ABORT` / `order abort` requires an existing session (`"No active docking session to abort."`)
+///    and never resumes a `Promoted` `CarrierJourney` on a free-flying hull.
+/// 2. `+helm/autopilot pallas_inclined_belt` from Ceres berth (`Berth::Docked`) is refused
+///    (`"Ship is docked at a berth; undock first (+ship/undock)."`), and `+ship/undock pallas_inclined_belt`
+///    departs through `prepare_departure` + `tacsim_port_burn` + `launch_step` and opens the
+///    `pallas_inclined_belt` cluster session on arrival tick.
+/// 3. `+helm/autopilot neptune` with `1 t` in the tank is refused (`"Insufficient propellant for expedition to neptune"`).
+/// 4. Initiating a second `+helm/dock` while a docking session is already open is refused and does
+///    not reset `started_wall_s`; when the 60 s wall deadline expires, the 15 kg RCS debit submits
+///    `tacsim_port_burn` when crossing a whole tonne.
+/// 5. `holding_for_salvage` is per hull with a wall timeout (`SALVAGE_HOLD_TIMEOUT_WALL_S = 60`)
+///    and never blocks another carrier in the same cleared bubble from detaching and resuming its
+///    `CarrierJourney`.
+/// 6. The port dock range gate measures terminal braking distance (`<= 500 m`) and relative speed
+///    (`<= 15 m/s`) on every branch (refusing at `remaining_s = 45` where range is `506 m` and speed
+///    is `22.5 m/s`, and refusing a free-flight ship at `1 km` without clamping `2 km -> 200 m`).
+/// 7. A `30 s` late tick advances an active bubble by `30,000 ms` (`30 s`, `MAX_BUBBLE_TICK_STEP_MS`).
+#[test]
+#[allow(clippy::too_many_lines)]
+fn sfr17_hole_closeout_ii_abort_undock_expedition_dock_gates_salvage_hold_and_30s_tempo() {
+    // --- Part A: Berth autopilot refusal, `+ship/undock pallas_inclined_belt`, and 1 t Neptune refusal ---
+    let mut rig = stocked_with(Roster::default());
+    let (pilot, row) = chartered(&mut rig, "Pilot", 1);
+    let hull = ObjId(row.hull);
+    let desk = station_room(&rig.tw, "ceres_port", "room.c05_registry");
+    teleport(&mut rig.tw, pilot, desk);
+    let _ = run(&mut rig.tw, pilot, "+coop/refit prospector");
+    load(&mut rig, &row, 55, 60);
+    set_rate(&mut rig.tw, 3_600);
+    board(&mut rig, pilot);
+
+    // 2a. `+helm/autopilot pallas_inclined_belt` from Ceres berth (`Berth::Docked`) is refused:
+    let berth_auto = run(&mut rig.tw, pilot, "+helm/autopilot pallas_inclined_belt");
+    assert_eq!(
+        berth_auto.trim(),
+        "Ship is docked at a berth; undock first (+ship/undock).",
+        "berth autopilot must be refused"
+    );
+
+    // 2b. `+ship/undock pallas_inclined_belt` departs through `prepare_departure` + `tacsim_port_burn`
+    //     + `launch_step` and opens the `pallas_inclined_belt` cluster session on arrival tick:
+    let undock_pallas = run(
+        &mut rig.tw,
+        pilot,
+        "+ship/undock pallas_inclined_belt throttle=500",
+    );
+    assert!(
+        undock_pallas.contains("Clearance filed for Pallas Inclined Belt (`pallas_inclined_belt`)"),
+        "undock to cluster output: {undock_pallas}"
+    );
+    let undock_burn = drain_space_and_industry(&mut rig.tw);
+    assert!(
+        undock_burn
+            .iter()
+            .any(|s| s.action.key().id.as_str() == "tacsim_port_burn"),
+        "+ship/undock <cluster> must submit tacsim_port_burn"
+    );
+    land_quietly(&mut rig, &undock_burn);
+    let _ = fire_quietly(&mut rig);
+    assert!(
+        matches!(
+            journey(&rig.tw, hull).map(|j| j.state().clone()),
+            Some(mush_sim::JourneyState::Promoted { .. })
+        ),
+        "launch_step must promote the cluster departure into JourneyState::Promoted"
+    );
+
+    // 1a. While in free flight (`JourneyState::Promoted`) with NO docking session open,
+    //     `+helm/dock DOCK ABORT` and `+helm/dock abort` are refused and leave the journey `Promoted`:
+    for abort_cmd in ["+helm/dock DOCK ABORT", "+helm/dock abort"] {
+        let abort_no_sess = run(&mut rig.tw, pilot, abort_cmd);
+        assert_eq!(
+            abort_no_sess.trim(),
+            "No active docking session to abort.",
+            "{abort_cmd} without an active session must be refused"
+        );
+        assert!(
+            matches!(
+                journey(&rig.tw, hull).map(|j| j.state().clone()),
+                Some(mush_sim::JourneyState::Promoted { .. })
+            ),
+            "{abort_cmd} must leave JourneyState::Promoted intact"
+        );
+    }
+
+    // Advance to `cluster_arrival_ic_s` and verify `space_tick` promotes the hull into `pallas_inclined_belt`:
+    let arrival_ic = rig
+        .tw
+        .world()
+        .module_state::<tacsim::space::SpaceBubbleBook>()
+        .expect("SpaceBubbleBook")
+        .free_flights[&hull]
+        .cluster_arrival_ic_s
+        .expect("cluster_arrival_ic_s");
+    let real_s = (arrival_ic.saturating_sub(ic_now(&rig.tw)) + 3_599) / 3_600;
+    let t_arrive = rig.tw.world().now().saturating_add(real_s.max(6));
+    rig.tw.set_now(t_arrive);
+    let _ = rig.tw.fire_due(t_arrive.saturating_mul(1_000));
+    let open_submits = drain_space_and_industry(&mut rig.tw);
+    land_all(&mut rig, &open_submits);
+    {
+        let book = rig
+            .tw
+            .world()
+            .module_state::<tacsim::space::SpaceBubbleBook>()
+            .expect("SpaceBubbleBook");
+        assert!(
+            book.cluster_sessions.contains_key(&hull),
+            "+ship/undock pallas_inclined_belt must open the cluster session on arrival tick"
+        );
+    }
+
+    // 3. Charter a hull with only `1 t` in the tank at Ceres, undock into local Ceres orbit (`1 t` burn
+    //    from a `2 t` initial load -> `1 t` remaining in tank), and verify `+helm/autopilot neptune` is refused:
+    let mut rig_short = stocked_with(Roster::default());
+    let (pilot_short, row_short) = chartered(&mut rig_short, "PilotShort", 2);
+    let desk_short = station_room(&rig_short.tw, "ceres_port", "room.c05_registry");
+    teleport(&mut rig_short.tw, pilot_short, desk_short);
+    let _ = run(&mut rig_short.tw, pilot_short, "+coop/refit prospector");
+    load(&mut rig_short, &row_short, 2, 150);
+    set_rate(&mut rig_short.tw, 1);
+    board(&mut rig_short, pilot_short);
+    let _ = run(&mut rig_short.tw, pilot_short, "+ship/undock ceres");
+    let short_burn = drain(&mut rig_short.tw);
+    land_quietly(&mut rig_short, &short_burn);
+    let _ = fire_quietly(&mut rig_short);
+    let neptune_refused = run(&mut rig_short.tw, pilot_short, "+helm/autopilot neptune");
+    assert!(
+        neptune_refused.contains("Insufficient propellant for expedition to neptune"),
+        "+helm/autopilot neptune with 1 t in the tank must be refused, got: {neptune_refused}"
+    );
+
+    // --- Part B: Port dock range/speed gate (`remaining_s = 45` refused, free-flight `1 km` refused),
+    //             free-flyer `DOCK ABORT` leaving `JourneyState::Promoted`, duplicate `+helm/dock`
+    //             refused without resetting `started_wall_s`, and 60s expiry submitting a burn ---
+    let mut rig_dock = stocked_with(Roster::default());
+    let (pilot_dock, row_dock) = chartered(&mut rig_dock, "PilotDock", 3);
+    let hull_dock = ObjId(row_dock.hull);
+    load(&mut rig_dock, &row_dock, 70, 50);
+    set_rate(&mut rig_dock.tw, 3_600);
+    board(&mut rig_dock, pilot_dock);
+    let pending_dock = undock_and_burn(&mut rig_dock, pilot_dock, hull_dock);
+    let total_dock_s = pending_dock.plan.total_s;
+    let leg1_dock_s = i64::from(pending_dock.plan.legs[0].secs);
+    let _ = fire_quietly(&mut rig_dock);
+    let _ = to_ic(&mut rig_dock, pending_dock.plan.depart_ic + leg1_dock_s / 2);
+    let _ = run(&mut rig_dock.tw, pilot_dock, "+helm/decouple");
+    let _ = run(&mut rig_dock.tw, pilot_dock, "+helm/autopilot stickney");
+    let auto_dock_submits = drain(&mut rig_dock.tw);
+    land_quietly(&mut rig_dock, &auto_dock_submits);
+    let arrival_dock = journey(&rig_dock.tw, hull_dock)
+        .and_then(|j| j.arrival_at())
+        .expect("arrival_dock");
+    let _ = to_ic(&mut rig_dock, arrival_dock - 7_200);
+    set_rate(&mut rig_dock.tw, 1);
+
+    // 6a. At `remaining_s = 45` (`> 30 s`, terminal braking range `506 m > 500 m` and speed `22.5 m/s > 15 m/s`),
+    //     `+helm/dock stickney` is refused (no `remaining_s <= 60` proxy!):
+    let _ = to_ic(&mut rig_dock, arrival_dock - 45);
+    let dock_at_45s = run(&mut rig_dock.tw, pilot_dock, "+helm/dock stickney");
+    assert!(
+        dock_at_45s.contains("outside the Stickney Yards collar-initiation envelope"),
+        "+helm/dock at remaining_s = 45 (506 m, 22.5 m/s) must be refused: {dock_at_45s}"
+    );
+
+    // 6b. Advance to `remaining_s = 10` (`25 m <= 500 m`, `5.0 m/s <= 15 m/s`), decouple into free flight,
+    //     and verify free-flight `+helm/dock stickney` from `0 km` (`pos_km == tpos`) succeeds,
+    //     that `DOCK ABORT` on that open session debits RCS and leaves `JourneyState::Promoted`,
+    //     and that a second `+helm/dock` while a session is open is refused without resetting `started_wall_s`:
+    let _ = to_ic(&mut rig_dock, arrival_dock - 10);
+    let dec_dock = run(&mut rig_dock.tw, pilot_dock, "+helm/decouple");
+    assert!(
+        dec_dock.contains("Decoupled from corridor leg"),
+        "{dec_dock}"
+    );
+    assert!(matches!(
+        journey(&rig_dock.tw, hull_dock).map(|j| j.state().clone()),
+        Some(mush_sim::JourneyState::Promoted { .. })
+    ));
+
+    let dock_ff_open = run(&mut rig_dock.tw, pilot_dock, "+helm/dock stickney");
+    assert!(
+        dock_ff_open.contains("[DOCKING] Initiated 60 fps 6-DOF docking session"),
+        "co-located free-flight hull at 0 km / 0 m/s must initiate docking: {dock_ff_open}"
+    );
+    let started_0 = rig_dock
+        .tw
+        .world()
+        .module_state::<tacsim::space::SpaceBubbleBook>()
+        .expect("SpaceBubbleBook")
+        .docking_sessions[&hull_dock]
+        .started_wall_s;
+
+    // 4a. Advance wall clock by 10 s and verify a second `+helm/dock stickney` is refused and does NOT reset `started_wall_s`:
+    let t_dup = rig_dock.tw.world().now() + 10;
+    rig_dock.tw.set_now(t_dup);
+    let dup_dock = run(&mut rig_dock.tw, pilot_dock, "+helm/dock stickney");
+    assert!(
+        dup_dock.contains("A docking session is already open for this ship"),
+        "duplicate +helm/dock while session is open must be refused: {dup_dock}"
+    );
+    let started_after_dup = rig_dock
+        .tw
+        .world()
+        .module_state::<tacsim::space::SpaceBubbleBook>()
+        .expect("SpaceBubbleBook")
+        .docking_sessions[&hull_dock]
+        .started_wall_s;
+    assert_eq!(
+        started_after_dup, started_0,
+        "refused duplicate +helm/dock must not reset started_wall_s"
+    );
+
+    // 1b. Abort the open free-flight docking session via `+helm/dock DOCK ABORT` and verify
+    //     `JourneyState::Promoted` is preserved (NOT resumed into `Cruising`!):
+    let abort_open = run(&mut rig_dock.tw, pilot_dock, "+helm/dock DOCK ABORT");
+    assert!(
+        abort_open.contains("aborted") && abort_open.contains("hull unpaused"),
+        "aborting open session must succeed: {abort_open}"
+    );
+    assert!(
+        matches!(
+            journey(&rig_dock.tw, hull_dock).map(|j| j.state().clone()),
+            Some(mush_sim::JourneyState::Promoted { .. })
+        ),
+        "free-flyer's DOCK ABORT must leave JourneyState::Promoted intact"
+    );
+
+    // 4b. Re-open `+helm/dock stickney` and let the 60 s wall deadline expire on `space_tick`;
+    //     verify the 15 kg expiry RCS debit crosses the 1,000 kg boundary and submits `tacsim_port_burn`,
+    //     and `JourneyState::Promoted` remains intact:
+    let _ = run(&mut rig_dock.tw, pilot_dock, "+helm/dock stickney");
+    let _ = drain(&mut rig_dock.tw);
+    let t_exp = rig_dock.tw.world().now() + 65;
+    rig_dock.tw.set_now(t_exp);
+    let _ = rig_dock.tw.fire_due(t_exp * 1_000);
+    let exp_submits = drain(&mut rig_dock.tw);
+    assert!(
+        exp_submits
+            .iter()
+            .any(|s| s.action.key().id.as_str() == "tacsim_port_burn"),
+        "docking session expiry 15 kg RCS debit crossing a whole tonne must submit tacsim_port_burn"
+    );
+    land_quietly(&mut rig_dock, &exp_submits);
+    assert!(
+        matches!(
+            journey(&rig_dock.tw, hull_dock).map(|j| j.state().clone()),
+            Some(mush_sim::JourneyState::Promoted { .. })
+        ),
+        "docking session expiry on a free-flyer must leave JourneyState::Promoted intact"
+    );
+    let _ = total_dock_s;
+
+    // --- Part C: Multi-carrier bubble: `30 s` late tick advances `30,000 ms` (`30 s`), and
+    //             `holding_for_salvage` on Carrier 1 does not block Carrier 2 from resuming,
+    //             then expires on Carrier 1 after `SALVAGE_HOLD_TIMEOUT_WALL_S` (`60 s`) ---
+    let mut rig_mc = stocked_with(Roster {
+        seed_lane: Some(lane_with_interdicted_kirkwood()),
+        ..Roster::default()
+    });
+    let (pilot_c1, row_c1) = chartered(&mut rig_mc, "PilotC1", 1);
+    let pilot_c2 = self::pilot(&mut rig_mc, "PilotC2", 2);
+    let _ = run(&mut rig_mc.tw, pilot_c2, "+coop/enrol Escort Hawk");
+    let charter_c2 = tacsim::port::live_charter(rig_mc.tw.world(), pilot_c2).expect("c2 charter");
+    let row_c2 = port_map(&rig_mc.tw, "ceres_port")
+        .hulls
+        .into_iter()
+        .find(|r| r.hull == charter_c2.hull.0)
+        .expect("c2 hull row");
+    let hull_c1 = ObjId(row_c1.hull);
+    let hull_c2 = ObjId(row_c2.hull);
+    load(&mut rig_mc, &row_c1, 55, 25);
+    load(&mut rig_mc, &row_c2, 55, 25);
+    set_rate(&mut rig_mc.tw, 3_600);
+    board(&mut rig_mc, pilot_c1);
+    let gallery_mc = c01(&rig_mc.tw);
+    teleport(&mut rig_mc.tw, pilot_c2, gallery_mc);
+    let _ = run(&mut rig_mc.tw, pilot_c2, "+ship/board");
+
+    let p1 = undock_and_burn(&mut rig_mc, pilot_c1, hull_c1);
+    let p2 = undock_and_burn(&mut rig_mc, pilot_c2, hull_c2);
+    let _ = fire_quietly(&mut rig_mc);
+    let due_ic = (p1.plan.depart_ic + i64::from(p1.plan.legs[0].secs))
+        .max(p2.plan.depart_ic + i64::from(p2.plan.legs[0].secs));
+    let _ = to_ic(&mut rig_mc, due_ic);
+
+    // Disable the Interdictor Picket by play:
+    for i in 0..4 {
+        let next_r = rig_mc.tw.world().now() + 1;
+        rig_mc.tw.set_now(next_r);
+        let _ = rig_mc.tw.fire_due(next_r * 1_000);
+        if i == 0 || i == 2 || i == 3 {
+            let _ = run(&mut rig_mc.tw, pilot_c1, "+tac/beam Interdictor Picket");
+        }
+        if i == 1 || i == 2 {
+            let _ = run(&mut rig_mc.tw, pilot_c1, "+damage/vent");
+        }
+    }
+
+    // 5a. Carrier 1 (`hull_c1`) orders `+helm/approach derelict`, setting `holding_for_salvage = true`
+    //     on `hull_c1` with a 60 s wall deadline while Carrier 2 (`hull_c2`) does NOT hold for salvage.
+    //     On the next tick, Carrier 2 detaches and resumes its `CarrierJourney` (`Cruising`) while
+    //     Carrier 1 stays in the bubble for salvage!
+    let app_c1 = run(&mut rig_mc.tw, pilot_c1, "+helm/approach derelict");
+    assert!(
+        app_c1.contains("Braking approach ordered toward disabled derelict"),
+        "{app_c1}"
+    );
+    let app_c1_burn = drain(&mut rig_mc.tw);
+    land_quietly(&mut rig_mc, &app_c1_burn);
+
+    let next_r = rig_mc.tw.world().now() + 1;
+    rig_mc.tw.set_now(next_r);
+    let _ = rig_mc.tw.fire_due(next_r * 1_000);
+    assert!(
+        matches!(
+            journey(&rig_mc.tw, hull_c2).map(|j| j.state().clone()),
+            Some(mush_sim::JourneyState::Cruising)
+        ),
+        "Carrier 2 must detach and resume JourneyState::Cruising without being blocked by Carrier 1's holding_for_salvage"
+    );
+    assert!(
+        matches!(
+            journey(&rig_mc.tw, hull_c1).map(|j| j.state().clone()),
+            Some(mush_sim::JourneyState::Promoted { .. })
+        ),
+        "Carrier 1 holding for salvage remains in the bubble before its 60 s salvage hold deadline"
+    );
+
+    // 7. Fire a tick `30 s` late (`now + 30`) while Carrier 1 is holding in the bubble and verify
+    //    the active bubble advances by `30,000 ms` (`30 s`, `MAX_BUBBLE_TICK_STEP_MS`):
+    let elapsed_0 = rig_mc
+        .tw
+        .world()
+        .module_state::<tacsim::space::SpaceBubbleBook>()
+        .expect("SpaceBubbleBook")
+        .active_for_hull(hull_c1)
+        .expect("active bubble")
+        .bubble
+        .wall_elapsed_ms;
+    let t_late_30 = rig_mc.tw.world().now() + 30;
+    rig_mc.tw.set_now(t_late_30);
+    let _ = rig_mc.tw.fire_due(t_late_30 * 1_000);
+    let elapsed_after_30 = rig_mc
+        .tw
+        .world()
+        .module_state::<tacsim::space::SpaceBubbleBook>()
+        .expect("SpaceBubbleBook")
+        .active_for_hull(hull_c1)
+        .expect("active bubble")
+        .bubble
+        .wall_elapsed_ms;
+    assert_eq!(
+        elapsed_after_30 - elapsed_0,
+        30_000,
+        "a 30 s late tick must advance the bubble by 30,000 ms (30 s)"
+    );
+
+    // 5b. Advance wall time past `SALVAGE_HOLD_TIMEOUT_WALL_S` (`60 s`) without Carrier 1 docking/towing:
+    //     Carrier 1's salvage hold expires and Carrier 1 also resumes `JourneyState::Cruising`:
+    let t_hold_exp = rig_mc.tw.world().now() + 35;
+    rig_mc.tw.set_now(t_hold_exp);
+    let _ = rig_mc.tw.fire_due(t_hold_exp * 1_000);
+    assert!(
+        matches!(
+            journey(&rig_mc.tw, hull_c1).map(|j| j.state().clone()),
+            Some(mush_sim::JourneyState::Cruising)
+        ),
+        "Carrier 1's holding_for_salvage must expire after SALVAGE_HOLD_TIMEOUT_WALL_S (60 s) and resume its journey"
     );
 }

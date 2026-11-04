@@ -944,22 +944,38 @@ fn tacsim_integration_tests_never_mutate_space_bubble_book_directly() {
     rust_files(&tests_dir, &mut files);
     assert!(!files.is_empty(), "expected tacsim integration test files");
 
-    let forbidden = concat!("module_state_mut::<", "SpaceBubbleBook>()");
+    let forbidden_patterns = [
+        concat!("module_state_mut::<", "SpaceBubbleBook"),
+        concat!("module_state_mut::<", "tacsim::space::SpaceBubbleBook"),
+        concat!("module_state_mut::<", "space::SpaceBubbleBook"),
+        concat!("module_state_mut::<", "SpacePersistedState"),
+        concat!("module_state_mut::<", "tacsim::space::"),
+        "SpaceBubbleBook as ",
+        "= tacsim::space::SpaceBubbleBook",
+        "= space::SpaceBubbleBook",
+        "clear_interdiction_bubble(",
+        "apply_bubble_command(",
+        "solve_docking_tape(",
+        "solve_hard_bounce_tape(",
+    ];
     let mut offences = Vec::new();
     for file in files {
         let text = fs::read_to_string(&file).unwrap_or_else(|e| panic!("{}: {e}", file.display()));
         for (idx, line) in text.lines().enumerate() {
-            if line.contains(forbidden) {
-                let rel = file.strip_prefix(&root).unwrap_or(&file);
-                offences.push(format!("{}:{}", rel.display(), idx + 1));
+            let code = line.split("//").next().unwrap_or("");
+            for pat in forbidden_patterns {
+                if code.contains(pat) {
+                    let rel = file.strip_prefix(&root).unwrap_or(&file);
+                    offences.push(format!("{}:{} ({pat})", rel.display(), idx + 1));
+                }
             }
         }
     }
     assert!(
         offences.is_empty(),
         "integration tests in crates/tacsim/tests/ must drive space state through player/admin \
-         commands and tick hooks rather than calling `{forbidden}` \
-         directly (doc 35b §6, §8):\n{}",
+         commands, client sessions, and tick hooks rather than mutating space books or calling \
+         server docking solvers directly (doc 35b §6, §8; doc 35c §6.1, §9):\n{}",
         offences.join("\n")
     );
 }

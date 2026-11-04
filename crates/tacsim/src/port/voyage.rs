@@ -677,7 +677,13 @@ fn port_of_host(w: &World, host: ObjId) -> Option<(String, &PortMap)> {
 
 /// A venue's player-facing port name, else the venue word.
 pub(crate) fn venue_name(w: &World, venue: &CanonicalId) -> String {
-    port_of_venue(w, venue).map_or_else(|| venue.to_string(), |(name, _)| name)
+    if let Some((name, _)) = port_of_venue(w, venue) {
+        return name;
+    }
+    if let Some(cluster) = crate::space::OrbitalClusterId::parse(venue.as_str()) {
+        return format!("{} ({})", cluster.display_name(), cluster.as_str());
+    }
+    venue.to_string()
 }
 
 // ---- the passage renders -----------------------------------------------------------
@@ -1548,6 +1554,103 @@ pub(crate) fn plan_on_sky(
         basis.policy,
         basis.via.as_ref(),
     )
+}
+
+/// Resolve an orbital cluster or celestial body named on `+ship/undock <cluster|body>` (`SF.R17`).
+pub(crate) fn resolve_space_undock_destination(
+    w: &World,
+    dest_word: &str,
+) -> Option<(CanonicalId, String, CanonicalId)> {
+    if let Some(cluster) = crate::space::commands::resolve_cluster_by_query(w, dest_word) {
+        let port_label = format!("{} (`{}`)", cluster.display_name, cluster.id);
+        return Some((cluster.id, port_label, cluster.anchor_body));
+    }
+    if let Some(body_cid) = crate::space::commands::resolve_sky_body_by_query(w, dest_word) {
+        let port_label = body_cid.to_string();
+        return Some((body_cid.clone(), port_label, body_cid));
+    }
+    None
+}
+
+/// Plan a passage from `from_venue` to an orbital cluster or celestial body (`anchor_body`) for
+/// `+ship/undock <cluster|body>` (`SF.R17`).
+pub(crate) fn plan_space_undock_on(
+    w: &World,
+    basis: &Basis,
+    from_venue: &CanonicalId,
+    anchor_body: &CanonicalId,
+    corridor_routes: &[CanonicalId],
+    explicit_throttle: bool,
+) -> Result<PassagePlan, PlanError> {
+    let (sky, pack) = lane_sky_of(w, basis.version)?;
+    let corridor_route = corridor_routes
+        .iter()
+        .find(|r| {
+            matches!(
+                pack.entry(r),
+                Some(crate::pack::PackEntry::Route(entry)) if entry.legs.len() == 1
+            )
+        })
+        .or_else(|| corridor_routes.first())
+        .cloned()
+        .ok_or_else(|| PlanError::UnknownRoute {
+            route: "(none listed)".to_owned(),
+        })?;
+    let from_body = crate::port::passage::body_or_place_of(&sky, pack, from_venue)?;
+    let from_pos = sky
+        .position_km(&from_body, basis.depart_ic)
+        .ok_or_else(|| PlanError::UnknownBody {
+            place: from_venue.to_string(),
+        })?;
+    let from_vel = sky
+        .velocity_mps(&from_body, basis.depart_ic)
+        .unwrap_or([0, 0, 0]);
+    let mut plan = crate::port::passage::plan_passage_from(
+        &sky,
+        pack,
+        from_pos,
+        from_vel,
+        anchor_body,
+        &basis.spec.drive,
+        basis.spec.dry_kg,
+        basis.payload,
+        basis.occupants,
+        basis.depart_ic,
+    )?;
+    if !explicit_throttle
+        && plan.burn_t > basis.tank
+        && basis.spec.drive.throttle_permille
+            > crate::port::passage::MIN_EXPEDITION_THROTTLE_PERMILLE
+    {
+        for permille in [
+            MIN_THROTTLE_PERMILLE,
+            crate::port::passage::MIN_EXPEDITION_THROTTLE_PERMILLE,
+        ] {
+            if basis.spec.drive.throttle_permille <= permille {
+                continue;
+            }
+            let economy_drive = basis.spec.drive.clone().at_throttle(permille);
+            if let Ok(econ_plan) = crate::port::passage::plan_passage_from(
+                &sky,
+                pack,
+                from_pos,
+                from_vel,
+                anchor_body,
+                &economy_drive,
+                basis.spec.dry_kg,
+                basis.payload,
+                basis.occupants,
+                basis.depart_ic,
+            ) {
+                plan = econ_plan;
+                if plan.burn_t <= basis.tank {
+                    break;
+                }
+            }
+        }
+    }
+    plan.route = corridor_route;
+    Ok(plan)
 }
 
 /// **The lane pack at `version`** (factored out of [`plan_on`] by doc 20 cut SM.2, for the
@@ -3307,13 +3410,30 @@ pub(crate) fn prepare_departure(
         Queued::Live => match_destination(&dests, dest_word),
         Queued::Order { .. } => match_destination_exact(&dests, dest_word),
     };
-    let dest = found
-        .cloned()
-        .ok_or_else(|| refusal(K::NoRoute, no_route(&here, &dests)))?;
-    let port = dest.port.clone();
-    // Doc 20 cut SM.2 (lead override 3): a site whose pad is not ready takes no
-    // departure (its lines never gate the desk, so they gate the passage here).
-    let site_dest = site_gate(w, &dest)?;
+    let space_dest = if found.is_none() && queued == Queued::Live {
+        resolve_space_undock_destination(w, dest_word)
+    } else {
+        None
+    };
+    let (dest_venue, port, dest_routes, site_dest) = match (found, space_dest.as_ref()) {
+        (Some(dest), _) => {
+            let dest = dest.clone();
+            let port = dest.port.to_string();
+            // Doc 20 cut SM.2 (lead override 3): a site whose pad is not ready takes no
+            // departure (its lines never gate the desk, so they gate the passage here).
+            let site_dest = site_gate(w, &dest)?;
+            (dest.venue, port, dest.routes, site_dest)
+        }
+        (None, Some((venue_cid, port_label, _))) => (
+            venue_cid.clone(),
+            port_label.clone(),
+            def.routes.values().next().cloned().unwrap_or_default(),
+            None,
+        ),
+        (None, None) => {
+            return Err(refusal(K::NoRoute, no_route(&here, &dests)));
+        }
+    };
     // Doc 32 cut CF.3 (Q-H10): a carrier in a field is the field's until it settles. Doc 32 F-6
     // (cut CF.7): a live departure may take it out of the field, on the bay gate's confirmation
     // below; a queued one never presumes it.
@@ -3366,13 +3486,31 @@ pub(crate) fn prepare_departure(
         tracing::warn!(hull = hull.0, %error, "tacsim: a departure could not read the passage's basis");
         dark()
     })?;
+    let explicit_throttle = options.throttle_permille != DEFAULT_THROTTLE_PERMILLE;
     let basis = apply_options(basis, options);
-    let mut plan = plan_on(w, &basis, &dest.routes).map_err(|error| {
-        plan_refusal(w, &name, error).unwrap_or_else(|error| {
-            tracing::warn!(hull = hull.0, %error, "tacsim: a departure could not plan the passage");
-            dark()
-        })
-    })?;
+    let mut plan = if let Some((_, _, anchor_body)) = &space_dest {
+        plan_space_undock_on(
+            w,
+            &basis,
+            &def.venue,
+            anchor_body,
+            &dest_routes,
+            explicit_throttle,
+        )
+        .map_err(|error| {
+            plan_refusal(w, &name, error).unwrap_or_else(|error| {
+                tracing::warn!(hull = hull.0, %error, "tacsim: a departure could not plan the space passage");
+                dark()
+            })
+        })?
+    } else {
+        plan_on(w, &basis, &dest_routes).map_err(|error| {
+            plan_refusal(w, &name, error).unwrap_or_else(|error| {
+                tracing::warn!(hull = hull.0, %error, "tacsim: a departure could not plan the passage");
+                dark()
+            })
+        })?
+    };
     // Doc 20 cut SM.2: the stay's charge, the leg home a site holds back, the tank and the
     // locker — the checks the queue's dry run reads through the same function.
     let site = site_dest.as_ref().map(|(_, site)| *site);
@@ -3393,7 +3531,7 @@ pub(crate) fn prepare_departure(
                     goods,
                     &basis,
                     &readings,
-                    &dest.routes,
+                    &dest_routes,
                     def.site.is_some(),
                     Some((site, &def.venue)),
                 )
@@ -3442,7 +3580,7 @@ pub(crate) fn prepare_departure(
     let pending = PendingVoyage {
         seq,
         pilot,
-        to_venue: dest.venue.clone(),
+        to_venue: dest_venue,
         vault: basis.vault.0,
         occupants: basis.occupants,
         payload_kg: basis.payload,
@@ -3910,7 +4048,10 @@ pub(crate) fn launch_step(ctx: &mut Ctx<'_>, state: &mut PortTickState, hull: u3
             "the route no longer materializes at the ticket's lane version",
         );
     };
-    let leg_s: Vec<u32> = plan.legs.iter().map(|leg| leg.secs).collect();
+    let mut leg_s: Vec<u32> = plan.legs.iter().map(|leg| leg.secs).collect();
+    if leg_s.len() != route.legs().len() && !leg_s.is_empty() {
+        leg_s.resize(route.legs().len(), 1);
+    }
     // Doc 20 cut SM.2: a hull lifting from a pad hears the pad drop away.
     let from_pad = matches!(berth_of(ctx.w, hull), Berth::Docked { def, .. } if def.site.is_some());
     // Doc 23 cut S.2 (V5): the port entry the hull leaves, read before the depart moves it.
@@ -3918,6 +4059,7 @@ pub(crate) fn launch_step(ctx: &mut Ctx<'_>, state: &mut PortTickState, hull: u3
         Berth::Docked { map, .. } => Some(map.entry.clone()),
         Berth::UnderWay | Berth::Elsewhere => None,
     };
+    let from_for_space = from.clone();
     match mush_sim::depart(ctx, hull, route, Some(leg_s), plan.depart_ic) {
         Ok(_) => {}
         Err(error) => {
@@ -3929,6 +4071,15 @@ pub(crate) fn launch_step(ctx: &mut Ctx<'_>, state: &mut PortTickState, hull: u3
     // cut S.2, the departure the epoch arm reads its principal from (V5).
     let departed = departed_of(&pending, plan.depart_ic, from);
     clear_pending_with(ctx, hull, pending.seq, pending.arrival.clone(), departed);
+    if port_of_venue(ctx.w, &pending.to_venue).is_none() {
+        crate::space::commands::promote_departed_hull_to_space_free_flight(
+            ctx,
+            hull,
+            from_for_space.as_ref(),
+            &pending.to_venue,
+            plan,
+        );
+    }
     state.filed_seen.remove(&hull.0);
     let name = name_of(ctx.w, hull);
     let seals = if from_pad { LIFT_SEALS } else { LOCK_SEALS };
@@ -3997,7 +4148,10 @@ pub(crate) fn launch_verify(ctx: &mut Ctx<'_>, state: &mut PortTickState) {
             .w
             .module_state::<mush_sim::JourneyBook>()
             .and_then(|book| book.get(hull))
-            .filter(|journey| journey.departed().at == launching.depart_ic)
+            .filter(|journey| {
+                journey.departed().at == launching.depart_ic
+                    || matches!(journey.state(), mush_sim::JourneyState::Promoted { .. })
+            })
             .cloned();
         if let Some(journey) = journey {
             let remaining = journey.arrival_at().map_or(launching.total_s, |at| {

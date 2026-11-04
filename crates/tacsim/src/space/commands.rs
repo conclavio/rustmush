@@ -2416,12 +2416,133 @@ fn helm_burn(ctx: &mut Ctx<'_>) -> Result<(), CmdError> {
     Ok(())
 }
 
+/// Resolved orbital cluster metadata for `+ship/undock <cluster>` (`SF.R17`).
+pub(crate) struct ResolvedSpaceCluster {
+    pub id: mush_core::CanonicalId,
+    pub display_name: String,
+    pub anchor_body: mush_core::CanonicalId,
+}
+
+/// Resolve an orbital cluster token (`ceres_halo`, `pallas_inclined_belt`, etc.) for `+ship/undock` (`SF.R17`).
+pub(crate) fn resolve_cluster_by_query(_w: &World, query: &str) -> Option<ResolvedSpaceCluster> {
+    let trimmed = query.trim().to_ascii_lowercase();
+    if trimmed == "pallas" {
+        return None;
+    }
+    let cluster = super::mining::OrbitalClusterId::parse(&trimmed)?;
+    let id = cluster.canonical_id()?;
+    let anchor_body = mush_core::CanonicalId::new(cluster.anchor_body()).ok()?;
+    Some(ResolvedSpaceCluster {
+        id,
+        display_name: cluster.display_name().to_owned(),
+        anchor_body,
+    })
+}
+
+/// Resolve an outer-system sky celestial body token (`neptune`, `triton`, etc.) for `+ship/undock` (`SF.R17`).
+pub(crate) fn resolve_sky_body_by_query(w: &World, query: &str) -> Option<mush_core::CanonicalId> {
+    let store = w.module_state::<crate::TacsimStore>()?;
+    let lane = mush_core::CanonicalId::new(crate::definitions::content::LANE_PACK).ok()?;
+    let version = store.applied_in(w, &lane)?;
+    let (sky, _) = crate::port::voyage::lane_sky_of(w, version).ok()?;
+    let body_cid = mush_core::CanonicalId::new(query.trim().to_ascii_lowercase()).ok()?;
+    crate::sky::outer_catalog().get(&body_cid)?;
+    let now_ic = w.world_ic_now().at;
+    sky.position_km(&body_cid, now_ic).map(|_| body_cid)
+}
+
+/// Promote a hull that just launched via `+ship/undock <cluster|body>` (`launch_step`) into a
+/// [`SpaceFreeFlightRecord`] bound for `to_venue` (`SF.R17`).
+pub(crate) fn promote_departed_hull_to_space_free_flight(
+    ctx: &mut Ctx<'_>,
+    hull: ObjId,
+    from_port: Option<&mush_core::CanonicalId>,
+    to_venue: &mush_core::CanonicalId,
+    plan: &crate::port::families::PassagePlan,
+) {
+    let now = ctx.w.world_ic_now();
+    let domain = ctx
+        .w
+        .module_state::<JourneyBook>()
+        .and_then(|jb| jb.get(hull))
+        .and_then(|j| match j.destination() {
+            mush_sim::SpatialParent::Direct { domain, .. } => Some(*domain),
+            _ => None,
+        })
+        .unwrap_or(DomainId(u64::from(hull.0)));
+    let _ = mush_sim::promote_carrier_journey(ctx, hull, domain, &now);
+
+    let mut start_pos_km = [414_000_000_i64, 0, 0];
+    let mut start_vel_mps = [0_i64, 17_900, 0];
+    let mut origin_place = from_port
+        .cloned()
+        .or_else(|| mush_core::CanonicalId::new("ceres").ok())
+        .unwrap_or_else(|| to_venue.clone());
+
+    if let Some(store) = ctx.w.module_state::<crate::TacsimStore>()
+        && let Ok(lane) = mush_core::CanonicalId::new(crate::definitions::content::LANE_PACK)
+        && let Some(version) = store.applied_in(ctx.w, &lane)
+        && let Ok((sky, pack)) = crate::port::voyage::lane_sky_of(ctx.w, version)
+    {
+        let body_id = from_port
+            .and_then(|p| crate::port::passage::body_or_place_of(&sky, pack, p).ok())
+            .or_else(|| mush_core::CanonicalId::new("ceres").ok());
+        if let Some(body_id) = body_id {
+            if let Some(p) = sky.position_km(&body_id, plan.depart_ic) {
+                start_pos_km = [p.x, p.y, p.z];
+            }
+            if let Some([vx, vy, vz]) = sky.velocity_mps(&body_id, plan.depart_ic) {
+                start_vel_mps = [i64::from(vx), i64::from(vy), i64::from(vz)];
+            }
+            origin_place = body_id;
+        }
+    }
+
+    let post_burn_tank_t = crate::port::ship::hull_view(ctx.w, hull)
+        .and_then(|view| crate::port::voyage::basis(ctx, &view, 1).ok())
+        .map_or(0, |b| b.tank);
+
+    let arrival_ic = plan.depart_ic.saturating_add(plan.total_s.max(1));
+    let record = SpaceFreeFlightRecord {
+        hull,
+        origin_place,
+        target_place: to_venue.clone(),
+        pos_km: start_pos_km,
+        vel_mps: start_vel_mps,
+        thrust_mmps2: [0, 0, 0],
+        burn_remaining_ic_s: None,
+        guidance: FreeFlightGuidanceMode::Intercept,
+        braking_flipped: false,
+        decoupled_at_ic_s: plan.depart_ic,
+        last_ic_s: plan.depart_ic,
+        cluster_arrival_ic_s: Some(arrival_ic),
+        prepaid_unflown_t: plan.burn_t,
+    };
+    if let Some(book) = ctx.w.module_state_mut::<SpaceBubbleBook>() {
+        book.cluster_sessions.remove(&hull);
+        book.free_flights.insert(hull, record);
+        let _ = book
+            .propellant_ledger_mut(hull)
+            .record_burn_kg(post_burn_tank_t, 0);
+    }
+    super::tick::persist_space_state(ctx);
+    push_space_panels(ctx, hull);
+}
+
 fn helm_autopilot(ctx: &mut Ctx<'_>) -> Result<(), CmdError> {
     let (hull, _) = require_aboard_and_seat(ctx, Some("movement"))?;
     ensure_hull_can_maneuver(ctx.w, hull)?;
     let port_word = ctx.args.raw().trim().to_owned();
     if port_word.is_empty() {
         return Err(CmdError::msg("Usage: +helm/autopilot <port|cluster_id>"));
+    }
+    if matches!(
+        crate::port::ship::berth_of(ctx.w, hull),
+        crate::port::ship::Berth::Docked { .. }
+    ) {
+        return Err(CmdError::msg(
+            "Ship is docked at a berth; undock first (+ship/undock).",
+        ));
     }
     if ctx
         .w
@@ -2455,12 +2576,12 @@ fn helm_autopilot(ctx: &mut Ctx<'_>) -> Result<(), CmdError> {
     if matched_port.is_none()
         && let Some(cluster) = super::mining::OrbitalClusterId::parse(&port_word)
     {
-        let (start_pos_km, start_vel_mps, origin_place) = if let Some(ff) = ctx
+        let (start_pos_km, start_vel_mps, origin_place, prepaid_unflown_t) = if let Some(ff) = ctx
             .w
             .module_state::<SpaceBubbleBook>()
             .and_then(|b| b.free_flight_for_hull(hull).cloned())
         {
-            (ff.pos_km, ff.vel_mps, ff.origin_place)
+            (ff.pos_km, ff.vel_mps, ff.origin_place, ff.prepaid_unflown_t)
         } else if let Some(cs) = ctx
             .w
             .module_state::<SpaceBubbleBook>()
@@ -2480,29 +2601,11 @@ fn helm_autopilot(ctx: &mut Ctx<'_>) -> Result<(), CmdError> {
                 [p.x, p.y, p.z],
                 [i64::from(vx), i64::from(vy), i64::from(vz)],
                 body_id,
-            )
-        } else if let crate::port::ship::Berth::Docked { def, .. } =
-            crate::port::ship::berth_of(ctx.w, hull)
-        {
-            let origin_cid = def.venue.clone();
-            let body_id = crate::port::passage::body_or_place_of(&sky, pack, &origin_cid)
-                .unwrap_or_else(|_| origin_cid.clone());
-            let p = sky
-                .position_km(&body_id, now.at)
-                .unwrap_or(crate::sky::PosKm {
-                    x: 414_000_000,
-                    y: 0,
-                    z: 0,
-                });
-            let [vx, vy, vz] = sky.velocity_mps(&body_id, now.at).unwrap_or([0, 17_900, 0]);
-            (
-                [p.x, p.y, p.z],
-                [i64::from(vx), i64::from(vy), i64::from(vz)],
-                origin_cid,
+                0,
             )
         } else {
             return Err(CmdError::msg(
-                "Ship must be docked at a berth, in free flight, or in an orbital cluster to engage cluster autopilot.",
+                "Ship must be in free flight or in an orbital cluster to engage cluster autopilot.",
             ));
         };
 
@@ -2521,7 +2624,7 @@ fn helm_autopilot(ctx: &mut Ctx<'_>) -> Result<(), CmdError> {
             i32::try_from(start_vel_mps[2].clamp(i64::from(i32::MIN), i64::from(i32::MAX)))
                 .unwrap_or(0),
         ];
-        let plan = crate::port::passage::plan_passage_from(
+        let mut plan = crate::port::passage::plan_passage_from(
             &sky,
             pack,
             ff_pos,
@@ -2536,11 +2639,34 @@ fn helm_autopilot(ctx: &mut Ctx<'_>) -> Result<(), CmdError> {
         .map_err(|e| CmdError::msg(e.to_string()))?;
 
         let live_tank_t = live_kg / 1_000;
-        if live_tank_t < plan.burn_t {
+        if plan.burn_t.saturating_sub(prepaid_unflown_t) > live_tank_t
+            && basis.spec.drive.throttle_permille > crate::port::passage::MIN_THROTTLE_PERMILLE
+        {
+            let economy_drive = basis
+                .spec
+                .drive
+                .clone()
+                .at_throttle(crate::port::passage::MIN_THROTTLE_PERMILLE);
+            if let Ok(econ_plan) = crate::port::passage::plan_passage_from(
+                &sky,
+                pack,
+                ff_pos,
+                ff_vel,
+                &anchor_cid,
+                &economy_drive,
+                basis.spec.dry_kg,
+                effective_payload,
+                basis.occupants,
+                now.at,
+            ) {
+                plan = econ_plan;
+            }
+        }
+        let burn_t = plan.burn_t.saturating_sub(prepaid_unflown_t);
+        if live_tank_t < burn_t {
             return Err(CmdError::msg(format!(
-                "Insufficient propellant for passage to {}: requires {} t, tank holds {live_tank_t} t.",
+                "Insufficient propellant for passage to {}: requires {burn_t} t, tank holds {live_tank_t} t.",
                 cluster.display_name(),
-                plan.burn_t
             )));
         }
         if basis.locker < u64::from(plan.crew_days) {
@@ -2575,9 +2701,9 @@ fn helm_autopilot(ctx: &mut Ctx<'_>) -> Result<(), CmdError> {
             book.cluster_sessions.remove(&hull);
             book.free_flights.insert(hull, record);
             book.propellant_ledger_mut(hull)
-                .record_passage_burn_t(basis.tank, plan.burn_t);
+                .record_passage_burn_t(basis.tank, burn_t);
         }
-        let _ = submit_space_burn_if_needed(ctx, hull, basis.vault.0, plan.burn_t, plan.crew_days)?;
+        let _ = submit_space_burn_if_needed(ctx, hull, basis.vault.0, burn_t, plan.crew_days)?;
 
         ctx.out.sys_to_actor(
             ctx.actor,
@@ -2586,7 +2712,7 @@ fn helm_autopilot(ctx: &mut Ctx<'_>) -> Result<(), CmdError> {
                 "Autopilot engaged for orbital cluster {} (`{}`): burn {} t reaction mass, {} crew-days, transit {}s ({} IC days).",
                 cluster.display_name(),
                 cluster.as_str(),
-                plan.burn_t,
+                burn_t,
                 plan.crew_days,
                 plan.total_s,
                 crate::port::voyage::ic_days(plan.total_s)
@@ -2600,12 +2726,12 @@ fn helm_autopilot(ctx: &mut Ctx<'_>) -> Result<(), CmdError> {
         && let Ok(body_cid) = mush_core::CanonicalId::new(port_word.to_ascii_lowercase())
         && sky.position_km(&body_cid, now.at).is_some()
     {
-        let (start_pos_km, start_vel_mps, origin_place) = if let Some(ff) = ctx
+        let (start_pos_km, start_vel_mps, origin_place, prepaid_unflown_t) = if let Some(ff) = ctx
             .w
             .module_state::<SpaceBubbleBook>()
             .and_then(|b| b.free_flight_for_hull(hull).cloned())
         {
-            (ff.pos_km, ff.vel_mps, ff.origin_place)
+            (ff.pos_km, ff.vel_mps, ff.origin_place, ff.prepaid_unflown_t)
         } else if let Some(cs) = ctx
             .w
             .module_state::<SpaceBubbleBook>()
@@ -2627,31 +2753,11 @@ fn helm_autopilot(ctx: &mut Ctx<'_>) -> Result<(), CmdError> {
                 [p.x, p.y, p.z],
                 [i64::from(vx), i64::from(vy), i64::from(vz)],
                 anchor_id,
-            )
-        } else if let crate::port::ship::Berth::Docked { def, .. } =
-            crate::port::ship::berth_of(ctx.w, hull)
-        {
-            let origin_cid = def.venue.clone();
-            let anchor_id = crate::port::passage::body_or_place_of(&sky, pack, &origin_cid)
-                .unwrap_or_else(|_| origin_cid.clone());
-            let p = sky
-                .position_km(&anchor_id, now.at)
-                .unwrap_or(crate::sky::PosKm {
-                    x: 414_000_000,
-                    y: 0,
-                    z: 0,
-                });
-            let [vx, vy, vz] = sky
-                .velocity_mps(&anchor_id, now.at)
-                .unwrap_or([0, 17_900, 0]);
-            (
-                [p.x, p.y, p.z],
-                [i64::from(vx), i64::from(vy), i64::from(vz)],
-                origin_cid,
+                0,
             )
         } else {
             return Err(CmdError::msg(
-                "Ship must be docked at a berth, in free flight, or in an orbital cluster to engage celestial body autopilot.",
+                "Ship must be in free flight or in an orbital cluster to engage celestial body autopilot.",
             ));
         };
 
@@ -2668,7 +2774,7 @@ fn helm_autopilot(ctx: &mut Ctx<'_>) -> Result<(), CmdError> {
             i32::try_from(start_vel_mps[2].clamp(i64::from(i32::MIN), i64::from(i32::MAX)))
                 .unwrap_or(0),
         ];
-        let plan = crate::port::passage::plan_passage_from(
+        let mut plan = crate::port::passage::plan_passage_from(
             &sky,
             pack,
             ff_pos,
@@ -2683,17 +2789,42 @@ fn helm_autopilot(ctx: &mut Ctx<'_>) -> Result<(), CmdError> {
         .map_err(|e| CmdError::msg(e.to_string()))?;
 
         let live_tank_t = live_kg / 1_000;
-        let is_outer_expedition = plan.legs.first().is_some_and(|l| l.dist_km > 500_000_000);
-        let (burn_t, crew_days) = if is_outer_expedition {
-            // Outer-system gravity-assist expedition profile (`doc 35` §9 Story 2, `D-35-16`):
-            (
-                plan.burn_t.min(live_tank_t.max(1)).max(1),
-                u32::try_from(u64::from(plan.crew_days).min(basis.locker.max(1)))
-                    .unwrap_or(1)
-                    .max(1),
-            )
+        if plan.burn_t.saturating_sub(prepaid_unflown_t) > live_tank_t
+            && basis.spec.drive.throttle_permille
+                > crate::port::passage::MIN_EXPEDITION_THROTTLE_PERMILLE
+        {
+            for permille in [
+                crate::port::passage::MIN_THROTTLE_PERMILLE,
+                crate::port::passage::MIN_EXPEDITION_THROTTLE_PERMILLE,
+            ] {
+                if basis.spec.drive.throttle_permille <= permille {
+                    continue;
+                }
+                let economy_drive = basis.spec.drive.clone().at_throttle(permille);
+                if let Ok(econ_plan) = crate::port::passage::plan_passage_from(
+                    &sky,
+                    pack,
+                    ff_pos,
+                    ff_vel,
+                    &body_cid,
+                    &economy_drive,
+                    basis.spec.dry_kg,
+                    effective_payload,
+                    basis.occupants,
+                    now.at,
+                ) {
+                    plan = econ_plan;
+                    if plan.burn_t.saturating_sub(prepaid_unflown_t) <= live_tank_t {
+                        break;
+                    }
+                }
+            }
+        }
+        let burn_t = plan.burn_t.saturating_sub(prepaid_unflown_t);
+        let crew_days = if burn_t == 0 && prepaid_unflown_t > 0 {
+            0
         } else {
-            (plan.burn_t, plan.crew_days)
+            plan.crew_days
         };
         if live_tank_t < burn_t {
             return Err(CmdError::msg(format!(
@@ -2800,7 +2931,7 @@ fn helm_autopilot(ctx: &mut Ctx<'_>) -> Result<(), CmdError> {
         i32::try_from(start_vel_mps[2].clamp(i64::from(i32::MIN), i64::from(i32::MAX)))
             .unwrap_or(0),
     ];
-    let plan = crate::port::passage::plan_passage_from(
+    let mut plan = crate::port::passage::plan_passage_from(
         &sky,
         pack,
         ff_pos,
@@ -2814,8 +2945,31 @@ fn helm_autopilot(ctx: &mut Ctx<'_>) -> Result<(), CmdError> {
     )
     .map_err(|e| CmdError::msg(e.to_string()))?;
 
-    let charge_burn_t = plan.burn_t.saturating_sub(prepaid_unflown_t);
     let live_tank_t = live_kg / 1_000;
+    if plan.burn_t.saturating_sub(prepaid_unflown_t) > live_tank_t
+        && basis.spec.drive.throttle_permille > crate::port::passage::MIN_THROTTLE_PERMILLE
+    {
+        let economy_drive = basis
+            .spec
+            .drive
+            .clone()
+            .at_throttle(crate::port::passage::MIN_THROTTLE_PERMILLE);
+        if let Ok(econ_plan) = crate::port::passage::plan_passage_from(
+            &sky,
+            pack,
+            ff_pos,
+            ff_vel,
+            &target_place,
+            &economy_drive,
+            basis.spec.dry_kg,
+            effective_payload,
+            basis.occupants,
+            now.at,
+        ) {
+            plan = econ_plan;
+        }
+    }
+    let charge_burn_t = plan.burn_t.saturating_sub(prepaid_unflown_t);
     if live_tank_t < charge_burn_t {
         return Err(CmdError::msg(format!(
             "Insufficient propellant for autopilot passage to {port_label}: requires {charge_burn_t} t, tank holds {live_tank_t} t."
@@ -3520,11 +3674,15 @@ fn helm_approach(ctx: &mut Ctx<'_>) -> Result<(), CmdError> {
             )));
         }
         let burned_kg = debit_hull_propellant_for_dv(ctx, hull, 12, true)?;
+        let hold_until_wall_s = ctx
+            .w
+            .now()
+            .saturating_add(super::tick::SALVAGE_HOLD_TIMEOUT_WALL_S);
         if let Some(book) = ctx.w.module_state_mut::<SpaceBubbleBook>()
             && let Some(active) = book.active_for_hull_mut(hull)
         {
             active.set_approaching_derelict_for(hull, true);
-            active.set_holding_for_salvage_for(hull, true);
+            active.set_holding_for_salvage_for_with_deadline(hull, true, Some(hold_until_wall_s));
         }
         let (domain, generation, tick) = domain_stamp_for_hull(ctx.w, hull);
         let order = record_hull_standing_order(
@@ -3910,7 +4068,11 @@ fn helm_run(ctx: &mut Ctx<'_>) -> Result<(), CmdError> {
 // 60 fps 6-DOF Docking Mini-Game, Input-Tape Verification & Salvage Tow (`SF.R7`)
 // ---------------------------------------------------------------------------
 
-fn debit_hull_propellant_kg(ctx: &mut Ctx<'_>, hull: ObjId, spent_kg: u32) -> Result<(), CmdError> {
+pub(crate) fn debit_hull_propellant_kg(
+    ctx: &mut Ctx<'_>,
+    hull: ObjId,
+    spent_kg: u32,
+) -> Result<(), CmdError> {
     if spent_kg == 0 {
         return Ok(());
     }
@@ -3988,15 +4150,7 @@ fn apply_collar_scrape_damage(ctx: &mut Ctx<'_>, hull: ObjId, front_armor_damage
     }
 }
 
-fn unpause_hull_after_docking(ctx: &mut Ctx<'_>, hull: ObjId, now: &ClockStamp) {
-    let has_active_bubble = ctx
-        .w
-        .module_state::<SpaceBubbleBook>()
-        .is_some_and(|b| b.active_for_hull(hull).is_some());
-    if !has_active_bubble {
-        let _ = mush_sim::resume_carrier_journey(ctx, hull, now);
-    }
-}
+fn unpause_hull_after_docking(_ctx: &mut Ctx<'_>, _hull: ObjId, _now: &ClockStamp) {}
 
 fn resolve_docking_target(
     ctx: &Ctx<'_>,
@@ -4266,10 +4420,18 @@ fn validate_docking_initiation_gates(
                 }
                 let leg_due_ic = journey.leg_due_at(cursor).unwrap_or(now_ic);
                 let remaining_s = leg_due_ic.saturating_sub(now_ic);
-                if remaining_s > 60 {
+                let rem_u64 = u64::try_from(remaining_s).unwrap_or(u64::MAX);
+                let dist_m = rem_u64.saturating_mul(rem_u64) / 4;
+                let rel_speed_mmps = rem_u64.saturating_mul(500);
+                if dist_m > u64::try_from(super::docking::MAX_DOCKING_INIT_RANGE_M).unwrap_or(500)
+                    || rel_speed_mmps
+                        > u64::try_from(super::docking::MAX_DOCKING_INIT_REL_SPEED_MMPS)
+                            .unwrap_or(15_000)
+                {
                     return Err(CmdError::msg(format!(
-                        "Ship is outside the {port_name} collar-initiation envelope ({remaining_s} IC s remaining on approach leg; range > {} m and relative speed > {:.1} m/s).",
+                        "Ship is outside the {port_name} collar-initiation envelope (range {dist_m} m > {} m or relative speed {:.1} m/s > {:.1} m/s; {remaining_s} IC s remaining on approach leg).",
                         super::docking::MAX_DOCKING_INIT_RANGE_M,
+                        (rel_speed_mmps as f64) / 1_000.0,
                         (super::docking::MAX_DOCKING_INIT_REL_SPEED_MMPS as f64) / 1_000.0
                     )));
                 }
@@ -4296,11 +4458,7 @@ fn validate_docking_initiation_gates(
                 {
                     if let Some(p1) = sky.position_km(&body, now_ic) {
                         let dist_km = super::picket::distance_3d_m(ff.pos_km, [p1.x, p1.y, p1.z]);
-                        dist_m = if dist_km <= 2 {
-                            200
-                        } else {
-                            dist_km.saturating_mul(1_000)
-                        };
+                        dist_m = dist_km.saturating_mul(1_000);
                     }
                     if let Some([vx1, vy1, vz1]) = sky.velocity_mps(&body, now_ic) {
                         let rel_mps = super::picket::relative_speed_3d_mmps(
@@ -4410,15 +4568,25 @@ fn helm_dock(ctx: &mut Ctx<'_>) -> Result<(), CmdError> {
     let maybe_order_str = raw.strip_prefix("order ").unwrap_or(raw.as_str()).trim();
     if let Some(control_input) = super::docking::parse_dock_text_order(maybe_order_str) {
         if control_input.abort {
-            let _ = ctx
+            let Some(session) = ctx
                 .w
                 .module_state_mut::<SpaceBubbleBook>()
-                .and_then(|b| b.docking_sessions.remove(&hull));
+                .and_then(|b| b.docking_sessions.remove(&hull))
+            else {
+                return Err(CmdError::msg("No active docking session to abort."));
+            };
+            let spent_kg = session
+                .live_stepper
+                .rcs_spent_kg(&session.challenge.rcs_authority);
+            debit_hull_propellant_kg(ctx, hull, spent_kg)?;
             unpause_hull_after_docking(ctx, hull, &now);
             ctx.out.sys_to_actor(
                 ctx.actor,
                 "tacsim.space",
-                "Docking approach aborted via control order; hull unpaused.".to_owned(),
+                format!(
+                    "Docking approach `{}` aborted via control order; hull unpaused (spent {spent_kg} kg RCS propellant).",
+                    session.challenge.session_id
+                ),
             );
             push_space_panels(ctx, hull);
             return Ok(());
@@ -4491,6 +4659,7 @@ fn helm_dock(ctx: &mut Ctx<'_>) -> Result<(), CmdError> {
                 }
                 debit_hull_propellant_kg(ctx, hull, report.rcs_spent_kg.max(1))?;
                 unpause_hull_after_docking(ctx, hull, &now);
+                super::tick::persist_space_state(ctx);
                 return Err(CmdError::msg(format!(
                     "Docking input tape rejected: collar gates not aligned at end of {} frames ({}/5 gates green: lateral={}, attitude={}, roll={}, closure={}, range={}; final pose dx={} mm, dy={} mm, dz={} mm, vz={} mm/s; session `{}` closed and hull unpaused).",
                     report.frames_replayed,
@@ -4657,6 +4826,15 @@ fn helm_dock(ctx: &mut Ctx<'_>) -> Result<(), CmdError> {
     }
 
     // Initiate a new `DockingSession` (`+helm/dock <port|derelict>` or `+helm/dock start <port|derelict>`):
+    if ctx
+        .w
+        .module_state::<SpaceBubbleBook>()
+        .is_some_and(|b| b.docking_sessions.contains_key(&hull))
+    {
+        return Err(CmdError::msg(
+            "A docking session is already open for this ship; submit its tape or run `+helm/dock abort` first.",
+        ));
+    }
     let target_token = raw.strip_prefix("start ").unwrap_or(raw.as_str()).trim();
     let target = resolve_docking_target(ctx, hull, target_token)?;
     validate_docking_initiation_gates(ctx.w, hull, &target, now.at)?;

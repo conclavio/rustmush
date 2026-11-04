@@ -89,6 +89,12 @@ pub const MAX_BUBBLE_TAPE_ENTRIES: usize = 64;
 /// Maximum number of completed bubble summary records retained in [`SpaceBubbleBook::completed`] (`SF.R10`, `35b` §5 #9).
 pub const MAX_COMPLETED_BUBBLES: usize = 8;
 
+/// Maximum 1:1 wall-clock catch-up step (`30,000 ms`, `30 s`) applied on a single late tick fire (`SF.R17`).
+pub const MAX_BUBBLE_TICK_STEP_MS: u32 = 30_000;
+
+/// Maximum wall-clock duration (`60 s`) a carrier may hold a resolved bubble open for derelict salvage (`SF.R17`).
+pub const SALVAGE_HOLD_TIMEOUT_WALL_S: i64 = 60;
+
 /// Per-carrier entry inside a domain-keyed [`ActiveInterdictionBubble`] (`SF.R12`, `D-35-5`).
 #[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize)]
 pub struct BubbleCarrierEntry {
@@ -108,6 +114,9 @@ pub struct BubbleCarrierEntry {
     /// Whether this carrier is holding the bubble open while docking with / towing a derelict (`SF.R9`).
     #[serde(default)]
     pub holding_for_salvage: bool,
+    /// Wall-clock deadline (`World::now()`) after which `holding_for_salvage` expires (`SF.R17`).
+    #[serde(default)]
+    pub holding_for_salvage_until_wall_s: Option<i64>,
 }
 
 /// Active interdiction bubble bound to a promoted waypoint [`DomainId`] (`SF.R12`, `D-35-5`).
@@ -257,14 +266,51 @@ impl ActiveInterdictionBubble {
 
     /// Set `holding_for_salvage` for `hull` (`SF.R12`).
     pub fn set_holding_for_salvage_for(&mut self, hull: ObjId, val: bool) {
+        self.set_holding_for_salvage_for_with_deadline(hull, val, None);
+    }
+
+    /// Set `holding_for_salvage` and its optional wall-clock expiry deadline for `hull` (`SF.R17`).
+    pub fn set_holding_for_salvage_for_with_deadline(
+        &mut self,
+        hull: ObjId,
+        val: bool,
+        until_wall_s: Option<i64>,
+    ) {
         if let Some(c) = self.carriers.get_mut(&hull) {
             c.holding_for_salvage = val;
+            c.holding_for_salvage_until_wall_s = if val { until_wall_s } else { None };
         }
         if hull == self.hull || self.carriers.is_empty() {
             self.holding_for_salvage = val;
         } else {
             self.holding_for_salvage = self.carriers.values().any(|c| c.holding_for_salvage);
         }
+    }
+
+    /// Return whether combat and customs in this bubble have cleared, independent of per-carrier
+    /// derelict salvage holds (`SF.R17`).
+    #[must_use]
+    pub fn is_combat_clear(&self) -> bool {
+        if self.cleared {
+            return true;
+        }
+        if !self.bubble.torpedoes.is_empty() || !self.bubble.railgun_slugs.is_empty() {
+            return false;
+        }
+        if let Some(picket) = &self.picket {
+            let corvette_operational = self
+                .bubble
+                .ships
+                .get(&picket.corvette_ship_id)
+                .is_some_and(|s| s.status == HullStatus::Operational);
+            if corvette_operational && !picket.is_customs_cleared() {
+                return false;
+            }
+        }
+        !self.bubble.ships.values().any(|ship| {
+            ship.status == HullStatus::Operational
+                && self.bubble.party_relation(CARRIER_PARTY, ship.party) == Relation::Hostile
+        })
     }
     /// Compute the adaptive 1:1 wall-clock cadence period (`500 ms`, `1,000 ms`, or `5,000 ms`)
     /// from the bubble's live ordnance and hostile posture (`Q-35-4(1)`, `SF.R10`).
@@ -1502,27 +1548,10 @@ fn expire_stale_docking_sessions(ctx: &mut Ctx<'_>, now: &ClockStamp) {
         return;
     }
     for hull in expired {
-        let vault_tank_t = crate::port::ship::hull_view(ctx.w, hull)
-            .and_then(|v| crate::port::ship::hold_vault(ctx.w, &v))
-            .and_then(|vid| {
-                let good = mush_core::CanonicalId::new("propellant").ok()?;
-                crate::port_tick::read_pool(ctx, mush_inventory::record::EndpointRef(vid), &good)
-                    .ok()
-            })
-            .unwrap_or(0);
         if let Some(book) = ctx.w.module_state_mut::<SpaceBubbleBook>() {
             book.docking_sessions.remove(&hull);
-            let _ = book
-                .propellant_ledger_mut(hull)
-                .record_burn_kg(vault_tank_t, 15);
         }
-        let has_active_bubble = ctx
-            .w
-            .module_state::<SpaceBubbleBook>()
-            .is_some_and(|b| b.active_for_hull(hull).is_some());
-        if !has_active_bubble {
-            let _ = mush_sim::resume_carrier_journey(ctx, hull, now);
-        }
+        let _ = super::commands::debit_hull_propellant_kg(ctx, hull, 15);
         crate::port::voyage::narrate_hull(
             ctx,
             hull,
@@ -1649,6 +1678,113 @@ fn open_salvage_claim_for_derelict(
 }
 
 fn clear_resolved_bubbles(ctx: &mut Ctx<'_>, now: &ClockStamp) {
+    let wall_now_s = ctx.w.now();
+    let mut detached_carriers: Vec<(ObjId, Option<SpaceShipState>)> = Vec::new();
+    if let Some(book) = ctx.w.module_state_mut::<SpaceBubbleBook>() {
+        let paused_hulls: std::collections::BTreeSet<ObjId> = book
+            .docking_sessions
+            .iter()
+            .filter(|(_, s)| s.paused_from_world_tick)
+            .map(|(&h, _)| h)
+            .collect();
+        let clamped_hulls: std::collections::BTreeSet<ObjId> =
+            book.clamped_derelicts.keys().copied().collect();
+        for active in book.by_domain.values_mut() {
+            for entry in active.carriers.values_mut() {
+                if entry.holding_for_salvage
+                    && !clamped_hulls.contains(&entry.hull)
+                    && entry
+                        .holding_for_salvage_until_wall_s
+                        .is_some_and(|until| wall_now_s >= until)
+                {
+                    entry.holding_for_salvage = false;
+                    entry.holding_for_salvage_until_wall_s = None;
+                    entry.approaching_derelict = false;
+                }
+            }
+            if !active.carriers.is_empty() {
+                active.holding_for_salvage =
+                    active.carriers.values().any(|c| c.holding_for_salvage);
+                active.approaching_derelict =
+                    active.carriers.values().any(|c| c.approaching_derelict);
+            }
+            // Per-carrier salvage hold (`SF.R17`): when combat is clear and multiple carriers share
+            // the bubble, any carrier that is NOT paused for docking and NOT holding for salvage
+            // detaches and resumes immediately without waiting for another carrier's salvage hold.
+            if active.carriers.len() > 1 && active.is_combat_clear() {
+                let any_holding_or_paused = active.carriers.values().any(|c| {
+                    c.holding_for_salvage
+                        || c.approaching_derelict
+                        || paused_hulls.contains(&c.hull)
+                });
+                if any_holding_or_paused {
+                    let ready_hulls: Vec<ObjId> = active
+                        .carriers
+                        .values()
+                        .filter(|c| {
+                            !c.holding_for_salvage
+                                && !c.approaching_derelict
+                                && !paused_hulls.contains(&c.hull)
+                                && active
+                                    .bubble
+                                    .ships
+                                    .get(&c.ship_id)
+                                    .is_some_and(|s| s.status == HullStatus::Operational)
+                        })
+                        .map(|c| c.hull)
+                        .collect();
+                    for ch in ready_hulls {
+                        if active.carriers.len() <= 1 {
+                            break;
+                        }
+                        if let Some(entry) = active.carriers.remove(&ch) {
+                            book.cleared_interdiction_legs.insert((
+                                ch,
+                                entry.departed_at_ic_s,
+                                entry.leg_cursor,
+                            ));
+                            let cship = active.bubble.ships.remove(&entry.ship_id);
+                            active.ship_hulls.remove(&entry.ship_id);
+                            if active.hull == ch
+                                && let Some(next_entry) = active.carriers.values().next()
+                            {
+                                active.hull = next_entry.hull;
+                                active.carrier_ship_id = next_entry.ship_id.clone();
+                                active.leg_cursor = next_entry.leg_cursor;
+                                active.approaching_derelict = next_entry.approaching_derelict;
+                                active.holding_for_salvage = next_entry.holding_for_salvage;
+                            }
+                            let mut completed =
+                                CompletedInterdictionBubble::from_closed(active, now.at);
+                            completed.hull = ch;
+                            book.completed.insert(ch, completed);
+                            detached_carriers.push((ch, cship));
+                        }
+                    }
+                }
+            }
+        }
+    }
+    for (ch, cship) in detached_carriers {
+        if let Some(ship) = cship {
+            let _ = check_in_space_unit(ctx, ch, &ship, now.at);
+        }
+        let _ = resume_carrier_journey(ctx, ch, now);
+        if let Some((new_dep_at, new_cursor)) = ctx
+            .w
+            .module_state::<JourneyBook>()
+            .and_then(|jb| jb.get(ch))
+            .map(|j| (j.departed().at, j.cursor()))
+            && let Some(book) = ctx.w.module_state_mut::<SpaceBubbleBook>()
+        {
+            book.cleared_interdiction_legs
+                .insert((ch, new_dep_at, new_cursor));
+        }
+        let line =
+            "[SPACE] Interdiction contact cleared; local bubble closed and transit burn resumed.";
+        crate::port::voyage::narrate_hull(ctx, ch, line);
+    }
+
     let Some(book) = ctx.w.module_state::<SpaceBubbleBook>() else {
         return;
     };
@@ -1764,6 +1900,16 @@ fn clear_resolved_bubbles(ctx: &mut Ctx<'_>, now: &ClockStamp) {
 
         for (ch, _, _, _) in &carrier_entries {
             let _ = resume_carrier_journey(ctx, *ch, now);
+            if let Some((new_dep_at, new_cursor)) = ctx
+                .w
+                .module_state::<JourneyBook>()
+                .and_then(|jb| jb.get(*ch))
+                .map(|j| (j.departed().at, j.cursor()))
+                && let Some(book) = ctx.w.module_state_mut::<SpaceBubbleBook>()
+            {
+                book.cleared_interdiction_legs
+                    .insert((*ch, new_dep_at, new_cursor));
+            }
             let line = "[SPACE] Interdiction contact cleared; local bubble closed and transit burn resumed.";
             crate::port::voyage::narrate_hull(ctx, *ch, line);
         }
@@ -1930,25 +2076,23 @@ fn step_active_bubbles(ctx: &mut Ctx<'_>, now: &ClockStamp) {
             continue;
         }
         let cadence_ms = active.adaptive_step_wall_ms();
-        let elapsed_wall_s =
-            if active.last_stepped_wall_s > 0 && wall_now_s > active.last_stepped_wall_s {
-                wall_now_s - active.last_stepped_wall_s
-            } else {
-                1
-            };
-        if cadence_ms == CRUISE_STEP_WALL_MS
-            && active.last_stepped_wall_s > 0
-            && wall_now_s > active.last_stepped_wall_s
-            && elapsed_wall_s * 1_000 < i64::from(CRUISE_STEP_WALL_MS)
-        {
-            continue;
-        }
-        active.last_stepped_wall_s = wall_now_s;
-        let dt_wall_ms = if (1..=10).contains(&elapsed_wall_s) {
-            u32::try_from(elapsed_wall_s * 1_000).unwrap_or(1_000)
+        let dt_wall_ms = if active.last_stepped_wall_s > 0 {
+            if wall_now_s <= active.last_stepped_wall_s {
+                continue;
+            }
+            let elapsed_wall_s = wall_now_s - active.last_stepped_wall_s;
+            if cadence_ms == CRUISE_STEP_WALL_MS
+                && elapsed_wall_s * 1_000 < i64::from(CRUISE_STEP_WALL_MS)
+            {
+                continue;
+            }
+            u32::try_from(elapsed_wall_s.saturating_mul(1_000))
+                .unwrap_or(MAX_BUBBLE_TICK_STEP_MS)
+                .min(MAX_BUBBLE_TICK_STEP_MS)
         } else {
             1_000
         };
+        active.last_stepped_wall_s = wall_now_s;
         let mut events = active.tape.record_and_apply(
             &mut active.bubble,
             BubbleInputCommand::StepWall {
@@ -2163,6 +2307,17 @@ fn step_free_flight_records(ctx: &mut Ctx<'_>, now: &ClockStamp) {
 
     let mut target_vels: BTreeMap<ObjId, Option<[i64; 3]>> = BTreeMap::new();
     let mut target_positions: BTreeMap<ObjId, Option<[i64; 3]>> = BTreeMap::new();
+    let mut prev_target_positions: BTreeMap<ObjId, Option<[i64; 3]>> = BTreeMap::new();
+    let prev_ic_by_hull: BTreeMap<ObjId, i64> = ctx
+        .w
+        .module_state::<SpaceBubbleBook>()
+        .map(|b| {
+            b.free_flights
+                .iter()
+                .map(|(&h, r)| (h, r.last_ic_s))
+                .collect()
+        })
+        .unwrap_or_default();
     if let Some(store) = ctx.w.module_state::<TacsimStore>()
         && let Ok(lane) = mush_core::CanonicalId::new(crate::definitions::content::LANE_PACK)
         && let Some(version) = store.applied_in(ctx.w, &lane)
@@ -2176,6 +2331,9 @@ fn step_free_flight_records(ctx: &mut Ctx<'_>, now: &ClockStamp) {
                 target_vels.insert(*hull, vel);
                 let pos = sky.position_km(&body, now.at).map(|p| [p.x, p.y, p.z]);
                 target_positions.insert(*hull, pos);
+                let prev_ic = prev_ic_by_hull.get(hull).copied().unwrap_or(now.at);
+                let prev_pos = sky.position_km(&body, prev_ic).map(|p| [p.x, p.y, p.z]);
+                prev_target_positions.insert(*hull, prev_pos);
             }
         }
     }
@@ -2185,10 +2343,20 @@ fn step_free_flight_records(ctx: &mut Ctx<'_>, now: &ClockStamp) {
         for (hull, _) in &hulls {
             let tvel = target_vels.get(hull).copied().flatten();
             let tpos = target_positions.get(hull).copied().flatten();
+            let prev_tpos = prev_target_positions.get(hull).copied().flatten();
             if let Some(rec) = book.free_flights.get_mut(hull) {
                 let dt_ic_s = now.at.saturating_sub(rec.last_ic_s);
+                let was_co_located = prev_tpos.is_some_and(|p| rec.pos_km == p);
                 if dt_ic_s > 0 {
                     rec.step_ic_s(dt_ic_s, tvel);
+                    if was_co_located
+                        && let (Some(pos), Some(vel)) = (tpos, tvel)
+                        && super::picket::relative_speed_3d_mmps(rec.vel_mps, vel)
+                            .saturating_mul(dt_ic_s.max(0))
+                            < 500
+                    {
+                        rec.pos_km = pos;
+                    }
                 }
                 if super::mining::OrbitalClusterId::parse(rec.target_place.as_str()).is_none()
                     && rec
@@ -2523,6 +2691,7 @@ fn promote_due_interdictions(ctx: &mut Ctx<'_>, now: &ClockStamp) {
                         last_synced_propellant_kg: initial_prop_kg,
                         approaching_derelict: false,
                         holding_for_salvage: false,
+                        holding_for_salvage_until_wall_s: None,
                     },
                 );
                 active.ship_hulls.insert(carrier_ship_id, hull);
@@ -2718,6 +2887,7 @@ fn build_interdiction_bubble(
             last_synced_propellant_kg: initial_prop_kg,
             approaching_derelict: false,
             holding_for_salvage: false,
+            holding_for_salvage_until_wall_s: None,
         },
     );
 
