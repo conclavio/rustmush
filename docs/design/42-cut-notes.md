@@ -289,3 +289,13 @@ stands in a port room. CR.0's gates already treat `Processing` as Q-42-2 asks.
   production command path. The bot-over-SSH story is a dispatch-tier run, owed and named here.
 - A space `PortBerth` docking (Q-42-6's second trigger) is CR.6's seam: it calls `hand_over` when the
   space track's crew state exists.
+- RS.5's `+debts`, as #415 builds it, lists only `Ruleset`-cause one-term debts. The release fee is a
+  `Sanction`-cause one-shot, so it is not a `+debts` row until `debts_of` and `pay_debt` take it. That
+  widening is CR.2's, after RS.5 merges.
+
+**Cell delta (rule #14).** Measured from the JUnit `<testcase time>` sums of PR #417's run
+41846609530 against #412's run 41830026813, which first put `crew_custody` in shard_8.
+- shard_8's `crew_custody::` goes from 4.65 to 6.56 summed minutes: +1.9 for the two CR.2 stories.
+- shard_8's wall goes from 15.0 to 15.5 min. The run's slowest integration cell is 19.4 min (main's
+  41827163605 had 19.3), so no cell sets a new wall.
+- The lane-count edits to `sites::` (shard_5) and `vehicles::` (shard_6) move no time.
