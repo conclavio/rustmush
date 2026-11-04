@@ -1676,6 +1676,18 @@ pub struct PortTickState {
     pub(crate) epoch_warned: BTreeSet<(u32, crate::port::epoch::EpochWarn)>,
     /// **Doc 23 cut S.2**: the epoch arm's pages this boot (a count, for tests).
     pub(crate) epoch_pages: u32,
+    /// **Doc 39 cut IN.5**: each works' house purchase in flight, by stores vault — re-derived
+    /// every fire from its paid key and the works ledger (`crate::port::supply`), carried here
+    /// only to the offer its move lands through.
+    pub(crate) supply_owed: BTreeMap<u64, crate::port::works::WorksAct>,
+    /// **Doc 39 cut IN.5**: the IC day of each `(stores vault, good)` row's last purchase — the
+    /// one-a-day limit, RAM as the mill's back-offs are.
+    pub(crate) supply_day: BTreeMap<(u64, CanonicalId), i64>,
+    /// **Doc 39 cut IN.5**: each in-flight purchase's move submissions, by stores vault ->
+    /// `(the ordinal, the submissions)`.
+    pub(crate) supply_tries: BTreeMap<u64, (u32, u8)>,
+    /// **Doc 39 cut IN.5**: the house purchases warned about this boot, by `(stores, good)`.
+    pub(crate) supply_warned: BTreeSet<(u64, CanonicalId)>,
 }
 
 impl PortTickState {
@@ -2064,6 +2076,8 @@ fn port_tick(ctx: &mut Ctx<'_>, _tag: &str, _scene: Option<SceneId>) {
     // the works arm, so a consumption it settles this fire is laid up on the next.
     crate::port::commission::tick(ctx);
     crate::port::works::tick(ctx);
+    // Doc 41 cut RS.5 (Q-41-11): the retrieval clerk (Tycho at a window's end, a lapse).
+    crate::surface::retrieval::tick(ctx);
     crate::quest::tick(ctx);
     let Some(slot) = ctx.w.module_state_mut::<PortTickState>() else {
         return;

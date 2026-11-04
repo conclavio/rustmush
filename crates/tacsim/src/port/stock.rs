@@ -894,6 +894,11 @@ pub(crate) fn stock_step(
              the clerk's bound are never minted (re-author the port under the bound)"
         );
     }
+    // Doc 39 cut IN.5: a works' house purchase, ahead of the list step that re-lists what it
+    // moved out of the seller's pool.
+    if let Some(step) = crate::port::supply::supply_step(ctx, state, fire, clerk, &map, &def) {
+        return step;
+    }
     // 4–5. Every row is seeded: the drift check, then the list step.
     let mut due: Option<(mush_market::VendorId, u64, CanonicalId, u64, u64)> = None;
     // Doc 20 cut SM.12a (F1): the due ask's vendor org and its mills' target counters.
@@ -943,6 +948,8 @@ pub(crate) fn stock_step(
                 .module_state::<MarketStore>()
                 .map(|store| ask_reading(store, row.vault, &ask.good))
                 .unwrap_or_default();
+            // Doc 39 cut IN.5: a works' house purchase lowered the ask by the lot it is moving.
+            let net = net.saturating_sub(crate::port::supply::moving(ctx, row.vault, &ask.good));
             if drifts(net, &reading) && state.paged.insert((row.vault, ask.good.clone())) {
                 tracing::error!(
                     vault = row.vault,
@@ -1060,10 +1067,11 @@ pub(crate) struct StoreLot {
     pub listing: Option<ListingId>,
 }
 
-/// **The lots of `good` in `row`'s stores** (doc 39 cut IN.6): each seeded lot of the vendor's
-/// stock rows of `good` still at the storefront, unfitted, held by nothing but its own lot ask
-/// and claimed by no open bay order (`claimed`), lowest grade first. Only the seeds are read:
-/// a part sold, made or scrapped into the stores is IN.7's and IN.9's.
+/// **The lots of `good` in `row`'s stores** (doc 39 cut IN.6; the index, IN.7): each part lot
+/// of `good` at the storefront — seeded, made, scrapped or sold into it — traced, unfitted and
+/// clean, held by nothing but its own lot ask and claimed by no open bay order (`claimed`),
+/// lowest grade first. The stores are found by a bounded walk of the lot family
+/// ([`MAX_STORE_PAGES`] pages), since the inventory keeps no index of an endpoint's lots.
 pub(crate) fn store_lots(
     ctx: &Ctx<'_>,
     row: &crate::port::map::VendorRow,
@@ -1079,60 +1087,73 @@ pub(crate) fn store_lots(
     let storefront = EndpointRef(VaultId(row.vault));
     let market = ctx.w.module_state::<MarketStore>();
     let mut found = Vec::new();
-    for stock in row.stock.iter().filter(|s| &s.good == good) {
-        let Some(id) = StockIssueId::parse(&stock.id) else {
+    for here in storefront_lots(ctx, &inventory, storefront, good) {
+        let lot = here.id();
+        if claimed.contains(&lot) {
             continue;
-        };
+        }
         if !matches!(
-            receipt_at(ctx, &handles.families.port_stock, &id),
-            Ok(Some(_))
+            crate::port::bay_work::act::provenance(ctx, lot),
+            Ok(Some(part)) if part.fitted_into.is_none() && !part.is_hot()
         ) {
             continue;
         }
-        for n in 0..stock.qty {
-            let lot = seed_lot_id(&id, n);
-            if claimed.contains(&lot) {
-                continue;
+        let listing = market.and_then(|m| {
+            m.lot_listings()
+                .find(|l| l.source.exact_lot() == Some(lot))
+                .map(|l| l.id)
+        });
+        let holder = ctx.action_state(&inventory.lot_holds, &lot).ok();
+        let free = match (holder.flatten(), listing) {
+            (None, _) => true,
+            (Some(hold), Some(listing)) => {
+                hold.holder() == mush_market::listing_holder_text(listing)
             }
-            let Some(here) = ctx
-                .action_state(&inventory.lots, &lot)
-                .ok()
-                .flatten()
-                .filter(|l| l.endpoint() == storefront)
-                .cloned()
-            else {
-                continue;
-            };
-            if !matches!(
-                crate::port::bay_work::act::provenance(ctx, lot),
-                Ok(Some(part)) if part.fitted_into.is_none() && !part.is_hot()
-            ) {
-                continue;
-            }
-            let listing = market.and_then(|m| {
-                m.lot_listings()
-                    .find(|l| l.source.exact_lot() == Some(lot))
-                    .map(|l| l.id)
+            (Some(_), None) => false,
+        };
+        if free {
+            found.push(StoreLot {
+                lot,
+                grade: here.grade().get(),
+                listing,
             });
-            let holder = ctx.action_state(&inventory.lot_holds, &lot).ok();
-            let free = match (holder.flatten(), listing) {
-                (None, _) => true,
-                (Some(hold), Some(listing)) => {
-                    hold.holder() == mush_market::listing_holder_text(listing)
-                }
-                (Some(_), None) => false,
-            };
-            if free {
-                found.push(StoreLot {
-                    lot,
-                    grade: here.grade().get(),
-                    listing,
-                });
-            }
         }
     }
     found.sort_by_key(|s| (s.grade, s.lot));
     found
+}
+
+/// Pages of the lot family a stores walk reads.
+const MAX_STORE_PAGES: usize = 16;
+/// Lots a stores page reads.
+const STORE_PAGE: usize = 256;
+
+/// The lots of `good` at `storefront`: a bounded walk of the lot family (doc 39 cut IN.7).
+fn storefront_lots(
+    ctx: &Ctx<'_>,
+    inventory: &mush_inventory::InventoryFamilies,
+    storefront: EndpointRef,
+    good: &CanonicalId,
+) -> Vec<mush_inventory::Lot> {
+    let mut out = Vec::new();
+    let mut cursor: Option<String> = None;
+    for _ in 0..MAX_STORE_PAGES {
+        let Ok(page) = ctx.scan_action_state(&inventory.lots, cursor.as_deref(), STORE_PAGE) else {
+            break;
+        };
+        out.extend(
+            page.entries()
+                .iter()
+                .map(|entry| entry.value())
+                .filter(|lot| lot.endpoint() == storefront && lot.commodity() == good)
+                .cloned(),
+        );
+        match page.next_after() {
+            Some(next) => cursor = Some(next.to_string()),
+            None => break,
+        }
+    }
+    out
 }
 
 /// **The ask of a store lot a bay order has taken** (doc 39 cut IN.6): the clerk withdraws it,

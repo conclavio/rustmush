@@ -3,7 +3,7 @@
   "private": true,
   "version": "0.1.0",
   "type": "module",
-  "description": "rustmush web client \u2014 Svelte 5 + Vite + TypeScript SPA, embedded into mush-net-web via rust-embed",
+  "description": "rustmush web client — Svelte 5 + Vite + TypeScript SPA, embedded into mush-net-web via rust-embed",
   "scripts": {
     "dev": "vite",
     "wasm": "node scripts/build-wasm.mjs",
@@ -12,9 +12,11 @@
     "check": "svelte-check --tsconfig ./tsconfig.json",
     "pretest": "node scripts/build-wasm.mjs",
     "test": "vitest run",
-    "test:watch": "vitest"
+    "test:watch": "vitest",
+    "test:e2e": "playwright test"
   },
   "devDependencies": {
+    "@playwright/test": "^1.64.1",
     "@sveltejs/vite-plugin-svelte": "^7.3.0",
     "@testing-library/svelte": "^5.4.2",
     "@tsconfig/svelte": "^5.0.8",

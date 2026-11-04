@@ -37,7 +37,7 @@
 //!   `slots`, for a seated pilot and a mind alike.
 //!
 //! Integers only, no I/O and no clock: the arena library's gate
-//! (`crates/mush-contract-tests/tests/arena_library.rs`) reads this file.
+//! (`crates/mush-contract-tests/tests/engine_contracts/arena_library.rs`) reads this file.
 
 use std::collections::BTreeMap;
 
@@ -378,8 +378,27 @@ pub struct CoreHardware {
 /// **Never copied onto `UnitState`**: doc 17 §9's `UnitState.core` is not
 /// built (17b cut M3's declared departure) — the class is a live fact of the
 /// unit, and this function is its one reader.
+///
+/// **Doc 40 cut FR.5** (§4.1 item 4, Q-40-3): a core whose part's condition word reads jammed or
+/// damaged reads the compiled [`crate::arena::resolution::COMPONENT_EFFECTS`]' classes below its
+/// cell ([`read_core_under`]), derived here and never written to the cell, so the class returns
+/// when the word does.
 #[must_use]
 pub fn read_core(unit: &TacticalUnit) -> Option<CoreHardware> {
+    read_core_under(unit, &crate::arena::resolution::COMPONENT_EFFECTS)
+}
+
+/// **[`read_core`] under a unit's own component effects** (doc 40 cut FR.5, §4.1 item 4,
+/// Q-40-3): the class the cell reads, lowered by `effects.core`'s classes while the core's part
+/// is jammed or damaged — read-side, the `core_class` cell untouched (`DegradeCore` alone writes
+/// it), so the mind's class ([`Arena::mind_class`]), the slots ([`Arena::slot_capacity`]) and
+/// the truncation that reads them follow the word. The arena's own readers pass the hull's
+/// table ([`crate::arena::resolution::UnitProfile::effects`]).
+#[must_use]
+pub fn read_core_under(
+    unit: &TacticalUnit,
+    effects: &crate::arena::resolution::ComponentEffects,
+) -> Option<CoreHardware> {
     let id = CapabilityId::new(CORE_CAPABILITY).ok()?;
     let key = unit.capabilities().find(|key| key.id == id)?;
     let payload = unit.capability(key)?.data();
@@ -404,9 +423,23 @@ pub fn read_core(unit: &TacticalUnit) -> Option<CoreHardware> {
         let n = u8::try_from(current.clamp(0, 3)).ok()?;
         CoreClass::from_ordinal(n)
     });
+    let mut class = live.unwrap_or(fitted);
+    let lost = component
+        .and_then(|component| unit.component(component))
+        .map_or(0, |part| {
+            use mush_tactics::field_ops::ComponentCondition;
+            match ComponentCondition::classify_condition_id(&part.condition) {
+                ComponentCondition::Jammed => effects.core.jammed_classes_lost,
+                ComponentCondition::Damaged => effects.core.damaged_classes_lost,
+                _ => 0,
+            }
+        });
+    for _ in 0..lost {
+        class = class.lower();
+    }
     Some(CoreHardware {
         component: component.map_or_else(SmolStr::default, |id| SmolStr::new(id.as_str())),
-        class: live.unwrap_or(fitted),
+        class,
         governed,
     })
 }
@@ -430,7 +463,8 @@ impl Arena {
     /// for a unit this arena does not hold or one with no core.
     #[must_use]
     pub fn core_of(&self, unit: ObjId) -> Option<CoreHardware> {
-        read_core(&self.unit(unit)?.unit)
+        let state = self.unit(unit)?;
+        read_core_under(&state.unit, &state.profile.effects())
     }
 
     /// **The class a mind on `unit` thinks at** (D-UM-35; 17b cut M3's
@@ -457,7 +491,8 @@ impl Arena {
         let Some(state) = self.unit(unit) else {
             return CoreClass::Zero;
         };
-        read_core(&state.unit).map_or(CoreClass::Zero, |core| core.class.min(state.seal.class))
+        read_core_under(&state.unit, &state.profile.effects())
+            .map_or(CoreClass::Zero, |core| core.class.min(state.seal.class))
     }
 
     /// **The row a mind on `unit` thinks at**: [`Arena::classes`]' row of

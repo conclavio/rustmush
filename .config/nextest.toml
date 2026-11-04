@@ -71,11 +71,11 @@ final-status-level = "slow"
 filter = 'binary_id(mush-store::redis_suite) | (binary_id(mush-gateway::split_halves) & test(/^authoritative_process_kill::/)) | (binary_id(mushd::durable_process) & test(/^durability_e2e::/)) | binary_id(mush-bot::arena_e2e) | binary_id(tacsim::cost_lane)'
 threads-required = "num-test-threads"
 
-# Every REDIS_URL reader (crates/mush-contract-tests/tests/ci_gated_test_inventory.rs
+# Every REDIS_URL reader (crates/mush-contract-tests/tests/ci_policy/ci_gated_test_inventory.rs
 # is the census of the integration ones; the two lib proofs are mush-server's
 # persist and timeline tests, #[ignore]d, both named `redis`).
 [[profile.default.overrides]]
-filter = 'binary_id(mush-store::redis_suite) | binary_id(mush-store::memory_suite) | (binary_id(mushd::durable_process) & test(/^persistence::/)) | (binary_id(mushd::durable_process) & test(/^durability_e2e::/)) | (binary_id(mushd::durable_process) & test(/^m10c_e2e::/)) | (binary_id(mush-server::split_boundary) & test(/^authoritative_boot::/)) | (binary_id(mush-gateway::split_halves) & test(/^authoritative_process_kill::/)) | binary_id(mush-contract-tests::scale_harness) | (binary_id(mush-server) & test(~redis))'
+filter = 'binary_id(mush-store::redis_suite) | binary_id(mush-store::memory_suite) | (binary_id(mushd::durable_process) & test(/^persistence::/)) | (binary_id(mushd::durable_process) & test(/^durability_e2e::/)) | (binary_id(mushd::durable_process) & test(/^m10c_e2e::/)) | (binary_id(mush-server::split_boundary) & test(/^authoritative_boot::/)) | (binary_id(mush-gateway::split_halves) & test(/^authoritative_process_kill::/)) | (binary_id(mush-contract-tests::ci_policy) & test(/^scale_harness::/)) | (binary_id(mush-server) & test(~redis))'
 test-group = 'redis'
 
 # The load-sensitive suites (16b: "passed alone twice" was the flake rule),
@@ -122,6 +122,13 @@ test-threads = "num-cpus"
 fail-fast = false
 slow-timeout = { period = "60s", terminate-after = 20 }
 final-status-level = "flaky"
+
+# Doc 40 FR.7's round story: about an hour a size (the segment beat at the
+# ledger's 1 MiB floor), run by name through the gate's sweep with
+# `--run-ignored only`; the profile's twenty minutes would terminate it.
+[[profile.ci-bot.overrides]]
+filter = 'binary_id(mush-bot::mining_cohort) & test(/^fr7_round::/)'
+slow-timeout = { period = "60s", terminate-after = 100 }
 
 [profile.ci-bot.junit]
 path = "junit.xml"

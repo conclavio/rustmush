@@ -2744,6 +2744,9 @@ pub(crate) enum DepartRefusalKind {
     /// **Doc 36 cut GC.4 (Q-36-15)**: the bay holds more mass or volume of hulls than its
     /// limits ([`crate::surface::tow::bay_over_line`]).
     BayOver,
+    /// **Doc 41 cut RS.7 (Q-41-25)**: a port-security fine stands owed against the hull's
+    /// master or operator ([`crate::surface::security::QUARANTINED`]).
+    Quarantined,
 }
 
 /// A typed refusal: its kind and the line `+ship/undock` answers with.
@@ -3404,6 +3407,10 @@ pub(crate) fn prepare_departure(
     // Doc 36 cut GC.4 (Q-36-15): the bay gate counts mass and volume as well as rigs.
     if let Some(line) = crate::surface::tow::bay_over_line(w, hull, &name) {
         return Err(refusal(K::BayOver, line));
+    }
+    // Doc 41 cut RS.7 (Q-41-25): a fine owed against her master or operator holds her.
+    if let Some(line) = crate::surface::security::quarantine_line(ctx, hull, &name, &here) {
+        return Err(refusal(K::Quarantined, line));
     }
     let dests = destinations(w, def);
     // Doc 18 cut IC14 row 25: a queued depart resolves its stored venue word exactly;

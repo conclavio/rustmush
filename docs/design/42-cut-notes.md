@@ -210,3 +210,181 @@ last green run, 41814093413 (3fb3e861).
   - shard_8 is 44.1 summed minutes (+14.8 on main's 29.3), of which `crew_custody::` is 4.65 min; the
     rest of the shard's rise is that runner's speed. Its wall is 15.0 min (main's was 10.2).
   - No integration cell sets a new wall: the run's slowest was 18.3 min, against main's 20.2.
+
+## CR.2 — the port handover and release
+
+Q-42-6, Q-42-7, Q-42-19, with Draft 0.3's 42-2, 42-3 and 42-7. A captor's carrier that docks at an IC port
+hands every captive aboard to the port's authority. After an IC hour of processing the captive is free at
+that port, and the release fee is levied on their own account, paid or owed.
+
+**Content: lane v23 / relay v14.** Each IC port entry gains:
+- `authority`: Ceres `freeport_registry`, Stickney `stickney_yards`, Luna `orbital_access`, Deimos
+  `voltaire_bond`, Titan `titan_concession`;
+- `release_fee_cr`: 1,500.
+
+`PortDef` validates both: the authority must be one of the entry's orgs, and a fee needs an authority and
+is at least 1. The lane digest is `ed543059…` and the relay's `476bf7d8…`. The strip
+`lane_chain::strip_release_authority` heads the chain (`strip_part_seeds` calls it first). The pins moved
+are:
+- tacsim: `cost_lane.rs`, `shard_4/lane.rs`, `shard_5/sites.rs`, `shard_10/stations.rs`,
+  `shard_3/drones.rs`, `shard_9/mill.rs`;
+- mush-server: `boot_parity.rs`, `relay_registry.rs`.
+
+**Config.** `[tacsim.field].release_s`, 3,600, banded 60 to 86,400 (`FIELD_RELEASE_S`). It is documented in
+mush-config's table and mapped in `mush-server/src/config_ext.rs`.
+
+**The authority's grant** (`port/vendor.rs`, part (e).10). At apply, the port's stock clerk is granted
+`port.release_fee` (`RELEASE_FEE_CAPABILITY`, added to the composition's capability vocabulary) on the
+authority's root scope, once. The grant is recorded as `PortMap.release_grant`, skipped while absent, so
+`PORT_MAP_SCHEMA` stays 1. The clerk is the levier, as the vendor's `vault.withdraw` grant already makes
+it the vendor's.
+
+**The handover** (`field/crew.rs`, `hand_over(ctx, hull)`).
+- It runs from `composition/sim_routes.rs`'s `arrived` before the arrival's lines and hooks (42-3's
+  persons-first rule), and again on the crew tick's `custody_pass`, which catches a lost callback.
+- It selects only records still `Captured { carrier: hull }`, so a duplicate callback, a replay or a
+  restart finds nobody twice.
+- Each captive is set down in the port's medical room (`port::medical::room`), else its arrival room.
+- The record is written `Processing { port, release_due_ic: now + release_s, charge: None }`.
+- The captive hears `HANDED_OVER`; the captor hears `HANDED_OVER_CAPTOR`, with nothing paid.
+
+**The fee** (`levy_release`). One `mush_economy::create_sanction_obligation` (the Registry fine's shape):
+- one period due now, grace 1;
+- the debit is the captive's own account, the credit the authority's account;
+- `levied_by` is the clerk, under `port.release_fee` on the authority's root scope;
+- the inspection key is `release:<captive>:<release_due_ic>`.
+
+The record's `charge` is filled once it is created. An obligation already carrying the key is adopted, not
+levied twice. A refusal leaves `charge` empty, and the crew tick tries again. The economy's sweep settles
+it at once when the account covers it; otherwise it stands as an obligation, which RS.5's `+debts` lists
+and `+debts/pay` settles.
+
+**The release** (`release_processed`, on the crew tick). At `release_due_ic` the character:
+- is set down in the port's arrival room, unless they already stand in one of its rooms;
+- is stamped with the port as the one they know;
+- becomes `Port { port }` and is told `PROCESSED`.
+
+The release never waits on the fee (FO-12). Treatment (GC.13) begins at the handover, since the captive
+stands in a port room. CR.0's gates already treat `Processing` as Q-42-2 asks.
+
+**Gate.**
+- `shard_8 crew_custody::cr2_the_captor_docks_at_ceres_and_the_captive_is_handed_over_and_released` (256,
+  the fee paid) and `cr2_an_unpaid_release_fee_stands_and_the_captive_is_released_anyway_at_512` (512,
+  the fee unpaid). Both use one script, `custody_rig::handover_at_ceres`, after story (a′)'s load:
+  - the stranger lifts for Ceres (`+ship/lift ceres leave=1`) and docks;
+  - the captain is in processing at Ceres, standing in a Ceres room, with the fee's obligation named;
+  - `+sortie/condition` says "in processing at Ceres", and the captor's `+ship/captives` is empty;
+  - paid: the obligation is `Satisfied` and 1,500 cr have left the account;
+  - unpaid (a staff hand empties the available credit first): the obligation stands unsatisfied;
+  - after the hour the captain is `Port { ceres }` and Ceres is the port they know.
+- In-source: `crew.rs` `cr2_the_release_key_and_the_processing_band`.
+
+**Divergences from §7's row.**
+- The inspection key is `release:<captive>:<release_due_ic>`, not `…:<since_ic>`. `Processing` does not
+  carry the capture's instant, and a retried levy must rebuild the key from the record. It is still one
+  key per handover.
+- The handover also runs on the crew tick, not only in the docking hook. The arrival hook is
+  production's first chance, and the tick catches anything it missed.
+- The bot does not type the captive's half in this PR's tests: they type it as the player on the
+  production command path. The bot-over-SSH story is a dispatch-tier run, owed and named here.
+- A space `PortBerth` docking (Q-42-6's second trigger) is CR.6's seam: it calls `hand_over` when the
+  space track's crew state exists.
+- RS.5's `+debts`, as #415 builds it, lists only `Ruleset`-cause one-term debts. The release fee is a
+  `Sanction`-cause one-shot, so it is not a `+debts` row until `debts_of` and `pay_debt` take it.
+  **Closed after #415 merged**, in RS.5's preferred shape:
+  - mush-economy keeps `debts_of`, and adds `debts_of_with(w, debtor, namespaces, sanction_prefixes)`,
+    `pay_sanction_debt` and `reinstate_sanction_debt`. Each takes `DebtCause::Sanction(prefix)` under
+    the ruleset debt's own lock (the actor must be able to debit the debit account), and pays with the
+    same single post and `Satisfied`.
+  - `tacsim::surface::retrieval::DEBT_SANCTION_PREFIXES` is `["release:"]`, beside
+    `DEBT_NAMESPACES`. `+debts`, `+debts/pay` and the desk's refusal (`desk_refusal`, with its
+    reinstatement) read both.
+  - The unpaid story now asserts that the fee is a `+debts` row and that `+debts/pay` settles it once
+    the captain can cover it.
+
+**Cell delta (rule #14).** Measured from the JUnit `<testcase time>` sums of PR #417's run
+41846609530 against #412's run 41830026813, which first put `crew_custody` in shard_8.
+- shard_8's `crew_custody::` goes from 4.65 to 6.56 summed minutes: +1.9 for the two CR.2 stories.
+- shard_8's wall goes from 15.0 to 15.5 min. The run's slowest integration cell is 19.4 min (main's
+  41827163605 had 19.3), so no cell sets a new wall.
+- The lane-count edits to `sites::` (shard_5) and `vehicles::` (shard_6) move no time.
+
+## CR.3 — the bound and the held case
+
+Q-42-8, Q-42-9, Q-42-15. A captor who never docks can hold a captive only up to the bound. A captive the
+captor releases away from a port can ask for extraction. A captor's carrier wrecked in a later field
+strands its captives like the rest of its crew.
+
+**Config.** `[tacsim.field].captive_bound_s`, 604,800 (seven IC days), banded 60 to 2,592,000
+(`FIELD_CAPTIVE_BOUND_S`). It is documented in mush-config's table and mapped in
+`mush-server/src/config_ext.rs`.
+
+**The bound** (`field/crew.rs`).
+- `refusal(w, who, Gate::Extract)` reads a `Captured` record's `since_ic` against the bound. Before it
+  passes, the refusal is `HELD_BOUND` ("You are held aboard the {carrier}. In about {h} IC h…"). Every
+  other gate keeps CR.0's `HELD`, so nothing else opens.
+- The bound is IC time from the record, so a restart resumes it and a freeze pauses it.
+- Past the bound, `extract_cmd` takes the request (`may_extract`), telling `EXTRACT_RELEASE`.
+- The crew tick's existing `Captured => (None, None)` arm lands it as any extraction: no seat to vacate,
+  the body moved to the safe port, `Port`.
+- A handover at a port overtakes a pending extraction (`hand_over` clears it).
+
+**The released passenger** (Q-42-9's widening). `may_extract` also takes `Carrier { hull }` when `hull` is
+not the hull the character commands and they stand aboard it. `+ship/release`'s two landings were built in
+CR.1.
+
+**The captor's wreck** (Q-42-15). `check_in` asks `wrecked_captive` first:
+- when a captive's carrier checks in and `aboard()` reads it stranded (GC.3's `CrewStranded`), the captive
+  is `Stranded { site, unit: carrier }`, the condition kept, custody gone, told `STRANDED`;
+- a sound carrier's check-in still leaves the captive alone (CR.0's `leaves_alone`).
+
+**Gate.**
+- `shard_8 crew_custody::cr3_a_captive_extracts_after_the_bound_and_a_restart_keeps_it` (256) and
+  `…_at_512`, through `custody_rig::held_past_the_bound`, with the bound at 600 IC s:
+  - after GC.5's load, `+sortie/extract` refuses with the time left;
+  - a crash and reboot keeps `Captured` with the same `since_ic`;
+  - past the bound, the request is taken;
+  - after `extract_s` the captain is `Port`, and the captor's `+ship/captives` is empty.
+- In-source: `cr3_a_captors_wreck_strands_its_captives`. CR.0's `cr0_the_held_gate_refuses_by_hold` now
+  also pins the extract refusal's time and its opening past the bound.
+
+**Divergences from §7's row.**
+- Story (e)'s wreck half is an in-source gate on the check-in rule, not a fought loss. A second field that
+  takes the captor's carrier's hull (GC.3's fixture, a third party firing on the Red Moth) would add a
+  field run a ground for one branch of `check_in`. It is owed to the next story that fights over a
+  captor's carrier.
+- The extraction's landing line for a captive is the ordinary `EXTRACTED` ("Your hull is still on the
+  ground"): the tick has no site for a carrier.
+
+**Cell delta (rule #14).** Measured from the JUnit sums of PR #418's run 41851040446 against #417's run
+41846609530.
+- The two CR.3 stories ran 41.8 s and 42.1 s: +1.4 summed minutes in shard_8. On a faster runner,
+  `crew_custody::` read 6.55 against 6.56.
+- shard_8's wall is 12.5 min (15.5 before).
+- The run's slowest cell was shard_1 at 23.2 min, which this cut does not touch. Every shard_1 module ran
+  about 1.27× slower on that runner (`driving::` 14.0 → 18.7, `field_gc4::` 8.4 → 9.7), as doc 43 §5.8
+  warns the hosted machines vary.
+
+## CR.6 — the space seam
+
+Row: §7 CR.6; Q-42-24. The owner moved it from the space track to the programme session. It is stacked on doc 41's RS.8 (#439). The as-built is doc 35c §12.2. `field/crew.rs` is not edited: CR.6 calls its `check_in`, `put`, `crew_of`, `held_in`, `captured_loaded`, `aboard_loaded` and `hand_over`, all from `space/`.
+
+**Built.**
+- `space/custody.rs`:
+  - `check_in_space_crew` is called from `check_in_space_unit`, so every space check-in writes the crew's records: `Carrier`, or `Stranded` in a derelict.
+  - `space_site` picks the site a space record names.
+  - `capture_at_hard_dock` takes the crew at the derelict clamp: captured by a non-friend under the ground's Friend rule, aboard for a friend.
+- `space/commands.rs`:
+  - the derelict clamp calls `capture_at_hard_dock`;
+  - the port clamp calls `crew::hand_over` before the hull's own delivery.
+
+**Story.** `shard_10/voyage.rs`, `cr6_a_crewed_derelict_hard_docked_by_a_stranger_is_captured_and_handed_over_at_port`. Disabled, stranded, hard-docked, captured, then handed over at Stickney (doc 35c §12.2 has the steps). Rule #1's 256/512 does not apply, because a bubble has no site scheme. The bot does not fly space.
+
+**Divergences.**
+- **The fixture disables the carrier.** Staff `@unit/damage` puts SalvorB's drive at its floor during the cruise. The bubble's own check-out then meets her as a derelict; no test writes the space book (SF.R9's no-fiat lint). Combat's disablement of a player carrier is sfr18's story.
+- **The friend test is the ground's, not the bubble's.** SF.R18 makes every co-participating carrier `Friend` for fire control. Under that relation, two strangers interdicted together could never take each other.
+- **Records, not bodies.** A settled derelict's rooms may be empty by the clamp, so the capture reads the crew's records, as `captured_loaded` does. The scan for crewed records walks the world's characters through `crew_of`, because `CrewBook` has no public iterator and `crew.rs` is not this cut's file.
+- **The space site** is `space_domain_<n>`, not a waypoint entry, on the test lane. Its waypoints carry no port map.
+- **Not exercised:** `+sortie/extract` from a space `Stranded` record, and the friend's `aboard_loaded` branch. Both are the ground's code paths, unchanged.
+
+**Cell cost (rule #14).** Owed from the PR's CI JUnit.

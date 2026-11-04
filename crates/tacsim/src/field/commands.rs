@@ -321,6 +321,12 @@ fn seated_in_field(ctx: &Ctx<'_>, actor: ObjId) -> bool {
 }
 
 /// **A mark inside a field** (Q-CF-7): private, the marking party's book only.
+///
+/// **The owner's ruling of 2026-11-04** (doc 40's FR.5 cut note): the mark also goes to the books of
+/// the unit parties whose hulls the leader seats in that field ([`seated_parties`]), so one mark
+/// covers every hull they command. A hull that is its own party (a seated pilot with no roster)
+/// was fired on in its own book and would otherwise keep the tempo Engaged after its leader
+/// stood down.
 fn mark_in_field(
     ctx: &mut Ctx<'_>,
     actor: ObjId,
@@ -329,40 +335,65 @@ fn mark_in_field(
 ) -> Result<(), CmdError> {
     let (site, by) =
         in_field(ctx, actor).ok_or_else(|| CmdError::msg("You lead no party in a field."))?;
-    let (task, standing) = ctx
+    // Doc 40 cut FR.1 (§4.2, round 2's 40-3): a standing Hostile mark (a declared stance, a
+    // raider's) outlives the clear, in each marking book by its own row.
+    let (task, books) = ctx
         .w
         .module_state::<super::FieldBook>()
         .and_then(|book| book.hosted(&site))
         .filter(|hosted| hosted.live.parties.iter().any(|party| party.party == of))
         .map(|hosted| {
-            // Doc 40 cut FR.1 (§4.2, round 2's 40-3): a standing Hostile mark (a declared
-            // stance, a raider's) outlives the clear.
-            let standing = hosted
-                .live
-                .parties
-                .iter()
-                .find(|party| party.party == by)
-                .is_some_and(|party| party.stance_hostile.contains(&of));
-            (hosted.task, standing)
+            let standing = |book: PartyId| {
+                hosted
+                    .live
+                    .parties
+                    .iter()
+                    .find(|party| party.party == book)
+                    .is_some_and(|party| party.stance_hostile.contains(&of))
+            };
+            let books: Vec<(PartyId, bool)> = std::iter::once(by)
+                .chain(seated_parties(ctx, &hosted.live, actor))
+                .filter(|book| *book != of)
+                .collect::<BTreeSet<PartyId>>()
+                .into_iter()
+                .map(|book| (book, standing(book)))
+                .collect();
+            (hosted.task, books)
         })
         .ok_or_else(|| CmdError::msg("No party in your field has that letter."))?;
     if of == by {
         return Err(CmdError::msg("That is your own party."));
     }
-    let cleared_to_standing = mark.is_none() && standing;
-    let mark = if cleared_to_standing {
-        Some(Mark::Hostile)
-    } else {
-        mark
-    };
     let tasks = ctx
         .w
         .module_state::<crate::arena_bridge::ArenaRegistry>()
         .map(|registry| registry.tasks().clone())
         .ok_or_else(|| CmdError::msg("The field host is unavailable."))?;
-    tasks
-        .offer(task, crate::arena_task::ArenaMsg::Mark { by, of, mark })
-        .map_err(|_| CmdError::msg("The field is busy; try the mark again."))?;
+    let mut cleared_to_standing = false;
+    let asked = mark;
+    let mut mark = mark;
+    for (book, standing) in books {
+        let to_standing = asked.is_none() && standing;
+        let marked = if to_standing {
+            Some(Mark::Hostile)
+        } else {
+            asked
+        };
+        if book == by {
+            cleared_to_standing = to_standing;
+            mark = marked;
+        }
+        tasks
+            .offer(
+                task,
+                crate::arena_task::ArenaMsg::Mark {
+                    by: book,
+                    of,
+                    mark: marked,
+                },
+            )
+            .map_err(|_| CmdError::msg("The field is busy; try the mark again."))?;
+    }
     let word = match mark {
         Some(Mark::Hostile) => "Hostile",
         Some(Mark::Friendly) => "Friendly",
@@ -380,6 +411,20 @@ fn mark_in_field(
             .replace("{word}", word),
     );
     Ok(())
+}
+
+/// **The unit parties whose hulls `actor` seats in a field** (the owner's ruling of 2026-11-04):
+/// each row of the live record whose pilot is `actor`, by the record's own pilot or the seat as it
+/// stands now, as its party.
+fn seated_parties(ctx: &Ctx<'_>, live: &super::record::FieldLive, actor: ObjId) -> Vec<PartyId> {
+    live.units
+        .iter()
+        .filter(|row| {
+            row.pilot.as_ref().is_some_and(|(pilot, _)| *pilot == actor)
+                || parties::seated(ctx.w, row.unit).is_some_and(|(pilot, _)| pilot == actor)
+        })
+        .map(|row| row.party)
+        .collect()
 }
 
 /// **A door onto the surface**: resolve the row, refuse what cannot open, and submit the

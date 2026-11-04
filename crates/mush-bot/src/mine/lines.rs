@@ -198,6 +198,11 @@ pub const AGREED: &str = "Agreed.";
 /// bots bunkering at once; `mush-market` is not a dependency of this crate, so
 /// no unit test reads the constant).
 pub const QUOTE_STALE: &str = "That quote no longer stands";
+/// `mush_market::trade::SELL_BUSY`'s head (`mush-market` `trade.rs:1545`, "You have an order
+/// still being handled; try again in a moment. Nothing was sold."): the seller's last deal had
+/// not landed when the sale was asked (read live by doc 39 cut IN.5's bot story at Urvara; as
+/// [`QUOTE_STALE`], no unit test reads the constant).
+pub const SELL_BUSY: &str = "You have an order still being handled";
 /// `+ship/board`'s answer (`ship.rs:936`, "You cycle the lock into the {name}.").
 pub const BOARDED: &str = "You cycle the lock into the ";
 /// `tacsim::port::voyage::CLEARANCE_FILED`'s head (`voyage.rs:294`).

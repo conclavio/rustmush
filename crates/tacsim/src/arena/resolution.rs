@@ -251,6 +251,152 @@ pub struct UnitProfile {
     /// every fixture's, so a hit on one jams nothing.
     #[serde(default, skip_serializing_if = "ComponentHits::is_none")]
     pub component_hits: ComponentHits,
+    /// **What a jammed or damaged part does to the hull** (doc 40 cut FR.5, §4.1 item 4,
+    /// Q-40-2, Q-40-3): the unit's own table or the resolution pack's, or `None` for the
+    /// compiled [`COMPONENT_EFFECTS`] — every shipped unit and every fixture, so a profile that
+    /// names none serialises as one written before the cut. Read through
+    /// [`UnitProfile::effects`].
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub component_effects: Option<ComponentEffects>,
+}
+
+/// **What a jammed or damaged part does, kind by kind** (doc 40 cut FR.5, §4.1 item 4, Q-40-2,
+/// Q-40-3; ruled 2026-11-03 as proposed): one row a kind, the numbers provisional (the owner's
+/// defaults rule of 2026-10-24). **Jammed is off until unjammed** for every kind — a sight with
+/// no detection, a silent pod, an idle filter, a plant at `Power::Off`, a relay that holds the
+/// party's orders — and a jammed core runs `core.jammed_classes_lost` below its cell; **damaged
+/// is degraded by these numbers until repaired**. The effect is a function of the part's
+/// condition word, derived by `Arena::apply_part_effects` (`crate::arena::part_effects`), so
+/// the draw-label set is unchanged.
+///
+/// Authored where [`ComponentHits`] is: the compiled [`COMPONENT_EFFECTS`], overridden by an
+/// optional `component_effects` block on the resolution pack's def
+/// ([`crate::definitions::resolution::ResolutionDef::component_effects`]) and, per unit, by
+/// [`crate::definitions::unit::UnitSpec::component_effects`], absent in every shipped unit — so
+/// no pack digest moves. A block may name only the rows it changes: each row it leaves out is
+/// the compiled one.
+#[derive(Clone, Copy, Debug, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(default, deny_unknown_fields)]
+pub struct ComponentEffects {
+    /// The sight the unit sees with ([`crate::arena::perception::SensorProfile::component`]).
+    pub sensor: SensorEffect,
+    /// The jamming pod.
+    pub ecm: PodEffect,
+    /// The counter-jamming filter.
+    pub eccm: PodEffect,
+    /// The power plant (the `tacsim.power` capability's source).
+    pub power: PlantEffect,
+    /// The relay (the `tacsim.relay.mobile` capability's source): the host's row, read by
+    /// `crate::field::orders` (Q-40-5); the kernel has none.
+    pub relay: RelayEffect,
+    /// The core (the `tacsim.core` capability's source).
+    pub core: CoreEffect,
+}
+
+impl Default for ComponentEffects {
+    fn default() -> Self {
+        COMPONENT_EFFECTS
+    }
+}
+
+/// **A damaged sight** (Q-40-3's sensor row): detection and lock range at a per mille of the
+/// authored row; the comms reach (`share_range_cells`) untouched.
+#[derive(Clone, Copy, Debug, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(deny_unknown_fields)]
+pub struct SensorEffect {
+    /// `max_range_cells` while damaged, per mille of the authored row.
+    pub damaged_range_permille: u16,
+}
+
+/// **A jammed or damaged pod or filter** (Q-40-3's ecm and eccm rows: "their modifiers off").
+#[derive(Clone, Copy, Debug, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(deny_unknown_fields)]
+pub struct PodEffect {
+    /// Whether a damaged part is off as a jammed one is (`true`, the ruling's).
+    pub damaged_off: bool,
+}
+
+/// **A damaged plant** (Q-40-3's power row): the heat ceiling and the dissipation at a per mille,
+/// read-side (`UnitState::heat_max`, `UnitState::heat_per_s`), the cell untouched.
+#[derive(Clone, Copy, Debug, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(deny_unknown_fields)]
+pub struct PlantEffect {
+    /// The heat ceiling and the dissipation while damaged, per mille.
+    pub damaged_heat_permille: u16,
+}
+
+/// **A damaged relay** (Q-40-5): its party's delivered orders reach the kernel this much later.
+#[derive(Clone, Copy, Debug, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(deny_unknown_fields)]
+pub struct RelayEffect {
+    /// The delay while damaged, wall milliseconds.
+    pub damaged_delay_ms: u32,
+}
+
+/// **A jammed or damaged core** (Q-40-3's core row): its effective class this many below the
+/// cell's, derived read-side (`crate::arena::core::read_core_under`).
+#[derive(Clone, Copy, Debug, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(deny_unknown_fields)]
+pub struct CoreEffect {
+    /// Classes lost while jammed.
+    pub jammed_classes_lost: u8,
+    /// Classes lost while damaged.
+    pub damaged_classes_lost: u8,
+}
+
+/// **The compiled component effects** (doc 40 cut FR.5, Q-40-3's numbers): a damaged sight at
+/// half range, a damaged pod or filter off, a damaged plant at half its heat ceiling and
+/// dissipation, a damaged relay 10 s late, a jammed or damaged core one class down.
+pub const COMPONENT_EFFECTS: ComponentEffects = ComponentEffects {
+    sensor: SensorEffect {
+        damaged_range_permille: 500,
+    },
+    ecm: PodEffect { damaged_off: true },
+    eccm: PodEffect { damaged_off: true },
+    power: PlantEffect {
+        damaged_heat_permille: 500,
+    },
+    relay: RelayEffect {
+        damaged_delay_ms: 10_000,
+    },
+    core: CoreEffect {
+        jammed_classes_lost: 1,
+        damaged_classes_lost: 1,
+    },
+};
+
+impl ComponentEffects {
+    /// **Whether the table is in bounds** (doc 40 cut FR.5): every per mille at most 1,000, a
+    /// core at most three classes down, a relay at most an hour late. `Err` names the row.
+    ///
+    /// # Errors
+    ///
+    /// The row and what is wrong with it.
+    pub fn check(&self) -> Result<(), String> {
+        let permille = PERMILLE;
+        if u32::from(self.sensor.damaged_range_permille) > permille {
+            return Err(format!(
+                "component_effects.sensor.damaged_range_permille is at most {permille}; {} is not",
+                self.sensor.damaged_range_permille
+            ));
+        }
+        if u32::from(self.power.damaged_heat_permille) > permille {
+            return Err(format!(
+                "component_effects.power.damaged_heat_permille is at most {permille}; {} is not",
+                self.power.damaged_heat_permille
+            ));
+        }
+        if self.core.jammed_classes_lost > 3 || self.core.damaged_classes_lost > 3 {
+            return Err("component_effects.core loses at most 3 classes".to_owned());
+        }
+        if self.relay.damaged_delay_ms > 3_600_000 {
+            return Err(format!(
+                "component_effects.relay.damaged_delay_ms is at most 3600000; {} is not",
+                self.relay.damaged_delay_ms
+            ));
+        }
+        Ok(())
+    }
 }
 
 /// **The chances a survivable hit jams or damages one part of the section it
@@ -280,6 +426,13 @@ impl ComponentHits {
 }
 
 impl UnitProfile {
+    /// **The component effects this unit answers to** (doc 40 cut FR.5, Q-40-2): its own or its
+    /// pack's table, else the compiled [`COMPONENT_EFFECTS`].
+    #[must_use]
+    pub fn effects(&self) -> ComponentEffects {
+        self.component_effects.unwrap_or(COMPONENT_EFFECTS)
+    }
+
     /// One band by its id.
     #[must_use]
     pub fn band(&self, id: &str) -> Option<&BandProfile> {

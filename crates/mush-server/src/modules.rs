@@ -2597,6 +2597,8 @@ mod tests {
             // Doc 17h cut M8d2: the seizure and the forfeit.
             mush_roll::commerce::registry_inspection::REGISTRY_SEIZE_CAPABILITY,
             mush_roll::commerce::registry_inspection::REGISTRY_FORFEIT_CAPABILITY,
+            // Doc 42 cut CR.2: the port authority's release fee.
+            tacsim::port::vendor::RELEASE_FEE_CAPABILITY,
         ];
         // DT.2a declares all six distinct unit rights without granting them.
         let unit_capabilities = [

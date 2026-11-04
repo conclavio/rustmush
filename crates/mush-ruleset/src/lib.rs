@@ -43,7 +43,7 @@
 //! section), and power pools (add fields).
 
 // WS01-S12: the panic-shaped restriction lints this crate measures zero of,
-// held at zero. `crates/mush-contract-tests/tests/restriction_lints.rs` carries
+// held at zero. `crates/mush-contract-tests/tests/ci_policy/restriction_lints.rs` carries
 // the measurement this set was cut from — including the counts of the lints
 // NOT named here — and fails if this attribute loses one of them.
 #![deny(
@@ -201,7 +201,7 @@ pub trait Ruleset: GameModule {
     /// action coordinator directly with no pending decision. An ability with
     /// no projected offer returns `None` and stays on the legacy
     /// [`Self::invoke_ability`] path — the **residual**, pinned by
-    /// `crates/mush-contract-tests/tests/npc_ability_residual.rs` so it can only
+    /// `crates/mush-contract-tests/tests/engine_contracts/npc_ability_residual.rs` so it can only
     /// shrink. The default maps nothing.
     fn projected_ability(
         &self,

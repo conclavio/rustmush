@@ -402,7 +402,7 @@ fn audit(measured: &[(&str, [u32; 6])], tree: &BTreeMap<String, CrateFacts>) -> 
     faults.sort();
     Err(format!(
         "the panic-shaped restriction lints are enabled per crate at the crate root, from the \
-         measurement in crates/mush-contract-tests/tests/restriction_lints.rs:\n  {}",
+         measurement in crates/mush-contract-tests/tests/ci_policy/restriction_lints.rs:\n  {}",
         faults.join("\n  ")
     ))
 }

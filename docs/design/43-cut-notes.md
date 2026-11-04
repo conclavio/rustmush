@@ -175,3 +175,459 @@ base `c252ec8d`. Summed, main → PR:
 
 No cell's wall is set by this cut, and no story moves to another shard.
 
+## TS.3 (2026-11-04) — optimised dependencies, measured
+
+Q-43-4 / D-43-4. `[profile.dev.package."*"] opt-level = 1` in `Cargo.toml`: every non-workspace dependency is
+optimised in dev and test builds, and the workspace's own crates are not. Variant B added `opt-level = 2` for
+`rhai`, `serde_json`, `rmp-serde`, `sha2`, `blake3`, `image` and `flate2` (PR #423, closed unmerged).
+
+**Hosted CI, summed test minutes per cell** (nextest JUnit).
+- main: runs 41870246223 (`7a535806`), 41870167197 and 41827163605.
+- A: run 41871003719, attempts 1 and 2.
+- B: run 41873792386.
+
+| cell | main mean (min–max) | optA mean (min–max) | optB | optA Δ% | optB Δ% |
+|---|---|---|---|---|---|
+| bot | 10.7 (9.7–11.9) | 8.2 (8.2–8.2) | 8.1 | -23 | -24 |
+| bot-stories | 28.3 (28.0–28.6) | 25.3 (25.3–25.3) | 26.2 | -10 | -7 |
+| rest-gateway | 5.0 (4.6–5.4) | 3.0 (2.8–3.2) | 3.5 | -39 | -30 |
+| rest-libs | 18.9 (16.1–20.6) | 11.3 (10.1–12.5) | 12.6 | -40 | -33 |
+| rest-mushd | 31.4 (26.7–34.0) | 17.6 (15.5–19.7) | 17.7 | -44 | -44 |
+| rest-server | 46.5 (36.9–51.6) | 40.9 (35.7–46.0) | 38.9 | -12 | -16 |
+| rest-server-boundary | 33.6 (30.2–40.2) | 21.4 (21.2–21.6) | 16.6 | -36 | -51 |
+| tacsim-integration-1 | 59.0 (43.3–72.6) | 49.6 (43.3–55.9) | 54.8 | -16 | -7 |
+| tacsim-integration-10 | 48.3 (37.3–61.2) | 39.1 (35.1–43.1) | 26.4 | -19 | -45 |
+| tacsim-integration-2 | 28.2 (21.5–40.4) | 27.5 (27.4–27.7) | 29.6 | -2 | +5 |
+| tacsim-integration-3 | 49.0 (46.9–50.1) | 33.3 (32.8–33.7) | 23.1 | -32 | -53 |
+| tacsim-integration-4 | 46.5 (30.4–61.7) | 38.9 (33.1–44.6) | 46.3 | -16 | -0 |
+| tacsim-integration-5 | 42.0 (34.3–46.0) | 33.6 (33.4–33.8) | 34.7 | -20 | -17 |
+| tacsim-integration-6 | 46.3 (46.2–46.5) | 28.5 (23.4–33.6) | 34.3 | -39 | -26 |
+| tacsim-integration-7 | 49.6 (48.9–50.0) | 29.2 (28.1–30.3) | 29.6 | -41 | -40 |
+| tacsim-integration-8 | 51.5 (30.3–62.7) | 36.4 (36.0–36.7) | 49.6 | -29 | -4 |
+| tacsim-integration-9 | 52.3 (51.5–52.9) | 32.1 (24.9–39.2) | 40.6 | -39 | -22 |
+| tacsim-lib | 38.3 (37.7–39.0) | 21.9 (18.9–24.9) | 27.5 | -43 | -28 |
+| **total** | 685.5 (636.8–751.6) | 497.7 (493.6–501.8) | 520.3 | -27 | -24 |
+
+**conclav.dev, tacsim's whole sweep** (`-P ci`, 16 threads, base `7a535806`, summed minutes per binary):
+
+| binary | main-a | main-b | o1-a | o2-a | main-b vs main-a | o1-a vs main-a | o2-a vs main-a |
+|---|---|---|---|---|---|---|---|
+| tacsim::shard_1 | 32.7 | 32.7 | 26.2 | 27.5 | -0% | -20% | -16% |
+| tacsim::shard_9 | 27.5 | 27.4 | 22.1 | 22.9 | -0% | -20% | -17% |
+| tacsim::shard_8 | 26.7 | 26.7 | 20.9 | 21.7 | -0% | -22% | -19% |
+| tacsim::shard_10 | 25.5 | 25.7 | 18.5 | 20.1 | +1% | -27% | -21% |
+| tacsim::shard_4 | 22.0 | 21.5 | 15.3 | 16.2 | -2% | -31% | -26% |
+| tacsim::shard_7 | 20.7 | 20.8 | 16.3 | 17.1 | +1% | -21% | -18% |
+| tacsim::shard_3 | 18.7 | 18.1 | 11.9 | 12.8 | -3% | -36% | -32% |
+| tacsim::shard_6 | 16.4 | 16.6 | 11.9 | 12.9 | +1% | -27% | -21% |
+| tacsim::shard_5 | 16.0 | 15.9 | 11.6 | 12.2 | -1% | -28% | -24% |
+| tacsim | 14.6 | 14.7 | 9.4 | 10.4 | +0% | -36% | -29% |
+| tacsim::shard_2 | 14.0 | 14.2 | 11.1 | 11.9 | +1% | -21% | -15% |
+| tacsim::cost_lane | 4.8 | 4.8 | 3.2 | 3.3 | +1% | -33% | -30% |
+| tacsim::harness | 0.4 | 0.4 | 0.3 | 0.3 | -2% | -31% | -27% |
+| **total** | 240.1 | 239.4 | 178.7 | 189.2 | -0% | -26% | -21% |
+
+The wall of that sweep was 1366 s on both main runs, 1036 s for A and 1082 s for B. A cold build of tacsim's tests
+took 190 s, 198 s and 197 s.
+
+**Reading**
+- **A meets D-43-4's bar.**
+  - On hosted CI, 11 of the 18 cells fall by a fifth or more, and the total by 27%.
+  - On the quiet box every tacsim binary falls by 20–36%, with main against itself at ±0%.
+- **B is slower than A on the same host** (−21% against −26%), so per-crate opt-level 2 is not taken.
+- **Why it works.** TS.3b found that boot (debug-build composition, content, site generation) is 70% of the
+  biggest modules' minutes, and the dependencies (serde, rhai, hashing, compression) do much of that work.
+- **The cost.** Every warm target dir (CI's caches, the VPS gate's, the owner's box) rebuilds its dependencies
+  once. The hosted cells' first run built in 1–4 min more than main's.
+- **The one red.** B's single failure, `field_gc4::gc4_the_wingman_drags…` (`field_gc4.rs:317`), passed on A in
+  every run and on main's three. It also failed twice on TS.12's branch, which has no profile change, so it is not
+  an effect of the opt level. Its cause is not established: a real-time race in that journey, or (on TS.12) the
+  binary's composition.
+
+## TS.3b (2026-11-04) — the step audit
+
+Read-only. The question was: for the dozen modules of §2.4, where do each story's minutes go? Four buckets:
+- **boot**: composing the world, opening the site, the pad fixture;
+- **real-time wait**: a real clock, a tokio sleep, an arena window;
+- **work**: simulation CPU on a stepped clock;
+- **assertion**: reading back.
+
+The twelve are the nine §2.4 names (`knowing`, `claims`, `match_lifecycle`, `cockpit`, `mining`, `drones`,
+`plans`, `unloading`, `field_gc4`), plus `field_gc5` (5.8's family), `driving` and `vehicles`, the next-largest
+tacsim modules. The minutes are run 41827163605's JUnit, from main `4390f04c` on hosted 4-vCPU cells, after
+TS.16. The split is a source reading of every test of 30 s or more and of each rig. Its anchors are tests that
+do only one thing, such as a test that only boots. Per test it is good to about ±30 %, because a test shares
+its cell with three others. The per-module write-ups, with the evidence for every row, are kept outside the
+tree in the doc-43 notes folder (`ts3b-audit/`).
+
+| Module (cell) | Tests | Summed min | Boot | Wait | Work | Assert | Where the minutes go |
+|---|---|---|---|---|---|---|---|
+| **5.8 the field window**: `field_gc4` + `field_gc5` (shard_1) | 12 | 13.4 | 6.6 | **6.2** | 0.4 | 0.2 | gc4: the arena's wall-clock `disengage_s`: the kept journey's two 90-s fields, and 15-s fields in the four lane3 tests. gc5: the keyed boot (~33 s a test), then 15-s windows |
+| `claims` (shard_5) | 35 | 41.0 | 24.3 | 0 | 15.4 | 1.3 | 41 keyed worlds for 35 tests (a world = keyed `boot_over` + `stock` + Ahuna opened + pad, ~32–39 s) |
+| `plans` (shard_6) | 28 | 34.4 | 22.6 | 0 | 11.0 | 0.8 | 37 worlds for 28 tests; P3 and P10 build three each |
+| `drones` (shard_3) | 23 | 28.2 | 13.5 | 0 | 12.3 | 2.4 | work: T5's fixed 4,000 fires (473 s) and T9's 2 × 800 (311 s), ~0.1 s of debug CPU a fire |
+| `knowing` (shard_4) | 83 | 26.7 | 22.0 | 0 | 3.3 | 1.5 | keyed `stocked()` (~8 s) in every test; `on_pad` (~13 s, stepped fires) in the 41 SM.4/survey tests |
+| `cockpit` (shard_7) | 192 | 26.5 | 21.6 | 3.5 | 0.3 | 1.2 | the production-roster `Rig::boot` (~5 s) + a match check-out (~3 s) in ~150 tests; the wait is the ledger tape's 16-KiB chunk fill (`CHUNK_BYTES`, ~4–5 s a wait, 12 real-clock tests) |
+| `mining` (shard_7) | 26 | 23.5 | 19.3 | 0 | 3.5 | 0.7 | one keyed world + Ahuna + pad a test; M12 and M8e boot two in a loop; M8 rewarms four times |
+| `match_lifecycle` (shard_8) | 144 | 15.5 | 12.1 | 0.7 | 1.9 | 0.9 | ~190 compositions of the production roster (~3.2 s each) and 20 reboots |
+| `driving` (shard_1) | 22 | 13.9 | 11.9 | 0 | 1.6 | 0.5 | the keyed `stocked()` + `on_pad` (~32 s a world), one or two a test |
+| `vehicles` (shard_6) | 52 | 12.0 | 9.2 | 0 | 2.3 | 0.5 | one stocked world (~7 s) a test; three preflight tests build 22 worlds for 22 refusal sentences |
+| `unloading` (shard_8) | 24 | 8.9 | 7.8 | 0 | 0.7 | 0.4 | the keyed `stocked()` + `on_pad` rig (~19.5 s) in 20 of 24 tests |
+| **The twelve** | **641** | **244.0** | **170.9 (70 %)** | **10.4 (4 %)** | **52.6 (22 %)** | **10.3 (4 %)** | |
+
+**Measured, not read: wall against CPU.** To check the reading, the same twelve modules ran once on conclav.dev (main `7a535806`, `-P ci`, 8 threads). A cargo target runner wrapped every test process and recorded its wall time and its CPU time (`getrusage` of the child, user + sys). A test whose wall exceeds its CPU spent the difference waiting. The idle column is that difference, summed per module.
+
+| module | tests | wall min | CPU min | idle min (wall − CPU, per test, ≥ 0) | idle share |
+|---|---|---|---|---|---|
+| knowing | 83 | 19.1 | 19.1 | 0.0 | 0% |
+| claims | 35 | 14.4 | 14.4 | 0.0 | 0% |
+| cockpit | 192 | 12.6 | 9.2 | 3.5 | 27% |
+| plans | 28 | 11.6 | 11.6 | 0.0 | 0% |
+| match_lifecycle | 144 | 10.9 | 10.8 | 0.2 | 2% |
+| drones | 23 | 10.4 | 10.4 | 0.0 | 0% |
+| mining | 26 | 8.1 | 8.1 | 0.0 | 0% |
+| driving | 22 | 6.5 | 6.5 | 0.0 | 0% |
+| field_gc4 | 6 | 6.5 | 2.6 | 3.9 | 60% |
+| unloading | 24 | 6.0 | 6.0 | 0.0 | 0% |
+| vehicles | 52 | 4.7 | 4.7 | 0.0 | 0% |
+| field_gc5 | 4 | 2.1 | 1.4 | 0.7 | 32% |
+| **all** | 639 | 112.9 | 104.7 | 8.3 | 7% |
+
+The measurement agrees with the reading. Overall the twelve are 7 % idle; the reading put real-time wait at 4 %, and the idle figure also counts lock and I/O waits.
+- Nine modules are 0–2 % idle.
+- The idle time is in `field_gc4` (60 %), `field_gc5` (32 %) and `cockpit` (27 %).
+- The most idle single test is the gc4 journey kept at 90: 153 s idle of 204 s.
+- After it come the lane3 and gc5 tests at the rig default: ~13 s idle per 15-s field, ~27 s for two fields.
+- Then come cockpit's tape and reclaim waits, 9–21 s each.
+- The box runs these tests about 2.2 times faster than a hosted cell: 112.9 wall minutes against the hosted 244.
+
+**What the table says.**
+- **Real-time wait is 4 % of these minutes, and nearly all of it is 5.8's family and cockpit's ledger tape.**
+  - Nine of the twelve modules wait on no real clock at all. They are `TestWorld` suites, and every window in
+    them (`sweep(120)`, `T9_WINDOW`, the IC-hour spans) is a `set_now` jump costing one `fire_due`.
+  - The clock seam (TS.10) is therefore the lever for the field family and the arena-backed modules, not for the
+    bulk of tacsim's minutes.
+- **Boot is 70 %, and boot is CPU.** It is debug-build composition, content load, site generation and stepped
+    port fires. That puts it squarely in TS.3's reach: opt-level 1 for dependencies cut these cells' summed
+    minutes by about a fifth to a half on its first run (TS.3's note: −26 % for tacsim on the box, −27 % hosted).
+- **The 5.8 row after TS.16.**
+  - The four lane3 tests and the two one-field gc5 tests now run at the rig default of 15. The two-field tests
+    went from ~211–214 s to 66–70 s, and the one-field tests from ~115–123 s to 51–53 s: 75 s a field, as
+    constructed.
+  - One copied window is left inside the journey TS.16 kept at 90.
+    `gc4_the_wingman_drags_the_casualty_to_the_ramp_and_loads_it_before_the_lift` sets `disengage_s = 90` for
+    the rig (`field_gc4.rs:190`), so both of its fields get it. Only the second field needs to stay open (the
+    drag happens inside it); the first does nothing inside its field. That is ~75 s of idle wall.
+  - CR.1 renamed §5.8's two gc5 tests (`…keeps_the_captive`, `…captures_the_crew`) and added `_at_512` twins
+    in shard_8 (`crew_custody`, 118.9 s).
+- **The arena clock is pausable today.** `match_lifecycle::af2_…a_minute_of_fire` runs 60 arena seconds under
+    `current_thread, start_paused` in 8.8 s. 25 cockpit tests on the paused clock average the same ~9 s as the
+    real-clock ones, and their tape waits cost nothing there. Doc 43c §0 has the consequence for TS.10.
+
+**Steps that boot a world to test one refusal** (Q-43-12's question; D-43-12 answers it: no unit rewrite).
+Named here for the record:
+- `vehicles`: `sm12b_the_yards_preflight_refuses_each_recorded_breach` (78.9 s),
+  `sm3a_the_rig_pools_preflight_refuses_each_recorded_breach` (67.6 s) and
+  `sm3a_the_vehicles_line_names_what_is_missing` (39.3 s): 22 worlds for 22 sentences.
+- `match_lifecycle`: `af3_a_boot_voids_a_match_it_cannot_resume_for_each_reason` (112.8 s): 32 compositions for
+  16 void reasons.
+- `claims`: C16, C2 and C23 build 4, 3 and 2 worlds to prove a text identical across deposit tables (413 s,
+  ~300 s of it boot). C21, C20 and C14b are single refusals (52–72 s).
+- `mining`: M9 opens a second site for one `MINE_CLAIMED` refusal (59 s).
+- `driving`: four refusal tests, at ~32 s of boot each.
+- `field_gc4`: `lane3_a_load_into_a_strangers_carrier_is_refused` boots three pilots on two sites and runs one
+  real 15-s field for one refusal line.
+- `knowing`: the cold-site and moved-rig refusals (23–25 s).
+- `cockpit`: `o1_start_refuses_a_mode_the_ground_does_not_declare`, and the two registry-collision checks.
+
+Under D-43-12 the lever for these is the boot's cost itself (TS.3; a cached composed world is a question for
+the owner, not this audit), never a unit test in place of the story.
+
+## TS.4 (2026-11-04) — the hostile-input suites
+
+§5.1's parsers, each fed what an attacker or a broken peer can send. **No suite found a panic, an abort or an
+unbounded state**, so nothing landed `#[ignore]`d and no production code changed.
+
+- **The command line** (`mush-server/tests/world_task/hostile_lines.rs`). `boot::build_engine`, with the
+  TacSim layer on, is wrapped in a `TestWorld`. It runs 1,500 seeded lines as a plain player and 1,500 as God.
+  Most lines are built on a registered verb: a name or alias, a prefix character, switches, and edge tokens
+  (dbrefs, numbers past every width, splitters, markup, control and bidi characters, 600-character runs). The
+  rest are arbitrary text. The engine is shared, so earlier lines' objects and input contexts are in play. A
+  reach floor stops a vacuous pass: more than a quarter of each actor's lines must get an answer other than
+  `Huh?`. They measured 688 and 683 of 1,500. `ParsedArgs` gets its own contract property inline in
+  `mush-core/src/cmd.rs`: every shape, with `raw`, `lhs`/`rhs` and `rhs_list` checked against the split rule.
+- **The key parser and the caps replies** (`mush-net-ssh/tests/editor_proptest/key_parser.rs`). The input is
+  arbitrary bytes, plus bursts weighted to `ESC [ O _ P \ BEL`, split anywhere. The properties: no panic; no
+  control character in a `Char`/`Alt`; and the parser's carried state (its `Debug`) stays under 4 KiB after
+  256 KiB of an unterminated CSI, APC or DCS. Capability replies with each final (`c t u ~`) reach
+  `DeviceAttributes::parse`/`CellSize::parse` through the parser, and any text reaches them directly.
+- **Both Rhai engines** (`mush-mind/tests/sandbox/nesting.rs`, `mush-script/tests/script/nesting.rs`). There
+  are fifteen nesting shapes: parens, unary, arrays, maps, blocks, `if`, `while`, calls, interpolation,
+  closures (script only), flat `+`/`&&` chains, index and method chains. Each runs at the guard's edges, far
+  past it, and up to the 32 KiB source cap, at the top level and inside a function. Each runs on an explicit
+  2 MiB thread, the stack the minds pool and the world task get (nothing in the tree sets another), through
+  `Sandbox::compile`/`think` and through the script module's boot compile and dispatch. One deep compiles.
+  Twice the guard is refused with Rhai's "exceeds maximum complexity", the flat chains included. Unbounded
+  recursion faults at the call-level limit.
+- **mush-ipc** (`mush-ipc/tests/roundtrip/hostile_frames.rs`). Every sample frame of both directions is cut at
+  every byte behind a whole frame. The codec reads needs-more-bytes and `FrameReader` reads `UnexpectedEof`;
+  a cut at the boundary is a clean EOF. Six corrupt bodies behind a valid prefix, including length-bomb
+  `array32`/`str32` headers, are `InvalidData` after the leading frame, and the valid frame after them is
+  never reached. An oversized prefix faults without its body. Arbitrary bytes in any chunking, and sample
+  bodies with overwritten bytes, never panic.
+- **`client_command_strategy`** (`mush-proto/tests/decode_proptest.rs`) now generates every `ClientCommand`,
+  `Query` and `InvokeRequest` family. Before, it was missing `Invoke`, `Ack`, `Composing`, `Respond`,
+  `Picture` and `Query::Commands`. `variant_tag` matches all three enums with no wildcard, so a new variant
+  does not compile until it is listed. `strategy_reaches_every_variant` fails until the strategy draws it.
+
+**Departures from §7.** The fuzzer runs one shared engine, not a fresh `TestWorld` per case. A boot costs
+seconds and shared state reaches more handlers. The runner is seeded, so CI is deterministic and a failure
+prints its line. `mush-ipc` and `mush-server` gain `proptest` as a dev-dependency. `mush-proto`'s
+`tests/wire.rs` exhaustive round trip (doc 05 I12 C2) is not touched. The proptest round trip now covers
+every variant.
+
+**Summed minutes.** About +0.3: `hostile_lines` is 12 s, and the rest is under 4 s across five binaries.
+Every module joins a binary that already exists.
+
+## TS.20 (2026-11-04) — pinned reconstructions
+
+§7's four unpinned rebuilds of old content each get a pin. A pin is the shape the old version actually had, read
+from the commit before the change it rebuilds around and written into the test as fixed history. Pinning
+turned up drift in two of the four: those reconstructions had been carrying fields their version never wrote.
+
+- **`ooc_v3`** (`mush-atlas/tests/interior.rs`) is held to `V3_REBUILT_DIGEST`, like `ooc_v6` and
+  `staff_lobby_v4`. It cannot be the published digest (`74344b62…`, `44115c47`). The published version 3 has
+  the same 24 entries, and 20 are byte-equal, but four differ:
+  - the Welcome Hall's desc and sign: the shipped text is kept, which is why the upgrade plans one update;
+  - the three `Lounge <L>` exits' `l` segment: since 16b cut D.5, apply refuses it.
+
+  So the real bytes cannot boot, and a committed fixture of them would prove nothing. The doc comment lists the
+  four entries. A re-pin must confirm the rebuild still differs from version 3 in those four entries and no
+  others.
+- **The format-3 checkpoint body** (`mush-economy/tests/e2b.rs`) is held to `FORMAT_3_FOLD_FIELDS`, the 28
+  fields `FoldState` serialized at `b205438c^`. **Finding: the rebuild had drifted.** Besides
+  `title_lineage`, it carried `seizure_receipts` and `bay_refit_receipts`, two audits added after format 4
+  without a format bump, which format 3 never had. The rebuild now strips all three.
+- **The pre-O.1 replay** (`tacsim/tests/shard_1/replay.rs`) is held to `PRE_O1_REPLAY_KEYS`, the 18 keys
+  `Replay::to_document` wrote at `8c2f0388^`. It matched: `mode` was the only key added since.
+- **The R4 relay shape** (`mush-server/tests/split_boundary/relay_registry.rs`) is held by `assert_r4_shape`
+  to the registry, node, pair and half fields at `233fbb2e`. R4 and R7 are consecutive commits on `relay.rs`.
+  **Finding: the rebuild had drifted.** R7 added `losses` and each half's `damaged` as well as
+  `structural_version`, and the "R4" document still carried both. The rebuild now drops them, after asserting
+  they are empty and false (so R4 could express that state).
+
+**Departures from §7.** None of the four uses a committed fixture. Three rebuild documents from a live run,
+whose bytes depend on that run. The fourth is the OOC pack, whose published bytes no longer apply. So the pin
+is the version's field set, or its rebuilt digest, and the `golden/v12` template does not fit any of them.
+
+**Summed minutes.** Zero: four assertions in tests that already exist.
+
+## TS.12 (2026-11-04) — the partition experiment, measured
+
+Q-43-5 / D-43-5. This was a measurement on branch `claude/ts12-partition-experiment` (draft PR #422), never
+merged.
+- **The layout.** tacsim's ten `shard_N.rs` roots became four domain roots over the same module files, with no
+  file moved:
+  - `domain_field`: 34 modules, the field, crew, bay and sortie journeys;
+  - `domain_economy`: 31 modules, the surface, market, claims, plans, mining and drones;
+  - `domain_arena`: 29 modules, the arena, cockpit, match lifecycle and minds;
+  - `domain_world`: 10 modules, knowing, vehicles, voyage, chart and ephemeris.
+- **The cells.** Every `tacsim-integration-N` cell built all four binaries and ran
+  `cargo nextest run --partition hash:N/10` over them. `harness` (cell 1) and `cost_lane` (cell 2) ran first, as
+  today.
+- **The runs.** Three attempts of run 41873443102, against main's runs 41870246223 (`7a535806`, the branch's
+  base), 41870167197 and 41827163605.
+- **The compile figures** are cargo's `Finished` lines in each cell's log. **The job and test minutes** are from
+  the jobs API and the JUnit.
+
+| Run | Compile + link, mean a cell (s) | Cells' compile, summed (min) | Slowest cell's job (min) | Fastest (min) | Spread | Tacsim summed test min (10 cells) |
+|---|---|---|---|---|---|---|
+| main 41870246223 | 215 | 35.8 | 23.1 | 12.5 | 1.85 | 523 |
+| main 41870167197 | 217 | 36.1 | 21.7 | 12.2 | 1.77 | 461 |
+| main 41827163605 | 197 | 32.8 | 19.4 | 10.4 | 1.86 | 435 |
+| TS.12 a1 | 249 | 41.5 | 24.6 | 11.6 | 2.12 | 484 |
+| TS.12 a2 | 233 | 38.8 | 23.8 | 9.3 | 2.54 | 485 |
+| TS.12 a3 | 226 | 37.7 | 21.8 | 10.6 | 2.05 | 460 |
+
+The TS.12 summed column leaves out harness and cost_lane (about 5 min), whose JUnit the experiment did not
+upload.
+
+**Reading**
+- **The link cost is small.**
+  - A cell compiles and links in 236 s on average against main's 210 s: about +26 s a cell, or 4–5 runner-minutes
+    a run.
+  - The hosted runner links the four binaries in parallel on its four cores. After the lib, the four domain
+    binaries took 38–45 s together (cells 1 and 2, where they built second).
+- **The wall is a wash.**
+  - Cell 2 was the slowest in two attempts: 24.6 and 23.8 min. That is the experiment's own artifact: cost_lane,
+    which runs alone, went serially before cell 2's hash share.
+  - Without cell 2 the slowest cell was 20.9, 21.2 and 21.8 min, against main's 19.4–23.1.
+- **The hash does not balance by time.**
+  - Spread (slowest over fastest job) was 2.05–2.54 against main's 1.77–1.86.
+  - The same cell's summed minutes varied up to 2× between attempts (cell 10: 50, 25, 29), and the partition is
+    deterministic, so that variation is the hosted machine's speed.
+  - Neither layout escapes that noise, but the hash layout never has to be rebalanced.
+- **The reshard cost it removes.**
+  - There were five layout changes in eight days (§2.4). Each was a `git mv`, `mod` lines, run lines and (until
+    TS.8) state-slot rows, and each was judged on several runs.
+  - Under partition, a new test module is one `mod` line in its domain root, and no shard ever moves.
+- **What adoption would also need** (not built here):
+  - the guards rewritten for domain roots (`ci_tacsim_shards`, the gated-test inventory's `shard_4` line, and
+    the `tacsim-minds` steps' `--test shard_2` names);
+  - the M8 jobs' `--test shard_9` lines;
+  - cost_lane given its own cell or run inside the partition.
+- **One test failed in all three attempts:** `field_gc4::gc4_the_wingman_drags…` at `field_gc4.rs:317`.
+  - It also failed on #423 and on #429 (a web-only diff on the standard layout), so it is a race in main's own
+    code.
+  - Still, 3 of 3 under partition against 0 of 4 on main's runs means the neighbour mix the hash gives it makes the
+    race likelier. Adopting the partition would first need that race found (rule 2.3 #7). The record is in the
+    doc-43 notes folder.
+
+D-43-5's test was whether the partition's link cost is lower than the reshard cost. Measured, it is about 26 s a
+cell and no wall, against a hand-made layout PR every day or two. The decision is the owner's.
+
+## TS.6 (2026-11-04) — the fiat budget
+
+D-43-9 as written. `crates/mush-contract-tests/tests/ci_policy/fiat_budget.rs` (module `fiat_budget::` of
+`ci_policy`) counts the unchecked state-slot accessors in every `crates/<pkg>/tests/**.rs`, after comments and
+literals are blanked. The accessors are `module_state_mut`, `module_state_pair_mut`, `get_pair_mut` and
+`get_captured_pair_mut`, matched as whole words, so path-qualified spellings count too. The checked
+`state_mut`/`try_state_mut` are not counted.
+
+- **The budgets.** `fiat_budget/<crate>-tests.txt` holds one line per file: `<budget> <low-water> <path>`.
+  Today's baseline is **205 sites in 96 files across 21 crates**. Doc 43 counted 210 at its base; tacsim
+  has 86 of today's sites.
+- **The ratchet.** The gate is equality: a file's count is its budget, so a removal is re-blessed down and
+  stays down. A budget above its low-water mark, a new file included (low-water 0), needs
+  `# raised <path> to <n>: <reason>`, and the reason must name an as-built section (`§`). Bless lowers
+  freely. It raises only with `FIAT_BUDGET_RAISE="<path>: <reason naming §…>"` and refuses without it.
+  Unit tests pin the count's spellings (prose and literals excluded) and the raise rules (missing, no `§`,
+  wrong number, stale, new file).
+- **`TestWorld::exec_ok`** runs a line that must succeed and panics, naming the line and its error, on any
+  error-styled answer, `Huh?` included. It is the prefer-instead the gate's failure names. 44 test files
+  today carry their own `has_error`, so the common case is real.
+
+**Departures from §7.** Inline `#[cfg(test)]` modules in `src/` are not counted; they are in-crate unit tests
+of a slot's own owner. Equality rather than a ceiling makes the ratchet bite on removals too. It runs in the
+existing `ci_policy` binary, so CI needs no change.
+
+**Summed minutes.** About +0.01: the walk takes 0.4 s warm and 17 s cold.
+
+## TS.5b (2026-11-04) — the fault matrix as sequences
+
+The second half of §7's TS.5 row. The new test is `gate5_fault_matrix::`
+`lifecycle_sequences_with_two_faults_and_restarts_recover_to_the_clean_run`, in `ci_policy`.
+
+- **The script.** Each case runs one script over each of the matrix's five real bundles (Gate-1 brace, Gate-2
+  tactical fire, and the three Gate-4 delayed-decision bundles):
+  - submit;
+  - reconcile;
+  - one outbox attempt per pending delivery that **fails (`Retry`)**, then is delivered;
+  - checkpoint.
+- **The cases.** Every single fault, and every pair at two different stages, from the matrix's own modes:
+  `BeforeIntent`, `AfterIntent`, every `AfterNMaterializationOps`, `AckLostAfterFinalize`, `TokenConflict`
+  and `AckLostAfterCheckpoint`. Each is crossed with:
+  - no restart;
+  - a restart before each one stage;
+  - a restart before every stage.
+
+  A restart is `InMemoryStore::dump`, then `restore` into a fresh store, as a process reopens the same
+  durable state. The outbox stage's restart falls between the failed attempt and its retry. That makes
+  over 500 cases, and the test asserts the floor.
+- **The check.** Every case ends with its exact receipt, a compact rejoin and no delivery left pending. Its
+  final store, dumped to JSON, must be **identical to the same script run clean**: recovered equals live.
+  All pass. No sequence found a divergence.
+
+**Departures from §7.** The Redis backend is not driven. `AuthoritativeFaultStore` wraps the memory store
+only, so a Redis twin needs a fault wrapper over `RedisStore`, and that run belongs in the `redis` group
+(`.config/nextest.toml`'s `redis-serial`). `cancel` and `advance time` are not modelled, because the store
+has no cancel of an authoritative bundle: a decision's cancellation and its deadline live in the engine.
+Conservation and sole custody are covered by TS.5a's model, not here; this test's check is whole-store
+identity. The minimised-failures part of the row has nothing to keep yet.
+
+**Summed minutes.** About +0.15: 9 s in a debug build.
+
+## TS.19 (2026-11-04) — mounted assertions
+
+The structural source probes in `stores/unit.test.ts`, `lib/game.test.ts` and `lib/roomband.test.ts` are gone.
+Each case is now a mounted assertion in jsdom, or it was already one elsewhere. The three stale "no harness"
+comments went with the probes. The vocabulary bans elsewhere in the suite stay.
+
+- **`components/UnitScreen.test.ts`** (new):
+  - `KeyValue` and `Table` render repeated producer ids, rows and cells.
+  - `UnitScreen` branches refusal, then unanswered, then no-subject, then the panes.
+  - The ring renders under the no-subject line.
+  - An actionable `GenericView` row is a focusable button that prefills on Enter and Space; a row with no
+    action is neither.
+- **`components/RoomBand.test.ts`** (new): the weather chip shows the prose, or the bare state, never an empty
+  chip. The vitals strip names its subject as text, not only as a tooltip.
+- **`components/Game.test.ts`** (new) mounts the whole shell on a real `GameApp` driven through a fake socket.
+  jsdom has no `<dialog>`, so two lines polyfill `showModal`/`close`. It covers:
+  - B-08: one command box, after the screen and before the legend, registered with the app; none on the
+    channel screen, where the app lets go of it.
+  - The unit tab's badge counts nothing until the server answers.
+  - Screen 0 has no tab without a seat or a replay, and draws the replay, not the cockpit, once one opens.
+- **The three app whitelists** (Cockpit, Picture, Replay) are now `components/reach.ts`'s `onlyReaches`. It is
+  a Proxy around each mount's stand-in app that throws on any member outside the list. So every test in those
+  three files enforces the whitelist on every path it drives, child components and aliases included, and the
+  send bans fall out of it.
+- **B-60** (the zoom glyphs) and **B-09** (the label plan) were already asserted by `CockpitScreen.test.ts`'s
+  mounts, so their probes simply went. `Table`'s check that its callers declare constant columns also went:
+  it is spelling, and the header's keying is commented in `Table.svelte`.
+
+Every new assertion was checked against a mutation of the component, and each mutation failed the test that
+covers it.
+
+**Finding.** `PictureView.svelte:487` reads `app.chart` through a cast, `(app as { chart?: … }).chart`. SF.18's
+space views draw the sky chart's frame behind the ship. The source probe's `app\.(\w+)` regex could not see the
+cast, so the "picture and helm only" whitelist passed while the screen reached a third member. The runtime
+whitelist caught it on its first run. `chart` is now an explicit, read-only entry on the Picture and Cockpit
+lists. Whether the cast should become a declared prop is the owner's call.
+
+**Summed minutes.** About +0.1: three jsdom files, 13 cases, a few seconds of the web job.
+
+## TS.5a (2026-11-04) — the generated lifecycle, part one
+
+§7's row has three parts. This PR lands the first two: the state machine with the invariants as its model,
+and the check that a generated history's checkpoint boot equals its whole replay. The fault matrix as
+sequences is TS.5b.
+
+- **The state machine** (`mush-economy/tests/e2a/lifecycle.rs`) replaces `e2a.rs`'s fixed-seed
+  conservation fuzz. That fuzz had one instrument, two-line transfers and no shrinking.
+  - The inputs are histories of up to 47 steps, run against the pure engine: pay, place, capture, release
+    and expire a hold, title, transfer (with or without releasing liens), assign, unassign, encumber,
+    release a lien, and resubmit an earlier plan.
+  - After every step the model checks:
+    - conservation;
+    - the held projection equals the account's `Held` holds;
+    - invariant 23's available floor;
+    - invariant 26's cap;
+    - invariant 24: a hold leaves `Held` once and captures at most what it held, and an `Expire` without a
+      deadline never posts;
+    - invariants 12 and 13: no lien rides a title move, a moved title loses its assignment and maintenance
+      payer, and an asset is never assigned to its own owner;
+    - a posted plan resubmitted is `AlreadyPosted`.
+  - `the_histories_reach_every_kind_of_post` is the reach floor: every step kind posts somewhere in a fixed
+    sample.
+  - Mutation check: with invariant 12's `Encumbered` refusal disabled, the property fails and shrinks to a
+    three-step history (title, lien, transfer).
+- **Checkpoint boot equals whole replay** (`mush-economy/tests/e2b/lifecycle_replay.rs`).
+  - Histories of the economy's own staff verbs run through `TestWorld`:
+    - `@econ/mint`, `@econ/pay`;
+    - `@hold/place`, `@hold/capture`, `@hold/release`;
+    - `@asset/title`, `/transfer`, `/assign`, `/unassign`, `/lien`, `/release`.
+  - The sweep fires at random points, with the checkpoint cadence at 4 and the tail at 3.
+  - The written store is booted twice: as written, which resumes from the newest checkpoint, and with every
+    checkpoint document and the boot manifest removed, which replays the whole journal. The two snapshots
+    must be equal to each other, and to the live one.
+  - Its reach floor: every verb succeeds somewhere, and some boot resumes from a checkpoint. The floor caught
+    the generator's own gap on its first run. Only a hold placed `for=` someone can be captured
+    (`api.rs:710`), and unfunded accounts rarely placed at all, so the cast now starts funded and places
+    with a beneficiary.
+
+**Departures from §7.** It ships in two PRs. The pure engine has no custody provider, so custody is covered
+only through the module rig's title and lien verbs. `@vault` deposit and withdraw need a vault and a carried
+object, and wait for TS.5b's sequences. No minimised failure exists yet to keep as a regression: none was
+found.
+
+**Summed minutes.** About +0.05: 0.7 s in `e2a` and 2.3 s in `e2b`.

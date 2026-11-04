@@ -429,6 +429,269 @@ slower, unrelated ones too (`twin::m2_gate_a_on_a_mixed_pool` 28.1 → 52.5 s, `
 64.0 s), and no test ran faster. The other changed tests run no longer for the cut: the stores are minted inside the
 bulk mint, so a port boots in exactly main's fires.
 
+## IN.5 — the first production story: the refine and the works (Q-39-4, Q-39-5, Q-39-6, Q-39-23, Q-39-31)
+
+**Built.**
+
+- **Lane v24, relay v15** (after CR.2's v23/v14, which merged first). The strip chain's head is
+  `lane_chain::strip_industry`, called first by CR.2's `strip_release_authority`;
+  `shard_4/lane.rs::in5_strip_industry_rebuilds_the_published_v23` pins it against CR.2's digest, and the chain
+  under it against IN.6's.
+- **The refine** (Q-39-6). `MillDef.kind` is `mill` (the default, skipped on encode, so the ore mills re-encode
+  byte-identically) or `refine`. The family rule in `check_ports` binds a `mill` row only. Kasei's row:
+  `{kind: refine, ore: metals, into: structural_alloys, ratio 5:4, batch_t 20, per_ic_day_t 40}`. Its
+  concentrate bid gains `refresh {per_ic_day: 40, cap: 4000}`. The 7,000 t seed stays as opening stock. The
+  refine is the mill engine unchanged: its ledger, its restock of Kasei's alloy ask, its drift check and its
+  readiness line.
+- **The facility rows** (Q-39-5): `PortDef.refinery` (room, operator, `smelt`, cost; one slot, never booked) and
+  `PortDef.works` (room, operator, the works capability, slots, cost, `customers`, `buys`). The applier opens them
+  as parts l and m (`port/plant.rs`, part j's precedent: the room is the facility, drift refused, a changed cost or
+  customer policy re-termed in place). The checks: the room is in the area and belongs to no other block; the
+  operator is an org of the entry; the capability is held. A `refine` row needs the port's refinery, and the
+  refinery's operator is the vendor that refines.
+- **The rows**:
+  - Stickney's refinery at `p07_receiving` (Kasei, §4.4's row, margin 0).
+  - Stickney's works at `p15_maintenance` (Stickney Yards, two slots, Public, §4.4's works row; `+works/quote
+    fittings` reads 265.00 cr).
+  - The Ceres works at `c15_maintenance`, owned by **Freeport Works**, a new Ceres org (capital 1,000,000).
+    Its vendor row is the last at Ceres. It stocks 240 t of carbon ore and asks it at 60, and its storefront
+    is the works room, so its stock is the works' stores.
+  - The programme's carbon reference becomes that listing, since a fixed reference is only for a good no port
+    asks.
+- **The recipe pack** (§4.3): `content/industry/recipes-v1.json`, `tacsim.industry.recipes` v1, with `fittings`
+  (5 `structural_alloys` + 1 `carbon_ore` → 5 `industrial_parts`, `works`, 6 work units, `output_lots: pooled`).
+  It ships as a game seed source beside the relay's manufacture pack (`game_seed_sources`), so every deploy with
+  the game on publishes the works' menu.
+- **The house purchase** (Q-39-31; `port/supply.rs`): while the Stickney works' stores hold under 10 t of alloys,
+  the stock clerk buys a 5 t lot an IC day from Kasei at its ask, paid from Stickney Yards' account. The step
+  runs in two phases:
+  1. one economy post keyed `tacsim.works_supply/{stores}/{act}/{good}/{lot}`;
+  2. one `tacsim_works` move, the order contract's own act, under the works ledger keyed by the stores vault.
+
+  A purchase is in flight exactly when the next ordinal's key has resolved, so a restart neither pays twice nor
+  loses a paid lot. Before the move, the seller's ask is lowered by the lot with `mush_market::shrink_ask`
+  (`restock_ask`'s mirror, never while a Draw is unsettled), so the ask stands throughout. The pool's excess over
+  the listing and its undrawn quotes is the durable mark that the shrink is done. The drift check and the
+  readiness report discount the lot in flight (`supply::moving`) until the works ledger shows it landed.
+- **`+works` at a room facility**: `here()` and the arm's `port_of` find a facility that is the port's authored
+  works room (the spine is not one of `port_rooms`).
+- **The pooled output** (§4.3): the arm dissolves a delivery's bulk lot in the escrow on the fire after the
+  delivery (`Then::Pooled`, an escrow-to-escrow act). The collection then moves pools, and a collection asked
+  for first answers "That order is still settling." IN.3's prepare relocated and dissolved in one act, which can
+  never land: a bundle mutates a pool's tally key once. IN.3's story never collected a pooled output. Escrow
+  contents now name the order's bulk outputs beside the bill.
+- **The bot** (`mush-bot/src/mine/works.rs`, mounted as `lane::works`): the closed vocabulary (`+works` and its
+  switches, `+ship/plan|undock ceres|stickney`) and the reader (`booked`, `delivered`, `supplied`, `collected`,
+  `quote_fee`, `row_quantity`, `ask_row`, `bid_row`). The contract test holds it to `tacsim::port::works`'s new
+  `pub` sentence constants (`BOOKED_AT`, `DELIVERED_AT`, `INTO_ESCROW`, `INTO_HOLD`, `FEE_CLAUSE`, `SETTLING`).
+
+**The stories.**
+
+- `shard_2/in5_production.rs::in5_concentrate_refined_at_kasei_becomes_fittings_sold_at_ceres` (shard_2, the
+  shard with the most room), through the production commands:
+  1. The lane's facilities and Freeport Works' bids are read.
+  2. A First Captain buys 20 t of concentrate at the Exchange's ask and 1 t of carbon at Freeport Works', and
+     sails to Stickney.
+  3. They sell the concentrate into Kasei's bid. The refine ledger reads 20 → 16 and Kasei's ask restocks by 16.
+  4. They buy 5 t of alloys, quote and book `fittings`, and deliver the bill. The arm runs, delivers and pools
+     the order, and `+works/collect` puts 5 t of fittings in the hold.
+  5. Home, the Co-op's bid pays 3,000.00 cr less the Trust's 100.00 cr share.
+  6. On the way, the works' stores reach their 10 t floor in two purchases (the works ledger reads 2, no third
+     key paid). The drift check never pages, and no write is refused.
+
+  Seeds: the captain's money (`@econ/mint`) and the passage's bunkers (`load`).
+- `mush-bot/tests/mining_cohort.rs::in5_the_bot_mines_refines_and_sells_fittings_from_ahuna` (256) and
+  `…_from_urvara` (512), the bot over SSH. The mining lane plays its loop to the hold sold, under the canary's rate
+  lift. God then lifts the rate to 3,600, and the bot types the production half in its own vocabulary, reading
+  every answer with its own reader: the Exchange's and Freeport Works' asks, the bunkers, the passage, Kasei's bid, the restock
+  watched on `+market/list`, the alloys, `+works/quote|order|deliver|collect`, the passage home and the Co-op's
+  bid (gross 3,000.00 cr). Both `#[ignore]`d, run by name on conclav.dev (by-hand tier, doc 43 TS.2):
+  `cargo test -j 8 -p mush-bot --test mining_cohort -- --ignored in5_ --nocapture --test-threads 1`.
+  The way out is by Luna and Deimos: Ceres→Aitken Highport→Voltaire Anchorage→Stickney (`ceres_aitken`,
+  `aitken_voltaire`, `voltaire_stickney`, about 27 IC days), bunkering at each port. The way home is
+  `stickney_ceres`, whose legs carry no hazard. The detour adds about 11 real minutes a site at the 3,600 rate.
+  Seed: God mints the pilot a 50,000.00cr float from a system source of the story's own (`@account/system … =tacsim.credit`, the
+  pilot's `@account/list`, `@econ/mint`), staff lines outside the bot's vocabulary.
+  The closing check reads `@tacsim/port status`: no line pending, missing or flagged but the two the story's rate
+  brings, the rate line itself and Occator's house rig stopped under a claim after the IC month the lift runs.
+  by-hand: `cdd30329` (main `a193de9c` with the busy-sale retry), both side by side on conclav.dev: Ahuna 1,895 s,
+  Urvara 1,897 s, each about 570 s of mining, 1,325 s of production and passage, and the sale. Tier: by hand
+  (`test-tiers.toml`).
+
+**Departures from the row.**
+
+- **No new atlas rooms.** §7 names `p12_refinery`, `p13_works` and `c15_works`. A room in
+  `neighborhood.ceres_freeport` re-publishes it at v5, and ten packs pin v4 exactly (the cast, crew, passenger,
+  quest and relay packs). That cascade crosses the parallel cuts' files, so the facilities open in standing
+  rooms: Kasei's receiving office for the refinery, and the two stations' service spines for the works.
+  `+works` needs only the port. The station re-publish is IN.9's, which owes `p14_slipway` anyway; the rooms
+  move then.
+- **The Exchange keeps its bids; the carbon ask is Freeport Works'.** §4.2 moves the Exchange's alloy and carbon
+  bids to Freeport Works and gives the Exchange a carbon ask. The port applier never retires a bid on an update
+  (a kept world would refuse the apply), and a vendor may not both ask and bid one good. So the bids stay where
+  they are (the alloy bid keeps its "Freeport Works" alias), and Freeport Works stocks and asks the carbon. Its
+  240 t is finite (provisional): nothing refills it. Flagged for the tune, and for IN.10's house orders, which
+  draw on those same stores.
+- **No strategic-ore ask**, for the same rule: the Exchange keeps its strategic bid. IN.7, which owns the
+  strategic recipes, rules where that ask lives.
+- **"Mines carbon ore on Kerwan"** is read as the bot's mining loop (metal ore, sold into the Exchange's bid) at
+  the story's two ground sizes, Ahuna and Urvara. The story's carbon is bought at the Exchange's ask, as the row's
+  next clause says. The bot mines metals and volatiles only; a carbon family for the lane is a later bot cut.
+- **The house purchase has no consumer yet**: house orders at the works are IN.10's. It stops at the floor.
+- **The bot sails out by Luna and Deimos, not the corridor.** On main every Ceres→Stickney passage is interdicted
+  at Kirkwood: `ceres_stickney`'s leg 0 has hazard 4 against an interdiction threshold of 3, and the Kirkwood
+  location carries the `kirkwood_picket`. The SF track's wall-clock customs bubble wants heave-to and
+  `+helm/submit`, then the raider fight (doc 35 SF.R6). The owner has said these cuts raise no space exposure,
+  and the lead ruled the story should not fly the picket. Stripping it in the bot rig would need a production
+  hook, because the rig boots the real server with the built-in lane, and an operator seed may not claim the
+  lane's id. So the story takes the lane's own picket-free way out, on production paths with nothing stripped,
+  and the matter pin and the drift check are untouched.
+- **The bot's money does not cover the long way round** (an economy finding, provisional numbers): unseeded, at
+  both sites the pilot reached Stickney, sold, refined, ordered and collected the fittings, then could not pay the
+  bunkers home ("Your account does not have enough available to cover that."). The mining loop's earnings plus the
+  trade's margin do not buy propellant at 60 cr a tonne for three legs out and one home. The story seeds a float
+  (above); tuning the margin or the propellant asks is the economy's, not this cut's.
+- **Stickney Yards' capital is thin** (an economy finding, provisional numbers): its 50,000 now also pays the works'
+  house purchases of Kasei's alloys (two lots, 4,500), so IN.8's `in8_a_whole_escort_scrapped_at_stickney…`,
+  whose escort costs the Yards about 45,000, can no longer buy the heavy's bale back. The story seeds the Yards
+  50,000 from Ceres' treasury before that step (`fund_the_yards`); the capital is the economy's to tune.
+- **For the SF thread:** the bot has no picket words (brake under 10 m/s, `+helm/submit`, `+tac/pdc auto`, a
+  jink), so any bot haul through Kirkwood stalls in the bubble.
+
+**Other tests moved.**
+
+- The lane pins: `LANE_VERSION` 24, `LANE_DIGEST`/`SHIPPED_LANE_DIGEST` `0d07927c…`, relay v15 `2fff2038…`
+  (`relay_registry.rs` and its kept-world test, now `sm12b_a_kept_v13_star_takes_lane_v24_and_relay_v15`;
+  `boot_parity.rs`; `shard_10/stations.rs`), and the version asserts in `shard_3/drones.rs`,
+  `shard_5/sites.rs`, `shard_9/mill.rs`, `cost_lane.rs` and `shard_4/lane.rs`.
+- `shard_4/lane.rs`: the Syndicate is still appended last before Freeport Works.
+- `shard_9/mill.rs`:
+  - the shipped lane's mill rows count Kasei's refine, and the vendors' mill flags count Freeport Works;
+  - Stickney's clerk is now offered the mill action, so another port's clerk is refused at the resolve;
+  - the one-act check leaves out Stickney's own writes (Kasei's drip and the house purchase), by its listings
+    before and after the fire.
+- `shard_2/in3_order_contract.rs` books at the lane's Stickney works instead of seeding one.
+- Ceres' fourth vendor and ninth org: `shard_10/commerce.rs` (receipts 34 → 35, vendor counts, the Exchange Hall
+  board's carbon line), `shard_10/ports.rs` (orgs 12, treasury 15,951,000.00 cr, 63 commerce lines),
+  `shard_10/plumbing.rs` (Freeport Works' two tranches; it is the one non-Ceres-bid vendor stocking ore),
+  `shard_5/sites.rs` (the org order), and `boot_parity.rs` (25 institutions).
+- Kasei's bid refreshes and the refine consumes what Kasei buys:
+  - `shard_9/sale.rs` runs IC10's suite on the lane without IN.5's rows (its subject is the plain bid);
+  - `shard_3/orders.rs` counts the pilot's own submissions and reads one sale by its contract;
+  - `ic_slice_loop.rs` reads the bid through the port map, counts Kasei's concentrate with its refine
+    ledger, and counts the alloy ask's sales net of the refine's restock and the house purchases. Its
+    `drain_players` treats Stickney's clerk as a house actor.
+- `cost_lane.rs` settles the Stickney works' two purchases before the C2/C3 cohort, so its quiet points find
+  Stickney's clerk idle.
+- `shard_5/sites.rs`'s "nothing is burned" checks burns, not every tacsim submission.
+- `shard_1/driving.rs`'s site-map fixture is re-blessed: 18 IC seconds of extra stocking fires.
+- mush-market `e7r2`: `shrink_ask` joins `restock_ask` as a taker of `RestockSpec`.
+
+**A flake seen on this PR (doc 43 rule #7).** `shard_8/escort_lease.rs::cf6c_a_leased_escort_flies_out_fights_withdraws_and_goes_back`
+failed twice on the PR's CI (`tacsim-integration-8`) and once in three runs on conclav.dev on this tree. It passed
+2 of 2 there on main (`4390f04c`) and always on Windows. Each time the escort is destroyed during the fire
+exchange, before it drives to the ramp ("Your tank is destroyed and takes no orders"). The fight reads no industry
+row, so the likely cause is timing: the story's `until` loops fire on wall-clock steps, and Stickney's new port
+activity (the refine, the drip, the house purchases) adds work to every fire. Owed: a CF-train look at the story's
+fight budget (the exchange should stop at the first hit both ways, not let the intruder keep firing).
+
+**Cell delta (rule #14).** `tacsim-integration-2`: **+0.22 min**. The cell's sum is 21.51 → 21.73 min, main's run
+at the merge base (41827163605, `4390f04c`) against the PR's (41853059138), 414 → 415 tests. The new story takes
+20.8 s. The common tests moved −0.12 min in all; `cost_lane`'s C2/C3 cohort adds about 10 s for the house
+purchases it settles first (`sm12c_a_restart…` 69.1 → 78.8 s).
+
+## IN.7 — the part recipes (Q-39-22, Q-39-31)
+
+**Built.**
+
+- **The part recipes** (§4.3): `tacsim.industry.recipes` v2 (`content/industry/recipes-v2.json`, which replaces v1
+  in `game_seed_sources`) carries `fittings` unchanged and the table's thirteen part rows. They are the five
+  mounts and racks (`mount_105`, `mount_30`, `mount_mg`, `mount_laser`, `rack_lr`), the two sights, the two pods
+  and the four plants, each at the works with `output_lots: each`, with the table's inputs, outputs and work
+  units. The works' menu shows the latest published version of each recipe, so a kept world that holds v1 beside
+  v2 offers `fittings` once.
+- **The arm's part commission** (§4.11; IN.2's act):
+  - On the fire after a part recipe's delivery, the works arm finds the escrow's untraced part lot (a part good
+    with no provenance row) and owes IN.2's `Commission` under the facility's own bay ledger
+    (`bay_work::owe_commission`, ledger = the facility object, submitted as the requester).
+  - The act consumes the lot by its `workorder.output` lineage. It lays one lot a unit at grade 9, each with its
+    `Manufactured {order, facility}` row, in one bundle. The bay tick submits it on the next fire, and its ordinal
+    replay lands it once across a restart.
+  - Until the act lands, `+works/collect` answers "That order is still settling.", and a house order is not
+    collected. The ten-unit industry lot carries no row, so `+bay/fit` refuses it.
+  - A hull kit is not a part, so IN.9's yard commission does not meet this one.
+  - An order of a part recipe is capped at 32 parts, one commission's rows (`+works/quote`/`order` refuse
+    "The works lays at most 32 parts an order; order fewer.").
+- **Lot moves in one bundle** (`mush_inventory::InventoryFamilies::relocate_lots`): a collection of ten part lots
+  failed "a lot could not be moved", because ten single `relocate`s write one endpoint's census and tally keys ten
+  times and a bundle writes a key once. The works' move relocates its lots together.
+- **The stores index** (IN.6 left it to IN.7/IN.9): `stock::store_lots` finds a storefront's part lots by a bounded
+  walk of the lot family (16 pages of 256), not by the seeds' derived ids. A part made, scrapped or sold into a
+  storefront is now drawn by `Replace{lot: Store}` like a seeded one: traced, unfitted, clean, unheld but for its
+  own ask, and unclaimed.
+- **The disputed part** (the row's last clause): `bay_work::disputed` is a stripped part that its parent's record
+  lists under a claim (`claim_lots`) that is not vacated and whose filed contract has not ended. An unreadable
+  contract counts as live: fail closed. `+bay/fit` refuses it: "That part is disputed: it came off #… under claim
+  …, which is still open; nothing takes custody of it until the claim is settled." `disputed_refusal` is the
+  sentence for a build's custody too. `strip::list_under_claim` is staff's seam, `vacate_claim`'s pair, since no
+  ruled path strips under a claim (Q-36-33).
+- **The lane** (v26, relay v17; after CR.2's v23, IN.5's v24 and IN.9's v25):
+  - Stickney Yards bids strategic ore at 700: intake 12, refresh 2 a day, boards exchange and yard. This is
+    Q-39-31's Stickney bid; the Exchange's 600 at Ceres stays, so a hauler clears 100 a tonne.
+  - **The seeds retire** (Q-39-12): Occator's five part stock rows and the Yards' thirteen are gone, so the stores
+    hold what is made, scrapped or sold into them.
+  - The strip chain's head is `lane_chain::strip_part_recipes`, which `strip_industry` calls first. It puts the
+    rows back from `SEEDED_PARTS` and removes the bid. `shard_4/lane.rs::in7_strip_part_recipes_rebuilds_the_published_v24`
+    pins it against IN.5's v24 digest.
+- **Instrument boards from Luna**: no new row. Crisium Instruments' ask at Aitken Highport (900) is the source,
+  and the lane's own routes are the leg (Ceres → Luna → Voltaire → Stickney: Luna has no route back to Ceres, and
+  this leg passes no Kirkwood picket).
+
+**The story.** `shard_2/in7_part_recipes.rs::in7_strategic_ore_boards_and_fittings_become_ten_sights_at_stickney`
+(shard_2, the shard with the most room):
+1. A captain at Ceres with three tonnes of strategic ore and a titled scout in their Dray-P's bay sails to Luna.
+   They buy a tonne of boards at Crisium's ask and sail by Voltaire to Stickney.
+2. The scout is berthed and its sight wrecked. `+bay` quotes `NO_PART`: the seeds retired.
+3. A tonne of ore goes into the Yards' bid at 700, and three tonnes of fittings come off the Yards' ask.
+4. `+works/quote sight_visual` prints the bill and sixty work units, and a quantity of four is refused at 32
+   parts. The captain books the order and delivers the three lines, and the arm runs it.
+5. Delivered, the escrow holds one ten-unit industry lot with no row. `+bay/fit` refuses it, `+works/collect` is
+   settling, and the works' bay ledger owes the commission.
+6. The commission is submitted and the world restarts before it lands (the submission dropped, `reboot`). After
+   the restart it lands once: the ledger reads 1, the industry lot is gone, and there are ten one-unit lots at
+   grade 9 with `Manufactured` rows naming the order and the works.
+7. `+works/collect` puts the ten in the hold, and `+bay/fit` fits one to the scout. Its row reads manufactured,
+   fitted into the scout, and the sight is intact.
+8. The sight is stripped again and staff list it under an open claim. `+bay/fit` refuses it as disputed and
+   stages nothing.
+
+Seeds: the money, the ore in the hold, the bunkers, the scout's unit, title and placement, the wrecked sight, the
+open claim.
+
+**Departures from the row.**
+
+- **No 256/512 pair**: the cut is port-side (IN.2's, IN.4's and IN.6's precedent). The ore the story seeds is the
+  bot's to mine, and the bot mines metals and volatiles only (IN.5's note).
+- **"Refused at a build's custody"** is proved at `+bay/fit`'s custody. On this tree the yard's `+yard/deliver`
+  of part lots is IN.9's (#416, not merged). `disputed_refusal` is the one sentence for IN.9 to call there, with
+  `relocate_lots` for its multi-lot delivery.
+- **The strategic ask at Ceres is not authored**: the row names only the Stickney bid. The Exchange cannot ask
+  the good it bids (IN.5's rule), so strategic ore reaches the works from miners and haulers, who sell into the
+  700 bid or deliver into an order from their own hold.
+- **The seeds retire with no house restock**: with the lane's part stock gone, a workshop's stores are empty
+  until parts are made, scrapped or sold into them. A refit that wants a part from the stores now finds `NO_PART`
+  unless one is there, and the captain orders the part at the works and `+bay/fit`s it. A house order that keeps
+  the stores stocked is IN.10's arm (house orders) or a later cut. **Flagged for the owner.**
+
+**Other tests moved.**
+
+- `shard_2/in6_part_lot.rs` and `shard_1/bay_36a.rs::b36a_2_…` stock the stores they draw from by staff
+  (`driving_rig::seed_store_parts`: one-unit grade-9 lots with `Seeded` rows, as IN.6's stock row laid them),
+  since the lane seeds none. Their claims are unchanged.
+- The lane pins: `LANE_VERSION` 26 and the lane digest (`shard_4/lane.rs`, `cost_lane.rs`), relay v17 and its
+  digest (`relay_registry.rs`), and the version asserts (`drones`, `mill`, `sites`, `stations`, `boot_parity`).
+
+**Cell delta (rule #14).** `tacsim-integration-2`: _filled from the PR's JUnit_.
 ## IN.8 — the mass budget and scrap (Q-39-15, Q-39-16, Q-39-17, Q-39-25, Q-39-26)
 
 **Built.**
@@ -579,14 +842,19 @@ found; the moved tests do no more work than before.
   Ceres, returns its own leased tug, and `+coop/buyout` writes the title transfer with the titled escort still in her
   bay.
 
-Seeds: the yard facility (`@facility/open`, `/owner`, `/terms`) until lane v24 authors the row; the Dray-P's bill
-and, on the ground, the escort's in their escrows; the escort's bill and the munitions in the Dray-P's hold; the
+Seeds: the Dray-P's bill and, on the ground, the escort's in their escrows; the escort's bill and the munitions in the Dray-P's hold; the
 money; the officer's grant; the captain's move to Stickney; the escort's disablement and its index row.
 
 **Departures from the row.**
 
-- **The lane's `yard` row at `room.p14_slipway`** waits on IN.5's lane v23 (#414): it is lane v24, a `PortDef.yard`
-  block of IN.5's `WorksDef` shape (capability `tacsim.yard`) and a new atlas room. Until then the facility is a seed.
+- **The lane's `yard` row is at P12 Observation, not a new `room.p14_slipway`** (lane v27, relay v18, over
+  IN.7's v26, IN.5's v24 and CR.2's v23): a `PortDef.yard` block of IN.5's `WorksDef` shape under `tacsim.yard`, opened
+  by the applier's part m (`plant::rows`), found by `+yard` through `plant::block_room`. A new atlas room would
+  bump Stickney's atlas pack v4 and the Phobos exchange pack that requires it; the gallery over the drydocks is
+  the slipway's counter. v27 also carries **Stickney Yards' raise of 50,000** (IN.7's, folded in on the owner's
+  ruling: it funds the Yards' strategic bid, so IN.8's whole-escort scrap can buy back its bale; the tranche count
+  in `plumbing.rs` goes 5 → 6 and the treasury in `ports.rs` to 16,001,000.00 cr). `lane_chain::strip_yard` heads
+  the strip chain and takes out both (`in9_strip_yard_rebuilds_the_published_v26`).
 - **`armour_cab` and `walker_cab` are not in this cut.** Giving the line-tank family, the heavy, the scout and the
   bipeds an authored `logistics` changes every fielded tank's dry mass from the field-ops measure to whole tonnes,
   which moves the tow masses and IN.8's per-point figures for those designs; it is a follow-up with its own review.
