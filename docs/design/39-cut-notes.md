@@ -510,7 +510,7 @@ bulk mint, so a port boots in exactly main's fires.
   The way out is by Luna and Deimos: Ceres→Aitken Highport→Voltaire Anchorage→Stickney (`ceres_aitken`,
   `aitken_voltaire`, `voltaire_stickney`, about 27 IC days), bunkering at each port. The way home is
   `stickney_ceres`, whose legs carry no hazard. The detour adds about 11 real minutes a site at the 3,600 rate.
-  Seed: God mints the pilot a 50,000.00cr float from a system source of the story's own (`@account/system`, the
+  Seed: God mints the pilot a 50,000.00cr float from a system source of the story's own (`@account/system … =tacsim.credit`, the
   pilot's `@account/list`, `@econ/mint`), staff lines outside the bot's vocabulary.
   by-hand: _the revision and walls of the conclav.dev run_.
 

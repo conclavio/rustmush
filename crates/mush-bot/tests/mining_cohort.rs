@@ -639,16 +639,16 @@ async fn float(god: &mut arena::Client, client: &mut arena::Client) {
             })
     };
     let opened = god
-        .say("@account/system in5_float=cr", "Opened account #")
+        .say("@account/system in5_float=tacsim.credit", "Opened account #")
         .await;
     let source = id(&opened, "Opened account #");
-    let listed = client.say("@account/list", " cr = ").await;
+    let listed = client.say("@account/list", " tacsim.credit = ").await;
     let row = listed
         .lines()
-        .find(|line| line.trim_start().starts_with('#') && line.contains(" cr = "))
+        .find(|line| line.trim_start().starts_with('#') && line.contains(" tacsim.credit = "))
         .unwrap_or_else(|| {
             panic!(
-                "no cr account in the pilot's list:
+                "no tacsim.credit account in the pilot's list:
 {listed}"
             )
         });
