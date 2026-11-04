@@ -586,6 +586,9 @@ pub(crate) fn refusal_line(
         // cannot be switched to now.`; the cockpit's own pre-checks (17b cut
         // M5.4) say the specific case through the same `order_refused`.
         (Refusal::Profile, _) => PROFILE_REFUSED.to_owned(),
+        // **Doc 40 cut FR.5** (Q-40-4): a jammed or destroyed plant will not
+        // start, said as `STARTUP refused. Your plant will not start.`.
+        (Refusal::Plant, _) => "Your plant will not start.".to_owned(),
     };
     order_refused(order, weapon, &said)
 }

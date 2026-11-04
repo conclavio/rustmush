@@ -322,6 +322,7 @@ pub mod motion;
 pub mod motor;
 pub mod observer;
 pub(crate) mod order_watch;
+pub mod part_effects;
 pub mod party;
 pub mod path;
 pub mod perception;
@@ -554,7 +555,7 @@ pub(crate) mod test_support {
     }
 
     /// [`tactical_unit`]'s spec, under any rules blob.
-    fn tactical_unit_spec(rules: RulesValue) -> UnitSpec {
+    pub(crate) fn tactical_unit_spec(rules: RulesValue) -> UnitSpec {
         UnitSpec {
             definition: dref("unit", "tacsim.unit.line_tank"),
             sections: vec![SectionSpec {

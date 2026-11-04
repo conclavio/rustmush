@@ -589,7 +589,15 @@ thread_local! {
 ///        seat holds its weapons and **nothing at all for weapons free**, the
 ///        default, by sub-item 20's rule, so every match that never holds
 ///        folds the bytes it folded before the cut. It decides whether a
-///        standing fire rule fires, which no ledger line says until it does.
+///        standing fire rule fires, which no ledger line says until it does;
+///    22. **the authored sight** (doc 40 cut FR.5, §4.1 item 4, Q-40-3):
+///        [`crate::arena::state::UnitState::sensor_authored`] — `[1]`, then the
+///        authored `max_range_cells` as `u16`, then the live sight's as `u16`
+///        (`u16::MAX` for none, a jammed sight) — and **nothing at all when the
+///        live sight is the authored one**, by sub-item 20's rule, so every match
+///        whose sights are intact folds the bytes it folded before the cut. The
+///        sensor row itself is not folded (a fact of the fit); this is the one
+///        place a part's condition moves it, so it is.
 /// 2. **The spent-section window** (16b cut D.2), in the map's own key order: the
 ///    count of entries as `u64`, then per entry the platform told's `u32`, the
 ///    target's `u32`, the section id's bytes and the arena millisecond as `i64`.
@@ -1214,6 +1222,19 @@ pub fn state_hash(arena: &Arena) -> u64 {
         // hashes as it did.
         if unit.weapons_hold {
             fold.bytes(&[1_u8]);
+        }
+        // **Doc 40 cut FR.5** (sub-item 22): the authored sight, only while the
+        // live one differs from it — no byte for an intact sight.
+        if let Some(authored) = &unit.sensor_authored {
+            fold.bytes(&[1_u8]);
+            fold.bytes(&authored.max_range_cells.to_le_bytes());
+            fold.bytes(
+                &unit
+                    .sensor
+                    .as_ref()
+                    .map_or(u16::MAX, |sensor| sensor.max_range_cells)
+                    .to_le_bytes(),
+            );
         }
     }
     // **16b cut D.2**: the spent-section window, in the map's own key order.
@@ -2604,6 +2625,49 @@ mod tests {
             unit.weapons_hold = false;
         }
         assert_eq!(state_hash(&held), base, "free folds no byte");
+    }
+
+    /// **Doc 40 cut FR.5: the authored sight folds only while the live one differs** (item
+    /// 1's sub-item 22): no unit checks out with a kept row, so the base folds no byte for it;
+    /// a damaged sight and a jammed one each move the hash, from the base and from each other;
+    /// and the repair's `None` hashes as the base did.
+    #[test]
+    fn fr5_the_hash_folds_the_authored_sight_only_while_it_differs() {
+        let base_arena = two_tanks();
+        let base = state_hash(&base_arena);
+        assert!(
+            base_arena
+                .units
+                .iter()
+                .all(|unit| unit.sensor_authored.is_none()),
+            "every intact sight checks out as authored"
+        );
+        let authored = crate::arena::test_support::visual();
+        let with = |live: Option<u16>| {
+            let mut arena = two_tanks();
+            if let Some(unit) = arena.unit_mut(ObjId(9)) {
+                unit.sensor_authored = Some(authored.clone());
+                unit.sensor = live.map(|range| crate::arena::perception::SensorProfile {
+                    max_range_cells: range,
+                    ..authored.clone()
+                });
+            }
+            state_hash(&arena)
+        };
+        let damaged = with(Some(authored.max_range_cells / 2));
+        let jammed = with(None);
+        assert_ne!(damaged, base, "a damaged sight went unhashed");
+        assert_ne!(jammed, base, "a jammed sight went unhashed");
+        assert_ne!(damaged, jammed, "how the sight differs folds too");
+        let mut repaired = two_tanks();
+        if let Some(unit) = repaired.unit_mut(ObjId(9)) {
+            unit.sensor_authored = None;
+        }
+        assert_eq!(
+            state_hash(&repaired),
+            base,
+            "an authored sight folds no byte"
+        );
     }
 
     /// **17b cut M5.2: the active profile folds only off its default** (item
