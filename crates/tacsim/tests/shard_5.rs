@@ -41,6 +41,8 @@ mod field_host_rig;
 mod field_raiders_rig;
 #[path = "support/field/grounds_rig.rs"]
 mod grounds_rig;
+#[path = "shard_5/port_security_rs7.rs"]
+mod port_security_rs7;
 #[path = "support/field/site_record_rig.rs"]
 mod site_record_rig;
 #[path = "shard_5/sites.rs"]
