@@ -565,10 +565,10 @@ fn combat_casualty(rig: &mut crate::driving_rig::Rig, name: &str, cell: (i64, i6
     unit
 }
 
-/// GC.4's tempo, for the lane's two gates.
+/// GC.4's stage timings for the lane's regressions, on the rig's default disengagement (doc 43
+/// TS.16): their bodies only wait for each field to settle, so only the gate keeps 90 s.
 fn lane3_tune(cfg: &mut tacsim::TacsimConfig) {
     tune(cfg);
-    cfg.field.disengage_s = 90;
     cfg.field.idle_demote_s = 3_600;
     cfg.recovery.inspect_s = 30;
     cfg.recovery.attach_s = 30;
