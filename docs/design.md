@@ -92,7 +92,7 @@ train is not yet seam-complete: 35c §8 lists the remaining cuts.
 
 The early platform documents remain useful architectural history, but the project
 has since committed to one TacSim game. References to selectable WoD/Shadowrun
-rulesets, SQLite, Lua, hex maps, or a permanently frozen sky need the
+rulesets, SQLite, Lua, hexagonal maps, or a permanently frozen sky need the
 [superseded decisions](design/README.md#superseded-decisions) beside them.
 The [original plan](PLAN.md) preserves the initial treaty rulings; later explicit
 decisions govern the areas they amend.
