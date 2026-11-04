@@ -154,6 +154,7 @@ id = "mush-server/src/world_task/submission_disposition/tests/player_market_stor
 tier = "nightly"
 job = "mind-commerce-acceptance"
 config = "MIND_PULSE_MS=1000"
+note = "Owner: the M7 market story (doc 17g C2a). Red at production pace on the nightlies of 10-30, 10-31 and 11-02, each time the story's own timing, not the product: the holder's renewal (#230), the engine's busy back-pressure on a typed step (c56dfcde) and the buyer's recall notice (8245c88e). Green on 11-03 and 11-04 (10-28 and 10-29 not re-read)."
 
 [[test]]
 id = "mush-server/src/world_task/submission_disposition/tests/player_market_typed.rs::typed_market_story_quote_pay_complete_panels_resale_and_restart"
