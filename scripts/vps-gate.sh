@@ -24,10 +24,10 @@
 #   scripts/vps-gate.sh --no-push            the current branch as origin has it
 #   scripts/vps-gate.sh --runner conclav-dev the box, by label: `vps` (the default
 #                                            for a sweep: whichever box is idle),
-#                                            `conclav-dev` (32 cores) or `conclav-io`
-#                                            (8 cores; the default for harness and
-#                                            cost-lane, whose timing gates are live
-#                                            on that host alone)
+#                                            `conclav-dev` (32 cores; the default
+#                                            for harness and cost-lane, whose timing
+#                                            gates are live on that host alone,
+#                                            doc 43 D-43-6) or `conclav-io` (8 cores)
 #
 # The cut loop's gate runner calls `scripts/vps-gate.sh --wip` for the
 # workspace sweep, after its targeted commands, instead of running the sweep on
@@ -61,10 +61,11 @@ while [ $# -gt 0 ]; do
 done
 case "$kind" in sweep|harness|cost-lane) ;; *) echo "--kind is sweep, harness or cost-lane" >&2; exit 2 ;; esac
 # A sweep goes to whichever box is idle; the harness and the cost lane go to
-# conclav.io, the host whose name blessed their baselines (their timing gates
-# are dormant anywhere else), unless the dispatch says otherwise.
+# conclav.dev, the host whose name blessed the harness baseline and whose
+# figures the cost lane's lens was re-read on (doc 43 D-43-6, cut TS.21: their
+# timing gates are dormant anywhere else), unless the dispatch says otherwise.
 if [ -z "$runner" ]; then
-  if [ "$kind" = sweep ]; then runner=vps; else runner=conclav-io; fi
+  if [ "$kind" = sweep ]; then runner=vps; else runner=conclav-dev; fi
 fi
 case "$runner" in vps|conclav-dev|conclav-io) ;; *) echo "--runner is vps, conclav-dev or conclav-io" >&2; exit 2 ;; esac
 
