@@ -3,9 +3,6 @@
 // order, and the coalescing storm guard. Fixtures are the frozen contract's
 // F1 (keyframe) and F3 (journal delta) verbatim.
 
-import { readFileSync } from "node:fs";
-import { resolve } from "node:path";
-
 import { describe, expect, it, vi } from "vitest";
 
 import {
@@ -932,74 +929,8 @@ describe("the unit panel leaks no definition body", () => {
   });
 });
 
-describe("the widgets and the screen are keyed and branched as the panes need", () => {
-  // Same source-probe convention: this file runs in `environment: "node"`.
-  // A component harness does exist (`@testing-library/svelte` under
-  // `// @vitest-environment jsdom`, e.g. components/QuarryScreen.test.ts);
-  // doc 43 TS.19 turns these probes into mounted assertions.
-  const read = (p: string): string => readFileSync(resolve(process.cwd(), p), "utf8");
-
-  it("KeyValue keys its rows by index, so no producer id can throw the block", () => {
-    // Svelte throws `each_key_duplicate` out of the whole flush on a
-    // repeated key, and these keys are producer-chosen ids.
-    const src = read("src/components/widgets/KeyValue.svelte");
-    expect(src).toMatch(/\{#each rows as r, i \(i\)\}/);
-    expect(src).not.toMatch(/\{#each rows as r \(r\.key\)\}/);
-  });
-
-  it("Table index-keys everything that comes off the wire", () => {
-    // The old probe here was `toMatch(/\(i\)\}/)` — it passed on any `(i)}`
-    // anywhere in the file and said nothing about WHICH block was keyed
-    // (LB-4). Both wire-derived loops are named exactly now.
-    const src = read("src/components/widgets/Table.svelte");
-    expect(src).toMatch(/\{#each rows as row, i \(i\)\}/);
-    expect(src).toMatch(/\{#each tableCells\(columns, row\) as cell, j \(j\)\}/);
-    expect(src).not.toMatch(/\{#each rows as row \(/);
-    // Its header keys by `c.key`, which is safe ONLY because every caller
-    // passes a client-declared constant: `UnitScreen`'s BEFORE_AFTER_COLUMNS
-    // and JOURNAL_COLUMNS, `VitalsBoard`'s ROLL_COLUMNS. `GenericView`'s
-    // columns come off the wire instead, and are deduped in
-    // `parseViewSchema` (genericview.test.ts).
-    expect(src).toMatch(/\{#each columns as c \(c\.key\)\}/);
-    for (const caller of ["src/components/UnitScreen.svelte", "src/components/VitalsBoard.svelte"]) {
-      expect(read(caller)).toMatch(/COLUMNS: TableColumn\[\] = \[/);
-    }
-  });
-
-  it("UnitScreen branches refusal, then unanswered, then no-subject, then the panes", () => {
-    const src = read("src/components/UnitScreen.svelte");
-    expect(src).toMatch(
-      /\{#if app\.unit\.unavailable !== null\}[\s\S]{0,200}?\{:else if !app\.unit\.answered\}[\s\S]{0,200}?Loading…[\s\S]{0,200}?\{:else if view === null\}[\s\S]{0,200}?NO_UNIT_LINE/,
-    );
-  });
-
-  it("UnitScreen renders the ring under the no-subject line", () => {
-    // The one actor who can produce an after-action report is a staffer,
-    // who often holds no station at all.
-    const src = read("src/components/UnitScreen.svelte");
-    expect(src).toMatch(/ringPanes = \$derived\(app\.unit\.journal\.length > 0/);
-    expect(src).toMatch(/\{#if ringPanes\.length > 0\}/);
-    expect(src).toMatch(/afterAction\(null, app\.unit\.journal\)/);
-    expect(src).toMatch(/journalTableRows\(app\.unit\.journal, null\)/);
-  });
-
-  it("the tab badge counts only rows the panel can open", () => {
-    expect(read("src/components/Game.svelte")).toMatch(
-      /case "unit":[\s\S]{0,300}?app\.unit\.answered \? app\.unit\.journal\.length : 0/,
-    );
-  });
-
-  it("an actionable generic-view row is reachable from the keyboard", () => {
-    const src = read("src/components/GenericView.svelte");
-    expect(src).toMatch(/tabindex=\{line !== null \? 0 : undefined\}/);
-    expect(src).toMatch(/role=\{line !== null \? "button" : undefined\}/);
-    expect(src).toMatch(/onkeydown=[\s\S]{0,200}?e\.key === "Enter" \|\| e\.key === " "/);
-    expect(src).toMatch(/onPrefill\(line\)/);
-  });
-
-  it("the vitals strip names its subject visibly, not only as a tooltip", () => {
-    expect(read("src/components/VitalsStrip.svelte")).toMatch(
-      /<span class="subject">\{group\.frame\.subject\.name\}<\/span>/,
-    );
-  });
-});
+// The widgets' and the screen's own halves (index keys, the branch order, the
+// ring under the no-subject line, the tab badge, the keyboard row, the strip's
+// subject) are mounted in `components/UnitScreen.test.ts`,
+// `components/Game.test.ts` and `components/RoomBand.test.ts` (doc 43 cut
+// TS.19).

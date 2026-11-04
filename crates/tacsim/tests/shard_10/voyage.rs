@@ -3438,8 +3438,8 @@ fn sfr2_space_bubble_custody_checks_out_unit_persists_damage_on_checkin_and_open
         .expect("disabled interdictor recorded as open-epoch derelict");
     assert!(derelict.epoch_open);
     assert_eq!(
-        derelict.salvage_contest_window_s,
-        tacsim::space::DERELICT_WINDOW_S
+        derelict.life_support_remaining_s,
+        tacsim::space::DERELICT_LIFE_SUPPORT_S
     );
     assert!(
         derelict.salvage_title_status.is_none(),
@@ -3473,7 +3473,7 @@ fn sfr2_space_bubble_custody_checks_out_unit_persists_damage_on_checkin_and_open
         let evs = rig.tw.fire_due(next_real * 1_000);
         let heard = said(&rig.tw, &evs, pilot2);
         if heard.contains(
-            "[SPACE] Drive offline; hull adrift as an open-epoch derelict with a 48-hour Registry salvage window.",
+            "[SPACE] Drive offline; hull adrift as an open-epoch derelict with 48 hours of life support.",
         ) {
             settle_heard = heard;
             break;
@@ -3481,7 +3481,7 @@ fn sfr2_space_bubble_custody_checks_out_unit_persists_damage_on_checkin_and_open
     }
     assert!(
         settle_heard.contains(
-            "[SPACE] Drive offline; hull adrift as an open-epoch derelict with a 48-hour Registry salvage window."
+            "[SPACE] Drive offline; hull adrift as an open-epoch derelict with 48 hours of life support."
         ),
         "expected derelict narration for hull2, got: {settle_heard}"
     );
@@ -5290,7 +5290,7 @@ fn sfr7_docking_session_pauses_ship_replays_valid_tape_into_berth_docked_rejects
     let tow_out = run(&mut rig.tw, pilot, "+helm/tow");
     assert!(
         tow_out.contains("[SALVAGE] Tow line locked to disabled derelict")
-            && tow_out.contains("48-hour Freeport Registry salvage claim window"),
+            && tow_out.contains("You file a salvage claim on the"),
         "expected salvage tow line attachment: {tow_out}"
     );
     {
@@ -5365,8 +5365,8 @@ fn sfr7_docking_session_pauses_ship_replays_valid_tape_into_berth_docked_rejects
 /// - Story 1 (mid-bubble triad encounter) and Story 2 (mid-free-flight + open-epoch
 ///   derelict + paused docking session) survive a full engine restart (`reboot_with`)
 ///   with bit-identical `SpaceBubbleBook` and `SalvageClaimBook` state.
-/// - Open-epoch derelict life-support (`life_support_remaining_s`) and salvage contest
-///   (`salvage_contest_window_s`) clocks decrement on the world tick (`35a` §1 `D-35-12`).
+/// - Open-epoch derelict life-support (`life_support_remaining_s`) decrements on the world
+///   tick (`35a` §1 `D-35-12`).
 #[test]
 fn sfr8_space_state_persists_in_tacsim_store_and_survives_full_engine_restart_mid_bubble_free_flight_derelict_and_docking()
  {
@@ -5514,11 +5514,9 @@ fn sfr8_space_state_persists_in_tacsim_store_and_survives_full_engine_restart_mi
             .expect("disabled Raider must be recorded as an open-epoch SpaceDerelictRecord");
         assert!(derelict.epoch_open);
         assert!(
-            derelict.life_support_remaining_s < tacsim::space::DERELICT_WINDOW_S
-                && derelict.salvage_contest_window_s < tacsim::space::DERELICT_WINDOW_S,
-            "open-epoch derelict life-support ({}) and salvage contest ({}) clocks must decrement on the world tick",
-            derelict.life_support_remaining_s,
-            derelict.salvage_contest_window_s
+            derelict.life_support_remaining_s < tacsim::space::DERELICT_LIFE_SUPPORT_S,
+            "open-epoch derelict life-support ({}) must decrement on the world tick",
+            derelict.life_support_remaining_s
         );
         assert!(
             derelict.salvage_title_status.is_none(),
@@ -6347,8 +6345,8 @@ fn sfr11_one_ledger_rated_drive_debits_bubble_jink_in_vault_persists_across_reen
 ///    `PicketInspectionStatus::ClearedAfterSeizure`) and debited from `stow.ore`, and is cleared.
 /// 4. The escort disables the Raider; the miner approaches (`+helm/approach derelict`), docks
 ///    (`+helm/dock derelict` + `+helm/dock tape`), and tows (`+helm/tow`) the real Raider `Thing`;
-///    the salvage claim in `SalvageClaimBook` names `"Varga Teodor"` as `prior_owner` and resolves a
-///    real port/waypoint `ObjId` (`!= GOD`) as `port_base_obj`.
+///    the tow files the salvage claim on the one path (doc 41 cut RS.8), naming the Raider's NPC
+///    leader, her real title holder, as `prior_owner`.
 #[test]
 #[allow(clippy::too_many_lines)]
 fn sfr12_domain_bubbles_and_real_hulls_share_kirkwood_bubble_tow_real_raider_thing_with_leader_claim_and_seize_indigent_contraband()
@@ -6617,30 +6615,19 @@ fn sfr12_domain_bubbles_and_real_hulls_share_kirkwood_bubble_tow_real_raider_thi
             .derelicts
             .get(&raider_hull)
             .expect("disabled Raider settled into SpaceBubbleBook::derelicts");
-        let Some(tacsim::field_ops::CustodyTitleStatus::PendingSalvageClaim { claim_id, .. }) =
-            &derelict.salvage_title_status
-        else {
-            panic!(
-                "expected PendingSalvageClaim on disabled Raider, got {:?}",
-                derelict.salvage_title_status
-            );
-        };
-        let salvage = rig
-            .tw
-            .world()
-            .module_state::<tacsim::field_ops::SalvageClaimBook>()
-            .expect("SalvageClaimBook");
-        let claim = salvage.claim(*claim_id).expect("Raider salvage claim");
-        let tow_tug = salvage
-            .black_box_tape_for_hull(raider_hull)
-            .iter()
-            .find_map(|e| match e {
-                tacsim::field_ops::BlackBoxFlightEntry::TowAttached { tug, .. } => Some(*tug),
-                _ => None,
-            })
-            .expect("TowAttached entry on Raider black box");
-        assert_eq!(tow_tug, hull_miner);
-        let prior_owner = claim.prior_owner;
+        assert!(derelict.epoch_open);
+        // Doc 41 cut RS.8 (Q-36-46): the tow put the Raider in the miner's custody and filed on
+        // the one path; the claim's prior owner is the Raider's real title holder.
+        let custody = book
+            .space_custody
+            .get(&raider_hull)
+            .expect("the Raider in the miner's space custody");
+        assert_eq!(custody.carrier, hull_miner);
+        let prior_owner = custody
+            .file
+            .as_ref()
+            .expect("the tow filed the Raider's claim")
+            .prior_owner;
         let leader_obj = rig
             .tw
             .world()
@@ -7299,14 +7286,14 @@ fn sfr14_authoring_loads_clusters_doctrines_and_outer_bodies_from_packs_opens_pi
 ///    on `pdc_dorsal` / `pdc_ventral`) opens a real gap in the point-defense screen so a 2-torpedo
 ///    salvo that was fully intercepted by 2 operational PDCs now has 1 torpedo penetrate.
 /// 4. In Story 2 (`sfr2` / `sfr7`), after taking combat damage across `hull` and `drive`, clamping
-///    and towing the disabled interdictor (`+helm/tow`, settling the `1,200.00 cr` Freeport Registry
-///    salvage recovery payout into the pilot's credit account), and docking at Stickney Yards, the
+///    and towing the disabled interdictor (`+helm/tow`, filing the salvage claim; no bounty since
+///    doc 41 cut RS.8), and docking at Stickney Yards, the
 ///    pilot quotes (`+bay #<hull>`) and completes (`+bay/order #<hull>=all`) a doc 31 bay repair at
 ///    Stickney Yards' workshop that restores the Dray's armour and internals to full (`600/600` hull,
 ///    `250/250` drive).
 #[test]
 #[allow(clippy::too_many_lines)]
-fn sfr15_hull_fidelity_splits_rear_hit_per_dray_json_strips_pdc_and_refits_in_bay_after_salvage_payout()
+fn sfr15_hull_fidelity_splits_rear_hit_per_dray_json_strips_pdc_and_refits_in_bay_after_salvage_tow()
  {
     // 1. Verify `dray.json` facet weights, `struck_through` rear split (`50/50` hull/drive),
     //    `hold` `slow_75` consequence, and `TacticalUnit` `"heat"` / `"heat_sink"` cell round-trip:
@@ -7491,8 +7478,8 @@ fn sfr15_hull_fidelity_splits_rear_hit_per_dray_json_strips_pdc_and_refits_in_ba
     );
 
     // 3. End-to-end Story 2 (`sfr2`/`sfr7`): take rear-aspect combat damage (`hull 480/600, drive 190/250`),
-    //    disable, clamp, and tow the interdictor derelict (`+helm/tow`, settling the `1,200.00 cr`
-    //    Freeport Registry salvage recovery payout), dock at Stickney Yards, and run `+bay` +
+    //    disable, clamp, and tow the interdictor derelict (`+helm/tow`), dock at Stickney Yards
+    //    (no bounty since doc 41 cut RS.8), and run `+bay` +
     //    `+bay/order #<hull>=all` to repair the Dray back to full (`600/600` hull, `250/250` drive):
     let mut rig = stocked_with(Roster {
         seed_lane: Some(lane_with_interdicted_kirkwood()),
@@ -7578,7 +7565,7 @@ fn sfr15_hull_fidelity_splits_rear_hit_per_dray_json_strips_pdc_and_refits_in_ba
     let expected_arrival = j_resumed.departed().at + total_secs;
     let _ = to_ic(&mut rig, expected_arrival);
 
-    // Settle the Freeport Registry salvage recovery payout (`1,200.00 cr` = `120_000` minor credits) on port delivery (`SF.R19`):
+    // Doc 41 cut RS.8: no bounty on port delivery; the derelict is the salvor's if the claim stands.
     sweep(&mut rig.tw, 60);
     let balance_after_tow = economy(&rig.tw)
         .snapshot()
@@ -7588,9 +7575,8 @@ fn sfr15_hull_fidelity_splits_rear_hit_per_dray_json_strips_pdc_and_refits_in_ba
         .expect("amt")
         .minor();
     assert_eq!(
-        balance_after_tow - balance_before_tow,
-        120_000,
-        "delivering a towed derelict to port settles the 1,200.00 cr Freeport Registry salvage recovery bounty"
+        balance_after_tow, balance_before_tow,
+        "delivering a towed derelict to port pays no bounty (doc 41 cut RS.8)"
     );
 
     // Confirm rear-split combat damage was written to *Salt Moth*'s `TacticalUnit` (`drive` and `hull` both damaged):
@@ -8729,25 +8715,34 @@ fn sfr18_multi_carrier_bubble_per_carrier_party_inspection_escort_disabled_settl
     );
 }
 
-/// **Doc 35c cut SF.R19 acceptance (`Q-36-46`, `D-35-12`, `doc 35c` §4 `SF.R19`)** — verifies:
-/// 1. Disablement alone never files a salvage claim; a salvage claim is opened only when a tug
-///    clamps (`+helm/dock`) and attaches a tow line (`+helm/tow`), using `w.now()` (never divided
-///    by `1_000` or `now.at / 24`) and `store.config().recovery.claim_window_s`.
-/// 2. Two ships in the same bubble racing to clamp/tow the same derelict cannot double-clamp or
-///    double-tow (`already clamped or under tow by another ship`).
-/// 3. The `1,200.00 cr` (`120_000` minor) Freeport Registry salvage bounty is paid on port
-///    delivery (not on deep-space tow attach), and releasing + re-towing never pays the bounty
-///    twice (`paid_salvage_bounties`).
-/// 4. At port, `+salvage`, `+salvage/inspect`, `+salvage/report`, and `+salvage/contest` work on
-///    recovered space hulls:
-///    - A contest on `UnlawfulRecovery` evidence vacates the claim (`Settlement::Vacate`), closes
-///      the `mush_economy` contract, and leaves the `EconomyStore` title with the prior owner.
-///    - An uncontested claim (or `BarePriorTitle`-only contest) settles on window expiry via
-///      `mush_economy::award_salvage_title`, transferring the `EconomyStore` title to the salvor,
-///      who can then repair the salvaged hull back to `Operational` at the port workshop and
-///      clear its `SpaceDerelictRecord`.
-#[test]
-fn sfr19_one_salvage_path_unifies_space_derelict_claims_with_gc6_and_economy() {
+/// The two-tug Kirkwood scene `sfr19` and `rs8` share: *SalvorA* and *SalvorB* fly the
+/// interdicted `ceres_stickney` leg, clear customs, beam the Belt Raider into a disabled
+/// derelict, and close to the collar envelope.
+struct SalvageScene {
+    rig: Rig,
+    pilot_a: ObjId,
+    pilot_b: ObjId,
+    hull_a: ObjId,
+    raider_hull: ObjId,
+    raider_leader: ObjId,
+    total_secs: i64,
+}
+
+/// The two tugs flown into the Kirkwood bubble, each operational one heaved-to and cleared by
+/// customs. With `drive_down_b`, staff `@unit/damage` puts *SalvorB*'s drive at its floor during
+/// the cruise (her unit is not deployed then), so the bubble meets her as a `DisabledDerelict`
+/// through the engine's own check-out (doc 42 cut CR.6's fixture; doc 35b's no-fiat lint holds).
+struct TwoTugs {
+    rig: Rig,
+    pilot_a: ObjId,
+    pilot_b: ObjId,
+    hull_a: ObjId,
+    hull_b: ObjId,
+    total_secs: i64,
+}
+
+#[allow(clippy::too_many_lines)]
+fn two_tugs_into_kirkwood(drive_down_b: bool) -> TwoTugs {
     let mut rig = stocked();
     let (pilot_a, row_a) = chartered(&mut rig, "SalvorA", 1);
     let hull_a = ObjId(row_a.hull);
@@ -8782,13 +8777,54 @@ fn sfr19_one_salvage_path_unifies_space_derelict_claims_with_gc6_and_economy() {
     let pending_a = undock_and_burn(&mut rig, pilot_a, hull_a);
     let pending_b = undock_and_burn(&mut rig, pilot_b, hull_b);
     let _ = fire_quietly(&mut rig);
+    if drive_down_b {
+        let drive = mush_tactics::CellAddr::Section {
+            section: mush_tactics::SectionId::new("drive").expect("the drive section"),
+            cell: mush_tactics::CellId::new(tacsim::definitions::unit::INTERNALS_CELL)
+                .expect("the internals cell"),
+        };
+        let unit = mush_tactics::module::unit_of(rig.tw.world(), hull_b)
+            .expect("SalvorB's unit")
+            .clone();
+        let floor = unit.cell(&drive).expect("the drive's internals").min;
+        let plan = mush_tactics::UnitMutationPlan::new(
+            vec![mush_tactics::UnitMutationOp::SetCell {
+                addr: drive.clone(),
+                value: floor,
+            }],
+            Some(unit.revision()),
+            Some("CR.6 fixture: SalvorB's drive down".into()),
+        )
+        .expect("the plan");
+        let damaged = run(
+            &mut rig.tw,
+            GOD,
+            &format!(
+                "@unit/damage #{}={}",
+                hull_b.0,
+                serde_json::to_string(&plan).expect("the plan's JSON")
+            ),
+        );
+        assert_eq!(
+            mush_tactics::module::unit_of(rig.tw.world(), hull_b)
+                .and_then(|u| u.cell(&drive))
+                .map(|c| c.current),
+            Some(floor),
+            "{damaged}"
+        );
+    }
+    let flying: Vec<ObjId> = if drive_down_b {
+        vec![pilot_a]
+    } else {
+        vec![pilot_a, pilot_b]
+    };
     let leg1_due = (pending_a.plan.depart_ic + i64::from(pending_a.plan.legs[0].secs))
         .max(pending_b.plan.depart_ic + i64::from(pending_b.plan.legs[0].secs));
     let total_secs = pending_a.plan.total_s;
     let _ = to_ic(&mut rig, leg1_due);
 
     // Heave-to and clear customs inspection for `pilot_a` while the Raider ambush launches:
-    for p in [pilot_a, pilot_b] {
+    for &p in &flying {
         let _ = run(&mut rig.tw, p, "+helm/thrust 600 -1000 0 0");
     }
     for _ in 0..6 {
@@ -8796,17 +8832,37 @@ fn sfr19_one_salvage_path_unifies_space_derelict_claims_with_gc6_and_economy() {
         rig.tw.set_now(next_r);
         let _ = rig.tw.fire_due(next_r * 1_000);
     }
-    for p in [pilot_a, pilot_b] {
+    for &p in &flying {
         let _ = run(&mut rig.tw, p, "+helm/thrust 0");
     }
     let brake_submits = drain_space_and_industry(&mut rig.tw);
     land_quietly(&mut rig, &brake_submits);
-    for p in [pilot_a, pilot_b] {
+    for &p in &flying {
         let sub = run(&mut rig.tw, p, "+helm/submit");
         assert!(sub.contains("customs clearance granted"), "{sub}");
         let draws = drain(&mut rig.tw);
         land_quietly(&mut rig, &draws);
     }
+    TwoTugs {
+        rig,
+        pilot_a,
+        pilot_b,
+        hull_a,
+        hull_b,
+        total_secs,
+    }
+}
+
+#[allow(clippy::too_many_lines)]
+fn salvage_scene() -> SalvageScene {
+    let TwoTugs {
+        mut rig,
+        pilot_a,
+        pilot_b,
+        hull_a,
+        total_secs,
+        ..
+    } = two_tugs_into_kirkwood(false);
     let (corvette_hull, raider_hull, raider_leader) = {
         let book = rig
             .tw
@@ -8895,7 +8951,108 @@ fn sfr19_one_salvage_path_unifies_space_derelict_claims_with_gc6_and_economy() {
         }
     }
 
-    // 1. Before `+helm/tow`, no salvage claim or custody exists for `raider_hull`:
+    SalvageScene {
+        rig,
+        pilot_a,
+        pilot_b,
+        hull_a,
+        raider_hull,
+        raider_leader,
+        total_secs,
+    }
+}
+
+/// The 6-DOF clamp of `who`'s hull on the derelict `target` names, through the client tape.
+fn clamp_derelict(rig: &mut Rig, who: ObjId, hull: ObjId, target: &str) -> String {
+    let dock = run(&mut rig.tw, who, &format!("+helm/dock {target}"));
+    assert!(
+        dock.contains("[DOCKING] Initiated 60 fps 6-DOF docking session"),
+        "{dock}"
+    );
+    let (session, challenge) = {
+        let book = rig
+            .tw
+            .world()
+            .module_state::<tacsim::space::SpaceBubbleBook>()
+            .unwrap();
+        let s = book.docking_sessions.get(&hull).unwrap();
+        (s.challenge.session_id.clone(), s.challenge.clone())
+    };
+    let rle = client_solve_docking_rle(&challenge);
+    let clamp = run(
+        &mut rig.tw,
+        who,
+        &format!("+helm/dock tape {session} {rle}"),
+    );
+    let draws = drain(&mut rig.tw);
+    land_quietly(rig, &draws);
+    clamp
+}
+
+/// `who`'s available credit, minor units.
+fn credit_of(tw: &TestWorld, who: ObjId) -> i64 {
+    let account = tacsim::port::credit::own_account(tw.world(), who)
+        .expect("a credit account")
+        .id;
+    economy(tw)
+        .snapshot()
+        .account(account)
+        .unwrap()
+        .available()
+        .unwrap()
+        .minor()
+}
+
+/// Close the bubble and fly `hull` on to Stickney Yards, the leg's end: the plan's total from
+/// the resumed departure, then two IC days at a time until she docks (a long bubble pauses the
+/// leg's timer: at the 3,600 rate ten wall minutes in a bubble are twenty-five IC days), sixty
+/// days at most.
+fn fly_on_to_stickney(rig: &mut Rig, hull: ObjId, total_secs: i64) {
+    let next_real = rig.tw.world().now() + 1;
+    rig.tw.set_now(next_real);
+    let _ = rig.tw.fire_due(next_real * 1_000);
+    let resumed = journey(&rig.tw, hull).expect("the resumed journey");
+    let _ = to_ic(rig, resumed.departed().at + total_secs);
+    for _ in 0..30 {
+        if matches!(
+            tacsim::port::ship::berth_of(rig.tw.world(), hull),
+            tacsim::port::ship::Berth::Docked { .. }
+        ) {
+            break;
+        }
+        let _ = to_ic(rig, ic_now(&rig.tw) + 2 * 86_400);
+    }
+    sweep(&mut rig.tw, 60);
+}
+
+/// **Doc 41 cut RS.8 (Q-36-46, Q-36-47; doc 35c §12), rewriting doc 35c cut SF.R19's story** —
+/// a derelict clamped, towed and docked under the one window, contested on the one path:
+/// 1. Disablement alone opens no custody; the clamp pins the Belt Raider's real title (her NPC
+///    leader) in open space's `Unclaimed` tenure.
+/// 2. A second tug racing for the same derelict is refused.
+/// 3. `+helm/tow` puts her in *SalvorA*'s custody — one row in the domain's
+///    `tacsim:space:custody:{domain}` document, which a full engine restart reads back — and files
+///    on `+salvage/claim`'s own path: one economy contract whose window is
+///    `[tacsim.recovery].claim_window_s`, from real seconds. No bounty is paid, at the tow or at
+///    the dock; release and re-tow keep the one claim.
+/// 4. Docked at Stickney Yards (the interdicted leg's end), `+salvage`, `+salvage/inspect`,
+///    `+salvage/report` and `+salvage/contest` work on her as on a ground hull.
+/// 5. Lawful recovery in open space: past the window, the claim tick's `award_salvage_title`
+///    moves her title to *SalvorA* and the custody document goes.
+#[test]
+#[allow(clippy::too_many_lines)]
+fn sfr19_one_salvage_path_unifies_space_derelict_claims_with_gc6_and_economy() {
+    let SalvageScene {
+        mut rig,
+        pilot_a,
+        pilot_b,
+        hull_a,
+        raider_hull,
+        raider_leader,
+        total_secs,
+    } = salvage_scene();
+
+    // 1. Before `+helm/tow`, no custody names the Raider:
     assert!(
         !rig.tw
             .world()
@@ -8905,72 +9062,50 @@ fn sfr19_one_salvage_path_unifies_space_derelict_claims_with_gc6_and_economy() {
             .contains_key(&raider_hull)
     );
 
-    // 2. `pilot_a` clamps `raider_hull`; `pilot_b` racing to clamp the same derelict is refused:
-    let dock_a = run(&mut rig.tw, pilot_a, "+helm/dock derelict");
-    assert!(
-        dock_a.contains("[DOCKING] Initiated 60 fps 6-DOF docking session"),
-        "{dock_a}"
-    );
-    let (session_a, challenge_a) = {
-        let book = rig
-            .tw
-            .world()
-            .module_state::<tacsim::space::SpaceBubbleBook>()
-            .unwrap();
-        let s = book.docking_sessions.get(&hull_a).unwrap();
-        (s.challenge.session_id.clone(), s.challenge.clone())
-    };
-    let rle_a = client_solve_docking_rle(&challenge_a);
-    let clamp_a = run(
-        &mut rig.tw,
-        pilot_a,
-        &format!("+helm/dock tape {session_a} {rle_a}"),
-    );
+    // 2. SalvorA clamps; SalvorB racing for the same derelict is refused.
+    let clamp_a = clamp_derelict(&mut rig, pilot_a, hull_a, "derelict");
     assert!(
         clamp_a.contains("Hard dock and magnetic collar seal confirmed"),
         "{clamp_a}"
     );
-    let clamp_draws = drain(&mut rig.tw);
-    land_quietly(&mut rig, &clamp_draws);
-
+    let pin = rig
+        .tw
+        .world()
+        .module_state::<tacsim::space::SpaceBubbleBook>()
+        .unwrap()
+        .derelict_pins
+        .get(&raider_hull)
+        .cloned()
+        .expect("the clamp pins the derelict");
+    assert_eq!(
+        pin.title,
+        Some(mush_org::PrincipalId::Object(raider_leader)),
+        "the pin names the Raider's real title"
+    );
+    assert_eq!(pin.answering, Some(raider_leader));
+    assert_eq!(pin.tenure, tacsim::field_ops::GroundTenure::Unclaimed);
     let dock_b_refused = run(&mut rig.tw, pilot_b, "+helm/dock derelict");
     assert!(
         dock_b_refused.contains("already clamped or under tow by another ship"),
         "expected race refusal for second tug, got: {dock_b_refused}"
     );
 
-    // 3. `pilot_a` attaches the tow line (`+helm/tow`), releases (`+helm/tow release`), then
-    //    re-clamps and re-tows: verify the claim uses `w.now()` + `claim_window_s`, and no bounty
-    //    is paid before port delivery!
-    let acct_a = tacsim::port::credit::own_account(rig.tw.world(), pilot_a)
-        .expect("pilot_a credit account")
-        .id;
-    let bal_before = economy(&rig.tw)
-        .snapshot()
-        .account(acct_a)
-        .unwrap()
-        .available()
-        .unwrap()
-        .minor();
+    // 3. The tow files on the one path, from real seconds, on the one window; no bounty.
+    let credit_before = credit_of(&rig.tw, pilot_a);
     let now_before_tow = rig.tw.world().now();
     let tow_1 = run(&mut rig.tw, pilot_a, "+helm/tow");
     assert!(
-        tow_1.contains("[SALVAGE] Tow line locked to disabled derelict"),
+        tow_1.contains("[SALVAGE] Tow line locked to disabled derelict")
+            && tow_1.contains("You file a salvage claim on the Belt Raider"),
         "{tow_1}"
     );
-    let bal_in_space = economy(&rig.tw)
-        .snapshot()
-        .account(acct_a)
-        .unwrap()
-        .available()
-        .unwrap()
-        .minor();
     assert_eq!(
-        bal_in_space, bal_before,
-        "salvage recovery bounty must NOT be paid at tow attach in deep space"
+        credit_of(&rig.tw, pilot_a),
+        credit_before,
+        "no bounty at the tow"
     );
-
-    let (claim_id, filed_real_s, deadline_real_s) = {
+    let window_s = store(&rig.tw).config().recovery.claim_window_s;
+    let (contract, filed_real_s, deadline_real_s, domain) = {
         let book = rig
             .tw
             .world()
@@ -8979,82 +9114,68 @@ fn sfr19_one_salvage_path_unifies_space_derelict_claims_with_gc6_and_economy() {
         let custody = book
             .space_custody
             .get(&raider_hull)
-            .expect("space_custody filed on tow");
-        let file = custody
-            .file
-            .as_ref()
-            .expect("SalvageClaim on space_custody");
-        (file.id, file.filed_at_real_s, file.deadline_real_s)
+            .expect("the tow puts her in custody");
+        assert_eq!((custody.holder, custody.carrier), (pilot_a, hull_a));
+        let tacsim::surface::salvage::ClaimSeam::Filed { contract } = custody.claim else {
+            panic!("the tow files the claim: {:?}", custody.claim);
+        };
+        let file = custody.file.as_ref().expect("the filed claim");
+        assert_eq!(file.prior_owner, raider_leader);
+        (
+            contract,
+            file.filed_at_real_s,
+            file.deadline_real_s,
+            book.space_custody.domain_of(raider_hull).expect("a domain"),
+        )
     };
     assert!(
         filed_real_s >= now_before_tow,
-        "filed_at_real_s ({filed_real_s}) must use w.now() ({now_before_tow}), never w.now()/1000"
+        "filed_at_real_s ({filed_real_s}) is real seconds ({now_before_tow})"
     );
+    assert_eq!(deadline_real_s - filed_real_s, window_s, "the one window");
+    let (economy_end, _) =
+        mush_economy::salvage_claim_window(rig.tw.world(), mush_economy::ContractId(contract))
+            .expect("the economy's claim contract");
     assert_eq!(
-        deadline_real_s - filed_real_s,
-        tacsim::field_ops::CONTEST_WINDOW_AVAILABLE_REAL_SECS
+        economy_end, deadline_real_s,
+        "the economy runs the same window"
     );
 
-    // Release and re-clamp + re-tow before leaving the bubble:
+    // Release and re-clamp + re-tow keep the one claim.
     let rel = run(&mut rig.tw, pilot_a, "+helm/tow release");
     assert!(rel.contains("Tow line and collar clamp released"), "{rel}");
     let _ = run(&mut rig.tw, pilot_a, "+helm/approach derelict");
     let rel_draws = drain(&mut rig.tw);
     land_quietly(&mut rig, &rel_draws);
-    let _ = run(&mut rig.tw, pilot_a, "+helm/dock derelict");
-    let (session_a2, challenge_a2) = {
+    let _ = clamp_derelict(&mut rig, pilot_a, hull_a, "derelict");
+    let tow_2 = run(&mut rig.tw, pilot_a, "+helm/tow");
+    assert!(
+        tow_2.contains("[SALVAGE] Tow line locked to disabled derelict")
+            && !tow_2.contains("You file a salvage claim"),
+        "{tow_2}"
+    );
+
+    // The custody is its domain's document: a full engine restart reads it back.
+    rig = reboot_with(rig, Roster::default());
+    {
         let book = rig
             .tw
             .world()
             .module_state::<tacsim::space::SpaceBubbleBook>()
             .unwrap();
-        let s = book.docking_sessions.get(&hull_a).unwrap();
-        (s.challenge.session_id.clone(), s.challenge.clone())
-    };
-    let rle_a2 = client_solve_docking_rle(&challenge_a2);
-    let _ = run(
-        &mut rig.tw,
-        pilot_a,
-        &format!("+helm/dock tape {session_a2} {rle_a2}"),
-    );
-    let clamp2_draws = drain(&mut rig.tw);
-    land_quietly(&mut rig, &clamp2_draws);
-    let tow_2 = run(&mut rig.tw, pilot_a, "+helm/tow");
-    assert!(
-        tow_2.contains("[SALVAGE] Tow line locked to disabled derelict"),
-        "{tow_2}"
-    );
+        assert_eq!(book.space_custody.domain_of(raider_hull), Some(domain));
+        assert!(matches!(
+            book.space_custody.get(&raider_hull).map(|c| c.claim),
+            Some(tacsim::surface::salvage::ClaimSeam::Filed { contract: c }) if c == contract
+        ));
+    }
 
-    // 4. Close the bubble (per-carrier clearance detaches `hull_a` immediately!) and arrive at
-    //    Stickney Yards: verify `raider_hull` is delivered to port (`Berth::Docked`),
-    //    `EpochClosedInBay` is recorded, and the `1,200.00 cr` bounty is paid ONCE!
-    let next_real = rig.tw.world().now() + 1;
-    rig.tw.set_now(next_real);
-    let _ = rig.tw.fire_due(next_real * 1_000);
-    let j_resumed = journey(&rig.tw, hull_a).expect("resumed journey A");
-    let expected_arrival = j_resumed.departed().at + total_secs;
-    let _ = to_ic(&mut rig, expected_arrival);
-    sweep(&mut rig.tw, 60);
-
-    let bal_at_port = economy(&rig.tw)
-        .snapshot()
-        .account(acct_a)
-        .unwrap()
-        .available()
-        .unwrap()
-        .minor();
+    // 4. Docked at Stickney Yards: delivered, black box closed, no bounty.
+    fly_on_to_stickney(&mut rig, hull_a, total_secs);
     assert_eq!(
-        bal_at_port - bal_before,
-        120_000,
-        "port delivery of towed derelict must pay the 1,200.00 cr bounty once"
-    );
-    assert!(
-        rig.tw
-            .world()
-            .module_state::<tacsim::space::SpaceBubbleBook>()
-            .unwrap()
-            .paid_salvage_bounties
-            .contains(&raider_hull)
+        credit_of(&rig.tw, pilot_a),
+        credit_before,
+        "no bounty at the dock"
     );
     assert!(
         matches!(
@@ -9077,9 +9198,7 @@ fn sfr19_one_salvage_path_unifies_space_derelict_claims_with_gc6_and_economy() {
         "port delivery must append EpochClosedInBay to the derelict's black box"
     );
 
-    // 5. At port during the contest window, `+salvage` lists the space hull, `+salvage/inspect`
-    //    reads its black box, `+salvage/report` shares the evidence with `pilot_b`, and
-    //    `+salvage/contest` files a contest on the space hull:
+    // `+salvage`, `/inspect`, `/report` and `/contest` work on the space custody.
     let salvage_list = run(&mut rig.tw, pilot_a, "+salvage");
     assert!(
         salvage_list.contains(&format!("#{} the Belt Raider", raider_hull.0)),
@@ -9113,38 +9232,275 @@ fn sfr19_one_salvage_path_unifies_space_derelict_claims_with_gc6_and_economy() {
         "expected +salvage/contest output, got: {contest_out}"
     );
 
-    // 6. Because recovery in open space (`GroundTenure::Unclaimed`) is lawful, advancing wall
-    //    time past `deadline_real_s` and ticking adjudicates the claim as `AwardedToClaimant` and
-    //    transfers the `EconomyStore` title of `raider_hull` to `pilot_a` via
-    //    `mush_economy::award_salvage_title`!
-    let _ = claim_id;
+    // 5. A lawful open-space recovery: past the one window the claim tick awards the title.
     let after_deadline = deadline_real_s + 10;
     rig.tw.set_now(after_deadline);
     let _ = rig.tw.fire_due(after_deadline * 1_000);
-
     assert_eq!(
         economy(&rig.tw)
             .snapshot()
             .asset(raider_hull)
             .map(|a| a.title_owner.clone()),
         Some(mush_org::PrincipalId::Object(pilot_a)),
-        "expired open-space salvage claim must award the EconomyStore title of the derelict hull to the salvor"
+        "the claim tick's award_salvage_title moves the derelict's title to the salvor"
     );
-    let resolved_status = rig
+    let book = rig
         .tw
         .world()
         .module_state::<tacsim::space::SpaceBubbleBook>()
-        .unwrap()
-        .derelict_for_hull(raider_hull)
-        .and_then(|d| d.salvage_title_status.clone());
+        .unwrap();
+    assert!(
+        !book.space_custody.contains_key(&raider_hull),
+        "the custody row goes"
+    );
     assert!(
         matches!(
-            resolved_status,
-            Some(tacsim::field_ops::CustodyTitleStatus::ResolvedTitle { owner })
-                if owner == pilot_a
+            book.derelict_for_hull(raider_hull).and_then(|d| d.salvage_title_status.clone()),
+            Some(tacsim::field_ops::CustodyTitleStatus::ResolvedTitle { owner }) if owner == pilot_a
         ),
-        "expected ResolvedTitle {{ owner: pilot_a }} on SpaceDerelictRecord, got: {resolved_status:?}"
+        "the derelict record reads the award"
     );
+}
+
+/// **Doc 41 cut RS.8 (§4.7, Q-41-8)** — a space retrieval job on `+salvage/jobs`, delivered by a
+/// ship: the Belt Raider's owner (a player; her title moved to them by staff as the fixture)
+/// posts `+salvage/retrieve` for her to Stickney Yards; *SalvorA* reads it on `+salvage/jobs`,
+/// accepts, clamps and tows her for the job (retrieval custody: no salvage row, no claim), and
+/// docking at Stickney delivers her (`tacsim.retrieval.delivered`), so the sweep pays the fee.
+#[test]
+#[allow(clippy::too_many_lines)]
+fn rs8_a_space_retrieval_job_is_delivered_by_the_tug_that_docks_her() {
+    let SalvageScene {
+        mut rig,
+        pilot_a,
+        hull_a,
+        raider_hull,
+        total_secs,
+        ..
+    } = salvage_scene();
+    // A chartered pilot: the enrolment opens the credit account the job escrows from.
+    let owner = pilot(&mut rig, "RaiderOwner", 3);
+    let enrol = run(&mut rig.tw, owner, "+coop/enrol Third Tug");
+    assert!(enrol.contains("now the Third Tug"), "{enrol}");
+    let moved = run(
+        &mut rig.tw,
+        GOD,
+        &format!("@asset/transfer #{}=#{}", raider_hull.0, owner.0),
+    );
+    assert_eq!(
+        economy(&rig.tw)
+            .snapshot()
+            .asset(raider_hull)
+            .map(|a| a.title_owner.clone()),
+        Some(mush_org::PrincipalId::Object(owner)),
+        "{moved}"
+    );
+    let account = tacsim::port::credit::own_account(rig.tw.world(), owner)
+        .expect("the owner's account")
+        .id;
+    let treasury = port_map(&rig.tw, "ceres_port")
+        .treasury
+        .expect("the Ceres treasury");
+    let minted = run(
+        &mut rig.tw,
+        GOD,
+        &format!("@econ/mint {treasury}={} 10000000", account.0),
+    );
+    assert!(!minted.contains("Usage"), "{minted}");
+
+    let posted = run(
+        &mut rig.tw,
+        owner,
+        &format!("+salvage/retrieve #{}=stickney go", raider_hull.0),
+    );
+    assert!(posted.contains("Retrieval job"), "{posted}");
+    let jobs = run(&mut rig.tw, pilot_a, "+salvage/jobs");
+    assert!(jobs.contains(&format!("#{}", raider_hull.0)), "{jobs}");
+    let taken = run(
+        &mut rig.tw,
+        pilot_a,
+        &format!("+salvage/accept #{} go", raider_hull.0),
+    );
+    assert!(taken.contains("You accept job"), "{taken}");
+    let fee = tacsim::surface::retrieval::order_of(rig.tw.world(), raider_hull)
+        .expect("the job")
+        .fee_minor;
+
+    let clamp = clamp_derelict(&mut rig, pilot_a, hull_a, "derelict");
+    assert!(
+        clamp.contains("Hard dock and magnetic collar seal confirmed"),
+        "{clamp}"
+    );
+    let tow = run(&mut rig.tw, pilot_a, "+helm/tow");
+    assert!(
+        tow.contains("[SALVAGE] Tow line locked to disabled derelict")
+            && tow.contains(tacsim::space::TOW_FOR_RETRIEVAL)
+            && !tow.contains("You file a salvage claim"),
+        "{tow}"
+    );
+    assert!(
+        !rig.tw
+            .world()
+            .module_state::<tacsim::space::SpaceBubbleBook>()
+            .unwrap()
+            .space_custody
+            .contains_key(&raider_hull),
+        "a retrieval tow is no salvage custody"
+    );
+
+    let credit_before = credit_of(&rig.tw, pilot_a);
+    fly_on_to_stickney(&mut rig, hull_a, total_secs);
+    let order = tacsim::surface::retrieval::order_of(rig.tw.world(), raider_hull).expect("the job");
+    let delivery = order.delivered.as_ref().expect("the dock delivered her");
+    assert_eq!(delivery.by, pilot_a);
+    assert_eq!(delivery.port, order.destination);
+    sweep(&mut rig.tw, 60);
+    assert_eq!(
+        credit_of(&rig.tw, pilot_a) - credit_before,
+        fee,
+        "the delivered job pays its fee"
+    );
+    assert_eq!(
+        economy(&rig.tw)
+            .snapshot()
+            .asset(raider_hull)
+            .map(|a| a.title_owner.clone()),
+        Some(mush_org::PrincipalId::Object(owner)),
+        "a retrieval never moves the title"
+    );
+}
+
+/// **Doc 42 cut CR.6 (Q-42-24), the space seam** — the crew's one record in space:
+/// 1. *SalvorB*'s drive is down when she enters the bubble (staff `@unit/damage` during the
+///    cruise is the fixture; combat's disablement is sfr18's), so the bubble meets her as a
+///    derelict and settles her out of it: her pilot's record is `Stranded` in her, on the
+///    domain's site, from the space check-in.
+/// 2. *SalvorA* hard-docks her (`+helm/dock #<hull>` and the client tape). The bubble reads the
+///    two carriers as no friends, so the clamp captures SalvorB as a ground load does: out of her
+///    seat, into *SalvorA*'s bay room, `Captured { carrier, captor }`.
+/// 3. *SalvorA* casts off the empty derelict, flies on and docks at Stickney Yards. The port's
+///    authority takes the captive through CR.2's one hook (`Processing`, then released there),
+///    and SalvorA's own record is `Carrier` from her own check-in.
+#[test]
+#[allow(clippy::too_many_lines)]
+fn cr6_a_crewed_derelict_hard_docked_by_a_stranger_is_captured_and_handed_over_at_port() {
+    let TwoTugs {
+        mut rig,
+        pilot_a,
+        pilot_b,
+        hull_a,
+        hull_b,
+        total_secs,
+    } = two_tugs_into_kirkwood(true);
+    // 1. The bubble meets SalvorB as a derelict and settles her out of it.
+    for _ in 0..30 {
+        let next = rig.tw.world().now() + 1;
+        rig.tw.set_now(next);
+        let _ = rig.tw.fire_due(next * 1_000);
+        if rig
+            .tw
+            .world()
+            .module_state::<tacsim::space::SpaceBubbleBook>()
+            .is_some_and(|b| b.derelicts.contains_key(&hull_b))
+        {
+            break;
+        }
+    }
+    let draws = drain(&mut rig.tw);
+    land_quietly(&mut rig, &draws);
+    let stranded = tacsim::field::crew_of(rig.tw.world(), pilot_b)
+        .map(|record| record.location.clone())
+        .expect("SalvorB's crew record from the space check-in");
+    assert!(
+        matches!(
+            stranded,
+            tacsim::field::CrewLocation::Stranded { unit, .. } if unit == hull_b
+        ),
+        "a derelict's crew are stranded in her: {stranded:?}"
+    );
+
+    // 2. SalvorA, no friend of SalvorB's, closes on her and hard-docks her: SalvorB is captured.
+    let approach = run(
+        &mut rig.tw,
+        pilot_a,
+        &format!("+helm/approach #{}", hull_b.0),
+    );
+    assert!(approach.contains("Braking approach ordered"), "{approach}");
+    let draws = drain(&mut rig.tw);
+    land_quietly(&mut rig, &draws);
+    for _ in 0..600 {
+        let next = rig.tw.world().now() + 1;
+        rig.tw.set_now(next);
+        let _ = rig.tw.fire_due(next * 1_000);
+        let (closing, ordnance) = rig
+            .tw
+            .world()
+            .module_state::<tacsim::space::SpaceBubbleBook>()
+            .and_then(|b| b.active_for_hull(hull_a))
+            .map_or((false, false), |a| {
+                (
+                    a.carriers
+                        .get(&hull_a)
+                        .is_some_and(|c| c.approaching_derelict),
+                    !a.bubble.torpedoes.is_empty() || !a.bubble.railgun_slugs.is_empty(),
+                )
+            });
+        if !closing && !ordnance {
+            break;
+        }
+    }
+    let clamp = clamp_derelict(&mut rig, pilot_a, hull_a, &format!("#{}", hull_b.0));
+    assert!(
+        clamp.contains("Hard dock and magnetic collar seal confirmed"),
+        "{clamp}"
+    );
+    let held = tacsim::field::crew_of(rig.tw.world(), pilot_b)
+        .map(|record| record.location.clone())
+        .expect("SalvorB's record");
+    assert!(
+        matches!(
+            held,
+            tacsim::field::CrewLocation::Captured { carrier, captor, .. }
+                if carrier == hull_a && captor == pilot_a
+        ),
+        "the hard-dock captures her crew: {held:?}"
+    );
+    let room = location(&rig.tw, pilot_b).expect("SalvorB stands somewhere");
+    assert_eq!(
+        tacsim::port::ship::hull_of_room(rig.tw.world(), room).map(|(view, _)| view.hull()),
+        Some(hull_a),
+        "the captive's body is aboard the captor's carrier"
+    );
+
+    // 3. SalvorA casts off the empty derelict and docks at Stickney: the captive is handed to
+    //    the port's authority.
+    let cast_off = run(&mut rig.tw, pilot_a, "+helm/tow release");
+    assert!(cast_off.contains("collar clamp released"), "{cast_off}");
+    fly_on_to_stickney(&mut rig, hull_a, total_secs);
+    assert!(
+        matches!(
+            tacsim::port::ship::berth_of(rig.tw.world(), hull_a),
+            tacsim::port::ship::Berth::Docked { .. }
+        ),
+        "SalvorA docks at Stickney"
+    );
+    let processed = tacsim::field::crew_of(rig.tw.world(), pilot_b)
+        .map(|record| record.location.clone())
+        .expect("SalvorB's record");
+    // The fly-on can spend days docked before the read, so the release may have come too.
+    assert!(
+        matches!(
+            &processed,
+            tacsim::field::CrewLocation::Processing { port, .. }
+                | tacsim::field::CrewLocation::Port { port }
+                if port.as_str() == "stickney"
+        ),
+        "the docking hands the captive over to Stickney's authority: {processed:?}"
+    );
+    let own = tacsim::field::crew_of(rig.tw.world(), pilot_a)
+        .map(|record| record.location.clone())
+        .expect("SalvorA's record from her own check-in");
+    assert_eq!(own, tacsim::field::CrewLocation::Carrier { hull: hull_a });
 }
 
 /// **Doc 35c §9 cut `SF.R20` ("One damage table and canonical drives", `Q-36-47`, `D-35-1`, `35c` §6.4–§6.5)**:
