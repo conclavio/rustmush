@@ -263,7 +263,11 @@ the site has settled:
   `+salvage/authorize <hull>=<who> go`, a landholder with
   `+salvage/authorize <site>/<block>=<who> go`. Repairs a salvor makes are at
   their own risk and are never repaid. An uncontested claim passes the title
-  when its window runs out.
+  when its window runs out. A vacated claim leaves her held for her owner in
+  the custodian's bay: aboard a carrier of yours standing where hers does (one
+  port, or one pad), `+bay/stow <hull>=<your carrier>` takes her. If she is
+  still aboard when the custodian docks at a port with a workshop, the port
+  berths her there for you, and you stow her from the workshop floor.
 - **A carrier** is towed only by a tug of at least half its tonnage, which no
   rig is. A carrier whose drive is destroyed cannot lift. One whose hull falls
   is a wreck that never lifts and strands its crew.

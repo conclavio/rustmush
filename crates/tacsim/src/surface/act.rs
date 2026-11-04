@@ -500,7 +500,7 @@ pub enum Where {
 /// (`crate::port::vehicle::bay_rooms` over the programme port's hull rows) is `Bay`;
 /// `Direct` is `Ground`; anything else `Elsewhere`.
 #[must_use]
-pub(crate) fn where_is(w: &World, tv: ObjId) -> Where {
+pub fn where_is(w: &World, tv: ObjId) -> Where {
     let Some(st) = w.module_state::<SpatialState>() else {
         return Where::Elsewhere;
     };

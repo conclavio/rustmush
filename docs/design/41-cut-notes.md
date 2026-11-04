@@ -348,3 +348,44 @@ whole, the tonnes gone from the hold, nobody paid. Re-run green: `bay_gc8` (its 
 (41814093413, `3fb3e861`) against the PR's, 366 → 368 tests; the other 0.11 min is runner noise spread over unchanged
 tests (`landing::sm2_rheasilvia…` 144.8 → 149.6 s), and `field_rs1` ran no longer (95.2 → 95.0 s, 100.3 → 99.6 s).
 `bay_gc8` changed one `expect`, nothing timed. shard_10 stays the room for growth, so nothing moves shard (rule #3).
+
+## RS.4 — the vacated hull's return (2026-11-04)
+
+Row: §6 RS.4; Q-41-18, Q-41-19, Q-38-19, round-2 item 41-15. No lane rows. Consumes IN.9's
+`+bay/stow <hull>=<carrier>` as merged; built on its branch (#416). Moves no crew (doc 42's).
+
+**Built.**
+
+- **`held_for`** on the bay record (`BayHull.held_for: Option<PrincipalId>`, serde default, omitted while
+  `None`): the claims' tick writes the hull's title holder at a `Vacate` settlement
+  (`bay_work::hold_for`), right after the site record's settle lands.
+- **Bay to bay** (`bay_work::stow`'s new source, `stow_held`): `+bay/stow <hull>=<carrier>` on a hull
+  that is not berthed and is held moves her out of whatever bay holds her into a free slot of the named
+  carrier, for the holder (the character, or one acting for the organization) or a `maintain_refit`
+  grantee, who has the run of that carrier, stands aboard her, and has her docked where the holding
+  carrier is (one port, or one site's pad). The custodian cannot refuse it and has no right to move her.
+  The slot check is IN.9's `free_bay_slot`.
+- **The port holds her** (`bay_work::berth_held`, from `TacsimCarrierHooks::arrived`): a carrier docking at a
+  port with a workshop has every held hull in her bay berthed into the workshop room with no carrier
+  (`BerthRow.carrier: None`, as IN.9's yard berth), her slot freed; a lease rig is handed back to the
+  shed instead. **Outside the stand count**: `berth`'s count of the workshop's berths skips held hulls.
+  Her owner's carrier stows her from the floor through IN.9's existing named-carrier path, which clears
+  the hold.
+- `+bay <hull>` says "… is held for <name>: a carrier of theirs takes her".
+- `surface::act::where_is` is `pub` (the story reads it).
+- The fix thread's defect note (§2.2, the vacated hull's missing return verb) is closed by this cut.
+
+**Story.** `tacsim` `tests/shard_7/vacated_return_rs4.rs`, story (b) extended at 512 (Urvara) and 256
+(Ahuna): both of O's unlawful recoveries vacated on T's `recovery` contests and held for T; O cannot move
+them; T aboard T's own carrier on the same pad takes one bay to bay; O docks at Ceres with the other, which
+the port berths in the workshop held for T; T's carrier docks and T stows her from the floor.
+
+**Divergences.**
+
+- **A held hull never counts against the workshop's berths**, whatever her owner does: she waits there
+  until a carrier of theirs takes her (no fee, no expiry). A storage charge or a lapse to Tycho's sweep is
+  not ruled; it is RS.6's to consider.
+- **The return carries no crew**, and a hull vacated while crewed keeps whoever is aboard where they are
+  (doc 42 owns it).
+
+**Cell cost (rule #14).** Owed from the PR's CI JUnit.

@@ -200,6 +200,21 @@ fn taken_line(ctx: &Ctx<'_>, order: &super::BayOrder) -> String {
 fn show(ctx: &mut Ctx<'_>, hull: ObjId) -> Result<(), String> {
     let name = crate::port::coop::name_of(ctx.w, hull);
     let mut lines = Vec::new();
+    // Doc 41 cut RS.4 (Q-41-19): a vacated hull says whom she is held for.
+    if let Some(owner) = super::held_for(ctx.w, hull) {
+        let owner = match &owner {
+            mush_org::PrincipalId::Object(who) => crate::port::coop::name_of(ctx.w, *who),
+            other => mush_economy::principal_holders(ctx.w, other)
+                .first()
+                .map_or_else(
+                    || "her owner".to_owned(),
+                    |who| crate::port::coop::name_of(ctx.w, *who),
+                ),
+        };
+        lines.push(format!(
+            "{name} is held for {owner}: a carrier of theirs takes her (+bay/stow {name}=<carrier>)."
+        ));
+    }
     // Doc 41 Q-41-20 (Q-S14): a salvor reads the risk before anything else.
     if super::right_of(ctx, hull) == Some(super::Right::Salvor) {
         lines.push(crate::surface::claim::AT_RISK_QUOTE.to_owned());
