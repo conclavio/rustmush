@@ -500,6 +500,10 @@ row); Q-CF-19 was the one default marked expensive to reverse, and the owner rev
   No treatment, no ejection, no capture in the first version.
 - **Alternative:** a richer injury model with compartments and treatment.
 - **Why:** FO-12 and Q-H12 want survival and extraction to exist, not medicine.
+- **Amended by doc 42** (ruled 2026-11-03, built CR.0–CR.5): the location has two more variants,
+  `Captured { carrier, captor, since_ic }` and `Processing { port, release_due_ic, charge }`.
+  Ejection exists (`+sortie/eject`, CR.4) and capture exists: at a non-friend's load (CR.1) and at an
+  ejection under a Hostile hold (CR.4). Treatment is GC.13's, with doc 42 CR.5's beds as a limit.
 
 **Q-CF-39 — Dismounting and extraction.**
 - **Decision (accepted default):** a character cannot leave a hull on foot inside a field (no infantry
@@ -510,6 +514,12 @@ row); Q-CF-19 was the one default marked expensive to reverse, and the owner rev
 - **Alternative:** on-foot movement in the field and a rescue vehicle to reach.
 - **Why:** the infantry group of Q-D1 is future work; extraction as a bounded teleport-with-delay
   is what P-5 accepted.
+- **Amended by doc 42:**
+  - An extraction may also be **forced**, by an ejection (Q-42-10, CR.4). It lands at the port, or,
+    when the eject's draw captured, aboard the holder's carrier as `Captured` (Q-42-12).
+  - The Friend's deferral now keys on any flight or leased rig of the character's own party or a
+    Friend's on the site, not on the recovery duty (Q-42-14).
+  - A captive may ask for extraction only after `captive_bound_s` (Q-42-8, CR.3).
 
 **Q-CF-40 — Link loss.** Ruled (Q-H5, P-2). Not asked.
 
@@ -1027,8 +1037,9 @@ rulings left it open, for the owner to object to:
 No snapshot, hash or frame bump: the withdrawal removes a unit from the arena and adds no field to
 any encoded state; the site record and the voyage document gain optional fields, empty by default.
 
-Not built in CF.5: **towing** a casualty home (FO-13; 27a H2); **ejection, capture and treatment**
-(Q-CF-38 rules them out of the first version); a carrier departing **during** a field (F-6; CF.3 refuses it, `InField`, and that refusal stands ahead of the bay gate).
+Not built in CF.5: **towing** a casualty home (FO-13; 27a H2); ~~**ejection, capture and
+treatment** (Q-CF-38 rules them out of the first version)~~ (built since: treatment by doc 36 GC.13,
+ejection and capture by doc 42 CR.1–CR.5); a carrier departing **during** a field (F-6; CF.3 refuses it, `InField`, and that refusal stands ahead of the bay gate).
 
 ## 11. CF.6 as built (NPC pilots and raiders)
 

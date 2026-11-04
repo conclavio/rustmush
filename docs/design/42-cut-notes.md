@@ -484,3 +484,17 @@ numbers stand: one IC day injured, three incapacitated, half at a medical room.
 **Divergence from §7's row.** The third casualty's record is seeded as a stored document, not brought
 home by a field. Three extractions to Ceres would add three fields' worth of run time to a cell, for a
 rule that reads only the records and the port.
+
+## CR.7 — docs
+
+§5's amendments are now written into the documents they amend:
+- **Doc 32:** Q-CF-38 and Q-CF-39 carry "amended by doc 42" notes, and §10's "Not built in CF.5:
+  ejection, capture and treatment" is struck through.
+- **Doc 36:** Q-36-52's non-friend half is marked superseded by CR.1 and its friendly half stands.
+  Q-36-45 gains CR.5's beds. GC.5's "The abandoned crew" and lane 5's row 4 are noted as superseded.
+  "GC.13: beds are authored but not a limit" is closed.
+- **Doc 27:** Q-H12's rescue and capture route is marked built, and Q-F4's cap is `captive_bound_s`.
+- **Doc 38:** §4 F and Q-38-22 point at doc 42, and Q-38-29's vocabulary gains the crew verbs.
+
+Doc 42 is now Draft 0.5. It adds §7b, an as-built table with what stays owed, and records CR.6 as the
+space window's (owner ruling, 2026-11-04). The help and code text items of §5 rode CR.1–CR.5.
