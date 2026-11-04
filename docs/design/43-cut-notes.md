@@ -70,4 +70,15 @@ not a timing figure, and fixing it is outside this cut. Until it is re-pinned or
 dispatch for FR.5 and S.4b can't go green until then: those cuts read the lanes before it and run the delta
 by hand, as this cut did. The bless skipped the lane, and nothing it records depends on it.
 
-**Cell delta** (rule #14). CELL-DELTA
+**Cell delta** (rule #14). Zero: no test was added, removed or lengthened, and only comments changed in a
+test file. The figures are from the JUnit of #388's green CI run `41762280651` (head `faaa00bc`), set
+against main's last CI run `41754225803` at `c0d123a9`; main's merges after it, up to the base `a2ef4075`,
+were docs-only. Summed minutes, main → PR:
+
+| Cell | Tests | Main | PR | Read |
+|---|---|---|---|---|
+| tacsim-integration-1 (shard 1) | 220 → 220 | 78.3 | 66.7 | The cell that holds the harness binary's 24 ordinary tests: 1.00 → 0.74 min. |
+| Every other cell | unchanged | 558.8 | 626.3 | Untouched by TS.21. Cells moved both ways, from tacsim-lib +16.6 and rest-server-boundary +15.0 to rest-libs −8.2 and shard 7 −9.0: runner noise. |
+| **All cells** | | 637.1 | 693.0 | |
+
+No cell's wall is set by this cut, and no story moves to another shard.
