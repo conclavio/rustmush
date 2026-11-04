@@ -175,8 +175,9 @@
 //! four by `[tacsim.arena].squad_size`, under a scripted commander a side that
 //! is its own lowest unit, for `TACSIM_LANCE_ARENA_S` (120) arena seconds
 //! through the same wake loop ([`run_wakes`], which since Z.1 steps a
-//! [`Stepper`] and hands each wake's phase 2 a script's intents). Under
-//! `TACSIM_ASSERT` it asserts W8 — the span and the orders per commander per
+//! [`Stepper`] and hands each wake's phase 2 a script's intents). Whatever
+//! `TACSIM_ASSERT` says (since TS.21's finding: every check it makes is
+//! deterministic) it asserts W8 — the span and the orders per commander per
 //! minute — against `[tacsim.command]`, the tape against the script and the
 //! opening round at any knob, **and**, at the lane's own defaults only, the span
 //! and the busiest minute pinned to the fight's own figures (the squads a side
@@ -7294,7 +7295,8 @@ async fn measure_fan_out(knobs: &Knobs) {
 // (`arena_bridge::admit_order`) is bypassed by design: the lane steps the arena
 // directly, and the arena reads no author.
 //
-// **What it asserts**, under `TACSIM_ASSERT` only. At **any** knob: W8's two
+// **What it asserts**, whatever `TACSIM_ASSERT` says since TS.21's finding
+// (under it only before; [`tacsim_harness_lance`]). At **any** knob: W8's two
 // bounds against `[tacsim.command]`; that the tape's `ordered` lines are exactly
 // the orders the script gave (one a unit not already a wreck, at the millisecond
 // phase 2 applied it, under the side's commander); that the opening round landed
@@ -7693,13 +7695,24 @@ fn supporters_on_charge(arena: &tacsim::arena::state::Arena) -> (usize, usize, u
 
 /// **The lance lane** (16b cut Z.1): [`measure_lance`] at `TACSIM_LANCE_UNITS`
 /// (24) for `TACSIM_LANCE_ARENA_S` (120) arena seconds, JSON at
-/// `<stem>-lance.<ext>`; W8 asserted under `TACSIM_ASSERT`, and at the lane's
-/// defaults pinned to the defaults' own fight (at the ROM since 17b cut M4.5:
-/// [`measure_lance`]); timing report-only.
+/// `<stem>-lance.<ext>`; W8 asserted, and at the lane's defaults pinned to the
+/// defaults' own fight (at the ROM since 17b cut M4.5: [`measure_lance`]);
+/// timing report-only.
+///
+/// **Asserting whatever `TACSIM_ASSERT` says** (since TS.21's finding): every
+/// check this lane makes is deterministic — W8's bounds, the tape, the fact
+/// pins — and its timing is printed, never asserted, so D-H-8's reason for a
+/// CI job that asserts no absolutes (a shared runner's speed is not a
+/// threshold) does not reach it. Gated on the flag, its span pin went red at
+/// `5993ba20` and stayed red unseen for a fortnight, because the CI job never
+/// sets it and the delta does not read `harness-lance.json`. Now the nightly
+/// `tacsim-harness` job and every `--kind harness` dispatch hold it.
 #[test]
 #[ignore = "tacsim harness: run by the CI `tacsim-harness` job (workflow_dispatch / daily schedule)"]
 fn tacsim_harness_lance() {
-    measure_lance(&Knobs::from_env(), &LanceKnobs::from_env());
+    let mut knobs = Knobs::from_env();
+    knobs.assert = true;
+    measure_lance(&knobs, &LanceKnobs::from_env());
 }
 
 /// Whether the report-only Hold lane was asked for (16b cut O.1; plan item 27).
@@ -8436,7 +8449,8 @@ fn lance_field_arena(units: u32) -> tacsim::arena::state::Arena {
 ///    pinned `Engaged`, warmed up as the relief lanes are ([`warm_up`]).
 /// 4. [`run_wakes`] for `lance.arena_s` arena seconds with the script handing
 ///    each wake's phase 2 the orders due at it.
-/// 5. The lines, the JSON, and — under `TACSIM_ASSERT` — W8.
+/// 5. The lines, the JSON, and — when `knobs.assert`, which
+///    [`tacsim_harness_lance`] always sets — W8.
 #[allow(clippy::too_many_lines)]
 fn measure_lance(knobs: &Knobs, lance: &LanceKnobs) -> LanceReport {
     use tacsim::arena::clock::Tempo as ArenaTempo;
