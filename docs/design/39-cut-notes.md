@@ -428,3 +428,83 @@ JUnit, the merged head 1fbd149e). The cell's sum reads 25.10 → 37.44 min, main
 slower, unrelated ones too (`twin::m2_gate_a_on_a_mixed_pool` 28.1 → 52.5 s, `moon_ports::a8_titan_throttle…` 42.7 →
 64.0 s), and no test ran faster. The other changed tests run no longer for the cut: the stores are minted inside the
 bulk mint, so a port boots in exactly main's fires.
+
+## IN.8 — the mass budget and scrap (Q-39-15, Q-39-16, Q-39-17, Q-39-25, Q-39-26)
+
+**Built.**
+
+- **The partition at the catalogue build** (§4.8, Q-39-15): `definitions::mass::partition` gives every design the
+  yard partitions a `MassBudget` (`Catalog::budgets`, `budget_of`): the dry mass (`logistics.dry_mass_t`, else the
+  field-ops measure), one part a slot at goods v5's masses and references, the core (150 / 250 / 500 kg, and its
+  3 / 8 / 25 % reference), and the remainder split by class (armour, vehicle and hauler 0.75, walker 0.70, drone
+  0.65; capital and station not partitioned). The figures spread over the design's **structural points** — facet
+  armour and section internals, never a heat cell. The escort reads 2,565 kg of structure and 855 of fittings
+  over 2,990 points (0.86 and 0.29 kg a point); the Dray 157,500 and 52,500 over 1,820 (86.5 and 28.8). A design
+  whose parts and core leave no remainder has no budget (it draws nothing and yields nothing). The bill (§4.7:
+  the loss on top, each bulk line rounded up, a day per 20 t, the build at §4.4's 68.75 cr a work unit and 25 %
+  margin) is computed from the budget at the live references; IN.8 reads it only as the reference a scrap's fifth
+  bounds (the escort's is 75,495 cr at 450 and 520), and a programme hull's reference is its buyout (the Dray's
+  and the Dray-P's 90,000, Q-39-17).
+- **Repair draws both goods** (§4.8): `BayQuote::bale_need` takes the hull's budget — `points ×
+  structure_kg_per_point` of alloys and `points × fittings_kg_per_point` of fittings, rounded up — through
+  IN.1's bale; the tender's stabilize (RS.1) draws the same figures for its target (`TendWork::need(budget)`).
+  An escort's hundred-point patch draws 86 kg and 29 kg; a Dray's 8,654 and 2,885.
+- **The three constants retire**: `SCRAP_KG_PER_STRUCTURAL_POINT` and `FALLBACK_SECTION_SCRAP_KG` (mush-tactics;
+  `ScrapYieldReport` now reports the hull's surviving structural points, the host weighing them), and the
+  tariff's `structural_points_per_industrial_parts_t` (with `WorkshopCostQuote::industrial_parts_t`): the tariff
+  keeps labour and time only. RS.1's `fittings_kg_per_point` constant is gone with it.
+- **Scrap at a workshop** (§4.6, Q-39-16, Q-39-25): everything goes to the operator. The yield (the design's
+  structure over its surviving structural points at r 0.6) and the hull's bale go into the workshop's **shop
+  bale** (`tacsim:shopbale:{port}`, §4.10), whose whole tonnes mint into the operator's storefront (its stock) and
+  whose remainder stays; each salvageable part goes to the same storefront as a lot with its scrapped provenance
+  (its stores). The title holder is credited `min(yield at the alloys' reference, (reference − parts new) / 5)`
+  for the structure, each part's used value (0.75 intact, 0.40 worn) less its removal (the tariff's replacement
+  labour at the operator's multiplier), and the bale's kilograms at the references; the operator posts it, from
+  its account to the holder's, when the mint lands (idempotent on the hull and the act). A workshop that cannot
+  pay refuses the scrap. The shop bale is held for the owed act (`pending`), so a second scrap or return at the
+  same workshop waits for it; a given-up mint lets it go as it stood and pays nothing.
+- **`+bay/return <hull>`** (§4.10, Q-39-26): the title holder sells the hull's opened bale back to the workshop at
+  the references, no labour, no fifth, into the shop bale (which mints a tonne each time it passes 1,000 kg); the
+  hull's bale is emptied when it lands. A new receipt kind, `bay_return` (the closed-kinds pin in `shard_9/mill.rs`
+  now reads five).
+- **Scrap on a site** (§4.6, the fix thread's room check): `+tv/<n> scrap` mints `claim::remains_alloys_t` — the
+  design's whole structure at r, capped at the fifth of its reference at the alloys' reference, down to whole
+  tonnes (the rest a declared loss) — no longer the remains' whole dry mass; remains of no known design yield
+  nothing. The command refuses a hold that will not take the tonnes (`SCRAP_NO_ROOM`, the hold's own line), and
+  the prepare checks the same plan against the pool its bundle reads.
+
+**The story.** `shard_2/in8_mass_scrap.rs` (shard_2, the shard with the most room):
+`in8_a_whole_escort_scrapped_at_stickney_pays_for_its_parts_and_a_tonne` — the escort's partition is the document's;
+a captain's Dray-P sails to Stickney Yards with a titled spare escort and a titled heavy; at P11 `+bay/scrap` breaks
+the whole intact escort up: 1,539 kg of yield, a 1 t lot in the Yards' stock and 539 kg in its shop bale, its four parts
+(the cannon, the coax, the sight, the plant) as lots in the Yards' stores, nothing in the Dray's hold, and about
+45,200 cr paid of its 75,500; a Dray counts no heat points and carries 94 t of yield; a ten-point patch on the
+heavy draws its own figures from the bale it opens, and `+bay/return` sells the rest back, the shop bale minting a
+tonne as it passes 1,000 kg, the alloys conserved. `in8_an_escorts_remains_on_ahuna_yield_a_tonne_and_a_full_hold_refuses`
+(256) and `in8_a_drays_remains_on_urvara_yield_forty_tonnes_and_a_full_hold_refuses` (512): remains dropped beside the
+captain's rig scrap into the hold at 1 t and 40 t, and a full hold refuses the next at the command. The arithmetic
+is pinned by `definitions::mass::tests` (the escort's and the Dray's lines) and `port::bay_work::scrap::tests` (the
+escort's 45,217.55, the Dray's 34,100, the wrecked Dray's 18,000, the 914 kg return at 411.30 and its second return
+minting a tonne). Seeds: the hulls' title and bay placement, the heavy made by `@unit/create`, the dents, the
+remains (GC.6's staff drop) and the holds' goods.
+
+**Departures from the row.**
+
+- *The scrapped parts sit in the stores but are not yet drawn by a `Replace`*: IN.6 finds store lots by the seeds'
+  ids; the stores' index is IN.7/IN.9's.
+- *The bill's build line* is §4.4's yard row as constants (68.75 cr a work unit, 25 %) until IN.9 prices the build
+  from the yard facility's own cost row; the build days follow the rule (the Dray's 12, not the table's 14, which
+  Q-39-14 left to the owner's eye).
+- *"1 t in the Yards' pool"*: the tonnes are minted as a lot at the operator's storefront, as every bay mint lays its
+  lots; nothing dissolves a bay lot into the pool yet (`@inv/dissolve` does, and the stock clerk dissolves only its
+  own seeds). The matter is the Yards' either way.
+- *The return's 914 kg* is the tender's two-patch figure (`surface::tender` tests); the story's heavy draws its own.
+- *No bot vocabulary*: `+bay` stays outside the bot's (the IN.1/IN.6 stories' precedent).
+
+**Other tests moved.** `shard_1/bay_gc8.rs` `gc8b_scrap…`: the alloys and parts are in Occator's storefront, the
+alloy lot a whole escort's tonne, the parts at rows 2…; `shard_1/bay_36a.rs` `b36a_5_a`/`5_b` exercise the hold's
+room through a strip (a workshop scrap lays nothing in the hold now); `shard_1/field_gc6.rs`'s remains of a rig scrap
+at their design's yield; `shard_2/in1_accounting.rs`'s heavy patch draws the heavy's figures; `shard_10/voyage.rs`
+drops `industrial_parts_t`; mush-tactics' scrap test reads 60 points; the tender's unit test the escort's figures.
+
+**Cell delta (rule #14).** `tacsim-integration-2`: _filled from the PR's JUnit_.

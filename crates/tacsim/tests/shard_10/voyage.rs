@@ -3699,7 +3699,6 @@ fn gc7_munitions_are_bought_and_carried_and_the_tariff_quotes_a_known_repair() {
     )
     .expect("a quote at Ceres");
     assert_eq!(at_ceres.structural_points, 90);
-    assert_eq!(at_ceres.industrial_parts_t, 1);
     assert_eq!(at_ceres.components_to_rearm.get(&cannon), Some(&10));
     assert_eq!(at_ceres.total_resource_cost, 11_100, "111.00 cr at 1.2x");
     assert_eq!(at_ceres.total_work_duration_ic, 5_040);

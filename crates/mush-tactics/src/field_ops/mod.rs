@@ -58,11 +58,10 @@ pub use salvage::{
     evaluate_recovery_entitlement,
 };
 pub use workshop::{
-    ComponentProvenance, ContrabandReason, FALLBACK_SECTION_SCRAP_KG, MAX_STRIPPED_COMPONENTS,
-    MAX_WORKSHOP_ORDERS, ProvenanceLegalityStatus, ReplacementPartSpec,
-    SCRAP_KG_PER_STRUCTURAL_POINT, ScrapYieldReport, StripAuthorization, StrippedComponentRecord,
-    WorkshopBook, WorkshopCostQuote, WorkshopError, WorkshopFacilityTariff, WorkshopOperationKind,
-    WorkshopWorkOrderRecord,
+    ComponentProvenance, ContrabandReason, MAX_STRIPPED_COMPONENTS, MAX_WORKSHOP_ORDERS,
+    ProvenanceLegalityStatus, ReplacementPartSpec, ScrapYieldReport, StripAuthorization,
+    StrippedComponentRecord, WorkshopBook, WorkshopCostQuote, WorkshopError,
+    WorkshopFacilityTariff, WorkshopOperationKind, WorkshopWorkOrderRecord,
 };
 
 #[cfg(test)]

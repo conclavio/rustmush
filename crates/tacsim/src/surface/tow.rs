@@ -1958,21 +1958,41 @@ impl TowProvider {
         if *of != facts.of || *mass_kg != facts.mass_kg {
             return Err(refused("scrap_changed"));
         }
-        // Doc 39 cut IN.1 (§4.10): scrap mints down to whole tonnes; under a tonne, on a site
-        // with no facility to keep the fraction, nothing mints and the mass is a declared loss.
-        let alloys_t = mass_kg / crate::port::bay_work::strip::SCRAP_KG_PER_T;
-        if alloys_t != facts.alloys_t {
-            return Err(refused("scrap_changed"));
-        }
+        // Doc 39 cut IN.8 (§4.6, §4.10): the server's capped yield, already down to whole tonnes;
+        // under a tonne, on a site with no facility to keep the fraction, nothing mints and the
+        // mass is a declared loss.
+        let alloys_t = facts.alloys_t;
         let good = CanonicalId::new(crate::port::bay_work::strip::SCRAP_GOOD)
             .map_err(|_| integrity("the alloys' good is malformed"))?;
         let grade = mush_inventory::Grade::new(crate::port::bay_work::strip::SCRAP_GRADE)
             .map_err(|_| integrity("the alloys' grade is out of bounds"))?;
+        let hold = mush_inventory::EndpointRef(mush_economy::VaultId(facts.hold));
+        // Doc 39 cut IN.8 (the room check, doc 36a P2-4): the alloys fit the hold by the plan the
+        // command read, against the pool this bundle reads.
+        if alloys_t > 0
+            && let Some(plan) = &facts.plan
+        {
+            let plan = mush_market::CapacityPlan(plan.clone());
+            let mut read = |good: &CanonicalId| {
+                inventory
+                    .pool(txn, hold, good)
+                    .map(|pool| pool.map_or(0, |pool| pool.quantity))
+                    .map_err(|_| mush_market::CapacityReadError)
+            };
+            mush_market::CapacityProvider::check(
+                &crate::port::market::PortCapacity,
+                &plan,
+                &good,
+                alloys_t,
+                &mut read,
+            )
+            .map_err(|_| refused("scrap_no_room"))?;
+        }
         if alloys_t > 0 {
             inventory
             .mint_origin(
                 txn,
-                mush_inventory::EndpointRef(mush_economy::VaultId(facts.hold)),
+                hold,
                 &good,
                 alloys_t,
                 grade,
