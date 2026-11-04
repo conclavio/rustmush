@@ -526,13 +526,14 @@ async fn salvage_smoke(miner: Miner) {
 /// ore bid — and then the bot types the production run's half, every line in its closed
 /// vocabulary and every answer read by its own reader ([`mush_bot::mine::lane::works`]): at Ceres
 /// it buys concentrate at the Exchange's ask and a tonne of carbon ore at Freeport Works', bunkers and sails to
-/// Stickney Yards, sells the concentrate into Kasei's bid, watches Kasei's alloy ask restock by the
+/// Stickney Yards by Luna and Deimos (the corridor's outbound leg is interdicted at Kirkwood by the
+/// SF track's picket, whose words the bot does not have), sells the concentrate into Kasei's bid, watches Kasei's alloy ask restock by the
 /// refine's tonnes, buys five tonnes of alloys there, books `fittings` at the works, delivers the
 /// alloys and the carbon from its hold, collects five tonnes of fittings once the arm has pooled
 /// them, sails home and sells them into the Co-op's bid at 600. God lifts the world rate after
 /// the enrolment (the canary's lift) and to 3,600 for the production half (`ic_slice_loop`'s
-/// rate: the two passages are some 11.6 IC days each). `#[ignore]`d, run by name (`in5_`), the
-/// dispatch / by-hand tier (doc 43 TS.2): about 30 minutes a site on conclav.dev.
+/// rate: the way out is some 27 IC days, the way home 11.6). `#[ignore]`d, run by name (`in5_`),
+/// the dispatch / by-hand tier (doc 43 TS.2): about 30 minutes a site on conclav.dev.
 ///
 /// `cargo test -j 8 -p mush-bot --test mining_cohort -- --ignored in5_ --nocapture --test-threads 1`
 #[tokio::test(flavor = "multi_thread", worker_threads = 4)]
@@ -756,7 +757,7 @@ async fn production_story(miner: Miner) {
     let (concentrate, carbon) = (concentrate.number, carbon.number);
     buy(&mut client, concentrate, 20).await;
     buy(&mut client, carbon, 1).await;
-    bunker(&mut client, "stickney").await;
+    bunker(&mut client, "luna").await;
     for (word, room) in [
         ("concourse", lines::ROOM_CONCOURSE),
         ("arrivals", lines::ROOM_ARRIVALS),
@@ -765,7 +766,18 @@ async fn production_story(miner: Miner) {
     ] {
         typed(&mut client, word, &[room], &[]).await;
     }
-    stamp("bought 20 t of concentrate and 1 t of carbon ore; sailing for Stickney");
+    stamp(
+        "bought 20 t of concentrate and 1 t of carbon ore; sailing for Stickney by Luna and Deimos",
+    );
+    // The way out by Luna and Deimos: the Ceres–Stickney corridor's outbound leg is interdicted at
+    // Kirkwood by the SF track's customs picket, whose words (heave-to, `+helm/submit`, `+tac/pdc
+    // auto`, a jink) the bot does not have (doc 39 cut IN.5's note).
+    sail(&mut client, &hull, "luna").await;
+    stamp("docked at Aitken Highport");
+    bunker(&mut client, "deimos").await;
+    sail(&mut client, &hull, "deimos").await;
+    stamp("docked at Voltaire Anchorage");
+    bunker(&mut client, "stickney").await;
     sail(&mut client, &hull, "stickney").await;
     stamp("docked at Stickney Yards");
 
