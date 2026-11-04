@@ -469,3 +469,30 @@ matched only the unqualified `module_state_mut::<SpaceBubbleBook>()` spelling (`
 **Test.** `sfr17_hole_closeout_ii_abort_undock_expedition_dock_gates_salvage_hold_and_30s_tempo`.
 
 **Divergences.** None from the `35c` §9 `SF.R17` specification.
+
+## SF.R18 — the multi-carrier bubble
+
+- Assigned each carrier in `ActiveInterdictionBubble::carriers` (`crates/tacsim/src/space/tick.rs`) its own distinct
+  arena `PartyId` (`CARRIER_PARTY` for the primary carrier, `ActiveInterdictionBubble::next_available_carrier_party`
+  for subsequent carriers joining the domain bubble) with `Friendly` inter-carrier relation and per-carrier relation
+  entries against `CUSTOMS_CORVETTE_PARTY`, `BELT_RAIDER_PARTY`, and `INTERDICTOR_PARTY` (`35c` §4 #4, §9 `SF.R18`, `Q-36-48`, `doc 40` `FR.6`).
+- Added `KirkwoodPicketState::carrier_inspection_status` and `carrier_inspection_outcome` (`crates/tacsim/src/space/picket.rs`)
+  with per-carrier helpers (`inspection_status_for`, `inspection_outcome_for`, `set_inspection_status_for`,
+  `set_inspection_outcome_for`, `is_carrier_customs_cleared`), and updated `helm_submit` and `helm_run`
+  (`crates/tacsim/src/space/commands.rs`) and `step_kirkwood_picket_for_carriers` (`picket.rs`) so one carrier's
+  `+helm/submit` or `+helm/run` updates only that carrier's inspection status and Corvette party relation (`35c` §4 #4).
+- Evaluated `is_combat_clear`, `is_carrier_clear_to_resume`, `is_clear_to_resume`, `clear_resolved_bubbles`, and
+  `settle_disabled_carrier_bubbles` (`tick.rs`) per carrier so a disabled escort carrier is settled into
+  `SpaceBubbleBook::derelicts` (`JourneyState::Failed`) and checked in immediately while an operational cleared
+  carrier remains in the bubble until combat clears and then resumes its `CarrierJourney` (`JourneyState::Cruising`) (`35c` §4 #5).
+- Checked in every participating carrier and NPC contact (`interdictor_hull`, `corvette_hull`, `raider_hull`) across
+  all bubble exit paths (`clear_interdiction_bubble`, `clear_resolved_bubbles`, `settle_disabled_carrier_bubbles`, and
+  `helm_dock` port/derelict clamps), updated `SpaceBubbleBook::remove_carrier_from_active` to snapshot the docking
+  hull's own `SpaceShipState` before removal, and stood down the domain activation when the last carrier leaves (`35c` §6.1, §9 `SF.R18`).
+- Keyed `SpaceBubbleBook::cleared_interdiction_legs` by `(hull, leg_cursor)` (`BTreeSet<(ObjId, u32)>`, cleared on new
+  departure in `launch_step`) so a carrier that cleared an interdicted leg is never re-promoted into that leg's domain
+  when a subsequent hull arrives (`35c` §4 #6).
+
+**Test.** `sfr18_multi_carrier_bubble_per_carrier_party_inspection_escort_disabled_settlement_and_domain_stand_down`.
+
+**Divergences.** None from the `35c` §9 `SF.R18` specification.

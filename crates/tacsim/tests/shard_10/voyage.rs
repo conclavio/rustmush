@@ -8454,3 +8454,324 @@ fn sfr17_hole_closeout_ii_abort_undock_expedition_dock_gates_salvage_hold_and_30
         "Carrier 1's holding_for_salvage must expire after SALVAGE_HOLD_TIMEOUT_WALL_S (60 s) and resume its journey"
     );
 }
+
+/// **Doc 35c §9 cut `SF.R18` ("The multi-carrier bubble", `Q-36-48`, `doc 40` `FR.6`)**:
+/// 1. Each carrier in a shared domain bubble is assigned its own distinct arena [`tacsim::arena::party::PartyId`]
+///    with `Friendly` inter-carrier relation and per-carrier relation/inspection state against the
+///    Republic Customs Corvette and Belt Raider.
+/// 2. A clean escort's (`*Escort Hawk*`) `+helm/submit` clears only the escort and does NOT clear
+///    the smuggler (`*Salt Moth*`).
+/// 3. The Belt Raider disables the escort (`*Escort Hawk*`) while the smuggler (`*Salt Moth*`) submits
+///    and resumes its [`mush_sim::CarrierJourney`] (`Cruising`) once the Corvette disables the Raider
+///    and ordnance clears, while the disabled escort settles into `SpaceBubbleBook::derelicts` with
+///    `JourneyState::Failed`.
+/// 4. Every participating hull (`hull_miner`, `hull_escort`, `corvette_hull`, `raider_hull`) is
+///    checked in (`mush_tactics::custody::marker_of` is `None`), and the domain activation stands down
+///    (domain count returns to zero).
+/// 5. `cleared_interdiction_legs` is keyed by `(hull, leg_cursor)`: when a subsequent hull (`*Late Runner*`)
+///    arrives at the same waypoint while `*Salt Moth*` is still cruising on leg 2, `*Salt Moth*` is
+///    not re-promoted into the bubble.
+#[test]
+#[allow(clippy::too_many_lines)]
+fn sfr18_multi_carrier_bubble_per_carrier_party_inspection_escort_disabled_settlement_and_domain_stand_down()
+ {
+    let mut rig = stocked();
+
+    // 1. Charter *Salt Moth* (smuggler on `Dray-P` carrying 51 t unlicensed `strategic_ore`)
+    //    and *Escort Hawk* (clean armed `Dray` escort carrying 0 t `strategic_ore`):
+    let (pilot_miner, row_miner) = chartered(&mut rig, "Miner", 1);
+    let hull_miner = ObjId(row_miner.hull);
+    let vault_miner = hold_vault(&rig.tw, &row_miner);
+    let desk = station_room(&rig.tw, "ceres_port", "room.c05_registry");
+    teleport(&mut rig.tw, pilot_miner, desk);
+    let refit_miner = run(&mut rig.tw, pilot_miner, "+coop/refit prospector");
+    assert!(refit_miner.contains("Dray-P"), "{refit_miner}");
+    seed_pool(&mut rig, vault_miner, "propellant", 75, LotId(1081));
+    seed_pool(&mut rig, vault_miner, "provisions", 25, LotId(1082));
+    seed_pool(&mut rig, vault_miner, "strategic_ore", 51, LotId(1083));
+
+    let pilot_escort = pilot(&mut rig, "Escort", 2);
+    let enrol_escort = run(&mut rig.tw, pilot_escort, "+coop/enrol Escort Hawk");
+    assert!(
+        enrol_escort.contains("now the Escort Hawk"),
+        "{enrol_escort}"
+    );
+    let charter_escort =
+        tacsim::port::live_charter(rig.tw.world(), pilot_escort).expect("escort charter");
+    let row_escort = port_map(&rig.tw, "ceres_port")
+        .hulls
+        .into_iter()
+        .find(|r| r.hull == charter_escort.hull.0)
+        .expect("escort hull row");
+    let hull_escort = ObjId(row_escort.hull);
+    let vault_escort = hold_vault(&rig.tw, &row_escort);
+    seed_pool(&mut rig, vault_escort, "propellant", 53, LotId(1084));
+    seed_pool(&mut rig, vault_escort, "provisions", 19, LotId(1085));
+
+    // Also charter a third hull (*Late Runner*) at Ceres before departure so we can launch it
+    // after the first bubble closes to verify `cleared_interdiction_legs` prevents re-promotion:
+    let pilot_late = pilot(&mut rig, "LatePilot", 3);
+    let enrol_late = run(&mut rig.tw, pilot_late, "+coop/enrol Late Runner");
+    assert!(enrol_late.contains("now the Late Runner"), "{enrol_late}");
+    let charter_late =
+        tacsim::port::live_charter(rig.tw.world(), pilot_late).expect("late charter");
+    let row_late = port_map(&rig.tw, "ceres_port")
+        .hulls
+        .into_iter()
+        .find(|r| r.hull == charter_late.hull.0)
+        .expect("late hull row");
+    let hull_late = ObjId(row_late.hull);
+    let vault_late = hold_vault(&rig.tw, &row_late);
+    seed_pool(&mut rig, vault_late, "propellant", 53, LotId(1086));
+    seed_pool(&mut rig, vault_late, "provisions", 19, LotId(1087));
+
+    set_rate(&mut rig.tw, 3_600);
+    board(&mut rig, pilot_miner);
+    let gallery = c01(&rig.tw);
+    teleport(&mut rig.tw, pilot_escort, gallery);
+    let board_escort = run(&mut rig.tw, pilot_escort, "+ship/board");
+    assert!(
+        board_escort.contains("You cycle the lock into the Escort Hawk."),
+        "{board_escort}"
+    );
+
+    let pending_miner = undock_and_burn(&mut rig, pilot_miner, hull_miner);
+    let pending_escort = undock_and_burn(&mut rig, pilot_escort, hull_escort);
+    let _ = fire_quietly(&mut rig);
+
+    let miner_leg1_due = pending_miner.plan.depart_ic + i64::from(pending_miner.plan.legs[0].secs);
+    let escort_leg1_due =
+        pending_escort.plan.depart_ic + i64::from(pending_escort.plan.legs[0].secs);
+    let convoy_kirkwood_due = miner_leg1_due.max(escort_leg1_due);
+    let _ = to_ic(&mut rig, convoy_kirkwood_due);
+
+    // Verify both carriers share the Kirkwood bubble with distinct arena PartyIds:
+    let (domain, corvette_hull, raider_hull, party_miner, party_escort) = {
+        let book = rig
+            .tw
+            .world()
+            .module_state::<tacsim::space::SpaceBubbleBook>()
+            .expect("SpaceBubbleBook");
+        assert_eq!(book.by_domain.len(), 1);
+        let active = book
+            .active_for_hull(hull_miner)
+            .expect("miner in active bubble");
+        assert_eq!(active.carriers.len(), 2);
+        let p_miner = active.carrier_party_for(hull_miner);
+        let p_escort = active.carrier_party_for(hull_escort);
+        assert_ne!(
+            p_miner, p_escort,
+            "each carrier in a multi-carrier bubble must have its own distinct arena PartyId"
+        );
+        assert_eq!(
+            active.bubble.party_relation(p_miner, p_escort),
+            tacsim::arena::party::Relation::Friend,
+            "co-participating carriers must have Friend relation"
+        );
+        let picket = active.picket.as_ref().expect("KirkwoodPicketState");
+        assert_eq!(
+            picket.inspection_status_for(hull_miner),
+            tacsim::space::PicketInspectionStatus::AwaitingHeaveTo
+        );
+        assert_eq!(
+            picket.inspection_status_for(hull_escort),
+            tacsim::space::PicketInspectionStatus::AwaitingHeaveTo
+        );
+        (
+            active.domain,
+            picket.corvette_hull,
+            picket.raider_hull,
+            p_miner,
+            p_escort,
+        )
+    };
+
+    // 2. Clean escort (`*Escort Hawk*`) flips to braking attitude (`180 0`), heaves-to, and submits (`+helm/submit`):
+    //    verify the clean escort is cleared while the smuggler (`*Salt Moth*`) is NOT cleared!
+    let _ = run(&mut rig.tw, pilot_escort, "+helm/heading 180 0");
+    let _ = run(&mut rig.tw, pilot_escort, "+helm/thrust 600 -1000 0 0");
+    for _ in 0..6 {
+        let next_r = rig.tw.world().now() + 1;
+        rig.tw.set_now(next_r);
+        let _ = rig.tw.fire_due(next_r * 1_000);
+    }
+    let _ = run(&mut rig.tw, pilot_escort, "+helm/thrust 0");
+    let escort_brake_submits = drain_space_and_industry(&mut rig.tw);
+    land_quietly(&mut rig, &escort_brake_submits);
+
+    let submit_escort_out = run(&mut rig.tw, pilot_escort, "+helm/submit");
+    assert!(
+        submit_escort_out.contains("0 kg `strategic_ore`, licensed/compliant")
+            && submit_escort_out.contains("customs clearance granted"),
+        "clean escort must receive customs clearance: {submit_escort_out}"
+    );
+    {
+        let book = rig
+            .tw
+            .world()
+            .module_state::<tacsim::space::SpaceBubbleBook>()
+            .expect("SpaceBubbleBook");
+        let active = book
+            .active_for_hull(hull_miner)
+            .expect("active bubble after escort submit");
+        let picket = active.picket.as_ref().expect("KirkwoodPicketState");
+        assert_eq!(
+            picket.inspection_status_for(hull_escort),
+            tacsim::space::PicketInspectionStatus::Cleared,
+            "escort must be Cleared"
+        );
+        assert_eq!(
+            active
+                .bubble
+                .party_relation(tacsim::space::CUSTOMS_CORVETTE_PARTY, party_escort),
+            tacsim::arena::party::Relation::Friend,
+            "Corvette must be Friend toward cleared escort"
+        );
+        assert_eq!(
+            picket.inspection_status_for(hull_miner),
+            tacsim::space::PicketInspectionStatus::AwaitingHeaveTo,
+            "clean escort's submit must NOT clear the smuggler (*Salt Moth*)"
+        );
+        assert!(
+            !picket.is_carrier_customs_cleared(hull_miner) && !picket.is_customs_cleared(),
+            "smuggler and overall bubble must remain uncleared until smuggler submits"
+        );
+        assert_eq!(
+            active
+                .bubble
+                .party_relation(tacsim::space::CUSTOMS_CORVETTE_PARTY, party_miner),
+            tacsim::arena::party::Relation::Neutral,
+            "Corvette must remain Neutral (Inspecting) toward uncleared smuggler"
+        );
+    }
+
+    // 3. Escort (`*Escort Hawk*`) enters ActiveCombat (`+helm/emcon combat`, `+tac/pdc manual`) to screen
+    //    while smuggler (`*Salt Moth*`) heaves-to, submits (`ClearedAfterSeizure`), and enables PDCs:
+    let _ = run(&mut rig.tw, pilot_escort, "+helm/emcon combat");
+    let _ = run(&mut rig.tw, pilot_escort, "+tac/pdc manual");
+    let _ = run(&mut rig.tw, pilot_miner, "+tac/pdc auto");
+    let _ = run(&mut rig.tw, pilot_miner, "+helm/thrust 600 -1000 0 0");
+    for _ in 0..6 {
+        let next_r = rig.tw.world().now() + 1;
+        rig.tw.set_now(next_r);
+        let _ = rig.tw.fire_due(next_r * 1_000);
+    }
+    let _ = run(&mut rig.tw, pilot_miner, "+helm/thrust 0");
+    let miner_brake_submits = drain_space_and_industry(&mut rig.tw);
+    land_quietly(&mut rig, &miner_brake_submits);
+
+    let submit_miner_out = run(&mut rig.tw, pilot_miner, "+helm/submit");
+    assert!(
+        submit_miner_out.contains("confiscated in lieu of fine")
+            && submit_miner_out.contains("customs clearance granted"),
+        "smuggler submit must seize contraband and grant clearance: {submit_miner_out}"
+    );
+    let seizure_submits = drain(&mut rig.tw);
+    for s in &seizure_submits {
+        land(&mut rig, s).expect("seizure burn lands");
+    }
+
+    // Step the bubble until the Raider disables the escort (`*Escort Hawk*`) into `SpaceBubbleBook::derelicts`
+    // (`JourneyState::Failed`) and the Corvette disables the Raider so `*Salt Moth*` resumes (`Cruising`):
+    for _ in 0..60 {
+        let next_r = rig.tw.world().now() + 1;
+        rig.tw.set_now(next_r);
+        let _ = rig.tw.fire_due(next_r * 1_000);
+        let sub = drain_space_and_industry(&mut rig.tw);
+        land_quietly(&mut rig, &sub);
+        let bubble_closed = rig
+            .tw
+            .world()
+            .module_state::<tacsim::space::SpaceBubbleBook>()
+            .is_some_and(|b| b.by_domain.is_empty());
+        if bubble_closed {
+            break;
+        }
+    }
+
+    // 4. Verify the escort became a derelict (`JourneyState::Failed`), the miner resumed (`JourneyState::Cruising`),
+    //    all four hulls are checked in (`custody::marker_of` is `None`), and the domain activation stood down:
+    {
+        let book = rig
+            .tw
+            .world()
+            .module_state::<tacsim::space::SpaceBubbleBook>()
+            .expect("SpaceBubbleBook");
+        assert!(
+            book.by_domain.is_empty(),
+            "shared domain bubble must close once the escort is settled as a derelict and the miner resumes"
+        );
+        assert!(
+            book.derelicts.contains_key(&hull_escort),
+            "disabled escort (*Escort Hawk*) must be settled in SpaceBubbleBook::derelicts"
+        );
+        assert!(
+            !book.derelicts.contains_key(&hull_miner),
+            "cleared miner (*Salt Moth*) must not be a derelict"
+        );
+    }
+    assert!(
+        matches!(
+            journey(&rig.tw, hull_escort).map(|j| j.state().clone()),
+            Some(mush_sim::JourneyState::Failed)
+        ),
+        "disabled escort's CarrierJourney must be Failed"
+    );
+    assert!(
+        matches!(
+            journey(&rig.tw, hull_miner).map(|j| j.state().clone()),
+            Some(mush_sim::JourneyState::Cruising)
+        ),
+        "cleared miner's CarrierJourney must resume to Cruising"
+    );
+    for h in [hull_miner, hull_escort, corvette_hull, raider_hull] {
+        assert!(
+            mush_tactics::custody::marker_of(rig.tw.world(), h).is_none(),
+            "hull #{} must be checked in (no dangling custody checkout marker)",
+            h.0
+        );
+    }
+    let active_domain_count = rig
+        .tw
+        .world()
+        .module_state::<mush_sim::ActivationBook>()
+        .map_or(0, |ab| usize::from(ab.activations.contains_key(&domain)));
+    assert_eq!(
+        active_domain_count, 0,
+        "domain activation count must return to zero when the last carrier leaves"
+    );
+
+    // 5. Launch `*Late Runner*` (`hull_late`) onto the same Kirkwood route while `*Salt Moth*` (`hull_miner`)
+    //    is still cruising on leg 2 (`leg_cursor == 1`) and verify `*Salt Moth*` is NOT re-promoted:
+    teleport(&mut rig.tw, pilot_late, gallery);
+    let board_late = run(&mut rig.tw, pilot_late, "+ship/board");
+    assert!(
+        board_late.contains("You cycle the lock into the Late Runner."),
+        "{board_late}"
+    );
+    let pending_late = undock_and_burn(&mut rig, pilot_late, hull_late);
+    let _ = fire_quietly(&mut rig);
+    let late_leg1_due = pending_late.plan.depart_ic + i64::from(pending_late.plan.legs[0].secs);
+    let _ = to_ic(&mut rig, late_leg1_due);
+    {
+        let book = rig
+            .tw
+            .world()
+            .module_state::<tacsim::space::SpaceBubbleBook>()
+            .expect("SpaceBubbleBook");
+        let active_late = book
+            .active_for_hull(hull_late)
+            .expect("*Late Runner* must promote into the Kirkwood domain bubble");
+        assert!(
+            !active_late.carriers.contains_key(&hull_miner),
+            "cleared carrier (*Salt Moth*) must NOT be re-promoted when a subsequent hull arrives at the waypoint"
+        );
+    }
+    assert!(
+        matches!(
+            journey(&rig.tw, hull_miner).map(|j| j.state().clone()),
+            Some(mush_sim::JourneyState::Cruising)
+        ),
+        "cleared carrier (*Salt Moth*) must remain Cruising on leg 2"
+    );
+}

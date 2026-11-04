@@ -3870,7 +3870,7 @@ fn helm_submit(ctx: &mut Ctx<'_>) -> Result<(), CmdError> {
             picket.corvette_ship_id.clone(),
             own_ship_id.to_owned(),
             rel_speed,
-            picket.inspection_status,
+            picket.inspection_status_for(hull),
         )
     };
 
@@ -3912,21 +3912,26 @@ fn helm_submit(ctx: &mut Ctx<'_>) -> Result<(), CmdError> {
                 if let Some(book) = ctx.w.module_state_mut::<SpaceBubbleBook>()
                     && let Some(active) = book.active_for_hull_mut(hull)
                 {
+                    let carrier_party = active.carrier_party_for(hull);
                     active.bubble.set_party_relation(
                         super::picket::CUSTOMS_CORVETTE_PARTY,
-                        super::tick::CARRIER_PARTY,
+                        carrier_party,
                         Some(Mark::Friendly),
                     );
                     if let Some(picket) = active.picket.as_mut() {
-                        picket.inspection_status =
-                            super::picket::PicketInspectionStatus::ClearedAfterFine;
-                        picket.inspection_outcome =
-                            Some(super::picket::PicketInspectionOutcome::Fined {
+                        picket.set_inspection_status_for(
+                            hull,
+                            super::picket::PicketInspectionStatus::ClearedAfterFine,
+                        );
+                        picket.set_inspection_outcome_for(
+                            hull,
+                            super::picket::PicketInspectionOutcome::Fined {
                                 contract_id: contract_id.0,
                                 fine_minor,
                                 unlicensed_strategic_ore_kg: manifest.unlicensed_strategic_ore_kg,
                                 front_id: front_raw,
-                            });
+                            },
+                        );
                     }
                 }
 
@@ -3956,19 +3961,24 @@ fn helm_submit(ctx: &mut Ctx<'_>) -> Result<(), CmdError> {
                 if let Some(book) = ctx.w.module_state_mut::<SpaceBubbleBook>()
                     && let Some(active) = book.active_for_hull_mut(hull)
                 {
+                    let carrier_party = active.carrier_party_for(hull);
                     active.bubble.set_party_relation(
                         super::picket::CUSTOMS_CORVETTE_PARTY,
-                        super::tick::CARRIER_PARTY,
+                        carrier_party,
                         Some(Mark::Friendly),
                     );
                     if let Some(picket) = active.picket.as_mut() {
-                        picket.inspection_status =
-                            super::picket::PicketInspectionStatus::ClearedAfterSeizure;
-                        picket.inspection_outcome =
-                            Some(super::picket::PicketInspectionOutcome::ContrabandSeized {
+                        picket.set_inspection_status_for(
+                            hull,
+                            super::picket::PicketInspectionStatus::ClearedAfterSeizure,
+                        );
+                        picket.set_inspection_outcome_for(
+                            hull,
+                            super::picket::PicketInspectionOutcome::ContrabandSeized {
                                 seized_strategic_ore_kg: manifest.unlicensed_strategic_ore_kg,
                                 front_id: front_raw,
-                            });
+                            },
+                        );
                     }
                 }
 
@@ -3986,16 +3996,23 @@ fn helm_submit(ctx: &mut Ctx<'_>) -> Result<(), CmdError> {
         if let Some(book) = ctx.w.module_state_mut::<SpaceBubbleBook>()
             && let Some(active) = book.active_for_hull_mut(hull)
         {
+            let carrier_party = active.carrier_party_for(hull);
             active.bubble.set_party_relation(
                 super::picket::CUSTOMS_CORVETTE_PARTY,
-                super::tick::CARRIER_PARTY,
+                carrier_party,
                 Some(Mark::Friendly),
             );
             if let Some(picket) = active.picket.as_mut() {
-                picket.inspection_status = super::picket::PicketInspectionStatus::Cleared;
-                picket.inspection_outcome = Some(super::picket::PicketInspectionOutcome::Cleared {
-                    strategic_ore_kg: manifest.strategic_ore_kg,
-                });
+                picket.set_inspection_status_for(
+                    hull,
+                    super::picket::PicketInspectionStatus::Cleared,
+                );
+                picket.set_inspection_outcome_for(
+                    hull,
+                    super::picket::PicketInspectionOutcome::Cleared {
+                        strategic_ore_kg: manifest.strategic_ore_kg,
+                    },
+                );
             }
         }
 
@@ -4018,7 +4035,7 @@ fn helm_run(ctx: &mut Ctx<'_>) -> Result<(), CmdError> {
         .module_state::<SpaceBubbleBook>()
         .and_then(|b| b.active_for_hull(hull))
         .and_then(|a| a.picket.as_ref())
-        .map(|p| p.inspection_status)
+        .map(|p| p.inspection_status_for(hull))
         .ok_or_else(|| CmdError::msg("No customs picket is hailing this ship."))?;
     if matches!(
         status,
@@ -4041,15 +4058,21 @@ fn helm_run(ctx: &mut Ctx<'_>) -> Result<(), CmdError> {
     if let Some(book) = ctx.w.module_state_mut::<SpaceBubbleBook>()
         && let Some(active) = book.active_for_hull_mut(hull)
     {
+        let carrier_party = active.carrier_party_for(hull);
         active.bubble.set_party_relation(
             super::picket::CUSTOMS_CORVETTE_PARTY,
-            super::tick::CARRIER_PARTY,
+            carrier_party,
             Some(Mark::Hostile),
         );
         if let Some(picket) = active.picket.as_mut() {
-            picket.inspection_status = super::picket::PicketInspectionStatus::RanThePicket;
-            picket.inspection_outcome =
-                Some(super::picket::PicketInspectionOutcome::RanThePicket { front_id });
+            picket.set_inspection_status_for(
+                hull,
+                super::picket::PicketInspectionStatus::RanThePicket,
+            );
+            picket.set_inspection_outcome_for(
+                hull,
+                super::picket::PicketInspectionOutcome::RanThePicket { front_id },
+            );
         }
     }
 
@@ -4299,15 +4322,13 @@ fn validate_docking_initiation_gates(
             ));
         }
         let own_ship_id = active.carrier_ship_id_for(hull);
+        let own_party = active.carrier_party_for(hull);
         for (ship_id, ship) in &active.bubble.ships {
             if ship_id == own_ship_id {
                 continue;
             }
             if ship.status == HullStatus::Operational
-                && active
-                    .bubble
-                    .party_relation(ship.party, super::tick::CARRIER_PARTY)
-                    == Relation::Hostile
+                && active.bubble.party_relation(ship.party, own_party) == Relation::Hostile
             {
                 return Err(CmdError::msg(format!(
                     "Cannot initiate collar docking while hostile contact `{}` is still operational in the tactical bubble.",
@@ -4761,16 +4782,29 @@ fn helm_dock(ctx: &mut Ctx<'_>) -> Result<(), CmdError> {
                                         now.at,
                                     );
                                 }
-                                if let Some(picket) = &active.picket
-                                    && let Some(corvette_ship) =
-                                        active.bubble.ships.get(&picket.corvette_ship_id)
-                                {
-                                    let _ = super::custody::check_in_space_unit(
-                                        ctx,
-                                        picket.corvette_hull,
-                                        corvette_ship,
-                                        now.at,
-                                    );
+                                if let Some(picket) = &active.picket {
+                                    if picket.corvette_hull != active.interdictor_hull
+                                        && let Some(corvette_ship) =
+                                            active.bubble.ships.get(&picket.corvette_ship_id)
+                                    {
+                                        let _ = super::custody::check_in_space_unit(
+                                            ctx,
+                                            picket.corvette_hull,
+                                            corvette_ship,
+                                            now.at,
+                                        );
+                                    }
+                                    if picket.raider_hull != active.interdictor_hull
+                                        && let Some(raider_ship) =
+                                            active.bubble.ships.get(&picket.raider_ship_id)
+                                    {
+                                        let _ = super::custody::check_in_space_unit(
+                                            ctx,
+                                            picket.raider_hull,
+                                            raider_ship,
+                                            now.at,
+                                        );
+                                    }
                                 }
                             }
                             if let Some(book) = ctx.w.module_state_mut::<SpaceBubbleBook>() {

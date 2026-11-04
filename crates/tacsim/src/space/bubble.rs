@@ -47,13 +47,13 @@ pub const fn admitted_party(n: usize) -> PartyId {
 /// persists as its admission number from 1 (`A` is 1), the number the documents
 /// already hold, so the seam moves no persisted document. 0 reads as `A`, as it
 /// always did.
-mod party_wire {
+pub(super) mod party_wire {
     use serde::{Deserialize, Deserializer, Serialize, Serializer};
 
     use super::{PartyId, admitted_party};
     use crate::arena::party::LETTERS;
 
-    pub(super) fn serialize<S: Serializer>(
+    pub(in crate::space) fn serialize<S: Serializer>(
         party: &PartyId,
         serializer: S,
     ) -> Result<S::Ok, S::Error> {
@@ -64,7 +64,7 @@ mod party_wire {
             .serialize(serializer)
     }
 
-    pub(super) fn deserialize<'de, D: Deserializer<'de>>(
+    pub(in crate::space) fn deserialize<'de, D: Deserializer<'de>>(
         deserializer: D,
     ) -> Result<PartyId, D::Error> {
         let number = u32::deserialize(deserializer)?;
