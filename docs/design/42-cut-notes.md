@@ -186,3 +186,11 @@ into the bay room before `tv::hand_back` (42-8): captive for a non-friend loader
   `+tv/<n> board`: §3a's cab bug stays the fix thread's.
 - `+ship/release`'s two landings, and a written-off Friend's load's crew stepping aboard, are built here;
   the `extractable` widening for a released passenger stays CR.3's.
+
+**Cell delta (rule #14).** All of it lands in shard_1. `crew_custody` is pinned there by its `field_gc5` and `field_gc4` imports (doc 43 §10.2 asks a cut to say so). The two rewritten GC.5 tests became four, one per ground, and `crew_custody` adds three. Local Windows wall times (`-j 8`):
+- GC.5's gate: 39.1 s at 256, 39.6 s at 512;
+- the twin: 54.8 s at 256, 55.7 s at 512;
+- the NPC exit: 21.6 s at 256, 21.8 s at 512;
+- the release: 43.4 s.
+
+That is about 4.6 summed minutes against the two 256-only tests it replaces, which were not timed here. **Owed:** the figure from PR #408's JUnit (shard_1's `field_gc5::` and `crew_custody::` testcases against main's last green run), to replace this estimate.
