@@ -688,6 +688,14 @@ fn home(c: &crate::field_ops::FieldUnitAssessment) -> bool {
         )
 }
 
+/// **Every crew record the world holds**, in character order (doc 42 cut CR.6's space seam reads
+/// it to find a derelict's crew); empty when the book is not registered.
+pub(crate) fn records(w: &World) -> impl Iterator<Item = &CrewRecord> {
+    w.module_state::<CrewBook>()
+        .into_iter()
+        .flat_map(|book| book.0.values())
+}
+
 /// **Who is seated in `unit`**, if anyone (a reader for the gates).
 #[must_use]
 pub fn seated_in(w: &World, unit: ObjId) -> Option<ObjId> {
@@ -1671,15 +1679,13 @@ fn flight_on_site(ctx: &Ctx<'_>, site: &CanonicalId, friend: &dyn Fn(ObjId) -> b
 /// Draft 0.3 42-5): a forced extraction whose draw named it. A raider's lift waits on it.
 #[must_use]
 pub(crate) fn capture_pending(w: &World, carrier: ObjId) -> bool {
-    w.module_state::<CrewBook>().is_some_and(|book| {
-        book.0.values().any(|record| {
-            record.extraction.as_ref().is_some_and(|coming| {
-                coming.forced
-                    && coming
-                        .capture
-                        .as_ref()
-                        .is_some_and(|capture| capture.carrier == carrier)
-            })
+    records(w).any(|record| {
+        record.extraction.as_ref().is_some_and(|coming| {
+            coming.forced
+                && coming
+                    .capture
+                    .as_ref()
+                    .is_some_and(|capture| capture.carrier == carrier)
         })
     })
 }
