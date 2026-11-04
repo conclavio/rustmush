@@ -1050,7 +1050,7 @@ impl SurfaceActProvider {
         stamp: &Stamp,
         flight: Option<&crate::detachment::sortie::Flight>,
         work: Option<Box<crate::detachment::sortie::FieldWork>>,
-        (mind, context): (
+        (mind, mut context): (
             Option<(&crate::surface::dispatch::MindWord, Option<mush_org::OrgId>)>,
             Option<&mut mush_core::PrepareCtx<'_>>,
         ),
@@ -1128,28 +1128,47 @@ impl SurfaceActProvider {
             && parameters.get("claim").and_then(Value::as_str) == Some("refused")
         {
             let at_ic = now;
+            let book = context
+                .as_deref()
+                .and_then(|context| context.world().ok())
+                .map(|world| crate::minds::ic_sortie::claim_of(world, tv));
             match (record.queued.as_ref(), record.claim.as_deref()) {
                 (
                     Some(crate::surface::excursion::Queued {
                         launch: Some(_),
                         operator,
+                        hull,
                         ..
                     }),
                     Some(crate::surface::excursion::ClaimCursor::Opening { .. }),
-                ) if *operator == actor
-                    && !matches!(
-                        context
-                            .as_deref()
-                            .and_then(|context| context.world().ok())
-                            .map(|world| crate::minds::ic_sortie::claim_of(world, tv)),
-                        Some(crate::minds::ic_sortie::ClaimRead::Active { .. })
-                    ) =>
-                {
-                    record.claim =
-                        Some(Box::new(crate::surface::excursion::ClaimCursor::Refused {
+                ) if *operator == actor => {
+                    record.claim = Some(Box::new(match book {
+                        // Doc 23 cut S.4b-3 (D-23-23 step 5): the claim opened but its launch
+                        // never ran — the rig never left its bay, so the claim closes
+                        // `PoweredDownInBase` naming the hangar's hull; the claim arm lands it.
+                        Some(crate::minds::ic_sortie::ClaimRead::Active { open, dispatcher })
+                            if dispatcher == actor =>
+                        {
+                            crate::surface::excursion::ClaimCursor::Closing {
+                                open,
+                                kind:
+                                    crate::surface::excursion::ClaimCloseKind::PoweredDownInBase {
+                                        base: *hull,
+                                    },
+                                operator: actor,
+                            }
+                        }
+                        Some(crate::minds::ic_sortie::ClaimRead::Active { .. }) => {
+                            return Err(port_error(
+                                ActionErrorCode::Conflict,
+                                "that rig's mind claim is another's",
+                            ));
+                        }
+                        _ => crate::surface::excursion::ClaimCursor::Refused {
                             reason: crate::surface::excursion::CLAIM_REFUSED.into(),
                             at_ic,
-                        }));
+                        },
+                    }));
                     record.queued = None;
                     write_record(txn, &self.excursions, record, existed)?;
                     let outcome = RulesValue::new(
@@ -1184,6 +1203,8 @@ impl SurfaceActProvider {
         } else {
             None
         };
+        // Doc 23 cut S.4b-3 (D-23-16): every other rig's claim still opening, by licence.
+        let mut openings: BTreeMap<u64, usize> = BTreeMap::new();
         if launches {
             if record.excursion.is_some() {
                 return Err(port_error(
@@ -1225,7 +1246,15 @@ impl SurfaceActProvider {
             }
             let mut counts = ExcursionCounts::default();
             for &other in world {
-                if let Some(found) = read_record(txn, &self.excursions, ObjId(other))?
+                let found = read_record(txn, &self.excursions, ObjId(other))?;
+                // Doc 23 cut S.4b-3 (D-23-16): a claim still opening holds its licence's seat.
+                if ObjId(other) != tv
+                    && let Some(crate::surface::excursion::ClaimCursor::Opening { licence, .. }) =
+                        found.as_ref().and_then(|found| found.claim.as_deref())
+                {
+                    *openings.entry(*licence).or_insert(0_usize) += 1;
+                }
+                if let Some(found) = found
                     && let Some(excursion) = &found.excursion
                 {
                     counts.world = counts.world.saturating_add(1);
@@ -1398,7 +1427,7 @@ impl SurfaceActProvider {
                 sealed,
             )))
         } else {
-            match (mind, context) {
+            match (mind, context.as_deref_mut()) {
                 (None, _) => None,
                 (Some(_), None) => {
                     return Err(port_error(
@@ -1414,7 +1443,38 @@ impl SurfaceActProvider {
         let seal = match dispatched {
             None => None,
             Some(crate::surface::dispatch::Dispatched::Sealed(seal)) => Some(seal),
-            Some(crate::surface::dispatch::Dispatched::Claim { licence, state }) => {
+            Some(crate::surface::dispatch::Dispatched::Claim {
+                licence,
+                state,
+                seats,
+            }) => {
+                // D-23-16: the licence seat is the claim's, counted at `go` over the book's
+                // active claims and every other rig's claim still opening.
+                if let Some(seats) = seats {
+                    let held = context
+                        .as_deref()
+                        .and_then(|context| context.world().ok())
+                        .map_or(0, |world| {
+                            crate::minds::ic_sortie::active_under_licence(world, licence)
+                        })
+                        .saturating_add(openings.get(&licence).copied().unwrap_or(0));
+                    if held >= usize::from(seats) {
+                        return Err(ActionError::new(
+                            ActionErrorCode::ProviderRejected,
+                            false,
+                            crate::surface::dispatch::MIND_SEATS_HELD
+                                .replace("{licence}", &licence.to_string())
+                                .replace("{held}", &held.to_string())
+                                .replace("{seats}", &seats.to_string()),
+                        )
+                        .unwrap_or_else(|_| {
+                            port_error(
+                                ActionErrorCode::ProviderRejected,
+                                "the licence's seats are held",
+                            )
+                        }));
+                    }
+                }
                 // D-23-21: the claim is the reservation. `go` files the Open's cursor and queues
                 // the launch behind it, with the rig in its bay; no act starts, nothing leaves.
                 let org = mind.and_then(|(_, org)| org).map(|org| org.0);

@@ -323,7 +323,7 @@ async fn tender_on(ground: &Ground) {
     );
     assert!(
         preview.contains("patch 40 points of hull")
-            && preview.contains("400 kg of yard fittings")
+            && preview.contains("35 kg of structural alloys and 12 kg of yard fittings")
             && preview.contains("about 72 IC minutes"),
         "{preview}"
     );
@@ -365,15 +365,14 @@ async fn tender_on(ground: &Ground) {
         10 + short.min(20),
         "the magazine takes what the stores held, up to its size"
     );
-    // The draw: 10 + 400 kg of fittings out of the bale's tonne; the rounds out of the stores.
+    // The draw: the unjam's 10 kg of fittings and the patch's escort figures (doc 39 cut IN.8:
+    // 40 points at 0.86 and 0.29 kg, rounded up) out of the bale's tonnes; the rounds out of the
+    // stores.
     let bale = crate::driving_rig::record_of(&mut rig.tw, tender)
         .and_then(|record| record.bale)
         .expect("the bale");
-    assert_eq!(bale.fittings_kg, 1_000 - 10 - 400, "the bale's fittings");
-    assert_eq!(
-        bale.alloys_kg, 1_000,
-        "no alloys until IN.8's per-point figures"
-    );
+    assert_eq!(bale.fittings_kg, 1_000 - 10 - 12, "the bale's fittings");
+    assert_eq!(bale.alloys_kg, 1_000 - 35, "the bale's alloys");
     let shown = run(&mut rig.tw, a, "+tv/2 stores");
     let left = 20 - u64::try_from(short.min(20)).expect("rounds");
     assert!(
