@@ -429,105 +429,14 @@ slower, unrelated ones too (`twin::m2_gate_a_on_a_mixed_pool` 28.1 → 52.5 s, `
 64.0 s), and no test ran faster. The other changed tests run no longer for the cut: the stores are minted inside the
 bulk mint, so a port boots in exactly main's fires.
 
-## IN.9 — the yard and the handover (Q-39-14, Q-39-18, Q-39-19, Q-39-20, Q-39-33, Q-39-36)
-
-**Built.** The expensive-to-reverse marker cut (Q-39-33): the register and the provenance, built as ruled.
-
-- **The register** — `tacsim:owned_hull:{hull}` (`port::owned::OwnedHull`): the hull, the design, the fresh mark
-  (`SYB-01`, `SYB-02`, …, one a commission, never re-issued), the home port, the provenance id and the lay-up row
-  (`OwnedBody::Ship(HullRow)` or `Rig(RigRow)`). It is never a programme row: the applier's preflight and `hull_line`
-  do not read it, so the pool stays the seed. It is read **after** the programme and yard rows by `hull_view`,
-  `hull_of_room`, `helm_of` (a hull titled to the pilot or to an org the pilot `acts_for`, lowest id first),
-  `world_hulls` (so `tow.rs::carriers_at` and the second-carrier recovery see a yard-built carrier; `tow.rs` is not
-  edited), `bay_carriers` (RS.2's seam behind `carrier_of_bay` and `facility_of`), `carrier_right` and `right_of`
-  (an org's officer works its hull as title holder), `hopper_of`, the rig tools and battery reads and `world_rigs`.
-- **The provenance** — `tacsim:hull_provenance:{order}`: the order, the work order, the hull, the facility, the
-  design's pack digest, the kit lot, the part lots fitted and the instant.
-- **The commission** — `tacsim:commission:{order}` (`port::commission::YardCommission`). `+yard/collect` on a
-  delivered hull order writes the record first, then owes one `tacsim_works` move (`Then::Commissioned`) that
-  **consumes** the kit lot (its `workorder.output` lineage checked, the relay foundry's shape) and the part lots in
-  the escrow, through the new `InventoryFamilies::consume_products` (the census and tallies summed per key: the
-  inventory stages an endpoint's lot census once a transaction, so two `consume_product` calls at one escrow are
-  refused). When the works ledger shows it landed the record steps on, and the port tick (`commission::tick`, run
-  before `works::tick` so a consumption settled in a fire is laid up on the next) runs Laying → Placed → Titled →
-  Vault → Emptied → Provenance → Registered → Berthed, each idempotent and recorded. The lay-up is the applier's own
-  `hull::lay_up_one` / `vehicle::lay_up_rig`, now writing through a `HullRowSink` / `RigRowSink` (the port map's
-  `MapRows` / `MapRigRows`, or the commission's record). A ship is placed docked on the yard port's domain with a
-  hold vault the beneficiary's; a rig stands on the port's workshop floor (a location, no simulation placement, as a
-  berthed hull does) with a yard berth row naming no carrier. Magazines are emptied by one plan (Q-39-36).
-- **The bill from the design** (`port::bill`, Q-39-14): §4.8's partition and §4.7's bill. The escort is 3 t of
-  alloys, 1 t of fittings, four parts and the line core, two days; the Dray and the Dray-P 163 t, 55 t and a hauler
-  plant, twelve days (doc 39's 2,565/855 kg and 157,500/52,500 kg). The hull recipe pack `tacsim.industry.hulls` v1
-  (`content/industry/hulls-v1.json`, in `game_seed_sources`) carries one recipe a buildable design (the bulk lines,
-  `work_units` = days × 24, one kit `output_lots: each`, `requires: tacsim.yard`), pinned row for row to
-  `design_bill` by `port::bill`'s test. A yard order's bill adds the design's part lines; a part is delivered as its
-  lots.
-- **Kits** — goods v6: `class: kit`, five `tacsim.hull_kit.<design>` rows (escort, prospector, tender, Dray,
-  Dray-P), no mass of their own and stowage `stow.kit`, which no hold accepts (the gauges never list them);
-  `MAX_GOODS` 32 → 48; never orderable on the market.
-- **`+bay/stow <hull>[=<carrier>]`** (§4.13, §8.4: this document's verb): the named carrier docked here, the actor's
-  run of her, a lessee or salvor only to the row's own carrier, a free bay slot whose mass limit takes her catalogue
-  mass; the custody refusal ("The <name> is in <custodian>'s custody; only they may move her.") before the right.
-  `BerthRow.carrier` and `bay_room` are optional (old rows read `Some`); `+bay` reads a yard berth as "Built on this
-  floor". The first rearm draws from a carrier the hull's title holder holds docked at the port.
-- **The title view for rigs** (`owned::title_view`): a commissioned rig in the bay of a carrier the pilot has the run
-  of, or out on the ground by her `tacsim:tv:{tv}` projection's hull, read as `TvLease::house_view`'s shape with the
-  carrier's hold, by `rig_lease`, `live_on_hull`, boarding and the surface act's rig readers. `repossess` skips a
-  titled rig, and `bay_slot_word` (the buyout's and refit's "still in the bay") never counts one.
-
-**The story.** `shard_6/yard_in9.rs`, three tests through the production commands:
-
-- `in9_the_yard_builds_a_dray_p_and_an_escort_and_hands_them_over` (port-side): a captain who enrolled and handed
-  the charter straight back orders a Dray-P at Stickney; twelve days later `+yard/collect` hands her over docked,
-  titled to them, `SYB-01`, a register row and a provenance, and `helm_of` gives them her helm. `+yard/quote
-  tv_escort` prints the design's bill and two days; the bill comes from the Dray-P's hold in two deliveries (the bulk,
-  then the four part lots); two days on, `+yard/collect` writes the commission, **staff stop it after the lay-up and
-  the placement** (no title, no register row), and the next fire finishes it. The escort stands on the workshop
-  floor titled to them, magazines empty, the provenance naming the four lots; `+bay` quotes her clean but for the
-  rearm ("0/2000 rounds", "Built on this floor"); `+bay/order …=rearm` loads her from the Dray-P's hold;
-  `+bay/stow escort=<Dray-P>` puts her in the Dray-P's bay, and `facility_of` names the Dray-P. Granted office in the
-  Co-op, the captain orders a second escort `=org:<coop>`, collects it titled to the Co-op, stows it as its officer and
-  reaches it by its title view; a crewmate without office reaches neither.
-- `in9_ahuna_…` and `in9_urvara_…` (256 and 512): a second captain's chartered Dray-P stands on the pad with a leased
-  tug. The yard builds the first captain a Dray-P and an escort; she is stowed, the captain boards the Dray-P at
-  Stickney's gallery (`+ship/board`, the register's helm) and sails by Ceres to the site, walks to the bay
-  (`+tv/bay in`), `+tv/1 board` and `+tv/1 launch go` by the title view. Disabled and indexed (GC.6's staff fixture),
-  the escort is towed by the second captain's tug and loaded into **their** programme Dray-P; that Dray-P sails to
-  Ceres, returns its own leased tug, and `+coop/buyout` writes the title transfer with the titled escort still in her
-  bay.
-
-Seeds: the yard facility (`@facility/open`, `/owner`, `/terms`) until lane v24 authors the row; the Dray-P's bill
-and, on the ground, the escort's in their escrows; the escort's bill and the munitions in the Dray-P's hold; the
-money; the officer's grant; the captain's move to Stickney; the escort's disablement and its index row.
-
-**Departures from the row.**
-
-- **The lane's `yard` row at `room.p14_slipway`** waits on IN.5's lane v23 (#414): it is lane v24, a `PortDef.yard`
-  block of IN.5's `WorksDef` shape (capability `tacsim.yard`) and a new atlas room. Until then the facility is a seed.
-- **`armour_cab` and `walker_cab` are not in this cut.** Giving the line-tank family, the heavy, the scout and the
-  bipeds an authored `logistics` changes every fielded tank's dry mass from the field-ops measure to whole tonnes,
-  which moves the tow masses and IN.8's per-point figures for those designs; it is a follow-up with its own review.
-  The five designs that already carry both blocks are the buildable ones, and only they have kits and recipes.
-- **`+yard/deliver` buys no parts at the port's asks**: the lane authors no part asks (IN.6). A part line comes from
-  a lot the requester holds in the docked hold.
-- **"The bot types it"**: the stories type every player line through the rig's command path (`run`), the field
-  stories' precedent; no `mush-bot` vocabulary is added (IN.11's).
-- **A pilot with two hulls**: `helm_of` takes the charter, then the programme rows, then the register; `+ship/helm
-  <hull>` (doc 18 P2's seat) is not built. The story's captain hands the charter back so the yard-built Dray-P is
-  their one helm.
-
-**Cell delta (rule #14).** `tacsim-integration-6`: **+2.76 min** for the three new tests (the port half 48.0 s,
-Ahuna 64.5 s, Urvara 53.3 s on PR run 41850018642's JUnit, head `e6b0f82c`). The cell's sum reads 46.35 → 50.16 min
-against main's run at the merge base (41827163605, `4390f04c`), 80 → 83 tests; the other +1.05 min is spread over
-the unchanged tests (runner speed), none of which this cut touches.
-
 ## IN.5 — the first production story: the refine and the works (Q-39-4, Q-39-5, Q-39-6, Q-39-23, Q-39-31)
 
 **Built.**
 
-- **Lane v23, relay v14** (after IN.6's v22/v13). The strip chain's head is `lane_chain::strip_industry`, called
-  first by `strip_part_seeds`; `shard_4/lane.rs::in5_strip_industry_rebuilds_the_published_v22` pins it against
-  IN.6's digest.
+- **Lane v24, relay v15** (after CR.2's v23/v14, which merged first). The strip chain's head is
+  `lane_chain::strip_industry`, called first by CR.2's `strip_release_authority`;
+  `shard_4/lane.rs::in5_strip_industry_rebuilds_the_published_v23` pins it against CR.2's digest, and the chain
+  under it against IN.6's.
 - **The refine** (Q-39-6). `MillDef.kind` is `mill` (the default, skipped on encode, so the ore mills re-encode
   byte-identically) or `refine`. The family rule in `check_ports` binds a `mill` row only. Kasei's row:
   `{kind: refine, ore: metals, into: structural_alloys, ratio 5:4, batch_t 20, per_ic_day_t 40}`. Its
@@ -598,12 +507,16 @@ the unchanged tests (runner speed), none of which this cut touches.
   watched on `+market/list`, the alloys, `+works/quote|order|deliver|collect`, the passage home and the Co-op's
   bid (gross 3,000.00 cr). Both `#[ignore]`d, run by name on conclav.dev (by-hand tier, doc 43 TS.2):
   `cargo test -j 8 -p mush-bot --test mining_cohort -- --ignored in5_ --nocapture --test-threads 1`.
-  by-hand (conclav.dev, the PR's tree on `3fb3e861`, 2026-11-04): at both sites the mining half passes in about
-  570 s and the bot buys its cargo. The passage to Stickney then stalls: on main every Ceres→Stickney passage is
-  interdicted at Kirkwood (leg 0's hazard 4 meets its interdiction threshold of 3, and the lane carries the
-  `kirkwood_picket`). The SF track's wall-clock customs bubble wants heave-to, `+helm/submit` and then the
-  raider fight (doc 35 SF.R6), none of which the bot types. **The rest of the bot story is owed** until the lead
-  rules how the story meets the picket.
+  The way out is by Luna and Deimos: Ceres→Aitken Highport→Voltaire Anchorage→Stickney (`ceres_aitken`,
+  `aitken_voltaire`, `voltaire_stickney`, about 27 IC days), bunkering at each port. The way home is
+  `stickney_ceres`, whose legs carry no hazard. The detour adds about 11 real minutes a site at the 3,600 rate.
+  Seed: God mints the pilot a 50,000.00cr float from a system source of the story's own (`@account/system … =tacsim.credit`, the
+  pilot's `@account/list`, `@econ/mint`), staff lines outside the bot's vocabulary.
+  The closing check reads `@tacsim/port status`: no line pending, missing or flagged but the two the story's rate
+  brings, the rate line itself and Occator's house rig stopped under a claim after the IC month the lift runs.
+  by-hand: `cdd30329` (main `a193de9c` with the busy-sale retry), both side by side on conclav.dev: Ahuna 1,895 s,
+  Urvara 1,897 s, each about 570 s of mining, 1,325 s of production and passage, and the sale. Tier: by hand
+  (`test-tiers.toml`).
 
 **Departures from the row.**
 
@@ -625,11 +538,30 @@ the unchanged tests (runner speed), none of which this cut touches.
   the story's two ground sizes, Ahuna and Urvara. The story's carbon is bought at the Exchange's ask, as the row's
   next clause says. The bot mines metals and volatiles only; a carbon family for the lane is a later bot cut.
 - **The house purchase has no consumer yet**: house orders at the works are IN.10's. It stops at the floor.
+- **The bot sails out by Luna and Deimos, not the corridor.** On main every Ceres→Stickney passage is interdicted
+  at Kirkwood: `ceres_stickney`'s leg 0 has hazard 4 against an interdiction threshold of 3, and the Kirkwood
+  location carries the `kirkwood_picket`. The SF track's wall-clock customs bubble wants heave-to and
+  `+helm/submit`, then the raider fight (doc 35 SF.R6). The owner has said these cuts raise no space exposure,
+  and the lead ruled the story should not fly the picket. Stripping it in the bot rig would need a production
+  hook, because the rig boots the real server with the built-in lane, and an operator seed may not claim the
+  lane's id. So the story takes the lane's own picket-free way out, on production paths with nothing stripped,
+  and the matter pin and the drift check are untouched.
+- **The bot's money does not cover the long way round** (an economy finding, provisional numbers): unseeded, at
+  both sites the pilot reached Stickney, sold, refined, ordered and collected the fittings, then could not pay the
+  bunkers home ("Your account does not have enough available to cover that."). The mining loop's earnings plus the
+  trade's margin do not buy propellant at 60 cr a tonne for three legs out and one home. The story seeds a float
+  (above); tuning the margin or the propellant asks is the economy's, not this cut's.
+- **Stickney Yards' capital is thin** (an economy finding, provisional numbers): its 50,000 now also pays the works'
+  house purchases of Kasei's alloys (two lots, 4,500), so IN.8's `in8_a_whole_escort_scrapped_at_stickney…`,
+  whose escort costs the Yards about 45,000, can no longer buy the heavy's bale back. The story seeds the Yards
+  50,000 from Ceres' treasury before that step (`fund_the_yards`); the capital is the economy's to tune.
+- **For the SF thread:** the bot has no picket words (brake under 10 m/s, `+helm/submit`, `+tac/pdc auto`, a
+  jink), so any bot haul through Kirkwood stalls in the bubble.
 
 **Other tests moved.**
 
-- The lane pins: `LANE_VERSION` 23, `LANE_DIGEST`/`SHIPPED_LANE_DIGEST` `5b35ec9c…`, relay v14 `476bf7d8…`
-  (`relay_registry.rs` and its kept-world test, now `sm12b_a_kept_v13_star_takes_lane_v23_and_relay_v14`;
+- The lane pins: `LANE_VERSION` 24, `LANE_DIGEST`/`SHIPPED_LANE_DIGEST` `0d07927c…`, relay v15 `2fff2038…`
+  (`relay_registry.rs` and its kept-world test, now `sm12b_a_kept_v13_star_takes_lane_v24_and_relay_v15`;
   `boot_parity.rs`; `shard_10/stations.rs`), and the version asserts in `shard_3/drones.rs`,
   `shard_5/sites.rs`, `shard_9/mill.rs`, `cost_lane.rs` and `shard_4/lane.rs`.
 - `shard_4/lane.rs`: the Syndicate is still appended last before Freeport Works.
@@ -667,6 +599,278 @@ fight budget (the exchange should stop at the first hit both ways, not let the i
 at the merge base (41827163605, `4390f04c`) against the PR's (41853059138), 414 → 415 tests. The new story takes
 20.8 s. The common tests moved −0.12 min in all; `cost_lane`'s C2/C3 cohort adds about 10 s for the house
 purchases it settles first (`sm12c_a_restart…` 69.1 → 78.8 s).
+
+## IN.7 — the part recipes (Q-39-22, Q-39-31)
+
+**Built.**
+
+- **The part recipes** (§4.3): `tacsim.industry.recipes` v2 (`content/industry/recipes-v2.json`, which replaces v1
+  in `game_seed_sources`) carries `fittings` unchanged and the table's thirteen part rows. They are the five
+  mounts and racks (`mount_105`, `mount_30`, `mount_mg`, `mount_laser`, `rack_lr`), the two sights, the two pods
+  and the four plants, each at the works with `output_lots: each`, with the table's inputs, outputs and work
+  units. The works' menu shows the latest published version of each recipe, so a kept world that holds v1 beside
+  v2 offers `fittings` once.
+- **The arm's part commission** (§4.11; IN.2's act):
+  - On the fire after a part recipe's delivery, the works arm finds the escrow's untraced part lot (a part good
+    with no provenance row) and owes IN.2's `Commission` under the facility's own bay ledger
+    (`bay_work::owe_commission`, ledger = the facility object, submitted as the requester).
+  - The act consumes the lot by its `workorder.output` lineage. It lays one lot a unit at grade 9, each with its
+    `Manufactured {order, facility}` row, in one bundle. The bay tick submits it on the next fire, and its ordinal
+    replay lands it once across a restart.
+  - Until the act lands, `+works/collect` answers "That order is still settling.", and a house order is not
+    collected. The ten-unit industry lot carries no row, so `+bay/fit` refuses it.
+  - A hull kit is not a part, so IN.9's yard commission does not meet this one.
+  - An order of a part recipe is capped at 32 parts, one commission's rows (`+works/quote`/`order` refuse
+    "The works lays at most 32 parts an order; order fewer.").
+- **Lot moves in one bundle** (`mush_inventory::InventoryFamilies::relocate_lots`): a collection of ten part lots
+  failed "a lot could not be moved", because ten single `relocate`s write one endpoint's census and tally keys ten
+  times and a bundle writes a key once. The works' move relocates its lots together.
+- **The stores index** (IN.6 left it to IN.7/IN.9): `stock::store_lots` finds a storefront's part lots by a bounded
+  walk of the lot family (16 pages of 256), not by the seeds' derived ids. A part made, scrapped or sold into a
+  storefront is now drawn by `Replace{lot: Store}` like a seeded one: traced, unfitted, clean, unheld but for its
+  own ask, and unclaimed.
+- **The disputed part** (the row's last clause): `bay_work::disputed` is a stripped part that its parent's record
+  lists under a claim (`claim_lots`) that is not vacated and whose filed contract has not ended. An unreadable
+  contract counts as live: fail closed. `+bay/fit` refuses it: "That part is disputed: it came off #… under claim
+  …, which is still open; nothing takes custody of it until the claim is settled." `disputed_refusal` is the
+  sentence for a build's custody too. `strip::list_under_claim` is staff's seam, `vacate_claim`'s pair, since no
+  ruled path strips under a claim (Q-36-33).
+- **The lane** (v26, relay v17; after CR.2's v23, IN.5's v24 and IN.9's v25):
+  - Stickney Yards bids strategic ore at 700: intake 12, refresh 2 a day, boards exchange and yard. This is
+    Q-39-31's Stickney bid; the Exchange's 600 at Ceres stays, so a hauler clears 100 a tonne.
+  - **The seeds retire** (Q-39-12): Occator's five part stock rows and the Yards' thirteen are gone, so the stores
+    hold what is made, scrapped or sold into them.
+  - The strip chain's head is `lane_chain::strip_part_recipes`, which `strip_industry` calls first. It puts the
+    rows back from `SEEDED_PARTS` and removes the bid. `shard_4/lane.rs::in7_strip_part_recipes_rebuilds_the_published_v24`
+    pins it against IN.5's v24 digest.
+- **Instrument boards from Luna**: no new row. Crisium Instruments' ask at Aitken Highport (900) is the source,
+  and the lane's own routes are the leg (Ceres → Luna → Voltaire → Stickney: Luna has no route back to Ceres, and
+  this leg passes no Kirkwood picket).
+
+**The story.** `shard_2/in7_part_recipes.rs::in7_strategic_ore_boards_and_fittings_become_ten_sights_at_stickney`
+(shard_2, the shard with the most room):
+1. A captain at Ceres with three tonnes of strategic ore and a titled scout in their Dray-P's bay sails to Luna.
+   They buy a tonne of boards at Crisium's ask and sail by Voltaire to Stickney.
+2. The scout is berthed and its sight wrecked. `+bay` quotes `NO_PART`: the seeds retired.
+3. A tonne of ore goes into the Yards' bid at 700, and three tonnes of fittings come off the Yards' ask.
+4. `+works/quote sight_visual` prints the bill and sixty work units, and a quantity of four is refused at 32
+   parts. The captain books the order and delivers the three lines, and the arm runs it.
+5. Delivered, the escrow holds one ten-unit industry lot with no row. `+bay/fit` refuses it, `+works/collect` is
+   settling, and the works' bay ledger owes the commission.
+6. The commission is submitted and the world restarts before it lands (the submission dropped, `reboot`). After
+   the restart it lands once: the ledger reads 1, the industry lot is gone, and there are ten one-unit lots at
+   grade 9 with `Manufactured` rows naming the order and the works.
+7. `+works/collect` puts the ten in the hold, and `+bay/fit` fits one to the scout. Its row reads manufactured,
+   fitted into the scout, and the sight is intact.
+8. The sight is stripped again and staff list it under an open claim. `+bay/fit` refuses it as disputed and
+   stages nothing.
+
+Seeds: the money, the ore in the hold, the bunkers, the scout's unit, title and placement, the wrecked sight, the
+open claim.
+
+**Departures from the row.**
+
+- **No 256/512 pair**: the cut is port-side (IN.2's, IN.4's and IN.6's precedent). The ore the story seeds is the
+  bot's to mine, and the bot mines metals and volatiles only (IN.5's note).
+- **"Refused at a build's custody"** is proved at `+bay/fit`'s custody. On this tree the yard's `+yard/deliver`
+  of part lots is IN.9's (#416, not merged). `disputed_refusal` is the one sentence for IN.9 to call there, with
+  `relocate_lots` for its multi-lot delivery.
+- **The strategic ask at Ceres is not authored**: the row names only the Stickney bid. The Exchange cannot ask
+  the good it bids (IN.5's rule), so strategic ore reaches the works from miners and haulers, who sell into the
+  700 bid or deliver into an order from their own hold.
+- **The seeds retire with no house restock**: with the lane's part stock gone, a workshop's stores are empty
+  until parts are made, scrapped or sold into them. A refit that wants a part from the stores now finds `NO_PART`
+  unless one is there, and the captain orders the part at the works and `+bay/fit`s it. A house order that keeps
+  the stores stocked is IN.10's arm (house orders) or a later cut. **Flagged for the owner.**
+
+**Other tests moved.**
+
+- `shard_2/in6_part_lot.rs` and `shard_1/bay_36a.rs::b36a_2_…` stock the stores they draw from by staff
+  (`driving_rig::seed_store_parts`: one-unit grade-9 lots with `Seeded` rows, as IN.6's stock row laid them),
+  since the lane seeds none. Their claims are unchanged.
+- The lane pins: `LANE_VERSION` 26 and the lane digest (`shard_4/lane.rs`, `cost_lane.rs`), relay v17 and its
+  digest (`relay_registry.rs`), and the version asserts (`drones`, `mill`, `sites`, `stations`, `boot_parity`).
+
+**Cell delta (rule #14).** `tacsim-integration-2`: _filled from the PR's JUnit_.
+## IN.8 — the mass budget and scrap (Q-39-15, Q-39-16, Q-39-17, Q-39-25, Q-39-26)
+
+**Built.**
+
+- **The partition at the catalogue build** (§4.8, Q-39-15): `definitions::mass::partition` gives every design the
+  yard partitions a `MassBudget` (`Catalog::budgets`, `budget_of`): the dry mass (`logistics.dry_mass_t`, else the
+  field-ops measure), one part a slot at goods v5's masses and references, the core (150 / 250 / 500 kg, and its
+  3 / 8 / 25 % reference), and the remainder split by class (armour, vehicle and hauler 0.75, walker 0.70, drone
+  0.65; capital and station not partitioned). The figures spread over the design's **structural points** — facet
+  armour and section internals, never a heat cell. The escort reads 2,565 kg of structure and 855 of fittings
+  over 2,990 points (0.86 and 0.29 kg a point); the Dray 157,500 and 52,500 over 1,820 (86.5 and 28.8). A design
+  whose parts and core leave no remainder has no budget (it draws nothing and yields nothing). The bill (§4.7:
+  the loss on top, each bulk line rounded up, a day per 20 t, the build at §4.4's 68.75 cr a work unit and 25 %
+  margin) is computed from the budget at the live references; IN.8 reads it only as the reference a scrap's fifth
+  bounds (the escort's is 75,495 cr at 450 and 520), and a programme hull's reference is its buyout (the Dray's
+  and the Dray-P's 90,000, Q-39-17).
+- **Repair draws both goods** (§4.8): `BayQuote::bale_need` takes the hull's budget — `points ×
+  structure_kg_per_point` of alloys and `points × fittings_kg_per_point` of fittings, rounded up — through
+  IN.1's bale; the tender's stabilize (RS.1) draws the same figures for its target (`TendWork::need(budget)`).
+  An escort's hundred-point patch draws 86 kg and 29 kg; a Dray's 8,654 and 2,885.
+- **The three constants retire**: `SCRAP_KG_PER_STRUCTURAL_POINT` and `FALLBACK_SECTION_SCRAP_KG` (mush-tactics;
+  `ScrapYieldReport` now reports the hull's surviving structural points, the host weighing them), and the
+  tariff's `structural_points_per_industrial_parts_t` (with `WorkshopCostQuote::industrial_parts_t`): the tariff
+  keeps labour and time only. RS.1's `fittings_kg_per_point` constant is gone with it.
+- **Scrap at a workshop** (§4.6, Q-39-16, Q-39-25): everything goes to the operator. The yield (the design's
+  structure over its surviving structural points at r 0.6) and the hull's bale go into the workshop's **shop
+  bale** (`tacsim:shopbale:{port}`, §4.10), whose whole tonnes mint into the operator's storefront (its stock) and
+  whose remainder stays; each salvageable part goes to the same storefront as a lot with its scrapped provenance
+  (its stores). The title holder is credited `min(yield at the alloys' reference, (reference − parts new) / 5)`
+  for the structure, each part's used value (0.75 intact, 0.40 worn) less its removal (the tariff's replacement
+  labour at the operator's multiplier), and the bale's kilograms at the references; the operator posts it, from
+  its account to the holder's, when the mint lands (idempotent on the hull and the act). A workshop that cannot
+  pay refuses the scrap. The shop bale is held for the owed act (`pending`), so a second scrap or return at the
+  same workshop waits for it; a given-up mint lets it go as it stood and pays nothing.
+- **`+bay/return <hull>`** (§4.10, Q-39-26): the title holder sells the hull's opened bale back to the workshop at
+  the references, no labour, no fifth, into the shop bale (which mints a tonne each time it passes 1,000 kg); the
+  hull's bale is emptied when it lands. A new receipt kind, `bay_return` (the closed-kinds pin in `shard_9/mill.rs`
+  now reads five).
+- **Scrap on a site** (§4.6, the fix thread's room check): `+tv/<n> scrap` mints `claim::remains_alloys_t` — the
+  design's whole structure at r, capped at the fifth of its reference at the alloys' reference, down to whole
+  tonnes (the rest a declared loss) — no longer the remains' whole dry mass; remains of no known design yield
+  nothing. The command refuses a hold that will not take the tonnes (`SCRAP_NO_ROOM`, the hold's own line), and
+  the prepare checks the same plan against the pool its bundle reads.
+
+**The story.** `shard_2/in8_mass_scrap.rs` (shard_2, the shard with the most room):
+`in8_a_whole_escort_scrapped_at_stickney_pays_for_its_parts_and_a_tonne` — the escort's partition is the document's;
+a captain's Dray-P sails to Stickney Yards with a titled spare escort and a titled heavy; at P11 `+bay/scrap` breaks
+the whole intact escort up: 1,539 kg of yield, a 1 t lot in the Yards' stock and 539 kg in its shop bale, its four parts
+(the cannon, the coax, the sight, the plant) as lots in the Yards' stores, nothing in the Dray's hold, and about
+45,200 cr paid of its 75,500; a Dray counts no heat points and carries 94 t of yield; a ten-point patch on the
+heavy draws its own figures from the bale it opens, and `+bay/return` sells the rest back, the shop bale minting a
+tonne as it passes 1,000 kg, the alloys conserved. `in8_an_escorts_remains_on_ahuna_yield_a_tonne_and_a_full_hold_refuses`
+(256) and `in8_a_drays_remains_on_urvara_yield_forty_tonnes_and_a_full_hold_refuses` (512): remains dropped beside the
+captain's rig scrap into the hold at 1 t and 40 t, and a full hold refuses the next at the command. The arithmetic
+is pinned by `definitions::mass::tests` (the escort's and the Dray's lines) and `port::bay_work::scrap::tests` (the
+escort's 45,217.55, the Dray's 34,100, the wrecked Dray's 18,000, the 914 kg return at 411.30 and its second return
+minting a tonne). Seeds: the hulls' title and bay placement, the heavy made by `@unit/create`, the dents, the
+remains (GC.6's staff drop) and the holds' goods.
+
+**Departures from the row.**
+
+- *The scrapped parts sit in the stores but are not yet drawn by a `Replace`*: IN.6 finds store lots by the seeds'
+  ids; the stores' index is IN.7/IN.9's.
+- *The bill's build line* is §4.4's yard row as constants (68.75 cr a work unit, 25 %) until IN.9 prices the build
+  from the yard facility's own cost row; the build days follow the rule (the Dray's 12, not the table's 14, which
+  Q-39-14 left to the owner's eye).
+- *"1 t in the Yards' pool"*: the tonnes are minted as a lot at the operator's storefront, as every bay mint lays its
+  lots; nothing dissolves a bay lot into the pool yet (`@inv/dissolve` does, and the stock clerk dissolves only its
+  own seeds). The matter is the Yards' either way.
+- *The return's 914 kg* is the tender's two-patch figure (`surface::tender` tests); the story's heavy draws its own.
+- *No bot vocabulary*: `+bay` stays outside the bot's (the IN.1/IN.6 stories' precedent).
+
+**Other tests moved.** `shard_1/bay_gc8.rs` `gc8b_scrap…`: the alloys and parts are in Occator's storefront, the
+alloy lot a whole escort's tonne, the parts at rows 2…; `shard_1/bay_36a.rs` `b36a_5_a`/`5_b` exercise the hold's
+room through a strip (a workshop scrap lays nothing in the hold now); `shard_1/field_gc6.rs`'s remains of a rig scrap
+at their design's yield; `shard_2/in1_accounting.rs`'s heavy patch draws the heavy's figures; `shard_10/voyage.rs`
+drops `industrial_parts_t`; mush-tactics' scrap test reads 60 points; the tender's unit test the escort's figures.
+
+**Cell delta (rule #14).** `tacsim-integration-2`: **+1.37 min** for the three new stories (11.5 s Stickney, 35.6 s
+Ahuna, 35.1 s Urvara on PR run 41838007042's JUnit). The cell's sum reads 21.51 → 30.83 min, main's run at the merge
+base (41827163605, `4390f04c`) against the PR's, 414 → 417 tests: runner speed outweighs the stories, as IN.6's note
+found; the moved tests do no more work than before.
+
+## IN.9 — the yard and the handover (Q-39-14, Q-39-18, Q-39-19, Q-39-20, Q-39-33, Q-39-36)
+
+**Built.** The expensive-to-reverse marker cut (Q-39-33): the register and the provenance, built as ruled.
+
+- **The register** — `tacsim:owned_hull:{hull}` (`port::owned::OwnedHull`): the hull, the design, the fresh mark
+  (`SYB-01`, `SYB-02`, …, one a commission, never re-issued), the home port, the provenance id and the lay-up row
+  (`OwnedBody::Ship(HullRow)` or `Rig(RigRow)`). It is never a programme row: the applier's preflight and `hull_line`
+  do not read it, so the pool stays the seed. It is read **after** the programme and yard rows by `hull_view`,
+  `hull_of_room`, `helm_of` (a hull titled to the pilot or to an org the pilot `acts_for`, lowest id first),
+  `world_hulls` (so `tow.rs::carriers_at` and the second-carrier recovery see a yard-built carrier; `tow.rs` is not
+  edited), `bay_carriers` (RS.2's seam behind `carrier_of_bay` and `facility_of`), `carrier_right` and `right_of`
+  (an org's officer works its hull as title holder), `hopper_of`, the rig tools and battery reads and `world_rigs`.
+- **The provenance** — `tacsim:hull_provenance:{order}`: the order, the work order, the hull, the facility, the
+  design's pack digest, the kit lot, the part lots fitted and the instant.
+- **The commission** — `tacsim:commission:{order}` (`port::commission::YardCommission`). `+yard/collect` on a
+  delivered hull order writes the record first, then owes one `tacsim_works` move (`Then::Commissioned`) that
+  **consumes** the kit lot (its `workorder.output` lineage checked, the relay foundry's shape) and the part lots in
+  the escrow, through the new `InventoryFamilies::consume_products` (the census and tallies summed per key: the
+  inventory stages an endpoint's lot census once a transaction, so two `consume_product` calls at one escrow are
+  refused). When the works ledger shows it landed the record steps on, and the port tick (`commission::tick`, run
+  before `works::tick` so a consumption settled in a fire is laid up on the next) runs Laying → Placed → Titled →
+  Vault → Emptied → Provenance → Registered → Berthed, each idempotent and recorded. The lay-up is the applier's own
+  `hull::lay_up_one` / `vehicle::lay_up_rig`, now writing through a `HullRowSink` / `RigRowSink` (the port map's
+  `MapRows` / `MapRigRows`, or the commission's record). A ship is placed docked on the yard port's domain with a
+  hold vault the beneficiary's; a rig stands on the port's workshop floor (a location, no simulation placement, as a
+  berthed hull does) with a yard berth row naming no carrier. Magazines are emptied by one plan (Q-39-36).
+- **The bill from the design** (`port::bill`, Q-39-14): §4.8's partition and §4.7's bill. The escort is 3 t of
+  alloys, 1 t of fittings, four parts and the line core, two days; the Dray and the Dray-P 163 t, 55 t and a hauler
+  plant, twelve days (doc 39's 2,565/855 kg and 157,500/52,500 kg). The hull recipe pack `tacsim.industry.hulls` v1
+  (`content/industry/hulls-v1.json`, in `game_seed_sources`) carries one recipe a buildable design (the bulk lines,
+  `work_units` = days × 24, one kit `output_lots: each`, `requires: tacsim.yard`), pinned row for row to
+  `design_bill` by `port::bill`'s test. A yard order's bill adds the design's part lines; a part is delivered as its
+  lots.
+- **Kits** — goods v6: `class: kit`, five `tacsim.hull_kit.<design>` rows (escort, prospector, tender, Dray,
+  Dray-P), no mass of their own and stowage `stow.kit`, which no hold accepts (the gauges never list them);
+  `MAX_GOODS` 32 → 48; never orderable on the market.
+- **`+bay/stow <hull>[=<carrier>]`** (§4.13, §8.4: this document's verb): the named carrier docked here, the actor's
+  run of her, a lessee or salvor only to the row's own carrier, a free bay slot whose mass limit takes her catalogue
+  mass; the custody refusal ("The <name> is in <custodian>'s custody; only they may move her.") before the right.
+  `BerthRow.carrier` and `bay_room` are optional (old rows read `Some`); `+bay` reads a yard berth as "Built on this
+  floor". The first rearm draws from a carrier the hull's title holder holds docked at the port.
+- **The title view for rigs** (`owned::title_view`): a commissioned rig in the bay of a carrier the pilot has the run
+  of, or out on the ground by her `tacsim:tv:{tv}` projection's hull, read as `TvLease::house_view`'s shape with the
+  carrier's hold, by `rig_lease`, `live_on_hull`, boarding and the surface act's rig readers. `repossess` skips a
+  titled rig, and `bay_slot_word` (the buyout's and refit's "still in the bay") never counts one.
+
+**The story.** `shard_6/yard_in9.rs`, three tests through the production commands:
+
+- `in9_the_yard_builds_a_dray_p_and_an_escort_and_hands_them_over` (port-side): a captain who enrolled and handed
+  the charter straight back orders a Dray-P at Stickney; twelve days later `+yard/collect` hands her over docked,
+  titled to them, `SYB-01`, a register row and a provenance, and `helm_of` gives them her helm. `+yard/quote
+  tv_escort` prints the design's bill and two days; the bill comes from the Dray-P's hold in two deliveries (the bulk,
+  then the four part lots); two days on, `+yard/collect` writes the commission, **staff stop it after the lay-up and
+  the placement** (no title, no register row), and the next fire finishes it. The escort stands on the workshop
+  floor titled to them, magazines empty, the provenance naming the four lots; `+bay` quotes her clean but for the
+  rearm ("0/2000 rounds", "Built on this floor"); `+bay/order …=rearm` loads her from the Dray-P's hold;
+  `+bay/stow escort=<Dray-P>` puts her in the Dray-P's bay, and `facility_of` names the Dray-P. Granted office in the
+  Co-op, the captain orders a second escort `=org:<coop>`, collects it titled to the Co-op, stows it as its officer and
+  reaches it by its title view; a crewmate without office reaches neither.
+- `in9_ahuna_…` and `in9_urvara_…` (256 and 512): a second captain's chartered Dray-P stands on the pad with a leased
+  tug. The yard builds the first captain a Dray-P and an escort; she is stowed, the captain boards the Dray-P at
+  Stickney's gallery (`+ship/board`, the register's helm) and sails by Ceres to the site, walks to the bay
+  (`+tv/bay in`), `+tv/1 board` and `+tv/1 launch go` by the title view. Disabled and indexed (GC.6's staff fixture),
+  the escort is towed by the second captain's tug and loaded into **their** programme Dray-P; that Dray-P sails to
+  Ceres, returns its own leased tug, and `+coop/buyout` writes the title transfer with the titled escort still in her
+  bay.
+
+Seeds: the Dray-P's bill and, on the ground, the escort's in their escrows; the escort's bill and the munitions in the Dray-P's hold; the
+money; the officer's grant; the captain's move to Stickney; the escort's disablement and its index row.
+
+**Departures from the row.**
+
+- **The lane's `yard` row is at P12 Observation, not a new `room.p14_slipway`** (lane v27, relay v18, over
+  IN.7's v26, IN.5's v24 and CR.2's v23): a `PortDef.yard` block of IN.5's `WorksDef` shape under `tacsim.yard`, opened
+  by the applier's part m (`plant::rows`), found by `+yard` through `plant::block_room`. A new atlas room would
+  bump Stickney's atlas pack v4 and the Phobos exchange pack that requires it; the gallery over the drydocks is
+  the slipway's counter. v27 also carries **Stickney Yards' raise of 50,000** (IN.7's, folded in on the owner's
+  ruling: it funds the Yards' strategic bid, so IN.8's whole-escort scrap can buy back its bale; the tranche count
+  in `plumbing.rs` goes 5 → 6 and the treasury in `ports.rs` to 16,001,000.00 cr). `lane_chain::strip_yard` heads
+  the strip chain and takes out both (`in9_strip_yard_rebuilds_the_published_v26`).
+- **`armour_cab` and `walker_cab` are not in this cut.** Giving the line-tank family, the heavy, the scout and the
+  bipeds an authored `logistics` changes every fielded tank's dry mass from the field-ops measure to whole tonnes,
+  which moves the tow masses and IN.8's per-point figures for those designs; it is a follow-up with its own review.
+  The five designs that already carry both blocks are the buildable ones, and only they have kits and recipes.
+- **`+yard/deliver` buys no parts at the port's asks**: the lane authors no part asks (IN.6). A part line comes from
+  a lot the requester holds in the docked hold.
+- **"The bot types it"**: the stories type every player line through the rig's command path (`run`), the field
+  stories' precedent; no `mush-bot` vocabulary is added (IN.11's).
+- **A pilot with two hulls**: `helm_of` takes the charter, then the programme rows, then the register; `+ship/helm
+  <hull>` (doc 18 P2's seat) is not built. The story's captain hands the charter back so the yard-built Dray-P is
+  their one helm.
+
+**Cell delta (rule #14).** `tacsim-integration-6`: **+2.76 min** for the three new tests (the port half 48.0 s,
+Ahuna 64.5 s, Urvara 53.3 s on PR run 41850018642's JUnit, head `e6b0f82c`). The cell's sum reads 46.35 → 50.16 min
+against main's run at the merge base (41827163605, `4390f04c`), 80 → 83 tests; the other +1.05 min is spread over
+the unchanged tests (runner speed), none of which this cut touches.
 
 ## IN.10 — the pools (Q-39-7, Q-39-21, Q-39-34)
 

@@ -1774,6 +1774,53 @@ impl From<crate::arena_task::SpawnError> for OpenMatchError {
 /// `reflex` or `native`) and again since the fill decision (2026-10-09,
 /// every one `native`); from M4.3 to the decision every one was `scripted`
 /// on the stock source, and such a match resumed since still names it.
+/// **An IC field's retained install** (doc 23 cut S.4b-2/S.4b-3, D-23-17): every scripted hull
+/// whose claim the book holds active, under that claim's own seal, is installed through
+/// `IcHost::resume(open)?.install` — the ABI drop and the compile drop to the ROM, journalled once
+/// — at the field's admission and its resume alike. A hull it cannot install is left to the strict
+/// rule. The host is the claim arm's (`surface::mind_claim`), composed only where claims are.
+fn ic_retained(
+    world: &mush_core::World,
+) -> impl FnMut(&mut crate::arena::Arena) -> BTreeSet<ObjId> + '_ {
+    let host = crate::surface::mind_claim::host_of(world);
+    move |arena| {
+        let mut done = BTreeSet::new();
+        let Some(host) = &host else {
+            return done;
+        };
+        let scripted: Vec<(ObjId, crate::arena::mind::SealRef)> = arena
+            .units
+            .iter()
+            .filter(|unit| unit.seal.engine == crate::arena::mind::SealEngine::Scripted)
+            .map(|unit| (unit.id, unit.seal.clone()))
+            .collect();
+        for (unit, seal) in scripted {
+            let crate::minds::ic_sortie::ClaimRead::Active { open, .. } =
+                crate::minds::ic_sortie::claim_of(world, unit)
+            else {
+                continue;
+            };
+            let Ok(retained) = host.resume(world, open) else {
+                continue;
+            };
+            if retained.seal().seal_ref() != seal {
+                continue;
+            }
+            match retained.install(world, arena) {
+                Ok(()) => {
+                    done.insert(unit);
+                }
+                Err(error) => tracing::warn!(
+                    unit = unit.0,
+                    %error,
+                    "tacsim: a claimed hull's retained mind could not be installed in its field"
+                ),
+            }
+        }
+        done
+    }
+}
+
 fn sealed_sources<'a>(
     w: &mush_core::World,
     seals: impl Iterator<Item = &'a crate::arena::MindSeal>,
@@ -1970,7 +2017,7 @@ fn open_task(
             match_id,
             custody,
             (arena_cfg, match_cfg, sensors_cfg, &minds_cfg),
-            &sources,
+            (&sources, &mut ic_retained(ctx.w)),
             pool,
             egress,
             terms,
@@ -2224,7 +2271,7 @@ pub fn resume_field_task(
         task,
         arena,
         &arena_cfg,
-        &BTreeMap::new(),
+        (&BTreeMap::new(), &mut ic_retained(ctx.w)),
         pool,
         egress,
         terms,
@@ -3045,6 +3092,12 @@ pub fn drain_egress(ctx: &mut Ctx<'_>) {
                     crate::field::carrier::on_joined(ctx, match_id, unit, outcome);
                 }
             }
+            // Doc 40 cut FR.5 (§4.1 item 5): a tug that let its casualty go inside a field.
+            ArenaOut::Released {
+                match_id,
+                tug,
+                outcome,
+            } => crate::field::exit::on_released(ctx, match_id, tug, outcome),
         }
     }
     // **16b cut N.2** (doc 16 §6 "Provider failure"): the one in-world sentence, said
@@ -5522,6 +5575,17 @@ pub(crate) fn offer_field_detachment(
         IntentKind::DetachmentCommand(Box::new(command)),
     )
     .is_ok()
+}
+
+/// **A tug's release, offered to its field's task** (doc 40 cut FR.5, §4.1 item 5, Q-40-7): the
+/// host's `+tv/<n> release` on a promoted site sends [`ArenaMsg::Release`], applied at the next
+/// pulse's head and answered by `crate::field::exit::on_released`. Answers whether the task took
+/// it; a full or gone task did not, and the host says so.
+pub(crate) fn offer_field_release(ctx: &mut Ctx<'_>, task: MatchId, tug: ObjId) -> bool {
+    ctx.w
+        .module_state::<ArenaRegistry>()
+        .map(|registry| registry.tasks.clone())
+        .is_some_and(|tasks| tasks.offer(task, ArenaMsg::Release { tug }).is_ok())
 }
 
 /// Offer the current host fences before controller commands. A full queue keeps

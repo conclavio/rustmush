@@ -885,12 +885,12 @@ fn yard(w: &World) -> Result<FacilityRecord, String> {
         .ok_or_else(|| "the yard is not open".to_owned())
 }
 
-/// The days the floor's recipe takes at the yard, or the bill's rule's floor.
+/// The days the floor's recipe takes at the yard, or two (§4.7's fewest).
 fn build_days(w: &World, floor: &Floor) -> i64 {
     yard(w)
         .ok()
         .and_then(|facility| crate::port::works::find_recipe(w, &facility, floor.recipe))
-        .map_or(crate::port::bill::MIN_DAYS, |(_, pinned)| {
+        .map_or(2, |(_, pinned)| {
             pinned
                 .work_units()
                 .div_ceil(crate::port::bill::WORK_UNITS_A_DAY)

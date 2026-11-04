@@ -656,6 +656,15 @@ pub fn unit_profile(catalog: &Catalog, unit: &mush_tactics::TacticalUnit) -> Uni
         component_hits: spec
             .component_hits
             .unwrap_or(crate::definitions::unit::COMPONENT_HITS),
+        // Doc 40 cut FR.5 (Q-40-2): the unit's own table, else the resolution pack's, else none
+        // (the compiled `COMPONENT_EFFECTS`, which no shipped pack overrides).
+        component_effects: spec.component_effects.or_else(|| {
+            entry(
+                &catalog.resolutions,
+                crate::definitions::content::RESOLUTION,
+            )
+            .and_then(|resolution| resolution.component_effects)
+        }),
     }
 }
 
@@ -734,6 +743,7 @@ pub fn stock_resolution() -> ResolutionDef {
         },
         p_min: 10,
         p_max: 950,
+        component_effects: None,
         note: String::new(),
     }
 }

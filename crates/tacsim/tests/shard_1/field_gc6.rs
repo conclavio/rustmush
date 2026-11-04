@@ -473,7 +473,8 @@ async fn gc6_story_b_the_contested_salvage_on_urvara_reach() {
 
     // 9. Remains scrapped where they lie (GC.3's follow-up): open to the title holder, which
     //    the winning claimant now is. O may not break up remains of T's hull; O breaks up
-    //    remains of the hull the registry just awarded O, and the alloys go into O's hold.
+    //    remains of the hull the registry just awarded O, and the alloys go into O's hold: the
+    //    rig's own structure at the recovery share, two whole tonnes (doc 39 cut IN.8).
     let (a_cell, b_cell) = ((262_i64, 252_i64), (262_i64, 254_i64));
     for (hull, (x, y)) in [(near, a_cell), (far, b_cell)] {
         staff(
@@ -500,7 +501,7 @@ async fn gc6_story_b_the_contested_salvage_on_urvara_reach() {
     assert!(refused.contains("Only the title holder"), "{refused}");
     let preview = run(&mut rig.tw, o, &format!("+tv/1 scrap {of_far}"));
     assert!(
-        preview.contains("6 t of structural_alloys") && preview.contains("Red Moth"),
+        preview.contains("2 t of structural_alloys") && preview.contains("Red Moth"),
         "{preview}"
     );
     let out = go(&mut rig, o, &format!("+tv/1 scrap {of_far} go"));
@@ -519,7 +520,7 @@ async fn gc6_story_b_the_contested_salvage_on_urvara_reach() {
         .expect("the inventory");
     let found = crate::driving_rig::typed(&mut rig.tw, &inventory.lots, &lot).expect("the alloys");
     assert_eq!(found.commodity().as_str(), "structural_alloys");
-    assert_eq!(found.quantity(), 6);
+    assert_eq!(found.quantity(), 2);
     assert_eq!(
         found.endpoint(),
         mush_inventory::EndpointRef(crate::driving_rig::hold_vault_of(&rig.tw, &o_row))

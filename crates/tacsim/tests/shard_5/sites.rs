@@ -1013,8 +1013,8 @@ fn sm2_the_lane_carries_six_sites() {
     // its port and its two routes, four entries; `s1_the_lane_carries_the_512_site`). Doc 36 cut
     // GC.7: v18 (the munitions rows and the two workshops; no new entry).
     assert_eq!(
-        LANE_VERSION, 23,
-        "lane v9 since doc 20 cut SM.2, v10 since SM.3a, v11 since SM.5, v12 since SM.10, v13 since relay R9b, v14 since doc 20 cut SM.12a, v15 since doc 20 cut SM.12b, v16 since doc 32 cut CF.6c, v17 since doc 32 cut S.1, v18 since doc 36 cut GC.7, v19 since doc 36 cut GC.13, v20 since doc 39 cut IN.1, v21 since doc 41 cut RS.1, v22 since doc 39 cut IN.6, v23 since doc 39 cut IN.5"
+        LANE_VERSION, 27,
+        "lane v9 since doc 20 cut SM.2, v10 since SM.3a, v11 since SM.5, v12 since SM.10, v13 since relay R9b, v14 since doc 20 cut SM.12a, v15 since doc 20 cut SM.12b, v16 since doc 32 cut CF.6c, v17 since doc 32 cut S.1, v18 since doc 36 cut GC.7, v19 since doc 36 cut GC.13, v20 since doc 39 cut IN.1, v21 since doc 41 cut RS.1, v22 since doc 39 cut IN.6, v23 since doc 42 cut CR.2, v24 since doc 39 cut IN.5, v26 since doc 39 cut IN.7, v27 since doc 39 cut IN.9"
     );
     assert_eq!(
         parse_pack(LANE_JSON).expect("parses").entries().len(),
@@ -2953,7 +2953,7 @@ fn sm2_a_world_on_lane_v8_takes_v9_by_the_shelf() {
     let (plan, apply) = plan_and_apply(&mut rig.tw);
     assert!(
         plan.contains(&format!(
-            "Plan for {LANE_PACK}@{LANE_VERSION}: 28 create, 14 update, 0 retire, 22 unchanged"
+            "Plan for {LANE_PACK}@{LANE_VERSION}: 28 create, 16 update, 0 retire, 20 unchanged"
         )),
         "{plan}"
     );
@@ -2964,7 +2964,7 @@ fn sm2_a_world_on_lane_v8_takes_v9_by_the_shelf() {
     );
     assert!(
         apply.contains(&format!(
-            "Applied {LANE_PACK}@{LANE_VERSION}: 28 created, 14 updated, 0 retired, 22 unchanged."
+            "Applied {LANE_PACK}@{LANE_VERSION}: 28 created, 16 updated, 0 retired, 20 unchanged."
         )),
         "{plan}\n{apply}"
     );
@@ -3008,7 +3008,7 @@ fn sm2_the_apply_installs_the_lane_tables() {
     let (plan, apply) = plan_and_apply(&mut rig.tw);
     assert!(
         apply.contains(&format!(
-            "Applied {LANE_PACK}@{LANE_VERSION}: 28 created, 14 updated, 0 retired, 22 unchanged."
+            "Applied {LANE_PACK}@{LANE_VERSION}: 28 created, 16 updated, 0 retired, 20 unchanged."
         )),
         "{plan}\n{apply}"
     );

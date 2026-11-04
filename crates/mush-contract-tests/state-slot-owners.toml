@@ -8,7 +8,7 @@
 # (`if let Some(s) = ctx.state_mut::<T>()` becomes a no-op), which is why
 # WS03-S8 wrote every site that would start no-opping down here first.
 #
-# `tests/state_slot_owners.rs` fails on:
+# `tests/engine_contracts/state_slot_owners.rs` fails on:
 #
 #   * a `World::module_state_insert` site with no row — that accessor seeds a
 #     slot with no owner at all, so every one of its sites is declared;

@@ -364,16 +364,28 @@ pub(crate) fn register(reg: &mut Registrar<'_>) -> Result<(), ModError> {
     // of GC.4's `tacsim_surface_tow` (its `claim` op) as the actor: `+claim`'s and `+tv`'s
     // rule, so the verb takes the `Authoritative` class in the same bracket. Doc 41 cut RS.3:
     // `/authorize` on a hull is exactly ONE submission of Org's unit-grant action (the grant
-    // `@unitgrant/issue` would make), on a block ONE `claim` op of the tow action.
+    // `@unitgrant/issue` would make), on a block ONE `claim` op of the tow action. Doc 41 cut
+    // RS.5: `/jobs` reads; `/retrieve` and `/accept` preview, and `go` is the economy's own API
+    // (one retrieval contract posted and escrowed by the poster, or joined by the acceptor) and
+    // one `tacsim:retrieval:` document.
     reg.command(
         CommandSpec {
             name: crate::surface::claim::SALVAGE_VERB.into(),
             shape: ArgShape::Raw,
-            switches: ["claim", "contest", "report", "inspect", "authorize"]
-                .iter()
-                .copied()
-                .map(SmolStr::new)
-                .collect(),
+            switches: [
+                "claim",
+                "contest",
+                "report",
+                "inspect",
+                "authorize",
+                "retrieve",
+                "jobs",
+                "accept",
+            ]
+            .iter()
+            .copied()
+            .map(SmolStr::new)
+            .collect(),
             help: crate::surface::claim::SALVAGE_HELP.into(),
             ..CommandSpec::default()
         },
@@ -414,6 +426,20 @@ pub(crate) fn register(reg: &mut Registrar<'_>) -> Result<(), ModError> {
         Arc::new(crate::port::works::yard_cmd),
     )?;
     reg.classify_commands(mush_core::CommandCompatibility::LegacyPostImage);
+    // ---- Doc 41 cut RS.5 (Q-41-13): `+debts`, LegacyPostImage ----
+    //
+    // `+debts` reads; `/pay <id>` is ONE post through the economy's own API (the debt's
+    // amount, the obligation `Satisfied` in the same step).
+    reg.command(
+        CommandSpec {
+            name: "+debts".into(),
+            shape: ArgShape::Raw,
+            switches: ["pay"].iter().copied().map(SmolStr::new).collect(),
+            help: crate::surface::retrieval::DEBTS_USAGE.into(),
+            ..CommandSpec::default()
+        },
+        Arc::new(crate::surface::retrieval::debts_cmd),
+    )?;
     // Survey acceptance creates an economy offer and queues one authoritative
     // record. Occator funds only a landed record; successful soundings earn it.
     reg.classify_commands(mush_core::CommandCompatibility::Authoritative);

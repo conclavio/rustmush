@@ -1001,6 +1001,11 @@ impl Arena {
         if state.limits.wreck {
             return Err(Refusal::Wreck);
         }
+        // Doc 40 cut FR.5 (§4.1 item 5, Q-40-7): a casualty under tow fires nothing — its guns
+        // are off the fire table while it is coupled, so no seat, rule or mind shoots from it.
+        if state.coupled_to.is_some() {
+            return Err(Refusal::NoWeapon);
+        }
         let Some(summary) = state.weapon(weapon).cloned() else {
             return Err(Refusal::NoWeapon);
         };

@@ -106,6 +106,12 @@ pub struct ResolutionDef {
     pub p_min: u32,
     /// The ceiling, per mille.
     pub p_max: u32,
+    /// **What a jammed or damaged part does** (doc 40 cut FR.5, Q-40-2): an optional block
+    /// overriding the compiled [`crate::arena::resolution::COMPONENT_EFFECTS`] for every unit
+    /// that names no table of its own. Absent from the shipped `content/resolution.json`, so the
+    /// pack's digest does not move; a pack that carries it re-signs once.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub component_effects: Option<crate::arena::resolution::ComponentEffects>,
     /// Why these numbers.
     #[serde(default, skip_serializing_if = "String::is_empty")]
     pub note: String,
@@ -151,6 +157,11 @@ impl ResolutionDef {
     pub fn check(&self, entry: &str) -> Result<(), DefinitionError> {
         crate::definitions::check_label(entry, &self.label)?;
         crate::definitions::check_note(entry, &self.note)?;
+        if let Some(effects) = &self.component_effects {
+            effects
+                .check()
+                .map_err(|reason| DefinitionError::value(entry, reason))?;
+        }
         if self.hit_curve.len() < 2 || self.hit_curve.len() > MAX_HIT_CURVE_POINTS {
             return Err(DefinitionError::value(
                 entry,

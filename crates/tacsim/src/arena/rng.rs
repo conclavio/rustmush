@@ -16,7 +16,7 @@
 //!   across releases and is therefore not usable for authoritative state; `rand`
 //!   is a stream and has the position problem.
 //!
-//! The label set is pinned by `crates/mush-contract-tests/tests/arena_library.rs`,
+//! The label set is pinned by `crates/mush-contract-tests/tests/engine_contracts/arena_library.rs`,
 //! and the arena is exempt from `provider_rng_policy` by construction: it
 //! implements no action provider, so there is no `PrepareCtx` for it to draw
 //! from (doc 16 §3.5).

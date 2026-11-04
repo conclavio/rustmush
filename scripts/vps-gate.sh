@@ -18,6 +18,9 @@
 #   scripts/vps-gate.sh --extra "-E 'test(sm12c)'"
 #                                            extra `cargo nextest run` arguments
 #   scripts/vps-gate.sh --no-redis           no REDIS_URL (the in-memory branches)
+#   scripts/vps-gate.sh --env "MINE_RATE=24" a configuration: NAME=VALUE pairs
+#                                            exported to the run, any kind (doc 43
+#                                            TS.2; gate.yml refuses the names it owns)
 #   scripts/vps-gate.sh --kind harness       scripts/harness-weekly.sh on the VPS
 #   scripts/vps-gate.sh --kind cost-lane     scripts/cost-lane.sh on the VPS
 #   scripts/vps-gate.sh --ref <branch>       a branch already on origin, not pushed here
@@ -41,6 +44,7 @@ kind=sweep
 runner=""
 packages=""
 extra=""
+config=""
 redis=true
 wip=0
 ref=""
@@ -51,11 +55,12 @@ while [ $# -gt 0 ]; do
     --runner) runner="$2"; shift 2 ;;
     --packages) packages="$2"; shift 2 ;;
     --extra) extra="$2"; shift 2 ;;
+    --env) config="$2"; shift 2 ;;
     --no-redis) redis=false; shift ;;
     --wip) wip=1; shift ;;
     --ref) ref="$2"; shift 2 ;;
     --no-push) push=0; shift ;;
-    -h|--help) sed -n '2,37p' "$0"; exit 0 ;;
+    -h|--help) sed -n '2,40p' "$0"; exit 0 ;;
     *) echo "unknown argument: $1" >&2; exit 2 ;;
   esac
 done
@@ -97,8 +102,11 @@ fi
 since="$(date -u +%s)"
 # GitHub finds a workflow to dispatch by its file on the DEFAULT branch (the
 # ref's copy is what runs); until gate.yml is on main the dispatch is a 404.
-if ! gh workflow run gate.yml --repo "$repo" --ref "$ref" \
-  -f "kind=$kind" -f "runner=$runner" -f "packages=$packages" -f "extra=$extra" -f "redis=$redis"; then
+# `env` is sent only when given: a ref whose gate.yml predates the input
+# (doc 43 TS.2) refuses an input it does not declare.
+fields=(-f "kind=$kind" -f "runner=$runner" -f "packages=$packages" -f "extra=$extra" -f "redis=$redis")
+if [ -n "$config" ]; then fields+=(-f "env=$config"); fi
+if ! gh workflow run gate.yml --repo "$repo" --ref "$ref" "${fields[@]}"; then
   echo "the dispatch failed: if gate.yml is not on the default branch yet, nothing can dispatch it (a 404 above); otherwise see the error" >&2
   exit 1
 fi

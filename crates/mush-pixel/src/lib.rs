@@ -56,7 +56,7 @@
 //! the camera clock, the probe's state machine and the write.
 //!
 //! Born with all six panic-shaped restriction lints denied (WS01-S12; see
-//! `crates/mush-contract-tests/tests/restriction_lints.rs`): a frame that
+//! `crates/mush-contract-tests/tests/ci_policy/restriction_lints.rs`): a frame that
 //! cannot be drawn is a frame that is not sent, never a dead connection.
 
 #![deny(

@@ -68,9 +68,13 @@ use support::ground::{UNSIGNED, sign};
 /// cut IN.4 (the workshops' cost model and Tycho Mutual's recovery row; was `10fcdaa6…` at v19).
 /// Doc 39 cut IN.6: v22, the seeded part rows at Occator and Stickney Yards (was `790ab79b…` at
 /// v21).
-/// Doc 39 cut IN.5: v23, Stickney's refinery and works, the Ceres works and Freeport Works with its
-/// carbon ask (was `af3f150a…` at v22).
-const LANE_DIGEST: &str = "5b35ec9cdbb8ff8e2c99384841ba7e13c893ef2b1bdeecbb53a16f8a948cf299";
+/// Doc 42 cut CR.2: v23, the IC ports' `authority` and `release_fee_cr` (was `af3f150a…` at v22).
+/// Doc 39 cut IN.5: v24, Stickney's refinery and works, the Ceres works and Freeport Works with its
+/// carbon ask (was `ed543059…` at v23).
+/// Doc 39 cut IN.7: v26, Stickney Yards' strategic-ore bid and the seeded part rows retired (was
+/// `0d07927c…` at v24, IN.9's v25 between).
+/// Doc 39 cut IN.9: v27, Stickney Yards' yard (was `cea6221c…` at v26).
+const LANE_DIGEST: &str = "ef0b16923cc7df7475d4961a774e4396e9dcdc2100601b024cb36fe35bd30d9c";
 
 /// The date the lane's bodies stand at (the script's chord minimum, R4).
 const LANE_DATE: &str = "2351-05-13";
@@ -219,23 +223,71 @@ fn coast_kms(class: &CanonicalId) -> u32 {
 /// chords at the epoch for 226 km/s (doc 19 cut A.8: the six direct moon routes) and
 /// the five ports; every body carries the same `epoch_ic`, which is 2351-05-13 on
 /// the game calendar.
-/// **Doc 39 cut IN.5: `strip_industry` rebuilds the published v22** — the shipped v23 stripped
-/// of the refinery, the works and Freeport Works, re-signed at 22, is IN.6's lane digest for
-/// digest, and the strip is idempotent.
+/// **Doc 39 cut IN.5: `strip_industry` rebuilds the published v23** — the shipped v24 stripped
+/// of the refinery, the works and Freeport Works, re-signed at 23, is CR.2's lane digest for
+/// digest, and the strip is idempotent; `strip_release_authority` over it, re-signed at 22, is
+/// IN.6's.
 #[test]
-fn in5_strip_industry_rebuilds_the_published_v22() {
+fn in5_strip_industry_rebuilds_the_published_v23() {
     let mut doc: serde_json::Value = serde_json::from_str(LANE_JSON).expect("the lane is JSON");
-    doc["manifest"]["version"] = 22.into();
+    doc["manifest"]["version"] = 23.into();
     doc["manifest"]["digest"] = UNSIGNED.into();
     support::lane_chain::strip_industry(&mut doc);
     let once = doc.clone();
     support::lane_chain::strip_industry(&mut doc);
     assert_eq!(doc, once, "the strip is idempotent");
     let signed = sign(&serde_json::to_string_pretty(&doc).expect("serializes"));
+    let pack = load_pack(&signed).expect("v23 verifies");
+    assert_eq!(
+        pack.manifest().digest().to_hex(),
+        "ed54305983ce323431574b703decc15f72741acbd030567de9927e732aa24c19"
+    );
+    doc["manifest"]["version"] = 22.into();
+    support::lane_chain::strip_release_authority(&mut doc);
+    let signed = sign(&serde_json::to_string_pretty(&doc).expect("serializes"));
     let pack = load_pack(&signed).expect("v22 verifies");
     assert_eq!(
         pack.manifest().digest().to_hex(),
         "af3f150ab9d9bf17107155944f94f6dba9297e8ceadb181a6c28f90f70a849d6"
+    );
+}
+
+/// **Doc 39 cut IN.7's strip** (`lane_chain::strip_part_recipes`): the shipped lane without
+/// Stickney Yards' strategic-ore bid and with IN.6's seeded part stock put back, re-signed at 24,
+/// is IN.5's lane digest for v24, and the strip is idempotent.
+#[test]
+fn in7_strip_part_recipes_rebuilds_the_published_v24() {
+    let mut doc: serde_json::Value = serde_json::from_str(LANE_JSON).expect("the lane is JSON");
+    doc["manifest"]["version"] = 24.into();
+    doc["manifest"]["digest"] = UNSIGNED.into();
+    support::lane_chain::strip_part_recipes(&mut doc);
+    let once = doc.clone();
+    support::lane_chain::strip_part_recipes(&mut doc);
+    assert_eq!(doc, once, "the strip is idempotent");
+    let signed = sign(&serde_json::to_string_pretty(&doc).expect("serializes"));
+    let pack = load_pack(&signed).expect("v24 verifies");
+    assert_eq!(
+        pack.manifest().digest().to_hex(),
+        "0d07927c914abdf61b7cc32304e4aa1b396c767e2128ef8136f0da8bc4370caa"
+    );
+}
+
+/// **Doc 39 cut IN.9: `strip_yard` rebuilds the published v26** — the shipped v27 stripped of
+/// Stickney Yards' yard, re-signed at 26, is IN.7's lane digest, and the strip is idempotent.
+#[test]
+fn in9_strip_yard_rebuilds_the_published_v26() {
+    let mut doc: serde_json::Value = serde_json::from_str(LANE_JSON).expect("the lane is JSON");
+    doc["manifest"]["version"] = 26.into();
+    doc["manifest"]["digest"] = UNSIGNED.into();
+    support::lane_chain::strip_yard(&mut doc);
+    let once = doc.clone();
+    support::lane_chain::strip_yard(&mut doc);
+    assert_eq!(doc, once, "the strip is idempotent");
+    let signed = sign(&serde_json::to_string_pretty(&doc).expect("serializes"));
+    let pack = load_pack(&signed).expect("v26 verifies");
+    assert_eq!(
+        pack.manifest().digest().to_hex(),
+        "cea6221c2e4e82718289182d8784c2a1ed6b3bb3e61d9ce0f587c01c85cc80d7"
     );
 }
 
@@ -266,8 +318,8 @@ fn ic2_the_lane_pack_is_pinned() {
     assert_eq!(manifest.version(), LANE_VERSION);
     assert_eq!(
         manifest.version(),
-        23,
-        "lane v23 since doc 39 cut IN.5 (v22 at doc 39 cut IN.6, v21 at doc 41 cut RS.1, v20 at doc 39 cuts IN.1 and IN.4, v19 at GC.13, v18 at GC.7, v17 at S.1, v16 at CF.6c, v15 at SM.12b, v14 at SM.12a, v13 at relay R9b, v12 at doc 20 cut SM.10) (v11 \
+        27,
+        "lane v27 since doc 39 cut IN.9 (v26 at doc 39 cut IN.7, v24 at doc 39 cut IN.5, v23 at doc 42 cut CR.2, v22 at doc 39 cut IN.6, v21 at doc 41 cut RS.1, v20 at doc 39 cuts IN.1 and IN.4, v19 at GC.13, v18 at GC.7, v17 at S.1, v16 at CF.6c, v15 at SM.12b, v14 at SM.12a, v13 at relay R9b, v12 at doc 20 cut SM.10) (v11 \
          at SM.5, v10 at SM.3a, v9 at SM.2, v8 at A.8, v7 at A.7, v6 at A.4b, v5 at A.4, v4 at A.1)"
     );
     assert_eq!(manifest.kind(), tacsim::PackKind::CampaignSeed);

@@ -455,6 +455,7 @@ mod tests {
                 view: &view,
                 memory: &[99],
                 map: &arena.definition,
+                wrecks: &arena.mind_wrecks(),
                 card: &runtime.card,
                 program: &runtime.program,
                 profile_token: runtime.token(),

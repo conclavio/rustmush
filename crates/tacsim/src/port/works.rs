@@ -478,7 +478,8 @@ fn here(ctx: &Ctx<'_>, front: Front) -> Result<(CanonicalId, FacilityRecord), St
         }
         // Doc 39 cut IN.5: the lane's works row is a room of the port (its spine, at both
         // stations), which is the facility itself.
-        let authored = crate::port::plant::works_room(ctx.w, &entry, def)
+        // Doc 39 cut IN.9: and the yard's row the same way.
+        let authored = crate::port::plant::block_room(ctx.w, &entry, def, front.word())
             .ok()
             .flatten();
         let found = ctx
@@ -600,16 +601,51 @@ fn recipes() -> Arc<dyn RecipeAuthority> {
     Arc::new(crate::composition::industry_recipes::TacsimRecipeAuthority)
 }
 
-/// The recipes `facility` runs: `(pack, version, id, pinned)` from the published catalogue.
+/// The recipes `facility` runs: `(pack, version, id, pinned)` from the published catalogue,
+/// the latest published version of each (doc 39 cut IN.7: a kept world holds the pack's v1
+/// beside its v2).
 fn menu(
     w: &World,
     facility: &FacilityRecord,
 ) -> Vec<(mush_industry::RecipeRef, mush_industry::PinnedRecipe)> {
-    recipes()
-        .catalog(w)
-        .into_iter()
-        .filter(|(_, pinned)| facility.offers(pinned.requires()))
-        .collect()
+    let mut latest: BTreeMap<
+        (CanonicalId, CanonicalId),
+        (mush_industry::RecipeRef, mush_industry::PinnedRecipe),
+    > = BTreeMap::new();
+    for (recipe, pinned) in recipes().catalog(w) {
+        if !facility.offers(pinned.requires()) {
+            continue;
+        }
+        let key = (recipe.pack().clone(), recipe.id().clone());
+        if latest
+            .get(&key)
+            .is_none_or(|(held, _)| held.version() < recipe.version())
+        {
+            latest.insert(key, (recipe, pinned));
+        }
+    }
+    latest.into_values().collect()
+}
+
+/// **The parts one order of `pinned` lays** (doc 39 cut IN.7, §4.11): the largest part output
+/// line times the quantity, which one commission must carry.
+fn parts_laid(pinned: &mush_industry::PinnedRecipe, quantity: u32) -> u64 {
+    pinned
+        .outputs()
+        .iter()
+        .filter(|line| crate::port_tick::is_part(line.commodity()))
+        .map(|line| line.units().saturating_mul(u64::from(quantity)))
+        .max()
+        .unwrap_or(0)
+}
+
+/// The refusal for an order of more parts than one commission lays.
+fn too_many_parts(front: Front) -> String {
+    format!(
+        "The {} lays at most {} parts an order; order fewer.",
+        front.word(),
+        crate::port::bay_work::act::MAX_ACT_ROWS
+    )
 }
 
 pub(crate) fn find_recipe(
@@ -826,6 +862,9 @@ fn quote(ctx: &mut Ctx<'_>, front: Front, raw: &str) -> Result<(), String> {
     let quantity = parse_qty(words.next())?;
     let (_, pinned) = find_recipe(ctx.w, &facility, word)
         .ok_or_else(|| format!("The {} here does not make that.", front.word()))?;
+    if parts_laid(&pinned, quantity) > crate::port::bay_work::act::MAX_ACT_ROWS as u64 {
+        return Err(too_many_parts(front));
+    }
     let units = pinned.work_units().saturating_mul(u64::from(quantity));
     let fee = facility.fee_minor(units);
     let booking = facility.booking_fee_minor();
@@ -857,6 +896,9 @@ fn order(ctx: &mut Ctx<'_>, front: Front, raw: &str) -> Result<(), String> {
     }
     let (recipe, pinned) = find_recipe(ctx.w, &facility, word)
         .ok_or_else(|| format!("The {} here does not make that.", front.word()))?;
+    if parts_laid(&pinned, quantity) > crate::port::bay_work::act::MAX_ACT_ROWS as u64 {
+        return Err(too_many_parts(front));
+    }
     // The triple (Q-39-30): the requester pays; the beneficiary is the requester unless an
     // officer names their organization.
     let payer = PrincipalId::Object(ctx.actor);
@@ -1174,8 +1216,9 @@ fn collect(ctx: &mut Ctx<'_>, front: Front, raw: &str) -> Result<(), String> {
     }
     let hold = docked_hold(ctx.w, ctx.actor, &entry, true)?;
     let (goods, lots) = escrow_contents(ctx, &c);
-    // Doc 39 cut IN.5: a bulk output is pooled by the arm before it moves.
-    if !bulk_lots(&lots).is_empty() {
+    // Doc 39 cut IN.5: a bulk output is pooled by the arm before it moves; doc 39 cut IN.7: a
+    // part output is commissioned first.
+    if !bulk_lots(&lots).is_empty() || untraced_part(ctx, &lots).is_some() {
         return Err(SETTLING.to_owned());
     }
     if goods.is_empty() && lots.is_empty() {
@@ -1736,6 +1779,13 @@ fn step(ctx: &mut Ctx<'_>, c: &mut WorksContract, free: &mut BTreeMap<ObjId, u64
                 }
                 return;
             }
+            // Doc 39 cut IN.7 (§4.11): a part output is commissioned in the escrow first.
+            if c.owed.is_none()
+                && let Some(source) = untraced_part(ctx, &escrow_lots(ctx, c.escrow()))
+            {
+                commission_parts(ctx, c, id, source);
+                return;
+            }
             if c.house {
                 house_collect(ctx, c, &facility);
                 return;
@@ -1751,6 +1801,67 @@ fn step(ctx: &mut Ctx<'_>, c: &mut WorksContract, free: &mut BTreeMap<ObjId, u64
         | WorkOrderState::Interrupted { .. }
         | WorkOrderState::Ready
         | WorkOrderState::AwaitingApproval { .. } => {}
+    }
+}
+
+/// **An untraced part lot** among `lots` (doc 39 cut IN.7): a part good with no provenance
+/// row, which is a part recipe's delivery before its commission.
+fn untraced_part(
+    ctx: &Ctx<'_>,
+    lots: &[(LotId, CanonicalId, u64)],
+) -> Option<(LotId, CanonicalId, u64)> {
+    lots.iter()
+        .find(|(lot, good, _)| {
+            crate::port_tick::is_part(good)
+                && matches!(crate::port::bay_work::act::provenance(ctx, *lot), Ok(None))
+        })
+        .cloned()
+}
+
+/// **The part commission** (doc 39 cut IN.7, §4.11; IN.2's act): the order's delivered part
+/// lot is consumed by its `workorder.output` lineage and laid back in the escrow as one lot a
+/// unit at grade 9, each with its `Manufactured` row, in one bundle under the facility's bay
+/// ledger. The bay's arm (which runs before this one) submits it on the next fire and replays
+/// it after a restart, so it lands once; until it lands the escrow holds no fittable part and
+/// `/collect` is settling.
+fn commission_parts(
+    ctx: &mut Ctx<'_>,
+    c: &WorksContract,
+    order: u64,
+    (lot, good, units): (LotId, CanonicalId, u64),
+) {
+    let Some(definition) = crate::port::stock::part_row_of(ctx.w, &good) else {
+        tracing::warn!(
+            contract = c.id,
+            good = good.as_str(),
+            "tacsim: a made part has no row"
+        );
+        return;
+    };
+    let facility = c.facility;
+    let owed = crate::port::bay_work::owe_commission(
+        ctx,
+        facility,
+        c.requester,
+        VaultId(c.id),
+        (lot, &good, units),
+        crate::port::bay_work::act::CommissionSource::WorkOrder { order },
+        |lot| crate::port::bay_work::act::PartProvenance {
+            lot,
+            definition: definition.clone(),
+            condition: mush_tactics::field_ops::ComponentCondition::Intact,
+            legality: mush_tactics::field_ops::ProvenanceLegalityStatus::CleanTitle,
+            fitted_into: None,
+            origin: crate::port::bay_work::act::PartOrigin::Manufactured { order, facility },
+        },
+    );
+    match owed {
+        Ok(_) => {}
+        // The facility's ledger owes another order's commission: this one waits a fire.
+        Err(error) if error == crate::port::bay_work::SETTLING => {}
+        Err(error) => {
+            tracing::warn!(contract = c.id, %error, "tacsim: a made part was not commissioned");
+        }
     }
 }
 
@@ -2365,14 +2476,19 @@ impl ActionProvider for WorksProvider {
                 .transfer(txn, from, to, &row.good, row.units)
                 .map_err(|_| refused("the goods could not be moved"))?;
         }
-        for lot in lots {
-            // A part moves as its lot; a bulk lot is pooled first (`Then::Pooled`: a bundle
-            // mutates a pool's tally once, so it cannot be moved and dissolved in one act).
-            if !crate::port_tick::is_part(lot.commodity()) {
-                return Err(refused("a bulk lot is pooled before it moves"));
-            }
+        // A part moves as its lot; a bulk lot is pooled first (`Then::Pooled`: a bundle
+        // mutates a pool's tally once, so it cannot be moved and dissolved in one act).
+        if lots
+            .iter()
+            .any(|lot| !crate::port_tick::is_part(lot.commodity()))
+        {
+            return Err(refused("a bulk lot is pooled before it moves"));
+        }
+        // Doc 39 cut IN.7: the lots move together (one census and tally write an endpoint).
+        let ids: Vec<LotId> = lots.iter().map(mush_inventory::Lot::id).collect();
+        if !ids.is_empty() {
             self.inventory
-                .relocate(txn, lot.id(), from, to)
+                .relocate_lots(txn, &ids, from, to)
                 .map_err(|_| refused("a lot could not be moved"))?;
         }
         self.landed(invocation, txn, (contract, act), prior.is_some())

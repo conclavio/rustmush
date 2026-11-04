@@ -182,12 +182,10 @@ pub(crate) fn dent(
     }
 }
 
-/// **`hull` worn to what a Dray-P's hold can take as alloy** (doc 36a P2-4): the scrap yield is
-/// `SCRAP_KG_PER_STRUCTURAL_POINT` (100 kg) a surviving structural point and a whole escort is
-/// 2,990 points — 299 t against the hold's 86 t rating — so every section cell is set to a
-/// quarter of its points, a hull brought back shot up, its sections standing and its parts
-/// salvageable. (That a rig the bay slot rates at 20 t scraps to 299 t of alloy is an owner
-/// question, doc 36a §9.)
+/// **`hull` worn** (doc 36a P2-4): every section cell set to a quarter of its points, a hull
+/// brought back shot up, its sections standing and its parts salvageable. (Doc 39 cut IN.8 took
+/// the 100 kg a point that once made a whole escort scrap to 299 t; a worn one now yields a few
+/// hundred kilograms of its own structure.)
 pub(crate) fn worn(rig: &mut Rig, hull: ObjId) {
     let u = unit(rig, hull);
     let ops: Vec<UnitMutationOp> = u
@@ -786,10 +784,11 @@ async fn gc8b_a_stripped_part_carries_its_provenance_and_a_hot_part_is_refused()
 }
 
 /// **GC.8b's scrap gate** (Q-36-39) at Ceres' workshop. A spare escort of Occator's pool is
-/// titled to the captain and stowed in the Dray's bay; berthed, the title holder scraps it: its
-/// structural mass becomes `structural_alloys` and each salvageable part a lot with its
-/// provenance, all in the Dray's hold; the hull is an irrecoverable shell and its berth free.
-/// The lessee may not scrap a leased hull; remains are scrapped on the site (GC.6).
+/// titled to the captain and stowed in the Dray's bay; berthed, the title holder scraps it: since
+/// doc 39 cut IN.8 its structural yield becomes `structural_alloys` in the operator's (Occator's)
+/// stock and each salvageable part a lot with its provenance in its stores, the Dray's hold
+/// untouched; the hull is an irrecoverable shell and its berth free. The lessee may not scrap a
+/// leased hull; remains are scrapped on the site (GC.6).
 #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
 async fn gc8b_scrap_breaks_a_workshop_hull_into_alloys_and_parts() {
     let mut rig = stocked();
@@ -833,9 +832,6 @@ async fn gc8b_scrap_breaks_a_workshop_hull_into_alloys_and_parts() {
     put(&mut rig, spare, bay, true);
     let berthed = run(&mut rig.tw, pilot, &format!("+bay/berth #{}", spare.0));
     assert!(berthed.contains("berthed in the workshop"), "{berthed}");
-    // Doc 36a P2-4: the hold takes the alloy or the scrap is refused; a whole escort's 299 t
-    // never fits a Dray-P's 86 t, so the spare comes back worn.
-    worn(&mut rig, spare);
     let before = tacsim::field_ops::assess_tacsim_unit(&unit(&rig, spare), None).expect("assessed");
     let salvageable = before
         .component_conditions
@@ -845,21 +841,28 @@ async fn gc8b_scrap_breaks_a_workshop_hull_into_alloys_and_parts() {
 
     let out = settled(&mut rig, pilot, &format!("+bay/scrap #{}", spare.0), spare);
     assert!(out.contains("is broken up"), "{out}");
+    let stores = port_map(&rig.tw, "ceres_port").vendors[&cid("occator")].vault;
     let alloys = lot_record(
         &mut rig,
         tacsim::port::bay_work::act::lot_id(spare, 1, 0).expect("the lot"),
     )
     .expect("the alloys' lot");
     assert_eq!(alloys.commodity().as_str(), "structural_alloys");
-    assert!(alloys.quantity() > 0, "{alloys:?}");
-    assert_eq!(alloys.endpoint(), EndpointRef(vault));
+    assert_eq!(alloys.quantity(), 1, "1,539 kg: a tonne, {alloys:?}");
+    assert_eq!(alloys.endpoint(), EndpointRef(VaultId(stores)));
+    assert_eq!(
+        hold_pool(&mut rig.tw, vault, "structural_alloys"),
+        0,
+        "nothing in the Dray's hold"
+    );
     let mut parts = 0;
-    for row in 1..=salvageable {
+    for row in 2..=salvageable + 1 {
         let lot = tacsim::port::bay_work::act::lot_id(spare, 1, row).expect("the lot");
         let Some(found) = lot_record(&mut rig, lot) else {
             continue;
         };
         assert!(found.commodity().as_str().starts_with("tacsim.part."));
+        assert_eq!(found.endpoint(), EndpointRef(VaultId(stores)));
         let part = provenance(&mut rig, lot);
         assert_eq!(part.parent_hull(), Some(spare));
         assert!(part.stripped().is_some_and(|s| s.scrapped));

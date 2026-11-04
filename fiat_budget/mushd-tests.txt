@@ -1,0 +1,20 @@
+# mushd — test-side fiat budget (doc 43 cut TS.6).
+#
+# `<budget> <low-water> <path>`: each test file's unchecked state-slot writes.
+# Regenerate with:
+#   FIAT_BUDGET_BLESS=1 cargo test -p mush-contract-tests --test ci_policy fiat_budget::
+# A raise names the as-built section that allows the seed.
+1 1 tests/durable_process/m10c_e2e.rs
+1 1 tests/durable_process/persistence.rs
+1 1 tests/sim_lenses/arena_story.rs
+1 1 tests/sim_lenses/front_door.rs
+1 1 tests/sim_lenses/observer_rule.rs
+1 1 tests/sim_lenses/sim_cockpit.rs
+1 1 tests/sim_lenses/sim_lobby.rs
+1 1 tests/sim_lenses/sim_net.rs
+1 1 tests/sim_lenses/sim_range.rs
+1 1 tests/sim_lenses/sim_reflex.rs
+1 1 tests/sim_lenses/sim_rematch.rs
+1 1 tests/sim_lenses/sim_solo.rs
+1 1 tests/sim_lenses/sim_units.rs
+1 1 tests/sim_lenses/sim_weapons.rs

@@ -2774,6 +2774,68 @@ fn r7_station_pack_digest_and_bounded_attention() {
     assert_eq!(f.resource_log.last().unwrap().delta, -1000);
 }
 
+/// Hold a rebuilt registry document to the shape relay cut R4 wrote: the
+/// structs at `233fbb2e`, unchanged until R7 (`ba3b072c`) (doc 43 cut TS.20).
+/// Fixed history: never edited to follow today's structs.
+fn assert_r4_shape(doc: &serde_json::Value) {
+    fn keys(value: &serde_json::Value) -> Vec<&str> {
+        let mut keys: Vec<&str> = value
+            .as_object()
+            .expect("an object")
+            .keys()
+            .map(String::as_str)
+            .collect();
+        keys.sort_unstable();
+        keys
+    }
+    fn sorted<const N: usize>(mut want: [&'static str; N]) -> Vec<&'static str> {
+        want.sort_unstable();
+        want.to_vec()
+    }
+    assert_eq!(
+        keys(doc),
+        sorted([
+            "version",
+            "revision",
+            "source_pack",
+            "source_entry",
+            "operator",
+            "nodes",
+            "pairs",
+        ]),
+        "the rebuilt registry is not R4's"
+    );
+    for node in doc["nodes"].as_object().expect("nodes").values() {
+        assert_eq!(
+            keys(node),
+            sorted(["object", "place", "label", "operator", "coverage"]),
+            "a rebuilt node is not R4's"
+        );
+    }
+    for pair in doc["pairs"].as_object().expect("pairs").values() {
+        assert_eq!(
+            keys(pair),
+            sorted(["halves", "capacity_units_per_ic_second", "class_policy"]),
+            "a rebuilt pair is not R4's"
+        );
+        for half in pair["halves"].as_array().expect("halves") {
+            assert_eq!(
+                keys(half),
+                sorted([
+                    "id",
+                    "object",
+                    "node",
+                    "enabled",
+                    "powered",
+                    "staffed",
+                    "destroyed",
+                ]),
+                "a rebuilt half is not R4's"
+            );
+        }
+    }
+}
+
 #[tokio::test]
 async fn r7_missing_migrated_structure_refuses_boot_and_old_seed_migrates_once() {
     let mut rig = Rig::new(true).await;
@@ -2794,6 +2856,17 @@ async fn r7_missing_migrated_structure_refuses_boot_and_old_seed_migrates_once()
         .unwrap()
         .unwrap();
     doc.as_object_mut().unwrap().remove("structural_version");
+    // R7 also added the loss ledger and each half's `damaged`; R4 wrote neither
+    // (doc 43 cut TS.20). Both are empty here, so R4 can express this state.
+    let losses = doc.as_object_mut().unwrap().remove("losses");
+    assert_eq!(losses, Some(serde_json::json!({})), "no loss to drop");
+    for pair in doc["pairs"].as_object_mut().unwrap().values_mut() {
+        for half in pair["halves"].as_array_mut().unwrap() {
+            let damaged = half.as_object_mut().unwrap().remove("damaged");
+            assert_eq!(damaged, Some(serde_json::json!(false)), "no damage to drop");
+        }
+    }
+    assert_r4_shape(&doc);
     rig.replace_document(doc).await;
     rig.restart().await.unwrap();
     assert!(mush_tactics::module::unit_of(rig.tw.world(), node).is_some());
@@ -4419,7 +4492,7 @@ impl Rig {
 /// the operator org, the bindings, the Terms story and the money never move, across two
 /// restarts.
 #[tokio::test]
-async fn sm12b_a_kept_v13_star_takes_lane_v23_and_relay_v14() {
+async fn sm12b_a_kept_v13_star_takes_lane_v24_and_relay_v15() {
     let lane = tacsim::definitions::content::LANE_PACK;
     let relay = "tacsim.relay.luna_ceres";
     let mut rig = Rig::v13_star().await;
@@ -4448,44 +4521,44 @@ async fn sm12b_a_kept_v13_star_takes_lane_v23_and_relay_v14() {
         .to_owned();
     let applied = rig.run(GOD, &format!("@atlas/pack apply {fingerprint}"));
     assert!(
-        applied.contains(&format!("Applied {lane}@23: ")),
+        applied.contains(&format!("Applied {lane}@27: ")),
         "{plan}\n{applied}"
     );
     assert!(!applied.contains("STOPPED"), "{applied}");
-    assert_eq!(rig.latched(lane), Some(23));
+    assert_eq!(rig.latched(lane), Some(27));
 
-    // Relay v14 differs from v2 only in its manifest: staff have nothing to apply.
+    // Relay v15 differs from v2 only in its manifest: staff have nothing to apply.
     let plan = rig.run(GOD, &format!("@atlas/pack plan {relay}"));
     assert!(plan.contains("Nothing to do."), "{plan}");
     rig.flush().await;
     rig.restart().await.unwrap();
-    assert_eq!((rig.latched(lane), rig.latched(relay)), (Some(23), Some(2)));
+    assert_eq!((rig.latched(lane), rig.latched(relay)), (Some(27), Some(2)));
     assert_eq!(rig.registry(), original);
     assert_eq!(
         rig.story(),
         story,
-        "relay v2 beside lane v23 is still the full star"
+        "relay v2 beside lane v24 is still the full star"
     );
 
-    // The operator's apply of the shipped seed latches v14 and changes nothing else.
+    // The operator's apply of the shipped seed latches v15 and changes nothing else.
     rig.apply_content(vec![
         mush_content::load_pack(tacsim::relay_content::JSON).unwrap(),
     ])
     .await;
-    assert_eq!(rig.latched(relay), Some(14));
+    assert_eq!(rig.latched(relay), Some(18));
     assert_eq!(rig.registry(), original);
     rig.flush().await;
     rig.restart().await.unwrap();
     assert_eq!(
         (rig.latched(lane), rig.latched(relay)),
-        (Some(23), Some(14))
+        (Some(27), Some(18))
     );
     assert_eq!(rig.registry(), original);
     assert_eq!(rig.operator_org(), org);
     assert_eq!(
         rig.story(),
         story,
-        "relay v14 is the full star: the Terms story boots unchanged"
+        "relay v15 is the full star: the Terms story boots unchanged"
     );
     assert!(rig.run(GOD, "@relay/check").contains("Bindings OK"));
     assert_eq!(rig.money_total(), money);
@@ -4674,7 +4747,8 @@ async fn oduya_kept_ceres_v2_and_relay_v4_upgrade_without_replacing_the_live_sta
     // Doc 32 cut CF.6c: the shipped relay requires lane v16, so the lane comes first (doc 32
     // cut S.1: lane v17, relay v8; doc 36 cut GC.7: lane v18, relay v9; cut GC.13: lane v19,
     // relay v10; doc 39 cuts IN.1 and IN.4: lane v20, relay v11; doc 41 cut RS.1: lane v21, relay
-    // v12; doc 39 cut IN.6: lane v22, relay v13; doc 39 cut IN.5: lane v23, relay v14).
+    // v12; doc 39 cut IN.6: lane v22, relay v13; doc 42 cut CR.2: lane v23, relay v14; doc 39 cut
+    // IN.5: lane v24, relay v15).
     rig.apply_content(vec![
         mush_content::load_pack(tacsim::definitions::content::LANE_JSON).unwrap(),
         mush_content::load_pack(tacsim::relay_content::JSON).unwrap(),
@@ -4682,7 +4756,7 @@ async fn oduya_kept_ceres_v2_and_relay_v4_upgrade_without_replacing_the_live_sta
     .await;
     assert_eq!(
         (rig.latched(ceres), rig.latched(relay)),
-        (Some(4), Some(14))
+        (Some(4), Some(18))
     );
     assert_eq!(rig.registry(), original);
     rig.flush().await;
@@ -4734,9 +4808,11 @@ fn r10_public_star_content_digests_are_pinned() {
             // v10, re-signed to require lane v19 (was `850923eb…` at v9). Doc 39 cuts IN.1 and IN.4: v11,
             // re-signed to require lane v20 (was `28dea885…` at v10). Doc 41 cut RS.1: v12,
             // re-signed to require lane v21 (was `a057e314…` at v11). Doc 39 cut IN.6: v13,
-            // re-signed to require lane v22 (was `e38f2f19…` at v12). Doc 39 cut IN.5: v14,
-            // re-signed to require lane v23 (was `c55ce471…` at v13).
-            "476bf7d828ba325b4db18a33bba4f750460447e20c063af4a4f37c1a1582b9ac",
+            // re-signed to require lane v22 (was `e38f2f19…` at v12). Doc 42 cut CR.2: v14,
+            // re-signed to require lane v23 (was `c55ce471…` at v13). Doc 39 cut IN.5: v15,
+            // re-signed to require lane v24 (was `476bf7d8…` at v14).
+            // Doc 39 cut IN.9: v18, re-signed to require lane v27 (was `4d3454c8…` at v17).
+            "5cf916b9477562cfe2b69cbc2b77c21a5b32ded0cd5c635fd73d66aa4f68272c",
         ),
     ];
     let packs = tacsim::relay_content::packs().unwrap();

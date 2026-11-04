@@ -515,6 +515,9 @@ pub fn tacsim_config(cfg: &TacsimCfg) -> Result<tacsim::TacsimConfig, String> {
             raid_lost_permille: cfg.field.raid_lost_permille,
             raid_field_s: cfg.field.raid_field_s,
             launch_cycle_s: cfg.field.launch_cycle_s,
+            release_s: cfg.field.release_s,
+            captive_bound_s: cfg.field.captive_bound_s,
+            seed: None,
         },
     };
     // **16b cut Q.7**: the arena's own values, checked here and nowhere else.
@@ -811,6 +814,16 @@ fn recovery_config(
             cfg.claim_window_s
         ));
     }
+    if !(1..=tacsim::surface::retrieval::MAX_RETRIEVAL_WINDOW_IC_DAYS)
+        .contains(&cfg.retrieval_window_ic_days)
+    {
+        return Err(format!(
+            "[tacsim.recovery]: `retrieval_window_ic_days` is between 1 and {} IC days; `{}` is \
+             a window no retrieval can run",
+            tacsim::surface::retrieval::MAX_RETRIEVAL_WINDOW_IC_DAYS,
+            cfg.retrieval_window_ic_days
+        ));
+    }
     Ok(tacsim::TacsimRecoveryConfig {
         enabled: cfg.enabled,
         pool_account: cfg.pool_account,
@@ -826,6 +839,8 @@ fn recovery_config(
         load_s: cfg.load_s,
         // Doc 41 cut RS.3: the contest window from the config file (48 real hours by default).
         claim_window_s: cfg.claim_window_s,
+        // Doc 41 cut RS.5 (Q-41-11): both retrieval windows, IC days (28 by default).
+        retrieval_window_ic_days: cfg.retrieval_window_ic_days,
     })
 }
 

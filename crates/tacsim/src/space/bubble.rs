@@ -25,8 +25,9 @@ use crate::space::weapons::{
 /// Maximum substep duration in wall milliseconds (`D-16-2`).
 pub const MAX_SUBSTEP_MS: u32 = 250;
 
-/// Default 48-hour open-epoch derelict life-support and salvage contest window in seconds (`D-35-12`).
-pub const DERELICT_WINDOW_S: u32 = 48 * 3_600;
+/// The 48-hour life support of an open-epoch derelict, in seconds (`D-35-12`). Its salvage
+/// contest runs on the claim's one window, `[tacsim.recovery].claim_window_s` (doc 41 RS.8).
+pub const DERELICT_LIFE_SUPPORT_S: u32 = 48 * 3_600;
 
 /// Identifier of a [`LocalSpaceBubble`].
 #[derive(Clone, Debug, PartialEq, Eq, PartialOrd, Ord, Hash, Serialize, Deserialize)]
@@ -159,7 +160,6 @@ pub enum HullStatus {
     DisabledDerelict {
         epoch_open: bool,
         life_support_remaining_s: u32,
-        salvage_contest_window_s: u32,
     },
 }
 
@@ -985,8 +985,7 @@ impl SpaceShipState {
         if disable_ship && self.status == HullStatus::Operational {
             self.status = HullStatus::DisabledDerelict {
                 epoch_open: true,
-                life_support_remaining_s: DERELICT_WINDOW_S,
-                salvage_contest_window_s: DERELICT_WINDOW_S,
+                life_support_remaining_s: DERELICT_LIFE_SUPPORT_S,
             };
             self.thrust_mps2 = [0, 0, 0];
             self.thrust_mmps2 = [0, 0, 0];
@@ -1320,6 +1319,124 @@ pub fn default_canopy_bodies_for_site(site_id: &str) -> Vec<CanopyBodyProjection
             },
         ]
     }
+}
+
+/// Compute the bridge canopy's celestial `bodies` from [`crate::sky::Sky`] (`sky.position_km(&body, now_ic)`)
+/// at the hull's live 3D heliocentric state vector `observer_pos_km` (`SF.R24`, `D-35-15`).
+#[must_use]
+pub fn compute_ephemeris_canopy_bodies(
+    w: &mush_core::World,
+    observer_pos_km: [i64; 3],
+    site_id: &str,
+    now_ic: i64,
+) -> Vec<CanopyBodyProjection> {
+    let mut bodies = default_canopy_bodies_for_site(site_id);
+    let Some(store) = w.module_state::<crate::store::TacsimStore>() else {
+        return bodies;
+    };
+    let Ok(lane) = mush_core::CanonicalId::new(crate::definitions::content::LANE_PACK) else {
+        return bodies;
+    };
+    let Some(version) = store.applied_in(w, &lane) else {
+        return bodies;
+    };
+    let Ok((sky, _pack)) = crate::port::voyage::lane_sky_of(w, version) else {
+        return bodies;
+    };
+
+    let obs_pos = crate::sky::PosKm {
+        x: observer_pos_km[0],
+        y: observer_pos_km[1],
+        z: observer_pos_km[2],
+    };
+
+    let primary_pos = bodies
+        .first()
+        .and_then(|b| mush_core::CanonicalId::new(&b.id).ok())
+        .and_then(|cid| sky.position_km(&cid, now_ic));
+
+    if let (Some(primary), Some(p_pos)) = (bodies.first_mut(), primary_pos) {
+        let rel = [
+            p_pos.x.saturating_sub(obs_pos.x),
+            p_pos.y.saturating_sub(obs_pos.y),
+            p_pos.z.saturating_sub(obs_pos.z),
+        ];
+        let raw_dist_km = i64::try_from(obs_pos.distance_km(p_pos)).unwrap_or(i64::MAX);
+        let dir = if rel == [0, 0, 0] {
+            [p_pos.x, p_pos.y, p_pos.z]
+        } else {
+            rel
+        };
+        let (b_f, p_f) = vector_to_bearing_pitch(dir);
+        primary.bearing_deg = (b_f.round() as i32).rem_euclid(360);
+        primary.pitch_deg = (p_f.round() as i32 - 4).clamp(-45, 45);
+        if raw_dist_km > 0 {
+            primary.distance_km = raw_dist_km;
+        }
+    }
+
+    let primary_bearing = bodies.first().map_or(0, |b| b.bearing_deg);
+    let primary_pitch = bodies.first().map_or(-4, |b| b.pitch_deg);
+
+    if let Some(sec_id) = bodies.get(1).map(|b| b.id.clone())
+        && let Ok(sec_cid) = mush_core::CanonicalId::new(&sec_id)
+        && let Some(s_pos) = sky.position_km(&sec_cid, now_ic)
+        && let Some(sec) = bodies.get_mut(1)
+    {
+        let rel_s = [
+            s_pos.x.saturating_sub(obs_pos.x),
+            s_pos.y.saturating_sub(obs_pos.y),
+            s_pos.z.saturating_sub(obs_pos.z),
+        ];
+        let raw_s_dist_km = i64::try_from(obs_pos.distance_km(s_pos)).unwrap_or(i64::MAX);
+        let is_moon_of_primary =
+            primary_pos.is_some_and(|p_pos| p_pos.distance_km(s_pos) < 5_000_000);
+        if is_moon_of_primary {
+            let p_pos = primary_pos.unwrap_or(s_pos);
+            sec.bearing_deg = (primary_bearing + 26).rem_euclid(360);
+            sec.pitch_deg = (primary_pitch + 9).clamp(-45, 45);
+            if p_pos == obs_pos {
+                let orb_dist_km =
+                    i64::try_from(p_pos.distance_km(s_pos)).unwrap_or(sec.distance_km);
+                sec.distance_km = orb_dist_km.max(1);
+            } else if raw_s_dist_km > 0 {
+                sec.distance_km = raw_s_dist_km;
+            }
+        } else {
+            let dir_s = if rel_s == [0, 0, 0] {
+                [s_pos.x, s_pos.y, s_pos.z]
+            } else {
+                rel_s
+            };
+            let (s_b_f, s_p_f) = vector_to_bearing_pitch(dir_s);
+            sec.bearing_deg = (s_b_f.round() as i32).rem_euclid(360);
+            sec.pitch_deg = s_p_f.round() as i32;
+            if raw_s_dist_km > 0 {
+                sec.distance_km = raw_s_dist_km;
+            }
+        }
+    }
+
+    if let Some(sun) = bodies.iter_mut().find(|b| b.id == "sun") {
+        let ref_pos = if obs_pos.x == 0 && obs_pos.y == 0 && obs_pos.z == 0 {
+            primary_pos.unwrap_or(obs_pos)
+        } else {
+            obs_pos
+        };
+        if ref_pos.x != 0 || ref_pos.y != 0 || ref_pos.z != 0 {
+            let (sun_b_f, sun_p_f) = vector_to_bearing_pitch([-ref_pos.x, -ref_pos.y, -ref_pos.z]);
+            sun.bearing_deg = (sun_b_f.round() as i32).rem_euclid(360);
+            sun.pitch_deg = (sun_p_f.round() as i32 + 2).clamp(-45, 45);
+            let sun_dist_km =
+                i64::try_from(ref_pos.distance_km(crate::sky::PosKm { x: 0, y: 0, z: 0 }))
+                    .unwrap_or(sun.distance_km);
+            if sun_dist_km > 0 {
+                sun.distance_km = sun_dist_km;
+            }
+        }
+    }
+
+    bodies
 }
 
 /// A Tier-2 **Local Space Bubble** anchored at an orbital site or encounter point (`D-35-3`, `D-35-5`).
@@ -2038,14 +2155,11 @@ impl LocalSpaceBubble {
             for ship in self.ships.values_mut() {
                 if let HullStatus::DisabledDerelict {
                     ref mut life_support_remaining_s,
-                    ref mut salvage_contest_window_s,
                     ..
                 } = ship.status
                 {
                     *life_support_remaining_s =
                         life_support_remaining_s.saturating_sub(elapsed_whole_s);
-                    *salvage_contest_window_s =
-                        salvage_contest_window_s.saturating_sub(elapsed_whole_s);
                 }
             }
         }

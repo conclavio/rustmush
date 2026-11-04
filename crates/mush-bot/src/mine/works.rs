@@ -8,7 +8,7 @@
 //!
 //! Taken here: `+works`, `+works/quote|order <recipe> [qty]`, `+works/deliver <order>=<good>
 //! <qty>`, `+works/collect <order>`, `+works/cancel <order>`, and `+ship/plan|undock <port>` for
-//! the two ports of the trade run. Already taken and not repeated: `+market/list`, `+market/quote
+//! the ports of the run ([`PORTS`]). Already taken and not repeated: `+market/list`, `+market/quote
 //! <n>=<qty>`, `+market/accept <n>`, `+market/sell <n>=all`, `+ship/board` and `+ship/leave`
 //! (the mining lane's, [`super::in_vocabulary`]).
 //!
@@ -20,8 +20,10 @@ use crate::mine::lines::{self, Listing};
 /// The works verb.
 pub const WORKS: &str = "+works";
 
-/// The ports the trade run sails between, by the route word `+ship/plan` and `+ship/undock` take.
-pub const PORTS: [&str; 2] = ["ceres", "stickney"];
+/// The ports the production run sails between, by the route word `+ship/plan` and `+ship/undock`
+/// take: Ceres and Stickney Yards, and the way out by Luna and Deimos (Aitken Highport, Voltaire
+/// Anchorage), whose legs no picket interdicts.
+pub const PORTS: [&str; 4] = ["ceres", "deimos", "luna", "stickney"];
 
 /// `tacsim::port::works::BOOKED_AT` at the works: "Order {n} booked at the works: …".
 pub const BOOKED: &str = " booked at the works: ";
@@ -191,6 +193,8 @@ mod tests {
             "+ship/plan stickney",
             "+ship/undock stickney",
             "+ship/undock ceres",
+            "+ship/undock luna",
+            "+ship/plan deimos",
         ] {
             assert!(in_vocabulary(line), "{line}");
         }
@@ -204,7 +208,7 @@ mod tests {
             "+works/collect",
             "+works/collect x",
             "+works/strip 154",
-            "+ship/undock luna",
+            "+ship/undock titan",
             "+ship/undock",
             "@works/order fittings",
         ] {
