@@ -1026,9 +1026,9 @@ jobs:
       # WS01-S11: the world task must never panic, so the number of places it
       # could is budgeted per crate under panic_budget/ and only a reviewed
       # diff raises one. The same target refuses `panic = "abort"`, which would
-      # make WS01-S4's catch_unwind boundary inert. It also runs in the `test`
-      # matrix's rest-libs cell; it is named here so the log says which
-      # contract failed.
+      # make WS01-S4's catch_unwind boundary inert. It also runs under the
+      # cross-platform `test` job's `--workspace`; it is named here so the log
+      # says which contract failed.
       - name: The production panic surface and the panic=abort firewall
         run: cargo test -p mush-contract-tests --test panic_budget
       # WS01-S12: the other half of the same rule. Where a crate's production
