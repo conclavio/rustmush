@@ -918,4 +918,28 @@ and `_512` are on the by-hand tier at the revision of their last green run. Note
 - **The raider no longer fires while rig 2 comes down.** The field's idle bound holds it open, and the extra rounds
   had wrecked rig 1, the tug.
 
-RUNS7B_PLACEHOLDER
+**Runs** (conclav.dev, head `c969ec3f`; the code is `37276a81`'s, with docs and the nextest override on top). Both sizes
+are green by hand and through gate.yml.
+
+| Beat | Ahuna Flank (256), by hand | Urvara Reach (512), by hand |
+|---|---|---|
+| The lane's own `=all` held back | +343 s | +352 s |
+| 3a. rig 1 takes the Stranded Rig in tow | green | green |
+| 3b. coupled at admission; struck in tow; released under fire, uncoupled where struck | (129, 124) | (257, 252) |
+| 4. the wing's sight dark | after 8 shots, +419 s | after 6 shots, +420 s |
+| 6. segment 2 | +3290 s | +3229 s |
+| 5. `Voided as friendly fire` | green | green |
+| `test result: ok` | 3,719 s | 3,720 s |
+
+- **Through gate.yml**: run [41904925552](https://github.com/conclavio/rustmush/actions/runs/41904925552), dispatched
+  with `scripts/vps-gate.sh --runner conclav-dev --packages mush-bot --extra "--run-ignored only -E
+  'test(/fr7_/)'" --no-push`. Both tests passed under the `ci-bot` profile, 256 in 3,712 s and 512 in 3,742 s. The
+  run is a success, which meets §6's "green on gate.yml".
+- **The profile override.** `.config/nextest.toml` gains a `ci-bot` override for `fr7_round::`
+  (`terminate-after = 100`). Without it, the profile's 20-minute limit would end an hour-long story.
+- **The runs before these** (r5–r7 and the four Ahuna approach probes) found the release-at-the-helm refusal, the
+  lane's own launch, the Ahuna sight line and the fire that wrecked the tug, each fixed as listed above.
+- **Contract test.** `mush-contract-tests` on conclav.dev fails only on IN.5's two missing rows.
+
+**Cell minutes (rule #14): +0.** The tests stay `#[ignore]`d, and no PR cell runs them.
+

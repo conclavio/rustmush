@@ -273,17 +273,18 @@ tier = "by-hand"
 by_hand = "5e03f6d2"
 
 # Doc 40 FR.7's round story at 256 and 512, about an hour each: both passed by hand on
-# conclav.dev at the revision named (40 cut notes, FR.7, run r4). No dispatch-only job or
+# conclav.dev and through gate.yml's sweep (run 41904925552) at the revision named (40 cut notes,
+# FR.7b). No dispatch-only job or
 # gate.yml kind runs it yet (the sweep kind has no `via` script), so it is by-hand.
 [[test]]
 id = "mush-bot/tests::fr7_round::fr7_the_rounds_story_at_256"
 tier = "by-hand"
-by_hand = "6ccaf77e"
+by_hand = "c969ec3f"
 
 [[test]]
 id = "mush-bot/tests::fr7_round::fr7_the_rounds_story_at_512"
 tier = "by-hand"
-by_hand = "6ccaf77e"
+by_hand = "c969ec3f"
 
 # Doc 36 GC.12: the second measurement, after GC.2, on conclav.dev in release
 # (doc 36 "As built (GC.12)"); FIELD_MAX_UNITS was set from it.
