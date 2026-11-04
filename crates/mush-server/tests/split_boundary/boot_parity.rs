@@ -926,8 +926,8 @@ async fn ic1_a_kept_world_takes_the_stations_when_the_game_is_switched_on() {
     // doc 39 IN.1: relay v11, lane v20; doc 41 cut RS.1: relay v12, lane v21; doc 39 cut IN.6:
     // relay v13, lane v22; doc 42 cut CR.2: relay v14, lane v23; doc 39 cut IN.5: relay v15, lane
     // v24.
-    // Doc 39 cut IN.9: relay v16, lane v25.
-    assert_eq!(after.get("tacsim.relay.luna_ceres").map(|l| l.0), Some(16));
+    // Doc 39 cut IN.9: relay v18, lane v27.
+    assert_eq!(after.get("tacsim.relay.luna_ceres").map(|l| l.0), Some(18));
     assert!(after.contains_key(tacsim::port::passenger::content::PACK));
     assert_eq!(
         after.len(),

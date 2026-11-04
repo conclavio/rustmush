@@ -654,3 +654,250 @@ async fn gate1_tactical_and_delayed_lifecycle_bundles_survive_every_in_process_c
         assert_fault_matrix(name, bundle).await;
     }
 }
+
+// ---------------------------------------------------------------------------
+// Doc 43 cut TS.5: the matrix as sequences
+// ---------------------------------------------------------------------------
+//
+// The matrix above fires one fault per case on a fresh store, healed after one
+// fire. A lifecycle meets faults in sequence: a lost reserve, then a restart,
+// then a torn materialization, then a delivery that has to retry. Each case
+// below is one script (submit, reconcile, one outbox attempt that RETRIES and
+// is then delivered, checkpoint) with up to two faults armed at different
+// stages and a restart (the store dumped and restored into a fresh one, as a
+// process restart reopens the same durable state) before any stage. Every
+// case must finish with its exact receipt and a compact rejoin, and with a
+// store identical to the same script run clean: recovered equals live.
+
+/// The four stages of one bundle's life.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+enum Stage {
+    Submit,
+    Reconcile,
+    Outbox,
+    Checkpoint,
+}
+
+const STAGES: [Stage; 4] = [
+    Stage::Submit,
+    Stage::Reconcile,
+    Stage::Outbox,
+    Stage::Checkpoint,
+];
+
+/// One case: which fault each stage arms (at most two), and which stages a
+/// restart precedes.
+#[derive(Clone, Debug)]
+struct Sequence {
+    faults: Vec<(Stage, AuthoritativeFaultMode)>,
+    restarts: Vec<Stage>,
+}
+
+/// The store as a fresh process would reopen it.
+fn restart(fault: AuthoritativeFaultStore) -> AuthoritativeFaultStore {
+    let dump = fault.store().dump().expect("dump");
+    let fresh = AuthoritativeFaultStore::new(AuthoritativeFaultMode::Clean);
+    fresh.store().restore(dump).expect("restore");
+    fresh
+}
+
+/// Run one stage until it settles: a cut reserve or checkpoint is retried as
+/// the coordinator's resubmit does; a cut materialization or a lost finalize
+/// ack heals; a conflicting hash is refused and the exact one retried.
+async fn settle(
+    name: &str,
+    seq: &Sequence,
+    fault: &mut AuthoritativeFaultStore,
+    bundle: &AuthoritativeBundle,
+    stage: Stage,
+) {
+    let token = bundle.token();
+    let hash = bundle.bundle_hash();
+    for attempt in 0..3 {
+        let done = match stage {
+            Stage::Submit => fault
+                .reserve(bundle.clone())
+                .await
+                .unwrap_or_else(|e| panic!("{name} {seq:?}: reserve: {e}"))
+                .is_some(),
+            Stage::Reconcile => match fault.reconcile(token, hash).await {
+                Ok(Some(receipt)) => {
+                    assert!(receipt.matches_bundle(bundle), "{name} {seq:?}");
+                    true
+                }
+                Ok(None) | Err(_) => false,
+            },
+            Stage::Checkpoint => fault
+                .checkpoint(token, hash)
+                .await
+                .unwrap_or_else(|e| panic!("{name} {seq:?}: checkpoint: {e}"))
+                .is_some(),
+            Stage::Outbox => unreachable!("the outbox stage is driven by `deliver`"),
+        };
+        if done {
+            return;
+        }
+        assert!(attempt < 2, "{name} {seq:?}: {stage:?} never settled");
+    }
+}
+
+/// Every pending delivery fails once, a restart may fall between the failure
+/// and the retry, and the retry is delivered.
+async fn deliver(
+    name: &str,
+    seq: &Sequence,
+    mut fault: AuthoritativeFaultStore,
+) -> AuthoritativeFaultStore {
+    for result in [
+        AuthoritativeOutboxAttemptResult::Retry {
+            error: "unreachable".to_owned(),
+        },
+        AuthoritativeOutboxAttemptResult::Delivered,
+    ] {
+        if matches!(result, AuthoritativeOutboxAttemptResult::Delivered)
+            && seq.restarts.contains(&Stage::Outbox)
+        {
+            fault = restart(fault);
+        }
+        for record in fault
+            .store()
+            .pending_authoritative_outbox()
+            .await
+            .unwrap_or_else(|e| panic!("{name} {seq:?}: outbox discovery: {e}"))
+        {
+            let started = fault
+                .store()
+                .begin_authoritative_outbox_attempt(
+                    record.item_id(),
+                    record.intent().payload_hash(),
+                    record.attempts(),
+                )
+                .await
+                .unwrap_or_else(|e| panic!("{name} {seq:?}: outbox start: {e}"));
+            fault
+                .store()
+                .complete_authoritative_outbox_attempt(
+                    started.item_id(),
+                    started.intent().payload_hash(),
+                    started.attempts(),
+                    result.clone(),
+                )
+                .await
+                .unwrap_or_else(|e| panic!("{name} {seq:?}: outbox completion: {e}"));
+        }
+    }
+    fault
+}
+
+/// Run one sequence to completion; the final store, as JSON.
+async fn run_sequence(
+    name: &str,
+    bundle: &AuthoritativeBundle,
+    seq: &Sequence,
+) -> serde_json::Value {
+    let mut fault = AuthoritativeFaultStore::new(AuthoritativeFaultMode::Clean);
+    for stage in STAGES {
+        if seq.restarts.contains(&stage) && stage != Stage::Outbox {
+            fault = restart(fault);
+        }
+        if let Some((_, mode)) = seq.faults.iter().find(|(s, _)| *s == stage) {
+            fault.arm(*mode);
+        }
+        if stage == Stage::Outbox {
+            fault = deliver(name, seq, fault).await;
+        } else {
+            settle(name, seq, &mut fault, bundle, stage).await;
+        }
+    }
+    assert!(
+        fault
+            .store()
+            .reserve_authoritative_intent(bundle.clone())
+            .await
+            .unwrap_or_else(|e| panic!("{name} {seq:?}: compact rejoin: {e}"))
+            .resumed,
+        "{name} {seq:?}: a resubmission must join the compact result"
+    );
+    assert!(
+        fault
+            .store()
+            .pending_authoritative_outbox()
+            .await
+            .expect("outbox")
+            .is_empty(),
+        "{name} {seq:?}: a delivery is left pending"
+    );
+    serde_json::to_value(fault.store().dump().expect("dump")).expect("a dump serializes")
+}
+
+/// Every case for one bundle: each single fault and each pair at two different
+/// stages, crossed with no restart, a restart before each one stage, and a
+/// restart before every stage.
+fn sequences(bundle: &AuthoritativeBundle) -> Vec<Sequence> {
+    let mut by_stage: Vec<(Stage, AuthoritativeFaultMode)> = vec![
+        (Stage::Submit, AuthoritativeFaultMode::BeforeIntent),
+        (Stage::Submit, AuthoritativeFaultMode::AfterIntent),
+        (
+            Stage::Reconcile,
+            AuthoritativeFaultMode::AckLostAfterFinalize,
+        ),
+        (Stage::Reconcile, AuthoritativeFaultMode::TokenConflict),
+        (
+            Stage::Checkpoint,
+            AuthoritativeFaultMode::AckLostAfterCheckpoint,
+        ),
+    ];
+    by_stage.extend((0..=bundle.writes().len()).map(|n| {
+        (
+            Stage::Reconcile,
+            AuthoritativeFaultMode::AfterNMaterializationOps(n),
+        )
+    }));
+    let mut fault_sets: Vec<Vec<(Stage, AuthoritativeFaultMode)>> = vec![Vec::new()];
+    for (i, a) in by_stage.iter().enumerate() {
+        fault_sets.push(vec![*a]);
+        for b in &by_stage[i + 1..] {
+            if a.0 != b.0 {
+                fault_sets.push(vec![*a, *b]);
+            }
+        }
+    }
+    let mut restart_sets: Vec<Vec<Stage>> = vec![Vec::new(), STAGES.to_vec()];
+    restart_sets.extend(STAGES.iter().map(|s| vec![*s]));
+    let mut out = Vec::new();
+    for faults in &fault_sets {
+        for restarts in &restart_sets {
+            out.push(Sequence {
+                faults: faults.clone(),
+                restarts: restarts.clone(),
+            });
+        }
+    }
+    out
+}
+
+#[tokio::test]
+async fn lifecycle_sequences_with_two_faults_and_restarts_recover_to_the_clean_run() {
+    let mut bundles = vec![
+        ("Gate-1 brace", gate1_bundle()),
+        ("Gate-2 tactical fire", tactical_bundle()),
+    ];
+    bundles.extend(delayed_capture_bundles());
+    let mut cases = 0usize;
+    for (name, bundle) in &bundles {
+        let clean = Sequence {
+            faults: Vec::new(),
+            restarts: Vec::new(),
+        };
+        let live = run_sequence(name, bundle, &clean).await;
+        for seq in sequences(bundle) {
+            let recovered = run_sequence(name, bundle, &seq).await;
+            assert!(
+                recovered == live,
+                "{name} {seq:?}: the recovered store differs from the clean run's"
+            );
+            cases += 1;
+        }
+    }
+    assert!(cases > 500, "the sequence matrix shrank: {cases} cases");
+}

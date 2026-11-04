@@ -230,7 +230,7 @@ pub struct PortDef {
     /// whole credits (1,500 provisional at every IC port). Authored only with [`Self::authority`].
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub release_fee_cr: Option<u64>,
-    /// **Doc 39 cut IN.9 (Q-39-19, Q-39-20; lane v25)** — the port's yard: a room of the port's
+    /// **Doc 39 cut IN.9 (Q-39-19, Q-39-20; lane v27)** — the port's yard: a room of the port's
     /// area (Stickney's P12 Observation, over the drydocks) opened as a facility of its operator holding the yard
     /// capability, which `+yard` fronts (`crate::port::works`), in the works' shape: slots, cost
     /// model (§4.4's 10M slipway over thirty years), customers. Its `buys` are empty (a yard order

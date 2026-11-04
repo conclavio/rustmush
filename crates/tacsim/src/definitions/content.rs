@@ -996,17 +996,20 @@ pub const LANE_PACK: &str = "tacsim.lane.ceres_phobos";
 /// `lane_v13` rebuilds the
 /// published v13 by stripping every row added since: the next lane cut strips its own
 /// rows there too and extends the test to its versions.
-pub const LANE_VERSION: u32 = 25;
+pub const LANE_VERSION: u32 = 27;
 /// `crates/tacsim/content/lane/ceres_phobos.json`.
 pub const LANE_JSON: &str = include_str!("../../content/lane/ceres_phobos.json");
 /// The lane as one source, in apply order.
 pub const LANE_SOURCES: [(&str, &str); 1] = [("tacsim/content/lane/ceres_phobos.json", LANE_JSON)];
 /// **The industry recipes' pack id** (doc 39 cut IN.5, §4.3): the works' menu — `fittings`
 /// (five tonnes of alloys and one of carbon ore into five of fittings, six work units, pooled);
-/// IN.7 adds the part recipes and IN.9 the hulls, each at the pack's next version.
+/// IN.7 adds the part recipes at v2 (the mounts, the sights, the pods and the plants, each
+/// `output_lots: each`, so the works arm commissions them).
 pub const INDUSTRY_RECIPES_PACK: &str = "tacsim.industry.recipes";
-/// `crates/tacsim/content/industry/recipes-v1.json`.
-pub const INDUSTRY_RECIPES_JSON: &str = include_str!("../../content/industry/recipes-v1.json");
+/// The pack's shipped version.
+pub const INDUSTRY_RECIPES_VERSION: u32 = 2;
+/// `crates/tacsim/content/industry/recipes-v2.json`.
+pub const INDUSTRY_RECIPES_JSON: &str = include_str!("../../content/industry/recipes-v2.json");
 /// The outbound route: Ceres Freeport by Kirkwood Depot to Stickney Yards.
 pub const LANE_ROUTE_OUT: &str = "ceres_stickney";
 /// The return route: Stickney Yards by Kirkwood Depot to Ceres Freeport.
@@ -1045,7 +1048,7 @@ pub fn game_seed_sources() -> Vec<PackSource> {
                     "relays/manufacture-v1.json",
                     include_str!("../../content/relays/manufacture-v1.json"),
                 ),
-                ("industry/recipes-v1.json", INDUSTRY_RECIPES_JSON),
+                ("industry/recipes-v2.json", INDUSTRY_RECIPES_JSON),
                 // Doc 39 cut IN.9: the yard's hull recipes (each row pinned to its design's
                 // bill, `crate::port::bill`).
                 ("industry/hulls-v1.json", INDUSTRY_HULLS_JSON),

@@ -4492,7 +4492,7 @@ impl Rig {
 /// the operator org, the bindings, the Terms story and the money never move, across two
 /// restarts.
 #[tokio::test]
-async fn sm12b_a_kept_v13_star_takes_lane_v25_and_relay_v16() {
+async fn sm12b_a_kept_v13_star_takes_lane_v24_and_relay_v15() {
     let lane = tacsim::definitions::content::LANE_PACK;
     let relay = "tacsim.relay.luna_ceres";
     let mut rig = Rig::v13_star().await;
@@ -4521,23 +4521,23 @@ async fn sm12b_a_kept_v13_star_takes_lane_v25_and_relay_v16() {
         .to_owned();
     let applied = rig.run(GOD, &format!("@atlas/pack apply {fingerprint}"));
     assert!(
-        applied.contains(&format!("Applied {lane}@25: ")),
+        applied.contains(&format!("Applied {lane}@27: ")),
         "{plan}\n{applied}"
     );
     assert!(!applied.contains("STOPPED"), "{applied}");
-    assert_eq!(rig.latched(lane), Some(25));
+    assert_eq!(rig.latched(lane), Some(27));
 
     // Relay v15 differs from v2 only in its manifest: staff have nothing to apply.
     let plan = rig.run(GOD, &format!("@atlas/pack plan {relay}"));
     assert!(plan.contains("Nothing to do."), "{plan}");
     rig.flush().await;
     rig.restart().await.unwrap();
-    assert_eq!((rig.latched(lane), rig.latched(relay)), (Some(25), Some(2)));
+    assert_eq!((rig.latched(lane), rig.latched(relay)), (Some(27), Some(2)));
     assert_eq!(rig.registry(), original);
     assert_eq!(
         rig.story(),
         story,
-        "relay v2 beside lane v25 is still the full star"
+        "relay v2 beside lane v24 is still the full star"
     );
 
     // The operator's apply of the shipped seed latches v15 and changes nothing else.
@@ -4545,20 +4545,20 @@ async fn sm12b_a_kept_v13_star_takes_lane_v25_and_relay_v16() {
         mush_content::load_pack(tacsim::relay_content::JSON).unwrap(),
     ])
     .await;
-    assert_eq!(rig.latched(relay), Some(16));
+    assert_eq!(rig.latched(relay), Some(18));
     assert_eq!(rig.registry(), original);
     rig.flush().await;
     rig.restart().await.unwrap();
     assert_eq!(
         (rig.latched(lane), rig.latched(relay)),
-        (Some(25), Some(16))
+        (Some(27), Some(18))
     );
     assert_eq!(rig.registry(), original);
     assert_eq!(rig.operator_org(), org);
     assert_eq!(
         rig.story(),
         story,
-        "relay v16 is the full star: the Terms story boots unchanged"
+        "relay v15 is the full star: the Terms story boots unchanged"
     );
     assert!(rig.run(GOD, "@relay/check").contains("Bindings OK"));
     assert_eq!(rig.money_total(), money);
@@ -4748,7 +4748,7 @@ async fn oduya_kept_ceres_v2_and_relay_v4_upgrade_without_replacing_the_live_sta
     // cut S.1: lane v17, relay v8; doc 36 cut GC.7: lane v18, relay v9; cut GC.13: lane v19,
     // relay v10; doc 39 cuts IN.1 and IN.4: lane v20, relay v11; doc 41 cut RS.1: lane v21, relay
     // v12; doc 39 cut IN.6: lane v22, relay v13; doc 42 cut CR.2: lane v23, relay v14; doc 39 cut
-    // IN.5: lane v24, relay v15; doc 39 cut IN.9: lane v25, relay v16).
+    // IN.5: lane v24, relay v15).
     rig.apply_content(vec![
         mush_content::load_pack(tacsim::definitions::content::LANE_JSON).unwrap(),
         mush_content::load_pack(tacsim::relay_content::JSON).unwrap(),
@@ -4756,7 +4756,7 @@ async fn oduya_kept_ceres_v2_and_relay_v4_upgrade_without_replacing_the_live_sta
     .await;
     assert_eq!(
         (rig.latched(ceres), rig.latched(relay)),
-        (Some(4), Some(16))
+        (Some(4), Some(18))
     );
     assert_eq!(rig.registry(), original);
     rig.flush().await;
@@ -4811,8 +4811,8 @@ fn r10_public_star_content_digests_are_pinned() {
             // re-signed to require lane v22 (was `e38f2f19…` at v12). Doc 42 cut CR.2: v14,
             // re-signed to require lane v23 (was `c55ce471…` at v13). Doc 39 cut IN.5: v15,
             // re-signed to require lane v24 (was `476bf7d8…` at v14).
-            // Doc 39 cut IN.9: v16, re-signed to require lane v25 (was `2fff2038…` at v15).
-            "c0ad379d89038a67fae480f93d364b55611dc622cf74ca7f6cb8c6503220ce83",
+            // Doc 39 cut IN.9: v18, re-signed to require lane v27 (was `4d3454c8…` at v17).
+            "5cf916b9477562cfe2b69cbc2b77c21a5b32ded0cd5c635fd73d66aa4f68272c",
         ),
     ];
     let packs = tacsim::relay_content::packs().unwrap();

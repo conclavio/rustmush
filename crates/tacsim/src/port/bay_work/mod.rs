@@ -1132,6 +1132,9 @@ pub fn fit_order(ctx: &mut Ctx<'_>, hull: ObjId, slot: &str, lot: LotId) -> Resu
             rightful_owner.0
         ));
     }
+    if let Some(refusal) = disputed_refusal(ctx.w, &part) {
+        return Err(refusal);
+    }
     if part.fitted_into.is_some() {
         return Err("That part has already been fitted.".to_owned());
     }
@@ -1139,6 +1142,37 @@ pub fn fit_order(ctx: &mut Ctx<'_>, hull: ObjId, slot: &str, lot: LotId) -> Resu
         return Err("That part is held for a sale or another order.".to_owned());
     }
     take(ctx, hull, slot, Some((lot, part)))
+}
+
+/// **The claim a disputed part is held under** (doc 39 cut IN.7, §4.11; doc 41 §4.6): a
+/// stripped part its parent hull's record lists under a claim that is not vacated and whose
+/// filed contract has not ended (an unreadable one counts as live: fail closed). Who owns it is
+/// the claim's to decide, so no fit or build takes custody of it meanwhile.
+#[must_use]
+pub fn disputed(w: &World, part: &act::PartProvenance) -> Option<u64> {
+    let parent = part.parent_hull()?;
+    let listed = record_of(w, parent)
+        .ok()?
+        .claim_lots
+        .into_iter()
+        .find(|listed| listed.lot == part.lot.0 && listed.vacated.is_none())?;
+    let ended = w
+        .module_state::<EconomyStore>()
+        .and_then(|s| s.snapshot().contract(ContractId(listed.claim)).cloned())
+        .is_some_and(|c| c.state.is_terminal());
+    (!ended).then_some(listed.claim)
+}
+
+/// The refusal a custody reads for a disputed part (doc 39 cut IN.7): `+bay/fit` here, and a
+/// build's delivery of a part into its escrow.
+#[must_use]
+pub fn disputed_refusal(w: &World, part: &act::PartProvenance) -> Option<String> {
+    disputed(w, part).map(|claim| {
+        format!(
+            "That part is disputed: it came off #{} under claim {claim}, which is still open;              nothing takes custody of it until the claim is settled.",
+            part.parent_hull().map_or(0, |h| h.0)
+        )
+    })
 }
 
 /// The `Replace` job for `slot` in `quote`, fitted from `lot`, when `part` fits it.

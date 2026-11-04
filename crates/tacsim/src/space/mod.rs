@@ -21,27 +21,28 @@ pub mod weapons;
 
 pub use bubble::{
     BubbleId, BubbleInputCommand, BubbleInputEntry, BubbleInputTape, BubbleSnapshot,
-    BubbleStepReport, CanopyBodyProjection, DERELICT_WINDOW_S, EmconPosture, FacetBand, HullStatus,
-    LocalSpaceBubble, MAX_SUBSTEP_MS, ShipSectionId, ShipSectionState, SpaceCombatEvent,
-    SpaceSectionConsequence, SpaceShipState, SubsystemCrit, admitted_party,
+    BubbleStepReport, CanopyBodyProjection, DERELICT_LIFE_SUPPORT_S, EmconPosture, FacetBand,
+    HullStatus, LocalSpaceBubble, MAX_SUBSTEP_MS, ShipSectionId, ShipSectionState,
+    SpaceCombatEvent, SpaceSectionConsequence, SpaceShipState, SubsystemCrit, admitted_party,
     compute_ephemeris_canopy_bodies, default_canopy_bodies_for_site, relation_feed_word,
 };
 pub use commands::{
     BridgeRole, HELM_HELP, HELM_SWITCHES, HELM_VERB, HOLOTANK_FEED, MINE_HELP, MINE_SWITCHES,
     MINE_VERB, NO_BRIDGE_STATION, NO_SUCH_CONTACT, NOT_ABOARD_SHIP, SPACE_COCKPIT_FEED,
     SPACE_DOCKING_FEED, SpaceContactObservation, TAC_HELP, TAC_SWITCHES, TAC_VERB,
-    emcon_level_for_posture, emcon_posture_for_level, evaluate_space_contact_detection,
-    heading_order_vector, helm_cmd, hull_aboard_for_actor, is_hull_captain, mine_cmd,
-    observe_bubble_contacts, parse_emcon_token, rcs_authority_for_hull, seat_role_for_actor,
-    tac_cmd,
+    TOW_FOR_RETRIEVAL, emcon_level_for_posture, emcon_posture_for_level,
+    evaluate_space_contact_detection, heading_order_vector, helm_cmd, hull_aboard_for_actor,
+    is_hull_captain, mine_cmd, observe_bubble_contacts, parse_emcon_token, rcs_authority_for_hull,
+    seat_role_for_actor, tac_cmd,
 };
 pub use custody::{
-    ALL_FACET_BANDS, ALL_SHIP_SECTIONS, SpaceUnitOverlay, apply_space_unit_overlay,
-    apply_unit_spec_to_space_ship, build_space_damage_mutation_plan, check_in_space_unit,
-    check_out_space_unit, format_tactical_unit_damage_line, instantiate_stock_space_unit,
-    record_space_combat_to_black_box, register_derelict_salvage_in_book,
-    resolve_tactical_section_id, space_ship_from_tactical_unit,
-    space_ship_from_tactical_unit_with_spec, space_unit_overlay_for_id, unit_spec_for_id,
+    ALL_FACET_BANDS, ALL_SHIP_SECTIONS, MAX_SPACE_CUSTODY, SpaceCustodyBook, SpaceUnitOverlay,
+    apply_space_unit_overlay, apply_unit_spec_to_space_ship, build_space_damage_mutation_plan,
+    capture_at_hard_dock, check_in_space_crew, check_in_space_unit, check_out_space_unit,
+    format_tactical_unit_damage_line, instantiate_stock_space_unit,
+    record_space_combat_to_black_box, resolve_tactical_section_id, space_ship_from_tactical_unit,
+    space_ship_from_tactical_unit_with_spec, space_site, space_unit_overlay_for_id,
+    unit_spec_for_id,
 };
 pub use docking::{
     COLLAR_SCRAPE_FRONT_ARMOR_DAMAGE, DOCK_GATE_MAX_ANG_RATE_MDEG_S, DOCK_GATE_MAX_LAT_VEL_MMPS,
@@ -70,15 +71,14 @@ pub use picket::{
     CUSTOMS_FINE_MAJOR_PER_TONNE, CUSTOMS_FINE_MIN_MAJOR, HEAVE_TO_REL_VEL_MMPS,
     KirkwoodPicketState, LiveCustomsManifest, PICKET_RUN_BOUNDARY_M, PendingLightLagHail,
     PicketCastBook, PicketCastEntry, PicketInspectionOutcome, PicketInspectionStatus,
-    RAIDER_AMBUSH_RANGE_M, SALVAGE_RECOVERY_BOUNTY_MAJOR, SALVAGE_RECOVERY_CONTRACT_NAME,
-    SPACE_MIND_SEAL_ATTR, assess_customs_fine_and_advance_front, build_space_mind_seal,
-    customs_fine_spec, deliver_light_lagged_hail_now, distance_3d_m, emit_light_lagged_picket_hail,
-    inspect_hull_manifest, picket_cast_book, queue_or_deliver_light_lagged_hail,
-    record_ran_the_picket_incident, relative_speed_3d_mmps, resolve_hull_customs_principal,
-    run_sealed_mind_on_pool, run_space_rhai_think, seal_space_unit_in_world,
-    seize_contraband_and_advance_front, settle_salvage_recovery_payout_from_registry,
-    should_open_kirkwood_picket, space_mind_seal_of, spawn_kirkwood_picket_ships_in_world,
-    step_kirkwood_picket, step_pending_light_lag_hails,
+    RAIDER_AMBUSH_RANGE_M, SPACE_MIND_SEAL_ATTR, assess_customs_fine_and_advance_front,
+    build_space_mind_seal, customs_fine_spec, deliver_light_lagged_hail_now, distance_3d_m,
+    emit_light_lagged_picket_hail, inspect_hull_manifest, picket_cast_book,
+    queue_or_deliver_light_lagged_hail, record_ran_the_picket_incident, relative_speed_3d_mmps,
+    resolve_hull_customs_principal, run_sealed_mind_on_pool, run_space_rhai_think,
+    seal_space_unit_in_world, seize_contraband_and_advance_front, should_open_kirkwood_picket,
+    space_mind_seal_of, spawn_kirkwood_picket_ships_in_world, step_kirkwood_picket,
+    step_pending_light_lag_hails,
 };
 pub use tick::{
     ActiveInterdictionBubble, BUBBLE_INPUT_ACTION, BUBBLE_INPUT_OUTCOME, BUBBLE_TAPE_FAMILY,
@@ -86,14 +86,15 @@ pub use tick::{
     CompletedInterdictionBubble, FreeFlightGuidanceMode, HullPropellantLedger,
     INTERDICTION_STANDOFF_M, INTERDICTOR_PARTY, MAX_BUBBLE_SNAPSHOTS, MAX_BUBBLE_TAPE_ENTRIES,
     MAX_BUBBLE_TICK_STEP_MS, MAX_COMPLETED_BUBBLES, ORDNANCE_STEP_WALL_MS, PendingBubbleInput,
-    PersistedBubbleDoc, PersistedDerelictDoc, PersistedDockingDoc, PersistedFlightDoc,
-    PersistedLedgerDoc, SALVAGE_HOLD_TIMEOUT_WALL_S, SOLAR_MU_KM3_S2, SPACE_BUBBLE_PREFIX,
-    SPACE_DERELICT_PREFIX, SPACE_DOCKING_PREFIX, SPACE_FLIGHT_PREFIX, SPACE_KEY_PREFIX,
-    SPACE_LEDGER_PREFIX, SPACE_LINKDEAD_GRACE_WALL_S, SPACE_STATE_FORMAT, SPACE_STATE_KEY,
-    SPACE_TICK, SPACE_TICK_PERIOD, SpaceBubbleBook, SpaceDerelictRecord, SpaceFreeFlightRecord,
-    SpaceLinkdeadState, SpacePersistedState, StagedBubbleTapeEntry, StagedBubbleTapeLedger,
-    apply_bubble_command, boot_read, clear_interdiction_bubble, load_space_kv_entry,
-    persist_space_state, reacquire_custody_after_boot, space_bubble_key, space_derelict_key,
+    PersistedBubbleDoc, PersistedCustodyDoc, PersistedDerelictDoc, PersistedDockingDoc,
+    PersistedFlightDoc, PersistedLedgerDoc, SALVAGE_HOLD_TIMEOUT_WALL_S, SOLAR_MU_KM3_S2,
+    SPACE_BUBBLE_PREFIX, SPACE_CUSTODY_PREFIX, SPACE_DERELICT_PREFIX, SPACE_DOCKING_PREFIX,
+    SPACE_FLIGHT_PREFIX, SPACE_KEY_PREFIX, SPACE_LEDGER_PREFIX, SPACE_LINKDEAD_GRACE_WALL_S,
+    SPACE_STATE_FORMAT, SPACE_STATE_KEY, SPACE_TICK, SPACE_TICK_PERIOD, SpaceBubbleBook,
+    SpaceDerelictRecord, SpaceFreeFlightRecord, SpaceLinkdeadState, SpacePersistedState,
+    StagedBubbleTapeEntry, StagedBubbleTapeLedger, apply_bubble_command, boot_read,
+    clear_interdiction_bubble, load_space_kv_entry, persist_space_state,
+    reacquire_custody_after_boot, space_bubble_key, space_custody_key, space_derelict_key,
     space_docking_key, space_flight_key, space_ledger_key, submit_bubble_input,
 };
 pub use weapons::{
@@ -521,7 +522,6 @@ mod tests {
         ship.status = HullStatus::DisabledDerelict {
             epoch_open: true,
             life_support_remaining_s: 1_000,
-            salvage_contest_window_s: 2_000,
         };
         bubble.insert_ship(ship);
 
@@ -533,11 +533,9 @@ mod tests {
         match bubble.ships["ship.derelict"].status {
             HullStatus::DisabledDerelict {
                 life_support_remaining_s,
-                salvage_contest_window_s,
                 ..
             } => {
                 assert_eq!(life_support_remaining_s, 999);
-                assert_eq!(salvage_contest_window_s, 1_999);
             }
             ref other => panic!("expected DisabledDerelict, got {other:?}"),
         }
@@ -717,8 +715,7 @@ mod tests {
             .internals = 0;
         halcyon_ship.status = HullStatus::DisabledDerelict {
             epoch_open: true,
-            life_support_remaining_s: DERELICT_WINDOW_S,
-            salvage_contest_window_s: DERELICT_WINDOW_S,
+            life_support_remaining_s: DERELICT_LIFE_SUPPORT_S,
         };
         let (halcyon_after, halcyon_assessment, halcyon_plan) = build_space_damage_mutation_plan(
             &halcyon_unit,
@@ -892,20 +889,8 @@ mod tests {
             )
             .expect("standing order");
 
-        let mut salvage = crate::field_ops::SalvageClaimBook::new();
+        let salvage = crate::field_ops::SalvageClaimBook::new();
         let op_id = crate::field_ops::RecoveryOpId::new(1).expect("op_id");
-        let title_status = register_derelict_salvage_in_book(
-            &mut salvage,
-            op_id,
-            interdictor,
-            hull,
-            hull,
-            interdictor,
-            mush_core::ObjId(500),
-            74_152_600_024,
-            1_000,
-        )
-        .expect("salvage claim");
         book.derelicts.insert(
             interdictor,
             SpaceDerelictRecord {
@@ -913,12 +898,45 @@ mod tests {
                 domain,
                 disabled_at_ic_s: 74_152_600_024,
                 epoch_open: true,
-                life_support_remaining_s: DERELICT_WINDOW_S,
-                salvage_contest_window_s: DERELICT_WINDOW_S,
+                life_support_remaining_s: DERELICT_LIFE_SUPPORT_S,
                 assessment: None,
-                salvage_title_status: Some(title_status),
+                salvage_title_status: None,
             },
         );
+        // Doc 41 cut RS.8: the custody row never rides the auxiliary document; it has its own.
+        let row = crate::surface::salvage::SalvageCustody {
+            hull: interdictor,
+            holder: mush_core::ObjId(101),
+            carrier: hull,
+            recovered_by: hull,
+            recovered_ic: 74_152_600_024,
+            left_ic: Some(74_152_600_024),
+            claim: crate::surface::salvage::ClaimSeam::Owed,
+            operation: Some(op_id),
+            pin: None,
+            file: None,
+            told: Vec::new(),
+            evidence: Vec::new(),
+            at_risk: Vec::new(),
+        };
+        assert!(book.space_custody.insert(domain, row.clone()));
+        let custody_doc = PersistedCustodyDoc {
+            format: SPACE_STATE_FORMAT,
+            domain,
+            rows: vec![row],
+        };
+        let wire = serde_json::to_value(&custody_doc).expect("encode custody doc");
+        let mut store = crate::store::TacsimStore::default();
+        load_space_kv_entry(&mut store, &space_custody_key(domain), &wire);
+        let loaded = store.space_state().expect("custody document reads");
+        assert_eq!(loaded.book.space_custody, book.space_custody);
+        let mut held = crate::store::TacsimStore::default();
+        load_space_kv_entry(
+            &mut held,
+            &space_custody_key(domain),
+            &serde_json::json!({ "format": SPACE_STATE_FORMAT, "domain": 8, "rows": [] }),
+        );
+        assert!(held.is_space_state_held() && held.space_state().is_none());
 
         let state = SpacePersistedState {
             format: SPACE_STATE_FORMAT,
@@ -929,7 +947,10 @@ mod tests {
         let encoded = serde_json::to_value(&state).expect("encode SpacePersistedState");
         let decoded: SpacePersistedState =
             serde_json::from_value(encoded).expect("decode SpacePersistedState");
-        assert_eq!(decoded, state);
+        assert_eq!(decoded.book.space_custody, SpaceCustodyBook::default());
+        let mut expected = state.clone();
+        expected.book.space_custody = SpaceCustodyBook::default();
+        assert_eq!(decoded, expected);
     }
 
     /// FR.6 (doc 40 Q-40-22): space parties are the arena's letters, the

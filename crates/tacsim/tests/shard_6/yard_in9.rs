@@ -248,7 +248,7 @@ async fn in9_the_yard_builds_a_dray_p_and_an_escort_and_hands_them_over() {
     let floor = station_room(&rig.tw, STICKNEY, "room.p11_service");
     teleport(&mut rig.tw, captain, floor);
 
-    // ---- The yard: lane v25's row, Stickney Yards' slipway counter over the drydocks ----
+    // ---- The yard: lane v27's row, Stickney Yards' slipway counter over the drydocks ----
     let menu = run(&mut rig.tw, captain, "+yard");
     assert!(
         menu.contains("dray_p") && menu.contains("tv_escort"),
@@ -516,7 +516,7 @@ fn free_captain(rig: &mut Rig, who: &str, seed: i64) -> ObjId {
     captain
 }
 
-/// **The Stickney yard** (lane v25's row): the captain on the Service Counter's floor, where a
+/// **The Stickney yard** (lane v27's row): the captain on the Service Counter's floor, where a
 /// rig the yard builds stands; `+yard` finds the yard in the port.
 fn open_yard(rig: &mut Rig) -> ObjId {
     station_room(&rig.tw, STICKNEY, "room.p11_service")
