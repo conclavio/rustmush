@@ -843,6 +843,56 @@ jobs:
         if: matrix.shard == 'rest-mushd'
         run: |
           cargo test -p mushd --test durable_process world_panic_exit::
+      # Doc 43 cut TS.9 (D-43-8, §10.1): the one browser smoke, landed from
+      # PR #429's web/e2e/CI-STEP.md (removed now the steps are here). It
+      # runs in this cell because the cell already built `target/debug/mushd` (the integration tests'
+      # CARGO_BIN_EXE_mushd, with the test build's unified features; a plain
+      # `cargo build -p mushd` would relink, so it runs only if the binary is
+      # missing). `npm run build` builds the SPA it serves, which needs the
+      # wasm32 target for the picture module, as the `web` job does; it stays
+      # out of that npm-only job (§10.1). Headless Chromium boots against mushd
+      # on the in-memory store, logs in, picks a character, runs a verb and a
+      # typed action, reconnects and sees the WASM canvas paint.
+      - name: Browser smoke (TS.9) - the wasm target
+        if: matrix.shard == 'rest-mushd'
+        run: rustup target add wasm32-unknown-unknown
+      - name: Browser smoke (TS.9) - node
+        if: matrix.shard == 'rest-mushd'
+        uses: actions/setup-node@v4
+        with:
+          node-version: "22"
+          cache: npm
+          cache-dependency-path: web/package-lock.json
+      - name: Browser smoke (TS.9) - the SPA and Chromium
+        if: matrix.shard == 'rest-mushd'
+        working-directory: web
+        run: |
+          npm ci
+          npm run build
+          npx playwright install --with-deps chromium
+      - name: Browser smoke (TS.9) - the mushd binary
+        if: matrix.shard == 'rest-mushd'
+        run: |
+          # Built by the sweep above; built here only if it is not.
+          test -x target/debug/mushd || cargo build -p mushd
+      - name: Browser smoke (TS.9)
+        if: matrix.shard == 'rest-mushd'
+        working-directory: web
+        env:
+          MUSHD_BIN: ${{ github.workspace }}/target/debug/mushd
+        run: npm run test:e2e
+      # The trace, the screenshot and mushd.log (web/test-results/) and the
+      # HTML report, on a failure; the upload itself never fails the cell.
+      - name: Browser smoke (TS.9) - report
+        if: failure() && matrix.shard == 'rest-mushd'
+        continue-on-error: true
+        uses: actions/upload-artifact@v4
+        with:
+          name: playwright-report
+          path: |
+            web/playwright-report/
+            web/test-results/
+          if-no-files-found: ignore
       - name: TS bindings drift check
         if: matrix.shard == 'rest-libs'
         run: |
