@@ -340,8 +340,8 @@ Built on RS.8 (#439). Every crew rule is the ground's own `field/crew.rs`, calle
   - A friend's clamp runs `crew::aboard_loaded` into the same room.
 - **The handover.** The `+helm/dock` port clamp calls `crew::hand_over(ctx, hull)` before the tow's delivery. A lane arrival already did, through `sim_routes`'s `arrived`, and the crew tick catches any it misses.
 - **Story** (`shard_10/voyage.rs`): `cr6_a_crewed_derelict_hard_docked_by_a_stranger_is_captured_and_handed_over_at_port`.
-  - A fixture sets SalvorB's drive down in the bubble; combat's disablement is sfr18's.
-  - She settles as a derelict, and her pilot is `Stranded` in her.
+  - The fixture is staff `@unit/damage`, which puts SalvorB's drive at its floor during the cruise, while her unit is not deployed. No test writes the space book (SF.R9's lint). Combat's disablement is sfr18's.
+  - The bubble's own check-out meets her as a `DisabledDerelict` and settles her, and her pilot is `Stranded` in her.
   - SalvorA approaches and hard-docks her. The pilot is `Captured { carrier: SalvorA, captor }`, with her body aboard SalvorA.
   - SalvorA casts off and docks at Stickney. Stickney's authority takes the captive, and SalvorA's own record is `Carrier`.
 - **Not built** (Q-42-24): ejection in a bubble, and surrender. The owner's ruling stands: crew whose carrier is wrecked fight to the death. Captives aboard NPC hulls are not covered, because NPC crew have no records (Q-42-5).

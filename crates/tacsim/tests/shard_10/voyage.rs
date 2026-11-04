@@ -8728,8 +8728,21 @@ struct SalvageScene {
     total_secs: i64,
 }
 
+/// The two tugs flown into the Kirkwood bubble, each operational one heaved-to and cleared by
+/// customs. With `drive_down_b`, staff `@unit/damage` puts *SalvorB*'s drive at its floor during
+/// the cruise (her unit is not deployed then), so the bubble meets her as a `DisabledDerelict`
+/// through the engine's own check-out (doc 42 cut CR.6's fixture; doc 35b's no-fiat lint holds).
+struct TwoTugs {
+    rig: Rig,
+    pilot_a: ObjId,
+    pilot_b: ObjId,
+    hull_a: ObjId,
+    hull_b: ObjId,
+    total_secs: i64,
+}
+
 #[allow(clippy::too_many_lines)]
-fn salvage_scene() -> SalvageScene {
+fn two_tugs_into_kirkwood(drive_down_b: bool) -> TwoTugs {
     let mut rig = stocked();
     let (pilot_a, row_a) = chartered(&mut rig, "SalvorA", 1);
     let hull_a = ObjId(row_a.hull);
@@ -8764,13 +8777,54 @@ fn salvage_scene() -> SalvageScene {
     let pending_a = undock_and_burn(&mut rig, pilot_a, hull_a);
     let pending_b = undock_and_burn(&mut rig, pilot_b, hull_b);
     let _ = fire_quietly(&mut rig);
+    if drive_down_b {
+        let drive = mush_tactics::CellAddr::Section {
+            section: mush_tactics::SectionId::new("drive").expect("the drive section"),
+            cell: mush_tactics::CellId::new(tacsim::definitions::unit::INTERNALS_CELL)
+                .expect("the internals cell"),
+        };
+        let unit = mush_tactics::module::unit_of(rig.tw.world(), hull_b)
+            .expect("SalvorB's unit")
+            .clone();
+        let floor = unit.cell(&drive).expect("the drive's internals").min;
+        let plan = mush_tactics::UnitMutationPlan::new(
+            vec![mush_tactics::UnitMutationOp::SetCell {
+                addr: drive.clone(),
+                value: floor,
+            }],
+            Some(unit.revision()),
+            Some("CR.6 fixture: SalvorB's drive down".into()),
+        )
+        .expect("the plan");
+        let damaged = run(
+            &mut rig.tw,
+            GOD,
+            &format!(
+                "@unit/damage #{}={}",
+                hull_b.0,
+                serde_json::to_string(&plan).expect("the plan's JSON")
+            ),
+        );
+        assert_eq!(
+            mush_tactics::module::unit_of(rig.tw.world(), hull_b)
+                .and_then(|u| u.cell(&drive))
+                .map(|c| c.current),
+            Some(floor),
+            "{damaged}"
+        );
+    }
+    let flying: Vec<ObjId> = if drive_down_b {
+        vec![pilot_a]
+    } else {
+        vec![pilot_a, pilot_b]
+    };
     let leg1_due = (pending_a.plan.depart_ic + i64::from(pending_a.plan.legs[0].secs))
         .max(pending_b.plan.depart_ic + i64::from(pending_b.plan.legs[0].secs));
     let total_secs = pending_a.plan.total_s;
     let _ = to_ic(&mut rig, leg1_due);
 
     // Heave-to and clear customs inspection for `pilot_a` while the Raider ambush launches:
-    for p in [pilot_a, pilot_b] {
+    for &p in &flying {
         let _ = run(&mut rig.tw, p, "+helm/thrust 600 -1000 0 0");
     }
     for _ in 0..6 {
@@ -8778,17 +8832,37 @@ fn salvage_scene() -> SalvageScene {
         rig.tw.set_now(next_r);
         let _ = rig.tw.fire_due(next_r * 1_000);
     }
-    for p in [pilot_a, pilot_b] {
+    for &p in &flying {
         let _ = run(&mut rig.tw, p, "+helm/thrust 0");
     }
     let brake_submits = drain_space_and_industry(&mut rig.tw);
     land_quietly(&mut rig, &brake_submits);
-    for p in [pilot_a, pilot_b] {
+    for &p in &flying {
         let sub = run(&mut rig.tw, p, "+helm/submit");
         assert!(sub.contains("customs clearance granted"), "{sub}");
         let draws = drain(&mut rig.tw);
         land_quietly(&mut rig, &draws);
     }
+    TwoTugs {
+        rig,
+        pilot_a,
+        pilot_b,
+        hull_a,
+        hull_b,
+        total_secs,
+    }
+}
+
+#[allow(clippy::too_many_lines)]
+fn salvage_scene() -> SalvageScene {
+    let TwoTugs {
+        mut rig,
+        pilot_a,
+        pilot_b,
+        hull_a,
+        total_secs,
+        ..
+    } = two_tugs_into_kirkwood(false);
     let (corvette_hull, raider_hull, raider_leader) = {
         let book = rig
             .tw
@@ -9297,9 +9371,10 @@ fn rs8_a_space_retrieval_job_is_delivered_by_the_tug_that_docks_her() {
 }
 
 /// **Doc 42 cut CR.6 (Q-42-24), the space seam** — the crew's one record in space:
-/// 1. *SalvorB*'s carrier is disabled in the bubble (the fixture sets her drive down; combat's
-///    disablement is sfr18's) and settles out of it as a derelict: her pilot's record is
-///    `Stranded` in her, on the waypoint's site, from the space check-in.
+/// 1. *SalvorB*'s drive is down when she enters the bubble (staff `@unit/damage` during the
+///    cruise is the fixture; combat's disablement is sfr18's), so the bubble meets her as a
+///    derelict and settles her out of it: her pilot's record is `Stranded` in her, on the
+///    domain's site, from the space check-in.
 /// 2. *SalvorA* hard-docks her (`+helm/dock #<hull>` and the client tape). The bubble reads the
 ///    two carriers as no friends, so the clamp captures SalvorB as a ground load does: out of her
 ///    seat, into *SalvorA*'s bay room, `Captured { carrier, captor }`.
@@ -9309,45 +9384,27 @@ fn rs8_a_space_retrieval_job_is_delivered_by_the_tug_that_docks_her() {
 #[test]
 #[allow(clippy::too_many_lines)]
 fn cr6_a_crewed_derelict_hard_docked_by_a_stranger_is_captured_and_handed_over_at_port() {
-    let SalvageScene {
+    let TwoTugs {
         mut rig,
         pilot_a,
         pilot_b,
         hull_a,
+        hull_b,
         total_secs,
-        ..
-    } = salvage_scene();
-    let hull_b = tacsim::port::live_charter(rig.tw.world(), pilot_b)
-        .expect("SalvorB's charter")
-        .hull;
-
-    // 1. The fixture: SalvorB's drive is down in the bubble.
-    {
-        let book = rig
-            .tw
-            .world_mut()
-            .module_state_mut::<tacsim::space::SpaceBubbleBook>()
-            .expect("the space book");
-        let active = book.active_for_hull_mut(hull_b).expect("SalvorB's bubble");
-        let ship_id = active.carrier_ship_id_for(hull_b).to_owned();
-        let ship = active
-            .bubble
-            .ships
-            .get_mut(&ship_id)
-            .expect("SalvorB's ship");
-        if let Some(drive) = ship.sections.get_mut(&tacsim::space::ShipSectionId::Drive) {
-            drive.internals = 0;
-        }
-        ship.status = tacsim::space::HullStatus::DisabledDerelict {
-            epoch_open: true,
-            life_support_remaining_s: tacsim::space::DERELICT_LIFE_SUPPORT_S,
-        };
-        ship.thrust_mps2 = [0, 0, 0];
-    }
-    for _ in 0..3 {
+    } = two_tugs_into_kirkwood(true);
+    // 1. The bubble meets SalvorB as a derelict and settles her out of it.
+    for _ in 0..30 {
         let next = rig.tw.world().now() + 1;
         rig.tw.set_now(next);
         let _ = rig.tw.fire_due(next * 1_000);
+        if rig
+            .tw
+            .world()
+            .module_state::<tacsim::space::SpaceBubbleBook>()
+            .is_some_and(|b| b.derelicts.contains_key(&hull_b))
+        {
+            break;
+        }
     }
     let draws = drain(&mut rig.tw);
     land_quietly(&mut rig, &draws);
@@ -9375,17 +9432,20 @@ fn cr6_a_crewed_derelict_hard_docked_by_a_stranger_is_captured_and_handed_over_a
         let next = rig.tw.world().now() + 1;
         rig.tw.set_now(next);
         let _ = rig.tw.fire_due(next * 1_000);
-        let closing = rig
+        let (closing, ordnance) = rig
             .tw
             .world()
             .module_state::<tacsim::space::SpaceBubbleBook>()
             .and_then(|b| b.active_for_hull(hull_a))
-            .is_some_and(|a| {
-                a.carriers
-                    .get(&hull_a)
-                    .is_some_and(|c| c.approaching_derelict)
+            .map_or((false, false), |a| {
+                (
+                    a.carriers
+                        .get(&hull_a)
+                        .is_some_and(|c| c.approaching_derelict),
+                    !a.bubble.torpedoes.is_empty() || !a.bubble.railgun_slugs.is_empty(),
+                )
             });
-        if !closing {
+        if !closing && !ordnance {
             break;
         }
     }

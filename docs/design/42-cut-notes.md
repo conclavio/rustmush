@@ -381,7 +381,7 @@ Row: §7 CR.6; Q-42-24. The owner moved it from the space track to the programme
 **Story.** `shard_10/voyage.rs`, `cr6_a_crewed_derelict_hard_docked_by_a_stranger_is_captured_and_handed_over_at_port`. Disabled, stranded, hard-docked, captured, then handed over at Stickney (doc 35c §12.2 has the steps). Rule #1's 256/512 does not apply, because a bubble has no site scheme. The bot does not fly space.
 
 **Divergences.**
-- **The fixture disables the carrier.** The story sets SalvorB's drive down directly. Combat's disablement of a player carrier is sfr18's story.
+- **The fixture disables the carrier.** Staff `@unit/damage` puts SalvorB's drive at its floor during the cruise. The bubble's own check-out then meets her as a derelict; no test writes the space book (SF.R9's no-fiat lint). Combat's disablement of a player carrier is sfr18's story.
 - **The friend test is the ground's, not the bubble's.** SF.R18 makes every co-participating carrier `Friend` for fire control. Under that relation, two strangers interdicted together could never take each other.
 - **Records, not bodies.** A settled derelict's rooms may be empty by the clamp, so the capture reads the crew's records, as `captured_loaded` does. The scan for crewed records walks the world's characters through `crew_of`, because `CrewBook` has no public iterator and `crew.rs` is not this cut's file.
 - **The space site** is `space_domain_<n>`, not a waypoint entry, on the test lane. Its waypoints carry no port map.

@@ -1303,7 +1303,7 @@ fn space_domain_of(w: &mush_core::World, hull: ObjId) -> Option<mush_sim::Domain
 }
 
 /// **The crew of `hull` checked in from space** (doc 42 cut CR.6, Q-42-24): every character
-/// aboard gets the ground's record ([`crate::field::crew::check_in`], with its rules: a record in
+/// aboard gets the ground's record (`crate::field::crew::check_in`, with its rules: a record in
 /// custody is left alone, a check-in never heals, a fallen hull strands its souls). A
 /// `DisabledDerelict` strands them too: her crew are `Stranded` in her on the domain's site and
 /// may ask `+sortie/extract`, as on a ground site.
@@ -1371,10 +1371,10 @@ fn hard_dock_friendly(ctx: &Ctx<'_>, site: &CanonicalId, tug: ObjId, derelict: O
 
 /// **A hard-dock on a derelict with crew** (doc 42 cut CR.6, Q-42-24; Q-42-1 (iii)): the
 /// derelict's crew are checked in first (stranded in her), then a non-friend's clamp captures
-/// them as a ground load does ([`crate::field::crew::captured_loaded`]: the seat vacated, the
+/// them as a ground load does (`crate::field::crew::captured_loaded`: the seat vacated, the
 /// body stepped into the tug's bay room, `Captured { carrier: tug, captor }`, both told, the
 /// standing paid), and a friend's takes them aboard the tug
-/// ([`crate::field::crew::aboard_loaded`]). The captives, in record order.
+/// (`crate::field::crew::aboard_loaded`). The captives, in record order.
 pub fn capture_at_hard_dock(ctx: &mut Ctx<'_>, tug: ObjId, derelict: ObjId) -> Vec<ObjId> {
     check_in_space_crew(ctx, derelict, true);
     // The record is the truth, as a ground load reads it: everyone it holds in the derelict.
