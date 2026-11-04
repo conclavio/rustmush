@@ -219,11 +219,19 @@ jobs:
         run: |
           mkdir -p target
           python scripts/mind_port_acceptance.py run target/m6-acceptance-evidence
+      # The evidence upload continues on error (see the test job's JUnit
+      # upload): a transient artifact-service failure must not turn a passed
+      # acceptance red. The next step warns instead.
       - uses: actions/upload-artifact@v4
+        id: evidence
         if: always()
+        continue-on-error: true
         with:
           name: m6-author-acceptance
           path: target/m6-acceptance-evidence/
+      - name: Warn when the evidence upload failed
+        if: always() && steps.evidence.outcome == 'failure'
+        run: echo "::warning title=M6 evidence not uploaded::the acceptance evidence failed to upload (the artifact service, not the story)"
   # Weekly and by dispatch, for the same reason as the job above: a 900-second
   # replay of twenty-four hulls that recomputes every think (bound 180 min),
   # run weekly and when the mind kernel changes rather than every night.
@@ -806,13 +814,25 @@ jobs:
       # per-test and per-binary times a rebalance of the tacsim shards needs
       # are read from these, not from the log. lint runs no sweep; a shard
       # whose sweep never started has no file, and that is not a failure.
+      #
+      # 2026-11-04: an upload is evidence, not a test, so a failed upload does
+      # not fail the cell. Nightly #1553's only red job was rest-server-boundary,
+      # every test passed, and the artifact service's finalize answered
+      # ECONNRESET after the upload. The step continues on error and the next
+      # one warns, so the run still says the cell's JUnit is missing (rule #14
+      # reads it).
       - name: Per-test times (nextest JUnit)
+        id: junit
         if: always() && matrix.shard != 'lint'
+        continue-on-error: true
         uses: actions/upload-artifact@v4
         with:
           name: nextest-junit-${{ matrix.shard }}
           path: target/nextest/ci/junit.xml
           if-no-files-found: ignore
+      - name: Warn when the JUnit upload failed
+        if: always() && steps.junit.outcome == 'failure'
+        run: echo "::warning title=JUnit not uploaded::the ${{ matrix.shard }} cell's nextest JUnit failed to upload (the artifact service, not a test); its per-test times are missing from this run"
       # 16b cut R-b: the testkit's toy ruleset is a test-only feature the host crates'
       # dev-dependencies enable; naming it here is what lets the feature census (the
       # `feature_matrix_inventory` gate) see that a job compiles it.
@@ -1344,3 +1364,43 @@ jobs:
         run: node --test scripts/stamp-commit.test.mjs
       - name: Build
         run: npm run build
+
+  # Doc 43 TS.2's failure channel (D-43-3) is GitHub's own email for a failed
+  # scheduled run; this job makes that run name its cause. On the schedule and
+  # on a dispatch it waits for every other job, whatever their results, and
+  # writes one line per job into the run's summary: the failed ones first,
+  # each also an error annotation (the email and the run page both list
+  # annotations). A failure of the job itself would be noise, so it always
+  # exits 0. `needs` must name every job of this file:
+  # crates/mush-contract-tests/tests/ci_policy/ci_gated_test_inventory.rs
+  # refuses a job it leaves out.
+  nightly-report:
+    name: Nightly report
+    if: always() && (github.event_name == 'schedule' || github.event_name == 'workflow_dispatch')
+    needs: [mind-commerce-acceptance, m8-gate-stories, mind-author-acceptance, mind-full-replay, m8-leak-battery, m8-house-doctrines, test, features, documentation, release, provisioning, redis-faults, scale, bot-win-rate, bot-muster-rate, tacsim-harness, web]
+    runs-on: ubuntu-latest
+    steps:
+      - name: Name what failed
+        env:
+          NEEDS: ${{ toJSON(needs) }}
+          SCHEDULE: ${{ github.event.schedule }}
+        run: |
+          python3 - <<'PY'
+          import json, os
+          needs = json.loads(os.environ["NEEDS"])
+          kind = "weekly" if os.environ.get("SCHEDULE") == "17 4 * * 0" else "nightly"
+          if os.environ.get("GITHUB_EVENT_NAME") == "workflow_dispatch":
+              kind = "dispatch"
+          order = {"failure": 0, "cancelled": 1, "success": 2, "skipped": 3}
+          rows = sorted(needs.items(), key=lambda kv: (order.get(kv[1]["result"], 9), kv[0]))
+          failed = [job for job, v in rows if v["result"] in ("failure", "cancelled")]
+          lines = [f"## The {kind} run: {len(failed)} job(s) red" if failed else f"## The {kind} run: every job green or skipped", ""]
+          lines += ["| Job | Result |", "|---|---|"]
+          lines += [f"| `{job}` | {v['result']} |" for job, v in rows]
+          lines += ["", "Each job's tests and tier: crates/mush-contract-tests/test-tiers.toml (doc 43 TS.2)."]
+          with open(os.environ["GITHUB_STEP_SUMMARY"], "a", encoding="utf-8") as out:
+              out.write("\n".join(lines) + "\n")
+          for job in failed:
+              print(f"::error title={kind} run: {job}::{job} is {needs[job]['result']}; its log is this run's {job} job")
+          print("\n".join(lines))
+          PY
