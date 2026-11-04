@@ -104,9 +104,12 @@ pub const WORKS_HELP: &str = "+works                          the works here: wh
                               +works/order <recipe> [qty][=<org>]  book it: an escrow and the \
                               booking fee (one slot-day, forfeit on a cancel).\n\
                               +works/deliver <order>=<good> <qty>  move bill goods from your docked \
-                              hold into the escrow; the order starts when the bill is covered.\n\
+                              hold into the escrow (a part as its lots); the order starts when the \
+                              bill is covered.\n\
                               +works/collect <order>          the output (or a cancelled bill) into \
-                              your docked hold.\n\
+                              your docked hold; at a yard, the hull's commission: she is handed \
+                              over docked here (a ship) or on the workshop floor (a rig), titled to \
+                              you, her magazines empty.\n\
                               +works/cancel <order>           before half the work is done: the \
                               bill back, the booking fee and the work done so far forfeit.";
 /// The switches.
@@ -204,6 +207,10 @@ pub enum Then {
     Returned,
     /// Storage unpaid: the facility's stores take the goods, and it closes `Seized`.
     Seized,
+    /// **Doc 39 cut IN.9 (§4.13)**: a yard order's kit and part lots **consumed** in the escrow
+    /// (never moved), the commission's first half; it closes `Collected` and the commission
+    /// (`crate::port::commission`) lays the hull up.
+    Commissioned,
     /// **Doc 39 cut IN.5** (§4.3's `output_lots: pooled`): the delivery's bulk lot dissolved into
     /// the escrow's pool where it lies, the arm's act on the fire after the delivery, so the
     /// collection moves pools. Nothing more.
@@ -240,6 +247,18 @@ impl WorksAct {
     ///
     /// A sentence naming what is wrong.
     pub fn check(&self) -> Result<(), String> {
+        if self.then == Then::Commissioned {
+            // The consumption names the escrow twice and lots only.
+            if self.act == 0
+                || self.from != self.to
+                || !self.goods.is_empty()
+                || self.lots.is_empty()
+                || self.lots.len() > MAX_MOVE_LOTS
+            {
+                return Err("a commission consumes lots in one escrow".into());
+            }
+            return Ok(());
+        }
         // Doc 39 cut IN.5: a pooling act names one endpoint, its lots and no pool goods.
         let pooling = self.then == Then::Pooled;
         if pooling && (self.from != self.to || !self.goods.is_empty() || self.lots.is_empty()) {
@@ -459,7 +478,8 @@ fn here(ctx: &Ctx<'_>, front: Front) -> Result<(CanonicalId, FacilityRecord), St
         }
         // Doc 39 cut IN.5: the lane's works row is a room of the port (its spine, at both
         // stations), which is the facility itself.
-        let authored = crate::port::plant::works_room(ctx.w, &entry, def)
+        // Doc 39 cut IN.9: and the yard's row the same way.
+        let authored = crate::port::plant::block_room(ctx.w, &entry, def, front.word())
             .ok()
             .flatten();
         let found = ctx
@@ -651,6 +671,36 @@ fn bill_of(pinned: &mush_industry::PinnedRecipe, quantity: u32) -> Vec<Goods> {
             units: line.units().saturating_mul(u64::from(quantity)),
         })
         .collect()
+}
+
+/// **A hull recipe's part lines** (doc 39 cut IN.9): the design its kit builds, one part a slot
+/// from the design's bill (`crate::port::bill`), times the quantity. None for a recipe whose
+/// output is no kit.
+fn design_parts(w: &World, pinned: &mush_industry::PinnedRecipe, quantity: u32) -> Vec<Goods> {
+    let Some(design) = pinned
+        .outputs()
+        .iter()
+        .find_map(|line| crate::port::commission::design_of_kit(line.commodity()))
+    else {
+        return Vec::new();
+    };
+    let Some(store) = w.module_state::<TacsimStore>() else {
+        return Vec::new();
+    };
+    let Some(goods) = store.goods() else {
+        return Vec::new();
+    };
+    crate::port::bill::design_bill(store.definitions(), goods, &design)
+        .map(|bill| {
+            bill.part_lines()
+                .into_iter()
+                .map(|(good, units)| Goods {
+                    good,
+                    units: units.saturating_mul(u64::from(quantity)),
+                })
+                .collect()
+        })
+        .unwrap_or_default()
 }
 
 fn bill_text(bill: &[Goods]) -> String {
@@ -925,7 +975,11 @@ fn order(ctx: &mut Ctx<'_>, front: Front, raw: &str) -> Result<(), String> {
         let _ = mush_industry::money::settle_booking(ctx, vault.0, None);
         e.to_string()
     })?;
-    let bill = bill_of(&pinned, quantity);
+    let mut bill = bill_of(&pinned, quantity);
+    // Doc 39 cut IN.9 (§4.7): a hull's parts are the design's, one a slot, delivered as lots.
+    if front == Front::Yard {
+        bill.extend(design_parts(ctx.w, &pinned, quantity));
+    }
     let contract = WorksContract {
         id: vault.0,
         front,
@@ -1037,21 +1091,31 @@ fn deliver(ctx: &mut Ctx<'_>, front: Front, raw: &str) -> Result<(), String> {
             good.as_str()
         ));
     }
-    let (by, escrow) = (ctx.actor, c.escrow());
-    owe(
-        ctx,
-        &mut c,
-        by,
-        (from, escrow),
+    // Doc 39 cut IN.9: a part moves as its lots, one each, never as a pool.
+    let moved = if crate::port_tick::is_part(&good) {
+        let lots: Vec<_> = escrow_lots(ctx, from)
+            .into_iter()
+            .filter(|(_, held, _)| *held == good)
+            .take(usize::try_from(units).unwrap_or(usize::MAX))
+            .collect();
+        if u64::try_from(lots.len()).unwrap_or(0) < units {
+            return Err(format!(
+                "That hold carries no {units} loose {} lots.",
+                good.as_str()
+            ));
+        }
+        (Vec::new(), lots)
+    } else {
         (
             vec![Goods {
                 good: good.clone(),
                 units,
             }],
             Vec::new(),
-        ),
-        Then::Supplied,
-    )?;
+        )
+    };
+    let (by, escrow) = (ctx.actor, c.escrow());
+    owe(ctx, &mut c, by, (from, escrow), moved, Then::Supplied)?;
     say(
         ctx,
         format!(
@@ -1078,6 +1142,12 @@ fn collect(ctx: &mut Ctx<'_>, front: Front, raw: &str) -> Result<(), String> {
         return Err(SETTLING.to_owned());
     }
     let entry = here(ctx, front)?.0;
+    // Doc 39 cut IN.9: a delivered hull order is collected by its commission, never into a hold.
+    if then == Then::Collected
+        && let Some(lots) = kit_lots(ctx, &c)
+    {
+        return commission(ctx, &mut c, &entry, lots);
+    }
     let hold = docked_hold(ctx.w, ctx.actor, &entry, true)?;
     let (goods, lots) = escrow_contents(ctx, &c);
     // Doc 39 cut IN.5: a bulk output is pooled by the arm before it moves; doc 39 cut IN.7: a
@@ -1108,12 +1178,93 @@ fn collect(ctx: &mut Ctx<'_>, front: Front, raw: &str) -> Result<(), String> {
     Ok(())
 }
 
+/// **A hull order's lots** (doc 39 cut IN.9): the escrow's lots when one of them is a hull kit,
+/// the kit first; `None` for any other order.
+fn kit_lots(ctx: &Ctx<'_>, c: &WorksContract) -> Option<Vec<(LotId, CanonicalId, u64)>> {
+    let mut lots = escrow_lots(ctx, c.escrow());
+    let kit = lots
+        .iter()
+        .position(|(_, good, _)| crate::port::commission::is_kit(good))?;
+    let first = lots.remove(kit);
+    lots.insert(0, first);
+    Some(lots)
+}
+
+/// **`+yard/collect` on a delivered hull order** (doc 39 cut IN.9, §4.13): the commission
+/// record first, then the one move that consumes the kit and the parts in the escrow.
+fn commission(
+    ctx: &mut Ctx<'_>,
+    c: &mut WorksContract,
+    entry: &CanonicalId,
+    lots: Vec<(LotId, CanonicalId, u64)>,
+) -> Result<(), String> {
+    use crate::port::commission::{Step, YardCommission, design_of_kit, next_mark};
+    let (kit, kit_good, _) = lots.first().cloned().ok_or(NO_ORDER)?;
+    let design = design_of_kit(&kit_good).ok_or("That order's kit names no design.")?;
+    let ship = ctx
+        .w
+        .module_state::<TacsimStore>()
+        .and_then(|store| store.definitions().specs.get(&design))
+        .and_then(|spec| spec.logistics.as_ref())
+        .ok_or("The yard has no plans for that design.")?
+        .drive
+        .is_some();
+    if crate::port::commission::commission(ctx.w, c.id).is_some() {
+        return Err("That order is already being commissioned.".to_owned());
+    }
+    let parts: Vec<LotId> = lots.iter().skip(1).map(|(lot, ..)| *lot).collect();
+    let (n, mark) = next_mark(ctx.w);
+    let record = YardCommission {
+        order: c.id,
+        work_order: c.order.ok_or(NO_ORDER)?,
+        facility: c.facility,
+        home: entry.clone(),
+        design,
+        requester: ctx.actor,
+        beneficiary: c.beneficiary.clone(),
+        mark: mark.clone(),
+        n,
+        ship,
+        kit,
+        parts,
+        step: Step::Consuming,
+        row: None,
+        hold: None,
+        at_ic: ctx.w.world_ic_now().at,
+    };
+    record.check()?;
+    crate::port::commission::put(ctx, &record);
+    let (by, escrow) = (ctx.actor, c.escrow());
+    owe(
+        ctx,
+        c,
+        by,
+        (escrow, escrow),
+        (Vec::new(), lots),
+        Then::Commissioned,
+    )?;
+    say(
+        ctx,
+        format!(
+            "Order {}: the yard commissions her as {mark}; she is handed over when the work is \
+             done.",
+            c.id
+        ),
+    );
+    Ok(())
+}
+
 /// The bulk lots among `lots`, the first of each good (doc 39 cut IN.5: one dissolve a pool an
 /// act, since a bundle mutates a pool's key once).
 fn bulk_lots(lots: &[(LotId, CanonicalId, u64)]) -> Vec<(LotId, CanonicalId, u64)> {
     let mut seen = std::collections::BTreeSet::new();
     lots.iter()
-        .filter(|(_, good, _)| !crate::port_tick::is_part(good) && seen.insert(good.clone()))
+        // Doc 39 cut IN.9: a hull kit is never pooled; the commission consumes it whole.
+        .filter(|(_, good, _)| {
+            !crate::port_tick::is_part(good)
+                && !crate::port::commission::is_kit(good)
+                && seen.insert(good.clone())
+        })
         .cloned()
         .collect()
 }
@@ -1309,6 +1460,10 @@ fn settle(ctx: &mut Ctx<'_>, c: &mut WorksContract) -> bool {
             Then::Supplied | Then::Pooled => put(ctx, c),
             Then::Collected => close(ctx, c, Close::Collected),
             Then::Seized => close(ctx, c, Close::Seized),
+            Then::Commissioned => {
+                crate::port::commission::consumed(ctx, c.id);
+                close(ctx, c, Close::Collected);
+            }
             Then::Returned => {
                 let failed = c
                     .order
@@ -2090,6 +2245,10 @@ impl ActionProvider for WorksProvider {
         // 3. The move.
         let refused =
             |message: &'static str| port_error(ActionErrorCode::ProviderRejected, message);
+        if owed.then == Then::Commissioned {
+            self.consume(txn, &owed)?;
+            return self.landed(invocation, txn, (contract, act), prior.is_some());
+        }
         let from = EndpointRef(VaultId(owed.from));
         let to = EndpointRef(VaultId(owed.to));
         // Doc 39 cut IN.5: a pooling act dissolves each bulk lot where it lies; nothing moves.
@@ -2170,12 +2329,58 @@ impl ActionProvider for WorksProvider {
                 .relocate_lots(txn, &ids, from, to)
                 .map_err(|_| refused("a lot could not be moved"))?;
         }
+        self.landed(invocation, txn, (contract, act), prior.is_some())
+    }
+}
+
+impl WorksProvider {
+    /// **Doc 39 cut IN.9**: the commission's consumption — every lot still in the escrow, the
+    /// kit by its `workorder.output` lineage (the relay foundry's check), consumed in one bundle.
+    fn consume(
+        &self,
+        txn: &mut ActionTxn<'_>,
+        owed: &WorksAct,
+    ) -> Result<(), mush_core::ActionError> {
+        let refused =
+            |message: &'static str| port_error(ActionErrorCode::ProviderRejected, message);
+        let escrow = EndpointRef(VaultId(owed.from));
+        let mut lots = Vec::with_capacity(owed.lots.len());
+        for lot in &owed.lots {
+            let record = txn
+                .get(&self.inventory.lots, lot)
+                .map_err(|_| refused("a lot cannot be read"))?
+                .cloned()
+                .filter(|l| l.endpoint() == escrow)
+                .ok_or_else(|| refused("a lot is no longer in the escrow"))?;
+            if crate::port::commission::is_kit(record.commodity())
+                && !matches!(record.lineage(), mush_inventory::Lineage::Origin { source }
+                    if source.provider == "industry" && source.kind == "workorder.output")
+            {
+                return Err(refused("the kit did not come from a work order"));
+            }
+            lots.push(record);
+        }
+        self.inventory
+            .consume_products(txn, &lots)
+            .map_err(|_| refused("a lot could not be consumed"))?;
+        Ok(())
+    }
+
+    /// The ledger and the outcome of a landed move.
+    fn landed(
+        &self,
+        invocation: &ActionInvocation,
+        txn: &mut ActionTxn<'_>,
+        (contract, act): (u64, u32),
+        prior: bool,
+    ) -> Result<AuthoritativeActionOutput, mush_core::ActionError> {
+        let actor = invocation.actor();
         // 4. The ledger.
         let ledger = WorksLedger {
             contract,
             acts: act,
         };
-        let staged = if prior.is_some() {
+        let staged = if prior {
             txn.replace(&self.ledgers, &contract, ledger)
         } else {
             txn.insert(&self.ledgers, &contract, ledger)

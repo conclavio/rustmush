@@ -1563,6 +1563,8 @@ pub(crate) fn live_on_hull(w: &World, hull: ObjId) -> Vec<TvLease> {
     {
         records.extend(crate::port::yard::house_rigs(w, dispatcher));
     }
+    // Doc 39 cut IN.9: the titled rigs riding her bay, as their title views.
+    records.extend(crate::port::owned::title_views_on(w, hull));
     records
 }
 
@@ -5323,6 +5325,10 @@ pub(crate) fn repossess(ctx: &mut Ctx<'_>, hull: ObjId) -> Result<usize, String>
     // Every check first.
     let mut records: Vec<TvLease> = Vec::new();
     for rig in rigs_in_bay(w, &view) {
+        // Doc 39 cut IN.9: a titled rig is the captain's own cargo; no lease to end.
+        if crate::port::owned::rig_row(w, rig.tv).is_some() {
+            continue;
+        }
         let record = store.tv_lease_on(rig.tv).cloned().ok_or_else(|| {
             format!(
                 "rig #{} in the bay has no readable live lease record",
@@ -5333,6 +5339,9 @@ pub(crate) fn repossess(ctx: &mut Ctx<'_>, hull: ObjId) -> Result<usize, String>
     }
     // Deduped by rig (doc 20 cut SM.12b: two house views would both carry `HOUSE_LEASE`).
     for record in live_on_hull(w, hull) {
+        if crate::port::owned::rig_row(w, record.tv).is_some() {
+            continue;
+        }
         if !records.iter().any(|seen| seen.tv == record.tv) {
             records.push(record);
         }
@@ -5793,8 +5802,17 @@ fn rig_out_or_busy(ctx: &Ctx<'_>, tv: ObjId) -> bool {
 /// buyout and the recall until it is returned or repossessed. `{n}` is the lowest
 /// live slot among them, else `?`; `None` when the hull carries none.
 pub(crate) fn bay_slot_word(w: &World, view: &HullView<'_>) -> Option<String> {
-    let rigs = rigs_in_bay(w, view);
-    let records = live_on_hull(w, view.hull());
+    // Doc 39 cut IN.9 (§4.13): a titled rig is its holder's own cargo and rides along; the
+    // buyout's and the refit's "still in the bay" never counts it.
+    let titled = |tv: ObjId| crate::port::owned::rig_row(w, tv).is_some();
+    let rigs: Vec<_> = rigs_in_bay(w, view)
+        .into_iter()
+        .filter(|rig| !titled(rig.tv))
+        .collect();
+    let records: Vec<_> = live_on_hull(w, view.hull())
+        .into_iter()
+        .filter(|record| !titled(record.tv))
+        .collect();
     if rigs.is_empty() && records.is_empty() {
         return None;
     }

@@ -55,8 +55,8 @@ pub const GOODS_DIGEST_DOMAIN: &str = "tacsim.goods.v1";
 /// The most measures the registry may name.
 pub const MAX_MEASURES: usize = 8;
 
-/// The most rows the table may carry.
-pub const MAX_GOODS: usize = 32;
+/// The most rows the table may carry (48 since doc 39 cut IN.9: a hull kit a buildable design).
+pub const MAX_GOODS: usize = 48;
 
 /// The longest ledger or quote unit word, bytes.
 pub const MAX_UNIT_BYTES: usize = 16;
@@ -166,7 +166,16 @@ pub enum GoodClass {
     /// **A part** (doc 39 cut IN.1, Q-39-2): one hardware row a slot names, counted `each`, of
     /// no family, spelled `tacsim.part.<kind>.<row>` ([`PART_PREFIX`]; Q-39-35).
     Part,
+    /// **A hull kit** (doc 39 cut IN.9, §4.13, Q-39-33): a yard order's one-unit output, the
+    /// stable order-to-hull identity the commission consumes, counted `each`, of no family and
+    /// no mass of its own (the mass is the bill's), spelled `tacsim.hull_kit.<design>`
+    /// ([`KIT_PREFIX`]). Never traded.
+    Kit,
 }
+
+/// **The prefix every hull kit's id carries** (doc 39 cut IN.9): `tacsim.hull_kit.`, then the
+/// design's tail (`tv_escort`).
+pub const KIT_PREFIX: &str = "tacsim.hull_kit.";
 
 /// **The prefix every part good's id carries** (doc 39 Q-39-3, Q-39-35): `tacsim.part.`, then
 /// the row's kind (`weapon`, `sensor`, `plant`) and the row.
@@ -183,6 +192,7 @@ impl GoodClass {
             GoodClass::Trade => "trade",
             GoodClass::ShipSupply => "ship_supply",
             GoodClass::Part => "part",
+            GoodClass::Kit => "kit",
         }
     }
 }
@@ -324,6 +334,32 @@ impl GoodsTable {
                         format!("a part is spelled `{PART_PREFIX}<kind>.<row>`"),
                     ));
                 }
+            } else if good.class == GoodClass::Kit {
+                // Doc 39 cut IN.9: a kit is one each, of no family, spelled by its design.
+                if good.family.is_some()
+                    || good.ledger_unit != PART_UNIT
+                    || good.quote_unit != PART_UNIT
+                {
+                    return Err(row_error(
+                        name,
+                        id,
+                        format!("a kit names no family and is counted `{PART_UNIT}`"),
+                    ));
+                }
+                let design = id.as_str().strip_prefix(KIT_PREFIX).unwrap_or_default();
+                if design.is_empty() || design.contains('.') {
+                    return Err(row_error(
+                        name,
+                        id,
+                        format!("a kit is spelled `{KIT_PREFIX}<design>`"),
+                    ));
+                }
+            } else if id.as_str().starts_with(KIT_PREFIX) {
+                return Err(row_error(
+                    name,
+                    id,
+                    format!("only a kit's id begins `{KIT_PREFIX}`"),
+                ));
             } else if id.as_str().starts_with(PART_PREFIX) {
                 return Err(row_error(
                     name,
@@ -359,7 +395,7 @@ impl GoodsTable {
                     ));
                 }
             }
-            if good.mass_kg_per_unit().is_none() {
+            if good.mass_kg_per_unit().is_none() && good.class != GoodClass::Kit {
                 return Err(row_error(
                     name,
                     id,

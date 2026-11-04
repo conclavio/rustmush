@@ -40,10 +40,13 @@ pub fn bay_key_owner(key: &str) -> Option<ObjId> {
 pub struct BerthRow {
     /// The workshop room it stands in: the facility.
     pub workshop: ObjId,
-    /// The carrier it came off.
-    pub carrier: ObjId,
-    /// The carrier's bay room it left.
-    pub bay_room: ObjId,
+    /// The carrier it came off; **doc 39 cut IN.9**: none for a hull the yard commissioned on
+    /// the workshop floor (`+bay/stow <hull>=<carrier>` names one). Old rows read as `Some`.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub carrier: Option<ObjId>,
+    /// The carrier's bay room it left (none with no carrier).
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub bay_room: Option<ObjId>,
     /// The bay slot it left, when it had one.
     pub slot: Option<SlotId>,
     /// Who berthed it.

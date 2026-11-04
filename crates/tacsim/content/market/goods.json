@@ -1,5 +1,5 @@
 {
-  "version": 5,
+  "version": 6,
   "measures": [
     { "id": "si.mass_kg", "unit": "kg", "word": "mass" },
     { "id": "si.volume_l", "unit": "L", "word": "packed volume" }
@@ -385,6 +385,71 @@
       "consumable": null,
       "reference_major": 30000,
       "note": "Doc 39 cut IN.1. The Dray's and the Dray-P's plant, 30 t: the one part a ship's crane lifts and a hold barely takes."
+    },
+    {
+      "id": "tacsim.hull_kit.tv_escort",
+      "label": "escort hull kit",
+      "family": null,
+      "class": "kit",
+      "ledger_unit": "each",
+      "quote_unit": "each",
+      "measures": {},
+      "stowage": "stow.kit",
+      "consumable": null,
+      "reference_major": 1,
+      "note": "Doc 39 cut IN.9 (§4.13, Q-39-33): a yard order's output, the stable order-to-hull identity; no mass of its own (the mass is the bill's), consumed by the commission in the escrow. The escort, IN.9's first hull: 3 t of alloys, 1 t of fittings and four parts over two yard days."
+    },
+    {
+      "id": "tacsim.hull_kit.tv_prospector",
+      "label": "prospector hull kit",
+      "family": null,
+      "class": "kit",
+      "ledger_unit": "each",
+      "quote_unit": "each",
+      "measures": {},
+      "stowage": "stow.kit",
+      "consumable": null,
+      "reference_major": 1,
+      "note": "Doc 39 cut IN.9 (§4.13, Q-39-33): a yard order's output, the stable order-to-hull identity; no mass of its own (the mass is the bill's), consumed by the commission in the escrow. The prospector rig, a light-plant terrain vehicle."
+    },
+    {
+      "id": "tacsim.hull_kit.tv_tender",
+      "label": "tender hull kit",
+      "family": null,
+      "class": "kit",
+      "ledger_unit": "each",
+      "quote_unit": "each",
+      "measures": {},
+      "stowage": "stow.kit",
+      "consumable": null,
+      "reference_major": 1,
+      "note": "Doc 39 cut IN.9 (§4.13, Q-39-33): a yard order's output, the stable order-to-hull identity; no mass of its own (the mass is the bill's), consumed by the commission in the escrow. The tender, the prospector's frame with a recovery bed."
+    },
+    {
+      "id": "tacsim.hull_kit.dray",
+      "label": "Dray hull kit",
+      "family": null,
+      "class": "kit",
+      "ledger_unit": "each",
+      "quote_unit": "each",
+      "measures": {},
+      "stowage": "stow.kit",
+      "consumable": null,
+      "reference_major": 1,
+      "note": "Doc 39 cut IN.9 (§4.13, Q-39-33): a yard order's output, the stable order-to-hull identity; no mass of its own (the mass is the bill's), consumed by the commission in the escrow. The standard Dray: 163 t of alloys, 55 t of fittings and a hauler plant over twelve yard days."
+    },
+    {
+      "id": "tacsim.hull_kit.dray_p",
+      "label": "Dray-P hull kit",
+      "family": null,
+      "class": "kit",
+      "ledger_unit": "each",
+      "quote_unit": "each",
+      "measures": {},
+      "stowage": "stow.kit",
+      "consumable": null,
+      "reference_major": 1,
+      "note": "Doc 39 cut IN.9 (§4.13, Q-39-33): a yard order's output, the stable order-to-hull identity; no mass of its own (the mass is the bill's), consumed by the commission in the escrow. The Dray-P, the Dray with a two-rig vehicle bay: the Dray's bill."
     }
   ]
 }

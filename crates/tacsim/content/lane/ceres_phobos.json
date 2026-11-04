@@ -1,9 +1,9 @@
 {
   "manifest": {
     "id": "tacsim.lane.ceres_phobos",
-    "version": 26,
+    "version": 27,
     "kind": "campaign_seed",
-    "digest": "cea6221c2e4e82718289182d8784c2a1ed6b3bb3e61d9ce0f587c01c85cc80d7",
+    "digest": "ef0b16923cc7df7475d4961a774e4396e9dcdc2100601b024cb36fe35bd30d9c",
     "requires": []
   },
   "entries": {
@@ -2869,7 +2869,7 @@
         "treasury": "tacsim.treasury",
         "orgs": [
           { "id": "kasei", "name": "Kasei Metals", "capital_major": 600000, "faction": "republic" },
-          { "id": "stickney_yards", "name": "Stickney Yards", "capital_major": 50000, "faction": "republic" },
+          { "id": "stickney_yards", "name": "Stickney Yards", "capital_major": 50000, "faction": "republic", "raises": [ 50000 ] },
           { "id": "yard_commissary", "name": "Yard Commissary", "capital_major": 50000, "faction": "republic" }
         ],
         "vendors": [
@@ -2917,7 +2917,11 @@
                    "capabilities": ["tacsim.works"], "slots": 2, "customers": "public",
                    "cost": { "capital_major": 3000000, "lifetime_years": 25, "upkeep_permille": 20,
                              "staff": 8, "wage_major": 150, "margin_permille": 250 },
-                   "buys": [ { "good": "structural_alloys", "vendor": "kasei", "floor": 10, "lot": 5 } ] }
+                   "buys": [ { "good": "structural_alloys", "vendor": "kasei", "floor": 10, "lot": 5 } ] },
+        "yard": { "room": "neighborhood.stickney_yards.room.p12_observation", "operator": "stickney_yards",
+                  "capabilities": ["tacsim.yard"], "slots": 2, "customers": "public",
+                  "cost": { "capital_major": 10000000, "lifetime_years": 30, "upkeep_permille": 20,
+                            "staff": 12, "wage_major": 150, "margin_permille": 250 } }
       }
     },
     "luna_port": {

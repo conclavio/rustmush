@@ -996,7 +996,7 @@ pub const LANE_PACK: &str = "tacsim.lane.ceres_phobos";
 /// `lane_v13` rebuilds the
 /// published v13 by stripping every row added since: the next lane cut strips its own
 /// rows there too and extends the test to its versions.
-pub const LANE_VERSION: u32 = 26;
+pub const LANE_VERSION: u32 = 27;
 /// `crates/tacsim/content/lane/ceres_phobos.json`.
 pub const LANE_JSON: &str = include_str!("../../content/lane/ceres_phobos.json");
 /// The lane as one source, in apply order.
@@ -1049,6 +1049,9 @@ pub fn game_seed_sources() -> Vec<PackSource> {
                     include_str!("../../content/relays/manufacture-v1.json"),
                 ),
                 ("industry/recipes-v2.json", INDUSTRY_RECIPES_JSON),
+                // Doc 39 cut IN.9: the yard's hull recipes (each row pinned to its design's
+                // bill, `crate::port::bill`).
+                ("industry/hulls-v1.json", INDUSTRY_HULLS_JSON),
             ]
             .iter(),
         )
@@ -1058,6 +1061,10 @@ pub fn game_seed_sources() -> Vec<PackSource> {
         })
         .collect()
 }
+
+/// **The yard's hull recipes** (doc 39 cut IN.9, §4.7): `tacsim.industry.hulls` v1, one recipe
+/// a buildable design, each a kit lot from its bill's bulk lines over its days.
+pub const INDUSTRY_HULLS_JSON: &str = include_str!("../../content/industry/hulls-v1.json");
 
 /// The extension packs as sources [`crate::verify_sources`] reads exactly as it
 /// reads an operator's.

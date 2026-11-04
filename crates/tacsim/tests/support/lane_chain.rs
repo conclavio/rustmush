@@ -45,11 +45,37 @@ pub const SEEDED_PARTS: [(&str, &str, u64); 18] = [
     ("stickney_yards", "tacsim.part.plant.hauler_mk1", 6),
 ];
 
+/// **Doc 39 cut IN.9 (lane v27): the yard taken out** — Stickney's `yard` block and the Yards'
+/// 50,000 raise (IN.7's, folded into v27 on the owner's ruling), so a strip chain rebuilds a
+/// lane before v27 (idempotent). The chain's head.
+pub fn strip_yard(doc: &mut Value) {
+    if let Some(def) = doc["entries"]
+        .as_object_mut()
+        .and_then(|entries| entries.get_mut("stickney_port"))
+        .and_then(|entry| entry.get_mut("def"))
+        .and_then(Value::as_object_mut)
+    {
+        def.remove("yard");
+        for org in def
+            .get_mut("orgs")
+            .and_then(Value::as_array_mut)
+            .into_iter()
+            .flatten()
+            .filter(|org| org["id"] == "stickney_yards")
+        {
+            if let Some(org) = org.as_object_mut() {
+                org.remove("raises");
+            }
+        }
+    }
+}
+
 /// **Doc 39 cut IN.7: the part recipes' lane rows taken out** — Stickney Yards' strategic-ore
 /// bid removed and IN.6's seeded part stock put back ([`SEEDED_PARTS`]) — so a strip chain
 /// rebuilds the lane before IN.7 (idempotent). A suite that wants the seeded stores runs on
 /// this lane.
 pub fn strip_part_recipes(doc: &mut Value) {
+    strip_yard(doc);
     let Some(entries) = doc["entries"].as_object_mut() else {
         return;
     };

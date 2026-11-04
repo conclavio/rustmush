@@ -2298,10 +2298,11 @@ fn sm5_occators_capital_rises_by_a_tranche_on_a_kept_world() {
         .collect();
     // Doc 20 cut SM.10: v12 also adds the Pallas Syndicate (capital 50,000), whose base
     // tranche joins R9b's 100,000-credit Fleet base; Occator's raise is still exactly one. Doc 39
-    // cut IN.5: Freeport Works' 1,000,000 comes in two tranches, 800,000 and 200,000.
+    // cut IN.5: Freeport Works' 1,000,000 comes in two tranches, 800,000 and 200,000. Doc 39
+    // cut IN.9 (lane v27): Stickney Yards' 50,000 raise (IN.7's), one more.
     assert_eq!(
         made.len(),
-        5,
+        6,
         "Occator's one new tranche, the Syndicate's and the Fleet's bases, Freeport Works' two"
     );
     let made: Vec<mush_economy::Obligation> = made

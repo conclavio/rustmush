@@ -56,6 +56,18 @@ fn rows(def: &PortDef) -> Vec<Row<'_>> {
             customers: works.customers,
         });
     }
+    // Doc 39 cut IN.9: the yard, opened the works' way under its own capability.
+    if let Some(yard) = &def.yard {
+        rows.push(Row {
+            block: "yard",
+            room: &yard.room,
+            operator: &yard.operator,
+            capabilities: &yard.capabilities,
+            slots: yard.slots,
+            cost: yard.cost,
+            customers: yard.customers,
+        });
+    }
     rows
 }
 
@@ -76,9 +88,24 @@ fn room_of(w: &World, id: &CanonicalId, def: &PortDef, row: &Row<'_>) -> Result<
 ///
 /// A room reference outside the port's area, or one no room carries.
 pub fn works_room(w: &World, id: &CanonicalId, def: &PortDef) -> Result<Option<ObjId>, String> {
+    block_room(w, id, def, "works")
+}
+
+/// **The room of the entry's `block` facility** (`works`, `yard`, `refinery`) on this world, when
+/// the entry authors one (doc 39 cut IN.9: the yard's room, `+yard`'s facility).
+///
+/// # Errors
+///
+/// A room reference outside the port's area, or one no room carries.
+pub fn block_room(
+    w: &World,
+    id: &CanonicalId,
+    def: &PortDef,
+    block: &str,
+) -> Result<Option<ObjId>, String> {
     rows(def)
         .iter()
-        .find(|row| row.block == "works")
+        .find(|row| row.block == block)
         .map(|row| room_of(w, id, def, row))
         .transpose()
 }

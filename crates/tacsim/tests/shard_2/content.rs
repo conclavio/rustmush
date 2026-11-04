@@ -2788,7 +2788,7 @@ const DRAY_DIGEST: &str = "9f0f8f18d64aa91e234521550d5483ec49e88725a675210e6ddb9
 /// of `content/market/goods.json` under `tacsim.goods.v1`. Printed under
 /// `TACSIM_WRITE_CONTENT=1` and copied here by hand. Doc 39 cut IN.1: v5, the thirteen part
 /// rows (was `812c9497…` at v4).
-const GOODS_DIGEST: &str = "e8c593933f914cffd71198cf7d697996c6ba9273fa8db1b1288ac36ffed5c847";
+const GOODS_DIGEST: &str = "dfffd34f928149cc81a630203d90030d9ab1926e144c68e133c9ef9a001e7a1d";
 
 /// A canonical id, for the tests below.
 fn cid(word: &str) -> mush_core::CanonicalId {
@@ -3331,8 +3331,8 @@ fn ic2_the_goods_table_is_pinned() {
     let table = goods_table().expect("the shipped goods table loads");
     // Doc 19 cut A.8: v2 (the two moon goods); doc 20 cut SM.3a: v3 (the four
     // run-of-mine ores under `stow.ore`); doc 36 cut GC.7: v4 (the four munitions goods); doc
-    // 39 cut IN.1: v5 (the thirteen parts).
-    assert_eq!(table.version, 5);
+    // 39 cut IN.1: v5 (the thirteen parts); doc 39 cut IN.9: v6 (the five hull kits).
+    assert_eq!(table.version, 6);
     let measures: Vec<(&str, &str, &str)> = table
         .measures
         .iter()
@@ -3729,9 +3729,70 @@ fn ic2_the_goods_table_is_pinned() {
                 None,
                 30_000
             ),
+            (
+                "tacsim.hull_kit.tv_escort",
+                "escort hull kit",
+                None,
+                GoodClass::Kit,
+                "each",
+                0,
+                0,
+                "stow.kit",
+                None,
+                1
+            ),
+            (
+                "tacsim.hull_kit.tv_prospector",
+                "prospector hull kit",
+                None,
+                GoodClass::Kit,
+                "each",
+                0,
+                0,
+                "stow.kit",
+                None,
+                1
+            ),
+            (
+                "tacsim.hull_kit.tv_tender",
+                "tender hull kit",
+                None,
+                GoodClass::Kit,
+                "each",
+                0,
+                0,
+                "stow.kit",
+                None,
+                1
+            ),
+            (
+                "tacsim.hull_kit.dray",
+                "Dray hull kit",
+                None,
+                GoodClass::Kit,
+                "each",
+                0,
+                0,
+                "stow.kit",
+                None,
+                1
+            ),
+            (
+                "tacsim.hull_kit.dray_p",
+                "Dray-P hull kit",
+                None,
+                GoodClass::Kit,
+                "each",
+                0,
+                0,
+                "stow.kit",
+                None,
+                1
+            ),
         ],
         "doc 18 section 4.3's six rows, doc 19 cut A.8's two, doc 20 cut SM.3a's \
-         four, doc 36 cut GC.7's four and doc 39 cut IN.1's thirteen parts, in its order"
+         four, doc 36 cut GC.7's four, doc 39 cut IN.1's thirteen parts and cut IN.9's five \
+         hull kits, in its order"
     );
     // Doc 36 cut GC.7 (Q-36-36): every shipped ammunition but beam charge is exactly one
     // munitions good, and every munitions good names a shipped ammunition.
