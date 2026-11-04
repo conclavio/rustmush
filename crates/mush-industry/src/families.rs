@@ -962,6 +962,23 @@ impl IndustryFamilies {
         holder: &ScopedIdempotencyKey,
         now: &ClockStamp,
     ) -> Result<ReservationId, IndustryError> {
+        self.reserve_slot_for(txn, object, maximum_slots, holder, now, 0)
+    }
+
+    /// [`Self::reserve_slot`] held for `lead_secs` of work plus the TTL (doc 39 cut IN.3,
+    /// Q-39-28): a work order's slot lasts its production.
+    ///
+    /// # Errors
+    /// [`IndustryError`] on any refusal; **nothing is written on an error**.
+    pub fn reserve_slot_for(
+        &self,
+        txn: &mut ActionTxn<'_>,
+        object: ObjId,
+        maximum_slots: u32,
+        holder: &ScopedIdempotencyKey,
+        now: &ClockStamp,
+        lead_secs: i64,
+    ) -> Result<ReservationId, IndustryError> {
         let (key, pair) = self.load_capacity_pair(txn, object)?;
         let (existed, scalar, book) = match pair {
             Some((scalar, book)) => (true, scalar, book),
@@ -978,7 +995,9 @@ impl IndustryFamilies {
             resource,
             holder.clone(),
             1,
-            mush_inventory::reservation_deadline(now).map_err(IndustryError::Inventory)?,
+            // Doc 39 cut IN.3 (Q-39-28): held for the order's work plus the TTL.
+            mush_inventory::reservation_deadline_after(now, lead_secs)
+                .map_err(IndustryError::Inventory)?,
         )?;
         let book = book.checked_hold(book.revision(), scalar, record, now)?;
         self.write_capacity_pair(txn, key, existed, scalar, book)?;
