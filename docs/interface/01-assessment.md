@@ -141,7 +141,7 @@ are build sessions of that shape.
 3. **Don't choose between 1a and 1b; split by screen.** Prose wants 1a's
    typography, a HUD wants 1b's density. Making "screen" a first-class client
    concept, with a prose-first scene screen and console-dense ruleset screens,
-   matches the ruleset-owned scene modes idea (`docs/next_ideas.md` §16) and
+   matches the ruleset-owned scene modes idea (`docs/archive/next-ideas.md` §16) and
    lets the TUI and web share one layout vocabulary where it matters.
 4. **The rigger's two-pane rule generalizes.** "Two bodies get two panes" is
    TacSim's active-station focus (doc 10 C2A, C4A) in UI form: any remotely

@@ -120,5 +120,5 @@ The library exposes `trace::load`, `Trace::matching`, `Trace::report` and
 experiment passed. The CLI exits 0 for a successful inspection and 1 for an
 invalid input, incompatible options or an unavailable interactive terminal.
 
-See [harness analysis](bot-analysis.md), [regression gates](bot-regression.md)
-and [live phase debugging](bot-cast-debug.md) for the surrounding workflow.
+See [harness analysis](analysis.md), [regression gates](regression.md)
+and [live phase debugging](cast-debug.md) for the surrounding workflow.

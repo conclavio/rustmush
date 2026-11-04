@@ -27,7 +27,7 @@ E3's title/vault/custody.
   rounds, anchor, `source: "scene:{uid}"` — not success/failure (`mush-scenes/src/lib.rs:301-329`).
   `SceneUid` is monotonic and reboot-stable.
 - The knowledge model doc 08 §9.4 leans on ("a fence evaluates provenance through the buyer's
-  available knowledge") is **unbuilt**: `Claim`/`Belief`/`Evidence` (`docs/scenes_factions_knowledge.md`
+  available knowledge") is **unbuilt**: `Claim`/`Belief`/`Evidence` (`docs/design/scenes-factions-knowledge.md`
   §2) exist only in design; shipped `LoreEntry`/`IntelRecord` are free-text and person-keyed.
 - Journal-derived provenance **does** exist: `AcquisitionRecord { transaction, at }`, the
   `AssetEffect` title chain, `CustodyEffect`s (transaction-level actor only), `Encumbrance::Disputed`,
