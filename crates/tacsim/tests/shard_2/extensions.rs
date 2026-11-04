@@ -8629,8 +8629,9 @@ fn ae1_the_three_chassis_load_beside_the_stock_game_without_moving_it() {
     let fielded = Catalog::build_fielded(&[], tacsim::NS).expect("the fielded content binds");
     assert_eq!(
         fielded.specs.len(),
-        // Doc 35 cut SF.R12: eighteen with the Republic Corvette (was seventeen).
-        18,
+        // Doc 35 cut SF.R12: eighteen with the Republic Corvette (was seventeen); doc 41 cut
+        // RS.1: nineteen with the tender.
+        19,
         "the line tank, doc 16 section 9's five, the range's target, the three chassis, \
          16b cut AE.3's drone, doc 18 cut IC2's Dray and doc 20 cut SM.3a's terrain vehicle \
          and Dray-P, plus R7's relay station and R9b's Halcyon"
@@ -10155,8 +10156,9 @@ fn ae2_the_ordnance_loads_beside_the_stock_game_without_moving_it() {
     // with the terrain vehicle and the Dray-P (was twelve).
     assert_eq!(
         fielded.specs.len(),
-        // Doc 35 cut SF.R12: eighteen with the Republic Corvette (was seventeen).
-        18,
+        // Doc 35 cut SF.R12: eighteen with the Republic Corvette (was seventeen); doc 41 cut
+        // RS.1: nineteen with the tender.
+        19,
         "no unit schema of its own: the ten AE.1 left, 16b cut AE.3's drone, doc 18 cut \
          IC2's Dray and doc 20 cut SM.3a's terrain vehicle and Dray-P, plus R7's relay station and R9b's Halcyon"
     );
@@ -10981,8 +10983,9 @@ fn ae3_the_drone_loads_beside_the_stock_game_without_moving_it() {
     let fielded = Catalog::build_fielded(&[], tacsim::NS).expect("the fielded content binds");
     assert_eq!(
         fielded.specs.len(),
-        // Doc 35 cut SF.R12: eighteen with the Republic Corvette (was seventeen).
-        18,
+        // Doc 35 cut SF.R12: eighteen with the Republic Corvette (was seventeen); doc 41 cut
+        // RS.1: nineteen with the tender.
+        19,
         "the line tank, doc 16 section 9's five, the range's target, the three chassis, \
          the drone, the Dray, the terrain vehicle and the Dray-P, plus R7's relay station and R9b's Halcyon"
     );

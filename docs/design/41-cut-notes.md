@@ -4,6 +4,95 @@ One `## RS.n` heading per cut of [41-restoration-and-the-salvage-loop.md](41-res
 §6, in the order they landed: what was built, the story that proves it, where the PR departed from the row,
 and the cell's cost (doc 43 rule 2.3 #14).
 
+## RS.1 — the tender (2026-11-03)
+
+Row: §6 RS.1; Q-41-1..4, Q-41-27, Q-41-29, Q-38-16, Q-36-35/36. Lane v21 opened here (relay v12), on
+TS.8's one strip chain.
+
+**Built.**
+
+- **The definition** (`definitions/logistics.rs`). `logistics.tender { stores, reach_cm }` (the stores
+  one of the unit's compartments and accepting `stow.bulk`; reach 1..10,000 cm) and
+  `logistics.recovery_profile: standard|recovery_optimized|heavy` (default `standard`, omitted). Both
+  are read by tacsim's port and surface code only, never by `bind()`, so no `DefinitionRef` moves.
+- **The cap on the profile** (mush-tactics `recovery.rs`, Q-41-27). `TowRigProfile::cap_permille`:
+  `Standard` and the new `Heavy` 2×, `RecoveryOptimized` 3×; `tow_mass_ratio_permille_for(tug,
+  casualty, profile)` beside the old 2× function, read by the speed factor and the inspection; `Heavy`
+  takes the optimized speed. `attach_request` reads the tug's profile off its definition
+  (`TugFacts.profile`, `tow::profile_of`) instead of hard-coding `Standard`.
+- **The laden count** (`tow.rs` `attach_facts`, Q-41-29; doc 36's owed hopper change). The casualty
+  counts dry mass plus `tow::carried_kg`: a rig's hopper or stores (`hopper_load_of`), a hull's
+  payload as the passage planner weighs it (`voyage::basis`: hold, tank, locker and every rig in its
+  bay, laden). What will not read counts nothing, logged. The refusal line now reads "at 13 t laden it
+  is more than the 12 t a 6 t tug can tow".
+- **`tacsim.unit.tv_tender`** (`content/units/tv_tender.json`, pack `tacsim.pack.tv_tender`,
+  `EXTENSIONS_TENDER`, fielded last): the prospector's chassis, its hopper made a `stores` bin of
+  2.7 t / 4.8 m3 `stow.bulk`, 7 t dry, unarmed, `recovery_optimized`, `tender { stores: "stores",
+  reach_cm: 1500 }`. Listed LOOKLESS (the prospector has no look yet either).
+- **Occator's lease row** (lane v21): `vehicles.designs` gains `tender`, pool 2, `OWP-TD-`,
+  1,800 + 7,000 for 168 IC days, the licence gate, the battery. `strip_tender` heads TS.8's chain
+  (`tests/support/lane_chain.rs`).
+- **The stores and the bale** (`surface/tender.rs`; the `stores` op of `tacsim_surface_tow`).
+  `RigRecord.bale` (IN.1's `Bale`, the twin of `BayHull.bale`). `+tv/<n> stores` shows the stores and
+  the bale; `+tv/<n> stores load <qty> <good> [go]` moves goods from the carrier's hold into the
+  stores, in the bay only, re-checked against the stores' limits in the prepare; `+tv/<n> stores open
+  [go]` debits a tonne of alloys and a tonne of fittings into an unopened bale.
+- **The `tend` op** (`tow.rs` dispatch, `tender.rs` body). `+tv/<n> unjam <unit>[=<part>]`,
+  `stabilize <unit>[=<section>] [<points>|all]`, `rearm <unit>[=<part>]`, each `[go]`: the preview
+  names the work, the draw and the time; `go` files one timed act on the site's record
+  (`TowStage::Tend`), so the tender drives or tends, never both. Reach is the tow's cell. A target
+  carried in tow is refused. Time is the tariff's base at `TENDER_TIME_FACTOR` 3 (unjam 6 IC h, a point
+  108 s, a rearm 1.5 IC h). The draw: an unjam the library's 10 kg of fittings, a point the tariff's
+  10 kg (the constant until IN.8; alloys none), both through `Bale::draw` from the stores; a rearm
+  whole units of the mount's munitions good, what the stores hold, up to the magazine. No money moves
+  (Q-41-4).
+- **`register_tender`** (`tender.rs`), fed from the compartment: spare parts = the bale's fittings and
+  the stores' whole tonnes, rounds = the stores' units of the mount's good, no charge. The finish runs
+  mush-tactics' `field_unjam_component`, `field_stabilize_damaged_section` or
+  `field_resupply_ammo_and_charge` on the target's unit, applies the change (`apply_plan`) in the tick,
+  then submits `tended`, which debits the stores and writes the bale (the load's `place_in_bay`
+  precedent; `TendApplied` in RAM keeps a resubmitted finish from landing twice on the unit).
+- **The field** (Q-41-3, Q-CF-30). No tend starts on a promoted site. An act in flight when a field
+  opens is paused (`paused`: its IC time left) by the tick and resumed on the tick that finds the site
+  settled. FR.5's coupled withdraw (Q-40-25) is not built here.
+- `+tv` takes the four words (`ACT_WORDS` 24); the bot's `salvage::in_vocabulary` admits them; `help
+  field` gains the tender and the laden tow; doc 36's two owed lines are marked closed.
+
+**Story.** `crates/tacsim/tests/shard_10/field_rs1.rs`, `rs1_ahuna_…` (256) and `rs1_urvara_…` (512),
+one body: the captain leases the escort and the tender, stocks the stores from the hold, opens the
+bale and launches both; the escort, jammed, 40 points down and its magazine at 10, stands beside the
+tender; `+tv/2 unjam`, `stabilize … all` and `rearm` are each filed, paused by a stranger's
+`+field/mark`, resumed when the field settles and landed: the cannon clear, the hull whole, the
+magazine refilled by what the stores held, the bale at 590 kg of fittings. Then the stranger's
+prospector, 7 t of ore in her hopper and no power: its own 6 t rig is refused on her 13 t laden (her
+dry 6 t is within the 2×), and the tender's 3× coupling takes her. Local Windows debug: 73 s and
+74 s. Unit tests: `surface::tender::tests::rs1_*` (the grammar, the time and the draw, the
+registration), mush-tactics' `h2a_universal_2x_tonnage_cap_and_speed_scaling` (the profiles' caps),
+mush-bot's `rs0_the_salvage_lines_are_closed` (the tender's lines). Re-run green: `field_gc4`,
+`field_gc5`, `field_carrier`, and every lane, relay, content and census pin the bump moved.
+
+**Divergences.**
+
+- **`+tv/<n> stores load`** is not in the row: nothing else fills a rig's compartment from the hold,
+  so the stores could not be stocked. It moves pools only (bulk goods; a part lot stays in the hold).
+- **The stores hold 2.7 t, not 2 t** (provisional, under the economy rule): a tonne of each line and a
+  magazine. The plan's 2,000 kg held the two tonnes and nothing else.
+- **The bale is not returned to the stores** at the rig's return: kilograms cannot go back into a
+  whole-tonne pool, so the bale rides the rig record, as the hull's bale rides the hull, and the next
+  work draws it first. `stores open` refuses an open bale.
+- **A rearm is the tariff's per-mount 1,800 s × 3**, not the plan's "ten minutes for 30 rounds": the
+  tariff has no per-round loading time.
+- **The work lands on the unit in the tick, before the finish's transaction** (the load's precedent):
+  a stores shortfall at the finish draws what is there and lands `tended:short`.
+- **A tend start creates the site record** when no field has written one yet, at the site's side
+  (`TendFacts.side`; the tow never needed it, since a casualty always comes of a field).
+- **The bay room check** now sees the casualty laden (the library's own load check reads total mass);
+  the bay's contents are still counted dry, as before.
+- The census pin (`mill::sm12a_only_the_clerk_the_foundry_and_the_mill_create_matter`) is re-blessed for
+  the tender's two `.debit(` calls, matter spent or held in the bale, never made.
+
+**Cell cost (rule #14).** Pending the PR run's JUnit; filled in on the PR.
+
 ## RS.3 — the claim's close (2026-11-03)
 
 Rulings: Q-41-20..23, Q-41-28, Q-38-19, Q-S13, Q-S14; round-2 items 41-1, 41-8, 41-10, 41-12a (§4b).

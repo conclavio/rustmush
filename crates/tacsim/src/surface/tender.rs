@@ -1185,7 +1185,7 @@ fn work(
         let arg = match (&job, which) {
             (TendWork::Stabilize { points, .. }, _) => format!(
                 "{unit_word}={} {points}",
-                which.unwrap_or_else(|| match &job {
+                which.unwrap_or(match &job {
                     TendWork::Stabilize { section, .. } => section.as_str(),
                     _ => "",
                 })
