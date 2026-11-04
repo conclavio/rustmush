@@ -632,6 +632,17 @@ runs `npm` only.
 
 Doc 43 has no cut-notes file; each cut's note lands here.
 
+### TS.14 release check on pull requests (D-43-10)
+
+**Built.** The `lint` cell gains one step after Clippy: `cargo check --locked --release -p mushd -p
+mush-server -p mush-gateway --features mushd/tls,mush-gateway/tls`, the release job's package and
+feature set. A `cfg(not(debug_assertions))` break now fails the PR. Thin LTO and the real SPA embed
+stay with the nightly release job. The embed guard (`mush-net-web/build.rs`) refuses a release build
+with no `web/dist/index.html`. The lint cell builds no SPA, so the step writes a one-line placeholder
+when the file is missing: the check is of the Rust, not the bundle.
+
+**The cost (rule #14, §8.1).** MEASURED_PENDING
+
 ### TS.16 the field tempo (§5.8, §10.2)
 
 **Built.** Test-only, two tunes in shard_1. `field_gc4::lane3_tune` and `field_gc5::quick` drop their
