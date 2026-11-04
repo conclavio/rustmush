@@ -180,7 +180,7 @@ pub use content::{
 };
 pub use pool::{BatchFailed, BatchHandle, MindPool};
 pub use runner::{DROPPED_LINE, RhaiRunner, ThinkStat};
-pub use sealed::{InstallError, install_sealed_runners};
+pub use sealed::{InstallError, install_sealed_runners, install_sealed_runners_except};
 
 /// **The API's version** (doc 17 Â§13): the `api=` part of [`MIND_ABI`]. A
 /// change to any registered name, signature, getter, fee or refusal is a bump.

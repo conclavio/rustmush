@@ -37,6 +37,13 @@ pub(crate) struct ClaimArm {
     closes: BTreeMap<ObjId, Arc<IcHostTicket>>,
 }
 
+/// **The composed IC host**, where the claim path is composed (doc 23 cut S.4b-3: the field's
+/// retained install reads it).
+pub(crate) fn host_of(w: &mush_core::World) -> Option<IcHost> {
+    w.module_state::<ClaimArm>()
+        .and_then(|arm| arm.host.clone())
+}
+
 /// Register the arm's slot with the composed host, if any.
 pub(crate) fn register(reg: &mut mush_core::Registrar<'_>, host: Option<IcHost>) {
     reg.state(ClaimArm {

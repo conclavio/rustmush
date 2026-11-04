@@ -455,3 +455,39 @@ fn s4b1_an_ic_epoch_id_seals_a_retained_execution() -> TestResult {
     check_eq!(arena.minds.get(&UNIT).ok_or("mind")?.dropped, None);
     Ok(())
 }
+
+/// **Doc 23 cut S.4b-3 (D-23-17 (b)): a retained source that no longer compiles drops to the ROM,
+/// per row.** At this build's ABI, a seal over a source the compiler refuses installs the native
+/// doctrine runner with one `mind_dropped { cause: abi, fault: compile }`, the row marked dropped,
+/// instead of refusing the install (which would keep a field from opening); a second install
+/// journals nothing more.
+#[test]
+fn s4b3_a_retained_source_that_no_longer_compiles_drops_to_the_rom() -> TestResult {
+    let removed = "fn think(v,c) { missing_old_global; }";
+    let (execution, mut arena) = fixture(crate::minds::MIND_ABI, removed)?;
+    check!(
+        execution.compile().is_err(),
+        "the source does not compile here"
+    );
+    execution.install(&mut arena)?;
+    check_eq!(
+        arena.minds.get(&UNIT).ok_or("mind")?.dropped,
+        Some(DropCause::Abi)
+    );
+    let drops =
+        |arena: &mut Arena| -> Result<Vec<Option<smol_str::SmolStr>>, Box<dyn std::error::Error>> {
+            Ok(events(arena)?
+                .into_iter()
+                .filter_map(|event| match event.kind {
+                    EventKind::MindDropped {
+                        unit, cause, fault, ..
+                    } if unit == UNIT && cause == "abi" => Some(fault),
+                    _ => None,
+                })
+                .collect())
+        };
+    check_eq!(drops(&mut arena)?, vec![Some("compile".into())]);
+    execution.install(&mut arena)?;
+    check!(drops(&mut arena)?.is_empty(), "journalled once");
+    Ok(())
+}
