@@ -63,6 +63,12 @@ pub const MAX_SCOPE_DEPTH: u8 = 8;
 /// authorization and rendered whole by `@org/show`, so its size is a cost input.
 pub const MAX_SCOPES_PER_ORG: usize = 64;
 
+/// **Declare the organization's stance toward another** (doc 40 cut FR.1, Q-40-11): an
+/// organization has no owner field, so "declared by an organization's owner" (Q-38-23) is a member
+/// holding this on the org's root scope, granted through `@org/grant`. `mush-faction`'s stance
+/// table asks it; the built-in vocabulary carries it beside `org.role.manage`.
+pub const STANCE_DECLARE_CAPABILITY: &str = "org.stance.declare";
+
 pub use authorize::{
     AuthRequest, AuthWitness, Decision, DenyReason, NoPredicates, PredicateEval, authorize,
 };

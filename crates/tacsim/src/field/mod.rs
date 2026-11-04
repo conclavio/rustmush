@@ -111,6 +111,10 @@ pub const NO_FIELD: &str = "No field holds a party of yours.";
 /// A mark made inside a field (`{party}` the letter, `{word}` `Hostile`, `Friendly` or
 /// `unmarked`).
 pub const PARTY_MARKED: &str = "Your party now marks party {party} {word}.";
+/// A clear of a standing Hostile mark (doc 40 cut FR.1, §4.2: a declared stance or a raider's),
+/// which returns to it rather than erasing it.
+pub const PARTY_CLEARED_TO_STANDING: &str =
+    "Your party's mark on party {party} is cleared to the standing Hostile.";
 /// **How long a fire order waits for its shooter's sensors**, arena milliseconds (doc 32
 /// Q-CF-14): past it the shot never left the barrel.
 pub const FIRE_WINDOW_MS: i64 = 10_000;

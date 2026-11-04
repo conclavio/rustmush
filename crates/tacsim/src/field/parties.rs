@@ -17,8 +17,15 @@
 //! membership, or a faction's principalship, each only where fellow members may know it
 //! ([`affiliations`]). A raider's organization (doc 36 cut GC.11) is a faction whose principal is
 //! the raider's leader, so a member of it is the raider's friend. Friends rank below a leader's
-//! mark and below hostility fire produced (the kernel's [`crate::arena::party::Relations`]);
-//! there are no declared stances between organizations yet.
+//! mark and below hostility fire produced (the kernel's [`crate::arena::party::Relations`]).
+//!
+//! **Declared stances** (doc 40 cut FR.1; Q-38-23, Q-40-12, §4.2): mush-faction's stance table,
+//! between the same [`Affiliation`]s, read as a field is built and at a join, never mid-field
+//! ([`opening_stances`]). A party whose organization declared Hostile on one of another's opens
+//! the field with a Hostile mark on it, exactly as a raider's standing mark (so it beats shared
+//! membership and a later Friendly mark replaces it), and the live record keeps it
+//! ([`FieldParty::stance_hostile`]) so a clear returns to it. A mutual Allied pair is a friendship
+//! beside the ones above (below a mark and fire); a one-sided Allied is nothing. Neutral is no row.
 //!
 //! **Letters in admission order** (Q-CF-11): the parties sorted by their keys take `A`, `B`, … in
 //! that order. Never by who promoted the site: the first letter would tell everyone on the ground
@@ -436,6 +443,7 @@ pub(crate) fn letter(
             party,
             key: *key,
             leader: *leader,
+            stance_hostile: Vec::new(),
             director: entrants
                 .iter()
                 .any(|entrant| entrant.key == *key && entrant.director),
@@ -514,11 +522,13 @@ pub(crate) fn friends(entrants: &[Entrant], parties: &[FieldParty]) -> Vec<(Part
 }
 
 /// **The standing friendships of a field's parties, read now** (doc 36 cut GC.10): [`friends`]'s
-/// rule over the live record's parties, each owned by its leader or, for a roster, its organizer.
-/// The demotion reads it to tell friendly fire.
+/// rule over the live record's parties, each owned by its leader or, for a roster, its organizer,
+/// and since doc 40 cut FR.1 every mutually Allied pair (Q-40-14: the void counts it as it counts
+/// shared membership). The demotion reads it to tell friendly fire.
 #[must_use]
 pub(crate) fn friends_of(w: &World, parties: &[FieldParty]) -> Vec<(PartyId, PartyId)> {
     let mut ties = Vec::new();
+    let mut sides: BTreeMap<PartyId, BTreeSet<Affiliation>> = BTreeMap::new();
     for party in parties {
         let owner = match party.key {
             PartyKey::Operation { operation } => Some(operation.organizer),
@@ -527,18 +537,140 @@ pub(crate) fn friends_of(w: &World, parties: &[FieldParty]) -> Vec<(PartyId, Par
         if let Some(owner) = owner {
             ties.push((Tie::Owner(owner), party.party));
         }
+        let affiliations = party_affiliations(w, party.leader, owner);
         ties.extend(
-            party_affiliations(w, party.leader, owner)
-                .into_iter()
-                .map(|affiliation| (Tie::Org(affiliation), party.party)),
+            affiliations
+                .iter()
+                .map(|affiliation| (Tie::Org(*affiliation), party.party)),
         );
+        sides.insert(party.party, affiliations);
     }
-    pair_up(ties)
+    let mut pairs: BTreeSet<(PartyId, PartyId)> = pair_up(ties).into_iter().collect();
+    pairs.extend(declared(w, &sides).1);
+    pairs.into_iter().collect()
+}
+
+/// An organization as a side of mush-faction's stance table.
+fn stance_side(affiliation: Affiliation) -> mush_faction::StanceSide {
+    match affiliation {
+        Affiliation::Org(org) => mush_faction::StanceSide::Org(org),
+        Affiliation::Faction(faction) => mush_faction::StanceSide::Faction(faction),
+    }
+}
+
+/// **Each party's organizations**: the union of its entrants' [`affiliations`].
+fn party_sides(
+    entrants: &[Entrant],
+    parties: &[FieldParty],
+) -> BTreeMap<PartyId, BTreeSet<Affiliation>> {
+    let mut sides: BTreeMap<PartyId, BTreeSet<Affiliation>> = parties
+        .iter()
+        .map(|party| (party.party, BTreeSet::new()))
+        .collect();
+    for entrant in entrants {
+        if let Some(party) = parties.iter().find(|party| party.key == entrant.key) {
+            sides
+                .entry(party.party)
+                .or_default()
+                .extend(entrant.affiliations.iter().copied());
+        }
+    }
+    sides
+}
+
+/// A set of party pairs.
+type Pairs = BTreeSet<(PartyId, PartyId)>;
+
+/// **The declared stances between `sides`, read now** (doc 40 cut FR.1; Q-40-12): every ordered
+/// pair `(by, of)` where an organization of `by` declared Hostile on one of `of`'s, and every pair
+/// some organization of each holds mutually Allied with one of the other's, lower letter first.
+fn declared(w: &World, sides: &BTreeMap<PartyId, BTreeSet<Affiliation>>) -> (Pairs, Pairs) {
+    let mut hostile = BTreeSet::new();
+    let mut allied = BTreeSet::new();
+    let Some(table) = w
+        .module_state::<mush_faction::FactionState>()
+        .filter(|table| !table.stances.is_empty())
+    else {
+        return (hostile, allied);
+    };
+    for (by, mine) in sides {
+        for (of, theirs) in sides {
+            if by == of {
+                continue;
+            }
+            let any =
+                |held: &dyn Fn(mush_faction::StanceSide, mush_faction::StanceSide) -> bool| {
+                    mine.iter().any(|a| {
+                        theirs
+                            .iter()
+                            .any(|b| held(stance_side(*a), stance_side(*b)))
+                    })
+                };
+            if any(&|a, b| table.stance(a, b) == mush_faction::Stance::Hostile) {
+                hostile.insert((*by, *of));
+            }
+            if by < of && any(&|a, b| table.mutually_allied(a, b)) {
+                allied.insert((*by, *of));
+            }
+        }
+    }
+    (hostile, allied)
+}
+
+/// **What a field opens with by standing word** (doc 40 cut FR.1, §4.2).
+#[derive(Clone, Debug, Default, PartialEq, Eq)]
+pub(crate) struct OpeningStances {
+    /// Every `(by, of)`: `by`'s leader opens marking `of` Hostile — `by`'s organizations declared
+    /// Hostile on `of`'s, or `by` is a fixture raider (Q-CF-44).
+    pub hostile: Vec<(PartyId, PartyId)>,
+    /// Every mutually Allied pair, lower letter first: a friendship (Q-40-12).
+    pub allied: Vec<(PartyId, PartyId)>,
+}
+
+/// **The stance table read over `parties` now** (doc 40 cut FR.1; Q-38-23): at admission over
+/// every party, at a join for the pairs the joining party opens.
+#[must_use]
+pub(crate) fn opening_stances(
+    w: &World,
+    entrants: &[Entrant],
+    parties: &[FieldParty],
+) -> OpeningStances {
+    let (mut hostile, allied) = declared(w, &party_sides(entrants, parties));
+    // A fixture raider's leader holds a standing Hostile mark on every other party (doc 32 cut
+    // CF.6, Q-CF-44): the raider fights whoever it finds, with no player connected.
+    for raider in parties.iter().filter(|party| party.key.is_fixture()) {
+        for other in parties.iter().filter(|other| other.party != raider.party) {
+            hostile.insert((raider.party, other.party));
+        }
+    }
+    OpeningStances {
+        hostile: hostile.into_iter().collect(),
+        allied: allied.into_iter().collect(),
+    }
+}
+
+/// **The opening Hostile marks a live record's `stance_hostile` rows hold that name `party`**
+/// (doc 40 cut FR.1), as the kernel's `(by, of, mark)` rows.
+#[must_use]
+pub(crate) fn standing_marks(
+    parties: &[FieldParty],
+    party: Option<PartyId>,
+) -> Vec<(PartyId, PartyId, crate::arena::party::Mark)> {
+    parties
+        .iter()
+        .flat_map(|by| {
+            by.stance_hostile
+                .iter()
+                .map(move |of| (by.party, *of, crate::arena::party::Mark::Hostile))
+        })
+        .filter(|(by, of, _)| party.is_none_or(|party| *by == party || *of == party))
+        .collect()
 }
 
 /// **The parties on `site`'s ground as a field would admit them now, and which are Friends**
 /// (doc 36 cut GC.10; Q-36-10): the presence picture's parties, lettered, with every standing
-/// friendship among them. Staff and the gates read it; nothing is written.
+/// friendship among them — since doc 40 cut FR.1 each mutually Allied pair too, and each party's
+/// `stance_hostile` as admission would write it. Staff and the gates read it; nothing is written.
 #[must_use]
 pub fn friends_on_ground(
     ctx: &Ctx<'_>,
@@ -549,11 +681,37 @@ pub fn friends_on_ground(
     };
     let units = on_ground(ctx.w, domain);
     let entrants = entrants(ctx, site, &units);
-    let Ok((parties, _)) = letter(&entrants) else {
+    let Ok((mut parties, _)) = letter(&entrants) else {
         return (Vec::new(), Vec::new());
     };
-    let pairs = friends(&entrants, &parties);
+    let allied = admit_stances(ctx.w, &entrants, &mut parties);
+    let mut pairs = friends(&entrants, &parties);
+    for pair in allied {
+        if !pairs.contains(&pair) {
+            pairs.push(pair);
+        }
+    }
+    pairs.sort_unstable();
     (parties, pairs)
+}
+
+/// **Write admission's standing Hostile marks into `parties`** (doc 40 cut FR.1, §4.2) — each
+/// party's `stance_hostile`, from [`opening_stances`] — and return its mutually Allied pairs.
+pub(crate) fn admit_stances(
+    w: &World,
+    entrants: &[Entrant],
+    parties: &mut [FieldParty],
+) -> Vec<(PartyId, PartyId)> {
+    let stances = opening_stances(w, entrants, parties);
+    for party in parties.iter_mut() {
+        party.stance_hostile = stances
+            .hostile
+            .iter()
+            .filter(|(by, _)| *by == party.party)
+            .map(|(_, of)| *of)
+            .collect();
+    }
+    stances.allied
 }
 
 #[cfg(test)]

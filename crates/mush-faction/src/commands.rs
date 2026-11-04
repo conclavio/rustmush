@@ -43,7 +43,7 @@ fn state_ref<'a>(ctx: &'a Ctx<'_>) -> &'a FactionState {
 
 /// Whether `who` may administer the registry: the `FACTION_ADMIN` power
 /// (Wizard+ implicitly) or Royalty+.
-fn is_admin(w: &World, who: ObjId) -> bool {
+pub(crate) fn is_admin(w: &World, who: ObjId) -> bool {
     perm::has_power(w, who, Powers::FACTION_ADMIN) || perm::has_role(w, who, Role::Royalty)
 }
 
@@ -195,6 +195,8 @@ fn cmd_faction(ctx: &mut Ctx<'_>) -> Result<(), CmdError> {
         crate::reputation::command_incident(ctx)
     } else if ctx.switches.has("publish-incident") {
         crate::reputation::command_publish(ctx)
+    } else if ctx.switches.has("stance") {
+        crate::stance_commands::declare(ctx, true)
     } else if ctx.switches.has("show") {
         faction_show(ctx)
     } else {
@@ -289,6 +291,16 @@ fn faction_destroy(ctx: &mut Ctx<'_>) -> Result<(), CmdError> {
         st.factions.remove(&id);
         (member_keys, edge_owners, control_regions)
     };
+    // Doc 40 cut FR.1: the stance rows naming it go with it.
+    let side = crate::data::StanceSide::Faction(id);
+    let stance_keys: Vec<SmolStr> = state(ctx)
+        .stances
+        .extract_if(.., |(from, to), _| *from == side || *to == side)
+        .map(|((from, to), _)| crate::data::stance_key(from, to))
+        .collect();
+    for key in stance_keys {
+        persist_del(ctx.out, key);
+    }
     for (p, fac) in &member_keys {
         persist_del(ctx.out, member_key(*p, *fac));
     }
@@ -1431,11 +1443,21 @@ fn cmd_factions(ctx: &mut Ctx<'_>) -> Result<(), CmdError> {
 }
 
 fn cmd_faction_info(ctx: &mut Ctx<'_>) -> Result<(), CmdError> {
+    // Doc 40 cut FR.1 (Q-40-11): a declarer's stance.
+    if ctx.switches.has("stance") {
+        return crate::stance_commands::declare(ctx, false);
+    }
     let arg = ctx.args.raw().trim().to_string();
     if arg.is_empty() {
         return cmd_factions(ctx);
     }
-    let f = resolve_faction(ctx, &arg, true)?;
+    let f = match resolve_faction(ctx, &arg, true) {
+        Ok(f) => f,
+        // An organization (a co-op) shows its stance rows.
+        Err(error) => {
+            return crate::stance_commands::org_info(ctx, &arg).ok_or(error);
+        }
+    };
     let actor = ctx.actor;
     let staff = is_admin(ctx.w, actor);
     let st = state_ref(ctx);
@@ -1568,6 +1590,13 @@ fn cmd_faction_info(ctx: &mut Ctx<'_>) -> Result<(), CmdError> {
             }
         ));
     }
+    // Doc 40 cut FR.1 (Q-40-11): its stances, each naming a side the viewer may know.
+    lines.extend(crate::stance_commands::stance_lines(
+        ctx.w,
+        actor,
+        staff,
+        crate::data::StanceSide::Faction(f.id),
+    ));
     let _ = is_member;
     for line in lines {
         ctx.out.sys_to_actor(actor, "faction", line);
@@ -1698,6 +1727,7 @@ pub(crate) fn register(reg: &mut Registrar<'_>) -> Result<(), ModError> {
                 "contest".into(),
                 "incident".into(),
                 "publish-incident".into(),
+                "stance".into(),
                 "show".into(),
             ],
             help: "@faction  --  Staff faction registry (Royalty+ or the FACTION_ADMIN power). \
@@ -1733,6 +1763,9 @@ pub(crate) fn register(reg: &mut Registrar<'_>) -> Result<(), ModError> {
                    inspect the report. @faction/publish-incident <cause> explicitly publishes \
                    it and applies -20 standing to an identified attacker, once. Ordinary combat \
                    and unverified rumors do not publish incidents automatically.\n\
+                   @faction/stance <from>=<to>/<allied|neutral|hostile>  --  declare a faction's \
+                   or organization's stance toward another (doc 40 FR.1: Hostile one-way, Allied \
+                   counts when mutual, Neutral clears; read as a field is built).\n\
                    @faction/show <f>  --  full staff dump (truth, all visibilities)."
                 .into(),
             ..CommandSpec::default()
@@ -1793,19 +1826,6 @@ pub(crate) fn register(reg: &mut Registrar<'_>) -> Result<(), ModError> {
     )?;
     reg.command(
         CommandSpec {
-            name: "+faction".into(),
-            shape: ArgShape::Raw,
-            help: "+faction <name>  --  What you know about one faction: charter, known \
-                   structure, known members (titles; officers also see levels), known holdings, \
-                   and your own membership if any. What you see is a projection — covert \
-                   memberships, covert holdings, and hidden factions do not appear."
-                .into(),
-            ..CommandSpec::default()
-        },
-        Arc::new(cmd_faction_info),
-    )?;
-    reg.command(
-        CommandSpec {
             name: "+territory".into(),
             shape: ArgShape::Raw,
             help: "+territory [<region>]  --  The territory map as you know it: each region and \
@@ -1816,6 +1836,29 @@ pub(crate) fn register(reg: &mut Registrar<'_>) -> Result<(), ModError> {
         },
         Arc::new(cmd_territory),
     )?;
+    // Doc 40 cut FR.1 (Q-40-11): `+faction/stance` writes one bounded stance row, so the verb
+    // leaves the read-only group.
     reg.classify_commands(mush_core::CommandCompatibility::LegacyPostImage);
+    reg.command(
+        CommandSpec {
+            name: "+faction".into(),
+            shape: ArgShape::Raw,
+            switches: vec!["stance".into()],
+            help: "+faction <name>  --  What you know about one faction: charter, known \
+                   structure, known members (titles; officers also see levels), known holdings, \
+                   its declared stances, and your own membership if any. What you see is a \
+                   projection — covert memberships, covert holdings, and hidden factions do not \
+                   appear. Naming an organization shows its stances.\n\
+                   +faction/stance <yours>=<other>/<allied|neutral|hostile>  --  Declare your \
+                   faction's or organization's stance toward another (a faction's principals and \
+                   officers; an organization's members holding org.stance.declare). Hostile is \
+                   yours alone: your parties open a field marking theirs Hostile. Allied counts \
+                   only when both declare it. Neutral clears it. A field already running is \
+                   unchanged; a stance never opens one."
+                .into(),
+            ..CommandSpec::default()
+        },
+        Arc::new(cmd_faction_info),
+    )?;
     Ok(())
 }

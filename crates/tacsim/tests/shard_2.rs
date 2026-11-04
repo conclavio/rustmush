@@ -41,6 +41,8 @@ mod e7r1;
 mod e7r2;
 #[path = "shard_2/extensions.rs"]
 mod extensions;
+#[path = "shard_2/field_fr1.rs"]
+mod field_fr1;
 #[path = "shard_2/field_fr2.rs"]
 mod field_fr2;
 #[path = "support/field/field_host_rig.rs"]

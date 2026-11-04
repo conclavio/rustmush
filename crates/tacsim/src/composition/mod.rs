@@ -483,6 +483,8 @@ pub fn domain_org_capability_vocabulary() -> std::collections::BTreeSet<mush_org
         .chain([
             "org.role.manage",
             "org.grant.delegate",
+            // Doc 40 cut FR.1 (Q-40-11): who declares a co-op's stance.
+            mush_org::STANCE_DECLARE_CAPABILITY,
             "relay.manage",
             "relay.discover",
             "relay.use",

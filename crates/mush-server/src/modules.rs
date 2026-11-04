@@ -2627,6 +2627,7 @@ mod tests {
         let administrative = [
             "org.role.manage",
             "org.grant.delegate",
+            mush_org::STANCE_DECLARE_CAPABILITY,
             "relay.manage",
             "relay.inspect",
             "relay.publish",

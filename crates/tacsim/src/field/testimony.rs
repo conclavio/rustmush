@@ -175,6 +175,7 @@ mod tests {
             party: party(n),
             key: PartyKey::Unit { unit: ObjId(key) },
             leader: by.map(ObjId),
+            stance_hostile: Vec::new(),
             director: false,
         };
         FieldLive {

@@ -115,6 +115,13 @@ pub struct FieldParty {
     /// a party nobody leads (a casualty left by an earlier field).
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub leader: Option<ObjId>,
+    /// **The parties it opened the field marking Hostile by a standing word** (doc 40 cut FR.1,
+    /// §4.2, round 2's 40-3): the parties its organizations declared Hostile as the field was
+    /// built, or every other party for a fixture raider (Q-CF-44); written at admission and
+    /// extended at a join for the party the join opens. A leader's `+field/mark <x>=clear` on
+    /// one of them returns to the Hostile mark rather than erasing it.
+    #[serde(default, skip_serializing_if = "Vec::is_empty")]
+    pub stance_hostile: Vec<PartyId>,
     /// **A director raid's raider** (doc 40 cut FR.2, Q-40-18): its carrier carried the raid
     /// director's `raid` key at admission. Fixed then, since the key goes when the raid is over,
     /// which may be before the field demotes; its leader voids its own friendly fire at demotion.
@@ -452,12 +459,14 @@ mod tests {
                     party: PartyId::nth(0).expect("A"),
                     key: PartyKey::Unit { unit: ObjId(7) },
                     leader: Some(ObjId(3)),
+                    stance_hostile: vec![PartyId::nth(1).expect("B")],
                     director: false,
                 },
                 FieldParty {
                     party: PartyId::nth(1).expect("B"),
                     key: PartyKey::Unit { unit: ObjId(9) },
                     leader: None,
+                    stance_hostile: Vec::new(),
                     director: true,
                 },
             ],

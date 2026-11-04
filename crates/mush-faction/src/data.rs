@@ -12,6 +12,7 @@
 //! | `member:{player}:{id}` | one [`FactionMembership`]                    |
 //! | `region:{id}`          | one [`Region`]                               |
 //! | `control:{region}`     | `Vec<ControlRecord>` for that region         |
+//! | `stance:{from}:{to}`   | one [`StanceRow`] (doc 40 cut FR.1, [`crate::stance`]) |
 //!
 //! ## The three separations this model enforces (§3.3)
 //!
@@ -23,7 +24,8 @@
 //! - **Structure vs. stance**: [`FactionEdge`]s are the small closed
 //!   structural vocabulary (`ChapterOf`/`SubordinateTo`/`ContractedTo`/
 //!   `FrontFor`), acyclic per kind, never auto-transitive. Rivalry/alliance
-//!   stances are the future relationship matrix, not edges.
+//!   stances are the relationship matrix, not edges: [`FactionState::stances`]
+//!   (doc 40 cut FR.1, [`crate::stance`]).
 //! - **Control vs. ownership**: [`ControlRecord`]s attach [`ControlKind`]s
 //!   (de jure / de facto / covert / economic) to abstract [`Region`]s — a
 //!   region *may* reference zones, or nothing at all ("Media influence").
@@ -35,6 +37,8 @@ use std::collections::{BTreeMap, BTreeSet};
 use mush_core::{Deferred, ModuleOp, ModuleWrite, ObjId, Outbox};
 use serde::{Deserialize, Serialize};
 use smol_str::SmolStr;
+
+pub use crate::stance::{Stance, StanceRow, StanceSide, stance_key};
 
 /// The faction persistence namespace (`mod:faction:*`).
 pub const NS: &str = "faction";
@@ -524,6 +528,9 @@ pub struct FactionState {
     pub next_faction_id: u64,
     /// Region id allocator resume point (persisted in the meta doc).
     pub next_region_id: u64,
+    /// **The stance table** (doc 40 cut FR.1, Q-38-23), keyed `(from, to)`: one Allied or
+    /// Hostile row a direction; Neutral is no row.
+    pub stances: BTreeMap<(StanceSide, StanceSide), StanceRow>,
 }
 
 impl FactionState {
@@ -655,6 +662,27 @@ impl FactionState {
         false
     }
 
+    /// **`from`'s declared stance toward `to`** (doc 40 cut FR.1): its row's, else Neutral.
+    #[must_use]
+    pub fn stance(&self, from: StanceSide, to: StanceSide) -> Stance {
+        self.stances
+            .get(&(from, to))
+            .map_or(Stance::Neutral, |row| row.stance)
+    }
+
+    /// **Whether `a` and `b` are mutually Allied** (Q-40-12): both rows declare it.
+    #[must_use]
+    pub fn mutually_allied(&self, a: StanceSide, b: StanceSide) -> bool {
+        a != b && self.stance(a, b) == Stance::Allied && self.stance(b, a) == Stance::Allied
+    }
+
+    /// Every stance row with `side` at either end, in key order.
+    pub fn stances_naming(&self, side: StanceSide) -> impl Iterator<Item = &StanceRow> {
+        self.stances
+            .values()
+            .filter(move |row| row.from == side || row.to == side)
+    }
+
     /// Allocate the next faction id (callers persist the meta doc).
     pub fn alloc_faction_id(&mut self) -> FactionId {
         let id = FactionId(self.next_faction_id);
@@ -768,6 +796,25 @@ pub(crate) fn persist_meta(out: &mut Outbox, next_faction_id: u64, next_region_i
                 "next_faction_id": next_faction_id,
                 "next_region_id": next_region_id,
             }),
+        },
+    );
+}
+
+/// Mirror one stance row (doc 40 cut FR.1): written whole, no receipt.
+pub(crate) fn persist_stance(out: &mut Outbox, row: &StanceRow) {
+    let value = match serde_json::to_value(row) {
+        Ok(value) => value,
+        // Plain data: unreachable in practice, and never a panic on the command path.
+        Err(error) => {
+            tracing::error!(%error, "faction: a stance row did not serialize");
+            return;
+        }
+    };
+    push_op(
+        out,
+        ModuleWrite::JsonSet {
+            key: stance_key(row.from, row.to),
+            value,
         },
     );
 }

@@ -114,8 +114,9 @@ note = "E7 cut 10 (10b 3.10 B7/B8): the player-facing crew call -- +crewcall/lis
 
 [[handler]]
 name = "+faction"
-category = "read-only"
-note = "Player faction detail view (+faction): renders the viewer-filtered projection of one faction's charter, structure, members, and holdings; no durable mutation."
+category = "legacy-post-image"
+family = "faction.stance"
+note = "REFRESHED by doc 40 cut FR.1 (Q-38-23, Q-40-11..14): /stance <yours>=<other>/<allied|neutral|hostile> writes or deletes one bounded whole-document stance:<from>:<to> row (a strict StanceRow, deny_unknown_fields, deterministic key, no receipt) in the faction module's FactionState on the compatibility post-image lane, declared by a faction's principal or officer or an organization's member holding org.stance.declare; the tacsim field host reads it only as a field is admitted or a party joins, never mid-field (as an opening mark or friend pair handed to the kernel), and it never opens a field (Q-40-13). New switch of the existing verb, so PINNED_BASELINE does not move; the verb moves from the read-only group to legacy-post-image with it. Earlier: the player faction detail view (+faction): renders the viewer-filtered projection of one faction's charter, structure, members, holdings and now its stances (an organization's name shows its stances); no other durable mutation."
 
 [[handler]]
 name = "+factions"
@@ -565,7 +566,7 @@ note = "E7 residue pass 2 (P0a): @facility/owner <object>=<principal> is a NEW S
 name = "@faction"
 category = "legacy-post-image"
 family = "faction.registry"
-note = "Staff faction administration (@faction): creates, destroys, configures, binds, or inspects bounded faction:<id>, member:<faction>:<char>, and control:<region> documents on the faction module's compatibility post-image lane."
+note = "Staff faction administration (@faction): creates, destroys, configures, binds, or inspects bounded faction:<id>, member:<faction>:<char>, and control:<region> documents on the faction module's compatibility post-image lane. Doc 40 cut FR.1: /stance <from>=<to>/<stance> writes or deletes one bounded stance:<from>:<to> row the same way (a new switch of the existing verb), and /destroy deletes the destroyed faction's stance rows."
 
 [[handler]]
 name = "@field"

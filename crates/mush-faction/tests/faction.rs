@@ -767,3 +767,136 @@ fn membership_visibility_matrix_members_and_officers() {
     let out = run(&mut engine, bob, "+faction Setites");
     assert!(joined(&out).contains("Your membership"), "{}", joined(&out));
 }
+
+// ----------------------------------------------------------------------
+// Doc 40 cut FR.1: the stance table
+// ----------------------------------------------------------------------
+
+/// **The stance table's verbs, its persistence and its cascade** (Q-38-23, Q-40-11, Q-40-12):
+/// an officer declares, a plain member and a stranger may not, staff always may; a one-sided
+/// Allied reads unreciprocated, a Neutral deletes the row; every row round-trips through the
+/// store, and a destroyed faction takes its rows with it.
+#[test]
+fn stances_are_declared_by_officers_persist_and_go_with_their_faction() {
+    use mush_faction::{Stance, StanceSide};
+    let (mut engine, nick, ann, bob) = boot();
+    let mut ops: Vec<ModuleOp> = engine.take_module_ops();
+    for line in [
+        "@faction/create Camarilla",
+        "@faction/create Anarchs",
+        "@faction/create Sabbat",
+        "@faction/add Camarilla=Nick/level:3",
+        "@faction/add Camarilla=Ann",
+        "@faction/add Anarchs=Bob/level:2",
+    ] {
+        let text = joined(&run(&mut engine, GOD, line));
+        assert!(!text.contains("Usage:"), "{line}: {text}");
+    }
+    ops.extend(engine.take_module_ops());
+    let id = |engine: &Engine, name: &str| {
+        StanceSide::Faction(state(engine).faction_by_name(name).unwrap().id)
+    };
+    let (cam, anarchs, sabbat) = (
+        id(&engine, "Camarilla"),
+        id(&engine, "Anarchs"),
+        id(&engine, "Sabbat"),
+    );
+
+    // A plain member declares nothing; an officer does.
+    let text = joined(&run(
+        &mut engine,
+        ann,
+        "+faction/stance Camarilla=Anarchs/hostile",
+    ));
+    assert!(text.contains("You do not declare"), "{text}");
+    assert!(
+        engine.take_module_ops().is_empty(),
+        "a refusal writes nothing"
+    );
+    let text = joined(&run(
+        &mut engine,
+        nick,
+        "+faction/stance Camarilla=Anarchs/hostile",
+    ));
+    assert!(
+        text.contains("Camarilla now stands Hostile toward Anarchs"),
+        "{text}"
+    );
+    let written = engine.take_module_ops();
+    assert!(
+        written.iter().any(|op| matches!(
+            &op.op,
+            ModuleWrite::JsonSet { key, .. } if key.starts_with("stance:f")
+        )),
+        "one stance row: {written:?}"
+    );
+    ops.extend(written);
+    let text = joined(&run(
+        &mut engine,
+        bob,
+        "+faction/stance Anarchs=Camarilla/allied",
+    ));
+    assert!(text.contains("Unreciprocated"), "{text}");
+    ops.extend(engine.take_module_ops());
+    // Staff declare for anyone; Neutral deletes the row.
+    for line in [
+        "@faction/stance Sabbat=Camarilla/hostile",
+        "@faction/stance Camarilla=Sabbat/allied",
+        "@faction/stance Camarilla=Sabbat/neutral",
+    ] {
+        let text = joined(&run(&mut engine, GOD, line));
+        assert!(text.contains("now stands"), "{line}: {text}");
+        ops.extend(engine.take_module_ops());
+    }
+    let st = state(&engine);
+    assert_eq!(st.stance(cam, anarchs), Stance::Hostile);
+    assert_eq!(st.stance(anarchs, cam), Stance::Allied);
+    assert!(
+        !st.mutually_allied(cam, anarchs),
+        "Allied counts when both declare it"
+    );
+    assert_eq!(st.stance(sabbat, cam), Stance::Hostile);
+    assert_eq!(st.stance(cam, sabbat), Stance::Neutral);
+    assert_eq!(st.stances.len(), 3);
+    // `+faction` shows the rows.
+    let text = joined(&run(&mut engine, ann, "+faction Camarilla"));
+    assert!(text.contains("Stance toward Anarchs: Hostile."), "{text}");
+    assert!(
+        text.contains("Anarchs stands Allied toward it (unreciprocated)."),
+        "{text}"
+    );
+    assert!(text.contains("Sabbat stands Hostile toward it."), "{text}");
+
+    // The rows round-trip.
+    let store = InMemoryStore::new();
+    futures::executor::block_on(async {
+        store
+            .write(WriteBatch {
+                serial: 1,
+                module_ops: ops,
+                ..WriteBatch::default()
+            })
+            .await
+            .unwrap();
+    });
+    let engine2 = reboot_from_store(&store);
+    assert_eq!(
+        state(&engine),
+        state(&engine2),
+        "the stance rows round-trip"
+    );
+
+    // A destroyed faction takes its rows with it.
+    let text = joined(&run(&mut engine, GOD, "@faction/destroy Sabbat"));
+    assert!(text.contains("Destroyed faction Sabbat"), "{text}");
+    let deleted = engine.take_module_ops();
+    assert!(
+        deleted.iter().any(|op| matches!(
+            &op.op,
+            ModuleWrite::Del { key } if key.starts_with("stance:")
+        )),
+        "{deleted:?}"
+    );
+    assert_eq!(state(&engine).stances.len(), 2);
+    assert_eq!(state(&engine).stance(sabbat, cam), Stance::Neutral);
+}
