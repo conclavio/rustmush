@@ -111,14 +111,47 @@ fn tv_word(rest: &str) -> bool {
     if !number(rig, 2) {
         return false;
     }
-    let (tail, _) = split_go(tail);
-    let Some(after) = tail
+    let (tail, go) = split_go(tail);
+    if let Some(after) = tail
         .strip_prefix("pickup")
         .or_else(|| tail.strip_prefix("scrap"))
-    else {
+    {
+        return after.is_empty() || after.strip_prefix(' ').is_some_and(|n| number(n, 10));
+    }
+    tender_tail(tail, go)
+}
+
+/// **The tender's words** (doc 41 cut RS.1): `stores`, `stores open [go]`, `stores load <qty>
+/// <good> [go]`, `unjam|rearm #<unit>[=<part>] [go]` and `stabilize #<unit>[=<section>]
+/// [<points>|all] [go]`.
+fn tender_tail(tail: &str, go: bool) -> bool {
+    if tail == "stores" {
+        return !go;
+    }
+    if tail == "stores open" {
+        return true;
+    }
+    if let Some(load) = tail.strip_prefix("stores load ") {
+        return load
+            .split_once(' ')
+            .is_some_and(|(qty, good)| number(qty, 4) && word(good));
+    }
+    let Some((verb, args)) = tail.split_once(' ') else {
         return false;
     };
-    after.is_empty() || after.strip_prefix(' ').is_some_and(|n| number(n, 10))
+    let (target, points) = match (verb, args.split_once(' ')) {
+        ("stabilize", Some((target, points))) => (target, Some(points)),
+        (_, Some(_)) => return false,
+        (_, None) => (args, None),
+    };
+    let unit = |s: &str| s.strip_prefix('#').is_some_and(|id| number(id, 10));
+    let aimed = match target.split_once('=') {
+        Some((u, which)) => unit(u) && word(which),
+        None => unit(target),
+    };
+    aimed
+        && matches!(verb, "unjam" | "stabilize" | "rearm")
+        && points.is_none_or(|p| p == "all" || number(p, 4))
 }
 
 /// Everything after `+salvage/`.
@@ -371,6 +404,15 @@ mod tests {
             "+tv/1 scrap",
             "+tv/1 scrap go",
             "+tv/12 scrap 90210",
+            // Doc 41 cut RS.1: the tender's words.
+            "+tv/2 stores",
+            "+tv/2 stores open go",
+            "+tv/2 stores load 20 ammo_he_105 go",
+            "+tv/2 unjam #812",
+            "+tv/2 unjam #812=cannon go",
+            "+tv/2 stabilize #812=hull all go",
+            "+tv/2 stabilize #812 40",
+            "+tv/2 rearm #812=cannon go",
             "+salvage",
             "+salvage/claim #812",
             "+salvage/claim Salt Moth go",
@@ -409,6 +451,11 @@ mod tests {
         for line in [
             "+tv/0 scrap",
             "+tv/100 scrap",
+            "+tv/2 stores go",
+            "+tv/2 stores load 0 ammo_he_105",
+            "+tv/2 unjam Salt Moth",
+            "+tv/2 rearm #812 40",
+            "+tv/2 stabilize #812=Hull",
             "+tv/1 scrap 007",
             "+tv/1 scrap go go",
             "+tv/1 scrap go 4",

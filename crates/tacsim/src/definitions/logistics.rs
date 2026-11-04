@@ -101,7 +101,53 @@ pub struct LogisticsDef {
     /// never plans a passage.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub drive: Option<DriveDef>,
+    /// **The tender role** (doc 41 cut RS.1, Q-41-1): the stowage compartment its stores ride in
+    /// and its service reach. `None` for every unit that tends nothing.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub tender: Option<TenderDef>,
+    /// **The tow coupling it carries** (doc 41 cut RS.1, Q-41-27): `standard` unless authored.
+    #[serde(default, skip_serializing_if = "RecoveryProfile::is_standard")]
+    pub recovery_profile: RecoveryProfile,
 }
+
+/// The longest service reach a tender may author, cm (a site cell's diagonal and then some).
+pub const MAX_TENDER_REACH_CM: u32 = 10_000;
+
+/// **A tender's role** (doc 41 cut RS.1; §4.1, Q-41-1): its stores and its reach.
+#[derive(Clone, Debug, Eq, PartialEq, Serialize, Deserialize)]
+#[serde(deny_unknown_fields)]
+pub struct TenderDef {
+    /// The stowage compartment that holds its stores: one of [`LogisticsDef::stowage`], and it
+    /// accepts `stow.bulk` (munitions, alloys and fittings).
+    pub stores: CanonicalId,
+    /// How far it reaches to tend, cm; `1..=`[`MAX_TENDER_REACH_CM`].
+    pub reach_cm: u32,
+}
+
+/// **The tow coupling a unit carries** (doc 41 cut RS.1; §4.8, Q-41-27), authored as
+/// `logistics.recovery_profile`; mush-tactics' `TowRigProfile` carries its cap and speed.
+#[derive(Clone, Copy, Debug, Default, Eq, PartialEq, Serialize, Deserialize)]
+#[serde(rename_all = "snake_case")]
+pub enum RecoveryProfile {
+    /// Any mobile unit's coupling: 2×.
+    #[default]
+    Standard,
+    /// A dedicated recovery rig: 3× (provisional).
+    RecoveryOptimized,
+    /// A heavy crawler: 2× at the optimized speed.
+    Heavy,
+}
+
+impl RecoveryProfile {
+    /// Whether it is the default, so a definition omits it.
+    #[must_use]
+    pub const fn is_standard(&self) -> bool {
+        matches!(self, Self::Standard)
+    }
+}
+
+/// The stowage tag a tender's stores must accept.
+pub const TENDER_STORES_TAG: &str = "stow.bulk";
 
 /// **One stowage compartment**: the stowage tags it accepts and doc 06 D3's
 /// measure map of its limits (doc 18 §4.2, §4.3).
@@ -341,6 +387,40 @@ impl LogisticsDef {
                         ));
                     }
                 }
+            }
+        }
+        // Doc 41 cut RS.1 (Q-41-1): a tender's stores are one of its compartments, and take bulk.
+        if let Some(tender) = &self.tender {
+            let Some(stores) = self.stowage.get(&tender.stores) else {
+                return Err(DefinitionError::value(
+                    entry,
+                    format!(
+                        "logistics.tender.stores names `{}`, which is not one of its compartments",
+                        tender.stores
+                    ),
+                ));
+            };
+            if !stores
+                .accepts
+                .iter()
+                .any(|tag| tag.as_str() == TENDER_STORES_TAG)
+            {
+                return Err(DefinitionError::value(
+                    entry,
+                    format!(
+                        "logistics.tender.stores `{}` does not accept {TENDER_STORES_TAG}",
+                        tender.stores
+                    ),
+                ));
+            }
+            if tender.reach_cm == 0 || tender.reach_cm > MAX_TENDER_REACH_CM {
+                return Err(DefinitionError::value(
+                    entry,
+                    format!(
+                        "logistics.tender.reach_cm is 1 to {MAX_TENDER_REACH_CM}; {} is not",
+                        tender.reach_cm
+                    ),
+                ));
             }
         }
         // Doc 18 §4.2: "a rail at or above the stowage maxima plus occupants".

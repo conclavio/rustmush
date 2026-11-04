@@ -119,6 +119,8 @@ pub(crate) fn tick(ctx: &mut Ctx<'_>, _tag: &str, _scene: Option<mush_core::Scen
         // GC.1b takes it in.
         super::carrier::note_arrivals(ctx, &site);
         super::carrier::join_arrivals(ctx, &site);
+        // Doc 40 cut FR.3 (§4.4): a launch landed at its ramp, or sent back aboard, joins.
+        super::carrier::join_launches(ctx, &site);
         let busy = ctx.w.module_state::<FieldBook>().is_none_or(|book| {
             book.hosted(&site).is_some() || book.pending(&site) || book.closing.contains(&site)
         });

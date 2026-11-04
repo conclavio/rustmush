@@ -1780,16 +1780,41 @@ enum Act {
         /// Committed.
         go: bool,
     },
+    /// **Doc 41 cut RS.1**: `+tv[/<n>] unjam|stabilize|rearm|stores …` (the tender's).
+    Tend(crate::surface::tender::TendAct),
 }
 
 /// The act words a `+tv` switch or first word may name (the lease's, the acts', and since doc
 /// 20 cut SM.4a `scan` with its alias `survey`, `sound`, `forget` and `quiet`; since SM.4b
 /// `drive` and `map`; since SM.7 `mine` with its alias `drill`; since SM.8 `unload`; since SM.11
 /// `plan`; since doc 36 cut GC.4 `tow`, `release` and `load`, since GC.5 `pickup`, and since
-/// GC.6 `scrap`, as first words).
-const ACT_WORDS: [&str; 20] = [
-    "lease", "launch", "recover", "dump", "scan", "survey", "sound", "forget", "quiet", "drive",
-    "map", "mine", "drill", "unload", "plan", "tow", "release", "load", "pickup", "scrap",
+/// GC.6 `scrap`, as first words; since doc 41 cut RS.1 the tender's `unjam`, `stabilize`, `rearm`
+/// and `stores`).
+const ACT_WORDS: [&str; 24] = [
+    "lease",
+    "launch",
+    "recover",
+    "dump",
+    "scan",
+    "survey",
+    "sound",
+    "forget",
+    "quiet",
+    "drive",
+    "map",
+    "mine",
+    "drill",
+    "unload",
+    "plan",
+    "tow",
+    "release",
+    "load",
+    "pickup",
+    "scrap",
+    "unjam",
+    "stabilize",
+    "rearm",
+    "stores",
 ];
 
 /// **`/show`** (doc 20 cut SM.11; the brief's D11): a switch accepted only beside `plan`, so the
@@ -2060,6 +2085,11 @@ fn parse_parts(has: &dyn Fn(&str) -> bool, raw: &str) -> Result<(Option<u8>, Act
                     Act::Pickup { object, go }
                 },
             ));
+        }
+        // Doc 41 cut RS.1: the tender's verbs (`crate::surface::tender::parse`).
+        "unjam" | "stabilize" | "rearm" | "stores" => {
+            let rest: Vec<String> = next.take().into_iter().chain(words.by_ref()).collect();
+            return Ok((slot, Act::Tend(crate::surface::tender::parse(&act, &rest)?)));
         }
         // Doc 20 cut SM.8 (the brief's 3.5): `unload [<t>] [go]` — at most one whole tonnage
         // (`1..=99`, decimal digits only), then `go`; anything else is `UNLOAD_USAGE`.
@@ -2416,6 +2446,20 @@ pub(crate) fn tv_cmd(ctx: &mut Ctx<'_>) -> Result<(), CmdError> {
             crate::surface::site_record::field_gate(ctx, rig.hull)?;
             crate::surface::tow::act_gate(ctx, &rig, false)?;
             crate::surface::salvage::pickup_cmd(ctx, &rig, object, go)
+        }
+        // Doc 41 cut RS.1: the tender's verbs; the stores' in the bay or on the ground, the work
+        // on the open ground only.
+        Act::Tend(act) => {
+            let word = match &act {
+                crate::surface::tender::TendAct::Work { verb, .. } => verb,
+                _ => "stores",
+            };
+            let rig = select_word(ctx, slot, word).map_err(CmdError::msg)?;
+            if matches!(act, crate::surface::tender::TendAct::Work { .. }) {
+                crate::surface::site_record::field_gate(ctx, rig.hull)?;
+                crate::surface::tow::act_gate(ctx, &rig, false)?;
+            }
+            crate::surface::tender::tend_cmd(ctx, &rig, act)
         }
         // Doc 36 cut GC.6: remains broken up where they lie, on the open ground only.
         Act::Scrap { object, go } => {

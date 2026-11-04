@@ -318,12 +318,21 @@ async fn b36a_2_a_doomed_order_is_refused_at_the_counter() {
         "nothing was taken: {:?}",
         bay_record(&rig, escort)
     );
+    // Doc 39 cut IN.6: one part from the workshop's stores an order, so the cannon alone.
     let taken = run(
         &mut rig.tw,
         pilot,
-        &format!("+bay/order #{}=rebuild,replace", escort.0),
+        &format!("+bay/order #{}=rebuild,cannon", escort.0),
     );
     assert!(taken.contains("taken in the workshop"), "{taken}");
+    // The order's hold on the store's lot lands first (no cancel while it settles).
+    for _ in 0..8 {
+        if bay_record(&rig, escort).owed.is_none() {
+            break;
+        }
+        let (_, queued) = fire(&mut rig);
+        land_quietly(&mut rig, &queued);
+    }
     let cancelled = run(&mut rig.tw, pilot, &format!("+bay/cancel #{}", escort.0));
     assert!(cancelled.contains("cancelled"), "{cancelled}");
 }

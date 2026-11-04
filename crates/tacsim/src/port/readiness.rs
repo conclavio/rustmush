@@ -779,6 +779,12 @@ fn seeded_rows(
             continue;
         };
         total = total.saturating_add(receipt.qty);
+        // Doc 39 cut IN.6: a part row's lots are never dissolved (each is an identified part in
+        // the workshop's stores), so its receipt alone seeds it.
+        if crate::port_tick::is_part(&stock.good) {
+            seeded = seeded.saturating_add(1);
+            continue;
+        }
         let standing = ctx
             .action_state(&inventory.lots, &mush_inventory::record::LotId(receipt.lot))
             .map_err(|_| ())?;
@@ -905,7 +911,12 @@ fn commerce_lines(
     // ---- listings, per ask ----
     for vendor in &def.vendors {
         let org = &vendor.org;
-        for ask in &vendor.asks {
+        // Doc 39 cut IN.6: a part ask is a listing a lot, never a pool's (`seeded_rows`).
+        for ask in vendor
+            .asks
+            .iter()
+            .filter(|ask| !crate::port_tick::is_part(&ask.good))
+        {
             let good = &ask.good;
             let unit = unit_word(goods, good);
             let head = format!("{entry} ask {org} {good}");

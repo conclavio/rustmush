@@ -3370,6 +3370,7 @@ mod tests {
             sortie: None,
             field_crew: None,
             field_work: None,
+            bale: None,
             claim: None,
         };
         let over = u32::try_from(MAX_EXCURSIONS_VISITED_PER_FIRE).expect("fits") + 6;
@@ -3432,6 +3433,7 @@ mod tests {
             sortie: None,
             field_crew: None,
             field_work: None,
+            bale: None,
             claim: None,
         };
         let stuck = u32::try_from(MAX_EXCURSIONS_VISITED_PER_FIRE).expect("fits");
@@ -3604,6 +3606,7 @@ mod tests {
             sortie: None,
             field_crew: None,
             field_work: None,
+            bale: None,
             claim: None,
         };
         let state = SurfaceTickState::default();
@@ -3728,6 +3731,7 @@ mod tests {
             sortie: None,
             field_crew: None,
             field_work: None,
+            bale: None,
             claim: None,
         }
     }
