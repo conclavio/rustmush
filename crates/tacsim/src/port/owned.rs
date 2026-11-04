@@ -457,6 +457,21 @@ fn carrier_bay_of(w: &World, tv: ObjId) -> Option<(ObjId, ObjId)> {
         .then(|| (view.hull(), space))
 }
 
+/// **The carrier a titled rig belongs to now**: the one whose bay she rides, else — out on the
+/// ground — the hull of her last act (her `tacsim:tv:{tv}` projection) and the slot she launched
+/// from.
+fn home_of(w: &World, tv: ObjId) -> Option<(ObjId, Option<u8>)> {
+    if let Some((carrier, _)) = carrier_bay_of(w, tv) {
+        return Some((carrier, None));
+    }
+    match w.module_state::<TacsimStore>()?.tv_rec(tv)? {
+        crate::surface::excursion::TvRecState::Present(rec) => {
+            rec.hull.map(|hull| (hull, Some(rec.slot)))
+        }
+        crate::surface::excursion::TvRecState::Unreadable => None,
+    }
+}
+
 /// **Who has the run of `carrier`** (doc 36a P1-2's predicate, as the rig's view reads it): her
 /// helm holder, else the character her register title names.
 fn runner_of(w: &World, carrier: ObjId) -> Option<ObjId> {
@@ -483,7 +498,7 @@ fn runner_of(w: &World, carrier: ObjId) -> Option<ObjId> {
 #[must_use]
 pub fn title_view_for(w: &World, tv: ObjId, pilot: ObjId) -> Option<crate::port::tv::TvLease> {
     let rig = rig_row(w, tv)?;
-    let (carrier, _) = carrier_bay_of(w, tv)?;
+    let (carrier, launched) = home_of(w, tv)?;
     if !titled_for(w, tv, pilot) {
         return None;
     }
@@ -504,10 +519,13 @@ pub fn title_view_for(w: &World, tv: ObjId, pilot: ObjId) -> Option<crate::port:
                 .collect()
         })
         .unwrap_or_default();
-    let mut slot = 1u8;
-    while taken.contains(&slot) {
-        slot = slot.saturating_add(1);
-    }
+    let slot = launched.unwrap_or_else(|| {
+        let mut slot = 1u8;
+        while taken.contains(&slot) {
+            slot = slot.saturating_add(1);
+        }
+        slot
+    });
     let mut record = crate::port::tv::TvLease::house_view(tv, &rig.mark, pilot, carrier, slot);
     record.hold = hold;
     Some(record)
@@ -516,7 +534,7 @@ pub fn title_view_for(w: &World, tv: ObjId, pilot: ObjId) -> Option<crate::port:
 /// **A titled rig's view** for whoever has the run of its carrier ([`title_view_for`]).
 #[must_use]
 pub fn title_view(w: &World, tv: ObjId) -> Option<crate::port::tv::TvLease> {
-    let (carrier, _) = carrier_bay_of(w, tv)?;
+    let (carrier, _) = home_of(w, tv)?;
     title_view_for(w, tv, runner_of(w, carrier)?)
 }
 
@@ -525,7 +543,7 @@ pub fn title_view(w: &World, tv: ObjId) -> Option<crate::port::tv::TvLease> {
 pub fn title_views_on(w: &World, carrier: ObjId) -> Vec<crate::port::tv::TvLease> {
     rows(w)
         .filter_map(|row| row.rig().map(|_| row.hull))
-        .filter(|tv| carrier_bay_of(w, *tv).is_some_and(|(on, _)| on == carrier))
+        .filter(|tv| home_of(w, *tv).is_some_and(|(on, _)| on == carrier))
         .filter_map(|tv| title_view(w, tv))
         .collect()
 }

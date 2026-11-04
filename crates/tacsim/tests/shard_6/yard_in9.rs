@@ -532,3 +532,340 @@ async fn in9_the_yard_builds_a_dray_p_and_an_escort_and_hands_them_over() {
     );
     let _ = ic_now(&rig.tw);
 }
+
+// ---- the ground half --------------------------------------------------------------------------
+
+/// **A free captain**: enrolled for the account, the charter handed straight back, minted, and
+/// moved to Stickney's Service Counter (a fixture standing for a passage).
+fn free_captain(rig: &mut Rig, who: &str, seed: i64) -> ObjId {
+    let captain = pilot(rig, who, seed);
+    let out = run(&mut rig.tw, captain, "+coop/enrol Long Ox");
+    assert!(out.contains("now the Long Ox"), "{out}");
+    let out = run(&mut rig.tw, captain, "+coop/release");
+    assert!(
+        tacsim::port::live_charter(rig.tw.world(), captain).is_none(),
+        "the charter is handed back: {out}"
+    );
+    mint(rig, captain);
+    let floor = station_room(&rig.tw, STICKNEY, "room.p11_service");
+    teleport(&mut rig.tw, captain, floor);
+    captain
+}
+
+/// **The Stickney yard** (the seed until lane v24 authors the row): a two-slot facility of the
+/// Yards on the Service Counter's floor, Public, a 10M slipway over thirty years.
+fn open_yard(rig: &mut Rig) -> ObjId {
+    let floor = station_room(&rig.tw, STICKNEY, "room.p11_service");
+    let yard = made(rig, "Stickney slipway");
+    rig.tw
+        .world_mut()
+        .move_to(yard, floor)
+        .expect("the yard onto the floor");
+    let vendor = port_map(&rig.tw, STICKNEY).vendors[&cid("stickney_yards")]
+        .vendor
+        .expect("the yard's vendor");
+    let yards = rig
+        .tw
+        .world()
+        .module_state::<mush_market::MarketStore>()
+        .and_then(|m| m.vendor(mush_market::VendorId(vendor)).map(|v| v.org))
+        .expect("the yard's org");
+    for line in [
+        format!("@facility/open {}=2 tacsim.yard", yard.0),
+        format!("@facility/owner {}=org:{}", yard.0, yards.0),
+        format!(
+            "@facility/terms {}=public 10000000/30/20/12/150/250",
+            yard.0
+        ),
+    ] {
+        let out = run(&mut rig.tw, GOD, &line);
+        assert!(!out.contains("Usage"), "{line}: {out}");
+    }
+    floor
+}
+
+/// **One hull built and handed over**: `+yard/order <design>`, its bill laid in the escrow (the
+/// fixture), its days stepped, `+yard/collect`; the commission's record, finished.
+fn build(
+    rig: &mut Rig,
+    captain: ObjId,
+    design: &str,
+    bulk: (u64, u64),
+    parts: &[&str],
+    lot: u64,
+) -> YardCommission {
+    let order = booked(rig, captain, &format!("+yard/order {design}"));
+    let escrow = VaultId(order);
+    seed_pool(rig, escrow, ALLOYS, bulk.0, LotId(lot));
+    seed_pool(rig, escrow, FITTINGS, bulk.1, LotId(lot + 1));
+    for (i, part) in parts.iter().enumerate() {
+        seed_lot(rig, escrow, part, 1, LotId(lot + 2 + i as u64));
+    }
+    settle(rig, 2);
+    let days = contract(rig, order).work_units.div_ceil(24);
+    days_on(rig, i64::try_from(days).expect("days"));
+    let _ = typed_in(rig, captain, &format!("+yard/collect {order}"), 3);
+    let done = commission(rig, order);
+    assert_eq!(done.step, Step::Done, "{done:?}");
+    done
+}
+
+/// The tug's tow on `entry`'s record.
+fn towing(rig: &mut Rig, entry: &str, tug: ObjId) -> Option<ObjId> {
+    crate::field_host_rig::site_record_at(rig, entry)
+        .and_then(|record| record.tows.towing(tug).map(|op| op.casualty()))
+}
+
+/// Seconds of ticks until `done`, at most `limit`.
+fn seconds_until(rig: &mut Rig, limit: u32, mut done: impl FnMut(&mut Rig) -> bool) -> bool {
+    for _ in 0..limit {
+        if done(rig) {
+            return true;
+        }
+        let _ = crate::field_host_rig::second(rig);
+    }
+    done(rig)
+}
+
+/// `line` as `who`, its one submission landed; the reply.
+fn go(rig: &mut Rig, who: ObjId, line: &str) -> String {
+    let (out, queued) = crate::driving_rig::command(rig, who, line);
+    assert_eq!(queued.len(), 1, "{line}: one submission: {out}");
+    crate::driving_rig::land(rig, &queued[0]).unwrap_or_else(|e| panic!("{line}: {e}"));
+    out
+}
+
+/// Staff destroy `unit`'s plant: a casualty (GC.4's fixture, standing for a fight).
+fn powerless(rig: &mut Rig, unit: ObjId) {
+    crate::driving_rig::staff_hand(rig, |ctx| {
+        let plan = mush_tactics::UnitMutationPlan::new(
+            vec![mush_tactics::UnitMutationOp::SetComponentCondition {
+                component: mush_tactics::unit::ComponentId::new("power").expect("an id"),
+                condition: mush_tactics::ConditionId::new("destroyed").expect("a condition"),
+            }],
+            None,
+            Some(smol_str::SmolStr::new_static("test:in9-powerless")),
+        )
+        .expect("a plan");
+        mush_tactics::module::apply_plan(ctx, unit, &plan).expect("applied");
+    });
+}
+
+/// Sail `hull` from where `pilot` stands aboard her with `line`, to the landing and an hour on.
+fn sail(rig: &mut Rig, pilot: ObjId, hull: ObjId, line: &str, entry: &str) {
+    let t = crate::driving_rig::file_and_launch(rig, pilot, hull, line);
+    let _ = crate::driving_rig::to_ic(rig, t.plan.depart_ic + t.plan.total_s);
+    let _ = crate::driving_rig::to_ic(rig, t.plan.depart_ic + t.plan.total_s + 3_600);
+    assert!(
+        matches!(tacsim::port::ship::berth_of(rig.tw.world(), hull),
+            tacsim::port::ship::Berth::Docked { map, .. } if map.entry.as_str() == entry),
+        "{line}: docked at {entry}"
+    );
+}
+
+/// **The yard's hulls on the ground** (the row's second half): the escort the yard built rides
+/// the yard-built Dray-P to the site, boards and launches; a second carrier's tug tows her in
+/// when she is disabled; and that carrier's programme Dray-P is bought out at Ceres with the
+/// titled rig still in her bay.
+#[allow(clippy::too_many_lines)]
+async fn ground_leg(ground: &crate::grounds_rig::Ground) {
+    let mut rig = crate::driving_rig::stocked_tuned(|cfg| {
+        crate::field_host_rig::tune(cfg);
+        cfg.recovery.inspect_s = 30;
+        cfg.recovery.attach_s = 30;
+        cfg.recovery.load_s = 60;
+    });
+    // The second carrier: a chartered Dray-P on the pad with one leased rig.
+    let (salvor, salvor_row, salvor_tvs) = crate::driving_rig::on_pad_with_at(
+        &mut rig,
+        ("Salvor", 2, "Grey Wren"),
+        ground.site(),
+        |rig, pilot| {
+            mint(rig, pilot);
+            crate::driving_rig::lease_one(rig, pilot);
+        },
+    );
+    let (salvor_hull, tug) = (ObjId(salvor_row.hull), salvor_tvs[0]);
+
+    // The captain, the yard, the Dray-P and the escort, built at Stickney.
+    let captain = free_captain(&mut rig, "Builder", 1);
+    let _ = open_yard(&mut rig);
+    let dray = build(
+        &mut rig,
+        captain,
+        "dray_p",
+        (163, 55),
+        &["tacsim.part.plant.hauler_mk1"],
+        9_800,
+    )
+    .object()
+    .expect("the Dray-P");
+    let escort = build(
+        &mut rig,
+        captain,
+        "tv_escort",
+        (3, 1),
+        &[
+            "tacsim.part.weapon.cannon_105",
+            "tacsim.part.weapon.mg_coax",
+            "tacsim.part.sensor.visual_mk1",
+            "tacsim.part.plant.vehicle_mk1",
+        ],
+        9_810,
+    )
+    .object()
+    .expect("the escort");
+    let out = typed_in(
+        &mut rig,
+        captain,
+        &format!("+bay/stow #{}=#{}", escort.0, dray.0),
+        1,
+    );
+    assert!(out.contains("is stowed in the"), "{out}");
+
+    // Aboard her at Stickney's gallery, and to the site by Ceres.
+    let row = tacsim::port::owned::ship_row(rig.tw.world(), dray)
+        .cloned()
+        .expect("the Dray-P's row");
+    crate::driving_rig::load(&mut rig, &row, 80, 120, 9_830);
+    let gallery = station_room(&rig.tw, STICKNEY, "room.p01_berth_gallery");
+    teleport(&mut rig.tw, captain, gallery);
+    let out = run(&mut rig.tw, captain, "+ship/board");
+    assert!(out.contains("You cycle the lock into the "), "{out}");
+    sail(&mut rig, captain, dray, "+ship/undock ceres", "ceres_port");
+    sail(
+        &mut rig,
+        captain,
+        dray,
+        &format!("+ship/undock {}", ground.venue),
+        ground.entry,
+    );
+    crate::driving_rig::warm(&mut rig);
+
+    // `+tv/1 board` and `launch` on the ground, by the title view.
+    // From the airlock to the hold, then the internal bay access (`escort_lease`'s walk).
+    for step in ["inner", "hold"] {
+        let _ = run(&mut rig.tw, captain, step);
+    }
+    let bay = run(&mut rig.tw, captain, "+tv/bay in");
+    assert!(bay.contains("entered vehicle bay"), "{bay}");
+    let out = run(&mut rig.tw, captain, "+tv/1 board");
+    assert!(
+        out.contains("You are at rig 1's"),
+        "the title holder boards: {out}"
+    );
+    let out = run(&mut rig.tw, captain, "+tv/1 leave");
+    assert!(out.contains("give back your rig billet"), "{out}");
+    let _ = crate::driving_rig::act_go(&mut rig, captain, "+tv/1 launch go");
+    let _ = crate::driving_rig::finish(&mut rig, escort, captain);
+    assert!(
+        matches!(
+            crate::driving_rig::parent(&rig.tw, escort),
+            mush_sim::data::SpatialParent::Direct { .. }
+        ),
+        "the escort stands on {}'s ground",
+        ground.entry
+    );
+
+    // Disabled and left on the index (GC.6's staff fixture, standing for a fight); the second
+    // carrier's tug takes her in tow and loads her into its own bay.
+    powerless(&mut rig, escort);
+    let escort_cell = mush_sim::pose_of(rig.tw.world(), escort)
+        .map(|(_, at)| (at.x_cm.div_euclid(1_000), at.y_cm.div_euclid(1_000)))
+        .expect("the escort's cell");
+    let s = crate::site_record_rig::staff_member(&mut rig);
+    crate::site_record_rig::staff(
+        &mut rig,
+        s,
+        &format!(
+            "@tacsim/site {} leave #{} casualty {},{}",
+            ground.entry, escort.0, escort_cell.0, escort_cell.1
+        ),
+    );
+    let _ = crate::driving_rig::act_go(&mut rig, salvor, "+tv/1 launch go");
+    let _ = crate::driving_rig::finish(&mut rig, tug, salvor);
+    let at = crate::driving_rig::ramp_at(&rig.tw, ground.entry);
+    crate::driving_rig::to_cell_on(
+        &mut rig,
+        ground.entry,
+        tug,
+        (escort_cell.0 + 1, escort_cell.1),
+    );
+    let out = go(&mut rig, salvor, &format!("+tv/1 tow #{} go", escort.0));
+    assert!(
+        seconds_until(&mut rig, 120, |rig| towing(rig, ground.entry, tug)
+            == Some(escort)),
+        "the tow attaches: {out}"
+    );
+    crate::driving_rig::to_cell_on(
+        &mut rig,
+        ground.entry,
+        tug,
+        (at.0.div_euclid(1_000), at.1.div_euclid(1_000)),
+    );
+    let out = go(&mut rig, salvor, "+tv/1 load go");
+    let in_bay = |rig: &mut Rig| {
+        matches!(
+            crate::driving_rig::parent(&rig.tw, escort),
+            mush_sim::data::SpatialParent::Interior { .. }
+        )
+    };
+    assert!(
+        seconds_until(&mut rig, 180, in_bay),
+        "the load lands: {out}"
+    );
+    let carrier = tacsim::port::bay_work::facility_of(rig.tw.world(), escort)
+        .ok()
+        .and_then(|f| f.carrier);
+    eprintln!(
+        "recovered into {carrier:?} (salvor #{}, dray #{})",
+        salvor_hull.0, dray.0
+    );
+    assert_eq!(
+        carrier,
+        Some(salvor_hull),
+        "the second carrier recovered her"
+    );
+
+    // The programme Dray-P sails home and is bought out with the titled rig in her bay.
+    let _ = go(&mut rig, salvor, "+tv/1 recover go");
+    let _ = crate::driving_rig::finish(&mut rig, tug, salvor);
+    sail(
+        &mut rig,
+        salvor,
+        salvor_hull,
+        "+ship/undock ceres",
+        "ceres_port",
+    );
+    let out = run(&mut rig.tw, salvor, "+ship/leave");
+    assert!(out.contains("cycle the lock out"), "{out}");
+    // Her own leased tug goes back to Occator; the titled escort stays in her bay.
+    crate::driving_rig::at_counter(&mut rig, salvor);
+    let out = run(&mut rig.tw, salvor, "+tv/lease return go");
+    assert!(out.contains("back across Occator's counter"), "{out}");
+    let desk = station_room(&rig.tw, "ceres_port", "room.c05_registry");
+    teleport(&mut rig.tw, salvor, desk);
+    mint(&mut rig, salvor);
+    let out = run(&mut rig.tw, salvor, "+coop/buyout");
+    assert!(
+        !out.contains("is still in the") && out.contains("writes the title transfer"),
+        "the titled rig in her bay does not refuse the buyout: {out}"
+    );
+    assert!(
+        matches!(
+            crate::driving_rig::parent(&rig.tw, escort),
+            mush_sim::data::SpatialParent::Interior { .. }
+        ),
+        "the escort still rides her bay"
+    );
+}
+
+#[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+async fn in9_ahuna_the_yard_built_escort_boards_launches_and_is_recovered() {
+    ground_leg(&crate::grounds_rig::AHUNA_FLANK).await;
+}
+
+#[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+async fn in9_urvara_the_yard_built_escort_boards_launches_and_is_recovered() {
+    ground_leg(&crate::grounds_rig::URVARA_REACH).await;
+}

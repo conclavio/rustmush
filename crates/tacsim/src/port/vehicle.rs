@@ -413,6 +413,18 @@ pub(crate) fn rig_tools(w: &World, tv: ObjId) -> Vec<CanonicalId> {
     if let Some(terms) = rig_terms(w, tv) {
         return terms.tools.to_vec();
     }
+    // Doc 39 cut IN.9: a commissioned rig carries the tools of the pool design it was built to.
+    if let Some(owned) = crate::port::owned::owned(w, tv)
+        && let Some(tools) = crate::port::coop::programme_port(w).and_then(|port| {
+            port.def.vehicles.as_deref().and_then(|pool| {
+                pool.all_terms()
+                    .find(|terms| *terms.unit == owned.design)
+                    .map(|terms| terms.tools.to_vec())
+            })
+        })
+    {
+        return tools;
+    }
     crate::port::coop::programme_port(w)
         .and_then(|port| port.def.vehicles.as_deref().map(|pool| pool.tools.clone()))
         .unwrap_or_default()
