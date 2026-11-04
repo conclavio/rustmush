@@ -41,6 +41,18 @@ on:
 permissions:
   contents: read
 
+# Doc 43 cut TS.15: a newer push to a pull request's branch cancels the run it
+# supersedes (18 of the last 100 PR runs finished superseded). Everything else
+# keeps every run: the bisect and the shard rebalances read main's JUnit run by
+# run. That is why the group is per-ref only for pull requests and per-run for
+# push, schedule and dispatch. GitHub keeps at most one running and one pending
+# run in a group, and a newer queued run cancels the pending one even with
+# `cancel-in-progress: false`, so one shared main group would still drop runs
+# whenever three pushes landed inside one run's hour (Q-43-14).
+concurrency:
+  group: ci-${{ github.event_name }}-${{ github.event_name == 'pull_request' && github.ref || github.run_id }}
+  cancel-in-progress: ${{ github.event_name == 'pull_request' }}
+
 env:
   CARGO_TERM_COLOR: always
   # No incremental artifacts on CI: nothing is rebuilt twice in one run, and
