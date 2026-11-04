@@ -205,7 +205,28 @@ pub(crate) fn site_population(
         .into_iter()
         .filter(|unit| !carried.contains_key(unit) && !super::admit::held_out(w, *unit))
         .collect();
-    record.map_or(units.len(), |record| counted(&units, record))
+    let ground = record.map_or(units.len(), |record| counted(&units, record));
+    // Doc 40 cut FR.3 (Q-40-24): the launches in flight — each live pending row whose hull is
+    // not on the ground yet, and each launch the field sent back aboard to join again — so two
+    // carriers one short of the cap cannot both put a hull down.
+    let mut flying: std::collections::BTreeSet<ObjId> = super::carrier::relaunching(w, site)
+        .into_iter()
+        .filter(|hull| !units.contains(hull))
+        .collect();
+    if let Some(record) = record {
+        let cycle_ic = super::config(w).launch_cycle_ic(w.world_timeline().current().rate);
+        flying.extend(
+            record
+                .pending_live(
+                    w.world_ic_now().at,
+                    crate::surface::excursion::LAUNCH_S,
+                    cycle_ic,
+                )
+                .map(|row| row.hull)
+                .filter(|hull| !units.contains(hull)),
+        );
+    }
+    ground.saturating_add(flying.len())
 }
 
 /// **Who sits in `unit`**: the first occupied station, by station id.

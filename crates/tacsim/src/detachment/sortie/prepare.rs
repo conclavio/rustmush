@@ -145,7 +145,13 @@ impl Snapshot {
         }
         for write in self.site_records {
             let key = write.after.key();
-            save(txn, &handles.ports.sites, &key, true, write.after)?;
+            save(
+                txn,
+                &handles.ports.sites,
+                &key,
+                write.before.is_some(),
+                write.after,
+            )?;
         }
         for write in flights {
             write.after.validate().map_err(runtime::error)?;
@@ -400,6 +406,7 @@ pub(super) fn snapshot(
                 .checked_add(1)
                 .ok_or("Flight revision exhausted.")?;
             let mut patch = Snapshot::new(*operation)?;
+            drop_pending(read, h, &mut patch, &flight)?;
             patch.flights.push(Write {
                 before: Some(flight),
                 after: next,
@@ -430,6 +437,7 @@ pub(super) fn snapshot(
                             .revision
                             .checked_add(1)
                             .ok_or("Flight revision exhausted.")?;
+                        drop_pending(read, h, &mut patch, &flight)?;
                         patch.flights.push(Write {
                             before: Some(flight),
                             after: next,
@@ -560,22 +568,56 @@ fn launch(
         &h.ports.sites,
         &crate::surface::site_record::SiteKey(berth.entry.clone()),
     )?;
-    // Doc 32 cut CF.2 (Q-CF-17): no launch onto a promoted site, with the reason.
-    if let Some(field) = site_record.as_ref().and_then(|record| record.open_field()) {
-        return Err(crate::surface::site_record::FIELD_LAUNCH
+    // Doc 40 cut FR.3 (Q-38-25, Q-40-19; CF.2's `FIELD_LAUNCH` retired): a launch goes down into
+    // a running field, one hull its carrier a launch cycle, so a bay cannot pour. A second launch
+    // inside the cycle is refused with the seconds left.
+    let now_ic = intent.ic.at;
+    let rate = world.world_timeline().current().rate;
+    let cycle_ic = crate::field::config(world).launch_cycle_ic(rate);
+    let launch_s = crate::surface::excursion::LAUNCH_S;
+    let field = site_record.as_ref().and_then(|record| record.open_field());
+    if let Some(field) = &field
+        && let Some(free) = site_record.as_ref().and_then(|record| {
+            record.cycle_free_at(roster.plan.carrier, now_ic, launch_s, cycle_ic)
+        })
+        && now_ic < free
+    {
+        let rate = i64::from(rate.max(1));
+        let seconds = (free - now_ic).saturating_add(rate - 1) / rate;
+        return Err(crate::surface::site_record::LAUNCH_CYCLE
             .replace("{ordinal}", &field.ordinal.to_string())
             .replace(
                 "{site}",
                 &crate::surface::act::site_name(world, &berth.entry),
-            ));
+            )
+            .replace(
+                "{carrier}",
+                &crate::port::coop::name_of(world, roster.plan.carrier),
+            )
+            .replace("{seconds}", &seconds.to_string()));
     }
     // Q-CF-21 (doc 36a §11 row 5): a launch that would put more on the ground than a field
     // holds is refused at the ramp with CF.2's line, counting everyone the next promotion would
-    // admit (`field::parties::site_population`), as the rig ramp's launch half counts.
+    // admit (`field::parties::site_population`), as the rig ramp's launch half counts — and,
+    // since doc 40 cut FR.3 (Q-40-24), every launch accepted and not yet down. A hull whose own
+    // launch is already pending is counted once.
     let cap = crate::field::config(world).max_units;
     let population =
         crate::field::parties::site_population(world, &berth.entry, site_record.as_ref());
-    if u32::try_from(population.saturating_add(slots.len())).unwrap_or(u32::MAX) > cap {
+    let already: BTreeSet<ObjId> = site_record
+        .as_ref()
+        .map(|record| {
+            record
+                .pending_live(now_ic, launch_s, cycle_ic)
+                .map(|row| row.hull)
+                .collect()
+        })
+        .unwrap_or_default();
+    let adding = slots
+        .iter()
+        .filter(|chosen| !already.contains(&chosen.unit))
+        .count();
+    if u32::try_from(population.saturating_add(adding)).unwrap_or(u32::MAX) > cap {
         return Err(crate::port::tv::CAP_SITE
             .replace("{cap}", &cap.to_string())
             .replace(
@@ -587,6 +629,12 @@ fn launch(
         &h.ports.epochs,
         &crate::port::epoch::EpochKey(roster.plan.carrier),
     )?;
+    // Doc 40 cut FR.3 (Q-40-24): the launch's own pending rows, on the site's record; into a
+    // running field each new slot opens its own cycle, one a cycle in slot order.
+    let mut site_after = site_record
+        .clone()
+        .unwrap_or_else(|| crate::surface::site_record::fresh_record(world, &berth.entry));
+    let mut cycles = 0_i64;
     for chosen in slots {
         let row = roster
             .plan
@@ -659,6 +707,25 @@ fn launch(
         if read.get(&h.flights, &key)?.is_some() {
             return Err("Flight identity is already present.".into());
         }
+        let accepted_ic = if field.is_some() {
+            let at = now_ic.saturating_add(cycles.saturating_mul(cycle_ic));
+            cycles = cycles.saturating_add(1);
+            at
+        } else {
+            now_ic
+        };
+        site_after
+            .add_pending(
+                crate::surface::site_record::PendingLaunch {
+                    hull: chosen.unit,
+                    carrier: roster.plan.carrier,
+                    accepted_ic,
+                },
+                now_ic,
+                launch_s,
+                cycle_ic,
+            )
+            .map_err(|why| why.sentence().to_owned())?;
         let flight = Flight {
             schema: 1,
             key,
@@ -674,7 +741,13 @@ fn launch(
             bay_room: berth.bay_room,
             bay_slot: berth.bay_slot.clone(),
             requested: intent.ic.clone(),
-            due: due(intent.ic.clone(), crate::surface::excursion::LAUNCH_S)?,
+            due: due(
+                ClockStamp {
+                    at: accepted_ic,
+                    ..intent.ic.clone()
+                },
+                launch_s,
+            )?,
             phase: Phase::Departing,
             epoch: None,
             carrier_epoch: ship.as_ref().and_then(|s| s.open.as_ref()).map(|o| o.id),
@@ -708,6 +781,13 @@ fn launch(
         patch
             .observations
             .push(json!({"unit":unit,"person":person,"ship":ship,"roster":roster}));
+    }
+    if site_record.as_ref() != Some(&site_after) {
+        site_after.check()?;
+        patch.site_records.push(Write {
+            before: site_record,
+            after: site_after,
+        });
     }
     Ok(patch)
 }
@@ -843,6 +923,37 @@ fn finish(
         after: next,
     });
     Ok(patch)
+}
+/// **The abort's half of the pending row** (doc 40 cut FR.3; Q-40-24, §4.4 step 5): a departure
+/// cancelled before its ramp drops its hull's pending launch from its site's record, in the
+/// cancel's own commit, so the one count and the carrier's cycle let it go at once. One commit
+/// cancelling several on one site writes that record once.
+fn drop_pending(
+    read: &mut impl Read,
+    h: &SortieHandles,
+    patch: &mut Snapshot,
+    flight: &Flight,
+) -> Result<(), String> {
+    let key = crate::surface::site_record::SiteKey(flight.site.clone());
+    if let Some(write) = patch
+        .site_records
+        .iter_mut()
+        .find(|write| write.after.key() == key)
+    {
+        write.after.drop_pending(flight.key.unit);
+        return Ok(());
+    }
+    let Some(record) = read.get(&h.ports.sites, &key)? else {
+        return Ok(());
+    };
+    let mut after = record.clone();
+    if after.drop_pending(flight.key.unit) {
+        patch.site_records.push(Write {
+            before: Some(record),
+            after,
+        });
+    }
+    Ok(())
 }
 fn link(op: &OperationRecord, flight: &Flight) -> crate::surface::black_box::DetachmentLink {
     crate::surface::black_box::DetachmentLink {

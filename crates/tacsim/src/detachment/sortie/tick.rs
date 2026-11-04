@@ -82,6 +82,10 @@ fn tick(ctx: &mut Ctx<'_>, _tag: &str, _scene: Option<SceneId>) {
             || !known_clock(ctx.w, &flight.due)
             || matches!(flight.phase, Phase::Departing | Phase::Returning)
                 && ctx.w.world_ic_now().at < flight.due.at
+            // Doc 40 cut FR.3 (Q-40-20): a launch the field sent back aboard is still on the
+            // surface; the field puts it down again, and its bay is no return.
+            || flight.phase == Phase::Field
+                && crate::field::carrier::relaunching_unit(ctx.w, flight.key.unit)
             || ctx.authoritative_pending(flight.continuation_actor())
             || acted.contains(&flight.continuation_actor())
         {
