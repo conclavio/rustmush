@@ -222,12 +222,7 @@ fn stand_up(rig: &mut Rig) -> (ObjId, ObjId, ObjId, ObjId) {
 }
 
 /// **CF.6c's gate** (doc 32 §14): lease, fly out, fight from the line cockpit, withdraw, return.
-///
-/// Ignored since #451: under the field rigs' pinned seed the intruder's first volley destroys the
-/// escort before it can withdraw (doc 40 cut notes, FR.5 "After merge"); its follow-up PR makes the
-/// fight survivable on purpose. Last green on CI at `4390f04c`.
 #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
-#[ignore = "doc 32 CF.6c: the escort dies to the first volley under the pinned field seed; follow-up to #451 (tier by-hand)"]
 #[allow(clippy::too_many_lines)]
 async fn cf6c_a_leased_escort_flies_out_fights_withdraws_and_goes_back() {
     // The field stays up while the escort drives home under fire's quiet.

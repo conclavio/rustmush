@@ -298,14 +298,6 @@ id = "mush-bot/tests::mining_cohort::in5_the_bot_mines_refines_and_sells_fitting
 tier = "by-hand"
 by_hand = "cdd30329"
 
-# Doc 32 CF.6c's gate, ignored by #451: under the field rigs' pinned seed (`FIELD_SEED`) the
-# intruder's first volley destroys the escort before it withdraws (40 cut notes, FR.5 "After
-# merge"). Last green on CI at 4390f04c; its follow-up PR makes the fight survivable and lifts it.
-[[test]]
-id = "tacsim/tests::escort_lease::cf6c_a_leased_escort_flies_out_fights_withdraws_and_goes_back"
-tier = "by-hand"
-by_hand = "4390f04c"
-
 # Doc 36 GC.12: the second measurement, after GC.2, on conclav.dev in release
 # (doc 36 "As built (GC.12)"); FIELD_MAX_UNITS was set from it.
 [[test]]
