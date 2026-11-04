@@ -97,3 +97,183 @@ Local (Windows, `-j 8`, a sibling build sharing the box): the two shard_2 storie
 of wall, both together, each about 60 s; the five lib tests 0.5 s. So shard_2's summed minutes
 rise by about 2 (11 → ~13 at `f146734e`'s figure), still the cell with the most room; the PR
 run's JUnit figure is the one rule #14 asks for, recorded in the PR body once its run lands.
+
+## S.4b-1 (2026-11-03) — the protocol's shape, the IC id, the hangar, the title rule (§17.3–§17.5, §17.10; D-23-11, D-23-14, D-23-15, D-23-21..23; Q-23-21, Q-23-22)
+
+Built on `claude/s4b-moving-anchors-c79caa` off `main` `a2ef4075`, one PR, wave 1 of doc 38 §9.
+S.4b is built in two slices (§17.10's "Built in two slices"). At `a2ef4075`:
+
+- (a) No world but the claim path's own test worlds composes the IC claim path. `with_ic_minds`
+  has no non-test caller, production boot composes no mind commerce, and neither the surface
+  harness nor the field harness composes it.
+- (b) The exclusion admitted an Open only into a `ConfiguredIcBase` on a `FixedDomain`.
+- (c) The book refused `SortieId::Ic` and read its ordinal off the seal.
+
+This slice builds what stands on its own. **Nothing in it is reachable by a player**: no world
+composes the claim path, so no `go` mints a permit and no cursor is written outside a test.
+
+- **D-23-22, the title rule** (`surface/dispatch.rs`, `untitled_refusal`, `MIND_UNTITLED`). A
+  filed mind that will fly (`Resolved::Held` with a licence) is refused at `go` with the one
+  sentence when the hull's economy title is not the operator's own and unscoped (`titled_to`,
+  the fields the Roll's `TitleFence` checks). The refusal comes after the word's own refusals
+  and before any seal.
+  - It applies **only where the claim path is composed**
+    (`minds::ic_sortie::claim_path_composed`: the seal owner's book is registered). The refusal
+    guards the claim's Open. Without the claim path the held mind is S.4a's dormant seal, which
+    opens nothing.
+  - Applied unconditionally, it would break doc 17h M8g's shipped stories, none of which opens a
+    claim: `m8_world.rs`'s tier-2 story flies `mind=filed:` over a leased rig, and the zero-PC
+    story flies over organisation-titled hulls.
+  - A draft opens no claim and a licence fallen to the ROM flies no mind, so neither is read.
+    Leases are S.4c's (D-23-22).
+- **The seals' armament** (`match_::seal_armament`; `seal_held`, `seal_rom`, the DT launch's
+  `epoch_facts`). Each now passes the hull's armament summaries, the same list the field's
+  `custody_unit` and `Execution::capture` pass, so a dispatch seal of an armed rig digests the
+  same as the field's (D-23-14). Draft 0.11 found every dispatch seal taken over an empty list.
+- **The book's ordinal and the IC id** (`minds/ic_sortie/records.rs`, `state.rs`, `audit.rs`,
+  `participant.rs`, `execution.rs`; round 2's 23-7).
+  - `Opening.transition: u64` is the book's ordinal, set by the participant's Open from
+    `next_transition`. The book's load orders by it and its `opening` checks it.
+  - `IcSortieOutput::sortie()` returns it. So the Roll's writer check `sortie() == transition()`,
+    the Roll's `SortieNumber`, and the `sortie` that tactics custody and the exclusion keep are
+    all unchanged.
+  - The Close's `transition > open` compares against it, and the audit compares it with the
+    Roll's `claim.sortie()`.
+  - The record format is 2 (`records::FORMAT`). Format 1 is refused, never migrated: this is
+    pre-launch and no claim exists.
+  - `Execution::validate` and the book accept `SortieId::Ic { hull, at_ic }` over the sealed
+    hull. They also accept the fixture's packed ordinal, which must equal `transition`.
+  - `StartPermit.sortie: Option<SortieId>` names the epoch the Open seals under (`None` is the
+    fixture's packed ordinal), and `Execution::capture` takes the id.
+- **The hangar** (`mush-sim` `ic_exclusion.rs`; D-23-11, D-23-15).
+  - `IcExclusionConfig::with_hangars(manifest, participants, bases)` admits an Open for a hull
+    `Interior` to the bay: a live interior anchored `MovingObject { host }` on a live carrier.
+    `bases` may be empty.
+  - The Open records `OpenImage.hangar: HangarImage { space, carrier }` beside `base`, with
+    exactly one of the two present. A row held in a base serializes as before, so its digest and
+    the claim path's own gate are unmoved.
+  - The ancestors' journey refusal covers the carrier. The boot checks require the hangar's
+    interior and carrier to stand.
+  - **The freeze is unchanged**: no placement write of the hull and no rewrite of its interior.
+    D-23-15's re-scope to re-anchoring isn't needed to admit an Open in a bay. It lands in S.4b-2
+    with the claim arm that moves a held hull down the ramp.
+  - `IcExclusionConfig::new`, the base-only composition, still refuses a bay.
+- **The protocol's types** (`surface/excursion.rs`; D-23-13, D-23-21, D-23-23).
+  - `RigRecord.claim: Option<Box<ClaimCursor>>`, serde default and skipped when `None`, so every
+    S.1–S.3 record decodes byte for byte. The states are `ClaimCursor::{Opening { operator,
+    licence, org, launch_ic, tries }, Open { open, operator }, Closing { open, kind, operator },
+    Closed { open, close }, Refused { reason, at_ic }}`. `ClaimCloseKind` carries the four close
+    kinds.
+  - `Queued.launch: Option<QueuedLaunch { launch_ic, mind, org }>`. `RigRecord::check` refuses it
+    until S.4b-2 queues one.
+  - The relaunch guard at `go`: a launch over a live cursor (`Opening`, `Open` or `Closing`) is
+    refused with `CLAIM_STILL_OPEN` ("that rig's mind claim is still open").
+- **The bot's vocabulary** (`mush-bot/src/mine/lines.rs`). `launch(n, word)` builds `+tv/<n>
+  launch mind=<word> go`, or the stock line with no word, and `MIND_UNTITLED` mirrors the game's
+  sentence. S.4b-2's licensed stories send it.
+- **The review-lane branch** `claude/youthful-kowalevski-168ddb` (`50cdbe03`) is already an
+  ancestor of `origin/main`. Its `prepare.rs` cap is on main, so nothing was folded.
+
+### The seams FR.3 lands on (doc 40 §4.4; D-23-23)
+
+Of doc 38 §9.2's one-writer files (`detachment/sortie/prepare.rs`, `field/carrier.rs`,
+`field/admit.rs`), this slice touches only `prepare.rs`, at the DT seal (one argument). The
+protocol's shape:
+
+1. **Step 1 (S.4b-2's).** `go` with a `mind=` word, where the claim path is composed, writes two
+   things in one bundle and answers `Queued.`; no act starts:
+   - `RigRecord.claim = Opening { operator, licence, org, launch_ic: <go's IC instant>,
+     tries: 0 }`;
+   - `RigRecord.queued = Queued { kind: Launch, launch: Some(QueuedLaunch { launch_ic, mind,
+     org }), .. }`.
+
+   The epoch's id `SortieId::ic(tv, launch_ic)` and the excursion's `ExcursionId { tv,
+   launch_ic }` are both fixed at `go`. The fire that observes the book's active row writes
+   `Open { open, operator }` and starts the queued launch. A refusal for good writes `Refused`
+   and clears the queue.
+2. **Step 2.** The queued launch starts as today's launch act (`LAUNCH_S`, the ramp).
+3. **Step 3 (FR.3's).** At the landing the field reads `RigRecord.claim`:
+   - `Some(Open { open, .. })`: S.4b-2's `custody_unit` takes the claim's seal from
+     `IcHost::resume(world, open)?.seal()`, and the join installs it with
+     `IcRetainedExecution::install`.
+   - Anything else (`None`, `Opening`, `Refused`, …): the ROM, as for every entrant today.
+
+   FR.3 can build its unlicensed half reading only `None`.
+4. **Step 4 (FR.3's).** A refused join goes back aboard with the cursor untouched. The bay is the
+   claim's hangar, and S.4b-2's re-scoped freeze admits that re-parent.
+5. **Step 5 (S.4b-2's).** A launch cancelled after `Open`, or a ramp that lands nobody, writes
+   `Closing { kind: PoweredDownInBase { base: <the hangar's hull> } }`. The next fire closes it.
+
+`ClaimCursor::is_live()` is the one predicate for "a claim is owed or held": the relaunch guard
+uses it now, and the seats' count will in S.4b-2. FR.3's `SiteRecord.pending` counts the queued
+launch from step 1 on, so a pending licensed launch is one pending row like any other.
+
+### Tests
+
+- **`tacsim` lib:**
+  - `surface::dispatch::tests::s4b1_the_dispatch_seals_an_armed_rig_over_its_armament`: the
+    escort's dispatch ROM seal equals `seal_rom_for` over its armament, and the empty list
+    digests differently.
+  - `surface::dispatch::tests::s4b1_a_licensed_mind_needs_the_hull_titled_where_claims_open`:
+    with no claim path nothing is read; with it composed the launch is refused with the sentence.
+  - `surface::dispatch::tests::s4b1_the_title_rule`.
+  - `minds::ic_sortie::execution::tests::s4b1_an_ic_epoch_id_seals_a_retained_execution`: an IC
+    id over its own hull validates and installs; another hull's id, or none, is refused.
+  - `surface::excursion::tests::s4b1_the_claim_cursor_and_the_queued_launch`: a record with no
+    claim has no key; each state round-trips strictly under its `state` word; `is_live` and
+    `open` read as specified; the check refuses a queued launch.
+- **`mush-sim` lib:**
+  - `ic_exclusion::tests::s4b1_a_carrier_bay_is_a_hangar_where_hangars_are_admitted`. The
+    base-only composition refuses the bay. `with_hangars` admits it: the row names the bay and
+    the carrier and no base, the hull alone is excluded, the freeze still refuses a placement
+    write, and a reboot keeps the hold. A base row has no `hangar` key.
+  - The fixture gains a carrier on the field's domain and its bay, beside the base (`setup_in`,
+    `Admission`).
+- **`tacsim --test shard_9`:**
+  - `ic_sortie_surface::s4b1_a_live_claim_cursor_holds_the_rig_in_its_bay`: through the composed
+    launch path, each live cursor refuses `+tv/1 launch go` with the rig left in its bay; a
+    terminal cursor doesn't.
+  - `excursions::put_record` is now `pub(crate)` for this test.
+- **The M7 gate** (`genuine_registry_original_purchase_grant_refund_and_paired_recovery`,
+  ignored; the CI dispatch runs it). The `OwnedDispatch` branch now opens its claim under
+  `SortieId::Ic` through the real four owners:
+  - the book's row is format 2 and carries its `transition`;
+  - the Roll's claim `sortie` equals it;
+  - the resumed seal carries the IC id;
+  - a reboot reconstructs it.
+
+  `chartered_owner`'s Close then closes that Open.
+- **`mush-bot` lib:** `mine::lines::tests::s4b1_the_launch_line_names_the_mind`.
+- The existing claim-path, exclusion, dispatch, excursion and shard_9 suites run unchanged.
+
+### Hash pins (rule #13)
+
+None of doc 40 §4a's pinned files is touched:
+
+- the book and the exclusion aren't pinned;
+- the dispatch seals are IC seals (`mind_sealed` lines, no OOC practice hash);
+- `match_/seal.rs` is unchanged (`seal_armament` is a new function in `arena_def.rs`);
+- no OOC arena installs a retained execution.
+
+The brief's rule for S.4b asks for the harness kind regardless, so it is dispatched on the PR's
+branch before the PR is marked ready. The run is linked in the PR.
+
+### Deferred, and why
+
+Everything §17.10 lists beyond the bullets above belongs to S.4b-2:
+
+- the composition and the story harness (fact a);
+- the production `HostTransition` and its `go`;
+- the surface claim arm and the Close producers;
+- the re-scoped freeze (D-23-15's `check_plan` and boot checks);
+- custody coexistence and the live-hull Close;
+- `custody_unit` from `IcHost::resume`, and the join's install;
+- the licence and compute seats (D-23-16);
+- the per-row compile drop and the wall (D-23-17);
+- the carried memory (D-23-18);
+- M8g's "To S.4b" stories;
+- the acceptance stories at 256 and 512.
+
+### Cost (rule #14)
+
+The PR run's JUnit figure is recorded here once its run lands (see the PR body).

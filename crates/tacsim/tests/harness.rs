@@ -175,8 +175,9 @@
 //! four by `[tacsim.arena].squad_size`, under a scripted commander a side that
 //! is its own lowest unit, for `TACSIM_LANCE_ARENA_S` (120) arena seconds
 //! through the same wake loop ([`run_wakes`], which since Z.1 steps a
-//! [`Stepper`] and hands each wake's phase 2 a script's intents). Under
-//! `TACSIM_ASSERT` it asserts W8 — the span and the orders per commander per
+//! [`Stepper`] and hands each wake's phase 2 a script's intents). Whatever
+//! `TACSIM_ASSERT` says (since TS.21's finding: every check it makes is
+//! deterministic) it asserts W8 — the span and the orders per commander per
 //! minute — against `[tacsim.command]`, the tape against the script and the
 //! opening round at any knob, **and**, at the lane's own defaults only, the span
 //! and the busiest minute pinned to the fight's own figures (the squads a side
@@ -184,7 +185,9 @@
 //! fewer, the match ending at 111,250 ms before minute one's last marks; since
 //! 17b cut M4.5, the fight at the ROM, the busiest minute the squads a side and
 //! the span one fewer, no end inside the window, both sides' first squads
-//! released; off the defaults the fight decides those two figures); its timing
+//! released; since `5993ba20`, re-pinned by record, the span the squads a side,
+//! `blue-1` held on a wreck; off the defaults the fight decides those two
+//! figures); its timing
 //! is **report-only**, printed beside the
 //! authored lane's per-wake and per-window lenses (20 and 32 ms since 16c
 //! `T-109`, 12 and 20 before). Its JSON
@@ -7292,7 +7295,8 @@ async fn measure_fan_out(knobs: &Knobs) {
 // (`arena_bridge::admit_order`) is bypassed by design: the lane steps the arena
 // directly, and the arena reads no author.
 //
-// **What it asserts**, under `TACSIM_ASSERT` only. At **any** knob: W8's two
+// **What it asserts**, whatever `TACSIM_ASSERT` says since TS.21's finding
+// (under it only before; [`tacsim_harness_lance`]). At **any** knob: W8's two
 // bounds against `[tacsim.command]`; that the tape's `ordered` lines are exactly
 // the orders the script gave (one a unit not already a wreck, at the millisecond
 // phase 2 applied it, under the side's commander); that the opening round landed
@@ -7691,13 +7695,24 @@ fn supporters_on_charge(arena: &tacsim::arena::state::Arena) -> (usize, usize, u
 
 /// **The lance lane** (16b cut Z.1): [`measure_lance`] at `TACSIM_LANCE_UNITS`
 /// (24) for `TACSIM_LANCE_ARENA_S` (120) arena seconds, JSON at
-/// `<stem>-lance.<ext>`; W8 asserted under `TACSIM_ASSERT`, and at the lane's
-/// defaults pinned to the defaults' own fight (at the ROM since 17b cut M4.5:
-/// [`measure_lance`]); timing report-only.
+/// `<stem>-lance.<ext>`; W8 asserted, and at the lane's defaults pinned to the
+/// defaults' own fight (at the ROM since 17b cut M4.5: [`measure_lance`]);
+/// timing report-only.
+///
+/// **Asserting whatever `TACSIM_ASSERT` says** (since TS.21's finding): every
+/// check this lane makes is deterministic — W8's bounds, the tape, the fact
+/// pins — and its timing is printed, never asserted, so D-H-8's reason for a
+/// CI job that asserts no absolutes (a shared runner's speed is not a
+/// threshold) does not reach it. Gated on the flag, its span pin went red at
+/// `5993ba20` and stayed red unseen for a fortnight, because the CI job never
+/// sets it and the delta does not read `harness-lance.json`. Now the nightly
+/// `tacsim-harness` job and every `--kind harness` dispatch hold it.
 #[test]
 #[ignore = "tacsim harness: run by the CI `tacsim-harness` job (workflow_dispatch / daily schedule)"]
 fn tacsim_harness_lance() {
-    measure_lance(&Knobs::from_env(), &LanceKnobs::from_env());
+    let mut knobs = Knobs::from_env();
+    knobs.assert = true;
+    measure_lance(&knobs, &LanceKnobs::from_env());
 }
 
 /// Whether the report-only Hold lane was asked for (16b cut O.1; plan item 27).
@@ -8434,7 +8449,8 @@ fn lance_field_arena(units: u32) -> tacsim::arena::state::Arena {
 ///    pinned `Engaged`, warmed up as the relief lanes are ([`warm_up`]).
 /// 4. [`run_wakes`] for `lance.arena_s` arena seconds with the script handing
 ///    each wake's phase 2 the orders due at it.
-/// 5. The lines, the JSON, and — under `TACSIM_ASSERT` — W8.
+/// 5. The lines, the JSON, and — when `knobs.assert`, which
+///    [`tacsim_harness_lance`] always sets — W8.
 #[allow(clippy::too_many_lines)]
 fn measure_lance(knobs: &Knobs, lance: &LanceKnobs) -> LanceReport {
     use tacsim::arena::clock::Tempo as ArenaTempo;
@@ -9129,42 +9145,75 @@ fn measure_lance(knobs: &Knobs, lance: &LanceKnobs) -> LanceReport {
         // passes on nothing. No `Support` is given in the 120 seconds (the
         // table's fifth arm is minute five's), so the report's `supporters`
         // and `supporters_charge_unheld` read nought at the defaults.
+        //
+        // **Re-pinned by record (doc 43 rule #8; TS.21's finding, 2026-11-04)
+        // — the span reads `squads_per_side`, 3, since `5993ba20`.** That
+        // commit ("restore M5r doctrine and motor behavior", 2026-10-17,
+        // straight to main) moved the stock mind's doctrine and the motor and
+        // re-blessed the arena lane's baseline, but never ran this lane under
+        // `TACSIM_ASSERT`, so the span pin above went red unseen: every
+        // nightly's `harness-lance.json` has read 3 since. A first-parent
+        // bisect on conclav.dev from 17b cut M4.5's `f19a88fb` (2) to
+        // `c44c0bb6` (3) names it: its parent `d9e6ef1f` reads 2, it reads 3.
+        // **Why, and why it is the fight and not a defect**: `blue-1`'s #100003
+        // now outlives the minute-one mark (wrecked at 71,132 ms in M4.5's
+        // fight, before it), so `blue-1` stands three at 71,500 ms and the
+        // hull takes that order (live until 161,500 ms); it is wrecked before
+        // the 90,000 ms release, which lands on standing machines only, and a
+        // wreck keeps the order it died under on its mind row (16b cut AI.1;
+        // M4.5's own `blue-2` #100011 above). So blue's commander holds
+        // `blue-1` on that wreck alone besides `blue-2` and `blue-3` on standing
+        // machines, and red's holds `red-2` and `red-3`: the span reads 3 for
+        // blue, 2 for red, and 2 over the standing hulls for both. The span's
+        // definition (every live order a mind row holds, wrecks counted) and
+        // the release's (standing machines) are unchanged; only the fight at
+        // the defaults moved. At main `3cb04168` every other figure here holds
+        // as M4.5 pinned it — no end, 131,500 ms, eight orders, the busiest
+        // minute 3, five releases (red's three, blue's two; `5993ba20` itself
+        // read four, `red-1` standing two at the release, and GC.2's
+        // `c2653243` moved it back) — except `blue-1`'s standing at its
+        // minute-one mark, three where M4.5's fight stood two.
         if at_defaults {
             // **The fact pin of 16b cut AP.2, re-pinned by 17b cut M4.5**
             // (at 4bbcbdc, the reflex's fight: `(Some(Elimination { winner:
             // Some(Red) }), 111_250)`): at the ROM the defaults' fight has no
             // end inside the window — red five hulls down, blue seven, neither
-            // side out — and runs to 131,500 ms, the warm-up's 11,500 plus 120
-            // seconds.
+            // side out (red four and blue six at main `3cb04168`, the fight
+            // `5993ba20` and the cuts since made) — and runs to 131,500 ms, the
+            // warm-up's 11,500 plus 120 seconds.
             assert_eq!(
                 (run.ended.as_ref().map(|end| end.reason), arena.now_ms),
                 (None, 131_500),
                 "17b cut M4.5: at the defaults the ROM's fight has no end inside the window \
-                 (red five hulls down, blue seven) and the match runs to 131,500 ms"
+                 (neither side out) and the match runs to 131,500 ms"
             );
-            // 17b cut M4.5: `squads_per_side - 1` (16b cut AP.2's
-            // `squads_per_side - 2`, re-pinned; see above).
+            // `squads_per_side` since `5993ba20` (17b cut M4.5's
+            // `squads_per_side - 1`, re-pinned by record; see above).
             assert_eq!(
-                command.span_max,
-                squads_per_side - 1,
-                "W8: the span read {} where each commander holds live orders on its second and \
-                 third squads alone at the read (its first squad's standing machines released, \
-                 their wrecks' opening orders expired; 17b cut M4.5, see above)",
+                command.span_max, squads_per_side,
+                "W8: the span read {} where blue's commander holds live orders on all three \
+                 squads at the read (`blue-1` on its wreck #100003 alone, taken at 71,500 ms and \
+                 never released; re-pinned by record from `5993ba20`, see above)",
                 command.span_max
             );
-            // **The span rests on no wreck** (17b cut M4.5's review): the same
-            // join over the live orders standing hulls hold, the wrecks
-            // skipped, reads the same span — every squad it counts has a
-            // standing machine holding the order (at the defaults the one
-            // wreck under a live order, `blue-2`'s #100011, stands beside
-            // #100015 under the same order).
+            // **The one squad that rests on a wreck** (17b cut M4.5's review,
+            // re-stated by record from `5993ba20`): the same join over the live
+            // orders standing hulls hold, the wrecks skipped, reads each
+            // commander's second and third squads, and the join with wrecks
+            // counted adds `blue-1` under blue's commander and nothing else.
             // Held per commander, squad by squad, not only at the maximum.
             let standing = live_orders_by_issuer(&arena, &counts.ordered, Wrecks::Skipped);
+            let mut wreck_held = standing.clone();
+            wreck_held
+                .entry(commanders.get(1).copied())
+                .or_default()
+                .insert("blue-1".to_string());
             assert_eq!(
-                standing,
                 live_orders_by_issuer(&arena, &counts.ordered, Wrecks::Counted),
-                "W8: a squad the span counts is held only by a wreck: at the defaults every \
-                 commander's squads rest on a standing machine (17b cut M4.5)"
+                wreck_held,
+                "W8: at the defaults the span's squads rest on standing machines but `blue-1`, \
+                 held by its wreck alone (re-pinned by record from `5993ba20`); standing: \
+                 {standing:?}"
             );
             let standing_span = standing
                 .values()
@@ -9172,10 +9221,10 @@ fn measure_lance(knobs: &Knobs, lance: &LanceKnobs) -> LanceReport {
                 .max()
                 .unwrap_or(0);
             assert_eq!(
-                standing_span, command.span_max,
-                "W8: the span read {} but {standing_span} over the live orders standing hulls \
-                 hold: at the defaults the span rests on no wreck (17b cut M4.5)",
-                command.span_max
+                standing_span,
+                squads_per_side - 1,
+                "W8: {standing_span} squads over the live orders standing hulls hold, where each \
+                 commander's second and third squads are (17b cut M4.5, held since `5993ba20`)"
             );
             // How many of the squad's machines stood at the scripted wake at
             // `t_ms` (`true` an order, `false` the release), or `None` when the
@@ -9193,7 +9242,9 @@ fn measure_lance(knobs: &Knobs, lance: &LanceKnobs) -> LanceReport {
             // minute-one mark and at the release, `red-1` at least one at the
             // release): at the ROM `blue-1` stands two at both and `red-1`
             // three at both — the fight the re-stated checks below were set
-            // from, so each passes on a fact.
+            // from, so each passes on a fact. Since `5993ba20` (re-pinned by
+            // record, see above) `blue-1` stands three at 71,500 ms — #100003
+            // takes the minute-one order and is wrecked before the release.
             assert_eq!(
                 (
                     stood(71_500, "blue-1", true),
@@ -9201,9 +9252,9 @@ fn measure_lance(knobs: &Knobs, lance: &LanceKnobs) -> LanceReport {
                     stood(71_500, "red-1", true),
                     stood(LANCE_RELEASE_MS, "red-1", false)
                 ),
-                (Some(2), Some(2), Some(3), Some(3)),
-                "17b cut M4.5: at the defaults blue-1 stands two and red-1 three at 71,500 ms and \
-                 at {LANCE_RELEASE_MS} ms: {marks:?}"
+                (Some(3), Some(2), Some(3), Some(3)),
+                "at the defaults blue-1 stands three at 71,500 ms and two at {LANCE_RELEASE_MS} \
+                 ms, red-1 three at both (re-pinned by record from `5993ba20`): {marks:?}"
             );
             // The sides whose first squad had a standing machine at the release.
             let stood_at_release: Vec<(ObjId, &str)> = commanders
