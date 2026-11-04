@@ -934,6 +934,10 @@ The rulings are in (§4). What a builder must know before each cut starts:
   hash change, but if the kernel is reblessed anyway the eject's seat release could become a
   kernel message rather than CF.5's `Released` control.
 - The space track's plan for SF.R9–R16, so CR.6 has a place.
+- **Future (owner, 2026-11-04):** surrender by circumstance and personality. A raider whose carrier
+  is wrecked fights to the death for now (no life support to scatter or wait for a pickup, and no
+  surrender yet); a later cut may let crews surrender into custody instead (doc 41 RS.1's note on
+  `gc11`).
 
 **Defaults the survey held with least confidence**, ruled as written and worth a second look
 after the first play: Q-42-7 (who pays and what a fee is for when it cannot gate release; the

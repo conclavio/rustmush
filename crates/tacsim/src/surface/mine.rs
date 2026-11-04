@@ -866,6 +866,7 @@ mod tests {
             sortie: None,
             field_crew: None,
             field_work: None,
+            bale: None,
             claim: None,
         }
     }

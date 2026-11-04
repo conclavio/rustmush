@@ -182,6 +182,16 @@ pub enum TowStage {
         /// The carrier.
         carrier: ObjId,
     },
+    /// **Doc 41 cut RS.1**: tend `target` ([`crate::surface::tender`]).
+    Tend {
+        /// The unit tended.
+        target: ObjId,
+        /// The work.
+        work: crate::surface::tender::TendWork,
+        /// IC seconds left when a field paused it (Q-41-3); `None` while it runs.
+        #[serde(default, skip_serializing_if = "Option::is_none")]
+        paused: Option<i64>,
+    },
 }
 
 /// **One tug's timed tow act in flight** (Q-36-13).
@@ -394,6 +404,10 @@ pub struct TugFacts {
     pub mass_kg: u64,
     /// Where it stands.
     pub pose: FieldPose,
+    /// **Doc 41 cut RS.1** (Q-41-27): the tow coupling its definition authors
+    /// (`logistics.recovery_profile`), which carries its cap.
+    #[serde(default)]
+    pub profile: TowRigProfile,
 }
 
 /// **An attach's facts**: the tug's and the casualty's, read off the world.
@@ -517,6 +531,26 @@ pub enum TowOrder {
         /// The facts.
         facts: Box<crate::surface::claim::ScrapFacts>,
     },
+    /// **Doc 41 cut RS.1**: `+tv/<n> unjam|stabilize|rearm … go`, a tend act's start.
+    Tend {
+        /// The facts.
+        facts: Box<crate::surface::tender::TendFacts>,
+    },
+    /// **Doc 41 cut RS.1**: the tick's step on a tend act (its finish, a pause, a resume).
+    Tended {
+        /// The act's ordinal.
+        ordinal: u32,
+        /// The site.
+        site: CanonicalId,
+        /// The step.
+        step: crate::surface::tender::TendStep,
+    },
+    /// **Doc 41 cut RS.1**: `+tv/<n> stores load|open … go`, on the rig's stores and bale; no
+    /// site record is read or written.
+    Stores {
+        /// The facts.
+        facts: Box<crate::surface::tender::StoresFacts>,
+    },
 }
 
 impl TowOrder {
@@ -532,6 +566,9 @@ impl TowOrder {
             Self::Pickup { .. } => "pickup",
             Self::Claim { .. } => "claim",
             Self::Scrap { .. } => "scrap",
+            Self::Tend { .. } => "tend",
+            Self::Tended { .. } => "tended",
+            Self::Stores { .. } => "stores",
         }
     }
 }
@@ -645,6 +682,60 @@ fn unit_facts(
     Some((cells, assessment, mass, speed, volume))
 }
 
+/// **The tow coupling `unit`'s definition authors** (doc 41 cut RS.1, Q-41-27):
+/// `logistics.recovery_profile`, `Standard` when it authors none.
+#[must_use]
+pub(crate) fn profile_of(w: &World, unit: ObjId) -> TowRigProfile {
+    use crate::definitions::RecoveryProfile;
+    let profile = mush_tactics::module::unit_of(w, unit)
+        .and_then(|cells| crate::carrier_damage::spec_of(w, cells))
+        .and_then(|spec| spec.logistics.as_ref())
+        .map_or(RecoveryProfile::Standard, |l| l.recovery_profile);
+    match profile {
+        RecoveryProfile::Standard => TowRigProfile::Standard,
+        RecoveryProfile::RecoveryOptimized => TowRigProfile::RecoveryOptimized,
+        RecoveryProfile::Heavy => TowRigProfile::Heavy,
+    }
+}
+
+/// **What `unit` carries, kg** (doc 41 cut RS.1, Q-41-29; doc 36's owed "the hopper's ore in a
+/// casualty's laden mass"): a rig's hopper or stores; a hull's hold, tank and locker and every
+/// rig in its bay, dry and laden, as the passage planner weighs her (`crate::port::voyage`).
+/// What will not read counts nothing, logged: the tow is never refused for a gauge.
+pub(crate) fn carried_kg(ctx: &Ctx<'_>, unit: ObjId) -> u64 {
+    if let Some(view) = crate::port::ship::hull_view(ctx.w, unit) {
+        return match crate::port::voyage::basis(ctx, &view, 0) {
+            Ok(basis) => basis.payload,
+            Err(error) => {
+                tracing::warn!(unit = unit.0, %error, "tacsim: a casualty's hold did not weigh; the tow counts her dry");
+                0
+            }
+        };
+    }
+    if crate::port::vehicle::hopper_of(ctx.w, unit).is_none() {
+        return 0;
+    }
+    match crate::port::tv::hopper_load_of(ctx, unit) {
+        Ok((kg, _)) => kg,
+        Err(error) => {
+            tracing::warn!(unit = unit.0, %error, "tacsim: a casualty's hopper did not weigh; the tow counts her dry");
+            0
+        }
+    }
+}
+
+/// **`dry` laden with `cargo_kg`** (Q-41-29): the casualty's mass profile as the tow counts it.
+fn laden(dry: UnitMassProfile, cargo_kg: u64) -> UnitMassProfile {
+    UnitMassProfile::new(
+        dry.dry_mass_kg(),
+        cargo_kg,
+        dry.cargo_volume_l(),
+        dry.width_cm(),
+        dry.height_cm(),
+    )
+    .unwrap_or(dry)
+}
+
 /// The tug's facts.
 fn tug_facts(w: &World, tug: ObjId) -> Option<(CanonicalId, TugFacts)> {
     let (site, _, pose) = on_ground(w, tug)?;
@@ -657,18 +748,22 @@ fn tug_facts(w: &World, tug: ObjId) -> Option<(CanonicalId, TugFacts)> {
             base_speed_cms: speed,
             mass_kg: mass.total_mass_kg(),
             pose,
+            profile: profile_of(w, tug),
         },
     ))
 }
 
-/// **An attach's facts** for `tug` and `casualty`, when both stand on the same site's ground.
-fn attach_facts(w: &World, tug: ObjId, casualty: ObjId) -> Option<AttachFacts> {
+/// **An attach's facts** for `tug` and `casualty`, when both stand on the same site's ground:
+/// the casualty counted laden (doc 41 cut RS.1, Q-41-29).
+fn attach_facts(ctx: &Ctx<'_>, tug: ObjId, casualty: ObjId) -> Option<AttachFacts> {
+    let w: &World = ctx.w;
     let (site, tug_facts) = tug_facts(w, tug)?;
     let (there, _, pose) = on_ground(w, casualty)?;
     if there != site {
         return None;
     }
-    let (_, assessment, mass, _, _) = unit_facts(w, casualty)?;
+    let (_, assessment, dry, _, _) = unit_facts(w, casualty)?;
+    let mass = laden(dry, carried_kg(ctx, casualty));
     let cfg = recovery_config(w);
     Some(AttachFacts {
         secs: cfg.inspect_s.saturating_add(cfg.attach_s),
@@ -691,7 +786,7 @@ fn attach_request(tug: ObjId, facts: &AttachFacts, now: i64) -> AttachTowRequest
         tug_can_move: facts.tug.can_move,
         tug_base_speed_cms: facts.tug.base_speed_cms,
         tug_mass_kg: facts.tug.mass_kg,
-        rig_profile: TowRigProfile::Standard,
+        rig_profile: facts.tug.profile,
         tug_pose: facts.tug.pose,
         casualty_assessment: facts.assessment.clone(),
         casualty_mass: facts.mass,
@@ -950,10 +1045,11 @@ fn why(error: &RecoveryError) -> String {
         RecoveryError::ExceedsTonnageCap {
             tug_mass_kg,
             casualty_mass_kg,
-            ..
+            max_casualty_mass_kg,
         } => format!(
-            "at {} t it is more than twice the tug's {} t",
-            casualty_mass_kg / 1_000,
+            "at {} t laden it is more than the {} t a {} t tug can tow",
+            casualty_mass_kg.div_ceil(1_000),
+            max_casualty_mass_kg / 1_000,
             tug_mass_kg / 1_000
         ),
         RecoveryError::OutOfAttachRange { .. } | RecoveryError::SiteMismatch { .. } => {
@@ -1115,6 +1211,7 @@ pub(crate) fn register(
     reg.state(TowOrders::default());
     reg.state(TowIndex::default());
     reg.state(TowWatch::default());
+    reg.state(crate::surface::tender::TendApplied::default());
     reg.state(crate::surface::claim::ClaimMail::default());
     let (Some(action), Some(outcome)) = (actions.get(TOW_ACTION), outcomes.get(TOW_OUTCOME)) else {
         reg.state(TowHandles::default());
@@ -1138,8 +1235,9 @@ pub(crate) fn register(
 }
 
 /// The action's `op` words.
-const OPS: [&str; 8] = [
-    "attach", "attached", "release", "load", "loaded", "pickup", "claim", "scrap",
+const OPS: [&str; 11] = [
+    "attach", "attached", "release", "load", "loaded", "pickup", "claim", "scrap", "tend",
+    "tended", "stores",
 ];
 
 fn parameters(
@@ -1248,7 +1346,20 @@ impl ActionProvider for TowProvider {
             return Err(invalid());
         }
         let actor = invocation.actor();
+        // Doc 41 cut RS.1: the stores ops write the rig's record and its stores, never a site's.
+        if let TowOrder::Stores { facts } = &order {
+            let result = self.stores(txn, tv, facts)?;
+            let outcome = RulesValue::new(
+                self.outcome.clone(),
+                json!({"actor": actor.0, "tv": tv.0, "op": op, "result": result}),
+            )
+            .map_err(|_| integrity("the tow result is out of bounds"))?;
+            return Ok(AuthoritativeActionOutput::new(outcome)
+                .with_eligible_witnesses(vec![invocation.principal().clone()]));
+        }
         let site = match &order {
+            TowOrder::Tend { facts } => facts.site.clone(),
+            TowOrder::Stores { .. } => return Err(invalid()),
             TowOrder::Attach { facts } => facts.site.clone(),
             TowOrder::Load { facts } => facts.site.clone(),
             TowOrder::Pickup { facts } => facts.site.clone(),
@@ -1256,15 +1367,23 @@ impl ActionProvider for TowProvider {
             TowOrder::Claim { order } => order.site().clone(),
             TowOrder::Attached { site, .. }
             | TowOrder::Release { site }
-            | TowOrder::Loaded { site, .. } => site.clone(),
+            | TowOrder::Loaded { site, .. }
+            | TowOrder::Tended { site, .. } => site.clone(),
         };
         let key = SiteKey(site.clone());
-        let mut record = txn
+        let found = txn
             .get(&self.sites, &key)
             .map_err(|_| integrity("the site records are unavailable"))?
             .cloned()
-            .filter(|record| record.key() == key)
-            .ok_or_else(|| refused("tow_no_ground"))?;
+            .filter(|record| record.key() == key);
+        let existed = found.is_some();
+        // Doc 41 cut RS.1: a tend may start on ground no field has written yet (the tow's
+        // casualty always comes of a field, so its record is always there).
+        let mut record = match (found, &order) {
+            (Some(record), _) => record,
+            (None, TowOrder::Tend { facts }) => SiteRecord::with_side(site.clone(), facts.side),
+            (None, _) => return Err(refused("tow_no_ground")),
+        };
         let promoted = record.open_field().is_some();
         let mut closing: Option<(ObjId, crate::surface::black_box::BlackBoxLine)> = None;
         let result: String = match order {
@@ -1359,7 +1478,7 @@ impl ActionProvider for TowProvider {
                     .or_else(|| {
                         record.tows.act_of(tv).and_then(|a| match a.stage {
                             TowStage::Attach { casualty } => Some(casualty),
-                            TowStage::Load { .. } => None,
+                            TowStage::Load { .. } | TowStage::Tend { .. } => None,
                         })
                     });
                 record
@@ -1483,12 +1602,23 @@ impl ActionProvider for TowProvider {
             TowOrder::Scrap { facts } => {
                 self.scrap(txn, &mut record, (tv, actor), &facts, (promoted, now))?
             }
+            TowOrder::Tend { facts } => {
+                self.tend(txn, &mut record, (tv, actor), &facts, (promoted, now))?
+            }
+            TowOrder::Tended { ordinal, step, .. } => {
+                self.tended(txn, &mut record, (tv, actor, ordinal), &step, now)?
+            }
+            TowOrder::Stores { .. } => return Err(invalid()),
         };
         record
             .check()
             .map_err(|_| integrity("the site record is out of bounds"))?;
-        txn.replace(&self.sites, &key, record)
-            .map_err(|_| integrity("the site record could not be written"))?;
+        if existed {
+            txn.replace(&self.sites, &key, record)
+        } else {
+            txn.insert(&self.sites, &key, record)
+        }
+        .map_err(|_| integrity("the site record could not be written"))?;
         if let Some((hull, line)) = closing {
             crate::surface::black_box::append(context, self.black_box.as_ref(), hull, line)?;
         }
@@ -1840,6 +1970,239 @@ impl TowProvider {
         );
         Ok("scrapped:unlawful".to_owned())
     }
+
+    /// **A tend act's start** (doc 41 cut RS.1; [`crate::surface::tender`]): on open ground, the
+    /// rig idle (no tow act, no tow, no surface act or run), the target on the same ground, not
+    /// carried in tow, within a cell; one timed act on the site's record.
+    fn tend(
+        &self,
+        txn: &mut ActionTxn<'_>,
+        record: &mut SiteRecord,
+        (tv, actor): (ObjId, ObjId),
+        facts: &crate::surface::tender::TendFacts,
+        (promoted, now): (bool, i64),
+    ) -> Result<String, mush_core::ActionError> {
+        if promoted {
+            return Err(refused(crate::surface::site_record::FIELD_OPEN_CODE));
+        }
+        if record.tows.towing(tv).is_some() || record.tows.towed(tv).is_some() {
+            return Err(refused("tow_busy"));
+        }
+        if record.tows.towed(facts.target).is_some() {
+            return Err(refused("tend_in_tow"));
+        }
+        if facts.target == tv
+            || facts.tender_pose.site != facts.target_pose.site
+            || cells_apart(
+                site_cell(facts.tender_pose.x_cm, facts.tender_pose.y_cm),
+                site_cell(facts.target_pose.x_cm, facts.target_pose.y_cm),
+            ) > 1
+        {
+            return Err(refused("tend_reach"));
+        }
+        if act::read_record(txn, &self.excursions, tv)?
+            .as_ref()
+            .is_some_and(|r| r.act.is_some() || r.run.is_some())
+        {
+            return Err(refused("tow_rig_busy"));
+        }
+        record
+            .tows
+            .put_act(
+                tv,
+                actor,
+                TowStage::Tend {
+                    target: facts.target,
+                    work: facts.work.clone(),
+                    paused: None,
+                },
+                (now, now.saturating_add(i64::from(facts.secs))),
+            )
+            .map_err(refused)?;
+        Ok("filed".to_owned())
+    }
+
+    /// **The tick's step on a tend act** (doc 41 cut RS.1): a pause under a field, a resume on
+    /// open ground, a finish that draws the stores and writes the bale, or a finish that came
+    /// to nothing.
+    fn tended(
+        &self,
+        txn: &mut ActionTxn<'_>,
+        record: &mut SiteRecord,
+        (tv, actor, ordinal): (ObjId, ObjId, u32),
+        step: &crate::surface::tender::TendStep,
+        now: i64,
+    ) -> Result<String, mush_core::ActionError> {
+        use crate::surface::tender::TendStep;
+        let promoted = record.open_field().is_some();
+        let act = record
+            .tows
+            .acts
+            .iter_mut()
+            .find(|a| a.tug == tv && a.ordinal == ordinal && a.operator == actor)
+            .ok_or_else(|| port_error(ActionErrorCode::Conflict, "that tend act has landed"))?;
+        let TowStage::Tend { paused, .. } = &mut act.stage else {
+            return Err(invalid());
+        };
+        match step {
+            TendStep::Pause => {
+                if !promoted || paused.is_some() {
+                    return Err(port_error(
+                        ActionErrorCode::Conflict,
+                        "no field to pause for",
+                    ));
+                }
+                *paused = Some(act.due_ic.saturating_sub(now).max(1));
+                return Ok("paused".to_owned());
+            }
+            TendStep::Resume => {
+                let Some(left) = *paused else {
+                    return Err(port_error(
+                        ActionErrorCode::Conflict,
+                        "the act is not paused",
+                    ));
+                };
+                if promoted {
+                    return Err(refused(crate::surface::site_record::FIELD_OPEN_CODE));
+                }
+                *paused = None;
+                act.started_ic = now;
+                act.due_ic = now.saturating_add(left);
+                return Ok("resumed".to_owned());
+            }
+            TendStep::Lost { .. } | TendStep::Finish { .. } => {}
+        }
+        if promoted || paused.is_some() || act.due_ic > now {
+            return Err(port_error(
+                ActionErrorCode::Conflict,
+                "the tend act is not due",
+            ));
+        }
+        record.tows.take_act(tv);
+        let TendStep::Finish { draw } = step else {
+            return Ok("lost".to_owned());
+        };
+        // The draw (Q-41-2): what the stores still hold of it, out of them; the bale written.
+        // The work already landed on the unit (the load's precedent), so a short store never
+        // undoes it: the finish takes what is there and says so.
+        let mut short = false;
+        if let Some(inventory) = self.inventory.as_ref() {
+            let stores = mush_inventory::EndpointRef(mush_economy::VaultId(draw.stores));
+            for (good, qty) in &draw.debit {
+                let have = inventory
+                    .available(txn, stores, good)
+                    .map_err(|_| integrity("the stores cannot be read"))?;
+                let take = have.min(*qty);
+                short |= take < *qty;
+                if take > 0 {
+                    inventory
+                        .debit(txn, stores, good, take)
+                        .map_err(|_| integrity("the stores could not be drawn"))?;
+                }
+            }
+        } else if !draw.debit.is_empty() {
+            short = true;
+        }
+        if let Some(after) = draw.bale_after {
+            let found = act::read_record(txn, &self.excursions, tv)?;
+            let existed = found.is_some();
+            let mut rig =
+                found.unwrap_or_else(|| crate::surface::excursion::RigRecord::fresh_unread(tv));
+            rig.bale = Some(after);
+            act::write_record(txn, &self.excursions, rig, existed)?;
+        }
+        Ok(if short {
+            "tended:short".to_owned()
+        } else {
+            "tended".to_owned()
+        })
+    }
+
+    /// **A stores op** (doc 41 cut RS.1): a load from the carrier's hold into the stores,
+    /// re-checked against the stores' room; or the bale opened, a tonne of each line out of the
+    /// stores onto the rig's record.
+    fn stores(
+        &self,
+        txn: &mut ActionTxn<'_>,
+        tv: ObjId,
+        facts: &crate::surface::tender::StoresFacts,
+    ) -> Result<String, mush_core::ActionError> {
+        use crate::surface::tender::StoresOp;
+        let inventory = self
+            .inventory
+            .as_ref()
+            .ok_or_else(|| refused("stores_unwired"))?;
+        let stores = mush_inventory::EndpointRef(mush_economy::VaultId(facts.stores));
+        let mut rig = act::read_record(txn, &self.excursions, tv)?;
+        if rig
+            .as_ref()
+            .is_some_and(|r| r.act.is_some() || r.run.is_some() || r.excursion.is_some())
+        {
+            return Err(refused("tow_rig_busy"));
+        }
+        match &facts.op {
+            StoresOp::Load {
+                hold,
+                good,
+                qty,
+                limits,
+                figures,
+            } => {
+                let mut load: BTreeMap<CanonicalId, u64> = BTreeMap::new();
+                for (held, per) in figures {
+                    let mut q = inventory
+                        .available(txn, stores, held)
+                        .map_err(|_| integrity("the stores cannot be read"))?;
+                    if held == good {
+                        q = q.saturating_add(*qty);
+                    }
+                    for (measure, per_unit) in per {
+                        *load.entry(measure.clone()).or_default() += q.saturating_mul(*per_unit);
+                    }
+                }
+                if !figures.contains_key(good)
+                    || limits
+                        .iter()
+                        .any(|(m, limit)| load.get(m).copied().unwrap_or(0) > *limit)
+                {
+                    return Err(refused("stores_no_room"));
+                }
+                inventory
+                    .transfer_many(
+                        txn,
+                        mush_inventory::EndpointRef(mush_economy::VaultId(*hold)),
+                        stores,
+                        &[(good.clone(), *qty)],
+                    )
+                    .map_err(|_| refused("stores_hold_short"))?;
+                Ok("loaded".to_owned())
+            }
+            StoresOp::Open => {
+                if rig.as_ref().is_some_and(|r| r.bale.is_some()) {
+                    return Err(refused("stores_bale_open"));
+                }
+                for good in [
+                    crate::surface::tender::ALLOYS,
+                    crate::surface::tender::FITTINGS,
+                ] {
+                    let good = CanonicalId::new(good).map_err(|_| invalid())?;
+                    inventory
+                        .debit(txn, stores, &good, 1)
+                        .map_err(|_| refused("stores_no_tonne"))?;
+                }
+                let existed = rig.is_some();
+                let mut record = rig
+                    .take()
+                    .unwrap_or_else(|| crate::surface::excursion::RigRecord::fresh_unread(tv));
+                record.bale = Some(crate::port::bay_work::Bale {
+                    alloys_kg: crate::port::bay_work::KG_PER_T,
+                    fittings_kg: crate::port::bay_work::KG_PER_T,
+                });
+                act::write_record(txn, &self.excursions, record, existed)?;
+                Ok("opened".to_owned())
+            }
+        }
+    }
 }
 
 // ---- submission ---------------------------------------------------------------------------
@@ -1954,7 +2317,7 @@ pub(crate) fn tow_cmd(
             .map(|(_, unit)| *unit)
             .ok_or_else(|| CmdError::msg(NOTHING_IN_REACH.replace("{n}", &n)))?,
     };
-    let mut facts = attach_facts(ctx.w, rig.tv, casualty)
+    let mut facts = attach_facts(ctx, rig.tv, casualty)
         .ok_or_else(|| CmdError::msg(NOTHING_IN_REACH.replace("{n}", &n)))?;
     // Doc 36 cut GC.6 (Q-S3): the tenure, title and witnesses this attach's start pins.
     facts.pin = Some(crate::surface::claim::pin_for(
@@ -2041,9 +2404,10 @@ pub(crate) fn release_cmd(ctx: &mut Ctx<'_>, rig: &act::RigAt, go: bool) -> Resu
         .towing(rig.tv)
         .map(RecoveryOperation::casualty)
         .or_else(|| {
-            record.tows.act_of(rig.tv).map(|a| match a.stage {
-                TowStage::Attach { casualty } => casualty,
+            record.tows.act_of(rig.tv).map(|a| match &a.stage {
+                TowStage::Attach { casualty } => *casualty,
                 TowStage::Load { .. } => rig.tv,
+                TowStage::Tend { target, .. } => *target,
             })
         })
         .ok_or_else(|| CmdError::msg(NOT_TOWING.replace("{n}", &n)))?;
@@ -2223,6 +2587,7 @@ pub(crate) fn tick(ctx: &mut Ctx<'_>) {
         .collect();
     let mut index: BTreeMap<ObjId, (CanonicalId, RecoveryOperation)> = BTreeMap::new();
     let mut due: Vec<(CanonicalId, bool, TowAct)> = Vec::new();
+    let mut steps: Vec<(CanonicalId, TowAct, crate::surface::tender::TendStep)> = Vec::new();
     let mut acts_now: BTreeMap<ObjId, u32> = BTreeMap::new();
     for site in &sites {
         let Some(record) = record_of(ctx, site) else {
@@ -2231,10 +2596,24 @@ pub(crate) fn tick(ctx: &mut Ctx<'_>) {
         for op in record.tows.active() {
             index.insert(op.tug(), (site.clone(), op.clone()));
         }
+        let promoted = record.open_field().is_some();
         for act in &record.tows.acts {
             acts_now.insert(act.tug, act.ordinal);
+            // Doc 41 cut RS.1 (Q-41-3): a tend act pauses under a field and resumes after it.
+            if let TowStage::Tend { paused, .. } = &act.stage {
+                use crate::surface::tender::TendStep;
+                match (promoted, paused) {
+                    (true, None) => steps.push((site.clone(), act.clone(), TendStep::Pause)),
+                    (false, Some(_)) => steps.push((site.clone(), act.clone(), TendStep::Resume)),
+                    (false, None) if act.due_ic <= now => {
+                        due.push((site.clone(), false, act.clone()));
+                    }
+                    _ => {}
+                }
+                continue;
+            }
             if act.due_ic <= now {
-                due.push((site.clone(), record.open_field().is_some(), act.clone()));
+                due.push((site.clone(), promoted, act.clone()));
             }
         }
     }
@@ -2242,15 +2621,26 @@ pub(crate) fn tick(ctx: &mut Ctx<'_>) {
     if let Some(slot) = ctx.w.module_state_mut::<TowIndex>() {
         slot.0 = index;
     }
+    for (site, act, step) in steps {
+        if ctx.authoritative_pending(act.operator) {
+            continue;
+        }
+        crate::surface::tender::step(ctx, &site, &act, step);
+    }
     for (site, promoted, act) in due {
         if ctx.authoritative_pending(act.operator) {
             continue;
         }
-        let order = match act.stage {
+        let order = match act.stage.clone() {
+            TowStage::Tend { target, work, .. } => TowOrder::Tended {
+                ordinal: act.ordinal,
+                site: site.clone(),
+                step: crate::surface::tender::due_step(ctx, &act, target, &work, now),
+            },
             TowStage::Attach { casualty } => TowOrder::Attached {
                 ordinal: act.ordinal,
                 site: site.clone(),
-                facts: attach_facts(ctx.w, act.tug, casualty).map(Box::new),
+                facts: attach_facts(ctx, act.tug, casualty).map(Box::new),
             },
             TowStage::Load { carrier } => {
                 let casualty = ctx
@@ -2400,6 +2790,9 @@ fn tell_landed(
             .and_then(|store| store.tv_lease_on(tug))
             .map_or_else(|| tug.0.to_string(), |lease| lease.slot.to_string());
         let line = match act.stage {
+            TowStage::Tend { target, .. } => {
+                crate::surface::tender::landed_line(ctx, (tug, act.ordinal), &slot, target)
+            }
             TowStage::Attach { casualty } => {
                 let label = name(ctx.w, casualty);
                 match index.get(&tug) {
