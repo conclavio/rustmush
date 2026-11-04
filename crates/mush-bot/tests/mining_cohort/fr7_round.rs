@@ -34,7 +34,11 @@
 //!    idle bound, the raider is offered the void, and its next line, `+field/void`, takes it.
 //! 6. **A segment rolled** (FR.4): `[tacsim.arena.ledger].max_bytes` lowered to the production
 //!    floor ([`MAX_BYTES`], 1 MiB; the boot refuses less) and `summary_ms` to its floor, 1 s; the
-//!    live record reaches segment 2 before the field demotes.
+//!    live record reaches segment 2 before the field demotes. At that floor a five-hull field
+//!    ships about one 16 KiB chunk a minute, so the roll (three quarters of the bound) comes some
+//!    forty minutes into the field: the raider goes quiet after the jam and the field waits on
+//!    its idle bound ([`IDLE_DEMOTE_S`]), which is most of the run's hour. Beat 5's demotion
+//!    follows the roll.
 //!
 //! **What is a fixture** (as FR.1's and FR.2's stories): the two Basin hulls are made, placed,
 //! seated and (the wing's) worn by a staff hand at boot, before the world task spawns; the two
@@ -66,7 +70,7 @@ const MAX_BYTES: u64 = 1_048_576;
 /// **The field's idle bound for the run** (`[tacsim.field].idle_demote_s` and `disengage_s`):
 /// long enough that, once the raider stops firing, the black box fills to the roll before the
 /// field demotes (beat 6); the demotion and its void (beat 5) follow.
-const IDLE_DEMOTE_S: u32 = 480;
+const IDLE_DEMOTE_S: u32 = 3_300;
 /// The fixture design the wing flies: the line tank whose every survivable hit jams a part.
 const JAMMING_UNIT: &str = "fr7.unit.jamming_tank";
 /// Its pack.
@@ -910,18 +914,18 @@ async fn round_story(ground: &'static Ground) {
 
 /// **FR.7 at 256**: Ahuna Flank.
 #[tokio::test(flavor = "multi_thread", worker_threads = 4)]
-#[ignore = "doc 40 cut FR.7's round story at 256: the bot over SSH, tens of minutes; run by name (tier dispatch)"]
+#[ignore = "doc 40 cut FR.7's round story at 256: the bot over SSH, about an hour; run by name (tier dispatch)"]
 async fn fr7_the_rounds_story_at_256() {
-    tokio::time::timeout(Duration::from_secs(60 * 60), round_story(&AHUNA_FLANK))
+    tokio::time::timeout(Duration::from_secs(100 * 60), round_story(&AHUNA_FLANK))
         .await
-        .expect("the round's story at 256 finishes inside an hour");
+        .expect("the round's story at 256 finishes inside 100 minutes");
 }
 
 /// **FR.7 at 512**: Urvara Reach.
 #[tokio::test(flavor = "multi_thread", worker_threads = 4)]
-#[ignore = "doc 40 cut FR.7's round story at 512: the bot over SSH, tens of minutes; run by name (tier dispatch)"]
+#[ignore = "doc 40 cut FR.7's round story at 512: the bot over SSH, about an hour; run by name (tier dispatch)"]
 async fn fr7_the_rounds_story_at_512() {
-    tokio::time::timeout(Duration::from_secs(60 * 60), round_story(&URVARA_REACH))
+    tokio::time::timeout(Duration::from_secs(100 * 60), round_story(&URVARA_REACH))
         .await
-        .expect("the round's story at 512 finishes inside an hour");
+        .expect("the round's story at 512 finishes inside 100 minutes");
 }
