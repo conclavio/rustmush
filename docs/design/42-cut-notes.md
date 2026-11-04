@@ -456,3 +456,12 @@ captured one.
   need an armed second hull of the pilot's party, which no rig lease gives.
 - An eject capture writes no `capture:` standing and no `UnlawfulKind::Capture` row: the holder held
   the pilot Hostile by (a), so Q-42-21's charge does not apply, and nothing was loaded.
+
+**Cell delta (rule #14).** Measured from the JUnit `<testcase time>` sums of PR #442's run
+41891582950 against main's 41891314242 (a170600b), both shard_8:
+- The four CR.4 stories add 3.45 summed minutes to `crew_custody::` (48.7 to 54.0 s each).
+- Every other shard_8 test ran about 1.25× slower on that runner, CR.1–CR.3's stories included
+  (`match_lifecycle::af3_…` 164 → 210 s, `unloading::sm8_…` 72 → 94 s). Doc 43 §5.8's runner
+  variance, not this cut: the shard's summed minutes go 49.9 → 67.4, and 3.45 of that is CR.4's.
+- shard_8's wall was 21.0 min on that run. The run's slowest cell was shard_1 at 23.9 min, which this
+  cut does not touch.
