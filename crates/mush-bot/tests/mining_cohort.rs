@@ -631,27 +631,20 @@ async fn float(god: &mut arena::Client, client: &mut arena::Client) {
                 let digits: String = rest.chars().take_while(char::is_ascii_digit).collect();
                 digits.parse::<u64>().ok()
             })
-            .unwrap_or_else(|| {
-                panic!(
-                    "no account id after {after:?}:
-{text}"
-                )
-            })
+            .unwrap_or_else(|| panic!("no account id after {after:?}:\n{text}"))
     };
     let opened = god
-        .say("@account/system in5_float=tacsim.credit", "Opened account #")
+        .say(
+            "@account/system in5_float=tacsim.credit",
+            "Opened account #",
+        )
         .await;
     let source = id(&opened, "Opened account #");
     let listed = client.say("@account/list", " tacsim.credit = ").await;
     let row = listed
         .lines()
         .find(|line| line.trim_start().starts_with('#') && line.contains(" tacsim.credit = "))
-        .unwrap_or_else(|| {
-            panic!(
-                "no tacsim.credit account in the pilot's list:
-{listed}"
-            )
-        });
+        .unwrap_or_else(|| panic!("no tacsim.credit account in the pilot's list:\n{listed}"));
     let pilot = id(row, "#");
     god.say(&format!("@econ/mint {source}={pilot} 5000000"), "Minted")
         .await;
