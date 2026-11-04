@@ -586,6 +586,11 @@ pub struct RecipeDef {
     /// `total_units` (E7 cut 4). `1..=MAX_RECIPE_UNITS`.
     #[serde(default = "default_work_units")]
     pub work_units: u64,
+    /// **How its output is lotted** (doc 39 cut IN.2, §4.3): `pooled` (the default, and not
+    /// written, so every published pack's digest stands) or `each`, a part's one identified
+    /// lot a unit by the part commission.
+    #[serde(default, skip_serializing_if = "mush_industry::OutputLots::is_pooled")]
+    pub output_lots: mush_industry::OutputLots,
 }
 
 /// A recipe that does not name its work explicitly does one unit of work.

@@ -11,6 +11,9 @@ pub(super) const HEAD: &str = "ic_sortie_head";
 // Complete terminal metadata has its own strict bound; Open reserves this
 // amount before custody. No dummy terminal event or padding is persisted.
 pub(super) const MAX_CLOSE_BYTES: usize = 8192;
+/// **The record's format** (doc 23 cut S.4b-1: 2 carries `Opening.transition`). Format 1 is
+/// refused, never migrated: the book is pre-launch and holds no claim (doc 38's phase rule).
+pub(super) const FORMAT: u16 = 2;
 pub(super) fn bad(_: impl std::fmt::Display) -> ParticipantError {
     ParticipantError::refused("IC retained execution or event identity differs")
 }
@@ -94,6 +97,10 @@ pub(super) struct Opening {
     pub(super) action: DefinitionRef,
     pub(super) protocol: CapturedProtocol,
     pub(super) dispatcher: ObjId,
+    /// **The book's transition ordinal of this Open** (doc 23 cut S.4b-1, round 2's 23-7): the
+    /// book's own field, never read off the seal, so the seal's sortie can be the epoch's IC id
+    /// (`SortieId::Ic`, D-23-14) while the Roll's `SortieNumber` keeps carrying the ordinal.
+    pub(super) transition: u64,
     #[serde(
         default,
         skip_serializing_if = "Option::is_none",
@@ -114,6 +121,13 @@ impl Opening {
         }
         if self.request.as_bytes() == &[0; 32]
             || self.action != self.protocol.action(false)?
+            || self.transition == 0
+            // The fixture's packed id is the ordinal itself (the shape before S.4b-1); an IC
+            // epoch's id names the sealed hull.
+            || match self.execution.seal.sortie {
+                crate::arena::mind::SortieId::Packed(n) => n != self.transition,
+                crate::arena::mind::SortieId::Ic { hull, .. } => hull != self.execution.seal.unit,
+            }
             || self.dispatcher.0 == 0
             || self.unit.object() != self.execution.seal.unit
             || self.execution.seal.unit == self.dispatcher
@@ -190,12 +204,7 @@ impl Closing {
             || self.request == open.request
             || self.operation == open.operation
             || self.action != self.protocol.action(true)?
-            || open
-                .execution
-                .seal
-                .sortie
-                .as_match_packed()
-                .is_none_or(|sortie| self.transition <= sortie)
+            || self.transition <= open.transition
             || self.sequence == 0
             || self.conditions_digest.as_bytes() == &[0; 32]
             || self.unit_digest.as_bytes() == &[0; 32]
@@ -228,7 +237,7 @@ impl Record {
         format!("{PREFIX}{}", self.open.operation.to_hex())
     }
     pub(super) fn validate(&self) -> Result<(), ParticipantError> {
-        if self.format != 1 {
+        if self.format != FORMAT {
             return Err(bad("format"));
         }
         self.open.validate()?;

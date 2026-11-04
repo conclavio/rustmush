@@ -800,10 +800,12 @@ pub fn in_vocabulary(line: &str) -> bool {
     if line.len() > 512 || line.contains(['\n', '\r']) || line.starts_with("@channel") {
         return false;
     }
-    // Doc 42 cut CR.0 (Q-42-23): the crew's lines, both halves; doc 40 cut FR.0: the round's words.
+    // Doc 42 cut CR.0 (Q-42-23): the crew's lines, both halves; doc 40 cut FR.0: the round's words;
+    // doc 41 cut RS.0: the salvage loop's.
     if super::in_vocabulary(line)
         || super::crew::in_vocabulary(line)
         || super::field::round_word(line)
+        || super::salvage::in_vocabulary(line)
     {
         return true;
     }

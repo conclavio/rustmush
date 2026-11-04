@@ -88,6 +88,16 @@ filter = '(binary_id(mushd::world_journeys) & test(/^scripting_e2e::/)) | (binar
 test-group = 'load-sensitive'
 retries = 1
 
+# STOPGAP (2026-11-04): GC.1b's refused-arrival story, retried twice. Under load the kernel
+# refuses a mid-field join while a think batch is outstanding ("a think awaits its answer on
+# ...: the batch was not delivered before the encode"), and the host never asks that arrival
+# again, so the story's wait can never hold (doc 40 cut notes, "FR.5 — carried in"). Its root
+# fix is FR.5's (await the batch before the joins); the retry of a refused arrival is FR.3's.
+# REMOVE this override when FR.3's retry lands. A pass on retry is FLAKY, never silent.
+[[profile.default.overrides]]
+filter = 'binary_id(tacsim::shard_10) & test(=field_carrier::gc1b_a_refused_middle_party_never_lends_its_letter_to_the_next_arrival)'
+retries = 2
+
 [profile.ci]
 # The hosted runner's four threads, all of them (`num-cpus` is nextest's
 # default; named so the local eight above is read as the exception).

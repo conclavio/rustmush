@@ -60,6 +60,7 @@ pub struct InventoryModule {
     capacity: Option<std::sync::Arc<dyn crate::provider::PoolCapacity>>,
     core_inputs: Option<crate::core_input::CoreInputBinding>,
     bay_parts: Option<crate::bay_part::BayPartBinding>,
+    indivisible: Option<std::sync::Arc<dyn crate::lot_hold::IndivisibleGoods>>,
 }
 
 impl InventoryModule {
@@ -74,7 +75,21 @@ impl InventoryModule {
             capacity: None,
             core_inputs: None,
             bay_parts: None,
+            indivisible: None,
         }
+    }
+
+    /// **Name the composition's indivisible goods** (doc 39 cut IN.2, Q-39-27): a part is one
+    /// identified lot, and split, merge and dissolve refuse it. The same seam shape as
+    /// [`InventoryModule::with_pool_capacity`]: the class is the game's. Unwired, every good
+    /// divides.
+    #[must_use]
+    pub fn with_indivisible_goods(
+        mut self,
+        goods: std::sync::Arc<dyn crate::lot_hold::IndivisibleGoods>,
+    ) -> Self {
+        self.indivisible = Some(goods);
+        self
     }
 
     /// **Name the composition's capacity rule** (doc 36a P2-4): what room an endpoint has for
@@ -419,6 +434,26 @@ impl GameModule for InventoryModule {
             |value: &ReservationBookId| serde_json::to_value(value).map_err(|e| e.to_string()),
         )?;
 
+        // ---- Doc 39 cut IN.2 — one exact lot held for one holder ----
+        let lot_holds = reg.state_family::<LotId, crate::lot_hold::LotHold, _, _, _, _>(
+            StateFamilyDescriptor::new(
+                family_id("inventory_lot_holds")?,
+                canonical("inventory.lot_id.v1")?,
+                canonical("inventory.lot_hold.v1")?,
+                1,
+                canonical("inventory.lot_hold.decode_json.v1")?,
+                canonical("inventory.lot_hold.invariants.v1")?,
+                canonical("inventory.lot_hold.json.v1")?,
+            )
+            .map_err(|error| ModError::msg(error.to_string()))?,
+            |key: &LotId| Ok(format!("{:016x}", key.0)),
+            |value: &Value| serde_json::from_value(value.clone()).map_err(|e| e.to_string()),
+            crate::lot_hold::LotHold::validate,
+            |value: &crate::lot_hold::LotHold| {
+                serde_json::to_value(value).map_err(|e| e.to_string())
+            },
+        )?;
+
         let core_inputs = self
             .core_inputs
             .clone()
@@ -441,6 +476,7 @@ impl GameModule for InventoryModule {
                     lots.clone(),
                     lot_census.clone(),
                     core_inputs.clone(),
+                    lot_holds.clone(),
                 )
             })
             .transpose()?;
@@ -455,8 +491,10 @@ impl GameModule for InventoryModule {
             lot_tally,
             reservations: reservations.clone(),
             marker_ring,
+            lot_holds,
             core_inputs,
             bay_parts,
+            indivisible: self.indivisible.clone(),
         };
 
         // ---- E7c2: B4 — the first `Reservation` validator on the tree ----

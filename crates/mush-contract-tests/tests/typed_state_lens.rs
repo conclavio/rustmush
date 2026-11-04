@@ -47,8 +47,9 @@
 
 use std::collections::BTreeMap;
 use std::fs;
-use std::path::{Path, PathBuf};
+use std::path::Path;
 
+use mush_contract_tests::scan;
 use serde::Deserialize;
 
 /// The checked-in pin, beside this crate's `Cargo.toml`.
@@ -145,55 +146,15 @@ struct DetachedRow {
     reason: String,
 }
 
-/// The workspace root, from this crate's manifest directory.
-fn repo_root() -> PathBuf {
-    Path::new(env!("CARGO_MANIFEST_DIR"))
-        .parent()
-        .and_then(Path::parent)
-        .expect("crates/<pkg> has a workspace root two levels up")
-        .to_path_buf()
-}
-
-/// Every `.rs` file under `dir`, sorted, so the walk is reproducible.
-fn rust_files(dir: &Path) -> Vec<PathBuf> {
-    let mut files = Vec::new();
-    let Ok(entries) = fs::read_dir(dir) else {
-        return files;
-    };
-    let mut paths: Vec<PathBuf> = entries.flatten().map(|entry| entry.path()).collect();
-    paths.sort();
-    for path in paths {
-        if path.is_dir() {
-            files.extend(rust_files(&path));
-        } else if path.extension().is_some_and(|ext| ext == "rs") {
-            files.push(path);
-        }
-    }
-    files
-}
-
 /// Every production source file in the workspace: `crates/*/src/**/*.rs`,
 /// keyed by its repo-relative path with forward slashes.
 fn production_sources(root: &Path) -> Vec<(String, String)> {
-    let crates_dir = root.join("crates");
-    let entries = fs::read_dir(&crates_dir)
-        .unwrap_or_else(|err| panic!("{} is not readable: {err}", crates_dir.display()));
-    let mut dirs: Vec<PathBuf> = entries.flatten().map(|entry| entry.path()).collect();
-    dirs.sort();
     let mut sources = Vec::new();
-    for dir in dirs {
-        if !dir.join("Cargo.toml").is_file() {
-            continue;
-        }
-        for path in rust_files(&dir.join("src")) {
+    for dir in scan::crate_dirs(root) {
+        for path in scan::rust_files(&dir.join("src")) {
             let text =
                 fs::read_to_string(&path).unwrap_or_else(|err| panic!("{}: {err}", path.display()));
-            let relative = path
-                .strip_prefix(root)
-                .unwrap_or(&path)
-                .display()
-                .to_string()
-                .replace('\\', "/");
+            let relative = scan::relative(root, &path);
             sources.push((relative, text));
         }
     }
@@ -214,7 +175,7 @@ fn read_pin(root: &Path) -> Pin {
 
 #[test]
 fn every_detached_typed_state_lens_is_declared_in_the_pin() {
-    let root = repo_root();
+    let root = scan::repo_root();
     let pin = read_pin(&root);
 
     let mut declared: BTreeMap<&str, &DetachedRow> = BTreeMap::new();
@@ -402,7 +363,7 @@ fn optional_store_offenders(sources: &[(String, String)]) -> Vec<String> {
 
 #[test]
 fn no_function_at_any_visibility_takes_an_optional_action_state_store() {
-    let root = repo_root();
+    let root = scan::repo_root();
     let offenders = optional_store_offenders(&production_sources(&root));
     assert!(
         offenders.is_empty(),
@@ -516,15 +477,10 @@ fn the_scan_flags_an_optional_store_behind_every_visibility_and_generic() {
 /// wider than scans 1 and 2's: a twin reintroduced in a test crate is a twin.
 fn every_source(root: &Path) -> Vec<(String, String)> {
     let mut sources = Vec::new();
-    for path in rust_files(&root.join("crates")) {
+    for path in scan::rust_files(&root.join("crates")) {
         let text =
             fs::read_to_string(&path).unwrap_or_else(|err| panic!("{}: {err}", path.display()));
-        let relative = path
-            .strip_prefix(root)
-            .unwrap_or(&path)
-            .display()
-            .to_string()
-            .replace('\\', "/");
+        let relative = scan::relative(root, &path);
         sources.push((relative, text));
     }
     sources
@@ -538,7 +494,7 @@ fn every_source(root: &Path) -> Vec<(String, String)> {
 /// looks like on the way in.
 #[test]
 fn no_action_state_twin_names_remain() {
-    let root = repo_root();
+    let root = scan::repo_root();
     assert!(
         root.join(SELF_PATH).is_file(),
         "{SELF_PATH} is this test's own repo-relative path and the ONE file the scan \

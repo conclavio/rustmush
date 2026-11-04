@@ -78,8 +78,13 @@ pub struct InventoryFamilies {
     /// per endpoint (doc 18 §9 risk 19, cut IC14) without retiring a marker
     /// any read or replay could still need (E7c2 owner decision D1).
     pub marker_ring: StateFamilyHandle<EndpointRef, crate::record::MarkerRing>,
+    /// `inventory.lot_holds` — **one exact lot held for one holder** (doc 39 cut IN.2): a
+    /// listing selling that lot or a bay order fitting it ([`crate::lot_hold`]).
+    pub lot_holds: StateFamilyHandle<LotId, crate::lot_hold::LotHold>,
     pub(crate) core_inputs: Option<crate::core_input::CoreInputHandle>,
     pub(crate) bay_parts: Option<crate::bay_part::BayPartHandle>,
+    /// The composition's indivisible goods (doc 39 cut IN.2); none, every good divides.
+    pub(crate) indivisible: Option<std::sync::Arc<dyn crate::lot_hold::IndivisibleGoods>>,
 }
 
 /// The `ResourceRef` one `(endpoint, commodity)` pool is keyed by.
@@ -203,11 +208,28 @@ pub fn is_marker_id(id: &str) -> bool {
 /// # Errors
 /// [`InventoryError::ClockArithmetic`] if the deadline overflows.
 pub fn reservation_deadline(now: &ClockStamp) -> Result<ClockStamp, InventoryError> {
+    reservation_deadline_after(now, 0)
+}
+
+/// **A hold that must outlive work of `lead_secs`** (doc 39 cut IN.3, §4.12, Q-39-28): the
+/// deadline is the work's duration plus [`RESERVATION_TTL_SECS`] past *now*, so a 20-day order's
+/// materials do not lapse on the seventh day. `lead_secs` 0 is [`reservation_deadline`].
+///
+/// # Errors
+/// [`InventoryError::ClockArithmetic`] for a negative lead or an overflow.
+pub fn reservation_deadline_after(
+    now: &ClockStamp,
+    lead_secs: i64,
+) -> Result<ClockStamp, InventoryError> {
+    if lead_secs < 0 {
+        return Err(InventoryError::ClockArithmetic);
+    }
     Ok(ClockStamp {
         clock: now.clock.clone(),
         at: now
             .at
-            .checked_add(RESERVATION_TTL_SECS)
+            .checked_add(lead_secs)
+            .and_then(|at| at.checked_add(RESERVATION_TTL_SECS))
             .ok_or(InventoryError::ClockArithmetic)?,
     })
 }
@@ -1111,6 +1133,25 @@ impl InventoryFamilies {
         amount: u64,
         now: &ClockStamp,
     ) -> Result<ReservationId, InventoryError> {
+        self.reserve_for(txn, endpoint, commodity, holder, amount, now, 0)
+    }
+
+    /// [`Self::reserve`] for a hold that must outlive `lead_secs` of work: its deadline is
+    /// [`reservation_deadline_after`] (doc 39 cut IN.3, Q-39-28).
+    ///
+    /// # Errors
+    /// [`InventoryError`] on any refusal; **nothing is written on an error**.
+    #[allow(clippy::too_many_arguments)]
+    pub fn reserve_for(
+        &self,
+        txn: &mut ActionTxn<'_>,
+        endpoint: EndpointRef,
+        commodity: &CanonicalId,
+        holder: &ScopedIdempotencyKey,
+        amount: u64,
+        now: &ClockStamp,
+        lead_secs: i64,
+    ) -> Result<ReservationId, InventoryError> {
         let (key, pair) = self.load_pair(txn, endpoint, commodity)?;
         let Some((scalar, book)) = pair else {
             return Err(InventoryError::NoPool);
@@ -1127,7 +1168,7 @@ impl InventoryFamilies {
             resource,
             holder.clone(),
             amount,
-            reservation_deadline(now)?,
+            reservation_deadline_after(now, lead_secs)?,
         )
         .map_err(InventoryError::Reservation)?;
         let book = book.checked_hold(book.revision(), scalar, record, now)?;
@@ -1358,6 +1399,33 @@ impl InventoryFamilies {
         expected_reservation_revision: u64,
         now: &ClockStamp,
     ) -> Result<(), InventoryError> {
+        self.renew_for(
+            txn,
+            endpoint,
+            commodity,
+            reservation,
+            expected_reservation_revision,
+            now,
+            0,
+        )
+    }
+
+    /// [`Self::renew`] to a deadline `lead_secs` of work out (doc 39 cut IN.3): a restamped
+    /// order's materials last its remaining work plus the TTL.
+    ///
+    /// # Errors
+    /// [`InventoryError`] on any refusal; **nothing is written on an error**.
+    #[allow(clippy::too_many_arguments)]
+    pub fn renew_for(
+        &self,
+        txn: &mut ActionTxn<'_>,
+        endpoint: EndpointRef,
+        commodity: &CanonicalId,
+        reservation: ReservationId,
+        expected_reservation_revision: u64,
+        now: &ClockStamp,
+        lead_secs: i64,
+    ) -> Result<(), InventoryError> {
         let (key, pair) = self.load_pair(txn, endpoint, commodity)?;
         let Some((scalar, book)) = pair else {
             return Err(InventoryError::NoPool);
@@ -1375,7 +1443,7 @@ impl InventoryFamilies {
                 reservation,
                 expected_revision: expected_reservation_revision,
                 amount,
-                expires: reservation_deadline(now)?,
+                expires: reservation_deadline_after(now, lead_secs)?,
             },
             now,
         )?;
@@ -1485,6 +1553,7 @@ impl InventoryFamilies {
         if parent.endpoint() != endpoint {
             return Err(InventoryError::NoLot);
         }
+        self.require_divisible(&parent)?;
         self.require_unheld_lot(txn, lot)?;
         self.require_new_lot(txn, child)?;
         if amount == 0 {
@@ -1598,6 +1667,8 @@ impl InventoryFamilies {
         if actual != expected {
             return Err(InventoryError::NoLot);
         }
+        // Doc 39 cut IN.2: a held lot is consumed by its holder alone (`consume_held`).
+        self.require_no_hold(txn, expected.id())?;
         self.move_lots(txn, expected.endpoint(), -1)?;
         self.tally_lots(
             txn,
@@ -1649,6 +1720,7 @@ impl InventoryFamilies {
         if first.endpoint() != endpoint {
             return Err(InventoryError::NoLot);
         }
+        self.require_divisible(first)?;
         let commodity = first.commodity().clone();
         let grade = first.grade();
         let mut quantity = 0_u64;
@@ -1719,6 +1791,7 @@ impl InventoryFamilies {
         if record.endpoint() != endpoint {
             return Err(InventoryError::NoLot);
         }
+        self.require_divisible(&record)?;
         self.require_unheld_lot(txn, lot)?;
         let commodity = record.commodity().clone();
         // One tranche per `(endpoint, commodity, generation)`, keyed
@@ -2022,6 +2095,71 @@ impl InventoryFamilies {
         Ok(created)
     }
 
+    /// **Commission one lot as identified lots** (doc 39 cut IN.2, §4.11's part commission): the
+    /// `source` lot is consumed and its quantity laid back at its endpoint as one lot a row, a
+    /// unit each, every one `Lineage::Split` of the source. Nothing is created and nothing
+    /// pools: the census moves by the rows less the source, the tally not at all.
+    ///
+    /// # Errors
+    /// [`InventoryError::NoLot`] for a source that moved or changed;
+    /// [`InventoryError::Record`] for rows that are not the source's quantity, or past the
+    /// depth cap; [`InventoryError::AlreadyExists`] for a row id in use or named twice.
+    /// **Nothing is written on an error.**
+    pub fn commission_lots(
+        &self,
+        txn: &mut ActionTxn<'_>,
+        source: &Lot,
+        rows: &[(LotId, Grade)],
+    ) -> Result<Vec<Lot>, InventoryError> {
+        let actual = txn
+            .get(&self.lots, &source.id())?
+            .ok_or(InventoryError::NoLot)?;
+        if actual != source {
+            return Err(InventoryError::NoLot);
+        }
+        self.require_unheld_lot(txn, source.id())?;
+        let units = u64::try_from(rows.len()).map_err(|_| InventoryError::Identity)?;
+        if units != source.quantity() {
+            return Err(InventoryError::SplitTooLarge {
+                quantity: source.quantity(),
+                requested: units,
+            });
+        }
+        let depth = source.depth().checked_add(1).ok_or(InventoryError::Record(
+            InventoryRecordError::LineageDepth {
+                max: crate::record::MAX_LINEAGE_DEPTH,
+            },
+        ))?;
+        let mut created: Vec<Lot> = Vec::with_capacity(rows.len());
+        for (child, grade) in rows {
+            if *child == source.id() || created.iter().any(|lot| lot.id() == *child) {
+                return Err(InventoryError::AlreadyExists);
+            }
+            self.require_new_lot(txn, *child)?;
+            if txn.get(&self.lots, child)?.is_some() {
+                return Err(InventoryError::AlreadyExists);
+            }
+            created.push(Lot::new(
+                *child,
+                source.endpoint(),
+                source.commodity().clone(),
+                1,
+                *grade,
+                Lineage::Split {
+                    parent: source.id(),
+                },
+                depth,
+            )?);
+        }
+        let delta = i64::try_from(created.len()).map_err(|_| InventoryError::Identity)? - 1;
+        self.move_lots(txn, source.endpoint(), delta)?;
+        txn.remove(&self.lots, &source.id())?;
+        for lot in &created {
+            txn.insert(&self.lots, &lot.id(), lot.clone())?;
+        }
+        Ok(created)
+    }
+
     /// One exact generation of the endpoint's root for one commodity.
     ///
     /// **Verifies what it loaded** (E7c2 fold C10): `tranche_key` truncates a
@@ -2261,6 +2399,10 @@ pub enum InventoryError {
     /// (c)): a horizon may only shorten the ring's day, and nothing is staged.
     #[error("that move's marker horizon is out of range")]
     MarkerHorizon,
+    /// The lot is of an indivisible good (doc 39 cut IN.2, Q-39-27: a part): one identified
+    /// lot, never split, merged or poured into a pool. Its text is player-facing.
+    #[error("that is a part: one identified lot, never split, merged or dissolved")]
+    Indivisible,
 }
 
 /// Whether a create path counts its new pool in `inventory.census` itself, or

@@ -610,13 +610,9 @@ impl SpaceShipState {
         f64::from(self.rated_accel_mg) / 1_000.0 * crate::port::passage::G0_MPS2
     }
 
-    /// Recompute [`Self::rated_accel_mg`], [`Self::max_accel_mmps2`], and [`Self::max_accel_mps2`]
-    /// from [`Self::base_rated_accel_mg`], [`Self::slow_pct`], and the hull's current mass (`SF.R20`).
-    pub fn recompute_drive_accel(&mut self) {
-        let pct = u32::from(self.slow_pct.clamp(1, 100));
-        self.rated_accel_mg = (self.base_rated_accel_mg.saturating_mul(pct) / 100).max(1);
-        let hull_drive = crate::port::passage::HullDrive {
-            class: mush_core::CanonicalId::new("space").expect("canonical"),
+    fn hull_drive(&self) -> Option<crate::port::passage::HullDrive> {
+        Some(crate::port::passage::HullDrive {
+            class: mush_core::CanonicalId::new("space").ok()?,
             law: crate::definitions::logistics::DriveLaw::Flip {
                 accel_mg: self.rated_accel_mg,
                 exhaust_kms: self.exhaust_kms.max(1),
@@ -625,12 +621,21 @@ impl SpaceShipState {
                 .payload_ceiling_kg
                 .max(u64::from(self.propellant_cap_kg)),
             throttle_permille: crate::port::passage::MAX_THROTTLE_PERMILLE,
-        };
+        })
+    }
+
+    /// Recompute [`Self::rated_accel_mg`], [`Self::max_accel_mmps2`], and [`Self::max_accel_mps2`]
+    /// from [`Self::base_rated_accel_mg`], [`Self::slow_pct`], and the hull's current mass (`SF.R20`).
+    pub fn recompute_drive_accel(&mut self) {
+        let pct = u32::from(self.slow_pct.clamp(1, 100));
+        self.rated_accel_mg = (self.base_rated_accel_mg.saturating_mul(pct) / 100).max(1);
         let dry_kg = u64::from(self.dry_mass_t).saturating_mul(1_000);
         let payload_kg = self
             .non_prop_payload_kg
             .saturating_add(u64::from(self.propellant_kg));
-        let accel_mps2 = crate::port::passage::flip_accel_mps2(&hull_drive, dry_kg, payload_kg)
+        let accel_mps2 = self
+            .hull_drive()
+            .and_then(|hd| crate::port::passage::flip_accel_mps2(&hd, dry_kg, payload_kg))
             .unwrap_or_else(|| self.rated_accel_mps2());
         self.max_accel_mmps2 = ((accel_mps2 * 1_000.0).round() as i64).max(1);
         self.max_accel_mps2 = (accel_mps2.ceil() as i64).max(1);
@@ -640,27 +645,18 @@ impl SpaceShipState {
     /// rocket-equation [`Self::delta_v_mps`] from the hull's `UnitSpec` drive law (`SF.R20`).
     pub fn recompute_drive_kinematics(&mut self) {
         self.recompute_drive_accel();
-        let hull_drive = crate::port::passage::HullDrive {
-            class: mush_core::CanonicalId::new("space").expect("canonical"),
-            law: crate::definitions::logistics::DriveLaw::Flip {
-                accel_mg: self.rated_accel_mg,
-                exhaust_kms: self.exhaust_kms.max(1),
-            },
-            payload_ceiling_kg: self
-                .payload_ceiling_kg
-                .max(u64::from(self.propellant_cap_kg)),
-            throttle_permille: crate::port::passage::MAX_THROTTLE_PERMILLE,
-        };
         let dry_kg = u64::from(self.dry_mass_t).saturating_mul(1_000);
         let payload_kg = self
             .non_prop_payload_kg
             .saturating_add(u64::from(self.propellant_kg));
-        if let Ok(dv) = crate::port::passage::remaining_dv_mps_for_propellant(
-            &hull_drive,
-            dry_kg,
-            payload_kg,
-            u64::from(self.propellant_kg),
-        ) {
+        if let Some(hull_drive) = self.hull_drive()
+            && let Ok(dv) = crate::port::passage::remaining_dv_mps_for_propellant(
+                &hull_drive,
+                dry_kg,
+                payload_kg,
+                u64::from(self.propellant_kg),
+            )
+        {
             self.delta_v_mps = i64::from(dv);
         }
     }

@@ -509,6 +509,24 @@ pub fn sensor_profile(
 /// whose ammunition the catalog does not hold gets a load of zero, which is a weapon
 /// that refuses `FIRE` as empty; it cannot happen through the loader (a dangling
 /// reference is refused at load) and the honest answer is better than a guess.
+/// **The seal's armament list** (doc 23 cut S.4b-1, D-23-14): each of the unit's armament
+/// summaries as the seal's rule row, the list `Execution::capture` and the field's
+/// `custody_unit` already pass, so a dispatch's or a DT launch's seal of an armed rig digests
+/// the same armament as the field's and the claim's.
+#[must_use]
+pub fn seal_armament(
+    catalog: &Catalog,
+    unit: &mush_tactics::TacticalUnit,
+) -> Vec<crate::arena::rules::RuleWeapon> {
+    weapon_summaries(catalog, unit)
+        .into_iter()
+        .map(|summary| crate::arena::rules::RuleWeapon {
+            id: summary.id,
+            rounds_max: summary.count_per_load,
+        })
+        .collect()
+}
+
 #[must_use]
 pub fn weapon_summaries(
     catalog: &Catalog,

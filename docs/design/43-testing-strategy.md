@@ -84,7 +84,7 @@ lint path, a quiet skip in a deploy script) are cut TS.0's; nothing else here re
 | **Twin lenses** across the two process shapes | mushd `sim_lenses` (observer_rule 9,501 lines, 32 tests) and `mush-gateway/tests/split_halves` (`arena_custody_split`, `arena_story_split`, `front_door_split`, `tui_split`) | the same story drives the all-in-one binary and the gateway+server pair; the assertions are divided between the twins (the store claims stay with mushd, the output path is the split's: doc 16 §1, `arena_story_split.rs:5-8`) | each lens boots the production stack over real SSH and web sockets |
 | **The deterministic harness** | `crates/tacsim/tests/harness.rs` (13,354 lines, 33 tests) + `harness_baseline/arena.<os>.json` | the deterministic block (world, substeps, counters, totals, peaks, end states) is bit-identical to the blessed baseline; the timing gate (20 ms wake, 40 ms engaged p99) is live only on the host that blessed it | nightly `tacsim-harness` in release (~4 min build + 3.5 min lanes); `scripts/harness-weekly.sh` by hand; re-blessed by a record, never blind (`ade71092`, three records, 24 fields, after the 2026-11-02 bisect) |
 | **The long stories** | M7 `mind-commerce-acceptance` (6 cells), M8 `m8-gate-stories` (3 cells), the bot's `mining_cohort` (three stories: 590, 504 and 336 s), `arena_mind_isolation`, `field_scale`, the leak battery, the house doctrines, the M6 author/replay acceptance | a whole programme's acceptance, `#[ignore]`d or long, run by name | nightly at production pace (`MIND_PULSE_MS=1000`, 3 h) or dispatched fast (50 ms, ~29 min); six jobs dispatch-only; debug builds, `-j 2`, 360-minute timeout |
-| **The external bot** | `mush-bot` (71k src lines, 740 tests): an SSH line-mode player with goals, budgets, recall, regression gates (`docs/bot-regression.md`), adversarial playtests (`docs/bot-playtesting.md`) | the game as a player meets it, from outside the process; the mining canary (nine minutes of game clock at rate 24, 168 after enrolment since 2026-10-27) | two matrix cells (`bot` 12 summed min, `bot-stories` 26); `bot-win-rate` and `bot-muster-rate` dispatch-only (75–120 min) |
+| **The external bot** | `mush-bot` (71k src lines, 740 tests): an SSH line-mode player with goals, budgets, recall, regression gates (`docs/bot/regression.md`), adversarial playtests (`docs/bot/playtesting.md`) | the game as a player meets it, from outside the process; the mining canary (nine minutes of game clock at rate 24, 168 after enrolment since 2026-10-27) | two matrix cells (`bot` 12 summed min, `bot-stories` 26); `bot-win-rate` and `bot-muster-rate` dispatch-only (75–120 min) |
 | **Live acceptance scripts** | `scripts/relay-r*-{live.mjs,ssh.py,fresh.py,world-fixture.py}` (44 files), `scripts/client-*-live.*` (4), their evidence under `docs/design/evidence/` | one relay or client cut proved against dev1 on the day, with the transcript kept | by hand, once; the evidence is the record |
 | **The tripwires** | `mush-contract-tests`: 33 binaries, 13,294 lines; the registries `state-slot-owners.toml` (138 rows), `panic_budget/<crate>.txt` (35 files), `MEASURED` in `restriction_lints.rs` (51 crates × 6 lints) | the compiled production registry (exit words, macro names, help, projections, RNG routing, serialization policy) and the source tree (panic surface, lint floors, slot ownership, feature census, gated-test reachability, shard completeness, matcher call sites, grid vocabulary, toolchain pin) | seconds each; the four guards run before every push (feature census, panic budget, restriction lints, state-slot owners) |
 | **The web client** | `web/`: 80 vitest files, ~876 cases, 9 mounted-component tests (jsdom), 71 lib-module tests, 4 files of source probes; svelte-check over every component in the build | the TypeScript controllers and stores (only 3 hand-written lib modules have no importing test); component logic lives in tested lib modules | the `web` job, 1.4 min; no browser, `environment: "node"` with 11 files opting into jsdom |
@@ -627,3 +627,39 @@ runs `npm` only.
 6. **TS.21 before FR.5.** Doc 40's one rebless re-blesses the timing block too and needs a live baseline to
    re-bless against; and rule #13 (the harness kind before ready) binds FR.5 and doc 23's S.4b, the two cuts
    that touch hash-pinned files. Doc 38 §9.3 carries both edges.
+
+## 11. Cut notes
+
+Doc 43 has no cut-notes file; each cut's note lands here.
+
+### TS.16 the field tempo (§5.8, §10.2)
+
+**Built.** Test-only, two tunes in shard_1. `field_gc4::lane3_tune` and `field_gc5::quick` drop their
+`disengage_s = 90` and take the rig's default (15 s, `field_host_rig.rs`'s `tune`); their other stage timings
+stand. That moves the six tests whose bodies only wait for a field to settle and act after it: the four lane3
+regressions in `field_gc4` (two settle two fields each, two settle one) and `field_gc5`'s two field tests,
+`gc5_review_the_captors_field_close_keeps_the_abandoned_extraction` (two fields) and
+`gc5_a_non_friend_load_takes_custody_and_abandons_the_crew` (one). `gc5_review…` reads the live record right
+after its second field opens, well inside 15 s. `field_gc5`'s other two tests open no field. No assertion
+changed.
+
+**Kept at 90, one journey per family.** `field_gc4::gc4_the_wingman_drags_the_casualty_to_the_ramp_and_loads_it_before_the_lift`
+(GC.4's gate: the wingman drags while the field is open) and `escort_lease::cf6c_a_leased_escort_flies_out_fights_withdraws_and_goes_back`
+(shard_8, CF.6c's gate: the escort drives home while the field stays up). §7's row names `cf6c`, but its body
+acts inside the field, so it is the family's representative rather than a candidate.
+
+**Rule #14, shard_1's summed minutes.** Runner speed moved the cell more than the cut did. The like-for-like
+pair is two runs taken under the same parallel wave-1 load, where the 214 untouched tests sum within 3 %
+(60.2 and 62.0 minutes):
+
+| Run | Head | Cell, summed | The six | The 214 others | Wall |
+|---|---|---|---|---|---|
+| main [41754225803](https://github.com/conclavio/rustmush/actions/runs/41754225803) | `c0d123a9` | 78.3 min | 1,086.2 s | 60.2 min | 23 m 54 s |
+| PR [41757602966](https://github.com/conclavio/rustmush/actions/runs/41757602966) | `51722d5e` | 68.9 min | 416.6 s | 62.0 min | 21 m 40 s |
+
+The delta is **−9.4 summed minutes**, with the six tests saving 11.2. A quiet main run
+([41749664818](https://github.com/conclavio/rustmush/actions/runs/41749664818) at `f94b1e26`) summed 52.3
+minutes, with the six at 965.4 s and a wall of 16 m 16 s. Its 214 others ran 1.7× faster, which puts the six
+at about 245 s at that speed and the cell near 40 summed minutes, the §7 estimate of −12. Locally (Windows,
+nextest) the six take 300.8 s. The wall under load is still the queue's, not this cell's: TS.10's clock seam
+is the structural half.

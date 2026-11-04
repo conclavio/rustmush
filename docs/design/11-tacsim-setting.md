@@ -4,7 +4,7 @@
 
 Three framing choices (owner, 2026-09-05) govern everything below: **old power vs. rising power** (Earth/Luna a hegemon past its peak, Mars converting autonomy into sovereignty, the Belt a loose freeport arrangement nobody fully governs); the corridor's conflict is **a Mars polity against a Ceres polity over the Ceres→Phobos flow**; and **mixed texture** — governments sound institutional, corporations sound like brands, mercenary units sound martial.
 
-Companion docs: 10 (foundations), 10a/10b (E7), `docs/scenes_factions_knowledge.md` §3 (faction registry, edges, control, fronts/clocks, the four design tests), `docs/help/faction.md`.
+Companion docs: 10 (foundations), 10a/10b (E7), `docs/design/scenes-factions-knowledge.md` §3 (faction registry, edges, control, fronts/clocks, the four design tests), `docs/help/faction.md`.
 
 ---
 
@@ -42,7 +42,7 @@ Only the past that explains a present-day record is recorded here. Dates are CE.
 
 ## 3. The three governments
 
-Each is a `mush-faction` faction: charter, typed resource pools, NPC principals, edges, control records, fronts. Each must act with **zero PCs** (`scenes_factions_knowledge.md` §3.7 test 1) — the principals and the fronts below are what move when no player is logged in.
+Each is a `mush-faction` faction: charter, typed resource pools, NPC principals, edges, control records, fronts. Each must act with **zero PCs** (`scenes-factions-knowledge.md` §3.7 test 1) — the principals and the fronts below are what move when no player is logged in.
 
 ### 3.1 The Concord of Earth and Luna — "the Concord"
 
@@ -255,7 +255,7 @@ The five relay nodes the Malapert Exchange operates — the Luna hub, Phobos, Ce
 
 ## 6. Fronts and clocks at world start
 
-These are what move when nobody is logged in (`scenes_factions_knowledge.md` §3.6; clocks advance only from typed causes; the pressure budget bounds them). Segment counts are seed values.
+These are what move when nobody is logged in (`scenes-factions-knowledge.md` §3.6; clocks advance only from typed causes; the pressure budget bounds them). Segment counts are seed values.
 
 | Front (faction) | Clock | At start | Advances on | Completion |
 |---|---|---|---|---|

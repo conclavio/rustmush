@@ -3539,6 +3539,7 @@ mod tests {
             after,
             at_ic: 5_000,
             excursion: None,
+            launch: None,
         };
         let markers = ActResult::Refused {
             code: RefusedCode::MarkersFull,
@@ -3631,6 +3632,7 @@ mod tests {
             after: 3,
             at_ic: 1_500,
             excursion: None,
+            launch: None,
         };
         assert!(queue_orphaned(&queued(plan.author), &plan, None));
         assert!(queue_orphaned(&queued(plan.author), &plan, Some(ObjId(55))));

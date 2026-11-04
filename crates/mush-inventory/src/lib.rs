@@ -68,6 +68,7 @@ pub mod commands;
 pub mod core_input;
 pub mod facts;
 pub mod guard;
+pub mod lot_hold;
 pub mod module;
 pub mod pool;
 pub mod provider;
@@ -77,13 +78,15 @@ pub mod store;
 
 pub use facts::InventoryFactProvider;
 pub use guard::ReservationGuardValidator;
+pub use lot_hold::{IndivisibleGoods, LotHold, MAX_HOLDER_BYTES};
 pub use module::{
     InventoryHandleCell, InventoryHandles, InventoryModule, SWEEP_PERIOD_SECS, SWEEP_TAG,
 };
 pub use pool::{
     InventoryError, InventoryFamilies, LotSale, MARKER_CAUSAL_MAX_BYTES, Moved, SettledSale,
     derive_lot_id, derive_tranche_id, derived_marker_id, is_marker_id, pool_key, pool_resource,
-    reservation_deadline, reservation_id_from_text, reservation_id_text, tranche_key,
+    reservation_deadline, reservation_deadline_after, reservation_id_from_text,
+    reservation_id_text, tranche_key,
 };
 pub use provider::{
     InventoryVerb, MAX_ENDPOINT_CHOICES, PoolCapacity, PoolReadFailed, action_ref, endpoint_status,

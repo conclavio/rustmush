@@ -130,7 +130,9 @@ impl crate::InventoryFamilies {
         self.bay_parts
             .as_ref()
             .map_or(Ok(()), |h| h.require_unheld(txn, id))
-            .map_err(|_| crate::InventoryError::ExactInput)
+            .map_err(|_| crate::InventoryError::ExactInput)?;
+        // Doc 39 cut IN.2: a lot a listing or a bay order holds is the holder's alone.
+        self.require_no_hold(txn, id)
     }
     pub(crate) fn require_new_lot(
         &self,

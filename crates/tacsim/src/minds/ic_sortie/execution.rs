@@ -31,14 +31,14 @@ impl Execution {
     pub(super) fn capture(
         world: &World,
         facts: &IcAdmissionFacts,
-        sortie: u64,
+        sortie: SortieId,
         profiles: &[SmolStr],
         arena: &ArenaConfig,
         minds: &MindsConfig,
     ) -> Result<Self, ParticipantError> {
         arena.validate().map_err(bad)?;
         minds.validate().map_err(bad)?;
-        if sortie == 0 || profiles.len() > crate::arena::card::ProfileSet::MOST {
+        if sortie == SortieId::none() || profiles.len() > crate::arena::card::ProfileSet::MOST {
             return Err(bad("profile or sortie bound"));
         }
         for (kind, owner) in [
@@ -103,9 +103,9 @@ impl Execution {
             facts.unit(),
             unit,
             &weapons,
-            // Doc 23 cut S.1 (L1): the book's transition ordinal rides the arena kind until
-            // the cut that flies a mind IC (S.4) makes the book carry its host's id.
-            SortieId::Packed(sortie),
+            // Doc 23 cut S.4b-1 (D-23-14): the epoch's IC id (or the fixture's packed
+            // ordinal); the book's ordinal is `Opening.transition`.
+            sortie,
             &SealPolicy {
                 authored: Some(definition),
                 selected_profiles: profiles,
@@ -145,7 +145,12 @@ impl Execution {
         if self.source.is_empty()
             || self.source.len() > mush_roll::MAX_SOURCE_BYTES
             || self.source.contains('\0')
-            || self.seal.sortie.as_match_packed().is_none_or(|n| n == 0)
+            // Doc 23 cut S.4b-1 (D-23-14): the seal's sortie is an IC epoch's id over the
+            // sealed hull, or (the claim path's own fixture) a packed ordinal; never none.
+            || match self.seal.sortie {
+                SortieId::Packed(n) => n == 0,
+                SortieId::Ic { hull, .. } => hull != self.seal.unit || hull.0 == 0,
+            }
             || self.seal.requested.source_sha256 != digest
             // Doc 17h cut M8b C4 (D-UM-41, D-UM-42): a governed core refuses an unfiled
             // digest; an ungoverned one admits the personal draft (sealed with the draft's own

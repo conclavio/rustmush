@@ -1,7 +1,7 @@
 //! # mush-scenes
 //!
 //! Durable narrative scenes and the **timestop** driver (design:
-//! `docs/scenes_factions_knowledge.md` §1).
+//! `docs/design/scenes-factions-knowledge.md` §1).
 //!
 //! A scene is an explicit, durable envelope around play. Cut 1 ships the
 //! timestop: `+timestop` promotes the actor's room into an **exclusive,
