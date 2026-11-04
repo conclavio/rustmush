@@ -509,7 +509,10 @@ bulk mint, so a port boots in exactly main's fires.
   `cargo test -j 8 -p mush-bot --test mining_cohort -- --ignored in5_ --nocapture --test-threads 1`.
   The way out is by Luna and Deimos: Ceres→Aitken Highport→Voltaire Anchorage→Stickney (`ceres_aitken`,
   `aitken_voltaire`, `voltaire_stickney`, about 27 IC days), bunkering at each port. The way home is
-  `stickney_ceres`, whose legs carry no hazard. by-hand: _the revision and walls of the conclav.dev run_.
+  `stickney_ceres`, whose legs carry no hazard. The detour adds about 11 real minutes a site at the 3,600 rate.
+  Seed: God mints the pilot a 50,000.00cr float from a system source of the story's own (`@account/system`, the
+  pilot's `@account/list`, `@econ/mint`), staff lines outside the bot's vocabulary.
+  by-hand: _the revision and walls of the conclav.dev run_.
 
 **Departures from the row.**
 
@@ -539,6 +542,11 @@ bulk mint, so a port boots in exactly main's fires.
   hook, because the rig boots the real server with the built-in lane, and an operator seed may not claim the
   lane's id. So the story takes the lane's own picket-free way out, on production paths with nothing stripped,
   and the matter pin and the drift check are untouched.
+- **The bot's money does not cover the long way round** (an economy finding, provisional numbers): unseeded, at
+  both sites the pilot reached Stickney, sold, refined, ordered and collected the fittings, then could not pay the
+  bunkers home ("Your account does not have enough available to cover that."). The mining loop's earnings plus the
+  trade's margin do not buy propellant at 60 cr a tonne for three legs out and one home. The story seeds a float
+  (above); tuning the margin or the propellant asks is the economy's, not this cut's.
 - **For the SF thread:** the bot has no picket words (brake under 10 m/s, `+helm/submit`, `+tac/pdc auto`, a
   jink), so any bot haul through Kirkwood stalls in the bubble.
 
