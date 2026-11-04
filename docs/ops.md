@@ -2031,7 +2031,16 @@ scripts/vps-gate.sh --packages "tacsim mush-server"
 scripts/vps-gate.sh --extra "-E 'test(sm12c)'"
 scripts/vps-gate.sh --kind harness          # scripts/harness-weekly.sh, on conclav.dev
 scripts/vps-gate.sh --kind cost-lane        # scripts/cost-lane.sh, on conclav.dev
+scripts/vps-gate.sh --env "MINE_RATE=24" --extra "--run-ignored only -E 'test(/^mining_cohort::/)'" --packages mush-bot
+                                            # a configuration: NAME=VALUE pairs, any kind
 ```
+
+`--env` (gate.yml's `env` input, doc 43 cut TS.2) exports its pairs to every
+later step of the run, so a dispatch can select a variant no hosted job sets
+(doc 43 §5.9). Values cannot hold spaces, and gate.yml refuses the names the
+workflow or the toolchain owns (`REDIS_URL` is the `redis` input's; `CARGO_*`,
+`RUST*`, `NEXTEST_*`, `PATH`, the runner's own). The script sends the input only
+when it is given, so it still dispatches a branch whose gate.yml predates it.
 
 `--wip` pushes a commit of the working tree, uncommitted work and untracked
 files included, to `gate/<branch>` (never to the branch itself; the index and
@@ -2192,6 +2201,31 @@ cut note. The files are doc 40 §4a's inventory (the pins recorded in
 docs/design/40-cut-notes.md, "§4a's inventory, at the base commit"). The PR's
 CI does not run the harness, so without the dispatch a mover is found only by
 the nightly's bisect after it merges.
+
+**Every gated test declares its tier** (doc 43 cut TS.2). A test that passes
+without running when nobody gives it what it needs — `#[ignore]`d, reading
+`REDIS_URL`, or opting in by a `RUN_*` flag — has a row in
+`crates/mush-contract-tests/test-tiers.toml`: `pr` (a ci.yml job with no `if:`),
+`nightly` (the daily schedule), `weekly` (the Sunday cron, `17 4 * * 0`),
+`dispatch` (a dispatch-only job, or the VPS gate's `harness`/`cost-lane` kinds),
+or `by-hand` (no job; the row's `by_hand` is the revision of the last recorded
+run), with the configuration that run sets. `ci_gated_test_inventory` holds the
+rows to the workflows: the job must be on the row's tier, run the test by a
+command (a ci.yml comment is a recipe, not a run; an ignored test needs
+`--ignored` or `--run-ignored`) and set the row's configuration. **A cut that
+adds a gated story adds its row in the same pull request**; a programme story
+on the `dispatch` or `by-hand` tier is put in a weekly job or carries its
+by-hand revision in the row and in its cut note (doc 43 §10.3). After a by-hand
+run, the commit that records its figures moves `by_hand` to the revision it ran
+at.
+
+**The nightly's failure channel** (doc 43 D-43-3) is GitHub's own email for a
+failed scheduled run. GitHub sends a scheduled workflow's notifications to the
+account that last changed the `cron` lines in `ci.yml`, so the owner checks two
+things: that the last commit touching those lines is theirs (a merge they made
+of doc 43 TS.2 counts), and that *Settings → Notifications → Actions* has
+"Send notifications for failed workflows only" with email on. A run that went
+red then mails the owner the next morning; nothing in the workflow sends it.
 
 ## Test targets since T.3: the group binaries
 

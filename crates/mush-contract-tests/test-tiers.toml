@@ -1,0 +1,308 @@
+# Doc 43 cut TS.2: the gated tests' tiers and configurations.
+#
+# A gated test is one that passes without running when nobody gives it what it
+# needs: `#[ignore]`d, reading `REDIS_URL`, or opting in by a `RUN_*`/`*_RUN`
+# flag (tests/ci_gated_test_inventory.rs finds them by scanning the tree). Each
+# one says here WHEN it runs and UNDER WHAT:
+#
+#   tier      pr        a ci.yml job with no `if:` (every push and pull request)
+#             nightly   a job whose `if:` admits the schedule (daily, 04:17 UTC)
+#             weekly    a job whose `if:` admits the Sunday cron '17 4 * * 0'
+#                       (D-43-11), at the fast pulse
+#             dispatch  a job only `workflow_dispatch` reaches, or the VPS
+#                       gate (`job = "gate.yml:<kind>"`, `via` the script
+#                       the kind runs)
+#             by-hand   no job: somebody runs it on a box. `by_hand` is the
+#                       `by-hand:` tag, the revision of its last recorded run
+#                       (or `never`, with a note saying why)
+#   job       the ci.yml job that runs it (not on the by-hand tier)
+#   config    the environment that run sets: space-separated NAME or
+#             NAME=VALUE; the job must set each (an opt-in test's row names
+#             its flag). Empty is the default configuration. One test may
+#             have a row per configuration (doc 43 §5.9, TS.18)
+#   via       a script the job runs that runs the test
+#   child_of  an ignored helper its file's test spawns as a child process
+#   id        `<pkg>/tests::<module or target>::<fn>` for an integration test
+#             (the group directory left out: a reshard rewrites no row);
+#             `<path under crates/>::<fn>` for a unit test; `<prefix>::*` for
+#             every gated test under a prefix that needs no opt-in flag
+#
+# The test refuses: a gated test with no row; a row matching no gated test; a
+# job on another tier than its row says; a job that runs the test only in a
+# comment (a comment is a recipe, not a run); an ignored test under a command
+# without --ignored / --run-ignored; a config the job does not set; a by-hand
+# row without its revision.
+#
+# A cut that adds a gated story adds its row in the same pull request (doc 43
+# TS.2, §10.3). A programme story on the dispatch or by-hand tier is named in
+# the Sunday slot (a weekly job) or carries its by-hand revision here and in
+# its cut note. After a by-hand run, update `by_hand` to the revision it ran
+# at, in the commit that records the run's figures.
+
+# ---- pr: every push and pull request ----
+
+# The live-Redis branches (redis-faults sets REDIS_URL at a disposable Redis 8).
+[[test]]
+id = "mushd/tests::persistence::*"
+tier = "pr"
+job = "redis-faults"
+config = "REDIS_URL"
+
+[[test]]
+id = "mushd/tests::durability_e2e::*"
+tier = "pr"
+job = "redis-faults"
+config = "REDIS_URL"
+
+[[test]]
+id = "mushd/tests::m10c_e2e::m10c_persistence_twin_redis_gated"
+tier = "pr"
+job = "redis-faults"
+config = "REDIS_URL"
+
+[[test]]
+id = "mush-gateway/tests::authoritative_process_kill::*"
+tier = "pr"
+job = "redis-faults"
+config = "REDIS_URL"
+
+[[test]]
+id = "mush-server/tests::authoritative_boot::*"
+tier = "pr"
+job = "redis-faults"
+config = "REDIS_URL"
+
+[[test]]
+id = "mush-server/src/persist.rs::live_redis_wrong_type_bundle_quarantines_repairs_and_recovers"
+tier = "pr"
+job = "redis-faults"
+config = "REDIS_URL"
+
+[[test]]
+id = "mush-server/src/timeline.rs::redis_round_trip_preserves_exact_generations"
+tier = "pr"
+job = "redis-faults"
+config = "REDIS_URL"
+
+# The unit minds' cross-platform pins (the test matrix's tacsim-minds cell).
+[[test]]
+id = "tacsim/tests::minds_rhai::m2_the_twin_corpus_hashes_the_same_on_every_host"
+tier = "pr"
+job = "test"
+
+[[test]]
+id = "tacsim/tests::twin::m2_whole_match_hashes_are_equal_between_the_runners_over_the_pool"
+tier = "pr"
+job = "test"
+
+[[test]]
+id = "tacsim/tests::minds_pool::m4_real_tasks_over_the_twin_s_thirty_hash_as_the_library"
+tier = "pr"
+job = "test"
+
+# The LLM cost report against the mock provider (tacsim-integration-1's named step).
+[[test]]
+id = "tacsim/tests::harness::tacsim_harness_llm_cost_run"
+tier = "pr"
+job = "test"
+config = "TACSIM_LLM_COST_RUN=1 TACSIM_LLM_COST_MOCK=1"
+
+# The child half of `split_halves_write_distinct_log_files`, spawned by it.
+[[test]]
+id = "mushd/tests::world_panic_exit::the_half_child"
+tier = "pr"
+child_of = "split_halves_write_distinct_log_files"
+
+# ---- nightly ----
+
+# M7: the six Registry-rating stories, at production's pulse on the schedule.
+[[test]]
+id = "tacsim/src/minds/bulk/original_purchase_integration_tests.rs::genuine_registry_original_purchase_grant_refund_and_paired_recovery"
+tier = "nightly"
+job = "mind-commerce-acceptance"
+config = "MIND_PULSE_MS=1000"
+
+[[test]]
+id = "mush-server/src/world_task/submission_disposition/tests/paid_purchase.rs::genuine_registry_purchase_writer_unknown_expiry_and_recovery"
+tier = "nightly"
+job = "mind-commerce-acceptance"
+config = "MIND_PULSE_MS=1000"
+
+[[test]]
+id = "tacsim/src/minds/bulk/conduct_integration_tests.rs::genuine_safe_conduct_service_result_and_complete_cold_inverse"
+tier = "nightly"
+job = "mind-commerce-acceptance"
+config = "MIND_PULSE_MS=1000"
+
+[[test]]
+id = "tacsim/src/hardware/flow/launch/story.rs::named_coprates_real_save_rate_house_sale_and_membership_fences"
+tier = "nightly"
+job = "mind-commerce-acceptance"
+config = "MIND_PULSE_MS=1000"
+
+[[test]]
+id = "mush-server/src/world_task/submission_disposition/tests/player_market_story.rs::player_market_commands_story_two_accounts_alt_stale_tiny_and_restart"
+tier = "nightly"
+job = "mind-commerce-acceptance"
+config = "MIND_PULSE_MS=1000"
+
+[[test]]
+id = "mush-server/src/world_task/submission_disposition/tests/player_market_typed.rs::typed_market_story_quote_pay_complete_panels_resale_and_restart"
+tier = "nightly"
+job = "mind-commerce-acceptance"
+config = "MIND_PULSE_MS=1000"
+
+# M8: the gate's stories over the combined world (the S.4b cuts' too).
+[[test]]
+id = "tacsim/tests::m8_world::*"
+tier = "nightly"
+job = "m8-gate-stories"
+
+# H3: the scale harness, against a disposable Redis.
+[[test]]
+id = "mush-contract-tests/tests::scale_harness::*"
+tier = "nightly"
+job = "scale"
+config = "REDIS_URL"
+
+# 16b cut H: the TacSim harness in release, the delta gating the deterministic block.
+[[test]]
+id = "tacsim/tests::harness::*"
+tier = "nightly"
+job = "tacsim-harness"
+config = "TACSIM_JSON=harness.json"
+
+# ---- weekly: the Sunday cron, at the fast pulse (D-43-11) ----
+
+[[test]]
+id = "mush-bot/tests::arena_mind_author_story::field_pilot_complete_production_author_story"
+tier = "weekly"
+job = "mind-author-acceptance"
+via = "scripts/mind_port_acceptance.py"
+
+[[test]]
+id = "mush-bot/tests::arena_mind_port_rate::field_pilot_fresh_external_muster_interval"
+tier = "weekly"
+job = "mind-author-acceptance"
+via = "scripts/mind_port_acceptance.py"
+
+[[test]]
+id = "tacsim/src/minds/resimulation.rs::m6_real_24_class_iii_900s_complete_tape_replays_every_think_and_substep"
+tier = "weekly"
+job = "mind-full-replay"
+
+[[test]]
+id = "tacsim/tests::m8_leaks::*"
+tier = "weekly"
+job = "m8-leak-battery"
+
+[[test]]
+id = "tacsim/src/minds/registry/trials/house_tests.rs::house_minds_over_every_trial_case"
+tier = "weekly"
+job = "m8-house-doctrines"
+
+[[test]]
+id = "tacsim/src/hardware/flow/launch/story.rs::launch_house_doctrines_win_some_registry_trials"
+tier = "weekly"
+job = "m8-house-doctrines"
+
+[[test]]
+id = "mush-bot/tests::arena_win_rate::arena_win_rate_over_ten_matches"
+tier = "weekly"
+job = "bot-win-rate"
+
+[[test]]
+id = "mush-bot/tests::arena_muster_rate::*"
+tier = "weekly"
+job = "bot-muster-rate"
+
+# ---- dispatch: the VPS gate on conclav.dev ----
+
+# scripts/harness-weekly.sh: the same lanes with the absolutes asserted, on the
+# host that blessed the timing baseline (doc 43 D-43-6, cut TS.21).
+[[test]]
+id = "tacsim/tests::harness::*"
+tier = "dispatch"
+job = "gate.yml:harness"
+via = "scripts/harness-weekly.sh"
+config = "TACSIM_ASSERT=1"
+
+# scripts/cost-lane.sh: the surface-mining cost lane's IC month at 30 TVs.
+[[test]]
+id = "tacsim/tests::cost_lane::sm12c_cost_lane_cohort_over_an_ic_month"
+tier = "dispatch"
+job = "gate.yml:cost-lane"
+via = "scripts/cost-lane.sh"
+config = "TACSIM_ASSERT=1 TACSIM_COHORT_TVS=30"
+# TS.21's run on conclav.dev: no breach, month p99 2,053 us, 730 s.
+by_hand = "a2ef4075"
+
+# ---- by-hand ----
+
+# The four-bot mining cohort over SSH: passed at its landed commit, 2,258 s
+# (doc 20 cut notes, SM.12c-bot, the lead's run after the fixer's round).
+[[test]]
+id = "mush-bot/tests::mining_cohort::four_bots_mine_and_sell_over_ssh_in_line_mode"
+tier = "by-hand"
+by_hand = "d2f4ee7c"
+
+# Doc 40 FR.0's Urvara smoke: passed on the owner's box, recorded in the cut's commit.
+[[test]]
+id = "mush-bot/tests::mining_cohort::fr0_the_bot_drives_to_a_four_digit_pocket_on_urvara_and_types_void"
+tier = "by-hand"
+by_hand = "99b3a4b4"
+
+# Doc 41 RS.0's two smokes: both passed (687 s) on the branch head (41 cut notes).
+[[test]]
+id = "mush-bot/tests::mining_cohort::rs0_the_bot_types_the_salvage_words_on_urvara"
+tier = "by-hand"
+by_hand = "5e03f6d2"
+
+[[test]]
+id = "mush-bot/tests::mining_cohort::rs0_the_bot_types_the_salvage_words_on_ahuna"
+tier = "by-hand"
+by_hand = "5e03f6d2"
+
+# Doc 36 GC.12: the second measurement, after GC.2, on conclav.dev in release
+# (doc 36 "As built (GC.12)"); FIELD_MAX_UNITS was set from it.
+[[test]]
+id = "tacsim/tests::field_scale::gc12_the_field_pulse_is_measured_at_scale"
+tier = "by-hand"
+by_hand = "34416410"
+
+# 16c Q-AK4: spends real money, so no job runs it. The last run, "on AN", from
+# the muster, two of five, $0.0725 (16c), recorded at this commit.
+[[test]]
+id = "mush-bot/tests::arena_live_commander::arena_live_commander_five_matches"
+tier = "by-hand"
+by_hand = "21cbe730"
+config = "MUSH_BOT_LIVE_COMMANDER=1"
+
+# 17b cut M1b.5: the M1b gate's measure, 15 of 30 at the gate (17b's plan).
+[[test]]
+id = "mush-bot/tests::arena_win_rate::the_bot_against_a_conditioned_t1_over_thirty_pooled_matches"
+tier = "by-hand"
+by_hand = "d2d49389"
+
+# The live-provider smokes and cost run: operator-funded, never run against
+# the real provider (the logged "ok" lines are their early returns).
+[[test]]
+id = "mushd/tests::npc_smoke::live_npc_dialogue_openrouter_smoke"
+tier = "by-hand"
+config = "RUN_LLM_SMOKE=1"
+by_hand = "never"
+note = "Needs an operator-funded OpenRouter key; no recorded run against the live provider."
+
+[[test]]
+id = "mushd/tests::worldgen_smoke::live_worldgen_openrouter_smoke"
+tier = "by-hand"
+config = "RUN_LLM_SMOKE=1"
+by_hand = "never"
+note = "Needs an operator-funded OpenRouter key; no recorded run against the live provider."
+
+[[test]]
+id = "tacsim/tests::harness::tacsim_harness_llm_cost_run"
+tier = "by-hand"
+config = "TACSIM_LLM_COST_RUN=1"
+by_hand = "never"
+note = "Owner-funded cost measurement; only the mock lane has run (16b's plan: no run against the real provider)."
