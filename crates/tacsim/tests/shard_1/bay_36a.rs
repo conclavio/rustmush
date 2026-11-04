@@ -288,6 +288,15 @@ fn jam_cannon(rig: &mut Rig, hull: ObjId) -> mush_tactics::ComponentId {
 #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
 async fn b36a_2_a_doomed_order_is_refused_at_the_counter() {
     let mut rig = stocked();
+    // Doc 39 cut IN.7: the lane seeds no parts; a cannon in Occator's stores is staff's.
+    crate::driving_rig::seed_store_parts(
+        &mut rig,
+        CERES,
+        "occator",
+        "tacsim.part.weapon.cannon_105",
+        1,
+        7_600_100,
+    );
     let (pilot, row, escort, _) = two_escorts(&mut rig);
     seed_hold(&mut rig, &row, "industrial_parts", 40, 9_700);
     // Doc 39 cut IN.1: the first repair opens the hull's bale with a tonne of alloys too.
