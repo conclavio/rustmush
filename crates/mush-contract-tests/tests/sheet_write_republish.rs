@@ -8,7 +8,7 @@
 //! `put_by` itself stays legitimate where there is no `Ctx` to emit from
 //! (NPC sheet bootstrap, the store's own helpers).
 
-use std::path::{Path, PathBuf};
+use mush_contract_tests::scan;
 
 /// Every store write that bypasses the event: `put_by` (look-back I1-C22
 /// added `put` — the same write under the caller's own audit identity — and
@@ -23,31 +23,9 @@ fn offending_needle(line: &str) -> Option<&'static str> {
         .find(|needle| line.contains(needle))
 }
 
-fn rust_sources(root: &Path, files: &mut Vec<PathBuf>) {
-    let mut entries = std::fs::read_dir(root)
-        .unwrap_or_else(|error| panic!("cannot scan {}: {error}", root.display()))
-        .collect::<Result<Vec<_>, _>>()
-        .unwrap_or_else(|error| panic!("cannot read entry in {}: {error}", root.display()));
-    entries.sort_by_key(std::fs::DirEntry::file_name);
-    for entry in entries {
-        let path = entry.path();
-        let kind = entry
-            .file_type()
-            .unwrap_or_else(|error| panic!("cannot inspect {}: {error}", path.display()));
-        if kind.is_dir() {
-            if entry.file_name() == "tests" {
-                continue;
-            }
-            rust_sources(&path, files);
-        } else if kind.is_file() && path.extension().is_some_and(|extension| extension == "rs") {
-            files.push(path);
-        }
-    }
-}
-
 #[test]
 fn ruleset_command_code_writes_sheets_through_put_in() {
-    let crates = Path::new(env!("CARGO_MANIFEST_DIR")).join("..");
+    let crates = scan::repo_root().join("crates");
     let mut files = Vec::new();
     // 16b cut R-b: the two deleted game rulesets are replaced by the crates that
     // still call `mush_ruleset::register_sheet_commands` — the game's own pilot
@@ -55,7 +33,11 @@ fn ruleset_command_code_writes_sheets_through_put_in() {
     // whole `src` trees are scanned (a superset of the sheet code), which is the
     // stricter reading of the same tripwire.
     for crate_dir in ["tacsim", "mush-testkit"] {
-        rust_sources(&crates.join(crate_dir).join("src"), &mut files);
+        files.extend(scan::files(
+            &crates.join(crate_dir).join("src"),
+            &["rs"],
+            &["tests"],
+        ));
     }
     files.push(crates.join("mush-ruleset").join("src").join("commands.rs"));
 
