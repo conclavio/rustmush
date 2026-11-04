@@ -416,3 +416,37 @@ upload.
 
 D-43-5's test was whether the partition's link cost is lower than the reshard cost. Measured, it is about 26 s a
 cell and no wall, against a hand-made layout PR every day or two. The decision is the owner's.
+
+## TS.5b (2026-11-04) — the fault matrix as sequences
+
+The second half of §7's TS.5 row. The new test is `gate5_fault_matrix::`
+`lifecycle_sequences_with_two_faults_and_restarts_recover_to_the_clean_run`, in `ci_policy`.
+
+- **The script.** Each case runs one script over each of the matrix's five real bundles (Gate-1 brace, Gate-2
+  tactical fire, and the three Gate-4 delayed-decision bundles):
+  - submit;
+  - reconcile;
+  - one outbox attempt per pending delivery that **fails (`Retry`)**, then is delivered;
+  - checkpoint.
+- **The cases.** Every single fault, and every pair at two different stages, from the matrix's own modes:
+  `BeforeIntent`, `AfterIntent`, every `AfterNMaterializationOps`, `AckLostAfterFinalize`, `TokenConflict`
+  and `AckLostAfterCheckpoint`. Each is crossed with:
+  - no restart;
+  - a restart before each one stage;
+  - a restart before every stage.
+
+  A restart is `InMemoryStore::dump`, then `restore` into a fresh store, as a process reopens the same
+  durable state. The outbox stage's restart falls between the failed attempt and its retry. That makes
+  over 500 cases, and the test asserts the floor.
+- **The check.** Every case ends with its exact receipt, a compact rejoin and no delivery left pending. Its
+  final store, dumped to JSON, must be **identical to the same script run clean**: recovered equals live.
+  All pass. No sequence found a divergence.
+
+**Departures from §7.** The Redis backend is not driven. `AuthoritativeFaultStore` wraps the memory store
+only, so a Redis twin needs a fault wrapper over `RedisStore`, and that run belongs in the `redis` group
+(`.config/nextest.toml`'s `redis-serial`). `cancel` and `advance time` are not modelled, because the store
+has no cancel of an authoritative bundle: a decision's cancellation and its deadline live in the engine.
+Conservation and sole custody are covered by TS.5a's model, not here; this test's check is whole-store
+identity. The minimised-failures part of the row has nothing to keep yet.
+
+**Summed minutes.** About +0.15: 9 s in a debug build.
