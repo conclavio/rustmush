@@ -2249,8 +2249,7 @@ pub fn stow(ctx: &mut Ctx<'_>, hull: ObjId, carrier: Option<ObjId>) -> Result<Ob
     put_bay_hull(ctx, &record);
     // Doc 41 cut RS.5 (Q-41-8): the second handover — stowed into the poster's own carrier
     // docked at the destination.
-    if let crate::port::ship::Berth::Docked { map, .. } =
-        crate::port::ship::berth_of(ctx.w, target)
+    if let crate::port::ship::Berth::Docked { map, .. } = crate::port::ship::berth_of(ctx.w, target)
         && let Some(order) = crate::surface::retrieval::held_by(ctx.w, hull, ctx.actor)
         && crate::port::coop::helm_holder(ctx.w, target)
             .is_some_and(|helm| crate::surface::retrieval::acts_for(ctx.w, helm, &order.poster))
