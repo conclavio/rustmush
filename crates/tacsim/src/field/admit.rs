@@ -334,12 +334,13 @@ fn admit(ctx: &mut Ctx<'_>, site: &CanonicalId, record: &SiteRecord) -> Result<(
     // field left are admitted but never counted (Q-CF-26, Q-CF-45; doc 32 §15, the review's
     // CF-3a). A carrier counts: no ruling exempts it.
     // Doc 36 cut GC.1 (Q-36-44): a hull held out of the field is a wall, never an entrant.
-    // Doc 36 cut GC.4 (Q-36-20): a tow is admitted coupled — the casualty rides as its tug's
-    // load, never a kernel unit, and the tug enters at the tow rate.
+    // Doc 36 cut GC.4 (Q-36-20): a tow is admitted coupled, and the tug enters at the tow rate.
+    // Doc 40 cut FR.5 (§4.1 item 5, Q-40-7): the casualty is a kernel unit of its tug's party,
+    // coupled in the arena (`FieldHost::tows`) and trailing it cell for cell, so a hit on it lands
+    // by its own geometry; it is never counted (Q-CF-26, `parties::site_population`).
     let carried = crate::surface::tow::carried(record);
     let (held, units): (Vec<ObjId>, Vec<ObjId>) = parties::on_ground(ctx.w, domain)
         .into_iter()
-        .filter(|unit| !carried.contains_key(unit))
         .partition(|unit| held_out(ctx.w, *unit));
     // Doc 36a §11 #1: the walls go on the live record too, so every rebuild of the ground
     // lays them as admission did (`ground_with_held`).
@@ -377,7 +378,8 @@ fn admit(ctx: &mut Ctx<'_>, site: &CanonicalId, record: &SiteRecord) -> Result<(
     if units.is_empty() {
         return Err("nobody is on the ground".to_owned());
     }
-    let entrants = parties::entrants(ctx, site, &units);
+    let mut entrants = parties::entrants(ctx, site, &units);
+    coupled_entrants(&mut entrants, &carried);
     let (mut lettered, rows) = parties::letter(&entrants).map_err(str::to_owned)?;
     // Doc 40 cut FR.1 (Q-38-23): the stance table, read as the field is built; the live record
     // keeps each party's standing Hostile marks so a clear returns to them (§4.2).
@@ -400,6 +402,15 @@ fn admit(ctx: &mut Ctx<'_>, site: &CanonicalId, record: &SiteRecord) -> Result<(
             unit.mobility.max_speed_cms = unit.mobility.max_speed_cms.min((*speed).max(1));
         }
     }
+    custody.host.tows = carried
+        .iter()
+        .filter(|(casualty, (tug, _))| {
+            [**casualty, *tug]
+                .iter()
+                .all(|id| custody.units.iter().any(|unit| unit.id == *id))
+        })
+        .map(|(casualty, (tug, _))| (*casualty, *tug))
+        .collect();
     // (4) The check-out, all or nothing.
     let mark = mush_sim::deployed::DeployedMark::field(site.as_str(), field.ordinal);
     let mut out: Vec<ObjId> = Vec::new();
@@ -518,6 +529,33 @@ fn admit(ctx: &mut Ctx<'_>, site: &CanonicalId, record: &SiteRecord) -> Result<(
         "tacsim: an IC field opened"
     );
     Ok(())
+}
+
+/// **A casualty enters under its tug's party** (doc 40 cut FR.5, Q-40-7): each entrant `carried`
+/// names takes its tug's key, leader, owner, carrier, affiliations and director flag, so the
+/// lettering puts the two in one party; its own epoch stays its own. A casualty whose tug is not
+/// an entrant (held out) keeps its own row.
+fn coupled_entrants(entrants: &mut [Entrant], carried: &BTreeMap<ObjId, (ObjId, u32)>) {
+    for (casualty, (tug, _)) in carried {
+        let Some(tug) = entrants
+            .iter()
+            .find(|entrant| entrant.unit == *tug)
+            .cloned()
+        else {
+            continue;
+        };
+        if let Some(entrant) = entrants
+            .iter_mut()
+            .find(|entrant| entrant.unit == *casualty)
+        {
+            entrant.key = tug.key;
+            entrant.leader = tug.leader;
+            entrant.owner = tug.owner;
+            entrant.carrier = tug.carrier;
+            entrant.affiliations = tug.affiliations;
+            entrant.director = tug.director;
+        }
+    }
 }
 
 /// **A hull left out of a field** (doc 36 cut GC.1; Q-36-44), told to everyone on the site:

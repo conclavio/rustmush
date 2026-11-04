@@ -18,7 +18,7 @@
 //! - **A trailer.** Each substep its tug crosses into a new cell, right after the tug's
 //!   `integrate` and its index move, the casualty is set on the cell the tug left — its centre,
 //!   at the ground's elevation, on the tug's heading — and the index moved for it
-//!   ([`trail`]), so the cell it takes is the one the index has just freed and one unit a cell
+//!   (`trail`), so the cell it takes is the one the index has just freed and one unit a cell
 //!   holds throughout. It never integrates on its own.
 //! - **The coupling ends** when the tug releases ([`Arena::release`], a field act:
 //!   `crate::arena_task::ArenaMsg::Release`), when the tug's hull is destroyed
