@@ -511,6 +511,8 @@ fn every_refusal() -> Vec<Refusal> {
         Refusal::Unlawful,
         // 17b cut M5.2: a profile switch the arena cannot take now.
         Refusal::Profile,
+        // Doc 40 cut FR.5: a jammed or destroyed plant will not start.
+        Refusal::Plant,
     ];
     for refusal in &refusals {
         match refusal {
@@ -534,7 +536,8 @@ fn every_refusal() -> Vec<Refusal> {
             | Refusal::Unwarranted
             | Refusal::NoSlot
             | Refusal::Unlawful
-            | Refusal::Profile => {}
+            | Refusal::Profile
+            | Refusal::Plant => {}
         }
     }
     refusals

@@ -570,6 +570,42 @@ pub(crate) async fn handover_at_ceres(at: &Ground, paid: bool) {
         Some("ceres"),
         "Ceres is the port A knows"
     );
+    if paid {
+        return;
+    }
+    // The unpaid fee is one of A's debts (doc 41 RS.5's `+debts`, widened for release fees),
+    // and `+debts/pay` settles it once A can cover it.
+    let listed = run(&mut rig.tw, a, "+debts");
+    assert!(
+        listed.contains(&format!("#{}", charge.0)) && listed.contains("+debts/pay"),
+        "{listed}"
+    );
+    let from = tacsim::port::credit::own_account(rig.tw.world(), b)
+        .map(|b| b.id.0)
+        .expect("B's account");
+    let to = tacsim::port::credit::own_account(rig.tw.world(), a)
+        .map(|a| a.id.0)
+        .expect("A's account");
+    let _ = run(
+        &mut rig.tw,
+        mush_core::GOD,
+        &format!("@econ/pay #{from}=#{to} 200000"),
+    );
+    let paid_now = run(&mut rig.tw, a, &format!("+debts/pay {}", charge.0));
+    assert!(paid_now.contains("paid"), "{paid_now}");
+    let status = rig
+        .tw
+        .world()
+        .module_state::<mush_economy::EconomyStore>()
+        .and_then(|economy| {
+            economy
+                .snapshot()
+                .obligation(charge)
+                .map(|o| o.status.clone())
+        });
+    assert_eq!(status, Some(mush_economy::ObligationStatus::Satisfied));
+    let after = run(&mut rig.tw, a, "+debts");
+    assert!(after.contains("You owe nothing."), "{after}");
 }
 
 /// **Doc 42 cut CR.3's story (e), the held case, on `at`'s ground** (Q-42-3, Q-42-8): a captor

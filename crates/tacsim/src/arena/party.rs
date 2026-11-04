@@ -332,7 +332,11 @@ impl Relations {
     /// **`shooter` fired on `victim`** (Q-CF-5, Q-CF-9): the victim's book and
     /// the book of every party that holds the victim a friend now hold the
     /// shooter hostile — under any mark, which still decides. The shooter's
-    /// own friends are not moved. Fire within a party moves nothing.
+    /// own friends are not moved: doc 40 cut FR.5 (§4.1 item 2, Q-40-9) skips
+    /// every third party that holds the shooter a friend too, so a friend of
+    /// both stays as it was; the victim is moved whatever it holds the shooter
+    /// (fire on you is fire on you, and its leader's Friendly mark cancels it).
+    /// Fire within a party moves nothing.
     ///
     /// The kernel reads "observed" as the victim's knowing it was fired on and
     /// its friends' sharing that, which is the first version's reading.
@@ -347,7 +351,9 @@ impl Relations {
             .copied()
             .filter(|party| {
                 *party != shooter
-                    && (*party == victim || self.relation(*party, victim) == Relation::Friend)
+                    && (*party == victim
+                        || (self.relation(*party, victim) == Relation::Friend
+                            && self.relation(*party, shooter) != Relation::Friend))
             })
             .collect();
         let mut changed = false;
@@ -406,6 +412,11 @@ pub struct FieldHost {
     /// pilots are untouched by the gate and obey a delivered `HOLD FIRE` instead
     /// ([`crate::arena::state::Arena::holds_fire`]). `false` is the simulator's FREE (Q-21-9).
     pub weapons_hold: bool,
+    /// **The coupled tows, `(casualty, tug)`** (doc 40 cut FR.5, §4.1 item 5, Q-40-7): each
+    /// casualty admitted as a unit of its tug's party, coupled by `Arena::new` through
+    /// `Arena::couple` once the units are in hand. Empty for every practice match and for an IC
+    /// field with no tow; a join never carries one in this cut.
+    pub tows: Vec<(mush_core::ObjId, mush_core::ObjId)>,
 }
 
 impl FieldHost {
@@ -420,6 +431,7 @@ impl FieldHost {
             end: EndCondition::Elimination,
             every_class: false,
             weapons_hold: false,
+            tows: Vec::new(),
         }
     }
 
@@ -593,6 +605,38 @@ mod tests {
         assert_eq!(books.relation(miner, raider), Relation::Hostile);
         assert_eq!(books.relation(escort, raider), Relation::Hostile);
         assert_eq!(books.relation(bystander, miner), Relation::Neutral);
+    }
+
+    /// **Doc 40 cut FR.5** (§4.1 item 2, Q-40-9): fire between two parties that
+    /// a third holds friends moves the victim's book and leaves the third's; a
+    /// victim that holds the shooter a friend is moved all the same.
+    #[test]
+    fn fr5_a_friend_of_both_is_not_told() {
+        let [miner, escort, wingman] = [0, 1, 2].map(|n| PartyId::nth(n).unwrap());
+        let mut books = FieldHost::default().open(&BTreeSet::from([miner, escort, wingman]));
+        books.befriend(miner, escort);
+        books.befriend(escort, wingman);
+        books.befriend(miner, wingman);
+        assert!(books.note_fire(wingman, miner));
+        assert_eq!(
+            books.relation(miner, wingman),
+            Relation::Hostile,
+            "the victim"
+        );
+        assert_eq!(
+            books.relation(escort, wingman),
+            Relation::Friend,
+            "the friend of both"
+        );
+        // A friend by the leader's mark is a friend too.
+        let raider = PartyId::nth(3).unwrap();
+        let mut books =
+            FieldHost::default().open(&BTreeSet::from([miner, escort, wingman, raider]));
+        books.befriend(miner, escort);
+        books.mark(escort, raider, Some(Mark::Friendly));
+        books.note_fire(raider, miner);
+        assert_eq!(books.relation(escort, raider), Relation::Friend);
+        assert_eq!(books.relation(wingman, raider), Relation::Neutral);
     }
 
     #[test]

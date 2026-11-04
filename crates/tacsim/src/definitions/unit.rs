@@ -970,6 +970,13 @@ pub struct UnitSpec {
     /// serialises nothing, so no `DefinitionRef` moves.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub component_hits: Option<crate::arena::resolution::ComponentHits>,
+    /// **What a jammed or damaged part does to this hull** (doc 40 cut FR.5, Q-40-2), or `None`
+    /// for the resolution pack's table, else the compiled
+    /// [`crate::arena::resolution::COMPONENT_EFFECTS`]. Absent in every shipped unit; read by the
+    /// arena's profile at check-out only, and serialising nothing when absent, so no
+    /// `DefinitionRef` moves.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub component_effects: Option<crate::arena::resolution::ComponentEffects>,
     /// Why these numbers.
     #[serde(default, skip_serializing_if = "String::is_empty")]
     pub note: String,
@@ -1084,6 +1091,11 @@ impl UnitSpec {
                     hits.jam_permille, hits.damage_permille
                 ),
             ));
+        }
+        if let Some(effects) = &self.component_effects {
+            effects
+                .check()
+                .map_err(|reason| DefinitionError::value(entry, reason))?;
         }
         if self.sections.is_empty() {
             return Err(DefinitionError::value(

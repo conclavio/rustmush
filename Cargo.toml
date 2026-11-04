@@ -272,7 +272,7 @@ invalid_html_tags = "deny"
 # across the whole tree. They are enabled per crate, at the crate root, exactly
 # where the measured production count is zero; the measurement, the enabling
 # rule and the counts of what stays off are in
-# crates/mush-contract-tests/tests/restriction_lints.rs.
+# crates/mush-contract-tests/tests/ci_policy/restriction_lints.rs.
 [workspace.lints.clippy]
 dbg_macro = "warn"
 todo = "warn"

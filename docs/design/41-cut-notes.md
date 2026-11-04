@@ -348,3 +348,144 @@ whole, the tonnes gone from the hold, nobody paid. Re-run green: `bay_gc8` (its 
 (41814093413, `3fb3e861`) against the PR's, 366 → 368 tests; the other 0.11 min is runner noise spread over unchanged
 tests (`landing::sm2_rheasilvia…` 144.8 → 149.6 s), and `field_rs1` ran no longer (95.2 → 95.0 s, 100.3 → 99.6 s).
 `bay_gc8` changed one `expect`, nothing timed. shard_10 stays the room for growth, so nothing moves shard (rule #3).
+
+## RS.5 — the retrieval contract and the charge (2026-11-04)
+
+Row: §6 RS.5; Q-41-8..14, Q-38-6, Q-38-7. No lane rows: Tycho Mutual's org row and Ceres's `recovery` row
+(IN.4) are on lane v22 already; the slot-day is IN.4's cost model, not a lane constant. v23 stays IN.5's.
+
+**Built.**
+
+- **The contract** (`mush-economy` `contract_live.rs`, after RS.3's award): `RetrievalSpec`,
+  `post_retrieval`, `retrieval_contract_hull` (the shape: one consideration from the issuer, no
+  deliverables/split/outcomes, exactly `[TitleHeld{hull, by: issuer}, Fact{delivery}]`, a `WorldIc`
+  deadline, `Public`, at most one party beside the issuer), `retrieval_acceptor`, `accept_retrieval` (the
+  acceptor joins as the second party in one write, the remainder pointed at their account, the poster's
+  acceptance re-bound to the joined consent — the shape is the standing offer), `cancel_retrieval` (the
+  ordinary unwind, escrow back). The fee is escrowed at posting under the poster's own debit authority; a
+  poster who cannot cover it posts nothing.
+- **The debt** (`mush-economy` `api.rs`, beside `reinstate_obligation`): `create_debt` (one-term,
+  WorldIc, due now, `Ruleset{namespace}`, the actor lock of every ruleset obligation), `debts_of`,
+  `pay_debt` (one post, the record `Satisfied`; refuses an account that cannot cover it with nothing
+  written), `reinstate_debt` (`reinstate_obligation`'s locks, then due *now*: re-anchoring a cadence-less
+  schedule leaves it due never — a defect in the plain reinstate for one-shots, found here). CR.2's
+  Q-42-7 debt is the same seam.
+- **The record** (`tacsim` `surface/retrieval.rs`): `RetrievalOrder` at `tacsim:retrieval:{hull}` (store
+  field, `put_retrieval`, an R8 loader arm) carrying the contract, the fact's `serial`, poster, destination,
+  fee and floor, `accept_by_ic`, the acceptor and `perform_by_ic`, the delivery and the stage
+  (Open/Accepted/House/Delivered/Closed). `RETRIEVAL_WINDOW_IC_DAYS` = 28 is
+  `[tacsim.recovery].retrieval_window_ic_days` (mush-config, the server mapping, clamped 1..=365); the
+  contract's deadline is twice it.
+- **The delivery fact** `tacsim.retrieval.delivered` (`RetrievalFactProvider`, unscoped, in both
+  compositions): holds once a handover at the destination is recorded for the record whose serial the
+  reference names. The handovers: `+bay/berth` into the destination's workshop; a stow into the poster's
+  own carrier docked there; the shed's hand-back of a lease rig when the acceptor's carrier docks at the
+  lessor's port (`on_docked`, from `TacsimCarrierHooks::arrived`); a hull's own docking is the space seam's
+  call of `retrieval::deliver` (RS.8).
+- **The clerk** (`retrieval::tick`, on the port tick after the works arm): unaccepted past `accept_by_ic`,
+  Tycho Mutual accepts the same contract (`PortPartyCaps` now admits the recovery operator); a PC past
+  `perform_by_ic` is cancelled, a fresh contract posted with one window's deadline (serial + 1) and Tycho
+  accepts it on the same tick, the PC told, nothing charged; a delivered job closes when its contract
+  settles and the acceptor is told the fee; any other terminal contract closes the record.
+- **The fee floor** (`floor_minor`): the recovery row's `retrieval_fee_minor(days)`; days = route hops
+  from Tycho's port to where the hull lies and on to the destination, less the one the round trip
+  shares, at least one, plus one ground day — a Ceres site to Ceres is 2 days. Nobody posts under it.
+- **The verbs**: `+salvage/retrieve <hull>[=<port>] [fee=<cr>] [go]` (a title holder, a hull not aboard a
+  carrier, the destination Tycho's port by default), `+salvage/jobs`, `+salvage/accept <job> [go]`;
+  `+debts`, `+debts/pay <id>` (LegacyPostImage).
+- **Retrieval custody** (`surface/tow.rs`): `LoadFacts.retrieval` (serde default) is the third case
+  beside the friend rule — the custodian holds an active retrieval on the casualty: no salvage row, no
+  `Recovery` log, the result word `retrieval`, its own preview and line; a written-off rig under one goes
+  into the bay and is handed back at the destination, not at the load. A write-off handed back at the load
+  by someone holding no retrieval withdraws Occator's job. `Right::Retrieval` (berth and stow only) is
+  read from the record, not stored on `BayHull` (the record is the one source).
+- **The charge** (`port/tv.rs`): the wear allowance in `restoration_charge` (a tenth of the unit's
+  structural points free, off the points the quote repairs or rebuilds; components whole;
+  `allowance_minor` beside a net `total_minor`); `debt_minor`; `give_back` opens the debt beyond the
+  deposit from the lessee's own return; `repossess` repossesses a rig left idle on a site **where it
+  lies** (only a rig mid-act still holds the hull), prices the restoration and Tycho's quote, part-captures
+  the deposit, posts Occator's retrieval to the lessor's port and opens the debt (a wreck: deposit whole,
+  the fee the debt); a rig in the bay still goes to the shed (the recall takes the hull home).
+- **The desk**: `+tv/lease` and `+coop/enrol` refuse a delinquent debtor naming the amount and reinstate
+  each debt (the refusal's writes pinned).
+- **Q-38-7's second clock**: `TvLease.wreck_aboard_ic` (serde default), set the first tick a live lease's
+  rig reads a wreck in its own bay, cleared if mended; 28 IC days on it is the write-off on the wreck's
+  terms; the rig waits aboard and `on_docked` hands it back at the lessor's port.
+- **The `capture: None` hole**: a write-off whose lessor account does not resolve now waits instead of
+  releasing the deposit to the lessee.
+
+**Story.** See the RS.5 test files (`mush-economy` `tests/e4c/retrieval.rs`: the contract's escrow, one
+acceptor, payment on the fact, the refund, the debt's delinquency, reinstatement and payment; tacsim's
+story (c) at 256 and 512).
+
+**Divergences.**
+
+- **The contract is in force at posting**, not `Offered`: with the poster its only party, the escrowing
+  acceptance activates it; the acceptor joins an active contract. Nothing a stranger could accept by the
+  generic verbs exists either way.
+- **No propellant in the floor** yet: the lifter that burns it is RS.6's; the days are route hops, not the
+  planner's legs (no basis to plan a hull that does not exist).
+- **The fourth handover** (a hull's own docking with a derelict clamped) is the seam `deliver`, for RS.8.
+- **Owed: a rig left idle on a site is on nobody's index.** `repossess` leaves it where it lies, but
+  only a field's close writes `SiteRecord.units`; a rig a departure leaves (`+ship/undock … leave=`)
+  is not indexed either (pre-existing), so `+tv/<n> tow` cannot find it and the write-off's clock never
+  starts. The site-record write is the staff fixture, offered to staff only, and the harness holds that
+  GOD never submits from a tick, so the repossession cannot index it without widening a staff verb.
+  The story stands it in with GC.5's fixture. The fix belongs with the next writer of
+  `surface/tow.rs`/`site_record.rs` (a system index op, or the departure indexing what it leaves).
+- **A rig aboard the charter's own hull still goes to the shed** at a repossession away from port: the
+  recall takes the hull back, so nothing would be left aboard a carrier anyone holds.
+
+**Cell cost (rule #14).** Owed from the PR's CI JUnit.
+
+## RS.7 — port security (2026-11-04)
+
+Row: §6 RS.7; Q-41-24, Q-41-25, Q-38-20, doc 27 Q-S4. No lane rows (v23 stays IN.5's). Built on RS.5's
+branch (#415): the fine is RS.5's one-term debt.
+
+**Built.**
+
+- **The record** (`tacsim` `surface/security.rs`): `SecurityRecord` at `tacsim:security:{actor}` (store
+  field, `put_security`, an R8 loader arm) holding `ProvenAct { site, act, proof, proven_ic, debt }`, at
+  most 64 rows (a full record drops its oldest settled row). `Proof::Vacated` or
+  `Proof::Reported { by }`. A row's identity is the site plus the act's kind, actor, subject and instant,
+  so one act is proven once.
+- **Proof at the vacate**: `claim::tick`, after a `Vacate` settlement whose vacating contest was
+  `ProvenUnlawfulRecovery`, copies the site's `Recovery` row on that hull by the custodian (or, when the
+  ring has dropped it, the row as the custody knew it) to the custodian's record.
+- **Proof by report**: `+salvage/report <site>[=<who>|#<hull>] registry` (RS.0's ruled form; one
+  command, no `go`, as the bot's line has it) reads the site's log directly. The reporter's evidence
+  (Q-S4): a witness pinned on a live custody row over the act's hull (`evidence_of`), or the reporter's
+  own `known` row on the site learned within one IC day after the act. Refusals: no such site, nothing
+  logged, no evidence, already before the registry, oneself.
+- **The fine at docking** (`security::on_docked`, from `TacsimCarrierHooks::arrived` beside
+  `retrieval::on_docked`): at a Registry port — `SECURITY_VENUES` `ceres`, `stickney`, by venue — for the
+  carrier's master (`helm_holder`) and operator (her title holder when a character), every proven unfined
+  row is fined by kind (`Pickup` 500, `Scrap` 2,000, `Recovery` 5,000 cr; `Vacated` and `Capture` none)
+  as a one-term debt to the Freeport Registry's account under `tacsim.debt`, paid in the same step when
+  the account covers it (`pay_debt`), the debt's id written on the row (the receipt). Each still-delinquent
+  fine is reinstated (`reinstate_debt`) at every docking there.
+- **The quarantine**: `DepartRefusalKind::Quarantined` in `prepare_departure` while a fine stands owed
+  against the master or operator, with the ruled line; the queued-departure arm reports the line.
+  `+debts/pay` lifts it.
+
+**Story.** `tacsim` `tests/shard_5/port_security_rs7.rs`, story (b) extended at 512 (Urvara) and 256
+(Ahuna): O's two unlawful recoveries, one vacated on T's `recovery` contest (proven), one left bare; O
+docks at Ceres short, is fined 5,000 cr for the proven one only, held, refused `+debts/pay` short, paid
+once funded, released; T reports the bare one to the registry on T's sensor record, L cannot.
+
+**Divergences.**
+
+- **Proven rows are copied, not moved**: the site's ring keeps them. Moving them would be a site-record
+  write, which only the tow action makes; the security record is what the docking reads and dedups by the
+  row's identity, so a row left in the ring is never charged twice.
+- **The whole fine is the debt** when the account cannot cover it, rather than the shortfall alone: the
+  fine is paid in one post or not at all, as the customs fine is.
+- **An organization operating a carrier** answers through its helm holder only: `UnlawfulAct.actor` is a
+  character, so an organization has no rows of its own.
+- **The bare-row case is a `Recovery`**: story (b)'s bare row is O's unreported recovery of `d`, not a
+  pickup; a crate pickup would leave ore in O's hopper and hold the departure (`HopperLoaded`). The rule is
+  kind-blind: no row is fined unless proven.
+- **Security venues are a constant**, not a lane field, to take no lane version.
+
+**Cell cost (rule #14).** Owed from the PR's CI JUnit.

@@ -979,6 +979,7 @@ fn e7r2_p4_the_fact_provider_registers_no_separate_salvage_namespace() {
         "mush_market::MarketFactProvider",
         "tacsim::surface::survey_facts::SurveyFactProvider",
         "tacsim::port::passenger::facts::PassengerFactProvider",
+        "tacsim::surface::retrieval::RetrievalFactProvider",
     ] {
         assert_eq!(
             body.matches(provider).count(),
@@ -988,8 +989,8 @@ fn e7r2_p4_the_fact_provider_registers_no_separate_salvage_namespace() {
     }
     assert_eq!(
         body.matches("Arc::new(").count(),
-        8,
-        "six base providers and the owner-gated survey and passenger providers: {body}"
+        9,
+        "six base providers and the owner-gated survey, passenger and retrieval providers: {body}"
     );
     let (_, owner_gated) = body
         .split_once("if tacsim_delegate {")
@@ -1002,6 +1003,10 @@ fn e7r2_p4_the_fact_provider_registers_no_separate_salvage_namespace() {
     assert!(
         owner_gated.contains("tacsim::port::passenger::facts::PassengerFactProvider"),
         "the passenger provider is registered inside the owner gate"
+    );
+    assert!(
+        owner_gated.contains("tacsim::surface::retrieval::RetrievalFactProvider"),
+        "the retrieval provider (doc 41 cut RS.5) is registered inside the owner gate"
     );
     assert!(
         !body.contains("Salvage"),

@@ -4282,13 +4282,15 @@ fn damage(rig: &mut Rig, tv: ObjId, cells: &[(&str, i64)]) {
 
 /// The prospector's damage the GC.9 stories give it: 50 points of the chassis's 120 internals
 /// and 20 of the hopper's 80. At Ceres's workshop (Occator's, 1.2x) a structural point is
-/// 1.20cr, so the chassis is 60.00cr, the hopper 24.00cr, 84.00cr in all.
+/// 1.20cr, so the chassis is 60.00cr, the hopper 24.00cr, 84.00cr gross; doc 41 cut RS.5's wear
+/// allowance (Q-41-12) frees a tenth of the rig's 450 structural points, 45 of the 70 down, 54.00cr,
+/// so 30.00cr is charged.
 const GC9_DAMAGE: [(&str, i64); 2] = [("chassis", 70), ("hopper", 60)];
-/// [`GC9_DAMAGE`]'s restoration, minor units.
-const GC9_CHARGE_MINOR: i64 = 8_400;
-/// [`GC9_DAMAGE`]'s breakdown and total, as the lessee reads them.
-const GC9_LINES: &str = "chassis 60.00cr, hopper 24.00cr";
-const GC9_TOTAL: &str = "84.00cr";
+/// [`GC9_DAMAGE`]'s restoration, minor units, net of the allowance.
+const GC9_CHARGE_MINOR: i64 = 3_000;
+/// [`GC9_DAMAGE`]'s breakdown, its allowance, and its total, as the lessee reads them.
+const GC9_LINES: &str = "chassis 60.00cr, hopper 24.00cr, less a wear allowance of 54.00cr";
+const GC9_TOTAL: &str = "30.00cr";
 
 /// **GC.9's gate** (doc 36 §7, Q-36-34): a leased rig returned damaged to Occator's counter has
 /// its damage assessed and its restoration priced at Ceres's workshop tariff; the preview and the
@@ -4312,7 +4314,7 @@ fn gc9_a_damaged_lease_rig_returned_pays_its_restoration_from_the_deposit() {
     let settle = CHARGE_PART
         .replace("{charge}", GC9_TOTAL)
         .replace("{deposit}", DEPOSIT)
-        .replace("{refund}", "4916.00cr");
+        .replace("{refund}", "4970.00cr");
     // The preview names the charge by section and signs nothing.
     let preview = at_occator(&mut rig, pilot, "+tv/1 lease return");
     let want = RETURN_PREVIEW_CHARGED
@@ -4362,14 +4364,14 @@ fn gc9_a_damaged_lease_rig_returned_pays_its_restoration_from_the_deposit() {
     no_refused_writes(&rig.tw);
 }
 
-/// **GC.9: damage that costs more than the deposit** takes the whole deposit and no more. On a
-/// lane whose prospector deposit is 50.00cr, the 84.00cr restoration keeps all of it: the hold
-/// is captured whole, nothing is released, and the pilot's posted balance falls by the deposit
-/// alone.
+/// **GC.9: damage that costs more than the deposit** takes the whole deposit, and since doc 41
+/// cut RS.5 (Q-41-13) the rest is a one-term debt. On a lane whose prospector deposit is 20.00cr,
+/// the 30.00cr restoration keeps all of it: the hold is captured whole, nothing is released, the
+/// pilot's posted balance falls by the deposit alone, and 10.00cr is owed to Occator.
 #[test]
 fn gc9_a_lease_rig_whose_damage_costs_more_than_its_deposit_pays_the_deposit() {
     let small = lane_variant(LANE_VERSION, |doc| {
-        doc["entries"]["ceres_port"]["def"]["vehicles"]["deposit_major"] = serde_json::json!(50);
+        doc["entries"]["ceres_port"]["def"]["vehicles"]["deposit_major"] = serde_json::json!(20);
     });
     let mut rig = stocked_on(Roster::seeded(small));
     let (pilot, _) = prospector(&mut rig, "Pilot", 1, "Salt Moth");
@@ -4381,21 +4383,33 @@ fn gc9_a_lease_rig_whose_damage_costs_more_than_its_deposit_pays_the_deposit() {
     let (posted, held) = balances(&rig.tw, account);
     let (occ_posted, _) = balances(&rig.tw, occ);
     let record = record_on(&rig.tw, pilot, tv);
-    assert_eq!(record.deposit_minor, 5_000, "the variant's 50.00cr deposit");
+    assert_eq!(record.deposit_minor, 2_000, "the variant's 20.00cr deposit");
     let out = at_occator(&mut rig, pilot, "+tv/1 lease return go");
     let want = RETURNED_CHARGED
         .replace("{mark}", "OWP-TV-01")
         .replace("{lines}", GC9_LINES)
         .replace("{total}", GC9_TOTAL)
-        .replace("{settle}", &CHARGE_WHOLE.replace("{deposit}", "50.00cr"));
+        .replace(
+            "{settle}",
+            &CHARGE_WHOLE
+                .replace("{deposit}", "20.00cr")
+                .replace("{debt}", "10.00cr"),
+        );
     assert!(out.contains(&want), "{out}\nwanted: {want}");
     assert!(
         matches!(hold_status(&rig.tw, record.hold), HoldStatus::Consumed { amount, .. }
-            if amount == Amount::from_minor(5_000)),
+            if amount == Amount::from_minor(2_000)),
         "the whole deposit is captured"
     );
-    assert_eq!(balances(&rig.tw, account), (posted - 5_000, held - 5_000));
-    assert_eq!(balances(&rig.tw, occ).0, occ_posted + 5_000);
+    assert_eq!(balances(&rig.tw, account), (posted - 2_000, held - 2_000));
+    assert_eq!(balances(&rig.tw, occ).0, occ_posted + 2_000);
+    let debts = mush_economy::debts_of(
+        rig.tw.world(),
+        &mush_org::PrincipalId::Object(pilot),
+        tacsim::surface::retrieval::DEBT_NAMESPACES,
+    );
+    assert_eq!(debts.len(), 1, "one debt beyond the deposit");
+    assert_eq!(debts[0].amount, Amount::from_minor(1_000));
     assert_eq!(
         record_on(&rig.tw, pilot, tv).status,
         TvLeaseStatus::Returned
