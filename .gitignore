@@ -17,6 +17,9 @@ web/src/lib/pixel/mush_pixel.wasm
 web/src/lib/pixel/models/
 # Doc 31 cut UD.2: copied by the same script (the designer's catalogue)
 web/src/lib/designer/content/
+# Doc 43 cut TS.9: the browser smoke's traces, screenshots and HTML report
+web/test-results/
+web/playwright-report/
 
 # Secrets & local config
 .env

@@ -46,9 +46,7 @@ use std::collections::BTreeSet;
 use mush_atlas::def::ExitDef;
 use mush_atlas::starter;
 
-mod production_registry;
-
-use production_registry::production_composition;
+use crate::production_registry::production_composition;
 
 /// The overlap that is allowed to exist, as `(entry id, segment, verb)`.
 ///

@@ -9,7 +9,7 @@
 # A row is not what makes a write legal; `Registrar::persist_delegation` in the
 # declaring module is. This file pins the composed set, so a new delegation
 # cannot arrive without a reviewed row, and a row that no module declares any
-# more cannot linger. `tests/module_ns_owners.rs` fails on either.
+# more cannot linger. `tests/engine_contracts/module_ns_owners.rs` fails on either.
 #
 # WHO DECLARES A PAIR: one of the two modules it names — the writer, or the
 # namespace's owner. Both know why the write is legitimate; nobody else does.

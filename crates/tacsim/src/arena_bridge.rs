@@ -5587,7 +5587,6 @@ pub(crate) fn offer_field_detachment(
 /// host's `+tv/<n> release` on a promoted site sends [`ArenaMsg::Release`], applied at the next
 /// pulse's head and answered by `crate::field::exit::on_released`. Answers whether the task took
 /// it; a full or gone task did not, and the host says so.
-#[allow(dead_code)] // doc 40 cut FR.5: the host half (`+tv/<n> release` on a promoted site) sends it
 pub(crate) fn offer_field_release(ctx: &mut Ctx<'_>, task: MatchId, tug: ObjId) -> bool {
     ctx.w
         .module_state::<ArenaRegistry>()
