@@ -1771,91 +1771,8 @@ describe("the cockpit feeds", () => {
     expect(text).not.toContain("BA's turret is destroyed.");
   });
 
-  it("the shell mounts the one command box, and the screens' own markup follows 16b cut B.1", () => {
-    // Probes in the whitelist's style, for the Svelte halves the pure tests
-    // cannot reach (this file runs in node and mounts nothing; the jsdom
-    // mounts are the `components/*.test.ts` files under
-    // `// @vitest-environment jsdom`, and doc 43 TS.19 moves these probes
-    // there). Each one fails on the code before cut B.1.
-    const read = (name: string): string =>
-      readFileSync(resolve(process.cwd(), `src/components/${name}`), "utf8");
 
-    // `B-08`: the box and its palette are the shell's, under `.screen` and
-    // before the legend, on every screen but the channel screen.
-    const game = read("Game.svelte");
-    expect(game).toMatch(
-      /\{#if active\.id !== "channels"\}\s*<div class="composer-wrap">\s*<CommandPalette \{app\} \/>\s*<Composer bind:this=\{composer\} \{app\} \/>/,
-    );
-    const box = game.indexOf("<Composer bind:this={composer}");
-    expect(game.indexOf('<div class="screen">')).toBeLessThan(box);
-    expect(game.indexOf('<footer class="legend"')).toBeGreaterThan(box);
-    expect(game).toContain("app.composer = composer ?? null;");
-    // …and the scene screen no longer mounts or registers one.
-    const scene = read("SceneScreen.svelte");
-    for (const gone of ["import Composer", "import CommandPalette", "<Composer", "app.composer"]) {
-      expect(scene, `SceneScreen still has ${gone}`).not.toContain(gone);
-    }
 
-    // `B-60`: only the glyphs moved — `zoom in` shows `+` and still runs
-    // `zoom(-1)` (fewer cells), `zoom out` shows `−` and runs `zoom(1)`.
-    const cockpit = read("CockpitScreen.svelte");
-    expect(cockpit).toMatch(/aria-label="zoom in" onclick=\{\(\) => zoom\(-1\)\}>\+<\/button>/);
-    expect(cockpit).toMatch(/aria-label="zoom out" onclick=\{\(\) => zoom\(1\)\}>−<\/button>/);
-
-    // `B-09`: the paint loop labels what `labelPlan` says, once per frame, and
-    // no longer gates every label on the cell size.
-    expect(cockpit).toContain("labelPlan(w.markers, f.lock_designator, px)");
-    expect(cockpit).toContain("if (labels[i] === true)");
-    expect(cockpit).not.toContain("if (px >= 6)");
-  });
-
-  it("CockpitScreen.svelte touches nothing on the app but the cockpit", () => {
-    // The component-level half of the rule, as a probe: this file has no DOM
-    // to mount into, the strings the screen renders are pinned above through
-    // the same pure functions it calls, and `components/CockpitScreen.test.ts`
-    // mounts it on an app that IS this whitelist (16b cut B.2). What a probe
-    // adds is that it calls nothing else.
-    //
-    // It is a WHITELIST and not a list of forbidden names on purpose: a
-    // blocklist passes for every member it forgets, and `GameApp` grows. The
-    // two below are the whole of what the screen may reach for — the payload
-    // it was handed, and the box it prefills. Anything else, an identity store
-    // or a send path, fails here.
-    const src = readFileSync(
-      resolve(process.cwd(), "src/components/CockpitScreen.svelte"),
-      "utf8",
-    );
-    const reached = new Set([...src.matchAll(/\bapp\.(\w+)/g)].map((m) => m[1]));
-    expect([...reached].sort()).toEqual([
-      "cockpit",
-      "focusComposer",
-      "helm",
-      "mindReadoutOpen",
-      "refreshMindTrace",
-    ]);
-    // And nothing on this screen sends: the five ordering verbs prefill only.
-    for (const send of ["app.submit", "app.runBinding", "app.client", "app.act("]) {
-      expect(src, `CockpitScreen calls ${send}`).not.toContain(send);
-    }
-  });
-
-  it("PictureView.svelte touches nothing on the app but its picture and the helm", () => {
-    // Doc 21 cut G.3c: the first-person picture the cockpit screen mounts. It
-    // reads its own store, asks for the picture or stops it, and sends the
-    // arrow keys' `HEADING` orders through `helm` — the one send the cockpit
-    // tab makes, as the SSH TUI's view does (G.4). Nothing else. Doc 21 cut
-    // G.12c's `SPEED`, `FIRE` and `LOCK` keys go through the same `helm`, and
-    // its `ORDER` prefills through the screen's `prefill` prop, not the app.
-    const src = readFileSync(
-      resolve(process.cwd(), "src/components/PictureView.svelte"),
-      "utf8",
-    );
-    const reached = new Set([...src.matchAll(/\bapp\.(\w+)/g)].map((m) => m[1]));
-    expect([...reached].sort()).toEqual(["helm", "picture"]);
-    for (const send of ["app.submit", "app.runBinding", "app.client", "app.act(", "app.setPicture"]) {
-      expect(src, `PictureView calls ${send}`).not.toContain(send);
-    }
-  });
 });
 
 // Doc 21 cut G.12c: the picture's camera rides the `picture` command — the
@@ -2241,18 +2158,6 @@ describe("the replay on screen 0 (16b cut I.2)", () => {
     expect(count(ARENA_MAP_FEED)).toBe(held);
   });
 
-  it("ReplayScreen.svelte touches nothing on the app but the replay", () => {
-    const src = readFileSync(resolve(process.cwd(), "src/components/ReplayScreen.svelte"), "utf8");
-    const reached = new Set([...src.matchAll(/\bapp\.(\w+)/g)].map((m) => m[1]));
-    expect([...reached].sort()).toEqual(["replay"]);
-    for (const send of ["app.submit", "app.runBinding", "app.client", "app.act("]) {
-      expect(src, `ReplayScreen calls ${send}`).not.toContain(send);
-    }
-    // And the shell mounts it on screen 0 only while a replay is drawn there.
-    const game = readFileSync(resolve(process.cwd(), "src/components/Game.svelte"), "utf8");
-    expect(game).toContain('{:else if active.id === "cockpit" && app.pictureShown}');
-    expect(game.indexOf("<ReplayScreen {app} />")).toBeLessThan(game.indexOf("<CockpitScreen {app} />"));
-  });
 });
 
 // The live picture on the web (16b cut I.4; 16c N10): a staffer's `@arena/watch`

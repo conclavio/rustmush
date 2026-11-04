@@ -1,9 +1,6 @@
 // The room band model (interface plan I4): renders with ambient absent,
 // reads every ambient key defensively, pairs exits with their nav keys.
 
-import { readFileSync } from "node:fs";
-import { resolve } from "node:path";
-
 import { describe, expect, it } from "vitest";
 
 import { exitKeys } from "./keys";
@@ -69,11 +66,7 @@ describe("roomBand", () => {
     const bare = roomBand({ ...base, ambient: { weather: { state: "rain" } } }, new Map());
     expect(bare?.weather).toEqual({ state: "rain", icon: "rain", temp: null, line: null });
 
-    // The fallback itself lives in the component; this file runs in
-    // `environment: "node"`, so it is pinned as source (a jsdom mount, as the
-    // `components/*.test.ts` files do, is doc 43 TS.19's).
-    const src = readFileSync(resolve(process.cwd(), "src/components/RoomBand.svelte"), "utf8");
-    expect(src).toContain("{band.weather.line ?? band.weather.state}");
+    // The chip's fallback itself is mounted in `components/RoomBand.test.ts`.
   });
 
   it("ignores odd ambient shapes", () => {

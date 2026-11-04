@@ -417,6 +417,45 @@ upload.
 D-43-5's test was whether the partition's link cost is lower than the reshard cost. Measured, it is about 26 s a
 cell and no wall, against a hand-made layout PR every day or two. The decision is the owner's.
 
+## TS.19 (2026-11-04) — mounted assertions
+
+The structural source probes in `stores/unit.test.ts`, `lib/game.test.ts` and `lib/roomband.test.ts` are gone.
+Each case is now a mounted assertion in jsdom, or it was already one elsewhere. The three stale "no harness"
+comments went with the probes. The vocabulary bans elsewhere in the suite stay.
+
+- **`components/UnitScreen.test.ts`** (new):
+  - `KeyValue` and `Table` render repeated producer ids, rows and cells.
+  - `UnitScreen` branches refusal, then unanswered, then no-subject, then the panes.
+  - The ring renders under the no-subject line.
+  - An actionable `GenericView` row is a focusable button that prefills on Enter and Space; a row with no
+    action is neither.
+- **`components/RoomBand.test.ts`** (new): the weather chip shows the prose, or the bare state, never an empty
+  chip. The vitals strip names its subject as text, not only as a tooltip.
+- **`components/Game.test.ts`** (new) mounts the whole shell on a real `GameApp` driven through a fake socket.
+  jsdom has no `<dialog>`, so two lines polyfill `showModal`/`close`. It covers:
+  - B-08: one command box, after the screen and before the legend, registered with the app; none on the
+    channel screen, where the app lets go of it.
+  - The unit tab's badge counts nothing until the server answers.
+  - Screen 0 has no tab without a seat or a replay, and draws the replay, not the cockpit, once one opens.
+- **The three app whitelists** (Cockpit, Picture, Replay) are now `components/reach.ts`'s `onlyReaches`. It is
+  a Proxy around each mount's stand-in app that throws on any member outside the list. So every test in those
+  three files enforces the whitelist on every path it drives, child components and aliases included, and the
+  send bans fall out of it.
+- **B-60** (the zoom glyphs) and **B-09** (the label plan) were already asserted by `CockpitScreen.test.ts`'s
+  mounts, so their probes simply went. `Table`'s check that its callers declare constant columns also went:
+  it is spelling, and the header's keying is commented in `Table.svelte`.
+
+Every new assertion was checked against a mutation of the component, and each mutation failed the test that
+covers it.
+
+**Finding.** `PictureView.svelte:487` reads `app.chart` through a cast, `(app as { chart?: … }).chart`. SF.18's
+space views draw the sky chart's frame behind the ship. The source probe's `app\.(\w+)` regex could not see the
+cast, so the "picture and helm only" whitelist passed while the screen reached a third member. The runtime
+whitelist caught it on its first run. `chart` is now an explicit, read-only entry on the Picture and Cockpit
+lists. Whether the cast should become a declared prop is the owner's call.
+
+**Summed minutes.** About +0.1: three jsdom files, 13 cases, a few seconds of the web job.
+
 ## TS.5a (2026-11-04) — the generated lifecycle, part one
 
 §7's row has three parts. This PR lands the first two: the state machine with the invariants as its model,
