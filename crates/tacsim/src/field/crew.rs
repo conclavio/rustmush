@@ -49,13 +49,13 @@
 //! **Capture at a load** (doc 42 cut CR.1; Q-38-22, Q-42-4, Q-42-5, Q-42-16, Q-42-21, Q-42-26):
 //! a casualty loaded into a carrier that is not its crew's own party's or a Friend's — a Neutral
 //! salvor's as much as a Hostile's — takes everyone still aboard it captive
-//! ([`captured_loaded`]): each leaves the seat, steps out into the carrier's bay room, and is
+//! (`captured_loaded`): each leaves the seat, steps out into the carrier's bay room, and is
 //! held there by the carrier's operator, the captor. A captor who was no enemy of the captive
 //! pays [`STANDING_CAPTURE`] with each faction the captive openly stands in. A hired NPC keeps no
 //! crew record and is never captured: their seat is vacated and they go back to their hire port's
 //! pool room at once, and the roster's half — the contract and the reservation ended — is the
 //! `tacsim_crew_captured` action the tow tick submits as the organizer until it lands
-//! ([`npc_exit_loaded`], [`npc_exits`]). GC.5's abandonment, which this replaces, left the
+//! (`npc_exit_loaded`, `npc_exits`). GC.5's abandonment, which this replaces, left the
 //! [`Extraction::abandoned`] flag on old records; it still reads.
 //!
 //! **Treatment** (doc 36 cut GC.13; Q-36-45): an injured or incapacitated character standing in
@@ -1141,7 +1141,7 @@ pub struct NpcExit {
 }
 
 /// **The owed NPC exits, in RAM** (module state; loaded at boot, written through
-/// [`owe_npc_exit`]), and how many times each was submitted this boot.
+/// `owe_npc_exit`), and how many times each was submitted this boot.
 #[derive(Clone, Debug, Default)]
 pub struct NpcExits {
     owed: BTreeMap<ObjId, NpcExit>,
