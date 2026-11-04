@@ -409,12 +409,6 @@ pub(crate) fn drain(tw: &mut TestWorld) -> Vec<AuthoritativeSubmit> {
             kept.push(*submit);
         }
     }
-    if let Some(book) = tw
-        .world_mut()
-        .module_state_mut::<tacsim::space::SpaceBubbleBook>()
-    {
-        book.last_bubble_submit_actors.clear();
-    }
     kept
 }
 
@@ -3848,9 +3842,12 @@ fn sfr3_authoritative_helm_and_tac_enforce_aboard_seats_write_standing_orders_an
     );
 
     {
-        let h_order =
-            mush_sim::tick::standing_order(rig.tw.world(), hull, mush_sim::tick::OrderChannel::Heading)
-                .expect("Heading standing order");
+        let h_order = mush_sim::tick::standing_order(
+            rig.tw.world(),
+            hull,
+            mush_sim::tick::OrderChannel::Heading,
+        )
+        .expect("Heading standing order");
         assert_eq!(
             *h_order.value(),
             mush_sim::tick::OrderValue::Vector {
@@ -3859,16 +3856,22 @@ fn sfr3_authoritative_helm_and_tac_enforce_aboard_seats_write_standing_orders_an
                 z: 0
             }
         );
-        let t_order =
-            mush_sim::tick::standing_order(rig.tw.world(), hull, mush_sim::tick::OrderChannel::Thrust)
-                .expect("Thrust standing order");
+        let t_order = mush_sim::tick::standing_order(
+            rig.tw.world(),
+            hull,
+            mush_sim::tick::OrderChannel::Thrust,
+        )
+        .expect("Thrust standing order");
         assert_eq!(
             *t_order.value(),
             mush_sim::tick::OrderValue::Scalar { value: 600 }
         );
-        let p_order =
-            mush_sim::tick::standing_order(rig.tw.world(), hull, mush_sim::tick::OrderChannel::Posture)
-                .expect("Posture standing order");
+        let p_order = mush_sim::tick::standing_order(
+            rig.tw.world(),
+            hull,
+            mush_sim::tick::OrderChannel::Posture,
+        )
+        .expect("Posture standing order");
         assert_eq!(
             *p_order.value(),
             mush_sim::tick::OrderValue::Emcon { level: 1 }
@@ -4181,12 +4184,6 @@ fn drain_space_and_industry(tw: &mut TestWorld) -> Vec<AuthoritativeSubmit> {
                 kept.push(*submit);
             }
         }
-    }
-    if let Some(book) = tw
-        .world_mut()
-        .module_state_mut::<tacsim::space::SpaceBubbleBook>()
-    {
-        book.last_bubble_submit_actors.clear();
     }
     kept
 }
@@ -9546,7 +9543,12 @@ fn sfr21_prepared_bubble_input_mush_sim_standing_orders_and_per_entity_store_wit
         .expect("entered interdiction bubble");
 
     // 1. Per-entity store keys: verify `tacsim:space:bubble:{domain}` is written in `rig.store`.
-    let has_kv = |r: &Rig, k: &str| r.store[tacsim::NS].kv.iter().any(|(ek, _)| ek.as_str() == k);
+    let has_kv = |r: &Rig, k: &str| {
+        r.store[tacsim::NS]
+            .kv
+            .iter()
+            .any(|(ek, _)| ek.as_str() == k)
+    };
     fold_module_ops_into(&mut rig.store, rig.tw.take_module_ops());
     let bubble_key = SmolStr::new(tacsim::space::space_bubble_key(bubble_domain));
     assert!(
@@ -9588,12 +9590,8 @@ fn sfr21_prepared_bubble_input_mush_sim_standing_orders_and_per_entity_store_wit
 
     // Verify `mush-sim`'s `StandingOrderBook` holds all 3 channels (`Heading`, `Posture`, `Thrust`):
     assert_eq!(
-        mush_sim::tick::standing_order(
-            rig.tw.world(),
-            hull,
-            mush_sim::tick::OrderChannel::Heading
-        )
-        .map(|o| o.value().clone()),
+        mush_sim::tick::standing_order(rig.tw.world(), hull, mush_sim::tick::OrderChannel::Heading)
+            .map(|o| o.value().clone()),
         Some(mush_sim::tick::OrderValue::Vector {
             x: 0,
             y: 1_000,
@@ -9601,21 +9599,13 @@ fn sfr21_prepared_bubble_input_mush_sim_standing_orders_and_per_entity_store_wit
         })
     );
     assert_eq!(
-        mush_sim::tick::standing_order(
-            rig.tw.world(),
-            hull,
-            mush_sim::tick::OrderChannel::Posture
-        )
-        .map(|o| o.value().clone()),
+        mush_sim::tick::standing_order(rig.tw.world(), hull, mush_sim::tick::OrderChannel::Posture)
+            .map(|o| o.value().clone()),
         Some(mush_sim::tick::OrderValue::Emcon { level: 0 })
     );
     assert_eq!(
-        mush_sim::tick::standing_order(
-            rig.tw.world(),
-            hull,
-            mush_sim::tick::OrderChannel::Thrust
-        )
-        .map(|o| o.value().clone()),
+        mush_sim::tick::standing_order(rig.tw.world(), hull, mush_sim::tick::OrderChannel::Thrust)
+            .map(|o| o.value().clone()),
         Some(mush_sim::tick::OrderValue::Scalar { value: 0 })
     );
 
@@ -9771,12 +9761,8 @@ fn sfr21_prepared_bubble_input_mush_sim_standing_orders_and_per_entity_store_wit
         "resolved bubble must delete `{bubble_key}`"
     );
     assert!(
-        mush_sim::tick::standing_order(
-            rig.tw.world(),
-            hull,
-            mush_sim::tick::OrderChannel::Thrust
-        )
-        .is_none(),
+        mush_sim::tick::standing_order(rig.tw.world(), hull, mush_sim::tick::OrderChannel::Thrust)
+            .is_none(),
         "resolving the bubble must clear the hull's standing orders in mush-sim"
     );
     let derelict_hull = *rig

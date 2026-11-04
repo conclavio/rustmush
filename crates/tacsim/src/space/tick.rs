@@ -933,18 +933,6 @@ pub struct SpaceBubbleBook {
     /// Derelict hulls whose Freeport Registry salvage recovery bounty has already been paid (`SF.R19`, `35b` §5 #5).
     #[serde(default)]
     pub paid_salvage_bounties: std::collections::BTreeSet<ObjId>,
-    /// Server-authenticated bubble inputs queued by `+tac/*` and `+helm/*` for `BubbleInputProvider` (`SF.R21`, `35b` §3b).
-    #[serde(default, skip)]
-    pub pending_bubble_inputs: Vec<PendingBubbleInput>,
-    /// Monotonic sequence allocator for [`Self::pending_bubble_inputs`] (`SF.R21`, `35b` §3b).
-    #[serde(default, skip)]
-    pub next_bubble_input_seq: u64,
-    /// Transient tracking of actors whose most recent queued submission is [`BUBBLE_INPUT_ACTION`].
-    #[serde(default, skip)]
-    pub last_bubble_submit_actors: std::collections::BTreeSet<ObjId>,
-    /// Transient tracking of actors with an un-drained `tacsim_port_burn` submission.
-    #[serde(default, skip)]
-    pub pending_burn_submit_actors: std::collections::BTreeSet<ObjId>,
     /// Bubble domains quarantined at boot due to an unreadable `tacsim:space:bubble:{domain}` document (`SF.R21`, `35c` §6.3).
     #[serde(default, skip)]
     pub quarantined_bubbles: std::collections::BTreeSet<DomainId>,
@@ -964,10 +952,6 @@ impl SpaceBubbleBook {
         aux.derelicts.clear();
         aux.docking_sessions.clear();
         aux.propellant_ledgers.clear();
-        aux.pending_bubble_inputs.clear();
-        aux.next_bubble_input_seq = 0;
-        aux.last_bubble_submit_actors.clear();
-        aux.pending_burn_submit_actors.clear();
         aux.quarantined_bubbles.clear();
         aux.quarantined_hulls.clear();
         aux
@@ -1349,11 +1333,7 @@ impl SpacePersistedState {
 /// Any malformed, format-mismatched, or key-vs-inner-identity-mismatched document quarantines
 /// space state (`store.space_state = None; store.space_state_held = true`) so it fails closed
 /// and is never overwritten.
-pub fn load_space_kv_entry(
-    store: &mut TacsimStore,
-    key: &str,
-    value: &serde_json::Value,
-) {
+pub fn load_space_kv_entry(store: &mut TacsimStore, key: &str, value: &serde_json::Value) {
     if store.space_state_held && store.space_state.is_none() {
         return;
     }
@@ -1512,13 +1492,9 @@ pub fn persist_space_state(ctx: &mut Ctx<'_>) {
     {
         return;
     }
-    let Some(mut book) = ctx.w.module_state::<SpaceBubbleBook>().cloned() else {
+    let Some(book) = ctx.w.module_state::<SpaceBubbleBook>().cloned() else {
         return;
     };
-    book.pending_bubble_inputs.clear();
-    book.next_bubble_input_seq = 0;
-    book.last_bubble_submit_actors.clear();
-    book.pending_burn_submit_actors.clear();
 
     let salvage = ctx
         .w
@@ -1792,8 +1768,8 @@ pub fn boot_read(ctx: &mut Ctx<'_>, kv: &[(SmolStr, serde_json::Value)]) {
     }
     for active in state.book.by_domain.values_mut() {
         if let Some(picket) = active.picket.as_mut() {
-            picket.corvette_seal =
-                super::picket::space_mind_seal_of(ctx.w, picket.corvette_hull).or_else(|| {
+            picket.corvette_seal = super::picket::space_mind_seal_of(ctx.w, picket.corvette_hull)
+                .or_else(|| {
                     super::picket::build_space_mind_seal(
                         picket.corvette_hull,
                         crate::arena::mind::SortieId::ic(picket.corvette_hull, 1),
@@ -1801,8 +1777,8 @@ pub fn boot_read(ctx: &mut Ctx<'_>, kv: &[(SmolStr, serde_json::Value)]) {
                         crate::minds::content::kirkwood_picket_digest().0,
                     )
                 });
-            picket.raider_seal =
-                super::picket::space_mind_seal_of(ctx.w, picket.raider_hull).or_else(|| {
+            picket.raider_seal = super::picket::space_mind_seal_of(ctx.w, picket.raider_hull)
+                .or_else(|| {
                     super::picket::build_space_mind_seal(
                         picket.raider_hull,
                         crate::arena::mind::SortieId::ic(picket.raider_hull, 1),
@@ -1828,7 +1804,10 @@ pub fn boot_read(ctx: &mut Ctx<'_>, kv: &[(SmolStr, serde_json::Value)]) {
                 super::picket::space_mind_seal_of(ctx.w, d.excursion_id.tv).or_else(|| {
                     super::picket::build_space_mind_seal(
                         d.excursion_id.tv,
-                        crate::arena::mind::SortieId::ic(d.excursion_id.tv, d.excursion_id.launch_ic),
+                        crate::arena::mind::SortieId::ic(
+                            d.excursion_id.tv,
+                            d.excursion_id.launch_ic,
+                        ),
                         "drone_mining",
                         crate::minds::content::drone_mining_digest().0,
                     )
@@ -1873,7 +1852,9 @@ impl StagedBubbleTapeLedger {
     /// Validate record invariants for the `tacsim.space_bubble_tape` state family.
     pub fn check(&self) -> Result<(), String> {
         if self.hull.0 == 0 || self.last_seq == 0 {
-            return Err("a staged bubble tape ledger names a hull and a positive sequence".to_owned());
+            return Err(
+                "a staged bubble tape ledger names a hull and a positive sequence".to_owned(),
+            );
         }
         if self.recent.len() > MAX_BUBBLE_TAPE_ENTRIES {
             return Err("a staged bubble tape ledger exceeds MAX_BUBBLE_TAPE_ENTRIES".to_owned());
@@ -1908,6 +1889,12 @@ pub struct BubbleInputHandles {
     pub action: Option<mush_core::DefinitionRef>,
     /// Typed state family handle (`tacsim.space_bubble_tape`).
     pub tapes: mush_core::StateFamilyHandle<ObjId, StagedBubbleTapeLedger>,
+    /// Server-authenticated bubble inputs queued by `+tac/*` and `+helm/*` for `BubbleInputProvider` (`SF.R21`, `35b` §3b).
+    pub pending_bubble_inputs: Vec<PendingBubbleInput>,
+    /// Monotonic sequence allocator for [`Self::pending_bubble_inputs`] (`SF.R21`, `35b` §3b).
+    pub next_bubble_input_seq: u64,
+    /// Transient tracking of actors with an un-drained `tacsim_port_burn` submission.
+    pub pending_burn_submit_actors: std::collections::BTreeSet<ObjId>,
 }
 
 /// Outcome descriptor for [`BUBBLE_INPUT_OUTCOME`] (`SF.R21`, `35b` §3b).
@@ -1972,7 +1959,13 @@ pub(crate) fn register_bubble_input(
     } else {
         None
     };
-    reg.state(BubbleInputHandles { action, tapes });
+    reg.state(BubbleInputHandles {
+        action,
+        tapes,
+        pending_bubble_inputs: Vec::new(),
+        next_bubble_input_seq: 0,
+        pending_burn_submit_actors: std::collections::BTreeSet::new(),
+    });
     Ok(())
 }
 
@@ -1983,13 +1976,20 @@ pub fn submit_bubble_input(
     switch: &str,
     cmd: Option<BubbleInputCommand>,
 ) -> Option<u64> {
+    if !ctx
+        .w
+        .module_state::<SpaceBubbleBook>()
+        .is_some_and(|b| b.active_for_hull(hull).is_some())
+    {
+        return None;
+    }
     let at_ic = ctx.w.world_ic_now().at;
     let actor = ctx.actor;
-    let (seq, can_submit) = {
-        let book = ctx.w.module_state_mut::<SpaceBubbleBook>()?;
-        book.next_bubble_input_seq = book.next_bubble_input_seq.saturating_add(1);
-        let seq = book.next_bubble_input_seq;
-        book.pending_bubble_inputs.push(PendingBubbleInput {
+    let (seq, can_submit, action) = {
+        let handles = ctx.w.module_state_mut::<BubbleInputHandles>()?;
+        handles.next_bubble_input_seq = handles.next_bubble_input_seq.saturating_add(1);
+        let seq = handles.next_bubble_input_seq;
+        handles.pending_bubble_inputs.push(PendingBubbleInput {
             seq,
             actor,
             hull,
@@ -1997,22 +1997,16 @@ pub fn submit_bubble_input(
             at_ic,
             cmd,
         });
-        if book.pending_bubble_inputs.len() > 64 {
-            let excess = book.pending_bubble_inputs.len() - 64;
-            book.pending_bubble_inputs.drain(0..excess);
+        if handles.pending_bubble_inputs.len() > 64 {
+            let excess = handles.pending_bubble_inputs.len() - 64;
+            handles.pending_bubble_inputs.drain(0..excess);
         }
         let can_submit = !ctx.out.authoritative_pending(actor)
-            && !book.pending_burn_submit_actors.contains(&actor);
-        if can_submit {
-            book.last_bubble_submit_actors.insert(actor);
-        }
-        (seq, can_submit)
+            && !handles.pending_burn_submit_actors.contains(&actor);
+        (seq, can_submit, handles.action.clone())
     };
     if can_submit
-        && let Some(action) = ctx
-            .w
-            .module_state::<BubbleInputHandles>()
-            .and_then(|h| h.action.clone())
+        && let Some(action) = action
         && let Ok(key) = mush_core::IdempotencyKeyText::parse_canonical(format!(
             "tacsim.space.input/{}/{}/{}",
             hull.0, seq, switch
@@ -2086,11 +2080,11 @@ impl mush_core::ActionProvider for BubbleInputProvider {
             return Ok(None);
         }
         let w = &engine.world;
-        let Some(book) = w.module_state::<SpaceBubbleBook>() else {
+        let Some(handles) = w.module_state::<BubbleInputHandles>() else {
             return Ok(None);
         };
         let mut pending_map = serde_json::Map::new();
-        for entry in book
+        for entry in handles
             .pending_bubble_inputs
             .iter()
             .filter(|e| e.actor == query.actor())
@@ -2174,10 +2168,7 @@ impl mush_core::ActionProvider for BubbleInputProvider {
             .ok_or_else(invalid)?;
         let pending: PendingBubbleInput =
             serde_json::from_value(pending_val.clone()).map_err(|_| invalid())?;
-        if pending.actor != invocation.actor()
-            || pending.hull != hull
-            || pending.switch != switch
-        {
+        if pending.actor != invocation.actor() || pending.hull != hull || pending.switch != switch {
             return Err(crate::port_tick::port_error(
                 mush_core::ActionErrorCode::Unauthorized,
                 "that space bubble input belongs to another actor or hull",
@@ -2569,11 +2560,8 @@ fn prune_space_book_collections(ctx: &mut Ctx<'_>) {
 
     let clamped_set: std::collections::BTreeSet<ObjId> =
         book.clamped_derelicts.values().copied().collect();
-    let towed_set: std::collections::BTreeSet<ObjId> = book
-        .active_tows
-        .values()
-        .map(|t| t.derelict_hull)
-        .collect();
+    let towed_set: std::collections::BTreeSet<ObjId> =
+        book.active_tows.values().map(|t| t.derelict_hull).collect();
     book.derelicts.retain(|&hull, d| {
         clamped_set.contains(&hull)
             || towed_set.contains(&hull)
@@ -2602,6 +2590,13 @@ fn prune_space_book_collections(ctx: &mut Ctx<'_>) {
             break;
         };
         book.completed.remove(&oldest);
+    }
+    let remaining_burn_actors: std::collections::BTreeSet<ObjId> =
+        book.pending_space_burns.iter().map(|b| b.actor).collect();
+    if let Some(handles) = ctx.w.module_state_mut::<BubbleInputHandles>() {
+        handles
+            .pending_burn_submit_actors
+            .retain(|a| remaining_burn_actors.contains(a));
     }
 }
 

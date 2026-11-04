@@ -370,17 +370,16 @@ fn require_aboard_and_seat(
 ) -> Result<(ObjId, BridgeRole), CmdError> {
     let hull =
         hull_aboard_for_actor(ctx.w, ctx.actor).ok_or_else(|| CmdError::msg(NOT_ABOARD_SHIP))?;
-    if let Some(book) = ctx.w.module_state::<SpaceBubbleBook>() {
-        if book.quarantined_hulls.contains(&hull)
+    if let Some(book) = ctx.w.module_state::<SpaceBubbleBook>()
+        && (book.quarantined_hulls.contains(&hull)
             || book
                 .active_for_hull(hull)
-                .is_some_and(|a| book.quarantined_bubbles.contains(&a.domain))
-        {
-            return Err(CmdError::msg(format!(
-                "Ship #{} or its active bubble is quarantined for staff repair due to an unreadable persisted document.",
-                hull.0
-            )));
-        }
+                .is_some_and(|a| book.quarantined_bubbles.contains(&a.domain)))
+    {
+        return Err(CmdError::msg(format!(
+            "Ship #{} or its active bubble is quarantined for staff repair due to an unreadable persisted document.",
+            hull.0
+        )));
     }
     let role = seat_role_for_actor(ctx.w, hull, ctx.actor)
         .ok_or_else(|| CmdError::msg(NO_BRIDGE_STATION))?;
@@ -2015,10 +2014,11 @@ fn submit_space_burn_if_needed(
                 crew_days,
                 seized_strategic_ore_t: 0,
             });
-        book.pending_burn_submit_actors.insert(burn_actor);
-        book.last_bubble_submit_actors.remove(&burn_actor);
         seq
     };
+    if let Some(handles) = ctx.w.module_state_mut::<super::tick::BubbleInputHandles>() {
+        handles.pending_burn_submit_actors.insert(burn_actor);
+    }
     let key = mush_core::IdempotencyKeyText::parse_canonical(format!(
         "{}{}/space_burn/{seq}",
         crate::port::burn::BURN_KEY_PREFIX,
@@ -2079,10 +2079,11 @@ pub(crate) fn submit_seized_contraband_burn(
                 crew_days: 0,
                 seized_strategic_ore_t,
             });
-        book.pending_burn_submit_actors.insert(burn_actor);
-        book.last_bubble_submit_actors.remove(&burn_actor);
         seq
     };
+    if let Some(handles) = ctx.w.module_state_mut::<super::tick::BubbleInputHandles>() {
+        handles.pending_burn_submit_actors.insert(burn_actor);
+    }
     let key = mush_core::IdempotencyKeyText::parse_canonical(format!(
         "{}{}/space_burn/{seq}",
         crate::port::burn::BURN_KEY_PREFIX,
