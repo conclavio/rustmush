@@ -60,6 +60,9 @@ pub mod ground;
 /// **17b cut M5.1**: the holdings seam's test provider — Standard Doctrine and
 /// two scripted fixture minds, installed through the production seam.
 pub mod holdings;
+/// **Doc 43 cut TS.8**: lanes v17–v20's additions stripped away, the one strip chain
+/// mush-server's relay registry shares.
+pub mod lane_chain;
 /// **Doc 20 cut SM.5**: a prospecting licence bought through `+licence/buy go`, for every
 /// suite whose pilots lease a rig.
 pub mod licence;

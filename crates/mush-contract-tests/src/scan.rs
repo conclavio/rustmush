@@ -312,3 +312,59 @@ pub fn file_is_test_only(stripped: &str) -> bool {
     }
     false
 }
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn the_stripper_keeps_offsets_and_blanks_only_comments_and_literals() {
+        let src = "fn f<'a>(c: char) -> bool {\n    // x.unwrap()\n    /* a /* nested */ b */ c == '\"' && \"}\\\"\".len() > 0\n}\n";
+        let stripped = strip_comments_and_literals(src);
+        assert_eq!(stripped.len(), src.len());
+        assert_eq!(stripped.lines().count(), src.lines().count());
+        assert!(!stripped.contains("unwrap") && !stripped.contains("nested"));
+        assert!(stripped.contains("fn f<'a>(c: char)"), "a lifetime is code");
+        assert_eq!(
+            stripped.matches('}').count(),
+            1,
+            "a brace in a string is gone"
+        );
+    }
+
+    /// TS.8: the `matcher_call_sites.rs` copy read the `r` of a `br#"…"#` as the
+    /// tail of an identifier and lexed the body as code; the `panic_budget.rs`
+    /// copy did not. The one stripper reads it as one literal.
+    #[test]
+    fn a_raw_byte_string_is_one_literal_and_a_raw_identifier_is_code() {
+        let src = "let a = br#\"{\"op\":\"x.unwrap()\"}\"#; let r#type = b'q'; a.expect(\"\");";
+        let stripped = strip_comments_and_literals(src);
+        assert!(!stripped.contains("op") && !stripped.contains("unwrap"));
+        assert!(!stripped.contains('q'));
+        assert!(stripped.contains("let r#type") && stripped.contains("a.expect("));
+    }
+
+    #[test]
+    fn a_cfg_test_item_is_blanked_and_a_leading_fence_marks_the_file() {
+        let code = "fn a() {}\n#[cfg(test)]\nuse super::*;\n#[cfg(test)]\nmod t {\n    fn b() { x.unwrap(); }\n}\nfn c() {}\n";
+        let blanked = blank_cfg_test_items(&strip_comments_and_literals(code));
+        assert!(blanked.contains("fn a()") && blanked.contains("fn c()"));
+        assert!(blanked.contains("use super::*;") && !blanked.contains("unwrap"));
+        assert!(file_is_test_only(
+            "#![allow(dead_code)]\n#![cfg( test )]\nfn f() {}"
+        ));
+        assert!(!file_is_test_only("fn f() {}\nmod m { #![cfg(test)] }"));
+    }
+
+    #[test]
+    fn the_walk_is_sorted_and_finds_this_file() {
+        let src = Path::new(env!("CARGO_MANIFEST_DIR")).join("src");
+        let found = rust_files(&src);
+        assert!(found.windows(2).all(|pair| pair[0] < pair[1]));
+        assert!(found.contains(&src.join("scan.rs")));
+        assert_eq!(
+            relative(&repo_root(), &src.join("scan.rs")),
+            "crates/mush-contract-tests/src/scan.rs"
+        );
+    }
+}

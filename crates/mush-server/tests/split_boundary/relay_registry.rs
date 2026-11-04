@@ -4274,94 +4274,12 @@ fn relay_v4() -> mush_content::Pack {
     );
     pack
 }
-/// **Doc 39 cut IN.1 (lane v20): the ladder's three prices put back** — Kasei's alloy ask 450 →
-/// 400, Stickney Yards' fittings ask 520 → 400, the Co-op's fittings bid 600 → 560 — so a strip
-/// chain rebuilds a lane before v20 (idempotent).
-fn strip_ladder(doc: &mut serde_json::Value) {
-    for (port, org, side, good, was) in [
-        ("stickney_port", "kasei", "asks", "structural_alloys", 400),
-        (
-            "stickney_port",
-            "stickney_yards",
-            "asks",
-            "industrial_parts",
-            400,
-        ),
-        ("ceres_port", "coop", "bids", "industrial_parts", 560),
-    ] {
-        for vendor in doc["entries"][port]["def"]["vendors"]
-            .as_array_mut()
-            .into_iter()
-            .flatten()
-            .filter(|vendor| vendor["org"] == org)
-        {
-            for row in vendor[side]
-                .as_array_mut()
-                .into_iter()
-                .flatten()
-                .filter(|row| row["good"] == good)
-            {
-                row["price_major"] = was.into();
-            }
-        }
-    }
-}
-/// **Doc 32 cut S.1: the 512 site's rows** — Urvara Reach's place, its two routes, its port and
-/// Ceres's `urvara` routes key — stripped from the shipped lane to rebuild an older one. Doc 36
-/// cut GC.7 (lane v18): the two ports' `workshop` blocks and the vendors' munitions rows first;
-/// cut GC.13 (lane v19): and their `medical` blocks; doc 39 cut IN.1 (lane v20): the ladder
-/// first ([`strip_ladder`]); doc 39 cut IN.4 (lane v20): Ceres's `recovery` row (the workshops'
-/// `cost` goes with their blocks).
-fn strip_urvara(lane: &mut serde_json::Value) {
-    strip_ladder(lane);
-    for port in ["ceres_port", "stickney_port"] {
-        let def = lane["entries"][port]["def"].as_object_mut().unwrap();
-        def.remove("workshop");
-        def.remove("medical");
-        def.remove("recovery");
-        for vendor in def["vendors"].as_array_mut().unwrap() {
-            for rows in ["stock", "asks"] {
-                if let Some(rows) = vendor[rows].as_array_mut() {
-                    rows.retain(|row| !row["good"].as_str().unwrap().starts_with("ammo_"));
-                }
-            }
-        }
-    }
-    let entries = lane["entries"].as_object_mut().unwrap();
-    for id in [
-        "urvara_reach",
-        "ceres_urvara",
-        "urvara_ceres",
-        "urvara_port",
-    ] {
-        entries.remove(id);
-    }
-    lane["entries"]["ceres_port"]["def"]["routes"]
-        .as_object_mut()
-        .unwrap()
-        .remove("urvara");
-    if let Some(def) = lane["entries"]
-        .get_mut("kirkwood_depot")
-        .and_then(|entry| entry["def"].as_object_mut())
-    {
-        def.remove("kirkwood_picket");
-        def.remove("clusters");
-    }
-    if let Some(legs) = lane["entries"]
-        .get_mut("ceres_stickney")
-        .and_then(|entry| entry["def"]["legs"].as_array_mut())
-        && let Some(leg0) = legs.first_mut().and_then(serde_json::Value::as_object_mut)
-    {
-        leg0.remove("hazard");
-        leg0.remove("interdiction");
-    }
-}
 /// The published lane v15 (doc 20 cut SM.12b): the shipped lane less doc 32 cut S.1's 512 site
 /// and CF.6c's escort design, at version 15, re-signed to its published digest.
 fn lane_v15() -> mush_content::Pack {
     let mut lane: serde_json::Value =
         serde_json::from_str(tacsim::definitions::content::LANE_JSON).unwrap();
-    strip_urvara(&mut lane);
+    crate::lane_chain::strip_wide_sites(&mut lane);
     lane["entries"]["ceres_port"]["def"]["vehicles"]
         .as_object_mut()
         .unwrap()
@@ -4381,7 +4299,7 @@ fn lane_v13() -> mush_content::Pack {
     let mut lane: serde_json::Value =
         serde_json::from_str(tacsim::definitions::content::LANE_JSON).unwrap();
     // Doc 32 cut S.1: the 512 site.
-    strip_urvara(&mut lane);
+    crate::lane_chain::strip_wide_sites(&mut lane);
     // Doc 32 cut CF.6c: the rig pool's further designs.
     lane["entries"]["ceres_port"]["def"]["vehicles"]
         .as_object_mut()
