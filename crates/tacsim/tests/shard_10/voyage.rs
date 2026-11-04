@@ -8888,9 +8888,9 @@ fn salvage_scene() -> SalvageScene {
     }
 }
 
-/// The 6-DOF clamp of `who`'s hull on the bubble's derelict, through the client tape.
-fn clamp_derelict(rig: &mut Rig, who: ObjId, hull: ObjId) -> String {
-    let dock = run(&mut rig.tw, who, "+helm/dock derelict");
+/// The 6-DOF clamp of `who`'s hull on the derelict `target` names, through the client tape.
+fn clamp_derelict(rig: &mut Rig, who: ObjId, hull: ObjId, target: &str) -> String {
+    let dock = run(&mut rig.tw, who, &format!("+helm/dock {target}"));
     assert!(
         dock.contains("[DOCKING] Initiated 60 fps 6-DOF docking session"),
         "{dock}"
@@ -8929,13 +8929,25 @@ fn credit_of(tw: &TestWorld, who: ObjId) -> i64 {
         .minor()
 }
 
-/// Close the bubble and fly `hull` on to Stickney Yards, the leg's end.
+/// Close the bubble and fly `hull` on to Stickney Yards, the leg's end: the plan's total from
+/// the resumed departure, then two IC days at a time until she docks (a long bubble pauses the
+/// leg's timer: at the 3,600 rate ten wall minutes in a bubble are twenty-five IC days), sixty
+/// days at most.
 fn fly_on_to_stickney(rig: &mut Rig, hull: ObjId, total_secs: i64) {
     let next_real = rig.tw.world().now() + 1;
     rig.tw.set_now(next_real);
     let _ = rig.tw.fire_due(next_real * 1_000);
     let resumed = journey(&rig.tw, hull).expect("the resumed journey");
     let _ = to_ic(rig, resumed.departed().at + total_secs);
+    for _ in 0..30 {
+        if matches!(
+            tacsim::port::ship::berth_of(rig.tw.world(), hull),
+            tacsim::port::ship::Berth::Docked { .. }
+        ) {
+            break;
+        }
+        let _ = to_ic(rig, ic_now(&rig.tw) + 2 * 86_400);
+    }
     sweep(&mut rig.tw, 60);
 }
 
@@ -8977,7 +8989,7 @@ fn sfr19_one_salvage_path_unifies_space_derelict_claims_with_gc6_and_economy() {
     );
 
     // 2. SalvorA clamps; SalvorB racing for the same derelict is refused.
-    let clamp_a = clamp_derelict(&mut rig, pilot_a, hull_a);
+    let clamp_a = clamp_derelict(&mut rig, pilot_a, hull_a, "derelict");
     assert!(
         clamp_a.contains("Hard dock and magnetic collar seal confirmed"),
         "{clamp_a}"
@@ -9061,7 +9073,7 @@ fn sfr19_one_salvage_path_unifies_space_derelict_claims_with_gc6_and_economy() {
     let _ = run(&mut rig.tw, pilot_a, "+helm/approach derelict");
     let rel_draws = drain(&mut rig.tw);
     land_quietly(&mut rig, &rel_draws);
-    let _ = clamp_derelict(&mut rig, pilot_a, hull_a);
+    let _ = clamp_derelict(&mut rig, pilot_a, hull_a, "derelict");
     let tow_2 = run(&mut rig.tw, pilot_a, "+helm/tow");
     assert!(
         tow_2.contains("[SALVAGE] Tow line locked to disabled derelict")
@@ -9240,7 +9252,7 @@ fn rs8_a_space_retrieval_job_is_delivered_by_the_tug_that_docks_her() {
         .expect("the job")
         .fee_minor;
 
-    let clamp = clamp_derelict(&mut rig, pilot_a, hull_a);
+    let clamp = clamp_derelict(&mut rig, pilot_a, hull_a, "derelict");
     assert!(
         clamp.contains("Hard dock and magnetic collar seal confirmed"),
         "{clamp}"
@@ -9282,6 +9294,153 @@ fn rs8_a_space_retrieval_job_is_delivered_by_the_tug_that_docks_her() {
         Some(mush_org::PrincipalId::Object(owner)),
         "a retrieval never moves the title"
     );
+}
+
+/// **Doc 42 cut CR.6 (Q-42-24), the space seam** — the crew's one record in space:
+/// 1. *SalvorB*'s carrier is disabled in the bubble (the fixture sets her drive down; combat's
+///    disablement is sfr18's) and settles out of it as a derelict: her pilot's record is
+///    `Stranded` in her, on the waypoint's site, from the space check-in.
+/// 2. *SalvorA* hard-docks her (`+helm/dock #<hull>` and the client tape). The bubble reads the
+///    two carriers as no friends, so the clamp captures SalvorB as a ground load does: out of her
+///    seat, into *SalvorA*'s bay room, `Captured { carrier, captor }`.
+/// 3. *SalvorA* casts off the empty derelict, flies on and docks at Stickney Yards. The port's
+///    authority takes the captive through CR.2's one hook (`Processing`, then released there),
+///    and SalvorA's own record is `Carrier` from her own check-in.
+#[test]
+#[allow(clippy::too_many_lines)]
+fn cr6_a_crewed_derelict_hard_docked_by_a_stranger_is_captured_and_handed_over_at_port() {
+    let SalvageScene {
+        mut rig,
+        pilot_a,
+        pilot_b,
+        hull_a,
+        total_secs,
+        ..
+    } = salvage_scene();
+    let hull_b = tacsim::port::live_charter(rig.tw.world(), pilot_b)
+        .expect("SalvorB's charter")
+        .hull;
+
+    // 1. The fixture: SalvorB's drive is down in the bubble.
+    {
+        let book = rig
+            .tw
+            .world_mut()
+            .module_state_mut::<tacsim::space::SpaceBubbleBook>()
+            .expect("the space book");
+        let active = book.active_for_hull_mut(hull_b).expect("SalvorB's bubble");
+        let ship_id = active.carrier_ship_id_for(hull_b).to_owned();
+        let ship = active
+            .bubble
+            .ships
+            .get_mut(&ship_id)
+            .expect("SalvorB's ship");
+        if let Some(drive) = ship.sections.get_mut(&tacsim::space::ShipSectionId::Drive) {
+            drive.internals = 0;
+        }
+        ship.status = tacsim::space::HullStatus::DisabledDerelict {
+            epoch_open: true,
+            life_support_remaining_s: tacsim::space::DERELICT_LIFE_SUPPORT_S,
+        };
+        ship.thrust_mps2 = [0, 0, 0];
+    }
+    for _ in 0..3 {
+        let next = rig.tw.world().now() + 1;
+        rig.tw.set_now(next);
+        let _ = rig.tw.fire_due(next * 1_000);
+    }
+    let draws = drain(&mut rig.tw);
+    land_quietly(&mut rig, &draws);
+    let stranded = tacsim::field::crew_of(rig.tw.world(), pilot_b)
+        .map(|record| record.location.clone())
+        .expect("SalvorB's crew record from the space check-in");
+    assert!(
+        matches!(
+            stranded,
+            tacsim::field::CrewLocation::Stranded { unit, .. } if unit == hull_b
+        ),
+        "a derelict's crew are stranded in her: {stranded:?}"
+    );
+
+    // 2. SalvorA, no friend of SalvorB's, closes on her and hard-docks her: SalvorB is captured.
+    let approach = run(
+        &mut rig.tw,
+        pilot_a,
+        &format!("+helm/approach #{}", hull_b.0),
+    );
+    assert!(approach.contains("Braking approach ordered"), "{approach}");
+    let draws = drain(&mut rig.tw);
+    land_quietly(&mut rig, &draws);
+    for _ in 0..600 {
+        let next = rig.tw.world().now() + 1;
+        rig.tw.set_now(next);
+        let _ = rig.tw.fire_due(next * 1_000);
+        let closing = rig
+            .tw
+            .world()
+            .module_state::<tacsim::space::SpaceBubbleBook>()
+            .and_then(|b| b.active_for_hull(hull_a))
+            .is_some_and(|a| {
+                a.carriers
+                    .get(&hull_a)
+                    .is_some_and(|c| c.approaching_derelict)
+            });
+        if !closing {
+            break;
+        }
+    }
+    let clamp = clamp_derelict(&mut rig, pilot_a, hull_a, &format!("#{}", hull_b.0));
+    assert!(
+        clamp.contains("Hard dock and magnetic collar seal confirmed"),
+        "{clamp}"
+    );
+    let held = tacsim::field::crew_of(rig.tw.world(), pilot_b)
+        .map(|record| record.location.clone())
+        .expect("SalvorB's record");
+    assert!(
+        matches!(
+            held,
+            tacsim::field::CrewLocation::Captured { carrier, captor, .. }
+                if carrier == hull_a && captor == pilot_a
+        ),
+        "the hard-dock captures her crew: {held:?}"
+    );
+    let room = location(&rig.tw, pilot_b).expect("SalvorB stands somewhere");
+    assert_eq!(
+        tacsim::port::ship::hull_of_room(rig.tw.world(), room).map(|(view, _)| view.hull()),
+        Some(hull_a),
+        "the captive's body is aboard the captor's carrier"
+    );
+
+    // 3. SalvorA casts off the empty derelict and docks at Stickney: the captive is handed to
+    //    the port's authority.
+    let cast_off = run(&mut rig.tw, pilot_a, "+helm/tow release");
+    assert!(cast_off.contains("collar clamp released"), "{cast_off}");
+    fly_on_to_stickney(&mut rig, hull_a, total_secs);
+    assert!(
+        matches!(
+            tacsim::port::ship::berth_of(rig.tw.world(), hull_a),
+            tacsim::port::ship::Berth::Docked { .. }
+        ),
+        "SalvorA docks at Stickney"
+    );
+    let processed = tacsim::field::crew_of(rig.tw.world(), pilot_b)
+        .map(|record| record.location.clone())
+        .expect("SalvorB's record");
+    // The fly-on can spend days docked before the read, so the release may have come too.
+    assert!(
+        matches!(
+            &processed,
+            tacsim::field::CrewLocation::Processing { port, .. }
+                | tacsim::field::CrewLocation::Port { port }
+                if port.as_str() == "stickney"
+        ),
+        "the docking hands the captive over to Stickney's authority: {processed:?}"
+    );
+    let own = tacsim::field::crew_of(rig.tw.world(), pilot_a)
+        .map(|record| record.location.clone())
+        .expect("SalvorA's record from her own check-in");
+    assert_eq!(own, tacsim::field::CrewLocation::Carrier { hull: hull_a });
 }
 
 /// **Doc 35c §9 cut `SF.R20` ("One damage table and canonical drives", `Q-36-47`, `D-35-1`, `35c` §6.4–§6.5)**:

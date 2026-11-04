@@ -319,3 +319,29 @@ fabricated principals.
     space mechanic.
   - The tow's cap stays the 2× dry-mass check. The carrier floor (`TUG_SHARE_PERMILLE`) is not
     applied in space, and no space hull is a carrier wreck yet.
+
+### 12.2 CR.6, the crew seam (doc 42 Q-42-24)
+
+Built on RS.8 (#439). Every crew rule is the ground's own `field/crew.rs`, called from `space/` only. The CR window owns `crew.rs`, so CR.6 does not edit it.
+
+- **Crew records from the space check-in.** `check_in_space_unit` ends with `custody::check_in_space_crew`. It runs `crew::check_in` for every soul aboard (`field::carrier::souls_aboard`). The ground's rules apply:
+  - a record in custody is left alone;
+  - a check-in never heals;
+  - a fallen hull (`CrewStranded`) strands its souls.
+- **The derelict's crew.** A `DisabledDerelict` strands her crew as well: they are `Stranded { site, unit: hull }` and may ask `+sortie/extract`. The site is `custody::space_site`:
+  - the lane entry whose map hosts the domain;
+  - otherwise `space_domain_<n>`. The test lane's waypoints carry no port map, so its stories read `space_domain_<n>`.
+  - The domain comes from the hull's bubble, the bubble's ship rows (a settled carrier stays there), her derelict record, the bubble she just left (`completed`), or her placement.
+- **The hard-dock capture.** The derelict clamp in `+helm/dock tape` calls `custody::capture_at_hard_dock`.
+  - The derelict's crew check in first.
+  - Who is aboard is read from the records (`crew::held_in`), as a ground load reads it. A body need not be in her rooms.
+  - The friend test is the ground's Friend rule (`field::parties::entrants` / `letter` / `friends`: one owner, or an open shared organization). It does not read the bubble's relation, because SF.R18 marks every co-participating carrier `Friend` for fire control.
+  - A non-friend's clamp runs `crew::captured_loaded` into the tug's first bay room, else her airlock.
+  - A friend's clamp runs `crew::aboard_loaded` into the same room.
+- **The handover.** The `+helm/dock` port clamp calls `crew::hand_over(ctx, hull)` before the tow's delivery. A lane arrival already did, through `sim_routes`'s `arrived`, and the crew tick catches any it misses.
+- **Story** (`shard_10/voyage.rs`): `cr6_a_crewed_derelict_hard_docked_by_a_stranger_is_captured_and_handed_over_at_port`.
+  - A fixture sets SalvorB's drive down in the bubble; combat's disablement is sfr18's.
+  - She settles as a derelict, and her pilot is `Stranded` in her.
+  - SalvorA approaches and hard-docks her. The pilot is `Captured { carrier: SalvorA, captor }`, with her body aboard SalvorA.
+  - SalvorA casts off and docks at Stickney. Stickney's authority takes the captive, and SalvorA's own record is `Carrier`.
+- **Not built** (Q-42-24): ejection in a bubble, and surrender. The owner's ruling stands: crew whose carrier is wrecked fight to the death. Captives aboard NPC hulls are not covered, because NPC crew have no records (Q-42-5).

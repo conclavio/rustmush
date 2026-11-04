@@ -5274,6 +5274,8 @@ fn helm_dock(ctx: &mut Ctx<'_>) -> Result<(), CmdError> {
                         }
                         mush_sim::dock_carrier_at_destination(ctx, hull, dest_parent, &now)
                             .map_err(CmdError::msg)?;
+                        // Doc 42 cut CR.6 (Q-42-6's one hook): captives first, then the hull's.
+                        crate::field::crew::hand_over(ctx, hull);
                         super::tick::deliver_active_tow_at_port(ctx, hull, &now);
                         super::tick::deliver_own_retrieval_at_port(ctx, hull);
                         let line = format!(
@@ -5310,6 +5312,9 @@ fn helm_dock(ctx: &mut Ctx<'_>) -> Result<(), CmdError> {
                             book.clamped_derelicts.insert(hull, derelict_hull);
                             book.derelict_pins.insert(derelict_hull, pin);
                         }
+                        // Doc 42 cut CR.6 (Q-42-24): a hard-dock on a derelict with crew takes
+                        // them, captive unless the tug is a friend's.
+                        let _ = super::custody::capture_at_hard_dock(ctx, hull, derelict_hull);
                         unpause_hull_after_docking(ctx, hull, &now);
                         let line = format!(
                             "[DOCKING] Hard dock and magnetic collar seal confirmed on derelict {derelict_name} (#{}) on frame {} (dz={} mm, vz={} mm/s, spent {} kg RCS propellant). Run `+helm/tow` to attach salvage tow line.",
