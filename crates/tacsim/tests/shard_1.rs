@@ -66,6 +66,8 @@ mod field_raiders;
 mod field_raiders_rig;
 #[path = "shard_1/field_scale.rs"]
 mod field_scale;
+#[path = "support/field/grounds_rig.rs"]
+mod grounds_rig;
 #[path = "shard_1/one_picture.rs"]
 mod one_picture;
 #[path = "shard_1/passage.rs"]

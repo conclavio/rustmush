@@ -1484,7 +1484,8 @@ match.
 The bot can play the surface-mining loop (`help mining`) at one site over the
 same line-mode SSH session a person would use, with no model at all:
 `--mine <site>`, where the site is a route word — `ahuna`, `commons`,
-`juling`, `kerwan`, `occator` or `rheasilvia`. It is headless and model-free:
+`juling`, `kerwan`, `occator`, `rheasilvia` or `urvara` (Urvara Reach, the
+first 512 site, whose pockets run to `P1024`). It is headless and model-free:
 `--headless --mine ahuna` is a complete run, with no `[model]` and no goal,
 and `--mine` without `--headless` is refused (no REPL control or `/arena`
 can reach a run while it plays).
@@ -1508,7 +1509,7 @@ types only that closed vocabulary, at most two lines a second, never a staff
 recorded and nothing more.
 
 **Refusals.** `--mine` with an unknown word answers "--mine takes one of
-ahuna, commons, juling, kerwan, occator, rheasilvia"; with `--arena`, "--mine
+ahuna, commons, juling, kerwan, occator, rheasilvia, urvara"; with `--arena`, "--mine
 and --arena are two lanes; choose one"; with `--goal`, "--mine plays now and
 --goal lets the model decide; choose one"; with `--script`, `--paused`,
 `--managed-floor`, `--replay`, `--studio`, `--harness` or a campaign session,

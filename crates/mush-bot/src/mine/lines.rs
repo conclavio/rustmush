@@ -340,7 +340,13 @@ pub struct Pocket {
     pub order: usize,
 }
 
-/// A pocket address: one letter `A`–`P`, then 1 to 3 digits.
+/// The highest pocket number a block holds at the widest site (`tacsim::surface::Scheme::WIDEST`:
+/// a 512 site's blocks are 32 × 32 pockets, so Urvara Reach runs to `P1024`; a 256 site's to
+/// `P256`).
+pub const MAX_POCKET_NUMBER: u16 = 1_024;
+
+/// A pocket address: one letter `A`–`P`, then its number in the block, 1 to [`MAX_POCKET_NUMBER`]
+/// with no leading zero (doc 40 cut FR.0: four digits at a 512 site, `G1000`, `P1024`).
 pub fn is_addr(token: &str) -> bool {
     let mut chars = token.chars();
     let Some(letter) = chars.next() else {
@@ -348,15 +354,17 @@ pub fn is_addr(token: &str) -> bool {
     };
     let digits = chars.as_str();
     ('A'..='P').contains(&letter)
-        && (1..=3).contains(&digits.len())
+        && (1..=4).contains(&digits.len())
+        && !digits.starts_with('0')
         && digits.chars().all(|c| c.is_ascii_digit())
+        && digits.parse::<u16>().is_ok_and(|n| n <= MAX_POCKET_NUMBER)
 }
 
 /// **The sounding's pockets** (`tv::SOUNDED` and its `"  {family}: {list}"`
 /// lines): from the first `"Rig 1 sounded "` in the normalised window, a token
 /// scan — a token `metals:` or `volatiles:` sets the family, any other `word:`
 /// token clears it (carbon and strategic ore are not this lane's), and an
-/// `ADDR CLASS` pair (ADDR one letter `A`–`P` then 1–3 digits; CLASS
+/// `ADDR CLASS` pair (ADDR one letter `A`–`P` then 1–4 digits, [`is_addr`]; CLASS
 /// rich|fair|lean, a trailing `,` or `.` stripped) under a family is a pocket,
 /// `order` its position. Wrapped lines therefore read whole, and an
 /// interleaved heard line adds nothing. `None` without the head; `Some(vec![])`
@@ -794,6 +802,31 @@ pub const NO_FIELD: &str = "No field holds a party of yours.";
 pub const YOUR_PARTY: &str = "Your party is ";
 /// `tacsim::field::PARTY_MARKED`'s head, the mark's acknowledgement.
 pub const PARTY_MARKED: &str = "Your party now marks party ";
+/// `tacsim::field::standing::NOTHING_TO_VOID`: `+field/void` with no open offer.
+pub const NOTHING_TO_VOID: &str = "Nothing your party's fire cost is yours to void now.";
+/// `tacsim::field::standing::VOIDED`'s head: the void taken.
+pub const VOIDED: &str = "Voided as friendly fire: ";
+/// `tacsim::field::standing::VOID_OFFERED`'s middle, after the friend's letter: the offer.
+pub const VOID_OFFERED: &str = " was a friend of yours: +field/void cancels the standing";
+
+/// **`+field/void`'s answer** (doc 40 cut FR.0): `Some(true)` for the void taken,
+/// `Some(false)` for nothing to void, `None` while neither is in `window` (normalised).
+pub fn void_answer(window: &str) -> Option<bool> {
+    let taken = window.rfind(VOIDED);
+    let nothing = window.rfind(&normalise(NOTHING_TO_VOID));
+    match (taken, nothing) {
+        (None, None) => None,
+        (Some(_), None) => Some(true),
+        (None, Some(_)) => Some(false),
+        (Some(t), Some(n)) => Some(t > n),
+    }
+}
+
+/// **Whether `window` offers the leader a void** (`Party {party} was a friend of yours: …`).
+pub fn void_offered(window: &str) -> bool {
+    window.contains(&normalise(VOID_OFFERED))
+}
+
 /// `tacsim::surface::site_record::FIELD_OPEN`'s tail: surface work refused while a field runs.
 pub const SURFACE_WAITS: &str = "Surface work there waits until it settles.";
 /// `tacsim::detachment::sortie::ORDER_PREFILL`'s middle, before the fence.
@@ -1493,6 +1526,70 @@ mod tests {
         assert_eq!(heard_sentence("Rig 1 sounded 64 pockets"), None);
     }
 
+    /// **Doc 40 cut FR.0: the four-digit addresses.** Every pocket a 512 site prints (Urvara
+    /// Reach, `Scheme::WIDEST`, `A1`..`P1024`) is an address, and so is every one a 256 site
+    /// prints; what the game's own strict parser refuses at the widest site is refused here, and
+    /// a 512 sounding's four-digit pockets read whole, wrapped.
+    #[test]
+    fn fr0_every_pocket_of_a_512_site_is_an_address() {
+        use tacsim::surface::address::Scheme;
+        for scheme in [Scheme::SHIPPED, Scheme::WIDEST] {
+            let side = scheme.pockets();
+            for py in 0..side {
+                for px in 0..side {
+                    let addr = scheme.pocket_address(px, py).expect("on the site");
+                    assert!(is_addr(&addr), "{addr}");
+                }
+            }
+        }
+        for good in ["A1", "G993", "G1000", "C1024", "P1024", "K256"] {
+            assert!(is_addr(good), "{good}");
+            assert!(
+                Scheme::WIDEST.parse_pocket_address(good).is_some(),
+                "{good}"
+            );
+        }
+        for bad in [
+            "A0", "A01", "C1025", "P9999", "A10000", "Q1", "a1", "G", "", "G1000x", "G-1",
+        ] {
+            assert!(!is_addr(bad), "{bad}");
+        }
+        assert!(Scheme::WIDEST.parse_pocket_address("C1025").is_none());
+        assert!(super::super::lane::in_vocabulary("+tv/1 drive G1000 go"));
+        assert!(super::super::lane::in_vocabulary("+tv/1 drive P1024 go"));
+        assert!(!super::super::lane::in_vocabulary("+tv/1 drive P1025 go"));
+
+        let head = tv::SOUNDED
+            .replace("{n}", "1")
+            .replace("{count}", "64")
+            .replace("{addr}", "G993")
+            .replace("{quietly}", "");
+        let metals: Vec<String> = (993..=1_024)
+            .map(|n| format!("G{n} {}", ["rich", "fair", "lean"][n % 3]))
+            .collect();
+        let block = [
+            head,
+            format!("  metals: {}", metals.join(", ")),
+            "  volatiles: K1000 fair, P1024 lean".to_owned(),
+        ];
+        let mut received = Vec::new();
+        for line in &block {
+            received.extend(wrap(line, 120));
+        }
+        let pockets = sounding_pockets(&joined(&received)).expect("the head");
+        assert_eq!(pockets.len(), 34, "{pockets:?}");
+        assert_eq!(pockets[7].addr, "G1000");
+        assert_eq!(pockets[32].addr, "K1000");
+        assert_eq!(pockets[33].addr, "P1024");
+        assert_eq!(pockets[33].family, Family::Volatiles);
+        let arrived = tv::ARRIVED
+            .replace("{n}", "1")
+            .replace("{addr}", "G1000")
+            .replace("{reading}", ", fair metals");
+        assert!(has_addr(&normalise(&arrived), ARRIVED, "G1000"));
+        assert!(!has_addr(&normalise(&arrived), ARRIVED, "G100"));
+    }
+
     /// **The captain's field sentences** (doc 32 G-4), each built from tacsim's own constant:
     /// a changed sentence breaks this test, not a field.
     #[test]
@@ -1528,6 +1625,24 @@ mod tests {
             .replace("{party}", "B")
             .replace("{word}", "Hostile");
         assert!(marked.starts_with(PARTY_MARKED), "{marked}");
+        // Doc 40 cut FR.0: `+field/void`'s answers and its offer.
+        use tacsim::field::standing;
+        assert_eq!(NOTHING_TO_VOID, standing::NOTHING_TO_VOID);
+        let voided = standing::VOIDED.replace("{n}", "2");
+        assert!(voided.starts_with(VOIDED), "{voided}");
+        let offered = standing::VOID_OFFERED.replace("{party}", "C");
+        assert!(void_offered(&normalise(&offered)), "{offered}");
+        assert!(void_offered(&joined(&wrap(&offered, 40))));
+        assert_eq!(void_answer(&normalise(&voided)), Some(true));
+        assert_eq!(
+            void_answer(&normalise(standing::NOTHING_TO_VOID)),
+            Some(false)
+        );
+        assert_eq!(
+            void_answer(&joined(&wrap(standing::NOTHING_TO_VOID, 30))),
+            Some(false)
+        );
+        assert_eq!(void_answer(&normalise(&offered)), None);
         let waits = tacsim::surface::site_record::FIELD_OPEN
             .replace("{ordinal}", "1")
             .replace("{site}", site);
