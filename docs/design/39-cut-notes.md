@@ -360,10 +360,12 @@ pack (the plant and fittings recipes are IN.5's and IN.7's content), the holds' 
   `plant.vehicle_mk1` and `plant.light_mk1`; Stickney Yards six of all thirteen part rows. `MAX_VENDOR_ROWS`
   16 → 24 (the Yards carry 18 stock rows). The strip chain's head is `lane_chain::strip_part_seeds`, called first
   by `strip_tender` (RS.1's v21 strip), so every chain rebuilding an older lane still hits its published digest.
-- **Readiness counts a part row seeded once its receipt exists** (its lots are never dissolved, so IN.2's rule
-  read it as never seeded): a port reads ready only when its stores are seeded. The clerk mints the part rows after
-  the bulk rows, asks and bids (`stock_step`: `seed_step(parts: false)` … `bid_step`, then
-  `seed_step(parts: true)`).
+- **The stores cost a boot no fire**: the clerk's mint of a vendor's bulk row lays every unminted part row of the
+  same vendor in the same bundle (`mush-inventory` `mint_origins_from`, a lineage source a row, so each lot is
+  rooted in its own stock issue; at most ~170 writes at the Yards against the bundle's 1,024), so a port boots in
+  exactly the fires it took before. Readiness counts a part row seeded once its receipt exists (its lots are never
+  dissolved, so IN.2's rule read it as never seeded). A part row added to a kept world (a pack apply) is minted on
+  its own, after the bulk rows, asks and bids (`seed_step(parts: true)`).
 - **For a lane that authors part asks** (none does yet): `part_ask_step` keeps one lot ask a part good standing
   at a time, and a vendor at `MAX_LISTINGS_PER_VENDOR` lists no more. A store lot an order takes from its own ask
   is withdrawn by the stock clerk, who listed it (`stock::claimed_step`; the market's release leg is the
@@ -388,7 +390,8 @@ money (`@econ/mint`).
   with Q-39-12's four, so the store reads four less one and the **fifth** replace refuses `NO_PART`.
 - **The stores are not listed on the market** (Q-39-11's "+market/list at the port already shows it"): the lane
   authors no part asks. With them, Occator's lots stood on the Exchange board, and their listings and mints were
-  background acts in every rig on the shipped lane (PR #399's first CI run: five cells red). The lot-ask path is
+  background acts in every rig on the shipped lane (PR #399's first CI run: five cells red; a second, which
+seeded the stores within readiness one row a fire, lengthened every boot and moved four clock-bound stories). The lot-ask path is
   kept for a cut that authors them, and that cut needs the market's reserve grace (below).
 - **One part from the stores an order** (`ONE_STORE_PART`): an order owes one act at a time (and with lot asks a
   command can submit only one authoritative act), so an order that would replace several parts from the stores is
@@ -409,10 +412,10 @@ not landed (both ran in one fire); the hold then landed under a listing that no 
 It applies to any exact-lot listing (IN.2's `@market/vendor stock … lot=`). The fix (`RESERVE_GRACE_SWEEPS`, a RAM
 `reserve_staged` map the reconcile skips for two sweeps) is its own PR, not this one.
 
-**Other tests moved.** Every rig's `stock()` budget is 80 fires (was 40; twenty copies), since a port reads ready
-only once its stores are seeded. `shard_10/commerce.rs`: the receipt counts 16 → 34 and Occator's readiness line
+**Other tests moved.** `shard_10/commerce.rs`: the receipt counts 16 → 34 and Occator's readiness line
 (7 of 7 rows); part receipts are skipped where a test checks pools. `shard_3/drones.rs` `sm12b_a_delivery…`'s
-licence-fire census leaves out a journey's `atlas` tick, whose fire moves with the boot's length.
+licence-fire census leaves out a journey's `atlas` tick (a guard for the boot's length).
+`shard_9/mill.rs`'s matter pin counts the clerk under `.mint_origins_from(`.
 `shard_1/bay_36a.rs` `b36a_2_a…` orders the cannon alone (one store part an order) and lets the order's hold land
 before its cancel. `shard_9/mill.rs`'s pack-apply story waits 64 fires after the apply (it adds the part rows). The
 lane pins: `LANE_VERSION` 22, `LANE_DIGEST`/`SHIPPED_LANE_DIGEST` `af3f150a…`, relay v13 `c55ce471…`
