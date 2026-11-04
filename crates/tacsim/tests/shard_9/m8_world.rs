@@ -2714,9 +2714,6 @@ async fn licensed_field_story(at: &FieldSite) {
     // 3. The field, over the field harness.
     let mut rig = into_field_rig(world);
     crate::driving_rig::to_cell_on(&mut rig, at.entry, tv, at.cell);
-    if !at.wide {
-        crate::driving_rig::warm(&mut rig);
-    }
     let raiders = if at.wide {
         let mut def = tacsim::field::raiders::raiders()
             .expect("the fixture raiders")
