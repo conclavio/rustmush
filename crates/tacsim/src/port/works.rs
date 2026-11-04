@@ -1517,8 +1517,9 @@ fn untraced_part(
 /// **The part commission** (doc 39 cut IN.7, §4.11; IN.2's act): the order's delivered part
 /// lot is consumed by its `workorder.output` lineage and laid back in the escrow as one lot a
 /// unit at grade 9, each with its `Manufactured` row, in one bundle under the facility's bay
-/// ledger. The bay's arm submits it on this fire's settle and replays it after a restart, so it
-/// lands once; until it lands the escrow holds no fittable part and `/collect` is settling.
+/// ledger. The bay's arm (which runs before this one) submits it on the next fire and replays
+/// it after a restart, so it lands once; until it lands the escrow holds no fittable part and
+/// `/collect` is settling.
 fn commission_parts(
     ctx: &mut Ctx<'_>,
     c: &WorksContract,
