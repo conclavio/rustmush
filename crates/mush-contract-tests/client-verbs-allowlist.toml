@@ -1,0 +1,64 @@
+# Doc 43 cut TS.7: the command-shaped literals of the two clients that are
+# not a registered verb, each with its reason. tests/engine_contracts/client_verbs.rs
+# fails on a row no client line uses.
+
+[[allow]]
+head = "DOCK"
+reason = "KNOWN DEAD END (doc 35b, doc 43 §5.2): both clients' docking keys fall back to `DOCK TRANS UP` and its kin when no local docking session is open (tui/pixel.rs, web picture.ts and PictureView.svelte), and no verb parses `DOCK`; docking is `+helm/dock` (its tape, `+helm/dock tape`, is what the docking session sends). Owed: route the fallback keys to `+helm/dock` or drop them, then remove this row."
+
+[[allow]]
+head = "+roll"
+switch = "last"
+reason = "KNOWN DEAD END (found by TS.7): both clients' dice screens bind a key to `+roll/last`, and `+roll` declares no switches, so dispatch answers `Unknown switch \"/last\" for +roll.` Owed: give `+roll` a `/last` switch or drop the key, then remove this row."
+
+[[allow]]
+head = "+act"
+reason = "answered by the gateway's bridge (mush-gateway/src/bridge_common.rs, the legal-action offer), before the server's registry"
+
+[[allow]]
+head = "+actions"
+reason = "answered by the gateway's bridge (mush-gateway/src/bridge_common.rs), before the server's registry"
+
+[[allow]]
+head = "+crew"
+reason = "a content reference the content studio lists (`command_refs`, tacsim content_studio.rs), not a line the client sends"
+
+[[allow]]
+head = "ARMOUR"
+reason = "a cockpit label in a format string (\"ARMOUR {}\"), not a command"
+
+[[allow]]
+head = "HEAT"
+reason = "a cockpit label in a format string, not a command"
+
+[[allow]]
+head = "RULES"
+reason = "a cockpit text heading, not a command"
+
+[[allow]]
+head = "PIXEL"
+reason = "a picture label in a format string, not a command"
+
+[[allow]]
+head = "SKY"
+reason = "a picture label in a format string, not a command"
+
+[[allow]]
+head = "REPLAY"
+reason = "a picture label in a format string, not a command"
+
+[[allow]]
+head = "OOC"
+reason = "a channel label in the map editor, not a command (the OOC channel's verb is `ooc`, lower case)"
+
+[[allow]]
+head = "JPL"
+reason = "an ephemeris source's name in the corridor editor, not a command"
+
+[[allow]]
+head = "LLM"
+reason = "a studio label (\"LLM ...\"), not a command"
+
+[[allow]]
+head = "JSON"
+reason = "a content studio label, not a command"

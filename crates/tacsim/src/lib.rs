@@ -61,7 +61,7 @@
 //! purpose and each has its own test.
 
 // WS01-S12: the panic-shaped restriction lints this crate measures zero of,
-// held at zero. `crates/mush-contract-tests/tests/restriction_lints.rs` carries
+// held at zero. `crates/mush-contract-tests/tests/ci_policy/restriction_lints.rs` carries
 // the measurement this set was cut from — including the counts of the lints
 // NOT named here — and fails if this attribute loses one of them.
 #![deny(
@@ -87,7 +87,7 @@ mod test_checks;
 /// that drives them — `Arena::step(wall_now_ms, controls, intents)`, a pure
 /// function of the state and those inputs. Cut T's arena task is the thin wrapper
 /// that owns one; a contract gate
-/// (`crates/mush-contract-tests/tests/arena_library.rs`) asserts that nothing
+/// (`crates/mush-contract-tests/tests/engine_contracts/arena_library.rs`) asserts that nothing
 /// under `arena/` can reach persistence, a runtime, an output sink or the world.
 pub mod arena;
 /// 16b cut T.2: **the world's half of the arena seam** (doc 16 §3.1 "The seam is

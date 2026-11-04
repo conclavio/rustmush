@@ -521,6 +521,426 @@ async fn salvage_smoke(miner: Miner) {
     drop(rig);
 }
 
+/// **Doc 39 cut IN.5: the first production story, the bot over SSH at 256** (Ahuna Flank). The
+/// mining lane plays its loop — kit-up, the hop, the mine, home, the hold sold into the Exchange's
+/// ore bid — and then the bot types the production run's half, every line in its closed
+/// vocabulary and every answer read by its own reader ([`mush_bot::mine::lane::works`]): at Ceres
+/// it buys concentrate at the Exchange's ask and a tonne of carbon ore at Freeport Works', bunkers and sails to
+/// Stickney Yards by Luna and Deimos (the corridor's outbound leg is interdicted at Kirkwood by the
+/// SF track's picket, whose words the bot does not have), sells the concentrate into Kasei's bid, watches Kasei's alloy ask restock by the
+/// refine's tonnes, buys five tonnes of alloys there, books `fittings` at the works, delivers the
+/// alloys and the carbon from its hold, collects five tonnes of fittings once the arm has pooled
+/// them, sails home and sells them into the Co-op's bid at 600. God lifts the world rate after
+/// the enrolment (the canary's lift) and to 3,600 for the production half (`ic_slice_loop`'s
+/// rate: the way out is some 27 IC days, the way home 11.6). `#[ignore]`d, run by name (`in5_`),
+/// the dispatch / by-hand tier (doc 43 TS.2): about 30 minutes a site on conclav.dev.
+///
+/// `cargo test -j 8 -p mush-bot --test mining_cohort -- --ignored in5_ --nocapture --test-threads 1`
+#[tokio::test(flavor = "multi_thread", worker_threads = 4)]
+#[ignore = "doc 39 cut IN.5's production story at 256: a mining loop, two passages and the works; run by name"]
+async fn in5_the_bot_mines_refines_and_sells_fittings_from_ahuna() {
+    tokio::time::timeout(
+        Duration::from_secs(60 * 60),
+        production_story(Miner {
+            account: "in5ahuna",
+            character: "Anvil",
+            site: Site::Ahuna,
+        }),
+    )
+    .await
+    .expect("the Ahuna production story finishes inside an hour");
+}
+
+/// The same story with the ground half at Urvara Reach (512). `#[ignore]`d, run by name (`in5_`).
+#[tokio::test(flavor = "multi_thread", worker_threads = 4)]
+#[ignore = "doc 39 cut IN.5's production story at 512: a mining loop, two passages and the works; run by name"]
+async fn in5_the_bot_mines_refines_and_sells_fittings_from_urvara() {
+    tokio::time::timeout(
+        Duration::from_secs(60 * 60),
+        production_story(Miner {
+            account: "in5urvara",
+            character: "Bellows",
+            site: Site::Urvara,
+        }),
+    )
+    .await
+    .expect("the Urvara production story finishes inside an hour");
+}
+
+/// The production half's world rate: an IC hour a real second.
+const PRODUCTION_RATE: u32 = 3_600;
+
+/// One line of the production run, held to the bot's vocabulary and answered by one of
+/// `needles` (sent again two seconds later on a `retry` needle or a transient, at most sixty
+/// times); the needle's index and the text since the send. The needles are matched on the text
+/// with its whitespace normalised ([`lines::normalise`]): the game wraps a long sentence at the
+/// session's width, anywhere between two words.
+async fn typed(
+    client: &mut arena::Client,
+    line: &str,
+    needles: &[&str],
+    retry: &[&str],
+) -> (usize, String) {
+    use mush_bot::mine::lane::works;
+    assert!(
+        in_vocabulary(line) || works::in_vocabulary(line),
+        "`{line}` is not in the bot's vocabulary"
+    );
+    let found = |text: &str, wanted: &[&str]| {
+        let text = lines::normalise(text);
+        wanted
+            .iter()
+            .position(|needle| text.contains(&lines::normalise(needle)))
+    };
+    for _ in 0..60 {
+        let from = client.seen.len();
+        if let Err(closed) = client.try_send(line).await {
+            panic!("`{line}`: {closed}");
+        }
+        let deadline = std::time::Instant::now() + Duration::from_secs(20);
+        let answer = loop {
+            client.pump(Duration::from_millis(200)).await;
+            let text = client.seen.get(from..).unwrap_or("").to_owned();
+            if let Some(i) = found(&text, needles) {
+                break Some((i, text));
+            }
+            if found(&text, retry).is_some() || found(&text, &arena::TRANSIENTS).is_some() {
+                break None;
+            }
+            assert!(
+                std::time::Instant::now() < deadline,
+                "`{line}` answered none of {needles:?} or {retry:?}:\n{text}"
+            );
+        };
+        match answer {
+            Some(answer) => return answer,
+            None => tokio::time::sleep(Duration::from_secs(2)).await,
+        }
+    }
+    panic!("`{line}` kept answering {retry:?}");
+}
+
+/// **The story's float** (a staff seed, outside the bot's vocabulary): God opens a system
+/// source, the pilot reads its own account's id off `@account/list`, and God mints it 50,000.00cr.
+async fn float(god: &mut arena::Client, client: &mut arena::Client) {
+    let id = |text: &str, after: &str| {
+        text.split(after)
+            .nth(1)
+            .and_then(|rest| {
+                let digits: String = rest.chars().take_while(char::is_ascii_digit).collect();
+                digits.parse::<u64>().ok()
+            })
+            .unwrap_or_else(|| panic!("no account id after {after:?}:\n{text}"))
+    };
+    let opened = god
+        .say(
+            "@account/system in5_float=tacsim.credit",
+            "Opened account #",
+        )
+        .await;
+    let source = id(&opened, "Opened account #");
+    let listed = client.say("@account/list", " tacsim.credit = ").await;
+    let row = listed
+        .lines()
+        .find(|line| line.trim_start().starts_with('#') && line.contains(" tacsim.credit = "))
+        .unwrap_or_else(|| panic!("no tacsim.credit account in the pilot's list:\n{listed}"));
+    let pilot = id(row, "#");
+    god.say(&format!("@econ/mint {source}={pilot} 5000000"), "Minted")
+        .await;
+}
+
+/// `+market/list`'s rows, read by the bot's own parser.
+async fn board_rows(client: &mut arena::Client) -> Vec<lines::Listing> {
+    let from = client.seen.len();
+    typed(client, "+market/list", &[" × "], &[]).await;
+    client.idle(Duration::from_secs(2)).await;
+    let text = client.seen.get(from..).unwrap_or("").to_owned();
+    lines::listings(&text.lines().map(str::to_owned).collect::<Vec<_>>())
+}
+
+/// Quote and accept `qty` of listing `n`.
+async fn buy(client: &mut arena::Client, n: u64, qty: u64) {
+    let (_, text) = typed(
+        client,
+        &format!("+market/quote {n}={qty}"),
+        &[lines::QUOTED],
+        &[lines::QUOTE_STALE],
+    )
+    .await;
+    let quote = lines::quote_number(&text).expect("the quote's number");
+    typed(
+        client,
+        &format!("+market/accept {quote}"),
+        &[lines::AGREED],
+        &[],
+    )
+    .await;
+}
+
+/// Sell the whole of a good into bid `n`; the receipt.
+async fn sell_all(client: &mut arena::Client, n: u64) -> lines::SaleRead {
+    let (_, text) = typed(
+        client,
+        &format!("+market/sell {n}=all"),
+        &[" when the goods are in"],
+        &[lines::GOODS_WAIT, lines::GOODS_LEAVING],
+    )
+    .await;
+    lines::sale_receipt(&text).expect("the sale's receipt")
+}
+
+/// **Bunker for the passage to `port`** (the mining lane's rule: the plan's burn and crew-days
+/// with a margin), buying any shortfall at the port's reaction mass and provisions asks.
+async fn bunker(client: &mut arena::Client, port: &str) {
+    for _ in 0..4 {
+        let from = client.seen.len();
+        typed(client, &format!("+ship/plan {port}"), &["Stores "], &[]).await;
+        client.idle(Duration::from_secs(1)).await;
+        let text = client.seen.get(from..).unwrap_or("").to_owned();
+        let raw: Vec<String> = text.lines().map(str::to_owned).collect();
+        let plan = lines::plan_figures(&raw).expect("the plan's figures");
+        let (want_tank, want_locker) = (plan.burn_t + 10, plan.crew_days + 5);
+        if plan.tank_t >= want_tank && plan.locker >= want_locker {
+            return;
+        }
+        let rows = board_rows(client).await;
+        if plan.tank_t < want_tank {
+            let fuel = lines::ask_for(&rows, "reaction mass").expect("a reaction mass ask");
+            buy(client, fuel, want_tank - plan.tank_t).await;
+        }
+        if plan.locker < want_locker {
+            let food = lines::ask_for(&rows, "provisions").expect("a provisions ask");
+            buy(client, food, want_locker - plan.locker).await;
+        }
+        client.idle(Duration::from_secs(5)).await;
+    }
+    panic!("the bunkers for {port} never covered the plan");
+}
+
+/// Board at the gallery, file the passage to `port` once every bought good is aboard and every
+/// sold one has left (the hand-overs settle on the market's sweep), and wait for the hull to dock
+/// there; then ashore.
+async fn sail(client: &mut arena::Client, hull: &str, port: &str) {
+    typed(client, "+ship/board", &[lines::BOARDED], &[]).await;
+    let from = client.seen.len();
+    typed(
+        client,
+        &format!("+ship/undock {port}"),
+        &[lines::CLEARANCE],
+        &[lines::GOODS_WAIT, lines::GOODS_LEAVING],
+    )
+    .await;
+    if !client
+        .watch(from, &lines::docks(hull), Duration::from_secs(20 * 60))
+        .await
+    {
+        panic!(
+            "{hull} did not dock at {port} inside 20 minutes; the client's last 4 KiB:\n{}",
+            mush_bot::tail(&client.seen, 4 * 1024)
+        );
+    }
+    typed(client, "+ship/leave", &[lines::ASHORE], &[]).await;
+}
+
+#[allow(clippy::too_many_lines)] // the story's beats, in order
+async fn production_story(miner: Miner) {
+    use mush_bot::mine::lane::works;
+    let started = std::time::Instant::now();
+    let rig = mine::boot(&[miner]).await;
+    let mut god = arena::Client::login(&rig, arena::GOD_ACCOUNT, arena::GOD_PASSWORD, "God").await;
+    let mut client =
+        arena::Client::login(&rig, miner.account, arena::PILOT_PASSWORD, miner.character).await;
+    let hull = hull_name(&format!("{}+{}", miner.account, miner.character)).expect("the hull name");
+    let site = miner.site.word();
+    let stamp = |what: &str| println!("in5 {site}: +{} s {what}", started.elapsed().as_secs());
+
+    // ---- The mining loop: the lane's own, to the hold sold at the Exchange ----
+    let mut lane = Lane::new(
+        miner.site,
+        Settings {
+            hull: hull.clone(),
+            epoch_unix_ms: mine::unix_now_ms(),
+        },
+        miner.character.to_owned(),
+    );
+    let lift = mine::rate_lift(mine::LIFTED_RATE);
+    let drive_started = std::time::Instant::now();
+    let bound = Duration::from_secs(40 * 60);
+    let enrolled_now = |lane: &Lane| lane.step_line() == Some("+coop/refit prospector");
+    mine::drive_lane_since(
+        &mut client,
+        &mut lane,
+        drive_started,
+        |lane| enrolled_now(lane) || lane.reached(Milestone::Launched),
+        bound,
+    )
+    .await;
+    if let (Some(rate), true) = (lift, enrolled_now(&lane)) {
+        mine::lift_rate(&mut god, rate).await;
+    }
+    let (wall, _) = mine::drive_lane_since(
+        &mut client,
+        &mut lane,
+        drive_started,
+        |lane| lane.reached(Milestone::Sold),
+        bound,
+    )
+    .await;
+    if !lane.reached(Milestone::Sold) {
+        let report = lane.report();
+        canary_failed(
+            &client.seen,
+            &report,
+            lane.beat().as_str(),
+            &format!("the hold was not sold in {wall} s"),
+        );
+    }
+    stamp("the mining loop sold its hold at the Exchange");
+
+    // ---- The production half, an IC hour a real second ----
+    if lift != Some(PRODUCTION_RATE) {
+        mine::lift_rate(&mut god, PRODUCTION_RATE).await;
+    }
+    // The seed (doc 43 rule 2.3 #4), as the in-process story's `@econ/mint`: the mining loop's
+    // earnings do not bunker the way out by Luna and Deimos and the way home, so God mints the
+    // pilot a working float from a system source of the story's own.
+    float(&mut god, &mut client).await;
+    stamp("God minted the pilot a 50,000.00cr float");
+    // Ceres: the concentrate at the Exchange's ask, the carbon at Freeport Works', the bunkers,
+    // the passage.
+    let rows = board_rows(&mut client).await;
+    let concentrate = works::ask_row(&rows, "metal concentrate").expect("the concentrate ask");
+    let carbon = works::ask_row(&rows, "carbon ore").expect("Freeport Works' carbon ask");
+    let (concentrate, carbon) = (concentrate.number, carbon.number);
+    buy(&mut client, concentrate, 20).await;
+    buy(&mut client, carbon, 1).await;
+    bunker(&mut client, "luna").await;
+    for (word, room) in [
+        ("concourse", lines::ROOM_CONCOURSE),
+        ("arrivals", lines::ROOM_ARRIVALS),
+        ("lobby", lines::ROOM_LOBBY),
+        ("gallery", lines::ROOM_GALLERY),
+    ] {
+        typed(&mut client, word, &[room], &[]).await;
+    }
+    stamp(
+        "bought 20 t of concentrate and 1 t of carbon ore; sailing for Stickney by Luna and Deimos",
+    );
+    // The way out by Luna and Deimos: the Ceres–Stickney corridor's outbound leg is interdicted at
+    // Kirkwood by the SF track's customs picket, whose words (heave-to, `+helm/submit`, `+tac/pdc
+    // auto`, a jink) the bot does not have (doc 39 cut IN.5's note).
+    sail(&mut client, &hull, "luna").await;
+    stamp("docked at Aitken Highport");
+    bunker(&mut client, "deimos").await;
+    sail(&mut client, &hull, "deimos").await;
+    stamp("docked at Voltaire Anchorage");
+    bunker(&mut client, "stickney").await;
+    sail(&mut client, &hull, "stickney").await;
+    stamp("docked at Stickney Yards");
+
+    // Stickney: the concentrate into Kasei's bid, and the refine's restock of its alloy ask.
+    let rows = board_rows(&mut client).await;
+    let alloys_before = works::ask_row(&rows, "structural alloy").and_then(works::row_quantity);
+    let kasei = works::bid_row(&rows, "metal concentrate").expect("Kasei's concentrate bid");
+    let sale = sell_all(&mut client, kasei.number).await;
+    assert_eq!(sale.qty_t, 20, "{sale:?}");
+    stamp(&format!("sold 20 t of concentrate to Kasei: {}", sale.net));
+    let mut alloys = None;
+    for _ in 0..60 {
+        let rows = board_rows(&mut client).await;
+        let ask = works::ask_row(&rows, "structural alloy");
+        if let (Some(now), Some(before)) = (ask.and_then(works::row_quantity), alloys_before)
+            && now >= before + 16
+        {
+            alloys = ask.map(|row| row.number);
+            stamp(&format!("Kasei's alloy ask restocked {before} -> {now} t"));
+            break;
+        }
+        client.idle(Duration::from_secs(5)).await;
+    }
+    let alloys = alloys.expect("Kasei's alloy ask restocks by the refine's sixteen tonnes");
+
+    // The works: five tonnes of alloys bought, the fittings booked, the bill delivered.
+    buy(&mut client, alloys, 5).await;
+    let (_, quote) = typed(&mut client, "+works/quote fittings", &[works::FEE], &[]).await;
+    let fee = works::quote_fee(&quote).expect("the quote's fee");
+    stamp(&format!("+works/quote fittings: fee {fee}"));
+    let (_, booking) = typed(&mut client, "+works/order fittings", &[works::BOOKED], &[]).await;
+    let order = works::booked(&booking).expect("the order's number");
+    let from = client.seen.len();
+    for (good, units) in [("structural_alloys", 5), ("carbon_ore", 1)] {
+        let (_, text) = typed(
+            &mut client,
+            &format!("+works/deliver {order}={good} {units}"),
+            &[works::INTO_ESCROW],
+            &["is still settling.", "That hold carries "],
+        )
+        .await;
+        assert!(works::supplied(&text, order), "{text}");
+    }
+    let delivered = format!("Order {order}{}", works::DELIVERED);
+    assert!(
+        client
+            .watch(from, &delivered, Duration::from_secs(5 * 60))
+            .await,
+        "order {order} is delivered at the works"
+    );
+    let (_, text) = typed(
+        &mut client,
+        &format!("+works/collect {order}"),
+        &[works::INTO_HOLD],
+        &[works::SETTLING],
+    )
+    .await;
+    assert!(works::collected(&text, order), "{text}");
+    stamp(&format!("order {order}: five tonnes of fittings collected"));
+
+    // Home: the fittings into the Co-op's bid at 600.
+    bunker(&mut client, "ceres").await;
+    sail(&mut client, &hull, "ceres").await;
+    stamp("docked at Ceres");
+    let rows = board_rows(&mut client).await;
+    let coop = works::bid_row(&rows, "yard fittings").expect("the Co-op's fittings bid");
+    assert!(coop.text.contains("600.00cr"), "{}", coop.text);
+    let sale = sell_all(&mut client, coop.number).await;
+    assert_eq!(sale.qty_t, 5, "{sale:?}");
+    assert_eq!(sale.gross, "3000.00cr", "{sale:?}");
+    stamp(&format!(
+        "sold five tonnes of fittings to the Co-op: gross {}, net {}",
+        sale.gross, sale.net
+    ));
+
+    // The matter pin and the drift check: no readiness line is pending, missing or flagged but
+    // two the story's own rate brings: the rate line itself (play runs at 24), and Occator's
+    // house rig stopped under a claim after the month of IC time the lifted rate runs.
+    let (index, report) = god
+        .answer("@tacsim/port status", &[mine::READY, mine::NOT_READY])
+        .await;
+    assert!(
+        index.is_some(),
+        "the readiness report's last line:\n{report}"
+    );
+    let text = lines::normalise(&report);
+    let flagged = ["[flagged]", "[pending]", "[missing]"]
+        .iter()
+        .flat_map(|tag| text.match_indices(tag).map(|(at, _)| at))
+        .map(|at| {
+            let entry = &text[..at];
+            entry[entry.rfind("] ").map_or(0, |end| end + 2)..].trim()
+        })
+        .filter(|entry| {
+            !entry.starts_with("world rate: ")
+                && !(entry.contains("occator_port dispatch occator: ")
+                    && entry.contains(" stopped: under claim."))
+        })
+        .map(str::to_owned)
+        .collect::<Vec<_>>();
+    assert!(flagged.is_empty(), "{flagged:#?}\n{report}");
+    client.close().await;
+    god.close().await;
+    drop(rig);
+}
+
 /// **The canary failed**: the client's last 4 KiB and the lane's report
 /// printed, then a panic naming the beat. An engine-under-feature finding,
 /// reported and never worked around (revision 2's F5).

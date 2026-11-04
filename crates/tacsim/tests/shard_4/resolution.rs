@@ -3830,7 +3830,7 @@ mod money {
     //! one: a match is fought on the production composition root, from `SIM TEAM`
     //! through `Running` to the check-in, and every account's posted balance and
     //! every instrument is compared before and after. The arena cannot reach the
-    //! store at all (`crates/mush-contract-tests/tests/arena_library.rs` is the
+    //! store at all (`crates/mush-contract-tests/tests/engine_contracts/arena_library.rs` is the
     //! gate), so what this adds is the **world** half: the check-in applies cells
     //! and poses and writes a result, and none of that is a transaction.
 

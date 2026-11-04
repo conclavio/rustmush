@@ -61,7 +61,7 @@
 //! # Held to the arena library's standard
 //!
 //! The fold is under `match_/` and not `arena/`, so
-//! `crates/mush-contract-tests/tests/arena_library.rs` does not scan it, but it
+//! `crates/mush-contract-tests/tests/engine_contracts/arena_library.rs` does not scan it, but it
 //! keeps the same rules: no I/O, no world, no clock, no float, and every map it
 //! iterates to produce a line is a `BTreeMap` (17b cut M5.6's spans are handed
 //! their moments by the world; the fold reads no clock of its own). The

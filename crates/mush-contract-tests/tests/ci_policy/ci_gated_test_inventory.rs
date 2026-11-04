@@ -48,12 +48,18 @@
 //! run, and fail, under the ordinary `cargo test --workspace` job. The suffix
 //! is not the contract — skippability is.
 //!
+//! Since doc 43 cut TS.2 naming is not enough: every gated test also has a
+//! row in `test-tiers.toml` giving its tier (`pr`, `nightly`, `weekly`,
+//! `dispatch`, `by-hand`) and configuration, and the last tests of this file
+//! hold each row to the workflows — where a comment is not a run, and an
+//! ignored test runs only under `--ignored` / `--run-ignored`.
+//!
 //! Macro-generated tests (`mush-store`'s `redis_gated!` suite) are invisible to
 //! a source scan by construction; their target is named by `redis-faults`
 //! directly and the second test below pins the census so the scanner cannot
 //! quietly stop finding anything.
 
-use std::collections::BTreeSet;
+use std::collections::{BTreeMap, BTreeSet};
 use std::fs;
 use std::path::Path;
 
@@ -76,6 +82,9 @@ struct DiscoveredTest {
     reads_live_backend: bool,
     /// Explicit opt-in flags in an early-returning test body.
     opt_in_flags: BTreeSet<String>,
+    /// Every variable an early-returning test body reads by literal name: the
+    /// candidates for an opt-in `test-tiers.toml` declares (doc 43 TS.18).
+    early_return_reads: BTreeSet<String>,
 }
 
 impl DiscoveredTest {
@@ -115,6 +124,14 @@ impl DiscoveredTest {
 /// Opt-in spelling is part of this source gate's contract. Knobs such as a
 /// duration or report path do not make a test optional.
 fn opt_in_flags(body: &str) -> BTreeSet<String> {
+    early_return_reads(body)
+        .into_iter()
+        .filter(|name| name.starts_with("RUN_") || name.ends_with("_RUN"))
+        .collect()
+}
+
+/// The variables an early-returning body reads by literal name.
+fn early_return_reads(body: &str) -> BTreeSet<String> {
     if !body
         .lines()
         .any(|line| line.trim_start().starts_with("return"))
@@ -125,7 +142,6 @@ fn opt_in_flags(body: &str) -> BTreeSet<String> {
     body.split(&needle)
         .skip(1)
         .filter_map(|tail| tail.split_once('"').map(|(name, _)| name))
-        .filter(|name| name.starts_with("RUN_") || name.ends_with("_RUN"))
         .map(str::to_owned)
         .collect()
 }
@@ -231,6 +247,7 @@ fn scan_file(path: &Path, relative: &str, out: &mut Vec<DiscoveredTest>) {
             ignored,
             reads_live_backend: body.contains(&needle),
             opt_in_flags: opt_in_flags(&body),
+            early_return_reads: early_return_reads(&body),
         });
         index = end + 1;
     }
@@ -683,7 +700,7 @@ fn the_gated_suffix_census_is_stable_and_every_live_backend_proof_names_its_back
 // three of its four censused lanes cited a job that cannot see the crate that
 // owns the lane, or a test cell that does not exist:
 //
-//   * **L4** cited `cargo test -p mush-contract-tests --test schedule_source`
+//   * **L4** cited `cargo test -p mush-contract-tests --test ci_policy schedule_source::`
 //     for `industry.workorder`, and this package declares no `mush-industry`
 //     dependency at all — its three toy-fixture tests name neither "production"
 //     nor "workorder", so L4's go criterion was dischargeable GREEN while
@@ -762,7 +779,7 @@ fn vf_g5_every_e7k_lane_job_can_see_the_crate_that_owns_the_lane() {
         GateLane {
             lane: "L5 the ledger append",
             owner_crate: "mush-economy",
-            invocation: "-p mush-contract-tests --test gate5_fault_matrix",
+            invocation: "-p mush-contract-tests --test ci_policy gate5_fault_matrix::",
             invoked_package: "mush-contract-tests",
         },
         GateLane {
@@ -885,7 +902,7 @@ fn vf_g6_every_proof_10b_section_14_names_exists_in_the_file_it_is_attributed_to
         ),
         // L5/L6's fault proof, named exactly as it exists.
         (
-            "mush-contract-tests/tests/gate5_fault_matrix.rs",
+            "mush-contract-tests/tests/ci_policy/gate5_fault_matrix.rs",
             "gate1_tactical_and_delayed_lifecycle_bundles_survive_every_in_process_cut",
         ),
     ];
@@ -909,9 +926,10 @@ fn vf_g6_every_proof_10b_section_14_names_exists_in_the_file_it_is_attributed_to
     // bundle and asserts no such criterion. §14 now names it as a cell the
     // MIGRATION commit must add, and this pins that it has not been added yet —
     // so the day it is, §14's wording moves with it.
-    let matrix =
-        fs::read_to_string(root.join("crates/mush-contract-tests/tests/gate5_fault_matrix.rs"))
-            .expect("gate5_fault_matrix.rs");
+    let matrix = fs::read_to_string(
+        root.join("crates/mush-contract-tests/tests/ci_policy/gate5_fault_matrix.rs"),
+    )
+    .expect("gate5_fault_matrix.rs");
     assert!(
         !matrix.to_lowercase().contains("fn partial_materializ"),
         "a partial-materialization cell now exists: 10b §14.2's L5/L6 citation \
@@ -928,9 +946,10 @@ fn vf_g6_every_proof_10b_section_14_names_exists_in_the_file_it_is_attributed_to
     // counts and names no `mush-sim` or `mush-tactics` symbol, so it proves
     // generic bundle throughput and not the lane. §14 now cites
     // `-p mush-sim --test e7c8` for the measurement instead.
-    let harness =
-        fs::read_to_string(root.join("crates/mush-contract-tests/tests/scale_harness.rs"))
-            .expect("scale_harness.rs");
+    let harness = fs::read_to_string(
+        root.join("crates/mush-contract-tests/tests/ci_policy/scale_harness.rs"),
+    )
+    .expect("scale_harness.rs");
     assert!(
         harness.contains("fn scale_tick_shaped_bundle_measures_caps("),
         "the tick-shaped cell still exists, and still measures a synthetic shape"
@@ -943,5 +962,695 @@ fn vf_g6_every_proof_10b_section_14_names_exists_in_the_file_it_is_attributed_to
     assert!(
         e7c8.contains("measure_tick_bundle") && e7c8.contains("check_domain_capacity"),
         "…and the measurement §14's L3 go criterion needs really does run here"
+    );
+}
+
+// ---- Doc 43 cut TS.2: every gated test declares its tier ----
+//
+// The census above asks only that ci.yml *names* a gated test somewhere. Two
+// holes followed (doc 43 §5.9, §6 item 6): a comment counted as a name, so a
+// test "run by hand" was green with no recorded run; and nothing said when a
+// named job runs — on every pull request, nightly, or only when somebody
+// presses the button. `test-tiers.toml` is the declaration: one row per gated
+// test (or per file, `<key prefix>::*`) and configuration, with its tier, and
+// these tests hold the rows to the workflows.
+
+/// The manifest, beside this package's other registries.
+const TIERS_MANIFEST: &str = "test-tiers.toml";
+
+/// The tiers, most frequent first (doc 43 TS.2).
+const TIERS: [&str; 5] = ["pr", "nightly", "weekly", "dispatch", "by-hand"];
+
+/// The Sunday cron (D-43-11). A job whose `if:` admits this schedule is weekly.
+const WEEKLY_CRON: &str = "17 4 * * 0";
+
+#[derive(Debug, serde::Deserialize)]
+struct TierManifest {
+    #[serde(rename = "test")]
+    rows: Vec<TierRow>,
+    /// Doc 43 cut TS.18: the variables tacsim's and the bot's tests read that
+    /// are not a configuration of their own (or, `opt-in`, make a test gated).
+    #[serde(rename = "knob", default)]
+    knobs: Vec<Knob>,
+}
+
+/// The kinds of [`Knob`]: why a variable a test reads needs no row of its own.
+const KNOB_KINDS: [(&str, &str); 7] = [
+    (
+        "opt-in",
+        "an early return unless set: the test is gated and has rows",
+    ),
+    (
+        "size",
+        "a sizing knob: the default is what the rows cover, another value a recorded measurement",
+    ),
+    (
+        "measurement",
+        "changes what is measured, never what is asserted",
+    ),
+    ("report", "where a report or preview is written"),
+    ("bless", "rewrites a committed fixture or baseline"),
+    (
+        "secret",
+        "a credential, or a name a test keeps unset on purpose",
+    ),
+    (
+        "plumbing",
+        "set by a parent process or script for its child",
+    ),
+];
+
+#[derive(Debug, serde::Deserialize)]
+#[serde(deny_unknown_fields)]
+struct Knob {
+    name: String,
+    kind: String,
+    note: String,
+}
+
+#[derive(Debug, serde::Deserialize)]
+#[serde(deny_unknown_fields)]
+struct TierRow {
+    /// `<pkg>/tests::<module or target>::<fn>` for an integration test (the
+    /// group directory left out, so a reshard rewrites no row), `<path under
+    /// crates/>::<fn>` otherwise; `<prefix>::*` for every gated test under it.
+    id: String,
+    tier: String,
+    /// Space-separated `NAME` or `NAME=VALUE`: the environment this row's run
+    /// sets. Empty is the default configuration.
+    #[serde(default)]
+    config: String,
+    /// The ci.yml job that runs it, or `gate.yml:<kind>` for the VPS gate.
+    #[serde(default)]
+    job: String,
+    /// A script the job runs that runs the test (the test is named in the
+    /// script, and in the job at most in a comment).
+    #[serde(default)]
+    via: String,
+    /// The `by-hand:` tag: the revision of the last recorded run, or `never`
+    /// (with a `note` saying why). Required on the by-hand tier.
+    #[serde(default)]
+    by_hand: String,
+    /// An `#[ignore]`d helper that another test of its file spawns as a child
+    /// process (`--ignored --exact <name>`): the parent, which is not gated,
+    /// is what runs it, on the parent's tier.
+    #[serde(default)]
+    child_of: String,
+    #[serde(default)]
+    note: String,
+}
+
+impl TierRow {
+    /// A `::*` row covers the gated tests under its prefix that need no
+    /// opt-in flag; a test that does is named by a row of its own, whose
+    /// configuration names the flag (a run without it is a skip). An exact
+    /// row may also name a test that is not gated: a variant, which only a
+    /// configuration other than the default makes worth a row (TS.18).
+    fn matches(&self, key: &str, test: &DiscoveredTest) -> bool {
+        match self.id.strip_suffix("::*") {
+            Some(prefix) => {
+                test.backend_gated()
+                    && test.opt_in_flags.is_empty()
+                    && key
+                        .strip_prefix(prefix)
+                        .is_some_and(|rest| rest.starts_with("::"))
+            }
+            None => self.id == key,
+        }
+    }
+}
+
+impl DiscoveredTest {
+    /// The manifest's key (see [`TierRow::id`]).
+    fn tier_key(&self, root: &Path) -> String {
+        match self.integration_target(root) {
+            Some((package, _, Some(module))) => format!("{package}/tests::{module}::{}", self.name),
+            Some((package, target, None)) => format!("{package}/tests::{target}::{}", self.name),
+            None => format!("{}::{}", self.relative, self.name),
+        }
+    }
+
+    /// Whether this one line of a workflow names the test or invokes its
+    /// target (whole) or its group binary's module. A line that only names the
+    /// test (a matrix `test:` entry) is not a command; the caller decides
+    /// whether its job's command runs ignored tests.
+    fn covered_by(&self, root: &Path, line: &str) -> bool {
+        if line.contains(&self.name) {
+            return true;
+        }
+        match self.integration_target(root) {
+            Some((package, target, None)) => invokes_target(line, package, target, true),
+            Some((package, target, Some(module))) => {
+                invokes_module(line, package, target, &format!("{module}::{}", self.name))
+            }
+            None => false,
+        }
+    }
+}
+
+/// Whether a command line runs `#[ignore]`d tests at all: cargo's
+/// `--ignored` / `--include-ignored`, nextest's `--run-ignored`.
+fn runs_ignored(line: &str) -> bool {
+    line.split_whitespace().any(|word| {
+        matches!(word, "--ignored" | "--include-ignored") || word.starts_with("--run-ignored")
+    })
+}
+
+/// One line of a workflow, with the job it sits in.
+struct WorkflowLine<'a> {
+    /// `None` before `jobs:` and for a comment at the jobs' own indentation
+    /// (a note between jobs belongs to none of them).
+    job: Option<&'a str>,
+    comment: bool,
+    text: &'a str,
+}
+
+fn workflow_lines(workflow: &str) -> Vec<WorkflowLine<'_>> {
+    let mut in_jobs = false;
+    let mut job: Option<&str> = None;
+    workflow
+        .lines()
+        .map(|text| {
+            let trimmed = text.trim_start();
+            let depth = text.len() - trimmed.len();
+            let comment = trimmed.starts_with('#');
+            if text == "jobs:" {
+                in_jobs = true;
+                job = None;
+            } else if in_jobs && depth == 2 && !comment && trimmed.ends_with(':') {
+                job = Some(trimmed.trim_end_matches(':'));
+            } else if in_jobs && depth == 0 && !trimmed.is_empty() && !comment {
+                in_jobs = false;
+                job = None;
+            }
+            let own = if comment && depth <= 2 { None } else { job };
+            WorkflowLine {
+                job: own,
+                comment,
+                text,
+            }
+        })
+        .collect()
+}
+
+/// Each job's tier, read from its job-level `if:` (doc 43 TS.2): none runs on
+/// every push and pull request; the Sunday cron is weekly; any schedule is
+/// nightly; `workflow_dispatch` alone is dispatch.
+fn job_tiers(workflow: &str) -> BTreeMap<String, &'static str> {
+    let mut tiers = BTreeMap::new();
+    for line in workflow_lines(workflow) {
+        let Some(job) = line.job else { continue };
+        tiers.entry(job.to_string()).or_insert("pr");
+        let Some(condition) = line.text.strip_prefix("    if:") else {
+            continue;
+        };
+        let tier = if condition.contains(&format!("github.event.schedule == '{WEEKLY_CRON}'")) {
+            "weekly"
+        } else if condition.contains("'schedule'") {
+            "nightly"
+        } else if condition.contains("'workflow_dispatch'") {
+            "dispatch"
+        } else {
+            panic!("ci.yml job `{job}`: cannot read a tier from `if:{condition}`")
+        };
+        tiers.insert(job.to_string(), tier);
+    }
+    tiers
+}
+
+fn tier_manifest(root: &Path) -> TierManifest {
+    let path = root.join("crates/mush-contract-tests").join(TIERS_MANIFEST);
+    let text = fs::read_to_string(&path).unwrap_or_else(|_| panic!("{}", path.display()));
+    toml::from_str(&text).unwrap_or_else(|error| panic!("{TIERS_MANIFEST}: {error}"))
+}
+
+/// A revision as a `by-hand:` tag spells it: 8 to 40 lowercase hex digits.
+fn is_revision(tag: &str) -> bool {
+    (8..=40).contains(&tag.len())
+        && tag
+            .chars()
+            .all(|c| c.is_ascii_digit() || ('a'..='f').contains(&c))
+}
+
+/// The `NAME` / `NAME=VALUE` pairs of `config` the job does not set: each
+/// wants a non-comment line of the job holding `NAME:` or `NAME=` (and, with
+/// a value, the value).
+fn job_does_not_set(lines: &[WorkflowLine<'_>], job: &str, config: &str) -> Vec<String> {
+    config
+        .split_whitespace()
+        .filter(|pair| {
+            let (name, value) = pair.split_once('=').unwrap_or((pair, ""));
+            !lines.iter().any(|line| {
+                line.job == Some(job)
+                    && !line.comment
+                    && (line.text.contains(&format!("{name}:"))
+                        || line.text.contains(&format!("{name}=")))
+                    && line.text.contains(value)
+            })
+        })
+        .map(str::to_owned)
+        .collect()
+}
+
+/// Whether the script names the test, or its integration target as `--test
+/// <target>` (a shell line) or `"--test","<target>"` (an argument list).
+fn script_runs(root: &Path, via: &str, test: &DiscoveredTest) -> bool {
+    let script = fs::read_to_string(root.join(via)).unwrap_or_default();
+    script.contains(&test.name)
+        || test.integration_target(root).is_some_and(|(_, target, _)| {
+            script.contains(&format!("--test {target}"))
+                || script.contains(&format!("\"--test\",\"{target}\""))
+        })
+}
+
+/// The workflows a row is checked against.
+struct Workflows {
+    ci: String,
+    gate: String,
+    tiers: BTreeMap<String, &'static str>,
+}
+
+/// The tree's tests, with the opt-ins `test-tiers.toml` declares (`kind =
+/// "opt-in"`) counted as opt-in flags: a test that returns early unless one
+/// is set is gated like a `RUN_*` one (doc 43 TS.18).
+fn tiered_tests(root: &Path, manifest: &TierManifest) -> Vec<DiscoveredTest> {
+    let declared: BTreeSet<&str> = manifest
+        .knobs
+        .iter()
+        .filter(|knob| knob.kind == "opt-in")
+        .map(|knob| knob.name.as_str())
+        .collect();
+    let mut tests = discovered_tests(root);
+    for test in &mut tests {
+        let extra: Vec<String> = test
+            .early_return_reads
+            .iter()
+            .filter(|name| declared.contains(name.as_str()))
+            .cloned()
+            .collect();
+        test.opt_in_flags.extend(extra);
+    }
+    tests
+}
+
+/// Checks one row against one test it matches; the problems, if any.
+fn row_problems(
+    root: &Path,
+    flows: &Workflows,
+    row: &TierRow,
+    test: &DiscoveredTest,
+) -> Vec<String> {
+    let mut problems = Vec::new();
+    let key = test.tier_key(root);
+    for flag in &test.opt_in_flags {
+        if !row
+            .config
+            .split_whitespace()
+            .any(|pair| pair.split('=').next() == Some(flag.as_str()))
+        {
+            problems.push(format!(
+                "{key}: opts in by {flag}, which the row's config does not set"
+            ));
+        }
+    }
+    if !row.child_of.is_empty() {
+        let source =
+            fs::read_to_string(root.join("crates").join(&test.relative)).unwrap_or_default();
+        if row.tier != "pr" || !row.job.is_empty() {
+            problems.push(format!(
+                "{key}: a child row is on its parent's tier, pr, with no job"
+            ));
+        }
+        if !source.contains(&format!("fn {}(", row.child_of))
+            || source.matches(&test.name).count() < 2
+        {
+            problems.push(format!(
+                "{key}: its file has no test `{}` that names it as a child",
+                row.child_of
+            ));
+        }
+        return problems;
+    }
+    if row.tier == "by-hand" {
+        if !row.job.is_empty() || !row.via.is_empty() {
+            problems.push(format!("{key}: a by-hand row names no job"));
+        }
+        if !(is_revision(&row.by_hand) || (row.by_hand == "never" && !row.note.is_empty())) {
+            problems.push(format!(
+                "{key}: a by-hand row carries `by_hand` = the last run's revision \
+                 (or `never` with a note), not {:?}",
+                row.by_hand
+            ));
+        }
+        return problems;
+    }
+    if !row.by_hand.is_empty() && !is_revision(&row.by_hand) {
+        problems.push(format!("{key}: `by_hand` is a revision when it is set"));
+    }
+    // The VPS gate: a dispatch of one kind, whose step runs the `via` script.
+    if let Some(kind) = row.job.strip_prefix("gate.yml:") {
+        if row.tier != "dispatch" {
+            problems.push(format!(
+                "{key}: gate.yml is dispatch-only, not {}",
+                row.tier
+            ));
+        }
+        if !flows.gate.contains(&format!("inputs.kind == '{kind}'")) {
+            problems.push(format!("{key}: gate.yml has no `{kind}` kind"));
+        }
+        if row.via.is_empty() || !flows.gate.contains(&format!("run: {}", row.via)) {
+            problems.push(format!(
+                "{key}: gate.yml's `{kind}` step runs no `via` script"
+            ));
+        }
+        if !script_runs(root, &row.via, test) {
+            problems.push(format!("{key}: {} does not run the test", row.via));
+        }
+        return problems;
+    }
+    let Some(job_tier) = flows.tiers.get(&row.job) else {
+        problems.push(format!("{key}: ci.yml has no job `{}`", row.job));
+        return problems;
+    };
+    if *job_tier != row.tier {
+        problems.push(format!(
+            "{key}: job `{}` is on the {job_tier} tier, the row says {}",
+            row.job, row.tier
+        ));
+    }
+    let lines = workflow_lines(&flows.ci);
+    let in_job = |line: &&WorkflowLine<'_>| line.job == Some(row.job.as_str()) && !line.comment;
+    // An `#[ignore]`d test runs only under a command that asks for ignored
+    // tests: on the covering line itself, or — for a matrix entry that only
+    // names it — on a command of the same job.
+    let job_runs_ignored = lines
+        .iter()
+        .filter(in_job)
+        .any(|line| line.text.contains("cargo ") && runs_ignored(line.text));
+    let runs = |line: &WorkflowLine<'_>| {
+        !test.ignored
+            || runs_ignored(line.text)
+            || (!line.text.contains("cargo ") && job_runs_ignored)
+    };
+    let covered = if row.via.is_empty() {
+        lines
+            .iter()
+            .filter(in_job)
+            .any(|line| test.covered_by(root, line.text) && runs(line))
+    } else {
+        script_runs(root, &row.via, test)
+            && lines
+                .iter()
+                .filter(in_job)
+                .any(|line| line.text.contains(&row.via))
+    };
+    if !covered {
+        problems.push(format!(
+            "{key}: job `{}` does not run it (a comment is not a run{})",
+            row.job,
+            if test.ignored {
+                "; an ignored test needs --ignored or --run-ignored"
+            } else {
+                ""
+            }
+        ));
+    }
+    let unset = job_does_not_set(&lines, &row.job, &row.config);
+    if !unset.is_empty() {
+        problems.push(format!(
+            "{key}: job `{}` does not set {}",
+            row.job,
+            unset.join(" ")
+        ));
+    }
+    problems
+}
+
+/// **Doc 43 TS.2.** Every gated test has a row in `test-tiers.toml`; every row
+/// matches a gated test; and each row is true of the workflows: its job is on
+/// the tier it says, runs the test by a command (a comment is not a run; an
+/// ignored test needs a command that runs ignored tests), and sets the
+/// configuration it names. A test only ci.yml's comments name is `by-hand`,
+/// with the last run's revision.
+#[test]
+fn every_gated_test_declares_its_tier_and_the_workflow_agrees() {
+    let root = scan::repo_root();
+    let ci = fs::read_to_string(root.join(".github/workflows/ci.yml")).expect("ci.yml");
+    let gate = fs::read_to_string(root.join(".github/workflows/gate.yml")).expect("gate.yml");
+    let flows = Workflows {
+        tiers: job_tiers(&ci),
+        ci,
+        gate,
+    };
+    let manifest = tier_manifest(&root);
+    let tests = tiered_tests(&root, &manifest);
+    let gated: Vec<&DiscoveredTest> = tests.iter().filter(|t| t.backend_gated()).collect();
+
+    let mut problems: Vec<String> = Vec::new();
+    let mut seen = BTreeSet::new();
+    for row in &manifest.rows {
+        if !TIERS.contains(&row.tier.as_str()) {
+            problems.push(format!(
+                "{}: tier {:?} is none of {TIERS:?}",
+                row.id, row.tier
+            ));
+        }
+        if !seen.insert((row.id.as_str(), row.config.as_str(), row.tier.as_str())) {
+            problems.push(format!(
+                "{}: a duplicate row ({} {})",
+                row.id, row.tier, row.config
+            ));
+        }
+        let matched: Vec<&DiscoveredTest> = tests
+            .iter()
+            .filter(|test| row.matches(&test.tier_key(&root), test))
+            .collect();
+        if matched.is_empty() {
+            problems.push(format!("{}: a stale row; it matches no test", row.id));
+        }
+        for test in matched {
+            if !test.backend_gated() && row.config.is_empty() {
+                problems.push(format!(
+                    "{}: the test is not gated, so it runs in its default configuration                      wherever its binary runs; a row for it names a variant's config",
+                    row.id
+                ));
+            }
+            problems.extend(row_problems(&root, &flows, row, test));
+        }
+    }
+    for test in &gated {
+        let key = test.tier_key(&root);
+        if !manifest.rows.iter().any(|row| row.matches(&key, test)) {
+            problems.push(format!(
+                "{key} ({}): a gated test with no tier; add a row to {TIERS_MANIFEST}",
+                test.relative
+            ));
+        }
+    }
+    assert!(
+        problems.is_empty(),
+        "{TIERS_MANIFEST} disagrees with the tree or the workflows (doc 43 TS.2):\n  {}",
+        problems.join("\n  ")
+    );
+}
+
+#[test]
+fn the_tier_reader_knows_a_job_s_trigger_and_a_comment_from_a_command() {
+    let workflow = "\
+on:
+  push:
+jobs:
+  every:
+    runs-on: ubuntu-latest
+    steps:
+      - run: cargo test -p a --test t -- --ignored
+  # between jobs: cargo test -p a --test b
+  night:
+    if: github.event_name == 'schedule' || github.event_name == 'workflow_dispatch'
+  sunday:
+    if: github.event_name == 'workflow_dispatch' || github.event.schedule == '17 4 * * 0'
+    steps:
+      # cargo test -p a --test c -- --ignored
+  button:
+    if: github.event_name == 'workflow_dispatch'
+";
+    let tiers = job_tiers(workflow);
+    assert_eq!(tiers["every"], "pr");
+    assert_eq!(tiers["night"], "nightly");
+    assert_eq!(tiers["sunday"], "weekly");
+    assert_eq!(tiers["button"], "dispatch");
+    let lines = workflow_lines(workflow);
+    let between = lines.iter().find(|l| l.text.contains("--test b")).unwrap();
+    assert_eq!(between.job, None);
+    let inside = lines.iter().find(|l| l.text.contains("--test c")).unwrap();
+    assert_eq!(inside.job, Some("sunday"));
+    assert!(inside.comment);
+    assert!(runs_ignored("cargo nextest run -p a --run-ignored only"));
+    assert!(runs_ignored("cargo test -p a -- --include-ignored"));
+    assert!(!runs_ignored("cargo nextest run -P ci -p a --test t"));
+    assert!(is_revision("99b3a4b4"));
+    assert!(!is_revision("99B3A4B4") && !is_revision("abc") && !is_revision("never"));
+}
+
+// ---- Doc 43 cut TS.18: variant identities ----
+
+/// The crates whose tests §5.9 censused: the stories that carry switches.
+const CENSUSED_TESTS: [&str; 2] = ["crates/tacsim/tests", "crates/mush-bot/tests"];
+
+/// The environment variables a test source reads by name: the argument of
+/// `env::var`, `env::var_os`, `knob` or an `env_*` helper, as a literal or a
+/// `const NAME: &str = "..."` of the same file. A census, not a parser: a name
+/// built at run time is invisible to it.
+fn env_names_read(source: &str) -> BTreeSet<String> {
+    let is_name = |name: &str| {
+        name.len() > 1
+            && name.starts_with(|c: char| c.is_ascii_uppercase())
+            && name
+                .chars()
+                .all(|c| c.is_ascii_uppercase() || c.is_ascii_digit() || c == '_')
+    };
+    let mut consts = BTreeMap::new();
+    for line in source.lines() {
+        let Some((_, rest)) = line.split_once("const ") else {
+            continue;
+        };
+        let Some((ident, value)) = rest.split_once(": &str = \"") else {
+            continue;
+        };
+        if let Some((value, _)) = value.split_once('"') {
+            consts.insert(ident.trim().to_string(), value.to_string());
+        }
+    }
+    let mut names = BTreeSet::new();
+    for (at, _) in source.match_indices('(') {
+        let before = &source[..at];
+        let callee_start = before
+            .char_indices()
+            .rev()
+            .find(|(_, c)| !(c.is_ascii_alphanumeric() || *c == '_' || *c == ':'))
+            .map_or(0, |(i, c)| i + c.len_utf8());
+        let callee = &before[callee_start..];
+        let last = callee.rsplit("::").next().unwrap_or(callee);
+        let reads = callee.ends_with("env::var")
+            || callee.ends_with("env::var_os")
+            || last == "knob"
+            || last.starts_with("env_");
+        if !reads {
+            continue;
+        }
+        let argument = source[at + 1..].trim_start();
+        let name = if let Some(literal) = argument.strip_prefix('"') {
+            literal.split_once('"').map(|(name, _)| name.to_string())
+        } else {
+            let ident: String = argument
+                .chars()
+                .take_while(|c| c.is_ascii_alphanumeric() || *c == '_')
+                .collect();
+            consts.get(&ident).cloned()
+        };
+        if let Some(name) = name.filter(|name| is_name(name)) {
+            names.insert(name);
+        }
+    }
+    names
+}
+
+/// **Doc 43 TS.18.** Every variable tacsim's and the bot's tests read is a
+/// named configuration — in the `config` of a `test-tiers.toml` row, where it
+/// has a tier and a run — or a declared knob with a kind saying why it needs
+/// no row. A new switch in a story therefore arrives with its row or its
+/// reason; a variant nobody selects is no longer a configuration with no test
+/// under a name the inventory calls covered (§5.9).
+#[test]
+fn every_variable_a_story_reads_is_a_named_configuration_or_a_declared_knob() {
+    let root = scan::repo_root();
+    let manifest = tier_manifest(&root);
+    let mut read: BTreeMap<String, String> = BTreeMap::new();
+    for dir in CENSUSED_TESTS {
+        for file in scan::files(&root.join(dir), &["rs"], &["target"]) {
+            let source = fs::read_to_string(&file).unwrap_or_default();
+            let relative = file
+                .strip_prefix(&root)
+                .expect("under the root")
+                .to_string_lossy()
+                .replace('\\', "/");
+            for name in env_names_read(&source) {
+                read.entry(name).or_insert_with(|| relative.clone());
+            }
+        }
+    }
+    assert!(
+        read.len() >= 50 && read.contains_key("FIELD_RAID") && read.contains_key("MINE_RATE"),
+        "the census found {} variables: it is broken, not the tree",
+        read.len()
+    );
+    let configured: BTreeSet<&str> = manifest
+        .rows
+        .iter()
+        .flat_map(|row| row.config.split_whitespace())
+        .map(|pair| pair.split('=').next().unwrap_or(pair))
+        .collect();
+    let mut problems = Vec::new();
+    let mut knobs = BTreeSet::new();
+    for knob in &manifest.knobs {
+        if !KNOB_KINDS.iter().any(|(kind, _)| *kind == knob.kind) {
+            problems.push(format!(
+                "knob {}: kind {:?} is none of {KNOB_KINDS:?}",
+                knob.name, knob.kind
+            ));
+        }
+        if knob.note.trim().is_empty() {
+            problems.push(format!("knob {}: a knob says what it switches", knob.name));
+        }
+        if !knobs.insert(knob.name.as_str()) {
+            problems.push(format!("knob {}: declared twice", knob.name));
+        }
+        if !read.contains_key(&knob.name) {
+            problems.push(format!(
+                "knob {}: a stale knob; no censused test reads it",
+                knob.name
+            ));
+        }
+        if knob.kind == "opt-in" && !configured.contains(knob.name.as_str()) {
+            problems.push(format!(
+                "knob {}: an opt-in no row's config sets runs nowhere",
+                knob.name
+            ));
+        }
+    }
+    for (name, file) in &read {
+        if !configured.contains(name.as_str()) && !knobs.contains(name.as_str()) {
+            problems.push(format!(
+                "{name} (read in {file}): a configuration with no row and no declared knob; \
+                 name it in a row's config (with its tier and last run) or declare it a \
+                 [[knob]] in {TIERS_MANIFEST}"
+            ));
+        }
+    }
+    assert!(
+        problems.is_empty(),
+        "{TIERS_MANIFEST}'s variants and knobs disagree with the tests (doc 43 TS.18):\n  {}",
+        problems.join("\n  ")
+    );
+}
+
+#[test]
+fn the_variable_census_reads_literals_constants_and_helpers() {
+    let source = r#"
+const ROLE: &str = "MY_ROLE";
+fn x() {
+    let a = std::env::var("FIELD_RAID");
+    let b = std::env::var_os(ROLE);
+    let c = env_u64("TACSIM_SEED", 1);
+    let d = knob("GC12_ARENA_S", 120);
+    let e = std::env::var(name);
+    let f = other("NOT_READ");
+    fn env_u32(name: &str) {}
+}
+"#;
+    let names: Vec<String> = env_names_read(source).into_iter().collect();
+    assert_eq!(
+        names,
+        ["FIELD_RAID", "GC12_ARENA_S", "MY_ROLE", "TACSIM_SEED"]
     );
 }
