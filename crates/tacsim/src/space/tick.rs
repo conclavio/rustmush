@@ -853,6 +853,9 @@ pub struct PendingBubbleInput {
     /// Optional [`BubbleInputCommand`] staged by the command.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub cmd: Option<BubbleInputCommand>,
+    /// Optional collector drone sortie excursions `(drone_obj, slot, site)` staged by `+mine/drones` (`SF.R22`, `D-35-13`).
+    #[serde(default, skip_serializing_if = "Vec::is_empty")]
+    pub drone_excursions: Vec<(ObjId, u8, mush_core::CanonicalId)>,
 }
 
 /// World-state registry of active and completed space interdiction bubbles,
@@ -885,9 +888,9 @@ pub struct SpaceBubbleBook {
     /// Monotonic sequence allocator for [`Self::pending_space_burns`].
     #[serde(default)]
     pub next_space_burn_seq: u32,
-    /// Laid-up orbital cluster sites (`ceres_halo`, `kirkwood_gap_3_1`, `pallas_inclined_belt`, `saturn_b_ring_edge`) (`SF.R5`, `D-35-13`).
+    /// Laid-up orbital cluster sites keyed by authored cluster [`mush_core::CanonicalId`] (`SF.R5`, `SF.R22`, `D-35-13`, `D-35-17`).
     #[serde(default, with = "super::bubble::vec_tuple_map")]
-    pub cluster_sites: BTreeMap<super::mining::OrbitalClusterId, super::mining::ClusterSiteState>,
+    pub cluster_sites: BTreeMap<mush_core::CanonicalId, super::mining::ClusterSiteState>,
     /// Active orbital cluster mining sessions keyed by carrier hull [`ObjId`] (`SF.R5`, `D-35-13`).
     #[serde(default, with = "super::bubble::vec_tuple_map")]
     pub cluster_sessions: BTreeMap<ObjId, super::mining::ActiveClusterMiningSession>,
@@ -1922,11 +1925,12 @@ pub(crate) fn action_descriptor(
     .map(|d| d.with_references(vec![outcome]))
 }
 
-/// Register the [`BUBBLE_TAPE_FAMILY`] state family, [`BubbleInputProvider`], and [`BubbleInputHandles`] (`SF.R21`).
+/// Register the [`BUBBLE_TAPE_FAMILY`] state family, [`BubbleInputProvider`], and [`BubbleInputHandles`] (`SF.R21`, `SF.R22`).
 pub(crate) fn register_bubble_input(
     reg: &mut Registrar<'_>,
     actions: &BTreeMap<String, mush_core::DefinitionRef>,
     outcomes: &BTreeMap<String, mush_core::DefinitionRef>,
+    port_families: &crate::port::families::PortFamilies,
 ) -> Result<(), ModError> {
     use crate::port::families::family_descriptor;
     let tapes = reg.state_family::<ObjId, StagedBubbleTapeLedger, _, _, _, _>(
@@ -1953,6 +1957,7 @@ pub(crate) fn register_bubble_input(
                 action: action.clone(),
                 outcome,
                 tapes: tapes.clone(),
+                excursions: port_families.excursions.clone(),
             },
         )?;
         Some(action)
@@ -1983,6 +1988,29 @@ pub fn submit_bubble_input(
     {
         return None;
     }
+    submit_bubble_input_with_drones(ctx, hull, switch, cmd, Vec::new())
+}
+
+/// Submit collector drone sortie [`crate::surface::excursion::RigRecord`]s into `tacsim.excursion`
+/// via [`BUBBLE_INPUT_ACTION`]'s `prepare_authoritative` (`SF.R22`, `D-35-13`).
+pub fn submit_drone_excursions(
+    ctx: &mut Ctx<'_>,
+    hull: ObjId,
+    drone_excursions: Vec<(ObjId, u8, mush_core::CanonicalId)>,
+) -> Option<u64> {
+    if drone_excursions.is_empty() {
+        return None;
+    }
+    submit_bubble_input_with_drones(ctx, hull, "drones_launch", None, drone_excursions)
+}
+
+fn submit_bubble_input_with_drones(
+    ctx: &mut Ctx<'_>,
+    hull: ObjId,
+    switch: &str,
+    cmd: Option<BubbleInputCommand>,
+    drone_excursions: Vec<(ObjId, u8, mush_core::CanonicalId)>,
+) -> Option<u64> {
     let at_ic = ctx.w.world_ic_now().at;
     let actor = ctx.actor;
     let (seq, can_submit, action) = {
@@ -1996,6 +2024,7 @@ pub fn submit_bubble_input(
             switch: switch.to_owned(),
             at_ic,
             cmd,
+            drone_excursions,
         });
         if handles.pending_bubble_inputs.len() > 64 {
             let excess = handles.pending_bubble_inputs.len() - 64;
@@ -2027,11 +2056,15 @@ pub fn submit_bubble_input(
     Some(seq)
 }
 
-/// Authoritative action provider for [`BUBBLE_INPUT_ACTION`] (`SF.R21`, `35b` §3b).
+/// Authoritative action provider for [`BUBBLE_INPUT_ACTION`] (`SF.R21`, `SF.R22`, `35b` §3b).
 pub(crate) struct BubbleInputProvider {
     pub action: mush_core::DefinitionRef,
     pub outcome: mush_core::DefinitionRef,
     pub tapes: mush_core::StateFamilyHandle<ObjId, StagedBubbleTapeLedger>,
+    pub excursions: mush_core::StateFamilyHandle<
+        crate::surface::excursion::RigKey,
+        crate::surface::excursion::RigRecord,
+    >,
 }
 
 impl mush_core::ActionProvider for BubbleInputProvider {
@@ -2212,6 +2245,63 @@ impl mush_core::ActionProvider for BubbleInputProvider {
                 "the staged bubble tape ledger did not stage",
             )
         })?;
+        for (drone_obj, slot, site) in &pending.drone_excursions {
+            let key = crate::surface::excursion::RigKey(*drone_obj);
+            let prior_rig = txn
+                .get(&self.excursions, &key)
+                .map_err(|_| {
+                    crate::port_tick::port_error(
+                        mush_core::ActionErrorCode::Integrity,
+                        "the excursion family cannot be read",
+                    )
+                })?
+                .cloned();
+            let ordinal = prior_rig
+                .as_ref()
+                .map_or(1, |r| r.ordinal.saturating_add(1));
+            let rig_record = crate::surface::excursion::RigRecord {
+                field_crew: None,
+                field_work: None,
+                schema: crate::surface::excursion::EXCURSION_SCHEMA,
+                tv: *drone_obj,
+                ordinal,
+                charge: crate::surface::excursion::Charge {
+                    value_cu: 1_000,
+                    at_ic: pending.at_ic,
+                    in_bay: false,
+                },
+                act: None,
+                excursion: Some(crate::surface::excursion::Excursion {
+                    id: crate::surface::excursion::ExcursionId {
+                        tv: *drone_obj,
+                        launch_ic: pending.at_ic,
+                    },
+                    operator: pending.actor,
+                    hull,
+                    slot: (*slot).clamp(1, 16),
+                    site: site.clone(),
+                }),
+                last: None,
+                run: None,
+                queued: None,
+                plan: None,
+                plans: 0,
+                recovery: None,
+                sortie: None,
+                claim: None,
+            };
+            let rig_staged = if prior_rig.is_some() {
+                txn.replace(&self.excursions, &key, rig_record)
+            } else {
+                txn.insert(&self.excursions, &key, rig_record)
+            };
+            rig_staged.map_err(|_| {
+                crate::port_tick::port_error(
+                    mush_core::ActionErrorCode::Integrity,
+                    "the collector drone excursion record did not stage",
+                )
+            })?;
+        }
         let outcome = mush_core::RulesValue::new(
             self.outcome.clone(),
             serde_json::json!({
@@ -3427,8 +3517,10 @@ fn step_active_bubbles(ctx: &mut Ctx<'_>, now: &ClockStamp) {
                 active.interdictor_hull,
                 &active.interdictor_ship_id,
                 &active.carrier_ship_id,
+                active.interdictor_seal.as_ref(),
                 &mut active.interdictor_think_seq,
                 &mut active.interdictor_memory,
+                &mut active.cleared,
             );
             events.extend(picket_events);
         }
@@ -3647,6 +3739,15 @@ fn step_free_flight_records(ctx: &mut Ctx<'_>, now: &ClockStamp) {
         }
     }
 
+    let is_cluster_by_hull: BTreeMap<ObjId, bool> = hulls
+        .iter()
+        .map(|(h, tp)| {
+            (
+                *h,
+                super::mining::lookup_orbital_cluster(ctx.w, tp.as_str()).is_some(),
+            )
+        })
+        .collect();
     let mut arrived_bodies: Vec<(ObjId, String)> = Vec::new();
     if let Some(book) = ctx.w.module_state_mut::<SpaceBubbleBook>() {
         for (hull, _) in &hulls {
@@ -3667,7 +3768,7 @@ fn step_free_flight_records(ctx: &mut Ctx<'_>, now: &ClockStamp) {
                         rec.pos_km = pos;
                     }
                 }
-                if super::mining::OrbitalClusterId::parse(rec.target_place.as_str()).is_none()
+                if !is_cluster_by_hull.get(hull).copied().unwrap_or(false)
                     && rec
                         .cluster_arrival_ic_s
                         .is_some_and(|arr_ic| now.at >= arr_ic)
@@ -3691,8 +3792,8 @@ fn step_free_flight_records(ctx: &mut Ctx<'_>, now: &ClockStamp) {
         crate::port::voyage::narrate_hull(ctx, hull, &line);
     }
 
-    // Promote any free-flight hulls that have reached their destination orbital cluster (`SF.R9`, `D-35-5`):
-    let arrived_clusters: Vec<(ObjId, super::mining::OrbitalClusterId)> = ctx
+    // Promote any free-flight hulls that have reached their destination orbital cluster (`SF.R9`, `SF.R22`, `D-35-5`, `D-35-17`):
+    let arrived_clusters: Vec<(ObjId, super::mining::ResolvedOrbitalCluster)> = ctx
         .w
         .module_state::<SpaceBubbleBook>()
         .map(|b| {
@@ -3700,7 +3801,7 @@ fn step_free_flight_records(ctx: &mut Ctx<'_>, now: &ClockStamp) {
                 .iter()
                 .filter_map(|(&hull, rec)| {
                     let cluster =
-                        super::mining::OrbitalClusterId::parse(rec.target_place.as_str())?;
+                        super::mining::lookup_orbital_cluster(ctx.w, rec.target_place.as_str())?;
                     let arrived = rec
                         .cluster_arrival_ic_s
                         .is_some_and(|arr_ic| now.at >= arr_ic);
@@ -3710,7 +3811,7 @@ fn step_free_flight_records(ctx: &mut Ctx<'_>, now: &ClockStamp) {
         })
         .unwrap_or_default();
     for (hull, cluster) in arrived_clusters {
-        let _ = super::mining::ensure_cluster_laid_up(ctx, cluster, hull);
+        let _ = super::mining::ensure_cluster_laid_up(ctx, &cluster, hull);
         if let Some(book) = ctx.w.module_state_mut::<SpaceBubbleBook>() {
             book.free_flights.remove(&hull);
             let existing_drones = book
@@ -3718,7 +3819,8 @@ fn step_free_flight_records(ctx: &mut Ctx<'_>, now: &ClockStamp) {
                 .get(&hull)
                 .map(|s| s.drone_things.clone())
                 .unwrap_or_default();
-            let mut session = super::mining::ActiveClusterMiningSession::new(hull, cluster, now.at);
+            let mut session =
+                super::mining::ActiveClusterMiningSession::new(hull, cluster.id.clone(), now.at);
             session.drone_things = existing_drones;
             book.cluster_sessions.insert(hull, session);
         }
@@ -3734,15 +3836,20 @@ fn step_free_flight_records(ctx: &mut Ctx<'_>, now: &ClockStamp) {
     }
 }
 
+#[allow(clippy::too_many_arguments)]
 fn step_interdictor_picket(
     bubble: &mut LocalSpaceBubble,
     tape: &mut BubbleInputTape,
     interdictor_hull: ObjId,
     interdictor_ship_id: &str,
     carrier_ship_id: &str,
+    interdictor_seal: Option<&crate::arena::mind::MindSeal>,
     think_seq: &mut u64,
     memory: &mut Vec<u8>,
+    cleared: &mut bool,
 ) -> Vec<super::bubble::SpaceCombatEvent> {
+    use crate::arena::{IntentKind, MotorGoal};
+
     let mut emitted = Vec::new();
     let Some(iship) = bubble.ships.get(interdictor_ship_id) else {
         return emitted;
@@ -3766,69 +3873,55 @@ fn step_interdictor_picket(
             },
         ));
     }
-    if let Some((res, _)) = super::picket::run_space_rhai_think(
+    let Some((res, cmap)) = super::picket::run_space_rhai_think_with_seal(
         bubble,
         interdictor_ship_id,
         interdictor_hull,
-        crate::minds::content::interdictor_patrol_source(),
+        interdictor_seal,
+        crate::minds::content::interdictor_patrol_digest().0,
+        None,
         *think_seq,
         memory,
-    ) && res.fault.is_none()
+    ) else {
+        return emitted;
+    };
+    if res.fault.is_some() {
+        return emitted;
+    }
+    *think_seq = think_seq.saturating_add(1);
+    *memory = res.memory;
+    if res
+        .trace
+        .iter()
+        .any(|t| t == "INTERDICTOR_STAND_DOWN_CLEARED")
     {
-        *think_seq = think_seq.saturating_add(1);
-        *memory = res.memory;
-        if res
-            .trace
-            .iter()
-            .any(|t| t == "INTERDICTOR_STAND_DOWN_CLEARED")
-        {
-            let carrier_parties: Vec<PartyId> = bubble
-                .ships
-                .values()
-                .filter(|s| s.party != INTERDICTOR_PARTY)
-                .map(|s| s.party)
-                .collect();
-            for cparty in carrier_parties {
-                bubble.set_party_relation(cparty, INTERDICTOR_PARTY, None);
-            }
-            emitted.extend(tape.record_and_apply(
-                bubble,
-                BubbleInputCommand::CommandBurn {
-                    ship_id: interdictor_ship_id.to_owned(),
-                    thrust_mps2: [0, 0, 0],
-                    force_into_reserve: false,
-                },
-            ));
-            return emitted;
+        *cleared = true;
+        let carrier_parties: Vec<PartyId> = bubble
+            .ships
+            .values()
+            .filter(|s| s.party != INTERDICTOR_PARTY)
+            .map(|s| s.party)
+            .collect();
+        for cparty in carrier_parties {
+            bubble.set_party_relation(cparty, INTERDICTOR_PARTY, None);
         }
-    }
-    if bubble
-        .ships
-        .get(interdictor_ship_id)
-        .is_some_and(|s| s.locked_target_id.as_deref() != Some(carrier_ship_id))
-    {
-        emitted.extend(tape.record_and_apply(
-            bubble,
-            BubbleInputCommand::SetLockedTarget {
-                ship_id: interdictor_ship_id.to_owned(),
-                target_id: Some(carrier_ship_id.to_owned()),
-            },
-        ));
-    }
-    if bubble
-        .ships
-        .get(interdictor_ship_id)
-        .is_some_and(|s| s.thrust_mps2 == [0, 0, 0])
-    {
         emitted.extend(tape.record_and_apply(
             bubble,
             BubbleInputCommand::CommandBurn {
                 ship_id: interdictor_ship_id.to_owned(),
-                thrust_mps2: [-10, 0, 0],
+                thrust_mps2: [0, 0, 0],
                 force_into_reserve: false,
             },
         ));
+        return emitted;
     }
+
+    let mut locked_ship = bubble
+        .ships
+        .get(interdictor_ship_id)
+        .and_then(|s| s.locked_target_id.clone())
+        .unwrap_or_else(|| carrier_ship_id.to_owned());
+
     if bubble
         .ships
         .get(interdictor_ship_id)
@@ -3841,31 +3934,109 @@ fn step_interdictor_picket(
             },
         ));
     }
-    if bubble
-        .ships
-        .get(carrier_ship_id)
-        .is_some_and(|s| s.emcon == super::bubble::EmconPosture::ActiveCombat)
-        && bubble
-            .ships
-            .get(interdictor_ship_id)
-            .is_some_and(|s| s.torpedo_tubes.iter().any(|t| t.magazine_remaining == 8))
-    {
-        emitted.extend(tape.record_and_apply(
-            bubble,
-            BubbleInputCommand::FireTorpedoSalvo {
-                shooter_id: interdictor_ship_id.to_owned(),
-                target_id: carrier_ship_id.to_owned(),
-                count: 1,
-            },
-        ));
+
+    for intent in &res.intents {
+        match intent {
+            IntentKind::Emcon { on } => {
+                let target_posture = if *on {
+                    super::bubble::EmconPosture::ActiveCombat
+                } else {
+                    super::bubble::EmconPosture::Standard
+                };
+                if bubble
+                    .ships
+                    .get(interdictor_ship_id)
+                    .is_some_and(|s| s.emcon != target_posture)
+                {
+                    emitted.extend(tape.record_and_apply(
+                        bubble,
+                        BubbleInputCommand::SetEmcon {
+                            ship_id: interdictor_ship_id.to_owned(),
+                            posture: target_posture,
+                        },
+                    ));
+                }
+            }
+            IntentKind::Lock { contact } => {
+                if let Some(target_ship_id) = cmap.get(contact).cloned() {
+                    locked_ship = target_ship_id.clone();
+                    if bubble.ships.get(interdictor_ship_id).is_some_and(|s| {
+                        s.locked_target_id.as_deref() != Some(target_ship_id.as_str())
+                    }) {
+                        emitted.extend(tape.record_and_apply(
+                            bubble,
+                            BubbleInputCommand::SetLockedTarget {
+                                ship_id: interdictor_ship_id.to_owned(),
+                                target_id: Some(target_ship_id),
+                            },
+                        ));
+                    }
+                }
+            }
+            IntentKind::Goal(MotorGoal::Hold) => {
+                if bubble
+                    .ships
+                    .get(interdictor_ship_id)
+                    .is_some_and(|s| s.thrust_mps2 != [0, 0, 0])
+                {
+                    emitted.extend(tape.record_and_apply(
+                        bubble,
+                        BubbleInputCommand::CommandBurn {
+                            ship_id: interdictor_ship_id.to_owned(),
+                            thrust_mps2: [0, 0, 0],
+                            force_into_reserve: false,
+                        },
+                    ));
+                }
+            }
+            IntentKind::Speed { cms } if *cms > 0 => {
+                if bubble
+                    .ships
+                    .get(interdictor_ship_id)
+                    .is_some_and(|s| s.thrust_mps2 == [0, 0, 0])
+                {
+                    emitted.extend(tape.record_and_apply(
+                        bubble,
+                        BubbleInputCommand::CommandBurn {
+                            ship_id: interdictor_ship_id.to_owned(),
+                            thrust_mps2: [-10, 0, 0],
+                            force_into_reserve: false,
+                        },
+                    ));
+                }
+            }
+            IntentKind::Fire { weapon, .. } => {
+                if weapon.starts_with("torp") {
+                    if bubble
+                        .ships
+                        .get(&locked_ship)
+                        .is_some_and(|s| s.emcon == super::bubble::EmconPosture::ActiveCombat)
+                        && bubble.ships.get(interdictor_ship_id).is_some_and(|s| {
+                            s.torpedo_tubes.iter().any(|t| t.magazine_remaining == 8)
+                        })
+                    {
+                        emitted.extend(tape.record_and_apply(
+                            bubble,
+                            BubbleInputCommand::FireTorpedoSalvo {
+                                shooter_id: interdictor_ship_id.to_owned(),
+                                target_id: locked_ship.clone(),
+                                count: 1,
+                            },
+                        ));
+                    }
+                } else if weapon.starts_with("laser") {
+                    emitted.extend(tape.record_and_apply(
+                        bubble,
+                        BubbleInputCommand::FireOffensiveLasers {
+                            shooter_id: interdictor_ship_id.to_owned(),
+                            target_id: locked_ship.clone(),
+                        },
+                    ));
+                }
+            }
+            _ => {}
+        }
     }
-    emitted.extend(tape.record_and_apply(
-        bubble,
-        BubbleInputCommand::FireOffensiveLasers {
-            shooter_id: interdictor_ship_id.to_owned(),
-            target_id: carrier_ship_id.to_owned(),
-        },
-    ));
     emitted
 }
 
@@ -4181,15 +4352,19 @@ fn build_interdiction_bubble(
         let raider_ship_id = picket_state.raider_ship_id.clone();
         (raider_hull, raider_ship_id, Some(picket_state), None)
     } else {
+        let cast = super::picket::picket_cast_book()?;
         let interdictor_ship_id = format!("picket.{}.{}", domain.0, leg_cursor);
-        let interdictor_commander =
-            reuse_or_create_npc_commander(ctx, "Interdictor Picket Commander", None)?;
+        let interdictor_commander = reuse_or_create_npc_commander(
+            ctx,
+            &cast.interdictor.commander,
+            cast.interdictor.organization.as_deref(),
+        )?;
         let interdictor_hull =
-            reuse_or_create_npc_hull(ctx, "Interdictor Picket", interdictor_commander)?;
+            reuse_or_create_npc_hull(ctx, &cast.interdictor.hull_name, interdictor_commander)?;
         super::custody::create_stock_space_unit_in_world(
             ctx,
             interdictor_hull,
-            crate::definitions::content::CORVETTE,
+            &cast.interdictor.unit,
         )
         .ok()?;
         super::custody::ensure_space_hull_titled(ctx, interdictor_hull, interdictor_commander);
@@ -4197,7 +4372,7 @@ fn build_interdiction_bubble(
             ctx,
             interdictor_hull,
             crate::arena::mind::SortieId::ic(interdictor_hull, ic_now_s.max(1)),
-            "interdictor_patrol",
+            &cast.interdictor.doctrine,
             crate::minds::content::interdictor_patrol_digest().0,
         );
         let mut interdictor_ship = check_out_space_unit(
@@ -4206,19 +4381,20 @@ fn build_interdiction_bubble(
             &site_id,
             leg_cursor,
             &interdictor_ship_id,
-            "Interdictor Picket",
+            &cast.interdictor.hull_name,
             INTERDICTOR_PARTY,
-            [INTERDICTION_STANDOFF_M, 0, 0],
-            [-20_000, 0, 0],
+            cast.interdictor.pos_m,
+            cast.interdictor.vel_mmps,
         )
         .ok()?;
+        super::custody::apply_space_unit_overlay(
+            &mut interdictor_ship,
+            &super::custody::space_unit_overlay_for_id(&cast.interdictor.overlay),
+        );
         interdictor_ship.attitude_deg = (0, 0, 0);
         interdictor_ship.emcon = super::bubble::EmconPosture::Ghost;
         interdictor_ship.heat_permille = 0;
         interdictor_ship.thrust_mps2 = [0, 0, 0];
-        if let Some(def_laser) = interdictor_ship.lasers.get_mut(1) {
-            def_laser.mode = super::weapons::LaserMode::Defense;
-        }
         bubble.set_party_relation(CARRIER_PARTY, INTERDICTOR_PARTY, Some(Mark::Hostile));
         bubble.insert_ship(interdictor_ship);
         ship_hulls.insert(interdictor_ship_id.clone(), interdictor_hull);

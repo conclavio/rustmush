@@ -54,7 +54,7 @@ use crate::space::bubble::{
     SpaceSectionConsequence, SpaceShipState, SubsystemCrit,
 };
 use crate::space::docking::DockingRcsAuthority;
-use crate::space::weapons::{LaserMount, PdcMount, RailgunMount, TorpedoTube};
+use crate::space::weapons::{LaserMode, LaserMount, PdcMount, RailgunMount, TorpedoTube};
 
 /// Capability id used to persist space-only subsystem crits (`PdcOffline`, `SensorDegraded`,
 /// `RadiatorDamaged`, `DriveDegraded`), per-PDC `operational` flags, and `slow_pct` across
@@ -75,7 +75,7 @@ pub struct SpaceUnitOverlay {
     pub pixel_model: &'static str,
 }
 
-/// Look up the canonical [`SpaceUnitOverlay`] for `unit_entry_id` (`D-35-1`, `SF.R15`).
+/// Look up the canonical [`SpaceUnitOverlay`] for `unit_entry_id` (`D-35-1`, `SF.R15`, `SF.R22`).
 #[must_use]
 pub fn space_unit_overlay_for_id(unit_entry_id: &str) -> SpaceUnitOverlay {
     let base_id = crate::definitions::core_replacement::surface_chassis(unit_entry_id);
@@ -94,8 +94,16 @@ pub fn space_unit_overlay_for_id(unit_entry_id: &str) -> SpaceUnitOverlay {
             },
             torpedo_tubes: vec![TorpedoTube::standard_twin("torp_bow", 8)],
             lasers: vec![
-                LaserMount::standard_turret("laser_1"),
-                LaserMount::standard_turret("laser_2"),
+                LaserMount {
+                    max_range_m: 160_000,
+                    base_damage: 180,
+                    ..LaserMount::standard_turret("laser_1")
+                },
+                LaserMount {
+                    mode: LaserMode::Defense,
+                    defense_range_m: 45_000,
+                    ..LaserMount::standard_turret("laser_2")
+                },
             ],
             railguns: vec![RailgunMount::standard_spinal("rail_spinal", 24)],
             pdcs: vec![
@@ -117,10 +125,47 @@ pub fn space_unit_overlay_for_id(unit_entry_id: &str) -> SpaceUnitOverlay {
                 damp_roll_mdeg_s_per_frame: 140,
                 kg_per_pulse_batch: 1,
             },
-            torpedo_tubes: vec![TorpedoTube::standard_twin("torp_bow", 8)],
+            torpedo_tubes: vec![TorpedoTube {
+                tubes: 2,
+                max_dv_mps: 12_000,
+                accel_mps2: 250,
+                ..TorpedoTube::standard_twin("torp_bow", 8)
+            }],
             lasers: vec![
                 LaserMount::standard_turret("laser_1"),
                 LaserMount::standard_turret("laser_2"),
+            ],
+            railguns: vec![RailgunMount {
+                max_range_m: 250_000,
+                muzzle_vel_mps: 12_000,
+                ..RailgunMount::standard_spinal("rail_spinal", 24)
+            }],
+            pdcs: vec![
+                PdcMount::standard_rotary("pdc_port", 3_000),
+                PdcMount::standard_rotary("pdc_stbd", 3_000),
+            ],
+            decoys_remaining: 6,
+            pixel_model: "raider",
+        },
+        "tacsim.unit.corvette_interdictor" => SpaceUnitOverlay {
+            unit_id: "tacsim.unit.corvette",
+            rcs_authority: DockingRcsAuthority {
+                trans_dv_mmps_per_frame: 40,
+                closure_dv_mmps_per_frame: 35,
+                attitude_rate_mdeg_s_per_frame: 240,
+                roll_rate_mdeg_s_per_frame: 320,
+                damp_trans_mmps_per_frame: 20,
+                damp_attitude_mdeg_s_per_frame: 120,
+                damp_roll_mdeg_s_per_frame: 160,
+                kg_per_pulse_batch: 1,
+            },
+            torpedo_tubes: vec![TorpedoTube::standard_twin("torp_bow", 8)],
+            lasers: vec![
+                LaserMount::standard_turret("laser_1"),
+                LaserMount {
+                    mode: LaserMode::Defense,
+                    ..LaserMount::standard_turret("laser_2")
+                },
             ],
             railguns: vec![RailgunMount::standard_spinal("rail_spinal", 24)],
             pdcs: vec![
@@ -128,7 +173,7 @@ pub fn space_unit_overlay_for_id(unit_entry_id: &str) -> SpaceUnitOverlay {
                 PdcMount::standard_rotary("pdc_stbd", 3_000),
             ],
             decoys_remaining: 6,
-            pixel_model: "raider",
+            pixel_model: "corvette",
         },
         "tacsim.unit.halcyon" => SpaceUnitOverlay {
             unit_id: "tacsim.unit.halcyon",

@@ -148,26 +148,25 @@ pub const fn ore_specific_volume_l_per_t(family: OreFamily) -> u32 {
     }
 }
 
-/// Canonical orbital asteroid clusters (`doc 35` §7.1, `D-35-13`).
-#[derive(Copy, Clone, Debug, PartialEq, Eq, PartialOrd, Ord, Hash, Serialize, Deserialize)]
-pub enum OrbitalClusterId {
-    /// `ceres_halo` — Core commons around Ceres Freeport.
-    CeresHalo,
-    /// `kirkwood_gap_3_1` — Frontier 3:1 resonance gap at 2.50 AU.
-    KirkwoodGap31,
-    /// `pallas_inclined_belt` — Frontier inclined belt near Pallas; Pallas Syndicate claims.
-    PallasInclinedBelt,
-    /// `saturn_b_ring_edge` — Frontier dense ice/silicate ring edge near Saturn/Titan.
-    SaturnBRingEdge,
-}
-
-/// Security and tenure zone of an [`OrbitalClusterId`].
+/// Security and tenure zone of an authored orbital cluster (`doc 35` §7.1, `D-35-13`, `D-35-17`).
 #[derive(Copy, Clone, Debug, PartialEq, Eq, Serialize, Deserialize)]
 pub enum ClusterZone {
     /// Core patrolled commons (`ceres_halo`).
     Core,
     /// Frontier claims and contested space (`kirkwood_gap_3_1`, `pallas_inclined_belt`, `saturn_b_ring_edge`).
     Frontier,
+}
+
+impl ClusterZone {
+    /// Parse a cluster zone token (`"Core"`, `"Frontier"`).
+    #[must_use]
+    pub fn parse(token: &str) -> Option<Self> {
+        match token.trim() {
+            "Core" => Some(Self::Core),
+            "Frontier" => Some(Self::Frontier),
+            _ => None,
+        }
+    }
 }
 
 /// Asteroid spectral class (`doc 35` §7.2, `D-35-13`).
@@ -223,13 +222,13 @@ impl SpectralClass {
     }
 }
 
-/// Authored specification of one asteroid pocket (`A`, `B`, `C`) inside an [`OrbitalClusterId`].
-#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+/// Authored specification of one asteroid pocket (`A`, `B`, `C`) inside a [`ResolvedOrbitalCluster`].
+#[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize)]
 pub struct ClusterRockSpec {
     /// Block letter (`'A'`, `'B'`, `'C'`).
     pub letter: char,
     /// Alias token (`"rock_1"`, `"rock_2"`, `"rock_3"`).
-    pub alias: &'static str,
+    pub alias: String,
     /// Spectral class (`C`, `S`, `M`).
     pub spectral: SpectralClass,
     /// Position in cluster bubble coordinates (`[x_m, y_m, z_m]`).
@@ -241,180 +240,189 @@ pub struct ClusterRockSpec {
     /// Authored default tenure (`Commons`, `Open`, `Held`).
     pub tenure: Tenure,
     /// Authored holder org id (`Some("pallas_syndicate")` on Pallas blocks `A` and `B`).
-    pub holder_org: Option<&'static str>,
+    pub holder_org: Option<CanonicalId>,
 }
 
-static LANE_CLUSTER_ROCKS: std::sync::LazyLock<BTreeMap<OrbitalClusterId, [ClusterRockSpec; 3]>> =
-    std::sync::LazyLock::new(|| {
-        let mut map = BTreeMap::new();
-        if let Ok(pack) = crate::pack::load_pack(crate::definitions::content::LANE_JSON) {
-            for entry in pack.entries().values() {
-                let crate::pack::PackEntry::Location(loc) = entry else {
-                    continue;
-                };
-                for cdef in &loc.clusters {
-                    let Some(cid) = OrbitalClusterId::parse(cdef.id.as_str()) else {
-                        continue;
-                    };
-                    if cdef.rocks.len() < 3 {
-                        continue;
-                    }
-                    let parse_rock = |r: &crate::pack::ClusterRockDef| -> ClusterRockSpec {
-                        let letter = r.letter;
-                        let alias: &'static str = Box::leak(r.alias.clone().into_boxed_str());
-                        let spectral =
-                            SpectralClass::parse(&r.spectral).unwrap_or(SpectralClass::CType);
-                        let tenure = r.tenure;
-                        let holder_org = r.holder_org.as_ref().map(|h| -> &'static str {
-                            Box::leak(h.as_str().to_owned().into_boxed_str())
-                        });
-                        ClusterRockSpec {
-                            letter,
-                            alias,
-                            spectral,
-                            pos_m: r.pos_m,
-                            vel_mmps: r.vel_mmps,
-                            gross_t: r.gross_t,
-                            tenure,
-                            holder_org,
-                        }
-                    };
-                    map.insert(
-                        cid,
-                        [
-                            parse_rock(&cdef.rocks[0]),
-                            parse_rock(&cdef.rocks[1]),
-                            parse_rock(&cdef.rocks[2]),
-                        ],
-                    );
-                }
-            }
-        }
-        map
-    });
+/// Authored orbital asteroid cluster resolved from the applied lane pack (`SF.R22`, `D-35-17`).
+#[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize)]
+pub struct ResolvedOrbitalCluster {
+    /// Canonical cluster identifier (`ceres_halo`, `kirkwood_gap_3_1`, `pallas_inclined_belt`, `saturn_b_ring_edge`, or any pack-authored cluster).
+    pub id: CanonicalId,
+    /// Display label of the cluster from content.
+    pub label: String,
+    /// Security/tenure zone (`Core` vs `Frontier`) from content.
+    pub zone: ClusterZone,
+    /// Anchor ephemeris body id (`ceres`, `pallas`, `titan`, etc.) from content.
+    pub anchor_body: CanonicalId,
+    /// Authored asteroid pockets (`A`, `B`, `C`, ...) from content.
+    pub rocks: Vec<ClusterRockSpec>,
+}
 
-impl OrbitalClusterId {
-    /// All four canonical orbital clusters (`doc 35` §7.1).
-    pub const ALL: [Self; 4] = [
-        Self::CeresHalo,
-        Self::KirkwoodGap31,
-        Self::PallasInclinedBelt,
-        Self::SaturnBRingEdge,
-    ];
-
-    /// Canonical identifier string (`"ceres_halo"`, `"kirkwood_gap_3_1"`,
-    /// `"pallas_inclined_belt"`, `"saturn_b_ring_edge"`).
+impl ResolvedOrbitalCluster {
+    /// Construct a [`ResolvedOrbitalCluster`] from an authored [`crate::pack::OrbitalClusterDef`].
     #[must_use]
-    pub const fn as_str(self) -> &'static str {
-        match self {
-            Self::CeresHalo => "ceres_halo",
-            Self::KirkwoodGap31 => "kirkwood_gap_3_1",
-            Self::PallasInclinedBelt => "pallas_inclined_belt",
-            Self::SaturnBRingEdge => "saturn_b_ring_edge",
+    pub fn from_def(cdef: &crate::pack::OrbitalClusterDef) -> Self {
+        let zone = ClusterZone::parse(&cdef.zone).unwrap_or(ClusterZone::Frontier);
+        let rocks = cdef
+            .rocks
+            .iter()
+            .map(|r| ClusterRockSpec {
+                letter: r.letter,
+                alias: r.alias.clone(),
+                spectral: SpectralClass::parse(&r.spectral).unwrap_or(SpectralClass::CType),
+                pos_m: r.pos_m,
+                vel_mmps: r.vel_mmps,
+                gross_t: r.gross_t,
+                tenure: r.tenure,
+                holder_org: r.holder_org.clone(),
+            })
+            .collect();
+        Self {
+            id: cdef.id.clone(),
+            label: cdef.label.clone(),
+            zone,
+            anchor_body: cdef.anchor_body.clone(),
+            rocks,
         }
     }
 
-    /// Display name of the orbital cluster.
+    /// Canonical identifier string (`"ceres_halo"`, etc.).
     #[must_use]
-    pub const fn display_name(self) -> &'static str {
-        match self {
-            Self::CeresHalo => "Ceres Halo Commons",
-            Self::KirkwoodGap31 => "3:1 Kirkwood Resonance Gap",
-            Self::PallasInclinedBelt => "Pallas Inclined Belt",
-            Self::SaturnBRingEdge => "Saturn B-Ring Edge",
-        }
+    pub fn as_str(&self) -> &str {
+        self.id.as_str()
+    }
+
+    /// Display name of the orbital cluster from content.
+    #[must_use]
+    pub fn display_name(&self) -> &str {
+        &self.label
     }
 
     /// Security/tenure zone (`Core` vs `Frontier`).
     #[must_use]
-    pub const fn zone(self) -> ClusterZone {
-        match self {
-            Self::CeresHalo => ClusterZone::Core,
-            Self::KirkwoodGap31 | Self::PallasInclinedBelt | Self::SaturnBRingEdge => {
-                ClusterZone::Frontier
-            }
-        }
+    pub const fn zone(&self) -> ClusterZone {
+        self.zone
     }
 
-    /// Anchor ephemeris body id (`ceres`, `pallas`, `titan`).
+    /// Anchor ephemeris body id (`ceres`, `pallas`, `titan`, etc.).
     #[must_use]
-    pub const fn anchor_body(self) -> &'static str {
-        match self {
-            Self::CeresHalo | Self::KirkwoodGap31 => "ceres",
-            Self::PallasInclinedBelt => "pallas",
-            Self::SaturnBRingEdge => "titan",
-        }
-    }
-
-    /// Parse a cluster identifier or short alias.
-    #[must_use]
-    pub fn parse(token: &str) -> Option<Self> {
-        match token.trim().to_ascii_lowercase().as_str() {
-            "ceres_halo" | "ceres" | "halo" => Some(Self::CeresHalo),
-            "kirkwood_gap_3_1" | "kirkwood" | "kirkwood_gap" => Some(Self::KirkwoodGap31),
-            "pallas_inclined_belt" | "pallas" | "pallas_belt" => Some(Self::PallasInclinedBelt),
-            "saturn_b_ring_edge" | "saturn" | "saturn_b_ring" | "b_ring" => {
-                Some(Self::SaturnBRingEdge)
-            }
-            _ => None,
-        }
+    pub fn anchor_body(&self) -> &str {
+        self.anchor_body.as_str()
     }
 
     /// Convert to a [`CanonicalId`].
     #[must_use]
-    pub fn canonical_id(self) -> Option<CanonicalId> {
-        CanonicalId::new(self.as_str()).ok()
+    pub fn canonical_id(&self) -> Option<CanonicalId> {
+        Some(self.id.clone())
     }
 
-    /// Authored asteroid pockets (`A`, `B`, `C`) in this cluster (`SF.R14`, `D-35-17`).
+    /// Authored asteroid pockets (`A`, `B`, `C`, ...) in this cluster.
     #[must_use]
-    pub fn rocks(self) -> &'static [ClusterRockSpec; 3] {
-        static EMPTY: [ClusterRockSpec; 3] = [
-            ClusterRockSpec {
-                letter: 'A',
-                alias: "rock_1",
-                spectral: SpectralClass::CType,
-                pos_m: [0, 0, 0],
-                vel_mmps: [0, 0, 0],
-                gross_t: 0,
-                tenure: Tenure::Open,
-                holder_org: None,
-            },
-            ClusterRockSpec {
-                letter: 'B',
-                alias: "rock_2",
-                spectral: SpectralClass::CType,
-                pos_m: [0, 0, 0],
-                vel_mmps: [0, 0, 0],
-                gross_t: 0,
-                tenure: Tenure::Open,
-                holder_org: None,
-            },
-            ClusterRockSpec {
-                letter: 'C',
-                alias: "rock_3",
-                spectral: SpectralClass::CType,
-                pos_m: [0, 0, 0],
-                vel_mmps: [0, 0, 0],
-                gross_t: 0,
-                tenure: Tenure::Open,
-                holder_org: None,
-            },
-        ];
-        LANE_CLUSTER_ROCKS.get(&self).unwrap_or(&EMPTY)
+    pub fn rocks(&self) -> &[ClusterRockSpec] {
+        &self.rocks
     }
 
-    /// Look up a rock in this cluster by block letter (`'A'`..`'C'`) or alias (`"rock_1"`..`"rock_3"`).
+    /// Look up a rock in this cluster by block letter (`'A'`..`'Z'`) or alias (`"rock_1"`, etc.).
     #[must_use]
-    pub fn rock(self, token: &str) -> Option<&'static ClusterRockSpec> {
+    pub fn rock(&self, token: &str) -> Option<&ClusterRockSpec> {
         let trimmed = token.trim();
-        self.rocks().iter().find(|spec| {
+        self.rocks.iter().find(|spec| {
             spec.letter
                 .eq_ignore_ascii_case(&trimmed.chars().next().unwrap_or('\0'))
                 && trimmed.len() == 1
                 || spec.alias.eq_ignore_ascii_case(trimmed)
         })
     }
+}
+
+/// Resolve all orbital clusters authored in `w`'s applied / loaded campaign-seed packs (`SF.R22`, `D-35-17`).
+#[must_use]
+pub fn all_orbital_clusters(w: &mush_core::World) -> Vec<ResolvedOrbitalCluster> {
+    let mut map: BTreeMap<CanonicalId, ResolvedOrbitalCluster> = BTreeMap::new();
+    if let Some(store) = w.module_state::<crate::store::TacsimStore>() {
+        // First collect from any loaded campaign-seed packs, then let applied versions override.
+        for loaded in store.packs() {
+            if loaded.pack.manifest().kind() != mush_content::PackKind::CampaignSeed {
+                continue;
+            }
+            for entry in loaded.pack.entries().values() {
+                let crate::pack::PackEntry::Location(loc) = entry else {
+                    continue;
+                };
+                for cdef in &loc.clusters {
+                    map.insert(cdef.id.clone(), ResolvedOrbitalCluster::from_def(cdef));
+                }
+            }
+        }
+        for loaded in store.packs() {
+            let id = loaded.pack.manifest().id();
+            let ver = loaded.pack.manifest().version();
+            if !store.is_applied(id, ver) && store.applied_version(id) != Some(ver) {
+                continue;
+            }
+            for entry in loaded.pack.entries().values() {
+                let crate::pack::PackEntry::Location(loc) = entry else {
+                    continue;
+                };
+                for cdef in &loc.clusters {
+                    map.insert(cdef.id.clone(), ResolvedOrbitalCluster::from_def(cdef));
+                }
+            }
+        }
+    }
+    if map.is_empty()
+        && let Ok(pack) = crate::pack::load_pack(crate::definitions::content::LANE_JSON)
+    {
+        for entry in pack.entries().values() {
+            let crate::pack::PackEntry::Location(loc) = entry else {
+                continue;
+            };
+            for cdef in &loc.clusters {
+                map.insert(cdef.id.clone(), ResolvedOrbitalCluster::from_def(cdef));
+            }
+        }
+    }
+    map.into_values().collect()
+}
+
+/// Look up an authored [`ResolvedOrbitalCluster`] by its canonical id in `w`.
+#[must_use]
+pub fn cluster_by_id(w: &mush_core::World, id: &CanonicalId) -> Option<ResolvedOrbitalCluster> {
+    all_orbital_clusters(w).into_iter().find(|c| &c.id == id)
+}
+
+/// Look up an authored [`ResolvedOrbitalCluster`] by canonical id, label, short alias, or prefix in `w`.
+#[must_use]
+pub fn lookup_orbital_cluster(w: &mush_core::World, token: &str) -> Option<ResolvedOrbitalCluster> {
+    let q = token.trim();
+    if q.is_empty() {
+        return None;
+    }
+    let clusters = all_orbital_clusters(w);
+    if let Some(exact) = clusters
+        .iter()
+        .find(|c| c.id.as_str().eq_ignore_ascii_case(q) || c.label.eq_ignore_ascii_case(q))
+    {
+        return Some(exact.clone());
+    }
+    let q_lower = q.to_ascii_lowercase();
+    let canonical_alias = match q_lower.as_str() {
+        "ceres" | "halo" => Some("ceres_halo"),
+        "kirkwood" | "kirkwood_gap" => Some("kirkwood_gap_3_1"),
+        "pallas" | "pallas_belt" => Some("pallas_inclined_belt"),
+        "saturn" | "saturn_b_ring" | "b_ring" => Some("saturn_b_ring_edge"),
+        _ => None,
+    };
+    if let Some(alias_id) = canonical_alias
+        && let Some(found) = clusters.iter().find(|c| c.id.as_str() == alias_id)
+    {
+        return Some(found.clone());
+    }
+    clusters.into_iter().find(|c| {
+        c.id.as_str().to_ascii_lowercase().starts_with(&q_lower)
+            || c.label.to_ascii_lowercase().contains(&q_lower)
+            || c.anchor_body.as_str().eq_ignore_ascii_case(q)
+    })
 }
 
 /// Parse an [`OreFamily`] from a player token (`metals`/`metal_ore`, `volatiles`/`ice_ore`,
@@ -468,11 +476,11 @@ pub fn check_velocity_match_gate(
     Ok((dist_m, rel_speed_mmps))
 }
 
-/// Laid-up world objects and vaults for an [`OrbitalClusterId`].
+/// Laid-up world objects and vaults for an authored orbital cluster (`SF.R22`, `D-35-17`).
 #[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize)]
 pub struct ClusterSiteState {
-    /// Cluster identifier.
-    pub cluster: OrbitalClusterId,
+    /// Canonical cluster identifier.
+    pub cluster: CanonicalId,
     /// Host room holding the `DARK` block place `Thing`s and cluster clerk.
     pub host_room: ObjId,
     /// `DARK` clerk `Thing` that submits `DepositOpen`, `ClaimTenure` seeds, and `tacsim_site_work`.
@@ -541,8 +549,8 @@ pub struct DroneSortieState {
 pub struct ActiveClusterMiningSession {
     /// Carrier hull [`ObjId`].
     pub hull: ObjId,
-    /// Active orbital cluster.
-    pub cluster: OrbitalClusterId,
+    /// Active orbital cluster canonical id.
+    pub cluster: CanonicalId,
     /// Ship's position in cluster coordinates (`[x_m, y_m, z_m]`).
     pub ship_pos_m: [i64; 3],
     /// Ship's velocity in cluster coordinates (`[vx_mmps, vy_mmps, vz_mmps]`).
@@ -572,7 +580,7 @@ pub struct ActiveClusterMiningSession {
 impl ActiveClusterMiningSession {
     /// Construct a fresh [`ActiveClusterMiningSession`] for `hull` arriving at `cluster` (`SF.R9`, `D-35-5`).
     #[must_use]
-    pub fn new(hull: ObjId, cluster: OrbitalClusterId, now_ic: i64) -> Self {
+    pub fn new(hull: ObjId, cluster: CanonicalId, now_ic: i64) -> Self {
         Self {
             hull,
             cluster,
@@ -598,7 +606,7 @@ pub struct PendingSpaceMineDraw {
     /// Unique receipt (`"{cluster}/{letter}/{family}/draw/{seq}"`).
     pub receipt: String,
     /// Cluster whose clerk submits the transfer.
-    pub cluster: OrbitalClusterId,
+    pub cluster: CanonicalId,
     ///Cluster clerk [`ObjId`].
     pub clerk: ObjId,
     /// Carrier hull receiving the ore.
@@ -626,8 +634,8 @@ pub struct PendingSpaceMineDraw {
 pub struct ClusterTenureOrder {
     /// Acting licensed pilot.
     pub actor: ObjId,
-    /// Target orbital cluster.
-    pub cluster: OrbitalClusterId,
+    /// Target orbital cluster canonical id.
+    pub cluster: CanonicalId,
     /// Target rock block letter (`'A'`, `'B'`, `'C'`).
     pub letter: char,
     /// Whether this is a contest (`true`) or a fresh stake (`false`).
@@ -690,13 +698,13 @@ pub fn build_updated_pocket_cursor(
 /// and cluster clerk `Thing` exist for `cluster`.
 pub fn ensure_cluster_laid_up(
     ctx: &mut Ctx<'_>,
-    cluster: OrbitalClusterId,
+    cluster: &ResolvedOrbitalCluster,
     fallback_room: ObjId,
 ) -> Result<ClusterSiteState, String> {
     if let Some(existing) = ctx
         .w
         .module_state::<super::tick::SpaceBubbleBook>()
-        .and_then(|book| book.cluster_sites.get(&cluster).cloned())
+        .and_then(|book| book.cluster_sites.get(&cluster.id).cloned())
     {
         return Ok(existing);
     }
@@ -706,9 +714,7 @@ pub fn ensure_cluster_laid_up(
         .get(ctx.actor)
         .and_then(|obj| obj.location)
         .unwrap_or(fallback_room);
-    let cluster_cid = cluster
-        .canonical_id()
-        .ok_or_else(|| "invalid cluster canonical id".to_owned())?;
+    let cluster_cid = cluster.id.clone();
     let saved_actor = ctx.actor;
     ctx.actor = mush_core::GOD;
     let clerk_res = crate::port::site::dark_thing(
@@ -778,7 +784,7 @@ pub fn ensure_cluster_laid_up(
     }
 
     let state = ClusterSiteState {
-        cluster,
+        cluster: cluster_cid.clone(),
         host_room,
         clerk,
         blocks,
@@ -786,7 +792,7 @@ pub fn ensure_cluster_laid_up(
         vaults,
     };
     if let Some(book) = ctx.w.module_state_mut::<super::tick::SpaceBubbleBook>() {
-        book.cluster_sites.insert(cluster, state.clone());
+        book.cluster_sites.insert(cluster_cid, state.clone());
     }
 
     Ok(state)
@@ -848,15 +854,12 @@ pub fn next_cluster_opening(
             .iter()
             .find(|(_, id)| **id == actor)
         {
-            let cluster_cid = site_state.cluster.canonical_id()?;
-            let spec = site_state
-                .cluster
-                .rocks()
-                .iter()
-                .find(|r| r.letter == letter)?;
+            let cluster_cid = &site_state.cluster;
+            let resolved = cluster_by_id(w, cluster_cid)?;
+            let spec = resolved.rocks().iter().find(|r| r.letter == letter)?;
             let place = *site_state.blocks.get(&letter)?;
             let vault = *site_state.vaults.get(&letter)?;
-            let rec = receipt(&cluster_cid, letter, family);
+            let rec = receipt(cluster_cid, letter, family);
             let deposit_id = mush_industry::derive_system_deposit_id(&rec).ok()?;
             if matches!(state.get(deposits, &deposit_id), Ok(None)) {
                 let good = CanonicalId::new(ore_good(family)).ok()?;
@@ -883,13 +886,14 @@ pub fn next_cluster_opening(
     }
 
     let site_state = book.cluster_sites.values().find(|s| s.clerk == actor)?;
-    let cluster_cid = site_state.cluster.canonical_id()?;
+    let cluster_cid = &site_state.cluster;
+    let resolved = cluster_by_id(w, cluster_cid)?;
 
-    for spec in site_state.cluster.rocks() {
+    for spec in resolved.rocks() {
         let place = *site_state.blocks.get(&spec.letter)?;
         let vault = *site_state.vaults.get(&spec.letter)?;
         for &family in spec.spectral.families() {
-            let rec = receipt(&cluster_cid, spec.letter, family);
+            let rec = receipt(cluster_cid, spec.letter, family);
             let deposit_id = mush_industry::derive_system_deposit_id(&rec).ok()?;
             if matches!(state.get(deposits, &deposit_id), Ok(None)) {
                 let good = CanonicalId::new(ore_good(family)).ok()?;
@@ -939,22 +943,23 @@ pub fn next_cluster_tenure(engine: &Engine, actor: ObjId) -> Option<TenureAct> {
         if matched_letter.is_none() && site_state.clerk != actor {
             continue;
         }
-        let cluster_cid = site_state.cluster.canonical_id()?;
+        let cluster_cid = &site_state.cluster;
+        let resolved = cluster_by_id(w, cluster_cid)?;
         let term_at = now.checked_add(crate::surface::tenure::SEEDED_TERM_IC_SECS)?;
-        for spec in site_state.cluster.rocks() {
+        for spec in resolved.rocks() {
             if let Some(only_letter) = matched_letter
                 && spec.letter != only_letter
             {
                 continue;
             }
-            let (Tenure::Held, Some(holder_str)) = (spec.tenure, spec.holder_org) else {
+            let (Tenure::Held, Some(holder_cid)) = (spec.tenure, spec.holder_org.as_ref()) else {
                 continue;
             };
             let place = *site_state.blocks.get(&spec.letter)?;
             // Ensure all deposits on this rock are open before seeding tenure.
             let mut opened = Vec::new();
             for &family in spec.spectral.families() {
-                let rec = receipt(&cluster_cid, spec.letter, family);
+                let rec = receipt(cluster_cid, spec.letter, family);
                 let dep_id = mush_industry::derive_system_deposit_id(&rec).ok()?;
                 let dep = state.get(&industry.0.deposits, &dep_id).ok()??;
                 opened.push(dep.id());
@@ -967,9 +972,8 @@ pub fn next_cluster_tenure(engine: &Engine, actor: ObjId) -> Option<TenureAct> {
             if existing.as_ref().is_some_and(|r| r.claim.is_some()) {
                 continue;
             }
-            let holder_cid = CanonicalId::new(holder_str).ok()?;
-            let holder = org_principal(w, &holder_cid).unwrap_or_else(|| issuer.clone());
-            let game = TenureGame::new(&cluster_cid, spec.letter, "seed_held");
+            let holder = org_principal(w, holder_cid).unwrap_or_else(|| issuer.clone());
+            let game = TenureGame::new(cluster_cid, spec.letter, "seed_held");
             return Some(TenureAct {
                 receipt: SmolStr::new(format!(
                     "{}{cluster_cid}/{}/{}",
@@ -996,16 +1000,13 @@ pub fn next_cluster_tenure(engine: &Engine, actor: ObjId) -> Option<TenureAct> {
     // 2. Licensed player's pending stake or contest order (`+mine/stake`, `+mine/contest`).
     let order = book.cluster_tenure_orders.get(&actor)?;
     let site_state = book.cluster_sites.get(&order.cluster)?;
-    let cluster_cid = order.cluster.canonical_id()?;
+    let cluster_cid = &order.cluster;
+    let resolved = cluster_by_id(w, cluster_cid)?;
     let place = *site_state.blocks.get(&order.letter)?;
-    let spec = order
-        .cluster
-        .rocks()
-        .iter()
-        .find(|r| r.letter == order.letter)?;
+    let spec = resolved.rocks().iter().find(|r| r.letter == order.letter)?;
     let mut deposits = Vec::new();
     for &family in spec.spectral.families() {
-        let rec = receipt(&cluster_cid, order.letter, family);
+        let rec = receipt(cluster_cid, order.letter, family);
         let dep_id = mush_industry::derive_system_deposit_id(&rec).ok()?;
         if state.get(&industry.0.deposits, &dep_id).ok()?.is_some() {
             deposits.push(dep_id);
@@ -1095,7 +1096,7 @@ pub fn next_cluster_tenure(engine: &Engine, actor: ObjId) -> Option<TenureAct> {
         )
     };
 
-    let mut game = TenureGame::new(&cluster_cid, order.letter, kind_word);
+    let mut game = TenureGame::new(cluster_cid, order.letter, kind_word);
     game.declared = order.declared;
     game.account = account;
     Some(TenureAct {
@@ -1184,7 +1185,7 @@ pub fn rock_pool_tonnes(ctx: &Ctx<'_>, rock_vault: VaultId, family: OreFamily) -
 #[must_use]
 pub fn cluster_rock_tenure_word(
     ctx: &Ctx<'_>,
-    cluster: OrbitalClusterId,
+    cluster: &CanonicalId,
     spec: &ClusterRockSpec,
     viewer: ObjId,
     now_ic: i64,
@@ -1192,12 +1193,9 @@ pub fn cluster_rock_tenure_word(
     if spec.tenure == Tenure::Commons {
         return "commons (Freeport Registry)".to_owned();
     }
-    let Some(cluster_cid) = cluster.canonical_id() else {
-        return "open".to_owned();
-    };
     if let Some(handles) = ctx.w.module_state::<crate::port::families::PortHandles>() {
         let key = BlockKey {
-            site: cluster_cid,
+            site: cluster.clone(),
             letter: spec.letter,
         };
         if let Ok(Some(record)) = ctx.action_state(&handles.families.claims, &key)
@@ -1217,7 +1215,7 @@ pub fn cluster_rock_tenure_word(
             );
         }
     }
-    if let (Tenure::Held, Some(org)) = (spec.tenure, spec.holder_org) {
+    if let (Tenure::Held, Some(org)) = (spec.tenure, spec.holder_org.as_ref()) {
         return format!("held by {org}");
     }
     "open".to_owned()
@@ -1283,6 +1281,9 @@ pub fn step_clusters_on_tick(ctx: &mut Ctx<'_>, now: ClockStamp) {
         else {
             continue;
         };
+        let Some(resolved_cluster) = cluster_by_id(ctx.w, &session_snapshot.cluster) else {
+            continue;
+        };
 
         let dt_ic_s = now.at.saturating_sub(session_snapshot.last_ic_s).max(1);
         let mut next_pos = session_snapshot.ship_pos_m;
@@ -1293,11 +1294,7 @@ pub fn step_clusters_on_tick(ctx: &mut Ctx<'_>, now: ClockStamp) {
         // at 1,200 m per tick step (requiring multiple ticks to cross from 3,800 m into the 2,000 m
         // velocity-match envelope, `SF.R9` §8) and brake relative velocity to `< 2,000 mm/s`.
         if let Some(letter) = session_snapshot.approaching_rock
-            && let Some(spec) = session_snapshot
-                .cluster
-                .rocks()
-                .iter()
-                .find(|r| r.letter == letter)
+            && let Some(spec) = resolved_cluster.rocks().iter().find(|r| r.letter == letter)
         {
             let target_pos = [spec.pos_m[0] - 600, spec.pos_m[1], spec.pos_m[2]];
             let target_vel = spec.vel_mmps;
@@ -1321,11 +1318,7 @@ pub fn step_clusters_on_tick(ctx: &mut Ctx<'_>, now: ClockStamp) {
                 next_vel = [target_vel[0] + 8_000, target_vel[1], target_vel[2]];
             }
         } else if let Some(letter) = session_snapshot.matched_rock
-            && let Some(spec) = session_snapshot
-                .cluster
-                .rocks()
-                .iter()
-                .find(|r| r.letter == letter)
+            && let Some(spec) = resolved_cluster.rocks().iter().find(|r| r.letter == letter)
         {
             next_vel = spec.vel_mmps;
         } else {
@@ -1340,7 +1333,7 @@ pub fn step_clusters_on_tick(ctx: &mut Ctx<'_>, now: ClockStamp) {
         let mut hold_room_t = hold_cap_t.saturating_sub(hold_used_t);
         let hold_vault = crate::port::ship::hull_view(ctx.w, hull)
             .and_then(|v| crate::port::ship::hold_vault(ctx.w, &v));
-        let cluster_cid = session_snapshot.cluster.canonical_id();
+        let cluster_cid = Some(session_snapshot.cluster.clone());
 
         let mut completed_draws: Vec<(char, OreFamily, u64, ObjId, Option<ExcursionId>)> =
             Vec::new();
@@ -1388,7 +1381,9 @@ pub fn step_clusters_on_tick(ctx: &mut Ctx<'_>, now: ClockStamp) {
             } else {
                 let mut updated = drone.clone();
                 if let Some(res) = super::picket::run_drone_rhai_think(
+                    ctx.w.module_state::<crate::store::TacsimStore>(),
                     updated.excursion_id.tv,
+                    updated.mind_seal.as_ref(),
                     session_snapshot.ship_pos_m,
                     updated.mind_think_seq,
                     &updated.mind_memory,
@@ -1479,7 +1474,7 @@ pub fn step_clusters_on_tick(ctx: &mut Ctx<'_>, now: ClockStamp) {
                     let draw_receipt = format!("{rec_base}/draw/{seq}");
                     book.pending_space_mine_draws.push(PendingSpaceMineDraw {
                         receipt: draw_receipt,
-                        cluster: session_snapshot.cluster,
+                        cluster: session_snapshot.cluster.clone(),
                         clerk: site_snapshot.clerk,
                         hull,
                         operator,
@@ -1520,7 +1515,8 @@ pub fn step_clusters_on_tick(ctx: &mut Ctx<'_>, now: ClockStamp) {
 
     let mut fire = crate::port_tick::Fire::new(BTreeMap::new());
     for site in &sites {
-        let Some(cluster_cid) = site.cluster.canonical_id() else {
+        let cluster_cid = site.cluster.clone();
+        let Some(resolved_cluster) = cluster_by_id(ctx.w, &cluster_cid) else {
             continue;
         };
 
@@ -1558,8 +1554,11 @@ pub fn step_clusters_on_tick(ctx: &mut Ctx<'_>, now: ClockStamp) {
         //     block's own `place` `Thing` (`site.blocks[&spec.letter]`).
         if opened_all {
             let issuer_cid = CanonicalId::new("freeport_registry").ok();
-            for spec in site.cluster.rocks() {
-                if !matches!((spec.tenure, spec.holder_org), (Tenure::Held, Some(_))) {
+            for spec in resolved_cluster.rocks() {
+                if !matches!(
+                    (spec.tenure, spec.holder_org.as_ref()),
+                    (Tenure::Held, Some(_))
+                ) {
                     continue;
                 }
                 let Some(&block_place) = site.blocks.get(&spec.letter) else {

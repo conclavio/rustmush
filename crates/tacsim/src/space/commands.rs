@@ -790,7 +790,9 @@ fn build_tier1_space_panel_payloads(
         let vy = i128::from(cs.ship_vel_mmps[1]);
         let vz = i128::from(cs.ship_vel_mmps[2]);
         let spd = (super::weapons::isqrt_i128(vx * vx + vy * vy + vz * vz) / 1_000) as i64;
-        (cs.cluster.anchor_body().to_owned(), spd)
+        let anchor_body = super::mining::cluster_by_id(w, &cs.cluster)
+            .map_or_else(|| "ceres".to_owned(), |c| c.anchor_body.as_str().to_owned());
+        (anchor_body, spd)
     };
 
     let callsign = display_name(w, hull);
@@ -2527,18 +2529,16 @@ pub(crate) struct ResolvedSpaceCluster {
 }
 
 /// Resolve an orbital cluster token (`ceres_halo`, `pallas_inclined_belt`, etc.) for `+ship/undock` (`SF.R17`).
-pub(crate) fn resolve_cluster_by_query(_w: &World, query: &str) -> Option<ResolvedSpaceCluster> {
+pub(crate) fn resolve_cluster_by_query(w: &World, query: &str) -> Option<ResolvedSpaceCluster> {
     let trimmed = query.trim().to_ascii_lowercase();
     if trimmed == "pallas" {
         return None;
     }
-    let cluster = super::mining::OrbitalClusterId::parse(&trimmed)?;
-    let id = cluster.canonical_id()?;
-    let anchor_body = mush_core::CanonicalId::new(cluster.anchor_body()).ok()?;
+    let cluster = super::mining::lookup_orbital_cluster(w, &trimmed)?;
     Some(ResolvedSpaceCluster {
-        id,
-        display_name: cluster.display_name().to_owned(),
-        anchor_body,
+        id: cluster.id,
+        display_name: cluster.label,
+        anchor_body: cluster.anchor_body,
     })
 }
 
@@ -2677,7 +2677,7 @@ fn helm_autopilot(ctx: &mut Ctx<'_>) -> Result<(), CmdError> {
     });
 
     if matched_port.is_none()
-        && let Some(cluster) = super::mining::OrbitalClusterId::parse(&port_word)
+        && let Some(cluster) = super::mining::lookup_orbital_cluster(ctx.w, &port_word)
     {
         let (start_pos_km, start_vel_mps, origin_place, prepaid_unflown_t) = if let Some(ff) = ctx
             .w
@@ -2690,8 +2690,10 @@ fn helm_autopilot(ctx: &mut Ctx<'_>) -> Result<(), CmdError> {
             .module_state::<SpaceBubbleBook>()
             .and_then(|b| b.cluster_sessions.get(&hull).cloned())
         {
-            let body_id = mush_core::CanonicalId::new(cs.cluster.anchor_body())
-                .map_err(|e| CmdError::msg(e.to_string()))?;
+            let body_id = super::mining::cluster_by_id(ctx.w, &cs.cluster)
+                .map(|c| c.anchor_body)
+                .or_else(|| mush_core::CanonicalId::new("ceres").ok())
+                .ok_or_else(|| CmdError::msg("Invalid cluster anchor body."))?;
             let p = sky
                 .position_km(&body_id, now.at)
                 .unwrap_or(crate::sky::PosKm {
@@ -2712,8 +2714,7 @@ fn helm_autopilot(ctx: &mut Ctx<'_>) -> Result<(), CmdError> {
             ));
         };
 
-        let anchor_cid = mush_core::CanonicalId::new(cluster.anchor_body())
-            .map_err(|e| CmdError::msg(e.to_string()))?;
+        let anchor_cid = cluster.anchor_body.clone();
         let ff_pos = crate::sky::PosKm {
             x: start_pos_km[0],
             y: start_pos_km[1],
@@ -2781,9 +2782,7 @@ fn helm_autopilot(ctx: &mut Ctx<'_>) -> Result<(), CmdError> {
             )));
         }
 
-        let cluster_cid = cluster
-            .canonical_id()
-            .ok_or_else(|| CmdError::msg("Invalid cluster canonical ID."))?;
+        let cluster_cid = cluster.id.clone();
         let arrival_ic = now.at.saturating_add(plan.total_s.max(1));
         let record = SpaceFreeFlightRecord {
             hull,
@@ -2840,8 +2839,10 @@ fn helm_autopilot(ctx: &mut Ctx<'_>) -> Result<(), CmdError> {
             .module_state::<SpaceBubbleBook>()
             .and_then(|b| b.cluster_sessions.get(&hull).cloned())
         {
-            let anchor_id = mush_core::CanonicalId::new(cs.cluster.anchor_body())
-                .map_err(|e| CmdError::msg(e.to_string()))?;
+            let anchor_id = super::mining::cluster_by_id(ctx.w, &cs.cluster)
+                .map(|c| c.anchor_body)
+                .or_else(|| mush_core::CanonicalId::new("ceres").ok())
+                .ok_or_else(|| CmdError::msg("Invalid cluster anchor body."))?;
             let p = sky
                 .position_km(&anchor_id, now.at)
                 .unwrap_or(crate::sky::PosKm {
@@ -3000,8 +3001,10 @@ fn helm_autopilot(ctx: &mut Ctx<'_>) -> Result<(), CmdError> {
         .module_state::<SpaceBubbleBook>()
         .and_then(|b| b.cluster_sessions.get(&hull).cloned())
     {
-        let body_id = mush_core::CanonicalId::new(cs.cluster.anchor_body())
-            .map_err(|e| CmdError::msg(e.to_string()))?;
+        let body_id = super::mining::cluster_by_id(ctx.w, &cs.cluster)
+            .map(|c| c.anchor_body)
+            .or_else(|| mush_core::CanonicalId::new("ceres").ok())
+            .ok_or_else(|| CmdError::msg("Invalid cluster anchor body."))?;
         let p = sky
             .position_km(&body_id, now.at)
             .unwrap_or(crate::sky::PosKm {
@@ -3830,16 +3833,19 @@ fn helm_approach(ctx: &mut Ctx<'_>) -> Result<(), CmdError> {
         return Ok(());
     }
 
-    let cluster = ctx
+    let cluster_id = ctx
         .w
         .module_state::<SpaceBubbleBook>()
         .and_then(|b| b.cluster_sessions.get(&hull))
-        .map(|s| s.cluster)
+        .map(|s| s.cluster.clone())
         .ok_or_else(|| {
             CmdError::msg(
                 "Ship is not in an orbital cluster; use `+helm/autopilot <cluster_id>` first.",
             )
         })?;
+    let cluster = super::mining::cluster_by_id(ctx.w, &cluster_id).ok_or_else(|| {
+        CmdError::msg("Orbital cluster definition is not available in the applied pack.")
+    })?;
     let spec = cluster.rock(&raw).ok_or_else(|| {
         CmdError::msg(format!(
             "Unknown asteroid pocket `{raw}` in {} (choose A, B, or C).",
@@ -3893,16 +3899,19 @@ fn helm_match(ctx: &mut Ctx<'_>) -> Result<(), CmdError> {
     if raw.is_empty() {
         return Err(CmdError::msg("Usage: +helm/match <A|B|C>"));
     }
-    let (cluster, ship_pos_m, ship_vel_mmps) = ctx
+    let (cluster_id, ship_pos_m, ship_vel_mmps) = ctx
         .w
         .module_state::<SpaceBubbleBook>()
         .and_then(|b| b.cluster_sessions.get(&hull))
-        .map(|s| (s.cluster, s.ship_pos_m, s.ship_vel_mmps))
+        .map(|s| (s.cluster.clone(), s.ship_pos_m, s.ship_vel_mmps))
         .ok_or_else(|| {
             CmdError::msg(
                 "Ship is not in an orbital cluster; use `+helm/autopilot <cluster_id>` first.",
             )
         })?;
+    let cluster = super::mining::cluster_by_id(ctx.w, &cluster_id).ok_or_else(|| {
+        CmdError::msg("Orbital cluster definition is not available in the applied pack.")
+    })?;
     let spec = cluster.rock(raw).ok_or_else(|| {
         CmdError::msg(format!(
             "Unknown asteroid pocket `{raw}` in {} (choose A, B, or C).",
@@ -5508,6 +5517,8 @@ fn mine_status(ctx: &mut Ctx<'_>) -> Result<(), CmdError> {
         return Ok(());
     };
 
+    let cluster_label = super::mining::cluster_by_id(ctx.w, &session.cluster)
+        .map_or_else(|| session.cluster.as_str().to_owned(), |c| c.label);
     let matched = session
         .matched_rock
         .map_or_else(|| "none".to_owned(), |c| format!("Block {c}"));
@@ -5529,7 +5540,7 @@ fn mine_status(ctx: &mut Ctx<'_>) -> Result<(), CmdError> {
         format!(
             "Mining status aboard {} in {} (`{}`): pos=({}, {}, {}) m, vel=({}, {}, {}) mm/s, matched={matched}, laser={laser_desc}, active drones={}/{}, frontier bloom heat={}, `stow.ore` hold={used_t}/{hold_cap_t} t ({hold_cap_kg} kg capacity).",
             display_name(ctx.w, hull),
-            session.cluster.display_name(),
+            cluster_label,
             session.cluster.as_str(),
             session.ship_pos_m[0],
             session.ship_pos_m[1],
@@ -5567,14 +5578,17 @@ fn mine_ping(ctx: &mut Ctx<'_>) -> Result<(), CmdError> {
         .ok_or_else(|| {
             CmdError::msg("Ship is not in an orbital cluster; use `+helm/cluster <id>` first.")
         })?;
+    let cluster = super::mining::cluster_by_id(ctx.w, &session.cluster).ok_or_else(|| {
+        CmdError::msg("Orbital cluster definition is not available in the applied pack.")
+    })?;
 
-    let specs: Vec<&'static super::mining::ClusterRockSpec> = if raw.is_empty() {
-        session.cluster.rocks().iter().collect()
+    let specs: Vec<&super::mining::ClusterRockSpec> = if raw.is_empty() {
+        cluster.rocks().iter().collect()
     } else {
-        let one = session.cluster.rock(&raw).ok_or_else(|| {
+        let one = cluster.rock(&raw).ok_or_else(|| {
             CmdError::msg(format!(
                 "Unknown asteroid pocket `{raw}` in {} (choose A, B, or C).",
-                session.cluster.display_name()
+                cluster.display_name()
             ))
         })?;
         vec![one]
@@ -5593,8 +5607,8 @@ fn mine_ping(ctx: &mut Ctx<'_>) -> Result<(), CmdError> {
 
     let mut lines = vec![format!(
         "Prospecting ping in {} ({:?} zone):",
-        session.cluster.display_name(),
-        session.cluster.zone()
+        cluster.display_name(),
+        cluster.zone()
     )];
     for spec in specs {
         let dx = i128::from(session.ship_pos_m[0]) - i128::from(spec.pos_m[0]);
@@ -5620,7 +5634,7 @@ fn mine_ping(ctx: &mut Ctx<'_>) -> Result<(), CmdError> {
             }
         }
         let tenure_desc =
-            super::mining::cluster_rock_tenure_word(ctx, session.cluster, spec, ctx.actor, now_ic);
+            super::mining::cluster_rock_tenure_word(ctx, &session.cluster, spec, ctx.actor, now_ic);
         lines.push(format!(
             "  Block {} (`{}` {}): range {dist_m} m, rel speed {rel_mps:.2} m/s, reserves [{}], tenure: {tenure_desc}.",
             spec.letter,
@@ -5678,10 +5692,13 @@ fn mine_stake(ctx: &mut Ctx<'_>) -> Result<(), CmdError> {
         .ok_or_else(|| {
             CmdError::msg("Ship is not in an orbital cluster; use `+helm/cluster <id>` first.")
         })?;
-    let spec = session.cluster.rock(rock_token).ok_or_else(|| {
+    let cluster = super::mining::cluster_by_id(ctx.w, &session.cluster).ok_or_else(|| {
+        CmdError::msg("Orbital cluster definition is not available in the applied pack.")
+    })?;
+    let spec = cluster.rock(rock_token).ok_or_else(|| {
         CmdError::msg(format!(
             "Unknown asteroid pocket `{rock_token}` in {} (choose A, B, or C).",
-            session.cluster.display_name()
+            cluster.display_name()
         ))
     })?;
 
@@ -5689,15 +5706,12 @@ fn mine_stake(ctx: &mut Ctx<'_>) -> Result<(), CmdError> {
         return Err(CmdError::msg(
             crate::port::claims::STAKE_COMMONS
                 .replace("{block}", &spec.letter.to_string())
-                .replace("{site}", session.cluster.display_name()),
+                .replace("{site}", cluster.display_name()),
         ));
     }
 
     let now_ic = ctx.w.world_ic_now().at;
-    let cluster_cid = session
-        .cluster
-        .canonical_id()
-        .ok_or_else(|| CmdError::msg("Invalid cluster canonical id."))?;
+    let cluster_cid = cluster.id.clone();
 
     if let Some(handles) = ctx.w.module_state::<crate::port::families::PortHandles>() {
         let key = crate::surface::claims::BlockKey {
@@ -5711,7 +5725,7 @@ fn mine_stake(ctx: &mut Ctx<'_>) -> Result<(), CmdError> {
             return Err(CmdError::msg(format!(
                 "Block {} at {} is already held by {}; use `+mine/contest {}` within the 30-day contest window if eligible.",
                 spec.letter,
-                session.cluster.display_name(),
+                cluster.display_name(),
                 crate::port::claims::holder_name(ctx.w, &claim.holder),
                 spec.letter
             )));
@@ -5746,7 +5760,7 @@ fn mine_stake(ctx: &mut Ctx<'_>) -> Result<(), CmdError> {
             ctx.actor,
             super::mining::ClusterTenureOrder {
                 actor: ctx.actor,
-                cluster: session.cluster,
+                cluster: session.cluster.clone(),
                 letter: spec.letter,
                 is_contest: false,
                 declared,
@@ -5771,7 +5785,7 @@ fn mine_stake(ctx: &mut Ctx<'_>) -> Result<(), CmdError> {
         format!(
             "Filed Freeport Registry claim stake on Block {} at {} (168-day term, 30-day contest window).",
             spec.letter,
-            session.cluster.display_name()
+            cluster.display_name()
         ),
     );
     Ok(())
@@ -5797,18 +5811,18 @@ fn mine_contest(ctx: &mut Ctx<'_>) -> Result<(), CmdError> {
         .ok_or_else(|| {
             CmdError::msg("Ship is not in an orbital cluster; use `+helm/cluster <id>` first.")
         })?;
-    let spec = session.cluster.rock(raw).ok_or_else(|| {
+    let cluster = super::mining::cluster_by_id(ctx.w, &session.cluster).ok_or_else(|| {
+        CmdError::msg("Orbital cluster definition is not available in the applied pack.")
+    })?;
+    let spec = cluster.rock(raw).ok_or_else(|| {
         CmdError::msg(format!(
             "Unknown asteroid pocket `{raw}` in {} (choose A, B, or C).",
-            session.cluster.display_name()
+            cluster.display_name()
         ))
     })?;
 
     let now_ic = ctx.w.world_ic_now().at;
-    let cluster_cid = session
-        .cluster
-        .canonical_id()
-        .ok_or_else(|| CmdError::msg("Invalid cluster canonical id."))?;
+    let cluster_cid = cluster.id.clone();
     let handles = ctx
         .w
         .module_state::<crate::port::families::PortHandles>()
@@ -5825,14 +5839,14 @@ fn mine_contest(ctx: &mut Ctx<'_>) -> Result<(), CmdError> {
             CmdError::msg(format!(
                 "Block {} at {} has no claim to contest.",
                 spec.letter,
-                session.cluster.display_name()
+                cluster.display_name()
             ))
         })?;
     let claim = record.claim.as_ref().ok_or_else(|| {
         CmdError::msg(format!(
             "Block {} at {} has no active claim to contest.",
             spec.letter,
-            session.cluster.display_name()
+            cluster.display_name()
         ))
     })?;
     if !claim.live(now_ic) {
@@ -5856,7 +5870,7 @@ fn mine_contest(ctx: &mut Ctx<'_>) -> Result<(), CmdError> {
         return Err(CmdError::msg(format!(
             "The 30-day Registry contest window on Block {} at {} has closed.",
             spec.letter,
-            session.cluster.display_name()
+            cluster.display_name()
         )));
     }
 
@@ -5882,7 +5896,7 @@ fn mine_contest(ctx: &mut Ctx<'_>) -> Result<(), CmdError> {
             ctx.actor,
             super::mining::ClusterTenureOrder {
                 actor: ctx.actor,
-                cluster: session.cluster,
+                cluster: session.cluster.clone(),
                 letter: spec.letter,
                 is_contest: true,
                 declared,
@@ -5907,7 +5921,7 @@ fn mine_contest(ctx: &mut Ctx<'_>) -> Result<(), CmdError> {
         format!(
             "Filed Freeport Registry contest on Block {} at {} within the 30-day contest window.",
             spec.letter,
-            session.cluster.display_name()
+            cluster.display_name()
         ),
     );
     Ok(())
@@ -5942,10 +5956,13 @@ fn mine_laser(ctx: &mut Ctx<'_>) -> Result<(), CmdError> {
         .ok_or_else(|| {
             CmdError::msg("Ship is not in an orbital cluster; use `+helm/cluster <id>` first.")
         })?;
-    let spec = session.cluster.rock(rock_token).ok_or_else(|| {
+    let cluster = super::mining::cluster_by_id(ctx.w, &session.cluster).ok_or_else(|| {
+        CmdError::msg("Orbital cluster definition is not available in the applied pack.")
+    })?;
+    let spec = cluster.rock(rock_token).ok_or_else(|| {
         CmdError::msg(format!(
             "Unknown asteroid pocket `{rock_token}` in {} (choose A, B, or C).",
-            session.cluster.display_name()
+            cluster.display_name()
         ))
     })?;
 
@@ -6018,8 +6035,8 @@ fn mine_laser(ctx: &mut Ctx<'_>) -> Result<(), CmdError> {
     // Check if this is unleased/claim-jumped frontier extraction (`doc 35` §7.4): generate
     // thermal bloom (`+18` heat) and flag claim-jump, without scripting any rival spawn inside
     // `+mine/laser` (`35a` §3 #9).
-    let is_frontier_unleased = session.cluster.zone() == super::mining::ClusterZone::Frontier
-        && super::mining::cluster_rock_tenure_word(ctx, session.cluster, spec, ctx.actor, now_ic)
+    let is_frontier_unleased = cluster.zone() == super::mining::ClusterZone::Frontier
+        && super::mining::cluster_rock_tenure_word(ctx, &session.cluster, spec, ctx.actor, now_ic)
             != format!(
                 "your claim (until {}, contest window {}d)",
                 crate::port::licence::ic_stamp(now_ic + crate::surface::tenure::CLAIM_TERM_IC_SECS),
@@ -6120,10 +6137,13 @@ fn mine_drones(ctx: &mut Ctx<'_>) -> Result<(), CmdError> {
         .ok_or_else(|| {
             CmdError::msg("Ship is not in an orbital cluster; use `+helm/cluster <id>` first.")
         })?;
-    let spec = session.cluster.rock(rock_token).ok_or_else(|| {
+    let cluster = super::mining::cluster_by_id(ctx.w, &session.cluster).ok_or_else(|| {
+        CmdError::msg("Orbital cluster definition is not available in the applied pack.")
+    })?;
+    let spec = cluster.rock(rock_token).ok_or_else(|| {
         CmdError::msg(format!(
             "Unknown asteroid pocket `{rock_token}` in {} (choose A, B, or C).",
-            session.cluster.display_name()
+            cluster.display_name()
         ))
     })?;
 
@@ -6192,6 +6212,7 @@ fn mine_drones(ctx: &mut Ctx<'_>) -> Result<(), CmdError> {
     let now_ic = ctx.w.world_ic_now().at;
     let due_ic = now_ic.saturating_add(super::mining::DRONE_SORTIE_IC_SECS);
     let mut launched_ids = Vec::new();
+    let mut drone_excursions = Vec::new();
     for idx in 0..count {
         let slot = u8::try_from(active_count + idx + 1).unwrap_or(1);
         let drone_obj =
@@ -6207,10 +6228,17 @@ fn mine_drones(ctx: &mut Ctx<'_>) -> Result<(), CmdError> {
             "drone_mining",
             crate::minds::content::drone_mining_digest().0,
         );
-        let (mind_memory, mind_think_seq, mind_last_trace) =
-            super::picket::run_drone_rhai_think(drone_obj, session.ship_pos_m, 0, &[])
-                .filter(|r| r.fault.is_none())
-                .map_or_else(|| (Vec::new(), 0, Vec::new()), |r| (r.memory, 1, r.trace));
+        let (mind_memory, mind_think_seq, mind_last_trace) = super::picket::run_drone_rhai_think(
+            ctx.w.module_state::<crate::store::TacsimStore>(),
+            drone_obj,
+            mind_seal.as_ref(),
+            session.ship_pos_m,
+            0,
+            &[],
+        )
+        .filter(|r| r.fault.is_none())
+        .map_or_else(|| (Vec::new(), 0, Vec::new()), |r| (r.memory, 1, r.trace));
+        drone_excursions.push((drone_obj, slot, session.cluster.clone()));
         launched_ids.push((
             slot,
             excursion_id,
@@ -6220,6 +6248,7 @@ fn mine_drones(ctx: &mut Ctx<'_>) -> Result<(), CmdError> {
             mind_last_trace,
         ));
     }
+    let _ = super::tick::submit_drone_excursions(ctx, hull, drone_excursions);
 
     if let Some(book) = ctx.w.module_state_mut::<SpaceBubbleBook>()
         && let Some(sess_mut) = book.cluster_sessions.get_mut(&hull)

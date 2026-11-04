@@ -629,7 +629,7 @@ fn register_providers(
         (inventory_families.as_ref(), black_box.tow),
     )?;
     // Doc 35 cut SF.R21: the space bubble's prepared input tape family and provider.
-    crate::space::tick::register_bubble_input(reg, action_refs, outcome_refs)?;
+    crate::space::tick::register_bubble_input(reg, action_refs, outcome_refs, &port_families)?;
     // Doc 17h cut M8h: the `tacsim.house_attestation` tick and its RAM slot, unconditionally
     // (no agent, no visit).
     crate::house_attestation::register(reg)?;

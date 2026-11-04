@@ -1,0 +1,32 @@
+{
+  "corvette": {
+    "commander": "Customs Picket Commander",
+    "organization": "Republic Customs",
+    "hull_name": "Republic Customs Corvette",
+    "unit": "tacsim.unit.corvette",
+    "overlay": "tacsim.unit.corvette",
+    "doctrine": "kirkwood_picket",
+    "pos_m": [-6000, 400, 0],
+    "vel_mmps": [13800, 0, 0]
+  },
+  "raider": {
+    "commander": "Kaelen Vane",
+    "organization": "Kirkwood Corsairs",
+    "hull_name": "Belt Raider",
+    "unit": "tacsim.unit.corvette",
+    "overlay": "tacsim.unit.raider_heavy",
+    "doctrine": "belt_raider",
+    "pos_m": [120000, 0, 0],
+    "vel_mmps": [-20000, 0, 0]
+  },
+  "interdictor": {
+    "commander": "Interdictor Picket Commander",
+    "organization": null,
+    "hull_name": "Interdictor Picket",
+    "unit": "tacsim.unit.corvette",
+    "overlay": "tacsim.unit.corvette_interdictor",
+    "doctrine": "interdictor_patrol",
+    "pos_m": [18000, 0, 0],
+    "vel_mmps": [-20000, 0, 0]
+  }
+}
