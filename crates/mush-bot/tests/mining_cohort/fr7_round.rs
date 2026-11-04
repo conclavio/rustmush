@@ -28,7 +28,8 @@
 //!    `+tv/1 tow go` takes it in tow with rig 1 before the mark; the field admits the pair coupled;
 //!    the raider's fire strikes the casualty in tow; the captain's `+tv/1 release go` lets it go
 //!    under fire, and the snapshot stands it out of tow where it was ([`tow_struck_before_field`],
-//!    [`tow_released_under_fire`]).
+//!    [`tow_released_under_fire`]). The release is typed before beat 2's launch: once rig 2 flies,
+//!    the captain sits at its helm and `+tv/1` names no rig of theirs.
 //! 4. **A jammed sight** (FR.5 item 4): the wing's hull is the fixture design [`JAMMING_UNIT`]
 //!    (the line tank with every survivable hit jamming a part) worn to its armour floor; the
 //!    raider's machine gun on it jams the turret's parts until the sight is one, and the field's
@@ -181,7 +182,8 @@ fn named(engine: &mush_core::Engine, name: &str) -> ObjId {
 /// four rows, `driving_rig::RAMP_CELL` on every site), the raider's hull sixteen cells due east
 /// of it facing west, so the rigs that come down the ramp are its `W` and the nearest flight
 /// there; the wing's three cells west of the raider and three north (its `NW`); the casualty
-/// one cell west of the ramp, within a cell of the rig that lands there (beat 3). Answers
+/// one cell south of the ramp (off the raider's row, so the rig that lands on the ramp hides it
+/// from nobody), within a cell of that rig (beat 3). Answers
 /// `(raider, wing, casualty)`.
 fn stands(engine: &mush_core::Engine, ground: &Ground) -> [(i64, i64); 3] {
     let (x, y) = tacsim::surface::excursion::site_pad_cm(&engine.world, &cid(ground.entry));
@@ -190,7 +192,7 @@ fn stands(engine: &mush_core::Engine, ground: &Ground) -> [(i64, i64); 3] {
     [
         (ramp.0 + 16, ramp.1),
         (ramp.0 + 13, ramp.1 + 3),
-        (ramp.0 - 1, ramp.1),
+        (ramp.0, ramp.1 - 1),
     ]
 }
 
@@ -993,6 +995,21 @@ async fn round_story(ground: &'static Ground) {
     }
     assert!(struck, "the raider locks and fires on Concord");
 
+    // -- Beat 3b: the casualty struck while towed, then released under fire (FR.5b) -------
+    // Before the reinforcement: once rig 2 flies, the captain sits at its helm and `+tv/1` names
+    // no rig of theirs (the helm's own rig is the only one a slot can name).
+    let tow_b = tow_released_under_fire(
+        &rig,
+        &mut raider,
+        &mut cap,
+        ground,
+        &hulls,
+        rig1,
+        concord_letter,
+        &gun,
+    )
+    .await;
+
     // -- Beat 2: reinforcement from the pad (FR.3) ------------------------------------------
     let (said, text) = captain_says(
         &mut cap,
@@ -1007,8 +1024,7 @@ async fn round_story(ground: &'static Ground) {
     );
     let mut joined = None;
     for _ in 0..90 {
-        // The raider keeps the field engaged while the reinforcement comes down.
-        let _ = lock_and_fire(&mut raider, concord_letter, &gun).await;
+        // The field's idle bound is long: it holds with no round fired while rig 2 comes down.
         if let Some(record) = live(&rig, ground).await
             && party_of(&record, rig2).is_some()
         {
@@ -1028,19 +1044,6 @@ async fn round_story(ground: &'static Ground) {
         Some(concord_letter),
         "the captain, in rig 2's cab, reads Concord's party"
     );
-
-    // Beat 3b: the casualty struck while towed, then released under fire.
-    let tow_b = tow_released_under_fire(
-        &rig,
-        &mut raider,
-        &mut cap,
-        ground,
-        &hulls,
-        rig1,
-        concord_letter,
-        &gun,
-    )
-    .await;
 
     // -- Beat 4: a jammed sight (FR.5 item 4), by the raider's fire on its wing ---------------
     let mut dark = false;
