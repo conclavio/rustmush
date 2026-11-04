@@ -412,6 +412,11 @@ pub struct FieldHost {
     /// pilots are untouched by the gate and obey a delivered `HOLD FIRE` instead
     /// ([`crate::arena::state::Arena::holds_fire`]). `false` is the simulator's FREE (Q-21-9).
     pub weapons_hold: bool,
+    /// **The coupled tows, `(casualty, tug)`** (doc 40 cut FR.5, §4.1 item 5, Q-40-7): each
+    /// casualty admitted as a unit of its tug's party, coupled by `Arena::new` through
+    /// `Arena::couple` once the units are in hand. Empty for every practice match and for an IC
+    /// field with no tow; a join never carries one in this cut.
+    pub tows: Vec<(mush_core::ObjId, mush_core::ObjId)>,
 }
 
 impl FieldHost {
@@ -426,6 +431,7 @@ impl FieldHost {
             end: EndCondition::Elimination,
             every_class: false,
             weapons_hold: false,
+            tows: Vec::new(),
         }
     }
 

@@ -188,6 +188,31 @@ pub(crate) fn request(
     Ok(())
 }
 
+/// **The arena's answer to a tug's release** (doc 40 cut FR.5, §4.1 item 5, Q-40-7; the bridge's
+/// branch): for now traced only — the site record's tow retirement in the batch that takes the
+/// answer is `crate::surface::tow`'s, wired by the host half of the cut.
+pub(crate) fn on_released(
+    _ctx: &mut Ctx<'_>,
+    task: MatchId,
+    tug: ObjId,
+    outcome: Result<ObjId, String>,
+) {
+    match outcome {
+        Ok(casualty) => tracing::debug!(
+            task = task.0,
+            tug = tug.0,
+            casualty = casualty.0,
+            "tacsim: a tug released its casualty in the field"
+        ),
+        Err(reason) => tracing::debug!(
+            task = task.0,
+            tug = tug.0,
+            %reason,
+            "tacsim: a release in the field was refused"
+        ),
+    }
+}
+
 /// **The arena's answer** (the bridge's branch; this module's head, step 2).
 pub(crate) fn on_withdrawn(
     ctx: &mut Ctx<'_>,

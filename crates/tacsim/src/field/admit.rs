@@ -692,6 +692,7 @@ fn custody(
             end: EndCondition::Host,
             every_class: true,
             weapons_hold: true,
+            tows: Vec::new(),
         },
     })
 }

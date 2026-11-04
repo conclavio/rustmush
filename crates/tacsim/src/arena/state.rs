@@ -2407,6 +2407,18 @@ pub struct UnitState {
     /// that finds it at the bound is refused `queue_full`; a new second resets
     /// it. The machine's own orders are never counted. Hashed, with the window.
     pub orders_in_window: u32,
+    /// **The tug this casualty trails** (doc 40 cut FR.5, §4.1 item 5, Q-40-7), or `None` for
+    /// every unit under its own power — every unit of every practice match.
+    ///
+    /// Written by `Arena::couple` at check-out (the host's `FieldHost::tows`) and cleared by
+    /// `Arena::release`, by the tug's destruction (`Arena::destroy_unit`) and by the tug's exit
+    /// (`Arena::withdraw`); read by the step, which sets the casualty on the cell its tug left in
+    /// the tug's own turn (`crate::arena::tow`). Decoded by `serde` default and written only when
+    /// present, so `SNAPSHOT_FORMAT` stands; folded into [`crate::arena::hash::state_hash`]
+    /// **only when present** (item 1's sub-item 23), so every match without a tow hashes as it
+    /// did.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub coupled_to: Option<ObjId>,
 }
 
 // ---------------------------------------------------------------------------
@@ -3880,6 +3892,27 @@ pub enum ArenaError {
         /// The repeated id.
         unit: ObjId,
     },
+    /// **A release the kernel refuses** (doc 40 cut FR.5, §4.1 item 5, Q-40-7): a tug the field
+    /// does not hold, or one that tows nothing.
+    #[error("unit {tug} cannot release a tow: {reason}")]
+    TowRelease {
+        /// The unit asked to release.
+        tug: ObjId,
+        /// Why, by name.
+        reason: &'static str,
+    },
+    /// **A tow the kernel refuses** (doc 40 cut FR.5, §4.1 item 5, Q-40-7): an unknown unit, a
+    /// tug that is a wreck, parties that differ, a casualty already coupled, a tug already
+    /// towing, a tug under tow, a casualty itself towing, or no free ground beside the tug.
+    #[error("unit {casualty} cannot be coupled to {tug}: {reason}")]
+    Coupling {
+        /// The casualty.
+        casualty: ObjId,
+        /// The tug.
+        tug: ObjId,
+        /// Why, by name.
+        reason: &'static str,
+    },
     /// A unit's pose is not on the window.
     #[error(
         "unit {unit} was handed over at ({x_cm}, {y_cm}) cm, which is off the arena window: every \
@@ -4849,6 +4882,13 @@ impl Arena {
         // check-out is its caller and places every tank it checks out on a cell of its own.
         // **16b cut AF.1** moved it into `check_occupancy`, which the snapshot's
         // decode calls too, unchanged.
+        // **Doc 40 cut FR.5** (§4.1 item 5, Q-40-7): a casualty the surface stacked on its tug's
+        // cell is stood apart first, by the join's ring rule (`crate::arena::tow::unstack`), so
+        // a tow never meets this refusal; the coupling itself is laid below, once the arena is
+        // built.
+        for (casualty, tug) in &host.tows {
+            crate::arena::tow::unstack(&definition.terrain, &mut states, *casualty, *tug)?;
+        }
         check_occupancy(&definition.terrain, &states)?;
         let mut index = SpatialIndex::new(&definition.terrain);
         index.rebuild(&definition.terrain, &states);
@@ -4987,6 +5027,11 @@ impl Arena {
             relations,
             end,
         };
+        // **Doc 40 cut FR.5** (§4.1 item 5, Q-40-7): the host's tows, coupled before the opening
+        // hash (a practice match names none, so its opening moves by no byte).
+        for (casualty, tug) in &host.tows {
+            arena.couple(*casualty, *tug)?;
+        }
         let ids = arena.units.iter().map(|unit| unit.id).collect::<Vec<_>>();
         for unit in ids {
             arena.constrain_profile_hardware(unit);
@@ -5298,6 +5343,8 @@ impl Arena {
             // **16b cut M.1** (`T-82`): no seat has ordered anything yet.
             orders_window_s: 0,
             orders_in_window: 0,
+            // Doc 40 cut FR.5 (§4.1 item 5): under its own power until `Arena::couple`.
+            coupled_to: None,
         };
         // **Doc 40 cut FR.5** (§4.1 item 4, Q-40-3, Q-40-6): the rows a part's
         // condition word decides — the sight, the pod, the filter and the plant

@@ -1442,6 +1442,10 @@ impl Arena {
             // applies to a pass that does not run.
             state.receiver = None;
         }
+        // Doc 40 cut FR.5 (§4.1 item 5, Q-40-7): a tug destroyed drops its tow — the casualty
+        // stands where it is, its tug's last cell behind it. (A casualty destroyed stays coupled:
+        // a wreck is still towed.)
+        self.drop_tow(target);
         self.contacts.clear_viewer(target);
         // A wreck owns no destination. Release its reservation before another
         // same-side request chooses a formation fan cell.
@@ -1909,6 +1913,59 @@ impl Arena {
                 }
             })
             .collect()
+    }
+
+    /// **One certain round of `damage` on `target`'s front band, landed** (a test's strike, by
+    /// the impact's own path): shot `seq` from `shooter`, journalled into `journal`.
+    #[cfg(test)]
+    pub(crate) fn strike_for_test(
+        &mut self,
+        shooter: ObjId,
+        target: ObjId,
+        seq: u64,
+        damage: u32,
+        journal: &mut Vec<Notice>,
+    ) {
+        let (Some(from), Some(at)) = (
+            self.unit(shooter).map(|state| state.pose.clone()),
+            self.unit(target).map(|state| state.pose.clone()),
+        ) else {
+            return;
+        };
+        let terrain = &self.definition.terrain;
+        let shot = crate::arena::weapons::Shot {
+            seq,
+            shooter,
+            weapon: SmolStr::new("cannon"),
+            contact: crate::arena::state::ContactId(seq),
+            target,
+            rounds: 1,
+            fired_at_ms: self.now_ms,
+            impact_at_ms: self.now_ms,
+            range_cm: 1_000,
+            aim_x_cm: at.x_cm,
+            aim_y_cm: at.y_cm,
+            aim_cell: terrain.cell_of(&at),
+            from_x_cm: from.x_cm,
+            from_y_cm: from.y_cm,
+            from_cell: terrain.cell_of(&from),
+            from_height_cm: 150,
+            damage,
+            resolution: Resolution::blind("front", 3_000, Cover::None),
+        };
+        let drawn = self.shot_draw(seq, 1);
+        let now = self.now_ms;
+        self.apply_hit(
+            &shot,
+            &Resolution {
+                p_permille: 1_000,
+                ..Resolution::blind("front", 3_000, Cover::None)
+            },
+            1,
+            now,
+            drawn,
+            journal,
+        );
     }
 }
 

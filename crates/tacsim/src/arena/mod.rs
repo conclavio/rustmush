@@ -342,6 +342,7 @@ pub mod snapshot_capacity;
 pub mod state;
 pub mod step;
 pub mod stock_mind;
+pub mod tow;
 pub(crate) mod trace_runtime;
 pub mod view;
 pub mod weapons;

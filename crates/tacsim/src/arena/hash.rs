@@ -597,7 +597,13 @@ thread_local! {
 ///        live sight is the authored one**, by sub-item 20's rule, so every match
 ///        whose sights are intact folds the bytes it folded before the cut. The
 ///        sensor row itself is not folded (a fact of the fit); this is the one
-///        place a part's condition moves it, so it is.
+///        place a part's condition moves it, so it is;
+///    23. **the tow** (doc 40 cut FR.5, §4.1 item 5, Q-40-7):
+///        [`crate::arena::state::UnitState::coupled_to`] — `[1]`, then the tug's
+///        id as `u32` — and **nothing at all for a unit under its own power**, by
+///        sub-item 20's rule, so every match without a tow (every practice match)
+///        folds the bytes it folded before the cut. It decides where the casualty
+///        stands next substep and whether it may fire, with no ledger line of its own.
 /// 2. **The spent-section window** (16b cut D.2), in the map's own key order: the
 ///    count of entries as `u64`, then per entry the platform told's `u32`, the
 ///    target's `u32`, the section id's bytes and the arena millisecond as `i64`.
@@ -1235,6 +1241,12 @@ pub fn state_hash(arena: &Arena) -> u64 {
                     .map_or(u16::MAX, |sensor| sensor.max_range_cells)
                     .to_le_bytes(),
             );
+        }
+        // **Doc 40 cut FR.5** (sub-item 23): the tow, only while coupled — no byte for a unit
+        // under its own power.
+        if let Some(tug) = unit.coupled_to {
+            fold.bytes(&[1_u8]);
+            fold.bytes(&tug.0.to_le_bytes());
         }
     }
     // **16b cut D.2**: the spent-section window, in the map's own key order.
@@ -2668,6 +2680,36 @@ mod tests {
             base,
             "an authored sight folds no byte"
         );
+    }
+
+    /// **Doc 40 cut FR.5: the tow folds only while coupled** (item 1's sub-item 23): no unit
+    /// checks out coupled, so the base folds no byte for it; a coupling moves the hash, whose
+    /// tug it names folds too, and the release's `None` hashes as the base did.
+    #[test]
+    fn fr5_the_hash_folds_the_tow_only_while_coupled() {
+        let base_arena = two_tanks();
+        let base = state_hash(&base_arena);
+        assert!(
+            base_arena
+                .units
+                .iter()
+                .all(|unit| unit.coupled_to.is_none()),
+            "every unit checks out under its own power"
+        );
+        let towed = |tug: u32| {
+            let mut arena = two_tanks();
+            if let Some(unit) = arena.unit_mut(ObjId(9)) {
+                unit.coupled_to = Some(ObjId(tug));
+            }
+            state_hash(&arena)
+        };
+        assert_ne!(towed(4), base, "a tow went unhashed");
+        assert_ne!(towed(4), towed(5), "whose tow it is folds too");
+        let mut released = two_tanks();
+        if let Some(unit) = released.unit_mut(ObjId(9)) {
+            unit.coupled_to = None;
+        }
+        assert_eq!(state_hash(&released), base, "no tow folds no byte");
     }
 
     /// **17b cut M5.2: the active profile folds only off its default** (item
