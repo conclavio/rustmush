@@ -2849,10 +2849,16 @@ async fn licensed_field_story(at: &FieldSite) {
         "the field demotes"
     );
     // 5. Home: the Close over the live hull, the seat released.
-    let _ = crate::driving_rig::act_go(&mut rig, pilot, "+tv/1 recover go");
-    let _ = crate::driving_rig::finish(&mut rig, tv, pilot);
+    // The pilot's own start (a tick's submission may sit beside it in the queue), landed on
+    // the composed path; the recover's finish and the claim's Close are the composed ticks'.
+    let (out, queued) = crate::driving_rig::command(&mut rig, pilot, "+tv/1 recover go");
+    let start = queued
+        .iter()
+        .find(|submit| submit.actor == pilot)
+        .unwrap_or_else(|| panic!("the pilot's recover: {out}"));
+    crate::driving_rig::land_composed(&mut rig, start).expect("the recover starts");
     let closed =
-        crate::field_host_rig::until_composed(&mut rig, &mut rx, &mut lines, 60, |rig, _| {
+        crate::field_host_rig::until_composed(&mut rig, &mut rx, &mut lines, 600, |rig, _| {
             tacsim::ic_claim_closed(rig.tw.world(), open).is_some()
         })
         .await;
