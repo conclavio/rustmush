@@ -108,6 +108,21 @@ fn mint(rig: &mut Rig, pilot: ObjId) {
     );
 }
 
+/// Mint the Stickney Yards fifty thousand from Ceres' treasury (a seed, doc 43 rule 2.3 #4).
+fn fund_the_yards(rig: &mut Rig) {
+    let treasury = port_map(&rig.tw, "ceres_port")
+        .treasury
+        .expect("a treasury");
+    let account = port_map(&rig.tw, STICKNEY).orgs[&cid("stickney_yards")]
+        .account
+        .expect("the Yards' account");
+    let _ = run(
+        &mut rig.tw,
+        GOD,
+        &format!("@econ/mint {treasury}={account} 5000000"),
+    );
+}
+
 /// The pilot's available credit, minor units.
 fn credit(rig: &Rig, pilot: ObjId) -> i64 {
     tacsim::port::credit::own_account(rig.tw.world(), pilot)
@@ -382,6 +397,9 @@ async fn in8_a_whole_escort_scrapped_at_stickney_pays_for_its_parts_and_a_tonne(
     );
 
     // (3) The heavy's ten-point patch draws its own figures; its bale goes back to the Yards.
+    // Doc 39 cut IN.5: the Yards' 50,000 of capital also pays the works' house purchases of
+    // Kasei's alloys, so after the escort's 45,000 it cannot buy the bale; the seed refills it.
+    fund_the_yards(&mut rig);
     let heavy_budget = store(&rig.tw)
         .definitions()
         .budget_of("tacsim.unit.heavy_mk1")

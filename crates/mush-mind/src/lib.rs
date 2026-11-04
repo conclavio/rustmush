@@ -46,7 +46,7 @@
 
 // 17b cut M2.1 (doc 17 §7 "Lints"): all six panic-shaped restriction lints,
 // denied at the root — `mush-script`'s list read as a floor plus
-// `expect_used`, because `crates/mush-contract-tests/tests/restriction_lints.rs`
+// `expect_used`, because `crates/mush-contract-tests/tests/ci_policy/restriction_lints.rs`
 // reads a zero in this crate's row as a promise to deny, and this crate has
 // nothing to price.
 #![deny(

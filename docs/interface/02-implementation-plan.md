@@ -385,7 +385,7 @@ as specified, with these deviations, each for a reason found in the tree:
    `mush-ruleset::commands` migrated mechanically; the three `&mut World`
    sites (NPC sheet bootstrap in both rulesets, the store's own helpers) stay
    on `put_by` by design. The probe is
-   `crates/mush-contract-tests/tests/sheet_write_republish.rs`.
+   `crates/mush-contract-tests/tests/engine_contracts/sheet_write_republish.rs`.
 2. **`Ruleset::extra_vitals` became the `VitalsSource` trait**
    (`mush_ruleset::vitals`): a query handler runs under a `HookReadContext`
    and an observer under a `Ctx`, and the K8.4 authoritative overlays
@@ -2085,7 +2085,7 @@ closed.**
   is refused at boot rather than silently unfiltered), deduplicating, bounded
   by `MAX_REPUBLISH_SUBJECTS` = 32 (the rest logged, never wrong); wod and
   shadowrun decode their `roll_state` / `condition_state` decimal-`ObjId`
-  keys. A contract probe (`mush-contract-tests/tests/action_state_republish.rs`)
+  keys. A contract probe (`mush-contract-tests/tests/engine_contracts/action_state_republish.rs`)
   refuses a bare `install_prepared_action(` — the identifier, so a UFCS or
   path-valued call matches too; only the definition is exempt — on any
   production path: `tests/` directories and the bodies of `#[cfg(test)]`

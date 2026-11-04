@@ -1,0 +1,38 @@
+{
+  "manifest": {
+    "id": "tacsim.industry.recipes",
+    "version": 1,
+    "kind": "rules_definition",
+    "requires": [],
+    "digest": "1de31984b11baa62b79e36dae54d9fa1bb6a0918d728a994c9728812ee676055"
+  },
+  "entries": {
+    "fittings": {
+      "kind": "recipe",
+      "def": {
+        "label": "Fittings batch",
+        "inputs": [
+          {
+            "commodity": "structural_alloys",
+            "units": 5
+          },
+          {
+            "commodity": "carbon_ore",
+            "units": 1
+          }
+        ],
+        "outputs": [
+          {
+            "commodity": "industrial_parts",
+            "units": 5
+          }
+        ],
+        "requires": [
+          "tacsim.works"
+        ],
+        "work_units": 6,
+        "output_lots": "pooled"
+      }
+    }
+  }
+}

@@ -264,6 +264,13 @@ the site has settled:
   `+salvage/authorize <site>/<block>=<who> go`. Repairs a salvor makes are at
   their own risk and are never repaid. An uncontested claim passes the title
   when its window runs out.
+- **Port security.** The Freeport Registry acts only on proof: a recovery a
+  `recovery` contest vacated, or an act a witness reports to it with a record
+  of their own (`+salvage/report <site>[=<who>|#<hull>] registry`). When the
+  carrier you command docks at Ceres or Stickney, each proven act of yours is
+  fined (an unlawful pickup 500 cr, scrapping 2,000 cr, a recovery 5,000 cr).
+  A fine your account cannot cover is a debt (`+debts`), and your carrier is
+  held at the port until you pay it (`+debts/pay <id>`).
 - **A carrier** is towed only by a tug of at least half its tonnage, which no
   rig is. A carrier whose drive is destroyed cannot lift. One whose hull falls
   is a wreck that never lifts and strands its crew.

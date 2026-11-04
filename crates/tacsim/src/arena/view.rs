@@ -22,7 +22,7 @@
 //!
 //! **Pure over a [`Frame`] and a `BTreeMap<ContactId, u64>` range memory**: no
 //! world, no clock, no store, no task. It is a file of the arena library, so
-//! `crates/mush-contract-tests/tests/arena_library.rs` scans it by
+//! `crates/mush-contract-tests/tests/engine_contracts/arena_library.rs` scans it by
 //! construction.
 //!
 //! **One rounding, two memories.** A scope row's range is held against the

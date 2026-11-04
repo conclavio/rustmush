@@ -1,5 +1,5 @@
 # Rule 1 -- the pinned legacy-handler allowlist (08i section 4; K answer 12, ratified
-# 2026-09-04). Read by crates/mush-contract-tests/tests/legacy_handler_allowlist.rs.
+# 2026-09-04). Read by crates/mush-contract-tests/tests/ci_policy/legacy_handler_allowlist.rs.
 #
 # Doc 09 section 7 rule 1, "no new mutating legacy handlers", is ratified with a NARROWER
 # exception than 08i Draft 0.1 proposed: allowed temporarily are bounded whole-document

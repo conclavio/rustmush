@@ -7,9 +7,9 @@
 //! former file, unchanged but for its paths; its tests are `<module>::<fn>`.
 //!
 //! The world task itself: the arena bridge, the dead-world reader, H2b's
-//! scene turns, H2c's ability coordinator, the preflight retry bounds, the
-//! production action migrations, the world's exit status and its panic
-//! firewall.
+//! scene turns, H2c's ability coordinator, hostile command lines (doc 43 cut
+//! TS.4), the preflight retry bounds, the production action migrations, the
+//! world's exit status and its panic firewall.
 //!
 //! One module: `cargo nextest run -p mush-server --test world_task -E 'test(/^arena_bridge::/)'`
 //! or `cargo test -p mush-server --test world_task arena_bridge::` (a substring filter, so no
@@ -26,6 +26,9 @@ mod dead_world_reader;
 mod h2b_scene_turns;
 #[path = "world_task/h2c_ability_coordinator.rs"]
 mod h2c_ability_coordinator;
+// Doc 43 cut TS.4: arbitrary lines through the production registry.
+#[path = "world_task/hostile_lines.rs"]
+mod hostile_lines;
 #[path = "world_task/preflight_retry_bounds.rs"]
 mod preflight_retry_bounds;
 #[path = "world_task/production_action_migrations.rs"]

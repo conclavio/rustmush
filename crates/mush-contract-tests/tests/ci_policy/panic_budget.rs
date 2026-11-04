@@ -69,7 +69,7 @@
 //! a deliberate act. Regenerate with:
 //!
 //! ```text
-//! PANIC_BUDGET_BLESS=1 cargo test -p mush-contract-tests --test panic_budget
+//! PANIC_BUDGET_BLESS=1 cargo test -p mush-contract-tests --test ci_policy panic_budget::
 //! ```
 //!
 //! and raise a ratchet crate by adding `PANIC_BUDGET_RAISE="<why>"`.
@@ -317,7 +317,7 @@ fn render_budget(crate_name: &str, budget: &Budget) -> String {
         "# {crate_name} — production panic-surface budget (WS01-S11).\n\
          #\n\
          # Regenerate with:\n\
-         #   {BLESS_VAR}=1 cargo test -p mush-contract-tests --test panic_budget\n\
+         #   {BLESS_VAR}=1 cargo test -p mush-contract-tests --test ci_policy panic_budget::\n\
          # A raise is a reviewed diff, not a rounding error.\n\
          # tier: {}\n",
         budget.tier.label()
@@ -422,7 +422,7 @@ fn enforce(
     faults.sort();
     Err(format!(
         "the production panic surface is budgeted per crate ({BUDGET_DIR}/<crate>.txt); \
-         regenerate with `{BLESS_VAR}=1 cargo test -p mush-contract-tests --test panic_budget`:\n  {}",
+         regenerate with `{BLESS_VAR}=1 cargo test -p mush-contract-tests --test ci_policy panic_budget::`:\n  {}",
         faults.join("\n  ")
     ))
 }

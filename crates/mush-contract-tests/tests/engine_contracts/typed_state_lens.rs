@@ -69,7 +69,7 @@ const TWIN_SUFFIXES: [&str; 2] = ["_with_action_state", "_via_action_state"];
 /// which has to name the suffixes in order to forbid them. Spelled in full
 /// rather than taken from `file!()`'s basename so that a future
 /// `crates/<other>/src/typed_state_lens.rs` is scanned like anything else.
-const SELF_PATH: &str = "crates/mush-contract-tests/tests/typed_state_lens.rs";
+const SELF_PATH: &str = "crates/mush-contract-tests/tests/engine_contracts/typed_state_lens.rs";
 
 /// The offset of the `fn` keyword that opens `trimmed`, if any: `fn` as a
 /// whole word, followed by the function's name.

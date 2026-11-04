@@ -75,7 +75,7 @@
 //!   one provider call at a time, so a refusal on the second would strand the first.
 
 // WS01-S12: the panic-shaped restriction lints this crate measures zero of,
-// held at zero. `crates/mush-contract-tests/tests/restriction_lints.rs` carries
+// held at zero. `crates/mush-contract-tests/tests/ci_policy/restriction_lints.rs` carries
 // the measurement this set was cut from — including the counts of the lints
 // NOT named here — and fails if this attribute loses one of them.
 #![deny(clippy::unwrap_used, clippy::panic_in_result_fn)]
@@ -302,15 +302,16 @@ pub use sweep::MAX_REPUBLISH_PER_SWEEP;
 
 // E2b/E3b1 public surface.
 pub use api::{
-    CadenceError, ENGINE_OWNED_RESERVATIONS, MAX_CADENCE_NAME_BYTES, MAX_CADENCES, META_KEY,
-    ObligationSpec, PostOutcome, SanctionSpec, account_key, acknowledge_escalation, approval_key,
-    asset_key, cadence_key, cancel_obligation, capture_engine_reservation_part, contract_key,
-    create_cadence, create_debt, create_obligation, create_sanction_obligation,
+    CadenceError, DebtCause, ENGINE_OWNED_RESERVATIONS, MAX_CADENCE_NAME_BYTES, MAX_CADENCES,
+    META_KEY, ObligationSpec, PostOutcome, SanctionSpec, account_key, acknowledge_escalation,
+    approval_key, asset_key, cadence_key, cancel_obligation, capture_engine_reservation_part,
+    contract_key, create_cadence, create_debt, create_obligation, create_sanction_obligation,
     create_service_obligation, create_system_obligation, create_vault, cure_service_obligation,
-    debts_of, hold_key, idempotency_resolved, instrument_key, is_engine_owned_reservation,
-    issue_title, mark_canon_published, obligation_key as obligation_doc_key, open_account,
-    open_escalation, pay_debt, post, post_capability, register_instrument, rehome_vault,
-    reinstate_debt, reinstate_obligation, resolve_idempotency, resume_obligation, reverse,
+    debts_of, debts_of_with, hold_key, idempotency_resolved, instrument_key,
+    is_engine_owned_reservation, issue_title, mark_canon_published,
+    obligation_key as obligation_doc_key, open_account, open_escalation, pay_debt,
+    pay_sanction_debt, post, post_capability, register_instrument, rehome_vault, reinstate_debt,
+    reinstate_obligation, reinstate_sanction_debt, resolve_idempotency, resume_obligation, reverse,
     set_account_approval, set_account_status, set_asset_frozen, set_economy_frozen,
     set_system_obligation, set_vault_status, settle_engine_reservation, suspend_obligation,
     vault_key,
