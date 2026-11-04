@@ -64,6 +64,9 @@ npm --prefix web run build
 docker compose up -d redis
 ```
 
+The example config stores the world in that Redis (`redis://127.0.0.1:6379`); set
+`store = "memory"` under `[store]` to run without one.
+
 Copy [mushd.toml.example](mushd.toml.example) to `mushd.toml`. To enable TacSim
 and the simulator, set `enabled = true` in its `[tacsim]` section, then run:
 

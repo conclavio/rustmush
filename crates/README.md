@@ -13,15 +13,18 @@ server.
 ```mermaid
 flowchart TB
     terminal[SSH terminal or mush-bot]
-    browser[Svelte web client]
+    doorway["sshdoorway (optional)<br/>routes SSH by username"]
+    browser["Svelte web client<br/>renders locally via mush-pixel-wasm"]
     discord[Discord]
-    gateway["mush-gateway<br/>listeners, accounts, sessions"]
+    gateway["mush-gateway<br/>listeners, accounts, sessions,<br/>per-connection terminal rendering"]
     server["mush-server<br/>world task and persistence driver"]
     core["mush-core + composed game modules<br/>commands, durable state, shared contracts"]
     arena["tacsim arena task<br/>live match simulation"]
     store["mush-store<br/>Redis or in-memory backend"]
 
     terminal <-->|SSH| gateway
+    terminal <-.->|SSH| doorway
+    doorway <-.->|trusted preamble| gateway
     browser <-->|HTTP / WebSocket| gateway
     discord <-->|optional Discord transport| gateway
     gateway <-->|in-process link or mush-ipc socket| server
@@ -43,18 +46,27 @@ library, with controls, observer frames, journals, and settlement crossing an
 explicit world/arena boundary. Both terminal and web interfaces consume the
 shared `mush-proto` vocabulary.
 
+**Rendering happens at the edge, not in the world.** `mush-server` emits semantic
+output events and observer feeds; it never produces ANSI text or pictures. For
+SSH players, the gateway process renders each connection through `mush-net-ssh`:
+line-mode text via `mush-ansi`, the ratatui TUI, and cockpit and map pictures
+drawn by `mush-pixel` and encoded for the terminal's graphics protocol. The
+browser receives the same events and feeds as JSON and draws pictures locally
+with `mush-pixel-wasm`. Under `mushd`, the rendering side and the world share one
+process, but the division of work is the same.
+
 ## Runtime and connections
 
 | Crate | What lives here | How it fits |
 | --- | --- | --- |
 | [`mushd`](mushd/) | All-in-one executable, in-process glue, offline core REPL. | The simplest server entry point. `--repl` exercises the core command surface without the full game module stack. |
-| [`mush-gateway`](mush-gateway/) | Account login, transport bridges, sessions, delivery, connection lifecycle and server reconnection. | Owns live connections. In split deployments, the service manager owns server restarts; the gateway retains and reattaches sessions. |
+| [`mush-gateway`](mush-gateway/) | Account login, transport bridges, sessions, delivery, connection lifecycle and server reconnection; hosts the SSH, web and Discord transports, so per-connection terminal rendering runs in this process. | Owns live connections and turns the server's semantic output into each client's presentation. In split deployments, the service manager owns server restarts; the gateway retains and reattaches sessions. |
 | [`mush-server`](mush-server/) | World task, boot/recovery, persistence driver, deferred work, help and staff operations. | Hosts the authoritative world and communicates with the gateway; it owns no public connection listeners. |
 | [`mush-composition`](mush-composition/) | Production module roster, boot ordering, cross-module adapters and TacSim wiring. | The assembly point between reusable systems and the game's modules. |
 | [`mush-config`](mush-config/) | TOML configuration, logging, metrics, IP guard and account helpers. | Shared runtime support for both halves and `mushd`. |
 | [`mush-ipc`](mush-ipc/) | Gateway/server messages, service requests and replies, link interfaces and framed MessagePack codec. | Defines the process boundary and connection lifecycle protocol. |
 | [`mush-session`](mush-session/) | Session attachment, multi-connect delivery, flood control, backpressure and reconnect replay. | Maps character identities to live transports without owning the game world. |
-| [`mush-net-ssh`](mush-net-ssh/) | SSH listener, authentication hooks, line editor, terminal capabilities and server-rendered TUI. | Connects terminal clients to the shared protocol and presentation layers. |
+| [`mush-net-ssh`](mush-net-ssh/) | SSH listener, authentication hooks, line editor, terminal capabilities, ANSI output, the full-screen TUI and terminal picture encoding. | Runs inside the gateway process and renders each SSH connection with `mush-ansi` and `mush-pixel`; the world server never renders. |
 | [`mush-net-web`](mush-net-web/) | HTTP authentication, WebSocket transport, SPA serving, health and metrics endpoints. | Serves the [web client](../web/README.md) and its structured event stream. |
 | [`mush-net-discord`](mush-net-discord/) | Discord event/REST adapters, account-link commands, DM follow/input and bounded output delivery. | An optional transport whose game operations cross gateway hooks. |
 | [`mush-sshdoorway`](mush-sshdoorway/) | The `sshdoorway` executable: instance routing, trusted upstream connections, authentication relay and connection limits. | An optional shared SSH front door, separate from instance account and world state. |

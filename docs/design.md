@@ -71,8 +71,9 @@ design is not a claim that every step is complete.
 | Test coverage and cost | [Testing strategy](design/43-testing-strategy.md) | Decisions, review dispositions, and implementation steps are in the specification |
 
 Ship flight has its own [remediation review](design/35c-remediation-train-review.md)
-and [cut notes](design/35-cut-notes.md). Read them alongside the flight design;
-the recorded review does not declare the integration complete.
+and [cut notes](design/35-cut-notes.md). The review covers SF.R9–SF.R16; the cut
+notes were corrected from its findings, and SF.R17–SF.R18 have landed since. The
+train is not yet seam-complete: 35c §8 lists the remaining cuts.
 
 ## Reading the records
 
