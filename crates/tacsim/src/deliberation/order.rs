@@ -11,7 +11,7 @@
 //! # Why it is data and nothing else
 //!
 //! The arena library holds no I/O and no clock of its own (D-16-1, D-16-3), and
-//! the gate in `crates/mush-contract-tests/tests/arena_library.rs` keeps it that
+//! the gate in `crates/mush-contract-tests/tests/engine_contracts/arena_library.rs` keeps it that
 //! way by reading the source. So an order carries no handle, no callback and no
 //! provider: it is a record the world hands over, exactly as a pilot's `HEADING`
 //! is, and the arena treats it with the same suspicion — re-validated at apply,

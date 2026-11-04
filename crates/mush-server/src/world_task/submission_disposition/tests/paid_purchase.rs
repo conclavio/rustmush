@@ -60,7 +60,7 @@ const PRODUCTION_PULSE_MS: u64 = 1_000;
 /// dispatch input, the fast path.
 pub(super) fn mind_pulse(config: &mut Config) {
     // `assert!`, not `panic!`: this file is under `src/`, so the production
-    // panic budget (`mush-contract-tests/tests/panic_budget.rs`) counts it.
+    // panic budget (`mush-contract-tests/tests/ci_policy/panic_budget.rs`) counts it.
     let pulse = match std::env::var("MIND_PULSE_MS") {
         Ok(raw) if !raw.trim().is_empty() => {
             let parsed = raw

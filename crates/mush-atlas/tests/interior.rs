@@ -179,11 +179,24 @@ fn ooc_repainted() -> String {
 
 /// **Version 3 of the OOC pack**, rebuilt from the shipped one by taking the
 /// simulator centre back out: every entry [`ADDED`] names, the room budget back
-/// to 7, the version back to 3, the digest re-derived. (Version 3's bytes are
-/// not in the tree any more; this is the world an upgrade meets, built from the
-/// one source of truth so it cannot drift. The Welcome Hall's own text therefore
-/// matches the shipped one's, which is why the upgrade below plans one update
-/// and not two.)
+/// to 7, the version back to 3, the digest re-derived. The Welcome Hall's own
+/// text matches the shipped one's, which is why the upgrade below plans one
+/// update and not two.
+///
+/// **Held to its own pinned digest** (doc 43 cut TS.20), [`V3_REBUILT_DIGEST`].
+/// It is not the published version 3 (`74344b62…`, commit `44115c47`). That
+/// version's 24 entries are this one's, and 20 are byte-equal, but four differ:
+/// - the Welcome Hall's desc and sign (the shipped text kept, as above);
+/// - the three `Lounge <L>` exits' `l` segment, which apply has refused since
+///   16b cut D.5 (see [`V4_TEXTS`]), so the published bytes cannot boot.
+///
+/// The pin means a shipped-pack change that reaches this rebuild fails here,
+/// and does not quietly move the world the upgrade starts from. Re-pin only
+/// after checking that the rebuild still differs from version 3 in those four
+/// entries and nowhere else.
+/// The digest [`ooc_v3`]'s rebuild re-derives (doc 43 cut TS.20).
+const V3_REBUILT_DIGEST: &str = "b0c936083bdb2f59152da2eee5955de14102a0f4c3278d99181500307ef0d24a";
+
 fn ooc_v3() -> String {
     let mut doc: Value = serde_json::from_str(starter::OOC_AREA_JSON).expect("the pack is json");
     doc["manifest"]["version"] = Value::from(3);
@@ -200,6 +213,10 @@ fn ooc_v3() -> String {
         .computed_digest()
         .expect("digests")
         .to_hex();
+    assert_eq!(
+        digest, V3_REBUILT_DIGEST,
+        "the rebuilt version 3 moved: a shipped-pack change reached it (see the doc above)"
+    );
     doc["manifest"]["digest"] = Value::String(digest);
     serde_json::to_string(&doc).expect("json")
 }
