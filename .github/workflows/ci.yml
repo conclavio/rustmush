@@ -714,6 +714,22 @@ jobs:
               exit 1
               ;;
           esac
+      # Doc 43 cut TS.1: the one step of the old `kernel-contracts` job that ran
+      # nowhere else (every other line there re-ran tests the matrix's sweeps
+      # already run). The live provider remains an explicit, owner-funded
+      # opt-in; this exact test filter exercises its report path with no
+      # external provider or key, and without `TACSIM_LLM_COST_RUN` the sweep
+      # above runs the same test as an early return. The harness binary is
+      # this cell's (manifest line 1), already built by the sweep.
+      # `ci_gated_test_inventory` pins this step by its name.
+      - name: The LLM cost report with a mock provider
+        if: matrix.shard == 'tacsim-integration-1'
+        env:
+          TACSIM_LLM_COST_RUN: "1"
+          TACSIM_LLM_COST_MOCK: "1"
+          TACSIM_LLM_COST_MINUTES: "0.1"
+          TACSIM_LLM_COST_UNITS: "4"
+        run: cargo test -p tacsim --test harness tacsim_harness_llm_cost_run -- --exact --nocapture
       - name: Test the bot on its own feature set
         if: matrix.shard == 'bot'
         run: |
@@ -989,69 +1005,6 @@ jobs:
           bash scripts/tests/gateway-swap.sh
           bash scripts/tests/check-web-bundle.sh
 
-  kernel-contracts:
-    name: K8 kernel contracts
-    runs-on: ubuntu-latest
-    steps:
-      - uses: actions/checkout@v4
-      - name: Rust toolchain (pinned by rust-toolchain.toml)
-        shell: bash
-        run: |
-          rustup toolchain install
-          rustc --version
-      - uses: Swatinem/rust-cache@v2
-      - name: Five-gate and lifecycle contracts
-        run: |
-          cargo test -p mush-contract-tests --lib
-          cargo test -p mush-contract-tests --test gate5_fault_matrix
-          cargo test -p mush-contract-tests --test schedule_source
-          cargo test -p mush-contract-tests --test ci_gated_test_inventory
-      # The live provider remains an explicit, owner-funded opt-in. This exact
-      # test filter exercises its report path with no external provider or key.
-      - name: The LLM cost report with a mock provider
-        env:
-          TACSIM_LLM_COST_RUN: "1"
-          TACSIM_LLM_COST_MOCK: "1"
-          TACSIM_LLM_COST_MINUTES: "0.1"
-          TACSIM_LLM_COST_UNITS: "4"
-        run: cargo test -p tacsim --test harness tacsim_harness_llm_cost_run -- --exact --nocapture
-      # WS01-S11: the world task must never panic, so the number of places it
-      # could is budgeted per crate under panic_budget/ and only a reviewed
-      # diff raises one. The same target refuses `panic = "abort"`, which would
-      # make WS01-S4's catch_unwind boundary inert. It also runs under the
-      # cross-platform `test` job's `--workspace`; it is named here so the log
-      # says which contract failed.
-      - name: The production panic surface and the panic=abort firewall
-        run: cargo test -p mush-contract-tests --test panic_budget
-      # WS01-S12: the other half of the same rule. Where a crate's production
-      # count for one of the six panic-shaped restriction lints is already zero,
-      # its crate root denies that lint and the compiler holds it there. This
-      # target carries the measurement the per-crate sets were cut from, and
-      # fails if a root drops a deny, if a deny appears that the record does not
-      # back, if an `#[allow]` under src/ takes an enabled lint back, or if a new
-      # crate arrives unmeasured.
-      - name: The per-crate restriction lints
-        run: cargo test -p mush-contract-tests --test restriction_lints
-      # 10b §14.3 criterion 4 (E7 cut 11 independent verify fold, G5/F7): every
-      # E7k lane's proof must run in a package that can SEE the crate that owns
-      # the lane. `mush-contract-tests` declares no `mush-industry` dependency,
-      # so L4 (`industry.workorder`) is proven by the industry suite itself —
-      # the `industry.workorder.completed` boundary fact and the production
-      # source's cursor.
-      - name: E7k lane proofs
-        run: |
-          cargo test -p mush-industry --test e7c4
-      - name: Production migrations and compatibility declarations
-        run: |
-          cargo test -p mush-server --test world_task production_action_migrations::
-          cargo test -p mush-server --lib k8_5_production_compositions_publish_command_compatibility
-          # WS04-S8: the gate above composes `boot::game_modules` — the roster a
-          # server boots — instead of a hand-assembled list. This second cell is
-          # the ordered golden of that roster, so a module added, dropped or
-          # reordered fails a named test here rather than being re-certified in
-          # silence.
-          cargo test -p mush-server --lib the_ci_gated_composition_is_the_boot_composition
-
   redis-faults:
     name: K8 Redis and process-fault matrix
     runs-on: ubuntu-latest
@@ -1284,65 +1237,6 @@ jobs:
           name: tacsim-harness-report
           path: harness*.json
           if-no-files-found: error
-
-  definition-wire-fixtures:
-    name: K8 definition and wire fixtures
-    runs-on: ubuntu-latest
-    steps:
-      - uses: actions/checkout@v4
-      - name: Rust toolchain (pinned by rust-toolchain.toml)
-        shell: bash
-        run: |
-          rustup toolchain install
-          rustc --version
-      - uses: Swatinem/rust-cache@v2
-      - name: Canonical definition and action wire goldens
-        run: |
-          cargo test -p mush-core mechanics::tests::canonical_encoding_and_digest_have_a_golden_wire_contract -- --exact
-          cargo test -p mush-core mechanics::tests::definition_identity_and_registry_fingerprint_have_golden_contracts -- --exact
-          cargo test -p mush-core action::tests::request_uid_wire_form_is_fixed_and_strict -- --exact
-          cargo test -p mush-core authoritative::tests::key_and_bundle_wire_are_strict -- --exact
-          cargo test -p mush-core clock::tests::clock_stamp_wire_shape_is_strict_and_cross_clock_math_fails -- --exact
-          cargo test -p mush-contract-tests tests::definitions_are_stable_and_installed_exactly -- --exact
-      - name: Generated protocol bindings are current
-        run: |
-          cargo test -p mush-proto --features ts --test ts_export
-          git diff --exit-code web/src/lib/proto
-
-  direct-rand-policy:
-    name: K8 direct-rand policy
-    runs-on: ubuntu-latest
-    steps:
-      - uses: actions/checkout@v4
-      - name: Rust toolchain (pinned by rust-toolchain.toml)
-        shell: bash
-        run: |
-          rustup toolchain install
-          rustc --version
-      - uses: Swatinem/rust-cache@v2
-      - run: cargo test -p mush-contract-tests --test provider_rng_policy
-
-  truth-serialization-policy:
-    name: K8 truth-serialization policy
-    runs-on: ubuntu-latest
-    steps:
-      - uses: actions/checkout@v4
-      - name: Rust toolchain (pinned by rust-toolchain.toml)
-        shell: bash
-        run: |
-          rustup toolchain install
-          rustc --version
-      - uses: Swatinem/rust-cache@v2
-      - name: Private truth has no serde contract
-        run: cargo test -p mush-contract-tests --test truth_serialization_policy
-      - name: Public action surfaces stay redacted
-        run: |
-          cargo test -p mush-core offer::tests::projected_offer_hides_internal_binding_and_builds_server_parameters -- --exact
-          cargo test -p mush-contract-tests tests::brace_offer_projects_no_hidden_clock_and_routes_to_the_same_provider -- --exact
-          cargo test -p mush-contract-tests tactical_gate::tests::tactical_keyframe_line_receipt_and_llm_surfaces_share_one_redacted_dto -- --exact
-          cargo test -p mush-server --test split_boundary ipc_authoritative_action::authenticated_action_transfers_ownership_only_after_exact_intent -- --exact
-          cargo test -p mush-gateway --lib bridge_common::projection_tests::line_action_list_renders_only_projected_presentation -- --exact
-          cargo test -p mush-net-ssh --lib tui::render::tests::view_rows_reproduce_actions_and_never_leak_undeclared_fields -- --exact
 
   web:
     runs-on: ubuntu-latest
