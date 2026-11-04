@@ -1,7 +1,7 @@
 {
   "blessed": {
-    "commit": "16320d7cb7696a2961272462b80b36df0007fdc7",
-    "date": "2026-10-12T20:17:57Z",
+    "commit": "a2ef407539ab67157faa6675861b3aa855cb4c78",
+    "date": "2026-11-04T02:05:12Z",
     "deterministic_update": {
       "cut": "M5r",
       "date": "2026-10-17",
@@ -104,8 +104,8 @@
       "source_sha256": "92987a0c26bc442ef87640f026dfea16dc0934739b5788607f4d3322b24e07ab"
     },
     "host": {
-      "cpus": 4,
-      "hostname": "srv1930616",
+      "cpus": 32,
+      "hostname": "hg.conclav.dev",
       "os": "linux"
     },
     "m6_deterministic_update": {
@@ -439,6 +439,66 @@
         "minds.ceiling_authored.inline_thinks": 1747,
         "minds.ceiling_authored.landings": 9231,
         "minds.ceiling_authored.thinks": 9227
+      }
+    },
+    "harness_timing_update": {
+      "cut": "doc 43 TS.21 (D-43-6), the timing baseline on conclav.dev",
+      "recorded_utc": "2026-11-04T02:30:00Z",
+      "measured_revision": "a2ef407539ab67157faa6675861b3aa855cb4c78 (main)",
+      "host": {
+        "cpus": 32,
+        "hostname": "hg.conclav.dev",
+        "os": "linux"
+      },
+      "verified_hosts": [
+        "linux/32/hg.conclav.dev"
+      ],
+      "reason": "DRAFT",
+      "timing_policy": "DRAFT",
+      "fields": [],
+      "previous": {
+        "tempos": [
+          {
+            "max_ms": 8.427,
+            "name": "arena_engaged",
+            "p50_ms": 4.326,
+            "p95_ms": 6.466,
+            "p99_ms": 7.584,
+            "period_ms": 500,
+            "pulses": 120
+          }
+        ],
+        "setup_ms": {
+          "arena_open": 7.604,
+          "boot": 51.334,
+          "generate": 5.975,
+          "killed_warming": 0,
+          "pack_apply": 29.762,
+          "terrain_convert": 2.462,
+          "warm_pulses": 47,
+          "warm_up": 179.211,
+          "window_open": 20.338
+        },
+        "window.ms_max": 15.896,
+        "window.ms_p50": 8.801,
+        "window.ms_p95": 11.946,
+        "window.ms_p99": 13.172,
+        "snapshot.decode_ms_max": 54.509,
+        "snapshot.encode_ms": {
+          "max": 17.005,
+          "p50": 15.454,
+          "p99": 16.121
+        },
+        "snapshot.wake_plus_encode_ms_max": 23.509,
+        "thresholds.assert": false,
+        "thresholds.lens": "report-only",
+        "blessed.host": {
+          "cpus": 4,
+          "hostname": "srv1930616",
+          "os": "linux"
+        },
+        "blessed.commit": "16320d7cb7696a2961272462b80b36df0007fdc7",
+        "blessed.date": "2026-10-12T20:17:57Z"
       }
     }
   },
@@ -807,15 +867,15 @@
     ]
   },
   "setup_ms": {
-    "arena_open": 7.604,
-    "boot": 51.334,
-    "generate": 5.975,
+    "arena_open": 591.496,
+    "boot": 55.66,
+    "generate": 4.307,
     "killed_warming": 0,
-    "pack_apply": 29.762,
-    "terrain_convert": 2.462,
+    "pack_apply": 19.198,
+    "terrain_convert": 1.474,
     "warm_pulses": 47,
-    "warm_up": 179.211,
-    "window_open": 20.338
+    "warm_up": 208.17,
+    "window_open": 12.332
   },
   "slope": {
     "refusals": 239,
@@ -835,16 +895,16 @@
     "bytes_max": 4867417,
     "bytes_mean": 4807618,
     "count": 7,
-    "decode_ms_max": 54.509,
+    "decode_ms_max": 48.576,
     "encode_ms": {
-      "max": 17.005,
-      "p50": 15.454,
-      "p99": 16.121
+      "max": 27.137,
+      "p50": 26.408,
+      "p99": 26.775
     },
     "every_ms": 5000,
     "hash_ok": true,
     "max_snapshot_bytes": 7340032,
-    "wake_plus_encode_ms_max": 23.509
+    "wake_plus_encode_ms_max": 32.144
   },
   "substeps": {
     "per_wake_max": 1,
@@ -854,21 +914,21 @@
   },
   "tempos": [
     {
-      "max_ms": 8.427,
+      "max_ms": 6.789,
       "name": "arena_engaged",
-      "p50_ms": 4.326,
-      "p95_ms": 6.466,
-      "p99_ms": 7.584,
+      "p50_ms": 5.467,
+      "p95_ms": 6.518,
+      "p99_ms": 6.595,
       "period_ms": 500,
       "pulses": 120
     }
   ],
   "thresholds": {
-    "assert": false,
+    "assert": true,
     "cut_a_p99_ms": 5.0,
     "cut_s_p99_ms": 20.0,
     "engaged_p99_ms": 40,
-    "lens": "report-only",
+    "lens": "per-wake-and-per-window",
     "max_cell_probes_per_pulse": 32000,
     "max_jam_checks_per_pulse": 2048,
     "max_ledger_bytes": 67108864,
@@ -900,10 +960,10 @@
     "cell_probes_peak": 4987,
     "horizon_probes_peak": 4968,
     "jam_checks_peak": 677,
-    "ms_max": 15.896,
-    "ms_p50": 8.801,
-    "ms_p95": 11.946,
-    "ms_p99": 13.172,
+    "ms_max": 13.044,
+    "ms_p50": 10.753,
+    "ms_p95": 12.519,
+    "ms_p99": 12.777,
     "share_ops_peak": 108,
     "traces_peak": 967,
     "window_ms": 500,

@@ -1682,8 +1682,10 @@ dispatch; the repository has been public since 2026-10-20, so hosted minutes
 are free — the billing block this note used to cite dates from the private
 repository of the project's first weeks), but a hosted runner is a shared
 runner: its delta gates the deterministic block alone, and the timing gate is
-live only on the host that blessed the baseline, the VPS (16c T-109). So the
-run that measures is still the owner's, by hand, on that box. It is one
+live only on the host that blessed the baseline: **conclav.dev** since doc 43
+cut TS.21 (D-43-6, 2026-11-03; conclav.io from 16c T-109 until then, below). So
+the run that measures is still the owner's, on that box: by hand as `ghrunner`,
+or `scripts/vps-gate.sh --kind harness`, which goes there by default. It is one
 command from the repository root, under bash (Linux, or Git Bash on Windows):
 
 ```sh
@@ -1893,7 +1895,8 @@ under the host name `ccr-m4.5-linux-bless`, so its timing gate was dormant
 everywhere. The stale Windows file was removed in the same commit, so on the
 owner's Windows box the delta says `no baseline for windows` and passes.
 
-**The production VPS is the blessing host since 16c `T-109`** (the owner,
+**The production VPS was the blessing host from 16c `T-109` to doc 43 cut
+TS.21** (the owner,
 2026-10-09: the lenses follow the host the game runs on). The lenses are the
 conclav.io VPS's figures, and `arena.linux.json` is blessed **on the VPS under
 its own host name** (`srv1930616`, read from `/etc/hostname`; no `HOSTNAME`
@@ -1975,12 +1978,13 @@ Since test-strategy cut T.2 (2026-10-26) the owner's VPS boxes are
 
 | box | runner | labels | cores / memory | shares the box with |
 |---|---|---|---|---|
-| conclav.io | `conclav-vps` | `vps`, `conclav-io` | 8 / 31 GB | dev1, dev2 and the production Redis; the harness's blessing host |
-| conclav.dev | `conclav-dev` | `vps`, `conclav-dev` | 32 / 62 GB | nothing (added 2026-10-27) |
+| conclav.io | `conclav-vps` | `vps`, `conclav-io` | 8 / 31 GB | dev1, dev2 and the production Redis |
+| conclav.dev | `conclav-dev` | `vps`, `conclav-dev` | 32 / 62 GB | nothing (added 2026-10-27); the harness's blessing host since doc 43 cut TS.21 |
 
 The cut loop's gate (the workspace sweep that used to tie up the owner's Windows
 box for an hour a sub-cut) runs there, and so do the two by-hand scripts whose
-timing gates are live on conclav.io and nowhere else. From the box, under bash:
+timing gates are live on conclav.dev and nowhere else (doc 43 D-43-6; conclav.io
+until cut TS.21). From the box, under bash:
 
 ```sh
 scripts/vps-gate.sh                         # the sweep of the pushed branch, on whichever box is idle
@@ -1988,8 +1992,8 @@ scripts/vps-gate.sh --wip                   # the sweep of the WORKING TREE
 scripts/vps-gate.sh --runner conclav-dev    # pinned to a box: vps, conclav-dev or conclav-io
 scripts/vps-gate.sh --packages "tacsim mush-server"
 scripts/vps-gate.sh --extra "-E 'test(sm12c)'"
-scripts/vps-gate.sh --kind harness          # scripts/harness-weekly.sh, on conclav.io
-scripts/vps-gate.sh --kind cost-lane        # scripts/cost-lane.sh, on conclav.io
+scripts/vps-gate.sh --kind harness          # scripts/harness-weekly.sh, on conclav.dev
+scripts/vps-gate.sh --kind cost-lane        # scripts/cost-lane.sh, on conclav.dev
 ```
 
 `--wip` pushes a commit of the working tree, uncommitted work and untracked
@@ -2010,10 +2014,14 @@ the one both boxes carry, so GitHub hands the job to whichever is idle;
 dispatches serialise among themselves; a runner takes one job at a time
 regardless, so two jobs never share a target directory. GitHub keeps one
 running and one pending run per group: a third dispatch while one runs and one
-waits replaces the waiting one. `harness` and `cost-lane` go to `conclav-io`
-unless the dispatch says otherwise (`vps-gate.sh` defaults them there): the
-timing gate is live on the host that blessed the baseline and dormant
-elsewhere. Each job sizes itself by the runner's name (the "Sized for the box"
+waits replaces the waiting one. `harness` and `cost-lane` go to `conclav-dev`
+unless the dispatch says otherwise (`vps-gate.sh` defaults them there, since
+doc 43 cut TS.21): the timing gate is live on the host that blessed the
+baseline, conclav.dev (`linux/32/hg.conclav.dev`), and dormant elsewhere,
+conclav.io and the hosted runners included, and the cost lane's absolute lens
+is read there too. The owner's ruling (D-43-6, 2026-11-03): conclav.dev has no
+other load and is close enough to conclav.io for timing, while a run on
+conclav.io would time dev1 and dev2's play, which no run can control. Each job sizes itself by the runner's name (the "Sized for the box"
 step): conclav.io compiles with six jobs and tests with nextest's `num-cpus`
 (eight), conclav.dev with 24 jobs and 32 test threads (`NEXTEST_TEST_THREADS`;
 its first sweep ran 16 at a load average of five, the tests waiting on clocks

@@ -163,8 +163,10 @@
 //! harness's 16 per cent over the VPS's worst ordinary run — and
 //! `harness.engaged_p99_ms` to 40 so the authored window stays a boundary under
 //! it; [`the_lens_is_the_cohorts_own`] pins all four. The committed
-//! `arena.linux.json` is blessed on the VPS under its own host name, so the
-//! delta's timing gate is live on the production host and dormant elsewhere.
+//! `arena.linux.json` was blessed on the VPS under its own host name, so the
+//! delta's timing gate was live on the production host and dormant elsewhere;
+//! since doc 43 cut TS.21 (D-43-6) it is blessed on conclav.dev, which serves no
+//! players, and the gate is live there alone (the lenses unchanged).
 //!
 //! **The lance lane since 16b cut Z.1** (16c N6, *lances*). One more ignored
 //! lane, `tacsim_harness_lance`: `TACSIM_LANCE_UNITS` (24) units of the fielded
@@ -283,7 +285,9 @@
 //! gate is live there and dormant on every other host, ALIEN18 and the cloud
 //! containers included; the fill decision's `minds.fill_authored` block (the
 //! fill native, ops and fees nought) was carried onto that bless when
-//! `perf/vps-300` was merged, with no re-bless.
+//! `perf/vps-300` was merged, with no re-bless. Since doc 43 cut TS.21 (D-43-6)
+//! the timing block is conclav.dev's (`hg.conclav.dev`, 32 cores), re-blessed
+//! with a `harness_timing_update` record and the deterministic block unmoved.
 //!
 //! What it must not do (16b §9's `H` row): touch `mush-sim` or `mush-atlas` — a
 //! harness that needs a new API in the thing it measures is measuring its own
