@@ -12,7 +12,7 @@
 //! **Doomed** (Q-42-11): the test that would strand the pilot at check-in, read on the live
 //! cells — no power, no control, no motion, or a wreck or irrecoverable state, or the kernel's own
 //! wreck, motion-disabled or disabled limits — **or** a control section already damaged
-//! ([`crate::field::crew::doomed`]).
+//! (`crate::field::crew::doomed`).
 //!
 //! **Holding the cell** (Q-42-12, Draft 0.3's 42-1): a party P holds it when (a) P holds the
 //! pilot's party Hostile in its book; (b) a live unit of P, armed at check-out or having fired,

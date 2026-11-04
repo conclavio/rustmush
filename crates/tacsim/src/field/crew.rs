@@ -652,7 +652,7 @@ pub(crate) fn cells_condition(cells: &mush_tactics::TacticalUnit) -> CrewConditi
 
 /// **Whether a unit whose cells are `cells` is doomed** (doc 42 cut CR.4; Q-42-11): it could not
 /// bring its pilot home at a check-in — no power, no control, no motion, a wreck or irrecoverable
-/// ([`home`]'s negation) — or a control section is already damaged, so the next hit
+/// (`home`'s negation) — or a control section is already damaged, so the next hit
 /// incapacitates. The arena reads it on its live row (`crate::arena::eject`), adding its own
 /// wreck, motion-disabled and disabled limits.
 #[must_use]
@@ -671,7 +671,7 @@ pub(crate) fn doomed(cells: &mush_tactics::TacticalUnit) -> bool {
 }
 
 /// Whether an assessed unit can bring its pilot home: power, control and motion, and neither a
-/// wreck nor irrecoverable ([`check_in`]'s rule).
+/// wreck nor irrecoverable (`check_in`'s rule).
 fn home(c: &crate::field_ops::FieldUnitAssessment) -> bool {
     c.has_power
         && c.has_control
@@ -821,7 +821,7 @@ pub(crate) fn check_in(ctx: &mut Ctx<'_>, site: &CanonicalId, unit: ObjId, pilot
     }
 }
 
-/// **[`check_in`]'s rule for a captive whose carrier checks in** (doc 42 cut CR.3, Q-42-15):
+/// **`check_in`'s rule for a captive whose carrier checks in** (doc 42 cut CR.3, Q-42-15):
 /// held aboard `unit` and the carrier's own check-in strands its souls (`at` is
 /// [`aboard`]'s reading) — stranded in the wreck on `site`, the condition kept, custody gone.
 /// Anyone else, and a captive of a sound carrier, is `None`.
@@ -860,7 +860,7 @@ pub(crate) fn leaves_alone(record: &CrewRecord) -> bool {
 }
 
 /// **Everyone a carrier's row listed aboard** (doc 32 cut CF.3's rows), as the carrier checks in:
-/// each soul still aboard is recorded aboard it ([`check_in`]'s carrier branch).
+/// each soul still aboard is recorded aboard it (`check_in`'s carrier branch).
 pub(crate) fn check_in_aboard(
     ctx: &mut Ctx<'_>,
     site: &CanonicalId,
@@ -1591,7 +1591,7 @@ pub(crate) fn extract_cmd(ctx: &mut Ctx<'_>) -> Result<(), CmdError> {
 
 /// **Whether a rescue stands on `site` for `who`** (doc 42 Q-42-14, cut CR.4; this module's
 /// head): an open DT flight in the field there, on any duty, or a live rig lease whose rig stands
-/// on the site's ground, of the character's own party or a Friend's ([`friendly`]).
+/// on the site's ground, of the character's own party or a Friend's (`friendly`).
 fn rescue_on_site(ctx: &Ctx<'_>, site: &CanonicalId, record: &CrewRecord) -> bool {
     let (who, organizer) = (record.character, record.organizer);
     // The hull the character is stranded in rescues nobody.

@@ -4,24 +4,24 @@
 //! **Who may** (Q-42-10): the seated pilot of a doomed unit, from inside it (a remote console has
 //! nothing to eject from), never while world time is frozen; an NPC pilot never types it. **When**
 //! (Q-42-11): a unit is doomed when it could not bring its pilot home at a check-in, or a control
-//! section is already damaged ([`super::crew::doomed`]).
+//! section is already damaged (`super::crew::doomed`).
 //!
 //! **In a running field** the host asks the arena for one read of its live state
 //! ([`crate::arena_task::ArenaMsg::Eject`], `crate::arena::eject`): whether the unit is doomed,
 //! the crew's condition its sections give, and the parties holding its cell. The answer
-//! ([`on_ejected`]) takes the first holder with a carrier on the site (Q-42-12 (d), [`holder`])
+//! (`on_ejected`) takes the first holder with a carrier on the site (Q-42-12 (d), `holder`)
 //! and draws, deterministically, against `[tacsim.field].eject_capture_permille` ([`draw`]): an
 //! FNV-1a hash over the field's site tag, its ordinal, the unit and the read's arena millisecond,
 //! so a replay and a gate agree. **After a field** (the unit standing on the site's ground, no
 //! field running) the world's cells decide and nobody holds the cell.
 //!
-//! **The eject** ([`ejected`]) releases the seat at once — every channel `Released` to the arena,
+//! **The eject** (`ejected`) releases the seat at once — every channel `Released` to the arena,
 //! the station vacated, so the hull is its mind's or nobody's — and writes `Stranded { site, unit
 //! }` with a forced extraction due after `extract_s`, carrying the draw's [`EjectCapture`] when
 //! there was one. The body stays in the cockpit room until the landing moves it (Q-CF-39): the
-//! held gate refuses it movement and operation ([`super::crew::PICKUP`]) and every load rule skips
+//! held gate refuses it movement and operation (`super::crew::PICKUP`) and every load rule skips
 //! the record (Draft 0.3, 42-5 (B)). The condition is kept (Q-42-13). The landing is the crew
-//! tick's ([`super::crew::tick`]).
+//! tick's (`super::crew::tick`).
 
 use std::collections::BTreeMap;
 

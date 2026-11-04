@@ -657,7 +657,9 @@ pub(crate) async fn eject_under_the_hold(at: &Ground, permille: u32) {
     to_cell_on(&mut rig, at.entry, escort, (ramp.0 + 1, ramp.1));
     // The wing stands on the ground, unarmed and far off: it contests nothing, and it is the
     // rescue a pickup waits for.
-    launched_at(&mut rig, at.entry, a, wing);
+    // `launched_at` launches slot 1; the wing is slot 2.
+    let _ = crate::driving_rig::act_go(&mut rig, a, "+tv/2 launch go");
+    let _ = crate::driving_rig::finish(&mut rig, wing, a);
     to_cell_on(&mut rig, at.entry, wing, (ramp.0 + 1, ramp.1 + 6));
     powerless(&mut rig, escort);
     seat(&mut rig, escort, a);

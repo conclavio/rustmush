@@ -355,3 +355,95 @@ CR.1.
 - The run's slowest cell was shard_1 at 23.2 min, which this cut does not touch. Every shard_1 module ran
   about 1.27× slower on that runner (`driving::` 14.0 → 18.7, `field_gc4::` 8.4 → 9.7), as doc 43 §5.8
   warns the hosted machines vary.
+
+## CR.4 — Ejection
+
+Q-42-10 to Q-42-14, with Draft 0.3's 42-1 and 42-5 (B). The seated pilot of a doomed unit leaves the
+seat for a pickup. Under a Hostile party's hold that pickup may be the holder's, by a seeded draw.
+
+**Config.** `[tacsim.field].eject_capture_permille`, 500, 0 to 1,000. It is documented in mush-config's
+table and mapped in `mush-server/src/config_ext.rs`.
+
+**The verb** (`field/eject.rs`, `+sortie/eject`, gated `Gate::Move`, so a captive or an ejectee
+waiting for the pickup is refused with CR.0's lines).
+- Who may use it: the seated pilot, from inside the unit. It is refused:
+  - at a remote console (`EJECT_REMOTE`);
+  - to a stranded pilot (`+sortie/extract` is theirs);
+  - with an extraction already on its way;
+  - while world time is frozen.
+- An NPC types nothing.
+- **In a running field** the host sends the arena `ArenaMsg::Eject { unit }` and keeps the asker in
+  the RAM `EjectBook`. A restart before the answer loses only the request.
+- **After a field** (the unit standing on the site's ground, no field running), the world's cells
+  decide and nobody holds the cell.
+
+**The arena's read** (`arena/eject.rs`, `Arena::eject_read`). It is taken at the next pulse's head,
+before the withdrawals, and answered as `ArenaOut::Ejected` behind the ledger. **A read, never a step:
+nothing moves, nothing is journalled or taped, nothing is hashed.**
+- **Doomed** (Q-42-11) is any one of:
+  - the kernel's own wreck, motion-disabled or disabled limits;
+  - `field::crew::doomed` on the live cells: the check-in's stranding test (no power, no control, no
+    motion, a wreck or irrecoverable). A unit with no mobility profile is never doomed for want of
+    motion: that is the withdraw's own-power rule;
+  - a control section already damaged.
+- **Holding the cell** (Q-42-12 with 42-1) needs all three of:
+  - (a) the holder's book holds the pilot's party Hostile;
+  - (b) a live unit of the holder that is armed at check-out or has fired has the doomed unit's pose
+    inside its `fight_inner_cm`;
+  - (c) no unit of the pilot's own party or a Friend's has the pose inside its reach. The ejecting
+    unit, wrecks and unarmed hulls are excluded.
+- The answer lists every holder, nearest unit first, together with the condition the live sections
+  give (Q-42-13) and the arena millisecond.
+
+**The draw** (`field::eject::draw`).
+- (d): the host takes the first holder that has a leader and a carrier in the field that has not
+  fallen. That carrier is either one of its own units or the carrier of a party its leader leads.
+- The draw is FNV-1a over GC.10's `cause_prefix(site, ordinal)`, the unit and the read's millisecond,
+  taken mod 1,000. It captures below the knob, so 1,000 always captures and 0 never does.
+
+**The eject** (`ejected`).
+- `crew::release_seat`, factored out of the extraction's landing: every channel `Released`, the pilot
+  unbound and the cockpit cleared, the station vacated.
+- Then `Stranded { site, unit }` with an `Extraction { forced: true, capture }` due after `extract_s`.
+  The condition is the worse of the record's and the cells' (Q-42-13).
+- The body stays in the cockpit room. CR.0's gate and load filters already treat a forced record.
+
+**The landings** (the crew tick).
+- **Captured:** a forced extraction with a capture, whose carrier still stands on the site
+  (`bay_work::site_of_carrier`) and has not fallen. The ejectee steps into its bay room and is
+  `Captured` by the captor (`EJECT_CAPTURED`; the captor hears `EJECT_CAPTOR_TOLD`).
+- **At a port:** otherwise, as any extraction.
+- `raiders::lift_check` skips a carrier that a pending capture names (`crew::capture_pending`), so a
+  raider's carrier waits for its captive.
+
+**The deferral** (Q-42-14). `rescue_on_site` no longer keys on `CrewDuty::Recovery`. It defers when
+either of these is of the character's own party or a Friend's (the character, their organizer, or a
+character sharing an organization either openly stands in):
+- any open DT flight in the field on the site;
+- a live rig lease whose rig stands on the site's ground, other than the hull the character is
+  stranded in.
+
+It applies to asked-for and to uncaptured forced extractions alike, never to an abandoned or a
+captured one.
+
+**Gate.**
+- `shard_8 crew_custody::cr4_an_ejection_under_a_hostile_hold_is_captured` (256) and `…_at_512`,
+  through `custody_rig::eject_under_the_hold` with the knob at 1,000.
+- `cr4_an_uncaptured_ejection_waits_for_the_wing_then_lands_at_a_port` (256) and `…_at_512`, with the
+  knob at 0.
+- In-source:
+  - `arena::eject::tests::cr4_only_a_doomed_unit_ejects`;
+  - `cr4_holding_the_cell` (the ejecting unit never contests its cell, a wing in reach does, a wrecked
+    one does not, and a Neutral holds nothing);
+  - `field::eject::tests::cr4_the_draw_is_seeded_and_bounded`.
+
+**Divergences from §7's row.**
+- Story (d) flies a leased escort rig, whose unit has no control section. The doomed arm it reaches is
+  the powerless one, so the pilot lands Fit. The damaged-cockpit arm is pinned in-source, and the
+  Injured landing at Stickney is owed to a biped story.
+- The captor in the story is a player's carrier, not a director raider's. The raider lift's wait is
+  in source (`lift_check`) and is owed to the next raider story.
+- The "wing inside its own reach" variant is in-source (`cr4_holding_the_cell`). A field story would
+  need an armed second hull of the pilot's party, which no rig lease gives.
+- An eject capture writes no `capture:` standing and no `UnlawfulKind::Capture` row: the holder held
+  the pilot Hostile by (a), so Q-42-21's charge does not apply, and nothing was loaded.

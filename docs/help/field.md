@@ -359,7 +359,19 @@ ask for extraction the same way. If the captor's carrier is wrecked in a later
 field, you are stranded in the wreck like everyone aboard it, and the captivity
 ends with the hull.
 
-Capture at an ejection is still being built.
+**Ejecting.** A pilot whose unit cannot bring them home, or whose cockpit is
+already hit, may leave the seat at once with `+sortie/eject`, from inside the
+unit (a console has nothing to eject from). The seat empties, the hull is the
+field's, and you wait in the cockpit for a pickup to the safe port you know after
+the usual delay (`[tacsim.field].extract_s`); `+sortie/condition` shows it. An
+ejection never hurts you: you keep the condition the hull last gave you. A unit
+that can still bring you home refuses ("#n can still bring you home").
+
+If a party that holds you Hostile has an armed unit within reach of your unit,
+no unit of yours or a Friend's has it within its own reach, and that party has a
+carrier on the site, the pickup may be theirs (a fixed chance,
+`[tacsim.field].eject_capture_permille`, even by default): you are carried aboard
+their carrier and held there, as above.
 
 A control-section kill incapacitates you at once: "Your head is gone and you with
 it, for now: you are incapacitated." A stranded pilot is told so when the field
@@ -373,11 +385,12 @@ the port you last stood in, or else Stickney Yards on Phobos. Your hull, its
 cargo and its log stay where they are, and your seat is left empty. While world
 time is frozen the request is refused and the delay does not run.
 
-**A Friend's recovery flight.** If a Friend has an open recovery flight on the site
-(a detachment flight activated for `recovery` duty under the same organizer as
-your own party), your extraction waits for it. It waits up to
-`[tacsim.field].rescue_bound_s` past the due time (two IC hours by default), then
-lands you anyway.
+**A Friend on the site.** If your own party or a Friend still has a hull on the
+site (an open detachment flight in its field on any duty, or a leased rig standing
+on its ground, other than the hull you are stranded in), your extraction or your
+pickup waits for them. It waits up to `[tacsim.field].rescue_bound_s` past the due
+time (two IC hours by default), then lands you anyway. A pickup that is a capture
+never waits.
 
 **Treatment.** An injured or incapacitated character who stands in a port is
 under treatment there and is fit again after a stay of IC time: one IC day when
@@ -391,6 +404,7 @@ stand in. While world time is frozen the clock does not run.
 
   +sortie/extract          stranded or incapacitated: ask a recovery service to
                            lift you to a safe port
+  +sortie/eject            leave the seat of a doomed unit for a pickup
   +sortie/condition        how you are and where, and the time left on an
                            extraction, a treatment or a processing hour
 

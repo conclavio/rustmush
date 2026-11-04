@@ -877,7 +877,7 @@ test on live cells; the holding query to the arena task; the deterministic draw 
 `eject_capture_permille`; the forced extraction's two landings; the deferral keyed on Friends
 rather than the duty. Files: `detachment/sortie/commands.rs`, `field/crew.rs`, `arena_bridge.rs`,
 the arena task's message handler (a read; no hash). Draft 0.3 (42-5): also `field/raiders.rs` (`lift_check` waits on a pending capture naming its carrier). Draft 0.4 (Q-40-25 ruled): the coupled-casualty crew rule reads doc 40's coupled withdraw at the ramp, after which the ordinary `TowOrder::Load`/`Loaded` runs, so a casualty recovered from a running field reaches the same `place_in_bay`/`captured_loaded` branch as CR.1's. Story: (d), both sizes, knob at 1,000 and 0.
-After CR.1 (both touch `crew.rs`).
+After CR.1 (both touch `crew.rs`). **Built** — see [42-cut-notes.md](42-cut-notes.md) §CR.4.
 
 **CR.5 — Beds as a limit.** Q-42-17, Q-42-18. `treat` counts the medical room's occupants
 against `beds`. Files: `field/crew.rs`, `port/medical.rs`. Gate: GC.13's gates plus a third
