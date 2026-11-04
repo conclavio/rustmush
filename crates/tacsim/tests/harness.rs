@@ -2,7 +2,7 @@
 //! `11-h-implementation-plan.md` §3.3 and D-H-8).
 //!
 //! What this is. One `#[ignore]` measurement, run by the CI `tacsim-harness` job
-//! on `workflow_dispatch` and the weekly schedule (report-only, `--release`,
+//! on `workflow_dispatch` and the daily schedule (report-only, `--release`,
 //! `--nocapture`, `harness.json` kept as an artifact) and locally by hand. It
 //! composes the **production** composition root — the same calls
 //! `mush_server::boot::game_modules` makes, read out of
@@ -319,7 +319,7 @@ use tacsim::definitions::{Catalog, content};
 
 // Every test here carries
 // `#[ignore = "tacsim harness: run by the CI `tacsim-harness` job (workflow_dispatch /
-// weekly)"]`. `ci_gated_test_inventory` finds the job that owns them by the verbatim
+// daily schedule)"]`. `ci_gated_test_inventory` finds the job that owns them by the verbatim
 // `-p tacsim --test harness` in `.github/workflows/ci.yml`.
 
 // ---------------------------------------------------------------------------
@@ -1158,7 +1158,7 @@ fn num(v: f64) -> serde_json::Value {
 // ---------------------------------------------------------------------------
 
 #[test]
-#[ignore = "tacsim harness: run by the CI `tacsim-harness` job (workflow_dispatch / weekly)"]
+#[ignore = "tacsim harness: run by the CI `tacsim-harness` job (workflow_dispatch / daily schedule)"]
 #[allow(clippy::too_many_lines)]
 fn tacsim_harness_reports_the_ground_pulse_baseline() {
     let knobs = Knobs::from_env();
@@ -2795,7 +2795,7 @@ fn windows(wakes: &[Wake], start_ms: i64) -> Vec<WindowSum> {
 /// A2; 16b cut U.1): [`measure_arena`] at [`Reach::Ci`], the thresholds asserted
 /// under `TACSIM_ASSERT`.
 #[test]
-#[ignore = "tacsim harness: run by the CI `tacsim-harness` job (workflow_dispatch / weekly)"]
+#[ignore = "tacsim harness: run by the CI `tacsim-harness` job (workflow_dispatch / daily schedule)"]
 fn tacsim_harness_arena_step() {
     measure_arena(&Knobs::from_env(), Reach::Ci);
 }
@@ -2809,7 +2809,7 @@ fn tacsim_harness_arena_step() {
 /// `T-109`), and the same per-pulse bounds of
 /// `[tacsim.harness]`. The delta does not read its report.
 #[test]
-#[ignore = "tacsim harness: run by the CI `tacsim-harness` job (workflow_dispatch / weekly)"]
+#[ignore = "tacsim harness: run by the CI `tacsim-harness` job (workflow_dispatch / daily schedule)"]
 fn tacsim_harness_arena_authored_reach() {
     measure_arena(&Knobs::from_env(), Reach::Authored);
 }
@@ -2821,7 +2821,7 @@ fn tacsim_harness_arena_authored_reach() {
 /// `<stem>-arena-long.<ext>`. Under `TACSIM_ASSERT` it asserts the memory growth
 /// and the ledger bound, and never the p99: the lens is the 30-second lane's.
 #[test]
-#[ignore = "tacsim harness: run by the CI `tacsim-harness` job (workflow_dispatch / weekly)"]
+#[ignore = "tacsim harness: run by the CI `tacsim-harness` job (workflow_dispatch / daily schedule)"]
 fn tacsim_harness_arena_long_run() {
     measure_long_run(&Knobs::from_env());
 }
@@ -4679,7 +4679,7 @@ const SIGHT_REACH_CELLS: i32 = 60;
 /// are printed and never asserted; JSON at `<stem>-sight.<ext>`, which the delta
 /// does not read.
 #[test]
-#[ignore = "tacsim harness: run by the CI `tacsim-harness` job (workflow_dispatch / weekly)"]
+#[ignore = "tacsim harness: run by the CI `tacsim-harness` job (workflow_dispatch / daily schedule)"]
 fn tacsim_harness_sight_differential() {
     measure_sight(&Knobs::from_env());
 }
@@ -5398,7 +5398,7 @@ fn write_text(path: &std::path::Path, text: &str) {
 /// before it is believed: two runs of one tree on one box have differed by 16 per
 /// cent at the p99 (16b cut N.1's own record).
 #[test]
-#[ignore = "tacsim harness: run by the CI `tacsim-harness` job (workflow_dispatch / weekly)"]
+#[ignore = "tacsim harness: run by the CI `tacsim-harness` job (workflow_dispatch / daily schedule)"]
 fn tacsim_harness_delta_against_the_committed_baseline() {
     let knobs = Knobs::from_env();
     let fresh_path = arena_report_path(&knobs.json, "arena");
@@ -6727,7 +6727,7 @@ fn fan_out_roster() -> Vec<Box<dyn GameModule>> {
 /// `TACSIM_ASSERT`, `panel_bytes_max <= harness.max_frame_bytes` and
 /// `events_per_pulse_max <= harness.max_output_events_per_pulse`.
 #[tokio::test(flavor = "multi_thread")]
-#[ignore = "tacsim harness: run by the CI `tacsim-harness` job (workflow_dispatch / weekly)"]
+#[ignore = "tacsim harness: run by the CI `tacsim-harness` job (workflow_dispatch / daily schedule)"]
 async fn tacsim_harness_fan_out() {
     measure_fan_out(&Knobs::from_env()).await;
 }
@@ -7695,7 +7695,7 @@ fn supporters_on_charge(arena: &tacsim::arena::state::Arena) -> (usize, usize, u
 /// defaults pinned to the defaults' own fight (at the ROM since 17b cut M4.5:
 /// [`measure_lance`]); timing report-only.
 #[test]
-#[ignore = "tacsim harness: run by the CI `tacsim-harness` job (workflow_dispatch / weekly)"]
+#[ignore = "tacsim harness: run by the CI `tacsim-harness` job (workflow_dispatch / daily schedule)"]
 fn tacsim_harness_lance() {
     measure_lance(&Knobs::from_env(), &LanceKnobs::from_env());
 }
@@ -12118,7 +12118,7 @@ fn measure_minds(
 /// **The minds lane since 17b cut M4.2** — see the file head and the section
 /// head above [`DEFAULT_MINDS_JITTER_MS`].
 #[test]
-#[ignore = "tacsim harness: run by the CI `tacsim-harness` job (workflow_dispatch / weekly)"]
+#[ignore = "tacsim harness: run by the CI `tacsim-harness` job (workflow_dispatch / daily schedule)"]
 fn tacsim_harness_arena_minds() {
     let minds = MindsKnobs::from_env();
     let variants = minds.variants.clone();

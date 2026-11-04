@@ -1,6 +1,6 @@
 //! # mush-faction
 //!
-//! The faction **registry** (design: `docs/scenes_factions_knowledge.md` §3,
+//! The faction **registry** (design: `docs/design/scenes-factions-knowledge.md` §3,
 //! registry half): first-class organizations for every game line — WoD sects
 //! and coteries, Shadowrun crews/corps/gangs, TacSim houses and merc
 //! units — as engine data, not roster decoration.

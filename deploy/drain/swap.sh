@@ -42,7 +42,7 @@
 # swap of a unit runs at a time (flock).
 set -euo pipefail
 
-unit= marker_dir= check= link= link_target= after= lock= force=0
+unit='' marker_dir='' check='' link='' link_target='' after='' lock='' force=0
 drain_note="warnings on its schedule; closes at its deadline or when empty"
 
 usage() {

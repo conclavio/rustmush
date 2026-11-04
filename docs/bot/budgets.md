@@ -138,6 +138,6 @@ a denied replay has no request ID and sends no provider request. An inspection o
 successful policy validation exits 0; denied headless play exits 2, and denied
 replay exits 1. Interactive bots stay available for local controls.
 
-Use [cost accounting](bot.md#session-and-lifetime-costs),
-[trace inspection](bot-traces.md) and [regression gates](bot-regression.md) to
+Use [cost accounting](guide.md#session-and-lifetime-costs),
+[trace inspection](traces.md) and [regression gates](regression.md) to
 inspect the resulting experiments.

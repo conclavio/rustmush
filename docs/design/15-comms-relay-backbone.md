@@ -82,7 +82,7 @@ A link carries the short, consequential traffic — orders, reports, market tick
 mail — and queues it by **class** (§5.2). Bulk traffic — sensor imagery, full telemetry, manifests
 in the large — goes by conventional laser at light speed, or by courier. The corridor therefore
 learns *that* something happened at once and *what it looked like* minutes to hours later, which is
-the graded knowledge the epistemic engine wants (`docs/scenes_factions_knowledge.md`).
+the graded knowledge the epistemic engine wants (`docs/design/scenes-factions-knowledge.md`).
 
 ### 3.3 Coverage and the last mile (D-15-10)
 

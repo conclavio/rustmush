@@ -522,7 +522,7 @@ fn replay_phases(ledger: &[LedgerDoc]) -> ReplayPhases {
 /// `us_per_entry` and `entries_at_5s` are the numbers §4 derives the entry
 /// line from.
 #[test]
-#[ignore = "scale harness: run by the CI `scale` job (workflow_dispatch / weekly)"]
+#[ignore = "scale harness: run by the CI `scale` job (workflow_dispatch / daily schedule)"]
 fn scale_cold_journal_replay_phases() {
     let scales: Vec<usize> = std::env::var("SCALE_PROFILE_SCALES")
         .ok()
@@ -638,7 +638,7 @@ fn scale_cold_journal_replay_phases() {
 /// and the at-rest working set. `SCALE_TX_TAIL_MAX` sets the RAM tail (0 is
 /// the default; a value past the journal's length is unbounded retention).
 #[test]
-#[ignore = "scale harness: run by the CI `scale` job (workflow_dispatch / weekly)"]
+#[ignore = "scale harness: run by the CI `scale` job (workflow_dispatch / daily schedule)"]
 fn scale_cold_journal_replay_from_file() {
     let Ok(path) = std::env::var("SCALE_JOURNAL_FILE") else {
         println!("scale_cold_journal_replay_from_file: SCALE_JOURNAL_FILE unset; nothing to boot");
@@ -673,7 +673,7 @@ fn scale_cold_journal_replay_from_file() {
 }
 
 #[test]
-#[ignore = "scale harness: run by the CI `scale` job (workflow_dispatch / weekly)"]
+#[ignore = "scale harness: run by the CI `scale` job (workflow_dispatch / daily schedule)"]
 fn scale_cold_journal_replay_reports_time() {
     let entries = env_usize("SCALE_JOURNAL_ENTRIES", 100_000);
     let accounts = env_usize("SCALE_ACCOUNTS", 100);
@@ -793,7 +793,7 @@ fn report_world_boot(label: &str, objects: usize, booted: usize, took: Duration)
 }
 
 #[tokio::test(flavor = "multi_thread")]
-#[ignore = "scale harness: run by the CI `scale` job (workflow_dispatch / weekly)"]
+#[ignore = "scale harness: run by the CI `scale` job (workflow_dispatch / daily schedule)"]
 async fn scale_world_boot_reports_time() {
     let objects = env_usize("SCALE_OBJECTS", 50_000);
     let store = InMemoryStore::new();
@@ -802,7 +802,7 @@ async fn scale_world_boot_reports_time() {
 }
 
 #[tokio::test(flavor = "multi_thread")]
-#[ignore = "scale harness: run by the CI `scale` job (workflow_dispatch / weekly)"]
+#[ignore = "scale harness: run by the CI `scale` job (workflow_dispatch / daily schedule)"]
 async fn scale_world_boot_redis_gated() {
     let Some(store) = live_redis("scale_world_boot_redis_gated", 1).await else {
         return;
@@ -1116,7 +1116,7 @@ fn report_soak(label: &str, bundles: usize, report: &SoakReport) {
 }
 
 #[tokio::test(flavor = "multi_thread")]
-#[ignore = "scale harness: run by the CI `scale` job (workflow_dispatch / weekly)"]
+#[ignore = "scale harness: run by the CI `scale` job (workflow_dispatch / daily schedule)"]
 async fn scale_authoritative_soak_reports_hold_time() {
     let bundles = env_usize("SCALE_BUNDLES", 2_000);
     let report = soak(Arc::new(InMemoryStore::new()), bundles).await;
@@ -1124,7 +1124,7 @@ async fn scale_authoritative_soak_reports_hold_time() {
 }
 
 #[tokio::test(flavor = "multi_thread")]
-#[ignore = "scale harness: run by the CI `scale` job (workflow_dispatch / weekly)"]
+#[ignore = "scale harness: run by the CI `scale` job (workflow_dispatch / daily schedule)"]
 async fn scale_authoritative_soak_redis_gated() {
     let Some(store) = live_redis("scale_authoritative_soak_redis_gated", 2).await else {
         return;
@@ -1212,7 +1212,7 @@ fn report_tick(shape: &TickShape) {
 }
 
 #[test]
-#[ignore = "scale harness: run by the CI `scale` job (workflow_dispatch / weekly)"]
+#[ignore = "scale harness: run by the CI `scale` job (workflow_dispatch / daily schedule)"]
 fn scale_tick_shaped_bundle_measures_caps() {
     let writes = env_usize("SCALE_TICK_WRITES", 512);
     let post_bytes = env_usize("SCALE_TICK_POST_BYTES", 2_048);

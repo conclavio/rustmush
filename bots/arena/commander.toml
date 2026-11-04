@@ -1,4 +1,4 @@
-# The simulator pilot with a model commander (docs/bot.md "Arena pilot" and
+# The simulator pilot with a model commander (docs/bot/guide.md "Arena pilot" and
 # "The commander"). The pilot still locks, fires and steers; the commander only
 # sets its doctrine (which hostile, what stance, how far out, which way round).
 #
