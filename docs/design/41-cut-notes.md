@@ -343,4 +343,8 @@ whole, the tonnes gone from the hold, nobody paid. Re-run green: `bay_gc8` (its 
   story covers, with the class check relaxed.
 - **The yard's rearm is the right, not an act**: no production caller orders a house rig's rearm until IN.9.
 
-**Cell cost (rule #14).** Pending the PR run's JUnit; filled in on the PR.
+**Cell cost (rule #14).** `tacsim-integration-10`: **+1.80 min** for the two new story tests (52.9 s at 256, 55.1 s at
+512 on PR run 41819115615's JUnit, head `279d895a`). The cell's sum reads 58.17 → 60.08 min, main's run at the merge base
+(41814093413, `3fb3e861`) against the PR's, 366 → 368 tests; the other 0.11 min is runner noise spread over unchanged
+tests (`landing::sm2_rheasilvia…` 144.8 → 149.6 s), and `field_rs1` ran no longer (95.2 → 95.0 s, 100.3 → 99.6 s).
+`bay_gc8` changed one `expect`, nothing timed. shard_10 stays the room for growth, so nothing moves shard (rule #3).
