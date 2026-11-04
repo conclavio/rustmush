@@ -627,3 +627,28 @@ runs `npm` only.
 6. **TS.21 before FR.5.** Doc 40's one rebless re-blesses the timing block too and needs a live baseline to
    re-bless against; and rule #13 (the harness kind before ready) binds FR.5 and doc 23's S.4b, the two cuts
    that touch hash-pinned files. Doc 38 §9.3 carries both edges.
+
+## 11. Cut notes
+
+Doc 43 has no cut-notes file; each cut's note lands here.
+
+### TS.16 the field tempo (§5.8, §10.2)
+
+**Built.** Test-only, two tunes in shard_1. `field_gc4::lane3_tune` and `field_gc5::quick` drop their
+`disengage_s = 90` and take the rig's default (15 s, `field_host_rig.rs`'s `tune`); their other stage timings
+stand. That moves the six tests whose bodies only wait for a field to settle and act after it: the four lane3
+regressions in `field_gc4` (two settle two fields each, two settle one) and `field_gc5`'s two field tests,
+`gc5_review_the_captors_field_close_keeps_the_abandoned_extraction` (two fields) and
+`gc5_a_non_friend_load_takes_custody_and_abandons_the_crew` (one). `gc5_review…` reads the live record right
+after its second field opens, well inside 15 s. `field_gc5`'s other two tests open no field. No assertion
+changed.
+
+**Kept at 90, one journey per family.** `field_gc4::gc4_the_wingman_drags_the_casualty_to_the_ramp_and_loads_it_before_the_lift`
+(GC.4's gate: the wingman drags while the field is open) and `escort_lease::cf6c_a_leased_escort_flies_out_fights_withdraws_and_goes_back`
+(shard_8, CF.6c's gate: the escort drives home while the field stays up). §7's row names `cf6c`, but its body
+acts inside the field, so it is the family's representative rather than a candidate.
+
+**Rule #14, shard_1's summed minutes.** Before: main's run
+[41749664818](https://github.com/conclavio/rustmush/actions/runs/41749664818) at `f94b1e26`, 220 tests,
+**52.3 summed minutes**, wall 16 m 16 s; the six tests 209.2 + 206.8 + 203.7 + 119.6 + 116.3 + 109.8 = 965.4 s.
+After (locally, Windows, nextest `-j 8`, before the PR run): the six at 42.6 + 42.8 + 42.9 + 56.2 + 57.5 + 58.8 = 300.8 s; the PR run's JUnit figure replaces this line.
