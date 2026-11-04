@@ -1072,9 +1072,33 @@ pub const DEBT_SHORT: &str = "Your account cannot cover {amount}; nothing was pa
 /// `+debts`' usage.
 pub const DEBTS_USAGE: &str = "Usage: +debts  |  +debts/pay <id>";
 
-/// The ruleset namespaces `+debts` reads: this layer's one. Doc 42's Q-42-7 debt is the same
-/// shape; CR.2 opens it under [`DEBT_NAMESPACE`] or adds its own namespace here.
+/// The ruleset namespaces `+debts` reads: this layer's one.
 pub const DEBT_NAMESPACES: &[&str] = &[DEBT_NAMESPACE];
+
+/// **The sanction keys `+debts` reads beside them** (doc 42 cut CR.2, Q-42-7): a captive's
+/// release fee, a one-shot `Sanction` keyed `release:<captive>:<due>`
+/// (`crate::field::crew::release_key`), levied by a port authority's clerk.
+pub const DEBT_SANCTION_PREFIXES: &[&str] = &["release:"];
+
+/// The live one-term debts `who` owes that `+debts` reads: this layer's, and the release fees.
+fn owed(w: &World, who: &PrincipalId) -> Vec<mush_economy::Obligation> {
+    mush_economy::debts_of_with(w, who, DEBT_NAMESPACES, DEBT_SANCTION_PREFIXES)
+}
+
+/// **The cause `o` is paid or reinstated under**: its ruleset namespace, or the sanction prefix
+/// its key starts with.
+fn debt_cause(o: &mush_economy::Obligation) -> Option<mush_economy::DebtCause<'_>> {
+    match &o.cause {
+        mush_economy::ObligationCause::Ruleset { namespace } => {
+            Some(mush_economy::DebtCause::Ruleset(namespace.as_str()))
+        }
+        mush_economy::ObligationCause::Sanction { inspection } => DEBT_SANCTION_PREFIXES
+            .iter()
+            .find(|prefix| inspection.starts_with(*prefix))
+            .map(|prefix| mush_economy::DebtCause::Sanction(prefix)),
+        _ => None,
+    }
+}
 
 /// A principal's name for the debt lines.
 fn principal_name(w: &World, who: &PrincipalId) -> String {
@@ -1101,7 +1125,7 @@ fn principal_name(w: &World, who: &PrincipalId) -> String {
 /// **The delinquent debts `actor` owes this layer**, with their amounts (the desk's read).
 #[must_use]
 pub fn delinquent_debts(w: &World, actor: ObjId) -> Vec<mush_economy::Obligation> {
-    mush_economy::debts_of(w, &PrincipalId::Object(actor), DEBT_NAMESPACES)
+    owed(w, &PrincipalId::Object(actor))
         .into_iter()
         .filter(|o| matches!(o.status, mush_economy::ObligationStatus::Delinquent))
         .collect()
@@ -1119,11 +1143,16 @@ pub fn desk_refusal(ctx: &mut Ctx<'_>) -> Option<String> {
         .iter()
         .fold(0_i64, |sum, o| sum.saturating_add(o.amount.minor()));
     for o in &owed {
-        let namespace = match &o.cause {
-            mush_economy::ObligationCause::Ruleset { namespace } => namespace.clone(),
-            _ => continue,
+        let reinstated = match debt_cause(o) {
+            Some(mush_economy::DebtCause::Ruleset(namespace)) => {
+                mush_economy::reinstate_debt(ctx, o.id, namespace)
+            }
+            Some(mush_economy::DebtCause::Sanction(prefix)) => {
+                mush_economy::reinstate_sanction_debt(ctx, o.id, prefix)
+            }
+            None => continue,
         };
-        if let Err(error) = mush_economy::reinstate_debt(ctx, o.id, &namespace) {
+        if let Err(error) = reinstated {
             tracing::warn!(obligation = o.id.0, %error, "tacsim: a delinquent debt could not be reinstated at the desk");
         }
     }
@@ -1148,15 +1177,21 @@ pub(crate) fn debts_cmd(ctx: &mut Ctx<'_>) -> Result<(), CmdError> {
             .trim_start_matches('#')
             .parse::<u64>()
             .map_err(|_| CmdError::msg(DEBTS_USAGE))?;
-        let debt = mush_economy::debts_of(ctx.w, &me, DEBT_NAMESPACES)
+        let debt = owed(ctx.w, &me)
             .into_iter()
             .find(|o| o.id.0 == id)
             .ok_or_else(|| CmdError::msg(NO_SUCH_DEBT.replace("{id}", &id.to_string())))?;
-        let mush_economy::ObligationCause::Ruleset { namespace } = &debt.cause else {
-            return Err(CmdError::msg(NO_SUCH_DEBT.replace("{id}", &id.to_string())));
+        let paid = match debt_cause(&debt) {
+            Some(mush_economy::DebtCause::Ruleset(namespace)) => {
+                mush_economy::pay_debt(ctx, debt.id, namespace)
+            }
+            Some(mush_economy::DebtCause::Sanction(prefix)) => {
+                mush_economy::pay_sanction_debt(ctx, debt.id, prefix)
+            }
+            None => return Err(CmdError::msg(NO_SUCH_DEBT.replace("{id}", &id.to_string()))),
         };
         let amount = crate::port::coop::money_minor(ctx, debt.amount.minor());
-        return match mush_economy::pay_debt(ctx, debt.id, namespace) {
+        return match paid {
             Ok(mush_economy::PostOutcome::Posted(_)) => {
                 let line = DEBT_PAID
                     .replace("{id}", &id.to_string())
@@ -1178,7 +1213,7 @@ pub(crate) fn debts_cmd(ctx: &mut Ctx<'_>) -> Result<(), CmdError> {
     if !raw.is_empty() {
         return Err(CmdError::msg(DEBTS_USAGE));
     }
-    let debts = mush_economy::debts_of(ctx.w, &me, DEBT_NAMESPACES);
+    let debts = owed(ctx.w, &me);
     let text = if debts.is_empty() {
         NO_DEBTS.to_owned()
     } else {
