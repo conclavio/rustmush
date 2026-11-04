@@ -520,3 +520,31 @@ matched only the unqualified `module_state_mut::<SpaceBubbleBook>()` spelling (`
 **Test.** `sfr19_one_salvage_path_unifies_space_derelict_claims_with_gc6_and_economy`.
 
 **Divergences.** None from the `35c` §9 `SF.R19` specification.
+
+## SF.R20 — one damage table and canonical drives
+
+- Bridged `ShipSectionId`, `ShipSectionState`, and `SpaceShipState` onto `crate::carrier_damage::CarrierPart` and
+  `CarrierDamage` (`Q-36-47`, `D-35-1`, `crates/tacsim/src/space/bubble.rs`), and routed `Slow` consequence capping through
+  `crate::arena::damage::apply_slow_consequence` (`crates/tacsim/src/arena/damage.rs`) so `Slow` takes `min` instead of
+  compounding across hits after `hold` reaches `0` internals (`35c` §6.5).
+- Persisted space subsystem crits (`PdcOffline`, `SensorDegraded`, `RadiatorDamaged`, `DriveDegraded`), stripped PDC mounts,
+  and `slow_pct` across `check_in_space_unit` and `space_ship_from_tactical_unit` via the `tactics.space.subsystems`
+  capability (`crates/tacsim/src/space/custody.rs`), and restored `tactics.space.subsystems` on workshop bay repair
+  (`crates/tacsim/src/port/bay_work/jobs.rs`) (`35b` §5 #16, `35c` §6.5).
+- Authored `"drive": { "class": "patrol_corvette", "law": { "flip": { "accel_mg": 500, "exhaust_kms": 12000 } } }` in
+  `crates/tacsim/content/units/corvette.json` and re-signed its content digest; computed `max_accel_mmps2`, `max_accel_mps2`,
+  and `delta_v_mps` from `UnitSpec` and the Tsiolkovsky rocket equation across `SpaceShipState::new_dray`, `new_corvette`,
+  and `apply_unit_spec_to_space_ship` (`bubble.rs`, `custody.rs`), removing the `60` $\text{m/s}^2$, `9_500` $\text{m/s}$,
+  `4_500` $\text{m/s}$, and `DRAY_P_HOLD_CAPACITY_T = 86` constants (`mining.rs`, `commands.rs`).
+- Added `thrust_mmps2` and `max_accel_mmps2` (`mm/s²` kinematics) on `SpaceShipState`, `LocalSpaceBubble::command_burn_mmps2`,
+  and `BubbleInputCommand::CommandBurnMmps2`, and wired `+helm/thrust`, `+helm/burn`, and `+helm/approach` to scale throttle
+  permille against `max_accel_mmps2` so an empty `Dray` and an `80 t`-loaded `Dray-P` accelerate at distinct sub-$1\text{ m/s}^2$
+  flip-drive rates (`35c` §6.5).
+- Replaced `raiders().first()` and `RAIDER_ATTR` in `spawn_kirkwood_picket_ships_in_world` (`crates/tacsim/src/space/picket.rs`)
+  with a dedicated space raider unit (`tacsim.unit.raider_heavy`), added `reuse_or_create_npc_hull` and non-derelict NPC
+  `Thing` cleanup in `clear_resolved_bubbles` (`crates/tacsim/src/space/tick.rs`), and hydrated `SpaceShipState::pixel_model`
+  directly from `SpaceUnitOverlay::pixel_model` (`35c` §6.4–§6.5).
+
+**Test.** `sfr20_one_damage_table_and_canonical_drives_sub_1mps2_kinematics_pdc_checkin_and_no_leaked_npcs`.
+
+**Divergences.** None from the `35c` §9 `SF.R20` specification.

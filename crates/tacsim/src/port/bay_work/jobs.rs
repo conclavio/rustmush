@@ -532,5 +532,45 @@ pub fn work(
             }
         };
     }
+
+    if !jobs.is_empty() {
+        let mut cleanup_ops = Vec::new();
+        if let Ok(hull_sec) = SectionId::new("hull")
+            && let Ok(sink_cell) = CellId::new(crate::definitions::unit::HEAT_SINK_CELL)
+        {
+            let sink_addr = CellAddr::Section {
+                section: hull_sec,
+                cell: sink_cell,
+            };
+            if let Some(cell) = now.cell(&sink_addr)
+                && cell.current < cell.max
+            {
+                cleanup_ops.push(mush_tactics::UnitMutationOp::SetCell {
+                    addr: sink_addr,
+                    value: cell.max,
+                });
+            }
+        }
+        if let Ok(cap_id) =
+            mush_tactics::CapabilityId::new(crate::space::custody::SPACE_SUBSYSTEMS_CAPABILITY)
+        {
+            let subsys_key = mush_tactics::CapabilityKey {
+                id: cap_id,
+                source: None,
+            };
+            if now.capability(&subsys_key).is_some() {
+                cleanup_ops
+                    .push(mush_tactics::UnitMutationOp::RevokeCapability { key: subsys_key });
+            }
+        }
+        if !cleanup_ops.is_empty()
+            && let Ok(plan) =
+                mush_tactics::UnitMutationPlan::new(cleanup_ops, Some(now.revision()), None)
+            && let Ok((updated, _)) = mush_tactics::apply(&now, &plan, at_ic)
+        {
+            now = updated;
+        }
+    }
+
     Ok(now)
 }

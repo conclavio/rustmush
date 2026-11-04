@@ -2044,6 +2044,7 @@ fn clear_resolved_bubbles(ctx: &mut Ctx<'_>, now: &ClockStamp) {
                     },
                 );
             }
+            destroy_unclaimed_npc_hull(ctx, contact_hull);
         }
 
         for (ch, _, _, _) in &carrier_entries {
@@ -2259,6 +2260,7 @@ fn settle_disabled_carrier_bubbles(ctx: &mut Ctx<'_>, now: &ClockStamp) {
                     },
                 );
             }
+            destroy_unclaimed_npc_hull(ctx, npc_hull);
         }
         for (hull, carrier_ship) in carrier_ships {
             let Some(ship) = carrier_ship else {
@@ -3152,28 +3154,10 @@ fn build_interdiction_bubble(
         (raider_hull, raider_ship_id, Some(picket_state), None)
     } else {
         let interdictor_ship_id = format!("picket.{}.{}", domain.0, leg_cursor);
-        let interdictor_commander = ctx
-            .w
-            .resolve_player("Interdictor Picket Commander")
-            .or_else(|| {
-                ctx.w
-                    .create(
-                        mush_core::ObjKind::Npc,
-                        "Interdictor Picket Commander",
-                        mush_core::GOD,
-                        None,
-                    )
-                    .ok()
-            })?;
-        let interdictor_hull = ctx
-            .w
-            .create(
-                mush_core::ObjKind::Thing,
-                "Interdictor Picket",
-                interdictor_commander,
-                None,
-            )
-            .ok()?;
+        let interdictor_commander =
+            reuse_or_create_npc_commander(ctx, "Interdictor Picket Commander", None)?;
+        let interdictor_hull =
+            reuse_or_create_npc_hull(ctx, "Interdictor Picket", interdictor_commander)?;
         super::custody::create_stock_space_unit_in_world(
             ctx,
             interdictor_hull,
@@ -3341,12 +3325,25 @@ fn build_carrier_ship_state(
             ship.non_prop_payload_kg = non_prop_payload;
             ship.propellant_kg =
                 u32::try_from(live_kg.min(u64::from(u32::MAX))).unwrap_or(u32::MAX);
+            ship.recompute_drive_kinematics();
             if let Some(accel) = crate::port::passage::flip_accel_mps2(
                 &basis.spec.drive,
                 basis.spec.dry_kg,
                 effective_payload,
             ) {
-                ship.max_accel_mps2 = (accel.ceil() as i64).max(1);
+                ship.max_accel_mmps2 = ((accel * 1_000.0).round() as i64).max(1);
+                if ship.slow_pct > 0 && ship.slow_pct < 100 {
+                    ship.max_accel_mmps2 = (ship
+                        .max_accel_mmps2
+                        .saturating_mul(i64::from(100_u8.saturating_sub(ship.slow_pct)))
+                        / 100)
+                        .max(1);
+                }
+                ship.max_accel_mps2 = ship
+                    .max_accel_mmps2
+                    .saturating_add(999)
+                    .div_euclid(1_000)
+                    .max(1);
             }
             ship.delta_v_mps = i64::from(
                 crate::port::passage::remaining_dv_mps_for_propellant(
@@ -3369,4 +3366,115 @@ fn build_carrier_ship_state(
         }
     }
     Some(ship)
+}
+
+/// Resolve an existing NPC commander by `name` (owned by `GOD`) or create one, optionally
+/// registering `faction` in `mush-faction` (`SF.R20`).
+pub(crate) fn reuse_or_create_npc_commander(
+    ctx: &mut Ctx<'_>,
+    name: &str,
+    faction: Option<&str>,
+) -> Option<ObjId> {
+    if let Some(existing) = ctx
+        .w
+        .iter()
+        .find(|o| {
+            o.kind == mush_core::ObjKind::Npc
+                && !o.flags.contains(mush_core::Flags::GOING)
+                && o.owner == mush_core::GOD
+                && o.name.as_str() == name
+        })
+        .map(|o| o.id)
+    {
+        return Some(existing);
+    }
+    let npc = ctx
+        .w
+        .create(mush_core::ObjKind::Npc, name, mush_core::GOD, None)
+        .ok()?;
+    if let Some(org) = faction
+        && ctx.w.module_state::<mush_faction::FactionState>().is_some()
+    {
+        let _ = mush_faction::register_content_faction(ctx, org, npc);
+    }
+    Some(npc)
+}
+
+/// Reuse an idle NPC space hull (`ObjKind::Thing` owned by `owner` with `name`) or create a fresh
+/// one (`SF.R20`, `35b` §5 #11).
+pub(crate) fn reuse_or_create_npc_hull(
+    ctx: &mut Ctx<'_>,
+    name: &str,
+    owner: ObjId,
+) -> Option<ObjId> {
+    let existing = ctx
+        .w
+        .iter()
+        .find(|o| {
+            if o.kind != mush_core::ObjKind::Thing
+                || o.flags.contains(mush_core::Flags::GOING)
+                || o.owner != owner
+                || o.name.as_str() != name
+                || mush_tactics::custody::marker_of(ctx.w, o.id).is_some()
+            {
+                return false;
+            }
+            let in_space_custody = ctx.w.module_state::<SpaceBubbleBook>().is_some_and(|b| {
+                b.by_domain.values().any(|a| {
+                    a.interdictor_hull == o.id
+                        || a.picket
+                            .as_ref()
+                            .is_some_and(|p| p.corvette_hull == o.id || p.raider_hull == o.id)
+                        || a.ship_hulls.values().any(|&h| h == o.id)
+                }) || b.clamped_derelicts.values().any(|&dh| dh == o.id)
+                    || b.active_tows.values().any(|t| t.derelict_hull == o.id)
+                    || b.space_custody.contains_key(&o.id)
+            });
+            !in_space_custody
+        })
+        .map(|o| o.id);
+    if let Some(hull) = existing {
+        if let Some(book) = ctx.w.module_state_mut::<SpaceBubbleBook>() {
+            book.derelicts.remove(&hull);
+        }
+        return Some(hull);
+    }
+    ctx.w
+        .create(mush_core::ObjKind::Thing, name, owner, None)
+        .ok()
+}
+
+/// Destroy an unclaimed NPC picket/raider hull (`Thing` + `TacticalUnit` + `EconomyStore` asset)
+/// when its bubble closes without a clamp, tow, or salvage claim (`SF.R20`, `35b` §5 #11).
+pub(crate) fn destroy_unclaimed_npc_hull(ctx: &mut Ctx<'_>, npc_hull: ObjId) {
+    let is_npc_hull = ctx.w.get(npc_hull).is_some_and(|o| {
+        o.kind == mush_core::ObjKind::Thing
+            && !o.flags.contains(mush_core::Flags::GOING)
+            && ctx
+                .w
+                .get(o.owner)
+                .is_some_and(|owner| owner.kind == mush_core::ObjKind::Npc)
+    });
+    if !is_npc_hull {
+        return;
+    }
+    let retained = ctx.w.module_state::<SpaceBubbleBook>().is_some_and(|b| {
+        b.by_domain.values().any(|a| {
+            a.interdictor_hull == npc_hull
+                || a.picket
+                    .as_ref()
+                    .is_some_and(|p| p.corvette_hull == npc_hull || p.raider_hull == npc_hull)
+                || a.ship_hulls.values().any(|&h| h == npc_hull)
+        }) || b.clamped_derelicts.values().any(|&dh| dh == npc_hull)
+            || b.active_tows.values().any(|t| t.derelict_hull == npc_hull)
+            || b.space_custody.contains_key(&npc_hull)
+    });
+    if retained {
+        return;
+    }
+    let _ = mush_tactics::custody::check_in(ctx, npc_hull, None);
+    let _ = mush_sim::deployed::clear(ctx.w, npc_hull);
+    if ctx.w.destroy(npc_hull).is_ok() {
+        ctx.emit_world_event(&mush_core::WorldEvent::ObjDestroyed { obj: npc_hull });
+    }
 }

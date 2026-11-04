@@ -68,11 +68,53 @@ pub const MAX_MINING_MATCH_RANGE_M: i64 = 2_000;
 /// Maximum 3D Euclidean relative speed in millimetres per second for velocity matching (`5,000 mm/s = 5.000 m/s`, `35a` §5 #11).
 pub const MAX_VELOCITY_MATCH_SPEED_MMPS: i64 = 5_000;
 
-/// `Dray-P` (`dray_p.json`) unreserved bulk/ore hold capacity in kilograms (`86,000 kg = 86 t`, `35a` §5 #13).
-pub const DRAY_P_HOLD_CAPACITY_KG: u64 = 86_000;
+/// Read the unreserved bulk/ore hold capacity in kilograms directly from `unit_entry_id`'s
+/// authored [`crate::definitions::unit::UnitSpec`] (`dray_p.json` $\to 86{,}000\text{ kg}$,
+/// `dray.json` $\to 100{,}000\text{ kg}$, `35a` §5 #13, `SF.R20`).
+#[must_use]
+pub fn unit_hold_capacity_kg(unit_entry_id: &str) -> u64 {
+    let cargo_key = CanonicalId::new("cargo").ok();
+    let mass_key = CanonicalId::new("si.mass_kg").ok();
+    if let (Some(spec), Some(cargo_key), Some(mass_key)) = (
+        super::custody::unit_spec_for_id(unit_entry_id),
+        cargo_key,
+        mass_key,
+    ) && let Some(logistics) = &spec.logistics
+        && let Some(cargo_stow) = logistics.stowage.get(&cargo_key)
+        && let Some(&mass_kg) = cargo_stow.limits.get(&mass_key)
+    {
+        return mass_kg;
+    }
+    0
+}
 
-/// `Dray-P` (`dray_p.json`) unreserved bulk/ore hold capacity in whole tonnes (`86 t`).
-pub const DRAY_P_HOLD_CAPACITY_T: u64 = 86;
+/// Read the unreserved bulk/ore hold capacity in whole tonnes directly from `unit_entry_id`'s
+/// authored [`crate::definitions::unit::UnitSpec`] (`SF.R20`).
+#[must_use]
+pub fn unit_hold_capacity_tonnes(unit_entry_id: &str) -> u64 {
+    unit_hold_capacity_kg(unit_entry_id) / 1_000
+}
+
+/// Read `hull`'s unreserved bulk/ore hold capacity in kilograms from its bound [`UnitSpec`] (`SF.R20`).
+#[must_use]
+pub fn hull_hold_capacity_kg(w: &mush_core::World, hull: ObjId) -> u64 {
+    if crate::port::ship::hull_view(w, hull).is_some_and(|v| v.is_prospector()) {
+        return unit_hold_capacity_kg("tacsim.unit.dray_p");
+    }
+    if let Some(unit) = mush_tactics::module::unit_of(w, hull) {
+        let cap = unit_hold_capacity_kg(unit.schema().key().id.as_str());
+        if cap > 0 {
+            return cap;
+        }
+    }
+    unit_hold_capacity_kg("tacsim.unit.dray_p")
+}
+
+/// Read `hull`'s unreserved bulk/ore hold capacity in whole tonnes from its bound [`UnitSpec`] (`SF.R20`).
+#[must_use]
+pub fn hull_hold_capacity_tonnes(w: &mush_core::World, hull: ObjId) -> u64 {
+    hull_hold_capacity_kg(w, hull) / 1_000
+}
 
 /// Timed mining-laser cycle duration in IC seconds (`60 s`).
 pub const LASER_CYCLE_IC_SECS: i64 = 60;
@@ -1292,7 +1334,8 @@ pub fn step_clusters_on_tick(ctx: &mut Ctx<'_>, now: ClockStamp) {
         }
 
         let hold_used_t = hull_hold_used_tonnes(ctx, hull);
-        let mut hold_room_t = DRAY_P_HOLD_CAPACITY_T.saturating_sub(hold_used_t);
+        let hold_cap_t = hull_hold_capacity_tonnes(ctx.w, hull);
+        let mut hold_room_t = hold_cap_t.saturating_sub(hold_used_t);
         let hold_vault = crate::port::ship::hull_view(ctx.w, hull)
             .and_then(|v| crate::port::ship::hold_vault(ctx.w, &v));
         let cluster_cid = session_snapshot.cluster.canonical_id();
@@ -1664,8 +1707,8 @@ mod tests {
             ore_specific_volume_l_per_t(OreFamily::StrategicElements),
             600
         );
-        assert_eq!(DRAY_P_HOLD_CAPACITY_KG, 86_000);
-        assert_eq!(DRAY_P_HOLD_CAPACITY_T, 86);
+        assert_eq!(unit_hold_capacity_kg("tacsim.unit.dray_p"), 86_000);
+        assert_eq!(unit_hold_capacity_tonnes("tacsim.unit.dray_p"), 86);
     }
 
     #[test]
