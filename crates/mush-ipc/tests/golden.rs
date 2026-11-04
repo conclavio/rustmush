@@ -21,7 +21,7 @@
 //! - [`the_previous_version_set_decodes_under_the_current_codec`] proves the
 //!   window's promise, both directions. A removal that breaks it waits one
 //!   release (protocol.rs, "Inside the window, additive only").
-//! - `crates/mush-contract-tests/tests/ipc_golden_frames.rs` is the bump lint,
+//! - `crates/mush-contract-tests/tests/engine_contracts/ipc_golden_frames.rs` is the bump lint,
 //!   which fails when `IPC_VERSION` is newer than the newest recorded set.
 //!
 //! Recording replaces the current version's set. It is an example binary, not an

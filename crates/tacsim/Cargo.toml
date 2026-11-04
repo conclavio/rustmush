@@ -71,7 +71,7 @@ thiserror.workspace = true
 # 16b cut T.2: the arena TASK (`arena_task.rs`) — one tokio task per running
 # match, its bounded inbox and egress, its timer and its stop signal. The arena
 # LIBRARY (`src/arena/`) never touches it: the gate in
-# `crates/mush-contract-tests/tests/arena_library.rs` refuses the word `tokio` in
+# `crates/mush-contract-tests/tests/engine_contracts/arena_library.rs` refuses the word `tokio` in
 # every file under that directory, which is the whole reason the task lives one
 # level up.
 tokio.workspace = true
@@ -92,7 +92,7 @@ libm.workspace = true
 # fencing production the moment `[profile.release]` sets `debug-assertions =
 # true`. Off by default; `mushd`'s and `mush-gateway`'s `[dev-dependencies]`
 # edges are the only things in the tree that turn it on, for the two tests that
-# need it, and `crates/mush-contract-tests/tests/feature_matrix_inventory.rs`
+# need it, and `crates/mush-contract-tests/tests/ci_policy/feature_matrix_inventory.rs`
 # pins that claim.
 fault-injection = []
 

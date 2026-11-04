@@ -2,7 +2,7 @@
 #
 # A gated test is one that passes without running when nobody gives it what it
 # needs: `#[ignore]`d, reading `REDIS_URL`, or opting in by a `RUN_*`/`*_RUN`
-# flag (tests/ci_gated_test_inventory.rs finds them by scanning the tree). Each
+# flag (tests/ci_policy/ci_gated_test_inventory.rs finds them by scanning the tree). Each
 # one says here WHEN it runs and UNDER WHAT:
 #
 #   tier      pr        a ci.yml job with no `if:` (every push and pull request)

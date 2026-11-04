@@ -1535,7 +1535,7 @@ and `mush_authoritative_last_replay_writes`. Alert on `slot_held` staying 1 whil
 filling their top bucket (a bundle at the cap). `@stats` renders the same lane
 as one line. Every number is an aggregate; no token, hash, owner or key is
 exposed. The scale harness that exercises this lane on demand
-(`crates/mush-contract-tests/tests/scale_harness.rs`) runs in the CI `scale`
+(`crates/mush-contract-tests/tests/ci_policy/scale_harness.rs`) runs in the CI `scale`
 job on `workflow_dispatch` or the daily schedule, never on push. The same
 harness reports the economy's cold journal replay phase by phase
 (`scale_cold_journal_replay_phases`, scales from `SCALE_PROFILE_SCALES`,
@@ -2182,7 +2182,7 @@ cargo nextest run -j 8 -p <crate> --test <group> -E 'test(/^<module>::/)'   # wh
 rustfmt --edition 2021 <changed files>       # never `cargo fmt --all` (the path length breaks it)
 cargo clippy -j 8 -p <crate> --all-targets -- -D warnings
 RUSTDOCFLAGS="-D warnings" cargo doc -j 8 -p <crate> --no-deps
-cargo nextest run -j 8 -p mush-contract-tests --test feature_matrix_inventory   --test panic_budget --test restriction_lints --test state_slot_owners
+cargo nextest run -j 8 -p mush-contract-tests --test ci_policy --test engine_contracts -E 'test(/^(feature_matrix_inventory|panic_budget|restriction_lints|state_slot_owners)::/)'
 scripts/vps-gate.sh                          # the broad sweep, once
 ```
 
@@ -2260,7 +2260,11 @@ mush-gateway (13: `split_halves`, the one group with an allowed exception to
 the suffix rule below — `restart_survival` is a suffix of
 `web_restart_survival`, so under `cargo test` the filter `restart_survival::`
 selects both modules and nextest's anchored `test(/^restart_survival::/)` is
-the line to use). The tests that re-exec their own binary for a child half
+the line to use), and since doc 43 cut TS.11 (T.3c) mush-contract-tests (33:
+`ci_policy`, the tree's and the workflows' own gates, three of the four guards
+among them, and `engine_contracts`, the compiled registry's contracts and
+`state_slot_owners`; `production_registry` is the one module three of
+`engine_contracts`' share). The tests that re-exec their own binary for a child half
 (mushd's `world_panic_exit`, mush-gateway's `authoritative_process_kill` and
 `server_panic_relaunch`) name it by the full `<module>::<fn>` id. A test's
 name is `<module>::<fn>`, and every run line translates as `--test <name>` →
@@ -2276,7 +2280,7 @@ Two things to know. `cargo test`'s positional filter is a substring match on
 the full name, so `lane::` would also select `cost_lane::…` if both were modules
 of one group: the merge refused a group where a module's name is a suffix of
 another's, and a new module keeps that rule (for tacsim's shards
-`crates/mush-contract-tests/tests/ci_tacsim_shards.rs` refuses it since doc 43
+`crates/mush-contract-tests/tests/ci_policy/ci_tacsim_shards.rs` refuses it since doc 43
 cut TS.0, and refuses a file under `tests/shard_N/` that no root declares, which
 would otherwise compile nowhere). And under plain multi-threaded
 `cargo test` a group's modules share one process and its statics (locks, global
@@ -2284,7 +2288,7 @@ tracing subscribers); sweeps run under nextest, one process per test, as CI and
 the VPS gate do, and `cargo test` is for one test (`--exact`) or one module
 with `--test-threads=1`. A new test file is a `mod` line in the group that fits
 (for tacsim, the shard with the most room). The gated-test inventory
-(`crates/mush-contract-tests/tests/ci_gated_test_inventory.rs`) reads a group's
+(`crates/mush-contract-tests/tests/ci_policy/ci_gated_test_inventory.rs`) reads a group's
 modules and ci.yml's `--test <group> <module>::` lines the way it read whole
 targets. Run lines in design notes written before T.3 name the old targets;
 translate them as above.
