@@ -667,3 +667,54 @@ fight budget (the exchange should stop at the first hit both ways, not let the i
 at the merge base (41827163605, `4390f04c`) against the PR's (41853059138), 414 → 415 tests. The new story takes
 20.8 s. The common tests moved −0.12 min in all; `cost_lane`'s C2/C3 cohort adds about 10 s for the house
 purchases it settles first (`sm12c_a_restart…` 69.1 → 78.8 s).
+
+## IN.10 — the pools (Q-39-7, Q-39-21, Q-39-34)
+
+**Built.** `port::pools`, one record a house (`tacsim:house_pool:{org}`, `HousePool`, written whole, an unreadable one
+orders nothing) and one arm on the port tick after the works arm, one step a house a fire, every step re-derived
+from durable state.
+
+- **The floor** (`pools::FLOORS`): the Trust's two free Drays at Ceres. `coop::free_hulls` now counts the Trust's
+  built Drays too — register rows of the programme's unit under the same `hull_is_free` rule — so the floor and the
+  desk read one list. A house whose free hulls and orders standing are under its floor orders **when its account
+  covers the order** (`pools::price_minor`: the bill at Stickney's asks and the parts' catalogue price, the yard's fee
+  and booking fee, and the ferry's stores at an allowance of 120 t of propellant and five crew-days). On the shipped
+  lane a Dray is 165,290 cr.
+- **The helm**: a `DARK` Thing `"coop_trust ferry helm"` (the Occator Yard dispatcher's shape, `site::dark_thing`)
+  with **its own credit account**. The industry's budget rule makes a work order's account its requester's own
+  (`check_wo_accounts`), so the house funds the helm with the order's price in one post
+  (`tacsim.house_order/{org}/{n}/fund`) and the helm books and pays as itself. The order's beneficiary is the house,
+  so the hull is the Trust's from the commission on. Once the last order is home the helm's unspent purse goes back.
+- **The order**: `works::book` (factored out of `+works/order`/`+yard/order`) at the Stickney yard, as the helm, for
+  the Trust; the bill bought line by line, paid under `tacsim.house_order/{escrow}/{good}/{held}` (the count the
+  escrow holds names the purchase, so a restart finds the payment and never pays twice), the seller's standing ask
+  lowered first (IN.5's `shrink_ask` rule), then moved through `works::supply_from` under the order's own ledger.
+  A part is one store lot of the Yards' with no ask. The works arm runs the order; the helm collects it into IN.9's
+  commission (`works::commission_as`, the route IN.9's note asked for).
+- **The ferry**: the passage's burn with a quarter over and its crew-days are dry-run (`voyage::passage_needs`) and
+  bought into her hold the same way, under the works ledger keyed by the hold (`pools::owed_moves` in the works
+  offer). Then the helm files `+ship/undock ceres` as itself (`voyage::undock_as`). `coop::helm_of` reads
+  `pools::ferry_hull` on `Fleet`'s precedent of a helm without a charter, `voyage::aboard` holds the helm aboard
+  wherever it stands (the dispatcher's precedent), and `prepare_departure` counts the house's hands as one soul.
+  She docks at Ceres a free hull of the pool, a register row and never a programme row.
+- **`NO_HULL`'s two texts**: "The Co-op has no Dray free to charter." then "The Trust has no Dray free and cannot yet
+  fund one." (`NO_HULL_UNFUNDED`) or "The Trust has a Dray on order at Stickney Yards, due at Ceres in n IC days."
+  (`NO_HULL_ON_ORDER`, from `pools::next_due`: the build's days and a four-day passage allowance until she sails,
+  then her filed arrival).
+- **The raise**: `lane_chain::strip_trust_raise` is drafted; the lane bump (`coop_trust` `raises: [250000]`) lands
+  after IN.5's and IN.9's lane versions, on the next free number.
+
+**The story.** `shard_2/in10_pools.rs` (port-side; no site, so no 256/512 pair):
+`in10_the_trust_restocks_its_pool_from_the_yard_and_ferries_her_home`. Eight captains enrol; the Trust is at 50,000
+and orders nothing; the ninth hears `NO_HULL` and the unfunded text. Two buyouts bring 180,000 home, and the Trust
+orders on the next fire: the DARK helm books the Dray at Stickney for the Trust and buys the bill into the escrow;
+the ninth hears "on order at Stickney Yards, due at Ceres in 16 IC days". The yard hands her over 13 IC days after
+the order as `SYB-01`, titled to the Trust; her stores are bought, the helm files the passage, and she docks at
+Ceres a free register hull while the programme map still holds eight; the helm's purse is empty. The desk then
+enrols the ninth captain. Over those weeks the dormancy recall (seven real days on the rig's clock) may hand a
+programme Dray back first, and the desk lends the lowest free id, so the story asserts the ninth captain is
+chartered and the Trust's Dray is theirs or still free. 39 s locally.
+
+**Owed.** Occator's floors (two free rigs and one escort) ride a ferry Dray-P's bay, and no house keeps one at the
+yard, so `FLOORS` carries the Trust's row alone. The lane raise and its pins, and the story's staff mint of the
+raise, go away when the bump lands. The rule #14 cell delta is owed from CI.

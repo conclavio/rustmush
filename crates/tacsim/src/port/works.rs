@@ -612,7 +612,7 @@ fn menu(
         .collect()
 }
 
-fn find_recipe(
+pub(crate) fn find_recipe(
     w: &World,
     facility: &FacilityRecord,
     word: &str,
@@ -624,6 +624,17 @@ fn find_recipe(
 
 fn days_of(units: u64) -> u64 {
     units.div_ceil(mush_industry::cost::WORK_UNITS_PER_DAY)
+}
+
+/// A yard or works order's whole bill: the recipe's lines and, for a hull, the design's parts.
+pub(crate) fn bill_with_parts(
+    w: &World,
+    pinned: &mush_industry::PinnedRecipe,
+    quantity: u32,
+) -> Vec<Goods> {
+    let mut bill = bill_of(pinned, quantity);
+    bill.extend(design_parts(w, pinned, quantity));
+    bill
 }
 
 fn bill_of(pinned: &mush_industry::PinnedRecipe, quantity: u32) -> Vec<Goods> {
@@ -861,10 +872,81 @@ fn order(ctx: &mut Ctx<'_>, front: Front, raw: &str) -> Result<(), String> {
             named
         }
     };
-    let house = &beneficiary == facility.owner();
     let account = crate::port::credit::own_account(ctx.w, ctx.actor)
         .map(|a| a.id)
         .ok_or("You hold no credit account to pay from.")?;
+    let contract = book(
+        ctx,
+        Booking {
+            front,
+            facility: &facility,
+            recipe: &recipe,
+            pinned: &pinned,
+            quantity,
+            payer,
+            beneficiary,
+            account,
+        },
+    )?;
+    let _ = entry;
+    let line = format!(
+        "Order {}{BOOKED_AT}{}: {word} x{quantity}, {} IC days. Deliver the bill: {}. \
+         Booking fee {} held{}.",
+        contract.id,
+        front.word(),
+        days_of(contract.work_units),
+        bill_text(&contract.bill),
+        cr(ctx, contract.booking_minor),
+        if contract.booking_minor > 0 {
+            " (forfeit on a cancel)"
+        } else {
+            ""
+        }
+    );
+    say(ctx, line);
+    Ok(())
+}
+
+/// **What one booking names** (`book`'s terms): the front and its facility, the recipe, the
+/// quantity, and the triple's payer and beneficiary with the payer's own account.
+pub(crate) struct Booking<'a> {
+    /// The front.
+    pub front: Front,
+    /// The facility.
+    pub facility: &'a FacilityRecord,
+    /// The recipe.
+    pub recipe: &'a mush_industry::RecipeRef,
+    /// Its pin.
+    pub pinned: &'a mush_industry::PinnedRecipe,
+    /// How many.
+    pub quantity: u32,
+    /// Who pays: `ctx.actor`'s own principal (the industry's budget rule).
+    pub payer: PrincipalId,
+    /// Who the output is for.
+    pub beneficiary: PrincipalId,
+    /// The payer's account.
+    pub account: AccountId,
+}
+
+/// **Book one order as `ctx.actor`** (§4.12): the escrow, the booking fee held, the draft, and
+/// the contract written. `+works/order` and `+yard/order` front it; doc 39 cut IN.10's house arm
+/// (`crate::port::pools`) books a house's yard order through it as the house's helm.
+///
+/// # Errors
+///
+/// The refusal the actor reads; nothing stands after one but a closed escrow vault.
+pub(crate) fn book(ctx: &mut Ctx<'_>, terms: Booking<'_>) -> Result<WorksContract, String> {
+    let Booking {
+        front,
+        facility,
+        recipe,
+        pinned,
+        quantity,
+        payer,
+        beneficiary,
+        account,
+    } = terms;
+    let house = &beneficiary == facility.owner();
     let units = pinned.work_units().saturating_mul(u64::from(quantity));
     let booking = if house {
         0
@@ -933,10 +1015,10 @@ fn order(ctx: &mut Ctx<'_>, front: Front, raw: &str) -> Result<(), String> {
         let _ = mush_industry::money::settle_booking(ctx, vault.0, None);
         e.to_string()
     })?;
-    let mut bill = bill_of(&pinned, quantity);
+    let mut bill = bill_of(pinned, quantity);
     // Doc 39 cut IN.9 (§4.7): a hull's parts are the design's, one a slot, delivered as lots.
     if front == Front::Yard {
-        bill.extend(design_parts(ctx.w, &pinned, quantity));
+        bill.extend(design_parts(ctx.w, pinned, quantity));
     }
     let contract = WorksContract {
         id: vault.0,
@@ -965,23 +1047,7 @@ fn order(ctx: &mut Ctx<'_>, front: Front, raw: &str) -> Result<(), String> {
         closed: None,
     };
     put(ctx, &contract);
-    let _ = entry;
-    let line = format!(
-        "Order {}{BOOKED_AT}{}: {word} x{quantity}, {} IC days. Deliver the bill: {}. \
-         Booking fee {} held{}.",
-        vault.0,
-        front.word(),
-        days_of(units),
-        bill_text(&bill),
-        cr(ctx, booking),
-        if booking > 0 {
-            " (forfeit on a cancel)"
-        } else {
-            ""
-        }
-    );
-    say(ctx, line);
-    Ok(())
+    Ok(contract)
 }
 
 /// The actor's open contract `raw` names at this front's facility here.
@@ -1226,6 +1292,84 @@ fn bulk_lots(lots: &[(LotId, CanonicalId, u64)]) -> Vec<(LotId, CanonicalId, u64
         .collect()
 }
 
+// ---- the house arm's seams (doc 39 cut IN.10) -----------------------------------------------
+
+/// An open contract by its number.
+pub(crate) fn open_contract(w: &World, id: u64) -> Option<WorksContract> {
+    contract(w, id).filter(|c| c.closed.is_none())
+}
+
+/// The state of a contract's work order, once its draft landed.
+pub(crate) fn order_state(ctx: &Ctx<'_>, c: &WorksContract) -> Option<WorkOrderState> {
+    c.order.and_then(|o| work_order(ctx, o)).map(|o| *o.state())
+}
+
+/// The units of `good` pooled in a contract's escrow.
+pub(crate) fn escrow_units(ctx: &Ctx<'_>, c: &WorksContract, good: &CanonicalId) -> u64 {
+    pooled(ctx, c.escrow(), good)
+}
+
+/// The lots in an endpoint (an escrow, a storefront), at most a move's worth.
+pub(crate) fn lots_in(ctx: &Ctx<'_>, endpoint: EndpointRef) -> Vec<(LotId, CanonicalId, u64)> {
+    escrow_lots(ctx, endpoint)
+}
+
+/// **A house order's supply** (doc 39 cut IN.10): `goods` and `lots` from `from` into contract
+/// `id`'s escrow, owed as `by` — the `+yard/deliver` move with the source the arm bought from.
+///
+/// # Errors
+///
+/// The order is gone, settling, past its draft, or the move does not check.
+pub(crate) fn supply_from(
+    ctx: &mut Ctx<'_>,
+    id: u64,
+    by: ObjId,
+    from: EndpointRef,
+    (goods, lots): (Vec<Goods>, Vec<(LotId, CanonicalId, u64)>),
+) -> Result<(), String> {
+    let mut c = open_contract(ctx.w, id).ok_or(NO_ORDER)?;
+    if c.owed.is_some() {
+        return Err(SETTLING.to_owned());
+    }
+    if order_state(ctx, &c).is_some_and(|state| state != WorkOrderState::Draft) {
+        return Err("That order is no longer taking goods.".to_owned());
+    }
+    let escrow = c.escrow();
+    owe(
+        ctx,
+        &mut c,
+        by,
+        (from, escrow),
+        (goods, lots),
+        Then::Supplied,
+    )
+}
+
+/// **A house order's collection** (doc 39 cut IN.10): a delivered hull order commissioned as
+/// `requester` (the house's helm), the `+yard/collect` body; the hull is titled to the order's
+/// beneficiary, the house.
+///
+/// # Errors
+///
+/// Nothing to collect yet, the order still settling, or the commission refused.
+pub(crate) fn commission_as(ctx: &mut Ctx<'_>, id: u64, requester: ObjId) -> Result<(), String> {
+    let mut c = open_contract(ctx.w, id).ok_or(NO_ORDER)?;
+    if !matches!(order_state(ctx, &c), Some(WorkOrderState::Completed { .. })) {
+        return Err("That order has nothing to collect yet.".to_owned());
+    }
+    if c.owed.is_some() {
+        return Err(SETTLING.to_owned());
+    }
+    let facility = facility_record(ctx.w, c.facility).ok_or(NO_ORDER)?;
+    let entry = port_of(ctx.w, &facility).ok_or(NO_ORDER)?;
+    let lots = kit_lots(ctx, &c).ok_or("That order delivered no kit.")?;
+    let saved = ctx.actor;
+    ctx.actor = requester;
+    let done = commission(ctx, &mut c, &entry, lots);
+    ctx.actor = saved;
+    done
+}
+
 fn describe(goods: &[Goods], lots: &[(LotId, CanonicalId, u64)]) -> String {
     let mut parts: Vec<String> = goods
         .iter()
@@ -1344,6 +1488,11 @@ fn close(ctx: &mut Ctx<'_>, c: &mut WorksContract, how: Close) {
 }
 
 /// Submit `owed` as its actor (the bay's swap).
+/// Submit an owed move under `contract`'s ledger as its `by` (the house arm's hold moves too).
+pub(crate) fn submit_move(ctx: &mut Ctx<'_>, contract: u64, owed: &WorksAct) -> bool {
+    submit(ctx, contract, owed)
+}
+
 fn submit(ctx: &mut Ctx<'_>, contract: u64, owed: &WorksAct) -> bool {
     let Some(action) = ctx
         .w
@@ -1959,6 +2108,19 @@ fn owed_rows(w: &World, actor: ObjId) -> (Map<String, Value>, Map<String, Value>
         }
         if let Ok(value) = serde_json::to_value(&owed) {
             rows.insert(stores.to_string(), value);
+        }
+    }
+    // Doc 39 cut IN.10: a house ferry's stores move into her hold, keyed by the hold's vault,
+    // governed by the hold's capacity.
+    for (hold, owed) in crate::port::pools::owed_moves(w, actor) {
+        if rows.len() >= MAX_OFFER_ROWS {
+            break;
+        }
+        if let Ok(value) = serde_json::to_value(&owed) {
+            if let Some(plan) = PortCapacity.plan(w, EndpointRef(VaultId(hold))) {
+                plans.insert(hold.to_string(), plan.0);
+            }
+            rows.insert(hold.to_string(), value);
         }
     }
     (rows, plans)

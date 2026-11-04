@@ -21,6 +21,28 @@ pub const WIDE_SITE_ROWS: [&str; 4] = [
 pub const MUNITIONS_GOODS: [&str; 4] =
     ["ammo_ap_30", "ammo_ball_762", "ammo_he_105", "ammo_missile"];
 
+/// **Doc 39 cut IN.10: the Trust's raise taken out** — `coop_trust`'s `raises` at Ceres removed,
+/// so a strip chain rebuilds the lane before IN.10's (idempotent). Not yet in the chain: the
+/// lane's version and its place above the previous head are set when the bump lands.
+pub fn strip_trust_raise(doc: &mut Value) {
+    let Some(orgs) = doc
+        .get_mut("entries")
+        .and_then(|entries| entries.get_mut("ceres_port"))
+        .and_then(|entry| entry.get_mut("def"))
+        .and_then(|def| def.get_mut("orgs"))
+        .and_then(Value::as_array_mut)
+    else {
+        return;
+    };
+    for org in orgs {
+        if org.get("id").and_then(Value::as_str) == Some("coop_trust")
+            && let Some(org) = org.as_object_mut()
+        {
+            org.remove("raises");
+        }
+    }
+}
+
 /// **Doc 39 cut IN.5 (lane v23): the refinery and the works taken out** — Stickney's `refinery`
 /// and `works` blocks, Kasei's refine row and its bid's `refresh`, Ceres's `works` block, and the
 /// Freeport Works org and vendor (its carbon stock and ask) — so a strip chain rebuilds a lane
