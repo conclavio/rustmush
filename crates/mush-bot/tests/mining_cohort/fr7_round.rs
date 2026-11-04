@@ -182,8 +182,9 @@ fn named(engine: &mush_core::Engine, name: &str) -> ObjId {
 /// four rows, `driving_rig::RAMP_CELL` on every site), the raider's hull sixteen cells due east
 /// of it facing west, so the rigs that come down the ramp are its `W` and the nearest flight
 /// there; the wing's three cells west of the raider and three north (its `NW`); the casualty
-/// one cell south of the ramp (off the raider's row, so the rig that lands on the ramp hides it
-/// from nobody), within a cell of that rig (beat 3). Answers
+/// one cell east of the ramp, between the raider and the rig that lands there and within a cell of
+/// it, so nothing stands between the raider and the casualty (beat 3; `field_fr5` found a
+/// powerless casualty west of the ramp unseen at Ahuna). Answers
 /// `(raider, wing, casualty)`.
 fn stands(engine: &mush_core::Engine, ground: &Ground) -> [(i64, i64); 3] {
     let (x, y) = tacsim::surface::excursion::site_pad_cm(&engine.world, &cid(ground.entry));
@@ -192,7 +193,7 @@ fn stands(engine: &mush_core::Engine, ground: &Ground) -> [(i64, i64); 3] {
     [
         (ramp.0 + 16, ramp.1),
         (ramp.0 + 13, ramp.1 + 3),
-        (ramp.0, ramp.1 - 1),
+        (ramp.0 + 1, ramp.1),
     ]
 }
 
@@ -650,6 +651,15 @@ async fn drive_to_launch(
             lifted = true;
         }
         for send in lane.tick(now) {
+            // The step can open and go in one tick: its launch is the script's to type.
+            if send.line.starts_with("+sortie/launch ") {
+                println!(
+                    "fr7: +{} s lane held back: {}",
+                    started.elapsed().as_secs(),
+                    send.line
+                );
+                return started.elapsed().as_secs();
+            }
             println!("fr7: +{} s lane {}", started.elapsed().as_secs(), send.line);
             if let Err(error) = client.try_send(&send.line).await {
                 println!("fr7: {error}");
@@ -968,6 +978,10 @@ async fn round_story(ground: &'static Ground) {
     let opened = opened.unwrap_or_else(|| panic!("the raider's mark opens the field:\n{text}"));
     println!("fr7: {} the field opens: {opened}", ground.venue);
     let concord = party_of(&opened, rig1).expect("rig 1 is in the field");
+    assert!(
+        party_of(&opened, rig2).is_none(),
+        "rig 2 is still aboard when the field opens: {opened}"
+    );
     let basin = party_of(&opened, hulls.raider.0.into()).expect("the raider is in the field");
     let wing_party = party_of(&opened, hulls.wing.0.into()).expect("the wing is in the field");
     let basin_row = party_row(&opened, &basin).expect("Basin's row");
