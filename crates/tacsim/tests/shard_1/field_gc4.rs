@@ -4,10 +4,12 @@
 //!
 //! The main path of story (a): a casualty of the captain's own two-rig party lies off the ramp
 //! after a field; the wingman takes it in tow on the IC tick, a restart keeps the attachment, a
-//! second field on the site admits the tow coupled (the tug at the tow rate, the casualty its
-//! load), the wingman drags it to the ramp during that field, the field settles with the casualty
-//! at the tug's cell, and the wingman loads it into the carrier's bay — a restart while loading
-//! keeps the load — before the carrier lifts.
+//! second field on the site admits the tow coupled (the tug at the tow rate; since doc 40 cut
+//! FR.5 the casualty a kernel unit trailing it), the wingman drags it to the ramp during that
+//! field, the field settles with the casualty at its own trailing cell beside the tug, and the
+//! wingman loads it into the carrier's bay — a restart while loading keeps the load — before the
+//! carrier lifts. FR.5's own stories (release, a fallen tug, the coupled withdraw at the ramp)
+//! are `shard_10/field_fr5.rs`.
 //!
 //! **What is a fixture.** The casualty's power is destroyed by staff hand before the first
 //! field, standing in for the round that disabled it (GC.3's precedent): the first field then
@@ -314,9 +316,12 @@ async fn gc4_the_wingman_drags_the_casualty_to_the_ramp_and_loads_it_before_the_
         tacsim::field::field_of_unit(rig.tw.world(), wingman).is_some(),
         "the tug is in the field"
     );
-    assert!(
-        tacsim::field::field_of_unit(rig.tw.world(), escort).is_none(),
-        "the casualty rides as its tug's load"
+    // Doc 40 cut FR.5 (Q-40-7): the casualty is a kernel unit of its tug's party, trailing it,
+    // where GC.4 carried it off the kernel's ground as the tug's load.
+    assert_eq!(
+        tacsim::field::field_of_unit(rig.tw.world(), escort),
+        tacsim::field::field_of_unit(rig.tw.world(), wingman),
+        "the casualty is in the field with its tug"
     );
     assert!(
         until(&mut rig, &mut rx, &mut lines, 20, |rig, _| {
@@ -336,12 +341,14 @@ async fn gc4_the_wingman_drags_the_casualty_to_the_ramp_and_loads_it_before_the_
         until(&mut rig, &mut rx, &mut lines, 240, |rig, _| demoted(rig)).await,
         "the second field settles"
     );
-    // The casualty stands at its tug's cell, still in tow, indexed there.
+    // Doc 40 cut FR.5 (Q-40-7): the casualty stands at its own trailing cell beside its tug,
+    // never on it, still in tow, indexed there; GC.4 set it down on the tug's cell.
     let tug_cell = cell_of(&rig, wingman).expect("the tug is on the ground");
-    assert_eq!(
-        cell_of(&rig, escort),
-        Some(tug_cell),
-        "the casualty was set down at its tug"
+    let escort_cell = cell_of(&rig, escort).expect("the casualty is on the ground");
+    assert_ne!(escort_cell, tug_cell, "the casualty is not on its tug");
+    assert!(
+        (escort_cell.0 - tug_cell.0).abs() <= 1 && (escort_cell.1 - tug_cell.1).abs() <= 1,
+        "the casualty trails beside its tug: {escort_cell:?}, tug {tug_cell:?}"
     );
     assert!(
         (tug_cell.0 - ramp.0).abs() <= 1 && (tug_cell.1 - ramp.1).abs() <= 1,
@@ -354,7 +361,8 @@ async fn gc4_the_wingman_drags_the_casualty_to_the_ramp_and_loads_it_before_the_
         .iter()
         .find(|left| left.unit == escort)
         .expect("the casualty is still indexed");
-    assert_eq!(indexed.pose.cell(), tug_cell, "indexed at its tug's cell");
+    // Doc 40 cut FR.5: indexed at its own cell, where GC.4 indexed it at its tug's.
+    assert_eq!(indexed.pose.cell(), escort_cell, "indexed where it stands");
 
     // The load (Q-36-15, Q-36-54): beside the ramp, into the carrier's bay; a restart while
     // loading keeps the load.
