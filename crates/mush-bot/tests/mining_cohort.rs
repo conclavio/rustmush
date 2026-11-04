@@ -385,6 +385,142 @@ async fn urvara_smoke() {
     drop(rig);
 }
 
+/// **Doc 41 cut RS.0's smoke: the salvage loop's words over SSH**, on Urvara Reach (512) and on
+/// Ahuna Flank (256). The bot's own lane kits up at Ceres, flies to the site and launches rig 1,
+/// over its own SSH session in line mode; then, on the same session and through the captain's
+/// closed vocabulary (`mush_bot::mine::lane::field::in_vocabulary`, asserted before each line
+/// goes), it types story (b)'s `+salvage/claim`, `+salvage/contest <hull>=recovery` and `+tv/1
+/// scrap`, and the bot's own `salvage::answer` reads each answer: no custody names the hull it
+/// names (nothing was recovered) and no remains lie by the rig. `#[ignore]`d, run by name:
+///
+/// `cargo test -j 8 -p mush-bot --test mining_cohort -- --ignored rs0_ --nocapture`
+#[tokio::test(flavor = "multi_thread", worker_threads = 4)]
+#[ignore = "doc 41 cut RS.0's Urvara smoke: a hop and a launch, minutes; run by name"]
+async fn rs0_the_bot_types_the_salvage_words_on_urvara() {
+    tokio::time::timeout(
+        Duration::from_secs(30 * 60),
+        salvage_smoke(Miner {
+            account: "rsurvara",
+            character: "Rsurvara",
+            site: Site::Urvara,
+        }),
+    )
+    .await
+    .expect("the Urvara salvage smoke finishes inside 30 minutes");
+}
+
+/// The same smoke on Ahuna Flank (256). `#[ignore]`d, run by name (`rs0_`).
+#[tokio::test(flavor = "multi_thread", worker_threads = 4)]
+#[ignore = "doc 41 cut RS.0's Ahuna smoke: a hop and a launch, minutes; run by name"]
+async fn rs0_the_bot_types_the_salvage_words_on_ahuna() {
+    tokio::time::timeout(
+        Duration::from_secs(30 * 60),
+        salvage_smoke(Miner {
+            account: "rsahuna",
+            character: "Rsahuna",
+            site: Site::Ahuna,
+        }),
+    )
+    .await
+    .expect("the Ahuna salvage smoke finishes inside 30 minutes");
+}
+
+async fn salvage_smoke(miner: Miner) {
+    use mush_bot::mine::lane::{field, salvage};
+    let started = std::time::Instant::now();
+    let rig = mine::boot(&[miner]).await;
+    let mut god = arena::Client::login(&rig, arena::GOD_ACCOUNT, arena::GOD_PASSWORD, "God").await;
+    let mut client =
+        arena::Client::login(&rig, miner.account, arena::PILOT_PASSWORD, miner.character).await;
+    let hull = hull_name(&format!("{}+{}", miner.account, miner.character)).expect("the hull name");
+    let mut lane = Lane::new(
+        miner.site,
+        Settings {
+            hull: hull.clone(),
+            epoch_unix_ms: mine::unix_now_ms(),
+        },
+        miner.character.to_owned(),
+    );
+    let lift = mine::rate_lift(mine::LIFTED_RATE);
+    let drive_started = std::time::Instant::now();
+    let bound = Duration::from_secs(28 * 60);
+    let enrolled_now = |lane: &Lane| lane.step_line() == Some("+coop/refit prospector");
+    mine::drive_lane_since(
+        &mut client,
+        &mut lane,
+        drive_started,
+        |lane| enrolled_now(lane) || lane.reached(Milestone::Launched),
+        bound,
+    )
+    .await;
+    if let (Some(rate), true) = (lift, enrolled_now(&lane)) {
+        mine::lift_rate(&mut god, rate).await;
+    }
+    let (wall, _) = mine::drive_lane_since(
+        &mut client,
+        &mut lane,
+        drive_started,
+        |lane| lane.reached(Milestone::Launched),
+        bound,
+    )
+    .await;
+    let report = lane.report();
+    let seen = client.seen.clone();
+    let beat = lane.beat().as_str();
+    let fail = |why: &str| canary_failed(&seen, &report, beat, why);
+    if let Some(result) = lane.result() {
+        fail(&format!("the lane ended: {}", result.outcome));
+    }
+    for milestone in [Milestone::ArrivedSite, Milestone::Launched] {
+        if !lane.reached(milestone) {
+            fail(&format!("{milestone:?} was not reached in {wall} s"));
+        }
+    }
+    let site = miner.site.word();
+    println!("{site}: rig 1 launched after {wall} s");
+
+    // Story (b)'s three lines, in the bot's own words, each answer read by the bot's reader.
+    let claim = format!("+salvage/claim {hull}");
+    let contest = format!("+salvage/contest {hull}=recovery");
+    let not_in_custody = tacsim::surface::claim::NOT_IN_CUSTODY.replace("{hull}", &hull);
+    let no_remains = tacsim::surface::claim::NO_REMAINS.replace("{n}", "1");
+    for (line, needle, want) in [
+        (
+            claim.as_str(),
+            not_in_custody.as_str(),
+            salvage::Answer::NotInCustody,
+        ),
+        (
+            contest.as_str(),
+            not_in_custody.as_str(),
+            salvage::Answer::NotInCustody,
+        ),
+        (
+            "+tv/1 scrap",
+            no_remains.as_str(),
+            salvage::Answer::NoRemains,
+        ),
+    ] {
+        assert!(field::in_vocabulary(line), "{line}");
+        assert!(salvage::in_vocabulary(line), "{line}");
+        let (answered, text) = client.answer(line, &[needle]).await;
+        let read = text.lines().find_map(salvage::answer);
+        assert_eq!(
+            (answered, read),
+            (Some(0), Some(want)),
+            "{line} answers {want:?}:
+{text}"
+        );
+        println!(
+            "{site}: +{} s {line} answered: {needle}",
+            started.elapsed().as_secs()
+        );
+    }
+    client.close().await;
+    god.close().await;
+    drop(rig);
+}
+
 /// **The canary failed**: the client's last 4 KiB and the lane's report
 /// printed, then a panic naming the beat. An engine-under-feature finding,
 /// reported and never worked around (revision 2's F5).
