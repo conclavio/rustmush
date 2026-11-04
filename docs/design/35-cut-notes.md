@@ -496,3 +496,55 @@ matched only the unqualified `module_state_mut::<SpaceBubbleBook>()` spelling (`
 **Test.** `sfr18_multi_carrier_bubble_per_carrier_party_inspection_escort_disabled_settlement_and_domain_stand_down`.
 
 **Divergences.** None from the `35c` §9 `SF.R18` specification.
+
+## SF.R19 — one salvage path
+
+- Unified space derelict salvage with `GC.6`'s economy-contract salvage claim path (`mush_economy::file_salvage_claim`,
+  `mush_economy::award_salvage_title`, `mush_economy::close_salvage_claim`, and `SalvageCustody`) (`Q-36-46`, `35c` §4 `SF.R19`).
+- Removed auto-filing of salvage claims on disablement in `clear_resolved_bubbles` and `settle_disabled_carrier_bubbles`
+  (`crates/tacsim/src/space/tick.rs`): disablement records the open-epoch `SpaceDerelictRecord` with `salvage_title_status: None`
+  until a tug clamps (`+helm/dock`) and attaches a tow line (`+helm/tow`).
+- Added `real_now_secs(w)` (`w.now().max(1)`, never dividing by `1_000` or `now.at / 24`), `salvage_claim_window_secs(w)`
+  (`store.config().recovery.claim_window_s`), and `ensure_space_hull_titled` (`crates/tacsim/src/space/custody.rs`), and
+  issued `EconomyStore` titles on spawned NPC picket/raider/interdictor hulls (`picket.rs`, `tick.rs`).
+- Enforced single-claimant collar clamp and tow gates across `validate_docking_initiation_gates`, `helm_dock`, and
+  `helm_tow` (`crates/tacsim/src/space/commands.rs`) so two ships racing for the same derelict cannot double-clamp or
+  double-tow it, and added `+helm/tow release` to release a tow line and collar clamp.
+- Moved the `1,200.00 cr` Freeport Registry salvage recovery bounty settlement from deep-space tow attach to port
+  delivery (`deliver_active_tow_at_port` and `step_delivered_tows_at_port` in `tick.rs`) with idempotency tracking in
+  `SpaceBubbleBook::paid_salvage_bounties` so releasing and re-towing never pays the bounty twice (`35c` §4 #11).
+- Wired `SpaceBubbleBook::space_custody` into `surface::salvage::custody_of` and `surface::claim` (`+salvage`,
+  `+salvage/inspect`, `+salvage/report`, `+salvage/contest`, and `claim::tick`) and cleared `SpaceBubbleBook::derelicts`
+  when a salvaged hull is repaired at a port workshop (`crates/tacsim/src/port/bay_work/mod.rs`).
+
+**Test.** `sfr19_one_salvage_path_unifies_space_derelict_claims_with_gc6_and_economy`.
+
+**Divergences.** None from the `35c` §9 `SF.R19` specification.
+
+## SF.R20 — one damage table and canonical drives
+
+- Bridged `ShipSectionId`, `ShipSectionState`, and `SpaceShipState` onto `crate::carrier_damage::CarrierPart` and
+  `CarrierDamage` (`Q-36-47`, `D-35-1`, `crates/tacsim/src/space/bubble.rs`), and routed `Slow` consequence capping through
+  `crate::arena::damage::apply_slow_consequence` (`crates/tacsim/src/arena/damage.rs`) so `Slow` takes `min` instead of
+  compounding across hits after `hold` reaches `0` internals (`35c` §6.5).
+- Persisted space subsystem crits (`PdcOffline`, `SensorDegraded`, `RadiatorDamaged`, `DriveDegraded`), stripped PDC mounts,
+  and `slow_pct` across `check_in_space_unit` and `space_ship_from_tactical_unit` via the `tactics.space.subsystems`
+  capability (`crates/tacsim/src/space/custody.rs`), and restored `tactics.space.subsystems` on workshop bay repair
+  (`crates/tacsim/src/port/bay_work/jobs.rs`) (`35b` §5 #16, `35c` §6.5).
+- Authored `"drive": { "class": "patrol_corvette", "law": { "flip": { "accel_mg": 500, "exhaust_kms": 12000 } } }` in
+  `crates/tacsim/content/units/corvette.json` and re-signed its content digest; computed `max_accel_mmps2`, `max_accel_mps2`,
+  and `delta_v_mps` from `UnitSpec` and the Tsiolkovsky rocket equation across `SpaceShipState::new_dray`, `new_corvette`,
+  and `apply_unit_spec_to_space_ship` (`bubble.rs`, `custody.rs`), removing the `60` $\text{m/s}^2$, `9_500` $\text{m/s}$,
+  `4_500` $\text{m/s}$, and `DRAY_P_HOLD_CAPACITY_T = 86` constants (`mining.rs`, `commands.rs`).
+- Added `thrust_mmps2` and `max_accel_mmps2` (`mm/s²` kinematics) on `SpaceShipState`, `LocalSpaceBubble::command_burn_mmps2`,
+  and `BubbleInputCommand::CommandBurnMmps2`, and wired `+helm/thrust`, `+helm/burn`, and `+helm/approach` to scale throttle
+  permille against `max_accel_mmps2` so an empty `Dray` and an `80 t`-loaded `Dray-P` accelerate at distinct sub-$1\text{ m/s}^2$
+  flip-drive rates (`35c` §6.5).
+- Replaced `raiders().first()` and `RAIDER_ATTR` in `spawn_kirkwood_picket_ships_in_world` (`crates/tacsim/src/space/picket.rs`)
+  with a dedicated space raider unit (`tacsim.unit.raider_heavy`), added `reuse_or_create_npc_hull` and non-derelict NPC
+  `Thing` cleanup in `clear_resolved_bubbles` (`crates/tacsim/src/space/tick.rs`), and hydrated `SpaceShipState::pixel_model`
+  directly from `SpaceUnitOverlay::pixel_model` (`35c` §6.4–§6.5).
+
+**Test.** `sfr20_one_damage_table_and_canonical_drives_sub_1mps2_kinematics_pdc_checkin_and_no_leaked_npcs`.
+
+**Divergences.** None from the `35c` §9 `SF.R20` specification.

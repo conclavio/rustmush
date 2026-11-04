@@ -812,6 +812,31 @@ fn build_tier1_space_panel_payloads(
         }],
         "torpedoes": [],
     });
+    let tier1_dv_mps = mush_tactics::module::unit_of(w, hull)
+        .and_then(|u| {
+            super::custody::space_ship_from_tactical_unit(
+                u,
+                format!("ship.{}", hull.0),
+                &callsign,
+                crate::arena::party::PartyId::BLUE,
+                [0, 0, 0],
+                [0, 0, 0],
+            )
+            .ok()
+        })
+        .map_or_else(
+            || {
+                super::bubble::SpaceShipState::new_dray(
+                    format!("ship.{}", hull.0),
+                    &callsign,
+                    crate::arena::party::PartyId::BLUE,
+                    [0, 0, 0],
+                    [0, 0, 0],
+                )
+                .delta_v_mps
+            },
+            |s| s.delta_v_mps,
+        );
     let cockpit = serde_json::json!({
         "callsign": callsign,
         "site_id": site_id,
@@ -821,7 +846,7 @@ fn build_tier1_space_panel_payloads(
         "speed_mps": speed_mps,
         "prograde_bearing_deg": 0.0,
         "prograde_pitch_deg": 0.0,
-        "delta_v_mps": 4_500,
+        "delta_v_mps": tier1_dv_mps,
         "heat_permille": 0,
         "hull_pct": 100,
         "pdc_mode": "AUTO",
@@ -1071,10 +1096,11 @@ fn helm_status(ctx: &mut Ctx<'_>) -> Result<(), CmdError> {
                 let non_prop_payload = basis
                     .payload
                     .saturating_sub(basis.tank.saturating_mul(1_000));
+                let payload_kg = non_prop_payload.saturating_add(live_kg);
                 let dv_mps = crate::port::passage::remaining_dv_mps_for_propellant(
                     &basis.spec.drive,
                     basis.spec.dry_kg,
-                    non_prop_payload,
+                    payload_kg,
                     live_kg,
                 )
                 .unwrap_or(0);
@@ -1446,30 +1472,30 @@ fn helm_thrust(ctx: &mut Ctx<'_>) -> Result<(), CmdError> {
         tick,
     )?;
 
-    if let Some((ship_id, max_accel_mps2)) = active_carrier_ship_and_max_accel(ctx.w, hull) {
+    let mut effective_accel_mmps2: Option<[i64; 3]> = None;
+    if let Some((ship_id, max_accel_mmps2)) = active_carrier_ship_and_max_accel_mmps2(ctx.w, hull) {
         let scale = i64::from(thrust_permille);
-        let thrust_mps2 = if scale == 0 {
+        let thrust_mmps2 = if scale == 0 {
             [0, 0, 0]
         } else {
-            let ax = (max_accel_mps2 * scale * i64::from(burn_dir[0])) / 1_000_000;
-            let ay = (max_accel_mps2 * scale * i64::from(burn_dir[1])) / 1_000_000;
-            let az = (max_accel_mps2 * scale * i64::from(burn_dir[2])) / 1_000_000;
-            if ax == 0 && ay == 0 && az == 0 {
-                [
-                    i64::from(burn_dir[0].signum()),
-                    i64::from(burn_dir[1].signum()),
-                    i64::from(burn_dir[2].signum()),
-                ]
-            } else {
-                [ax, ay, az]
-            }
+            let dir_mag = super::weapons::isqrt_i128(
+                (burn_dir[0] as i128).pow(2)
+                    + (burn_dir[1] as i128).pow(2)
+                    + (burn_dir[2] as i128).pow(2),
+            )
+            .max(1) as i64;
+            [
+                (max_accel_mmps2 * scale * i64::from(burn_dir[0])) / (1_000 * dir_mag),
+                (max_accel_mmps2 * scale * i64::from(burn_dir[1])) / (1_000 * dir_mag),
+                (max_accel_mmps2 * scale * i64::from(burn_dir[2])) / (1_000 * dir_mag),
+            ]
         };
         let events = apply_bubble_command(
             ctx.w,
             hull,
-            BubbleInputCommand::CommandBurn {
-                ship_id,
-                thrust_mps2,
+            BubbleInputCommand::CommandBurnMmps2 {
+                ship_id: ship_id.clone(),
+                thrust_mmps2,
                 force_into_reserve,
             },
         );
@@ -1485,14 +1511,68 @@ fn helm_thrust(ctx: &mut Ctx<'_>) -> Result<(), CmdError> {
                 )));
             }
         }
+        effective_accel_mmps2 = ctx
+            .w
+            .module_state::<SpaceBubbleBook>()
+            .and_then(|b| b.active_for_hull(hull))
+            .and_then(|a| a.bubble.ships.get(&ship_id))
+            .map(|s| s.thrust_mmps2);
         sync_bubble_propellant_to_ledger(ctx, hull);
+    } else if ctx
+        .w
+        .module_state::<SpaceBubbleBook>()
+        .is_some_and(|b| b.free_flight_for_hull(hull).is_some())
+    {
+        let max_accel_mmps2 =
+            if let Ok((basis, live_kg)) = live_hull_basis_and_propellant_kg(ctx, hull) {
+                let non_prop_payload = basis
+                    .payload
+                    .saturating_sub(basis.tank.saturating_mul(1_000));
+                let payload_kg = non_prop_payload.saturating_add(live_kg);
+                let accel_mps2 = crate::port::passage::flip_accel_mps2(
+                    &basis.spec.drive,
+                    basis.spec.dry_kg,
+                    payload_kg,
+                )
+                .unwrap_or(0.0);
+                ((accel_mps2 * 1_000.0).round() as i64).max(1)
+            } else {
+                645
+            };
+        let scale = i64::from(thrust_permille);
+        let thrust_mmps2 = if scale == 0 {
+            [0, 0, 0]
+        } else {
+            let dir_mag = super::weapons::isqrt_i128(
+                (burn_dir[0] as i128).pow(2)
+                    + (burn_dir[1] as i128).pow(2)
+                    + (burn_dir[2] as i128).pow(2),
+            )
+            .max(1) as i64;
+            [
+                (max_accel_mmps2 * scale * i64::from(burn_dir[0])) / (1_000 * dir_mag),
+                (max_accel_mmps2 * scale * i64::from(burn_dir[1])) / (1_000 * dir_mag),
+                (max_accel_mmps2 * scale * i64::from(burn_dir[2])) / (1_000 * dir_mag),
+            ]
+        };
+        if let Some(book) = ctx.w.module_state_mut::<SpaceBubbleBook>()
+            && let Some(ff) = book.free_flight_for_hull_mut(hull)
+        {
+            ff.thrust_mmps2 = thrust_mmps2;
+            ff.burn_remaining_ic_s = (thrust_mmps2 != [0, 0, 0]).then_some(60);
+        }
+        effective_accel_mmps2 = Some(thrust_mmps2);
     }
+
+    let accel_clause = effective_accel_mmps2.map_or_else(String::new, |a| {
+        format!(", accel=({}, {}, {}) mm/s²", a[0], a[1], a[2])
+    });
 
     ctx.out.sys_to_actor(
         ctx.actor,
         "tacsim.space",
         format!(
-            "Helm thrust set: {thrust_permille}‰ burn=({}, {}, {}) (standing order `{}` rev {}).",
+            "Helm thrust set: {thrust_permille}‰ burn=({}, {}, {}){accel_clause} (standing order `{}` rev {}).",
             burn_dir[0],
             burn_dir[1],
             burn_dir[2],
@@ -3111,11 +3191,16 @@ fn active_carrier_ship_and_roll(w: &World, hull: ObjId) -> Option<(String, i32)>
     Some((ship_id.to_owned(), ship.attitude_deg.2))
 }
 
-fn active_carrier_ship_and_max_accel(w: &World, hull: ObjId) -> Option<(String, i64)> {
+fn active_carrier_ship_and_max_accel_mmps2(w: &World, hull: ObjId) -> Option<(String, i64)> {
     let active = w.module_state::<SpaceBubbleBook>()?.active_for_hull(hull)?;
     let ship_id = active.carrier_ship_id_for(hull);
     let ship = active.bubble.ships.get(ship_id)?;
-    Some((ship_id.to_owned(), ship.max_accel_mps2.max(1)))
+    let max_mmps2 = if ship.max_accel_mmps2 > 0 {
+        ship.max_accel_mmps2
+    } else {
+        ship.max_accel_mps2.saturating_mul(1_000).max(1)
+    };
+    Some((ship_id.to_owned(), max_mmps2))
 }
 
 fn active_carrier_attitude(w: &World, hull: ObjId) -> Option<(String, i32, i32)> {
@@ -4346,6 +4431,20 @@ fn validate_docking_initiation_gates(
             let book = w
                 .module_state::<SpaceBubbleBook>()
                 .ok_or_else(|| CmdError::msg("Space state is not registered."))?;
+            if book
+                .clamped_derelicts
+                .iter()
+                .any(|(&tug, &dh)| tug != hull && dh == *derelict_hull)
+                || book
+                    .active_tows
+                    .iter()
+                    .any(|(&tug, t)| tug != hull && t.derelict_hull == *derelict_hull)
+            {
+                return Err(CmdError::msg(format!(
+                    "Derelict `{derelict_name}` (#{}) is already clamped or under tow by another ship.",
+                    derelict_hull.0
+                )));
+            }
             let active = book.active_for_hull(hull).ok_or_else(|| {
                 CmdError::msg(format!(
                     "Ship is not in the spatial frame of derelict `{derelict_name}` (#{}).",
@@ -4781,6 +4880,10 @@ fn helm_dock(ctx: &mut Ctx<'_>) -> Result<(), CmdError> {
                                         interdictor_ship,
                                         now.at,
                                     );
+                                    super::tick::destroy_unclaimed_npc_hull(
+                                        ctx,
+                                        active.interdictor_hull,
+                                    );
                                 }
                                 if let Some(picket) = &active.picket {
                                     if picket.corvette_hull != active.interdictor_hull
@@ -4793,6 +4896,10 @@ fn helm_dock(ctx: &mut Ctx<'_>) -> Result<(), CmdError> {
                                             corvette_ship,
                                             now.at,
                                         );
+                                        super::tick::destroy_unclaimed_npc_hull(
+                                            ctx,
+                                            picket.corvette_hull,
+                                        );
                                     }
                                     if picket.raider_hull != active.interdictor_hull
                                         && let Some(raider_ship) =
@@ -4803,6 +4910,10 @@ fn helm_dock(ctx: &mut Ctx<'_>) -> Result<(), CmdError> {
                                             picket.raider_hull,
                                             raider_ship,
                                             now.at,
+                                        );
+                                        super::tick::destroy_unclaimed_npc_hull(
+                                            ctx,
+                                            picket.raider_hull,
                                         );
                                     }
                                 }
@@ -4823,6 +4934,7 @@ fn helm_dock(ctx: &mut Ctx<'_>) -> Result<(), CmdError> {
                         }
                         mush_sim::dock_carrier_at_destination(ctx, hull, dest_parent, &now)
                             .map_err(CmdError::msg)?;
+                        super::tick::deliver_active_tow_at_port(ctx, hull, &now);
                         let line = format!(
                             "[DOCKING] Hard dock and magnetic collar seal confirmed at {port_name} on frame {} (dz={} mm, vz={} mm/s, spent {} kg RCS propellant; berth transitioned to `Berth::Docked`).",
                             report.frames_replayed,
@@ -4837,8 +4949,45 @@ fn helm_dock(ctx: &mut Ctx<'_>) -> Result<(), CmdError> {
                         derelict_hull,
                         ref derelict_name,
                     } => {
+                        if ctx.w.module_state::<SpaceBubbleBook>().is_some_and(|book| {
+                            book.clamped_derelicts
+                                .iter()
+                                .any(|(&tug, &dh)| tug != hull && dh == derelict_hull)
+                                || book.active_tows.iter().any(|(&tug, t)| {
+                                    tug != hull && t.derelict_hull == derelict_hull
+                                })
+                        }) {
+                            return Err(CmdError::msg(format!(
+                                "Derelict `{derelict_name}` (#{}) is already clamped or under tow by another ship.",
+                                derelict_hull.0
+                            )));
+                        }
+                        let mut prior_owner =
+                            super::tick::resolve_hull_prior_owner(ctx.w, derelict_hull, hull);
+                        if prior_owner == ctx.actor {
+                            prior_owner = if mush_core::GOD != ctx.actor {
+                                mush_core::GOD
+                            } else {
+                                ObjId(2)
+                            };
+                        }
+                        super::custody::ensure_space_hull_titled(ctx, derelict_hull, prior_owner);
+                        let pin = crate::surface::claim::TenurePin {
+                            casualty: derelict_hull,
+                            tug: hull,
+                            recoverer: ctx.actor,
+                            title: Some(mush_org::PrincipalId::Object(prior_owner)),
+                            answering: Some(prior_owner),
+                            answerers: vec![prior_owner],
+                            owner_grant: None,
+                            landholder_authorized: false,
+                            tenure: crate::field_ops::GroundTenure::Unclaimed,
+                            witnesses: Vec::new(),
+                            pinned_ic: now.at,
+                        };
                         if let Some(book) = ctx.w.module_state_mut::<SpaceBubbleBook>() {
                             book.clamped_derelicts.insert(hull, derelict_hull);
+                            book.derelict_pins.insert(derelict_hull, pin);
                         }
                         unpause_hull_after_docking(ctx, hull, &now);
                         let line = format!(
@@ -4983,6 +5132,26 @@ fn helm_tow(ctx: &mut Ctx<'_>) -> Result<(), CmdError> {
     let raw = ctx.args.raw().trim().to_owned();
     let now = ctx.w.world_ic_now();
 
+    if ctx.switches.has("release") || raw.eq_ignore_ascii_case("release") {
+        let released = ctx
+            .w
+            .module_state_mut::<SpaceBubbleBook>()
+            .and_then(|b| {
+                let tow = b.active_tows.remove(&hull).map(|t| t.derelict_hull);
+                let clamp = b.clamped_derelicts.remove(&hull);
+                tow.or(clamp)
+            })
+            .ok_or_else(|| CmdError::msg("No active tow line or collar clamp to release."))?;
+        let line = format!(
+            "[SALVAGE] Tow line and collar clamp released from derelict #{}.",
+            released.0
+        );
+        crate::port::voyage::narrate_hull(ctx, hull, &line);
+        ctx.out.sys_to_actor(ctx.actor, "tacsim.space", line);
+        push_space_panels(ctx, hull);
+        return Ok(());
+    }
+
     let clamped_derelict = ctx
         .w
         .module_state::<SpaceBubbleBook>()
@@ -4992,6 +5161,17 @@ fn helm_tow(ctx: &mut Ctx<'_>) -> Result<(), CmdError> {
                 "Must complete a 6-DOF hard-dock clamp (`+helm/dock <derelict>` then `+helm/dock tape ...`) before attaching a tow line.",
             )
         })?;
+
+    if ctx.w.module_state::<SpaceBubbleBook>().is_some_and(|b| {
+        b.active_tows
+            .iter()
+            .any(|(&tug, t)| tug != hull && t.derelict_hull == clamped_derelict)
+    }) {
+        return Err(CmdError::msg(format!(
+            "Derelict #{} is already under tow by another ship.",
+            clamped_derelict.0
+        )));
+    }
 
     if !raw.is_empty()
         && let Some(parsed_id) = raw
@@ -5017,22 +5197,52 @@ fn helm_tow(ctx: &mut Ctx<'_>) -> Result<(), CmdError> {
         )));
     }
 
-    let filed_real_s = if ctx.w.now() > 0 {
-        (ctx.w.now() / 1_000).max(1)
-    } else {
-        (now.at / 24).max(1)
-    };
-    let contest_expires_real_s =
-        filed_real_s.saturating_add(i64::from(super::bubble::DERELICT_WINDOW_S));
+    let filed_real_s = super::custody::real_now_secs(ctx.w);
+    let window_s = super::custody::salvage_claim_window_secs(ctx.w);
+    let contest_expires_real_s = filed_real_s.saturating_add(window_s);
 
-    // Ensure the derelict is registered in `SalvageClaimBook` and `SpaceBubbleBook::derelicts` (`D-35-12`, `SF.R12`):
-    let already_claimed = ctx
+    // Ensure the derelict is registered through the unified GC.6 / `mush_economy` salvage path
+    // (`SF.R19`, `Q-36-46`, `D-35-12`, `SF.R12`):
+    let existing_expires = ctx
         .w
         .module_state::<SpaceBubbleBook>()
-        .and_then(|b| b.derelicts.get(&clamped_derelict))
-        .is_some_and(|d| d.salvage_title_status.is_some());
-    if !already_claimed {
-        let (domain, op_id) = {
+        .and_then(|b| b.space_custody.get(&clamped_derelict))
+        .and_then(|c| c.file.as_ref().map(|f| f.deadline_real_s));
+    let contest_expires_real_s = if let Some(exp) = existing_expires {
+        exp
+    } else {
+        let mut prior_owner = super::tick::resolve_hull_prior_owner(ctx.w, clamped_derelict, hull);
+        if prior_owner == ctx.actor {
+            prior_owner = if mush_core::GOD != ctx.actor {
+                mush_core::GOD
+            } else {
+                ObjId(2)
+            };
+        }
+        super::custody::ensure_space_hull_titled(ctx, clamped_derelict, prior_owner);
+        let remainder = crate::port::credit::own_account(ctx.w, ctx.actor)
+            .map(|a| a.id)
+            .ok_or_else(|| CmdError::msg(crate::port::claims::CLAIMS_FAILED))?;
+        let label = crate::port::coop::name_of(ctx.w, clamped_derelict);
+        let audience = if prior_owner != ctx.actor {
+            vec![mush_org::PrincipalId::Object(prior_owner)]
+        } else {
+            Vec::new()
+        };
+        let contract = mush_economy::file_salvage_claim(
+            ctx,
+            mush_economy::SalvageClaimSpec {
+                name: smol_str::SmolStr::new(format!("Salvage claim: the {label}")),
+                claimant: ctx.actor,
+                hull: clamped_derelict,
+                audience,
+                window_secs: window_s,
+                remainder_to: remainder,
+            },
+        )
+        .map_err(|e| CmdError::msg(format!("Failed to file salvage claim with Registry: {e}")))?;
+
+        let (domain, op_id, pin) = {
             let book = ctx
                 .w
                 .module_state_mut::<SpaceBubbleBook>()
@@ -5042,34 +5252,86 @@ fn helm_tow(ctx: &mut Ctx<'_>) -> Result<(), CmdError> {
                 .map(|a| a.domain)
                 .or_else(|| book.derelicts.get(&clamped_derelict).map(|d| d.domain))
                 .unwrap_or(DomainId(1));
-            book.next_recovery_op_id = book.next_recovery_op_id.saturating_add(1);
-            let op = crate::field_ops::RecoveryOpId::new(book.next_recovery_op_id)
-                .map_err(|e| CmdError::msg(e.to_string()))?;
-            (dom, op)
+            let op = book
+                .alloc_recovery_op_id()
+                .ok_or_else(|| CmdError::msg("Failed to allocate recovery operation id."))?;
+            let pin = book
+                .derelict_pins
+                .get(&clamped_derelict)
+                .cloned()
+                .unwrap_or(crate::surface::claim::TenurePin {
+                    casualty: clamped_derelict,
+                    tug: hull,
+                    recoverer: ctx.actor,
+                    title: Some(mush_org::PrincipalId::Object(prior_owner)),
+                    answering: Some(prior_owner),
+                    answerers: vec![prior_owner],
+                    owner_grant: None,
+                    landholder_authorized: false,
+                    tenure: crate::field_ops::GroundTenure::Unclaimed,
+                    witnesses: Vec::new(),
+                    pinned_ic: now.at,
+                });
+            (dom, op, pin)
         };
-        let prior_owner = super::tick::resolve_hull_prior_owner(ctx.w, clamped_derelict, hull);
         let base_obj = super::tick::resolve_nearest_port_base_obj(ctx.w, domain, hull);
-        let title_status = ctx
+        let (title_status, salvage_claim_opt) = ctx
             .w
             .module_state_mut::<crate::field_ops::SalvageClaimBook>()
             .and_then(|sb| {
-                super::custody::register_derelict_salvage_in_book(
+                let status = super::custody::register_derelict_salvage_in_book(
                     sb,
                     op_id,
                     clamped_derelict,
                     hull,
-                    hull,
+                    ctx.actor,
                     prior_owner,
                     base_obj,
                     now.at,
                     filed_real_s,
                 )
-                .ok()
-            });
+                .ok()?;
+                let claim = match &status {
+                    crate::field_ops::CustodyTitleStatus::PendingSalvageClaim {
+                        claim_id, ..
+                    } => sb.claim(*claim_id).cloned(),
+                    crate::field_ops::CustodyTitleStatus::ResolvedTitle { .. } => None,
+                };
+                Some((status, claim))
+            })
+            .ok_or_else(|| {
+                CmdError::msg("Failed to register salvage claim in SalvageClaimBook.")
+            })?;
+        let salvage_claim = salvage_claim_opt.map(|mut c| {
+            c.deadline_real_s = contest_expires_real_s;
+            c
+        });
+        let told = if prior_owner != ctx.actor {
+            vec![prior_owner]
+        } else {
+            Vec::new()
+        };
+        let custody_row = crate::surface::salvage::SalvageCustody {
+            hull: clamped_derelict,
+            holder: ctx.actor,
+            carrier: hull,
+            recovered_by: hull,
+            recovered_ic: now.at,
+            left_ic: Some(now.at),
+            claim: crate::surface::salvage::ClaimSeam::Filed {
+                contract: contract.0,
+            },
+            operation: Some(op_id),
+            pin: Some(pin),
+            file: salvage_claim.map(Box::new),
+            told: told.clone(),
+            evidence: Vec::new(),
+            at_risk: Vec::new(),
+        };
         if let Some(book) = ctx.w.module_state_mut::<SpaceBubbleBook>() {
-            book.derelicts
-                .entry(clamped_derelict)
-                .or_insert(super::tick::SpaceDerelictRecord {
+            book.space_custody.insert(clamped_derelict, custody_row);
+            let entry = book.derelicts.entry(clamped_derelict).or_insert(
+                super::tick::SpaceDerelictRecord {
                     hull: clamped_derelict,
                     domain,
                     disabled_at_ic_s: now.at,
@@ -5077,16 +5339,27 @@ fn helm_tow(ctx: &mut Ctx<'_>) -> Result<(), CmdError> {
                     life_support_remaining_s: super::bubble::DERELICT_WINDOW_S,
                     salvage_contest_window_s: super::bubble::DERELICT_WINDOW_S,
                     assessment: None,
-                    salvage_title_status: title_status,
-                });
+                    salvage_title_status: Some(title_status.clone()),
+                },
+            );
+            entry.salvage_title_status = Some(title_status);
         }
-    }
+        for who in told {
+            ctx.out.sys_to_actor(
+                who,
+                "tacsim.salvage",
+                format!(
+                    "{} has filed a salvage claim on the {label} (#{}) at the Freeport Registry (contract #{}). +salvage/contest #{} go contests it.",
+                    crate::port::coop::name_of(ctx.w, ctx.actor),
+                    clamped_derelict.0,
+                    contract.0,
+                    clamped_derelict.0
+                ),
+            );
+        }
+        contest_expires_real_s
+    };
 
-    let already_towed = ctx
-        .w
-        .module_state::<SpaceBubbleBook>()
-        .and_then(|b| b.active_tows.get(&hull))
-        .is_some_and(|t| t.derelict_hull == clamped_derelict);
     let tow_record = super::docking::SalvageTowRecord {
         tug_hull: hull,
         derelict_hull: clamped_derelict,
@@ -5100,13 +5373,6 @@ fn helm_tow(ctx: &mut Ctx<'_>) -> Result<(), CmdError> {
             active.set_approaching_derelict_for(hull, false);
             active.set_holding_for_salvage_for(hull, false);
         }
-    }
-    if !already_towed {
-        let _ = super::picket::settle_salvage_recovery_payout_from_registry(
-            ctx,
-            ctx.actor,
-            clamped_derelict,
-        );
     }
 
     let line = format!(
@@ -5151,6 +5417,8 @@ pub fn mine_cmd(ctx: &mut Ctx<'_>) -> Result<(), CmdError> {
 fn mine_status(ctx: &mut Ctx<'_>) -> Result<(), CmdError> {
     let (hull, _) = require_aboard_and_seat(ctx, None)?;
     let used_t = super::mining::hull_hold_used_tonnes(ctx, hull);
+    let hold_cap_t = super::mining::hull_hold_capacity_tonnes(ctx.w, hull);
+    let hold_cap_kg = super::mining::hull_hold_capacity_kg(ctx.w, hull);
     let Some(session) = ctx
         .w
         .module_state::<SpaceBubbleBook>()
@@ -5160,9 +5428,8 @@ fn mine_status(ctx: &mut Ctx<'_>) -> Result<(), CmdError> {
             ctx.actor,
             "tacsim.space",
             format!(
-                "Mining status aboard {}: not in an orbital cluster (`stow.ore` hold: {used_t}/{} t).",
+                "Mining status aboard {}: not in an orbital cluster (`stow.ore` hold: {used_t}/{hold_cap_t} t).",
                 display_name(ctx.w, hull),
-                super::mining::DRAY_P_HOLD_CAPACITY_T
             ),
         );
         return Ok(());
@@ -5187,7 +5454,7 @@ fn mine_status(ctx: &mut Ctx<'_>) -> Result<(), CmdError> {
         ctx.actor,
         "tacsim.space",
         format!(
-            "Mining status aboard {} in {} (`{}`): pos=({}, {}, {}) m, vel=({}, {}, {}) mm/s, matched={matched}, laser={laser_desc}, active drones={}/{}, frontier bloom heat={}, `stow.ore` hold={used_t}/{} t ({} kg capacity).",
+            "Mining status aboard {} in {} (`{}`): pos=({}, {}, {}) m, vel=({}, {}, {}) mm/s, matched={matched}, laser={laser_desc}, active drones={}/{}, frontier bloom heat={}, `stow.ore` hold={used_t}/{hold_cap_t} t ({hold_cap_kg} kg capacity).",
             display_name(ctx.w, hull),
             session.cluster.display_name(),
             session.cluster.as_str(),
@@ -5200,8 +5467,6 @@ fn mine_status(ctx: &mut Ctx<'_>) -> Result<(), CmdError> {
             session.active_drones.len(),
             crate::surface::excursion::MAX_EXCURSIONS_PER_OPERATOR,
             session.frontier_bloom_heat,
-            super::mining::DRAY_P_HOLD_CAPACITY_T,
-            super::mining::DRAY_P_HOLD_CAPACITY_KG,
         ),
     );
     Ok(())
@@ -5652,10 +5917,10 @@ fn mine_laser(ctx: &mut Ctx<'_>) -> Result<(), CmdError> {
     };
 
     let used_t = super::mining::hull_hold_used_tonnes(ctx, hull);
-    if used_t >= super::mining::DRAY_P_HOLD_CAPACITY_T {
+    let hold_cap_t = super::mining::hull_hold_capacity_tonnes(ctx.w, hull);
+    if used_t >= hold_cap_t {
         return Err(CmdError::msg(format!(
-            "`stow.ore` hold is at capacity ({used_t}/{} t).",
-            super::mining::DRAY_P_HOLD_CAPACITY_T
+            "`stow.ore` hold is at capacity ({used_t}/{hold_cap_t} t)."
         )));
     }
     let rock_vault = *site
@@ -5674,7 +5939,7 @@ fn mine_laser(ctx: &mut Ctx<'_>) -> Result<(), CmdError> {
     let now_ic = ctx.w.world_ic_now().at;
     let due_ic = now_ic.saturating_add(super::mining::LASER_CYCLE_IC_SECS);
     let yield_t = super::mining::LASER_CYCLE_YIELD_T
-        .min(super::mining::DRAY_P_HOLD_CAPACITY_T.saturating_sub(used_t))
+        .min(hold_cap_t.saturating_sub(used_t))
         .min(avail_t);
 
     // Check if this is unleased/claim-jumped frontier extraction (`doc 35` §7.4): generate
@@ -5832,10 +6097,10 @@ fn mine_drones(ctx: &mut Ctx<'_>) -> Result<(), CmdError> {
     };
 
     let used_t = super::mining::hull_hold_used_tonnes(ctx, hull);
-    if used_t >= super::mining::DRAY_P_HOLD_CAPACITY_T {
+    let hold_cap_t = super::mining::hull_hold_capacity_tonnes(ctx.w, hull);
+    if used_t >= hold_cap_t {
         return Err(CmdError::msg(format!(
-            "`stow.ore` hold is at capacity ({used_t}/{} t).",
-            super::mining::DRAY_P_HOLD_CAPACITY_T
+            "`stow.ore` hold is at capacity ({used_t}/{hold_cap_t} t)."
         )));
     }
     let rock_vault = *site

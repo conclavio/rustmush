@@ -434,3 +434,152 @@ main's two merges after it, up to this branch's base `a2ef4075`, were docs only.
 - **Every other cell** moved both ways by up to 26 min with identical tests (`tacsim-integration-1` −25.9,
   `rest-server` +16.4, `tacsim-lib` +17.0); the total read 637.1 → 604.0.
 - **Shards**: no cell's wall is set by this cut, and nothing moves shard.
+
+## FR.5 — carried in: the join-during-think await (found 2026-11-04, before the cut)
+
+Not built yet. This records a finding so FR.5 does not rediscover it: doc 38 §9.3's "the join-during-think await",
+with the evidence from the GC.1b shard-10 flake.
+
+- **What fails.** `field_carrier::gc1b_a_refused_middle_party_never_lends_its_letter_to_the_next_arrival` failed at
+  `field_carrier.rs:725` on PR #389's runs 41764030040 and 41767085311, and passed alone. `gc1_…` fails at line 420
+  the same way. Under load the kernel answers both arrivals' joins for real with `match recovery capacity refused: a
+  think awaits its answer on #395: the batch was not delivered before the encode`.
+- **Why.** `arena_task.rs` takes `waiting.joins` in (`Task::join`, then `Arena::join`'s recovery-capacity encode)
+  before `Task::pulse`, and only the pulse's head runs `await_thinks`. A join that lands while the last pulse's think
+  batch is outstanding meets `SnapshotError::Awaiting`. Every unseated hull on the field thinks (the carrier on the
+  pad, a rig out). On a loaded cell each late pulse steps more arena time, so more pulses carry a batch.
+- **FR.5's item.** Await the outstanding batch before the joins are taken in (`arena/*` is FR.5's alone, doc 38
+  §9.2). The other half of the failure is FR.3's: `carrier::on_joined`'s refusal drops the kept arrival and puts it
+  in `join_refused`, never to be asked again. FR.3 builds the retry.
+- **Evidence** (conclav.dev; 3–5 processes of the shard_10 binary at once, `field_carrier::`, `--test-threads=6`,
+  `taskset` to 4 cores):
+  - beat-counted waits: 4 of 18 failed, while the base passed 15 of 15 on the same rig. No wait length helps.
+  - every core class at `think_ms` 5000 (the config ceiling): 2 of 30 failed, against 3 of 30 for the unchanged
+    control run beside it.
+- **Stopgap.** `.config/nextest.toml` retries the gc1b story twice (a pass on retry reports FLAKY). Remove it when
+  FR.3's retry lands.
+
+## FR.3 — reinforcement (§4.4; Q-38-25, Q-38-26, Q-40-19, Q-40-20, Q-40-24; doc 23 Q-23-21, D-23-23)
+
+Row: §6 FR.3. Base `c0801a8a` (S.4b-1 merged). This cut is the unlicensed half. Its join reads `RigRecord.claim`,
+and an `Open` claim waits for doc 23 S.4b-2's install (see "Owed" below).
+
+**Built.**
+
+- **`FIELD_LAUNCH` is retired** (`detachment/sortie/prepare.rs`, `launch`). A `+sortie/launch` from a carrier on a
+  promoted site's pad now passes two checks:
+  - **The launch cycle** (Q-40-19): `[tacsim.field].launch_cycle_s`, 60 wall seconds (provisional), banded 10–600
+    as `FIELD_LAUNCH_CYCLE_S`. It is turned into IC seconds at the world's rate (`FieldConfig::launch_cycle_ic`).
+    - A carrier puts one hull down a cycle.
+    - A launch of several slots opens one cycle per slot, in slot order: slot *k*'s `due` is its cycle's start
+      plus `LAUNCH_S`.
+    - A second launch inside the cycle is refused with `site_record::LAUNCH_CYCLE`, which names the field, the
+      site, the carrier and the wall seconds left.
+    - Only launches accepted at or after the promotion open a cycle (`SiteRecord::cycle_free_at`). A launch from
+      before the field opened is no pour into it.
+  - **The cap over the one count** (Q-CF-21's CF.2 line), now counting what is in flight.
+- **The one count** (Q-40-24): `SiteRecord.pending: Vec<PendingLaunch { hull, carrier, accepted_ic }>`.
+  - The field is serde default and skipped while empty, so every earlier record is byte-identical. It is bounded
+    by `FIELD_MAX_UNITS`, kept in hull order and checked by `SiteRecord::check`.
+  - **Written** by the launch's own transaction for every new slot, whether or not a field is open. The DT
+    `Snapshot`'s `site_records` now insert a record that did not exist (`fresh_record`, at the site's side).
+  - **Counted** by `field::parties::site_population`: each live row whose hull is not on the ground, plus each
+    launch the field sent back aboard. So the prepare, the rig ramp's launch half and admission all see a launch
+    in flight. A hull whose row is already live is not counted twice by its own launch.
+  - **Retired** by the abort: `+sortie/cancel-launch` and an `+sortie/end` that cancels a departure drop the row
+    in the same commit (`prepare::drop_pending`), which frees the cycle too (§4.4 step 5).
+  - **Stale**: a row is live until its landing (`accepted_ic + LAUNCH_S`) and one cycle have passed
+    (`SiteRecord::pending_live`). The count and the cycle then ignore it, and the record's next launch drops it.
+- **The join** (§4.4 steps 3 and 4; `field/carrier.rs`). `join_launches` runs beside `join_arrivals` in the field
+  tick, one new line in `admit.rs`'s `tick`. Each **pending entrant** (`carrier::launches`) is a non-carrier hull
+  whose DT flight landed on this site (`Phase::Field`, epoch open, not closed) and that the running field does
+  not hold:
+  - not on the live record, not owed an exit, not checked out, not held out, not towed, not out at the ramp and
+    not leaving;
+  - or one the field sent back aboard.
+
+  Each entrant is checked out under the field's mark and offered as `ArenaMsg::Join` where it stands at the ramp,
+  with the director's spread (`raiders::LAUNCH_SPREAD_CELLS`, 4). That goes through the shared `carrier::join`,
+  now `join(ctx, site, hull, pose, spread)`, which the arrivals use at their pad pose with `PAD_SPREAD_CELLS`.
+  - On the kernel's `Joined` Ok, the site hears `LAUNCHED_IN_FIELD`. The launch's pilot, still in its seat, is
+    bound to the task as an admission binds one (`seat_joined_pilot`). Without that the hull joined and flew as
+    its mind, and its pilot got no frames.
+  - **Step 3's seal**: `launch_seal` reads `RigRecord.claim`. `Open` is `LaunchSeal::Claim(open)`; anything else
+    is the ROM, as every entrant.
+- **A refused join** (Q-40-20; step 4). `carrier::on_joined` tells a launch from an arrival by
+  `FieldBook.launching`. A refused launch is checked back in, its row leaves the live record (and its roster
+  party, if nobody else holds it), and it is put back aboard into its bay berth (`place_interior`). Its operator
+  hears `LAUNCH_BACK_ABOARD`, and it is noted in `FieldBook.relaunch`. The next tick puts it down at its ramp
+  again and offers the join, until it is taken or the field demotes.
+  - The flights' tick (`detachment/sortie/tick.rs`, one guard) skips a `Phase::Field` flight in `relaunch`, so a
+    bay that is no return does not close the epoch `RecoveredToBase`.
+  - The relaunch set is RAM, cleared when the field is gone. A restart while a hull is aboard loses it, and the
+    flights' tick then reads the hull home as recovered: an honest close, not a hull on the ground outside the
+    field.
+- **GC.1b's refused arrival is retried** (Q-40-20): `FieldBook.join_refused` is gone. A refused arrival is asked
+  again at the next tick, as the director's raid is. `ARRIVED_IN_FIELD` now says the carrier launches into the
+  field one hull a cycle, which closes Q-36-5's half state for an F-6 arrival.
+- **Config**: `launch_cycle_s` in `[tacsim.field]` (`mush-config` with its table row, `config_ext`, tacsim's
+  `FieldConfig` and its validation).
+
+**Divergences from §4.4's text.**
+
+- **The row is retired by the abort and by staleness, not by the join's batch.** The field tick runs over a `Ctx`
+  with no write into the site family. Retiring there would need a new host-owed `tacsim_field` op, as `exit` is.
+  Instead the count takes the union of the ground and the live rows, by hull. A landed hull is counted by the
+  ground, a refused one by `relaunch`, and a row past its window by nobody. The count is the same one §4.4 asks
+  for, written in one place.
+- **The rig ramp's `+tv/<n> launch` into a running field is still refused** (CF.1's "every act on a promoted site",
+  `FIELD_OPEN_CODE`). The unlicensed story is the DT `+sortie/launch`, as the row says. Opening the rig ramp's
+  launch is the licensed half's: S.4b-2's `go` queues it behind the claim.
+- **An `Open` claim waits rather than joining.** Until S.4b-2's `custody_unit` seals under the claim's own seal, a
+  join would seal the ROM over an open claim. No world composes the claim path yet, so nobody can reach it.
+
+**Owed (named follow-up): FR.3b, the licensed reinforcement**, on top of doc 23 S.4b-2 (`claude/s4b2-claim-arm`,
+not yet up as a PR when this cut was opened). It needs:
+
+- `join_launches`' `LaunchSeal::Claim` arm to drop its wait, once `custody_unit` seals under
+  `minds::ic_sortie::claim_seal`;
+- the rig ramp's launch opened into a field behind the claim, with its pending row;
+- the shared acceptance story of D-23-23 at 256 and 512: a second cored rig launched `mind=` after the first shot,
+  its claim opened in the bay, joined by the next tick under its own seal and thinking.
+
+The row's other unbuilt acceptance items are an F-6 arrival that joins and then launches, and two *different*
+carriers one short of the cap. Both read the same code as the stories below (the arrival's carrier is an ordinary
+carrier once joined, and the count is per site, not per carrier). Neither has a story of its own yet.
+
+**The story** (`mush-server/tests/split_boundary/dt_preparation_plans.rs`). The tacsim world harness lands no DT
+activation, so the DT field stories live in the split-boundary harness. Its shared helpers (`pulse`'s clerk,
+`staff_place_on_ahuna`, `promoted_by`, `until_hosted`, `two_pilot_fixture`) now read the ground and the field's cap
+and cycle from a `tokio::task_local!` `Story` scope. Outside a scope it is Ahuna Flank with the shipped knobs, so
+every earlier test reads as before.
+
+- `fr3_a_second_escort_launches_into_the_running_field_on_ahuna` and `…_on_urvara` (256 and 512): two players fly
+  one operation, and the activation puts the first escort down. Its `+field/fire E` at a bystander opens the
+  field with the second escort still aboard. Then, through the command paths:
+  - the organizer's `+sortie/launch 1:1=2` is accepted, with its pending row naming the hull and the carrier;
+  - a second launch inside the cycle is refused with the seconds left;
+  - `+sortie/cancel-launch 1:1=2` drops the row and frees the cycle, and the launch again is taken;
+  - the hull lands on the IC clock, and the next tick joins it. Its pilot's cockpit frame is the hull's, in the
+    first escort's party, deployed, within the spread of its ramp.
+- `fr3_the_pending_row_counts_a_launch_still_aboard` (the one count, at Ahuna; it reads no ground): with the cap
+  at two and only the carrier down, slot 1's launch is accepted and slot 2's, a moment later, is refused with
+  CF.2's cap line while slot 1 is still aboard. Before the row, both went down.
+- Unit: `surface::site_record::tests::fr3_pending_launches_count_cycle_and_go_stale`.
+- `tacsim --test shard_10`: `field_carrier::gc1b_a_refused_middle_party_never_lends_its_letter_to_the_next_arrival`
+  steps (3)–(4) now read the retry. The refused arrival's retry takes the freed letter, the third takes the next
+  free one, and the restart keeps every letter. This is the test that failed under load (the gc1b-flake session's
+  diagnosis: the kernel refuses a join for real while a think is outstanding, FR.5's await, and the arrival was
+  never asked again). The cut drops PR #398's `retries = 2` stopgap override for it from `.config/nextest.toml`.
+  The gc1b-flake session's loaded stress was run on conclav.dev at this branch's `237bd386`: 5 copies × 6 rounds of
+  `field_carrier::` on `taskset -c 0-3`, `--test-threads=6`. **0 of 30 failed**, against 4 of 18 (beat-counted
+  waits) and 3 of 30 (the unchanged control) on the same rig without the retry.
+
+**§4a's pins.** None of §4a's pinned files is touched: no kernel file, no snapshot or live-record format, no
+content, no seal. The live record gains no field (`launching` and `relaunch` are RAM), so `FIELD_LIVE_FORMAT` 1
+stands. `SiteRecord.pending` is skipped when empty. Rule #13's harness kind is therefore not required for this
+cut, and FR.5 moves no hash it would not have moved before it.
+
+### Cell minutes (rule #14)
+
+To be read from the PR run's JUnit and recorded here before the PR is marked ready.

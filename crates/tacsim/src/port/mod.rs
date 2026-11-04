@@ -190,6 +190,8 @@ pub mod vehicle;
 pub mod vendor;
 pub mod voyage;
 pub mod when;
+/// Doc 39 cut IN.3: the order contract: `+works` and `+yard` over `@wo`, the escrow, the arm.
+pub mod works;
 /// Doc 36 cut GC.7: a port's workshop room, opened as a `bay_refit` facility, and its quote.
 pub mod workshop;
 /// Doc 20 cut SM.12b: a house's yard at a site — its lay-up, its dispatcher, its seeds and its

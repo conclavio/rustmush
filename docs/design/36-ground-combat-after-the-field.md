@@ -2693,9 +2693,11 @@ stands its casualty on the same cell.
 - The one-cell reach.
 - The two bays' limits, and the 250 kg/m3 stowage density.
 - The casualty carried as its tug's load inside a field.
-- Every tug a standard rig.
+- Every tug a standard rig. (Closed by doc 41 cut RS.1: the tender's `recovery_optimized`
+  coupling tows 3x, Q-41-27.)
 - A hopper's ore not counted in a casualty's laden mass (cargo 0), until the hopper reads come
-  to the tow.
+  to the tow. (Closed by doc 41 cut RS.1, Q-41-29: the tow counts the casualty laden, her
+  hopper's ore, her hold's goods and her bay's hulls.)
 
 ## GC.10 as built (relations: Friends by organization, standing at demotion)
 
@@ -3225,7 +3227,8 @@ Every cut of §7 has landed. What each as-built section left open, gathered in o
   - Recovery authority grants (GC.6).
   - A crate into a carrier's hold; a crate dropped by play; a written-off rig's crew aboard the
     carrier (GC.5).
-  - The hopper's ore counted in a casualty's laden mass (GC.4).
+  - The hopper's ore counted in a casualty's laden mass (GC.4). Done by doc 41 cut RS.1
+    (Q-41-29).
 - **The bay:**
   - A per-unit grant in the built bay, which needs an owner read in three prepares (GC.8b).
   - Disposing of a scrapped shell (GC.8b).

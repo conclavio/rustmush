@@ -208,11 +208,28 @@ pub fn is_marker_id(id: &str) -> bool {
 /// # Errors
 /// [`InventoryError::ClockArithmetic`] if the deadline overflows.
 pub fn reservation_deadline(now: &ClockStamp) -> Result<ClockStamp, InventoryError> {
+    reservation_deadline_after(now, 0)
+}
+
+/// **A hold that must outlive work of `lead_secs`** (doc 39 cut IN.3, §4.12, Q-39-28): the
+/// deadline is the work's duration plus [`RESERVATION_TTL_SECS`] past *now*, so a 20-day order's
+/// materials do not lapse on the seventh day. `lead_secs` 0 is [`reservation_deadline`].
+///
+/// # Errors
+/// [`InventoryError::ClockArithmetic`] for a negative lead or an overflow.
+pub fn reservation_deadline_after(
+    now: &ClockStamp,
+    lead_secs: i64,
+) -> Result<ClockStamp, InventoryError> {
+    if lead_secs < 0 {
+        return Err(InventoryError::ClockArithmetic);
+    }
     Ok(ClockStamp {
         clock: now.clock.clone(),
         at: now
             .at
-            .checked_add(RESERVATION_TTL_SECS)
+            .checked_add(lead_secs)
+            .and_then(|at| at.checked_add(RESERVATION_TTL_SECS))
             .ok_or(InventoryError::ClockArithmetic)?,
     })
 }
@@ -1116,6 +1133,25 @@ impl InventoryFamilies {
         amount: u64,
         now: &ClockStamp,
     ) -> Result<ReservationId, InventoryError> {
+        self.reserve_for(txn, endpoint, commodity, holder, amount, now, 0)
+    }
+
+    /// [`Self::reserve`] for a hold that must outlive `lead_secs` of work: its deadline is
+    /// [`reservation_deadline_after`] (doc 39 cut IN.3, Q-39-28).
+    ///
+    /// # Errors
+    /// [`InventoryError`] on any refusal; **nothing is written on an error**.
+    #[allow(clippy::too_many_arguments)]
+    pub fn reserve_for(
+        &self,
+        txn: &mut ActionTxn<'_>,
+        endpoint: EndpointRef,
+        commodity: &CanonicalId,
+        holder: &ScopedIdempotencyKey,
+        amount: u64,
+        now: &ClockStamp,
+        lead_secs: i64,
+    ) -> Result<ReservationId, InventoryError> {
         let (key, pair) = self.load_pair(txn, endpoint, commodity)?;
         let Some((scalar, book)) = pair else {
             return Err(InventoryError::NoPool);
@@ -1132,7 +1168,7 @@ impl InventoryFamilies {
             resource,
             holder.clone(),
             amount,
-            reservation_deadline(now)?,
+            reservation_deadline_after(now, lead_secs)?,
         )
         .map_err(InventoryError::Reservation)?;
         let book = book.checked_hold(book.revision(), scalar, record, now)?;
@@ -1363,6 +1399,33 @@ impl InventoryFamilies {
         expected_reservation_revision: u64,
         now: &ClockStamp,
     ) -> Result<(), InventoryError> {
+        self.renew_for(
+            txn,
+            endpoint,
+            commodity,
+            reservation,
+            expected_reservation_revision,
+            now,
+            0,
+        )
+    }
+
+    /// [`Self::renew`] to a deadline `lead_secs` of work out (doc 39 cut IN.3): a restamped
+    /// order's materials last its remaining work plus the TTL.
+    ///
+    /// # Errors
+    /// [`InventoryError`] on any refusal; **nothing is written on an error**.
+    #[allow(clippy::too_many_arguments)]
+    pub fn renew_for(
+        &self,
+        txn: &mut ActionTxn<'_>,
+        endpoint: EndpointRef,
+        commodity: &CanonicalId,
+        reservation: ReservationId,
+        expected_reservation_revision: u64,
+        now: &ClockStamp,
+        lead_secs: i64,
+    ) -> Result<(), InventoryError> {
         let (key, pair) = self.load_pair(txn, endpoint, commodity)?;
         let Some((scalar, book)) = pair else {
             return Err(InventoryError::NoPool);
@@ -1380,7 +1443,7 @@ impl InventoryFamilies {
                 reservation,
                 expected_revision: expected_reservation_revision,
                 amount,
-                expires: reservation_deadline(now)?,
+                expires: reservation_deadline_after(now, lead_secs)?,
             },
             now,
         )?;

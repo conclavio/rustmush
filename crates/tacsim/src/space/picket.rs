@@ -1827,8 +1827,6 @@ fn configure_corvette_and_raider_ships(corvette: &mut SpaceShipState, raider: &m
         raider,
         &super::custody::space_unit_overlay_for_id("tacsim.unit.raider_heavy"),
     );
-    raider.max_accel_mps2 = 60;
-    raider.delta_v_mps = 9_500;
     raider.attitude_deg = (180, 0, 0);
     raider.emcon = EmconPosture::Ghost;
     raider.heat_permille = 0;
@@ -1860,8 +1858,18 @@ pub const SALVAGE_RECOVERY_CONTRACT_NAME: &str = "Freeport Registry Derelict Sal
 pub fn settle_salvage_recovery_payout_from_registry(
     ctx: &mut Ctx<'_>,
     pilot: ObjId,
-    _derelict_hull: ObjId,
+    derelict_hull: ObjId,
 ) -> Result<(ContractId, i64), String> {
+    if ctx
+        .w
+        .module_state::<super::tick::SpaceBubbleBook>()
+        .is_some_and(|b| b.paid_salvage_bounties.contains(&derelict_hull))
+    {
+        return Err(format!(
+            "salvage recovery bounty already settled for derelict #{}",
+            derelict_hull.0
+        ));
+    }
     let bounty_minor = minor_of(
         u64::try_from(SALVAGE_RECOVERY_BOUNTY_MAJOR).unwrap_or(1_200),
         credit_scale(ctx.w),
@@ -1950,12 +1958,16 @@ pub fn settle_salvage_recovery_payout_from_registry(
     }
     ctx.actor = saved_actor;
     ctx.out.pin_deferred();
+    if let Some(book) = ctx.w.module_state_mut::<super::tick::SpaceBubbleBook>() {
+        book.paid_salvage_bounties.insert(derelict_hull);
+    }
     Ok((contract_id, bounty_minor))
 }
 
 /// Spawn real world `Thing` hulls and checked-out [`mush_tactics::TacticalUnit`]s for the
-/// Republic Customs Corvette (`"tacsim.unit.corvette"`) and Belt Raider (from `raiders.json`),
-/// and insert them alongside their 3-party relations into `bubble` (`SF.R12`, `D-35-1`, `D-35-11`).
+/// Republic Customs Corvette (`"tacsim.unit.corvette"`) and Belt Raider (`"tacsim.unit.corvette"`
+/// with `"tacsim.unit.raider_heavy"` overlay), and insert them alongside their 3-party relations
+/// into `bubble` (`SF.R12`, `SF.R20`, `D-35-1`, `D-35-11`).
 pub fn spawn_kirkwood_picket_ships_in_world(
     ctx: &mut Ctx<'_>,
     bubble: &mut LocalSpaceBubble,
@@ -1967,21 +1979,24 @@ pub fn spawn_kirkwood_picket_ships_in_world(
     let corvette_ship_id = format!("customs.{}.{}", domain.0, leg_cursor);
     let raider_ship_id = format!("raider.{}.{}", domain.0, leg_cursor);
 
-    let corvette_hull = ctx
-        .w
-        .create(
-            mush_core::ObjKind::Thing,
-            "Republic Customs Corvette",
-            mush_core::GOD,
-            None,
-        )
-        .ok()?;
+    let corvette_commander = super::tick::reuse_or_create_npc_commander(
+        ctx,
+        "Customs Picket Commander",
+        Some("Republic Customs"),
+    )
+    .unwrap_or(mush_core::GOD);
+    let corvette_hull = super::tick::reuse_or_create_npc_hull(
+        ctx,
+        "Republic Customs Corvette",
+        corvette_commander,
+    )?;
     super::custody::create_stock_space_unit_in_world(
         ctx,
         corvette_hull,
         crate::definitions::content::CORVETTE,
     )
     .ok()?;
+    super::custody::ensure_space_hull_titled(ctx, corvette_hull, corvette_commander);
     let mut corvette = super::custody::check_out_space_unit(
         ctx,
         corvette_hull,
@@ -1991,52 +2006,20 @@ pub fn spawn_kirkwood_picket_ships_in_world(
         "Republic Customs Corvette",
         CUSTOMS_CORVETTE_PARTY,
         [-CORVETTE_STANDOFF_M, 400, 0],
-        [10_000, 0, 0],
+        [13_800, 0, 0],
     )
     .ok()?;
 
-    let raider_defs = crate::field::raiders::raiders().ok()?;
-    let raider_def = raider_defs.first()?;
-    let leader = crate::field::raiders::hulls_of(ctx.w, raider_def.id.as_str())
-        .into_iter()
-        .find_map(|h| crate::field::raiders::leader_of(ctx.w, h))
-        .or_else(|| {
-            let l = ctx
-                .w
-                .create(
-                    mush_core::ObjKind::Npc,
-                    &raider_def.leader,
-                    mush_core::GOD,
-                    None,
-                )
-                .ok()?;
-            if ctx.w.module_state::<mush_faction::FactionState>().is_some() {
-                let _ = mush_faction::register_content_faction(ctx, &raider_def.organization, l);
-            }
-            Some(l)
-        })?;
-
-    let raider_hull = ctx
-        .w
-        .create(mush_core::ObjKind::Thing, "Belt Raider", leader, None)
-        .ok()?;
+    let leader =
+        super::tick::reuse_or_create_npc_commander(ctx, "Kaelen Vane", Some("Kirkwood Corsairs"))?;
+    let raider_hull = super::tick::reuse_or_create_npc_hull(ctx, "Belt Raider", leader)?;
     super::custody::create_stock_space_unit_in_world(
         ctx,
         raider_hull,
-        raider_def.carrier.unit.as_str(),
+        crate::definitions::content::CORVETTE,
     )
     .ok()?;
-    let _ = ctx.w.set_attr(
-        raider_hull,
-        crate::field::raiders::RAIDER_ATTR,
-        mush_core::Attr::json(
-            serde_json::json!({
-                "raider": raider_def.id.as_str(),
-                "leader": leader.0,
-            }),
-            mush_core::GOD,
-        ),
-    );
+    super::custody::ensure_space_hull_titled(ctx, raider_hull, leader);
     let mut raider = super::custody::check_out_space_unit(
         ctx,
         raider_hull,
@@ -2118,7 +2101,7 @@ pub fn build_kirkwood_picket_ships(
         "Republic Customs Corvette",
         CUSTOMS_CORVETTE_PARTY,
         [-CORVETTE_STANDOFF_M, 400, 0],
-        [10_000, 0, 0],
+        [13_800, 0, 0],
     );
     let mut raider = SpaceShipState::new_corvette(
         &raider_ship_id,

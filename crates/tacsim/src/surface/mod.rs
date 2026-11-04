@@ -173,6 +173,7 @@ pub mod salvage;
 pub mod site_record;
 pub mod survey;
 pub mod survey_facts;
+pub mod tender;
 pub mod tenure;
 pub mod tick;
 pub mod tow;

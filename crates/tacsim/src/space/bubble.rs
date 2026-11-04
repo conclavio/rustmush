@@ -125,6 +125,17 @@ impl ShipSectionId {
             Self::Drive => "drive",
         }
     }
+
+    /// Map a space hull section onto the shared [`crate::carrier_damage::CarrierPart`]
+    /// table (`Q-36-47`, `SF.R20`).
+    #[must_use]
+    pub const fn carrier_part(self) -> Option<crate::carrier_damage::CarrierPart> {
+        match self {
+            Self::Hull => Some(crate::carrier_damage::CarrierPart::Hull),
+            Self::Drive => Some(crate::carrier_damage::CarrierPart::Drive),
+            Self::Hold => None,
+        }
+    }
 }
 
 /// Subsystem critical hits (`D-35-1`, §6.3).
@@ -174,6 +185,32 @@ pub struct ShipSectionState {
     /// Authored consequences applied when this section reaches `0` internals (`D-35-1`, `SF.R15`).
     #[serde(default, skip_serializing_if = "Vec::is_empty")]
     pub consequences: Vec<SpaceSectionConsequence>,
+}
+
+impl ShipSectionState {
+    /// Map this section's authored consequences (or section id when none are authored)
+    /// onto [`crate::carrier_damage::CarrierPart`] (`Q-36-47`, `SF.R20`).
+    #[must_use]
+    pub fn carrier_part(&self) -> Option<crate::carrier_damage::CarrierPart> {
+        if self.consequences.is_empty() {
+            return self.id.carrier_part();
+        }
+        if self
+            .consequences
+            .iter()
+            .any(|c| matches!(c, SpaceSectionConsequence::DestroyUnit))
+        {
+            Some(crate::carrier_damage::CarrierPart::Hull)
+        } else if self
+            .consequences
+            .iter()
+            .any(|c| matches!(c, SpaceSectionConsequence::DisableMotion))
+        {
+            Some(crate::carrier_damage::CarrierPart::Drive)
+        } else {
+            None
+        }
+    }
 }
 
 fn default_dray_facet_weights() -> BTreeMap<FacetBand, Vec<(ShipSectionId, u32)>> {
@@ -272,8 +309,32 @@ fn is_default_exhaust_kms(v: &u32) -> bool {
     *v == 6_000
 }
 
+fn default_slow_pct() -> u8 {
+    100
+}
+
+fn is_default_slow_pct(v: &u8) -> bool {
+    *v == 100
+}
+
+fn default_pixel_model() -> String {
+    "freighter".to_owned()
+}
+
+fn is_default_pixel_model(v: &String) -> bool {
+    v == "freighter"
+}
+
 fn is_zero_vec3(v: &[i64; 3]) -> bool {
     *v == [0, 0, 0]
+}
+
+fn is_zero_attitude(v: &(i32, i32, i32)) -> bool {
+    *v == (0, 0, 0)
+}
+
+fn is_zero_u16(v: &u16) -> bool {
+    *v == 0
 }
 
 fn is_zero_u32(v: &u32) -> bool {
@@ -294,6 +355,12 @@ pub struct SpaceShipState {
     pub id: String,
     pub callsign: String,
     pub hull_class: String,
+    /// Canonical `mush-pixel` 3D sprite archetype from the hull's [`crate::space::custody::SpaceUnitOverlay`] (`SF.R13`, `SF.R20`, `D-35-15`).
+    #[serde(
+        default = "default_pixel_model",
+        skip_serializing_if = "is_default_pixel_model"
+    )]
+    pub pixel_model: String,
     /// The ship's party, lettered by the arena; its wire stays the space
     /// track's admission number (Q-40-22: no persisted document moves).
     #[serde(with = "party_wire")]
@@ -306,9 +373,16 @@ pub struct SpaceShipState {
     /// 3D local velocity in $\text{mm/s}$ (`[vx, vy, vz]`).
     pub vel_mmps: [i64; 3],
     /// Commanded 3D thrust acceleration in $\text{m/s}^2$ (`[ax, ay, az]`).
+    #[serde(default, skip_serializing_if = "is_zero_vec3")]
     pub thrust_mps2: [i64; 3],
+    /// Commanded 3D thrust acceleration in $\text{mm/s}^2$ (`[ax, ay, az]`, `SF.R20`).
+    #[serde(default, skip_serializing_if = "is_zero_vec3")]
+    pub thrust_mmps2: [i64; 3],
     /// Maximum maneuvering / combat thrust acceleration in $\text{m/s}^2$.
     pub max_accel_mps2: i64,
+    /// Mass-adjusted maximum flip-drive acceleration in $\text{mm/s}^2$ (`SF.R20`).
+    #[serde(default, skip_serializing_if = "is_zero_i64")]
+    pub max_accel_mmps2: i64,
     /// Dry hull mass in tonnes from `UnitSpec::logistics` (`D-35-1`, `240 t` for Dray/Dray-P, `4,000 t` for Halcyon).
     #[serde(
         default = "default_dry_mass_t",
@@ -327,6 +401,18 @@ pub struct SpaceShipState {
         skip_serializing_if = "is_default_propellant_cap_kg"
     )]
     pub propellant_cap_kg: u32,
+    /// Unimpaired rated flip-drive continuous acceleration in milli-g from `UnitSpec::logistics.drive.law` (`D-35-1`, `SF.R20`).
+    #[serde(
+        default = "default_rated_accel_mg",
+        skip_serializing_if = "is_default_rated_accel_mg"
+    )]
+    pub base_rated_accel_mg: u32,
+    /// Current `Slow` consequence cap in percent (`1..=100`, `100` when unimpaired, `SF.R20`).
+    #[serde(
+        default = "default_slow_pct",
+        skip_serializing_if = "is_default_slow_pct"
+    )]
+    pub slow_pct: u8,
     /// Rated flip-drive continuous acceleration in milli-g from `UnitSpec::logistics.drive.law` (`50 mg` $\approx 0.49\text{ m/s}^2$, `D-35-1`).
     #[serde(
         default = "default_rated_accel_mg",
@@ -340,6 +426,7 @@ pub struct SpaceShipState {
     )]
     pub exhaust_kms: u32,
     /// Hull attitude `(yaw_deg, pitch_deg, roll_deg)` in whole degrees.
+    #[serde(default, skip_serializing_if = "is_zero_attitude")]
     pub attitude_deg: (i32, i32, i32),
     /// Remaining reaction mass in `kg` (`D-35-6`).
     pub propellant_kg: u32,
@@ -348,12 +435,14 @@ pub struct SpaceShipState {
     /// Minimum $\Delta v$ needed to return to the nearest open port (`RETURN_RESERVE`, `D-35-6`).
     pub return_reserve_dv_mps: i64,
     /// Hull heat cell in permille (`0..=1000`, `D-35-1`).
+    #[serde(default, skip_serializing_if = "is_zero_u16")]
     pub heat_permille: u16,
     /// Base radiator cooling rate in permille per wall second.
     pub cooling_rate_permille_s: u16,
     /// Whether automatic point-defense interception (`+tac/pdc auto`) is enabled (`Q-35-4`).
     pub pdc_auto: bool,
     /// Whether all crew are currently linkdead (`D-35-7` ballistic safety rule).
+    #[serde(default, skip_serializing_if = "std::ops::Not::not")]
     pub crew_linkdead: bool,
     pub emcon: EmconPosture,
     #[serde(default, skip_serializing_if = "Option::is_none")]
@@ -455,20 +544,25 @@ impl SpaceShipState {
             id: id.into(),
             callsign: callsign.into(),
             hull_class: "tacsim.unit.dray".to_owned(),
+            pixel_model: "freighter".to_owned(),
             party,
             pos_m,
             pos_rem_um: [0, 0, 0],
             vel_mmps,
             thrust_mps2: [0, 0, 0],
+            thrust_mmps2: [0, 0, 0],
             max_accel_mps2: 1,
+            max_accel_mmps2: 645,
             dry_mass_t: 240,
             payload_ceiling_kg: 181_000,
             propellant_cap_kg: 80_000,
+            base_rated_accel_mg: 50,
+            slow_pct: 100,
             rated_accel_mg: 50,
             exhaust_kms: 6_000,
             attitude_deg: (0, 0, 0),
             propellant_kg: 80_000,
-            delta_v_mps: 4_500,
+            delta_v_mps: 0,
             return_reserve_dv_mps: 900,
             heat_permille: 0,
             cooling_rate_permille_s: 30,
@@ -497,6 +591,11 @@ impl SpaceShipState {
             non_prop_payload_kg: 0,
             dv_rem_mmps: 0,
         };
+        if let Some(spec) = super::custody::unit_spec_for_id("tacsim.unit.dray") {
+            super::custody::apply_unit_spec_to_space_ship(&mut ship, spec);
+        } else {
+            ship.recompute_drive_kinematics();
+        }
         super::custody::apply_space_unit_overlay(
             &mut ship,
             &super::custody::space_unit_overlay_for_id("tacsim.unit.dray"),
@@ -509,6 +608,69 @@ impl SpaceShipState {
     #[must_use]
     pub fn rated_accel_mps2(&self) -> f64 {
         f64::from(self.rated_accel_mg) / 1_000.0 * crate::port::passage::G0_MPS2
+    }
+
+    fn hull_drive(&self) -> Option<crate::port::passage::HullDrive> {
+        Some(crate::port::passage::HullDrive {
+            class: mush_core::CanonicalId::new("space").ok()?,
+            law: crate::definitions::logistics::DriveLaw::Flip {
+                accel_mg: self.rated_accel_mg,
+                exhaust_kms: self.exhaust_kms.max(1),
+            },
+            payload_ceiling_kg: self
+                .payload_ceiling_kg
+                .max(u64::from(self.propellant_cap_kg)),
+            throttle_permille: crate::port::passage::MAX_THROTTLE_PERMILLE,
+        })
+    }
+
+    /// Recompute [`Self::rated_accel_mg`], [`Self::max_accel_mmps2`], and [`Self::max_accel_mps2`]
+    /// from [`Self::base_rated_accel_mg`], [`Self::slow_pct`], and the hull's current mass (`SF.R20`).
+    pub fn recompute_drive_accel(&mut self) {
+        let pct = u32::from(self.slow_pct.clamp(1, 100));
+        self.rated_accel_mg = (self.base_rated_accel_mg.saturating_mul(pct) / 100).max(1);
+        let dry_kg = u64::from(self.dry_mass_t).saturating_mul(1_000);
+        let payload_kg = self
+            .non_prop_payload_kg
+            .saturating_add(u64::from(self.propellant_kg));
+        let accel_mps2 = self
+            .hull_drive()
+            .and_then(|hd| crate::port::passage::flip_accel_mps2(&hd, dry_kg, payload_kg))
+            .unwrap_or_else(|| self.rated_accel_mps2());
+        self.max_accel_mmps2 = ((accel_mps2 * 1_000.0).round() as i64).max(1);
+        self.max_accel_mps2 = (accel_mps2.ceil() as i64).max(1);
+    }
+
+    /// Recompute both mass-adjusted drive acceleration ([`Self::recompute_drive_accel`]) and
+    /// rocket-equation [`Self::delta_v_mps`] from the hull's `UnitSpec` drive law (`SF.R20`).
+    pub fn recompute_drive_kinematics(&mut self) {
+        self.recompute_drive_accel();
+        let dry_kg = u64::from(self.dry_mass_t).saturating_mul(1_000);
+        let payload_kg = self
+            .non_prop_payload_kg
+            .saturating_add(u64::from(self.propellant_kg));
+        if let Some(hull_drive) = self.hull_drive()
+            && let Ok(dv) = crate::port::passage::remaining_dv_mps_for_propellant(
+                &hull_drive,
+                dry_kg,
+                payload_kg,
+                u64::from(self.propellant_kg),
+            )
+        {
+            self.delta_v_mps = i64::from(dv);
+        }
+    }
+
+    /// Evaluate the shared [`crate::carrier_damage::CarrierDamage`] table for this ship's
+    /// zero-internals sections (`Q-36-47`, `SF.R20`).
+    #[must_use]
+    pub fn carrier_damage(&self) -> crate::carrier_damage::CarrierDamage {
+        crate::carrier_damage::CarrierDamage::of_parts(
+            self.sections
+                .values()
+                .filter(|sec| sec.internals == 0)
+                .filter_map(ShipSectionState::carrier_part),
+        )
     }
 
     /// Construct an armed corvette / raider hull with torpedo tubes, spinal railgun,
@@ -525,9 +687,12 @@ impl SpaceShipState {
         ship.hull_class = "tacsim.unit.corvette".to_owned();
         if let Some(spec) = super::custody::unit_spec_for_id("tacsim.unit.corvette") {
             super::custody::apply_unit_spec_to_space_ship(&mut ship, spec);
+        } else {
+            ship.base_rated_accel_mg = 500;
+            ship.rated_accel_mg = 500;
+            ship.exhaust_kms = 12_000;
+            ship.recompute_drive_kinematics();
         }
-        ship.max_accel_mps2 = 60;
-        ship.delta_v_mps = 9_500;
         super::custody::apply_space_unit_overlay(
             &mut ship,
             &super::custody::space_unit_overlay_for_id("tacsim.unit.corvette"),
@@ -564,46 +729,17 @@ impl SpaceShipState {
     pub fn is_burning(&self) -> bool {
         self.status == HullStatus::Operational
             && !self.crew_linkdead
-            && (self.thrust_mps2[0] != 0 || self.thrust_mps2[1] != 0 || self.thrust_mps2[2] != 0)
+            && (self.thrust_mps2 != [0, 0, 0] || self.thrust_mmps2 != [0, 0, 0])
     }
 
     /// Canonical `mush-pixel` 3D sprite archetype (`"freighter"`, `"corvette"`, `"raider"`,
-    /// `"halcyon"`, `"drone"`, or `"derelict"`, `SF.R13`, `D-35-15`).
+    /// `"halcyon"`, `"drone"`, or `"derelict"`, `SF.R13`, `SF.R20`, `D-35-15`).
     #[must_use]
-    pub fn pixel_model(&self) -> &'static str {
+    pub fn pixel_model(&self) -> &str {
         if matches!(self.status, HullStatus::DisabledDerelict { .. }) {
-            return "derelict";
-        }
-        let hc = self.hull_class.to_ascii_lowercase();
-        let id = self.id.to_ascii_lowercase();
-        let cs = self.callsign.to_ascii_lowercase();
-        if hc.contains("halcyon") || id.contains("halcyon") || cs.contains("halcyon") {
-            "halcyon"
-        } else if hc.contains("raider")
-            || id.contains("raider")
-            || cs.contains("raider")
-            || cs.contains("pirate")
-            || cs.contains("corsair")
-        {
-            "raider"
-        } else if hc.contains("corvette")
-            || id.contains("corvette")
-            || cs.contains("corvette")
-            || cs.contains("customs")
-            || cs.contains("picket")
-        {
-            "corvette"
-        } else if hc.contains("drone") || id.contains("drone") || cs.contains("drone") {
-            "drone"
-        } else if hc.contains("dray")
-            || hc.contains("freighter")
-            || id.contains("dray")
-            || cs.contains("dray")
-            || cs.contains("hauler")
-        {
-            "freighter"
+            "derelict"
         } else {
-            "corvette"
+            self.pixel_model.as_str()
         }
     }
 
@@ -820,34 +956,28 @@ impl SpaceShipState {
         }
 
         // Apply authored section consequences (`slow_75`, `disable_motion`, `destroy_unit`)
-        // and open-epoch derelict disablement (`D-35-1`, `D-35-12`, `FO-12`, `SF.R15`).
-        let mut disable_ship = false;
-        let mut slow_percent: Option<u32> = None;
+        // and open-epoch derelict disablement via the shared `carrier_damage` table (`D-35-1`,
+        // `D-35-12`, `FO-12`, `Q-36-47`, `SF.R20`).
+        let disable_ship = self
+            .carrier_damage()
+            .has(crate::carrier_damage::CarrierLoss::RefusesLift);
+        let mut next_slow_pct = self.slow_pct;
+        let mut any_slow = false;
         for sec in self.sections.values() {
             if sec.internals == 0 {
-                if sec.consequences.is_empty() {
-                    if matches!(sec.id, ShipSectionId::Hull | ShipSectionId::Drive) {
-                        disable_ship = true;
-                    }
-                } else {
-                    for cons in &sec.consequences {
-                        match *cons {
-                            SpaceSectionConsequence::DestroyUnit
-                            | SpaceSectionConsequence::DisableMotion => {
-                                disable_ship = true;
-                            }
-                            SpaceSectionConsequence::Slow { percent } => {
-                                slow_percent =
-                                    Some(slow_percent.map_or(percent, |cur| cur.min(percent)));
-                            }
-                        }
+                for cons in &sec.consequences {
+                    if let SpaceSectionConsequence::Slow { percent } = *cons {
+                        let clamped = u8::try_from(percent.clamp(1, 100)).unwrap_or(100);
+                        next_slow_pct =
+                            crate::arena::damage::apply_slow_consequence(next_slow_pct, clamped);
+                        any_slow = true;
                     }
                 }
             }
         }
-        if let Some(pct) = slow_percent {
-            self.rated_accel_mg = (self.rated_accel_mg.saturating_mul(pct) / 100).max(1);
-            self.max_accel_mps2 = ((self.max_accel_mps2 * i64::from(pct)) / 100).max(1);
+        if any_slow {
+            self.slow_pct = next_slow_pct;
+            self.recompute_drive_accel();
             if !self.crits.contains(&SubsystemCrit::DriveDegraded) {
                 self.crits.push(SubsystemCrit::DriveDegraded);
             }
@@ -859,6 +989,7 @@ impl SpaceShipState {
                 salvage_contest_window_s: DERELICT_WINDOW_S,
             };
             self.thrust_mps2 = [0, 0, 0];
+            self.thrust_mmps2 = [0, 0, 0];
         }
 
         (target_section, armor_absorbed, internal_dmg)
@@ -1202,6 +1333,7 @@ pub struct LocalSpaceBubble {
     /// Stamped IC epoch seconds (`Q-CF-32`).
     pub ic_timestamp_s: i64,
     /// Whether the bubble is frozen due to a W-clock outage (`Q-CF-33`).
+    #[serde(default, skip_serializing_if = "std::ops::Not::not")]
     pub outage_frozen: bool,
     pub ships: BTreeMap<String, SpaceShipState>,
     /// Canonical kernel party relation books (`D-35-1`, `D-35-11`, `Q-CF-5`–`Q-CF-8`).
@@ -1213,7 +1345,9 @@ pub struct LocalSpaceBubble {
     /// the document while empty, so only a screening picket's bubble carries it.
     #[serde(default, skip_serializing_if = "BTreeSet::is_empty")]
     pub inspecting: BTreeSet<PartyId>,
+    #[serde(default, skip_serializing_if = "Vec::is_empty")]
     pub torpedoes: Vec<InFlightTorpedo>,
+    #[serde(default, skip_serializing_if = "Vec::is_empty")]
     pub railgun_slugs: Vec<InFlightSlug>,
     /// Celestial bodies visible in the bridge canopy (`SF.R13`, `SF.R16`, `D-35-15`).
     #[serde(default)]
@@ -1404,6 +1538,7 @@ impl LocalSpaceBubble {
         };
         if ship.status != HullStatus::Operational || ship.crew_linkdead {
             ship.thrust_mps2 = [0, 0, 0];
+            ship.thrust_mmps2 = [0, 0, 0];
             return Ok(());
         }
         let clamped = [
@@ -1478,7 +1613,116 @@ impl LocalSpaceBubble {
             ship.vel_mmps[2] = ship.vel_mmps[2].saturating_add(next_thrust[2] * 1_000);
         }
         ship.thrust_mps2 = next_thrust;
+        ship.thrust_mmps2 = [
+            next_thrust[0].saturating_mul(1_000),
+            next_thrust[1].saturating_mul(1_000),
+            next_thrust[2].saturating_mul(1_000),
+        ];
         Ok(())
+    }
+
+    /// Command a 3D burn vector `[ax, ay, az]` in $\text{mm/s}^2$ on `ship_id` (`D-35-6`, `SF.R20`).
+    ///
+    /// Caps acceleration magnitude by `ship.max_accel_mmps2` (halved when `DriveDegraded`)
+    /// so sub-$1\text{ m/s}^2$ haulers accelerate at their true mass-adjusted flip-drive rate.
+    pub fn command_burn_mmps2(
+        &mut self,
+        ship_id: &str,
+        thrust_mmps2: [i64; 3],
+        force_into_reserve: bool,
+    ) -> Result<[i64; 3], SpaceCombatEvent> {
+        let Some(ship) = self.ships.get_mut(ship_id) else {
+            return Ok([0, 0, 0]);
+        };
+        if ship.status != HullStatus::Operational || ship.crew_linkdead {
+            ship.thrust_mps2 = [0, 0, 0];
+            ship.thrust_mmps2 = [0, 0, 0];
+            return Ok([0, 0, 0]);
+        }
+        let clamped = [
+            thrust_mmps2[0].clamp(-1_000_000_000, 1_000_000_000),
+            thrust_mmps2[1].clamp(-1_000_000_000, 1_000_000_000),
+            thrust_mmps2[2].clamp(-1_000_000_000, 1_000_000_000),
+        ];
+        let requested_mag_mmps2 = isqrt_i128(
+            (clamped[0] as i128).pow(2) + (clamped[1] as i128).pow(2) + (clamped[2] as i128).pow(2),
+        ) as i64;
+        if requested_mag_mmps2 > 0
+            && !force_into_reserve
+            && ship.delta_v_mps <= ship.return_reserve_dv_mps
+        {
+            return Err(SpaceCombatEvent::TankReserveWarning {
+                ship_id: ship.id.clone(),
+                remaining_dv_mps: ship.delta_v_mps,
+                return_reserve_dv_mps: ship.return_reserve_dv_mps,
+            });
+        }
+        let base_max_mmps2 = if ship.max_accel_mmps2 > 0 {
+            ship.max_accel_mmps2
+        } else {
+            (ship.max_accel_mps2.saturating_mul(1_000)).max(1)
+        };
+        let max_a_mmps2 = if ship.crits.contains(&SubsystemCrit::DriveDegraded) {
+            (base_max_mmps2 / 2).max(1)
+        } else {
+            base_max_mmps2
+        };
+        let next_thrust_mmps2 = if requested_mag_mmps2 > max_a_mmps2 && requested_mag_mmps2 > 0 {
+            let max_i128 = i128::from(max_a_mmps2);
+            let mag_i128 = i128::from(requested_mag_mmps2);
+            [
+                ((i128::from(clamped[0]) * max_i128) / mag_i128) as i64,
+                ((i128::from(clamped[1]) * max_i128) / mag_i128) as i64,
+                ((i128::from(clamped[2]) * max_i128) / mag_i128) as i64,
+            ]
+        } else {
+            clamped
+        };
+        let actual_mag_mmps2 = isqrt_i128(
+            (next_thrust_mmps2[0] as i128).pow(2)
+                + (next_thrust_mmps2[1] as i128).pow(2)
+                + (next_thrust_mmps2[2] as i128).pow(2),
+        ) as i64;
+        let actual_dv_mps = ((actual_mag_mmps2 + 999) / 1_000).max(i64::from(actual_mag_mmps2 > 0));
+        if actual_mag_mmps2 > 0
+            && !force_into_reserve
+            && ship.delta_v_mps.saturating_sub(actual_dv_mps) <= ship.return_reserve_dv_mps
+        {
+            return Err(SpaceCombatEvent::TankReserveWarning {
+                ship_id: ship.id.clone(),
+                remaining_dv_mps: ship.delta_v_mps,
+                return_reserve_dv_mps: ship.return_reserve_dv_mps,
+            });
+        }
+        if actual_mag_mmps2 > 0 && ship.thrust_mmps2 != next_thrust_mmps2 {
+            let law = crate::definitions::logistics::DriveLaw::Flip {
+                accel_mg: ship.rated_accel_mg,
+                exhaust_kms: ship.exhaust_kms.max(1),
+            };
+            let dry_kg = u64::from(ship.dry_mass_t).saturating_mul(1_000);
+            let payload_kg = ship
+                .non_prop_payload_kg
+                .saturating_add(u64::from(ship.propellant_kg));
+            let dv_u32 = u32::try_from(actual_dv_mps).unwrap_or(1).max(1);
+            let burn_kg =
+                crate::port::passage::burn_kg_for_law_dv(&law, dry_kg, payload_kg, dv_u32)
+                    .unwrap_or(1)
+                    .max(1);
+            ship.propellant_kg = ship
+                .propellant_kg
+                .saturating_sub(u32::try_from(burn_kg).unwrap_or(u32::MAX));
+            ship.delta_v_mps = (ship.delta_v_mps - actual_dv_mps).max(0);
+            ship.vel_mmps[0] = ship.vel_mmps[0].saturating_add(next_thrust_mmps2[0]);
+            ship.vel_mmps[1] = ship.vel_mmps[1].saturating_add(next_thrust_mmps2[1]);
+            ship.vel_mmps[2] = ship.vel_mmps[2].saturating_add(next_thrust_mmps2[2]);
+        }
+        ship.thrust_mmps2 = next_thrust_mmps2;
+        ship.thrust_mps2 = [
+            next_thrust_mmps2[0] / 1_000,
+            next_thrust_mmps2[1] / 1_000,
+            next_thrust_mmps2[2] / 1_000,
+        ];
+        Ok(next_thrust_mmps2)
     }
 
     /// Launch a torpedo salvo from `shooter_id` at `target_id` (`D-35-8`).
@@ -1822,21 +2066,31 @@ impl LocalSpaceBubble {
         for ship in self.ships.values_mut() {
             if ship.crew_linkdead || ship.status != HullStatus::Operational {
                 ship.thrust_mps2 = [0, 0, 0];
+                ship.thrust_mmps2 = [0, 0, 0];
             }
 
-            let ax = ship.thrust_mps2[0];
-            let ay = ship.thrust_mps2[1];
-            let az = ship.thrust_mps2[2];
-            let accel_mag =
+            let eff_thrust_mmps2 = if ship.thrust_mmps2 != [0, 0, 0] {
+                ship.thrust_mmps2
+            } else {
+                [
+                    ship.thrust_mps2[0].saturating_mul(1_000),
+                    ship.thrust_mps2[1].saturating_mul(1_000),
+                    ship.thrust_mps2[2].saturating_mul(1_000),
+                ]
+            };
+            let ax = eff_thrust_mmps2[0];
+            let ay = eff_thrust_mmps2[1];
+            let az = eff_thrust_mmps2[2];
+            let accel_mag_mmps2 =
                 isqrt_i128((ax as i128).pow(2) + (ay as i128).pow(2) + (az as i128).pow(2)) as i64;
 
-            if accel_mag > 0 && ship.propellant_kg > 0 && ship.delta_v_mps > 0 {
-                // dv_mmps = a_mps2 * step_ms
-                ship.vel_mmps[0] = ship.vel_mmps[0].saturating_add(ax * step_i64);
-                ship.vel_mmps[1] = ship.vel_mmps[1].saturating_add(ay * step_i64);
-                ship.vel_mmps[2] = ship.vel_mmps[2].saturating_add(az * step_i64);
+            if accel_mag_mmps2 > 0 && ship.propellant_kg > 0 && ship.delta_v_mps > 0 {
+                // dv_mmps = (a_mmps2 * step_ms) / 1000
+                ship.vel_mmps[0] = ship.vel_mmps[0].saturating_add((ax * step_i64) / 1_000);
+                ship.vel_mmps[1] = ship.vel_mmps[1].saturating_add((ay * step_i64) / 1_000);
+                ship.vel_mmps[2] = ship.vel_mmps[2].saturating_add((az * step_i64) / 1_000);
 
-                let dv_mmps = accel_mag.saturating_mul(step_i64);
+                let dv_mmps = (accel_mag_mmps2.saturating_mul(step_i64)) / 1_000;
                 let total_dv_mmps = ship.dv_rem_mmps.saturating_add(dv_mmps);
                 let dv_spent_mps = (total_dv_mmps / 1_000).max(0);
                 ship.dv_rem_mmps = total_dv_mmps % 1_000;
@@ -1861,6 +2115,7 @@ impl LocalSpaceBubble {
                 }
                 if ship.propellant_kg == 0 || ship.delta_v_mps == 0 {
                     ship.thrust_mps2 = [0, 0, 0];
+                    ship.thrust_mmps2 = [0, 0, 0];
                 }
             }
 
@@ -2146,18 +2401,26 @@ impl LocalSpaceBubble {
             if slug.remaining_flight_ms == 0 {
                 if let Some(target_mut) = self.ships.get_mut(&slug.target_id) {
                     let overstep_ms = i128::from(step_ms.saturating_sub(dt));
-                    let target_impact_x = i128::from(target_mut.pos_m[0])
-                        - (i128::from(target_mut.vel_mmps[0]) * overstep_ms) / 1_000_000;
-                    let target_impact_y = i128::from(target_mut.pos_m[1])
-                        - (i128::from(target_mut.vel_mmps[1]) * overstep_ms) / 1_000_000;
-                    let target_impact_z = i128::from(target_mut.pos_m[2])
-                        - (i128::from(target_mut.vel_mmps[2]) * overstep_ms) / 1_000_000;
-                    let jx = target_impact_x - i128::from(slug.aimed_lead_pos_m[0]);
-                    let jy = target_impact_y - i128::from(slug.aimed_lead_pos_m[1]);
-                    let jz = target_impact_z - i128::from(slug.aimed_lead_pos_m[2]);
-                    let displacement_m = isqrt_i128(jx * jx + jy * jy + jz * jz) as i64;
+                    let target_impact_x_um = i128::from(target_mut.pos_m[0]) * 1_000_000
+                        + i128::from(target_mut.pos_rem_um[0])
+                        - i128::from(target_mut.vel_mmps[0]) * overstep_ms;
+                    let target_impact_y_um = i128::from(target_mut.pos_m[1]) * 1_000_000
+                        + i128::from(target_mut.pos_rem_um[1])
+                        - i128::from(target_mut.vel_mmps[1]) * overstep_ms;
+                    let target_impact_z_um = i128::from(target_mut.pos_m[2]) * 1_000_000
+                        + i128::from(target_mut.pos_rem_um[2])
+                        - i128::from(target_mut.vel_mmps[2]) * overstep_ms;
+                    let jx_um =
+                        target_impact_x_um - i128::from(slug.aimed_lead_pos_m[0]) * 1_000_000;
+                    let jy_um =
+                        target_impact_y_um - i128::from(slug.aimed_lead_pos_m[1]) * 1_000_000;
+                    let jz_um =
+                        target_impact_z_um - i128::from(slug.aimed_lead_pos_m[2]) * 1_000_000;
+                    let displacement_um =
+                        isqrt_i128(jx_um * jx_um + jy_um * jy_um + jz_um * jz_um) as i64;
+                    let displacement_m = (displacement_um + 999_999) / 1_000_000;
 
-                    if displacement_m > slug.hit_radius_m {
+                    if displacement_um > slug.hit_radius_m.saturating_mul(1_000_000) {
                         events.push(SpaceCombatEvent::RailgunDodgedByJink {
                             slug_id: slug.id,
                             shooter_id: slug.shooter_id,
@@ -2472,6 +2735,14 @@ impl LocalSpaceBubble {
                 Ok(()) => Vec::new(),
                 Err(ev) => vec![ev],
             },
+            BubbleInputCommand::CommandBurnMmps2 {
+                ship_id,
+                thrust_mmps2,
+                force_into_reserve,
+            } => match self.command_burn_mmps2(ship_id, *thrust_mmps2, *force_into_reserve) {
+                Ok(_) => Vec::new(),
+                Err(ev) => vec![ev],
+            },
             BubbleInputCommand::SetAttitude {
                 ship_id,
                 attitude_deg,
@@ -2546,6 +2817,11 @@ pub enum BubbleInputCommand {
     CommandBurn {
         ship_id: String,
         thrust_mps2: [i64; 3],
+        force_into_reserve: bool,
+    },
+    CommandBurnMmps2 {
+        ship_id: String,
+        thrust_mmps2: [i64; 3],
         force_into_reserve: bool,
     },
     SetAttitude {

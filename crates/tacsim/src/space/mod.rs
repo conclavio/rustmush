@@ -53,11 +53,12 @@ pub use docking::{
 };
 pub use mining::{
     ActiveClusterMiningSession, ClusterRockSpec, ClusterSiteState, ClusterTenureOrder, ClusterZone,
-    DRAY_P_HOLD_CAPACITY_KG, DRAY_P_HOLD_CAPACITY_T, DRONE_SORTIE_IC_SECS, DRONE_SORTIE_YIELD_T,
-    DroneSortieState, FRONTIER_LASER_BLOOM_HEAT, LASER_CYCLE_IC_SECS, LASER_CYCLE_YIELD_T,
-    LaserExtractionCycle, MAX_MINING_MATCH_RANGE_M, MAX_VELOCITY_MATCH_SPEED_MMPS,
-    OrbitalClusterId, PendingSpaceMineDraw, SpectralClass, build_updated_pocket_cursor,
-    check_velocity_match_gate, ore_specific_volume_l_per_t,
+    DRONE_SORTIE_IC_SECS, DRONE_SORTIE_YIELD_T, DroneSortieState, FRONTIER_LASER_BLOOM_HEAT,
+    LASER_CYCLE_IC_SECS, LASER_CYCLE_YIELD_T, LaserExtractionCycle, MAX_MINING_MATCH_RANGE_M,
+    MAX_VELOCITY_MATCH_SPEED_MMPS, OrbitalClusterId, PendingSpaceMineDraw, SpectralClass,
+    build_updated_pocket_cursor, check_velocity_match_gate, hull_hold_capacity_kg,
+    hull_hold_capacity_tonnes, ore_specific_volume_l_per_t, unit_hold_capacity_kg,
+    unit_hold_capacity_tonnes,
 };
 #[cfg(test)]
 pub use picket::build_kirkwood_picket_ships;
