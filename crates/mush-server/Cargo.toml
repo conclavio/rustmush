@@ -115,6 +115,8 @@ mush-testkit = { workspace = true, features = ["toy-ruleset"] }
 mush-housing = { workspace = true, features = ["debug-checks"] }
 mush-sim = { workspace = true, features = ["debug-checks"] }
 tokio = { workspace = true, features = ["test-util"] }
+# Doc 43 cut TS.4: arbitrary command lines through the production registry.
+proptest = { workspace = true }
 
 [lints]
 workspace = true

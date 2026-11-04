@@ -175,7 +175,52 @@ base `c252ec8d`. Summed, main → PR:
 
 No cell's wall is set by this cut, and no story moves to another shard.
 
+## TS.4 (2026-11-04) — the hostile-input suites
 
+§5.1's parsers, each fed what an attacker or a broken peer can send. **No suite found a panic, an abort or an
+unbounded state**, so nothing landed `#[ignore]`d and no production code changed.
+
+- **The command line** (`mush-server/tests/world_task/hostile_lines.rs`). `boot::build_engine`, with the
+  TacSim layer on, is wrapped in a `TestWorld`. It runs 1,500 seeded lines as a plain player and 1,500 as God.
+  Most lines are built on a registered verb: a name or alias, a prefix character, switches, and edge tokens
+  (dbrefs, numbers past every width, splitters, markup, control and bidi characters, 600-character runs). The
+  rest are arbitrary text. The engine is shared, so earlier lines' objects and input contexts are in play. A
+  reach floor stops a vacuous pass: more than a quarter of each actor's lines must get an answer other than
+  `Huh?`. They measured 688 and 683 of 1,500. `ParsedArgs` gets its own contract property inline in
+  `mush-core/src/cmd.rs`: every shape, with `raw`, `lhs`/`rhs` and `rhs_list` checked against the split rule.
+- **The key parser and the caps replies** (`mush-net-ssh/tests/editor_proptest/key_parser.rs`). The input is
+  arbitrary bytes, plus bursts weighted to `ESC [ O _ P \ BEL`, split anywhere. The properties: no panic; no
+  control character in a `Char`/`Alt`; and the parser's carried state (its `Debug`) stays under 4 KiB after
+  256 KiB of an unterminated CSI, APC or DCS. Capability replies with each final (`c t u ~`) reach
+  `DeviceAttributes::parse`/`CellSize::parse` through the parser, and any text reaches them directly.
+- **Both Rhai engines** (`mush-mind/tests/sandbox/nesting.rs`, `mush-script/tests/script/nesting.rs`). There
+  are fifteen nesting shapes: parens, unary, arrays, maps, blocks, `if`, `while`, calls, interpolation,
+  closures (script only), flat `+`/`&&` chains, index and method chains. Each runs at the guard's edges, far
+  past it, and up to the 32 KiB source cap, at the top level and inside a function. Each runs on an explicit
+  2 MiB thread, the stack the minds pool and the world task get (nothing in the tree sets another), through
+  `Sandbox::compile`/`think` and through the script module's boot compile and dispatch. One deep compiles.
+  Twice the guard is refused with Rhai's "exceeds maximum complexity", the flat chains included. Unbounded
+  recursion faults at the call-level limit.
+- **mush-ipc** (`mush-ipc/tests/roundtrip/hostile_frames.rs`). Every sample frame of both directions is cut at
+  every byte behind a whole frame. The codec reads needs-more-bytes and `FrameReader` reads `UnexpectedEof`;
+  a cut at the boundary is a clean EOF. Six corrupt bodies behind a valid prefix, including length-bomb
+  `array32`/`str32` headers, are `InvalidData` after the leading frame, and the valid frame after them is
+  never reached. An oversized prefix faults without its body. Arbitrary bytes in any chunking, and sample
+  bodies with overwritten bytes, never panic.
+- **`client_command_strategy`** (`mush-proto/tests/decode_proptest.rs`) now generates every `ClientCommand`,
+  `Query` and `InvokeRequest` family. Before, it was missing `Invoke`, `Ack`, `Composing`, `Respond`,
+  `Picture` and `Query::Commands`. `variant_tag` matches all three enums with no wildcard, so a new variant
+  does not compile until it is listed. `strategy_reaches_every_variant` fails until the strategy draws it.
+
+**Departures from §7.** The fuzzer runs one shared engine, not a fresh `TestWorld` per case. A boot costs
+seconds and shared state reaches more handlers. The runner is seeded, so CI is deterministic and a failure
+prints its line. `mush-ipc` and `mush-server` gain `proptest` as a dev-dependency. `mush-proto`'s
+`tests/wire.rs` exhaustive round trip (doc 05 I12 C2) is not touched. The proptest round trip now covers
+every variant.
+
+**Summed minutes.** About +0.3: `hostile_lines` is 12 s, and the rest is under 4 s across five binaries.
+Every module joins a binary that already exists.
+=======
 ## TS.20 (2026-11-04) — pinned reconstructions
 
 §7's four unpinned rebuilds of old content each get a pin. A pin is the shape the old version actually had, read
