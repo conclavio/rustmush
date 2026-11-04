@@ -2154,14 +2154,19 @@ impl ActionProvider for WorksProvider {
                 .transfer(txn, from, to, &row.good, row.units)
                 .map_err(|_| refused("the goods could not be moved"))?;
         }
-        for lot in lots {
-            // A part moves as its lot; a bulk lot is pooled first (`Then::Pooled`: a bundle
-            // mutates a pool's tally once, so it cannot be moved and dissolved in one act).
-            if !crate::port_tick::is_part(lot.commodity()) {
-                return Err(refused("a bulk lot is pooled before it moves"));
-            }
+        // A part moves as its lot; a bulk lot is pooled first (`Then::Pooled`: a bundle
+        // mutates a pool's tally once, so it cannot be moved and dissolved in one act).
+        if lots
+            .iter()
+            .any(|lot| !crate::port_tick::is_part(lot.commodity()))
+        {
+            return Err(refused("a bulk lot is pooled before it moves"));
+        }
+        // Doc 39 cut IN.7: the lots move together (one census and tally write an endpoint).
+        let ids: Vec<LotId> = lots.iter().map(mush_inventory::Lot::id).collect();
+        if !ids.is_empty() {
             self.inventory
-                .relocate(txn, lot.id(), from, to)
+                .relocate_lots(txn, &ids, from, to)
                 .map_err(|_| refused("a lot could not be moved"))?;
         }
         // 4. The ledger.
