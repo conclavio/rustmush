@@ -506,12 +506,9 @@ bulk mint, so a port boots in exactly main's fires.
   watched on `+market/list`, the alloys, `+works/quote|order|deliver|collect`, the passage home and the Co-op's
   bid (gross 3,000.00 cr). Both `#[ignore]`d, run by name on conclav.dev (by-hand tier, doc 43 TS.2):
   `cargo test -j 8 -p mush-bot --test mining_cohort -- --ignored in5_ --nocapture --test-threads 1`.
-  by-hand (conclav.dev, the PR's tree on `3fb3e861`, 2026-11-04): at both sites the mining half passes in about
-  570 s and the bot buys its cargo. The passage to Stickney then stalls: on main every Ceres→Stickney passage is
-  interdicted at Kirkwood (leg 0's hazard 4 meets its interdiction threshold of 3, and the lane carries the
-  `kirkwood_picket`). The SF track's wall-clock customs bubble wants heave-to, `+helm/submit` and then the
-  raider fight (doc 35 SF.R6), none of which the bot types. **The rest of the bot story is owed** until the lead
-  rules how the story meets the picket.
+  The way out is by Luna and Deimos: Ceres→Aitken Highport→Voltaire Anchorage→Stickney (`ceres_aitken`,
+  `aitken_voltaire`, `voltaire_stickney`, about 27 IC days), bunkering at each port. The way home is
+  `stickney_ceres`, whose legs carry no hazard. by-hand: _the revision and walls of the conclav.dev run_.
 
 **Departures from the row.**
 
@@ -533,6 +530,16 @@ bulk mint, so a port boots in exactly main's fires.
   the story's two ground sizes, Ahuna and Urvara. The story's carbon is bought at the Exchange's ask, as the row's
   next clause says. The bot mines metals and volatiles only; a carbon family for the lane is a later bot cut.
 - **The house purchase has no consumer yet**: house orders at the works are IN.10's. It stops at the floor.
+- **The bot sails out by Luna and Deimos, not the corridor.** On main every Ceres→Stickney passage is interdicted
+  at Kirkwood: `ceres_stickney`'s leg 0 has hazard 4 against an interdiction threshold of 3, and the Kirkwood
+  location carries the `kirkwood_picket`. The SF track's wall-clock customs bubble wants heave-to and
+  `+helm/submit`, then the raider fight (doc 35 SF.R6). The owner has said these cuts raise no space exposure,
+  and the lead ruled the story should not fly the picket. Stripping it in the bot rig would need a production
+  hook, because the rig boots the real server with the built-in lane, and an operator seed may not claim the
+  lane's id. So the story takes the lane's own picket-free way out, on production paths with nothing stripped,
+  and the matter pin and the drift check are untouched.
+- **For the SF thread:** the bot has no picket words (brake under 10 m/s, `+helm/submit`, `+tac/pdc auto`, a
+  jink), so any bot haul through Kirkwood stalls in the bubble.
 
 **Other tests moved.**
 
