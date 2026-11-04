@@ -37,6 +37,7 @@ impl Execution {
         profiles: &[SmolStr],
         arena: &ArenaConfig,
         minds: &MindsConfig,
+        composed: Option<&crate::definitions::Catalog>,
     ) -> Result<Self, ParticipantError> {
         arena.validate().map_err(bad)?;
         minds.validate().map_err(bad)?;
@@ -61,7 +62,9 @@ impl Execution {
             .module_state::<crate::store::TacsimStore>()
             .ok_or_else(|| bad("sources"))?;
         let unit = mush_tactics::module::unit_of(world, facts.unit()).ok_or_else(|| bad("unit"))?;
-        let catalog = store.definitions();
+        // Doc 23 cut S.4b-2: the composition's own catalogue (a governed or fitted world's rig
+        // roots ride it; the store's is the fielded set alone), else the store's.
+        let catalog = composed.unwrap_or_else(|| store.definitions());
         // weapon_summaries is intentionally total for OOC callers. IC must not
         // interpret an unknown/mismatched schema as an unarmed authored hull.
         let id = catalog

@@ -1070,7 +1070,7 @@ impl GameModule for TacsimRuleset {
                 conduct.register(reg, &self.cfg, &catalog)?;
             }
             if let Some(ic) = &self.ic_minds {
-                ic.register(reg, &self.cfg, registry.reference())?;
+                ic.register(reg, &self.cfg, registry.reference(), &catalog)?;
                 if let Some(coverage) = &self.coverage {
                     coverage.register(
                         reg,

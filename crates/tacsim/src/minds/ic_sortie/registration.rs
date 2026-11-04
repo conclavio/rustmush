@@ -103,6 +103,7 @@ impl Composition {
             arena: cfg.arena.clone(),
             minds: cfg.minds.clone(),
             definitions: Arc::new(OnceLock::new()),
+            catalog: Arc::new(OnceLock::new()),
         };
         Ok(Registration {
             host: IcHost::new(self.writer.clone(), self.claims.actions()?),
@@ -130,7 +131,10 @@ impl Registration {
         reg: &mut Registrar<'_>,
         cfg: &crate::config::TacsimConfig,
         manifest: &DefinitionRef,
+        catalog: &crate::definitions::Catalog,
     ) -> Result<(), ModError> {
+        // Doc 23 cut S.4b-2: the composition's catalogue for the Open's capture (set once).
+        let _ = self.config.catalog.set(catalog.clone());
         if reg.module() != crate::NS
             || self.config.claims.manifest() != manifest
             || self.config.arena != cfg.arena

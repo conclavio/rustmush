@@ -113,6 +113,9 @@ pub(super) struct Config {
     pub(super) arena: crate::config::ArenaConfig,
     pub(super) minds: crate::config::MindsConfig,
     pub(super) definitions: Arc<OnceLock<DefinitionRegistry>>,
+    /// **The composition's unit catalogue** (doc 23 cut S.4b-2), set at registration from the
+    /// layer's `definition_catalog`: the Open's capture reads a rig root's armament from it.
+    pub(super) catalog: Arc<OnceLock<crate::definitions::Catalog>>,
 }
 impl Config {
     fn check(&self, ctx: &OwnerPrepareContext<'_>, close: bool) -> Result<(), ParticipantError> {
@@ -309,6 +312,7 @@ impl IcSortieParticipant {
                     &profiles,
                     &self.config.arena,
                     &self.config.minds,
+                    self.config.catalog.get(),
                 )?;
                 let row = Record {
                     format: super::records::FORMAT,
