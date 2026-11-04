@@ -844,7 +844,7 @@ the owner's to change; the content of each cut is its rulings'.
 `held` gate and its refusals in the verbs named, `status_line`; the bot's crew vocabulary; the
 help and code text of §5; the contract census notes. Files: `field/crew.rs`, the verb files for
 the gate, `help/field.md`, `mush-bot/src/mine/*.rs`, `legacy-handlers.toml`. Gate: in-source
-decode and gate tests; no story yet.
+decode and gate tests; no story yet. **Built** — see [42-cut-notes.md](42-cut-notes.md) §CR.0.
 
 **CR.1 — Capture at the load.** Q-42-4, Q-42-5, Q-42-16, Q-42-21, Q-42-22. `tow.rs:2316–2321`'s
 second branch calls `captured_loaded`; the NPC seat's return to the pool; Draft 0.3 (42-4): the NPC exit's K3 action (Q-42-26), adding `detachment/crew/runtime.rs` and

@@ -800,7 +800,8 @@ pub fn in_vocabulary(line: &str) -> bool {
     if line.len() > 512 || line.contains(['\n', '\r']) || line.starts_with("@channel") {
         return false;
     }
-    if super::in_vocabulary(line) {
+    // Doc 42 cut CR.0 (Q-42-23): the crew's lines, both halves.
+    if super::in_vocabulary(line) || super::crew::in_vocabulary(line) {
         return true;
     }
     let digits = |s: &str| !s.is_empty() && s.len() <= 10 && s.bytes().all(|b| b.is_ascii_digit());

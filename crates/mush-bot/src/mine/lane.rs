@@ -34,6 +34,8 @@
 //! kept out of every window: the echo is not the game's answer, and a heard
 //! line is another party's act, recorded (`LaneEvent::Heard`, the report's
 //! `heard`) and never acted on.
+#[path = "crew.rs"]
+pub mod crew;
 #[path = "detachment.rs"]
 pub mod detachment;
 #[path = "escort.rs"]

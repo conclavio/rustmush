@@ -87,6 +87,12 @@ impl CarrierHooks for TacsimCarrierHooks {
         })
     }
 
+    /// Doc 42 cut CR.0 (Q-42-2): `@station` and `+focus` refuse a captive and an ejectee
+    /// waiting on their pickup with the crew record's held line.
+    fn restrains_operator(&self, w: &World, actor: ObjId) -> Option<String> {
+        crate::field::crew::refusal(w, actor, crate::field::crew::Gate::Operate)
+    }
+
     fn boundary(&self, ctx: &mut Ctx<'_>, journey: &CarrierJourney, reached: u32) -> bool {
         let hull = journey.root();
         if crate::port::ship::hull_view(ctx.w, hull).is_none() {

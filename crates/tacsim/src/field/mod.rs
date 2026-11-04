@@ -293,6 +293,8 @@ pub fn register(reg: &mut Registrar<'_>) -> Result<(), ModError> {
     reg.state(exit::ExitBook::default());
     reg.state(exit::OwedExits::default());
     reg.state(crew::CrewBook::default());
+    // Doc 42 cut CR.0 (Q-42-2): a captive's exits, and an ejectee's, are refused.
+    reg.hook(mush_core::HookPoint::MoveAttempt, Arc::new(crew::HeldGate));
     reg.state(orders::Offered::default());
     reg.state(home::Asked::default());
     // Doc 23 cut S.4b-T (D-23-19): the earned-contacts index this host feeds and the quirk

@@ -734,6 +734,13 @@ pub(crate) fn ship_cmd(ctx: &mut Ctx<'_>) -> Result<(), CmdError> {
     if !enabled {
         return Err(CmdError::msg(NOT_ENABLED));
     }
+    // Doc 42 cut CR.0 (Q-42-2): boarding and leaving move the character; every other switch
+    // operates the hull. The two reads, the bare status and `/orders`, pass.
+    if ctx.switches.has("board") || ctx.switches.has("leave") {
+        crate::field::crew::gate(ctx, crate::field::crew::Gate::Move)?;
+    } else if ctx.switches.iter().any(|switch| switch != "orders") {
+        crate::field::crew::gate(ctx, crate::field::crew::Gate::Operate)?;
+    }
     // Doc 18 cut IC11: the sailing plan's read and its edits, ahead of the rest.
     if ctx.switches.has("orders") {
         crate::port::orders::orders_cmd(ctx)

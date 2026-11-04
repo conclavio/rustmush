@@ -2251,22 +2251,30 @@ fn slots_words(slots: &[u8]) -> String {
 /// Every refusal is a [`CmdError`] line said to the actor.
 pub(crate) fn tv_cmd(ctx: &mut Ctx<'_>) -> Result<(), CmdError> {
     crate::commands::require_enabled(ctx)?;
+    // Doc 42 cut CR.0 (Q-42-2): the bay, the cab and every act are the held gate's.
+    use crate::field::crew::{Gate, gate};
     if ctx.switches.has("bay") {
+        gate(ctx, Gate::Move)?;
         return super::boarding::bay_access(ctx).map_err(CmdError::msg);
     }
     if ctx.switches.has("board")
         || ctx.switches.has("leave")
         || matches!(ctx.args.raw().trim(), "board" | "leave")
     {
+        gate(ctx, Gate::Move)?;
         return super::boarding::player(ctx).map_err(CmdError::msg);
     }
     if ctx.switches.has("permissions") {
+        gate(ctx, Gate::Operate)?;
         return super::equipment::command(ctx).map_err(CmdError::msg);
     }
     if programme_port(ctx.w).is_none() {
         return Err(CmdError::msg(NOT_OPEN_HERE));
     }
     let (slot, act) = parse(ctx)?;
+    if !matches!(act, Act::Status) {
+        gate(ctx, Gate::Operate)?;
+    }
     if let Some(n) = slot {
         let actor = ctx.actor;
         point(ctx, actor, n);
