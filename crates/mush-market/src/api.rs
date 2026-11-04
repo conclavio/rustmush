@@ -772,11 +772,16 @@ pub fn list_goods(ctx: &mut Ctx<'_>, spec: ListingSpec) -> Result<ListingId, Mar
         // provenance root as far as a buyer can tell, because both would draw from the
         // one tranche and the second sale would refuse **after** its money leg was in
         // force. Refused here instead.
-        if ctx
-            .w
-            .module_state::<MarketStore>()
-            .is_some_and(|s| s.lot_listing_of(*endpoint, commodity).is_some())
-        {
+        //
+        // Doc 39 cut IN.2: a lot-transfer listing holds one exact lot and draws on no
+        // tranche, so lot listings of distinct lots stand side by side; one never shares
+        // its endpoint and good with a pooled listing, nor names a lot another names.
+        let exact = spec.source.exact_lot();
+        if ctx.w.module_state::<MarketStore>().is_some_and(|s| {
+            s.lot_listings_of(*endpoint, commodity).any(|l| {
+                exact.is_none() || l.source.exact_lot().is_none_or(|lot| Some(lot) == exact)
+            })
+        }) {
             return Err(MarketError::bad(
                 "That endpoint already carries a live listing for that commodity. Withdraw \
                  it first (@market/vendor withdraw <listing>).",
@@ -907,6 +912,7 @@ pub fn list_goods(ctx: &mut Ctx<'_>, spec: ListingSpec) -> Result<ListingId, Mar
     else {
         return Err(MarketError::bad("The listing-id allocator is exhausted."));
     };
+    let exact_lot = spec.source.exact_lot();
     put_listing(
         ctx,
         Listing {
@@ -950,6 +956,7 @@ pub fn list_goods(ctx: &mut Ctx<'_>, spec: ListingSpec) -> Result<ListingId, Mar
                 grade,
                 destination: None,
                 contract: None,
+                lot: exact_lot,
             },
         );
         if !staged {
@@ -1067,6 +1074,7 @@ pub fn withdraw_listing(ctx: &mut Ctx<'_>, id: ListingId) -> Result<(), MarketEr
             grade,
             destination: None,
             contract: None,
+            lot: listing.source.exact_lot(),
         });
     // A Draw (doc 18 cut IC7) and a standing bid (cut IC8) hold no reservation, so
     // deleting the document is the whole withdrawal and nothing is staged.

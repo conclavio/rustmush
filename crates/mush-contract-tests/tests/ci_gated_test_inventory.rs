@@ -55,21 +55,14 @@
 
 use std::collections::BTreeSet;
 use std::fs;
-use std::path::{Path, PathBuf};
+use std::path::Path;
+
+use mush_contract_tests::scan;
 
 /// The exact source form of a live-backend gate, built at runtime so that this
 /// file does not match its own needle.
 fn redis_gate_needle() -> String {
     format!("env::var({:?})", "REDIS_URL")
-}
-
-/// The workspace root, from this crate's manifest directory.
-fn repo_root() -> PathBuf {
-    Path::new(env!("CARGO_MANIFEST_DIR"))
-        .parent()
-        .and_then(Path::parent)
-        .expect("crates/<pkg> has a workspace root two levels up")
-        .to_path_buf()
 }
 
 /// One discovered test function.
@@ -161,23 +154,6 @@ const PAID_OPT_INS: &[(&str, &str, &str, &str)] = &[
     ),
 ];
 
-fn collect_rust_files(dir: &Path, out: &mut Vec<PathBuf>) {
-    let Ok(entries) = fs::read_dir(dir) else {
-        return;
-    };
-    for entry in entries.flatten() {
-        let path = entry.path();
-        if path.is_dir() {
-            if path.file_name().is_some_and(|name| name == "target") {
-                continue;
-            }
-            collect_rust_files(&path, out);
-        } else if path.extension().is_some_and(|ext| ext == "rs") {
-            out.push(path);
-        }
-    }
-}
-
 /// The identifier of a function-defining line, if it is one.
 fn function_name(line: &str) -> Option<&str> {
     let rest = line
@@ -262,9 +238,7 @@ fn scan_file(path: &Path, relative: &str, out: &mut Vec<DiscoveredTest>) {
 
 fn discovered_tests(root: &Path) -> Vec<DiscoveredTest> {
     let crates_dir = root.join("crates");
-    let mut files = Vec::new();
-    collect_rust_files(&crates_dir, &mut files);
-    files.sort();
+    let files = scan::files(&crates_dir, &["rs"], &["target"]);
     let mut tests = Vec::new();
     for file in &files {
         let relative = file
@@ -556,7 +530,7 @@ fn a_module_of_a_group_binary_is_covered_by_the_binary_the_module_or_the_test() 
 
 #[test]
 fn every_backend_gated_proof_is_named_by_a_ci_job() {
-    let root = repo_root();
+    let root = scan::repo_root();
     let workflow = fs::read_to_string(root.join(".github/workflows/ci.yml"))
         .expect("the CI workflow is part of the tree this policy governs");
     let tests = discovered_tests(&root);
@@ -631,7 +605,7 @@ fn every_backend_gated_proof_is_named_by_a_ci_job() {
 
 #[test]
 fn paid_opt_in_exemptions_are_live_and_the_cost_report_has_a_mock_ci_run() {
-    let root = repo_root();
+    let root = scan::repo_root();
     let tests = discovered_tests(&root);
     for (path, name, flag, reason) in PAID_OPT_INS {
         assert!(!reason.is_empty());
@@ -676,7 +650,7 @@ fn paid_opt_in_exemptions_are_live_and_the_cost_report_has_a_mock_ci_run() {
 /// wears, and the census cannot quietly empty itself behind a rename.
 #[test]
 fn the_gated_suffix_census_is_stable_and_every_live_backend_proof_names_its_backend() {
-    let root = repo_root();
+    let root = scan::repo_root();
     let tests = discovered_tests(&root);
     let live: BTreeSet<&str> = tests
         .iter()
@@ -752,7 +726,7 @@ fn declares(root: &Path, package: &str, wanted: &str) -> bool {
 
 #[test]
 fn vf_g5_every_e7k_lane_job_can_see_the_crate_that_owns_the_lane() {
-    let root = repo_root();
+    let root = scan::repo_root();
     // 10b §14.2, as corrected by the independent verify fold.
     let lanes = [
         GateLane {
@@ -870,7 +844,7 @@ fn vf_g5_every_e7k_lane_job_can_see_the_crate_that_owns_the_lane() {
 
 #[test]
 fn vf_g6_every_proof_10b_section_14_names_exists_in_the_file_it_is_attributed_to() {
-    let root = repo_root();
+    let root = scan::repo_root();
     // (file relative to `crates/`, the test name §14 cites).
     let cited: [(&str, &str); 9] = [
         // L1+L2's go criterion.

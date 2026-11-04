@@ -19,7 +19,9 @@
 //! per-crate enable is measured with `--all-targets`.
 
 use std::fs;
-use std::path::{Path, PathBuf};
+use std::path::Path;
+
+use mush_contract_tests::scan;
 
 /// Every allowance the restriction lints in flight depend on.
 const REQUIRED_ALLOWANCES: [&str; 4] = [
@@ -29,18 +31,9 @@ const REQUIRED_ALLOWANCES: [&str; 4] = [
     "allow-indexing-slicing-in-tests",
 ];
 
-/// The workspace root, from this crate's manifest directory.
-fn repo_root() -> PathBuf {
-    Path::new(env!("CARGO_MANIFEST_DIR"))
-        .parent()
-        .and_then(Path::parent)
-        .expect("crates/<pkg> has a workspace root two levels up")
-        .to_path_buf()
-}
-
 #[test]
 fn the_repo_root_clippy_config_allows_the_panic_shaped_lints_in_tests() {
-    let root = repo_root();
+    let root = scan::repo_root();
     let path = root.join("clippy.toml");
     let text = fs::read_to_string(&path).unwrap_or_else(|err| {
         panic!(
@@ -111,7 +104,7 @@ fn shadowing_configs_under(dir: &Path) -> Vec<String> {
 /// undotted one would leave the likelier-to-be-overlooked half uncovered.
 #[test]
 fn no_crate_carries_its_own_clippy_config() {
-    let strays = shadowing_configs_under(&repo_root().join("crates"));
+    let strays = shadowing_configs_under(&scan::repo_root().join("crates"));
     assert!(
         strays.is_empty(),
         "clippy's config lookup starts at the crate's manifest directory and walks up, taking \

@@ -43,8 +43,9 @@ impl RecipeAuthority for TacsimRecipeAuthority {
         let recipe = RecipeRef::new(pack.clone(), version, id.clone(), digest).ok()?;
         let inputs = pin_lines(&def.inputs)?;
         let outputs = pin_lines(&def.outputs)?;
-        let pinned =
-            PinnedRecipe::new(inputs, outputs, def.requires.clone(), def.work_units).ok()?;
+        let pinned = PinnedRecipe::new(inputs, outputs, def.requires.clone(), def.work_units)
+            .ok()?
+            .with_output_lots(def.output_lots);
         Some((recipe, pinned))
     }
 
@@ -104,7 +105,7 @@ impl RecipeAuthority for TacsimRecipeAuthority {
                 else {
                     continue;
                 };
-                out.push((reference, pinned));
+                out.push((reference, pinned.with_output_lots(def.output_lots)));
             }
         }
         out

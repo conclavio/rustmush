@@ -31,8 +31,8 @@
 //! `restriction_lints.rs` defends its own: by reading the tree.
 
 use std::fs;
-use std::path::{Path, PathBuf};
 
+use mush_contract_tests::scan;
 use tacsim::arena::rng::{DrawLabel, LABEL_KINDS};
 
 /// The names that would give the arena library a path out of itself.
@@ -83,34 +83,9 @@ const FORBIDDEN: [(&str, &str); 9] = [
     ),
 ];
 
-/// The workspace root, from this crate's manifest directory.
-fn repo_root() -> PathBuf {
-    Path::new(env!("CARGO_MANIFEST_DIR"))
-        .parent()
-        .and_then(Path::parent)
-        .expect("crates/<pkg> has a workspace root two levels up")
-        .to_path_buf()
-}
-
-/// Every `.rs` file under `dir`, sorted, so the walk is reproducible.
-fn rust_files(dir: &Path, out: &mut Vec<PathBuf>) {
-    let Ok(entries) = fs::read_dir(dir) else {
-        return;
-    };
-    let mut paths: Vec<PathBuf> = entries.flatten().map(|entry| entry.path()).collect();
-    paths.sort();
-    for path in paths {
-        if path.is_dir() {
-            rust_files(&path, out);
-        } else if path.extension().is_some_and(|ext| ext == "rs") {
-            out.push(path);
-        }
-    }
-}
-
 #[test]
 fn the_arena_library_has_no_path_to_the_store_the_runtime_or_the_world() {
-    let root = repo_root();
+    let root = scan::repo_root();
     let arena = root.join("crates/tacsim/src/arena");
     assert!(
         arena.is_dir(),
@@ -118,8 +93,7 @@ fn the_arena_library_has_no_path_to_the_store_the_runtime_or_the_world() {
          Re-point it at the new path in the same commit.",
         arena.display()
     );
-    let mut files = Vec::new();
-    rust_files(&arena, &mut files);
+    let files = scan::rust_files(&arena);
     assert!(
         files.len() >= 6,
         "the scan found only {} source files under {}; cut A.1 ships six modules (state, clock, \
@@ -265,16 +239,11 @@ const SIGHT_ONLY_FILES: [&str; 2] = [
 /// index.)
 #[test]
 fn sight_only_is_the_arenas_trace_and_nobody_elses() {
-    let root = repo_root();
+    let root = scan::repo_root();
     let crates = root.join("crates");
-    let Ok(entries) = fs::read_dir(&crates) else {
-        panic!("{} is not readable", crates.display());
-    };
-    let mut members: Vec<PathBuf> = entries.flatten().map(|entry| entry.path()).collect();
-    members.sort();
     let mut files = Vec::new();
-    for member in members {
-        rust_files(&member.join("src"), &mut files);
+    for member in scan::crate_dirs(&root) {
+        files.extend(scan::rust_files(&member.join("src")));
     }
     assert!(
         files.len() > 100,
@@ -813,7 +782,7 @@ const OBSERVER_NAMES: [&str; 4] = [
 /// other is a reviewed diff and not an accident.
 #[test]
 fn the_observer_has_no_path_into_a_pilot_feed() {
-    let root = repo_root();
+    let root = scan::repo_root();
     let cockpit_paths = [
         "crates/tacsim/src/match_/cockpit.rs",
         "crates/tacsim/src/match_/cockpit/frames.rs",
@@ -938,10 +907,9 @@ fn the_observer_has_no_path_into_a_pilot_feed() {
 
 #[test]
 fn tacsim_integration_tests_never_mutate_space_bubble_book_directly() {
-    let root = repo_root();
+    let root = scan::repo_root();
     let tests_dir = root.join("crates/tacsim/tests");
-    let mut files = Vec::new();
-    rust_files(&tests_dir, &mut files);
+    let files = scan::rust_files(&tests_dir);
     assert!(!files.is_empty(), "expected tacsim integration test files");
 
     let forbidden_patterns = [

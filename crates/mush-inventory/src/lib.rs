@@ -68,6 +68,7 @@ pub mod commands;
 pub mod core_input;
 pub mod facts;
 pub mod guard;
+pub mod lot_hold;
 pub mod module;
 pub mod pool;
 pub mod provider;
@@ -77,6 +78,7 @@ pub mod store;
 
 pub use facts::InventoryFactProvider;
 pub use guard::ReservationGuardValidator;
+pub use lot_hold::{IndivisibleGoods, LotHold, MAX_HOLDER_BYTES};
 pub use module::{
     InventoryHandleCell, InventoryHandles, InventoryModule, SWEEP_PERIOD_SECS, SWEEP_TAG,
 };

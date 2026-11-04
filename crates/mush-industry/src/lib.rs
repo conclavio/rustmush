@@ -133,7 +133,7 @@ pub use seams::{
 pub use store::{DraftDrift, FacilityQuarantine, IndustryStore, Quarantine};
 pub use workorder::{
     DeliveryTarget, InterruptionCause, MAX_RESERVATIONS_PER_ORDER, MAX_WORK_ORDER_INPUTS,
-    MAX_WORK_ORDER_QUANTITY, MAX_WORK_ORDERS_PER_REQUESTER, PRODUCTION_CADENCE_SECS,
+    MAX_WORK_ORDER_QUANTITY, MAX_WORK_ORDERS_PER_REQUESTER, OutputLots, PRODUCTION_CADENCE_SECS,
     PRODUCTION_MAX_CATCH_UP, PRODUCTION_UNITS_PER_OCCURRENCE, PinnedRecipe, ProductionJob,
     ProductionSchedule, RecipeAuthority, RecipeLine, RecipeRef, WorkOrder, WorkOrderId,
     WorkOrderState, derive_work_order_id, wo_holder, wo_holder_text,

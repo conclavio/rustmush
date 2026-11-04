@@ -390,6 +390,8 @@ fn paid_entry(q: &Quote, lot: &crate::record::PaidLot, op: LotOp, plan: Value) -
         "quantity": q.quantity,
         "grade": lot.grade,
         "plan": plan,
+        // Doc 39 cut IN.2: the exact lot a lot-transfer sale hands over, or null.
+        "lot": lot.lot.map(|l| l.to_string()),
     })
 }
 
@@ -577,6 +579,28 @@ fn matches_paid(
         && grade.is_none_or(|g| u64_of("grade") == Some(u64::from(g)))
 }
 
+/// The exact lot a submission names (doc 39 cut IN.2), `None` when it names none.
+fn lot_param(
+    parameters: &serde_json::Map<String, Value>,
+) -> Result<Option<mush_inventory::LotId>, ActionError> {
+    match parameters.get("lot") {
+        None | Some(Value::Null) => Ok(None),
+        Some(Value::String(raw)) => mush_inventory::LotId::parse(raw)
+            .map(Some)
+            .ok_or_else(|| error(ActionErrorCode::InvalidRequest, LOT_REFUSED)),
+        Some(_) => Err(error(ActionErrorCode::InvalidRequest, LOT_REFUSED)),
+    }
+}
+
+/// Whether a paid entry's frozen lot is `lot` (both none, or the same id).
+fn paid_lot_is(entry: &serde_json::Map<String, Value>, lot: Option<mush_inventory::LotId>) -> bool {
+    let frozen = entry
+        .get("lot")
+        .and_then(Value::as_str)
+        .and_then(mush_inventory::LotId::parse);
+    frozen == lot
+}
+
 impl MarketLotProvider {
     fn parameters<'i>(
         &self,
@@ -719,6 +743,13 @@ impl ActionProvider for MarketLotProvider {
                     maximum: i64::from(MAX_GRADE),
                 },
             )?,
+            // Doc 39 cut IN.2: the exact lot a lot-transfer listing sells. Its authority is
+            // the endpoint's (a reserve) or the paid entry's frozen lot (a consume).
+            parameter(
+                "lot",
+                false,
+                ProjectedParameterKind::Text { maximum_bytes: 32 },
+            )?,
         ];
         // The paid contract a consume or draw names, as a decimal string — present only
         // when the actor has a paid entry, so a supplied `contract` from anyone else is
@@ -822,8 +853,68 @@ impl ActionProvider for MarketLotProvider {
         data.insert("op".to_owned(), json!(op.word()));
         data.insert("listing".to_owned(), json!(listing.0));
 
-        let summary = match op {
-            LotOp::Reserve => {
+        let exact = lot_param(&parameters)?;
+        let summary = match (op, exact) {
+            // ---- doc 39 cut IN.2: the lot-transfer listing, one exact lot ----
+            (LotOp::Reserve, Some(lot)) => {
+                let endpoint = endpoint_field(&parameters, "endpoint")?;
+                let held = self
+                    .families
+                    .hold_lot(txn, endpoint, lot, &listing_holder_text(listing))
+                    .map_err(|source| refuse(&source))?;
+                if held.commodity() != &commodity || held.quantity() != quantity {
+                    return Err(error(ActionErrorCode::ProviderRejected, LOT_REFUSED));
+                }
+                data.insert("endpoint".to_owned(), json!(endpoint.vault().0));
+                data.insert("lot".to_owned(), json!(lot.0));
+                data.insert("quantity".to_owned(), json!(quantity));
+                format!("Held {lot} for listing #{listing}.")
+            }
+            (LotOp::Consume, Some(lot)) => {
+                let destination = endpoint_field(&parameters, "endpoint")?;
+                let source = endpoint_field(&parameters, "source")?;
+                let (contract, entry) = paid_entry_of(&parameters, LotOp::Consume)?;
+                if !matches_paid(
+                    entry,
+                    listing,
+                    destination,
+                    source,
+                    &commodity,
+                    quantity,
+                    None,
+                ) || !paid_lot_is(entry, Some(lot))
+                {
+                    return Err(rejected());
+                }
+                data.insert("contract".to_owned(), json!(contract.0));
+                // The lot itself goes to the buyer: the same id, grade and lineage. A
+                // replay finds no hold and refuses, so the hand-over lands once.
+                let moved = self
+                    .families
+                    .relocate_held(txn, lot, source, destination, &listing_holder_text(listing))
+                    .map_err(|source| refuse(&source))?;
+                if moved.commodity() != &commodity || moved.quantity() != quantity {
+                    return Err(error(ActionErrorCode::ProviderRejected, LOT_REFUSED));
+                }
+                data.insert("endpoint".to_owned(), json!(destination.vault().0));
+                data.insert("source".to_owned(), json!(source.vault().0));
+                data.insert("lot".to_owned(), json!(lot.0));
+                data.insert("quantity".to_owned(), json!(quantity));
+                format!("Handed over {lot}.")
+            }
+            (LotOp::Release, Some(lot)) => {
+                let endpoint = endpoint_field(&parameters, "endpoint")?;
+                self.families
+                    .release_lot(txn, lot, &listing_holder_text(listing))
+                    .map_err(|source| refuse(&source))?;
+                data.insert("endpoint".to_owned(), json!(endpoint.vault().0));
+                data.insert("lot".to_owned(), json!(lot.0));
+                format!("Released listing #{listing}'s hold on {lot}.")
+            }
+            (LotOp::Draw | LotOp::Deliver, Some(_)) => {
+                return Err(error(ActionErrorCode::InvalidRequest, LOT_REFUSED));
+            }
+            (LotOp::Reserve, None) => {
                 let endpoint = endpoint_field(&parameters, "endpoint")?;
                 let holder = listing_holder(listing)
                     .map_err(|_| error(ActionErrorCode::Integrity, LOT_REFUSED))?;
@@ -849,7 +940,7 @@ impl ActionProvider for MarketLotProvider {
                 data.insert("quantity".to_owned(), json!(quantity));
                 format!("Reserved {quantity} {commodity} for listing #{listing}.")
             }
-            LotOp::Consume => {
+            (LotOp::Consume, None) => {
                 let destination = endpoint_field(&parameters, "endpoint")?;
                 let source = endpoint_field(&parameters, "source")?;
                 let raw_grade =
@@ -870,7 +961,8 @@ impl ActionProvider for MarketLotProvider {
                     &commodity,
                     quantity,
                     Some(raw_grade),
-                ) {
+                ) || !paid_lot_is(entry, None)
+                {
                     return Err(rejected());
                 }
                 data.insert("contract".to_owned(), json!(contract.0));
@@ -922,7 +1014,7 @@ impl ActionProvider for MarketLotProvider {
                     settled.buyer.id()
                 )
             }
-            LotOp::Release => {
+            (LotOp::Release, None) => {
                 let endpoint = endpoint_field(&parameters, "endpoint")?;
                 let reservation = listing_reservation(listing, endpoint, &commodity)
                     .map_err(|_| error(ActionErrorCode::Integrity, LOT_REFUSED))?;
@@ -940,7 +1032,7 @@ impl ActionProvider for MarketLotProvider {
                 data.insert("endpoint".to_owned(), json!(endpoint.vault().0));
                 format!("Released listing #{listing}'s hold.")
             }
-            LotOp::Draw => self.prepare_draw(
+            (LotOp::Draw, None) => self.prepare_draw(
                 invocation,
                 txn,
                 &parameters,
@@ -950,7 +1042,7 @@ impl ActionProvider for MarketLotProvider {
                 quantity,
                 &mut data,
             )?,
-            LotOp::Deliver => self.prepare_deliver(
+            (LotOp::Deliver, None) => self.prepare_deliver(
                 invocation,
                 txn,
                 &parameters,
@@ -1323,6 +1415,9 @@ pub struct LotLeg {
     /// The paid contract a `consume`, `draw` or `deliver` delivers against (doc 18 cuts
     /// IC7 and IC10), and `None` on a `reserve` or `release`.
     pub contract: Option<ContractId>,
+    /// The exact lot a lot-transfer listing sells (doc 39 cut IN.2): its `reserve` holds
+    /// it, its `consume` hands it over, its `release` lets it go. `None` for pooled stock.
+    pub lot: Option<mush_inventory::LotId>,
 }
 
 /// **Stage the ONE `Ctx::submit_authoritative` a lot leg costs its command** (cut 2's
@@ -1365,6 +1460,10 @@ pub(crate) fn stage(ctx: &mut mush_core::Ctx<'_>, leg: &LotLeg) -> bool {
             "destination".to_owned(),
             json!(destination.vault().0.to_string()),
         );
+    }
+    // Doc 39 cut IN.2: only a lot-transfer leg names its lot, so a pooled leg is unchanged.
+    if let (Some(lot), Some(map)) = (leg.lot, parameters.as_object_mut()) {
+        map.insert("lot".to_owned(), json!(lot.to_string()));
     }
     let discriminator = if leg.op.is_paid() {
         let Some(contract) = leg.contract else {
@@ -1467,6 +1566,25 @@ pub(crate) fn hold_standing(
     let Some(families) = crate::module::lot_supply(ctx.w) else {
         return Some(HoldStanding::Unreadable);
     };
+    // Doc 39 cut IN.2: a lot-transfer listing's hold is its lot's, and lasts as long as the
+    // listing does (the lot hold has no clock of its own).
+    if let Some(lot) = listing.source.exact_lot() {
+        return Some(match ctx.action_state(&families.lot_holds, &lot) {
+            Ok(Some(hold))
+                if hold.holder() == listing_holder_text(listing.id)
+                    && hold.endpoint() == endpoint =>
+            {
+                if crate::projection::lapsed(listing.expires.at, listing.expires.clock, ctx.w.now())
+                {
+                    HoldStanding::Lapsed
+                } else {
+                    HoldStanding::Live
+                }
+            }
+            Ok(_) => HoldStanding::Gone,
+            Err(_) => HoldStanding::Unreadable,
+        });
+    }
     let (Ok(reservation), Ok(key)) = (
         listing_reservation(listing.id, endpoint, commodity),
         mush_inventory::pool_key(endpoint, commodity),
@@ -1507,6 +1625,26 @@ pub(crate) fn pool_balance(
     match ctx.action_state(&families.pools, &key) {
         Ok(None) => Ok(0),
         Ok(Some(scalar)) => u64::try_from(scalar.current()).map_err(|_| ()),
+        Err(_) => Err(()),
+    }
+}
+
+/// **What an endpoint holds of a good, for its room** (doc 39 cut IN.2): the pool's balance,
+/// and for an indivisible good (a part, which never pools) the units held in lots too — the
+/// reading the composition's capacity rule weighs. Refused as [`pool_balance`] is.
+pub(crate) fn held_balance(
+    ctx: &mush_core::Ctx<'_>,
+    endpoint: EndpointRef,
+    commodity: &CanonicalId,
+) -> Result<u64, ()> {
+    let pooled = pool_balance(ctx, endpoint, commodity)?;
+    let families = crate::module::lot_supply(ctx.w).ok_or(())?;
+    if !families.is_indivisible(commodity) {
+        return Ok(pooled);
+    }
+    let key = mush_inventory::pool_key(endpoint, commodity).map_err(|_| ())?;
+    match ctx.action_state(&families.lot_tally, &key) {
+        Ok(held) => Ok(pooled.saturating_add(held.copied().unwrap_or(0))),
         Err(_) => Err(()),
     }
 }
@@ -1671,6 +1809,7 @@ pub fn release_lapsed_hold(
         grade,
         destination: None,
         contract: None,
+        lot: listing.source.exact_lot(),
     };
     if !stage(ctx, &leg) {
         return Err(crate::api::MarketError::bad(

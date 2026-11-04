@@ -19,6 +19,7 @@
 use std::fs;
 use std::path::{Path, PathBuf};
 
+use mush_contract_tests::scan;
 use mush_ipc::IPC_VERSION;
 
 /// The first version with a recorded set; nothing before it is expected.
@@ -27,18 +28,9 @@ const FIRST_GOLDEN_VERSION: u32 = 12;
 /// The command that records the current version's set.
 const RECORD_COMMAND: &str = "cargo run -p mush-ipc --example record_golden_frames";
 
-/// The workspace root, from this crate's manifest directory.
-fn repo_root() -> PathBuf {
-    Path::new(env!("CARGO_MANIFEST_DIR"))
-        .parent()
-        .and_then(Path::parent)
-        .expect("crates/<pkg> has a workspace root two levels up")
-        .to_path_buf()
-}
-
 /// `crates/mush-ipc/tests/golden/`.
 fn golden_root() -> PathBuf {
-    repo_root()
+    scan::repo_root()
         .join("crates")
         .join("mush-ipc")
         .join("tests")

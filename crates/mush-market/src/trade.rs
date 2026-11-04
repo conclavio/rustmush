@@ -865,6 +865,10 @@ pub fn accept_at(
             accepted_at,
             draw_by,
             marker: None,
+            lot: match matter {
+                LotMatter::Hold { lot, .. } => *lot,
+                LotMatter::Draw { .. } => None,
+            },
         };
         if !crate::lot::stage(ctx, &paid_leg(&q, &paid, contract)) {
             // The money is in force and no leg was staged: a composition defect. A Draw
@@ -922,6 +926,7 @@ fn paid_leg(q: &Quote, lot: &PaidLot, contract: ContractId) -> crate::lot::LotLe
         quantity: q.quantity,
         grade: lot.grade,
         contract: Some(contract),
+        lot: lot.lot,
     }
 }
 
@@ -964,9 +969,12 @@ fn lot_precheck(
             presence,
         )
         .map_err(|r| MarketError::bad(r.line))?;
+        // Doc 39 cut IN.2: a lot-transfer sale hands one identified lot over whole, so it
+        // may land in a governed endpoint too, the capacity pre-check below its gate.
         if gate.governed(ctx.w, destination)
             && !(matches!(matter, LotMatter::Draw { .. })
                 && gate.port_seller(ctx.w, &listing.market, &listing.seller))
+            && !matches!(matter, LotMatter::Hold { lot: Some(_), .. })
         {
             return Err(MarketError::bad(PORT_ONLY_ENDPOINT));
         }
@@ -979,7 +987,7 @@ fn lot_precheck(
             return Err(MarketError::bad(CAPACITY_UNREADABLE));
         }
         let mut read_pool = |c: &mush_core::CanonicalId| {
-            crate::lot::pool_balance(ctx, destination, c).map_err(|()| CapacityReadError)
+            crate::lot::held_balance(ctx, destination, c).map_err(|()| CapacityReadError)
         };
         match capacity.check(&plan, matter.commodity(), q.quantity, &mut read_pool) {
             Ok(()) => {}
@@ -2243,6 +2251,7 @@ pub fn sell_into_bid(ctx: &mut Ctx<'_>, req: &BidSaleRequest) -> Result<BidSale,
         accepted_at,
         draw_by: Some(cutoff),
         marker: Some(marker),
+        lot: None,
     };
     let mut q = Quote {
         id: quote,

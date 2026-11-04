@@ -2506,20 +2506,24 @@ fn sm12a_only_the_mill_restocks() {
 /// the world, taken off the site's record in the same bundle, never made from nothing. **Doc 39
 /// cut IN.1 (Q-39-8)**: `.mint_origins(` is counted too — once, the bay's strip and scrap mint
 /// (`port/bay_work/act.rs`), parts and alloys off a hull already in the world — so a new mint
-/// path is a reviewed diff here, as every other is.
+/// path is a reviewed diff here, as every other is. **Doc 39 cut IN.2**: the stock clerk's one
+/// mint moved from `.mint_origin(` to `.mint_origins(` (a part row mints one identified lot a
+/// unit, any other row one lot as before), so the clerk is counted under the second verb; the
+/// part commission mints nothing (`commission_lots` lays an industry lot back as one-unit
+/// lots of the same quantity).
 #[test]
 fn sm12a_only_the_clerk_the_foundry_and_the_mill_create_matter() {
     let files = production_files("tacsim/src");
     assert_eq!(
         occurrences(&files, ".mint_origin("),
-        vec![
-            ("tacsim/src/port/stock.rs".to_owned(), 1),
-            ("tacsim/src/surface/tow.rs".to_owned(), 1),
-        ]
+        vec![("tacsim/src/surface/tow.rs".to_owned(), 1)]
     );
     assert_eq!(
         occurrences(&files, ".mint_origins("),
-        vec![("tacsim/src/port/bay_work/act.rs".to_owned(), 1)]
+        vec![
+            ("tacsim/src/port/bay_work/act.rs".to_owned(), 1),
+            ("tacsim/src/port/stock.rs".to_owned(), 1),
+        ]
     );
     let credits = occurrences(&files, ".credit(");
     let (foundry, others): (Vec<_>, Vec<_>) = credits
