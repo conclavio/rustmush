@@ -15,6 +15,10 @@ use mush_core::{
 use mush_proto::OutputEvent;
 use mush_script::{ScriptConfig, ScriptModule};
 
+// Doc 43 cut TS.4: nested source against the depth guard.
+#[path = "script/nesting.rs"]
+mod nesting;
+
 // ----------------------------------------------------------------------
 // Harness
 // ----------------------------------------------------------------------

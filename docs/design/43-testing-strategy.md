@@ -632,6 +632,17 @@ runs `npm` only.
 
 Doc 43 has no cut-notes file; each cut's note lands here.
 
+### TS.14 release check on pull requests (D-43-10)
+
+**Built.** The `lint` cell gains one step after Clippy: `cargo check --locked --release -p mushd -p
+mush-server -p mush-gateway --features mushd/tls,mush-gateway/tls`, the release job's package and
+feature set. A `cfg(not(debug_assertions))` break now fails the PR. Thin LTO and the real SPA embed
+stay with the nightly release job. The embed guard (`mush-net-web/build.rs`) refuses a release build
+with no `web/dist/index.html`. The lint cell builds no SPA, so the step writes a one-line placeholder
+when the file is missing: the check is of the Rust, not the bundle.
+
+**The cost (rule #14, §8.1).** On this PR's run ([41876942230](https://github.com/conclavio/rustmush/actions/runs/41876942230)) the step took **2.9 min**, cold for the release profile, in a lint cell of about 10.5 min (Clippy 4.0, the M7 memory-size limits 2.9). The run's wall was tacsim-integration-1 at 22.8 min, so the check stays in the lint cell; it moves to a cell of its own only if the cell ever sets the wall.
+
 ### TS.2 inventory tiers and configuration (§5.9, §10.3)
 
 **Built.** `crates/mush-contract-tests/test-tiers.toml` gives every gated test (an `#[ignore]`d,
@@ -728,6 +739,36 @@ and 175 after, with the `<module>::` prefix stripped: none gone, none new.
 **The four guards** are now one line (docs/ops.md, "The cut loop"):
 `cargo nextest run -p mush-contract-tests --test ci_policy --test engine_contracts -E
 'test(/^(feature_matrix_inventory|panic_budget|restriction_lints|state_slot_owners)::/)'`.
+
+### TS.7 client verbs are registered (§5.2)
+
+**Built**, as `engine_contracts::client_verbs` (on TS.11's branch). It has two contracts.
+
+- **Every command a client emits is a registered verb.** The TUI (`mush-net-ssh/src/tui/`, each file cut
+  at its first `#[cfg(test)]`) and the web client (`web/src/`, no `*.test.ts`, no fixtures) are
+  scanned for command-shaped string literals: a `+verb`/`@verb` with its `/switches`; an upper-case
+  cockpit line of two words or more, or one word in a send context; and a key table's or send helper's
+  argument (`Run(`, `Prefill(`, `cmd:`, `line:`, `sendLine(`, `orders.push(` and their kin). Each
+  head must resolve through the registry's own `lookup` against `production_composition()`, and
+  each literal switch must be one the spec declares. Exceptions go in
+  `client-verbs-allowlist.toml`, each with a reason; a switch-level row excuses that switch alone,
+  and a row no client line uses fails.
+- **Every client session type has a production constructor.** Each `pub struct *Session*` in the net
+  crates, mush-gateway and the pixel crates must be constructed (`Name::…`, `Name {`) somewhere in a
+  workspace crate's non-test source. All of them are today, `DockingClientSession` included (its
+  `from_feed` is called from `tui/pixel.rs` and `mush-pixel-wasm`).
+
+**What it found.** Two dead ends, both kept as allowlist rows marked KNOWN DEAD END, with what is
+owed:
+
+1. `DOCK …`: 52 literals in both clients. It is the docking keys' fallback when no local docking
+   session is open, and no verb parses it; docking is `+helm/dock`. This is §5.2's case, still
+   present.
+2. `+roll/last`: a key on both clients' dice screens. `+roll` declares no switches, so dispatch
+   answers `Unknown switch "/last" for +roll.`
+
+`+act` and `+actions` are answered by the gateway's bridge, before the registry. The other rows
+are labels.
 
 ### TS.16 the field tempo (§5.8, §10.2)
 

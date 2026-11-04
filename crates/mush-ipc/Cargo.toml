@@ -28,5 +28,9 @@ tokio.workspace = true
 # implementor lives gateway-side.
 futures.workspace = true
 
+[dev-dependencies]
+# Doc 43 cut TS.4: arbitrary bytes and corrupt bodies into the frame decoder.
+proptest = { workspace = true }
+
 [lints]
 workspace = true

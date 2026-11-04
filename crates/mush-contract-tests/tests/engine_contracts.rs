@@ -26,6 +26,8 @@ mod production_registry;
 mod action_state_republish;
 #[path = "engine_contracts/arena_library.rs"]
 mod arena_library;
+#[path = "engine_contracts/client_verbs.rs"]
+mod client_verbs;
 #[path = "engine_contracts/exit_command_words.rs"]
 mod exit_command_words;
 #[path = "engine_contracts/help_commands.rs"]

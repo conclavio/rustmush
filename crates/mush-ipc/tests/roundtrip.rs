@@ -20,6 +20,10 @@ use mush_ipc::{
 };
 
 mod samples;
+// Doc 43 cut TS.4: hostile frames (a corrupt body behind a valid prefix, EOF
+// mid-frame, arbitrary bytes in any chunking).
+#[path = "roundtrip/hostile_frames.rs"]
+mod hostile_frames;
 use samples::{every_to_gateway, every_to_server};
 
 /// Encode one message and decode it back, asserting equality.

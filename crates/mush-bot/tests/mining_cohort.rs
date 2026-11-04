@@ -23,6 +23,19 @@
 mod arena;
 #[path = "support/mine.rs"]
 mod mine;
+// Doc 40 cut FR.7: the round's story at both sizes, over tacsim's own two grounds.
+#[path = "mining_cohort/fr7_round.rs"]
+mod fr7_round;
+#[path = "../../tacsim/tests/support/field/grounds_rig.rs"]
+mod grounds_rig;
+/// The one name `grounds_rig` reads from tacsim's `driving_rig`: Ahuna Flank's port entry.
+mod driving_rig {
+    pub(crate) const AHUNA: &str = "ahuna_port";
+}
+/// The one name `grounds_rig` reads from tacsim's `field_raiders_rig`: Ahuna's content raider.
+mod field_raiders_rig {
+    pub(crate) const SKULKS: &str = "tacsim.raider.ahuna_skulks";
+}
 
 use std::{collections::BTreeSet, time::Duration};
 
@@ -609,8 +622,7 @@ async fn typed(
             }
             assert!(
                 std::time::Instant::now() < deadline,
-                "`{line}` answered none of {needles:?} or {retry:?}:
-{text}"
+                "`{line}` answered none of {needles:?} or {retry:?}:\n{text}"
             );
         };
         match answer {
@@ -631,27 +643,20 @@ async fn float(god: &mut arena::Client, client: &mut arena::Client) {
                 let digits: String = rest.chars().take_while(char::is_ascii_digit).collect();
                 digits.parse::<u64>().ok()
             })
-            .unwrap_or_else(|| {
-                panic!(
-                    "no account id after {after:?}:
-{text}"
-                )
-            })
+            .unwrap_or_else(|| panic!("no account id after {after:?}:\n{text}"))
     };
     let opened = god
-        .say("@account/system in5_float=cr", "Opened account #")
+        .say(
+            "@account/system in5_float=tacsim.credit",
+            "Opened account #",
+        )
         .await;
     let source = id(&opened, "Opened account #");
-    let listed = client.say("@account/list", " cr = ").await;
+    let listed = client.say("@account/list", " tacsim.credit = ").await;
     let row = listed
         .lines()
-        .find(|line| line.trim_start().starts_with('#') && line.contains(" cr = "))
-        .unwrap_or_else(|| {
-            panic!(
-                "no cr account in the pilot's list:
-{listed}"
-            )
-        });
+        .find(|line| line.trim_start().starts_with('#') && line.contains(" tacsim.credit = "))
+        .unwrap_or_else(|| panic!("no tacsim.credit account in the pilot's list:\n{listed}"));
     let pilot = id(row, "#");
     god.say(&format!("@econ/mint {source}={pilot} 5000000"), "Minted")
         .await;
@@ -918,12 +923,32 @@ async fn production_story(miner: Miner) {
         sale.gross, sale.net
     ));
 
-    // The matter pin and the drift check: every port reads ready, nothing flagged.
+    // The matter pin and the drift check: no readiness line is pending, missing or flagged but
+    // two the story's own rate brings: the rate line itself (play runs at 24), and Occator's
+    // house rig stopped under a claim after the month of IC time the lifted rate runs.
     let (index, report) = god
         .answer("@tacsim/port status", &[mine::READY, mine::NOT_READY])
         .await;
-    assert_eq!(index, Some(0), "the ports read ready:\n{report}");
-    assert!(!report.contains("[flagged]"), "{report}");
+    assert!(
+        index.is_some(),
+        "the readiness report's last line:\n{report}"
+    );
+    let text = lines::normalise(&report);
+    let flagged = ["[flagged]", "[pending]", "[missing]"]
+        .iter()
+        .flat_map(|tag| text.match_indices(tag).map(|(at, _)| at))
+        .map(|at| {
+            let entry = &text[..at];
+            entry[entry.rfind("] ").map_or(0, |end| end + 2)..].trim()
+        })
+        .filter(|entry| {
+            !entry.starts_with("world rate: ")
+                && !(entry.contains("occator_port dispatch occator: ")
+                    && entry.contains(" stopped: under claim."))
+        })
+        .map(str::to_owned)
+        .collect::<Vec<_>>();
+    assert!(flagged.is_empty(), "{flagged:#?}\n{report}");
     client.close().await;
     god.close().await;
     drop(rig);

@@ -510,8 +510,10 @@ bulk mint, so a port boots in exactly main's fires.
   The way out is by Luna and Deimos: Ceres→Aitken Highport→Voltaire Anchorage→Stickney (`ceres_aitken`,
   `aitken_voltaire`, `voltaire_stickney`, about 27 IC days), bunkering at each port. The way home is
   `stickney_ceres`, whose legs carry no hazard. The detour adds about 11 real minutes a site at the 3,600 rate.
-  Seed: God mints the pilot a 50,000.00cr float from a system source of the story's own (`@account/system`, the
+  Seed: God mints the pilot a 50,000.00cr float from a system source of the story's own (`@account/system … =tacsim.credit`, the
   pilot's `@account/list`, `@econ/mint`), staff lines outside the bot's vocabulary.
+  The closing check reads `@tacsim/port status`: no line pending, missing or flagged but the two the story's rate
+  brings, the rate line itself and Occator's house rig stopped under a claim after the IC month the lift runs.
   by-hand: _the revision and walls of the conclav.dev run_.
 
 **Departures from the row.**
@@ -547,6 +549,10 @@ bulk mint, so a port boots in exactly main's fires.
   bunkers home ("Your account does not have enough available to cover that."). The mining loop's earnings plus the
   trade's margin do not buy propellant at 60 cr a tonne for three legs out and one home. The story seeds a float
   (above); tuning the margin or the propellant asks is the economy's, not this cut's.
+- **Stickney Yards' capital is thin** (an economy finding, provisional numbers): its 50,000 now also pays the works'
+  house purchases of Kasei's alloys (two lots, 4,500), so IN.8's `in8_a_whole_escort_scrapped_at_stickney…`,
+  whose escort costs the Yards about 45,000, can no longer buy the heavy's bale back. The story seeds the Yards
+  50,000 from Ceres' treasury before that step (`fund_the_yards`); the capital is the economy's to tune.
 - **For the SF thread:** the bot has no picket words (brake under 10 m/s, `+helm/submit`, `+tac/pdc auto`, a
   jink), so any bot haul through Kirkwood stalls in the bubble.
 
