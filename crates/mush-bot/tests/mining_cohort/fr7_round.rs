@@ -37,13 +37,11 @@
 //! 5. **Friendly fire voided at once** (FR.2): the raider and the wing are both Basin, so the
 //!    raider's rounds on the wing are friendly fire; the raider stops, the field demotes on its
 //!    idle bound, the raider is offered the void, and its next line, `+field/void`, takes it.
-//! 6. **A segment rolled** (FR.4): `[tacsim.arena.ledger].max_bytes` lowered to the production
-//!    floor ([`MAX_BYTES`], 1 MiB; the boot refuses less) and `summary_ms` to its floor, 1 s; the
-//!    live record reaches segment 2 before the field demotes. At that floor a five-hull field
-//!    ships about one 16 KiB chunk a minute, so the roll (three quarters of the bound) comes some
-//!    forty minutes into the field: the raider goes quiet after the jam and the field waits on
-//!    its idle bound ([`IDLE_DEMOTE_S`]), which is most of the run's hour. Beat 5's demotion
-//!    follows the roll.
+//! 6. **A segment rolled** (FR.4): the field's black box bounded at [`MAX_BYTES`] (48 KiB, FR.4's
+//!    knob) with a position summary every [`SUMMARY_MS`], below the boot's production floors
+//!    (1 MiB, 1 s), through tacsim's test-only `TacsimStore::lower_ledger_floor_for_test` on the
+//!    booted engine (the `test-ledger-floor` feature, FR.7c). The live record reaches segment 2 in
+//!    the field's first minutes, before the field demotes on its idle bound ([`IDLE_DEMOTE_S`]).
 //!
 //! **What is a fixture** (as FR.1's and FR.2's stories): the two Basin hulls are made, placed,
 //! seated and (the wing's) worn by a staff hand at boot, before the world task spawns; the two
@@ -72,13 +70,16 @@ use serde_json::Value;
 use crate::grounds_rig::{AHUNA_FLANK, Ground, URVARA_REACH};
 use crate::{arena, mine};
 
-/// **The ledger's bound for the run**: the production floor (`ArenaConfig::validate` refuses
-/// less than 1 MiB), so a segment rolls at three quarters of it.
-const MAX_BYTES: u64 = 1_048_576;
+/// **The ledger's bound for the run** (doc 40 cut FR.7c): FR.4's test knob, 48 KiB, below the
+/// boot's 1 MiB floor, so a segment rolls at three quarters of it early in the field.
+const MAX_BYTES: u64 = 48 * 1024;
+/// **A position summary every tenth of a second** (FR.2's and FR.4's), below the boot's 1 s
+/// floor: the black box fills at a known pace.
+const SUMMARY_MS: u32 = 100;
 /// **The field's idle bound for the run** (`[tacsim.field].idle_demote_s` and `disengage_s`):
-/// long enough that, once the raider stops firing, the black box fills to the roll before the
-/// field demotes (beat 6); the demotion and its void (beat 5) follow.
-const IDLE_DEMOTE_S: u32 = 3_300;
+/// past the reinforcement's landing (the raider holds fire while rig 2 comes down) and the roll;
+/// once the raider stops after the jam the field demotes on it, and beat 5's void follows.
+const IDLE_DEMOTE_S: u32 = 180;
 /// The fixture design the wing flies: the line tank whose every survivable hit jams a part.
 const JAMMING_UNIT: &str = "fr7.unit.jamming_tank";
 /// Its pack.
@@ -894,12 +895,16 @@ async fn round_story(ground: &'static Ground) {
             // Beat 5: the field demotes on its idle bound once the raider stops.
             cfg.tacsim.field.disengage_s = IDLE_DEMOTE_S;
             cfg.tacsim.field.idle_demote_s = IDLE_DEMOTE_S;
-            // Beat 6: the black box at the production floor, a summary every second.
-            cfg.tacsim.arena.ledger.max_bytes = MAX_BYTES;
-            cfg.tacsim.arena.ledger.summary_ms = 1_000;
             cfg.tacsim.arena.snapshot_ms = 2_000;
         },
         |engine| {
+            // Beat 6 (FR.7c): the black box below the boot's floors, through the test-only seam
+            // on the booted engine; no shipped config reaches it.
+            engine
+                .world
+                .module_state_mut::<tacsim::TacsimStore>()
+                .expect("the layer")
+                .lower_ledger_floor_for_test(MAX_BYTES, SUMMARY_MS);
             let (said, made) = fixture(engine, ground);
             hulls = Some(made);
             said
@@ -1195,18 +1200,18 @@ async fn round_story(ground: &'static Ground) {
 
 /// **FR.7 at 256**: Ahuna Flank.
 #[tokio::test(flavor = "multi_thread", worker_threads = 4)]
-#[ignore = "doc 40 cut FR.7's round story at 256: the bot over SSH, about an hour; run by name (tier dispatch)"]
+#[ignore = "doc 40 cut FR.7's round story at 256: the bot over SSH, about ten minutes; run by name"]
 async fn fr7_the_rounds_story_at_256() {
-    tokio::time::timeout(Duration::from_secs(100 * 60), round_story(&AHUNA_FLANK))
+    tokio::time::timeout(Duration::from_secs(30 * 60), round_story(&AHUNA_FLANK))
         .await
-        .expect("the round's story at 256 finishes inside 100 minutes");
+        .expect("the round's story at 256 finishes inside 30 minutes");
 }
 
 /// **FR.7 at 512**: Urvara Reach.
 #[tokio::test(flavor = "multi_thread", worker_threads = 4)]
-#[ignore = "doc 40 cut FR.7's round story at 512: the bot over SSH, about an hour; run by name (tier dispatch)"]
+#[ignore = "doc 40 cut FR.7's round story at 512: the bot over SSH, about ten minutes; run by name"]
 async fn fr7_the_rounds_story_at_512() {
-    tokio::time::timeout(Duration::from_secs(100 * 60), round_story(&URVARA_REACH))
+    tokio::time::timeout(Duration::from_secs(30 * 60), round_story(&URVARA_REACH))
         .await
-        .expect("the round's story at 512 finishes inside 100 minutes");
+        .expect("the round's story at 512 finishes inside 30 minutes");
 }
