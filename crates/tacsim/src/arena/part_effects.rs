@@ -1,7 +1,7 @@
 //! **What a hull's parts do while jammed or damaged** (doc 40 cut FR.5, §4.1 item 4; Q-40-2 to
 //! Q-40-6, ruled 2026-11-03 as proposed).
 //!
-//! One function, [`Arena::apply_part_effects`], derives a unit's live rows from its parts'
+//! One function, `Arena::apply_part_effects`, derives a unit's live rows from its parts'
 //! condition words (`mush_tactics::field_ops::ComponentCondition::classify_condition_id`): once
 //! at admission (`Arena::admit_unit`, which serves the check-out and `Arena::join` alike, so a
 //! condition the bay left is honoured for every kind) and once after a round's part op lands
@@ -203,7 +203,7 @@ pub(crate) fn derive(state: &mut UnitState, cell_cm: u16) -> Derived {
 
 impl Arena {
     /// **Derive `unit`'s live rows from its parts' condition words** (doc 40 cut FR.5, §4.1
-    /// item 4, Q-40-3; this module's head): [`derive`] over the row, then the arena's half —
+    /// item 4, Q-40-3; this module's head): [`derive()`] over the row, then the arena's half —
     /// a gun whose part no longer works off the fire table (GC.2's rule, Q-40-6), a jammed
     /// plant's scheduled `StartupComplete` off the heap (the retain `Arena::destroy_unit` runs,
     /// Q-40-4), a lowered core's condition row cut to its slots (`Arena::truncate_slots`), and
