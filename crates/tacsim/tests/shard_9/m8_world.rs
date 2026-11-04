@@ -2647,7 +2647,8 @@ struct FieldSite {
 ///    licence and `active`, the claim's seal digest — its retained source installed (a missing
 ///    source fails the field's spawn), and it flies the field with no `mind_dropped` and no
 ///    `mind_fault`;
-/// 4. the mark is cleared and the field demotes (the check-in writes the hull);
+/// 4. the raiders withdraw (`@field/raiders/withdraw`, the field story's own ending), their barge
+///    lifts and the field demotes, checking rig 1 in (the check-in writes the hull);
 /// 5. `+tv/1 recover go` brings rig 1 home and the claim's Close lands **over the live hull**
 ///    the field wrote (D-23-15), the seat released: rig 2's `go` now files its own claim.
 async fn licensed_field_story(at: &FieldSite) {
@@ -2714,13 +2715,18 @@ async fn licensed_field_story(at: &FieldSite) {
     // 3. The field, over the field harness.
     let mut rig = into_field_rig(world);
     crate::driving_rig::to_cell_on(&mut rig, at.entry, tv, at.cell);
+    let raider = if at.wide {
+        "tacsim.raider.urvara_s4b3"
+    } else {
+        crate::field_raiders_rig::SKULKS
+    };
     let raiders = if at.wide {
         let mut def = tacsim::field::raiders::raiders()
             .expect("the fixture raiders")
             .into_iter()
             .find(|def| def.id.as_str() == crate::field_raiders_rig::SKULKS)
             .expect("the content's raider");
-        def.id = crate::driving_rig::cid("tacsim.raider.urvara_s4b3");
+        def.id = crate::driving_rig::cid(raider);
         def.site = crate::driving_rig::cid(at.entry);
         let seeded =
             crate::driving_rig::staff_hand(&mut rig, |ctx| tacsim::field::raiders::seed(ctx, &def));
@@ -2825,21 +2831,18 @@ async fn licensed_field_story(at: &FieldSite) {
         matches!(&line.kind, EventKind::MindDropped { unit, .. } | EventKind::MindFault { unit, .. } if *unit == tv)
     });
     assert!(!troubled, "the licensed mind neither dropped nor faulted");
-    // 4. The mark cleared, the field demotes and checks rig 1 in.
-    // In the field the parties carry the field's own letters (the promotion's `E` was the
-    // site's): the leader clears its mark on rig 1's party by that party's letter.
-    let party = live
-        .units
-        .iter()
-        .find(|row| row.unit == tv)
-        .map(|row| row.party.letter())
-        .expect("rig 1's party");
-    let (out, queued) =
-        crate::driving_rig::command(&mut rig, leader, &format!("+field/mark {party}=clear"));
-    assert_eq!(queued.len(), 1, "one clear: {out}");
-    crate::driving_rig::land_composed(&mut rig, &queued[0]).expect("the clear lands");
+    // 4. The raiders withdraw (the field story's own ending), their barge lifts and the field
+    // demotes on its quiet interval, checking rig 1 in. A field the fight already ended is over.
+    if crate::field_host_rig::task(&rig).is_some() {
+        let ordered = crate::driving_rig::run(
+            &mut rig.tw,
+            GOD,
+            &format!("@field/raiders/withdraw {raider}"),
+        );
+        assert!(ordered.contains("make for the"), "{ordered}");
+    }
     assert!(
-        crate::field_host_rig::until_composed(&mut rig, &mut rx, &mut lines, 400, |rig, _| {
+        crate::field_host_rig::until_composed(&mut rig, &mut rx, &mut lines, 600, |rig, _| {
             crate::field_host_rig::task(rig).is_none()
         })
         .await,
