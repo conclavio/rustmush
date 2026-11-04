@@ -1074,9 +1074,24 @@ fn walk(ctx: &mut Ctx<'_>, state: &mut SurfaceTickState) -> SurfaceFireStats {
                     };
                     let pending = ctx.authoritative_pending(operator);
                     match attempt_visit(state, key, pending) {
-                        Visit::PassOver | Visit::Page => {
+                        Visit::PassOver => {
                             stats.passed_over = stats.passed_over.saturating_add(1);
                             Step::Held
+                        }
+                        // D-23-21: an Open the owners refused on every try is refused for good —
+                        // the launch cancelled, the rig in its bay (a Close keeps retrying).
+                        Visit::Page => {
+                            let step = crate::surface::mind_claim::refuse(
+                                ctx,
+                                &mut fire,
+                                handles.surface_act.as_ref(),
+                                record,
+                            );
+                            if step == Step::Submitted {
+                                stats.submitted = stats.submitted.saturating_add(1);
+                                stats.worked = stats.worked.saturating_add(1);
+                            }
+                            step
                         }
                         Visit::Submit => {
                             let step = crate::surface::mind_claim::step(
@@ -1279,6 +1294,10 @@ fn still_due(records: &[RigRecord], now: i64) -> BTreeSet<ActKey> {
         }
         if quiet && record.excursion.is_some() {
             due.insert(idle_attempt(record));
+        }
+        // Doc 23 cut S.4b-2: a mind claim owed a transition, so its tries survive the prune.
+        if claims(record).is_some() {
+            due.insert(claim_attempt(record));
         }
     }
     due

@@ -2888,3 +2888,88 @@ fn s4b1_a_live_claim_cursor_holds_the_rig_in_its_bay() {
     );
     no_refused_writes(&rig.tw);
 }
+
+/// **Doc 23 cut S.4b-2 (D-23-21): an Open refused for good cancels the queued launch.** The fitted
+/// roster under the Active commerce with the IC claims composed in the bays
+/// (`reboot_with_claims`); staff file the cursor `go` would (an `Opening` for licence 7, which the
+/// pilot does not hold, and the launch queued behind it). The surface tick's claim arm mints the
+/// Open and submits it as the pilot on every fire; the Roll's reader refuses each one, so the book
+/// never holds it. Past the tries the arm cancels the launch: the cursor reads `Refused`, the queue
+/// is gone, the rig never left its bay, the pilot hears `CLAIM_REFUSED` once, and a plain launch
+/// afterwards is not held by the spent cursor.
+#[test]
+fn s4b2_an_open_refused_for_good_cancels_the_queued_launch() {
+    use tacsim::surface::excursion::{CLAIM_REFUSED, ClaimCursor, Queued, QueuedLaunch};
+    let _ = tracing_subscriber::fmt()
+        .with_env_filter("warn,ic_claim=debug")
+        .with_test_writer()
+        .try_init();
+    let mut rig = crate::excursions::stocked_fitted();
+    let (pilot, row, tvs) = on_pad(&mut rig, 1);
+    let tv = tvs[0];
+    let (mut rig, _) = crate::excursions::reboot_with_claims(rig, pilot, &[pilot]);
+    fit(&mut rig, tv, tacsim::definitions::core_replacement::RIG_I);
+    let now = ic_now(&rig);
+    let mut record =
+        record_of(&mut rig.tw, tv).unwrap_or_else(|| tacsim::surface::RigRecord::fresh_unread(tv));
+    record.claim = Some(Box::new(ClaimCursor::Opening {
+        operator: pilot,
+        licence: 7,
+        org: None,
+        launch_ic: now,
+        tries: 0,
+    }));
+    record.queued = Some(Queued {
+        kind: tacsim::surface::ActKind::Launch,
+        operator: pilot,
+        hull: ObjId(row.hull),
+        slot: 1,
+        site: mush_core::CanonicalId::new("ahuna_port").expect("the site"),
+        after: record.ordinal,
+        at_ic: now,
+        excursion: None,
+        launch: Some(Box::new(QueuedLaunch {
+            launch_ic: now,
+            mind: "filed:7".into(),
+            org: None,
+            licence_state: tacsim::minds::licence_state::SealLicenceState::Active,
+        })),
+    });
+    crate::excursions::put_record(&mut rig, record);
+    let mut heard = 0;
+    for _ in 0..40 {
+        let (events, queued) = fire(&mut rig);
+        heard += count(&said(&rig.tw, &events, pilot), CLAIM_REFUSED);
+        // The owners refuse every Open (no licence 7 is held): those submissions land nothing.
+        for submit in &queued {
+            let refused_open = submit.action.key().id.as_str() == "open_ic_mind";
+            let landed = land(&mut rig, submit);
+            assert!(landed.is_ok() || refused_open, "{landed:?}");
+        }
+        if record_of(&mut rig.tw, tv)
+            .is_some_and(|r| matches!(r.claim.as_deref(), Some(ClaimCursor::Refused { .. })))
+        {
+            break;
+        }
+    }
+    let record = record_of(&mut rig.tw, tv).expect("the record");
+    assert!(
+        matches!(record.claim.as_deref(), Some(ClaimCursor::Refused { .. })),
+        "{:?}",
+        record.claim
+    );
+    assert!(record.queued.is_none(), "the launch is cancelled");
+    assert!(record.act.is_none() && record.excursion.is_none());
+    assert!(in_bay(&rig.tw, tv, &row), "nothing left the bay");
+    assert_eq!(heard, 1, "the pilot is told once");
+    assert_eq!(
+        tacsim::ic_claim_of(rig.tw.world(), tv),
+        tacsim::IcClaimRead::None
+    );
+    let _ = act_go(&mut rig, pilot, "+tv/1 launch go");
+    assert!(
+        record_of(&mut rig.tw, tv).is_some_and(|r| r.act.is_some()),
+        "a refused claim holds nothing"
+    );
+    no_refused_writes(&rig.tw);
+}

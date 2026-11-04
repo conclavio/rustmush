@@ -28,7 +28,8 @@ pub const MAX_IC_EXCLUSION_HISTORY: usize = 8192;
 pub const MAX_IC_EXCLUSION_BYTES: usize = 8192;
 pub const MAX_IC_BASES: usize = 32;
 const MAX_BASE_BYTES: usize = 4096;
-fn error(_: impl std::fmt::Display) -> ParticipantError {
+fn error(reason: impl std::fmt::Display) -> ParticipantError {
+    tracing::debug!(target: "ic_claim", %reason, "sim: IC exclusion refused");
     ParticipantError::refused("IC exclusion is unavailable or changed")
 }
 fn bad(e: impl std::fmt::Display) -> ModError {

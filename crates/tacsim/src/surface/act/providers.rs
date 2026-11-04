@@ -447,6 +447,16 @@ impl ActionProvider for SurfaceActProvider {
                     maximum: i64::MAX,
                 },
             )?,
+            // Doc 23 cut S.4b-2 (D-23-21): the surface tick's word on a queued launch whose claim
+            // the owners would not open within its tries — the launch is cancelled, the cursor
+            // `Refused`, nothing having left the bay.
+            parameter(
+                "claim",
+                false,
+                ProjectedParameterKind::Choice {
+                    choices: ["refused".to_owned()].into_iter().collect(),
+                },
+            )?,
         ];
         offer_draft(
             action,
@@ -1112,6 +1122,63 @@ impl SurfaceActProvider {
         // Doc 23 cut S.4b-2 (D-23-21, D-23-23 step 1): the launch a claim held back, started by
         // its operator's own start (the surface tick's, with no `mind=` word) once the book holds
         // the claim's Open: `(open, licence, launch, seal)`.
+        // A queued launch whose claim was refused for good (the tick's `claim: refused`): the
+        // cursor is `Refused`, the queue cleared, no act starts.
+        if kind == ActKind::Launch
+            && parameters.get("claim").and_then(Value::as_str) == Some("refused")
+        {
+            let at_ic = now;
+            match (record.queued.as_ref(), record.claim.as_deref()) {
+                (
+                    Some(crate::surface::excursion::Queued {
+                        launch: Some(_),
+                        operator,
+                        ..
+                    }),
+                    Some(crate::surface::excursion::ClaimCursor::Opening { .. }),
+                ) if *operator == actor
+                    && !matches!(
+                        context
+                            .as_deref()
+                            .and_then(|context| context.world().ok())
+                            .map(|world| crate::minds::ic_sortie::claim_of(world, tv)),
+                        Some(crate::minds::ic_sortie::ClaimRead::Active { .. })
+                    ) =>
+                {
+                    record.claim =
+                        Some(Box::new(crate::surface::excursion::ClaimCursor::Refused {
+                            reason: crate::surface::excursion::CLAIM_REFUSED.into(),
+                            at_ic,
+                        }));
+                    record.queued = None;
+                    write_record(txn, &self.excursions, record, existed)?;
+                    let outcome = RulesValue::new(
+                        self.outcome.clone(),
+                        json!({
+                            "act": wire_word(kind, quiet),
+                            "actor": actor.0,
+                            "due_ic": now,
+                            "ordinal": ordinal,
+                            "tv": tv.0,
+                        }),
+                    )
+                    .map_err(|_| {
+                        port_error(
+                            ActionErrorCode::BoundsExceeded,
+                            "the surface act's outcome exceeds canonical bounds",
+                        )
+                    })?;
+                    return Ok(AuthoritativeActionOutput::new(outcome)
+                        .with_eligible_witnesses(vec![invocation.principal().clone()]));
+                }
+                _ => {
+                    return Err(port_error(
+                        ActionErrorCode::Conflict,
+                        "that rig's mind claim is not waiting to open",
+                    ));
+                }
+            }
+        }
         let claimed = if kind == ActKind::Launch && mind.is_none() {
             queued_claim(&record, actor, tv, context.as_deref())?
         } else {

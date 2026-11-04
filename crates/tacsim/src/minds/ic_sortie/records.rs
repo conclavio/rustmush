@@ -14,7 +14,9 @@ pub(super) const MAX_CLOSE_BYTES: usize = 8192;
 /// **The record's format** (doc 23 cut S.4b-1: 2 carries `Opening.transition`). Format 1 is
 /// refused, never migrated: the book is pre-launch and holds no claim (doc 38's phase rule).
 pub(super) const FORMAT: u16 = 2;
-pub(super) fn bad(_: impl std::fmt::Display) -> ParticipantError {
+pub(super) fn bad(reason: impl std::fmt::Display) -> ParticipantError {
+    // The player's sentence stays generic; the reason is the operator's (doc 23 cut S.4b-2).
+    tracing::debug!(target: "ic_claim", %reason, "tacsim: IC seal owner refused");
     ParticipantError::refused("IC retained execution or event identity differs")
 }
 pub(super) fn present<'de, D: serde::Deserializer<'de>, T: Deserialize<'de>>(

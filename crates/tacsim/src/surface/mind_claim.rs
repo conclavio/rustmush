@@ -197,6 +197,58 @@ fn submit(
     }
 }
 
+/// **The claim refused for good** (doc 23 cut S.4b-2, D-23-21): the tick's tries spent with no
+/// Open in the book, the queued launch's start is submitted with `claim: refused`, whose prepare
+/// writes `Refused` and cancels the queue; the operator is told once, here.
+pub(crate) fn refuse(
+    ctx: &mut Ctx<'_>,
+    fire: &mut Fire,
+    start: Option<&mush_core::DefinitionRef>,
+    record: &RigRecord,
+) -> Step {
+    let Some(ClaimCursor::Opening { operator, .. }) = record.claim.as_deref() else {
+        return Step::Idle;
+    };
+    let Some(start) = start else {
+        return Step::Refused;
+    };
+    let operator = *operator;
+    let tv = record.tv;
+    let ordinal = record.ordinal.saturating_add(1);
+    let Some(key) = crate::surface::act::queued_key(tv, ordinal).and_then(|key| {
+        mush_core::IdempotencyKeyText::parse_canonical(format!("{}/refused", key.as_str())).ok()
+    }) else {
+        return Step::Refused;
+    };
+    let parameters = serde_json::json!({
+        "tv": tv.0.to_string(),
+        "act": crate::surface::excursion::ActKind::Launch.word(),
+        "ordinal": ordinal,
+        "claim": "refused",
+    });
+    match fire.as_principal(ctx, tv, operator, |ctx| {
+        ctx.submit_authoritative(
+            start.clone(),
+            mush_core::PerceivedRef::SelfActor,
+            Vec::new(),
+            parameters,
+            key,
+        );
+    }) {
+        Ok(()) => {
+            crate::port_tick::notify_budget(
+                ctx,
+                operator,
+                crate::surface::excursion::CLAIM_REFUSED,
+                crate::port_tick::NoticeLevel::Trip,
+            );
+            Step::Submitted
+        }
+        Err(SwapRefused::AlreadyActed | SwapRefused::Owed | SwapRefused::Pending) => Step::Deferred,
+        Err(SwapRefused::God | SwapRefused::Gone) => Step::Refused,
+    }
+}
+
 /// **The queued launch's start** (`act: launch`, no `mind=` word) under the queued key, as the
 /// operator: its prepare finds the claim open and starts the ramp.
 fn submit_launch(

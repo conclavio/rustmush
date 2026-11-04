@@ -941,6 +941,9 @@ fn s4b1_a_carrier_bay_is_a_hangar_where_hangars_are_admitted() -> Result {
         identity_of(f.world.world(), f.unit).map(|i| i.open),
         Some(token())
     );
+    // Doc 23 cut S.4b-2: the hold names its hangar's carrier, so a field admits the hull under
+    // its claim (D-23-15); a base-held hull names none.
+    check_eq!(held_in_hangar(f.world.world(), f.unit), Some(f.carrier));
     for shown in [f.carrier, f.bay] {
         check!(!crate::deployed::excluded(
             f.world.world(),

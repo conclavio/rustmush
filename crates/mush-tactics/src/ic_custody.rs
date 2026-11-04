@@ -24,7 +24,8 @@ use std::collections::{BTreeMap, BTreeSet};
 use std::sync::{Arc, OnceLock};
 
 const PREFIX: &str = "ic_custody:";
-fn refused(_: impl std::fmt::Display) -> ParticipantError {
+fn refused(reason: impl std::fmt::Display) -> ParticipantError {
+    tracing::debug!(target: "ic_claim", %reason, "tactics: IC hull custody refused");
     ParticipantError::refused("IC hull custody is unavailable or changed")
 }
 fn bad(e: impl std::fmt::Display) -> ModError {

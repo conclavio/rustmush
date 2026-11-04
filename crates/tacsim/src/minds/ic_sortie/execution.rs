@@ -15,7 +15,8 @@ use crate::deliberation::order::CharacterRef;
 use crate::match_::filed_holdings::FiledExecutable;
 use crate::match_::seal::{SealPolicy, seal_with_policy};
 
-fn bad(_: impl std::fmt::Display) -> ParticipantError {
+fn bad(reason: impl std::fmt::Display) -> ParticipantError {
+    tracing::debug!(target: "ic_claim", %reason, "tacsim: IC executable refused");
     ParticipantError::refused("IC executable material is unavailable or changed")
 }
 

@@ -276,4 +276,7 @@ Everything §17.10 lists beyond the bullets above belongs to S.4b-2:
 
 ### Cost (rule #14)
 
-The PR run's JUnit figure is recorded here once its run lands (see the PR body).
+From the PR's last run's JUnit (`41773658403`, at `6dc72e09`): **+0.07 summed minutes on
+`tacsim-integration-9`** — the one new story, `s4b1_a_live_claim_cursor_holds_the_rig_in_its_bay`,
+4.0 s; the cell sums 30.9 min. The lib, `rest-libs` and `bot` additions are under a second in all
+(`tacsim-lib` 0.77 s over six tests, `rest-libs` 0.03 s, `bot` 0.01 s).

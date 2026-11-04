@@ -834,6 +834,23 @@ pub(crate) async fn rate_and_list(
     listed
 }
 
+/// **Coprates' line alone, rated and listed** (doc 23 cut S.4b-2: one licence is all a claim
+/// story needs; [`rate_and_list`]'s first row): one genuine rating where the tier-2 world runs
+/// three. Returns the House, the owner licence and the listing.
+pub(crate) async fn rate_and_list_coprates(
+    world: &mut M8World,
+) -> (
+    HouseDeployment,
+    mush_roll::commerce::LicenceId,
+    mush_core::CommitToken,
+) {
+    let house = world.deployment.houses.coprates.clone();
+    let certified = certify(world, "coprates", &house.source_name.clone()).await;
+    eprintln!("M8G_STORY rated coprates: {}", census(world, "rating"));
+    let (licence, listing) = file_and_list(world, &house, &certified);
+    (house, licence, listing)
+}
+
 /// **The pilot buys one paid House Pin** of `listing` (the launch story's purchase): a member of
 /// the Republic (Coprates requires it), at the counter, quote, fund and settle. Returns the paid
 /// licence.
@@ -2447,12 +2464,16 @@ async fn rate_and_publish(world: &mut M8World) -> Vec<(&'static str, String)> {
 ///    (the book's row closed, no active claim), and a plain launch afterwards is not held by the
 ///    spent cursor.
 #[tokio::test(flavor = "current_thread")]
-#[ignore = "M8 combined-world story: three genuine Registry ratings; the CI dispatch runs it"]
+#[ignore = "M8 combined-world story: a genuine Registry rating; the CI dispatch runs it"]
 async fn s4b2_a_licensed_rig_opens_its_claim_in_the_bay_and_closes_it_home() {
     use tacsim::surface::excursion::ClaimCursor;
+    // The owners' refusal reasons, which the player never hears (`ic_claim` at debug).
+    let _ = tracing_subscriber::fmt()
+        .with_env_filter("warn,ic_claim=debug")
+        .with_test_writer()
+        .try_init();
     let mut world = m8_world_with_claims();
-    let listed = rate_and_list(&mut world).await;
-    let (_, _, listing) = listed[0].clone();
+    let (_, _, listing) = rate_and_list_coprates(&mut world).await;
     let paid = buy(&mut world, listing);
     let (pilot, tv) = (world.pilot, world.tvs[0]);
     crate::ic_sortie_surface::fit(

@@ -280,8 +280,10 @@ impl OwnerReadService for IcAdmissionReader {
         }
         roll.commerce_ready()
             .map_err(|_| OwnerReadError::Unavailable)?;
-        let hull = TitleFence::capture(ctx.world(), request.unit, ctx.actor())
-            .map_err(|_| OwnerReadError::Refused)?;
+        let hull = TitleFence::capture(ctx.world(), request.unit, ctx.actor()).map_err(|e| {
+            tracing::debug!(target: "ic_claim", unit = request.unit.0, error = ?e, "roll: IC admission: the hull's title fence");
+            OwnerReadError::Refused
+        })?;
         let owner = ctx
             .action_state(&self.families.licences, &request.licence.key())?
             .is_some();
@@ -333,13 +335,19 @@ impl OwnerReadService for IcAdmissionReader {
                         request.licence,
                         &self.expected,
                     )
-                    .map_err(refusal)?,
+                    .map_err(|e| {
+                    tracing::debug!(target: "ic_claim", error = ?e, "roll: IC admission: the paid projection");
+                    refusal(e)
+                })?,
                 ),
                 None,
                 None,
                 None,
             ),
-            (false, false) => return Err(OwnerReadError::Refused),
+            (false, false) => {
+                tracing::debug!(target: "ic_claim", licence = request.licence.get(), "roll: IC admission: no licence row");
+                return Err(OwnerReadError::Refused);
+            }
             (true, true) => return Err(OwnerReadError::Integrity),
         };
         let paid_ownership = if paid {
@@ -347,7 +355,10 @@ impl OwnerReadService for IcAdmissionReader {
             let licence = read(ctx, &self.families.paid_licences, request.licence.key())
                 .map_err(|_| OwnerReadError::Integrity)?;
             super::super::paid_resale::history::require_not_pending(ctx, &self.families, licence)
-                .map_err(|_| OwnerReadError::Refused)?;
+                .map_err(|_| {
+                tracing::debug!(target: "ic_claim", "roll: IC admission: a pending resale");
+                OwnerReadError::Refused
+            })?;
             // The full paid projection already proved today's exact holder;
             // preserve that immutable generation in this new captured warrant.
             licence.ownership().copied()
