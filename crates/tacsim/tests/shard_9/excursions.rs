@@ -120,6 +120,13 @@ fn fitted_tactics() -> mush_tactics::TacticsModule {
 /// **The test world's layer the launch composes over** (doc 17h cut M8g G1): enabled, the
 /// shipped game content, a test world, the conduct carrier — what the launch prepares its catalog from and then
 /// configures (with the inventory and the unit authority).
+/// **Whether the M8 world's launch layer runs a field at the field stories' tempo** (doc 23 cut
+/// S.4b-3): set once by `m8_world::m8_world_field` before its first boot. Process-wide, which is
+/// safe because nextest runs each test in a process of its own and the CI job runs the M8 stories
+/// one exact test at a time; the plain M8 stories never set it.
+pub(crate) static LAUNCH_FIELD_TUNE: std::sync::atomic::AtomicBool =
+    std::sync::atomic::AtomicBool::new(false);
+
 pub(crate) fn launch_layer() -> tacsim::TacsimRuleset {
     // The named launch story's layer: a proving budget that admits the three Houses' full
     // Registry trials in one UTC day, and the unarmed proving carrier before any catalogue
@@ -129,6 +136,16 @@ pub(crate) fn launch_layer() -> tacsim::TacsimRuleset {
         ..TacsimConfig::default()
     };
     cfg.minds.proving_daily_unit_minutes = 100_000;
+    // Doc 23 cut S.4b-3: the field stories' fast field inside the checked bounds (S.4b-T's
+    // `claim_tune`: the commerce's preparation validates `[tacsim]` as production does).
+    if LAUNCH_FIELD_TUNE.load(std::sync::atomic::Ordering::Acquire) {
+        cfg.arena.tempo.quiet_ms = 100;
+        cfg.arena.tempo.alert_ms = 100;
+        cfg.arena.tempo.engaged_ms = 100;
+        cfg.arena.tempo.substep_max_ms = 100;
+        cfg.arena.snapshot_ms = 1_000;
+        cfg.field.disengage_s = 15;
+    }
     tacsim::TacsimRuleset::with_game_content(cfg, true)
         .with_test_world(true)
         .with_conduct_carrier()
@@ -1273,6 +1290,17 @@ pub(crate) fn on_pad_as(
     name: &str,
     n_rigs: usize,
 ) -> (ObjId, HullRow, Vec<ObjId>) {
+    on_pad_as_at(rig, (who, seed, name), ("ahuna", "ahuna_port"), n_rigs)
+}
+
+/// **[`on_pad_as`] on any site** (doc 23 cut S.4b-3, `driving_rig`'s twin): `(venue, entry)` the
+/// `+ship/undock` word and the site's port entry.
+pub(crate) fn on_pad_as_at(
+    rig: &mut Rig,
+    (who, seed, name): (&str, i64, &str),
+    (venue, entry): (&str, &str),
+    n_rigs: usize,
+) -> (ObjId, HullRow, Vec<ObjId>) {
     let (pilot, row) = prospector(rig, who, seed, name);
     for _ in 0..n_rigs {
         lease_one(rig, pilot);
@@ -1288,28 +1316,27 @@ pub(crate) fn on_pad_as(
     let hull = ObjId(row.hull);
     // Doc 20 cut SM.6 (D2): a keyed site's pad is closed until its clerk has opened every
     // deposit (an unkeyed site reads Ready at once, and this fires nothing).
-    open_ahuna(rig);
-    let t = file_and_launch(rig, pilot, hull, "+ship/undock ahuna");
+    open_site(rig, entry);
+    let t = file_and_launch(rig, pilot, hull, &format!("+ship/undock {venue}"));
     let _ = to_ic(rig, arrival_of(&t));
     assert!(
         matches!(
             tacsim::port::ship::berth_of(rig.tw.world(), hull),
-            tacsim::port::ship::Berth::Docked { map, .. } if map.entry.as_str() == "ahuna_port"
+            tacsim::port::ship::Berth::Docked { map, .. } if map.entry.as_str() == entry
         ),
-        "the hull is settled on Ahuna Flank's pad"
+        "the hull is settled on {entry}'s pad"
     );
     let tvs = rigs_of(&rig.tw, pilot);
     assert_eq!(tvs.len(), n_rigs);
     (pilot, row, tvs)
 }
 
-/// **Open Ahuna Flank** (doc 20 cut SM.6, D2; `support::sites::open_site`), keeping the landed
-/// bundles' typed post-images for a reboot; the port fires it took (0 when it is open already,
-/// as an unkeyed site always is).
-fn open_ahuna(rig: &mut Rig) -> u32 {
+/// **Open the site `entry`** (doc 20 cut SM.6, D2; `support::sites::open_site`), keeping the
+/// landed bundles' typed post-images for a reboot; the port fires it took (0 when it is open
+/// already, as an unkeyed site always is).
+fn open_site(rig: &mut Rig, entry: &str) -> u32 {
     let mut kept = Vec::new();
-    let fires =
-        support::sites::open_site_keeping(&mut rig.tw, "ahuna_port", &mut |ops| kept.push(ops));
+    let fires = support::sites::open_site_keeping(&mut rig.tw, entry, &mut |ops| kept.push(ops));
     for ops in kept {
         keep(rig, ops);
     }
