@@ -1313,7 +1313,12 @@ economy's per-party cap of live contracts
 (`mush_economy::MAX_LIVE_CONTRACTS_PER_PARTY`) from 32 to 100 on 2026-10-26
 (O-19c): a one-IC-day smoke at 64 TVs ran green that day, and no whole 64-TV
 month is on record yet. `TACSIM_COHORT_IC_DAYS` (1 to 30, default 30) shortens the month; 5 is the
-smoke. The month at 30 TVs took about 7.5 minutes on the build box.
+smoke. The month at 30 TVs took about 7.5 minutes on the build box and 12
+minutes on conclav.dev (730 s), where `scripts/vps-gate.sh --kind cost-lane`
+runs it by default since doc 43 cut TS.21: its lens is absolute (5,000 us at
+the p99, no baseline file and no host in it), so the box it is read on is the
+whole of its gate. conclav.dev read the tick gate's minimum p99 at 887 us and
+the month's at 2,053 us at main `a2ef4075`.
 
 **Rollback.** The cut's decision (c) keeps the surface unload's hopper markers one
 real hour (`RingEntry.keep_s`; every other marker keeps the day). A build from
@@ -1935,6 +1940,31 @@ the thresholds unchanged, the timing the VPS's at that tree, the gate live
 there as before. The in-tree pins (the D-UM-28 rows, the duel's and the
 field's hashes, the three ledger-line tables) moved in the code commit; the
 RNG's fold did not, so no draw and no outcome moved.
+
+**Re-blessed on conclav.dev** (doc 43 cut TS.21, D-43-6, 2026-11-04): the
+timing gate had been dormant everywhere since `linux/4/srv1930616` went away,
+and the owner moved it to conclav.dev rather than back onto conclav.io, whose
+dev1 and dev2 play no run can control. The timing block alone was re-blessed
+there, at main `a2ef4075`, by hand as `ghrunner` at the runner's `Nice=10` with
+`HOSTNAME` unset (so the host is `/etc/hostname`'s, as in every `gate.yml`
+job): the asserting lanes and the delta (the deterministic block and all four
+minds blocks equal, every lens held), the delta with `TACSIM_BASELINE_BLESS=1`
+over those reports, then the lanes and the delta again with the gate live
+(every figure within 4.3 per cent). The bless's timing leaves (the tempos,
+`setup_ms`, the window's milliseconds, the snapshot's encode and decode times,
+the run-only `assert`/`lens`) were carried onto main's file, and nothing else:
+the deterministic block and every earlier record stand byte for byte, and the
+`blessed` stanza gained a `harness_timing_update` record naming the host
+(`linux/32/hg.conclav.dev`), the five readings and the reason. The lenses did
+not move. Over five readings at that tree (two by hand, three gate runs) the
+wake p99 ran 6.36 to 7.90 ms and the window p99 12.2 to 15.0 ms: the slowest
+gate run is +19.7 per cent on the p99 against the blessed run, inside the
+bound, so a timing-only failure is still re-run once before it is believed.
+The lance lane was skipped in that bless: under `TACSIM_ASSERT` it fails a
+deterministic fact pin on main (its W8 span reads 3 where 2 is pinned; every
+nightly's `harness-lance.json` reads 3 back to 2026-10-19), which stops
+`scripts/harness-weekly.sh`, and so `vps-gate.sh --kind harness`, before the
+delta until it is re-pinned or fixed.
 
 **A timing-only failure is re-run once before it is believed.** Two runs of one
 tree on one box have differed by 16 per cent at the p99 (16b cut N.1). A

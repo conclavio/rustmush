@@ -443,7 +443,7 @@
     },
     "harness_timing_update": {
       "cut": "doc 43 TS.21 (D-43-6), the timing baseline on conclav.dev",
-      "recorded_utc": "2026-11-04T02:30:00Z",
+      "recorded_utc": "2026-11-04T02:50:00Z",
       "measured_revision": "a2ef407539ab67157faa6675861b3aa855cb4c78 (main)",
       "host": {
         "cpus": 32,
@@ -453,9 +453,51 @@
       "verified_hosts": [
         "linux/32/hg.conclav.dev"
       ],
-      "reason": "DRAFT",
-      "timing_policy": "DRAFT",
-      "fields": [],
+      "reason": "D-43-6 (the owner, 2026-11-03): the timing gate had been dormant everywhere since its blessing host, linux/4/srv1930616 (the old conclav.io plan), went away; conclav.io now carries dev1 and dev2's play, which no run can control, while conclav.dev (32 cores, AMD EPYC, nothing else on the box) has no other load and is close enough to conclav.io for timing. FR.5's rebless needs a live timing baseline to re-bless against.",
+      "procedure": "By hand as ghrunner in a throwaway clone of the measured revision, at the runner's Nice=10, HOSTNAME unset (the host read from /etc/hostname, as every gate.yml job reads it): (A) the lanes under TACSIM_ASSERT=1 with --skip tacsim_harness_lance, then the delta against main's file: deterministic block equal (106 fields), the four minds blocks equal, every lens held, every minds variant held=yes sound=yes; (B) the delta with TACSIM_BASELINE_BLESS=1 over A's reports; (C) the same lanes and delta again against the blessed file, the timing gate live: p50 -4.1%, p99 -3.6%, window p99 -4.3%. The lance lane was skipped because it fails a deterministic fact pin under TACSIM_ASSERT on main (W8 span_max 3 where 2 is pinned, harness.rs's at-defaults block; span_max 3 on every nightly back to 2026-10-19), which is no timing figure and none of this record's.",
+      "readings": {
+        "note": "wake p50 / wake p99 / window p99 ms of the CI cohort's arena lane at a2ef4075, each run's harness-arena.json",
+        "gate_41756575489": [
+          5.414,
+          7.896,
+          14.97
+        ],
+        "gate_41760419368": [
+          5.281,
+          7.213,
+          14.553
+        ],
+        "gate_41760428226": [
+          5.487,
+          6.644,
+          12.787
+        ],
+        "by_hand_A_blessed": [
+          5.467,
+          6.595,
+          12.777
+        ],
+        "by_hand_C": [
+          5.243,
+          6.358,
+          12.231
+        ]
+      },
+      "timing_policy": "Only the timing leaves moved, carried from bless B onto main's file: tempos, setup_ms, window.ms_max/ms_p50/ms_p95/ms_p99, snapshot.decode_ms_max/encode_ms/wake_plus_encode_ms_max, and the run-only thresholds.assert/lens (now the asserting run's); blessed.host/commit/date are conclav.dev's. Every other leaf, the deterministic block and every earlier record are main's, byte for byte (the leaves no path compares, such as perception.contacts_at_end, slope.refusals and the snapshot bytes, keep their old values). The lenses (20 ms per wake, 22/32 ms per window, the 40 ms engaged ceiling) did not move. Bless A is the median of five readings; the slowest, gate run 41756575489, is +19.7% on the p99 against it, inside the 20% bound, so a timing-only failure is re-run once before it is believed, as before.",
+      "fields": [
+        "tempos",
+        "setup_ms",
+        "window.ms_max",
+        "window.ms_p50",
+        "window.ms_p95",
+        "window.ms_p99",
+        "snapshot.decode_ms_max",
+        "snapshot.encode_ms",
+        "snapshot.wake_plus_encode_ms_max",
+        "thresholds.assert",
+        "thresholds.lens"
+      ],
+      "cost_lane": "The cost lane's lens is absolute (no baseline file): scripts/cost-lane.sh on conclav.dev at the same revision, under TACSIM_ASSERT=1, read the surface tick gate's minimum p99 887 us of five runs and the 30-TV IC month's surface-fire p99 2053 us, both under 5000 us, no breach, the month's wall 730 s.",
       "previous": {
         "tempos": [
           {
