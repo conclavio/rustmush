@@ -79,7 +79,9 @@ use std::collections::HashMap;
 use mush_pixel::Frame;
 use mush_pixel::chart::{ChartPicture, SKY_CHART_FEED};
 use mush_pixel::cockpit::{ARENA_MAP_FEED, COCKPIT_FEED, CockpitPicture};
-use mush_pixel::docking::{DockingPicture, SPACE_DOCKING_FEED};
+use mush_pixel::docking::{
+    DockingClientInput, DockingClientSession, DockingPicture, SPACE_DOCKING_FEED,
+};
 use mush_pixel::doll::DollPicture;
 use mush_pixel::holotank::{HolotankPicture, SPACE_HOLOTANK_FEED};
 use mush_pixel::iso25d::Iso25DPicture;
@@ -165,6 +167,7 @@ struct State {
     holotank: HolotankPicture,
     space_cockpit: SpaceCockpitPicture,
     docking: DockingPicture,
+    docking_session: Option<DockingClientSession>,
     frame: Frame,
     rgba: Vec<u8>,
     output: Vec<u8>,
@@ -187,6 +190,7 @@ impl State {
             holotank: HolotankPicture::new(),
             space_cockpit: SpaceCockpitPicture::new(),
             docking: DockingPicture::new(),
+            docking_session: None,
             frame: Frame::new(1, 1),
             rgba: Vec::new(),
             output: Vec::new(),
@@ -250,6 +254,9 @@ pub fn feed(feed: u32, json: &[u8]) -> bool {
     };
     with(|s| {
         if json.is_empty() {
+            if name == SPACE_DOCKING_FEED {
+                s.docking_session = None;
+            }
             s.feeds.remove(name);
             return true;
         }
@@ -258,11 +265,84 @@ pub fn feed(feed: u32, json: &[u8]) -> bool {
         };
         if name == COCKPIT_FEED && value.get("seated").and_then(Value::as_bool) == Some(false) {
             s.feeds.remove(name);
+        } else if name == SPACE_DOCKING_FEED {
+            let refused = value.get("refused").and_then(Value::as_bool) == Some(true);
+            let incoming_id = value
+                .get("session_id")
+                .and_then(Value::as_str)
+                .filter(|id| !id.is_empty());
+            if refused || incoming_id.is_none() {
+                s.docking_session = None;
+                s.feeds.insert(name.to_string(), value);
+            } else if let Some(sid) = incoming_id {
+                let same_session = s
+                    .docking_session
+                    .as_ref()
+                    .is_some_and(|d| d.session_id == sid);
+                if !same_session {
+                    s.docking_session = Some(DockingClientSession::from_feed(&value));
+                    s.feeds.insert(name.to_string(), value);
+                } else {
+                    let overlaid = s
+                        .docking_session
+                        .as_ref()
+                        .map_or_else(|| value.clone(), |d| d.to_feed_value(&value));
+                    s.feeds.insert(name.to_string(), overlaid);
+                }
+            }
         } else {
             s.feeds.insert(name.to_string(), value);
         }
         true
     })
+}
+
+fn docking_state_json(s: &State) -> Option<String> {
+    let session = s.docking_session.as_ref()?;
+    let base = s
+        .feeds
+        .get(SPACE_DOCKING_FEED)
+        .cloned()
+        .unwrap_or(Value::Null);
+    let feed_val = session.to_feed_value(&base);
+    Some(
+        serde_json::json!({
+            "session_id": session.session_id,
+            "clamped": session.clamped(),
+            "gates_green": session.gates_green(),
+            "frames_stepped": session.frames_stepped(),
+            "tape_command": session.format_tape_command(),
+            "feed": feed_val,
+        })
+        .to_string(),
+    )
+}
+
+/// Step the active 60 Hz [`DockingClientSession`] by one frame (`mask` packed via
+/// [`DockingClientInput::to_bitmask`]), update the held `space.docking` feed, and return
+/// the updated state JSON (`D-35-14`, `SF.R24`).
+#[must_use]
+pub fn docking_step(mask: u16) -> Option<String> {
+    with(|s| {
+        {
+            let session = s.docking_session.as_mut()?;
+            session.step_60fps(DockingClientInput::from_bitmask(mask));
+            let base = s
+                .feeds
+                .get(SPACE_DOCKING_FEED)
+                .cloned()
+                .unwrap_or(Value::Null);
+            let overlaid = session.to_feed_value(&base);
+            s.feeds.insert(SPACE_DOCKING_FEED.to_string(), overlaid);
+        }
+        docking_state_json(s)
+    })
+}
+
+/// Return the current 60 Hz [`DockingClientSession`] state JSON without stepping (`D-35-14`, `SF.R24`).
+#[must_use]
+pub fn docking_state() -> Option<String> {
+    with(|s| docking_state_json(s))
 }
 
 /// Add the model file `pack` to the models drawn (see the crate's ABI,
@@ -549,6 +629,34 @@ pub extern "C" fn mp_check_look(len: u32) -> u32 {
 pub extern "C" fn mp_preview(len: u32) -> u32 {
     let input = with(|s| s.input.get(..len as usize).map(<[u8]>::to_vec)).unwrap_or_default();
     preview(&input)
+}
+
+/// Step the active 60 Hz `space.docking` client session by one frame (`mask` packed per
+/// [`DockingClientInput::to_bitmask`]) and write its state JSON into the output buffer:
+/// its byte length (`0` when no docking session is active).
+#[unsafe(no_mangle)]
+pub extern "C" fn mp_docking_step(mask: u32) -> u32 {
+    let mask16 = u16::try_from(mask & 0xFFFF).unwrap_or(0);
+    let Some(json) = docking_step(mask16) else {
+        return 0;
+    };
+    with(|s| {
+        s.output = json.into_bytes();
+        u32::try_from(s.output.len()).unwrap_or(0)
+    })
+}
+
+/// Write the current 60 Hz `space.docking` client session state JSON into the output buffer
+/// without stepping: its byte length (`0` when no docking session is active).
+#[unsafe(no_mangle)]
+pub extern "C" fn mp_docking_state() -> u32 {
+    let Some(json) = docking_state() else {
+        return 0;
+    };
+    with(|s| {
+        s.output = json.into_bytes();
+        u32::try_from(s.output.len()).unwrap_or(0)
+    })
 }
 
 /// The output buffer `mp_wanted` or `mp_check_look` wrote.

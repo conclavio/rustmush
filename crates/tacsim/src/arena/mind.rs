@@ -811,6 +811,11 @@ pub struct ThinkJob<'a> {
     /// The map: the window, its zones, its spots and its waypoint graph —
     /// the arena's own [`Arena::definition`], behind its `Arc` (17b cut M2.2).
     pub map: &'a Arc<ArenaDefinition>,
+    /// **The cells the field's wrecks stand in** at the think's moment ([`Arena::mind_wrecks`]),
+    /// in unit order (doc 40 cut FR.5, §4.1 item 3, Q-40-8): what `line_to` traces beside the
+    /// map, so a mind's line is the ground the fire trace walks. Never in the view: a mind reads
+    /// no wreck, only the answer to the question it already asks.
+    pub wrecks: &'a [(u16, u16)],
     /// **The exact card captured for this think** (doc 17 §11): the active
     /// [`ProfileRuntime::card`](super::profile_runtime::ProfileRuntime::card),
     /// including its immutable key and hydrated schema, values and rules.
@@ -936,6 +941,8 @@ pub struct CollectedThink {
     pub memory: Vec<u8>,
     /// The map ([`ThinkJob::map`]).
     pub map: Arc<ArenaDefinition>,
+    /// The wrecks' cells at collection ([`ThinkJob::wrecks`]), by value.
+    pub wrecks: Vec<(u16, u16)>,
     /// The card the mind thinks under ([`ThinkJob::card`]), by value.
     pub card: super::runtime_card::RuntimeCard,
     pub program: super::profile_rules::BoundProgram,
@@ -974,6 +981,7 @@ impl CollectedThink {
             view: &self.view,
             memory: &self.memory,
             map: &self.map,
+            wrecks: &self.wrecks,
             card: &self.card,
             program: &self.program,
             profile_token: self.profile_token,
@@ -1984,6 +1992,7 @@ impl Arena {
         let period = profile.think_ms;
         let seed = self.seed;
         let map = Arc::clone(&self.definition);
+        let wrecks = self.mind_wrecks();
         let Some(runtime) = self.profiles.get(&unit) else {
             return;
         };
@@ -2041,6 +2050,7 @@ impl Arena {
             view,
             memory,
             map,
+            wrecks,
             card,
             program,
             profile_token,
@@ -3234,6 +3244,7 @@ mod tests {
             view: &Arc::new(view),
             memory: &[1, 2, 3],
             map: &arena.definition,
+            wrecks: &arena.mind_wrecks(),
             card: &arena.profiles[&RED].card,
             program: &arena.profiles[&RED].program,
             profile_token: arena.profiles[&RED].token(),

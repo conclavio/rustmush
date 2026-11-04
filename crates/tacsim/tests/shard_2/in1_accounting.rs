@@ -13,8 +13,9 @@
 //! 2. The heavy's own cannon is wrecked; `+bay/fit` takes the escort's into it — a part fits
 //!    every slot that names its row, whatever the unit.
 //! 3. A one-point armour patch on the heavy opens its bale (§4.10): a tonne of alloys and a tonne
-//!    of fittings come out of the hold once, and the point's 10 kg of fittings go into the work;
-//!    a second one-point patch draws nothing from the hold.
+//!    of fittings come out of the hold once, and the point's alloys and fittings at the heavy's
+//!    own figures go into the work (doc 39 cut IN.8); a second one-point patch draws nothing
+//!    from the hold.
 //!
 //! **Seeds** (doc 43 rule 2.3 #4; doc 36a §8): the spare escort and the heavy reach the captain's
 //! title by staff (`@asset/transfer`, `@unit/create` + `@asset/title`) and the bay by staff
@@ -333,7 +334,14 @@ async fn in1_a_cannon_stripped_at_stickney_fits_a_heavy_and_a_patch_opens_a_bale
     assert_eq!(provenance(&mut rig, lot).fitted_into, Some(heavy));
     assert!(record(&rig, heavy).bale.is_none(), "a fit opens no bale");
 
-    // (3) A one-point armour patch opens the heavy's bale: a tonne of each good, once.
+    // (3) A one-point armour patch opens the heavy's bale: a tonne of each good, once; a point
+    //     draws the heavy's own figures (doc 39 cut IN.8), rounded up.
+    let budget = store(&rig.tw)
+        .definitions()
+        .budget_of("tacsim.unit.heavy_mk1")
+        .cloned()
+        .expect("the heavy's budget");
+    let (a1, f1) = (budget.structure_kg_for(1), budget.fittings_kg_for(1));
     dent_one(&mut rig, heavy);
     let quote = run(&mut rig.tw, pilot, &format!("+bay #{}", heavy.0));
     assert!(
@@ -341,7 +349,11 @@ async fn in1_a_cannon_stripped_at_stickney_fits_a_heavy_and_a_patch_opens_a_bale
         "{quote}"
     );
     assert!(
-        quote.contains("Her bale after it: 1000 kg of alloys and 990 kg of fittings left."),
+        quote.contains(&format!(
+            "Her bale after it: {} kg of alloys and {} kg of fittings left.",
+            1_000 - a1,
+            1_000 - f1
+        )),
         "{quote}"
     );
     let taken = run(
@@ -357,8 +369,8 @@ async fn in1_a_cannon_stripped_at_stickney_fits_a_heavy_and_a_patch_opens_a_bale
     assert_eq!(
         record(&rig, heavy).bale,
         Some(Bale {
-            alloys_kg: 1_000,
-            fittings_kg: 990,
+            alloys_kg: 1_000 - a1,
+            fittings_kg: 1_000 - f1,
         })
     );
 
@@ -377,8 +389,8 @@ async fn in1_a_cannon_stripped_at_stickney_fits_a_heavy_and_a_patch_opens_a_bale
     assert_eq!(
         record(&rig, heavy).bale,
         Some(Bale {
-            alloys_kg: 1_000,
-            fittings_kg: 980,
+            alloys_kg: 1_000 - 2 * a1,
+            fittings_kg: 1_000 - 2 * f1,
         })
     );
 }

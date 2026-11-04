@@ -526,13 +526,14 @@ async fn salvage_smoke(miner: Miner) {
 /// ore bid — and then the bot types the production run's half, every line in its closed
 /// vocabulary and every answer read by its own reader ([`mush_bot::mine::lane::works`]): at Ceres
 /// it buys concentrate at the Exchange's ask and a tonne of carbon ore at Freeport Works', bunkers and sails to
-/// Stickney Yards, sells the concentrate into Kasei's bid, watches Kasei's alloy ask restock by the
+/// Stickney Yards by Luna and Deimos (the corridor's outbound leg is interdicted at Kirkwood by the
+/// SF track's picket, whose words the bot does not have), sells the concentrate into Kasei's bid, watches Kasei's alloy ask restock by the
 /// refine's tonnes, buys five tonnes of alloys there, books `fittings` at the works, delivers the
 /// alloys and the carbon from its hold, collects five tonnes of fittings once the arm has pooled
 /// them, sails home and sells them into the Co-op's bid at 600. God lifts the world rate after
 /// the enrolment (the canary's lift) and to 3,600 for the production half (`ic_slice_loop`'s
-/// rate: the two passages are some 11.6 IC days each). `#[ignore]`d, run by name (`in5_`), the
-/// dispatch / by-hand tier (doc 43 TS.2): about 30 minutes a site on conclav.dev.
+/// rate: the way out is some 27 IC days, the way home 11.6). `#[ignore]`d, run by name (`in5_`),
+/// the dispatch / by-hand tier (doc 43 TS.2): about 30 minutes a site on conclav.dev.
 ///
 /// `cargo test -j 8 -p mush-bot --test mining_cohort -- --ignored in5_ --nocapture --test-threads 1`
 #[tokio::test(flavor = "multi_thread", worker_threads = 4)]
@@ -570,8 +571,10 @@ async fn in5_the_bot_mines_refines_and_sells_fittings_from_urvara() {
 const PRODUCTION_RATE: u32 = 3_600;
 
 /// One line of the production run, held to the bot's vocabulary and answered by one of
-/// `needles` (sent again two seconds later on the `retry` needle, at most sixty times); the
-/// needle's index and the text since the send.
+/// `needles` (sent again two seconds later on a `retry` needle or a transient, at most sixty
+/// times); the needle's index and the text since the send. The needles are matched on the text
+/// with its whitespace normalised ([`lines::normalise`]): the game wraps a long sentence at the
+/// session's width, anywhere between two words.
 async fn typed(
     client: &mut arena::Client,
     line: &str,
@@ -583,17 +586,75 @@ async fn typed(
         in_vocabulary(line) || works::in_vocabulary(line),
         "`{line}` is not in the bot's vocabulary"
     );
-    let mut all: Vec<&str> = needles.to_vec();
-    all.extend_from_slice(retry);
+    let found = |text: &str, wanted: &[&str]| {
+        let text = lines::normalise(text);
+        wanted
+            .iter()
+            .position(|needle| text.contains(&lines::normalise(needle)))
+    };
     for _ in 0..60 {
-        let (index, text) = client.answer(line, &all).await;
-        match index {
-            Some(i) if i < needles.len() => return (i, text),
-            Some(_) => tokio::time::sleep(Duration::from_secs(2)).await,
-            None => panic!("`{line}` answered none of {all:?}:\n{text}"),
+        let from = client.seen.len();
+        if let Err(closed) = client.try_send(line).await {
+            panic!("`{line}`: {closed}");
+        }
+        let deadline = std::time::Instant::now() + Duration::from_secs(20);
+        let answer = loop {
+            client.pump(Duration::from_millis(200)).await;
+            let text = client.seen.get(from..).unwrap_or("").to_owned();
+            if let Some(i) = found(&text, needles) {
+                break Some((i, text));
+            }
+            if found(&text, retry).is_some() || found(&text, &arena::TRANSIENTS).is_some() {
+                break None;
+            }
+            assert!(
+                std::time::Instant::now() < deadline,
+                "`{line}` answered none of {needles:?} or {retry:?}:
+{text}"
+            );
+        };
+        match answer {
+            Some(answer) => return answer,
+            None => tokio::time::sleep(Duration::from_secs(2)).await,
         }
     }
     panic!("`{line}` kept answering {retry:?}");
+}
+
+/// **The story's float** (a staff seed, outside the bot's vocabulary): God opens a system
+/// source, the pilot reads its own account's id off `@account/list`, and God mints it 50,000.00cr.
+async fn float(god: &mut arena::Client, client: &mut arena::Client) {
+    let id = |text: &str, after: &str| {
+        text.split(after)
+            .nth(1)
+            .and_then(|rest| {
+                let digits: String = rest.chars().take_while(char::is_ascii_digit).collect();
+                digits.parse::<u64>().ok()
+            })
+            .unwrap_or_else(|| {
+                panic!(
+                    "no account id after {after:?}:
+{text}"
+                )
+            })
+    };
+    let opened = god
+        .say("@account/system in5_float=cr", "Opened account #")
+        .await;
+    let source = id(&opened, "Opened account #");
+    let listed = client.say("@account/list", " cr = ").await;
+    let row = listed
+        .lines()
+        .find(|line| line.trim_start().starts_with('#') && line.contains(" cr = "))
+        .unwrap_or_else(|| {
+            panic!(
+                "no cr account in the pilot's list:
+{listed}"
+            )
+        });
+    let pilot = id(row, "#");
+    god.say(&format!("@econ/mint {source}={pilot} 5000000"), "Minted")
+        .await;
 }
 
 /// `+market/list`'s rows, read by the bot's own parser.
@@ -748,6 +809,11 @@ async fn production_story(miner: Miner) {
     if lift != Some(PRODUCTION_RATE) {
         mine::lift_rate(&mut god, PRODUCTION_RATE).await;
     }
+    // The seed (doc 43 rule 2.3 #4), as the in-process story's `@econ/mint`: the mining loop's
+    // earnings do not bunker the way out by Luna and Deimos and the way home, so God mints the
+    // pilot a working float from a system source of the story's own.
+    float(&mut god, &mut client).await;
+    stamp("God minted the pilot a 50,000.00cr float");
     // Ceres: the concentrate at the Exchange's ask, the carbon at Freeport Works', the bunkers,
     // the passage.
     let rows = board_rows(&mut client).await;
@@ -756,7 +822,7 @@ async fn production_story(miner: Miner) {
     let (concentrate, carbon) = (concentrate.number, carbon.number);
     buy(&mut client, concentrate, 20).await;
     buy(&mut client, carbon, 1).await;
-    bunker(&mut client, "stickney").await;
+    bunker(&mut client, "luna").await;
     for (word, room) in [
         ("concourse", lines::ROOM_CONCOURSE),
         ("arrivals", lines::ROOM_ARRIVALS),
@@ -765,7 +831,18 @@ async fn production_story(miner: Miner) {
     ] {
         typed(&mut client, word, &[room], &[]).await;
     }
-    stamp("bought 20 t of concentrate and 1 t of carbon ore; sailing for Stickney");
+    stamp(
+        "bought 20 t of concentrate and 1 t of carbon ore; sailing for Stickney by Luna and Deimos",
+    );
+    // The way out by Luna and Deimos: the Ceres–Stickney corridor's outbound leg is interdicted at
+    // Kirkwood by the SF track's customs picket, whose words (heave-to, `+helm/submit`, `+tac/pdc
+    // auto`, a jink) the bot does not have (doc 39 cut IN.5's note).
+    sail(&mut client, &hull, "luna").await;
+    stamp("docked at Aitken Highport");
+    bunker(&mut client, "deimos").await;
+    sail(&mut client, &hull, "deimos").await;
+    stamp("docked at Voltaire Anchorage");
+    bunker(&mut client, "stickney").await;
     sail(&mut client, &hull, "stickney").await;
     stamp("docked at Stickney Yards");
 
@@ -835,7 +912,7 @@ async fn production_story(miner: Miner) {
     assert!(coop.text.contains("600.00cr"), "{}", coop.text);
     let sale = sell_all(&mut client, coop.number).await;
     assert_eq!(sale.qty_t, 5, "{sale:?}");
-    assert_eq!(sale.gross, "3,000.00cr", "{sale:?}");
+    assert_eq!(sale.gross, "3000.00cr", "{sale:?}");
     stamp(&format!(
         "sold five tonnes of fittings to the Co-op: gross {}, net {}",
         sale.gross, sale.net

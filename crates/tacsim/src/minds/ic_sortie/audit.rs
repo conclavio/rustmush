@@ -132,5 +132,14 @@ fn verify(row: &Record, claim: &IcClaimHistory) -> Result<(), ModError> {
     }
     // Compilation uses only the captured source/configuration. It never asks
     // the current seller/holder/parent for permission to resume a held sortie.
-    row.open.execution.compile().map_err(bad)
+    // Doc 23 cut S.4b-3 (D-23-17 (b)): a row whose source no longer compiles is recorded, not a
+    // refusal of the whole book — its hull flies the ROM when it is next installed.
+    row.open.execution.validate().map_err(bad)?;
+    if row.open.execution.compile().is_err() {
+        tracing::warn!(
+            unit = row.open.unit.object().0,
+            "tacsim: a retained IC mind no longer compiles; the book loads and its hull drops to the ROM at its next install"
+        );
+    }
+    Ok(())
 }

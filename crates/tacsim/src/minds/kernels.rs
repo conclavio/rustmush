@@ -202,7 +202,11 @@ fn line_to(v: &mut View, id: INT) -> Result<bool, Box<EvalAltResult>> {
         let Some(row) = stock_mind::contact(view, contact_of(id)) else {
             return Err(refuse(ctx, REFUSED_UNKNOWN, NO_SUCH_CONTACT));
         };
-        Ok(line_between(&ctx.map, view.cell, row.cell))
+        let ground = stock_mind::Ground {
+            def: &ctx.map,
+            wrecks: &ctx.wrecks,
+        };
+        Ok(line_between(&ground, view.cell, row.cell))
     })?
 }
 
@@ -1059,7 +1063,7 @@ mod tests {
         );
         assert_eq!(
             shown(&eval(&format!("line_to(v, {})", contact_int(HOSTILE))).expect("line")),
-            line_between(&map, seen.cell, row.cell).to_string()
+            line_between(&stock_mind::Ground::bare(&map), seen.cell, row.cell).to_string()
         );
         // An unplotted row is a line, with no trace (T1's `line_between`).
         assert_eq!(
@@ -1260,8 +1264,14 @@ mod tests {
         let seen = std::sync::Arc::clone(&ctx.view);
         let hostile = stock_mind::contact(&seen, HOSTILE).expect("held");
         let friend = stock_mind::contact(&seen, fixture::FRIEND).expect("held");
-        assert!(!line_between(&map, seen.cell, hostile.cell), "the ridge");
-        assert!(line_between(&map, seen.cell, friend.cell), "off the ridge");
+        assert!(
+            !line_between(&stock_mind::Ground::bare(&map), seen.cell, hostile.cell),
+            "the ridge"
+        );
+        assert!(
+            line_between(&stock_mind::Ground::bare(&map), seen.cell, friend.cell),
+            "off the ridge"
+        );
         let expr = format!(
             "[line_to(v, {}), line_to(v, {})]",
             contact_int(HOSTILE),

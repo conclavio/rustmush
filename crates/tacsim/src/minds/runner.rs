@@ -405,6 +405,7 @@ mod tests {
             view: &seen,
             memory: b"{\"k\":0}",
             map: &defined,
+            wrecks: &[],
             card: &held,
             program: &program,
             profile_token: crate::arena::profile_runtime::ProfileToken {
@@ -491,6 +492,7 @@ mod tests {
             view: &seen,
             memory: b"{\"k\":0}",
             map: &defined,
+            wrecks: &[],
             card: &held,
             program: &program,
             profile_token: crate::arena::profile_runtime::ProfileToken {
@@ -597,6 +599,7 @@ mod tests {
             view: &seen,
             memory: b"{\"k\":0}",
             map: &defined,
+            wrecks: &[],
             card: &held,
             program: &program,
             profile_token: crate::arena::profile_runtime::ProfileToken {

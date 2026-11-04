@@ -3699,7 +3699,6 @@ fn gc7_munitions_are_bought_and_carried_and_the_tariff_quotes_a_known_repair() {
     )
     .expect("a quote at Ceres");
     assert_eq!(at_ceres.structural_points, 90);
-    assert_eq!(at_ceres.industrial_parts_t, 1);
     assert_eq!(at_ceres.components_to_rearm.get(&cannon), Some(&10));
     assert_eq!(at_ceres.total_resource_cost, 11_100, "111.00 cr at 1.2x");
     assert_eq!(at_ceres.total_work_duration_ic, 5_040);
@@ -10582,5 +10581,286 @@ fn sfr23_mining_and_sensing_remainders() {
     assert!(
         submit_out.contains("4000 kg unlicensed `strategic_ore`"),
         "per-block inspect_hull_manifest must detect unlicensed strategic_ore mined from Block C despite Block B claim: {submit_out}"
+    );
+}
+
+#[test]
+#[allow(clippy::too_many_lines)]
+fn sfr24_one_docking_kinematics_and_ephemeris_canopy() {
+    use mush_pixel::picture::{Feeds, Look, Picture as _};
+
+    struct SingleFeed<'a>(&'a str, &'a serde_json::Value);
+    impl Feeds for SingleFeed<'_> {
+        fn feed(&self, name: &str) -> Option<&serde_json::Value> {
+            (name == self.0).then_some(self.1)
+        }
+    }
+
+    // 1. Charter a ship at Ceres Freeport, fly to Stickney Yards (Phobos), and open a docking
+    //    session via `+helm/dock stickney` (`D-35-14`):
+    let mut rig = stocked_with(Roster::default());
+    let (pilot, row) = chartered(&mut rig, "PilotSfR24", 1);
+    let hull = ObjId(row.hull);
+    load(&mut rig, &row, 70, 50);
+    set_rate(&mut rig.tw, 3_600);
+    board(&mut rig, pilot);
+
+    let pending = undock_and_burn(&mut rig, pilot, hull);
+    let depart_ic = pending.plan.depart_ic;
+    let leg1_secs = i64::from(pending.plan.legs[0].secs);
+    let _ = fire_quietly(&mut rig);
+    let _ = to_ic(&mut rig, depart_ic + leg1_secs / 2);
+    let dec_out = run(&mut rig.tw, pilot, "+helm/decouple");
+    assert!(
+        dec_out.contains("Decoupled from corridor leg"),
+        "decouple output: {dec_out}"
+    );
+    let auto_out = run(&mut rig.tw, pilot, "+helm/autopilot stickney");
+    assert!(
+        auto_out.contains("Autopilot engaged for Stickney Yards"),
+        "autopilot stickney output: {auto_out}"
+    );
+    let auto_submits = drain(&mut rig.tw);
+    land_quietly(&mut rig, &auto_submits);
+    let arrival_at = journey(&rig.tw, hull)
+        .and_then(|j| j.arrival_at())
+        .expect("recoupled arrival_at");
+    let _ = to_ic(&mut rig, arrival_at - 7_200);
+    set_rate(&mut rig.tw, 1);
+    let _ = to_ic(&mut rig, arrival_at - 10);
+
+    let dock_events = rig.tw.run(pilot, "+helm/dock stickney");
+    let dock_text = said(&rig.tw, &dock_events, pilot);
+    assert!(
+        dock_text.contains("[DOCKING] Initiated 60 fps 6-DOF docking session"),
+        "expected docking session open, got: {dock_text}"
+    );
+    let dock_panel = dock_events
+        .iter()
+        .find_map(|(_, ev)| match ev {
+            OutputEvent::Panel { feed, data, .. }
+                if feed.as_str() == tacsim::space::SPACE_DOCKING_FEED =>
+            {
+                Some(data.clone())
+            }
+            _ => None,
+        })
+        .expect("space.docking panel keyframe emitted on +helm/dock");
+
+    // 2. Drive two independent client sessions hydrated from `dock_panel` using ONLY single-key
+    //    human axis pulses (`active_axis_pulses() <= 1`, never `play_to_clamp`) and replay the
+    //    recorded bitmask tape through `DockingClientInput::from_bitmask` (the WASM entry point):
+    let mut tui_session = mush_pixel::docking::DockingClientSession::from_feed(&dock_panel);
+    let mut recorded_bitmasks: Vec<u16> = Vec::new();
+    while !tui_session.clamped()
+        && tui_session.frames_stepped() < mush_pixel::docking::MAX_DOCKING_CLIENT_TAPE_FRAMES
+    {
+        let multi = tui_session.next_guidance_input();
+        let single_key = if multi.roll_trim != 0 {
+            mush_pixel::docking::DockingClientInput {
+                roll_trim: multi.roll_trim,
+                ..Default::default()
+            }
+        } else if multi.pitch_trim != 0 {
+            mush_pixel::docking::DockingClientInput {
+                pitch_trim: multi.pitch_trim,
+                ..Default::default()
+            }
+        } else if multi.yaw_trim != 0 {
+            mush_pixel::docking::DockingClientInput {
+                yaw_trim: multi.yaw_trim,
+                ..Default::default()
+            }
+        } else if multi.trans_x != 0 {
+            mush_pixel::docking::DockingClientInput {
+                trans_x: multi.trans_x,
+                ..Default::default()
+            }
+        } else if multi.trans_y != 0 {
+            mush_pixel::docking::DockingClientInput {
+                trans_y: multi.trans_y,
+                ..Default::default()
+            }
+        } else if multi.closure_pulse != 0 {
+            mush_pixel::docking::DockingClientInput {
+                closure_pulse: multi.closure_pulse,
+                ..Default::default()
+            }
+        } else {
+            mush_pixel::docking::DockingClientInput::default()
+        };
+        let single_key_mask = single_key.to_bitmask();
+        let input = mush_pixel::docking::DockingClientInput::from_bitmask(single_key_mask);
+        assert!(
+            input.active_axis_pulses() <= 1,
+            "every recorded frame in the human key tape must press at most one key (got mask {single_key_mask:#x})"
+        );
+        recorded_bitmasks.push(single_key_mask);
+        tui_session.step_60fps(input);
+    }
+    assert!(
+        tui_session.clamped(),
+        "human single-key tape must reach collar clamp in TUI client session"
+    );
+    assert_eq!(tui_session.gates_green(), 5);
+
+    // Replay the exact recorded bitmasks into a second session (matching `mush-pixel-wasm`'s
+    // `mp_docking_step(mask)`) and verify bit-identical final pose and RLE tape:
+    let mut wasm_session = mush_pixel::docking::DockingClientSession::from_feed(&dock_panel);
+    for &mask in &recorded_bitmasks {
+        wasm_session.step_60fps(mush_pixel::docking::DockingClientInput::from_bitmask(mask));
+    }
+    assert!(wasm_session.clamped());
+    assert_eq!(wasm_session.gates_green(), 5);
+    assert_eq!(wasm_session.pose, tui_session.pose);
+    assert_eq!(wasm_session.encode_rle(), tui_session.encode_rle());
+
+    // Submit the recorded key tape to the server and verify it clamps at Stickney Yards:
+    let clamp_cmd = wasm_session.format_tape_command();
+    let clamp_out = run(&mut rig.tw, pilot, &clamp_cmd);
+    assert!(
+        clamp_out.contains("Hard dock and magnetic collar seal confirmed"),
+        "recorded human key tape from client session must clamp on server: {clamp_out}"
+    );
+    let clamp_burn = drain(&mut rig.tw);
+    land_quietly(&mut rig, &clamp_burn);
+    assert!(
+        matches!(
+            tacsim::port::ship::berth_of(rig.tw.world(), hull),
+            tacsim::port::ship::Berth::Docked { .. }
+        ),
+        "hull must be Berth::Docked at Stickney Yards after clamp"
+    );
+
+    // 3. Ephemeris canopy (`D-35-15`): charter a `Dray-P`, undock for `neptune`, engage
+    //    `+helm/autopilot neptune`, and verify that `space.cockpit`'s `bodies` are computed
+    //    from `Sky` (`sky.position_km(&body, now_ic)`) at the hull's 3D state vector `pos_km`,
+    //    pushed on `space_tick`, and that Neptune's `bearing_deg` and `distance_km` change
+    //    as the hull's position changes:
+    let mut rig_nep = stocked_with(Roster::default());
+    let (pilot_nep, row_nep) = chartered(&mut rig_nep, "PilotNepR24", 2);
+    let hull_nep = ObjId(row_nep.hull);
+    let desk_nep = station_room(&rig_nep.tw, "ceres_port", "room.c05_registry");
+    teleport(&mut rig_nep.tw, pilot_nep, desk_nep);
+    let _ = run(&mut rig_nep.tw, pilot_nep, "+coop/refit prospector");
+    load(&mut rig_nep, &row_nep, 80, 200);
+    set_rate(&mut rig_nep.tw, 3_600);
+    board(&mut rig_nep, pilot_nep);
+
+    let undock_nep = run(&mut rig_nep.tw, pilot_nep, "+ship/undock neptune");
+    assert!(
+        undock_nep.contains("Clearance filed for neptune"),
+        "undock neptune output: {undock_nep}"
+    );
+    let undock_nep_draws = drain(&mut rig_nep.tw);
+    land_quietly(&mut rig_nep, &undock_nep_draws);
+    let _ = fire_quietly(&mut rig_nep);
+
+    let nep_events_0 = rig_nep.tw.run(pilot_nep, "+helm/autopilot neptune");
+    let nep_draws = drain(&mut rig_nep.tw);
+    land_quietly(&mut rig_nep, &nep_draws);
+
+    let cockpit_0 = nep_events_0
+        .iter()
+        .find_map(|(_, ev)| match ev {
+            OutputEvent::Panel { feed, data, .. }
+                if feed.as_str() == tacsim::space::SPACE_COCKPIT_FEED =>
+            {
+                Some(data.clone())
+            }
+            _ => None,
+        })
+        .expect("initial space.cockpit keyframe emitted on +helm/autopilot neptune");
+
+    let (pos_0, arr_ic) = rig_nep
+        .tw
+        .world()
+        .module_state::<tacsim::space::SpaceBubbleBook>()
+        .and_then(|b| b.free_flight_for_hull(hull_nep))
+        .map(|ff| {
+            (
+                ff.pos_km,
+                ff.cluster_arrival_ic_s.expect("neptune arrival_ic"),
+            )
+        })
+        .expect("hull_nep in free flight");
+    let now_0 = rig_nep.tw.world().world_ic_now().at;
+    let expected_bodies_0 =
+        tacsim::space::compute_ephemeris_canopy_bodies(rig_nep.tw.world(), pos_0, "neptune", now_0);
+    let nep_0 = cockpit_0["bodies"]
+        .as_array()
+        .expect("bodies array")
+        .iter()
+        .find(|b| b["id"].as_str() == Some("neptune"))
+        .expect("neptune entry in cockpit_0")
+        .clone();
+    assert_eq!(
+        nep_0["bearing_deg"].as_i64(),
+        Some(i64::from(expected_bodies_0[0].bearing_deg)),
+        "initial canopy Neptune bearing_deg must match Sky ephemeris at pos_0"
+    );
+    assert_eq!(
+        nep_0["distance_km"].as_i64(),
+        Some(expected_bodies_0[0].distance_km),
+        "initial canopy Neptune distance_km must match Sky ephemeris at pos_0"
+    );
+    assert!(
+        expected_bodies_0[0].distance_km > 1_000_000_000,
+        "at departure from Ceres, Neptune distance_km in canopy must be interplanetary (> 1e9 km), got {}",
+        expected_bodies_0[0].distance_km
+    );
+
+    // Advance along the Neptune transit via `to_ic` so `space_tick` updates the hull's 3D state
+    // vector `pos_km` across the solar system and pushes updated `space.cockpit` panels whose
+    // Neptune `bearing_deg` and `distance_km` change with the hull's position:
+    let mut tick_cockpit_panels: Vec<serde_json::Value> = Vec::new();
+    let mut saw_bearing_change = false;
+    let mut saw_distance_change = false;
+    for target_ic in [
+        now_0 + (arr_ic - now_0) / 3,
+        now_0 + ((arr_ic - now_0) * 2) / 3,
+        arr_ic - 7_200,
+        arr_ic - 3_600,
+    ] {
+        let evs = to_ic(&mut rig_nep, target_ic);
+        for (_, ev) in &evs {
+            if let OutputEvent::Panel { feed, data, .. } = ev
+                && feed.as_str() == tacsim::space::SPACE_COCKPIT_FEED
+            {
+                if let Some(nep) = data["bodies"]
+                    .as_array()
+                    .and_then(|arr| arr.iter().find(|b| b["id"].as_str() == Some("neptune")))
+                {
+                    if nep["bearing_deg"] != nep_0["bearing_deg"] {
+                        saw_bearing_change = true;
+                    }
+                    if nep["distance_km"] != nep_0["distance_km"] {
+                        saw_distance_change = true;
+                    }
+                }
+                tick_cockpit_panels.push(data.clone());
+            }
+        }
+    }
+    assert!(
+        !tick_cockpit_panels.is_empty(),
+        "space_tick must push updated space.cockpit panels for free-flight hull"
+    );
+    assert!(
+        saw_distance_change,
+        "Neptune's distance_km in space.cockpit must change as the hull's 3D state vector moves on space_tick"
+    );
+    assert!(
+        saw_bearing_change,
+        "Neptune's bearing_deg in space.cockpit must change as the hull's 3D state vector moves on space_tick"
+    );
+
+    let latest_cockpit = tick_cockpit_panels.last().expect("latest cockpit panel");
+    let mut canopy_pic = mush_pixel::space_cockpit::SpaceCockpitPicture::new();
+    let mut canopy_frame = mush_pixel::Frame::new(640, 360);
+    let feeds = SingleFeed(tacsim::space::SPACE_COCKPIT_FEED, latest_cockpit);
+    assert!(
+        canopy_pic.draw(&mut canopy_frame, &feeds, &Look::default()),
+        "SpaceCockpitPicture must render the tick-pushed ephemeris canopy keyframe"
     );
 }

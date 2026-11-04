@@ -967,7 +967,8 @@ pub const LANE_PACK: &str = "tacsim.lane.ceres_phobos";
 /// the customs hall, the Yard's, four beds), each opened as a `medical` facility that crew
 /// treatment reads; **v21 since doc 41 cut RS.1**: Occator's third lease design, the tender
 /// (`+tv/lease tender`, pool 2, 1,800 + 7,000 for 168 IC days, provisional); **v22 since doc 39
-/// cut IN.6**: the seeded part rows; **v23 since doc 39 cut IN.5**: Stickney's refinery (Kasei's
+/// cut IN.6**: the seeded part rows; **v23 since doc 42 cut CR.2**: the five IC ports'
+/// `authority` and `release_fee_cr` (the captive handover); **v24 since doc 39 cut IN.5**: Stickney's refinery (Kasei's
 /// `kind: refine` mill row, concentrate into alloys at five to four, and its bid's `refresh`) and
 /// works (Stickney Yards', its house purchase of Kasei's alloys), and the Ceres works of Freeport
 /// Works (the new org), which stocks and asks carbon ore. The port readiness report
@@ -984,7 +985,7 @@ pub const LANE_PACK: &str = "tacsim.lane.ceres_phobos";
 /// follows Ceres v3's Oduya guidance update; relay v6 follows Ceres v4's Qureshi trust
 /// service. Both still require lane v15, and their entries
 /// remain unchanged. Lane v16 ↔ relay v7 (doc 32 cut CF.6c), lane v17 ↔ relay v8 (doc 32 cut
-/// S.1), lane v18 ↔ relay v9 (doc 36 cut GC.7), lane v19 ↔ relay v10 (doc 36 cut GC.13), lane v20 ↔ relay v11 (doc 39 cuts IN.1 and IN.4), lane v21 ↔ relay v12 (doc 41 cut RS.1), lane v22 ↔ relay v13 (doc 39 cut IN.6), lane v23 ↔ relay v14 (doc 39 cut IN.5), entries unchanged. The relay code reads any version from 2 as the full star
+/// S.1), lane v18 ↔ relay v9 (doc 36 cut GC.7), lane v19 ↔ relay v10 (doc 36 cut GC.13), lane v20 ↔ relay v11 (doc 39 cuts IN.1 and IN.4), lane v21 ↔ relay v12 (doc 41 cut RS.1), lane v22 ↔ relay v13 (doc 39 cut IN.6), lane v23 ↔ relay v14 (doc 42 cut CR.2), lane v24 ↔ relay v15 (doc 39 cut IN.5), entries unchanged. The relay code reads any version from 2 as the full star
 /// (`relay_world`'s `full_star`, `relay_content`'s upgrade preflight), so a kept world
 /// whose relay latch stays at an older version — `@atlas/pack plan` reads "Nothing to
 /// do." when no entry differs — keeps its star. The pins that move with it are the

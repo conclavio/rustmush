@@ -61,6 +61,18 @@ impl WithdrawRefusal {
     }
 }
 
+/// **Whether `state` can return under its own power** (this module's head): no wreck, motion
+/// not disabled, not disabled, and its anatomy holds power and control and, where it has a
+/// mobility profile, locomotion.
+fn under_own_power(state: &crate::arena::state::UnitState) -> bool {
+    !state.limits.wreck
+        && !state.limits.motion_disabled
+        && !state.disabled
+        && crate::field_ops::assess_tacsim_unit(&state.unit, None).is_ok_and(|c| {
+            c.has_power && c.has_control && (c.can_move || state.unit.mobility().is_none())
+        })
+}
+
 /// Cells apart, Chebyshev.
 fn cells_apart(a: (u16, u16), b: (u16, u16)) -> u16 {
     a.0.abs_diff(b.0).max(a.1.abs_diff(b.1))
@@ -83,27 +95,33 @@ impl Arena {
         let Some(ramp) = ramp else {
             return self.take_out(unit);
         };
+        // **Doc 40 cut FR.5** (§4.1 item 5, Q-40-25): a casualty under tow cannot come in under
+        // its own power, so it is judged by its tug — the tug in the field, under its own power
+        // and beside the ramp — and goes out in tow with its own check-in row. The task applies
+        // a casualty's withdrawal before its tug's, so the tug still stands here to be read.
+        let judged = match state.coupled_to {
+            Some(tug) => self.unit(tug).ok_or(WithdrawRefusal::NotUnderOwnPower)?,
+            None => state,
+        };
+        if !under_own_power(judged) {
+            return Err(WithdrawRefusal::NotUnderOwnPower);
+        }
+        if !self.beside(judged, ramp) {
+            return Err(WithdrawRefusal::NotAtRamp);
+        }
+        self.take_out(unit)
+    }
+
+    /// Whether `state` stands within one cell of the ramp at `ramp` (cm), Chebyshev.
+    fn beside(&self, state: &crate::arena::state::UnitState, ramp: (i64, i64)) -> bool {
         let terrain = &self.definition.terrain;
-        let beside = match (
+        match (
             terrain.cell_of(&state.pose),
             terrain.cell_at(ramp.0, ramp.1),
         ) {
             (Some(here), Some(at)) => cells_apart(here, at) <= 1,
             _ => false,
-        };
-        let own_power = !state.limits.wreck
-            && !state.limits.motion_disabled
-            && !state.disabled
-            && crate::field_ops::assess_tacsim_unit(&state.unit, None).is_ok_and(|c| {
-                c.has_power && c.has_control && (c.can_move || state.unit.mobility().is_none())
-            });
-        if !own_power {
-            return Err(WithdrawRefusal::NotUnderOwnPower);
         }
-        if !beside {
-            return Err(WithdrawRefusal::NotAtRamp);
-        }
-        self.take_out(unit)
     }
 
     /// The unit's check-in row, and the unit out of the arena.
@@ -131,6 +149,9 @@ impl Arena {
         self.pending_cards.remove(&unit);
         self.awaiting.remove(&unit);
         self.jam_fold.remove(&unit);
+        // Doc 40 cut FR.5 (§4.1 item 5): a tug gone uncouples its trailer, which stands where it
+        // is.
+        self.drop_tow(unit);
         // Doc 36 cut GC.1b: the chassis words are kept in the unit table's row order, so a row
         // gone shifts every later one; laid down again, as a join lays them.
         self.chassis = crate::arena::state::ChassisWords::table(&self.units);

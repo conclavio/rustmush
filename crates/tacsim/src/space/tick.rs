@@ -3775,10 +3775,23 @@ fn step_free_flight_records(ctx: &mut Ctx<'_>, now: &ClockStamp) {
             let prev_tpos = prev_target_positions.get(hull).copied().flatten();
             if let Some(rec) = book.free_flights.get_mut(hull) {
                 let dt_ic_s = now.at.saturating_sub(rec.last_ic_s);
+                let prev_ic = rec.last_ic_s;
                 let was_co_located = prev_tpos.is_some_and(|p| rec.pos_km == p);
                 if dt_ic_s > 0 {
                     rec.step_ic_s(dt_ic_s, tvel);
-                    if was_co_located
+                    if let (Some(arr_ic), Some(pos)) = (rec.cluster_arrival_ic_s, tpos)
+                        && now.at < arr_ic
+                        && arr_ic > prev_ic
+                    {
+                        let rem_ic = arr_ic - prev_ic;
+                        for (rec_p, &target_p) in rec.pos_km.iter_mut().zip(pos.iter()) {
+                            let d = i128::from(target_p) - i128::from(*rec_p);
+                            let step = (d * i128::from(dt_ic_s)) / i128::from(rem_ic);
+                            *rec_p = (i128::from(*rec_p) + step)
+                                .clamp(i128::from(i64::MIN / 2), i128::from(i64::MAX / 2))
+                                as i64;
+                        }
+                    } else if was_co_located
                         && let (Some(pos), Some(vel)) = (tpos, tvel)
                         && super::picket::relative_speed_3d_mmps(rec.vel_mps, vel)
                             .saturating_mul(dt_ic_s.max(0))

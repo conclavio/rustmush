@@ -285,6 +285,12 @@ pub use contract_live::{
     award_salvage_title, close_salvage_claim, file_salvage_claim, live_salvage_claim,
     salvage_claim_hull, salvage_claim_window,
 };
+// Doc 41 cut RS.5 (Q-41-8): the retrieval contract, posted by a hull's title holder and
+// accepted by whoever takes the job.
+pub use contract_live::{
+    RetrievalSpec, accept_retrieval, cancel_retrieval, post_retrieval, retrieval_acceptor,
+    retrieval_contract_hull,
+};
 
 // E4c — facts, events, evidence.
 pub use attest::{MAX_CANON_CONTRACTS_VISITED, MAX_OBSERVER_SETTLEMENTS_PER_EVENT};
@@ -299,14 +305,15 @@ pub use api::{
     CadenceError, ENGINE_OWNED_RESERVATIONS, MAX_CADENCE_NAME_BYTES, MAX_CADENCES, META_KEY,
     ObligationSpec, PostOutcome, SanctionSpec, account_key, acknowledge_escalation, approval_key,
     asset_key, cadence_key, cancel_obligation, capture_engine_reservation_part, contract_key,
-    create_cadence, create_obligation, create_sanction_obligation, create_service_obligation,
-    create_system_obligation, create_vault, cure_service_obligation, hold_key,
-    idempotency_resolved, instrument_key, is_engine_owned_reservation, issue_title,
-    mark_canon_published, obligation_key as obligation_doc_key, open_account, open_escalation,
-    post, post_capability, register_instrument, rehome_vault, reinstate_obligation,
-    resolve_idempotency, resume_obligation, reverse, set_account_approval, set_account_status,
-    set_asset_frozen, set_economy_frozen, set_system_obligation, set_vault_status,
-    settle_engine_reservation, suspend_obligation, vault_key,
+    create_cadence, create_debt, create_obligation, create_sanction_obligation,
+    create_service_obligation, create_system_obligation, create_vault, cure_service_obligation,
+    debts_of, hold_key, idempotency_resolved, instrument_key, is_engine_owned_reservation,
+    issue_title, mark_canon_published, obligation_key as obligation_doc_key, open_account,
+    open_escalation, pay_debt, post, post_capability, register_instrument, rehome_vault,
+    reinstate_debt, reinstate_obligation, resolve_idempotency, resume_obligation, reverse,
+    set_account_approval, set_account_status, set_asset_frozen, set_economy_frozen,
+    set_system_obligation, set_vault_status, settle_engine_reservation, suspend_obligation,
+    vault_key,
 };
 pub use commands::{
     ASSET_PAGE_VISIT, may_view_account, may_view_asset, may_view_hold, may_view_obligation,

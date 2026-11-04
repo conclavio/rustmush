@@ -1781,6 +1781,16 @@ pub(crate) fn salvage_cmd(ctx: &mut Ctx<'_>) -> Result<(), CmdError> {
     if ctx.switches.has("inspect") {
         return inspect_cmd(ctx, raw.trim());
     }
+    // Doc 41 cut RS.5 (Q-41-9): the retrieval's three verbs.
+    if ctx.switches.has("retrieve") {
+        return crate::surface::retrieval::retrieve_cmd(ctx, &raw);
+    }
+    if ctx.switches.has("jobs") {
+        return crate::surface::retrieval::jobs_cmd(ctx);
+    }
+    if ctx.switches.has("accept") {
+        return crate::surface::retrieval::accept_cmd(ctx, &raw);
+    }
     if !raw.trim().is_empty() {
         return Err(CmdError::msg(SALVAGE_USAGE));
     }
@@ -2708,6 +2718,9 @@ pub const SCRAP_NOT_TITLED: &str = "Only the title holder of {what} may break th
 /// **The preview of remains under a tonne** (doc 39 cut IN.1, §4.10): scrap mints down to whole
 /// tonnes, and on a site, where no facility keeps the fraction, it is a declared loss. `{n}`,
 /// `{what}`, `{carrier}`.
+/// The hold has no room for the remains' alloys (doc 39 cut IN.8).
+pub const SCRAP_NO_ROOM: &str =
+    "Rig {n}'s carrier's hold will not take {t} t of structural_alloys: {line}";
 pub const SCRAP_LOSS_PREVIEW: &str = "Rig {n} can break up {what} where it lies: under a tonne of structural mass, which is lost; nothing goes into the {carrier}'s hold. +tv/{n} scrap go";
 /// The scrap of remains under a tonne done: `{n}`, `{what}`, `{carrier}`.
 pub const SCRAPPED_LOSS: &str = "Rig {n} breaks up {what} where it lies: under a tonne of structural mass, lost; nothing goes into the {carrier}'s hold.";
@@ -2729,7 +2742,10 @@ pub struct ScrapFacts {
     pub of: Option<ObjId>,
     /// Their mass, kg, as the command read it.
     pub mass_kg: u64,
-    /// The tonnes of `structural_alloys` they yield.
+    /// The tonnes of `structural_alloys` they yield (doc 39 cut IN.8: the design's structure at
+    /// the recovery share, capped by the fifth of its reference — §4.6 on a site — and minted
+    /// down to whole tonnes, the rest lost to the ground). The server fixes it; the prepare mints
+    /// it as fixed.
     pub alloys_t: u64,
     /// The hold vault the lot is laid into, `VaultId.0`.
     pub hold: u64,
@@ -2739,6 +2755,36 @@ pub struct ScrapFacts {
     pub lawful: bool,
     /// The landholder, on owned ground.
     pub landholder: Option<ObjId>,
+    /// **The hold's capacity plan** (doc 39 cut IN.8; doc 36a P2-4), when it is governed: the
+    /// prepare checks the alloys fit it by the pools it reads in its own bundle.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub plan: Option<serde_json::Value>,
+}
+
+/// **The tonnes remains of `of` yield on a site** (doc 39 cut IN.8, §4.6): the design's whole
+/// structure at the recovery share, capped at the fifth of its reference price at the alloys'
+/// reference — nothing can be stripped on a site (Q-36-39), so the whole reference is
+/// scrappable — minted down to whole tonnes. Remains of no known design yield nothing.
+#[must_use]
+pub fn remains_alloys_t(w: &World, of: Option<ObjId>) -> u64 {
+    let Some((design, budget)) = of.and_then(|hull| crate::definitions::mass::hull_budget(w, hull))
+    else {
+        return 0;
+    };
+    let reference = crate::definitions::mass::reference_price_minor(w, &design, &budget);
+    let alloy =
+        crate::definitions::mass::good_reference_minor(w, crate::port::bay_work::strip::SCRAP_GOOD);
+    let cap_kg = if alloy == 0 {
+        0
+    } else {
+        u64::try_from(
+            u128::from(reference / crate::port::bay_work::scrap::CEILING_DIVISOR)
+                * u128::from(crate::port::bay_work::KG_PER_T)
+                / u128::from(alloy),
+        )
+        .unwrap_or(u64::MAX)
+    };
+    budget.remains_yield_kg().min(cap_kg) / crate::port::bay_work::KG_PER_T
 }
 
 /// **The lot a site's remains scrap into**: a hash of the site and the object number.
@@ -2823,8 +2869,8 @@ pub(crate) fn scrap_cmd(
         Some(_) => return Err(CmdError::msg(SCRAP_NOT_TITLED.replace("{what}", &what))),
         None => landholder.is_none_or(|holder| holder == ctx.actor),
     };
-    // Doc 39 cut IN.1 (§4.10): down to whole tonnes; a yield under one is a declared loss.
-    let alloys_t = mass_kg / crate::port::bay_work::strip::SCRAP_KG_PER_T;
+    // Doc 39 cut IN.8 (§4.6): the capped yield, down to whole tonnes; under one, a declared loss.
+    let alloys_t = remains_alloys_t(ctx.w, *of);
     let (preview, done) = if alloys_t == 0 {
         (SCRAP_LOSS_PREVIEW, SCRAPPED_LOSS)
     } else {
@@ -2837,6 +2883,15 @@ pub(crate) fn scrap_cmd(
                 .is_some_and(|(there, ..)| there == site)
         })
         .ok_or_else(|| CmdError::msg(SCRAP_NO_HOLD.replace("{n}", &n)))?;
+    // Doc 39 cut IN.8 (the room check): the alloys must fit the hold as it stands.
+    let plan = remains_room(ctx, hold, alloys_t).map_err(|line| {
+        CmdError::msg(
+            SCRAP_NO_ROOM
+                .replace("{n}", &n)
+                .replace("{t}", &alloys_t.to_string())
+                .replace("{line}", &line),
+        )
+    })?;
     let carrier = name(ctx.w, rig.hull);
     let fill = |line: &str| {
         line.replace("{n}", &n)
@@ -2859,6 +2914,7 @@ pub(crate) fn scrap_cmd(
         lot: lot.0,
         lawful,
         landholder,
+        plan,
     };
     let actor = ctx.actor;
     if !crate::surface::tow::submit(
@@ -2874,6 +2930,38 @@ pub(crate) fn scrap_cmd(
     }
     ctx.out.sys_to_actor(actor, "tacsim.tow", fill(done));
     Ok(())
+}
+
+/// **Whether `hold` takes `alloys_t` of the remains' alloys** (doc 39 cut IN.8; doc 36a P2-4):
+/// the capacity plan of a governed hold, to carry to the prepare, once the pools as they stand
+/// fit; `Ok(None)` for an ungoverned hold or nothing to lay.
+///
+/// # Errors
+///
+/// The refusal's line: the hold's own, or that it cannot be read.
+fn remains_room(
+    ctx: &Ctx<'_>,
+    hold: mush_economy::VaultId,
+    alloys_t: u64,
+) -> Result<Option<serde_json::Value>, String> {
+    use mush_market::{CapacityProvider, CapacityReadError, CapacityRefusal};
+    let endpoint = mush_inventory::EndpointRef(hold);
+    let Some(plan) = crate::port::market::PortCapacity.plan(ctx.w, endpoint) else {
+        return Ok(None);
+    };
+    if alloys_t == 0 {
+        return Ok(None);
+    }
+    let good =
+        CanonicalId::new(crate::port::bay_work::strip::SCRAP_GOOD).map_err(|e| e.to_string())?;
+    let mut read = |good: &CanonicalId| {
+        crate::port_tick::read_pool(ctx, endpoint, good).map_err(|_| CapacityReadError)
+    };
+    match crate::port::market::PortCapacity.check(&plan, &good, alloys_t, &mut read) {
+        Ok(()) => Ok(Some(plan.0)),
+        Err(CapacityRefusal::Refused { line, .. }) => Err(line),
+        Err(CapacityRefusal::Unreadable) => Err("its room cannot be read".to_owned()),
+    }
 }
 
 /// The recovery operation a load closed, as the custody record keeps it.

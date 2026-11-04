@@ -1352,6 +1352,11 @@ pub const CLAIM_STILL_OPEN: &str = "that rig's mind claim is still open";
 /// holding, a changed hull); the launch is cancelled with the rig in its bay.
 pub const CLAIM_REFUSED: &str = "The Registry did not admit the mind's claim; the launch is cancelled and the rig stays in its bay.";
 
+/// **A claim whose launch never ran** (doc 23 cut S.4b-3, D-23-23 step 5): the claim opened in the
+/// bay but the launch could not start; it closes with the rig in its bay.
+pub const CLAIM_CANCELLED: &str =
+    "The launch could not start; the mind's claim is closed and the rig stays in its bay.";
+
 /// **A queued launch whose claim the book does not hold yet** (doc 23 cut S.4b-2): the start
 /// waits; the tick retries it.
 pub const CLAIM_NOT_OPEN: &str = "that rig's mind claim has not opened yet";

@@ -255,6 +255,8 @@ fn compose_domain_modules<E>(
                     facts.push(Arc::new(
                         crate::port::passenger::facts::PassengerFactProvider::default(),
                     ));
+                    // Doc 41 cut RS.5: the retrieval's delivery fact.
+                    facts.push(Arc::new(crate::surface::retrieval::RetrievalFactProvider));
                 }
                 facts
             })
@@ -513,6 +515,8 @@ pub fn domain_org_capability_vocabulary() -> std::collections::BTreeSet<mush_org
             mush_roll::commerce::registry_inspection::REGISTRY_SEIZE_CAPABILITY,
             mush_roll::commerce::registry_inspection::REGISTRY_FORFEIT_CAPABILITY,
         ])
+        // Doc 42 cut CR.2: the port authority's release fee.
+        .chain([crate::port::vendor::RELEASE_FEE_CAPABILITY])
         .chain(NAMED_LAUNCH_HARDWARE_CAPABILITIES)
         .map(|c| mush_org::CapabilityId::new(c).expect("a built-in capability id is well-formed"))
         .collect()

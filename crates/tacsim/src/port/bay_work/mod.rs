@@ -46,13 +46,14 @@ pub mod act;
 pub mod command;
 pub mod jobs;
 pub mod record;
+pub mod scrap;
 pub mod strip;
 
 pub use jobs::{BayJob, BayQuote, CARRIER_TIME_FACTOR, FacilityClass, QuotedJob};
 pub use record::{
     BAY_PREFIX, BAY_SCHEMA, Bale, BaleDraw, BayHull, BayHullState, BayOrder, BerthRow, ClaimLot,
-    KG_PER_T, MAX_CLAIM_LOTS, MAX_ORDER_JOBS, OrderStatus, Right, VacatedLot, bay_key,
-    bay_key_owner,
+    KG_PER_T, MAX_CLAIM_LOTS, MAX_ORDER_JOBS, OrderStatus, Right, SHOP_BALE_PREFIX, ShopBale,
+    VacatedLot, bay_key, bay_key_owner, shop_bale_key,
 };
 
 use std::collections::BTreeMap;
@@ -112,6 +113,7 @@ pub const fn permits(right: Right, act: Act) -> bool {
         Right::Grant => !matches!(act, Act::Scrap),
         Right::Lessee => matches!(act, Act::Repair | Act::Rearm | Act::Berth),
         Right::Salvor => matches!(act, Act::Repair | Act::Berth),
+        Right::Retrieval => matches!(act, Act::Berth),
     }
 }
 
@@ -549,6 +551,9 @@ fn right_held_by(ctx: &Ctx<'_>, actor: ObjId, hull: ObjId) -> Option<Right> {
     if leases(ctx.w, actor, hull) {
         return Some(Right::Lessee);
     }
+    if custody.is_none() && crate::surface::retrieval::held_by(ctx.w, hull, actor).is_some() {
+        return Some(Right::Retrieval);
+    }
     custody.map(|_| Right::Salvor)
 }
 
@@ -638,6 +643,9 @@ pub fn right_of(ctx: &Ctx<'_>, hull: ObjId) -> Option<Right> {
         || crate::port::coop::helm_of(ctx.w, actor).is_some_and(|h| h.hull == hull)
     {
         return Some(Right::Lessee);
+    }
+    if custody.is_none() && crate::surface::retrieval::held_by(ctx.w, hull, actor).is_some() {
+        return Some(Right::Retrieval);
     }
     custody.map(|_| Right::Salvor)
 }
@@ -908,13 +916,18 @@ fn lot_words(w: &World, lot: &act::LotMint) -> String {
     }
 }
 
-/// **The goods `jobs` draw** (Q-36-31, Q-36-36; doc 39 cut IN.1): each rearm's munitions good,
-/// summed by good, and the whole tonnes of `structural_alloys` and `industrial_parts` the hull's
-/// `bale` takes in to cover the kilograms their points consume ([`Bale::draw`]); with the bale
-/// once the work is done, `None` when the jobs touch no bale. Beam charge and a replaced part
-/// draw nothing.
+/// **The goods `jobs` draw on `hull`** (Q-36-31, Q-36-36; doc 39 cuts IN.1, IN.8): each rearm's
+/// munitions good, summed by good, and the whole tonnes of `structural_alloys` and
+/// `industrial_parts` the hull's `bale` takes in to cover the kilograms their points consume at
+/// the design's own figures ([`Bale::draw`]); with the bale once the work is done, `None` when
+/// the jobs touch no bale. Beam charge and a replaced part draw nothing.
 #[must_use]
-pub fn order_goods(jobs: &[QuotedJob], bale: Option<Bale>) -> (Vec<GoodUnits>, Option<Bale>) {
+pub fn order_goods(
+    w: &World,
+    hull: ObjId,
+    jobs: &[QuotedJob],
+    bale: Option<Bale>,
+) -> (Vec<GoodUnits>, Option<Bale>) {
     let mut goods: BTreeMap<CanonicalId, u64> = BTreeMap::new();
     for job in jobs {
         if let BayJob::Rearm {
@@ -928,9 +941,8 @@ pub fn order_goods(jobs: &[QuotedJob], bale: Option<Bale>) -> (Vec<GoodUnits>, O
         }
     }
     let mut after = None;
-    if let Ok(tariff) = crate::definitions::workshop::workshop_tariff()
-        && let Some(draw) = Bale::draw(bale, BayQuote::bale_need(jobs, &tariff))
-    {
+    let budget = crate::definitions::mass::hull_budget(w, hull).map(|(_, budget)| budget);
+    if let Some(draw) = Bale::draw(bale, BayQuote::bale_need(jobs, budget.as_ref())) {
         for (good, units) in [(ALLOYS_GOOD, draw.alloys_t), (PARTS_GOOD, draw.fittings_t)] {
             if let Ok(good) = CanonicalId::new(good) {
                 let sum = goods.entry(good).or_default();
@@ -1317,7 +1329,7 @@ fn take(
         }
     }
     // GC.8b: the goods come from the carrier's hold, checked now and drawn at completion.
-    let (mut goods, mut bale_after) = order_goods(&picked, record.bale);
+    let (mut goods, mut bale_after) = order_goods(ctx.w, hull, &picked, record.bale);
     let vault = if goods.is_empty() && fit.is_none() {
         None
     } else if facility.class == FacilityClass::Workshop
@@ -1869,13 +1881,29 @@ fn settle(ctx: &mut Ctx<'_>, hull: ObjId) {
         put_bay_hull(ctx, &record);
         match &owed.kind {
             OwedKind::Draw { .. } => complete(ctx, hull),
-            OwedKind::Mint { why, lots } => {
+            OwedKind::Mint { why, lots, settle } => {
                 strip::land_mint(ctx, hull, owed.by, why, lots);
+                // Doc 39 cut IN.8: a workshop scrap's or a return's lots are the operator's,
+                // and its credit and shop bale land with them.
+                let into = if let Some(settle) = settle {
+                    scrap::land(ctx, hull, owed.act, owed.by, settle);
+                    format!(
+                        "the workshop's stores, and {} is paid to you",
+                        crate::port::board::money(
+                            ctx.w,
+                            mush_economy::Amount::from_minor(
+                                i64::try_from(settle.credit_minor).unwrap_or(i64::MAX)
+                            )
+                        )
+                    )
+                } else {
+                    "the carrier's hold".to_owned()
+                };
                 ctx.out.sys_to_actor(
                     owed.by,
                     "tacsim",
                     format!(
-                        "The {why} of #{} is laid into the carrier's hold: {}.",
+                        "The {why} of #{} is laid into {into}: {}.",
                         hull.0,
                         lots.iter()
                             .map(|l| lot_words(ctx.w, l))
@@ -1940,10 +1968,21 @@ fn settle(ctx: &mut Ctx<'_>, hull: ObjId) {
                     false,
                 );
             }
-            OwedKind::Mint { why, .. } => {
+            OwedKind::Mint { why, settle, .. } => {
                 // The strip or the scrap was never written to the hull (`strip::land_mint`
-                // writes it when the mint lands): a lost mint destroys nothing.
+                // writes it when the mint lands): a lost mint destroys nothing. Doc 39 cut IN.8:
+                // the shop bale it held is let go as it stood, and nothing is paid.
                 put_bay_hull(ctx, &record);
+                if let Some(settle) = settle
+                    && let Some(Some(mut shop)) = ctx
+                        .w
+                        .module_state::<TacsimStore>()
+                        .map(|store| store.shop_bale(&settle.shop.port))
+                    && shop.pending == Some((hull, owed.act))
+                {
+                    shop.pending = None;
+                    crate::store::put_shop_bale(ctx, &shop);
+                }
                 tracing::error!(
                     hull = hull.0,
                     act = owed.act,
@@ -2123,6 +2162,7 @@ pub fn berth(ctx: &mut Ctx<'_>, hull: ObjId) -> Result<ObjId, String> {
                 .to_owned(),
         );
     }
+    let port = map.entry.clone();
     let berths = def.workshop.as_ref().map_or(0, |w| w.berths);
     let used = ctx
         .w
@@ -2142,6 +2182,9 @@ pub fn berth(ctx: &mut Ctx<'_>, hull: ObjId) -> Result<ObjId, String> {
         at_ic: ctx.w.world_ic_now().at,
     });
     put_bay_hull(ctx, &record);
+    // Doc 41 cut RS.5 (Q-41-8): the first handover — berthed into the destination's workshop
+    // by the acceptor's hand.
+    let _ = crate::surface::retrieval::deliver(ctx, hull, &port, ctx.actor);
     Ok(room)
 }
 
@@ -2184,6 +2227,17 @@ pub fn stow(ctx: &mut Ctx<'_>, hull: ObjId) -> Result<ObjId, String> {
         .map_err(|e| format!("Her bay will not take her: {e}"))?;
     record.berth = None;
     put_bay_hull(ctx, &record);
+    // Doc 41 cut RS.5 (Q-41-8): the second handover — stowed into the poster's own carrier
+    // docked at the destination.
+    if let crate::port::ship::Berth::Docked { map, .. } =
+        crate::port::ship::berth_of(ctx.w, row.carrier)
+        && let Some(order) = crate::surface::retrieval::held_by(ctx.w, hull, ctx.actor)
+        && crate::port::coop::helm_holder(ctx.w, row.carrier)
+            .is_some_and(|helm| crate::surface::retrieval::acts_for(ctx.w, helm, &order.poster))
+    {
+        let entry = map.entry.clone();
+        let _ = crate::surface::retrieval::deliver(ctx, hull, &entry, ctx.actor);
+    }
     Ok(row.carrier)
 }
 

@@ -82,10 +82,10 @@ pub fn strip_part_recipes(doc: &mut Value) {
     }
 }
 
-/// **Doc 39 cut IN.5 (lane v23): the refinery and the works taken out** — Stickney's `refinery`
+/// **Doc 39 cut IN.5 (lane v24): the refinery and the works taken out** — Stickney's `refinery`
 /// and `works` blocks, Kasei's refine row and its bid's `refresh`, Ceres's `works` block, and the
 /// Freeport Works org and vendor (its carbon stock and ask) — so a strip chain rebuilds a lane
-/// before v23 (idempotent). The programme's carbon reference goes back from Freeport Works'
+/// before v24 (idempotent). The programme's carbon reference goes back from Freeport Works'
 /// listing to its fixed 25.00cr.
 pub fn strip_industry(doc: &mut Value) {
     strip_part_recipes(doc);
@@ -151,11 +151,27 @@ pub fn strip_industry(doc: &mut Value) {
     }
 }
 
+/// **Doc 42 cut CR.2 (lane v23): the IC ports' `authority` and `release_fee_cr` taken out**, so a
+/// strip chain rebuilds a lane before v23 (idempotent); lane v24's [`strip_industry`] first.
+pub fn strip_release_authority(doc: &mut Value) {
+    strip_industry(doc);
+    let Some(entries) = doc["entries"].as_object_mut() else {
+        return;
+    };
+    // `get_mut`, never `IndexMut`: indexing a missing key inserts it.
+    for entry in entries.values_mut() {
+        if let Some(def) = entry.get_mut("def").and_then(Value::as_object_mut) {
+            def.remove("authority");
+            def.remove("release_fee_cr");
+        }
+    }
+}
+
 /// **Doc 39 cut IN.6 (lane v22): the seeded part rows taken out**: every vendor's `stock` and
 /// `asks` row of a `tacsim.part.*` good, so a strip chain rebuilds a lane before v22
-/// (idempotent); lane v23's [`strip_industry`] first.
+/// (idempotent); lane v23's [`strip_release_authority`] first.
 pub fn strip_part_seeds(doc: &mut Value) {
-    strip_industry(doc);
+    strip_release_authority(doc);
     let Some(entries) = doc["entries"].as_object_mut() else {
         return;
     };

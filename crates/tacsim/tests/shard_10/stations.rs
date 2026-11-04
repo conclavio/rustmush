@@ -572,7 +572,7 @@ fn ic1_the_boot_list_and_the_shelf_carry_the_stations_in_order() {
                     // Doc 32 cut S.1: relay v8 requires lane v17.
                     // Doc 36 cut GC.7: relay v9 requires lane v18; cut GC.13: relay v10, v19; doc 39
                     // cut IN.1: relay v11, v20; doc 41 cut RS.1: relay v12, v21; doc 39 cut IN.6:
-                    // relay v13, v22; doc 39 cut IN.5: relay v14, v23.
+                    // relay v13, v22; doc 42 cut CR.2: relay v14, v23; doc 39 cut IN.5: relay v15, v24.
                     (LANE_PACK.into(), 26)
                 ]
             ),
