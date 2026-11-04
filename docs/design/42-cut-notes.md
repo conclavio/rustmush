@@ -501,3 +501,8 @@ numbers stand: one IC day injured, three incapacitated, half at a medical room.
 **Divergence from §7's row.** The third casualty's record is seeded as a stored document, not brought
 home by a field. Three extractions to Ceres would add three fields' worth of run time to a cell, for a
 rule that reads only the records and the port.
+
+**Cell delta (rule #14).** From the JUnit `<testcase time>` sums of PR #447's run 41897737833
+(shard_8): the one CR.5 story is 13.4 s, so +0.22 summed minutes to `crew_custody::` (9.73 in all
+on that run, with CR.4's four stories). shard_8's wall was 14.7 min. The run's slowest cell was
+shard_1 at 22.7 min, which this cut does not touch.
