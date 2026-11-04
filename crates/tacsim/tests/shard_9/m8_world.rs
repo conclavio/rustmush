@@ -548,12 +548,21 @@ pub(crate) fn m8_world_with_claims() -> M8World {
     m8_world_in(None, true, ("ahuna", "ahuna_port"), 1)
 }
 
-/// **The claims world on `site` at the field stories' tempo, with `n_rigs` rigs** (doc 23 cut
-/// S.4b-3): [`m8_world_with_claims`] on any site (`(venue, entry)`), its launch layer tuned for a
-/// field ([`crate::excursions::LAUNCH_FIELD_TUNE`]).
+/// **The claims world on `site`, with `n_rigs` rigs** (doc 23 cut S.4b-3): [`m8_world_with_claims`]
+/// on any site (`(venue, entry)`), at the stock tempo — the Registry's rating arenas run at it,
+/// and the field tune would multiply their pulses. [`M8World::field_tempo`] tunes it for a field
+/// once the licence is bought.
 pub(crate) fn m8_world_field(site: (&str, &str), n_rigs: usize) -> M8World {
-    crate::excursions::LAUNCH_FIELD_TUNE.store(true, std::sync::atomic::Ordering::Release);
     m8_world_in(None, true, site, n_rigs)
+}
+
+impl M8World {
+    /// **The field stories' tempo from here on** (doc 23 cut S.4b-3): the launch layer tuned for a
+    /// field ([`crate::excursions::LAUNCH_FIELD_TUNE`]) and the world rebooted under it.
+    pub(crate) fn field_tempo(self) -> M8World {
+        crate::excursions::LAUNCH_FIELD_TUNE.store(true, std::sync::atomic::Ordering::Release);
+        self.reboot()
+    }
 }
 
 fn m8_world_in(
@@ -2661,6 +2670,7 @@ async fn licensed_field_story(at: &FieldSite) {
     let mut world = m8_world_field((at.venue, at.entry), 2);
     let (_, _, listing) = rate_and_list_coprates(&mut world).await;
     let paid = buy(&mut world, listing);
+    let mut world = world.field_tempo();
     let (pilot, tv, second_tv) = (world.pilot, world.tvs[0], world.tvs[1]);
     for rig_tv in [tv, second_tv] {
         crate::ic_sortie_surface::fit(
