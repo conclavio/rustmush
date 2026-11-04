@@ -697,6 +697,38 @@ the test that returns early unless it is set a gated test, so it needs a row.
 
 **Rule #14.** No cell changes.
 
+### TS.11 T.3c: the contract binaries grouped (D-43-7)
+
+**Built**, on TS.18's branch (the inventory file both rewrite moves here). The 33 integration targets
+of mush-contract-tests are two group binaries, by the T.3 plan's manifests plus the two files added
+since (`ipc_golden_frames`, `pixel_hull_down`, both into `engine_contracts`):
+
+- `ci_policy` (15): `ci_gated_test_inventory`, `ci_tacsim_shards`, `clippy_test_allowances`,
+  `feature_matrix_inventory`, `gate5_fault_matrix`, `legacy_handler_allowlist`, `matcher_call_sites`,
+  `panic_budget`, `process_fault_gate`, `provider_rng_policy`, `restriction_lints`, `scale_harness`,
+  `schedule_source`, `toolchain_pin`, `truth_serialization_policy`.
+- `engine_contracts` (18): `action_state_republish`, `arena_library`, `exit_command_words`,
+  `help_commands`, `hex_vocabulary`, `ipc_golden_frames`, `j4_narrow_fetch`, `macro_names`,
+  `module_ns_owners`, `npc_ability_residual`, `pixel_hull_down`, `pixel_relief`,
+  `pixel_sight_heights`, `sheet_write_republish`, `state_slot_owners`, `typed_state_lens`,
+  `unit_looks`, `vitals_projection_clean`. `production_registry` is declared once at its root.
+
+The moves used T.3's tooling: plan-data `merge-test-targets.py` with a `mush-contract-tests.json`
+manifest, and `rewrite-refs.py` over the live tree. The two guard self-paths, vf_g5/vf_g6's
+citations, the `scale` and `features` jobs' lines (as block scalars, since a one-line `run:` with
+`:: ` is not YAML), nextest's Redis group (`binary_id(…::ci_policy) & test(/^scale_harness::/)`),
+the panic-budget files' regeneration line, and the comments in 122 other files naming
+`tests/restriction_lints.rs` and its siblings all follow. Historical design docs keep the names
+their commands ran under. The rows of `test-tiers.toml` and `state-slot-owners.toml` already key
+by module, so none changed.
+
+**Identity.** `cargo nextest list -p mush-contract-tests --run-ignored all` gives 175 tests before
+and 175 after, with the `<module>::` prefix stripped: none gone, none new.
+
+**The four guards** are now one line (docs/ops.md, "The cut loop"):
+`cargo nextest run -p mush-contract-tests --test ci_policy --test engine_contracts -E
+'test(/^(feature_matrix_inventory|panic_budget|restriction_lints|state_slot_owners)::/)'`.
+
 ### TS.16 the field tempo (§5.8, §10.2)
 
 **Built.** Test-only, two tunes in shard_1. `field_gc4::lane3_tune` and `field_gc5::quick` drop their

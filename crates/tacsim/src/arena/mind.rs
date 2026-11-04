@@ -76,7 +76,7 @@
 //! runners live outside the library (doc 17 §7, D-UM-1): the interpreter the
 //! sim task drives — the Rhai engine of doc 17 §2 — which this file must never
 //! name in code: the contract test
-//! `crates/mush-contract-tests/tests/arena_library.rs` refuses the lowercase
+//! `crates/mush-contract-tests/tests/engine_contracts/arena_library.rs` refuses the lowercase
 //! crate name anywhere under `crates/tacsim/src/arena/`. The arena calls the
 //! runner and reads its answer; it never times it (there is no wall clock
 //! here: the twin lane times a view and a think from the test), and it never
@@ -429,7 +429,7 @@ impl<'de> Deserialize<'de> for SortieId {
 /// reflex controller, the native stock mind, or a scripted runner. Its words
 /// are `reflex`, `native` and `scripted` — never the scripted engine's own
 /// name, which the arena library may not contain
-/// (`crates/mush-contract-tests/tests/arena_library.rs`).
+/// (`crates/mush-contract-tests/tests/engine_contracts/arena_library.rs`).
 ///
 /// **[`SealEngine::Reflex`] is decode-only** since 17b cut M4.3 (no seal
 /// computes it) and outlives the reflex controller 17b cut M4.6 deleted:

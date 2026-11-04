@@ -700,7 +700,7 @@ fn the_gated_suffix_census_is_stable_and_every_live_backend_proof_names_its_back
 // three of its four censused lanes cited a job that cannot see the crate that
 // owns the lane, or a test cell that does not exist:
 //
-//   * **L4** cited `cargo test -p mush-contract-tests --test schedule_source`
+//   * **L4** cited `cargo test -p mush-contract-tests --test ci_policy schedule_source::`
 //     for `industry.workorder`, and this package declares no `mush-industry`
 //     dependency at all — its three toy-fixture tests name neither "production"
 //     nor "workorder", so L4's go criterion was dischargeable GREEN while
@@ -779,7 +779,7 @@ fn vf_g5_every_e7k_lane_job_can_see_the_crate_that_owns_the_lane() {
         GateLane {
             lane: "L5 the ledger append",
             owner_crate: "mush-economy",
-            invocation: "-p mush-contract-tests --test gate5_fault_matrix",
+            invocation: "-p mush-contract-tests --test ci_policy gate5_fault_matrix::",
             invoked_package: "mush-contract-tests",
         },
         GateLane {
@@ -902,7 +902,7 @@ fn vf_g6_every_proof_10b_section_14_names_exists_in_the_file_it_is_attributed_to
         ),
         // L5/L6's fault proof, named exactly as it exists.
         (
-            "mush-contract-tests/tests/gate5_fault_matrix.rs",
+            "mush-contract-tests/tests/ci_policy/gate5_fault_matrix.rs",
             "gate1_tactical_and_delayed_lifecycle_bundles_survive_every_in_process_cut",
         ),
     ];
@@ -926,9 +926,10 @@ fn vf_g6_every_proof_10b_section_14_names_exists_in_the_file_it_is_attributed_to
     // bundle and asserts no such criterion. §14 now names it as a cell the
     // MIGRATION commit must add, and this pins that it has not been added yet —
     // so the day it is, §14's wording moves with it.
-    let matrix =
-        fs::read_to_string(root.join("crates/mush-contract-tests/tests/gate5_fault_matrix.rs"))
-            .expect("gate5_fault_matrix.rs");
+    let matrix = fs::read_to_string(
+        root.join("crates/mush-contract-tests/tests/ci_policy/gate5_fault_matrix.rs"),
+    )
+    .expect("gate5_fault_matrix.rs");
     assert!(
         !matrix.to_lowercase().contains("fn partial_materializ"),
         "a partial-materialization cell now exists: 10b §14.2's L5/L6 citation \
@@ -945,9 +946,10 @@ fn vf_g6_every_proof_10b_section_14_names_exists_in_the_file_it_is_attributed_to
     // counts and names no `mush-sim` or `mush-tactics` symbol, so it proves
     // generic bundle throughput and not the lane. §14 now cites
     // `-p mush-sim --test e7c8` for the measurement instead.
-    let harness =
-        fs::read_to_string(root.join("crates/mush-contract-tests/tests/scale_harness.rs"))
-            .expect("scale_harness.rs");
+    let harness = fs::read_to_string(
+        root.join("crates/mush-contract-tests/tests/ci_policy/scale_harness.rs"),
+    )
+    .expect("scale_harness.rs");
     assert!(
         harness.contains("fn scale_tick_shaped_bundle_measures_caps("),
         "the tick-shaped cell still exists, and still measures a synthetic shape"

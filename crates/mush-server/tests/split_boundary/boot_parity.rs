@@ -1757,7 +1757,7 @@ async fn a_caller_supplied_store_says_the_archive_tier_is_ignored() {
 /// manifest assembly cannot land on either side.
 ///
 /// Scoped to exactly these four files and no wider on purpose:
-/// `mush-contract-tests/tests/legacy_handler_allowlist.rs` legitimately
+/// `mush-contract-tests/tests/ci_policy/legacy_handler_allowlist.rs` legitimately
 /// hand-builds compositions through `Engine::compose_modules`, and a widened
 /// tripwire would trip on a test that is doing the right thing.
 #[test]

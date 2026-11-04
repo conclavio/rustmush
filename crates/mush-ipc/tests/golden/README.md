@@ -24,5 +24,5 @@ in `mush-contract-tests` reads an ignored test as a proof some CI job must run.
 the build encodes (re-record after any deliberate, additive wire change; the
 diff of this directory is then the record of the change) and that the previous
 version's set still decodes (the one-step compatibility window).
-`crates/mush-contract-tests/tests/ipc_golden_frames.rs` fails a bump that has
+`crates/mush-contract-tests/tests/engine_contracts/ipc_golden_frames.rs` fails a bump that has
 no set. Sets older than the window stay as history.

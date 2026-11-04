@@ -10,7 +10,7 @@
 //! conventional documents and E7k has nothing of cut 2's to move (§5).
 //!
 //! **No ambient RNG anywhere in this file** — nothing here draws, and
-//! `crates/mush-contract-tests/tests/provider_rng_policy.rs` scans it.
+//! `crates/mush-contract-tests/tests/ci_policy/provider_rng_policy.rs` scans it.
 //!
 //! # Where endpoint legality is enforced, and why there
 //!

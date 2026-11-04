@@ -24,9 +24,7 @@
 use mush_core::commands::macros::{BAD_NAME, name_refusal};
 use mush_core::{GOD, Role, World};
 
-mod production_registry;
-
-use production_registry::production_composition;
+use crate::production_registry::production_composition;
 
 #[test]
 fn no_bare_key_or_read_only_word_can_be_a_macro_name() {
@@ -35,7 +33,7 @@ fn no_bare_key_or_read_only_word_can_be_a_macro_name() {
     let w = World::new_minimal();
 
     let run_allowlist: Vec<String> =
-        serde_json::from_str(include_str!("../../../web/src/lib/run-allowlist.json"))
+        serde_json::from_str(include_str!("../../../../web/src/lib/run-allowlist.json"))
             .expect("web/src/lib/run-allowlist.json is a JSON array of verbs");
     assert!(!run_allowlist.is_empty());
     let read_only = mush_server::world_task::STORE_READ_ONLY_ALLOWED;

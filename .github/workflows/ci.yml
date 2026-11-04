@@ -310,7 +310,7 @@ jobs:
     # another) and rest 47.5 min (29.7 min of tests, of which mushd, mush-server
     # and mush-gateway were 20.5, then the bot's 11.4). Integration is split in
     # three by an explicit list (.github/tacsim-integration-shards.txt, guarded
-    # by crates/mush-contract-tests/tests/ci_tacsim_shards.rs), and rest into
+    # by crates/mush-contract-tests/tests/ci_policy/ci_tacsim_shards.rs), and rest into
     # lint, libs, servers and bot. Format, Clippy, the bot and the named steps
     # keep their command lines and only moved shard; the integration binaries
     # are named per shard, and the libs line names the four features the
@@ -576,7 +576,7 @@ jobs:
       # tacsim-minds cell (one binary, shard_2, holds their three modules), in
       # parallel with the shards. Their `name:` and `run:` lines are the same
       # in every cell's reading of this file, because the gated-test inventory
-      # (crates/mush-contract-tests/tests/ci_gated_test_inventory.rs) covers
+      # (crates/mush-contract-tests/tests/ci_policy/ci_gated_test_inventory.rs) covers
       # each #[ignore]d test by finding its name here.
       # 17b cut M2.7 (doc 17 D-UM-28): the unit minds' cross-platform pin.
       # The stock corpus flown by the Rhai Standard Doctrine and a float-probe
@@ -845,7 +845,8 @@ jobs:
       - name: The TLS listener serves
         run: cargo test -p mush-net-web --features tls
       - name: Every toggleable feature is named by a job
-        run: cargo test -p mush-contract-tests --test feature_matrix_inventory
+        run: |
+          cargo test -p mush-contract-tests --test ci_policy feature_matrix_inventory::
 
   documentation:
     name: Workspace documentation
@@ -1088,7 +1089,7 @@ jobs:
       # 08j S4: without these the nine `*_redis_gated` proofs in
       # `crates/mushd/tests/durable_process/persistence.rs` and the two single-test twins take
       # their missing-`REDIS_URL` early return and pass everywhere as a silent
-      # skip. `crates/mush-contract-tests/tests/ci_gated_test_inventory.rs`
+      # skip. `crates/mush-contract-tests/tests/ci_policy/ci_gated_test_inventory.rs`
       # keeps this list honest.
       - name: Reboot-from-Redis-alone round trips
         run: |
@@ -1119,7 +1120,8 @@ jobs:
       - name: Start disposable Redis 8
         run: docker run -d --rm --name redis -p 127.0.0.1:6379:6379 redis:8 redis-server --appendonly yes --appendfsync always --no-appendfsync-on-rewrite no
       - name: Scale harness
-        run: cargo test --release -p mush-contract-tests --test scale_harness -- --ignored --test-threads=1 --nocapture
+        run: |
+          cargo test --release -p mush-contract-tests --test ci_policy scale_harness:: -- --ignored --test-threads=1 --nocapture
 
   # 16b cut AJ.4 (16c Q-AJ1): the external bot's win rate against the machine
   # — ten 1 v 1 matches flown by the real mush-bot binary, no model, against a

@@ -37,7 +37,7 @@
 //!   `slots`, for a seated pilot and a mind alike.
 //!
 //! Integers only, no I/O and no clock: the arena library's gate
-//! (`crates/mush-contract-tests/tests/arena_library.rs`) reads this file.
+//! (`crates/mush-contract-tests/tests/engine_contracts/arena_library.rs`) reads this file.
 
 use std::collections::BTreeMap;
 
