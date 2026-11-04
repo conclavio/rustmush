@@ -670,6 +670,33 @@ the merger of this cut).
 
 **Rule #14.** No cell changes: the new test is seconds in `rest-libs`.
 
+### TS.18 variant identities (§5.9)
+
+**Built**, on TS.2's manifest. A row may now name a test that is not gated, with a non-default
+`config`: a variant, with its own tier and last run. A census reads every variable tacsim's and the
+bot's tests pass by name (a literal, or a `const` of the same file) to `env::var`, `env::var_os`,
+`knob` or an `env_*` helper; 71 at this cut. Each must be in some row's `config` or declared a
+`[[knob]]` with a kind: `opt-in`, `size`, `measurement`, `report`, `bless`, `secret` or
+`plumbing`. A stale knob fails, and so does an opt-in that no row sets. A declared `opt-in` makes
+the test that returns early unless it is set a gated test, so it needs a row.
+
+**§5.9's variants, named.**
+
+| Variable | Entry |
+|---|---|
+| `FIELD_RAID=director` | by-hand row on `a_captain_and_its_escort_fight_the_raider_in_an_ic_field`; recorded once by this cut, `2c4b1c03`: gate run 41874705027 on conclav.dev through `--env FIELD_RAID=director` (the input's first use), passed in 584 s |
+| `MINE_RATE=24` | by-hand row on the canary, `77d2f56c` (gate run 40431777853, 528 s, when 24 was the default) |
+| `GC12_SIZES`, `GC12_ARENA_S` | `size` knobs: the recorded runs used the defaults |
+| `GC12_ASSERT=1` | by-hand row, `never`: both recorded runs were report-only |
+| `TACSIM_HOLD_LANE=1` | `opt-in` knob, by-hand row at O.1's gate `8c2f0388`. Before this cut the flag matched no opt-in spelling, so the inventory neither registered nor exempted it (16c Q-O3) |
+| `TACSIM_SNAPSHOT_OFF`, `TACSIM_FRAME_WORKERS` | `measurement` knobs |
+| `TACSIM_MINDS_VARIANTS`, `TACSIM_SIGHT_ORIGINS`, the harness and cost-lane sizes | `size` knobs |
+| `MUSH_BOT_LIVE_FROM_MUSTER=1` | in the live commander's by-hand row: its last run was the muster form |
+| `MUSH_BOT_WIN_RATE_*`, `MUSH_BOT_MIND_RATE_*` | `size` knobs |
+| `RELIEF_PREVIEW`, `MUSH_CAMPAIGN_START` | `report` and `plumbing` |
+
+**Rule #14.** No cell changes.
+
 ### TS.16 the field tempo (§5.8, §10.2)
 
 **Built.** Test-only, two tunes in shard_1. `field_gc4::lane3_tune` and `field_gc5::quick` drop their
