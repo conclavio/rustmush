@@ -352,6 +352,12 @@ pub(crate) fn actor_grant_epoch(
 /// The primary `@station` verbs. `handoff`/`release`/`cancel` are the authoritative
 /// ingress; `show` is read-only; `fallback` writes the exempt record.
 pub(crate) fn cmd_station(ctx: &mut Ctx<'_>) -> Result<(), CmdError> {
+    // Doc 42 cut CR.0 (Q-42-2): a held person takes, gives and arranges no lease; `/show` reads.
+    if !ctx.switches.has("show")
+        && let Some(why) = crate::journey::operator_restraint(ctx.w, ctx.actor)
+    {
+        return Err(CmdError::msg(why));
+    }
     if ctx.switches.has("release") {
         if ctx.args.rhs().is_some() {
             return Err(CmdError::msg(NO_SUCH_STATION));

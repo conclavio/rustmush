@@ -174,6 +174,10 @@ pub(crate) fn command(ctx: &mut Ctx<'_>) -> Result<(), CmdError> {
     {
         return Err(CmdError::msg("The tactical simulation is not enabled."));
     }
+    // Doc 42 cut CR.0 (Q-42-2): `/mark`, `/fire` and `/void` are the held gate's; the read passes.
+    if ctx.switches.iter().next().is_some() {
+        crate::field::crew::gate(ctx, crate::field::crew::Gate::Operate)?;
+    }
     let raw = ctx.args.raw().trim().to_owned();
     if ctx.switches.has("mark") {
         return mark(ctx, &raw);

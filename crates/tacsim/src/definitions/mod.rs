@@ -49,6 +49,7 @@ pub mod core;
 pub mod core_replacement;
 pub mod goods;
 pub mod logistics;
+pub mod plant;
 pub mod resolution;
 pub mod resources;
 pub mod sensor;
@@ -77,6 +78,7 @@ pub use logistics::{
     BayDef, BaySlotDef, BerthsSlotDef, DriveDef, DriveLaw, EgressDef, InteriorDef, InteriorExitDef,
     InteriorRoomDef, InteriorRoomKind, LogisticsDef, StowageDef,
 };
+pub use plant::PlantDef;
 pub use resolution::ResolutionDef;
 pub use resources::ResourceTable;
 pub use sensor::SensorDef;
@@ -106,13 +108,15 @@ pub const MAX_ENTRY_REFERENCES: usize = 32;
 ///
 /// **17b cut M3.1** adds the ninth, `core` (doc 17 §9, D-UM-33), after
 /// `sensor` and before `resolution`: a core is minted before the components
-/// that name it, as a sensor is.
-pub const KINDS: [&str; 9] = [
+/// that name it, as a sensor is. **Doc 39 cut IN.1** adds the tenth, `plant` (Q-39-35), after
+/// `core`: the row a `power` component names, minted before the units, as a core is.
+pub const KINDS: [&str; 10] = [
     "schema",
     "ammunition",
     "weapon",
     "sensor",
     "core",
+    "plant",
     "resolution",
     "component",
     "unit",
@@ -121,13 +125,14 @@ pub const KINDS: [&str; 9] = [
 
 /// The kinds a TacSim pack may carry (the other two are minted, never
 /// authored): doc 16 §4's six and, since **17b cut M3.1**, the seventh,
-/// `core` (doc 17 §9, D-UM-33).
-pub const CONTENT_KINDS: [&str; 7] = [
+/// `core` (doc 17 §9, D-UM-33), and since **doc 39 cut IN.1** the eighth, `plant` (Q-39-35).
+pub const CONTENT_KINDS: [&str; 8] = [
     "unit",
     "weapon",
     "ammunition",
     "sensor",
     "core",
+    "plant",
     "resolution",
     "arena",
 ];
@@ -223,6 +228,16 @@ struct Sourced<T> {
 
 /// **The game's definitions, decoded, checked and bound** (16b cut C.2).
 ///
+/// **A component's part** (doc 39 cut IN.1, Q-39-3): the good it stocks as and the hardware
+/// row it is, so a part fits every slot that names the row.
+#[derive(Clone, Debug, Eq, PartialEq)]
+pub struct PartRow {
+    /// The part good, `tacsim.part.<kind>.<row>`.
+    pub commodity: CanonicalId,
+    /// The hardware row's exact reference: a weapon, a sensor or a plant.
+    pub row: DefinitionRef,
+}
+
 /// Everything the composition root, the module and the arena pack's applier
 /// need, produced once so none of them can hold a different answer.
 #[derive(Clone, Debug, Default)]
@@ -247,6 +262,13 @@ pub struct Catalog {
     pub sensors: BTreeMap<CanonicalId, SensorDef>,
     /// **The cores, by entry id** (17b cut M3.1; doc 17 §9, D-UM-33).
     pub cores: BTreeMap<CanonicalId, CoreDef>,
+    /// **The plants, by entry id** (doc 39 cut IN.1; Q-39-35).
+    pub plants: BTreeMap<CanonicalId, PlantDef>,
+    /// **Each component's part, by its component definition id** (`{unit}.{slot}`; doc 39 cut
+    /// IN.1, Q-39-3): the hardware row the slot names, and the `tacsim.part.<kind>.<row>` good it
+    /// stocks as. A component whose row has no part good (a core, a relay socket, an unpriced
+    /// plant) has no entry and comes off no hull.
+    pub parts: BTreeMap<CanonicalId, PartRow>,
     /// The resolution tables, by entry id.
     pub resolutions: BTreeMap<CanonicalId, ResolutionDef>,
     /// Every minted reference, by entry id — the exact identity a persisted
@@ -273,6 +295,7 @@ impl Catalog {
         let mut weapons: BTreeMap<CanonicalId, Sourced<WeaponDef>> = BTreeMap::new();
         let mut sensors: BTreeMap<CanonicalId, Sourced<SensorDef>> = BTreeMap::new();
         let mut cores: BTreeMap<CanonicalId, Sourced<CoreDef>> = BTreeMap::new();
+        let mut plants: BTreeMap<CanonicalId, Sourced<PlantDef>> = BTreeMap::new();
         let mut resolutions: BTreeMap<CanonicalId, Sourced<ResolutionDef>> = BTreeMap::new();
         let mut units: BTreeMap<CanonicalId, Sourced<UnitSpec>> = BTreeMap::new();
         let mut arenas: BTreeMap<CanonicalId, Sourced<ArenaDef>> = BTreeMap::new();
@@ -304,6 +327,11 @@ impl Catalog {
                     PackEntry::Core(def) => {
                         def.check(name)?;
                         insert(&mut cores, id, &pack, version, def.clone())?;
+                    }
+                    // Doc 39 cut IN.1: a plant, checked and refused a duplicate likewise.
+                    PackEntry::Plant(def) => {
+                        def.check(name)?;
+                        insert(&mut plants, id, &pack, version, def.clone())?;
                     }
                     PackEntry::Resolution(def) => {
                         def.check(name)?;
@@ -376,6 +404,23 @@ impl Catalog {
                         id.as_str(),
                         "core",
                         core.as_str(),
+                    ));
+                }
+            }
+            // Doc 39 cut IN.1 (Q-39-35): a power role names a plant some loaded pack declares,
+            // with the plant's own states.
+            for (plant, states) in sourced.def.plants() {
+                let Some(def) = plants.get(plant) else {
+                    return Err(DefinitionError::reference(
+                        id.as_str(),
+                        "plant",
+                        plant.as_str(),
+                    ));
+                };
+                if def.def.states.as_slice() != states {
+                    return Err(DefinitionError::value(
+                        id.as_str(),
+                        format!("its power role's states are not plant `{plant}`'s"),
                     ));
                 }
             }
@@ -481,6 +526,21 @@ impl Catalog {
             )?;
             out.cores.insert(id.clone(), sourced.def.clone());
         }
+        // Doc 39 cut IN.1: the plants, minted as `plant` definitions before the units whose
+        // power components name them.
+        for (id, sourced) in &plants {
+            let payload = serde_json::to_value(&sourced.def)
+                .map_err(|error| DefinitionError::value(id.as_str(), error.to_string()))?;
+            out.mint(
+                &mut minter,
+                "plant",
+                id,
+                sourced.version,
+                payload,
+                Vec::new(),
+            )?;
+            out.plants.insert(id.clone(), sourced.def.clone());
+        }
         for (id, sourced) in &resolutions {
             let payload = serde_json::to_value(&sourced.def)
                 .map_err(|error| DefinitionError::value(id.as_str(), error.to_string()))?;
@@ -529,6 +589,7 @@ impl Catalog {
                 .add(binding.spec.clone(), &vocabulary)
                 .map_err(|error| DefinitionError::value(id.as_str(), error.to_string()))?;
             out.bindings.insert(id.clone(), binding);
+            out.index_parts(id, &sourced.def)?;
             out.specs.insert(id.clone(), sourced.def.clone());
         }
         out.units = catalog.freeze();
@@ -555,6 +616,52 @@ impl Catalog {
             out.arenas.insert(id.clone(), sourced.def.clone());
         }
         Ok(out)
+    }
+
+    /// **Index `unit`'s parts** (doc 39 cut IN.1, Q-39-3, Q-39-35): each component whose row has
+    /// a part good in the compiled goods table, keyed by its component definition id.
+    fn index_parts(&mut self, unit: &CanonicalId, spec: &UnitSpec) -> Result<(), DefinitionError> {
+        let goods = goods::goods_table()?;
+        for component in &spec.components {
+            let Some((kind, row)) = component.role.part_row() else {
+                continue;
+            };
+            let Some(tail) = row.as_str().rsplit('.').next() else {
+                continue;
+            };
+            let commodity = CanonicalId::new(format!("{}{kind}.{tail}", goods::PART_PREFIX))
+                .map_err(|error| DefinitionError::value(unit.as_str(), error.to_string()))?;
+            if goods
+                .good(&commodity)
+                .is_none_or(|good| good.class != GoodClass::Part)
+            {
+                continue;
+            }
+            let Some(reference) = self.references.get(row).cloned() else {
+                return Err(DefinitionError::reference(
+                    unit.as_str(),
+                    kind,
+                    row.as_str(),
+                ));
+            };
+            let key = CanonicalId::new(format!("{unit}.{}", component.id))
+                .map_err(|error| DefinitionError::value(unit.as_str(), error.to_string()))?;
+            self.parts.insert(
+                key,
+                PartRow {
+                    commodity,
+                    row: reference,
+                },
+            );
+        }
+        Ok(())
+    }
+
+    /// **The part a component stocks as** (doc 39 cut IN.1), by the component's definition id
+    /// (`{unit}.{slot}`).
+    #[must_use]
+    pub fn part_of(&self, component: &CanonicalId) -> Option<&PartRow> {
+        self.parts.get(component)
     }
 
     /// **The law a drive class flies under** (doc 18 cut IC2; Q-18-5, D-18-45):

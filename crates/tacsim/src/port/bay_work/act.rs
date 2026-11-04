@@ -91,7 +91,8 @@ pub struct PartProvenance {
     pub parent_schema: DefinitionRef,
     /// The slot it left, now `Missing` on the parent.
     pub slot: ComponentId,
-    /// The part's definition: it fits only a slot of this definition.
+    /// **The hardware row it is** (doc 39 cut IN.1, Q-39-3): a weapon, sensor or plant row; it
+    /// fits every slot that names this row, whatever the unit.
     pub definition: DefinitionRef,
     /// Its condition when it came off (intact, damaged or jammed).
     pub condition: ComponentCondition,
@@ -742,7 +743,7 @@ impl ActionProvider for BayActProvider {
             }
             OwedKind::Mint { why, lots } => {
                 let endpoint = endpoint.ok_or_else(invalid)?;
-                // Doc 36a P2-4: the bulk the lots lay in the hold must fit it, by the plan the
+                // Doc 36a P2-4: what the lots lay in the hold must fit it, by the plan the
                 // offer carried for this hull; a hold the offer carried no plan for is
                 // ungoverned. The pools are read here, in the bundle that writes them.
                 if let Some(plan) = parameters
@@ -751,16 +752,26 @@ impl ActionProvider for BayActProvider {
                     .and_then(|plans| plans.get(&hull.0.to_string()))
                 {
                     let plan = CapacityPlan(plan.clone());
+                    // Doc 39 cut IN.1: a part weighs its catalogue mass, and the parts already
+                    // aboard are read from the lot tally (a part never pools).
                     let mut bulk: BTreeMap<CanonicalId, u64> = BTreeMap::new();
-                    for row in lots.iter().filter(|row| row.part.is_none()) {
+                    for row in lots {
                         let slot = bulk.entry(row.commodity.clone()).or_insert(0);
                         *slot = slot.saturating_add(row.quantity);
                     }
                     for (commodity, quantity) in &bulk {
                         let mut read = |good: &CanonicalId| {
-                            self.inventory
+                            let pooled = self
+                                .inventory
                                 .pool(txn, endpoint, good)
                                 .map(|pool| pool.map_or(0, |pool| pool.quantity))
+                                .map_err(|_| CapacityReadError)?;
+                            if !crate::port_tick::is_part(good) {
+                                return Ok(pooled);
+                            }
+                            self.inventory
+                                .lot_quantity(txn, endpoint, good)
+                                .map(|held| pooled.saturating_add(held))
                                 .map_err(|_| CapacityReadError)
                         };
                         PortCapacity

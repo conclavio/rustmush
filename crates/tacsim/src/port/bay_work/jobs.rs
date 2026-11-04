@@ -200,12 +200,21 @@ impl BayQuote {
         }
     }
 
-    /// Tonnes of `industrial_parts` the jobs' points consume (Q-36-31).
+    /// **The kilograms the jobs' points consume** (Q-36-31; doc 39 cut IN.1, §4.10): yard
+    /// fittings at the tariff's rate, now to the kilogram rather than rounded up to a tonne a
+    /// job; no alloys until doc 39 cut IN.8 gives each design its own per-point figures. Drawn
+    /// through the hull's bale ([`super::Bale::draw`]).
     #[must_use]
-    pub fn parts_t(jobs: &[QuotedJob], tariff: &WorkshopFacilityTariff) -> u64 {
-        jobs.iter()
-            .fold(0u64, |sum, job| sum.saturating_add(job.points))
-            .div_ceil(tariff.structural_points_per_industrial_parts_t.max(1))
+    pub fn bale_need(jobs: &[QuotedJob], tariff: &WorkshopFacilityTariff) -> super::Bale {
+        let points = jobs
+            .iter()
+            .fold(0u64, |sum, job| sum.saturating_add(job.points));
+        super::Bale {
+            alloys_kg: 0,
+            fittings_kg: points
+                .saturating_mul(super::KG_PER_T)
+                .div_ceil(tariff.structural_points_per_industrial_parts_t.max(1)),
+        }
     }
 
     /// The jobs a selector picks: `all`, a kind word (`armor`, `unjam`, `rearm`, …) or a

@@ -949,6 +949,10 @@ fn require_space_state_healthy(w: &World) -> Result<(), CmdError> {
 /// the caller lacks the required bridge seat/channel, or the arguments are malformed.
 pub fn helm_cmd(ctx: &mut Ctx<'_>) -> Result<(), CmdError> {
     crate::commands::require_enabled(ctx)?;
+    // Doc 42 cut CR.0 (Q-42-2): every switch but the status read operates the ship.
+    if ctx.switches.iter().any(|switch| switch != "status") {
+        crate::field::crew::gate(ctx, crate::field::crew::Gate::Operate)?;
+    }
     require_space_state_healthy(ctx.w)?;
     if ctx.switches.iter().count() > 1 {
         return Err(CmdError::msg("Choose one +helm switch."));
@@ -2994,6 +2998,10 @@ fn default_nose_burn_dir(w: &World, hull: ObjId) -> [i32; 3] {
 /// the caller lacks the required bridge seat/channel, or the target contact is undetected.
 pub fn tac_cmd(ctx: &mut Ctx<'_>) -> Result<(), CmdError> {
     crate::commands::require_enabled(ctx)?;
+    // Doc 42 cut CR.0 (Q-42-2): every switch but the status read operates the ship.
+    if ctx.switches.iter().any(|switch| switch != "status") {
+        crate::field::crew::gate(ctx, crate::field::crew::Gate::Operate)?;
+    }
     require_space_state_healthy(ctx.w)?;
     if ctx.switches.iter().count() > 1 {
         return Err(CmdError::msg("Choose one +tac switch."));

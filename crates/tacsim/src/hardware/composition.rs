@@ -242,8 +242,9 @@ fn refit_bay(
     let recipe_ref = DefinitionRegistryBuilder::new()
         .register(OwnerId::new(crate::NS).map_err(bad)?, recipe.clone())
         .map_err(bad)?;
-    let fielded = crate::definitions::Catalog::build_fielded(&layer.loaded_packs()?, crate::NS)
-        .map_err(bad)?
+    let catalog = crate::definitions::Catalog::build_fielded(&layer.loaded_packs()?, crate::NS)
+        .map_err(bad)?;
+    let fielded = catalog
         .bindings
         .values()
         .map(|b| b.spec.definition.clone())
@@ -254,6 +255,7 @@ fn refit_bay(
         instrument.clone(),
         recipe_ref,
         fielded,
+        catalog.parts.clone(),
         economy.clone(),
     )?;
     Ok((Some(Box::new(config)), Some(recipe)))

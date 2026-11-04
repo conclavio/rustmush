@@ -11,9 +11,13 @@
       {
         "id": "tacsim.pack.cores",
         "version": 1
+      },
+      {
+        "id": "tacsim.pack.plants",
+        "version": 1
       }
     ],
-    "digest": "355a9688f6afb856e6e4167e6975992cf0bdfccf60841631318a19ee58bc1a7a"
+    "digest": "3f04a4283d540708d3f25e8138b099f4575a74d858e6ad546e5f3c2a3129767a"
   },
   "entries": {
     "tacsim.unit.conduct_carrier": {
@@ -185,6 +189,7 @@
             "section": "hull",
             "role": {
               "kind": "power",
+              "plant": "tacsim.plant.vehicle_mk1",
               "capability": "tacsim.power",
               "states": [
                 "off",

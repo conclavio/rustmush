@@ -18,7 +18,22 @@
 //!
 //! The condition reads the control sections (`crate::field_ops`'s anatomy: `head`, `cockpit`,
 //! `bridge`): one destroyed incapacitates, one damaged injures, else fit. A pilot at a remote
-//! console is fit. No ejection or capture (Q-CF-38).
+//! console is fit. Doc 42 amends Q-CF-38's "no ejection, no capture": the location has five
+//! variants (below), and ejection and capture write into it.
+//!
+//! **Custody** (doc 42 cut CR.0; Q-42-1, Q-42-2, Q-42-3): a character may be **held**
+//! ([`CrewLocation::Captured`]: aboard a carrier that is not theirs, by a captor, since an IC
+//! instant) or **in processing** at a port after a handover ([`CrewLocation::Processing`]). The
+//! record is the authority: `check_in` leaves both alone, so a captor's carrier checking in from
+//! a later field neither re-crews nor frees a captive, and [`crew_location`] prefers them over a
+//! carrier row's `aboard`. A captive is a passenger who cannot leave and cannot operate: the
+//! [`gate`] at the head of each verb Q-42-2 names refuses with one line ([`HELD`]), the
+//! [`HeldGate`] hook refuses their exits, and mush-sim's `@station` and `+focus` ask the same
+//! question through the carrier hooks (`crate::composition::sim_routes`). An ejectee waiting on a
+//! forced extraction ([`Extraction::forced`]) is refused movement and operation too ([`PICKUP`]);
+//! one in processing is refused only leaving the port ([`PROCESSING`]). What moves a character
+//! into or out of custody is the later cuts' (CR.1 the load, CR.2 the handover, CR.3 the bound,
+//! CR.4 the eject); this cut is the record, the gate and the lines.
 //!
 //! **Extraction** (Q-CF-39, P-5): a stranded or incapacitated character asks for it
 //! (`+sortie/extract`); there is no timeout that extracts an unwilling pilot guarding the wreck.
@@ -33,7 +48,7 @@
 //!
 //! **Abandonment** (doc 36 cut GC.5; Q-36-52, the owner's ruling): a casualty loaded into a
 //! carrier that is not its crew's own party's or a Friend's leaves everyone still aboard it
-//! abandoned, until capture is built. Their extraction starts the moment the load completes, as
+//! abandoned, until doc 42's cut CR.1 captures them instead (Q-38-22, Q-42-16). Their extraction starts the moment the load completes, as
 //! if each had asked for it (`abandoned_loaded`), and it is never deferred for a recovery
 //! flight ([`Extraction::abandoned`]). The hull stays with the carrier.
 //!
@@ -88,6 +103,15 @@ pub const EXTRACTED: &str =
 pub const STRANDED: &str = "#{unit} cannot bring you home: you are stranded on {site}. +sortie/extract asks a recovery service to lift you out.";
 /// Incapacitated on a control-section kill: `{section}`.
 pub const INCAPACITATED: &str = "Your {section} is gone and you with it, for now: you are incapacitated. +sortie/extract asks a recovery service to lift you out.";
+/// **The held refusal** (doc 42 Q-42-2, §7a): a captive's movement, operation, extraction
+/// request or detachment chat. `{carrier}`.
+pub const HELD: &str = "You are held aboard the {carrier}.";
+/// **The pickup refusal** (doc 42 Q-42-12, Draft 0.3 42-5 (B)): an ejectee's movement or
+/// operation while their forced extraction is on its way.
+pub const PICKUP: &str = "You are waiting for your pickup.";
+/// **The processing refusal** (doc 42 Q-42-7, Draft 0.3 42-2): leaving the port during the
+/// processing hour. `{port}`, `{h}`.
+pub const PROCESSING: &str = "You are being processed at {port}; about {h} IC h.";
 
 /// `tacsim:crew:<character>`.
 #[must_use]
@@ -121,6 +145,29 @@ pub enum CrewLocation {
         /// The port's venue id.
         port: SmolStr,
     },
+    /// **Held** (doc 42 Q-42-1): aboard `carrier` — the hull they physically stand in, never the
+    /// casualty they were taken in — in `captor`'s custody since `since_ic`, the bound's origin
+    /// (Q-42-8). A new variant under the same tag, so [`CREW_FORMAT`] is unchanged.
+    Captured {
+        /// The carrier they ride in.
+        carrier: ObjId,
+        /// The captor: a character (Q-42-4).
+        captor: ObjId,
+        /// The IC instant of the capture.
+        since_ic: i64,
+    },
+    /// **In processing** at a port after a handover (doc 42 Q-42-7, Draft 0.3 42-2): released
+    /// at `release_due_ic`, the release fee's obligation `charge` once it is created (`None`
+    /// first, so a pass that finds `None` creates it and one that finds it filled does not).
+    Processing {
+        /// The port's venue id.
+        port: SmolStr,
+        /// The IC instant of the release.
+        release_due_ic: i64,
+        /// The release fee's obligation, once created.
+        #[serde(default, skip_serializing_if = "Option::is_none")]
+        charge: Option<mush_economy::ObligationId>,
+    },
 }
 
 /// **How a character is** (Q-CF-38). Ordered by severity, fit first: a check-in keeps the worse
@@ -151,6 +198,29 @@ pub struct Extraction {
     /// flight defers it. Omitted when false, so an asked-for extraction reads as before.
     #[serde(default, skip_serializing_if = "std::ops::Not::not")]
     pub abandoned: bool,
+    /// **Doc 42 Q-42-10** (cut CR.4 writes it): started by an ejection, not asked for. The body
+    /// stays in the cockpit room until the landing moves it, so every load rule skips the record
+    /// and the [`gate`] refuses movement and operation ([`PICKUP`]). Omitted when false.
+    #[serde(default, skip_serializing_if = "std::ops::Not::not")]
+    pub forced: bool,
+    /// **Doc 42 Q-42-12** (Draft 0.3 42-5 (B)): the eject's draw, kept so the landing survives a
+    /// restart: when set, the landing captures into that carrier if it still stands on the site.
+    /// Omitted when `None`.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub capture: Option<EjectCapture>,
+}
+
+/// **An ejection's capture, drawn at the eject** (doc 42 Q-42-12, Draft 0.3 42-5 (B)): the party
+/// that held the cell, the carrier the captive will ride in, and the captor (its leader, Q-42-4).
+#[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(deny_unknown_fields)]
+pub struct EjectCapture {
+    /// The party that held the cell.
+    pub party: crate::arena::party::PartyId,
+    /// The party's carrier on the site.
+    pub carrier: ObjId,
+    /// The party's leader.
+    pub captor: ObjId,
 }
 
 /// **A treatment under way** (doc 36 cut GC.13; Q-36-45).
@@ -202,10 +272,168 @@ impl CrewRecord {
             CrewLocation::Unit { unit } if self.condition == CrewCondition::Incapacitated => {
                 Some(*unit)
             }
+            // Doc 42: a captive asks only once the bound has passed (cut CR.3), and a character in
+            // processing is released by the port, not lifted out.
             CrewLocation::Unit { .. }
             | CrewLocation::Carrier { .. }
-            | CrewLocation::Port { .. } => None,
+            | CrewLocation::Port { .. }
+            | CrewLocation::Captured { .. }
+            | CrewLocation::Processing { .. } => None,
         }
+    }
+
+    /// **Whether the record is in custody** (doc 42 Q-42-3): held, or in processing after a
+    /// handover. `check_in` and [`crew_location`] defer to such a record.
+    #[must_use]
+    pub const fn in_custody(&self) -> bool {
+        matches!(
+            self.location,
+            CrewLocation::Captured { .. } | CrewLocation::Processing { .. }
+        )
+    }
+
+    /// **Whether an ejection's forced extraction is still on its way** (doc 42 Q-42-12).
+    #[must_use]
+    pub fn awaiting_pickup(&self) -> bool {
+        self.extraction.as_ref().is_some_and(|coming| coming.forced)
+    }
+
+    /// **What holds the character, if anything** (doc 42 Q-42-2): the [`gate`]'s one read.
+    #[must_use]
+    pub fn hold(&self) -> Option<Hold> {
+        match &self.location {
+            CrewLocation::Captured { carrier, .. } => Some(Hold::Captured { carrier: *carrier }),
+            CrewLocation::Processing {
+                port,
+                release_due_ic,
+                ..
+            } => Some(Hold::Processing {
+                port: port.clone(),
+                release_due_ic: *release_due_ic,
+            }),
+            _ if self.awaiting_pickup() => Some(Hold::Pickup),
+            _ => None,
+        }
+    }
+}
+
+/// **What holds a character** (doc 42 Q-42-2; Draft 0.3 42-2 and 42-5): the three cases the
+/// [`gate`] refuses on.
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub enum Hold {
+    /// Held aboard `carrier` ([`CrewLocation::Captured`]): every gated verb refuses ([`HELD`]).
+    Captured {
+        /// The carrier.
+        carrier: ObjId,
+    },
+    /// An ejectee waiting on a forced extraction: movement and operation refuse ([`PICKUP`]).
+    Pickup,
+    /// In processing at `port` until `release_due_ic`: only leaving the port refuses
+    /// ([`PROCESSING`]).
+    Processing {
+        /// The port's venue id.
+        port: SmolStr,
+        /// The IC instant of the release.
+        release_due_ic: i64,
+    },
+}
+
+/// **What a gated verb does** (doc 42 Q-42-2's list, Draft 0.3 42-6): the [`gate`]'s argument.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub enum Gate {
+    /// Moves the character: an exit or `go`, `+tv/bay in|out`, `+ship/board|leave`,
+    /// `+tv/<n> board|leave`, `+sortie/seat`.
+    Move,
+    /// Operates a unit or commits one to an operation: `+tv/<n>` acts, `+ship/*`, `+helm/*`,
+    /// `+tac/*`, `+field/*`, `+bay/*`, `+salvage/*`, `+sortie/activate|hire|board|contract|
+    /// launch|recover|cancel-launch`, a cockpit keyword, `WILCO`/`NEGATIVE`, `@station/*`,
+    /// `+focus`.
+    Operate,
+    /// `+sortie/extract`: refused to a captive until the bound (cut CR.3).
+    Extract,
+    /// `+sortie/chat`: the roster radio a captor would take.
+    Chat,
+}
+
+/// **Whether `who` is held aboard a carrier** (doc 42 Q-42-2's `crew::held`): the carrier.
+#[must_use]
+pub fn held(w: &World, who: ObjId) -> Option<ObjId> {
+    match crew_of(w, who)?.hold()? {
+        Hold::Captured { carrier } => Some(carrier),
+        Hold::Pickup | Hold::Processing { .. } => None,
+    }
+}
+
+/// **The refusal `gate` gives `who`**, if any (doc 42 Q-42-2): [`HELD`] for a captive on every
+/// gate; [`PICKUP`] for an ejectee on movement and operation; [`PROCESSING`] for a character in
+/// processing on movement. `None` passes.
+#[must_use]
+pub fn refusal(w: &World, who: ObjId, gate: Gate) -> Option<String> {
+    let hold = crew_of(w, who)?.hold()?;
+    refusal_for(w, &hold, gate)
+}
+
+/// [`refusal`]'s rule for one [`Hold`].
+fn refusal_for(w: &World, hold: &Hold, gate: Gate) -> Option<String> {
+    match (hold, gate) {
+        (Hold::Captured { carrier }, _) => {
+            Some(HELD.replace("{carrier}", &crate::port::coop::name_of(w, *carrier)))
+        }
+        (Hold::Pickup, Gate::Move | Gate::Operate) => Some(PICKUP.to_owned()),
+        (
+            Hold::Processing {
+                port,
+                release_due_ic,
+            },
+            Gate::Move,
+        ) => Some(processing_line(w, port, *release_due_ic)),
+        (Hold::Pickup | Hold::Processing { .. }, _) => None,
+    }
+}
+
+/// [`PROCESSING`], filled.
+fn processing_line(w: &World, port: &str, release_due_ic: i64) -> String {
+    PROCESSING.replace("{port}", port_name(port)).replace(
+        "{h}",
+        &hours(release_due_ic - w.world_ic_now().at).to_string(),
+    )
+}
+
+/// **The held gate** (doc 42 Q-42-2): read at the head of each verb the question names, before
+/// anything else the verb reads or writes.
+///
+/// # Errors
+///
+/// The one-line refusal ([`refusal`]).
+pub fn gate(ctx: &Ctx<'_>, gate: Gate) -> Result<(), CmdError> {
+    refusal(ctx.w, ctx.actor, gate).map_or(Ok(()), |line| Err(CmdError::msg(line)))
+}
+
+/// **The held gate on exits** (doc 42 Q-42-2: "`go` and exits"): a `MoveAttempt` veto. A captive
+/// and an ejectee waiting on their pickup go nowhere; a character in processing goes anywhere in
+/// the port, and nowhere else. The crew's own moves (an extraction's landing, a capture, a
+/// handover) move the body directly and never ask.
+pub struct HeldGate;
+
+impl mush_core::EventHook for HeldGate {
+    fn move_attempt(
+        &self,
+        ctx: &mush_core::HookReadContext<'_>,
+        actor: ObjId,
+        _exit: Option<ObjId>,
+        dest: ObjId,
+    ) -> Result<(), mush_proto::RichText> {
+        let w = ctx.world();
+        let Some(hold) = crew_of(w, actor).and_then(CrewRecord::hold) else {
+            return Ok(());
+        };
+        if let Hold::Processing { port, .. } = &hold
+            && crate::ic_return::port_of_room(w, dest).is_some_and(|here| here.id == port.as_str())
+        {
+            return Ok(());
+        }
+        refusal_for(w, &hold, Gate::Move)
+            .map_or(Ok(()), |line| Err(mush_proto::RichText::tag("error", line)))
     }
 }
 
@@ -221,9 +449,13 @@ pub fn crew_of(w: &World, who: ObjId) -> Option<&CrewRecord> {
 
 /// **Where a character is** (Q-CF-38): aboard a carrier while a running field lists them on the
 /// carrier's row (doc 32 cut CF.3's rows, `FieldUnit::aboard`), else their crew record's
-/// location; `None` for a character the field engine never touched.
+/// location; `None` for a character the field engine never touched. A record in custody (doc 42
+/// Q-42-3: held, or in processing) wins over the carrier's row.
 #[must_use]
 pub fn crew_location(w: &World, who: ObjId) -> Option<CrewLocation> {
+    if let Some(record) = crew_of(w, who).filter(|record| record.in_custody()) {
+        return Some(record.location.clone());
+    }
     let aboard = w.module_state::<super::FieldBook>().and_then(|book| {
         book.running().find_map(|(_, hosted)| {
             hosted
@@ -393,7 +625,8 @@ fn organizer_of(w: &World, site: &CanonicalId, unit: ObjId) -> Option<ObjId> {
 /// soul abandoned in a casualty loaded into a captor's bay (doc 36 cut GC.5, Q-36-52: an
 /// extraction marked `abandoned`) is not the captor's crew: the captor's carrier checking in
 /// from a later field leaves their record alone, so the extraction lands them at a port as the
-/// load promised.
+/// load promised. Doc 42 widens that guard ([`leaves_alone`], Q-42-3): a record in custody, and
+/// an ejectee's forced extraction, are the record's to end, never a check-in's.
 pub(crate) fn check_in(ctx: &mut Ctx<'_>, site: &CanonicalId, unit: ObjId, pilot: Option<ObjId>) {
     let Some(pilot) = pilot else {
         return;
@@ -406,11 +639,7 @@ pub(crate) fn check_in(ctx: &mut Ctx<'_>, site: &CanonicalId, unit: ObjId, pilot
         return;
     }
     let prior = crew_of(ctx.w, pilot).cloned();
-    if prior
-        .as_ref()
-        .and_then(|record| record.extraction.as_ref())
-        .is_some_and(|coming| coming.abandoned)
-    {
+    if prior.as_ref().is_some_and(leaves_alone) {
         return;
     }
     let now = ctx.w.world_ic_now().at;
@@ -478,6 +707,18 @@ pub(crate) fn check_in(ctx: &mut Ctx<'_>, site: &CanonicalId, unit: ObjId, pilot
     }
 }
 
+/// **Whether a check-in leaves `record` alone** (doc 36a §11 row 4; doc 42 Q-42-3, Q-42-12): an
+/// abandoned extraction (GC.5), an ejectee's forced one, or a character in custody — held, or in
+/// processing. The prior condition is kept either way: a check-in never heals.
+#[must_use]
+pub(crate) fn leaves_alone(record: &CrewRecord) -> bool {
+    record.in_custody()
+        || record
+            .extraction
+            .as_ref()
+            .is_some_and(|coming| coming.abandoned || coming.forced)
+}
+
 /// **Everyone a carrier's row listed aboard** (doc 32 cut CF.3's rows), as the carrier checks in:
 /// each soul still aboard is recorded aboard it ([`check_in`]'s carrier branch).
 pub(crate) fn check_in_aboard(
@@ -527,11 +768,7 @@ pub(crate) fn loaded_aboard(
     carrier: ObjId,
     now: i64,
 ) -> Option<CrewRecord> {
-    let held = match &record.location {
-        CrewLocation::Unit { unit } | CrewLocation::Stranded { unit, .. } => *unit == casualty,
-        CrewLocation::Carrier { .. } | CrewLocation::Port { .. } => false,
-    };
-    if !held {
+    if !held_in(record, casualty) {
         return None;
     }
     let mut next = record.clone();
@@ -539,6 +776,24 @@ pub(crate) fn loaded_aboard(
     next.extraction = None;
     next.at_ic = now;
     Some(next)
+}
+
+/// **Whether a load of `casualty` carries `record`'s character** (GC.4, GC.5): aboard or stranded
+/// in it. Doc 42 Draft 0.3 42-5 (B): an ejectee's forced extraction is skipped — the draw is
+/// already decided, so the ejectee rides where the hull goes and lands where the extraction says
+/// — and a record in custody names a carrier, never a casualty.
+#[must_use]
+pub(crate) fn held_in(record: &CrewRecord, casualty: ObjId) -> bool {
+    if record.awaiting_pickup() {
+        return false;
+    }
+    match &record.location {
+        CrewLocation::Unit { unit } | CrewLocation::Stranded { unit, .. } => *unit == casualty,
+        CrewLocation::Carrier { .. }
+        | CrewLocation::Port { .. }
+        | CrewLocation::Captured { .. }
+        | CrewLocation::Processing { .. } => false,
+    }
 }
 
 /// **The crew abandoned in a loaded casualty**: `{name}`, `{carrier}`, `{port}`, `{h}`.
@@ -564,12 +819,7 @@ pub(crate) fn abandoned_loaded(
         .map(|book| {
             book.0
                 .values()
-                .filter(|record| match &record.location {
-                    CrewLocation::Unit { unit } | CrewLocation::Stranded { unit, .. } => {
-                        *unit == casualty
-                    }
-                    CrewLocation::Carrier { .. } | CrewLocation::Port { .. } => false,
-                })
+                .filter(|record| held_in(record, casualty))
                 .cloned()
                 .collect()
         })
@@ -614,8 +864,8 @@ pub(crate) fn abandon(
 ) -> CrewRecord {
     let unit = match &record.location {
         CrewLocation::Unit { unit } | CrewLocation::Stranded { unit, .. } => *unit,
-        CrewLocation::Carrier { hull } => *hull,
-        CrewLocation::Port { .. } => ObjId(0),
+        CrewLocation::Carrier { hull } | CrewLocation::Captured { carrier: hull, .. } => *hull,
+        CrewLocation::Port { .. } | CrewLocation::Processing { .. } => ObjId(0),
     };
     let mut next = record.clone();
     next.location = CrewLocation::Stranded {
@@ -632,6 +882,8 @@ pub(crate) fn abandon(
             requested_ic: now,
             due_ic: now.saturating_add(delay),
             abandoned: true,
+            forced: false,
+            capture: None,
         },
     });
     next.at_ic = now;
@@ -650,10 +902,13 @@ pub(crate) fn on_frames(ctx: &mut Ctx<'_>, frames: &[(ObjId, crate::arena::step:
                 section.internals,
             )
         }));
+        // Doc 42 Q-42-3: a captive and an ejectee sit in no seat; no frame reaches them.
         if condition != CrewCondition::Incapacitated
             || crew_of(ctx.w, *pilot).is_some_and(|record| {
-                record.condition == CrewCondition::Incapacitated
-                    && record.location == CrewLocation::Unit { unit: frame.unit }
+                (record.condition == CrewCondition::Incapacitated
+                    && record.location == CrewLocation::Unit { unit: frame.unit })
+                    || record.in_custody()
+                    || record.awaiting_pickup()
             })
             || !inside(ctx.w, *pilot, frame.unit)
         {
@@ -710,6 +965,8 @@ fn hours(seconds: i64) -> i64 {
 ///
 /// The refusal line.
 pub(crate) fn extract_cmd(ctx: &mut Ctx<'_>) -> Result<(), CmdError> {
+    // Doc 42 Q-42-2: a captive asks only after the bound (cut CR.3 opens it).
+    gate(ctx, Gate::Extract)?;
     let actor = ctx.actor;
     let record = crew_of(ctx.w, actor)
         .cloned()
@@ -744,6 +1001,8 @@ pub(crate) fn extract_cmd(ctx: &mut Ctx<'_>) -> Result<(), CmdError> {
         requested_ic: now,
         due_ic: now.saturating_add(delay),
         abandoned: false,
+        forced: false,
+        capture: None,
     });
     put(ctx, next);
     ctx.out.sys_to_actor(
@@ -818,7 +1077,13 @@ pub(crate) fn tick(ctx: &mut Ctx<'_>) {
         let (site, unit) = match &record.location {
             CrewLocation::Stranded { site, unit } => (Some(site.clone()), Some(*unit)),
             CrewLocation::Unit { unit } => (super::field_of_unit(ctx.w, *unit), Some(*unit)),
-            CrewLocation::Carrier { .. } | CrewLocation::Port { .. } => (None, None),
+            // Doc 42: no seat is left to vacate aboard a carrier, in custody or at a port. A
+            // captive's extraction after the bound (CR.3) and an eject's captured landing (CR.4)
+            // are their cuts'; nothing writes either yet.
+            CrewLocation::Carrier { .. }
+            | CrewLocation::Port { .. }
+            | CrewLocation::Captured { .. }
+            | CrewLocation::Processing { .. } => (None, None),
         };
         if let Some(site) = &site
             && !coming.abandoned
@@ -964,11 +1229,37 @@ pub fn status_line(ctx: &Ctx<'_>, who: ObjId) -> String {
             unit.0
         ),
         CrewLocation::Port { port } => format!("at {}", port_name(port.as_str())),
+        // Doc 42 cut CR.0 (Q-42-1, Draft 0.3 42-2).
+        CrewLocation::Captured { carrier, .. } => format!(
+            "held aboard the {}",
+            crate::port::coop::name_of(ctx.w, carrier)
+        ),
+        CrewLocation::Processing {
+            port,
+            release_due_ic,
+            charge,
+        } => format!(
+            "in processing at {}, released in about {} IC h{}",
+            port_name(port.as_str()),
+            hours(release_due_ic - now),
+            if charge.is_some() {
+                ", the release fee charged"
+            } else {
+                ""
+            }
+        ),
     };
     let mut line = format!("Crew: {condition}, {at}");
     if let Some(coming) = &record.extraction {
+        // Doc 42 Q-42-12: an ejectee's draw is kept on the record; the line names the pickup, not
+        // the draw, which the landing tells.
+        let what = if coming.forced {
+            "pickup after your ejection, to"
+        } else {
+            "extraction to"
+        };
         line.push_str(&format!(
-            "; extraction to {} in about {} IC h",
+            "; {what} {} in about {} IC h",
             port_name(coming.port.as_str()),
             hours(coming.due_ic - now)
         ));
@@ -1198,6 +1489,8 @@ mod tests {
                 requested_ic: 150,
                 due_ic: 21_750,
                 abandoned: false,
+                forced: false,
+                capture: None,
             }),
             treatment: None,
         };
@@ -1261,6 +1554,8 @@ mod tests {
                 requested_ic: 200,
                 due_ic: 900,
                 abandoned: false,
+                forced: false,
+                capture: None,
             }),
             ..inside
         };
@@ -1279,5 +1574,267 @@ mod tests {
         let back: CrewRecord =
             serde_json::from_value(serde_json::to_value(&left).expect("encodes")).expect("decodes");
         assert_eq!(back, left);
+    }
+
+    /// A record for the doc 42 tests: `who`, injured, at `location`.
+    fn record_at(who: ObjId, location: CrewLocation) -> CrewRecord {
+        CrewRecord {
+            format: CREW_FORMAT,
+            character: who,
+            location,
+            condition: CrewCondition::Injured,
+            at_ic: 100,
+            organizer: Some(ObjId(3)),
+            extraction: None,
+            treatment: None,
+        }
+    }
+
+    /// **Doc 42 cut CR.0** (Q-42-1, Draft 0.3 42-2 and 42-5): the two new locations and the two
+    /// new extraction fields decode under `CREW_FORMAT` 1; a record written before them decodes as
+    /// before; the new fields are omitted when empty, so an old record re-encodes unchanged.
+    #[test]
+    fn cr0_the_custody_record_decodes_under_the_same_format() {
+        let captured: CrewRecord = serde_json::from_value(serde_json::json!({
+            "format": 1, "character": 7,
+            "location": {"at": "captured", "carrier": 90, "captor": 12, "since_ic": 500},
+            "condition": "injured", "at_ic": 500
+        }))
+        .expect("a captured record decodes");
+        assert_eq!(
+            captured.location,
+            CrewLocation::Captured {
+                carrier: ObjId(90),
+                captor: ObjId(12),
+                since_ic: 500
+            }
+        );
+        assert!(captured.in_custody());
+        assert_eq!(
+            captured.extractable(),
+            None,
+            "a captive asks after the bound"
+        );
+        let processing: CrewRecord = serde_json::from_value(serde_json::json!({
+            "format": 1, "character": 7,
+            "location": {"at": "processing", "port": "ceres", "release_due_ic": 4_100},
+            "condition": "fit", "at_ic": 500
+        }))
+        .expect("a processing record decodes");
+        assert_eq!(
+            processing.location,
+            CrewLocation::Processing {
+                port: SmolStr::new("ceres"),
+                release_due_ic: 4_100,
+                charge: None
+            }
+        );
+        assert_eq!(processing.extractable(), None);
+        let charged = CrewRecord {
+            location: CrewLocation::Processing {
+                port: SmolStr::new("ceres"),
+                release_due_ic: 4_100,
+                charge: Some(mush_economy::ObligationId(31)),
+            },
+            ..processing.clone()
+        };
+        let wire = serde_json::to_value(&charged).expect("encodes");
+        assert_eq!(wire["location"]["charge"], 31);
+        assert!(
+            serde_json::to_value(&processing).expect("encodes")["location"]
+                .get("charge")
+                .is_none(),
+            "an uncreated charge is omitted"
+        );
+        let ejected: CrewRecord = serde_json::from_value(serde_json::json!({
+            "format": 1, "character": 7,
+            "location": {"at": "stranded", "site": "ahuna", "unit": 40},
+            "condition": "injured", "at_ic": 500,
+            "extraction": {"port": "stickney", "requested_ic": 500, "due_ic": 22_100,
+                "forced": true, "capture": {"party": "c", "carrier": 90, "captor": 12}}
+        }))
+        .expect("an ejectee's record decodes");
+        let coming = ejected.extraction.clone().expect("the pickup");
+        assert!(coming.forced && !coming.abandoned);
+        assert_eq!(
+            coming
+                .capture
+                .as_ref()
+                .map(|c| (c.party.as_str(), c.carrier, c.captor)),
+            Some(("c", ObjId(90), ObjId(12)))
+        );
+        for record in [captured, processing, charged, ejected] {
+            let back: CrewRecord =
+                serde_json::from_value(serde_json::to_value(&record).expect("encodes"))
+                    .expect("decodes");
+            assert_eq!(back, record);
+        }
+        // A record from before doc 42 decodes, and re-encodes with none of the new fields.
+        let old = serde_json::json!({
+            "format": 1, "character": 7,
+            "location": {"at": "stranded", "site": "ahuna", "unit": 40},
+            "condition": "fit", "at_ic": 100,
+            "extraction": {"port": "stickney", "requested_ic": 150, "due_ic": 21_750}
+        });
+        let decoded: CrewRecord = serde_json::from_value(old.clone()).expect("an old record");
+        assert_eq!(serde_json::to_value(&decoded).expect("encodes"), old);
+    }
+
+    /// **Doc 42 cut CR.0** (Q-42-3, Draft 0.3 42-5 (B)): a check-in leaves custody, an abandoned
+    /// extraction and an ejectee's forced one alone; no load carries a captive, a soul in
+    /// processing or an ejectee; a Friend's load still carries the stranded.
+    #[test]
+    fn cr0_check_in_and_the_loads_leave_custody_alone() {
+        let site = CanonicalId::new("ahuna").expect("a site");
+        let stranded = record_at(
+            ObjId(7),
+            CrewLocation::Stranded {
+                site,
+                unit: ObjId(40),
+            },
+        );
+        assert!(!leaves_alone(&stranded));
+        assert!(held_in(&stranded, ObjId(40)));
+        let mut ejectee = stranded.clone();
+        ejectee.extraction = Some(Extraction {
+            port: SmolStr::new("stickney"),
+            requested_ic: 100,
+            due_ic: 21_700,
+            abandoned: false,
+            forced: true,
+            capture: None,
+        });
+        assert!(leaves_alone(&ejectee), "the eject's draw is the record's");
+        assert!(
+            !held_in(&ejectee, ObjId(40)),
+            "the ejectee rides where the hull goes"
+        );
+        assert!(loaded_aboard(&ejectee, ObjId(40), ObjId(90), 500).is_none());
+        let captive = record_at(
+            ObjId(7),
+            CrewLocation::Captured {
+                carrier: ObjId(40),
+                captor: ObjId(12),
+                since_ic: 100,
+            },
+        );
+        assert!(leaves_alone(&captive));
+        assert!(
+            !held_in(&captive, ObjId(40)),
+            "a captive's carrier is never a casualty"
+        );
+        let processing = record_at(
+            ObjId(7),
+            CrewLocation::Processing {
+                port: SmolStr::new("ceres"),
+                release_due_ic: 4_100,
+                charge: None,
+            },
+        );
+        assert!(leaves_alone(&processing));
+        assert!(!held_in(&processing, ObjId(40)));
+    }
+
+    /// **Doc 42 cut CR.0** (Q-42-2, Draft 0.3 42-2, 42-5 (B), 42-6): the gate's refusals. A
+    /// captive is refused every gate with the held line; an ejectee movement and operation; a
+    /// character in processing only movement; a passenger nothing.
+    #[test]
+    fn cr0_the_held_gate_refuses_by_hold() {
+        let mut w = World::new_minimal();
+        let who = w
+            .create(
+                ObjKind::Player,
+                "Pilot",
+                mush_core::GOD,
+                Some(mush_core::LIMBO),
+            )
+            .expect("a pilot");
+        let carrier = w
+            .create(
+                ObjKind::Thing,
+                "Kestrel",
+                mush_core::GOD,
+                Some(mush_core::LIMBO),
+            )
+            .expect("a carrier");
+        let now = w.world_ic_now().at;
+        let mut book = CrewBook::default();
+        let gates = [Gate::Move, Gate::Operate, Gate::Extract, Gate::Chat];
+        w.module_state_insert(book.clone());
+        assert!(
+            gates.iter().all(|gate| refusal(&w, who, *gate).is_none()),
+            "no record"
+        );
+        book.0.insert(
+            who,
+            record_at(
+                who,
+                CrewLocation::Captured {
+                    carrier,
+                    captor: ObjId(12),
+                    since_ic: now,
+                },
+            ),
+        );
+        w.module_state_insert(book.clone());
+        assert_eq!(held(&w, who), Some(carrier));
+        for gate in gates {
+            let line = refusal(&w, who, gate).expect("a captive is refused");
+            assert_eq!(
+                line,
+                HELD.replace("{carrier}", &crate::port::coop::name_of(&w, carrier))
+            );
+            assert!(line.starts_with("You are held aboard the "), "{line}");
+        }
+        let mut ejectee = record_at(
+            who,
+            CrewLocation::Stranded {
+                site: CanonicalId::new("ahuna").expect("a site"),
+                unit: ObjId(40),
+            },
+        );
+        ejectee.extraction = Some(Extraction {
+            port: SmolStr::new("stickney"),
+            requested_ic: now,
+            due_ic: now + 21_600,
+            abandoned: false,
+            forced: true,
+            capture: None,
+        });
+        book.0.insert(who, ejectee);
+        w.module_state_insert(book.clone());
+        assert_eq!(held(&w, who), None);
+        assert_eq!(refusal(&w, who, Gate::Move).as_deref(), Some(PICKUP));
+        assert_eq!(refusal(&w, who, Gate::Operate).as_deref(), Some(PICKUP));
+        assert_eq!(refusal(&w, who, Gate::Chat), None);
+        book.0.insert(
+            who,
+            record_at(
+                who,
+                CrewLocation::Processing {
+                    port: SmolStr::new("ceres"),
+                    release_due_ic: now + 3_600,
+                    charge: None,
+                },
+            ),
+        );
+        w.module_state_insert(book.clone());
+        let line = refusal(&w, who, Gate::Move).expect("leaving the port is refused");
+        assert_eq!(
+            line,
+            PROCESSING
+                .replace("{port}", port_name("ceres"))
+                .replace("{h}", "1")
+        );
+        for gate in [Gate::Operate, Gate::Extract, Gate::Chat] {
+            assert_eq!(refusal(&w, who, gate), None, "{gate:?}");
+        }
+        book.0
+            .insert(who, record_at(who, CrewLocation::Carrier { hull: carrier }));
+        w.module_state_insert(book);
+        assert!(
+            gates.iter().all(|gate| refusal(&w, who, *gate).is_none()),
+            "a passenger"
+        );
     }
 }

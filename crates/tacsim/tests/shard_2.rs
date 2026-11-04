@@ -49,6 +49,8 @@ mod field_fr2;
 mod field_host_rig;
 #[path = "support/field/field_raiders_rig.rs"]
 mod field_raiders_rig;
+#[path = "shard_2/in1_accounting.rs"]
+mod in1_accounting;
 #[path = "shard_2/minds.rs"]
 mod minds;
 #[path = "shard_2/minds_pool.rs"]

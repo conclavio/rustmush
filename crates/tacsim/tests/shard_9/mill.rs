@@ -1122,7 +1122,7 @@ fn enrol(rig: &mut Rig, who: &str, seed: i64) -> Result<String, (String, String)
 /// digest; and `strip_mill` removes exactly those two rows and the yard, idempotently.
 #[test]
 fn sm12a_strip_mill_rebuilds_the_published_v13() {
-    assert_eq!(LANE_VERSION, 19, "lane v19 since doc 36 cut GC.13");
+    assert_eq!(LANE_VERSION, 20, "lane v20 since doc 39 cut IN.1");
     let shipped = load_pack(LANE_JSON).expect("the lane verifies");
     assert_eq!(shipped.manifest().version(), LANE_VERSION);
     let mut mills = Vec::new();
@@ -2503,7 +2503,10 @@ fn sm12a_only_the_mill_restocks() {
 /// (`port/bay_work/act.rs`) consumes an order's goods from the carrier's hold: matter leaves the
 /// world as munitions and parts are spent on a hull. Doc 36 cut GC.6's remains scrap
 /// (`surface/tow.rs`) mints a wreck's structural mass as alloys where it lies: matter already in
-/// the world, taken off the site's record in the same bundle, never made from nothing.
+/// the world, taken off the site's record in the same bundle, never made from nothing. **Doc 39
+/// cut IN.1 (Q-39-8)**: `.mint_origins(` is counted too — once, the bay's strip and scrap mint
+/// (`port/bay_work/act.rs`), parts and alloys off a hull already in the world — so a new mint
+/// path is a reviewed diff here, as every other is.
 #[test]
 fn sm12a_only_the_clerk_the_foundry_and_the_mill_create_matter() {
     let files = production_files("tacsim/src");
@@ -2513,6 +2516,10 @@ fn sm12a_only_the_clerk_the_foundry_and_the_mill_create_matter() {
             ("tacsim/src/port/stock.rs".to_owned(), 1),
             ("tacsim/src/surface/tow.rs".to_owned(), 1),
         ]
+    );
+    assert_eq!(
+        occurrences(&files, ".mint_origins("),
+        vec![("tacsim/src/port/bay_work/act.rs".to_owned(), 1)]
     );
     let credits = occurrences(&files, ".credit(");
     let (foundry, others): (Vec<_>, Vec<_>) = credits
@@ -2530,6 +2537,58 @@ fn sm12a_only_the_clerk_the_foundry_and_the_mill_create_matter() {
             ("tacsim/src/port/burn.rs".to_owned(), 2),
             ("tacsim/src/port/mill.rs".to_owned(), 1),
         ]
+    );
+}
+
+/// **The receipt kinds a mint may carry are a closed set** (doc 39 cut IN.1, Q-39-8's second
+/// pin): over `crates/tacsim/src`'s production text, the `ExternalRef` each minting file builds
+/// names one of four kinds — the stock clerk's `port.stock`, the remains scrap's
+/// `remains_scrap`, and the bay's `bay_strip` and `bay_scrap` (its `bay_{why}`, where the only
+/// `why`s `owe_mint` is handed are `strip` and `scrap`). A new kind is a new kind of matter's
+/// origin, and the matter story (IN.11) sums by them.
+#[test]
+fn in1_the_receipt_kinds_a_mint_may_carry_are_closed() {
+    let files = production_files("tacsim/src");
+    let text = |path: &str| {
+        files
+            .iter()
+            .find(|(p, _)| p == path)
+            .map(|(_, text)| text.clone())
+            .unwrap_or_else(|| panic!("{path} is production text"))
+    };
+    // Each minting file builds exactly one receipt, of exactly this kind.
+    for (path, kind) in [
+        (
+            "tacsim/src/port/stock.rs",
+            "kind: smol_str::SmolStr::new_static(STOCK_SOURCE_KIND),",
+        ),
+        (
+            "tacsim/src/surface/tow.rs",
+            "kind: \"remains_scrap\".into(),",
+        ),
+        (
+            "tacsim/src/port/bay_work/act.rs",
+            "kind: format!(\"bay_{why}\").into(),",
+        ),
+    ] {
+        let source = text(path);
+        assert_eq!(source.matches("ExternalRef {").count(), 1, "{path}");
+        assert_eq!(source.matches(kind).count(), 1, "{path}: {kind}");
+    }
+    assert_eq!(tacsim::port::STOCK_SOURCE_KIND, "port.stock");
+    // The bay's `why`: the strip's and the scrap's, and nothing else.
+    let strip = text("tacsim/src/port/bay_work/strip.rs");
+    let whys: Vec<&str> = strip
+        .match_indices("owe_mint(ctx, record, act_no, vault.0, \"")
+        .map(|(at, needle)| {
+            let rest = &strip[at + needle.len()..];
+            &rest[..rest.find('"').expect("a closed literal")]
+        })
+        .collect();
+    assert_eq!(whys, ["strip", "scrap"]);
+    assert_eq!(
+        occurrences(&files, "owe_mint("),
+        vec![("tacsim/src/port/bay_work/strip.rs".to_owned(), 3)]
     );
 }
 

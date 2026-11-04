@@ -670,6 +670,20 @@ pub trait CarrierHooks: Send + Sync {
         let _ = (ctx, journey);
         false
     }
+
+    /// **Doc 42 cut CR.0 (Q-42-2, Draft 0.3 42-6) — a person a carrier holds.** Asked at the
+    /// head of `@station` and `+focus` (every form but the reads): `Some(why)` refuses
+    /// `actor` with `why`, the game layer's one-line held refusal. World-only, like the rest.
+    fn restrains_operator(&self, w: &World, actor: ObjId) -> Option<String> {
+        let _ = (w, actor);
+        None
+    }
+}
+
+/// **The held refusal for `actor`** from the installed carrier hooks
+/// ([`CarrierHooks::restrains_operator`]); `None` when unwired.
+pub(crate) fn operator_restraint(w: &World, actor: ObjId) -> Option<String> {
+    carrier_hooks(w).and_then(|hooks| hooks.restrains_operator(w, actor))
 }
 
 /// A newtype over `Option<Arc<dyn CarrierHooks>>` carrying the

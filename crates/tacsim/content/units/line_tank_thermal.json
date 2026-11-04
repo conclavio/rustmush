@@ -3,7 +3,7 @@
     "id": "tacsim.pack.line_tank_thermal",
     "version": 4,
     "kind": "rules_definition",
-    "digest": "45d2d86aba3418652cc2e7e71153b24586810b799d24ae64fa883671f48304e7",
+    "digest": "a90431a398347f152f6536cda35cf2a3013589b5d29a95a493061551074b24d9",
     "requires": [
       {
         "id": "tacsim.pack.cannon_105",
@@ -19,6 +19,10 @@
       },
       {
         "id": "tacsim.pack.cores",
+        "version": 1
+      },
+      {
+        "id": "tacsim.pack.plants",
         "version": 1
       }
     ]
@@ -119,6 +123,7 @@
             "section": "hull",
             "role": {
               "kind": "power",
+              "plant": "tacsim.plant.vehicle_mk1",
               "capability": "tacsim.power",
               "states": ["off", "starting", "online"],
               "initial": "off"

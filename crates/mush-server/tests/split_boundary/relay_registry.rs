@@ -2763,7 +2763,7 @@ fn r7_station_pack_digest_and_bounded_attention() {
     .unwrap();
     assert_eq!(
         pack.manifest().digest().to_hex(),
-        "9db7f4ad577e1071c124369289f9fdd6d5ff395b78160b9362c4718e29a7827e"
+        "eadf31296816ca5fa914e5bf4691c648d3ce779ed012473e1d39d888ad35d4c5"
     );
     let mut f = mush_faction::Faction::new(mush_faction::FactionId(0), "Controlled attention");
     f.apply_resource("attention", i64::MAX, "test", GOD, 0);
@@ -4274,11 +4274,45 @@ fn relay_v4() -> mush_content::Pack {
     );
     pack
 }
+/// **Doc 39 cut IN.1 (lane v20): the ladder's three prices put back** — Kasei's alloy ask 450 →
+/// 400, Stickney Yards' fittings ask 520 → 400, the Co-op's fittings bid 600 → 560 — so a strip
+/// chain rebuilds a lane before v20 (idempotent).
+fn strip_ladder(doc: &mut serde_json::Value) {
+    for (port, org, side, good, was) in [
+        ("stickney_port", "kasei", "asks", "structural_alloys", 400),
+        (
+            "stickney_port",
+            "stickney_yards",
+            "asks",
+            "industrial_parts",
+            400,
+        ),
+        ("ceres_port", "coop", "bids", "industrial_parts", 560),
+    ] {
+        for vendor in doc["entries"][port]["def"]["vendors"]
+            .as_array_mut()
+            .into_iter()
+            .flatten()
+            .filter(|vendor| vendor["org"] == org)
+        {
+            for row in vendor[side]
+                .as_array_mut()
+                .into_iter()
+                .flatten()
+                .filter(|row| row["good"] == good)
+            {
+                row["price_major"] = was.into();
+            }
+        }
+    }
+}
 /// **Doc 32 cut S.1: the 512 site's rows** — Urvara Reach's place, its two routes, its port and
 /// Ceres's `urvara` routes key — stripped from the shipped lane to rebuild an older one. Doc 36
 /// cut GC.7 (lane v18): the two ports' `workshop` blocks and the vendors' munitions rows first;
-/// cut GC.13 (lane v19): and their `medical` blocks.
+/// cut GC.13 (lane v19): and their `medical` blocks; doc 39 cut IN.1 (lane v20): the ladder
+/// first ([`strip_ladder`]).
 fn strip_urvara(lane: &mut serde_json::Value) {
+    strip_ladder(lane);
     for port in ["ceres_port", "stickney_port"] {
         let def = lane["entries"][port]["def"].as_object_mut().unwrap();
         def.remove("workshop");
@@ -4465,7 +4499,7 @@ impl Rig {
 /// the operator org, the bindings, the Terms story and the money never move, across two
 /// restarts.
 #[tokio::test]
-async fn sm12b_a_kept_v13_star_takes_lane_v19_and_relay_v10() {
+async fn sm12b_a_kept_v13_star_takes_lane_v20_and_relay_v11() {
     let lane = tacsim::definitions::content::LANE_PACK;
     let relay = "tacsim.relay.luna_ceres";
     let mut rig = Rig::v13_star().await;
@@ -4494,44 +4528,44 @@ async fn sm12b_a_kept_v13_star_takes_lane_v19_and_relay_v10() {
         .to_owned();
     let applied = rig.run(GOD, &format!("@atlas/pack apply {fingerprint}"));
     assert!(
-        applied.contains(&format!("Applied {lane}@19: ")),
+        applied.contains(&format!("Applied {lane}@20: ")),
         "{plan}\n{applied}"
     );
     assert!(!applied.contains("STOPPED"), "{applied}");
-    assert_eq!(rig.latched(lane), Some(19));
+    assert_eq!(rig.latched(lane), Some(20));
 
-    // Relay v10 differs from v2 only in its manifest: staff have nothing to apply.
+    // Relay v11 differs from v2 only in its manifest: staff have nothing to apply.
     let plan = rig.run(GOD, &format!("@atlas/pack plan {relay}"));
     assert!(plan.contains("Nothing to do."), "{plan}");
     rig.flush().await;
     rig.restart().await.unwrap();
-    assert_eq!((rig.latched(lane), rig.latched(relay)), (Some(19), Some(2)));
+    assert_eq!((rig.latched(lane), rig.latched(relay)), (Some(20), Some(2)));
     assert_eq!(rig.registry(), original);
     assert_eq!(
         rig.story(),
         story,
-        "relay v2 beside lane v19 is still the full star"
+        "relay v2 beside lane v20 is still the full star"
     );
 
-    // The operator's apply of the shipped seed latches v10 and changes nothing else.
+    // The operator's apply of the shipped seed latches v11 and changes nothing else.
     rig.apply_content(vec![
         mush_content::load_pack(tacsim::relay_content::JSON).unwrap(),
     ])
     .await;
-    assert_eq!(rig.latched(relay), Some(10));
+    assert_eq!(rig.latched(relay), Some(11));
     assert_eq!(rig.registry(), original);
     rig.flush().await;
     rig.restart().await.unwrap();
     assert_eq!(
         (rig.latched(lane), rig.latched(relay)),
-        (Some(19), Some(10))
+        (Some(20), Some(11))
     );
     assert_eq!(rig.registry(), original);
     assert_eq!(rig.operator_org(), org);
     assert_eq!(
         rig.story(),
         story,
-        "relay v10 is the full star: the Terms story boots unchanged"
+        "relay v11 is the full star: the Terms story boots unchanged"
     );
     assert!(rig.run(GOD, "@relay/check").contains("Bindings OK"));
     assert_eq!(rig.money_total(), money);
@@ -4719,7 +4753,7 @@ async fn oduya_kept_ceres_v2_and_relay_v4_upgrade_without_replacing_the_live_sta
     // without replacing the operator, node/half objects or disabled link state.
     // Doc 32 cut CF.6c: the shipped relay requires lane v16, so the lane comes first (doc 32
     // cut S.1: lane v17, relay v8; doc 36 cut GC.7: lane v18, relay v9; cut GC.13: lane v19,
-    // relay v10).
+    // relay v10; doc 39 cut IN.1: lane v20, relay v11).
     rig.apply_content(vec![
         mush_content::load_pack(tacsim::definitions::content::LANE_JSON).unwrap(),
         mush_content::load_pack(tacsim::relay_content::JSON).unwrap(),
@@ -4727,7 +4761,7 @@ async fn oduya_kept_ceres_v2_and_relay_v4_upgrade_without_replacing_the_live_sta
     .await;
     assert_eq!(
         (rig.latched(ceres), rig.latched(relay)),
-        (Some(4), Some(10))
+        (Some(4), Some(11))
     );
     assert_eq!(rig.registry(), original);
     rig.flush().await;
@@ -4776,8 +4810,9 @@ fn r10_public_star_content_digests_are_pinned() {
             // `b8e247be…`). Doc 32 cut CF.6c: v7, re-signed to require lane v16 (was
             // `ed73b84d…`). Doc 32 cut S.1: v8, re-signed to require lane v17. Doc 36 cut
             // GC.7: v9, re-signed to require lane v18 (was `77b71203…` at v8). Doc 36 cut GC.13:
-            // v10, re-signed to require lane v19 (was `850923eb…` at v9).
-            "28dea88535d239b4f5cbde163df3f6ef1c3bc79ad824c3c454b0c0f2e481a52c",
+            // v10, re-signed to require lane v19 (was `850923eb…` at v9). Doc 39 cut IN.1: v11,
+            // re-signed to require lane v20 (was `28dea885…` at v10).
+            "a057e314f37967b3366857d025c9f618a245402403071e4b08538355fdab9fc6",
         ),
     ];
     let packs = tacsim::relay_content::packs().unwrap();

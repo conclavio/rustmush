@@ -1718,6 +1718,11 @@ pub(crate) fn apply_focus_bump_and_refresh(
 }
 
 fn cmd_focus(ctx: &mut Ctx<'_>) -> Result<(), CmdError> {
+    // Doc 42 cut CR.0 (Q-42-2): a held person takes and gives no focus; the bare form reads.
+    let reads = !ctx.switches.has("release") && ctx.args.raw().trim().is_empty();
+    if !reads && let Some(why) = crate::journey::operator_restraint(ctx.w, ctx.actor) {
+        return Err(CmdError::msg(why));
+    }
     if ctx.switches.has("release") {
         focus_release(ctx)
     } else if ctx.args.raw().trim().is_empty() {

@@ -1794,15 +1794,18 @@ impl TowProvider {
         if *of != facts.of || *mass_kg != facts.mass_kg {
             return Err(refused("scrap_changed"));
         }
+        // Doc 39 cut IN.1 (§4.10): scrap mints down to whole tonnes; under a tonne, on a site
+        // with no facility to keep the fraction, nothing mints and the mass is a declared loss.
         let alloys_t = mass_kg / crate::port::bay_work::strip::SCRAP_KG_PER_T;
-        if alloys_t == 0 || alloys_t != facts.alloys_t {
+        if alloys_t != facts.alloys_t {
             return Err(refused("scrap_changed"));
         }
         let good = CanonicalId::new(crate::port::bay_work::strip::SCRAP_GOOD)
             .map_err(|_| integrity("the alloys' good is malformed"))?;
         let grade = mush_inventory::Grade::new(crate::port::bay_work::strip::SCRAP_GRADE)
             .map_err(|_| integrity("the alloys' grade is out of bounds"))?;
-        inventory
+        if alloys_t > 0 {
+            inventory
             .mint_origin(
                 txn,
                 mush_inventory::EndpointRef(mush_economy::VaultId(facts.hold)),
@@ -1821,6 +1824,7 @@ impl TowProvider {
                 tracing::warn!(tv = tv.0, object = facts.object, %error, "tacsim: remains' alloys would not mint; the scrap refuses");
                 refused("scrap_unminted")
             })?;
+        }
         if facts.lawful {
             return Ok("scrapped:lawful".to_owned());
         }

@@ -518,6 +518,10 @@ pub enum ComponentRole {
     /// The power plant: a capability with a named state set (doc 16 §3.3
     /// "Startup").
     Power {
+        /// **The plant it is** (doc 39 cut IN.1, Q-39-35): a `plant` entry id, checked at load,
+        /// whose states these must be. What the bay stocks the component as
+        /// (`tacsim.part.plant.<row>`) and what it weighs; `bind` reads nothing from it.
+        plant: CanonicalId,
         /// The capability id, `tacsim.power`.
         capability: CanonicalId,
         /// Its states, in order: `off`, `starting`, `online`.
@@ -544,6 +548,23 @@ pub enum ComponentRole {
         /// The core definition it is — an entry id, checked at load.
         core: CanonicalId,
     },
+}
+
+impl ComponentRole {
+    /// **The hardware row this role names, and the row's kind** (doc 39 cut IN.1, Q-39-3):
+    /// a mount's weapon row, a sight's, pod's or filter's sensor row, a power role's plant;
+    /// `None` for a core and a relay socket, which are no parts.
+    #[must_use]
+    pub fn part_row(&self) -> Option<(&'static str, &CanonicalId)> {
+        match self {
+            ComponentRole::Weapon { weapon, .. } => Some(("weapon", weapon)),
+            ComponentRole::Sensor { sensor, .. }
+            | ComponentRole::Ecm { sensor }
+            | ComponentRole::Eccm { sensor } => Some(("sensor", sensor)),
+            ComponentRole::Power { plant, .. } => Some(("plant", plant)),
+            ComponentRole::Relay { .. } | ComponentRole::Core { .. } => None,
+        }
+    }
 }
 
 /// One component (doc 16 §3.3 "Components").
@@ -996,6 +1017,15 @@ impl UnitSpec {
             ComponentRole::Sensor { sensor, .. }
             | ComponentRole::Ecm { sensor }
             | ComponentRole::Eccm { sensor } => Some(sensor),
+            _ => None,
+        })
+    }
+
+    /// **Every plant definition this unit names**, in component order (doc 39 cut IN.1) — the
+    /// reference check at load walks it, with each power role's states.
+    pub fn plants(&self) -> impl Iterator<Item = (&CanonicalId, &[CanonicalId])> {
+        self.components.iter().filter_map(|c| match &c.role {
+            ComponentRole::Power { plant, states, .. } => Some((plant, states.as_slice())),
             _ => None,
         })
     }
@@ -1951,6 +1981,7 @@ pub fn bind(
                 capability,
                 states,
                 initial,
+                ..
             } => {
                 let schema = schema_ref(name, cx.schemas, POWER_RULES_SCHEMA)?;
                 let words: Vec<&str> = states.iter().map(CanonicalId::as_str).collect();
